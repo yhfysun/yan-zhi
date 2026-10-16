@@ -19,7 +19,7 @@
 
 import { defineStore } from 'pinia';
 import { computed } from 'vue';
-import type { CommandDef } from '@yan-zhi/core';
+import type { CommandDef, PlaybookDef } from '@yan-zhi/core';
 import { api } from '../api/client';
 import { activeMode } from './mode';
 import { usePluginStore } from './plugin';
@@ -53,7 +53,7 @@ export const useCommandsStore = defineStore('commands', () => {
    *   而"列出来但不能用"比"没列出来"更糟 —— 用户会以为功能坏了。
    * ★ 不过滤（`mode` 缺省）的命令全局可用（`/agent` `/model` `/help` 这些）。
    */
-  function commandsForMode(list: CommandDef[], mode: string): CommandDef[] {
+  function commandsForMode<T extends { mode?: string }>(list: T[], mode: string): T[] {
     return list.filter((c) => !c.mode || c.mode === mode);
   }
 
@@ -70,6 +70,15 @@ export const useCommandsStore = defineStore('commands', () => {
   function search(q: string): CommandDef[] {
     return searchCommands(globalCommands.value, q);
   }
+
+  /**
+   * 剧本（`@名字` 召唤）。与命令同样**按模式过滤**：安全剧本不该出现在办公模式。
+   * ★ 剧本只是"命令的序列"，本 store 不执行它 —— 调用方拿展开后的命令行走同一条命令通道。
+   */
+  const playbooks = computed<PlaybookDef[]>(() => commandsForMode(
+    usePluginStore().playbooks || [],
+    activeMode.value,
+  ));
 
   /**
    * 当前页命中的**页面指令**（CommandDef 形态）—— 浏览器面板的 chips 用。
@@ -111,5 +120,5 @@ export const useCommandsStore = defineStore('commands', () => {
     return { ok: d?.ok !== false, text: String(d?.text || '(无输出)') };
   }
 
-  return { globalCommands, globalGroups, search, pageDefsFor, pageCommandById, runTool };
+  return { globalCommands, globalGroups, search, playbooks, pageDefsFor, pageCommandById, runTool };
 });

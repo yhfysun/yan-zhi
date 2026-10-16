@@ -776,7 +776,8 @@ import type { CommandDef } from '@yan-zhi/core';
 import { useCommandsStore } from '../../stores/commands';
 import { groupCommands, isPrefixOf, slashOf } from '../../utils/commandBridge';
 import {
-  findCommand, formatCommandHelp, formatHelp, planCommandInput, pushHistory, type ParsedCommand,
+  findCommand, formatCommandHelp, formatHelp, planCommandInput, planPlaybookSummon,
+  pushHistory, type ParsedCommand,
 } from '../../utils/commandParser';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
@@ -1712,6 +1713,24 @@ function onTab(e: KeyboardEvent) {
  *   一条命令被当成聊天内容发给模型，用户与模型都会一头雾水。
  * @returns 是否已按命令处理（true ⇒ 调用方不要再 send）
  */
+/**
+ * 整行 `@名字` = **剧本召唤**：把剧本展开成命令行填进输入框（不直接跑）。
+ * ★ 为什么是"填进去"而不是"直接跑"：聊天框这边没有"当前目标"这个概念，
+ *   剧本里 `${target}` 这类占位符得由人来填；摊在输入框里让人看见并改完再回车，
+ *   比让它在后台拿空目标扫一遍诚实得多。
+ * @returns 是否命中剧本（true ⇒ 调用方不要再 send）
+ */
+function summonPlaybook(): boolean {
+  const hit = planPlaybookSummon(input.value, commandsStore.playbooks);
+  if (!hit) return false;
+  input.value = hit.steps.join('; ');
+  const rest = hit.steps.filter((s) => /\$\{\w+\}/.test(s)).length;
+  ElMessage.info(rest
+    ? `已展开剧本「${hit.playbook.name}」：把 ${'${target}'} 换成实际目标后回车执行`
+    : `已展开剧本「${hit.playbook.name}」，回车执行`);
+  return true;
+}
+
 function runCommandInput(): boolean {
   const line = input.value.trim();
   const plan = planCommandInput(line, commandsStore.globalCommands);
@@ -1887,6 +1906,9 @@ function onEnter(e: KeyboardEvent) {
     if (f) pickAtFile(f);
     return;
   }
+  // ★ 一整行剧本召唤（`@信息收集`）：把展开后的命令**填进输入框**，用户改完占位符再回车。
+  //   （`@` 在句子中间仍是文件引用，两者靠"是不是独立一行"区分，见 planPlaybookSummon）
+  if (summonPlaybook()) return;
   // ★ 一整条命令（`/help agent`、`/a; /b` 这类带空格/分号的行不会开菜单）⇒ 按命令跑。
   //   不拦的话它会走到下面的 send()，被当成聊天内容发给模型 —— 用户与模型都会一头雾水。
   if (runCommandInput()) return;

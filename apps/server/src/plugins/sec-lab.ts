@@ -90,6 +90,34 @@ export const secLabManifest: PluginManifest = {
       // —— 报告 ——
       { name: 'report', aliases: ['sec_report'], desc: '按目标汇总发现项，出 Markdown/JSON 报告', usage: '/report [--target=x] [--format=markdown|json]', group: 'REPORT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sec_report' },
     ],
+    // ── 剧本（`@名字` 召唤的命令序列，2026-10-16）────────────────────────────────
+    // ★ 定义就是"一串**已存在的命令**"（见 core 的 PlaybookDef）：剧本自己不执行任何东西，
+    //   展开后走各自的命令通道（含各自的护栏与审计）。这样不必再发明第三种多步模型
+    //   —— 本仓已有工作流引擎与 task_type 的 SOP 步骤。
+    // ★ 步骤里的 `${target}` 由调用方替换（安全控制台用「执行」页填的 target）；
+    //   替换不了的占位符**原样留着**，面板会明说"还有 N 步没填"——绝不拿空目标去扫。
+    // ★ 与方案 §五 那份「首批 6 个」的差异：方案的「合规基线」（baseline→tls-audit→headers-audit）
+    //   依赖 P3 才有的命令，这里**不提前声明不存在的命令**；换成同样成串、且今天就能跑的「靶场演练」。
+    playbooks: [
+      { id: 'recon-basic', name: '信息收集', group: 'SEC', mode: 'sec',
+        desc: '目标画像 + 端口暴露面（被动画像 → 主动扫描）',
+        steps: ['/recon ${target}', '/portscan ${target}'] },
+      { id: 'web-audit', name: 'Web常规审计', group: 'SEC', mode: 'sec',
+        desc: 'Web 面探测 → 外部模板引擎（装了 nuclei 才跑得动）→ 出报告',
+        steps: ['/webprobe ${target}', '/toolchain run --tool=nuclei --target=${target}', '/report --target=${target}'] },
+      { id: 'asset-review', name: '资产盘点', group: 'SEC', mode: 'sec',
+        desc: '资产台账 → 快照 → 变更对比',
+        steps: ['/assets list', '/assets snapshot --assetId=${assetId}', '/assets diff --assetId=${assetId}'] },
+      { id: 'blue-review', name: '蓝队复盘', group: 'SEC', mode: 'sec',
+        desc: '内置规则清单 → 日志狩猎',
+        steps: ['/rules list', '/hunt ${logPath}'] },
+      { id: 'lab-drill', name: '靶场演练', group: 'SEC', mode: 'sec',
+        desc: '探测本机环境 → 列出靶场 → 跑一次 ATT&CK 行为模拟（仅 lab 环境、人工确认）',
+        steps: ['/env', '/ranges', '/attack ${target} --playbook=discovery-basic'] },
+      { id: 'full-assessment', name: '完整评估', group: 'SEC', mode: 'sec', confirmEach: true,
+        desc: '全流程：画像 → 端口 → Web → 报告（**每一步都要确认**）',
+        steps: ['/recon ${target}', '/portscan ${target}', '/webprobe ${target}', '/report --target=${target}'] },
+    ],
   },
   config: {
     type: 'object',

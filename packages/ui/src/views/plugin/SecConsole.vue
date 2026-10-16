@@ -114,6 +114,26 @@
       <section class="sec-col-right">
         <!-- 命令模式（lead=human）：现有扫描控制台原样保留（任务 8.2），v-show 保活不卸载 -->
         <div v-show="lead === 'human'" class="sec-ws">
+        <!-- ── 命令行（命令中枢，2026-10-16）──────────────────────────────
+             ★ 为什么必须有：安全模式的落地页**就是本页**（没有聊天输入框），
+               所以 sec 限定的命令若只挂在聊天框上，等于在哪儿都敲不到。
+             ★ 解析与执行与聊天框的面板**同源**：planCommandInput / commandsStore.runTool，
+               执行仍是 POST /plugin/sec-lab/run（同一套 withGuard、同一份审计）。 -->
+        <div class="sec-cmdbar">
+          <span class="sec-cmdbar-k">/</span>
+          <input
+            v-model="cmdInput" class="sec-cmdbar-input" spellcheck="false"
+            :placeholder="cmdPlaceholder"
+            @input="updateCmdHints" @keydown.enter.prevent="submitCommand" @keydown.esc="cmdHints = []"
+          />
+          <span class="sec-cmdbar-tip"><b>/help</b> 看全部命令</span>
+          <el-button class="sec-cta" size="small" type="primary" :loading="running" @click="submitCommand">▶ 运行</el-button>
+        </div>
+        <div v-if="cmdHints.length" class="sec-cmdhints">
+          <button v-for="h in cmdHints" :key="h.name" type="button" class="sec-cmdhint" @click="pickCmdHint(h)">
+            <b>/{{ h.name }}</b><span>{{ h.desc }}</span>
+          </button>
+        </div>
         <header class="sec-frame-head sec-frame-head-tab">
           <span class="sec-num">04</span>
           <span class="sec-frame-title">EXEC</span>
@@ -684,10 +704,15 @@ import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import FormDialog from '../../components/FormDialog.vue';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
 import { useChat } from '../../composables/chat/useChat';
+// 命令中枢（2026-10-16）：命令行与聊天框的面板**同源**（同一份解析、同一个执行出口）
+import type { CommandDef } from '@yan-zhi/core';
+import { useCommandsStore } from '../../stores/commands';
+import { formatHelp, planCommandInput, planPlaybookSummon, type ParsedCommand } from '../../utils/commandParser';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 
 const BASE = '/plugin/sec-lab';
+
 
 // ============================================================
 // 主导方双形态（任务 8.1–8.6）：human = 命令模式（现有控制台，原样保留）
@@ -944,6 +969,98 @@ const ports = ref('common');
 const result = ref('');
 const running = ref(false);
 const lastRunMs = ref<number | null>(null);
+
+// ============================================================
+// 命令行（命令中枢）：`/命令 参数…` 直接跑工具（2026-10-16）
+//
+// ★ 与聊天框的 `/` 面板共用一套：解析 `planCommandInput`、执行 `commandsStore.runTool`
+//   （后者打的就是 SecConsole 自己的 `POST /plugin/sec-lab/run` —— 同一套 withGuard）。
+//   在控制台里再加一条执行链，等于把护栏复制一份，迟早漂移。
+// ============================================================
+const commandsStore = useCommandsStore();
+const cmdInput = ref('');
+const cmdHints = ref<CommandDef[]>([]);
+const cmdPlaceholder = computed(() => {
+  // ★ 别把局部变量也命名成 target —— 会遮蔽外层的 ref，初始化器就变成引用自己
+  const t = String(target.value || '').trim();
+  return t ? `例：/portscan ${t}` : '输入 /命令，例：/scopes 或 /recon example.com';
+});
+
+/** 输入时给候选（只认以 `/` 开头的输入；空关键词给前几条） */
+function updateCmdHints() {
+  const line = cmdInput.value;
+  if (!line.trim().startsWith('/')) { cmdHints.value = []; return; }
+  const kw = line.trim().slice(1).split(/\s+/)[0] || '';
+  cmdHints.value = commandsStore.search(kw).slice(0, 6);
+}
+function pickCmdHint(h: CommandDef) {
+  cmdInput.value = `/${h.name} `;
+  cmdHints.value = [];
+  updateCmdHints();
+}
+
+/** 执行命令行（`;` 串联依次跑；`@剧本` 先展开成命令序列；结果落「执行」页的输出区） */
+async function submitCommand() {
+  const line = cmdInput.value.trim();
+  if (!line) return;
+  // ★ 剧本召唤（`@信息收集`）：展开成命令序列，并把「执行」页填的 target 替进 `${target}`
+  const summon = planPlaybookSummon(line, commandsStore.playbooks, { target: String(target.value || '').trim() });
+  const effective = summon ? summon.steps.join('; ') : line;
+  const plan = planCommandInput(effective, commandsStore.globalCommands);
+  if (plan.length === 1 && plan[0].kind === 'chat') {
+    ElMessage.warning('命令要以 / 开头，或 @剧本名（/help 看全部）');
+    return;
+  }
+  if (summon) {
+    // 把没替掉的占位符**名字**列出来（只说"还有 N 步"等于让用户自己去猜差什么）
+    const missing = new Set<string>();
+    for (const s of summon.steps) for (const m of s.matchAll(/\$\{(\w+)\}/g)) missing.add(m[1]);
+    if (missing.size) {
+      ElMessage.warning(`剧本「${summon.playbook.name}」还需要：${[...missing].map((k) => '${' + k + '}').join(' ')}（target 可在「执行」页填，其余请补进命令行）`);
+      return;
+    }
+    ElMessage.info(`召唤剧本「${summon.playbook.name}」（${summon.steps.length} 步）`);
+  }
+  cmdInput.value = '';
+  cmdHints.value = [];
+  tab.value = 'run';          // 结果落在「执行」页的输出区，避免跑完看不见
+  for (const step of plan) {
+    if (step.kind === 'unknown') { ElMessage.warning(`没有 /${step.name} 这条命令（/help 看全部）`); continue; }
+    if (step.kind === 'interactive') { ElMessage.info(`「${step.def.name}」需要在聊天框里交互选择，控制台不支持`); continue; }
+    if (step.kind !== 'run') continue;
+    if (step.def.run === 'help') { result.value = formatHelp(commandsStore.globalCommands); continue; }
+    if (step.def.kind !== 'tool') { ElMessage.info(`「${step.def.name}」不是安全工具命令（本控制台只跑工具型）`); continue; }
+    // 标了 confirmEach 的剧本（如「完整评估」）每一步都先问
+    await runToolCommand(step.def, step.parsed, summon?.playbook.confirmEach === true);
+  }
+}
+
+/** 跑一条工具型命令：危险 / 需确认的先弹确认（与「▶ 执行」按钮的确认口径一致） */
+async function runToolCommand(def: CommandDef, parsed: ParsedCommand, forceConfirm = false) {
+  if (forceConfirm || def.confirm || def.danger === 'I' || def.danger === 'S') {
+    try {
+      await ElMessageBox.confirm(
+        `确认执行 /${def.name}？<br>${def.desc}<br><br>` +
+        '<span style="color:#e6a23c">该类动作只应在**已授权目标或隔离靶场**上使用，执行全程留痕审计。</span>',
+        '高风险命令',
+        { dangerouslyUseHTMLString: true, confirmButtonText: '执行', cancelButtonText: '取消', type: 'warning' },
+      );
+    } catch { return; }
+    parsed.flags = { ...parsed.flags, confirmed: true };
+  }
+  running.value = true;
+  result.value = '';
+  const t0 = Date.now();
+  try {
+    const r = await commandsStore.runTool(def, parsed);
+    result.value = r.text;
+    lastRunMs.value = Date.now() - t0;
+    if (!r.ok) ElMessage.warning('工具返回错误，见输出结果');
+    await loadAll();     // findings / audit / pulse 跟着刷新（与 postRun 同口径）
+  } finally {
+    running.value = false;
+  }
+}
 const needsTarget = computed(() => tool.value !== 'toolchain' && tool.value !== 'sec_report');
 
 // ---------- 演练 tab ----------
@@ -1445,6 +1562,34 @@ onUnmounted(() => { secAbort?.abort(); });
   text-transform: uppercase;
 }
 .sec-pulse-more:hover { background: var(--sc-bg-2); color: var(--sc-amber); }
+
+/* ---------- 命令行（命令中枢）---------- */
+.sec-cmdbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--sc-line);
+  background: var(--sc-bg-2);
+}
+.sec-cmdbar-k { font-family: var(--sc-mono); font-size: 12px; color: var(--sc-amber); }
+.sec-cmdbar-input {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  font-family: var(--sc-mono); font-size: 12px; color: var(--sc-fg);
+}
+.sec-cmdbar-input::placeholder { color: var(--sc-fg-3); }
+.sec-cmdbar-tip { font-family: var(--sc-mono); font-size: 10px; color: var(--sc-fg-3); white-space: nowrap; }
+.sec-cmdbar-tip b { color: var(--sc-primary); }
+.sec-cmdhints {
+  display: flex; flex-direction: column;
+  border-bottom: 1px solid var(--sc-line); background: var(--sc-bg);
+}
+.sec-cmdhint {
+  display: flex; gap: 10px; align-items: baseline;
+  padding: 5px 12px; border: none; background: transparent; cursor: pointer;
+  font-family: var(--sc-mono); font-size: 11px; color: var(--sc-fg-2); text-align: left;
+}
+.sec-cmdhint b { color: var(--sc-amber); min-width: 96px; }
+.sec-cmdhint:hover { background: var(--sc-bg-2); color: var(--sc-fg); }
 
 /* ---------- Tab 导航 ---------- */
 .sec-tabs {

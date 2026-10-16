@@ -9,6 +9,7 @@ import type {
   SettingsTab,
   ChatEnhancerDef,
   CommandDef,
+  PlaybookDef,
   PluginContributes,
   PluginWebSocket,
   PluginWsRequest,
@@ -63,6 +64,8 @@ export class ExtensionRegistry {
    *   （packages/ui/src/utils/commandBridge.ts）。
    */
   commands: RegistryEntry<CommandDef>[] = [];
+  /** 命令中枢：剧本（`@名字` 召唤的命令序列；执行仍走各自命令的通道） */
+  playbooks: RegistryEntry<PlaybookDef>[] = [];
 
   /** 注册工具（后端执行体） */
   registerTool(pluginId: string, tool: BuiltInTool): Disposable {
@@ -113,6 +116,7 @@ export class ExtensionRegistry {
     (c.settingsTabs || []).forEach((t) => this.settingsTabs.push({ pluginId, item: t }));
     (c.chatEnhancers || []).forEach((t) => this.chatEnhancers.push({ pluginId, item: t }));
     (c.commands || []).forEach((t) => this.commands.push({ pluginId, item: t }));
+    (c.playbooks || []).forEach((t) => this.playbooks.push({ pluginId, item: t }));
     return { dispose: () => this.removeByPlugin(pluginId) };
   }
 
@@ -130,6 +134,7 @@ export class ExtensionRegistry {
     this.settingsTabs = this.settingsTabs.filter((e) => e.pluginId !== pluginId);
     this.chatEnhancers = this.chatEnhancers.filter((e) => e.pluginId !== pluginId);
     this.commands = this.commands.filter((e) => e.pluginId !== pluginId);
+    this.playbooks = this.playbooks.filter((e) => e.pluginId !== pluginId);
   }
 
   /** 返回所有插件工具（含 pluginId，供后端同步到 ToolRegistry） */
@@ -156,6 +161,7 @@ export class ExtensionRegistry {
       settingsTabs: this.settingsTabs,
       chatEnhancers: this.chatEnhancers,
       commands: this.commands,
+      playbooks: this.playbooks,
     };
   }
 }

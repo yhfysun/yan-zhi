@@ -4,10 +4,10 @@
 // 而且不会报错 —— 这类错在安全工具上尤其贵。纯文本断言完全抓不住。
 
 import { describe, it, expect } from 'vitest';
-import type { CommandDef } from '@yan-zhi/core';
+import type { CommandDef, PlaybookDef } from '@yan-zhi/core';
 import {
-  buildToolArgs, findCommand, formatCommandHelp, formatHelp, parseCommandChain, parseCommandLine,
-  planCommandInput, pushHistory, splitChain,
+  applyVars, buildToolArgs, expandPlaybook, findCommand, findPlaybook, formatCommandHelp, formatHelp,
+  parseCommandChain, parseCommandLine, planCommandInput, planPlaybookSummon, pushHistory, splitChain,
 } from './commandParser';
 
 function def(p: Partial<CommandDef> & { name: string }): CommandDef {
@@ -222,5 +222,58 @@ describe('★ 位置参数/选项 → 工具入参（命令与工具 schema 的�
 
   it('没有 params 的命令（如 /env）只吃选项', () => {
     expect(buildToolArgs(def({ name: 'env' }), { raw: '', name: 'env', args: ['多余'], flags: {} })).toEqual({});
+  });
+});
+
+describe('★ 剧本召唤（`@名字`）：展开成一串已存在的命令', () => {
+  const pb = (p: Partial<PlaybookDef> & { id: string; name: string }): PlaybookDef =>
+    ({ steps: [], ...p });
+
+  const list: PlaybookDef[] = [
+    pb({ id: 'recon-basic', name: '信息收集', steps: ['/recon ${target}', '/portscan ${target}'] }),
+    pb({ id: 'blue-review', name: '蓝队复盘', steps: ['/rules list', '/hunt ${logPath}'] }),
+  ];
+
+  it('applyVars：替换已知占位符；**未提供的原样留着**（不静默变空串）', () => {
+    expect(applyVars('/recon ${target}', { target: '10.0.0.1' })).toBe('/recon 10.0.0.1');
+    // ★ 空值也当"没提供"：拿空串去扫等于扫了个不存在的东西，还不报错
+    expect(applyVars('/recon ${target}', { target: '' })).toBe('/recon ${target}');
+    expect(applyVars('/hunt ${logPath}', { target: 'x' })).toBe('/hunt ${logPath}');
+  });
+
+  it('findPlaybook 认名字也认 id，大小写不敏感', () => {
+    expect(findPlaybook(list, '信息收集')?.id).toBe('recon-basic');
+    expect(findPlaybook(list, 'recon-basic')?.id).toBe('recon-basic');
+    expect(findPlaybook(list, '蓝队复盘')?.id).toBe('blue-review');
+    expect(findPlaybook(list, '没有这个')).toBeNull();
+  });
+
+  it('★ 只有"整行就是一个 @名字"才算召唤（句子中间的 @ 是文件引用）', () => {
+    const hit = planPlaybookSummon('@信息收集', list);
+    expect(hit?.playbook.name).toBe('信息收集');
+    // 句子中间的 @ 不是召唤
+    expect(planPlaybookSummon('看看 @report.md 讲了什么', list)).toBeNull();
+    expect(planPlaybookSummon('帮我 @信息收集 一下', list)).toBeNull();
+    // 不认识的 @ 名 → null（交给普通发送）
+    expect(planPlaybookSummon('@不存在的剧本', list)).toBeNull();
+    expect(planPlaybookSummon('', list)).toBeNull();
+  });
+
+  it('召唤时可带目标（`@信息收集 10.0.0.1`）：第一个词当剧名，其余当 target', () => {
+    const hit = planPlaybookSummon('@信息收集 10.0.0.1', list)!;
+    expect(hit.steps).toEqual(['/recon 10.0.0.1', '/portscan 10.0.0.1']);
+  });
+
+  it('★ 展开后每条都是可解析的命令行；没填的占位符留在原位', () => {
+    const hit = planPlaybookSummon('@蓝队复盘', list)!;
+    expect(hit.steps).toEqual(['/rules list', '/hunt ${logPath}']);
+    // 留下来的占位符必须能被解析出来（调用方据此告诉用户"还差什么"）
+    expect([...hit.steps[1].matchAll(/\$\{(\w+)\}/g)].map((m) => m[1])).toEqual(['logPath']);
+  });
+
+  it('expandPlaybook 不校验命令是否存在（那是 planCommandInput 的事）；空步骤丢掉', () => {
+    expect(expandPlaybook(pb({ id: 'x', name: 'x', steps: ['/不存在的命令 a'] }))).toEqual(['/不存在的命令 a']);
+    // 空步骤丢掉（剧本里留空行不该变成一条空命令）
+    expect(expandPlaybook(pb({ id: 'y', name: 'y', steps: ['  ', '/a'] }))).toEqual(['/a']);
   });
 });

@@ -279,7 +279,35 @@ export interface ChatEnhancerDef {
 }
 
 /**
- * 命令定义（**命令中枢**，2026-10-16）。
+ * 剧本（**命令的序列**，2026-10-16）—— `@信息收集` 这类"一键跑一串"的东西。
+ *
+ * ★ 为什么是"命令序列"而不是另造一套流程引擎：本仓已经有工作流引擎（`workflow/engine`）
+ *   与 SOP 步骤（`task_type.steps_json`），再发明第三种多步模型必然互相漂移。
+ *   剧本在这里的定义**只有一个**：一串**已存在的命令**按顺序跑，复用命令中枢的解析与执行通道
+ *   （含各自的护栏与审计）。它自己不做任何执行。
+ * ★ `confirmEach`：每一步都先问（方案里 `@完整评估`「全流程，需人工确认每一步」就是这么标的）。
+ */
+export interface PlaybookDef {
+  /** 唯一 id（kebab-case），如 'recon-basic' */
+  id: string;
+  /** 召唤名（`@信息收集` 里的「信息收集」） */
+  name: string;
+  desc?: string;
+  /**
+   * 步骤 = 命令行片段数组，**与手敲的 `/命令 参数` 同语法**（可含 `${target}` 等占位符）。
+   * ★ 用命令行字符串而不是结构化对象：剧本作者写的就是他要敲的那一行，
+   *   否则"剧本里写的"与"手敲的"两套语义迟早分叉。
+   */
+  steps: string[];
+  /** 面板分组（缺省按 SEC 之类的域分组） */
+  group?: string;
+  /** 限定模式（'sec'）；不填 = 全局 */
+  mode?: string;
+  /** 标了就每一步都先确认（高危剧本） */
+  confirmEach?: boolean;
+}
+
+/** 命令定义（**命令中枢**，2026-10-16）。
  *
  * ★ 为什么要有这个扩展点：命令此前**写死在前端**（`ChatInputArea.vue` 的 `/agent`、`/model` …），
  *   每加一个能力就要改那个数组 ⇒「界面随能力增长」。声明式收口后：各能力在
@@ -368,6 +396,8 @@ export interface PluginContributes {
   backendRoutes?: string[];
   /** 命令中枢：声明式命令（前端命令面板与 `/` 菜单据此列出） */
   commands?: CommandDef[];
+  /** 命令中枢：剧本（`@名字` 召唤的命令序列） */
+  playbooks?: PlaybookDef[];
 }
 
 /** 插件清单 */

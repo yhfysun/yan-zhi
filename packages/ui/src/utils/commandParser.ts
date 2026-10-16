@@ -10,7 +10,7 @@
 //     要带值就写 `--url=https://x`（`=` 形式对长短选项都成立）。
 //   将来若给 CommandDef 补上参数 schema，这条规则应当由 schema 覆盖 —— 那时只改这一个文件。
 
-import type { CommandDef } from '@yan-zhi/core';
+import type { CommandDef, PlaybookDef } from '@yan-zhi/core';
 import { groupCommands, slashOf } from './commandBridge';
 
 /** 一条解析出来的命令 */
@@ -202,6 +202,52 @@ export function planCommandInput(line: string, commands: CommandDef[]): CommandI
     if (def.run && INTERACTIVE_RUN_IDS.has(def.run)) return { kind: 'interactive', def };
     return { kind: 'run', def, parsed };
   });
+}
+
+/**
+ * `${k}` 占位符替换。
+ * ★ vars 里没有（或为空）的键**原样留着** —— 让用户看见"这里需要你填"，
+ *   而不是静默替换成空串去扫一个空目标（那是最坏的失败方式：不报错，结果没意义）。
+ */
+export function applyVars(text: string, vars: Record<string, string> = {}): string {
+  return String(text || '').replace(/\$\{(\w+)\}/g, (m, k) => {
+    const v = vars[k];
+    return v !== undefined && v !== '' ? String(v) : m;
+  });
+}
+
+/** 按召唤名（或 id）找剧本；大小写不敏感 */
+export function findPlaybook(list: PlaybookDef[], name: string): PlaybookDef | null {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return null;
+  return list.find((p) => p.name.toLowerCase() === n || p.id.toLowerCase() === n) || null;
+}
+
+/** 剧本 → 命令行数组（占位符按 vars 替换；**不**校验命令存不存在 —— 那是 planCommandInput 的事） */
+export function expandPlaybook(pb: PlaybookDef, vars: Record<string, string> = {}): string[] {
+  return (pb.steps || []).map((s) => applyVars(s, vars).trim()).filter(Boolean);
+}
+
+/**
+ * 整行是不是一次**剧本召唤**（`@信息收集`）。
+ * ★ 只在"整行就是一个 `@名字`"时命中：聊天框里 `@` 还兼着**文件引用**（`看看 @report.md 讲了什么`），
+ *   那种 `@` 在句子中间，不能当成召唤。两者靠"是不是独立一行"区分，语义不重叠。
+ * @returns 命中的剧本 + 展开后的命令行（未命中返回 null）
+ */
+export function planPlaybookSummon(
+  line: string,
+  playbooks: PlaybookDef[],
+  vars: Record<string, string> = {},
+): { playbook: PlaybookDef; steps: string[] } | null {
+  const t = String(line || '').trim();
+  if (!t.startsWith('@') || t.includes('\n')) return null;
+  // 只允许 `@名字` 后面跟可选空白（`@信息收集 10.0.0.1` 也认：第一个词当剧场名，其余当 target）
+  const m = t.match(/^@([^\s]+)\s*(.*)$/);
+  if (!m) return null;
+  const pb = findPlaybook(playbooks, m[1]);
+  if (!pb) return null;
+  const rest = m[2].trim();
+  return { playbook: pb, steps: expandPlaybook(pb, rest ? { ...vars, target: rest } : vars) };
 }
 
 /**

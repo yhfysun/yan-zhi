@@ -135,3 +135,56 @@ describe('★★ 命令的 params / danger 必须与工具真相源同口径', (
     }
   });
 });
+
+describe('★ 剧本（`@名字` 召唤）：每一步都必须是**已声明的命令**', () => {
+  const PLAYBOOKS = () => (secLabManifest.contributes as any).playbooks as Array<Record<string, any>>;
+
+  it('6 个内置剧本，字段齐备且限定安全模式', () => {
+    expect(PLAYBOOKS().length).toBe(6);
+    for (const pb of PLAYBOOKS()) {
+      expect(pb.id, '剧本缺 id').toBeTruthy();
+      expect(pb.name, `${pb.id} 缺召唤名`).toBeTruthy();
+      expect(pb.desc, `${pb.id} 缺说明`).toBeTruthy();
+      expect(Array.isArray(pb.steps) && pb.steps.length, `${pb.id} 没有步骤`).toBeTruthy();
+      expect(pb.mode, `${pb.id} 的 mode`).toBe('sec');
+    }
+  });
+
+  it('★★ 每一步引用的命令都真实存在（防拼错、防提前声明还不存在的命令）', () => {
+    const known = new Set<string>();
+    for (const c of COMMANDS()) {
+      known.add(c.name);
+      for (const a of c.aliases || []) known.add(a);
+    }
+    for (const pb of PLAYBOOKS()) {
+      for (const step of pb.steps) {
+        expect(String(step).startsWith('/'), `剧本「${pb.name}」的步骤 "${step}" 应以 / 开头`).toBe(true);
+        const cmd = String(step).slice(1).split(/\s+/)[0];
+        expect(known, `★ 剧本「${pb.name}」引用了不存在的命令 /${cmd}（展开后那一步会直接报"没有这条命令"）`)
+          .toContain(cmd);
+      }
+    }
+  });
+
+  it('id 与召唤名都唯一（重名会让召唤命中哪一个是随机的）', () => {
+    const ids = PLAYBOOKS().map((p) => p.id);
+    const names = PLAYBOOKS().map((p) => p.name);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('「完整评估」标了逐条确认（方案写明"全流程，需人工确认每一步"）', () => {
+    expect(PLAYBOOKS().find((p) => p.id === 'full-assessment')!.confirmEach).toBe(true);
+  });
+
+  it('剧本步骤里出现的占位符都能被人填（只允许 ${target} / ${assetId} / ${logPath}）', () => {
+    const allowed = new Set(['target', 'assetId', 'logPath']);
+    for (const pb of PLAYBOOKS()) {
+      for (const step of pb.steps) {
+        for (const m of String(step).matchAll(/\$\{(\w+)\}/g)) {
+          expect(allowed, `★ 剧本「${pb.name}」用了没人填得出的占位符 \${${m[1]}}`).toContain(m[1]);
+        }
+      }
+    }
+  });
+});

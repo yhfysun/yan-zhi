@@ -14,6 +14,7 @@ import type {
   SettingsTab,
   ChatEnhancerDef,
   CommandDef,
+  PlaybookDef,
 } from '@yan-zhi/core';
 
 /** 前端视角的插件信息（不含内部 disposables） */
@@ -66,6 +67,10 @@ export const usePluginStore = defineStore('plugin', () => {
    */
   const commands = computed<CommandDef[]>(() =>
     enabledPlugins.value.flatMap((p) => p.manifest.contributes?.commands || []),
+  );
+  /** 贡献的剧本（命令中枢的 `@名字` 召唤；执行仍走各自命令的通道） */
+  const playbooks = computed<PlaybookDef[]>(() =>
+    enabledPlugins.value.flatMap((p) => p.manifest.contributes?.playbooks || []),
   );
   /** 贡献的工具元数据（声明式，执行体在后端） */
   const toolDecls = computed(() =>
@@ -142,6 +147,7 @@ export const usePluginStore = defineStore('plugin', () => {
     settingsTabs,
     chatEnhancers,
     commands,
+    playbooks,
     toolDecls,
     enabledPlugins,
     refresh,
