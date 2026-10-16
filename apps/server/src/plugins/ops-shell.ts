@@ -2,19 +2,30 @@
 // 形态对齐 computer-use（manifest + 入口模块 + 权限护栏 + 审计），默认启用（仅首次注册生效，之后随 DB 状态）。
 // 实现：ssh2（纯 JS，无原生编译）+ Docker over SSH（远程执行 docker CLI，免 dockerode/本地 socket 依赖）
 //      + mysql2/pg 直连数据库（只读护栏，单条 SELECT/SHOW/DESC/EXPLAIN/WITH）。
+//      + 跳板机 ProxyJump：连接可指定另一条 ssh/docker 连接作跳板，经 forwardOut 隧道穿透，支持多级；
+//        数据库连接经本地临时端口转发接入（pg 会对流调 socket 方法，不能直接塞 SSH channel）。
 // 智能体挂载：a_builtin_ops_agent（db.ts seedAgents）绑定 plugin_ops-shell__* 工具，
-// 对话模式走现有聊天链路；命令模式为 /ops 控制台的 xterm 终端（SSE 输出 + POST 输入）。
+// 对话模式走现有聊天链路；命令模式为 /ops 控制台的 xterm 终端（WebSocket 优先，SSE + POST 回退）。
 // 护栏：remote-shell 权限声明 / 危险命令黑名单 / 生产连接写操作二次确认 / 空闲会话回收 / 全量审计（plugin_storage.audit）。
 import { getPluginManager } from '@yan-zhi/core';
-import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
+import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule, PluginWebSocket, PluginWsRequest } from '@yan-zhi/core';
 import { Client } from 'ssh2';
 import { readdirSync, lstatSync, mkdirSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { pushPluginAudit } from '../services/plugin-audit.js';
 import { guard, capOutput, isProductionTag } from './ops-shell-guard.js';
+import {
+  TermRecorder, MAX_RECORDINGS, parseCast, readRecordingFile, removeRecordingFile, sweepOrphanRecordings,
+  type RecordingMeta,
+} from './ops-recordings.js';
+import {
+  hostPortOf, verifyHostKey, outcomeAllows, mismatchMessage, unknownHostMessage,
+  type HostKeyRecord, type KnownHostMode, type VerifyOutcome,
+} from './ops-known-hosts.js';
 import { createLogger } from '../services/logger.js';
 const logger = createLogger('ops-shell');
 
@@ -61,6 +72,8 @@ export const opsShellManifest: PluginManifest = {
       execTimeoutMs: { type: 'number', description: 'ssh_exec 默认超时（ms）', default: 30000 },
       idleTimeoutMs: { type: 'number', description: 'SSH 会话空闲回收（ms）', default: 600000 },
       maxAuditEntries: { type: 'number', description: '审计记录上限', default: 500 },
+      recordSessions: { type: 'boolean', description: '录制终端会话（asciinema .cast，可在「录像」页回放）', default: true },
+      knownHostMode: { type: 'string', description: '主机密钥校验：tofu=首次记录后必须一致（默认）/ strict=只认已记录的 / off=不校验', default: 'tofu' },
     },
   },
 };
@@ -94,6 +107,12 @@ interface OpsConnection {
   note?: string;
   /** 所属目录（分组）id；缺省表示未分组 */
   groupId?: string;
+  /**
+   * 跳板机（ProxyJump）：经由此连接中转再连目标。
+   * 存的是另一条 ssh/docker 连接的 id，链路可多级（跳板机自己也能挂跳板机）。
+   * database 连接只能作为目标，不能作为跳板机。
+   */
+  jumpConnectionId?: string;
   createdAt: number;
 }
 
@@ -178,6 +197,9 @@ interface ConnInput {
   sftpPath?: string;
   note?: string;
   groupId?: string;
+  /** 跳板机连接 id；jumpProvided 区分「未传该字段」与「显式清空」 */
+  jumpConnectionId?: string;
+  jumpProvided?: boolean;
 }
 
 /** 归一化 HTTP 入参 → 连接字段（不做业务校验，校验见 validateConnInput） */
@@ -205,6 +227,9 @@ function parseConnInput(body: Record<string, unknown>): ConnInput {
     sftpPath: opt(body.sftpPath),
     note: opt(body.note),
     groupId: opt(body.groupId),
+    // 跳板机：空字符串 = 显式清空；字段缺席 = 保持原值（编辑只改端口时不该丢掉跳板）
+    jumpProvided: body.jumpConnectionId !== undefined,
+    jumpConnectionId: opt(body.jumpConnectionId),
   };
 }
 
@@ -236,6 +261,8 @@ function buildConnection(input: ConnInput, base?: StoredConnection): StoredConne
     note: input.note,
     // 编辑时未传 groupId（如只改端口）→ 保留原目录归属，避免被静默清空
     groupId: input.groupId ?? base?.groupId,
+    // 显式传了 jumpConnectionId 才改动（空字符串表示清空），否则沿用原跳板
+    jumpConnectionId: input.jumpProvided ? input.jumpConnectionId : base?.jumpConnectionId,
     createdAt: base?.createdAt ?? Date.now(),
   };
 }
@@ -247,21 +274,78 @@ function resolveRemotePath(conn: StoredConnection, remotePath: string): string {
   return `${conn.sftpPath.replace(/\/+$/, '')}/${p.replace(/^\.\//, '')}`;
 }
 
+// ---------- 跳板机（ProxyJump） ----------
+
+/** 跳板链路最大跳数：挡住误配置出的超长链路（建连逐跳变慢） */
+export const MAX_JUMP_DEPTH = 5;
+
+/**
+ * 解析目标连接背后的完整跳板链路，返回「由外到内」排序的跳板连接（最外层最先建连）。
+ * 链路非法时抛错：跳板不存在 / 指向数据库连接 / 自引用 / 成环 / 超过 MAX_JUMP_DEPTH。
+ */
+export function buildJumpChain(target: StoredConnection, all: StoredConnection[]): StoredConnection[] {
+  const byId = new Map(all.map((c) => [c.id, c]));
+  const seen = new Set<string>([target.id]);
+  const chain: StoredConnection[] = [];
+  let cursor = target.jumpConnectionId;
+  while (cursor) {
+    if (seen.has(cursor)) throw new Error(`跳板链路成环：连接「${target.name}」的跳板链绕回了自身`);
+    seen.add(cursor);
+    const hop = byId.get(cursor);
+    if (!hop) throw new Error(`跳板机连接不存在（id=${cursor}），请重新指定`);
+    if (hop.type === 'database') throw new Error(`连接「${hop.name}」是数据库连接，不能作为跳板机`);
+    if (chain.length >= MAX_JUMP_DEPTH) throw new Error(`跳板链路超过 ${MAX_JUMP_DEPTH} 跳，请精简后再试`);
+    chain.unshift(hop);
+    cursor = hop.jumpConnectionId;
+  }
+  return chain;
+}
+
+/** 只校验不建连：保存连接 / 表单提交用。返回错误文案，通过则 null。target 为空表示新建场景 */
+export function validateJumpRef(target: StoredConnection | undefined, jumpId: string | undefined, all: StoredConnection[]): string | null {
+  if (!jumpId) return null;
+  if (target && jumpId === target.id) return '跳板机不能是连接自身';
+  const hop = all.find((c) => c.id === jumpId);
+  if (!hop) return '跳板机连接不存在';
+  if (hop.type === 'database') return `「${hop.name}」是数据库连接，不能作为跳板机`;
+  // 假装目标已挂上该跳板再跑一遍解析，以检出成环 / 超深
+  const hypothetical: StoredConnection = target
+    ? { ...target, jumpConnectionId: jumpId }
+    : { ...hop, id: '__pending__', name: '__pending__', jumpConnectionId: jumpId };
+  try {
+    buildJumpChain(hypothetical, all);
+  } catch (e) {
+    return (e as Error).message;
+  }
+  return null;
+}
+
 // ---------- SSH 连接池 ----------
 
 interface PoolEntry {
   client: Client;
   lastUsed: number;
+  /** 被下游隧道占用的引用数：>0 时跳过空闲回收（掐掉会连带掐断下游连接） */
+  refs: number;
 }
 const sshPool = new Map<string, PoolEntry>();
 const IDLE_TIMEOUT_MS = 600000;
 
-export function getSsh(conn: StoredConnection): Promise<Client> {
-  const cached = sshPool.get(conn.id);
-  if (cached) {
-    cached.lastUsed = Date.now();
-    return Promise.resolve(cached.client);
-  }
+/**
+ * 建立一条 SSH 连接；传了 sock 表示这条连接是从跳板机隧道里穿出去的。
+ *
+ * ★ 主机密钥校验在这里接（2026-10-16）：跳板机与目标各自走一次本函数，
+ *   所以**每一跳都独立校验** —— 只验最终目标而放过跳板机，等于把信任根留了个洞。
+ */
+async function connectClient(conn: StoredConnection, sock?: ClientChannel): Promise<Client> {
+  const hostPort = hostPortOf(conn.host, conn.port);
+  // 校验结论在握手期间产生，而错误要到之后才抛出 —— 用 holder 把细节带出回调
+  const hk: { mismatch: Extract<VerifyOutcome, { status: 'changed' }> | null; unknown: Buffer | null } = {
+    mismatch: null, unknown: null,
+  };
+  const knownHosts = hostKeyMode === 'off' ? [] : await loadKnownHosts();
+  const known = knownHosts.find((k) => k.host === hostPort);
+
   return new Promise((resolve, reject) => {
     const client = new Client();
     const cfg: ConnectConfig = {
@@ -271,18 +355,131 @@ export function getSsh(conn: StoredConnection): Promise<Client> {
       readyTimeout: 15000,
       keepaliveInterval: 30000,
     };
-    if (conn.authType === 'key') cfg.privateKey = Buffer.from(decrypt(conn.secretEnc), 'utf8');
-    else cfg.password = decrypt(conn.secretEnc);
+    if (sock) cfg.sock = sock;
+    if (hostKeyMode !== 'off') {
+      cfg.hostVerifier = (key: Buffer, verify: (ok: boolean) => void) => {
+        const outcome = verifyHostKey(known, hostPort, key, hostKeyMode);
+        if (outcome.status === 'new') void rememberHostKey(conn.name, outcome.record);
+        else if (outcome.status === 'changed') hk.mismatch = outcome;
+        else if (outcome.status === 'skipped' && hostKeyMode === 'strict') hk.unknown = key;
+        verify(outcomeAllows(outcome, hostKeyMode));
+      };
+    }
+    try {
+      if (conn.authType === 'key') cfg.privateKey = Buffer.from(decrypt(conn.secretEnc), 'utf8');
+      else cfg.password = decrypt(conn.secretEnc);
+    } catch (e) {
+      reject(new Error(`凭据解密失败：${(e as Error).message}`));
+      return;
+    }
     client
-      .on('ready', () => {
-        sshPool.set(conn.id, { client, lastUsed: Date.now() });
-        client.once('close', () => sshPool.delete(conn.id));
-        client.once('error', () => sshPool.delete(conn.id));
-        resolve(client);
+      .on('ready', () => resolve(client))
+      .on('error', (err: Error) => {
+        // 密钥问题要给可行动的报错，而不是 ssh2 那句「Host verification failed」
+        if (hk.mismatch) {
+          void audit('hostkey.mismatch', { connection: conn.name, detail: `${hostPort} ${hk.mismatch.actual}`, ok: false });
+          reject(new Error(mismatchMessage(hostPort, hk.mismatch)));
+        } else if (hk.unknown) {
+          reject(new Error(unknownHostMessage(hostPort, hk.unknown)));
+        } else {
+          reject(new Error(`SSH 连接失败: ${err.message}`));
+        }
       })
-      .on('error', (err: Error) => reject(new Error(`SSH 连接失败: ${err.message}`)))
       .connect(cfg);
   });
+}
+
+/** 在已建立的连接上开一条到 targetHost:targetPort 的直通通道（跳板机隧道） */
+function openTunnel(from: Client, targetHost: string, targetPort: number): Promise<ClientChannel> {
+  return new Promise((resolve, reject) => {
+    from.forwardOut('127.0.0.1', 0, targetHost, targetPort, (err, stream) => {
+      if (err) reject(new Error(`跳板机隧道建立失败: ${err.message}`));
+      else resolve(stream);
+    });
+  });
+}
+
+/**
+ * 一次性本地端口转发：在 127.0.0.1 上随机监听，把进来的 TCP 连接逐条引到远端 host:port。
+ * 给「不能用自定义 stream 的客户端」用（pg 会对流调 setNoDelay/connect，塞 ssh2 channel 会崩），
+ * 所以让这类客户端照常连本地端口，由这里换成经跳板的 channel。用完调 close()。
+ * （导出仅为单测直接驱动，生产调用点只有 dbExec）
+ */
+export function openEphemeralTunnel(from: Client, targetHost: string, targetPort: number): Promise<{ port: number; close: () => void }> {
+  return new Promise((resolve, reject) => {
+    const channels = new Set<ClientChannel>();
+    const server: Server = createServer((socket) => {
+      from.forwardOut(socket.remoteAddress || '127.0.0.1', socket.remotePort || 0, targetHost, targetPort, (err, channel) => {
+        if (err) { socket.destroy(); return; }
+        channels.add(channel);
+        socket.pipe(channel).pipe(socket);
+        const drop = () => { channels.delete(channel); };
+        channel.once('close', () => { drop(); socket.destroy(); });
+        channel.once('error', drop);
+        socket.once('error', () => { try { channel.close(); } catch { /* ignore */ } });
+        socket.once('close', () => { drop(); try { channel.close(); } catch { /* ignore */ } });
+      });
+    });
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') { server.close(); reject(new Error('本地隧道端口分配失败')); return; }
+      resolve({
+        port: addr.port,
+        close: () => {
+          for (const ch of channels) { try { ch.close(); } catch { /* ignore */ } }
+          channels.clear();
+          try { server.close(); } catch { /* ignore */ }
+        },
+      });
+    });
+  });
+}
+
+export async function getSsh(conn: StoredConnection): Promise<Client> {
+  const cached = sshPool.get(conn.id);
+  if (cached) {
+    cached.lastUsed = Date.now();
+    return cached.client;
+  }
+  const jumpId = conn.jumpConnectionId;
+  let jumpClient: Client | undefined;
+  let tunnel: ClientChannel | undefined;
+  if (jumpId) {
+    const all = await loadConnections();
+    const hop = all.find((c) => c.id === jumpId);
+    if (!hop) throw new Error(`跳板机连接不存在（id=${jumpId}），请检查该连接的跳板设置`);
+    // 递归：跳板机自己也可能挂在更外层跳板后面
+    jumpClient = await getSsh(hop);
+    tunnel = await openTunnel(jumpClient, conn.host, conn.port || 22);
+  }
+  let client: Client;
+  try {
+    client = await connectClient(conn, tunnel);
+  } catch (e) {
+    try { tunnel?.end(); } catch { /* ignore */ }
+    throw e;
+  }
+  sshPool.set(conn.id, { client, lastUsed: Date.now(), refs: 0 });
+  if (jumpClient && jumpId) {
+    const entry = sshPool.get(jumpId);
+    if (entry) { entry.refs += 1; entry.lastUsed = Date.now(); }
+  }
+  // close 与 error 都可能触发，用幂等释放避免引用计数被扣两次
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    // 只在池里仍是「这一条」时才摘除：断开重连期间可能已有新连接顶替，别被旧连接的 close 误删
+    if (sshPool.get(conn.id)?.client === client) sshPool.delete(conn.id);
+    if (jumpClient && jumpId) {
+      const entry = sshPool.get(jumpId);
+      if (entry && entry.refs > 0) entry.refs -= 1;
+    }
+  };
+  client.once('close', release);
+  client.once('error', release);
+  return client;
 }
 
 function disconnect(connId: string): void {
@@ -293,23 +490,46 @@ function disconnect(connId: string): void {
   }
 }
 
-/** 一次性 SSH 连接（不入连接池）：表单内「测试连接」用，测完即断 */
-function sshProbe(conn: StoredConnection): Promise<Client> {
-  return new Promise((resolve, reject) => {
-    const client = new Client();
-    const cfg: ConnectConfig = {
-      host: conn.host,
-      port: conn.port || 22,
-      username: conn.username,
-      readyTimeout: 15000,
+/** 断开所有以 connId 为跳板的下游连接（含更深层级）；改跳板 / 删连接时调用 */
+function disconnectDependents(connId: string, list: StoredConnection[], seen = new Set<string>()): void {
+  if (seen.has(connId)) return;
+  seen.add(connId);
+  for (const c of list) {
+    if (c.jumpConnectionId === connId) {
+      disconnect(c.id);
+      disconnectDependents(c.id, list, seen);
+    }
+  }
+}
+
+/** 一次性 SSH 连接（不入连接池）：表单内「测试连接」用，测完调 cleanup 断开整条链路 */
+async function sshProbe(conn: StoredConnection, all?: StoredConnection[]): Promise<{ client: Client; cleanup: () => void }> {
+  const jumpId = conn.jumpConnectionId;
+  if (!jumpId) {
+    const client = await connectClient(conn);
+    return { client, cleanup: () => { try { client.end(); } catch { /* ignore */ } } };
+  }
+  const list = all ?? (await loadConnections());
+  const hop = list.find((c) => c.id === jumpId);
+  if (!hop) throw new Error(`跳板机连接不存在（id=${jumpId}）`);
+  const upstream = await sshProbe(hop, list);
+  let tunnel: ClientChannel | undefined;
+  try {
+    tunnel = await openTunnel(upstream.client, conn.host, conn.port || 22);
+    const client = await connectClient(conn, tunnel);
+    return {
+      client,
+      cleanup: () => {
+        try { client.end(); } catch { /* ignore */ }
+        try { tunnel?.end(); } catch { /* ignore */ }
+        upstream.cleanup();
+      },
     };
-    if (conn.authType === 'key') cfg.privateKey = Buffer.from(decrypt(conn.secretEnc), 'utf8');
-    else cfg.password = decrypt(conn.secretEnc);
-    client
-      .on('ready', () => resolve(client))
-      .on('error', (err: Error) => reject(new Error(`SSH 连接失败: ${err.message}`)))
-      .connect(cfg);
-  });
+  } catch (e) {
+    try { tunnel?.end(); } catch { /* ignore */ }
+    upstream.cleanup();
+    throw e;
+  }
 }
 
 // ---------- SFTP 文件管理 ----------
@@ -527,6 +747,8 @@ export function buildUploadPlan(
 const idleTimer = setInterval(() => {
   const now = Date.now();
   for (const [id, e] of sshPool) {
+    // 有下游连接正在借用这条隧道时不能回收：掐掉会连带掐断下游
+    if (e.refs > 0) continue;
     if (now - e.lastUsed > IDLE_TIMEOUT_MS) disconnect(id);
   }
 }, 60000);
@@ -545,6 +767,70 @@ interface AuditEntry {
 async function audit(action: string, opts: { connection?: string; detail?: string; ok: boolean }): Promise<void> {
   // 裁剪 cap 沿用 500（本插件事件密度高）；load/push/slice/save 收口在 pushPluginAudit
   await pushPluginAudit(pluginStorage, { at: Date.now(), action, ...opts }, 500);
+}
+
+// ---------- 会话录像索引 ----------
+
+/** 是否录制终端会话。默认开（对齐堡垒机的合规口径），可在插件配置里关掉 */
+let recordSessions = true;
+
+async function loadRecordings(): Promise<RecordingMeta[]> {
+  if (!pluginStorage) return [];
+  const rows = await pluginStorage.get<RecordingMeta[]>('recordings');
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((r) => r && typeof r.id === 'string');
+}
+
+/**
+ * 落库一条录像元数据（新的排最前），并按上限淘汰最旧的。
+ * ★ 淘汰时必须同步删掉对应的 .cast：否则索引被裁掉了、文件却一直躺在磁盘上，
+ *   既占空间又再也看不到（用户视角就是「磁盘莫名变小」）。
+ */
+async function persistRecording(meta: RecordingMeta): Promise<void> {
+  if (!pluginStorage) return;
+  const list = [meta, ...(await loadRecordings()).filter((r) => r.id !== meta.id)];
+  for (const evicted of list.slice(MAX_RECORDINGS)) removeRecordingFile(evicted.id);
+  try {
+    await pluginStorage.set('recordings', list.slice(0, MAX_RECORDINGS));
+  } catch (e) {
+    logger.warn('[ops-shell] 录像索引落库失败（.cast 文件仍在磁盘上，下次启动会当孤儿清掉）:', (e as Error).message);
+  }
+}
+
+// ---------- 主机密钥（known_hosts） ----------
+
+/** 主机密钥校验策略。默认 tofu：首次记录，之后必须一致（见 ops-known-hosts.ts） */
+let hostKeyMode: KnownHostMode = 'tofu';
+
+async function loadKnownHosts(): Promise<HostKeyRecord[]> {
+  if (!pluginStorage) return [];
+  const rows = await pluginStorage.get<HostKeyRecord[]>('known-hosts');
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((r) => r && typeof r.host === 'string' && typeof r.keyB64 === 'string');
+}
+
+async function saveKnownHosts(list: HostKeyRecord[]): Promise<void> {
+  if (!pluginStorage) return;
+  await pluginStorage.set('known-hosts', list);
+}
+
+/** TOFU：记下首次见到的主机密钥（已在则只更新 lastSeenAt）。失败只记日志，不阻断连接。 */
+async function rememberHostKey(connName: string, record: HostKeyRecord): Promise<void> {
+  try {
+    const list = await loadKnownHosts();
+    const existing = list.find((k) => k.host === record.host);
+    if (existing && existing.keyB64 !== record.keyB64) return;   // 变更由校验层拦，这里不动
+    const next = existing
+      ? list.map((k) => (k.host === record.host ? { ...k, lastSeenAt: record.lastSeenAt } : k))
+      : [...list, record];
+    await saveKnownHosts(next);
+    if (!existing) {
+      logger.info(`[ops-shell] 已记录 ${record.host} 的主机密钥（${record.keyType} ${record.fingerprint}）`);
+      await audit('hostkey.trust', { connection: connName, detail: `${record.host} ${record.fingerprint}`, ok: true });
+    }
+  } catch (e) {
+    logger.warn('[ops-shell] 记录主机密钥失败（本次连接不受影响）:', (e as Error).message);
+  }
 }
 
 // ---------- SSH 命令执行 ----------
@@ -621,33 +907,50 @@ async function dbExec(conn: StoredConnection, rawSql: string): Promise<DbExecRes
   const database = conn.database || '';
   let rows: Record<string, unknown>[];
   let fields: string[];
-  if (conn.dbType === 'postgres') {
-    const client = new pg.Client({
-      host: conn.host, port: conn.port || 5432, user: conn.username,
-      password: decrypt(conn.secretEnc), database, connectionTimeoutMillis: 10000,
-    });
-    await client.connect();
-    try {
-      const r = await client.query(sql);
-      rows = (r.rows || []) as Record<string, unknown>[];
-      fields = (r.fields || []).map((f) => f.name);
-    } finally {
-      try { await client.end(); } catch { /* ignore */ }
+  // 跳板机：内网数据库只对跳板机可达时，本地开个临时端口把流量引进去，
+  // mysql2/pg 照常连 127.0.0.1（pg 会调 socket 方法，不能直接塞 ssh2 channel）
+  let tunnel: { port: number; close: () => void } | undefined;
+  let host = conn.host;
+  let port = conn.port || (conn.dbType === 'postgres' ? 5432 : 3306);
+  if (conn.jumpConnectionId) {
+    const all = await loadConnections();
+    const hop = all.find((c) => c.id === conn.jumpConnectionId);
+    if (!hop) throw new Error(`跳板机连接不存在（id=${conn.jumpConnectionId}），请检查该连接的跳板设置`);
+    tunnel = await openEphemeralTunnel(await getSsh(hop), host, port);
+    host = '127.0.0.1';
+    port = tunnel.port;
+  }
+  try {
+    if (conn.dbType === 'postgres') {
+      const client = new pg.Client({
+        host, port, user: conn.username,
+        password: decrypt(conn.secretEnc), database, connectionTimeoutMillis: 10000,
+      });
+      await client.connect();
+      try {
+        const r = await client.query(sql);
+        rows = (r.rows || []) as Record<string, unknown>[];
+        fields = (r.fields || []).map((f) => f.name);
+      } finally {
+        try { await client.end(); } catch { /* ignore */ }
+      }
+    } else {
+      const c = await mysql.createConnection({
+        host, port, user: conn.username,
+        password: decrypt(conn.secretEnc), database, connectTimeout: 10000,
+      });
+      try {
+        const [result] = await c.query({ sql, timeout: 20000 });
+        const r = result as unknown[];
+        rows = (Array.isArray(r) ? r : []) as Record<string, unknown>[];
+        const first = rows[0];
+        fields = first ? Object.keys(first) : [];
+      } finally {
+        try { await c.end(); } catch { /* ignore */ }
+      }
     }
-  } else {
-    const c = await mysql.createConnection({
-      host: conn.host, port: conn.port || 3306, user: conn.username,
-      password: decrypt(conn.secretEnc), database, connectTimeout: 10000,
-    });
-    try {
-      const [result] = await c.query({ sql, timeout: 20000 });
-      const r = result as unknown[];
-      rows = (Array.isArray(r) ? r : []) as Record<string, unknown>[];
-      const first = rows[0];
-      fields = first ? Object.keys(first) : [];
-    } finally {
-      try { await c.end(); } catch { /* ignore */ }
-    }
+  } finally {
+    tunnel?.close();
   }
   const truncated = rows.length > DB_MAX_ROWS;
   const capped = (truncated ? rows.slice(0, DB_MAX_ROWS) : rows).map((row) => {
@@ -904,12 +1207,14 @@ export function makeTools(): BuiltInTool[] {
       execute: async () => {
         const [conns, groups] = await Promise.all([loadConnections(), loadGroups()]);
         const gname = (id?: string) => groups.find((g) => g.id === id)?.name || '未分组';
+        const cname = (id?: string) => conns.find((c) => c.id === id)?.name || '（已失效的跳板）';
         const lines = conns.map((c) => {
           const addr = c.type === 'database'
             ? `${c.username}@${c.host}:${c.port}/${c.database || ''}`
             : `${c.username}@${c.host}:${c.port}`;
           const bits = [`类型=${c.type}`, `地址=${addr}`, `目录=${gname(c.groupId)}`];
           if (c.tag) bits.push(`标签=${c.tag}`);
+          if (c.jumpConnectionId) bits.push(`跳板机=${cname(c.jumpConnectionId)}`);
           if (c.sftpPath) bits.push(`SFTP默认目录=${c.sftpPath}`);
           return `- ${c.name}（${bits.join('，')}）`;
         });
@@ -940,6 +1245,7 @@ export function makeTools(): BuiltInTool[] {
           database: { type: 'string', description: 'database 类型必填：库名' },
           tag: { type: 'string', description: '标签，如「生产」' },
           group: { type: 'string', description: '所属目录名（可选）' },
+          jump: { type: 'string', description: '跳板机：已有连接的名称或 id（可选）。目标机只对跳板机可达时填，支持多级' },
           sftpPath: { type: 'string', description: 'SFTP 默认目录（可选）' },
           defaultCommand: { type: 'string', description: '进终端后自动执行的命令（可选）' },
           note: { type: 'string', description: '备注（可选）' },
@@ -947,6 +1253,7 @@ export function makeTools(): BuiltInTool[] {
         required: ['name', 'host', 'username'],
       },
       execute: async (args) => {
+        const list = await loadConnections();
         const groupName = String(args.group || '').trim();
         let groupId: string | undefined;
         if (groupName) {
@@ -955,15 +1262,24 @@ export function makeTools(): BuiltInTool[] {
           if (!g) return textResult(`目录「${groupName}」不存在。现有目录：${groups.map((x) => x.name).join('、') || '（无）'}`);
           groupId = g.id;
         }
+        const jumpName = String(args.jump || '').trim();
+        let jumpConnectionId: string | undefined;
+        if (jumpName) {
+          const j = list.find((x) => x.name === jumpName || x.id === jumpName);
+          if (!j) return textResult(`跳板机「${jumpName}」不存在。可用连接：${list.map((x) => x.name).join('、') || '（无）'}`);
+          jumpConnectionId = j.id;
+        }
         const input = parseConnInput({
           ...args,
           secret: String(args.password || args.privateKey || ''),
           groupId,
+          ...(jumpConnectionId ? { jumpConnectionId } : {}),
         });
         const invalid = validateConnInput(input, { requireSecret: true });
         if (invalid) return textResult(invalid);
-        const list = await loadConnections();
         if (list.some((c) => c.name === input.name)) return textResult(`连接「${input.name}」已存在，要改它请用 conn_update`);
+        const jumpError = validateJumpRef(undefined, input.jumpConnectionId, list);
+        if (jumpError) return textResult(jumpError);
         const conn = buildConnection(input);
         list.push(conn);
         try {
@@ -971,8 +1287,8 @@ export function makeTools(): BuiltInTool[] {
         } catch (e) {
           return textResult(`保存失败: ${(e as Error).message}`);
         }
-        await audit('connection.create', { connection: conn.name, detail: 'agent tool', ok: true });
-        return textResult(`已新建连接「${conn.name}」（${conn.type} ${conn.username}@${conn.host}:${conn.port}），目录：${groupName || '未分组'}`);
+        await audit('connection.create', { connection: conn.name, detail: jumpName ? `经跳板 ${jumpName}` : 'agent tool', ok: true });
+        return textResult(`已新建连接「${conn.name}」（${conn.type} ${conn.username}@${conn.host}:${conn.port}），目录：${groupName || '未分组'}${jumpName ? `，跳板机：${jumpName}` : ''}`);
       },
     },
     {
@@ -997,6 +1313,7 @@ export function makeTools(): BuiltInTool[] {
           defaultCommand: { type: 'string' },
           database: { type: 'string', description: 'database 类型的库名' },
           group: { type: 'string', description: '目标目录名；传空字符串移出目录' },
+          jump: { type: 'string', description: '跳板机：已有连接的名称或 id；传空字符串取消跳板' },
           confirmed: { type: 'boolean', description: '生产连接必须为 true' },
         },
         required: ['connection'],
@@ -1019,6 +1336,19 @@ export function makeTools(): BuiltInTool[] {
             groupId = g.id;
           }
         }
+        let jumpConnectionId = conn.jumpConnectionId;
+        let jumpProvided = false;
+        if (args.jump !== undefined) {
+          jumpProvided = true;
+          const jname = String(args.jump).trim();
+          if (!jname) jumpConnectionId = undefined;
+          else {
+            const all = await loadConnections();
+            const j = all.find((x) => x.name === jname || x.id === jname);
+            if (!j) return textResult(`跳板机「${jname}」不存在。可用连接：${all.map((x) => x.name).join('、') || '（无）'}`);
+            jumpConnectionId = j.id;
+          }
+        }
         const input: ConnInput = {
           type: conn.type,
           name: String(args.name ?? conn.name).trim(),
@@ -1034,6 +1364,8 @@ export function makeTools(): BuiltInTool[] {
           sftpPath: pick(args.sftpPath, conn.sftpPath),
           note: pick(args.note, conn.note),
           groupId,
+          jumpConnectionId,
+          jumpProvided,
         };
         const invalid = validateConnInput(input, { requireSecret: false });
         if (invalid) return textResult(invalid);
@@ -1041,13 +1373,17 @@ export function makeTools(): BuiltInTool[] {
         const idx = list.findIndex((c) => c.id === conn.id);
         if (idx < 0) return textResult('连接不存在');
         if (list.some((c) => c.id !== conn.id && c.name === input.name)) return textResult(`连接「${input.name}」已存在`);
-        list[idx] = buildConnection(input, list[idx]);
+        const next = buildConnection(input, list[idx]);
+        list[idx] = next;
+        const jumpError = validateJumpRef(next, next.jumpConnectionId, list);
+        if (jumpError) return textResult(jumpError);
         try {
           await saveConnections(list);
         } catch (e) {
           return textResult(`保存失败: ${(e as Error).message}`);
         }
         disconnect(conn.id); // 字段变了，池里的旧连接不能继续复用
+        disconnectDependents(conn.id, list); // 出口变了，下游经它中转的连接也要重连
         await audit('connection.update', { connection: input.name, detail: 'agent tool', ok: true });
         return textResult(`已更新连接「${input.name}」`);
       },
@@ -1067,14 +1403,19 @@ export function makeTools(): BuiltInTool[] {
         const conn = await resolveConn(args);
         if (isProduction(conn) && !args.confirmed) return textResult('生产连接删除需确认后带 confirmed=true 重新调用');
         const list = await loadConnections();
+        const dependents = list.filter((c) => c.jumpConnectionId === conn.id).map((c) => c.name);
         try {
           await saveConnections(list.filter((c) => c.id !== conn.id));
         } catch (e) {
           return textResult(`删除失败: ${(e as Error).message}`);
         }
         disconnect(conn.id);
+        disconnectDependents(conn.id, list);
         await audit('connection.delete', { connection: conn.name, detail: 'agent tool', ok: true });
-        return textResult(`已删除连接「${conn.name}」`);
+        return textResult(
+          `已删除连接「${conn.name}」`
+          + (dependents.length ? `。注意：${dependents.join('、')} 以它为跳板机，需要重新指定跳板` : ''),
+        );
       },
     },
     {
@@ -1331,14 +1672,185 @@ export function makeTools(): BuiltInTool[] {
 
 // ---------- 插件入口 ----------
 
+// ---------- 交互式终端（WebSocket） ----------
+
+const TERM_PING_INTERVAL_MS = 30000;
+
+/** 控制消息（文本帧）发送；连接已关时静默丢弃 */
+function sendWsJson(ws: PluginWebSocket, payload: unknown): void {
+  if (ws.readyState !== 1) return;
+  try { ws.send(JSON.stringify(payload)); } catch { /* 对端已断 */ }
+}
+
+/**
+ * WebSocket 版交互式终端。帧约定（与市面 Web SSH 实现同构）：
+ *   服务端 → 客户端：二进制帧 = PTY 原始输出；文本帧 = JSON 控制消息（ready / exit / error）
+ *   客户端 → 服务端：二进制帧 = 按键（原样字节）；文本帧 = JSON 控制消息（resize / ping）
+ *
+ * 为什么从 SSE + POST 换过来：SSE 是单向的，按键只能另开 HTTP POST ——
+ * 每敲一个键一次往返，输入延迟叠加，Ctrl-C 与刷屏输出的时序保证很脆，
+ * 多开终端还会撞 HTTP/1.1 的同源连接数上限。WS 是一条双向长连接，
+ * I/O 与 resize 共用同一通道，也不再需要 base64（省一次编解码、不放大 33% 流量）。
+ *
+ * （导出仅为单测直接驱动协议收发；生产入口是 activate 里的 registerWebSocket）
+ */
+export async function handleTerminalWs(ws: PluginWebSocket, req: PluginWsRequest): Promise<void> {
+  let query: URLSearchParams;
+  try {
+    query = new URL(req.url, 'http://localhost').searchParams;
+  } catch {
+    sendWsJson(ws, { type: 'error', message: '请求地址无法解析' });
+    ws.close();
+    return;
+  }
+  const fail = (message: string) => { sendWsJson(ws, { type: 'error', message }); ws.close(); };
+
+  const cols = Number(query.get('cols')) || 120;
+  const rows = Number(query.get('rows')) || 32;
+  const list = await loadConnections();
+  const conn = list.find((c) => c.id === (query.get('connectionId') || ''));
+  if (!conn) { fail('连接不存在'); return; }
+  if (conn.type === 'database') { fail('数据库连接不支持交互终端'); return; }
+
+  let stream: ClientChannel;
+  try {
+    const client = await getSsh(conn);
+    stream = await new Promise<ClientChannel>((resolve, reject) => {
+      client.shell({ cols, rows }, (err, s) => (err ? reject(err) : resolve(s)));
+    });
+  } catch (e) {
+    fail(`打开终端失败：${(e as Error).message}`);
+    return;
+  }
+
+  // 会话录制：默认开（插件配置可关）。录制本身出问题不该影响终端，所以整体包 try/catch。
+  let recorder: TermRecorder | null = null;
+  if (recordSessions) {
+    try {
+      recorder = new TermRecorder({
+        connectionId: conn.id, connectionName: conn.name, transport: 'websocket', cols, rows,
+      });
+    } catch (e) {
+      logger.warn('[ops-shell] 启动会话录制失败（终端不受影响）:', (e as Error).message);
+    }
+  }
+
+  let closed = false;
+  let pingTimer: ReturnType<typeof setInterval> | null = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    if (recorder) {
+      // 先收尾录像再关流：stop() 会 flush 缓冲，掉线也能留下最后一段
+      const meta = recorder.stop();
+      recorder = null;
+      void persistRecording(meta);
+    }
+    try { stream.close(); } catch { /* 已关 */ }
+  };
+
+  // 心跳：网络被硬断（拔网线 / 休眠）时 'close' 未必及时到达，靠 ping/pong 兜底回收 ——
+  // 否则 SSH 会话会一直挂着，还占着连接池的引用计数，让跳板客户端永远不被回收。
+  // 浏览器对协议级 ping 自动回 pong，前端不需要写任何代码。
+  let alive = true;
+  const heartbeat = setInterval(() => {
+    if (!alive) { try { ws.close(); } catch { /* ignore */ } cleanup(); return; }
+    alive = false;
+    try { ws.ping(); } catch { /* ignore */ }
+  }, TERM_PING_INTERVAL_MS);
+  pingTimer = heartbeat;
+  if (typeof heartbeat.unref === 'function') heartbeat.unref();
+
+  stream.on('data', (d: Buffer) => {
+    // 录制与 ws 状态无关：客户端已经断了，会话尾部的输出同样值得留下
+    recorder?.output(d);
+    if (ws.readyState !== 1) return;
+    try { ws.send(d); } catch { /* 对端已断，close 事件会收尾 */ }
+  });
+  stream.on('close', () => {
+    // 幂等：ws 先断开时 cleanup 会关流，流再回弹一次 close 就会重复发 exit 帧
+    if (closed) return;
+    sendWsJson(ws, { type: 'exit' });
+    cleanup();
+    try { ws.close(); } catch { /* ignore */ }
+  });
+
+  ws.on('pong', () => { alive = true; });
+  ws.on('message', (raw: Buffer, isBinary: boolean) => {
+    alive = true;
+    if (isBinary) {
+      // 按键按原始字节写进 PTY：控制字符（Ctrl-C 等）不能走文本解码
+      recorder?.input(raw.toString('utf8'));
+      try { stream.write(raw); } catch { /* ignore */ }
+      return;
+    }
+    let msg: { type?: string; cols?: number; rows?: number };
+    try { msg = JSON.parse(raw.toString('utf8')); } catch { return; }
+    if (msg.type === 'resize') {
+      const c = Number(msg.cols);
+      const rw = Number(msg.rows);
+      if (c > 0 && rw > 0) {
+        recorder?.resize(c, rw);
+        try { stream.setWindow(rw, c, 0, 0); } catch { /* ignore */ }
+      }
+    }
+  });
+  ws.on('close', cleanup);
+  ws.on('error', cleanup);
+
+  // 默认命令先算出来：ready 帧要带上它，前端据此提示「已自动执行默认命令」
+  const defaultCommand = String(query.get('defaultCommand') ?? conn.defaultCommand ?? '').trim();
+  const autoRun = query.get('autoRun') !== 'false' && !!defaultCommand;
+
+  sendWsJson(ws, { type: 'ready', defaultCommand: defaultCommand || null, autoRun, recording: !!recorder });
+
+  // 默认命令：shell 起来后自动执行一次（与 SSE 版同样的「等登录 banner」处理）
+  if (autoRun) {
+    setTimeout(() => {
+      if (closed) return;
+      try { stream.write(`${defaultCommand}\n`); } catch { /* 会话已关 */ }
+    }, 600);
+    await audit('term.default_command', { connection: conn.name, detail: defaultCommand.slice(0, 200), ok: true });
+  }
+  await audit('term.open', { connection: conn.name, detail: 'websocket', ok: true });
+}
+
 const opsShellModule: PluginModule = {
   activate(ctx) {
     pluginStorage = ctx.storage;
+    // 录制开关：默认开（对齐堡垒机的合规口径），可在插件管理页关掉
+    recordSessions = (ctx.config as { recordSessions?: boolean } | undefined)?.recordSessions !== false;
+    // 主机密钥校验策略：默认 tofu（首次记录、之后必须一致）。见 ops-known-hosts.ts
+    const hk = (ctx.config as { knownHostMode?: string } | undefined)?.knownHostMode;
+    hostKeyMode = hk === 'strict' || hk === 'off' ? hk : 'tofu';
+    // ★ 孤儿清理是**破坏性**操作（会 unlink 文件），绝不能在测试进程里跑：
+    //   测试的 cwd 与「dev 未设 DATA_DIR 时」的录像目录是同一个 →
+    //   跑一次测试就会把开发者本机的真实录像删光。清理逻辑本身由
+    //   ops-recordings.test.ts 直接调 sweepOrphanRecordings 覆盖。
+    if (!process.env.VITEST) {
+      void loadRecordings()
+        .then((list) => {
+          const n = sweepOrphanRecordings(list.map((r) => r.id));
+          if (n > 0) logger.info(`[ops-shell] 已清理 ${n} 个孤儿录像文件`);
+        })
+        .catch(() => { /* 清理失败不影响启动 */ });
+    }
 
     // 注册工具（供智能体挂载，运行时名 plugin_ops-shell__<tool>）
     for (const tool of makeTools()) {
       ctx.registerTool(tool);
     }
+
+    // 交互式终端（WebSocket）：与下方 SSE + POST 通道并存。
+    // 前端优先走 WS；WS 连不上（被代理拦掉等）时自动回退到 SSE，行为不变。
+    ctx.registerWebSocket('/term/ws', (ws, req) => {
+      void handleTerminalWs(ws, req).catch((e: unknown) => {
+        logger.warn('[ops-shell] WS 终端处理异常:', (e as Error)?.message || e);
+        sendWsJson(ws, { type: 'error', message: '终端会话异常结束' });
+        try { ws.close(); } catch { /* ignore */ }
+      });
+    });
 
     // 后端路由：连接 CRUD + 终端会话 + Docker 面板（运维控制台 /ops 页面消费）
     ctx.registerBackendRoute((app: unknown) => {
@@ -1495,6 +2007,11 @@ const opsShellModule: PluginModule = {
           (res as { status: (n: number) => { json: (d: unknown) => void } }).status(409).json({ error: `连接「${input.name}」已存在` });
           return;
         }
+        const jumpError = validateJumpRef(undefined, input.jumpConnectionId, list);
+        if (jumpError) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: jumpError });
+          return;
+        }
         const conn = buildConnection(input);
         list.push(conn);
         try {
@@ -1530,17 +2047,27 @@ const opsShellModule: PluginModule = {
         }
         const next = buildConnection(input, base);
         list[idx] = next;
+        const jumpError = validateJumpRef(next, next.jumpConnectionId, list);
+        if (jumpError) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: jumpError });
+          return;
+        }
         try {
           await saveConnections(list);
         } catch (e) {
           (res as { status: (n: number) => { json: (d: unknown) => void } }).status(500).json({ error: (e as Error).message });
           return;
         }
-        // 主机/端口/账号/密钥有变动 → 断开旧 SSH 会话，避免复用失效连接
-        const changed =
+        // 出口变了（主机/端口/账号/密钥/跳板）→ 断开旧 SSH 会话，避免复用失效连接；
+        // 下游经它中转的连接也必须一并断开重连，否则会挂在旧隧道上
+        const endpointChanged =
           base.host !== next.host || base.port !== next.port || base.username !== next.username ||
-          base.authType !== next.authType || base.secretEnc !== next.secretEnc;
-        if (changed) disconnect(id);
+          base.authType !== next.authType || base.secretEnc !== next.secretEnc ||
+          base.jumpConnectionId !== next.jumpConnectionId;
+        if (endpointChanged) {
+          disconnect(id);
+          disconnectDependents(id, list);
+        }
         await audit('connection.update', { connection: next.name, ok: true });
         (res as { json: (d: unknown) => void }).json({ data: toClientView(next) });
       });
@@ -1567,13 +2094,13 @@ const opsShellModule: PluginModule = {
           if (probe.type === 'database') {
             await dbExec(probe, 'SELECT 1');
           } else {
-            const client = await sshProbe(probe);
+            const { client, cleanup } = await sshProbe(probe);
             try {
               const cmd = probe.type === 'docker' ? 'docker ps >/dev/null 2>&1 && echo ok' : 'echo ok';
               const r = await sshExec(client, cmd, 15000);
               if (!r.stdout.includes('ok')) throw new Error(r.stderr.trim() || `命令退出码 ${r.code}`);
             } finally {
-              try { client.end(); } catch { /* ignore */ }
+              cleanup();
             }
           }
           (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
@@ -1591,14 +2118,17 @@ const opsShellModule: PluginModule = {
           (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '连接不存在' });
           return;
         }
+        // 被删的连接可能正被别处当跳板：一并断开下游，并在响应里回报，供前端提示
+        const dependents = next.filter((c) => c.jumpConnectionId === id).map((c) => c.name);
         disconnect(id);
+        disconnectDependents(id, next);
         try {
           await saveConnections(next);
         } catch (e) {
           (res as { status: (n: number) => { json: (d: unknown) => void } }).status(500).json({ error: (e as Error).message });
           return;
         }
-        (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
+        (res as { json: (d: unknown) => void }).json({ data: { ok: true, dependents } });
       });
 
       // 连接测试（按类型：ssh=echo；docker=docker ps；database=SELECT 1 直连）
@@ -2023,11 +2553,19 @@ const opsShellModule: PluginModule = {
       });
 
       // 终端会话（命令模式）：open 返回 sessionId，SSE 读输出，POST 写输入
-      const termSessions = new Map<string, { stream: ClientChannel; lastActive: number }>();
+      const termSessions = new Map<string, { stream: ClientChannel; lastActive: number; recorder: TermRecorder | null }>();
+      /** 收尾一条 SSE 会话的录像（幂等：recorder 置空后不会重复落库） */
+      const stopTermRecording = (s: { recorder: TermRecorder | null }) => {
+        if (!s.recorder) return;
+        const meta = s.recorder.stop();
+        s.recorder = null;
+        void persistRecording(meta);
+      };
       const termTimer = setInterval(() => {
         const now = Date.now();
         for (const [id, s] of termSessions) {
           if (now - s.lastActive > IDLE_TIMEOUT_MS) {
+            stopTermRecording(s);
             try { s.stream.close(); } catch {}
             termSessions.delete(id);
           }
@@ -2046,7 +2584,19 @@ const opsShellModule: PluginModule = {
             client.shell({ cols: Number(body.cols) || 120, rows: Number(body.rows) || 32 }, (err, s) => (err ? reject(err) : resolve(s!)));
           });
           const sessionId = `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-          termSessions.set(sessionId, { stream, lastActive: Date.now() });
+          // SSE 回退通道同样录制：漏了它的话，走回退的会话在「录像」列表里会静默缺失
+          let recorder: TermRecorder | null = null;
+          if (recordSessions) {
+            try {
+              recorder = new TermRecorder({
+                connectionId: conn.id, connectionName: conn.name, transport: 'sse',
+                cols: Number(body.cols) || 120, rows: Number(body.rows) || 32,
+              });
+            } catch (e) {
+              logger.warn('[ops-shell] 启动会话录制失败（终端不受影响）:', (e as Error).message);
+            }
+          }
+          termSessions.set(sessionId, { stream, lastActive: Date.now(), recorder });
           // 默认命令：前端明确要求时（autoRun !== false）在 shell 就绪后自动执行一次
           const defaultCommand = String(body.defaultCommand ?? conn.defaultCommand ?? '').trim();
           const autoRun = body.autoRun !== false && !!defaultCommand && conn.type !== 'database';
@@ -2072,6 +2622,7 @@ const opsShellModule: PluginModule = {
         const s = termSessions.get(id);
         if (!s) { (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '会话已关闭' }); return; }
         s.lastActive = Date.now();
+        s.recorder?.input(data);
         s.stream.write(data);
         (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
       });
@@ -2082,6 +2633,7 @@ const opsShellModule: PluginModule = {
         const s = termSessions.get(id);
         if (!s) { (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '会话已关闭' }); return; }
         s.lastActive = Date.now();
+        s.recorder?.resize(Number(body.cols) || 120, Number(body.rows) || 32);
         s.stream.setWindow(Number(body.rows) || 32, Number(body.cols) || 120, 0, 0);
         (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
       });
@@ -2104,6 +2656,7 @@ const opsShellModule: PluginModule = {
         rr.setHeader('X-Accel-Buffering', 'no');
         rr.write(':connected\n\n');
         const onData = (d: Buffer) => {
+          s.recorder?.output(d);
           try { rr.write(`data:${d.toString('base64')}\n\n`); } catch { cleanup(); }
         };
         const onClose = () => { try { rr.end(); } catch {} cleanup(); };
@@ -2120,10 +2673,67 @@ const opsShellModule: PluginModule = {
         const { id } = (req as { params: { id: string } }).params;
         const s = termSessions.get(id);
         if (s) {
+          stopTermRecording(s);
           try { s.stream.close(); } catch {}
           termSessions.delete(id);
         }
         (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
+      });
+
+      // ===== 会话录像 =====
+      // 内容落在 <DATA_DIR>/ops-recordings/。列表只回元数据，正文按 id 单独取 ——
+      // 否则几百 KB 的 .cast 会把列表接口撑成一次全量下载。
+      r.get('/recordings', async (_req: unknown, res: unknown) => {
+        jsonRes(res).json({ data: await loadRecordings(), recording: recordSessions });
+      });
+
+      // 取某条录像用于回放：服务端解析好再下发 ——
+      // 前端就不必再实现一份 .cast 解析器（两份解析必然漂移），也省掉一次前端 JSON.parse 循环。
+      r.get('/recordings/:id/play', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const text = readRecordingFile(id);
+        if (text === null) { failRes(res, 404, '录像不存在或已被清理'); return; }
+        const { header, events, skipped } = parseCast(text);
+        const duration = events.reduce((m, e) => Math.max(m, e.t), 0);
+        jsonRes(res).json({ data: { header, events, skipped, duration } });
+      });
+
+      // 删除某条录像（连同 .cast 文件）
+      r.delete('/recordings/:id', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const list = await loadRecordings();
+        if (!list.some((x) => x.id === id)) { failRes(res, 404, '录像不存在'); return; }
+        removeRecordingFile(id);
+        try {
+          await pluginStorage?.set('recordings', list.filter((x) => x.id !== id));
+        } catch (e) {
+          failRes(res, 500, (e as Error).message);
+          return;
+        }
+        jsonRes(res).json({ data: { ok: true } });
+      });
+
+      // ===== 主机密钥（known_hosts）=====
+      // 这个页面的职责就两件事：看清「这台机器的密钥是哪一把」，
+      // 以及在服务器合法换过密钥之后把它忘掉（下次连接重新 TOFU）。
+      // 刻意不做「手工导入指纹」—— 没有真实密钥可比对时，让用户手抄一串 base64
+      // 只会引入抄错的风险，而抄错等于把信任根交给一个自己都不确定的值。
+      r.get('/known-hosts', async (_req: unknown, res: unknown) => {
+        jsonRes(res).json({ data: await loadKnownHosts(), mode: hostKeyMode });
+      });
+
+      r.delete('/known-hosts/:hostPort', async (req: unknown, res: unknown) => {
+        const hostPort = decodeURIComponent((req as { params: { hostPort: string } }).params.hostPort);
+        const list = await loadKnownHosts();
+        if (!list.some((k) => k.host === hostPort)) { failRes(res, 404, '该主机不在已知列表中'); return; }
+        try {
+          await saveKnownHosts(list.filter((k) => k.host !== hostPort));
+        } catch (e) {
+          failRes(res, 500, (e as Error).message);
+          return;
+        }
+        await audit('hostkey.forget', { detail: hostPort, ok: true });
+        jsonRes(res).json({ data: { ok: true } });
       });
     });
   },

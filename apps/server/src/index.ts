@@ -4,12 +4,15 @@ import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import cors from 'cors';
+import { WebSocketServer } from 'ws';
 import { setPlatformAdapter, getPluginManager, getToolRegistry, setCustomToolDepPreparer } from '@yan-zhi/core';
+import type { PluginWsRoute } from '@yan-zhi/core';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from './constants.js';
 import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
-import { requireLicense, isLicenseGuardEnabled } from './license-guard.js';
+import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicenseCode, verifyLicenseCached } from './license-guard.js';
+import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
 import conversationRoutes from './routes/conversations.js';
 import clipRoutes from './routes/clip.js';
 import messageRoutes from './routes/messages.js';
@@ -491,6 +494,54 @@ httpServer.on('error', (err: any) => {
     logger.error('[server] 监听失败:', err?.message || err);
   }
   process.exit(1);
+});
+
+/**
+ * 插件 WebSocket 分发层。
+ *
+ * ★★★ 为什么授权校验必须在这里补（2026-10-16）：
+ *   `upgrade` 请求**不经过 Express 中间件链** —— 挂在 `app.use('/api', requireLicense)`
+ *   上的门禁对它完全无效。不补就等于在 WebSocket 上开了一个绕过授权的后门
+ *   （运维终端能直接拿到 SSH shell，正是最不该被绕过的那类能力）。
+ *   授权码走 `?license=` query：浏览器 WebSocket 带不了自定义请求头，与媒体流同一
+ *   限制、同一兜底（见 license-guard.ts 的 extractLicenseCode）。
+ */
+const pluginWsServer = new WebSocketServer({ noServer: true });
+
+/** 取当前已注册的插件 WS 端点；插件系统未初始化时返回空（启动早期来的 upgrade 一律不认领） */
+function currentWsRoutes(): PluginWsRoute[] {
+  try {
+    return getPluginManager().registry.wsRoutes;
+  } catch {
+    return [];
+  }
+}
+
+httpServer.on('upgrade', (req, socket, head) => {
+  const route = matchPluginWsRoute(currentWsRoutes(), req.url || '');
+  if (!route) {
+    // 无人认领：保持 Node 在没有 upgrade 监听时的默认行为（销毁 socket），避免连接悬挂
+    socket.destroy();
+    return;
+  }
+  if (isLicenseGuardEnabled() && !isGuardExemptPath(req.url || '')) {
+    let query: Record<string, string> = {};
+    try {
+      query = Object.fromEntries(new URL(req.url || '', 'http://localhost').searchParams);
+    } catch { /* URL 异常 → 视为无授权码 */ }
+    const code = extractLicenseCode({ headers: req.headers, query } as never);
+    if (!code || !verifyLicenseCached(code).valid) {
+      // 先回一个 HTTP 403 再断开：前端据此区分「授权问题」与「网络不通」
+      try {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      } catch { /* 对端已断 */ }
+      socket.destroy();
+      return;
+    }
+  }
+  pluginWsServer.handleUpgrade(req, socket, head, (ws) => {
+    route.onConnection(ws as never, { url: req.url || '', headers: req.headers });
+  });
 });
 
 // ★★★ 启动时数据库完整性自检 + 损坏库隔离（2026-10-09，P3）：

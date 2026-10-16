@@ -9,6 +9,8 @@ import type {
   SettingsTab,
   ChatEnhancerDef,
   PluginContributes,
+  PluginWebSocket,
+  PluginWsRequest,
 } from './types';
 
 interface RegistryEntry<T> {
@@ -19,12 +21,28 @@ interface RegistryEntry<T> {
 type PluginTool = BuiltInTool & { __pluginId: string };
 export type { PluginTool };
 
+/** 插件 WebSocket 端点：mountPath 已归一化为「/ 开头、无尾斜杠」 */
+export interface PluginWsRoute {
+  pluginId: string;
+  mountPath: string;
+  onConnection: (ws: PluginWebSocket, req: PluginWsRequest) => void;
+}
+
+/** 归一化挂载路径：补前导斜杠、去尾斜杠；空串归为 '/' */
+export function normalizeWsMountPath(p: string): string {
+  const s = (p || '').trim();
+  if (!s) return '/';
+  return (s.startsWith('/') ? s : `/${s}`).replace(/\/+$/, '') || '/';
+}
+
 /** 聚合所有已激活插件贡献的扩展点 */
 export class ExtensionRegistry {
   /** 工具（后端执行体） */
   readonly tools = new Map<string, PluginTool>();
   /** 后端路由挂载函数 */
   backendRoutes: Array<{ pluginId: string; setup: (app: unknown) => void }> = [];
+  /** 插件 WebSocket 端点（由服务端 upgrade 分发层消费） */
+  wsRoutes: PluginWsRoute[] = [];
   /** 主题调色板（前端） */
   themes: RegistryEntry<ThemePalette>[] = [];
   /** 布局（前端） */
@@ -62,6 +80,22 @@ export class ExtensionRegistry {
     };
   }
 
+  /** 注册插件 WebSocket 端点（路径相对于 /api/plugin/<pluginId>） */
+  registerWebSocket(
+    pluginId: string,
+    mountPath: string,
+    onConnection: (ws: PluginWebSocket, req: PluginWsRequest) => void,
+  ): Disposable {
+    const entry: PluginWsRoute = { pluginId, mountPath: normalizeWsMountPath(mountPath), onConnection };
+    this.wsRoutes.push(entry);
+    return {
+      dispose: () => {
+        const i = this.wsRoutes.indexOf(entry);
+        if (i >= 0) this.wsRoutes.splice(i, 1);
+      },
+    };
+  }
+
   /** 批量加入声明式前端扩展点（来自 manifest.contributes） */
   addContributes(pluginId: string, c: PluginContributes): Disposable {
     (c.themes || []).forEach((t) => this.themes.push({ pluginId, item: t }));
@@ -79,6 +113,7 @@ export class ExtensionRegistry {
       if (t.__pluginId === pluginId) this.tools.delete(name);
     }
     this.backendRoutes = this.backendRoutes.filter((r) => r.pluginId !== pluginId);
+    this.wsRoutes = this.wsRoutes.filter((r) => r.pluginId !== pluginId);
     this.themes = this.themes.filter((e) => e.pluginId !== pluginId);
     this.layouts = this.layouts.filter((e) => e.pluginId !== pluginId);
     this.sidebar = this.sidebar.filter((e) => e.pluginId !== pluginId);
@@ -103,6 +138,7 @@ export class ExtensionRegistry {
         outputSchema: e.outputSchema,
       })),
       backendRoutes: this.backendRoutes.map((r) => r.pluginId),
+      wsRoutes: this.wsRoutes.map((r) => `${r.pluginId}${r.mountPath}`),
       themes: this.themes,
       layouts: this.layouts,
       sidebar: this.sidebar,

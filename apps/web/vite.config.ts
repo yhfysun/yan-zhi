@@ -40,6 +40,9 @@ export default defineConfig({
         //   症状极具误导性："后端明明起了，界面却全加载不出来"。
         target: `http://127.0.0.1:${process.env.YANZHI_API_PORT || 3001}`,
         changeOrigin: true,
+        // 运维控制台的交互终端走 WebSocket（/api/plugin/ops-shell/term/ws）：
+        // 不开这一项，dev 下 upgrade 请求不会被转发，前端只能回退到 SSE 通道。
+        ws: true,
       },
     },
   },

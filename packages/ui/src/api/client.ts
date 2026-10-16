@@ -42,6 +42,27 @@ export const API_BASE = isElectron
     : '/api';
 const BASE_URL = API_BASE;
 
+/**
+ * 把 API 路径（如 `/plugin/ops-shell/term/ws`）转成 WebSocket URL。
+ *
+ * 为什么要有这个函数：API_BASE 各端形态不同 —— Electron/Capacitor 是绝对地址、
+ * Web 是 `/api` 相对路径。各处自己拼 `ws://` 必然在某一端拼错，统一在这里补成
+ * 绝对地址再换协议。
+ *
+ * 授权码走 `?license=`：浏览器 WebSocket **带不了自定义请求头**，与媒体流是同一限制，
+ * 后端 `extractLicenseCode` 已兜底解析该 query（见 server/license-guard.ts）；
+ * 服务端的 upgrade 分发层会用它做与 REST 同口径的授权校验。
+ */
+export function wsUrl(path: string): string {
+  const base = API_BASE.startsWith('http') ? API_BASE : `${window.location.origin}${API_BASE}`;
+  const u = new URL(base);
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+  const prefix = u.pathname.replace(/\/+$/, '');
+  const url = `${u.origin}${prefix}${path.startsWith('/') ? path : `/${path}`}`;
+  const license = getLicenseCodeSync();
+  return license ? `${url}${url.includes('?') ? '&' : '?'}license=${encodeURIComponent(license)}` : url;
+}
+
 const MOBILE_API_BASE_KEY = 'mobile_api_base';
 
 /** 当前配置的移动端远程后端地址；未配置返回 ''（走 APK 内嵌本地后端） */

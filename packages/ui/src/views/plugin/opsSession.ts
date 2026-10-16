@@ -55,9 +55,10 @@ export interface OpsWin {
   connectionId: string;
   view: ViewKey;
   // 终端
-  termSessionId: string;
   termOpen: boolean;
   termConnecting: boolean;
+  /** 本次会话正在被录制（服务端在 ready 帧里告知；录制默认开启） */
+  termRecording: boolean;
   pendingInput: string;
   lastCommands: string[];
   outputBuffer: string;
@@ -80,10 +81,26 @@ export interface OpsWin {
   cmdChatOpen: boolean;
 }
 
+/**
+ * 终端传输通道。两种实现：
+ *   - WebSocket（首选）：二进制帧走 PTY I/O，文本帧走控制消息（resize）。
+ *   - SSE + POST（回退）：SSE 收输出、POST 送按键 —— 给 WS 被代理拦掉的部署场景兜底。
+ * 把差异收在这一个接口后面，xterm 侧的接线只有一份。
+ */
+export interface TermTransport {
+  /** 发送按键（原始文本，含控制字符） */
+  send(data: string): void;
+  /** 上报 PTY 尺寸 */
+  resize(cols: number, rows: number): void;
+  /** 关闭通道与服务端 PTY */
+  close(): void;
+}
+
 export interface TermHandle {
   term: Terminal;
   fitAddon: FitAddon;
-  stream: AbortController | null;
+  /** 当前传输通道；终端未连上时为 null */
+  transport: TermTransport | null;
   ro: ResizeObserver | null;
   timer: number | null;
   sent: { cols: number; rows: number };

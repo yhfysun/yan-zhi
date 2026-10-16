@@ -317,6 +317,33 @@ export interface PluginStorage {
   delete(key: string): Promise<void>;
 }
 
+/**
+ * 插件 WebSocket 连接。结构性类型 —— core 不依赖 ws，服务端把真实的 ws 实例按这个形状传进来。
+ * 只暴露插件真正需要的那几项，避免插件摸到服务端 socket。
+ */
+export interface PluginWebSocket {
+  /** 1 = OPEN（对应 ws 的 WebSocket.OPEN） */
+  readonly readyState: number;
+  send(data: string | Buffer): void;
+  close(code?: number, reason?: string): void;
+  /**
+   * 发协议级 ping 帧。浏览器**自动回 pong**，客户端无需任何代码 ——
+   * 用来在网络被硬断（拔网线 / 休眠）时兜底回收会话，因为那种情况下 'close' 未必及时到达。
+   */
+  ping(): void;
+  on(event: 'message', cb: (data: Buffer, isBinary: boolean) => void): void;
+  on(event: 'pong', cb: () => void): void;
+  on(event: 'close', cb: (code: number, reason: Buffer) => void): void;
+  on(event: 'error', cb: (err: Error) => void): void;
+}
+
+/** WebSocket 握手请求里插件用得上的部分 */
+export interface PluginWsRequest {
+  /** 原始 URL（含 query），如 /api/plugin/ops-shell/term/ws?connectionId=xxx */
+  url: string;
+  headers: Record<string, string | string[] | undefined>;
+}
+
 /** 插件上下文（激活时注入，插件唯一 API 入口） */
 export interface PluginContext {
   id: string;
@@ -325,6 +352,16 @@ export interface PluginContext {
   config: Record<string, unknown>;
   registerTool(def: BuiltInTool): Disposable;
   registerBackendRoute(setup: (app: unknown) => void): Disposable;
+  /**
+   * 注册 WebSocket 端点。mountPath 相对于 `/api/plugin/<pluginId>`，如 `/term/ws`。
+   *
+   * ★ 升级请求不走 Express 中间件链 —— 所以挂在 `/api` 上的授权门禁（requireLicense）
+   *   由**服务端分发层**统一补做，插件不必也不能自己实现。
+   */
+  registerWebSocket(
+    mountPath: string,
+    onConnection: (ws: PluginWebSocket, req: PluginWsRequest) => void,
+  ): Disposable;
   storage: PluginStorage;
   emit(event: string, payload?: unknown): void;
   on(event: string, handler: (...args: unknown[]) => void): Disposable;

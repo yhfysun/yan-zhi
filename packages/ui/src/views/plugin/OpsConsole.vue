@@ -71,6 +71,11 @@
             >
               <span class="ops-conn-dot" :data-type="connType(row.conn!)" />
               <span class="ops-conn-name">{{ row.name }}</span>
+              <span
+                v-if="row.conn!.jumpConnectionId"
+                class="ops-conn-jump"
+                :title="`经跳板 ${jumpNameOf(row.conn!)}`"
+              >跳板</span>
               <span v-if="testingId === row.id" class="ops-conn-testing">测试中…</span>
               <el-tag v-if="row.conn!.tag" size="small" :type="isProdTag(row.conn!.tag) ? 'danger' : 'info'">{{ row.conn!.tag }}</el-tag>
             </div>
@@ -99,7 +104,7 @@
 
       <!-- 右侧：两个 tab（工作区 / 操作日志）；工作区内是一排窗口标签，每个窗口独立会话 -->
       <section class="ops-workspace">
-        <el-tabs v-model="mode" class="ops-tabs">
+        <el-tabs v-model="mode" class="ops-tabs" @tab-change="onTabChange">
           <el-tab-pane label="工作区" name="main">
             <div class="ops-main-tab">
               <!-- 顶部一行：窗口标签（左） + 整体设置（右，与具体连接无关） -->
@@ -143,6 +148,11 @@
                     <span class="ops-win-conn">{{ winConnInfo(w) }}</span>
                     <div class="ops-win-head-actions">
                       <span v-if="w.view === 'term' && w.termConnecting" class="ops-term-hint">连接中…</span>
+                      <span
+                        v-if="w.view === 'term' && w.termOpen && w.termRecording"
+                        class="ops-rec-chip"
+                        title="本次会话正在录制，可在「录像」页回放"
+                      ><span class="ops-rec-dot" />录制中</span>
                       <el-button v-if="w.view === 'container'" size="small" @click="loadContainers(w)">刷新</el-button>
                       <el-button
                         v-if="w.view === 'term' && !w.termOpen"
@@ -408,6 +418,16 @@
               <div v-else class="ops-empty">暂无操作记录 —— 对话模式/工具执行的每一条 ssh/docker/db 操作都会落在这里</div>
             </div>
           </el-tab-pane>
+
+          <!-- 录像：终端会话的 asciinema .cast 录制与回放（合规留痕 + 事后复盘） -->
+          <el-tab-pane label="录像" name="rec">
+            <OpsRecordingsPanel ref="recPanelRef" />
+          </el-tab-pane>
+
+          <!-- 主机密钥：SSH 信任根的可视化与「忘记」入口 -->
+          <el-tab-pane label="主机密钥" name="kh">
+            <OpsKnownHostsPanel ref="khPanelRef" />
+          </el-tab-pane>
         </el-tabs>
       </section>
     </div>
@@ -486,6 +506,7 @@ import {
   type OpsWin,
   type OpsToolCall,
   type TermHandle,
+  type TermTransport,
   type DockerRow,
   type DbResult,
   TYPE_LABELS,
@@ -516,12 +537,14 @@ import { FitAddon } from '@xterm/addon-fit';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import '@xterm/xterm/css/xterm.css';
-import { api, API_BASE } from '../../api/client';
+import { api, API_BASE, wsUrl, buildRequestHeaders } from '../../api/client';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
 import SftpPanel from './SftpPanel.vue';
 import OpsConnectionDialog, { type OpsConn } from './OpsConnectionDialog.vue';
 import OpsMetricsPanel from '../../components/ops/OpsMetricsPanel.vue';
+import OpsRecordingsPanel from '../../components/ops/OpsRecordingsPanel.vue';
+import OpsKnownHostsPanel from '../../components/ops/OpsKnownHostsPanel.vue';
 import OpsStepCards from '../../components/ops/OpsStepCards.vue';
 import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
@@ -535,7 +558,14 @@ const platformStore = usePlatformStore();
 const OPS_AGENT_ID = 'a_builtin_ops_agent';
 const MAX_OUTPUT_CHARS = 4000;
 
-const mode = ref<'main' | 'log'>('main');
+const mode = ref<'main' | 'log' | 'rec' | 'kh'>('main');
+/** 录像 / 主机密钥面板：切到对应 Tab 时刷新一次（会话结束后列表要跟着更新） */
+const recPanelRef = ref<InstanceType<typeof OpsRecordingsPanel> | null>(null);
+const khPanelRef = ref<InstanceType<typeof OpsKnownHostsPanel> | null>(null);
+function onTabChange(name: string) {
+  if (name === 'rec') void recPanelRef.value?.load();
+  else if (name === 'kh') void khPanelRef.value?.load();
+}
 
 // 三屏拖动：资源列表 / 主视图 / 文件面板 宽度可拖，localStorage 持久化
 // 拖动只改变宽度（最小到 min），折叠是独立按钮的事，两者不耦合
@@ -633,7 +663,7 @@ function newWin(c: OpsConn, view: ViewKey): OpsWin {
     id: `w-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     connectionId: c.id,
     view,
-    termSessionId: '', termOpen: false, termConnecting: false,
+    termOpen: false, termConnecting: false, termRecording: false,
     pendingInput: '', lastCommands: [], outputBuffer: '',
     containers: [], containersError: '',
     dbTables: [], dbTable: '', dbSql: '', dbLoading: false, dbError: '', dbResult: null,
@@ -762,12 +792,12 @@ function scheduleResizePost(w: OpsWin) {
   if (h.timer !== null) window.clearTimeout(h.timer);
   h.timer = window.setTimeout(() => {
     h.timer = null;
-    if (!h.term || !w.termSessionId) return;
+    if (!h.term || !h.transport) return;
     const { cols, rows } = h.term;
     if (!cols || !rows) return;
     if (cols === h.sent.cols && rows === h.sent.rows) return;
     h.sent = { cols, rows };
-    void api.post(`/plugin/ops-shell/term/${w.termSessionId}/resize`, { cols, rows });
+    h.transport.resize(cols, rows);
   }, 200);
 }
 
@@ -800,6 +830,131 @@ function attachTerm(h: TermHandle, w: OpsWin) {
   });
 }
 
+/**
+ * 建立终端通道：优先 WebSocket，连不上（被反代拦掉 / 握手失败 / 超时）时回退到
+ * SSE + POST 的老通道 —— 行为与改造前完全一致，所以 WS 出问题不会让终端变成不可用。
+ * 返回 null 表示两条通道都没起来（此时已经提示过用户）。
+ */
+async function openTermTransport(
+  w: OpsWin, c: OpsConn, cols: number, rows: number, onOutput: (t: string) => void,
+): Promise<TermTransport | null> {
+  try {
+    return await openWsTermTransport(w, c, cols, rows, onOutput);
+  } catch (e) {
+    // 静默降级：这是实现细节，用户不必看到「WebSocket 失败」，留一行控制台便于排查
+    console.info('[ops] WebSocket 终端不可用，回退 SSE：', (e as Error)?.message || e);
+  }
+  try {
+    return await openSseTermTransport(c, cols, rows, onOutput);
+  } catch (e) {
+    ElMessage.error((e as Error)?.message || '终端连接失败');
+    return null;
+  }
+}
+
+/** WebSocket 通道：二进制帧收 PTY 输出、文本帧收控制消息（ready / error / exit） */
+function openWsTermTransport(
+  w: OpsWin, c: OpsConn, cols: number, rows: number, onOutput: (t: string) => void,
+): Promise<TermTransport> {
+  return new Promise((resolve, reject) => {
+    const url = wsUrl(`/plugin/ops-shell/term/ws?connectionId=${encodeURIComponent(c.id)}&cols=${cols}&rows=${rows}`);
+    let sock: WebSocket;
+    try { sock = new WebSocket(url); } catch (e) { reject(e as Error); return; }
+    sock.binaryType = 'arraybuffer';
+
+    let settled = false;
+    let timer: number | null = null;
+    // 单个流式解码器：一个多字节 UTF-8 字符可能被切在两帧之间，逐帧新建 decoder 会解出乱码
+    const decoder = new TextDecoder('utf-8');
+
+    const succeed = () => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) window.clearTimeout(timer);
+      resolve(transport);
+    };
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) window.clearTimeout(timer);
+      try { sock.close(); } catch { /* ignore */ }
+      reject(err);
+    };
+
+    const transport: TermTransport = {
+      send: (data) => { if (sock.readyState === WebSocket.OPEN) sock.send(data); },
+      resize: (c2, r2) => {
+        if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: 'resize', cols: c2, rows: r2 }));
+      },
+      close: () => { try { sock.close(); } catch { /* ignore */ } },
+    };
+    timer = window.setTimeout(() => fail(new Error('WebSocket 握手超时')), 8000);
+
+    sock.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        let msg: { type?: string; message?: string; defaultCommand?: string | null; autoRun?: boolean; recording?: boolean };
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === 'ready') {
+          w.termRecording = !!msg.recording;
+          if (msg.autoRun && msg.defaultCommand) ElMessage.info(`已自动执行默认命令: ${msg.defaultCommand}`);
+          succeed();
+        } else if (msg.type === 'error') {
+          // 握手前的错误（连接不存在等）要回退；已就绪后的错误只需提示
+          if (settled) ElMessage.error(msg.message || '终端出错');
+          else fail(new Error(msg.message || '终端建立失败'));
+        }
+        return;
+      }
+      onOutput(decoder.decode(new Uint8Array(ev.data as ArrayBuffer), { stream: true }));
+    };
+    sock.onerror = () => fail(new Error('WebSocket 连接失败'));
+    sock.onclose = () => {
+      // 握手中途被关 → 回退到 SSE；已就绪后关闭 → 只标记断开（窗口还在，可点「连接终端」重连）
+      if (!settled) fail(new Error('WebSocket 已关闭'));
+      else {
+        w.termOpen = false;
+        w.termRecording = false;
+      }
+    };
+  });
+}
+
+/** SSE + POST 通道（回退路径）：SSE 收输出，按键与 resize 各走一次 POST */
+async function openSseTermTransport(
+  c: OpsConn, cols: number, rows: number, onOutput: (t: string) => void,
+): Promise<TermTransport> {
+  const r = await api.post<{ sessionId: string; defaultCommand?: string | null; autoRun?: boolean }>(
+    '/plugin/ops-shell/term/open',
+    { connectionId: c.id, cols, rows },
+  );
+  if ('error' in r) throw new Error(r.error);
+  const sessionId = r.data.sessionId;
+  if (r.data.autoRun && r.data.defaultCommand) {
+    ElMessage.info(`已自动执行默认命令: ${r.data.defaultCommand}`);
+  }
+  const ac = new AbortController();
+  void (async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/plugin/ops-shell/term/${sessionId}/stream`, {
+        // 必须走 buildRequestHeaders：这条路径同样在 /api 授权门禁之下，
+        // 原实现只带 Authorization 漏了 x-license，开授权后就表现为「终端连上但一片空白」
+        headers: buildRequestHeaders(),
+        signal: ac.signal,
+      });
+      if (!resp.body) return;
+      // SSE 解码统一走 utils/sse（P5 收口）；payload 为 base64 帧
+      await consumeSseStream(resp.body, (payload) => {
+        try { onOutput(b64ToUtf8(payload)); } catch { /* 脏帧跳过 */ }
+      });
+    } catch { /* 会话关闭/网络中断，静默 */ }
+  })();
+  return {
+    send: (data) => { void api.post(`/plugin/ops-shell/term/${sessionId}/input`, { data }); },
+    resize: (c2, r2) => { void api.post(`/plugin/ops-shell/term/${sessionId}/resize`, { cols: c2, rows: r2 }); },
+    close: () => { ac.abort(); void api.post(`/plugin/ops-shell/term/${sessionId}/close`, {}); },
+  };
+}
+
 async function openTerminal(w: OpsWin) {
   // 已有活着的 xterm（典型场景：从别的页面切回来）→ 只接回 DOM，不重开 PTY
   const alive = terms.get(w.id);
@@ -830,7 +985,7 @@ async function openTerminal(w: OpsWin) {
     term.loadAddon(fitAddon);
     term.open(el);
     const handle: TermHandle = {
-      term, fitAddon, stream: null, ro: null, timer: null,
+      term, fitAddon, transport: null, ro: null, timer: null,
       sent: { cols: 0, rows: 0 }, el,
     };
     terms.set(w.id, handle);
@@ -838,23 +993,20 @@ async function openTerminal(w: OpsWin) {
     const cols = term.cols || 120;
     const rows = term.rows || 32;
 
-    const r = await api.post<{ sessionId: string; defaultCommand?: string | null; autoRun?: boolean }>(
-      '/plugin/ops-shell/term/open',
-      { connectionId: c.id, cols, rows },
-    );
-    if ('error' in r) {
-      ElMessage.error(r.error);
-      disposeTerminal(w);
-      return;
-    }
-    w.termSessionId = r.data.sessionId;
+    // 输出统一在这里落到 xterm 与现场缓冲：WS / SSE 两条通道共用一份处理
+    const onOutput = (text: string) => {
+      if (!text) return;
+      terms.get(w.id)?.term.write(text);
+      accumulateOutput(w, text);
+    };
+
+    const transport = await openTermTransport(w, c, cols, rows, onOutput);
+    if (!transport) { disposeTerminal(w); return; }
+    handle.transport = transport;
     handle.sent = { cols, rows };
-    if (r.data.autoRun && r.data.defaultCommand) {
-      ElMessage.info(`已自动执行默认命令: ${r.data.defaultCommand}`);
-    }
 
     term.onData((data) => {
-      void api.post(`/plugin/ops-shell/term/${w.termSessionId}/input`, { data });
+      handle.transport?.send(data);
       // 现场采集：回显用户敲入的可见字符（用于还原最近命令）
       if (data === '\r' || data === '\n') {
         if (w.pendingInput.trim()) {
@@ -873,25 +1025,6 @@ async function openTerminal(w: OpsWin) {
     // 容器尺寸变化（展开/收起文件面板、拖动分隔条、窗口缩放）→ 重新 fit，尺寸上报由 scheduleResizePost 去抖
     watchTermSize(handle, w);
 
-    const ac = new AbortController();
-    handle.stream = ac;
-    const token = localStorage.getItem('auth_token') || '';
-    void (async () => {
-      try {
-        const resp = await fetch(`${API_BASE}/plugin/ops-shell/term/${w.termSessionId}/stream`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: ac.signal,
-        });
-        if (!resp.body) return;
-        // SSE 解码统一走 utils/sse（P5 收口）；payload 为 base64 帧
-        await consumeSseStream(resp.body, (payload) => {
-          let text = '';
-          try { text = b64ToUtf8(payload); } catch { return; }
-          terms.get(w.id)?.term.write(text);
-          accumulateOutput(w, text);
-        });
-      } catch { /* 会话关闭/网络中断，静默 */ }
-    })();
     if (w.id === activeWinId.value) term.focus();
   } finally {
     w.termConnecting = false;
@@ -904,13 +1037,14 @@ function disposeTerminal(w: OpsWin) {
   if (h) {
     if (h.timer !== null) { window.clearTimeout(h.timer); h.timer = null; }
     h.ro?.disconnect();
-    h.stream?.abort();
+    // 通道自己负责收尾（WS 关 socket；SSE 停流 + 通知服务端关 PTY）
+    h.transport?.close();
+    h.transport = null;
     h.term.dispose();
     terms.delete(w.id);
   }
-  if (w.termSessionId) void api.post(`/plugin/ops-shell/term/${w.termSessionId}/close`, {});
-  w.termSessionId = '';
   w.termOpen = false;
+  w.termRecording = false;
   resetTerminalContext(w);
 }
 
@@ -1288,11 +1422,17 @@ async function runDbQuery(w: OpsWin) {
 function connType(c: OpsConn | null | undefined): ConnType {
   return c?.type === 'docker' || c?.type === 'database' ? c.type : 'ssh';
 }
+/** 跳板机名称；指向已删除的连接时给明确提示，而不是显示空 */
+function jumpNameOf(c: OpsConn): string {
+  if (!c.jumpConnectionId) return '';
+  return connections.value.find((x) => x.id === c.jumpConnectionId)?.name || '（跳板已失效）';
+}
 function connSub(c: OpsConn): string {
-  if (connType(c) === 'database') {
-    return `${c.dbType === 'postgres' ? 'pgsql' : 'mysql'} · ${c.username}@${c.host}:${c.port}/${c.database || ''}`;
-  }
-  return `${c.username}@${c.host}:${c.port}`;
+  const addr = connType(c) === 'database'
+    ? `${c.dbType === 'postgres' ? 'pgsql' : 'mysql'} · ${c.username}@${c.host}:${c.port}/${c.database || ''}`
+    : `${c.username}@${c.host}:${c.port}`;
+  const jump = jumpNameOf(c);
+  return jump ? `经 ${jump} → ${addr}` : addr;
 }
 /** 连接副信息：默认命令 / SFTP 路径有配置时才展示 */
 function connMeta(c: OpsConn): string {
@@ -1629,7 +1769,12 @@ function onDocKeydown(ev: KeyboardEvent) {
 }
 
 async function removeConnection(c: OpsConn) {
-  const ok = await ElMessageBox.confirm(`删除连接「${c.name}」？`, '确认', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' })
+  // 它是别人的跳板机时，删掉会让那些连接连不上 —— 在确认框里说清楚，而不是删完才发现
+  const dependents = connections.value.filter((x) => x.jumpConnectionId === c.id).map((x) => x.name);
+  const warn = dependents.length
+    ? `注意：它正被 ${dependents.join('、')} 当作跳板机，删除后这些连接会连不上，需重新指定跳板。`
+    : '';
+  const ok = await ElMessageBox.confirm(`删除连接「${c.name}」？${warn}`, '确认', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' })
     .then(() => true).catch(() => false);
   if (!ok) return;
   const res = await api.delete(`/plugin/ops-shell/connections/${c.id}`);
@@ -1642,12 +1787,14 @@ async function removeConnection(c: OpsConn) {
 async function testConnection(c: OpsConn) {
   testingId.value = c.id;
   try {
-    const r = await api.post<{ ok: boolean; message?: string }>('/plugin/ops-shell/connections/test', {
+    // 必须带 id：后端靠它取回已存密钥复用（不带密钥又没 id 的话，只会回「密码或私钥必填」）
+    const r = await api.post<{ ok: boolean; error?: string }>('/plugin/ops-shell/connections/test', {
+      id: c.id,
       type: connType(c), host: c.host, port: c.port, username: c.username, dbType: c.dbType, database: c.database,
     });
     if ('error' in r) { ElMessage.error(r.error); return; }
-    if (r.data.ok) ElMessage.success(r.data.message || '连接成功');
-    else ElMessage.error(r.data.message || '连接失败');
+    if (r.data.ok) ElMessage.success('连接成功');
+    else ElMessage.error(r.data.error || '连接失败');
   } finally {
     testingId.value = '';
   }
@@ -1844,6 +1991,19 @@ onUnmounted(() => {
 .ops-conn-dot[data-type="database"] { background: #e6a23c; }
 .ops-conn-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ops-conn-testing { font-size: 11px; color: var(--color-text-tertiary); flex-shrink: 0; }
+/* 经跳板接入的标记：轻量文字片，避免和标签 el-tag 抢视觉 */
+.ops-conn-jump {
+  flex-shrink: 0; font-size: 10px; line-height: 1.6; padding: 0 4px; border-radius: 3px;
+  color: var(--color-text-tertiary);
+  background: color-mix(in srgb, var(--color-text-tertiary) 14%, transparent);
+}
+/* 录制中标记：录制默认开启，用户在终端里应当看得见这件事 */
+.ops-rec-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--el-color-danger); }
+.ops-rec-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--el-color-danger);
+  animation: ops-rec-blink 1.6s ease-in-out infinite;
+}
+@keyframes ops-rec-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 
 
 

@@ -79,6 +79,8 @@ async function makeHarness(): Promise<Harness> {
     storage,
     emit: () => {},
     on: () => ({ dispose: () => {} }),
+    // 假 ctx 必须实现完整的 PluginContext：activate 里会调 registerWebSocket 注册终端端点
+    registerWebSocket: () => ({ dispose: () => {} }),
   };
   await opsShellModule.activate(ctx as never);
 

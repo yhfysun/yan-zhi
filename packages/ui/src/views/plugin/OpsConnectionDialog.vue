@@ -72,6 +72,27 @@
         <span v-if="isEdit" class="form-tip">留空表示沿用原密钥，仅填新值才会覆盖</span>
       </el-form-item>
 
+      <!-- 连通性：目标机只对内网 / 堡垒机可达时走跳板（ProxyJump） -->
+      <el-form-item label="跳板机">
+        <el-select
+          v-model="form.jumpConnectionId"
+          class="ops-group-select"
+          clearable
+          filterable
+          placeholder="直连（不经跳板）"
+        >
+          <el-option
+            v-for="c in jumpOptions"
+            :key="c.id"
+            :label="`${c.name}（${c.username}@${c.host}:${c.port}）`"
+            :value="c.id"
+          />
+        </el-select>
+        <span class="form-tip">
+          目标机只对某台机器可达时，选它作跳板；可多级（跳板机自己也能设跳板机）。数据库连接不能作跳板
+        </span>
+      </el-form-item>
+
       <!-- 以下为本次新增：进入终端默认命令 + SFTP 默认路径 -->
       <template v-if="form.type !== 'database'">
         <el-divider content-position="left"><span class="ops-divider-text">终端与文件</span></el-divider>
@@ -139,6 +160,8 @@ export interface OpsConn {
   note?: string;
   /** 所属目录 id */
   groupId?: string;
+  /** 跳板机（ProxyJump）：另一条 ssh/docker 连接的 id；目标机只对跳板机可达时使用 */
+  jumpConnectionId?: string;
 }
 
 interface FormState {
@@ -156,6 +179,7 @@ interface FormState {
   sftpPath: string;
   note: string;
   groupId: string;
+  jumpConnectionId: string;
 }
 
 const emit = defineEmits<{
@@ -175,7 +199,7 @@ function emptyForm(): FormState {
     type: 'ssh', name: '', host: '', port: 22, username: 'root',
     authType: 'password', secret: '', tag: '',
     dbType: 'mysql', database: '',
-    defaultCommand: '', sftpPath: '', note: '', groupId: '',
+    defaultCommand: '', sftpPath: '', note: '', groupId: '', jumpConnectionId: '',
   };
 }
 const form = ref<FormState>(emptyForm());
@@ -186,6 +210,16 @@ async function loadGroups() {
   const r = await api.get<Array<{ id: string; name: string }>>('/plugin/ops-shell/groups');
   if ('data' in r) groups.value = r.data;
 }
+
+/** 跳板机候选：已有连接里可用于中转的（ssh / docker）。数据库连接没有 shell，不能当跳板 */
+const conns = ref<OpsConn[]>([]);
+async function loadConns() {
+  const r = await api.get<OpsConn[]>('/plugin/ops-shell/connections');
+  if ('data' in r) conns.value = r.data;
+}
+const jumpOptions = computed(() => conns.value.filter(
+  (c) => c.id !== editing.value?.id && (c.type ?? 'ssh') !== 'database',
+));
 
 const secretLabel = computed(() => {
   if (form.value.type === 'database') return '密码';
@@ -207,6 +241,7 @@ function open(conn?: OpsConn) {
 function onOpen() {
   testResult.value = null;
   void loadGroups();
+  void loadConns();
   const c = editing.value;
   if (c) {
     form.value = {
@@ -217,6 +252,7 @@ function onOpen() {
       database: c.database || '',
       defaultCommand: c.defaultCommand || '', sftpPath: c.sftpPath || '', note: c.note || '',
       groupId: c.groupId || '',
+      jumpConnectionId: c.jumpConnectionId || '',
     };
   } else {
     form.value = emptyForm();
@@ -244,6 +280,8 @@ function payload() {
     sftpPath: f.type === 'database' ? undefined : (f.sftpPath.trim() || undefined),
     note: f.note.trim() || undefined,
     groupId: f.groupId || undefined,
+    // 始终下发（空串=显式清空跳板）：后端靠「字段是否存在」区分「未传」与「清空」
+    jumpConnectionId: f.jumpConnectionId,
   };
 }
 

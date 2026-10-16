@@ -26,6 +26,8 @@ export function createPluginContext(deps: CreateCtxDeps): PluginContext {
     config: deps.config,
     registerTool: (def) => deps.registry.registerTool(deps.pluginId, def),
     registerBackendRoute: (setup) => deps.registry.registerBackendRoute(deps.pluginId, setup),
+    registerWebSocket: (mountPath, onConnection) =>
+      deps.registry.registerWebSocket(deps.pluginId, mountPath, onConnection),
     storage: deps.storage,
     emit: deps.emit,
     on: deps.on,
