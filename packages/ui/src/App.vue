@@ -97,7 +97,9 @@
         </header>
         <main class="main-content" :class="{ 'is-chat': route.name === 'chat', 'no-shell-topbar': isShellPage }">
           <router-view v-slot="{ Component }">
-            <transition name="slide-fade" mode="out-in"><component :is="Component" /></transition>
+            <!-- :key="viewKey" 是看门狗的重挂开关（见 repairStuckPageTransition）：
+                 帧被系统掐掉时过渡会冻在半路，重新可见时要能把状态机整个重置 -->
+            <transition :key="viewKey" name="slide-fade" mode="out-in"><component :is="Component" /></transition>
           </router-view>
         </main>
         </template>
@@ -221,7 +223,87 @@ function resolvePluginLayout() {
   pluginLayoutLoader.value = def ? (resolvePluginComponent(def.component) ?? null) : null;
 }
 
+// ===== 页面切换的看门狗（2026-10-16，治「切模式后黑屏、无任何报错」）=====
+//
+// 事故链条（用户实报「重启后切到运维模式再切别的模式黑屏，控制台一条错都没有」）：
+//   Vue 的 <transition mode="out-in"> 要靠**完成回调**推进状态机（enter-from 等 nextFrame 摘掉、
+//   旧视图等 leave 结束才换新视图）。这个回调一旦没跑到（帧被系统掐掉、或元素在过渡中途被
+//   摘走），`state.isLeaving` 就永远是 true：`.main-content` 里只剩一个占位注释，
+//   **页面永久空白**，而且不抛任何异常 —— 过渡只是不推进，没有任何错误可打。
+//   实测两条都能真出现：
+//     · 页面不可见时（Electron backgroundThrottling / 窗口被遮挡、最小化 / 后台标签页）
+//       Chromium 直接掐掉动画帧（requestAnimationFrame 实测完全不触发）；
+//     · 可见时也会卡：`/ops` → `/code` 切一次就卡死，之后切到哪个路由内容区都是空的。
+//
+// 三道防线（前两道是"让它不可能发生"，第三道是"发生了也必须自愈"）：
+//   ① CSS：过渡类里不再用 opacity（见 .slide-fade-* 注释）—— 帧被掐也只会停在几像素位移上，
+//      页面始终可见，"黑屏"在这条路径上不可能再发生；
+//   ② 可见性事件：重新可见 / 重新聚焦时清掉残留过渡类并重挂 router-view；
+//   ③ 定时兜底（最要紧的一条）：**不看时序**地检查"路由说我们在某个页面上，
+//      而内容区一个元素都没有" —— 只要这个状态持续超过一次心跳，就强制重挂当前视图。
+//      光靠②会漏掉"页面一直可见却已经卡死"的情况（正是本次实测的形态）。
+//
+// 为什么是重挂而不是清类名：状态机里还停在 isLeaving，光清类名不解决；
+// 换掉 <transition> 的 :key 等于把整个过渡组件连同它的内部状态重建一次。
+const PAGE_TRANSITION_CLASSES = [
+  'slide-fade-enter-from', 'slide-fade-enter-active', 'slide-fade-enter-to',
+  'slide-fade-leave-from', 'slide-fade-leave-active', 'slide-fade-leave-to',
+];
+const viewKey = ref(0);
+/** 每个地址最多重挂几次：重挂也救不回来时不再反复销毁重建，避免把用户正在看的页面抖个不停 */
+const MAX_CONTENT_REPAIRS_PER_PATH = 3;
+const contentRepairs = new Map<string, number>();
+
+function repairStuckPageTransition() {
+  const selector = PAGE_TRANSITION_CLASSES.map((c) => `.${c}`).join(', ');
+  for (const el of Array.from(document.querySelectorAll(selector))) {
+    el.classList.remove(...PAGE_TRANSITION_CLASSES);
+  }
+  viewKey.value += 1;
+}
+
+/** 「路由说该有内容、内容区却没有正确的页面」——即过渡把 router-view 卡死了。
+ *  两种形态实测都出现过，都要认：
+ *    · 内容区一个元素都没有（旧视图已被摘掉、新视图永远没插进来）——只剩占位注释；
+ *    · 旧视图**赖着不走**（hash 已换、界面还停在上一页），因为它带着 leave-* 类等一个
+ *      永远不会到来的完成回调。 */
+function contentAreaStuck(): boolean {
+  if (document.hidden) return false;            // 页面不可见时本来就不出帧，别误修
+  if (!route.matched.length) return false;      // 路由压根没匹配上，那是兜底路由的事
+  const main = document.querySelector('.main-content');
+  if (!main) return false;
+  if (main.children.length === 0) return true;
+  return main.querySelector('[class*="slide-fade-leave-"]') !== null;
+}
+
+/** 连续几次心跳都判定为卡住才动手：正常的 leave 只持续 150ms，不该被误判成卡住 */
+const STUCK_TICKS_BEFORE_REPAIR = 2;
+let stuckTicks = 0;
+
+function ensureContentRendered() {
+  stuckTicks = contentAreaStuck() ? stuckTicks + 1 : 0;
+  if (stuckTicks < STUCK_TICKS_BEFORE_REPAIR) return;
+  stuckTicks = 0;
+  const key = route.fullPath;
+  const n = (contentRepairs.get(key) ?? 0) + 1;
+  contentRepairs.set(key, n);
+  if (n > MAX_CONTENT_REPAIRS_PER_PATH) return;
+  // 第一次留下一条线索：这条路径以前是"什么都没有、查不出来"，现在至少有话说
+  if (n === 1) console.warn('[view] 页面过渡被卡住（内容区为空或旧页面未退出），已强制重挂：', key);
+  repairStuckPageTransition();
+}
+
+const onDocVisible = () => { if (!document.hidden) ensureContentRendered(); };
+
 onMounted(async () => {
+  // 页面切换看门狗（见 ensureContentRendered 注释）：
+  //   ② 回到可见 / 重新聚焦时修
+  document.addEventListener('visibilitychange', onDocVisible);
+  window.addEventListener('focus', ensureContentRendered);
+  //   ③ 不看时序的定时兜底 —— 用户报的形态正是"页面一直可见、却已经卡成空白"
+  window.setInterval(ensureContentRendered, 700);
+  //   路由刚变过之后再复查一次（过渡多在这时完成或卡住）
+  watch(() => route.fullPath, () => { window.setTimeout(ensureContentRendered, 1200); });
   // 全局 Ctrl+A 只作用于当前"窗口"（弹窗/抽屉/浮层/主内容区），不再全选整个应用
   installSelectAllScope();
   try {
@@ -575,8 +657,15 @@ body {
 
 .slide-fade-enter-active { transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
 .slide-fade-leave-active { transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1); }
-.slide-fade-enter-from { opacity: 0; transform: translateY(6px); }
-.slide-fade-leave-to { opacity: 0; transform: translateY(-4px); }
+/* ★★ 2026-10-16 去掉了这里的 `opacity: 0`（用户实报「切模式整块黑屏、控制台无任何报错」）。
+   原因：Vue 的过渡是**靠动画帧推进**的（enter-from 要等 nextFrame 才被摘掉），而文档不可见时
+   （Electron 的 backgroundThrottling / 窗口被遮挡、最小化，或后台标签页）Chromium 会把帧掐掉 ——
+   元素于是永远停在 `slide-fade-enter-from` 上。只要这个类里有 opacity: 0，刚切进来的视图就
+   永远是**全透明**的，观感正是"黑屏"，而且不抛任何异常（过渡只是不推进）。
+   现在只保留位移：帧被掐最多停在几像素的偏移上，页面始终可见 —— 这条路径上"黑屏"不可能再发生。
+   过渡观感不受影响（位移 + 200ms 曲线还在），只是不再淡入淡出。 */
+.slide-fade-enter-from { transform: translateY(6px); }
+.slide-fade-leave-to { transform: translateY(-4px); }
 
 /* Global Element Plus overrides */
 .el-button { font-weight: 500; letter-spacing: 0.01em; transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
