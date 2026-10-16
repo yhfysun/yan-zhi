@@ -97,9 +97,21 @@
         </header>
         <main class="main-content" :class="{ 'is-chat': route.name === 'chat', 'no-shell-topbar': isShellPage }">
           <router-view v-slot="{ Component }">
-            <!-- :key="viewKey" 是看门狗的重挂开关（见 repairStuckPageTransition）：
-                 帧被系统掐掉时过渡会冻在半路，重新可见时要能把状态机整个重置 -->
-            <transition :key="viewKey" name="slide-fade" mode="out-in"><component :is="Component" /></transition>
+            <!-- :key="viewKey" 是看门狗的重挂开关（见 ensureContentRendered）。
+                 ★ :duration 是**根因级**的那一半：不给它时，out-in 的"旧视图可以退场了"
+                   这件事由 transitionend/动画帧决定 —— 帧被系统掐掉（页面不可见、降频）
+                   或元素在过渡中途被摘走时，完成回调就永远不跑，state.isLeaving 卡在 true，
+                   内容区只剩占位注释（用户实报的"切模式黑屏、无任何报错"）。
+                   给了显式时长后 Vue 改用定时器收尾，状态机不再依赖帧。
+                 ★ 时长取 110/150（不是 150/200）：实测 DOM 交换本身只要 3–13ms，out-in 是
+                   **串行**的（先走完 leave 再进 enter），动画时长直接叠在用户感知上 ——
+                   用户反馈"切换有点慢"，所以把这两段各收短一档。 -->
+            <transition
+              :key="viewKey"
+              name="slide-fade"
+              mode="out-in"
+              :duration="{ enter: 150, leave: 110 }"
+            ><component :is="Component" /></transition>
           </router-view>
         </main>
         </template>
@@ -250,9 +262,6 @@ const PAGE_TRANSITION_CLASSES = [
   'slide-fade-leave-from', 'slide-fade-leave-active', 'slide-fade-leave-to',
 ];
 const viewKey = ref(0);
-/** 每个地址最多重挂几次：重挂也救不回来时不再反复销毁重建，避免把用户正在看的页面抖个不停 */
-const MAX_CONTENT_REPAIRS_PER_PATH = 3;
-const contentRepairs = new Map<string, number>();
 
 function repairStuckPageTransition() {
   const selector = PAGE_TRANSITION_CLASSES.map((c) => `.${c}`).join(', ');
@@ -266,34 +275,96 @@ function repairStuckPageTransition() {
  *  两种形态实测都出现过，都要认：
  *    · 内容区一个元素都没有（旧视图已被摘掉、新视图永远没插进来）——只剩占位注释；
  *    · 旧视图**赖着不走**（hash 已换、界面还停在上一页），因为它带着 leave-* 类等一个
- *      永远不会到来的完成回调。 */
+ *      永远不会到来的完成回调。
+ *
+ *  ★ 这里**不能**加 `if (document.hidden) return`（我加过，是错的）：页面被判定不可见时
+ *    帧会被掐，但 **DOM 照样同步建得出来**（实测隐藏状态下截图仍能渲染出内容）——
+ *    隐藏期间内容区为空，同样意味着状态机卡死，此时重挂一次就能把 DOM 补到位，
+ *    等用户看过来时正确的页面已经在那儿了；反过来放行才会"一看就是黑的"。 */
 function contentAreaStuck(): boolean {
-  if (document.hidden) return false;            // 页面不可见时本来就不出帧，别误修
   if (!route.matched.length) return false;      // 路由压根没匹配上，那是兜底路由的事
   const main = document.querySelector('.main-content');
   if (!main) return false;
-  if (main.children.length === 0) return true;
+  const kids = main.children.length;
+  if (kids === 0) return true;
+  // 一个路由只该有一个根元素。多出来的若还挂着过渡类，说明是没退场的残留
+  // （实测过：连切几个模式后 chat-page / console-shell / code-page 全堆在内容区里）。
+  // 只有"多"不足以判定 —— 页面自身可能是多根模板，那种没有过渡类。
+  if (kids > 1 && main.querySelector('[class*="slide-fade-"]')) return true;
   return main.querySelector('[class*="slide-fade-leave-"]') !== null;
 }
 
 /** 连续几次心跳都判定为卡住才动手：正常的 leave 只持续 150ms，不该被误判成卡住 */
 const STUCK_TICKS_BEFORE_REPAIR = 2;
+/** 同一地址两次重挂之间的冷却：限流而不是"修几次就放弃"——放弃就等于把它永久留在黑屏上 */
+const REPAIR_COOLDOWN_MS = 5000;
 let stuckTicks = 0;
+const lastRepairAt = new Map<string, number>();
+const repairCounts = new Map<string, number>();
 
 function ensureContentRendered() {
   stuckTicks = contentAreaStuck() ? stuckTicks + 1 : 0;
   if (stuckTicks < STUCK_TICKS_BEFORE_REPAIR) return;
   stuckTicks = 0;
   const key = route.fullPath;
-  const n = (contentRepairs.get(key) ?? 0) + 1;
-  contentRepairs.set(key, n);
-  if (n > MAX_CONTENT_REPAIRS_PER_PATH) return;
-  // 第一次留下一条线索：这条路径以前是"什么都没有、查不出来"，现在至少有话说
-  if (n === 1) console.warn('[view] 页面过渡被卡住（内容区为空或旧页面未退出），已强制重挂：', key);
+  const now = Date.now();
+  if (now - (lastRepairAt.get(key) ?? 0) < REPAIR_COOLDOWN_MS) return;
+  lastRepairAt.set(key, now);
+  const n = (repairCounts.get(key) ?? 0) + 1;
+  repairCounts.set(key, n);
+  // 第一次留下一条**自足**的线索：用户报「黑屏但一条错都没有」，就得让这一行把
+  // 「哪个地址、哪种形态、页面可见与否」全带上，贴出来就能定位，不用再猜。
+  if (n === 1) {
+    const main = document.querySelector('.main-content');
+    const first = main?.children[0] as HTMLElement | undefined;
+    console.warn('[view] 页面过渡卡住，已强制重挂当前页面', {
+      路由: key,
+      形态: (main?.children.length ?? 0) === 0 ? '内容区为空（新视图没进来）' : '旧视图未退出（带 leave-* 类）',
+      子元素数: main?.children.length ?? -1,
+      首个子元素: first ? `${first.tagName}.${first.className}` : '(无)',
+      页面可见: !document.hidden,
+      第几次修复: n,
+    });
+  }
   repairStuckPageTransition();
 }
 
 const onDocVisible = () => { if (!document.hidden) ensureContentRendered(); };
+
+/**
+ * 闲置时预热各模式工作台的模块（2026-10-16，用户反馈「切换有点慢，顺畅点」）。
+ *
+ * 实测：切换那一刻的 DOM 交换只要 3–13ms，慢的不是渲染，而是「切过去才去拉/编译那个模块」——
+ * 模式工作台体量都不小（运维台 2300+ 行、开发台带 CodeMirror、剪辑台带时间轴），
+ * dev 下第一次切还要现编译（秒级），prod 下也要现场解析执行。用户感知就是"切模式很慢"。
+ * 预热之后首次切换只剩挂载成本。
+ *
+ * 三条约束：
+ *   · 只在**空闲回调**里推进，且一次只热一个 —— 预热本身不能把主线程占满、反而更卡；
+ *   · 失败静默：预热纯属优化，任何失败都不该影响功能（模块真出错时，切过去那一刻照常报错）；
+ *   · 重复 import 走模块缓存，所以在看的那个也不必排除。
+ */
+function scheduleModeViewWarmup() {
+  const loaders: Array<() => Promise<unknown>> = [
+    () => import('./views/plugin/OpsConsole.vue'),
+    () => import('./views/CodeWorkbench.vue'),
+    () => import('./views/WorkflowWorkbench.vue'),
+    () => import('./views/ClipWorkbench.vue'),
+    () => import('./views/plugin/ShopConsole.vue'),
+    () => import('./views/plugin/SecConsole.vue'),
+  ];
+  const ric = (window as unknown as {
+    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+  }).requestIdleCallback;
+  const idle = (cb: () => void) => { if (ric) ric(cb, { timeout: 2000 }); else window.setTimeout(cb, 300); };
+  let i = 0;
+  const next = () => {
+    if (i >= loaders.length) return;
+    const load = loaders[i++];
+    void load().catch(() => { /* 预热失败不影响功能 */ }).finally(() => idle(next));
+  };
+  idle(next);
+}
 
 onMounted(async () => {
   // 页面切换看门狗（见 ensureContentRendered 注释）：
@@ -318,6 +389,9 @@ onMounted(async () => {
   await bootPluginLayer();
   // 业务清单预热（模型/智能体）：非阻塞，见 warmUpBusinessData 注释
   void warmUpBusinessData();
+  // 模式工作台模块预热（非阻塞、空闲时错峰，见 scheduleModeViewWarmup 注释）：
+  // 排在启动那几件事之后，避免和首屏抢主线程
+  scheduleModeViewWarmup();
 });
 
 /**
@@ -655,8 +729,8 @@ body {
   color: var(--color-text-primary, #0f172a);
 }
 
-.slide-fade-enter-active { transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
-.slide-fade-leave-active { transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1); }
+.slide-fade-enter-active { transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1); }
+.slide-fade-leave-active { transition: all 0.11s cubic-bezier(0.4, 0, 0.2, 1); }
 /* ★★ 2026-10-16 去掉了这里的 `opacity: 0`（用户实报「切模式整块黑屏、控制台无任何报错」）。
    原因：Vue 的过渡是**靠动画帧推进**的（enter-from 要等 nextFrame 才被摘掉），而文档不可见时
    （Electron 的 backgroundThrottling / 窗口被遮挡、最小化，或后台标签页）Chromium 会把帧掐掉 ——
