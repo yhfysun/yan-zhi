@@ -1479,7 +1479,7 @@ const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负责在用
 
 ## 硬约束
 - 危险命令（rm -rf /、mkfs、dd、shutdown、fork bomb 等）会被服务端黑名单直接拒绝，不要尝试。
-- 生产标签连接上的非只读操作需要 confirmed=true：先向用户说明将执行什么、影响什么，用户确认后再带 confirmed=true 调用；用户未确认前不要自作主张。
+- 生产标签连接上的非只读操作**必须人工批准**：调用工具后会先返回「待批准」，运维人员在控制台点批准后，原样重试同一条命令才会执行。不要假定已获批准，也不要把 confirmed 参数当作批准凭证（它已失效）。
 - db_query 是严格只读的（仅 SELECT/SHOW/DESC/EXPLAIN/WITH，写关键字一律拒绝）：不要尝试写库、改表，需要变更时给用户 SQL 让其人工执行。
 - 命令失败时先读 stderr 判断原因（权限/路径/服务名/端口），最多换 2 种思路，仍失败就如实汇报已有信息。
 - 不要执行交互式命令（top/vim/apt 交互确认等），用非交互替代（free -m / sed / apt-get -y）。
