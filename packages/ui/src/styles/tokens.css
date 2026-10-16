@@ -162,7 +162,7 @@
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);        /* 入场：自然减速 */
   --ease-in: cubic-bezier(0.4, 0, 1, 1);             /* 出场：轻快收尾 */
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);       /* 通用标准 */
-  --ease-entrance: cubic-bezier(0.16, 1, 0.3, 1);    /* 强入场（原 slide-fade 用） */
+  --ease-entrance: cubic-bezier(0.16, 1, 0.3, 1);    /* 强入场（页面切换动画 yz-page-in 用，见 App.vue） */
 
   /* ===== 层级：显式分层，消除浮层互相压盖 ===== */
   --z-nav: 100;          /* 侧栏 / 顶栏 */
