@@ -104,6 +104,30 @@ export const usePageChatStore = defineStore('page-chat', () => {
     resetChatState(s);
   }
 
+  /**
+   * P3-6 目标页锁定：把本流钉在 tabId 那一页上（任务期间不许换标签页、不许另开页）。
+   *
+   * ★ flow 传 `null`（= 缺省共享流）而不是写 `'shared'`：那个字面量在桌面端
+   *   `browser-target.cjs` 与后端 `browser-flow-lock.ts` 已各有一份，渲染层再抄第三份必然漂移。
+   * ★ 返回**真正钉上**的 tabId（空 = 没钉上）：拿不到 IPC（web 端 / 老 preload / 主进程拒绝）
+   *   就是空 —— 面板据此决定漂移提示怎么说，不去声称一个没生效的锁定。
+   */
+  async function pinTarget(convId: string, tabId: string): Promise<string> {
+    const bridge = (globalThis as any)?.window?.electronAPI?.browserView;
+    if (!bridge?.pinTarget) return '';
+    try {
+      const r = await bridge.pinTarget(convId, null, tabId);
+      return r && r.ok ? String(tabId) : '';
+    } catch { return ''; }
+  }
+
+  /** 任务收尾解锁（幂等：没钉过、或已解锁，都是 no-op） */
+  function unpinTarget(convId: string): void {
+    const bridge = (globalThis as any)?.window?.electronAPI?.browserView;
+    if (!bridge?.unpinTarget) return;
+    try { void Promise.resolve(bridge.unpinTarget(convId, null)).catch(() => { /* 解锁失败不阻断 UI */ }); } catch { /* ignore */ }
+  }
+
   /** 停止当前页在执行的任务（服务端也终止，避免后台继续烧 token） */
   async function stop(tabId: string): Promise<void> {
     const s = states.value[tabId];
@@ -238,6 +262,12 @@ export const usePageChatStore = defineStore('page-chat', () => {
     const ac = new AbortController();
     aborts.set(tabId, ac);
 
+    // ★★★ P3-6 目标页锁定（2026-10-16）：把本流钉在**用户此刻指的那一页**上。
+    //   与漂移检测的基线同时置位 —— 锁定与基线必须看**同一页**，否则提示会说"跑偏"而其实没跑。
+    //   主进程拿到锁之后的语义见 browser-target.cjs：换页类动作（new_tab/switch_tab）直接拒绝，
+    //   无显式 tabId 的动作一律落在锁定页（不再回落"用户当前在看的那一页"）。
+    state.pinnedTabId = await pinTarget(convId, tabId);
+
     try {
       // 上下文在**发送前**现采一次（L0~L2；读取失败会如实标注，不假装页面是空的）
       const ctx = await collectPageContext(tabId, tab);
@@ -268,6 +298,9 @@ export const usePageChatStore = defineStore('page-chat', () => {
       state.streaming = false;
       for (const m of state.messages) m.streaming = false;
       aborts.delete(tabId);
+      // ★ P3-6：任务收尾**一律**解锁（成功 / 失败 / 中止都走这里）。
+      //   漏解锁的后果是这一页在**下一次**任务里还被继续钉着 —— 而那时用户指的可能是别的一页。
+      if (state.pinnedTabId) { unpinTarget(convId); state.pinnedTabId = ''; }
       // 自建会话：收尾对齐服务端真相（共用主会话时**不拉**，否则整个任务会倒进面板）
       if (own) await refreshFromServer(state);
     }

@@ -409,6 +409,9 @@ function clearFlowAnchorsForTab(tabId) {
   for (const [key, t] of convAnchors) {
     if (t === tid) convAnchors.delete(key);
   }
+  // ★ 锁定页也要一起清（P3-6）：tab 都没了，锁定就是幽灵 —— 留着会让
+  //   `resolveFlowPinForFlow` 返回不存在的 id（虽然那边有 isAlive 兜底，但这里清掉更直白）。
+  flowPins.clearForTab(tid);
   agentTouchedTabs.delete(tid);
 }
 
@@ -424,7 +427,30 @@ const {
   decideAnchorUpdate,
   flowKeyOf,
   isBackgroundFlow,
+  createFlowPinRegistry,
 } = require('./browser-target.cjs');
+
+/**
+ * 流 → **锁定页**（P3-6，2026-10-16）：页面对话任务开始时由面板钉住那一页，任务期间不许换页。
+ *
+ * ★ 与 `convAnchors`（锚）的区别，别混：
+ *   · 锚 = "最近一次操作目标"，**随动作漂移**（navigate 到别页、切 tab 都会改它）；
+ *   · 锁定 = "本次任务开始时用户指的那一页"，**任务期间不可改**，在 `resolveTarget` 里优先于锚。
+ *   "面板跟随锚"（下方 :5055 那段）照旧 —— 页内导航仍会让面板跟着走；
+ *   锁定只禁止"跳到**别的标签页**"。
+ *
+ * ★ 判定本体在 browser-target.cjs 的工厂里（可真跑验证）；这里只持有实例 + 注入"tab 还在不在"。
+ *   （位置在 `clearFlowAnchorsForTab` 之后，但那边只在**调用时**读 `flowPins`，
+ *     而它在模块初始化完成后才会被调用 —— 不是 TDZ 问题。）
+ */
+const flowPins = createFlowPinRegistry({
+  isAlive: (t) => (isWebviewEngine() ? webviewTabs.has(t) : browserViews.has(t)),
+});
+
+/** 取某流的锁定页（tab 已不存在时工厂内部会自清并返回 null） */
+function resolveFlowPinForFlow(flowKey) {
+  return flowPins.resolve(flowKey);
+}
 
 
 // R3：摘除即静音 —— 收起右栏/切走 tab 后视频音乐不再出声（"收起了就该安静"）。
@@ -2038,7 +2064,37 @@ ipcMain.handle('browserView:closeConvTabs', (_e, convId) => {
     const k = String(key);
     if (k === cid || k.startsWith(convPrefix)) convAnchors.delete(key);
   }
+  // 锁定页同样按会话收口（P3-6）：收尾了就不该还钉着某一页
+  for (const key of [...flowPins.keys()]) {
+    const k = String(key);
+    if (k === cid || k.startsWith(convPrefix)) flowPins.clear(key);
+  }
   return { closed: ids.length };
+});
+
+/**
+ * 目标页锁定（P3-6，2026-10-16）—— 浏览器面板在页面对话任务开始 / 结束时调用。
+ *
+ * ★ 为什么由**面板**来钉而不是服务端：tabId 是渲染层的东西（面板正在显示哪一页），
+ *   服务端只知道 convId；面板也知道这次任务的 convId（page 空间=本 tab 自己的会话，
+ *   preview 空间=当前主会话），所以两端合起来才凑得出 flowKey。
+ * ★ 为什么钉的是 tab 而不是 URL：页内导航（点链接→翻页）是任务本身的一部分；
+ *   要禁的是"跳到别的标签页"（另开一页作答 / 切走之后答别的页）。
+ * ★ 幂等且可重复：重复钉同一页无副作用；`unpin` 对没钉过的 key 是 no-op
+ *   （任务异常结束时多调一次不会误伤别人）。
+ */
+ipcMain.handle('browserView:pinTarget', (_e, convId, flow, tabId) => {
+  const key = flowKeyOf(convId, flow);
+  if (!key || !tabId) return { ok: false };
+  flowPins.set(key, String(tabId));
+  return { ok: true, flowKey: key, tabId: String(tabId) };
+});
+
+ipcMain.handle('browserView:unpinTarget', (_e, convId, flow) => {
+  const key = flowKeyOf(convId, flow);
+  if (!key) return { ok: false };
+  flowPins.clear(key);
+  return { ok: true, flowKey: key };
 });
 
 // 激活标签页：显示其 BrowserView，隐藏其他
@@ -3237,6 +3293,12 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
   {
     const r = resolveBrowserTarget(convId, tabId, action, {
       anchored: resolveTabIdForFlow(flowKey),
+      // ★★★ P3-6（2026-10-16）：**目标页锁定** —— 页面对话任务开始时面板钉住的那一页。
+      //   有锁定时：无显式 tabId 的动作一律落在锁定页（不再走锚、更不回落 activeTabId），
+      //   new_tab / switch_tab 直接拒绝 —— 治掉"另开一页 / 切走之后答的是别的页"这一整类漂移
+      //   （面板此前只能事后提示「结果可能来自新页面」）。语义与判定本体见 browser-target.cjs。
+      //   ★ 后台流不会被锁定：它有自己的流键（`conv::bg:x`），面板只钉前台的 `::shared`。
+      pinned: resolveFlowPinForFlow(flowKey),
       // ★ 建页类动作未锚定时的回落目标（见 browser-target.cjs 的 `activeTabId` 注释）：
       //   首次 navigate 必须能从"当前活动页"出发，否则锚永不建立 → 读类动作全被拒 → 模型疯狂重试。
       // ★★★ 但**后台流不给回落**（传 null）：否则它的首次 navigate 会直接导航走用户正在看的那页

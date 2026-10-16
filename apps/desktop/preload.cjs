@@ -160,6 +160,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     //   browser_* 工具 → 渲染层的 agentOpened 记账恒为空 → closeAgentTabs 关不掉东西。
     //   主进程按自己的 agentTouchedTabs 收口（不依赖渲染层）。
     closeConvTabs: (convId) => ipcRenderer.invoke('browserView:closeConvTabs', convId),
+    // ★ P3-6 目标页锁定：页面对话任务开始时钉住"用户指的那一页"，任务期间不许换标签页。
+    //   锁定语义与判定本体见 browser-target.cjs 的 createFlowPinRegistry / resolveTarget；
+    //   这里只转发（幂等，任务异常结束时多调一次 unpin 也不会误伤别人）。
+    pinTarget: (convId, flow, tabId) => ipcRenderer.invoke('browserView:pinTarget', convId, flow, tabId),
+    unpinTarget: (convId, flow) => ipcRenderer.invoke('browserView:unpinTarget', convId, flow),
     activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
     ensureActiveTab: (scope) => ipcRenderer.invoke('browserView:ensureActiveTab', scope),
     load: (tabId, url) => ipcRenderer.invoke('browserView:load', tabId, url),

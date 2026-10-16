@@ -228,4 +228,12 @@ describe('★ 面板入口：历史 / 技能（PageChatDock 源码契约）', ()
     expect(DOCK).toContain('distillMessagesOf');
     expect(DOCK).not.toMatch(/:messages="state\.messages"/);
   });
+
+  it('★ P3-6：漂移提示的措辞按"是否真的锁定了"分岔（不能声称一个没生效的锁定）', () => {
+    // 锁定生效时：新标签页不可能是 AI 开的，结果也仍来自锁定页 → 文案必须跟着变
+    expect(DOCK).toContain('st.pinnedTabId');
+    expect(DOCK).toMatch(/本次任务已锁定在开始那一页/);
+    // 没锁定时保留原来的（诚实）说法：可能来自新页面
+    expect(DOCK).toMatch(/结果可能来自新页面/);
+  });
 });

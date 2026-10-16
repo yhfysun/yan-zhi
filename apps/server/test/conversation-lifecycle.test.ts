@@ -90,7 +90,11 @@ function seed() {
       mode TEXT DEFAULT 'office',
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
       archived_at INTEGER, deleted_at INTEGER, last_activity_at INTEGER,
-      task_plan_json TEXT
+      task_plan_json TEXT,
+      -- 来源标记两列（2026-10-16 页面内对话历史）：/counts 无条件统计 source='browser-page'
+      -- 的条数（侧栏那个"已收起 N 条页面对话"角标）。本测试 mock 掉了 db.js ⇒
+      -- apps/server/src/db.ts 的启动迁移不作用于本库，夹具必须自带，否则 /counts 直接 500。
+      source TEXT, source_meta_json TEXT
     );
     CREATE TABLE IF NOT EXISTS message (
       id TEXT PRIMARY KEY,
@@ -224,9 +228,22 @@ describe('会话列表 · 生命周期过滤', () => {
     expect(listIds((await req('GET', '/')).body)).toEqual(['c_b3', 'c_normal', 'c_other_mode']);
   });
 
-  it('GET /counts 给出归档/回收站数量（侧栏角标数据源）', async () => {
+  it('GET /counts 给出归档/回收站 + 被收起的页面对话数（侧栏角标数据源）', async () => {
     const { body } = await req('GET', '/counts');
-    expect(body.data).toMatchObject({ archived: 3, trashed: 2 });
+    expect(body.data).toMatchObject({ archived: 3, trashed: 2, pageSessions: 0 });
+    // ★ 页面对话（2026-10-16）：侧栏那个"已收起 N 条"角标靠这个数。
+    //   临时插一条再删掉（不写进公共夹具 —— 那会改变上面几条"列表内容"断言的期望值）。
+    const t = Date.now();
+    conn.prepare(
+      "INSERT INTO conversation (id, user_id, title, mode, source, created_at, updated_at) VALUES (?, ?, ?, 'office', 'browser-page', ?, ?)",
+    ).run('c_page_tmp', hoisted.testUser, '浏览器 · example.com', t, t);
+    try {
+      const r2 = await req('GET', '/counts');
+      // 页面对话只进 pageSessions，**不**混进归档/回收站计数
+      expect(r2.body.data).toMatchObject({ archived: 3, trashed: 2, pageSessions: 1 });
+    } finally {
+      conn.prepare('DELETE FROM conversation WHERE id = ?').run('c_page_tmp');
+    }
   });
 });
 

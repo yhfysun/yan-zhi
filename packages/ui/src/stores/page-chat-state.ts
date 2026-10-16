@@ -44,6 +44,16 @@ export interface PageChatState {
    * 存整段 prompt（而不是散字段）—— 它就是要发出去的那段话，省得两处拼装漂移。
    */
   repairHint: string;
+  /**
+   * 本次任务**钉住**的标签页（P3-6，2026-10-16）：非空表示执行面已锁定在开始那一页上
+   * （换页类动作会被主进程拒绝）。空 = 没钉上（web 端 / 老 preload / 钉失败）。
+   *
+   * ★ 为什么面板要知道这件事：漂移提示的措辞必须**如实** —— 钉上了才能说
+   *   "结果仍来自那一页"；没钉上却这么说，就是本仓最忌讳的那种"看起来正常的错"。
+   * ★ 生命周期归 `send()` 的 finally 管（任务结束即解锁），**不**随 `resetChatState` 清 ——
+   *   清消息不等于任务结束（手动清空时任务可能还在跑）。
+   */
+  pinnedTabId: string;
 }
 
 let seq = 0;
@@ -64,6 +74,7 @@ export function createChatState(tabId: string): PageChatState {
     targetUrl: '',
     targetTabCount: 0,
     repairHint: '',
+    pinnedTabId: '',
   };
 }
 

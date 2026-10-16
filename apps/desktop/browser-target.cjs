@@ -91,17 +91,86 @@ function tabIdCandidates(raw) {
 }
 
 /**
+ * 「目标页锁定」期间**禁止**的动作（P3-6，2026-10-16）。
+ *
+ * ★ 为什么需要锁定（用户诉求「页面对话跑着跑着答的是别的页」）：
+ *   页面内对话的承诺是"**在这一页上**问答 / 点击 / 填写"。可它的执行面是共用的：
+ *   模型只要调 `browser_new_tab`（或让编排层把 `navigate(openInNewTab)` 改写成 new_tab）
+ *   就会另开一页作答、锚也跟着走，用户看到的是"看起来正常、答的却是别的页"的结果。
+ *   面板此前只能**事后提示**（P0.1 漂移检测："结果可能来自新页面"），治不了根。
+ *   ⇒ 任务开始时把该流**钉在开始那一页**上，换页类动作直接拒绝（错误信息里给出口）。
+ *
+ * ★ 为什么只禁这两个：
+ *   · `new_tab` —— 另开一页作答，正是漂移的成因；
+ *   · `switch_tab` —— 切走之后所有"无 tabId"的动作都会落到别页。
+ *   而 `navigate`（页内换地址）**必须放行**：点链接 → 翻页 → 读结果，本身就是这类任务的一部分。
+ */
+const PIN_TARGET_FORBIDDEN_ACTIONS = new Set(['new_tab', 'switch_tab']);
+
+/** 锁定期间的拒绝话术（含出口：跨页任务该走「移交给主智能体」） */
+const PIN_TARGET_REFUSAL =
+  '当前「页面对话」任务已锁定在开始那一个标签页：不能新开标签页、也不能切换到其它页。'
+  + '需要跨页操作时，请让用户在浏览器工具栏点「页面移交给主智能体」。';
+
+/**
+ * 流 → 锁定页 的登记表（P3-6）。与 `convAnchors`（锚）是**两件事**：
+ *   · 锚 = "最近一次操作目标"，随动作漂移；
+ *   · 锁定 = "本次任务开始时用户指的那一页"，任务期间**不可改**。
+ * 由浏览器面板在页面对话任务开始 / 结束时经 IPC 设置、清除（`browserView:pinTarget`）。
+ *
+ * ★ 为什么做成工厂而不是又一个模块级 Map（写进 main.cjs 就没法真跑验证了）：
+ *   本文件存在的理由就是"判定必须能被 vitest 真跑"（见文件头注释）。
+ *   `isAlive` 由调用方注入（main.cjs 传"tab 还在不在"），保持本模块不依赖 electron。
+ */
+function createFlowPinRegistry(opts) {
+  const isAlive = (opts && opts.isAlive) || (() => true);
+  const pins = new Map();     // flowKey → tabId
+  const MAX_PINS = 200;
+  return {
+    set(flowKey, tabId) {
+      if (!flowKey || !tabId) return;
+      pins.set(String(flowKey), String(tabId));
+      // 上限兜底：与 convAnchors / agentTouchedTabs 同手法（Map 插入序淘汰最老）
+      while (pins.size > MAX_PINS) {
+        const oldest = pins.keys().next().value;
+        if (oldest === undefined) break;
+        pins.delete(oldest);
+      }
+    },
+    clear(flowKey) { if (flowKey) pins.delete(String(flowKey)); },
+    /** 取锁定页；tab 已不存在 → 清掉并返回 null（**绝不返回幽灵 tabId**） */
+    resolve(flowKey) {
+      if (!flowKey) return null;
+      const key = String(flowKey);
+      const t = pins.get(key);
+      if (!t) return null;
+      if (!isAlive(t)) { pins.delete(key); return null; }
+      return t;
+    },
+    /** tab 关闭时的收口（唯一入口，避免某条关闭路径漏清） */
+    clearForTab(tabId) {
+      if (!tabId) return;
+      const tid = String(tabId);
+      for (const [k, t] of pins) if (t === tid) pins.delete(k);
+    },
+    size: () => pins.size,
+  };
+}
+
+/**
  * 解析本次动作该作用在哪个 tab（**唯一判定**）。
  *
  * @param convId  会话标识（null = 非会话场景/渲染层路径 ⇒ 不动本逻辑）
  * @param rawTab  工具入参里的显式 tabId（可为 string/number/null）
  * @param action  桥 action 名（如 'get_page_content'）
- * @param opts    { anchored: string|null, isMine: (tabId: string) => boolean }
+ * @param opts    { anchored: string|null, pinned?: string|null, isMine: (tabId: string) => boolean }
  * @returns { ok: true, tabId: string|null } | { ok: false, error: string }
  *
  * ★ 优先级（顺序即语义，不可调换）：
+ *   ⓪ 锁定期间遇到换页类动作（new_tab / switch_tab）→ **拒绝**；
  *   ① 显式 tabId 且属于本会话 → 用它（**不是**被锚覆盖）；
  *   ② 显式 tabId 但不属于本会话 → 拒绝（跨会话越权）；
+ *   ②' 锁定期间且无显式 tabId → **锁定页**（不走锚、更不回落活动页）；
  *   ③ 无显式 tabId + 已锚定 → 用锚；
  *   ④ 无显式 tabId + 未锚定 + 建页类 action → 放行（tabId 保持 null，由下游落到活动页/自建）；
  *   ⑤ 无显式 tabId + 未锚定 + 其它 → 明确报错。
@@ -112,6 +181,12 @@ function resolveTarget(convId, rawTab, action, opts) {
     // 渲染层路径（IPC）：渲染层自己维护锚与 tabId ⇒ 原样透传，行为逐字不变
     return { ok: true, tabId: rawTab != null && rawTab !== '' ? String(rawTab) : null };
   }
+  // ★★★ ⓪（P3-6，2026-10-16）：目标页锁定期间的换页类动作先拦。
+  //   必须在 ①② 之前判 `switch_tab` —— 它本身带 tabId，会被"显式 tabId 优先"直接放行。
+  //   `new_tab` 不带 tabId，本可放到下面判，但两条放一起才看得出"这是同一件事：换页"。
+  if (o.pinned && PIN_TARGET_FORBIDDEN_ACTIONS.has(action)) {
+    return { ok: false, error: PIN_TARGET_REFUSAL };
+  }
   const cands = tabIdCandidates(rawTab);
   if (cands.length) {
     const mine = cands.find((t) => o.isMine && o.isMine(t));
@@ -121,8 +196,14 @@ function resolveTarget(convId, rawTab, action, opts) {
         error: `标签页 ${cands[0]} 不属于本会话（不能读取/操作其它会话的页面）。请先调用 browser_new_tab 或 browser_navigate 打开页面后再操作。`,
       };
     }
+    // ★ 显式 tabId 仍按 ①② 放行（工具契约允许定向读别的页），且它**不改本流的操作目标** ——
+    //   锁定约束的是"无显式 tabId 的动作落在哪"与"能不能换页"，不禁止定向读。
     return { ok: true, tabId: mine };
   }
+  // ★★ ②' 锁定期间：无显式 tabId 的动作**一律落在锁定页**。
+  //   这一步同时挡掉了"回落 activeTabId"那条路 —— 用户任务中途自己切了标签页时，
+  //   回落会让 agent 的动作落到用户刚点开的那一页上（同一类漂移的另一种触发方式）。
+  if (o.pinned) return { ok: true, tabId: String(o.pinned) };
   if (o.anchored) return { ok: true, tabId: String(o.anchored) };
   // ★★★ 2026-10-10 三次根因修复：建页类动作未锚定时**回落 `activeTabId`（若属于本会话）**。
   //
@@ -218,9 +299,11 @@ module.exports = {
   SHARED_FLOW,
   ANCHOR_ESTABLISHING_ACTIONS,
   NO_ANCHOR_REWRITE_ACTIONS,
+  PIN_TARGET_FORBIDDEN_ACTIONS,
   tabIdCandidates,
   flowKeyOf,
   isBackgroundFlow,
+  createFlowPinRegistry,
   resolveTarget,
   decideAnchorUpdate,
 };

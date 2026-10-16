@@ -350,9 +350,13 @@ function onClear() { pageChat.clearTab(props.tabId); scrollToBottom(); }
 watch(() => props.url, (now) => {
   const st = state.value;
   if (st.streaming && st.targetUrl && now && now !== st.targetUrl) {
+    // ★ P3-6：锁定的是**标签页**不是地址 —— 页内导航（点链接→翻页→读结果）是这类任务的正常组成，
+    //   所以钉住时说的是"结果来自这一页的新地址"，而不是"可能来自新页面"。
     pageChat.note(
       props.tabId,
-      `⚠️ 执行期间页面地址已变为 ${now}（原 ${st.targetUrl}），下面的结果可能来自新页面。`,
+      st.pinnedTabId
+        ? `⚠️ 执行期间本页地址已变为 ${now}（原 ${st.targetUrl}）—— 结果来自这一页的新地址。`
+        : `⚠️ 执行期间页面地址已变为 ${now}（原 ${st.targetUrl}），下面的结果可能来自新页面。`,
       true,
     );
     st.targetUrl = now;
@@ -363,9 +367,14 @@ watch(() => props.url, (now) => {
 watch(() => props.tabCount, (now) => {
   const st = state.value;
   if (st.streaming && now && st.targetTabCount && now > st.targetTabCount) {
+    const extra = now - st.targetTabCount;
+    // ★ P3-6：执行面已被钉在开始那一页时，"新标签页"不可能是 AI 开的（new_tab 会被主进程拒绝），
+    //   结果也仍来自锁定页 —— 措辞必须跟着走，否则就是在说一句自己也不信的话。
     pageChat.note(
       props.tabId,
-      `⚠️ 执行期间新增了 ${now - st.targetTabCount} 个标签页（可能是 AI 自己开的），结果可能来自新页面。`,
+      st.pinnedTabId
+        ? `⚠️ 执行期间新增了 ${extra} 个标签页（本次任务已锁定在开始那一页，结果仍来自该页）。`
+        : `⚠️ 执行期间新增了 ${extra} 个标签页（可能是 AI 自己开的），结果可能来自新页面。`,
       true,
     );
     st.targetTabCount = now;

@@ -168,8 +168,7 @@ describe('★ 历史：列表 / 打开 / 删除', () => {
     expect(store.stateOf('tab-1').conversationId).toBe('');
   });
 
-  it('★ deleteSession 是软删，且把正在用它的 tab 解绑（否则下一次发言会打到已删会话）', async () => {
-    const store = usePageChatStore();
+  it('★ deleteSession 是软删，且把正在用它的 tab 解绑（否则下一次发言会打到已删会话）', async () => {    const store = usePageChatStore();
     await store.send({ tabId: 'tab-1', tab: TAB, question: 'a' });
     expect(store.stateOf('tab-1').conversationId).toBe('c_new');
 
@@ -187,5 +186,78 @@ describe('★ 历史：列表 / 打开 / 删除', () => {
     });
     await store.send({ tabId: 'tab-1', tab: TAB, question: '删完再问' });
     expect(callsTo('/llm/tasks').pop()![1].conversationId).toBe('c_after');
+  });
+});
+
+describe('★ P3-6 目标页锁定：任务期间钉住那一页，收尾解锁', () => {
+  /** 装一个假的桌面端 bridge（只提供锁定相关的两个方法） */
+  function mountPinBridge(pinResult: any = { ok: true, tabId: 'tab-1' }) {
+    const pinTarget = vi.fn(async () => pinResult);
+    const unpinTarget = vi.fn(async () => ({ ok: true }));
+    (globalThis as any).window = globalThis;
+    (globalThis as any).electronAPI = { browserView: { pinTarget, unpinTarget } };
+    return { pinTarget, unpinTarget };
+  }
+  const clearBridge = () => { delete (globalThis as any).electronAPI; };
+
+  it('发消息前钉住本 tab（flow 传 null = 缺省共享流，不在渲染层再抄一份字面量），收尾解锁', async () => {
+    const bridge = mountPinBridge();
+    try {
+      const store = usePageChatStore();
+      // ★ 用一道闸门把任务"卡在跑"的状态：否则 send 一返回就已经收尾解锁了，
+      //   断不到"任务进行中已锁定"这件事（`pinnedTabId` 只有在跑的过程中才非空）。
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => { release = r; });
+      post.mockImplementation(async (url: string) => {
+        if (url === '/conversations') return { data: { id: 'c_new' } };
+        if (url === '/llm/tasks') { await gate; return { data: { taskId: 't1' } }; }
+        return { data: {} };
+      });
+
+      const running = store.send({ tabId: 'tab-1', tab: TAB, question: '问一句' });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(bridge.pinTarget).toHaveBeenCalledWith('c_new', null, 'tab-1');
+      expect(store.stateOf('tab-1').pinnedTabId, '任务进行中必须处于锁定态').toBe('tab-1');
+      expect(bridge.unpinTarget).not.toHaveBeenCalled();   // 还没结束，不能提前解锁
+
+      release();
+      await running;
+      expect(bridge.unpinTarget).toHaveBeenCalledWith('c_new', null);
+      expect(store.stateOf('tab-1').pinnedTabId).toBe('');
+    } finally { clearBridge(); }
+  });
+
+  it('★ 任务**失败**时也要解锁（漏解锁 = 下一次任务被上一页钉死）', async () => {
+    const bridge = mountPinBridge();
+    try {
+      const store = usePageChatStore();
+      post.mockImplementation(async (url: string) => {
+        if (url === '/conversations') return { data: { id: 'c_new' } };
+        if (url === '/llm/tasks') return { error: '任务创建失败' };
+        return { data: {} };
+      });
+      const r = await store.send({ tabId: 'tab-1', tab: TAB, question: 'x' });
+      expect(r.ok).toBe(false);
+      expect(bridge.unpinTarget).toHaveBeenCalledWith('c_new', null);
+      expect(store.stateOf('tab-1').pinnedTabId).toBe('');
+    } finally { clearBridge(); }
+  });
+
+  it('★ 主进程拒绝钉页（ok:false）时不谎称已锁定 —— pinnedTabId 留空', async () => {
+    const bridge = mountPinBridge({ ok: false });
+    try {
+      const store = usePageChatStore();
+      await store.send({ tabId: 'tab-1', tab: TAB, question: '问一句' });
+      expect(bridge.pinTarget).toHaveBeenCalled();
+      expect(store.stateOf('tab-1').pinnedTabId).toBe('');
+    } finally { clearBridge(); }
+  });
+
+  it('没有桌面端 bridge（web 端 / 老 preload）时静默跳过，不影响对话可用性', async () => {
+    clearBridge();
+    const store = usePageChatStore();
+    const r = await store.send({ tabId: 'tab-1', tab: TAB, question: '问一句' });
+    expect(r.ok).toBe(true);
+    expect(store.stateOf('tab-1').pinnedTabId).toBe('');
   });
 });
