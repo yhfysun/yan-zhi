@@ -85,7 +85,10 @@ describe('封面制作配方（2026-10-12 补：合集封面 + 每集视频封�
   // （skill 写了但 agent 没挂 = 静默失效，2026-10-12 实测正是如此）；③ 书名红线进封面。
   it('双端 skill 种子都含封面节（规格/两段式/书名红线）', () => {
     for (const [name, src] of [['core/schema.ts', CORE_SCHEMA()], ['server/db.ts', SERVER_DB()]] as const) {
-      expect(src, name).toContain('## 封面制作');
+      // ★ 2026-10-16：skill 改为「仓库树单一真相源 + pages/ 分层」后，封面配方搬进
+      //   `references/cover-recipes.md`（标题为「封面制作配方」）⇒ 不再断言 `## 封面制作` 这个
+      //   正文小节标题，改为断言"封面制作"这件事在种子里（正文与参考文件合起来看）。
+      expect(src, name).toContain('封面制作');
       expect(src, name).toContain('1080×1080');   // 合集封面 1:1
       expect(src, name).toContain('≤5MB');          // 合集封面 JPG 大小上限
       expect(src, name).toContain('1080×1920');    // 每集封面 9:16

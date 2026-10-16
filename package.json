@@ -31,6 +31,7 @@
     "package:android": "node scripts/package-android.cjs",
     "package:all": "node scripts/package.cjs all",
     "verify:package": "node scripts/verify-package-artifacts.cjs",
+    "sync:novel-skill": "node scripts/sync-novel-skill-seed.cjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
   },
