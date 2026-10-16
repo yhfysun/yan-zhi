@@ -31,10 +31,11 @@ export type Edition = 'lite' | 'basic' | 'pro';
 export const EDITION_MODES: Record<Edition, readonly string[]> = {
   lite: ['office'],
   // 剪辑属产出型能力（基础版即可用），与 wf/dev 同档；lite 是试用档，刻意只放「办公」。
-  // ★ 2026-10-16 douyin 模式下线（与 office 同形态的重复模式）：从 basic/pro 一并移除，
-  //   否则会下发一个前端 MODE_DEFS 里已不存在的模式 key（无害但不一致）。
+  // ★ 2026-10-16 douyin 模式下线（与 office 同形态的重复模式）：从 basic/pro 一并移除。
+  // ★ shop（店铺运营模式，2026-10-16）只放 pro：它涉及真实店铺账号与（后续的）写操作，
+  //   与 ops / sec 同属"动生产、要在场"的一档，不宜在基础档放开。
   basic: ['office', 'wf', 'dev', 'clip'],
-  pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec'],
+  pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop'],
 };
 
 export const EDITIONS: readonly Edition[] = ['lite', 'basic', 'pro'];

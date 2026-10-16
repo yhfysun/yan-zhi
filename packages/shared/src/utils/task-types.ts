@@ -538,6 +538,63 @@ export const TASK_TYPES: TaskTypeSpec[] = [
       { title: '漏斗复盘', detail: '曝光/点击/成交三段漏斗，指出下一轮具体改什么（选品/封面/前三张图/发布时间），落到 03-output', output: '03-output' },
     ],
   },
+  {
+    // 店铺运营（父任务类型，2026-10-16）：与 douyin_ops 同一范式 —— 本身不规定流程，
+    // 只负责「一个目录管多类店铺任务」：空间绑它，每条任务再选一条子线。
+    // 智能体与所有子线共用 a_builtin_shop_agent（见 apps/server/src/builtin-shop-agents.ts）。
+    id: 'shop_ops',
+    label: '店铺运营',
+    summary: '一个目录管多类店铺任务：选品 / Listing / 广告利润 / 中转仓',
+    guide: '这是父任务类型：本目录共用一套资源目录（00-source~03-output），每条任务各选一条线——「跨境选品分析」做选品与利润测算，「Listing 优化」做标题与详情，「中转仓与头程」做库存与物流。新建任务时选一条线即可。',
+    agentId: 'a_builtin_shop_agent',
+    skillIds: ['skill_shop_selection'],
+    steps: [],
+  },
+  {
+    // 跨境选品分析（P0 唯一子线，2026-10-16）：亚马逊 / 淘宝 / 1688 三平台同款匹配与利润测算。
+    // 抓数走 pageAgent + browser_*（登录态由用户在浏览器面板自己登录），同款匹配复用
+    // compare_products 工具 —— 故本类型不需要任何"店铺 API"，只读即可闭环。
+    id: 'shop_selection',
+    label: '跨境选品分析',
+    summary: '品类口径 → 竞品与同款抓取 → 利润测算 → 选品清单',
+    guide: '把平台导出报表、竞品截图放进 00-source。先定清品类与站点口径（币种/含税/佣金/头程），再抓同款与到手价，用 compare_products 做同款匹配，最后给出带测算的选品清单。**只读分析，不改价、不上下架、不碰店铺写操作**。',
+    agentId: 'a_builtin_shop_agent',
+    skillIds: ['skill_shop_selection'],
+    parentId: 'shop_ops',
+    steps: [
+      {
+        title: '品类与站点口径',
+        detail: '目标平台与站点（亚马逊 US/EU/JP、淘宝、1688）、品类与价格带、目标毛利；币种与含税口径、平台佣金率、头程与尾程成本口径。费率与政策一律现查，不凭记忆写死数字',
+        confirmTool: 'confirm',
+        confirmAbout: '平台站点、品类价格带、成本与费率口径',
+        output: '02-work',
+      },
+      {
+        title: '竞品与同款抓取',
+        detail: '委派 pageAgent 打开目标平台搜索结果与竞品详情页（首次需用户在浏览器面板自行登录），抓价格/销量/评分/评论数/规格；同款匹配交给 compare_products，不手工比对标题',
+        confirmTool: 'confirm',
+        confirmAbout: '本批竞品样本是否可用',
+        output: '02-work',
+        batchable: true,
+      },
+      {
+        title: '利润测算',
+        detail: '按「售价 - 平台佣金 - 履约/头程 - 采购成本」逐项扣减算到手毛利与盈亏平衡价；给公式与中间值，数据不足处用区间假设并显式标注来源',
+        confirmTool: 'confirm',
+        confirmAbout: '测算口径与假设是否认可',
+        output: '02-work',
+        batchable: true,
+      },
+      {
+        title: '选品清单',
+        detail: '每次给 3~8 个候选，按需求/竞争/利润三维打分并给出淘汰理由；结论先行，清单落到 03-output（含测算表，用 python_exec 出 CSV）',
+        confirmTool: 'confirm',
+        confirmAbout: '本批候选是否入选',
+        output: '03-output',
+        batchable: true,
+      },
+    ],
+  },
 ];
 
 /** 类型 id 集合（校验用） */

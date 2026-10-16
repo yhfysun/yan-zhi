@@ -169,9 +169,9 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     (globalThis as Record<string, unknown>).localStorage = new LocalStorageStub() as unknown as Storage;
   });
 
-  it('模式定义与 openspec 表格一致（含新增的 wf / clip；douyin 已于 2026-10-16 下线）', async () => {
+  it('模式定义与 openspec 表格一致（含 wf / clip / shop；douyin 已于 2026-10-16 下线）', async () => {
     const m = await freshModule(new LocalStorageStub());
-    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'clip']);
+    expect(m.MODE_DEFS.map((d) => d.key)).toEqual(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop']);
     expect(m.modeRoute('office')).toBe('/chat');
     expect(m.modeRoute('dev')).toBe('/code');
     expect(m.modeRoute('ops')).toBe('/ops');
@@ -187,6 +187,11 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     const wf = m.MODE_DEFS.find((d) => d.key === 'wf');
     expect(wf?.pluginId).toBeUndefined();
     expect(wf?.desktopOnly).toBeUndefined();
+    // 店铺运营模式（第八模式，2026-10-16）：重模式 —— 依赖插件，故必须带 pluginId（未启用则置灰）
+    const shop = m.MODE_DEFS.find((d) => d.key === 'shop');
+    expect(shop?.pluginId).toBe('shop-ops');
+    expect(shop?.desktopOnly).toBe(true);
+    expect(m.modeRoute('shop')).toBe('/shop');
   });
 
   it('★ douyin 模式已下线（2026-10-16）：模式清单里不再有它，路由查询回落办公', async () => {

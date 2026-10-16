@@ -333,14 +333,16 @@ authStore.loadUser();
     writeCtx(ctx);
     // 2) 新模式恢复：智能体先行
     // dev → 代码编写助手；wf → 工作流助手（工作流模式的 AI 形态宿主，负责补参/调工作流/解读结果）；
-    // clip → 剪辑师；其余模式回落日常办公助手。缺了对应分支的话，进该模式只能绑「日常办公助手」+
-    // 场景提示词，人格与职责对不上（助手不知道该去调工作流/该怎么剪）。
+    // clip → 剪辑师；shop → 店铺运营助手（选品/经营人格，工具面与店铺任务对齐）；
+    // 其余模式回落日常办公助手。缺了对应分支的话，进该模式只能绑「日常办公助手」+
+    // 场景提示词，人格与职责对不上（助手不知道该去调工作流/该怎么剪/该怎么算利润）。
     const saved = ctx[m];
     const fallbackAgent =
       m === 'dev' ? 'a_builtin_code_agent'
         : m === 'wf' ? 'a_builtin_workflow_assistant'
           : m === 'clip' ? 'a_builtin_clip_agent'  // 剪辑模式：剪辑师（人格/工具面与剪辑任务对齐）
-            : 'a_default_assistant';
+            : m === 'shop' ? 'a_builtin_shop_agent'  // 店铺运营模式：口径先行 + compare_products 选品
+              : 'a_default_assistant';
     const agentId = saved?.agent || fallbackAgent;
     if (agentId && agentStore.agents.some((a) => a.id === agentId) && agentStore.selectedId !== agentId) {
       chat.onAgentSwitch(agentId);

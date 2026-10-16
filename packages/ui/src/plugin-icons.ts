@@ -1,5 +1,5 @@
 // 插件图标解析：将清单中的图标名（lucide 命名）映射为组件
-import { GitBranch, Palette, LayoutGrid, Puzzle, FolderOpen, Server, Shield, Settings as SettingsIcon } from 'lucide-vue-next';
+import { GitBranch, Palette, LayoutGrid, Puzzle, FolderOpen, Server, Shield, ShoppingCart, Settings as SettingsIcon } from 'lucide-vue-next';
 
 const map: Record<string, unknown> = {
   GitBranch,
@@ -11,6 +11,8 @@ const map: Record<string, unknown> = {
   ops: Server,
   // 安全工作台（sec-lab）
   shield: Shield,
+  // 店铺运营（shop-ops）
+  shop: ShoppingCart,
   Settings: SettingsIcon,
 };
 

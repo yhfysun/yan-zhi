@@ -121,10 +121,10 @@ export interface Conversation {
    *
    * ★ 与前端 stores/mode.ts 的 AppMode 联合类型成对维护：2026-10-12 补 clip（既有缺口，
    *   一直靠 chat.ts 的 as cast 兜着）。
-   * ★ 2026-10-16 移除 douyin：该模式无独立工作台、对话居中，与 office 同形态，属重复模式。
-   *   库里存量 mode='douyin' 的会话由 db.ts 的迁移统一改判 'office'，故联合类型里不再保留它。
+   * ★ 2026-10-16 移除 douyin（与 office 同形态的重复模式），新增 shop（店铺运营模式，
+   *   插件 shop-ops 贡献独立控制台）。
    */
-  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip';
+  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'shop';
   createdAt: number;
   updatedAt: number;
   /**

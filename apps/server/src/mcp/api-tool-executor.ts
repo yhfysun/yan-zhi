@@ -3036,15 +3036,15 @@ export async function executeApiTool(
           applied.customToolIds = valid;
         }
 
-        // ── 工作模式（office / dev / ops / sec / wf / clip）──
+        // ── 工作模式（office / dev / ops / sec / wf / clip / shop）──
         if (args.mode !== undefined) {
-          // ★ 与 routes/conversations.ts 的 VALID_MODES 必须同集：漏一个（如 clip）
+          // ★ 与 routes/conversations.ts 的 VALID_MODES 必须同集：漏一个（如 clip/shop）
           //   会让模型"切模式"被拒，而用户侧表现为「说了切到剪辑模式但没生效」。
           //   douyin 已于 2026-10-16 下线（与 office 同形态的重复模式），故不再可选。
-          const MODES = ['office', 'dev', 'ops', 'sec', 'wf', 'clip'];
+          const MODES = ['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop'];
           const m = str(args, 'mode');
           if (!MODES.includes(m)) {
-            return fail(`未知的工作模式「${m}」。可选值：${MODES.join('、')}（wf = 工作流模式、clip = 剪辑模式）`);
+            return fail(`未知的工作模式「${m}」。可选值：${MODES.join('、')}（wf = 工作流模式、clip = 剪辑模式、shop = 店铺运营模式）`);
           }
           db.prepare('UPDATE conversation SET mode = ? WHERE id = ?').run(m, cid);
           applied.mode = m;

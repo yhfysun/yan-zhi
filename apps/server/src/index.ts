@@ -79,6 +79,8 @@ import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.j
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
 import { registerBuiltinSkins } from './plugins/skins.js';
 import { opsShellManifest, opsShellModule } from './plugins/ops-shell.js';
+// 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理，见 plugins/shop-ops.ts 文件头
+import { shopOpsManifest, shopOpsModule } from './plugins/shop-ops.js';
 import { cicdManifest, cicdModule } from './plugins/cicd-pipeline.js';
 import { javaSuiteManifest, javaSuiteModule } from './plugins/java-suite.js';
 import { secLabManifest, secLabModule } from './plugins/sec-lab.js';
@@ -728,6 +730,8 @@ try {
     await mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true);
     // 安全工作台：授权范围内的侦察/扫描/审计（护栏：授权范围 + 危险动作黑名单 + 全量审计）
     await mgr.registerBuiltin(secLabManifest, secLabModule, true);
+    // 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理；移动端跳过（同 ops/sec）
+    await mgr.registerBuiltin(shopOpsManifest, shopOpsModule, true);
     }
     // 旧库一次性迁移：本版本起内置高危插件默认开启（新装库在 registerBuiltin 首次注册即启用；
     // 旧库已存在 disabled 行不会被动到），按标记只执行一次，之后用户停用状态永久尊重

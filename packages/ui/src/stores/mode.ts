@@ -10,7 +10,7 @@
 //   - 「共享的是上下文，不是界面状态」
 import { ref, computed, watch, type ComputedRef, type Ref } from 'vue';
 
-export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip';
+export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'shop';
 /** 主导方：ai = 对话居中；human = 工作区居中（编辑器/终端/控制台），对话靠边 */
 export type LeadMode = 'ai' | 'human';
 /** 对话位置排布：center = 居中主视觉；right = 右栏；inline = 与控制台同区（折叠条/步骤卡） */
@@ -40,6 +40,10 @@ export const MODE_DEFS: ModeDef[] = [
   { key: 'wf', label: '工作流模式', icon: 'Connection', desc: '运行 · 调试 · 定时', route: '/workflow' },
   // 剪辑模式：无插件依赖（三端可用），时间轴工作台 + 对话双驱动，工程由 clip_project 工具落盘
   { key: 'clip', label: '剪辑模式', icon: 'VideoCamera', desc: '剪辑 · 字幕动画 · 成片', route: '/clip' },
+  // 店铺运营模式（第八模式，2026-10-16）：**重模式** —— 插件 shop-ops 贡献 /shop 控制台
+  //   （左侧店铺/仓库资源列表 + 主区工作台）。有 pluginId，故插件未启用时入口自动置灰；
+  //   desktopOnly 与 ops/sec 同档（控制台型页面不对移动端开放）。
+  { key: 'shop', label: '店铺运营模式', icon: 'Shop', desc: '选品 · Listing · 利润 · 仓储', route: '/shop', pluginId: 'shop-ops', desktopOnly: true },
 ];
 
 const MODE_KEY = 'yz:mode';
@@ -92,6 +96,7 @@ const LEAD_DEFAULTS: Record<AppMode, LeadMode | null> = {
   sec: 'human',
   wf: 'human', // 默认运行模式（人工填参执行），调试优先
   clip: 'human', // 默认时间轴居中（人工剪），要 AI 主导时切到 ai
+  shop: 'human', // 默认店铺列表/工作台居中（人工主导），要 AI 主导时切到 ai
 };
 
 function readStoredMode(): AppMode {
@@ -180,7 +185,7 @@ export function chatPlacementOf(m: AppMode, lead: LeadMode): ChatPlacement {
   if (m === 'dev') return lead === 'ai' ? 'center' : 'right';
   if (m === 'wf') return lead === 'ai' ? 'center' : 'right'; // 运行模式：运行台居中 + 对话在右
   if (m === 'clip') return lead === 'ai' ? 'center' : 'right'; // 剪辑模式：时间轴居中 + 对话在右
-  return lead === 'ai' ? 'center' : 'inline'; // ops / sec
+  return lead === 'ai' ? 'center' : 'inline'; // ops / sec / shop（控制台型：工作区居中，对话与控制台同区）
 }
 
 // ===== 兼容层：原「代码模式标记」薄封装（调用方 4 处不改行为）=====

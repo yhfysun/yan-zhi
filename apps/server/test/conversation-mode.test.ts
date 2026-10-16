@@ -66,6 +66,8 @@ async function mkDb() {
   ins.run('c_ops', 'guest', '运维会话', 'ops', 320);
   ins.run('c_sec', 'guest', '安全会话', 'sec', 340);
   ins.run('c_clip', 'guest', '剪辑会话', 'clip', 350);
+  // 店铺运营模式（2026-10-16）：模式清单里新增一个就得多一个样本，否则下面的并集断言会假通过
+  ins.run('c_shop', 'guest', '店铺运营会话', 'shop', 360);
   // ★ 两个脏值：历史行可能没写过 mode（NULL），也可能写成空串
   ins.run('c_null', 'guest', '历史NULL行', null, 400);
   ins.run('c_empty', 'guest', '历史空串行', '', 500);

@@ -44,7 +44,7 @@ router.use(authMiddleware);
 //   scope=active（默认，也是唯一给主列表用的）/ archived / trashed / all。
 //   过滤照旧放在 DB 层（理由同上）：归档与回收站会话**绝不能**出现在主列表响应里，
 //   否则批量删除、导出、计数这些「扫全量」的逻辑会连带处理用户认为已经被收起来的会话。
-const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip']);
+const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop']);
 
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;

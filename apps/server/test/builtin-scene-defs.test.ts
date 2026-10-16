@@ -26,18 +26,21 @@ const KNOWN_AGENT_IDS = new Set([
   'a_builtin_translate_agent',
   'a_builtin_business_agent',
   DOUYIN_AGENT_ID,
+  // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）
+  'a_builtin_shop_agent',
 ]);
 
 /** 与前端 scenes.ts 的内置键集合一一对应（双源守门） */
 const EXPECTED_KEYS = [
   'office', 'design', 'admin', 'finance', 'operation', 'hr', 'sales', 'legal',
   'data', 'service', 'translate', 'business', 'douyin',
+  'shop',
   'code', 'ops', 'sec', 'wf',
 ];
 
 describe('场景配置种子 · 目录结构', () => {
-  it('共 17 条：13 办公岗位 + code/ops/sec/wf 四个模式场景', () => {
-    expect(builtinSceneDefs).toHaveLength(17);
+  it('共 18 条：13 办公岗位 + code/ops/sec/wf/shop 五个模式场景', () => {
+    expect(builtinSceneDefs).toHaveLength(18);
   });
 
   it('键集合与前端 scenes.ts 完全一致（双源不漂移）', () => {
@@ -49,9 +52,9 @@ describe('场景配置种子 · 目录结构', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it('恰好 4 个模式场景（is_mode=true）：code/ops/sec/wf', () => {
+  it('恰好 5 个模式场景（is_mode=true）：code/ops/sec/wf/shop', () => {
     const modeKeys = builtinSceneDefs.filter((s) => s.isMode).map((s) => s.key);
-    expect(modeKeys).toEqual(['code', 'ops', 'sec', 'wf']);
+    expect(modeKeys).toEqual(['shop', 'code', 'ops', 'sec', 'wf']);
   });
 
   it('douyin 是办公岗位场景（进欢迎卡轮播，不是模式场景）', () => {

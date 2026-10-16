@@ -231,6 +231,7 @@ const MODE_ROUTE_KEYS: Record<string, AppMode> = {
   '/clip': 'clip',
   '/ops': 'ops',
   '/sec': 'sec',
+  '/shop': 'shop',
 };
 
 /** 未授权模式的重定向落点：第一个可见模式的路由（阉割版 = /chat）。 */

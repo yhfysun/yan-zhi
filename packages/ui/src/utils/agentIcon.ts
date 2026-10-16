@@ -58,6 +58,9 @@ export const AGENT_ICON_BY_ID: Record<string, Component> = {
  *   也会让本该走兜底的「小明的助手」被误判。只认真正的用途词。
  */
 const AGENT_ICON_BY_KEYWORD: Array<[RegExp, Component]> = [
+  // 店铺运营 —— 专指词，必须排最前（「选品分析」「店铺数据」里的「分析/数据」是通用词，
+  // 排后面会被设计/数据类抢走；与抖音的「带货」也要区分：这里认的是平台与店铺词）
+  [/亚马逊|amazon|店铺|选品|跨境|listing|1688|shopify|头程|海外仓/i, Shop],
   // 抖音运营 —— 专指词，必须排最前（「抖音带货分析」这类名字里也含「分析」）
   [/抖音|带货|引流|涨粉|起号|短视频|直播|douyin/i, VideoCamera],
   [/短剧|分镜|导演|剧本/, VideoCamera],

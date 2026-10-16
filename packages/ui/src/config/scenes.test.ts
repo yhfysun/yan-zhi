@@ -27,11 +27,13 @@ const KNOWN_AGENT_IDS = new Set([
   'a_builtin_business_agent',
   // 抖音运营助手（图文带货 + 引流共用一个智能体）
   'a_builtin_douyin_agent',
+  // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）
+  'a_builtin_shop_agent',
 ]);
 
 describe('场景目录完整性', () => {
-  it('SCENES 共 17 项：13 办公岗位 + code/ops/sec/wf 四个模式场景', () => {
-    expect(SCENES).toHaveLength(17);
+  it('SCENES 共 18 项：13 办公岗位 + code/ops/sec/wf/shop 五个模式场景', () => {
+    expect(SCENES).toHaveLength(18);
   });
 
   it('WELCOME_SCENES 恰好 13 张，排除 code/ops/sec/wf', () => {

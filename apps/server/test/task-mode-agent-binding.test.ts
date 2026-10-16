@@ -24,6 +24,9 @@ const TASK_MODE_AGENTS = read('src/builtin-task-mode-agents.ts');
 // ★ 2026-10-14：抖音引流/带货两个任务类型复用它，seededAgentIds 不读这个文件就会把
 //   a_builtin_douyin_agent 误判成"不存在的智能体"——而实际链路是好的（假红比漏报更贵）。
 const DOUYIN_AGENTS = read('src/builtin-douyin-agents.ts');
+// 店铺运营智能体同样是独立 defs 模块（builtin-shop-agents.ts）。★ 2026-10-16：shop_ops /
+//   shop_selection 两个任务类型复用 a_builtin_shop_agent，不读这个文件会把它误判成"不存在"。
+const SHOP_AGENTS = read('src/builtin-shop-agents.ts');
 const DB = read('src/db.ts');
 const USE_CHAT = readRepo('packages/ui/src/composables/chat/useChat.ts');
 
@@ -37,7 +40,7 @@ const USE_CHAT = readRepo('packages/ui/src/composables/chat/useChat.ts');
  */
 function seededAgentIds(): Set<string> {
   const ids = new Set<string>();
-  const sources = [DB, read('src/builtin-office-agents.ts'), TASK_MODE_AGENTS, DOUYIN_AGENTS];
+  const sources = [DB, read('src/builtin-office-agents.ts'), TASK_MODE_AGENTS, DOUYIN_AGENTS, SHOP_AGENTS];
   for (const src of sources) {
     for (const m of src.matchAll(/(?:id:\s*|_AGENT_ID\s*=\s*)'(a_[a-z0-9_]+)'/g)) ids.add(m[1]);
   }

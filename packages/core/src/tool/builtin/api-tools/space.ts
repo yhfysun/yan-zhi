@@ -70,7 +70,9 @@ export function registerSpaceTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               '任务类型 id（key）。内置：novel_rewrite 小说改写 / novel_tuiwen 小说推文 / translate 翻译 / ' +
               'script_copy 脚本文案 / audiobook 有声小说 / dubbing 配音 / comic 漫画绘本 / ppt_deck PPT 生成 / ' +
               'short_drama 短剧 / longform 长文写作 / douyin_ops 抖音运营（父任务：一个目录管多条线）/ ' +
-              'douyin_traffic 抖音引流 / douyin_sell 抖音图文带货；也接受自建类型的 key（先 api_task_type_list 看看有哪些）。' +
+              'douyin_traffic 抖音引流 / douyin_sell 抖音图文带货 / ' +
+              'shop_ops 店铺运营（父任务：一个目录管多类店铺任务）/ shop_selection 跨境选品分析；' +
+              '也接受自建类型的 key（先 api_task_type_list 看看有哪些）。' +
               '传 null 或空串表示改回通用。写给父任务类型的目录，每条任务再选子线',
           },
         },

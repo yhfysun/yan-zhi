@@ -286,6 +286,7 @@ const MODE_ROUTES: Record<string, string> = {
   '/code': 'dev',
   '/ops': 'ops',
   '/sec': 'sec',
+  '/shop': 'shop',
 };
 
 /** 该路由是否属于「当前授权未放行」的模式。非模式路由（/home、/settings 等）一律放行。 */

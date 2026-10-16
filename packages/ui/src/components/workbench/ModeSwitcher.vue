@@ -45,7 +45,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Check, Lock, ChatDotRound, Monitor, Platform, Connection, VideoCamera } from '@element-plus/icons-vue';
+import { Check, Lock, ChatDotRound, Monitor, Platform, Connection, VideoCamera, Shop } from '@element-plus/icons-vue';
 import {
   activeMode, MODE_DEFS, setMode, modeRoute, visibleModeDefs,
   type AppMode, type ModeDef,
@@ -119,7 +119,7 @@ function onTriggerClick() {
 // 注：VideoCamera（剪辑模式）是历史漏登记项 —— 2026-10-12 补 douyin 时一并补上；
 //     douyin 模式已于 2026-10-16 下线，其图标 Promotion 随之从本表移除。
 const ICONS: Record<string, unknown> = {
-  ChatDotRound, Monitor, Platform, Lock, Connection, VideoCamera,
+  ChatDotRound, Monitor, Platform, Lock, Connection, VideoCamera, Shop,
 };
 function iconOf(name: string) {
   return ICONS[name] || ChatDotRound;

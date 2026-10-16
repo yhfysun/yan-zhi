@@ -1,0 +1,104 @@
+// 店铺运营专属内置智能体定义（纯数据模块，**不 import db**）。
+//
+// 为什么单独一个文件（与 builtin-douyin-agents.ts / builtin-office-agents.ts 同一理由）：
+//   db.ts 一旦被 import 就会打开 SQLite 并跑全套 seed —— 单测要引 better-sqlite3，
+//   在本机必须跑在 Electron 下。把定义抽成纯常量后，测试可以直接 import 本模块做断言。
+//
+// 定位（2026-10-16，用户拍板）：面向**跨境与国内店铺运营**，覆盖亚马逊 / 淘宝 / 1688 /
+//   跨境中转仓（海外仓）。P0 只做「只读分析闭环」：选品分析、竞品与同款比对、利润测算。
+//   写操作（改价/上下架/回消息）留到 P2，届时每个动作都要走变更单 + 二次确认 + 审计。
+//
+// ★ 与「抖音运营助手」的关键差别：那个是内容/带货，**不碰用户账号**；
+//   这个是**店铺经营**，后续允许代操作 —— 所以它的提示词里"只读优先 + 变更单"必须是硬约束，
+//   而不是像别处那样只作建议。
+
+/** 店铺运营助手 id（前端 config/scenes.ts 的 shop 场景卡与 mode.ts 的 fallbackAgent 引用它） */
+export const SHOP_AGENT_ID = 'a_builtin_shop_agent';
+
+const PAGE_AGENT_ID = 'a_builtin_page_agent';
+
+// 挂载口径：
+// - file 三件：选品清单/测算表/诊断报告落盘（category="deliverable"）
+// - python_exec：利润测算、CSV 台账（复用 skill_xlsx_data_processing 的方法学）
+// - image_analyze：看用户给的后台截图/竞品主图/详情页截图（只有路径，必须调它才看得见）
+// - compare_products：跨平台同款匹配与到手价归一化（选品分析的核心引擎，**不要手工比对标题**）
+// - browser 两件：直接看平台搜索页/详情页；多步操作委派 pageAgent
+// - pageAgent：登录态站点的一切操作（首次由用户在浏览器面板自行登录）+ 平台规则现查
+// - 故意**不挂**任何写操作工具：P0 无写能力，见 system_prompt 的硬约束
+export const SHOP_AGENT_BUILTIN_TOOLS = [
+  // 读资料与交付
+  'file_read', 'file_write', 'file_list',
+  // 测算与统计
+  'python_exec',
+  // 看图（后台截图 / 竞品主图 / 详情页）
+  'image_analyze',
+  // 跨平台同款匹配 + 到手价归一化（选品分析的核心）
+  'compare_products',
+  // 看网页原文；多步网站操作委派 pageAgent
+  'browser_navigate', 'browser_get_page_content',
+  // 委派 pageAgent 抓数 / 现查平台规则
+  'call_agent', 'list_sub_agents', 'spawn_subagent',
+  // 交互与规划
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+];
+
+/** 店铺运营 skill（须与 skill 表种子 id 对齐）。
+ *  ★ P0 只种 skill_shop_selection 一个 —— 这里就只挂一个。
+ *    后端对「技能不存在或已禁用」是**不注入且不报错**（见 conversation-self-config.test.ts 的守门），
+ *    所以挂了还没种的 id 会静默失效；宁可随阶段一起长，不要提前占位。 */
+export const SHOP_AGENT_SKILL_IDS = ['skill_shop_selection'];
+
+export const SHOP_AGENT_SYSTEM_PROMPT = `你是「店铺运营助手」（shopAgent），陪用户做**真实店铺的经营决策**：亚马逊 / 淘宝 / 1688 / 跨境中转仓（海外仓）。你服务的是有真金白银在里面的店主，不是写行业报告。
+
+## 第一原则：先对齐口径，再算数
+跨境电商最容易错的地方不是分析，是**口径**。每次开工先问清（一次问全，不要挤牙膏）：
+- 平台与站点：亚马逊哪个站点（US/EU/JP）、还是淘宝/天猫、还是 1688 找货；
+- 品类与价格带：卖什么、客单价区间、目标毛利；
+- 成本口径：币种与汇率、是否含税（VAT/销售税）、平台佣金率、履约方式（FBA/自发货/海外仓）、头程与尾程；
+- 约束：预算、备货周期、不能碰的品类（侵权/认证门槛高的）。
+
+**费率、政策、平台规则一律现查**（委派 pageAgent），不凭记忆写死数字 —— 亚马逊佣金与 FBA 费按品类和尺寸分段、
+淘宝与 1688 的规则也在变，记错一个数就能把结论带反。
+
+## 标准工作流
+1. **口径确认**：按上面四项问齐，缺数就用区间假设并**显式标注假设与来源**。
+2. **抓数**：竞品与同款优先委派 pageAgent 打开目标平台搜索结果页与详情页（登录态站点首次需用户在浏览器面板自行登录，你不代填账号密码）；拿到的是价格/销量/评分/评论数/规格这类可复核的字段。
+3. **同款匹配**：跨平台比同款用 compare_products 工具，**不要手工比对标题**（标题噪音大、易漏同款）。
+4. **测算**：按「售价 − 平台佣金 − 履约/头程 − 采购成本」逐项扣减，给出到手毛利与盈亏平衡价；公式与中间值都要给，便于用户复算。
+5. **交付**：结论先行（推荐 / 备选 / 不建议），每个候选给三维打分（需求 / 竞争 / 利润）与淘汰理由；清单与测算表 file_write 落盘（category="deliverable"），对话里只给摘要 + 路径。
+
+## 硬约束
+- **只读优先，且当前版本无写能力**：你**没有任何**改价、改库存、上下架、发消息的工具。用户要你做这类事，明确说明要等后续版本且届时需逐步确认，不要假装能做，也不要指导用户去用自动化脚本绕过平台风控。
+- **不做平台规则的断言**：佣金、费率、类目准入、合规红线（认证/侵权/限售）以现查结果为准，查不到就说查不到。
+- **不承诺结果**：不给「保证出单/保证回本」；所有预期标注为「假设 + 验证方式」。
+- **数据可复算**：用户给的数就用用户的数；缺数用经验区间并标注；绝不编造行业数据。
+- **合规红线不可协商**：侵权、刷单、违规改价、虚假宣传一律不做，只给合规替代做法。
+- 大任务先用 task_plan/task_step 拆解；需要联网核实或登录态站点操作时委派 pageAgent（call_agent { agentId: "a_builtin_page_agent", input: "<具体任务 + 关键词>" }），最多 2~3 次。
+- 输出用中文，结论先行，结构清晰。`;
+
+/**
+ * 店铺运营助手的 seed 条目（由 db.ts 展开进 seedAgents）。
+ *
+ * force_sync: true 的理由：内置定义由代码收敛 —— 工具挂载/提示词/步数以代码为准，
+ * 启动时覆盖旧库里的同名条目（受 YZ_BUILTIN_OVERWRITE 策略控制）。
+ */
+export const builtinShopAgentDefs: Array<Record<string, unknown>> = [
+  {
+    id: SHOP_AGENT_ID,
+    name: '店铺运营助手',
+    description:
+      '内置店铺运营助手：面向亚马逊 / 淘宝 / 1688 / 跨境中转仓的真实店铺经营。选品分析（跨平台同款匹配 + 利润测算，复用 compare_products）、竞品与评论分析、Listing 与详情优化建议、头程与库存台账；先对齐口径再算数，费率政策一律现查，只读优先、不承诺收益、合规红线不可协商',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(SHOP_AGENT_BUILTIN_TOOLS),
+    skill_ids: JSON.stringify(SHOP_AGENT_SKILL_IDS),
+    // pageAgent：登录态站点的抓数与平台规则现查
+    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID]),
+    system_prompt: SHOP_AGENT_SYSTEM_PROMPT,
+    force_sync: true,
+    agent_kind: 'main',
+    category: '办公',
+    // 选品分析要跑「抓数 → 同款匹配 → 测算 → 成稿」多轮，步数给足
+    config_json: JSON.stringify({ maxReActSteps: 50 }),
+  },
+];

@@ -122,8 +122,8 @@ describe('EDITION_MODES · 档位到模式的映射', () => {
     expect(EDITION_MODES.basic).toEqual(['office', 'wf', 'dev', 'clip']);
   });
 
-  it('高级版是全部六模式', () => {
-    expect(EDITION_MODES.pro).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec']);
+  it('高级版是全部七模式', () => {
+    expect(EDITION_MODES.pro).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop']);
   });
 
   it('档位单调递增：低档的模式是高哋的子集（不会出现「升级后功能反而少了」）', () => {
@@ -153,7 +153,7 @@ describe('allowedModes · 构建档 ∩ 授权档', () => {
       pro: {
         lite: ['office'],
         basic: ['office', 'wf', 'dev', 'clip'],
-        pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec'],
+        pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop'],
       },
     };
     for (const build of EDITIONS) {
@@ -183,14 +183,14 @@ describe('验签结果携带档位与放行模式', () => {
   it('三档码在各自构建档下返回正确 modes', () => {
     expect(verify(codeOf('lite'), 'lite').modes).toEqual(['office']);
     expect(verify(codeOf('basic'), 'basic').modes).toEqual(['office', 'wf', 'dev', 'clip']);
-    expect(verify(codeOf('pro'), 'pro').modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec']);
+    expect(verify(codeOf('pro'), 'pro').modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop']);
   });
 
   it('★ 老码（payload 无 edition 字段）在高级包里放行全量', () => {
     const r = verify(codeOf(undefined), 'pro');
     expect(r.valid).toBe(true);
     expect(r.edition).toBe('pro');
-    expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec']);
+    expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop']);
   });
 
   it('★ 老码在阉割包里仍被构建档收住（构建档是硬上限）', () => {
@@ -212,7 +212,7 @@ describe('验签结果携带档位与放行模式', () => {
     expect(r.valid).toBe(false);
     // payload 已解析出来 → 能报出真实档位
     expect(r.edition).toBe('pro');
-    expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec']);
+    expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop']);
   });
 
   it('格式错误（无法解析 payload）的分支结构完整，不抛异常', () => {
