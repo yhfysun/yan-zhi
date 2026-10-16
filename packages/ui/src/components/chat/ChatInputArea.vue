@@ -766,6 +766,10 @@ import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } 
 import type { Component } from 'vue';
 import { ElMessage } from 'element-plus';
 import { api } from '../../api/client';
+// 命令中枢（2026-10-16）：`/` 菜单的清单来自命令总线，不在本文件写死
+import type { CommandDef } from '@yan-zhi/core';
+import { useCommandsStore } from '../../stores/commands';
+import { slashOf } from '../../utils/commandBridge';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
@@ -1224,6 +1228,8 @@ const currentModelName = computed(() => {
 
 // ===== 模型候选池下拉瘦身（model-candidate-pools P2）=====
 const platformStore = usePlatformStore();
+// 命令中枢（2026-10-16）：`/` 菜单的清单来自这里（内置命令 + 插件 contributes.commands）
+const commandsStore = useCommandsStore();
 // 数据源：GET /api/model-pools 的 effective 字段（llm + vision 合并展示）——
 // 回退顺序（agent → 平台 → 全局 → 兜底）在后端解析，前端不重复实现。
 // 池为空或用户点「显示全部模型」时回落全量（modelGroups），行为与旧版一致。
@@ -1473,18 +1479,32 @@ const slashMode = ref<SlashMode>('command');
 const slashQuery = ref('');
 const slashIndex = ref(0);
 
-const COMMANDS: Array<{ cmd: string; hint: string; icon: Component }> = [
-  { cmd: '/agent', hint: '切换当前任务智能体', icon: User },
-  { cmd: '/model', hint: '切换使用的模型', icon: Cpu },
-  { cmd: '/skill', hint: '挂载 / 卸载 Skill', icon: Files },
-  { cmd: '/dir', hint: '设置工作目录', icon: FolderOpened },
-  { cmd: '/new', hint: '新建任务', icon: Plus },
-];
+/**
+ * 命令清单**不再写死在本文件**（2026-10-16 命令中枢）：内置命令与插件贡献的命令
+ * 都来自命令总线 `useCommandsStore().globalCommands`（`contributes.commands`）。
+ *
+ * ★ 本文件只负责"渲染 + 分发"：
+ *   · 图标是 UI 关注点，留在这里按命令名映射（新命令没配图标时给中性图标，而不是渲染不出来）；
+ *   · 过滤口径交给总线（名称 / 别名 / 说明），这里不再另写一份 includes。
+ */
+const COMMAND_ICONS: Record<string, Component> = {
+  agent: User, model: Cpu, skill: Files, dir: FolderOpened, new: Plus,
+};
+
+/** 菜单项 = 命令总线给出的 CommandDef + 本地图标 */
+function toMenuItems(defs: CommandDef[]): Array<{ cmd: string; hint: string; icon: Component }> {
+  return defs.map((c) => ({
+    cmd: slashOf(c),
+    hint: c.desc,
+    icon: COMMAND_ICONS[c.name] || Operation,
+  }));
+}
+
+const COMMANDS = computed(() => toMenuItems(commandsStore.globalCommands));
 
 const filteredCommands = computed(() => {
   const q = slashQuery.value.trim();
-  if (!q) return COMMANDS;
-  return COMMANDS.filter((c) => c.cmd.includes(q) || c.hint.includes(q));
+  return toMenuItems(q ? commandsStore.search(q) : commandsStore.globalCommands);
 });
 
 const flatModels = computed<Array<{ id: string; name: string }>>(() => {
@@ -1517,13 +1537,19 @@ function slashListLength(): number {
 }
 
 function enterSlashCommand(cmd: string) {
-  if (cmd === '/agent') { slashMode.value = 'agent'; slashIndex.value = 0; return; }
-  if (cmd === '/model') { slashMode.value = 'model'; slashIndex.value = 0; return; }
+  // ★ 按命令的 `run`（动作 id）分发，而不是按 '/xxx' 字符串 ——
+  //   字符串分发会把"命令叫什么"和"点了做什么"焊死在一起（改名即失效）。
+  const def = commandsStore.globalCommands.find((c) => c.name === cmd.replace(/^\//, ''));
+  if (def?.run === 'agent') { slashMode.value = 'agent'; slashIndex.value = 0; return; }
+  if (def?.run === 'model') { slashMode.value = 'model'; slashIndex.value = 0; return; }
   slashMenuOpen.value = false;
   input.value = '';
-  if (cmd === '/skill') showSkills.value = true;
-  else if (cmd === '/dir') showWorkspaceDir.value = true;
-  else if (cmd === '/new') startNewChat();
+  if (def?.run === 'skill') showSkills.value = true;
+  else if (def?.run === 'dir') showWorkspaceDir.value = true;
+  else if (def?.run === 'new') startNewChat();
+  // ★ 不静默吞掉：插件以后可以贡献命令，但执行器得有人接（kind='tool' 要走后端工具 + guard）。
+  //   现在没有插件声明命令，所以这条分支平时不会走到；真走到时必须说出来，而不是点了没反应。
+  else if (def) ElMessage.info(`「${def.name}」已登记到命令中枢，但当前还没有它的执行通道。`);
 }
 
 function pickSlashAgent(ag: { id: string }) {

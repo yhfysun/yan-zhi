@@ -8,6 +8,7 @@ import type {
   RouteConfig,
   SettingsTab,
   ChatEnhancerDef,
+  CommandDef,
   PluginContributes,
   PluginWebSocket,
   PluginWsRequest,
@@ -55,6 +56,13 @@ export class ExtensionRegistry {
   settingsTabs: RegistryEntry<SettingsTab>[] = [];
   /** 对话增强器（前端） */
   chatEnhancers: RegistryEntry<ChatEnhancerDef>[] = [];
+  /**
+   * 命令中枢（前端命令面板 / `/` 菜单的数据源，2026-10-16）。
+   * ★ 与页面指令（browser_page_command 表）**不是两套概念**：页面指令由前端适配器映射成
+   *   `kind:'page'` 的 CommandDef 一起进总线，映射点只有一处
+   *   （packages/ui/src/utils/commandBridge.ts）。
+   */
+  commands: RegistryEntry<CommandDef>[] = [];
 
   /** 注册工具（后端执行体） */
   registerTool(pluginId: string, tool: BuiltInTool): Disposable {
@@ -104,6 +112,7 @@ export class ExtensionRegistry {
     (c.routes || []).forEach((t) => this.routes.push({ pluginId, item: t }));
     (c.settingsTabs || []).forEach((t) => this.settingsTabs.push({ pluginId, item: t }));
     (c.chatEnhancers || []).forEach((t) => this.chatEnhancers.push({ pluginId, item: t }));
+    (c.commands || []).forEach((t) => this.commands.push({ pluginId, item: t }));
     return { dispose: () => this.removeByPlugin(pluginId) };
   }
 
@@ -120,6 +129,7 @@ export class ExtensionRegistry {
     this.routes = this.routes.filter((e) => e.pluginId !== pluginId);
     this.settingsTabs = this.settingsTabs.filter((e) => e.pluginId !== pluginId);
     this.chatEnhancers = this.chatEnhancers.filter((e) => e.pluginId !== pluginId);
+    this.commands = this.commands.filter((e) => e.pluginId !== pluginId);
   }
 
   /** 返回所有插件工具（含 pluginId，供后端同步到 ToolRegistry） */
@@ -145,6 +155,7 @@ export class ExtensionRegistry {
       routes: this.routes,
       settingsTabs: this.settingsTabs,
       chatEnhancers: this.chatEnhancers,
+      commands: this.commands,
     };
   }
 }

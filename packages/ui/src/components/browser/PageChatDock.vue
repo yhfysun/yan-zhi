@@ -45,11 +45,11 @@
         <template v-if="matchedCmds.length">
           <div class="pcd-chips">
             <button
-              v-for="c in matchedCmds" :key="c.id" class="pcd-chip" type="button"
-              :class="{ 'is-script': c.kind === 'script' }"
-              :title="(c.kind === 'script' ? '脚本指令（执行前确认）：' : '') + (c.description || c.body)"
-              :disabled="state.streaming || convBusy" @click="runCommand(c)"
-            >{{ c.kind === 'script' ? '⚙ ' : '' }}{{ c.name }}</button>
+              v-for="c in matchedCmds" :key="c.pageCommandId" class="pcd-chip" type="button"
+              :class="{ 'is-script': c.pageKind === 'script' }"
+              :title="chipTitle(c)"
+              :disabled="state.streaming || convBusy" @click="runDef(c)"
+            >{{ c.pageKind === 'script' ? '⚙ ' : '' }}{{ c.name }}</button>
           </div>
         </template>
         <template v-else>
@@ -109,6 +109,9 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePageChatStore } from '../../stores/page-chat';
 import { usePageCommandsStore } from '../../stores/page-commands';
+// 命令中枢（2026-10-16）：chips 的清单经命令总线取（与聊天框的 `/` 菜单同一套口径）
+import { useCommandsStore } from '../../stores/commands';
+import type { CommandDef } from '@yan-zhi/core';
 import {
   buildScriptRepairPrompt, buildScriptSource, digestOf, formatScriptResult, inputPromptsOf, needsConfirm,
   renderCommandBody, usedVarsOf, type PageCommand, type PageCommandVars,
@@ -140,6 +143,7 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'manage'): void }>();
 
 const pageChat = usePageChatStore();
 const cmdsStore = usePageCommandsStore();
+const commandsStore = useCommandsStore();
 const { renderMarkdown, renderAssistantMarkdown, store: chatStore } = useChat();
 
 const draft = ref('');
@@ -163,8 +167,29 @@ const inputPlaceholder = computed(() => (convBusy.value
   ? '当前会话正在执行任务，等它结束再问'
   : '问这一页的内容，或让它在这一页上做点什么…'));
 
-/** 当前页命中的页面指令（P1）：站点专属在前、全局在后；一条都没有时给"新建指令" */
-const matchedCmds = computed(() => cmdsStore.matched(props.url || ''));
+/** 当前页命中的页面指令（P1）：站点专属在前、全局在后；一条都没有时给"新建指令"。
+ *  ★ 2026-10-16 起经**命令总线**取（`CommandDef` 形态，`kind:'page'`）——
+ *    与聊天框的 `/` 菜单共用同一套"列出 + 搜索"口径，不再各写一份列表逻辑。
+ *    匹配与排序仍是 `utils/pageCommand` 的 matchPageCommands（总线只做形态转换）。 */
+const matchedCmds = computed(() => commandsStore.pageDefsFor(props.url || ''));
+
+/** chips 的 tooltip：优先说明，其次指令正文（点下去之前的最后一道"这条到底要干什么"） */
+function chipTitle(c: CommandDef): string {
+  const prefix = c.pageKind === 'script' ? '脚本指令（执行前确认）：' : '';
+  const raw = commandsStore.pageCommandById(c.pageCommandId);
+  return prefix + (c.desc || raw?.body || '');
+}
+
+/**
+ * 执行一条 chips = 先按 `pageCommandId` 回查原始指令行，再走**原有**执行路径。
+ * ★ 命令总线只负责"列出 + 触发"，不认识 `/llm/tasks` 也不认识 `run_script` ——
+ *   执行口径始终只有 `runCommand` 一处（脚本型那条更是带着确认与审计）。
+ */
+function runDef(c: CommandDef) {
+  const raw = commandsStore.pageCommandById(c.pageCommandId);
+  if (!raw) { ElMessage.warning('这条指令已不在指令库里，刷新后再试'); return; }
+  void runCommand(raw);
+}
 
 onMounted(() => { void cmdsStore.load(); });
 

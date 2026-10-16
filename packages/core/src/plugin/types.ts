@@ -278,6 +278,60 @@ export interface ChatEnhancerDef {
   module: string;
 }
 
+/**
+ * 命令定义（**命令中枢**，2026-10-16）。
+ *
+ * ★ 为什么要有这个扩展点：命令此前**写死在前端**（`ChatInputArea.vue` 的 `/agent`、`/model` …），
+ *   每加一个能力就要改那个数组 ⇒「界面随能力增长」。声明式收口后：各能力在
+ *   `contributes.commands` 里声明，前端只负责"列出 + 搜索 + 触发"
+ *   （见 `packages/ui/src/stores/commands.ts` 的命令总线）。
+ *
+ * ★ 与**页面指令**（`browser_page_command` 表）的关系（两边方案文档都写死的一条）：
+ *   页面指令**不是另一套概念**，而是 `kind:'page'` 的命令 + 页面作用域字段
+ *   （`pageKind` / `matchHost` / `matchUrl`）。差别只有一处：页面指令是**持久化数据**
+ *   （用户可增删改），本类型是**声明式**的（随代码发布）—— 前者由适配器映射成后者统一进总线，
+ *   映射点只有一处（`packages/ui/src/utils/commandBridge.ts`）。
+ *   ⇒ 所以**不要求两边字段逐名相同**：硬把 `description→desc`、`kind` 语义合并要动
+ *   19 个文件 + 表迁移 + 已上线的导入/导出协议（代价约 10 倍），方案文档明确不建议。
+ */
+export interface CommandDef {
+  /** 命令名（不带 `/`），如 'portscan' / '总结本页' */
+  name: string;
+  /** 别名（输入 `/ps` 等价于 `/portscan`） */
+  aliases?: string[];
+  /** 一行说明（命令面板与 `/help` 用） */
+  desc: string;
+  /** 用法串，如 '/portscan <target> [-p spec]' */
+  usage?: string;
+  /** 面板分组（'SYS' / 'PAGE' / 'SCAN' …）；同一分组的命令在面板里折叠在一起 */
+  group: string;
+  /** 限定模式（'sec' 等）；不填 = 全局可用 */
+  mode?: string;
+  /** 展示用风险级（'P'被动 / 'A'主动 / 'I'侵入 / 'S'模拟）。**只管展示，执行仍由 guard 决定** */
+  danger?: string;
+  /**
+   * 执行分流：
+   * · 'tool'    —— 走后端插件工具（`tool` 指向工具名）
+   * · 'ui'      —— 前端动作（`run` 指向动作 id）
+   * · 'builtin' —— 内置命令（前端已实现）
+   * · 'page'    —— **页面指令**：页面作用域，执行走浏览器面板那条通道
+   *   （`pageKind='task'` → 发进会话；`pageKind='script'` → 在页面上跑脚本）
+   */
+  kind: 'tool' | 'ui' | 'builtin' | 'page';
+  /** kind='tool'：映射到的插件工具名 */
+  tool?: string;
+  /** kind='ui'：前端动作 id（如 'open-tab:findings'） */
+  run?: string;
+  /** kind='page' 专用：指令的原始形态（自然语言任务 / 页面脚本） */
+  pageKind?: 'task' | 'script';
+  /** kind='page' 专用：站点匹配（`*` 全局 / `域名` / `*.域名` 通配） */
+  matchHost?: string;
+  /** kind='page' 专用：URL 正则（**优先于** matchHost） */
+  matchUrl?: string;
+  /** kind='page' 专用：持久化主键（编辑 / 删除 / 统计要回查那一行） */
+  pageCommandId?: string;
+}
+
 /** contributes 声明（清单中的扩展点贡献） */
 export interface PluginContributes {
   tools?: string[];
@@ -288,6 +342,8 @@ export interface PluginContributes {
   settingsTabs?: SettingsTab[];
   chatEnhancers?: ChatEnhancerDef[];
   backendRoutes?: string[];
+  /** 命令中枢：声明式命令（前端命令面板与 `/` 菜单据此列出） */
+  commands?: CommandDef[];
 }
 
 /** 插件清单 */

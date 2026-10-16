@@ -13,6 +13,7 @@ import type {
   RouteConfig,
   SettingsTab,
   ChatEnhancerDef,
+  CommandDef,
 } from '@yan-zhi/core';
 
 /** 前端视角的插件信息（不含内部 disposables） */
@@ -58,6 +59,13 @@ export const usePluginStore = defineStore('plugin', () => {
   /** 贡献的对话增强器 */
   const chatEnhancers = computed<ChatEnhancerDef[]>(() =>
     enabledPlugins.value.flatMap((p) => p.manifest.contributes?.chatEnhancers || []),
+  );
+  /**
+   * 贡献的命令（命令中枢，2026-10-16）—— 前端命令总线的数据源之一（另一个是内置命令与页面指令）。
+   * ★ 只聚合**已启用**插件（与其它贡献点同口径）：停用的插件不该还能被 `/` 命令唤起。
+   */
+  const commands = computed<CommandDef[]>(() =>
+    enabledPlugins.value.flatMap((p) => p.manifest.contributes?.commands || []),
   );
   /** 贡献的工具元数据（声明式，执行体在后端） */
   const toolDecls = computed(() =>
@@ -133,6 +141,7 @@ export const usePluginStore = defineStore('plugin', () => {
     routes,
     settingsTabs,
     chatEnhancers,
+    commands,
     toolDecls,
     enabledPlugins,
     refresh,
