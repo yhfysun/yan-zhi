@@ -104,6 +104,19 @@
 
       <!-- 右侧：两个 tab（工作区 / 操作日志）；工作区内是一排窗口标签，每个窗口独立会话 -->
       <section class="ops-workspace">
+        <!-- 待批准命令：AI 在生产连接上发起的写操作会停在这里等人点头（任何 Tab 下都可见） -->
+        <div v-if="approvals.length" class="ops-approvals">
+          <div v-for="a in approvals" :key="a.id" class="ops-approval">
+            <span class="ops-approval-tag">待批准</span>
+            <span class="ops-approval-conn">{{ a.connectionName }}</span>
+            <code class="ops-approval-cmd" :title="a.command">{{ a.command }}</code>
+            <div class="ops-approval-actions">
+              <el-button size="small" type="primary" @click="decideApproval(a, true)">批准</el-button>
+              <el-button size="small" @click="decideApproval(a, false)">拒绝</el-button>
+            </div>
+          </div>
+        </div>
+
         <el-tabs v-model="mode" class="ops-tabs" @tab-change="onTabChange">
           <el-tab-pane label="工作区" name="main">
             <div class="ops-main-tab">
@@ -525,6 +538,7 @@ import {
 } from './opsSession';
 import { clampMenuPos } from '../../utils/menuPosition';
 import { consumeSseStream } from '../../utils/sse';
+import { startVisiblePolling } from '../../utils/visible-polling';
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import {
   Folder, FolderOpened, Fold, Expand,
@@ -1845,7 +1859,35 @@ function init() {
 init();
 
 // 从别的页面切回来：把仍然活着的终端接回新容器（不重开 PTY），并滚到底部
+// ===== 命令审批闸门（生产连接上的写操作要人点头） =====
+// 与后端的关系：助手在生产连接上发起非只读命令时，工具会返回「待批准」并在这里登记一条；
+// 批准后助手原样重试才真正执行。批准与「连接 + 命令原文」绑定、用一次即失效（见 ops-approvals.ts）。
+interface ApprovalRow {
+  id: string;
+  connectionName: string;
+  command: string;
+  reason: string;
+  status: string;
+  requestedAt: number;
+}
+const approvals = ref<ApprovalRow[]>([]);
+let approvalPoll: (() => void) | null = null;
+
+async function loadApprovals() {
+  const r = await api.get<ApprovalRow[]>('/plugin/ops-shell/approvals');
+  if ('data' in r) approvals.value = r.data.filter((a) => a.status === 'pending');
+}
+
+async function decideApproval(row: ApprovalRow, approve: boolean) {
+  const r = await api.post(`/plugin/ops-shell/approvals/${row.id}`, { approve });
+  if ('error' in r) { ElMessage.error(r.error); return; }
+  approvals.value = approvals.value.filter((a) => a.id !== row.id);
+  ElMessage.success(approve ? '已批准 —— 助手会原样重试该命令' : '已拒绝执行');
+}
+
 onMounted(() => {
+  // 待批准命令：可见性感知轮询（3s）—— 助手一登记就该尽快出现在界面上
+  approvalPoll = startVisiblePolling(loadApprovals, { intervalMs: 3000 });
   void nextTick(() => {
     // 恢复主导方形态（AI 模式下激活窗口回到 chat 视图）
     applyLeadToActiveWin();
@@ -1858,6 +1900,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (approvalPoll) { approvalPoll(); approvalPoll = null; }
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onDocKeydown);
   // 这里**不**销毁终端与对话：切到别的页面后要保留 shell 连接与对话会话，
@@ -2004,6 +2047,25 @@ onUnmounted(() => {
   animation: ops-rec-blink 1.6s ease-in-out infinite;
 }
 @keyframes ops-rec-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* 待批准命令条：必须在任何 Tab 下都能看见 —— 助手正卡在等人点头 */
+.ops-approvals {
+  flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--el-color-warning) 35%, transparent);
+  background: color-mix(in srgb, var(--el-color-warning) 12%, transparent);
+}
+.ops-approval { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.ops-approval-tag {
+  flex-shrink: 0; padding: 1px 6px; border-radius: 3px; font-size: 11px;
+  color: var(--el-color-warning);
+  background: color-mix(in srgb, var(--el-color-warning) 22%, transparent);
+}
+.ops-approval-conn { flex-shrink: 0; color: var(--color-text-secondary); }
+.ops-approval-cmd {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: Consolas, "Courier New", monospace; color: var(--color-text-primary);
+}
+.ops-approval-actions { flex-shrink: 0; display: flex; gap: 6px; }
 
 
 

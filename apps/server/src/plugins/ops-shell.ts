@@ -17,7 +17,11 @@ import pg from 'pg';
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { pushPluginAudit } from '../services/plugin-audit.js';
-import { guard, capOutput, isProductionTag } from './ops-shell-guard.js';
+import { guard, capOutput, isDangerous, isProductionTag } from './ops-shell-guard.js';
+import {
+  pruneApprovals, capApprovals, takeApproval, hasPending, makeRequest, pendingMessage, rejectedMessage,
+  type ApprovalRequest,
+} from './ops-approvals.js';
 import {
   TermRecorder, MAX_RECORDINGS, parseCast, readRecordingFile, removeRecordingFile, sweepOrphanRecordings,
   type RecordingMeta,
@@ -833,6 +837,49 @@ async function rememberHostKey(connName: string, record: HostKeyRecord): Promise
   }
 }
 
+// ---------- 命令审批闸门 ----------
+
+async function loadApprovals(): Promise<ApprovalRequest[]> {
+  if (!pluginStorage) return [];
+  const rows = await pluginStorage.get<ApprovalRequest[]>('approvals');
+  if (!Array.isArray(rows)) return [];
+  return pruneApprovals(rows.filter((a) => a && typeof a.id === 'string'));
+}
+
+async function saveApprovals(list: ApprovalRequest[]): Promise<void> {
+  if (!pluginStorage) return;
+  await pluginStorage.set('approvals', capApprovals(list));
+}
+
+/**
+ * 生产连接上的非只读命令：模型一律不能自行确认，必须由人在界面上批准。
+ *
+ * 返回 null = 放行（已获人工批准，且这条批准已被消费）；
+ * 返回字符串 = 不要执行，把这句话原样作为工具结果回给模型。
+ */
+async function gateProductionAction(conn: StoredConnection, command: string, reason: string): Promise<string | null> {
+  const list = await loadApprovals();
+  const { hit, rest } = takeApproval(list, conn.id, command);
+  if (hit) {
+    // 已决记录一律消费掉（批准只能用一次；拒绝也不能留着反复回放）
+    await saveApprovals(rest);
+    if (hit.status === 'approved') {
+      await audit('approval.granted', { connection: conn.name, detail: command.slice(0, 200), ok: true });
+      return null;
+    }
+    await audit('approval.rejected', { connection: conn.name, detail: command.slice(0, 200), ok: false });
+    return rejectedMessage(hit);
+  }
+
+  const req = makeRequest(conn.id, conn.name, command, reason);
+  // 幂等：模型反复重试同一条命令，不该刷出一堆待批准
+  if (!hasPending(list, conn.id, command)) {
+    await saveApprovals([req, ...list]);
+    await audit('approval.requested', { connection: conn.name, detail: command.slice(0, 200), ok: true });
+  }
+  return pendingMessage(req);
+}
+
 // ---------- SSH 命令执行 ----------
 
 export function sshExec(client: Client, command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
@@ -991,13 +1038,13 @@ export function makeTools(): BuiltInTool[] {
   return [
     {
       name: 'ssh_exec',
-      description: '在指定 SSH 连接上执行 shell 命令并返回 stdout/stderr/退出码。生产标签连接的非只读命令需 confirmed=true。危险命令（rm -rf /、mkfs、dd、shutdown 等）一律拒绝。',
+      description: '在指定 SSH 连接上执行 shell 命令并返回 stdout/stderr/退出码。★ 生产标签连接的非只读命令需要**人工批准**：本工具会先返回「待批准」，运维人员在控制台点批准后原样重试即可；模型自己传 confirmed 无效。危险命令（rm -rf /、mkfs、dd、shutdown 等）一律拒绝。',
       inputSchema: {
         type: 'object',
         properties: {
           connection: { type: 'string', description: '连接名称（或 connectionId）' },
           command: { type: 'string', description: '要执行的 shell 命令' },
-          confirmed: { type: 'boolean', description: '生产连接非只读命令时必须为 true' },
+          confirmed: { type: 'boolean', description: '已废弃：生产写操作改由人工批准，模型无法自行确认' },
           timeoutMs: { type: 'number', description: '超时毫秒数，默认 30000' },
         },
         required: ['connection', 'command'],
@@ -1005,8 +1052,17 @@ export function makeTools(): BuiltInTool[] {
       execute: async (args) => {
         const conn = await resolveConn(args);
         const command = String(args.command || '');
-        const rejected = guard(command, { isProduction: isProduction(conn), confirmed: !!args.confirmed });
-        if (rejected) { await audit('ssh_exec.rejected', { connection: conn.name, detail: command.slice(0, 200), ok: false }); return textResult(rejected); }
+        // ★ 恒传 confirmed:false —— 模型说的「已确认」不算数，见 ops-approvals.ts 文件头
+        const rejected = guard(command, { isProduction: isProduction(conn), confirmed: false });
+        if (rejected) {
+          // 危险命令是黑名单，没有批准通道
+          if (isDangerous(command)) {
+            await audit('ssh_exec.rejected', { connection: conn.name, detail: command.slice(0, 200), ok: false });
+            return textResult(rejected);
+          }
+          const gated = await gateProductionAction(conn, command, 'agent tool');
+          if (gated !== null) return textResult(gated);
+        }
         const timeout = Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : execTimeoutDefault();
         try {
           const r = await execOnConnection(conn, command, timeout);
@@ -1144,13 +1200,13 @@ export function makeTools(): BuiltInTool[] {
     },
     {
       name: 'docker_restart',
-      description: '重启远程服务器上的指定容器（docker restart）。生产连接需 confirmed=true。',
+      description: '重启远程服务器上的指定容器（docker restart）。生产连接需**人工批准**（与 ssh_exec 同口径，模型传 confirmed 无效）。',
       inputSchema: {
         type: 'object',
         properties: {
           connection: { type: 'string', description: '连接名称（或 connectionId）' },
           container: { type: 'string', description: '容器名或 ID' },
-          confirmed: { type: 'boolean', description: '生产连接必须为 true' },
+          confirmed: { type: 'boolean', description: '已废弃：生产写操作改由人工批准，模型无法自行确认' },
         },
         required: ['connection', 'container'],
       },
@@ -1158,8 +1214,10 @@ export function makeTools(): BuiltInTool[] {
         const conn = await resolveConn(args);
         const container = String(args.container || '').replace(/['"`;]/g, '');
         if (!container) return textResult('容器名不能为空');
-        if (isProduction(conn) && !args.confirmed) {
-          return textResult(`生产连接上重启容器 ${container} 需确认后带 confirmed=true 重新调用`);
+        // ★ 与 ssh_exec 同口径：生产连接的写操作必须人工批准，模型传 confirmed 不算数
+        if (isProduction(conn)) {
+          const gated = await gateProductionAction(conn, `docker restart ${container}`, '重启容器');
+          if (gated !== null) return textResult(gated);
         }
         try {
           const r = await execOnConnection(conn, `docker restart ${JSON.stringify(container)}`, 60000);
@@ -2734,6 +2792,41 @@ const opsShellModule: PluginModule = {
         }
         await audit('hostkey.forget', { detail: hostPort, ok: true });
         jsonRes(res).json({ data: { ok: true } });
+      });
+
+      // ===== 命令审批闸门 =====
+      // 模型在生产连接上发起的非只读命令会先落到这里，等人点批准/拒绝。
+      // 批准与「连接 + 命令原文」绑定、用一次即失效（见 ops-approvals.ts）。
+      r.get('/approvals', async (_req: unknown, res: unknown) => {
+        jsonRes(res).json({ data: await loadApprovals() });
+      });
+
+      r.post('/approvals/:id', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const approve = body.approve;
+        // 必须显式给布尔值：缺省当成「批准」是最危险的默认
+        if (typeof approve !== 'boolean') { failRes(res, 400, '必须显式给出 approve: true / false'); return; }
+        const list = await loadApprovals();
+        const idx = list.findIndex((a) => a.id === id);
+        if (idx < 0) { failRes(res, 404, '该审批请求不存在或已过期'); return; }
+        if (list[idx].status !== 'pending') { failRes(res, 409, '该请求已被处理'); return; }
+        list[idx] = {
+          ...list[idx],
+          status: approve ? 'approved' : 'rejected',
+          decidedAt: Date.now(),
+          decidedBy: 'operator',
+        };
+        try {
+          await saveApprovals(list);
+        } catch (e) {
+          failRes(res, 500, (e as Error).message);
+          return;
+        }
+        await audit(approve ? 'approval.approved' : 'approval.rejected', {
+          connection: list[idx].connectionName, detail: list[idx].command.slice(0, 200), ok: approve,
+        });
+        jsonRes(res).json({ data: list[idx] });
       });
     });
   },
