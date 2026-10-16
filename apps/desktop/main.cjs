@@ -3847,9 +3847,13 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           // ===NOTFOUND-START=== 未命中时的候选清单；notfound-candidates.test.cjs 经此哨兵抽取真实代码
           // ★★★ 2026-10-15：未命中时**附上候选清单**，而不是只丢一句"未找到"。
           //   实测（conv 7e99207b）：当天 34 次「元素未找到」，其中 6 次在同一个
-          //   `.arco-drawer-footer button:contains(…)` 上反复试 —— 模型不知道页面上**实际有什么**，
+          //   '.arco-drawer-footer button:contains(...)' 上反复试 —— 模型不知道页面上**实际有什么**，
           //   只能换文案/换选择器猜；猜够次数撞上循环闸门后，改去写 run_script 穷举 DOM（189 次）。
           //   给出"同一基选择器下当前可见元素的编号+文本" ⇒ 一次往返就能改对（编号可直接点）。
+          //   ★ 这段注释在 executeJavaScript 的模板字符串内部：注释里的反引号会**提前终止模板**，
+          //     后面的注入代码被当外层 JS 解析 → "missing ) after argument list"（Node 22 必炸，
+          //     2026-10-16 实测 dev 启动失败）。所以本段及同模板内任何注释都禁止出现反引号，
+          //     需要引用代码名一律用引号。
           function notFound(sel){
             var out={error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};
             try{
