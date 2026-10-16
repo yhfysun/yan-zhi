@@ -96,6 +96,8 @@ interface ConsoleSession {
   fitAddon: FitAddon | null;
   streamController: AbortController | null;
   resizeObserver: ResizeObserver | null;
+  /** 已排队未执行的那一帧 fit（同帧多次 RO 通知合并成一次；见下方注释） */
+  fitFrame: number | null;
   exited: boolean;
 }
 
@@ -150,6 +152,7 @@ function addSession(shell: ShellKind) {
     fitAddon: null,
     streamController: null,
     resizeObserver: null,
+    fitFrame: null,
     exited: false,
   };
   sessions.value.push(s);
@@ -203,8 +206,20 @@ async function openSession(s: ConsoleSession) {
   s.term = term;
   s.fitAddon = fitAddon;
 
+  // ★★ ResizeObserver 回调里**不同步 fit**（2026-10-16，与 OpsConsole 的终端同口径）：
+  //   fit() 会写 xterm 的内部尺寸 → 布局再变 → RO 再次投递，Chromium 就会**每帧**报一条
+  //   `ResizeObserver loop completed with undelivered notifications`（实测 2 分钟 3425 条，
+  //   把 renderer 日志刷满）。推迟到下一帧并合并同帧通知；行列没变则直接跳过（不动 DOM）。
   const ro = new ResizeObserver(() => {
-    try { s.fitAddon?.fit(); } catch { /* 尺寸异常忽略 */ }
+    if (s.fitFrame !== null) return; // 本帧已排好队 → 合并
+    s.fitFrame = requestAnimationFrame(() => {
+      s.fitFrame = null;
+      try {
+        const next = s.fitAddon?.proposeDimensions();
+        if (next && s.term && next.cols === s.term.cols && next.rows === s.term.rows) return;
+        s.fitAddon?.fit();
+      } catch { /* 尺寸异常忽略 */ }
+    });
   });
   ro.observe(frame);
   s.resizeObserver = ro;
@@ -244,6 +259,8 @@ function teardownSession(s: ConsoleSession) {
   s.streamController = null;
   s.resizeObserver?.disconnect();
   s.resizeObserver = null;
+  // 排队中的那一帧也要撤：否则回调会在 term.dispose() 之后碰一次已销毁的终端
+  if (s.fitFrame !== null) { try { cancelAnimationFrame(s.fitFrame); } catch { /* 已执行 */ } s.fitFrame = null; }
   s.term?.dispose();
   s.term = null; s.fitAddon = null;
   s.sessionId = '';

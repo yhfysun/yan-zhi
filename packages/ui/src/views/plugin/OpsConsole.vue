@@ -769,7 +769,11 @@ function fitTerm(w: OpsWin) {
   if (!h) return;
   const el = h.el;
   if (!el.offsetWidth || !el.offsetHeight) return;
-  try { h.fitAddon.fit(); } catch { /* 容器已卸载 */ }
+  try {
+    const next = h.fitAddon.proposeDimensions();
+    if (next && next.cols === h.term.cols && next.rows === h.term.rows) return;
+    h.fitAddon.fit();
+  } catch { /* 容器已卸载 */ }
 }
 
 /**
@@ -792,12 +796,24 @@ function scheduleResizePost(w: OpsWin) {
   }, 200);
 }
 
-/** 监听终端容器尺寸变化 → refit + 去抖上报（展开/收起文件面板、拖动分隔条、窗口缩放都会触发） */
+/**
+ * 监听终端容器尺寸变化 → refit + 去抖上报（展开/收起文件面板、拖动分隔条、窗口缩放都会触发）。
+ *
+ * ★★ 回调里**绝不直接动布局**（2026-10-16）：RO 回调同步改被观察元素 = Chromium 报
+ *   `ResizeObserver loop completed with undelivered notifications`，**每个通知一条**，
+ *   实测 2 分钟 3425 条（renderer 日志被刷满，排障时真信号全被淹）。
+ *   统一推迟到下一帧、且同帧只排一次（合并突发通知）—— 既去掉噪音，顺带省掉重复 fit。
+ */
 function watchTermSize(h: TermHandle, w: OpsWin) {
   h.ro?.disconnect();
+  if (h.fitFrame !== null) { try { cancelAnimationFrame(h.fitFrame); } catch { /* 已执行 */ } h.fitFrame = null; }
   h.ro = new ResizeObserver(() => {
-    fitTerm(w);
-    scheduleResizePost(w);
+    if (h.fitFrame !== null) return; // 本帧已排好队 → 合并，别再排
+    h.fitFrame = requestAnimationFrame(() => {
+      h.fitFrame = null;
+      fitTerm(w);
+      scheduleResizePost(w);
+    });
   });
   h.ro.observe(h.el);
 }
@@ -976,7 +992,7 @@ async function openTerminal(w: OpsWin) {
     term.loadAddon(fitAddon);
     term.open(el);
     const handle: TermHandle = {
-      term, fitAddon, transport: null, ro: null, timer: null,
+      term, fitAddon, transport: null, ro: null, timer: null, fitFrame: null,
       sent: { cols: 0, rows: 0 }, el,
     };
     terms.set(w.id, handle);
@@ -1027,6 +1043,8 @@ function disposeTerminal(w: OpsWin) {
   const h = terms.get(w.id);
   if (h) {
     if (h.timer !== null) { window.clearTimeout(h.timer); h.timer = null; }
+    // 已排队但没跑的那一帧也要撤：否则回调会在 term.dispose() 之后再碰一次已销毁的终端
+    if (h.fitFrame !== null) { try { cancelAnimationFrame(h.fitFrame); } catch { /* 已执行 */ } h.fitFrame = null; }
     h.ro?.disconnect();
     // 通道自己负责收尾（WS 关 socket；SSE 停流 + 通知服务端关 PTY）
     h.transport?.close();

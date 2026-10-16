@@ -49,6 +49,31 @@ function stringify(a) {
   }
 }
 
+/**
+ * 重复消息抑制（2026-10-16）。
+ *
+ * ★ 为什么：`ResizeObserver loop completed with undelivered notifications` 是 Chromium 对
+ *   「RO 回调里改了被观察元素的布局」的**提示性**报错 —— 它不中断执行，但一旦成环就是
+ *   **每帧一条**：实测 2 分钟内落了 3425 行，把排障真要看的东西全冲没了
+ *   （渲染进程日志是排查白屏、任务卡住的第一现场，被这种噪音淹掉等于没有）。
+ *   成因在渲染层（见 OpsConsole.vue 终端 fit 的 rAF 推迟 + 预量），这里只做**日志侧兜底**：
+ *   完全相同的这条消息每分钟至多落一条 —— 真出问题仍看得见"第一次发生了什么"，
+ *   量级从"每帧一条"降到"每分钟一条"。
+ *
+ * 只匹配这一条：其它错误（含未知的 RO 相关错误）照旧全量落盘，绝不吞掉新信号。
+ */
+const REPEAT_WINDOW_MS = 60_000;
+const repeatSeenAt = new Map();
+
+function isSuppressedRepeat(message) {
+  if (typeof message !== 'string' || !/ResizeObserver loop/i.test(message)) return false;
+  const now = Date.now();
+  const prev = repeatSeenAt.get(message) || 0;
+  if (now - prev < REPEAT_WINDOW_MS) return true;
+  repeatSeenAt.set(message, now);
+  return false;
+}
+
 function cleanupOld() {
   if (!logDir) return;
   try {
@@ -137,6 +162,8 @@ function attachRendererConsole(wc, label = 'renderer') {
       // 只落 warn/error + 带 [browser] 前缀的信息，避免渲染层噪音淹没（Vue devtools 等很吵）
       const isNoisy = level === 0 || (typeof message === 'string' && /DevTools|Vue Devtools|\[vite\]/i.test(message));
       if (isNoisy && lv !== 'ERROR') return;
+      // 成环的 ResizeObserver 提示按「每分钟一条」落盘（见 isSuppressedRepeat 注释）
+      if (isSuppressedRepeat(message)) return;
       const src = source ? ` (${String(source).split('/').pop()}:${line})` : '';
       writeLine(`${label}`, `[${lv}] ${message}${src}`);
     });

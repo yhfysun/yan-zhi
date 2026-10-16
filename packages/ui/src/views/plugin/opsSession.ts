@@ -103,6 +103,8 @@ export interface TermHandle {
   transport: TermTransport | null;
   ro: ResizeObserver | null;
   timer: number | null;
+  /** 已排队但还没跑的那一帧 fit（同一帧内的多次 RO 通知合并成一次；见 OpsConsole 的 watchTermSize） */
+  fitFrame: number | null;
   sent: { cols: number; rows: number };
   el: HTMLElement;
 }
