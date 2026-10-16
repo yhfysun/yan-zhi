@@ -6,6 +6,8 @@ import { builtinOfficeAgentDefs } from './builtin-office-agents.js';
 import { builtinTaskModeAgentDefs } from './builtin-task-mode-agents.js';
 // 抖音运营助手（带货 + 引流一体）—— 定义见 ./builtin-douyin-agents.ts
 import { builtinDouyinAgentDefs } from './builtin-douyin-agents.js';
+// 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
+import { builtinShopAgentDefs } from './builtin-shop-agents.js';
 // 场景（模式）配置内置种子 —— 与前端 packages/ui/src/config/scenes.ts 双源维护（见该文件头注）
 import { builtinSceneDefs } from './builtin-scene-defs.js';
 // 任务类型内置种子 —— 直接 re-export shared 的 TASK_TYPES（单一数据源，不另抄一份）
@@ -2357,6 +2359,9 @@ export const seedAgents: Array<Record<string, unknown>> = [
   ...builtinTaskModeAgentDefs,
   // 抖音运营助手（图文带货 + 引流共用一个智能体）—— 定义见 ./builtin-douyin-agents.ts
   ...builtinDouyinAgentDefs,
+  // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
+  // 与任务类型注册表（shared/utils/task-types.ts 的 shop_ops/shop_selection 的 agentId）成对维护
+  ...builtinShopAgentDefs,
   {
     // 代码探索助手：代码编写助手的专属只读探索子智能体（对标 CodeBuddy codebase-explorer）
     id: 'a_builtin_code_explorer',
@@ -3443,6 +3448,89 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
 详见 .claude/skills/video-editing/SKILL.md`,
     },
     {
+      // 跨境选品分析（2026-10-16）：与「店铺运营助手」a_builtin_shop_agent 成对维护。
+      // P0 只此一个店铺 skill；Listing / 广告利润 / 1688 货源 / 中转仓随 P1 再加，
+      // 加的时候记得同时改 builtin-shop-agents.ts 的 SHOP_AGENT_SKILL_IDS。
+      id: 'skill_shop_selection', name: '跨境选品分析', category: '电商运营',
+      description: '跨境与国内店铺的选品分析：先对齐口径（站点/币种/含税/佣金/履约），再从需求-竞争-利润三维评估；跨平台同款匹配走 compare_products，利润按售价逐项扣减算到手毛利与盈亏平衡价；含侵权/认证/限售合规红线与「费率政策一律现查」纪律。',
+      triggers: ['选品', '选品分析', '跨境选品', '亚马逊选品', '淘宝选品', '1688', '货源', '竞品分析', '利润测算', '到手毛利', '店铺运营', 'Listing'],
+      body: `# 跨境选品分析
+
+选品的本质是**在一堆"看着能卖"的品里，找出"算完账还有钱赚、且你打得过"的那几个**。新手最常见的错不是分析不够深，而是拿错口径算账（币种、含税、佣金、履约费用漏项）——所以本文把「口径」放在第一位。
+
+## 一、先对齐口径（顺序不能反）
+
+开工前必须问齐这四项，缺数就用区间假设并显式标注：
+
+| 项 | 要问清 | 为什么重要 |
+|---|---|---|
+| 平台与站点 | 亚马逊 US/EU/JP、淘宝/天猫、1688 找货 | 同一件货在不同站点的佣金、税、竞争完全不同 |
+| 品类与价格带 | 卖什么、客单价区间、目标毛利 | 决定要不要碰这个类目（有些类目准入/认证门槛极高） |
+| 成本口径 | 币种与汇率、是否含税（VAT/销售税）、平台佣金率、履约方式（FBA/自发货/海外仓）、头程与尾程 | 少扣一项，结论就会从"能赚"变成"亏" |
+| 约束 | 预算、备货周期、不能碰的品类 | 现金流与周转决定你能压多少货 |
+
+**费率与政策一律现查**（委派 pageAgent 打开平台官方费率页）：亚马逊佣金按品类分段、FBA 费按尺寸重量分段，淘宝与 1688 规则也在变。记错一个数就能把结论带反。
+
+## 二、需求侧：这个品有没有人要
+
+看的是**可复核的数据**，不是感觉：
+
+- 搜索量与趋势（判断是不是季节性、有没有在退潮）；
+- 类目销量分布（头部集中度：前 10 名吃掉多少销量？太集中说明打不进去）；
+- 评论数与评分分布（评论多说明有需求；差评集中的点就是你的差异化机会）；
+- 退货率与售后口碑（高退货直接吃掉利润）。
+
+## 三、竞争侧：这个品能不能打得过
+
+- **同款数量**：同款越多价格战越狠。用 compare_products 做同款匹配，不要手工比对标题（标题噪音大、易漏）。
+- **价格带与到手价**：把各平台的标价、优惠、运费折成**到手价**再比，标价没有可比性。
+- **头部卖家的护城河**：是品牌、是供应链成本、还是单纯广告砸出来的？前者绕开，后者可以抢。
+- **差异化切入点**：规格/套装/场景/人群/赠品——至少要有**一个**说得出来的差异，否则就是比谁亏得起。
+
+## 四、利润侧：算完还有没有钱
+
+逐项扣减，**每一项都给公式与中间值**，便于复算：
+
+    到手毛利 = 售价
+             − 平台佣金（按品类费率，现查）
+             − 履约费用（FBA 配送费 / 自发货物流 / 海外仓仓储+出库）
+             − 头程分摊（海运/空运总成本 ÷ 该批件数）
+             − 采购成本（含税、含包装、含国内头程前运输）
+             − 支付/汇损/退货准备金
+
+    盈亏平衡价 = 上述所有成本之和 ÷ (1 − 佣金率)
+
+- 币种必须统一后再算，汇率标注取值日期。
+- **退货准备金**不要省（跨境退货率普遍高于国内，且退货运费常由卖家承担）。
+- 广告费单独列（ACoS 是独立变量，不要混进"成本"里假装固定）。
+- 结论必须包含：到手毛利、毛利率、盈亏平衡价、**盈亏平衡 ACoS**。
+
+## 五、同款匹配怎么做
+
+用 compare_products 工具（输入各平台商品 JSON，输出同款分组 + 到手价归一化 + 可信度评分）：
+
+- 单平台内部比价、跨平台比价（1688 拿货价 vs 亚马逊售价）都走它；
+- 它按标题核心词 + 规格匹配，比人眼稳定；匹配结果的可信度评分低的组，标注"需人工确认"而不是硬下结论；
+- 不把"看起来像"当成"就是同款"——尺寸/容量/数量不同就是不同 SKU，价格没有可比性。
+
+## 六、合规与红线（逐条过）
+
+- **侵权**：品牌 logo、外观专利、卡通形象、明星肖像一律不碰；
+- **认证门槛**：电子类（FCC/CE）、儿童用品（CPC）、食品接触材料、化妆品等，先确认认证要求与成本，再谈能不能做；
+- **限售类目**：部分类目需要类目审核或品牌备案，没资质就别选；
+- **不承诺结果**：给的是"假设 + 验证方式"，不是"保证出单"。
+
+## 七、交付物
+
+每次任务至少交付：
+
+1. **选品清单**：3~8 个候选，每个给需求/竞争/利润三维打分 + 一句话淘汰或入选理由；
+2. **测算表**（CSV，python_exec 产出）：每条含售价、各成本项、到手毛利、盈亏平衡价、盈亏平衡 ACoS；
+3. **数据来源清单**：每个关键数字标来源（平台页面 / 用户提供 / 区间假设），假设项要能一眼看出。
+
+清单与测算表 file_write 落盘（category="deliverable"），对话里只给结论摘要 + 路径。`,
+    },
+    {
       // 抖音图文带货（2026-10-12）：与「抖音运营助手」a_builtin_douyin_agent 成对维护
       id: 'skill_douyin_sell', name: '抖音图文带货', category: '电商运营',
       description: '抖音图文带货全流程：账号定位与人群、精选联盟选品（佣金/销量/人群匹配/季节性/体验）、图文结构（封面+3~9 张轮播+文案+话题）、挂车发布 SOP、曝光-点击-转化漏斗复盘与优化迭代；含广告法极限词与虚假宣传合规红线。',
@@ -3584,7 +3672,8 @@ try {
 // ★ skill_douyin_sell / skill_douyin_traffic（2026-10-12 新增）：新内置 skill 的 body
 //   也要进白名单 —— 万一同 id 的旧行先于代码定义存在（如手工插入/半途安装），
 //   批量 upsert 的「不覆盖」语义会让它们拿不到新版。
-const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen', 'skill_douyin_sell', 'skill_douyin_traffic'];
+// ★ skill_shop_selection（2026-10-16 新增）：同上 —— 新内置 skill 一律进白名单。
+const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen', 'skill_douyin_sell', 'skill_douyin_traffic', 'skill_shop_selection'];
 try {
   const getBody = db.prepare('SELECT body, files_json FROM skill WHERE id = ?');
   const setDef = db.prepare('UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ? WHERE id = ?');
