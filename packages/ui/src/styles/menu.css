@@ -246,3 +246,55 @@
 .ctx-menu .ctx-submenu > li.disabled-hint:hover { background: transparent; }
 /* 子菜单图标：与主菜单同宽同色，避免"主菜单图标 15px、子菜单图标跑到字号大小" */
 .ctx-menu .ctx-submenu > li > .el-icon { font-size: 14px; flex-shrink: 0; }
+
+/* ============================================================
+   SFTP 任务中心弹窗（2026-10-16）
+   ============================================================
+   ★ 为什么这些规则住在这里、而不是 SftpPanel.vue 的 scoped 块里：
+     弹窗内容被 el-popover **teleport 到 body**，浮层里的元素能不能吃到 scoped 的 data-v
+     取决于渲染路径 —— 一旦没吃到就是"裸奔"（行高塌陷、无省略号、无分隔线）。
+     本仓对 popper 内容的既定做法就是写在这份全局表里、用 popper-class 前缀限域
+     （见上方 `.yz-menu-popper` 那一批）。这里沿用同一套，并用 `.sftp-task-popper`
+     把它关在自己的命名空间内，不会外泄到其它浮层。 */
+.sftp-task-popper .sftp-task-pop { max-height: 62vh; overflow: auto; font-size: 12px; }
+.sftp-task-popper .stp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.sftp-task-popper .stp-head-title { font-weight: 600; }
+.sftp-task-popper .stp-group + .stp-group {
+  margin-top: 10px; border-top: 1px solid var(--glass-border); padding-top: 8px;
+}
+.sftp-task-popper .stp-title { font-size: 11px; color: var(--color-text-secondary); margin-bottom: 4px; }
+.sftp-task-popper .stp-empty { font-size: 11px; color: var(--color-text-tertiary); }
+
+/* 任务行 */
+.sftp-task-popper .stp-item { display: flex; gap: 6px; padding: 4px 0; }
+.sftp-task-popper .stp-item + .stp-item { border-top: 1px dashed var(--glass-border); }
+.sftp-task-popper .stp-icon { font-size: 13px; color: var(--color-text-tertiary); margin-top: 2px; flex: none; }
+.sftp-task-popper .stp-item.is-finished .stp-icon { color: var(--color-success, #4fa97f); }
+.sftp-task-popper .stp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sftp-task-popper .stp-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.sftp-task-popper .stp-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sftp-task-popper .stp-meta { flex: none; font-size: 11px; color: var(--color-text-tertiary); }
+.sftp-task-popper .stp-meta.is-err,
+.sftp-task-popper .stp-err { color: var(--color-danger, #c25b4e); }
+.sftp-task-popper .stp-err { font-size: 11px; word-break: break-all; }
+.sftp-task-popper .stp-cur {
+  font-size: 11px; color: var(--color-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 待执行清单（等宽字体，路径对齐好读） */
+.sftp-task-popper .stp-file {
+  font-family: var(--font-mono, Consolas, monospace); font-size: 11px;
+  color: var(--color-text-secondary); padding: 1px 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 删除明细：实时滚动的已删路径 */
+.sftp-task-popper .stp-del-toggle { font-size: 11px; color: var(--color-primary); cursor: pointer; }
+.sftp-task-popper .stp-del-list {
+  margin-top: 3px; max-height: 110px; overflow: auto;
+  font-family: var(--font-mono, Consolas, monospace); font-size: 11px;
+  color: var(--color-text-secondary); background: rgba(127, 127, 127, 0.08);
+  border-radius: 4px; padding: 3px 5px;
+}
+.sftp-task-popper .stp-del-list > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

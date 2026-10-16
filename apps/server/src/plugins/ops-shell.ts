@@ -692,6 +692,14 @@ export interface SftpJob {
 export const MAX_JOB_DELETED_KEEP = 500;
 
 /**
+ * 上传任务回给前端的「待传清单」条数上限（2026-10-16）。
+ * 界面要按「已传 / 正在传 / 待传」三段展示队列，所以**扫描结果必须先回给前端**；
+ * 但几万个文件时没必要把整张清单塞进响应体 —— 截断后 count/total 仍是全量口径，
+ * 界面显示「…等 N 项」即可。
+ */
+export const MAX_UPLOAD_PLAN_ITEMS = 2000;
+
+/**
  * 审计详情里的「已删路径样本」后缀：最多 12 条、总长 400 字符，其余以「共 N 项」收尾。
  * 审计是长期留痕（上限 500 条），不能因为一次删了十万个文件就往里塞一个几十 KB 的字符串 ——
  * 那是把审计表撑爆、而不是留痕。全量明细在删除进行时由任务列表实时展示。
@@ -2779,7 +2787,17 @@ const opsShellModule: PluginModule = {
         // 进度按总字节聚合，多文件/文件夹上传时进度条不会来回跳；
         // 同时给条目口径（doneCount/totalCount）与「当前文件」，供任务列表显示"第几个 / 正在传谁"
         const jobId = newJob('upload', `上传 → ${destDir}`, { totalCount: plan.length, totalBytes });
-        json(res, { data: { jobId, kind: 'upload', count: plan.length, total: totalBytes, destDir } });
+        // ★ 2026-10-16 把**扫描结果**一并回给前端（用户要求「先把要上传的文件扫描后排队上传」）：
+        //   队列要在界面上分「已传 / 正在传 / 待传」三段展示，所以清单得在上传开始前就到手。
+        //   截断上限：几万个文件时没必要把整张清单塞进响应体（count/total 仍是准确的全量口径）。
+        const planForUi = plan.slice(0, MAX_UPLOAD_PLAN_ITEMS).map((p) => ({ name: p.dest, size: p.size }));
+        json(res, {
+          data: {
+            jobId, kind: 'upload', count: plan.length, total: totalBytes, destDir,
+            plan: planForUi,
+            planTruncated: plan.length > planForUi.length,
+          },
+        });
         // 异步执行，不阻塞响应
         void (async () => {
           try {
