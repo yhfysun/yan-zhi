@@ -10,7 +10,8 @@
 //   Electron ABI，vitest 跑在系统 Node 上直接 import 会 NODE_MODULE_VERSION 不匹配
 //   （同 conversation-mode.test.ts 的说明）。
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openSqlite, type YzSqliteDb } from '../src/services/sqlite-driver.js';
@@ -159,6 +160,34 @@ describe('会话来源标记 · 建表与迁移', () => {
       .toContain('ALTER TABLE conversation ADD COLUMN source TEXT');
     expect(src, '★ 服务端 db.ts 缺 source_meta_json 列')
       .toContain('ALTER TABLE conversation ADD COLUMN source_meta_json TEXT');
+  });
+
+  it('★★ 真起一次服务端库模块（临时 DATA_DIR）：启动迁移必须真的把两列建出来', async () => {
+    // 上面那条只证明"源码里写了 ALTER"。ALTER 写在模块加载链的**哪一步**、有没有被前面的
+    // 异常半路打断、列名拼错没有 —— 都只有真起一次才知道，而这条链一坏就是整台服务端起不来。
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'yz-conv-src-'));
+    const prev = process.env.DATA_DIR;
+    process.env.DATA_DIR = dir;
+    try {
+      const mod = await import('../src/db.js');
+      const cols = (mod.db.prepare(`SELECT name FROM pragma_table_info('conversation')`).all() as Array<{ name: string }>)
+        .map((c) => c.name);
+      expect(cols, '★ 服务端库启动后没有 source 列 —— 页面内对话历史一开就报 no such column').toContain('source');
+      expect(cols).toContain('source_meta_json');
+      // 建出来的列必须真的能写能读（列名拼错时 pragma 也可能"有"，但写入会报错）
+      mod.db.prepare(
+        'INSERT INTO conversation (id, user_id, title, source, source_meta_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('c_smoke', 'guest', '冒烟', 'browser-page', '{"host":"example.com"}', 1, 1);
+      const row = mod.db.prepare('SELECT source, source_meta_json FROM conversation WHERE id = ?').get('c_smoke') as any;
+      expect(row.source).toBe('browser-page');
+      expect(parseSourceMeta(row.source_meta_json).host).toBe('example.com');
+    } finally {
+      if (prev === undefined) delete process.env.DATA_DIR; else process.env.DATA_DIR = prev;
+      // ★ Windows 上删不干净是正常的：本测试导入的 db.ts 会一直持有 data.db 的句柄，
+      //   文件在进程退出前不会释放（EPERM）。临时目录本身可丢，故容错即可 ——
+      //   这里若直接 rmSync，测试会因为"清理失败"变红，看起来像功能坏了。
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* 句柄未释放，留给系统清理 */ }
+    }
   });
 
   it('★ 路由：POST 写来源、GET 按来源过滤 —— 两处都不能少', () => {
