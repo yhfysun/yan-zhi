@@ -845,6 +845,9 @@ export function sftpFastPut(sftp: SFTPWrapper, localPath: string, remotePath: st
  * ★ 中断语义：`shouldAbort()` 变真时销毁两条流并 resolve `{ cancelled: true }`，
  *   **不当错误抛** —— 暂停不是失败。落盘了多少要看调用方重新 stat 远端，不能信这里的计数：
  *   被中断时写流里可能还有没落盘的缓冲，按内存计数续传会在文件中间留一个洞。
+ * ⚠️ 前置条件：`offset > 0` 时**远端必须已经有这 offset 个字节**（续传用 `r+` 打开，不会 CREAT）。
+ *   上传任务那边靠"每次尝试前先 stat 远端"来保证（stat 失败就把 offset 归零、按新文件重传）。
+ *   谁要直接调这个函数，得自己把这条守住 —— 否则会拿到一个 NO_SUCH_FILE。
  */
 export function sftpUploadRange(
   sftp: SFTPWrapper,
