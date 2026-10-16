@@ -133,6 +133,10 @@ scripts/diagnose-*.cjs
 scripts/check-*.py
 apps/server/diagnose-cdp.cjs
 
+# Python 字节码缓存（scripts/*.py 本地运行或 py_compile 语法校验时生成，不入库）
+__pycache__/
+*.pyc
+
 # 根目录临时调试产物
 tmp_*
 tmp_smoke.out
