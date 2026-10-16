@@ -44,24 +44,26 @@ beforeEach(() => {
 });
 
 describe('★ 全局命令 = 内置 + 插件贡献', () => {
-  it('内置命令仍是原来的 5 条，且执行分流标成 ui + run（总线只报"要执行哪一条"）', () => {
+  it('内置命令仍是原来的 5 条 + 自动生成的 /help，且执行分流标成 ui/builtin + run', () => {
     const store = useCommandsStore();
-    expect(store.globalCommands.map((c) => c.name)).toEqual(['agent', 'model', 'skill', 'dir', 'new']);
+    expect(store.globalCommands.map((c) => c.name)).toEqual(['agent', 'model', 'skill', 'dir', 'new', 'help']);
     for (const c of BUILTIN_COMMANDS) {
-      expect(c.kind).toBe('ui');
+      expect(['ui', 'builtin']).toContain(c.kind);
       expect(c.run).toBe(c.name);
       expect(c.group).toBe('SYS');
     }
-    // 逐字保留原 UI 文案（搬家的东西不许在搬家时改字）
-    expect(BUILTIN_COMMANDS.map((c) => c.desc)).toEqual([
+    // 逐字保留原 UI 文案（搬家的东西不许在搬家时改字）；/help 是新增的那条
+    expect(BUILTIN_COMMANDS.slice(0, 5).map((c) => c.desc)).toEqual([
       '切换当前任务智能体', '切换使用的模型', '挂载 / 卸载 Skill', '设置工作目录', '新建任务',
     ]);
+    expect(BUILTIN_COMMANDS[5]).toMatchObject({ name: 'help', aliases: ['?'], run: 'help' });
   });
 
   it('插件贡献的命令会出现在列表里（内置在前，插件在后）', () => {
     pluginCommands.push({ name: 'findings', desc: '列出发现', group: 'SEC', kind: 'ui', run: 'open-findings' });
     const store = useCommandsStore();
-    expect(store.globalCommands.map((c) => c.name)).toEqual(['agent', 'model', 'skill', 'dir', 'new', 'findings']);
+    expect(store.globalCommands.map((c) => c.name))
+      .toEqual(['agent', 'model', 'skill', 'dir', 'new', 'help', 'findings']);
     // 搜索也覆盖插件命令
     expect(store.search('发现').map((c) => c.name)).toEqual(['findings']);
     // 分组里能看到 SEC

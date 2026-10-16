@@ -1,0 +1,205 @@
+// 命令行解析与帮助文本（命令中枢 P0，2026-10-16）——**纯函数**，可脱离 pinia 单测。
+//
+// 语法（对齐方案 §5.1c）：`/cmd 位置参数… [-s 值] [--long] [--long=值]`；`;` 串联多条。
+//
+// ★★★ 为什么 `-p spec` 与 `--banner` 的取值规则要写死成"短选项吃下一个词、长选项不带值"：
+//   CommandDef 里**没有**参数 schema（方案里的 `args?: JsonSchema` 尚未落地），
+//   没有 schema 就无法判断 `--banner target` 到底是"带值的 banner"还是"布尔 banner + 位置参数"。
+//   含糊的解析会让**同一条命令在不同人手里跑出不同结果**，而这种错不会报错、只会打错目标。
+//   ⇒ 规则定死并写进帮助文本：短选项 `-p spec` 吃下一个词；长选项 `--banner` 是布尔，
+//     要带值就写 `--url=https://x`（`=` 形式对长短选项都成立）。
+//   将来若给 CommandDef 补上参数 schema，这条规则应当由 schema 覆盖 —— 那时只改这一个文件。
+
+import type { CommandDef } from '@yan-zhi/core';
+import { groupCommands, slashOf } from './commandBridge';
+
+/** 一条解析出来的命令 */
+export interface ParsedCommand {
+  /** 原始片段（用于历史与错误提示里回显） */
+  raw: string;
+  /** 命令名（**不带** `/`） */
+  name: string;
+  /** 位置参数 */
+  args: string[];
+  /** 选项：布尔为 true；带值为字符串 */
+  flags: Record<string, string | boolean>;
+}
+
+/**
+ * 按 `;` 切分多条命令（尊重单/双引号：引号内的 `;` 是内容，不是分隔符）。
+ * 空片段丢掉（`/a;; /b` 与结尾的 `;` 都是手滑，不该解析出一条空命令）。
+ */
+export function splitChain(line: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let quote = '';
+  for (const ch of String(line || '')) {
+    if (quote) {
+      if (ch === quote) quote = '';
+      buf += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
+    if (ch === ';') { out.push(buf); buf = ''; continue; }
+    buf += ch;
+  }
+  out.push(buf);
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+/** 去掉成对的引号（`"a b"` → `a b`）；不配对时原样返回（不猜用户想干嘛） */
+function unquote(token: string): string {
+  const s = String(token);
+  if (s.length >= 2 && (s[0] === '"' || s[0] === "'") && s[s.length - 1] === s[0]) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+/** 极简分词：空白切分 + 引号成组（不处理转义 —— 命令参数里出现转义是少见情形，猜错代价更大） */
+function tokenize(text: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let quote = '';
+  let has = false;
+  for (const ch of String(text || '')) {
+    if (quote) {
+      if (ch === quote) { quote = ''; continue; }
+      buf += ch; has = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; has = true; continue; }
+    if (/\s/.test(ch)) {
+      if (has || buf) { out.push(buf); buf = ''; has = false; }
+      continue;
+    }
+    buf += ch; has = true;
+  }
+  if (has || buf) out.push(buf);
+  return out;
+}
+
+/**
+ * 解析**一条**命令（不含 `;`）。非命令（不以 `/` 开头）或空 → null。
+ * ★ 调用方拿到 null 就该把这段当普通文本处理，而不是报"命令不存在"——
+ *   用户可能就是想发一句以 `/` 开头的话（少见，但为此报错会打断他）。
+ */
+export function parseCommandLine(fragment: string): ParsedCommand | null {
+  const raw = String(fragment || '').trim();
+  if (!raw.startsWith('/')) return null;
+  const tokens = tokenize(raw.slice(1));
+  const name = unquote(tokens.shift() || '');
+  if (!name) return null;
+
+  const args: string[] = [];
+  const flags: Record<string, string | boolean> = {};
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.startsWith('--') || (t.startsWith('-') && t.length > 1)) {
+      const body = t.replace(/^-+/, '');
+      const eq = body.indexOf('=');
+      if (eq >= 0) {
+        // `--url=https://x` / `-p=80`：显式取值，长短选项都成立
+        flags[body.slice(0, eq)] = unquote(body.slice(eq + 1));
+        continue;
+      }
+      // 短选项吃下一个词（`-p 80`）；长选项是布尔（`--banner`）
+      if (t.startsWith('-') && !t.startsWith('--') && i + 1 < tokens.length && !tokens[i + 1].startsWith('-')) {
+        flags[body] = unquote(tokens[++i]);
+        continue;
+      }
+      flags[body] = true;
+      continue;
+    }
+    args.push(unquote(t));
+  }
+  return { raw, name, args, flags };
+}
+
+/** 解析整行（可能含 `;` 串联）→ 依次的 ParsedCommand（非命令片段被丢掉） */
+export function parseCommandChain(line: string): ParsedCommand[] {
+  return splitChain(line).map(parseCommandLine).filter((c): c is ParsedCommand => !!c);
+}
+
+/** 从候选里按名称/别名找命令（大小写不敏感） */
+export function findCommand(list: CommandDef[], name: string): CommandDef | null {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return null;
+  return list.find((c) => c.name.toLowerCase() === n
+    || (c.aliases || []).some((a) => String(a).toLowerCase() === n)) || null;
+}
+
+/** `/help <cmd>`：单条命令的用法、说明、分组、风险级 */
+export function formatCommandHelp(c: CommandDef): string {
+  const lines = [
+    `${slashOf(c)}  —  ${c.desc || '(无说明)'}`,
+    `用法：${c.usage || slashOf(c)}`,
+  ];
+  if (c.aliases?.length) lines.push(`别名：${c.aliases.map((a) => `/${a}`).join('、')}`);
+  if (c.group) lines.push(`分组：${c.group}`);
+  if (c.danger) lines.push(`风险：${c.danger}`);
+  if (c.kind === 'page') {
+    const scope = c.matchUrl ? `URL 正则 ${c.matchUrl}` : (c.matchHost || '*');
+    lines.push(`站点：${scope}（${c.pageKind === 'script' ? '脚本型，执行前确认' : '任务型'}）`);
+    lines.push('提示：这条指令出现在**当前页**的面板里，直接在浏览器面板点击即可运行。');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * `/help`：把全部命令按分组列出来（**由 CommandDef 自动生成** —— 命令一多，
+ * 手写的帮助文本必然与实现漂移，而"帮助里没有这条命令"会让用户以为它不存在）。
+ */
+export function formatHelp(all: CommandDef[]): string {
+  if (!all.length) return '当前没有可用命令。';
+  const blocks = groupCommands(all).map((g) => {
+    const rows = g.commands.map((c) => `  ${slashOf(c).padEnd(18)} ${c.desc || ''}`.trimEnd());
+    return `【${g.group}】\n${rows.join('\n')}`;
+  });
+  return ['可用命令（输入 / 唤起面板，Tab 补全，↑↓ 翻历史）：', ...blocks].join('\n\n');
+}
+
+/** 历史：把一条输入压入（去重、最新在前、容量封顶）。纯函数，调用方负责持久化。 */
+export function pushHistory(list: string[], entry: string, max = 50): string[] {
+  const e = String(entry || '').trim();
+  if (!e) return list;
+  return [e, ...list.filter((x) => x !== e)].slice(0, max);
+}
+
+/**
+ * 回车提交这一行时的**动作计划**（命令中枢）。
+ *
+ * ★★★ 为什么把判断抽成纯函数：这里有一条**绝不能错**的规则 ——
+ *   "以 / 开头的命令**永远不许**被当成聊天内容发给模型"。
+ *   而它是靠"在 send() 之前插一个分支"实现的，写进组件里就只能靠源码断言，
+ *   断言不出"分支顺序反了""带空格的行漏了"。抽出来就能真跑。
+ *
+ * @returns 依次要做的动作。**不是命令时返回 `[{kind:'chat'}]`**（调用方据此走普通发送）。
+ */
+export type CommandInputPlan =
+  /** 普通文本 → 走聊天发送 */
+  | { kind: 'chat' }
+  /** 执行这条命令 */
+  | { kind: 'run'; def: CommandDef; parsed: ParsedCommand }
+  /** 需要交互选择（开子菜单），不能放进 `;` 串联 */
+  | { kind: 'interactive'; def: CommandDef }
+  /** 名字不认识 */
+  | { kind: 'unknown'; name: string };
+
+/** 需要交互的命令（点了要再选一次，串联里做不了） */
+const INTERACTIVE_RUN_IDS = new Set(['agent', 'model']);
+
+export function planCommandInput(line: string, commands: CommandDef[]): CommandInputPlan[] {
+  const text = String(line || '').trim();
+  if (!text.startsWith('/')) return [{ kind: 'chat' }];
+  const chain = parseCommandChain(text);
+  // 以 / 开头但解析不出命令（例如单一个 "/"）：仍按聊天处理 —— 用户可能就是想发这句话
+  if (!chain.length) return [{ kind: 'chat' }];
+
+  return chain.map((parsed) => {
+    const def = findCommand(commands, parsed.name);
+    if (!def) return { kind: 'unknown', name: parsed.name };
+    if (def.run && INTERACTIVE_RUN_IDS.has(def.run)) return { kind: 'interactive', def };
+    return { kind: 'run', def, parsed };
+  });
+}

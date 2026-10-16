@@ -173,6 +173,7 @@
           @keydown.enter.exact="onEnter"
           @keydown.up="onKeyUp"
           @keydown.down="onKeyDown"
+          @keydown.tab="onTab"
           @keydown.esc="onEsc"
           @paste="onPaste"
           @focus="onInputFocus"
@@ -213,19 +214,23 @@
           <!-- D2 命令菜单 -->
           <template v-if="slashMenuOpen">
             <template v-if="slashMode === 'command'">
-              <div
-                v-for="(c, i) in filteredCommands"
-                :key="c.cmd"
-                class="cmd-menu-item"
-                :class="{ active: i === slashIndex }"
-                @click="enterSlashCommand(c.cmd)"
-              >
-                <el-icon class="cmd-menu-icon"><component :is="c.icon" /></el-icon>
-                <div class="cmd-menu-info">
-                  <div class="cmd-menu-label">{{ c.cmd }}</div>
-                  <div class="cmd-menu-desc">{{ c.hint }}</div>
+              <!-- 分组渲染：分组头不参与键盘索引（见 slashRows 的注释） -->
+              <template v-for="(row, ri) in slashRows" :key="row.kind === 'group' ? `g-${row.label}-${ri}` : row.item.cmd">
+                <div v-if="row.kind === 'group'" class="cmd-menu-group">{{ row.label }}</div>
+                <div
+                  v-else
+                  class="cmd-menu-item"
+                  :class="{ active: row.index === slashIndex }"
+                  @click="enterSlashCommand(row.item.cmd)"
+                >
+                  <el-icon class="cmd-menu-icon"><component :is="row.item.icon" /></el-icon>
+                  <div class="cmd-menu-info">
+                    <div class="cmd-menu-label">{{ row.item.cmd }}</div>
+                    <div class="cmd-menu-desc">{{ row.item.hint }}</div>
+                  </div>
                 </div>
-              </div>
+              </template>
+              <div v-if="!slashRows.length" class="cmd-menu-group">没有匹配的命令</div>
             </template>
             <template v-else-if="slashMode === 'agent'">
               <div
@@ -764,12 +769,15 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import type { Component } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../../api/client';
 // 命令中枢（2026-10-16）：`/` 菜单的清单来自命令总线，不在本文件写死
 import type { CommandDef } from '@yan-zhi/core';
 import { useCommandsStore } from '../../stores/commands';
-import { slashOf } from '../../utils/commandBridge';
+import { groupCommands, isPrefixOf, slashOf } from '../../utils/commandBridge';
+import {
+  findCommand, formatCommandHelp, formatHelp, planCommandInput, pushHistory, type ParsedCommand,
+} from '../../utils/commandParser';
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
@@ -1492,19 +1500,39 @@ const COMMAND_ICONS: Record<string, Component> = {
 };
 
 /** 菜单项 = 命令总线给出的 CommandDef + 本地图标 */
-function toMenuItems(defs: CommandDef[]): Array<{ cmd: string; hint: string; icon: Component }> {
-  return defs.map((c) => ({
-    cmd: slashOf(c),
-    hint: c.desc,
-    icon: COMMAND_ICONS[c.name] || Operation,
-  }));
+function toMenuItem(c: CommandDef): { cmd: string; hint: string; icon: Component } {
+  return { cmd: slashOf(c), hint: c.desc, icon: COMMAND_ICONS[c.name] || Operation };
+}
+function toMenuItems(defs: CommandDef[]) {
+  return defs.map(toMenuItem);
 }
 
-const COMMANDS = computed(() => toMenuItems(commandsStore.globalCommands));
-
-const filteredCommands = computed(() => {
+/** 面板一打开/一输入就要显示的那批命令（搜索口径归总线：名称 / 别名 / 说明） */
+const slashHits = computed<CommandDef[]>(() => {
   const q = slashQuery.value.trim();
-  return toMenuItems(q ? commandsStore.search(q) : commandsStore.globalCommands);
+  return q ? commandsStore.search(q) : commandsStore.globalCommands;
+});
+
+/** 扁平项列表：**键盘导航的索引基准**，顺序与下面渲染出来的分组顺序逐项一致 */
+const filteredCommands = computed(() => toMenuItems(slashHits.value));
+
+/** 渲染行：分组头 + 命令项 */
+type SlashRow = { kind: 'group'; label: string } | { kind: 'item'; index: number; item: ReturnType<typeof toMenuItem> };
+
+/**
+ * 按分组组织的渲染行（方案 §4.3.1：面板按流程分组）。
+ *
+ * ★ 分组头**不占** `slashIndex`（上下键只在真实命令之间走）—— 否则"按了三次下键停在标题上"
+ *   会让人以为键盘坏了。所以这里显式算 index，而不是靠模板里的 $index。
+ */
+const slashRows = computed<SlashRow[]>(() => {
+  const rows: SlashRow[] = [];
+  let index = 0;
+  for (const g of groupCommands(slashHits.value)) {
+    rows.push({ kind: 'group', label: g.group });
+    for (const c of g.commands) rows.push({ kind: 'item', index: index++, item: toMenuItem(c) });
+  }
+  return rows;
 });
 
 const flatModels = computed<Array<{ id: string; name: string }>>(() => {
@@ -1540,16 +1568,126 @@ function enterSlashCommand(cmd: string) {
   // ★ 按命令的 `run`（动作 id）分发，而不是按 '/xxx' 字符串 ——
   //   字符串分发会把"命令叫什么"和"点了做什么"焊死在一起（改名即失效）。
   const def = commandsStore.globalCommands.find((c) => c.name === cmd.replace(/^\//, ''));
-  if (def?.run === 'agent') { slashMode.value = 'agent'; slashIndex.value = 0; return; }
-  if (def?.run === 'model') { slashMode.value = 'model'; slashIndex.value = 0; return; }
+  runCommandDef(def);
+}
+
+/**
+ * 执行一条命令（**唯一分发点**：菜单点击、回车提交、`;` 串联都走这里）。
+ * ★ 命令总线只报"要执行哪一条"，真正的动作在这里 —— 总线不认识任何弹窗。
+ */
+function runCommandDef(def: CommandDef | undefined | null, parsed?: ParsedCommand) {
+  if (!def) return;
+  if (def.run === 'help') { showCommandHelp(parsed?.args?.[0] || ''); return; }
+  if (def.run === 'agent') { slashMode.value = 'agent'; slashIndex.value = 0; slashMenuOpen.value = true; return; }
+  if (def.run === 'model') { slashMode.value = 'model'; slashIndex.value = 0; slashMenuOpen.value = true; return; }
   slashMenuOpen.value = false;
   input.value = '';
-  if (def?.run === 'skill') showSkills.value = true;
-  else if (def?.run === 'dir') showWorkspaceDir.value = true;
-  else if (def?.run === 'new') startNewChat();
-  // ★ 不静默吞掉：插件以后可以贡献命令，但执行器得有人接（kind='tool' 要走后端工具 + guard）。
-  //   现在没有插件声明命令，所以这条分支平时不会走到；真走到时必须说出来，而不是点了没反应。
-  else if (def) ElMessage.info(`「${def.name}」已登记到命令中枢，但当前还没有它的执行通道。`);
+  if (def.run === 'skill') showSkills.value = true;
+  else if (def.run === 'dir') showWorkspaceDir.value = true;
+  else if (def.run === 'new') startNewChat();
+  // ★ 不静默吞掉：插件以后可以贡献命令，但执行器得有人接（kind='tool' 要走后端工具 + 护栏）。
+  //   真走到这里时必须说出来，而不是点了没反应。
+  else ElMessage.info(`「${def.name}」已登记到命令中枢，但当前还没有它的执行通道。`);
+}
+
+/** 转义 HTML（帮助文本进 MessageBox 的 HTML 分支，必须自己转义 —— 命令名可能带 <>） */
+function escapeHtml(s: string): string {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * `/help`：帮助文本**由 CommandDef 自动生成**（`formatHelp` / `formatCommandHelp`）。
+ * 手写的帮助清单会随命令增长而漂移，而"帮助里没有这条命令"会让用户以为它不存在。
+ */
+function showCommandHelp(name = '') {
+  const all = commandsStore.globalCommands;
+  const preStyle = 'max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;'
+    + 'font-size:12px;line-height:1.7;margin:0;font-family:inherit';
+  if (name) {
+    const def = findCommand(all, name);
+    if (!def) { ElMessage.warning(`没有 /${name} 这条命令（/help 看全部）`); return; }
+    void ElMessageBox.alert(`<pre style="${preStyle}">${escapeHtml(formatCommandHelp(def))}</pre>`,
+      `命令 ${slashOf(def)}`, { dangerouslyUseHTMLString: true, confirmButtonText: '知道了' });
+    return;
+  }
+  void ElMessageBox.alert(`<pre style="${preStyle}">${escapeHtml(formatHelp(all))}</pre>`,
+    '可用命令', { dangerouslyUseHTMLString: true, confirmButtonText: '知道了' });
+}
+
+// ===== 命令历史（↑↓，localStorage 持久化；与方案的 "↑↓ 翻历史" 对齐）=====
+const CMD_HISTORY_KEY = 'yz_cmd_history';
+function readCmdHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(CMD_HISTORY_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : [];
+  } catch { return []; }   // 隐私模式 / 坏数据：当没有历史，不阻断输入
+}
+const cmdHistory = ref<string[]>(readCmdHistory());
+/** 历史游标：-1 = 当前不在翻历史（正在写新内容） */
+const historyCursor = ref(-1);
+
+function rememberCommand(line: string) {
+  cmdHistory.value = pushHistory(cmdHistory.value, line);
+  historyCursor.value = -1;
+  try { localStorage.setItem(CMD_HISTORY_KEY, JSON.stringify(cmdHistory.value)); } catch { /* 忽略 */ }
+}
+
+/** ↑：往前翻（越翻越旧）；没有历史时什么都不做 */
+function historyPrev() {
+  if (!cmdHistory.value.length) return;
+  historyCursor.value = Math.min(historyCursor.value + 1, cmdHistory.value.length - 1);
+  input.value = cmdHistory.value[historyCursor.value];
+}
+
+/** ↓：往回翻；翻到最新之后再按一次回到空输入 */
+function historyNext() {
+  if (historyCursor.value < 0) return;
+  historyCursor.value -= 1;
+  input.value = historyCursor.value < 0 ? '' : cmdHistory.value[historyCursor.value];
+}
+
+/**
+ * Tab 补全命令名。
+ * ★ 只在**唯一候选**时补：多个候选时 Tab 补哪一个是猜的，猜错比不补更烦人。
+ */
+function onTab(e: KeyboardEvent) {
+  if (e.isComposing || slashMode.value !== 'command') return;
+  const q = slashQuery.value.trim();
+  if (!q) return;
+  const cands = commandsStore.globalCommands.filter((c) => isPrefixOf(c, q));
+  if (cands.length !== 1) return;
+  e.preventDefault();
+  input.value = `${slashOf(cands[0])} `;
+  slashMenuOpen.value = false;
+}
+
+/**
+ * 输入框里是一整条命令（`/xxx …`，可能含 `;` 串联）⇒ 按命令跑，**绝不发给模型**。
+ * ★ 为什么必须拦在这里：`watch(input)` 只认 `/单词` 这种形态来开菜单，
+ *   `/help agent`、`/a; /b` 这类带空格/分号的行不会开菜单，回车就会走到 `send()` ——
+ *   一条命令被当成聊天内容发给模型，用户与模型都会一头雾水。
+ * @returns 是否已按命令处理（true ⇒ 调用方不要再 send）
+ */
+function runCommandInput(): boolean {
+  const line = input.value.trim();
+  const plan = planCommandInput(line, commandsStore.globalCommands);
+  // 不是命令 ⇒ 交给 send()（普通聊天）
+  if (plan.length === 1 && plan[0].kind === 'chat') return false;
+  input.value = '';
+  slashMenuOpen.value = false;
+  rememberCommand(line);
+  for (const step of plan) {
+    if (step.kind === 'unknown') { ElMessage.warning(`没有 /${step.name} 这条命令（/help 看全部）`); continue; }
+    if (step.kind === 'interactive') {
+      // 单条（如 `/agent ` 带空格手敲的）照常打开子菜单；串联里才拒绝
+      if (plan.length === 1) { runCommandDef(step.def); continue; }
+      ElMessage.info(`「${step.def.name}」需要交互选择，不能放进 ; 串联里`);
+      continue;
+    }
+    runCommandDef(step.def, step.parsed);
+  }
+  return true;
 }
 
 function pickSlashAgent(ag: { id: string }) {
@@ -1704,6 +1842,9 @@ function onEnter(e: KeyboardEvent) {
     if (f) pickAtFile(f);
     return;
   }
+  // ★ 一整条命令（`/help agent`、`/a; /b` 这类带空格/分号的行不会开菜单）⇒ 按命令跑。
+  //   不拦的话它会走到下面的 send()，被当成聊天内容发给模型 —— 用户与模型都会一头雾水。
+  if (runCommandInput()) return;
   // 任务运行中不再拦：send() 内部会判断——本会话在跑就入队到输入框上方，
   // 切到别的会话则正常发送（此前这里直接 return，是「跑着就发不出消息」的根因）。
   send();
@@ -1711,11 +1852,14 @@ function onEnter(e: KeyboardEvent) {
 
 function onKeyUp(e: KeyboardEvent) {
   if (e.isComposing) return;
-  if (slashMenuOpen.value || atMenuOpen.value) { e.preventDefault(); moveIndex(-1); }
+  if (slashMenuOpen.value || atMenuOpen.value) { e.preventDefault(); moveIndex(-1); return; }
+  // 菜单没开：↑ 翻命令历史（游标只在历史里走，不影响正常输入）
+  if (e.key === 'ArrowUp') { e.preventDefault(); historyPrev(); }
 }
 function onKeyDown(e: KeyboardEvent) {
   if (e.isComposing) return;
-  if (slashMenuOpen.value || atMenuOpen.value) { e.preventDefault(); moveIndex(1); }
+  if (slashMenuOpen.value || atMenuOpen.value) { e.preventDefault(); moveIndex(1); return; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); historyNext(); }
 }
 function onEsc() { slashMenuOpen.value = false; atMenuOpen.value = false; }
 

@@ -38,6 +38,9 @@ export const BUILTIN_COMMANDS: CommandDef[] = [
   { name: 'skill', desc: '挂载 / 卸载 Skill', group: SYS_COMMAND_GROUP, kind: 'ui', run: 'skill' },
   { name: 'dir', desc: '设置工作目录', group: SYS_COMMAND_GROUP, kind: 'ui', run: 'dir' },
   { name: 'new', desc: '新建任务', group: SYS_COMMAND_GROUP, kind: 'ui', run: 'new' },
+  // ★ 帮助由 CommandDef **自动生成**（`formatHelp`）—— 手写的帮助清单必然随命令增长而漂移，
+  //   而"帮助里没有这条命令"会让用户以为它不存在。
+  { name: 'help', aliases: ['?'], desc: '查看可用命令（/help <命令> 看单条用法）', usage: '/help [命令名]', group: SYS_COMMAND_GROUP, kind: 'builtin', run: 'help' },
 ];
 
 export const useCommandsStore = defineStore('commands', () => {
