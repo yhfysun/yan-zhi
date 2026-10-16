@@ -13,6 +13,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { hardDeleteRow } from '../services/conversation-lifecycle.js';
 import { readClipProject, writeClipProject, clipProjectPath as clipProjectPathOf } from '../services/clip-store.js';
 import { summarizeProject } from '../services/clip-project.js';
 import { ensureArtifactDirFor } from '../services/artifact-dir.js';
@@ -130,8 +131,12 @@ router.delete('/projects/:conversationId', (req: Request, res: Response) => {
     const { file } = clipProjectPathOf(cid);
     if (fs.existsSync(file)) { fs.rmSync(file, { force: true }); removedFiles++; }
   } catch { /* 文件删不掉不阻塞会话删除，但如实回报 */ }
+  // ★ 走统一的真删出口（2026-10-16）：剪辑项目的删除此前是自己手写一行
+  //   DELETE FROM conversation，漏掉了 message / message_summary / task_plan_item /
+  //   path-guard 授权这批派生物清理 —— 同一个会话的派生物清理清单却有两份实现，
+  //   将来新增派生表必有一边漏。这里不再自己删。
   try {
-    db.prepare('DELETE FROM conversation WHERE id = ?').run(cid);
+    hardDeleteRow(cid);
   } catch {
     return res.status(500).json({ error: '删除会话失败' });
   }

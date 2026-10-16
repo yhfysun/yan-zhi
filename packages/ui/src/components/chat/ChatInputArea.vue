@@ -169,6 +169,7 @@
             'is-expanded': isMobileShell && mobileExpanded,
           }"
           :placeholder="inputPlaceholder"
+          :disabled="currentConvArchived"
           @keydown.enter.exact="onEnter"
           @keydown.up="onKeyUp"
           @keydown.down="onKeyDown"
@@ -799,6 +800,8 @@ const {
   // ★ Task 6 起由工具条左下的 ContextUsagePill 胶囊承载（原右侧用量环已删）。
   tokenCount, contextLimit, tokenPercent, declaredContextWindow, messageRounds,
   loadedConvHasMore,
+  // 归档会话只读（2026-10-16）：禁用输入 + 占位符说明去向
+  currentConvArchived,
 } = useChat();
 
 /** 当前会话已发生的自动压缩次数（消息流里的 compact_boundary 标记数），供胶囊明细展示 */
@@ -949,6 +952,9 @@ const inputAutosize = computed(() => {
  * 移动端换短文案。桌面端保持原文案不变。
  */
 const inputPlaceholder = computed(() => {
+  // 归档会话只读（2026-10-16）：占位符直接说清"为什么不能输入 + 该怎么办"，
+  // 用户看到灰掉的输入框时不需要猜。
+  if (currentConvArchived.value) return '该会话已归档（只读）—— 取消归档后可继续对话';
   if (isMobileShell.value) return isCodeMode ? '描述代码任务…' : '输入消息…';
   return isCodeMode
     ? '描述代码任务，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件'

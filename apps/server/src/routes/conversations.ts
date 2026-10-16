@@ -1,11 +1,15 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
-import { db, MESSAGE_LIST_COLS, clearMessageSummaries, listMessageSummaries, deleteMessageSummariesAfter } from '../db.js';
+import { db, MESSAGE_LIST_COLS, listMessageSummaries, deleteMessageSummariesAfter } from '../db.js';
+// ★ 归档 / 回收站：所有涉及到「会话在不在列表里」与「真删」的活都在这一个出口里，
+//   本文件不再手写 DELETE FROM conversation（清理清单随派生表增长，散写必然漏）。
+import {
+  parseScope, lifecycleClause, hardDeleteRow, softDeleteRow, restoreRow, setArchivedRow, emptyTrash,
+} from '../services/conversation-lifecycle.js';
 import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
-import { clearAuthorization } from '../services/path-guard.js';
 import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode, compressConversationNow } from '../llm-task-manager.js';
 import { estimateTokens } from '@yan-zhi/shared';
 
@@ -34,25 +38,44 @@ router.use(authMiddleware);
 //   却混进办公模式的列表（真实缺陷，靠 CDP 真跑才发现）。
 // ★ 'douyin'（抖音运营模式，2026-10-12）同理：漏掉它，抖音会话会静默落成 office，
 //   在抖音模式列表里看不到、混进办公列表。
+// ★ 会话生命周期（归档 / 回收站，2026-10-16）：
+//   scope=active（默认，也是唯一给主列表用的）/ archived / trashed / all。
+//   过滤照旧放在 DB 层（理由同上）：归档与回收站会话**绝不能**出现在主列表响应里，
+//   否则批量删除、导出、计数这些「扫全量」的逻辑会连带处理用户认为已经被收起来的会话。
 const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'douyin']);
 
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const mode = typeof req.query.mode === 'string' ? req.query.mode : '';
+  const life = lifecycleClause(parseScope(req.query.scope));
   // 非法 mode 视为「不过滤」而不是「查不到」：前端传错值时不该让用户看到空列表
   if (mode && VALID_MODES.has(mode)) {
     const rows = db.prepare(
       `SELECT * FROM conversation
-       WHERE user_id = ? AND COALESCE(NULLIF(mode, ''), 'office') = ?
+       WHERE user_id = ? AND COALESCE(NULLIF(mode, ''), 'office') = ? AND ${life}
        ORDER BY pinned DESC, updated_at DESC`,
     ).all(userId, mode);
     res.json({ data: rows });
     return;
   }
   const rows = db.prepare(
-    'SELECT * FROM conversation WHERE user_id = ? ORDER BY pinned DESC, updated_at DESC',
+    `SELECT * FROM conversation WHERE user_id = ? AND ${life} ORDER BY pinned DESC, updated_at DESC`,
   ).all(userId);
   res.json({ data: rows });
+});
+
+// GET /api/conversations/counts —— 侧栏「已归档 / 回收站」角标。
+// ★ 单独给计数而不是让前端囤全量再算：主列表默认只拉 active，前端拿不到另外两类。
+// ★ 必须在 /:id 之前注册，否则会被当成会话 id。
+router.get('/counts', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const row = db.prepare(
+    `SELECT
+       SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS trashed,
+       SUM(CASE WHEN deleted_at IS NULL AND archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived
+     FROM conversation WHERE user_id = ?`,
+  ).get(userId) as any;
+  res.json({ data: { archived: Number(row?.archived || 0), trashed: Number(row?.trashed || 0) } });
 });
 
 // POST /api/conversations
@@ -189,41 +212,67 @@ router.patch('/:id', (req: Request, res: Response) => {
   res.json({ data: row });
 });
 
-// DELETE /api/conversations/:id
-// DELETE /api/conversations/clear —— 批量清空当前用户全部会话与消息（设置页「清空缓存」用）
+// DELETE /api/conversations/clear —— 设置页「清空缓存」。
+//
+// ★ 2026-10-16 语义变更（原实现是**永久删除全部会话及其消息**，和用户心里
+//   「清空列表」的预期不符：一旦点了，包括刚归档的重要会话在内全部不可恢复）。
+//   现在改为「全部会话移入回收站」——列表照样清空，但随时能从回收站整体还原。
+//   真要永久抹掉请走 DELETE /trash（清空回收站）。
 router.delete('/clear', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const ids = db.prepare('SELECT id FROM conversation WHERE user_id = ?').all(userId) as any[];
-  const clear = () => {
-    for (const c of ids) {
-      db.prepare('DELETE FROM message WHERE conversation_id = ?').run(c.id);
-      // 任务计划派生物同步清（与 DELETE /:id 同一口径，见该处注释）
-      db.prepare('DELETE FROM task_plan_item WHERE conversation_id = ?').run(c.id);
-    }
-    db.prepare('DELETE FROM conversation WHERE user_id = ?').run(userId);
-  };
-  db.transaction(clear)();
-  res.json({ ok: true, cleared: ids.length });
+  const r = db.prepare(
+    'UPDATE conversation SET deleted_at = ? WHERE user_id = ? AND deleted_at IS NULL',
+  ).run(Date.now(), userId);
+  res.json({ ok: true, moved: r.changes, trashed: true });
+});
+
+// DELETE /api/conversations/trash —— 永久清空回收站（不可恢复，前端必须二次确认）
+router.delete('/trash', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const n = emptyTrash(userId);
+  res.json({ ok: true, removed: n });
+});
+
+// POST /api/conversations/:id/restore —— 从回收站恢复
+router.post('/:id/restore', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  if (!restoreRow(cid, userId)) { res.status(404).json({ error: '会话不存在或不在回收站' }); return; }
+  res.json({ ok: true });
+});
+
+// POST /api/conversations/:id/archive —— 归档（可逆，数据全留，会话变只读）
+// body.archived=false 即取消归档（同一个端点两个方向，避免两个端点两处漂移）
+router.post('/:id/archive', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const archived = req.body?.archived !== false;
+  if (!setArchivedRow(cid, userId, archived)) {
+    res.status(404).json({ error: '会话不存在、或在回收站里（回收站内的会话请先恢复）' });
+    return;
+  }
+  res.json({ ok: true, archived });
 });
 
 router.delete('/:id', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
-  const existing = db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  const existing = db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId) as any;
   if (!existing) { res.status(404).json({ error: '会话不存在' }); return; }
-  db.prepare('DELETE FROM message WHERE conversation_id = ?').run(cid);
-  // ★ 压缩摘要随会话一起清（2026-10-03）：message_summary 是 message 的派生物，
-  //   会话删了却留下摘要行 = 孤儿数据（且会用同一个 conversation_id 在下条同 id 会话里被读到）。
-  //   ★ 同理清内存里的越界授权白名单（path-guard 的会话级状态），否则删会话后残留一小块内存。
-  //   两处都是「新增了带 conversation_id 的状态，却没在删除路径上一起收」——同一类漏接线。
-  clearMessageSummaries(cid);
-  clearAuthorization(cid);
-  // ★ task_plan_item 同属 message 的派生物（2026-10-08）：多智能体任务计划随会话一起清。
-  //   与上两行同一类"新增了带 conversation_id 的状态，却没在删除路径上一起收"——
-  //   漏了会留下孤儿计划行（且会话 id 复用时会被 get_plan_status 读到旧计划）。
-  db.prepare('DELETE FROM task_plan_item WHERE conversation_id = ?').run(cid);
-  db.prepare('DELETE FROM conversation WHERE id = ?').run(cid);
-  res.json({ ok: true });
+  // 已在回收站 ⇒ 这条就是「永久删除」（与回收站里的永久删除同一语义，走同一出口）
+  if (existing.deleted_at) { hardDeleteRow(cid); res.json({ ok: true, permanent: true }); return; }
+  if (!softDeleteRow(cid, userId)) { res.status(404).json({ error: '会话不存在' }); return; }
+  res.json({ ok: true, trashed: true });
+});
+
+// DELETE /api/conversations/:id/permanent —— 显式永久删除（绕过回收站，前端需二次确认）
+router.delete('/:id/permanent', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const existing = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!existing) { res.status(404).json({ error: '会话不存在' }); return; }
+  hardDeleteRow(cid);
+  res.json({ ok: true, permanent: true });
 });
 
 // GET /api/conversations/:id/messages
@@ -424,11 +473,21 @@ router.get('/:id/messages', (req: Request, res: Response) => {
 router.post('/:id/messages', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
-  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  // ★ 同时读生命周期列：归档会话是**只读**的（2026-10-16 决策，对齐 ChatGPT /
+  //   Anthropic Agent SDK 的 archive 语义）。前端禁用输入框只是第一道，这里必须真拦 ——
+  //   否则任何绕过前端的写入（旧页面、脚本、模型自己）都能往归档会话里灌消息。
+  const conv = db.prepare('SELECT id, archived_at, deleted_at FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId) as any;
   if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  if (conv.deleted_at) { res.status(409).json({ error: '会话已在回收站', code: 'CONVERSATION_TRASHED' }); return; }
   const { role, content, toolCalls, toolCallId, reasoningContent, tokens, systemPromptSnapshot,
     parentToolCallId, subAgentId, subAgentName, subAgentDepth } = req.body || {};
   if (!role) { res.status(400).json({ error: 'role 为必填项' }); return; }
+  // 只拦「用户开口」这一类：assistant / tool 回执仍要允许落库 —— 任务跑到一半被归档时，
+  // 后台还在补录回复，拦了会把一段对话劈成"有问无答"。
+  if (conv.archived_at && role === 'user') {
+    res.status(409).json({ error: '该会话已归档，恢复后才能继续对话', code: 'CONVERSATION_ARCHIVED' });
+    return;
+  }
 
   const id = uuid();
   const now = Date.now();
@@ -437,7 +496,9 @@ router.post('/:id/messages', (req: Request, res: Response) => {
   ).run(id, cid, userId, role, content || null, toolCalls ? JSON.stringify(toolCalls) : null,
     toolCallId || null, reasoningContent || null, systemPromptSnapshot || null, tokens || 0,
     parentToolCallId || null, subAgentId || null, subAgentName || null, subAgentDepth ?? null, now);
-  db.prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(now, cid);
+  // ★ last_activity_at 与 updated_at 分开：前者表示"真实对话活动"（自动归档的判据），
+  //   后者只是排序用。若将来给 PATCH 补刷 updated_at，用 updated_at 会让"改个名也算活跃"。
+  db.prepare('UPDATE conversation SET updated_at = ?, last_activity_at = ? WHERE id = ?').run(now, now, cid);
   const row = db.prepare('SELECT * FROM message WHERE id = ?').get(id);
   res.json({ data: row });
 });

@@ -2,6 +2,9 @@ import { v4 as uuid } from 'uuid';
 import { readFile } from 'node:fs/promises';
 import { db } from '../db.js';
 import { createTask, subscribe } from '../llm-task-manager.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('im');
 
 type ImProvider = 'wechat' | 'feishu' | 'wechat-personal' | 'dingtalk';
 
@@ -541,16 +544,24 @@ function runImClosedLoop(p: ImClosedLoopPayload): { handled: boolean; reason?: s
   const title = p.text.length > 24 ? p.text.slice(0, 24) + '…' : p.text;
   const conversationId = getOrCreateImConversation(p.connectorId || p.provider, p.fromUser, p.userId, title);
 
-  const taskId = createTask({
-    conversationId,
-    userId: p.userId,
-    platformId: model.platformId,
-    modelId: model.modelId,
-    userContent: p.text,
-    agentId: 'a_default_assistant',
-    origin: 'im',
-    offlinePolicy: 'skip',
-  });
+  let taskId: string;
+  try {
+    taskId = createTask({
+      conversationId,
+      userId: p.userId,
+      platformId: model.platformId,
+      modelId: model.modelId,
+      userContent: p.text,
+      agentId: 'a_default_assistant',
+      origin: 'im',
+      offlinePolicy: 'skip',
+    });
+  } catch (e: any) {
+    // 会话被归档/删除（用户手动收起来的 IM 会话）时不应再触发任务，也不该 500 掉整条 IM 链路
+    const msg = String(e?.message || '');
+    logger.warn(`[im] 跳过任务创建（会话不可用）conv=${conversationId}: ${msg}`);
+    return { handled: false, reason: msg.startsWith('CONVERSATION_') ? 'conversation_unavailable' : 'create_task_failed' };
+  }
 
   subscribe(taskId, 0, (event) => {
     if (event.type === 'task:completed') {

@@ -2212,3 +2212,21 @@ body.yz-right-panel-open .el-overlay-dialog {
   .send-btn { width: 32px; height: 32px; margin-left: 4px; }
   .toolbar-divider { display: none; }
 }
+
+/* ── 归档会话只读横幅（2026-10-16）──────────────────────────────────────────
+   位置：消息流与输入区之间。存在感要够（一眼看出"这个会话不能发了"），
+   但不能抢焦点 —— 单行、左对齐、右侧一个明确的出口按钮。 */
+.conv-archived-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: var(--el-fill-color-light, #f4f4f5);
+  border: 1px solid var(--el-border-color-lighter, #e4e7ed);
+  color: var(--el-text-color-regular, #606266);
+  font-size: 13px;
+}
+.conv-archived-banner > .el-icon { color: var(--el-color-warning, #e6a23c); flex: none; }
+.conv-archived-banner > span { flex: 1; min-width: 0; }

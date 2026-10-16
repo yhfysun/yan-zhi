@@ -289,7 +289,11 @@ const effSpaceId = computed(() => (props.spaceId === undefined ? codeStore.proje
 
 const convs = computed(() => {
   const sid = effSpaceId.value;
-  const list = sid ? chatStore.conversations.filter((c) => c.spaceId === sid) : chatStore.conversations;
+  // ★ 生命周期兜底（2026-10-16，与 ChatSidebar 同口径）：后端已按 scope=active 过滤，
+  //   这里再排一遍是防旧缓存/别处写入把归档/回收站会话带进 store.conversations。
+  //   两处 UI 若口径不一致，会出现「侧栏没有、工作台还在」的灵异列表。
+  const list = (sid ? chatStore.conversations.filter((c) => c.spaceId === sid) : chatStore.conversations)
+    .filter((c) => !c.archivedAt && !c.deletedAt);
   // 置顶在前，其余按更新时间倒序（与侧栏一致的时间语义）
   // ★ 本组件没有搜索框，因此**不消费** useChat 的全局 search：
   //   那是 useChat 的单例状态，办公侧栏搜过之后切到运维/安全会残留过滤，

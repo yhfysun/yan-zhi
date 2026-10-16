@@ -79,8 +79,9 @@
               <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
                 <span class="task-row-act is-on" role="button" title="取消置顶" @click="rows.togglePinned(conv)"><el-icon :size="12"><Top /></el-icon></span>
                 <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)"><el-icon :size="12"><EditPen /></el-icon></span>
-<span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)"><el-icon :size="12"><Rank /></el-icon></span>
-                    <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)"><el-icon :size="12"><Delete /></el-icon></span>
+                <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)"><el-icon :size="12"><Rank /></el-icon></span>
+                <span class="task-row-act" role="button" title="归档（可恢复；归档后只读）" @click="archiveConv(conv, true)"><el-icon :size="12"><FolderChecked /></el-icon></span>
+                <span class="task-row-act is-danger" role="button" title="删除（移入回收站）" @click="rows.remove(conv)"><el-icon :size="12"><Delete /></el-icon></span>
               </span>
             </div>
           </div>
@@ -256,6 +257,71 @@
           </div>
         </div>
 
+        <!-- ── 已归档分组（2026-10-16）──────────────────────────────────────────
+             ★ 形态照「置顶」：**顶层节点**（不受「任务」/空间折叠影响）、自身可折叠、
+               空则整组不渲染（不占位、不打扰）。
+             ★ 数据源是 useChat.archivedConversations（独立数组），**刻意不并入**
+               store.conversations —— 一旦并入，主列表、批量选择、导出这些
+               「扫全量」的逻辑立刻会看到归档会话（那正是归档要消除的打扰）。
+             ★ 行点击照常打开（只读语义由 Chat 输入区负责禁用 + 提示）。 -->
+        <div v-if="archivedConversations.length > 0" class="tree-node tree-archived">
+          <div class="tree-node-head" @click="toggleArchivedCollapse">
+            <el-icon class="tree-caret" :class="{ expanded: !archivedCollapsed }"><CaretRight /></el-icon>
+            <el-icon class="tree-node-icon"><FolderChecked /></el-icon>
+            <span class="tree-node-label">已归档</span>
+            <span class="tree-count">{{ archivedConversations.length }}</span>
+          </div>
+          <div v-show="!archivedCollapsed" class="tree-children">
+            <div
+              v-for="conv in archivedConversations"
+              :key="conv.id"
+              class="conv-item"
+              :class="{ active: conv.id === store.currentConvId, selecting: batchMode }"
+              @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
+              @contextmenu.prevent="openConvMenu($event, conv)"
+            >
+              <el-icon class="pin-icon"><FolderChecked /></el-icon>
+              <span class="conv-title">{{ conv.title }}</span>
+              <span v-if="!batchMode" class="task-row-actions" @click.stop>
+                <span class="task-row-act" role="button" title="恢复到主列表（可继续对话）" @click="archiveConv(conv, false)"><el-icon :size="12"><RefreshLeft /></el-icon></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── 回收站入口（2026-10-16）──────────────────────────────────────────
+             删除会话现在是软删进这里（可恢复）；「永久删除」只在这个列表内出现，
+             且必须二次确认 —— 破坏性操作离日常列表越远越好。 -->
+        <div class="tree-node tree-trash">
+          <div class="tree-node-head" @click="toggleTrash">
+            <el-icon class="tree-caret" :class="{ expanded: trashOpen }"><CaretRight /></el-icon>
+            <el-icon class="tree-node-icon"><Delete /></el-icon>
+            <span class="tree-node-label">回收站</span>
+            <span class="tree-count">{{ trashedConversations.length }}</span>
+          </div>
+          <div v-show="trashOpen" class="tree-children">
+            <div
+              v-for="conv in trashedConversations"
+              :key="conv.id"
+              class="conv-item"
+              :class="{ active: conv.id === store.currentConvId }"
+              @click="rows.activate(conv)"
+            >
+              <el-icon class="pin-icon"><Delete /></el-icon>
+              <span class="conv-title">{{ conv.title }}</span>
+              <span class="task-row-actions" @click.stop>
+                <span class="task-row-act" role="button" title="恢复" @click="restoreConv(conv)"><el-icon :size="12"><RefreshLeft /></el-icon></span>
+                <span class="task-row-act is-danger" role="button" title="永久删除（不可恢复）" @click="purgeConv(conv)"><el-icon :size="12"><Delete /></el-icon></span>
+              </span>
+            </div>
+            <div v-if="trashedConversations.length > 0" class="tree-trash-actions">
+              <el-button size="small" @click="refreshLifecycle()">刷新</el-button>
+              <el-button size="small" type="danger" @click="onEmptyTrash">清空回收站</el-button>
+            </div>
+            <div v-else class="tree-trash-empty">回收站是空的</div>
+          </div>
+        </div>
+
       </div>
 
       <div v-if="batchMode && selectedConvIds.size > 0" class="batch-bar">
@@ -307,6 +373,11 @@
           <el-icon><FolderOpened /></el-icon>{{ sp.name }}
         </li>
       </ul>
+    </li>
+    <!-- 归档（2026-10-16）：可逆操作，放在破坏性的「删除」之前。
+         归档后会话移出主列表且只读，恢复后才能继续对话（对齐 ChatGPT）。 -->
+    <li @click="archiveConv(ctxMenu.conv, true)">
+      <el-icon><FolderChecked /></el-icon>归档
     </li>
     <li class="danger" @click="rows.remove(ctxMenu.conv)">
       <el-icon><Delete /></el-icon>删除
@@ -481,9 +552,9 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top,
+  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft,
 } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/shared';
 import { useChat } from '../../composables/chat/useChat';
 import { useTaskRowActions } from '../../composables/useTaskRowActions';
@@ -514,6 +585,8 @@ const {
   treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
   enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,
   spaceSelectState, rootSelectState,
+  // 会话生命周期（2026-10-16 归档 + 回收站）
+  archiveConv, restoreConv, purgeConv, loadLifecycleLists, archivedConversations, trashedConversations,
 } = useChat();
 
 // 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与 TaskListSection 共用同一 composable。
@@ -536,10 +609,11 @@ const convSheetActions = computed<ActionSheetAction[]>(() => {
   ];
   if (batchMode.value) list.push({ key: 'exit-batch', label: '退出批量模式' });
   list.push(
-    { key: 'pin', label: c.pinned ? '取消置顶' : '置顶' },
-    { key: 'rename', label: '重命名' },
+    { key: 'pin', label: c.pinned ? '取消置顶' : '置顶' },    { key: 'rename', label: '重命名' },
     { key: 'open-dir', label: '打开目录' },
   );
+  // 归档（2026-10-16）：归档后只读，恢复后才能继续，所以入口放在「删除」之前
+  list.push({ key: 'archive', label: '归档' });
   if (spaceStore.spaces.length === 0) {
     list.push({ key: 'no-space', label: '暂无空间，请先创建', disabled: true });
   } else {
@@ -561,6 +635,7 @@ function onConvSheetSelect(a: ActionSheetAction) {
   else if (a.key === 'pin') rows.togglePinned(c);
   else if (a.key === 'rename') rows.startRename(c);
   else if (a.key === 'open-dir') openConvDir(c);
+  else if (a.key === 'archive') archiveConv(c, true);
   else if (a.key === 'move:null') rows.moveTo(c, null);
   else if (a.key.startsWith('move:')) rows.moveTo(c, a.key.slice(5));
   else if (a.key === 'delete') rows.remove(c);
@@ -666,6 +741,53 @@ function onDocMouseDown(e: MouseEvent) {
   rows.closeMoveMenu();
 }
 
-onMounted(() => document.addEventListener('mousedown', onDocMouseDown, true));
+// ═══ 归档 / 回收站 UI 状态（2026-10-16）══════════════════════════════════════
+// 「已归档」与「置顶」同形态：**顶层节点**（不受「任务」/空间的折叠态影响），
+// 自身可折叠。收纳态持久化，避免每次进页面都被归档列表刷屏。
+const ARCHIVED_COLLAPSE_KEY = 'yz_conv_archived_collapsed';
+const archivedCollapsed = ref<boolean>((() => {
+  try { return localStorage.getItem(ARCHIVED_COLLAPSE_KEY) === '1'; } catch { return true; }
+})());
+function toggleArchivedCollapse() {
+  archivedCollapsed.value = !archivedCollapsed.value;
+  try { localStorage.setItem(ARCHIVED_COLLAPSE_KEY, archivedCollapsed.value ? '1' : '0'); } catch { /* ignore */ }
+  // 展开时顺带拉一次最新（侧栏常驻，归档操作可能发生在别处/别的会话）
+  if (!archivedCollapsed.value) void loadLifecycleLists();
+}
+
+/** 回收站视图开关（与「已归档」互斥的简单切换，不做嵌套层级） */
+const trashOpen = ref(false);
+function toggleTrash() {
+  trashOpen.value = !trashOpen.value;
+  if (trashOpen.value) {
+    archivedCollapsed.value = false;
+    void loadLifecycleLists();
+  }
+}
+
+/** 展开归档区/回收站时刷新列表；恢复、永久删除、归档都要回到这里 */
+async function refreshLifecycle() {
+  await loadLifecycleLists();
+}
+
+/** 清空回收站 = 永久删除全部。破坏性最强的一步，二次确认 + 明示不可恢复 */
+async function onEmptyTrash() {
+  try {
+    await ElMessageBox.confirm(
+      `永久删除回收站里的 ${trashedConversations.value.length} 个会话？消息将一并删除，无法恢复。`,
+      '清空回收站',
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger' },
+    );
+    const n = await store.emptyTrash();
+    ElMessage.success(`已永久删除 ${n} 个会话`);
+    await refreshLifecycle();
+  } catch { /* 用户取消 */ }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocMouseDown, true);
+  // 侧栏角标需要这两个数；列表本身只在展开时才拉（不进主列表）
+  void loadLifecycleLists();
+});
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown, true));
 </script>

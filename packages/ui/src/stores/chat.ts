@@ -196,6 +196,13 @@ function rowToConv(r: any): Conversation {
     mode: (['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'douyin'].includes(r.mode) ? r.mode : 'office') as Conversation['mode'],
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    // ── 生命周期三列（2026-10-16「归档 + 回收站」）──────────────────────────
+    // ★ 必须同时认蛇形（server 库）与驼峰（某些 IPC 通道直接回对象）两种写法：
+    //   只认一种时，另一条链路读到的会话会**全是 undefined** ⇒ 前端判成活/归档/删除全错，
+    //   而且不报错（"会话莫名其妙出现在回收站/主列表"）。
+    archivedAt: r.archived_at ?? r.archivedAt ?? null,
+    deletedAt: r.deleted_at ?? r.deletedAt ?? null,
+    lastActivityAt: r.last_activity_at ?? r.lastActivityAt ?? null,
   };
 }
 
@@ -1082,13 +1089,15 @@ export const useChatStore = defineStore('chat', () => {
  * 读的是 `activeMode` 的**当前值**而不是缓存的快照：切模式后 App.vue 会重新调用本函数，
  * 若这里捕获的是旧模式，列表会串。
  */
-async function loadConversations() {
+async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all' = 'active') {
     const mode = activeMode.value;
     if (isServerMode()) {
       // ★ 2026-10-09 改走 getWithRetry + 失败不清空：更新安装后首启竞态下，
       //   单发请求失败会把会话列表洗成 [] ——「记录忽有忽无」的直接来源。
       //   重试窗口（~10.5s）覆盖后端 seed/迁移冷启；仍失败则保留现有列表等下次刷新。
-      const r = await getWithRetry<any[]>(`/conversations?mode=${encodeURIComponent(mode)}`);
+      // ★ scope（2026-10-16）：默认 active = 只拿正常会话。归档/回收站由专门的
+      //   loadLifecycle 拉取（不进 conversations 主数组，否则主列表会串）。
+      const r = await getWithRetry<any[]>(`/conversations?mode=${encodeURIComponent(mode)}&scope=${scope}`);
       if ('data' in r && Array.isArray(r.data)) {
         conversations.value = (r.data as any[]).map(rowToConv);
         conversationsLoadedMode = mode; // 成功才记录：失败时仅同模式列表可保留（防串模式）
@@ -1098,16 +1107,133 @@ async function loadConversations() {
       }
       return;
     }
-    // 本地（Electron IPC）通道：同样按模式过滤。
+    // 本地（Electron IPC）通道：同样按模式过滤 + 生命周期过滤。
     // 用 COALESCE 兜空值，与后端 GET /conversations 的口径保持一致。
     const adapter = getPlatformAdapter();
+    // ★ 生命周期 SQL 与后端 lifecycleClause 严格同口径（拼串变量在下一个常量里，
+    //   单一来源）：两边写错任意一处 = 归档/回收站的会话在主列表里"复活"。
+    const LOCAL_LIFECYCLE: Record<string, string> = {
+      active: 'deleted_at IS NULL AND archived_at IS NULL',
+      archived: 'deleted_at IS NULL AND archived_at IS NOT NULL',
+      trashed: 'deleted_at IS NOT NULL',
+      all: '1=1',
+    };
     const rows = await adapter.db.query<any>(
       `SELECT * FROM conversation
-       WHERE COALESCE(NULLIF(mode, ''), 'office') = ?
+       WHERE COALESCE(NULLIF(mode, ''), 'office') = ? AND ${LOCAL_LIFECYCLE[scope] ?? LOCAL_LIFECYCLE.active}
        ORDER BY pinned DESC, updated_at DESC`,
       [mode],
     );
     conversations.value = rows.map(rowToConv);
+  }
+
+  // ═══ 会话生命周期：归档 / 回收站（2026-10-16）══════════════════════════════
+  /** 归档 / 取消归档。后端只认 archived 布尔；失败（如已在回收站）会抛错由调用方提示 */
+  async function archiveConversation(id: string, archived: boolean) {
+    if (isServerMode()) {
+      await api.post(`/conversations/${id}/archive`, { archived });
+    } else {
+      const adapter = getPlatformAdapter();
+      await adapter.db.exec(
+        'UPDATE conversation SET archived_at = ? WHERE id = ? AND deleted_at IS NULL',
+        [archived ? Math.floor(Date.now()) : null, id],
+      );
+    }
+    await loadConversations();
+  }
+
+  /** 从回收站恢复（清 deleted_at；归档标记不动） */
+  async function restoreConversation(id: string) {
+    if (isServerMode()) {
+      await api.post(`/conversations/${id}/restore`, {});
+    } else {
+      const adapter = getPlatformAdapter();
+      await adapter.db.exec('UPDATE conversation SET deleted_at = NULL WHERE id = ?', [id]);
+    }
+    await loadConversations();
+  }
+
+  /** 永久删除（绕过回收站）。真删路径服务端已收口到 conversation-lifecycle.ts */
+  async function purgeConversation(id: string) {
+    if (isServerMode()) {
+      await api.delete(`/conversations/${id}/permanent`);
+    } else {
+      const adapter = getPlatformAdapter();
+      await adapter.db.exec('DELETE FROM message WHERE conversation_id = ?', [id]);
+      await adapter.db.exec('DELETE FROM conversation WHERE id = ?', [id]);
+    }
+    if (currentConvId.value === id) currentConvId.value = '';
+    delete messagesByConv.value[id];
+    delete queuedByConv.value[id];
+    clearHistoryPaging(id);
+    plansByConv.value = removePlan(plansByConv.value, id);
+    await loadConversations();
+  }
+
+  /** 清空回收站（永久）。返回删除条数 */
+  async function emptyTrash(): Promise<number> {
+    if (isServerMode()) {
+      const r = await api.delete<{ removed: number }>('/conversations/trash');
+      return ('data' in r && r.data) ? (r.data.removed ?? 0) : 0;
+    }
+    const adapter = getPlatformAdapter();
+    const rows = await adapter.db.query<any>('SELECT id FROM conversation WHERE deleted_at IS NOT NULL');
+    for (const r of rows) {
+      await adapter.db.exec('DELETE FROM message WHERE conversation_id = ?', [r.id]);
+      await adapter.db.exec('DELETE FROM conversation WHERE id = ?', [r.id]);
+    }
+    return rows.length;
+  }
+
+  /** 侧栏角标：已归档 / 回收站数量（server 模式走后端计数，本地模式自己数） */
+  const lifecycleCounts = ref<{ archived: number; trashed: number }>({ archived: 0, trashed: 0 });
+  async function loadLifecycleCounts() {
+    if (!isServerMode()) {
+      const adapter = getPlatformAdapter();
+      const rows = await adapter.db.query<any>(
+        `SELECT
+           SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS trashed,
+           SUM(CASE WHEN deleted_at IS NULL AND archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived
+         FROM conversation`,
+      );
+      lifecycleCounts.value = { archived: Number(rows[0]?.archived || 0), trashed: Number(rows[0]?.trashed || 0) };
+      return;
+    }
+    try {
+      const r = await api.get<{ archived: number; trashed: number }>('/conversations/counts');
+      if ('data' in r && r.data) {
+        lifecycleCounts.value = { archived: r.data.archived ?? 0, trashed: r.data.trashed ?? 0 };
+      }
+    } catch { /* 计数失败不阻塞主流程 */ }
+  }
+
+  /**
+   * 按 scope 拉会话列表但**不写入 conversations 主数组**（2026-10-16 归档/回收站用）。
+   *
+   * ★ 为什么不复用 loadConversations(scope)：那个函数会把 store.conversations
+   *   **整体替换**（切模式时正是靠它防串模式）。归档/回收站如果也往里写，
+   *   主列表、批量选择、导出这些"扫全量"的逻辑立刻就会看到它们 —— 归档的意义就没了。
+   *   （同一个坑在候选池下拉上真实发生过：共享缓存被单实体加载整体替换。）
+   */
+  async function loadConversationsByScope(scope: 'archived' | 'trashed' | 'all'): Promise<Conversation[]> {
+    const mode = activeMode.value;
+    if (isServerMode()) {
+      const r = await getWithRetry<any[]>(`/conversations?mode=${encodeURIComponent(mode)}&scope=${scope}`);
+      return 'data' in r && Array.isArray(r.data) ? (r.data as any[]).map(rowToConv) : [];
+    }
+    const adapter = getPlatformAdapter();
+    const LOCAL_LIFECYCLE: Record<string, string> = {
+      archived: 'deleted_at IS NULL AND archived_at IS NOT NULL',
+      trashed: 'deleted_at IS NOT NULL',
+      all: '1=1',
+    };
+    const rows = await adapter.db.query<any>(
+      `SELECT * FROM conversation
+       WHERE COALESCE(NULLIF(mode, ''), 'office') = ? AND ${LOCAL_LIFECYCLE[scope] ?? LOCAL_LIFECYCLE.all}
+       ORDER BY updated_at DESC`,
+      [mode],
+    );
+    return rows.map(rowToConv);
   }
 
   // ═══ 历史消息懒加载（2026-10-11，治"403 条消息全量拉取拖死渲染"主链路）═══
@@ -1350,12 +1476,13 @@ async function loadConversations() {
   }
 
   async function deleteConversation(id: string) {
+    // ★ 2026-10-16：删除改为**软删进回收站**（后端同一口径，本地模式同步）。
+    //   此前这里是真删 message + conversation，点错一下全部不可恢复。
     if (isServerMode()) {
       await api.delete(`/conversations/${id}`);
     } else {
       const adapter = getPlatformAdapter();
-      await adapter.db.exec('DELETE FROM message WHERE conversation_id = ?', [id]);
-      await adapter.db.exec('DELETE FROM conversation WHERE id = ?', [id]);
+      await adapter.db.exec('UPDATE conversation SET deleted_at = ? WHERE id = ?', [Math.floor(Date.now()), id]);
     }
     if (currentConvId.value === id) {
       currentConvId.value = '';
@@ -1366,17 +1493,18 @@ async function loadConversations() {
     // 一并清掉该会话的计划，避免 plansByConv 里留孤儿键
     plansByConv.value = removePlan(plansByConv.value, id);
     await loadConversations();
+    await loadLifecycleCounts();
   }
 
   async function deleteConversations(ids: string[]) {
     if (ids.length === 0) return;
+    // 同上：批量删除 = 批量移入回收站（可在回收站整体恢复）
     if (isServerMode()) {
       await Promise.all(ids.map((id) => api.delete(`/conversations/${id}`)));
     } else {
       const adapter = getPlatformAdapter();
       for (const id of ids) {
-        await adapter.db.exec('DELETE FROM message WHERE conversation_id = ?', [id]);
-        await adapter.db.exec('DELETE FROM conversation WHERE id = ?', [id]);
+        await adapter.db.exec('UPDATE conversation SET deleted_at = ? WHERE id = ?', [Math.floor(Date.now()), id]);
       }
     }
     if (ids.includes(currentConvId.value)) {
@@ -1390,6 +1518,7 @@ async function loadConversations() {
     // 浏览器操作串行链同样按会话清（防内存泄漏；进行中的操作不受影响）
     for (const id of ids) dropBrowserOpChain(browserOpChains, id);
     await loadConversations();
+    await loadLifecycleCounts();
   }
 
   async function addMessage(msg: Omit<Message, 'id' | 'createdAt'>): Promise<string> {
@@ -3293,6 +3422,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     planSteps, planTitle, clearPlan, clearPlanDisplayOnly,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
+    // 会话生命周期（2026-10-16 归档 + 回收站）
+    archiveConversation, restoreConversation, purgeConversation, emptyTrash, loadLifecycleCounts, lifecycleCounts,
+    loadConversationsByScope,
     loadMoreHistory, historyPagingByConv, HISTORY_PAGE_SIZE,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,
     getMergedMounts,

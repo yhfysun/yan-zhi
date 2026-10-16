@@ -5,6 +5,7 @@ import { runCmd } from '../services/exec-cmd.js';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { db, loadEffectiveTaskTypes } from '../db.js';
+import { softDeleteRow, lifecycleClause } from '../services/conversation-lifecycle.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { resolvePool } from '../services/model-pools.js';
@@ -2901,10 +2902,15 @@ export async function executeApiTool(
       // Conversation
       case 'api_conversation_list': {
         const uid = requireUser(userId);
-        return ok(db.prepare('SELECT * FROM conversation WHERE user_id = ? ORDER BY updated_at DESC').all(uid));
+        // ★ 只列正常会话：归档/回收站里的会话不该被模型看见（看见了就可能被调用、被引用、
+        //   被当成"用户当前的会话"注入上下文）。用户把它们收起来就是因为不想再被打扰。
+        return ok(db.prepare(
+          `SELECT * FROM conversation WHERE user_id = ? AND ${lifecycleClause('active')} ORDER BY updated_at DESC`,
+        ).all(uid));
       }
       case 'api_conversation_get':
-        return ok(db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ?').get(str(args, 'id'), requireUser(userId)) || null);
+        // 已删除（回收站）的会话对模型不可见；已归档仍可读（只读语义：查得到，但前端禁止发新消息）
+        return ok(db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ? AND deleted_at IS NULL').get(str(args, 'id'), requireUser(userId)) || null);
       case 'api_conversation_create': {
         const uid = requireUser(userId);
         const id = uuid();
@@ -2930,9 +2936,11 @@ export async function executeApiTool(
       case 'api_conversation_delete': {
         const uid = requireUser(userId);
         const id = str(args, 'id');
-        db.prepare('DELETE FROM message WHERE conversation_id = ? AND user_id = ?').run(id, uid);
-        db.prepare('DELETE FROM conversation WHERE id = ? AND user_id = ?').run(id, uid);
-        return ok({ deleted: true });
+        // ★ 2026-10-16：模型的删除改为**软删进回收站**（此前是真删 message + conversation）。
+        //   模型是在用户没点头的情况下替用户做决定的一方，它造成的后果必须是可恢复的 ——
+        //   真删一旦发生，用户连"为什么会没了"都没地方找。清理清单走统一出口，不在工具层重写。
+        const moved = softDeleteRow(id, uid);
+        return ok({ deleted: moved, trashed: moved });
       }
 
       /**

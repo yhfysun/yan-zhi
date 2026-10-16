@@ -1021,6 +1021,28 @@ export function createTask(params: {
     }
   }
 
+  // ── 会话生命周期拦截（2026-10-16「归档 + 回收站」）─────────────────────────
+  // 开新任务 = 用户要"继续对话"，这正是归档/删除要拦住的动作。
+  // 只在这里拦一次，覆盖全部入口（前端 SSE / IM / 定时任务 / 工作流）——
+  // 逐入口补拦是必然漏的（本项目已因此类漂移出过多次事故）。
+  // 错误码 CONVERSATION_ARCHIVED / CONVERSATION_TRASHED 由调用方映射 HTTP 状态。
+  try {
+    const life = db.prepare('SELECT archived_at, deleted_at FROM conversation WHERE id = ? AND user_id = ?')
+      .get(params.conversationId, params.userId) as any;
+    if (!life) {
+      throw new Error('CONVERSATION_NOT_FOUND: 会话不存在');
+    }
+    if (life.deleted_at) {
+      throw new Error('CONVERSATION_TRASHED: 会话已在回收站，请先从回收站恢复');
+    }
+    if (life.archived_at) {
+      throw new Error('CONVERSATION_ARCHIVED: 会话已归档，请先恢复归档会话');
+    }
+  } catch (e: any) {
+    if (String(e?.message || '').startsWith('CONVERSATION_')) throw e;
+    // 查库本身失败（如列未迁移）不阻断任务：fail-open 会让老库照常跑，比全员 500 好
+  }
+
   const taskId = 'task_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   // 会话级权限模式：以 conversation 表持久化值为准（前端下拉选择后随会话保存）
   // ★ 查不到/异常时兜底 readonly（fail-safe）：宁可误收窄也不静默放行写操作

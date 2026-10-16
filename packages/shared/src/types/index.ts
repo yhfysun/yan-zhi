@@ -125,7 +125,35 @@ export interface Conversation {
   mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'douyin';
   createdAt: number;
   updatedAt: number;
+  /**
+   * 归档时间戳（null = 未归档）。
+   *
+   * 归档 = **移出主列表但保留全部数据**，且会话变为**只读**——可查看/搜索/导出，
+   * 不可发新消息（对齐 ChatGPT：归档会话须 Unarchive 才能继续；Anthropic Agent SDK
+   * 更严格，archive 后直接拒绝新事件）。要继续就先「恢复」。
+   *
+   * ★ 用 nullable 时间戳而非布尔：列表排序需要"何时归档"，布尔就得再加一列。
+   */
+  archivedAt?: number | null;
+  /**
+   * 软删除时间戳（null = 未删除）。
+   *
+   * 2026-10-16 之前删除是**硬删**（连消息一起真删、不可恢复）。现在删除先进回收站，
+   * 只有回收站里的「永久删除」才真删。
+   */
+  deletedAt?: number | null;
+  /**
+   * 最后一次"真实对话活动"的时间戳（有消息产出时才刷新）。
+   *
+   * ★ 与 updatedAt 分离的必要性：自动归档（N 天不活跃）必须用它。
+   * 目前 PATCH 改名/置顶不刷 updatedAt，看起来够用；但只要将来有人在 PATCH 里补刷
+   * updatedAt，用它就会变成"改个名也算活跃"，14 天计时被静默重置。
+   */
+  lastActivityAt?: number | null;
 }
+
+/** 会话归属的生命周期状态：正常 / 已归档 / 已在回收站 */
+export type ConversationLifecycle = 'active' | 'archived' | 'trashed';
 
 /** 空间（文件夹）：组织会话与目录绑定 */
 export interface Space {

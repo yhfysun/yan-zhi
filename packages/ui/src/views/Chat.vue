@@ -24,6 +24,13 @@
 
     <section class="chat-main">
       <div class="chat-column">
+        <!-- 归档会话只读横幅（2026-10-16）：归档后可查看历史，但不能再发消息
+             （对齐 ChatGPT：必须 Unarchive 才能继续）。按钮一步恢复，不用去侧栏翻。 -->
+        <div v-if="currentConvArchived" class="conv-archived-banner">
+          <el-icon><FolderChecked /></el-icon>
+          <span>该会话已归档，历史记录可查看但不能再发送消息</span>
+          <el-button size="small" type="primary" @click="unarchiveCurrent()">取消归档，继续对话</el-button>
+        </div>
         <ChatTopbar />
         <ChatMessageList />
         <ChatInputArea />
@@ -41,8 +48,8 @@
 </template>
 
 <script setup lang="ts">
-import { watch, onBeforeUnmount, nextTick } from 'vue';
-import { Fold, Expand } from '@element-plus/icons-vue';
+import { watch, onBeforeUnmount, nextTick, computed } from 'vue';
+import { Fold, Expand, FolderChecked } from '@element-plus/icons-vue';
 import { useChat } from '../composables/chat/useChat';
 import { useResizable } from '../composables/useResizable';
 import ChatSidebar from '../components/chat/ChatSidebar.vue';
@@ -55,7 +62,7 @@ import ChatMountDialog from '../components/chat/ChatMountDialog.vue';
 import ChatSkillCards from '../components/chat/ChatSkillCards.vue';
 import ChatDialogs from '../components/chat/ChatDialogs.vue';
 
-const { convCollapsed, drawerOpen, store, contextSidebarOpen } = useChat();
+const { convCollapsed, drawerOpen, store, contextSidebarOpen, currentConvArchived, currentConv, archiveConv } = useChat();
 const sidebarR = useResizable('chat_sidebar', 280, 200, 460);
 const contextR = useResizable('chat_context', 286, 240, 480);
 const rightR = useResizable('chat_right', 480, 320, 1200);
@@ -67,6 +74,15 @@ const { width: rightW, moved: rightMoved } = rightR;
 function closeAllDrawers() {
   if (contextSidebarOpen.value) contextSidebarOpen.value = false;
   if (store.rightPanelOpen) store.rightPanelOpen = false;
+}
+
+/** 归档横幅的「取消归档，继续对话」：恢复后横幅自动消失（currentConvArchived 变 false） */
+async function unarchiveCurrent() {
+  const c = currentConv.value;
+  if (!c) return;
+  try {
+    await archiveConv(c, false);
+  } catch { /* 失败时横幅仍在，用户可重试 */ }
 }
 
 // 弹窗避开右侧预览面板：面板展开时标记 body 并写入面板宽度，.el-overlay 据此收窄右边界

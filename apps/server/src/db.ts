@@ -805,6 +805,22 @@ try { db.exec("UPDATE conversation SET mode = 'office' WHERE mode IS NULL OR mod
 // 列表查询是「按模式 + 用户」过滤并按 updated_at 排序，走复合索引
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_mode ON conversation(user_id, mode, updated_at)'); } catch {}
 
+// ── 会话生命周期三列（2026-10-16「归档 + 回收站」，必须与 core/db/schema.ts 同步）──
+// ★ 一律用 **nullable 时间戳**而不是 0/1 布尔：既表达"是否处于该状态"又携带"何时进入"。
+//   NULL = 不在该状态。依据：
+//   - ChatGPT：归档会话只读，须 Unarchive 才能继续；
+//   - Anthropic Agent SDK：archive 后禁止再发事件；
+//   - WorkBuddy sessions 表：deleted_at 软删 + last_activity_at 判不活跃。
+//   两套 CREATE TABLE / 迁移不同步是本项目已发生过的事故形态（core 侧一度缺 mode 列），
+//   故这里与 core/src/db/schema.ts 的 initSchema 里成对出现。
+for (const col of ['archived_at', 'deleted_at', 'last_activity_at']) {
+  try { db.exec(`ALTER TABLE conversation ADD COLUMN ${col} INTEGER`); } catch {}
+}
+// 存量会话回填：以最后改动时间作为初始活动时间戳，避免会话一上线就被判定为"N 天不活跃"。
+try { db.exec('UPDATE conversation SET last_activity_at = COALESCE(last_activity_at, updated_at) WHERE last_activity_at IS NULL'); } catch {}
+// 列表默认只查 deleted_at IS NULL AND archived_at IS NULL ⇒ 复合过滤，走索引避免全表扫
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_lifecycle ON conversation(deleted_at, archived_at)'); } catch {}
+
 // 迁移 message 表（添加 system_prompt_snapshot 列 + 子智能体归属列）
 try { db.exec('ALTER TABLE message ADD COLUMN system_prompt_snapshot TEXT'); } catch {}
 

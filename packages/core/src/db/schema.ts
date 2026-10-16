@@ -479,6 +479,18 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   // 迁移：conversation 新增 task_type 列（2026-10-14「父任务」层：多任务目录里每条任务各选一条子线，
   //   任务级优先于目录级 space.task_type；NULL = 跟随目录）
   try { await execFn(`ALTER TABLE conversation ADD COLUMN task_type TEXT;`); } catch { /* 列已存在 */ }
+  // ── 会话生命周期三列（2026-10-16「归档 + 回收站」）──────────────────────────
+  // ★ 一律用 **nullable 时间戳**而不是 0/1 布尔：既表达"是否处于该状态"又携带"何时进入"，
+  //   列表排序/展示不需要第二个字段（与 WorkBuddy sessions 表的 deleted_at 同范式）。
+  //   NULL = 不在该状态；非 NULL = 处于该状态，值是进入时的毫秒时间戳。
+  for (const col of ['archived_at', 'deleted_at', 'last_activity_at']) {
+    try { await execFn(`ALTER TABLE conversation ADD COLUMN ${col} INTEGER;`); } catch { /* 列已存在 */ }
+  }
+  // last_activity_at 独立于 updated_at：自动归档（7/14/30 天不活跃）的判据必须是它，
+  // 因为将来若有人给 PATCH 补刷 updated_at，用 updated_at 会让"改个名也算活跃"、计时被静默重置。
+  try { await execFn(`UPDATE conversation SET last_activity_at = COALESCE(last_activity_at, updated_at) WHERE last_activity_at IS NULL;`); } catch { /* 旧库无列时跳过 */ }
+  // 列表默认只看未归档+未删除的会话 ⇒ 这两列会出现在每条列表 SQL 里，建索引避免全表扫
+  try { await execFn(`CREATE INDEX IF NOT EXISTS idx_conversation_lifecycle ON conversation(deleted_at, archived_at);`); } catch { /* 索引已存在 */ }
   // 迁移：space 新增 task_type / task_config_json 列（「目录即任务」：目录绑定任务类型 + 类型覆盖配置）
   try { await execFn(`ALTER TABLE space ADD COLUMN task_type TEXT;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE space ADD COLUMN task_config_json TEXT;`); } catch { /* 列已存在 */ }

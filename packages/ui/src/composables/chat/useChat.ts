@@ -1224,10 +1224,24 @@ function createChat() {
   }
 
   const currentConv = computed(() => store.conversations.find((c) => c.id === store.currentConvId));
+  /**
+   * 当前会话是否已归档（2026-10-16）。
+   *
+   * 归档 = **只读**：可以看、可以搜、不能发新消息（对齐 ChatGPT 与
+   * Anthropic Agent SDK 的 archive 语义）。前端禁用输入框 + 顶部提示只是第一道，
+   * 真正的闸在服务端（POST /conversations/:id/messages 拦 role=user，
+   * createTask 拒绝给归档会话开任务）——前端那道是为了让用户看懂"为什么发不出去"。
+   */
+  const currentConvArchived = computed(() => !!currentConv.value?.archivedAt);
   const filteredConversations = computed(() => {
-    let list = store.conversations;
+    // ★ 生命周期兜底（2026-10-16）：主列表只渲染正常会话。
+    //   后端 GET /conversations 默认已按 scope=active 过滤，这里是**第二道**——
+    //   一旦后端口径漏了（或旧缓存里混进了已归档行），前端至少不会把它画进主列表。
+    //   ⚠️ 不能反过来说"前端有这道就不用改后端"：批量删除/导出这类扫 conversations 的
+    //      逻辑走的是 store.conversations 全量，前端过滤拦不住它们。
+    let list = store.conversations.filter((c) => !c.archivedAt && !c.deletedAt);
     if (!search.value.trim()) return list;
-    const q = search.value.toLowerCase();
+    const q = search.value.trim().toLowerCase();
     return list.filter((c) => c.title.toLowerCase().includes(q));
   });
   /** 对话根节点：未归入任何空间的会话 */
@@ -3716,10 +3730,70 @@ async function healStalePlatform() {
     if (!conv) return;
     closeCtxMenu();
     try {
-      await ElMessageBox.confirm(`删除会话"${conv.title}"？`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
+      // ★ 2026-10-16 语义变更：删除 = 移入回收站（可恢复）。
+      //   确认文案必须说清去向，否则用户以为"删了"就再也找不到（旧文案只有"删除会话？"）。
+      await ElMessageBox.confirm(`把会话"${conv.title}"移入回收站？回收站里可以恢复`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
       await store.deleteConversation(conv.id);
-      ElMessage.success('已删除');
+      ElMessage.success('已移入回收站');
     } catch {}
+  }
+
+  /**
+   * 归档 / 取消归档（2026-10-16）。
+   * ★ 归档后会话**只读**（对齐 ChatGPT / Anthropic Agent SDK）：可见、可搜、不可发消息。
+   *   要继续对话必须先取消归档 —— 所以这里成功后若当前会话正是它，就清掉选中，
+   *   让用户回主列表重新选（否则输入框还开着，第一道防线只剩前端禁用）。
+   */
+  async function archiveConv(conv: Conversation | null, archived = true) {
+    if (!conv) return;
+    closeCtxMenu();
+    try {
+      await store.archiveConversation(conv.id, archived);
+      if (store.currentConvId === conv.id) store.currentConvId = '';
+      ElMessage.success(archived ? '已归档（可随时恢复）' : '已取消归档');
+    } catch (e: any) {
+      ElMessage.error(e?.message || '操作失败');
+    }
+  }
+
+  /** 从回收站恢复 */
+  async function restoreConv(conv: Conversation | null) {
+    if (!conv) return;
+    try {
+      await store.restoreConversation(conv.id);
+      ElMessage.success('已恢复到主列表');
+      await loadLifecycleLists();
+    } catch (e: any) {
+      ElMessage.error(e?.message || '恢复失败');
+    }
+  }
+
+  /** 回收站内永久删除（真删，不可恢复） */
+  async function purgeConv(conv: Conversation | null) {
+    if (!conv) return;
+    try {
+      await ElMessageBox.confirm(`永久删除"${conv.title}"？消息将一并删除且无法恢复`, '永久删除', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
+      await store.purgeConversation(conv.id);
+      ElMessage.success('已永久删除');
+      await loadLifecycleLists();
+    } catch {}
+  }
+
+  // ═══ 归档 / 回收站列表（2026-10-16）══════════════════════════════════════
+  /** 侧栏「已归档」分组与「回收站」的数据：独立数组，**不并入** store.conversations
+   *  （并入会让主列表、批量选择、导出全都看到它们 —— 那正是归档要消除的"打扰"）。 */
+  const archivedConversations = ref<Conversation[]>([]);
+  const trashedConversations = ref<Conversation[]>([]);
+  async function loadLifecycleLists() {
+    try {
+      const [arch, trash] = await Promise.all([
+        store.loadConversationsByScope('archived'),
+        store.loadConversationsByScope('trashed'),
+      ]);
+      archivedConversations.value = arch;
+      trashedConversations.value = trash;
+    } catch { /* 拉取失败保留旧列表，不闪空 */ }
+    await store.loadLifecycleCounts();
   }
 
   function toggleConvSelect(id: string) {
@@ -3733,11 +3807,11 @@ async function healStalePlatform() {
   async function batchDeleteConvs() {
     if (selectedConvIds.value.size === 0) return;
     try {
-      await ElMessageBox.confirm(`删除 ${selectedConvIds.value.size} 个会话？`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
+      await ElMessageBox.confirm(`把 ${selectedConvIds.value.size} 个会话移入回收站？回收站里可以恢复`, '提示', { type: 'warning', confirmButtonClass: 'yz-confirm-danger' });
       await store.deleteConversations([...selectedConvIds.value]);
       selectedConvIds.value = new Set();
       batchMode.value = false;
-      ElMessage.success('已删除');
+      ElMessage.success('已移入回收站');
     } catch {}
   }
 
@@ -3900,6 +3974,9 @@ async function healStalePlatform() {
     isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, toolTargetHint, safeJson, isToolError, getToolStatusClass, getToolResult,
     toolResultIndex, getToolResultUncached,
     copyMsg, editMsg, quoteMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
+    // 会话生命周期（2026-10-16 归档 + 回收站）
+    archiveConv, restoreConv, purgeConv, loadLifecycleLists, archivedConversations, trashedConversations,
+    currentConvArchived,
     collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
     copySubAgentRoundMd, downloadSubAgentRoundMd, copySubAgentResultMd, downloadSubAgentResultMd,
     copyAssistantMd, downloadAssistantMd,

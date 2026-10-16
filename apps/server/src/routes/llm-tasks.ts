@@ -31,10 +31,21 @@ router.post('/tasks', (req: Request, res: Response) => {
     res.json({ data: { taskId: runningId, reused: true, injected: inj.status === 'injected', injectedMsgId: inj.msgId } });
     return;
   }
-const taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined,
-    // 越界守卫档位（2026-10-01）：与 workspaceDir 同一条下发通道（同一份设置来源）
-    pathGuard: (pathGuard === 'strict' || pathGuard === 'off' || pathGuard === 'ask') ? pathGuard : undefined,
-  });
+  let taskId: string;
+  try {
+    taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined,
+      // 越界守卫档位（2026-10-01）：与 workspaceDir 同一条下发通道（同一份设置来源）
+      pathGuard: (pathGuard === 'strict' || pathGuard === 'off' || pathGuard === 'ask') ? pathGuard : undefined,
+    });
+  } catch (e: any) {
+    // 会话被归档/删除/不存在时不给 500：前端要靠这个状态码给出「去恢复」的入口
+    // （报 500 的话前端只会显示"网络错误"，用户完全不知道去哪找回会话）。
+    const msg = String(e?.message || '');
+    if (msg.startsWith('CONVERSATION_TRASHED')) { res.status(409).json({ error: '会话已在回收站，请先从回收站恢复', code: 'CONVERSATION_TRASHED' }); return; }
+    if (msg.startsWith('CONVERSATION_ARCHIVED')) { res.status(409).json({ error: '会话已归档，请先恢复归档会话', code: 'CONVERSATION_ARCHIVED' }); return; }
+    if (msg.startsWith('CONVERSATION_NOT_FOUND')) { res.status(404).json({ error: '会话不存在', code: 'CONVERSATION_NOT_FOUND' }); return; }
+    throw e;
+  }
   res.json({ data: { taskId } });
 });
 
