@@ -220,6 +220,43 @@ export const usePlatformStore = defineStore('platform', () => {
     modelsLoaded.value = true;
   }
 
+  /**
+   * ★★ 「兜底加载」：**列表为空才补拉**，非空直接幂等返回（进行中的请求复用同一个 Promise）。
+   *
+   * 为什么需要（2026-10-16 用户实报「模型/智能体数据经常容易丢，要点进平台页再回会话下拉才出来」）：
+   * 拉清单只在 `useChat.onMounted`（会话页挂载）与几个管理页里发**一次**请求。冷启动那次若没落地——
+   * 后端还在起（网络层失败）、授权码未就绪（403，`getWithRetry` 对 4xx **不重试**）、
+   * 或后端重启窗口超过 5 次退避的总预算（~10.5s）——`models/platforms` 就**永久为空**，
+   * 用户只能自己进「模型平台」页逛一圈把共享缓存补回来。
+   *
+   * `modelsLoaded` 标志救不了这种情形：后端 200 + **空数组**一样会被判成"拉到了"（见上方注释的
+   * ①/② 之分），所以判据必须是「**有没有数据**」而不是「有没有拉过」。
+   *
+   * 与 `agentStore.ensureAgents()` 完全同口径 —— 智能体下拉早就靠它自愈（见
+   * `ChatInputArea.onAgentDropdownVisible` 的注释），模型这一侧一直没有，这才是「点平台页才出来」的根因。
+   */
+  let platformsInflight: Promise<void> | null = null;
+  let modelsInflight: Promise<void> | null = null;
+
+  async function ensurePlatforms(): Promise<void> {
+    if (platforms.value.length) return;
+    // 进行中的请求复用同一个 Promise：壳层预热与下拉展开兜底几乎同时触发，别发两遍。
+    // ★ 这里**不**与会话页的 `loadPlatforms()`（无条件全量刷新）去重 —— 那条路径保留原样，
+    //   因为它兼着"修复被 loadModels(pid) 整体替换成单平台清单的共享缓存"的职责，不能省。
+    if (!platformsInflight) {
+      platformsInflight = loadPlatforms().finally(() => { platformsInflight = null; });
+    }
+    return platformsInflight;
+  }
+
+  async function ensureModels(): Promise<void> {
+    if (models.value.length) return;
+    if (!modelsInflight) {
+      modelsInflight = loadModels().finally(() => { modelsInflight = null; });
+    }
+    return modelsInflight;
+  }
+
   async function addPlatform(p: Omit<Platform, 'id' | 'createdAt'>): Promise<string> {
     if (on()) {
       const r = await api.post<any>('/platforms', {
@@ -575,7 +612,7 @@ export const usePlatformStore = defineStore('platform', () => {
 
   return {
     platforms, models, apiKeys, loading, platformsLoaded, modelsLoaded,
-    loadPlatforms, loadModels, addPlatform, updatePlatform, deletePlatform,
+    loadPlatforms, loadModels, ensurePlatforms, ensureModels, addPlatform, updatePlatform, deletePlatform,
     addModel, updateModel, deleteModel,
     fetchRemoteModels, testConnectivity, testModel, testModelCapability,
     testPlatformConfig, fetchModelsPreview, startHealthCheck,

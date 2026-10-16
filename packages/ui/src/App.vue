@@ -129,6 +129,8 @@ import MobileNavDrawer from './components/MobileNavDrawer.vue';
 import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';
 import { useLicenseStore } from './stores/license';
+import { usePlatformStore } from './stores/platform';
+import { waitForBackend } from './api/backend-ready';
 
 import { useMobileShell } from './composables/useMobileShell';
 import { usePlatform } from './composables/usePlatform';
@@ -232,6 +234,8 @@ onMounted(async () => {
   //   只能重启才恢复（本函数注释里记的老坑）。init() 幂等，正常路径上零开销。
   await useLicenseStore().init();
   await bootPluginLayer();
+  // 业务清单预热（模型/智能体）：非阻塞，见 warmUpBusinessData 注释
+  void warmUpBusinessData();
 });
 
 /**
@@ -258,10 +262,49 @@ async function bootPluginLayer() {
   }
 }
 
+/**
+ * 冷启动预热业务清单：模型（平台 + 模型）与智能体。
+ *
+ * ★★ 为什么必须在壳层做（2026-10-16 用户实报「模型/智能体数据经常容易丢，要点进平台页
+ *   再回会话，下拉才出来」）：这两份清单此前**只**在 `useChat.onMounted`（会话页挂载）
+ *   里各拉一次。冷启动那一次若没落地，列表就永久为空 —— 用户只能自己进「模型平台」
+ *   逛一圈把共享缓存补回来。本组件恒挂载，在这里预热 = 不管用户落在哪个模式页，清单都已在路上。
+ *
+ * ★ 顺序不能反：先等内嵌后端就绪（没监听时请求直接扑空），再等授权码（keyring 异步 IPC，
+ *   冷启动存在"后端已就绪但码还没读出来"的窗口，此时 `/platforms` 会 403，而
+ *   `getWithRetry` 对 4xx **不重试**）—— 这两条正是"拉一次拉不到就永远没有"的成因。
+ *
+ * ★ 非阻塞（void）：预热不该拖慢首屏。下拉打开时还有一层 `ensure*` 兜底（见 ChatInputArea）。
+ * ★ 幂等：`ensure*` 只在列表为空时发请求，进行中的请求复用同一个 Promise → 与下游展开兜底不会发两遍。
+ *   与会话页 `useChat.onMounted` 那条路径（`loadPlatforms()/loadModels()` 无条件全量刷新）**可能**
+ *   在时间上重叠、多打一次只读接口 —— 有意保留：那份"每次全量刷新"的语义还兼着修复
+ *   被 `loadModels(pid)` 换成单平台清单的共享缓存，不能为了省一次请求把它改成 ensure*。
+ */
+async function warmUpBusinessData() {
+  try {
+    await waitForBackend();
+    await useLicenseStore().init();
+    const platformStore = usePlatformStore();
+    const agentStore = useAgentStore();
+    await Promise.allSettled([
+      platformStore.ensurePlatforms(),
+      platformStore.ensureModels(),
+      agentStore.ensureAgents(),
+    ]);
+  } catch {
+    // 预热失败不阻塞主应用：下拉展开时会再兜一次（见 ChatInputArea 的 ensure*）
+  }
+}
+
 // 激活成功后补跑插件层：授权页拿不到 /plugins，激活后必须重新拉一次（见 bootPluginLayer 注释）
+// ★ 业务清单同理：未激活时 /platforms 也是 403（冷启动那轮 `ensure*` 注定空手而归），
+//   所以激活后必须连模型/智能体清单一起补拉，否则用户激活完还得手动进平台页。
 const licenseStore = useLicenseStore();
 watch(() => licenseStore.verified, (now, before) => {
-  if (now && !before) void bootPluginLayer();
+  if (now && !before) {
+    void bootPluginLayer();
+    void warmUpBusinessData();
+  }
 });
 
 // 布局切换或插件清单变化时重新解析

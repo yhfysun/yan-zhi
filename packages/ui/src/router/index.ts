@@ -240,6 +240,63 @@ function firstLicensedRoute(): string {
   return first ? modeRoute(first.key) : '/chat';
 }
 
+/**
+ * 插件路由「首次同步完成」的信号 —— 治冷启动竞态。
+ *
+ * `/ops`、`/sec`、`/shop` 的模式路由**是插件贡献的**（见各插件 manifest 的
+ * `contributes.routes`），RouteRecord 由 `syncPluginRoutes()` 在
+ * `onMounted → pluginStore.refresh()` 之后才 addRoute。而冷启动时用户可能一上来
+ * 就落在这些路径上：桌面端上次会话的窗口 URL、书签、外部跳转、移动端 deep link、
+ * 多窗口的第二个窗口。首次导航跑在 addRoute 之前 → `to.matched` 为空 → 无匹配 →
+ * 空白页（观感是「点了一下没反应 / 白屏」，而不是什么错误提示）。
+ * 处置见 `beforeEach` 末尾：等这个信号（带上限）再重导航一次。
+ */
+let pluginRoutesSynced = false;
+let resolvePluginRoutesSynced: (() => void) | null = null;
+const pluginRoutesSyncedSignal = new Promise<void>((resolve) => {
+  resolvePluginRoutesSynced = resolve;
+});
+
+/** 插件路由首次同步完成的信号；已同步则立即 resolve。 */
+export function whenPluginRoutesSynced(): Promise<void> {
+  return pluginRoutesSynced ? Promise.resolve() : pluginRoutesSyncedSignal;
+}
+
+function markPluginRoutesSynced(): void {
+  if (pluginRoutesSynced) return;
+  pluginRoutesSynced = true;
+  resolvePluginRoutesSynced?.();
+  resolvePluginRoutesSynced = null;
+}
+
+/** 冷启动等待上限：插件层 403（授权门禁未放行）或接口挂了时，不能把用户无限期按在空白页上。 */
+const PLUGIN_ROUTES_SYNC_TIMEOUT_MS = 3000;
+
+/**
+ * 等插件路由首次同步，最多等 maxMs。
+ * 超时不是错误分支：到点就放行，让这次导航按「确实没有这条路由」走完 ——
+ * 好过一直挂在空白页上（用户至少还能从侧栏去到别处）。
+ */
+function waitForPluginRoutes(maxMs = PLUGIN_ROUTES_SYNC_TIMEOUT_MS): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, maxMs);
+    whenPluginRoutesSynced().then(done, done);
+  });
+}
+
+/**
+ * 冷启动重试过的路径 —— 防重导航成环。
+ *
+ * 等完（或超时）后路由仍没注册上时，重导航会再次走到同一个分支：没有这个集合就是
+ * 「等 → 重导航 → 再等」的死循环。注意 vue-router 的无限重定向保护**只在 dev 生效**
+ * （`process.env.NODE_ENV !== 'production'`），线上会真的转不出来。
+ */
+const coldStartRetried = new Set<string>();
+
 router.beforeEach(async (to) => {
   // 移动端重功能路由重定向到对话页，避免手动输 URL 进入
   if (isCapacitor && MOBILE_BLOCKED_PATHS.has(to.path)) {
@@ -275,6 +332,17 @@ router.beforeEach(async (to) => {
   ) {
     return { path: modeRoute(activeMode.value) };
   }
+  // ★ 冷启动竞态兜底：`/ops` 这类**插件贡献的模式路由**在冷启动时还没 addRoute，
+  //   此刻 `to.matched` 为空（无匹配）→ 空白页。等首次同步完成（上限 3s）再重导航一次，
+  //   这次路由表已就绪就能正常进。同一个路径只重试一次（见 coldStartRetried）。
+  //   ★ 位置：必须放在上面两条门禁**之后** —— 未激活授权 / 未授权模式该当场弹走，
+  //     不该陪跑这几秒（授权门禁未放行时 /plugins 是 403，永远等不到同步完成）。
+  if (to.matched.length === 0 && MODE_ROUTE_KEYS[to.path] && !coldStartRetried.has(to.fullPath)) {
+    coldStartRetried.add(to.fullPath);
+    await waitForPluginRoutes();
+    // replace：冷启动的首次导航不该在历史里多留一条（否则「返回」会退到同一个页面）
+    return { path: to.path, query: to.query, hash: to.hash, replace: true };
+  }
 });
 
 /** 动态挂载插件贡献的前端路由（在 usePluginStore.refresh 之后调用） */
@@ -292,6 +360,8 @@ export async function syncPluginRoutes(): Promise<void> {
         meta: r.meta,
       });
     }
+    // 首次同步完成 → 放行冷启动里等着的导航（见 whenPluginRoutesSynced）
+    markPluginRoutesSynced();
   } catch {
     /* plugin store 未就绪 */
   }

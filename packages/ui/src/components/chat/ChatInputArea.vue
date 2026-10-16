@@ -1427,6 +1427,12 @@ async function onCtxWindowChange(tokens: number) {
 // ★ 两个开关都要收尾（移动端与桌面端各自的弹层），漏一个会留下"幽灵弹层"没被清理
 watch([modelPopOpen, mobileModelPopOpen], ([desktopOpen, mobileOpen]) => {
   if (!desktopOpen && !mobileOpen) { closeCtxPanelNow(); modelSearch.value = ''; return; }
+  // ★ 展开时兜底加载（2026-10-16，与 onAgentDropdownVisible 完全同口径）：
+  //   冷启动那轮预热若没落地（后端未就绪 / 授权码未就绪 / 重试预算耗尽），共享缓存为空 →
+  //   下拉只剩一个「显示全部模型」的空壳。用户能展开下拉时后端必然已就绪，这里补一次即可，
+  //   不必再让他进「模型平台」页逛一圈。ensure* 幂等（空才拉 + 进行中复用），不会重复打接口。
+  void platformStore.ensurePlatforms();
+  void platformStore.ensureModels();
   // 打开 → 定位到当前选中的模型。
   // ★ 必须 nextTick + 两帧 rAF：popover 内容是 Teleport 到 body 的、打开瞬间才挂载，
   //   nextTick 后 DOM 在，但布局（含 sticky 分组标题占位）要等一帧才稳定 ——
