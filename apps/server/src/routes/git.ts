@@ -492,6 +492,54 @@ router.get('/remoteBranches', async (req: Request, res: Response) => {
   }
 });
 
+// ===== 远程仓库地址（查看 / 修改）=====
+// 名字与地址的校验在 service 层（services/git-remote.ts）：它们会进 git 命令行。
+// 「没有远程」返回空数组 200，不是 400 —— 新仓库本来就没有 origin。
+
+router.get('/remoteList', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.listRemotes(String(req.query.repo || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/remoteAdd', async (req: Request, res: Response) => {
+  try {
+    await gitService.addRemote(req.body.repo, req.body.name, req.body.url);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/remoteSetUrl', async (req: Request, res: Response) => {
+  try {
+    await gitService.setRemoteUrl(req.body.repo, req.body.name, req.body.url, req.body.push === true);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/remoteRename', async (req: Request, res: Response) => {
+  try {
+    await gitService.renameRemote(req.body.repo, req.body.oldName, req.body.newName);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/remoteRemove', async (req: Request, res: Response) => {
+  try {
+    await gitService.removeRemote(req.body.repo, req.body.name);
+    res.json({ data: { ok: true } });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 router.post('/deleteBranch', async (req: Request, res: Response) => {
   try {
     await gitService.deleteBranch(req.body.repo, req.body.name);

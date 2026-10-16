@@ -22,6 +22,15 @@ export interface GitAheadBehind {
   behind: number;
 }
 
+/** 远程仓库配置（后端 /git/remoteList 返回） */
+export interface GitRemote {
+  name: string;
+  /** 拉取地址 */
+  fetchUrl: string;
+  /** 推送地址；未单独配置时与 fetchUrl 相同 */
+  pushUrl: string;
+}
+
 /** status 接口返回的单个文件条目（simple-git 结构） */
 export interface GitStatusFile {
   path: string;
@@ -84,6 +93,27 @@ export function shouldSkipGitRead(probe: boolean | null): boolean {
  *
  * `null`（还没探 / 探测失败）**不净化**：未知不等于不是仓库，见 probeGitRepo 注释。
  */
+export function sanitizeSnapshotForPersist<T extends Record<string, unknown>>(
+  snap: T,
+  isRepo: boolean | null,
+): T {
+  if (isRepo !== false) return snap;
+  return {
+    ...snap,
+    status: null,
+    log: null,
+    branches: [],
+    currentBranch: '',
+    numstat: [],
+    aheadBehind: { ahead: 0, behind: 0 },
+    remoteBranches: [],
+    tags: [],
+    stash: [],
+    graph: [],
+    repoSummaries: [],
+  };
+}
+
 export const useGitStore = defineStore('git', () => {
   const supported = ref(false);
   const status = ref<Record<string, unknown> | null>(null);
@@ -126,6 +156,25 @@ export const useGitStore = defineStore('git', () => {
       bumpStatusVersion();
       return r;
     };
+  }
+
+  /**
+   * 清空**全局**仓库数据（状态 / 文件树 / 分支 / log）。
+   *
+   * ★ 为什么需要（2026-10-16 用户实报「这目录都没用 git 初始化管理，左边的还有这玩意」）：
+   *   本 store 是**单槽**的 —— 切目录、切仓库时没有任何一处会清它。于是「先看过仓库 A，
+   *   再打开非 Git 目录 B」时，面板从 `gitStore.status` 渲染出来的变更列表仍然是 A 的
+   *   （实测：侧栏显示 master / 变更 1 / 已暂存 1，其实是上一个仓库的文件），
+   *   还会被写进 B 的缓存长期留存（另一半防线见 sanitizeSnapshotForPersist）。
+   *
+   * ⚠️ 不 bump statusVersion：这不是仓库状态变更，只是"当前视图没有数据"。bump 会让
+   *    两侧订阅方再拉一轮（而它们各自本来就会先探针 → 直接短路），白跑且可能自激。
+   */
+  function clearRepoState() {
+    status.value = null;
+    fileTree.value = [];
+    branches.value = [];
+    log.value = null;
   }
 
   async function checkCapability(): Promise<void> {
@@ -343,6 +392,27 @@ export const useGitStore = defineStore('git', () => {
     const res = await api.get<string[]>(`/git/remoteBranches?repo=${encodeURIComponent(repo)}`);
     return 'data' in res ? res.data : [];
   }
+
+  // ===== 远程仓库地址（查看 / 修改）=====
+  /** 远程列表（名字 + 拉取/推送地址）。没配远程时是空数组，不是错误。 */
+  async function remoteList(repo: string): Promise<GitRemote[]> {
+    const res = await api.get<GitRemote[]>(`/git/remoteList?repo=${encodeURIComponent(repo)}`);
+    return 'data' in res ? res.data : [];
+  }
+  async function remoteAdd(repo: string, name: string, url: string) {
+    return api.post('/git/remoteAdd', { repo, name, url });
+  }
+  /** push=true 只改推送地址（fetch/push 指向不同仓库的部署需要它） */
+  async function remoteSetUrl(repo: string, name: string, url: string, push = false) {
+    return api.post('/git/remoteSetUrl', { repo, name, url, push });
+  }
+  async function remoteRename(repo: string, oldName: string, newName: string) {
+    return api.post('/git/remoteRename', { repo, oldName, newName });
+  }
+  /** 只解除关联，不动本地提交与分支 */
+  async function remoteRemove(repo: string, name: string) {
+    return api.post('/git/remoteRemove', { repo, name });
+  }
   async function deleteBranch(repo: string, name: string) {
     return api.post('/git/deleteBranch', { repo, name });
   }
@@ -464,12 +534,20 @@ export const useGitStore = defineStore('git', () => {
     rebase: withBump(rebase),
     rebaseAbort: withBump(rebaseAbort),
     remoteBranches,
+    // 远程地址：读列表不 bump；增/删/改会改变仓库状态（推送目标变了）→ 一律 withBump
+    remoteList,
+    remoteAdd: withBump(remoteAdd),
+    remoteSetUrl: withBump(remoteSetUrl),
+    remoteRename: withBump(remoteRename),
+    remoteRemove: withBump(remoteRemove),
     deleteBranch: withBump(deleteBranch),
     renameBranch: withBump(renameBranch),
     diffTree,
     commitDiff,
     graph,
     discoverAll,
+    // 非 Git 目录 / 切仓库时清空这个单槽 store 的残留（不 bump，见 clearRepoState 注释）
+    clearRepoState,
     readRepoCache,
     // ⚠️ 缓存写/清**不 bump**：面板 refreshAll 收尾会 persist() 写缓存，
     //    若它也 bump 就成 refresh → persist → bump → refresh 死循环。

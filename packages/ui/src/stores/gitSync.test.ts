@@ -29,6 +29,8 @@ const WRITE_METHODS = [
   'createBranch', 'mergeBranch', 'abortMerge', 'fetch',
   // initRepo：非 Git 目录一键初始化。会改变仓库状态（且探针结论翻面后两侧都得重拉）→ 必须 bump
   'initRepo',
+  // 远程地址增删改：推送目标变了，领先/落后与远程分支都会变 → 必须 bump
+  'remoteAdd', 'remoteSetUrl', 'remoteRename', 'remoteRemove',
   'stashSave', 'stashPop', 'stashApply', 'stashDrop',
   'tagCreate', 'tagDelete',
   'revert', 'reset', 'cherryPick', 'rebase', 'rebaseAbort',
@@ -41,7 +43,11 @@ const READ_METHODS = [
   'checkCapability', 'fetchStatus', 'fetchStatusRaw', 'fetchFileTree', 'fetchBranches',
   'fetchLog', 'readFile', 'diff', 'show', 'conflicts', 'conflictVersions',
   'fetchNumstat', 'fetchAheadBehind', 'fetchTree', 'stashList', 'tagList',
-  'blame', 'remoteBranches', 'diffTree', 'commitDiff', 'graph', 'discoverAll',
+  'blame', 'remoteBranches', 'remoteList', 'diffTree', 'commitDiff', 'graph', 'discoverAll',
+  // clearRepoState：**不碰网络的本地状态重置**（切到非 Git 目录时清空单槽，见 stores/git.ts）。
+  // 归在读侧不是因为"读"，而是因为口径相同：它绝不能 bump —— 清空只是"当前视图没数据"，
+  // bump 会让两侧订阅方白刷一轮（它们各自本来就会先探针再短路）。
+  'clearRepoState',
   'readRepoCache',
   // ★ 面板缓存：refreshAll 收尾会写它，故**必须**属于读侧
   'writeRepoCache', 'clearRepoCache',

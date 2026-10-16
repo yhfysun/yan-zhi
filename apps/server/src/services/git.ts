@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { isWithinRoot } from './path-guard.js';
+import { parseRemoteVerbose, assertRemoteName, assertRemoteUrl, type GitRemote } from './git-remote.js';
 
 /** 面板缓存：仓库内的隐藏目录（应用独有，随仓库走，不进版本库） */
 const CACHE_DIR = '.yan-zhi';
@@ -707,6 +708,58 @@ export class GitService {
     } catch {
       return [];
     }
+  }
+
+  // ===== 远程仓库地址（查看 / 修改）=====
+  //
+  // ★ 为什么单开一组：面板此前只能看到「远程分支」，看不到远程**地址**，也不能新增/修改 ——
+  //   用户想确认自己推的是哪个仓库、或把 origin 从 GitHub 换到内网 GitLab，只能去命令行。
+  // ★ 名字与地址来自用户输入且会原样进 git 命令行 ⇒ 一律先过 git-remote.ts 的校验
+  //   （挡 `-` 开头的参数注入与含空白的参数拆分），再交给 git。
+
+  /** 远程列表（git remote -v）。没有配置远程时返回空数组 —— 这是正常状态，不是错误。 */
+  async listRemotes(repo: string): Promise<GitRemote[]> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    try {
+      return parseRemoteVerbose(await this.open(repo).raw(['remote', '-v']));
+    } catch {
+      return [];
+    }
+  }
+
+  /** 添加远程（git remote add name url） */
+  async addRemote(repo: string, name: string, url: string): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    await this.open(repo).raw(['remote', 'add', assertRemoteName(name), assertRemoteUrl(url)]);
+  }
+
+  /**
+   * 修改远程地址（git remote set-url [--push] name url）。
+   * push=true 时只改推送地址（fetch 与 push 指向不同仓库的部署需要它）。
+   */
+  async setRemoteUrl(repo: string, name: string, url: string, push = false): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const args = ['remote', 'set-url'];
+    if (push) args.push('--push');
+    args.push(assertRemoteName(name), assertRemoteUrl(url));
+    await this.open(repo).raw(args);
+  }
+
+  /** 重命名远程（git remote rename old new） */
+  async renameRemote(repo: string, oldName: string, newName: string): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    await this.open(repo).raw(['remote', 'rename', assertRemoteName(oldName), assertRemoteName(newName)]);
+  }
+
+  /** 删除远程（git remote remove name）。只解除关联，不动本地提交与分支。 */
+  async removeRemote(repo: string, name: string): Promise<void> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    await this.open(repo).raw(['remote', 'remove', assertRemoteName(name)]);
   }
 
   /** 删除本地分支（git branch -d name） */

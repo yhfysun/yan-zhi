@@ -78,6 +78,8 @@
             <el-dropdown-item command="pull">拉取 Pull</el-dropdown-item>
             <el-dropdown-item command="push">推送 Push</el-dropdown-item>
             <el-dropdown-item command="fetch">抓取 Fetch</el-dropdown-item>
+            <!-- 远程地址：此前只能看到「远程分支」，看不到远程**地址**，也不能改（用户实报缺口） -->
+            <el-dropdown-item command="remotes">远程仓库地址…</el-dropdown-item>
             <el-dropdown-item command="merge" divided>合并分支…</el-dropdown-item>
             <el-dropdown-item command="rebase">变基 Rebase…</el-dropdown-item>
             <el-dropdown-item v-if="conflictFiles.length" command="abortMerge" divided>中止合并</el-dropdown-item>
@@ -123,14 +125,28 @@
 
     <!-- 列表区（独立滚动） -->
     <div class="git-scroll">
-      <!-- 非 Git 仓库：列表区换成一句说明 + 初始化入口。把根因写在界面上，
-           用户不必去翻控制台那四条 400 才知道发生了什么。 -->
-      <div v-if="gitIsRepo === false" class="git-no-repo">
-        <el-icon :size="26"><Box /></el-icon>
-        <p class="git-no-repo-title">该目录还不是 Git 仓库</p>
-        <p class="git-no-repo-path">{{ activeRepo || repo }}</p>
-        <el-button size="small" type="primary" :loading="busy" @click="doInitRepo">初始化仓库</el-button>
-      </div>
+      <!-- ★ 非 Git 目录：整块换成一句说明 + 一个出口（2026-10-16 用户实报）。
+           为什么必须整块拦掉、而不是靠里面各块自己 v-if：变更列表读的是**全局单槽**
+           gitStore.status，只要还没清干净，列表就照样渲染出上一个仓库的文件
+           （实测：一个从没有过 .git 的目录显示着 master / 已暂存 1 个文件）。
+           注意顺序：本分支必须在 gitLoading 之前 —— 不是仓库时压根没有"加载中"可言，
+           排在后面会被骨架屏挡住（同一天两个会话各加了一份空态，此处已合并为一份）。 -->
+      <template v-if="isNonRepo">
+        <div class="git-nonrepo">
+          <el-icon class="git-nonrepo-ico" :size="26"><FolderOpened /></el-icon>
+          <div class="git-nonrepo-title">该目录还不是 Git 仓库</div>
+          <div class="git-nonrepo-desc">
+            源码管理需要有仓库才能工作。初始化后即可查看变更、提交、关联远程地址。
+          </div>
+          <div class="git-nonrepo-path" :title="activeRepo || repo">{{ activeRepo || repo }}</div>
+          <button class="git-nonrepo-btn" :disabled="busy" @click="doInitRepo">
+            <el-icon v-if="busy" class="is-loading"><Loading /></el-icon>
+            <el-icon v-else><Plus /></el-icon>&nbsp;初始化 Git 仓库
+          </button>
+          <div class="git-nonrepo-hint">只会创建 .git 目录，不动你的文件（不提交、不建 .gitignore）。</div>
+        </div>
+      </template>
+
       <template v-else-if="gitLoading">
         <div v-for="i in 5" :key="'sk' + i" class="git-skeleton" />
       </template>
@@ -488,6 +504,13 @@
       :repos="repoSummaries.map((r) => ({ path: r.path, name: r.name }))"
       @committed="onDialogCommitted"
     />
+
+    <!-- 远程仓库地址：查看 / 新增 / 修改 / 重命名 / 删除 -->
+    <GitRemoteDialog
+      v-model="remoteDialogOpen"
+      :repo="activeRepo || repo"
+      @changed="onRemotesChanged"
+    />
   </div>
 </template>
 
@@ -498,8 +521,9 @@ import {
   Refresh, RefreshRight, RefreshLeft, Plus, Minus, Document, CopyDocument, Delete, Edit,
   PriceTag, Box, DArrowRight, Check, Search, MagicStick, ArrowDown, MoreFilled, Switch,
   Loading, Upload, Download, CaretRight, CaretBottom, View, Fold, Expand, FullScreen, Hide,
+  FolderOpened,
 } from '@element-plus/icons-vue';
-import { useGitStore, probeGitRepo, shouldSkipGitRead, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
+import { useGitStore, probeGitRepo, shouldSkipGitRead, sanitizeSnapshotForPersist, type GitNumstatEntry, type GitAheadBehind } from '../../stores/git';
 import { useChatStore } from '../../stores/chat';
 import { useSettingsStore } from '../../stores/settings';
 import { useCodeStore } from '../../stores/code';
@@ -508,6 +532,7 @@ import { LlmClient } from '@yan-zhi/core';
 import GitDiffViewer from './GitDiffViewer.vue';
 import MarkdownPreview from '../code/MarkdownPreview.vue';
 import GitCommitDialog from '../git/GitCommitDialog.vue';
+import GitRemoteDialog from '../git/GitRemoteDialog.vue';
 import { computeGraphLayout, segmentPath, laneX } from '../git/graphLanes';
 import { useGitAi, AI_COMMIT_RULES } from '../../composables/git/useGitAi';
 // 刷新合并闸门：本面板写操作收尾刷新与 statusVersion 跨区 watch 会同时触发
@@ -766,6 +791,12 @@ function clearRepoData() {
   tagsList.value = [];
   stashList.value = [];
   graphEntries.value = [];
+  // ★ 连全局单槽一起清（2026-10-16 用户实报：非 Git 目录仍显示 master / 变更 1）。
+  //   面板的 changedFiles / stagedFiles / untrackedFiles 都是从 `gitStore.status` 算出来的 ——
+  //   只清上面这些本地 ref 是不够的，上一个仓库的变更列表照样会渲染出来。
+  gitStore.clearRepoState();
+}
+
 async function loadRepoData(target?: string) {
   // 防御：target 可能为空（缓存恢复时 activeRepo 未回填），回落到工作目录根，仍为空则直接放弃
   const r = (target || activeRepo.value || repo.value || '').trim();
@@ -896,7 +927,11 @@ async function doInitRepo() {
 
 // ===== 缓存（后端落在仓库内 .yan-zhi/git-cache.json）=====
 function snapshot() {
-  return {
+  // ★ 落盘前净化（2026-10-16）：不是 Git 仓库时，仓库数据一律不写进**本目录**的缓存。
+  //   全局单槽 gitStore.status 可能还留着别的仓库的值 —— 不净化的话，这份快照会把
+  //   别的仓库的 master / 变更文件写进本目录的 .yan-zhi/git-cache.json，
+  //   下次打开本目录又被恢复，脏数据就"永久"留下来了（原 bug 的另一半）。
+  return sanitizeSnapshotForPersist({
     activeRepo: activeRepo.value,
     status: gitStore.status,
     log: gitStore.log,
@@ -909,7 +944,7 @@ function snapshot() {
     stash: stashList.value,
     graph: graphEntries.value,
     repoSummaries: repoSummaries.value,
-  };
+  }, gitIsRepo.value);
 }
 function applySnapshot(data: Record<string, unknown>) {
   const g = gitStore;
@@ -963,11 +998,20 @@ async function init(force = false) {
 
     const cached = !force ? await gitStore.readRepoCache(repo.value) : null;
     if (cached) {
+      // ★ 先探针、再套用缓存**数据**（2026-10-16 用户实报：非 Git 目录仍显示 master / 变更 1）。
+      //   缓存里的 status 可能来自**别的仓库**（gitStore.status 是全局单槽，切目录时不会自己清），
+      //   盲目套用就等于把别的仓库的变更当成这个目录的变更显示出来。
+      //   UI 偏好（展开状态 / 提交草稿）照旧恢复 —— 那是这个目录自己的东西。
+      const probe = await probeGitRepo(repo.value);
+      gitIsRepo.value = probe;
       applyUi((cached.ui as Record<string, unknown>) || {});
-      applySnapshot((cached.data as Record<string, unknown>) || {});
+      if (shouldSkipGitRead(probe)) clearRepoData();
+      else applySnapshot((cached.data as Record<string, unknown>) || {});
       // 缓存里没有 activeRepo 时回落到工作目录根，避免后续 refreshAll 以空路径请求
       if (!activeRepo.value) activeRepo.value = repo.value;
       gitLoading.value = false;
+      // 这一轮 refreshAll 会再探一次并 persist()：不是仓库时把脏缓存改写成干净快照（自愈，
+      // 见 snapshot() 的净化），于是这个目录下次打开不会再冒出别的仓库的变更。
       void refreshAll(false);
       return;
     }
@@ -1107,6 +1151,7 @@ async function onMoreCommand(cmd: string) {
     case 'pull': return doPull();
     case 'push': return doPush();
     case 'fetch': return doFetch();
+    case 'remotes': remoteDialogOpen.value = true; return;
     case 'merge': return doMergePrompt();
     case 'rebase': return doRebasePrompt();
     case 'abortMerge': return doAbortMerge();
@@ -1454,6 +1499,16 @@ async function onDialogCommitted() {
   await refreshAll(true);
 }
 
+/** 远程仓库地址弹窗（查看 / 新增 / 修改 / 重命名 / 删除） */
+const remoteDialogOpen = ref(false);
+/**
+ * 远程地址改动后重拉：换 origin 会直接改变「领先 / 落后」与远程分支列表，
+ * 面板上的 ↑↓ 计数若不同步就会自相矛盾。写操作本身已 bump statusVersion（顶栏也会跟着刷）。
+ */
+async function onRemotesChanged() {
+  await refreshAll(true);
+}
+
 // ===== 提交（侧栏输入框：Ctrl+Enter 提交 / Ctrl+Shift+Enter 提交并推送；放大进弹窗逐文件勾选） =====
 async function doCommit() {
   const msg = draftText.value;
@@ -1666,9 +1721,6 @@ onUnmounted(() => { document.removeEventListener('click', onDocClick); });
 /* ===== 列表区（独立滚动） ===== */
 .git-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 /* 非 Git 仓库的整块说明（列表区唯一内容）：图标 + 一句结论 + 目录路径 + 一个动作 */
-.git-no-repo { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 36px 16px; color: var(--color-text-secondary, #6b6b6b); text-align: center; }
-.git-no-repo-title { margin: 4px 0 0; font-size: 13px; color: var(--color-text, #1a1a1a); }
-.git-no-repo-path { margin: 0 0 8px; font-size: 11px; word-break: break-all; opacity: 0.75; }
 .git-skeleton { height: 14px; margin: 8px 10px; border-radius: 4px; background: linear-gradient(90deg, rgba(15,23,42,0.06), rgba(15,23,42,0.12), rgba(15,23,42,0.06)); animation: git-pulse 1.2s ease-in-out infinite; }
 @keyframes git-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 
@@ -1715,6 +1767,29 @@ onUnmounted(() => { document.removeEventListener('click', onDocClick); });
 .git-status-badge.conflict { color: #ef4444; }
 .git-status-badge.renamed { color: #8b5cf6; }
 .git-empty-inline { padding: 8px 12px; font-size: 12px; color: var(--color-text-tertiary, #999); }
+/* 非 Git 目录的空态：居中一列「说明 + 出口」。刻意做成整块面板的样子（而不是一行灰字），
+   否则用户会以为只是"这里暂时没数据"，而实际是"这个目录还没有仓库"。 */
+.git-nonrepo {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 28px 20px; text-align: center;
+}
+.git-nonrepo-ico { color: var(--color-text-tertiary, #bbb); }
+.git-nonrepo-title { font-size: 13px; font-weight: 600; color: var(--color-text, #1a1a1a); }
+.git-nonrepo-desc { font-size: 12px; line-height: 1.6; color: var(--color-text-soft, #6b6b6b); }
+.git-nonrepo-path {
+  max-width: 100%; font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--color-text-tertiary, #999); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left;
+}
+.git-nonrepo-btn {
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 2px;
+  padding: 5px 14px; font-size: 13px; cursor: pointer;
+  border: 1px solid var(--color-primary, #c2410c); border-radius: 6px;
+  background: var(--color-primary, #c2410c); color: #fff;
+}
+.git-nonrepo-btn:hover:not(:disabled) { filter: brightness(1.06); }
+.git-nonrepo-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.git-nonrepo-hint { font-size: 11px; color: var(--color-text-tertiary, #999); }
 
 /* ===== 储存库 ===== */
 .git-sub { margin: 0 4px; }

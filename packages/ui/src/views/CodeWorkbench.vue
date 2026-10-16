@@ -114,6 +114,12 @@
                 <el-icon :size="12"><Refresh /></el-icon>
                 <span class="cp-task-item-label">获取远程更新（不合并）</span>
               </div>
+              <div class="cp-task-divider"></div>
+              <!-- 远程地址：此前在顶栏也看不到自己推的是哪个仓库（用户实报缺口） -->
+              <div class="cp-task-item" @click="openGitRemotes">
+                <el-icon :size="12"><Link /></el-icon>
+                <span class="cp-task-item-label">远程仓库地址…</span>
+              </div>
             </div>
           </Teleport>
         </div>
@@ -252,12 +258,14 @@
       :files="conflictResolver.files"
       @aborted="refreshGitStatus"
     />
+    <!-- 远程仓库地址：顶栏同步下拉 →「远程仓库地址…」打开 -->
+    <GitRemoteDialog v-model="remoteDialogOpen" :repo="code.projectDir" @changed="onGitRemotesChanged" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Fold, Expand, Share, Download, Upload, Refresh, WarningFilled, Plus, Monitor, Close } from '@element-plus/icons-vue';
+import { FolderOpened, ArrowDown, ArrowRight, ChatDotRound, EditPen, FolderAdd, Check, Fold, Expand, Share, Download, Upload, Refresh, WarningFilled, Plus, Monitor, Close, Link } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useCodeStore, setCodeModeActive } from '../stores/code';
 import { activeMode, leadOf, setLead, type LeadMode } from '../stores/mode';
@@ -283,6 +291,7 @@ import ChatDialogs from '../components/chat/ChatDialogs.vue';
 import GitCommitDialog from '../components/git/GitCommitDialog.vue';
 import GitCheckoutConflictDialog from '../components/git/GitCheckoutConflictDialog.vue';
 import GitConflictResolver from '../components/git/GitConflictResolver.vue';
+import GitRemoteDialog from '../components/git/GitRemoteDialog.vue';
 
 const code = useCodeStore();
 const chatStore = useChatStore();
@@ -503,6 +512,10 @@ async function refreshGitStatusInner() {
     gitBranchDropdown.value = false;
     gitSyncDropdown.value = false;
     clearGitState();
+    // ★ 连全局 git 单槽一起清（2026-10-16 用户实报：非 Git 目录的侧栏仍显示 master / 变更 1）。
+    //   侧栏面板的变更列表是从 `gitStore.status` 算出来的；它不会因为本组件清了本地 ref 就跟着空，
+    //   上一条打开过的仓库的变更会一直挂在界面上（还会被写进本目录的缓存，见 sanitizeSnapshotForPersist）。
+    gitStore.clearRepoState();
     return;
   }
   const q = encodeURIComponent(code.projectDir);
@@ -664,6 +677,17 @@ async function doGitPush() {
     await refreshGitStatus();
   }
 }
+/** 远程仓库地址弹窗：查看 / 修改 origin（此前顶栏只有拉取/推送，看不到推的是哪个仓库） */
+const remoteDialogOpen = ref(false);
+function openGitRemotes() {
+  gitSyncDropdown.value = false;
+  remoteDialogOpen.value = true;
+}
+/** 远程地址改动后刷新顶栏：换 origin 会改变领先 / 落后计数 */
+function onGitRemotesChanged() {
+  void refreshGitStatus();
+}
+
 async function doGitFetch() {
   gitSyncDropdown.value = false;
   gitBusy.value = true;
