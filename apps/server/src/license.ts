@@ -30,11 +30,11 @@ export type Edition = 'lite' | 'basic' | 'pro';
  *  不自己维护一份，否则迟早两处漂移（改了一边忘了另一边，表现为「码升了但界面没放开」）。 */
 export const EDITION_MODES: Record<Edition, readonly string[]> = {
   lite: ['office'],
-  // 剪辑属产出型能力（基础版即可用），与 wf/dev 同档
-  // 抖音运营（douyin，2026-10-12）同属内容/电商型产出能力，与 clip 同档（basic 起）；
-  // lite 是试用档，刻意只放「办公」。
-  basic: ['office', 'wf', 'dev', 'clip', 'douyin'],
-  pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'douyin'],
+  // 剪辑属产出型能力（基础版即可用），与 wf/dev 同档；lite 是试用档，刻意只放「办公」。
+  // ★ 2026-10-16 douyin 模式下线（与 office 同形态的重复模式）：从 basic/pro 一并移除，
+  //   否则会下发一个前端 MODE_DEFS 里已不存在的模式 key（无害但不一致）。
+  basic: ['office', 'wf', 'dev', 'clip'],
+  pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec'],
 };
 
 export const EDITIONS: readonly Edition[] = ['lite', 'basic', 'pro'];

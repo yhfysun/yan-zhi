@@ -37,13 +37,14 @@ router.use(authMiddleware);
 // ★ 'clip'（剪辑模式）必须在内：漏掉时 POST 会把 mode='clip' 静默落成 'office'，
 //   于是剪辑任务在剪辑模式列表里**看不到**（按 mode 过滤为空），
 //   却混进办公模式的列表（真实缺陷，靠 CDP 真跑才发现）。
-// ★ 'douyin'（抖音运营模式，2026-10-12）同理：漏掉它，抖音会话会静默落成 office，
-//   在抖音模式列表里看不到、混进办公列表。
+// ★ 2026-10-16 douyin 模式下线（与 office 同形态的重复模式），故从白名单移除。
+//   移除**必须**与 db.ts 的存量迁移成对：白名单删掉而库里仍有 mode='douyin' 的行时，
+//   那些行在过滤条件 `... = ?` 下**任何模式都匹配不到** → 会话从列表里消失且不报错。
 // ★ 会话生命周期（归档 / 回收站，2026-10-16）：
 //   scope=active（默认，也是唯一给主列表用的）/ archived / trashed / all。
 //   过滤照旧放在 DB 层（理由同上）：归档与回收站会话**绝不能**出现在主列表响应里，
 //   否则批量删除、导出、计数这些「扫全量」的逻辑会连带处理用户认为已经被收起来的会话。
-const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'douyin']);
+const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip']);
 
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;

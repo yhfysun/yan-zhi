@@ -120,9 +120,11 @@ export interface Conversation {
    * 别的模式列表里，归属语义就乱了）。存量会话在迁移时统一归 'office'。
    *
    * ★ 与前端 stores/mode.ts 的 AppMode 联合类型成对维护：2026-10-12 补 clip（既有缺口，
-   *   一直靠 chat.ts 的 as cast 兜着）与 douyin（抖音运营模式）。
+   *   一直靠 chat.ts 的 as cast 兜着）。
+   * ★ 2026-10-16 移除 douyin：该模式无独立工作台、对话居中，与 office 同形态，属重复模式。
+   *   库里存量 mode='douyin' 的会话由 db.ts 的迁移统一改判 'office'，故联合类型里不再保留它。
    */
-  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'douyin';
+  mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip';
   createdAt: number;
   updatedAt: number;
   /**

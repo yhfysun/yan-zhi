@@ -29,7 +29,7 @@ async function freshModule(): Promise<ModeModule> {
   return import('./mode');
 }
 
-// 注意顺序：前端可见顺序**始终跟随 MODE_DEFS**（office, dev, ops, sec, wf, clip, douyin），
+// 注意顺序：前端可见顺序**始终跟随 MODE_DEFS**（office, dev, ops, sec, wf, clip），
 // 与后端 allowedModes 的下发顺序（office, wf, dev…）无关 —— 界面顺序不该被接口返回顺序左右。
 //
 // ★★ 为什么从 MODE_DEFS 推导而不是硬编码（2026-10-08 实测教训）：

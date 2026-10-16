@@ -802,6 +802,13 @@ try { db.exec("ALTER TABLE conversation ADD COLUMN mode TEXT DEFAULT 'office'");
 // 老库补值：ALTER 加的默认值只对新行生效？SQLite 的 ADD COLUMN DEFAULT 会给存量行回填，
 // 但若历史数据里已有 NULL（早于本迁移被别的路径写入），这里再兜一次，保证不为空。
 try { db.exec("UPDATE conversation SET mode = 'office' WHERE mode IS NULL OR mode = ''"); } catch {}
+// ★ 2026-10-16 douyin 模式下线（与 office 同形态的重复模式，用户拍板移除）：
+//   把存量抖音会话改判到 office。**这条不能省** —— 模式的合法性由前端白名单
+//   （stores/chat.ts）与后端 VALID_MODES 双重把关，两处都删掉 'douyin' 之后，
+//   过滤条件 `COALESCE(NULLIF(mode,''),'office') = 'office'` 恰好匹配不到 'douyin' 行，
+//   于是这些会话从**所有**模式的列表里消失且不报错（用户会以为数据丢了）。
+//   性质与上面那条回填相同：存量归属，不是功能逻辑。可重复执行（幂等）。
+try { db.exec("UPDATE conversation SET mode = 'office' WHERE mode = 'douyin'"); } catch {}
 // 列表查询是「按模式 + 用户」过滤并按 updated_at 排序，走复合索引
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_mode ON conversation(user_id, mode, updated_at)'); } catch {}
 

@@ -116,14 +116,14 @@ describe('EDITION_MODES · 档位到模式的映射', () => {
     expect(EDITION_MODES.lite).toEqual(['office']);
   });
 
-  it('基础版是办公 + 工作流 + 开发 + 剪辑 + 抖音运营', () => {
+  it('基础版是办公 + 工作流 + 开发 + 剪辑', () => {
     // 2026-10-08 同步：clip（剪辑模式，第六模式）属产出型能力，与 wf/dev 同档（见 license.ts 注释）
-    // 2026-10-12 同步：douyin（抖音运营模式，第七模式）同属内容/电商型产出能力，与 clip 同档
-    expect(EDITION_MODES.basic).toEqual(['office', 'wf', 'dev', 'clip', 'douyin']);
+    // 2026-10-16 同步：douyin 模式下线（与 office 同形态的重复模式），从 basic/pro 一并移除
+    expect(EDITION_MODES.basic).toEqual(['office', 'wf', 'dev', 'clip']);
   });
 
-  it('高级版是全部七模式', () => {
-    expect(EDITION_MODES.pro).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'douyin']);
+  it('高级版是全部六模式', () => {
+    expect(EDITION_MODES.pro).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec']);
   });
 
   it('档位单调递增：低档的模式是高哋的子集（不会出现「升级后功能反而少了」）', () => {
@@ -147,13 +147,13 @@ describe('allowedModes · 构建档 ∩ 授权档', () => {
       },
       basic: {
         lite: ['office'],
-        basic: ['office', 'wf', 'dev', 'clip', 'douyin'],
-        pro: ['office', 'wf', 'dev', 'clip', 'douyin'],
+        basic: ['office', 'wf', 'dev', 'clip'],
+        pro: ['office', 'wf', 'dev', 'clip'],
       },
       pro: {
         lite: ['office'],
-        basic: ['office', 'wf', 'dev', 'clip', 'douyin'],
-        pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'douyin'],
+        basic: ['office', 'wf', 'dev', 'clip'],
+        pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec'],
       },
     };
     for (const build of EDITIONS) {
@@ -165,7 +165,7 @@ describe('allowedModes · 构建档 ∩ 授权档', () => {
   });
 
   it('★ 高级包 + 基础码 = 五模式（用户拍板：高级包默认带基础码）', () => {
-    expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev', 'clip', 'douyin']);
+    expect(allowedModes('pro', 'basic')).toEqual(['office', 'wf', 'dev', 'clip']);
   });
 
   it('★ 构建档是硬上限：pro 码在阉割包里也只能开出办公模式', () => {
@@ -175,22 +175,22 @@ describe('allowedModes · 构建档 ∩ 授权档', () => {
 
   it('兜底档参与交集时不会意外放大权限', () => {
     expect(allowedModes('lite', FALLBACK_EDITION)).toEqual(['office']);
-    expect(allowedModes(DEFAULT_BUILD_EDITION, 'pro')).toEqual(['office', 'wf', 'dev', 'clip', 'douyin']);
+    expect(allowedModes(DEFAULT_BUILD_EDITION, 'pro')).toEqual(['office', 'wf', 'dev', 'clip']);
   });
 });
 
 describe('验签结果携带档位与放行模式', () => {
   it('三档码在各自构建档下返回正确 modes', () => {
     expect(verify(codeOf('lite'), 'lite').modes).toEqual(['office']);
-    expect(verify(codeOf('basic'), 'basic').modes).toEqual(['office', 'wf', 'dev', 'clip', 'douyin']);
-    expect(verify(codeOf('pro'), 'pro').modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'douyin']);
+    expect(verify(codeOf('basic'), 'basic').modes).toEqual(['office', 'wf', 'dev', 'clip']);
+    expect(verify(codeOf('pro'), 'pro').modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec']);
   });
 
   it('★ 老码（payload 无 edition 字段）在高级包里放行全量', () => {
     const r = verify(codeOf(undefined), 'pro');
     expect(r.valid).toBe(true);
     expect(r.edition).toBe('pro');
-    expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'douyin']);
+    expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec']);
   });
 
   it('★ 老码在阉割包里仍被构建档收住（构建档是硬上限）', () => {
@@ -212,7 +212,7 @@ describe('验签结果携带档位与放行模式', () => {
     expect(r.valid).toBe(false);
     // payload 已解析出来 → 能报出真实档位
     expect(r.edition).toBe('pro');
-    expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'douyin']);
+    expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'ops', 'sec']);
   });
 
   it('格式错误（无法解析 payload）的分支结构完整，不抛异常', () => {
@@ -294,7 +294,7 @@ describe('预置授权码 · 按档各一份', () => {
       expect(r.valid).toBe(true);
       expect(r.buildEdition).toBe('pro');
       expect(r.edition).toBe('basic');
-      expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip', 'douyin']);
+      expect(r.modes).toEqual(['office', 'wf', 'dev', 'clip']);
     } finally {
       if (prevEd === undefined) delete process.env.YZ_DEFAULT_EDITION;
       else process.env.YZ_DEFAULT_EDITION = prevEd;

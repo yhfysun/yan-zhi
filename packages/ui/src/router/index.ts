@@ -69,15 +69,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '剪辑' },
   },
   {
-    // 抖音运营模式（第七模式，stores/mode.ts 的 douyin）：无独立工作台 UI，复用 Chat.vue
-    //   （差异在会话池隔离 + 抖音运营助手 + 场景自动挂载，见 App.vue / useChat.ts）。
-    //   route 独立而不蹭 /chat：URL 反映模式 + 授权守卫按路由逐模式拦（MODE_ROUTE_KEYS）。
-    path: '/douyin',
-    name: 'douyin',
-    component: () => import('../views/Chat.vue'),
-    meta: { title: '抖音' },
-  },
-  {
     path: '/chat-hub',
     name: 'chat-hub',
     component: () => import('../views/ChatHub.vue'),
@@ -238,7 +229,6 @@ const MODE_ROUTE_KEYS: Record<string, AppMode> = {
   '/workflow': 'wf',
   '/code': 'dev',
   '/clip': 'clip',
-  '/douyin': 'douyin',
   '/ops': 'ops',
   '/sec': 'sec',
 };

@@ -193,7 +193,9 @@ function rowToConv(r: any): Conversation {
     // 否则老数据会在所有模式下都"隐身"——列表按 mode 过滤，NULL 匹配不上任何模式。
     // ★ 白名单必须与后端 routes/conversations.ts 的 VALID_MODES 同集：
     //   漏一个模式会让后端已正确落库的会话在前端被**静默改判成 office**（列表里看不到）。
-    mode: (['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'douyin'].includes(r.mode) ? r.mode : 'office') as Conversation['mode'],
+    //   douyin 已于 2026-10-16 下线；库里存量 mode='douyin' 的行由 db.ts 的迁移改判 office，
+    //   迁移先于本白名单生效，故这里少一项不会造成遗漏。
+    mode: (['office', 'dev', 'ops', 'sec', 'wf', 'clip'].includes(r.mode) ? r.mode : 'office') as Conversation['mode'],
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     // ── 生命周期三列（2026-10-16「归档 + 回收站」）──────────────────────────
