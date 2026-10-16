@@ -43,6 +43,20 @@ export function sourceFilterClause(q: unknown): string | null {
   return s ? `source = '${s}'` : null;
 }
 
+/**
+ * **反向**过滤：排除某个来源（主会话列表默认把页面对话收起来，只留「页面」徽标入口）。
+ *
+ * ★★★ 必须显式处理 NULL：`source <> 'browser-page'` 对普通会话（source IS NULL）求值为 NULL，
+ *   SQL 里 NULL 不成立 ⇒ **所有普通会话也被一起藏掉**，用户看到的是"我的会话全没了"。
+ *   （已用 `apps/server/test/conversation-source.test.ts` 钉住这个语义。）
+ * ★ `sourceFilterClause` 与 `excludeSourceClause` 同时传同一个来源时结果为空集 ——
+ *   两个参数本来就是互斥用法（一个给历史弹窗，一个给主列表），不做额外兼容。
+ */
+export function excludeSourceClause(q: unknown): string | null {
+  const s = normalizeConversationSource(q);
+  return s ? `(source IS NULL OR source <> '${s}')` : null;
+}
+
 /** 来源附加信息的体积上限：它只是一条线索（URL/站点），不是消息正文 */
 export const CONV_SOURCE_META_MAX = 4096;
 

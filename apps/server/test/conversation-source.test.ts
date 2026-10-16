@@ -18,6 +18,7 @@ import { openSqlite, type YzSqliteDb } from '../src/services/sqlite-driver.js';
 import {
   CONV_SOURCE_BROWSER_PAGE,
   CONVERSATION_SOURCES,
+  excludeSourceClause,
   initSchema,
   normalizeConversationSource,
   normalizeSourceMeta,
@@ -111,6 +112,30 @@ describe('会话来源标记 · 过滤 SQL 口径', () => {
     expect(CONVERSATION_SOURCES.length).toBeGreaterThan(0);
     expect(sourceFilterClause(CONV_SOURCE_BROWSER_PAGE)).toContain(CONV_SOURCE_BROWSER_PAGE);
     expect(sourceFilterClause('nope')).toBeNull();
+  });
+
+  it('★★ excludeSource：排除页面对话时**普通会话（source IS NULL）一条都不能少**', () => {
+    // 这是本功能最阴的一个坑：`source <> 'browser-page'` 对 source IS NULL 的行求值为 NULL，
+    // SQL 里 NULL 不成立 ⇒ 普通会话也被一起筛掉，用户看到的是「我的会话全没了」。
+    // 所以断言的重点不是"页面对话被排除了"，而是"普通会话**还在**"。
+    const cond = excludeSourceClause(CONV_SOURCE_BROWSER_PAGE)!;
+    expect(cond).toBeTruthy();
+    const rows = db
+      .prepare(`SELECT id FROM conversation WHERE ${['user_id = ?', LIFE_ACTIVE, cond].join(' AND ')} ORDER BY updated_at DESC`)
+      .all('guest') as Array<{ id: string }>;
+    expect(rows.map((r) => r.id)).toEqual(['c_junk', 'c_plain']);   // 页面对话（c_page*）没了，其余都在
+    // 白名单外的值仍按"不过滤"（含 NULL 兜底的整段拼法都不会出现）
+    expect(excludeSourceClause('nope')).toBeNull();
+    expect(excludeSourceClause(undefined)).toBeNull();
+  });
+
+  it('excludeSource 与 lifecycle 叠加：归档/回收站里的页面对话也不在主列表里', () => {
+    const cond = excludeSourceClause(CONV_SOURCE_BROWSER_PAGE)!;
+    const rows = db
+      .prepare(`SELECT id FROM conversation WHERE ${['user_id = ?', LIFE_ACTIVE, cond].join(' AND ')}`)
+      .all('guest') as Array<{ id: string }>;
+    expect(rows.map((r) => r.id)).not.toContain('c_page_archived');
+    expect(rows.map((r) => r.id)).not.toContain('c_page_trashed');
   });
 });
 

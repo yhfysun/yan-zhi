@@ -18,6 +18,21 @@
              （2026-10-04：原独立一行描边按钮与空态大按钮重复，用户红框要求收敛） -->
         <div class="conv-search-row">
           <el-input v-model="search" placeholder="搜索任务" size="small" clearable :prefix-icon="Search" />
+          <!-- 浏览器页面对话默认收起（它们由浏览器面板的「历史」管理），这里是查看/收起的开关。
+               带数字角标是为了**别让"收起来了"变成"消失了"** —— 有 N 条时按钮上直接写 N。 -->
+          <button
+            v-if="!batchMode"
+            class="conv-new-icon page-conv-toggle"
+            :class="{ 'is-on': store.showPageConvs }"
+            type="button"
+            :title="store.showPageConvs
+              ? '收起浏览器页面对话（仍可在浏览器面板的「历史」里打开 / 删除）'
+              : `显示浏览器页面对话${pageConvCount ? `（已收起 ${pageConvCount} 条）` : ''}`"
+            @click="togglePageConvs"
+          >
+            <el-icon :size="14"><Monitor /></el-icon>
+            <span v-if="!store.showPageConvs && pageConvCount" class="page-conv-badge">{{ pageConvCount > 99 ? '99+' : pageConvCount }}</span>
+          </button>
           <button v-if="!batchMode" class="conv-new-icon" type="button" title="新建任务" @click="startNewChat()">
             <el-icon :size="14"><Plus /></el-icon>
           </button>
@@ -589,7 +604,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft,
+  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft, Monitor,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/shared';
@@ -813,6 +828,18 @@ function toggleTrash() {
     archivedCollapsed.value = false;
     void loadLifecycleLists();
   }
+}
+
+/** 被收起的浏览器页面对话条数（角标；来自 /conversations/counts，不是"列表长度"—— 那些本就不在主列表里） */
+const pageConvCount = computed(() => store.lifecycleCounts.pageSessions || 0);
+
+/**
+ * 显示 / 收起浏览器页面对话。
+ * ★ 必须**重拉列表**：过滤在服务端（前端过滤只是"看不见"，批量删除这类扫全量的逻辑仍会扫到）。
+ */
+async function togglePageConvs() {
+  store.setShowPageConvs(!store.showPageConvs);
+  await store.loadConversations();
 }
 
 /** 展开归档区/回收站时刷新列表；恢复、永久删除、归档都要回到这里 */

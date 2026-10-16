@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick, watch } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView } from '@yan-zhi/shared';
-import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta } from '@yan-zhi/core';
+import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
@@ -368,6 +368,28 @@ import { SWEEP_INTERVAL_MS, shouldSweepConv } from './stale-run-sweep';
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([]);
+
+  /**
+   * 「显示浏览器页面对话」偏好（2026-10-16）：默认**隐藏**。
+   * ★ 为什么默认隐藏：页面对话是"问一句就走"的（/browser 每个 tab 一条），
+   *   混进任务列表后噪声远大于信息量；它们有自己的管理入口（浏览器面板「历史」）。
+   * ★ 为什么还要有这个开关：藏起来不等于不存在 —— 用户可能就是想在这个列表里看到全部会话。
+   *   打开时列表会多出带「页面」徽标的行，且**服务端**才做过滤（前端过滤只是"看不见"，
+   *   批量删除/导出这类扫全量的逻辑仍会把它们扫到）。
+   * ★ 存 localStorage 而不是服务端：这是**本设备的视图偏好**，不是账号数据
+   *   （与 yz_conv_root_collapsed 同口径）。
+   */
+  const SHOW_PAGE_CONVS_KEY = 'yz_show_page_convs';
+  function readShowPageConvs(): boolean {
+    // localStorage 在部分环境（隐私模式 / 个别单测的 node 环境）不可用 —— 失败即按默认（隐藏）
+    try { return localStorage.getItem(SHOW_PAGE_CONVS_KEY) === '1'; } catch { return false; }
+  }
+  const showPageConvs = ref(readShowPageConvs());
+  function setShowPageConvs(v: boolean) {
+    showPageConvs.value = !!v;
+    try { localStorage.setItem(SHOW_PAGE_CONVS_KEY, showPageConvs.value ? '1' : '0'); } catch { /* 忽略 */ }
+  }
+
   const currentConvId = ref('');
   // 会话级消息缓存：每个会话独立一份消息数组，支持多会话并行（后台会话流式时不会污染当前会话视图）
   const messagesByConv = ref<Record<string, Message[]>>({});
@@ -1108,7 +1130,11 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       //   重试窗口（~10.5s）覆盖后端 seed/迁移冷启；仍失败则保留现有列表等下次刷新。
       // ★ scope（2026-10-16）：默认 active = 只拿正常会话。归档/回收站由专门的
       //   loadLifecycle 拉取（不进 conversations 主数组，否则主列表会串）。
-      const r = await getWithRetry<any[]>(`/conversations?mode=${encodeURIComponent(mode)}&scope=${scope}`);
+      // ★ excludeSource（2026-10-16）：默认把浏览器页面对话排除在外（见 showPageConvs 的说明）。
+      //   过滤必须下推到后端：前端过滤只是"看不见"，批量删除/计数这类扫全量的逻辑仍会扫到。
+      const q = new URLSearchParams({ mode, scope });
+      if (!showPageConvs.value) q.set('excludeSource', CONV_SOURCE_BROWSER_PAGE);
+      const r = await getWithRetry<any[]>(`/conversations?${q.toString()}`);
       if ('data' in r && Array.isArray(r.data)) {
         conversations.value = (r.data as any[]).map(rowToConv);
         conversationsLoadedMode = mode; // 成功才记录：失败时仅同模式列表可保留（防串模式）
@@ -1132,6 +1158,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     const rows = await adapter.db.query<any>(
       `SELECT * FROM conversation
        WHERE COALESCE(NULLIF(mode, ''), 'office') = ? AND ${LOCAL_LIFECYCLE[scope] ?? LOCAL_LIFECYCLE.active}
+         ${showPageConvs.value ? '' : `AND ${excludeSourceClause(CONV_SOURCE_BROWSER_PAGE)}`}
        ORDER BY pinned DESC, updated_at DESC`,
       [mode],
     );
@@ -1225,24 +1252,33 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     return n;
   }
 
-  /** 侧栏角标：已归档 / 回收站数量（server 模式走后端计数，本地模式自己数） */
-  const lifecycleCounts = ref<{ archived: number; trashed: number }>({ archived: 0, trashed: 0 });
+  /** 侧栏角标：已归档 / 回收站 / 被收起来的页面对话（server 模式走后端计数，本地模式自己数） */
+  const lifecycleCounts = ref<{ archived: number; trashed: number; pageSessions: number }>({ archived: 0, trashed: 0, pageSessions: 0 });
   async function loadLifecycleCounts() {
     if (!isServerMode()) {
       const adapter = getPlatformAdapter();
       const rows = await adapter.db.query<any>(
         `SELECT
            SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS trashed,
-           SUM(CASE WHEN deleted_at IS NULL AND archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived
+           SUM(CASE WHEN deleted_at IS NULL AND archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived,
+           SUM(CASE WHEN deleted_at IS NULL AND archived_at IS NULL AND source = '${CONV_SOURCE_BROWSER_PAGE}' THEN 1 ELSE 0 END) AS page_sessions
          FROM conversation`,
       );
-      lifecycleCounts.value = { archived: Number(rows[0]?.archived || 0), trashed: Number(rows[0]?.trashed || 0) };
+      lifecycleCounts.value = {
+        archived: Number(rows[0]?.archived || 0),
+        trashed: Number(rows[0]?.trashed || 0),
+        pageSessions: Number(rows[0]?.page_sessions || 0),
+      };
       return;
     }
     try {
-      const r = await api.get<{ archived: number; trashed: number }>('/conversations/counts');
+      const r = await api.get<{ archived: number; trashed: number; pageSessions?: number }>('/conversations/counts');
       if ('data' in r && r.data) {
-        lifecycleCounts.value = { archived: r.data.archived ?? 0, trashed: r.data.trashed ?? 0 };
+        lifecycleCounts.value = {
+          archived: r.data.archived ?? 0,
+          trashed: r.data.trashed ?? 0,
+          pageSessions: r.data.pageSessions ?? 0,
+        };
       }
     } catch { /* 计数失败不阻塞主流程 */ }
   }
@@ -3471,6 +3507,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     // 会话生命周期（2026-10-16 归档 + 回收站）
     archiveConversation, restoreConversation, purgeConversation, emptyTrash, loadLifecycleCounts, lifecycleCounts,
+    /** 「显示浏览器页面对话」偏好与开关（侧栏搜索行那个图标按钮用） */
+    showPageConvs, setShowPageConvs,
     archiveAllInSpace, dropConvRuntime,
     loadConversationsByScope,
     loadMoreHistory, historyPagingByConv, HISTORY_PAGE_SIZE,

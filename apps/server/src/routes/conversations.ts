@@ -14,7 +14,7 @@ import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workf
 import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode, compressConversationNow } from '../llm-task-manager.js';
 import { estimateTokens } from '@yan-zhi/shared';
 // 会话来源标记：白名单与规范化只有 core 一处实现（写入与过滤共用，免得上游各自写字面量）
-import { normalizeConversationSource, normalizeSourceMeta, sourceFilterClause } from '@yan-zhi/core';
+import { normalizeConversationSource, normalizeSourceMeta, sourceFilterClause, excludeSourceClause, CONV_SOURCE_BROWSER_PAGE } from '@yan-zhi/core';
 
 const router = Router();
 router.use(authMiddleware);
@@ -66,24 +66,37 @@ router.get('/', (req: Request, res: Response) => {
   //   非法来源同样按不过滤处理（口径与 mode 一致，实现在 core 的 sourceFilterClause）。
   const sourceCond = sourceFilterClause(req.query.source);
   if (sourceCond) conds.push(sourceCond);
+  // 反向：主列表默认把页面对话排除掉（它们由浏览器面板的「历史」管理，不该灌满任务列表）。
+  //   前端开关打开时不传这个参数即回到全量。★ NULL 语义的坑见 core 的 excludeSourceClause。
+  const excludeCond = excludeSourceClause(req.query.excludeSource);
+  if (excludeCond) conds.push(excludeCond);
   const rows = db.prepare(
     `SELECT * FROM conversation WHERE ${conds.join(' AND ')} ORDER BY pinned DESC, updated_at DESC`,
   ).all(...params);
   res.json({ data: rows });
 });
 
-// GET /api/conversations/counts —— 侧栏「已归档 / 回收站」角标。
-// ★ 单独给计数而不是让前端囤全量再算：主列表默认只拉 active，前端拿不到另外两类。
+// GET /api/conversations/counts —— 侧栏角标：已归档 / 回收站 / 页面对话。
+// ★ 单独给计数而不是让前端囤全量再算：主列表默认只拉 active（且默认已排除页面对话），
+//   前端拿不到另外这些类。
 // ★ 必须在 /:id 之前注册，否则会被当成会话 id。
 router.get('/counts', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const row = db.prepare(
     `SELECT
        SUM(CASE WHEN deleted_at IS NOT NULL THEN 1 ELSE 0 END) AS trashed,
-       SUM(CASE WHEN deleted_at IS NULL AND archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived
+       SUM(CASE WHEN deleted_at IS NULL AND archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived,
+       -- 页面对话：只说"收起来了多少条"，供侧栏开关打角标用（回收/归档的不算，它们有自己的去处）
+       SUM(CASE WHEN deleted_at IS NULL AND archived_at IS NULL AND source = '${CONV_SOURCE_BROWSER_PAGE}' THEN 1 ELSE 0 END) AS page_sessions
      FROM conversation WHERE user_id = ?`,
   ).get(userId) as any;
-  res.json({ data: { archived: Number(row?.archived || 0), trashed: Number(row?.trashed || 0) } });
+  res.json({
+    data: {
+      archived: Number(row?.archived || 0),
+      trashed: Number(row?.trashed || 0),
+      pageSessions: Number(row?.page_sessions || 0),
+    },
+  });
 });
 
 // POST /api/conversations/archive-all —— 一键归档某空间下的全部 active 会话（侧栏空间右键菜单）。
