@@ -4,6 +4,7 @@ import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
 import { createLogger } from '../services/logger.js';
+import { normalizePermissionMode, checkToolPermission } from '../tool-permission.js';
 
 // ★ 文件内另有 tesseract.js 选项属性 { logger: () => {} }（第三方 API 名，不可改名）；
 //   对象属性名不与导入的 logger 绑定冲突，可安全共存（P4b 遗留手工迁移）。
@@ -96,6 +97,16 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
   if (!name) { res.status(400).json({ error: 'name 为必填项' }); return; }
   const rawArgs = req.body?.args;
   const args = (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) ? rawArgs as Record<string, unknown> : {};
+  // ★ 权限模式判定（2026-10-17）：本端点此前**完全不判 permissionMode** ——
+  //   只读会话也能借它跑 file_write / cmd_exec 这类写工具，等于在权限体系上开了个侧门。
+  //   · 缺省 `'all'`：保持既有语义不变（这里是"UI 试跑"＝用户自己点按钮触发，
+  //     见下方 path-guard 段落的既有口径），不给现有调用方造成行为回归；
+  //   · **命令中枢**那条路会显式带上会话的权限模式，于是读写判定跟会话一致。
+  const permVerdict = checkToolPermission(normalizePermissionMode(req.body?.permissionMode), name);
+  if (!permVerdict.allowed) {
+    res.status(403).json({ error: permVerdict.reason || `当前权限模式不允许执行工具「${name}」` });
+    return;
+  }
   try {
     let result: unknown;
     // ★ 判定用 isApiExecutableTool 而不是 startsWith('api_')：media_compose / media_install_ffmpeg
@@ -139,6 +150,16 @@ router.post('/builtin/execute', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(500).json({ error: e?.message || '内置工具执行失败' });
   }
+});
+
+// GET /api/tools/builtin/commands — 可"命令化"的**只读**内置工具清单（命令中枢用，2026-10-17）
+// ★ 为什么由服务端给而不是前端写死清单：读写判定只有服务端有（WRITE_TOOLS 在 tool-permission.ts），
+//   前端再维护一份必然漂移，而漂移的后果是"只读的命令跑出了写工具"。这里过一遍
+//   `checkToolPermission('readonly', ...)`，前端拿到的每一条都保证只读。
+// ★ 必须定义在 GET /:id 之类的动态路由之前（与 /builtin/execute 同一理由）。
+router.get('/builtin/commands', async (_req: Request, res: Response) => {
+  const { readOnlyBuiltinCommands } = await import('../builtin-command-tools.js');
+  res.json({ data: readOnlyBuiltinCommands() });
 });
 
 // POST /api/tools/:id/execute — 执行自定义工具（服务端 node:vm 沙箱）

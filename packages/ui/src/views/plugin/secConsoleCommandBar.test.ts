@@ -50,19 +50,39 @@ describe('★ 命令行：与聊天框的面板同源，不另起执行链', () 
   });
 });
 
-describe('★ 收敛边界：8 个 Tab 与人工闸门都必须还在', () => {
+describe('★ 收敛边界：Tab 数下降，但功能与人工闸门一个都不能少', () => {
   it('★ attack_sim 的人工触发通道不能被收敛掉（丢了它该工具直接不可用）', () => {
     // HUMAN_ONLY_TOOLS 依赖 requester='human'，而它由 /run 路由注入 ——
-    // "人工点击"的那个入口就在演练 Tab（postRun('attack_sim') + 二次确认弹窗）。
+    // "人工点击"的那个入口就是「高级表单 · 演练」里的「▶ 演练」按钮（postRun('attack_sim') + 二次确认）。
+    // 收敛把演练**折叠**进「终端」，但入口本身必须还在。
     expect(SRC).toContain("postRun('attack_sim'");
     expect(SRC).toContain('simConfirm');
   });
 
-  it('8 个 Tab 仍在（本次只加命令行，**没有**做"收敛为命令行 + 运行卡"那一步）', () => {
+  it('★ Tab 从 8 收敛到 3（终端 / 结果 / 环境）——界面不再随能力增长', () => {
     const i = RAW.indexOf('const TABS');
     const tabBlock = RAW.slice(i, i + 1400);
     const nums = [...tabBlock.matchAll(/num:\s*'(\d+)'/g)].map((m) => m[1]);
-    expect(nums).toEqual(['01', '02', '03', '04', '05', '06', '07', '08']);
+    expect(nums).toEqual(['01', '02', '03']);
+  });
+
+  it('★ 收敛只改信息架构：四个动作面降级为「高级表单」，一个都没删', () => {
+    expect(SRC, '用 <details> 折叠').toContain('sec-adv');
+    // 每个表单自己的入口按钮都还在（沿用原按钮文案，避免"收敛"变成"删功能"）
+    for (const label of ['▶ 执行', '▶ 演练', '▶ 运行', '▶ 狩猎', '▶ 部署靶场']) {
+      expect(SRC, `表单入口「${label}」不能被收敛掉`).toContain(label);
+    }
+  });
+
+  it('★ 命令行的结果落在**运行卡**里（终端页首块），不在某个表单下面', () => {
+    const cards = [...SRC.matchAll(/sec-frame-out sec-runcard/g)];
+    expect(cards.length, '运行卡有且只有一块').toBe(1);
+  });
+
+  it('控制台接了 /target（焦点目标）与 /playbook（自定义剧本）两条内置命令', () => {
+    expect(SRC, '焦点目标分支').toContain("step.def.run === 'target'");
+    expect(SRC, '自定义剧本分支').toContain("step.def.run === 'playbook'");
+    expect(SRC, '进页面时拉取用户剧本').toContain('loadUserPlaybooks');
   });
 
   it('左栏三件（任务 / 授权目录 / 脉冲）与交战模式开关都还在', () => {

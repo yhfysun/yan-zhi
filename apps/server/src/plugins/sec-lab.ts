@@ -9,7 +9,7 @@
 // 合规声明（重要）：本模块仅用于自有资产或持有书面授权目标的安全评估。
 // 所有带目标的工具都会先过 sec-lab-guard 的授权范围校验，越界直接拒绝并记审计。
 import { randomUUID } from 'node:crypto';
-import type { BuiltInTool, McpCallResult, PluginContext, PluginManifest, PluginModule, PluginStorage } from '@yan-zhi/core';
+import type { BuiltInTool, McpCallResult, PlaybookDef, PluginContext, PluginManifest, PluginModule, PluginStorage } from '@yan-zhi/core';
 import {
   DEFAULT_SEC_CONFIG, guard, normalizeTarget,
   type ScopeEntry, type SecConfig,
@@ -140,6 +140,7 @@ const K_CONFIG = 'config';
 const K_ASSETS = 'assets';
 const K_SNAPSHOTS = 'snapshots';
 const K_EXERCISES = 'exercises';
+const K_PLAYBOOKS = 'playbooks';
 const AUDIT_MAX = 500;
 
 let store: PluginStorage | null = null;
@@ -164,6 +165,16 @@ const loadFindings = () => loadList<StoredFinding>(K_FINDINGS);
 const loadAudit = () => loadList<AuditEntry>(K_AUDIT);
 const loadAssets = () => loadList<Asset>(K_ASSETS);
 const loadSnapshots = () => loadList<Snapshot>(K_SNAPSHOTS);
+
+// ── 用户自定义剧本（`/playbook save`，2026-10-16）─────────────────────────────
+// ★ 与 manifest 里 `contributes.playbooks` 的**内置**剧本并存，不覆盖：
+//   内置的随代码发布（改不了），用户的存 plugin_storage（可增删）。
+//   两者在 `PlaybookDef` 上是同一个类型、同一条展开/执行通道 —— 剧本自己不执行，
+//   展开成命令行后仍走各自的护栏与审计，所以"谁定义的"不影响安全性。
+const loadPlaybooks = () => loadList<PlaybookDef>(K_PLAYBOOKS);
+/** 用户剧本上限：够用又不至于把面板撑爆；超出直接拒绝并说明，不静默丢弃 */
+const USER_PLAYBOOK_MAX = 50;
+const USER_PLAYBOOK_STEPS_MAX = 20;
 
 async function loadConfig(): Promise<SecConfig> {
   if (!store) return DEFAULT_SEC_CONFIG;
@@ -933,6 +944,61 @@ function registerRoutes(ctx: PluginContext) {
 
     r.get('/config', async (_req: unknown, res: unknown) => {
       json(res, { data: await loadConfig() });
+    });
+
+    // ── 用户自定义剧本（`/playbook save|rm`，2026-10-16）──────────────────────
+    // ★ 校验放**服务端**：剧本会被"展开成命令行再执行"，是执行链的上游输入，
+    //   只靠前端拦不住。这里只做**形状**校验（id/name/steps 合法 + 步数与总量上限）——
+    //   步骤里到底引用了哪条命令，留给运行时的命令解析去报错（那时会说清"没有 /xxx 这条命令"）。
+    r.get('/playbooks', async (_req: unknown, res: unknown) => {
+      json(res, { data: await loadPlaybooks() });
+    });
+
+    r.post('/playbooks', async (req: unknown, res: unknown) => {
+      const b = bodyOf(req);
+      const name = String(b.name || '').trim();
+      const rawSteps = Array.isArray(b.steps) ? b.steps.map((s) => String(s).trim()).filter(Boolean) : [];
+      if (!name) return fail(res, 400, '剧本名（name）必填');
+      if (!rawSteps.length) return fail(res, 400, '剧本至少要有一个步骤（steps）');
+      if (rawSteps.length > USER_PLAYBOOK_STEPS_MAX) {
+        return fail(res, 400, `步骤最多 ${USER_PLAYBOOK_STEPS_MAX} 步，当前 ${rawSteps.length} 步`);
+      }
+      // 每步都必须是一条命令行（以 `/` 开头）。剧本的定义就是"一串命令"——
+      // 放行裸文本等于给剧本开第二种执行形态，展开时只会得到一条看不懂的报错。
+      const bad = rawSteps.find((s) => !s.startsWith('/'));
+      if (bad) return fail(res, 400, `每个步骤都要是以 / 开头的命令，例如 /recon \${target}；收到：${bad.slice(0, 40)}`);
+      const id = String(b.id || '').trim() || `user-${Date.now().toString(36)}`;
+      const list = await loadPlaybooks();
+      const idx = list.findIndex((p) => p.id === id);
+      if (idx < 0 && list.length >= USER_PLAYBOOK_MAX) {
+        return fail(res, 400, `自定义剧本已达上限 ${USER_PLAYBOOK_MAX} 条，请先删掉不再用的`);
+      }
+      const entry: PlaybookDef = {
+        id, name, steps: rawSteps,
+        desc: b.desc ? String(b.desc) : undefined,
+        group: b.group ? String(b.group) : 'USER',
+        mode: 'sec',
+        confirmEach: b.confirmEach === true,
+      };
+      const next = idx >= 0 ? list.map((p, i) => (i === idx ? entry : p)) : [...list, entry];
+      if (store) await store.set(K_PLAYBOOKS, next);
+      await pushAudit({
+        at: Date.now(), tool: 'playbook_save', ok: true,
+        message: `${idx >= 0 ? '更新' : '保存'}剧本「${name}」（${rawSteps.length} 步）`,
+      });
+      json(res, { ok: true, data: entry });
+    });
+
+    r.post('/playbooks/remove', async (req: unknown, res: unknown) => {
+      const b = bodyOf(req);
+      const id = String(b.id || '').trim();
+      const name = String(b.name || '').trim();
+      const list = await loadPlaybooks();
+      const next = list.filter((p) => (id ? p.id !== id : p.name !== name));
+      if (next.length === list.length) return fail(res, 404, '未找到该剧本');
+      if (store) await store.set(K_PLAYBOOKS, next);
+      await pushAudit({ at: Date.now(), tool: 'playbook_remove', ok: true, message: `删除剧本（${id || name}）` });
+      json(res, { ok: true });
     });
 
     // 主机环境探测（Docker / Android）

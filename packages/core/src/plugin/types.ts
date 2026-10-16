@@ -348,13 +348,16 @@ export interface CommandDef {
   confirm?: boolean;
   /**
    * 执行分流：
-   * · 'tool'    —— 走后端插件工具（`tool` 指向工具名）
+   * · 'tool'    —— 走后端插件工具（`tool` 指向工具名，端点 `/plugin/<pluginId>/run`）
+   * · 'builtin-tool' —— 走**通用内置工具**（`tool` 指向 ToolRegistry 里的工具名，
+   *   端点 `/api/tools/builtin/execute`）。★ 只允许**只读**工具走这条路：
+   *   清单由服务端 `/api/tools/builtin/commands` 按 `readonly` 过滤后下发。
    * · 'ui'      —— 前端动作（`run` 指向动作 id）
    * · 'builtin' —— 内置命令（前端已实现）
    * · 'page'    —— **页面指令**：页面作用域，执行走浏览器面板那条通道
    *   （`pageKind='task'` → 发进会话；`pageKind='script'` → 在页面上跑脚本）
    */
-  kind: 'tool' | 'ui' | 'builtin' | 'page';
+  kind: 'tool' | 'ui' | 'builtin' | 'page' | 'builtin-tool';
   /** kind='tool'：映射到的插件工具名 */
   tool?: string;
   /**

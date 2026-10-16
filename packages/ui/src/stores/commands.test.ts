@@ -83,6 +83,20 @@ describe('★ 全局命令 = 内置 + 插件贡献', () => {
     expect(BUILTIN_COMMANDS[5]).toMatchObject({ name: 'help', aliases: ['?'], run: 'help' });
   });
 
+  it('★ /target 与 /playbook 标了 mode:"sec" —— 只在安全模式出现，不污染别的模式的面板', () => {
+    const store = useCommandsStore();
+    // 默认 office：两条都不该出现（列出来点了没用，比不列更糟）
+    expect(store.globalCommands.map((c) => c.name)).not.toContain('target');
+    activeMode.value = 'sec';
+    const names = store.globalCommands.map((c) => c.name);
+    expect(names).toContain('target');
+    expect(names).toContain('playbook');
+    expect(store.globalCommands.find((c) => c.name === 'target'))
+      .toMatchObject({ kind: 'ui', run: 'target' });
+    expect(store.globalCommands.find((c) => c.name === 'playbook'))
+      .toMatchObject({ kind: 'ui', run: 'playbook' });
+  });
+
   it('插件贡献的命令会出现在列表里（内置在前，插件在后）', () => {
     pluginCommands.push({ name: 'findings', desc: '列出发现', group: 'SEC', kind: 'ui', run: 'open-findings' });
     const store = useCommandsStore();

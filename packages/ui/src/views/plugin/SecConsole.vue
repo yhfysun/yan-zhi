@@ -106,7 +106,7 @@
             </div>
             <div v-if="!audit.length" class="sec-empty sec-empty-sm">暂无审计记录</div>
           </div>
-          <button class="sec-pulse-more" @click="tab = 'audit'">查看全部审计 →</button>
+          <button class="sec-pulse-more" @click="tab = 'review'">查看全部审计 →</button>
         </section>
       </aside>
 
@@ -153,12 +153,29 @@
             <span class="sec-tab-num">{{ t.num }}</span>
             <span class="sec-tab-name">{{ t.name }}</span>
             <span class="sec-tab-sub">{{ t.sub }}</span>
-            <span v-if="t.badge" class="sec-tab-badge">{{ t.badge }}</span>
+            <span v-if="tabBadge(t)" class="sec-tab-badge">{{ tabBadge(t) }}</span>
           </button>
         </nav>
 
-        <!-- ========= Tab 1：执行（基础扫描） ========= -->
+        <!-- ========= Tab 1：终端（命令行 + 运行卡 + 高级表单） ========= -->
         <div v-show="tab === 'run'" class="sec-pane">
+          <!-- 运行卡：命令行与各高级表单**共用的唯一输出区**（命令行的结果也落这里） -->
+          <article class="sec-frame sec-frame-out sec-runcard">
+            <header class="sec-frame-head sec-frame-head-sm">
+              <span class="sec-dot-out" :class="{ active: running }" />
+              <span class="sec-frame-title">run card</span>
+              <span class="sec-frame-hint">命令行与高级表单共用</span>
+              <span class="sec-spacer" />
+              <span class="sec-meta-v" v-if="lastRunMs">{{ lastRunMs }}ms</span>
+            </header>
+            <div class="sec-out-wrap" :class="{ scanning: running }">
+              <div v-if="result" class="sec-out">{{ result }}</div>
+              <div v-else class="sec-empty">
+                在上方命令行敲 <b>/help</b> 看全部命令，或用 <b>@剧本名</b> 一键跑一串；建议先跑 <b>/recon &lt;目标&gt;</b> 摸清暴露面。
+              </div>
+            </div>
+          </article>
+
           <div class="sec-pane-head">
             <span class="sec-pane-tag">recon · portscan · webprobe · toolchain · report</span>
           </div>
@@ -180,29 +197,13 @@
             <span class="sec-spacer" />
             <el-button class="sec-cta" size="small" type="primary" :loading="running" @click="runBasic">▶ 执行</el-button>
           </div>
-
-          <article class="sec-frame sec-frame-out">
-            <header class="sec-frame-head sec-frame-head-sm">
-              <span class="sec-dot-out" :class="{ active: running }" />
-              <span class="sec-frame-title">output</span>
-              <span class="sec-frame-hint">流式输出</span>
-              <span class="sec-spacer" />
-              <span class="sec-meta-v" v-if="lastRunMs">{{ lastRunMs }}ms</span>
-            </header>
-            <div class="sec-out-wrap" :class="{ scanning: running }">
-              <div v-if="result" class="sec-out">{{ result }}</div>
-              <div v-else class="sec-empty">
-                选择工具并填写目标后执行。建议先跑 <b>目标画像（recon）</b> 摸清暴露面，再决定要不要扫端口 / 探 Web。
-              </div>
-            </div>
-          </article>
         </div>
 
-        <!-- ========= Tab 2：演练（攻击模拟 · 隔离靶场 + 人工执行） ========= -->
-        <div v-show="tab === 'sim'" class="sec-pane">
-          <div class="sec-pane-head">
-            <span class="sec-pane-tag sec-pane-tag-warn">attack_sim · 隔离靶场 · 仅 system read-only 命令</span>
-          </div>
+        <!-- ===== 高级表单 · 演练（攻击模拟 · 隔离靶场 + 人工执行）=====
+             收敛后在「终端」Tab 内折叠。★ 人工触发通道必须留着 ——
+             attack_sim 是 HUMAN_ONLY，它的「人工点击」入口就是下面的「▶ 演练」按钮。 -->
+        <details v-show="tab === 'run'" class="sec-adv">
+          <summary class="sec-adv-sum">演练 · attack_sim<span class="sec-adv-hint">隔离靶场 · 仅人工执行 · 只用 system read-only 命令</span></summary>
           <div class="sec-row sec-row-ctl">
             <label class="sec-field sec-field-grow">
               <span class="sec-field-k">target</span>
@@ -259,13 +260,11 @@
               </div>
             </div>
           </article>
-        </div>
+        </details>
 
-        <!-- ========= Tab 3：检测（蓝队） ========= -->
-        <div v-show="tab === 'detect'" class="sec-pane">
-          <div class="sec-pane-head">
-            <span class="sec-pane-tag sec-pane-tag-info">detect_rules · log_hunt · 内置 10 条 Sigma/Suricata 规则</span>
-          </div>
+        <!-- ===== 高级表单 · 检测（蓝队）===== -->
+        <details v-show="tab === 'run'" class="sec-adv">
+          <summary class="sec-adv-sum">检测 · detect_rules / log_hunt<span class="sec-adv-hint">内置 10 条 Sigma / Suricata 规则 + 日志狩猎</span></summary>
           <div class="sec-row sec-row-ctl">
             <label class="sec-field">
               <span class="sec-field-k">mode</span>
@@ -319,13 +318,11 @@
               </div>
             </div>
           </article>
-        </div>
+        </details>
 
-        <!-- ========= Tab 4：资产（自有资产监控） ========= -->
-        <div v-show="tab === 'easm'" class="sec-pane">
-          <div class="sec-pane-head">
-            <span class="sec-pane-tag sec-pane-tag-info">asset_monitor · add/list/verify/snapshot/diff</span>
-          </div>
+        <!-- ===== 高级表单 · 资产（自有资产监控）===== -->
+        <details v-show="tab === 'run'" class="sec-adv">
+          <summary class="sec-adv-sum">资产 · asset_monitor<span class="sec-adv-hint">add / list / verify / snapshot / diff</span></summary>
           <div class="sec-row sec-row-ctl">
             <label class="sec-field">
               <span class="sec-field-k">action</span>
@@ -382,10 +379,10 @@
               </div>
             </div>
           </article>
-        </div>
+        </details>
 
-        <!-- ========= Tab 5：发现项 ========= -->
-        <div v-show="tab === 'findings'" class="sec-pane">
+        <!-- ========= Tab 2：结果（发现项 + 审计，两个只读列表合一） ========= -->
+        <div v-show="tab === 'review'" class="sec-pane">
           <article class="sec-frame sec-frame-list">
             <header class="sec-frame-head">
               <span class="sec-num">05</span>
@@ -419,8 +416,8 @@
           </article>
         </div>
 
-        <!-- ========= Tab 6：审计 ========= -->
-        <div v-show="tab === 'audit'" class="sec-pane">
+        <!-- ===== 审计（并进「结果」Tab）===== -->
+        <div v-show="tab === 'review'" class="sec-pane">
           <article class="sec-frame sec-frame-list">
             <header class="sec-frame-head">
               <span class="sec-num">06</span>
@@ -440,7 +437,7 @@
           </article>
         </div>
 
-        <!-- ========= Tab 7：环境 / 靶场（宿主机 Docker + Android，仅本机） ========= -->
+        <!-- ========= Tab 3：环境 / 靶场（宿主机 Docker + Android，仅本机） ========= -->
         <div v-show="tab === 'env'" class="sec-pane">
           <div class="sec-pane-head">
             <span class="sec-pane-tag sec-pane-tag-info">host_env · range · android　仅本机基础设施，不向任何外部目标发起流量</span>
@@ -541,8 +538,8 @@
           </article>
         </div>
 
-        <!-- ========= Tab 8：能力边界（明确不实现 + 规划中） ========= -->
-        <div v-show="tab === 'boundary'" class="sec-pane">
+        <!-- ===== 能力边界（明确不实现 + 规划中）· 并进「环境」Tab ===== -->
+        <div v-show="tab === 'env'" class="sec-pane">
           <article class="sec-frame sec-frame-note sec-frame-note-lock">
             <header class="sec-frame-head sec-frame-head-sm">
               <span class="sec-frame-title">not-implemented</span>
@@ -915,15 +912,16 @@ function onSecMdClick(e: MouseEvent) {
 }
 
 // ---------- Tab 描述（决定顺序、编号、分类标签） ----------
+// ★ 2026-10-16 收敛：8 个 Tab → 3 个（终端 / 结果 / 环境）。
+//   命令行成了主入口之后，能力增长体现在**命令**上而不是 Tab 上，所以 Tab 数不该再随能力涨。
+//   原来的「执行 / 演练 / 检测 / 资产」四个动作面降级为「终端」里的**高级表单**（折叠收纳），
+//   一个都没删 —— 命令是给熟手的，表单是给"不知道该敲哪条命令"的人的引导。
+//   两者**共用同一套执行通道**（命令行走 submitCommand / runToolCommand，表单走各自的 runXxx），
+//   执行末端都落 `POST /plugin/sec-lab/run`，所以不存在第二条绕过护栏的链。
 const TABS = [
-  { value: 'run',      num: '01', name: '执行',   sub: 'EXEC',     badge: '' },
-  { value: 'sim',      num: '02', name: '演练',   sub: 'TRAIN',    badge: 'human' },
-  { value: 'detect',   num: '03', name: '检测',   sub: 'DETECT',   badge: '' },
-  { value: 'easm',     num: '04', name: '资产',   sub: 'ASSETS',   badge: '' },
-  { value: 'findings', num: '05', name: '发现项', sub: 'FIND',     badge: '0' },
-  { value: 'audit',    num: '06', name: '审计',   sub: 'AUDIT',    badge: '0' },
-  { value: 'env',      num: '07', name: '环境',   sub: 'RANGE',    badge: '' },
-  { value: 'boundary', num: '08', name: '边界',   sub: 'SCOPE',    badge: '' },
+  { value: 'run',    num: '01', name: '终端', sub: 'TERM',   badge: '' },
+  { value: 'review', num: '02', name: '结果', sub: 'REVIEW', badge: '0' },
+  { value: 'env',    num: '03', name: '环境', sub: 'LAB',    badge: '' },
 ] as const;
 
 const BASIC_TOOLS = [
@@ -952,6 +950,15 @@ const cfg = reactive({ engagementMode: false });
 
 // ---------- 派生 ----------
 const currentTabLabel = computed(() => TABS.find((t) => t.value === tab.value)?.sub || '');
+
+/** Tab 角标：只给「结果」实时计数。
+ *  ★ 原来写死的 `badge: '0'` 是个假角标 —— 永远是 0 会让人以为"没结果"，
+ *    而这里真正的信号是"有多少发现项 + 多少条被拦的审计"。 */
+function tabBadge(t: { value: string }): string {
+  if (t.value !== 'review') return '';
+  const n = findings.value.length + audit.value.filter((a) => !a.ok).length;
+  return n ? String(n) : '';
+}
 const liveScopes = computed(() => String(scopes.value.length).padStart(2, '0'));
 const liveFindingsCount = computed(() => String(findings.value.length).padStart(2, '0'));
 const liveFindingsSev = computed(() => findings.value.some((f) => f.severity === 'critical' || f.severity === 'high') ? 'bad' : 'ok');
@@ -1023,20 +1030,86 @@ async function submitCommand() {
   }
   cmdInput.value = '';
   cmdHints.value = [];
-  tab.value = 'run';          // 结果落在「执行」页的输出区，避免跑完看不见
+  tab.value = 'run';          // 结果落在「终端」页的运行卡里，避免跑完看不见
   for (const step of plan) {
     if (step.kind === 'unknown') { ElMessage.warning(`没有 /${step.name} 这条命令（/help 看全部）`); continue; }
     if (step.kind === 'interactive') { ElMessage.info(`「${step.def.name}」需要在聊天框里交互选择，控制台不支持`); continue; }
     if (step.kind !== 'run') continue;
     if (step.def.run === 'help') { result.value = formatHelp(commandsStore.globalCommands); continue; }
+    // 控制台自有的两条交互命令（内置 kind:'ui'）：它们不改任何目标状态，只改本页会话状态
+    if (step.def.run === 'target') { setFocusTarget(step.parsed.args[0] || ''); continue; }
+    if (step.def.run === 'playbook') { await runPlaybookCommand(step.parsed); continue; }
     if (step.def.kind !== 'tool') { ElMessage.info(`「${step.def.name}」不是安全工具命令（本控制台只跑工具型）`); continue; }
     // 标了 confirmEach 的剧本（如「完整评估」）每一步都先问
     await runToolCommand(step.def, step.parsed, summon?.playbook.confirmEach === true);
   }
 }
 
+/** `/target <host>`：设定/清空**焦点目标** —— 之后带 target 位置参数的命令可省略不写 */
+function setFocusTarget(v: string) {
+  const val = String(v || '').trim();
+  target.value = val;
+  if (!val) { ElMessage.info('已清空焦点目标'); return; }
+  ElMessage.success(`焦点目标：${val}（之后带 target 的命令可省略不写）`);
+}
+
+/** `/playbook list|save|rm`：自定义剧本（存后端，`@名字` 召唤时与内置剧本一起展开） */
+async function runPlaybookCommand(parsed: ParsedCommand) {
+  const action = String(parsed.args[0] || 'list').toLowerCase();
+  const flag = (k: string) => (typeof parsed.flags[k] === 'string' ? String(parsed.flags[k]) : '');
+  if (action === 'list') {
+    const all = commandsStore.playbooks;
+    result.value = all.length
+      ? '剧本（用 @名字 召唤）：\n' + all.map((p) => `- @${p.name}　${p.steps.length} 步${p.confirmEach ? '（每一步都确认）' : ''}\n    ${p.steps.join('  ;  ')}`).join('\n')
+      : '暂无剧本。用 /playbook save --name=名 --steps="/recon ${target};/portscan ${target}" 存一个。';
+    return;
+  }
+  if (action === 'rm' || action === 'remove' || action === 'delete') {
+    const id = flag('id');
+    const name = flag('name') || parsed.args[1] || '';
+    if (!id && !name) { ElMessage.warning('要删哪个：/playbook rm --name=剧本名（或 --id=xxx）'); return; }
+    const r: any = await api.post(`${BASE}/playbooks/remove`, { id, name });
+    if (r && 'error' in r) { ElMessage.error(String(r.error)); return; }
+    await commandsStore.loadUserPlaybooks();
+    result.value = `已删除剧本（${id || name}）。`;
+    ElMessage.success('已删除');
+    return;
+  }
+  if (action === 'save') {
+    const name = flag('name');
+    // ★ 步骤用 `;` 分隔 —— 因为命令行本身也用 `;` 串联，所以 `--steps=` 的值**必须加引号**
+    //   （解析器尊重引号，引号内的 `;` 是内容；usage 里已经写成带引号的样子）。
+    const steps = flag('steps').split(';').map((s) => s.trim()).filter(Boolean);
+    if (!name || !steps.length) {
+      ElMessage.warning('用法：/playbook save --name=名 --steps="/recon ${target};/portscan ${target}"');
+      return;
+    }
+    const r: any = await api.post(`${BASE}/playbooks`, {
+      id: flag('id') || undefined, name, steps,
+      desc: flag('desc') || undefined,
+      confirmEach: parsed.flags.confirmEach === true,
+    });
+    if (r && 'error' in r) { ElMessage.error(String(r.error)); return; }
+    await commandsStore.loadUserPlaybooks();
+    result.value = `已保存剧本「${name}」（${steps.length} 步）。用 @${name} 召唤。`;
+    ElMessage.success(`已保存，用 @${name} 召唤`);
+    return;
+  }
+  ElMessage.info('用法：/playbook <list|save|rm>');
+}
+
 /** 跑一条工具型命令：危险 / 需确认的先弹确认（与「▶ 执行」按钮的确认口径一致） */
 async function runToolCommand(def: CommandDef, parsed: ParsedCommand, forceConfirm = false) {
+  // 焦点目标兜底：带 target 位置参数的命令没写目标时，用 `/target` 设定的那个。
+  // ★ 只是省打字，不是省校验 —— 目标照旧要过授权范围（判定在服务端的 guard 里，藏不掉）。
+  if (def.params?.[0] === 'target' && !parsed.args[0]) {
+    const focus = String(target.value || '').trim();
+    if (!focus) {
+      ElMessage.warning(`「/${def.name}」需要目标：先 /target <域名|IP> 设一个，或在命令里直接写目标`);
+      return;
+    }
+    parsed.args = [focus, ...parsed.args];
+  }
   if (forceConfirm || def.confirm || def.danger === 'I' || def.danger === 'S') {
     try {
       await ElMessageBox.confirm(
@@ -1318,6 +1391,8 @@ const chatApi = useChat();
 onMounted(async () => {
   await loadAll();
   await loadToolchain();
+  // 用户自定义剧本（`/playbook save` 写入）：与插件声明的内置剧本一起进 `@` 召唤清单
+  void commandsStore.loadUserPlaybooks();
   // 任务 8.5：进入安全模式时切到 sec 场景（场景提示词只影响后续消息的 system prompt，不动历史）。
   // 双重断言：config/scenes.ts 的 SceneKey 正在由另一处改动扩展（ops / sec），
   // 这里不阻塞对方的编译——场景不存在时 setScene 内部不生效，已用 try 兜底。
@@ -1579,6 +1654,23 @@ onUnmounted(() => { secAbort?.abort(); });
 .sec-cmdbar-input::placeholder { color: var(--sc-fg-3); }
 .sec-cmdbar-tip { font-family: var(--sc-mono); font-size: 10px; color: var(--sc-fg-3); white-space: nowrap; }
 .sec-cmdbar-tip b { color: var(--sc-primary); }
+
+/* ── 高级表单（2026-10-16 收敛：原 8 Tab 的四个动作面折叠进「终端」）──
+   收敛只改**信息架构**，不改执行链：展开后的表单和命令行走的是同一套命令通道。 */
+.sec-adv {
+  margin-top: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+}
+.sec-adv-sum {
+  cursor: pointer; user-select: none; list-style: none;
+  padding: 8px 10px; font-family: var(--sc-mono); font-size: 11px;
+  letter-spacing: 0.06em; color: var(--sc-fg-3);
+}
+.sec-adv-sum::-webkit-details-marker { display: none; }
+.sec-adv-sum::before { content: '▸ '; color: var(--sc-amber); }
+.sec-adv[open] > .sec-adv-sum::before { content: '▾ '; }
+.sec-adv-hint { margin-left: 8px; font-size: 10px; color: var(--sc-fg-3); }
 .sec-cmdhints {
   display: flex; flex-direction: column;
   border-bottom: 1px solid var(--sc-line); background: var(--sc-bg);

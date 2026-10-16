@@ -18,7 +18,7 @@
 //   的 runCommand / runScriptCommand）。命令总线不该成为第二条执行链。
 
 import { defineStore } from 'pinia';
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { CommandDef, PlaybookDef } from '@yan-zhi/core';
 import { api } from '../api/client';
 import { activeMode } from './mode';
@@ -44,6 +44,11 @@ export const BUILTIN_COMMANDS: CommandDef[] = [
   // ★ 帮助由 CommandDef **自动生成**（`formatHelp`）—— 手写的帮助清单必然随命令增长而漂移，
   //   而"帮助里没有这条命令"会让用户以为它不存在。
   { name: 'help', aliases: ['?'], desc: '查看可用命令（/help <命令> 看单条用法）', usage: '/help [命令名]', group: SYS_COMMAND_GROUP, kind: 'builtin', run: 'help' },
+  // ★ 下面两条是**安全控制台的交互**，不是插件能力，所以放内置而不是 contributes.commands：
+  //   插件只知道 `target` 参数，没有"当前焦点目标"这个概念；剧本的增删也是控制台的会话状态。
+  //   `mode:'sec'` ⇒ 只在安全模式的面板里出现（办公模式列出来毫无意义）。
+  { name: 'target', desc: '设定焦点目标（之后带 target 的命令可省略；不带参数=清空）', usage: '/target <域名|IP>', group: SYS_COMMAND_GROUP, mode: 'sec', kind: 'ui', run: 'target' },
+  { name: 'playbook', aliases: ['pb'], desc: '自定义剧本：list / save / rm', usage: '/playbook <list|save|rm> [--name=名] [--steps="/recon ${target};/portscan ${target}"]', group: SYS_COMMAND_GROUP, mode: 'sec', kind: 'ui', run: 'playbook' },
 ];
 
 export const useCommandsStore = defineStore('commands', () => {
@@ -57,9 +62,36 @@ export const useCommandsStore = defineStore('commands', () => {
     return list.filter((c) => !c.mode || c.mode === mode);
   }
 
-  /** 全局命令 = 内置 + 插件贡献，且**只留当前模式可用的**（页面指令不在其列，理由见文件头） */
+  /**
+   * 通用内置工具的命令（服务端下发，2026-10-17）。
+   * ★ 为什么**不在前端写死清单**：读写判定只有服务端有（`WRITE_TOOLS`），
+   *   前端再维护一份必然漂移，漂移的后果是"只读的命令跑出了写工具"。
+   *   服务端 `/api/tools/builtin/commands` 已按 `readonly` 过滤，前端拿到即是只读。
+   */
+  const builtinToolCommands = ref<CommandDef[]>([]);
+
+  /** 拉取只读内置工具清单；失败**不抛**（拿不到就当没有，内置命令与插件命令照旧可用） */
+  async function loadBuiltinToolCommands(): Promise<void> {
+    try {
+      const r: any = await api.get('/tools/builtin/commands');
+      const list = r?.data;
+      builtinToolCommands.value = Array.isArray(list)
+        ? list.map((t: any) => ({
+            name: String(t?.name || ''),
+            desc: String(t?.desc || t?.name || ''),
+            group: String(t?.group || 'TOOLS'),
+            kind: 'builtin-tool' as const,
+            tool: String(t?.name || ''),
+            params: Array.isArray(t?.params) ? t.params.map(String) : undefined,
+          })).filter((c: CommandDef) => !!c.name)
+        : [];
+    } catch { /* 保持现状 */ }
+  }
+
+  /**
+   * 全局命令 = 内置 + 只读内置工具 + 插件贡献，且**只留当前模式可用的**（页面指令不在其列，理由见文件头） */
   const globalCommands = computed<CommandDef[]>(() => commandsForMode(
-    [...BUILTIN_COMMANDS, ...usePluginStore().commands],
+    [...BUILTIN_COMMANDS, ...builtinToolCommands.value, ...usePluginStore().commands],
     activeMode.value,
   ));
 
@@ -71,12 +103,28 @@ export const useCommandsStore = defineStore('commands', () => {
     return searchCommands(globalCommands.value, q);
   }
 
+  /** 用户自定义剧本（存后端 `plugin_storage` 的 `playbooks` 键，`/playbook save` 写入） */
+  const userPlaybooks = ref<PlaybookDef[]>([]);
+
   /**
-   * 剧本（`@名字` 召唤）。与命令同样**按模式过滤**：安全剧本不该出现在办公模式。
+   * 拉取用户剧本。
+   * ★ 失败**不抛**：拿不到就当没有 —— 内置剧本仍然可用，
+   *   不该因为一个接口抖动让整个"@剧本"功能消失（那是把可降级的事做成了硬故障）。
+   */
+  async function loadUserPlaybooks(): Promise<void> {
+    try {
+      const r: any = await api.get('/plugin/sec-lab/playbooks');
+      const list = r?.data;
+      userPlaybooks.value = Array.isArray(list) ? list : [];
+    } catch { /* 保持现状 */ }
+  }
+
+  /**
+   * 剧本（`@名字` 召唤）= 插件声明的内置剧本 + 用户自定义剧本，同样**按模式过滤**。
    * ★ 剧本只是"命令的序列"，本 store 不执行它 —— 调用方拿展开后的命令行走同一条命令通道。
    */
   const playbooks = computed<PlaybookDef[]>(() => commandsForMode(
-    usePluginStore().playbooks || [],
+    [...(usePluginStore().playbooks || []), ...userPlaybooks.value],
     activeMode.value,
   ));
 
@@ -112,6 +160,22 @@ export const useCommandsStore = defineStore('commands', () => {
    *    拿它跑安全工具等于把护栏绕过去（这正是"命令层不新增绕过路径"要防的事）。
    */
   async function runTool(def: CommandDef, parsed: ParsedCommand): Promise<{ ok: boolean; text: string }> {
+    // ★ 通用内置工具走**另一条端点**（`/api/tools/builtin/execute`）——
+    //   它与插件工具的 `/plugin/<id>/run` 是两套：那个端点没有 sec 护栏，
+    //   所以**绝不能**拿它跑 sec-lab 的工具（`secConsoleCommandBar.test.ts` 有守门），
+    //   反过来这里也**只**接 `kind:'builtin-tool'`，不混用。
+    //   `permissionMode` 固定传 `'readonly'`：我们只放开了只读工具，
+    //   把这一点**在服务端也钉死**（服务端会据此拒绝任何写工具），
+    //   比"信任前端列出来的都对"更稳。
+    if (def.kind === 'builtin-tool') {
+      if (!def.tool) return { ok: false, text: `「${def.name}」没有声明工具名` };
+      const args = buildToolArgs(def, parsed);
+      const r: any = await api.post('/tools/builtin/execute', { name: def.tool, args, permissionMode: 'readonly' });
+      if (r && 'error' in r) return { ok: false, text: String(r.error) };
+      const d = r?.data as { content?: Array<{ text?: string }>; isError?: boolean } | undefined;
+      const text = (d?.content || []).map((c) => c?.text || '').filter(Boolean).join('\n') || '(无输出)';
+      return { ok: d?.isError !== true, text };
+    }
     if (!def.pluginId || !def.tool) return { ok: false, text: `「${def.name}」没有声明执行端点（缺 pluginId / tool）` };
     const args = buildToolArgs(def, parsed);
     const r: any = await api.post(`/plugin/${def.pluginId}/run`, { tool: def.tool, args });
@@ -120,5 +184,9 @@ export const useCommandsStore = defineStore('commands', () => {
     return { ok: d?.ok !== false, text: String(d?.text || '(无输出)') };
   }
 
-  return { globalCommands, globalGroups, search, playbooks, pageDefsFor, pageCommandById, runTool };
+  // 首次实例化时拉一次「只读内置工具」清单：失败静默降级（拿不到就是少几条命令，
+  // 不该因为一个接口抖动让内置命令与插件命令一起消失），也不阻塞任何调用方。
+  void loadBuiltinToolCommands();
+
+  return { globalCommands, globalGroups, search, playbooks, loadUserPlaybooks, loadBuiltinToolCommands, pageDefsFor, pageCommandById, runTool };
 });
