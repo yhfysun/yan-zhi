@@ -30,11 +30,12 @@ export type Edition = 'lite' | 'basic' | 'pro';
  *  不自己维护一份，否则迟早两处漂移（改了一边忘了另一边，表现为「码升了但界面没放开」）。 */
 export const EDITION_MODES: Record<Edition, readonly string[]> = {
   lite: ['office'],
-  // 剪辑属产出型能力（基础版即可用），与 wf/dev 同档；lite 是试用档，刻意只放「办公」。
+  // lite 是试用档，刻意只放「办公」。
   // ★ 2026-10-16 douyin 模式下线（与 office 同形态的重复模式）：从 basic/pro 一并移除。
-  // ★ shop（店铺运营模式，2026-10-16）只放 pro：它涉及真实店铺账号与（后续的）写操作，
-  //   与 ops / sec 同属"动生产、要在场"的一档，不宜在基础档放开。
-  basic: ['office', 'wf', 'dev', 'clip'],
+  // ★ 2026-10-16 用户拍板：clip（剪辑）与 shop（店铺运营）都归 pro ——
+  //   剪辑要接成片与素材（重产出），店铺运营涉及真实店铺账号与（后续的）写操作，
+  //   两者与 ops / sec 同属"动生产、要在场"的一档，故 basic 只留 office / wf / dev。
+  basic: ['office', 'wf', 'dev'],
   pro: ['office', 'wf', 'dev', 'clip', 'ops', 'sec', 'shop'],
 };
 
