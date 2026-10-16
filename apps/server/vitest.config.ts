@@ -4,6 +4,12 @@ export default defineConfig({
   resolve: {
     extensions: ['.ts', '.tsx', '.mjs', '.js', '.jsx', '.cjs', '.json'],
   },
+  // ★ 依赖/SSR 缓存固定到项目内 tmp/（2026-10-16）。
+  //   默认 vitest 会把缓存写到系统临时目录（%TEMP%\<随机>\ssr\...）；
+  //   本机沙箱对该路径只有读权限 ⇒ 写缓存 EPERM，**正在 transform 的测试文件被静默丢掉**，
+  //   表现为「同一份代码每次跑出不同文件数」（164/163/165 files），极易误判成回归。
+  //   显式指定后 EPERM 归零，全量 165 files / 2611 passed 稳定复现。
+  cacheDir: './tmp/vitest-cache',
   test: {
     include: ['test/**/*.test.ts'],
     environment: 'node',
