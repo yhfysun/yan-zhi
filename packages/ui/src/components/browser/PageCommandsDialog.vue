@@ -108,10 +108,17 @@
           共 {{ store.list.length }} 条<span v-if="url">，当前页命中 {{ matchedIds.size }} 条</span>
         </span>
         <span>
+          <el-button size="small" @click="onExport">导出</el-button>
+          <el-button size="small" @click="pickImportFile">导入</el-button>
           <el-button size="small" @click="openRuns()">执行记录</el-button>
           <el-button size="small" type="primary" @click="openCreate">新建指令</el-button>
         </span>
       </div>
+      <!-- 导入用的隐藏文件选择（点「导入」触发） -->
+      <input
+        ref="fileInput" type="file" accept="application/json,.json"
+        style="display:none" @change="onImportFile"
+      />
       <div v-if="store.warning" class="pc-warning">⚠️ {{ store.warning }}</div>
       <div v-if="!store.list.length" class="pc-empty">
         {{ store.loading ? '加载中…' : '还没有任何指令，点右上「新建指令」建一条' }}
@@ -127,6 +134,12 @@
           </div>
           <div class="pc-row-desc">{{ c.description || c.body }}</div>
           <div class="pc-row-match">匹配：{{ matchLabel(c) }}</div>
+          <!-- P3-3 执行统计：来自审计表（近 200 次），只在跑过之后才显示 -->
+          <div class="pc-row-stat" v-if="runsSummary[c.id] && runsSummary[c.id].total">
+            近 {{ runsSummary[c.id].total }} 次：成功 {{ runsSummary[c.id].ok }}
+            <template v-if="runsSummary[c.id].total > runsSummary[c.id].ok"> · 失败 {{ runsSummary[c.id].total - runsSummary[c.id].ok }}</template>
+            · 平均 {{ runsSummary[c.id].avgMs }}ms
+          </div>
         </div>
         <div class="pc-row-ops">
           <el-switch
@@ -194,6 +207,23 @@ const runs = ref<PageCommandRun[]>([]);
 const runsWarning = ref('');
 const runsFor = ref('');   // 指令名（空 = 全部）
 
+/** P3-3 执行统计：按指令聚合审计行（近 200 次），列表里直接给成功率与平均耗时 */
+const runsSummary = ref<Record<string, { total: number; ok: number; avgMs: number }>>({});
+async function loadSummary() {
+  const r = await store.listRuns(undefined, 200);
+  const agg: Record<string, { total: number; ok: number; durSum: number; avgMs: number }> = {};
+  for (const run of r.rows) {
+    const a = agg[run.command_id] || (agg[run.command_id] = { total: 0, ok: 0, durSum: 0, avgMs: 0 });
+    a.total += 1;
+    if (run.status === 'ok') a.ok += 1;
+    a.durSum += Number(run.duration_ms || 0);
+  }
+  for (const k of Object.keys(agg)) {
+    agg[k].avgMs = agg[k].total ? Math.round(agg[k].durSum / agg[k].total) : 0;
+  }
+  runsSummary.value = agg;
+}
+
 const title = computed(() => {
   if (view.value === 'runs') return '脚本执行记录';
   if (view.value === 'form') return editing.value ? '编辑页面指令' : '新建页面指令';
@@ -218,6 +248,7 @@ watch(() => props.modelValue, (v) => {
     view.value = 'list';
     form.value = null;
     void store.load(true);
+    void loadSummary();     // P3-3：顺手拉一次执行统计（一次请求覆盖全部指令）
   }
 });
 
@@ -314,6 +345,59 @@ async function onDelete(c: PageCommand) {
   if (!r.ok) ElMessage.error(r.msg);
   else ElMessage.success('已删除');
 }
+
+// ── 导入 / 导出（P3-2）────────────────────────────────────────────────────────
+const fileInput = ref<HTMLInputElement | null>(null);
+const escHtml = (s: unknown) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function pickImportFile() { fileInput.value?.click(); }
+
+/** 导出成 JSON 文件（只含自己建的指令；分享给同事即可导入） */
+async function onExport() {
+  const r = await store.exportCommands();
+  if (!r.ok) { ElMessage.error(r.msg); return; }
+  const n = Array.isArray(r.payload?.commands) ? r.payload.commands.length : 0;
+  if (!n) { ElMessage.warning('没有可导出的指令（内置指令随版本更新，不需要导出）'); return; }
+  const blob = new Blob([JSON.stringify(r.payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `页面指令-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  ElMessage.success(`已导出 ${n} 条`);
+}
+
+/** 导入前先确认（并明确告知：**导入的脚本一律每次确认**），再逐条校验，最后如实报跳过项 */
+async function onImportFile(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';     // 清空，允许连续导入同一个文件
+  if (!file) return;
+
+  let payload: unknown;
+  try { payload = JSON.parse(await file.text()); }
+  catch (err: any) { ElMessage.error(`JSON 解析失败：${err?.message || err}`); return; }
+
+  try {
+    await ElMessageBox.confirm(
+      '导入的指令会加进你自己的指令库。<b>导入的脚本一律每次执行都要确认</b>（不继承免确认）。',
+      '导入页面指令',
+      { dangerouslyUseHTMLString: true, confirmButtonText: '导入', cancelButtonText: '取消' },
+    );
+  } catch { return; }
+
+  const r = await store.importCommands(payload);
+  if (!r.ok) { ElMessage.error(r.msg); return; }
+  if (!r.skipped.length) { ElMessage.success(`已导入 ${r.imported} 条`); return; }
+  const lines = r.skipped.slice(0, 10).map((s) => `· ${escHtml(s.name)}：${escHtml(s.reason)}`).join('<br>');
+  const more = r.skipped.length > 10 ? `<br>…其余 ${r.skipped.length - 10} 条同理` : '';
+  ElMessageBox.alert(
+    `已导入 <b>${r.imported}</b> 条，跳过 ${r.skipped.length} 条：<br><br>${lines}${more}`,
+    '导入结果',
+    { dangerouslyUseHTMLString: true },
+  ).catch(() => { /* 用户关掉提示即可 */ });
+}
 </script>
 
 <style scoped>
@@ -334,6 +418,7 @@ async function onDelete(c: PageCommand) {
 .pc-name { font-size: 13px; font-weight: 600; color: var(--el-text-color-primary, #303133); }
 .pc-row-desc { font-size: 12px; color: var(--el-text-color-secondary, #909399); margin-top: 3px; white-space: pre-wrap; word-break: break-word; }
 .pc-row-match { font-size: 11px; color: var(--el-text-color-placeholder, #a8abb2); margin-top: 3px; }
+.pc-row-stat { font-size: 11px; color: var(--el-text-color-secondary, #909399); margin-top: 2px; }
 .pc-row-ops { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .pc-var-hint { font-size: 11px; color: var(--el-text-color-placeholder, #a8abb2); margin-top: 4px; line-height: 1.6; }
 .pc-var-hint code { background: var(--el-fill-color-light, #f5f7fa); padding: 0 3px; border-radius: 3px; }

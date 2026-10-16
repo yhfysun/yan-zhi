@@ -14,7 +14,9 @@ import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
-import { PAGE_COMMAND_DDL, PAGE_COMMAND_RUN_DDL, seedBuiltinPageCommands } from '@yan-zhi/core';
+import {
+  PAGE_COMMAND_DDL, PAGE_COMMAND_RUN_DDL, sanitizeImportedCommands, seedBuiltinPageCommands, toExportPayload,
+} from '@yan-zhi/core';
 
 const router = Router();
 router.use(authMiddleware);
@@ -248,6 +250,43 @@ router.get('/runs', (req: Request, res: Response) => {
   } catch (e: any) {
     res.json({ data: [], warning: `执行记录读取失败：${e?.message || e}` });
   }
+});
+
+// ── 导入 / 导出（P3-2）────────────────────────────────────────────────────────
+// 导出：只导**自己建的**指令（内置随版本走，导出副本只会造成"改了不生效"）；
+//   只带可移植字段（无 id / 归属 / 统计 / need_confirm），便于分享给同事。
+router.get('/export', (req: Request, res: Response) => {
+  const uid = req.user!.userId;
+  try {
+    const rows = db.prepare('SELECT * FROM browser_page_command WHERE user_id = ? ORDER BY created_at ASC').all(uid);
+    res.json({ data: toExportPayload(rows as any[]) });
+  } catch (e: any) {
+    res.status(500).json({ error: `导出失败：${e?.message || e}` });
+  }
+});
+
+// 导入：**外部数据入口**。逐条校验（坏条目跳过并回报原因，不整份拒绝）；
+//   ★ 导入的脚本一律 `need_confirm=1` —— 由 core 的 sanitizeImportedCommands 保证，
+//     这里 INSERT 也硬写 1（双保险）：别人给的文件不能把 P2 的双层门控绕掉。
+router.post('/import', (req: Request, res: Response) => {
+  const uid = req.user!.userId;
+  const result = sanitizeImportedCommands(req.body);
+  const now = Date.now();
+  let imported = 0;
+  for (const c of result.commands) {
+    try {
+      db.prepare(
+        `INSERT INTO browser_page_command
+           (id, user_id, name, description, kind, body, match_host, match_url, source,
+            enabled, need_confirm, run_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'user', 1, 1, 0, ?, ?)`,
+      ).run(`pc_${uuid()}`, uid, c.name, c.description, c.kind, c.body, c.match_host, c.match_url, now, now);
+      imported += 1;
+    } catch (e: any) {
+      result.skipped.push({ name: c.name, reason: `写入失败：${e?.message || e}` });
+    }
+  }
+  res.json({ data: { imported, skipped: result.skipped } });
 });
 
 export default router;

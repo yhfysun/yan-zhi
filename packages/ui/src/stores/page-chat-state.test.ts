@@ -137,4 +137,10 @@ describe('★ 重置语义', () => {
     addMessage(s, { id: '2', role: 'assistant', content: 'a', createdAt: 2 });
     expect(s.messages.map((m) => m.id)).toEqual(['1', '2']);
   });
+
+  it('P0.1 漂移检测的基线字段有确定默认值（不让 undefined 参与比较）', () => {
+    const s = createChatState('t');
+    expect(s.targetUrl).toBe('');
+    expect(s.targetTabCount).toBe(0);
+  });
 });

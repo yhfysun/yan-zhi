@@ -135,10 +135,40 @@ export const usePageCommandsStore = defineStore('page-commands', () => {
     return { rows: (Array.isArray(r?.data) ? r.data : []) as PageCommandRun[], warning: String(r?.warning || '') };
   }
 
+  /**
+   * 导出（P3-2）：拿一份可分享的 JSON（只含**自己建的**指令；不带 id/归属/统计/need_confirm）。
+   */
+  async function exportCommands(): Promise<{ ok: true; payload: any } | Fail> {
+    const r: any = await api.get('/page-commands/export');
+    if (r && 'error' in r) return { ok: false, msg: String(r.error) };
+    return { ok: true, payload: r?.data || { version: 1, commands: [] } };
+  }
+
+  /**
+   * 导入（P3-2）：服务端逐条校验，坏条目跳过并回报原因。
+   * ★ 导入进来的**脚本一律每次确认**（由 core 的 sanitizeImportedCommands 保证）——
+   *   别人给的文件绕不过 P2 的双层门控。
+   */
+  async function importCommands(payload: unknown): Promise<
+    { ok: true; imported: number; skipped: Array<{ name: string; reason: string }> } | Fail
+  > {
+    const r: any = await api.post('/page-commands/import', payload);
+    if (r && 'error' in r) return { ok: false, msg: String(r.error) };
+    await load(true);   // 导入即刷新列表
+    return {
+      ok: true,
+      imported: Number(r?.data?.imported || 0),
+      skipped: Array.isArray(r?.data?.skipped) ? r.data.skipped : [],
+    };
+  }
+
   /** 当前页命中的指令（已按"URL 正则 → 站点专属 → 全局"排好序） */
   function matched(url: string): PageCommand[] {
     return matchPageCommands(list.value, url);
   }
 
-  return { list, loaded, loading, warning, load, create, update, remove, markUsed, reportRun, listRuns, matched };
+  return {
+    list, loaded, loading, warning, load, create, update, remove, markUsed, reportRun, listRuns,
+    exportCommands, importCommands, matched,
+  };
 });

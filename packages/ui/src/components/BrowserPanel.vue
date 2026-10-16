@@ -112,6 +112,11 @@
       <el-dropdown trigger="click" @command="onAiMenuCommand">
         <button class="handoff-btn" :class="{ active: pageChatOpen }" title="页面 AI：就地对话 / 移交给主智能体">
           <span class="handoff-ico">🤖</span><span class="handoff-label">AI</span>
+          <!-- P3-1 指令自动推荐：本站有专属指令时在按钮上打角标（全局指令每页都有，标了没信息量） -->
+          <span
+            v-if="siteCommandCount > 0" class="handoff-badge"
+            :title="`当前站点有 ${siteCommandCount} 条专属页面指令（AI 菜单 → 页面指令…）`"
+          >{{ siteCommandCount }}</span>
           <span class="handoff-caret">▾</span>
         </button>
         <template #dropdown>
@@ -358,6 +363,7 @@
       :scope="browserScope"
       :conv-id="pageChatConvId"
       :agent-id="pageChatAgentId"
+      :tab-count="tabs.length"
       @close="setPageChatOpen(false)"
       @manage="showPageCommands = true"
     />
@@ -479,6 +485,7 @@ import { usePlatformStore } from '../stores/platform';
 import { useChatStore } from '../stores/chat';
 import { useBrowserStore, claimPopup, type BrowserTab } from '../stores/browser';
 import { usePageChatStore } from '../stores/page-chat';
+import { usePageCommandsStore } from '../stores/page-commands';
 import { useSettingsStore } from '../stores/settings';
 import PageChatDock from './browser/PageChatDock.vue';
 import PageCommandsDialog from './browser/PageCommandsDialog.vue';
@@ -1079,6 +1086,15 @@ const trustScriptCommands = computed({
   get: () => !!settingsStore.settings.browserTrustScriptCommands,
   set: (v: boolean) => { void settingsStore.update({ browserTrustScriptCommands: v }); },
 });
+
+// P3-1 指令自动推荐：面板挂载即拉一次指令库，本站有**专属**指令时在 AI 按钮上打角标。
+// （对话面板自己也会 load 一次，store 内部幂等去重，不会重复请求。）
+const cmdsStore = usePageCommandsStore();
+onMounted(() => { void cmdsStore.load(); });
+const siteCommandCount = computed(() => cmdsStore
+  .matched(currentUrl.value)
+  .filter((c) => !!c.match_url || (!!c.match_host && c.match_host !== '*'))
+  .length);
 
 // ── BrowserView 尺寸同步：监听占位 div 尺寸/位置变化，调用 setBounds 同步原生 BrowserView ──
 let browserViewResizeObserver: ResizeObserver | null = null;
@@ -2740,6 +2756,12 @@ onUnmounted(() => {
 .handoff-ico { font-size: 13px; line-height: 1; }
 .handoff-label { white-space: nowrap; }
 .handoff-caret { font-size: 9px; line-height: 1; opacity: 0.75; }
+/* 本站专属指令数角标（P3-1）：小圆点数字，别抢工具条的视觉重心 */
+.handoff-badge {
+  min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
+  background: var(--el-color-primary); color: #fff; font-size: 10px; line-height: 15px;
+  text-align: center; font-weight: 600;
+}
 
 /* ── 内容区：起始主页 / 网页视口 +（右侧）页面对话面板 ──
    横向 flex；子项 min-width:0 允许被压缩（否则窄窗口下视口不肯让位给对话面板）。 */

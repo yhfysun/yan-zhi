@@ -101,6 +101,8 @@ const props = defineProps<{
   convId?: string;
   /** 会话的智能体（preview 空间传当前会话的 agentId；留空走服务端默认） */
   agentId?: string;
+  /** 面板当前标签数（P0.1 漂移检测：执行期间多出来的标签页可能是 AI 自己开的） */
+  tabCount?: number;
 }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'manage'): void }>();
 
@@ -151,6 +153,7 @@ async function sendText(text: string): Promise<void> {
     question: text,
     convId: props.convId,
     agentId: props.agentId,
+    tabCount: props.tabCount,
   });
   if (!r.ok && r.msg) ElMessage.warning(r.msg);
 }
@@ -284,8 +287,37 @@ async function confirmScript(c: PageCommand, script: string, vars: PageCommandVa
 function onStop() { void pageChat.stop(props.tabId); }
 function onClear() { pageChat.clearTab(props.tabId); scrollToBottom(); }
 
-/** 当前页地址变化 → 跟到底部（消息不跟着清：同一 tab 的连续浏览视为一段对话） */
-watch(() => props.url, scrollToBottom);
+/**
+ * 当前页地址 / 标签数变化：跟到底部 + **执行期间漂移就明说**（P0.1）。
+ *
+ * 漂移场景：页面内对话让 AI"在这一页点/填"，它却把页导航走了（或另开一页作答）——
+ * 用户会看到一个"看起来正常、答的却是别的页"的结果（本仓最难查的一类）。
+ * 这里不假装没事：直接把漂移说出来；基线随之更新，同一任务只提醒一次。
+ */
+watch(() => props.url, (now) => {
+  const st = state.value;
+  if (st.streaming && st.targetUrl && now && now !== st.targetUrl) {
+    pageChat.note(
+      props.tabId,
+      `⚠️ 执行期间页面地址已变为 ${now}（原 ${st.targetUrl}），下面的结果可能来自新页面。`,
+      true,
+    );
+    st.targetUrl = now;
+  }
+  scrollToBottom();
+});
+
+watch(() => props.tabCount, (now) => {
+  const st = state.value;
+  if (st.streaming && now && st.targetTabCount && now > st.targetTabCount) {
+    pageChat.note(
+      props.tabId,
+      `⚠️ 执行期间新增了 ${now - st.targetTabCount} 个标签页（可能是 AI 自己开的），结果可能来自新页面。`,
+      true,
+    );
+    st.targetTabCount = now;
+  }
+});
 </script>
 
 <style scoped>

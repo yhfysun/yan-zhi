@@ -32,6 +32,13 @@ export interface PageChatState {
   taskId: string;
   /** 最近一次失败原因（UI 展示用；成功发送后清空） */
   lastError: string;
+  /**
+   * 发这条消息时**目标页**的地址与面板标签数（P0.1 漂移检测）。
+   * 执行期间地址变了 / 多出标签页 ⇒ 结果可能来自另一个页面 —— 面板会明说一句，
+   * 而不是让用户看着一个"答非所问但看起来正常"的结果。
+   */
+  targetUrl: string;
+  targetTabCount: number;
 }
 
 let seq = 0;
@@ -49,6 +56,8 @@ export function createChatState(tabId: string): PageChatState {
     ownConversation: false,
     taskId: '',
     lastError: '',
+    targetUrl: '',
+    targetTabCount: 0,
   };
 }
 

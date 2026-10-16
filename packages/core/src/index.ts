@@ -9,6 +9,8 @@ export * from './workflow/engine';
 export * from './workflow/nodes';
 export * from './compress/window';
 export * from './db/schema';
+// 页面指令的导入校验（P3-2）：导出/导入共用，导入的脚本强制"每次确认"
+export * from './db/page-command-import';
 export * from './skill/loader';
 export * from './tool';
 export * from './plugin';

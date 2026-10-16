@@ -39,6 +39,8 @@ export interface PageChatSendInput {
   convId?: string;
   /** 会话的智能体：preview 空间传当前会话的 agentId；留空时自建会话用 PAGE_CHAT_AGENT_ID */
   agentId?: string;
+  /** 发送时面板里的标签页数量（P0.1 漂移检测：执行期间多出标签页 ⇒ 结果可能来自另一页） */
+  tabCount?: number;
 }
 
 export type PageChatSendResult = { ok: true } | { ok: false; msg: string };
@@ -205,6 +207,9 @@ export const usePageChatStore = defineStore('page-chat', () => {
     addUserEcho(state, text);
     state.streaming = true;
     state.lastError = '';
+    // P0.1 漂移检测的基线：这条消息是**对哪一页**说的
+    state.targetUrl = String(tab?.url || '');
+    state.targetTabCount = Number(input.tabCount || 0);
     const ac = new AbortController();
     aborts.set(tabId, ac);
 
