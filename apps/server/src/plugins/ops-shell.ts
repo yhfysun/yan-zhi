@@ -53,19 +53,8 @@ export const opsShellManifest: PluginManifest = {
       'docker_restart',
       'db_query',
     ],
-    sidebar: [
-      {
-        id: 'ops',
-        label: '运维',
-        route: '/ops',
-        icon: 'ops',
-        // 进「更多」下拉新建「运维」分组（桌面 TitleBar）；缺省时渲染侧栏「插件」分组
-        moreGroup: 'ops',
-        moreGroupLabel: '运维',
-        desc: '服务器 · Docker · 数据库',
-        order: 10,
-      },
-    ],
+    // ★ 2026-10-16 去掉 sidebar 贡献：它渲染的「更多 → 运维」分组与顶栏**模式下拉**是同一个
+    //   入口（都进 /ops），属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
     routes: [
       { path: '/ops', name: 'ops', component: 'views/plugin/OpsConsole.vue', meta: { desktopOnly: true } },
     ],

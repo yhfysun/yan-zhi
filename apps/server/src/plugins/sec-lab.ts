@@ -44,18 +44,8 @@ export const secLabManifest: PluginManifest = {
       'attack_sim', 'detect_rules', 'log_hunt', 'asset_monitor', 'sim_report',
       'host_env', 'range_deploy', 'range_list', 'range_stop', 'android_launch',
     ],
-    sidebar: [
-      {
-        id: 'sec',
-        label: '安全',
-        route: '/sec',
-        icon: 'shield',
-        moreGroup: 'sec',
-        moreGroupLabel: '安全',
-        desc: '侦察 · 扫描 · 审计',
-        order: 11,
-      },
-    ],
+    // ★ 2026-10-16 去掉 sidebar 贡献：与顶栏**模式下拉**的「安全」是同一个入口（都进 /sec），
+    //   属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
     routes: [
       { path: '/sec', name: 'sec', component: 'views/plugin/SecConsole.vue', meta: { desktopOnly: true } },
     ],
