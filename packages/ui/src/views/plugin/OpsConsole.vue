@@ -1,13 +1,8 @@
 <template>
-  <div class="page ops-console">
-    <div class="ops-layout" :style="{ '--ops-aside-w': (asideCollapsed ? 0 : asideW) + 'px' }">
-      <!-- 左侧：资源列表（可整体收起；目录行可折叠；空白处右键新建，资源行右键出操作菜单） -->
-      <aside
-        v-show="!asideCollapsed"
-        class="ops-connections"
-        :style="{ width: asideW + 'px' }"
-        @contextmenu.prevent="onTreeCtx"
-      >
+  <ConsoleShell storage-key="ops_aside" root-class="ops-console" @aside-contextmenu="onTreeCtx">
+    <!-- 左侧：资源列表（可整体收起；目录行可折叠；空白处右键新建，资源行右键出操作菜单）
+         ★ 盒子（布局 / 分隔条 / 折叠条 / 宽度持久化）在 components/console/ConsoleShell.vue -->
+    <template #aside>
         <!-- 任务段（决策 13 / 5f.4）：四模式同构，读同一份会话列表；资源树之下保留 -->
         <div class="ops-side-tasks">
           <TaskListSection :space-id="null" />
@@ -87,23 +82,10 @@
         <div v-if="activeConn && connType(activeConn) !== 'database'" class="ops-side-metrics">
           <OpsMetricsPanel :connection-id="activeConn.id" :conn-name="activeConn.name" />
         </div>
-      </aside>
+    </template>
 
-      <!-- 资源列表 ↔ 工作区：拖动分隔条调宽（最小到 min，不会自动折叠） -->
-      <div
-        v-show="!asideCollapsed"
-        class="rs-handle rs-handle-left"
-        title="拖动调整宽度"
-        @mousedown="asideR.startDrag($event, 'left')"
-      ></div>
-
-      <!-- 折叠按钮：贴左边缘的竖条，点击收起/展开资源列表（同「对话」页） -->
-      <div class="ops-aside-toggle" :title="asideCollapsed ? '展开资源列表' : '收起资源列表'" @click="toggleAside">
-        <el-icon><Expand v-if="asideCollapsed" /><Fold v-else /></el-icon>
-      </div>
-
-      <!-- 右侧：两个 tab（工作区 / 操作日志）；工作区内是一排窗口标签，每个窗口独立会话 -->
-      <section class="ops-workspace">
+    <!-- 右侧：两个 tab（工作区 / 操作日志）；工作区内是一排窗口标签，每个窗口独立会话 -->
+    <section class="ops-workspace">
         <!-- 待批准命令：AI 在生产连接上发起的写操作会停在这里等人点头（任何 Tab 下都可见） -->
         <div v-if="approvals.length" class="ops-approvals">
           <div v-for="a in approvals" :key="a.id" class="ops-approval">
@@ -508,7 +490,7 @@
 
     <!-- 主导方悬浮胶囊（任务 7.9 / 7.10）：AI 模式=对话居中（chat 视图），命令模式=终端等主视图 -->
     <LeadToggle :model-value="lead" mode="ops" @update:model-value="onLeadChange" />
-  </div>
+  </ConsoleShell>
 </template>
 
 <script setup lang="ts">
@@ -541,7 +523,7 @@ import { consumeSseStream } from '../../utils/sse';
 import { startVisiblePolling } from '../../utils/visible-polling';
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import {
-  Folder, FolderOpened, Fold, Expand,
+  Folder, FolderOpened,
   ArrowDown, ArrowRight, ArrowUp, Close, Plus,
   Monitor, Box, DataLine, ChatDotRound, User,
 } from '@element-plus/icons-vue';
@@ -563,6 +545,7 @@ import OpsStepCards from '../../components/ops/OpsStepCards.vue';
 import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
+import ConsoleShell from '../../components/console/ConsoleShell.vue';
 import { useResizable } from '../../composables/useResizable';
 
 // 类型与常量定义见上方 <script> 模块块（跨路由切换需要保留的会话状态也在那里）
@@ -581,18 +564,13 @@ function onTabChange(name: string) {
   else if (name === 'kh') void khPanelRef.value?.load();
 }
 
-// 三屏拖动：资源列表 / 主视图 / 文件面板 宽度可拖，localStorage 持久化
+// 三屏拖动：主视图 / 文件面板 宽度可拖，localStorage 持久化
+// （资源列表那一屏的宽度与折叠由 ConsoleShell 管，键同为 ops_aside）
 // 拖动只改变宽度（最小到 min），折叠是独立按钮的事，两者不耦合
-const asideR = useResizable('ops_aside', 260, 160, 460);
-const { width: asideW } = asideR;
 const fileR = useResizable('ops_files', 420, 280, 900);
 const { width: fileW } = fileR;
 
-// 资源列表折叠（独立按钮控制，与拖动宽度互不影响）
-const asideCollapsed = ref(false);
-function toggleAside() {
-  asideCollapsed.value = !asideCollapsed.value;
-}
+// 资源列表的折叠与宽度已由 ConsoleShell 接管（每个模式一个 storageKey）
 const testingId = ref('');
 
 // ===== 主导方双形态（任务 7.9 / 7.10）=====
@@ -1910,10 +1888,9 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* ★ 布局盒子（列向撑满 + 定位基准）已交给 components/console/ConsoleShell.vue 的 .console-shell；
+   这里只留本控制台自己的配色变量。 */
 .ops-console {
-  display: flex; flex-direction: column; height: 100%; overflow: hidden;
-  /* 定位基准：右下角悬浮胶囊（LeadToggle）相对此容器定位 */
-  position: relative;
   /* 列表 hover / 右键菜单 hover 统一底色：行与菜单共用同一个**不透明**色，
      半透明色叠两层会形成硬边色带（原来 hover 按钮那版就是这里脏） */
   --ops-row-hover: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface));
@@ -1939,37 +1916,6 @@ onUnmounted(() => {
   padding-top: 6px;
   margin-top: 6px;
 }
-.ops-layout { flex: 1; display: flex; gap: 6px; min-height: 0; position: relative; }
-.ops-connections {
-  flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
-  padding-right: 10px; border-right: 1px solid var(--glass-border);
-}
-
-/* 折叠按钮：贴左边缘竖条（与「对话」页 .conv-toggle 一致） */
-.ops-aside-toggle {
-  position: absolute; left: calc(var(--ops-aside-w, 260px) + 5px); top: 50%; transform: translateY(-50%);
-  width: 20px; height: 48px;
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
-  border: 1px solid var(--glass-border); border-left: none; border-radius: 0 8px 8px 0;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; z-index: 5; font-size: 12px; color: var(--color-text-secondary);
-  transition: left 0.25s ease;
-}
-.ops-aside-toggle:hover { color: var(--color-primary); background: var(--glass-bg-hover); }
-
-/* ===== 面板拖拽分隔条（与 Chat 页 .rs-handle 一致） ===== */
-.rs-handle {
-  flex: 0 0 7px; width: 7px; cursor: col-resize; position: relative; z-index: 6;
-  background: transparent; transition: background 0.15s ease;
-}
-.rs-handle::after {
-  content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 2px;
-  transform: translateX(-50%); border-radius: 1px;
-  background: var(--glass-border, rgba(148, 163, 184, 0.28));
-  transition: background 0.15s ease, width 0.15s ease, opacity 0.15s ease;
-}
-.rs-handle:hover, .rs-handle:active { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
-.rs-handle:hover::after, .rs-handle:active::after { background: var(--color-primary); width: 3px; }
 .ops-tree-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 2px 6px; flex-shrink: 0;

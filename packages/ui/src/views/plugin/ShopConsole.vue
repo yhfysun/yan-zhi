@@ -1,7 +1,7 @@
 <template>
-  <div class="shop-layout">
+  <ConsoleShell storage-key="shop_aside" root-class="shop-console">
     <!-- ============ 左栏：店铺 / 仓库资源 ============ -->
-    <aside class="shop-side">
+    <template #aside>
       <div class="shop-side-head">
         <span class="shop-side-title">资源</span>
         <el-button size="small" type="primary" plain :icon="Plus" @click="openCreate()">新建</el-button>
@@ -36,7 +36,7 @@
           </div>
         </div>
       </div>
-    </aside>
+    </template>
 
     <!-- ============ 主区 ============ -->
     <section class="shop-main">
@@ -189,7 +189,7 @@
         <el-button type="primary" :loading="saving" @click="submit()">{{ editing ? '保存' : '创建' }}</el-button>
       </template>
     </el-dialog>
-  </div>
+  </ConsoleShell>
 </template>
 
 <script setup lang="ts">
@@ -199,6 +199,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, Shop } from '@element-plus/icons-vue';
+import ConsoleShell from '../../components/console/ConsoleShell.vue';
 import { setLead } from '../../stores/mode';
 import {
   shopConnections, shopGroups, shopPlatforms, shopActiveId, shopCheck, shopCheckId,
@@ -344,22 +345,8 @@ onMounted(() => { void loadShopConsole(); });
 </script>
 
 <style scoped>
-.shop-layout {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 12px;
-  height: 100%;
-  min-height: 0;
-  padding: 12px;
-  box-sizing: border-box;
-}
-.shop-side {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-right: 1px solid var(--el-border-color-lighter);
-  padding-right: 12px;
-}
+/* ★ 布局盒子（左栏 + 分隔条 + 折叠条 + 主区）已交给 components/console/ConsoleShell.vue，
+   与运维控制台共用同一套壳；这里只留本页自己的内容样式。 */
 .shop-side-head {
   display: flex;
   align-items: center;
