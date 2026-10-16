@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { Writable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,8 +22,8 @@ vi.mock('../src/utils/crypto.js', () => ({
 }));
 
 import {
-  MAX_RECURSIVE_DELETE_ENTRIES, MAX_UPLOAD_CONCURRENCY, auditPathTail, opsShellModule,
-  removeRemoteRecursive, runWithConcurrency,
+  MAX_RECURSIVE_DELETE_ENTRIES, MAX_UPLOAD_CONCURRENCY, auditPathTail, createPauseGate, opsShellModule,
+  removeRemoteRecursive, runWithConcurrency, sftpUploadRange,
 } from '../src/plugins/ops-shell.js';
 
 // ---------- A. 远程递归删除 ----------
@@ -287,6 +288,145 @@ describe('runWithConcurrency · 有界并发窗口', () => {
   it('并发上限常量是正的、且有合理上界（单条 SFTP 通道开不了太多路）', () => {
     expect(MAX_UPLOAD_CONCURRENCY).toBeGreaterThan(0);
     expect(MAX_UPLOAD_CONCURRENCY).toBeLessThanOrEqual(64);
+  });
+});
+
+// ---------- A3b. 暂停闸门（用户要求：「顶多加个暂停任务按钮」）----------
+
+describe('createPauseGate · 上传暂停闸门', () => {
+  it('未暂停时是空操作（不拖慢正常上传）', async () => {
+    const gate = createPauseGate(() => ({ paused: false }) as never, 1);
+    await expect(gate()).resolves.toBeUndefined();
+  });
+
+  it('★ 暂停期间原地等着，一恢复就放行', async () => {
+    const job = { paused: true };
+    const gate = createPauseGate(() => job as never, 1);
+    let released = false;
+    const p = gate().then(() => { released = true; });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(released, '暂停了却直接放行').toBe(false);
+    job.paused = false;
+    await p;
+    expect(released).toBe(true);
+  });
+
+  it('★ 任务记录没了（重启/回收）立刻放行 —— 否则 worker 会永远等一个不存在的任务', async () => {
+    const gate = createPauseGate(() => undefined, 1);
+    await expect(gate()).resolves.toBeUndefined();
+  });
+});
+
+describe('runWithConcurrency · beforeTake 闸门（暂停点就在领活之前）', () => {
+  it('★ 每个真正开始跑的条目，前面都过一次闸门（一个都不漏）', async () => {
+    let takes = 0;
+    const seen: number[] = [];
+    await runWithConcurrency([0, 1, 2, 3, 4], 2, async (n) => { seen.push(n); }, {
+      beforeTake: async () => { takes += 1; },
+    });
+    expect(seen.sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
+    // 允许比条目数多几次：等闸门期间活被别的 worker 领走的那次也算过闸
+    expect(takes).toBeGreaterThanOrEqual(seen.length);
+  });
+
+  it('★ 闸门挂着（=暂停）时一个新文件都不开始；放行后继续，不重不漏', async () => {
+    const job = { paused: true };
+    const started: number[] = [];
+    const gate = createPauseGate(() => job as never, 1);
+    const p = runWithConcurrency([1, 2, 3, 4, 5, 6], 2, async (n) => { started.push(n); }, { beforeTake: gate });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(started, '暂停期间还在领新活').toEqual([]);
+    job.paused = false;
+    await p;
+    expect(started.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+});
+
+// ---------- A4. 断点续传（用户要求：「点了暂停正在执行的和待执行的都得暂停，还得支持断点续传」）----------
+//
+// 读侧是**真实的本地文件流**（node:fs），所以这里能真的验证"从第 N 字节开始拷"
+// 和"被中断时停在哪"，而不只是验证调用参数长相。
+
+/** 假 SFTP 只需要一个 createWriteStream：把收到的块攒起来，顺便记下每次的 options */
+function fakeUploadSftp(opts: { failWrite?: boolean } = {}) {
+  const chunks: Buffer[] = [];
+  const seenOpts: Array<Record<string, unknown>> = [];
+  const sftp = {
+    createWriteStream(_p: string, o: Record<string, unknown>) {
+      seenOpts.push(o);
+      return new Writable({
+        write(c: Buffer, _e, cb) {
+          if (opts.failWrite) { cb(new Error('远端写失败')); return; }
+          chunks.push(Buffer.from(c));
+          cb();
+        },
+      });
+    },
+  };
+  return { sftp: sftp as never, seenOpts, text: () => Buffer.concat(chunks).toString('utf8') };
+}
+
+describe('sftpUploadRange · 可中断、可从断点续传的单文件上传', () => {
+  it('★ 从 offset 处接着拷，只传后半截（续传不是整文件重来）', async () => {
+    const f = join(root, 'big.bin');
+    writeFileSync(f, 'ABCDEFGHIJ');                       // 10 字节
+    const { sftp, seenOpts, text } = fakeUploadSftp();
+    const r = await sftpUploadRange(sftp, f, '/remote/big.bin', 4, () => {}, () => false);
+    expect(r).toEqual({ written: 10, cancelled: false });
+    expect(text(), '没有从第 4 字节接着传').toBe('EFGHIJ');
+    // offset>0 用 r+ 定位续写、offset=0 用 w 截断重来 —— 这个区分弄反会写出半个文件
+    expect(seenOpts[0]).toMatchObject({ flags: 'r+', start: 4 });
+  });
+
+  it('★ 从头传（offset=0）用 w 截断，绝不续写远端的同名文件', async () => {
+    const f = join(root, 'a.txt');
+    writeFileSync(f, 'hello');
+    const { sftp, seenOpts, text } = fakeUploadSftp();
+    await sftpUploadRange(sftp, f, '/remote/a.txt', 0, () => {}, () => false);
+    expect(seenOpts[0]).toMatchObject({ flags: 'w', start: 0 });
+    expect(text()).toBe('hello');
+  });
+
+  it('★ 进度报的是**绝对字节数**（从 offset 起算），界面才能画对进度条', async () => {
+    const f = join(root, 'p.bin');
+    writeFileSync(f, 'ABCDEFGHIJ');
+    const { sftp } = fakeUploadSftp();
+    const seen: number[] = [];
+    await sftpUploadRange(sftp, f, '/r/p.bin', 3, (n) => seen.push(n), () => false);
+    expect(Math.min(...seen)).toBeGreaterThan(3);
+    expect(seen[seen.length - 1]).toBe(10);
+  });
+
+  it('★ shouldAbort 变真 → 当作「暂停」返回 cancelled，而不是抛错', async () => {
+    const f = join(root, 'c.bin');
+    writeFileSync(f, 'x'.repeat(200000));
+    const { sftp } = fakeUploadSftp();
+    const r = await sftpUploadRange(sftp, f, '/r/c.bin', 0, () => {}, () => true);
+    expect(r.cancelled, '暂停被当成了错误，或者压根没停').toBe(true);
+    expect(r.written, '中断点没回传给调用方，续不上').toBeGreaterThan(0);
+    expect(r.written, '说停却把整个文件传完了').toBeLessThan(200000);
+  });
+
+  it('offset 已等于文件大小 → 直接完成，连写流都不建（重进任务时的收尾路径）', async () => {
+    const f = join(root, 'done.bin');
+    writeFileSync(f, 'abc');
+    const { sftp, seenOpts } = fakeUploadSftp();
+    const r = await sftpUploadRange(sftp, f, '/r/done.bin', 3, () => {}, () => false);
+    expect(r).toEqual({ written: 3, cancelled: false });
+    expect(seenOpts, '文件已经传完了还去开了写流').toHaveLength(0);
+  });
+
+  it('本地文件读不出来 → reject（不能把"没传"当成功）', async () => {
+    const { sftp } = fakeUploadSftp();
+    await expect(sftpUploadRange(sftp, join(root, '不存在.bin'), '/r/x', 0, () => {}, () => false))
+      .rejects.toThrow();
+  });
+
+  it('远端写失败 → reject（不静默吞掉）', async () => {
+    const f = join(root, 'e.bin');
+    writeFileSync(f, 'data');
+    const { sftp } = fakeUploadSftp({ failWrite: true });
+    await expect(sftpUploadRange(sftp, f, '/r/e.bin', 0, () => {}, () => false)).rejects.toThrow('远端写失败');
   });
 });
 

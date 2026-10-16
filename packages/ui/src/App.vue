@@ -713,12 +713,15 @@ body {
      永久空白（用户实报的黑屏，且不抛任何异常）。animation 在元素插入时自己跑，
      不需要任何回调来推进，也就没有能卡住的中间态。
    ★ 为什么只动 transform、绝不动 opacity：动画帧被系统掐掉时（窗口被遮挡/最小化、后台标签页）
-     动画会停在 from 那一帧；只要 from 里没有 opacity，停住的最坏情况也只是"页面下沉 6px"，
-     绝不会变成一块看不见的黑。这条是那两次黑屏事故换来的铁律，改这里之前先看 router-view 注释。 */
-.main-content > * { animation: yz-page-in 0.16s cubic-bezier(0.16, 1, 0.3, 1); }
+     动画会停在 from 那一帧；只要 from 里没有 opacity，停住的最坏情况也只是"页面下沉一点点"，
+     绝不会变成一块看不见的黑。这条是那两次黑屏事故换来的铁律，改这里之前先看 router-view 注释。
+   ★ 幅度与时长（2026-10-16 用户反馈「切换是好了，就是少了点过渡」后调过一次）：
+     位移 6px→10px、加一点 scale、时长 0.16s→0.2s，进场感明显一些但仍不拖沓。
+     ★ 别再加回去：scale 不要小于约 0.99（再小就是肉眼可辨的"缩一下"），也永远不要 opacity。 */
+.main-content > * { animation: yz-page-in 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
 @keyframes yz-page-in {
-  from { transform: translateY(6px); }
-  to { transform: translateY(0); }
+  from { transform: translateY(10px) scale(0.994); }
+  to { transform: translateY(0) scale(1); }
 }
 
 /* Global Element Plus overrides */

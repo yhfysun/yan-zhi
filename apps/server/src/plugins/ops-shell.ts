@@ -10,7 +10,7 @@
 import { getPluginManager } from '@yan-zhi/core';
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule, PluginWebSocket, PluginWsRequest } from '@yan-zhi/core';
 import { Client } from 'ssh2';
-import { readdirSync, lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { readdirSync, lstatSync, mkdirSync, renameSync, rmSync, createReadStream } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
@@ -686,6 +686,16 @@ export interface SftpJob {
    *   界面既要显示"正在传哪几个"，也要按 activeFiles.length 算出"待执行从队列第几个开始"。
    */
   activeFiles: string[];
+  /**
+   * 上传任务是否被用户暂停（2026-10-16，用户要求「顶多加个暂停任务按钮」）。
+   * ★ 暂停会**连正在传的文件一起停**（并记下断点，恢复时从断点续传，见 sftpUploadRange），
+   *   不只是"不再领新文件" —— 用户要的就是"点了暂停，正在执行的和待执行的都停下"。
+   * ★ 下载/删除恒为 false：那两类是"一条路走到黑"的连续动作，中途没有安全点
+   *   （删除停在一半，远端留下的是删了半棵的目录树，比删完或没删都难收拾）。
+   * ⚠️ 暂停期间任务保持 running（SSE 流不关，界面才看得到「已暂停」），
+   *   也就是说它会一直占着那条 SFTP 连接，直到用户点继续。
+   */
+  paused: boolean;
   /** 删除任务：累计已删条目数（不受保留上限影响） */
   deletedCount: number;
   /** 删除任务：最近删掉的路径（保留上限见 MAX_JOB_DELETED_KEEP） */
@@ -739,6 +749,7 @@ function jobPayload(j: SftpJob): Record<string, unknown> {
     currentFile: j.currentFile,
     activeFiles: j.activeFiles,
     activeCount: j.activeFiles.length,
+    paused: j.paused,
     deletedCount: j.deletedCount,
     deleted: j.deleted.slice(-50),
     error: j.error,
@@ -822,8 +833,60 @@ export function sftpFastPut(sftp: SFTPWrapper, localPath: string, remotePath: st
   );
 }
 
-/** fastGet 封装：带 step 进度回调 */
-function sftpFastGet(sftp: SFTPWrapper, remotePath: string, localPath: string, onStep: (transferred: number, total: number) => void): Promise<void> {
+/**
+ * 可中断、可续传的单文件上传（2026-10-16，用户要求：暂停要能停住**正在传的**那一个，
+ * 恢复后从断点接着传，而不是整文件重来）。
+ *
+ * ★ 为什么不能用 sftp.fastPut：它是一次性黑盒 —— 没有"停"这个操作（暂停只能等它传完），
+ *   也没有"从第 N 字节开始"（续传只能重头来）。要这两样只能自己拼
+ *   本地 createReadStream + sftp.createWriteStream。
+ * ★ 断点由**调用方**决定传进来（offset）：只有"本次任务已经动过"的目标文件才允许续传，
+ *   免得把远端一个不相干的同名文件当成自己的半成品接着写。见上传任务里的 started 集合。
+ * ★ 中断语义：`shouldAbort()` 变真时销毁两条流并 resolve `{ cancelled: true }`，
+ *   **不当错误抛** —— 暂停不是失败。落盘了多少要看调用方重新 stat 远端，不能信这里的计数：
+ *   被中断时写流里可能还有没落盘的缓冲，按内存计数续传会在文件中间留一个洞。
+ */
+export function sftpUploadRange(
+  sftp: SFTPWrapper,
+  localPath: string,
+  remotePath: string,
+  offset: number,
+  onStep: (written: number) => void,
+  shouldAbort: () => boolean,
+): Promise<{ written: number; cancelled: boolean }> {
+  return new Promise<{ written: number; cancelled: boolean }>((resolve, reject) => {
+    let size: number;
+    try { size = lstatSync(localPath).size; } catch (e) { reject(e as Error); return; }
+    if (offset >= size) { onStep(size); resolve({ written: size, cancelled: false }); return; }
+
+    const rs = createReadStream(localPath, { start: offset });
+    // offset>0 说明远端已经有我们自己写进去的那一截 —— 用 r+ 定位续写；否则一律 w（截断重来）
+    const ws = sftp.createWriteStream(remotePath, { flags: offset > 0 ? 'r+' : 'w', start: offset, autoClose: true });
+    let read = offset;
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      try { rs.destroy(); } catch { /* ignore */ }
+      try { ws.destroy(); } catch { /* ignore */ }
+      fn();
+    };
+    // ★ pipe 必须挂完监听**之前**接上：先加 'data' 监听会把读流切进 flowing 态，
+    //   在 pipe 接上之前到达的数据块会被直接丢掉（文件开头凭空少一截）。
+    rs.pipe(ws);
+    rs.on('data', (chunk: Buffer) => {
+      read += chunk.length;
+      onStep(read);
+      if (shouldAbort()) settle(() => resolve({ written: read, cancelled: true }));
+    });
+    rs.on('error', (e: Error) => settle(() => reject(e)));
+    ws.on('error', (e: Error) => settle(() => reject(e)));
+    // 写流正常关闭 = 全部数据已落盘。被我们主动销毁时 settled 已为真，不会重复 resolve。
+    ws.on('close', () => settle(() => resolve({ written: read, cancelled: false })));
+  });
+}
+
+/** fastGet 封装：带 step 进度回调 */function sftpFastGet(sftp: SFTPWrapper, remotePath: string, localPath: string, onStep: (transferred: number, total: number) => void): Promise<void> {
   return new Promise<void>((resolve, reject) =>
     sftp.fastGet(remotePath, localPath, { step: (transferred, _chunk, total) => onStep(transferred, total) }, (err) => (err ? reject(err) : resolve())),
   );
@@ -890,6 +953,7 @@ export async function runWithConcurrency<T>(
   items: T[],
   limit: number,
   worker: (item: T, index: number) => Promise<void>,
+  opts: { beforeTake?: () => Promise<void> } = {},
 ): Promise<void> {
   const total = items.length;
   if (!total) return;
@@ -899,8 +963,16 @@ export async function runWithConcurrency<T>(
   let firstError: unknown = null;
   const run = async (): Promise<void> => {
     while (!firstError) {
+      // ★ 顺序有讲究：先判"还有没有活"，再等闸门。
+      //   反过来（先等闸门再判）会让暂停时空闲 worker 一起挂在闸门上 ——
+      //   队列已经领完、只剩在飞的几个时，暂停一下就再也收不了尾了。
+      if (next >= total) return;
+      if (opts.beforeTake) {
+        await opts.beforeTake();
+        if (firstError) return;
+      }
       const i = next++;
-      if (i >= total) return;
+      if (i >= total) return;   // 等闸门期间可能已被别的 worker 领走
       try {
         await worker(items[i], i);
       } catch (e) {
@@ -911,6 +983,22 @@ export async function runWithConcurrency<T>(
   };
   await Promise.all(Array.from({ length: workers }, run));
   if (firstError) throw firstError;
+}
+
+/**
+ * 上传的**暂停闸门**：暂停期间在 `beforeTake` / worker 循环里原地等，一恢复就接着往下走。
+ *
+ * ★ 为什么轮询读状态、而不是用 Promise 通知：任务记录本身就有 `paused`（SSE 每 300ms 推一帧），
+ *   闸门读同一个源，就不会出现"闸门和界面各说各话"。200ms 的粒度对上传毫无感知。
+ * ★ 任务记录没了（进程重启 / 已被回收）也必须放行 —— 否则 worker 会永远等一个不存在的任务，
+ *   整个上传既不完成也不失败，连接也跟着漏掉。
+ */
+export function createPauseGate(job: () => SftpJob | undefined, intervalMs = 200): () => Promise<void> {
+  return async () => {
+    while (job()?.paused) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  };
 }
 
 /**
@@ -2534,6 +2622,7 @@ const opsShellModule: PluginModule = {
           doneCount: 0, totalCount: opts.totalCount,
           currentFile: '',
           activeFiles: [],
+          paused: false,
           deletedCount: 0, deleted: [],
         });
         return jobId;
@@ -2892,6 +2981,10 @@ const opsShellModule: PluginModule = {
               j.activeFiles = [...inFlight.keys()].map((k) => plan[k].dest);
               j.currentFile = j.activeFiles[0] ?? '';
             };
+            // 本次任务里**已经动过**的目标文件：只有它们才允许断点续传（见 sftpUploadRange 注释）
+            const startedDests = new Set<string>();
+            // 暂停闸门：调度层用它挡住「排队中的文件」，worker 里用它挡住「正在传的那个」
+            const pauseGate = createPauseGate(() => sftpJobs.get(jobId));
             await runWithConcurrency(plan, uploadConcurrency, async (p, i) => {
               const parent = p.dest.slice(0, p.dest.lastIndexOf('/'));
               if (parent && !ensuredDirs.has(parent)) {
@@ -2900,19 +2993,43 @@ const opsShellModule: PluginModule = {
                 ensuredDirs.add(parent);
                 await ensureRemoteDir(got.sftp, parent);
               }
-              inFlight.set(i, 0);
+              // ★ 一个文件是"循环"而不是"一次调用"：暂停要能停住正在传的**这一个**，
+              //   恢复后从远端实际落盘的字节数接着写。
+              //   断点取自 stat 远端、不取内存计数 —— 被中断时写流的缓冲里可能还有没落盘的字节。
+              let offset = 0;
+              if (startedDests.has(p.dest)) {
+                try { offset = Math.min((await statRemote(got.sftp, p.dest)).size, p.size); } catch { offset = 0; }
+              }
+              startedDests.add(p.dest);
+              inFlight.set(i, offset);
               syncProgress();
               try {
-                await sftpFastPut(got.sftp, p.src, p.dest, (transferred) => {
-                  inFlight.set(i, transferred);
-                  syncProgress();
-                });
+                for (;;) {
+                  if (!sftpJobs.get(jobId)) throw new Error('任务已结束');
+                  await pauseGate();
+                  const r = await sftpUploadRange(
+                    got.sftp, p.src, p.dest, offset,
+                    (written) => { inFlight.set(i, written); syncProgress(); },
+                    () => sftpJobs.get(jobId)?.paused === true,
+                  );
+                  if (r.cancelled) {
+                    // 被暂停打断：断点以远端落盘的为准，回到循环顶部等恢复（continue 而不是 return）
+                    try { offset = Math.min((await statRemote(got.sftp, p.dest)).size, p.size); } catch { offset = 0; }
+                    continue;
+                  }
+                  if (r.written >= p.size) break;   // 传完了（0 字节文件也走这里收尾）
+                  // 一次尝试一个字节都没推进 → 直接失败，别在这里空转
+                  if (r.written <= offset) throw new Error(`「${p.dest}」写入没有进展`);
+                  offset = r.written;
+                }
               } finally {
                 inFlight.delete(i);
               }
               doneBytes += p.size;
               doneCount += 1;
               syncProgress();
+            }, {
+              beforeTake: pauseGate,
             });
             await audit('sftp.upload', { connection: got.conn.name, detail: `${plan.length} 个文件 → ${destDir}`, ok: true });
             finishJob(jobId, 'done');
@@ -2977,6 +3094,24 @@ const opsShellModule: PluginModule = {
       r.get('/sftp/progress/:id/stream', (req: unknown, res: unknown) => {
         const { id } = (req as { params: { id: string } }).params;
         sftpProgressStream(req, res, id);
+      });
+
+      // 暂停 / 继续（用户要求：「顶多加个暂停任务按钮」）
+      // ★ 只有**上传**能暂停：上传是"扫描好的队列 + 一个有界并发窗口"，暂停就是不再领新文件，
+      //   天然有安全点。下载/删除是一条路走到黑 —— 删除停在一半，远端留下的是删了半棵的目录树，
+      //   比删完或没删都难收拾，所以这里直接拒掉，而不是给个"看起来能用"的按钮。
+      // ★ 状态只改 `paused`，`state` 保持 running：SSE 流因此不关，界面才看得到「已暂停」，
+      //   也不会被界面的终态判定误认成"结束了"。
+      r.post('/sftp/job/pause', (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const jobId = String(body.jobId || '');
+        const job = sftpJobs.get(jobId);
+        if (!job) { fail(res, 404, '任务不存在（可能已结束）'); return; }
+        if (job.kind !== 'upload') { fail(res, 400, '只有上传任务支持暂停'); return; }
+        if (job.state !== 'running') { fail(res, 400, '任务已结束'); return; }
+        // 不传 paused 就当"切换"，前端只管点按钮，不用自己维护一个可能过期的本地态
+        job.paused = body.paused === undefined ? !job.paused : !!body.paused;
+        json(res, { data: { jobId, paused: job.paused } });
       });
 
       // 操作日志（工具执行审计）：运维控制台「操作日志」面板消费（倒序，最近 200 条）

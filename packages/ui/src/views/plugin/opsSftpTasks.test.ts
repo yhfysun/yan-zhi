@@ -73,7 +73,9 @@ describe('上传：先扫描成队列，再排队执行', () => {
   it('★ 并发窗口：展示"正在传 N 个"以及是哪几个', () => {
     expect(SRC, '任务模型缺 activeFiles').toMatch(/activeFiles: string\[\]/);
     expect(SRC, 'SSE 帧没落到 activeFiles').toMatch(/Array\.isArray\(d\.activeFiles\)/);
-    expect(SRC, '没展示在飞文件数').toMatch(/正在传 \{\{ t\.activeFiles\.length \}\} 个/);
+    expect(SRC, '没展示在飞文件数').toMatch(/\{\{ t\.activeFiles\.length \}\} 个/);
+    expect(SRC, '暂停后仍显示"正在传"，看不出它停在断点上')
+      .toMatch(/t\.paused \? '已停在断点' : '正在传'/);
     // 名字太长只报前几个，title 里给全量
     expect(SRC).toMatch(/function activeNames\(t: SftpTask\)/);
     expect(SRC).toMatch(/:title="t\.activeFiles\.join\('\\n'\)"/);
@@ -144,5 +146,41 @@ describe('任务状态本身可用', () => {
   it('任务行建好后一律经 taskOf 取**响应式代理**再改（否则改了不渲染）', () => {
     expect(SRC).toMatch(/tasks\.value = \[\.\.\.tasks\.value, \{/);
     expect(SRC, '缺少按 id 取代理的入口').toMatch(/const taskOf = \(id: string\): SftpTask \| undefined => tasks\.value\.find/);
+  });
+});
+
+// 暂停 / 继续（2026-10-16 用户要求）：
+//   ① 「顶多加个暂停任务按钮」—— 待执行本来就是自动跑的，不需要"点开始"；
+//   ② 「点了暂停正在执行的任务和待执行的都得暂停，还得支持断点续传」——
+//      所以暂停是后端调度的事（在飞的那个也停在断点），前端只负责发指令 + 如实显示。
+describe('暂停 / 继续 + 断点续传', () => {
+  it('★ 任务模型带 paused，SSE 帧把它落进任务行', () => {
+    expect(SRC, 'SftpTask 缺 paused').toMatch(/paused: boolean/);
+    expect(SRC, 'SSE 帧没落到 paused').toMatch(/typeof d\.paused === 'boolean'/);
+    expect(SRC, '新建任务没给 paused 初值').toMatch(/paused: false/);
+  });
+
+  it('★ 暂停按钮只在上传任务上（下载/删除中途停没有安全点，后端会拒）', () => {
+    expect(SRC).toMatch(/v-if="t\.kind === 'upload'"[\s\S]{0,400}togglePause\(t\)/);
+    expect(SRC, '按钮没有随状态切换图标').toMatch(/:icon="t\.paused \? VideoPlay : VideoPause"/);
+    expect(SRC, '缺 VideoPause 图标导入').toMatch(/\bVideoPause, VideoPlay\b/);
+  });
+
+  it('★ 暂停状态要看得见（只有图标的话用户不知道停在哪了）', () => {
+    expect(SRC).toMatch(/class="stp-paused"/);
+    expect(SRC).toContain('已暂停');
+  });
+
+  it('★ 调后端的暂停接口，并用响应里的 paused 回写（不靠本地猜）', () => {
+    const fn = SRC.match(/async function togglePause\([\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(fn, '找不到 togglePause').not.toBe('');
+    expect(fn).toContain('/plugin/ops-shell/sftp/job/pause');
+    expect(fn, '没把 jobId 一起发').toMatch(/jobId: t\.id/);
+    expect(fn, '拿本地状态改了就算数（应该以服务端返回为准）').toMatch(/row\.paused = /);
+  });
+
+  it('★ 断点续传要对用户可见（否则"暂停后从一半接着传"看不出来）', () => {
+    expect(SRC, '暂停按钮的提示词没提断点').toMatch(/从断点接着传/);
+    expect(SRC, '「已暂停」的说明没提断点').toMatch(/断点/);
   });
 });

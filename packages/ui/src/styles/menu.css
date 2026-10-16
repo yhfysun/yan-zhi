@@ -273,6 +273,15 @@
 .sftp-task-popper .stp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .sftp-task-popper .stp-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .sftp-task-popper .stp-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 行右侧：状态小字 + 暂停键（挤在 label 后面，label 负责省略号，这块不缩） */
+.sftp-task-popper .stp-actions { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.sftp-task-popper .stp-paused {
+  font-size: 11px; color: var(--color-warning, #b88230);
+  border: 1px solid color-mix(in srgb, var(--color-warning, #b88230) 45%, transparent);
+  border-radius: 3px; padding: 0 4px; line-height: 15px;
+}
+/* link 按钮的默认高度会把这行撑开，压回与小字同一档 */
+.sftp-task-popper .stp-pause { height: 18px; padding: 0 2px; }
 .sftp-task-popper .stp-meta { flex: none; font-size: 11px; color: var(--color-text-tertiary); }
 .sftp-task-popper .stp-meta.is-err,
 .sftp-task-popper .stp-err { color: var(--color-danger, #c25b4e); }

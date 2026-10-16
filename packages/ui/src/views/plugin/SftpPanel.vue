@@ -40,7 +40,24 @@
                 <div class="stp-main">
                   <div class="stp-line">
                     <span class="stp-label" :title="t.label">{{ t.label }}</span>
-                    <span class="stp-meta">{{ taskMeta(t) }}</span>
+                    <span class="stp-actions">
+                      <span
+                        v-if="t.paused"
+                        class="stp-paused"
+                        title="已暂停：正在传的文件停在了断点上，点继续会从断点接着传"
+                      >已暂停</span>
+                      <span class="stp-meta">{{ taskMeta(t) }}</span>
+                      <!-- 只有上传可暂停：下载/删除中途停没有安全点，后端也会拒（见 SftpTask.paused） -->
+                      <el-button
+                        v-if="t.kind === 'upload'"
+                        link
+                        size="small"
+                        class="stp-pause"
+                        :icon="t.paused ? VideoPlay : VideoPause"
+                        :title="t.paused ? '继续上传（从断点接着传）' : '暂停上传（正在传的文件停在断点，继续时接着传）'"
+                        @click.stop="togglePause(t)"
+                      />
+                    </span>
                   </div>
                   <el-progress
                     v-if="t.kind !== 'delete'"
@@ -48,13 +65,13 @@
                     :stroke-width="4"
                     :show-text="false"
                   />
-                  <!-- 并发窗口：同时在飞的那几个文件（最多 上传并发数 个） -->
+                  <!-- 并发窗口：同时在飞的那几个文件（最多 上传并发数 个）；暂停后它们停在断点上 -->
                   <div
                     v-if="t.kind === 'upload' && t.activeFiles.length"
                     class="stp-cur"
                     :title="t.activeFiles.join('\n')"
                   >
-                    正在传 {{ t.activeFiles.length }} 个：{{ activeNames(t) }}
+                    {{ t.paused ? '已停在断点' : '正在传' }} {{ t.activeFiles.length }} 个：{{ activeNames(t) }}
                   </div>
                   <!-- 删除任务：实时删除明细 -->
                   <div v-if="t.kind === 'delete' && t.deleted.length" class="stp-del">
@@ -327,6 +344,7 @@ import { consumeSseStream } from '../../utils/sse';
 import {
   ArrowUp, Connection, Delete, Document, Download, EditPen,
   Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Tickets, Upload,
+  VideoPause, VideoPlay,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, API_BASE } from '../../api/client';
@@ -422,6 +440,12 @@ interface SftpTask {
    * 正在传的文件会被同时算进"待执行"，看着就像重复排队。
    */
   activeFiles: string[];
+  /**
+   * 上传任务是否被用户暂停（对应后端 SftpJob.paused）。
+   * ★ 暂停连**正在传的文件一起停**，并记下断点；点继续时从断点续传，不是整文件重来。
+   *   下载/删除恒为 false —— 后端会拒掉这两类的暂停请求（中途停没有安全点）。
+   */
+  paused: boolean;
   error?: string;
 }
 
@@ -1098,6 +1122,7 @@ async function downloadNames(names: string[], destDir?: string) {
       currentFile: '', deletedCount: 0, deleted: [], expanded: false,
       files: opts.files ?? [], filesTruncated: !!opts.filesTruncated,
       activeFiles: [],
+      paused: false,
     }];
     // 起了任务就把弹窗打开：用户要的是"扫描后排队能看见"，藏在图标后面等于没有
     tasksOpen.value = true;
@@ -1116,6 +1141,7 @@ async function downloadNames(names: string[], destDir?: string) {
     if (typeof d.totalCount === 'number') t.totalCount = d.totalCount;
     if (typeof d.currentFile === 'string') t.currentFile = d.currentFile;
     if (Array.isArray(d.activeFiles)) t.activeFiles = (d.activeFiles as unknown[]).filter((x): x is string => typeof x === 'string');
+    if (typeof d.paused === 'boolean') t.paused = d.paused;
     if (typeof d.error === 'string' && d.error) t.error = d.error;
     if (t.kind === 'delete' && typeof d.deletedCount === 'number') {
       const delta = d.deletedCount - t.deletedCount;
@@ -1126,6 +1152,24 @@ async function downloadNames(names: string[], destDir?: string) {
         const fresh = delta <= all.length ? all.slice(all.length - delta) : all;
         t.deleted = [...t.deleted, ...fresh].slice(-DELETED_KEEP);
       }
+    }
+  }
+
+  /**
+   * 暂停 / 继续一条上传任务（用户要求：「顶多加个暂停任务按钮」）。
+   * ★ 状态以**后端返回的 paused 为准**回写，不在本地先改再看结果 —— 暂停是服务端调度的事，
+   *   本地乐观更新一旦和后端不一致（比如任务刚好结束了），界面就会显示一个骗人的"已暂停"。
+   */
+  async function togglePause(t: SftpTask): Promise<void> {
+    try {
+      const r = await api.post<{ jobId: string; paused: boolean }>('/plugin/ops-shell/sftp/job/pause', {
+        jobId: t.id, paused: !t.paused,
+      });
+      if ('error' in r) { ElMessage.error(r.error); return; }
+      const row = taskOf(t.id);
+      if (row) row.paused = !!r.data?.paused;
+    } catch (e) {
+      ElMessage.error(`操作失败：${(e as Error).message}`);
     }
   }
 
