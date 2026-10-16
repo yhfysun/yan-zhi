@@ -43,10 +43,17 @@ export const SHOP_AGENT_BUILTIN_TOOLS = [
 ];
 
 /** 店铺运营 skill（须与 skill 表种子 id 对齐）。
- *  ★ P0 只种 skill_shop_selection 一个 —— 这里就只挂一个。
+ *  ★ P1 起六条全挂（选品 / Listing / 广告利润 / 淘宝 / 1688 货源 / 中转仓）。
  *    后端对「技能不存在或已禁用」是**不注入且不报错**（见 conversation-self-config.test.ts 的守门），
- *    所以挂了还没种的 id 会静默失效；宁可随阶段一起长，不要提前占位。 */
-export const SHOP_AGENT_SKILL_IDS = ['skill_shop_selection'];
+ *    所以这里挂的每个 id 都必须在 db.ts 的 builtinSkillDefaults 里真实存在 —— 加一条要两边同改。 */
+export const SHOP_AGENT_SKILL_IDS = [
+  'skill_shop_selection',
+  'skill_amazon_listing',
+  'skill_amazon_ads_profit',
+  'skill_taobao_ops',
+  'skill_1688_sourcing',
+  'skill_overseas_warehouse',
+];
 
 export const SHOP_AGENT_SYSTEM_PROMPT = `你是「店铺运营助手」（shopAgent），陪用户做**真实店铺的经营决策**：亚马逊 / 淘宝 / 1688 / 跨境中转仓（海外仓）。你服务的是有真金白银在里面的店主，不是写行业报告。
 

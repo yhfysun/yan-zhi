@@ -24,13 +24,15 @@ const logger = createLogger('shop-ops');
 
 export const SHOP_OPS_ID = 'shop-ops';
 
-/** 支持的平台。entryUrl/loginNote 给智能体与用户看：P0 的抓数全靠 pageAgent 打开这些页面。 */
+/** 支持的平台。entryUrl/loginNote/keyMetrics 给智能体与用户看：P0 的抓数全靠 pageAgent 打开这些页面。 */
 export interface ShopPlatform {
   id: 'amazon' | 'taobao' | 'pdd' | '1688' | 'tiktok' | 'shopify' | 'warehouse';
   label: string;
   kind: 'store' | 'warehouse';
   entryUrl: string;
   loginNote: string;
+  /** 该平台该盯哪些指标（控制台「口径速查」用；只读参考，不假装能自动取到） */
+  keyMetrics: string[];
 }
 
 export const SHOP_PLATFORMS: readonly ShopPlatform[] = [
@@ -38,36 +40,43 @@ export const SHOP_PLATFORMS: readonly ShopPlatform[] = [
     id: 'amazon', label: '亚马逊', kind: 'store',
     entryUrl: 'https://sellercentral.amazon.com/',
     loginNote: '卖家中心需登录（各站点子域不同：sellercentral.amazon.co.uk / .co.jp 等）。首次请你在浏览器面板自行登录，之后 cookie 复用。',
+    keyMetrics: ['业务报告：会话数 / 转化率 / 客单价', '广告报表：曝光-点击-花费-单量（算 ACoS）', '库存与 FBA 费用（含长期仓储费）', '退货率与差评关键词'],
   },
   {
     id: 'taobao', label: '淘宝 / 天猫', kind: 'store',
     entryUrl: 'https://myseller.taobao.com/',
     loginNote: '卖家中心（千牛网页版）需登录。反爬较强，取数优先找页面自身的 XHR 接口而不是点 DOM。',
+    keyMetrics: ['生意参谋：访客数 / 支付转化率 / 客单价', '主推款的核心关键词排名', 'DSR 三项与退款/纠纷率', '流量结构与活动资源位'],
   },
   {
     id: 'pdd', label: '拼多多', kind: 'store',
     entryUrl: 'https://mms.pinduoduo.com/',
     loginNote: '商家后台需登录（常需短信验证码，可能需你人工完成一次）。',
+    keyMetrics: ['商家后台：曝光 / 点击 / 转化', '退款率与纠纷率', '活动报名要素与价格力'],
   },
   {
     id: '1688', label: '1688（货源）', kind: 'store',
     entryUrl: 'https://www.1688.com/',
     loginNote: '部分阶梯价与供应商信息登录后才可见。主要用于货源比价，本模式不代下单。',
+    keyMetrics: ['阶梯价与起订量 MOQ', '发货地与供货能力（日产能/是否现货）', '评分与回头率', '是否可定制（贴牌/改包装）'],
   },
   {
     id: 'tiktok', label: 'TikTok Shop', kind: 'store',
     entryUrl: 'https://seller.tiktokglobalshop.com/',
     loginNote: '跨境卖家后台需登录，常有风控校验。',
+    keyMetrics: ['商品卡与短视频带货数据', '达人合作与佣金口径', '履约时效与差评'],
   },
   {
     id: 'shopify', label: 'Shopify 独立站', kind: 'store',
     entryUrl: 'https://admin.shopify.com/',
     loginNote: '后台需登录；有 API 时优先用 API 而非浏览器。',
+    keyMetrics: ['流量来源与转化漏斗', '弃单率', '物流时效与退款率'],
   },
   {
     id: 'warehouse', label: '跨境中转仓 / 海外仓', kind: 'warehouse',
     entryUrl: '',
     loginNote: '多数是自有台账或服务商系统：没有统一入口，用导出的 Excel/CSV 放进任务目录 00-source 即可。',
+    keyMetrics: ['入库预约与箱规/标签要求', '库存台账：在仓 / 在途 / 日均销 / 可售天数', '头程报价与门到门时效（含清关派送）', '长期仓储费与滞销库存'],
   },
 ];
 

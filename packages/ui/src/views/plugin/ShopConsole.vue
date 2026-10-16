@@ -108,6 +108,40 @@
           </el-table>
           <p v-else class="shop-empty-hint">还没有操作记录。新建 / 修改 / 删除 / 自检都会留痕。</p>
         </el-tab-pane>
+
+        <el-tab-pane label="口径速查" name="reference">
+          <p class="shop-empty-hint shop-ref-lead">
+            按平台列出<strong>该盯哪些指标</strong>与后台入口、登录注意事项。这里是只读参考 ——
+            具体数值由助手指引你在浏览器面板登录后取（本插件不存账号密码，也不假装能自动取到）。
+          </p>
+
+          <div class="shop-ref-grid">
+            <div v-for="p in shopPlatforms" :key="p.id" class="shop-ref-card">
+              <div class="shop-ref-head">
+                <strong>{{ p.label }}</strong>
+                <el-tag size="small" effect="plain" :type="p.kind === 'warehouse' ? 'warning' : 'info'">
+                  {{ p.kind === 'warehouse' ? '仓储' : '店铺' }}
+                </el-tag>
+              </div>
+              <ul class="shop-ref-list">
+                <li v-for="(m, i) in p.keyMetrics" :key="i">{{ m }}</li>
+              </ul>
+              <p v-if="p.entryUrl" class="shop-ref-entry">
+                入口：<a :href="p.entryUrl" target="_blank" rel="noreferrer noopener">{{ p.entryUrl }}</a>
+              </p>
+              <p class="shop-ref-note">{{ p.loginNote }}</p>
+            </div>
+          </div>
+
+          <div class="shop-ref-boundary">
+            <p class="shop-ref-boundary-title">本模式能做什么 / 不能做什么</p>
+            <ul class="shop-ref-list">
+              <li><strong>能做（只读分析）</strong>：跨境选品分析、Listing 与详情优化建议、广告与利润测算（ACoS / 盈亏平衡 ACoS）、1688 货源与铺货差价、头程比选与库存补货台账；产出都是可照做的清单与测算表。</li>
+              <li><strong>做不了（本版本）</strong>：改价、改库存、上下架、报名活动、回消息 —— 这些写操作要等后续版本，且届时每个动作都要走变更单 + 二次确认 + 审计。</li>
+              <li><strong>不做（长期边界）</strong>：不代下单、不代铺货、不代替你与平台/供应商成交；不绕过平台风控；不碰用户账号密码（登录一律由你在浏览器面板完成）。</li>
+            </ul>
+          </div>
+        </el-tab-pane>
       </el-tabs>
     </section>
 
@@ -171,7 +205,7 @@ import {
   loadShopConsole, selectShop, createShop, updateShop, deleteShop, checkShop,
 } from './shopSession';
 
-const tab = ref<'workbench' | 'audit'>('workbench');
+const tab = ref<'workbench' | 'audit' | 'reference'>('workbench');
 
 const active = computed(() => shopConnections.value.find((c) => c.id === shopActiveId.value) || null);
 /** 自检结果必须与当前选中的店铺同 id 才显示（换店后旧结论不能串台） */
@@ -386,4 +420,20 @@ onMounted(() => { void loadShopConsole(); });
 .shop-form-full { width: 100%; }
 .shop-form-tip { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
 .shop-audit { margin-top: 4px; }
+
+/* 「口径速查」页签 */
+.shop-ref-lead { margin: 0 0 12px; }
+.shop-ref-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.shop-ref-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 12px 14px; }
+.shop-ref-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; }
+.shop-ref-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
+.shop-ref-entry { font-size: 12px; margin: 8px 0 4px; word-break: break-all; }
+.shop-ref-entry a { color: var(--el-color-primary); }
+.shop-ref-note { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; margin: 4px 0 0; }
+.shop-ref-boundary {
+  margin-top: 16px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  padding-top: 12px;
+}
+.shop-ref-boundary-title { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
 </style>

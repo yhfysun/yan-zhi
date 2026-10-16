@@ -38,6 +38,8 @@ export interface ShopPlatformInfo {
   kind: 'store' | 'warehouse';
   entryUrl: string;
   loginNote: string;
+  /** 该平台该盯哪些指标（控制台「口径速查」渲染；只读参考） */
+  keyMetrics: string[];
 }
 
 export interface ShopCheckResult {
