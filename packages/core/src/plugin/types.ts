@@ -310,6 +310,15 @@ export interface CommandDef {
   /** 展示用风险级（'P'被动 / 'A'主动 / 'I'侵入 / 'S'模拟）。**只管展示，执行仍由 guard 决定** */
   danger?: string;
   /**
+   * 执行前是否必须**人工二次确认**（确认后命令层会给工具补 `confirmed: true`）。
+   * ★ 与 `danger` 分开：`danger` 是**风险标签**（必须与护栏的 `TOOL_RISK` 逐条一致），
+   *   `confirm` 是**交互闸门**。两者常常同时成立但不总是一致 ——
+   *   例如靶场部署/停止的风险级是 active，可它的 schema 要求 `confirmed: true`；
+   *   只在 `danger` 上做文章就会把"主动"误标成"侵入"，或者让用户收到一句
+   *   看不懂的"必须为 true 才真正部署"。
+   */
+  confirm?: boolean;
+  /**
    * 执行分流：
    * · 'tool'    —— 走后端插件工具（`tool` 指向工具名）
    * · 'ui'      —— 前端动作（`run` 指向动作 id）
@@ -320,6 +329,21 @@ export interface CommandDef {
   kind: 'tool' | 'ui' | 'builtin' | 'page';
   /** kind='tool'：映射到的插件工具名 */
   tool?: string;
+  /**
+   * kind='tool'：该命令由**哪个插件**提供 —— 执行时据此定端点（`/plugin/<pluginId>/run`）。
+   * ★ 这不是新造的执行面：安全控制台本来就走 `POST /plugin/sec-lab/run`，
+   *   命令只是它的另一个调用者（同一套护栏、同一份审计）。
+   */
+  pluginId?: string;
+  /**
+   * 位置参数的名字，**按顺序**对应命令行的位置参数。
+   * 例：`params: ['target','ports']` ⇒ `/portscan 10.0.0.1 80,443` → `{target:'10.0.0.1', ports:'80,443'}`。
+   * ★ 为什么用有序数组而不是方案里的 `args?: JsonSchema`：现在只需要"位置参数往哪个字段塞"，
+   *   而 JSON Schema 要写 18 遍（且会与工具自己的 schema 漂移）。等真要做
+   *   参数补全/校验时再升级成 schema，届时只用改这一个字段的消费方。
+   * ★ 没列进 `params` 的字段一律由**长选项**给（`--banner` / `--ports=80,443`）。
+   */
+  params?: string[];
   /** kind='ui'：前端动作 id（如 'open-tab:findings'） */
   run?: string;
   /** kind='page' 专用：指令的原始形态（自然语言任务 / 页面脚本） */

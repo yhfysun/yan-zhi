@@ -203,3 +203,30 @@ export function planCommandInput(line: string, commands: CommandDef[]): CommandI
     return { kind: 'run', def, parsed };
   });
 }
+
+/**
+ * 位置参数 + 选项 → **工具入参对象**（kind='tool' 的命令用）。
+ *
+ * ★ `params` 是 CommandDef 里的**有序字段名**，位置参数按顺序塞进去：
+ *   `params:['target','ports']` + `/portscan 10.0.0.1 80,443` → `{target, ports}`。
+ * ★ 长选项直接当字段名（`--banner` → `{banner:true}`；`--ports=80,443` → `{ports:'80,443'}`）。
+ * ★ 纯数字/true/false 的**选项值**转成数字/布尔：命令行里拿到的都是字符串，而工具的 schema
+ *   写的是 number/boolean（不转的话 `concurrency:'50'` 会被 schema 校验挡下，报一个看不懂的错）。
+ *   位置参数**不转**（`ports:'80'` 该是字符串，转了反而错）—— 这条区别很关键。
+ * ★ 必填校验**不在这里做**：工具自己的 schema 判得更准，两处判必然漂移。
+ */
+export function buildToolArgs(def: CommandDef, parsed: ParsedCommand): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  (def.params || []).forEach((field, i) => {
+    const v = parsed.args[i];
+    if (v !== undefined) args[field] = v;
+  });
+  for (const [k, v] of Object.entries(parsed.flags)) {
+    if (typeof v === 'string') {
+      if (/^-?\d+$/.test(v)) { args[k] = Number(v); continue; }
+      if (v === 'true' || v === 'false') { args[k] = v === 'true'; continue; }
+    }
+    args[k] = v;
+  }
+  return args;
+}

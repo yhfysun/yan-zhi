@@ -49,6 +49,47 @@ export const secLabManifest: PluginManifest = {
     routes: [
       { path: '/sec', name: 'sec', component: 'views/plugin/SecConsole.vue', meta: { desktopOnly: true } },
     ],
+    // ── 命令中枢：18 个安全工具各声明一条命令（2026-10-16）────────────────────────
+    // ★ 为什么声明在**插件**里而不是前端写死：这正是 `contributes.commands` 这个扩展点存在的理由
+    //   —— 能力（工具）由插件拥有，命令就该跟着能力走，前端只负责"列出 + 分发"。
+    //   （命令前的 `/` 由前端补；`params` 是**位置参数**的字段名，按顺序对应；
+    //     没列进 params 的字段一律用长选项给，如 `--ports=80,443` / `--banner`。）
+    // ★ `mode: 'sec'` ⇒ 只在安全模式的面板里出现（办公模式列出一堆扫描命令没有意义）。
+    // ★ `danger` 只用于展示与"执行前二次确认"的判断；**真正的拦截在 sec-lab-guard**，
+    //   命令层不新增任何绕过路径（方案 §九.2）：执行仍走 `POST /plugin/sec-lab/run`，
+    //   与安全控制台的按钮**同一条链路、同一套护栏、同一份审计**。
+    // ★ `danger` 的取值必须与护栏的推导**同口径**（`TOOL_RISK` 里没有的工具按默认 `active` 算，
+    //   不是"被动"；`attack_sim` 是 HUMAN_ONLY 的 simulate）—— 标错会让面板显示的"被动"与
+    //   服务端的判定打架。守门测试逐条比对，不靠人记得。
+    commands: [
+      // —— 授权边界（SYS）：一切扫描的前提，先登记后扫描 ——
+      { name: 'scopes', aliases: ['scope_list'], desc: '列出已登记的授权目标', usage: '/scopes', group: 'SYS', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scope_list' },
+      { name: 'scope_add', desc: '登记授权目标（必填授权人与证明材料）', usage: '/scope_add <type> <value> <authorizedBy> [--evidence=工单号] [--environment=internal]', group: 'SYS', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scope_add', params: ['type', 'value', 'authorizedBy'] },
+      { name: 'scope_remove', desc: '移除授权目标', usage: '/scope_remove <id|value>', group: 'SYS', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scope_remove', params: ['id'] },
+      // ★ toolchain 标 **P** 是照 `TOOL_RISK` 来的（工具级默认 passive）：它 run 外部工具时的
+      //   侵入级二次检查（sqlmap/hydra）在**工具实现内部**做，不体现在工具级风险上。
+      //   面板的显示必须与护栏同源 —— 觉得该升级就改 `TOOL_RISK`，而不是在这里标一个不一样的。
+      { name: 'toolchain', desc: '外部工具链：detect 探测 / run 执行（nmap、nuclei、nikto…）', usage: '/toolchain <detect|run> [--tool=nmap] [--target=x]', group: 'SYS', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'toolchain', params: ['action'] },
+      // —— 侦察与扫描 ——
+      { name: 'recon', desc: '目标被动画像：DNS / TLS 证书 / HTTP 头 / 子域字典', usage: '/recon <target> [--actions=dns,tls,http,subdomain]', group: 'RECON', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'recon', params: ['target'] },
+      { name: 'portscan', aliases: ['ps'], desc: 'TCP 端口扫描与服务识别（含高危端口暴露面）', usage: '/portscan <target> [--ports=common|80,443|1-1024|all] [--banner]', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'portscan', params: ['target'] },
+      { name: 'webprobe', aliases: ['wp'], desc: 'Web 面探测：敏感路径 / Cookie / CORS / 指纹', usage: '/webprobe <target> [--concurrency=8]', group: 'WEB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'webprobe', params: ['target'] },
+      // —— 资产暴露面 ——
+      { name: 'assets', aliases: ['asset_monitor'], desc: '资产台账：add / list / verify / snapshot / diff', usage: '/assets <action> [--value=x] [--assetId=id]', group: 'ASSET', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'asset_monitor', params: ['action'] },
+      // —— 蓝队 ——
+      { name: 'rules', aliases: ['detect_rules'], desc: '内置 Sigma/Suricata 规则：list / get / match', usage: '/rules <list|get|match> [--id=YZ-001] [--text=日志]', group: 'BLUE', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'detect_rules', params: ['action'] },
+      { name: 'hunt', aliases: ['log_hunt'], desc: '日志狩猎：按内置规则 + IOC 扫日志文件', usage: '/hunt <日志绝对路径> [--iocs=1.2.3.4,evil.com]', group: 'BLUE', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'log_hunt', params: ['path'] },
+      // —— 靶场与演练（lab 环境；攻击行为模拟**只允许人工执行**）——
+      { name: 'env', aliases: ['host_env'], desc: '探测本机 Docker / Android SDK 可用性', usage: '/env', group: 'LAB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'host_env' },
+      { name: 'ranges', aliases: ['range_list'], desc: '列出本模块部署的靶场容器', usage: '/ranges', group: 'LAB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'range_list' },
+      { name: 'range_deploy', desc: '部署漏洞训练靶场（dvwa / juice-shop / webgoat / mutillidae）', usage: '/range_deploy <template> [--hostPort=8081]', group: 'LAB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'range_deploy', confirm: true, params: ['template'] },
+      { name: 'range_stop', desc: '停止靶场容器', usage: '/range_stop <容器名>', group: 'LAB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'range_stop', confirm: true, params: ['name'] },
+      { name: 'android_launch', desc: '启动 Android 模拟器（AVD）', usage: '/android_launch <avd>', group: 'LAB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'android_launch', confirm: true, params: ['avd'] },
+      { name: 'attack', aliases: ['attack_sim'], desc: '靶场 ATT&CK 行为模拟（**仅人工执行**，lab 环境）', usage: '/attack <靶场目标> [--playbook=discovery-basic] [--planOnly]', group: 'LAB', mode: 'sec', danger: 'S', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'attack_sim', confirm: true, params: ['target'] },
+      { name: 'sim_report', desc: '演练复盘报告', usage: '/sim_report', group: 'LAB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sim_report' },
+      // —— 报告 ——
+      { name: 'report', aliases: ['sec_report'], desc: '按目标汇总发现项，出 Markdown/JSON 报告', usage: '/report [--target=x] [--format=markdown|json]', group: 'REPORT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sec_report' },
+    ],
   },
   config: {
     type: 'object',

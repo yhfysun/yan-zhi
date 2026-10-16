@@ -20,9 +20,12 @@
 import { defineStore } from 'pinia';
 import { computed } from 'vue';
 import type { CommandDef } from '@yan-zhi/core';
+import { api } from '../api/client';
+import { activeMode } from './mode';
 import { usePluginStore } from './plugin';
 import { usePageCommandsStore } from './page-commands';
 import { matchPageCommands, type PageCommand } from '../utils/pageCommand';
+import { buildToolArgs, type ParsedCommand } from '../utils/commandParser';
 import {
   groupCommands, pageCommandsToDefs, searchCommands, SYS_COMMAND_GROUP, type CommandGroup,
 } from '../utils/commandBridge';
@@ -44,11 +47,21 @@ export const BUILTIN_COMMANDS: CommandDef[] = [
 ];
 
 export const useCommandsStore = defineStore('commands', () => {
-  /** 全局命令 = 内置 + 插件贡献（页面指令不在其列，理由见文件头） */
-  const globalCommands = computed<CommandDef[]>(() => [
-    ...BUILTIN_COMMANDS,
-    ...usePluginStore().commands,
-  ]);
+  /**
+   * 按当前模式过滤命令。
+   * ★ 为什么要过滤：安全工具的命令（`mode:'sec'`）出现在办公模式的面板里毫无意义，
+   *   而"列出来但不能用"比"没列出来"更糟 —— 用户会以为功能坏了。
+   * ★ 不过滤（`mode` 缺省）的命令全局可用（`/agent` `/model` `/help` 这些）。
+   */
+  function commandsForMode(list: CommandDef[], mode: string): CommandDef[] {
+    return list.filter((c) => !c.mode || c.mode === mode);
+  }
+
+  /** 全局命令 = 内置 + 插件贡献，且**只留当前模式可用的**（页面指令不在其列，理由见文件头） */
+  const globalCommands = computed<CommandDef[]>(() => commandsForMode(
+    [...BUILTIN_COMMANDS, ...usePluginStore().commands],
+    activeMode.value,
+  ));
 
   /** 全局命令按分组归拢（命令面板的折叠单元；顺序 = 首次出现顺序） */
   const globalGroups = computed<CommandGroup[]>(() => groupCommands(globalCommands.value));
@@ -77,5 +90,26 @@ export const useCommandsStore = defineStore('commands', () => {
     return usePageCommandsStore().list.find((c) => c.id === id) || null;
   }
 
-  return { globalCommands, globalGroups, search, pageDefsFor, pageCommandById };
+  /**
+   * 执行一条 `kind:'tool'` 命令（工具型命令的**唯一执行出口**）。
+   *
+   * ★★ 端点 `/plugin/<pluginId>/run` **不是新造的**：安全控制台每个「▶ 执行」按钮走的就是它
+   *    （`SecConsole.vue` 的 `postRun` → `POST /plugin/sec-lab/run`），
+   *    服务端在那条路由里注入 `__sec_runner` 强制 `requester='human'`，再统一过 `withGuard`
+   *    （授权范围 → 风险级 → 交战模式 → HUMAN_ONLY → 危险黑名单）并写审计。
+   *    ⇒ 命令层**没有新增任何绕过路径**，与方案 §九.2 一致：命令只是"更好用的入口"。
+   * ★ 因此这里**不**做任何权限判断：判断只在服务端一处，前端判一遍必然与它漂移。
+   * ★ 也**不**走 `/api/tools/builtin/execute`：那个端点不过 permissionMode、也没有 sec 的护栏，
+   *    拿它跑安全工具等于把护栏绕过去（这正是"命令层不新增绕过路径"要防的事）。
+   */
+  async function runTool(def: CommandDef, parsed: ParsedCommand): Promise<{ ok: boolean; text: string }> {
+    if (!def.pluginId || !def.tool) return { ok: false, text: `「${def.name}」没有声明执行端点（缺 pluginId / tool）` };
+    const args = buildToolArgs(def, parsed);
+    const r: any = await api.post(`/plugin/${def.pluginId}/run`, { tool: def.tool, args });
+    if (r && 'error' in r) return { ok: false, text: String(r.error) };
+    const d = r?.data as { ok?: boolean; text?: string } | undefined;
+    return { ok: d?.ok !== false, text: String(d?.text || '(无输出)') };
+  }
+
+  return { globalCommands, globalGroups, search, pageDefsFor, pageCommandById, runTool };
 });

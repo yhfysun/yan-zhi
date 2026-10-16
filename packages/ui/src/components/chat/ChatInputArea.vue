@@ -1578,6 +1578,8 @@ function enterSlashCommand(cmd: string) {
 function runCommandDef(def: CommandDef | undefined | null, parsed?: ParsedCommand) {
   if (!def) return;
   if (def.run === 'help') { showCommandHelp(parsed?.args?.[0] || ''); return; }
+  // ★ 工具型命令（kind='tool'，如安全模式的 /portscan）：先确认再执行，结果以"运行卡"呈现
+  if (def.kind === 'tool') { void runToolCommand(def, parsed); return; }
   if (def.run === 'agent') { slashMode.value = 'agent'; slashIndex.value = 0; slashMenuOpen.value = true; return; }
   if (def.run === 'model') { slashMode.value = 'model'; slashIndex.value = 0; slashMenuOpen.value = true; return; }
   slashMenuOpen.value = false;
@@ -1585,9 +1587,51 @@ function runCommandDef(def: CommandDef | undefined | null, parsed?: ParsedComman
   if (def.run === 'skill') showSkills.value = true;
   else if (def.run === 'dir') showWorkspaceDir.value = true;
   else if (def.run === 'new') startNewChat();
-  // ★ 不静默吞掉：插件以后可以贡献命令，但执行器得有人接（kind='tool' 要走后端工具 + 护栏）。
+  // ★ 不静默吞掉：插件以后可以贡献命令，但执行器得有人接。
   //   真走到这里时必须说出来，而不是点了没反应。
   else ElMessage.info(`「${def.name}」已登记到命令中枢，但当前还没有它的执行通道。`);
+}
+
+/** 结果/帮助文本共用的等宽块样式（MessageBox 是 teleport 到 body 的，scoped 样式够不到，只能内联） */
+const CMD_PRE_STYLE = 'max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;'
+  + 'font-size:12px;line-height:1.7;margin:0;font-family:inherit';
+
+/**
+ * 工具型命令的执行：**二次确认 → 走命令总线 → 结果以"运行卡"呈现**。
+ *
+ * ★ 为什么危险级要先确认：服务端对 lab 类工具要求 `confirmed: true`（不传就只回一句
+ *   "必须为 true 才真正部署"），`attack_sim` 更是 `HUMAN_ONLY_TOOLS` —— 这里与安全控制台
+ *   点「▶ 执行」时的行为保持一致（同样弹确认）。
+ * ★ 权限判断**不在这里**：服务端的 `withGuard` 是唯一判定处（授权范围 / 风险级 / 交战模式 /
+ *   危险黑名单），前端再判一遍必然与它漂移。
+ */
+async function runToolCommand(def: CommandDef, parsed?: ParsedCommand) {
+  const p: ParsedCommand = parsed || { raw: slashOf(def), name: def.name, args: [], flags: {} };
+  // ★ `confirm` 来自声明（与工具 schema 是否要求 confirmed 同源），danger I/S 再兜一层
+  if (def.confirm || def.danger === 'I' || def.danger === 'S') {
+    try {
+      await ElMessageBox.confirm(
+        `确认执行 <b>${escapeHtml(def.name)}</b>？<br>${escapeHtml(def.desc)}`
+        + '<br><br><span style="color:#e6a23c">该类动作只应在**已授权目标或隔离靶场**上使用，执行全程留痕审计。</span>',
+        '高风险命令',
+        { dangerouslyUseHTMLString: true, confirmButtonText: '执行', cancelButtonText: '取消', type: 'warning' },
+      );
+    } catch { return; }   // 取消：什么都不做（不是失败）
+    p.flags = { ...p.flags, confirmed: true };
+  }
+  const tip = ElMessage({ message: `正在执行 ${slashOf(def)}…`, duration: 0 });
+  try {
+    const r = await commandsStore.runTool(def, p);
+    tip.close();
+    void ElMessageBox.alert(
+      `<pre style="${CMD_PRE_STYLE}">${escapeHtml(r.text)}</pre>`,
+      `${slashOf(def)} ${r.ok ? '执行结果' : '执行失败'}`,
+      { dangerouslyUseHTMLString: true, confirmButtonText: '知道了' },
+    );
+  } catch (e: any) {
+    tip.close();
+    ElMessage.error(`执行失败：${e?.message || e}`);
+  }
 }
 
 /** 转义 HTML（帮助文本进 MessageBox 的 HTML 分支，必须自己转义 —— 命令名可能带 <>） */
@@ -1601,8 +1645,7 @@ function escapeHtml(s: string): string {
  */
 function showCommandHelp(name = '') {
   const all = commandsStore.globalCommands;
-  const preStyle = 'max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;'
-    + 'font-size:12px;line-height:1.7;margin:0;font-family:inherit';
+  const preStyle = CMD_PRE_STYLE;
   if (name) {
     const def = findCommand(all, name);
     if (!def) { ElMessage.warning(`没有 /${name} 这条命令（/help 看全部）`); return; }
@@ -1685,6 +1728,8 @@ function runCommandInput(): boolean {
       ElMessage.info(`「${step.def.name}」需要交互选择，不能放进 ; 串联里`);
       continue;
     }
+    // 防御：chat 只可能**单独**出现（上面那条 return 已拦），串联里不会有
+    if (step.kind !== 'run') continue;
     runCommandDef(step.def, step.parsed);
   }
   return true;

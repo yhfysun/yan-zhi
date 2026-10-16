@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { CommandDef } from '@yan-zhi/core';
 import {
-  findCommand, formatCommandHelp, formatHelp, parseCommandChain, parseCommandLine,
+  buildToolArgs, findCommand, formatCommandHelp, formatHelp, parseCommandChain, parseCommandLine,
   planCommandInput, pushHistory, splitChain,
 } from './commandParser';
 
@@ -181,5 +181,46 @@ describe('★ 回车提交的动作计划（"命令绝不能被当成聊天发�
     expect(plan[0]).toMatchObject({ kind: 'run', def: { name: 'portscan', tool: 'portscan' } });
     expect((plan[0] as any).parsed.args).toEqual(['10.0.0.1']);
     expect((plan[0] as any).parsed.flags).toEqual({ p: '80' });
+  });
+});
+
+describe('★ 位置参数/选项 → 工具入参（命令与工具 schema 的唯一对接处）', () => {
+  const def = (p: Partial<CommandDef> & { name: string }): CommandDef =>
+    ({ desc: '', group: 'SCAN', kind: 'tool', params: [], ...p });
+
+  it('位置参数按 params 的顺序对应字段名', () => {
+    const args = buildToolArgs(
+      def({ name: 'scope_add', params: ['type', 'value', 'authorizedBy'] }),
+      { raw: '', name: 'scope_add', args: ['domain', 'example.com', '张三'], flags: {} },
+    );
+    expect(args).toEqual({ type: 'domain', value: 'example.com', authorizedBy: '张三' });
+  });
+
+  it('★ 位置参数缺一个就少一个字段（不塞空串、不占位）—— 必填由工具的 schema 判', () => {
+    const args = buildToolArgs(
+      def({ name: 'scope_add', params: ['type', 'value', 'authorizedBy'] }),
+      { raw: '', name: 'scope_add', args: ['domain'], flags: {} },
+    );
+    expect(args).toEqual({ type: 'domain' });
+  });
+
+  it('长选项进同名字段；纯数字与 true/false 的**选项值**转成数字/布尔', () => {
+    const args = buildToolArgs(def({ name: 'portscan', params: ['target'] }), {
+      raw: '', name: 'portscan', args: ['10.0.0.1'],
+      flags: { ports: '80,443', concurrency: '50', banner: true, planOnly: 'false' },
+    });
+    expect(args).toEqual({ target: '10.0.0.1', ports: '80,443', concurrency: 50, banner: true, planOnly: false });
+  });
+
+  it('★ 位置参数**不**做类型转换（`ports: "80"` 该是字符串，转了反而错）', () => {
+    const args = buildToolArgs(def({ name: 'portscan', params: ['target', 'ports'] }), {
+      raw: '', name: 'portscan', args: ['10.0.0.1', '80'], flags: {},
+    });
+    expect(args.ports).toBe('80');
+    expect(typeof args.ports).toBe('string');
+  });
+
+  it('没有 params 的命令（如 /env）只吃选项', () => {
+    expect(buildToolArgs(def({ name: 'env' }), { raw: '', name: 'env', args: ['多余'], flags: {} })).toEqual({});
   });
 });

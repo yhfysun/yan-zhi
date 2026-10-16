@@ -14,20 +14,42 @@ import { resolve } from 'node:path';
 import type { CommandDef } from '@yan-zhi/core';
 import type { PageCommand } from '../utils/pageCommand';
 
-/** 假插件贡献（可测中途改写） */
-const pluginCommands: CommandDef[] = [];
+// ★ vi.mock 会被提升到文件顶部 ⇒ 工厂里引用的可变状态必须放进 vi.hoisted
+//   （否则报 "Cannot access 'x' before initialization"，本仓多处测试都是这个写法）
+const hoisted = vi.hoisted(() => ({
+  /** 假插件贡献（可测中途改写） */
+  pluginCommands: [] as unknown[],
+  /** 假指令库 */
+  pageRows: [] as unknown[],
+  /** HTTP 边界（工具执行走这里）；带上入参类型，测试才能断言"发出去的 URL 与 body" */
+  post: vi.fn(async (_url?: string, _body?: unknown) => ({ data: { ok: true, text: '扫描完成' } })),
+}));
+
 vi.mock('./plugin', () => ({
   usePluginStore: () => ({
-    get commands() { return pluginCommands; },
+    get commands() { return hoisted.pluginCommands; },
   }),
 }));
-
-/** 假指令库 */
-const pageRows: PageCommand[] = [];
 vi.mock('./page-commands', () => ({
-  usePageCommandsStore: () => ({ get list() { return pageRows; } }),
+  usePageCommandsStore: () => ({ get list() { return hoisted.pageRows; } }),
+}));
+// ★ 必须返回**真 ref**（不是 { value } 普通对象）：总线里是 computed，普通对象不触发重算，
+//   测试切成 sec 模式后面板还是旧的 —— 那样测出来的是"假失败/假通过"
+vi.mock('./mode', async () => {
+  const { ref } = await import('vue');
+  return { activeMode: ref('office') };
+});
+vi.mock('../api/client', () => ({
+  api: { get: vi.fn(), post: hoisted.post, patch: vi.fn(), put: vi.fn(), delete: vi.fn() },
+  API_BASE: 'http://localhost:3001/api',
+  buildRequestHeaders: () => ({}),
 }));
 
+const pluginCommands = hoisted.pluginCommands as CommandDef[];
+const pageRows = hoisted.pageRows as PageCommand[];
+const post = hoisted.post;
+
+import { activeMode } from './mode';
 import { BUILTIN_COMMANDS, useCommandsStore } from './commands';
 
 function pageCmd(p: Partial<PageCommand> & { id: string }): PageCommand {
@@ -41,6 +63,8 @@ beforeEach(() => {
   setActivePinia(createPinia());
   pluginCommands.length = 0;
   pageRows.length = 0;
+  activeMode.value = 'office';
+  post.mockClear();
 });
 
 describe('★ 全局命令 = 内置 + 插件贡献', () => {
@@ -106,6 +130,74 @@ describe('★ 页面指令按页取（浏览器面板 chips 的数据源）', ()
     // 回查不到（指令被删了）返回 null —— 调用方据此提示"刷新后再试"，而不是拿个空 body 去跑
     expect(store.pageCommandById('pc_gone')).toBeNull();
     expect(store.pageCommandById(undefined)).toBeNull();
+  });
+});
+
+describe('★ 模式过滤 + 工具型命令的执行出口', () => {
+  it('限定模式的命令只在那个模式出现（办公模式列一堆扫描命令没有意义）', () => {
+    pluginCommands.push(
+      { name: 'portscan', desc: '端口扫描', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: 'sec-lab', tool: 'portscan', params: ['target'] },
+      { name: 'findings', desc: '列出发现', group: 'SEC', kind: 'ui', run: 'open-findings' },
+    );
+    const store = useCommandsStore();
+    expect(store.globalCommands.map((c) => c.name)).toContain('findings');   // 不限模式 ⇒ 全局
+    expect(store.globalCommands.map((c) => c.name)).not.toContain('portscan');
+
+    activeMode.value = 'sec';
+    expect(store.globalCommands.map((c) => c.name)).toContain('portscan');
+    expect(store.search('端口').map((c) => c.name)).toEqual(['portscan']);
+  });
+
+  it('★ runTool 走插件的既有端点 `/plugin/<id>/run`，并把位置参数映射成工具入参', async () => {
+    const store = useCommandsStore();
+    const def: CommandDef = {
+      name: 'portscan', desc: '端口扫描', group: 'SCAN', mode: 'sec',
+      kind: 'tool', pluginId: 'sec-lab', tool: 'portscan', params: ['target'],
+    };
+    const r = await store.runTool(def, {
+      raw: '/portscan 10.0.0.1 --ports=80,443 --banner --concurrency 50',
+      name: 'portscan', args: ['10.0.0.1'], flags: { ports: '80,443', banner: true, concurrency: '50' },
+    });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][0]).toBe('/plugin/sec-lab/run');
+    // 位置参数进 params[0]；纯数字/布尔的选项值转成数字/布尔（工具 schema 要的是 number/boolean）
+    expect(post.mock.calls[0][1]).toEqual({
+      tool: 'portscan',
+      args: { target: '10.0.0.1', ports: '80,443', banner: true, concurrency: 50 },
+    });
+    expect(r).toEqual({ ok: true, text: '扫描完成' });
+  });
+
+  it('★ 不自己判权限、也不走别的执行端点（护栏只在服务端一处）', async () => {
+    const store = useCommandsStore();
+    await store.runTool(
+      { name: 'attack', desc: 'x', group: 'LAB', mode: 'sec', danger: 'S', kind: 'tool', pluginId: 'sec-lab', tool: 'attack_sim', params: ['target'] },
+      { raw: '/attack t', name: 'attack', args: ['t'], flags: {} },
+    );
+    // ★ 只有一条路径：/plugin/sec-lab/run（它会注入 __sec_runner 强制 requester=human 再过 withGuard）。
+    //   走 /api/tools/builtin/execute 就等于把护栏绕过去 —— 那是"命令层不新增绕过路径"要防的事。
+    expect(post.mock.calls[0][0]).toBe('/plugin/sec-lab/run');
+    expect(JSON.stringify(post.mock.calls)).not.toContain('/api/tools/builtin/execute');
+  });
+
+  it('工具返回 ok:false 时如实回错（不是抛异常，也不是吞掉）', async () => {
+    post.mockResolvedValueOnce({ data: { ok: false, text: '目标不在授权范围内' } });
+    const store = useCommandsStore();
+    const r = await store.runTool(
+      { name: 'recon', desc: 'x', group: 'RECON', mode: 'sec', kind: 'tool', pluginId: 'sec-lab', tool: 'recon', params: ['target'] },
+      { raw: '/recon t', name: 'recon', args: ['t'], flags: {} },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('不在授权范围内');
+  });
+
+  it('缺 pluginId / tool 的命令不静默（返回可读原因，而不是发一个空请求）', async () => {
+    const store = useCommandsStore();
+    const r = await store.runTool({ name: 'x', desc: '', group: 'SYS', kind: 'tool' } as CommandDef,
+      { raw: '/x', name: 'x', args: [], flags: {} });
+    expect(r.ok).toBe(false);
+    expect(r.text).toContain('没有声明执行端点');
+    expect(post).not.toHaveBeenCalled();
   });
 });
 
