@@ -168,10 +168,12 @@ describe('缺陷修复回归 · 2026-10-16 第二轮', () => {
     expect(LIFECYCLE_SVC).toMatch(/SET deleted_at = NULL, archived_at = NULL WHERE id = \? AND user_id = \? AND deleted_at IS NOT NULL/);
   });
 
-  it('M1：PATCH 有归档/回收站守卫（writableGuard），title 单独放行', () => {
+  it('M1：PATCH 归档全拦（对齐业界：完全只读，无「改名放行」特例）', () => {
     expect(CONV_ROUTES).toMatch(/writableGuard\(cid, userId\)/);
-    expect(CONV_ROUTES).toMatch(/onlyRename/);
     expect(CONV_ROUTES).toMatch(/CONVERSATION_ARCHIVED/);
+    // ★ 此前留过 onlyRename 特例 —— 那是自创语义，业界（ChatGPT/Claude/WorkBuddy）
+    //   归档后都不能改名。钉死：不许再出现 onlyRename 这类口子。
+    expect(CONV_ROUTES).not.toMatch(/onlyRename/);
   });
 
   it('M2：files.ts 写点全过 guardConvWrite（5 处：artifact-dir ensure / files / upload / patch / delete）', () => {
@@ -180,9 +182,9 @@ describe('缺陷修复回归 · 2026-10-16 第二轮', () => {
     expect(count, `写守卫调用点应 ≥5，实际 ${count}`).toBeGreaterThanOrEqual(5);
   });
 
-  it('H3：clip.ts 列表与 conversationExists 排除回收站；M3：workspace-files 排除回收站', () => {
+  it('H3：clip.ts 列表与 conversationExists 排除回收站+归档（业界：归档从一切列表消失）', () => {
     expect(CLIP_ROUTES).toMatch(/conversationExists/);
-    expect(CLIP_ROUTES).toMatch(/AND deleted_at IS NULL/);
+    expect(CLIP_ROUTES).toMatch(/deleted_at IS NULL AND archived_at IS NULL/);
     expect(WORKSPACE_FILES).toMatch(/WHERE user_id = \? AND deleted_at IS NULL/);
   });
 
@@ -201,5 +203,16 @@ describe('缺陷修复回归 · 2026-10-16 第二轮', () => {
     expect(CHAT_STORE).toMatch(/function archiveAllInSpace\(spaceId: string\)/);
     expect(USE_CHAT).toMatch(/function archiveAllInSpace\(space/);
     expect(SIDEBAR).toMatch(/archiveAllInSpace\(spaceMenuTarget\.space\)/);
+  });
+
+  it('业界对齐补齐（ChatGPT 稳定行为）：工作台归档入口 + 搜索覆盖归档区 + 归档菜单裁剪', () => {
+    const TASK_LIST_SRC = strip(readRepo('packages/ui/src/components/workbench/TaskListSection.vue'));
+    // 工作台三处入口与办公侧栏同款（此前只同步了过滤没同步入口 —— 用户拍板的是「工作台同步」）
+    expect(TASK_LIST_SRC).toMatch(/archiveConv\(c, true\)/);            // 行 hover
+    expect(TASK_LIST_SRC).toMatch(/archiveConv\(rowMenu\.conv, true\)/); // 桌面右键
+    expect(TASK_LIST_SRC).toMatch(/key: 'archive'/);                    // 移动端 ActionSheet
+    // 搜索联动归档分组 + 归档会话右键菜单只剩只读动作（不得出现写操作项）
+    expect(SIDEBAR).toMatch(/archivedFiltered/);
+    expect(SIDEBAR).toMatch(/ctxMenu\.conv\?\.archivedAt/);
   });
 });

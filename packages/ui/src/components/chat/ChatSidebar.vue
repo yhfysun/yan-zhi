@@ -272,8 +272,10 @@
             <span class="tree-count">{{ archivedConversations.length }}</span>
           </div>
           <div v-show="!archivedCollapsed" class="tree-children">
+            <!-- ★ 搜索覆盖归档（对齐 ChatGPT：全局搜索能搜到归档会话）：搜索词同时过滤本分组，
+                 主列表与归档区同词联动 —— 归档不等于"再也找不到"。 -->
             <div
-              v-for="conv in archivedConversations"
+              v-for="conv in archivedFiltered"
               :key="conv.id"
               class="conv-item"
               :class="{ active: conv.id === store.currentConvId, selecting: batchMode }"
@@ -284,6 +286,7 @@
               <span class="conv-title">{{ conv.title }}</span>
               <span v-if="!batchMode" class="task-row-actions" @click.stop>
                 <span class="task-row-act" role="button" title="恢复到主列表（可继续对话）" @click="archiveConv(conv, false)"><el-icon :size="12"><RefreshLeft /></el-icon></span>
+                <span class="task-row-act is-danger" role="button" title="删除（移入回收站）" @click="rows.remove(conv)"><el-icon :size="12"><Delete /></el-icon></span>
               </span>
             </div>
           </div>
@@ -344,6 +347,20 @@
   <Teleport to="body">
 <!-- 移动外壳（触屏）下任务行菜单改由底部动作面板承载（Task 11.3），定位菜单只在非移动壳渲染 -->
 <ul v-if="ctxMenu.visible && !isTouchShell" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
+    <!-- 归档会话（右键自「已归档」分组）：对齐 ChatGPT Archived chats —— 只有
+         「取消归档 / 打开目录 / 删除」，重命名/置顶/移动空间都是写操作（归档=完全只读），不出现 -->
+    <template v-if="ctxMenu.conv?.archivedAt">
+      <li @click="archiveConv(ctxMenu.conv, false)">
+        <el-icon><RefreshLeft /></el-icon>取消归档
+      </li>
+      <li @click="openConvDir(ctxMenu.conv); closeCtxMenu()">
+        <el-icon><FolderOpened /></el-icon>打开目录
+      </li>
+      <li class="danger" @click="rows.remove(ctxMenu.conv)">
+        <el-icon><Delete /></el-icon>删除
+      </li>
+    </template>
+    <template v-else>
     <li @click="(batchMode && selectedConvIds.has(ctxMenu.conv!.id) ? toggleConvSelect(ctxMenu.conv!.id) : enterBatchSelect(ctxMenu.conv!.id)); closeCtxMenu()">
       <el-icon><Tools /></el-icon>{{ batchMode && selectedConvIds.has(ctxMenu.conv!.id) ? '移出批量选择' : '批量选择' }}
     </li>
@@ -382,6 +399,7 @@
     <li class="danger" @click="rows.remove(ctxMenu.conv)">
       <el-icon><Delete /></el-icon>删除
     </li>
+    </template>
   </ul>
 </Teleport>
 
@@ -593,6 +611,13 @@ const {
   archiveConv, restoreConv, purgeConv, loadLifecycleLists, archivedConversations, trashedConversations,
   archiveAllInSpace,
 } = useChat();
+
+/** 归档分组受侧栏搜索框联动过滤（对齐 ChatGPT：搜索能搜到归档会话） */
+const archivedFiltered = computed(() => {
+  const q = search.value.trim().toLowerCase();
+  if (!q) return archivedConversations.value;
+  return archivedConversations.value.filter((c) => (c.title || '').toLowerCase().includes(q));
+});
 
 // 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与 TaskListSection 共用同一 composable。
 // 重命名聚焦走 useChat 内置的 renameInputRef（模板里 rename 输入框绑了该 ref），无需额外适配。

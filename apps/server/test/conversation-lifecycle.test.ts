@@ -378,13 +378,14 @@ describe('restore 语义（缺陷 H2）', () => {
   });
 });
 
-describe('PATCH 归档只读（缺陷 M1：改名放行，其余拦）', () => {
-  it('归档会话改名放行（无害操作）', async () => {
+describe('PATCH 归档只读（对齐业界：完全只读，无改名特例）', () => {
+  it('归档会话改名也被拦（409）—— ChatGPT/Claude 均无「归档后可改名」组合，须先取消归档', async () => {
     const cid = freshConv('c_fix_m1a');
     await req('POST', `/${cid}/archive`, { archived: true });
     const r = await req('PATCH', `/${cid}`, { title: '归档后改的备注名' });
-    expect(r.status).toBe(200);
-    expect((conn.prepare('SELECT title FROM conversation WHERE id = ?').get(cid) as any).title).toBe('归档后改的备注名');
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe('CONVERSATION_ARCHIVED');
+    expect((conn.prepare('SELECT title FROM conversation WHERE id = ?').get(cid) as any).title).toBe(cid);
   });
 
   it('归档会话换模型 / 换 agent 被拦（409 CONVERSATION_ARCHIVED），数据不动', async () => {

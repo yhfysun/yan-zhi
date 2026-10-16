@@ -59,10 +59,10 @@ router.use(authMiddleware);
 function conversationExists(id: string): boolean {
   if (!id) return false;
   try {
-    // ★ 排除回收站（2026-10-16 缺陷 H3）：已删会话的工程不该再被读写。
-    //   归档的**保留可见**——剪辑首页是剪辑项目的唯一列表入口，侧栏归档区管不到这里，
-    //   排除归档会让归档的剪辑项目「凭空消失」且无任何恢复入口。
-    return !!db.prepare('SELECT id FROM conversation WHERE id = ? AND deleted_at IS NULL').get(id);
+    // ★ 对齐业界稳定语义（ChatGPT：归档后从一切列表消失，只能在归档区找到）：
+    //   归档/回收站的剪辑项目都不再出现在剪辑首页、不可再操作工程。
+    //   找回入口 = 侧栏「已归档」分组取消归档（此前我给归档留的「剪辑首页仍可见」是自创语义）。
+    return !!db.prepare('SELECT id FROM conversation WHERE id = ? AND deleted_at IS NULL AND archived_at IS NULL').get(id);
   } catch {
     return false;
   }
@@ -84,7 +84,7 @@ router.get('/projects', (req: Request, res: Response) => {
       .prepare(
         `SELECT id, title, created_at, updated_at FROM conversation
          WHERE user_id = ? AND COALESCE(NULLIF(mode, ''), 'office') = 'clip'
-           AND deleted_at IS NULL
+           AND deleted_at IS NULL AND archived_at IS NULL
          ORDER BY updated_at DESC`,
       )
       .all(userId) as typeof rows;

@@ -125,16 +125,13 @@ router.patch('/:id', (req: Request, res: Response) => {
   const existing = db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId) as any;
   if (!existing) { res.status(404).json({ error: '会话不存在' }); return; }
 
-  // ★ 归档 = 只读（2026-10-16 缺陷 M1 修正，此前只拦了发消息）：唯一例外是 title ——
-  //   改名无害（不改会话内容/挂载），且用户给归档会话起个备注名是合理诉求。
-  //   其余字段（换模型/换 agent/改提示词/挪空间/改权限/改计划/改 MCP）全拦：
-  //   它们都会改变「恢复后继续对话」的产出，与只读语义冲突。
-  //   回收站内的会话对外不可见，直接 404。
+  // ★ 归档 = 完全只读（对齐 ChatGPT / Claude / WorkBuddy 的稳定语义：归档后不可改名、
+  //   不可换模型、不可挪空间，要改先取消归档 —— 没有任何特例）。
+  //   此前留了「仅改名放行」的口子，那是我自己发明的语义，业界没有这种组合。
+  //   回收站内的会话对外不可见，一律 404。
   const guard = writableGuard(cid, userId);
   if (guard === 'not_found' || guard === 'trashed') { res.status(404).json({ error: '会话不存在' }); return; }
-  const patchKeys = Object.keys(req.body || {});
-  const onlyRename = patchKeys.length > 0 && patchKeys.every((k) => k === 'title');
-  if (guard === 'archived' && !onlyRename) {
+  if (guard === 'archived') {
     res.status(409).json({ error: 'CONVERSATION_ARCHIVED', message: '会话已归档（只读），取消归档后才能修改' });
     return;
   }

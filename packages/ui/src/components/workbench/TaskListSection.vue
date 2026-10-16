@@ -111,6 +111,10 @@
               <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(c, $event)">
                 <el-icon :size="12"><Rank /></el-icon>
               </span>
+              <!-- 归档（对齐办公侧栏同款入口）：移出工作台列表但数据全留，可在侧栏「已归档」恢复 -->
+              <span class="task-row-act" role="button" title="归档（可恢复；归档后只读）" @click="archiveConv(c, true)">
+                <el-icon :size="12"><FolderChecked /></el-icon>
+              </span>
               <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(c)">
                 <el-icon :size="12"><Delete /></el-icon>
               </span>
@@ -169,6 +173,10 @@
         </li>
         <li @click="onRowMenuRename">
           <el-icon><EditPen /></el-icon>重命名
+        </li>
+        <!-- 归档（与办公侧栏右键菜单同项同语义） -->
+        <li @click="archiveConv(rowMenu.conv, true); closeRowMenu()">
+          <el-icon><FolderChecked /></el-icon>归档
         </li>
         <li class="has-submenu">
           <el-icon><Rank /></el-icon>移动到空间
@@ -248,7 +256,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  EditPen, Top, Star, StarFilled, CaretRight, ChatDotRound, FolderOpened, Rank, Tools, Close, Delete, ArrowRight, Plus,
+  EditPen, Top, Star, StarFilled, CaretRight, ChatDotRound, FolderOpened, Rank, Tools, Close, Delete, ArrowRight, Plus, FolderChecked,
 } from '@element-plus/icons-vue';
 import { useChatStore } from '../../stores/chat';
 import { useChat } from '../../composables/chat/useChat';
@@ -279,6 +287,7 @@ const {
   enterBatchSelect, exitBatchMode, toggleBatchMode, toggleConvSelect, batchDeleteConvs,
   spaceStore, startNewChat, selectSpaceAndSyncDir,
   showSpaceEdit, spaceEditForm, saveSpaceEdit,
+  archiveConv,
 } = chat;
 
 // 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与办公侧栏（ChatSidebar）共用同一 composable。
@@ -435,6 +444,7 @@ const rowSheetActions = computed<ActionSheetAction[]>(() => {
   list.push(
     { key: 'pin', label: c.pinned ? '取消置顶' : '置顶' },
     { key: 'rename', label: '重命名' },
+    { key: 'archive', label: '归档' },
   );
   if (spaceStore.spaces.length === 0) {
     list.push({ key: 'no-space', label: '暂无空间，请先创建', disabled: true });
@@ -456,6 +466,7 @@ function onRowSheetSelect(a: ActionSheetAction) {
   } else if (a.key === 'exit-batch') exitBatchMode();
   else if (a.key === 'pin') rows.togglePinned(c);
   else if (a.key === 'rename') rows.startRename(c);
+  else if (a.key === 'archive') archiveConv(c, true);
   else if (a.key === 'move:null') rows.moveTo(c, null);
   else if (a.key.startsWith('move:')) rows.moveTo(c, a.key.slice(5));
   else if (a.key === 'delete') rows.remove(c);
