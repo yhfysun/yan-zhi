@@ -117,8 +117,19 @@ function textResult(text: string): McpCallResult {
 
 const AUDIT_LIMIT = 500;
 
+/** 插件存储的最小接口（与注入方 ctx.storage 同结构）。抽成具名类型是为了让测试能注入替身。 */
+export interface PluginStorage {
+  get<T>(key: string): Promise<T | undefined>;
+  set(key: string, value: unknown): Promise<void>;
+}
+
 /** 插件存储由 activate 注入（与 ops-shell 同写法） */
-let pluginStorage: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> } | null = null;
+let pluginStorage: PluginStorage | null = null;
+
+/** 测试专用：直接注入插件存储（生产路径永远走 activate(ctx)）。 */
+export function __setStorageForTest(s: PluginStorage | null): void {
+  pluginStorage = s;
+}
 
 async function loadConnections(): Promise<StoredConnection[]> {
   if (!pluginStorage) return [];
@@ -238,9 +249,10 @@ function checkConnection(conn: StoredConnection): { ok: boolean; issues: string[
   return { ok: issues.length === 0, issues, hints };
 }
 
-// ---------- 给模型用的工具（P0：只有连接管理，没有写操作） ----------
+// ---------- 给模型用的工具（连接管理 + 受闸门约束的写操作） ----------
 
-function makeTools(): BuiltInTool[] {
+/** 导出以便测试直接驱动工具（生产由 activate 逐条 registerTool）。 */
+export function makeShopTools(): BuiltInTool[] {
   const connList: BuiltInTool = {
     name: 'conn_list',
     description:
@@ -386,7 +398,98 @@ function makeTools(): BuiltInTool[] {
     },
   };
 
-  return [connList, connCreate, connUpdate, connDelete, connCheck];
+  // ---------- 写操作：申请改价（P2 打样的唯一写动作） ----------
+  //
+  // ★★ 为什么是"申请"而不是"直接改"：本插件既不持有平台登录态、也没有平台写接口 ——
+  //    真正的改动由智能体在**获批之后**用 pageAgent 在卖家后台完成。
+  //    这个工具的价值是那道**闸门**：把"要改什么"固化成变更单，强制二次确认
+  //    （生产店铺还要额外批准），并写审计留痕。
+  //    ★ 未确认绝不放行 —— 硬约束在工具里，不依赖模型自觉。
+  const priceUpdate: BuiltInTool = {
+    name: 'shop_price_update',
+    description:
+      '【受闸门约束的写操作】申请修改某个商品的价格。首次调用（不带 confirmed）只返回一张变更单并**拒绝执行**；'
+      + '把变更单交给用户确认、用户明确同意后，原样重试并带 confirmed: true 才放行。'
+      + '标记为「生产」的店铺还需要额外的人工批准（approveProduction: true）。'
+      + '放行后由你用 pageAgent 在卖家后台执行并回读确认。一次只改一个商品。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺名（必须已登记）' },
+        sku: { type: 'string', description: '商品唯一标识（亚马逊 ASIN / 淘宝商品 ID / 卖家 SKU）' },
+        currentPrice: { type: 'number', description: '当前价格（用于变更单的「从什么改成什么」）' },
+        newPrice: { type: 'number', description: '目标价格' },
+        reason: { type: 'string', description: '为什么改（用户给的理由，禁止编造）' },
+        confirmed: { type: 'boolean', description: '用户是否已明确确认这张变更单' },
+        approveProduction: { type: 'boolean', description: '仅生产店铺需要：控制台核对后的额外批准' },
+      },
+      required: ['shopName', 'sku', 'currentPrice', 'newPrice', 'reason'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const sku = String(args.sku || '').trim();
+      const reason = String(args.reason || '').trim();
+      const currentPrice = Number(args.currentPrice);
+      const newPrice = Number(args.newPrice);
+      const list = await loadConnections();
+      const conn = list.find((c) => c.shopName === shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      if (!sku) return textResult('sku 必填（亚马逊 ASIN / 淘宝商品 ID / 卖家 SKU）。');
+      if (!reason) return textResult('reason 必填 —— 改价理由必须来自用户，不要编造。');
+      if (!Number.isFinite(currentPrice) || !Number.isFinite(newPrice) || newPrice <= 0) {
+        return textResult('currentPrice / newPrice 必须是正数。');
+      }
+      const isProd = isProductionTag(conn.tag);
+      const delta = currentPrice > 0 ? ((newPrice - currentPrice) / currentPrice) * 100 : 0;
+      const order = [
+        '【改价变更单】',
+        `店铺：${conn.shopName}（${PLATFORM_BY_ID.get(conn.platform)?.label ?? conn.platform}${conn.site ? ' · ' + conn.site : ''}${isProd ? ' · ★生产' : ''}）`,
+        `商品：${sku}`,
+        `价格：${currentPrice} → ${newPrice}（${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%）`,
+        `理由：${reason}`,
+        `回滚方式：改回 ${currentPrice}`,
+      ].join('\n');
+
+      if (args.confirmed !== true) {
+        await audit('write.price_update.denied', { connection: conn.shopName, detail: sku, ok: false, note: '未确认' });
+        return textResult(`${order}\n\n★ 未确认，**未执行**。请把这张变更单交给用户确认；用户明确同意后，原样重试并带 confirmed: true。`);
+      }
+      if (isProd && args.approveProduction !== true) {
+        await audit('write.price_update.denied', { connection: conn.shopName, detail: sku, ok: false, note: '生产店铺未额外批准' });
+        return textResult(`${order}\n\n★ 该店铺标记为「生产」，需要**额外人工批准**：请在控制台核对变更单与影响面后，再带 approveProduction: true 重试。`);
+      }
+      await audit('write.price_update.approved', {
+        connection: conn.shopName, detail: sku, ok: true, from: currentPrice, to: newPrice, reason,
+      });
+      return textResult(
+        `${order}\n\n✓ 已批准（已记审计）。执行方式：用 pageAgent 在登录态的卖家后台把 ${sku} 的价格从 ${currentPrice} 改成 ${newPrice}，`
+        + `改完**回读页面确认已生效**再回报；若失败或价格不符，按回滚方式改回 ${currentPrice} 并如实说明。`,
+      );
+    },
+  };
+
+  const writeLog: BuiltInTool = {
+    name: 'shop_write_log',
+    description: '查看写操作记录（申请 / 被拒 / 已批准），用于回溯某个店铺改过什么、当时谁批的。只读。',
+    inputSchema: {
+      type: 'object',
+      properties: { shopName: { type: 'string', description: '店铺名（留空则列出全部）' } },
+    },
+    execute: async (args) => {
+      const name = String(args.shopName || '').trim();
+      const all = (pluginStorage ? await pluginStorage.get<Array<Record<string, unknown>>>('audit') : []) || [];
+      const writes = all.filter((e) => String(e.action || '').startsWith('write.'));
+      const rows = name ? writes.filter((e) => e.connection === name) : writes;
+      if (!rows.length) return textResult('还没有写操作记录。');
+      const lines = rows.slice(-50).map((e) => {
+        const t = new Date(Number(e.at) || 0).toISOString().replace('T', ' ').slice(0, 16);
+        return `- ${t} ${String(e.action)} ${String(e.connection ?? '')} ${String(e.detail ?? '')} ${String(e.note ?? '')}`.replace(/\s+/g, ' ').trim();
+      });
+      return textResult(`写操作记录 ${rows.length} 条（最近 50 条）：\n${lines.join('\n')}`);
+    },
+  };
+
+  return [connList, connCreate, connUpdate, connDelete, connCheck, priceUpdate, writeLog];
 }
 
 export const shopOpsManifest: PluginManifest = {
@@ -395,24 +498,15 @@ export const shopOpsManifest: PluginManifest = {
   version: '0.1.0',
   category: '操作',
   description:
-    '店铺运营工作台：登记亚马逊 / 淘宝 / 拼多多 / 1688 / TikTok Shop / 独立站 / 跨境中转仓的店铺与仓库，按目录归类并审计留痕；「更多 → 店铺运营」打开 /shop 控制台（店铺列表 + 工作台）。平台数据由智能体委派 pageAgent 打开卖家后台获取（登录态由你自己在浏览器面板登录）。当前版本只读，不含改价/上下架等写操作。默认开启，可在插件管理页停用。',
-  // ★ P0 只声明 network（抓数走 pageAgent）。写操作上线时再加 'shop-write'，
-  //   并且必须同时把权限闸门与审计做实 —— 声明了就要拦得住。
-  permissions: ['network'],
+    '店铺运营工作台：登记亚马逊 / 淘宝 / 拼多多 / 1688 / TikTok Shop / 独立站 / 跨境中转仓的店铺与仓库，按目录归类并审计留痕；「更多 → 店铺运营」打开 /shop 控制台（店铺列表 + 工作台 + 口径速查）。平台数据由智能体委派 pageAgent 打开卖家后台获取（登录态由你自己在浏览器面板登录）。写操作仅开放「申请改价」一个动作打样，且必须经变更单 + 二次确认（生产店铺额外强确认）后才放行、全程审计。默认开启，可在插件管理页停用。',
+  // ★ P0/P1 只声明 network（抓数走 pageAgent）。P2 加入 'shop-write'：
+  //   权限声明是给用户与插件管理页看的**告知面**，真正的拦截在 shop_price_update 的闸门里
+  //   （未确认 / 生产未额外批准一律拒绝执行），不依赖调用方自觉。
+  permissions: ['network', 'shop-write'],
   contributes: {
-    tools: ['conn_list', 'conn_create', 'conn_update', 'conn_delete', 'conn_check'],
-    sidebar: [
-      {
-        id: 'shop',
-        label: '店铺运营',
-        route: '/shop',
-        icon: 'shop',
-        moreGroup: 'shop',
-        moreGroupLabel: '店铺运营',
-        desc: '选品 · Listing · 利润 · 仓储',
-        order: 12,
-      },
-    ],
+    tools: ['conn_list', 'conn_create', 'conn_update', 'conn_delete', 'conn_check', 'shop_price_update', 'shop_write_log'],
+    // ★ 与 ops-shell / sec-lab 同口径：不贡献 sidebar ——「更多」里的分组与顶栏模式下拉
+    //   是同一个入口，重复（用户拍板 2026-10-16）。模式靠下面的 routes 拿路由。
     routes: [
       { path: '/shop', name: 'shop', component: 'views/plugin/ShopConsole.vue', meta: { desktopOnly: true } },
     ],
@@ -432,7 +526,7 @@ const shopOpsModule: PluginModule = {
   activate(ctx) {
     pluginStorage = ctx.storage;
 
-    for (const tool of makeTools()) {
+    for (const tool of makeShopTools()) {
       ctx.registerTool(tool);
     }
 
