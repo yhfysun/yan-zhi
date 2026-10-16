@@ -921,10 +921,24 @@ onMounted(async () => {
   window.addEventListener('keydown', onDocKeydown);
   remotePath.value = props.conn.sftpPath || '/';
   if (isElectron) {
-    // 本地栏默认「用户目录/下载」（Windows 下写 下载 也能被资源管理器识别为 Downloads）
+    // 本地栏默认「用户目录下的下载目录」。
+    // ★ 不能硬编码中文「下载」：目录名随系统语言/用户配置而变（中文 Windows 常见「下载」、
+    //   英文是 Downloads），而且**显示名与磁盘上的真实名可以不一致** —— 资源管理器会把
+    //   Downloads 显示成「下载」，但 fsp.readdir 用的是真实名。
+    //   2026-10-16 实测：硬编码「下载」在真实名是 Downloads 的机器上直接 ENOENT
+    //   （表现为打开 SFTP 面板就弹「读取本地目录失败」）。
+    //   故按候选依次**探测**：能列出来才算数，都不行就回落到用户主目录（至少可读）。
     try {
       const home = (await electron.fs.homeDir?.() || '').replace(/\\/g, '/');
-      if (home) localPath.value = `${home}/下载`;
+      if (home) {
+        for (const cand of [`${home}/Downloads`, `${home}/下载`, home]) {
+          try {
+            await electron.fs.listDetailed(cand);
+            localPath.value = cand;
+            break;
+          } catch { /* 该目录不存在或不可读 → 试下一个候选 */ }
+        }
+      }
     } catch { /* ignore */ }
     void loadLocal();
   }
