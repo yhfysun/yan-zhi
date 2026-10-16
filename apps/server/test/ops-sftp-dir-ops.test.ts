@@ -416,6 +416,15 @@ describe('sftpUploadRange · 可中断、可从断点续传的单文件上传', 
     expect(seenOpts, '文件已经传完了还去开了写流').toHaveLength(0);
   });
 
+  it('★ 空文件也要在远端建出来（0 字节 ≠ 不用传）', async () => {
+    const f = join(root, 'empty.txt');
+    writeFileSync(f, '');
+    const { sftp, seenOpts } = fakeUploadSftp();
+    const r = await sftpUploadRange(sftp, f, '/r/empty.txt', 0, () => {}, () => false);
+    expect(r).toEqual({ written: 0, cancelled: false });
+    expect(seenOpts, '空文件被当成"没什么可传"直接跳过了，远端不会出现这个文件').toHaveLength(1);
+  });
+
   it('本地文件读不出来 → reject（不能把"没传"当成功）', async () => {
     const { sftp } = fakeUploadSftp();
     await expect(sftpUploadRange(sftp, join(root, '不存在.bin'), '/r/x', 0, () => {}, () => false))

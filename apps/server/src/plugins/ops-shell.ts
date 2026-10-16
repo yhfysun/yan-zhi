@@ -857,7 +857,9 @@ export function sftpUploadRange(
   return new Promise<{ written: number; cancelled: boolean }>((resolve, reject) => {
     let size: number;
     try { size = lstatSync(localPath).size; } catch (e) { reject(e as Error); return; }
-    if (offset >= size) { onStep(size); resolve({ written: size, cancelled: false }); return; }
+    // ★ `offset > 0` 这个前置条件是必需的：0 字节的本地文件也该在远端建出来，
+    //   少了它，"空文件"会因为 offset(0) >= size(0) 直接走捷径，远端永远多不出这个文件。
+    if (offset > 0 && offset >= size) { onStep(size); resolve({ written: size, cancelled: false }); return; }
 
     const rs = createReadStream(localPath, { start: offset });
     // offset>0 说明远端已经有我们自己写进去的那一截 —— 用 r+ 定位续写；否则一律 w（截断重来）
