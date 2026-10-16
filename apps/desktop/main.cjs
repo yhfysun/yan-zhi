@@ -6287,6 +6287,13 @@ app.whenReady().then(async () => {
   // ★ connect-src 必须放行**本实例实际端口**（2026-10-10 起 dev/生产同为 3001；
   //   若用 YANZHI_API_PORT 临时错开则自动跟随 API_PORT），
   //   写死端口会让实例的所有 fetch 被 CSP 拦掉（表现为"界面正常但全功能 403/失败"）。
+  //
+  // ★★ 2026-10-16 补：**ws: 必须单独放行** —— CSP 的 `http:`/`https:` 源**不匹配** `ws://`，
+  //   只写 http 源等于把所有 WebSocket 都拦了。实测代价：运维终端连不上 WS，
+  //   控制台刷 `Connecting to 'ws://127.0.0.1:3001/api/plugin/ops-shell/term/ws...' violates
+  //   the following Content Security Policy directive` 并**静默降级成 SSE**
+  //   （功能还能用，所以只表现为"偶发连不上 WS"，极难归因）。插件 WS 与终端/日志流同端口。
+  const wsOrigins = `ws://127.0.0.1:${API_PORT} ws://localhost:${API_PORT}`;
   const csp = isDev
     ? "default-src 'self'; " +
       "script-src 'self'; " +
@@ -6294,14 +6301,14 @@ app.whenReady().then(async () => {
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      `connect-src 'self' ws://localhost:1420 wss://localhost:1420 ${API_ORIGIN} http://localhost:${API_PORT} https: http:;`
+      `connect-src 'self' ws://localhost:1420 wss://localhost:1420 ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;`
     : "default-src 'self'; " +
       "script-src 'self'; " +
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      `connect-src 'self' ${API_ORIGIN} http://localhost:${API_PORT} https: http:;`;
+      `connect-src 'self' ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;`;
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
