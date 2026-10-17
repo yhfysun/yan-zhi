@@ -20,6 +20,8 @@ const strip = (s: string) =>
    .replace(/^[ \t]*\/\/.*$/gm, ' ')
    .replace(/<!--[\s\S]*?-->/g, ' ');
 const SRC = strip(readFileSync(resolve(__dirname, 'SftpPanel.vue'), 'utf8'));
+/** 弹窗内容的样式住在全局表里（popper 会被 teleport 到 body，scoped 吃不到 data-v） */
+const CSS = strip(readFileSync(resolve(__dirname, '../../styles/menu.css'), 'utf8'));
 
 describe('任务中心：刷新旁边的图标按钮 + 下拉弹窗', () => {
   it('★ 入口是图标按钮上的下拉弹窗（用户拍板：不再内嵌在文件面板里占高度）', () => {
@@ -41,10 +43,37 @@ describe('任务中心：刷新旁边的图标按钮 + 下拉弹窗', () => {
     expect(popIdx, '任务按钮没挨着刷新（顺序变了）').toBeLessThan(refreshIdx);
   });
 
-  it('★ 三段分组齐全：正在执行中 / 待执行 / 已执行完成', () => {
-    expect(SRC, '缺「正在执行中」段').toMatch(/正在执行中（\{\{ runningCount \}\}）/);
-    expect(SRC, '缺「待执行」段').toMatch(/待执行（\{\{ pendingFiles\.length \}\}）/);
-    expect(SRC, '缺「已执行完成」段').toMatch(/已执行完成（\{\{ finishedCount \}\}）/);
+  // 2026-10-17 用户要求：「弄成 3 个 tab 页切换，这样每个 tab 页显示内容多点，
+  // 每个 tab 页可以滚动，上面还能显示当前任务类型的任务数量」——于是三段堆叠改成 tab。
+  it('★ 三个 tab 齐全（正在执行中 / 待执行 / 已执行完成），不再是堆叠的三段', () => {
+    expect(SRC, '没有用 el-tabs').toMatch(/<el-tabs v-model="taskTab"/);
+    expect(SRC, '缺「正在执行中」tab').toMatch(/<el-tab-pane name="running">[\s\S]{0,500}正在执行中<span class="stp-num"/);
+    expect(SRC, '缺「待执行」tab').toMatch(/<el-tab-pane name="pending">[\s\S]{0,500}待执行<span class="stp-num"/);
+    expect(SRC, '缺「已执行完成」tab').toMatch(/<el-tab-pane name="finished">[\s\S]{0,500}已执行完成<span class="stp-num"/);
+    // 旧的"段标题"必须下线，否则就是两套分区并存
+    expect(SRC, '旧的 .stp-group / .stp-title 还在').not.toMatch(/class="stp-group"|class="stp-title"/);
+  });
+
+  it('★ 数量标在 tab 上，且是**实时计数**（写死的数字没有意义）', () => {
+    expect(SRC).toMatch(/stp-num[^>]*>\{\{ runningCount \}\}/);
+    expect(SRC).toMatch(/stp-num[^>]*>\{\{ pendingFiles\.length \}\}/);
+    expect(SRC).toMatch(/stp-num[^>]*>\{\{ finishedCount \}\}/);
+    // 为 0 时压暗，别让一排"0"抢注意力
+    expect(SRC).toMatch(/'is-zero'/);
+  });
+
+  it('★ 每个 tab 有自己的滚动容器（三份），高度够一页多放内容', () => {
+    expect((SRC.match(/class="stp-pane"/g) ?? []).length, '三个 tab 没有各自的滚动容器').toBe(3);
+    expect(CSS, '缺 .stp-pane 滚动规则').toMatch(/\.sftp-task-popper \.stp-pane \{[^}]*overflow: auto/);
+    expect(CSS, '缺 .stp-pane 高度上限').toMatch(/\.sftp-task-popper \.stp-pane \{[^}]*max-height: 46vh/);
+    // 弹窗整体不再滚（否则 tab 头会被一起滚走）
+    expect(CSS, '弹窗本体还在滚').not.toMatch(/\.sftp-task-pop \{[^}]*overflow: auto/);
+  });
+
+  it('起任务时切到「正在执行」tab（否则新任务在别的页里，等于看不见）', () => {
+    const fn = SRC.match(/const addTask = \([\s\S]*?\n  \};/)?.[0] ?? '';
+    expect(fn, '找不到 addTask').not.toBe('');
+    expect(fn, '起任务后没切 tab').toContain("taskTab.value = 'running'");
   });
 
   it('已完成段不无限长（弹窗要一眼看完）', () => {

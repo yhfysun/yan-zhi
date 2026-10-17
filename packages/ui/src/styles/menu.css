@@ -256,13 +256,25 @@
      本仓对 popper 内容的既定做法就是写在这份全局表里、用 popper-class 前缀限域
      （见上方 `.yz-menu-popper` 那一批）。这里沿用同一套，并用 `.sftp-task-popper`
      把它关在自己的命名空间内，不会外泄到其它浮层。 */
-.sftp-task-popper .sftp-task-pop { max-height: 62vh; overflow: auto; font-size: 12px; }
-.sftp-task-popper .stp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.sftp-task-popper .stp-head-title { font-weight: 600; }
-.sftp-task-popper .stp-group + .stp-group {
-  margin-top: 10px; border-top: 1px solid var(--glass-border); padding-top: 8px;
+.sftp-task-popper .sftp-task-pop { font-size: 12px; }
+/* ===== 三个 tab：正在执行 / 待执行 / 已完成（2026-10-17）=====
+   ★ 改成 tab 的原因（用户原话）：三段堆在一个弹窗里会互相挤高度，每段只露几行；
+     改成 tab 后一次只显示一类，单页可以给到 46vh 并且自己滚。
+   ★ tab 头要压薄：它只是分区，不是页面导航，别占掉半屏。 */
+.sftp-task-popper .stp-tabs .el-tabs__header { margin: 0 0 6px; }
+.sftp-task-popper .stp-tabs .el-tabs__nav-wrap::after { height: 1px; background: var(--glass-border); }
+.sftp-task-popper .stp-tabs .el-tabs__item { height: 30px; line-height: 30px; padding: 0 9px; font-size: 12px; }
+.sftp-task-popper .stp-tab { display: inline-flex; align-items: center; gap: 4px; }
+/* 数量徽标：为 0 时压暗，别让一排"0"抢注意力 */
+.sftp-task-popper .stp-num {
+  min-width: 16px; padding: 0 4px; border-radius: 8px; text-align: center;
+  font-size: 10px; line-height: 15px; font-variant-numeric: tabular-nums;
+  background: var(--color-surface-hover); color: var(--color-text-secondary);
 }
-.sftp-task-popper .stp-title { font-size: 11px; color: var(--color-text-secondary); margin-bottom: 4px; }
+.sftp-task-popper .stp-num.is-zero { opacity: 0.45; }
+/* 每页自己的滚动区（弹窗整体不再滚，否则 tab 头会被一起滚走） */
+.sftp-task-popper .stp-pane { max-height: 46vh; overflow: auto; overscroll-behavior: contain; }
+.sftp-task-popper .stp-pane-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
 .sftp-task-popper .stp-empty { font-size: 11px; color: var(--color-text-tertiary); }
 
 /* 任务行 */
