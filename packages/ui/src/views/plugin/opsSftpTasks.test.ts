@@ -62,12 +62,36 @@ describe('任务中心：刷新旁边的图标按钮 + 下拉弹窗', () => {
     expect(SRC).toMatch(/'is-zero'/);
   });
 
-  it('★ 每个 tab 有自己的滚动容器（三份），高度够一页多放内容', () => {
+  it('★ 每个 tab 有自己的滚动容器（三份），高度有下限也有上限', () => {
     expect((SRC.match(/class="stp-pane"/g) ?? []).length, '三个 tab 没有各自的滚动容器').toBe(3);
     expect(CSS, '缺 .stp-pane 滚动规则').toMatch(/\.sftp-task-popper \.stp-pane \{[^}]*overflow: auto/);
     expect(CSS, '缺 .stp-pane 高度上限').toMatch(/\.sftp-task-popper \.stp-pane \{[^}]*max-height: 46vh/);
+    // ★ 下限：只有一两行、或空的时候，弹窗不能塌成一条细缝
+    expect(CSS, '缺 .stp-pane 高度下限').toMatch(/\.sftp-task-popper \.stp-pane \{[^}]*min-height: \d+px/);
     // 弹窗整体不再滚（否则 tab 头会被一起滚走）
     expect(CSS, '弹窗本体还在滚').not.toMatch(/\.sftp-task-pop \{[^}]*overflow: auto/);
+  });
+
+  // 用户原话：「没有任务的时候高度也能稍微高点，设置个最低高度和最高高度，
+  //            没有任务显示中间图标加文字」
+  it('★ 空状态是"图标 + 文字"，三个 tab 各一块，不是一行灰字', () => {
+    expect((SRC.match(/class="stp-empty-state"/g) ?? []).length, '三个 tab 的空状态没改全').toBe(3);
+    const cases = [
+      ['VideoPlay', '没有正在执行的任务'],
+      ['Clock', '没有排队中的文件'],
+      ['CircleCheck', '还没有完成的任务'],
+    ] as const;
+    for (const [icon, text] of cases) {
+      expect(SRC, `缺「${text}」的空状态（要图标 + 文案）`)
+        .toMatch(new RegExp(`stp-empty-state">\\s*<el-icon><${icon} /><\\/el-icon>\\s*<span class="stp-empty-title">${text}</span>`));
+    }
+    expect(SRC, '图标没导入').toMatch(/CircleCheck, Clock/);
+  });
+
+  it('★ 空状态居中、有最小高度、图标有尺寸（否则就是几行贴顶的小字）', () => {
+    expect(CSS, '缺 .stp-empty-state 布局').toMatch(/\.stp-empty-state \{[^}]*justify-content: center/);
+    expect(CSS, '空状态没有最小高度').toMatch(/\.stp-empty-state \{[^}]*min-height: \d+px/);
+    expect(CSS, '缺图标尺寸').toMatch(/\.stp-empty-state \.el-icon \{[^}]*font-size: \d+px/);
   });
 
   it('起任务时切到「正在执行」tab（否则新任务在别的页里，等于看不见）', () => {

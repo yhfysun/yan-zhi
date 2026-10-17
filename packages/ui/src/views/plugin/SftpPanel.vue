@@ -32,7 +32,11 @@
                   <span class="stp-tab">正在执行中<span class="stp-num" :class="{ 'is-zero': !runningCount }">{{ runningCount }}</span></span>
                 </template>
                 <div class="stp-pane">
-                  <div v-if="!runningCount" class="stp-empty">没有正在执行的任务</div>
+                  <div v-if="!runningCount" class="stp-empty-state">
+                    <el-icon><VideoPlay /></el-icon>
+                    <span class="stp-empty-title">没有正在执行的任务</span>
+                    <span class="stp-empty-hint">上传、下载、删除会出现在这里</span>
+                  </div>
                   <div v-for="t in runningTasks" :key="t.id" class="stp-item">
                     <el-icon class="stp-icon">
                       <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
@@ -92,7 +96,11 @@
                   <span class="stp-tab">待执行<span class="stp-num" :class="{ 'is-zero': !pendingFiles.length }">{{ pendingFiles.length }}</span></span>
                 </template>
                 <div class="stp-pane">
-                  <div v-if="!pendingFiles.length" class="stp-empty">没有排队中的文件</div>
+                  <div v-if="!pendingFiles.length" class="stp-empty-state">
+                    <el-icon><Clock /></el-icon>
+                    <span class="stp-empty-title">没有排队中的文件</span>
+                    <span class="stp-empty-hint">上传前先扫描队列，传完一个补一个</span>
+                  </div>
                   <div v-for="(f, i) in pendingRows" :key="'p' + i" class="stp-file" :title="f.name">{{ f.name }}</div>
                   <div v-if="pendingMore" class="stp-empty">…等 {{ pendingMore }} 项</div>
                 </div>
@@ -107,7 +115,11 @@
                     <span class="stp-empty">最近的排最前</span>
                     <el-button link size="small" :disabled="!finishedCount" @click="clearFinishedTasks">清除已完成</el-button>
                   </div>
-                  <div v-if="!finishedCount" class="stp-empty">还没有完成的任务</div>
+                  <div v-if="!finishedCount" class="stp-empty-state">
+                    <el-icon><CircleCheck /></el-icon>
+                    <span class="stp-empty-title">还没有完成的任务</span>
+                    <span class="stp-empty-hint">完成或失败的任务会留在这里</span>
+                  </div>
                   <div v-for="t in finishedTasks" :key="t.id" class="stp-item is-finished">
                     <el-icon class="stp-icon">
                       <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
@@ -354,7 +366,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { consumeSseStream } from '../../utils/sse';
 import {
-  ArrowUp, Connection, Delete, Document, Download, EditPen,
+  ArrowUp, CircleCheck, Clock, Connection, Delete, Document, Download, EditPen,
   Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Tickets, Upload,
   VideoPause, VideoPlay,
 } from '@element-plus/icons-vue';

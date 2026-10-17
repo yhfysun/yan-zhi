@@ -272,9 +272,22 @@
   background: var(--color-surface-hover); color: var(--color-text-secondary);
 }
 .sftp-task-popper .stp-num.is-zero { opacity: 0.45; }
-/* 每页自己的滚动区（弹窗整体不再滚，否则 tab 头会被一起滚走） */
-.sftp-task-popper .stp-pane { max-height: 46vh; overflow: auto; overscroll-behavior: contain; }
+/* 每页自己的滚动区（弹窗整体不再滚，否则 tab 头会被一起滚走）
+   ★ 给个下限：只有一两行、或者空的时候，弹窗不该塌成一条细缝 ——
+     用户原话「没有任务的时候高度也能稍微高点」。上限仍是 46vh，多了就在页内滚。 */
+.sftp-task-popper .stp-pane { min-height: 168px; max-height: 46vh; overflow: auto; overscroll-behavior: contain; }
 .sftp-task-popper .stp-pane-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+/* 空状态：图标 + 主文案 + 一句提示，居中放 —— 别让弹窗成一片空白 */
+.sftp-task-popper .stp-empty-state {
+  min-height: 152px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 12px 10px; text-align: center;
+  color: var(--color-text-tertiary);
+}
+.sftp-task-popper .stp-empty-state .el-icon { font-size: 26px; opacity: 0.45; }
+.sftp-task-popper .stp-empty-title { font-size: 12px; color: var(--color-text-secondary); }
+.sftp-task-popper .stp-empty-hint { font-size: 11px; opacity: 0.8; }
+/* 清单尾部"…等 N 项 / 另有 N 条"这种收尾提示仍用这个（跟空状态不是一回事） */
 .sftp-task-popper .stp-empty { font-size: 11px; color: var(--color-text-tertiary); }
 
 /* 任务行 */
