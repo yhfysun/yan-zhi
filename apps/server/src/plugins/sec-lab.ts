@@ -39,6 +39,11 @@ import { runPocScan, runTemplates } from './sec-lab-tools/templates.js';
 import { lookupCve, searchExploit } from './sec-lab-tools/intel.js';
 import { runOast } from './sec-lab-tools/oast.js';
 import { verifySqli, verifyXss, verifySsrf, updateFindingStatus } from './sec-lab-tools/verify.js';
+// —— P3：基线与巡检（2026-10-17）——
+import { runBaseline, runTlsAudit, runHeadersAudit } from './sec-lab-tools/baseline.js';
+import { runWatch, stopAllWatchers } from './sec-lab-tools/watch.js';
+import { runBrute } from './sec-lab-tools/brute.js';
+import { runAttackMap } from './sec-lab-tools/attackmap.js';
 
 export const SEC_LAB_ID = 'sec-lab';
 
@@ -65,6 +70,8 @@ export const secLabManifest: PluginManifest = {
       // —— P2（2026-10-17）——
       'poc_scan', 'poc_templates', 'cve_intel', 'exploit_search', 'oast',
       'verify_sqli', 'verify_xss', 'verify_ssrf', 'finding_status',
+      // —— P3（2026-10-17）——
+      'baseline_scan', 'tls_audit', 'headers_audit', 'watch', 'brute', 'attack_map',
     ],
     // ★ 2026-10-16 去掉 sidebar 贡献：与顶栏**模式下拉**的「安全」是同一个入口（都进 /sec），
     //   属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
@@ -142,6 +149,14 @@ export const secLabManifest: PluginManifest = {
       { name: 'xss', desc: '反射型 XSS 验证（只看是否原样反射，不执行脚本）', usage: '/xss <带参数URL>', group: 'VERIFY', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'verify_xss', params: ['target'] },
       { name: 'ssrf', desc: 'SSRF 验证（借 /oob 回调确认；需先 /oob start；侵入级）', usage: '/ssrf <带参数URL>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'verify_ssrf', confirm: true, params: ['target'] },
       { name: 'finding', aliases: ['verify'], desc: '发现项状态机：open / verified / fixed / accepted / fp', usage: '/finding <id> [status=verified]', group: 'REPORT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'finding_status', params: ['id', 'status'] },
+
+      // ── P3：基线与巡检（2026-10-17）────────────────────────────────────────
+      { name: 'baseline', desc: '配置基线核查：响应头 + TLS + Cookie，按 owasp/cis/等保 出分（仅可远程核查子集）', usage: '/baseline <url> [--profile=owasp|cis|djbh]', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'baseline_scan', params: ['target'] },
+      { name: 'tls-audit', aliases: ['tls_audit'], desc: 'TLS 审计：协议版本 / 加密套件 / 证书有效期与主体', usage: '/tls-audit <host[:port]>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'tls_audit', params: ['target'] },
+      { name: 'headers-audit', aliases: ['headers_audit'], desc: 'HTTP 安全响应头审计（HSTS/CSP/XFO/nosniff/Referrer/Permissions）', usage: '/headers-audit <url>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'headers_audit', params: ['target'] },
+      { name: 'watch', desc: '定时巡检：start / stop / list / tick（进程内定时器，重启需重开）', usage: '/watch <start|stop|list|tick> [--target=x] [--intervalMin=30]', group: 'ASSET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'watch', params: ['action'] },
+      { name: 'brute', desc: 'HTTP Basic 默认口令自查（8 组公开默认口令；SSH/FTP 请走 hydra）', usage: '/brute <http> <url>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'brute', confirm: true, params: ['protocol', 'target'] },
+      { name: 'attack-map', aliases: ['attack_map'], desc: 'ATT&CK 映射：把当前发现项映射到技术，给出已覆盖/未覆盖（启发式）', usage: '/attack-map', group: 'INTEL', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'attack_map' },
     ],
     // ── 剧本（`@名字` 召唤的命令序列，2026-10-16）────────────────────────────────
     // ★ 定义就是"一串**已存在的命令**"（见 core 的 PlaybookDef）：剧本自己不执行任何东西，
@@ -581,7 +596,7 @@ function secReportTool(): BuiltInTool {
       type: 'object',
       properties: {
         target: { type: 'string', description: '按目标过滤（可选）' },
-        format: { type: 'string', enum: ['markdown', 'json'], description: '输出格式，默认 markdown' },
+        format: { type: 'string', enum: ['markdown', 'json', 'html', 'sarif'], description: '输出格式，默认 markdown（pdf 请用 html 在浏览器打印）' },
       },
       required: [],
     },
@@ -590,12 +605,62 @@ function secReportTool(): BuiltInTool {
       const all = await loadFindings();
       const target = args.target ? normalizeTarget(String(args.target)) : '';
       const list = target ? all.filter((f) => f.target === target) : all;
-      if (!list.length) {
-        return { content: [{ type: 'text', text: target ? `目标 ${target} 暂无发现项。` : '暂无任何发现项，先跑 recon / portscan / webprobe。' }] };
+      // ★ 误报（fp）不进报告：状态机就是为了把噪音摘掉，报告里再列一遍等于白做
+      const actionable = list.filter((f) => (f as { status?: string }).status !== 'fp');
+      if (!actionable.length) {
+        return { content: [{ type: 'text', text: target ? `目标 ${target} 暂无发现项（或已全部标记为误报）。` : '暂无任何发现项，先跑 recon / portscan / webprobe。' }] };
       }
-      const sorted = sortFindings(list);
-      if (String(args.format || 'markdown') === 'json') {
-        return { content: [{ type: 'text', text: JSON.stringify(sorted.map((f) => ({ ...f, detail: redact(f.detail, cfg.redactReport) })), null, 2) }] };
+      const sorted = sortFindings(actionable);
+      const format = String(args.format || 'markdown').toLowerCase();
+      const safe = (s: string) => redact(String(s || ''), cfg.redactReport);
+
+      if (format === 'json') {
+        return { content: [{ type: 'text', text: JSON.stringify(sorted.map((f) => ({ ...f, detail: safe(f.detail) })), null, 2) }] };
+      }
+
+      // SARIF 2.1.0：给 CI / 代码扫描平台吃的标准格式（只含未标记误报的条目）
+      if (format === 'sarif') {
+        const level = (s: string) => (s === 'critical' || s === 'high' ? 'error' : s === 'medium' ? 'warning' : 'note');
+        const sarif = {
+          $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
+          version: '2.1.0',
+          runs: [{
+            tool: { driver: { name: 'yan-zhi-sec-lab', informationUri: 'https://github.com/yhfysun/yan-zhi' } },
+            results: sorted.map((f) => ({
+              ruleId: f.tool || 'sec-lab',
+              level: level(f.severity),
+              message: { text: `${f.title}：${safe(f.detail)}${f.remediation ? `（修复：${safe(f.remediation)}）` : ''}` },
+              locations: [{ physicalLocation: { artifactLocation: { uri: f.target || '(unknown)' } } }],
+              properties: { severity: f.severity, tool: f.tool },
+            })),
+          }],
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(sarif, null, 2) }] };
+      }
+
+      // HTML：可直接在浏览器打开并「打印为 PDF」—— 不引入 PDF 库，也不假装能生成二进制
+      if (format === 'html') {
+        const esc = (s: string) => String(s || '').replace(/[&<>"']/g, (c) => (
+          { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>
+        )[c]);
+        const rows = sorted.map((f) => `<tr><td><span class="sev ${esc(f.severity)}">${esc(f.severity)}</span></td>` +
+          `<td><b>${esc(f.title)}</b><div class="muted">${esc(safe(f.detail))}</div>` +
+          (f.remediation ? `<div class="fix">修复：${esc(safe(f.remediation))}</div>` : '') +
+          `</td><td><code>${esc(f.target || '')}</code><div class="muted">${esc(f.tool || '')}</div></td></tr>`).join('\n');
+        const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>安全评估报告</title>
+<style>body{font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:32px;color:#1f2937}
+h1{font-size:20px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #e5e7eb;padding:10px;vertical-align:top;text-align:left}
+.muted{color:#6b7280;font-size:12px}.fix{color:#047857;font-size:12px;margin-top:4px}
+.sev{padding:1px 6px;border-radius:4px;font-size:12px;color:#fff}
+.sev.critical{background:#b91c1c}.sev.high{background:#dc2626}.sev.medium{background:#d97706}.sev.low{background:#2563eb}.sev.info{background:#6b7280}
+@media print{body{margin:0}}</style></head><body>
+<h1>安全评估报告${target ? ` — ${esc(safe(target))}` : ''}</h1>
+<p class="muted">生成时间：${new Date().toLocaleString('zh-CN')}　发现项：${sorted.length}　（已排除标记为误报的条目）</p>
+<p class="muted">本报告由 yan-zhi 安全工作台生成，仅针对已登记授权的目标。浏览器「打印 → 另存为 PDF」即可得到 PDF。</p>
+<table><thead><tr><th>级别</th><th>发现项</th><th>目标 / 来源</th></tr></thead><tbody>
+${rows}
+</tbody></table></body></html>`;
+        return { content: [{ type: 'text', text: html }] };
       }
       const SEV: Record<string, string> = { critical: '🔴 严重', high: '🟠 高', medium: '🟡 中', low: '🔵 低', info: '⚪ 信息' };
       const groups = new Map<string, typeof sorted>();
@@ -1279,6 +1344,136 @@ function findingStatusTool(): BuiltInTool {
     }));
 }
 
+// ---------- P3 工具工厂（2026-10-17） ----------
+
+/**
+ * watch 的 `list` 不需要目标，但 `start` / `tick` 必须过授权范围。
+ * 所以 watch 进 NO_TARGET_TOOLS（否则 list 会被"缺少 target"挡住），
+ * 再在真正动手的两个动作上**显式调同一个 guard()** —— 不是绕过，是分段校验。
+ */
+async function assertInScope(tool: string, target: string): Promise<void> {
+  const cfg = await loadConfig();
+  const g = guard({ tool, target, scopes: await loadScopes(), config: cfg, requester: 'human' });
+  if (!g.ok) throw new Error(g.reason);
+}
+
+function baselineTool(): BuiltInTool {
+  return {
+    name: 'baseline_scan',
+    description: '配置基线核查：安全响应头 + TLS + Cookie，按 owasp / cis / 等保 出分与问题清单。只覆盖**可远程核查**的子集（账号策略、审计日志不在其中）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '目标 URL 或域名' },
+        profile: { type: 'string', enum: ['owasp', 'cis', 'djbh', 'dengbao'], description: '基线档位，默认 owasp' },
+        timeoutMs: { type: 'number' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('baseline_scan', args, async () => runBaseline(
+        String(args.target), String(args.profile || 'owasp'), Number(args.timeoutMs) || undefined,
+      ));
+    },
+  };
+}
+
+function tlsAuditTool(): BuiltInTool {
+  return {
+    name: 'tls_audit',
+    description: 'TLS 握手审计：协议版本、加密套件、证书主体/颁发者/有效期/是否自签名。默认 443，可写 host:port。',
+    inputSchema: {
+      type: 'object',
+      properties: { target: { type: 'string', description: 'host 或 host:port' }, timeoutMs: { type: 'number' } },
+      required: ['target'],
+    },
+    async execute(args) {
+      const raw = String(args.target || '');
+      const hostPort = raw.replace(/^https?:\/\//i, '').split('/')[0];
+      const [host, portStr] = hostPort.split(':');
+      const port = Number(portStr) || 443;
+      return withGuard('tls_audit', { ...args, target: host }, async () => runTlsAudit(host, port, Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function headersAuditTool(): BuiltInTool {
+  return {
+    name: 'headers_audit',
+    description: 'HTTP 安全响应头审计：HSTS / CSP / X-Frame-Options / nosniff / Referrer-Policy / Permissions-Policy，并检查版本号泄露。',
+    inputSchema: {
+      type: 'object',
+      properties: { target: { type: 'string', description: '目标 URL' }, timeoutMs: { type: 'number' } },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('headers_audit', args, async () => runHeadersAudit(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function watchTool(): BuiltInTool {
+  return {
+    name: 'watch',
+    description: '定时巡检：start 定期跑 recon+portscan 并 diff（新增端口/子域告警）/ stop / list / tick。进程内定时器，重启需重开。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['start', 'stop', 'list', 'tick'], description: '动作' },
+        target: { type: 'string', description: '目标（start / tick / 指定 stop 时必填）' },
+        intervalMin: { type: 'number', description: '间隔分钟，默认 30（5~1440）' },
+        timeoutMs: { type: 'number' },
+      },
+      required: ['action'],
+    },
+    async execute(args) {
+      const action = String(args.action || 'list');
+      const target = args.target ? String(args.target) : undefined;
+      if (action === 'start' || action === 'tick') await assertInScope('watch', String(target || ''));
+      return withGuard('watch', args, async () => runWatch({
+        action: action as 'start' | 'stop' | 'list' | 'tick',
+        target,
+        intervalMin: Number(args.intervalMin) || undefined,
+        timeoutMs: Number(args.timeoutMs) || undefined,
+      }, async (t, findings, summary) => {
+        await pushFindings(t, 'watch', findings);
+        await pushAudit({ at: Date.now(), tool: 'watch', target: t, risk: 'active', ok: true, message: summary });
+      }));
+    },
+  };
+}
+
+function bruteTool(): BuiltInTool {
+  return {
+    name: 'brute',
+    description: 'HTTP Basic 默认口令自查：8 组公开默认口令，每次间隔 800ms，命中即停。SSH/FTP 的弱口令请走 /toolchain（hydra）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        protocol: { type: 'string', enum: ['http', 'ssh', 'ftp'], description: '目前只支持 http' },
+        target: { type: 'string', description: '目标 URL' },
+        timeoutMs: { type: 'number' },
+        confirmed: { type: 'boolean', description: '侵入性动作需显式确认' },
+      },
+      required: ['protocol', 'target'],
+    },
+    async execute(args) {
+      return withGuard('brute', args, async () => runBrute({
+        protocol: String(args.protocol || 'http') as 'http' | 'ssh' | 'ftp',
+        target: String(args.target),
+        timeoutMs: Number(args.timeoutMs) || undefined,
+      }));
+    },
+  };
+}
+
+function attackMapTool(): BuiltInTool {
+  return plainTool('attack_map', '把当前发现项按关键词映射到 ATT&CK 技术，输出已覆盖与未覆盖（启发式，不是精确归属）。',
+    {},
+    [],
+    async () => runAttackMap(await loadFindings()));
+}
+
 // ---------- 后端路由（控制台页面用） ----------
 
 function registerRoutes(ctx: PluginContext) {
@@ -1364,6 +1559,13 @@ function registerRoutes(ctx: PluginContext) {
         verify_xss: { factory: verifyXssTool, opts: {}, passRunner: true },
         verify_ssrf: { factory: verifySsrfTool, opts: {}, passRunner: true },
         finding_status: { factory: findingStatusTool, opts: {}, passRunner: true },
+        // —— P3（2026-10-17）——
+        baseline_scan: { factory: baselineTool, opts: {}, passRunner: true },
+        tls_audit: { factory: tlsAuditTool, opts: {}, passRunner: true },
+        headers_audit: { factory: headersAuditTool, opts: {}, passRunner: true },
+        watch: { factory: watchTool, opts: {}, passRunner: true },
+        brute: { factory: bruteTool, opts: {}, passRunner: true },
+        attack_map: { factory: attackMapTool, opts: {}, passRunner: true },
       };
       const entry = map[tool];
       if (!entry) return fail(res, 400, `未知工具 ${tool}`);
@@ -1491,6 +1693,8 @@ export const secLabModule: PluginModule = {
       // —— P2（2026-10-17）——
       pocScanTool(), pocTemplatesTool(), cveTool(), exploitTool(), oastTool(),
       verifySqliTool(), verifyXssTool(), verifySsrfTool(), findingStatusTool(),
+      // —— P3（2026-10-17）——
+      baselineTool(), tlsAuditTool(), headersAuditTool(), watchTool(), bruteTool(), attackMapTool(),
     ]) {
       ctx.registerTool(t);
     }
@@ -1498,6 +1702,8 @@ export const secLabModule: PluginModule = {
     ctx.log('[sec-lab] 已启用：仅限自有资产或已授权目标，所有动作受授权范围与黑名单约束');
   },
   async deactivate() {
+    // 定时器属于进程资源：不停掉就会留下"幽灵巡检"继续打目标
+    stopAllWatchers();
     store = null;
   },
 };

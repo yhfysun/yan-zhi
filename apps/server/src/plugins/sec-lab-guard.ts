@@ -59,6 +59,15 @@ export const TOOL_RISK: Record<string, RiskLevel> = {
   verify_xss: 'active',
   verify_ssrf: 'intrusive',
   finding_status: 'passive',
+  // —— P3：基线与巡检（2026-10-17）——
+  baseline_scan: 'active',
+  tls_audit: 'active',
+  headers_audit: 'active',
+  watch: 'active',
+  // 默认口令自查：会尝试真实认证，属侵入级
+  brute: 'intrusive',
+  // ATT&CK 映射：只读既有发现项
+  attack_map: 'passive',
 };
 
 /** 动作分级：passive 被动观测 / active 主动探测 / intrusive 侵入 / simulate 攻击行为模拟 */
@@ -332,6 +341,10 @@ export function guard(i: GuardInput): GuardResult {
     'crypto_encode', 'crypto_decode', 'jwt_inspect', 'hash_id', 'target_state', 'proxy',
     // P2：模板库 / 情报 / 带外 / 状态机都没有"目标"概念
     'poc_templates', 'cve_intel', 'exploit_search', 'oast', 'finding_status',
+    // watch 的 list 没有目标；start/tick 在工具内部显式调本模块的 guard() 补校验
+    'watch',
+    // ATT&CK 映射只读本地发现项
+    'attack_map',
   ];
   const needsTarget = !NO_TARGET_TOOLS.includes(i.tool);
 
