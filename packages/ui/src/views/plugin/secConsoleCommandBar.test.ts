@@ -84,6 +84,17 @@ describe('★ AI 模式输入框工具条（对齐运维模式 P0-1）', () => {
     expect(SRC).toContain('已提交后台任务');
     expect(SRC, '后台分支必须在 subscribeSecTask 之前').toMatch(/if \(secBackground\.value\)[\s\S]{0,400}?pushSecLocal[\s\S]{0,200}?return;[\s\S]{0,120}?await subscribeSecTask/);
   });
+
+  it('★ ExecutionGate：三档审批 + 待批面板 + 批准/拒绝入口', () => {
+    expect(SRC).toContain('approvalMode');
+    expect(SRC).toContain('changeApprovalMode');
+    expect(SRC, '三档必须都出现在界面上').toContain('auto_review');
+    expect(SRC).toContain('full_access');
+    expect(SRC).toContain('decideExecutionApproval');
+    expect(SRC, '审批走独立路由').toContain('/approvals/decide');
+    expect(SRC, '待批面板').toContain('EXECUTION GATE');
+    expect(SRC, '批准票一次性提示').toContain('只对这一次、完全相同的参数有效');
+  });
 });
 
 describe('★ 收敛边界：Tab 数下降，但功能与人工闸门一个都不能少', () => {

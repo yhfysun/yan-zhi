@@ -515,6 +515,64 @@
           </details>
         </div>
 
+        <!-- ===== 执行审批（ExecutionGate）：高危动作逐条批准 ===== -->
+        <div v-show="tab === 'review'" class="sec-pane">
+          <article class="sec-frame sec-frame-list">
+            <header class="sec-frame-head">
+              <span class="sec-num">08</span>
+              <span class="sec-frame-title">EXECUTION GATE</span>
+              <span class="sec-frame-hint">高危动作逐条审批 · 待批 {{ approvals.length }}</span>
+            </header>
+            <div class="sec-exp-list">
+              <div v-for="a in approvals" :key="a.id" class="sec-exp-item">
+                <div class="sec-exp-item-head">
+                  <code class="sec-exp-id">{{ a.id }}</code>
+                  <span class="sec-exp-title">{{ a.summary }}</span>
+                  <el-tag size="small" :type="a.kind === 'intrusive' ? 'danger' : 'warning'" effect="plain">
+                    {{ a.kind === 'intrusive' ? '侵入验证' : 'shell 执行' }}
+                  </el-tag>
+                  <span class="sec-spacer" />
+                  <el-tag size="small" type="warning" effect="plain">待批准</el-tag>
+                </div>
+                <div class="sec-exp-meta">
+                  工具 {{ a.tool }} · 哈希 {{ a.argsHash }} · 申请 {{ fmtTime(a.requestedAt) }} · 过期 {{ fmtTime(a.expiresAt) }}
+                </div>
+                <div class="sec-exp-body">{{ a.reason }}</div>
+                <div class="sec-exp-actions">
+                  <el-button size="small" type="success" :loading="approvalBusy === a.id" @click="decideExecutionApproval(a, 'approve')">批准</el-button>
+                  <el-button size="small" type="danger" plain :loading="approvalBusy === a.id" @click="decideExecutionApproval(a, 'reject')">拒绝</el-button>
+                  <span class="sec-exp-note">只对这一次、完全相同的参数有效；助手需原样重试。</span>
+                </div>
+              </div>
+              <div v-if="!approvals.length" class="sec-empty sec-empty-sm">
+                没有待批准的高危动作。逐条审批只拦 AI 发起的外部工具执行 / 侵入验证 / 靶场 shell。
+              </div>
+            </div>
+            <details v-if="decidedApprovals.length" class="sec-adv">
+              <summary>最近已决（{{ decidedApprovals.length }}）</summary>
+              <div class="sec-exp-list">
+                <div v-for="a in decidedApprovals" :key="a.id" class="sec-exp-item">
+                  <div class="sec-exp-item-head">
+                    <code class="sec-exp-id">{{ a.id }}</code>
+                    <span class="sec-exp-title">{{ a.summary }}</span>
+                    <span class="sec-spacer" />
+                    <el-tag
+                      size="small"
+                      :type="a.status === 'approved' ? 'success' : a.status === 'rejected' ? 'danger' : 'info'"
+                      effect="plain"
+                    >{{ a.status === 'approved' ? '已批准' : a.status === 'rejected' ? '已拒绝' : '已过期' }}</el-tag>
+                  </div>
+                  <div class="sec-exp-meta">
+                    工具 {{ a.tool }} · 哈希 {{ a.argsHash }} · {{ fmtTime(a.decidedAt || a.requestedAt) }}
+                    <template v-if="a.decidedBy"> · {{ a.decidedBy }}</template>
+                    <template v-if="a.rejectReason"> · {{ a.rejectReason }}</template>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </article>
+        </div>
+
         <!-- ========= Tab 3：环境 / 靶场（宿主机 Docker + Android，仅本机） ========= -->
         <div v-show="tab === 'env'" class="sec-pane">
           <div class="sec-pane-head">
@@ -726,24 +784,43 @@
                 <el-option :value="''" :label="`默认（${defaultModelLabel}）`" />
                 <el-option v-for="m in chatModelOptions" :key="m.id" :value="m.id" :label="modelLabel(m)" />
               </el-select>
-              <el-popover placement="top-end" :width="286" trigger="click">
+              <el-popover placement="top-end" :width="330" trigger="click">
                 <template #reference>
-                  <el-button size="small" text class="sec-ai-perm-btn" title="执行权限（交战模式 / 授权范围）">
+                  <el-button size="small" text class="sec-ai-perm-btn" title="执行权限（交战模式 / 逐条审批 / 授权范围）">
                     <el-icon :size="14"><Setting /></el-icon>
                   </el-button>
                 </template>
                 <div class="sec-ai-perm-panel">
                   <div class="sec-ai-perm-title">执行权限</div>
                   <p class="sec-ai-perm-sub">
-                    侵入性动作（爆破 / 注入验证）默认关闭；开启前请确认目标已授权且环境隔离。
+                    侵入性动作（爆破 / 注入验证）默认关闭；高危动作逐条审批默认开启。
                   </p>
                   <div class="sec-ai-perm-row">
                     <span>交战模式</span>
                     <el-switch :model-value="cfg.engagementMode" size="small" @change="toggleEngagement($event === true)" />
                   </div>
+                  <div class="sec-ai-perm-row">
+                    <span>高危动作审批</span>
+                    <el-select
+                      :model-value="cfg.approvalMode"
+                      size="small"
+                      class="sec-ai-approval-select"
+                      @change="changeApprovalMode"
+                    >
+                      <el-option value="ask" label="逐条审批（默认）" />
+                      <el-option value="auto_review" label="自动复核（只读外部工具）" />
+                      <el-option value="full_access" label="全放行" />
+                    </el-select>
+                  </div>
                   <div class="sec-ai-perm-meta">当前授权目标 {{ scopes.length }} 个 · 风险上限以每条授权记录为准</div>
                   <div v-if="cfg.engagementMode" class="sec-ai-perm-warn">
                     ⚠ 交战模式已开启：服务端仍会逐条校验授权范围、风险级与确认标记，不会因为开关而跳过。
+                  </div>
+                  <div v-if="cfg.approvalMode === 'auto_review'" class="sec-ai-perm-meta">
+                    只读外部工具（nmap/nuclei 等）自动复核；sqlmap/hydra、侵入验证与靶场 shell 仍需逐条批准。
+                  </div>
+                  <div v-else-if="cfg.approvalMode === 'full_access'" class="sec-ai-perm-warn">
+                    ⚠ 全放行档：高危动作不再逐条人工批准，审计标记 via=full_access；授权范围/风险级/黑名单仍生效。
                   </div>
                 </div>
               </el-popover>
@@ -1230,7 +1307,10 @@ const scopes = ref<ScopeRow[]>([]);
 const findings = ref<Array<{ id: string; title: string; severity: string; detail: string; target: string; tool?: string; at?: number; remediation?: string }>>([]);
 const audit = ref<Array<{ at: number; tool: string; target?: string; ok: boolean; message: string }>>([]);
 const toolchain = ref<Array<{ name: string; available: boolean; capability: string; install: string }>>([]);
-const cfg = reactive({ engagementMode: false });
+const cfg = reactive<{ engagementMode: boolean; approvalMode: 'ask' | 'auto_review' | 'full_access' }>({
+  engagementMode: false,
+  approvalMode: 'ask',
+});
 
 // ---------- 经验库（自学习，P5）：待审 → 人工批准 → 才注入提示词 ----------
 interface ExperienceRow {
@@ -1254,7 +1334,7 @@ const currentTabLabel = computed(() => TABS.find((t) => t.value === tab.value)?.
  *    而这里真正的信号是"有多少发现项 + 多少条被拦的审计"。 */
 function tabBadge(t: { value: string }): string {
   if (t.value !== 'review') return '';
-  const n = findings.value.length + audit.value.filter((a) => !a.ok).length + expCounts.value.pending;
+  const n = findings.value.length + audit.value.filter((a) => !a.ok).length + expCounts.value.pending + approvals.value.length;
   return n ? String(n) : '';
 }
 const liveScopes = computed(() => String(scopes.value.length).padStart(2, '0'));
@@ -1566,9 +1646,13 @@ async function loadAll() {
   if (f) findings.value = f;
   const a = await unwrap<typeof audit.value>(api.get(`${BASE}/audit`));
   if (a) audit.value = a;
-  const c = await unwrap<{ engagementMode: boolean }>(api.get(`${BASE}/config`));
-  if (c) cfg.engagementMode = !!c.engagementMode;
+  const c = await unwrap<{ engagementMode: boolean; approvalMode?: string }>(api.get(`${BASE}/config`));
+  if (c) {
+    cfg.engagementMode = !!c.engagementMode;
+    cfg.approvalMode = c.approvalMode === 'auto_review' || c.approvalMode === 'full_access' ? c.approvalMode : 'ask';
+  }
   await loadExperience();
+  await loadApprovals();
   lastRunMs.value = Date.now() - t0;
 }
 
@@ -1659,7 +1743,79 @@ async function removeScope(s: ScopeRow) {
   await loadAll();
 }
 
-async function saveConfig() { await api.post(`${BASE}/config`, { engagementMode: cfg.engagementMode }); }
+async function saveConfig() { await api.post(`${BASE}/config`, { engagementMode: cfg.engagementMode, approvalMode: cfg.approvalMode }); }
+
+/** 高危动作逐条审批档位（与 engagementMode 合并：前者风险闸门，后者人手闸门） */
+async function changeApprovalMode(v: string) {
+  const mode = v === 'auto_review' || v === 'full_access' ? v : 'ask';
+  if (mode === 'full_access') {
+    try {
+      await ElMessageBox.confirm(
+        '全放行档下，高危动作（外部工具执行、侵入验证、靶场 shell）<b>不再逐条人工批准</b>。' +
+        '<br><br>授权范围、风险级、危险命令黑名单与 HUMAN_ONLY 仍然生效；审计会标记 via=full_access。' +
+        '<br>确定切换？',
+        '切换为全放行',
+        { dangerouslyUseHTMLString: true, type: 'warning', confirmButtonText: '切换', cancelButtonText: '取消' },
+      );
+    } catch { return; }
+  }
+  const r = await api.post(`${BASE}/config`, { approvalMode: mode });
+  if ('error' in r) { ElMessage.error(String(r.error)); return; }
+  cfg.approvalMode = mode;
+  ElMessage.success(mode === 'ask' ? '高危动作将逐条人工批准' : mode === 'auto_review' ? '只读外部工具自动复核，侵入仍逐条批准' : '已切换为全放行档');
+}
+
+// ---------- 执行审批（ExecutionGate）：高危动作逐条批准 ----------
+interface ApprovalRow {
+  id: string; tool: string; kind: string; target: string; argsHash: string;
+  summary: string; reason: string; status: string;
+  requestedAt: number; expiresAt: number;
+  decidedAt?: number; decidedBy?: string; rejectReason?: string;
+}
+const approvals = ref<ApprovalRow[]>([]);
+const decidedApprovals = ref<ApprovalRow[]>([]);
+const approvalBusy = ref('');
+let approvalTimer: ReturnType<typeof setInterval> | null = null;
+
+async function loadApprovals() {
+  const d = await unwrap<{ pending: ApprovalRow[]; decided: ApprovalRow[] }>(api.get(`${BASE}/approvals`));
+  if (!d) return;
+  const before = approvals.value.length;
+  approvals.value = d.pending || [];
+  decidedApprovals.value = d.decided || [];
+  // 新的待批票出现时提醒一次：AI 任务可能在后台停下等人，用户不知道就会以为卡住了
+  if (approvals.value.length > before) {
+    ElMessage.warning('有新的高危动作待批准，请到「结果 → 执行审批」处理');
+  }
+}
+
+async function decideExecutionApproval(row: ApprovalRow, decision: 'approve' | 'reject') {
+  let reason = '';
+  try {
+    if (decision === 'reject') {
+      const r = await ElMessageBox.prompt('拒绝原因会记录在案。', '拒绝高危动作', {
+        inputPlaceholder: '例如：目标未授权 / 影响面不可控 / 不需要这一步',
+        confirmButtonText: '拒绝', cancelButtonText: '取消',
+      });
+      reason = String(r.value || '').trim();
+    } else {
+      await ElMessageBox.confirm(
+        `批准后，助手需要**原样重试**「${row.summary}」。一张批准票只对这一次、完全相同的参数有效，10 分钟过期。`,
+        '批准高危动作',
+        { type: 'warning', confirmButtonText: '批准', cancelButtonText: '取消' },
+      );
+    }
+  } catch { return; }
+  approvalBusy.value = row.id;
+  try {
+    const r = await api.post(`${BASE}/approvals/decide`, { id: row.id, decision, reason, decidedBy: 'operator' });
+    if ('error' in r) return ElMessage.error(String(r.error));
+    ElMessage.success(decision === 'approve' ? '已批准：助手原样重试即可执行' : '已拒绝');
+    await loadApprovals();
+  } finally {
+    approvalBusy.value = '';
+  }
+}
 
 async function postRun(toolName: string, args: Record<string, unknown>) {
   running.value = true; result.value = '';
@@ -1757,8 +1913,13 @@ onMounted(async () => {
   try { chatApi.setScene('sec' as unknown as Parameters<typeof chatApi.setScene>[0]); } catch { /* 场景缺失不阻塞控制台 */ }
   // AI 模式会话：同页切换回来消息还在（secConvId 仍在内存）
   if (secConvId.value) void loadSecMessages();
+  // 高危动作待批准队列：AI 任务运行中也会出现新票，轻量轮询保证面板及时可见
+  approvalTimer = setInterval(() => { void loadApprovals(); }, 5000);
 });
-onUnmounted(() => { secAbort?.abort(); });
+onUnmounted(() => {
+  secAbort?.abort();
+  if (approvalTimer) { clearInterval(approvalTimer); approvalTimer = null; }
+});
 </script>
 
 <style scoped>
@@ -2518,6 +2679,7 @@ onUnmounted(() => { secAbort?.abort(); });
 .sec-ai-tool-btn { padding: 4px 10px; }
 .sec-ai-tool-btn-active { border-color: var(--sc-cyan); color: var(--sc-cyan); }
 .sec-ai-model-select { width: 190px; }
+.sec-ai-approval-select { width: 186px; }
 .sec-ai-model-select :deep(.el-select__wrapper) { min-height: 26px; }
 .sec-ai-perm-btn { padding: 2px 6px; }
 .sec-ai-scope-hint { font-family: var(--sc-mono); font-size: 10.5px; color: var(--sc-fg-3); }

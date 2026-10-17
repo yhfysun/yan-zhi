@@ -51,6 +51,12 @@ import {
   addExperience, approvedEntries, decideExperience, experienceCounts, oneLine, sanitizeText,
   type Decision, type ExperienceEntry,
 } from './sec-lab-tools/expstore.js';
+// —— 逐条审批门（ExecutionGate，2026-10-17）——
+import {
+  decideApproval, pendingApprovalMessage, pruneApprovals, rejectedApprovalMessage,
+  requiresExecutionApproval, resolveApprovalGate,
+  type ExecutionApproval,
+} from './sec-lab-tools/approvals.js';
 
 export const SEC_LAB_ID = 'sec-lab';
 
@@ -214,6 +220,7 @@ export const secLabManifest: PluginManifest = {
     type: 'object',
     properties: {
       engagementMode: { type: 'boolean', description: '交战模式：开启后允许侵入性动作（爆破/注入验证），默认关闭', default: false },
+      approvalMode: { type: 'string', enum: ['ask', 'auto_review', 'full_access'], description: '高危动作逐条审批：ask=逐条人工批准（默认）；auto_review=只读外部工具自动复核、侵入仍批准；full_access=不逐条批准（仍受授权范围/风险级/黑名单/HUMAN_ONLY 约束）', default: 'ask' },
       maxConcurrency: { type: 'number', description: '扫描并发上限', default: 200 },
       scanTimeoutMs: { type: 'number', description: '单次扫描超时（ms）', default: 120000 },
       maxPortsPerScan: { type: 'number', description: '单次扫描端口数上限', default: 65535 },
@@ -234,6 +241,8 @@ const K_EXERCISES = 'exercises';
 const K_PLAYBOOKS = 'playbooks';
 // P5：安全经验库（自学习）。只有 approved 会被 services/sec-experience-gate.ts 注入提示词。
 const K_EXPERIENCE = 'experience';
+// ExecutionGate：高危动作逐条审批票（一次性、内容哈希、10 分钟过期）
+const K_APPROVALS = 'approvals';
 const AUDIT_MAX = 500;
 
 let store: PluginStorage | null = null;
@@ -270,6 +279,10 @@ const loadExperience = async (): Promise<ExperienceEntry[]> =>
   (await loadList<ExperienceEntry>(K_EXPERIENCE)).filter(
     (e) => !!e && typeof e === 'object' && typeof e.id === 'string' && typeof e.status === 'string',
   );
+const loadApprovals = () => loadList<ExecutionApproval>(K_APPROVALS);
+async function saveApprovals(list: ExecutionApproval[]): Promise<void> {
+  if (store) await store.set(K_APPROVALS, list);
+}
 /** 用户剧本上限：够用又不至于把面板撑爆；超出直接拒绝并说明，不静默丢弃 */
 const USER_PLAYBOOK_MAX = 50;
 const USER_PLAYBOOK_STEPS_MAX = 20;
@@ -442,6 +455,10 @@ async function withGuard<T extends { target?: string }>(
 ): Promise<McpCallResult> {
   const cfg = await loadConfig();
   const scopes = await loadScopes();
+  // ★ 人工身份**只认 Symbol 标记**（见 sec-lab-guard.isTrustedHumanCall）：
+  //   工具参数是模型可写的 JSON，字符串字段（曾经的 __sec_runner）可以被伪造；
+  //   Symbol 键只能由服务端 `/run` / 控制台审批路由在进程内写入。
+  const requester: 'agent' | 'human' = isTrustedHumanCall(args) ? 'human' : 'agent';
   const g = guard({
     tool,
     target: args.target ? String(args.target) : (args.value ? String(args.value) : undefined),
@@ -451,22 +468,46 @@ async function withGuard<T extends { target?: string }>(
     scopes,
     config: cfg,
     confirmed: args.confirmed === true,
-    // ★ 人工身份**只认 Symbol 标记**（见 sec-lab-guard.isTrustedHumanCall）：
-    //   工具参数是模型可写的 JSON，字符串字段（曾经的 __sec_runner）可以被伪造；
-    //   Symbol 键只能由服务端 `/run` / 控制台审批路由在进程内写入。
-    //   没有任何“调用方自己声明 human”的入口。
-    requester: isTrustedHumanCall(args) ? 'human' : 'agent',
+    requester,
   });
   if (!g.ok) {
     await pushAudit({ at: Date.now(), tool, target: args.target ? String(args.target) : undefined, ok: false, message: g.reason });
     return errResult(g.reason);
   }
+
+  // ── ExecutionGate：高危动作逐条人工审批（2026-10-17）──────────────────────
+  // ★ 只拦 **AI 发起** 的高危动作；人工在控制台点击（requester=human）本身就是批准。
+  // ★ fail-closed：没有已批准票就是 pending，永远不会自动放行；票一次性、绑定内容哈希、10 分钟过期。
+  let approvalNote = '';
+  if (requester === 'agent' && requiresExecutionApproval(tool, args)) {
+    const gate = resolveApprovalGate(await loadApprovals(), tool, args, cfg.approvalMode);
+    await saveApprovals(gate.list);
+    if (gate.result.kind === 'pending') {
+      const a = gate.result.approval;
+      await pushAudit({ at: Date.now(), tool, target: a.target, ok: false, message: `高危动作待人工逐条批准（${a.id}）` });
+      return { content: [{ type: 'text', text: pendingApprovalMessage(a) }], isError: false };
+    }
+    if (gate.result.kind === 'rejected') {
+      const a = gate.result.approval;
+      await pushAudit({ at: Date.now(), tool, target: a.target, ok: false, message: `高危动作被人工拒绝（${a.id}）：${a.rejectReason || '未说明'}` });
+      return { content: [{ type: 'text', text: rejectedApprovalMessage(a) }], isError: false };
+    }
+    if (gate.result.kind === 'auto') {
+      approvalNote = gate.result.via === 'auto_review'
+        ? '逐条审批：自动复核放行（只读外部工具）'
+        : '逐条审批：全放行档（full_access）';
+    } else if (gate.result.kind === 'approved') {
+      approvalNote = '逐条审批：人工批准票已消费（一次性）';
+    }
+  }
+
   try {
     const out = await run(cfg);
     await pushFindings(out.target, tool, out.findings);
     await pushAudit({
       at: Date.now(), tool, target: out.target, risk: out.risk, ok: true,
-      message: out.summary, argsSummary: JSON.stringify(args).slice(0, 300),
+      message: approvalNote ? `${out.summary}\n（${approvalNote}）` : out.summary,
+      argsSummary: JSON.stringify(args).slice(0, 300),
     });
     return okResult(out);
   } catch (e) {
@@ -1901,6 +1942,43 @@ function registerRoutes(ctx: PluginContext) {
       json(res, { ok: true, message: text });
     });
 
+    // ── ExecutionGate：高危动作逐条审批（2026-10-17）────────────────────────
+    // ★ 审批入口只在控制台 UI / 本路由；模型没有可触达的 HTTP 工具（见执行面挂载校验），
+    //   因此模型无法给自己批票。票绑定内容哈希、一次性、10 分钟过期。
+    r.get('/approvals', async (_req: unknown, res: unknown) => {
+      const list = pruneApprovals(await loadApprovals());
+      await saveApprovals(list); // 持久化 expired 状态，界面/审计口径一致
+      const pending = list.filter((a) => a.status === 'pending').sort((a, b) => b.requestedAt - a.requestedAt);
+      const decided = list
+        .filter((a) => a.status !== 'pending')
+        .sort((a, b) => (b.decidedAt ?? b.requestedAt) - (a.decidedAt ?? a.requestedAt))
+        .slice(0, 50);
+      json(res, { data: { pending, decided } });
+    });
+
+    r.post('/approvals/decide', async (req: unknown, res: unknown) => {
+      const b = bodyOf(req);
+      const decision = String(b.decision || '').trim();
+      if (decision !== 'approve' && decision !== 'reject') {
+        return fail(res, 400, 'decision 必须是 approve / reject');
+      }
+      const list = pruneApprovals(await loadApprovals());
+      const dec = decideApproval(
+        list,
+        String(b.id || ''),
+        decision,
+        String(b.decidedBy || 'operator'),
+        b.reason ? String(b.reason) : undefined,
+      );
+      if (!dec.ok) return fail(res, 400, dec.reason);
+      await saveApprovals(dec.list);
+      await pushAudit({
+        at: Date.now(), tool: 'execution_approval', target: dec.entry.target, ok: true,
+        message: `${decision === 'approve' ? '批准' : '拒绝'}高危动作 ${dec.entry.tool}（${dec.entry.argsHash}）`,
+      });
+      json(res, { ok: true, data: dec.entry });
+    });
+
     // 主机环境探测（Docker / Android）
     r.get('/hostenv', async (_req: unknown, res: unknown) => {
       json(res, { data: await probeHostEnv() });
@@ -1918,6 +1996,11 @@ function registerRoutes(ctx: PluginContext) {
 
     r.post('/config', async (req: unknown, res: unknown) => {
       const patch = bodyOf(req) as Partial<SecConfig>;
+      // 审批档位只接受三个值：未知值按 ask 处理虽然安全，但会让界面显示与生效口径不一致
+      if (patch.approvalMode !== undefined
+        && !['ask', 'auto_review', 'full_access'].includes(String(patch.approvalMode))) {
+        return fail(res, 400, 'approvalMode 必须是 ask / auto_review / full_access');
+      }
       const next = { ...(await loadConfig()), ...patch };
       if (store) await store.set(K_CONFIG, next);
       json(res, { data: next });

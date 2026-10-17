@@ -155,6 +155,12 @@ export interface ScopeEntry {
 export interface SecConfig {
   /** 交战模式：开启后才允许 intrusive 级动作 */
   engagementMode: boolean;
+  /**
+   * 高危动作逐条审批档位（2026-10-17 ExecutionGate）：
+   * ask=逐条人工批准；auto_review=只读外部工具自动复核、侵入仍批准；full_access=不逐条批准。
+   * ★ 与 engagementMode 合并生效：前者是风险闸门，后者是人手闸门。
+   */
+  approvalMode: 'ask' | 'auto_review' | 'full_access';
   maxConcurrency: number;
   scanTimeoutMs: number;
   maxPortsPerScan: number;
@@ -163,6 +169,7 @@ export interface SecConfig {
 
 export const DEFAULT_SEC_CONFIG: SecConfig = {
   engagementMode: false,
+  approvalMode: 'ask',
   maxConcurrency: 200,
   scanTimeoutMs: 120000,
   maxPortsPerScan: 65535,
