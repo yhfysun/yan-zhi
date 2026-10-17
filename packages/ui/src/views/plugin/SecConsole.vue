@@ -1075,7 +1075,7 @@ async function runPlaybookCommand(parsed: ParsedCommand) {
     ElMessage.success('已删除');
     return;
   }
-  if (action === 'save') {
+  if (action === 'save' || action === 'new') {
     const name = flag('name');
     // ★ 步骤用 `;` 分隔 —— 因为命令行本身也用 `;` 串联，所以 `--steps=` 的值**必须加引号**
     //   （解析器尊重引号，引号内的 `;` 是内容；usage 里已经写成带引号的样子）。
