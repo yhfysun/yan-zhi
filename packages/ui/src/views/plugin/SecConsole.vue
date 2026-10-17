@@ -687,15 +687,31 @@
               v-model="secChatInput"
               type="textarea"
               :rows="2"
-              :disabled="secChatStreaming"
-              placeholder="输入安全任务，Ctrl+Enter 发送"
+              :disabled="secChatStreaming || secCmdRunning"
+              placeholder="输入安全任务，Ctrl+Enter 发送；/命令 或 @剧本 会直接执行"
               @keydown.ctrl.enter="sendSecChat"
             />
             <!-- 输入框工具条（对齐运维模式 P0）：左=动作语义，右=模型 / 执行权限 / 发送 -->
             <div class="sec-ai-toolbar">
               <div class="sec-ai-toolbar-group">
-                <el-button size="small" class="sec-ai-tool-btn" disabled title="P1 开放：把输入直接作为 /安全命令执行，不经过模型">执行</el-button>
-                <el-button size="small" class="sec-ai-tool-btn sec-ai-tool-btn-active" plain>Agent</el-button>
+                <el-button
+                  size="small"
+                  class="sec-ai-tool-btn"
+                  :class="{ 'sec-ai-tool-btn-active': secAiAction === 'exec' }"
+                  :plain="secAiAction === 'exec'"
+                  :disabled="secChatStreaming || secCmdRunning"
+                  title="把 /安全命令 或 @剧本 直接交给命令总线（不经过模型，仍过护栏与审计）"
+                  @click="secAiAction = 'exec'"
+                >执行</el-button>
+                <el-button
+                  size="small"
+                  class="sec-ai-tool-btn"
+                  :class="{ 'sec-ai-tool-btn-active': secAiAction === 'agent' }"
+                  :plain="secAiAction === 'agent'"
+                  :disabled="secChatStreaming || secCmdRunning"
+                  title="交给安全助手理解与编排"
+                  @click="secAiAction = 'agent'"
+                >Agent</el-button>
               </div>
               <span class="sec-spacer" />
               <el-select
@@ -703,7 +719,7 @@
                 size="small"
                 class="sec-ai-model-select"
                 placeholder="默认模型"
-                :disabled="secChatStreaming"
+                :disabled="secChatStreaming || secCmdRunning"
                 @change="saveSecModel"
                 @visible-change="onSecModelDropdown"
               >
@@ -732,9 +748,9 @@
                 </div>
               </el-popover>
               <span class="sec-ai-scope-hint">{{ scopes.length }} 个授权目标</span>
-              <span v-if="secChatStreaming" class="sec-ai-hint">执行中…</span>
+              <span v-if="secChatStreaming || secCmdRunning" class="sec-ai-hint">执行中…</span>
               <el-button v-if="secChatStreaming" size="small" type="warning" @click="abortSecChat">停止</el-button>
-              <el-button size="small" :disabled="secChatStreaming || !secChatInput.trim()" type="primary" @click="sendSecChat">发送</el-button>
+              <el-button size="small" :disabled="secChatStreaming || secCmdRunning || !secChatInput.trim()" type="primary" @click="sendSecChat">{{ secAiAction === 'exec' ? '执行' : '发送' }}</el-button>
             </div>
           </div>
         </div><!-- /.sec-ai AI 模式 -->
@@ -846,6 +862,10 @@ interface SecMsg { id: string; role: string; content: string; subAgentName?: str
 const secMessages = ref<SecMsg[]>([]);
 const secChatInput = ref('');
 const secChatStreaming = ref(false);
+/** 输入框动作语义：agent=交给安全助手；exec=把 /命令 或 @剧本 直接交给安全命令总线（不过模型） */
+const secAiAction = ref<'agent' | 'exec'>('agent');
+/** 命令直执行中的本地忙标记（命令是有限动作，不提供"停止"按钮） */
+const secCmdRunning = ref(false);
 const secConvId = ref((() => { try { return localStorage.getItem('sec-ai-conv') || ''; } catch { return ''; } })());
 const secChatListEl = ref<HTMLElement | null>(null);
 let secAbort: AbortController | null = null;
@@ -967,9 +987,55 @@ function scopeHint(): string {
   return `\n\n（当前授权范围（仅可对这些目标操作）：${list}）`;
 }
 
+/** 在 AI 对话里追加一条本地消息（命令直执行的结果，不落库） */
+function pushSecLocal(role: 'user' | 'assistant', content: string) {
+  secMessages.value.push({
+    id: `local-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    role, content, createdAt: Date.now(),
+  });
+  scrollSecBottom();
+}
+
+/**
+ * P1 执行指令：把 `/命令` 或 `@剧本` 直接交给安全命令总线（与控制台命令行同一条链）。
+ * ★ 不经过 LLM，但仍然：解析 → 危险命令确认 → POST /plugin/sec-lab/run → withGuard → 审计。
+ *   命令层没有新的绕过路径；AI 输入框只是多了一个"人直接敲命令"的入口。
+ */
+async function runSecCommandFromAi(line: string) {
+  if (!line.startsWith('/') && !line.startsWith('@')) {
+    ElMessage.warning('执行模式只接受 /安全命令 或 @剧本；自然语言请切回 Agent');
+    return;
+  }
+  secChatInput.value = '';
+  pushSecLocal('user', line);
+  secCmdRunning.value = true;
+  const prevCmdInput = cmdInput.value;
+  cmdInput.value = line;
+  result.value = ''; // 防止命令无文本输出时把上一次的输出误当成这次结果
+  try {
+    await submitCommand();
+    const out = String(result.value || '').trim();
+    pushSecLocal('assistant', out
+      ? `命令已直接执行（未经过模型）：\n\n\`\`\`\n${out}\n\`\`\``
+      : '命令已提交执行；该命令没有文本输出，详情见「终端」页运行卡与审计记录。');
+  } catch (e) {
+    pushSecLocal('assistant', `命令执行失败：${(e as Error).message || e}`);
+  } finally {
+    secCmdRunning.value = false;
+    // submitCommand 清空了自己的输入；恢复用户原本的命令行草稿，避免串到命令模式
+    if (!cmdInput.value) cmdInput.value = prevCmdInput;
+  }
+}
+
 async function sendSecChat() {
   const content = secChatInput.value.trim();
-  if (!content || secChatStreaming.value) return;
+  if (!content || secChatStreaming.value || secCmdRunning.value) return;
+  // P1 执行指令（对齐运维方案）：执行模式，或以 / 、@ 开头 → 直接走安全命令总线。
+  // ★ 不过模型 ≠ 不过护栏：执行末端仍是 POST /plugin/sec-lab/run（人工入口）→ withGuard → 审计。
+  if (secAiAction.value === 'exec' || content.startsWith('/') || content.startsWith('@')) {
+    await runSecCommandFromAi(content);
+    return;
+  }
   const resolved = await resolveSecModel();
   if (!resolved) return;
   const { platform, model } = resolved;

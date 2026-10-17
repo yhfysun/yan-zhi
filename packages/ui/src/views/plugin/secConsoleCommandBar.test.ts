@@ -65,9 +65,13 @@ describe('★ AI 模式输入框工具条（对齐运维模式 P0-1）', () => {
     expect(SRC).toContain('engagementMode');
   });
 
-  it('「执行」先占位禁用（P1），Agent 是当前默认语义', () => {
-    expect(SRC).toContain('sec-ai-tool-btn');
-    expect(SRC).toContain('P1 开放');
+  it('「执行」已接命令总线：/命令 与 @剧本 不经过模型', () => {
+    expect(SRC).toContain('secAiAction');
+    expect(SRC).toContain('runSecCommandFromAi');
+    expect(SRC, '/ 或 @ 必须走命令直执行分支')
+      .toMatch(/content\.startsWith\('\/'\)\s*\|\|\s*content\.startsWith\('@'\)/);
+    expect(SRC, '直执行仍复用 submitCommand（同一套 guard/审计）').toContain('await submitCommand()');
+    expect(SRC, '执行按钮不能再是永久禁用占位').not.toContain('disabled title="P1 开放');
   });
 
   it('工具条显示当前授权目标数量（提醒只对已授权目标动手）', () => {
