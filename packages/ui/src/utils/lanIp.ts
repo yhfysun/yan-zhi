@@ -109,12 +109,19 @@ export function pickDefaultLanIp(list: readonly LanIp[], stored: string): string
  * 解析 `/api/network/ip` 的响应。
  *
  * ★ 兼容三种形态（按真实数据流排序）：
- *   ① `{ data: [...], port }` —— **apiFetch 解包后的实际形态**（最常见，曾因多解一层而恒空）；
+ *   ① `{ data: [...], port, webServed }` —— **apiFetch 解包后的实际形态**（最常见，
+ *      曾因多解一层而恒空）；
  *   ② `[...]` —— 已取出的裸数组；
- *   ③ `{ data: { data: [...], port } }` —— 后端原始 JSON（直连后端/测试）。
+ *   ③ `{ data: { data: [...], port, webServed } }` —— 后端原始 JSON（直连后端/测试）。
  * 解析不出来时返回空清单，由调用方走"未检测到"提示，不抛异常。
+ *
+ * `webServed`（2026-10-17）：后端是否托管了前端静态资源。dev 模式按设计**不托管**
+ *   （见 server/index.ts resolveWebDist 的 ③ 分支），此时 `http://<IP>:<PORT>/` 是
+ *   `Cannot GET /`，而 `/api/*` 全部正常 —— 前端必须能区分这两者，
+ *   否则会给出一个点开来必然 404 的「打开浏览器」按钮且不给任何解释。
+ *   解析不到时返回 `undefined`（= 未知，调用方据此不展示状态、而不是误判为"不可用"）。
  */
-export function parseNetworkIpResponse(r: unknown): { ips: LanIp[]; port?: number } {
+export function parseNetworkIpResponse(r: unknown): { ips: LanIp[]; port?: number; webServed?: boolean } {
   const body: any = r && typeof r === 'object' ? r : {};
   const raw: unknown[] = Array.isArray(body.data)
     ? body.data
@@ -128,5 +135,10 @@ export function parseNetworkIpResponse(r: unknown): { ips: LanIp[]; port?: numbe
     .map((x: any) => ({ name: String(x.name || ''), address: x.address, family: x.family }));
   const portRaw = body?.port ?? body?.data?.port;
   const port = Number(portRaw);
-  return { ips, port: Number.isFinite(port) && port > 0 ? port : undefined };
+  const webRaw = body?.webServed ?? body?.data?.webServed;
+  return {
+    ips,
+    port: Number.isFinite(port) && port > 0 ? port : undefined,
+    webServed: typeof webRaw === 'boolean' ? webRaw : undefined,
+  };
 }

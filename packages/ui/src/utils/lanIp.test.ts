@@ -11,15 +11,35 @@
  * ★ 锚点断言对**剥注释后的 `<script setup>` 块**做 —— 修复说明注释里就写着错写法
  *   （`data.data`），直接对全文做负向断言会被自己的注释绊到假红。
  *
+ * ★★★ 剥注释正则的坑（2026-10-17 实测，害我白查一轮）：块注释正则是非贪婪匹配，
+ *   会把**注释文案里意外出现的块注释起始序列**当成注释开头，一路吃到后面最近的
+ *   结束序列，中间的真实代码被整段吞掉 ⇒ 锚点静默失配（看着像"我漏改断言"）。
+ *   ⇒ 源码注释里**不要写出块注释的起止序列**（形如「斜杠星」和「星号斜杠」，
+ *     `/api/` 后紧跟星号、`/v1/` 后紧跟星号 都算），改写成"API 类路径"即可。
+ *   ⚠️ 本条头注自己也因此错过一次：第一次写时把序列原样写进了注释，直接把
+ *      本文件的注释结构打断、文件级转换失败（1341 → 31 个用例全没跑）。
+ *      这不是 strip 函数的 bug，是注释文案与正则的相互踩踏。
+ *
  * ===== 变异测试记录 =====
  *  mF Settings.vue：webServiceUrl 绕过 preferredLanIp 改用 window.location.hostname → 变红 ✓
  *      （计数断言抓到：3 处变 2 处）
  *  mG Settings.vue：webServiceUrl 的返回值多加 `/api` 后缀（退化成又一个 API 地址）  → 变红 ✓
  *      （正则断言抓到，与 mF 走的是不同断言 —— 两层守卫各自独立有效）
+ *  mH Settings.vue：`v-if="webServed === false"` 弱化成 `v-if="webServed"`（真值判断）  → 变红 ✓
+ *      （真值判断会把 null=未知 也渲染成"不可用"，加载中闪警告 = 误报）
+ *  mI index.ts：/api/network/ip 不返回 webServed                                  → 变红 ✓
+ *  mJ Settings.vue：openLan 的警告块整段挪到打开动作之后                             → 变红 ✓
+ *      ★ 首版断言只查 `openExternal` 的首次出现 ⇒ 该变异**照样绿**（形同虚设）。
+ *        修严：顺序判据必须锚在「const w = window as any;」这个打开动作起点上。
+ *        ⇒ 教训：顺序类断言的锚点要选"动作起点"，不能选"动作里某个标识符的首次出现"。
  *  ⚠️ 实操教训：mF/mG 之间**忘了还原**，G 叠在 F 上跑，报错信息是 F 的 ⇒ 变异必须
  *     从干净基线逐个跑，否则"变红"可能来自上一个变异，自欺欺人。
  *  ⚠️ 实操教训 2：还原别用 `git checkout --`（会连本轮未提交改动一起丢，本次真丢过一次），
  *     用 `cp 备份文件` 还原。
+ *  ⚠️ 实操教训 3：源码注释里别写块注释起止序列（形如「斜杠星」）—— 本文件的剥注释正则
+ *     会把它当注释起始、一路吞掉后面真实代码 ⇒ 锚点静默失配。本次先在 Settings.vue 的
+ *     注释里写了 `/api/` 紧跟星号，害我白查一轮；改完又在本头注里原样写了一次，
+ *     直接把本文件注释结构打断、文件级转换失败（31 个用例全没跑）。
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -93,6 +113,28 @@ describe('parseNetworkIpResponse（★ 恒空 bug 的根因）', () => {
     expect(parseNetworkIpResponse({ data: REAL, port: 0 }).port).toBeUndefined();
     expect(parseNetworkIpResponse({ data: REAL, port: 'x' }).port).toBeUndefined();
     expect(parseNetworkIpResponse({ data: REAL }).port).toBeUndefined();
+  });
+});
+
+describe('parseNetworkIpResponse 的 webServed（后端是否托管前端）', () => {
+  it('★ 三种形态都能透传 webServed', () => {
+    expect(parseNetworkIpResponse({ data: REAL, port: 3001, webServed: true }).webServed).toBe(true);
+    expect(parseNetworkIpResponse({ data: REAL, port: 3001, webServed: false }).webServed).toBe(false);
+    expect(parseNetworkIpResponse({ data: { data: REAL, port: 3001, webServed: false } }).webServed).toBe(false);
+  });
+
+  it('★ 拿不到时返回 undefined（= 未知），绝不默认成 true 或 false', () => {
+    // 默认成 true ⇒ 后端其实没托管却告诉用户"可以访问" ⇒ 又是 Cannot GET /
+    // 默认成 false ⇒ 加载中/老后端都被渲染成"不可用" ⇒ 误报
+    expect(parseNetworkIpResponse({ data: REAL, port: 3001 }).webServed).toBeUndefined();
+    expect(parseNetworkIpResponse(null).webServed).toBeUndefined();
+    expect(parseNetworkIpResponse({ data: REAL, webServed: 'yes' }).webServed).toBeUndefined();
+  });
+
+  it('★ 后端未托管（dev 模式）时 ips 仍要正常解析 —— Web 404 不影响 API 可用', () => {
+    const r = parseNetworkIpResponse({ data: REAL, port: 3001, webServed: false });
+    expect(r.ips).toHaveLength(3);
+    expect(r.webServed).toBe(false);
   });
 });
 
@@ -181,7 +223,7 @@ describe('pickDefaultLanIp（默认 IP 选定）', () => {
 
 describe('Settings.vue 接线契约（源码锚点）', () => {
   it('★ loadLanIps 走 parseNetworkIpResponse，不再手写 data.data 多层解包', () => {
-    expect(SETTINGS_CODE).toMatch(/const \{ ips, port \} = parseNetworkIpResponse\(r\)/);
+    expect(SETTINGS_CODE).toMatch(/const \{ ips, port, webServed: served \} = parseNetworkIpResponse\(r\)/);
     // 老 bug 的判据：`Array.isArray(data.data)` 这种多解一层的写法必须绝迹（剥注释后判代码）
     expect(SETTINGS_CODE).not.toMatch(/Array\.isArray\(data\.data\)/);
     expect(SETTINGS_CODE).not.toMatch(/data\.data\.map/);
@@ -230,5 +272,49 @@ describe('Settings.vue 接线契约（源码锚点）', () => {
   it('★ SettingsDialog 左导航有独立「快捷键」与「本机 IP」菜单项', () => {
     expect(DIALOG).toMatch(/\{ key: 'shortcuts', label: '快捷键', icon: Key, pane: 'shortcuts' \}/);
     expect(DIALOG).toMatch(/\{ key: 'localip', label: '本机 IP', icon: Connection, pane: 'localip' \}/);
+  });
+});
+
+describe('★ webServed：后端必须暴露"是否托管前端"，前端必须据此提示（2026-10-17）', () => {
+  it('后端 /api/network/ip 响应带 webServed 字段', () => {
+    const SERVER = readFileSync(resolve(ROOT, 'apps/server/src/index.ts'), 'utf8');
+    expect(SERVER, '★ /api/network/ip 未返回 webServed').toMatch(
+      /res\.json\(\{ data: out, port: PORT_NUM, webServed: !!webDist \}\)/,
+    );
+    // 反向：绝不能再退回"向上爬目录猜 dist"（2026-10-11 陈旧快照事故的根源）
+    expect(SERVER, '★ resolveWebDist 不得出现爬目录兜底').not.toMatch(/\.\.\//);
+  });
+
+  it('前端 loadLanIps 把 webServed 存进 ref（三态：true/false/null=未知）', () => {
+    expect(SETTINGS_CODE).toMatch(/const webServed = ref<boolean \| null>\(null\)/);
+    expect(SETTINGS_CODE).toMatch(/const \{ ips, port, webServed: served \} = parseNetworkIpResponse\(r\)/);
+    // 未知（null）不得被当成 false —— 否则加载中会误报"不可用"
+    expect(SETTINGS_CODE).toMatch(/webServed\.value = served \?\? null/);
+  });
+
+  it('★ 只在确切不可用（=== false）时才提示，不用 v-if="webServed" 这类真值判断', () => {
+    // 真值判断会把 null（未知）也渲染成"不可用" ⇒ 加载中闪一下警告，误报
+    expect(SETTINGS).toMatch(/v-if="webServed === false"/);
+    expect(SETTINGS).not.toMatch(/v-if="webServed"/);
+    expect(SETTINGS).not.toMatch(/v-if="!webServed"/);
+  });
+
+  it('★ openLan 在未托管时必须先警告原因，且不拦路（用户仍可强行打开）', () => {
+    const fnIdx = SETTINGS_CODE.indexOf('function openLan(ip: string)');
+    expect(fnIdx, '未找到 openLan 函数').toBeGreaterThan(0);
+    const warnIdx = SETTINGS_CODE.indexOf('webServed.value === false', fnIdx);
+    const openIdx = SETTINGS_CODE.indexOf('const w = window as any;', fnIdx);
+    expect(warnIdx, '★ openLan 内必须有 webServed 警告').toBeGreaterThan(fnIdx);
+    expect(openIdx, '未找到 const w = window as any').toBeGreaterThan(fnIdx);
+    // ★ 顺序判据必须锚在「const w = window as any;」（打开动作的起点）上，
+    //   不能只查 openExternal 的首次出现 —— 那会漏掉"把警告块整段挪到打开动作之后"
+    //   的改法（变异 J 实测：只查 openExternal 时该变异照样绿，断言形同虚设）。
+    expect(warnIdx, '★ 警告必须排在打开动作（const w）之前').toBeLessThan(openIdx);
+    // 实际发起打开的调用也必须晚于警告
+    expect(SETTINGS_CODE.indexOf('.openExternal(url)', fnIdx), '★ 实际打开调用必须排在警告之后')
+      .toBeGreaterThan(warnIdx);
+    // 警告块内部不得 return —— 不拦路，用户仍可强行打开亲眼确认
+    const blk = SETTINGS_CODE.slice(warnIdx, openIdx);
+    expect(blk, '★ 警告块内不得 return（不应拦路）').not.toMatch(/\breturn\b/);
   });
 });

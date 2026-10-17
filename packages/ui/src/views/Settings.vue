@@ -339,6 +339,7 @@
             <div class="lan-ip-preview-row">
               <span class="lan-ip-preview-label">Web 服务地址</span>
               <code>{{ webServiceUrl }}</code>
+              <el-tag v-if="webServed === false" size="small" type="danger">当前模式不可用</el-tag>
             </div>
             <div class="lan-ip-preview-row">
               <span class="lan-ip-preview-label">商城服务端连接地址</span>
@@ -380,6 +381,13 @@
       <el-tab-pane v-if="!embedded || isPaneMode" label="局域网访问" name="lan" lazy>
         <div class="lan-section">
           <p class="lan-tip">局域网内其他设备（手机 / 电脑）可用浏览器访问本节点的 Web 界面，数据与本机共享同一后端。默认 IP 在「本机 IP」分区设定。</p>
+          <!-- dev 模式不托管前端（server/index.ts resolveWebDist 的 ③ 分支）：此时打开
+               根路径会得到 Cannot GET /，而 API 类路径全部正常。
+               ★ 只在这一种确切状态才提示（webServed===false），未知/可用都不显示，
+                 避免把"加载中"渲染成"不可用"造成误报。 -->
+          <p v-if="webServed === false" class="lan-web-warn">
+            当前运行模式未托管 Web 前端：上面的「打开浏览器」会显示 Cannot GET /（API 类地址不受影响，商城服务端 / 短信验证码照常可用）。局域网访问 Web 界面请使用打包版。
+          </p>
           <div v-if="lanIps.length === 0 && !lanLoading" class="lan-empty">未检测到局域网 IP（可能未连接网络）</div>
           <div v-else class="lan-list">
             <div v-for="ip in lanIps" :key="ip.address" class="lan-item">
@@ -1213,6 +1221,16 @@ const defaultLanIp = computed({
 /** 当前生效的默认 IP 是否来自用户显式选择（用于"恢复自动"按钮的可用态） */
 const hasManualLanIp = computed(() => !!settingsStore.settings.defaultLanIp);
 
+/**
+ * 后端是否托管前端静态资源（来自 /api/network/ip 的 webServed）。
+ *   true  → `http://<IP>:<PORT>/` 能打开完整 Web 界面（打包版默认如此）；
+ *   false → dev 模式按设计不托管，打开只会得到 Express 的 `Cannot GET /`
+ *           （`/api/*` 不受影响，商城/短信类地址照常可用）；
+ *   null  → 尚未问到（加载中 / 请求失败），此时**不展示任何状态**，
+ *           避免把"未知"渲染成"不可用"造成误报。
+ */
+const webServed = ref<boolean | null>(null);
+
 async function loadLanIps() {
   lanLoading.value = true;
   try {
@@ -1221,8 +1239,11 @@ async function loadLanIps() {
     //   `{ data: X, ...meta }`（单层）—— 此处原先又按 `data.data` 多解一层，
     //   `Array.isArray(undefined)` 恒 false ⇒ lanIps 永远是 [] ⇒ 所有"连接地址"
     //   静默落到 localhost。解析口径收口到 utils/lanIp.ts（兼容三种形态，别再手写）。
-    const { ips, port } = parseNetworkIpResponse(r);
+    const { ips, port, webServed: served } = parseNetworkIpResponse(r);
     if (port) lanPort.value = port;
+    // 后端是否托管前端静态资源：true=Web 界面可达；false=dev 模式按设计不托管，
+    // 打开根路径只会得到 Cannot GET /（API 类路径全部正常）；undefined=没问到（不表态）。
+    webServed.value = served ?? null;
     // 排序 = 默认 IP 贯通：用户选的置顶，其后物理网卡，最后虚拟网卡。
     // 所有取 lanIps[0] 的地方（connectUrl / openLanFirst / 局域网 tab 首行）自动跟随。
     lanIps.value = sortLanIps(ips, settingsStore.settings.defaultLanIp);
@@ -1239,6 +1260,18 @@ function copyLanUrl(ip: string) {
 
 function openLan(ip: string) {
   const url = `http://${ip}:${lanPort.value}`;
+  // ★ 后端未托管前端静态资源时（dev 模式按设计如此，见 server/index.ts resolveWebDist），
+  //   打开这个地址只会得到 Express 的 `Cannot GET /`（404）。此处**不拦路**（用户可能就是
+  //   想亲眼确认，或本地另有 dist 想手动开），但必须先说清原因，否则用户无从判断
+  //   —— 2026-10-17 用户实测踩过：点了「打开浏览器」看到 Cannot GET /，完全不知道
+  //   问题是"dev 不托管前端"而不是 IP 选错或网络不通。
+  if (webServed.value === false) {
+    ElMessage.warning({
+      message: '当前运行模式未托管 Web 前端，打开后会显示 Cannot GET /（API 类地址不受影响）。局域网访问 Web 界面请使用打包版。',
+      duration: 6000,
+      showClose: true,
+    });
+  }
   const w = window as any;
   // 桌面端优先用系统默认浏览器打开（Electron shell.openExternal），web 端回退新标签页
   if (w.electronAPI?.shell?.openExternal) {
@@ -1529,6 +1562,17 @@ onMounted(async () => {
 .lan-section { max-width: 600px; }
 .lan-tip { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .lan-empty { color: var(--color-text-secondary); font-size: 13px; padding: 16px 0; }
+/* dev 模式未托管前端时的说明条：琥珀色系（警示但不阻断），与 tab 内其他 tip 同节奏 */
+.lan-web-warn {
+  color: var(--el-color-warning, #E6A23C);
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--el-color-warning, #E6A23C) 10%, transparent);
+  border-left: 3px solid var(--el-color-warning, #E6A23C);
+  border-radius: 4px;
+}
 .lan-list { display: flex; flex-direction: column; gap: 12px; }
 .lan-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 10px; }
 .lan-url-box { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -1536,8 +1580,7 @@ onMounted(async () => {
 .lan-iface { font-size: 11px; color: var(--color-text-secondary); }
 .lan-actions { display: flex; gap: 8px; flex-shrink: 0; }
 /* 本机 IP 管理：radio 行 + 虚拟网卡弱化 + 生成地址预览 */
-.lan-ip-radio-group { display: flex; flex-direction: column; gap: 8px; width: 100%; }
-.lan-ip-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 10px; }
+.lan-ip-radio-group { display: flex; flex-direction: column; gap: 8px; width: 100%; }.lan-ip-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 10px; }
 /* 虚拟网卡行弱化：不是禁用它（有用户就是要把服务绑在 VPN 网卡上），只是视觉降权 */
 .lan-ip-row.virtual { opacity: 0.72; }
 .lan-ip-addr { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--color-text); }

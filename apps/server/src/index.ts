@@ -407,6 +407,17 @@ const HOST = process.env.YZ_HOST || process.env.HOST || '0.0.0.0';
 const PORT_NUM = PORT;
 
 // 本机局域网 IP 列表（供前端「局域网访问」按钮展示）
+// ★ `webServed`（2026-10-17）：后端**是否托管了前端静态资源**。
+//   为什么要暴露这个布尔值：dev 模式按设计不托管（见下方 resolveWebDist 的 ③ 分支，
+//   2026-10-11 为根治「陈旧快照冒充 dev 前端」而故意如此），此时
+//   根路径会返回 Express 的 `Cannot GET /`（404）—— 而 API 类路径全部正常。
+//   前端若不知情，会在「局域网访问」里给出一个点开来必然是 404 的
+//   「打开浏览器」按钮，用户完全无法判断原因。
+//   ⇒ 让前端能区分"IP 可达"与"Web 界面可达"，前者恒真、后者取决于运行模式。
+//   ⚠️ 这里引用了下方 463 行的 `webDist` 常量：路由**注册**时不读它（TDZ 安全），
+//     只有请求到达时才读，那时模块已加载完毕。
+//   ⚠️ 注释文案里别写块注释起止序列（形如「斜杠星」）—— 前端 lanIp.test.ts 的
+//     剥注释正则会把它当注释起始、一路吞掉后面的真实代码（2026-10-17 实测踩过）。
 app.get('/api/network/ip', (_req, res) => {
   const out: Array<{ name: string; address: string; family: string }> = [];
   const ifs = os.networkInterfaces();
@@ -415,7 +426,7 @@ app.get('/api/network/ip', (_req, res) => {
       if (it.family === 'IPv4' && !it.internal) out.push({ name, address: it.address, family: it.family });
     }
   }
-  res.json({ data: out, port: PORT_NUM });
+  res.json({ data: out, port: PORT_NUM, webServed: !!webDist });
 });
 
 // 前端静态资源托管（local web ui）：让局域网内浏览器访问 http://<IP>:<PORT> 直接用完整界面。
