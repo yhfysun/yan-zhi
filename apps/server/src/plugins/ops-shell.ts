@@ -2361,6 +2361,48 @@ export function terminalExecProblem(conn: { tag?: string }, command: string, con
 }
 
 /**
+ * 命令广播（7.14）目标校验：只允许 ssh/docker 连接，去重后 1..MAX 台。
+ * 纯函数导出供单测钉矩阵（路由只做 I/O）。
+ */
+export const MAX_BROADCAST_TARGETS = 20;
+export const BROADCAST_CONCURRENCY = 5;
+
+export function validateBroadcastTargets<T extends { id: string; name: string; type?: string; tag?: string }>(
+  all: T[],
+  ids: string[],
+): { targets?: T[]; error?: string } {
+  const unique = [...new Set(ids.map((x) => String(x || '').trim()).filter(Boolean))];
+  if (!unique.length) return { error: '请至少选择一个连接' };
+  if (unique.length > MAX_BROADCAST_TARGETS) return { error: `一次最多广播到 ${MAX_BROADCAST_TARGETS} 个连接` };
+  const targets: T[] = [];
+  for (const id of unique) {
+    const c = all.find((x) => x.id === id);
+    if (!c) return { error: `连接不存在（id=${id}）` };
+    if (c.type === 'database') return { error: `「${c.name}」是数据库连接，不支持广播命令` };
+    targets.push(c);
+  }
+  return { targets };
+}
+
+/**
+ * 广播命令护栏：危险命令黑名单**整批拒绝**；
+ * 只要包含生产连接就必须由人显式确认（confirmed=true）—— 多机同时执行风险高于单机，
+ * 这里刻意不沿用「静默执行命令」的免批（静默只针对单连接的单次操作）。
+ */
+export function broadcastProblem(
+  targets: Array<{ name: string; tag?: string }>,
+  command: string,
+  confirmed: boolean,
+): string | null {
+  if (!command.trim()) return '命令不能为空';
+  if (isDangerous(command)) return `命令命中危险黑名单，已拒绝广播：${command.slice(0, 120)}`;
+  if (!confirmed && targets.some((t) => isProductionTag(t.tag))) {
+    return '广播目标包含生产连接，需确认后重试（confirmed=true）';
+  }
+  return null;
+}
+
+/**
  * WebSocket 版交互式终端。帧约定（与市面 Web SSH 实现同构）：
  *   服务端 → 客户端：二进制帧 = PTY 原始输出；文本帧 = JSON 控制消息（ready / exit / error）
  *   客户端 → 服务端：二进制帧 = 按键（原样字节）；文本帧 = JSON 控制消息（resize / ping）
@@ -3020,6 +3062,50 @@ const opsShellModule: PluginModule = {
       const json = (res: unknown, body: unknown) => (res as { json: (d: unknown) => void }).json(body);
       const fail = (res: unknown, code: number, msg: string) =>
         (res as { status: (n: number) => { json: (d: unknown) => void } }).status(code).json({ error: msg });
+
+      // ===== 命令广播（7.14）：同一命令并发发到多个连接 =====
+      // 护栏：黑名单整批拒绝；任一生产连接需 confirmed=true；逐台审计（成功/失败都留痕）。
+      r.post('/broadcast', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const command = String(body.command || '').trim();
+        const ids = Array.isArray(body.connectionIds) ? body.connectionIds.map(String) : [];
+        const list = await loadConnections();
+        const checked = validateBroadcastTargets(list, ids);
+        if (checked.error || !checked.targets) { fail(res, 400, checked.error || '目标无效'); return; }
+        const targets = checked.targets;
+        const problem = broadcastProblem(targets, command, body.confirmed === true);
+        if (problem) {
+          const production = targets.filter((t) => isProductionTag(t.tag)).map((t) => t.name);
+          if (production.length && !isDangerous(command)) {
+            (res as { status: (n: number) => { json: (d: unknown) => void } }).status(409)
+              .json({ error: problem, data: { productionConnections: production } });
+          } else {
+            fail(res, 400, problem);
+          }
+          return;
+        }
+        const timeoutMs = Math.min(120000, Math.max(5000, Number(body.timeoutMs) || 30000));
+        const results: Array<Record<string, unknown>> = new Array(targets.length);
+        // 单台失败不影响其它机器（worker 内部吞错并记入结果）
+        await runWithConcurrency(targets, BROADCAST_CONCURRENCY, async (conn, i) => {
+          try {
+            const r = await execOnConnection(conn, command, timeoutMs);
+            results[i] = {
+              connectionId: conn.id, name: conn.name, ok: r.code === 0,
+              code: r.code, stdout: r.stdout, stderr: r.stderr,
+            };
+          } catch (e) {
+            results[i] = { connectionId: conn.id, name: conn.name, ok: false, error: (e as Error).message };
+          }
+          const ok = results[i]?.ok === true;
+          await audit('broadcast.exec', {
+            connection: conn.name,
+            detail: `${command.slice(0, 160)} → ${ok ? 'ok' : 'failed'}`,
+            ok,
+          });
+        });
+        json(res, { data: { command, results } });
+      });
 
       // ===== 发布项目（7b）：本地目录 + 部署目标 + 流水线 =====
       r.get('/release-projects', async (_req: unknown, res: unknown) => {

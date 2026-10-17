@@ -18,9 +18,14 @@
         </div>
         <div class="ops-tree-head">
           <span class="ops-tree-title">资源</span>
-          <button class="ops-tree-new" type="button" title="新增资源" @click.stop="openAddDialog">
-            <el-icon :size="12"><Plus /></el-icon>
-          </button>
+          <span class="ops-tree-actions">
+            <button class="ops-tree-new" type="button" title="命令广播（多机执行）" @click.stop="broadcastOpen = true">
+              <el-icon :size="12"><Promotion /></el-icon>
+            </button>
+            <button class="ops-tree-new" type="button" title="新增资源" @click.stop="openAddDialog">
+              <el-icon :size="12"><Plus /></el-icon>
+            </button>
+          </span>
         </div>
         <!-- 资源树：目录可嵌套（子目录在前、资源在后），支持拖拽调整归属 -->
         <div
@@ -551,6 +556,9 @@
 
     <!-- 主导方悬浮胶囊（任务 7.9 / 7.10）：AI 模式=对话居中（chat 视图），命令模式=终端等主视图 -->
     <LeadToggle :model-value="lead" mode="ops" @update:model-value="onLeadChange" />
+
+    <!-- 命令广播（7.14）：多台连接同一条命令，黑名单/生产确认/逐台结果 -->
+    <OpsBroadcastDialog v-model="broadcastOpen" :connections="connections" />
   </ConsoleShell>
 </template>
 
@@ -586,7 +594,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import {
   Folder, FolderOpened,
   ArrowDown, ArrowRight, ArrowUp, Close, Plus,
-  ChatDotRound, User, Setting,
+  ChatDotRound, User, Setting, Promotion,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Terminal } from '@xterm/xterm';
@@ -605,6 +613,7 @@ import OpsRecordingsPanel from '../../components/ops/OpsRecordingsPanel.vue';
 import OpsKnownHostsPanel from '../../components/ops/OpsKnownHostsPanel.vue';
 import OpsStepCards from '../../components/ops/OpsStepCards.vue';
 import ReleaseProjectPanel from '../../components/ops/ReleaseProjectPanel.vue';
+import OpsBroadcastDialog from '../../components/ops/OpsBroadcastDialog.vue';
 import CicdConsole from './CicdConsole.vue';
 import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
@@ -636,6 +645,8 @@ const { width: fileW } = fileR;
 
 // 资源列表的折叠与宽度已由 ConsoleShell 接管（每个模式一个 storageKey）
 const testingId = ref('');
+/** 命令广播弹窗（7.14）：多机同时执行 */
+const broadcastOpen = ref(false);
 
 // ===== 主导方双形态（任务 7.9 / 7.10）=====
 // ai（AI 模式）→ 激活窗口切到 chat 视图（对话即执行界面）；human（命令模式）→ 切回主视图（终端等）。
@@ -2362,6 +2373,7 @@ onUnmounted(() => {
   padding: 0 2px 6px; flex-shrink: 0;
 }
 .ops-tree-title { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+.ops-tree-actions { display: inline-flex; align-items: center; gap: 4px; }
 
 /* 新增资源：与任务段「新建任务」同规格（20px 圆钮，hover 主色浅底） */
 .ops-tree-new {
