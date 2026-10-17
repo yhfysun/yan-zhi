@@ -1363,8 +1363,12 @@ html[data-skin="on"] .url-bar {
    而 BrowserPanel 的 CSS 是路由懒加载 chunk，**总在**全局 skin.css 之后注入 → 永远赢。
    加一个 html 前缀把特异性提到 (0,2,1)，无论加载顺序如何都能稳定压住 scoped 规则。
    （只在皮肤开启时生效：未开皮肤不匹配，组件原样式照旧） */
+/* 2026-10-17 用户要求浏览器页也透出 3D 壁纸（「浏览器的皮肤3d效果没有啊」）：
+   壳体不再铺实底，壁纸（html 层）直接透出。文字可读性由 --skin-text 派生色保证
+   （与聊天页同一策略：消息列全程透明无玻璃，用户已验收）；浅色壁纸配深字、
+   深色壁纸配浅字，均由 applySurface 的 pickText 按壁纸亮度派生。 */
 html[data-skin="on"] .browser-shell {
-  background: var(--skin-surface, var(--el-bg-color, #fff));
+  background: transparent;
 }
 html[data-skin="on"] .browser-tabbar,
 html[data-skin="on"] .browser-toolbar,
@@ -1409,20 +1413,15 @@ html[data-skin="on"] .home-search-ico,
 html[data-skin="on"] .url-lock {
   color: var(--skin-text-tertiary, var(--el-text-color-placeholder, #9aa0a6));
 }
-/* 主页：整页内容区，给玻璃底 + 菜单底图（不给透明，透明会露出壁纸导致正文不可读）
+/* 主页（浏览器起始页）：2026-10-17 用户要求透出 3D 壁纸（「浏览器的皮肤3d效果没有啊」），
+   改为全透明 —— 原「实底 + 菜单底图」是 09-13「透明会露出壁纸导致正文不可读」的旧决策，
+   已被用户推翻；可读性走 --skin-text 派生（聊天页同策略已验收）。
    注意：.home-page 这个名字**两个组件都在用**（views/Home.vue 首页 + BrowserPanel 起始页），
-   所以必须挂在 .browser-shell 下限定，否则会给应用首页套上浏览器起始页的样式。 */
-/* 注意 background 简写会**重置** background-image：这里的 !important 简写会把底图一并清成
-   none!important，导致上面那行 background-image 永远不生效。所以底图必须写进同一个简写里
-   （或者全程用 background-color + 独立 background-image 两个长属性，不碰简写）。
-   这里采用「简写带 !important 打底 + 长属性补图」：简写里显式写上底图变量，
-   避免再被 !important 的 none 覆盖。 */
+   所以必须挂在 .browser-shell 下限定，否则会给应用首页套上浏览器起始页的样式。
+   !important 保留：要压过 BrowserPanel.vue 的 scoped .home-page[data-v] 规则（懒加载 chunk
+   总在全局 skin.css 之后注入，特异性打平时永远赢，见上方 1361-1365 的推导）。 */
 html[data-skin="on"] .browser-shell .home-page {
-  background-color: var(--skin-surface, var(--el-bg-color-page, #fafafa)) !important;
-  background-image: var(--skin-menu-pattern, none);
-  background-size: var(--skin-pattern-size, cover);
-  background-repeat: var(--skin-pattern-repeat, no-repeat);
-  background-position: center;
+  background: transparent !important;
 }
 html[data-skin="on"] .browser-shell .home-section-title,
 html[data-skin="on"] .browser-shell .placeholder-text {
