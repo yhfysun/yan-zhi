@@ -111,8 +111,19 @@ describe('①c APK 图标产物 · 尺寸与内容', () => {
     it('★ 图标内容必须来自言智 logo（不是脚手架默认的「惊讶脸」）', () => {
       // 判据：源 logo 存在，且生成的位图**尺寸符合密度表**（脚手架默认图是固定尺寸）
       // —— 比"字节不同"更有意义：默认图与 logo 尺寸不同，尺寸对得上说明确实由 logo 生成。
-      const logoPath = 'apps/mobile/resources/icon.png';
-      expect(existsRoot(logoPath), '缺少言智 logo 源图（icons:android 的输入）').toBe(true);
+      //
+      // ★★★ 2026-10-17 修（本断言此前恒红）：原写法把源图路径硬编码成
+      //   `apps/mobile/resources/icon.png` —— 那个目录**从来不存在、也没被 git 跟踪**。
+      //   真实源图是 gen-android-icons.cjs 的 DEFAULT_SOURCE：`assets/icons/icon.png`
+      //   （518KB，已跟踪）。两处各写一个路径必然漂移，本次正是漂移的后果。
+      //   ⇒ 改为**从脚本解析**（单一真相源），脚本改路径本断言自动跟着变；
+      //     解析失败一律 fail，不静默跳过（本文件既有教训：静默跳过的断言等于摆设）。
+      const gen = readRoot('apps/mobile/scripts/gen-android-icons.cjs');
+      const sm = gen.match(/DEFAULT_SOURCE\s*=\s*path\.join\(\s*REPO_ROOT([^)]*)\)/);
+      expect(sm, '未能从 gen-android-icons.cjs 解析 DEFAULT_SOURCE（脚本结构变了？）').toBeTruthy();
+      const logoPath = [...sm![1].matchAll(/'([^']+)'/g)].map((x) => x[1]).join('/');
+      expect(logoPath, '解析出的源图路径为空').toBeTruthy();
+      expect(existsRoot(logoPath), `缺少言智 logo 源图（icons:android 的输入）: ${logoPath}`).toBe(true);
       const b = readFileSync(resolve(REPO_ROOT, `${RES}/mipmap-xxxhdpi/ic_launcher.png`));
       expect({ w: b.readUInt32BE(16), h: b.readUInt32BE(20) }, '生成的图标尺寸不符合自适应图标表')
         .toEqual({ w: 192, h: 192 });
@@ -340,4 +351,14 @@ describe('⑤ 不得把内部 guest 身份显示成"已登录账号"', () => {
  *  m9  ic_launcher_background.xml：改回 #26A69A（脚手架青绿）      → 变红 ✓
  *  m10 package.json：build:android 去掉 gen-android-icons 调用     → 变红 ✓
  *  m11 恢复脚手架 drawable 的 ic_launcher_foreground.xml           → 变红 ✓
+ *
+ * ===== 变异测试补充（2026-10-17，修"源图路径硬编码漂移"）=====
+ * 背景：①c 的"图标来自言智 logo"断言把源图路径硬编码成 `apps/mobile/resources/icon.png`，
+ *   而该目录**从未存在也没被 git 跟踪**（真实源图是 gen-android-icons.cjs 的
+ *   DEFAULT_SOURCE = `assets/icons/icon.png`，已跟踪）⇒ 本机恒红、CI 干净检出也恒红。
+ *   改为从脚本解析路径后补做变异：
+ *  m12 gen-android-icons.cjs：DEFAULT_SOURCE 指向 assets/icons/nope.png    → 变红 ✓
+ *      （报错带出解析出的真实路径，一眼看出路径来源）
+ *  m13 gen-android-icons.cjs：`DEFAULT_SOURCE` 改名 `ICON_SRC`（正则失配）   → 变红 ✓
+ *      （解析失败一律 fail，不静默跳过 —— 本文件 ①b 的既有教训）
  */

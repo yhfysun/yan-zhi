@@ -26,6 +26,9 @@ const APP = read('App.vue');
 const SIDE_NAV = read('components/SideNav.vue');
 const CHAT_TOPBAR = read('components/chat/ChatTopbar.vue');
 const CHAT_INPUT = read('components/chat/ChatInputArea.vue');
+// 2026-10-17：远端 94245fa0 把输入框上方的智能体下拉抽成独立组件 AgentPicker.vue，
+// `agent-trigger` 等结构随组件一起搬走 —— 断言必须能跨组件边界看到它。
+const AGENT_PICKER = read('components/chat/AgentPicker.vue');
 const CHAT_MESSAGE_LIST = read('components/chat/ChatMessageList.vue');
 const CHAT_PREVIEW = read('components/chat/ChatPreviewPane.vue');
 const CHAT_CTX_SIDEBAR = read('components/chat/ChatContextSidebar.vue');
@@ -178,10 +181,11 @@ describe('★ 图标唯一性：常驻可见的 TabBar 图标不得与对话页�
       ...importedIconsOf(APP), ...importedIconsOf(SIDE_NAV), ...importedIconsOf(CHAT_TOPBAR),
       ...importedIconsOf(CHAT_INPUT), ...importedIconsOf(CHAT_MESSAGE_LIST),
       ...importedIconsOf(CHAT_PREVIEW), ...importedIconsOf(AGENT_ICON),
-      ...importedIconsOf(CHAT_CTX_SIDEBAR),
+      ...importedIconsOf(CHAT_CTX_SIDEBAR), ...importedIconsOf(AGENT_PICKER),
       ...inlineIconsOf(APP), ...inlineIconsOf(SIDE_NAV), ...inlineIconsOf(CHAT_TOPBAR),
       ...inlineIconsOf(CHAT_INPUT), ...inlineIconsOf(CHAT_MESSAGE_LIST),
       ...inlineIconsOf(CHAT_PREVIEW), ...inlineIconsOf(CHAT_CTX_SIDEBAR),
+      ...inlineIconsOf(AGENT_PICKER),
     ]);
     expect(used.size, '应解析到若干图标').toBeGreaterThan(10);
     const missing = [...used].filter((n) => !exported!.has(n));
@@ -280,7 +284,15 @@ describe('★ 同一动作不得有两个等价入口', () => {
 
   it('输入框上方仍保留智能体切换（这是保留的那一个入口）', () => {
     expect(CHAT_INPUT).toMatch(/class="input-agent-bar"/);
-    expect(CHAT_INPUT).toMatch(/agent-trigger/);
+    // 2026-10-17 适配远端 94245fa0 的组件抽取：入口从内联 el-dropdown 变成 <AgentPicker />。
+    // ★ 不能只断言"引用了 AgentPicker"就完事 —— 那样把组件掏空（删掉触发器/删掉切换动作）
+    //   也照样绿，守门就失效了。必须再进组件内断言两件事：
+    //     ① 触发器还在（class="agent-trigger"）；
+    //     ② 切换动作真的调到 agentStore.selectAgent（不是死入口）。
+    expect(CHAT_INPUT, '输入框上方应渲染 AgentPicker（智能体切换的唯一保留入口）').toMatch(/<AgentPicker\s*\/>/);
+    expect(AGENT_PICKER, '★ AgentPicker 必须有可点击的触发器（agent-trigger）').toMatch(/class="agent-trigger"/);
+    expect(AGENT_PICKER, '★ AgentPicker 必须调用 agentStore.selectAgent（否则是点不动的死入口）')
+      .toMatch(/agentStore\.selectAgent\(/);
   });
 });
 
@@ -299,4 +311,13 @@ describe('★ 同一动作不得有两个等价入口', () => {
  *  m10 ChatTopbar: `DocumentAdd` → `EditPen`（与工具条撞脸）               → 变红 ✓
  *  m11 ChatPreviewPane: 「收起面板」`Minus` → `Close`                      → 变红 ✓
  *  m12 App.vue: 头像位 `Avatar` → `User`（与 TabBar 撞脸）                 → 变红 ✓
+ *
+ * ===== 变异测试补充（2026-10-17，适配远端 94245fa0 的组件抽取）=====
+ * 背景：远端把输入框上方智能体下拉抽成 AgentPicker.vue，原断言「CHAT_INPUT 含
+ *   `agent-trigger`」恒红（该 class 已随组件搬走）。重写为跨组件边界的三层断言后补做变异：
+ *  m13 AgentPicker.vue: `class="agent-trigger"` → `agent-trigger-x`           → 变红 ✓
+ *  m14 AgentPicker.vue: `agentStore.selectAgent(id)` → `select(id)`（死入口）  → 变红 ✓
+ *  m15 ChatInputArea.vue: `<AgentPicker />` → `<div class="agent-stub"/>`      → 变红 ✓
+ *  ⇒ 三层各自独立变红，缺一不可。只断言"引用了 AgentPicker"（最省事的改法）会被
+ *    掏空的组件蒙混过关 —— 那等于把守门降级成装饰。
  */
