@@ -560,17 +560,6 @@ function catTag(p: Palette, m: Motif): string {
     `<rect width='6' height='64' fill='url(#a)'/></svg>`);
 }
 
-/** ===== 会话/任务列表底纹（420×300） =====
-    可见度说明：图案叠在半透明玻璃面板之上，透明度过低（<0.1）会完全看不见，
-    这里按"能看清纹理又不压文字"调至 0.16 / 行线 0.14 */
-function taskList(p: Palette, m: Motif): string {
-  const rows: string[] = [];
-  for (let y = 18; y < 300; y += 44) rows.push(`<line x1='16' y1='${y}' x2='404' y2='${y}' stroke='${p.primary}' stroke-opacity='0.14' stroke-width='1'/>`);
-  return uri(`<svg ${SVG_HEAD} viewBox='0 0 420 300'>` +
-    `<defs>${motifTile(m, p, 30, 0.16)}</defs>` +
-    `<rect width='420' height='300' fill='url(#m)'/>${rows.join('')}</svg>`);
-}
-
 /** ===== 输入框底纹（320×72 母题点阵，明显可辨） ===== */
 function inputPat(p: Palette, m: Motif): string {
   return uri(`<svg ${SVG_HEAD} viewBox='0 0 320 72'>` +
@@ -655,7 +644,7 @@ export interface BuiltinSkinSeries {
     border: string; borderDark: string;
     radius: number; buttonRadius: number; glassBlur: number;
     overlayColor: string; overlayBlur: number;
-    catTagPattern: string; taskListPattern: string; inputPattern: string;
+    catTagPattern: string; inputPattern: string;
     buttonPattern: string; dialogPattern: string; titlebarPattern: string;
     menuPattern: string; menuPatternDark: string;
     codePattern: string; browserPattern: string; browserPatternDark: string;
@@ -706,7 +695,14 @@ function buildSeries(): BuiltinSkinSeries[] {
         // 内置系列显式下发了 overlayBlur，改 CSS 回落值对它们无效 —— 要调两边一起改。
         overlayColor: darkOverlay(id), overlayBlur: 14,
         catTagPattern: uriOf(catTag(p, m)),
-        taskListPattern: uriOf(taskList(p, m)),
+        // ★ taskListPattern 刻意**不下发**（2026-10-17 用户实报「任务侧栏被你弄坏了」）：
+        //   skin.css 的 .sidebar / .conv-list / .fs-panel 用它做 cover 大图底（09-13 定稿，
+        //   为插件皮肤的**真图片**设计）；内置系列这里曾是一张近乎透明的纹样贴片
+        //   （母题 0.16 + 行线），在 245×806 的竖条上 cover 会放大 ~2.7 倍裁切成糊块，
+        //   还把壁纸（瓷·冰的 3D 冰河场景）盖住。且 Electron 33 时代它因裸 data URI bug
+        //   从未渲染过 —— 侧栏一直透着壁纸，用户体感以「透出 3D 壁纸」为准。
+        //   ⇒ 内置系列不留此字段：这几处回落 none → 透出壁纸；插件皮肤不受影响。
+        //   （历史生成器 taskList() 已随之删除，勿恢复。）
         inputPattern: uriOf(inputPat(p, m)),
         buttonPattern: uriOf(buttonPat(p, m)),
         dialogPattern: uriOf(dialogPat(p, m)),

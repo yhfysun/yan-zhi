@@ -25,7 +25,6 @@ function hasTopLevelSemicolon(v: string): boolean {
 
 const PATTERN_FIELDS = [
   'catTagPattern',
-  'taskListPattern',
   'inputPattern',
   'buttonPattern',
   'dialogPattern',
@@ -36,6 +35,11 @@ const PATTERN_FIELDS = [
   'browserPattern',
   'browserPatternDark',
 ] as const;
+
+/** ★ 刻意不下发的字段：.sidebar/.conv-list/.fs-panel 消费它做 cover 大图底，
+ *  内置系列的纹样贴片在竖条容器上会被放大 ~2.7 倍裁切、并盖住 3D 壁纸
+ *  （2026-10-17 用户实报「任务侧栏被你弄坏了」）。见 skinSeries.ts buildSeries 注释。 */
+const FORBIDDEN_FIELDS = ['taskListPattern'] as const;
 
 describe('内置系列皮肤 · 部件图 CSS 值形态', () => {
   for (const s of BUILTIN_SKIN_SERIES) {
@@ -54,6 +58,12 @@ describe('内置系列皮肤 · 部件图 CSS 值形态', () => {
         for (const wp of [s.wallpaper.light, s.wallpaper.dark, s.preview]) {
           expect(wp.startsWith('data:image/svg+xml;charset=utf-8,')).toBe(true);
           expect(wp.startsWith('url(')).toBe(false);
+        }
+      });
+
+      it('★ 不下发被禁字段（taskListPattern → 侧栏透出 3D 壁纸，见 buildSeries 注释）', () => {
+        for (const field of FORBIDDEN_FIELDS) {
+          expect((s.surface as Record<string, unknown>)[field], `${field} 应当不存在`).toBeUndefined();
         }
       });
     });
