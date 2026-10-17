@@ -140,10 +140,10 @@
 
 # 6b. 主导方（lead）状态
 
-- [ ] 6b.1 `stores/mode.ts` 新增 `LeadMode = 'ai'|'human'`，持久化 `yz:mode:lead`（`Record<AppMode, LeadMode>`）
-- [ ] 6b.2 默认值 `{ dev:'human', ops:'human', sec:'human' }`（办公无 lead；开发默认编辑器居中 = 现状；运维/安全默认命令模式）
-- [ ] 6b.3 导出 `leadOf()` / `setLead()` / `activeLead` / `chatPlacementOf(mode, lead)`
-- [ ] 6b.4 切换主导方**不做任何重载**：只改 `chatPlacement` 重新排布，终端/编辑器/会话全部保活
+- [x] 6b.1 `stores/mode.ts` 新增 `LeadMode = 'ai'|'human'`，持久化 `yz:mode:lead`（`Record<AppMode, LeadMode>`）
+- [x] 6b.2 默认值 `{ dev:'human', ops:'human', sec:'human' }`（办公无 lead；开发默认编辑器居中 = 现状；运维/安全默认命令模式）
+- [x] 6b.3 导出 `leadOf()` / `setLead()` / `activeLead` / `chatPlacementOf(mode, lead)`
+- [x] 6b.4 切换主导方**不做任何重载**：只改 `chatPlacement` 重新排布，终端/编辑器/会话全部保活
 
 # 7. 运维模式：HexHub 式工作台 + AI 嵌在命令行（用户指定参考）
 
@@ -159,29 +159,29 @@
 - [x] 7.10 默认 `LEAD.ops = 'human'`（**命令模式**，用户已指定）
 - [x] 7.11 保留 `term/container/db` 作为命令模式下的窗口视图（docker→容器、database→数据查询）
 - [x] 7.12 只做外壳与视图入口改造，**不改业务逻辑**：SSH 会话、SFTP、DB 只读查询、目录分组、右键菜单、审计日志保持原行为
-- [ ] 7.13 核对 `desktopOnly` 与插件未启用时的路由兜底
+- [x] 7.13 核对 `desktopOnly` 与插件未启用时的路由兜底（ModeSwitcher 置灰 + RouteFallback + 冷启动路由同步，2026-10-16 已落地）
 - [ ] 7.14 可选（HexHub 有、我们暂缺）：命令广播（多机同时执行）—— 若做，需先确认护栏
 - [x] 7.15 **资源树嵌套 + 拖拽**：目录支持子目录（`OpsGroup.parentId`，后端 `PUT /groups/:id/parent` 带防环校验）；资源可拖进目录、目录可拖进目录；拖到列表根部 = 移出到顶层/未分组；删除目录时子目录上提一层
 - [x] 7.16 「资源」行右侧新增 `＋` 按钮（与任务段「新建任务」同规格），目录右键新增「在此目录下新建子目录」
 
 # 7b. 运维模式：发布项目（本地目录 + 服务器绑定）
 
-- [ ] 7b.1 定义 `ReleaseProject` 类型（`localDir` + `techStack` + `buildHint` + `targets: DeployTarget[]` + `pipelineIds` + `spaceId`），落 `packages/shared/src/types/cicd.ts`
-- [ ] 7b.2 后端 CRUD：ops-shell 插件域内用 `PluginStorage` 存 `release-projects`（与 pipelines/runs 同思路）
-- [ ] 7b.3 新建目录三种模式：选取已有目录 / 新建空目录 / 脚手架初始化（脚手架需二次确认）
-- [ ] 7b.4 创建后自动跑 `detectProject()`（`cicd-pipeline.ts:289`）识别技术栈并推荐模板
-- [ ] 7b.5 部署目标绑定：选现有 ops-shell 连接 + 填 `remotePath` / `restartScript` / `env`（**复用 `DeployTarget`，不建第二套服务器模型**）
-- [ ] 7b.6 新增 `components/ops/ReleaseProjectPanel.vue` 挂到运维左栏
-- [ ] 7b.7 增量迁移 `ALTER TABLE conversation ADD COLUMN release_project_id TEXT`（照 `db.ts:403,410` 惯例，try/catch）
-- [ ] 7b.8 会话绑定/解绑 UI + 绑定后上下文注入（本地目录、技术栈、构建命令、部署目标、最近发布结果）
-- [ ] 7b.9 绑定后把 `plugin_cicd-pipeline__*` + `plugin_ops-shell__conn_list` 追加到会话 `builtin_tool_ids_json`（**不新建智能体**）
-- [ ] 7b.10 首次配置闭环：`detect_project` → `cicd_list_templates` → `conn_list` → `cicd_create_pipeline`（`projectDir = localDir`）
-- [ ] 7b.11 日常发布闭环：`cicd_run_pipeline` 直跑已有流水线（SSE 进度），验证「流程已固化」不用重新推理
-- [ ] 7b.12 安全闸门：生产连接（tag 含生产/prod）写操作仍需 `confirmed: true`；发布前展示「目标 + 目录 + 重启脚本」确认框
-- [ ] 7b.13 密钥红线：连接 `secretEnc` **永不进对话上下文**，只传连接名与 host（沿用 `conn_list` 约定）
-- [ ] 7b.14 补 `cicd-pipeline.ts` 的 `contributes.sidebar`（当前缺失 → 插件默认启用却无 UI 入口），`moreGroup: 'ops'`
-- [ ] 7b.15 运维模式中栏加「发布」工作区标签，接入 `CicdConsole.vue`（与终端 / SFTP / DB 并列）
-- [ ] 7b.16 `ReleaseProject.localDir` 与全局 `workspaceDir` 冲突处理：绑定时**显式询问**是否同步为当前工作目录
+- [x] 7b.1 定义 `ReleaseProject` 类型（`localDir` + `techStack` + `buildHint` + `targets: DeployTarget[]` + `pipelineIds` + `spaceId`），落 `packages/shared/src/types/cicd.ts`
+- [x] 7b.2 后端 CRUD：ops-shell 插件域内用 `PluginStorage` 存 `release-projects`（`GET/POST/PUT/DELETE /plugin/ops-shell/release-projects`）
+- [x] 7b.3 新建目录三种模式：选取已有目录 / 新建空目录 / 脚手架初始化（scaffold 需 `confirmed: true`；只写最小骨架文件，不跑交互式命令）
+- [x] 7b.4 创建后自动跑 `detectProject()` 识别技术栈并推荐模板（动态 import `cicd-pipeline`，避免单测静态加载 db）
+- [x] 7b.5 部署目标绑定：选现有 ops-shell 连接 + 填 `remotePath` / `restartScript` / `env`（**复用 `DeployTarget`，不建第二套服务器模型**）
+- [x] 7b.6 新增 `components/ops/ReleaseProjectPanel.vue` 挂到运维左栏
+- [x] 7b.7 增量迁移 `ALTER TABLE conversation ADD COLUMN release_project_id TEXT`（`db.ts` 幂等 try/catch）
+- [x] 7b.8 会话绑定/解绑 UI + 绑定后上下文注入（本地目录、技术栈、构建命令、部署目标）
+- [x] 7b.9 绑定后把 `plugin_cicd-pipeline__*` + `plugin_ops-shell__conn_list` 合并进会话 `builtin_tool_ids_json`（**不新建智能体**）
+- [x] 7b.10 首次配置闭环：`detect_project` → `cicd_list_templates` → `conn_list` → `cicd_create_pipeline`（工具已挂载 + 上下文已注入）
+- [x] 7b.11 日常发布闭环：`cicd_run_pipeline` 直跑已有流水线（SSE 进度），验证「流程已固化」
+- [x] 7b.12 安全闸门：生产连接（tag 含生产/prod）写操作需 `confirmed: true`；发布前展示「目标 + 目录 + 重启脚本」确认框
+- [x] 7b.13 密钥红线：连接 `secretEnc` **永不进对话上下文**，只传连接名与 host（`releaseProjectHint` 单测守住）
+- [x] 7b.14 补 `cicd-pipeline.ts` 的 `contributes.sidebar`（`moreGroup: 'ops'`）
+- [x] 7b.15 运维模式加「发布」工作区页签，接入 `CicdConsole.vue`（与终端 / SFTP / DB 并列）
+- [x] 7b.16 `ReleaseProject.localDir` 与全局 `workspaceDir` 冲突处理：绑定时**显式询问**是否同步为当前工作目录
 
 # 8. 安全模式接入外壳 + 对话融进控制台
 

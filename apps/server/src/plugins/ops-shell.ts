@@ -9,8 +9,10 @@
 // 护栏：remote-shell 权限声明 / 危险命令黑名单 / 生产连接写操作二次确认 / 空闲会话回收 / 全量审计（plugin_storage.audit）。
 import { getPluginManager } from '@yan-zhi/core';
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule, PluginWebSocket, PluginWsRequest } from '@yan-zhi/core';
+import type { ReleaseProject, DeployTarget, ProjectDetectResult } from '@yan-zhi/shared';
 import { Client } from 'ssh2';
-import { readdirSync, lstatSync, mkdirSync, renameSync, rmSync, createReadStream } from 'node:fs';
+import { readdirSync, lstatSync, mkdirSync, renameSync, rmSync, createReadStream, existsSync, statSync, writeFileSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import { createServer, type Server } from 'node:net';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
@@ -291,6 +293,119 @@ function resolveRemotePath(conn: StoredConnection, remotePath: string): string {
   const p = remotePath.trim();
   if (/^[/~]/.test(p) || !conn.sftpPath) return p;
   return `${conn.sftpPath.replace(/\/+$/, '')}/${p.replace(/^\.\//, '')}`;
+}
+
+// ---------- 发布项目（four-mode-workspace 7b） ----------
+
+/** 发布项目存储：ops-shell 插件域内（与连接/分组同仓） */
+async function loadReleaseProjects(): Promise<ReleaseProject[]> {
+  if (!pluginStorage) return [];
+  const rows = await pluginStorage.get<ReleaseProject[]>('release-projects');
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((p) => p && typeof p.id === 'string' && typeof p.localDir === 'string');
+}
+async function saveReleaseProjects(list: ReleaseProject[]): Promise<void> {
+  if (!pluginStorage) throw new Error('插件存储不可用（plugin_storage 未初始化）——发布项目无法持久化');
+  await pluginStorage.set('release-projects', list);
+  const check = await pluginStorage.get<ReleaseProject[]>('release-projects');
+  if (!Array.isArray(check) || check.length !== list.length) {
+    throw new Error('发布项目写入校验失败（plugin_storage 未正确落库）');
+  }
+}
+
+/** 本地目录安全校验：必须绝对路径、不能含 ..（发布项目只允许用户明确选定的目录） */
+export function releaseProjectPathError(localDir: string): string | null {
+  const dir = (localDir || '').trim();
+  if (!dir) return '本地目录必填';
+  if (!/^([a-zA-Z]:[\\/]|\/)/.test(dir)) return '本地目录必须是绝对路径（如 D:/work/app 或 /opt/app）';
+  if (dir.replace(/\\/g, '/').split('/').includes('..')) return '本地目录不能包含 ..';
+  return null;
+}
+
+/** 归一化部署目标：连接必须存在；env 只收字符串值 */
+export function normalizeReleaseTargets(
+  raw: unknown,
+  connections: Array<{ id: string }>,
+): { targets?: DeployTarget[]; error?: string } {
+  if (raw === undefined) return {};
+  if (!Array.isArray(raw)) return { error: 'targets 必须是数组' };
+  const out: DeployTarget[] = [];
+  for (const item of raw) {
+    const o = (item || {}) as Record<string, unknown>;
+    const connectionId = String(o.connectionId || '').trim();
+    if (!connectionId) return { error: '部署目标必须选择连接' };
+    if (!connections.some((c) => c.id === connectionId)) return { error: '部署目标引用的连接不存在（可能已删除）' };
+    const envRaw = o.env;
+    let env: Record<string, string> | undefined;
+    if (envRaw && typeof envRaw === 'object' && !Array.isArray(envRaw)) {
+      env = Object.fromEntries(Object.entries(envRaw as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
+    }
+    out.push({
+      id: String(o.id || `tgt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`),
+      name: String(o.name || '').trim() || '部署目标',
+      connectionId,
+      remotePath: String(o.remotePath || '').trim(),
+      restartScript: String(o.restartScript || '').trim(),
+      ...(env && Object.keys(env).length ? { env } : {}),
+    });
+  }
+  return { targets: out };
+}
+
+/** 构造发布项目（编辑时保留 id/createdAt；techStack 由 detectProject 传入） */
+export function buildReleaseProject(
+  input: {
+    name: string;
+    description?: string;
+    localDir: string;
+    targets?: DeployTarget[];
+    pipelineIds?: string[];
+    spaceId?: string;
+    buildHint?: { command?: string; artifact?: string };
+  },
+  techStack: ProjectDetectResult | undefined,
+  base?: ReleaseProject,
+): ReleaseProject {
+  return {
+    id: base?.id ?? `rel-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    name: input.name,
+    description: input.description,
+    localDir: input.localDir,
+    techStack: techStack ?? base?.techStack,
+    buildHint: input.buildHint ?? base?.buildHint,
+    targets: input.targets ?? base?.targets ?? [],
+    pipelineIds: input.pipelineIds ?? base?.pipelineIds ?? [],
+    spaceId: input.spaceId ?? base?.spaceId,
+    createdAt: base?.createdAt ?? Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+/**
+ * 目录初始化（三种创建模式复用）：
+ *   - empty：只建目录 + README
+ *   - scaffold：再按技术栈写最小骨架（npm package.json / Maven pom.xml / Dockerfile）
+ * ★ 不跑 npm/mvn 交互式命令：网络与交互都可能卡住服务端，这里只写最小可编辑骨架。
+ */
+export function scaffoldLocalProject(localDir: string, kind: 'empty' | 'node' | 'maven' | 'docker'): void {
+  mkdirSync(localDir, { recursive: true });
+  const safeWrite = (file: string, content: string) => {
+    const p = join(localDir, file);
+    if (!existsSync(p)) writeFileSync(p, content, 'utf8');
+  };
+  const name = basename(localDir) || 'app';
+  safeWrite('README.md', `# ${name}\n\n由运维发布项目初始化（${new Date().toISOString().slice(0, 10)}）。\n`);
+  if (kind === 'node') {
+    safeWrite('package.json', JSON.stringify({
+      name: name.toLowerCase().replace(/[^a-z0-9-_]/g, '-'),
+      version: '0.1.0', private: true,
+      scripts: { build: 'echo "请配置构建命令"' },
+    }, null, 2) + '\n');
+  } else if (kind === 'maven') {
+    safeWrite('pom.xml', `<?xml version="1.0" encoding="UTF-8"?>\n<project xmlns="http://maven.apache.org/POM/4.0.0">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>com.example</groupId>\n  <artifactId>${name.toLowerCase().replace(/[^a-z0-9-_]/g, '-')}</artifactId>\n  <version>0.1.0</version>\n</project>\n`);
+  } else if (kind === 'docker') {
+    safeWrite('Dockerfile', 'FROM node:20-alpine\nWORKDIR /app\nCOPY . .\nCMD ["node", "index.js"]\n');
+  }
 }
 
 // ---------- 跳板机（ProxyJump） ----------
@@ -2905,6 +3020,155 @@ const opsShellModule: PluginModule = {
       const json = (res: unknown, body: unknown) => (res as { json: (d: unknown) => void }).json(body);
       const fail = (res: unknown, code: number, msg: string) =>
         (res as { status: (n: number) => { json: (d: unknown) => void } }).status(code).json({ error: msg });
+
+      // ===== 发布项目（7b）：本地目录 + 部署目标 + 流水线 =====
+      r.get('/release-projects', async (_req: unknown, res: unknown) => {
+        json(res, { data: await loadReleaseProjects() });
+      });
+
+      // 新建：existing=选已有目录 / empty=建空目录 / scaffold=建骨架（写文件，需 confirmed）
+      r.post('/release-projects', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const name = String(body.name || '').trim();
+        if (!name) { fail(res, 400, '项目名称必填'); return; }
+        const mode = body.mode === 'empty' || body.mode === 'scaffold' ? body.mode : 'existing';
+        let localDir = String(body.localDir || '').trim().replace(/\\/g, '/');
+        if (mode === 'existing') {
+          const pathError = releaseProjectPathError(localDir);
+          if (pathError) { fail(res, 400, pathError); return; }
+          try {
+            if (!statSync(localDir).isDirectory()) { fail(res, 400, `不是目录：${localDir}`); return; }
+          } catch {
+            fail(res, 400, `目录不存在：${localDir}`); return;
+          }
+        } else {
+          const parentDir = String(body.parentDir || '').trim().replace(/\\/g, '/');
+          const pathError = releaseProjectPathError(parentDir);
+          if (pathError) { fail(res, 400, `父目录：${pathError}`); return; }
+          if (mode === 'scaffold' && body.confirmed !== true) {
+            fail(res, 428, '脚手架初始化会写入文件，确认后带 confirmed=true 重试');
+            return;
+          }
+          localDir = `${parentDir.replace(/\/+$/, '')}/${name.replace(/[\\/:*?"<>|]/g, '-')}`;
+          try {
+            const scaffold = body.scaffold === 'node' || body.scaffold === 'maven' || body.scaffold === 'docker'
+              ? body.scaffold : 'empty';
+            scaffoldLocalProject(localDir, mode === 'scaffold' ? scaffold : 'empty');
+          } catch (e) {
+            fail(res, 500, `创建目录失败：${(e as Error).message}`);
+            return;
+          }
+        }
+        const conns = await loadConnections();
+        const normalized = normalizeReleaseTargets(body.targets, conns);
+        if (normalized.error) { fail(res, 400, normalized.error); return; }
+        let techStack: ProjectDetectResult | undefined;
+        try {
+          const { detectProject } = await import('./cicd-pipeline.js');
+          techStack = detectProject(localDir);
+        } catch { /* 检测失败不阻断创建（可稍后重新检测） */ }
+        const buildHintRaw = body.buildHint && typeof body.buildHint === 'object' && !Array.isArray(body.buildHint)
+          ? body.buildHint as Record<string, unknown> : undefined;
+        const project = buildReleaseProject({
+          name,
+          description: String(body.description || '').trim() || undefined,
+          localDir,
+          targets: normalized.targets,
+          pipelineIds: Array.isArray(body.pipelineIds) ? body.pipelineIds.map(String) : undefined,
+          spaceId: String(body.spaceId || '').trim() || undefined,
+          buildHint: buildHintRaw ? {
+            command: String(buildHintRaw.command || '').trim() || undefined,
+            artifact: String(buildHintRaw.artifact || '').trim() || undefined,
+          } : undefined,
+        }, techStack);
+        const list = await loadReleaseProjects();
+        if (list.some((p) => p.name === name)) { fail(res, 409, `发布项目「${name}」已存在`); return; }
+        list.push(project);
+        try { await saveReleaseProjects(list); } catch (e) { fail(res, 500, (e as Error).message); return; }
+        await audit('release_project.create', { detail: `${name} → ${localDir}`, ok: true });
+        json(res, { data: project });
+      });
+
+      // 编辑：只传要改的字段；localDir 变更会重新检测技术栈
+      r.put('/release-projects/:id', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const list = await loadReleaseProjects();
+        const idx = list.findIndex((p) => p.id === id);
+        if (idx < 0) { fail(res, 404, '发布项目不存在'); return; }
+        const base = list[idx];
+        if (body.name !== undefined && !String(body.name).trim()) { fail(res, 400, '项目名称不能为空'); return; }
+        const localDir = body.localDir === undefined ? base.localDir : String(body.localDir).trim().replace(/\\/g, '/');
+        const pathError = releaseProjectPathError(localDir);
+        if (pathError) { fail(res, 400, pathError); return; }
+        try {
+          if (!statSync(localDir).isDirectory()) { fail(res, 400, `不是目录：${localDir}`); return; }
+        } catch {
+          fail(res, 400, `目录不存在：${localDir}`); return;
+        }
+        const conns = await loadConnections();
+        const normalized = normalizeReleaseTargets(body.targets, conns);
+        if (normalized.error) { fail(res, 400, normalized.error); return; }
+        let techStack: ProjectDetectResult | undefined = base.techStack;
+        if (localDir !== base.localDir) {
+          try {
+            const { detectProject } = await import('./cicd-pipeline.js');
+            techStack = detectProject(localDir);
+          } catch { /* 保留旧快照 */ }
+        }
+        const buildHintRaw = body.buildHint && typeof body.buildHint === 'object' && !Array.isArray(body.buildHint)
+          ? body.buildHint as Record<string, unknown> : undefined;
+        const next = buildReleaseProject({
+          name: String(body.name ?? base.name).trim(),
+          description: body.description === undefined ? base.description : (String(body.description).trim() || undefined),
+          localDir,
+          targets: normalized.targets,
+          pipelineIds: body.pipelineIds === undefined ? undefined
+            : (Array.isArray(body.pipelineIds) ? body.pipelineIds.map(String) : []),
+          spaceId: body.spaceId === undefined ? base.spaceId : (String(body.spaceId).trim() || undefined),
+          buildHint: body.buildHint === undefined ? base.buildHint : (buildHintRaw ? {
+            command: String(buildHintRaw.command || '').trim() || undefined,
+            artifact: String(buildHintRaw.artifact || '').trim() || undefined,
+          } : undefined),
+        }, techStack, base);
+        if (list.some((p) => p.id !== id && p.name === next.name)) { fail(res, 409, `发布项目「${next.name}」已存在`); return; }
+        list[idx] = next;
+        try { await saveReleaseProjects(list); } catch (e) { fail(res, 500, (e as Error).message); return; }
+        await audit('release_project.update', { detail: `${next.name} → ${next.localDir}`, ok: true });
+        json(res, { data: next });
+      });
+
+      // 删除：同时清掉会话上的绑定（避免指向不存在的项目）
+      r.delete('/release-projects/:id', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const list = await loadReleaseProjects();
+        const next = list.filter((p) => p.id !== id);
+        if (next.length === list.length) { fail(res, 404, '发布项目不存在'); return; }
+        try { await saveReleaseProjects(next); } catch (e) { fail(res, 500, (e as Error).message); return; }
+        try {
+          const { db } = await import('../db.js');
+          db.prepare('UPDATE conversation SET release_project_id = NULL WHERE release_project_id = ?').run(id);
+        } catch { /* 清理绑定失败不影响删除本身 */ }
+        await audit('release_project.delete', { detail: id, ok: true });
+        json(res, { data: { removed: true } });
+      });
+
+      // 重新检测技术栈
+      r.post('/release-projects/:id/detect', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const list = await loadReleaseProjects();
+        const idx = list.findIndex((p) => p.id === id);
+        if (idx < 0) { fail(res, 404, '发布项目不存在'); return; }
+        try {
+          const { detectProject } = await import('./cicd-pipeline.js');
+          const techStack = detectProject(list[idx].localDir);
+          list[idx] = { ...list[idx], techStack, updatedAt: Date.now() };
+          await saveReleaseProjects(list);
+          json(res, { data: list[idx] });
+        } catch (e) {
+          fail(res, 500, `检测失败：${(e as Error).message}`);
+        }
+      });
 
       /** 解析连接 + 打开 SFTP，复用工具层 resolveConn 语义（按 id/name） */
       async function resolveSftpConn(req: unknown, res: unknown, idFromQueryOrBody: string): Promise<{ conn: StoredConnection; sftp: SFTPWrapper } | null> {

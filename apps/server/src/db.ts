@@ -328,6 +328,15 @@ try {
   }
 } catch {}
 
+// 发布项目绑定（four-mode-workspace 7b）：NULL = 未绑定；增量迁移，旧库不缺列。
+// 绑定后对话上下文注入本地目录/部署目标，工具面追加 cicd-pipeline + conn_list。
+try {
+  const convColsRel = db.prepare(`SELECT name FROM pragma_table_info('conversation')`).all() as Array<{ name: string }>;
+  if (!convColsRel.some((c) => c.name === 'release_project_id')) {
+    db.exec(`ALTER TABLE conversation ADD COLUMN release_project_id TEXT`);
+  }
+} catch {}
+
 // 会话级任务类型（2026-10-14「父任务」层）：多任务目录（空间绑了父类型）里，
 //   每条任务各选一条子线 —— 任务级优先于目录级，NULL = 跟随目录。
 // ★ 为什么加在 conversation 而不是只靠 space.task_type：一个抖音目录要同时管

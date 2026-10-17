@@ -390,7 +390,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
-import { ElDialog } from 'element-plus';
+import { ElDialog, ElMessageBox } from 'element-plus';
 import { useCicdStore } from '../../stores/cicd';
 import { useCodeStore } from '../../stores/code';
 import type { CicdPipeline, PipelineStep, DeployTarget, ProjectDetectResult, BuildType } from '@yan-zhi/shared';
@@ -454,6 +454,22 @@ function selectPipeline(p: CicdPipeline) {
 
 async function executePipeline() {
   if (!selectedPipeline.value) return;
+  // 7b.12 发布前确认：把「目标 + 目录 + 重启脚本」摆到人面前；生产连接额外警示。
+  const target = selectedPipeline.value.targets.find((t) => t.id === selectedTargetId.value)
+    || selectedPipeline.value.targets[0];
+  const conn = target ? connections.value.find((c) => c.id === target.connectionId) : undefined;
+  const prod = /生产|prod/i.test(conn?.tag || '');
+  const detail = [
+    `流水线：${selectedPipeline.value.name}`,
+    `目标：${target?.name || '默认'}（${conn ? `${conn.name} ${conn.host}` : '连接未设置'}）`,
+    `发布目录：${target?.remotePath || '（未设置）'}`,
+    `重启脚本：${target?.restartScript || '（未设置）'}`,
+    prod ? '\n⚠ 生产连接：确认后立即执行「打包 → 备份 → 上传 → 重启」。' : '',
+  ].join('\n');
+  const ok = await ElMessageBox.confirm(detail, prod ? '生产发布确认' : '发布确认', {
+    type: 'warning', confirmButtonText: '开始发布', cancelButtonText: '取消',
+  }).then(() => true).catch(() => false);
+  if (!ok) return;
   running.value = true;
   await cicdStore.runPipeline(selectedPipeline.value.id, selectedTargetId.value || undefined);
   running.value = false;

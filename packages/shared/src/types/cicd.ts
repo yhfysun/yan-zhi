@@ -148,6 +148,35 @@ export interface DeployTarget {
   env?: Record<string, string>;
 }
 
+/** 发布项目：构建命令与产物提示（可由 detectProject 推荐、用户可改） */
+export interface ReleaseProjectBuildHint {
+  command?: string;
+  artifact?: string;
+}
+
+/**
+ * 发布项目（four-mode-workspace 7b）：把「本地目录 + 部署目标 + 流水线」绑成一个可复用对象。
+ * 存 ops-shell 插件的 plugin_storage（key=`release-projects`），与 pipelines/runs 同思路。
+ * ★ 部署目标复用 `DeployTarget`，不建第二套服务器模型；connectionId 指向 ops-shell 连接。
+ */
+export interface ReleaseProject {
+  id: string;
+  name: string;
+  description?: string;
+  /** 本地项目根目录（绝对路径） */
+  localDir: string;
+  /** detectProject() 的结果快照（创建/重新检测时写入） */
+  techStack?: ProjectDetectResult;
+  buildHint?: ReleaseProjectBuildHint;
+  targets: DeployTarget[];
+  /** 关联的 CicdPipeline id（复用现有流水线） */
+  pipelineIds: string[];
+  /** 归属空间（复用现有空间隔离） */
+  spaceId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** 流水线定义 */
 export interface CicdPipeline {
   id: string;

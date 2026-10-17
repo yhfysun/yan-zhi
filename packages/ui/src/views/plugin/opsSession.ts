@@ -8,6 +8,7 @@
 import { ref } from 'vue';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
+import type { ReleaseProject } from '@yan-zhi/shared';
 import type { OpsConn } from './OpsConnectionDialog.vue';
 
 export type ViewKey = 'term' | 'container' | 'db' | 'chat';
@@ -84,6 +85,11 @@ export interface OpsWin {
    * 只存在窗口状态里，不落库 —— 窗口本来就是会话态，切连接/重开回到默认。
    */
   modelId?: string;
+  /**
+   * 本窗口绑定的发布项目（7b）。会话侧另存 release_project_id；
+   * 这里保留一份对象用于拼对话上下文，避免每次发送都回查。
+   */
+  releaseProject?: ReleaseProject;
 }
 
 /**

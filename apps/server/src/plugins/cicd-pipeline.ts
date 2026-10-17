@@ -27,6 +27,7 @@ import type {
   BuildType,
 } from '@yan-zhi/shared';
 import { runCmd } from '../services/exec-cmd.js';
+import { isProductionTag } from './ops-shell-guard.js';
 import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve, basename, dirname, relative } from 'node:path';
 import {
@@ -67,6 +68,15 @@ export const cicdManifest: PluginManifest = {
       'cicd_get_run',
       'cicd_detect_project',
       'cicd_list_templates',
+    ],
+
+    // 7b.14：插件默认启用却没有 UI 入口 —— 在「更多 → 运维」下补一个侧栏项。
+    sidebar: [
+      {
+        id: 'cicd', icon: 'Upload', route: '/cicd', label: 'CI/CD 发布',
+        order: 62, when: 'desktop', moreGroup: 'ops', moreGroupLabel: '运维',
+        desc: '打包 → 备份 → 上传 → 重启',
+      },
     ],
 
     routes: [
@@ -938,12 +948,13 @@ export function makeCicdTools(): BuiltInTool[] {
     },
     {
       name: 'cicd_run_pipeline',
-      description: '执行 CI/CD 流水线（打包→备份→上传→重启）。返回执行结果摘要。',
+      description: '执行 CI/CD 流水线（打包→备份→上传→重启）。返回执行结果摘要。生产连接（tag 含生产/prod）必须显式带 confirmed=true。',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: '流水线 ID' },
           targetId: { type: 'string', description: '部署目标 ID（不传则用第一个目标）' },
+          confirmed: { type: 'boolean', description: '生产连接发布必须由人确认后带 true（模型自报确认不算人工批准）' },
         },
         required: ['id'],
       },
@@ -955,6 +966,19 @@ export function makeCicdTools(): BuiltInTool[] {
           ? pipeline.targets.find((t) => t.id === args.targetId)
           : pipeline.targets[0];
         if (!target) return textResult('未配置部署目标');
+        // 7b.12：生产连接的发布必须显式确认（把目标/目录/重启脚本摆给模型转述给人）
+        const conn = (await loadConnections()).find((c) => c.id === target.connectionId);
+        if (conn && isProductionTag(conn.tag) && args.confirmed !== true) {
+          return textResult([
+            `目标「${target.name}」是生产连接，发布前需要确认：`,
+            `流水线：${pipeline.name}`,
+            `服务器：${conn.name}（${conn.host}）`,
+            `发布目录：${target.remotePath || '（未设置）'}`,
+            `重启脚本：${target.restartScript || '（未设置）'}`,
+            '',
+            '向用户展示以上信息并取得同意后，带 confirmed=true 重新调用。',
+          ].join('\n'));
+        }
 
         const executor = new PipelineExecutor();
         const logs: string[] = [];

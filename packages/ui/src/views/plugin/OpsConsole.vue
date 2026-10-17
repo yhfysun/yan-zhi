@@ -7,6 +7,15 @@
         <div class="ops-side-tasks">
           <TaskListSection :space-id="null" />
         </div>
+        <!-- 发布项目（7b）：本地目录 + 服务器 + 流水线；绑定后工具面挂到当前窗口会话 -->
+        <div class="ops-side-release">
+          <ReleaseProjectPanel
+            :active-project-id="activeWin?.releaseProject?.id || ''"
+            @bind="onBindReleaseProject"
+            @unbind="onUnbindReleaseProject"
+            @open-release="mode = 'release'"
+          />
+        </div>
         <div class="ops-tree-head">
           <span class="ops-tree-title">资源</span>
           <button class="ops-tree-new" type="button" title="新增资源" @click.stop="openAddDialog">
@@ -246,6 +255,11 @@
 
                       <!-- 对话模式：内置运维助手（每个窗口独立会话） -->
                       <div v-show="w.view === 'chat'" class="ops-chat">
+                        <!-- 绑定发布项目条（7b）：让用户一眼看到本任务发布的是哪个本地目录 -->
+                        <div v-if="w.releaseProject" class="ops-bound-bar">
+                          <span class="ops-bound-title">已绑定发布项目：{{ w.releaseProject.name }}</span>
+                          <span class="ops-bound-path" :title="w.releaseProject.localDir">{{ w.releaseProject.localDir }}</span>
+                        </div>
                         <div :ref="(el: any) => setChatEl(w.id, el)" class="ops-chat-list" @click="onMdClick">
                           <div v-if="!w.chatMessages.length" class="ops-chat-welcome">
                             <el-icon :size="30" class="ops-chat-welcome-icon"><ChatDotRound /></el-icon>
@@ -460,6 +474,11 @@
           <el-tab-pane label="主机密钥" name="kh">
             <OpsKnownHostsPanel ref="khPanelRef" />
           </el-tab-pane>
+
+          <!-- 发布（7b.15）：CICD 控制台并入运维工作台，与终端/文件/数据库并列 -->
+          <el-tab-pane label="发布" name="release" lazy>
+            <CicdConsole />
+          </el-tab-pane>
         </el-tabs>
       </section>
 
@@ -576,7 +595,7 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import '@xterm/xterm/css/xterm.css';
 import { api, API_BASE, wsUrl, buildRequestHeaders } from '../../api/client';
-import type { Platform, Model } from '@yan-zhi/shared';
+import type { Platform, Model, ReleaseProject } from '@yan-zhi/shared';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
 import SftpPanel from './SftpPanel.vue';
@@ -585,6 +604,8 @@ import OpsMetricsPanel from '../../components/ops/OpsMetricsPanel.vue';
 import OpsRecordingsPanel from '../../components/ops/OpsRecordingsPanel.vue';
 import OpsKnownHostsPanel from '../../components/ops/OpsKnownHostsPanel.vue';
 import OpsStepCards from '../../components/ops/OpsStepCards.vue';
+import ReleaseProjectPanel from '../../components/ops/ReleaseProjectPanel.vue';
+import CicdConsole from './CicdConsole.vue';
 import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
@@ -598,7 +619,7 @@ const platformStore = usePlatformStore();
 const OPS_AGENT_ID = 'a_builtin_ops_agent';
 const MAX_OUTPUT_CHARS = 4000;
 
-const mode = ref<'main' | 'log' | 'rec' | 'kh'>('main');
+const mode = ref<'main' | 'log' | 'rec' | 'kh' | 'release'>('main');
 /** 录像 / 主机密钥面板：切到对应 Tab 时刷新一次（会话结束后列表要跟着更新） */
 const recPanelRef = ref<InstanceType<typeof OpsRecordingsPanel> | null>(null);
 const khPanelRef = ref<InstanceType<typeof OpsKnownHostsPanel> | null>(null);
@@ -1432,6 +1453,85 @@ async function execDirect(w: OpsWin, raw: string) {
   }
 }
 
+// ===== 发布项目绑定（7b）=====
+/** 绑定发布项目后自动挂载的工具面：CICD 全部工具 + 连接清单（只传连接名/host，绝不含密钥） */
+const RELEASE_TOOL_IDS = [
+  'plugin_cicd-pipeline__cicd_list_pipelines',
+  'plugin_cicd-pipeline__cicd_create_pipeline',
+  'plugin_cicd-pipeline__cicd_update_pipeline',
+  'plugin_cicd-pipeline__cicd_delete_pipeline',
+  'plugin_cicd-pipeline__cicd_run_pipeline',
+  'plugin_cicd-pipeline__cicd_list_runs',
+  'plugin_cicd-pipeline__cicd_get_run',
+  'plugin_cicd-pipeline__cicd_detect_project',
+  'plugin_cicd-pipeline__cicd_list_templates',
+  'plugin_ops-shell__conn_list',
+];
+
+/**
+ * 发布项目上下文：本地目录 / 技术栈 / 构建命令 / 部署目标。
+ * ★ 只带连接名与 host（配合 conn_list 的「密钥永不返回」约定），不把 secretEnc 拼进来。
+ */
+function releaseProjectHint(w: OpsWin): string {
+  const p = w.releaseProject;
+  if (!p) return '';
+  const targets = p.targets.map((t) => {
+    const c = connections.value.find((x) => x.id === t.connectionId);
+    return `- ${t.name}：${c ? `${c.name}（${c.username}@${c.host}）` : '连接已删除'}；发布目录 ${t.remotePath || '（未填）'}；重启 ${t.restartScript || '（未填）'}`;
+  }).join('\n');
+  const build = p.buildHint?.command ? `；构建命令 ${p.buildHint.command}` : '';
+  const artifact = p.buildHint?.artifact ? `；产物 ${p.buildHint.artifact}` : '';
+  return `\n\n（已绑定发布项目：${p.name}；本地目录 ${p.localDir}；技术栈 ${p.techStack?.buildType || '未识别'}${build}${artifact}\n部署目标：\n${targets || '（未配置）'}）`;
+}
+
+/** 绑定发布项目：会话落 release_project_id + 合并挂载 CICD/连接工具（幂等） */
+async function onBindReleaseProject(project: ReleaseProject) {
+  const w = activeWin.value;
+  if (!w) { ElMessage.warning('请先打开一个运维窗口再绑定发布项目'); return; }
+  try {
+    if (!w.conversationId) await ensureWinConversation(w);
+  } catch (e) {
+    ElMessage.error('创建会话失败：' + (e as Error).message);
+    return;
+  }
+  const conv = await api.get<any>(`/conversations/${w.conversationId}`);
+  let existing: string[] = [];
+  if ('data' in conv && conv.data?.builtin_tool_ids_json) {
+    try { const parsed = JSON.parse(conv.data.builtin_tool_ids_json); if (Array.isArray(parsed)) existing = parsed.filter((x: unknown) => typeof x === 'string'); } catch { /* 脏值按空处理 */ }
+  }
+  const merged = [...new Set([...existing, ...RELEASE_TOOL_IDS])];
+  const r = await api.patch(`/conversations/${w.conversationId}`, {
+    releaseProjectId: project.id,
+    builtinToolIds: merged,
+  });
+  if ('error' in r) { ElMessage.error('绑定失败：' + r.error); return; }
+  w.releaseProject = project;
+  // 7b.16：显式询问是否同步为全局工作目录（不做静默修改）
+  if (settingsStore.settings.workspaceDir !== project.localDir) {
+    const sync = await ElMessageBox.confirm(
+      `是否把「${project.name}」的本地目录设为当前工作目录？\n${project.localDir}`,
+      '同步工作目录',
+      { type: 'info', confirmButtonText: '设为工作目录', cancelButtonText: '不同步' },
+    ).then(() => true).catch(() => false);
+    if (sync) {
+      settingsStore.settings.workspaceDir = project.localDir;
+      await settingsStore.save();
+    }
+  }
+  ElMessage.success(`已绑定发布项目「${project.name}」，发布工具已挂载`);
+}
+
+async function onUnbindReleaseProject() {
+  const w = activeWin.value;
+  if (!w) return;
+  if (w.conversationId) {
+    const r = await api.patch(`/conversations/${w.conversationId}`, { releaseProjectId: null });
+    if ('error' in r) { ElMessage.error('解绑失败：' + r.error); return; }
+  }
+  w.releaseProject = undefined;
+  ElMessage.success('已解绑发布项目');
+}
+
 /** 把当前连接（含类型）作为上下文提示带给运维助手（对话 / 后台任务共用） */
 function winConnHint(w: OpsWin): string {
   const c = connOf(w);
@@ -1465,7 +1565,7 @@ async function sendWinChat(w: OpsWin) {
   scrollChatBottom(w);
 
   // 终端已连接时把现场（最近命令 + 输出尾部）一并带上，让助手直接看到报错现场
-  const prompt = content + connHint + terminalContextHint(w);
+  const prompt = content + connHint + terminalContextHint(w) + releaseProjectHint(w);
 
   const ac = new AbortController();
   chatAborts.set(w.id, ac);
@@ -1515,7 +1615,7 @@ async function sendBackground(w: OpsWin) {
     ElMessage.error('创建会话失败: ' + (e as Error).message);
     return;
   }
-  const prompt = content + winConnHint(w) + terminalContextHint(w);
+  const prompt = content + winConnHint(w) + terminalContextHint(w) + releaseProjectHint(w);
   const taskRes = await api.post<any>('/llm/tasks', {
     conversationId: w.conversationId,
     platformId: platform.id,
@@ -2247,6 +2347,8 @@ onUnmounted(() => {
   padding-bottom: 4px; margin-bottom: 6px;
 }
 .ops-side-tasks :deep(.tls) { height: 100%; }
+/* 发布项目段（7b）：条目上限在组件内滚动，不挤压资源树 */
+.ops-side-release { flex: 0 0 auto; }
 
 /* 左栏底部实时面板（任务 7.4） */
 .ops-side-metrics {
@@ -2445,6 +2547,15 @@ onUnmounted(() => {
 /* 对话模式 */
 /* 对话模式（视觉对齐「任务」页：圆头像 + 气泡 + 胶囊输入框） */
 .ops-chat { height: 100%; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+/* 已绑定发布项目条（7b）：本地目录 + 项目名，窄屏时路径省略 */
+.ops-bound-bar {
+  flex-shrink: 0; display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 10px; border-radius: 8px; font-size: 11.5px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+}
+.ops-bound-title { flex: none; color: var(--color-primary); }
+.ops-bound-path { min-width: 0; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; }
 .ops-chat-list {
   flex: 1; min-height: 0; overflow-y: auto;
   display: flex; flex-direction: column; gap: 16px; padding: 8px 6px 14px;

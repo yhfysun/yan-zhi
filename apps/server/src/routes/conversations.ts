@@ -251,6 +251,16 @@ router.patch('/:id', (req: Request, res: Response) => {
     }
     sets.push('builtin_tool_ids_json = ?'); vals.push(JSON.stringify(ids));
   }
+  // 发布项目绑定（7b）：null = 解绑；字符串 = 发布项目 id（项目本身由 ops-shell 管）
+  if (req.body.releaseProjectId !== undefined) {
+    const rp = req.body.releaseProjectId;
+    if (rp !== null && typeof rp !== 'string') {
+      res.status(400).json({ error: 'releaseProjectId 必须是字符串或 null' });
+      return;
+    }
+    sets.push('release_project_id = ?');
+    vals.push(rp ? String(rp).trim() : null);
+  }
   if (req.body.pinned !== undefined) { sets.push('pinned = ?'); vals.push(req.body.pinned ? 1 : 0); }
   if (sets.length === 0) { res.json({ data: existing }); return; }
 
