@@ -152,7 +152,7 @@ export const useCommandsStore = defineStore('commands', () => {
    *
    * ★★ 端点 `/plugin/<pluginId>/run` **不是新造的**：安全控制台每个「▶ 执行」按钮走的就是它
    *    （`SecConsole.vue` 的 `postRun` → `POST /plugin/sec-lab/run`），
-   *    服务端在那条路由里注入 `__sec_runner` 强制 `requester='human'`，再统一过 `withGuard`
+   *    服务端在那条路由里写入进程内 Symbol 人工标记（模型参数无法伪造），再统一过 `withGuard`
    *    （授权范围 → 风险级 → 交战模式 → HUMAN_ONLY → 危险黑名单）并写审计。
    *    ⇒ 命令层**没有新增任何绕过路径**，与方案 §九.2 一致：命令只是"更好用的入口"。
    * ★ 因此这里**不**做任何权限判断：判断只在服务端一处，前端判一遍必然与它漂移。

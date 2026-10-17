@@ -50,6 +50,32 @@ describe('★ 命令行：与聊天框的面板同源，不另起执行链', () 
   });
 });
 
+describe('★ AI 模式输入框工具条（对齐运维模式 P0-1）', () => {
+  it('会话内模型切换：下拉 + 解析函数，发送用解析后的平台/模型', () => {
+    expect(SRC).toContain('sec-ai-toolbar');
+    expect(SRC).toContain('secModelId');
+    expect(SRC).toContain('resolveSecModel');
+    expect(SRC, '发送必须使用解析结果，不能绕过它直读默认模型')
+      .toContain('const { platform, model } = resolved');
+  });
+
+  it('执行权限浮层保留交战模式，且开启前必须人工确认', () => {
+    expect(SRC).toContain('toggleEngagement');
+    expect(SRC).toContain('开启交战模式');
+    expect(SRC).toContain('engagementMode');
+  });
+
+  it('「执行」先占位禁用（P1），Agent 是当前默认语义', () => {
+    expect(SRC).toContain('sec-ai-tool-btn');
+    expect(SRC).toContain('P1 开放');
+  });
+
+  it('工具条显示当前授权目标数量（提醒只对已授权目标动手）', () => {
+    expect(SRC).toContain('sec-ai-scope-hint');
+    expect(SRC).toContain('个授权目标');
+  });
+});
+
 describe('★ 收敛边界：Tab 数下降，但功能与人工闸门一个都不能少', () => {
   it('★ attack_sim 的人工触发通道不能被收敛掉（丢了它该工具直接不可用）', () => {
     // HUMAN_ONLY_TOOLS 依赖 requester='human'，而它由 /run 路由注入 ——

@@ -437,6 +437,84 @@
           </article>
         </div>
 
+        <!-- ===== 经验库（自学习，P5）：待审 → 人工审批 → 才注入提示词 ===== -->
+        <div v-show="tab === 'review'" class="sec-pane">
+          <article class="sec-frame sec-frame-list">
+            <header class="sec-frame-head">
+              <span class="sec-num">07</span>
+              <span class="sec-frame-title">EXPERIENCE</span>
+              <span class="sec-frame-hint">待审 {{ expCounts.pending }} · 已批准 {{ expCounts.approved }} · 仅 approved 注入提示词</span>
+              <span class="sec-spacer" />
+              <el-button size="small" @click="showExpForm = !showExpForm">{{ showExpForm ? '收起' : '人工新增' }}</el-button>
+            </header>
+
+            <div v-if="showExpForm" class="sec-exp-form">
+              <el-input v-model="expDraft.title" size="small" placeholder="标题：这条经验解决什么问题（2-80 字）" />
+              <el-input v-model="expDraft.source" size="small" placeholder="来源/依据：finding id / 命令 / 报告" />
+              <el-input v-model="expDraft.tags" size="small" placeholder="标签（逗号分隔，可空）" />
+              <el-input v-model="expDraft.body" type="textarea" :rows="3" placeholder="正文：做法、边界、验证方式（20-1200 字；不要写凭据/隐私）" />
+              <div class="sec-exp-actions">
+                <el-button size="small" type="primary" :loading="expBusy === 'new'" @click="proposeExperience">提交待审</el-button>
+                <span class="sec-exp-note">提交后仍需人工批准，不会立即影响模型行为。</span>
+              </div>
+            </div>
+
+            <div class="sec-exp-list">
+              <div class="sec-exp-group-title">待审队列（{{ expPending.length }}）</div>
+              <div v-for="e in expPending" :key="e.id" class="sec-exp-item">
+                <div class="sec-exp-item-head">
+                  <code class="sec-exp-id">{{ e.id }}</code>
+                  <span class="sec-exp-title">{{ e.title }}</span>
+                  <el-tag v-for="t in e.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag>
+                  <span class="sec-spacer" />
+                  <el-tag size="small" type="warning" effect="plain">{{ e.submittedBy === 'human' ? '人工提交' : '模型提交' }}</el-tag>
+                </div>
+                <div class="sec-exp-meta">来源：{{ e.source }} · {{ fmtTime(e.createdAt) }}</div>
+                <div class="sec-exp-body">{{ e.body }}</div>
+                <div class="sec-exp-actions">
+                  <el-button size="small" type="success" :loading="expBusy === e.id" @click="decideExperienceRow(e, 'approve')">批准</el-button>
+                  <el-button size="small" type="danger" plain :loading="expBusy === e.id" @click="decideExperienceRow(e, 'reject')">驳回</el-button>
+                  <span class="sec-exp-note">批准后才会进入后续任务的系统提示词。</span>
+                </div>
+              </div>
+              <div v-if="!expPending.length" class="sec-empty sec-empty-sm">没有待审经验。安全助手在任务收尾时可以用 /experience propose 提交。</div>
+            </div>
+          </article>
+
+          <article class="sec-frame sec-frame-list">
+            <header class="sec-frame-head">
+              <span class="sec-frame-title">approved</span>
+              <span class="sec-frame-hint">已批准（{{ expApproved.length }}）· 会进入安全助手提示词</span>
+            </header>
+            <div class="sec-exp-list">
+              <div v-for="e in expApproved" :key="e.id" class="sec-exp-item sec-exp-item-ok">
+                <div class="sec-exp-item-head">
+                  <code class="sec-exp-id">{{ e.id }}</code>
+                  <span class="sec-exp-title">{{ e.title }}</span>
+                  <el-tag v-for="t in e.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag>
+                </div>
+                <div class="sec-exp-meta">来源：{{ e.source }} · 审批人 {{ e.decidedBy || 'operator' }} · {{ fmtTime(e.decidedAt) }}</div>
+                <div class="sec-exp-body">{{ e.body }}</div>
+              </div>
+              <div v-if="!expApproved.length" class="sec-empty sec-empty-sm">暂无已批准经验。</div>
+            </div>
+          </article>
+
+          <details v-if="expRejected.length" class="sec-adv">
+            <summary>已驳回（{{ expRejected.length }}）</summary>
+            <div class="sec-exp-list">
+              <div v-for="e in expRejected" :key="e.id" class="sec-exp-item">
+                <div class="sec-exp-item-head">
+                  <code class="sec-exp-id">{{ e.id }}</code>
+                  <span class="sec-exp-title">{{ e.title }}</span>
+                  <span class="sec-spacer" />
+                  <span class="sec-exp-meta">驳回：{{ e.reason || '未说明' }}</span>
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+
         <!-- ========= Tab 3：环境 / 靶场（宿主机 Docker + Android，仅本机） ========= -->
         <div v-show="tab === 'env'" class="sec-pane">
           <div class="sec-pane-head">
@@ -613,7 +691,47 @@
               placeholder="输入安全任务，Ctrl+Enter 发送"
               @keydown.ctrl.enter="sendSecChat"
             />
-            <div class="sec-ai-actions">
+            <!-- 输入框工具条（对齐运维模式 P0）：左=动作语义，右=模型 / 执行权限 / 发送 -->
+            <div class="sec-ai-toolbar">
+              <div class="sec-ai-toolbar-group">
+                <el-button size="small" class="sec-ai-tool-btn" disabled title="P1 开放：把输入直接作为 /安全命令执行，不经过模型">执行</el-button>
+                <el-button size="small" class="sec-ai-tool-btn sec-ai-tool-btn-active" plain>Agent</el-button>
+              </div>
+              <span class="sec-spacer" />
+              <el-select
+                v-model="secModelId"
+                size="small"
+                class="sec-ai-model-select"
+                placeholder="默认模型"
+                :disabled="secChatStreaming"
+                @change="saveSecModel"
+                @visible-change="onSecModelDropdown"
+              >
+                <el-option :value="''" :label="`默认（${defaultModelLabel}）`" />
+                <el-option v-for="m in chatModelOptions" :key="m.id" :value="m.id" :label="modelLabel(m)" />
+              </el-select>
+              <el-popover placement="top-end" :width="286" trigger="click">
+                <template #reference>
+                  <el-button size="small" text class="sec-ai-perm-btn" title="执行权限（交战模式 / 授权范围）">
+                    <el-icon :size="14"><Setting /></el-icon>
+                  </el-button>
+                </template>
+                <div class="sec-ai-perm-panel">
+                  <div class="sec-ai-perm-title">执行权限</div>
+                  <p class="sec-ai-perm-sub">
+                    侵入性动作（爆破 / 注入验证）默认关闭；开启前请确认目标已授权且环境隔离。
+                  </p>
+                  <div class="sec-ai-perm-row">
+                    <span>交战模式</span>
+                    <el-switch :model-value="cfg.engagementMode" size="small" @change="toggleEngagement($event === true)" />
+                  </div>
+                  <div class="sec-ai-perm-meta">当前授权目标 {{ scopes.length }} 个 · 风险上限以每条授权记录为准</div>
+                  <div v-if="cfg.engagementMode" class="sec-ai-perm-warn">
+                    ⚠ 交战模式已开启：服务端仍会逐条校验授权范围、风险级与确认标记，不会因为开关而跳过。
+                  </div>
+                </div>
+              </el-popover>
+              <span class="sec-ai-scope-hint">{{ scopes.length }} 个授权目标</span>
               <span v-if="secChatStreaming" class="sec-ai-hint">执行中…</span>
               <el-button v-if="secChatStreaming" size="small" type="warning" @click="abortSecChat">停止</el-button>
               <el-button size="small" :disabled="secChatStreaming || !secChatInput.trim()" type="primary" @click="sendSecChat">发送</el-button>
@@ -690,7 +808,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
-import { ChatDotRound, Close, QuestionFilled, User } from '@element-plus/icons-vue';
+import { ChatDotRound, Close, QuestionFilled, Setting, User } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, API_BASE } from '../../api/client';
 import { consumeSseStream } from '../../utils/sse';
@@ -728,7 +846,7 @@ interface SecMsg { id: string; role: string; content: string; subAgentName?: str
 const secMessages = ref<SecMsg[]>([]);
 const secChatInput = ref('');
 const secChatStreaming = ref(false);
-const secConvId = ref('');
+const secConvId = ref((() => { try { return localStorage.getItem('sec-ai-conv') || ''; } catch { return ''; } })());
 const secChatListEl = ref<HTMLElement | null>(null);
 let secAbort: AbortController | null = null;
 
@@ -736,17 +854,100 @@ let secAbort: AbortController | null = null;
 const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();
 
+// ---------- AI 模式输入框工具条（对齐运维模式 P0-1，2026-10-17）----------
+// ★ 会话内模型选择：空 = 跟随设置（零迁移）；选了就按模型归属解析平台。
+//   选中模型被删/停用时明确提示并回落，不静默跨模型发送。
+const secModelId = ref((() => { try { return localStorage.getItem('sec-ai-model') || ''; } catch { return ''; } })());
+/** 会话内模型选择本地留档：刷新后仍用同一个模型（空 = 跟随设置） */
+function saveSecModel(v: unknown) {
+  try { localStorage.setItem('sec-ai-model', String(v || '')); } catch { /* 隐私模式忽略 */ }
+}
+const chatModelOptions = computed(() =>
+  platformStore.models.filter((m: any) => (m.type || 'llm') === 'llm' && m.enabled !== false && m.visible !== false),
+);
+const defaultModelLabel = computed(() => {
+  const m = platformStore.models.find((x: any) => x.id === settingsStore.settings.defaultModelId);
+  return m ? (m.alias || m.modelId) : '跟随设置';
+});
+function modelLabel(m: any): string {
+  return m.alias || m.modelId || m.id;
+}
+/** 打开下拉时补拉全量模型：本页可能只加载过默认平台那一份 */
+function onSecModelDropdown(open: boolean) {
+  if (!open) return;
+  void platformStore.loadModels().catch(() => { /* 拉取失败保留现有列表 */ });
+}
+
+async function resolveSecModel(): Promise<{ platform: any; model: any } | null> {
+  const selectedId = secModelId.value.trim();
+  if (selectedId && !platformStore.models.some((m: any) => m.id === selectedId)) {
+    await platformStore.loadModels().catch(() => {});
+  }
+  let model: any = selectedId ? platformStore.models.find((m: any) => m.id === selectedId) : undefined;
+  if (selectedId && (!model || model.enabled === false)) {
+    secModelId.value = '';
+    saveSecModel('');
+    ElMessage.warning(`本会话选择的模型已不可用（${selectedId}），已回落为设置里的默认模型`);
+    model = undefined;
+  }
+  if (!model) {
+    if (!platformStore.models.length) await platformStore.loadModels().catch(() => {});
+    model = platformStore.models.find((m: any) => m.id === settingsStore.settings.defaultModelId && m.enabled !== false);
+  }
+  if (!model) {
+    ElMessage.warning('请先在「设置」配置默认平台与模型（AI 模式需要）');
+    return null;
+  }
+  let platform: any = platformStore.platforms.find((p: any) => p.id === model.platformId);
+  if (!platform) {
+    await platformStore.loadPlatforms().catch(() => {});
+    platform = platformStore.platforms.find((p: any) => p.id === model.platformId);
+  }
+  if (!platform) {
+    ElMessage.warning(`模型「${model.alias || model.modelId}」所属平台不可用，请到「设置 → 模型平台」检查`);
+    return null;
+  }
+  return { platform, model };
+}
+
+/** 执行权限：交战模式（侵入性动作总开关）。开启前必须人工确认，服务端仍逐条校验。 */
+async function toggleEngagement(v: boolean) {
+  if (v) {
+    try {
+      await ElMessageBox.confirm(
+        '开启「交战模式」后，安全助手可执行侵入性动作（SQLi / SSRF 验证、默认口令自查等）。' +
+        '<br><br>只应在<b>已授权目标或隔离靶场</b>上使用；服务端仍会逐条校验授权范围与风险级，所有动作全程留痕。',
+        '开启交战模式',
+        { dangerouslyUseHTMLString: true, type: 'warning', confirmButtonText: '开启', cancelButtonText: '取消' },
+      );
+    } catch { return; }
+  }
+  const r = await api.post(`${BASE}/config`, { engagementMode: v });
+  if ('error' in r) { ElMessage.error(String(r.error)); return; }
+  cfg.engagementMode = v;
+  ElMessage.success(v ? '交战模式已开启' : '交战模式已关闭');
+}
+
 async function ensureSecConversation(): Promise<string> {
   if (secConvId.value) return secConvId.value;
   const r = await api.post<any>('/conversations', { title: '安全控制台', agentId: SEC_AGENT_ID });
   if ('error' in r) throw new Error(r.error);
   secConvId.value = (r.data as any).id as string;
+  // 刷新后回到同一个安全会话（而不是每题都新建一个）
+  try { localStorage.setItem('sec-ai-conv', secConvId.value); } catch { /* 隐私模式忽略 */ }
   return secConvId.value;
 }
 
 async function loadSecMessages() {
   if (!secConvId.value) return;
   const r = await api.get<any[]>(`/conversations/${secConvId.value}/messages`);
+  if ('error' in r) {
+    // 会话被删除/无权访问：清掉本地指针，下一次发送时重建，不卡在一个坏 id 上
+    secConvId.value = '';
+    secMessages.value = [];
+    try { localStorage.removeItem('sec-ai-conv'); } catch { /* 忽略 */ }
+    return;
+  }
   if ('data' in r) {
     secMessages.value = (r.data as any[]).map((m) => ({
       id: m.id, role: m.role, content: m.content || '',
@@ -769,12 +970,9 @@ function scopeHint(): string {
 async function sendSecChat() {
   const content = secChatInput.value.trim();
   if (!content || secChatStreaming.value) return;
-  const platform = platformStore.platforms.find((p) => p.id === settingsStore.settings.defaultPlatformId);
-  const model = platformStore.models.find((m) => m.id === settingsStore.settings.defaultModelId);
-  if (!platform || !model) {
-    ElMessage.warning('请先在「设置」配置默认平台与模型（AI 模式需要）');
-    return;
-  }
+  const resolved = await resolveSecModel();
+  if (!resolved) return;
+  const { platform, model } = resolved;
   try {
     await ensureSecConversation();
   } catch (e) {
@@ -948,6 +1146,20 @@ const audit = ref<Array<{ at: number; tool: string; target?: string; ok: boolean
 const toolchain = ref<Array<{ name: string; available: boolean; capability: string; install: string }>>([]);
 const cfg = reactive({ engagementMode: false });
 
+// ---------- 经验库（自学习，P5）：待审 → 人工批准 → 才注入提示词 ----------
+interface ExperienceRow {
+  id: string; title: string; body: string; tags: string[]; source: string;
+  submittedBy: string; status: string; createdAt: number;
+  decidedAt?: number; decidedBy?: string; reason?: string;
+}
+const expPending = ref<ExperienceRow[]>([]);
+const expApproved = ref<ExperienceRow[]>([]);
+const expRejected = ref<ExperienceRow[]>([]);
+const expCounts = ref({ pending: 0, approved: 0, rejected: 0, total: 0 });
+const expBusy = ref('');
+const showExpForm = ref(false);
+const expDraft = reactive({ title: '', body: '', source: '', tags: '' });
+
 // ---------- 派生 ----------
 const currentTabLabel = computed(() => TABS.find((t) => t.value === tab.value)?.sub || '');
 
@@ -956,7 +1168,7 @@ const currentTabLabel = computed(() => TABS.find((t) => t.value === tab.value)?.
  *    而这里真正的信号是"有多少发现项 + 多少条被拦的审计"。 */
 function tabBadge(t: { value: string }): string {
   if (t.value !== 'review') return '';
-  const n = findings.value.length + audit.value.filter((a) => !a.ok).length;
+  const n = findings.value.length + audit.value.filter((a) => !a.ok).length + expCounts.value.pending;
   return n ? String(n) : '';
 }
 const liveScopes = computed(() => String(scopes.value.length).padStart(2, '0'));
@@ -1270,7 +1482,67 @@ async function loadAll() {
   if (a) audit.value = a;
   const c = await unwrap<{ engagementMode: boolean }>(api.get(`${BASE}/config`));
   if (c) cfg.engagementMode = !!c.engagementMode;
+  await loadExperience();
   lastRunMs.value = Date.now() - t0;
+}
+
+// ---------- 经验库（自学习）：待审队列 + 人工审批 ----------
+// ★ 审批按钮只存在于人类界面；服务端 experience_review 还是 HUMAN_ONLY，
+//   两层都拦，避免"模型自己批自己写进提示词"。
+async function loadExperience() {
+  const d = await unwrap<{
+    pending: ExperienceRow[]; approved: ExperienceRow[]; rejected: ExperienceRow[];
+    counts: { pending: number; approved: number; rejected: number; total: number };
+  }>(api.get(`${BASE}/experience`));
+  if (!d) return;
+  expPending.value = d.pending || [];
+  expApproved.value = d.approved || [];
+  expRejected.value = d.rejected || [];
+  expCounts.value = d.counts || { pending: 0, approved: 0, rejected: 0, total: 0 };
+}
+
+async function proposeExperience() {
+  if (!expDraft.title.trim() || !expDraft.body.trim() || !expDraft.source.trim()) {
+    ElMessage.warning('标题 / 正文 / 来源依据 必填');
+    return;
+  }
+  expBusy.value = 'new';
+  try {
+    const r = await api.post(`${BASE}/experience/propose`, {
+      title: expDraft.title, body: expDraft.body, source: expDraft.source,
+      tags: expDraft.tags.split(/[,，\s]+/).filter(Boolean),
+    });
+    if ('error' in r) return ElMessage.error(String(r.error));
+    ElMessage.success('已提交待审（不会立即生效）');
+    expDraft.title = ''; expDraft.body = ''; expDraft.source = ''; expDraft.tags = '';
+    showExpForm.value = false;
+    await loadExperience();
+  } finally { expBusy.value = ''; }
+}
+
+async function decideExperienceRow(row: ExperienceRow, decision: 'approve' | 'reject') {
+  let reason = '';
+  try {
+    if (decision === 'reject') {
+      const r = await ElMessageBox.prompt('驳回原因会记录在案，便于提交者改进。', '驳回经验', {
+        inputPlaceholder: '例如：结论无法复现 / 属于一次性信息 / 含未去敏数据',
+        confirmButtonText: '驳回', cancelButtonText: '取消',
+      });
+      reason = String(r.value || '').trim();
+    } else {
+      await ElMessageBox.confirm(
+        `批准后「${row.title}」会进入安全助手后续任务的系统提示词。确定批准？`,
+        '批准经验', { type: 'warning', confirmButtonText: '批准', cancelButtonText: '取消' },
+      );
+    }
+  } catch { return; } // 用户取消
+  expBusy.value = row.id;
+  try {
+    const r = await api.post(`${BASE}/experience/decide`, { id: row.id, decision, reason, decidedBy: 'operator' });
+    if ('error' in r) return ElMessage.error(String(r.error));
+    ElMessage.success(decision === 'approve' ? '已批准：下个任务生效' : '已驳回');
+    await loadExperience();
+  } finally { expBusy.value = ''; }
 }
 
 async function loadToolchain() {
@@ -1885,6 +2157,34 @@ onUnmounted(() => { secAbort?.abort(); });
 .sec-audit-target { color: var(--sc-fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sec-audit-msg { color: var(--sc-fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- 经验库（自学习）：待审 / 已批准 ---------- */
+.sec-exp-form {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px; border-bottom: 1px dashed var(--sc-line);
+  background: var(--sc-bg-2);
+}
+.sec-exp-list { padding: 8px 12px 12px; overflow: auto; }
+.sec-exp-group-title {
+  margin: 4px 0 2px; font-family: var(--sc-mono); font-size: 10.5px;
+  letter-spacing: .08em; color: var(--sc-fg-3); text-transform: uppercase;
+}
+.sec-exp-item {
+  margin-top: 8px; padding: 8px 10px;
+  border: 1px solid var(--sc-line); border-radius: 3px;
+  background: var(--sc-bg-2);
+}
+.sec-exp-item-ok { border-left: 3px solid var(--sc-green); }
+.sec-exp-item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sec-exp-id { font-family: var(--sc-mono); font-size: 10.5px; color: var(--sc-cyan); }
+.sec-exp-title { font-size: 12.5px; font-weight: 600; color: var(--sc-fg); }
+.sec-exp-meta { margin-top: 4px; font-family: var(--sc-mono); font-size: 10.5px; color: var(--sc-fg-3); }
+.sec-exp-body {
+  margin-top: 6px; font-size: 12px; line-height: 1.55; color: var(--sc-fg);
+  white-space: pre-wrap; word-break: break-word;
+}
+.sec-exp-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.sec-exp-note { font-family: var(--sc-mono); font-size: 10.5px; color: var(--sc-fg-3); }
+
 /* ---------- 通用 ---------- */
 .sec-empty {
   padding: 32px 20px; text-align: center;
@@ -2122,7 +2422,29 @@ onUnmounted(() => { secAbort?.abort(); });
   padding: 8px 10px; border-radius: 10px; font-size: 13px; line-height: 1.6; resize: none;
 }
 .sec-ai-input :deep(.el-textarea__inner::placeholder) { color: var(--sc-fg-3); opacity: 0.8; }
-.sec-ai-actions { display: flex; align-items: center; gap: 8px; padding: 0 6px 2px; }
-.sec-ai-actions :deep(.el-button + .el-button) { margin-left: 0; }
+/* 右侧留 56px：右下角主导方悬浮胶囊（LeadToggle，right:16 + 34px 宽）压在工具条右端，
+   不留白会把「发送」盖住、点击还会误触切换模式（与运维模式同一处修正） */
+.sec-ai-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 56px 2px 2px;
+}
+.sec-ai-toolbar-group { display: inline-flex; gap: 4px; }
+.sec-ai-tool-btn { padding: 4px 10px; }
+.sec-ai-tool-btn-active { border-color: var(--sc-cyan); color: var(--sc-cyan); }
+.sec-ai-model-select { width: 190px; }
+.sec-ai-model-select :deep(.el-select__wrapper) { min-height: 26px; }
+.sec-ai-perm-btn { padding: 2px 6px; }
+.sec-ai-scope-hint { font-family: var(--sc-mono); font-size: 10.5px; color: var(--sc-fg-3); }
+.sec-ai-perm-title { font-size: 12.5px; font-weight: 600; color: var(--sc-fg); }
+.sec-ai-perm-sub { margin: 6px 0; font-size: 11.5px; line-height: 1.5; color: var(--sc-fg-2); }
+.sec-ai-perm-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 0; border-top: 1px dashed var(--sc-line); font-size: 12px;
+}
+.sec-ai-perm-meta { margin-top: 6px; font-family: var(--sc-mono); font-size: 10px; color: var(--sc-fg-3); }
+.sec-ai-perm-warn {
+  margin-top: 8px; padding: 6px 8px; border: 1px solid var(--sc-amber);
+  border-radius: 3px; color: var(--sc-amber); font-size: 11px; line-height: 1.5;
+}
 .sec-ai-hint { font-size: 11px; color: var(--sc-fg-3); }
 </style>

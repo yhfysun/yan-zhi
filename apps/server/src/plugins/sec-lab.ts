@@ -11,7 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BuiltInTool, McpCallResult, PlaybookDef, PluginContext, PluginManifest, PluginModule, PluginStorage } from '@yan-zhi/core';
 import {
-  DEFAULT_SEC_CONFIG, guard, normalizeTarget,
+  DEFAULT_SEC_CONFIG, guard, normalizeTarget, isTrustedHumanCall, markTrustedHumanCall,
   type ScopeEntry, type SecConfig,
 } from './sec-lab-guard.js';
 import { renderOutput, sortFindings, type Finding, type ToolOutput } from './sec-lab-types.js';
@@ -46,6 +46,11 @@ import { runBrute } from './sec-lab-tools/brute.js';
 import { runAttackMap } from './sec-lab-tools/attackmap.js';
 import { runSkill, runWarstory, runCheatsheet } from './sec-lab-tools/knowledge.js';
 import { runSast } from './sec-lab-tools/sast.js';
+// —— P5：经验库（自学习，2026-10-17）——
+import {
+  addExperience, approvedEntries, decideExperience, experienceCounts, oneLine, sanitizeText,
+  type Decision, type ExperienceEntry,
+} from './sec-lab-tools/expstore.js';
 
 export const SEC_LAB_ID = 'sec-lab';
 
@@ -76,6 +81,8 @@ export const secLabManifest: PluginManifest = {
       'baseline_scan', 'tls_audit', 'headers_audit', 'watch', 'brute', 'attack_map',
       // —— P4（2026-10-17）——
       'sec_skill', 'warstory', 'cheatsheet', 'sast',
+      // —— P5（2026-10-17）——
+      'sec_experience', 'experience_review',
     ],
     // ★ 2026-10-16 去掉 sidebar 贡献：与顶栏**模式下拉**的「安全」是同一个入口（都进 /sec），
     //   属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
@@ -167,6 +174,12 @@ export const secLabManifest: PluginManifest = {
       { name: 'warstory', desc: '战例库：真实缺陷的排查路径与教训', usage: '/warstory [关键词]', group: 'KB', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'warstory', params: ['topic'] },
       { name: 'cheatsheet', desc: '速查表：nmap / curl / jwt / sqlmap / ffuf', usage: '/cheatsheet [关键词]', group: 'KB', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'cheatsheet', params: ['topic'] },
       { name: 'code-scan', aliases: ['codescan'], desc: '本地源码安全扫描（L1 正则 + L2 结构式，10 条规则；只读不改文件）', usage: '/code-scan <目录> [--maxFiles=800]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sast', params: ['root'] },
+
+      // ── P5：经验库（自学习，2026-10-17）────────────────────────────────────
+      // ★ 模型只能 propose，审批走 `/exp-review`（HUMAN_ONLY，服务端硬拦）；
+      //   只有 approved 条目会被 buildSystemPromptForBackend 注入提示词。
+      { name: 'experience', aliases: ['exp'], desc: '安全经验库：list 看已批准（只有它进提示词）/ pending 看待审（仅元数据）/ propose 提交经验（人工审批后才生效）', usage: '/experience <list|pending|propose> [title] [--source=x] [--body=...]', group: 'KB', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sec_experience', params: ['action', 'title'] },
+      { name: 'exp-review', aliases: ['exp_review', 'experience-review'], desc: '经验库审批（**仅人工**）：approve / reject 待审条目；批准后才会进入提示词', usage: '/exp-review <approve|reject> <id> [--reason=...]', group: 'KB', mode: 'sec', danger: 'S', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'experience_review', confirm: false, params: ['action', 'id'] },
     ],
     // ── 剧本（`@名字` 召唤的命令序列，2026-10-16）────────────────────────────────
     // ★ 定义就是"一串**已存在的命令**"（见 core 的 PlaybookDef）：剧本自己不执行任何东西，
@@ -219,6 +232,8 @@ const K_ASSETS = 'assets';
 const K_SNAPSHOTS = 'snapshots';
 const K_EXERCISES = 'exercises';
 const K_PLAYBOOKS = 'playbooks';
+// P5：安全经验库（自学习）。只有 approved 会被 services/sec-experience-gate.ts 注入提示词。
+const K_EXPERIENCE = 'experience';
 const AUDIT_MAX = 500;
 
 let store: PluginStorage | null = null;
@@ -250,6 +265,11 @@ const loadSnapshots = () => loadList<Snapshot>(K_SNAPSHOTS);
 //   两者在 `PlaybookDef` 上是同一个类型、同一条展开/执行通道 —— 剧本自己不执行，
 //   展开成命令行后仍走各自的护栏与审计，所以"谁定义的"不影响安全性。
 const loadPlaybooks = () => loadList<PlaybookDef>(K_PLAYBOOKS);
+// 存储里的历史/异常数据不能让控制台整页崩：只接受 id/status 齐全的对象
+const loadExperience = async (): Promise<ExperienceEntry[]> =>
+  (await loadList<ExperienceEntry>(K_EXPERIENCE)).filter(
+    (e) => !!e && typeof e === 'object' && typeof e.id === 'string' && typeof e.status === 'string',
+  );
 /** 用户剧本上限：够用又不至于把面板撑爆；超出直接拒绝并说明，不静默丢弃 */
 const USER_PLAYBOOK_MAX = 50;
 const USER_PLAYBOOK_STEPS_MAX = 20;
@@ -297,9 +317,6 @@ function redact(text: string, on: boolean): string {
 }
 
 // ---------- 工具实现 ----------
-
-/** 工具工厂传给 withGuard 的元数据：当前只有 requester 区分；保留扩展位 */
-interface RuntimeOpts { requester?: 'agent' | 'human' }
 
 function scopeListTool(): BuiltInTool {
   return {
@@ -422,7 +439,6 @@ async function withGuard<T extends { target?: string }>(
   tool: string,
   args: Record<string, unknown>,
   run: (cfg: SecConfig) => Promise<ToolOutput>,
-  opts?: RuntimeOpts,
 ): Promise<McpCallResult> {
   const cfg = await loadConfig();
   const scopes = await loadScopes();
@@ -435,11 +451,11 @@ async function withGuard<T extends { target?: string }>(
     scopes,
     config: cfg,
     confirmed: args.confirmed === true,
-    // 控制台（/run 路由）注入的秘密前缀：仅以此开头的值才被视为受信任的人工身份。
-    // AI 不通过 /run 路由调用，且 schema 不暴露该字段，物理上不会撞前缀。
-    requester: opts?.requester || (typeof args.__sec_runner === 'string' && args.__sec_runner.startsWith('sec-runner-')
-      ? (args.__sec_runner.slice('sec-runner-'.length) as 'agent' | 'human')
-      : 'agent'),
+    // ★ 人工身份**只认 Symbol 标记**（见 sec-lab-guard.isTrustedHumanCall）：
+    //   工具参数是模型可写的 JSON，字符串字段（曾经的 __sec_runner）可以被伪造；
+    //   Symbol 键只能由服务端 `/run` / 控制台审批路由在进程内写入。
+    //   没有任何“调用方自己声明 human”的入口。
+    requester: isTrustedHumanCall(args) ? 'human' : 'agent',
   });
   if (!g.ok) {
     await pushAudit({ at: Date.now(), tool, target: args.target ? String(args.target) : undefined, ok: false, message: g.reason });
@@ -756,8 +772,8 @@ function attackSimTool(): BuiltInTool {
           }
           return out;
         },
-        // planOnly 只生成计划（不产生任何动作），AI 可调用；真正执行时必须人工点击（带 requester=human）
-        { requester: planOnly ? 'agent' : 'human' },
+        // ★ 不在这里自证 human：人工身份由 /run 路由写入的 Symbol 标记决定。
+        //   模型直接调用本工具（含 planOnly）一律按 agent 处理，被 HUMAN_ONLY 拦截。
       );
     },
   };
@@ -1528,6 +1544,120 @@ function sastTool(): BuiltInTool {
   };
 }
 
+function experienceTool(): BuiltInTool {
+  return plainTool(
+    'sec_experience',
+    '安全经验库（自学习，**人工审批后才生效**）：action=list 看已批准经验（只有 approved 会进入系统提示词）；propose 提交一条待审经验（title/body/source/tags）。待审队列（pending）仅供人工在控制台查看，模型调用会被拒绝。提交后不会立即生效，不要在回复里声称"已记住/已生效"。不得写入凭据、密码、token、客户隐私。',
+    {
+      action: { type: 'string', enum: ['list', 'pending', 'propose'], description: 'list=已批准 / pending=待审 / propose=提交' },
+      title: { type: 'string', description: 'propose：经验标题（2-80 字）' },
+      body: { type: 'string', description: 'propose：经验正文（20-1200 字，写方法/坑/验证过的步骤）' },
+      source: { type: 'string', description: 'propose：依据（finding id / 命令 / 报告 / 人工说明）' },
+      tags: { type: 'array', items: { type: 'string' }, description: 'propose：标签，最多 8 个' },
+    },
+    ['action'],
+    async (a) => {
+      const action = String(a.action || 'list');
+      const list = await loadExperience();
+      const counts = experienceCounts(list);
+
+      if (action === 'list') {
+        const approved = approvedEntries(list);
+        const text = approved.length
+          ? `已批准经验 ${approved.length} 条（只有这些会进入系统提示词）；待审 ${counts.pending} 条，已驳回 ${counts.rejected} 条。\n\n` +
+            approved
+              .slice()
+              .sort((x, y) => (y.decidedAt ?? y.createdAt) - (x.decidedAt ?? x.createdAt))
+              .map((e) => [
+                `### ${oneLine(e.id)} · ${oneLine(e.title)}${(e.tags || []).length ? ` [${(e.tags || []).map((t) => oneLine(t)).filter(Boolean).join(', ')}]` : ''}`,
+                `来源：${oneLine(e.source)}${e.decidedBy ? ` · 审批人 ${oneLine(e.decidedBy)}` : ''}`,
+                sanitizeText(e.body),
+              ].join('\n'))
+              .join('\n\n')
+          : `暂无已批准经验（待审 ${counts.pending} 条）。经验只有经人工审批后才会进入提示词。`;
+        return { tool: 'sec_experience', target: '', risk: 'passive', summary: text, findings: [], raw: { counts, entries: approved } };
+      }
+
+      if (action === 'pending') {
+        // ★ 待审队列只给人工看：模型读待审标题/来源，等于把未批准内容重新塞回自己的上下文，
+        //   闸门就漏了一半。模型只需要"我提交了什么"的结果，不需要浏览队列。
+        //   人工身份只认 Symbol 标记（字符串参数可被模型伪造）。
+        if (!isTrustedHumanCall(a)) {
+          throw new Error('待审队列仅供人工在安全控制台查看。模型只能 list 已批准经验，或用 propose 提交新提议。');
+        }
+        const pending = list
+          .filter((e) => e.status === 'pending')
+          .sort((x, y) => y.createdAt - x.createdAt);
+        const text = pending.length
+          ? `待审经验 ${pending.length} 条（等待人工在安全控制台审批；**未批准不会影响你的行为**）：\n` +
+            pending.map((e) => `- ${oneLine(e.id)} · ${oneLine(e.title)}（${e.submittedBy === 'human' ? '人工' : '模型'}提交）来源：${oneLine(e.source)}`).join('\n') +
+            '\n\n★ 这里只展示元数据，不返回正文：未批准的内容不应影响本轮判断。'
+          : '待审队列为空。';
+        return {
+          tool: 'sec_experience', target: '', risk: 'passive', summary: text, findings: [],
+          raw: { counts, pending: pending.map((e) => ({ id: e.id, title: e.title, source: e.source, submittedBy: e.submittedBy, createdAt: e.createdAt })) },
+        };
+      }
+
+      if (action === 'propose') {
+        // 提交者身份也来自受信任入口；模型传任何字符串都不会被当成"人工提交"
+        const submittedBy = isTrustedHumanCall(a) ? 'human' : 'agent';
+        const r = addExperience(list, {
+          title: String(a.title || ''),
+          body: String(a.body || ''),
+          source: String(a.source || ''),
+          tags: a.tags as string[] | string | undefined,
+        }, submittedBy);
+        if (!r.ok) throw new Error(r.reason);
+        if (store) await store.set(K_EXPERIENCE, r.list);
+        return {
+          tool: 'sec_experience', target: '', risk: 'passive',
+          summary: `已提交待审：${r.entry.id} —— ${r.entry.title}\n★ 当前**尚未生效**。人工在安全控制台批准后，下一个任务才会注入；不要据此改变本轮行为，也不要声称已记住。`,
+          findings: [],
+          raw: { id: r.entry.id, title: r.entry.title, status: r.entry.status, submittedBy: r.entry.submittedBy },
+        };
+      }
+
+      throw new Error('action 必须是 list / pending / propose');
+    },
+  );
+}
+
+function experienceReviewTool(): BuiltInTool {
+  return plainTool(
+    'experience_review',
+    '安全经验库审批（**仅人工**，模型调用会被服务端拒绝）：approve / reject 待审经验。批准后该条目才会在后续任务的系统提示词中生效。',
+    {
+      action: { type: 'string', enum: ['approve', 'reject'], description: 'approve=批准 / reject=驳回' },
+      id: { type: 'string', description: '经验条目 id（exp-…）' },
+      reason: { type: 'string', description: '驳回原因（reject 时建议填写）' },
+      decidedBy: { type: 'string', description: '审批人（默认 operator）' },
+    },
+    ['action', 'id'],
+    async (a) => {
+      const decision = String(a.action) as Decision;
+      const list = await loadExperience();
+      const r = decideExperience(
+        list,
+        String(a.id || ''),
+        decision,
+        String(a.decidedBy || 'operator'),
+        a.reason ? String(a.reason) : undefined,
+      );
+      if (!r.ok) throw new Error(r.reason);
+      if (store) await store.set(K_EXPERIENCE, r.list);
+      return {
+        tool: 'experience_review', target: '', risk: 'passive',
+        summary: decision === 'approve'
+          ? `已批准经验 ${r.entry.id} —— ${r.entry.title}\n它将在后续任务中进入安全助手的系统提示词（仅参考，不覆盖合规硬约束）。`
+          : `已驳回经验 ${r.entry.id} —— ${r.entry.title}\n原因：${r.entry.reason || '未说明'}。被驳回条目不会进入提示词。`,
+        findings: [],
+        raw: r.entry,
+      };
+    },
+  );
+}
+
 // ---------- 后端路由（控制台页面用） ----------
 
 function registerRoutes(ctx: PluginContext) {
@@ -1567,72 +1697,79 @@ function registerRoutes(ctx: PluginContext) {
     r.post('/run', async (req: unknown, res: unknown) => {
       const body = bodyOf(req);
       const tool = String(body.tool || '');
-      const map: Record<string, { factory: () => BuiltInTool; opts: RuntimeOpts; passRunner: boolean }> = {
-        recon: { factory: reconTool, opts: {}, passRunner: true },
-        portscan: { factory: portscanTool, opts: {}, passRunner: true },
-        webprobe: { factory: webprobeTool, opts: {}, passRunner: true },
-        toolchain: { factory: toolchainTool, opts: {}, passRunner: true },
-        sec_report: { factory: secReportTool, opts: {}, passRunner: true },
-        scope_list: { factory: scopeListTool, opts: {}, passRunner: false },
-        scope_add: { factory: scopeAddTool, opts: {}, passRunner: false },
-        scope_remove: { factory: scopeRemoveTool, opts: {}, passRunner: false },
-        attack_sim: { factory: attackSimTool, opts: { requester: 'human' }, passRunner: true },
-        sim_report: { factory: simReportTool, opts: { requester: 'human' }, passRunner: true },
-        detect_rules: { factory: detectRulesTool, opts: { requester: 'human' }, passRunner: true },
-        log_hunt: { factory: logHuntTool, opts: { requester: 'human' }, passRunner: true },
-        asset_monitor: { factory: assetMonitorTool, opts: { requester: 'human' }, passRunner: true },
-        host_env: { factory: hostEnvTool, opts: { requester: 'human' }, passRunner: true },
-        range_deploy: { factory: rangeDeployTool, opts: { requester: 'human' }, passRunner: true },
-        range_list: { factory: rangeListTool, opts: { requester: 'human' }, passRunner: true },
-        range_stop: { factory: rangeStopTool, opts: { requester: 'human' }, passRunner: true },
-        android_launch: { factory: androidLaunchTool, opts: { requester: 'human' }, passRunner: true },
+      const map: Record<string, () => BuiltInTool> = {
+        recon: reconTool,
+        portscan: portscanTool,
+        webprobe: webprobeTool,
+        toolchain: toolchainTool,
+        sec_report: secReportTool,
+        scope_list: scopeListTool,
+        scope_add: scopeAddTool,
+        scope_remove: scopeRemoveTool,
+        attack_sim: attackSimTool,
+        sim_report: simReportTool,
+        detect_rules: detectRulesTool,
+        log_hunt: logHuntTool,
+        asset_monitor: assetMonitorTool,
+        host_env: hostEnvTool,
+        range_deploy: rangeDeployTool,
+        range_list: rangeListTool,
+        range_stop: rangeStopTool,
+        android_launch: androidLaunchTool,
         // —— P1（2026-10-17）——
-        whois: { factory: whoisTool, opts: {}, passRunner: true },
-        ctlog: { factory: ctlogTool, opts: {}, passRunner: true },
-        osint: { factory: osintTool, opts: {}, passRunner: true },
-        subdomain: { factory: subdomainTool, opts: {}, passRunner: true },
-        crawl: { factory: crawlTool, opts: {}, passRunner: true },
-        js_endpoint: { factory: jsEndpointTool, opts: {}, passRunner: true },
-        dirsearch: { factory: dirsearchTool, opts: {}, passRunner: true },
-        waf_detect: { factory: wafTool, opts: {}, passRunner: true },
-        service_scan: { factory: serviceScanTool, opts: {}, passRunner: true },
-        udp_scan: { factory: udpScanTool, opts: {}, passRunner: true },
-        crypto_encode: { factory: encodeTool, opts: {}, passRunner: true },
-        crypto_decode: { factory: decodeTool, opts: {}, passRunner: true },
-        jwt_inspect: { factory: jwtTool, opts: {}, passRunner: true },
-        hash_id: { factory: hashidTool, opts: {}, passRunner: true },
-        target_state: { factory: targetStateTool, opts: {}, passRunner: true },
-        proxy: { factory: proxyTool, opts: {}, passRunner: true },
+        whois: whoisTool,
+        ctlog: ctlogTool,
+        osint: osintTool,
+        subdomain: subdomainTool,
+        crawl: crawlTool,
+        js_endpoint: jsEndpointTool,
+        dirsearch: dirsearchTool,
+        waf_detect: wafTool,
+        service_scan: serviceScanTool,
+        udp_scan: udpScanTool,
+        crypto_encode: encodeTool,
+        crypto_decode: decodeTool,
+        jwt_inspect: jwtTool,
+        hash_id: hashidTool,
+        target_state: targetStateTool,
+        proxy: proxyTool,
         // —— P2（2026-10-17）——
-        poc_scan: { factory: pocScanTool, opts: {}, passRunner: true },
-        poc_templates: { factory: pocTemplatesTool, opts: {}, passRunner: true },
-        cve_intel: { factory: cveTool, opts: {}, passRunner: true },
-        exploit_search: { factory: exploitTool, opts: {}, passRunner: true },
-        oast: { factory: oastTool, opts: {}, passRunner: true },
-        verify_sqli: { factory: verifySqliTool, opts: {}, passRunner: true },
-        verify_xss: { factory: verifyXssTool, opts: {}, passRunner: true },
-        verify_ssrf: { factory: verifySsrfTool, opts: {}, passRunner: true },
-        finding_status: { factory: findingStatusTool, opts: {}, passRunner: true },
+        poc_scan: pocScanTool,
+        poc_templates: pocTemplatesTool,
+        cve_intel: cveTool,
+        exploit_search: exploitTool,
+        oast: oastTool,
+        verify_sqli: verifySqliTool,
+        verify_xss: verifyXssTool,
+        verify_ssrf: verifySsrfTool,
+        finding_status: findingStatusTool,
         // —— P3（2026-10-17）——
-        baseline_scan: { factory: baselineTool, opts: {}, passRunner: true },
-        tls_audit: { factory: tlsAuditTool, opts: {}, passRunner: true },
-        headers_audit: { factory: headersAuditTool, opts: {}, passRunner: true },
-        watch: { factory: watchTool, opts: {}, passRunner: true },
-        brute: { factory: bruteTool, opts: {}, passRunner: true },
-        attack_map: { factory: attackMapTool, opts: {}, passRunner: true },
+        baseline_scan: baselineTool,
+        tls_audit: tlsAuditTool,
+        headers_audit: headersAuditTool,
+        watch: watchTool,
+        brute: bruteTool,
+        attack_map: attackMapTool,
         // —— P4（2026-10-17）——
-        sec_skill: { factory: skillTool, opts: {}, passRunner: true },
-        warstory: { factory: warstoryTool, opts: {}, passRunner: true },
-        cheatsheet: { factory: cheatsheetTool, opts: {}, passRunner: true },
-        sast: { factory: sastTool, opts: {}, passRunner: true },
+        sec_skill: skillTool,
+        warstory: warstoryTool,
+        cheatsheet: cheatsheetTool,
+        sast: sastTool,
+        // —— P5（2026-10-17）——
+        // ★ 审批必须人工：/run 路由会写入进程内 Symbol 人工标记，
+        //   命令行走的是人工入口（与 attack_sim 同一条闸门）。
+        sec_experience: experienceTool,
+        experience_review: experienceReviewTool,
       };
-      const entry = map[tool];
-      if (!entry) return fail(res, 400, `未知工具 ${tool}`);
+      const factory = map[tool];
+      if (!factory) return fail(res, 400, `未知工具 ${tool}`);
       const userArgs = (body.args as Record<string, unknown>) || {};
-      // 透传一个 secret 前缀标识到 args 让 withGuard 强制 requester=human；
-      // AI 走 ToolRegistry 不会走这条路，且 schema 不暴露该字段，物理上不会被偷。
-      const args: Record<string, unknown> = entry.passRunner ? { ...userArgs, __sec_runner: `sec-runner-${entry.opts.requester || 'agent'}` } : userArgs;
-      const out = await entry.factory().execute(args);
+      // ★ /run 是人工入口（控制台按钮 / 命令面板都是人触发的）：用**进程内 Symbol**
+      //   标记人工身份。模型工具调用的 args 来自 JSON，无法携带 Symbol 键，
+      //   因此不能伪造 `requester=human`（历史上用字符串前缀，可被模型直接塞参数绕过）。
+      const args: Record<string, unknown> = { ...userArgs };
+      markTrustedHumanCall(args);
+      const out = await factory().execute(args);
       json(res, { ok: !out.isError, text: out.content?.[0]?.text || '' });
     });
 
@@ -1709,6 +1846,61 @@ function registerRoutes(ctx: PluginContext) {
       json(res, { ok: true });
     });
 
+    // ── P5：经验库（自学习，2026-10-17）────────────────────────────────────────
+    // ★ 审批入口只在这里 + 控制台 UI：experience_review 属于 HUMAN_ONLY，
+    //   模型从工具面调用会被 sec-lab-guard 直接拒绝（guard 的判定在通用路径上，
+    //   不依赖"有没有 target"）。这里写入进程内 Symbol 人工标记才放行。
+    // ★ 所有状态变更都走工具（withGuard）→ 同一条审计链，不新开写入口。
+    r.get('/experience', async (_req: unknown, res: unknown) => {
+      const list = await loadExperience();
+      const byNewest = (a: ExperienceEntry, b: ExperienceEntry) => b.createdAt - a.createdAt;
+      json(res, {
+        data: {
+          pending: list.filter((e) => e.status === 'pending').sort(byNewest),
+          approved: list
+            .filter((e) => e.status === 'approved')
+            .sort((a, b) => (b.decidedAt ?? b.createdAt) - (a.decidedAt ?? a.createdAt)),
+          rejected: list.filter((e) => e.status === 'rejected').sort(byNewest),
+          counts: experienceCounts(list),
+          gate: '只有 approved 条目会注入安全助手提示词',
+        },
+      });
+    });
+
+    r.post('/experience/propose', async (req: unknown, res: unknown) => {
+      const b = bodyOf(req);
+      const args: Record<string, unknown> = {
+        action: 'propose',
+        title: b.title, body: b.body, source: b.source, tags: b.tags,
+      };
+      // 人工在控制台提交：Symbol 标记（仍然进待审队列，不会直接生效）
+      markTrustedHumanCall(args);
+      const out = await experienceTool().execute(args);
+      const text = out.content?.[0]?.text || '';
+      if (out.isError) return fail(res, 400, text);
+      json(res, { ok: true, message: text });
+    });
+
+    r.post('/experience/decide', async (req: unknown, res: unknown) => {
+      const b = bodyOf(req);
+      const decision = String(b.decision || '').trim();
+      if (decision !== 'approve' && decision !== 'reject') {
+        return fail(res, 400, 'decision 必须是 approve / reject');
+      }
+      const args: Record<string, unknown> = {
+        action: decision,
+        id: String(b.id || ''),
+        reason: b.reason ? String(b.reason) : undefined,
+        decidedBy: String(b.decidedBy || 'operator'),
+      };
+      // 人工点击：Symbol 标记才是 HUMAN_ONLY 放行的依据（模型无法伪造）
+      markTrustedHumanCall(args);
+      const out = await experienceReviewTool().execute(args);
+      const text = out.content?.[0]?.text || '';
+      if (out.isError) return fail(res, 400, text);
+      json(res, { ok: true, message: text });
+    });
+
     // 主机环境探测（Docker / Android）
     r.get('/hostenv', async (_req: unknown, res: unknown) => {
       json(res, { data: await probeHostEnv() });
@@ -1756,6 +1948,8 @@ export const secLabModule: PluginModule = {
       baselineTool(), tlsAuditTool(), headersAuditTool(), watchTool(), bruteTool(), attackMapTool(),
       // —— P4（2026-10-17）——
       skillTool(), warstoryTool(), cheatsheetTool(), sastTool(),
+      // —— P5（2026-10-17）——
+      experienceTool(), experienceReviewTool(),
     ]) {
       ctx.registerTool(t);
     }

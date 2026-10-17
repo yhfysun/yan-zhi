@@ -35,15 +35,15 @@ function expectedDanger(tool: string): string {
   return ({ passive: 'P', active: 'A', intrusive: 'I' } as Record<string, string>)[risk];
 }
 
-describe('★ sec-lab 的 53 条命令与工具一一对应（P0 18 + P1 16 + P2 9 + P3 6 + P4 4）', () => {
-  it('工具注册数量与本测试的预期一致（先钉住"53"这个前提）', () => {
-    expect(tools.length).toBe(53);
+describe('★ sec-lab 的 55 条命令与工具一一对应（P0 18 + P1 16 + P2 9 + P3 6 + P4 4 + P5 2）', () => {
+  it('工具注册数量与本测试的预期一致（先钉住"55"这个前提）', () => {
+    expect(tools.length).toBe(55);
   });
 
   it('每个注册的工具恰好有一条命令，且命令里的 tool 名真实存在（防拼错）', () => {
     const names = tools.map((t) => t.name).sort();
     const cmds = COMMANDS();
-    expect(cmds.length).toBe(53);
+    expect(cmds.length).toBe(55);
     expect(cmds.map((c) => c.tool).sort()).toEqual(names);
     // 声明式清单（contributes.tools）是第三条口径，同样不能漂
     expect([...(secLabManifest.contributes as any).tools].sort()).toEqual(names);
@@ -119,10 +119,14 @@ describe('★★ 命令的 params / danger 必须与工具真相源同口径', (
     expect(attack.confirm).toBe(true);
   });
 
-  it('人工闸门的工具（attack_sim）必须是 simulate 级，描述里点明只能人工执行', () => {
+  it('人工闸门的工具（attack_sim / experience_review）必须是 simulate 级或标 S，描述里点明只能人工执行', () => {
     const attack = COMMANDS().find((c) => c.tool === 'attack_sim')!;
     expect(attack.danger).toBe('S');
     expect(attack.desc).toContain('人工');
+    // 经验审批：批准权必须在人手里（HUMAN_ONLY），不能由模型给自己批经验
+    const review = COMMANDS().find((c) => c.tool === 'experience_review')!;
+    expect(review.danger).toBe('S');
+    expect(review.desc).toContain('人工');
   });
 
   it('params 里必填项的相对顺序与 schema 的 required 顺序一致（否则位置参数会错位）', () => {

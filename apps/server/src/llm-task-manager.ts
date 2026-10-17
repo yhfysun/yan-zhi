@@ -22,6 +22,8 @@ import {
   resolveExperienceBase, resolveSkillDraftsDir, appendExperienceEntry, buildExperienceContextForConversation,
   listExperienceSummaries, type ExperienceKind,
 } from './services/experience.js';
+// 安全经验库的注入闸门：只把**人工已批准**的条目拼进安全智能体的提示词（2026-10-17）
+import { isSecExperienceAgent, buildSecExperiencePromptSection } from './services/sec-experience-gate.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
 import { insertSkillDraft } from './services/skill-draft-store.js';
 import { backendTaskPlan, backendTaskStep, loadPlanJson, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
@@ -4198,6 +4200,69 @@ async function maybeAutoDiagnose(task: LlmTask, filePath: string, toolText: stri
 //   browser_run_script 换脚本硬试。两条线：同名同参重复 ≥3 次拦 / 同一工具
 //   严格连续 ≥8 次拦。只拦不罚，返回指引文本让模型走汇报收口路径。
 
+/** 编排/交互类工具：不依赖智能体挂载也必须可用（与 buildToolsForBackend 的无条件暴露口径一致） */
+const ALWAYS_ALLOWED_BUILTINS = new Set([
+  'plan_tasks', 'get_plan_status', 'reassign_task', 'get_sub_task_detail',
+  // buildToolsForBackend 无条件暴露的两条委派入口（不依赖挂载）
+  'call_agent', 'list_sub_agents',
+  ...INTERACTIVE_TOOLS,
+]);
+
+/**
+ * 当前任务是否有权执行某个后端内置工具。
+ * ★ 口径必须与 `buildToolsForBackend` 一致（那才是模型真正看到的工具面）：
+ *   agent.builtin_tool_ids ∪ 会话挂载；无 agent 且无会话挂载时沿用兜底（全部非 plugin/非 UI 内置）。
+ * ★ 取不到配置时 **fail-closed**（拒绝），不因 DB 抖动放行 —— 与 collectParentToolIds 同取向。
+ */
+function isBuiltinMountedForTask(task: LlmTask, toolName: string): boolean {
+  if (ALWAYS_ALLOWED_BUILTINS.has(toolName)) return true;
+  try {
+    const convMounts = loadConversationMounts(task.conversationId);
+    const isUi = UI_TOOL_NAMES.has(toolName);
+    if (isUi && !task.includeUiTools) return false;
+    if (!task.agentId && convMounts.builtinToolIds.length === 0) {
+      // buildToolsForBackend 的兜底分支：无 agent 且无会话挂载 → 暴露全部非 UI、非 plugin 内置工具
+      return !toolName.startsWith('plugin_');
+    }
+    let agentIds: string[] = [];
+    if (task.agentId) {
+      const row = db
+        .prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)')
+        .get(task.agentId, task.userId) as any;
+      try { agentIds = row?.builtin_tool_ids ? JSON.parse(row.builtin_tool_ids) : []; } catch { agentIds = []; }
+    }
+    return new Set([...agentIds, ...convMounts.builtinToolIds]).has(toolName);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 自定义工具是否挂载到当前智能体/会话（与 buildToolsForBackend 的自定义工具口径一致）。
+ * ★ 自定义工具执行的是用户代码，未挂载却可按名字执行等于任意代码执行 —— 必须拦。
+ */
+function isCustomToolMountedForTask(task: LlmTask, toolName: string): boolean {
+  try {
+    if (!task.agentId) return true; // 无 agent 的兜底分支：全部自定义工具暴露
+    const m = /^custom_([a-zA-Z0-9]{1,8})_(.+)$/.exec(toolName);
+    if (!m) return false;
+    const [, idTag, tName] = m;
+    const rows = db.prepare('SELECT id, name FROM custom_tool WHERE user_id = ? AND enabled = 1').all(task.userId) as any[];
+    const tool = rows.find((r: any) =>
+      String(r.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) === idTag && r.name === tName);
+    if (!tool) return false;
+    const row = db
+      .prepare('SELECT custom_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)')
+      .get(task.agentId, task.userId) as any;
+    let agentIds: string[] = [];
+    try { agentIds = row?.custom_tool_ids ? JSON.parse(row.custom_tool_ids) : []; } catch { agentIds = []; }
+    const convMounts = loadConversationMounts(task.conversationId);
+    return agentIds.includes(tool.id) || convMounts.customToolIds.includes(tool.id);
+  } catch {
+    return false;
+  }
+}
+
 async function executeTool(
   task: LlmTask,
   registry: ReturnType<typeof getToolRegistry>,
@@ -4237,6 +4302,52 @@ async function executeTool(
   // ★ 不能用 startsWith('api_') 单独判定：media_compose/media_install_ffmpeg 不带前缀却由
   //   executeApiTool 实现。统一用 isApiExecutableTool（见其注释里的完整链路说明）。
   const isApi = isApiExecutableTool(toolName);
+
+  // ★★★ 执行面必须与"模型实际看到的工具面"一致（2026-10-17，安全审查发现）：
+  //   `registry.execute` 只按名字执行、不校验挂载。模型只要猜中/被注入一个未挂载的工具名
+  //   （如 `http_request` / `browser_run_script`），就能直接执行 —— 实测可打本机无鉴权路由，
+  //   进而触发人工审批入口。这里在**唯一执行出口**做挂载校验，与 buildToolsForBackend 同源。
+  //   ★ 放在浏览器分支**之前**：browser_* 同为注册表工具，不能从这条路径漏过去。
+  //   ★ API 工具走 executeApiTool（含自己的权限判定与 discovery 语义），不在此处裁。
+  // ★ 模型实际看到的工具面优先（主循环与子智能体循环各自传入的 toolDefs）：
+  //   子智能体的工具集来自它自己的 builtin_tool_ids，而 task.agentId 仍是父体 ——
+  //   只查 DB 会误拒子体工具（如 recon 子体的 whois/subdomain）。
+  const declaredTools = new Set<string>();
+  for (const d of (toolDefs || [])) {
+    const n = (d as any)?.function?.name || (d as any)?.name;
+    if (typeof n === 'string' && n) declaredTools.add(n);
+  }
+  const alwaysAllowed = ALWAYS_ALLOWED_BUILTINS.has(toolName)
+    && (depth === 0 || INTERACTIVE_TOOLS.has(toolName));
+  // 主循环：按智能体/会话**挂载**判定（动态路由只隐藏工具、不改变挂载，不能因此拒绝）。
+  // 子智能体：按它自己的 subTools 判定（task.agentId 仍是父体，查 DB 会误拒子体工具）。
+  const toolAllowed = alwaysAllowed
+    || (depth > 0 ? declaredTools.has(toolName) : isBuiltinMountedForTask(task, toolName));
+  if (registry.has(toolName) && !isApi && !toolAllowed) {
+    logger.warn(`[llm-task] 未挂载工具执行被拒: conv=${task.conversationId} agent=${task.agentId || '-'} depth=${depth} tool=${toolName}`);
+    return `工具 \`${toolName}\` 未挂载到当前智能体/会话，拒绝执行。`
+      + `请只使用工具列表中实际提供的工具；不要猜测或调用其它工具名。`;
+  }
+
+  if (isCustom && (depth > 0 || !isCustomToolMountedForTask(task, toolName))) {
+    logger.warn(`[llm-task] 未挂载自定义工具执行被拒: conv=${task.conversationId} depth=${depth} tool=${toolName}`);
+    return `自定义工具 \`${toolName}\` 未挂载到当前智能体/会话，拒绝执行。`;
+  }
+
+  // 子智能体的 API 工具也必须在它自己的工具面里（subTools）；否则可按名字执行未授予的接口。
+  if (isApi && depth > 0 && !declaredTools.has(toolName)) {
+    logger.warn(`[llm-task] 子智能体调用未授予 API 被拒: conv=${task.conversationId} tool=${toolName}`);
+    return `API 工具 \`${toolName}\` 未授予当前子智能体，拒绝执行。`;
+  }
+
+  // ★ 安全域智能体额外收紧（2026-10-17）：API 工具只允许**只读**。
+  //   写类 API（api_conversation_setup / api_experience_write / 智能体与模型增删改）
+  //   能改变后续会话的智能体/工具/提示词 —— 那等于绕过经验库的人工审批闸门。
+  if (isApi && isSecExperienceAgent(task.agentId) && !checkToolPermission('readonly', toolName).allowed) {
+    logger.warn(`[llm-task] 安全智能体调用写类 API 被拒: conv=${task.conversationId} tool=${toolName}`);
+    return `安全智能体只能调用只读 API 工具；\`${toolName}\` 属于写/不可控工具，已拒绝。`
+      + `需要改配置/沉淀经验时，使用安全控制台的对应入口或 \`sec_experience\`（需人工审批）。`;
+  }
 
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
@@ -5556,6 +5667,24 @@ async function runSubAgent(
   }
 }
 
+/** 父智能体声明的子智能体 ID（call_agent 的委派白名单） */
+function parentAllowedSubAgentIds(task: LlmTask): string[] {
+  try {
+    let agentId = task.agentId || null;
+    if (!agentId) {
+      const conv = db.prepare('SELECT agent_id FROM conversation WHERE id = ?').get(task.conversationId) as any;
+      agentId = conv?.agent_id || null;
+    }
+    if (!agentId) return [];
+    const row = db
+      .prepare('SELECT sub_agent_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)')
+      .get(agentId, task.userId) as any;
+    try { return JSON.parse(row?.sub_agent_ids || '[]'); } catch { return []; }
+  } catch {
+    return []; // fail-closed
+  }
+}
+
 async function runSubAgentImpl(
   task: LlmTask,
   args: { agentId?: string; input?: unknown; platformId?: string; modelId?: string },
@@ -5583,6 +5712,19 @@ async function runSubAgentImpl(
 
   // 别名兜底（SUBAGENT_ALIASES 为模块级唯一实现 —— isBrowserCapableSubAgent 同源共用）
   const resolvedId = SUBAGENT_ALIASES[agentId] || agentId;
+
+  // ★★★ 只允许委派给父智能体**声明过**的子智能体（2026-10-17 安全审查）：
+  //   此前 call_agent 按 id 查任意 public agent —— 安全助手可以借一个挂载了
+  //   http_request / cmd_exec 的通用子体，执行父体根本没有的能力，等于绕过工具挂载。
+  //   运行时生成的子体（specOverride）由父体按"工具子集"创建，不走这张表。
+  if (!specOverride) {
+    const allowed = parentAllowedSubAgentIds(task);
+    if (!allowed.includes(resolvedId)) {
+      return `拒绝委派：${resolvedId} 不在当前智能体声明的子智能体列表中。`
+        + `可用：${allowed.length ? allowed.join(' / ') : '(无)'}。`
+        + `不要尝试调用未声明的子智能体。`;
+    }
+  }
 
   // ★★★ 运行时生成的临时子智能体：它在 agent 表里**没有行**。
   //   做法是**合成一份「虚拟 agent 配置」**，后续走**完全同一条** ReAct 循环
@@ -6961,6 +7103,18 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
     if (convMounts.systemPrompt) basePrompt = convMounts.systemPrompt;
   }
   if (basePrompt) parts.unshift(basePrompt);
+
+  // ★ 安全经验库（自学习）：只有**人工审批通过**的条目才会走到这里（2026-10-17）。
+  //   为什么闸门放在提示词组装这一处：经验正文一旦进入系统提示词就能改变模型后续行为，
+  //   所以"能不能进"必须由注入点统一判定，而不是各工具自己记得过滤。
+  //   只对安全域智能体注入；其它模式（办公/代码/工作流）完全不受影响。
+  //   无已批准条目时返回 ''，不产生空段落，也不影响提示词前缀缓存之外的任何东西。
+  if (isSecExperienceAgent(agentId)) {
+    try {
+      const experience = buildSecExperiencePromptSection();
+      if (experience) parts.push(experience);
+    } catch { /* 经验库读失败不影响任务（缺表/坏 JSON 都按"没有经验"处理） */ }
+  }
 
   // 工作目录：优先使用请求显式下发的 workspaceDir，回退到全局 serverState.workspaceDir
   if (effectiveWorkspaceDir && effectiveWorkspaceDir.trim()) {

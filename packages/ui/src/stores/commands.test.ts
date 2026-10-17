@@ -188,7 +188,7 @@ describe('★ 模式过滤 + 工具型命令的执行出口', () => {
       { name: 'attack', desc: 'x', group: 'LAB', mode: 'sec', danger: 'S', kind: 'tool', pluginId: 'sec-lab', tool: 'attack_sim', params: ['target'] },
       { raw: '/attack t', name: 'attack', args: ['t'], flags: {} },
     );
-    // ★ 只有一条路径：/plugin/sec-lab/run（它会注入 __sec_runner 强制 requester=human 再过 withGuard）。
+    // ★ 只有一条路径：/plugin/sec-lab/run（它会写入进程内 Symbol 人工标记再统一过 withGuard）。
     //   走 /api/tools/builtin/execute 就等于把护栏绕过去 —— 那是"命令层不新增绕过路径"要防的事。
     expect(post.mock.calls[0][0]).toBe('/plugin/sec-lab/run');
     expect(JSON.stringify(post.mock.calls)).not.toContain('/api/tools/builtin/execute');

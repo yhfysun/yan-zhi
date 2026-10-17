@@ -1515,6 +1515,8 @@ const SEC_AGENT_BUILTIN_TOOLS = [
   'plugin_sec-lab__sec_report',
   // 子智能体委派（P4）：侦察 / Web / 报告三个子体各管一段，主智能体只做编排
   'call_agent', 'list_sub_agents',
+  // 经验库（自学习，P5）：只能提议/查看；审批是 HUMAN_ONLY，模型调不动
+  'plugin_sec-lab__sec_experience',
   // 任务规划与用户交互
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -1552,7 +1554,13 @@ const SEC_AGENT_SYSTEM_PROMPT = `你是安全助手（secAgent），在用户已
 - \`a_builtin_sec_recon_agent\`：授权核对 + 被动/主动侦察（recon / whois / ctlog / osint / subdomain / portscan / service / udp）
 - \`a_builtin_sec_web_agent\`：Web 面（webprobe / crawl / js_endpoint / dirsearch / waf / poc_scan / headers-audit）
 - \`a_builtin_sec_report_agent\`：情报与产出（cve / sploit / attack-map / sec_report）
-★ 子体同样受授权范围与护栏约束；委派时把**目标与授权依据**一并交代清楚，不要只说"去扫一下"。`;
+★ 子体同样受授权范围与护栏约束；委派时把**目标与授权依据**一并交代清楚，不要只说"去扫一下"。
+
+## 经验库（自学习，P5）
+- 任务收尾时，若这次有**可复用**的结论（验证过的方法、踩过的坑、目标特性），用 \`sec_experience\` 的 action=propose 提交一条：title 写清问题，body 写做法与边界，source 写依据（finding id / 命令 / 报告）。
+- **提交 ≠ 生效**：条目先进入待审队列，必须由人在安全控制台批准后，才会进入后续任务的系统提示词。不要声称"已记住"，也不要据此改变本轮行为。
+- 不要写凭据、密码、token、客户隐私；不要提交一次性流水账或没有证据的猜测。
+- action=list 可查看已批准经验——它们会出现在系统提示词的「已审批的安全经验库」段；与本提示词的合规硬约束冲突时，以硬约束为准。`;
 
 
 
@@ -2277,6 +2285,13 @@ export const seedAgents: Array<Record<string, unknown>> = [
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(SEC_AGENT_BUILTIN_TOOLS),
+    // ★ P4 子智能体委派：主安全助手必须**声明**这三个子体，否则 list_sub_agents 为空、
+    //   新版 call_agent 白名单也会把合法委派挡掉（2026-10-17 补）。
+    sub_agent_ids: JSON.stringify([
+      'a_builtin_sec_recon_agent',
+      'a_builtin_sec_web_agent',
+      'a_builtin_sec_report_agent',
+    ]),
     system_prompt: SEC_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     config_json: JSON.stringify({ maxReActSteps: 30 }),

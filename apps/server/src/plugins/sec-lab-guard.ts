@@ -73,6 +73,10 @@ export const TOOL_RISK: Record<string, RiskLevel> = {
   warstory: 'passive',
   cheatsheet: 'passive',
   sast: 'passive',
+  // —— P5：经验库（自学习，2026-10-17）——
+  // 提议 / 查看都是本地数据操作；真正改变行为的是"审批"，而审批工具是 HUMAN_ONLY。
+  sec_experience: 'passive',
+  experience_review: 'passive',
 };
 
 /** 动作分级：passive 被动观测 / active 主动探测 / intrusive 侵入 / simulate 攻击行为模拟 */
@@ -90,7 +94,28 @@ export const TOOL_ACTION_CLASS: Partial<Record<string, ActionClass>> = {
  * 调用方必须显式声明 requester='human'（安全控制台人工点击），否则一律拒绝。
  * 这是硬约束：攻击模拟一旦由模型自主触发，就没人能为后果负责，也不满足"操作可追溯到具体的人"这一授权前提。
  */
-export const HUMAN_ONLY_TOOLS = new Set(['attack_sim']);
+export const HUMAN_ONLY_TOOLS = new Set(['attack_sim', 'experience_review']);
+
+/**
+ * 受信任调用方标记（**Symbol 键**，不是字符串字段）。
+ *
+ * ★ 为什么必须是 Symbol：工具参数是模型可写的 JSON，模型完全可以塞
+ *   `__sec_runner: "sec-runner-human"` 把自己伪装成人工调用 —— 这不是假设，
+ *   工具注册表执行时不剥离未声明字段。Symbol 键无法出现在 JSON 里，
+ *   只能由服务端进程内（`/run` 路由、控制台审批路由）写入。
+ * ★ 只用于"人工身份"这一件事；不要把它扩展成通用信任令牌。
+ */
+export const SEC_TRUSTED_CALLER: unique symbol = Symbol('yan-zhi.sec.trusted-caller');
+
+/** 把本次调用标记为人工发起（仅服务端路由/控制台调用） */
+export function markTrustedHumanCall(args: Record<string, unknown>): void {
+  (args as Record<PropertyKey, unknown>)[SEC_TRUSTED_CALLER] = 'human';
+}
+
+/** 本次调用是否来自受信任的人工入口（模型参数无法伪造） */
+export function isTrustedHumanCall(args: Record<string, unknown>): boolean {
+  return (args as Record<PropertyKey, unknown>)[SEC_TRUSTED_CALLER] === 'human';
+}
 
 /** 目标环境：lab=隔离靶场 / internal=内网 / production=生产 / public=公网（需归属已验证） */
 export type Environment = 'lab' | 'internal' | 'production' | 'public';
@@ -352,6 +377,8 @@ export function guard(i: GuardInput): GuardResult {
     'attack_map',
     // 知识库与源码审计：目标是本地路径/无目标，不适用"授权范围"
     'sec_skill', 'warstory', 'cheatsheet', 'sast',
+    // P5：经验库提议/查看 / 人工审批（审批本身由 HUMAN_ONLY 拦截，见下方通用判定）
+    'sec_experience', 'experience_review',
   ];
   const needsTarget = !NO_TARGET_TOOLS.includes(i.tool);
 
@@ -359,6 +386,16 @@ export function guard(i: GuardInput): GuardResult {
     if (isDangerous(i.command)) {
       return { ok: false, reason: `命令命中危险黑名单，已拒绝执行：${i.command.slice(0, 120)}` };
     }
+  }
+
+  // 人工闸门：这类动作不得由 AI 自主编排执行。
+  // ★ 2026-10-17 从 `needsTarget` 分支提到通用路径：经验审批（experience_review）没有目标，
+  //   若仍放在分支里，模型就能通过工具面给自己批经验 —— 那等于自学习闸门形同虚设。
+  if (HUMAN_ONLY_TOOLS.has(i.tool) && i.requester !== 'human') {
+    return {
+      ok: false,
+      reason: `${i.tool} 属于人工执行动作，AI 不得自主编排。请在「安全」控制台由人工点击执行（该调用会带 requester='human'）。`,
+    };
   }
 
   if (needsTarget) {
@@ -387,13 +424,7 @@ export function guard(i: GuardInput): GuardResult {
         reason: `${i.tool} 属于侵入性动作，需在插件配置中开启「交战模式」且本次调用带 confirmed=true。`,
       };
     }
-    // 人工闸门：攻击模拟这类动作不得由 AI 自主编排执行
-    if (HUMAN_ONLY_TOOLS.has(i.tool) && i.requester !== 'human') {
-      return {
-        ok: false,
-        reason: `${i.tool} 属于人工执行动作，AI 不得自主编排。请在「安全」控制台由人工点击执行（该调用会带 requester='human'）。`,
-      };
-    }
+    // 人工闸门已提到函数顶部（无目标工具同样适用）
 
     // 环境分级：动作分级不得超过环境上限（公网仅被动，攻击模拟只在靶场）
     const env: Environment = scope.environment || 'internal';
