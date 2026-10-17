@@ -202,7 +202,32 @@ describe('任务状态本身可用', () => {
   });
 });
 
-// 暂停 / 继续（2026-10-16 用户要求）：
+describe('已完成任务：明细可展开 + 历史入库', () => {
+  // 用户原话：「已完成任务的明细也要能展示啊，这些数据都要入库的啊」
+  it('★ 已完成行也能翻明细（删除看删掉了哪些，上传看传了哪些）', () => {
+    expect(SRC).toMatch(/function detailRows\(t: SftpTask\)/);
+    expect(SRC).toMatch(/function detailTitle\(t: SftpTask\)/);
+    const finished = SRC.slice(SRC.indexOf('name="finished"'));
+    expect(finished, '已完成行没有明细展开块').toMatch(/v-if="detailRows\(t\)\.length"/);
+    expect(finished).toMatch(/detailTitle\(t\)/);
+  });
+
+  it('★ 明细取数：删除用 deleted、上传用 files（两者都得有）', () => {
+    const fn = SRC.match(/function detailRows\(t: SftpTask\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn, '找不到 detailRows').not.toBe('');
+    expect(fn).toContain("t.kind === 'delete' ? t.deleted : t.files.map");
+  });
+
+  it('★ 历史是**入库后读回来**的，不是只留在内存里', () => {
+    expect(SRC, '没调历史接口').toContain('/plugin/ops-shell/sftp/jobs/history');
+    expect(SRC, '挂载时没读历史').toMatch(/void loadTaskHistory\(\)/);
+    // 落库记录要能还原成任务行：明细灌进 files / deleted
+    const fn = SRC.match(/function toTaskRow\([\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn, '找不到 toTaskRow').not.toBe('');
+    expect(fn, '删除明细没还原').toMatch(/deleted: h\.kind === 'delete' \? h\.detail : \[\]/);
+    expect(fn, '上传明细没还原').toMatch(/files: h\.kind === 'delete' \? \[\] : h\.detail/);
+  });
+});
 //   ① 「顶多加个暂停任务按钮」—— 待执行本来就是自动跑的，不需要"点开始"；
 //   ② 「点了暂停正在执行的任务和待执行的都得暂停，还得支持断点续传」——
 //      所以暂停是后端调度的事（在飞的那个也停在断点），前端只负责发指令 + 如实显示。

@@ -130,6 +130,16 @@
                         <span class="stp-meta" :class="{ 'is-err': t.state === 'failed' }">{{ taskMeta(t) }}</span>
                       </div>
                       <div v-if="t.error" class="stp-err" :title="t.error">{{ t.error }}</div>
+                      <!-- 已完成也要能翻明细：删除看"删掉了哪些"，上传看"传了哪些"
+                           （这些明细来自落库的历史，刷新之后照样在） -->
+                      <div v-if="detailRows(t).length" class="stp-del">
+                        <span class="stp-del-toggle" @click="t.expanded = !t.expanded">
+                          {{ t.expanded ? '收起明细' : detailTitle(t) }}
+                        </span>
+                        <div v-if="t.expanded" class="stp-del-list">
+                          <div v-for="(p, i) in detailRows(t)" :key="t.id + i" :title="p">{{ p }}</div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   <div v-if="finishedCount > finishedTasks.length" class="stp-empty">…另有 {{ finishedCount - finishedTasks.length }} 条已完成</div>
@@ -554,6 +564,75 @@ function percentOf(t: SftpTask): number {
 
 function clearFinishedTasks() {
   tasks.value = tasks.value.filter((t) => t.state === 'running');
+}
+
+/** 后端落库的历史记录（字段与服务端 SftpJobRecord 一一对应） */
+interface JobHistoryRecord {
+  id: string;
+  kind: 'upload' | 'download' | 'delete';
+  label: string;
+  state: 'done' | 'failed';
+  /** 结束时间（epoch 毫秒） */
+  at: number;
+  totalCount: number;
+  doneCount: number;
+  totalBytes: number;
+  error?: string;
+  deletedCount?: number;
+  detail: string[];
+  detailTruncated: boolean;
+}
+
+/** 落库记录 → 任务行（历史里没有字节进度，用 totalBytes 顶；明细灌进 files/deleted） */
+function toTaskRow(h: JobHistoryRecord): SftpTask {
+  return {
+    id: h.id, kind: h.kind, label: h.label, state: h.state,
+    transferred: h.totalBytes, total: h.totalBytes,
+    doneCount: h.doneCount, totalCount: h.totalCount,
+    currentFile: '',
+    deletedCount: h.deletedCount ?? 0,
+    deleted: h.kind === 'delete' ? h.detail : [],
+    expanded: false,
+    files: h.kind === 'delete' ? [] : h.detail.map((name) => ({ name, size: 0 })),
+    filesTruncated: h.detailTruncated,
+    activeFiles: [],
+    paused: false,
+    error: h.error,
+  };
+}
+
+/**
+ * 挂载时把**已落库**的任务历史读进来（用户要求「这些数据都要入库」）。
+ * ★ 只读一次：本会话新完成的任务本来就在 tasks 里，反复读只会按 id 撞出重复行
+ *   （下面的 dedupe 只是兜底，不是主要手段）。
+ */
+async function loadTaskHistory(): Promise<void> {
+  try {
+    const r = await api.get<JobHistoryRecord[]>('/plugin/ops-shell/sftp/jobs/history');
+    if ('error' in r || !Array.isArray(r.data)) return;
+    const known = new Set(tasks.value.map((t) => t.id));
+    const rows = r.data
+      .filter((h) => h && typeof h.id === 'string' && !known.has(h.id))
+      .slice()
+      .reverse()            // 后端给的是"最近在前"；tasks 里按时间正序更自然
+      .map(toTaskRow);
+    if (rows.length) tasks.value = [...rows, ...tasks.value];
+  } catch {
+    // 没有历史是很正常的状态，读失败也不该打扰用户
+  }
+}
+
+/** 已完成任务的明细：删除看"删掉了哪些"，上传看"传了哪些" */
+function detailRows(t: SftpTask): string[] {
+  const src = t.kind === 'delete' ? t.deleted : t.files.map((f) => f.name);
+  return src.slice(-DELETED_ROWS).reverse();
+}
+
+/** 明细展开的文案（带总数，免得只看最近几条就以为是全部） */
+function detailTitle(t: SftpTask): string {
+  if (t.kind === 'delete') return `查看删掉的项（${t.deletedCount}）`;
+  if (t.kind === 'upload') return `查看传的文件（${t.totalCount}）`;
+  return `查看文件（${t.totalCount}）`;
 }
 
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
@@ -1335,6 +1414,8 @@ onMounted(async () => {
   window.addEventListener('click', onDocClick);
   window.addEventListener('keydown', onDocKeydown);
   remotePath.value = props.conn.sftpPath || '/';
+  // 已完成任务的历史是**落库**的（内存里的任务 3 秒就回收了），进来先把它读回来
+  void loadTaskHistory();
   if (isElectron) {
     // 本地栏默认「用户目录下的下载目录」。
     // ★ 不能硬编码中文「下载」：目录名随系统语言/用户配置而变（中文 Windows 常见「下载」、
