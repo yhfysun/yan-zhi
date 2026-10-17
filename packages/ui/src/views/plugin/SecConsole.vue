@@ -748,6 +748,14 @@
                 </div>
               </el-popover>
               <span class="sec-ai-scope-hint">{{ scopes.length }} 个授权目标</span>
+              <el-button
+                size="small"
+                :type="secBackground ? 'primary' : ''"
+                :plain="!secBackground"
+                :disabled="secChatStreaming || secCmdRunning"
+                title="后台执行：提交后不等待结果；服务端继续执行，可在任务列表查看进度与结果"
+                @click="secBackground = !secBackground"
+              >后台</el-button>
               <span v-if="secChatStreaming || secCmdRunning" class="sec-ai-hint">执行中…</span>
               <el-button v-if="secChatStreaming" size="small" type="warning" @click="abortSecChat">停止</el-button>
               <el-button size="small" :disabled="secChatStreaming || secCmdRunning || !secChatInput.trim()" type="primary" @click="sendSecChat">{{ secAiAction === 'exec' ? '执行' : '发送' }}</el-button>
@@ -866,6 +874,8 @@ const secChatStreaming = ref(false);
 const secAiAction = ref<'agent' | 'exec'>('agent');
 /** 命令直执行中的本地忙标记（命令是有限动作，不提供"停止"按钮） */
 const secCmdRunning = ref(false);
+/** P2 后台执行：提交后不等待 SSE，服务端任务继续跑，切回命令模式可在任务列表看进度 */
+const secBackground = ref(false);
 const secConvId = ref((() => { try { return localStorage.getItem('sec-ai-conv') || ''; } catch { return ''; } })());
 const secChatListEl = ref<HTMLElement | null>(null);
 let secAbort: AbortController | null = null;
@@ -1052,6 +1062,7 @@ async function sendSecChat() {
   const prompt = content + scopeHint();
 
   secAbort = new AbortController();
+  let backgroundSubmitted = false;
   try {
     const taskRes = await api.post<any>('/llm/tasks', {
       conversationId: secConvId.value,
@@ -1061,13 +1072,22 @@ async function sendSecChat() {
       agentId: SEC_AGENT_ID,
     });
     if ('error' in taskRes) throw new Error(taskRes.error);
-    await subscribeSecTask(taskRes.data.taskId as string, secAbort);
+    const taskId = taskRes.data.taskId as string;
+    if (secBackground.value) {
+      // P2：只提交、不订阅。任务在服务端继续执行并落库；切回命令模式的任务列表可看进度与结果。
+      backgroundSubmitted = true;
+      pushSecLocal('assistant', `已提交后台任务（${taskId}）。本面板不等待结果，服务端会继续执行；`
+        + `切回命令模式即可在左侧任务列表查看进度与结果。`);
+      return;
+    }
+    await subscribeSecTask(taskId, secAbort);
   } catch (e) {
     if ((e as Error).name !== 'AbortError') ElMessage.error('执行失败: ' + (e as Error).message);
   } finally {
     secChatStreaming.value = false;
     secAbort = null;
-    await loadSecMessages();
+    // 后台提交保留本地"已提交"回执；普通流程从服务端拉规范消息列表
+    if (!backgroundSubmitted) await loadSecMessages();
     scrollSecBottom();
   }
 }

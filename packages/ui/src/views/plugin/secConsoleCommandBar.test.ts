@@ -78,6 +78,12 @@ describe('★ AI 模式输入框工具条（对齐运维模式 P0-1）', () => {
     expect(SRC).toContain('sec-ai-scope-hint');
     expect(SRC).toContain('个授权目标');
   });
+
+  it('P2 后台执行：提交后不订阅 SSE，服务端继续跑、任务列表可见', () => {
+    expect(SRC).toContain('secBackground');
+    expect(SRC).toContain('已提交后台任务');
+    expect(SRC, '后台分支必须在 subscribeSecTask 之前').toMatch(/if \(secBackground\.value\)[\s\S]{0,400}?pushSecLocal[\s\S]{0,200}?return;[\s\S]{0,120}?await subscribeSecTask/);
+  });
 });
 
 describe('★ 收敛边界：Tab 数下降，但功能与人工闸门一个都不能少', () => {
