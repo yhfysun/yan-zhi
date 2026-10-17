@@ -34,6 +34,11 @@ import { runCrawl, runJsEndpoint } from './sec-lab-tools/crawler.js';
 import { runDirsearch, runWafDetect, runServiceScan, runUdpScan } from './sec-lab-tools/websurface.js';
 import { runTargetState } from './sec-lab-tools/state.js';
 import { runProxy } from './sec-lab-tools/proxy.js';
+// —— P2：POC / 情报 / 带外 / 验证（2026-10-17）——
+import { runPocScan, runTemplates } from './sec-lab-tools/templates.js';
+import { lookupCve, searchExploit } from './sec-lab-tools/intel.js';
+import { runOast } from './sec-lab-tools/oast.js';
+import { verifySqli, verifyXss, verifySsrf, updateFindingStatus } from './sec-lab-tools/verify.js';
 
 export const SEC_LAB_ID = 'sec-lab';
 
@@ -57,6 +62,9 @@ export const secLabManifest: PluginManifest = {
       'service_scan', 'udp_scan',
       'crypto_encode', 'crypto_decode', 'jwt_inspect', 'hash_id',
       'target_state', 'proxy',
+      // —— P2（2026-10-17）——
+      'poc_scan', 'poc_templates', 'cve_intel', 'exploit_search', 'oast',
+      'verify_sqli', 'verify_xss', 'verify_ssrf', 'finding_status',
     ],
     // ★ 2026-10-16 去掉 sidebar 贡献：与顶栏**模式下拉**的「安全」是同一个入口（都进 /sec），
     //   属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
@@ -123,6 +131,17 @@ export const secLabManifest: PluginManifest = {
       { name: 'hashid', desc: '哈希类型识别（按长度与字符集）', usage: '/hashid <hash>', group: 'CRYPTO', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'hash_id', params: ['hash'] },
       { name: 'proxy', desc: '本机抓包代理：start / stop / list / clear / replay（只转发已授权目标）', usage: '/proxy <start|stop|list|clear|replay> [--port=8899] [--id=记录id]', group: 'NET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'proxy', params: ['action'] },
       { name: 'state', desc: '目标状态：list / diff / rollback（回滚的是**记录里的基线**，不改远端）', usage: '/state <list|diff|rollback> [--assetId=x] [--snapshotId=y]', group: 'ASSET', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'target_state', params: ['action'] },
+
+      // ── P2：POC / 情报 / 带外 / 验证（2026-10-17）──────────────────────────
+      { name: 'nuclei', desc: '模板化只读 POC 扫描（7 个内置模板：.git/.env/目录遍历/actuator/phpinfo/安全头/swagger）', usage: '/nuclei <url> [-t tags] [--severities=high,critical]', group: 'POC', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'poc_scan', params: ['target'] },
+      { name: 'templates', desc: '模板库：list / show / run <id>', usage: '/templates <list|show|run> [--id=git-config-exposure] [target]', group: 'POC', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'poc_templates', params: ['action'] },
+      { name: 'cve', desc: 'CVE 本地情报（CVSS / CISA KEV；EPSS 每日变化，不硬编码请现查）', usage: '/cve <CVE-id|产品关键词>', group: 'INTEL', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'cve_intel', params: ['keyword'] },
+      { name: 'sploit', desc: '利用线索（只给是否 KEV，不提供利用代码）', usage: '/sploit <产品关键词>', group: 'INTEL', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'exploit_search', params: ['keyword'] },
+      { name: 'oob', desc: '带外回调服务：start / stop / hits / clear（盲注·SSRF 的确认手段）', usage: '/oob <start|stop|hits|clear> [--port=8898]', group: 'VERIFY', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'oast', params: ['action'] },
+      { name: 'sqli', desc: 'SQL 注入验证（错误特征 + 布尔差分；侵入级，需交战模式）', usage: '/sqli <带参数URL>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'verify_sqli', confirm: true, params: ['target'] },
+      { name: 'xss', desc: '反射型 XSS 验证（只看是否原样反射，不执行脚本）', usage: '/xss <带参数URL>', group: 'VERIFY', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'verify_xss', params: ['target'] },
+      { name: 'ssrf', desc: 'SSRF 验证（借 /oob 回调确认；需先 /oob start；侵入级）', usage: '/ssrf <带参数URL>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'verify_ssrf', confirm: true, params: ['target'] },
+      { name: 'finding', aliases: ['verify'], desc: '发现项状态机：open / verified / fixed / accepted / fp', usage: '/finding <id> [status=verified]', group: 'REPORT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'finding_status', params: ['id', 'status'] },
     ],
     // ── 剧本（`@名字` 召唤的命令序列，2026-10-16）────────────────────────────────
     // ★ 定义就是"一串**已存在的命令**"（见 core 的 PlaybookDef）：剧本自己不执行任何东西，
@@ -1124,6 +1143,142 @@ function proxyTool(): BuiltInTool {
     }, await loadScopes()));
 }
 
+// ---------- P2 工具工厂（2026-10-17） ----------
+
+function pocScanTool(): BuiltInTool {
+  return {
+    name: 'poc_scan',
+    description: '模板化只读 POC 扫描：内置 7 个模板（.git / .env / 目录遍历 / actuator / phpinfo / 安全头 / swagger），可按标签与级别过滤。只发只读请求，不含利用动作。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '目标 URL 或域名' },
+        tags: { type: 'array', items: { type: 'string' }, description: '只跑含这些标签的模板（exposure/secrets/misconfig/...）' },
+        severities: { type: 'array', items: { type: 'string' }, description: '只跑这些级别（critical/high/medium/low/info）' },
+        timeoutMs: { type: 'number', description: '单请求超时（ms），默认 10000' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('poc_scan', args, async () => runPocScan({
+        target: String(args.target),
+        tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+        severities: Array.isArray(args.severities) ? args.severities.map(String) : undefined,
+        timeoutMs: Number(args.timeoutMs) || undefined,
+      }));
+    },
+  };
+}
+
+function pocTemplatesTool(): BuiltInTool {
+  return plainTool('poc_templates', '模板库：list 列全部 / show 看单条（含匹配条件）/ run 只跑一条。',
+    {
+      action: { type: 'string', enum: ['list', 'show', 'run'], description: '动作' },
+      id: { type: 'string', description: '模板 id' },
+      target: { type: 'string', description: 'run 时的目标' },
+      timeoutMs: { type: 'number' },
+    },
+    ['action'],
+    async (a) => runTemplates(String(a.action || 'list'), {
+      id: a.id ? String(a.id) : undefined,
+      target: a.target ? String(a.target) : undefined,
+      timeoutMs: Number(a.timeoutMs) || undefined,
+    }));
+}
+
+function cveTool(): BuiltInTool {
+  return plainTool('cve_intel', 'CVE 本地情报：CVSS 与 CISA KEV；EPSS 每日变化，刻意不硬编码。查不到会明说，不编。',
+    { keyword: { type: 'string', description: 'CVE 编号或产品关键词（log4j / spring / CVE-2021-44228）' } },
+    ['keyword'],
+    async (a) => lookupCve(String(a.keyword || '')));
+}
+
+function exploitTool(): BuiltInTool {
+  return plainTool('exploit_search', '利用线索：给出相关 CVE 与是否已被在野利用；不提供利用代码。',
+    { keyword: { type: 'string', description: '产品/组件关键词' } },
+    ['keyword'],
+    async (a) => searchExploit(String(a.keyword || '')));
+}
+
+function oastTool(): BuiltInTool {
+  return plainTool('oast', '带外（OAST）回调服务：start 启动 / stop / hits 看命中 / clear 清空。用于确认盲注与 SSRF。',
+    {
+      action: { type: 'string', enum: ['start', 'stop', 'hits', 'clear', 'status'], description: '动作' },
+      port: { type: 'number', description: 'start 时监听端口，默认 8898' },
+    },
+    ['action'],
+    async (a) => runOast({
+      action: String(a.action || 'status') as 'start' | 'stop' | 'hits' | 'clear' | 'status',
+      port: typeof a.port === 'number' ? a.port : undefined,
+    }));
+}
+
+function verifySqliTool(): BuiltInTool {
+  return {
+    name: 'verify_sqli',
+    description: 'SQL 注入验证：对每个查询参数注入单引号，检测数据库错误特征与布尔差分。**侵入级**，需交战模式。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '带查询参数的 URL' },
+        timeoutMs: { type: 'number' },
+        confirmed: { type: 'boolean', description: '侵入性动作需显式确认（控制台会二次确认后置 true）' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('verify_sqli', args, async () => verifySqli(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function verifyXssTool(): BuiltInTool {
+  return {
+    name: 'verify_xss',
+    description: '反射型 XSS 验证：注入唯一标记，检查是否**原样反射**（不执行脚本、不构造利用链）。',
+    inputSchema: {
+      type: 'object',
+      properties: { target: { type: 'string', description: '带查询参数的 URL' }, timeoutMs: { type: 'number' } },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('verify_xss', args, async () => verifyXss(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function verifySsrfTool(): BuiltInTool {
+  return {
+    name: 'verify_ssrf',
+    description: 'SSRF 验证：把 /oob 的回调地址投进参数，看回调服务是否收到请求。**侵入级**，需先 /oob start 且开启交战模式。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '带查询参数的 URL' },
+        timeoutMs: { type: 'number' },
+        confirmed: { type: 'boolean', description: '侵入性动作需显式确认' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('verify_ssrf', args, async () => verifySsrf(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function findingStatusTool(): BuiltInTool {
+  return plainTool('finding_status', '发现项状态机：open / verified / fixed / accepted / fp（fp 不再计入报告）。',
+    {
+      id: { type: 'string', description: '发现项 id（/findings 可见）' },
+      status: { type: 'string', enum: ['open', 'verified', 'fixed', 'accepted', 'fp'], description: '目标状态，默认 verified' },
+    },
+    ['id'],
+    async (a) => updateFindingStatus(String(a.id || ''), String(a.status || 'verified'), {
+      loadFindings: async () => (await loadFindings()) as unknown as Array<Record<string, unknown>>,
+      saveFindings: async (list) => { if (store) await store.set(K_FINDINGS, list); },
+    }));
+}
+
 // ---------- 后端路由（控制台页面用） ----------
 
 function registerRoutes(ctx: PluginContext) {
@@ -1199,6 +1354,16 @@ function registerRoutes(ctx: PluginContext) {
         hash_id: { factory: hashidTool, opts: {}, passRunner: true },
         target_state: { factory: targetStateTool, opts: {}, passRunner: true },
         proxy: { factory: proxyTool, opts: {}, passRunner: true },
+        // —— P2（2026-10-17）——
+        poc_scan: { factory: pocScanTool, opts: {}, passRunner: true },
+        poc_templates: { factory: pocTemplatesTool, opts: {}, passRunner: true },
+        cve_intel: { factory: cveTool, opts: {}, passRunner: true },
+        exploit_search: { factory: exploitTool, opts: {}, passRunner: true },
+        oast: { factory: oastTool, opts: {}, passRunner: true },
+        verify_sqli: { factory: verifySqliTool, opts: {}, passRunner: true },
+        verify_xss: { factory: verifyXssTool, opts: {}, passRunner: true },
+        verify_ssrf: { factory: verifySsrfTool, opts: {}, passRunner: true },
+        finding_status: { factory: findingStatusTool, opts: {}, passRunner: true },
       };
       const entry = map[tool];
       if (!entry) return fail(res, 400, `未知工具 ${tool}`);
@@ -1323,6 +1488,9 @@ export const secLabModule: PluginModule = {
       serviceScanTool(), udpScanTool(),
       encodeTool(), decodeTool(), jwtTool(), hashidTool(),
       targetStateTool(), proxyTool(),
+      // —— P2（2026-10-17）——
+      pocScanTool(), pocTemplatesTool(), cveTool(), exploitTool(), oastTool(),
+      verifySqliTool(), verifyXssTool(), verifySsrfTool(), findingStatusTool(),
     ]) {
       ctx.registerTool(t);
     }

@@ -48,6 +48,17 @@ export const TOOL_RISK: Record<string, RiskLevel> = {
   target_state: 'passive',
   // 抓包代理：本机监听 + 按 scope 转发
   proxy: 'active',
+  // —— P2：POC / 情报 / 带外 / 验证（2026-10-17）——
+  poc_scan: 'active',
+  poc_templates: 'passive',
+  cve_intel: 'passive',
+  exploit_search: 'passive',
+  oast: 'active',
+  // 注入验证会发攻击性探测载荷
+  verify_sqli: 'intrusive',
+  verify_xss: 'active',
+  verify_ssrf: 'intrusive',
+  finding_status: 'passive',
 };
 
 /** 动作分级：passive 被动观测 / active 主动探测 / intrusive 侵入 / simulate 攻击行为模拟 */
@@ -319,6 +330,8 @@ export function guard(i: GuardInput): GuardResult {
     'host_env', 'range_deploy', 'range_list', 'range_stop', 'android_launch',
     // P1：纯文本 / 本地记录 / 本机监听类工具没有"目标"概念
     'crypto_encode', 'crypto_decode', 'jwt_inspect', 'hash_id', 'target_state', 'proxy',
+    // P2：模板库 / 情报 / 带外 / 状态机都没有"目标"概念
+    'poc_templates', 'cve_intel', 'exploit_search', 'oast', 'finding_status',
   ];
   const needsTarget = !NO_TARGET_TOOLS.includes(i.tool);
 
