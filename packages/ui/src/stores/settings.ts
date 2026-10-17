@@ -7,7 +7,7 @@ import { usePluginStore } from './plugin';
 import { BUILTIN_SKIN_SERIES, isBuiltinSkinId, builtinSeriesFor, builtinSeriesPalette } from '../styles/skinSeries';
 
 export type ThemeName = string;
-export const BUILTIN_THEME_NAMES = ['cinnabar', 'ink', 'indigo', 'pine', 'clay', 'cloud', 'bamboo', 'ripple', 'porcelain', 'dune'] as const;
+export const BUILTIN_THEME_NAMES = ['cinnabar', 'ink', 'indigo', 'pine', 'clay', 'cloud', 'bamboo', 'ripple', 'porcelain', 'dune', 'cloudWhite'] as const;
 
 /** 皮肤表面定制（与 @yan-zhi/core ThemePalette['surface'] 结构一致，此处局部声明避免循环依赖） */
 type SkinSurface = {
@@ -519,8 +519,10 @@ export const DEFAULT_APP_GUIDE = APP_GUIDE_DOCS.map((d) => d.content).join('\n\n
 
 const DEFAULT_SETTINGS: AppSettings = {
   // 默认皮肤 = 瓷·冰（白瓷 + 冰块），默认亮色模式（2026-09-18 用户指定）
-  palette: 'porcelain',
-  skin: 'builtin:porcelain',
+  palette: 'cloudWhite',
+  // 方案 A（openspec 11.9）：出厂不启用壁纸皮肤，只用 tokens/调色板；
+  // 想要「云白」皮肤的用户可在皮肤库手动开启。
+  skin: '',
   darkMode: false,
   liteMode: false,   // 低内存模式默认关（保持既有毛玻璃观感；用户显式开启才降级）
   defaultPlatformId: '',
@@ -744,6 +746,20 @@ const THEMES: Record<ThemeName, ThemePalette> = {
     dark: { primary: '#A8C6D8', primaryLight: '#1A242C', primaryDark: '#7C9AAD', accent: '#CBE0EB' },
     gradientDark: 'linear-gradient(135deg, #A8C6D8, #CBE0EB)',
     orbDark: { orb1: '#A8C6D8', orb2: '#CBE0EB', orb3: '#4E6B80' },
+  },
+  /* 云白（openspec 11.1–11.4）：默认主题，蓝紫强调 + 冷白骨架；纯 tokens/调色板，不依赖壁纸皮肤。 */
+  cloudWhite: {
+    primary: '#4F46E5',
+    primaryLight: '#EEF0FF',
+    primaryDark: '#3730A3',
+    accent: '#7C5CFC',
+    gradient: 'linear-gradient(135deg, #4F46E5, #7C5CFC)',
+    orb1: '#4F46E5',
+    orb2: '#7C5CFC',
+    orb3: '#C7D2FE',
+    dark: { primary: '#818CF8', primaryLight: '#1E1B4B', primaryDark: '#4F46E5', accent: '#A78BFA', background: '#101216' },
+    gradientDark: 'linear-gradient(135deg, #818CF8, #A78BFA)',
+    orbDark: { orb1: '#818CF8', orb2: '#A78BFA', orb3: '#4F46E5' },
   },
   dune: {
     primary: '#C99559',

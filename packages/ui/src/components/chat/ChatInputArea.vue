@@ -11,35 +11,8 @@
     <div class="input-box" :class="{ focused: inputFocused, 'is-dragover': dragOver }">
 
       <div class="input-agent-bar">
-        <el-dropdown trigger="click" placement="bottom-start" popper-class="agent-switch-popper" @command="onAgentSwitch" @visible-change="onAgentDropdownVisible">
-          <div class="agent-trigger" @click.stop>
-            <span class="agent-trigger-avatar"><el-icon :size="14"><component :is="agentIconOf(agentStore.selectedAgent?.id, agentStore.selectedAgent?.name)" /></el-icon></span>
-            <span class="agent-trigger-name">{{ agentStore.selectedAgent?.name || '选择智能体' }}</span>
-            <el-icon class="agent-trigger-caret"><ArrowDown /></el-icon>
-          </div>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item
-                v-for="ag in agentStore.chatAgents"
-                :key="ag.id"
-                :command="ag.id"
-                :class="{ 'is-active': ag.id === agentStore.selectedId }"
-              >
-                <div class="agent-opt">
-                  <span class="agent-opt-avatar"><el-icon :size="16"><component :is="agentIconOf(ag.id, ag.name)" /></el-icon></span>
-                  <div class="agent-opt-info">
-                    <span class="agent-opt-name">
-                      <el-icon v-if="ag.isDefault" class="agent-opt-lock"><Lock /></el-icon>
-                      {{ ag.name }}
-                    </span>
-                    <span class="agent-opt-desc">{{ ag.description || '未填写描述' }}</span>
-                  </div>
-                  <el-icon v-if="ag.id === agentStore.selectedId" class="agent-opt-check"><Check /></el-icon>
-                </div>
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+        <!-- 智能体选择器（openspec 8b）：按模式分组 + 搜索 + 折叠记忆 -->
+        <AgentPicker />
         <el-tooltip content="编辑当前智能体" placement="top">
           <el-button size="small" circle class="agent-edit-btn" @click="openEditAgent(agentStore.selectedAgent)">
             <!-- 用 Tools 而非 Setting：Setting 是 TabBar「我的」的图标（移动端常驻同屏），
@@ -796,6 +769,7 @@ import { formatContextWindow } from '../../utils/context-window';
 import { resolveAgentIcon as agentIconOf } from '../../utils/agentIcon';
 import type { Model } from '@yan-zhi/shared';
 import { useRouter } from 'vue-router';
+import AgentPicker from './AgentPicker.vue';
 
 const {
   inputFocused, workspaceDir, hasWorkspaceDir, clearWorkspaceDir, showWorkspaceDir, showMount, store, showSkills, mountedSkillIds,

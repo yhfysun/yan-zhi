@@ -89,6 +89,36 @@ function skinTheme(
 }
 
 export const SKIN_MANIFESTS: PluginManifest[] = [
+  // 云白（openspec 11.6）：纯调色板皮肤（kind='palette'），无壁纸/无部件图，与 tokens 默认配色一致。
+  // 方案 A 下出厂不默认启用；用户可在皮肤库手动开。
+  {
+    id: 'skin-cloud-white',
+    name: '云白',
+    version: '1.0.0',
+    category: '皮肤',
+    author: 'yan-zhi',
+    description: '简约系列 · 云白：蓝紫强调色 + 冷白骨架，无壁纸（纯配色皮肤）',
+    permissions: [],
+    contributes: {
+      themes: [
+        {
+          id: 'skin-cloud-white',
+          name: '云白',
+          kind: 'palette',
+          category: '简约',
+          primary: '#4F46E5',
+          primaryLight: '#EEF0FF',
+          primaryDark: '#3730A3',
+          accent: '#7C5CFC',
+          gradient: 'linear-gradient(135deg, #4F46E5, #7C5CFC)',
+          orb1: '#4F46E5',
+          orb2: '#7C5CFC',
+          orb3: '#C7D2FE',
+          dark: { primary: '#818CF8', primaryLight: '#1E1B4B', primaryDark: '#4F46E5', accent: '#A78BFA', background: '#101216' },
+        },
+      ],
+    },
+  },
   {
     id: 'skin-sakura-night',
     name: '樱夜物语',

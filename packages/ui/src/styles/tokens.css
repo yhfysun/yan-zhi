@@ -5,20 +5,20 @@
    ============================================================ */
 :root {
   /* ===== 中性纸墨骨架：背景/文字/边框不绑定主题色，切主题只换强调色，全局不突兀 ===== */
-  --color-bg: #F7F5F0;
+  --color-bg: #F7F8FA;
   --color-surface: #FFFFFF;
-  --color-surface-hover: #F1EFE9;
-  --color-border: #E7E4DC;
-  --color-border-strong: #D8D5CC;
-  --color-text: #1A1A1A;
-  --color-text-secondary: #6B6B66;
-  --color-text-tertiary: #9C9B94;
+  --color-surface-hover: #F0F2F7;
+  --color-border: #E7EAF0;
+  --color-border-strong: #D5DAE4;
+  --color-text: #1A1D24;
+  --color-text-secondary: #5A6272;
+  --color-text-tertiary: #8B93A3;
 
   /* 兼容旧玻璃变量名（组件大量引用），改为实色纸面，去除 backdrop-blur */
   --glass-bg: #FFFFFF;
-  --glass-bg-hover: #F1EFE9;
-  --glass-border: #E7E4DC;
-  --glass-border-strong: #D8D5CC;
+  --glass-bg-hover: #F0F2F7;
+  --glass-border: #E7EAF0;
+  --glass-border-strong: #D5DAE4;
   --glass-blur: 0px;
   --glass-saturate: 100%;
   --glass-filter: none;
@@ -44,22 +44,22 @@
   /* 主题色（applyPalette/applySkin 运行时覆盖，这里为默认「瓷·冰」白瓷系冷蓝灰）
      ⚠️ 默认皮肤已改为 builtin:porcelain + 亮色模式（DEFAULT_SETTINGS），
         这里必须跟着改，否则首帧会先闪一下朱砂红再跳到瓷冰。 */
-  --color-primary: #7C9AAD;
-  --color-primary-light: #EAF2F6;
-  --color-primary-dark: #4E6B80;
-  --color-accent: #B7D3E0;
+  --color-primary: #4F46E5;
+  --color-primary-light: #EEF0FF;
+  --color-primary-dark: #3730A3;
+  --color-accent: #7C5CFC;
   --color-success: #2E7D5B;
-  --color-warning: #C99559;
+  --color-warning: #B45309;
   --color-danger: #B91C1C;
 
   /* Element Plus theme — 中性对齐，applyPalette/applySkin 会同步主色 */
-  --el-color-primary: #7C9AAD;
-  --el-color-primary-light-3: #9DB4C3;
-  --el-color-primary-light-5: #B8C9D3;
-  --el-color-primary-light-7: #D3DEE4;
-  --el-color-primary-light-8: #E0E8EC;
-  --el-color-primary-light-9: #EDF2F4;
-  --el-color-primary-dark-2: #4E6B80;
+  --el-color-primary: #4F46E5;
+  --el-color-primary-light-3: #818CF8;
+  --el-color-primary-light-5: #A5B4FC;
+  --el-color-primary-light-7: #C7D2FE;
+  --el-color-primary-light-8: #E0E7FF;
+  --el-color-primary-light-9: #EEF2FF;
+  --el-color-primary-dark-2: #3730A3;
 
   /* ===== Element Plus 语义色对齐（亮色兜底）：success/warning/danger/text/border 接到本文件色板 =====
      亮/暗梯度按 EP 公式（mix(color, white/black, N%)）用 color-mix 就地派生，
@@ -109,7 +109,7 @@
   --el-border-color-dark: var(--color-border-strong);
   --el-border-color-darker: var(--color-border-strong);
 
-  --gradient-primary: linear-gradient(135deg, #7C9AAD, #B7D3E0);
+  --gradient-primary: linear-gradient(135deg, #4F46E5, #7C5CFC);
 
   /* 阴影：极轻、带偏移与模糊（避免零偏移光晕式"浮起感"） */
   --shadow-sm: 0 1px 2px rgba(26, 26, 26, 0.04);
@@ -196,27 +196,27 @@
 }
 
 [data-theme="dark"] {
-  --color-bg: #141414;
-  --color-surface: #1D1D1C;
-  --color-surface-hover: #262624;
-  --color-border: #2A2A28;
-  --color-border-strong: #3A3A37;
-  --color-text: #ECEAE4;
-  --color-text-secondary: #9A9A92;
-  --color-text-tertiary: #6F6F68;
+  --color-bg: #101216;
+  --color-surface: #171A21;
+  --color-surface-hover: #1F232D;
+  --color-border: #262B36;
+  --color-border-strong: #343B49;
+  --color-text: #E8EAF0;
+  --color-text-secondary: #9AA3B2;
+  --color-text-tertiary: #6B7484;
 
-  --glass-bg: #1D1D1C;
-  --glass-bg-hover: #262624;
-  --glass-border: #2A2A28;
-  --glass-border-strong: #3A3A37;
+  --glass-bg: #171A21;
+  --glass-bg-hover: #1F232D;
+  --glass-border: #262B36;
+  --glass-border-strong: #343B49;
   --glass-filter: none;
 
-  --color-primary: #DE5F4F;
-  --color-primary-light: rgba(222, 95, 79, 0.16);
-  --color-primary-dark: #8E2318;
-  --color-accent: #DE5F4F;
+  --color-primary: #818CF8;
+  --color-primary-light: rgba(129, 140, 248, 0.16);
+  --color-primary-dark: #4F46E5;
+  --color-accent: #A78BFA;
   --color-success: #4FA97F;
-  --color-warning: #E2B87A;
+  --color-warning: #D9A066;
   --color-danger: #C25B4E;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -261,13 +261,13 @@
   --el-text-color-placeholder: #6F6F68;
   --el-text-color-disabled: var(--color-text-tertiary);
   --el-mask-color: rgba(0, 0, 0, 0.5);
-  --el-color-primary: #DE5F4F;
-  --el-color-primary-light-3: #CE5344;
-  --el-color-primary-light-5: #BE4739;
-  --el-color-primary-light-7: #AE3B2E;
-  --el-color-primary-light-8: #8E2318;
-  --el-color-primary-light-9: rgba(222, 95, 79, 0.16);
-  --el-color-primary-dark-2: #B03528;
+  --el-color-primary: #818CF8;
+  --el-color-primary-light-3: #6D74D9;
+  --el-color-primary-light-5: #5B62C2;
+  --el-color-primary-light-7: #4950A8;
+  --el-color-primary-light-8: #3730A3;
+  --el-color-primary-light-9: rgba(129, 140, 248, 0.16);
+  --el-color-primary-dark-2: #A5B4FC;
   --el-color-success: #4A8571;
   --el-color-success-light-9: rgba(74, 133, 113, 0.16);
   --el-color-warning: #C07A5C;

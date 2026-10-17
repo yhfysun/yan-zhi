@@ -1249,6 +1249,19 @@ const DEFAULT_AGENT_SKILL_IDS = [
   'skill_docx_processing', 'skill_xlsx_data_processing', 'skill_pdf_processing',
   'skill_image_processing', 'skill_file_convert',
   'skill_desktop_app_automation',
+  // 办公岗位 skill（openspec 5h，2026-10-17）：默认助理挂办公六条
+  'skill_office_finance', 'skill_office_hr', 'skill_office_operation',
+  'skill_office_legal', 'skill_office_data_report', 'skill_office_service',
+];
+/** 运维助手内置 skill（5h.5） */
+const OPS_AGENT_SKILL_IDS = [
+  'skill_ops_health_check', 'skill_ops_log_analysis', 'skill_ops_docker_ops',
+  'skill_ops_db_maintain', 'skill_ops_deploy_release', 'skill_ops_incident_response',
+];
+/** 安全助手内置 skill（5h.6） */
+const SEC_AGENT_SKILL_IDS = [
+  'skill_sec_recon', 'skill_sec_web_probe', 'skill_sec_report',
+  'skill_sec_audit_review', 'skill_sec_hardening', 'skill_sec_blue_team',
 ];
 // pageAgent 工具收口（与前端 packages/ui/src/stores/agent.ts 的 PAGE_AGENT_BUILTIN_TOOLS 对齐，
 // 含 v4 回补的 browser_scroll、v5 新增的 browser_run_script：四件套 + scroll + ask_user + run_script）。
@@ -2281,6 +2294,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(OPS_AGENT_BUILTIN_TOOLS),
+    skill_ids: JSON.stringify(OPS_AGENT_SKILL_IDS),
     system_prompt: OPS_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
     force_sync: true,
@@ -2294,6 +2308,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(SEC_AGENT_BUILTIN_TOOLS),
+    skill_ids: JSON.stringify(SEC_AGENT_SKILL_IDS),
     // ★ P4 子智能体委派：主安全助手必须**声明**这三个子体，否则 list_sub_agents 为空、
     //   新版 call_agent 白名单也会把合法委派挡掉（2026-10-17 补）。
     sub_agent_ids: JSON.stringify([
@@ -2565,6 +2580,43 @@ for (const a of seedAgents) {
     }
   } catch {}
 }
+
+// 四模式归属（openspec 8b.1/8b.2）：不新增数据库列，写进 config_json.mode，
+// 供前端智能体选择器按模式分组（agent_kind='sub' 的子体仍会被选择器过滤掉）。
+const AGENT_MODE_BY_ID: Record<string, string> = {
+  a_default_assistant: 'office',
+  a_builtin_design_agent: 'office',
+  a_builtin_storyboard_agent: 'office',
+  a_builtin_data_agent: 'office',
+  a_builtin_code_agent: 'dev',
+  a_builtin_page_agent: 'dev',
+  a_builtin_java_agent: 'dev',
+  a_builtin_cicd_agent: 'ops',
+  a_builtin_ops_agent: 'ops',
+  a_builtin_sec_agent: 'sec',
+  a_builtin_sec_recon_agent: 'sec',
+  a_builtin_sec_web_agent: 'sec',
+  a_builtin_sec_report_agent: 'sec',
+  a_builtin_workflow_assistant: 'workflow',
+};
+function mergeAgentMode(id: string, mode: string): void {
+  const row = db.prepare('SELECT config_json FROM agent WHERE id = ?').get(id) as { config_json?: string | null } | undefined;
+  if (!row) return;
+  let cfg: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(row.config_json || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) cfg = parsed as Record<string, unknown>;
+  } catch { /* 脏配置按空处理，只补 mode */ }
+  if (cfg.mode === mode) return;
+  cfg.mode = mode;
+  db.prepare('UPDATE agent SET config_json = ? WHERE id = ?').run(JSON.stringify(cfg), id);
+}
+try {
+  for (const [id, mode] of Object.entries(AGENT_MODE_BY_ID)) mergeAgentMode(id, mode);
+  for (const row of db.prepare("SELECT id FROM agent WHERE id LIKE 'a_wf_%'").all() as Array<{ id: string }>) {
+    mergeAgentMode(row.id, 'workflow');
+  }
+} catch { /* 模式分组是增强项，失败不阻塞启动 */ }
 
 // 旧库增量迁移：默认智能体（a_default_assistant）默认挂载内置「应用使用说明」知识库（builtin-app-guide），
 // 并设置分类标签=「默认」。仅当当前为空时回填，不覆盖用户后续手动改过的挂载/分类。
@@ -4143,6 +4195,335 @@ Listing 优化最常见的失败不是文案写得不好，而是**一次改了�
 ## 交付物
 选题清单（10+）、单条逐镜脚本、内容日历 CSV、评论区运营 SOP。全部 file_write 落盘（deliverable），对话给摘要 + 路径。`,
     },
+    // ===== 四模式岗位 skill（2026-10-17，openspec 5h）=====
+    {
+      id: 'skill_ops_health_check', name: '服务器健康巡检', category: '运维',
+      description: '服务器健康巡检：CPU/内存/磁盘/负载/服务状态/网络连通性一次性体检，输出异常项与处理建议；巡检只读，不擅自重启服务。',
+      triggers: ['服务器巡检', '健康检查', '机器体检', '磁盘满了', '负载高', 'CPU 高'],
+      body: `# 服务器健康巡检
+先用 conn_list 确认目标连接，再用 ssh_exec 逐项采集（全部只读）：
+uptime; free -h; df -h; df -i
+ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head -10
+systemctl --failed --no-pager
+ss -lntup | head -30
+## 判读
+- 负载 > CPU 核数 且持续 → 找 top 进程，确认是否业务高峰；
+- 磁盘 > 85% 或 inode 满 → 按目录 du -sh 定位大文件，给出清理建议（不要直接删）；
+- failed 服务 → 看 journalctl -u <unit> -n 100，先报告再问是否处理。
+## 纪律
+- 只读巡检；重启/清理/改配置一律先说明影响并等用户确认；
+- 生产连接的操作走人工确认；输出按「结论 → 证据 → 建议」给。`,
+    },
+    {
+      id: 'skill_ops_log_analysis', name: '日志分析与排障', category: '运维',
+      description: '按时间窗与关键字分析应用/系统日志（journalctl、nginx、应用日志），定位错误峰值、异常堆栈与关联请求，给出根因假设与验证步骤。',
+      triggers: ['看日志', '日志分析', '报错了', '排障', '500 错误', '异常堆栈'],
+      body: `# 日志分析与排障
+## 流程
+1. 明确时间窗、服务名、错误现象（5xx/超时/崩溃）；
+2. 只读采集：journalctl -u <svc> --since '1 hour ago' --no-pager、tail -n 500 <log>；
+3. 聚合：按错误类型 grep/sort/uniq -c，找首个异常与峰值时间；
+4. 关联：同时间窗的请求 ID、上游超时、OOM/重启记录（dmesg -T）。
+## 输出
+- 结论（最可能的根因 + 置信度）
+- 证据（原始日志片段，脱敏）
+- 下一步验证命令（只读）
+## 纪律
+- 不改配置、不重启，除非用户确认；
+- 日志里的密码/token 不原样回显。`,
+    },
+    {
+      id: 'skill_ops_docker_ops', name: 'Docker 运维', category: '运维',
+      description: 'Docker 容器巡检与运维：容器状态、资源占用、日志、镜像清理建议、重启/更新流程；写操作先确认，生产连接走审批。',
+      triggers: ['docker', '容器', '容器日志', '镜像清理', '容器重启'],
+      body: `# Docker 运维
+## 巡检（只读）
+docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+docker stats --no-stream
+docker system df
+docker logs --tail 200 <container> 2>&1
+## 常见处置
+- 容器反复重启 → 看 logs + inspect 的 ExitCode/OOMKilled；
+- 磁盘占用高 → docker system df 看镜像/卷/构建缓存，清理命令先给出再确认；
+- 重启容器：docker restart <name> 属于写操作，生产连接必须人工确认后执行。
+## 纪律
+- 不删卷、不 prune -a，除非用户明确同意并说明影响；
+- 给结论、证据、建议三步。`,
+    },
+    {
+      id: 'skill_ops_db_maintain', name: '数据库巡检（只读）', category: '运维',
+      description: '数据库日常巡检（只读）：连接数、慢查询、表/索引体积、复制延迟、锁等待；只允许 SELECT/SHOW/EXPLAIN，不做任何写操作。',
+      triggers: ['数据库巡检', '慢查询', '连接数', '表大小', '锁等待', 'MySQL 巡检'],
+      body: `# 数据库巡检（只读）
+用 db_query 执行，仅允许 SELECT / SHOW / DESC / EXPLAIN / WITH：
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+SHOW FULL PROCESSLIST;
+SELECT table_schema, table_name, ROUND((data_length+index_length)/1024/1024,1) AS mb
+FROM information_schema.tables ORDER BY mb DESC LIMIT 20;
+SHOW ENGINE INNODB STATUS;
+## 判读
+- 连接数接近 max_connections → 查未释放连接；
+- 慢查询 → EXPLAIN 看是否缺索引，给 CREATE INDEX 建议但不执行；
+- 锁等待 → 找阻塞事务 id，先报告再问是否 kill。
+## 纪律
+- 任何写操作（UPDATE/DELETE/ALTER/KILL）一律拒绝并说明原因；
+- 结果最多 200 行，敏感字段脱敏。`,
+    },
+    {
+      id: 'skill_ops_deploy_release', name: '发布与回滚', category: '运维',
+      description: '发布与回滚：确认构建产物、备份现网、上传、重启、健康检查、失败回滚；生产发布必须先展示目标/目录/脚本并人工确认。',
+      triggers: ['发布', '上线', '部署', '回滚', '更新应用', '重启服务'],
+      body: `# 发布与回滚
+## 发布前
+1. 确认发布项目/流水线（cicd_list_pipelines）与目标（连接、发布目录、重启脚本）；
+2. 生产连接：把「目标 + 目录 + 重启脚本」展示给用户并取得确认（cicd_run_pipeline 需 confirmed=true）；
+3. 确认已备份（备份目录、保留份数）。
+## 发布
+- 优先走 cicd_run_pipeline（打包 → 备份 → 上传 → 重启），订阅 SSE 看每步状态；
+- 手工流程：备份 → 上传（sftp/ssh_upload）→ 重启 → 健康检查（端口/HTTP/日志 1 分钟）。
+## 回滚
+- 用备份副本覆盖 → 重启 → 复验；
+- 回滚同样是写操作，生产连接必须人工确认。
+## 纪律
+- 不跳过备份；失败立即停在当前步骤并报告，不连续重试覆盖现场。`,
+    },
+    {
+      id: 'skill_ops_incident_response', name: '故障应急响应', category: '运维',
+      description: '故障应急：先止血再定位，按影响面分级，给出临时缓解与永久修复方案；所有变更留审计，生产操作需确认。',
+      triggers: ['故障', '宕机', '应急', '服务不可用', '告警', '线上问题'],
+      body: `# 故障应急响应
+## 第一步：评估影响面
+- 哪些服务/用户受影响、开始时间、是否仍在扩大；
+- 只读快照：进程、端口、磁盘、最近变更（发布记录/配置改动）。
+## 第二步：止血（需用户确认）
+- 回滚最近一次发布 / 切流量 / 重启异常实例 / 摘除故障节点；
+- 每次只做一个变更，做完立即复验，避免叠加变量。
+## 第三步：定位与修复
+- 对照日志与监控时间线找首个异常；
+- 给出根因假设与验证方式，永久修复另起变更。
+## 输出
+- 时间线、影响面、已做操作、当前状态、后续动作；
+- 所有操作写审计；生产变更必须人工确认。`,
+    },
+    {
+      id: 'skill_sec_recon', name: '安全侦察', category: '安全',
+      description: '授权范围内的安全侦察：DNS/TLS/HTTP 指纹、子域枚举、端口与服务识别；仅限已授权目标，危险动作需确认。',
+      triggers: ['信息收集', '侦察', '子域', '端口扫描', '指纹识别', '资产发现'],
+      body: `# 安全侦察（授权范围内）
+## 前置
+- 先用 scope_list 确认目标在授权范围；不在范围一律拒绝并说明。
+- 只做被动/低噪声侦察；主动扫描前说明速率与影响并取得确认。
+## 内容
+- DNS：A/AAAA/CNAME/MX/TXT；TLS：证书主体、SAN、有效期、协议版本；
+- HTTP：状态码、Server/X-Powered-By、安全响应头、robots/sitemap；
+- 子域：证书透明度日志 + 常见前缀（限速）；
+- 端口：先常见端口（22/80/443/3306/6379/8080），再做服务指纹。
+## 输出
+资产清单（域名/IP/端口/服务/版本/风险线索），标注证据来源。
+## 纪律
+- 不做破坏性探测、不爆破、不绕过授权边界；
+- 发现敏感信息只报告位置，不导出数据。`,
+    },
+    {
+      id: 'skill_sec_web_probe', name: 'Web 漏洞探测', category: '安全',
+      description: '授权范围内的 Web 漏洞探测：常见注入/XSS/越权/敏感文件/配置错误；非破坏性验证，危险利用动作必须确认。',
+      triggers: ['Web 漏洞', 'SQL 注入', 'XSS', '越权', '敏感文件', '漏洞验证'],
+      body: `# Web 漏洞探测（授权范围内）
+## 前置
+- scope_list 确认目标；只做非破坏性验证（布尔/回显/时间盲测需控制强度）。
+## 检查项
+- 输入点：SQLi、XSS、命令注入、路径遍历、SSRF、开放重定向；
+- 访问控制：未授权接口、IDOR、越权读写；
+- 配置：目录列表、备份文件、.git/.env、默认口令、CORS/安全头；
+- 组件：已知 CVE 指纹匹配（只识别版本，不利用）。
+## 验证原则
+- 最小化 payload，不写文件、不落库、不弹窗影响用户；
+- 需要写操作/命令执行的验证必须先确认，记录请求与响应证据。
+## 输出
+按严重度分级，给复现步骤、影响、修复建议。
+## 纪律
+- 不拖库、不横向移动、不持久化；越界立即停止。`,
+    },
+    {
+      id: 'skill_sec_report', name: '安全报告', category: '安全',
+      description: '把侦察/探测/审计结果整理成可交付的安全报告：执行摘要、风险分级、证据、修复建议与复测项。',
+      triggers: ['安全报告', '渗透报告', '漏洞报告', '风险评估', '整改建议'],
+      body: `# 安全报告
+## 结构
+1. 执行摘要：范围、时间、总体风险等级、最关键 3 条；
+2. 资产与方法：授权范围、测试边界、工具与限制；
+3. 发现列表：每条含标题、严重度（Critical/High/Medium/Low）、影响、证据（脱敏请求/响应）、复现步骤、修复建议；
+4. 修复优先级与复测清单；
+5. 附录：原始记录索引。
+## 要求
+- 结论先行，避免堆砌工具输出；
+- 证据必须可复核；敏感信息脱敏；
+- 不夸大、不编造；未验证的只标「疑似」。
+## 交付
+file_write 生成 Markdown/PDF，对话给摘要与路径。`,
+    },
+    {
+      id: 'skill_sec_audit_review', name: '配置与代码安全审计', category: '安全',
+      description: '配置与代码安全审计：账号权限、服务暴露面、加密与日志、依赖漏洞、代码中的注入/密钥/反序列化问题；输出整改清单。',
+      triggers: ['安全审计', '配置审计', '代码审计', '基线检查', '依赖漏洞'],
+      body: `# 配置与代码安全审计
+## 配置基线
+- SSH：PermitRootLogin/PasswordAuthentication/端口/失败锁定；
+- 防火墙与暴露面：监听端口最小化、管理口不对外；
+- 账号：空口令、sudo 权限、过期账号；
+- 日志与备份：审计日志开启、备份可恢复。
+## 代码审计
+- 注入（SQL/命令/模板）、XSS、路径遍历、SSRF；
+- 硬编码密钥、调试开关、危险反序列化（pickle/eval）；
+- 依赖：npm audit / pip-audit / 已知 CVE。
+## 输出
+逐项给「现状 → 风险 → 整改命令/代码建议 → 验证方式」。
+## 纪律
+- 仅审计**授权范围内**的资产；改配置/装包等危险动作需用户确认；
+- 审计结果里的凭据一律脱敏。`,
+    },
+    {
+      id: 'skill_sec_hardening', name: '安全加固', category: '安全',
+      description: '按最小权限与最小暴露面做安全加固：SSH、系统、Web 服务、容器与数据库；每项变更先备份、后验证，生产需确认。',
+      triggers: ['安全加固', '基线加固', '关闭端口', 'SSH 加固', '权限收敛'],
+      body: `# 安全加固
+## 原则
+- 最小权限、最小暴露面、默认拒绝；
+- 一次只改一类配置，改前备份、改后验证，失败可回滚。
+## 常见项
+- SSH：禁 root 直登、禁密码登录、限制来源 IP、失败锁定；
+- 系统：关闭无用服务、内核参数（SYN cookies）、自动安全更新策略；
+- Web：安全响应头、TLS 版本与套件、目录权限、上传目录禁执行；
+- 容器：非 root 运行、只读根文件系统、资源限制；
+- 数据库：绑定内网、最小账号权限、关闭公网访问。
+## 纪律
+- 只在**授权范围内**执行加固；每项变更展示命令与影响，危险动作必须人工确认；
+- 不锁死用户自己的访问路径（改 SSH 前保留当前会话与回滚方式）。`,
+    },
+    {
+      id: 'skill_sec_blue_team', name: '蓝队排查', category: '安全',
+      description: '蓝队视角的入侵排查：异常账号/进程/网络连接、持久化项、日志审计、Webshell 与挖矿特征；保全证据后再处置。',
+      triggers: ['入侵排查', '蓝队', '被攻击', '挖矿', 'Webshell', '异常进程'],
+      body: `# 蓝队排查
+## 取证优先（只读）
+- 账号：/etc/passwd、sudoers、最近登录 last/lastb；
+- 进程：异常 CPU/网络进程、父子关系、可执行文件路径与哈希；
+- 网络：ss -antp 外联、DNS 解析异常、定时外连；
+- 持久化：crontab、systemd、rc.local、authorized_keys、启动脚本；
+- 日志：认证失败、Web 访问日志中的上传/命令执行特征。
+## 处置（需用户确认）
+- 先隔离（断外联/摘流量）再清理；保留样本与时间线；
+- 不直接删除可疑文件，先打包备份证据。
+## 输出
+时间线、失陷指标（IOC）、影响范围、处置与加固建议。
+## 纪律
+- 仅在**授权范围内**取证与处置；不做破坏性删除；所有命令留审计；涉及生产先确认。`,
+    },
+    {
+      id: 'skill_office_finance', name: '财务分析', category: '办公',
+      description: '财务数据整理与分析：报表核对、成本费用拆解、现金流与预算差异、经营指标趋势；输出表格与结论。仅供参考，不构成审计/税务意见。',
+      triggers: ['财务分析', '报表', '成本', '预算', '现金流', '利润分析'],
+      body: `# 财务分析
+## 流程
+1. 明确口径（期间、主体、含税/不含税）与数据来源；
+2. Excel/CSV 用 pandas 清洗：去重、补空、统一科目；
+3. 分析：收入成本毛利、费用结构、预算 vs 实际差异、现金流、应收应付周转；
+4. 输出：表格（xlsx）+ 结论（异常项、原因假设、建议）。
+## 要求
+- 每个结论给数据依据与计算口径；
+- 区分事实、推断与建议；
+- 数字与用户原始数据一致，不臆造。
+## 免责
+仅供参考，不构成审计、税务或投资意见；正式用途请由持证专业人士复核。`,
+    },
+    {
+      id: 'skill_office_hr', name: '人力资源事务', category: '办公',
+      description: 'HR 日常事务：招聘 JD、简历筛选维度、面试提纲、入离职清单、绩效与培训方案；注意个人信息保护与用工合规。',
+      triggers: ['招聘', 'JD', '简历筛选', '面试提纲', '入职', '绩效考核'],
+      body: `# 人力资源事务
+## 常用交付
+- JD：职责、必备/加分项、团队与汇报关系、薪酬范围表述；
+- 简历筛选：按硬性条件 + 能力证据打分，给面试问题；
+- 面试提纲：行为面试（STAR）+ 岗位场景题 + 评分表；
+- 入职/离职清单：账号、设备、权限、交接与知识沉淀；
+- 绩效/培训：目标对齐、评估维度、改进计划。
+## 合规
+- 不基于性别/年龄/婚育等歧视性条件筛选；
+- 简历与员工信息最小化使用、脱敏存储，不对外泄露；
+- 涉及劳动合同/裁员等法律问题，提示咨询专业律师。
+## 输出
+结构化文档，可直接落地；对话给摘要与文件路径。`,
+    },
+    {
+      id: 'skill_office_operation', name: '运营与流程', category: '办公',
+      description: '运营与流程优化：活动方案、SOP 梳理、数据看板指标、跨部门协作清单；输出可执行计划与责任人/时间点。',
+      triggers: ['运营方案', '活动策划', 'SOP', '流程优化', '指标看板'],
+      body: `# 运营与流程
+## 方法
+1. 目标：一句话目标 + 可量化指标（基线/目标/口径）；
+2. 现状：流程步骤、参与角色、耗时与卡点；
+3. 方案：动作清单（做什么/谁做/何时/产出），区分必做与可选；
+4. 风险：依赖、资源缺口、失败预案；
+5. 复盘：指标对比、偏差原因、下一步。
+## 交付
+- 活动方案：目标/人群/玩法/渠道/预算/排期/衡量；
+- SOP：步骤、输入输出、责任人、异常处理；
+- 看板：北极星指标 + 过程指标 + 数据来源。
+## 要求
+结论先行、可执行；不写空泛口号。`,
+    },
+    {
+      id: 'skill_office_legal', name: '法务文书辅助', category: '办公',
+      description: '法务文书辅助：合同要点梳理、风险条款提示、函件与合规清单起草；仅供参考，不构成法律意见，正式文件需律师审核。',
+      triggers: ['合同', '法务', '条款', '律师函', '合规', '协议'],
+      body: `# 法务文书辅助
+## 能做
+- 合同要点表：主体、标的、价款、交付、验收、违约、解除、争议解决；
+- 风险条款提示：责任不对等、无限连带、单方变更、知识产权归属、保密与竞业；
+- 起草：通知函、催告函、合规自查清单、制度草案；
+- 对比：两版合同的实质差异。
+## 要求
+- 逐条引用原文再分析，不凭空推断；
+- 区分「文本风险」与「商业决策」，给修改建议与替代表述；
+- 标注缺失条款与建议补充内容。
+## 免责
+仅供参考，不构成法律意见；正式签署/发送前必须由执业律师审核。`,
+    },
+    {
+      id: 'skill_office_data_report', name: '数据报表', category: '办公',
+      description: '业务数据报表：从 CSV/Excel/数据库取数，做聚合、对比、趋势与异常检测，产出可复用的表格/图表与文字结论。',
+      triggers: ['数据报表', '周报', '月报', '数据分析', '趋势', '图表'],
+      body: `# 数据报表
+## 流程
+1. 明确指标口径、时间范围、对比对象（环比/同比/目标）；
+2. 取数：本地文件用 pandas；库内数据用只读查询；
+3. 处理：清洗、聚合、缺失与异常值标注；
+4. 展示：表格 + 关键图表（趋势/结构/对比），图注写清口径；
+5. 结论：3 条以内，含「变化 → 原因假设 → 建议动作」。
+## 要求
+- 每个数字可追溯到来源与计算方式；
+- 异常先标注再解释，不悄悄剔除；
+- 输出 xlsx/图表文件 + 对话摘要。
+## 注意
+- 只读取数；敏感字段脱敏；不把个人数据写入公开报表。`,
+    },
+    {
+      id: 'skill_office_service', name: '客户服务', category: '办公',
+      description: '客户服务：工单分类与优先级、标准回复、投诉安抚与升级、FAQ 与知识库沉淀；语气专业克制，不承诺无法兑现的结果。',
+      triggers: ['客服', '工单', '投诉', '回复客户', 'FAQ', '售后'],
+      body: `# 客户服务
+## 工单处理
+1. 分类：咨询/故障/投诉/退款/建议；按影响面与紧急度定优先级；
+2. 回复：先共情与确认问题 → 给事实与方案 → 明确下一步与时间点；
+3. 升级：涉及资金、数据丢失、舆情或超权限承诺，立即升级并同步。
+## 话术原则
+- 专业、克制、具体；不甩锅、不空头承诺；
+- 不泄露其他客户信息与内部敏感信息；
+- 不能确认的事说「我去核实」，给回访时间。
+## 沉淀
+- 高频问题补 FAQ；重复故障推动根因整改；
+- 工单结论与客户反馈回写知识库。`,
+    },
   ];
 
 // 批量 upsert 内置 skill：仅插入缺项 + 标记 source='builtin'，不覆盖用户改动的 body。
@@ -4177,7 +4558,11 @@ try {
 // ★ 店铺运营同族另五条（skill_amazon_listing / skill_amazon_ads_profit / skill_taobao_ops /
 //   skill_1688_sourcing / skill_overseas_warehouse，2026-10-16 P1 补齐）：同理一并进白名单，
 //   否则老库拿到的是残留旧行、拿不到新 body。
-const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen', 'skill_douyin_sell', 'skill_douyin_traffic', 'skill_shop_selection', 'skill_amazon_listing', 'skill_amazon_ads_profit', 'skill_taobao_ops', 'skill_1688_sourcing', 'skill_overseas_warehouse', 'skill_shop_service'];
+const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen', 'skill_douyin_sell', 'skill_douyin_traffic', 'skill_shop_selection', 'skill_amazon_listing', 'skill_amazon_ads_profit', 'skill_taobao_ops', 'skill_1688_sourcing', 'skill_overseas_warehouse', 'skill_shop_service',
+  // 四模式岗位 skill（2026-10-17，openspec 5h）：新内置 body 一律进白名单
+  'skill_ops_health_check', 'skill_ops_log_analysis', 'skill_ops_docker_ops', 'skill_ops_db_maintain', 'skill_ops_deploy_release', 'skill_ops_incident_response',
+  'skill_sec_recon', 'skill_sec_web_probe', 'skill_sec_report', 'skill_sec_audit_review', 'skill_sec_hardening', 'skill_sec_blue_team',
+  'skill_office_finance', 'skill_office_hr', 'skill_office_operation', 'skill_office_legal', 'skill_office_data_report', 'skill_office_service'];
 try {
   const getBody = db.prepare('SELECT body, files_json FROM skill WHERE id = ?');
   const setDef = db.prepare('UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ? WHERE id = ?');

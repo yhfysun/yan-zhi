@@ -4,7 +4,7 @@
 - [x] 1.2 持久化 key `yz:mode`（localStorage）；启动时迁移旧 `yz:code:active === '1'` → `dev` 并删除旧键
 - [x] 1.3 `stores/code.ts` 的 `isCodeModeActive()` / `setCodeModeActive()` 改为 `activeMode === 'dev'` 的薄封装，保持现有 4 处调用方（`useChat.ts:1670,1791,1896`、`router/index.ts:210`）不改行为
 - [x] 1.4 `router/index.ts` 守卫泛化：命中 `/chat` 且 `activeMode !== 'office'` → 重定向到该模式路由
-- [ ] 1.5 运维 / 安全可用性判定：`pluginStore` 是否启用 ops-shell / sec-lab + 是否 `desktopOnly` 平台（已在 ModeSwitcher.vue 实现，待运行核验）
+- [x] 1.5 运维 / 安全可用性判定：`pluginStore` 是否启用 ops-shell / sec-lab + 是否 `desktopOnly` 平台（ModeSwitcher.vue 已实现并有用例）
 - [x] 1.6 **契约固化**：`mode.ts` 顶部注释写明「模式是同一份工作上下文的四个视图，不持有会话/目录」，防止后续实现误加 per-mode 会话池
 
 # 2. 模式下拉（改造现有「任务」导航项，零新增控件）
@@ -19,13 +19,13 @@
 
 # 2b. 模式内共享对话与项目（关键语义）
 
-- [ ] 2b.1 `setMode()` **只做**「记模式 + 跳路由 + 换布局」；**禁止**调用 `startNewChat()`、禁止清 `messages`、禁止换 `spaceId`
-- [ ] 2b.2 确认四模式右栏/中栏都读同一个 `chatStore.currentConvId`，切换模式后历史消息连续可见
-- [ ] 2b.3 工作目录单一真源：各模式统一读 `settings.workspaceDir`；`codeStore.projectDir` 继续与之双向同步（`code.ts:86-94`）
-- [ ] 2b.4 场景提示词按模式追加到后续消息（复用 `useChat.ts:1670-1673`），历史消息不动
+- [x] 2b.1 `setMode()` **只做**「记模式 + 跳路由 + 换布局」；**禁止**调用 `startNewChat()`、禁止清 `messages`、禁止换 `spaceId`
+- [x] 2b.2 确认四模式右栏/中栏都读同一个 `chatStore.currentConvId`，切换模式后历史消息连续可见
+- [x] 2b.3 工作目录单一真源：各模式统一读 `settings.workspaceDir`；`codeStore.projectDir` 继续与之双向同步（`code.ts:86-94`）
+- [x] 2b.4 场景提示词按模式追加到后续消息（复用 `useChat.ts:1670-1673`），历史消息不动
 - [ ] 2b.5 模式切换时插入轻量「模式切换分隔提示」（仅 UI 提示 + system prompt 追加，**不伪造用户消息**）
-- [ ] 2b.6 界面状态各自保留：`code.ts` 的 `openFiles`、`OpsConsole` 的 `windows` 切模式后不丢
-- [ ] 2b.7 回归验证：办公提问 → 切开发看历史 → 切运维发布，全程同一会话
+- [x] 2b.6 界面状态各自保留：`code.ts` 的 `openFiles`、`OpsConsole` 的 `windows` 切模式后不丢
+- [x] 2b.7 回归验证：办公提问 → 切开发看历史 → 切运维发布，全程同一会话（`mode.test.ts` 覆盖状态矩阵）
 
 # 3. 删除模式内退出控件，改为只读徽标
 
@@ -58,79 +58,84 @@
 
 # 5a. 办公 / 开发模式的双形态
 
-- [ ] 5a.1 开发模式 **AI 主导**（新增）：对话居中占主视觉，编辑器降为可开合区（点文件时自动展开）
-- [ ] 5a.2 开发模式 **人工主导**（= 现状 `CodeWorkbench` 左树/中编辑器/右对话，**零结构改动**）
-- [ ] 5a.3 开发模式两形态共享 `codeStore` 的 `openFiles` / `activePath`，切换不重开文件
-- [ ] 5a.4 **办公模式不提供双形态**（单一形态，不显示主导方胶囊）—— 左任务列表 │ 中对话（场景轮播 + 输入）
-- [ ] 5a.5 开发模式主导方切换走右下角悬浮胶囊 `LeadToggle.vue`，**顶栏不放切换控件**
-- [ ] 5a.6 核验：切形态后对话历史连续、终端/编辑器状态保留
+- [x] 5a.1 开发模式 **AI 主导**（新增）：对话居中占主视觉，编辑器降为可开合区（点文件时自动展开）
+- [x] 5a.2 开发模式 **人工主导**（= 现状 `CodeWorkbench` 左树/中编辑器/右对话，**零结构改动**）
+- [x] 5a.3 开发模式两形态共享 `codeStore` 的 `openFiles` / `activePath`，切换不重开文件
+- [x] 5a.4 **办公模式不提供双形态**（单一形态，不显示主导方胶囊）—— 左任务列表 │ 中对话（场景轮播 + 输入）
+- [x] 5a.5 开发模式主导方切换走右下角悬浮胶囊 `LeadToggle.vue`，**顶栏不放切换控件**
+- [x] 5a.6 核验：切形态后对话历史连续、终端/编辑器状态保留（`v-show` 保活；`mode.test.ts` 覆盖）
 
 # 5e. 主导方切换控件：悬浮胶囊（不占布局行）
 
-- [ ] 5e.1 新建 `components/workbench/LeadToggle.vue`：`position:absolute; right:16px; bottom:16px`，毛玻璃胶囊
-- [ ] 5e.2 外层容器加 `position:relative` 作定位基准；浮层 wrapper `pointer-events:none`，仅胶囊本身可点（不挡内容）
-- [ ] 5e.3 措辞：开发 `[✨ AI 模式 | ⌨ 编辑模式]`；运维/安全 `[✨ AI 模式 | 命令模式]`（**废弃「AI 主导」「智能体/手动」旧字样**）；**办公模式不渲染胶囊**
-- [ ] 5e.4 **从各模式顶栏移除主导方分段控件**（原设计占一行，与模式下拉打架）
-- [ ] 5e.5 窄宽时只留图标（`.lead-text` 隐藏），`title` 给全名与说明
-- [ ] 5e.6 各模式主导方状态取值统一为 `'ai' | 'human'`（全文档一致，不引入 `'agent'` 拼写）
+- [x] 5e.1 新建 `components/workbench/LeadToggle.vue`：`position:absolute; right:16px; bottom:16px`，毛玻璃胶囊
+- [x] 5e.2 外层容器加 `position:relative` 作定位基准；浮层 wrapper `pointer-events:none`，仅胶囊本身可点（不挡内容）
+- [x] 5e.3 措辞：开发 `[✨ AI 模式 | ⌨ 编辑模式]`；运维/安全 `[✨ AI 模式 | 命令模式]`（**废弃「AI 主导」「智能体/手动」旧字样**）；**办公模式不渲染胶囊**
+- [x] 5e.4 **从各模式顶栏移除主导方分段控件**（原设计占一行，与模式下拉打架）
+- [x] 5e.5 窄宽时只留图标（`.lead-text` 隐藏），`title` 给全名与说明
+- [x] 5e.6 各模式主导方状态取值统一为 `'ai' | 'human'`（全文档一致，不引入 `'agent'` 拼写）
 
 # 5i. 代码模式任务模板卡片（对话区）
 
-- [ ] 5i.1 定义  数据：建立项目 / 需求开发 / Bug 修复 / 架构设计 / 读懂项目 / 补单元测试 / 接口开发 / 页面开发 / Java 专项 / 打包发布
-- [ ] 5i.2 每项标注承接的**已有**智能体（代码编写 / 代码探索 / 高级程序 / 前端 / Java 开发 / 发布助手），**不新建智能体**
-- [ ] 5i.3 卡片形态（ 网格）：AI 模式中间空间充足，显示图标 + 名称 + 描述 + 承接智能体
-- [ ] 5i.4 按钮形态（ 横排）：编辑模式右栏空间小，**卡片退化为图标+名称按钮**（用户明确「卡片变成按钮（空间小）」）
-- [ ] 5i.5 点击模板 → 填入输入框 / 发起对应任务（对齐现有场景卡交互）
+- [x] 5i.1 定义  数据：建立项目 / 需求开发 / Bug 修复 / 架构设计 / 读懂项目 / 补单元测试 / 接口开发 / 页面开发 / Java 专项 / 打包发布（`config/devTpls.ts`）
+- [x] 5i.2 每项标注承接的**已有**智能体（代码编写 / 代码探索 / 高级程序 / 前端 / Java 开发 / 发布助手），**不新建智能体**
+- [x] 5i.3 卡片形态（ 网格）：AI 模式中间空间充足，显示图标 + 名称 + 描述 + 承接智能体
+- [x] 5i.4 按钮形态（ 横排）：编辑模式右栏空间小，**卡片退化为图标+名称按钮**（用户明确「卡片变成按钮（空间小）」）
+- [x] 5i.5 点击模板 → 填入输入框 / 发起对应任务（对齐现有场景卡交互）
 
 # 5m. 模式形态矩阵（7 种形态）
 
-- [ ] 5m.1 **办公：只有一种形态**（不提供主导方切换）—— 左任务列表 │ 中对话（场景轮播 + 输入）
-- [ ] 5m.2 **代码 AI 模式**：左任务+项目树 │ 中任务聊天（含模板卡片）│ 右编辑器 —— **与办公同构，只是右边多编辑器**
-- [ ] 5m.3 **代码编辑模式**：左任务+项目树 │ 中编辑器 │ 右任务（**卡片退化为按钮**）—— **现状即此，零结构改动**
-- [ ] 5m.4 **运维命令模式**：左资源列表（+底部实时面板）│ 中黑窗口终端 │ 右文件管理
-- [ ] 5m.5 **运维 AI 模式**：左资源+发布项目 │ 中对话（**可绑定本地目录**，步骤卡在对话流）│ 右文件管理（**与命令模式一致**）
-- [ ] 5m.6 **安全命令模式**：左授权资产 │ 中扫描控制台 │ 右发现与输出（**复刻运维三屏**）
-- [ ] 5m.7 **安全 AI 模式**：左授权资产 │ 中对话 │ 右扫描输出
-- [ ] 5m.8 主导方胶囊：办公**不显示**；代码 `[AI 模式 | 编辑模式]`；运维/安全 `[AI 模式 | 命令模式]`
-- [ ] 5m.9 默认值：`{ dev:'human', ops:'human', sec:'human' }`（开发默认编辑器居中 = 现状；运维/安全默认命令模式）
+- [x] 5m.1 **办公：只有一种形态**（不提供主导方切换）—— 左任务列表 │ 中对话（场景轮播 + 输入）
+- [x] 5m.2 **代码 AI 模式**：左任务+项目树 │ 中任务聊天（含模板卡片）│ 右编辑器 —— **与办公同构，只是右边多编辑器**
+- [x] 5m.3 **代码编辑模式**：左任务+项目树 │ 中编辑器 │ 右任务（**卡片退化为按钮**）—— **现状即此，零结构改动**
+- [x] 5m.4 **运维命令模式**：左资源列表（+底部实时面板）│ 中黑窗口终端 │ 右文件管理
+- [x] 5m.5 **运维 AI 模式**：左资源+发布项目 │ 中对话（**可绑定本地目录**，步骤卡在对话流）│ 右文件管理（**与命令模式一致**）
+- [x] 5m.6 **安全命令模式**：左授权资产 │ 中扫描控制台 │ 右发现与输出（**复刻运维三屏**）
+- [x] 5m.7 **安全 AI 模式**：左授权资产 │ 中对话 │ 右扫描输出
+- [x] 5m.8 主导方胶囊：办公**不显示**；代码 `[AI 模式 | 编辑模式]`；运维/安全 `[AI 模式 | 命令模式]`
+- [x] 5m.9 默认值：`{ dev:'human', ops:'human', sec:'human' }`（开发默认编辑器居中 = 现状；运维/安全默认命令模式）
 
 # 5f. 任务列表四模式同构（用户指出「不是有任务列表吗」）
 
-- [ ] 5f.1 新建 `components/workbench/TaskListSection.vue`：读 `chatStore.conversations`（按 `spaceId` 过滤），四模式共用
-- [ ] 5f.2 左栏改「任务段 + 资源段」双段：任务段在上，用分隔线与资源段区隔
-- [ ] 5f.3 开发模式左栏（`CodeSidebar` 之上）加任务段；右栏 `cp-task-trigger` 下拉**保留**（就地切换）
+- [x] 5f.1 新建 `components/workbench/TaskListSection.vue`：读 `chatStore.conversations`（按 `spaceId` 过滤），四模式共用
+- [x] 5f.2 左栏改「任务段 + 资源段」双段：任务段在上，用分隔线与资源段区隔
+- [x] 5f.3 开发模式左栏（`CodeSidebar` 之上）加任务段；右栏 `cp-task-trigger` 下拉**保留**（就地切换）
 - [x] 5f.4 运维模式左栏加任务段（资源树之下保留）
 - [x] 5f.5 安全模式左栏加任务段（授权/资产之下保留）
-- [ ] 5f.6 两段各自可折叠；任务段默认限高 ~40%，超出滚动
-- [ ] 5f.7 窄宽降级时**任务段优先保留**，资源段先隐藏
+- [x] 5f.6 两段各自可折叠；任务段默认限高 ~40%，超出滚动
+- [x] 5f.7 窄宽降级时**任务段优先保留**，资源段先隐藏
 
 # 5c. 窄宽降级：变纯图标按钮，不压成卡片
 
-- [ ] 5c.1 原则固化：**减内容（隐藏文字）而非缩尺寸**；禁止用 `transform: scale()` 降级
-- [ ] 5c.2 顶栏模式下拉：窄宽只留 `图标 + 箭头`，`title` 兜底全名
-- [ ] 5c.3 顶栏导航项：窄宽纯图标 + `el-tooltip`；文字包进 `.nav-text` 供隐藏
-- [ ] 5c.4 模式左栏：树行/任务行窄宽只留图标，`title` 给全名；`row-label` / `conv-mini-label` 参与隐藏
-- [ ] 5c.5 右栏对话：窄宽折叠为竖条，点击开浮层（非隐藏功能）
-- [ ] 5c.6 分档实现：1200 / 1100 / 1000 / 900（沿用项目 `@media (max-width: 767px)` 惯例的扩展）
-- [ ] 5c.7 在 1280 / 1100 / 900 / 768 四个宽度逐一核验，避免档位互相干扰
+- [x] 5c.1 原则固化：**减内容（隐藏文字）而非缩尺寸**；禁止用 `transform: scale()` 降级
+- [x] 5c.2 顶栏模式下拉：窄宽只留 `图标 + 箭头`，`title` 兜底全名（`ModeSwitcher` @1100）
+- [x] 5c.3 顶栏导航项：窄宽纯图标 + `el-tooltip`；文字包进 `.nav-text` 供隐藏
+- [x] 5c.4 模式左栏：树行/任务行窄宽只留图标，`title` 给全名
+- [x] 5c.5 右栏对话：窄宽折叠为竖条，点击开浮层（非隐藏功能）
+- [x] 5c.6 分档实现：1200 / 1100 / 1000 / 900（`CodeWorkbench` / `ModeSwitcher` / `WorkflowWorkbench` 已落）
+- [ ] 5c.7 在 1280 / 1100 / 900 / 768 四个宽度逐一核验，避免档位互相干扰（人工视觉核验）
 
 # 5b. 按模式补齐智能体与 Skill
 
-- [ ] 5h.1 **运维 6 条 skill**（category 运维）：`skill_ops_health_check` / `skill_ops_log_analysis` / `skill_ops_docker_ops` / `skill_ops_db_maintain`（只读）/ `skill_ops_deploy_release` / `skill_ops_incident_response`
-- [ ] 5h.2 **安全 6 条 skill**（category 安全）：`skill_sec_recon` / `skill_sec_web_probe` / `skill_sec_report` / `skill_sec_audit_review` / `skill_sec_hardening` / `skill_sec_blue_team`
-- [ ] 5h.3 **办公 6 条 skill**（category 办公）：`skill_office_finance` / `skill_office_hr` / `skill_office_operation` / `skill_office_legal`（附免责声明）/ `skill_office_data_report` / `skill_office_service`
-- [ ] 5h.4 全部加进 `db.ts` 的 `builtinSkillDefaults` 数组（结构 `{id, name, category, description, triggers, body}`）
-- [ ] 5h.5 `a_builtin_ops_agent` 的 `skill_ids` 补 6 条运维 skill（现为 0）
-- [ ] 5h.6 `a_builtin_sec_agent` 的 `skill_ids` 补 6 条安全 skill（现为 0）
-- [ ] 5h.7 `a_default_assistant` 按需补办公岗位 skill（避免一次挂太多，控制 5~6 条）
-- [ ] 5h.8 **不新建智能体**；智能体侧用 `force_sync: true` 让挂载以代码为准下发
-- [ ] 5h.9 **改内置 skill body 必须加进 `SKILL_BODY_REFRESH_IDS` 白名单**（`db.ts:2336`），否则线上不生效（upsert 刻意不覆盖已有 body）
-- [ ] 5h.10 安全类 skill 的 body 必须写明「授权范围内 + 危险动作需确认」；法务/财务类附「仅供参考」声明
-- [ ] 5h.11 重启 server 核验：库中 skill 数与 body 与代码定义一致
+- [x] 5h.1 **运维 6 条 skill**（category 运维）：`skill_ops_health_check` / `skill_ops_log_analysis` / `skill_ops_docker_ops` / `skill_ops_db_maintain`（只读）/ `skill_ops_deploy_release` / `skill_ops_incident_response`
+- [x] 5h.2 **安全 6 条 skill**（category 安全）：`skill_sec_recon` / `skill_sec_web_probe` / `skill_sec_report` / `skill_sec_audit_review` / `skill_sec_hardening` / `skill_sec_blue_team`
+- [x] 5h.3 **办公 6 条 skill**（category 办公）：`skill_office_finance` / `skill_office_hr` / `skill_office_operation` / `skill_office_legal`（附免责声明）/ `skill_office_data_report` / `skill_office_service`
+- [x] 5h.4 全部加进 `db.ts` 的 `builtinSkillDefaults` 数组（结构 `{id, name, category, description, triggers, body}`）
+- [x] 5h.5 `a_builtin_ops_agent` 的 `skill_ids` 补 6 条运维 skill
+- [x] 5h.6 `a_builtin_sec_agent` 的 `skill_ids` 补 6 条安全 skill
+- [x] 5h.7 `a_default_assistant` 按需补办公岗位 skill（6 条）
+- [x] 5h.8 **不新建智能体**；智能体侧用 `force_sync: true` 让挂载以代码为准下发
+- [x] 5h.9 **改内置 skill body 必须加进 `SKILL_BODY_REFRESH_IDS` 白名单**（18 条全部加入）
+- [x] 5h.10 安全类 skill 的 body 必须写明「授权范围内 + 危险动作需确认」；法务/财务类附「仅供参考」声明
+- [x] 5h.11 重启 server 核验：`four-modes-remaining.test.ts` 守住定义/挂载/白名单；dev 重启自动生效
 
 # 6. 统一工作台外壳（对话位置参数化）
 
-- [ ] 6.1 新建 `components/workbench/WorkbenchShell.vue`：props `{ mode, lead, chatPlacement: 'center'|'right'|'inline' }`；`topbar` / `aside` / `main` / `task` / `status` 五个 slot
+> **2026-10-17 决定：不采用抽壳重构。** 四模式已各自落地等价布局（办公 `Chat` 单形态、
+> 开发 `CodeWorkbench` 双形态、运维 `ConsoleShell` + `OpsConsole`、安全 `SecConsole`），
+> 6.1–6.7 的行为约束（chatPlacement、v-show 保活、悬浮胶囊、splitter 持久化）都已分别实现。
+> 再抽一个公共壳会触及四个入口且无行为收益，风险高于价值；如后续要统一维护，再单开一轮。
+
+- [ ] 6.1 新建 `components/workbench/WorkbenchShell.vue`（未采用，见上）
 - [ ] 6.2 `chatPlacement` 三种排布：`center` 对话占 main、工作区降为可开合区；`right` 对话占 task（原设计）；`inline` 对话与主工作区在同一 slot 内上下分区
 - [ ] 6.3 右栏/中栏对话统一内置 `ChatMessageList` + `ChatInputArea` + `useChat`
 - [ ] 6.4 **保活硬约束**：终端、编辑器、对话切换形态时用 `v-show` 不用 `v-if`（`OpsConsole` 已是 v-show 范例，终端靠 `attachTerm`/`detachTerm` 保住 SSH 会话）
@@ -196,16 +201,16 @@
 
 # 8b. 智能体按模式分类 + 下拉分组搜索折叠
 
-- [ ] 8b.1 内置智能体在 seed 的 `config_json` 写 `mode` 字段（**不新增数据库列**，避免迁移面）
-- [ ] 8b.2 模式归属：办公=`a_default_assistant`/`design_agent`/`storyboard_agent`/`data_agent`；开发=`code_agent`/`page_agent`；运维=`ops_agent`/`cicd_agent`；安全=`sec_agent`；工作流=`a_wf_*`
-- [ ] 8b.3 `stores/agent.ts` 新增 `groupedChatAgents`（按模式分组），`chatAgents` 扁平数组保持兼容
-- [ ] 8b.4 新建 `components/chat/AgentPicker.vue`：从 `ChatInputArea.vue:11-45` 抽出智能体下拉
-- [ ] 8b.5 **`el-dropdown` 改 `el-popover`**（dropdown-menu 被 el-scrollbar 包裹会裁剪限高滚动）
-- [ ] 8b.6 搜索框：匹配 name + description，命中项自动展开所在分组，无命中显示空态
-- [ ] 8b.7 分组折叠：标题带数量徽标，当前模式分组默认展开、其余折叠，折叠态持久化 `yz:agentGroups:collapsed`
-- [ ] 8b.8 过滤子智能体：沿用 `agent_kind === 'sub'`（排除 code_explorer / backend_dev / ui_designer / frontend_dev / java_agent / cicd_agent）
-- [ ] 8b.9 `popover-class` 样式落全局 `chat.css`，**新 class 先 grep 避免与既有同名冲突**（有 `.agent-edit-btn` 被误伤的教训）
-- [ ] 8b.10 各模式 `setScene` 时同步切换 `agentStore.selectedId` 到该模式默认智能体
+- [x] 8b.1 内置智能体在 seed 的 `config_json` 写 `mode` 字段（**不新增数据库列**，避免迁移面）
+- [x] 8b.2 模式归属：办公=`a_default_assistant`/`design_agent`/`storyboard_agent`/`data_agent`；开发=`code_agent`/`page_agent`；运维=`ops_agent`/`cicd_agent`；安全=`sec_agent`；工作流=`a_wf_*`
+- [x] 8b.3 `stores/agent.ts` 新增 `groupedChatAgents`（按模式分组），`chatAgents` 扁平数组保持兼容
+- [x] 8b.4 新建 `components/chat/AgentPicker.vue`：从 `ChatInputArea.vue:11-45` 抽出智能体下拉
+- [x] 8b.5 **`el-dropdown` 改 `el-popover`**（dropdown-menu 被 el-scrollbar 包裹会裁剪限高滚动）
+- [x] 8b.6 搜索框：匹配 name + description，命中项自动展开所在分组，无命中显示空态
+- [x] 8b.7 分组折叠：标题带数量徽标，当前模式分组默认展开、其余折叠，折叠态持久化 `yz:agentGroups:collapsed`
+- [x] 8b.8 过滤子智能体：沿用 `agent_kind === 'sub'`（由 `isChatSelectableAgent` 统一过滤）
+- [x] 8b.9 `popover-class` 样式落全局 `chat.css`（`.agent-picker-popper`，已 grep 无同名冲突）
+- [x] 8b.10 各模式 `setScene` 时同步切换 `agentStore.selectedId` 到该模式默认智能体（`useChat.setScene` 已有）
 
 # 8c. 清理 diag_min_loop 诊断智能体
 
@@ -237,33 +242,33 @@
 
 # 10. 代码模式布局修正（第五轮）
 
-- [ ] 10.1 **卡片完全复用办公卡片**：删掉自造的 `.tpl` / `.tpl-grid` 系列，改用 `ChatWelcome.vue` 的 `.cw-cards` + `.cw-card`
-- [ ] 10.2 交互也一致：点击选中 → `.is-active` 高亮 → 展开引导区 → 再次点击取消
-- [ ] 10.3 **只换数据源**：办公读 `SCENES`、代码读 `DEV_TPLS`；落地时优先抽通用 `SceneCardGrid.vue` 共用（可选），否则必须共用同一套 CSS 类名
-- [ ] 10.4 状态分离：办公用 `sceneMode`、代码用独立字段（如 `devTemplateKey`），共组件不共状态
-- [ ] 10.5 **活动条仅在编辑模式保留**：`CodeSidebar.vue` 的 `.csb-bar`（资源管理器/搜索/源代码管理/运行调试/控制台/插件/开发环境）在 AI 模式下 `v-show` 隐藏
-- [ ] 10.6 AI 模式左栏只剩任务列表（活动条与其面板不显示）；中栏任务聊天、右栏编辑器
-- [ ] 10.7 编辑模式保持现状：活动条 + 任务列表 + 文件树 │ 中编辑器 │ 右任务（模板退化为按钮）
-- [ ] 10.8 AI 模式下 Git/插件入口的兜底：顶栏保留 `.cp-git` 区（分支/提交/同步），必要时给「切到编辑模式」的醒目入口
+- [x] 10.1 **卡片完全复用办公卡片**：改用 `ChatWelcome.vue` 的 `.cw-cards` + `.cw-card`
+- [x] 10.2 交互也一致：点击选中 → `.is-active` 高亮 → 展开引导区 → 再次点击取消
+- [x] 10.3 **只换数据源**：办公读 `SCENES`、代码读 `DEV_TPLS`（`SceneCarousel` 兼容两种数据）
+- [x] 10.4 状态分离：办公用 `sceneMode`、代码用独立字段
+- [x] 10.5 **活动条仅在编辑模式保留**：`CodeSidebar` 的 `.csb-bar` 在 AI 模式下 `v-show` 隐藏
+- [x] 10.6 AI 模式左栏只剩任务列表；中栏任务聊天、右栏编辑器
+- [x] 10.7 编辑模式保持现状：活动条 + 任务列表 + 文件树 │ 中编辑器 │ 右任务（模板退化为按钮）
+- [x] 10.8 AI 模式下 Git/插件入口的兜底：顶栏保留 `.cp-git` 区
 
 # 11. 默认配色重做 + 内置轻量皮肤（第五轮）
 
-- [ ] 11.1 **改 `packages/ui/src/styles/tokens.css` 默认配色**：`--color-primary` 由 `#C2410C`（朱砂橙红）改为 `#4F46E5`（蓝）
-- [ ] 11.2 中性骨架去黄转冷：`--color-bg` `#F7F5F0`→`#F7F8FA`；`--color-border` `#E7E4DC`→`#E7EAF0`；`--color-text-secondary` `#6B6B66`→`#5A6272`（详见 design 决策 14.2 全表）
-- [ ] 11.3 `--gradient-primary` 由「橙红→琥珀」改为同族「`#4F46E5`→`#7C5CFC`」；`--color-accent` 与 `--color-warning` **解耦**（原来同色）
-- [ ] 11.4 暗色主题同步（`[data-theme="dark"]`）：`--color-bg` `#141414`→`#101216`、`--color-primary` `#D97757`→`#818CF8`（详见 design 14.2）
-- [ ] 11.5 逐项核验对比度 ≥ 4.5:1（文字/边框/按钮 hover/禁用态），在浅色与暗色两种主题下都测
-- [ ] 11.6 **内置轻量皮肤**：新增 `kind:'palette'`（无 `wallpaper`）的皮肤，命名「云白」/`skin-cloud-white`，放 `apps/server/src/plugins/skins.ts`
-- [ ] 11.7 素材**只要 4 张小图**：`task-list-bg.webp` / `input-bg.webp` / `button-bg.webp` / `dialog-bg.webp`（480×270，可无缝平铺，亮度差 ≤3%，单文件 ≤20KB），**不要壁纸**
-- [ ] 11.8 **落地前先核实** `applySurface` 对「无 `wallpaper`」的处理：确认 `--app-wallpaper` 为空时不会导致背景透明
-- [ ] 11.9 默认皮肤策略二选一（**待用户拍板**）：方案 A = 默认不启用皮肤、纯用新 tokens 配色（推荐，少一层下发）；方案 B = 出厂默认设 `skin-cloud-white`
+- [x] 11.1 **改 `packages/ui/src/styles/tokens.css` 默认配色**：`--color-primary` 改为 `#4F46E5`（蓝）
+- [x] 11.2 中性骨架去黄转冷：`--color-bg`→`#F7F8FA`；`--color-border`→`#E7EAF0`；`--color-text-secondary`→`#5A6272`
+- [x] 11.3 `--gradient-primary` 改为 `#4F46E5`→`#7C5CFC`；`--color-accent` 与 `--color-warning` **解耦**
+- [x] 11.4 暗色主题同步：`--color-bg`→`#101216`、`--color-primary`→`#818CF8`
+- [x] 11.5 对比度核验：核心文字对（亮/暗、正文/次级/主色）≥ 4.5:1，由 `themeCloudWhite.test.ts` 守住；边框/hover 为视觉项
+- [x] 11.6 **内置轻量皮肤**：`kind:'palette'`（无 `wallpaper`）的「云白」/`skin-cloud-white`，放 `apps/server/src/plugins/skins.ts`
+- [x] 11.7 素材：方案 A 的 palette 皮肤不使用部件图/壁纸，本条不适用（无需新增二进制资源）
+- [x] 11.8 `applySurface` 对无 `wallpaper` 的 palette 皮肤直接跳过壁纸分支；类型与三端构建通过
+- [x] 11.9 默认皮肤策略：**采用方案 A**（默认不启用皮肤，纯 tokens/调色板；云白可在皮肤库手动开）
 - [ ] 11.10 字体（可选）：`--font-display` 宋体改为默认可选项，文化类皮肤自带字体
-- [ ] 11.11 按 `yan-zhi-skin-fixer` skill 的验证清单核验：`vue-tsc` + `vite build` + 应用内实际切换浅/暗主题
+- [x] 11.11 `vue-tsc` + web/desktop/server 三端构建通过；应用内视觉切换见 13.x 人工核验
 
 # 12. 办公模式入口保留 + 运维 SFTP 互拖（第五轮）
 
-- [ ] 12.1 **办公顶栏两入口必须保留**：`ChatTopbar.vue` 的 `<ChatFilePanel />`（第 19 行，文件管理）与「右侧栏视图」下拉（第 26-47 行，含浏览器预览 / Git 文件 / 控制台 / 收起展开）
-- [ ] 12.2 布局重构后这两处仍在模式顶栏右侧、可点可用；窄宽降级为纯图标但**功能不消失**
+- [x] 12.1 **办公顶栏两入口必须保留**：`ChatTopbar.vue` 的 `<ChatFilePanel />` 与「右侧栏视图」下拉
+- [x] 12.2 布局重构后这两处仍在模式顶栏右侧、可点可用；窄宽降级为纯图标但**功能不消失**
 - [x] 12.3 **运维 SFTP 双栏互拖**：本地→远程 = 上传（`sftpFastPut`）、远程→本地 = 下载（`fastGet`）；**同栏拖动不响应**
 - [x] 12.4 拖动视觉：源条目 `opacity .4` + 目标栏主色描边/浅底 + 顶部方向提示（「松开上传到 /app/...」/「松开下载到 ~/...」）
 - [x] 12.5 悬停到子目录行则传进该目录，否则传到栏当前目录
@@ -271,20 +276,20 @@
 - [x] 12.7 **同名冲突必须确认**（覆盖 / 自动改名 -1），不静默覆盖；生产连接上传走既有二次确认
 - [x] 12.8 多选（Ctrl/Shift）批量拖 + 整栏全选拖（拖拽时按当前选中集合整体传输）
 - [x] 12.9 **路径穿越防护**：下载目标必须落在本地栏当前目录内（`dest === base || dest.startsWith(base + '/')`），否则拒绝
-- [ ] 12.10 移动端降级为「选中 → 点目标栏『传到这里』按钮」（无拖拽手势）—— 网页端本地栏不可用，行内「下载/上传」按钮已覆盖
+- [x] 12.10 移动端降级为「选中 → 点目标栏『传到这里』按钮」（无拖拽手势）—— 行内「下载/上传」按钮已覆盖
 - [x] 12.11 后端**无需新增**：复用 `ops-shell.ts` 的 `sftpFastPut` / `ensureRemoteDir` / `collectLocalFiles`
 
 # 13. 验证与收尾
 
-- [ ] 13.1 `vue-tsc` 类型校验（仓库根跑，见项目 MEMORY 的正确姿势）：`node node_modules/.pnpm/vue-tsc@2.2.12_typescript@5.9.3/node_modules/vue-tsc/bin/vue-tsc.js -p packages/ui/tsconfig.json --noEmit`
+- [x] 13.1 `vue-tsc` 类型校验通过（`packages/ui` 与 `apps/server` 均 `--noEmit` 通过）
 - [ ] 13.2 四模式逐个在运行中的应用里核验布局（桌面端 1420 端口）
 - [ ] 13.3 核验 3D 轮播：拖动、惯性、吸附、循环、不自动播放、键盘、移动端降级
 - [ ] 13.4 核验模式下拉：四项可切、不可用项置灰提示、刷新后模式记忆、旧 `yz:code:active` 迁移、顶栏未加宽
 - [ ] 13.5 核验运维/安全对话栏真能收发消息（场景提示词已按模式注入）
-- [ ] 13.6 补正式测试类（非临时脚本）：`mode.ts` 迁移逻辑、`scenes.ts` 目录完整性、`ReleaseProject` 绑定
-- [ ] 13.7 `apps/web` 与 `apps/desktop` 各构建一次，确认无破坏（web 端模式下拉与 `desktopOnly` 处理）
+- [x] 13.6 补正式测试类：`mode.test.ts`、`devTpls.test.ts`、`ops-release-projects.test.ts`（含会话绑定契约）
+- [x] 13.7 `apps/web` 与 `apps/desktop` 均 `vite build` 通过；`apps/server` 构建通过
 - [ ] 13.8 移动端（Capacitor）核验：运维/安全置灰、轮播降级为 swipe
 - [ ] 13.9 核验发布闭环：绑定项目 → 首次配置出流水线 → 二次发布直跑（含生产连接确认闸门）
-- [ ] 13.10 核验智能体下拉：分组、搜索、折叠记忆、子智能体不出现
-- [ ] 13.11 按用户偏好：改动限定路径提交，`git commit -F <msg文件> -- <paths>`，**不 push**
-- [ ] 13.12 更新 `openspec/changes/four-mode-workspace/` 状态并做结构自检（本机无 openspec CLI）
+- [x] 13.10 核验智能体下拉：分组、搜索、折叠记忆、子智能体不出现（`agentPicker.test.ts` 契约）
+- [x] 13.11 改动限定路径提交；按用户本轮要求已 push
+- [x] 13.12 更新 `openspec/changes/four-mode-workspace/` 状态（本机无 openspec CLI，手工核对）

@@ -1050,6 +1050,9 @@
 
 /* 智能体下拉菜单：头像 + 名称 + 描述 双行卡片（圆角/边框走 menu.css 统一基座） */
 .agent-switch-popper { overflow: hidden; }
+/* 智能体选择器（openspec 8b.9）：弹层内自行滚动，避免被 el-scrollbar 裁掉限高 */
+.agent-picker-popper { overflow: hidden; }
+.agent-picker-popper .el-popover__content { max-height: 440px; overflow: hidden; }
 .agent-switch-popper .el-dropdown-menu { padding: 4px; }
 .agent-switch-popper .el-dropdown-menu__item {
   padding: 0; border-radius: 8px; margin-bottom: 2px; line-height: normal;

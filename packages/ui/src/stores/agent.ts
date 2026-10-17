@@ -375,6 +375,28 @@ export const useAgentStore = defineStore('agent', () => {
    */
   const chatAgents = computed(() => agents.value.filter((a) => isChatSelectableAgent(a)));
 
+  /** 智能体选择器分组（openspec 8b.3）：按 config.mode 归档，未知模式归入办公。 */
+  const AGENT_MODE_LABELS: Record<string, string> = {
+    office: '办公', dev: '开发', ops: '运维', sec: '安全', workflow: '工作流',
+  };
+  const AGENT_MODE_ORDER = ['office', 'dev', 'ops', 'sec', 'workflow'];
+  const groupedChatAgents = computed(() => {
+    const groups = new Map<string, Agent[]>();
+    for (const a of chatAgents.value) {
+      const mode = String((a.config as Record<string, unknown> | undefined)?.mode || 'office');
+      const list = groups.get(mode) || [];
+      list.push(a);
+      groups.set(mode, list);
+    }
+    return [...groups.entries()]
+      .sort(([x], [y]) => {
+        const xi = AGENT_MODE_ORDER.indexOf(x);
+        const yi = AGENT_MODE_ORDER.indexOf(y);
+        return (xi < 0 ? 99 : xi) - (yi < 0 ? 99 : yi);
+      })
+      .map(([mode, agents]) => ({ mode, label: AGENT_MODE_LABELS[mode] || mode, agents }));
+  });
+
   /** 可作为子智能体被引用的智能体（子智能体只能被引用，不能再引用别人） */
   const delegatableAgents = computed(() => agents.value.filter((a) => a.agentKind === 'sub'));
 
@@ -667,7 +689,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   return {
     agents, current, running, runLogs,
-    selectedId, selectedAgent, chatAgents, delegatableAgents, selectAgent,
+    selectedId, selectedAgent, chatAgents, groupedChatAgents, delegatableAgents, selectAgent,
     loadAgents, ensureAgents, loadAgent, createAgent, createChatAgent, updateAgent, updateWorkflow, deleteAgent, resetAgent,
     publishAgent, unpublishAgent, installFromMarketplace,
     runAgent, addNode,

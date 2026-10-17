@@ -41,6 +41,19 @@ describe('cicd-pipeline · 侧栏入口 + 生产发布确认', () => {
   });
 });
 
+describe('7b.7–7b.8 · 会话绑定（13.6）', () => {
+  const DB = readSrc(resolvePath(__dirname, '../src/db.ts'), 'utf8');
+  const CONV = readSrc(resolvePath(__dirname, '../src/routes/conversations.ts'), 'utf8');
+  it('增量迁移 release_project_id（幂等）', () => {
+    expect(DB).toContain('ALTER TABLE conversation ADD COLUMN release_project_id TEXT');
+    expect(DB).toContain("pragma_table_info('conversation')");
+  });
+  it('PATCH /conversations/:id 接受 releaseProjectId（null = 解绑）', () => {
+    expect(CONV).toMatch(/req\.body\.releaseProjectId !== undefined/);
+    expect(CONV).toContain("sets.push('release_project_id = ?')");
+  });
+});
+
 describe('releaseProjectPathError · 本地目录安全', () => {
   it('必须是绝对路径', () => {
     expect(releaseProjectPathError('')).toMatch(/必填/);
