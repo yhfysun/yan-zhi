@@ -129,6 +129,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setAccelerator: (accel) => ipcRenderer.invoke('shortcut:setScreenshot', accel),
   },
 
+  // AI 急停全局热键（computer-use 唯一安全阀）：★ 不可禁用，主进程对空值回退默认键
+  panicHotkey: {
+    // 读取当前生效的热键（Electron accelerator 串；主进程保证恒非空）
+    get: () => ipcRenderer.invoke('shortcut:getPanic'),
+    // 换键，返回 { ok, accelerator, error? }（被占用时 ok=false 并给出原因）
+    set: (accel) => ipcRenderer.invoke('shortcut:setPanic', accel),
+  },
+
   // Shell
   shell: {
     exec: (command, args, options) => ipcRenderer.invoke('shell:exec', command, args, options),

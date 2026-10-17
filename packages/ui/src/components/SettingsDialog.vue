@@ -8,13 +8,13 @@
   两者共用同一批内容组件：Settings.vue（经 pane 属性直取单个分区）与
   Models / LocalSkillMarket / ToolMarket 三个既有视图，不复制任何业务逻辑。
 
-  分类沿用既有 tab / 分区收敛：通用 / 外观皮肤 / 模型服务 / 技能 / 工具与连接 /
-  数据 / 钩子 / 商城服务端 / 局域网（+ 记忆管理 / 语音包 / 日志 / 关于，不删功能）。
+ 分类沿用既有 tab / 分区收敛：通用 / 快捷键 / 外观皮肤 / 模型服务 / 技能 / 工具与连接 /
+ 数据 / 钩子 / 本机 IP / 商城服务端 / 局域网（+ 记忆管理 / 语音包 / 日志 / 关于，不删功能）。
 -->
 <template>
   <Teleport to="body">
     <Transition name="settings-dialog">
-      <div v-if="open" class="settings-dialog-mask" @click.self="close">
+      <div v-if="open" class="settings-dialog-mask" :style="maskStyle" @click.self="close">
         <section class="settings-dialog" role="dialog" aria-modal="true" aria-label="设置">
           <header class="sd-header">
             <span class="sd-title">设置</span>
@@ -52,10 +52,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useZIndex } from 'element-plus';
 import {
   Setting, MagicStick, Cpu, Files, Suitcase, FolderOpened, SetUp,
   Shop, Monitor, Message, Memo, Microphone, Document, InfoFilled, Close,
+  Key, Connection,
 } from '@element-plus/icons-vue';
 // Settings.vue 走异步组件：保持与 /settings 路由、SettingsDrawer 相同的懒加载分包，
 // 不因弹窗常驻 App 壳而把它拉进首包。
@@ -74,12 +76,14 @@ interface SettingsCategory {
 
 const categories: SettingsCategory[] = [
   { key: 'general', label: '通用', icon: Setting, pane: 'general' },
+  { key: 'shortcuts', label: '快捷键', icon: Key, pane: 'shortcuts' },
   { key: 'skin', label: '外观皮肤', icon: MagicStick, pane: 'skin' },
   { key: 'models', label: '模型服务', icon: Cpu, comp: 'models' },
   { key: 'skills', label: '技能', icon: Files, comp: 'skills' },
   { key: 'tools', label: '工具与连接', icon: Suitcase, comp: 'tools' },
   { key: 'data', label: '数据', icon: FolderOpened, pane: 'data' },
   { key: 'userhooks', label: '钩子', icon: SetUp, pane: 'userhooks' },
+  { key: 'localip', label: '本机 IP', icon: Connection, pane: 'localip' },
   { key: 'marketplace', label: '商城服务端', icon: Shop, pane: 'marketplace' },
   { key: 'lan', label: '局域网', icon: Monitor, pane: 'lan' },
   { key: 'verification', label: '短信验证码', icon: Message, pane: 'verification' },
@@ -96,6 +100,19 @@ const asyncComps = {
 };
 
 const open = computed(() => settingsDialogOpen.value);
+
+// ── z-index 取号：从 Element Plus 同一个 PopupManager 计数器里取 ──
+// 之前写死 var(--z-overlay, 3000)：EP 的 el-dialog / ElMessageBox / el-select 下拉
+// 都从 2000 起递增取号，全部落在设置弹窗**下面**被遮罩挡住
+// （钩子面板「新增规则」表单、删除确认框、面板里的筛选下拉都中招）。
+// 改为每次打开时向 EP 取一个号（≈2001+），之后任何 EP 浮层打开都会取到更大的号，
+// 天然盖在设置弹窗之上；关闭后号不回收也没关系，计数器只增不减。
+const { nextZIndex } = useZIndex();
+const zIndex = ref(0);
+watch(open, (v) => {
+  if (v) zIndex.value = nextZIndex();
+});
+const maskStyle = computed(() => (zIndex.value ? { zIndex: String(zIndex.value) } : undefined));
 const active = computed({
   get: () => settingsDialogCategory.value,
   set: (v: string) => { settingsDialogCategory.value = v; },
@@ -118,6 +135,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 .settings-dialog-mask {
   position: fixed;
   inset: 0;
+  /* 兜底值：正常路径由上方 useZIndex 动态下发（内联 style 优先级更高） */
   z-index: var(--z-overlay, 3000);
   display: flex;
   align-items: center;

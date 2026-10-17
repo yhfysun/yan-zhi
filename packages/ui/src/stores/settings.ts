@@ -367,6 +367,30 @@ export interface AppSettings {
    * 想截自己界面里的内容时关掉它；仅桌面端生效。
    */
   screenshotHideApp: boolean;
+  /**
+   * AI 急停全局快捷键（computer-use 高危工具唯一安全阀，POST /api/plugin/computer-use/panic）。
+   * ★ 不可禁用（安全阀不可拆）：只允许换键 / 恢复默认；主进程启动时兜底注册此默认键，
+   *   渲染层就绪后用本字段覆盖 —— 任何时刻至少一条急停通道在线。仅桌面端生效。
+   */
+  panicAccelerator: string;
+  /**
+   * 聊天发送键模式：
+   * - 'enter'（默认，与历史行为一致）：Enter 发送，Shift+Enter 换行
+   * - 'ctrlEnter'：Ctrl+Enter 发送，Enter 换行
+   * 仅影响 ChatInputArea 的键盘分派；IME 组合态拦截、入队、重入锁等下游逻辑不受影响。
+   */
+  sendKeyMode: 'enter' | 'ctrlEnter';
+  /**
+   * 本机默认对外 IP（2026-10-17）。设置页「本机 IP」里选定，空 = 自动（优先物理网卡）。
+   *
+   * ★ 为什么需要：后端本就绑定 0.0.0.0（所有网卡），`/api/network/ip` 也能列出全部 IPv4，
+   *   但「商城服务端 / 短信验证码」展示的连接地址一度恒为 localhost（前端解析 bug）。
+   *   修完解析后仍剩一个产品问题：一台机器常有多个 IP（WLAN / 以太网 / Hyper-V 虚拟交换机），
+   *   复制哪一个给别人必须由用户定 —— 尤其虚拟网卡地址对方根本连不上。
+   * ★ 存的是地址而非网卡名：换网卡名（如重命名适配器）比换地址更频繁，地址更稳；
+   *   地址失效（换网）时 pickDefaultLanIp 会因"不在当前清单里"而自动回落，不会指向幽灵地址。
+   */
+  defaultLanIp: string;
 }
 
 /**
@@ -542,6 +566,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   layout: 'default',
   screenshotAccelerator: 'Control+Alt+A',
   screenshotHideApp: true,
+  panicAccelerator: 'Control+Alt+Escape',
+  sendKeyMode: 'enter',
+  defaultLanIp: '',
 };
 
 interface ThemePalette {

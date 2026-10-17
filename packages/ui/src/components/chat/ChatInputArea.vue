@@ -144,6 +144,7 @@
           :placeholder="inputPlaceholder"
           :disabled="currentConvArchived"
           @keydown.enter.exact="onEnter"
+          @keydown.enter.ctrl="onCtrlEnter"
           @keydown.up="onKeyUp"
           @keydown.down="onKeyDown"
           @keydown.tab="onTab"
@@ -669,7 +670,7 @@
                ★ disabled 只看 canSubmit（内容+模型），**不看** sending —— 见 canSubmit 注释。
                ★ tooltip 恒定文案（2026-10-11）：此前运行中会换成「发送（任务运行中将加入队列）」，
                  用户明确反感（重复弹出 + 冗余提示）→ 简化为恒定「发送 (Enter)」。 -->
-          <el-tooltip content="发送 (Enter)" placement="top">
+          <el-tooltip :content="`发送 (${sendKeyHint})`" placement="top">
             <span>
               <el-button type="primary" :icon="Promotion" :disabled="!canSubmit" @click="send" circle class="send-btn" />
             </span>
@@ -944,8 +945,8 @@ const inputPlaceholder = computed(() => {
   if (currentConvArchived.value) return '该会话已归档（只读）—— 取消归档后可继续对话';
   if (isMobileShell.value) return isCodeMode ? '描述代码任务…' : '输入消息…';
   return isCodeMode
-    ? '描述代码任务，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件'
-    : '输入消息，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件';
+    ? `描述代码任务，${sendKeyHint.value} 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件`
+    : `输入消息，${sendKeyHint.value} 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件`;
 });
 
 /** 输入区根节点：失焦收起的判定要用它做「焦点是否还在输入区内」的范围检查
@@ -1118,6 +1119,13 @@ function ilmNewTask() {
 // ===== 截图按钮微信式设计：tooltip 带快捷键 + 下拉「隐藏窗口」开关 =====
 const router = useRouter();
 const settingsStore2 = useSettingsStore();
+// 聊天发送键模式（settings.sendKeyMode）：'enter'（默认，与历史行为逐字节一致）=
+// Enter 发送 / Shift+Enter 换行；'ctrlEnter' = Ctrl+Enter 发送 / Enter 换行。
+// Shift+Enter 恒为换行，两种模式一致（用户拍板 2026-10-17 三态互换）。
+const sendKeyMode = computed<'enter' | 'ctrlEnter'>(
+  () => (settingsStore2.settings.sendKeyMode === 'ctrlEnter' ? 'ctrlEnter' : 'enter'),
+);
+const sendKeyHint = computed(() => (sendKeyMode.value === 'ctrlEnter' ? 'Ctrl+Enter' : 'Enter'));
 const shotHideApp = computed(() => settingsStore2.settings.screenshotHideApp !== false);
 const shotTooltip = computed(() => {
   const acc = String(settingsStore2.settings.screenshotAccelerator ?? '')
@@ -1869,11 +1877,9 @@ function pickAtFile(f: { name: string; path: string; isSymbol?: boolean; line?: 
 }
 
 // ===== 键盘 / 触发 =====
-function onEnter(e: KeyboardEvent) {
-  // 中文输入法组合态（isComposing / keyCode 229）：回车是「确认候选词」，不是发送。
-  // 若不拦截，用户用 Enter 选词时会误触发发送，表现为「问一条自动再发一条」。
-  if (e.isComposing || e.keyCode === 229) return;
-  e.preventDefault();
+// 发送动作收口：slash / @ / 剧本召唤 / 命令行 / send 的原有顺序 —— onEnter 与 onCtrlEnter
+// 两种模式共用同一条链路，只做"哪个键触发"的区分，动作语义零漂移。
+function handleSendIntent() {
   if (slashMenuOpen.value) { executeSlashActive(); return; }
   if (atMenuOpen.value) {
     const f = atFileList.value[atIndex.value];
@@ -1889,6 +1895,26 @@ function onEnter(e: KeyboardEvent) {
   // 任务运行中不再拦：send() 内部会判断——本会话在跑就入队到输入框上方，
   // 切到别的会话则正常发送（此前这里直接 return，是「跑着就发不出消息」的根因）。
   send();
+}
+
+/** 无修饰 Enter（`enter.exact` 绑定）：'enter' 模式的发送键；'ctrlEnter' 模式下放行换行 */
+function onEnter(e: KeyboardEvent) {
+  // 中文输入法组合态（isComposing / keyCode 229）：回车是「确认候选词」，不是发送。
+  // 若不拦截，用户用 Enter 选词时会误触发发送，表现为「问一条自动再发一条」。
+  if (e.isComposing || e.keyCode === 229) return;
+  // ★ ctrlEnter 模式：Enter 是换行 —— 不 preventDefault，走 textarea 默认行为
+  if (sendKeyMode.value === 'ctrlEnter') return;
+  e.preventDefault();
+  handleSendIntent();
+}
+
+/** Ctrl+Enter（`enter.ctrl` 绑定）：'ctrlEnter' 模式的发送键。
+ *  'enter' 模式保持历史行为（此前 .enter.exact 不匹配 → 无动作），不发送也不换行。 */
+function onCtrlEnter(e: KeyboardEvent) {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (sendKeyMode.value !== 'ctrlEnter') return;
+  e.preventDefault();
+  handleSendIntent();
 }
 
 function onKeyUp(e: KeyboardEvent) {
@@ -2025,6 +2051,15 @@ onMounted(() => {
       void syncScreenshotHotkey();
     }
   }
+  // AI 急停热键：主进程启动已按默认键注册（无真空期），这里只把用户改过的组合覆盖上去。
+  // 与截图键同用「进程级只绑一次」标记模式；急停不可禁用，主进程对空值回退默认键。
+  {
+    const w = window as any;
+    if (!w.__yzPanicHotkeySynced && (w.electronAPI as any)?.panicHotkey) {
+      w.__yzPanicHotkeySynced = true;
+      void syncPanicHotkey();
+    }
+  }
 });
 
 // 把本地保存的快捷键同步给主进程：主进程启动时只注册了内置默认值，用户改过的组合
@@ -2040,6 +2075,21 @@ async function syncScreenshotHotkey() {
     if (r && r.ok === false && r.error) console.warn('[截图快捷键]', r.error);
   } catch {
     /* 热键同步失败不阻断界面 */
+  }
+}
+
+/** 急停热键 sync：与截图键同一模式（先读再比对，避免每次挂载都重注册抖动）。 */
+async function syncPanicHotkey() {
+  try {
+    const api = (window as any).electronAPI?.panicHotkey;
+    if (!api) return;
+    const wanted = String(useSettingsStore().settings.panicAccelerator ?? 'Control+Alt+Escape').trim() || 'Control+Alt+Escape';
+    const cur = await api.get();
+    if ((cur?.accelerator || '') === wanted) return;
+    const r = await api.set(wanted);
+    if (r && r.ok === false && r.error) console.warn('[急停快捷键]', r.error);
+  } catch {
+    /* 热键同步失败不阻断界面（主进程仍有默认键兜底） */
   }
 }
 onBeforeUnmount(() => {

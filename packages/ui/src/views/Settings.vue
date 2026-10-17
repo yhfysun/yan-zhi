@@ -143,6 +143,32 @@
             <el-input-number v-model="keepRecent" :min="2" :max="50" />
           </SettingRow>
           <!-- 压缩触发阈值已移除：是否压缩由所选模型的上下文窗口配置自动决定 -->
+          <!-- 桌面端截图 / 急停快捷键与聊天发送键已迁至独立「快捷键」分区（2026-10-17）：
+               混在「通用」里层级太深，用户反馈"应该是个单独的菜单" -->
+          <!-- 移动端专属：远程后端地址（连自建节点；不配则走 APK 内嵌本地后端） -->
+          <SettingRow
+            v-if="isCapacitor"
+            label="后端服务地址"
+            :tip="`当前生效：${API_BASE}。保存后自动重载一次；重载前已建立的流式连接需重开会话。`"
+            tip-after
+          >
+            <el-input
+              v-model="mobileApiBaseInput"
+              placeholder="https://your-node.example.com（留空用内嵌本地后端）"
+              clearable
+            />
+            <div style="display: inline-flex; gap: 8px; margin-top: 8px">
+              <el-button size="small" type="primary" @click="saveMobileApiBase">保存并重载</el-button>
+              <el-button size="small" :disabled="!getMobileApiBase()" @click="clearMobileApiBase">恢复内嵌后端</el-button>
+            </div>
+          </SettingRow>
+        </div>
+      </el-tab-pane>
+      <!-- 快捷键（2026-10-17 从「通用」拆为独立分区）：截图 / 急停 / 发送键集中一处。
+           全局快捷键仅桌面端存在（web / 移动端无本地截图与全局热键能力，对应行自动隐藏），
+           聊天发送键三端通用。 -->
+      <el-tab-pane v-if="!embedded || isPaneMode" label="快捷键" name="shortcuts" lazy>
+        <div class="settings-form">
           <!-- 桌面端专属：截图全局快捷键（web / 移动端无本地截图能力，自动隐藏） -->
           <SettingRow v-if="canScreenshot" label="截图快捷键">
             <el-input
@@ -161,22 +187,28 @@
           <SettingRow v-if="canScreenshot" label="截图隐藏本应用">
             <el-switch v-model="screenshotHideApp" />
           </SettingRow>
-          <!-- 移动端专属：远程后端地址（连自建节点；不配则走 APK 内嵌本地后端） -->
-          <SettingRow
-            v-if="isCapacitor"
-            label="后端服务地址"
-            :tip="`当前生效：${API_BASE}。保存后自动重载一次；重载前已建立的流式连接需重开会话。`"
-            tip-after
-          >
+          <!-- 桌面端专属：AI 急停全局快捷键（computer-use 唯一安全阀）。
+               ★ 不可禁用（安全阀不可拆，用户拍板 2026-10-17）：只允许换键 / 恢复默认；
+               主进程启动已按默认键注册（无真空期），这里改完即重注册 + 落 settings。 -->
+          <SettingRow v-if="canPanicHotkey" label="AI 急停快捷键">
             <el-input
-              v-model="mobileApiBaseInput"
-              placeholder="https://your-node.example.com（留空用内嵌本地后端）"
-              clearable
+              :model-value="panicAccelDisplay"
+              readonly
+              placeholder="点此框后按下组合键"
+              style="width: 210px"
+              @keydown.capture.prevent="onPanicAccelKeyDown"
             />
-            <div style="display: inline-flex; gap: 8px; margin-top: 8px">
-              <el-button size="small" type="primary" @click="saveMobileApiBase">保存并重载</el-button>
-              <el-button size="small" :disabled="!getMobileApiBase()" @click="clearMobileApiBase">恢复内嵌后端</el-button>
+            <div style="display: inline-flex; gap: 8px">
+              <el-button size="small" @click="resetPanicAccel">恢复默认</el-button>
             </div>
+          </SettingRow>
+          <!-- 聊天发送键三态互换（用户拍板 2026-10-17）：Enter 发送 ⇄ Ctrl+Enter 发送。
+               Shift+Enter 恒为换行不占坑；默认 'enter' 与历史行为逐字节一致。 -->
+          <SettingRow label="聊天发送键">
+            <el-radio-group :model-value="sendKeyMode" @change="onSendKeyModeChange">
+              <el-radio value="enter">Enter 发送（Shift+Enter 换行）</el-radio>
+              <el-radio value="ctrlEnter">Ctrl+Enter 发送（Enter 换行）</el-radio>
+            </el-radio-group>
           </SettingRow>
         </div>
       </el-tab-pane>
@@ -275,6 +307,46 @@
       <el-tab-pane v-if="!embedded || isPaneMode" label="记忆管理" name="memory" lazy>
         <MemoryManage />
       </el-tab-pane>
+      <!-- 本机 IP 管理（2026-10-17）：选定"默认对外 IP"，所有带 IP 的链接统一用它。
+           后端本就绑定 0.0.0.0（所有网卡），这里解决的是"一台机器有多个 IP，复制哪一个给别人"——
+           尤其 vEthernet(Hyper-V) / VMware / VPN 虚拟网卡的地址对方根本连不上。 -->
+      <el-tab-pane v-if="!embedded || isPaneMode" label="本机 IP" name="localip" lazy>
+        <div class="lan-section">
+          <p class="lan-tip">
+            后端已绑定所有网卡（0.0.0.0），下列地址均可被同网设备访问。选定默认 IP 后，
+            「商城服务端」连接地址、「短信验证码」上报地址、「局域网访问」都会换成它。
+          </p>
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px">
+            <span class="lan-section-label" style="font-weight: 600">默认对外 IP</span>
+            <span style="display: inline-flex; gap: 8px">
+              <el-button size="small" :loading="lanLoading" @click="loadLanIps">刷新</el-button>
+              <el-button size="small" :disabled="!hasManualLanIp" @click="defaultLanIp = ''">恢复自动</el-button>
+            </span>
+          </div>
+          <div v-if="lanIps.length === 0 && !lanLoading" class="lan-empty">未检测到局域网 IP（可能未连接网络）</div>
+          <el-radio-group v-else v-model="defaultLanIp" class="lan-ip-radio-group">
+            <div v-for="ip in lanIps" :key="ip.address" class="lan-ip-row" :class="{ virtual: isVirtualNic(ip.name) }">
+              <el-radio :value="ip.address">
+                <code class="lan-ip-addr">{{ ip.address }}</code>
+              </el-radio>
+              <span class="lan-iface">{{ ip.name }}</span>
+              <el-tag v-if="isVirtualNic(ip.name)" size="small" type="info">虚拟网卡</el-tag>
+              <el-tag v-else size="small" type="success">物理网卡</el-tag>
+              <el-tag v-if="ip.address === preferredLanIp" size="small" type="warning">当前默认</el-tag>
+            </div>
+          </el-radio-group>
+          <div class="lan-ip-preview">
+            <div class="lan-ip-preview-row">
+              <span class="lan-ip-preview-label">商城服务端连接地址</span>
+              <code>{{ connectUrl }}</code>
+            </div>
+            <div class="lan-ip-preview-row">
+              <span class="lan-ip-preview-label">短信验证码上报地址</span>
+              <code>{{ smsUpstreamUrl }}</code>
+            </div>
+          </div>
+        </div>
+      </el-tab-pane>
       <el-tab-pane v-if="!embedded || isPaneMode" label="商城服务端" name="marketplace" lazy>
         <div class="settings-form">
           <SettingRow label="启用商城服务端" tip="开启后其他言智节点可连接本节点获取工具/Skill/智能体" tip-after>
@@ -303,13 +375,15 @@
       </el-tab-pane>
       <el-tab-pane v-if="!embedded || isPaneMode" label="局域网访问" name="lan" lazy>
         <div class="lan-section">
-          <p class="lan-tip">局域网内其他设备（手机 / 电脑）可用浏览器访问本节点的 Web 界面，数据与本机共享同一后端。</p>
+          <p class="lan-tip">局域网内其他设备（手机 / 电脑）可用浏览器访问本节点的 Web 界面，数据与本机共享同一后端。默认 IP 在「本机 IP」分区设定。</p>
           <div v-if="lanIps.length === 0 && !lanLoading" class="lan-empty">未检测到局域网 IP（可能未连接网络）</div>
           <div v-else class="lan-list">
             <div v-for="ip in lanIps" :key="ip.address" class="lan-item">
               <div class="lan-url-box">
                 <code>{{ 'http://' + ip.address + ':' + lanPort }}</code>
                 <span class="lan-iface">{{ ip.name }}</span>
+                <el-tag v-if="isVirtualNic(ip.name)" size="small" type="info">虚拟网卡</el-tag>
+                <el-tag v-if="ip.address === preferredLanIp" size="small" type="warning">默认</el-tag>
               </div>
               <div class="lan-actions">
                 <el-button size="small" @click="copyLanUrl(ip.address)">复制</el-button>
@@ -476,6 +550,7 @@ const isPaneMode = computed(() => !!props.pane);
 import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
+import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
 import { useSettingsStore, usePlatformStore, useModelPoolStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
@@ -522,11 +597,11 @@ watch(
 interface SettingsGroupTab { name: string; label: string }
 interface SettingsGroup { key: string; label: string; desc: string; icon: Component; tabs: SettingsGroupTab[] }
 const mobileGroups: SettingsGroup[] = [
-  { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩', icon: Setting, tabs: [{ name: 'general', label: '通用' }] },
+  { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩 · 快捷键', icon: Setting, tabs: [{ name: 'general', label: '通用' }, { name: 'shortcuts', label: '快捷键' }] },
   { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
   { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
   { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }] },
-  { key: 'service', label: '服务与连接', desc: '商城服务端 · 局域网访问 · 语音包', icon: Link, tabs: [{ name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'verification', label: '验证码' }, { name: 'voicepack', label: '语音包' }] },
+  { key: 'service', label: '服务与连接', desc: '本机 IP · 商城服务端 · 局域网访问 · 语音包', icon: Link, tabs: [{ name: 'localip', label: '本机 IP' }, { name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'verification', label: '验证码' }, { name: 'voicepack', label: '语音包' }] },
   { key: 'about', label: '关于', desc: '版本 · 开源信息', icon: InfoFilled, tabs: [{ name: 'about', label: '关于' }] },
 ];
 const mobileGroup = ref<SettingsGroup | null>(null);
@@ -714,6 +789,59 @@ function onShotAccelKeyDown(e: KeyboardEvent) {
 }
 function resetShotAccel() { void applyShotAccel(DEFAULT_SHOT_ACCEL); }
 function clearShotAccel() { void applyShotAccel(''); }
+
+// ===== AI 急停快捷键（computer-use 唯一安全阀：★ 不可禁用，只能换键 / 恢复默认）=====
+const canPanicHotkey = typeof window !== 'undefined' && !!(window as any).electronAPI?.panicHotkey;
+const DEFAULT_PANIC_ACCEL = 'Control+Alt+Escape';
+const panicAccel = ref(
+  String(settingsStore.settings.panicAccelerator ?? '').trim() || DEFAULT_PANIC_ACCEL,
+);
+watch(
+  () => settingsStore.settings.panicAccelerator,
+  (v) => { if (typeof v === 'string' && v.trim()) panicAccel.value = v.trim(); },
+);
+const panicAccelDisplay = computed(() =>
+  panicAccel.value.replace(/Control/g, 'Ctrl').replace(/\+/g, ' + '),
+);
+async function applyPanicAccel(accel: string) {
+  const api = (window as any).electronAPI?.panicHotkey;
+  if (!api) return;
+  // 主进程对空值也回退默认 —— 这里同样归一，保证 settings 里存的恒为有效键
+  const target = String(accel || '').trim() || DEFAULT_PANIC_ACCEL;
+  if (target === panicAccel.value) return;
+  const r = await api.set(target).catch(() => null);
+  if (r && r.ok === false) {
+    ElMessage.error(r.error || '快捷键设置失败');
+    return;
+  }
+  panicAccel.value = r?.accelerator || target;
+  await settingsStore.update({ panicAccelerator: panicAccel.value });
+  ElMessage.success(`AI 急停快捷键已设为 ${panicAccelDisplay.value}`);
+}
+function onPanicAccelKeyDown(e: KeyboardEvent) {
+  const accel = accelFromEvent(e);
+  if (!accel) {
+    ElMessage.warning('请按住 Ctrl / Alt / Shift 再按一个键');
+    return;
+  }
+  // 冲突自检：与截图快捷键相同 → 主进程会因被自己占用而注册失败，这里提前给出更明确的原因
+  if (accel === shotAccel.value) {
+    ElMessage.error('与截图快捷键相同，请换一个组合');
+    return;
+  }
+  void applyPanicAccel(accel);
+}
+function resetPanicAccel() { void applyPanicAccel(DEFAULT_PANIC_ACCEL); }
+
+// ===== 聊天发送键三态互换（'enter' 默认与历史行为一致；'ctrlEnter' = Ctrl+Enter 发送 / Enter 换行）=====
+const sendKeyMode = ref<'enter' | 'ctrlEnter'>(settingsStore.settings.sendKeyMode ?? 'enter');
+watch(
+  () => settingsStore.settings.sendKeyMode,
+  (v) => { if (v === 'enter' || v === 'ctrlEnter') sendKeyMode.value = v; },
+);
+async function onSendKeyModeChange(v: 'enter' | 'ctrlEnter') {
+  await settingsStore.update({ sendKeyMode: v });
+}
 
 const availableDefaultModels = computed(() =>
   platformStore.models.filter((m) => m.platformId === defaultPlatformId.value && m.enabled),
@@ -935,9 +1063,23 @@ const mpAuthType = ref('none');
 const mpAuthValue = ref('');
 const mpPort = ref(3001);
 
+/**
+ * 默认对外 IP：用户在「本机 IP」分区显式选定；未选则按 utils/lanIp 的
+ * pickDefaultLanIp 自动取（优先物理网卡，排除 vEthernet/VMware/VPN 等虚拟网卡）。
+ *
+ * ★ 单一真相源：settings.defaultLanIp（持久化）。这里只做"解析成当前生效地址"，
+ *   不另存一份 —— 否则换网后两处会漂移。
+ * ★ 为什么不再回落 `window.location.hostname`：dev 下它是 localhost、
+ *   打包版 file:// 下它是空串，两者都会把地址指回本机 —— 而这两个字段的用途
+ *   恰恰是"给别人连"。宁可显示"未检测到"，也不能给一个别人连不通的地址。
+ */
+const preferredLanIp = computed(() =>
+  pickDefaultLanIp(lanIps.value, settingsStore.settings.defaultLanIp),
+);
+
 const connectUrl = computed(() => {
-  // 优先用本机局域网 IP（其他节点跨设备连接必须用局域网地址，localhost 仅本机可达）
-  const host = lanIps.value[0]?.address || window.location.hostname || 'localhost';
+  // 其他节点跨设备连接必须用局域网地址，localhost 仅本机可达
+  const host = preferredLanIp.value || window.location.hostname || 'localhost';
   return `http://${host}:${mpPort.value}/api/marketplace`;
 });
 
@@ -962,9 +1104,9 @@ function copyUrl() {
 }
 
 // ===== 短信验证码中继 =====
-/** 上报地址：与 connectUrl 同思路优先局域网 IP（移动端跨设备必须用局域网地址）。 */
+/** 上报地址：与 connectUrl 同源同口径（默认 IP 单一真相源），移动端跨设备必须用局域网地址。 */
 const smsUpstreamUrl = computed(() => {
-  const host = lanIps.value[0]?.address || window.location.hostname || 'localhost';
+  const host = preferredLanIp.value || window.location.hostname || 'localhost';
   return `http://${host}:${lanPort.value}/api/verification-codes`;
 });
 
@@ -1043,15 +1185,31 @@ const lanIps = ref<Array<{ name: string; address: string }>>([]);
 const lanPort = ref(3001);
 const lanLoading = ref(false);
 
+/**
+ * 默认对外 IP 的读写（设置页「本机 IP」分区）。
+ * 存地址不存网卡名：地址比适配器名更稳；失效时 pickDefaultLanIp 自动回落。
+ * 写 '' = 恢复自动选择（优先物理网卡）。
+ */
+const defaultLanIp = computed({
+  get: () => settingsStore.settings.defaultLanIp,
+  set: (v: string) => { void settingsStore.update({ defaultLanIp: v || '' }); },
+});
+/** 当前生效的默认 IP 是否来自用户显式选择（用于"恢复自动"按钮的可用态） */
+const hasManualLanIp = computed(() => !!settingsStore.settings.defaultLanIp);
+
 async function loadLanIps() {
   lanLoading.value = true;
   try {
     const r = await api.get<any>('/network/ip');
-    const data = r && 'data' in r ? (r.data as any) : r;
-    if (data && Array.isArray(data.data)) {
-      lanIps.value = data.data.map((x: any) => ({ name: x.name, address: x.address }));
-    }
-    if (data?.port) lanPort.value = data.port;
+    // ★★★ 解析层级（2026-10-17 修）：apiFetch 已把后端 `{data: X, ...meta}` 解包成
+    //   `{ data: X, ...meta }`（单层）—— 此处原先又按 `data.data` 多解一层，
+    //   `Array.isArray(undefined)` 恒 false ⇒ lanIps 永远是 [] ⇒ 所有"连接地址"
+    //   静默落到 localhost。解析口径收口到 utils/lanIp.ts（兼容三种形态，别再手写）。
+    const { ips, port } = parseNetworkIpResponse(r);
+    if (port) lanPort.value = port;
+    // 排序 = 默认 IP 贯通：用户选的置顶，其后物理网卡，最后虚拟网卡。
+    // 所有取 lanIps[0] 的地方（connectUrl / openLanFirst / 局域网 tab 首行）自动跟随。
+    lanIps.value = sortLanIps(ips, settingsStore.settings.defaultLanIp);
   } catch {
     lanIps.value = [];
   } finally {
@@ -1092,8 +1250,12 @@ async function scanLanNodes() {
   nodeScanning.value = true;
   try {
     const r = await api.post<any>('/lan/discover-nodes', {});
+    // ★ 同族解析 bug（2026-10-17 修）：apiFetch 已单层解包，`data` 即业务体
+    //   （{ nodes, subnets, openCount, durationMs }）。原先读 `data.data.nodes`
+    //   ⇒ 恒为空 ⇒ 每次扫描都弹"未发现言智节点"。
     const data = r && 'data' in r ? (r.data as any) : r;
-    lanNodes.value = Array.isArray(data?.data?.nodes) ? data.data.nodes : [];
+    const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+    lanNodes.value = nodes;
     if (!lanNodes.value.length) ElMessage.info(`扫描完成（${Math.round((data?.durationMs || 0) / 100) / 10}s），未发现言智节点`);
   } catch (e) {
     lanNodes.value = [];
@@ -1357,6 +1519,16 @@ onMounted(async () => {
 .lan-url-box code { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--color-text); word-break: break-all; }
 .lan-iface { font-size: 11px; color: var(--color-text-secondary); }
 .lan-actions { display: flex; gap: 8px; flex-shrink: 0; }
+/* 本机 IP 管理：radio 行 + 虚拟网卡弱化 + 生成地址预览 */
+.lan-ip-radio-group { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.lan-ip-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 10px; }
+/* 虚拟网卡行弱化：不是禁用它（有用户就是要把服务绑在 VPN 网卡上），只是视觉降权 */
+.lan-ip-row.virtual { opacity: 0.72; }
+.lan-ip-addr { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--color-text); }
+.lan-ip-preview { margin-top: 16px; padding: 12px 14px; background: var(--glass-bg-hover, #f7f5f0); border: 1px solid var(--glass-border); border-radius: 10px; display: flex; flex-direction: column; gap: 8px; }
+.lan-ip-preview-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.lan-ip-preview-label { flex-shrink: 0; font-size: 12px; color: var(--color-text-secondary); min-width: 130px; }
+.lan-ip-preview-row code { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--color-text); word-break: break-all; }
 .about-section h3 { margin-bottom: 12px; }
 .about-section p { margin: 6px 0; color: var(--color-text-secondary); }
 .about-tip { font-size: 12px; opacity: 0.7; }

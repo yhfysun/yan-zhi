@@ -6158,7 +6158,11 @@ ipcMain.on('snip:composed', (e, payload) => {
 // 在前台都能触发；触发后先还原主窗口（可能最小化/隐藏）再通知渲染层走同一条框选流程。
 // ============================================================
 const DEFAULT_SHOT_ACCEL = 'Control+Alt+A';
-let shotAccel = null;
+const shotHotkey = { current: null };
+// AI 急停热键（computer-use 高危工具唯一安全阀）：★ 不可禁用，只允许换键/恢复默认。
+// 主进程启动即注册默认键（渲染层未就绪也能急停），渲染层就绪后用 settings.panicAccelerator 覆盖。
+const DEFAULT_PANIC_ACCEL = 'Control+Alt+Escape';
+const panicHotkey = { current: null };
 
 /** 热键实际动作：把主窗口拉回前台，再通知渲染层开始框选 */
 function triggerScreenshotHotkey() {
@@ -6177,29 +6181,54 @@ function triggerScreenshotHotkey() {
 }
 
 /**
- * 注册（或重注册）截图热键；传空串表示禁用。
+ * 全局热键注册唯一实现：unregister 旧值 → register 新值 → 失败回传原因。
+ * holder = { current } 记录变量（调用方各自持有一份，避免两条热键互相踩）。
+ * 传空串 target 表示禁用（仅允许显式允许禁用的热键走这分支，如截图）。
  * 返回 { ok, accelerator, error? } —— 注册失败几乎都是被系统或其它应用占用，
  * 需要把原因回传渲染层提示用户换一个，而不是静默失效。
  */
-function setScreenshotHotkey(accel) {
-  try { if (shotAccel) { globalShortcut.unregister(shotAccel); shotAccel = null; } } catch {}
+function setGlobalHotkey(holder, accel, handler, label) {
+  try { if (holder.current) { globalShortcut.unregister(holder.current); holder.current = null; } } catch {}
   const target = String(accel || '').trim();
   if (!target) {
-    console.log('[hotkey] 截图快捷键已禁用');
+    console.log('[hotkey] ' + label + '快捷键已禁用');
     return { ok: true, accelerator: '', disabled: true };
   }
   try {
-    const okReg = globalShortcut.register(target, () => triggerScreenshotHotkey());
+    const okReg = globalShortcut.register(target, handler);
     if (!okReg) {
-      console.warn('[hotkey] 截图快捷键注册失败（已被占用）:', target);
+      console.warn('[hotkey] ' + label + '快捷键注册失败（已被占用）:', target);
       return { ok: false, accelerator: target, error: '快捷键已被系统或其它应用占用，请换一个组合' };
     }
-    shotAccel = target;
-    console.log('[hotkey] 已注册截图快捷键 ' + target);
+    holder.current = target;
+    console.log('[hotkey] 已注册' + label + '快捷键 ' + target);
     return { ok: true, accelerator: target };
   } catch (err) {
     return { ok: false, accelerator: target, error: String(err?.message || err) };
   }
+}
+
+/** 截图热键：允许禁用（传空串即关掉） */
+function setScreenshotHotkey(accel) {
+  return setGlobalHotkey(shotHotkey, accel, () => triggerScreenshotHotkey(), '截图');
+}
+
+/** 急停热键实际动作：通知后端 panic（冻结输入工具并禁用插件）。
+ *  插件未启用时后端返回 404，静默忽略；请求失败也不影响本进程。 */
+function triggerPanicHotkey() {
+  const req = http.request(API_ORIGIN + '/api/plugin/computer-use/panic', { method: 'POST', timeout: 3000 }, (res) => {
+    res.resume();
+  });
+  req.on('error', () => {});
+  req.on('timeout', () => req.destroy());
+  req.end();
+  console.log('[panic] 急停热键触发');
+}
+
+/** 急停热键：★ 不可禁用（安全阀不可拆）——空值/非法输入一律回退默认键 */
+function setPanicHotkey(accel) {
+  const target = String(accel || '').trim() || DEFAULT_PANIC_ACCEL;
+  return setGlobalHotkey(panicHotkey, target, triggerPanicHotkey, '急停');
 }
 
 // 渲染层主动清理：截图界面上任何入口在开始新一次截图前先调一次，
@@ -6211,8 +6240,10 @@ ipcMain.handle('screenshot:cancel', () => {
   return { ok: true, cancelled: true };
 });
 
-ipcMain.handle('shortcut:getScreenshot', () => ({ accelerator: shotAccel || '' }));
+ipcMain.handle('shortcut:getScreenshot', () => ({ accelerator: shotHotkey.current || '' }));
 ipcMain.handle('shortcut:setScreenshot', (_e, accel) => setScreenshotHotkey(accel));
+ipcMain.handle('shortcut:getPanic', () => ({ accelerator: panicHotkey.current || DEFAULT_PANIC_ACCEL }));
+ipcMain.handle('shortcut:setPanic', (_e, accel) => setPanicHotkey(accel));
 
 
 // ============================================================
@@ -6396,20 +6427,9 @@ app.whenReady().then(async () => {
   await browserBridge.start();
   startServer();
 
-  // computer-use 急停热键：Ctrl+Alt+Esc → 通知后端 panic（冻结输入工具并禁用插件）。
-  // 插件未启用时后端返回 404，静默忽略；请求失败也不影响本进程。
-  try {
-    const ok = globalShortcut.register('Control+Alt+Escape', () => {
-      const req = http.request(API_ORIGIN + '/api/plugin/computer-use/panic', { method: 'POST', timeout: 3000 }, (res) => {
-        res.resume();
-      });
-      req.on('error', () => {});
-      req.on('timeout', () => req.destroy());
-      req.end();
-      console.log('[panic] 急停热键触发');
-    });
-    if (ok) console.log('[panic] 已注册急停热键 Ctrl+Alt+Esc');
-  } catch (e) {
+  // computer-use 急停热键：★ 不可禁用（安全阀不可拆）。启动即按默认键注册
+  //（渲染层未就绪也能急停），渲染层读到 settings.panicAccelerator 后会重注册覆盖。
+  try { setPanicHotkey(DEFAULT_PANIC_ACCEL); } catch (e) {
     console.warn('[panic] 急停热键注册失败:', e);
   }
 
