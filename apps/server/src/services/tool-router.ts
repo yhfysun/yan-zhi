@@ -18,10 +18,12 @@
 
 /**
  * 触发路由的工具面阈值：超过才裁。
- * ★ 必须大于常驻核心集规模（当前 23）+ 常见 custom_/mcp_ 挂载数，否则核心集直接占满
- *   阈值、裁剪永远不触发（首版设 24 被测试抓出这个 bug）。取 30 = 误选率上升带（20-30）的上沿。
+ * ★ 必须大于常驻核心集规模（当前 37，含应用编排家族 + 设计素材清单）+ 常见 custom_/mcp_
+ *   挂载数，否则核心集直接占满阈值、裁剪永远不触发（首版设 24 被测试抓出这个 bug；
+ *   2026-10-17 两度随核心集扩张 30→36→42）。
+ *   超出部分仍按相关性裁；核心集再膨胀时应考虑收敛清单而不是继续抬阈值。
  */
-export const TOOL_ROUTE_THRESHOLD = 30;
+export const TOOL_ROUTE_THRESHOLD = 42;
 
 /**
  * 常驻核心集：无论打分高低都不裁。
@@ -31,6 +33,14 @@ export const TOOL_ROUTE_CORE = new Set<string>([
   // 编排底座
   'call_agent', 'list_sub_agents', 'spawn_subagent',
   'task_plan', 'task_step',
+  // 应用即工具：模型自建顶层任务（建错被裁掉会让"自动执行/自动推广"链路失效）+ 状态跟进
+  'app_create_task', 'app_get_task_status',
+  // 独立窗口 / 录屏 / 后期合成（演示视频生产线）
+  'app_open_window', 'screen_record', 'demo_compose',
+  // 科普动画 + 发布队列（内容矩阵）
+  'anim_compose', 'publish_enqueue', 'publish_mark_published', 'publish_record_stats',
+  // 设计素材站点清单（纯读信息）
+  'design_asset_sites',
   // 交互（在线任务）
   'ask_user', 'confirm_user',
   // 文件与执行底座

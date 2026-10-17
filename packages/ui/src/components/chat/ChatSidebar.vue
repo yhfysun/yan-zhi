@@ -10,6 +10,9 @@
       <div class="sb-tab" :class="{ active: sideTab === 'file' }" @click="sideTab = 'file'">
         <el-icon><FolderOpened /></el-icon> 文件
       </div>
+      <div class="sb-tab" :class="{ active: sideTab === 'publish' }" @click="sideTab = 'publish'">
+        <el-icon><Promotion /></el-icon> 发布
+      </div>
     </div>
 
     <div v-if="sideTab === 'chat'" class="conv-list">
@@ -76,7 +79,7 @@
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon"><StarFilled /></el-icon>
-              <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+              <span v-if="renamingId !== conv.id" class="conv-title" :title="conv.title">{{ conv.title }}</span>
               <el-input
                 v-else
                 v-model="renamingTitle"
@@ -138,7 +141,7 @@
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
               <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
-              <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+              <span v-if="renamingId !== conv.id" class="conv-title" :title="conv.title">{{ conv.title }}</span>
               <el-input
                 v-else
                 v-model="renamingTitle"
@@ -262,7 +265,7 @@
                   <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
                   <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
                   <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
-                  <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+                  <span v-if="renamingId !== conv.id" class="conv-title" :title="conv.title">{{ conv.title }}</span>
                   <el-input
                     v-else
                     v-model="renamingTitle"
@@ -311,7 +314,7 @@
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
               <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
-              <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+              <span v-if="renamingId !== conv.id" class="conv-title" :title="conv.title">{{ conv.title }}</span>
               <el-input
                 v-else
                 v-model="renamingTitle"
@@ -388,7 +391,7 @@
               @contextmenu.prevent="openConvMenu($event, conv)"
             >
               <el-icon class="pin-icon"><FolderChecked /></el-icon>
-              <span class="conv-title">{{ conv.title }}</span>
+              <span class="conv-title" :title="conv.title">{{ conv.title }}</span>
               <span v-if="!batchMode" class="task-row-actions" @click.stop>
                 <span class="task-row-act" role="button" title="恢复到主列表（可继续对话）" @click="archiveConv(conv, false)"><el-icon :size="12"><RefreshLeft /></el-icon></span>
                 <span class="task-row-act is-danger" role="button" title="删除（移入回收站）" @click="rows.remove(conv)"><el-icon :size="12"><Delete /></el-icon></span>
@@ -416,7 +419,7 @@
               @click="rows.activate(conv)"
             >
               <el-icon class="pin-icon"><Delete /></el-icon>
-              <span class="conv-title">{{ conv.title }}</span>
+              <span class="conv-title" :title="conv.title">{{ conv.title }}</span>
               <span class="task-row-actions" @click.stop>
                 <span class="task-row-act" role="button" title="恢复" @click="restoreConv(conv)"><el-icon :size="12"><RefreshLeft /></el-icon></span>
                 <span class="task-row-act is-danger" role="button" title="永久删除（不可恢复）" @click="purgeConv(conv)"><el-icon :size="12"><Delete /></el-icon></span>
@@ -441,6 +444,11 @@
 
     <div v-else-if="sideTab === 'task'" class="task-tab">
       <ScheduledTaskDialog />
+    </div>
+
+    <!-- 发布队列（2026-10-17）：模型 publish_enqueue 入队的内容在这里人工确认 -->
+    <div v-else-if="sideTab === 'publish'" class="task-tab">
+      <PublishQueueTab />
     </div>
 
     <!-- 文件 tab：资源管理器 / 搜索 / Git（竖排视图按钮 + 面板） -->
@@ -482,6 +490,10 @@
     <!-- 在系统文件管理器里打开该任务的产物目录（仅桌面端有效，其它端给出提示） -->
     <li @click="openConvDir(ctxMenu.conv); closeCtxMenu()">
       <el-icon><FolderOpened /></el-icon>打开目录
+    </li>
+    <!-- 独立执行窗口（2026-10-17）：把任务单独开 OS 窗口跑给用户/录屏看（Web 降级新标签页） -->
+    <li @click="openTaskWindow(ctxMenu.conv); closeCtxMenu()">
+      <el-icon><Monitor /></el-icon>独立窗口打开
     </li>
     <li class="has-submenu">
       <el-icon><Rank /></el-icon>移动到空间
@@ -712,7 +724,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft, Monitor, Refresh,
+  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft, Monitor, Refresh, Promotion,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/shared';
@@ -723,6 +735,7 @@ import { useTaskRowActions } from '../../composables/useTaskRowActions';
 import { bindLongPress } from '../../composables/useLongPress';
 import { useMobileShell } from '../../composables/useMobileShell';
 import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
+import PublishQueueTab from './PublishQueueTab.vue';
 import ChatFileTab from './ChatFileTab.vue';
 import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
 import FormDialog from '../FormDialog.vue';
@@ -743,7 +756,7 @@ const {
   spaceStore, openSpaceMenu, openSpaceEdit, openSpaceCreate, showSpaceEdit, spaceEditForm,
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, ctxMenu,
   syncSpaceSubdirsAction,
-  openConvDir, openPathInSystem,
+  openConvDir, openPathInSystem, openTaskWindow,
   taskTypes, pickedTaskType, selectSpaceAndSyncDir,
   // 任务级任务类型（「父任务」层）：多任务目录选线
   taskLinePicker, confirmTaskLine, cancelTaskLine, taskTypeStore,

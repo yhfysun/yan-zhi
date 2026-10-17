@@ -1046,6 +1046,8 @@ export const useChatStore = defineStore('chat', () => {
   let abortControllers = new Map<string, AbortController>();
   const taskIds = new Map<string, string>(); // convId → backend taskId（用于 abort）
   const taskEventCounts = new Map<string, number>(); // taskId → 已收到的**最后一个事件的 seq**（重连时作为 since）
+  // app_open_window 已处理过的 eventId（跨重连去重：任务事件重连会重放，不去重会弹两次窗口）
+  const openedWindowEventIds = new Set<string>();
 
   /**
    * 跨重连的**流内状态**（2026-10-08）。
@@ -1981,6 +1983,33 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       return mcpStore.callTool(parsed.serverId, parsed.toolName, args);
     }
 
+    // 1.5) 桌面录屏（2026-10-17）：screen_record 由服务端委托前端执行（主进程 capturePage+ffmpeg）。
+    //      必须在 registry 分支之前拦截 —— registry 里注册的是占位实现，直接执行会返回占位文本。
+    if (fullName === 'screen_record') {
+      const electron = (window as any).electronAPI;
+      if (!electron?.screenRecord) {
+        return { ok: false, msg: '当前环境不支持录屏（仅桌面端可用）' };
+      }
+      const a = (args || {}) as Record<string, unknown>;
+      const action = String(a.action || 'start');
+      try {
+        const r = action === 'stop'
+          ? await electron.screenRecord.stop({ recordId: String(a.recordId || '') })
+          : await electron.screenRecord.start({
+              outPath: String(a.outPath || ''),
+              target: String(a.target || ''),
+              fps: Number(a.fps) || undefined,
+            });
+        if (!r?.ok) return { ok: false, msg: r?.error || '录屏失败' };
+        const text = action === 'stop'
+          ? `录屏完成。\n文件：${r.outPath}\n时长：${Math.round((r.durationMs || 0) / 100) / 10}s，帧数：${r.frames || 0}`
+          : `录屏已开始。\nrecordId=${r.recordId}\n产物路径：${r.outPath}\n（停止时传 action="stop" + recordId）`;
+        return { ok: true, result: text };
+      } catch (e: any) {
+        return { ok: false, msg: `录屏失败: ${e?.message || e}` };
+      }
+    }
+
     // 2) 内置工具裸名（经 ToolRegistry + 平台适配器执行）
     // 注意：custom_/call_agent/list_sub_agents 已由后端直接执行，不再委托前端
     if (registry.has(fullName)) {
@@ -2759,6 +2788,34 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           case 'sub_agent:end': {
             if (event.parentToolCallId) runningToolCallIds.value.delete(event.parentToolCallId);
             if (event.agentId) st.subAgentMsgIds.delete(subAgentKeyOf(event.agentId, event.parentToolCallId));
+            break;
+          }
+          case 'app:open_window': {
+            // 模型请求弹出某任务的独立执行窗口（app_open_window 工具，2026-10-17）。
+            // 重连重放按 eventId 去重；桌面端开真子窗口，Web 端降级新标签页。
+            const owEventId = String(event.eventId || '');
+            if (owEventId) {
+              if (openedWindowEventIds.has(owEventId)) break;
+              openedWindowEventIds.add(owEventId);
+              if (openedWindowEventIds.size > 100) {
+                const first = openedWindowEventIds.values().next().value;
+                if (first) openedWindowEventIds.delete(first);
+              }
+            }
+            const targetConvId = String(event.conversationId || '');
+            if (!targetConvId) break;
+            void (async () => {
+              try {
+                const api = (window as any).electronAPI?.childWindow;
+                if (!api) {
+                  window.open(`${location.origin}${location.pathname}#/task-window/${targetConvId}`, '_blank');
+                  return;
+                }
+                await api.open({ key: `task-run-${targetConvId}`, route: `/task-window/${targetConvId}`, width: 520, height: 760 });
+              } catch (e) {
+                console.warn('[Chat] app_open_window 弹窗失败:', e);
+              }
+            })();
             break;
           }
           case 'tool:execute': {

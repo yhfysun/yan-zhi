@@ -6,6 +6,8 @@ import { builtinOfficeAgentDefs } from './builtin-office-agents.js';
 import { builtinTaskModeAgentDefs } from './builtin-task-mode-agents.js';
 // 抖音运营助手（带货 + 引流一体）—— 定义见 ./builtin-douyin-agents.ts
 import { builtinDouyinAgentDefs } from './builtin-douyin-agents.js';
+// 言智代言官（应用即工具元智能体：派发任务 / 弹执行窗口 / 录屏演示）
+import { builtinYanzhiAgentDefs } from './builtin-yanzhi-agent.js';
 // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
 import { builtinShopAgentDefs } from './builtin-shop-agents.js';
 // 场景（模式）配置内置种子 —— 与前端 packages/ui/src/config/scenes.ts 双源维护（见该文件头注）
@@ -2494,6 +2496,8 @@ export const seedAgents: Array<Record<string, unknown>> = [
   ...builtinTaskModeAgentDefs,
   // 抖音运营助手（图文带货 + 引流共用一个智能体）—— 定义见 ./builtin-douyin-agents.ts
   ...builtinDouyinAgentDefs,
+  // 言智代言官（应用即工具元智能体：派发任务 / 弹执行窗口 / 录屏演示）—— 定义见 ./builtin-yanzhi-agent.ts
+  ...builtinYanzhiAgentDefs,
   // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
   // 与任务类型注册表（shared/utils/task-types.ts 的 shop_ops/shop_selection 的 agentId）成对维护
   ...builtinShopAgentDefs,
@@ -4689,6 +4693,32 @@ db.exec(`
   );
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_task_group_user ON scheduled_task_group(user_id, sort_order)'); } catch {}
+
+// ===== 发布队列（2026-10-17）：模型产出内容先入队，人工确认后才真正发布 =====
+// status: pending（待确认）→ approved（已确认，待发布执行）→ published（已发布）
+//                                        ↘ rejected（已驳回）
+db.exec(`
+  CREATE TABLE IF NOT EXISTS publish_queue (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES user(id),
+    conversation_id TEXT,
+    platform TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT,
+    media_paths_json TEXT,
+    tags TEXT,
+    status TEXT DEFAULT 'pending',
+    note TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    published_at INTEGER
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_publish_queue_user ON publish_queue(user_id, status, updated_at DESC)'); } catch {}
+// 发布后数据回传（P2 复盘）：pageAgent 读平台后台数据后由模型记录
+try { db.exec('ALTER TABLE publish_queue ADD COLUMN stats_json TEXT'); } catch {}
+// 合集/专栏归属：同主题内容归入同一合集是平台涨粉的关键动作（2026-10-17）
+try { db.exec('ALTER TABLE publish_queue ADD COLUMN collection TEXT'); } catch {}
 
 // ===== 应用全局配置（key-value）=====
 db.exec(`

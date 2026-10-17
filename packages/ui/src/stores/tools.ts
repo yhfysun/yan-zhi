@@ -40,6 +40,7 @@ const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]
   { key: 'network', label: '网络请求', names: ['http_request'] },
   { key: 'interact', label: '用户交互', names: ['ask_user', 'confirm_user'] },
   { key: 'task', label: '任务规划', names: ['task_plan', 'task_step'] },
+  { key: 'app', label: '应用编排', names: ['app_create_task', 'app_get_task_status', 'app_open_window', 'screen_record', 'demo_compose', 'anim_compose', 'publish_enqueue', 'publish_mark_published', 'publish_record_stats', 'design_asset_sites'] },
   { key: 'data', label: '数据查询（本体/SQL）', prefixes: ['api_ontology_', 'api_data_', 'api_datasource_'] },
   { key: 'image', label: '图像分析', names: ['image_analyze'] },
   { key: 'config', label: '模型配置', names: ['configure_model_platform', 'list_models'] },

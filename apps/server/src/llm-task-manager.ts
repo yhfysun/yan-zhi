@@ -60,7 +60,7 @@ import {
 } from './services/background-subagents.js';
 import { matchUserHooks } from './services/user-hooks.js';
 import { guessMime } from './utils/mime.js';
-import { resolveArtifactDirFor } from './services/artifact-dir.js';
+import { resolveArtifactDirFor, ensureArtifactDirFor } from './services/artifact-dir.js';
 // 工作目录边界守卫：判定在 path-guard（纯逻辑），这里只做"拿到 need-auth 后弹窗授权"
 import {
   checkPathAccess,
@@ -104,6 +104,7 @@ import {
 // 且带 mtime 缓存，开销可忽略。
 import { statSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import { v4 as uuid } from 'uuid';
 import { createLogger } from './services/logger.js';
 import { gapBetweenToolHeadAndReceipt, shouldWarnOnGap } from './services/tool-receipt-adjacency.js';
 // LLM 自动生成会话标题（2026-10-11）：首个任务 completed 时 fire-and-forget；
@@ -1153,6 +1154,293 @@ export function createTask(params: {
     browserExecution: browserBridgeAvailable() ? 'bridge' : 'frontend' });
   void runReActLoop(task, params);
   return taskId;
+}
+
+/**
+ * app_create_task —— 模型自建顶层任务（应用即工具，2026-10-17）。
+ *
+ * 与 call_agent 的区别：call_agent 是"任务内委派"，跑在父会话上下文里、结果回注父会话；
+ * 本工具像用户手动新建一样**创建一个独立任务**：独立会话、独立任务列表条目、独立 SSE 流。
+ * 数据链路与前端手动发起（POST /api/conversations + POST /api/llm/tasks）完全同源，
+ * 服务端实现参照 runScheduledTask 的无人值守路径 —— 前端任务列表 / 执行窗口零改动即可展示。
+ *
+ * 权限策略（**不升级**）：新会话 permission_mode 与 pathGuard **继承父任务** ——
+ * 用户给父任务什么档位，派生任务就最多什么档位；模型不能借派发自我提权。
+ * 模型选择：智能体绑定 > 智能体候选池首选 > 父任务当前模型 > 默认模型（findDefaultModel 同款查询）。
+ */
+export async function appCreateTask(task: LlmTask, args: any): Promise<string> {
+  const title = String(args?.title || '').trim();
+  const instruction = String(args?.instruction || '').trim();
+  if (!title) return '缺少 title（必填）：请给新任务一个简短标题，它会显示在任务列表。';
+  if (!instruction) return '缺少 instruction（必填）：新任务看不到当前会话的上下文，指令必须自包含（目标 / 要求 / 交付物形态 / 验收标准）。';
+
+  // ── 1. 解析执行智能体：显式指定 > 继承父任务 > 默认智能体 ──
+  let agentId: string | null = null;
+  const wantAgent = String(args?.agentId || '').trim();
+  if (wantAgent) {
+    const row = db.prepare('SELECT id, name, type FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(wantAgent, task.userId) as any;
+    if (!row) return `agentId "${wantAgent}" 不存在或不可用。请先用 list_sub_agents 查询可用智能体，再重新调用。`;
+    if (isWorkflowAgent(row)) return `「${row?.name || wantAgent}」是工作流型智能体，不能作为会话智能体跑任务（可改用 call_agent 委派它）。`;
+    agentId = row.id;
+  } else if (task.agentId) {
+    agentId = task.agentId;
+  } else {
+    const def = db.prepare("SELECT id FROM agent WHERE id = 'a_default_assistant' AND (user_id = ? OR is_public = 1)").get(task.userId) as any;
+    if (def) agentId = def.id;
+  }
+
+  // ── 2. 归属空间：显式指定 > 继承父任务所在空间 ──
+  let spaceId: string | null = null;
+  const wantSpace = String(args?.spaceId || '').trim();
+  if (wantSpace) {
+    const sp = db.prepare('SELECT id FROM space WHERE id = ? AND user_id = ?').get(wantSpace, task.userId) as any;
+    if (!sp) return `spaceId "${wantSpace}" 不存在或不属于当前用户，任务未创建。`;
+    spaceId = sp.id;
+  } else {
+    const sp = db.prepare('SELECT space_id FROM conversation WHERE id = ?').get(task.conversationId) as any;
+    spaceId = sp?.space_id || null;
+  }
+
+  // ── 3. 解析模型：智能体绑定 > 智能体候选池首选 > 父任务当前模型 > 默认模型 ──
+  let platformId: string | null = null;
+  let modelId: string | null = null;
+  if (agentId) {
+    const agent = db.prepare('SELECT platform_id, model_id FROM agent WHERE id = ?').get(agentId) as any;
+    if (agent) {
+      platformId = agent.platform_id || null;
+      modelId = agent.model_id || null;
+      if (!modelId) {
+        const poolFirst = resolveFirstModel(db, { userId: task.userId, agentId }, 'llm');
+        if (poolFirst) { platformId = poolFirst.platformId; modelId = poolFirst.model.id; }
+      }
+    }
+  }
+  if (!platformId || !modelId) { platformId = task.platformId; modelId = task.modelId; }
+  if (!platformId || !modelId) {
+    const fallback = db.prepare(
+      `SELECT m.id, m.platform_id FROM model m JOIN platform p ON p.id = m.platform_id
+       WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
+       ORDER BY CASE WHEN m.is_default = 1 AND p.is_builtin = 0 THEN 0 WHEN m.is_default = 1 THEN 1 ELSE 2 END, m.created_at ASC
+       LIMIT 1`,
+    ).get(task.userId) as any;
+    if (fallback) { platformId = fallback.platform_id; modelId = fallback.id; }
+  }
+  if (!platformId || !modelId) {
+    return '未找到可用模型（请先在「设置 → 模型平台」配置并启用模型），任务未创建。';
+  }
+
+  // ── 4. 建会话（与前端 POST /api/conversations 同构；权限继承父任务，不升级）──
+  const convId = uuid();
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, task_type, title_source, source, source_meta_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '[]', 0, ?, 'office', NULL, 'auto', NULL, NULL, ?, ?)`,
+  ).run(convId, task.userId, title, agentId, platformId, modelId, spaceId, task.permissionMode || 'readonly', now, now);
+
+  // ── 5. 无人值守工具面 + 提示词（参照 runScheduledTask：排除 UI 工具，页面没开也能跑）──
+  const systemPrompt = buildSystemPromptForBackend(agentId, task.userId, undefined, { conversationId: convId });
+  const tools = buildToolsForBackend(agentId, task.userId, { conversationId: convId });
+  const modelParams = loadAgentModelParams(agentId, task.userId);
+
+  // ── 6. 建任务（createTask 起 ReAct 循环；进度落库 + 会话级 SSE，主列表天然可见）──
+  try {
+    const newTaskId = createTask({
+      conversationId: convId,
+      userId: task.userId,
+      platformId,
+      modelId,
+      userContent: instruction,
+      agentId,
+      systemPrompt,
+      tools,
+      options: {
+        temperature: modelParams.temperature,
+        maxTokens: modelParams.maxTokens,
+        topP: modelParams.topP,
+        reasoningEffort: modelParams.reasoningEffort,
+      },
+      maxSteps: modelParams.maxReActSteps || 100,
+      // pathGuard 同样继承父任务档位（不升级）；createTask 会对非法值兜底 ask
+      pathGuard: task.pathGuard,
+    });
+    logger.info(`[app_create_task] conv=${task.conversationId} 派发顶层任务「${title}」-> conv=${convId} task=${newTaskId}`);
+    return [
+      '✅ 任务已创建并开始后台执行：',
+      `- 标题：${title}`,
+      `- conversationId：${convId}`,
+      `- taskId：${newTaskId}`,
+      `- 执行智能体：${agentId || '默认智能体'}`,
+      '',
+      '它已出现在用户任务列表中（与手动新建的任务完全一致），执行进度可在「独立执行窗口」实时查看。',
+      '注意：任务结果**不会**自动回注本会话；需要跟进时用 app_get_task_status 或 dataAgent 查询该任务状态。',
+    ].join('\n');
+  } catch (e: any) {
+    // 建任务失败（会话被并发归档等极少数情况）→ 清掉刚建的空壳会话，不留垃圾条目
+    try { db.prepare('DELETE FROM conversation WHERE id = ? AND user_id = ?').run(convId, task.userId); } catch { /* 忽略 */ }
+    const msg = e instanceof Error ? e.message : String(e);
+    return `任务创建失败：${msg}`;
+  }
+}
+
+/**
+ * app_get_task_status —— 查询顶层任务执行状态（纯读，readonly 会话可用）。
+ * 缺省查当前会话；传 conversationId 查指定任务（app_create_task 的回执里有）。
+ * 内存中活任务优先（实时 seq/pending），否则回落 llm_task 表（重启后仍能查到终态）。
+ */
+export function appGetTaskStatus(task: LlmTask, args: any): string {
+  const convId = String(args?.conversationId || '').trim() || task.conversationId;
+  const conv = db.prepare('SELECT id, title FROM conversation WHERE id = ? AND user_id = ?').get(convId, task.userId) as any;
+  if (!conv) return `会话 "${convId}" 不存在或不属于当前用户。`;
+  const row = db.prepare('SELECT id, status, step, error, created_at, updated_at FROM llm_task WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(convId) as any;
+  if (!row) return `任务「${conv.title}」还没有执行记录（可能尚未发起过任务）。`;
+  const live = getTask(row.id);
+  const status = live?.status || row.status;
+  const step = live?.step ?? row.step ?? 0;
+  const pending = live ? [...live.pendingToolCalls.values()].map((p) => p.toolName).filter(Boolean) : [];
+  const lines = [
+    `任务「${conv.title}」（conversationId: ${convId}）`,
+    `- 状态：${status}${status === 'running' ? `，已执行 ${step} 步` : ''}`,
+  ];
+  if (pending.length > 0) lines.push(`- 正在等待工具返回：${pending.join('、')}`);
+  if (row.error) lines.push(`- 错误：${row.error}`);
+  lines.push(`- 最近活动：${new Date(row.updated_at).toLocaleString('zh-CN')}`);
+  if (status === 'running') lines.push('仍在后台执行中；需要结果请稍后再查，或让用户在任务列表里查看。');
+  return lines.join('\n');
+}
+
+/**
+ * app_open_window —— 请求主窗口弹出某任务的独立执行窗口（纯展示，readonly 可用）。
+ * 链路：server 校验归属 → 发 app:open_window 任务事件 → 主窗口 SSE 处理器收到后
+ * 调 child-window IPC 开 /task-window/:convId 子窗口（复用独立窗口设施）。
+ * eventId 供前端去重：任务事件重连时会重放（subscribe(taskId, since)），不去重会弹两次。
+ */
+function appOpenWindow(task: LlmTask, args: any): string {
+  const convId = String(args?.conversationId || '').trim() || task.conversationId;
+  const conv = db.prepare('SELECT id, title FROM conversation WHERE id = ? AND user_id = ?').get(convId, task.userId) as any;
+  if (!conv) return `会话 "${convId}" 不存在或不属于当前用户，无法弹出窗口。`;
+  if (task.subscribers.size === 0) {
+    return '主窗口当前不在线（没有前端订阅者），无法弹出窗口。请用户打开主窗口后再试，或提醒用户手动从任务行右键「独立窗口打开」。';
+  }
+  emit(task, {
+    type: 'app:open_window',
+    conversationId: convId,
+    eventId: `ow_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+  });
+  logger.info(`[app_open_window] conv=${task.conversationId} 请求弹出 ${convId} 的执行窗口`);
+  return `已请求主窗口弹出任务「${conv.title}」的独立执行窗口（conversationId: ${convId}）。窗口弹出后即可实时查看该任务的执行进度；若用户没看到窗口，请提醒其检查主窗口是否打开。`;
+}
+
+const PUBLISH_PLATFORMS = new Set(['douyin', 'xiaohongshu', 'bilibili', 'wechat', 'csdn', 'juejin', 'zhihu']);
+const PUBLISH_PLATFORM_LABELS: Record<string, string> = {
+  douyin: '抖音', xiaohongshu: '小红书', bilibili: 'B站', wechat: '公众号',
+  csdn: 'CSDN', juejin: '掘金', zhihu: '知乎',
+};
+/** 平台形态（派发发布任务时给 pageAgent 的动作提示）：视频 / 图文 / 文章 */
+const PUBLISH_PLATFORM_KINDS: Record<string, string> = {
+  douyin: '短视频（创作者中心上传页）', xiaohongshu: '图文笔记（创作者中心发布页）',
+  bilibili: '视频（创作者中心投稿页）', wechat: '公众号文章（图文编辑器）',
+  csdn: '技术文章（Markdown 编辑器，支持 MD 直接粘贴）', juejin: '技术文章（Markdown 编辑器，支持 MD 直接粘贴）',
+  zhihu: '专栏文章（富文本编辑器）',
+};
+
+/**
+ * publish_enqueue —— 内容入发布队列（只入队，绝不直接发布；2026-10-17 合规设计）。
+ * 用户在发布面板确认（approved）后，发布执行由后续 pageAgent 流程承接。
+ * 合规预检：极限词粗筛（最/第一/百分百/保证），命中则退回让模型改写。
+ */
+export function publishEnqueue(task: LlmTask, args: any): string {
+  const platform = String(args?.platform || '').trim();
+  const title = String(args?.title || '').trim();
+  if (!PUBLISH_PLATFORMS.has(platform)) {
+    return `platform 必须是 ${[...PUBLISH_PLATFORMS].join(' / ')} 之一，收到 "${platform || '(空)'}"。`;
+  }
+  if (!title) return '缺少 title（必填）：发布标题（≤30 字，不含极限词）。';
+  // 极限词粗筛（合规红线提示，不做最终判定）
+  const risky = ['最', '第一', '百分百', '保证', '国家级', '全网最低'];
+  const hit = risky.filter((w) => title.includes(w));
+  if (hit.length > 0) {
+    return `标题含平台高危词（${hit.join('、')}），已拒绝入队。请改写标题后重新提交——发布内容含极限词可能导致限流/下架。`;
+  }
+  const id = uuid();
+  const now = Date.now();
+  const media = Array.isArray(args?.mediaPaths) ? args.mediaPaths.map(String).filter(Boolean) : [];
+  const collection = typeof args?.collection === 'string' ? args.collection.trim() : '';
+  db.prepare(
+    `INSERT INTO publish_queue (id, user_id, conversation_id, platform, title, content, media_paths_json, tags, collection, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+  ).run(id, task.userId, task.conversationId, platform, title,
+    typeof args?.content === 'string' ? args.content : '',
+    media.length ? JSON.stringify(media) : null,
+    typeof args?.tags === 'string' ? args.tags : '',
+    collection || null,
+    now, now);
+  logger.info(`[publish_enqueue] conv=${task.conversationId} 入队 ${platform}: ${title}`);
+  return [
+    '✅ 已加入发布队列（待用户确认）：',
+    `- 平台：${PUBLISH_PLATFORM_LABELS[platform]}`,
+    `- 标题：${title}`,
+    collection ? `- 合集：${collection}` : '- 合集：未设置（系列内容建议指定合集名，引导连续订阅）',
+    `- 队列 ID：${id}`,
+    media.length ? `- 媒体：${media.length} 个文件` : '- 媒体：无',
+    '',
+    '用户会在「发布」面板看到这条待确认内容；确认后才进入发布执行。请告知用户去确认，不要重复入队。',
+  ].join('\n');
+}
+
+/**
+ * publish_mark_published —— 发布执行完成后回写队列状态（approved → published）。
+ * 只认 approved 条目：pending 不能跳级（没确认就"已发布"是绕过人工确认的漏洞）；
+ * rejected / published 不允许（published 已是终态，重发走 UI 的「撤回待确认」）。
+ * note 记录发布结果（链接/平台稿件 ID），供发布面板展示与后续复盘。
+ */
+export function publishMarkPublished(task: LlmTask, args: any): string {
+  const id = String(args?.id || '').trim();
+  if (!id) return '缺少 id（必填）：发布任务指令里给出的队列条目 ID。';
+  const row = db.prepare('SELECT * FROM publish_queue WHERE id = ? AND user_id = ?').get(id, task.userId) as any;
+  if (!row) return `队列条目 "${id}" 不存在或不属于当前用户。`;
+  if (row.status !== 'approved') {
+    return `条目「${row.title}」状态是 ${row.status}，只有已确认（approved）的条目才能标记已发布——发布必须经用户在发布面板确认，不能跳级。`;
+  }
+  const note = typeof args?.note === 'string' && args.note.trim() ? args.note.trim() : null;
+  db.prepare('UPDATE publish_queue SET status = ?, published_at = ?, note = COALESCE(?, note), updated_at = ? WHERE id = ?')
+    .run('published', Date.now(), note, Date.now(), id);
+  logger.info(`[publish_mark_published] conv=${task.conversationId} 条目 ${id} 标记已发布`);
+  return `✅ 队列条目「${row.title}」已标记为已发布。请向用户汇报发布结果${note ? `（备注：${note}）` : ''}。`;
+}
+
+/**
+ * publish_record_stats —— 发布后数据回传（复盘链路，P2）。
+ * 数据必须来自 pageAgent 读到的平台创作者后台真实数字（模型编数据 = 谎报，提示词已禁）。
+ * 累积语义：重复记录时数字字段覆盖、note 追加，供多时间点观察（48h/7d）。
+ */
+export function publishRecordStats(task: LlmTask, args: any): string {
+  const id = String(args?.id || '').trim();
+  if (!id) return '缺少 id（必填）：发布队列条目 ID。';
+  const row = db.prepare('SELECT * FROM publish_queue WHERE id = ? AND user_id = ?').get(id, task.userId) as any;
+  if (!row) return `队列条目 "${id}" 不存在或不属于当前用户。`;
+  if (row.status !== 'published') {
+    return `条目「${row.title}」状态是 ${row.status}，只有已发布（published）的内容才记录表现数据。`;
+  }
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : undefined);
+  const stats = {
+    views: num(args?.views),
+    likes: num(args?.likes),
+    comments: num(args?.comments),
+    shares: num(args?.shares),
+    note: typeof args?.note === 'string' && args.note.trim() ? args.note.trim() : undefined,
+    recordedAt: Date.now(),
+  };
+  if (stats.views === undefined && stats.likes === undefined && stats.comments === undefined && stats.shares === undefined) {
+    return '至少提供一个数据字段（views/likes/comments/shares）。读不到真实数据就如实说明，不要编造数字。';
+  }
+  db.prepare('UPDATE publish_queue SET stats_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(stats), Date.now(), id);
+  logger.info(`[publish_record_stats] conv=${task.conversationId} 条目 ${id} 回传数据`);
+  return `✅ 已记录「${row.title}」的表现数据：${[
+    stats.views !== undefined ? `播放 ${stats.views}` : '',
+    stats.likes !== undefined ? `点赞 ${stats.likes}` : '',
+    stats.comments !== undefined ? `评论 ${stats.comments}` : '',
+    stats.shares !== undefined ? `转发 ${stats.shares}` : '',
+  ].filter(Boolean).join('，')}。请向用户简要解读（如完播/互动水平与下一步改进方向）。`;
 }
 
 /**
@@ -4230,6 +4518,16 @@ async function maybeAutoDiagnose(task: LlmTask, filePath: string, toolText: stri
 /** 编排/交互类工具：不依赖智能体挂载也必须可用（与 buildToolsForBackend 的无条件暴露口径一致） */
 const ALWAYS_ALLOWED_BUILTINS = new Set([
   'plan_tasks', 'get_plan_status', 'reassign_task', 'get_sub_task_detail',
+  // 应用即工具：模型自建顶层任务（仅主智能体，executeTool 内 depth 拦截）+ 状态跟进（纯读）
+  'app_create_task', 'app_get_task_status',
+  // 独立窗口 / 录屏（应用即工具 P1）：弹执行窗口（纯展示）与录屏（前端委托）
+  'app_open_window', 'screen_record',
+  // 演示后期合成（P1：录屏 → 成片）
+  'demo_compose',
+  // 科普动画渲染 + 发布队列入队/回写/数据回传（P1 内容矩阵）
+  'anim_compose', 'publish_enqueue', 'publish_mark_published', 'publish_record_stats',
+  // 设计素材站点清单（纯读信息）
+  'design_asset_sites',
   // buildToolsForBackend 无条件暴露的两条委派入口（不依赖挂载）
   'call_agent', 'list_sub_agents',
   ...INTERACTIVE_TOOLS,
@@ -4603,6 +4901,43 @@ async function executeTool(
     (task as any).uiTools = uiTools;
     const summary = await runPlanToCompletion(task, r.planId);
     return `${r.message}\n\n${summary}`;
+  }
+
+  // ── 应用即工具（2026-10-17）：模型自建顶层任务 / 查询任务状态 ──
+  if (toolName === 'app_create_task') {
+    if (depth >= 1) return '子智能体不能再创建顶层任务（仅主智能体可派发，防止任务树无限展开）';
+    return appCreateTask(task, args || {});
+  }
+  if (toolName === 'app_get_task_status') {
+    return appGetTaskStatus(task, args || {});
+  }
+  // ── 独立窗口 / 录屏（应用即工具 P1）──
+  if (toolName === 'app_open_window') {
+    return appOpenWindow(task, args || {});
+  }
+  if (toolName === 'screen_record') {
+    // 录屏委托前端（桌面端主进程执行 capturePage + ffmpeg）；产物路径由服务端统一解析到
+    // 本会话的产物目录（deliverable），录完天然出现在任务的文件面板里，不靠模型拼路径。
+    if (task.subscribers.size === 0) return '录屏需要桌面端主窗口在线（当前没有前端订阅者），无法执行。';
+    const a = (args || {}) as Record<string, unknown>;
+    const action = String(a.action || 'start');
+    let outPath = typeof a.outPath === 'string' ? a.outPath : undefined;
+    if (action === 'start' && !outPath) {
+      const dir = ensureArtifactDirFor({ conversationId: task.conversationId, category: 'deliverable' });
+      const name = String(a.outName || '').trim().replace(/[\\/:*?"<>|]/g, '_') || `recording_${Date.now()}`;
+      outPath = path.join(dir.dir, `${name}.mp4`);
+    }
+    return executeToolViaFrontend(task, toolName, { ...a, outPath }, toolCallId, depth);
+  }
+  // ── 发布队列（2026-10-17）：模型只入队，发布必须人工确认 ──
+  if (toolName === 'publish_enqueue') {
+    return publishEnqueue(task, args || {});
+  }
+  if (toolName === 'publish_mark_published') {
+    return publishMarkPublished(task, args || {});
+  }
+  if (toolName === 'publish_record_stats') {
+    return publishRecordStats(task, args || {});
   }
 
   // call_agent → 后端直接执行子 ReAct 循环（仅主智能体可调用，子智能体深度=1 不可再嵌套）
@@ -7558,7 +7893,7 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
 
   // 1.5) 多智能体编排工具（2026-10-08）：无条件暴露 —— 长任务规划是主智能体的通用能力，
   //      不随挂载变化（子智能体侧由 runSubAgent 的工具裁剪 + depth>=1 拦截双重排除）。
-  for (const name of ['plan_tasks', 'get_plan_status', 'reassign_task']) {
+  for (const name of ['plan_tasks', 'get_plan_status', 'reassign_task', 'app_create_task', 'app_get_task_status', 'app_open_window', 'screen_record', 'demo_compose', 'anim_compose', 'publish_enqueue', 'publish_mark_published', 'publish_record_stats', 'design_asset_sites']) {
     if (seen.has(name) || !registry.has(name)) continue;
     const def = registry.get(name)!;
     seen.add(name);

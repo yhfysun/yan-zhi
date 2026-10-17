@@ -656,7 +656,7 @@ function createChat() {
       convCollapsed.value = true;
     }
   });
-  const sideTab = ref<'chat' | 'task' | 'file'>('chat');
+  const sideTab = ref<'chat' | 'task' | 'file' | 'publish'>('chat');
   const contextSidebarOpen = ref(false);
   const batchMode = ref(false);
   const selectedConvIds = ref<Set<string>>(new Set());
@@ -1746,6 +1746,27 @@ function createChat() {
       else await electron.shell.showItemInFolder(dir);
     } catch (e: any) {
       ElMessage.error('打开目录失败：' + (e?.message || e));
+    }
+  }
+
+  /**
+   * 在独立窗口打开任务（2026-10-17）：桌面端开真 OS 窗口（复用 child-window 设施），
+   * Web 端降级为新标签页加载同一条 /task-window/:convId 裸路由。
+   * key 按会话隔离 —— 同一任务重复打开聚焦已有窗口而不是再开一个。
+   */
+  async function openTaskWindow(conv: any) {
+    if (!conv?.id) return;
+    const { openChildWindow } = await import('../../utils/childWindow');
+    const route = `/task-window/${conv.id}`;
+    const ok = await openChildWindow({
+      key: `task-run-${conv.id}`,
+      route,
+      width: 520,
+      height: 760,
+    });
+    if (!ok) {
+      // Web / 不支持真窗口 → 新标签页兜底（hash 路由，同一份产物即可）
+      window.open(`${location.origin}${location.pathname}#${route}`, '_blank');
     }
   }
 
@@ -4040,6 +4061,7 @@ async function healStalePlatform() {
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
     resolveArtifactDirFor,
     openConvDir,
+    openTaskWindow,
     scrollToRound, handleScroll, updateActiveNavRound, formatTime, showScrollBottom, showScrollTop, scrollToBottom,
     historyLoading,
     toggleReasoning, toggleTool, toggleToolGroup, toggleMsgCollapse, collapseEarlyOnMobile, toggleAgentProcess, toggleStepTools, isLastRoundStreaming, getStreamingStep,

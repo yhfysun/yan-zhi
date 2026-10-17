@@ -40,6 +40,16 @@ export { ListModelsTool } from './list-models';
 export { AskUserTool } from './ask-user';
 export { ConfirmUserTool } from './confirm-user';
 export { TaskPlanTool, TaskStepTool } from './task-plan';
+export { AppCreateTaskTool } from './app-create-task';
+export { AppGetTaskStatusTool } from './app-get-task-status';
+export { AppOpenWindowTool } from './app-open-window';
+export { ScreenRecordTool } from './screen-record';
+export { DemoComposeTool } from './demo-compose';
+export { AnimComposeTool } from './anim-compose';
+export { PublishEnqueueTool } from './publish-enqueue';
+export { PublishMarkPublishedTool } from './publish-mark-published';
+export { PublishRecordStatsTool } from './publish-record-stats';
+export { DesignAssetSitesTool } from './design-asset-sites';
 export { ConfigureModelPlatformTool } from './configure-model-platform';
 export { ImageAnalyzeTool } from './image-analyze';
 export { CompareProductsTool } from './compare-products';
@@ -89,6 +99,16 @@ import { ListModelsTool } from './list-models';
 import { AskUserTool } from './ask-user';
 import { ConfirmUserTool } from './confirm-user';
 import { TaskPlanTool, TaskStepTool } from './task-plan';
+import { AppCreateTaskTool } from './app-create-task';
+import { AppGetTaskStatusTool } from './app-get-task-status';
+import { AppOpenWindowTool } from './app-open-window';
+import { ScreenRecordTool } from './screen-record';
+import { DemoComposeTool } from './demo-compose';
+import { AnimComposeTool } from './anim-compose';
+import { PublishEnqueueTool } from './publish-enqueue';
+import { PublishMarkPublishedTool } from './publish-mark-published';
+import { PublishRecordStatsTool } from './publish-record-stats';
+import { DesignAssetSitesTool } from './design-asset-sites';
 import { ConfigureModelPlatformTool } from './configure-model-platform';
 import { ImageAnalyzeTool } from './image-analyze';
 import { CompareProductsTool } from './compare-products';
@@ -153,6 +173,26 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new ConfirmUserTool());
   registry.register(new TaskPlanTool());
   registry.register(new TaskStepTool());
+  // 应用即工具（2026-10-17）：模型自己发起顶层任务（schema 注册；实际执行由 server executeTool 拦截）
+  registry.register(new AppCreateTaskTool());
+  // 派发后的状态跟进（纯读；实际执行由 server executeTool 拦截）
+  registry.register(new AppGetTaskStatusTool());
+  // 弹独立执行窗口（server 拦截 → app:open_window 事件 → 主窗口开子窗口）
+  registry.register(new AppOpenWindowTool());
+  // 桌面录屏（server 委托前端 → 主进程 capturePage + ffmpeg）
+  registry.register(new ScreenRecordTool());
+  // 演示视频后期合成（标题条 + 步骤字幕 + 片尾卡；python 管线，registry 直执行）
+  registry.register(new DemoComposeTool());
+  // 科普动画画面层（概念/流程/对比模板；PIL 出帧，registry 直执行）
+  registry.register(new AnimComposeTool());
+  // 发布队列入队（只入队不发布；server executeTool 拦截写库）
+  registry.register(new PublishEnqueueTool());
+  // 发布完成回写（approved → published；server executeTool 拦截）
+  registry.register(new PublishMarkPublishedTool());
+  // 发布后数据回传（复盘链路；server executeTool 拦截）
+  registry.register(new PublishRecordStatsTool());
+  // 免费设计素材站点清单（纯静态信息，registry 直执行）
+  registry.register(new DesignAssetSitesTool());
   registry.register(new ConfigureModelPlatformTool());
   registry.register(new ImageAnalyzeTool());
   // compare_products 比价工具已停止注册（2026-09-14 工具瘦身：购物场景专用、低频；源码保留）

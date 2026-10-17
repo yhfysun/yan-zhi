@@ -1,0 +1,209 @@
+// 发布队列路由 —— 模型入队的内容在这里人工确认（2026-10-17 合规设计：模型只入队，发布必须人工点头）
+import { Router, Request, Response } from 'express';
+import { v4 as uuid } from 'uuid';
+import { authMiddleware } from '../auth.js';
+import { db } from '../db.js';
+import { buildSystemPromptForBackend, buildToolsForBackend, createTask } from '../llm-task-manager.js';
+import { resolveFirstModel } from '../services/model-pools.js';
+
+const router = Router();
+router.use(authMiddleware);
+
+/** 平台形态 → 派发指令里的动作提示（与 llm-task-manager 的 PUBLISH_PLATFORM_KINDS 同口径） */
+const PLATFORM_KIND_HINTS: Record<string, string> = {
+  douyin: '短视频（创作者中心上传页）', xiaohongshu: '图文笔记（创作者中心发布页）',
+  bilibili: '视频（创作者中心投稿页）', wechat: '公众号文章（图文编辑器）',
+  csdn: '技术文章（创作中心 Markdown 编辑器，把正文以 Markdown 粘贴导入）',
+  juejin: '技术文章（创作中心 Markdown 编辑器，把正文以 Markdown 粘贴导入）',
+  zhihu: '专栏文章（富文本编辑器）',
+};
+
+const VALID_STATUS = new Set(['pending', 'approved', 'rejected', 'published']);
+
+function rowToItem(r: any) {
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    platform: r.platform,
+    title: r.title,
+    content: r.content,
+    mediaPaths: (() => { try { return r.media_paths_json ? JSON.parse(r.media_paths_json) : []; } catch { return []; } })(),
+    tags: r.tags,
+    status: r.status,
+    note: r.note,
+    collection: r.collection,
+    stats: (() => { try { return r.stats_json ? JSON.parse(r.stats_json) : null; } catch { return null; } })(),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    publishedAt: r.published_at,
+  };
+}
+
+// GET /api/publish-queue?status=pending  队列列表（缺省全部，前端按状态分组）
+router.get('/', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const status = typeof req.query.status === 'string' ? req.query.status : '';
+  const conds: string[] = ['user_id = ?'];
+  const params: unknown[] = [userId];
+  if (status && VALID_STATUS.has(status)) {
+    conds.push('status = ?');
+    params.push(status);
+  }
+  const rows = db.prepare(
+    `SELECT * FROM publish_queue WHERE ${conds.join(' AND ')} ORDER BY updated_at DESC LIMIT 200`,
+  ).all(...params);
+  res.json({ data: rows.map(rowToItem) });
+});
+
+// GET /api/publish-queue/counts  角标：待确认数量
+router.get('/counts', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const row = db.prepare(
+    `SELECT SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+            SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved
+     FROM publish_queue WHERE user_id = ?`,
+  ).get(userId) as any;
+  res.json({ data: { pending: Number(row?.pending || 0), approved: Number(row?.approved || 0) } });
+});
+
+// POST /api/publish-queue  手动补一条（可选；主入口是模型 publish_enqueue 工具）
+router.post('/', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const { conversationId, platform, title, content, mediaPaths, tags } = req.body || {};
+  if (!platform || !title) { res.status(400).json({ error: 'platform/title 为必填项' }); return; }
+  const id = uuid();
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO publish_queue (id, user_id, conversation_id, platform, title, content, media_paths_json, tags, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+  ).run(id, userId, conversationId || null, String(platform), String(title),
+    typeof content === 'string' ? content : '',
+    Array.isArray(mediaPaths) && mediaPaths.length ? JSON.stringify(mediaPaths.map(String)) : null,
+    typeof tags === 'string' ? tags : '', now, now);
+  const row = db.prepare('SELECT * FROM publish_queue WHERE id = ?').get(id);
+  res.json({ data: rowToItem(row) });
+});
+
+// POST /api/publish-queue/:id/status  状态流转（confirm→approved / reject→rejected / markPublished→published / backToPending）
+router.post('/:id/status', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const id = req.params.id;
+  const action = String(req.body?.action || '');
+  const map: Record<string, { status: string; published?: number | null }> = {
+    confirm: { status: 'approved' },
+    reject: { status: 'rejected' },
+    backToPending: { status: 'pending', published: null },
+    markPublished: { status: 'published', published: Date.now() },
+  };
+  const next = map[action];
+  if (!next) { res.status(400).json({ error: `action 必须是 ${Object.keys(map).join(' / ')} 之一` }); return; }
+  const row = db.prepare('SELECT * FROM publish_queue WHERE id = ? AND user_id = ?').get(id, userId) as any;
+  if (!row) { res.status(404).json({ error: '队列条目不存在' }); return; }
+  // 流转合法性：published 是终态（可回退重发）；rejected 只能回 pending 重来
+  if (row.status === 'published' && action !== 'backToPending') {
+    res.status(409).json({ error: '该条目已发布，如需重新发布请先「撤回待确认」' }); return;
+  }
+  db.prepare('UPDATE publish_queue SET status = ?, published_at = ?, note = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+    .run(next.status, next.published !== undefined ? next.published : row.published_at,
+      typeof req.body?.note === 'string' ? req.body.note : row.note, Date.now(), id, userId);
+  const updated = db.prepare('SELECT * FROM publish_queue WHERE id = ?').get(id);
+  res.json({ data: rowToItem(updated) });
+});
+
+// POST /api/publish-queue/:id/dispatch  派发发布任务（P2 发布执行闭环）
+// 前置：条目必须已确认（approved）—— 派发即用户的"人工点头"动作本身在 confirm 步发生。
+// 做法：建一个绑定言智代言官的顶层会话+任务（复用 app-as-tool 链路，与手动建任务完全同构），
+// 指令自包含（平台/媒体/标题/正文/标签/队列 ID），由它委派 pageAgent 实际执行平台发布；
+// 完成后发布任务用 publish_mark_published 回写状态。条目保持 approved（终态由回写驱动）。
+router.post('/:id/dispatch', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const id = req.params.id;
+  const row = db.prepare('SELECT * FROM publish_queue WHERE id = ? AND user_id = ?').get(id, userId) as any;
+  if (!row) { res.status(404).json({ error: '队列条目不存在' }); return; }
+  if (row.status !== 'approved') {
+    res.status(409).json({ error: `条目状态是 ${row.status}，只有已确认（approved）的条目才能派发发布任务` });
+    return;
+  }
+
+  // 1) 解析执行智能体：言智代言官（懂发布 SOP 与 pageAgent 委派）→ 默认智能体
+  let agentId: string | null = null;
+  const yanzhi = db.prepare("SELECT id FROM agent WHERE id = 'a_builtin_yanzhi_agent' AND (user_id = ? OR is_public = 1)").get(userId);
+  if (yanzhi) agentId = 'a_builtin_yanzhi_agent';
+  else {
+    const def = db.prepare("SELECT id FROM agent WHERE id = 'a_default_assistant' AND (user_id = ? OR is_public = 1)").get(userId);
+    if (def) agentId = 'a_default_assistant';
+  }
+
+  // 2) 解析模型：智能体绑定 → 默认模型（与 runScheduledTask 同口径）
+  let platformId: string | null = null;
+  let modelId: string | null = null;
+  if (agentId) {
+    const agent = db.prepare('SELECT platform_id, model_id FROM agent WHERE id = ?').get(agentId) as any;
+    if (agent) { platformId = agent.platform_id || null; modelId = agent.model_id || null; }
+    if (!modelId) {
+      const poolFirst = resolveFirstModel(db, { userId, agentId }, 'llm');
+      if (poolFirst) { platformId = poolFirst.platformId; modelId = poolFirst.model.id; }
+    }
+  }
+  if (!platformId || !modelId) {
+    const fallback = db.prepare(
+      `SELECT m.id, m.platform_id FROM model m JOIN platform p ON p.id = m.platform_id
+       WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
+       ORDER BY CASE WHEN m.is_default = 1 AND p.is_builtin = 0 THEN 0 WHEN m.is_default = 1 THEN 1 ELSE 2 END, m.created_at ASC
+       LIMIT 1`,
+    ).get(userId) as any;
+    if (fallback) { platformId = fallback.platform_id; modelId = fallback.id; }
+  }
+  if (!platformId || !modelId) {
+    res.status(409).json({ error: '未找到可用模型，请先在「设置 → 模型平台」配置并启用模型' });
+    return;
+  }
+
+  // 3) 建会话 + 任务（指令自包含：发布任务看不到派发它时的上下文）
+  const convId = uuid();
+  const now = Date.now();
+  const media = (() => { try { return row.media_paths_json ? JSON.parse(row.media_paths_json) as string[] : []; } catch { return []; } })();
+  const userContent = [
+    `[发布任务] 把一条已确认的内容发布到平台，完成后用 publish_mark_published 回写。`,
+    ``,
+    `- 队列条目 ID：${row.id}（标记已发布时传给 publish_mark_published 的 id）`,
+    `- 平台：${row.platform}`,
+    `- 标题：${row.title}`,
+    `- 正文：${row.content || '（无）'}`,
+    `- 标签：${row.tags || '（无）'}`,
+    `- 合集：${row.collection || '（无，如平台支持建议创建/选择合集）'}`,
+    `- 媒体文件：${media.length ? media.join('；') : '（无，纯文字发布）'}`,
+    ``,
+    `要求：用 call_agent 委派 pageAgent（agentId: "a_builtin_page_agent"）执行实际发布操作——`,
+    `内容形态：${PLATFORM_KIND_HINTS[row.platform] || '创作者发布页'}（用户浏览器已有登录态），按标题/正文/标签填写并上传媒体文件后提交。`,
+    row.collection ? `发布时务必把内容归入合集/专栏「${row.collection}」（平台支持时；合集不存在则先创建同名合集）。` : `如平台支持合集且用户有同名合集，顺带归入。`,
+    `发布动作真实完成后调用 publish_mark_published { id: "${row.id}", note: "<发布链接或平台返回标识>" }；`,
+    `如果发布失败（登录态失效/页面结构变化等），如实汇报失败原因，**不要**调用 publish_mark_published。`,
+  ].join('\n');
+  try {
+    const systemPrompt = buildSystemPromptForBackend(agentId, userId, undefined, { conversationId: convId });
+    const tools = buildToolsForBackend(agentId, userId, { conversationId: convId });
+    const taskId = createTask({
+      conversationId: convId, userId, platformId, modelId,
+      userContent, agentId, systemPrompt, tools,
+    });
+    db.prepare('UPDATE publish_queue SET note = ?, updated_at = ? WHERE id = ?')
+      .run(`发布任务已派发：会话 ${convId}（任务 ${taskId}）`, now, id);
+    res.json({ data: { conversationId: convId, taskId } });
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (msg.startsWith('CONVERSATION_')) { res.status(409).json({ error: msg }); return; }
+    // 会话建了任务没建成功 → 清掉空壳
+    try { db.prepare('DELETE FROM conversation WHERE id = ?').run(convId); } catch { /* ignore */ }
+    res.status(500).json({ error: `派发失败：${msg}` });
+  }
+});
+
+// DELETE /api/publish-queue/:id  删除条目
+router.delete('/:id', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const n = db.prepare('DELETE FROM publish_queue WHERE id = ? AND user_id = ?').run(req.params.id, userId).changes;
+  res.json({ data: { deleted: n > 0 } });
+});
+
+export default router;

@@ -48,6 +48,18 @@ const WRITE_TOOLS = new Set([
   // ★ 必须列进写清单：它既改库（space.task_type）又**在用户磁盘上建目录**，
   //   只读会话里放行等于绕过了"不许写"的约束。
   'api_space_set_task_type',
+  // —— 录屏（2026-10-17）：产物是落在磁盘上的视频文件（写副作用）——
+  'screen_record',
+  // —— 演示视频后期合成：落盘成片 mp4（写副作用）——
+  'demo_compose',
+  // —— 科普动画渲染：落盘成片 mp4（写副作用）——
+  'anim_compose',
+  // —— 发布队列：新建待发布条目（写库）——
+  'publish_enqueue',
+  // —— 发布队列：完成回写（写库）——
+  'publish_mark_published',
+  // —— 发布队列：数据回传（写库）——
+  'publish_record_stats',
   // —— 记忆库写入 ——
   // ★★ 2026-09-29 自检（tools/audit-safety-gates.cjs）发现：这两个是**写库**操作
   //    （`INSERT INTO memory` / `DELETE FROM memory`），名字也明确是 create/delete，
@@ -188,6 +200,9 @@ const DELEGATION_TOOLS = new Set([
   //     api_message_send、api_custom_tool_execute）—— 判据仍是**按实现判**：谁最终能写，就登记谁。
   //   get_plan_status 是纯读，进 INTERACTION_TOOLS。
   'plan_tasks', 'reassign_task',
+  // app_create_task（2026-10-17）：模型自建顶层任务，新任务的智能体可执行任意写工具，
+  //   与 call_agent 同性质 —— readonly 会话必须拒绝。
+  'app_create_task',
 ]);
 
 /** 纯交互/规划类工具：不产生外部副作用，任何模式都放行 */
@@ -198,6 +213,10 @@ const INTERACTION_TOOLS = new Set([
   'get_plan_status',
   // 子任务执行详情查询：纯读 message 表（2026-10-09），编排者分析子任务失败用
   'get_sub_task_detail',
+  // 弹独立执行窗口：纯展示动作，无数据副作用（2026-10-17）
+  'app_open_window',
+  // 设计素材站点清单：纯静态信息查询（2026-10-17）
+  'design_asset_sites',
 ]);
 
 export interface ToolPermissionVerdict {

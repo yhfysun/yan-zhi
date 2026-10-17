@@ -17,6 +17,15 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '差异', bare: true, guest: true },
   },
   {
+    // 独立执行窗口（2026-10-17）：把一个任务单独开 OS 窗口跑给用户/录屏看。
+    // 只读执行监视器（状态 + 计划进度 + 消息流），交互仍在主窗口会话页。
+    // 同 diff-window：bare 不套应用外壳；guest 免授权门禁（子窗口独立渲染进程）。
+    path: '/task-window/:convId',
+    name: 'task-window',
+    component: () => import('../views/TaskRunWindow.vue'),
+    meta: { title: '任务执行', bare: true, guest: true },
+  },
+  {
     path: '/home',
     name: 'home',
     component: () => import('../views/Home.vue'),

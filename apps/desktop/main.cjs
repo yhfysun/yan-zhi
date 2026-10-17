@@ -1683,8 +1683,11 @@ ipcMain.handle('child-window:open', (event, opts = {}) => {
   });
 
   win.once('ready-to-show', () => win.show());
-  // 关窗即清理登记，避免 key 被已销毁窗口占住
-  win.on('closed', () => { childWindows.delete(key); });
+  // 关窗即清理登记，避免 key 被已销毁窗口占住；正在录该窗口的录屏立即收尾落盘
+  win.on('closed', () => {
+    childWindows.delete(key);
+    closeRecordingsOfWindow(win);
+  });
   win.webContents.setWindowOpenHandler(({ url: u }) => {
     if (isSafeExternalUrl(u)) shell.openExternal(u);
     return { action: 'deny' };
@@ -1720,6 +1723,130 @@ ipcMain.handle('child-window:take-payload', (_e, key) => {
   childPayloads.delete(k);
   return v ?? null;
 });
+
+// ============================================================
+// IPC：桌面录屏（screen_record 工具的执行端，2026-10-17）
+// ------------------------------------------------------------
+// 实现口径：目标窗口 webContents.capturePage() 定帧采样 → ffmpeg image2pipe 编码 mp4。
+// 为什么不用 desktopCapturer + MediaRecorder：capturePage 在主进程内闭环、可直接指定
+// 目标窗口（子窗口 key / 主窗口），不依赖渲染层 getUserMedia 权限流程，自动化更稳。
+// ffmpeg 解析：FFMPEG 环境变量 > C:\APP\EVCapture\ffmpeg.exe（novel-tuiwen 同款）> PATH。
+// ============================================================
+const { spawn: spawnRec } = require('child_process');
+const fsRec = require('fs');
+const activeRecordings = new Map(); // recordId → { timer, proc, outPath, startedAt, frames, win }
+const RECORD_MAX_MS = 10 * 60 * 1000; // 单段上限 10 分钟（防忘停写爆磁盘）
+
+function resolveFfmpegPath() {
+  const candidates = [process.env.FFMPEG, 'C:\\APP\\EVCapture\\ffmpeg.exe'].filter(Boolean);
+  for (const c of candidates) {
+    try { if (fsRec.existsSync(c)) return c; } catch { /* ignore */ }
+  }
+  return 'ffmpeg'; // 交给 PATH
+}
+
+ipcMain.handle('screen-record:start', (event, opts = {}) => {
+  try {
+    const outPath = String(opts.outPath || '');
+    if (!outPath) return { ok: false, error: '缺少产物路径（outPath）' };
+    // 目标窗口：task:<convId> → 子窗口 key `task-run-<convId>`；否则调用方窗口（子窗口内录自己）/ 主窗口
+    let win = null;
+    const target = String(opts.target || '');
+    const taskMatch = target.match(/^task[:=](.+)$/);
+    if (taskMatch) win = childWindows.get(`task-run-${taskMatch[1].trim()}`) || null;
+    if (!win || win.isDestroyed()) win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    if (!win || win.isDestroyed()) return { ok: false, error: '找不到可录制的窗口' };
+
+    const fps = Math.min(Math.max(Number(opts.fps) || 10, 5), 30);
+    fsRec.mkdirSync(path.dirname(outPath), { recursive: true });
+    const ff = resolveFfmpegPath();
+    // 老版 ffmpeg（N-80694）image2pipe + libx264 可用（novel-tuiwen 已验证其编解码能力）
+    const proc = spawnRec(ff, [
+      '-y', '-f', 'image2pipe', '-framerate', String(fps), '-i', '-',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', outPath,
+    ], { stdio: ['pipe', 'ignore', 'pipe'] });
+    let stderrTail = '';
+    proc.stderr.on('data', (d) => { stderrTail = (stderrTail + String(d)).slice(-4000); });
+
+    const recordId = 'rec_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const rec = { recordId, outPath, startedAt: Date.now(), frames: 0, proc, win, timer: null };
+    activeRecordings.set(recordId, rec);
+
+    rec.timer = setInterval(async () => {
+      // 安全阀：超时自动停（写盘收尾），避免模型忘 stop 把磁盘写爆
+      if (Date.now() - rec.startedAt >= RECORD_MAX_MS) {
+        try {
+          const r = await stopRecording(rec);
+          console.log(`[screen-record] 超时自动停止: ${r.outPath} (${Math.round(r.durationMs / 1000)}s)`);
+        } catch (e) {
+          console.warn('[screen-record] 超时自动停止失败:', e);
+        }
+        return;
+      }
+      try {
+        if (!rec.win || rec.win.isDestroyed() || !rec.proc.stdin.writable) return;
+        // 背压保护：ffmpeg 来不及消化时丢帧（演示视频丢帧可接受，堆积内存不可接受）
+        if (rec.proc.stdin.writableNeedDrain) return;
+        const image = await rec.win.webContents.capturePage();
+        if (!image || image.isEmpty()) return;
+        const buf = image.toPNG();
+        rec.proc.stdin.write(buf);
+        rec.frames++;
+      } catch { /* 单帧失败忽略（窗口最小化时 capturePage 可能抛错） */ }
+    }, Math.round(1000 / fps));
+
+    return { ok: true, recordId, outPath };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
+
+/** 收尾一段录屏：停采样 → 收尾 ffmpeg → 校验产物。返回结果对象（或抛错）。 */
+function stopRecording(rec) {
+  return new Promise((resolve, reject) => {
+    clearInterval(rec.timer);
+    activeRecordings.delete(rec.recordId);
+    const durationMs = Date.now() - rec.startedAt;
+    const finish = () => {
+      try {
+        const st = fsRec.existsSync(rec.outPath) ? fsRec.statSync(rec.outPath) : null;
+        if (!st || st.size === 0) {
+          reject(new Error('录制产物为空（ffmpeg 编码失败？见主进程日志）'));
+          return;
+        }
+        resolve({ ok: true, outPath: rec.outPath, durationMs, frames: rec.frames, bytes: st.size });
+      } catch (e) { reject(e); }
+    };
+    const onExit = (code) => {
+      if (code && code !== 0) {
+        reject(new Error(`ffmpeg 退出码 ${code}（检查 ffmpeg 是否支持 image2pipe/libx264）`));
+        return;
+      }
+      finish();
+    };
+    try { rec.proc.stdin.end(); } catch { /* 已关闭则直接等退出 */ }
+    const timeout = setTimeout(() => {
+      try { rec.proc.kill(); } catch { /* ignore */ }
+      reject(new Error('ffmpeg 收尾超时（15s）'));
+    }, 15000);
+    rec.proc.once('exit', (code) => { clearTimeout(timeout); onExit(code); });
+  });
+}
+
+ipcMain.handle('screen-record:stop', (_e, opts = {}) => {
+  const recordId = String(opts.recordId || '');
+  const rec = activeRecordings.get(recordId);
+  if (!rec) return { ok: false, error: '录屏不存在或已停止（recordId 不对？）' };
+  return stopRecording(rec).catch((e) => ({ ok: false, error: String(e?.message || e) }));
+});
+// 录屏的窗口被关闭 → 立即收尾落盘（不然 ffmpeg 等不到输入结束，文件不可用）
+function closeRecordingsOfWindow(win) {
+  for (const rec of [...activeRecordings.values()]) {
+    if (rec.win === win) {
+      stopRecording(rec).catch(() => { try { rec.proc.kill(); } catch { /* ignore */ } });
+    }
+  }
+}
 
 // ============================================================
 // IPC：BrowserView 导航控制（前进/后退/刷新/resize/URL）

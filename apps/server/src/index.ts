@@ -75,6 +75,7 @@ import queryContractRoutes from './routes/query-contract.js';
 import ontologyRoutes from './routes/ontologies.js';
 import llmProxyRoutes from './routes/llm-proxy.js';
 import llmTaskRoutes from './routes/llm-tasks.js';
+import publishQueueRoutes from './routes/publish-queue.js';
 import llmLogsRoutes from './routes/llm-logs.js';
 // 模型候选池三层配置（model-candidate-pools）：global/platform/agent 读写集中一处
 import modelPoolRoutes from './routes/model-pools.js';
@@ -165,6 +166,8 @@ app.use('/api/conversations', fileRoutes);
 app.use('/api/workspace', workspaceFileRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/spaces', spaceRoutes);
+// 发布队列：模型入队的内容在这里人工确认（2026-10-17 合规设计）
+app.use('/api/publish-queue', publishQueueRoutes);
 app.use('/api/platforms', platformRoutes);
 app.use('/api/model-pools', modelPoolRoutes);
 app.use('/api/agents', agentRoutes);

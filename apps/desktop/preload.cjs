@@ -55,6 +55,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     takePayload: (key) => ipcRenderer.invoke('child-window:take-payload', key),
   },
 
+  // 桌面录屏（screen_record 工具执行端）：主进程 capturePage 定帧采样 + ffmpeg 编码 mp4
+  screenRecord: {
+    // opts: { outPath, target?('task:<convId>'|''=主窗口), fps? } → { ok, recordId, outPath } | { ok:false, error }
+    start: (opts) => ipcRenderer.invoke('screen-record:start', opts),
+    // opts: { recordId } → { ok, outPath, durationMs, frames, bytes } | { ok:false, error }
+    stop: (opts) => ipcRenderer.invoke('screen-record:stop', opts),
+  },
+
   // 数据库
   db: {
     exec: (sql, params) => ipcRenderer.invoke('db:exec', sql, params),

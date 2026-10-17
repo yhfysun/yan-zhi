@@ -17,6 +17,11 @@ describe('planRepair', () => {
   it('缺依赖 → 装该模块', () => {
     expect(planRepair({ kind: 'missing-module', module: 'edge_tts' })?.pipArgs).toEqual(['install', 'edge_tts']);
   });
+  it('模块名 → pip 包名别名（PIL 是 2010 年占位假包，必须装 pillow）', () => {
+    expect(planRepair({ kind: 'missing-module', module: 'PIL' })?.pipArgs).toEqual(['install', 'pillow']);
+    expect(planRepair({ kind: 'missing-module', module: 'cv2' })?.pipArgs).toEqual(['install', 'opencv-python']);
+    expect(planRepair({ kind: 'missing-module', module: 'yaml' })?.pipArgs).toEqual(['install', 'pyyaml']);
+  });
   it('edge-tts 403 → 升级 edge-tts', () => {
     expect(planRepair({ kind: 'edge-tts-403' })?.pipArgs).toEqual(['install', '--upgrade', 'edge-tts']);
   });

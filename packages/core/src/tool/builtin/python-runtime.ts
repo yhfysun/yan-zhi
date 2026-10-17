@@ -163,6 +163,14 @@ const PY_PROBE_TIMEOUT_MS = 15000;
  *   ⇒ ① 探针超时 5s → 15s；② 探成功后缓存，正常路径每个进程只探一次。
  */
 export async function findPython(): Promise<string> {
+  // ★ YZ_PYTHON 显式指定解释器（2026-10-17）：PATH 探测命中的 python 未必带依赖
+  //   （如 pyenv 3.8 无 Pillow 而 venv 里有）。设置 YZ_PYTHON=<解释器路径> 一键指对。
+  const explicit = (typeof process !== 'undefined' && process.env?.YZ_PYTHON || '').trim();
+  if (explicit) {
+    try {
+      if (fs.existsSync(explicit) || !explicit.includes('\\')) return explicit;
+    } catch { /* 探测失败按未指定 */ }
+  }
   const bundled = getBundledPythonPath();
   if (bundled) return bundled;
   if (cachedShellPython) return cachedShellPython;
