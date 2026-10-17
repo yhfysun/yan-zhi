@@ -35,11 +35,11 @@
                   <div v-if="!runningCount" class="stp-empty-state">
                     <el-icon><VideoPlay /></el-icon>
                     <span class="stp-empty-title">没有正在执行的任务</span>
-                    <span class="stp-empty-hint">上传、下载、删除会出现在这里</span>
+                    <span class="stp-empty-hint">上传、下载、删除和后台 AI 任务会出现在这里</span>
                   </div>
                   <div v-for="t in runningTasks" :key="t.id" class="stp-item">
                     <el-icon class="stp-icon">
-                      <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
+                      <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><ChatDotRound v-else-if="t.kind === 'agent'" /><Delete v-else />
                     </el-icon>
                     <div class="stp-main">
                       <div class="stp-line">
@@ -64,11 +64,15 @@
                         </span>
                       </div>
                       <el-progress
-                        v-if="t.kind !== 'delete'"
+                        v-if="t.kind !== 'delete' && t.kind !== 'agent'"
                         :percentage="percentOf(t)"
                         :stroke-width="4"
                         :show-text="false"
                       />
+                      <!-- 后台 AI 任务：没有百分比，进度就是模型正在写什么 -->
+                      <div v-if="t.kind === 'agent'" class="stp-agent-preview" :title="t.progressText || ''">
+                        {{ agentPreview(t) || '等待模型输出…' }}
+                      </div>
                       <!-- 并发窗口：同时在飞的那几个文件（最多 上传并发数 个）；暂停后它们停在断点上 -->
                       <div
                         v-if="t.kind === 'upload' && t.activeFiles.length"
@@ -122,7 +126,7 @@
                   </div>
                   <div v-for="t in finishedTasks" :key="t.id" class="stp-item is-finished">
                     <el-icon class="stp-icon">
-                      <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
+                      <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><ChatDotRound v-else-if="t.kind === 'agent'" /><Delete v-else />
                     </el-icon>
                     <div class="stp-main">
                       <div class="stp-line">
@@ -139,6 +143,10 @@
                         />
                       </div>
                       <div v-if="t.error" class="stp-err" :title="t.error">{{ t.error }}</div>
+                      <!-- 后台 AI 任务：最终回复（历史里是落库的摘要，刷新后还在） -->
+                      <div v-if="t.kind === 'agent' && agentResult(t)" class="stp-agent-result" :title="agentResult(t)">
+                        {{ agentResult(t) }}
+                      </div>
                       <!-- 已完成也要能翻明细：删除看"删掉了哪些"，上传看"传了哪些"
                            （这些明细来自落库的历史，刷新之后照样在） -->
                       <div v-if="detailRows(t).length" class="stp-del">
@@ -385,12 +393,12 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { consumeSseStream } from '../../utils/sse';
 import {
-  ArrowUp, CircleCheck, Clock, Close, Connection, Delete, Document, Download, EditPen,
+  ArrowUp, ChatDotRound, CircleCheck, Clock, Close, Connection, Delete, Document, Download, EditPen,
   Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Tickets, Upload,
   VideoPause, VideoPlay,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, API_BASE } from '../../api/client';
+import { api, API_BASE, buildRequestHeaders } from '../../api/client';
 
 interface Props {
   connectionId: string;
@@ -455,7 +463,8 @@ const folderInput = ref<HTMLInputElement | null>(null);
 interface SftpTask {
   /** 后端 jobId，同时用作列表 key */
   id: string;
-  kind: 'upload' | 'download' | 'delete';
+  /** agent = 后台 AI 任务（P2，与文件传输共用任务中心） */
+  kind: 'upload' | 'download' | 'delete' | 'agent';
   label: string;
   state: 'running' | 'done' | 'failed';
   transferred: number;
@@ -489,6 +498,13 @@ interface SftpTask {
    *   下载/删除恒为 false —— 后端会拒掉这两类的暂停请求（中途停没有安全点）。
    */
   paused: boolean;
+  /** agent 任务（P2）：流式输出尾部，任务中心实时预览 */
+  progressText?: string;
+  /** agent 任务：最终回复 / 落库摘要 */
+  resultText?: string;
+  /** agent 任务：所属会话与底层任务 id（可从任务中心跳回） */
+  conversationId?: string;
+  taskId?: string;
   error?: string;
 }
 
@@ -553,6 +569,11 @@ function delRows(t: SftpTask): string[] {
 
 /** 行右侧那行小字：删除看条数，上传/下载看「第几个 · 合计」+ 字节 */
 function taskMeta(t: SftpTask): string {
+  if (t.kind === 'agent') {
+    if (t.state === 'done') return '完成';
+    if (t.state === 'failed') return t.error === '任务已终止' ? '已终止' : '失败';
+    return '执行中…';
+  }
   if (t.kind === 'delete') {
     if (t.state === 'done') return `已删除 ${t.deletedCount} 项`;
     if (t.state === 'failed') return `中断于 ${t.deletedCount} 项`;
@@ -562,6 +583,16 @@ function taskMeta(t: SftpTask): string {
   if (t.state === 'done') return `${idx}完成`;
   if (t.state === 'failed') return `${idx}失败`;
   return `${idx}${fmtSize(t.transferred)}${t.total > 1 ? ` / ${fmtSize(t.total)}` : ''}`;
+}
+
+/** agent 任务：流式输出压成一行预览（最近 120 字） */
+function agentPreview(t: SftpTask): string {
+  const text = (t.progressText || '').replace(/\s+/g, ' ').trim();
+  return text.length > 120 ? `…${text.slice(-120)}` : text;
+}
+/** agent 任务：最终结果（优先完整助手消息，退回流式尾部） */
+function agentResult(t: SftpTask): string {
+  return (t.resultText || t.progressText || '').trim();
 }
 
 /** 上传/下载的百分比（删除任务不画进度条：遍历前不知道树里有多少项，画了只能是假的） */
@@ -621,7 +652,7 @@ async function removeFinishedTask(t: SftpTask): Promise<void> {
 /** 后端落库的历史记录（字段与服务端 SftpJobRecord 一一对应） */
 interface JobHistoryRecord {
   id: string;
-  kind: 'upload' | 'download' | 'delete';
+  kind: 'upload' | 'download' | 'delete' | 'agent';
   label: string;
   state: 'done' | 'failed';
   /** 结束时间（epoch 毫秒） */
@@ -633,6 +664,9 @@ interface JobHistoryRecord {
   deletedCount?: number;
   detail: string[];
   detailTruncated: boolean;
+  /** agent 任务：最终回复摘要 */
+  summary?: string;
+  conversationId?: string;
 }
 
 /** 落库记录 → 任务行（历史里没有字节进度，用 totalBytes 顶；明细灌进 files/deleted） */
@@ -645,10 +679,14 @@ function toTaskRow(h: JobHistoryRecord): SftpTask {
     deletedCount: h.deletedCount ?? 0,
     deleted: h.kind === 'delete' ? h.detail : [],
     expanded: false,
-    files: h.kind === 'delete' ? [] : h.detail.map((name) => ({ name, size: 0 })),
+    files: h.kind === 'delete' || h.kind === 'agent' ? [] : h.detail.map((name) => ({ name, size: 0 })),
     filesTruncated: h.detailTruncated,
     activeFiles: [],
     paused: false,
+    // agent 任务：历史里只有摘要，把它同时当作结果与预览
+    progressText: h.kind === 'agent' ? (h.summary || '') : undefined,
+    resultText: h.kind === 'agent' ? (h.summary || '') : undefined,
+    conversationId: h.conversationId,
     error: h.error,
   };
 }
@@ -673,6 +711,28 @@ async function loadTaskHistory(): Promise<void> {
     // 没有历史是很正常的状态，读失败也不该打扰用户
   }
 }
+
+/**
+ * 正在执行的任务（P2）：后台 AI 任务可能在别的视图/文件面板关闭时提交，
+ * 任务中心靠轮询「活动任务」把它们接回来，再逐个订阅 SSE 实时刷新。
+ * 代价只有一次内存读取（服务端任务表），4 秒一次可以忽略。
+ */
+async function loadActiveJobs(): Promise<void> {
+  try {
+    const r = await api.get<Array<Record<string, unknown> & { id?: string }>>('/plugin/ops-shell/sftp/jobs/active');
+    if ('error' in r || !Array.isArray(r.data)) return;
+    for (const d of r.data) {
+      const id = String(d.id || '');
+      if (!id || taskOf(id)) continue;
+      const kind = d.kind === 'agent' || d.kind === 'upload' || d.kind === 'download' || d.kind === 'delete'
+        ? d.kind : 'upload';
+      addTask(id, kind, String(d.label || '任务'), Number(d.totalCount) || 1, { open: false });
+      applyJobFrame(id, d);
+      void subscribeTask(id);
+    }
+  } catch { /* 轮询失败不打扰用户 */ }
+}
+let activeJobsTimer: ReturnType<typeof setInterval> | null = null;
 
 /** 已完成任务的明细：删除看"删掉了哪些"，上传看"传了哪些" */
 function detailRows(t: SftpTask): string[] {
@@ -1278,7 +1338,7 @@ async function downloadNames(names: string[], destDir?: string) {
    *  直接改这里返回的裸对象不会触发渲染 —— 数组进 ref 后才被包成代理） */
   const addTask = (
     id: string, kind: SftpTask['kind'], labelText: string, totalCount: number,
-    opts: { totalBytes?: number; files?: { name: string; size: number }[]; filesTruncated?: boolean } = {},
+    opts: { totalBytes?: number; files?: { name: string; size: number }[]; filesTruncated?: boolean; open?: boolean } = {},
   ) => {
     tasks.value = [...tasks.value, {
       id, kind, label: labelText, state: 'running',
@@ -1288,10 +1348,12 @@ async function downloadNames(names: string[], destDir?: string) {
       activeFiles: [],
       paused: false,
     }];
-    // 起了任务就把弹窗打开、并切到「正在执行」：用户要的是"扫描后排队能看见"，
-    // 藏在图标后面、或停在别的 tab 上，等于没有
-    tasksOpen.value = true;
-    taskTab.value = 'running';
+    // 本窗口发起的任务：自动打开任务中心并切到「正在执行」；
+    // 轮询接回来的外部任务（open:false）不抢焦点 —— 用户可能正在别的 tab 干活
+    if (opts.open !== false) {
+      tasksOpen.value = true;
+      taskTab.value = 'running';
+    }
   };
   const taskOf = (id: string): SftpTask | undefined => tasks.value.find((x) => x.id === id);
 
@@ -1309,6 +1371,11 @@ async function downloadNames(names: string[], destDir?: string) {
     if (Array.isArray(d.activeFiles)) t.activeFiles = (d.activeFiles as unknown[]).filter((x): x is string => typeof x === 'string');
     if (typeof d.paused === 'boolean') t.paused = d.paused;
     if (typeof d.error === 'string' && d.error) t.error = d.error;
+    // agent 任务（P2）：流式预览 / 最终结果 / 跳回会话
+    if (typeof d.progressText === 'string') t.progressText = d.progressText;
+    if (typeof d.resultText === 'string' && d.resultText) t.resultText = d.resultText;
+    if (typeof d.conversationId === 'string') t.conversationId = d.conversationId;
+    if (typeof d.taskId === 'string') t.taskId = d.taskId;
     if (t.kind === 'delete' && typeof d.deletedCount === 'number') {
       const delta = d.deletedCount - t.deletedCount;
       t.deletedCount = d.deletedCount;
@@ -1348,7 +1415,8 @@ async function downloadNames(names: string[], destDir?: string) {
     try {
       const token = localStorage.getItem('auth_token') || '';
       const resp = await fetch(`${API_BASE}/plugin/ops-shell/sftp/progress/${jobId}/stream`, {
-        headers: { Authorization: `Bearer ${token}` },
+        // 必须走 buildRequestHeaders：授权门禁开启时还要带 x-license（只带 Authorization 会连不上）
+        headers: buildRequestHeaders(token ? { Authorization: `Bearer ${token}` } : undefined),
       });
       if (!resp.body) return true;
       // SSE 解码统一走 utils/sse（P5 收口）
@@ -1468,6 +1536,11 @@ onMounted(async () => {
   remotePath.value = props.conn.sftpPath || '/';
   // 已完成任务的历史是**落库**的（内存里的任务 3 秒就回收了），进来先把它读回来
   void loadTaskHistory();
+  // 正在执行的任务（含后台 AI 任务）：立即接回来，之后每 4 秒补一次；
+  // 同时刷新历史 —— 极短的后台任务可能在两次轮询之间就完成并从内存回收（3s），
+  // 不补历史的话会「从来没出现过」。
+  void loadActiveJobs();
+  activeJobsTimer = setInterval(() => { void loadActiveJobs(); void loadTaskHistory(); }, 4000);
   if (isElectron) {
     // 本地栏默认「用户目录下的下载目录」。
     // ★ 不能硬编码中文「下载」：目录名随系统语言/用户配置而变（中文 Windows 常见「下载」、
@@ -1496,6 +1569,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('click', onDocClick);
   window.removeEventListener('keydown', onDocKeydown);
+  if (activeJobsTimer !== null) { clearInterval(activeJobsTimer); activeJobsTimer = null; }
 });
 </script>
 

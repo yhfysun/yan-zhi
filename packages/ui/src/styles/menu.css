@@ -321,6 +321,17 @@
   font-size: 11px; color: var(--color-text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 后台 AI 任务（P2）：执行中一行流式预览；完成后可滚动的结果摘要 */
+.sftp-task-popper .stp-agent-preview {
+  font-size: 11px; color: var(--color-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sftp-task-popper .stp-agent-result {
+  font-size: 11px; line-height: 1.5; color: var(--color-text-secondary);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 120px; overflow: auto;
+  border-left: 2px solid var(--glass-border); padding-left: 6px;
+}
 
 /* 待执行清单（等宽字体，路径对齐好读） */
 .sftp-task-popper .stp-file {

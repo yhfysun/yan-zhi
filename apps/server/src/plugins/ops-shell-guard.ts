@@ -36,6 +36,32 @@ export function isDangerous(command: string): boolean {
   return DANGEROUS_PATTERNS.some((re) => re.test(command));
 }
 
+// ---------- 静默权限三档（按连接存；老记录没有该字段 = 全关） ----------
+
+/** 静默放行的动作类型：exec=执行命令 / write=改文件 / read=读文件 */
+export type SilentCapability = 'exec' | 'write' | 'read';
+export interface SilentFlags {
+  exec?: boolean;
+  write?: boolean;
+  read?: boolean;
+}
+export type SilentDecision = 'silent' | 'approve';
+
+/**
+ * 静默权限判定（纯函数）。
+ *
+ * ★ 黑名单**始终优先**：即使开了「静默执行命令」，危险命令也回到审批/拒绝路径。
+ * ★ 缺省全关：silent 为空或对应档位不是布尔 true，一律按「走原审批逻辑」。
+ */
+export function resolveSilent(
+  conn: { silent?: SilentFlags },
+  action: SilentCapability,
+  command?: string,
+): SilentDecision {
+  if (action === 'exec' && command && isDangerous(command)) return 'approve';
+  return conn.silent?.[action] === true ? 'silent' : 'approve';
+}
+
 /** 判断命令是否只读（生产连接免确认放行依据） */
 export function isReadonly(command: string): boolean {
   const c = command.trim().toLowerCase().replace(/\s+/g, ' ');

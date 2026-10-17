@@ -18,11 +18,12 @@ const CONSOLE = strip(readFileSync(resolve(__dirname, 'OpsConsole.vue'), 'utf8')
 const SESSION = strip(readFileSync(resolve(__dirname, 'opsSession.ts'), 'utf8'));
 
 describe('TermTransport · 通道抽象', () => {
-  it('接口只暴露 send / resize / close 三件事', () => {
+  it('接口只暴露 send / resize / exec / close 四件事', () => {
     const iface = SESSION.match(/export interface TermTransport \{[\s\S]*?\n\}/);
     expect(iface, '找不到 TermTransport').toBeTruthy();
     expect(iface![0]).toMatch(/send\(data: string\): void;/);
     expect(iface![0]).toMatch(/resize\(cols: number, rows: number\): void;/);
+    expect(iface![0]).toMatch(/exec\(command: string, opts\?: \{ confirmed\?: boolean \}\): Promise<void>;/);
     expect(iface![0]).toMatch(/close\(\): void;/);
   });
 
@@ -59,7 +60,8 @@ describe('OpsConsole · 通道选择与回退', () => {
     const fn = CONSOLE.match(/function openWsTermTransport\([\s\S]*?\n\}\n/);
     expect(fn, '找不到 openWsTermTransport').toBeTruthy();
     expect(fn![0]).toMatch(/sock\.binaryType = 'arraybuffer'/);
-    expect(fn![0]).toMatch(/sock\.send\(data\)/);
+    // send(string) 是文本帧，服务端会当 JSON 丢掉；必须编码成字节
+    expect(fn![0]).toMatch(/sock\.send\(encoder\.encode\(data\)\)/);
   });
 
   it('★ UTF-8 用流式解码器（逐帧新建 decoder 会把跨帧的多字节字符解成乱码）', () => {

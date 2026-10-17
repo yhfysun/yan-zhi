@@ -79,6 +79,11 @@ export interface OpsWin {
   chatStreaming: boolean;
   /** 命令模式底部折叠对话条是否展开（任务 7.8；与 AI 模式共用同一份会话） */
   cmdChatOpen: boolean;
+  /**
+   * 本会话（窗口）内选定的模型 id；空 = 跟随设置里的默认模型（零迁移）。
+   * 只存在窗口状态里，不落库 —— 窗口本来就是会话态，切连接/重开回到默认。
+   */
+  modelId?: string;
 }
 
 /**
@@ -92,6 +97,11 @@ export interface TermTransport {
   send(data: string): void;
   /** 上报 PTY 尺寸 */
   resize(cols: number, rows: number): void;
+  /**
+   * 直接执行一条命令（P1）：写进当前 PTY 并回车，不经过模型。
+   * 服务端做黑名单 / 生产非只读确认；确认流程抛出的错误带 code='NEED_CONFIRM'。
+   */
+  exec(command: string, opts?: { confirmed?: boolean }): Promise<void>;
   /** 关闭通道与服务端 PTY */
   close(): void;
 }
@@ -155,6 +165,11 @@ export const opsActiveWinId = ref('');
 export const opsFilePanelOpen = ref(false);
 export const opsTerms = new Map<string, TermHandle>();
 export const opsChatAborts = new Map<string, AbortController>();
+/**
+ * 窗口 → 服务端任务 id。停止时必须直接按 id 终止 —— 只靠 `/llm/tasks/active`
+ * 反查在「刚提交、active 还没落表」或请求失败时会把任务留在服务端继续跑。
+ */
+export const opsChatTasks = new Map<string, string>();
 // 资源树数据也留着：切回来时组件先渲染旧数据（否则 tab 上的连接名会短暂变成「连接已删除」），
 // init() 随后照常刷新。
 export const opsGroups = ref<OpsGroup[]>([]);

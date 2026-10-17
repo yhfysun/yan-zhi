@@ -613,6 +613,26 @@ function loadModel(modelId: string, userId: string, platformId?: string): Model 
   return rowToModel(row, DEFAULT_CONTEXT_WINDOW);
 }
 
+/**
+ * 校验前端下发的 platformId/modelId 组合（属于该用户的已配置平台且模型可用）。
+ * 返回错误文案；合法返回 null。
+ *
+ * 供对话入口在建任务**之前**快速失败（400），避免先建出任务再异步报「模型不存在」。
+ * 与运行时 loadModel 同源（findModelRow），但额外卡两点：模型必须属于所给平台、未停用。
+ * 注意：findModelRow 按主键查时不带平台约束（存量裸名兼容），所以这里必须自己比对 platform_id。
+ */
+export function validateTaskModel(userId: string, platformId: string, modelId: string): string | null {
+  if (!loadPlatform(platformId, userId)) return `平台不存在或已删除（platformId: ${platformId}）`;
+  const row = findModelRow(db, modelId, userId, platformId) as
+    | (ReturnType<typeof findModelRow> & { enabled?: number | null })
+    | undefined;
+  if (!row) return `模型不存在或已删除（modelId: ${modelId}）`;
+  const label = row.alias || row.model_id || row.id;
+  if (row.platform_id !== platformId) return `模型「${label}」不属于所选平台`;
+  if (row.enabled === 0) return `模型「${label}」已停用`;
+  return null;
+}
+
 /** list_models 工具执行：列出当前用户所有已启用且对模型可见的模型（可按 platformId/type/capability/category 过滤、分页），
  *  返回语义化文本，供 LLM 选型（图片/视频/视觉/向量化等任务指定模型）。
  *  可见性口径与前端模型下拉一致：查不到的平台/模型，智能体也不该动态选中。

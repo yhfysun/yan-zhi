@@ -3,7 +3,7 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { sseStream } from '../services/sse.js';
 import {
-  createTask, subscribe, subscribeConversation, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId,
+  createTask, subscribe, subscribeConversation, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId, validateTaskModel,
 } from '../llm-task-manager.js';
 
 const router = Router();
@@ -29,6 +29,14 @@ router.post('/tasks', (req: Request, res: Response) => {
   if (runningId) {
     const inj = userContent ? injectUserMessage(conversationId, String(userContent), userId) : { status: 'no-task' as const };
     res.json({ data: { taskId: runningId, reused: true, injected: inj.status === 'injected', injectedMsgId: inj.msgId } });
+    return;
+  }
+  // 会话内切模型（运维台 P0）：先校验组合再建任务。非法值不静默回落 ——
+  // 否则用户会以为切成功了，实际跑的是另一个模型。注入到运行中任务的路径不校验：
+  // 那条路径根本不使用 modelId，模型中途被删不该连带挡住追加消息。
+  const modelInvalid = validateTaskModel(userId, String(platformId), String(modelId));
+  if (modelInvalid) {
+    res.status(400).json({ error: modelInvalid });
     return;
   }
   let taskId: string;

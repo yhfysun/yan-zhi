@@ -225,7 +225,7 @@ describe('已完成任务：明细可展开 + 历史入库', () => {
     const fn = SRC.match(/function toTaskRow\([\s\S]*?\n\}/)?.[0] ?? '';
     expect(fn, '找不到 toTaskRow').not.toBe('');
     expect(fn, '删除明细没还原').toMatch(/deleted: h\.kind === 'delete' \? h\.detail : \[\]/);
-    expect(fn, '上传明细没还原').toMatch(/files: h\.kind === 'delete' \? \[\] : h\.detail/);
+    expect(fn, '上传明细没还原').toMatch(/files: h\.kind === 'delete' \|\| h\.kind === 'agent' \? \[\] : h\.detail/);
   });
 
   it('★「清除已完成」连库一起清，且先弹窗确认', () => {

@@ -138,7 +138,7 @@
               <div v-if="windows.length" class="ops-body">
               <div class="ops-win-body">
                 <div v-for="w in windows" :key="w.id" v-show="w.id === activeWinId" class="ops-win">
-                  <!-- 窗口头：连接信息 + 本连接自己的操作（视图切换见右下角浮动按钮） -->
+                  <!-- 窗口头：连接信息 + 本连接自己的操作（对话 ⇄ 命令视图的切换见右下角主导方悬浮胶囊） -->
                   <div class="ops-win-head">
                     <span class="ops-win-conn">{{ winConnInfo(w) }}</span>
                     <div class="ops-win-head-actions">
@@ -283,7 +283,52 @@
                             placeholder="输入运维任务，Ctrl+Enter 发送"
                             @keydown.ctrl.enter="sendWinChat(w)"
                           />
-                          <div class="ops-chat-actions">
+                          <!-- 输入框工具条（P0）：左=动作语义，右=模型 / 静默权限 / 发送 -->
+                          <div class="ops-input-toolbar">
+                            <div class="ops-toolbar-group">
+                              <el-button size="small" class="ops-tool-btn" :disabled="!w.chatInput.trim()" title="直接发到当前终端，不经过模型（输入以 / 开头也可触发）" @click="execDirect(w, w.chatInput)">执行</el-button>
+                              <el-button size="small" class="ops-tool-btn ops-tool-btn-active" plain>Agent</el-button>
+                              <el-button size="small" class="ops-tool-btn" :disabled="w.chatStreaming || !w.chatInput.trim()" title="提交为后台 AI 任务：关掉面板也会继续，进度在文件面板的任务中心" @click="sendBackground(w)">后台</el-button>
+                            </div>
+                            <div class="ops-toolbar-spacer"></div>
+                            <el-select
+                              v-model="w.modelId"
+                              size="small"
+                              class="ops-model-select"
+                              placeholder="默认模型"
+                              :disabled="w.chatStreaming"
+                              @visible-change="onModelDropdown"
+                            >
+                              <el-option :value="''" :label="`默认（${defaultModelLabel}）`" />
+                              <el-option v-for="m in chatModelOptions" :key="m.id" :value="m.id" :label="modelLabel(m)" />
+                            </el-select>
+                            <el-popover placement="top-end" :width="268" trigger="click">
+                              <template #reference>
+                                <el-button size="small" text class="ops-perm-btn" :disabled="!connOf(w)" title="静默权限（按连接）">
+                                  <el-icon :size="14"><Setting /></el-icon>
+                                </el-button>
+                              </template>
+                              <div class="ops-perm-panel">
+                                <div class="ops-perm-title">静默权限 · {{ connOf(w)?.name || '未选择连接' }}</div>
+                                <p class="ops-perm-sub">开启后，该连接上的对应操作不再逐条等待批准。危险命令黑名单始终优先；按连接保存，默认全关。</p>
+                                <div class="ops-perm-row">
+                                  <span>静默读取文件</span>
+                                  <el-switch :model-value="silentOf(connOf(w)).read" size="small" @change="saveSilent(w, 'read', $event === true)" />
+                                </div>
+                                <div class="ops-perm-row">
+                                  <span>静默修改文件</span>
+                                  <el-switch :model-value="silentOf(connOf(w)).write" size="small" @change="saveSilent(w, 'write', $event === true)" />
+                                </div>
+                                <div class="ops-perm-row">
+                                  <span>静默执行命令</span>
+                                  <el-switch :model-value="silentOf(connOf(w)).exec" size="small" @change="saveSilent(w, 'exec', $event === true)" />
+                                </div>
+                                <div v-if="isProdConn(connOf(w))" class="ops-perm-warn">
+                                  ⚠ 生产连接：开启「静默执行命令 / 修改文件」将跳过人工审批，审计以 via=silent 标记。
+                                </div>
+                                <p class="ops-perm-sub">注：读取类操作当前本就免批；读取档按连接保存，供后续更细粒度能力使用。</p>
+                              </div>
+                            </el-popover>
                             <span v-if="w.chatStreaming" class="form-tip">执行中…</span>
                             <el-button v-if="w.chatStreaming" size="small" type="warning" @click="abortWinChat(w)">停止</el-button>
                             <el-button size="small" :disabled="w.chatStreaming || !w.chatInput.trim()" type="primary" @click="sendWinChat(w)">发送</el-button>
@@ -346,15 +391,6 @@
                       </div>
                     </div>
 
-                    <!-- 模式切换：右下角浮动图标按钮，点击循环切换本窗口可用的视图 -->
-                    <div
-                      v-if="viewOptionsFor(w).length > 1"
-                      class="ops-view-fab"
-                      :title="`当前：${VIEW_LABEL[w.view]} · 点击切换`"
-                      @click="cycleWinView(w)"
-                    >
-                      <el-icon :size="16"><component :is="viewIcon(w.view)" /></el-icon>
-                    </div>
                   </div>
                 </div>
               </div>
@@ -404,9 +440,10 @@
                 <el-table-column prop="action" label="操作" width="150" show-overflow-tooltip />
                 <el-table-column prop="connection" label="连接" width="110" show-overflow-tooltip />
                 <el-table-column prop="detail" label="详情" min-width="260" show-overflow-tooltip />
-                <el-table-column label="结果" width="90">
+                <el-table-column label="结果" width="130">
                   <template #default="{ row }">
                     <el-tag size="small" :type="row.ok ? 'success' : 'danger'">{{ row.ok ? '成功' : '失败/拒绝' }}</el-tag>
+                    <el-tag v-if="row.via === 'silent'" size="small" type="warning" class="ops-audit-via">静默</el-tag>
                   </template>
                 </el-table-column>
               </el-table>
@@ -512,13 +549,13 @@ import {
   TYPE_LABELS,
   VIEW_LABEL,
   PRIMARY_VIEW,
-  TYPE_VIEWS,
   buildSteps,
   opsWindows,
   opsActiveWinId,
   opsFilePanelOpen,
   opsTerms,
   opsChatAborts,
+  opsChatTasks,
   opsGroups,
   opsConnections,
   opsCollapsedGroups,
@@ -530,7 +567,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import {
   Folder, FolderOpened,
   ArrowDown, ArrowRight, ArrowUp, Close, Plus,
-  Monitor, Box, DataLine, ChatDotRound, User,
+  ChatDotRound, User, Setting,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Terminal } from '@xterm/xterm';
@@ -539,6 +576,7 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import '@xterm/xterm/css/xterm.css';
 import { api, API_BASE, wsUrl, buildRequestHeaders } from '../../api/client';
+import type { Platform, Model } from '@yan-zhi/shared';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
 import SftpPanel from './SftpPanel.vue';
@@ -609,6 +647,7 @@ const activeWinId = opsActiveWinId;
 const filePanelOpen = opsFilePanelOpen;
 const terms = opsTerms;
 const chatAborts = opsChatAborts;
+const chatTasks = opsChatTasks;
 
 const activeWin = computed(() => windows.value.find((w) => w.id === activeWinId.value) || null);
 /** 当前激活窗口对应的连接 / 是否支持文件面板（「文件」是全局开关，但要看当前连接支不支持） */
@@ -622,11 +661,6 @@ function connOf(w: OpsWin | null): OpsConn | null {
 function supportsFileFor(w: OpsWin): boolean {
   const c = connOf(w);
   return !!c && connType(c) !== 'database';
-}
-function viewOptionsFor(w: OpsWin): Array<{ key: ViewKey; label: string }> {
-  const c = connOf(w);
-  const type = c ? connType(c) : 'ssh';
-  return TYPE_VIEWS[type].map((k) => ({ key: k, label: VIEW_LABEL[k] }));
 }
 /** 左列表高亮：该连接已有任一窗口都算激活 */
 function isConnActive(id: string): boolean {
@@ -665,7 +699,7 @@ function newWin(c: OpsConn, view: ViewKey): OpsWin {
     containers: [], containersError: '',
     dbTables: [], dbTable: '', dbSql: '', dbLoading: false, dbError: '', dbResult: null,
     conversationId: '', chatMessages: [], chatInput: '', chatStreaming: false,
-    cmdChatOpen: false,
+    cmdChatOpen: false, modelId: '',
   };
 }
 
@@ -727,20 +761,13 @@ function switchWinView(w: OpsWin, k: ViewKey) {
   if (k === 'term' && !w.termOpen) void openTerminal(w);
   if (k === 'container') void loadContainers(w);
   if (k === 'db') void loadDbTables(w);
-  if (k === 'chat') scrollChatBottom(w);
+  if (k === 'chat') {
+    scrollChatBottom(w);
+    // 后台任务/别的窗口写入的回复不在本地消息里：切回对话时从服务端补一次
+    // （正在流式时不动，避免把还没落库的片段冲掉）
+    if (w.conversationId && !w.chatStreaming) void loadWinMessages(w);
+  }
   void nextTick(() => fitTerm(w));
-}
-
-/** 模式切换浮动按钮的图标 */
-function viewIcon(v: ViewKey) {
-  return v === 'chat' ? ChatDotRound : v === 'container' ? Box : v === 'db' ? DataLine : Monitor;
-}
-/** 右下角浮动按钮：在当前连接可用的视图之间循环切换 */
-function cycleWinView(w: OpsWin) {
-  const keys = viewOptionsFor(w).map((o) => o.key);
-  if (keys.length < 2) return;
-  const i = keys.indexOf(w.view);
-  switchWinView(w, keys[(i + 1) % keys.length]);
 }
 
 /** 顶部「文件」：展开/收起右侧文件面板。属于**整体设置**（所有窗口共用），与具体连接无关 */
@@ -887,6 +914,18 @@ function openWsTermTransport(
     let timer: number | null = null;
     // 单个流式解码器：一个多字节 UTF-8 字符可能被切在两帧之间，逐帧新建 decoder 会解出乱码
     const decoder = new TextDecoder('utf-8');
+    // ★ 按键必须先编码成字节：WebSocket.send(string) 发的是**文本帧**，服务端会按 JSON 解析后丢弃
+    //   → 表现为「终端连上了但打字没反应」。只有二进制帧才会被原样写进 PTY。
+    const encoder = new TextEncoder();
+    /** 直接执行（P1）的请求等待表：按 token 对齐服务端的 exec-accepted / exec-rejected */
+    const execWaiters = new Map<string, { resolve: () => void; reject: (e: Error) => void; timer: number }>();
+    const failExecWaiters = (reason: string) => {
+      for (const [, waiter] of execWaiters) {
+        window.clearTimeout(waiter.timer);
+        waiter.reject(new Error(reason));
+      }
+      execWaiters.clear();
+    };
 
     const succeed = () => {
       if (settled) return;
@@ -903,17 +942,30 @@ function openWsTermTransport(
     };
 
     const transport: TermTransport = {
-      send: (data) => { if (sock.readyState === WebSocket.OPEN) sock.send(data); },
+      send: (data) => { if (sock.readyState === WebSocket.OPEN) sock.send(encoder.encode(data)); },
       resize: (c2, r2) => {
         if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: 'resize', cols: c2, rows: r2 }));
       },
-      close: () => { try { sock.close(); } catch { /* ignore */ } },
+      exec: (command, opts) => new Promise<void>((resolveExec, rejectExec) => {
+        if (sock.readyState !== WebSocket.OPEN) { rejectExec(new Error('终端未连接')); return; }
+        const token = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const waitTimer = window.setTimeout(() => {
+          execWaiters.delete(token);
+          rejectExec(new Error('终端无响应（执行指令超时）'));
+        }, 8000);
+        execWaiters.set(token, { resolve: resolveExec, reject: rejectExec, timer: waitTimer });
+        sock.send(JSON.stringify({ type: 'exec', command, confirmed: !!opts?.confirmed, token }));
+      }),
+      close: () => {
+        failExecWaiters('终端已断开');
+        try { sock.close(); } catch { /* ignore */ }
+      },
     };
     timer = window.setTimeout(() => fail(new Error('WebSocket 握手超时')), 8000);
 
     sock.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
-        let msg: { type?: string; message?: string; defaultCommand?: string | null; autoRun?: boolean; recording?: boolean };
+        let msg: { type?: string; message?: string; defaultCommand?: string | null; autoRun?: boolean; recording?: boolean; token?: string; code?: string };
         try { msg = JSON.parse(ev.data); } catch { return; }
         if (msg.type === 'ready') {
           w.termRecording = !!msg.recording;
@@ -923,6 +975,15 @@ function openWsTermTransport(
           // 握手前的错误（连接不存在等）要回退；已就绪后的错误只需提示
           if (settled) ElMessage.error(msg.message || '终端出错');
           else fail(new Error(msg.message || '终端建立失败'));
+        } else if (msg.type === 'exec-accepted' || msg.type === 'exec-rejected') {
+          const waiter = execWaiters.get(msg.token || '');
+          if (!waiter) return;
+          execWaiters.delete(msg.token || '');
+          window.clearTimeout(waiter.timer);
+          if (msg.type === 'exec-accepted') { waiter.resolve(); return; }
+          const err = new Error(msg.message || '执行被拒绝') as Error & { code?: string };
+          err.code = msg.code;
+          waiter.reject(err);
         }
         return;
       }
@@ -930,6 +991,7 @@ function openWsTermTransport(
     };
     sock.onerror = () => fail(new Error('WebSocket 连接失败'));
     sock.onclose = () => {
+      failExecWaiters('终端已断开');
       // 握手中途被关 → 回退到 SSE；已就绪后关闭 → 断开收尾（窗口还在，可点「连接终端」重连）
       if (!settled) fail(new Error('WebSocket 已关闭'));
       else markTermDisconnected(w);
@@ -974,6 +1036,15 @@ async function openSseTermTransport(
   return {
     send: (data) => { void api.post(`/plugin/ops-shell/term/${sessionId}/input`, { data }); },
     resize: (c2, r2) => { void api.post(`/plugin/ops-shell/term/${sessionId}/resize`, { cols: c2, rows: r2 }); },
+    exec: async (command, opts) => {
+      const res = await api.post(`/plugin/ops-shell/term/${sessionId}/exec`, { command, confirmed: !!opts?.confirmed });
+      if ('error' in res) {
+        const err = new Error(res.error) as Error & { code?: string };
+        // 409 = 生产连接的非只读命令需要人工确认（400 = 黑名单/空命令，直接报错）
+        if (res.status === 409) err.code = 'NEED_CONFIRM';
+        throw err;
+      }
+    },
     close: () => { ac.abort(); void api.post(`/plugin/ops-shell/term/${sessionId}/close`, {}); },
   };
 }
@@ -1239,15 +1310,146 @@ function runQuickCmd(w: OpsWin, q: string) {
   void sendWinChat(w);
 }
 
+// ===== 会话内模型选择（P0-1）=====
+/** 下拉候选：已启用且可见的对话模型（不带官方/非官方分组） */
+const chatModelOptions = computed(() =>
+  platformStore.models.filter((m) => (m.type || 'llm') === 'llm' && m.enabled !== false && m.visible !== false),
+);
+const defaultModelLabel = computed(() => {
+  const m = platformStore.models.find((x) => x.id === settingsStore.settings.defaultModelId);
+  return m ? (m.alias || m.modelId) : '跟随设置';
+});
+function modelLabel(m: { id: string; alias?: string; modelId: string }): string {
+  return m.alias || m.modelId || m.id;
+}
+/** 打开下拉时补拉全量模型：ops 页可能只加载过默认平台那一份，切不到别的平台的模型 */
+function onModelDropdown(open: boolean) {
+  if (!open) return;
+  void platformStore.loadModels().catch(() => { /* 拉取失败保留现有列表 */ });
+}
+
+// ===== 静默权限（P0-2，按连接存）=====
+const SILENT_LABELS = { exec: '静默执行命令', write: '静默修改文件', read: '静默读取文件' } as const;
+type SilentKey = keyof typeof SILENT_LABELS;
+function silentOf(c: OpsConn | null): { exec: boolean; write: boolean; read: boolean } {
+  return {
+    exec: c?.silent?.exec === true,
+    write: c?.silent?.write === true,
+    read: c?.silent?.read === true,
+  };
+}
+function isProdConn(c: OpsConn | null): boolean {
+  const t = (c?.tag || '').toLowerCase();
+  return t.includes('生产') || t.includes('prod');
+}
+async function saveSilent(w: OpsWin, key: SilentKey, value: boolean) {
+  const c = connOf(w);
+  if (!c) return;
+  const next = { ...silentOf(c), [key]: value };
+  const r = await api.put<OpsConn>(`/plugin/ops-shell/connections/${c.id}/silent`, { silent: next });
+  if ('error' in r) { ElMessage.error(`保存静默权限失败：${r.error}`); return; }
+  c.silent = next;
+  ElMessage.success(`${SILENT_LABELS[key]}已${value ? '开启' : '关闭'}`);
+}
+
+/**
+ * 解析本窗口要用的平台/模型：会话内选过就用它（平台取自模型归属），否则跟随设置。
+ * 选中的模型被删/停用时明确提示并清回默认 —— 不静默跨模型发送。
+ */
+async function resolveWinModel(w: OpsWin): Promise<{ platform: Platform; model: Model } | null> {
+  const selectedId = (w.modelId || '').trim();
+  // 列表可能只加载过默认平台那一份：会话选了其他平台的模型时补拉一次全量
+  if (selectedId && !platformStore.models.some((m) => m.id === selectedId)) {
+    await platformStore.loadModels().catch(() => {});
+  }
+  let model = selectedId ? platformStore.models.find((m) => m.id === selectedId) : undefined;
+  if (selectedId && (!model || model.enabled === false)) {
+    w.modelId = '';
+    ElMessage.warning(`本会话选择的模型已不可用（${selectedId}），已回落为设置里的默认模型`);
+    model = undefined;
+  }
+  if (!model) {
+    if (!platformStore.models.length) await platformStore.loadModels().catch(() => {});
+    model = platformStore.models.find((m) => m.id === settingsStore.settings.defaultModelId && m.enabled !== false);
+  }
+  if (!model) {
+    ElMessage.warning('请先在「设置」配置默认平台与模型（对话模式需要）');
+    return null;
+  }
+  const picked = model;
+  let platform = platformStore.platforms.find((p) => p.id === picked.platformId);
+  if (!platform) {
+    await platformStore.loadPlatforms().catch(() => {});
+    platform = platformStore.platforms.find((p) => p.id === picked.platformId);
+  }
+  if (!platform) {
+    ElMessage.warning(`模型「${picked.alias || picked.modelId}」所属平台不可用，请到「设置 → 模型平台」检查`);
+    return null;
+  }
+  return { platform, model: picked };
+}
+
+/**
+ * P1 执行指令：把输入原样写进当前窗口的终端，不经过模型。
+ * 触发：输入以 `/` 开头，或点工具条的「执行」。
+ * 没有活终端时自动切到命令模式并建连（仅 SSH 连接有终端）。
+ */
+async function execDirect(w: OpsWin, raw: string) {
+  const command = raw.trim().replace(/^\//, '').trim();
+  if (!command) return;
+  const c = connOf(w);
+  if (!c || connType(c) !== 'ssh') {
+    ElMessage.warning('只有 SSH 连接的窗口可以执行终端指令');
+    return;
+  }
+  if (w.view !== 'term') switchWinView(w, 'term');
+  if (!w.termOpen || !terms.get(w.id)?.transport) await openTerminal(w);
+  const transport = terms.get(w.id)?.transport;
+  if (!transport) {
+    ElMessage.warning('终端未连接，指令未执行');
+    return;
+  }
+  try {
+    await transport.exec(command);
+    w.chatInput = '';
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    if (err.code === 'NEED_CONFIRM') {
+      // 生产连接的非只读命令：由人当场确认（与手工在终端里敲同一口径）
+      const ok = await ElMessageBox.confirm(err.message, '生产连接确认', {
+        confirmButtonText: '仍然执行', cancelButtonText: '取消', type: 'warning',
+      }).then(() => true).catch(() => false);
+      if (!ok) return;
+      try {
+        await transport.exec(command, { confirmed: true });
+        w.chatInput = '';
+      } catch (e2) {
+        ElMessage.error(`执行失败：${(e2 as Error).message}`);
+      }
+      return;
+    }
+    ElMessage.error(`执行失败：${err.message}`);
+  }
+}
+
+/** 把当前连接（含类型）作为上下文提示带给运维助手（对话 / 后台任务共用） */
+function winConnHint(w: OpsWin): string {
+  const c = connOf(w);
+  if (!c) return '\n\n（尚未选定连接，请先选择或在工具参数里指定连接名）';
+  const extra = connType(c) === 'database'
+    ? `，${c.dbType === 'postgres' ? 'PostgreSQL' : 'MySQL'}，库名 ${c.database || '（未指定）'}`
+    : '';
+  return `\n\n（当前选定连接：${c.name}，类型 ${TYPE_LABELS[connType(c)]}，${c.username}@${c.host}:${c.port}${extra}${c.tag ? '，标签 ' + c.tag : ''}）`;
+}
+
 async function sendWinChat(w: OpsWin) {
   const content = w.chatInput.trim();
   if (!content || w.chatStreaming) return;
-  const platform = platformStore.platforms.find((p) => p.id === settingsStore.settings.defaultPlatformId);
-  const model = platformStore.models.find((m) => m.id === settingsStore.settings.defaultModelId);
-  if (!platform || !model) {
-    ElMessage.warning('请先在「设置」配置默认平台与模型（对话模式需要）');
-    return;
-  }
+  // P1：以 / 开头 = 执行指令，直接写当前终端，不经过模型
+  if (content.startsWith('/')) { void execDirect(w, content); return; }
+  const resolved = await resolveWinModel(w);
+  if (!resolved) return;
+  const { platform, model } = resolved;
   try {
     if (!w.conversationId) await ensureWinConversation(w);
   } catch (e) {
@@ -1256,15 +1458,7 @@ async function sendWinChat(w: OpsWin) {
   }
 
   // 上下文提示：把本窗口的连接（含类型）带给运维助手
-  const c = connOf(w);
-  let connHint: string;
-  if (c) {
-    const extra =
-      connType(c) === 'database' ? `，${c.dbType === 'postgres' ? 'PostgreSQL' : 'MySQL'}，库名 ${c.database || '（未指定）'}` : '';
-    connHint = `\n\n（当前选定连接：${c.name}，类型 ${TYPE_LABELS[connType(c)]}，${c.username}@${c.host}:${c.port}${extra}${c.tag ? '，标签 ' + c.tag : ''}）`;
-  } else {
-    connHint = '\n\n（尚未选定连接，请先选择或在工具参数里指定连接名）';
-  }
+  const connHint = winConnHint(w);
   w.chatInput = '';
   w.chatStreaming = true;
   w.chatMessages.push({ id: `local-${Date.now()}`, role: 'user', content, createdAt: Date.now() });
@@ -1284,35 +1478,115 @@ async function sendWinChat(w: OpsWin) {
       agentId: OPS_AGENT_ID,
     });
     if ('error' in taskRes) throw new Error(taskRes.error);
-    await subscribeWinTask(w, taskRes.data.taskId as string, ac);
+    const taskId = String(taskRes.data.taskId);
+    // 记住任务 id：停止按钮直接按 id 终止，不再依赖 active 反查（刚提交时可能查不到）
+    chatTasks.set(w.id, taskId);
+    if (ac.signal.aborted) {
+      // 用户在「建任务」这段空窗里点了停止：SSE 已不会订阅，必须主动终止服务端任务
+      try { await postAbortTask(taskId); } catch (e) { ElMessage.warning(`终止请求失败：${(e as Error).message}`); }
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    await subscribeWinTask(w, taskId, ac);
   } catch (e) {
     if ((e as Error).name !== 'AbortError') ElMessage.error('执行失败: ' + (e as Error).message);
   } finally {
     w.chatStreaming = false;
     chatAborts.delete(w.id);
+    chatTasks.delete(w.id);
     // 服务端为准：结束后拉取规范消息列表（含子智能体消息与最终回复）
     await loadWinMessages(w);
     scrollChatBottom(w);
   }
 }
 
-async function abortWinChat(w: OpsWin) {
-  chatAborts.get(w.id)?.abort();
-  if (!w.conversationId) return;
+/**
+ * P2 后台执行：以普通 LLM 任务提交，但**不在本窗口订阅流**。
+ * 任务由服务端继续跑；进度登记到任务中心（文件面板），关掉面板/切走页面都不影响。
+ */
+async function sendBackground(w: OpsWin) {
+  const content = w.chatInput.trim();
+  if (!content || w.chatStreaming) return;
+  const resolved = await resolveWinModel(w);
+  if (!resolved) return;
+  const { platform, model } = resolved;
   try {
-    const token = localStorage.getItem('auth_token') || '';
-    // taskId 本地未存时按会话查活动任务
-    const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${w.conversationId}`);
-    const taskId = ('data' in r && r.data?.[0]?.id) || null;
-    if (taskId) await fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-  } catch { /* 忽略 */ }
+    if (!w.conversationId) await ensureWinConversation(w);
+  } catch (e) {
+    ElMessage.error('创建会话失败: ' + (e as Error).message);
+    return;
+  }
+  const prompt = content + winConnHint(w) + terminalContextHint(w);
+  const taskRes = await api.post<any>('/llm/tasks', {
+    conversationId: w.conversationId,
+    platformId: platform.id,
+    modelId: model.id,
+    userContent: prompt,
+    agentId: OPS_AGENT_ID,
+  });
+  if ('error' in taskRes) { ElMessage.error('提交失败: ' + taskRes.error); return; }
+  if (taskRes.data.reused) {
+    // 同会话已有运行中任务：后端做了注入，不再重复登记任务中心
+    w.chatInput = '';
+    ElMessage.info('该会话已有运行中的任务，本条已并入（进度见对话）');
+    return;
+  }
+  const taskId = String(taskRes.data.taskId);
+  const reg = await api.post<{ jobId: string }>('/plugin/ops-shell/jobs/agent', {
+    taskId, conversationId: w.conversationId, label: content.slice(0, 60),
+  });
+  if ('error' in reg) {
+    ElMessage.warning(`任务已提交，但登记到任务中心失败：${reg.error}`);
+    return;
+  }
+  w.chatInput = '';
+  // 立即回显用户消息；助手回复等切回对话视图时从服务端拉取
+  w.chatMessages.push({ id: `local-bg-${Date.now()}`, role: 'user', content, createdAt: Date.now() });
+  ElMessage.success('已提交后台执行，进度在右侧「文件」面板的任务中心查看');
+}
+
+/** 调用服务端终止接口（失败抛错，由调用方决定怎么提示） */
+async function postAbortTask(taskId: string): Promise<void> {
+  const token = localStorage.getItem('auth_token') || '';
+  // 与主对话 stop() 同口径：buildRequestHeaders 会补 x-license
+  const r = await fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, {
+    method: 'POST',
+    headers: buildRequestHeaders(token ? { Authorization: `Bearer ${token}` } : undefined),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+}
+
+async function abortWinChat(w: OpsWin) {
+  // 本地先落态：停止的反馈不该等网络往返（服务端随后仍会发 aborted，重复是无害的）
+  chatAborts.get(w.id)?.abort();
+  w.chatStreaming = false;
+  for (const m of w.chatMessages) m.streaming = false;
+
+  // 优先用建任务时记下的 id；没有（页面热更/内存丢失）再按会话反查
+  let taskId = chatTasks.get(w.id) || null;
+  if (!taskId && w.conversationId) {
+    try {
+      const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${w.conversationId}`);
+      taskId = ('data' in r && r.data?.[0]?.id) || null;
+    } catch { /* 下面按「没有可终止任务」处理 */ }
+  }
+  if (!taskId) {
+    ElMessage.info('当前没有可终止的任务（可能已结束）');
+    return;
+  }
+  try {
+    await postAbortTask(taskId);
+  } catch (e) {
+    // 终止失败不能静默：任务可能仍在服务端继续跑
+    ElMessage.warning(`终止请求失败：${(e as Error).message}`);
+  }
 }
 
 /** 窗口专属 SSE 订阅：与 chat store 的 subscribeTaskSse 同协议，但状态完全本地 */
 async function subscribeWinTask(w: OpsWin, taskId: string, ac: AbortController): Promise<void> {
   const token = localStorage.getItem('auth_token') || '';
   const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/stream?since=0`, {
-    headers: { Authorization: `Bearer ${token}` },
+    // 与主对话 subscribeTaskSse 同口径（授权 + 授权码头）
+    headers: buildRequestHeaders(token ? { Authorization: `Bearer ${token}` } : undefined),
     signal: ac.signal,
   });
   if (!resp.ok || !resp.body) throw new Error('SSE 连接失败');
@@ -1876,7 +2150,7 @@ async function onConnectionSaved(conn: OpsConn) {
 }
 
 // ===== 操作日志 =====
-interface AuditEntry { at: number; action: string; connection?: string; detail?: string; ok: boolean }
+interface AuditEntry { at: number; action: string; connection?: string; detail?: string; ok: boolean; via?: 'silent' }
 const auditEntries = ref<AuditEntry[]>([]);
 async function loadAudit() {
   const r = await api.get<AuditEntry[]>('/plugin/ops-shell/audit');
@@ -1895,12 +2169,9 @@ function init() {
   void loadGroups();
   void loadConnections();
   void loadAudit();
-  if (!platformStore.platforms.length) {
-    void platformStore.loadPlatforms().then(() => {
-      const pid = settingsStore.settings.defaultPlatformId;
-      if (pid && !platformStore.models.some((m) => m.platformId === pid)) void platformStore.loadModels(pid);
-    });
-  }
+  // 模型清单拉**全量**：会话内可切到任意平台的模型（只拉默认平台那份会让下拉缺项）
+  if (!platformStore.platforms.length) void platformStore.loadPlatforms().catch(() => {});
+  if (!platformStore.models.length) void platformStore.loadModels().catch(() => {});
 }
 init();
 
@@ -2142,19 +2413,6 @@ onUnmounted(() => {
 .ops-win-head-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .ops-term-hint { font-size: 11px; color: var(--color-text-tertiary); }
 
-/* 模式切换：右下角浮动图标按钮（不占窗口头那一行高度）。
-   右偏移 60px：给主导方悬浮胶囊（LeadToggle，right:16）让位，两者不重叠 */
-.ops-view-fab {
-  position: absolute; right: 60px; bottom: 16px; z-index: 8;
-  width: 34px; height: 34px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; color: var(--color-text-secondary);
-  background: var(--color-surface); border: 1px solid var(--glass-border);
-  box-shadow: var(--shadow-md);
-  transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
-}
-.ops-view-fab:hover { color: var(--color-primary); border-color: var(--color-primary); transform: translateY(-1px); }
-
 /* 主视图区（文件面板已提到 .ops-body 层，作为全局面板） */
 .ops-main { flex: 1; display: flex; gap: 6px; min-height: 0; }
 .ops-main-primary { flex: 1 1 auto; min-width: 260px; min-height: 0; }
@@ -2271,13 +2529,28 @@ onUnmounted(() => {
   padding: 8px 10px; border-radius: 10px; font-size: 13px; line-height: 1.6; resize: none;
 }
 .ops-chat-input :deep(.el-textarea__inner::placeholder) { color: var(--color-text-secondary); opacity: 0.8; }
-.ops-chat-actions { display: flex; align-items: center; gap: 8px; padding: 0 6px 2px; }
-.ops-chat-actions :deep(.el-button + .el-button) { margin-left: 0; }
+/* 输入框工具条（P0）：32px 单行，左=动作语义，右=模型 / 静默权限 / 发送。
+   右侧留 56px：右下角主导方悬浮胶囊（LeadToggle，right:16 + 34px 宽）压在工具条右端，
+   不留白会把「发送」盖住、点击还会误触切换模式 */
+.ops-input-toolbar { display: flex; align-items: center; gap: 8px; padding: 0 56px 2px 6px; min-height: 28px; }
+.ops-toolbar-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.ops-toolbar-spacer { flex: 1; min-width: 4px; }
+.ops-input-toolbar :deep(.el-button + .el-button) { margin-left: 0; }
+.ops-tool-btn { height: 24px; padding: 0 10px; font-size: 11.5px; }
+.ops-tool-btn-active { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
+.ops-model-select { width: 168px; max-width: 34vw; }
+.ops-model-select :deep(.el-select__wrapper) { min-height: 24px; font-size: 11.5px; }
+.ops-perm-btn { height: 24px; padding: 0 6px; }
+.ops-perm-panel { display: flex; flex-direction: column; gap: 8px; }
+.ops-perm-title { font-size: 12.5px; font-weight: 600; }
+.ops-perm-sub { margin: 0; font-size: 11px; line-height: 1.55; color: var(--color-text-secondary); }
+.ops-perm-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; }
+.ops-perm-warn { font-size: 11px; line-height: 1.5; color: var(--el-color-danger, #d9534f); }
 
 /* ===== 底部命令行（任务 7.7）：AI 模式输入框下的单行状态条 ===== */
 .ops-cmdline {
   display: flex; align-items: center; gap: 6px;
-  padding: 5px 8px; margin-top: 6px;
+  padding: 5px 56px 5px 8px; margin-top: 6px;
   border-radius: 8px; cursor: text;
   border: 1px solid var(--glass-border);
   background: color-mix(in srgb, var(--color-text) 3%, transparent);
@@ -2339,6 +2612,7 @@ onUnmounted(() => {
 
 /* 操作日志 */
 .ops-audit { height: 100%; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.ops-audit-via { margin-left: 4px; }
 .ops-empty { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; font-size: 12px; color: var(--color-text-tertiary); text-align: center; line-height: 1.8; }
 .ops-log-view {
   margin: 0; max-height: 60vh; overflow: auto; padding: 10px; border-radius: 8px;

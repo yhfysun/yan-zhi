@@ -162,6 +162,11 @@ export interface OpsConn {
   groupId?: string;
   /** 跳板机（ProxyJump）：另一条 ssh/docker 连接的 id；目标机只对跳板机可达时使用 */
   jumpConnectionId?: string;
+  /**
+   * 静默权限三档（按连接存）：开启后对应操作不再逐条人工批准。
+   * 缺省/空对象 = 全关；危险命令黑名单始终优先。
+   */
+  silent?: { exec?: boolean; write?: boolean; read?: boolean };
 }
 
 interface FormState {

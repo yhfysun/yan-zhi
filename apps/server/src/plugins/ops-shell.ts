@@ -17,7 +17,7 @@ import pg from 'pg';
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { pushPluginAudit } from '../services/plugin-audit.js';
-import { guard, capOutput, isDangerous, isProductionTag } from './ops-shell-guard.js';
+import { guard, capOutput, isDangerous, isReadonly, isProductionTag, resolveSilent, type SilentCapability, type SilentFlags } from './ops-shell-guard.js';
 import {
   pruneApprovals, capApprovals, takeApproval, hasPending, makeRequest, pendingMessage, rejectedMessage,
   type ApprovalRequest,
@@ -109,6 +109,11 @@ interface OpsConnection {
    * database 连接只能作为目标，不能作为跳板机。
    */
   jumpConnectionId?: string;
+  /**
+   * 静默权限三档（按连接存）：开启后对应操作不再逐条人工批准。
+   * 缺省/空对象 = 全关；危险命令黑名单始终优先。
+   */
+  silent?: SilentFlags;
   createdAt: number;
 }
 
@@ -196,6 +201,19 @@ interface ConnInput {
   /** 跳板机连接 id；jumpProvided 区分「未传该字段」与「显式清空」 */
   jumpConnectionId?: string;
   jumpProvided?: boolean;
+  /** 静默权限三档；silentProvided 区分「未传」与「显式全关」 */
+  silent?: SilentFlags;
+  silentProvided?: boolean;
+}
+
+/** 归一化静默权限：只收三个布尔字段；非对象或含非布尔值返回 null（调用方按非法入参处理） */
+function normalizeSilent(v: unknown): SilentFlags | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  for (const k of ['exec', 'write', 'read'] as const) {
+    if (o[k] !== undefined && typeof o[k] !== 'boolean') return null;
+  }
+  return { exec: o.exec === true, write: o.write === true, read: o.read === true };
 }
 
 /** 归一化 HTTP 入参 → 连接字段（不做业务校验，校验见 validateConnInput） */
@@ -226,6 +244,9 @@ function parseConnInput(body: Record<string, unknown>): ConnInput {
     // 跳板机：空字符串 = 显式清空；字段缺席 = 保持原值（编辑只改端口时不该丢掉跳板）
     jumpProvided: body.jumpConnectionId !== undefined,
     jumpConnectionId: opt(body.jumpConnectionId),
+    // 静默权限：字段缺席 = 保持原值（编辑弹窗不持有这三档）；显式传入则整体替换
+    silentProvided: body.silent !== undefined,
+    silent: body.silent === undefined ? undefined : (normalizeSilent(body.silent) ?? undefined),
   };
 }
 
@@ -259,6 +280,8 @@ function buildConnection(input: ConnInput, base?: StoredConnection): StoredConne
     groupId: input.groupId ?? base?.groupId,
     // 显式传了 jumpConnectionId 才改动（空字符串表示清空），否则沿用原跳板
     jumpConnectionId: input.jumpProvided ? input.jumpConnectionId : base?.jumpConnectionId,
+    // 静默权限同理：没传就沿用原值，老记录没有该字段 = 全关
+    silent: input.silentProvided ? input.silent : base?.silent,
     createdAt: base?.createdAt ?? Date.now(),
   };
 }
@@ -668,7 +691,7 @@ export function copyRemoteFile(sftp: SFTPWrapper, from: string, to: string): Pro
  * 上传/下载画进度条。
  */
 export interface SftpJob {
-  kind: 'upload' | 'download' | 'delete';
+  kind: 'upload' | 'download' | 'delete' | 'agent';
   /** 人类可读的任务名（界面上那一行） */
   label: string;
   state: 'running' | 'done' | 'failed';
@@ -708,6 +731,13 @@ export interface SftpJob {
   deletedCount: number;
   /** 删除任务：最近删掉的路径（保留上限见 MAX_JOB_DELETED_KEEP） */
   deleted: string[];
+  /** agent 任务（P2）：底层 LLM 任务 id / 会话 id，用于跳回对话 */
+  taskId?: string;
+  conversationId?: string;
+  /** agent 任务：流式输出尾部（任务中心实时预览） */
+  progressText?: string;
+  /** agent 任务：最后一条完整助手消息（收尾时落库为 summary） */
+  resultText?: string;
   error?: string;
 }
 
@@ -760,6 +790,11 @@ function jobPayload(j: SftpJob): Record<string, unknown> {
     paused: j.paused,
     deletedCount: j.deletedCount,
     deleted: j.deleted.slice(-50),
+    // agent 任务（P2）：任务中心实时预览 + 跳回会话
+    taskId: j.taskId,
+    conversationId: j.conversationId,
+    progressText: j.progressText,
+    resultText: j.resultText,
     error: j.error,
   };
 }
@@ -775,14 +810,14 @@ function jobPayload(j: SftpJob): Record<string, unknown> {
  */
 export interface SftpJobRecord {
   id: string;
-  kind: 'upload' | 'download' | 'delete';
+  kind: 'upload' | 'download' | 'delete' | 'agent';
   label: string;
   state: 'done' | 'failed';
   /** 结束时间（epoch 毫秒） */
   at: number;
   totalCount: number;
   doneCount: number;
-  /** 字节口径（删除任务恒为 1，没有意义） */
+  /** 字节口径（删除/agent 任务恒为 1，没有意义） */
   totalBytes: number;
   error?: string;
   /** 删除任务：累计删了多少项（detail 只留最近 MAX_HISTORY_DETAIL 条） */
@@ -791,6 +826,10 @@ export interface SftpJobRecord {
   detail: string[];
   /** detail 是否被截断（真总数看 totalCount / deletedCount） */
   detailTruncated: boolean;
+  /** agent 任务：最终回复摘要（截断后） */
+  summary?: string;
+  /** agent 任务：所属会话，可从任务中心跳回 */
+  conversationId?: string;
 }
 
 /** 历史记录总条数上限：再多就靠滚动，别把插件 KV 撑成一本账 */
@@ -1144,8 +1183,10 @@ interface AuditEntry {
   connection?: string;
   detail?: string;
   ok: boolean;
+  /** 静默放行的标记：'silent' = 未走人工批准（事后可与「人批的」区分） */
+  via?: 'silent';
 }
-async function audit(action: string, opts: { connection?: string; detail?: string; ok: boolean }): Promise<void> {
+async function audit(action: string, opts: { connection?: string; detail?: string; ok: boolean; via?: 'silent' }): Promise<void> {
   // 裁剪 cap 沿用 500（本插件事件密度高）；load/push/slice/save 收口在 pushPluginAudit
   await pushPluginAudit(pluginStorage, { at: Date.now(), action, ...opts }, 500);
 }
@@ -1250,12 +1291,30 @@ async function saveApprovals(list: ApprovalRequest[]): Promise<void> {
 }
 
 /**
- * 生产连接上的非只读命令：模型一律不能自行确认，必须由人在界面上批准。
+ * 生产连接上的非只读操作：模型一律不能自行确认，必须由人在界面上批准。
  *
- * 返回 null = 放行（已获人工批准，且这条批准已被消费）；
- * 返回字符串 = 不要执行，把这句话原样作为工具结果回给模型。
+ * 静默权限命中（且不是黑名单命令）则跳过审批直接放行，审计标 via=silent。
+ * 返回 { blocked: null } = 放行（人工批准已消费，或静默放行）；
+ * 返回 { blocked: 字符串 } = 不要执行，把这句话原样作为工具结果回给模型。
+ * via='silent' 供调用方把后续执行审计也标上静默来源。
  */
-async function gateProductionAction(conn: StoredConnection, command: string, reason: string): Promise<string | null> {
+async function gateProductionAction(
+  conn: StoredConnection,
+  command: string,
+  reason: string,
+  action: SilentCapability,
+): Promise<{ blocked: string | null; via?: 'silent' }> {
+  // 黑名单优先：resolveSilent 对 exec + 危险命令恒返回 approve，随后仍由 guard 拒绝
+  if (resolveSilent(conn, action, action === 'exec' ? command : undefined) === 'silent') {
+    await audit('approval.silent', {
+      connection: conn.name,
+      detail: `[静默放行:${action}] ${command.slice(0, 200)}`,
+      ok: true,
+      via: 'silent',
+    });
+    return { blocked: null, via: 'silent' };
+  }
+
   const list = await loadApprovals();
   const { hit, rest } = takeApproval(list, conn.id, command);
   if (hit) {
@@ -1263,10 +1322,10 @@ async function gateProductionAction(conn: StoredConnection, command: string, rea
     await saveApprovals(rest);
     if (hit.status === 'approved') {
       await audit('approval.granted', { connection: conn.name, detail: command.slice(0, 200), ok: true });
-      return null;
+      return { blocked: null };
     }
     await audit('approval.rejected', { connection: conn.name, detail: command.slice(0, 200), ok: false });
-    return rejectedMessage(hit);
+    return { blocked: rejectedMessage(hit) };
   }
 
   const req = makeRequest(conn.id, conn.name, command, reason);
@@ -1275,7 +1334,7 @@ async function gateProductionAction(conn: StoredConnection, command: string, rea
     await saveApprovals([req, ...list]);
     await audit('approval.requested', { connection: conn.name, detail: command.slice(0, 200), ok: true });
   }
-  return pendingMessage(req);
+  return { blocked: pendingMessage(req) };
 }
 
 // ---------- SSH 命令执行 ----------
@@ -1450,21 +1509,23 @@ export function makeTools(): BuiltInTool[] {
       execute: async (args) => {
         const conn = await resolveConn(args);
         const command = String(args.command || '');
+        let silentVia: 'silent' | undefined;
         // ★ 恒传 confirmed:false —— 模型说的「已确认」不算数，见 ops-approvals.ts 文件头
         const rejected = guard(command, { isProduction: isProduction(conn), confirmed: false });
         if (rejected) {
-          // 危险命令是黑名单，没有批准通道
+          // 危险命令是黑名单，没有批准通道（静默权限也不能放行，见 resolveSilent）
           if (isDangerous(command)) {
             await audit('ssh_exec.rejected', { connection: conn.name, detail: command.slice(0, 200), ok: false });
             return textResult(rejected);
           }
-          const gated = await gateProductionAction(conn, command, 'agent tool');
-          if (gated !== null) return textResult(gated);
+          const gated = await gateProductionAction(conn, command, 'agent tool', 'exec');
+          if (gated.blocked !== null) return textResult(gated.blocked);
+          silentVia = gated.via;
         }
         const timeout = Number(args.timeoutMs) > 0 ? Number(args.timeoutMs) : execTimeoutDefault();
         try {
           const r = await execOnConnection(conn, command, timeout);
-          await audit('ssh_exec', { connection: conn.name, detail: command.slice(0, 200), ok: r.code === 0 });
+          await audit('ssh_exec', { connection: conn.name, detail: command.slice(0, 200), ok: r.code === 0, via: silentVia });
           return textResult(`[exit=${r.code}]\n${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`);
         } catch (e) {
           await audit('ssh_exec.error', { connection: conn.name, detail: (e as Error).message.slice(0, 200), ok: false });
@@ -1488,7 +1549,12 @@ export function makeTools(): BuiltInTool[] {
       },
       execute: async (args) => {
         const conn = await resolveConn(args);
-        if (isProduction(conn)) { const g = await gateProductionAction(conn, '上传 ' + String(args.localPath || '') + ' → ' + String(args.remotePath || '(默认目录)'), 'SFTP 上传'); if (g !== null) return textResult(g); }
+        let silentVia: 'silent' | undefined;
+        if (isProduction(conn)) {
+          const g = await gateProductionAction(conn, '上传 ' + String(args.localPath || '') + ' → ' + String(args.remotePath || '(默认目录)'), 'SFTP 上传', 'write');
+          if (g.blocked !== null) return textResult(g.blocked);
+          silentVia = g.via;
+        }
         const localPath = String(args.localPath || '');
         if (!localPath) return textResult('localPath 必填');
         const remotePath = resolveRemotePath(conn, String(args.remotePath || ''));
@@ -1504,7 +1570,7 @@ export function makeTools(): BuiltInTool[] {
             sftp.fastPut(localPath, remotePath, (err) => (err ? reject(err) : resolve())),
           );
           sftp.end();
-          await audit('ssh_upload', { connection: conn.name, detail: `${localPath} → ${remotePath}`, ok: true });
+          await audit('ssh_upload', { connection: conn.name, detail: `${localPath} → ${remotePath}`, ok: true, via: silentVia });
           return textResult(`已上传 ${localPath} → ${conn.name}:${remotePath}`);
         } catch (e) {
           await audit('ssh_upload.error', { connection: conn.name, detail: (e as Error).message.slice(0, 200), ok: false });
@@ -1613,13 +1679,15 @@ export function makeTools(): BuiltInTool[] {
         const container = String(args.container || '').replace(/['"`;]/g, '');
         if (!container) return textResult('容器名不能为空');
         // ★ 与 ssh_exec 同口径：生产连接的写操作必须人工批准，模型传 confirmed 不算数
+        let silentVia: 'silent' | undefined;
         if (isProduction(conn)) {
-          const gated = await gateProductionAction(conn, `docker restart ${container}`, '重启容器');
-          if (gated !== null) return textResult(gated);
+          const gated = await gateProductionAction(conn, `docker restart ${container}`, '重启容器', 'exec');
+          if (gated.blocked !== null) return textResult(gated.blocked);
+          silentVia = gated.via;
         }
         try {
           const r = await execOnConnection(conn, `docker restart ${JSON.stringify(container)}`, 60000);
-          await audit('docker_restart', { connection: conn.name, detail: container, ok: r.code === 0 });
+          await audit('docker_restart', { connection: conn.name, detail: container, ok: r.code === 0, via: silentVia });
           return textResult(r.code === 0 ? `容器 ${container} 已重启` : `[exit=${r.code}] ${r.stderr}`);
         } catch (e) {
           return textResult(`重启失败: ${(e as Error).message}`);
@@ -1730,6 +1798,9 @@ export function makeTools(): BuiltInTool[] {
           secret: String(args.password || args.privateKey || ''),
           groupId,
           ...(jumpConnectionId ? { jumpConnectionId } : {}),
+          // ★ 静默权限只能由人从控制台开：模型新建连接时即使夹带 silent 参数也不生效，
+          //   否则「助手创建一条生产连接 + 静默执行命令」就成了绕过人工审批的自授通道。
+          silent: undefined,
         });
         const invalid = validateConnInput(input, { requireSecret: true });
         if (invalid) return textResult(invalid);
@@ -2015,13 +2086,18 @@ export function makeTools(): BuiltInTool[] {
       execute: async (args) => {
         const conn = await resolveConn(args);
         if (conn.type === 'database') return textResult('数据库连接不支持文件操作');
-        if (isProduction(conn)) { const g = await gateProductionAction(conn, '新建目录 ' + String(args.path || ''), 'SFTP 新建目录'); if (g !== null) return textResult(g); }
+        let silentVia: 'silent' | undefined;
+        if (isProduction(conn)) {
+          const g = await gateProductionAction(conn, '新建目录 ' + String(args.path || ''), 'SFTP 新建目录', 'write');
+          if (g.blocked !== null) return textResult(g.blocked);
+          silentVia = g.via;
+        }
         try {
           const sftp = await getSftp(conn);
           const root = await resolveRemoteRoot(sftp, conn.sftpPath);
           const dir = normalizeRemotePath(String(args.path || ''), root);
           await ensureRemoteDir(sftp, dir);
-          await audit('sftp_mkdir', { connection: conn.name, detail: dir, ok: true });
+          await audit('sftp_mkdir', { connection: conn.name, detail: dir, ok: true, via: silentVia });
           return textResult(`已创建目录 ${dir}`);
         } catch (e) {
           return textResult(`创建目录失败: ${(e as Error).message}`);
@@ -2044,14 +2120,19 @@ export function makeTools(): BuiltInTool[] {
       execute: async (args) => {
         const conn = await resolveConn(args);
         if (conn.type === 'database') return textResult('数据库连接不支持文件操作');
-        if (isProduction(conn)) { const g = await gateProductionAction(conn, '重命名 ' + String(args.from || '') + ' → ' + String(args.to || ''), 'SFTP 重命名'); if (g !== null) return textResult(g); }
+        let silentVia: 'silent' | undefined;
+        if (isProduction(conn)) {
+          const g = await gateProductionAction(conn, '重命名 ' + String(args.from || '') + ' → ' + String(args.to || ''), 'SFTP 重命名', 'write');
+          if (g.blocked !== null) return textResult(g.blocked);
+          silentVia = g.via;
+        }
         try {
           const sftp = await getSftp(conn);
           const root = await resolveRemoteRoot(sftp, conn.sftpPath);
           const from = normalizeRemotePath(String(args.from || ''), root);
           const to = normalizeRemotePath(String(args.to || ''), root);
           await new Promise<void>((resolve, reject) => sftp.rename(from, to, (err) => (err ? reject(err) : resolve())));
-          await audit('sftp_rename', { connection: conn.name, detail: `${from} → ${to}`, ok: true });
+          await audit('sftp_rename', { connection: conn.name, detail: `${from} → ${to}`, ok: true, via: silentVia });
           return textResult(`已重命名 ${from} → ${to}`);
         } catch (e) {
           return textResult(`重命名失败: ${(e as Error).message}`);
@@ -2075,7 +2156,12 @@ export function makeTools(): BuiltInTool[] {
       execute: async (args) => {
         const conn = await resolveConn(args);
         if (conn.type === 'database') return textResult('数据库连接不支持文件操作');
-        if (isProduction(conn)) { const g = await gateProductionAction(conn, '备份 ' + String(args.path || ''), 'SFTP 备份'); if (g !== null) return textResult(g); }
+        let silentVia: 'silent' | undefined;
+        if (isProduction(conn)) {
+          const g = await gateProductionAction(conn, '备份 ' + String(args.path || ''), 'SFTP 备份', 'write');
+          if (g.blocked !== null) return textResult(g.blocked);
+          silentVia = g.via;
+        }
         try {
           const sftp = await getSftp(conn);
           const root = await resolveRemoteRoot(sftp, conn.sftpPath);
@@ -2084,7 +2170,7 @@ export function makeTools(): BuiltInTool[] {
           if (st.isDir) return textResult(`${src} 是目录，sftp_backup 只能备份文件`);
           const dst = backupRemoteName(src);
           await copyRemoteFile(sftp, src, dst);
-          await audit('sftp_backup', { connection: conn.name, detail: `${src} → ${dst}`, ok: true });
+          await audit('sftp_backup', { connection: conn.name, detail: `${src} → ${dst}`, ok: true, via: silentVia });
           return textResult(`已备份 ${src} → ${dst}`);
         } catch (e) {
           await audit('sftp_backup.error', { connection: conn.name, detail: (e as Error).message.slice(0, 200), ok: false });
@@ -2107,7 +2193,12 @@ export function makeTools(): BuiltInTool[] {
       execute: async (args) => {
         const conn = await resolveConn(args);
         if (conn.type === 'database') return textResult('数据库连接不支持文件操作');
-        if (isProduction(conn)) { const g = await gateProductionAction(conn, '删除 ' + String(args.path || ''), 'SFTP 删除'); if (g !== null) return textResult(g); }
+        let silentVia: 'silent' | undefined;
+        if (isProduction(conn)) {
+          const g = await gateProductionAction(conn, '删除 ' + String(args.path || ''), 'SFTP 删除', 'write');
+          if (g.blocked !== null) return textResult(g.blocked);
+          silentVia = g.via;
+        }
         try {
           const sftp = await getSftp(conn);
           const root = await resolveRemoteRoot(sftp, conn.sftpPath);
@@ -2115,7 +2206,7 @@ export function makeTools(): BuiltInTool[] {
           const st = await statRemote(sftp, path);
           if (st.isDir) return textResult(`${path} 是目录，sftp_delete 只删文件`);
           await new Promise<void>((resolve, reject) => sftp.unlink(path, (err) => (err ? reject(err) : resolve())));
-          await audit('sftp_delete', { connection: conn.name, detail: path, ok: true });
+          await audit('sftp_delete', { connection: conn.name, detail: path, ok: true, via: silentVia });
           return textResult(`已删除 ${path}`);
         } catch (e) {
           await audit('sftp_delete.error', { connection: conn.name, detail: (e as Error).message.slice(0, 200), ok: false });
@@ -2136,6 +2227,22 @@ const TERM_PING_INTERVAL_MS = 30000;
 function sendWsJson(ws: PluginWebSocket, payload: unknown): void {
   if (ws.readyState !== 1) return;
   try { ws.send(JSON.stringify(payload)); } catch { /* 对端已断 */ }
+}
+
+/**
+ * 直接执行指令（P1）的服务端护栏（纯函数，导出供单测钉矩阵）。
+ *   - 危险命令黑名单始终拒绝，确认也没用；
+ *   - 生产连接上的非只读命令必须由人显式确认（前端弹确认框后带 confirmed=true 重试）；
+ *   - 只读命令 / 非生产连接直接放行。
+ */
+export function terminalExecProblem(conn: { tag?: string }, command: string, confirmed: boolean): string | null {
+  const cmd = command.trim();
+  if (!cmd) return '命令不能为空';
+  if (isDangerous(cmd)) return `命令命中危险黑名单，已拒绝执行：${cmd.slice(0, 120)}`;
+  if (isProductionTag(conn.tag) && !confirmed && !isReadonly(cmd)) {
+    return `目标连接标记为生产环境，命令「${cmd.slice(0, 80)}」不是只读操作，请确认后执行`;
+  }
+  return null;
 }
 
 /**
@@ -2241,7 +2348,7 @@ export async function handleTerminalWs(ws: PluginWebSocket, req: PluginWsRequest
       try { stream.write(raw); } catch { /* ignore */ }
       return;
     }
-    let msg: { type?: string; cols?: number; rows?: number };
+    let msg: { type?: string; cols?: number; rows?: number; command?: string; confirmed?: boolean; token?: string };
     try { msg = JSON.parse(raw.toString('utf8')); } catch { return; }
     if (msg.type === 'resize') {
       const c = Number(msg.cols);
@@ -2250,6 +2357,24 @@ export async function handleTerminalWs(ws: PluginWebSocket, req: PluginWsRequest
         recorder?.resize(c, rw);
         try { stream.setWindow(rw, c, 0, 0); } catch { /* ignore */ }
       }
+    } else if (msg.type === 'exec') {
+      // P1 直接执行：写进 PTY，不经过模型。黑名单 / 生产确认在写入前判定。
+      const command = String(msg.command || '').trim();
+      const token = typeof msg.token === 'string' ? msg.token : undefined;
+      const problem = terminalExecProblem(conn, command, msg.confirmed === true);
+      if (problem) {
+        void audit('term.exec.rejected', { connection: conn.name, detail: command.slice(0, 200), ok: false });
+        sendWsJson(ws, {
+          type: 'exec-rejected', token,
+          code: isDangerous(command) ? 'BLOCKED' : 'NEED_CONFIRM',
+          message: problem,
+        });
+        return;
+      }
+      recorder?.input(`${command}\r`);
+      try { stream.write(`${command}\r`); } catch { /* ignore */ }
+      void audit('term.exec', { connection: conn.name, detail: command.slice(0, 200), ok: true });
+      sendWsJson(ws, { type: 'exec-accepted', token });
     }
   });
   ws.on('close', cleanup);
@@ -2451,9 +2576,33 @@ const opsShellModule: PluginModule = {
         jsonRes(res).json({ data: toClientView(list[idx]) });
       });
 
+      // 静默权限三档（按连接存）：整体替换，缺省全关。
+      // 开启后对应操作不再逐条人工批准；危险命令黑名单仍优先（判定见 resolveSilent）。
+      r.put('/connections/:id/silent', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const silent = normalizeSilent(body.silent);
+        if (!silent) { failRes(res, 400, 'silent 必须是包含 exec/write/read 布尔值的对象'); return; }
+        const list = await loadConnections();
+        const idx = list.findIndex((c) => c.id === id);
+        if (idx < 0) { failRes(res, 404, '连接不存在'); return; }
+        list[idx] = { ...list[idx], silent };
+        try { await saveConnections(list); } catch (e) { failRes(res, 500, (e as Error).message); return; }
+        await audit('connection.silent', {
+          connection: list[idx].name,
+          detail: `exec=${!!silent.exec} write=${!!silent.write} read=${!!silent.read}`,
+          ok: true,
+        });
+        jsonRes(res).json({ data: toClientView(list[idx]) });
+      });
+
       // 新建连接（type: ssh | docker | database；docker/database 复用 SSH 字段语义，database 直连）
       r.post('/connections', async (req: unknown, res: unknown) => {
         const body = (req as { body: Record<string, unknown> }).body || {};
+        if (body.silent !== undefined && normalizeSilent(body.silent) === null) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: 'silent 必须是包含 exec/write/read 布尔值的对象' });
+          return;
+        }
         const input = parseConnInput(body);
         const invalid = validateConnInput(input, { requireSecret: true });
         if (invalid) {
@@ -2493,6 +2642,10 @@ const opsShellModule: PluginModule = {
           return;
         }
         const base = list[idx];
+        if (body.silent !== undefined && normalizeSilent(body.silent) === null) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: 'silent 必须是包含 exec/write/read 布尔值的对象' });
+          return;
+        }
         const input = parseConnInput(body);
         const invalid = validateConnInput(input, { requireSecret: false });
         if (invalid) {
@@ -2733,8 +2886,9 @@ const opsShellModule: PluginModule = {
         // ★ 落库（用户要求「这些数据都要入库」）：内存记录 3 秒后就回收了，
         //   不写下来的话，刷新一下"刚才删了哪些文件"就查无此事。
         const isDelete = j.kind === 'delete';
-        const all = isDelete ? j.deleted : (j.plan ?? []);
-        const total = isDelete ? j.deletedCount : (j.planTotal ?? all.length);
+        const isAgent = j.kind === 'agent';
+        const all = isDelete ? j.deleted : isAgent ? [] : (j.plan ?? []);
+        const total = isDelete ? j.deletedCount : isAgent ? 0 : (j.planTotal ?? all.length);
         void pushJobHistory({
           id: jobId, kind: j.kind, label: j.label, state,
           at: Date.now(),
@@ -2743,6 +2897,9 @@ const opsShellModule: PluginModule = {
           deletedCount: isDelete ? j.deletedCount : undefined,
           detail: all.slice(-MAX_HISTORY_DETAIL),
           detailTruncated: total > MAX_HISTORY_DETAIL,
+          // agent 任务：结果摘要落库（内存任务 3 秒后回收，刷新后只能靠这条）
+          summary: isAgent ? (j.resultText || j.progressText || '').slice(-4000) : undefined,
+          conversationId: isAgent ? j.conversationId : undefined,
         });
       };
       const json = (res: unknown, body: unknown) => (res as { json: (d: unknown) => void }).json(body);
@@ -3251,6 +3408,75 @@ const opsShellModule: PluginModule = {
         json(res, { data: { jobId, paused: job.paused } });
       });
 
+      // 正在执行的任务（P2）：文件面板重开后也能把「后台 AI 任务」接回来
+      r.get('/sftp/jobs/active', (_req: unknown, res: unknown) => {
+        const data = [...sftpJobs.entries()]
+          .filter(([, j]) => j.state === 'running')
+          .map(([id, j]) => ({ id, ...jobPayload(j) }));
+        json(res, { data });
+      });
+
+      // 后台 AI 任务（P2）：把前端经 /llm/tasks 建好的任务挂进任务中心。
+      // ★ 动态 import llm-task-manager：该模块会连带加载 db（better-sqlite3），
+      //   静态 import 会让所有 ops-shell 单测在 ABI 不匹配的环境里直接挂掉。
+      r.post('/jobs/agent', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const taskId = String(body.taskId || '').trim();
+        if (!taskId) { fail(res, 400, 'taskId 必填'); return; }
+        const label = String(body.label || '').trim().slice(0, 120) || 'AI 后台任务';
+        // 幂等：同一个 LLM 任务只登记一条（重复提交/重试不该刷出多条）
+        for (const [existingId, j] of sftpJobs) {
+          if (j.kind === 'agent' && j.taskId === taskId) { json(res, { data: { jobId: existingId } }); return; }
+        }
+        let mod: typeof import('../llm-task-manager.js');
+        try {
+          mod = await import('../llm-task-manager.js');
+        } catch (e) {
+          fail(res, 500, `任务中心不可用：${(e as Error).message}`);
+          return;
+        }
+        const task = mod.getTask(taskId);
+        if (!task) { fail(res, 404, '任务不存在（可能已结束）'); return; }
+
+        const jobId = newJob('agent', label, { totalCount: 1 });
+        const j = sftpJobs.get(jobId)!;
+        j.taskId = taskId;
+        j.conversationId = task.conversationId;
+        let finished = false;
+        let unsub = () => { /* 占位：subscribe 回放历史期间可能先收尾，见下方 finished 判断 */ };
+        const finish = (state: 'done' | 'failed', error?: string) => {
+          if (finished) return;
+          finished = true;
+          const cur = sftpJobs.get(jobId);
+          if (cur) cur.resultText = (cur.resultText || cur.progressText || '').slice(-4000);
+          finishJob(jobId, state, error);
+        };
+        unsub = mod.subscribe(taskId, 0, (ev: any) => {
+          const cur = sftpJobs.get(jobId);
+          if (!cur || finished) return;
+          if (ev.type === 'chunk' && typeof ev.content === 'string' && ev.content) {
+            cur.progressText = ((cur.progressText || '') + ev.content).slice(-4000);
+          } else if (ev.type === 'message:added' && ev.message?.role === 'assistant' && typeof ev.message.content === 'string' && ev.message.content.trim()) {
+            // 完整助手消息（含子智能体）比流式片段更适合当最终结果
+            cur.resultText = ev.message.content;
+          } else if (ev.type === 'task:completed') {
+            finish('done');
+          } else if (ev.type === 'task:error') {
+            finish('failed', ev.error || '任务失败');
+          } else if (ev.type === 'task:aborted') {
+            finish('failed', '任务已终止');
+          }
+        });
+        // 回放期间就收尾了 → subscribe 返回的取消函数必须补调，避免挂在已结束任务的订阅表上
+        if (finished) unsub();
+        // 任务在登记前就已结束（极快完成 / 已终止）：订阅不会再收到事件，这里立即收尾
+        if (!finished && task.status !== 'running' && task.status !== 'paused') {
+          unsub();
+          finish(task.status === 'completed' ? 'done' : 'failed', task.error);
+        }
+        json(res, { data: { jobId } });
+      });
+
       // 已完成任务的历史（**落库的**，刷新/重启后还在）。
       // 「已执行完成」页靠它把明细翻出来 —— 内存里的任务 3 秒就回收了。
       r.get('/sftp/jobs/history', async (_req: unknown, res: unknown) => {
@@ -3313,7 +3539,7 @@ const opsShellModule: PluginModule = {
       });
 
       // 终端会话（命令模式）：open 返回 sessionId，SSE 读输出，POST 写输入
-      const termSessions = new Map<string, { stream: ClientChannel; lastActive: number; recorder: TermRecorder | null }>();
+      const termSessions = new Map<string, { stream: ClientChannel; lastActive: number; recorder: TermRecorder | null; connectionName: string; tag?: string }>();
       /** 收尾一条 SSE 会话的录像（幂等：recorder 置空后不会重复落库） */
       const stopTermRecording = (s: { recorder: TermRecorder | null }) => {
         if (!s.recorder) return;
@@ -3356,7 +3582,7 @@ const opsShellModule: PluginModule = {
               logger.warn('[ops-shell] 启动会话录制失败（终端不受影响）:', (e as Error).message);
             }
           }
-          termSessions.set(sessionId, { stream, lastActive: Date.now(), recorder });
+          termSessions.set(sessionId, { stream, lastActive: Date.now(), recorder, connectionName: conn.name, tag: conn.tag });
           // 默认命令：前端明确要求时（autoRun !== false）在 shell 就绪后自动执行一次
           const defaultCommand = String(body.defaultCommand ?? conn.defaultCommand ?? '').trim();
           const autoRun = body.autoRun !== false && !!defaultCommand && conn.type !== 'database';
@@ -3384,6 +3610,27 @@ const opsShellModule: PluginModule = {
         s.lastActive = Date.now();
         s.recorder?.input(data);
         s.stream.write(data);
+        (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
+      });
+
+      // 直接执行指令（P1，SSE 回退通道）：与 WS 的 exec 控制帧同口径
+      r.post('/term/:id/exec', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const body = (req as { body: { command?: string; confirmed?: boolean } }).body || {};
+        const command = String(body.command || '').trim();
+        const s = termSessions.get(id);
+        if (!s) { (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '会话已关闭' }); return; }
+        const problem = terminalExecProblem({ tag: s.tag }, command, body.confirmed === true);
+        if (problem) {
+          await audit('term.exec.rejected', { connection: s.connectionName, detail: command.slice(0, 200), ok: false });
+          const status = isDangerous(command) ? 400 : 409;
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(status).json({ error: problem });
+          return;
+        }
+        s.lastActive = Date.now();
+        s.recorder?.input(`${command}\r`);
+        s.stream.write(`${command}\r`);
+        await audit('term.exec', { connection: s.connectionName, detail: command.slice(0, 200), ok: true });
         (res as { json: (d: unknown) => void }).json({ data: { ok: true } });
       });
 
