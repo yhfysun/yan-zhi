@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS space (
   description TEXT,
   task_type TEXT,
   task_config_json TEXT,
+  parent_id TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -567,6 +568,9 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   // 迁移：space 新增 task_type / task_config_json 列（「目录即任务」：目录绑定任务类型 + 类型覆盖配置）
   try { await execFn(`ALTER TABLE space ADD COLUMN task_type TEXT;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE space ADD COLUMN task_config_json TEXT;`); } catch { /* 列已存在 */ }
+  // 迁移：space 新增 parent_id 列（2026-10-17「父任务目录」：子目录=子空间，挂在父任务目录下）。
+  //   NULL = 顶层空间；服务端 sync-subdirs 负责把磁盘子文件夹收编成子空间。
+  try { await execFn(`ALTER TABLE space ADD COLUMN parent_id TEXT;`); } catch { /* 列已存在 */ }
   // 迁移完成后创建引用 space_id 的索引（旧库迁移场景：旧 conversation 表无 space_id 列）
   try { await execFn(`CREATE INDEX IF NOT EXISTS idx_conversation_space ON conversation(space_id);`); } catch { /* 索引已存在 */ }
   // 迁移：message 表新增子智能体关联字段（子智能体中间过程持久化）

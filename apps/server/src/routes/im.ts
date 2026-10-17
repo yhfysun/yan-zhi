@@ -15,8 +15,22 @@ import {
   parseWechatInbound,
   handleWechatInbound,
   handleWechatPersonalInbound,
+  runWechatPersonalBridge,
 } from '../services/im.js';
 import { syncDingtalkStreamClients } from '../services/dingtalk-stream.js';
+import { syncFeishuStreamClients } from '../services/feishu-stream.js';
+import {
+  detectOpenclawEnv,
+  startInstallJob,
+  getInstallJob,
+  startLoginSession,
+  getLoginStatus,
+  sendVerifyCode,
+  cancelLoginSession,
+  assembleBridge,
+  startGateway,
+  resolveOpenclawCmd,
+} from '../services/openclaw-manager.js';
 
 const router = Router();
 
@@ -30,6 +44,7 @@ router.post('/connectors', authMiddleware, (req: Request, res: Response) => {
   try {
     res.json({ data: createImConnector(req.user!.userId, req.body || {}) });
     void syncDingtalkStreamClients();
+    void syncFeishuStreamClients();
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -40,6 +55,7 @@ router.patch('/connectors/:id', authMiddleware, (req: Request, res: Response) =>
   try {
     res.json({ data: updateImConnector(req.user!.userId, req.params.id, req.body || {}) });
     void syncDingtalkStreamClients();
+    void syncFeishuStreamClients();
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -50,6 +66,7 @@ router.delete('/connectors/:id', authMiddleware, (req: Request, res: Response) =
   try {
     deleteImConnector(req.user!.userId, req.params.id);
     void syncDingtalkStreamClients();
+    void syncFeishuStreamClients();
     res.json({ ok: true });
   } catch (e: unknown) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
@@ -318,6 +335,125 @@ function safeEqual(a: string, b: string) {
   if (ba.length !== bb.length) return false;
   return timingSafeEqual(ba, bb);
 }
+
+// ============================================================
+// 个人微信（OpenClaw 桥接）同步回调：插件 before_dispatch → 本路由 → AI 回复
+// 鉴权走连接器 config.bridgeToken（x-bridge-token 头），不走登录态——
+// 调用方是本机 OpenClaw Gateway 进程，不是浏览器。
+// ============================================================
+router.post('/bridge/wechat-personal', express.json({ limit: '1mb' }), async (req: Request, res: Response) => {
+  const token = String(req.headers['x-bridge-token'] || '');
+  if (!token) {
+    res.status(401).json({ ok: false, error: 'missing_bridge_token' });
+    return;
+  }
+  const rows = db.prepare(
+    "SELECT id, user_id, config_json, enabled FROM im_connector WHERE provider = 'wechat-personal' AND enabled = 1",
+  ).all() as any[];
+  const row = rows.find((r) => {
+    try {
+      return JSON.parse(r.config_json || '{}')?.bridgeToken === token;
+    } catch {
+      return false;
+    }
+  });
+  if (!row) {
+    res.status(401).json({ ok: false, error: 'invalid_bridge_token' });
+    return;
+  }
+  try {
+    const r = await runWechatPersonalBridge(row.id, row.user_id, req.body || {});
+    if (r.ok) {
+      res.json({ ok: true, reply: r.reply });
+    } else {
+      res.json({ ok: false, error: r.error, reason: r.reason });
+    }
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ============================================================
+// OpenClaw 托管（个人微信一键化）：环境检测 / 安装 / 扫码 / 桥接装配
+// 长任务统一 job 轮询模式，不做 SSE（与现有管理面一致）。
+// ============================================================
+router.get('/openclaw/status', authMiddleware, async (_req: Request, res: Response) => {
+  try {
+    res.json({ data: await detectOpenclawEnv() });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+router.post('/openclaw/install', authMiddleware, (_req: Request, res: Response) => {
+  res.json({ data: { jobId: startInstallJob() } });
+});
+
+router.get('/openclaw/install-job', authMiddleware, (_req: Request, res: Response) => {
+  res.json({ data: getInstallJob() });
+});
+
+router.post('/openclaw/login/start', authMiddleware, async (_req: Request, res: Response) => {
+  try {
+    // 复用安装编排得出的 openclaw 命令（未安装则明确报错）
+    const env = await detectOpenclawEnv();
+    if (!env.openclawVersion) {
+      res.status(400).json({ error: 'openclaw 未安装，请先执行一键安装' });
+      return;
+    }
+    res.json(startLoginSession(await resolveOpenclawCmd()));
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+router.get('/openclaw/login/status', authMiddleware, (_req: Request, res: Response) => {
+  res.json({ data: getLoginStatus() });
+});
+
+router.post('/openclaw/login/verify', authMiddleware, (req: Request, res: Response) => {
+  const code = String((req.body || {}).code || '').trim();
+  if (!code) {
+    res.status(400).json({ error: '缺少验证码' });
+    return;
+  }
+  res.json(sendVerifyCode(code));
+});
+
+router.post('/openclaw/login/cancel', authMiddleware, (_req: Request, res: Response) => {
+  cancelLoginSession();
+  res.json({ ok: true });
+});
+
+// 装配桥接：connectorId 必传（读取 bridgeToken），endpoint 由本请求的实际监听端口推导
+router.post('/openclaw/bridge/assemble', authMiddleware, async (req: Request, res: Response) => {
+  const connectorId = String((req.body || {}).connectorId || '');
+  const row = db.prepare('SELECT * FROM im_connector WHERE id = ?').get(connectorId) as any;
+  if (!row || row.provider !== 'wechat-personal') {
+    res.status(400).json({ error: '连接器不存在或不是个人微信类型' });
+    return;
+  }
+  let bridgeToken = '';
+  try {
+    bridgeToken = String(JSON.parse(row.config_json || '{}')?.bridgeToken || '');
+  } catch {
+    bridgeToken = '';
+  }
+  if (!bridgeToken) {
+    res.status(400).json({ error: '连接器缺少桥接令牌，请先保存连接器' });
+    return;
+  }
+  const logs: string[] = [];
+  const log = (l: string) => logs.push(l);
+  try {
+    const endpoint = `http://127.0.0.1:${req.socket.localPort}/api/im/bridge/wechat-personal`;
+    await assembleBridge({ endpoint, token: bridgeToken }, log);
+    await startGateway(log);
+    res.json({ ok: true, endpoint, logs });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e), logs });
+  }
+});
 
 export default router;
 

@@ -61,20 +61,24 @@
         <!-- 步骤 1：选平台 -->
         <div v-else-if="step === 1" class="step-choice">
           <button type="button" class="choice-card" @click="chooseProvider('feishu')">
+            <span class="choice-badge ok">长连接·免公网</span>
             <div class="choice-title">飞书</div>
             <div class="choice-desc">企业自建应用，收发消息</div>
           </button>
           <button type="button" class="choice-card" @click="chooseProvider('wechat')">
+            <span class="choice-badge warn">需公网地址</span>
             <div class="choice-title">企业微信</div>
             <div class="choice-desc">自建应用，收发消息</div>
           </button>
           <button type="button" class="choice-card" @click="chooseProvider('dingtalk')">
+            <span class="choice-badge ok">本地·免公网</span>
             <div class="choice-title">钉钉（Stream 模式）</div>
             <div class="choice-desc">企业内部应用机器人，无需公网回调</div>
           </button>
           <button type="button" class="choice-card" @click="chooseProvider('wechat-personal')">
-            <div class="choice-title">个人微信（ClawBot）</div>
-            <div class="choice-desc">ClawBot CLI 扫码登录个人微信，收发消息</div>
+            <span class="choice-badge ok">本地·免公网</span>
+            <div class="choice-title">个人微信</div>
+            <div class="choice-desc">一键安装 + 扫码登录，AI 自动回复</div>
           </button>
         </div>
 
@@ -84,18 +88,19 @@
             <ol class="guide-list">
               <li>打开 <a href="https://open.feishu.cn/app" target="_blank" rel="noopener">飞书开放平台</a>，创建「企业自建应用」</li>
               <li>在「凭证与基础信息」页拿到 <b>App ID</b>（cli_ 开头）和 <b>App Secret</b></li>
-              <li>在「事件与回调 > 事件配置」填回调地址，拿到 <b>Verification Token</b></li>
+              <li>在「事件与回调」把订阅方式选为<b>「使用长连接接收事件」</b>，添加事件 <code>im.message.receive_v1</code></li>
               <li>在「权限管理」开通 <code>im:message</code> 等权限并发布版本</li>
             </ol>
-            <div class="guide-callback">回调地址：<code>{{ callbackBase }}/api/im/inbound/feishu</code></div>
+            <div class="guide-callback">保存后言智自动建立长连接收消息，无需公网回调地址</div>
           </template>
           <template v-else-if="form.provider === 'wechat'">
             <ol class="guide-list">
               <li>登录 <a href="https://work.weixin.qq.com/" target="_blank" rel="noopener">企业微信管理后台</a>，在「应用管理」创建自建应用</li>
               <li>在「我的企业」拿到 <b>Corp ID</b>；应用详情页拿到 <b>Secret</b> 和 <b>Agent ID</b></li>
-              <li>在「接收消息 > API 接收」设置 <b>Token</b> 和 EncodingAESKey，填回调地址</li>
+              <li>在「接收消息 > API 接收」把下方生成的 <b>Token</b> 和 <b>EncodingAESKey</b> 粘贴进去，并填回调地址</li>
             </ol>
             <div class="guide-callback">回调地址：<code>{{ callbackBase }}/api/im/inbound/wechat</code></div>
+            <div class="guide-callback">收消息必须公网可达（平台限制）；下方 Token / EncodingAESKey 可一键生成后粘贴进后台</div>
           </template>
           <template v-else-if="form.provider === 'dingtalk'">
             <ol class="guide-list">
@@ -108,12 +113,11 @@
           </template>
           <template v-else>
             <ol class="guide-list">
-              <li>在服务器安装 <code>@tencent-weixin/openclaw-weixin-cli</code> 并启动 ClawBot 进程</li>
-              <li>扫描 CLI 生成的登录二维码，登录目标个人微信</li>
-              <li>将 ClawBot 消息推送到下方回调地址（JSON：<code>{ messageId, text, fromUser }</code>）</li>
+              <li>全程<b>在本机</b>完成：下一步一键安装 OpenClaw 网关与微信通道插件</li>
+              <li>手机微信扫描言智里显示的二维码完成登录（如提示验证码，直接在向导里输入）</li>
+              <li>保存后自动装配桥接：微信消息由言智 AI 处理并自动回复</li>
             </ol>
-            <div class="guide-callback">回调地址：<code>{{ callbackBase }}/api/im/inbound/wechat-personal</code></div>
-            <div class="guide-callback">提示：发送方向与二维码生成待 ClawBot CLI 接口确认后接入</div>
+            <div class="guide-callback">无需公网地址；本机 Node 不满足版本要求时向导会自动下载托管运行时</div>
           </template>
         </div>
 
@@ -150,14 +154,22 @@
                 <el-input v-model="form.agentId" />
                 <span class="field-help">应用详情页的 AgentId</span>
               </el-form-item>
-              <el-form-item label="Token">
-                <el-input v-model="form.token" />
-                <span class="field-help">接收消息 > API接收 设置的 Token（收消息必需）</span>
-              </el-form-item>
-              <el-form-item label="EncodingAESKey">
-                <el-input v-model="form.encodingAesKey" />
-                <span class="field-help">同页 43 位 EncodingAESKey（加密模式收消息必需）</span>
-              </el-form-item>
+            <el-form-item label="Token">
+              <el-input v-model="form.token">
+                <template #append>
+                  <el-button @click="genWechatCreds('token')">生成</el-button>
+                </template>
+              </el-input>
+              <span class="field-help">接收消息 > API接收 设置的 Token（收消息必需，可一键生成）</span>
+            </el-form-item>
+            <el-form-item label="EncodingAESKey">
+              <el-input v-model="form.encodingAesKey">
+                <template #append>
+                  <el-button @click="genWechatCreds('aes')">生成</el-button>
+                </template>
+              </el-input>
+              <span class="field-help">同页 43 位 EncodingAESKey（加密模式收消息必需，可一键生成）</span>
+            </el-form-item>
             </template>
             <template v-else-if="form.provider === 'dingtalk'">
               <el-form-item label="Client ID">
@@ -170,11 +182,42 @@
               </el-form-item>
             </template>
             <template v-else>
-              <el-form-item label="Bot 名称">
-                <el-input v-model="form.botName" />
-                <span class="field-help">ClawBot 登录的个人微信昵称（标识用）</span>
+              <el-form-item label="名称">
+                <el-input v-model="form.name" placeholder="如：我的微信助手" />
               </el-form-item>
             </template>
+            <!-- 个人微信一键面板（与名称同屏） -->
+            <div v-if="form.provider === 'wechat-personal'" class="oc-panel">
+              <div class="oc-env">
+                <template v-if="ocEnv">
+                  <span :class="ocEnv.nodeOk ? 'oc-ok' : 'oc-bad'">Node {{ ocEnv.nodeVersion || '缺失' }}</span>
+                  <span :class="ocEnv.openclawVersion ? 'oc-ok' : 'oc-bad'">OpenClaw {{ ocEnv.openclawVersion || '未安装' }}</span>
+                  <span :class="ocEnv.gatewayRunning ? 'oc-ok' : 'oc-bad'">Gateway {{ ocEnv.gatewayRunning ? '运行中' : '未运行' }}</span>
+                </template>
+                <span v-else class="oc-bad">环境检测中…</span>
+              </div>
+              <div v-if="ocLogs.length" class="oc-logs">
+                <div v-for="(l, i) in ocLogs" :key="i">{{ l }}</div>
+              </div>
+              <div class="oc-actions">
+                <el-button :loading="ocInstalling" :disabled="ocReady" @click="ocInstall">
+                  {{ ocEnv?.openclawVersion ? '已安装' : '一键安装' }}
+                </el-button>
+                <el-button type="primary" :loading="ocLoginPolling" :disabled="!ocReady || ocLoginDone" @click="ocStartLogin">
+                  {{ ocLoginDone ? '已连接' : '扫码连接' }}
+                </el-button>
+                <el-button v-if="ocLoginPolling" @click="ocCancelLogin">取消</el-button>
+              </div>
+              <div v-if="ocLoginPolling && ocNeedVerify" class="oc-verify">
+                <el-input v-model="ocVerify" placeholder="输入手机微信收到的验证码" size="small" @keyup.enter="ocSendVerify" />
+                <el-button size="small" type="primary" @click="ocSendVerify">提交验证码</el-button>
+              </div>
+              <div v-if="ocQrDataUrl" class="oc-qr">
+                <img :src="ocQrDataUrl" alt="微信登录二维码" />
+                <div class="oc-qr-tip">手机微信扫码登录；过期会自动刷新</div>
+              </div>
+              <div v-if="ocStatusText" class="oc-status" :class="{ bad: ocStatusBad }">{{ ocStatusText }}</div>
+            </div>
           </el-form>
         </div>
 
@@ -212,7 +255,7 @@
         <el-button v-if="step === 1" type="primary" disabled>请选择平台</el-button>
         <el-button v-if="step === 2" type="primary" :icon="ArrowRight" @click="step = 3">下一步</el-button>
         <el-button v-if="step === 3" type="primary" :icon="ArrowRight" @click="step = 4" :disabled="!form.name.trim()">下一步</el-button>
-        <el-button v-if="step === 4" type="primary" :loading="saving || testing" @click="testAndSave">测试并保存</el-button>
+        <el-button v-if="step === 4" type="primary" :loading="saving || testing || ocAssembling" @click="testAndSave">测试并保存</el-button>
         <el-button v-if="step === 5" type="primary" @click="finishWizard">完成</el-button>
       </template>
     </el-dialog>
@@ -291,12 +334,145 @@ function configFrom(f: typeof form.value) {
     return { appId: f.appId, appSecret: f.appSecret, verificationToken: f.verificationToken };
   }
   if (f.provider === 'wechat-personal') {
-    return { botName: f.botName };
+    // bridgeToken 由后端在创建/更新时生成并保留，前端不回传
+    return {};
   }
   if (f.provider === 'dingtalk') {
     return { clientId: f.clientId, clientSecret: f.clientSecret };
   }
   return { corpId: f.corpId, secret: f.secret, agentId: f.agentId, token: f.token, encodingAesKey: f.encodingAesKey };
+}
+
+/** 企微 Token(3-32 位字母数字) / EncodingAESKey(43 位字母数字) 一键生成，用户只需粘贴进后台 */
+function genWechatCreds(kind: 'token' | 'aes') {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const len = kind === 'token' ? 24 : 43;
+  const buf = new Uint8Array(len);
+  crypto.getRandomValues(buf);
+  let out = '';
+  for (let i = 0; i < len; i++) out += alphabet[buf[i] % alphabet.length];
+  if (kind === 'token') form.value.token = out;
+  else form.value.encodingAesKey = out;
+}
+
+// ===== 个人微信一键面板 =====
+const ocEnv = ref<any>(null);
+const ocInstalling = ref(false);
+const ocJob = ref<any>(null);
+const ocLoginPolling = ref(false);
+const ocLogin = ref<any>(null);
+const ocQrDataUrl = ref('');
+const ocVerify = ref('');
+const ocAssembling = ref(false);
+let ocInstallTimer: ReturnType<typeof setTimeout> | null = null;
+let ocLoginTimer: ReturnType<typeof setTimeout> | null = null;
+let ocLastQrUrl = '';
+
+const ocLogs = computed(() => ocJob.value?.logs || []);
+const ocReady = computed(() => !!ocEnv.value?.openclawVersion);
+const ocLoginDone = computed(() => ocLogin.value?.state?.phase === 'success' || !!ocEnv.value?.gatewayRunning);
+const ocNeedVerify = computed(() => !!(ocLogin.value?.logs || []).some((l: string) => l.includes('验证码')));
+const ocStatusText = computed(() => {
+  const ls = ocLogin.value;
+  if (ocAssembling.value) return '正在装配桥接并重启网关…';
+  if (!ls) return '';
+  const phase = ls.state?.phase;
+  if (phase === 'success') return `✅ ${ls.state?.message || '微信连接成功'}`;
+  if (phase === 'error') return `⛔ ${ls.state?.message || '登录失败'}`;
+  if (phase === 'verifying') return '已扫码，正在验证…';
+  if (phase === 'waiting_scan') return ocQrDataUrl.value ? '等待手机微信扫码…' : '正在获取二维码…';
+  if (ls.active) return '登录进行中…';
+  if (ls.exitCode != null && ls.exitCode !== 0) return `登录进程退出（code ${ls.exitCode}）`;
+  return ls.state?.message || '';
+});
+const ocStatusBad = computed(() => {
+  const phase = ocLogin.value?.state?.phase;
+  return phase === 'error' || (!!ocLogin.value && !ocLogin.value.active && ocLogin.value.exitCode !== 0 && phase !== 'success');
+});
+
+async function refreshOcEnv() {
+  const res = await api.get<any>('/im/openclaw/status');
+  if (!('error' in res)) ocEnv.value = res.data;
+}
+
+function stopOcPolling() {
+  if (ocInstallTimer) { clearTimeout(ocInstallTimer); ocInstallTimer = null; }
+  if (ocLoginTimer) { clearTimeout(ocLoginTimer); ocLoginTimer = null; }
+  ocInstalling.value = false;
+  ocLoginPolling.value = false;
+}
+
+async function ocInstall() {
+  ocInstalling.value = true;
+  const r = await api.post<any>('/im/openclaw/install');
+  if ('error' in r) {
+    ocInstalling.value = false;
+    ElMessage.error(r.error);
+    return;
+  }
+  const poll = async () => {
+    const jr = await api.get<any>('/im/openclaw/install-job');
+    if (!('error' in jr) && jr.data) {
+      ocJob.value = jr.data;
+      if (jr.data.finishedAt || jr.data.step === 'error') {
+        ocInstalling.value = false;
+        if (jr.data.step === 'error') ElMessage.error(`安装失败：${jr.data.error}`);
+        else ElMessage.success('安装完成');
+        await refreshOcEnv();
+        return;
+      }
+    }
+    ocInstallTimer = setTimeout(poll, 2000);
+  };
+  void poll();
+}
+
+async function ocStartLogin() {
+  const r = await api.post<any>('/im/openclaw/login/start');
+  if ('error' in r) {
+    ElMessage.error(r.error);
+    return;
+  }
+  ocLogin.value = null;
+  ocQrDataUrl.value = '';
+  ocLastQrUrl = '';
+  ocLoginPolling.value = true;
+  const poll = async () => {
+    const sr = await api.get<any>('/im/openclaw/login/status');
+    if (!('error' in sr) && sr.data) {
+      ocLogin.value = sr.data;
+      const url = sr.data.state?.qrUrl || '';
+      if (url && url !== ocLastQrUrl) {
+        ocLastQrUrl = url;
+        ocQrDataUrl.value = await QRCode.toDataURL(url, { width: 220, margin: 1 });
+      }
+      if (sr.data.state?.phase === 'success') {
+        ocLoginPolling.value = false;
+        ElMessage.success('微信连接成功');
+        await refreshOcEnv();
+        return;
+      }
+      if (sr.data.state?.phase === 'error' || (!sr.data.active && sr.data.exitCode !== 0)) {
+        ocLoginPolling.value = false;
+        return;
+      }
+    }
+    ocLoginTimer = setTimeout(poll, 2000);
+  };
+  void poll();
+}
+
+async function ocCancelLogin() {
+  await api.post('/im/openclaw/login/cancel');
+  ocLoginPolling.value = false;
+  if (ocLoginTimer) { clearTimeout(ocLoginTimer); ocLoginTimer = null; }
+}
+
+async function ocSendVerify() {
+  const code = ocVerify.value.trim();
+  if (!code) return;
+  await api.post('/im/openclaw/login/verify', { code });
+  ocVerify.value = '';
 }
 
 function resetForm() {
@@ -339,6 +515,7 @@ function openEdit(c: any) {
 function chooseProvider(p: 'feishu' | 'wechat' | 'wechat-personal' | 'dingtalk') {
   form.value.provider = p;
   step.value = 2;
+  if (p === 'wechat-personal') void refreshOcEnv();
 }
 
 async function testAndSave() {
@@ -358,6 +535,17 @@ async function testAndSave() {
     return;
   }
   if (!editingId.value) editingId.value = res.data.id;
+  // 个人微信：保存后自动装配桥接插件并拉起网关（失败给出可行动错误，不再假装通过）
+  if (form.value.provider === 'wechat-personal') {
+    ocAssembling.value = true;
+    const ar = await api.post<any>('/im/openclaw/bridge/assemble', { connectorId: editingId.value });
+    ocAssembling.value = false;
+    if ('error' in ar) {
+      testResult.value = 'fail';
+      testError.value = ar.error;
+      return;
+    }
+  }
   testing.value = true;
   const tr = await api.post<any>(`/im/connectors/${editingId.value}/test`);
   testing.value = false;
@@ -371,6 +559,7 @@ async function testAndSave() {
 }
 
 async function finishWizard() {
+  stopOcPolling();
   showWizard.value = false;
   await load();
 }
@@ -414,7 +603,7 @@ function providerLabel(p: string) {
 function configSummary(c: any) {
   const config = c.config || {};
   if (c.provider === 'feishu') return config.appId ? `App ID ${config.appId}` : '未配置凭据';
-  if (c.provider === 'wechat-personal') return config.botName ? `Bot ${config.botName}` : '未配置 Bot';
+  if (c.provider === 'wechat-personal') return config.bridgeToken ? '本机 OpenClaw 桥接' : '未连接';
   if (c.provider === 'dingtalk') return config.clientId ? `Client ID ${config.clientId}` : '未配置凭据';
   return config.corpId ? `Corp ID ${config.corpId}` : '未配置凭据';
 }
@@ -593,6 +782,7 @@ async function decodeQrImage(file: File): Promise<string | null> {
 }
 
 .choice-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -719,5 +909,90 @@ async function decodeQrImage(file: File): Promise<string | null> {
   .step-choice {
     grid-template-columns: 1fr;
   }
+}
+
+/* 平台卡片徽标：本地·免公网 / 需公网地址 */
+.choice-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+.choice-badge.ok {
+  color: #1f9d55;
+  background: rgba(34, 197, 94, 0.12);
+}
+.choice-badge.warn {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+/* 个人微信一键面板 */
+.oc-panel {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.oc-env {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.oc-ok {
+  color: #1f9d55;
+}
+.oc-bad {
+  color: #b45309;
+}
+.oc-logs {
+  max-height: 140px;
+  overflow-y: auto;
+  background: var(--color-bg-secondary, #f7f7f8);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: var(--font-mono, monospace);
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+.oc-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.oc-verify {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.oc-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.oc-qr img {
+  width: 220px;
+  height: 220px;
+  border-radius: 8px;
+}
+.oc-qr-tip {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.oc-status {
+  font-size: 13px;
+}
+.oc-status.bad {
+  color: #dc2626;
 }
 </style>

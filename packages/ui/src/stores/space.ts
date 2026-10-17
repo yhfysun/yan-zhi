@@ -1,4 +1,7 @@
 // 空间（文件夹）store —— 组织会话与目录绑定
+//
+// 父子层级（2026-10-17「父任务目录」）：子目录 = 子空间（parentId 指向父空间）。
+//   层级只允许两级；收编（磁盘子文件夹 → 子空间）由服务端 sync-subdirs 负责。
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -16,6 +19,7 @@ function rowToSpace(r: any): Space {
     description: r.description,
     taskType: r.task_type ?? r.taskType ?? undefined,
     taskConfigJson: r.task_config_json ?? r.taskConfigJson ?? undefined,
+    parentId: r.parent_id ?? r.parentId ?? undefined,
     sortOrder: r.sort_order ?? r.sortOrder ?? 0,
     createdAt: r.created_at ?? r.createdAt,
     updatedAt: r.updated_at ?? r.updatedAt,
@@ -48,6 +52,15 @@ export const useSpaceStore = defineStore('space', () => {
 
   const currentSpace = computed(() => spaces.value.find((s) => s.id === currentSpaceId.value) || null);
 
+  /** 顶层空间（未挂父的）—— 侧栏第一层 */
+  const rootSpaces = computed(() => spaces.value.filter((s) => !s.parentId));
+  /** 某父任务目录下的子空间（子目录），按名称排序 */
+  function childSpacesOf(parentId: string): Space[] {
+    return spaces.value
+      .filter((s) => s.parentId === parentId)
+      .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0) || a.name.localeCompare(b.name));
+  }
+
   async function loadSpaces() {
     loading.value = true;
     try {
@@ -66,10 +79,10 @@ export const useSpaceStore = defineStore('space', () => {
     }
   }
 
-  async function createSpace(data: { name: string; dirPath?: string; description?: string }): Promise<string> {
+  async function createSpace(data: { name: string; dirPath?: string; description?: string; parentId?: string }): Promise<string> {
     if (isServerMode()) {
       const r = await api.post<any>('/spaces', {
-        name: data.name, dirPath: data.dirPath, description: data.description,
+        name: data.name, dirPath: data.dirPath, description: data.description, parentId: data.parentId,
       });
       if ('data' in r) {
         const space = rowToSpace(r.data);
@@ -82,8 +95,8 @@ export const useSpaceStore = defineStore('space', () => {
     const id = uid('sp_');
     const now = Date.now();
     await adapter.db.exec(
-      'INSERT INTO space (id, name, dir_path, description, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [id, data.name, data.dirPath || null, data.description || null, 0, now, now],
+      'INSERT INTO space (id, name, dir_path, description, parent_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, data.name, data.dirPath || null, data.description || null, data.parentId || null, 0, now, now],
     );
     await loadSpaces();
     return id;
@@ -98,7 +111,7 @@ export const useSpaceStore = defineStore('space', () => {
     return createSpace({ name, dirPath });
   }
 
-  async function updateSpace(id: string, patch: { name?: string; dirPath?: string; description?: string; sortOrder?: number; taskType?: string | null; taskConfigJson?: string | null }) {
+  async function updateSpace(id: string, patch: { name?: string; dirPath?: string; description?: string; sortOrder?: number; taskType?: string | null; taskConfigJson?: string | null; parentId?: string | null }) {
     if (isServerMode()) {
       const body: any = {};
       if (patch.name !== undefined) body.name = patch.name;
@@ -107,6 +120,7 @@ export const useSpaceStore = defineStore('space', () => {
       if (patch.sortOrder !== undefined) body.sortOrder = patch.sortOrder;
       if (patch.taskType !== undefined) body.taskType = patch.taskType;
       if (patch.taskConfigJson !== undefined) body.taskConfigJson = patch.taskConfigJson;
+      if (patch.parentId !== undefined) body.parentId = patch.parentId;
       if (Object.keys(body).length === 0) return;
       await api.patch(`/spaces/${id}`, body);
     } else {
@@ -117,6 +131,7 @@ export const useSpaceStore = defineStore('space', () => {
       if (patch.dirPath !== undefined) { sets.push('dir_path = ?'); params.push(patch.dirPath || null); }
       if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description || null); }
       if (patch.sortOrder !== undefined) { sets.push('sort_order = ?'); params.push(patch.sortOrder); }
+      if (patch.parentId !== undefined) { sets.push('parent_id = ?'); params.push(patch.parentId || null); }
       if (sets.length === 0) return;
       sets.push('updated_at = ?'); params.push(Date.now());
       params.push(id);
@@ -141,13 +156,15 @@ export const useSpaceStore = defineStore('space', () => {
     return (r.data as any[]) || [];
   }
 
-  /** 删除空间：仅删 space 记录，其下会话 space_id 置空归"未归类" */
+  /** 删除空间：仅删 space 记录，其下会话 space_id 置空归"未归类"；子空间上提为顶层 */
   async function deleteSpace(id: string) {
     if (isServerMode()) {
       await api.delete(`/spaces/${id}`);
     } else {
       const adapter = getPlatformAdapter();
       await adapter.db.exec('UPDATE conversation SET space_id = NULL WHERE space_id = ?', [id]);
+      // 删父不毁子：子空间上提为顶层（与服务端 promoteChildSpaces 同语义）
+      await adapter.db.exec('UPDATE space SET parent_id = NULL WHERE parent_id = ?', [id]);
       await adapter.db.exec('DELETE FROM space WHERE id = ?', [id]);
     }
     if (currentSpaceId.value === id) {
@@ -155,6 +172,21 @@ export const useSpaceStore = defineStore('space', () => {
       persistCurrentSpaceId();
     }
     await loadSpaces();
+  }
+
+  // ── 父任务目录的子目录同步（2026-10-17）──
+
+  /**
+   * 把父任务目录 dir_path 下的磁盘子文件夹同步成子空间（服务端扫盘，幂等）。
+   * 已有的平铺空间（dirPath 命中）被自动收编，绝不重复建 —— 用户拍板的「自动合并」。
+   * 返回 { adopted, created } 供 toast 汇报。
+   */
+  async function syncSubdirs(spaceId: string): Promise<{ adopted: string[]; created: string[] }> {
+    const r = await api.post<any>(`/spaces/${spaceId}/sync-subdirs`);
+    if ('error' in r && r.error) throw new Error(String((r as any).error));
+    await loadSpaces();
+    const d = (r as any).data || {};
+    return { adopted: d.adopted || [], created: d.created || [] };
   }
 
   function selectSpace(id: string | null) {
@@ -183,7 +215,9 @@ export const useSpaceStore = defineStore('space', () => {
 
   return {
     spaces, loading, currentSpaceId, currentSpace,
+    rootSpaces, childSpacesOf,
     loadSpaces, createSpace, findOrCreateByDirPath, updateSpace, deleteSpace, selectSpace,
+    syncSubdirs,
     readSpaceMemory, writeSpaceMemory,
     loadSpaceResources, listResourceDir,
   };

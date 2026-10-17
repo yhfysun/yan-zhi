@@ -13,6 +13,7 @@
     "postinstall": "node ./scripts/fix-sqlite-electron.cjs || true"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.76.0",
     "@yan-zhi/core": "workspace:*",
     "@yan-zhi/shared": "workspace:*",
     "adm-zip": "^0.6.0",

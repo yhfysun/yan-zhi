@@ -1,9 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
+import { isParentTaskType } from '@yan-zhi/shared';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { readSpaceMemory, writeSpaceMemory } from '../services/space-memory.js';
 import { setSpaceTaskType, listResourceDir, summarizeResourceDirs, resolveResourceFilePath } from '../services/space-resources.js';
+import { syncSpaceSubdirs, promoteChildSpaces, validateParent } from '../services/space-tree.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -16,6 +18,7 @@ function rowToSpace(r: any) {
     description: r.description,
     taskType: r.task_type ?? null,
     taskConfigJson: r.task_config_json ?? null,
+    parentId: r.parent_id ?? null,
     sortOrder: r.sort_order ?? 0,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -37,13 +40,18 @@ router.get('/', (req: Request, res: Response) => {
 // POST /api/spaces —— 创建空间
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { name, dirPath, description, sortOrder } = req.body || {};
+  const { name, dirPath, description, sortOrder, parentId } = req.body || {};
   if (!name) { res.status(400).json({ error: '名称为必填项' }); return; }
+  // parent_id（2026-10-17 父任务目录）：给了就必须合法（存在 / 不是自己 / 只允许两级）
+  if (parentId) {
+    const bad = validateParent(userId, null, String(parentId));
+    if (bad) { res.status(400).json({ error: bad }); return; }
+  }
   const id = uuid();
   const now = Date.now();
   db.prepare(
-    'INSERT INTO space (id, user_id, name, dir_path, description, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, userId, name, dirPath || null, description || null, sortOrder ?? 0, now, now);
+    'INSERT INTO space (id, user_id, name, dir_path, description, parent_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, userId, name, dirPath || null, description || null, parentId || null, sortOrder ?? 0, now, now);
   // ★ 建空间时**不建资源目录**：目录骨架只在设任务类型时建（见 setSpaceTaskType）。
   //   用户明确："没有任务类型默认目录不需要建立" —— 没绑类型的空间是零散任务容器。
   const row = db.prepare('SELECT * FROM space WHERE id = ?').get(id);
@@ -63,6 +71,15 @@ router.patch('/:id', async (req: Request, res: Response) => {
   if (req.body.dirPath !== undefined) { sets.push('dir_path = ?'); vals.push(req.body.dirPath || null); }
   if (req.body.description !== undefined) { sets.push('description = ?'); vals.push(req.body.description || null); }
   if (req.body.sortOrder !== undefined) { sets.push('sort_order = ?'); vals.push(req.body.sortOrder); }
+  // parent_id（2026-10-17）：null = 上提为顶层；变更时校验父合法性
+  if (req.body.parentId !== undefined) {
+    const pid = req.body.parentId || null;
+    if (pid) {
+      const bad = validateParent(userId, sid, String(pid));
+      if (bad) { res.status(400).json({ error: bad }); return; }
+    }
+    sets.push('parent_id = ?'); vals.push(pid);
+  }
   // taskType：走专用服务（建资源目录骨架 + 写 task.json，幂等），不在这里裸改列
   if (req.body.taskType !== undefined && req.body.taskType !== existing.task_type) {
     try {
@@ -75,12 +92,37 @@ router.patch('/:id', async (req: Request, res: Response) => {
   if (req.body.taskConfigJson !== undefined) {
     sets.push('task_config_json = ?'); vals.push(req.body.taskConfigJson || null);
   }
-  if (sets.length === 0) { res.json({ data: rowToSpace(db.prepare('SELECT * FROM space WHERE id = ?').get(sid)) }); return; }
-  sets.push('updated_at = ?'); vals.push(Date.now());
-  vals.push(sid);
-  db.prepare(`UPDATE space SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  if (sets.length > 0) {
+    sets.push('updated_at = ?'); vals.push(Date.now());
+    vals.push(sid);
+    db.prepare(`UPDATE space SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  // ★ 自动收编子目录（2026-10-17 用户拍板「设置成父任务类型自动合并」）：
+  //   空间设成**父任务类型**（有子线）后，把它 dir_path 下的子文件夹同步成子空间
+  //   （已有的平铺空间直接收编，不重复建）。dirPath 变更且已是父类型时也重扫一次。
+  //   失败不阻塞更新本身（收编是增强动作，报错会在显式同步端点里暴露）。
+  const after = db.prepare('SELECT * FROM space WHERE id = ?').get(sid) as any;
+  const isParentSpace = !!after?.task_type && after.parent_id == null && isParentTaskType(after.task_type);
+  if (isParentSpace && (req.body.taskType !== undefined || req.body.dirPath !== undefined)) {
+    try { await syncSpaceSubdirs(userId, sid); } catch { /* 显式同步端点里会给出可读错误 */ }
+  }
+
   const row = db.prepare('SELECT * FROM space WHERE id = ?').get(sid);
   res.json({ data: rowToSpace(row) });
+});
+
+// POST /api/spaces/:id/sync-subdirs —— 把父任务目录下的磁盘子文件夹同步成子空间（幂等）
+//
+// ★ 自动收编的显式入口：侧栏父任务目录右键「同步子目录」；绑定父任务类型时 PATCH 里也会
+//   自动触发一次，这里是重扫/补救入口（新放了文件夹进来、或自动同步失败时用）。
+router.post('/:id/sync-subdirs', async (req: Request, res: Response) => {
+  try {
+    const data = await syncSpaceSubdirs(req.user!.userId, req.params.id);
+    res.json({ data });
+  } catch (e: unknown) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // GET /api/spaces/:id/resources —— 资源目录概览（各段文件数，供「项目资源」段渲染）
@@ -172,6 +214,8 @@ router.delete('/:id', (req: Request, res: Response) => {
   if (!existing) { res.status(404).json({ error: '空间不存在' }); return; }
   // 置空其下会话的 space_id
   db.prepare('UPDATE conversation SET space_id = NULL WHERE space_id = ? AND user_id = ?').run(sid, userId);
+  // 子空间上提为顶层（删父不毁子，与 task-types 删父类型同语义）
+  promoteChildSpaces(sid);
   db.prepare('DELETE FROM space WHERE id = ?').run(sid);
   res.json({ ok: true });
 });

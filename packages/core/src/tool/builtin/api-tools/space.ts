@@ -50,7 +50,8 @@ export function registerSpaceTools(m: Map<ApiModuleName, ToolDefinition[]>) {
       name: 'api_space_set_task_type',
       description:
         '给空间（目录）设置或更改「任务模式」。用户说"这个目录以后都按小说改写/配音/翻译来"时调用它。' +
-        '可选值：novel_rewrite 小说改写 / novel_tuiwen 小说推文 / translate 翻译 / script_copy 脚本文案 / audiobook 有声小说 / dubbing 配音 / ' +
+        '可选值：parent 父任务（独立的父任务目录：下面挂子目录，各子目录各自设工作类型）/ ' +
+        'novel_rewrite 小说改写 / novel_tuiwen 小说推文 / translate 翻译 / script_copy 脚本文案 / audiobook 有声小说 / dubbing 配音 / ' +
         'comic 漫画绘本 / ppt_deck PPT 生成 / short_drama 短剧 / longform 长文写作 / ' +
         'douyin_ops 抖音运营（父任务：一个目录管多条线，每条任务再选 douyin_traffic 抖音引流 或 douyin_sell 抖音图文带货）。' +
         '传 null 或空串 = 改回「通用」（不再按任务流程推进，但**已建的资源目录与文件都会保留**）。' +
@@ -67,7 +68,8 @@ export function registerSpaceTools(m: Map<ApiModuleName, ToolDefinition[]>) {
             //   用户/模型自建的类型也要能传进来 —— 写死 enum 会让"刚建的类型设不上"。
             //   合法性由服务端按「库行 ∪ 内置」校验，非法值会回可选清单。
             description:
-              '任务类型 id（key）。内置：novel_rewrite 小说改写 / novel_tuiwen 小说推文 / translate 翻译 / ' +
+              '任务类型 id（key）。内置：parent 父任务（独立的父任务目录，下面挂子目录）/ ' +
+              'novel_rewrite 小说改写 / novel_tuiwen 小说推文 / translate 翻译 / ' +
               'script_copy 脚本文案 / audiobook 有声小说 / dubbing 配音 / comic 漫画绘本 / ppt_deck PPT 生成 / ' +
               'short_drama 短剧 / longform 长文写作 / douyin_ops 抖音运营（父任务：一个目录管多条线）/ ' +
               'douyin_traffic 抖音引流 / douyin_sell 抖音图文带货 / ' +
@@ -75,7 +77,7 @@ export function registerSpaceTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               'shop_listing Listing 优化 / shop_ads 广告与利润 / shop_sourcing 1688 货源与铺货 / ' +
               'shop_transit 中转仓与头程 / shop_service 客服与售后；' +
               '也接受自建类型的 key（先 api_task_type_list 看看有哪些）。' +
-              '传 null 或空串表示改回通用。写给父任务类型的目录，每条任务再选子线',
+              '传 null 或空串表示改回通用。写给父任务类型（parent/douyin_ops/shop_ops）的目录，每条任务再选子线',
           },
         },
         required: ['taskType'],

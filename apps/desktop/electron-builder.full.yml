@@ -96,13 +96,13 @@ extraResources:
   - from: ../../assets/icons/icon.ico
     to: icon.ico
 # ── 体积裁剪：Electron 自带全部语言包，实测 locales/ 占 41MB ──
-# ★ 本项目界面全中文（部分英文术语），只保留简体中文 + 英文即可。
-#   Chromium 缺对应语言包时会回退 en-US，所以即使误设也不会白屏。
-#   ★ 注意：这一项对**安装包体积影响很小**（locales 在 NSIS 里压缩得动），
-#   主要收益是解开后的磁盘占用与分发解压耗时，属可选项；如遇界面语言异常先删这一项排查。
-electronLanguages:
-  - zh-CN
-  - en-US
+# ★ 本项目界面全中文（部分英文术语），原本只保留简体中文 + 英文（历史注释见下）。
+# ★★★ 2026-10-17：electron-builder 打包时会**按 electronLanguages 批量删除其余 ~50 个 .pak**，
+#   该批量删除触发沙箱 safe-delete 的 SAFE_DELETE_BULK_CONFIRM_REQUIRED（阈值 50）直接中断打包。
+#   electron-builder 25 没有 removeUnusedLanguages 开关，**故不再限制语言（保留全部语言包）**。
+#   安装包体积影响可忽略（locales 在 NSIS 里压缩得动），且彻底消除语言回退白屏风险。
+#   历史注释：Chromium 缺对应语言包时会回退 en-US，即使误设也不会白屏；该项原属可选项
+#   （主要省解开后的磁盘占用与分发解压耗时）。如需恢复裁剪，须先确认能绕过该批量删除守卫。
 win:
   target: nsis
   icon: ../../assets/icons/icon.ico

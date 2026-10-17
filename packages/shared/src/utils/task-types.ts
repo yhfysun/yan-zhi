@@ -130,6 +130,17 @@ export const TASK_TYPES: TaskTypeSpec[] = [
     steps: [],
   },
   {
+    // 独立的「父任务」类型（2026-10-17 用户拍板：父任务是**一个单独的类型**，
+    // 不是把抖音运营这类分组格式硬编码进下拉）。目录设成它 = 父任务目录：
+    // 侧栏下面挂子目录，每个子目录各自设工作类型（任意具体类型，不限某几条线）。
+    // 没有专属智能体、没有 SOP —— 它只负责"这个目录是父任务容器"这一层语义。
+    id: 'parent',
+    label: '父任务',
+    summary: '父任务目录：下面挂子目录，各子目录各自设工作类型',
+    guide: '这是父任务目录：侧栏右键「同步子目录」把磁盘子文件夹挂进来，每个子目录各选一种工作类型，任务按所选类型的流程推进。',
+    steps: [],
+  },
+  {
     id: 'novel_rewrite',
     label: '小说改写',
     summary: '原文 → 目标确认 → 大纲 → 逐章改写',
@@ -824,12 +835,6 @@ export function getTaskType(id?: string | null): TaskTypeSpec {
 // 父任务层（2026-10-14）：一个空间绑父类型，每条任务各选一条子线
 // ────────────────────────────────────────────────────────────
 
-/** 某类型的**子任务类型**（没有子类的返回空数组） */
-export function getChildTaskTypes(parentId?: string | null): TaskTypeSpec[] {
-  if (!parentId) return [];
-  return TASK_TYPES.filter((t) => t.parentId === parentId);
-}
-
 /** 某类型的父类型；没有父（本身就是父或普通类型）→ undefined */
 export function getTaskTypeParent(id?: string | null): TaskTypeSpec | undefined {
   const t = getTaskType(id);
@@ -838,13 +843,31 @@ export function getTaskTypeParent(id?: string | null): TaskTypeSpec | undefined 
 }
 
 /**
- * 是否父任务类型（= 有子类）。
+ * 是否父任务类型。
  *
- * ★ 判据用"有子类"而不是加一个 isParent 布尔字段：布尔字段会与 parentId 漂移
+ * ★ 两种父：① 独立的「父任务」类型（id=parent，容器语义，子目录可任选工作类型）；
+ *   ② 有子线的业务父类型（douyin_ops/shop_ops，子线固定为注册的几条）。
+ * ★ ②的判据用"有子类"而不是加一个 isParent 布尔字段：布尔字段会与 parentId 漂移
  *   （加了子类忘了翻布尔 → 下拉分组错、父类型被当成普通类型注入空 SOP）。
  */
 export function isParentTaskType(id?: string | null): boolean {
+  if (id === 'parent') return true;
   return getChildTaskTypes(id).length > 0;
+}
+
+/**
+ * 某父任务类型下的**可选工作类型**。
+ *
+ * ★ id=parent（独立父任务）→ 全部具体类型都可选（父任务本身与其它父类型除外）；
+ * ★ 业务父类型（douyin_ops 等）→ 只返回注册在它下面的子线；
+ * ★ 没有子类的返回空数组。
+ */
+export function getChildTaskTypes(parentId?: string | null): TaskTypeSpec[] {
+  if (!parentId) return [];
+  if (parentId === 'parent') {
+    return TASK_TYPES.filter((t) => t.id !== 'parent' && !t.parentId && !isParentTaskType(t.id));
+  }
+  return TASK_TYPES.filter((t) => t.parentId === parentId);
 }
 
 /** 顶层类型（下拉第一层：普通类型 + 父类型；子类型缩进在父类型下面） */

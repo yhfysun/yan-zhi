@@ -75,8 +75,14 @@ export const useTaskTypeStore = defineStore('taskType', (): TaskTypeStoreApi => 
     taskTypes,
     loaded,
     rootTaskTypes: computed(() => taskTypes.value.filter((t) => !t.parentId)),
-    childrenOf: (key: string) => taskTypes.value.filter((t) => t.parentId === key),
-    isParent: (key: string) => taskTypes.value.some((t) => t.parentId === key),
+    // id=parent（独立「父任务」类型）→ 全部具体类型都可选；业务父类型 → 只返回注册的子线
+    childrenOf: (key: string) => {
+      if (key === 'parent') {
+        return taskTypes.value.filter((t) => t.id !== 'parent' && !t.parentId && !taskTypes.value.some((c) => c.parentId === t.id));
+      }
+      return taskTypes.value.filter((t) => t.parentId === key);
+    },
+    isParent: (key: string) => key === 'parent' || taskTypes.value.some((t) => t.parentId === key),
     byKey,
     loadTaskTypes,
     async createTaskType(data: TaskTypeCreateInput): Promise<string> {

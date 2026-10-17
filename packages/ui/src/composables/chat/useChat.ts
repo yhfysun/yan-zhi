@@ -1571,8 +1571,9 @@ function createChat() {
 
   // ========== 空间（文件夹）管理 ==========
   const showSpaceEdit = ref(false);
-  // taskType：目录绑定的任务类型（「目录即任务」）。空串 = 通用
-  const spaceEditForm = ref({ id: '', name: '', dirPath: '', description: '', taskType: '' });
+  // taskType：目录绑定的任务类型（「目录即任务」）。空串 = 通用。
+  // parentId：非空 = 本空间是父任务目录下的「子目录」（创建模式可由父目录右键预置）。
+  const spaceEditForm = ref({ id: '', name: '', dirPath: '', description: '', taskType: '', parentId: '' });
   const spaceMenuTarget = ref<{ x: number; y: number; space: any } | null>(null);
 
   /**
@@ -1634,30 +1635,33 @@ function createChat() {
       dirPath: space.dirPath || '',
       description: space.description || '',
       taskType: space.taskType || '',
+      parentId: space.parentId || '',
     };
     showSpaceEdit.value = true;
   }
 
-  /** 新建空间：复用空间编辑对话框，id 为空表示创建模式 */
-  function openSpaceCreate() {
-    spaceEditForm.value = { id: '', name: '', dirPath: '', description: '', taskType: '' };
+  /** 新建空间：复用空间编辑对话框，id 为空表示创建模式；
+   *  传 parentId = 在父任务目录下建「子目录」（父目录右键菜单入口） */
+  function openSpaceCreate(parentId?: string) {
+    spaceEditForm.value = { id: '', name: '', dirPath: '', description: '', taskType: '', parentId: parentId || '' };
     showSpaceEdit.value = true;
   }
 
   async function saveSpaceEdit() {
     if (!spaceEditForm.value.name.trim()) { ElMessage.warning('名称不能为空'); return; }
+    const form = spaceEditForm.value;
     const payload = {
-      name: spaceEditForm.value.name.trim(),
-      dirPath: spaceEditForm.value.dirPath.trim() || undefined,
-      description: spaceEditForm.value.description.trim() || undefined,
+      name: form.name.trim(),
+      dirPath: form.dirPath.trim() || undefined,
+      description: form.description.trim() || undefined,
     };
-    if (!spaceEditForm.value.id) {
+    if (!form.id) {
       try {
-        const id = await spaceStore.createSpace(payload);
+        const id = await spaceStore.createSpace({ ...payload, parentId: form.parentId || undefined });
         // 创建后若选了任务类型，走 updateSpace（后端会建资源目录骨架 + 写 task.json）
-        if (spaceEditForm.value.taskType) {
-          await spaceStore.updateSpace(id, { taskType: spaceEditForm.value.taskType });
-          const t = getTaskType(spaceEditForm.value.taskType);
+        if (form.taskType) {
+          await spaceStore.updateSpace(id, { taskType: form.taskType });
+          const t = getTaskType(form.taskType);
           // 任务类型 → 专属智能体（A 方案）：选了类型就把人格+技能+工具面对齐
           applyTaskTypeAgent(spaceEditForm.value.taskType);
           ElMessage.success(`空间「${payload.name}」已创建（${t.label}：已生成 00-source 等资源目录）`);
@@ -1670,14 +1674,14 @@ function createChat() {
         return;
       }
     } else {
-      await spaceStore.updateSpace(spaceEditForm.value.id, payload);
+      await spaceStore.updateSpace(form.id, payload);
       // 任务类型单独走一次（仅在变化时请求，后端幂等建目录）
-      const cur = spaceStore.spaces.find((s) => s.id === spaceEditForm.value.id);
-      if ((cur?.taskType || '') !== spaceEditForm.value.taskType) {
+      const cur = spaceStore.spaces.find((s) => s.id === form.id);
+      if ((cur?.taskType || '') !== form.taskType) {
         try {
-          await spaceStore.updateSpace(spaceEditForm.value.id, { taskType: spaceEditForm.value.taskType || null });
-          const t = getTaskType(spaceEditForm.value.taskType);
-          if (spaceEditForm.value.taskType) {
+          await spaceStore.updateSpace(form.id, { taskType: spaceEditForm.value.taskType || null });
+          const t = getTaskType(form.taskType);
+          if (form.taskType) {
             // 任务类型 → 专属智能体（A 方案）
             applyTaskTypeAgent(spaceEditForm.value.taskType);
             ElMessage.success(`已设为「${t.label}」，资源目录（00-source / 01-reference / 02-work / 03-output）已就绪`);
@@ -1691,6 +1695,23 @@ function createChat() {
       } else {
         ElMessage.success('空间已更新');
       }
+    }
+    // ★ 父任务目录收编子目录（2026-10-17 用户拍板「设置成父任务类型自动合并」）：
+    //   设成父任务类型后把 dirPath 下的子文件夹同步成子空间 —— 已有平铺空间直接收编、
+    //   没有的新建，绝不重复。服务端 PATCH 里也会自动触发，这里显式调是为了拿结果汇报。
+    const savedId = form.id || spaceStore.currentSpaceId;
+    const saved = spaceStore.spaces.find((s) => s.id === savedId);
+    if (saved && !saved.parentId && saved.taskType && isParentTaskType(saved.taskType)) {
+      try {
+        const r = await spaceStore.syncSubdirs(saved.id);
+        const n = r.adopted.length + r.created.length;
+        if (n > 0) {
+          const parts: string[] = [];
+          if (r.adopted.length) parts.push(`收编已有目录 ${r.adopted.length} 个`);
+          if (r.created.length) parts.push(`新建子目录 ${r.created.length} 个`);
+          ElMessage.success(`「${saved.name}」：${parts.join('、')}（见侧栏层级）`);
+        }
+      } catch { /* 同步失败不阻塞保存；右键「同步子目录」可重试 */ }
     }
     showSpaceEdit.value = false;
   }
@@ -1744,6 +1765,23 @@ function createChat() {
     e.preventDefault();
     e.stopPropagation();
     spaceMenuTarget.value = { ...clampMenuPos(e), space };
+  }
+
+  /** 父任务目录右键「同步子目录」：把 dirPath 下的磁盘子文件夹收编成子空间（幂等，可反复点）。
+   *  设父任务类型保存时已自动同步过一次，这里是补扫入口（新放了文件夹 / 自动同步失败）。 */
+  async function syncSpaceSubdirsAction(space: any) {
+    if (!space?.id) return;
+    try {
+      const r = await spaceStore.syncSubdirs(space.id);
+      const n = r.adopted.length + r.created.length;
+      if (!n) { ElMessage.info('没有新的子目录需要同步'); return; }
+      const parts: string[] = [];
+      if (r.adopted.length) parts.push(`收编已有目录：${r.adopted.join('、')}`);
+      if (r.created.length) parts.push(`新建子目录：${r.created.join('、')}`);
+      ElMessage.success(parts.join('；'));
+    } catch (e: any) {
+      ElMessage.error(e?.message || '同步子目录失败');
+    }
   }
 
   function closeSpaceMenu() {
@@ -2097,14 +2135,17 @@ async function healStalePlatform() {
     }
   }
 
-  function onAgentSwitch(id: string) {
+  /** syncConv=false：只切选中智能体+模型，不回写当前会话（模式切换恢复用——
+   *  此刻 currentConvId 还是旧模式的会话，回写会把新模式智能体绑到旧会话上，
+   *  造成「助手随模式切换串会话」）。 */
+  function onAgentSwitch(id: string, syncConv = true) {
     agentStore.selectAgent(id);
     const agent = agentStore.agents.find((a) => a.id === id);
     if (agent?.modelId && chatModels.value.find((m) => m.id === agent.modelId)) {
       selectedModelId.value = agent.modelId;
     }
     // 同步更新当前会话的 agent_id，确保后端 list_sub_agents/call_agent 能查到正确的子智能体
-    if (store.currentConvId) {
+    if (syncConv && store.currentConvId) {
       void store.updateConversation(store.currentConvId, { agentId: id });
     }
   }
@@ -2402,10 +2443,20 @@ async function healStalePlatform() {
       // ★ 父任务目录：先让用户选本条任务走哪条子线（不选就不建会话）。
       //   父类型下空间本身也会切到父类型的智能体（agentId 相同），子线只影响 SOP 注入。
       //   ★ 父/子判定读 store（库行），否则用户在库里建的父子关系不生效。
-      if (targetSpace?.taskType && taskTypeStore.isParent(targetSpace.taskType) && !taskType) {
-        const children = taskTypeStore.childrenOf(targetSpace.taskType);
+      //   ★ 子目录（子空间）还没选子线时：上溯父目录拿「可选项」，但任务仍落在子目录 ——
+      //     选线框的 spaceId 必须是 targetSpace（不是父），否则任务会被塞进父目录。
+      let lineSpace = targetSpace;
+      if (lineSpace && !lineSpace.taskType && (lineSpace as any).parentId) {
+        lineSpace = spaceStore.spaces.find((s) => s.id === (lineSpace as any).parentId);
+      }
+      if (lineSpace?.taskType && taskTypeStore.isParent(lineSpace.taskType) && !taskType) {
+        const children = taskTypeStore.childrenOf(lineSpace.taskType);
         if (children.length > 0) {
-          taskLinePicker.value = { spaceId: targetSpace.id, spaceName: targetSpace.name || '', children };
+          taskLinePicker.value = {
+            spaceId: (targetSpace as any).id,
+            spaceName: (targetSpace as any).name || '',
+            children,
+          };
           return;
         }
       }
@@ -3976,7 +4027,7 @@ async function healStalePlatform() {
     // 否则用户看到"才用 30%"会以为很空 —— 而 30% 可能已越过有效边界。
     declaredContextWindow,
     openEditAgent, openCreateAgent, onAgentSaved, onAgentDeleted,
-    showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, selectSpaceAndSyncDir, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, openSpaceCreate, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace,
+    showSpaceEdit, spaceEditForm, spaceMenuTarget, selectSpace, selectSpaceAndSyncDir, createSpaceQuick, createSpaceFromDir, showSpaceDirPicker, openSpaceEdit, openSpaceCreate, saveSpaceEdit, deleteSpaceConfirm, openSpaceMenu, closeSpaceMenu, moveConvToSpace, syncSpaceSubdirsAction,
     taskTypes, pickedTaskType, applyTaskTypeAgent, syncMountsToAgent,
     treeMenu, openTreeMenu, treeMenuNewTask, treeMenuNewSpace, closeTreeMenu,
     enterBatchSelect, exitBatchMode, toggleBatchMode, toggleSelectAllInSpace, toggleSelectAllInRoot,

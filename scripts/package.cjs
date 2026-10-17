@@ -32,6 +32,7 @@
  *   --dry-run     只做环境检查与计划打印，**不移动目录、不构建**（预览用）
  *   --no-verify   跳过产物校验
  *   --keep-tmp    保留临时备份目录（默认构建成功后清理）
+ *   --no-fresh-output  旧产物被占用时**不**自动换产物根，只报错退出（默认会自动换根绕锁）
  *   -y / --yes    非交互确认（等价于默认全部；非 TTY 下自动生效）
  *
  * ★ 安卓路径会自动复用新鲜的 `apps/server/dist`（跳过编译）；陈旧则先真编译。
@@ -66,17 +67,29 @@ const {
   outDirForEdition,
   resolvePkgVersion,
 } = require(path.join(__dirname, '..', 'apps', 'desktop', 'scripts', 'lib', 'pack-helpers.cjs'));
-const RELEASE_ROOT = process.env.YZ_ALL_OUT_DIR || DEFAULT_RELEASE_ROOT;
 const DESKTOP_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'desktop', 'package.json') });
 const MOBILE_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'mobile', 'package.json') });
-const OUTPUT_DIRS = Object.fromEntries(ALL_EDITIONS.map((e) => [
-  e,
-  path.relative(ROOT, outDirForEdition(e, { repoRoot: ROOT, version: DESKTOP_VERSION, outRoot: RELEASE_ROOT })),
-]));
-const ANDROID_APK = path.join(
-  path.relative(ROOT, androidOutDir({ repoRoot: ROOT, version: MOBILE_VERSION, outRoot: RELEASE_ROOT })),
-  'app-debug.apk',
-);
+
+// ★ 产物根目录**可变**，所以这几个路径必须可重算、不能是只读常量：
+//   旧产物被句柄持有（EBUSY/EPERM）时，本脚本会自动换一个新根继续构建
+//   （见 switchToFreshRoot），换根后所有"写到哪 / 校验哪 / 列出哪"必须一起跟着变，
+//   否则会出现"移走 A 却写到 B"这种极难排查的错位。
+let RELEASE_ROOT = process.env.YZ_ALL_OUT_DIR || DEFAULT_RELEASE_ROOT;
+let OUTPUT_DIRS = null;
+let ANDROID_APK = null;
+/** 按给定的产物根重算全部产物路径 */
+function computePaths(outRoot) {
+  RELEASE_ROOT = outRoot;
+  OUTPUT_DIRS = Object.fromEntries(ALL_EDITIONS.map((e) => [
+    e,
+    path.relative(ROOT, outDirForEdition(e, { repoRoot: ROOT, version: DESKTOP_VERSION, outRoot })),
+  ]));
+  ANDROID_APK = path.join(
+    path.relative(ROOT, androidOutDir({ repoRoot: ROOT, version: MOBILE_VERSION, outRoot })),
+    'app-debug.apk',
+  );
+}
+computePaths(RELEASE_ROOT);
 
 const MOVABLE = [
   'apps/server/dist',
@@ -91,6 +104,12 @@ const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith('--')));
 const VERIFY = !flags.has('--no-verify');
 const KEEP_TMP = flags.has('--keep-tmp');
+/**
+ * 旧产物被句柄持有时（常见：dev 后端持有打包产物的 app.asar）是否**自动换产物根**继续构建。
+ * 默认开启 —— 换根后把交付物拷回标准树，用户拿到的路径不变；只是旧 win-unpacked 原样留下。
+ * 传 --no-fresh-output 则恢复旧行为：只报错退出（适合"必须先停 dev 再打"的场合）。
+ */
+const FRESH_OUTPUT = !flags.has('--no-fresh-output');
 // ★ 兼容 --dry：曾因写了 --dry（非 --dry-run）导致**误触发真实构建**（参数被忽略），
 //   故两个拼写都认，且 dry 模式下一切写操作都短路。
 const DRY = flags.has('--dry-run') || flags.has('--dry');
@@ -137,8 +156,7 @@ function moveAway(relPaths) {
     }
     const dest = path.join(bak, rel.replace(/[\\/]/g, '_'));
     try {
-      fs.rmSync(dest, { recursive: true, force: true });
-      fs.renameSync(p, dest);
+      moveWithRetry(p, dest);
       info(c.dim(`moved  ${rel}`));
     } catch (e) {
       // 极少数情况 rename 跨设备/被句柄持有时失败，退化为递归删除（若策略放行）
@@ -146,6 +164,132 @@ function moveAway(relPaths) {
       throw e;
     }
   }
+}
+
+// ─────────────────────── 占用（EBUSY/EPERM）处置 ───────────────────────
+/**
+ * 旧产物被句柄持有时（典型：dev 后端 electron 持有打包产物的 app.asar，
+ * 本机实测 PID 90524 / WorkBuddy.exe 持有 `…/win-unpacked/resources/app.asar`，
+ * 见 2026-10 排障），目录无法 rename（EBUSY/EPERM）。三层处置：
+ *   1) moveWithRetry —— 短暂重试，吃掉瞬时锁（杀软扫描 / 索引器）。
+ *   2) findLockedEntries —— 若仍锁，逐层 rename 探测，列出真正被占的路径。
+ *   3) switchToFreshRoot —— 持久锁则换一个**全新产物根**继续构建（旧目录一个都不动），
+ *      构建完把交付物（.exe/.blockmap/builder-*.yml）拷回标准树 dist-release/。
+ */
+const LOCK_CODES = /^(EPERM|EBUSY|EACCES)$/;
+// ★ 忙等而非 setTimeout：本脚本是同步顺序构建，锁通常秒级释放（杀软扫完即松），
+//   且 busy-wait 避免回调割裂主流程。
+const spin = (ms) => { const end = Date.now() + ms; while (Date.now() < end) {} };
+
+/** rename 带锁重试：仅对 LOCK_CODES 重试，其余错误立即抛出 */
+function moveWithRetry(src, dest, retries = 4, delayMs = 1200) {
+  fs.rmSync(dest, { recursive: true, force: true });
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(src, dest);
+      return;
+    } catch (e) {
+      if (!LOCK_CODES.test(e.code) || i >= retries) throw e;
+      spin(delayMs);
+    }
+  }
+}
+
+/**
+ * 逐层 rename 探测被占条目：把每个条目 rename 成探测名再 rename 回来，
+ * 失败（LOCK_CODES）即记录。目录记录带 '/' 后缀并递归；普通文件原样记录。
+ * 返回被占路径相对 dir 的列表（目录带 '/' 后缀）。
+ */
+function findLockedEntries(dir, base, out = [], depth = 0) {
+  if (depth > 8) return out;
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    if (LOCK_CODES.test(e.code)) out.push(base || '');
+    return out;
+  }
+  for (const ent of entries) {
+    const full = path.join(dir, ent.name);
+    const probe = full + '.lockprobe';
+    const rel = base ? path.join(base, ent.name) : ent.name;
+    try {
+      fs.renameSync(full, probe);
+      fs.renameSync(probe, full);
+    } catch (e) {
+      if (!LOCK_CODES.test(e.code)) continue; // 非锁错误（权限等）跳过
+      if (ent.isDirectory()) {
+        out.push(rel + '/');
+        findLockedEntries(full, rel, out, depth + 1);
+      } else {
+        out.push(rel);
+      }
+    }
+  }
+  return out;
+}
+
+/** 打印被占条目 + 常见持有者 + 用 handle.exe 确认的命令 */
+function reportLock(lockedEntries, dirName) {
+  fail(`${dirName} 被以下文件/目录占用，无法移走：`);
+  for (const e of lockedEntries) info(c.red(`    ${e}`));
+  info('');
+  info('常见持有者（本机实测）：');
+  info('  · dev 后端 electron（bin/dev.mjs 拉起的 electron，PID 见 handle.exe）');
+  info('  · 已启动的安装包/便携版 exe（进程里还开着旧版）');
+  info('  · 杀软实时扫描 / Windows 索引器（瞬时锁，重试已覆盖）');
+  info('');
+  info('确认持有者：下载 Sysinternals handle 后执行');
+  info(c.dim('    handle.exe -accepteula -nobanner win-unpacked'));
+  info('或指定进程：');
+  info(c.dim('    handle.exe -accepteula -nobanner -p <PID>'));
+}
+
+/**
+ * 换一个全新的产物根目录继续构建（旧根里的东西**一个都不动**，绕开锁）。
+ * 返回新根目录名。新根会写进 process.env.YZ_ALL_OUT_DIR，
+ * 下游 build-all-editions.cjs / electron-build.cjs 都读它，写到新根。
+ * 构建完成后由 copyDeliverablesBack 把交付物拷回标准树 dist-release/。
+ */
+let FRESH_ROOT_USED = null;
+function switchToFreshRoot(lockedDirName) {
+  const stamp = Date.now();
+  const newRoot = `dist-release-${stamp}`;
+  computePaths(newRoot);
+  process.env.YZ_ALL_OUT_DIR = newRoot;
+  FRESH_ROOT_USED = newRoot;
+  warn(`检测到 ${lockedDirName} 被占用，已自动切换产物根到 ${c.bold(newRoot)}`);
+  info('  · 旧目录原样保留，不做删除/改名');
+  info('  · 构建完成后交付物（.exe/.blockmap/builder-*.yml）会拷回标准树 dist-release/');
+  info('  · 如需手动清理旧目录，先停持有进程再用 handle.exe 确认无误再删');
+  return newRoot;
+}
+
+/** 若换过根，把新根里的交付物（exe/blockmap/builder-*.yml）拷回标准树 */
+function copyDeliverablesBack() {
+  if (!FRESH_ROOT_USED) return;
+  const fromRoot = path.join(ROOT, FRESH_ROOT_USED);
+  const toRoot = path.join(ROOT, DEFAULT_RELEASE_ROOT);
+  if (!fs.existsSync(fromRoot)) return;
+  const KEEP = /\.(exe|blockmap)$/i;
+  let copied = 0;
+  const walk = (dir, rel) => {
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const st = fs.statSync(full);
+      const target = path.join(toRoot, rel, name);
+      if (st.isDirectory()) {
+        fs.mkdirSync(target, { recursive: true });
+        walk(full, path.join(rel, name));
+      } else if (KEEP.test(name) || /^builder-.*\.yml$/i.test(name)) {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(full, target);
+        copied++;
+      }
+    }
+  };
+  walk(fromRoot, '');
+  if (copied) ok(`已将 ${copied} 个交付物从 ${FRESH_ROOT_USED} 拷回 ${DEFAULT_RELEASE_ROOT}/`);
 }
 
 /** shell 执行（继承 stdio，失败抛错；Windows 需要 shell 才能跑 .cmd/.bat） */
@@ -443,6 +587,11 @@ function parseTargets(raw) {
  *     它们可能上一轮刚产出，用户可能正要拿。
  */
 function moveOutDirContents(edition) {
+  // 已换根：新根为空，无物可移（旧目录原样保留），直接跳过避免二次撞锁
+  if (FRESH_ROOT_USED) {
+    info(c.dim(`skip   ${edition}（已换根，新根无需移走）`));
+    return;
+  }
   const dirName = OUTPUT_DIRS[edition];
   if (!dirName) return;
   const dir = path.join(ROOT, dirName);
@@ -465,10 +614,15 @@ function moveOutDirContents(edition) {
     const src = path.join(dir, n);
     const dest = path.join(bak, `${dirName}_${n}`.replace(/[\\/]/g, '_'));
     try {
-      fs.rmSync(dest, { recursive: true, force: true });
-      fs.renameSync(src, dest);
+      moveWithRetry(src, dest);
       info(c.dim(`moved  ${dirName}/${n}`));
     } catch (e) {
+      if (LOCK_CODES.test(e.code) && FRESH_OUTPUT) {
+        const locked = findLockedEntries(dir, path.basename(dirName));
+        reportLock(locked, dirName);
+        switchToFreshRoot(dirName); // 旧目录留下，后续改用新根构建
+        return;
+      }
       fail(`移动失败 ${dirName}/${n}: ${e.message}`);
       throw e;
     }
@@ -743,6 +897,7 @@ function cleanupTmp() {
   try {
     if (targets.desktop.length) buildDesktop(targets.desktop);
     if (targets.android) buildAndroid();
+    copyDeliverablesBack(); // 若换根，把交付物拷回标准树 dist-release/
 
     let verifyOk = true;
     if (VERIFY) verifyOk = verifyAll(targets);

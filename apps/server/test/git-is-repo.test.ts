@@ -14,10 +14,17 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { promises as fs } from 'node:fs';
+import { promises as fs, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gitService } from '../src/services/git.js';
+
+/** Windows 路径归一化：tmpdir() 在 Windows 上可能返回 8.3 短名（C:\Users\ADMINI~1\...），
+ *  而 `git rev-parse --show-toplevel` 返回的是规范长名（C:\Users\Administrator\...），
+ *  path.resolve 不做这两种归一化 → 直接字符串比对必炸（实测两处 root 断言全挂）。
+ *  realpathSync.native 走 GetFinalPathNameByHandle：展开短名 + 纠正大小写；
+ *  再统一小写兜底（Windows 文件系统大小写不敏感）。 */
+const canonWin = (p: string): string => realpathSync.native(p).toLowerCase();
 
 let dir = '';
 
@@ -40,7 +47,7 @@ describe('gitService.isRepo：普通目录必须得到一个"正常结论"，不
     await gitService.initRepo(dir);
     const r = await gitService.isRepo(dir);
     expect(r.isRepo).toBe(true);
-    expect(path.resolve(r.root as string)).toBe(path.resolve(dir));
+    expect(canonWin(r.root as string)).toBe(canonWin(dir));
   });
 
   it('★★ 仓库的**子目录**也判为 isRepo:true（rev-parse 会往上找，语义不能退化成"看有没有 .git"）', async () => {
@@ -48,7 +55,7 @@ describe('gitService.isRepo：普通目录必须得到一个"正常结论"，不
     await fs.mkdir(sub, { recursive: true });
     const r = await gitService.isRepo(sub);
     expect(r.isRepo).toBe(true);
-    expect(path.resolve(r.root as string)).toBe(path.resolve(dir));
+    expect(canonWin(r.root as string)).toBe(canonWin(dir));
   });
 
   it('相对路径仍被工作目录守卫拒绝（探针没有开后门）', async () => {

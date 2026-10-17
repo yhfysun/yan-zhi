@@ -179,6 +179,10 @@ export interface Space {
   /** 「目录即任务」：该目录绑定的任务类型 id（general/short_drama/... 见 shared/utils/task-types）。
    *  空/未设置 = 通用（不生成资源目录骨架、不注入 SOP）。 */
   taskType?: string;
+  /** 父空间 id（「父任务目录」层级，2026-10-17）：非空 = 本空间是某个父任务目录下的**子目录**。
+   *  子空间挂在工作目录的子文件夹上，任务类型只能选父空间类型的子线（如 抖音引流/图文带货）。
+   *  NULL = 顶层空间（行为与旧数据完全一致）。 */
+  parentId?: string;
   /** 类型在该目录下的覆盖配置（confirmBatchSize 等）。JSON 字符串。 */
   taskConfigJson?: string;
   sortOrder: number;

@@ -190,8 +190,8 @@
           </div>
         </div>
 
-        <!-- 各空间节点 -->
-        <div v-for="sp in spaceStore.spaces" :key="sp.id" class="tree-node tree-space">
+        <!-- 各空间节点（顶层；父任务目录下再渲染「子目录」层级，2026-10-17） -->
+        <div v-for="sp in spaceStore.rootSpaces" :key="sp.id" class="tree-node tree-space">
           <div
             class="tree-node-head"
             :class="{ 'tree-node-active': spaceStore.currentSpaceId === sp.id }"
@@ -223,6 +223,81 @@
             <el-icon class="tree-add-icon" @click.stop="startNewChat(sp.id)"><Plus /></el-icon>
           </div>
           <div v-show="!spaceCollapsed[sp.id]" class="tree-children">
+            <!-- ── 子目录（子空间，2026-10-17）──────────────────────────────
+                 父任务目录下的磁盘子文件夹 = 子空间（parentId 指回父空间）。
+                 点行 = 选中 + 工作目录同步到子目录；+ = 在子目录下新建任务
+                 （子目录已选子线就直接用，没选则弹选线框）。 -->
+            <div v-for="child in spaceStore.childSpacesOf(sp.id)" :key="child.id" class="tree-node tree-space tree-subspace">
+              <div
+                class="tree-node-head"
+                :class="{ 'tree-node-active': spaceStore.currentSpaceId === child.id }"
+                @click="onSpaceHeadClick(child.id)"
+                @dblclick="onSpaceHeadDblClick(child.id)"
+                @contextmenu.prevent="openSpaceMenu($event, child)"
+                v-on="bindLongPress((ev) => openSpaceMenu(ev, child))"
+              >
+                <el-icon class="tree-caret" :class="{ expanded: !spaceCollapsed[child.id] }"><CaretRight /></el-icon>
+                <el-icon class="tree-node-icon"><FolderOpened /></el-icon>
+                <span class="tree-node-label" :title="child.dirPath || child.name">{{ child.name }}</span>
+                <span
+                  v-if="child.taskType"
+                  class="tree-task-badge tree-task-badge-click"
+                  :title="`任务模式：${taskTypeLabel(child.taskType)}（点击更改）`"
+                  @click.stop="openSpaceEdit(child)"
+                >{{ taskTypeLabel(child.taskType) }}</span>
+                <span class="tree-count">{{ conversationsBySpace[child.id]?.length || 0 }}</span>
+                <el-icon class="tree-add-icon" @click.stop="startNewChat(child.id)"><Plus /></el-icon>
+              </div>
+              <div v-show="!spaceCollapsed[child.id]" class="tree-children">
+                <div
+                  v-for="conv in conversationsBySpace[child.id] || []"
+                  :key="conv.id"
+                  class="conv-item"
+                  :class="{ active: conv.id === store.currentConvId, pinned: conv.pinned, selecting: batchMode }"
+                  @click="batchMode ? toggleConvSelect(conv.id) : rows.activate(conv)"
+                  @contextmenu.prevent="openConvMenu($event, conv)"
+                  v-on="bindLongPress((ev) => openConvMenu(ev, conv))"
+                  @dblclick="!batchMode && rows.startRename(conv)"
+                >
+                  <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
+                  <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
+                  <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
+                  <span v-if="renamingId !== conv.id" class="conv-title">{{ conv.title }}</span>
+                  <el-input
+                    v-else
+                    v-model="renamingTitle"
+                    size="small"
+                    @click.stop
+                    @blur="rows.commitRename"
+                    @keydown.enter.prevent="rows.commitRename"
+                    @keydown.esc.prevent="rows.cancelRename"
+                    ref="renameInputRef"
+                  />
+                  <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
+                  <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
+                    <el-icon class="scheduled-badge"><Timer /></el-icon>
+                  </el-tooltip>
+                  <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
+                    <span
+                      class="task-row-act"
+                      :class="{ 'is-on': conv.pinned }"
+                      role="button"
+                      :title="conv.pinned ? '取消置顶' : '置顶'"
+                      @click="rows.togglePinned(conv)"
+                    ><el-icon :size="12"><Top /></el-icon></span>
+                    <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
+                      <el-icon :size="12"><EditPen /></el-icon>
+                    </span>
+                    <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)">
+                      <el-icon :size="12"><Rank /></el-icon>
+                    </span>
+                    <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)">
+                      <el-icon :size="12"><Delete /></el-icon>
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
             <div
               v-for="conv in conversationsBySpace[sp.id] || []"
               :key="conv.id"
@@ -278,7 +353,7 @@
               </span>
             </div>
             <EmptyState
-              v-if="!spaceCollapsed[sp.id] && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)"
+              v-if="!spaceCollapsed[sp.id] && spaceStore.childSpacesOf(sp.id).length === 0 && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)"
               icon="📝"
               :title="search ? '无匹配' : '暂无任务'"
               :action-text="!search && !batchMode ? '新建任务' : undefined"
@@ -412,12 +487,12 @@
       <el-icon><Rank /></el-icon>移动到空间
       <el-icon class="submenu-arrow"><ArrowRight /></el-icon>
       <ul class="ctx-submenu">
-        <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
+        <li v-if="moveSpaceList.length === 0" class="disabled-hint">暂无空间，请先创建</li>
         <li @click="rows.moveTo(ctxMenu.conv!, null)">
           <el-icon><Close /></el-icon>未归类
         </li>
-        <li v-for="sp in spaceStore.spaces" :key="sp.id" @click="rows.moveTo(ctxMenu.conv!, sp.id)">
-          <el-icon><FolderOpened /></el-icon>{{ sp.name }}
+        <li v-for="sp in moveSpaceList" :key="sp.id" @click="rows.moveTo(ctxMenu.conv!, sp.id)">
+          <el-icon><FolderOpened /></el-icon><span v-if="sp.child" class="move-child-prefix">└&nbsp;</span>{{ sp.name }}
         </li>
       </ul>
     </li>
@@ -436,12 +511,12 @@
   <!-- 行内「移动」按钮的空间选择浮层：与右键菜单「移动到空间」子菜单同列表、同一 moveTo 流程 -->
   <Teleport to="body">
     <ul v-if="rows.moveMenu.visible" class="ctx-menu" :style="{ top: rows.moveMenu.y + 'px', left: rows.moveMenu.x + 'px' }">
-      <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
+      <li v-if="moveSpaceList.length === 0" class="disabled-hint">暂无空间，请先创建</li>
       <li @click="rows.pickMoveTarget(null)">
         <el-icon><Close /></el-icon>未归类
       </li>
-      <li v-for="sp in spaceStore.spaces" :key="sp.id" @click="rows.pickMoveTarget(sp.id)">
-        <el-icon><FolderOpened /></el-icon>{{ sp.name }}
+      <li v-for="sp in moveSpaceList" :key="sp.id" @click="rows.pickMoveTarget(sp.id)">
+        <el-icon><FolderOpened /></el-icon><span v-if="sp.child" class="move-child-prefix">└&nbsp;</span>{{ sp.name }}
       </li>
     </ul>
   </Teleport>
@@ -483,31 +558,57 @@
       <!-- 任务类型：「目录即任务」——选定后自动生成资源目录骨架，模型按流程分步引导。
            父任务类型（如抖音运营）可缩进显示其子线：选父 = 一个目录管多条任务，每条任务再选线 -->
       <el-form-item label="任务类型">
-        <el-select v-model="spaceEditForm.taskType" placeholder="通用（不限定流程）" clearable style="width: 100%">
-          <!-- ★ 父子关系读 store（库行），否则用户在库里/让大模型建的父子关系显示不出来 -->
-          <template v-for="t in taskTypes" :key="t.id">
-            <el-option-group v-if="taskTypeStore.isParent(t.id)" :label="`${t.label}（多任务目录）`">
-              <el-option :label="t.label" :value="t.id">
+        <!-- 子目录（挂在父任务目录下）：只能选父目录类型的子线（用户 2026-10-17 拍板），
+             否则子目录绑了个不相干的类型，父目录"一套资源目录管多线"的口径就被劈开了 -->
+        <template v-if="editingChildOf">
+          <el-select v-model="spaceEditForm.taskType" placeholder="未设置（建任务时再选线）" clearable style="width: 100%">
+            <el-option
+              v-for="c in childLineOptions"
+              :key="c.id"
+              :label="c.label"
+              :value="c.id"
+            >
+              <span class="tt-opt-label">{{ c.label }}</span>
+              <span class="tt-opt-summary">{{ c.summary }}</span>
+            </el-option>
+          </el-select>
+          <div class="tt-guide">
+            「{{ editingChildOf.name }}」是父任务目录，给这个子目录选一种工作类型（可选：{{ childLineOptions.map((c: any) => c.label).join(' / ') || '父目录类型暂无可用任务线' }}）。
+            选定后本目录生成 00-source 等资源骨架。
+          </div>
+        </template>
+        <template v-else>
+          <el-select v-model="spaceEditForm.taskType" placeholder="通用（不限定流程）" clearable style="width: 100%">
+            <!-- ★ 顺序由注册表（TASK_TYPES）定：通用第一、独立「父任务」类型第二（用户拍板），
+                 不在 UI 层硬编码排序。★ 父子关系读 store（库行），用户自建的父子关系同样生效。
+                 ★ 有注册子线的父类型（抖音运营/店铺运营）渲染成分组；独立「父任务」是普通选项。 -->
+            <template v-for="t in taskTypes" :key="t.id">
+              <el-option-group
+                v-if="t.id !== 'parent' && taskTypeStore.childrenOf(t.id).length > 0"
+                :label="`${t.label}（父任务目录 · 一套目录管多条任务线）`"
+              >
+                <el-option :label="t.label" :value="t.id">
+                  <span class="tt-opt-label">{{ t.label }}</span>
+                  <span class="tt-opt-summary">{{ t.summary }}</span>
+                </el-option>
+                <el-option
+                  v-for="c in taskTypeStore.childrenOf(t.id)"
+                  :key="c.id"
+                  :label="`　└ ${c.label}`"
+                  :value="c.id"
+                >
+                  <span class="tt-opt-label tt-opt-child">{{ c.label }}</span>
+                  <span class="tt-opt-summary">{{ c.summary }}</span>
+                </el-option>
+              </el-option-group>
+              <el-option v-else-if="!t.parentId" :label="t.label" :value="t.id">
                 <span class="tt-opt-label">{{ t.label }}</span>
                 <span class="tt-opt-summary">{{ t.summary }}</span>
               </el-option>
-              <el-option
-                v-for="c in taskTypeStore.childrenOf(t.id)"
-                :key="c.id"
-                :label="`　└ ${c.label}`"
-                :value="c.id"
-              >
-                <span class="tt-opt-label tt-opt-child">{{ c.label }}</span>
-                <span class="tt-opt-summary">{{ c.summary }}</span>
-              </el-option>
-            </el-option-group>
-            <el-option v-else :label="t.label" :value="t.id">
-              <span class="tt-opt-label">{{ t.label }}</span>
-              <span class="tt-opt-summary">{{ t.summary }}</span>
-            </el-option>
-          </template>
-        </el-select>
-        <div v-if="spaceEditForm.taskType" class="tt-guide">{{ pickedTaskType.guide }}</div>
+            </template>
+          </el-select>
+          <div v-if="spaceEditForm.taskType" class="tt-guide">{{ pickedTaskType.guide }}</div>
+        </template>
       </el-form-item>
     </el-form>
   </FormDialog>
@@ -563,6 +664,13 @@
     <li @click="openSpaceEdit(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><EditPen /></el-icon>{{ spaceMenuTarget.space.taskType ? '更改任务模式' : '设置任务模式' }}
     </li>
+    <!-- 父任务目录专属（2026-10-17）：同步/新建子目录，管理「一个目录管多任务」的层级 -->
+    <li v-if="isParentTaskType(spaceMenuTarget.space.taskType)" @click="syncSpaceSubdirsAction(spaceMenuTarget.space); closeSpaceMenu()">
+      <el-icon><Refresh /></el-icon>同步子目录
+    </li>
+    <li v-if="isParentTaskType(spaceMenuTarget.space.taskType)" @click="openSpaceCreate(spaceMenuTarget.space.id); closeSpaceMenu()">
+      <el-icon><Plus /></el-icon>新建子目录
+    </li>
     <!-- 在系统文件管理器里打开这个空间的绑定目录（仅桌面端有效，其它端给提示） -->
     <li @click="openPathInSystem(spaceMenuTarget.space.dirPath, true); closeSpaceMenu()">
       <el-icon><FolderOpened /></el-icon>打开目录
@@ -604,7 +712,7 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft, Monitor,
+  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft, Monitor, Refresh,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/shared';
@@ -632,8 +740,9 @@ const {
   rootConversations, conversationsBySpace, spaceCollapsed, toggleSpaceCollapse, rootCollapsed, toggleRootCollapse,
   // 置顶分组（2026-10-09）
   pinnedRootConversations, unpinnedRootConversations, pinnedCollapsed, togglePinnedCollapse,
-  spaceStore, openSpaceMenu, openSpaceEdit, showSpaceEdit, spaceEditForm,
+  spaceStore, openSpaceMenu, openSpaceEdit, openSpaceCreate, showSpaceEdit, spaceEditForm,
   saveSpaceEdit, deleteSpaceConfirm, spaceMenuTarget, closeSpaceMenu, ctxMenu,
+  syncSpaceSubdirsAction,
   openConvDir, openPathInSystem,
   taskTypes, pickedTaskType, selectSpaceAndSyncDir,
   // 任务级任务类型（「父任务」层）：多任务目录选线
@@ -662,6 +771,33 @@ const rows = useTaskRowActions();
 const taskLinePickerOpen = computed({
   get: () => !!taskLinePicker.value,
   set: (v: boolean) => { if (!v) cancelTaskLine(); },
+});
+
+// ===== 父任务目录的「子目录」层级（2026-10-17）=====
+
+/** 子目录可选的工作类型：父目录是独立「父任务」类型 → 任意具体类型；
+ *  父目录是业务父类型（抖音运营等）→ 只能选它注册的子线 */
+const childLineOptions = computed(() => {
+  const p = editingChildOf.value;
+  if (!p?.taskType) return [] as Array<{ id: string; label: string; summary: string }>;
+  return taskTypeStore.childrenOf(p.taskType) as Array<{ id: string; label: string; summary: string }>;
+});
+
+/** 当前编辑的是否子目录：返回其父空间（顶层空间 → null） */
+const editingChildOf = computed(() => {
+  const pid = (spaceEditForm.value as any).parentId as string || '';
+  if (!pid) return null;
+  return spaceStore.spaces.find((s) => s.id === pid) || null;
+});
+
+/** 「移动到空间」列表：父目录在前、子目录缩进跟随（与侧栏层级一致，避免平铺看不出归属） */
+const moveSpaceList = computed(() => {
+  const out: Array<{ id: string; name: string; child: boolean }> = [];
+  for (const p of spaceStore.rootSpaces) {
+    out.push({ id: p.id, name: p.name, child: false });
+    for (const c of spaceStore.childSpacesOf(p.id)) out.push({ id: c.id, name: c.name, child: true });
+  }
+  return out;
 });
 
 // ===== 移动端：任务行（会话）底部动作面板（Task 11.3）=====

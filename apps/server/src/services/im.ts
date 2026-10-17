@@ -56,6 +56,11 @@ export function createImConnector(
   if (!input.name) throw new Error('连接器名称为必填项');
   const id = uuid();
   const ts = now();
+  // 个人微信（OpenClaw 桥接）：生成桥接令牌，插件侧配置与回调路由共用同一凭据
+  const config: Record<string, unknown> = { ...(input.config || {}) };
+  if (input.provider === 'wechat-personal' && !config.bridgeToken) {
+    config.bridgeToken = uuid();
+  }
   db.prepare(
     `INSERT INTO im_connector (id, user_id, provider, name, config_json, enabled, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -64,7 +69,7 @@ export function createImConnector(
     userId,
     input.provider,
     input.name,
-    JSON.stringify(input.config || {}),
+    JSON.stringify(config),
     input.enabled === false ? 0 : 1,
     ts,
     ts,
@@ -86,8 +91,22 @@ export function updateImConnector(
     vals.push(input.name);
   }
   if (input.config !== undefined) {
+    // 个人微信：编辑时表单只回传 botName 等字段，绝不能把桥接令牌整体冲掉
+    // （否则桥接插件持有的 token 与路由校验脱钩，收消息静默 401）
+    const cfgOut: Record<string, unknown> = { ...(input.config as Record<string, unknown>) };
+    if (existing.provider === 'wechat-personal') {
+      const existingToken = (() => {
+        try {
+          return JSON.parse(existing.config_json || '{}')?.bridgeToken;
+        } catch {
+          return undefined;
+        }
+      })();
+      if (!cfgOut.bridgeToken && existingToken) cfgOut.bridgeToken = existingToken;
+      else if (!cfgOut.bridgeToken) cfgOut.bridgeToken = uuid();
+    }
     sets.push('config_json = ?');
-    vals.push(JSON.stringify(input.config));
+    vals.push(JSON.stringify(cfgOut));
   }
   if (input.enabled !== undefined) {
     sets.push('enabled = ?');
@@ -204,11 +223,12 @@ async function sendWechat(config: any, input: ImSendInput) {
 }
 
 /**
- * 个人微信（ClawBot）发送：依赖外部 CLI（@tencent-weixin/openclaw-weixin-cli）。
- * CLI 具体命令/接口未确认前不臆造调用，明确报错；接入后在此落地。
+ * 个人微信（OpenClaw）主动外发：AI 闭环回复已走桥接同步通道（runWechatPersonalBridge，
+ * 插件 before_dispatch 返回文本由宿主回发），此处仅兜主动推送场景。
+ * OpenClaw 未向第三方插件公开通道级 send API，主动外发待确认入口后接入。
  */
 async function sendWechatPersonal(_config: any, _input: ImSendInput) {
-  throw new Error('个人微信发送需接入 ClawBot CLI（@tencent-weixin/openclaw-weixin-cli），暂未启用');
+  throw new Error('个人微信主动外发暂未开放：AI 回复已通过 OpenClaw 桥接自动回发');
 }
 
 /**
@@ -357,9 +377,19 @@ export async function testImConnector(userId: string, connectorId: string) {
     return { provider: 'wechat', ok: true };
   }
   if (connector.provider === 'wechat-personal') {
-    // ClawBot 连通性依赖本机 CLI 运行状态，此处仅校验配置存在
-    if (!config.botName) throw new Error('个人微信连接器缺少 botName');
-    return { provider: 'wechat-personal', ok: true, note: 'ClawBot CLI 未接入，仅校验配置' };
+    // 真校验：OpenClaw Gateway 必须在本机运行（桥接消息经它进出），
+    // 且连接器必须已带桥接令牌（一键装配后自动写入）
+    if (!config.bridgeToken) {
+      throw new Error('个人微信连接器缺少桥接令牌，请先在向导里完成「一键安装并连接」');
+    }
+    const ctrl = 'http://127.0.0.1:18789/';
+    try {
+      const res = await fetch(ctrl, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) throw new Error(`Gateway 返回 ${res.status}`);
+    } catch {
+      throw new Error('OpenClaw Gateway 未在本机运行（127.0.0.1:18789 不可达），请重新运行一键安装或手动 `openclaw gateway start`');
+    }
+    return { provider: 'wechat-personal', ok: true, note: 'OpenClaw Gateway 运行中' };
   }
   if (connector.provider === 'dingtalk') {
     if (!config.clientId || !config.clientSecret) throw new Error('钉钉连接器缺少 clientId/clientSecret');
@@ -509,17 +539,19 @@ interface ImClosedLoopPayload {
   rawJson: string;
 }
 
-/** 通用 IM 闭环：去重 → 落库 → 建/复会话 → 跑任务 → 回结果。飞书 / 企业微信共用。 */
-function runImClosedLoop(p: ImClosedLoopPayload): { handled: boolean; reason?: string } {
-  if (!p.externalId || !p.text || !p.fromUser) {
-    return { handled: false, reason: 'empty_or_non_text' };
-  }
-
+/**
+ * 闭环与桥接同步通道共用的前置段：去重 → 落库 → 建/复会话 → 建任务。
+ * 单一实现收口（判据：同一语义只能有一处实现）——dedupe/落库逻辑在此，
+ * runImClosedLoop 与 runWechatPersonalBridge 都从这里起步。
+ */
+function startImTask(
+  p: ImClosedLoopPayload,
+): { ok: true; conversationId: string; taskId: string } | { ok: false; reason: string } {
   // 去重：同一消息事件只处理一次（平台可能重投）
   const dup = db.prepare(
     'SELECT id FROM im_inbound_event WHERE connector_id = ? AND provider = ? AND external_id = ?',
   ).get(p.connectorId || null, p.provider, p.externalId);
-  if (dup) return { handled: false, reason: 'duplicate' };
+  if (dup) return { ok: false, reason: 'duplicate' };
 
   db.prepare(
     `INSERT INTO im_inbound_event
@@ -539,14 +571,13 @@ function runImClosedLoop(p: ImClosedLoopPayload): { handled: boolean; reason?: s
   );
 
   const model = getDefaultModel(p.userId);
-  if (!model) return { handled: false, reason: 'no_default_model' };
+  if (!model) return { ok: false, reason: 'no_default_model' };
 
   const title = p.text.length > 24 ? p.text.slice(0, 24) + '…' : p.text;
   const conversationId = getOrCreateImConversation(p.connectorId || p.provider, p.fromUser, p.userId, title);
 
-  let taskId: string;
   try {
-    taskId = createTask({
+    const taskId = createTask({
       conversationId,
       userId: p.userId,
       platformId: model.platformId,
@@ -556,12 +587,81 @@ function runImClosedLoop(p: ImClosedLoopPayload): { handled: boolean; reason?: s
       origin: 'im',
       offlinePolicy: 'skip',
     });
+    return { ok: true, conversationId, taskId };
   } catch (e: any) {
     // 会话被归档/删除（用户手动收起来的 IM 会话）时不应再触发任务，也不该 500 掉整条 IM 链路
     const msg = String(e?.message || '');
     logger.warn(`[im] 跳过任务创建（会话不可用）conv=${conversationId}: ${msg}`);
-    return { handled: false, reason: msg.startsWith('CONVERSATION_') ? 'conversation_unavailable' : 'create_task_failed' };
+    return { ok: false, reason: msg.startsWith('CONVERSATION_') ? 'conversation_unavailable' : 'create_task_failed' };
   }
+}
+
+/** 桥接同步通道等待 AI 回复的上限（OpenClaw 桥接插件侧同口径超时） */
+export const IM_BRIDGE_REPLY_TIMEOUT_MS = 110_000;
+
+/**
+ * 个人微信桥接同步通道：OpenClaw 桥接插件把微信消息 POST 进来，
+ * 本函数同步等待 AI 任务完成并返回回复文本（由插件经宿主回发到微信）。
+ * 复用与 webhook 入站完全相同的去重/落库/会话逻辑。
+ */
+export async function runWechatPersonalBridge(
+  connectorId: string,
+  userId: string,
+  body: unknown,
+): Promise<{ ok: true; reply: string } | { ok: false; error: string; reason?: string }> {
+  const parsed = parseWechatPersonalInbound(body);
+  if (!parsed.messageId || !parsed.text || !parsed.fromUser) {
+    return { ok: false, error: 'empty_or_non_text', reason: 'empty_or_non_text' };
+  }
+  const payload: ImClosedLoopPayload = {
+    connectorId,
+    userId,
+    provider: 'wechat-personal',
+    externalId: parsed.messageId,
+    text: parsed.text,
+    fromUser: parsed.fromUser,
+    toUser: parsed.fromUser,
+    replyTo: parsed.fromUser,
+    rawJson: JSON.stringify(body || {}),
+  };
+  const started = startImTask(payload);
+  if (!started.ok) {
+    return { ok: false, error: started.reason, reason: started.reason };
+  }
+
+  // 等 AI 任务结束（completed/error），超时给明确错误而不是挂死插件的 hook
+  const reply = await new Promise<{ reply: string } | null>((resolve) => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      resolve(null);
+    }, IM_BRIDGE_REPLY_TIMEOUT_MS);
+    const unsubscribe = subscribe(started.taskId, 0, (event) => {
+      if (event.type === 'task:completed') {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve({ reply: readLastAssistantReply(started.conversationId) || '（助手未返回有效内容）' });
+      } else if (event.type === 'task:error') {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve({ reply: `处理失败：${(event as any).error || '未知错误'}` });
+      }
+    });
+  });
+  if (!reply) {
+    return { ok: false, error: 'reply_timeout', reason: 'reply_timeout' };
+  }
+  return { ok: true, reply: reply.reply };
+}
+
+/** 通用 IM 闭环：去重 → 落库 → 建/复会话 → 跑任务 → 回结果。飞书 / 企业微信共用。 */
+function runImClosedLoop(p: ImClosedLoopPayload): { handled: boolean; reason?: string } {
+  if (!p.externalId || !p.text || !p.fromUser) {
+    return { handled: false, reason: 'empty_or_non_text' };
+  }
+
+  const started = startImTask(p);
+  if (!started.ok) return { handled: false, reason: started.reason };
+  const { conversationId, taskId } = started;
 
   subscribe(taskId, 0, (event) => {
     if (event.type === 'task:completed') {

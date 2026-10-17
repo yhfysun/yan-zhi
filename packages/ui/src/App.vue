@@ -521,8 +521,11 @@ authStore.loadUser();
             : m === 'shop' ? 'a_builtin_shop_agent'  // 店铺运营模式：口径先行 + compare_products 选品
               : 'a_default_assistant';
     const agentId = saved?.agent || fallbackAgent;
+    // syncConv=false：此刻 currentConvId 还停在旧模式会话上，回写会把新模式智能体
+    // 绑进旧会话（实测把 a_builtin_code_agent 写进办公会话 → 切回办公助手"串"）。
+    // 恢复的会话有自己的 agentId 绑定，第 4 步 selectConv 后由 applyConvAgent 接管。
     if (agentId && agentStore.agents.some((a) => a.id === agentId) && agentStore.selectedId !== agentId) {
-      chat.onAgentSwitch(agentId);
+      chat.onAgentSwitch(agentId, false);
     }
     // 3) ★ 先按新模式重载会话列表，再做归属判断。
     //

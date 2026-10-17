@@ -95,6 +95,7 @@ import ontologyGroupRoutes from './routes/ontology-groups.js';
 import { startScheduledTaskScheduler } from './services/scheduled-tasks.js';
 import { startMemoryDreamingScheduler } from './services/memory-dreaming.js';
 import { syncDingtalkStreamClients } from './services/dingtalk-stream.js';
+import { syncFeishuStreamClients } from './services/feishu-stream.js';
 import { nodeAdapter } from './node-adapter.js';
 import { db, dataDir } from './db.js';
 import { dedupeDuplicateModelRows, ensureModelDedupeIndex } from './services/model-dedupe.js';
@@ -722,6 +723,13 @@ try {
   syncDingtalkStreamClients();
 } catch (e) {
   logger.warn('[im] 钉钉 Stream 客户端启动失败:', e);
+}
+
+// 启动飞书长连接客户端：为所有启用的 feishu 连接器恢复 WSClient（免公网回调）
+try {
+  syncFeishuStreamClients();
+} catch (e) {
+  logger.warn('[im] 飞书长连接客户端启动失败:', e);
 }
 
 // 插件系统初始化：恢复已启用插件、同步工具到 ToolRegistry、挂载插件后端路由

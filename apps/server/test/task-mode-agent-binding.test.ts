@@ -85,7 +85,9 @@ describe('① 任务类型 → 专属智能体：id 必须真实存在', () => {
     const bad: string[] = [];
     let mapped = 0;
     for (const t of TASK_TYPES) {
-      if (t.id === 'general') continue;
+      // general = 通用（用户当前选的智能体）；parent = 独立父任务容器（子目录各选类型，
+      // 父目录本身没有"专属纪律"可言）—— 两者都不绑专属智能体
+      if (t.id === 'general' || t.id === 'parent') continue;
       expect(t.agentId, `★★ ${t.id} 没登记 agentId（选了类型但智能体不变 = 专属纪律丢失）`).toBeTruthy();
       mapped++;
       if (!known.has(t.agentId!)) bad.push(`${t.id} → ${t.agentId}`);
@@ -94,9 +96,10 @@ describe('① 任务类型 → 专属智能体：id 必须真实存在', () => {
     expect(bad, `★★ agentId 指向不存在的智能体（切类型后智能体不会变，且不报错）:\n${bad.join('\n')}`).toEqual([]);
   });
 
-  it('★ 通用类型不指定专属智能体（用用户当前选的）', async () => {
+  it('★ 通用/父任务类型不指定专属智能体（用用户当前选的）', async () => {
     const { getTaskType } = await import('@yan-zhi/shared');
     expect(getTaskType('general').agentId, '★ 通用类型不该绑死智能体').toBeUndefined();
+    expect(getTaskType('parent').agentId, '★ 独立父任务类型不该绑死智能体（容器没有专属纪律）').toBeUndefined();
   });
 
   it('★★ 四个新建的专属智能体必须真的进了 seed', () => {
@@ -275,6 +278,24 @@ describe('⑥ 父任务层：父类型分组 + 任务级优先', () => {
     expect(getRootTaskTypes().some((t) => t.parentId), '★ 有子类型漏进了顶层').toBe(false);
   });
 
+  it('★★ 独立「父任务」类型（2026-10-17 用户拍板：父任务是一个单独的类型）', async () => {
+    const { TASK_TYPES, isParentTaskType, getChildTaskTypes, getTaskType } = await import('@yan-zhi/shared');
+    const parent = TASK_TYPES.find((t) => t.id === 'parent');
+    expect(parent, '★ 缺独立「父任务」类型（用户要的是单独选项，不是分组格式）').toBeTruthy();
+    // 排序：通用第一、父任务第二（在注册表里定序，不在 UI 硬编码）
+    expect(TASK_TYPES[0].id, '★ 通用必须是第一项').toBe('general');
+    expect(TASK_TYPES[1].id, '★ 父任务必须是第二项（用户拍板"通用第一，父任务第二"）').toBe('parent');
+    expect(parent!.steps, '★ 父任务类型不该有自身 SOP（它只是容器）').toEqual([]);
+    expect(isParentTaskType('parent'), '★ isParentTaskType 不认独立父任务类型').toBe(true);
+    // 子目录可选工作类型 = 全部具体类型（排除父任务本身与业务父类型）
+    const lines = getChildTaskTypes('parent').map((c) => c.id);
+    expect(lines.length, '★ 父任务下没有任何可选工作类型').toBeGreaterThan(0);
+    expect(lines, '★ 父任务的可选项里混进了父类型/父任务本身').not.toContain('parent');
+    expect(lines, '★ 父任务的可选项里混进了业务父类型 douyin_ops').not.toContain('douyin_ops');
+    expect(lines, '★ 父任务的可选项里混进了业务父类型 shop_ops').not.toContain('shop_ops');
+    expect(getTaskType('parent').label, '★ 父任务类型的显示名不对').toBe('父任务');
+  });
+
   it('★★ 配置表化：task_type 表 + 种子 + 路由 + 注入全部闭环', () => {
     // ① 建表（含为插件化预留的 source 列）
     expect(read('src/db.ts'), '★ db.ts 没建 task_type 表').toMatch(/CREATE TABLE IF NOT EXISTS task_type \(/);
@@ -295,8 +316,9 @@ describe('⑥ 父任务层：父类型分组 + 任务级优先', () => {
     // ④ 注入读库（库行为准），并保留内置兜底
     const ltm = read('src/llm-task-manager.ts');
     expect(ltm, '★★ 注入侧没读库（用户在库里改的 SOP 不生效）').toMatch(/const effective = loadEffectiveTaskTypes\(\)/);
+    // 2026-10-17 起两种父：独立 parent 类型 + 有注册子线的业务父类型（都读库行）
     expect(ltm, '★★ 父类型判定没走库行（库里建的父子关系不生效）')
-      .toMatch(/effective\.some\(\(t\) => t\.parentId === taskType\)/);
+      .toMatch(/const childTypes = taskType === 'parent'\s*\?\s*effective\.filter\(isConcrete\)\s*:\s*effective\.filter\(\(t\) => t\.parentId === taskType\)/);
     expect(read('src/db.ts'), '★ 缺 loadEffectiveTaskTypes').toMatch(/export function loadEffectiveTaskTypes/);
   });
 
@@ -323,10 +345,11 @@ describe('⑥ 父任务层：父类型分组 + 任务级优先', () => {
     expect(ltm, '★★ 生效类型没有按「任务级 ?? 目录级」取（顺序反了会静默改掉老任务的线）')
       .toMatch(/convRow\?\.task_type \|\| tRow\?\.task_type/);
     // ② 父类型不得走进 formatTaskTypeContext（父类型 steps 为空 → 注入空，模型没有任何约束）
+    //    2026-10-17 起独立 parent 类型同样走「选线」引导（子线 = 全部具体类型）
     expect(ltm, '★★ 父类型没有分支到选线引导（模型会自己猜一条线跑完）')
-      .toMatch(/const parent = hit && effective\.some\(\(t\) => t\.parentId === taskType\)/);
+      .toMatch(/const parent = hit && \(taskType === 'parent' \|\| childTypes\.length > 0\)/);
     expect(ltm, '★★ 选线引导没吃库行（库里建的子线列不出来）')
-      .toMatch(/formatParentTaskTypeSpecContext\(hit!, effective\.filter\(\(t\) => t\.parentId === taskType\)\)/);
+      .toMatch(/formatParentTaskTypeSpecContext\(hit, childTypes\)/);
     expect(ltm, '★★ 子线 SOP 没吃库行（用户在库里改的步骤不生效）')
       .toMatch(/formatTaskTypeSpecContext\(hit, batchSize\)/);
   });
@@ -361,8 +384,12 @@ describe('⑥ 父任务层：父类型分组 + 任务级优先', () => {
   it('★★ 父目录新建任务必须先选线（不选就不建会话）', () => {
     const chat = readRepo('packages/ui/src/composables/chat/useChat.ts');
     // ① 识别"目标是父类型目录且没带子线"→ 弹选线框并 return（不建会话）
+    //    2026-10-17 起目标是子目录（子空间）时也会上溯父目录判定（lineSpace = targetSpace ?? 其父），
+    //    但选线框的 spaceId 仍是 targetSpace —— 任务落在子目录而不是父目录。
     expect(chat, '★★ startNewChat 没有父目录选线分支（会建出没有 SOP 的空任务）')
-      .toMatch(/taskTypeStore\.isParent\(targetSpace\.taskType\) && !taskType\)/);
+      .toMatch(/taskTypeStore\.isParent\(lineSpace\.taskType\) && !taskType\)/);
+    expect(chat, '★★ 子目录未选线时没有上溯父目录取子线（选线框永远弹不出来）')
+      .toMatch(/lineSpace = spaceStore\.spaces\.find\(\(s\) => s\.id === \(lineSpace as any\)\.parentId\)/);
     expect(chat, '★★ 选线分支没有 return（会接着把空会话建出来）')
       .toMatch(/taskLinePicker\.value = \{[\s\S]{0,200}?\n\s*return;/);
     // ② 生效类型按「子线 ?? 目录」取（顺序反了 → 选了的线被目录级覆盖）
@@ -377,11 +404,14 @@ describe('⑥ 父任务层：父类型分组 + 任务级优先', () => {
     const store = readRepo('packages/ui/src/stores/chat.ts');
     expect(store, '★★ store 建会话没带 taskType').toMatch(/taskType: opts\?\.taskType \|\| null/);
     expect(store, '★★ store PATCH 没接 taskType（任务里换不了线）').toMatch(/if \(patch\.taskType !== undefined\)/);
-    // ⑥ 侧栏要有选线框 + 下拉分组
+    // ⑥ 侧栏要有选线框 + 下拉分组（顺序由注册表定：通用第一、独立父任务第二；
+    //    有注册子线的父类型渲染成分组；分组标题写明"父任务目录"）
     const sidebar = readRepo('packages/ui/src/components/chat/ChatSidebar.vue');
     expect(sidebar, '★★ 侧栏没有选线框（父目录下新建任务没有选择入口）').toMatch(/taskLinePickerOpen/);
-    expect(sidebar, '★★ 下拉没有父子分组（父类型与子类型混在一起，看不出归属）')
-      .toMatch(/el-option-group v-if="taskTypeStore\.isParent\(t\.id\)"/);
+    expect(sidebar, '★★ 下拉缺父任务类型分组（看不出哪个目录能管多条任务线）')
+      .toMatch(/父任务目录 · 一套目录管多条任务线/);
+    expect(sidebar, '★★ 独立「父任务」类型没有按普通选项渲染（用户拍板：父任务是单独的类型）')
+      .toMatch(/t\.id !== 'parent' && taskTypeStore\.childrenOf\(t\.id\)\.length > 0/);
   });
 });
 

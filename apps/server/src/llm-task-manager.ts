@@ -2802,9 +2802,16 @@ async function runReActLoop(task: LlmTask, params: {
           //   只查内置数组 = 用户自建类型形同虚设；只查库 = seed 失败时 SOP 整体消失。
           const effective = loadEffectiveTaskTypes();
           const hit = effective.find((t) => t.id === taskType) || null;
-          const parent = hit && effective.some((t) => t.parentId === taskType);
-          const ctx = parent
-            ? formatParentTaskTypeSpecContext(hit!, effective.filter((t) => t.parentId === taskType))
+          // 两种父（2026-10-17）：① 独立「父任务」类型（id=parent，容器语义，子线 = 全部具体类型）；
+          //   ② 业务父类型（douyin_ops 等，子线 = 注册在它下面的几条）。
+          const isConcrete = (t: { id: string }) =>
+            t.id !== 'parent' && !effective.some((c) => c.parentId === t.id);
+          const childTypes = taskType === 'parent'
+            ? effective.filter(isConcrete)
+            : effective.filter((t) => t.parentId === taskType);
+          const parent = hit && (taskType === 'parent' || childTypes.length > 0);
+          const ctx = parent && hit
+            ? formatParentTaskTypeSpecContext(hit, childTypes)
             : hit
               ? formatTaskTypeSpecContext(hit, batchSize)
               // 库里查不到也不在内置清单里（如类型被删）：按 id 走内置薄壳，兜底为空串（不阻断）

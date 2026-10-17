@@ -797,6 +797,9 @@ try { db.exec("ALTER TABLE conversation ADD COLUMN task_plan_json TEXT"); } catc
 // task_type 为 NULL = 通用类型（不生成资源目录骨架、不注入 SOP）。
 try { db.exec("ALTER TABLE space ADD COLUMN task_type TEXT"); } catch {}
 try { db.exec("ALTER TABLE space ADD COLUMN task_config_json TEXT"); } catch {}
+// 迁移 space 表（parent_id，2026-10-17「父任务目录」）：子目录=子空间，parent_id 指向父任务目录。
+//   NULL = 顶层空间（旧数据全部是顶层，行为不变）。收编逻辑见 services/space-tree.ts。
+try { db.exec("ALTER TABLE space ADD COLUMN parent_id TEXT"); } catch {}
 
 // 迁移 conversation 表（添加 mode 列：会话按模式隔离）。
 //
