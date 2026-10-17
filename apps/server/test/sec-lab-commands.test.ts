@@ -35,15 +35,15 @@ function expectedDanger(tool: string): string {
   return ({ passive: 'P', active: 'A', intrusive: 'I' } as Record<string, string>)[risk];
 }
 
-describe('★ sec-lab 的 18 条命令与工具一一对应', () => {
-  it('工具注册数量与本测试的预期一致（先钉住"18"这个前提）', () => {
-    expect(tools.length).toBe(18);
+describe('★ sec-lab 的 34 条命令与工具一一对应（P0 18 + P1 16）', () => {
+  it('工具注册数量与本测试的预期一致（先钉住"34"这个前提）', () => {
+    expect(tools.length).toBe(34);
   });
 
   it('每个注册的工具恰好有一条命令，且命令里的 tool 名真实存在（防拼错）', () => {
     const names = tools.map((t) => t.name).sort();
     const cmds = COMMANDS();
-    expect(cmds.length).toBe(18);
+    expect(cmds.length).toBe(34);
     expect(cmds.map((c) => c.tool).sort()).toEqual(names);
     // 声明式清单（contributes.tools）是第三条口径，同样不能漂
     expect([...(secLabManifest.contributes as any).tools].sort()).toEqual(names);
