@@ -20,8 +20,11 @@ const SFTP = strip(readFileSync(resolve(__dirname, 'SftpPanel.vue'), 'utf8'));
 const MENU = readFileSync(resolve(__dirname, '../../styles/menu.css'), 'utf8');
 
 describe('OpsConsole · 后台执行入口', () => {
-  it('工具条有「后台」按钮，绑 sendBackground', () => {
-    expect(CONSOLE).toMatch(/<el-button[^>]*@click="sendBackground\(w\)"[^>]*>后台</);
+  it('工具条「后台」是模式切换，提交时走 sendBackground', () => {
+    expect(CONSOLE).toMatch(/@click="w\.chatMode = 'background'">后台</);
+    const submit = CONSOLE.match(/function submitWinChat\(w: OpsWin\)[\s\S]*?\n\}/);
+    expect(submit, '找不到 submitWinChat').toBeTruthy();
+    expect(submit![0]).toMatch(/mode === 'background'[\s\S]{0,80}sendBackground/);
     expect(CONSOLE).toContain('sendBackground(w)');
   });
 

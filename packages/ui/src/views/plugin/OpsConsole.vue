@@ -299,15 +299,15 @@
                             type="textarea"
                             :rows="2"
                             :disabled="w.chatStreaming"
-                            placeholder="输入运维任务，Ctrl+Enter 发送"
-                            @keydown.ctrl.enter="sendWinChat(w)"
+                            :placeholder="chatPlaceholder(w)"
+                            @keydown.ctrl.enter="submitWinChat(w)"
                           />
                           <!-- 输入框工具条（P0）：左=动作语义，右=模型 / 静默权限 / 发送 -->
                           <div class="ops-input-toolbar">
                             <div class="ops-toolbar-group">
-                              <el-button size="small" class="ops-tool-btn" :disabled="!w.chatInput.trim()" title="直接发到当前终端，不经过模型（输入以 / 开头也可触发）" @click="execDirect(w, w.chatInput)">执行</el-button>
-                              <el-button size="small" class="ops-tool-btn ops-tool-btn-active" plain>Agent</el-button>
-                              <el-button size="small" class="ops-tool-btn" :disabled="w.chatStreaming || !w.chatInput.trim()" title="提交为后台 AI 任务：关掉面板也会继续，进度在文件面板的任务中心" @click="sendBackground(w)">后台</el-button>
+                              <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'exec' }" plain title="执行模式：发送时直接写终端，不经过模型" @click="w.chatMode = 'exec'">执行</el-button>
+                              <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'agent' }" plain title="Agent 模式：发送给运维助手执行" @click="w.chatMode = 'agent'">Agent</el-button>
+                              <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'background' }" plain title="后台模式：提交为后台 AI 任务，关掉面板也会继续" @click="w.chatMode = 'background'">后台</el-button>
                             </div>
                             <div class="ops-toolbar-spacer"></div>
                             <el-select
@@ -350,7 +350,7 @@
                             </el-popover>
                             <span v-if="w.chatStreaming" class="form-tip">执行中…</span>
                             <el-button v-if="w.chatStreaming" size="small" type="warning" @click="abortWinChat(w)">停止</el-button>
-                            <el-button size="small" :disabled="w.chatStreaming || !w.chatInput.trim()" type="primary" @click="sendWinChat(w)">发送</el-button>
+                            <el-button size="small" :disabled="w.chatStreaming || !w.chatInput.trim()" type="primary" @click="submitWinChat(w)">{{ sendLabel(w) }}</el-button>
                           </div>
                           <!-- 底部命令行（任务 7.7）：显示当前执行到第几步 / 需要确认的步骤；点击聚焦输入框追加指令 -->
                           <div class="ops-cmdline" :class="{ running: w.chatStreaming, confirm: cmdlineNeedConfirm(w) }" @click="focusChatInput(w)">
@@ -401,10 +401,10 @@
                               size="small"
                               :disabled="w.chatStreaming"
                               placeholder="追加指令，Enter 发送"
-                              @keydown.enter="sendWinChat(w)"
+                              @keydown.enter="submitWinChat(w)"
                             />
                             <el-button v-if="w.chatStreaming" size="small" type="warning" @click="abortWinChat(w)">停止</el-button>
-                            <el-button size="small" type="primary" :disabled="w.chatStreaming || !w.chatInput.trim()" @click="sendWinChat(w)">发送</el-button>
+                            <el-button size="small" type="primary" :disabled="w.chatStreaming || !w.chatInput.trim()" @click="submitWinChat(w)">发送</el-button>
                           </div>
                         </div>
                       </div>
@@ -731,7 +731,7 @@ function newWin(c: OpsConn, view: ViewKey): OpsWin {
     containers: [], containersError: '',
     dbTables: [], dbTable: '', dbSql: '', dbLoading: false, dbError: '', dbResult: null,
     conversationId: '', chatMessages: [], chatInput: '', chatStreaming: false,
-    cmdChatOpen: false, modelId: '',
+    cmdChatOpen: false, modelId: '', chatMode: 'agent',
   };
 }
 
@@ -1551,6 +1551,27 @@ function winConnHint(w: OpsWin): string {
     ? `，${c.dbType === 'postgres' ? 'PostgreSQL' : 'MySQL'}，库名 ${c.database || '（未指定）'}`
     : '';
   return `\n\n（当前选定连接：${c.name}，类型 ${TYPE_LABELS[connType(c)]}，${c.username}@${c.host}:${c.port}${extra}${c.tag ? '，标签 ' + c.tag : ''}）`;
+}
+
+/** 输入框提交：按当前模式分派（执行 / Agent / 后台）；`/` 前缀始终按直接执行 */
+function submitWinChat(w: OpsWin) {
+  const content = w.chatInput.trim();
+  if (!content || w.chatStreaming) return;
+  if (content.startsWith('/')) { void execDirect(w, content); return; }
+  const mode = w.chatMode || 'agent';
+  if (mode === 'exec') { void execDirect(w, content); return; }
+  if (mode === 'background') { void sendBackground(w); return; }
+  void sendWinChat(w);
+}
+function sendLabel(w: OpsWin): string {
+  const mode = w.chatMode || 'agent';
+  return mode === 'exec' ? '执行' : mode === 'background' ? '后台提交' : '发送';
+}
+function chatPlaceholder(w: OpsWin): string {
+  const mode = w.chatMode || 'agent';
+  if (mode === 'exec') return '输入命令，Ctrl+Enter 直接发到终端（危险命令会被拦截）';
+  if (mode === 'background') return '输入后台任务，Ctrl+Enter 提交（关掉面板也会继续）';
+  return '输入运维任务，Ctrl+Enter 发送';
 }
 
 async function sendWinChat(w: OpsWin) {

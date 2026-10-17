@@ -21,16 +21,28 @@ const SESSION = strip(readFileSync(resolve(__dirname, 'opsSession.ts'), 'utf8'))
 const SESSION_RAW = readFileSync(resolve(__dirname, 'opsSession.ts'), 'utf8');
 
 describe('OpsConsole · AI 输入框工具条（P0-1）', () => {
-  it('工具条含 Agent / 执行 / 模型下拉 / 发送', () => {
+  it('工具条含 Agent / 执行 / 后台 / 模型下拉 / 发送', () => {
     expect(CONSOLE).toContain('ops-input-toolbar');
-    expect(CONSOLE).toMatch(/>执行</);
-    // P1 已接通：有输入可点，点后直接写终端（不过模型）
-    expect(CONSOLE).toMatch(/<el-button[^>]*:disabled="!w\.chatInput\.trim\(\)"[^>]*@click="execDirect\(w, w\.chatInput\)"[^>]*>执行</);
-    expect(CONSOLE).toMatch(/>Agent</);
+    // 三个按钮是**模式切换**（空输入也能点），不是提交动作
+    expect(CONSOLE).toMatch(/@click="w\.chatMode = 'exec'">执行</);
+    expect(CONSOLE).toMatch(/@click="w\.chatMode = 'agent'">Agent</);
+    expect(CONSOLE).toMatch(/@click="w\.chatMode = 'background'">后台</);
+    expect(CONSOLE).not.toMatch(/:disabled="!w\.chatInput\.trim\(\)"[^>]*@click="execDirect\(w, w\.chatInput\)"/);
     expect(CONSOLE).toMatch(/v-model="w\.modelId"/);
     expect(CONSOLE).toMatch(/v-for="m in chatModelOptions"/);
     // 空值 = 跟随设置，仍可一键切回
     expect(CONSOLE).toContain('${defaultModelLabel}');
+  });
+
+  it('★ 提交按模式分派：exec→直执行 / background→后台 / agent→对话', () => {
+    const fn = CONSOLE.match(/function submitWinChat\(w: OpsWin\)[\s\S]*?\n\}/);
+    expect(fn, '找不到 submitWinChat').toBeTruthy();
+    expect(fn![0]).toMatch(/mode === 'exec'[\s\S]{0,80}execDirect/);
+    expect(fn![0]).toMatch(/mode === 'background'[\s\S]{0,80}sendBackground/);
+    expect(fn![0]).toMatch(/sendWinChat\(w\)/);
+    // 输入框与发送按钮都走分派（不再直接绑 sendWinChat）
+    expect(CONSOLE).toMatch(/@keydown\.ctrl\.enter="submitWinChat\(w\)"/);
+    expect(CONSOLE).toMatch(/@click="submitWinChat\(w\)"/);
   });
 
   it('输入以 / 开头 → 直接执行到终端，不建任务', () => {

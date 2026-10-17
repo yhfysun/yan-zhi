@@ -90,6 +90,11 @@ export interface OpsWin {
    * 这里保留一份对象用于拼对话上下文，避免每次发送都回查。
    */
   releaseProject?: ReleaseProject;
+  /**
+   * 输入框提交模式：agent=AI 对话 / exec=直接写终端 / background=后台 AI 任务。
+   * 空 = agent（零迁移）；`/` 前缀始终按直接执行处理。
+   */
+  chatMode?: 'agent' | 'exec' | 'background';
 }
 
 /**
