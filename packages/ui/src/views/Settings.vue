@@ -597,9 +597,15 @@ const vcode = useVerificationStore();
 const tab = ref('general');
 
 // pane 模式：外部（SettingsDialog 左导航）切换分类 → 同步内部 el-tabs（isPaneMode 声明在上方）
+// ★ immediate 必须有（2026-10-17 用户实报「数据菜单串到通用里面」）：Settings 实例由
+//   SettingsDialog 的 v-if 挂载 —— 从 comp 类分区（模型服务/技能/工具与连接）切到 pane 类
+//   分区时组件**全新挂载**，props.pane 从「不存在」一步变成 'data'，非 immediate 的 watch
+//   不触发 ⇒ tab 停留初值 'general' ⇒ 左导航高亮「数据」、内容却是通用分区。
+//   （同文件 verification 轮询 watch 亦为 immediate，口径一致。）
 watch(
   () => props.pane,
   (p) => { if (p) tab.value = p; },
+  { immediate: true },
 );
 
 // ===== 移动端四段式层级导航（spec「设置页双端布局」）：首层分组入口 → 二级全屏子页 =====
