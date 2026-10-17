@@ -1302,26 +1302,16 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   background-position: center !important;
 }
 
-/* ===== 内置浏览器外壳底图：tab 栏 + 工具栏（BrowserView 网页内容区为原生层，无法也不应换肤） ===== */
+/* ===== 浏览器 chrome（tab 栏 + 工具栏 + 书签栏）：2026-10-17 用户要求与起始页一致，
+   全部透出 3D 壁纸（「红框里面这块呢？说一步做一步？」）——
+   原「browser 图案 cover + 45%/55% 玻璃垫底 + 暗色 90% 深玻璃」整套废止。
+   --skin-browser-pattern 各皮肤 manifest 仍在下发，只是此处**不再消费**（留回滚余地）；
+   文字/图标可读性走 --skin-text 派生（下方 1331 起的规则不变）。 ===== */
 [data-skin="on"] .browser-tabbar,
-[data-skin="on"] .browser-toolbar {
-  background-image: var(--skin-browser-pattern, none) !important;
-  background-size: var(--skin-pattern-size, cover) !important;
-  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
-  background-position: center !important;
-}
-/* tab 栏/工具栏：压薄玻璃底（45%/55%），让外壳图案清晰可见又不压图标 */
-[data-skin="on"] .browser-tabbar {
-  background-color: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 45%, transparent) !important;
-}
-[data-skin="on"] .browser-toolbar {
-  background-color: color-mix(in srgb, var(--skin-glass-tint, #f5f1ea) 55%, transparent) !important;
-}
-[data-theme="dark"][data-skin="on"] .browser-tabbar,
-[data-theme="dark"][data-skin="on"] .browser-toolbar {
-  /* 暗色系：底图走 --skin-browser-pattern 的深色变体（applySurface 暗色时下发，插件皮肤无变体则不下发），
-     这里保留近不透明深玻璃垫底：无图时兜底深底，杜绝白底白字 */
-  background-color: color-mix(in srgb, var(--skin-glass-tint, #1d1d1c) 90%, transparent) !important;
+[data-skin="on"] .browser-toolbar,
+[data-skin="on"] .bookmarks-bar {
+  background-image: none !important;
+  background-color: transparent !important;
 }
 /* 头部文字/图标：强制与外壳玻璃底对比，杜绝白底白字（头部看不见）。
    2026-09-13「全面接管」：原先写死 #202124 / #5f6368 / #e8eaed 三档常数，
@@ -1373,7 +1363,7 @@ html[data-skin="on"] .browser-shell {
 html[data-skin="on"] .browser-tabbar,
 html[data-skin="on"] .browser-toolbar,
 html[data-skin="on"] .bookmarks-bar {
-  background: var(--skin-surface, var(--el-bg-color, #fff));
+  /* 背景已由上方 chrome 透明规则接管（!important），此处只管分隔线颜色 */
   border-color: var(--skin-glass-border, var(--el-border-color-lighter, #e0e0e0));
 }
 html[data-skin="on"] .tab-item {
