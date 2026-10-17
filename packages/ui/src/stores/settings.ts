@@ -1065,7 +1065,14 @@ export const useSettingsStore = defineStore('settings', () => {
      *   导致菜单/代码模式/浏览器外壳/列表/输入框/按钮/弹窗的真图背景**全部不显示**。
      *   更早一版是在皮肤定义里写完整 CSS 值，引出的正是同一条注释警告的 bug；两版都没堵住根因：
      *   根因是「分辨不清文件名 vs CSS 值」，而不是「值写在哪一侧」。
-     * 现在：文件名 → url(资源地址)；其余（data: / url( / 含 '(' 的函数式值 / 含空白的多值）→ 原样透传。
+     * 现在：文件名 → url(资源地址)；其余（url( / 含 '(' 的函数式值 / 含空白的多值）→ 原样透传。
+     *
+     * ★ 2026-10-17 再修一层（Electron 33→44 / Chrome 152）：内置系列部件图曾以**裸 data URI**
+     *   （data:image/svg+xml;charset=utf-8,...）透传，两个叠加的坑：
+     *   ① 顶层分号 → CSSOM setProperty **整条静默丢弃**（浏览器皮肤图案全空的根因）；
+     *   ② 裸 data URI 不是合法 <image>，background-image: var(--x) 计算为 none。
+     *   现由 skinSeries.uriOf 统一包成 url("data:...") 完整值透传。
+     *   ⚠️ 透传分支**只允许** url(...) / 渐变等函数式值；裸 data: 值禁止直接下发。
      */
     const asset = (v: string) => {
       if (!pluginId) return v;

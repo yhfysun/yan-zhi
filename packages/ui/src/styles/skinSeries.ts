@@ -743,9 +743,23 @@ function darkOverlay(id: string): string {
   }
 }
 
-/** 包一层：catTag 等函数已返回 uri，这里再包是为了保持调用点一致（防御式） */
+/**
+ * 部件图 → 可直接下发为 CSS 自定义属性 / background-image 的值。
+ *
+ * ★ 必须包一层 url("...")（2026-10-17 修「浏览器皮肤效果没了」）：
+ *   裸 data URI 有两个叠加的致命伤 ——
+ *   ① 值里 `;charset=utf-8` 的**分号位于声明值顶层**：Chromium 的 CSSOM
+ *      `setProperty` 会把含顶层分号的自定义属性值**整条静默丢弃**
+ *      （Electron 33 / Chrome 130 容忍，Electron 44 / Chrome 152 起按 spec 拒绝）
+ *      → `--skin-browser-pattern` 等从来没存进去，皮肤图案全空；
+ *   ② 即便存进去，裸 data URI 也不是合法 <image>，
+ *      `background-image: var(--x)` 计算值为 none。
+ *   包进 url("...") 后分号位于字符串 token 内，两个问题一起消失。
+ *   （壁纸 wallpaper / 预览 preview **不走这里**：它们的消费方各自包 url()
+ *   或直接当 <img src> 用，见 settings.applySkin 与 Settings.vue。）
+ */
 function uriOf(v: string): string {
-  return v.startsWith('data:') ? v : uri(v);
+  return v.startsWith('data:') ? `url("${v}")` : `url("${uri(v)}")`;
 }
 
 export const BUILTIN_SKIN_SERIES: BuiltinSkinSeries[] = buildSeries();
