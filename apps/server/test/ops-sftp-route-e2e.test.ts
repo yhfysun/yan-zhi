@@ -304,6 +304,35 @@ describe('上传路由 · 暂停 / 断点续传 端到端（真 SFTP 服务器�
     expect(big?.detail?.length, '历史记录里没有明细（展开是空的）').toBeGreaterThan(0);
   }, 30000);
 
+  it('★ 历史能单条删、也能整表清（用户要求：清除已完成连库一起清）', async () => {
+    type Row = { id: string };
+    let rows: Row[] = [];
+    const t0 = Date.now();
+    while (Date.now() - t0 < 8000) {
+      const r = await call('GET', '/sftp/jobs/history');
+      const d = (r.body as { data?: Row[] }).data;
+      if (Array.isArray(d) && d.length) { rows = d; break; }
+      await sleep(50);
+    }
+    expect(rows.length, '历史是空的，没法测删除').toBeGreaterThan(0);
+
+    // 单条删
+    const del = await call('DELETE', `/sftp/jobs/history/${encodeURIComponent(rows[0].id)}`);
+    expect(del.statusCode).toBe(200);
+    const after = (await call('GET', '/sftp/jobs/history')).body as { data: Row[] };
+    expect(after.data.some((x) => x.id === rows[0].id), '删了但记录还在').toBe(false);
+
+    // 再删同一条 → 404（界面据此知道"已经没了"，而不是装作成功）
+    const again = await call('DELETE', `/sftp/jobs/history/${encodeURIComponent(rows[0].id)}`);
+    expect(again.statusCode).toBe(404);
+
+    // 整表清
+    const cleared = await call('DELETE', '/sftp/jobs/history');
+    expect(cleared.statusCode).toBe(200);
+    const empty = (await call('GET', '/sftp/jobs/history')).body as { data: Row[] };
+    expect(empty.data, '清了但库里的记录还在 —— 那就只是清了个界面').toHaveLength(0);
+  }, 30000);
+
   it('暂停接口的边界：不认识的任务 → 404；非上传任务 → 400', async () => {
     const missing = await call('POST', '/sftp/job/pause', { jobId: 'nope', paused: true });
     expect(missing.statusCode).toBe(404);

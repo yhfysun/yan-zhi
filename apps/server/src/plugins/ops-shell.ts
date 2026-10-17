@@ -821,6 +821,33 @@ function pushJobHistory(rec: SftpJobRecord): Promise<void> {
   return jobHistoryChain;
 }
 
+/** 清空历史（用户要求：清除已完成要**连库一起清**）。
+ *  ★ 走同一条串行链：否则正在收尾的任务会把刚清空的表又写回一条。 */
+export function clearJobHistory(): Promise<void> {
+  jobHistoryChain = jobHistoryChain
+    .then(async () => {
+      if (!pluginStorage) return;
+      await pluginStorage.set('sftp-job-history', []);
+    })
+    .catch(() => { /* ignore */ });
+  return jobHistoryChain;
+}
+
+/** 删掉一条历史；返回是否真删到了（没删到 = 已被清空或本来就没有） */
+export function deleteJobHistory(id: string): Promise<boolean> {
+  let removed = false;
+  jobHistoryChain = jobHistoryChain
+    .then(async () => {
+      if (!pluginStorage) return;
+      const rows = await loadJobHistory();
+      const next = rows.filter((x) => x.id !== id);
+      removed = next.length !== rows.length;
+      if (removed) await pluginStorage.set('sftp-job-history', next);
+    })
+    .catch(() => { /* ignore */ });
+  return jobHistoryChain.then(() => removed);
+}
+
 export const MAX_RECURSIVE_DELETE_ENTRIES = 20000;
 /**
  * 递归删除远程路径：文件直接 unlink；目录先深度遍历删子项、再 rmdir。
@@ -3229,6 +3256,20 @@ const opsShellModule: PluginModule = {
       r.get('/sftp/jobs/history', async (_req: unknown, res: unknown) => {
         const rows = await loadJobHistory();
         json(res, { data: rows.slice().reverse() }); // 最近的排最前
+      });
+
+      // 清空历史（用户要求：清除已完成要连库一起清，不能只清界面）
+      r.delete('/sftp/jobs/history', async (_req: unknown, res: unknown) => {
+        await clearJobHistory();
+        json(res, { data: { cleared: true } });
+      });
+
+      // 删掉单条历史（用户要求：单个已完成任务也能删）
+      r.delete('/sftp/jobs/history/:id', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const removed = await deleteJobHistory(id);
+        if (!removed) { fail(res, 404, '历史记录不存在'); return; }
+        json(res, { data: { removed: true } });
       });
 
       // 操作日志（工具执行审计）：运维控制台「操作日志」面板消费（倒序，最近 200 条）

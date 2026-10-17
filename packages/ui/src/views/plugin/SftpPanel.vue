@@ -128,6 +128,15 @@
                       <div class="stp-line">
                         <span class="stp-label" :title="t.label">{{ t.label }}</span>
                         <span class="stp-meta" :class="{ 'is-err': t.state === 'failed' }">{{ taskMeta(t) }}</span>
+                        <!-- 单条记录也能删（历史里一并删掉，见 removeFinishedTask） -->
+                        <el-button
+                          link
+                          size="small"
+                          class="stp-del-one"
+                          :icon="Close"
+                          title="删除这条记录"
+                          @click.stop="removeFinishedTask(t)"
+                        />
                       </div>
                       <div v-if="t.error" class="stp-err" :title="t.error">{{ t.error }}</div>
                       <!-- 已完成也要能翻明细：删除看"删掉了哪些"，上传看"传了哪些"
@@ -376,7 +385,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { consumeSseStream } from '../../utils/sse';
 import {
-  ArrowUp, CircleCheck, Clock, Connection, Delete, Document, Download, EditPen,
+  ArrowUp, CircleCheck, Clock, Close, Connection, Delete, Document, Download, EditPen,
   Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Tickets, Upload,
   VideoPause, VideoPlay,
 } from '@element-plus/icons-vue';
@@ -562,8 +571,51 @@ function percentOf(t: SftpTask): number {
   return Math.min(100, Math.round((t.transferred / t.total) * 100));
 }
 
-function clearFinishedTasks() {
+/**
+ * 清除已完成：**连库一起清**（用户要求），先弹窗确认 —— 历史删了不可恢复。
+ * ★ 以前只清视图，重开面板历史又回来了，等于骗人。
+ */
+async function clearFinishedTasks(): Promise<void> {
+  const n = finishedCount.value;
+  if (!n) return;
+  try {
+    await ElMessageBox.confirm(
+      `将清除 ${n} 条已完成任务，历史记录会一并删除且不可恢复。`,
+      '清除已完成',
+      { type: 'warning', confirmButtonText: '清除', cancelButtonText: '取消' },
+    );
+  } catch {
+    return; // 用户取消
+  }
+  try {
+    const r = await api.delete<{ cleared: boolean }>('/plugin/ops-shell/sftp/jobs/history');
+    if ('error' in r) { ElMessage.error(r.error); return; }
+  } catch (e) {
+    ElMessage.error(`清除失败：${(e as Error).message}`);
+    return;
+  }
   tasks.value = tasks.value.filter((t) => t.state === 'running');
+}
+
+/** 删除单条已完成记录（历史里一并删除，同样先确认） */
+async function removeFinishedTask(t: SftpTask): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `删除这条记录？「${t.label}」的明细会一并删除。`,
+      '删除记录',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const r = await api.delete<{ removed: boolean }>(`/plugin/ops-shell/sftp/jobs/history/${encodeURIComponent(t.id)}`);
+    if ('error' in r) { ElMessage.error(r.error); return; }
+  } catch (e) {
+    ElMessage.error(`删除失败：${(e as Error).message}`);
+    return;
+  }
+  tasks.value = tasks.value.filter((x) => x.id !== t.id);
 }
 
 /** 后端落库的历史记录（字段与服务端 SftpJobRecord 一一对应） */

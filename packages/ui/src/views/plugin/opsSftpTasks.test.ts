@@ -227,6 +227,25 @@ describe('已完成任务：明细可展开 + 历史入库', () => {
     expect(fn, '删除明细没还原').toMatch(/deleted: h\.kind === 'delete' \? h\.detail : \[\]/);
     expect(fn, '上传明细没还原').toMatch(/files: h\.kind === 'delete' \? \[\] : h\.detail/);
   });
+
+  it('★「清除已完成」连库一起清，且先弹窗确认', () => {
+    const fn = SRC.match(/async function clearFinishedTasks\(\): Promise<void> \{[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn, '找不到 clearFinishedTasks').not.toBe('');
+    expect(fn, '没弹确认框（删了不可恢复）').toContain('ElMessageBox.confirm');
+    expect(fn, '没删库里的历史 —— 只清视图等于骗人')
+      .toContain("api.delete<{ cleared: boolean }>('/plugin/ops-shell/sftp/jobs/history')");
+  });
+
+  it('★ 单条已完成也能删，历史一并删掉', () => {
+    const fn = SRC.match(/async function removeFinishedTask\([\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn, '找不到 removeFinishedTask').not.toBe('');
+    expect(fn, '没弹确认框').toContain('ElMessageBox.confirm');
+    expect(fn, '没调单条删除接口')
+      .toContain('/plugin/ops-shell/sftp/jobs/history/${encodeURIComponent(t.id)}');
+    const finished = SRC.slice(SRC.indexOf('name="finished"'));
+    expect(finished, '已完成行上没有删除入口').toMatch(/removeFinishedTask\(t\)/);
+    expect(finished, '删除按钮没图标').toMatch(/:icon="Close"/);
+  });
 });
 //   ① 「顶多加个暂停任务按钮」—— 待执行本来就是自动跑的，不需要"点开始"；
 //   ② 「点了暂停正在执行的任务和待执行的都得暂停，还得支持断点续传」——

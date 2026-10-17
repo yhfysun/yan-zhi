@@ -289,6 +289,12 @@
 .sftp-task-popper .stp-empty-hint { font-size: 11px; opacity: 0.8; }
 /* 清单尾部"…等 N 项 / 另有 N 条"这种收尾提示仍用这个（跟空状态不是一回事） */
 .sftp-task-popper .stp-empty { font-size: 11px; color: var(--color-text-tertiary); }
+/* 已完成行右侧的"删掉这条"：平时不抢眼，hover 才变危险色 */
+.sftp-task-popper .stp-del-one {
+  height: 16px; padding: 0 2px; color: var(--color-text-tertiary); opacity: 0.6;
+}
+.sftp-task-popper .stp-item:hover .stp-del-one { opacity: 1; }
+.sftp-task-popper .stp-del-one:hover { color: var(--color-danger); }
 
 /* 任务行 */
 .sftp-task-popper .stp-item { display: flex; gap: 6px; padding: 4px 0; }
