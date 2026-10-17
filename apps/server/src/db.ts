@@ -1513,6 +1513,8 @@ const SEC_AGENT_BUILTIN_TOOLS = [
   'plugin_sec-lab__toolchain',
   // 报告
   'plugin_sec-lab__sec_report',
+  // 子智能体委派（P4）：侦察 / Web / 报告三个子体各管一段，主智能体只做编排
+  'call_agent', 'list_sub_agents',
   // 任务规划与用户交互
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
@@ -1543,7 +1545,14 @@ const SEC_AGENT_SYSTEM_PROMPT = `你是安全助手（secAgent），在用户已
 ## 输出要求
 - 用中文。先给结论（暴露面如何、最严重的问题是什么），再给证据，最后给修复建议。
 - 每条发现项标明严重度与影响，不要只罗列原始工具输出。
-- 不确定的判断要说明不确定性，不要为了显得专业而夸大风险。`;
+- 不确定的判断要说明不确定性，不要为了显得专业而夸大风险。
+
+## 子智能体分工（P4）
+遇到可以并行/跨阶段的大任务时，用 call_agent 委派给专职子体，自己只做编排与汇总：
+- \`a_builtin_sec_recon_agent\`：授权核对 + 被动/主动侦察（recon / whois / ctlog / osint / subdomain / portscan / service / udp）
+- \`a_builtin_sec_web_agent\`：Web 面（webprobe / crawl / js_endpoint / dirsearch / waf / poc_scan / headers-audit）
+- \`a_builtin_sec_report_agent\`：情报与产出（cve / sploit / attack-map / sec_report）
+★ 子体同样受授权范围与护栏约束；委派时把**目标与授权依据**一并交代清楚，不要只说"去扫一下"。`;
 
 
 
@@ -2271,6 +2280,77 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: SEC_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     config_json: JSON.stringify({ maxReActSteps: 30 }),
+  },
+  // ── 安全子智能体（P4，2026-10-17）：主安全助手按阶段委派 ──────────────────
+  // ★ 子体只挂**本阶段需要的工具**：挂得越少，模型越不容易跑题，权限面也越小。
+  // ★ 三个子体都保留 scope_list：子体第一步必须自己确认授权，不靠父体"已经看过了"。
+  {
+    id: 'a_builtin_sec_recon_agent',
+    name: '安全侦察助手',
+    description:
+      '安全子智能体（侦察阶段）：授权核对、被动与主动信息收集——DNS/WHOIS/CT 日志/OSINT/子域枚举/端口与服务/UDP。由安全助手委派',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify([
+      'plugin_sec-lab__scope_list',
+      'plugin_sec-lab__recon', 'plugin_sec-lab__whois', 'plugin_sec-lab__ctlog',
+      'plugin_sec-lab__osint', 'plugin_sec-lab__subdomain',
+      'plugin_sec-lab__portscan', 'plugin_sec-lab__service_scan', 'plugin_sec-lab__udp_scan',
+      'ask_user',
+    ]),
+    system_prompt: `你是安全侦察助手（reconAgent）。只做信息收集，不做漏洞验证、不改任何东西。
+1. 动面前先 plugin_sec-lab__scope_list 确认目标在授权范围内且未过期；不在就停下并说明。
+2. 顺序：被动画像 → 子域 → 端口与服务 → UDP。每一步都说明你拿到了什么。
+3. 只报事实（端口/服务/证书/子域），不要推断漏洞。
+4. 输出结构化清单，供父智能体继续做 Web 面验证。`,
+    force_sync: true,
+    agent_kind: 'sub',
+    config_json: JSON.stringify({ maxReActSteps: 20 }),
+  },
+  {
+    id: 'a_builtin_sec_web_agent',
+    name: 'Web 验证助手',
+    description:
+      '安全子智能体（Web 阶段）：爬虫、JS 接口、目录爆破、WAF 识别、模板化 POC、反射型 XSS 与安全头审计。由安全助手委派',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify([
+      'plugin_sec-lab__scope_list',
+      'plugin_sec-lab__webprobe', 'plugin_sec-lab__crawl', 'plugin_sec-lab__js_endpoint',
+      'plugin_sec-lab__dirsearch', 'plugin_sec-lab__waf_detect',
+      'plugin_sec-lab__poc_scan', 'plugin_sec-lab__verify_xss', 'plugin_sec-lab__headers_audit',
+      'ask_user',
+    ]),
+    system_prompt: `你是 Web 验证助手（webAgent）。只做**只读检测**，不做利用、不投写入载荷。
+1. 先 scope_list 确认授权；只用父体交代的目标，不自行扩展。
+2. 顺序：爬虫/JS 接口 → 目录爆破 → 模板 POC → 安全头；按证据决定要不要再做 XSS 反射验证。
+3. 注入类（SQLi/SSRF）不在你的工具面里：需要时把线索交回父智能体，由它决定是否带确认执行。
+4. 每条结论必须附请求与响应证据；没有证据就说"未确认"。`,
+    force_sync: true,
+    agent_kind: 'sub',
+    config_json: JSON.stringify({ maxReActSteps: 25 }),
+  },
+  {
+    id: 'a_builtin_sec_report_agent',
+    name: '安全报告助手',
+    description:
+      '安全子智能体（报告阶段）：CVE/KEV 情报、ATT&CK 映射、发现项状态维护与 Markdown/HTML/SARIF 报告生成。由安全助手委派',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify([
+      'plugin_sec-lab__scope_list',
+      'plugin_sec-lab__cve_intel', 'plugin_sec-lab__exploit_search',
+      'plugin_sec-lab__attack_map', 'plugin_sec-lab__finding_status', 'plugin_sec-lab__sec_report',
+    ]),
+    system_prompt: `你是安全报告助手（reportAgent）。只做情报核对与产出，不发起任何扫描。
+1. 用 cve_intel 核对漏洞编号与 KEV 状态；本地库没有就明说"未收录"，不要编。
+2. 用 attack_map 看覆盖了哪些 ATT&CK 技术，指出未覆盖的方向。
+3. 用 finding_status 把人工确认过的条目标为 verified、误报标 fp（fp 不进报告）。
+4. 最后 sec_report 出报告；格式按用户要求选 markdown / html / sarif。
+5. 报告结论先行，每条含证据与修复建议，不夸大。`,
+    force_sync: true,
+    agent_kind: 'sub',
+    config_json: JSON.stringify({ maxReActSteps: 20 }),
   },
   {
     // Java 开发助手：代码编写助手的专属子智能体，Java 项目检测/构建/分析/调试/测试

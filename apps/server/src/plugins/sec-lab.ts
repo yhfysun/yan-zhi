@@ -44,6 +44,8 @@ import { runBaseline, runTlsAudit, runHeadersAudit } from './sec-lab-tools/basel
 import { runWatch, stopAllWatchers } from './sec-lab-tools/watch.js';
 import { runBrute } from './sec-lab-tools/brute.js';
 import { runAttackMap } from './sec-lab-tools/attackmap.js';
+import { runSkill, runWarstory, runCheatsheet } from './sec-lab-tools/knowledge.js';
+import { runSast } from './sec-lab-tools/sast.js';
 
 export const SEC_LAB_ID = 'sec-lab';
 
@@ -72,6 +74,8 @@ export const secLabManifest: PluginManifest = {
       'verify_sqli', 'verify_xss', 'verify_ssrf', 'finding_status',
       // —— P3（2026-10-17）——
       'baseline_scan', 'tls_audit', 'headers_audit', 'watch', 'brute', 'attack_map',
+      // —— P4（2026-10-17）——
+      'sec_skill', 'warstory', 'cheatsheet', 'sast',
     ],
     // ★ 2026-10-16 去掉 sidebar 贡献：与顶栏**模式下拉**的「安全」是同一个入口（都进 /sec），
     //   属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
@@ -157,6 +161,12 @@ export const secLabManifest: PluginManifest = {
       { name: 'watch', desc: '定时巡检：start / stop / list / tick（进程内定时器，重启需重开）', usage: '/watch <start|stop|list|tick> [--target=x] [--intervalMin=30]', group: 'ASSET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'watch', params: ['action'] },
       { name: 'brute', desc: 'HTTP Basic 默认口令自查（8 组公开默认口令；SSH/FTP 请走 hydra）', usage: '/brute <http> <url>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'brute', confirm: true, params: ['protocol', 'target'] },
       { name: 'attack-map', aliases: ['attack_map'], desc: 'ATT&CK 映射：把当前发现项映射到技术，给出已覆盖/未覆盖（启发式）', usage: '/attack-map', group: 'INTEL', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'attack_map' },
+
+      // ── P4：知识库与源码审计（2026-10-17）──────────────────────────────────
+      { name: 'skill', desc: '安全技能参考：list 列全部 / load <name> 看正文（方法论，不是可执行 skill）', usage: '/skill <list|load> [name]', group: 'KB', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sec_skill', params: ['action', 'name'] },
+      { name: 'warstory', desc: '战例库：真实缺陷的排查路径与教训', usage: '/warstory [关键词]', group: 'KB', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'warstory', params: ['topic'] },
+      { name: 'cheatsheet', desc: '速查表：nmap / curl / jwt / sqlmap / ffuf', usage: '/cheatsheet [关键词]', group: 'KB', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'cheatsheet', params: ['topic'] },
+      { name: 'code-scan', aliases: ['codescan'], desc: '本地源码安全扫描（L1 正则 + L2 结构式，10 条规则；只读不改文件）', usage: '/code-scan <目录> [--maxFiles=800]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sast', params: ['root'] },
     ],
     // ── 剧本（`@名字` 召唤的命令序列，2026-10-16）────────────────────────────────
     // ★ 定义就是"一串**已存在的命令**"（见 core 的 PlaybookDef）：剧本自己不执行任何东西，
@@ -1474,6 +1484,50 @@ function attackMapTool(): BuiltInTool {
     async () => runAttackMap(await loadFindings()));
 }
 
+function skillTool(): BuiltInTool {
+  return plainTool('sec_skill', '安全技能参考：list 列全部 / load <name> 看正文。这是**方法论速记**，不是本仓可执行 skill。',
+    { action: { type: 'string', enum: ['list', 'load'], description: '动作' }, name: { type: 'string', description: '技能名（load 时）' } },
+    ['action'],
+    async (a) => runSkill(String(a.action || 'list'), String(a.name || '')));
+}
+
+function warstoryTool(): BuiltInTool {
+  return plainTool('warstory', '战例库：真实缺陷的排查路径与教训（不传关键词列全部）。',
+    { topic: { type: 'string', description: '关键词（php / jwt / git …）' } },
+    [],
+    async (a) => runWarstory(String(a.topic || '')));
+}
+
+function cheatsheetTool(): BuiltInTool {
+  return plainTool('cheatsheet', '速查表：nmap / curl / jwt / sqlmap / ffuf（不传关键词列全部）。',
+    { topic: { type: 'string', description: '关键词' } },
+    [],
+    async (a) => runCheatsheet(String(a.topic || '')));
+}
+
+function sastTool(): BuiltInTool {
+  return {
+    name: 'sast',
+    description: '本地源码安全扫描：L1 正则 + L2 结构式，10 条规则（硬编码凭据 / SQL 拼接 / eval / innerHTML / 命令注入 / 反序列化 / 弱哈希 / CORS 通配 / 调试路由 / 关闭 TLS 校验）。只读，不执行被测代码。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: '要扫描的目录（绝对路径）' },
+        maxFiles: { type: 'number', description: '最多扫多少个文件，默认 800' },
+        maxBytes: { type: 'number', description: '单文件大小上限（字节），默认 512KB' },
+      },
+      required: ['root'],
+    },
+    async execute(args) {
+      return withGuard('sast', args, async () => runSast({
+        root: String(args.root || ''),
+        maxFiles: Number(args.maxFiles) || undefined,
+        maxBytes: Number(args.maxBytes) || undefined,
+      }));
+    },
+  };
+}
+
 // ---------- 后端路由（控制台页面用） ----------
 
 function registerRoutes(ctx: PluginContext) {
@@ -1566,6 +1620,11 @@ function registerRoutes(ctx: PluginContext) {
         watch: { factory: watchTool, opts: {}, passRunner: true },
         brute: { factory: bruteTool, opts: {}, passRunner: true },
         attack_map: { factory: attackMapTool, opts: {}, passRunner: true },
+        // —— P4（2026-10-17）——
+        sec_skill: { factory: skillTool, opts: {}, passRunner: true },
+        warstory: { factory: warstoryTool, opts: {}, passRunner: true },
+        cheatsheet: { factory: cheatsheetTool, opts: {}, passRunner: true },
+        sast: { factory: sastTool, opts: {}, passRunner: true },
       };
       const entry = map[tool];
       if (!entry) return fail(res, 400, `未知工具 ${tool}`);
@@ -1695,6 +1754,8 @@ export const secLabModule: PluginModule = {
       verifySqliTool(), verifyXssTool(), verifySsrfTool(), findingStatusTool(),
       // —— P3（2026-10-17）——
       baselineTool(), tlsAuditTool(), headersAuditTool(), watchTool(), bruteTool(), attackMapTool(),
+      // —— P4（2026-10-17）——
+      skillTool(), warstoryTool(), cheatsheetTool(), sastTool(),
     ]) {
       ctx.registerTool(t);
     }

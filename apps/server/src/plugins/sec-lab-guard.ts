@@ -68,6 +68,11 @@ export const TOOL_RISK: Record<string, RiskLevel> = {
   brute: 'intrusive',
   // ATT&CK 映射：只读既有发现项
   attack_map: 'passive',
+  // —— P4：知识库与源码审计 ——
+  sec_skill: 'passive',
+  warstory: 'passive',
+  cheatsheet: 'passive',
+  sast: 'passive',
 };
 
 /** 动作分级：passive 被动观测 / active 主动探测 / intrusive 侵入 / simulate 攻击行为模拟 */
@@ -345,6 +350,8 @@ export function guard(i: GuardInput): GuardResult {
     'watch',
     // ATT&CK 映射只读本地发现项
     'attack_map',
+    // 知识库与源码审计：目标是本地路径/无目标，不适用"授权范围"
+    'sec_skill', 'warstory', 'cheatsheet', 'sast',
   ];
   const needsTarget = !NO_TARGET_TOOLS.includes(i.tool);
 
