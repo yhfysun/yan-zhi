@@ -409,8 +409,16 @@ function createChat() {
    * 语义：进入 send() 即刻置位（**在任何 await 之前**），finally 释放；
    *   置位期间重复调用直接忽略。这是"防重复提交"的**唯一入口守卫** ——
    *   放在 store.callLlm 里的 runningConvIds 判据来不及挡（那里已在 await 之后）。
+   *
+   * ★ 锁粒度 = 按会话（2026-10-17，用户实报「切到别的会话回车发不出消息，刷新才好」）：
+   *   锁覆盖整个任务时长（sendInner await store.sendMessage 等 SSE 全程），若还是
+   *   全局一把，会话 A 跑任务期间在会话 B 发消息会在锁处被**静默吞掉**——与
+   *   ChatInputArea onEnter 注释宣称的「切到别的会话则正常发送」直接矛盾。
+   *   key = currentConvId；草稿态（还没建会话）用 '__draft__'，连发互斥语义不变。
+   *   对 UI 导出的 `sending` 退化为 computed：「当前会话是否在发送中」，语义不变。
    */
-  const sending = ref(false);
+  const sendingConvs = ref<Set<string>>(new Set());
+  const sending = computed(() => sendingConvs.value.has(store.currentConvId || '__draft__'));
   const inputRef = ref<any>();
   const fileInputRef = ref<HTMLInputElement>();
   const uploadedFiles = ref<Array<{ name: string; size: number; type: string; dataUrl: string }>>([]);
@@ -2579,16 +2587,19 @@ async function healStalePlatform() {
         return;
       }
     }
-    // ★★★ 重入锁（2026-10-09）：状态在**任何 await 之前**同步置位。见 sending 声明处注释。
-    //   放在这里而不是 store 里 —— 这里是"用户点发送"的唯一入口，能挡住 await 窗口期的连发。
-    //   （注意：此锁会覆盖整个任务时长 —— 正常路径 sendInner await store.sendMessage 等任务
-    //   SSE 全程。所以「运行中入队」判断必须放在它**前面**，见上方注释。）
-    if (sending.value) return;
-    sending.value = true;
+    // ★★★ 重入锁（2026-10-09 起为全局锁；2026-10-17 改按会话粒度，见 sendingConvs 声明处注释）：
+    //   key 在进入时冻结 —— sendInner 建会话后 currentConvId 会变，但锁仍挂原 key 直到
+    //   finally，草稿态（'__draft__'）连发仍互斥。锁命中不再静默（此前零反馈，用户以为回车坏了）。
+    const lockKey = store.currentConvId || '__draft__';
+    if (sendingConvs.value.has(lockKey)) {
+      ElMessage.warning('该会话正在发送中，请稍候');
+      return;
+    }
+    sendingConvs.value.add(lockKey);
     try {
       await sendInner();
     } finally {
-      sending.value = false;
+      sendingConvs.value.delete(lockKey);
     }
   }
 
