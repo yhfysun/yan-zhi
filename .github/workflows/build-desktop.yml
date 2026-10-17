@@ -31,6 +31,24 @@ jobs:
       - name: 安装依赖
         run: pnpm install
 
+      # 预置授权码「构建时现签」：私钥与签发脚本按设计不入库（.gitignore 授权码签发侧）。
+      # CI 经仓库 Secrets 还原；未配置 secret → 显式 YZ_SKIP_LICENSE_SIGN=1 跳过预置码，
+      # 运行时回退 license.ts 源码常量（2026-12-18 到期，之后需补配 secret 或签发机现签）。
+      # 配置方式（签发机执行，base64 内容不含换行）：
+      #   gh secret set LICENSE_PRIVATE_KEY_BASE64 < scripts/license-private-key.pem.b64
+      #   gh secret set GEN_LICENSE_SCRIPT_BASE64 < scripts/gen-license.mjs.b64
+      - name: 还原授权码签发材料（未配置 secret 则跳过预置码）
+        shell: bash
+        run: |
+          if [ -z '${{ secrets.LICENSE_PRIVATE_KEY_BASE64 }}' ] || [ -z '${{ secrets.GEN_LICENSE_SCRIPT_BASE64 }}' ]; then
+            echo "YZ_SKIP_LICENSE_SIGN=1" >> "$GITHUB_ENV"
+            echo "::warning::未配置 LICENSE_PRIVATE_KEY_BASE64 / GEN_LICENSE_SCRIPT_BASE64 secret，本包不含预置试用码（运行时回退源码常量，2026-12-18 到期）"
+            exit 0
+          fi
+          echo '${{ secrets.LICENSE_PRIVATE_KEY_BASE64 }}' | base64 -d > scripts/license-private-key.pem
+          echo '${{ secrets.GEN_LICENSE_SCRIPT_BASE64 }}' | base64 -d > scripts/gen-license.mjs
+          chmod +x scripts/gen-license.mjs
+          echo "已还原签发私钥与签发脚本，打包时将现签预置码"
 
       # 版本档（lite / basic / pro）由 `electron:build:*` 脚本内部的 set-edition.cjs 写入
       # apps/desktop/edition.json，无需在此额外设置 env —— 产物名后缀由 electron-build.cjs
@@ -78,6 +96,18 @@ jobs:
       - name: 安装依赖
         run: pnpm install
 
+      - name: 还原授权码签发材料（未配置 secret 则跳过预置码）
+        shell: bash
+        run: |
+          if [ -z '${{ secrets.LICENSE_PRIVATE_KEY_BASE64 }}' ] || [ -z '${{ secrets.GEN_LICENSE_SCRIPT_BASE64 }}' ]; then
+            echo "YZ_SKIP_LICENSE_SIGN=1" >> "$GITHUB_ENV"
+            echo "::warning::未配置 LICENSE_PRIVATE_KEY_BASE64 / GEN_LICENSE_SCRIPT_BASE64 secret，本包不含预置试用码（运行时回退源码常量，2026-12-18 到期）"
+            exit 0
+          fi
+          echo '${{ secrets.LICENSE_PRIVATE_KEY_BASE64 }}' | base64 -d > scripts/license-private-key.pem
+          echo '${{ secrets.GEN_LICENSE_SCRIPT_BASE64 }}' | base64 -d > scripts/gen-license.mjs
+          chmod +x scripts/gen-license.mjs
+          echo "已还原签发私钥与签发脚本，打包时将现签预置码"
 
       - name: 构建 Windows 基础版
         run: pnpm --filter @yan-zhi/desktop electron:build:basic
