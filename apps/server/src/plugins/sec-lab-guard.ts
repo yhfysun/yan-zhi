@@ -28,6 +28,46 @@ export const TOOL_RISK: Record<string, RiskLevel> = {
   log_hunt: 'passive',
   // 自有资产暴露面监控
   asset_monitor: 'passive',
+  // —— P1：侦察与 Web 纵深（2026-10-17）——
+  whois: 'passive',
+  ctlog: 'passive',
+  osint: 'passive',
+  subdomain: 'active',
+  crawl: 'active',
+  js_endpoint: 'active',
+  dirsearch: 'active',
+  waf_detect: 'active',
+  service_scan: 'active',
+  udp_scan: 'active',
+  // 编解码 / 哈希 / JWT：纯文本处理，无网络无文件
+  crypto_encode: 'passive',
+  crypto_decode: 'passive',
+  jwt_inspect: 'passive',
+  hash_id: 'passive',
+  // 目标状态：只改**本地记录**里的基线，不碰远端
+  target_state: 'passive',
+  // 抓包代理：本机监听 + 按 scope 转发
+  proxy: 'active',
+  // —— P2：POC / 情报 / 带外 / 验证（2026-10-17）——
+  poc_scan: 'active',
+  poc_templates: 'passive',
+  cve_intel: 'passive',
+  exploit_search: 'passive',
+  oast: 'active',
+  // 注入验证会发攻击性探测载荷
+  verify_sqli: 'intrusive',
+  verify_xss: 'active',
+  verify_ssrf: 'intrusive',
+  finding_status: 'passive',
+  // —— P3：基线与巡检（2026-10-17）——
+  baseline_scan: 'active',
+  tls_audit: 'active',
+  headers_audit: 'active',
+  watch: 'active',
+  // 默认口令自查：会尝试真实认证，属侵入级
+  brute: 'intrusive',
+  // ATT&CK 映射：只读既有发现项
+  attack_map: 'passive',
 };
 
 /** 动作分级：passive 被动观测 / active 主动探测 / intrusive 侵入 / simulate 攻击行为模拟 */
@@ -294,7 +334,18 @@ export type GuardResult = { ok: true; scope?: ScopeEntry } | { ok: false; reason
  */
 export function guard(i: GuardInput): GuardResult {
   // 无需目标的工具（范围管理 / 报告 / 规则 / 狩猎 / 资产台账）直接放行，但仍过命令黑名单
-  const NO_TARGET_TOOLS = ['scope_list', 'scope_add', 'scope_remove', 'sec_report', 'detect_rules', 'log_hunt', 'asset_monitor', 'host_env', 'range_deploy', 'range_list', 'range_stop', 'android_launch'];
+  const NO_TARGET_TOOLS = [
+    'scope_list', 'scope_add', 'scope_remove', 'sec_report', 'detect_rules', 'log_hunt', 'asset_monitor',
+    'host_env', 'range_deploy', 'range_list', 'range_stop', 'android_launch',
+    // P1：纯文本 / 本地记录 / 本机监听类工具没有"目标"概念
+    'crypto_encode', 'crypto_decode', 'jwt_inspect', 'hash_id', 'target_state', 'proxy',
+    // P2：模板库 / 情报 / 带外 / 状态机都没有"目标"概念
+    'poc_templates', 'cve_intel', 'exploit_search', 'oast', 'finding_status',
+    // watch 的 list 没有目标；start/tick 在工具内部显式调本模块的 guard() 补校验
+    'watch',
+    // ATT&CK 映射只读本地发现项
+    'attack_map',
+  ];
   const needsTarget = !NO_TARGET_TOOLS.includes(i.tool);
 
   if (i.command) {

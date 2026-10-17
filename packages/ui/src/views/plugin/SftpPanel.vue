@@ -24,94 +24,128 @@
           </template>
 
           <div class="sftp-task-pop">
-            <div class="stp-head">
-              <span class="stp-head-title">任务</span>
-              <el-button link size="small" :disabled="!finishedCount" @click="clearFinishedTasks">清除已完成</el-button>
-            </div>
-
-            <!-- 1) 正在执行 -->
-            <div class="stp-group">
-              <div class="stp-title">正在执行中（{{ runningCount }}）</div>
-              <div v-if="!runningCount" class="stp-empty">没有正在执行的任务</div>
-              <div v-for="t in runningTasks" :key="t.id" class="stp-item">
-                <el-icon class="stp-icon">
-                  <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
-                </el-icon>
-                <div class="stp-main">
-                  <div class="stp-line">
-                    <span class="stp-label" :title="t.label">{{ t.label }}</span>
-                    <span class="stp-actions">
-                      <span
-                        v-if="t.paused"
-                        class="stp-paused"
-                        title="已暂停：正在传的文件停在了断点上，点继续会从断点接着传"
-                      >已暂停</span>
-                      <span class="stp-meta">{{ taskMeta(t) }}</span>
-                      <!-- 只有上传可暂停：下载/删除中途停没有安全点，后端也会拒（见 SftpTask.paused） -->
-                      <el-button
-                        v-if="t.kind === 'upload'"
-                        link
-                        size="small"
-                        class="stp-pause"
-                        :icon="t.paused ? VideoPlay : VideoPause"
-                        :title="t.paused ? '继续上传（从断点接着传）' : '暂停上传（正在传的文件停在断点，继续时接着传）'"
-                        @click.stop="togglePause(t)"
+            <!-- 三段改成三个 tab：一次只显示一类，每页自己滚动、能多放内容；
+                 数量标在 tab 上，扫一眼就知道有几件在跑 / 排着 / 已完成 -->
+            <el-tabs v-model="taskTab" class="stp-tabs">
+              <el-tab-pane name="running">
+                <template #label>
+                  <span class="stp-tab">正在执行中<span class="stp-num" :class="{ 'is-zero': !runningCount }">{{ runningCount }}</span></span>
+                </template>
+                <div class="stp-pane">
+                  <div v-if="!runningCount" class="stp-empty-state">
+                    <el-icon><VideoPlay /></el-icon>
+                    <span class="stp-empty-title">没有正在执行的任务</span>
+                    <span class="stp-empty-hint">上传、下载、删除会出现在这里</span>
+                  </div>
+                  <div v-for="t in runningTasks" :key="t.id" class="stp-item">
+                    <el-icon class="stp-icon">
+                      <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
+                    </el-icon>
+                    <div class="stp-main">
+                      <div class="stp-line">
+                        <span class="stp-label" :title="t.label">{{ t.label }}</span>
+                        <span class="stp-actions">
+                          <span
+                            v-if="t.paused"
+                            class="stp-paused"
+                            title="已暂停：正在传的文件停在了断点上，点继续会从断点接着传"
+                          >已暂停</span>
+                          <span class="stp-meta">{{ taskMeta(t) }}</span>
+                          <!-- 只有上传可暂停：下载/删除中途停没有安全点，后端也会拒（见 SftpTask.paused） -->
+                          <el-button
+                            v-if="t.kind === 'upload'"
+                            link
+                            size="small"
+                            class="stp-pause"
+                            :icon="t.paused ? VideoPlay : VideoPause"
+                            :title="t.paused ? '继续上传（从断点接着传）' : '暂停上传（正在传的文件停在断点，继续时接着传）'"
+                            @click.stop="togglePause(t)"
+                          />
+                        </span>
+                      </div>
+                      <el-progress
+                        v-if="t.kind !== 'delete'"
+                        :percentage="percentOf(t)"
+                        :stroke-width="4"
+                        :show-text="false"
                       />
-                    </span>
-                  </div>
-                  <el-progress
-                    v-if="t.kind !== 'delete'"
-                    :percentage="percentOf(t)"
-                    :stroke-width="4"
-                    :show-text="false"
-                  />
-                  <!-- 并发窗口：同时在飞的那几个文件（最多 上传并发数 个）；暂停后它们停在断点上 -->
-                  <div
-                    v-if="t.kind === 'upload' && t.activeFiles.length"
-                    class="stp-cur"
-                    :title="t.activeFiles.join('\n')"
-                  >
-                    {{ t.paused ? '已停在断点' : '正在传' }} {{ t.activeFiles.length }} 个：{{ activeNames(t) }}
-                  </div>
-                  <!-- 删除任务：实时删除明细 -->
-                  <div v-if="t.kind === 'delete' && t.deleted.length" class="stp-del">
-                    <span class="stp-del-toggle" @click="t.expanded = !t.expanded">
-                      {{ t.expanded ? '收起明细' : '查看删掉的项' }}（{{ t.deletedCount }}）
-                    </span>
-                    <div v-if="t.expanded" class="stp-del-list">
-                      <div v-for="(p, i) in delRows(t)" :key="t.id + i" :title="p">{{ p }}</div>
+                      <!-- 并发窗口：同时在飞的那几个文件（最多 上传并发数 个）；暂停后它们停在断点上 -->
+                      <div
+                        v-if="t.kind === 'upload' && t.activeFiles.length"
+                        class="stp-cur"
+                        :title="t.activeFiles.join('\n')"
+                      >
+                        {{ t.paused ? '已停在断点' : '正在传' }} {{ t.activeFiles.length }} 个：{{ activeNames(t) }}
+                      </div>
+                      <!-- 删除任务：实时删除明细 -->
+                      <div v-if="t.kind === 'delete' && t.deleted.length" class="stp-del">
+                        <span class="stp-del-toggle" @click="t.expanded = !t.expanded">
+                          {{ t.expanded ? '收起明细' : '查看删掉的项' }}（{{ t.deletedCount }}）
+                        </span>
+                        <div v-if="t.expanded" class="stp-del-list">
+                          <div v-for="(p, i) in delRows(t)" :key="t.id + i" :title="p">{{ p }}</div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </div>
+              </el-tab-pane>
 
-            <!-- 2) 待执行：上传任务里排队等着传的文件（扫描出来就先列在这里） -->
-            <div class="stp-group">
-              <div class="stp-title">待执行（{{ pendingFiles.length }}）</div>
-              <div v-if="!pendingFiles.length" class="stp-empty">没有排队中的文件</div>
-              <div v-for="(f, i) in pendingRows" :key="'p' + i" class="stp-file" :title="f.name">{{ f.name }}</div>
-              <div v-if="pendingMore" class="stp-empty">…等 {{ pendingMore }} 项</div>
-            </div>
-
-            <!-- 3) 已执行完成（只留最近几条，避免弹窗无限长） -->
-            <div class="stp-group">
-              <div class="stp-title">已执行完成（{{ finishedCount }}）</div>
-              <div v-if="!finishedCount" class="stp-empty">还没有完成的任务</div>
-              <div v-for="t in finishedTasks" :key="t.id" class="stp-item is-finished">
-                <el-icon class="stp-icon">
-                  <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
-                </el-icon>
-                <div class="stp-main">
-                  <div class="stp-line">
-                    <span class="stp-label" :title="t.label">{{ t.label }}</span>
-                    <span class="stp-meta" :class="{ 'is-err': t.state === 'failed' }">{{ taskMeta(t) }}</span>
+              <el-tab-pane name="pending">
+                <template #label>
+                  <span class="stp-tab">待执行<span class="stp-num" :class="{ 'is-zero': !pendingFiles.length }">{{ pendingFiles.length }}</span></span>
+                </template>
+                <div class="stp-pane">
+                  <div v-if="!pendingFiles.length" class="stp-empty-state">
+                    <el-icon><Clock /></el-icon>
+                    <span class="stp-empty-title">没有排队中的文件</span>
+                    <span class="stp-empty-hint">上传前先扫描队列，传完一个补一个</span>
                   </div>
-                  <div v-if="t.error" class="stp-err" :title="t.error">{{ t.error }}</div>
+                  <div v-for="(f, i) in pendingRows" :key="'p' + i" class="stp-file" :title="f.name">{{ f.name }}</div>
+                  <div v-if="pendingMore" class="stp-empty">…等 {{ pendingMore }} 项</div>
                 </div>
-              </div>
-              <div v-if="finishedCount > finishedTasks.length" class="stp-empty">…另有 {{ finishedCount - finishedTasks.length }} 条已完成</div>
-            </div>
+              </el-tab-pane>
+
+              <el-tab-pane name="finished">
+                <template #label>
+                  <span class="stp-tab">已执行完成<span class="stp-num" :class="{ 'is-zero': !finishedCount }">{{ finishedCount }}</span></span>
+                </template>
+                <div class="stp-pane">
+                  <div class="stp-pane-bar">
+                    <span class="stp-empty">最近的排最前</span>
+                    <el-button link size="small" :disabled="!finishedCount" @click="clearFinishedTasks">清除已完成</el-button>
+                  </div>
+                  <div v-if="!finishedCount" class="stp-empty-state">
+                    <el-icon><CircleCheck /></el-icon>
+                    <span class="stp-empty-title">还没有完成的任务</span>
+                    <span class="stp-empty-hint">完成或失败的任务会留在这里</span>
+                  </div>
+                  <div v-for="t in finishedTasks" :key="t.id" class="stp-item is-finished">
+                    <el-icon class="stp-icon">
+                      <Upload v-if="t.kind === 'upload'" /><Download v-else-if="t.kind === 'download'" /><Delete v-else />
+                    </el-icon>
+                    <div class="stp-main">
+                      <div class="stp-line">
+                        <span class="stp-label" :title="t.label">{{ t.label }}</span>
+                        <span class="stp-meta" :class="{ 'is-err': t.state === 'failed' }">{{ taskMeta(t) }}</span>
+                      </div>
+                      <div v-if="t.error" class="stp-err" :title="t.error">{{ t.error }}</div>
+                      <!-- 已完成也要能翻明细：删除看"删掉了哪些"，上传看"传了哪些"
+                           （这些明细来自落库的历史，刷新之后照样在） -->
+                      <div v-if="detailRows(t).length" class="stp-del">
+                        <span class="stp-del-toggle" @click="t.expanded = !t.expanded">
+                          {{ t.expanded ? '收起明细' : detailTitle(t) }}
+                        </span>
+                        <div v-if="t.expanded" class="stp-del-list">
+                          <div v-for="(p, i) in detailRows(t)" :key="t.id + i" :title="p">{{ p }}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-if="finishedCount > finishedTasks.length" class="stp-empty">…另有 {{ finishedCount - finishedTasks.length }} 条已完成</div>
+                </div>
+              </el-tab-pane>
+            </el-tabs>
           </div>
         </el-popover>
         <el-button size="small" :icon="Refresh" title="刷新列表" @click="loadRemote" />
@@ -342,7 +376,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { consumeSseStream } from '../../utils/sse';
 import {
-  ArrowUp, Connection, Delete, Document, Download, EditPen,
+  ArrowUp, CircleCheck, Clock, Connection, Delete, Document, Download, EditPen,
   Folder, FolderAdd, FolderOpened, HomeFilled, Link, Refresh, Tickets, Upload,
   VideoPause, VideoPlay,
 } from '@element-plus/icons-vue';
@@ -451,16 +485,25 @@ interface SftpTask {
 
 /** 前端保留的已删路径上限：与后端 MAX_JOB_DELETED_KEEP 同量级，避免长任务把 DOM 撑爆。 */
 const DELETED_KEEP = 200;
-/** 明细里一次性渲染的行数上限（更早的在 title 里也能看到计数，不必都塞进 DOM）。 */
-const DELETED_ROWS = 60;
+/**
+ * 明细里一次性渲染的行数上限。
+ * ★ 改成 tab 之后一页只放一类，所以能比原来"三段挤在一个弹窗里"时多得多；
+ *   再多靠滚动看，更早的凭计数也心里有数。
+ */
+const DELETED_ROWS = 120;
 /** 「已执行完成」最多显示几条；更早的用一行"另有 N 条"带过 */
-const FINISHED_ROWS = 8;
+const FINISHED_ROWS = 40;
 /** 「待执行」清单最多渲染几行 */
-const PENDING_ROWS = 30;
+const PENDING_ROWS = 200;
 
 const tasks = ref<SftpTask[]>([]);
 /** 任务弹窗的展开态（由刷新旁边那个图标按钮控制） */
 const tasksOpen = ref(false);
+/**
+ * 任务弹窗当前停在哪个 tab（2026-10-17 用户要求从"三段堆叠"改成"三个 tab 切换"：
+ * 一次只显示一类，每页自己滚动，能放的条数多得多；数量标在 tab 上）。
+ */
+const taskTab = ref<'running' | 'pending' | 'finished'>('running');
 
 const runningCount = computed(() => tasks.value.filter((t) => t.state === 'running').length);
 const finishedCount = computed(() => tasks.value.filter((t) => t.state !== 'running').length);
@@ -521,6 +564,75 @@ function percentOf(t: SftpTask): number {
 
 function clearFinishedTasks() {
   tasks.value = tasks.value.filter((t) => t.state === 'running');
+}
+
+/** 后端落库的历史记录（字段与服务端 SftpJobRecord 一一对应） */
+interface JobHistoryRecord {
+  id: string;
+  kind: 'upload' | 'download' | 'delete';
+  label: string;
+  state: 'done' | 'failed';
+  /** 结束时间（epoch 毫秒） */
+  at: number;
+  totalCount: number;
+  doneCount: number;
+  totalBytes: number;
+  error?: string;
+  deletedCount?: number;
+  detail: string[];
+  detailTruncated: boolean;
+}
+
+/** 落库记录 → 任务行（历史里没有字节进度，用 totalBytes 顶；明细灌进 files/deleted） */
+function toTaskRow(h: JobHistoryRecord): SftpTask {
+  return {
+    id: h.id, kind: h.kind, label: h.label, state: h.state,
+    transferred: h.totalBytes, total: h.totalBytes,
+    doneCount: h.doneCount, totalCount: h.totalCount,
+    currentFile: '',
+    deletedCount: h.deletedCount ?? 0,
+    deleted: h.kind === 'delete' ? h.detail : [],
+    expanded: false,
+    files: h.kind === 'delete' ? [] : h.detail.map((name) => ({ name, size: 0 })),
+    filesTruncated: h.detailTruncated,
+    activeFiles: [],
+    paused: false,
+    error: h.error,
+  };
+}
+
+/**
+ * 挂载时把**已落库**的任务历史读进来（用户要求「这些数据都要入库」）。
+ * ★ 只读一次：本会话新完成的任务本来就在 tasks 里，反复读只会按 id 撞出重复行
+ *   （下面的 dedupe 只是兜底，不是主要手段）。
+ */
+async function loadTaskHistory(): Promise<void> {
+  try {
+    const r = await api.get<JobHistoryRecord[]>('/plugin/ops-shell/sftp/jobs/history');
+    if ('error' in r || !Array.isArray(r.data)) return;
+    const known = new Set(tasks.value.map((t) => t.id));
+    const rows = r.data
+      .filter((h) => h && typeof h.id === 'string' && !known.has(h.id))
+      .slice()
+      .reverse()            // 后端给的是"最近在前"；tasks 里按时间正序更自然
+      .map(toTaskRow);
+    if (rows.length) tasks.value = [...rows, ...tasks.value];
+  } catch {
+    // 没有历史是很正常的状态，读失败也不该打扰用户
+  }
+}
+
+/** 已完成任务的明细：删除看"删掉了哪些"，上传看"传了哪些" */
+function detailRows(t: SftpTask): string[] {
+  const src = t.kind === 'delete' ? t.deleted : t.files.map((f) => f.name);
+  return src.slice(-DELETED_ROWS).reverse();
+}
+
+/** 明细展开的文案（带总数，免得只看最近几条就以为是全部） */
+function detailTitle(t: SftpTask): string {
+  if (t.kind === 'delete') return `查看删掉的项（${t.deletedCount}）`;
+  if (t.kind === 'upload') return `查看传的文件（${t.totalCount}）`;
+  return `查看文件（${t.totalCount}）`;
 }
 
 const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
@@ -1124,8 +1236,10 @@ async function downloadNames(names: string[], destDir?: string) {
       activeFiles: [],
       paused: false,
     }];
-    // 起了任务就把弹窗打开：用户要的是"扫描后排队能看见"，藏在图标后面等于没有
+    // 起了任务就把弹窗打开、并切到「正在执行」：用户要的是"扫描后排队能看见"，
+    // 藏在图标后面、或停在别的 tab 上，等于没有
     tasksOpen.value = true;
+    taskTab.value = 'running';
   };
   const taskOf = (id: string): SftpTask | undefined => tasks.value.find((x) => x.id === id);
 
@@ -1300,6 +1414,8 @@ onMounted(async () => {
   window.addEventListener('click', onDocClick);
   window.addEventListener('keydown', onDocKeydown);
   remotePath.value = props.conn.sftpPath || '/';
+  // 已完成任务的历史是**落库**的（内存里的任务 3 秒就回收了），进来先把它读回来
+  void loadTaskHistory();
   if (isElectron) {
     // 本地栏默认「用户目录下的下载目录」。
     // ★ 不能硬编码中文「下载」：目录名随系统语言/用户配置而变（中文 Windows 常见「下载」、

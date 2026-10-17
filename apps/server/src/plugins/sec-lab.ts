@@ -26,6 +26,24 @@ import { runEasm, type Asset, type Snapshot } from './sec-lab-tools/easm.js';
 import {
   runHostEnv, runRangeDeploy, runRangeList, runRangeStop, runAndroidLaunch, RANGE_TEMPLATES, probeHostEnv, listRanges,
 } from './sec-lab-tools/hostenv.js';
+// —— P1：侦察与 Web 纵深（2026-10-17）——
+import { runEncode, runDecode, inspectJwt, identifyHash } from './sec-lab-tools/crypto.js';
+import { runWhois, runCtlog, runOsint } from './sec-lab-tools/whois.js';
+import { runSubdomain } from './sec-lab-tools/subdomain.js';
+import { runCrawl, runJsEndpoint } from './sec-lab-tools/crawler.js';
+import { runDirsearch, runWafDetect, runServiceScan, runUdpScan } from './sec-lab-tools/websurface.js';
+import { runTargetState } from './sec-lab-tools/state.js';
+import { runProxy } from './sec-lab-tools/proxy.js';
+// —— P2：POC / 情报 / 带外 / 验证（2026-10-17）——
+import { runPocScan, runTemplates } from './sec-lab-tools/templates.js';
+import { lookupCve, searchExploit } from './sec-lab-tools/intel.js';
+import { runOast } from './sec-lab-tools/oast.js';
+import { verifySqli, verifyXss, verifySsrf, updateFindingStatus } from './sec-lab-tools/verify.js';
+// —— P3：基线与巡检（2026-10-17）——
+import { runBaseline, runTlsAudit, runHeadersAudit } from './sec-lab-tools/baseline.js';
+import { runWatch, stopAllWatchers } from './sec-lab-tools/watch.js';
+import { runBrute } from './sec-lab-tools/brute.js';
+import { runAttackMap } from './sec-lab-tools/attackmap.js';
 
 export const SEC_LAB_ID = 'sec-lab';
 
@@ -43,6 +61,17 @@ export const secLabManifest: PluginManifest = {
       'recon', 'portscan', 'webprobe', 'toolchain', 'sec_report',
       'attack_sim', 'detect_rules', 'log_hunt', 'asset_monitor', 'sim_report',
       'host_env', 'range_deploy', 'range_list', 'range_stop', 'android_launch',
+      // —— P1（2026-10-17）——
+      'whois', 'ctlog', 'osint', 'subdomain',
+      'crawl', 'js_endpoint', 'dirsearch', 'waf_detect',
+      'service_scan', 'udp_scan',
+      'crypto_encode', 'crypto_decode', 'jwt_inspect', 'hash_id',
+      'target_state', 'proxy',
+      // —— P2（2026-10-17）——
+      'poc_scan', 'poc_templates', 'cve_intel', 'exploit_search', 'oast',
+      'verify_sqli', 'verify_xss', 'verify_ssrf', 'finding_status',
+      // —— P3（2026-10-17）——
+      'baseline_scan', 'tls_audit', 'headers_audit', 'watch', 'brute', 'attack_map',
     ],
     // ★ 2026-10-16 去掉 sidebar 贡献：与顶栏**模式下拉**的「安全」是同一个入口（都进 /sec），
     //   属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
@@ -89,6 +118,45 @@ export const secLabManifest: PluginManifest = {
       { name: 'sim_report', desc: '演练复盘报告', usage: '/sim_report', group: 'LAB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sim_report' },
       // —— 报告 ——
       { name: 'report', aliases: ['sec_report'], desc: '按目标汇总发现项，出 Markdown/JSON 报告', usage: '/report [--target=x] [--format=markdown|json]', group: 'REPORT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sec_report' },
+
+      // ── P1：侦察与 Web 纵深（2026-10-17）────────────────────────────────────
+      // ★ danger 必须与 TOOL_RISK 同口径（守门测试逐条比对）：
+      //   whois/ctlog/osint 是只读公网情报 → P；其余会主动发请求/查询 → A。
+      { name: 'whois', desc: 'WHOIS 查询：注册商 / 到期时间 / NS / 状态', usage: '/whois <域名>', group: 'RECON', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'whois', params: ['domain'] },
+      { name: 'ctlog', desc: '证书透明度日志（crt.sh）里的域名枚举', usage: '/ctlog <域名>', group: 'RECON', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'ctlog', params: ['domain'] },
+      { name: 'osint', desc: 'OSINT 聚合：WHOIS + CT 日志 + DNS 记录', usage: '/osint <域名>', group: 'RECON', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'osint', params: ['domain'] },
+      { name: 'subdomain', desc: '子域枚举（DNS 字典；命中测试/管理类会单独告警）', usage: '/subdomain <域名> [--wordlist=fast|full] [--concurrency=20]', group: 'RECON', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'subdomain', params: ['domain'] },
+      { name: 'crawl', desc: '爬虫：抽同源链接 / 表单 / 带参数 URL', usage: '/crawl <url> [--depth=2] [--maxPages=20]', group: 'WEB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'crawl', params: ['target'] },
+      { name: 'js_endpoint', aliases: ['js-endpoint'], desc: '从页面 JS 里抽接口路径', usage: '/js_endpoint <url>', group: 'WEB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'js_endpoint', params: ['target'] },
+      { name: 'dirsearch', desc: '目录/文件爆破（含 .git / .env / 备份文件；对随机路径基线去噪）', usage: '/dirsearch <url> [--concurrency=8]', group: 'WEB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'dirsearch', params: ['target'] },
+      { name: 'waf', desc: 'WAF / CDN 识别（只看响应特征，不发攻击载荷）', usage: '/waf <url>', group: 'WEB', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'waf_detect', params: ['target'] },
+      { name: 'service', desc: '服务/版本 banner 抓取（指定端口）', usage: '/service <target> [--ports=common|80,443]', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'service_scan', params: ['target'] },
+      { name: 'udp', desc: 'UDP 探测（DNS / NTP / SSDP，标准查询包）', usage: '/udp <target> [--timeoutMs=1500]', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'udp_scan', params: ['target'] },
+      { name: 'encode', desc: '编码：base64 / base32 / base58 / hex / url / html / unicode / rot13 / caesar / morse', usage: '/encode <op> <data>', group: 'CRYPTO', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'crypto_encode', params: ['op', 'data'] },
+      { name: 'decode', desc: '解码（与 /encode 同一套 10 种编码）', usage: '/decode <op> <data>', group: 'CRYPTO', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'crypto_decode', params: ['op', 'data'] },
+      { name: 'jwt', desc: 'JWT 解析与风险信号（alg=none / 无 exp / 对称算法；不破解密钥）', usage: '/jwt <token>', group: 'CRYPTO', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'jwt_inspect', params: ['token'] },
+      { name: 'hashid', desc: '哈希类型识别（按长度与字符集）', usage: '/hashid <hash>', group: 'CRYPTO', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'hash_id', params: ['hash'] },
+      { name: 'proxy', desc: '本机抓包代理：start / stop / list / clear / replay（只转发已授权目标）', usage: '/proxy <start|stop|list|clear|replay> [--port=8899] [--id=记录id]', group: 'NET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'proxy', params: ['action'] },
+      { name: 'state', desc: '目标状态：list / diff / rollback（回滚的是**记录里的基线**，不改远端）', usage: '/state <list|diff|rollback> [--assetId=x] [--snapshotId=y]', group: 'ASSET', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'target_state', params: ['action'] },
+
+      // ── P2：POC / 情报 / 带外 / 验证（2026-10-17）──────────────────────────
+      { name: 'nuclei', desc: '模板化只读 POC 扫描（7 个内置模板：.git/.env/目录遍历/actuator/phpinfo/安全头/swagger）', usage: '/nuclei <url> [-t tags] [--severities=high,critical]', group: 'POC', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'poc_scan', params: ['target'] },
+      { name: 'templates', desc: '模板库：list / show / run <id>', usage: '/templates <list|show|run> [--id=git-config-exposure] [target]', group: 'POC', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'poc_templates', params: ['action'] },
+      { name: 'cve', desc: 'CVE 本地情报（CVSS / CISA KEV；EPSS 每日变化，不硬编码请现查）', usage: '/cve <CVE-id|产品关键词>', group: 'INTEL', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'cve_intel', params: ['keyword'] },
+      { name: 'sploit', desc: '利用线索（只给是否 KEV，不提供利用代码）', usage: '/sploit <产品关键词>', group: 'INTEL', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'exploit_search', params: ['keyword'] },
+      { name: 'oob', desc: '带外回调服务：start / stop / hits / clear（盲注·SSRF 的确认手段）', usage: '/oob <start|stop|hits|clear> [--port=8898]', group: 'VERIFY', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'oast', params: ['action'] },
+      { name: 'sqli', desc: 'SQL 注入验证（错误特征 + 布尔差分；侵入级，需交战模式）', usage: '/sqli <带参数URL>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'verify_sqli', confirm: true, params: ['target'] },
+      { name: 'xss', desc: '反射型 XSS 验证（只看是否原样反射，不执行脚本）', usage: '/xss <带参数URL>', group: 'VERIFY', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'verify_xss', params: ['target'] },
+      { name: 'ssrf', desc: 'SSRF 验证（借 /oob 回调确认；需先 /oob start；侵入级）', usage: '/ssrf <带参数URL>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'verify_ssrf', confirm: true, params: ['target'] },
+      { name: 'finding', aliases: ['verify'], desc: '发现项状态机：open / verified / fixed / accepted / fp', usage: '/finding <id> [status=verified]', group: 'REPORT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'finding_status', params: ['id', 'status'] },
+
+      // ── P3：基线与巡检（2026-10-17）────────────────────────────────────────
+      { name: 'baseline', desc: '配置基线核查：响应头 + TLS + Cookie，按 owasp/cis/等保 出分（仅可远程核查子集）', usage: '/baseline <url> [--profile=owasp|cis|djbh]', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'baseline_scan', params: ['target'] },
+      { name: 'tls-audit', aliases: ['tls_audit'], desc: 'TLS 审计：协议版本 / 加密套件 / 证书有效期与主体', usage: '/tls-audit <host[:port]>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'tls_audit', params: ['target'] },
+      { name: 'headers-audit', aliases: ['headers_audit'], desc: 'HTTP 安全响应头审计（HSTS/CSP/XFO/nosniff/Referrer/Permissions）', usage: '/headers-audit <url>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'headers_audit', params: ['target'] },
+      { name: 'watch', desc: '定时巡检：start / stop / list / tick（进程内定时器，重启需重开）', usage: '/watch <start|stop|list|tick> [--target=x] [--intervalMin=30]', group: 'ASSET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'watch', params: ['action'] },
+      { name: 'brute', desc: 'HTTP Basic 默认口令自查（8 组公开默认口令；SSH/FTP 请走 hydra）', usage: '/brute <http> <url>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'brute', confirm: true, params: ['protocol', 'target'] },
+      { name: 'attack-map', aliases: ['attack_map'], desc: 'ATT&CK 映射：把当前发现项映射到技术，给出已覆盖/未覆盖（启发式）', usage: '/attack-map', group: 'INTEL', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'attack_map' },
     ],
     // ── 剧本（`@名字` 召唤的命令序列，2026-10-16）────────────────────────────────
     // ★ 定义就是"一串**已存在的命令**"（见 core 的 PlaybookDef）：剧本自己不执行任何东西，
@@ -528,7 +596,7 @@ function secReportTool(): BuiltInTool {
       type: 'object',
       properties: {
         target: { type: 'string', description: '按目标过滤（可选）' },
-        format: { type: 'string', enum: ['markdown', 'json'], description: '输出格式，默认 markdown' },
+        format: { type: 'string', enum: ['markdown', 'json', 'html', 'sarif'], description: '输出格式，默认 markdown（pdf 请用 html 在浏览器打印）' },
       },
       required: [],
     },
@@ -537,12 +605,62 @@ function secReportTool(): BuiltInTool {
       const all = await loadFindings();
       const target = args.target ? normalizeTarget(String(args.target)) : '';
       const list = target ? all.filter((f) => f.target === target) : all;
-      if (!list.length) {
-        return { content: [{ type: 'text', text: target ? `目标 ${target} 暂无发现项。` : '暂无任何发现项，先跑 recon / portscan / webprobe。' }] };
+      // ★ 误报（fp）不进报告：状态机就是为了把噪音摘掉，报告里再列一遍等于白做
+      const actionable = list.filter((f) => (f as { status?: string }).status !== 'fp');
+      if (!actionable.length) {
+        return { content: [{ type: 'text', text: target ? `目标 ${target} 暂无发现项（或已全部标记为误报）。` : '暂无任何发现项，先跑 recon / portscan / webprobe。' }] };
       }
-      const sorted = sortFindings(list);
-      if (String(args.format || 'markdown') === 'json') {
-        return { content: [{ type: 'text', text: JSON.stringify(sorted.map((f) => ({ ...f, detail: redact(f.detail, cfg.redactReport) })), null, 2) }] };
+      const sorted = sortFindings(actionable);
+      const format = String(args.format || 'markdown').toLowerCase();
+      const safe = (s: string) => redact(String(s || ''), cfg.redactReport);
+
+      if (format === 'json') {
+        return { content: [{ type: 'text', text: JSON.stringify(sorted.map((f) => ({ ...f, detail: safe(f.detail) })), null, 2) }] };
+      }
+
+      // SARIF 2.1.0：给 CI / 代码扫描平台吃的标准格式（只含未标记误报的条目）
+      if (format === 'sarif') {
+        const level = (s: string) => (s === 'critical' || s === 'high' ? 'error' : s === 'medium' ? 'warning' : 'note');
+        const sarif = {
+          $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
+          version: '2.1.0',
+          runs: [{
+            tool: { driver: { name: 'yan-zhi-sec-lab', informationUri: 'https://github.com/yhfysun/yan-zhi' } },
+            results: sorted.map((f) => ({
+              ruleId: f.tool || 'sec-lab',
+              level: level(f.severity),
+              message: { text: `${f.title}：${safe(f.detail)}${f.remediation ? `（修复：${safe(f.remediation)}）` : ''}` },
+              locations: [{ physicalLocation: { artifactLocation: { uri: f.target || '(unknown)' } } }],
+              properties: { severity: f.severity, tool: f.tool },
+            })),
+          }],
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(sarif, null, 2) }] };
+      }
+
+      // HTML：可直接在浏览器打开并「打印为 PDF」—— 不引入 PDF 库，也不假装能生成二进制
+      if (format === 'html') {
+        const esc = (s: string) => String(s || '').replace(/[&<>"']/g, (c) => (
+          { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as Record<string, string>
+        )[c]);
+        const rows = sorted.map((f) => `<tr><td><span class="sev ${esc(f.severity)}">${esc(f.severity)}</span></td>` +
+          `<td><b>${esc(f.title)}</b><div class="muted">${esc(safe(f.detail))}</div>` +
+          (f.remediation ? `<div class="fix">修复：${esc(safe(f.remediation))}</div>` : '') +
+          `</td><td><code>${esc(f.target || '')}</code><div class="muted">${esc(f.tool || '')}</div></td></tr>`).join('\n');
+        const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>安全评估报告</title>
+<style>body{font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;margin:32px;color:#1f2937}
+h1{font-size:20px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #e5e7eb;padding:10px;vertical-align:top;text-align:left}
+.muted{color:#6b7280;font-size:12px}.fix{color:#047857;font-size:12px;margin-top:4px}
+.sev{padding:1px 6px;border-radius:4px;font-size:12px;color:#fff}
+.sev.critical{background:#b91c1c}.sev.high{background:#dc2626}.sev.medium{background:#d97706}.sev.low{background:#2563eb}.sev.info{background:#6b7280}
+@media print{body{margin:0}}</style></head><body>
+<h1>安全评估报告${target ? ` — ${esc(safe(target))}` : ''}</h1>
+<p class="muted">生成时间：${new Date().toLocaleString('zh-CN')}　发现项：${sorted.length}　（已排除标记为误报的条目）</p>
+<p class="muted">本报告由 yan-zhi 安全工作台生成，仅针对已登记授权的目标。浏览器「打印 → 另存为 PDF」即可得到 PDF。</p>
+<table><thead><tr><th>级别</th><th>发现项</th><th>目标 / 来源</th></tr></thead><tbody>
+${rows}
+</tbody></table></body></html>`;
+        return { content: [{ type: 'text', text: html }] };
       }
       const SEV: Record<string, string> = { critical: '🔴 严重', high: '🟠 高', medium: '🟡 中', low: '🔵 低', info: '⚪ 信息' };
       const groups = new Map<string, typeof sorted>();
@@ -859,6 +977,503 @@ function androidLaunchTool(): BuiltInTool {
   };
 }
 
+// ---------- P1 工具工厂（2026-10-17） ----------
+
+/** 无目标类工具的通用工厂：统一过 withGuard（含审计），schema 由参数给。 */
+function plainTool(
+  name: string,
+  description: string,
+  properties: Record<string, unknown>,
+  required: string[],
+  run: (args: Record<string, unknown>) => Promise<ToolOutput>,
+): BuiltInTool {
+  return {
+    name,
+    description,
+    inputSchema: { type: 'object', properties, required },
+    async execute(args) {
+      return withGuard(name, args, () => run(args));
+    },
+  };
+}
+
+/** 以 `domain` 作为目标参数的 OSINT 工具共用（guard 认的是 args.target）。 */
+function domainTool(
+  name: string,
+  description: string,
+  run: (domain: string, args: Record<string, unknown>) => Promise<ToolOutput>,
+  props: Record<string, unknown> = {},
+): BuiltInTool {
+  return {
+    name,
+    description,
+    inputSchema: { type: 'object', properties: { domain: { type: 'string', description: '域名' }, ...props }, required: ['domain'] },
+    async execute(args) {
+      const domain = normalizeTarget(String(args.domain || ''));
+      return withGuard(name, { ...args, target: domain }, async () => run(domain, args));
+    },
+  };
+}
+
+function whoisTool(): BuiltInTool {
+  return domainTool('whois', 'WHOIS 查询（注册商 / 到期 / NS / 状态）。只读公网情报，不向目标发探测包。目标必须已授权。', (d) => runWhois(d));
+}
+
+function ctlogTool(): BuiltInTool {
+  return domainTool('ctlog', '证书透明度日志（crt.sh）里出现过的域名枚举。只读公开数据。', (d) => runCtlog(d));
+}
+
+function osintTool(): BuiltInTool {
+  return domainTool('osint', 'OSINT 聚合：WHOIS + CT 日志 + DNS 记录，三路并行、单路失败不影响其它。', (d) => runOsint(d));
+}
+
+function subdomainTool(): BuiltInTool {
+  return domainTool('subdomain', '子域枚举（DNS 字典，fast 40 词 / full 75 词）。命中测试/管理/数据库类子域会单独告警。', (d, a?: Record<string, unknown>) => runSubdomain({
+    domain: d,
+    wordlist: a?.wordlist === 'full' ? 'full' : 'fast',
+    concurrency: typeof a?.concurrency === 'number' ? a.concurrency as number : undefined,
+    timeoutMs: typeof a?.timeoutMs === 'number' ? a.timeoutMs as number : undefined,
+  }), {
+    wordlist: { type: 'string', enum: ['fast', 'full'], description: '字典档位，默认 fast' },
+    concurrency: { type: 'number', description: '并发 DNS 查询数，默认 20' },
+    timeoutMs: { type: 'number', description: '单次 DNS 超时（ms），默认 3000' },
+  });
+}
+
+function crawlTool(): BuiltInTool {
+  return {
+    name: 'crawl',
+    description: '爬虫：从起始页顺着**同源**链接走，抽出链接 / 表单（含字段名）/ 带参数 URL。跨域链接不跟（会跑出授权范围）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '起始 URL 或域名' },
+        depth: { type: 'number', description: '最大深度，默认 2（上限 4）' },
+        maxPages: { type: 'number', description: '最多爬多少页，默认 20（上限 60）' },
+        timeoutMs: { type: 'number', description: '单页超时（ms），默认 10000' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('crawl', args, async () => runCrawl({
+        target: String(args.target), depth: Number(args.depth) || undefined,
+        maxPages: Number(args.maxPages) || undefined, timeoutMs: Number(args.timeoutMs) || undefined,
+      }));
+    },
+  };
+}
+
+function jsEndpointTool(): BuiltInTool {
+  return {
+    name: 'js_endpoint',
+    description: '从页面引用的 JS（含内联脚本）里抽接口路径与外部地址——前端 bundle 常把全部 API 路径写死在里面。',
+    inputSchema: {
+      type: 'object',
+      properties: { target: { type: 'string', description: '页面 URL' }, timeoutMs: { type: 'number', description: '单请求超时（ms），默认 10000' } },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('js_endpoint', args, async () => runJsEndpoint(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function dirsearchTool(): BuiltInTool {
+  return {
+    name: 'dirsearch',
+    description: '目录/文件爆破（40 条常见路径：admin / .git / .env / 备份 / actuator / swagger…）。用随机路径做基线，避免自定义 404 全误报。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '目标 URL 或域名' },
+        concurrency: { type: 'number', description: '并发，默认 8（上限 32）' },
+        timeoutMs: { type: 'number', description: '单请求超时（ms），默认 8000' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('dirsearch', args, async () => runDirsearch({
+        target: String(args.target), concurrency: Number(args.concurrency) || undefined, timeoutMs: Number(args.timeoutMs) || undefined,
+      }));
+    },
+  };
+}
+
+function wafTool(): BuiltInTool {
+  return {
+    name: 'waf_detect',
+    description: 'WAF / CDN 识别：看响应头、Cookie 与响应体特征。不发攻击载荷（避免触发封禁）。',
+    inputSchema: { type: 'object', properties: { target: { type: 'string', description: '目标 URL' }, timeoutMs: { type: 'number' } }, required: ['target'] },
+    async execute(args) {
+      return withGuard('waf_detect', args, async () => runWafDetect(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function serviceScanTool(): BuiltInTool {
+  return {
+    name: 'service_scan',
+    description: '服务/版本 banner 抓取：对指定端口建立 TCP 连接（HTTP 端口发 HEAD）并读首行。不发送漏洞载荷。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '目标域名或 IP' },
+        ports: { type: 'string', description: '端口规格：common / 80,443 / 1-1024，默认 common' },
+        timeoutMs: { type: 'number', description: '单端口超时（ms），默认 3000' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('service_scan', args, async () => runServiceScan({
+        target: normalizeTarget(String(args.target)), ports: args.ports ? String(args.ports) : undefined,
+        timeoutMs: Number(args.timeoutMs) || undefined,
+      }));
+    },
+  };
+}
+
+function udpScanTool(): BuiltInTool {
+  return {
+    name: 'udp_scan',
+    description: 'UDP 探测：向 53/123/1900 发标准查询包（DNS / NTP / SSDP），有回包即说明端口开放。无回包不等于关闭。',
+    inputSchema: { type: 'object', properties: { target: { type: 'string' }, timeoutMs: { type: 'number', description: '等待回包时间（ms），默认 1500' } }, required: ['target'] },
+    async execute(args) {
+      return withGuard('udp_scan', args, async () => runUdpScan({
+        target: normalizeTarget(String(args.target)), timeoutMs: Number(args.timeoutMs) || undefined,
+      }));
+    },
+  };
+}
+
+function encodeTool(): BuiltInTool {
+  return plainTool('crypto_encode', '编码：base64 / base32 / base58 / hex / url / html / unicode / rot13 / caesar / morse。零依赖纯函数。',
+    { op: { type: 'string', description: '编码方式' }, data: { type: 'string', description: '要编码的文本' } },
+    ['op', 'data'],
+    async (a) => runEncode(String(a.op || ''), String(a.data ?? '')));
+}
+
+function decodeTool(): BuiltInTool {
+  return plainTool('crypto_decode', '解码（与 crypto_encode 同一套 10 种编码；base64 同时接受 URL-safe）。',
+    { op: { type: 'string', description: '解码方式' }, data: { type: 'string', description: '要解码的文本' } },
+    ['op', 'data'],
+    async (a) => runDecode(String(a.op || ''), String(a.data ?? '')));
+}
+
+function jwtTool(): BuiltInTool {
+  return plainTool('jwt_inspect', 'JWT 解析与风险信号：alg=none / 缺 exp / 有效期过长 / 对称算法弱密钥风险。只解码判断，不破解密钥。',
+    { token: { type: 'string', description: '完整 JWT' } },
+    ['token'],
+    async (a) => inspectJwt(String(a.token || '')));
+}
+
+function hashidTool(): BuiltInTool {
+  return plainTool('hash_id', '哈希类型识别：按长度与字符集判断 MD5 / SHA1 / SHA256 / bcrypt / argon2 / crypt 等。',
+    { hash: { type: 'string', description: '哈希字符串' } },
+    ['hash'],
+    async (a) => identifyHash(String(a.hash || '')));
+}
+
+function targetStateTool(): BuiltInTool {
+  return plainTool('target_state', '目标状态：list 列快照与当前基线 / diff 与基线比对（复用 asset_monitor）/ rollback 把基线切到历史快照。**只改本地记录，不改远端目标**。',
+    {
+      action: { type: 'string', enum: ['list', 'diff', 'rollback'], description: '动作' },
+      assetId: { type: 'string', description: '资产 id（/assets list 可见）' },
+      value: { type: 'string', description: '资产值（也可用 assetId）' },
+      snapshotId: { type: 'string', description: 'rollback 时指定快照 id，默认最新一份' },
+    },
+    ['action'],
+    async (a) => runTargetState({
+      action: String(a.action || 'list') as 'list' | 'diff' | 'rollback',
+      assetId: a.assetId ? String(a.assetId) : undefined,
+      value: a.value ? String(a.value) : undefined,
+      snapshotId: a.snapshotId ? String(a.snapshotId) : undefined,
+    }, {
+      loadAssets, saveAssets: async (v) => { if (store) await store.set(K_ASSETS, v); },
+      loadSnapshots, saveSnapshots: async (v) => { if (store) await store.set(K_SNAPSHOTS, v); },
+    }));
+}
+
+function proxyTool(): BuiltInTool {
+  return plainTool('proxy', '本机抓包代理：start 启动（127.0.0.1，默认 8899）/ stop / list 看记录 / clear 清空 / replay 重放。只转发已授权目标；HTTPS 只建隧道不解密。',
+    {
+      action: { type: 'string', enum: ['start', 'stop', 'list', 'clear', 'replay'], description: '动作' },
+      port: { type: 'number', description: 'start 时监听端口，默认 8899' },
+      id: { type: 'string', description: 'replay 时的记录 id' },
+    },
+    ['action'],
+    async (a) => runProxy({
+      action: String(a.action || 'list') as 'start' | 'stop' | 'list' | 'clear' | 'replay',
+      port: typeof a.port === 'number' ? a.port : undefined,
+      id: a.id ? String(a.id) : undefined,
+    }, await loadScopes()));
+}
+
+// ---------- P2 工具工厂（2026-10-17） ----------
+
+function pocScanTool(): BuiltInTool {
+  return {
+    name: 'poc_scan',
+    description: '模板化只读 POC 扫描：内置 7 个模板（.git / .env / 目录遍历 / actuator / phpinfo / 安全头 / swagger），可按标签与级别过滤。只发只读请求，不含利用动作。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '目标 URL 或域名' },
+        tags: { type: 'array', items: { type: 'string' }, description: '只跑含这些标签的模板（exposure/secrets/misconfig/...）' },
+        severities: { type: 'array', items: { type: 'string' }, description: '只跑这些级别（critical/high/medium/low/info）' },
+        timeoutMs: { type: 'number', description: '单请求超时（ms），默认 10000' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('poc_scan', args, async () => runPocScan({
+        target: String(args.target),
+        tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+        severities: Array.isArray(args.severities) ? args.severities.map(String) : undefined,
+        timeoutMs: Number(args.timeoutMs) || undefined,
+      }));
+    },
+  };
+}
+
+function pocTemplatesTool(): BuiltInTool {
+  return plainTool('poc_templates', '模板库：list 列全部 / show 看单条（含匹配条件）/ run 只跑一条。',
+    {
+      action: { type: 'string', enum: ['list', 'show', 'run'], description: '动作' },
+      id: { type: 'string', description: '模板 id' },
+      target: { type: 'string', description: 'run 时的目标' },
+      timeoutMs: { type: 'number' },
+    },
+    ['action'],
+    async (a) => runTemplates(String(a.action || 'list'), {
+      id: a.id ? String(a.id) : undefined,
+      target: a.target ? String(a.target) : undefined,
+      timeoutMs: Number(a.timeoutMs) || undefined,
+    }));
+}
+
+function cveTool(): BuiltInTool {
+  return plainTool('cve_intel', 'CVE 本地情报：CVSS 与 CISA KEV；EPSS 每日变化，刻意不硬编码。查不到会明说，不编。',
+    { keyword: { type: 'string', description: 'CVE 编号或产品关键词（log4j / spring / CVE-2021-44228）' } },
+    ['keyword'],
+    async (a) => lookupCve(String(a.keyword || '')));
+}
+
+function exploitTool(): BuiltInTool {
+  return plainTool('exploit_search', '利用线索：给出相关 CVE 与是否已被在野利用；不提供利用代码。',
+    { keyword: { type: 'string', description: '产品/组件关键词' } },
+    ['keyword'],
+    async (a) => searchExploit(String(a.keyword || '')));
+}
+
+function oastTool(): BuiltInTool {
+  return plainTool('oast', '带外（OAST）回调服务：start 启动 / stop / hits 看命中 / clear 清空。用于确认盲注与 SSRF。',
+    {
+      action: { type: 'string', enum: ['start', 'stop', 'hits', 'clear', 'status'], description: '动作' },
+      port: { type: 'number', description: 'start 时监听端口，默认 8898' },
+    },
+    ['action'],
+    async (a) => runOast({
+      action: String(a.action || 'status') as 'start' | 'stop' | 'hits' | 'clear' | 'status',
+      port: typeof a.port === 'number' ? a.port : undefined,
+    }));
+}
+
+function verifySqliTool(): BuiltInTool {
+  return {
+    name: 'verify_sqli',
+    description: 'SQL 注入验证：对每个查询参数注入单引号，检测数据库错误特征与布尔差分。**侵入级**，需交战模式。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '带查询参数的 URL' },
+        timeoutMs: { type: 'number' },
+        confirmed: { type: 'boolean', description: '侵入性动作需显式确认（控制台会二次确认后置 true）' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('verify_sqli', args, async () => verifySqli(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function verifyXssTool(): BuiltInTool {
+  return {
+    name: 'verify_xss',
+    description: '反射型 XSS 验证：注入唯一标记，检查是否**原样反射**（不执行脚本、不构造利用链）。',
+    inputSchema: {
+      type: 'object',
+      properties: { target: { type: 'string', description: '带查询参数的 URL' }, timeoutMs: { type: 'number' } },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('verify_xss', args, async () => verifyXss(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function verifySsrfTool(): BuiltInTool {
+  return {
+    name: 'verify_ssrf',
+    description: 'SSRF 验证：把 /oob 的回调地址投进参数，看回调服务是否收到请求。**侵入级**，需先 /oob start 且开启交战模式。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '带查询参数的 URL' },
+        timeoutMs: { type: 'number' },
+        confirmed: { type: 'boolean', description: '侵入性动作需显式确认' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('verify_ssrf', args, async () => verifySsrf(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function findingStatusTool(): BuiltInTool {
+  return plainTool('finding_status', '发现项状态机：open / verified / fixed / accepted / fp（fp 不再计入报告）。',
+    {
+      id: { type: 'string', description: '发现项 id（/findings 可见）' },
+      status: { type: 'string', enum: ['open', 'verified', 'fixed', 'accepted', 'fp'], description: '目标状态，默认 verified' },
+    },
+    ['id'],
+    async (a) => updateFindingStatus(String(a.id || ''), String(a.status || 'verified'), {
+      loadFindings: async () => (await loadFindings()) as unknown as Array<Record<string, unknown>>,
+      saveFindings: async (list) => { if (store) await store.set(K_FINDINGS, list); },
+    }));
+}
+
+// ---------- P3 工具工厂（2026-10-17） ----------
+
+/**
+ * watch 的 `list` 不需要目标，但 `start` / `tick` 必须过授权范围。
+ * 所以 watch 进 NO_TARGET_TOOLS（否则 list 会被"缺少 target"挡住），
+ * 再在真正动手的两个动作上**显式调同一个 guard()** —— 不是绕过，是分段校验。
+ */
+async function assertInScope(tool: string, target: string): Promise<void> {
+  const cfg = await loadConfig();
+  const g = guard({ tool, target, scopes: await loadScopes(), config: cfg, requester: 'human' });
+  if (!g.ok) throw new Error(g.reason);
+}
+
+function baselineTool(): BuiltInTool {
+  return {
+    name: 'baseline_scan',
+    description: '配置基线核查：安全响应头 + TLS + Cookie，按 owasp / cis / 等保 出分与问题清单。只覆盖**可远程核查**的子集（账号策略、审计日志不在其中）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '目标 URL 或域名' },
+        profile: { type: 'string', enum: ['owasp', 'cis', 'djbh', 'dengbao'], description: '基线档位，默认 owasp' },
+        timeoutMs: { type: 'number' },
+      },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('baseline_scan', args, async () => runBaseline(
+        String(args.target), String(args.profile || 'owasp'), Number(args.timeoutMs) || undefined,
+      ));
+    },
+  };
+}
+
+function tlsAuditTool(): BuiltInTool {
+  return {
+    name: 'tls_audit',
+    description: 'TLS 握手审计：协议版本、加密套件、证书主体/颁发者/有效期/是否自签名。默认 443，可写 host:port。',
+    inputSchema: {
+      type: 'object',
+      properties: { target: { type: 'string', description: 'host 或 host:port' }, timeoutMs: { type: 'number' } },
+      required: ['target'],
+    },
+    async execute(args) {
+      const raw = String(args.target || '');
+      const hostPort = raw.replace(/^https?:\/\//i, '').split('/')[0];
+      const [host, portStr] = hostPort.split(':');
+      const port = Number(portStr) || 443;
+      return withGuard('tls_audit', { ...args, target: host }, async () => runTlsAudit(host, port, Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function headersAuditTool(): BuiltInTool {
+  return {
+    name: 'headers_audit',
+    description: 'HTTP 安全响应头审计：HSTS / CSP / X-Frame-Options / nosniff / Referrer-Policy / Permissions-Policy，并检查版本号泄露。',
+    inputSchema: {
+      type: 'object',
+      properties: { target: { type: 'string', description: '目标 URL' }, timeoutMs: { type: 'number' } },
+      required: ['target'],
+    },
+    async execute(args) {
+      return withGuard('headers_audit', args, async () => runHeadersAudit(String(args.target), Number(args.timeoutMs) || undefined));
+    },
+  };
+}
+
+function watchTool(): BuiltInTool {
+  return {
+    name: 'watch',
+    description: '定时巡检：start 定期跑 recon+portscan 并 diff（新增端口/子域告警）/ stop / list / tick。进程内定时器，重启需重开。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['start', 'stop', 'list', 'tick'], description: '动作' },
+        target: { type: 'string', description: '目标（start / tick / 指定 stop 时必填）' },
+        intervalMin: { type: 'number', description: '间隔分钟，默认 30（5~1440）' },
+        timeoutMs: { type: 'number' },
+      },
+      required: ['action'],
+    },
+    async execute(args) {
+      const action = String(args.action || 'list');
+      const target = args.target ? String(args.target) : undefined;
+      if (action === 'start' || action === 'tick') await assertInScope('watch', String(target || ''));
+      return withGuard('watch', args, async () => runWatch({
+        action: action as 'start' | 'stop' | 'list' | 'tick',
+        target,
+        intervalMin: Number(args.intervalMin) || undefined,
+        timeoutMs: Number(args.timeoutMs) || undefined,
+      }, async (t, findings, summary) => {
+        await pushFindings(t, 'watch', findings);
+        await pushAudit({ at: Date.now(), tool: 'watch', target: t, risk: 'active', ok: true, message: summary });
+      }));
+    },
+  };
+}
+
+function bruteTool(): BuiltInTool {
+  return {
+    name: 'brute',
+    description: 'HTTP Basic 默认口令自查：8 组公开默认口令，每次间隔 800ms，命中即停。SSH/FTP 的弱口令请走 /toolchain（hydra）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        protocol: { type: 'string', enum: ['http', 'ssh', 'ftp'], description: '目前只支持 http' },
+        target: { type: 'string', description: '目标 URL' },
+        timeoutMs: { type: 'number' },
+        confirmed: { type: 'boolean', description: '侵入性动作需显式确认' },
+      },
+      required: ['protocol', 'target'],
+    },
+    async execute(args) {
+      return withGuard('brute', args, async () => runBrute({
+        protocol: String(args.protocol || 'http') as 'http' | 'ssh' | 'ftp',
+        target: String(args.target),
+        timeoutMs: Number(args.timeoutMs) || undefined,
+      }));
+    },
+  };
+}
+
+function attackMapTool(): BuiltInTool {
+  return plainTool('attack_map', '把当前发现项按关键词映射到 ATT&CK 技术，输出已覆盖与未覆盖（启发式，不是精确归属）。',
+    {},
+    [],
+    async () => runAttackMap(await loadFindings()));
+}
+
 // ---------- 后端路由（控制台页面用） ----------
 
 function registerRoutes(ctx: PluginContext) {
@@ -917,6 +1532,40 @@ function registerRoutes(ctx: PluginContext) {
         range_list: { factory: rangeListTool, opts: { requester: 'human' }, passRunner: true },
         range_stop: { factory: rangeStopTool, opts: { requester: 'human' }, passRunner: true },
         android_launch: { factory: androidLaunchTool, opts: { requester: 'human' }, passRunner: true },
+        // —— P1（2026-10-17）——
+        whois: { factory: whoisTool, opts: {}, passRunner: true },
+        ctlog: { factory: ctlogTool, opts: {}, passRunner: true },
+        osint: { factory: osintTool, opts: {}, passRunner: true },
+        subdomain: { factory: subdomainTool, opts: {}, passRunner: true },
+        crawl: { factory: crawlTool, opts: {}, passRunner: true },
+        js_endpoint: { factory: jsEndpointTool, opts: {}, passRunner: true },
+        dirsearch: { factory: dirsearchTool, opts: {}, passRunner: true },
+        waf_detect: { factory: wafTool, opts: {}, passRunner: true },
+        service_scan: { factory: serviceScanTool, opts: {}, passRunner: true },
+        udp_scan: { factory: udpScanTool, opts: {}, passRunner: true },
+        crypto_encode: { factory: encodeTool, opts: {}, passRunner: true },
+        crypto_decode: { factory: decodeTool, opts: {}, passRunner: true },
+        jwt_inspect: { factory: jwtTool, opts: {}, passRunner: true },
+        hash_id: { factory: hashidTool, opts: {}, passRunner: true },
+        target_state: { factory: targetStateTool, opts: {}, passRunner: true },
+        proxy: { factory: proxyTool, opts: {}, passRunner: true },
+        // —— P2（2026-10-17）——
+        poc_scan: { factory: pocScanTool, opts: {}, passRunner: true },
+        poc_templates: { factory: pocTemplatesTool, opts: {}, passRunner: true },
+        cve_intel: { factory: cveTool, opts: {}, passRunner: true },
+        exploit_search: { factory: exploitTool, opts: {}, passRunner: true },
+        oast: { factory: oastTool, opts: {}, passRunner: true },
+        verify_sqli: { factory: verifySqliTool, opts: {}, passRunner: true },
+        verify_xss: { factory: verifyXssTool, opts: {}, passRunner: true },
+        verify_ssrf: { factory: verifySsrfTool, opts: {}, passRunner: true },
+        finding_status: { factory: findingStatusTool, opts: {}, passRunner: true },
+        // —— P3（2026-10-17）——
+        baseline_scan: { factory: baselineTool, opts: {}, passRunner: true },
+        tls_audit: { factory: tlsAuditTool, opts: {}, passRunner: true },
+        headers_audit: { factory: headersAuditTool, opts: {}, passRunner: true },
+        watch: { factory: watchTool, opts: {}, passRunner: true },
+        brute: { factory: bruteTool, opts: {}, passRunner: true },
+        attack_map: { factory: attackMapTool, opts: {}, passRunner: true },
       };
       const entry = map[tool];
       if (!entry) return fail(res, 400, `未知工具 ${tool}`);
@@ -1035,6 +1684,17 @@ export const secLabModule: PluginModule = {
       reconTool(), portscanTool(), webprobeTool(), toolchainTool(), secReportTool(),
       attackSimTool(), simReportTool(), detectRulesTool(), logHuntTool(), assetMonitorTool(),
       hostEnvTool(), rangeDeployTool(), rangeListTool(), rangeStopTool(), androidLaunchTool(),
+      // —— P1（2026-10-17）——
+      whoisTool(), ctlogTool(), osintTool(), subdomainTool(),
+      crawlTool(), jsEndpointTool(), dirsearchTool(), wafTool(),
+      serviceScanTool(), udpScanTool(),
+      encodeTool(), decodeTool(), jwtTool(), hashidTool(),
+      targetStateTool(), proxyTool(),
+      // —— P2（2026-10-17）——
+      pocScanTool(), pocTemplatesTool(), cveTool(), exploitTool(), oastTool(),
+      verifySqliTool(), verifyXssTool(), verifySsrfTool(), findingStatusTool(),
+      // —— P3（2026-10-17）——
+      baselineTool(), tlsAuditTool(), headersAuditTool(), watchTool(), bruteTool(), attackMapTool(),
     ]) {
       ctx.registerTool(t);
     }
@@ -1042,6 +1702,8 @@ export const secLabModule: PluginModule = {
     ctx.log('[sec-lab] 已启用：仅限自有资产或已授权目标，所有动作受授权范围与黑名单约束');
   },
   async deactivate() {
+    // 定时器属于进程资源：不停掉就会留下"幽灵巡检"继续打目标
+    stopAllWatchers();
     store = null;
   },
 };

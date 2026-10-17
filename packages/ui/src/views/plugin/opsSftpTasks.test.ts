@@ -20,6 +20,8 @@ const strip = (s: string) =>
    .replace(/^[ \t]*\/\/.*$/gm, ' ')
    .replace(/<!--[\s\S]*?-->/g, ' ');
 const SRC = strip(readFileSync(resolve(__dirname, 'SftpPanel.vue'), 'utf8'));
+/** 弹窗内容的样式住在全局表里（popper 会被 teleport 到 body，scoped 吃不到 data-v） */
+const CSS = strip(readFileSync(resolve(__dirname, '../../styles/menu.css'), 'utf8'));
 
 describe('任务中心：刷新旁边的图标按钮 + 下拉弹窗', () => {
   it('★ 入口是图标按钮上的下拉弹窗（用户拍板：不再内嵌在文件面板里占高度）', () => {
@@ -41,10 +43,61 @@ describe('任务中心：刷新旁边的图标按钮 + 下拉弹窗', () => {
     expect(popIdx, '任务按钮没挨着刷新（顺序变了）').toBeLessThan(refreshIdx);
   });
 
-  it('★ 三段分组齐全：正在执行中 / 待执行 / 已执行完成', () => {
-    expect(SRC, '缺「正在执行中」段').toMatch(/正在执行中（\{\{ runningCount \}\}）/);
-    expect(SRC, '缺「待执行」段').toMatch(/待执行（\{\{ pendingFiles\.length \}\}）/);
-    expect(SRC, '缺「已执行完成」段').toMatch(/已执行完成（\{\{ finishedCount \}\}）/);
+  // 2026-10-17 用户要求：「弄成 3 个 tab 页切换，这样每个 tab 页显示内容多点，
+  // 每个 tab 页可以滚动，上面还能显示当前任务类型的任务数量」——于是三段堆叠改成 tab。
+  it('★ 三个 tab 齐全（正在执行中 / 待执行 / 已执行完成），不再是堆叠的三段', () => {
+    expect(SRC, '没有用 el-tabs').toMatch(/<el-tabs v-model="taskTab"/);
+    expect(SRC, '缺「正在执行中」tab').toMatch(/<el-tab-pane name="running">[\s\S]{0,500}正在执行中<span class="stp-num"/);
+    expect(SRC, '缺「待执行」tab').toMatch(/<el-tab-pane name="pending">[\s\S]{0,500}待执行<span class="stp-num"/);
+    expect(SRC, '缺「已执行完成」tab').toMatch(/<el-tab-pane name="finished">[\s\S]{0,500}已执行完成<span class="stp-num"/);
+    // 旧的"段标题"必须下线，否则就是两套分区并存
+    expect(SRC, '旧的 .stp-group / .stp-title 还在').not.toMatch(/class="stp-group"|class="stp-title"/);
+  });
+
+  it('★ 数量标在 tab 上，且是**实时计数**（写死的数字没有意义）', () => {
+    expect(SRC).toMatch(/stp-num[^>]*>\{\{ runningCount \}\}/);
+    expect(SRC).toMatch(/stp-num[^>]*>\{\{ pendingFiles\.length \}\}/);
+    expect(SRC).toMatch(/stp-num[^>]*>\{\{ finishedCount \}\}/);
+    // 为 0 时压暗，别让一排"0"抢注意力
+    expect(SRC).toMatch(/'is-zero'/);
+  });
+
+  it('★ 每个 tab 有自己的滚动容器（三份），高度有下限也有上限', () => {
+    expect((SRC.match(/class="stp-pane"/g) ?? []).length, '三个 tab 没有各自的滚动容器').toBe(3);
+    expect(CSS, '缺 .stp-pane 滚动规则').toMatch(/\.sftp-task-popper \.stp-pane \{[^}]*overflow: auto/);
+    expect(CSS, '缺 .stp-pane 高度上限').toMatch(/\.sftp-task-popper \.stp-pane \{[^}]*max-height: 46vh/);
+    // ★ 下限：只有一两行、或空的时候，弹窗不能塌成一条细缝
+    expect(CSS, '缺 .stp-pane 高度下限').toMatch(/\.sftp-task-popper \.stp-pane \{[^}]*min-height: \d+px/);
+    // 弹窗整体不再滚（否则 tab 头会被一起滚走）
+    expect(CSS, '弹窗本体还在滚').not.toMatch(/\.sftp-task-pop \{[^}]*overflow: auto/);
+  });
+
+  // 用户原话：「没有任务的时候高度也能稍微高点，设置个最低高度和最高高度，
+  //            没有任务显示中间图标加文字」
+  it('★ 空状态是"图标 + 文字"，三个 tab 各一块，不是一行灰字', () => {
+    expect((SRC.match(/class="stp-empty-state"/g) ?? []).length, '三个 tab 的空状态没改全').toBe(3);
+    const cases = [
+      ['VideoPlay', '没有正在执行的任务'],
+      ['Clock', '没有排队中的文件'],
+      ['CircleCheck', '还没有完成的任务'],
+    ] as const;
+    for (const [icon, text] of cases) {
+      expect(SRC, `缺「${text}」的空状态（要图标 + 文案）`)
+        .toMatch(new RegExp(`stp-empty-state">\\s*<el-icon><${icon} /><\\/el-icon>\\s*<span class="stp-empty-title">${text}</span>`));
+    }
+    expect(SRC, '图标没导入').toMatch(/CircleCheck, Clock/);
+  });
+
+  it('★ 空状态居中、有最小高度、图标有尺寸（否则就是几行贴顶的小字）', () => {
+    expect(CSS, '缺 .stp-empty-state 布局').toMatch(/\.stp-empty-state \{[^}]*justify-content: center/);
+    expect(CSS, '空状态没有最小高度').toMatch(/\.stp-empty-state \{[^}]*min-height: \d+px/);
+    expect(CSS, '缺图标尺寸').toMatch(/\.stp-empty-state \.el-icon \{[^}]*font-size: \d+px/);
+  });
+
+  it('起任务时切到「正在执行」tab（否则新任务在别的页里，等于看不见）', () => {
+    const fn = SRC.match(/const addTask = \([\s\S]*?\n  \};/)?.[0] ?? '';
+    expect(fn, '找不到 addTask').not.toBe('');
+    expect(fn, '起任务后没切 tab').toContain("taskTab.value = 'running'");
   });
 
   it('已完成段不无限长（弹窗要一眼看完）', () => {
@@ -149,7 +202,32 @@ describe('任务状态本身可用', () => {
   });
 });
 
-// 暂停 / 继续（2026-10-16 用户要求）：
+describe('已完成任务：明细可展开 + 历史入库', () => {
+  // 用户原话：「已完成任务的明细也要能展示啊，这些数据都要入库的啊」
+  it('★ 已完成行也能翻明细（删除看删掉了哪些，上传看传了哪些）', () => {
+    expect(SRC).toMatch(/function detailRows\(t: SftpTask\)/);
+    expect(SRC).toMatch(/function detailTitle\(t: SftpTask\)/);
+    const finished = SRC.slice(SRC.indexOf('name="finished"'));
+    expect(finished, '已完成行没有明细展开块').toMatch(/v-if="detailRows\(t\)\.length"/);
+    expect(finished).toMatch(/detailTitle\(t\)/);
+  });
+
+  it('★ 明细取数：删除用 deleted、上传用 files（两者都得有）', () => {
+    const fn = SRC.match(/function detailRows\(t: SftpTask\)[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn, '找不到 detailRows').not.toBe('');
+    expect(fn).toContain("t.kind === 'delete' ? t.deleted : t.files.map");
+  });
+
+  it('★ 历史是**入库后读回来**的，不是只留在内存里', () => {
+    expect(SRC, '没调历史接口').toContain('/plugin/ops-shell/sftp/jobs/history');
+    expect(SRC, '挂载时没读历史').toMatch(/void loadTaskHistory\(\)/);
+    // 落库记录要能还原成任务行：明细灌进 files / deleted
+    const fn = SRC.match(/function toTaskRow\([\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn, '找不到 toTaskRow').not.toBe('');
+    expect(fn, '删除明细没还原').toMatch(/deleted: h\.kind === 'delete' \? h\.detail : \[\]/);
+    expect(fn, '上传明细没还原').toMatch(/files: h\.kind === 'delete' \? \[\] : h\.detail/);
+  });
+});
 //   ① 「顶多加个暂停任务按钮」—— 待执行本来就是自动跑的，不需要"点开始"；
 //   ② 「点了暂停正在执行的任务和待执行的都得暂停，还得支持断点续传」——
 //      所以暂停是后端调度的事（在飞的那个也停在断点），前端只负责发指令 + 如实显示。

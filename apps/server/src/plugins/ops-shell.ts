@@ -696,6 +696,14 @@ export interface SftpJob {
    *   也就是说它会一直占着那条 SFTP 连接，直到用户点继续。
    */
   paused: boolean;
+  /**
+   * 上传任务：扫描出来的待传目标路径（2026-10-17 新增）。
+   * ★ 只用于**任务落库留痕**，不进 SSE 帧 —— 几千条路径会把每一帧都撑爆，
+   *   而界面上的待执行清单本来就是拿 `/sftp/upload` 响应里的 plan 渲染的。
+   */
+  plan?: string[];
+  /** 上传任务：待传文件**总数**（plan 可能被截断，落库时靠它对出"还有多少没记"） */
+  planTotal?: number;
   /** 删除任务：累计已删条目数（不受保留上限影响） */
   deletedCount: number;
   /** 删除任务：最近删掉的路径（保留上限见 MAX_JOB_DELETED_KEEP） */
@@ -754,6 +762,63 @@ function jobPayload(j: SftpJob): Record<string, unknown> {
     deleted: j.deleted.slice(-50),
     error: j.error,
   };
+}
+
+/**
+ * **已完成任务的历史记录**（2026-10-17，用户要求「已完成任务的明细也要能展示，这些数据都要入库」）。
+ *
+ * 为什么必须落库：内存里的 `sftpJobs` 在终态后 3 秒就回收，界面那份也是组件内状态 ——
+ * 刷新一下、切个连接，"刚才删了哪些文件"就没了。而删除是不可撤销的操作，事后必须能翻账。
+ *
+ * 与审计（`sftp.delete` 等）的分工：审计是**合规留痕**（长期、精简、只留 12 条路径样本）；
+ * 这里是**任务明细**（短期、可展开、带上每个文件），直接供界面「已执行完成」页消费。
+ */
+export interface SftpJobRecord {
+  id: string;
+  kind: 'upload' | 'download' | 'delete';
+  label: string;
+  state: 'done' | 'failed';
+  /** 结束时间（epoch 毫秒） */
+  at: number;
+  totalCount: number;
+  doneCount: number;
+  /** 字节口径（删除任务恒为 1，没有意义） */
+  totalBytes: number;
+  error?: string;
+  /** 删除任务：累计删了多少项（detail 只留最近 MAX_HISTORY_DETAIL 条） */
+  deletedCount?: number;
+  /** 明细：删除 = 删掉的路径；上传 = 传上去的目标路径 */
+  detail: string[];
+  /** detail 是否被截断（真总数看 totalCount / deletedCount） */
+  detailTruncated: boolean;
+}
+
+/** 历史记录总条数上限：再多就靠滚动，别把插件 KV 撑成一本账 */
+export const MAX_JOB_HISTORY = 60;
+/** 单条记录里保留的明细条数上限（删十万个文件不能存十万行 JSON） */
+export const MAX_HISTORY_DETAIL = 100;
+
+async function loadJobHistory(): Promise<SftpJobRecord[]> {
+  if (!pluginStorage) return [];
+  const rows = await pluginStorage.get<SftpJobRecord[]>('sftp-job-history');
+  return Array.isArray(rows) ? rows.filter((r) => r && typeof r.id === 'string') : [];
+}
+
+/**
+ * 追加一条历史（读-改-写）。
+ * ★ 必须串行：两个任务同时收尾时，各读一份旧数组再各自写回会丢掉一条。
+ */
+let jobHistoryChain: Promise<void> = Promise.resolve();
+function pushJobHistory(rec: SftpJobRecord): Promise<void> {
+  jobHistoryChain = jobHistoryChain
+    .then(async () => {
+      if (!pluginStorage) return;
+      const rows = await loadJobHistory();
+      await pluginStorage.set('sftp-job-history', [...rows, rec].slice(-MAX_JOB_HISTORY));
+    })
+    // 落库失败不该把任务本身带崩：任务已经跑完，留痕是附加价值
+    .catch(() => { /* ignore */ });
+  return jobHistoryChain;
 }
 
 export const MAX_RECURSIVE_DELETE_ENTRIES = 20000;
@@ -2632,11 +2697,26 @@ const opsShellModule: PluginModule = {
         });
         return jobId;
       };
-      /** 任务收尾：置终态 + 延时回收（留 3s 让正在订阅的 SSE 把最后状态推完） */
+      /** 任务收尾：置终态 + 落库留痕 + 延时回收（留 3s 让正在订阅的 SSE 把最后状态推完） */
       const finishJob = (jobId: string, state: 'done' | 'failed', error?: string) => {
         const j = sftpJobs.get(jobId);
         if (j) { j.state = state; if (error) j.error = error; }
         setTimeout(() => sftpJobs.delete(jobId), 3000);
+        if (!j) return;
+        // ★ 落库（用户要求「这些数据都要入库」）：内存记录 3 秒后就回收了，
+        //   不写下来的话，刷新一下"刚才删了哪些文件"就查无此事。
+        const isDelete = j.kind === 'delete';
+        const all = isDelete ? j.deleted : (j.plan ?? []);
+        const total = isDelete ? j.deletedCount : (j.planTotal ?? all.length);
+        void pushJobHistory({
+          id: jobId, kind: j.kind, label: j.label, state,
+          at: Date.now(),
+          totalCount: j.totalCount, doneCount: j.doneCount, totalBytes: j.total,
+          error,
+          deletedCount: isDelete ? j.deletedCount : undefined,
+          detail: all.slice(-MAX_HISTORY_DETAIL),
+          detailTruncated: total > MAX_HISTORY_DETAIL,
+        });
       };
       const json = (res: unknown, body: unknown) => (res as { json: (d: unknown) => void }).json(body);
       const fail = (res: unknown, code: number, msg: string) =>
@@ -2955,6 +3035,13 @@ const opsShellModule: PluginModule = {
         // 进度按总字节聚合，多文件/文件夹上传时进度条不会来回跳；
         // 同时给条目口径（doneCount/totalCount）与「当前文件」，供任务列表显示"第几个 / 正在传谁"
         const jobId = newJob('upload', `上传 → ${destDir}`, { totalCount: plan.length, totalBytes });
+        // 留一份待传清单在任务上，任务收尾时落库（★ 不进 SSE 帧：几千条会把每一帧撑爆，
+        //   界面上的待执行清单是拿这个响应里的 plan 渲染的）
+        const jobForPlan = sftpJobs.get(jobId);
+        if (jobForPlan) {
+          jobForPlan.plan = plan.slice(0, MAX_UPLOAD_PLAN_ITEMS).map((p) => p.dest);
+          jobForPlan.planTotal = plan.length;
+        }
         // ★ 2026-10-16 把**扫描结果**一并回给前端（用户要求「先把要上传的文件扫描后排队上传」）：
         //   队列要在界面上分「已传 / 正在传 / 待传」三段展示，所以清单得在上传开始前就到手。
         //   截断上限：几万个文件时没必要把整张清单塞进响应体（count/total 仍是准确的全量口径）。
@@ -2969,7 +3056,24 @@ const opsShellModule: PluginModule = {
         // 异步执行，不阻塞响应
         void (async () => {
           try {
-            const ensuredDirs = new Set<string>([destDir]);
+            /**
+             * 目标目录 → **"建目录"这个动作本身**（Promise），而不是"建过了"这个布尔事实。
+             * ★ 为什么必须缓存 Promise（2026-10-17 用户实报「上传目录 4/27 失败：No such file」）：
+             *   缓存布尔值时，worker B 看到 A 已经登记过，就**跳过等待直接开写** ——
+             *   可那一刻 A 的 mkdir 还没回来，远端目录根本不存在，OPEN 立刻 NO_SUCH_FILE。
+             *   串行上传时看不出来，并发 >1 才会露头：前面几个文件把目录建好了就"没事"，
+             *   撞在窗口里的那个必挂。缓存 Promise 后，B await 的是同一个建目录动作，天然排队。
+             */
+            const dirReady = new Map<string, Promise<void>>();
+            const ensureDirOnce = (dir: string): Promise<void> => {
+              let ready = dirReady.get(dir);
+              if (!ready) { ready = ensureRemoteDir(got.sftp, dir); dirReady.set(dir, ready); }
+              return ready;
+            };
+            // 目标目录本身也可能还不存在（把东西拖进一个新目录）。先 stat 一次：
+            // 常见情况（已存在）只花一个 RTT，不存在才逐级建。
+            try { await statRemote(got.sftp, destDir); dirReady.set(destDir, Promise.resolve()); }
+            catch { await ensureDirOnce(destDir); }
             let doneBytes = 0;
             let doneCount = 0;
             /** 在飞文件的字节进度：plan 下标 → 已传字节。
@@ -2992,12 +3096,9 @@ const opsShellModule: PluginModule = {
             const pauseGate = createPauseGate(() => sftpJobs.get(jobId));
             await runWithConcurrency(plan, uploadConcurrency, async (p, i) => {
               const parent = p.dest.slice(0, p.dest.lastIndexOf('/'));
-              if (parent && !ensuredDirs.has(parent)) {
-                // 并发下多个 worker 可能同时想建同一级父目录 —— mkdir 已存在会报错并被
-                // ensureRemoteDir 忽略，这里只是少建几次；Set 让常见情况不重复发请求。
-                ensuredDirs.add(parent);
-                await ensureRemoteDir(got.sftp, parent);
-              }
+              // ★ await 的是**同一个建目录动作**（见上面 dirReady 的注释）：
+              //   并发 worker 共用它，不会有人抢在 mkdir 完成之前就开写。
+              if (parent) await ensureDirOnce(parent);
               // ★ 一个文件是"循环"而不是"一次调用"：暂停要能停住正在传的**这一个**，
               //   恢复后从远端实际落盘的字节数接着写。
               //   断点取自 stat 远端、不取内存计数 —— 被中断时写流的缓冲里可能还有没落盘的字节。
@@ -3024,9 +3125,13 @@ const opsShellModule: PluginModule = {
                   }
                   if (r.written >= p.size) break;   // 传完了（0 字节文件也走这里收尾）
                   // 一次尝试一个字节都没推进 → 直接失败，别在这里空转
-                  if (r.written <= offset) throw new Error(`「${p.dest}」写入没有进展`);
+                  if (r.written <= offset) throw new Error('写入没有进展');
                   offset = r.written;
                 }
+              } catch (e) {
+                // ssh2 的原话往往只有一句 "No such file"，不带路径 ——
+                // 光看它没法知道是哪个文件、哪一级目录，补上才有得排查
+                throw new Error(`「${p.dest}」上传失败：${(e as Error).message}`);
               } finally {
                 inFlight.delete(i);
               }
@@ -3117,6 +3222,13 @@ const opsShellModule: PluginModule = {
         // 不传 paused 就当"切换"，前端只管点按钮，不用自己维护一个可能过期的本地态
         job.paused = body.paused === undefined ? !job.paused : !!body.paused;
         json(res, { data: { jobId, paused: job.paused } });
+      });
+
+      // 已完成任务的历史（**落库的**，刷新/重启后还在）。
+      // 「已执行完成」页靠它把明细翻出来 —— 内存里的任务 3 秒就回收了。
+      r.get('/sftp/jobs/history', async (_req: unknown, res: unknown) => {
+        const rows = await loadJobHistory();
+        json(res, { data: rows.slice().reverse() }); // 最近的排最前
       });
 
       // 操作日志（工具执行审计）：运维控制台「操作日志」面板消费（倒序，最近 200 条）

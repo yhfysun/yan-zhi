@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -245,6 +245,64 @@ describe('上传路由 · 暂停 / 断点续传 端到端（真 SFTP 服务器�
     }
     expect(fellBack, `★ WRITE 偏移出现 ${fellBack} 次大幅回退 —— 续传是从头重写的`).toBe(0);
   });
+
+  it('★★ 并发下多个文件进同一个**新**父目录：没人能抢在 mkdir 完成前开写', async () => {
+    // 用户实报：上传目录到第 5 个文件失败「No such file」（任务行显示 4/27 · 失败）。
+    // 根因是"建目录"被缓存成了布尔值：worker B 看到 A 已登记就直接开写，而此刻
+    // A 的 mkdir 还没回来 —— 远端目录尚不存在，OPEN 立刻 NO_SUCH_FILE。
+    // 这里把 mkdir 拖慢 80ms，让这个竞态**必然**发生（修好后所有 worker 等同一个 mkdir）。
+    const sub = join(dir, 'newsub');
+    mkdirSync(sub);
+    for (let i = 0; i < 6; i++) writeFileSync(join(sub, `f${i}.bin`), randomBytes(48 * 1024));
+
+    fake.setMkdirDelay(80);
+    try {
+      const up = await call('POST', '/sftp/upload', {
+        connectionId: 'c1', destDir: '/upload', files: [{ localPath: sub, rel: 'newsub' }],
+      });
+      expect(up.statusCode, `上传接口失败：${String(errOf(up))}`).toBe(200);
+      const jobId = (up.body as { data: { jobId: string } }).data.jobId;
+      const sse = await subscribeSse(jobId);
+
+      await waitFor(
+        () => sse.frames.some((f) => f.state === 'done' || f.state === 'failed'),
+        20000, '并发建目录的上传结束',
+      );
+      const last = sse.last();
+      expect(last?.state, `任务失败了：${String(last?.error)}`).toBe('done');
+      for (let i = 0; i < 6; i++) {
+        const p = `/upload/newsub/f${i}.bin`;
+        expect(fake.files.has(p), `缺文件 ${p} —— 并发抢在 mkdir 之前开写的典型症状`).toBe(true);
+        expect(fake.files.get(p)?.length).toBe(48 * 1024);
+      }
+    } finally {
+      fake.setMkdirDelay(0);
+    }
+  }, 40000);
+
+  it('★★ 任务落库：结束后能查到历史记录，且带着明细', async () => {
+    // 用户要求「这些数据都要入库」—— 内存里的任务 3 秒就回收了，
+    // 刷新/重启之后必须还能翻到"刚才删了/传了哪些"。
+    type Row = { id: string; kind: string; state: string; label: string; detail: string[]; detailTruncated: boolean };
+    let rows: Row[] = [];
+    const t0 = Date.now();
+    while (Date.now() - t0 < 8000) {
+      const r = await call('GET', '/sftp/jobs/history');
+      const data = (r.body as { data?: Row[] }).data;
+      if (Array.isArray(data) && data.length) { rows = data; break; }
+      await sleep(50);
+    }
+    expect(rows.length, '任务结束了，历史表还是空的（根本没入库）').toBeGreaterThan(0);
+
+    const uploads = rows.filter((x) => x.kind === 'upload');
+    expect(uploads.length, '没有 upload 的历史记录').toBeGreaterThan(0);
+    // 历史是**最近在前**，而且到这里已经有两条 upload（big.bin / newsub），
+    // 所以按明细里的文件定位，别拿 find 的第一条就断言（那是新的一条）
+    const big = uploads.find((x) => x.detail?.some((p) => p.endsWith('/big.bin')));
+    expect(big, '历史里找不到那个大文件上传的明细').toBeTruthy();
+    expect(big?.state).toBe('done');
+    expect(big?.detail?.length, '历史记录里没有明细（展开是空的）').toBeGreaterThan(0);
+  }, 30000);
 
   it('暂停接口的边界：不认识的任务 → 404；非上传任务 → 400', async () => {
     const missing = await call('POST', '/sftp/job/pause', { jobId: 'nope', paused: true });

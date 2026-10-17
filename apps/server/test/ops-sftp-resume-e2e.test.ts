@@ -27,6 +27,9 @@ describe('断点续传 · 对着真正的 SFTP 服务器跑一遍', () => {
 
   beforeAll(async () => {
     const port = await state.listen();
+    // 假服务器现在会像真实 sftp-server 一样检查父目录是否存在；这些用例是**绕过路由**
+    // 直接调 sftpUploadRange 的（没有建目录这一步），所以先把用到的目录手工建出来。
+    for (const d of ['/resume', '/flags', '/offsets', '/fresh', '/multi']) state.mkdir(d);
     client = new Client();
     await new Promise<void>((res, rej) => {
       client.on('ready', () => res()).on('error', rej);
