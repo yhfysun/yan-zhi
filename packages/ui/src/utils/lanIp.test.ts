@@ -5,8 +5,21 @@
  *   ① 响应解析 —— 修掉"apiFetch 已单层解包、调用方又多解一层"导致 lanIps 恒空的 bug；
  *   ② 虚拟网卡判定与排序 —— vEthernet(Hyper-V) 不能当默认对外 IP；
  *   ③ 默认 IP 选定 —— 用户显式选的优先，失效（换网）自动回落，不指向幽灵地址。
+ *   ④ 三个带 IP 的链接（Web 服务地址 / 商城连接地址 / 短信上报地址）必须同源供数。
  *
  * ②③ 是真跑纯函数（不依赖 Electron / 组件挂载）；①的接线用源码锚点（同 shortcut-governance 手法）。
+ * ★ 锚点断言对**剥注释后的 `<script setup>` 块**做 —— 修复说明注释里就写着错写法
+ *   （`data.data`），直接对全文做负向断言会被自己的注释绊到假红。
+ *
+ * ===== 变异测试记录 =====
+ *  mF Settings.vue：webServiceUrl 绕过 preferredLanIp 改用 window.location.hostname → 变红 ✓
+ *      （计数断言抓到：3 处变 2 处）
+ *  mG Settings.vue：webServiceUrl 的返回值多加 `/api` 后缀（退化成又一个 API 地址）  → 变红 ✓
+ *      （正则断言抓到，与 mF 走的是不同断言 —— 两层守卫各自独立有效）
+ *  ⚠️ 实操教训：mF/mG 之间**忘了还原**，G 叠在 F 上跑，报错信息是 F 的 ⇒ 变异必须
+ *     从干净基线逐个跑，否则"变红"可能来自上一个变异，自欺欺人。
+ *  ⚠️ 实操教训 2：还原别用 `git checkout --`（会连本轮未提交改动一起丢，本次真丢过一次），
+ *     用 `cp 备份文件` 还原。
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -179,11 +192,13 @@ describe('Settings.vue 接线契约（源码锚点）', () => {
     expect(SETTINGS_CODE).not.toMatch(/data\.data\.nodes/);
   });
 
-  it('★ 连接地址/上报地址统一走 preferredLanIp 单一真相源', () => {
+  it('★ 连接地址/上报地址/Web 服务地址统一走 preferredLanIp 单一真相源', () => {
     expect(SETTINGS_CODE).toMatch(/const preferredLanIp = computed\(\(\) =>\s*pickDefaultLanIp\(lanIps\.value, settingsStore\.settings\.defaultLanIp\)/);
-    // 两处带 IP 的链接都必须由 preferredLanIp 供数（不允许各写一套 host 解析）
+    // 三处带 IP 的链接都必须由 preferredLanIp 供数（不允许各写一套 host 解析）
     const urlCount = (SETTINGS_CODE.match(/const host = preferredLanIp\.value/g) || []).length;
-    expect(urlCount, `★ 带 IP 的链接应有 2 处走 preferredLanIp（实测 ${urlCount}）`).toBe(2);
+    expect(urlCount, `★ 带 IP 的链接应有 3 处走 preferredLanIp（实测 ${urlCount}）`).toBe(3);
+    // Web 服务地址必须是"默认 IP + 端口"、不带路径后缀（与另两个只差后缀）
+    expect(SETTINGS_CODE).toMatch(/const webServiceUrl = computed\(\(\) => \{[\s\S]*?const host = preferredLanIp\.value[\s\S]*?return `http:\/\/\$\{host\}:\$\{lanPort\.value\}`;/);
   });
 
   it('★ 默认 IP 写入 settings.defaultLanIp，且提供"恢复自动"入口', () => {

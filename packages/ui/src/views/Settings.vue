@@ -314,7 +314,7 @@
         <div class="lan-section">
           <p class="lan-tip">
             后端已绑定所有网卡（0.0.0.0），下列地址均可被同网设备访问。选定默认 IP 后，
-            「商城服务端」连接地址、「短信验证码」上报地址、「局域网访问」都会换成它。
+            Web 服务地址、「商城服务端」连接地址、「短信验证码」上报地址都会换成它。
           </p>
           <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px">
             <span class="lan-section-label" style="font-weight: 600">默认对外 IP</span>
@@ -336,6 +336,10 @@
             </div>
           </el-radio-group>
           <div class="lan-ip-preview">
+            <div class="lan-ip-preview-row">
+              <span class="lan-ip-preview-label">Web 服务地址</span>
+              <code>{{ webServiceUrl }}</code>
+            </div>
             <div class="lan-ip-preview-row">
               <span class="lan-ip-preview-label">商城服务端连接地址</span>
               <code>{{ connectUrl }}</code>
@@ -1108,6 +1112,18 @@ function copyUrl() {
 const smsUpstreamUrl = computed(() => {
   const host = preferredLanIp.value || window.location.hostname || 'localhost';
   return `http://${host}:${lanPort.value}/api/verification-codes`;
+});
+
+/**
+ * Web 服务地址：别人浏览器直接开这个就能进本节点的完整 Web 界面
+ * （后端 index.ts 已托管前端静态资源，数据与本机共享同一后端）。
+ * ★ 与另两个地址同源同口径 —— 都是"默认 IP + 端口"，只差路径后缀。
+ *   「局域网访问」tab 里有每个 IP 的完整列表（含复制/打开浏览器），
+ *   这里给的是**当前默认 IP 那一个**，与上面两行预披露成一组，免得用户来回切 tab。
+ */
+const webServiceUrl = computed(() => {
+  const host = preferredLanIp.value || window.location.hostname || 'localhost';
+  return `http://${host}:${lanPort.value}`;
 });
 
 function copyText(text: string, okMsg = '已复制') {
