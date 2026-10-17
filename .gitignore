@@ -25,6 +25,8 @@ apps/desktop/src-tauri/Cargo.lock
 # Electron/Android 打包产物（统一树：dist-release/desktop/<档>/<版本>/ 与 dist-release/android/<版本>/，
 # 路径定义见 apps/desktop/scripts/lib/pack-helpers.cjs）
 dist-release/
+# 打包脚本的历史变体输出：dist-release-<时间戳>/（2026-10-17 工作区实出现）
+dist-release-*/
 dist-download/
 apps/desktop/build/*
 !apps/desktop/build/installer.nsh
