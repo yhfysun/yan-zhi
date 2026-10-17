@@ -138,33 +138,10 @@
               <div v-if="windows.length" class="ops-body">
               <div class="ops-win-body">
                 <div v-for="w in windows" :key="w.id" v-show="w.id === activeWinId" class="ops-win">
-                  <!-- 窗口头：连接信息 + 本连接自己的操作。
-                       ★ 视图切换已从"右下角浮动钮"挪到这里（2026-10-17 用户反馈）：
-                         右下角只留主导方胶囊（LeadToggle），与安全模式一致 ——
-                         之前并排两个圆钮，很容易被读成两个"AI / 命令模式"开关。 -->
+                  <!-- 窗口头：连接信息 + 本连接自己的操作（视图切换见右下角浮动按钮） -->
                   <div class="ops-win-head">
                     <span class="ops-win-conn">{{ winConnInfo(w) }}</span>
                     <div class="ops-win-head-actions">
-                      <!-- 视图切换（终端 / Docker / 数据库 / 对话）：只有一个视图时不必出现 -->
-                      <el-dropdown
-                        v-if="viewOptionsFor(w).length > 1"
-                        trigger="click"
-                        popper-class="yz-menu-popper"
-                        @command="(k: unknown) => onPickView(w, k)"
-                      >
-                        <el-button
-                          size="small"
-                          :icon="viewIcon(w.view)"
-                          :title="`当前：${VIEW_LABEL[w.view]} · 点击切换视图`"
-                        />
-                        <template #dropdown>
-                          <el-dropdown-menu>
-                            <el-dropdown-item v-for="o in viewOptionsFor(w)" :key="o.key" :command="o.key">
-                              {{ o.label }}
-                            </el-dropdown-item>
-                          </el-dropdown-menu>
-                        </template>
-                      </el-dropdown>
                       <span v-if="w.view === 'term' && w.termConnecting" class="ops-term-hint">连接中…</span>
                       <span
                         v-if="w.view === 'term' && w.termOpen && w.termRecording"
@@ -369,6 +346,15 @@
                       </div>
                     </div>
 
+                    <!-- 模式切换：右下角浮动图标按钮，点击循环切换本窗口可用的视图 -->
+                    <div
+                      v-if="viewOptionsFor(w).length > 1"
+                      class="ops-view-fab"
+                      :title="`当前：${VIEW_LABEL[w.view]} · 点击切换`"
+                      @click="cycleWinView(w)"
+                    >
+                      <el-icon :size="16"><component :is="viewIcon(w.view)" /></el-icon>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -749,9 +735,12 @@ function switchWinView(w: OpsWin, k: ViewKey) {
 function viewIcon(v: ViewKey) {
   return v === 'chat' ? ChatDotRound : v === 'container' ? Box : v === 'db' ? DataLine : Monitor;
 }
-/** 窗口头下拉选了某个视图（原右下角循环按钮，2026-10-17 挪到头部，右下角只留主导方胶囊） */
-function onPickView(w: OpsWin, k: unknown) {
-  switchWinView(w, k as ViewKey);
+/** 右下角浮动按钮：在当前连接可用的视图之间循环切换 */
+function cycleWinView(w: OpsWin) {
+  const keys = viewOptionsFor(w).map((o) => o.key);
+  if (keys.length < 2) return;
+  const i = keys.indexOf(w.view);
+  switchWinView(w, keys[(i + 1) % keys.length]);
 }
 
 /** 顶部「文件」：展开/收起右侧文件面板。属于**整体设置**（所有窗口共用），与具体连接无关 */
@@ -2153,10 +2142,18 @@ onUnmounted(() => {
 .ops-win-head-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .ops-term-hint { font-size: 11px; color: var(--color-text-tertiary); }
 
-/* ★ 2026-10-17：右下角那个"切换视图"浮动圆钮已下线，入口挪到窗口头的下拉里。
-   原因（用户反馈）：它和主导方胶囊（LeadToggle，right:16）并排成两个圆钮，
-   被读成两个"AI / 命令模式"开关；安全模式只有胶囊，两边看着不统一。
-   现在右下角只剩主导方胶囊 —— 与安全模式一致，也不再占布局行。 */
+/* 模式切换：右下角浮动图标按钮（不占窗口头那一行高度）。
+   右偏移 60px：给主导方悬浮胶囊（LeadToggle，right:16）让位，两者不重叠 */
+.ops-view-fab {
+  position: absolute; right: 60px; bottom: 16px; z-index: 8;
+  width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--color-text-secondary);
+  background: var(--color-surface); border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-md);
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.ops-view-fab:hover { color: var(--color-primary); border-color: var(--color-primary); transform: translateY(-1px); }
 
 /* 主视图区（文件面板已提到 .ops-body 层，作为全局面板） */
 .ops-main { flex: 1; display: flex; gap: 6px; min-height: 0; }
