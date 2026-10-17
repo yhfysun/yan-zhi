@@ -2969,7 +2969,24 @@ const opsShellModule: PluginModule = {
         // 异步执行，不阻塞响应
         void (async () => {
           try {
-            const ensuredDirs = new Set<string>([destDir]);
+            /**
+             * 目标目录 → **"建目录"这个动作本身**（Promise），而不是"建过了"这个布尔事实。
+             * ★ 为什么必须缓存 Promise（2026-10-17 用户实报「上传目录 4/27 失败：No such file」）：
+             *   缓存布尔值时，worker B 看到 A 已经登记过，就**跳过等待直接开写** ——
+             *   可那一刻 A 的 mkdir 还没回来，远端目录根本不存在，OPEN 立刻 NO_SUCH_FILE。
+             *   串行上传时看不出来，并发 >1 才会露头：前面几个文件把目录建好了就"没事"，
+             *   撞在窗口里的那个必挂。缓存 Promise 后，B await 的是同一个建目录动作，天然排队。
+             */
+            const dirReady = new Map<string, Promise<void>>();
+            const ensureDirOnce = (dir: string): Promise<void> => {
+              let ready = dirReady.get(dir);
+              if (!ready) { ready = ensureRemoteDir(got.sftp, dir); dirReady.set(dir, ready); }
+              return ready;
+            };
+            // 目标目录本身也可能还不存在（把东西拖进一个新目录）。先 stat 一次：
+            // 常见情况（已存在）只花一个 RTT，不存在才逐级建。
+            try { await statRemote(got.sftp, destDir); dirReady.set(destDir, Promise.resolve()); }
+            catch { await ensureDirOnce(destDir); }
             let doneBytes = 0;
             let doneCount = 0;
             /** 在飞文件的字节进度：plan 下标 → 已传字节。
@@ -2992,12 +3009,9 @@ const opsShellModule: PluginModule = {
             const pauseGate = createPauseGate(() => sftpJobs.get(jobId));
             await runWithConcurrency(plan, uploadConcurrency, async (p, i) => {
               const parent = p.dest.slice(0, p.dest.lastIndexOf('/'));
-              if (parent && !ensuredDirs.has(parent)) {
-                // 并发下多个 worker 可能同时想建同一级父目录 —— mkdir 已存在会报错并被
-                // ensureRemoteDir 忽略，这里只是少建几次；Set 让常见情况不重复发请求。
-                ensuredDirs.add(parent);
-                await ensureRemoteDir(got.sftp, parent);
-              }
+              // ★ await 的是**同一个建目录动作**（见上面 dirReady 的注释）：
+              //   并发 worker 共用它，不会有人抢在 mkdir 完成之前就开写。
+              if (parent) await ensureDirOnce(parent);
               // ★ 一个文件是"循环"而不是"一次调用"：暂停要能停住正在传的**这一个**，
               //   恢复后从远端实际落盘的字节数接着写。
               //   断点取自 stat 远端、不取内存计数 —— 被中断时写流的缓冲里可能还有没落盘的字节。
@@ -3024,9 +3038,13 @@ const opsShellModule: PluginModule = {
                   }
                   if (r.written >= p.size) break;   // 传完了（0 字节文件也走这里收尾）
                   // 一次尝试一个字节都没推进 → 直接失败，别在这里空转
-                  if (r.written <= offset) throw new Error(`「${p.dest}」写入没有进展`);
+                  if (r.written <= offset) throw new Error('写入没有进展');
                   offset = r.written;
                 }
+              } catch (e) {
+                // ssh2 的原话往往只有一句 "No such file"，不带路径 ——
+                // 光看它没法知道是哪个文件、哪一级目录，补上才有得排查
+                throw new Error(`「${p.dest}」上传失败：${(e as Error).message}`);
               } finally {
                 inFlight.delete(i);
               }

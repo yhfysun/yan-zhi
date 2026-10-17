@@ -35,6 +35,14 @@ export interface FakeSftp {
   listen(): Promise<number>;
   /** 关掉服务器与所有还开着的客户端连接（不留开放句柄，否则 vitest 收不了尾） */
   close(): void;
+  /**
+   * 运行时调整"建目录"的回复延迟（毫秒）。
+   * ★ 目录是**延迟之后才真正出现**的 —— 这样才能逼出"抢在 mkdir 完成之前就开写"的竞态
+   *   （用户实报的上传 4/27 失败 No such file 就是它）。延迟 0 = 立即建好。
+   */
+  setMkdirDelay(ms: number): void;
+  /** 直接在内存文件系统里建一个目录（给"绕过路由、直接调 sftpUploadRange"的测试用） */
+  mkdir(dir: string): void;
 }
 
 /**
@@ -43,8 +51,9 @@ export interface FakeSftp {
  *   SFTP 客户端是一条接一条地发 WRITE（上一条的 status 回来才发下一条），
  *   所以延迟回包就等于把吞吐压到约 (64KB / writeDelayMs) 每秒。
  */
-export function startFakeSftp(opts: { writeDelayMs?: number } = {}): FakeSftp {
+export function startFakeSftp(opts: { writeDelayMs?: number; mkdirDelayMs?: number } = {}): FakeSftp {
   const writeDelayMs = opts.writeDelayMs ?? 0;
+  let mkdirDelayMs = opts.mkdirDelayMs ?? 0;
   const files = new Map<string, Buffer>();
   const dirs = new Set<string>(['/']);
   const handles = new Map<number, string>();
@@ -91,6 +100,11 @@ export function startFakeSftp(opts: { writeDelayMs?: number } = {}): FakeSftp {
           //   拿到 undefined，于是每个 CREAT 文件都被判成"不存在"，第一次 OPEN 就 NO_SUCH_FILE。
           sftp.on('OPEN', (reqid: number, filename: string, flags: number) => {
             opens.push({ path: filename, flags });
+            // ★ 父目录不存在就 NO_SUCH_FILE —— 真实 sftp-server 就是这样。
+            //   ★★ 少了这条，假服务器会若无其事地给个句柄，把"并发抢在 mkdir 之前开写"
+            //      这种事故**整个掩盖掉**（用户实报的上传 4/27 失败 No such file 正是它）。
+            const parent = filename.slice(0, filename.lastIndexOf('/')) || '/';
+            if (!dirs.has(parent)) { sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE); return; }
             const exists = files.has(filename);
             if (!exists && !(flags & OPEN_MODE.CREAT)) { sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE); return; }
             if ((flags & OPEN_MODE.TRUNC) || !exists) files.set(filename, Buffer.alloc(0));
@@ -117,7 +131,13 @@ export function startFakeSftp(opts: { writeDelayMs?: number } = {}): FakeSftp {
             handles.delete(h.readUInt32BE(0));
             sftp.status(reqid, STATUS_CODE.OK);
           });
-          sftp.on('MKDIR', (reqid: number, p: string) => { dirs.add(p); sftp.status(reqid, STATUS_CODE.OK); });
+          sftp.on('MKDIR', (reqid: number, p: string) => {
+            // ★ 目录在**延迟之后**才登记：在那之前它"还不存在"，
+            //   抢跑开写就会拿到 NO_SUCH_FILE —— 这正是要复现的竞态
+            const commit = () => { dirs.add(p); sftp.status(reqid, STATUS_CODE.OK); };
+            if (mkdirDelayMs > 0) setTimeout(commit, mkdirDelayMs);
+            else commit();
+          });
           sftp.on('OPENDIR', (reqid: number, p: string) => {
             if (!dirs.has(p) && !files.has(p)) { sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE); return; }
             const id = ++handleSeq;
@@ -145,6 +165,8 @@ export function startFakeSftp(opts: { writeDelayMs?: number } = {}): FakeSftp {
       for (const c of clients) { try { c.end(); } catch { /* ignore */ } }
       try { server.close(); } catch { /* ignore */ }
     },
+    setMkdirDelay: (ms: number) => { mkdirDelayMs = ms; },
+    mkdir: (dir: string) => { dirs.add(dir); },
   };
 }
 
