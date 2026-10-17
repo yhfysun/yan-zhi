@@ -746,10 +746,15 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
    图就是弹窗表面。文字可读性由 settings.applySurface 的 patternLum 判据保证
    （暗色配暗色图 ⇒ 浅字；浅色配原图 ⇒ 深字）。
    --el-bg-color-overlay 仍保留给下拉/菜单等不需要图的浮层使用。 */
+/* ★ 2026-10-17 兜底修正：底色不再 transparent，改 --skin-surface 实色垫底 ——
+   本规则是 09-13「图就是弹窗表面」定稿，为插件皮肤的**不透明真图**设计；
+   内置系列的 dialogPattern 是近乎透明的纹样贴片，垫底 transparent 时整个弹窗
+   透出壁纸（用户实报「弹窗背景被你改坏了」）。实色垫底对插件皮肤**零影响**
+   （不透明图 cover 完整盖住底色），对内置系列 = 实底 + 纹样，可读性恢复。 */
 [data-skin="on"] .el-dialog,
 [data-skin="on"] .el-drawer,
 [data-skin="on"] .el-message-box {
-  background-color: transparent;
+  background-color: var(--skin-surface, var(--el-bg-color, #fff));
   background-image: var(--skin-dialog-pattern, none);
   background-size: cover;
   background-repeat: no-repeat;
@@ -1280,6 +1285,14 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
 [data-skin="on"] .app-menu-list .menu-item:hover,
 [data-skin="on"] .el-dropdown-menu__item:not(.is-disabled):hover {
   background-color: color-mix(in srgb, var(--color-primary) 10%, var(--glass-bg-hover)) !important;
+}
+/* 禁用项：EP 默认 --el-text-color-disabled（#a8abb2 浅灰）压在近白部件图上几乎不可读
+   （2026-10-17 用户实报「字啊都看不清楚啊」——浏览器 AI 菜单未开页时 4 项里 3 项禁用）。
+   改走 --skin-text-tertiary：按当前面板明暗派生，保证与底有对比，且仍比可用项浅一档。 */
+[data-skin="on"] .el-dropdown-menu__item.is-disabled,
+[data-skin="on"] .app-menu-list .menu-item.is-disabled,
+[data-skin="on"] .ctx-menu li.is-disabled {
+  color: var(--skin-text-tertiary, var(--el-text-color-disabled)) !important;
 }
 
 /* ===== 代码模式独立底图：区别于全局壁纸（同系列不同图案，细格网+角饰） =====
