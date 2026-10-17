@@ -27,8 +27,9 @@ const PATTERN_FIELDS = [
   'catTagPattern',
   'inputPattern',
   'buttonPattern',
+  'buttonPatternDark',
   'dialogPattern',
-  'titlebarPattern',
+  'dialogPatternDark',
   'menuPattern',
   'menuPatternDark',
   'codePattern',
@@ -36,10 +37,16 @@ const PATTERN_FIELDS = [
   'browserPatternDark',
 ] as const;
 
-/** ★ 刻意不下发的字段：.sidebar/.conv-list/.fs-panel 消费它做 cover 大图底，
- *  内置系列的纹样贴片在竖条容器上会被放大 ~2.7 倍裁切、并盖住 3D 壁纸
- *  （2026-10-17 用户实报「任务侧栏被你弄坏了」）。见 skinSeries.ts buildSeries 注释。 */
-const FORBIDDEN_FIELDS = ['taskListPattern'] as const;
+/** ★ 刻意不下发的字段：
+ *  · taskListPattern：.sidebar/.conv-list/.fs-panel 消费它做 cover 大图底，
+ *    内置系列的纹样贴片在竖条容器上会被放大 ~2.7 倍裁切、并盖住 3D 壁纸
+ *    （2026-10-17 用户实报「任务侧栏被你弄坏了」）。
+ *  · titlebarPattern：弹窗标题栏专用的「主色→深色渐变带 + 白母题」，是弹窗
+ *    顶部与窗体割裂的「突兀」根因（2026-10-17 用户第 2 轮反馈）。停发后
+ *    .el-dialog__header 透明，弹窗底图从标题区一路贯通到底栏。
+ *  （button/dialog/menu 图不再自绘，直接复用 wallpaper() 的 3D 场景图 ——
+ *   用户「不是光影啊，你仔细看看背景的冰块？都不是 3D 效果啊」，见 skinSeries.ts 第六轮注释。） */
+const FORBIDDEN_FIELDS = ['taskListPattern', 'titlebarPattern'] as const;
 
 describe('内置系列皮肤 · 部件图 CSS 值形态', () => {
   for (const s of BUILTIN_SKIN_SERIES) {

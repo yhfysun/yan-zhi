@@ -404,10 +404,51 @@ html[data-skin="on"] .home-page {
   background: transparent;
 }
 
-/* ===== SettingsDrawer 自定义抽屉玻璃化（非 el-drawer，需单独补模糊） ===== */
+/* ===== SettingsDrawer 自定义抽屉（非 el-drawer，需单独补皮肤背景 + 模糊） =====
+   ★ 2026-10-17：用户实报「还有设置弹窗的皮肤背景」—— 组件 scoped 里写的是
+   `background: var(--el-bg-color, #fff)` 简写（skin 模式下 = 97% 近白玻璃），
+   从来没有铺过弹窗底图。这里补上与 .el-dialog 同一套：--skin-surface 实底
+   + --skin-dialog-pattern（内置系列 = 壁纸 3D 场景，插件皮肤 = 真图）。
+   ⚠️ 组件是 scoped 样式、后于本文件注入，且它写的是 `background:` 简写，
+   所以必须带 !important 才能赢（同下方 .csb-bar 的坑）。
+   磨砂由下方 ::before 机制（.settings-drawer::before）负责，保证文字可读。 */
 [data-skin="on"] .settings-drawer {
+  background-color: var(--skin-surface, var(--el-bg-color, #fff)) !important;
+  background-image: var(--skin-dialog-pattern, none) !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
+}
+
+/* ★ 2026-10-17：SettingsDialog（桌面端「侧导航居中大弹窗」）同套处理 ——
+   scoped 里是 `background: var(--glass-bg, #fff)` 简写（97% 近白玻璃），没铺过
+   弹窗底图。补 --skin-surface 实底 + --skin-dialog-pattern（壁纸 3D 场景/真图）。
+   ⚠️ scoped 简写 + 后注入 → 必须 !important（同上方 .csb-bar 坑）。 */
+[data-skin="on"] .settings-dialog {
+  background-color: var(--skin-surface, var(--el-bg-color, #fff)) !important;
+  background-image: var(--skin-dialog-pattern, none) !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+}
+/* 遮罩与 el-overlay 对齐：皮肤遮罩色 + 14px 模糊（弹窗打开时背景退到景深外） */
+[data-skin="on"] .settings-dialog-mask {
+  background: var(--skin-overlay-color, var(--el-mask-color));
+  backdrop-filter: blur(var(--skin-overlay-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--skin-overlay-blur, 14px));
+}
+/* ★ 2026-10-17：弹窗内层的两块面板（左导航 .sd-nav / 内容卡 .glass-tabs）
+   各自的玻璃实底会把弹窗底图盖成两块白板（用户实报「这两块呢？」）。
+   全部透明 → 透出弹窗自身铺的整张 3D 底图，左右连续成一面。
+   ⚠️ scoped 简写 + 后注入 → 必须 !important；.glass-tabs 在皮肤模式另有
+   玻璃规则（本文件 .glass-tabs 段），这里选择器多一档能压过它。 */
+[data-skin="on"] .settings-dialog .sd-nav,
+[data-skin="on"] .settings-dialog .glass-tabs,
+[data-skin="on"] .settings-drawer .glass-tabs {
+  background-color: transparent !important;
+  background-image: none !important;
 }
 
 /* ===== 开发模式面板：顶栏 / 左侧栏 / 编辑器 / 右侧对话栏统一玻璃 =====
@@ -746,11 +787,17 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
    图就是弹窗表面。文字可读性由 settings.applySurface 的 patternLum 判据保证
    （暗色配暗色图 ⇒ 浅字；浅色配原图 ⇒ 深字）。
    --el-bg-color-overlay 仍保留给下拉/菜单等不需要图的浮层使用。 */
-/* ★ 2026-10-17 兜底修正：底色不再 transparent，改 --skin-surface 实色垫底 ——
-   本规则是 09-13「图就是弹窗表面」定稿，为插件皮肤的**不透明真图**设计；
-   内置系列的 dialogPattern 是近乎透明的纹样贴片，垫底 transparent 时整个弹窗
-   透出壁纸（用户实报「弹窗背景被你改坏了」）。实色垫底对插件皮肤**零影响**
-   （不透明图 cover 完整盖住底色），对内置系列 = 实底 + 纹样，可读性恢复。 */
+/* ★ 2026-10-17 第四轮（本轮定稿）：弹窗/抽屉/消息框 = **有自己皮肤背景的表面** ——
+   垫底 --skin-surface 皮肤实色 + 铺 --skin-dialog-pattern（内置系列 = 主色晕染
+   组成的「皮肤表面图」，插件皮肤 = 不透明真图）。
+   三轮迭代实录：
+   · 第一轮停发贴片 → 「皮肤效果都没了」（EP 默认白板）；
+   · 第二轮实底 + 贴片 → 方向对，但标题栏那条深色渐变带把弹窗割裂成
+     「白底 + 深色横带」→ 用户「还很突兀」；
+   · 第三轮改玻璃透壁纸 → 用户「我说的是弹窗本身 的皮肤背景，不是透出去看背景」。
+   定稿：走第二轮方向 + 停发 titlebarPattern（skinSeries.ts）——
+   标题栏透明、dialogPattern 从标题区贯通到底栏，弹窗整体是一块连贯的皮肤表面。
+   插件皮肤零影响（不透明真图 cover 盖住实底）。 */
 [data-skin="on"] .el-dialog,
 [data-skin="on"] .el-drawer,
 [data-skin="on"] .el-message-box {
@@ -764,13 +811,17 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   border-color: var(--glass-border-strong);
   box-shadow: var(--skin-shadow, var(--overlay-shadow));
 }
-/* 下拉 / tooltip 等小浮层：保持半透明玻璃底（面积小、需与下方内容区分层次） */
+/* 下拉 / tooltip 等浮层：与弹窗同一材质 —— 皮肤实底 + 各自贴片。
+   ★ 2026-10-17 第四轮：垫底从 glass 改回 --skin-surface 实色，
+   让下拉/右键菜单也有「自己的皮肤背景」（用户三轮澄清的核心诉求）。 */
 [data-skin="on"] .el-popper.is-light {
-  background-color: var(--el-bg-color-overlay);
+  background-color: var(--skin-surface, var(--el-bg-color-overlay));
   background-image: var(--skin-dialog-pattern, none);
   background-size: cover;
   background-repeat: no-repeat;
   background-position: center;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border-color: var(--glass-border-strong);
   box-shadow: var(--skin-shadow, var(--overlay-shadow));
 }
@@ -1003,6 +1054,11 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
       → **白字压浅底，字几乎看不见**（实测「删除」按钮看不清就是这条造成的）。
       语义色是功能性的（危险/警告需要一眼可辨），不该被皮肤中性化，故整类排除。 */
 [data-skin="on"] .el-button:not(.is-text):not(.is-link):not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger):not(.el-button--info):not(.is-plain):not(.is-disabled) {
+  /* ★ 2026-10-17 第四轮：垫底回到 --btn-bg —— 它在 [data-skin="on"] 下本是
+     88% 皮肤色实底（见上方 token 定义），即按钮**自己的皮肤背景**；
+     叠加 --skin-btn-pattern 微纹 = 皮肤实底 + 皮肤纹理。
+     第二轮曾改 --skin-surface-raised：既绕过了插件皮肤的 btn-bg-color 控制，
+     又常是近白色（浅色主题），才显得「没皮肤效果」。 */
   background-color: var(--btn-bg);
   background-image: var(--skin-btn-pattern, none);
   background-size: var(--skin-pattern-size, cover);
@@ -1272,10 +1328,14 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
    未配置时回落 none，不影响无皮肤与纯调色板模式
    ============================================================ */
 
-/* ===== 菜单底图：应用菜单面板 / Element 下拉 / 右键菜单（挂点多为 scoped 样式，统一加固） ===== */
+/* ===== 菜单底图：应用菜单面板 / Element 下拉 / 右键菜单（挂点多为 scoped 样式，统一加固） =====
+   ★ 2026-10-17：.hm-sub 是 HoverMenu 的**二级飞出面板**（如「更多 → 能力 · 4」），
+   与一级菜单同一材质 —— scoped 里是 `background: var(--el-bg-color-overlay)` 简写，
+   加 !important 压回（同 .csb-bar 坑）。 */
 [data-skin="on"] .app-menu-list,
 [data-skin="on"] .el-dropdown-menu,
-[data-skin="on"] .ctx-menu {
+[data-skin="on"] .ctx-menu,
+[data-skin="on"] .hm-sub {
   background-image: var(--skin-menu-pattern, none) !important;
   background-size: var(--skin-pattern-size, cover) !important;
   background-repeat: var(--skin-pattern-repeat, no-repeat) !important;

@@ -185,8 +185,15 @@ function perspY(k: number, n: number, y0: number, y1: number, pow = 1.4): number
   return y0 + (y1 - y0) * Math.pow(n <= 1 ? 0 : k / (n - 1), pow);
 }
 
-/** ===== 壁纸（按系列画标志性大图形，深浅两版） ===== */
-function wallpaper(p: Palette, m: Motif, dark: boolean): string {
+/** ===== 壁纸（按系列画标志性大图形，深浅两版）
+ *  ★ 2026-10-17：新增 blurred 变体 —— 弹窗/下拉/右键/按钮的底图**直接复用壁纸**，
+ *  但整张场景太清晰抢文字（用户「背景图太清晰了，可以加点模糊度，所有的都同步，
+ *  除了应用的背景」）。blurred=true 时整幅内容包 <g filter=高斯模糊>，
+ *  并放大 10% 让羽化边缘落到 viewBox 外被 slice 裁掉（否则四周会出现透明毛边）。
+ *  模糊发生在**图片空间**（stdDeviation 16 / 1600×1000）：菜单、弹窗这类
+ *  0.4~0.6 缩放的表面 ≈ 7~9px 屏幕模糊；小按钮整体被 cover 压缩，
+ *  观感只是更柔，不会穿帮。应用壁纸**保持清晰版**（blurred 只给部件底图用）。 */
+function wallpaper(p: Palette, m: Motif, dark: boolean, blurred = false): string {
   const W = 1600, H = 1000;
   const base = dark ? lg('bg', p.dark, p.dark2, 'v') : lg('bg', p.paper, p.paper2, 'd');
   const inkOp = dark ? 1.6 : 1; // 深色下图形略提亮
@@ -544,10 +551,20 @@ function wallpaper(p: Palette, m: Motif, dark: boolean): string {
   const sun = rg('--sun', dark ? p.soft : p.accent, dark ? 0.34 : 0.46);
   const halo1 = rg('--halo1', dark ? p.soft : p.primary, dark ? 0.2 : 0.15);
   const halo2 = rg('--halo2', dark ? p.soft : p.deep, dark ? 0.24 : 0.17);
+  const defs = `<defs>${base}${sun}${halo1}${halo2}${motifTile(m, p, 26, 0.16)}</defs>`;
+  const body = `<rect width='${W}' height='${H}' fill='url(#bg)'/>` +
+    `<rect width='${W}' height='${H}' fill='url(#m)'/>${deco}`;
+  if (!blurred) {
+    return uri(`<svg ${SVG_HEAD} viewBox='0 0 ${W} ${H}' preserveAspectRatio='xMidYMid slice'>${defs}${body}</svg>`);
+  }
+  // 模糊变体：整体高斯模糊（stdDeviation 8，2026-10-17 用户反馈 16 太糊、
+  // 降到 8 保持「能看清冰块轮廓的柔焦」）+ 以中心放大 8% —— 3σ≈24px 的
+  // 羽化边被推出 viewBox，slice 裁掉，四周不会出现透明毛边。
+  const Z = 1.08;
   return uri(`<svg ${SVG_HEAD} viewBox='0 0 ${W} ${H}' preserveAspectRatio='xMidYMid slice'>` +
-    `<defs>${base}${sun}${halo1}${halo2}${motifTile(m, p, 26, 0.16)}</defs>` +
-    `<rect width='${W}' height='${H}' fill='url(#bg)'/>` +
-    `<rect width='${W}' height='${H}' fill='url(#m)'/>${deco}</svg>`);
+    defs.replace('</defs>',
+      `<filter id='wblur' x='-20%' y='-20%' width='140%' height='140%'><feGaussianBlur stdDeviation='8'/></filter></defs>`) +
+    `<g filter='url(#wblur)' transform='translate(${W / 2} ${H / 2}) scale(${Z}) translate(${-W / 2} ${-H / 2})'>${body}</g></svg>`);
 }
 
 /** ===== 分类标签横幅（220×64，主色条 + 明显母题纹理） ===== */
@@ -567,43 +584,18 @@ function inputPat(p: Palette, m: Motif): string {
     `<rect width='320' height='72' fill='url(#m)'/></svg>`);
 }
 
-/** ===== 按钮微纹（180×44） ===== */
-function buttonPat(p: Palette, m: Motif): string {
-  return uri(`<svg ${SVG_HEAD} viewBox='0 0 180 44'>` +
-    `<defs>${motifTile(m, p, 14, 0.2)}</defs>` +
-    `<rect width='180' height='44' fill='url(#m)'/></svg>`);
-}
-
-/** ===== 弹窗底图（760×520 大晕染 + 角饰，主视觉级可见度） ===== */
-function dialogPat(p: Palette, m: Motif): string {
-  return uri(`<svg ${SVG_HEAD} viewBox='0 0 760 520' preserveAspectRatio='xMidYMid slice'>` +
-    `<defs>${rg('h1', p.primary, 0.26)}${rg('h2', p.accent, 0.2)}${motifTile(m, p, 28, 0.12)}</defs>` +
-    `<rect width='760' height='520' fill='url(#m)'/>` +
-    `<circle cx='660' cy='60' r='220' fill='url(#h1)'/>` +
-    `<circle cx='80' cy='480' r='180' fill='url(#h2)'/></svg>`);
-}
-
-/** ===== 弹窗标题栏（760×56 主色带 + 母题白纹） ===== */
-function titlebarPat(p: Palette, m: Motif): string {
-  return uri(`<svg ${SVG_HEAD} viewBox='0 0 760 56' preserveAspectRatio='xMidYMid slice'>` +
-    `<defs><linearGradient id='bg' x1='0' y1='0' x2='1' y2='0'>` +
-    `<stop offset='0' stop-color='${p.primary}'/><stop offset='1' stop-color='${p.deep}'/></linearGradient>` +
-    motifTile(m, { ...p, primary: '#FFFFFF' }, 20, 0.22).replace(`id='m'`, `id='mw'`) + `</defs>` +
-    `<rect width='760' height='56' fill='url(#bg)'/>` +
-    `<rect width='760' height='56' fill='url(#mw)'/></svg>`);
-}
-
-/** ===== 菜单底图（260×360：左主色竖条 + 竖向母题，明显可辨）
- *  dark=true 时底改用 p.dark 深底 + p.soft 亮母题，杜绝暗色主题白底白字 */
-function menuPat(p: Palette, m: Motif, dark = false): string {
-  const base = dark ? lg('bg', p.dark, p.dark2, 'v') : lg('bg', p.paper, p.paper2, 'v');
-  const motifColor = dark ? { ...p, primary: p.soft } : p;
-  return uri(`<svg ${SVG_HEAD} viewBox='0 0 260 360' preserveAspectRatio='xMidYMid slice'>` +
-    `<defs>${base}${motifTile(m, motifColor, 24, 0.18)}</defs>` +
-    `<rect width='260' height='360' fill='url(#bg)'/>` +
-    `<rect width='260' height='360' fill='url(#m)'/>` +
-    `<rect width='5' height='360' fill='${p.primary}' fill-opacity='${dark ? 0.85 : 0.75}'/></svg>`);
-}
+/* ★ 2026-10-17 第六轮（本轮定稿）：**不再为弹窗/菜单/按钮另画图案** ——
+   用户三轮指向同一件事：「弹窗/下拉框/按钮本身的皮肤背景」（第 3 轮）→
+   「不是 3D 的」（第 4 轮）→ 「不是光影啊，你仔细看看背景的冰块？都不是 3D 效果啊」（第 5 轮）。
+   前几轮我一直在这三处「另画一张抽象图」：先是母题平铺、再是渐变+光晕、
+   再是受光带+立体台地+gloss —— 全是「光与纹」，**图上没有"物"**。
+   而用户说的 3D 就是**壁纸那张 3D 场景本身**（瓷·冰 = 一颗颗带斜面/轮廓光的 3D 冰砖）。
+   定稿：dialogPattern / menuPattern / buttonPattern **直接复用 wallpaper(p, m, dark)**
+   （见下方 buildSeries 下发处），三处各自 cover 取景、尺寸天然不同，
+   于是弹窗/下拉/按钮自己的背景上就是壁纸那套 3D 立体物，与壁纸视觉统一。
+   历史注脚印证：skin.css 的 09-13 旧注释写插件皮肤的弹窗底图 dialog-bg.webp
+   就是「**整张壁纸取景**」—— 弹窗底图本就应该取自壁纸，而不是另画一套。
+   （历史上为此写的 buttonPat / dialogPat / menuPat 三个生成器已全部删除，勿恢复。） */
 
 /** ===== 代码模式底图（960×640：格网 + 角饰，区别于壁纸大图形） ===== */
 function codePat(p: Palette, m: Motif): string {
@@ -645,7 +637,8 @@ export interface BuiltinSkinSeries {
     radius: number; buttonRadius: number; glassBlur: number;
     overlayColor: string; overlayBlur: number;
     catTagPattern: string; inputPattern: string;
-    buttonPattern: string; dialogPattern: string; titlebarPattern: string;
+    buttonPattern: string; buttonPatternDark: string;
+    dialogPattern: string; dialogPatternDark: string;
     menuPattern: string; menuPatternDark: string;
     codePattern: string; browserPattern: string; browserPatternDark: string;
     scrollbarThumb: string; dividerColor: string;
@@ -673,6 +666,9 @@ function buildSeries(): BuiltinSkinSeries[] {
     const m = MOTIF_BY_ID[id];
     const wl = wallpaper(p, m, false);
     const wd = wallpaper(p, m, true);
+    // 模糊变体：专供弹窗/下拉/按钮的部件底图（应用壁纸保持清晰版）
+    const wls = wallpaper(p, m, false, true);
+    const wds = wallpaper(p, m, true, true);
     // 深浅玻璃底色随系列：浅色用纸色，深色用系列深底
     const glass = p.paper, glassDark = p.dark;
     out.push({
@@ -703,12 +699,29 @@ function buildSeries(): BuiltinSkinSeries[] {
         //   从未渲染过 —— 侧栏一直透着壁纸，用户体感以「透出 3D 壁纸」为准。
         //   ⇒ 内置系列不留此字段：这几处回落 none → 透出壁纸；插件皮肤不受影响。
         //   （历史生成器 taskList() 已随之删除，勿恢复。）
+        // ★ titlebarPattern 刻意**不下发**（2026-10-17 用户第 2 轮实报「还很突兀」）：
+        //   那条 primary→deep 深色渐变带 + 白母题，是弹窗顶部与窗体割裂的根因。
+        //   停发后 .el-dialog__header 透明，弹窗底图从标题区一路贯通到底栏。
+        //   （历史生成器 titlebarPat 已删除，勿恢复。）
         inputPattern: uriOf(inputPat(p, m)),
-        buttonPattern: uriOf(buttonPat(p, m)),
-        dialogPattern: uriOf(dialogPat(p, m)),
-        titlebarPattern: uriOf(titlebarPat(p, m)),
-        menuPattern: uriOf(menuPat(p, m)),
-        menuPatternDark: uriOf(menuPat(p, m, true)),
+        // ★ 2026-10-17 第六轮（定稿）：弹窗/下拉/按钮**直接复用壁纸那张 3D 场景图** ——
+        //   用户「不是光影啊，你仔细看看背景的冰块？都不是 3D 效果啊」。
+        //   前几轮在这三处另画抽象图（母题平铺 → 渐变光晕 → 受光带+台地+gloss）
+        //   全是「光与纹」、图上没有"物"，所以怎么调都不是 3D。
+        //   壁纸（wallpaper()）画的才是 3D 立体物（瓷·冰 = 3D 冰砖场景），
+        //   三处各自 cover 取景 → 弹窗/下拉/按钮自己的背景上就是那套 3D 立体物。
+        //   深浅各一份（Dark 变体）→ 暗色主题不会拿亮图当底（呼应 settings 的
+        //   themedPattern 双变体机制；dialog/button 的暗色变体本轮已接上）。
+        //   ★ 2026-10-17 第七轮：底图整体换**模糊变体**（wallpaper blurred=true）——
+  //   用户「这些背景图太清晰了，可以加点模糊度，所有的都同步，除了应用的背景」；
+  //   同日反馈 16 太糊 → 降到 8（柔焦、冰块轮廓仍可辨）。应用壁纸继续用清晰版 wl/wd。
+        //   插件皮肤不受影响：仍走各自的 .webp 真图（如 dialog-bg.webp）。
+        buttonPattern: uriOf(wls),
+        buttonPatternDark: uriOf(wds),
+        dialogPattern: uriOf(wls),
+        dialogPatternDark: uriOf(wds),
+        menuPattern: uriOf(wls),
+        menuPatternDark: uriOf(wds),
         codePattern: uriOf(codePat(p, m)),
         browserPattern: uriOf(browserPat(p, m)),
         browserPatternDark: uriOf(browserPat(p, m, true)),

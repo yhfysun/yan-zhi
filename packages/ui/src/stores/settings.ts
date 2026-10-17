@@ -62,7 +62,11 @@ type SkinSurface = {
   taskListPattern?: string;
   inputPattern?: string;
   buttonPattern?: string;
+  /** 按钮底图暗色变体（暗色主题优先于 buttonPattern） */
+  buttonPatternDark?: string;
   dialogPattern?: string;
+  /** 弹窗底图暗色变体（暗色主题优先于 dialogPattern） */
+  dialogPatternDark?: string;
   /**
    * 卡片变体底图（多张，按序号对应 --skin-card-N-pattern）。
    * 同一类卡片需要"多套样式 + 随机分配"时配置（会话行/空间条目/任务行/玻璃卡片）。
@@ -1362,8 +1366,8 @@ export const useSettingsStore = defineStore('settings', () => {
     setPattern('--skin-cat-tag-pattern', themedPattern(sf.catTagPattern));
     setPattern('--skin-task-list-pattern', themedPattern(sf.taskListPattern));
     setPattern('--skin-input-pattern', themedPattern(sf.inputPattern));
-    setPattern('--skin-btn-pattern', themedPattern(sf.buttonPattern));
-    setPattern('--skin-dialog-pattern', themedPattern(sf.dialogPattern));
+    setPattern('--skin-btn-pattern', themedPattern(sf.buttonPattern, sf.buttonPatternDark));
+    setPattern('--skin-dialog-pattern', themedPattern(sf.dialogPattern, sf.dialogPatternDark));
     // ===== 卡片变体底图（多套样式 + 随机分配）=====
     // 【2026-09-13 用户反馈："卡片样式可以设置多点啊，然后随机多好。。。"】
     // 内置皮肤由 build-skin-parts.mjs 从壁纸 4 个不同区域取景生成 card-1~4-bg.webp，
