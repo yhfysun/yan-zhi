@@ -1,5 +1,4 @@
 import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from 'vue';
-import { clampMenuPos } from '../../utils/menuPosition';
 import { isChatSelectableAgent } from '../../utils/agentSelectable';
 import { DEFAULT_CONTEXT_WINDOW } from '../../utils/context-window';
 import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocalPaths } from '../../utils/file-open';
@@ -1841,7 +1840,8 @@ function createChat() {
   function openSpaceMenu(e: MouseEvent, space: any) {
     e.preventDefault();
     e.stopPropagation();
-    spaceMenuTarget.value = { ...clampMenuPos(e), space };
+    // 先按光标落位（不猜高度夹取），渲染后由宿主组件的 placeMenuAfterRender 按真实尺寸校正
+    spaceMenuTarget.value = { x: e.clientX, y: e.clientY, space };
   }
 
   /** 父任务目录右键「同步子目录」：把 dirPath 下的磁盘子文件夹收编成子空间（幂等，可反复点）。
@@ -3861,7 +3861,7 @@ async function healStalePlatform() {
   async function delMsg(msg: Message) { await store.deleteMessage(msg.id); }
 
   function openConvMenu(e: MouseEvent, conv: Conversation) {
-    const _p = clampMenuPos(e); ctxMenu.visible = true; ctxMenu.x = _p.x; ctxMenu.y = _p.y; ctxMenu.conv = conv;
+    ctxMenu.visible = true; ctxMenu.x = e.clientX; ctxMenu.y = e.clientY; ctxMenu.conv = conv;
   }
   // ========== 会话树空白区右键菜单（新建任务/新建空间） ==========
   const treeMenu = reactive({ visible: false, x: 0, y: 0 });
@@ -3869,7 +3869,7 @@ async function healStalePlatform() {
     // 会话项与空间节点有各自的右键菜单，命中时不弹空白区菜单。
     // 办公侧栏用 .conv-item / .tree-space，四模式任务段（TaskListSection）用 .tls-item / .tls-group-head。
     if ((e.target as HTMLElement)?.closest('.conv-item, .tree-space .tree-node-head, .tls-item, .tls-group-head')) return;
-    const _p2 = clampMenuPos(e); treeMenu.visible = true; treeMenu.x = _p2.x; treeMenu.y = _p2.y;
+    treeMenu.visible = true; treeMenu.x = e.clientX; treeMenu.y = e.clientY;
   }
   function treeMenuNewTask() {
     closeTreeMenu();

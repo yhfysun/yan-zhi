@@ -148,7 +148,7 @@
 
     <!-- 空白区右键菜单（与办公侧栏 treeMenu 同项） -->
     <Teleport to="body">
-      <ul v-if="treeMenu.visible" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
+      <ul v-if="treeMenu.visible" ref="treeMenuEl" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
         <li @click="toggleBatchMode(); closeTreeMenu()">
           <el-icon><Tools /></el-icon>{{ batchMode ? '退出批量模式' : '批量管理' }}
         </li>
@@ -164,7 +164,7 @@
 
     <!-- 任务行右键菜单（与办公侧栏 ctxMenu 同项） -->
     <Teleport to="body">
-      <ul v-if="rowMenu.visible" class="ctx-menu" :style="{ top: rowMenu.y + 'px', left: rowMenu.x + 'px' }">
+      <ul v-if="rowMenu.visible" ref="rowMenuEl" class="ctx-menu" :style="{ top: rowMenu.y + 'px', left: rowMenu.x + 'px' }">
         <li @click="onRowMenuBatch">
           <el-icon><Tools /></el-icon>{{ batchMode && selectedConvIds.has(rowMenu.conv?.id || '') ? '移出批量选择' : '批量选择' }}
         </li>
@@ -203,7 +203,7 @@
 
     <!-- 行内「移动」按钮的空间选择浮层：与右键菜单「移动到空间」子菜单同列表、同一 moveTo 流程 -->
     <Teleport to="body">
-      <ul v-if="rows.moveMenu.visible" class="ctx-menu" :style="{ top: rows.moveMenu.y + 'px', left: rows.moveMenu.x + 'px' }">
+      <ul v-if="rows.moveMenu.visible" ref="moveMenuEl" class="ctx-menu" :style="{ top: rows.moveMenu.y + 'px', left: rows.moveMenu.x + 'px' }">
         <li v-if="spaceStore.spaces.length === 0" class="disabled-hint">暂无空间，请先创建</li>
         <li @click="rows.pickMoveTarget(null)">
           <el-icon><Close /></el-icon>未归类
@@ -258,7 +258,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import {
   EditPen, Top, Star, StarFilled, CaretRight, ChatDotRound, FolderOpened, Rank, Tools, Close, Delete, ArrowRight, Plus, FolderChecked,
 } from '@element-plus/icons-vue';
@@ -267,13 +267,13 @@ import { useChat } from '../../composables/chat/useChat';
 import { useCodeStore } from '../../stores/code';
 import { useTaskRowActions } from '../../composables/useTaskRowActions';
 import { bindLongPress } from '../../composables/useLongPress';
+import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { useMobileShell } from '../../composables/useMobileShell';
 import WorkspaceDirDialog from '../WorkspaceDirDialog.vue';
 import FormDialog from '../FormDialog.vue';
 import EmptyState from '../common/EmptyState.vue';
 import ActionSheet from '../common/ActionSheet.vue';
 import type { ActionSheetAction } from '../common/ActionSheet.vue';
-import { clampMenuPos } from '../../utils/menuPosition';
 // 来源标记的白名单常量取自 core（别在模板里写 'browser-page' 字面量）
 import { CONV_SOURCE_BROWSER_PAGE } from '@yan-zhi/core';
 
@@ -302,6 +302,21 @@ const {
 // 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与办公侧栏（ChatSidebar）共用同一 composable。
 // DOM 差异走适配：本组件的 rename 输入框没绑 useChat 的 renameInputRef，用选择器聚焦。
 const rows = useTaskRowActions({ focusRenameInput: focusRename });
+
+// ===== 右键菜单贴光标：渲染后按真实尺寸校正（2026-10-18，与办公侧栏 ChatSidebar 同口径）=====
+// 旧 clampMenuPos 按猜的 320px 高度夹取，光标越靠下菜单被推得越远。打开时先落光标坐标，
+// 这里在各菜单 v-if 渲染完成后量真实尺寸校正（贴光标右下 / 放不下翻上方 / 再贴边）。
+const treeMenuEl = ref<HTMLElement | null>(null);
+const rowMenuEl = ref<HTMLElement | null>(null);
+const moveMenuEl = ref<HTMLElement | null>(null);
+watch(
+  () => [treeMenu.visible, rowMenu.value.visible, rows.moveMenu.visible] as const,
+  ([tv, rv, mv]) => {
+    if (tv) placeMenuAfterRender(treeMenuEl, treeMenu, (p) => { treeMenu.x = p.x; treeMenu.y = p.y; });
+    if (rv && rowMenu.value) placeMenuAfterRender(rowMenuEl, rowMenu.value, (p) => { rowMenu.value = { ...rowMenu.value, ...p }; });
+    if (mv) placeMenuAfterRender(moveMenuEl, rows.moveMenu, (p) => { rows.moveMenu.x = p.x; rows.moveMenu.y = p.y; });
+  },
+);
 
 const effSpaceId = computed(() => (props.spaceId === undefined ? codeStore.projectSpaceId : props.spaceId));
 
@@ -437,8 +452,8 @@ function onRowCtx(e: MouseEvent, c: any) {
     rowSheet.value = { visible: true, conv: c };
     return;
   }
-  const p = clampMenuPos(e);
-  rowMenu.value = { visible: true, x: p.x, y: p.y, conv: c };
+  // 先按光标落位（不猜高度夹取），渲染后由上方 placeMenuAfterRender 按真实尺寸校正
+  rowMenu.value = { visible: true, x: e.clientX, y: e.clientY, conv: c };
 }
 function closeRowSheet() { rowSheet.value = { ...rowSheet.value, visible: false }; }
 

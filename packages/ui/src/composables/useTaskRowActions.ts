@@ -14,7 +14,6 @@ import { nextTick, reactive } from 'vue';
 import type { Conversation } from '@yan-zhi/shared';
 import { useChat } from './chat/useChat';
 import { useChatStore } from '../stores/chat';
-import { clampMenuPos } from '../utils/menuPosition';
 
 export interface UseTaskRowActionsOptions {
   /**
@@ -79,11 +78,11 @@ export function useTaskRowActions(options: UseTaskRowActionsOptions = {}) {
     visible: false, x: 0, y: 0, conv: null,
   });
 
-  /** 行内操作组「移动」入口：在点击位置弹空间选择浮层（触屏无 hover，仍走长按面板） */
+  /** 行内操作组「移动」入口：在点击位置弹空间选择浮层（触屏无 hover，仍走长按面板）。
+   *  先按光标落位，渲染后由宿主组件的 placeMenuAfterRender 按真实尺寸校正（不猜高度夹取）。 */
   function openMoveMenu(task: Conversation, e: MouseEvent) {
-    const p = clampMenuPos(e);
-    moveMenu.x = p.x;
-    moveMenu.y = p.y;
+    moveMenu.x = e.clientX;
+    moveMenu.y = e.clientY;
     moveMenu.conv = task;
     moveMenu.visible = true;
   }

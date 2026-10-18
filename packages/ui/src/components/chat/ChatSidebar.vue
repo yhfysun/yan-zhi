@@ -469,7 +469,7 @@
 
   <Teleport to="body">
 <!-- 移动外壳（触屏）下任务行菜单改由底部动作面板承载（Task 11.3），定位菜单只在非移动壳渲染 -->
-<ul v-if="ctxMenu.visible && !isTouchShell" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
+<ul v-if="ctxMenu.visible && !isTouchShell" ref="convMenuEl" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
     <!-- 归档会话（右键自「已归档」分组）：对齐 ChatGPT Archived chats —— 只有
          「取消归档 / 打开目录 / 删除」，重命名/置顶/移动空间都是写操作（归档=完全只读），不出现 -->
     <template v-if="ctxMenu.conv?.archivedAt">
@@ -532,7 +532,7 @@
 
   <!-- 行内「移动」按钮的空间选择浮层：与右键菜单「移动到空间」子菜单同列表、同一 moveTo 流程 -->
   <Teleport to="body">
-    <ul v-if="rows.moveMenu.visible" class="ctx-menu" :style="{ top: rows.moveMenu.y + 'px', left: rows.moveMenu.x + 'px' }">
+    <ul v-if="rows.moveMenu.visible" ref="moveMenuEl" class="ctx-menu" :style="{ top: rows.moveMenu.y + 'px', left: rows.moveMenu.x + 'px' }">
       <li v-if="moveSpaceList.length === 0" class="disabled-hint">暂无空间，请先创建</li>
       <li @click="rows.pickMoveTarget(null)">
         <el-icon><Close /></el-icon>未归类
@@ -682,7 +682,7 @@
   </el-dialog>
 
   <Teleport to="body">
-<ul v-if="spaceMenuTarget" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
+<ul v-if="spaceMenuTarget" ref="spaceMenuEl" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
     <li @click="openSpaceEdit(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><EditPen /></el-icon>{{ spaceMenuTarget.space.taskType ? '更改任务模式' : '设置任务模式' }}
     </li>
@@ -715,7 +715,7 @@
 
   <!-- 会话树空白区右键菜单 -->
   <Teleport to="body">
-<ul v-if="treeMenu.visible" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
+<ul v-if="treeMenu.visible" ref="treeMenuEl" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
     <li @click="toggleBatchMode(); closeTreeMenu()">
       <el-icon><Tools /></el-icon>{{ batchMode ? '退出批量模式' : '批量管理' }}
     </li>
@@ -732,7 +732,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import {
   Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft, Monitor, Refresh, Promotion,
 } from '@element-plus/icons-vue';
@@ -743,6 +743,7 @@ import { CONV_SOURCE_BROWSER_PAGE } from '@yan-zhi/core';
 import { useChat } from '../../composables/chat/useChat';
 import { useTaskRowActions } from '../../composables/useTaskRowActions';
 import { bindLongPress } from '../../composables/useLongPress';
+import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
 import { useMobileShell } from '../../composables/useMobileShell';
 import ScheduledTaskDialog from './ScheduledTaskDialog.vue';
 import PublishQueueTab from './PublishQueueTab.vue';
@@ -789,6 +790,26 @@ const archivedFiltered = computed(() => {
 // 任务行共享操作（置顶/重命名/删除/移动空间/激活）：与 TaskListSection 共用同一 composable。
 // 重命名聚焦走 useChat 内置的 renameInputRef（模板里 rename 输入框绑了该 ref），无需额外适配。
 const rows = useTaskRowActions();
+
+// ===== 右键菜单贴光标：渲染后按真实尺寸校正（2026-10-18，用户实报「弹窗离鼠标老远」）=====
+// 旧 clampMenuPos 按猜的 320px 高度夹取，光标越靠菜单被推得越远。现在打开时先落光标坐标，
+// 这里在各菜单 v-if 渲染完成后量真实 offsetWidth/Height 校正：贴光标右下、下方放不下翻上方、
+// 再不行才贴边 —— 与系统右键菜单同感。机制详见 composables/useMenuPlacement.ts。
+const convMenuEl = ref<HTMLElement | null>(null);
+const moveMenuEl = ref<HTMLElement | null>(null);
+const spaceMenuEl = ref<HTMLElement | null>(null);
+const treeMenuEl = ref<HTMLElement | null>(null);
+watch(
+  () => [ctxMenu.visible, rows.moveMenu.visible, !!spaceMenuTarget.value, treeMenu.visible] as const,
+  ([cv, mv, sv, tv]) => {
+    if (cv) placeMenuAfterRender(convMenuEl, ctxMenu, (p) => { ctxMenu.x = p.x; ctxMenu.y = p.y; });
+    if (mv) placeMenuAfterRender(moveMenuEl, rows.moveMenu, (p) => { rows.moveMenu.x = p.x; rows.moveMenu.y = p.y; });
+    if (sv && spaceMenuTarget.value) placeMenuAfterRender(spaceMenuEl, spaceMenuTarget.value, (p) => {
+      if (spaceMenuTarget.value) { spaceMenuTarget.value.x = p.x; spaceMenuTarget.value.y = p.y; }
+    });
+    if (tv) placeMenuAfterRender(treeMenuEl, treeMenu, (p) => { treeMenu.x = p.x; treeMenu.y = p.y; });
+  },
+);
 
 // 选线框显隐（v-model 需要布尔；内容由 useChat 的 taskLinePicker 提供）
 const taskLinePickerOpen = computed({
