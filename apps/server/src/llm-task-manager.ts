@@ -6156,6 +6156,51 @@ function parentAllowedSubAgentIds(task: LlmTask): string[] {
   }
 }
 
+// ★★★ 子智能体系统提示词共享段注入（2026-10-18，开发模式"写码弱"根因修复之二）：
+//   此前子级只拿 agent.system_prompt 裸串（runSubAgentImpl 内 `agent.system_prompt || '你是一个智能助手。'`）
+//   —— 工作目录、项目规则（AGENTS.md / .yan-zhi/rules/）、工程记忆约定对子智能体**全部缺失**：
+//   用户在 AGENTS.md 写的规范只给架构师看，真正写码的实现者反而看不见；实现者也不知道工作目录
+//   （file_read 只能靠委派书里的绝对路径，委派书漏写就瞎找）。
+//   这里按需补三段，内容与 buildSystemPromptForBackend 的对应段同源同格式（loadProjectRules 同一函数）。
+//   刻意**不**整体复用 buildSystemPromptForBackend —— 那会连应用指引/工具描述/产物目录/浏览器收拾等
+//   主循环专属段一起带进子级，撑大上下文还发矛盾指令。
+function buildSubAgentSharedSections(resolvedId: string, conversationId: string): string {
+  const dir = resolveConversationWorkspaceDir(conversationId) || serverState.workspaceDir;
+  if (!dir || !dir.trim()) return '';
+  const parts: string[] = [];
+  parts.push(`## 工作目录\n当前工作目录：${dir}`);
+  try {
+    const rules = loadProjectRules(dir);
+    if (rules.length) {
+      parts.push([
+        '## 项目规则（自动读取自工作目录，优先级高于默认行为）',
+        '> 以下是本项目**用户自己写下的规则**。与默认做法冲突时以本节为准；',
+        '> 若某条规则与任务要求冲突，在交付报告里说明你偏离了哪条规则。',
+        '',
+        ...rules.map((r) => `### ${r.source}\n${r.content}`),
+      ].join('\n'));
+    }
+  } catch { /* 规则读取失败不影响委派（缺文件是常态） */ }
+  // 工程记忆约定：只给挂了记忆工具的实现者子智能体（backend/frontend/java，工具清单 2026-10-18 起
+  //   已含 api_space_memory_read/append）。架构师的工程记忆段走 buildSystemPromptForBackend
+  //   （主循环那条路才走完整组装）。
+  const IMPL_MEMORY_AGENTS = new Set(['a_builtin_backend_dev', 'a_builtin_frontend_dev', 'a_builtin_java_agent']);
+  if (IMPL_MEMORY_AGENTS.has(resolvedId)) {
+    parts.push([
+      '## 工程记忆（开工必读，收尾必补）',
+      '你有本项目共享的长期工程记忆：`api_space_memory_read`（读）/ `api_space_memory_append`（追加）。',
+      '**开工先读**：先用 api_space_memory_read 读工程记忆 —— 项目结构、构建/测试命令、约定与已知坑都在里面，'
+        + '能直接采用就不要重新探索；记忆与当前代码冲突时以代码为准，并写进交付报告。',
+      '**收尾补写**（只写"下次还用得上"的，一条一行，用 api_space_memory_append）：',
+      '- 踩到的坑与规避方式（这条最有价值，务必写）',
+      '- 实测可用的构建/测试/lint 完整命令（记忆里没有或已失效时）',
+      '- 委派任务书里没交代、但实际必须知道的约定',
+      '不要写：本次改了哪些文件的流水账（那属于交付报告，不属于工程记忆）。',
+    ].join('\n'));
+  }
+  return parts.join('\n\n');
+}
+
 async function runSubAgentImpl(
   task: LlmTask,
   args: { agentId?: string; input?: unknown; platformId?: string; modelId?: string },
@@ -6396,7 +6441,11 @@ async function runSubAgentImpl(
   const maxSteps = typeof runOpts?.maxSteps === 'number' && runOpts.maxSteps > 0
     ? Math.min(Math.floor(runOpts.maxSteps), 1000)
     : typeof cfgSteps === 'number' && cfgSteps > 0 ? Math.min(Math.floor(cfgSteps), 1000) : 1000;
-  const systemPrompt = agent.system_prompt || '你是一个智能助手。';
+  const systemPromptBase = agent.system_prompt || '你是一个智能助手。';
+  // ★ 共享段注入（2026-10-18）：工作目录 / 项目规则 / 工程记忆约定 —— 见 buildSubAgentSharedSections 注释。
+  //   接力总结（summarizeOnMaxSteps）与 ReAct 循环共用这一份，保证口径一致。
+  const systemPrompt = [systemPromptBase, buildSubAgentSharedSections(resolvedId, task.conversationId)]
+    .filter(Boolean).join('\n\n');
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);
   let tools = supportsTools ? subTools : [];
