@@ -188,15 +188,26 @@ export function visibleMessages(messages: Message[]): Message[] {
  * ★ 为什么放在 core：这是纯逻辑，不依赖存储层；且必须与 `compress` 用**同一个**
  *   `tokenCount`，否则「一边算一边降」两边口径不一致，会降不准。
  */
-export function enforceBudget(messages: Message[], budget: number, opts?: { placeholder?: string }): Message[] {
+export function enforceBudget(messages: Message[], budget: number, opts?: { placeholder?: string; protectRecentToolResults?: number }): Message[] {
   const placeholder = opts?.placeholder ?? '[该条旧工具结果已从历史中清理以释放上下文——仅影响历史回放，新调用不受影响；需要内容请重新调用工具]';
   if (budget <= 0) return messages;
 
-  // ① 长工具输出 → 占位符（从最长开始，直到降到预算内）
+  // ★★ 2026-10-19：最近 N 条工具结果受保护，硬清除一律从**更老的**开始。
+  //   旧实现按"最长输出优先"清除、全量参与 —— 一旦超预算，刚 file_read 的内容
+  //   往往是最长的一条，首批就被清掉（实测模型看到"新读取也返回已清理"，任务无法推进）。
+  const protect = Math.max(0, opts?.protectRecentToolResults ?? 6);
+  const toolRank = new Map<number, number>();
+  let rank = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'tool') { toolRank.set(i, rank); rank++; }
+  }
+  const isProtected = (i: number) => (toolRank.get(i) ?? Number.MAX_SAFE_INTEGER) < protect;
+
+  // ① 老的长工具输出 → 占位符（从最长开始，直到降到预算内；最近 N 条受保护）
   let out = messages.slice();
   const toolIdx = out
     .map((m, i) => ({ m, i }))
-    .filter(({ m }) => m.role === 'tool' && (m.content || '').length > 512)
+    .filter(({ m, i }) => m.role === 'tool' && (m.content || '').length > 512 && !isProtected(i))
     .sort((a, b) => (b.m.content || '').length - (a.m.content || '').length);
   for (const { i } of toolIdx) {
     if (sumTokens(out) <= budget) return out;
@@ -213,7 +224,20 @@ export function enforceBudget(messages: Message[], budget: number, opts?: { plac
     // 若切点落在 tool 上，说明它配对的 assistant 已被丢 → 一并跳过孤児 tool
     while (drop < out.length && out[drop].role === 'tool') drop++;
   }
-  return out.slice(0, head).concat(out.slice(drop));
+  out = out.slice(0, head).concat(out.slice(drop));
+  if (sumTokens(out) <= budget) return out;
+
+  // ③ 最后的兜底：连受保护的新结果也必须清（从最老的工具结果开始），
+  //    到这一步说明"最近几轮的原文"本身就装不下 —— 只能牺牲可读性保请求成功。
+  const protectedIdx = out
+    .map((m, i) => ({ m, i }))
+    .filter(({ m, i }) => m.role === 'tool' && (m.content || '').length > 512)
+    .sort((a, b) => b.i - a.i); // 老 → 新
+  for (const { i } of protectedIdx) {
+    if (sumTokens(out) <= budget) return out;
+    out = out.map((m, j) => (j === i ? { ...m, content: placeholder } : m));
+  }
+  return out;
 }
 
 /** 与 ContextWindow.tokenCount 同口径的独立求和（供 enforceBudget 使用，避免实例化） */
@@ -225,7 +249,7 @@ function sumTokens(messages: Message[]): number {
 /** 把超长文本裁成 头部 75% + 尾部 25%（错误信息/结论常在末尾），未超限原样返回。 */
 export function capLongText(text: string, max: number = COMPRESS_TOOL_CAP_CHARS): string {
   if (!text || text.length <= max) return text;
-  const marker = `\n…[已压缩：原文 ${text.length} 字符，此处为节选；仅历史归档，新调用不受影响]…\n`;
+  const marker = `\n…[已压缩：原文 ${text.length} 字符，此处取首尾节选；仅历史归档，新调用不受影响——需要完整内容请重新调用工具（file_read 支持 offset/limit）]…\n`;
   const head = Math.max(Math.floor((max - marker.length) * 0.75), 0);
   const tail = Math.max(max - head - marker.length, 0);
   if (head + tail <= 0) return text.slice(0, max);
@@ -269,14 +293,23 @@ export function capStaleToolResults(
   staleMaxChars: number = COMPRESS_STALE_TOOL_CAP_CHARS,
 ): Message[] {
   if (!messages.length || keepRecent < 0) return messages;
-  // 定位两档边界：只裁保留窗口之外的 tool 消息
-  const boundary = Math.max(0, messages.length - keepRecent);                  // 保留窗口（原文）
-  const staleBoundary = Math.max(0, messages.length - keepRecent * 3);         // 陈旧区起点
+  // ★★ 2026-10-19 修：保护窗口按**工具结果条数**算，而不是消息条数。
+  //   旧实现 boundary = messages.length - keepRecent：一次助手消息带多个并行工具调用时，
+  //   "最近 6 条消息"实际只护住 ~3 条工具结果；同一批里的其余结果立刻被裁成
+  //   "已压缩：…此处为节选" —— 实测弱模型把它读成"新读取结果也被清理"，
+  //   于是反复重读/分块试探，任务原地打转。按 tool 消息从末尾数排名，才是
+  //   "最近 N 次工具调用原文可见"的正确语义。
+  const toolRank = new Map<number, number>();
+  let rank = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'tool') { toolRank.set(i, rank); rank++; }
+  }
   let changed = false;
   const out = messages.map((m, i) => {
-    if (i >= boundary) return m;                    // 保留窗口内 → 原文
-    if (m.role !== 'tool') return m;                // 只处理 tool 结果
-    const cap = Math.min(i < staleBoundary ? staleMaxChars : maxChars, maxChars);
+    const r = toolRank.get(i);
+    if (r === undefined) return m;                  // 非工具消息不动
+    if (r < keepRecent) return m;                   // 最近 N 条工具结果 → 原文
+    const cap = Math.min(r < keepRecent * 3 ? maxChars : staleMaxChars, maxChars);
     const text = m.content || '';
     if (text.length <= cap) return m;               // 未超限 → 不动（幂等）
     changed = true;
