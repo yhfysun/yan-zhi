@@ -94,8 +94,13 @@ describe('compose_video.py 标题渲染实现不变量', () => {
     expect(SRC).toMatch(/y=\{80 \+ i \* line_step\}/);
   });
 
-  it('带 0.6s 淡入（alpha 表达式）', () => {
-    expect(SRC).toContain("alpha='if(lt(t,0.6),t/0.6,1)'");
+  it('v4：标题条无淡入（封面取 t=0 首帧，淡入会让封面上的字全透明）+ 集数常驻角标存在', () => {
+    // ★ 锚点跟实现走（2026-10-18 v4）：旧断言「带 0.6s 淡入」随 v4 去淡入一起退役 ——
+    //   平台封面抽 t=0 首帧，任何淡入都会让首帧的标题/集数几乎全透明（e320abf7）。
+    expect(SRC).not.toContain("alpha='if(lt(t,0.6),t/0.6,1)'");
+    // 集数信息任何一帧可见：常驻角标（无 alpha 表达式）+ 自动抽首帧封面
+    expect(SRC).toContain('def build_episode_badge');
+    expect(SRC).toContain('def extract_cover');
   });
 
   it('wrap_title 保留「显式换行优先 + 自然分隔折行 + 硬切兜底」三条规则', () => {

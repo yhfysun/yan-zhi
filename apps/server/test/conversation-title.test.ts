@@ -34,6 +34,9 @@ const hoisted = vi.hoisted(() => {
 
 vi.mock('../src/db.js', () => ({
   get db() { return hoisted.conn; },
+  // openclaw-manager（经 services/im.ts 拉进 import 链）在模块加载期执行 path.join(dataDir,'openclaw')，
+  // 手写白名单 mock 必须补 dataDir 导出，否则报 No "dataDir" export（教训同 2026-10-02 白名单 mock 注）。
+  get dataDir() { return process.env.DATA_DIR || ''; },
 }));
 
 // 路由读 req.user!.userId：必须注入测试身份（否则真 auth 拦截，PATCH 404）
