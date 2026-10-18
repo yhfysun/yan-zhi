@@ -385,6 +385,20 @@
     </div>
   </div>
 
+  <!-- 费用提醒条（2026-10-17，D4：只提醒、任务不停）。与 ask_user 表单同级的旁路 UI：
+       不落消息流（否则进上下文，提醒自身推高它提醒的数字，坑 #15）。 -->
+  <div v-if="costNotice" class="cost-notice-bar">
+    <div class="cost-notice-icon"><el-icon><WarningFilled /></el-icon></div>
+    <div class="cost-notice-body">
+      <div class="cost-notice-text">{{ costNotice.text }}</div>
+      <div class="cost-notice-actions">
+        <el-button size="small" type="primary" @click="startContinuedConversation()">新开会话继续</el-button>
+        <el-button size="small" @click="onDismissCostNotice">知道了</el-button>
+        <el-button size="small" text @click="onCopyCostNotice()">复制</el-button>
+      </div>
+    </div>
+  </div>
+
   <!-- ask_user 内联表单（消息流末尾独立渲染，不受横岗 hover 与轮次数控制） -->
   <div v-if="store.pendingQuestion" class="inline-ask-card">
     <div class="inline-ask-icon"><el-icon><ChatDotRound /></el-icon></div>
@@ -581,7 +595,25 @@ const {
   askMultiSelect, askChecked, askSingle, askShowText, askText, askSupplement, onAskSubmit, onAskSkip,
   confirmCurrentPage, confirmMultiSelect, confirmChecked, confirmSingle, confirmShowText,
   confirmText, confirmSupplement, onConfirmSkip, onConfirmNext,
+  costStore, startContinuedConversation,
 } = useChat();
+
+// ── 费用提醒条（2026-10-17，D4：只提醒、任务不停）────────────────────────────
+// ★ 提示条是**旁路 UI**，不落消息流：落进消息会进上下文，提醒自身在推高它提醒的数字（坑 #15）。
+const costNotice = computed(() => costStore.activeNotice(store.currentConvId));
+
+function onDismissCostNotice() {
+  costStore.dismissNotice(store.currentConvId);
+}
+async function onCopyCostNotice() {
+  if (!costNotice.value) return;
+  try {
+    await navigator.clipboard.writeText(costNotice.value.text);
+    ElMessage.success('已复制');
+  } catch {
+    ElMessage.warning('复制失败，请手动选择文本');
+  }
+}
 const isCodeMode = useCodeStore().codeModeActive;
 const askSupplementOpen = ref(false);
 
@@ -1287,6 +1319,28 @@ watch(activeNavRound, () => {
   box-shadow: 0 1px 4px rgba(0,0,0,0.04);
   animation: inline-ask-in .25s ease-out;
 }
+/* 费用提醒条（D4）：与 inline-ask 同族材质，但语义是"仪表超量" ⇒ 警告色描边 */
+.cost-notice-bar {
+  display: flex; gap: 10px; margin: 12px auto; padding: 14px 16px;
+  max-width: 85%;
+  background: var(--glass-bg); backdrop-filter: var(--glass-filter);
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 16px; border-bottom-left-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  animation: inline-ask-in .25s ease-out;
+}
+.cost-notice-icon {
+  flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;
+  background: var(--el-color-warning); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 16px;
+}
+.cost-notice-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+/* 文案由后端模板生成（多行）⇒ 保留换行；不落消息流所以这里的 pre-wrap 不会进上下文 */
+.cost-notice-text {
+  font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+  color: var(--el-text-color-primary, #fff);
+}
+.cost-notice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @keyframes inline-ask-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .inline-ask-icon {
   flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%;

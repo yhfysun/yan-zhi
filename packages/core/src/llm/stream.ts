@@ -1,5 +1,6 @@
 // SSE 流式响应解析
 import type { ChatChunk } from '@yan-zhi/shared';
+import { normalizeOpenAiUsage } from '@yan-zhi/shared';
 
 const DONE = 'DONE';
 /** ★ SSE 的标准结束哨兵是 `data: [DONE]`（**带方括号**，见 OpenAI 流式约定）。
@@ -128,6 +129,9 @@ export async function* parseSSE(
                   completionTokens: json.usage.completion_tokens,
                   // ★ D1 可观测（2026-10-09）：OpenAI 把缓存命中放在 prompt_tokens_details.cached_tokens
                   cachedTokens: json.usage.prompt_tokens_details?.cached_tokens,
+                  // ★ 计价明细（2026-10-17）：在**协议边界**归一化，计价层只认 TokenUsageDetail。
+                  //   注意 OpenAI 的 cached 是 prompt 的子集 ⇒ 全价输入要减掉（不能直接用 promptTokens）。
+                  detail: normalizeOpenAiUsage(json.usage),
                 }
               : undefined,
           };

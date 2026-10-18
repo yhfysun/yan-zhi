@@ -98,6 +98,14 @@
                 <el-input-number v-model="form.maxReActSteps" :min="1" :max="500" :step="1" size="small" controls-position="right" style="width: 100%" />
                 <div class="kind-hint">单批最大步数（1–500）。达上限后会自动接力下一批（默认最多 3 批），并先做一次进展总结与记忆整理；运行中改这里，下一轮即生效，不必重发。</div>
               </div>
+              <!-- 单任务费用上限（2026-10-17 费用核算）：0 = 跟随会话档位（设置 → 通用「费用预算」）；
+                   填正数则与本智能体的任务取**更严者**（提醒更早）。到阈值只提醒、不会停止任务，
+                   唯一会停的是全局设置里的「硬停上限」。 -->
+              <div class="param-item">
+                <div class="param-head"><span class="param-label">单任务费用上限（元）</span><span class="param-val">{{ form.maxCostCny }}</span></div>
+                <el-input-number v-model="form.maxCostCny" :min="0" :max="100000" :precision="2" :step="1" size="small" controls-position="right" style="width: 100%" />
+                <div class="kind-hint">0 = 不限（跟随会话档位）。填正数则按更严者提醒；仅提醒，不会停止任务。</div>
+              </div>
             </div>
           </div>
         </el-tab-pane>
@@ -300,6 +308,7 @@ const form = ref<any>({
   temperature: DEFAULT_AGENT_PARAMS.temperature, maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
   topP: DEFAULT_AGENT_PARAMS.topP, frequencyPenalty: DEFAULT_AGENT_PARAMS.frequencyPenalty,
   presencePenalty: DEFAULT_AGENT_PARAMS.presencePenalty,
+  maxCostCny: 0,
   reasoningEffort: '', maxReActSteps: 500,
   builtinToolIds: [], customToolIds: [], mcpToolMounts: [], skillIds: [], subAgentIds: [], ontologyIds: [], knowledgeBaseIds: [],
   category: '',
@@ -507,6 +516,7 @@ watch(() => [props.modelValue, props.agent], () => {
       frequencyPenalty: a?.frequencyPenalty ?? DEFAULT_AGENT_PARAMS.frequencyPenalty,
       presencePenalty: a?.presencePenalty ?? DEFAULT_AGENT_PARAMS.presencePenalty,
       reasoningEffort: (a?.config as any)?.reasoningEffort || '', maxReActSteps: (a?.config as any)?.maxReActSteps ?? 500,
+      maxCostCny: Number((a?.config as any)?.maxCostCny) > 0 ? Number((a?.config as any).maxCostCny) : 0,
       builtinToolIds: a?.builtinToolIds ? [...a.builtinToolIds] : [],
       customToolIds: a?.customToolIds ? [...a.customToolIds] : [],
       mcpToolMounts: a?.mcpToolMounts ? [...a.mcpToolMounts] : [],
@@ -555,7 +565,8 @@ async function handleSave() {
     agentKind: form.value.agentKind === 'sub' ? 'sub' : 'main',
     temperature: form.value.temperature, maxTokens: form.value.maxTokens, topP: form.value.topP,
     frequencyPenalty: form.value.frequencyPenalty, presencePenalty: form.value.presencePenalty,
-    config: { reasoningEffort: form.value.reasoningEffort || undefined, maxReActSteps: form.value.maxReActSteps },
+    // maxCostCny：0 = 不限（后端 resolveAgentCostLimit 只认正数）
+    config: { reasoningEffort: form.value.reasoningEffort || undefined, maxReActSteps: form.value.maxReActSteps, maxCostCny: Number(form.value.maxCostCny) > 0 ? Number(form.value.maxCostCny) : undefined },
     builtinToolIds: form.value.builtinToolIds, customToolIds: form.value.customToolIds,
     mcpToolMounts: form.value.mcpToolMounts,     skillIds: form.value.skillIds, subAgentIds: form.value.subAgentIds,
     ontologyIds: form.value.ontologyIds,

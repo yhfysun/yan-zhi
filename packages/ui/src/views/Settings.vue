@@ -142,6 +142,28 @@
           <SettingRow label="上下文保留条数" tip="触发压缩时保留的最近消息条数" tip-after>
             <el-input-number v-model="keepRecent" :min="2" :max="50" />
           </SettingRow>
+          <!-- 费用预算（2026-10-17 任务费用核算）：按会话累计 LLM 花费，到阈值**只提醒、不停任务**（D4）。
+               智能体上还可配更严的「单任务费用上限」（取更严者生效）。 -->
+          <SettingRow label="费用预算" tip="按会话累计花费，到阈值只提醒、不会停止任务；关闭后仍统计，只是不提醒" tip-after>
+            <el-switch v-model="costForm.enabled" />
+          </SettingRow>
+          <SettingRow label="单会话提醒档位（元）" tip="每跨过一个档位提醒一次；0 = 只统计不提醒" tip-after>
+            <el-input-number v-model="costForm.limitCny" :min="0" :max="100000" :precision="2" :step="1" style="width: 160px" />
+          </SettingRow>
+          <SettingRow label="预警比例" tip="累计到档位的该比例时先提醒一次（默认 80%）" tip-after>
+            <el-input-number v-model="costForm.warnRatio" :min="0.05" :max="1" :precision="2" :step="0.05" style="width: 160px" />
+          </SettingRow>
+          <SettingRow label="美元汇率（USD→CNY）" tip="美元平台按调用当时的汇率折算；改汇率不重算历史账单" tip-after>
+            <el-input-number v-model="costForm.usdToCny" :min="0.01" :max="1000" :precision="2" :step="0.1" style="width: 160px" />
+          </SettingRow>
+          <div class="settings-subhead">高级</div>
+          <SettingRow label="硬停上限（元，0 = 永不停）" tip="唯一会让任务停止的费用设置：用户自填才生效，默认 0 = 到阈值也只提醒（参考 Claude Code）" tip-after>
+            <el-input-number v-model="costForm.hardStopCny" :min="0" :max="100000" :precision="2" :step="1" style="width: 160px" />
+          </SettingRow>
+          <SettingRow label=" ">
+            <el-button size="small" type="primary" :loading="costSaving" @click="saveCostBudget">保存费用预算</el-button>
+            <span class="cost-saved-hint">{{ costSavedHint }}</span>
+          </SettingRow>
           <!-- 压缩触发阈值已移除：是否压缩由所选模型的上下文窗口配置自动决定 -->
           <!-- 桌面端截图 / 急停快捷键与聊天发送键已迁至独立「快捷键」分区（2026-10-17）：
                混在「通用」里层级太深，用户反馈"应该是个单独的菜单" -->
@@ -563,7 +585,7 @@ import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, Data
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
-import { useSettingsStore, usePlatformStore, useModelPoolStore } from '../stores';
+import { useSettingsStore, usePlatformStore, useModelPoolStore, useCostStore } from '../stores';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import { useVerificationStore } from '../stores/verification';
@@ -737,6 +759,32 @@ const defaultPlatformId = ref('');
 const defaultModelId = ref('');
 const keepRecent = ref(6);
 const enableCompression = ref(true);
+// ── 费用预算（2026-10-17）────────────────────────────────────────────────────
+// ★ 判定前**现读**（后端 getCostBudgetConfig 每次判定都查库）⇒ 这里保存后下一轮即生效，
+//   不存在"改了没反应"。表单与 store 双向：打开时拉一次，保存时整体 PUT。
+const costStore = useCostStore();
+const costSaving = ref(false);
+const costSavedHint = ref('');
+const costForm = ref({ enabled: true, limitCny: 5, warnRatio: 0.8, hardStopCny: 0, usdToCny: 7.1 });
+
+async function loadCostBudget() {
+  await costStore.loadBudget();
+  const b = costStore.budget;
+  if (b) {
+    costForm.value = {
+      enabled: b.enabled, limitCny: b.limitCny, warnRatio: b.warnRatio,
+      hardStopCny: b.hardStopCny, usdToCny: b.usdToCny,
+    };
+  }
+}
+
+async function saveCostBudget() {
+  costSaving.value = true;
+  costSavedHint.value = '';
+  const ok = await costStore.saveBudget(costForm.value);
+  costSaving.value = false;
+  costSavedHint.value = ok ? '已保存，下一轮判定即生效' : '保存失败，请重试';
+}
 const memoryExtractPlatformId = ref('');
 const memoryExtractModelId = ref('');
 
@@ -900,6 +948,8 @@ async function saveGlobalPools() {
 onMounted(async () => {
   await settingsStore.load();
   await platformStore.loadPlatforms();
+  // 费用预算：与其它设置独立加载（失败不阻塞设置页其它块）
+  void loadCostBudget();
   // 全局候选池：platformStore.loadPlatforms 只拉平台列表不带模型；候选池要跨所有平台选，
   // 先拉全量模型（独立清单，不受 loadModels(pid) 影响），再读已保存的全局池
   await modelPoolStore.ensureModels().catch(() => {});
@@ -1565,6 +1615,19 @@ onMounted(async () => {
 
 .data-section { display: flex; gap: 12px; }
 .settings-form { max-width: 600px; }
+/* 费用预算块内的「高级」分组标题（与快捷键分区同型：混在通用里层级太深 = 不存在） */
+.settings-subhead {
+  margin: 18px 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--el-text-color-secondary, #909399);
+}
+.cost-saved-hint {
+  margin-left: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
+}
 .lan-section { max-width: 600px; }
 .lan-tip { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .lan-empty { color: var(--color-text-secondary); font-size: 13px; padding: 16px 0; }

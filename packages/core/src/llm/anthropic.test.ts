@@ -155,6 +155,69 @@ function sseStream(frames: string): ReadableStream<Uint8Array> {
   });
 }
 
+describe('★ 用量明细 detail（2026-10-17 补采 cache_creation）', () => {
+  /**
+   * ★ 变异验证：把 `parseAnthropicSSE` 里传给 `normalizeAnthropicUsage` 的第一个参数
+   *   （startUsage）改成 `null` ⇒ 下面「缓存写入」这条**必须**打红。
+   *   不打红就说明没钉住"输入侧在 message_start、输出侧在 message_delta"这个分离结构。
+   */
+  it('★ 缓存写入（cache_creation_input_tokens）必须被采到 —— 改之前根本没读', async () => {
+    const stream = sseStream(
+      [
+        'event: message_start',
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":600,"cache_read_input_tokens":400,"cache_creation_input_tokens":12000}}}',
+        '',
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}',
+        '',
+        'event: message_stop',
+        'data: {"type":"message_stop"}',
+        '',
+      ].join('\n'),
+    );
+    const chunks: any[] = [];
+    for await (const c of parseAnthropicSSE(stream)) chunks.push(c);
+    const withUsage = chunks.find((c) => c.usage);
+
+    // ★ 这是本次补采的核心：长 system prompt 每次改写都要重新付费写入，漏了就是一笔看不见的钱
+    expect(withUsage.usage.detail.cacheWriteTokens).toBe(12000);
+    expect(withUsage.usage.detail.cacheReadTokens).toBe(400);
+    // ★ Anthropic 的 cache_read **不在** input_tokens 里 ⇒ 全价输入就是 600，**不做减法**
+    expect(withUsage.usage.detail.inputTokens).toBe(600);
+    expect(withUsage.usage.detail.outputTokens).toBe(50);
+    // 旧字段语义不变（继续喂 token 预算）
+    expect(withUsage.usage.promptTokens).toBe(600);
+    expect(withUsage.usage.cachedTokens).toBe(400);
+  });
+
+  it('★ 输出来自 message_delta：只传 start 会得到 outputTokens=0（凭空少算一大截）', async () => {
+    const stream = sseStream(
+      [
+        'event: message_start',
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":100}}}',
+        '',
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":88}}',
+        '',
+      ].join('\n'),
+    );
+    const chunks: any[] = [];
+    for await (const c of parseAnthropicSSE(stream)) chunks.push(c);
+    expect(chunks.find((c) => c.usage)?.usage.detail.outputTokens).toBe(88);
+  });
+
+  it('非流式：usage 在一个对象里，缓存三项都要出来', () => {
+    const chunk: any = anthropicResponseToChunk({
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 7, cache_read_input_tokens: 3, cache_creation_input_tokens: 900 },
+    });
+    expect(chunk.usage.detail).toEqual({
+      inputTokens: 10, cacheReadTokens: 3, cacheWriteTokens: 900, outputTokens: 7,
+    });
+  });
+});
+
 describe('parseAnthropicSSE', () => {
   it('文本 / 思考 / 工具调用 / 用量 事件统一映射为 ChatChunk', async () => {
     const stream = sseStream(
@@ -189,7 +252,15 @@ describe('parseAnthropicSSE', () => {
     expect(chunks).toContainEqual({ delta: { toolCalls: [{ index: 0, function: { arguments: '{"city":' } }] } });
     expect(chunks).toContainEqual({ delta: { content: '你好' } });
     expect(chunks).toContainEqual({ delta: { reasoningContent: '思考' } });
-    expect(chunks).toContainEqual({ finishReason: 'tool_use', usage: { promptTokens: 10, completionTokens: 5 } });
+    expect(chunks).toContainEqual({
+      finishReason: 'tool_use',
+      usage: {
+        promptTokens: 10,
+        completionTokens: 5,
+        // ★ 计价明细（2026-10-17）：Anthropic 的全价输入**不做减法**（cache_read 不在 input 里）
+        detail: { inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 5 },
+      },
+    });
     // ★ 见到 message_stop → 末帧标记为已正常收尾（2026-10-09 新增契约）
     expect(chunks.at(-1)).toEqual({ terminated: true });
   });
@@ -285,6 +356,10 @@ describe('anthropicResponseToChunk', () => {
       { index: 0, id: 'tu1', type: 'function', function: { name: 'fn', arguments: '{"a":1}' } },
     ]);
     expect(chunk.finishReason).toBe('tool_use');
-    expect(chunk.usage).toEqual({ promptTokens: 3, completionTokens: 7 });
+    expect(chunk.usage).toEqual({
+    promptTokens: 3,
+    completionTokens: 7,
+    detail: { inputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 7 },
+  });
   });
 });

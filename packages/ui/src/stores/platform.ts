@@ -23,6 +23,8 @@ function rowToPlatform(r: any): Platform {
     lastHealthAt: r.last_health_at,
     llmEnabled: r.llm_enabled === undefined || r.llm_enabled === null ? true : !!r.llm_enabled,
     isBuiltin: !!r.is_builtin,
+    /** 内置厂商目录来源（2026-10-17 方案 §2.3）：非空 = 目录添加的厂商平台（模型数据层可操作） */
+    presetKey: r.preset_key || undefined,
     pauseMinMs: r.pause_min_ms || 0,
     pauseMaxMs: r.pause_max_ms || 0,
     createdAt: r.created_at,
@@ -457,7 +459,14 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function fetchRemoteModels(platformId: string): Promise<string[]> {
-    assertEditablePlatform(platformId);
+    // ★ 拉模型是**数据层**操作，目录来源的内置厂商平台（有 presetKey）必须可用
+    //   （方案 §2.3：点已添加 → 进详情 → 拉模型 / 设默认）。
+    //   非目录内置平台（如本地模型商城管理的 ollama-local）仍禁 —— 连接配置守卫不变。
+    {
+      const store = usePlatformStore();
+      const p = store.platforms.find((x) => x.id === platformId);
+      if (p?.isBuiltin && !p?.presetKey) throw new Error('内置平台不可拉取模型');
+    }
     const p = platforms.value.find((x) => x.id === platformId);
     if (!p) throw new Error('平台不存在');
     const client = new LlmClient(p, {} as Model);

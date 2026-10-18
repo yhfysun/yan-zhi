@@ -2,6 +2,7 @@
 // 将内部 Message[] 与 OpenAI 格式 tools 转换成 Anthropic 约定，
 // 并把 Anthropic 的 SSE 流解析成与 OpenAI 路径一致的 ChatChunk。
 import type { Message, ChatChunk, DeltaToolCall } from '@yan-zhi/shared';
+import { normalizeAnthropicUsage } from '@yan-zhi/shared';
 
 /** 将工具入参（可能是 JSON 字符串或对象）统一解析为对象 */
 function parseInput(args: unknown): Record<string, unknown> {
@@ -153,6 +154,16 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
   const blockToTool: Record<number, number> = {};
   let toolSeq = 0;
   let inputTokens = 0;
+  /**
+   * ★ Anthropic 的用量**一半在 message_start、一半在 message_delta**：
+   *   输入侧（input_tokens / cache_read / **cache_creation**）在 `message_start.message.usage`，
+   *   输出侧（output_tokens）在 `message_delta.usage`。
+   *   ⇒ 必须把 start 侧**整个对象**留下来，否则缓存写入量拿不到（2026-10-17 补采）。
+   *
+   * ★ `cache_creation_input_tokens` 此前**完全没采** ⇒ 缓存写入费必然漏计，
+   *   而长 system prompt 每次改写都要重新付费写入，这笔钱在长任务里不小。
+   */
+  let startUsage: any = null;
   // ★ 是否见到终态（message_stop 事件 或 message_delta 带 stop_reason）——
   //   与 OpenAI 侧 parseSSE 的 terminated 同一判据：未见即视为流被掐断（2026-10-09）。
   let terminated = false;
@@ -175,6 +186,7 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
     if (ev) {
       const type = ev.type || eventType;
       if (type === 'message_start') {
+        startUsage = ev.message?.usage ?? null;
         inputTokens = ev.message?.usage?.input_tokens ?? 0;
       } else if (type === 'content_block_start') {
         if (ev.content_block?.type === 'tool_use') {
@@ -206,8 +218,12 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
           ? {
               promptTokens: inputTokens,
               completionTokens: ev.usage.output_tokens ?? 0,
-              // ★ D1 可观测（2026-10-09）：Anthropic 缓存读取量
-              cachedTokens: ev.usage.cache_read_input_tokens,
+              // ★ D1 可观测（2026-10-09）：Anthropic 缓存读取量。
+              //   优先取 message_start 侧（官方把它放在那里），delta 侧有则兜底。
+              cachedTokens: startUsage?.cache_read_input_tokens ?? ev.usage.cache_read_input_tokens,
+              // ★ 计价明细（2026-10-17）：合并 start（输入/缓存）+ delta（输出）两个来源。
+              //   只传一个来源会得到 outputTokens=0 或漏掉缓存写入。
+              detail: normalizeAnthropicUsage(startUsage, ev.usage),
             }
           : undefined;
         if (ev.delta?.stop_reason) terminated = true;
@@ -282,6 +298,8 @@ export function anthropicResponseToChunk(data: any): ChatChunk {
           completionTokens: data.usage.output_tokens,
           // ★ D1 可观测（2026-10-09）
           cachedTokens: data.usage.cache_read_input_tokens,
+          // 非流式：整个 usage 在一个对象里，start/delta 同源 ⇒ 两个参数传同一个
+          detail: normalizeAnthropicUsage(data.usage, data.usage),
         }
       : undefined,
   };

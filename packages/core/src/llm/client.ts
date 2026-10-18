@@ -1,9 +1,15 @@
 // LLM 客户端 - 同时支持 OpenAI Chat Completions 与 Anthropic Messages 协议
 // 浏览器端通过 PlatformAdapter.llmProxyBase 走后端代理（/api/llm 下的接口），避免 CORS 且不暴露 API Key；
 // server 端（无 llmProxyBase）直连上游。
-import type { Platform, Model, Message, ChatChunk, ChatRequest } from '@yan-zhi/shared';
+import type { Platform, Model, Message, ChatChunk, ChatRequest, TokenUsageDetail } from '@yan-zhi/shared';
+import { isResponsesProtocol, normalizeOpenAiUsage } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '../platform/types';
 import { parseSSE } from './stream';
+import { withUsageHook, type UsageCallback } from './usage-hook.js';
+// ★ 上游 URL 的**唯一实现**（2026-10-17）：本文件不再出现任何 'v1/...' 字面量 ——
+//   版本段由 base 决定，国产厂商（火山 /api/v3、智谱 /api/paas/v4、百炼 /compatible-mode/v1）
+//   的 base 自带版本段，无条件拼 v1 必然 404。详见 api-path.ts 文件头。
+import { resolveUpstreamUrl, upstreamRelPath, type UpstreamKind } from './api-path.js';
 // 发送前顺序规整（2026-10-09）：把夹在 tool_calls 与其配对 tool 消息之间的「运行中追加消息」后移。
 // 见 message-order.ts 顶部 —— 「立即发送」注入点天然落在组中间，不规整则每次重放撞上游 400
 // （`tool_calls must be followed by tool messages`）。
@@ -14,6 +20,14 @@ import {
   parseAnthropicSSE,
   anthropicResponseToChunk,
 } from './anthropic';
+import {
+  toResponsesInput,
+  toResponsesTools,
+  toResponsesToolChoice,
+  parseResponsesSSE,
+  responsesResultToChunk,
+  shouldRetryWithoutResponsesOnlyFields,
+} from './responses.js';
 
 /**
  * 工具调用强制策略（2026-10-07，P0-1）。
@@ -40,6 +54,12 @@ export function toOpenAIToolChoice(tc: ToolChoiceOption): unknown {
 
 /** 能力测试种类：chat=基础问答、vision=视觉识图、function_call=工具调用、embedding=向量、image=图片生成、video=视频生成 */
 export type CapabilityTestKind = 'chat' | 'vision' | 'function_call' | 'embedding' | 'image' | 'video';
+
+/**
+ * 用量回调元信息（2026-10-17，费用账本接线用）—— 定义在 usage-hook.ts（纯函数、可单测），
+ * 这里转售以保持「从 client 导入」的既有路径。
+ */
+export type { UsageCallback, UsageMeta } from './usage-hook.js';
 
 /**
  * 协议鉴权头的**唯一实现**（横切收敛 P2，2026-10-04）。
@@ -479,6 +499,9 @@ export class LlmClient {
 
   private get baseUrl() { return this.platform.apiUrl.replace(/\/$/, ''); }
   private get isAnthropic() { return this.platform.protocol === 'anthropic'; }
+  /** ★ Responses API（2026-10-17 新增）：与 Chat Completions 是**两条不同的请求体/事件结构**，
+   *  不能复用 OpenAI 的组装与解析，也不能复用 Anthropic 的。三者在此分派。 */
+  private get isResponses() { return isResponsesProtocol(this.platform.protocol); }
   /** Anthropic 官方协议不提供 embeddings 接口，上层 UI 应据此隐藏相关入口。 */
   get supportsEmbeddings() { return !this.isAnthropic; }
 
@@ -526,16 +549,22 @@ export class LlmClient {
   }
 
   /** 统一 POST：有代理走后端 /api/llm/<path>（body 包 platformId + payload），无则直连上游。
-   *  upstreamPath 形如 'v1/chat/completions' / 'v1/messages' / 'v1/embeddings' */
+   *
+   * ★★ 参数是**接口种类**（`'chat' | 'messages' | 'responses' | ...`），**不是路径字符串**。
+   *   版本段由 base 决定（见 `api-path.ts` 文件头）：火山 `/api/v3`、智谱 `/api/paas/v4`、
+   *   百炼 `/compatible-mode/v1` 的 base **自带版本段**，再无条件拼一个 `v1/` 上去必然 404，
+   *   而症状是"平台连不上"而不是"路径错了"，极难排查。
+   *   ⇒ 全仓**只有** `api-path.ts` 知道 URL 长什么样，这里只说"我要调哪类接口"。
+   */
   private async upstreamFetch(
-    upstreamPath: string,
+    kind: UpstreamKind,
     body: any,
     options?: { signal?: AbortSignal; anthropic?: boolean; apiKey?: string },
   ): Promise<Response> {
     const proxy = this.proxyBase;
     if (proxy) {
-      const proxyPath = upstreamPath.replace(/^v1\//, '');
-      return fetch(`${proxy}/${proxyPath}`, {
+      // 代理侧只要相对路径（**不带版本段**）：最终 URL 由 llm-proxy 用同一个 resolveUpstreamUrl 拼
+      return fetch(`${proxy}/${upstreamRelPath(kind)}`, {
         method: 'POST',
         headers: this.proxyAuthHeaders(),
         body: JSON.stringify({ platformId: this.platform.id, payload: body }),
@@ -545,9 +574,27 @@ export class LlmClient {
     const headers = options?.anthropic
       ? await this.buildAnthropicHeaders(options?.apiKey)
       : await this.buildHeaders(options?.apiKey);
-    return fetch(`${this.baseUrl}/${upstreamPath}`, {
+    return fetch(this.resolveUrl(kind), {
       method: 'POST', headers, body: JSON.stringify(body), signal: options?.signal,
     });
+  }
+
+  /**
+   * 直连时的完整 URL —— **唯一出口**（`api-path.ts` 是唯一实现）。
+   */
+  private resolveUrl(kind: UpstreamKind): string {
+    return resolveUpstreamUrl(this.baseUrl, kind);
+  }
+
+  /**
+   * 报错信息里展示给用户的 URL —— **必须与真实请求 URL 同源**。
+   *
+   * ★ 为什么单独抽一个方法：历史上 `urlDesc` 是手拼的字符串，改了请求 URL 却忘了改它 ⇒
+   *   用户看到的地址根本不是实际请求的地址，**下一次排查会被这份错误信息带偏**。
+   */
+  private describeUrl(kind: UpstreamKind): string {
+    const proxy = this.proxyBase;
+    return proxy ? `${proxy}/${upstreamRelPath(kind)}` : this.resolveUrl(kind);
   }
 
   /** 瞬时网络错误重试的 upstreamFetch（2026-10-06）：仅重试「连接建立」阶段的网络层
@@ -570,7 +617,7 @@ export class LlmClient {
    *  只在**直连**时轮换：走后端代理（llmProxyBase）时 Key 由 llm-proxy 服务端持有且已
    *  自行轮换，core 手里没有 Key 可换（见 types.ts:44 注释）。
    */
-  private async upstreamFetchRetry(url: string, body: unknown, opts?: { signal?: AbortSignal; anthropic?: boolean }, retries = 2): Promise<Response> {
+  private async upstreamFetchRetry(kind: UpstreamKind, body: unknown, opts?: { signal?: AbortSignal; anthropic?: boolean }, retries = 2): Promise<Response> {
     // Token 池（仅 server 端直连路径注入）。无池时行为与改动前完全一致。
     const pool = this.proxyBase ? undefined : (() => {
       try { return getPlatformAdapter().llmKeyPool; } catch { return undefined; }
@@ -597,7 +644,7 @@ export class LlmClient {
     for (let attempt = 0; ; attempt++) {
       let res: Response | null = null;
       try {
-        res = await this.upstreamFetch(url, body, { ...opts, apiKey });
+        res = await this.upstreamFetch(kind, body, { ...opts, apiKey });
       } catch (e: any) {
         const sig = opts?.signal;
         if (sig?.aborted || e?.name === 'AbortError') throw e;
@@ -641,8 +688,27 @@ export class LlmClient {
 
   async *chatStream(
     messages: Message[],
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; toolChoice?: ToolChoiceOption; signal?: AbortSignal; onUsage?: UsageCallback },
+  ): AsyncIterable<ChatChunk> {
+    // ★ 费用接线（2026-10-17）：onUsage 钩子包在**最外层** —— 三条协议路径与各自的
+    //   重试/降级分支因此全部覆盖。挂在某个分支上必然漏（本项目"同一语义多处收口"的老教训）。
+    const inner = this.chatStreamInner(messages, options);
+    if (!options?.onUsage) {
+      yield* inner;
+      return;
+    }
+    yield* withUsageHook(inner, options.onUsage, this.usageMeta());
+  }
+
+  /** chatStream 的协议分派 + 重试/降级（抽出来只为让 onUsage 钩子能整体包住它，行为不变） */
+  private async *chatStreamInner(
+    messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
   ): AsyncIterable<ChatChunk> {
+    if (this.isResponses) {
+      yield* this.responsesStream(messages, options);
+      return;
+    }
     if (this.isAnthropic) {
       yield* this.anthropicStream(messages, options);
       return;
@@ -669,10 +735,10 @@ export class LlmClient {
     if (options?.reasoningEffort) {
       body.reasoning_effort = options.reasoningEffort;
     }
-    const urlDesc = this.proxyBase ? `${this.proxyBase}/chat/completions` : `${this.baseUrl}/v1/chat/completions`;
+    const urlDesc = this.describeUrl('chat');
     let res: Response;
     try {
-      res = await this.upstreamFetchRetry('v1/chat/completions', body, { signal: options?.signal });
+      res = await this.upstreamFetchRetry('chat', body, { signal: options?.signal });
     } catch (e: any) {
       const sig = options?.signal;
       if (sig?.aborted || e?.name === 'AbortError') {
@@ -695,7 +761,7 @@ export class LlmClient {
         // P0-1：tool_choice 不被端点支持（或依赖 tools）时一并剥离重试
         delete body.tool_choice;
         body.messages = this.sanitizeToolMessages(body.messages as any[], false);
-        const retryRes = await this.upstreamFetch('v1/chat/completions', body, { signal: options?.signal });
+        const retryRes = await this.upstreamFetch('chat', body, { signal: options?.signal });
         if (retryRes.ok && retryRes.body) {
           yield* parseSSE(retryRes.body);
           return;
@@ -704,6 +770,106 @@ export class LlmClient {
       throw makeUpstreamError(res.status, res.statusText, urlDesc, text, 200);
     }
     yield* parseSSE(res.body);
+  }
+
+  /** Responses API 流式（2026-10-17）。请求体与事件结构都与 Chat Completions 不同，独立一条。 */
+  private async *responsesStream(
+    messages: Message[],
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
+  ): AsyncIterable<ChatChunk> {
+    // system 消息在 Responses 里没有对应 item ⇒ 合并进 instructions（toResponsesInput 已处理）
+    const { instructions, input } = toResponsesInput(messages.map(m => this.toApiMessage(m)));
+    const body: any = {
+      model: this.model.modelId,
+      input,
+      stream: true,
+    };
+    if (instructions) body.instructions = instructions;
+    if (options?.temperature != null) body.temperature = options.temperature;
+    // ★ Responses 的输出上限叫 max_output_tokens（不是 max_tokens）
+    if (options?.maxTokens != null) body.max_output_tokens = options.maxTokens;
+    if (options?.topP != null) body.top_p = options.topP;
+    if (options?.tools?.length) body.tools = toResponsesTools(options.tools);
+    if (options?.tools?.length && options?.toolChoice) body.tool_choice = toResponsesToolChoice(options.toolChoice);
+    if (options?.reasoningEffort) body.reasoning = { effort: options.reasoningEffort };
+
+    const urlDesc = this.describeUrl('responses');
+    let res: Response;
+    try {
+      res = await this.upstreamFetchRetry('responses', body, { signal: options?.signal });
+    } catch (e: any) {
+      const sig = options?.signal;
+      if (sig?.aborted || e?.name === 'AbortError') {
+        const reason = (sig?.reason as any)?.message || e?.message || 'Aborted';
+        throw new Error(`请求被中止（${reason}）。URL: ${urlDesc}`);
+      }
+      throw new Error(`请求失败（代理或网络不通）: ${e?.message || e}。URL: ${urlDesc}`);
+    }
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      // 各家对 Responses 的支持子集不一（部分网关不认 instructions/temperature/reasoning）
+      // ⇒ 剥掉这些**可选**字段重试一次（有 tools 时连 tools 一起剥，降级成纯文本）。
+      if (shouldRetryWithoutResponsesOnlyFields(res.status, text)) {
+        delete body.temperature;
+        delete body.top_p;
+        delete body.reasoning;
+        delete body.instructions;
+        const retryRes = await this.upstreamFetch('responses', body, { signal: options?.signal });
+        if (retryRes.ok && retryRes.body) {
+          yield* parseResponsesSSE(retryRes.body);
+          return;
+        }
+        if (!retryRes.ok && retryRes.status === 400 && body.tools) {
+          delete body.tools;
+          delete body.tool_choice;
+          const finalRes = await this.upstreamFetch('responses', body, { signal: options?.signal });
+          if (finalRes.ok && finalRes.body) {
+            yield* parseResponsesSSE(finalRes.body);
+            return;
+          }
+        }
+      }
+      throw makeUpstreamError(res.status, res.statusText, urlDesc, text, 200);
+    }
+    yield* parseResponsesSSE(res.body);
+  }
+
+  /** Responses 非流式（chat() 分派） */
+  private async responsesChat(
+    messages: Message[],
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
+  ): Promise<ChatChunk> {
+    const { instructions, input } = toResponsesInput(messages.map(m => this.toApiMessage(m)));
+    const body: any = { model: this.model.modelId, input, stream: false };
+    if (instructions) body.instructions = instructions;
+    if (options?.temperature != null) body.temperature = options.temperature;
+    if (options?.maxTokens != null) body.max_output_tokens = options.maxTokens;
+    if (options?.topP != null) body.top_p = options.topP;
+    if (options?.tools?.length) body.tools = toResponsesTools(options.tools);
+    if (options?.tools?.length && options?.toolChoice) body.tool_choice = toResponsesToolChoice(options.toolChoice);
+
+    const urlDesc = this.describeUrl('responses');
+    let res = await this.upstreamFetchRetry('responses', body, { signal: options?.signal });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      if (shouldRetryWithoutResponsesOnlyFields(res.status, text)) {
+        delete body.temperature;
+        delete body.top_p;
+        delete body.instructions;
+        res = await this.upstreamFetch('responses', body, { signal: options?.signal });
+        if (!res.ok && body.tools) {
+          delete body.tools;
+          delete body.tool_choice;
+          res = await this.upstreamFetch('responses', body, { signal: options?.signal });
+        }
+      }
+      if (!res.ok) {
+        const text2 = await res.text().catch(() => '');
+        throw makeUpstreamError(res.status, res.statusText, urlDesc, text2 || text, 200);
+      }
+    }
+    const data = await res.json().catch(() => null);
+    return responsesResultToChunk(data);
   }
 
   private async *anthropicStream(
@@ -736,10 +902,10 @@ export class LlmClient {
     if (tools.length && options?.toolChoice) body.tool_choice = toAnthropicToolChoice(options.toolChoice);
     if (options?.temperature != null) body.temperature = options.temperature;
     if (options?.topP != null) body.top_p = options.topP;
-    const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
+    const urlDesc = this.describeUrl('messages');
     let res: Response;
     try {
-      res = await this.upstreamFetchRetry('v1/messages', body, { signal: options?.signal, anthropic: true });
+      res = await this.upstreamFetchRetry('messages', body, { signal: options?.signal, anthropic: true });
     } catch (e: any) {
       const sig = options?.signal;
       if (sig?.aborted || e?.name === 'AbortError') {
@@ -757,8 +923,26 @@ export class LlmClient {
 
   async chat(
     messages: Message[],
+    options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; toolChoice?: ToolChoiceOption; signal?: AbortSignal; onUsage?: UsageCallback },
+  ): Promise<ChatChunk> {
+    const chunk = await this.chatInner(messages, options);
+    if (options?.onUsage) {
+      // 非流式一次回调（detail 可能 undefined = 上游没给 usage，调用方自行估算）
+      try {
+        options.onUsage(chunk.usage?.detail, this.usageMeta());
+      } catch { /* 记账失败绝不能炸掉生成 */ }
+    }
+    return chunk;
+  }
+
+  /** chat 的协议分派（抽出来同 chatStreamInner：让 onUsage 能在统一位置回调） */
+  private async chatInner(
+    messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
   ): Promise<ChatChunk> {
+    if (this.isResponses) {
+      return this.responsesChat(messages, options);
+    }
     if (this.isAnthropic) {
       return this.anthropicChat(messages, options);
     }
@@ -777,14 +961,14 @@ export class LlmClient {
     };
     if (options?.responseFormat) body.response_format = options.responseFormat;
     if (options?.tools?.length && options?.toolChoice) body.tool_choice = toOpenAIToolChoice(options.toolChoice);
-    const res = await this.upstreamFetchRetry('v1/chat/completions', body, { signal: options?.signal });
+    const res = await this.upstreamFetchRetry('chat', body, { signal: options?.signal });
     if (!res.ok) {
       // ★ 非流式路径此前只抛 `${status} ${statusText}`，从**不读取响应体** →
       //   上游返回 400 时用户只能看到光秃秃的「400 Bad Request」，真实原因（如
       //   response_format 不支持 / 消息格式错误）被丢弃，排障全靠猜。
       //   现与 chatStream 对齐：读 body + 带上真实请求 URL，让原因可见。
       const text = await res.text().catch(() => '');
-      const urlDesc = this.proxyBase ? `${this.proxyBase}/chat/completions` : `${this.baseUrl}/v1/chat/completions`;
+      const urlDesc = this.describeUrl('chat');
       throw makeUpstreamError(res.status, res.statusText, urlDesc, text);
     }
     const data = await res.json();
@@ -801,9 +985,21 @@ export class LlmClient {
             completionTokens: data.usage.completion_tokens,
             // ★ D1 可观测（2026-10-09）：OpenAI 缓存命中字段
             cachedTokens: data.usage.prompt_tokens_details?.cached_tokens,
+            // ★ 计价明细（2026-10-17 补）：**协议边界归一化**。此处此前漏了 detail
+            //   （流式 parseSSE 有、非流式没有）⇒ 非流式调用（自评/总结/计划重划）
+            //   全部走估算，金额虚高。与 stream.ts 同一函数，别在这里另写一套。
+            detail: normalizeOpenAiUsage(data.usage),
           }
         : undefined,
     };
+  }
+
+  /**
+   * 回调元信息：**实际发出请求的**平台/模型（故障转移后与任务快照可能不同）。
+   * 钩子本体（"只回调一次/取最后一份/抛错不回调"）在 usage-hook.ts —— 纯函数、可单测。
+   */
+  private usageMeta(): { platformId?: string; modelId?: string } {
+    return { platformId: this.platform?.id, modelId: this.model?.modelId };
   }
 
   private async anthropicChat(
@@ -831,10 +1027,10 @@ export class LlmClient {
     if (tools.length && options?.toolChoice) body.tool_choice = toAnthropicToolChoice(options.toolChoice);
     if (options?.temperature != null) body.temperature = options.temperature;
     if (options?.topP != null) body.top_p = options.topP;
-    const res = await this.upstreamFetchRetry('v1/messages', body, { signal: options?.signal, anthropic: true });
+    const res = await this.upstreamFetchRetry('messages', body, { signal: options?.signal, anthropic: true });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      const urlDesc = this.proxyBase ? `${this.proxyBase}/messages` : `${this.baseUrl}/v1/messages`;
+      const urlDesc = this.describeUrl('messages');
       throw makeUpstreamError(res.status, res.statusText, urlDesc, text);
     }
     const data = await res.json();
@@ -868,7 +1064,7 @@ export class LlmClient {
       });
     }
     const headers = this.isAnthropic ? await this.buildAnthropicHeaders() : await this.buildHeaders();
-    return fetch(`${this.baseUrl}/v1/models`, { headers });
+    return fetch(this.resolveUrl('models'), { headers });
   }
 
   async ping(): Promise<boolean> {
@@ -892,6 +1088,7 @@ export class LlmClient {
 
   /** 按 PRD 规范发 max_tokens=5 的小请求验证模型可用性 */
   async chatTest(): Promise<{ ok: boolean; durationMs: number; finishReason?: string; content?: string; msg?: string }> {
+    if (this.isResponses) return this.responsesChatTest();
     if (this.isAnthropic) return this.anthropicChatTest();
     const start = Date.now();
     try {
@@ -903,7 +1100,7 @@ export class LlmClient {
         maxTokens: 5,
         stream: false,
       };
-      const res = await this.upstreamFetchRetry('v1/chat/completions', body);
+      const res = await this.upstreamFetchRetry('chat', body);
       const durationMs = Date.now() - start;
       if (!res.ok) {
         const text = await res.text().catch(() => '');
@@ -921,6 +1118,35 @@ export class LlmClient {
     }
   }
 
+  private async responsesChatTest(): Promise<{ ok: boolean; durationMs: number; finishReason?: string; content?: string; msg?: string }> {
+    const start = Date.now();
+    try {
+      // Responses 的输出上限叫 max_output_tokens（不是 max_tokens），发最小请求验证可用性
+      const body = {
+        model: this.model.modelId,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'ping' }] }],
+        max_output_tokens: 5,
+        stream: false,
+      };
+      const res = await this.upstreamFetchRetry('responses', body);
+      const durationMs = Date.now() - start;
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return { ok: false, durationMs, msg: `HTTP ${res.status} ${res.statusText} ${text.slice(0, 120)}` };
+      }
+      const data = await res.json().catch(() => null);
+      const chunk = responsesResultToChunk(data);
+      return {
+        ok: true,
+        durationMs,
+        finishReason: chunk.finishReason,
+        content: chunk.delta?.content,
+      };
+    } catch (e: any) {
+      return { ok: false, durationMs: Date.now() - start, msg: e?.message || '请求异常' };
+    }
+  }
+
   private async anthropicChatTest(): Promise<{ ok: boolean; durationMs: number; finishReason?: string; content?: string; msg?: string }> {
     const start = Date.now();
     try {
@@ -930,7 +1156,7 @@ export class LlmClient {
         messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
         stream: false,
       };
-      const res = await this.upstreamFetch('v1/messages', body, { anthropic: true });
+      const res = await this.upstreamFetch('messages', body, { anthropic: true });
       const durationMs = Date.now() - start;
       if (!res.ok) {
         const text = await res.text().catch(() => '');
@@ -1025,7 +1251,7 @@ export class LlmClient {
       }
 
       if (kind === 'embedding') {
-        const res = await this.upstreamFetch('v1/embeddings', { model: this.model.modelId, input: ['ping'] });
+        const res = await this.upstreamFetch('embeddings', { model: this.model.modelId, input: ['ping'] });
         if (!res.ok) {
           const text = await res.text().catch(() => '');
           return fail(`HTTP ${res.status} ${res.statusText}`, text.slice(0, 120));
@@ -1040,7 +1266,7 @@ export class LlmClient {
       // 每次测试会消耗一次生成额度）。mode:'text' 是 agnes 专有约定，其他平台不带。
       if (kind === 'video') {
         const isAgnes = /agnes-ai\.com/i.test(this.baseUrl);
-        const res = await this.upstreamFetch('v1/videos', {
+        const res = await this.upstreamFetch('videos', {
           model: this.model.modelId,
           prompt: 'a red balloon floating gently in the sky',
           seconds: '5',
@@ -1063,7 +1289,7 @@ export class LlmClient {
       }
 
       // image：图片生成（最小尺寸，成本可控）
-      const res = await this.upstreamFetch('v1/images/generations', {
+      const res = await this.upstreamFetch('images', {
         model: this.model.modelId,
         prompt: 'a small red dot on a white background',
         n: 1,
@@ -1092,7 +1318,7 @@ export class LlmClient {
     if (this.isAnthropic) {
       throw new Error('Anthropic 协议不支持 embeddings 接口（请使用支持 embeddings 的平台）');
     }
-    const res = await this.upstreamFetch('v1/embeddings', { model: this.model.modelId, input });
+    const res = await this.upstreamFetch('embeddings', { model: this.model.modelId, input });
     if (!res.ok) throw new Error(`Embedding 请求失败: ${res.status}`);
     const data = await res.json();
     return (data.data || []).map((d: { embedding: number[] }) => d.embedding);
@@ -1123,7 +1349,7 @@ export class LlmClient {
         }],
         stream: false,
       };
-      const res = await this.upstreamFetchRetry('v1/messages', body, { signal: options?.signal, anthropic: true });
+      const res = await this.upstreamFetchRetry('messages', body, { signal: options?.signal, anthropic: true });
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new Error(`vision 请求失败: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);
@@ -1145,7 +1371,7 @@ export class LlmClient {
       temperature: options?.temperature,
       stream: false,
     };
-    const res = await this.upstreamFetchRetry('v1/chat/completions', body, { signal: options?.signal });
+    const res = await this.upstreamFetchRetry('chat', body, { signal: options?.signal });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`vision 请求失败: ${res.status} ${res.statusText} ${text.slice(0, 200)}`);

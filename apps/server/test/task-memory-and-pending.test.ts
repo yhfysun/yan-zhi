@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 // ★ 不能让导入链碰到真实 dev 库（data.db 被运行中的后端锁定 → flush EPERM，且测试不该写用户数据）
@@ -29,6 +30,10 @@ vi.mock('../src/db.js', () => ({
   getLatestMessageSummary: () => null,
   insertMessageSummary: () => "sum_test",
   hasSqliteVec: false,
+  // 2026-10-18：services/im.ts（并行会话未提交改动）新增 import openclaw-manager.js，
+  //   后者模块级 `path.join(dataDir, 'openclaw')` ⇒ dataDir 进入本测试的导入图，
+  //   白名单不补就报 `No "dataDir" export is defined on the mock`（表象是"任务 failed"）。
+  dataDir: resolve(tmpdir(), 'yz-mock-data'),
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));
 vi.mock('../src/state.js', () => ({ serverState: { workspaceDir: undefined } }));

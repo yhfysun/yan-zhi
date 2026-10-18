@@ -17,10 +17,12 @@
         <el-input v-model="form.name" placeholder="如：OpenAI / DeepSeek" />
       </el-form-item>
       <el-form-item label="协议">
-        <el-select v-model="form.protocol" style="width: 100%">
-          <el-option label="OpenAI" value="openai" />
-          <el-option label="Anthropic" value="anthropic" />
-          <el-option label="自定义" value="custom" />
+        <!-- 三格式（2026-10-17 方案 §2.1）；custom 是历史遗留值，仅编辑存量行时可见 -->
+        <el-select v-model="form.protocol" style="width: 100%" @change="onProtocolChange">
+          <el-option label="OpenAI Chat Completions 格式" value="openai" />
+          <el-option label="OpenAI Responses API 格式" value="openai-responses" />
+          <el-option label="Anthropic Messages 格式" value="anthropic" />
+          <el-option v-if="form.protocol === 'custom'" label="自定义（历史遗留，按 OpenAI 处理）" value="custom" />
         </el-select>
       </el-form-item>
       <el-form-item label="API URL">
@@ -63,6 +65,7 @@ import { Setting, Connection, Check } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { usePlatformStore } from '../stores';
 import type { Platform, Protocol } from '@yan-zhi/shared';
+import { findProviderPreset, resolveProtocolUrl } from '@yan-zhi/shared';
 
 const props = defineProps<{
   mode: 'create' | 'edit';
@@ -112,6 +115,20 @@ watch(
   () => [props.mode, props.platform?.id],
   () => initFromProps(),
 );
+
+/**
+ * 协议切换联动（2026-10-17 方案 §2.3）：仅当该平台来自内置厂商目录（有 presetKey）
+ * 且 URL 仍等于旧协议的默认值时，自动改写成新协议的默认端点 —— 用户手改过的
+ * 中转地址绝不被覆盖（判据在 shared 的 resolveProtocolUrl，纯函数可单测）。
+ */
+function onProtocolChange(to: Protocol) {
+  const presetKey = (props.platform as any)?.presetKey as string | undefined;
+  if (!presetKey) return;
+  const preset = findProviderPreset(presetKey);
+  if (!preset) return;
+  const from = (props.platform?.protocol || 'openai') as Protocol;
+  form.apiUrl = resolveProtocolUrl(preset, from, to, form.apiUrl);
+}
 
 async function testConnect() {
   if (!form.apiUrl) {

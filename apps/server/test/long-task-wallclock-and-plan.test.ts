@@ -119,7 +119,9 @@ describe('A 等待抵扣：等外部子进程不该吃墙钟（真跑算术，�
 // ────────────────────────────────────────────────────────────
 describe('B 预算触达后仍可接力（不再无条件否决）', () => {
   it('★★ 接力分支不得再被 budgetExhausted 挡在门外', () => {
-    const i = anchor(LTM, 'const budgetExhausted = !!taskBudgetHit;', 'budgetExhausted 定义');
+    // ★ 2026-10-18：定义行加入 costHardStop（费用硬停，D4 唯一例外）—— 语义仍是
+    //   "预算类闸门触达即视为已尽"，锚点随之更新。
+    const i = anchor(LTM, 'const budgetExhausted = !!taskBudgetHit', 'budgetExhausted 定义');
     const after = LTM.slice(i, i + 260);
     // ★ 反面断言：条件里不能再出现 budgetExhausted
     expect(after, '★ 预算触达仍无条件否决接力（计划剩 7 步也不接力）')

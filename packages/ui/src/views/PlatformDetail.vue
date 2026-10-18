@@ -181,13 +181,22 @@
             </div>
           </div>
         </el-form-item>
-        <el-form-item label="输入价格">
-          <el-input-number v-model="form.pricingInput" :min="0" :step="0.001" :precision="4" />
-          <span class="form-tip">元/千token</span>
-        </el-form-item>
-        <el-form-item label="输出价格">
-          <el-input v-model="form.pricingOutput" :min="0" :step="0.001" :precision="4" />
-          <span class="form-tip">元/千token</span>
+        <el-form-item label="价格（可选）">
+          <div class="price-grid">
+            <div class="price-item"><span class="price-label">输入</span>
+              <el-input-number v-model="form.pricingInput" :min="0" :step="1" :precision="2" size="small" controls-position="right" style="width:120px" /></div>
+            <div class="price-item"><span class="price-label">缓存命中</span>
+              <el-input-number v-model="form.pricingCacheRead" :min="0" :step="0.5" :precision="2" size="small" controls-position="right" style="width:120px" /></div>
+            <div class="price-item"><span class="price-label">缓存写入</span>
+              <el-input-number v-model="form.pricingCacheWrite" :min="0" :step="0.5" :precision="2" size="small" controls-position="right" style="width:120px" /></div>
+            <div class="price-item"><span class="price-label">输出</span>
+              <el-input-number v-model="form.pricingOutput" :min="0" :step="1" :precision="2" size="small" controls-position="right" style="width:120px" /></div>
+            <div class="price-item"><span class="price-label">币种</span>
+              <el-select v-model="form.pricingCurrency" size="small" style="width:90px">
+                <el-option label="CNY" value="CNY" /><el-option label="USD" value="USD" />
+              </el-select></div>
+            <div class="form-tip price-unit-tip">元（或 $）/ 百万 tokens（厂商价目表口径）。留空则用内置参考价（如有）——未配价的调用在费用统计里记为「未计价」，金额会偏低</div>
+          </div>
         </el-form-item>
       </el-form>
     </FormDialog>
@@ -266,6 +275,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { Plus, ArrowLeft, Expand, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePlatformStore } from '../stores';
+import { normalizePricing } from '@yan-zhi/shared';
 import { filterModels, modelTypeOptions as buildModelTypeOptions, isFilterActive } from '../utils/modelFilter';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
 import FormDialog from '../components/FormDialog.vue';
@@ -352,7 +362,11 @@ const form = ref({
   contextWindowK: undefined as number | undefined,
   capabilities: ['reasoning'] as string[],
   description: '',
-  pricingInput: 0, pricingOutput: 0,
+  // 价格四栏（2026-10-17 方案 §3.3）：单位**元/百万**（厂商价目表口径）。
+  // 读侧经 normalizePricing 归一化（unit 缺失的旧数据自动 ×1000 —— 读时兜底层，
+  // 见同文件 addOrEditModel 的写入侧：新写入一律 unit:'per_1m'）。
+  pricingInput: 0, pricingCacheRead: 0, pricingCacheWrite: 0, pricingOutput: 0,
+  pricingCurrency: 'CNY' as 'CNY' | 'USD',
 });
 
 onMounted(async () => {
@@ -384,7 +398,12 @@ function formatWindow(n: number | null): string {
 }
 
 async function fetchRemote() {
-  if (platform.value?.isBuiltin) { ElMessage.warning('内置平台不可拉取或修改模型'); return; }
+  // ★ 目录来源内置平台（有 presetKey）可拉模型（数据层开放，2026-10-18）；
+  //   非目录内置平台仍禁（模型由本地模型商城等服务端直写管理）。
+  if (platform.value?.isBuiltin && !(platform.value as any)?.presetKey) {
+    ElMessage.warning('内置平台不可拉取或修改模型');
+    return;
+  }
   fetching.value = true;
   try {
     const ids = await store.fetchRemoteModels(platformId.value);
@@ -403,6 +422,8 @@ function onCardClick(m: any) {
 function editModel(m: any) {
   if (m.isBuiltin) { ElMessage.warning('内置模型不可编辑'); return; }
   editingModelId.value = m.id;
+  // 读侧归一化走 shared 的 normalizePricing（唯一实现）：unit 缺失的旧数据（元/千）自动 ×1000
+  const np = normalizePricing(m.pricing);
   form.value = {
     modelId: m.modelId, alias: m.alias || '', type: m.type || 'llm',
     contextWindowK: Math.max(1, Math.round((m.contextWindow || 1048576) / 1024)),
@@ -411,9 +432,29 @@ function editModel(m: any) {
       ? [...(m.capabilities || [])]
       : (m.type || 'llm') === 'llm' ? ['reasoning'] : [],
     description: m.description || '',
-    pricingInput: m.pricing?.input || 0, pricingOutput: m.pricing?.output || 0,
+    pricingInput: np?.input ?? 0,
+    pricingCacheRead: np?.cacheRead ?? 0,
+    pricingCacheWrite: np?.cacheWrite ?? 0,
+    pricingOutput: np?.output ?? 0,
+    pricingCurrency: (np?.currency as 'CNY' | 'USD') || 'CNY',
   };
   showAdd.value = true;
+}
+
+/** 价格写入侧（方案 §3.3）：新写入一律 `unit:'per_1m'` + configured 三态。
+ *  ★ 「全是 0」= 没配价（configured:false，费用统计记未计价），不是免费。 */
+function pricingToSave() {
+  const f = form.value;
+  const configured = f.pricingInput > 0 || f.pricingOutput > 0 || f.pricingCacheRead > 0 || f.pricingCacheWrite > 0;
+  if (!configured) return {};
+  return {
+    unit: 'per_1m' as const,
+    currency: f.pricingCurrency,
+    configured: true,
+    input: f.pricingInput, output: f.pricingOutput,
+    cacheRead: f.pricingCacheRead > 0 ? f.pricingCacheRead : undefined,
+    cacheWrite: f.pricingCacheWrite > 0 ? f.pricingCacheWrite : undefined,
+  };
 }
 
 async function addOrEditModel() {
@@ -426,7 +467,7 @@ async function addOrEditModel() {
         contextWindow: form.value.contextWindowK ? form.value.contextWindowK * 1024 : null,
         capabilities: form.value.capabilities,
         description: form.value.description,
-        pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
+        pricing: pricingToSave(),
       });
       ElMessage.success('已更新');
     } else {
@@ -438,7 +479,7 @@ async function addOrEditModel() {
         enabled: true, isDefault: false,
         capabilities: form.value.capabilities,
         description: form.value.description,
-        pricing: { input: form.value.pricingInput, output: form.value.pricingOutput },
+        pricing: pricingToSave(),
       });
       ElMessage.success('已添加');
     }
@@ -448,7 +489,7 @@ async function addOrEditModel() {
 
 function resetModelForm() {
   editingModelId.value = '';
-  form.value = { modelId: '', alias: '', type: 'llm', contextWindowK: 1024, capabilities: ['reasoning'], description: '', pricingInput: 0, pricingOutput: 0 };
+  form.value = { modelId: '', alias: '', type: 'llm', contextWindowK: 1024, capabilities: ['reasoning'], description: '', pricingInput: 0, pricingCacheRead: 0, pricingCacheWrite: 0, pricingOutput: 0, pricingCurrency: 'CNY' };
 }
 
 async function toggleEnabled(row: any) { if (row.isBuiltin) return; await store.updateModel(row.id, { enabled: row.enabled }); }
@@ -744,5 +785,14 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
   .batch-toolbar { flex-wrap: wrap; gap: 8px; font-size: 12px; padding: 8px 12px; }
   .model-card-foot { flex-wrap: wrap; gap: 8px; }
   .model-card-actions { width: 100%; margin-left: 0; flex-wrap: wrap; justify-content: flex-start; }
+}
+
+/* 价格四栏（2026-10-17 方案 §3.3）：2 列网格，窄屏 1 列（ADAPTATION-NOTES 已知坑） */
+.price-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; width: 100%; }
+.price-item { display: flex; align-items: center; gap: 8px; }
+.price-label { font-size: 12px; color: var(--el-text-color-regular, #cfd3dc); flex-shrink: 0; width: 56px; }
+.price-unit-tip { grid-column: 1 / -1; }
+@media (max-width: 700px) {
+  .price-grid { grid-template-columns: 1fr; }
 }
 </style>

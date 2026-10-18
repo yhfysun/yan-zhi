@@ -6,6 +6,7 @@ import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveT
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
+import { useCostStore } from './cost';
 import { useToolsStore } from './tools';
 import { useSettingsStore } from './settings';
 import { useFileStore } from './file';
@@ -368,6 +369,9 @@ import { SWEEP_INTERVAL_MS, shouldSweepConv } from './stale-run-sweep';
 
 export const useChatStore = defineStore('chat', () => {
   const conversations = ref<Conversation[]>([]);
+  // 费用账本（2026-10-17）：SSE 的 task:cost / task:cost_notice 转调它。
+  // ★ 只在此 store 内持有一个实例：Pinia 单例，组件侧 useCostStore() 拿到的是同一份。
+  const costStore = useCostStore();
 
   /**
    * 「显示浏览器页面对话」偏好（2026-10-16）：默认**隐藏**。
@@ -2660,6 +2664,16 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
 
         switch (event.type) {
           case 'connected': break;
+          // ★ 费用账本（2026-10-17，方案 §3.7）：两个事件都只进 cost store，
+          //   **不进消息流** —— 落进消息会进上下文，提醒自身在推高它提醒的数字（坑 #15）。
+          case 'task:cost': {
+            costStore.applyCostEvent(convId, event);
+            break;
+          }
+          case 'task:cost_notice': {
+            costStore.applyNoticeEvent(convId, event);
+            break;
+          }
           // ★★★ 执行面判据（P2-1，2026-10-10）：服务端单一给出，前端只服从。
           //   收到 bridge ⇒ 本任务的 browser_* 由服务端直连主进程执行，前端**跳过本地执行**
           //   （否则双执行：同一次调用打两遍页面）。老 server 不发本字段 → 不进入本分支 → 行为不变。

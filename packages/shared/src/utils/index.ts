@@ -169,3 +169,15 @@ export {
   type ResourceDirSpec,
   type TaskTypeSpec,
 } from './task-types';
+
+// 用量归一化（三协议 → TokenUsageDetail）——**计价的唯一输入**。
+// ★ 为什么放 shared：归一化必须发生在"协议边界"（core/llm），而计价与账本在 server，
+//   两端必须认同一份结构，否则各自定义 ⇒ 字段对不上时静默算错。
+export * from './token-usage';
+
+// 模型计价（含单位迁移兜底与「免费 ≠ 未配价」三态）——**金额的唯一算式**。
+export * from './model-cost';
+
+// 费用提醒器（D4：**只提醒，不停**）—— 整倍数档位去重 + hardStopCny 唯一例外。
+// ★ 与 `checkTaskBudgetHit` 刻意**不共用**：后者只有「停/不停」语义，混用会让提醒被当成停止信号。
+export * from './cost-notice';

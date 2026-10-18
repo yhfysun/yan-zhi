@@ -54,7 +54,19 @@ vi.mock('../stores', () => {
     loadPlatform: vi.fn(async () => ({ llm: [], vision: [], image: [], video: [] })),
     platformPoolOf: () => ({ llm: [], vision: [], image: [], video: [] }),
   };
-  return { useSettingsStore: () => settings, usePlatformStore: () => platform, useModelPoolStore: () => pool };
+  // 费用账本（2026-10-18 新增导出）： budget=null ⇒ 表单保持默认值，loadBudget 空转
+  const cost = {
+    budget: null, usageByConv: {}, noticesByConv: {}, usageLoading: {},
+    loadBudget: vi.fn(async () => {}), saveBudget: vi.fn(async () => true),
+    loadUsage: vi.fn(async () => {}),
+    usageOf: () => ({ costCny: 0, unpricedCalls: 0, byModel: [], bySource: [], recent: [], limitCny: 5 }),
+    costOf: () => 0, applyCostEvent: vi.fn(), applyNoticeEvent: vi.fn(),
+    dismissNotice: vi.fn(), activeNotice: () => null, resetNoticeView: vi.fn(),
+  };
+  return {
+    useSettingsStore: () => settings, usePlatformStore: () => platform, useModelPoolStore: () => pool,
+    useCostStore: () => cost,
+  };
 });
 
 vi.mock('../stores/plugin', () => ({

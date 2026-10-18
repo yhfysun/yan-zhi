@@ -2,8 +2,39 @@
 export * from './marketplace.js';
 export * from './cicd.js';
 
-/** 平台协议类型 */
-export type Protocol = 'openai' | 'anthropic' | 'custom';
+// ★ 用量明细（三协议归一化后的结构，见 utils/token-usage.ts）。
+//   types 直接引 utils 的**具体文件**（不经过 utils/index），避免与 utils 侧的导出形成环。
+import type { TokenUsageDetail } from '../utils/token-usage.js';
+
+/**
+ * 平台协议类型（2026-10-17 新增 `openai-responses`）。
+ *
+ * - `openai`：OpenAI **Chat Completions** 格式（`/v1/chat/completions`）—— 绝大多数厂商
+ * - `openai-responses`：OpenAI **Responses API** 格式（`/v1/responses`）
+ * - `anthropic`：Anthropic **Messages** 格式（`/v1/messages`）
+ * - `custom`：历史遗留值，**语义未定义**，运行时一律按 `openai` 处理；UI 不再提供该选项
+ */
+export type Protocol = 'openai' | 'openai-responses' | 'anthropic' | 'custom';
+
+/** 是否为 Responses API 协议 */
+export function isResponsesProtocol(p: unknown): boolean {
+  return p === 'openai-responses';
+}
+
+/**
+ * 协议归一化 —— **唯一实现**（读库 / 读 UI / 读导入 JSON 都走这里）。
+ *
+ * ★ 为什么要有它：`protocol` 在 DB 里是 TEXT，历史存量里有 `custom`、有空值、
+ *   将来还可能从导入的 JSON 里进来拼错的值。若在各处 `if (protocol === 'openai-responses')`
+ *   各自兜底，漏一处就是"选了 Responses 却按 Chat Completions 发"（不报错，只是功能不对）。
+ */
+export function normalizeProtocol(p: unknown): Protocol {
+  const v = String(p ?? '').trim();
+  if (v === 'openai-responses') return 'openai-responses';
+  if (v === 'anthropic') return 'anthropic';
+  if (v === 'openai' || v === 'custom' || v === '') return 'openai';
+  return 'openai'; // 未知值保守回落：Chat Completions 是兼容性最广的一种
+}
 
 /** 模型类型 */
 export type ModelType = 'llm' | 'embedding' | 'rerank' | 'image' | 'video' | 'audio' | 'tts';
@@ -33,6 +64,10 @@ export interface Platform {
   llmEnabled?: boolean;
   /** 是否为内置平台/模型，内置项只读 */
   isBuiltin?: boolean;
+  /** 内置厂商目录来源（2026-10-17 方案 §2.3）：非空 = 从目录添加的厂商平台。
+   *  ★ 语义分层：这类平台**连接配置只读**（baseUrl/协议来自厂商文档），但模型数据层
+   *  （拉模型/改价/可见性）对用户开放 —— 与服务端直写受管的内置平台（ollama-local 等）区分。 */
+  presetKey?: string;
   /** 请求停顿时间下限（毫秒），每次请求前随机停顿 [pauseMinMs, pauseMaxMs] 区间，避免短时间请求过多被限流 */
   pauseMinMs?: number;
   /** 请求停顿时间上限（毫秒） */
@@ -582,6 +617,17 @@ export interface ChatChunk {
      * ⇒ 先能看见，再谈优化（本项与"移除 system 尾部时间戳"配对）。
      */
     cachedTokens?: number;
+    /**
+     * ★ 归一化后的用量明细（2026-10-17）——**计价唯一输入**。
+     *
+     * 为什么不能只用上面三个字段计费：OpenAI 的 `cachedTokens` 是 `promptTokens` 的**子集**，
+     * 而 Anthropic 的 `cache_read` **不在** `input_tokens` 里 —— 两者语义相反。
+     * 拿 `promptTokens` 直接乘单价，必错其一（OpenAI 重复计缓存、Anthropic 漏掉缓存）。
+     *
+     * ★ 旧字段语义**冻结不动**：它们继续喂 `task.totalTokens` 的 token 预算；
+     *   本字段只喂成本计算。改旧字段 = 同时动两套口径。
+     */
+    detail?: TokenUsageDetail;
   };
   /**
    * ★ 流已**正常收尾**的标记（2026-10-09）。

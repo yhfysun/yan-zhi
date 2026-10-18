@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
+import { MODEL_PROVIDER_PRESETS, findProviderPreset, normalizeProtocol } from '@yan-zhi/shared';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 
@@ -47,6 +48,8 @@ const rowToP = (r: any) => ({
   /** 平台级「可供大模型调用」总开关：0 = 该平台全部模型对下拉与智能体动态选型不可见 */
   llm_enabled: r.llm_enabled === undefined || r.llm_enabled === null ? 1 : r.llm_enabled,
   is_builtin: !!r.is_builtin,
+  /** 内置厂商目录来源（2026-10-17 方案 §2.3）：NULL = 用户手动创建 */
+  preset_key: r.preset_key || null,
   pause_min_ms: r.pause_min_ms || 0,
   pause_max_ms: r.pause_max_ms || 0,
   created_at: r.created_at,
@@ -116,6 +119,80 @@ router.post('/ensure-local', (req: Request, res: Response) => {
   res.json({ data: rowToP(row) });
 });
 
+// === 内置厂商目录（2026-10-17 方案 §2.3） ===
+
+// GET /catalog —— 目录 + 各厂商「已添加」态（页面宫格的数据源）。
+// ★ 目录是「可添加清单」而不是「已有平台」：已添加态由 preset_key 反查，
+//   不往库里塞 16 个没有 Key 的空平台（那会污染模型下拉）。
+router.get('/catalog', (req: Request, res: Response) => {
+  const added = db
+    .prepare('SELECT id, name, preset_key FROM platform WHERE user_id = ? AND preset_key IS NOT NULL')
+    .all(userId(req)) as any[];
+  const byKey = new Map(added.map((r) => [r.preset_key, r]));
+  res.json({
+    data: MODEL_PROVIDER_PRESETS.map((p) => {
+      const row = byKey.get(p.key);
+      return {
+        ...p,
+        added: !!row,
+        platformId: row?.id || null,
+        platformName: row?.name || null,
+      };
+    }),
+  });
+});
+
+// POST /from-preset —— 从目录添加厂商：预填 baseUrl/协议，带上 Key 才真建平台。
+// 幂等：同一 preset_key 已存在则返回既有平台（宫格重复点击不报错），有传 Key 时补一把。
+router.post('/from-preset', (req: Request, res: Response) => {
+  const { presetKey, apiKey, name } = req.body || {};
+  const preset = typeof presetKey === 'string' ? findProviderPreset(presetKey) : undefined;
+  if (!preset) { res.status(400).json({ error: '未知的厂商目录项' }); return; }
+  const uid = userId(req);
+  const existing = db.prepare('SELECT * FROM platform WHERE user_id = ? AND preset_key = ?').get(uid, preset.key) as any;
+  if (existing) {
+    if (apiKey) { try { addApiKey(existing.id, uid, apiKey, '默认Key'); } catch { /* 重复 Key 等忽略 */ } }
+    res.json({ data: rowToP(existing), existed: true });
+    return;
+  }
+  const id = uuid();
+  const now = Date.now();
+  const tx = db.transaction(() => {
+    db.prepare(
+      'INSERT INTO platform (id, user_id, name, protocol, api_url, api_key_enc, headers_json, status, is_builtin, preset_key, pause_min_ms, pause_max_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, 0, 0, ?)',
+    ).run(id, uid, name || preset.name, preset.protocol, preset.baseUrl, apiKey || null, '{}', preset.key, now);
+    if (apiKey) addApiKey(id, uid, apiKey, '默认Key');
+  });
+  tx();
+  res.json({ data: rowToP(db.prepare('SELECT * FROM platform WHERE id = ?').get(id)) });
+});
+
+// POST /custom-model —— 「自定义模型」一步式对话框的后端（方案 §2.4）。
+// ★ 为什么必须一个事务：分两步（先建平台再建模型）会在中间失败时留下
+//   「平台建了、模型没建」的半成品 —— 用户看到平台卡片点进去是空的，且删不干净。
+router.post('/custom-model', (req: Request, res: Response) => {
+  const { apiFormat, modelId, displayName, apiUrl, apiKey, pricing } = req.body || {};
+  const protocol = normalizeProtocol(apiFormat);
+  const mid = typeof modelId === 'string' ? modelId.trim() : '';
+  if (!mid) { res.status(400).json({ error: '模型 ID 为必填项' }); return; }
+  const label = (typeof displayName === 'string' && displayName.trim() ? displayName.trim() : mid).slice(0, 64);
+  const uid = userId(req);
+  const id = uuid();
+  const now = Date.now();
+  const tx = db.transaction(() => {
+    db.prepare(
+      'INSERT INTO platform (id, user_id, name, protocol, api_url, api_key_enc, headers_json, status, is_builtin, preset_key, pause_min_ms, pause_max_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, NULL, 0, 0, ?)',
+    ).run(id, uid, label, protocol, apiUrl || null, apiKey || null, '{}', now);
+    if (apiKey) addApiKey(id, uid, apiKey, '默认Key');
+    db.prepare(
+      'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json, pricing_json, description, enabled, is_default, is_builtin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)',
+    ).run(uuid(), id, uid, mid, label, 'llm', null,
+      JSON.stringify(inferCapabilitiesFromModelId(mid)), JSON.stringify(pricing || {}), null, 1, 0, now);
+  });
+  tx();
+  res.json({ data: { platformId: id, modelId: mid } });
+});
+
 router.delete('/:id', (req: Request, res: Response) => {
   const pid = req.params.id;
   const existing = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
@@ -177,9 +254,12 @@ router.get('/:pid/models', (req: Request, res: Response) => {
 
 router.post('/:pid/models', (req: Request, res: Response) => {
   const pid = req.params.pid;
-  const platform = db.prepare('SELECT id, is_builtin FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
+  const platform = db.prepare('SELECT id, is_builtin, preset_key FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
-  if ((platform as any).is_builtin) { res.status(403).json({ error: '内置平台不可添加模型' }); return; }
+  // ★ 内置平台的禁改范围是**连接配置**（PATCH 拦），不是模型数据（2026-10-18 方案 §2.3）：
+  //   目录来源的内置厂商平台（有 preset_key）要能「拉模型 / 设默认」，否则加完 Key 没法用。
+  //   非目录来源的内置平台（如 ollama-local，模型由本地模型商城服务端直写）维持原守卫。
+  if ((platform as any).is_builtin && !(platform as any).preset_key) { res.status(403).json({ error: '内置平台不可添加模型' }); return; }
   const { modelId, alias, type, contextWindow, capabilities, pricing, enabled, isDefault, description } = req.body || {};
   if (!modelId) { res.status(400).json({ error: 'modelId 为必填项' }); return; }
   const id = uuid();
@@ -239,9 +319,10 @@ router.delete('/models/:mid', (req: Request, res: Response) => {
 router.post('/models/batch', (req: Request, res: Response) => {
   const { platformId, models } = req.body || {};
   if (!platformId || !Array.isArray(models)) { res.status(400).json({ error: 'platformId 和 models 为必填项' }); return; }
-  const platform = db.prepare('SELECT id, is_builtin FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId(req));
+  const platform = db.prepare('SELECT id, is_builtin, preset_key FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId(req));
   if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
-  if ((platform as any).is_builtin) { res.status(403).json({ error: '内置平台不可拉取或修改模型' }); return; }
+  // 同 POST /:pid/models：目录来源内置平台开放模型数据层（拉模型），非目录内置仍禁
+  if ((platform as any).is_builtin && !(platform as any).preset_key) { res.status(403).json({ error: '内置平台不可拉取或修改模型' }); return; }
   const uid = userId(req);
   const now = Date.now();
 

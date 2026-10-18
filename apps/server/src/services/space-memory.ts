@@ -552,8 +552,11 @@ const PROGRESS_FILE = 'progress.md';
 /** 进度明细文件的读取上限（按需读，不在注入路径上） */
 const PROGRESS_READ_MAX_CHARS = 8000;
 
-/** 任务终结形态 —— 决定写入的措辞（模型据此判断"能不能接着做"） */
-export type TaskProgressOutcome = 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop' | 'loop_guard_stop';
+/** 任务终结形态 —— 决定写入的措辞（模型据此判断"能不能接着做"）
+ *  ★ `cost_notice`（2026-10-17）不是终结形态：费用提醒时任务**继续运行**（D4 只提醒不停），
+ *    写它是为了让"进度已写入空间记忆"这句提醒文案在**当下**就是真的（坑 #16）——
+ *    若等收尾再写，任务被用户手动中断时那句就是假话。 */
+export type TaskProgressOutcome = 'completed' | 'max_steps' | 'aborted' | 'failed' | 'empty_args_loop' | 'loop_guard_stop' | 'cost_notice';
 
 const OUTCOME_LABEL: Record<TaskProgressOutcome, string> = {
   completed: '已完成',
@@ -566,6 +569,8 @@ const OUTCOME_LABEL: Record<TaskProgressOutcome, string> = {
   // 防失控循环闸门硬停（2026-10-10）：同一工具被反复拦截 → 判定此路不通、拒绝接力直接收尾。
   // 留痕原因同 empty_args_loop —— 否则同目录新会话不知道上一批是"撞闸门停的"。
   loop_guard_stop: '循环闸门中断',
+  // 费用提醒（D4：任务不停，这只是"仪表读数"落一条痕，不是状态迁移）
+  cost_notice: '费用提醒',
 };
 
 function getTaskProgressPath(space: Pick<SpaceRow, 'id' | 'dir_path'>): string {

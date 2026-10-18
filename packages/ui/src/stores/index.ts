@@ -6,6 +6,8 @@ export { useSkillStore } from './skill';
 export { useDistillStore } from './distill';
 export { useAgentStore } from './agent';
 export { useModelPoolStore } from './model-pool';
+export { useCostStore } from './cost';
+export type { ConvUsage, CostNotice } from './cost';
 export { useSettingsStore } from './settings';
 export { useAuthStore } from './auth';
 export { useLicenseStore } from './license';

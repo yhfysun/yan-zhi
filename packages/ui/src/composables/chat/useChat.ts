@@ -19,6 +19,7 @@ import {
   useDistillStore,
   useSettingsStore,
   useLicenseStore,
+  useCostStore,
 } from '../../stores';
 import { useGitStore } from '../../stores/git';
 import { useSceneConfigStore } from '../../stores/sceneConfig';
@@ -67,6 +68,7 @@ function createChat() {
   const sceneConfigStore = useSceneConfigStore();
   const spaceStore = useSpaceStore();
   const fileStore = useFileStore();
+  const costStore = useCostStore();
   const distillStore = useDistillStore();
   const isMobile = useIsMobile();
   // E12: 移动端不支持内置浏览器——浏览器 tab/面板相关逻辑统一门控
@@ -2567,10 +2569,43 @@ async function healStalePlatform() {
     mountedSkillIds.value = conv?.skillIds ? [...conv.skillIds] : [];
     initMountSelection();
     fileStore.loadConversationFiles(id);
+    // ★ 费用账单（2026-10-17）：切会话拉一次库累计 —— 刷新页面后金额不丢（验收 9）。
+    //   运行中的增量由 task:cost 事件驱动（chat store switch 转调 cost store）。
+    void costStore.loadUsage(id);
+    costStore.resetNoticeView(id);
     await nextTick();
     if (messagesRef.value) {
       messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
       handleScroll();
+    }
+  }
+
+  /**
+   * 「新开会话继续」（费用提醒条上的按钮，2026-10-17 方案 §3.6）。
+   *
+   * ★★ D4 语义：**用户主动，程序绝不代劳** —— 自动发消息 = 直接扣钱，
+   *   而那正是提醒想避免的事。所以这里只做两件事：
+   *   ① 建一个带原上下文（智能体/平台/模型/空间）的新会话；
+   *   ② 把接力指令**预填进输入框**（不发送），用户 review 后自己发。
+   *
+   * ★ 为什么复用 createConversation 而不是新造"任务快照"：进度早在空间记忆里
+   *   （recordTaskProgress / appendTaskProgress 每批都写），接力指令让模型先去读它。
+   */
+  async function startContinuedConversation() {
+    const conv = currentConv.value;
+    if (!conv) return;
+    try {
+      const newId = await store.createConversation(`继续：${conv.title || '任务'}`, {
+        agentId: conv.agentId || undefined,
+        platformId: conv.platformId || undefined,
+        modelId: conv.modelId || undefined,
+        spaceId: conv.spaceId || undefined,
+      });
+      await selectConv(newId);
+      // ★ 必须在 selectConv **之后**设值：它会 resetDraftState() 清空输入框
+      input.value = `继续任务「${conv.title || '任务'}」。先读取空间记忆中该任务的进度与未完成步骤，从断点继续，不要重复已完成的部分。`;
+    } catch {
+      ElMessage.error('创建继续会话失败，请重试');
     }
   }
 
@@ -4058,6 +4093,8 @@ async function healStalePlatform() {
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
     queuedList, sendQueuedNow, editQueued, removeQueued, flushQueuedAfterTask,
     startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, sending, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
+    // 费用账单（2026-10-17）：会话头金额 / 提醒条 / 「新开会话继续」
+    costStore, startContinuedConversation,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
     resolveArtifactDirFor,
     openConvDir,

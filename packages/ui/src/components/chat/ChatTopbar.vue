@@ -4,6 +4,46 @@
       <el-icon :size="20"><Expand /></el-icon>
     </el-button>
     <span class="conv-title-display">{{ currentConv?.title || '新任务' }}</span>
+    <!-- 会话累计花费（2026-10-17 方案 §3.7）：等宽小字，点击展开明细（按模型/按来源）。
+         ★ 不加大图标、不加 tip —— 它是"仪表读数"，不是入口。金额读库（切会话/刷新不丢），
+           运行中由 task:cost 事件实时刷新。花费为 0 时不占位。 -->
+    <el-popover
+      v-if="convCost.costCny > 0"
+      placement="bottom-start"
+      :width="320"
+      trigger="click"
+      :show-arrow="false"
+      popper-class="cost-detail-popover"
+    >
+      <template #reference>
+        <span class="conv-cost" :class="{ 'is-over': convCost.costCny >= convCost.limitCny }">¥{{ fmtCost(convCost.costCny) }}</span>
+      </template>
+      <div class="cost-detail">
+        <div class="cost-detail-head">
+          <span>本会话累计花费</span>
+          <span class="cost-detail-total">¥{{ fmtCost(convCost.costCny) }}</span>
+        </div>
+        <div class="cost-detail-limit">提醒档位 ¥{{ fmtCost(convCost.limitCny) }}（到阈值只提醒，任务不会停）</div>
+        <div v-if="convCost.byModel.length" class="cost-detail-sec">
+          <div class="cost-detail-sec-title">按模型</div>
+          <div v-for="m in convCost.byModel" :key="m.label" class="cost-detail-row">
+            <span class="cost-detail-label" :title="m.label">{{ m.label }}</span>
+            <span class="cost-detail-val">¥{{ fmtCost(m.cny) }}</span>
+          </div>
+        </div>
+        <div v-if="convCost.bySource.length" class="cost-detail-sec">
+          <div class="cost-detail-sec-title">按来源</div>
+          <div v-for="s in convCost.bySource" :key="s.source" class="cost-detail-row">
+            <span class="cost-detail-label">{{ sourceLabel(s.source) }}（{{ s.calls }} 次）</span>
+            <span class="cost-detail-val">¥{{ fmtCost(s.cny) }}</span>
+          </div>
+        </div>
+        <div v-if="convCost.unpricedCalls > 0" class="cost-detail-warn">
+          另有 {{ convCost.unpricedCalls }} 次调用未配置价格，实际金额可能更高
+        </div>
+        <div class="cost-detail-note">内置价为参考价（2026-10-17），实际以厂商账单为准</div>
+      </div>
+    </el-popover>
     <el-tooltip content="新建任务" placement="bottom">
       <el-button size="small" circle class="new-chat-btn" @click="startNewChat()" aria-label="新建任务">
         <!-- 用 DocumentAdd（"新建文档"）而非 EditPen：EditPen 已被输入框工具条的
@@ -85,13 +125,30 @@ import ChatFilePanel from './ChatFilePanel.vue';
 const {
   drawerOpen, currentConv, store, isMobile, authStore,
   contextSidebarOpen, toggleContextSidebar,
-  startNewChat,
+  startNewChat, costStore,
 } = useChat();
 
 const settingsStore = useSettingsStore();
 // E12: 移动端不支持内置浏览器——隐藏「浏览器预览」下拉入口
 const { supportsBrowser } = usePlatform();
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
+
+/** 本会话累计花费（等宽小字的数据源；0 时不渲染） */
+const convCost = computed(() => costStore.usageOf(currentConv.value?.id));
+
+/** 金额格式：<1 显示 4 位（小额很常见，否则 ¥0.0032 会显示成 ¥0.00），≥1 显示 2 位 */
+function fmtCost(n: number): string {
+  const v = Number(n) || 0;
+  return v < 1 ? v.toFixed(4) : v.toFixed(2);
+}
+
+/** 调用来源的中文名（与后端 source 口径一致） */
+const SOURCE_LABELS: Record<string, string> = {
+  main: '主对话', sub_agent: '子智能体', summary: '进展总结', judge: '自评/判断', probe: '连通性测试',
+};
+function sourceLabel(s: string): string {
+  return SOURCE_LABELS[s] || s;
+}
 
 /** 本机身份首字母（本机单机端的中性头像，不暴露 guest 这个内部身份） */
 const localIdentityInitial = computed(() => '本');
@@ -117,4 +174,33 @@ function openConsoleTab() {
   margin-left: 6px;
 }
 
+/* 会话累计花费：等宽小字（仪表读数，不是入口） */
+.conv-cost {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.72;
+  cursor: pointer;
+  user-select: none;
+}
+.conv-cost:hover { opacity: 1; }
+.conv-cost.is-over { color: var(--el-color-warning); opacity: 1; }
+
+/* 花费明细弹层（el-popover 内容虽是 Teleport，但 Vue3 下仍带本组件的 scoped 属性） */
+.cost-detail { font-size: 12px; line-height: 1.6; }
+.cost-detail-head { display: flex; justify-content: space-between; font-weight: 600; }
+.cost-detail-total { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.cost-detail-limit { margin-top: 2px; color: var(--el-text-color-secondary, #909399); }
+.cost-detail-sec { margin-top: 10px; }
+.cost-detail-sec-title { font-weight: 600; margin-bottom: 2px; }
+.cost-detail-row { display: flex; justify-content: space-between; gap: 12px; }
+.cost-detail-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--el-text-color-regular, #cfd3dc);
+}
+.cost-detail-val { flex-shrink: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.cost-detail-warn { margin-top: 10px; color: var(--el-color-warning); }
+.cost-detail-note { margin-top: 8px; color: var(--el-text-color-secondary, #909399); }
 </style>

@@ -3,8 +3,8 @@
 // 内置工具（file/cmd/browser 等）后端直接执行，刷新不中断。
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
-import type { Platform, Model, Message, DeltaToolCall } from '@yan-zhi/shared';
-import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit } from '@yan-zhi/shared';
+import type { Platform, Model, Message, DeltaToolCall, TokenUsageDetail, ModelPricing } from '@yan-zhi/shared';
+import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit, formatCostNotice, isMissingUsage, estimateTokens } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
@@ -18,6 +18,10 @@ import {
   writeMemoryItems, flushMemoriesBeforeCompression, parseExtractedItems, type MemoryWriteItem,
 } from './services/memory-service.js';
 import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDecision, loadTaskMemoryForConversation, formatTaskMemoryContext, appendTaskProgress, readTaskProgressForConversation, formatProgressContext } from './services/space-memory.js';
+// 费用账本（2026-10-17）：会话级累计 + 逐次明细的唯一写入口；阈值**只提醒不停**（D4）
+import {
+  recordUsage, getConversationUsage, checkAndSaveNotice, getCostBudgetConfig, summarizeByModel, resolveModelPricing,
+} from './services/usage-ledger.js';
 import {
   resolveExperienceBase, resolveSkillDraftsDir, appendExperienceEntry, buildExperienceContextForConversation,
   listExperienceSummaries, type ExperienceKind,
@@ -521,6 +525,18 @@ interface LlmTask {
   lastCachedTokens?: number;
   lastPromptTokens?: number;
   cachedTokensTotal?: number;
+  /**
+   * ★ 费用账本内存增量（2026-10-17，方案 §3.4）—— **仅用于展示与对账**。
+   *
+   * ★ 阈值判定**不读这里**，读库（`conversation_usage.cost_cny`）：
+   *   内存值进程重启即归零 ⇒ 同一会话"刚超 ¥5、重启后又从 ¥0 开始"，
+   *   阈值被绕过且极难复现（用户只会说"提醒时灵时不灵"）。
+   *   本字段补的只是"调用已完成但尚未 upsert"的窗口（recordUsage 是同步的，窗口极小）。
+   */
+  costCnyTotal?: number;
+  costUnpricedCalls?: number;
+  /** 单价缓存（platformId::modelId → 单价）：避免每轮调用都读 model 表 */
+  costPricingCache?: Map<string, ModelPricing | undefined>;
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -2089,7 +2105,13 @@ export function accumulateToolCallDeltas(acc: DeltaToolCall[], deltas: DeltaTool
     const prevArgs = prev.function?.arguments || '';
     const incArgs = cur.function?.arguments || '';
     // 重发整段（以既有内容为前缀）→ 替换；正常增量 → 追加
-    const isResend = incArgs.length > prevArgs.length && incArgs.startsWith(prevArgs);
+    // ★ 等长也必须判重发（2026-10-18，mock server 真跑逼出的真实 bug）：
+    //   OpenAI Responses 的 `response.output_item.done` 会带**完整** arguments
+    //   （真实 API 也是如此），而此前的增量分片已拼出**同样长度**的完整串
+    //   ⇒ 只判 `>` 时等长漏过 ⇒ 拼成 `{...}{...}` 非法 JSON ⇒ parseToolArguments 失败
+    //   ⇒ **工具静默不执行**。等长且互为前缀 ⇒ 两者必然相同 ⇒ 替换是无操作，
+    //   绝不会误伤正常增量（增量的下一片不会以既有全文开头）。
+    const isResend = incArgs.length >= prevArgs.length && incArgs.startsWith(prevArgs);
     const merged: any = {
       ...prev, ...cur,
       function: cur.function
@@ -3197,6 +3219,9 @@ async function runReActLoop(task: LlmTask, params: {
     // ★ P1-9：任务预算触达状态（null=未触达）。token/墙钟触达时内层 break 跳出，
     //   收尾块按 kind 生成对应文案，且**拒绝自动接力**（预算已尽，接力只会立刻再触达）。
     let taskBudgetHit: { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null = null;
+    // ★ 费用硬停触达（2026-10-17，D4 唯一例外）：用户自填 hardStopCny > 0 才会出现，
+    //   出厂默认 0 ⇒ 本标记永远是 null。与 taskBudgetHit 同路收尾，但文案独立。
+    let costHardStop: { used: number; limit: number } | null = null;
     // 累计已消耗步数（跨自动接力批次），用于 step 事件与日志的连续计数
     let emittedStep = 0;
     // ★ 循环闸门硬停标记（2026-10-10）：同一工具被反复拦截达阈值 → 置位 → 跳出内层循环走收尾
@@ -3413,6 +3438,13 @@ async function runReActLoop(task: LlmTask, params: {
           }
         };
 
+        // ★ 费用记账回调（2026-10-17）：本步所有 LLM 调用（含重试/降级路径）共用。
+        //   meta 由 client 填**实际发出请求的**平台/模型 —— 候选池故障转移后也不会记错模型。
+        //   三条重试路径的 opts 都必须带上它，漏一条那笔钱就静默不进账本。
+        const usageRecorder = (source: 'main' | 'sub_agent' | 'summary' | 'judge') =>
+          (detail: TokenUsageDetail | undefined, meta: { platformId?: string; modelId?: string }) =>
+            recordTaskUsage(task, source, detail, meta, { messages: llmMessages, content: fullContent, reasoning: fullReasoning });
+
         const streamOpts = {
           tools: tools.length > 0 ? tools : undefined,
           temperature: effOpts.temperature,
@@ -3422,6 +3454,7 @@ async function runReActLoop(task: LlmTask, params: {
           presencePenalty: effOpts.presencePenalty,
           reasoningEffort: effOpts.reasoningEffort,
           signal: task.abortController.signal,
+          onUsage: usageRecorder('main'),
         };
 
         try {
@@ -3449,6 +3482,7 @@ async function runReActLoop(task: LlmTask, params: {
             await consumeStream({
               temperature: effOpts.temperature, maxTokens: effOpts.maxTokens,
               signal: task.abortController.signal,
+              onUsage: usageRecorder('main'),
             });
           } else if (isPoolFailoverable(e)) {
             // ★ 候选池故障转移（model-candidate-pools P3）：长任务长时间打同一个模型
@@ -3894,6 +3928,21 @@ async function runReActLoop(task: LlmTask, params: {
         // 被循环闸门硬停 → 立刻跳出本轮，不再进入下一轮 ReAct
         if (forceStoppedByLoopGuard) break;
 
+        // ── 轮末费用判定（D4：只提醒，程序不停）──────────────────────────
+        //   ★ 与轮首的 checkTaskBudgetHit（token/墙钟，停止语义）**刻意不同址**：
+        //     成本只有"提醒"语义，混进停止判定点会被下游收尾块当刹车处理。
+        //   ★ 提醒默认**不落会话消息**（emit task:cost_notice + 前端提示条）——
+        //     落进消息会进上下文，后续每轮输入都多带这段，提醒自身在推高它提醒的数字（坑 #15）。
+        if (noticeCostAtRoundEnd(task) === 'hard_stop') {
+          const cfg = getCostBudgetConfig();
+          costHardStop = { used: getConversationUsage(task.conversationId)?.costCny || 0, limit: cfg.hardStopCny };
+          logger.warn(
+            `[llm-task] 费用硬停（用户自填 hardStopCny）: conv=${task.conversationId} ` +
+            `used=¥${costHardStop.used.toFixed(2)} limit=¥${costHardStop.limit.toFixed(2)}`,
+          );
+          break;
+        }
+
         // 继续下一轮 ReAct
         emittedStep++;
       }
@@ -3915,6 +3964,10 @@ async function runReActLoop(task: LlmTask, params: {
         ? `已达到任务 token 总预算（累计 ${taskBudgetHit.used} / 上限 ${taskBudgetHit.limit}），请检查任务是否需要拆分，或在智能体 config_json 调高 totalTokenBudget。`
         : taskBudgetHit?.kind === 'wallclock'
         ? `已达到任务墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟，已扣除等外部进程的时间），请检查任务是否需要拆分，或在智能体 config_json 调高 wallClockMinutes。`
+        : costHardStop
+        // ★ D4 唯一例外：费用硬停（用户自填 hardStopCny，出厂默认 0 = 永不触发）。
+        //   措辞必须点明"这是你自己设的上限"—— 默认配置下用户永远看不到这句。
+        ? `已达到费用硬停上限（本会话累计约 ¥${costHardStop.used.toFixed(2)} / 上限 ¥${costHardStop.limit.toFixed(2)}），任务已停止。如需继续：调高「设置 → 费用预算 → 硬停上限」后把任务要求再发一次；设为 0 表示永不停（只提醒）。`
         : `已达到最大循环数（${budgetReached}），请检查任务是否需要拆分或调高工具配置。`;
       let summaryText = '';
       try {
@@ -3932,6 +3985,10 @@ async function runReActLoop(task: LlmTask, params: {
           continuationCount,
           autoContinueMaxRounds,
           conversationId: convId,
+          // ★ 费用记账（2026-10-17）：结账自评也真花钱，source='judge'。
+          //   注意它发生在**本批循环已结束**之后 ⇒ 轮末判定看不到这笔；
+          //   这正是"库累计"口径要覆盖的场景（下一批轮末会读到）。
+          onUsage: (detail, meta) => recordTaskUsage(task, 'judge', detail, meta, { messages: history }),
         });
         summaryText = judged.summary;
         if (summaryText) {
@@ -3975,7 +4032,7 @@ async function runReActLoop(task: LlmTask, params: {
         //     · token 预算：接力前把**累计值对齐到预算**（否则下一批第一步就再次触发），
         //       相当于"本任务已用满配额，这批是最后一次"；
         //     · 墙钟：把**起点前移**为下批开始时刻，即"每批给一份完整墙钟预算"。
-        const budgetExhausted = !!taskBudgetHit;
+        const budgetExhausted = !!taskBudgetHit || !!costHardStop;
         if (expectedContinue && !aborted && !degenerate) {
           continuationCount++;
           // ★★★ 总时长失控闸（2026-10-09）：弹性墙钟（每批一份）之后，批次数不足以兜底 ——
@@ -4219,6 +4276,8 @@ async function decideAutoContinue(args: {
   /** 允许的最大接力批次数；0 = 关闭自动接力 */
   autoContinueMaxRounds: number;
   conversationId: string;
+  /** 费用记账回调（2026-10-17；source='judge' —— 自评/接力判断也真花钱） */
+  onUsage?: (detail: TokenUsageDetail | undefined, meta: { platformId?: string; modelId?: string }) => void;
 }): Promise<{ shouldContinue: boolean; summary: string; reason: string; /** 该继续但被闸门挡住的真实原因（无则空） */ blockedBy?: string }> {
   const { continuationCount, autoContinueMaxRounds, conversationId } = args;
   // ★★★ 轮次上限 / 总开关不再**提前 return**（2026-09-29 修）：
@@ -4238,7 +4297,7 @@ async function decideAutoContinue(args: {
   let summary = '';
   let modelSaysContinue = false;
   try {
-    const r = await summarizeOnMaxSteps(args.client, args.systemPrompt, args.history, args.maxSteps, 'main');
+    const r = await summarizeOnMaxSteps(args.client, args.systemPrompt, args.history, args.maxSteps, 'main', args.onUsage);
     summary = r.text || '';
     modelSaysContinue = r.shouldContinue;
   } catch { /* 总结失败不接力（保守） */ }
@@ -4282,7 +4341,7 @@ async function maybeReplanOnContinue(args: { task: LlmTask; conversationId: stri
   if (!llm) return false;
   const client = new LlmClient(llm.platform, llm.model);
   const planText = remaining.map((s, i) => `${i + 1}. [${s.status}] ${s.title}${s.note ? ` —— ${s.note}` : ''}`).join('\n');
-  const resp = await client.chat([
+  const replanMsgs: Message[] = [
     { id: 'sys', conversationId: '', role: 'system', content: '你是任务计划的 re-planner。根据最新进展判断剩余步骤是否仍然有效，只输出 JSON。', createdAt: 0 },
     {
       id: 'usr', conversationId: '', role: 'user', createdAt: 0,
@@ -4299,7 +4358,12 @@ async function maybeReplanOnContinue(args: { task: LlmTask; conversationId: stri
         '已部分失效或需要增删步骤 → planStillValid=false，revisedSteps 给出**完整的剩余步骤修订版**（未提到的步骤将被丢弃）。',
       ].join('\n'),
     },
-  ], { temperature: 0.2, maxTokens: 1024, responseFormat: { type: 'json_object' } });
+  ];
+  const resp = await client.chat(replanMsgs, {
+    temperature: 0.2, maxTokens: 1024, responseFormat: { type: 'json_object' },
+    // ★ 费用记账（2026-10-17）：计划重划是接力决策链的一环，source='judge'。
+    onUsage: (detail, meta) => recordTaskUsage(args.task, 'judge', detail, meta, { messages: replanMsgs }),
+  });
   const raw = (resp.delta?.content || '').trim();
   if (!raw) return false;
   let parsed: any;
@@ -6421,6 +6485,10 @@ async function runSubAgentImpl(
       let fullReasoning = '';
       let usageTokens = 0;
       const toolCallAcc: DeltaToolCall[] = [];
+      // ★ 费用记账回调（2026-10-17）：子智能体用量按**自己的**平台/模型单价计价，
+      //   计进**同一会话账本**（source='sub_agent'）—— 与主循环同库不同源，对账时能分开看。
+      const subUsageRecorder = (detail: TokenUsageDetail | undefined, meta: { platformId?: string; modelId?: string }) =>
+        recordTaskUsage(task, 'sub_agent', detail, meta, { messages: llmMessages, content: fullContent, reasoning: fullReasoning });
 
       // 候选池故障转移（model-candidate-pools，2026-10-15 用户规则）：父模型失败才换候选
       let subStreamDone = false;
@@ -6435,6 +6503,7 @@ async function runSubAgentImpl(
           frequencyPenalty: agent.frequency_penalty,
           presencePenalty: agent.presence_penalty,
           signal: task.abortController.signal,
+          onUsage: subUsageRecorder,
         })) {
           if (chunk.usage) {
             usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0);
@@ -6448,30 +6517,11 @@ async function runSubAgentImpl(
             emit(task, { type: 'chunk', reasoning: chunk.delta.reasoningContent, subAgentId: resolvedId, parentToolCallId });
           }
           if (chunk.delta?.toolCalls) {
-            for (const tc of chunk.delta.toolCalls) {
-              let idx = tc.index;
-              if (idx === undefined) {
-                if (tc.id) {
-                  const existById = toolCallAcc.findIndex(x => x.id === tc.id);
-                  idx = existById >= 0 ? existById : toolCallAcc.length;
-                } else if (tc.function?.name) {
-                  idx = toolCallAcc.length;
-                } else {
-                  idx = toolCallAcc.length > 0 ? toolCallAcc.length - 1 : 0;
-                }
-              }
-              if (!toolCallAcc[idx]) {
-                toolCallAcc[idx] = { ...tc };
-              } else {
-                const prev = toolCallAcc[idx];
-                toolCallAcc[idx] = {
-                  ...prev, ...tc,
-                  function: tc.function
-                    ? { ...prev.function, ...tc.function, arguments: (prev.function?.arguments || '') + (tc.function!.arguments || '') }
-                    : prev.function,
-                };
-              }
-            }
+            // ★ 2026-10-18 收敛到**唯一实现** accumulateToolCallDeltas（此前这里是第二份
+            //   内联累积：朴素拼接，没有"网关重发完整 arguments"的去重）⇒ Responses 的
+            //   output_item.done 一带完整参数就拼成 `{...}{...}` 非法 JSON，工具静默不执行。
+            //   同一语义两处实现必然漂移 —— 这是本项目用血换回来的判据。
+            accumulateToolCallDeltas(toolCallAcc, chunk.delta.toolCalls);
             emit(task, { type: 'tool_call', toolCalls: [...toolCallAcc], subAgentId: resolvedId, parentToolCallId });
           }
         }
@@ -6496,6 +6546,7 @@ async function runSubAgentImpl(
           for await (const chunk of client.chatStream(llmMessages, {
             temperature: agent.temperature, maxTokens: agent.max_tokens,
             signal: task.abortController.signal,
+            onUsage: subUsageRecorder,
           })) {
             if (chunk.usage) { usageTokens = (chunk.usage.promptTokens || 0) + (chunk.usage.completionTokens || 0); }
             if (chunk.delta?.content) { fullContent += chunk.delta.content; emit(task, { type: 'chunk', content: chunk.delta.content, subAgentId: resolvedId, parentToolCallId }); }
@@ -6594,6 +6645,11 @@ async function runSubAgentImpl(
       emit(task, { type: 'message:updated', messageId: assistantMsgId, content: fullContent, reasoning: fullReasoning, toolCalls: toolCallAcc.length > 0 ? toolCallAcc : undefined });
       // ★ D（2026-10-07）：累计子智能体自身 token 消耗（与主循环同口径粗估），供预算闸判定
       subTokensTotal += usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2);
+      // ★ 坑 #8（2026-10-17 修）：子智能体用量此前**只进自己的** subTokensTotal，
+      //   父任务的 token 预算对子智能体完全无感 —— 一个狂派子智能体的父任务能把
+      //   总 token 烧到天际而 totalTokens 纹丝不动。这里同步累加进父任务
+      //   （口径：子智能体的每次 LLM 调用都真实消耗父任务的配额）。
+      task.totalTokens = (task.totalTokens || 0) + (usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2));
       // ★ D：子智能体预算闸（token/墙钟）。触达不硬杀——跳出内层，走与步数上限相同的接力决策，
       //   只是在接力判定处**拒绝续批**（预算已尽，续批只会立刻再触达）。
       subBudgetHit = sharedCheckTaskBudgetHit(subBudgets, subTokensTotal, subStartedAt);
@@ -6658,7 +6714,9 @@ async function runSubAgentImpl(
           toolCallId: m.toolCallId, createdAt: m.createdAt,
         }));
         // kind='main' → 带 CONTINUE 自评指令（子智能体接力同样需要模型自评"还有活没干完"）
-        const r = await summarizeOnMaxSteps(client, systemPrompt, history, subStepBudget, 'main');
+        // ★ 费用记账：子智能体的自评按**自己的**模型单价计入同一会话账本（source='sub_agent'）
+        const r = await summarizeOnMaxSteps(client, systemPrompt, history, subStepBudget, 'main',
+          (detail, meta) => recordTaskUsage(task, 'sub_agent', detail, meta, { messages: history }));
         shouldContinue = r.shouldContinue;
         if (r.text) {
           // 总结落库在**子智能体自己的上下文**里（带 parentToolCallId），
@@ -6693,7 +6751,9 @@ async function runSubAgentImpl(
         content: m.content, toolCalls: m.toolCalls,
         toolCallId: m.toolCallId, createdAt: m.createdAt,
       }));
-      const summary = await summarizeOnMaxSteps(client, systemPrompt, history, maxSteps, 'sub');
+      // ★ 费用记账：给父智能体的收尾总结同样花钱（source='sub_agent'，同库同单价）
+      const summary = await summarizeOnMaxSteps(client, systemPrompt, history, maxSteps, 'sub',
+        (detail, meta) => recordTaskUsage(task, 'sub_agent', detail, meta, { messages: history }));
       if (summary.text) {
         resultText = `${summary.text}\n\n（注：子智能体已达到最大循环步数（${maxSteps}），以上为阶段总结。）`;
       }
@@ -6720,6 +6780,8 @@ async function summarizeOnMaxSteps(
   history: Message[],
   maxSteps: number,
   kind: 'main' | 'sub',
+  /** 费用记账回调（2026-10-17；不传 = 不记账，如记忆抽取等不计入口径的调用） */
+  onUsage?: (detail: TokenUsageDetail | undefined, meta: { platformId?: string; modelId?: string }) => void,
 ): Promise<{ text: string | null; shouldContinue: boolean; /** 结构化 critic 的置信度（P1-10；文本兜底路径无此值） */ confidence?: number }> {
   try {
     const llmMessages: Message[] = [];
@@ -6753,6 +6815,7 @@ async function summarizeOnMaxSteps(
         const resp = await client.chat(sMsgs, {
           temperature: 0.3, maxTokens: 2048,
           responseFormat: { type: 'json_object' },
+          onUsage,
         });
         const raw = (resp.delta?.content || '').trim();
         const parsed = raw ? JSON.parse(raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()) : null;
@@ -6772,7 +6835,7 @@ async function summarizeOnMaxSteps(
       id: 'sum', conversationId: '', role: 'user', createdAt: 0,
       content: bodyInstruction,
     });
-    const resp = await client.chat(llmMessages, { temperature: 0.3, maxTokens: 1024 });
+    const resp = await client.chat(llmMessages, { temperature: 0.3, maxTokens: 1024, onUsage });
     const raw = (resp.delta?.content || '').trim();
     if (!raw) return { text: null, shouldContinue: false };
     // 剥离 CONTINUE 行：它是指令信号，不该出现在给用户看的总结正文里
@@ -6807,6 +6870,156 @@ function lastAssistantText(convId: string, floor = 0): string {
     return (hit?.content || '').trim();
   } catch {
     return '';
+  }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 费用账本接线（2026-10-17，方案 §3.4）—— **任务链路唯一的用量记录出口**
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ★ 为什么必须收口成一个函数：主循环 / 子智能体 / 总结 / 自评判断各有调用点，
+ *   在每处各算一遍乘法 = 必然漂移（本项目"同一语义多处实现"的老教训）。
+ *   client 的 `onUsage` 钩子在**协议边界归一化后**回调一次（三协议同一结构），
+ *   本函数负责：估算兜底 → 单价解析 → 落账本 → 内存增量。
+ *
+ * ★ 与阈值判定的关系：本函数只**记账**；"要不要提醒"在轮末由 checkAndSaveNotice
+ *   单独判（D4：只提醒，程序不停）。两者刻意不耦合同一个函数。
+ */
+export function recordTaskUsage(
+  task: LlmTask,
+  source: 'main' | 'sub_agent' | 'summary' | 'judge',
+  detail: TokenUsageDetail | undefined,
+  meta: { platformId?: string; modelId?: string },
+  ctx: { messages?: unknown[]; content?: string; reasoning?: string },
+): void {
+  try {
+    const platformId = meta.platformId || task.platformId;
+    const modelId = meta.modelId || task.modelId;
+    let d = detail;
+    let estimated = false;
+    if (!d || isMissingUsage(d)) {
+      // ★ 坑 #13：中转站乱报（usage 全 0 且响应非空）= **没给**，不是"免费"。
+      //   按内容估算并标 estimated（UI 显示 ≈）—— 直接当 0 会让费用恒 ¥0、阈值永不触发。
+      const inputText = ctx.messages ? JSON.stringify(ctx.messages) : '';
+      d = {
+        inputTokens: inputText ? estimateTokens(inputText) : 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: estimateTokens(`${ctx.content || ''}${ctx.reasoning || ''}`),
+        estimated: true,
+      };
+      estimated = true;
+    }
+    const pricing = resolveTaskModelPricing(task, platformId, modelId);
+    const { costCny, unpriced } = recordUsage({
+      conversationId: task.conversationId,
+      taskId: task.id,
+      userId: task.userId,
+      platformId,
+      modelId,
+      source,
+      detail: d,
+      pricing,
+      // 美元平台按**调用当时**的汇率折算（改汇率不重算历史，见 CostBudgetConfig.usdToCny）
+      usdToCny: getCostBudgetConfig().usdToCny,
+      estimated,
+    });
+    // 内存增量**仅用于展示与对账**；阈值判定读库（进程重启不归零，见 usage-ledger 注释）
+    task.costCnyTotal = (task.costCnyTotal || 0) + costCny;
+    if (unpriced) task.costUnpricedCalls = (task.costUnpricedCalls || 0) + 1;
+  } catch (e: any) {
+    // 记账失败绝不能炸任务：用户的钱要紧，任务的现场更要紧
+    logger.warn(`[llm-task] 费用记账失败（不影响任务继续）: conv=${task.conversationId} err=${e?.message || e}`);
+  }
+}
+
+/** 单价解析（任务内缓存）：model 表用户配置 > 内置参考价；都没有 ⇒ undefined（unpriced 计数） */
+function resolveTaskModelPricing(task: LlmTask, platformId: string, modelId: string): ModelPricing | undefined {
+  try {
+    task.costPricingCache ||= new Map();
+    const key = `${platformId}::${modelId}`;
+    if (task.costPricingCache.has(key)) return task.costPricingCache.get(key);
+    // 先按任务用户找（用户自己配的价优先），找不到再按平台+模型找（种子/内置行）
+    const row =
+      (db.prepare('SELECT pricing_json FROM model WHERE platform_id = ? AND model_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1').get(platformId, modelId, task.userId) as any) ||
+      (db.prepare('SELECT pricing_json FROM model WHERE platform_id = ? AND model_id = ? ORDER BY created_at DESC LIMIT 1').get(platformId, modelId) as any);
+    const raw = row?.pricing_json ? JSON.parse(row.pricing_json) : undefined;
+    const pricing = resolveModelPricing(modelId, raw);
+    task.costPricingCache.set(key, pricing);
+    return pricing;
+  } catch {
+    return undefined; // 查表失败 ⇒ 按未配价计（unpriced），不猜
+  }
+}
+
+/**
+ * 智能体级单任务费用上限（`agent.config_json.maxCostCny`，元；0/缺省 = 跟随会话档位）。
+ *
+ * ★ 与会话档位取**更严者**（方案 §3.5.1）：用户在智能体上配了更紧的上限，
+ *   那个任务的提醒就该更早 —— 否则"给这个智能体设了 ¥1 上限"是一句空话。
+ * ★ 判定前**现读**（与 `liveMaxSteps()` 同口径）：改完下一轮即生效，不等下一个任务。
+ */
+function resolveAgentCostLimit(task: LlmTask): number {
+  try {
+    if (!task.agentId) return 0;
+    const row = db.prepare('SELECT config_json FROM agent WHERE id = ?').get(task.agentId) as any;
+    const v = Number(JSON.parse(row?.config_json || '{}')?.maxCostCny);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  } catch {
+    return 0; // 读不到 ⇒ 只用会话档位（不猜）
+  }
+}
+
+/**
+ * 轮末费用判定（D4：**只提醒，程序不停**）。
+ *
+ * ★ 与 token/墙钟闸（checkTaskBudgetHit，在轮首）**刻意不同址**：那个函数只有
+ *   「停/不停」两种语义，成本只有「提醒」语义 —— 混进同一个判定点，下游收尾块
+ *   就会顺手把提醒当停止信号处理（D4 名存实亡）。
+ *
+ * @returns 'hard_stop' 时调用方应走停止路径（D4 唯一例外，hardStopCny 默认 0 = 不启用）
+ */
+export function noticeCostAtRoundEnd(task: LlmTask): 'warn' | 'exceeded' | 'hard_stop' | null {
+  try {
+    const baseCfg = getCostBudgetConfig(); // ★ 判定前现读（用户调低阈值立即生效，勿快照）
+    // 智能体级上限与会话档位取更严者（0 = 未配 ⇒ 只用会话档位）
+    const agentLimit = resolveAgentCostLimit(task);
+    const cfg: typeof baseCfg =
+      agentLimit > 0 && agentLimit < baseCfg.limitCny ? { ...baseCfg, limitCny: agentLimit } : baseCfg;
+    const notice = checkAndSaveNotice(task.conversationId, cfg);
+    if (!notice.kind) {
+      // 没提醒也推一次累计（驱动会话头金额小字）
+      emit(task, { type: 'task:cost', kind: null, usedCny: getConversationUsage(task.conversationId)?.costCny || 0, limitCny: cfg.limitCny });
+      return null;
+    }
+    if (notice.kind === 'hard_stop') {
+      emit(task, { type: 'task:cost', kind: 'hard_stop', usedCny: getConversationUsage(task.conversationId)?.costCny || 0, limitCny: cfg.hardStopCny });
+      return 'hard_stop';
+    }
+    // ★ 坑 #16：任务不停 ⇒ 文案里"进度已写入"必须**先真写**再发。
+    //   ★ 这里直接调 appendTaskProgress 而**不是** recordTaskProgress：后者会顺带
+    //     触发经验提炼/记忆蒸馏（收尾语义），每轮提醒都跑一遍既浪费又会 mid-task 调 LLM。
+    const usage = getConversationUsage(task.conversationId);
+    const usedCny = usage?.costCny || 0;
+    const noticeText = formatCostNotice(usedCny, cfg.limitCny, {
+      unpricedCalls: usage?.unpricedCalls || 0,
+      byModel: summarizeByModel(task.conversationId),
+      didWriteProgress: true,
+    });
+    void appendTaskProgress(task.conversationId, 'cost_notice', noticeText, { steps: task.step });
+    emit(task, {
+      type: 'task:cost_notice',
+      kind: notice.kind,
+      text: noticeText,
+      usedCny,
+      limitCny: cfg.limitCny,
+      units: notice.units,
+    });
+    return notice.kind;
+  } catch (e: any) {
+    logger.warn(`[llm-task] 费用判定失败（不影响任务继续）: conv=${task.conversationId} err=${e?.message || e}`);
+    return null;
   }
 }
 

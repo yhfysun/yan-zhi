@@ -2,6 +2,9 @@
 export * from './platform/types';
 export * from './llm/client';
 export * from './llm/stream';
+// 上游 URL 拼接的唯一实现（2026-10-17）：server 的 llm-proxy 与 core 的 LlmClient **必须共用**，
+// 否则两端各拼一次迟早漂移成两套规则（国产厂商的路径问题是最大受害者）。
+export * from './llm/api-path';
 export { reorderToolGroups } from './llm/message-order';
 export * from './llm/tool-args-advice';
 export * from './mcp/client';

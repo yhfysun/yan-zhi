@@ -14,6 +14,7 @@
         <el-select v-model="protocolFilter" size="small" placeholder="全部协议" class="filter-select">
           <el-option label="全部协议" value="" />
           <el-option label="OpenAI" value="openai" />
+          <el-option label="OpenAI Responses" value="openai-responses" />
           <el-option label="Anthropic" value="anthropic" />
           <el-option label="自定义" value="custom" />
         </el-select>
@@ -26,6 +27,9 @@
         <el-button v-if="platformFilterActive" size="small" text @click="clearPlatformFilter">重置</el-button>
       </template>
     </SearchToolbar>
+
+    <!-- 内置厂商宫格（2026-10-17 方案 §2.3）：目录是「可添加清单」，不往库里塞空平台 -->
+    <PlatformPresetGrid ref="presetGridRef" @pick="onPickPreset" @open="openPlatform" @custom="showCustom = true" />
 
     <div class="platform-grid">
       <template v-if="store.loading">
@@ -83,15 +87,16 @@
       <el-form label-width="90px">
         <el-form-item label="名称"><el-input v-model="form.name" placeholder="如：OpenAI / DeepSeek" /></el-form-item>
         <el-form-item label="协议">
+          <!-- 三格式（2026-10-17 方案 §2.1）：文案对齐厂商文档；custom 是历史遗留值，UI 不再提供 -->
           <el-select v-model="form.protocol">
-            <el-option label="OpenAI" value="openai" />
-            <el-option label="Anthropic" value="anthropic" />
-            <el-option label="自定义" value="custom" />
+            <el-option label="OpenAI Chat Completions 格式" value="openai" />
+            <el-option label="OpenAI Responses API 格式" value="openai-responses" />
+            <el-option label="Anthropic Messages 格式" value="anthropic" />
           </el-select>
         </el-form-item>
         <el-form-item label="API URL">
           <el-input v-model="form.apiUrl" placeholder="https://api.openai.com（填到域名，不要带 /v1）" />
-          <div class="form-tip">填基础地址即可，系统自动拼接 <code>/v1/chat/completions</code>、<code>/v1/models</code> 等路径</div>
+          <div class="form-tip">填基础地址即可（火山 /api/v3、智谱 /api/paas/v4 这类带版本段的照厂商文档填）；端点路径自动拼接</div>
         </el-form-item>
         <el-form-item label="API Key">
           <div class="apikey-list">
@@ -188,6 +193,11 @@
     <!-- Mobile FAB -->
     <el-button type="primary" :icon="Plus" circle class="mobile-fab" @click="openAdd" />
 
+    <!-- 「添加 {厂商}」对话框（宫格未添加项点击后弹出） -->
+    <AddPresetDialog v-model="showAddPreset" :preset="addPresetTarget" @saved="onPresetSaved" />
+    <!-- 「自定义模型」一步式对话框（平台 + 模型 + Key 一个事务） -->
+    <CustomModelDialog v-model="showCustom" @created="onCustomCreated" />
+
     <!-- 本地模型商城：国内源下载 / 测试启用 / 删除 / Ollama 接入 -->
     <LocalModelMarket v-model="showLocalMarket" />
   </div>
@@ -207,10 +217,38 @@ import LocalModelMarket from '../components/LocalModelMarket.vue';
 import FormDialog from '../components/FormDialog.vue';
 import StatusActionBar from '../components/common/StatusActionBar.vue';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
+import PlatformPresetGrid from '../components/PlatformPresetGrid.vue';
+import AddPresetDialog from '../components/AddPresetDialog.vue';
+import CustomModelDialog from '../components/CustomModelDialog.vue';
+import type { ModelProviderPreset } from '@yan-zhi/shared';
 
 const store = usePlatformStore();
 const showAdd = ref(false);
 const showLocalMarket = ref(false);
+
+// ── 内置厂商宫格 / 自定义模型（2026-10-17 方案 §2.3/§2.4） ──
+const presetGridRef = ref<InstanceType<typeof PlatformPresetGrid> | null>(null);
+const showAddPreset = ref(false);
+const addPresetTarget = ref<ModelProviderPreset | null>(null);
+const showCustom = ref(false);
+
+function onPickPreset(preset: ModelProviderPreset) {
+  addPresetTarget.value = preset;
+  showAddPreset.value = true;
+}
+
+/** 厂商添加成功：刷新宫格「已添加」态 + 平台列表（新平台立即可见） */
+async function onPresetSaved() {
+  void presetGridRef.value?.refresh();
+  await store.loadPlatforms();
+}
+
+/** 自定义模型创建成功：同上，并直接打开该平台详情（用户下一步通常是设默认） */
+async function onCustomCreated(platformId: string) {
+  void presetGridRef.value?.refresh();
+  await store.loadPlatforms();
+  if (platformId) openPlatform(platformId);
+}
 
 // 本地模型商城关闭后重拉计数（拉取/接入本地模型会影响平台模型数）
 watch(showLocalMarket, (v) => { if (!v) refreshModelCounts(); });

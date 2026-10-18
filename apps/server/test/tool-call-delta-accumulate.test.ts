@@ -76,6 +76,20 @@ describe('accumulateToolCallDeltas：同批多工具不串位', () => {
     expect(JSON.parse(acc[0].function.arguments)).toEqual({ a: 1, b: 2 });
   });
 
+  it('★★ 回归（2026-10-18 mock 真跑逼出）：Responses output_item.done 重发**等长**完整 arguments → 也必须替换', () => {
+    // 真实形态：OpenAI Responses 流 = 增量分片先拼出完整 JSON，随后
+    // `response.output_item.done` 的 item.arguments 再带一遍**同样长度**的完整串。
+    // 旧判据 `>` 等长漏过 ⇒ 拼成 {"tz":"UTC"}{"tz":"UTC"} ⇒ 工具静默不执行。
+    const acc: any[] = [];
+    accumulateToolCallDeltas(acc, [d({ index: 0, id: 'call_mock_1', function: { name: 'get_time', arguments: '' } })]);
+    accumulateToolCallDeltas(acc, [d({ index: 0, function: { arguments: '{"tz":' } })]);
+    accumulateToolCallDeltas(acc, [d({ index: 0, function: { arguments: '"UTC"}' } })]);
+    // done 帧：完整 arguments（与已拼出的等长）
+    accumulateToolCallDeltas(acc, [d({ index: 0, id: 'call_mock_1', function: { name: 'get_time', arguments: '{"tz":"UTC"}' } })]);
+    expect(acc[0].function.arguments).toBe('{"tz":"UTC"}');
+    expect(JSON.parse(acc[0].function.arguments)).toEqual({ tz: 'UTC' });
+  });
+
   it('★ 正常增量分片仍按拼接（不能把增量误判成重发）', () => {
     const acc: any[] = [];
     accumulateToolCallDeltas(acc, [d({ id: 'i1', function: { name: 'tool_y', arguments: '{"a"' } })]);

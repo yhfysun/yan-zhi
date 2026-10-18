@@ -10,6 +10,8 @@ import { builtinDouyinAgentDefs } from './builtin-douyin-agents.js';
 import { builtinYanzhiAgentDefs } from './builtin-yanzhi-agent.js';
 // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
 import { builtinShopAgentDefs } from './builtin-shop-agents.js';
+// 费用账本的建表/读写 SQL（纯字符串，不 import db，便于单测用真 SQLite 跑一遍）
+import { CONVERSATION_USAGE_SCHEMA, USAGE_EVENT_SCHEMA } from './usage-ledger-sql.js';
 // 场景（模式）配置内置种子 —— 与前端 packages/ui/src/config/scenes.ts 双源维护（见该文件头注）
 import { builtinSceneDefs } from './builtin-scene-defs.js';
 // 任务类型内置种子 —— 直接 re-export shared 的 TASK_TYPES（单一数据源，不另抄一份）
@@ -747,6 +749,10 @@ try { db.exec('ALTER TABLE platform ADD COLUMN pause_max_ms INTEGER NOT NULL DEF
 // 平台级「可供大模型调用」总开关：0 = 该平台下所有模型对模型下拉与智能体动态选型全部不可见，
 // 用于一键屏蔽模型上百个的平台。与 status（健康检查）无关，默认开。
 try { db.exec('ALTER TABLE platform ADD COLUMN llm_enabled INTEGER NOT NULL DEFAULT 1'); } catch {}
+
+// 内置厂商目录来源标记（2026-10-17 方案 §2.3）：记录该平台从哪个目录项添加而来，
+// 便于「重置为默认」与统计。NULL = 用户手动创建（非目录来源）。
+try { db.exec('ALTER TABLE platform ADD COLUMN preset_key TEXT'); } catch {}
 
 // 平台多 API Key 池：一个平台可配置多个 Token，轮询使用、失败自动切换、按失败次数优先选择。
 // fail_count 按时间窗口衰减（超过窗口未失败则视为 0），避免临时性错误永久拉低优先级。
@@ -5026,6 +5032,23 @@ db.exec(`
   );
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_scene_config_order ON scene_config(sort_order, id)'); } catch {}
+
+// ===== 费用账本（2026-10-17）=====
+// 两张表分工：
+//   conversation_usage = **会话级累计**（单行 upsert，原子累加）——阈值判定的**唯一事实来源**；
+//   usage_event        = **逐次调用明细**（用于对账 / 报表 / 解释"钱花在哪"）。
+//
+// ★★ 为什么累计值必须落库而不是放内存：判定若读内存 `task.cost`，进程/后端重启后归零
+//    ⇒ 同一个会话"刚超 ¥5、重启后又从 ¥0 开始" ⇒ 阈值被绕过且极难复现
+//    （用户只会说"提醒时灵时不灵"）。
+//
+// ★ `cost_noticed_units` / `cost_warned_at` 是**提醒去重状态**，同样必须落库：
+//   长任务每轮结束都判定一次、自动接力每批也判；放内存或靠前端去重都会重复弹。
+db.exec(CONVERSATION_USAGE_SCHEMA);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_conversation_usage_updated ON conversation_usage(updated_at)'); } catch {}
+
+db.exec(USAGE_EVENT_SCHEMA);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_usage_event_conv ON usage_event(conversation_id, created_at)'); } catch {}
 
 // 内置场景种子 upsert（与 seedAgents 同语义）：
 //   - 内置行 id 固定为 scene_<key>，已存在 → 按代码收敛覆盖（force_sync，含用户改过的内容也回代码默认）；

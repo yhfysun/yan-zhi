@@ -9,7 +9,7 @@ import {
   MAX_RETRY,
   shouldRetryStatus,
 } from '../services/token-pool.js';
-import { buildProtocolHeaders } from '@yan-zhi/core';
+import { buildProtocolHeaders, resolveUpstreamUrl, type UpstreamKind } from '@yan-zhi/core';
 import {
   isDashscopePlatform,
   dashscopeNativeRoot,
@@ -79,12 +79,14 @@ async function forward(upstream: Response, res: ExpressResponse): Promise<void> 
 async function proxyWithRetry(
   p: any,
   anthropic: boolean,
-  path: string,
+  kind: UpstreamKind,
   body: any,
   res: ExpressResponse,
   isStream: boolean,
 ): Promise<void> {
-  const url = `${baseUrl(p)}/${path}`;
+  // ★ 与 LlmClient 共用同一个拼接函数：版本段由 base 决定（火山 /api/v3、智谱 /api/paas/v4、
+  //   百炼 /compatible-mode/v1 的 base 自带版本段，再拼一个 v1/ 上去必然 404）。
+  const url = resolveUpstreamUrl(baseUrl(p), kind);
   const triedIds: string[] = [];
   const fallbackKey = p.api_key_enc || '';
 
@@ -134,7 +136,7 @@ router.post('/chat/completions', async (req: Request, res: ExpressResponse) => {
   const p = loadPlatform(req);
   if (!p) { platformNotFound(res, req); return; }
   try {
-    await proxyWithRetry(p, false, 'v1/chat/completions', (req.body as any)?.payload, res, true);
+    await proxyWithRetry(p, false, 'chat', (req.body as any)?.payload, res, true);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
@@ -144,7 +146,20 @@ router.post('/messages', async (req: Request, res: ExpressResponse) => {
   const p = loadPlatform(req);
   if (!p) { platformNotFound(res, req); return; }
   try {
-    await proxyWithRetry(p, true, 'v1/messages', (req.body as any)?.payload, res, true);
+    await proxyWithRetry(p, true, 'messages', (req.body as any)?.payload, res, true);
+  } catch (e: any) {
+    res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
+  }
+});
+
+// ★ Responses API（2026-10-17）：请求体与 Chat Completions 不同（instructions + input[]），
+//   但**鉴权头仍是 Bearer**（与 openai 同源），所以这里 anthropic=false。
+//   不要给它单独写一份 header 逻辑 —— 那是漂移的开始。
+router.post('/responses', async (req: Request, res: ExpressResponse) => {
+  const p = loadPlatform(req);
+  if (!p) { platformNotFound(res, req); return; }
+  try {
+    await proxyWithRetry(p, false, 'responses', (req.body as any)?.payload, res, true);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
@@ -154,7 +169,7 @@ router.post('/embeddings', async (req: Request, res: ExpressResponse) => {
   const p = loadPlatform(req);
   if (!p) { platformNotFound(res, req); return; }
   try {
-    await proxyWithRetry(p, false, 'v1/embeddings', (req.body as any)?.payload, res, false);
+    await proxyWithRetry(p, false, 'embeddings', (req.body as any)?.payload, res, false);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
@@ -264,7 +279,7 @@ router.post('/images/generations', async (req: Request, res: ExpressResponse) =>
     return;
   }
   try {
-    await proxyWithRetry(p, false, 'v1/images/generations', payload, res, false);
+    await proxyWithRetry(p, false, 'images', payload, res, false);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
@@ -275,7 +290,7 @@ router.post('/videos', async (req: Request, res: ExpressResponse) => {
   const p = loadPlatform(req);
   if (!p) { platformNotFound(res, req); return; }
   try {
-    await proxyWithRetry(p, false, 'v1/videos', (req.body as any)?.payload, res, false);
+    await proxyWithRetry(p, false, 'videos', (req.body as any)?.payload, res, false);
   } catch (e: any) {
     res.status(502).json({ error: `代理请求失败: ${e?.message || e}` });
   }
@@ -298,7 +313,7 @@ router.get('/models', async (req: Request, res: ExpressResponse) => {
       let upstream: Response;
       try {
         // 按平台协议选鉴权头：Anthropic 用 x-api-key，Bearer 会被官方 API 直接 401
-        upstream = await fetch(`${baseUrl(p)}/v1/models`, { headers: upstreamHeaders(p, apiKey, p.protocol === 'anthropic') });
+        upstream = await fetch(resolveUpstreamUrl(baseUrl(p), 'models'), { headers: upstreamHeaders(p, apiKey, p.protocol === 'anthropic') });
       } catch (e: any) {
         if (token) recordFailure(token.id);
         if (attempt < MAX_RETRY - 1 && (token || fallbackKey)) continue;
@@ -333,7 +348,7 @@ router.post('/preview-models', async (req: Request, res: ExpressResponse) => {
   // 鉴权头走唯一实现（P2 收敛；此前又手写了一份 anthropic-version）
   const h = { ...buildProtocolHeaders(anthropic ? 'anthropic' : 'openai', apiKey || ''), ...(headers || {}) };
   try {
-    const upstream = await fetch(`${String(apiUrl).replace(/\/$/, '')}/v1/models`, { headers: h });
+    const upstream = await fetch(resolveUpstreamUrl(String(apiUrl), 'models'), { headers: h });
     const text = await upstream.text().catch(() => '');
     res.status(upstream.status).setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
     res.send(text);
