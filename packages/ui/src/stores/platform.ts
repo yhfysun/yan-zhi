@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { Platform, Model, ModelType, PlatformApiKey } from '@yan-zhi/shared';
-import { CHAT_MODEL_TYPES } from '@yan-zhi/shared';
+import { CHAT_MODEL_TYPES, runPricingUnitMigration, PRICING_UNIT_FLAG_KEY } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient } from '@yan-zhi/core';
 import type { CapabilityTestKind, CapabilityTestResult } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
@@ -67,6 +67,31 @@ export function rowToModel(r: any): Model {
 
 function tryParse(v: string) {
   try { return JSON.parse(v); } catch { return {}; }
+}
+
+/**
+ * ★★ 定价单位落库迁移（UI 端，坑 #20）：把本端库里仍是「元/千 token」的旧定价 ×1000 → 「元/百万」。
+ *
+ * 为什么 UI 端也要跑一遍：`addModel` / `updateModel` 在离线直连库分支下**也是直接写 `model` 表**的。
+ * 只迁移 server 端 ⇒ 本端读到的仍是旧的「元/千」值，用户一编辑就**原样写回**，
+ * 于是同一条记录两端单位不一致 —— 金额时大时小 1000 倍，且表现为"这台机器上算出来的钱不对"，极难复现。
+ *
+ * ⇒ 换算与驱动的**唯一实现在 `@yan-zhi/shared`**（`utils/pricing-migration.ts`），
+ *   server 端（`services/pricing-unit-migration.ts`）与本端调的是**同一段逻辑**，不会漂移。
+ *
+ * ★ 幂等 + 不阻塞：只改 `unit !== 'per_1m'` 的行（改写后必带 per_1m ⇒ 第二次 0 写）；
+ *   每个会话只跑一次，且失败不外抛（读时 `normalizePricing` 仍兜底，最坏只是"没迁移"）。
+ */
+let pricingUnitMigrated = false;
+
+async function ensurePricingUnitMigrated(): Promise<void> {
+  if (pricingUnitMigrated) return;
+  pricingUnitMigrated = true; // 先置位：一次会话内不重试，避免每次读表都扫一遍
+  try {
+    await runPricingUnitMigration(getPlatformAdapter().db, { flagKey: PRICING_UNIT_FLAG_KEY });
+  } catch {
+    /* 迁移失败不阻塞读模型；读时兜底仍在 */
+  }
 }
 
 /** 从模型 ID 自动推断模型类型 */
@@ -215,6 +240,7 @@ export const usePlatformStore = defineStore('platform', () => {
       return;
     }
     const adapter = getPlatformAdapter();
+    await ensurePricingUnitMigrated(); // 读之前先把旧「元/千」定价统一成「元/百万」（坑 #20）
     const rows = platformId
       ? await adapter.db.query<any>('SELECT * FROM model WHERE platform_id = ? ORDER BY is_default DESC', [platformId])
       : await adapter.db.query<any>('SELECT * FROM model ORDER BY platform_id, is_default DESC');
@@ -352,6 +378,7 @@ export const usePlatformStore = defineStore('platform', () => {
       throw new Error('添加模型失败');
     }
     const adapter = getPlatformAdapter();
+    await ensurePricingUnitMigrated(); // 写之前先统一单位，避免把「元/千」值原样写回（坑 #20）
     const id = uid('m_');
     await adapter.db.exec(
       'INSERT INTO model (id, platform_id, model_id, alias, type, context_window, enabled, is_default, is_builtin, capabilities_json, pricing_json, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)',
@@ -388,6 +415,7 @@ export const usePlatformStore = defineStore('platform', () => {
       return;
     }
     const adapter = getPlatformAdapter();
+    await ensurePricingUnitMigrated(); // 同上：编辑保存前先把单位统一（坑 #20）
     const sets: string[] = [];
     const params: unknown[] = [];
     if (patch.alias !== undefined) { sets.push('alias = ?'); params.push(patch.alias); }

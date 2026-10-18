@@ -122,6 +122,7 @@ private get isResponses() { return this.platform.protocol === 'openai-responses'
 // upstreamFetch('v1/responses', body, { ... })  ← 仍需走代理分支
 ```
 
+
 `supportsEmbeddings`：Responses 平台**保留** embeddings（`/v1/embeddings` 是独立端点），只有 anthropic 才隐藏。别顺手写成 `!isAnthropic && !isResponses`。
 
 **后端代理**：`llm-proxy.ts` 增加
@@ -129,7 +130,6 @@ private get isResponses() { return this.platform.protocol === 'openai-responses'
 ```ts
 router.post('/responses', ...proxyWithRetry(p, false, 'v1/responses', payload, res, true));
 ```
-
 
 鉴权头沿用 `buildProtocolHeaders`（Bearer），**不要**给 responses 单独写一份 header 逻辑。
 
@@ -585,86 +585,103 @@ v1 把按钮放在"任务已结束"的收尾消息里 —— D4 下任务不会�
 - 不在聊天页新增常驻大图标/教程 tip（只保留金额小字 + 触达提示）
 - 不在提醒时改会话标题 / 不改任务状态（提醒是"仪表读数"，不是状态迁移）
 
-
 ---
 
 ## 8. 实施进度（P0 地基，2026-10-17 夜 ~ 10-18 凌晨）
 
-**策略：先做零冲突的新文件层。** 工作区有并行会话的在途改动（`llm-task-manager.ts`
+**策略：先做零冲突的新文件层。** 工作区有并行会话的在途改动（`llm-task-manager.ts`  
 +337、`db.ts` +30、`chat.ts` +57），被占用的文件不动。
 
-> ⚠️ 本文档在 00:03 被并行会话覆盖过一次（§8 丢失后重写）。**并行会话下别相信"文档当前内容
+> ⚠️ 本文档在 00:03 被并行会话覆盖过一次（§8 丢失后重写）。**并行会话下别相信"文档当前内容>   
 > 就是我写的那份"**，关键结论以代码和测试用例为准。
 
-| # | 模块 | 文件 | 测试 | 变异验证 |
-| - | ---- | ---- | ---- | -------- |
-| 1 | 路径拼接 | `packages/core/src/llm/api-path.ts`（新） | 11 ✅ | 双向钉住（无条件加 v1 → 8 红；永不加 → 3 红） |
-| 2 | 用量归一化 | `packages/shared/src/utils/token-usage.ts`（新） | 13 ✅ | Anthropic 误用减法口径 → 打红 |
-| 3 | 计价 | `packages/shared/src/utils/model-cost.ts`（新） | 15 ✅ | `/1e6` 改成 `/1e3`（差 1000 倍）→ 5 红 |
-| 4 | 内置参考价 | `packages/shared/src/model-pricing-presets.ts`（新） | 16 ✅ | 匹配顺序反转 → 4 红 |
-| **5** | **接入 client.ts** | 13 处 `'v1/...'` → `kind` 枚举；4 处 `urlDesc` → `describeUrl(kind)`；新增 `resolveUrl()` / `describeUrl()` | +1 守卫 ✅ | 插回 `'v1/chat/completions'` → 打红 |
-| **6** | **接入 llm-proxy.ts** | 5 处路由实参 + `/v1/models` 两处（原 `:301` / `:336`） | — | `tsc` 无新增错误 |
-| **7** | **真跑 HTTP** | `packages/core/src/llm/api-path.http.test.ts`（新） | 7 ✅ | 真起 server，断言**对端收到的 path** |
-| **8** | **Responses 协议** | `packages/core/src/llm/responses.ts`（新）+ `sse-frames.ts`（新） | 21 ✅ | tool index 固定 0 → 红；只取第一条 system → 红 |
-| **9** | **协议分派** | `shared/types`（`Protocol` + `normalizeProtocol`）、`client.ts`（`responsesStream` / `responsesChat` / `responsesChatTest` + 400 降级） | — | `tsc` 干净 |
-| **10** | **/responses 路由** | `llm-proxy.ts`（鉴权沿用 Bearer，**不单独写一份 header**） | — | `tsc` 干净 |
-| **11** | **★ usage.detail 埋点** | `shared/types`（`ChatChunk.usage.detail`）、`stream.ts` / `anthropic.ts` / `responses.ts` 三处协议边界 | +6 一致性 ✅ | Responses 复用错归一化函数 → 打红 |
-| **12** | **★ Anthropic 补采 cache_creation** | `anthropic.ts` 新增 `startUsage` 缓存（输入侧在 message_start、输出侧在 message_delta） | +3 ✅ | 不传 startUsage → 缓存写入用例打红 |
-| **13** | **账本两表 + 写入口** | `apps/server/src/usage-ledger-sql.ts`（新，纯 SQL 单一来源）+ `db.ts` 建表 + `services/usage-ledger.ts`（新，recordUsage/getConversationUsage/checkAndSaveNotice/getCostBudgetConfig/summarizeByModel） | 9 ✅ | 原子累加（禁读改写，注释钉死） |
-| **14** | **提醒器** | `packages/shared/src/utils/cost-notice.ts`（新，`maybeNoticeCost` + `formatCostNotice`） | 19 ✅ | 档位去重 / 默认永不停（hardStop=0）双向变异 |
-| **15** | **★ mock server 真跑** | `tools/mock-llm-server.cjs`（新，三协议固定 SSE + 工具调用 + usage 全 0 模式 + 请求计数）+ `mock-llm-server.http.test.ts`（新，真 HTTP × 真解析器） | 16 ✅ | 见下「抓到的真实 bug」 |
-| **16** | **★ 修 Responses 工具参数双拼** | `llm-task-manager.ts` `accumulateToolCallDeltas` 重发判据 `>` → `>=` | +1 回归 ✅ | 改回 `>` ⇒ 新用例精确打红（其余 7 例不红） |
-| **17** | **onUsage 钩子（core）** | `usage-hook.ts`（新，纯函数）+ `client.ts` chatStream/chat options；**非流式 OpenAI 路径补 `detail`**（此前漏了） | 6 ✅ | 多次 usage 只回调一次；流抛错不回调 |
-| **18** | **★ 任务链路记账（孤岛闭合）** | `llm-task-manager.ts` `recordTaskUsage` + 7 处调用点（主×2/子×3/judge×2）；单价任务内缓存；估算兜底 | 21 ✅ | 删估算分支 ⇒ 坑 #13 用例精确打红 |
-| **19** | **轮末提醒 + D4 例外** | `noticeCostAtRoundEnd`（轮末、与预算闸不同址）+ `task:cost`/`task:cost_notice` emit + 硬停收尾文案；子智能体 token 进父任务（坑 #8）；提醒前先 `appendTaskProgress`（坑 #16） | 含于 21 ✅ | 去重靠 `checkAndSaveNotice` 落库（cost-notice 19 例） |
-| **20** | **UI：金额/提醒条/设置/智能体上限** | `stores/cost.ts`（新）+ chat store 两个 case + `selectConv` 拉库 + ChatTopbar 金额小字与明细弹层 + ChatMessageList 提示条（新开会话继续/知道了/复制）+ Settings 通用「费用预算」块（高级含 hardStop）+ AgentEditDialog `maxCostCny` | cost store 10 ✅ | 后端路由 7 例（钳位/对账/刷新不丢） |
-| **21** | **★ 补 usdToCny（方案与实现的缺口）** | `CostBudgetConfig` 加 `usdToCny`（默认 7.1）+ `recordTaskUsage` 按调用当时汇率折算；智能体级上限 `resolveAgentCostLimit`（与会话档位取更严者，判定前现读） | 含于 28 ✅ | PUT 0 汇率 ⇒ 回落默认 |
+| #      | 模块                                | 文件                                                                                                                                                                                       | 测试       | 变异验证                                 |
+| ------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------ |
+| 1      | 路径拼接                              | `packages/core/src/llm/api-path.ts`（新）                                                                                                                                                   | 11 ✅     | 双向钉住（无条件加 v1 → 8 红；永不加 → 3 红）        |
+| 2      | 用量归一化                             | `packages/shared/src/utils/token-usage.ts`（新）                                                                                                                                            | 13 ✅     | Anthropic 误用减法口径 → 打红                |
+| 3      | 计价                                | `packages/shared/src/utils/model-cost.ts`（新）                                                                                                                                             | 15 ✅     | `/1e6` 改成 `/1e3`（差 1000 倍）→ 5 红      |
+| 4      | 内置参考价                             | `packages/shared/src/model-pricing-presets.ts`（新）                                                                                                                                        | 16 ✅     | 匹配顺序反转 → 4 红                         |
+| **5**  | **接入 client.ts**                  | 13 处 `'v1/...'` → `kind` 枚举；4 处 `urlDesc` → `describeUrl(kind)`；新增 `resolveUrl()` / `describeUrl()`                                                                                      | +1 守卫 ✅  | 插回 `'v1/chat/completions'` → 打红      |
+| **6**  | **接入 llm-proxy.ts**               | 5 处路由实参 + `/v1/models` 两处（原 `:301` / `:336`）                                                                                                                                             | —        | `tsc` 无新增错误                          |
+| **7**  | **真跑 HTTP**                       | `packages/core/src/llm/api-path.http.test.ts`（新）                                                                                                                                         | 7 ✅      | 真起 server，断言**对端收到的 path**           |
+| **8**  | **Responses 协议**                  | `packages/core/src/llm/responses.ts`（新）+ `sse-frames.ts`（新）                                                                                                                              | 21 ✅     | tool index 固定 0 → 红；只取第一条 system → 红 |
+| **9**  | **协议分派**                          | `shared/types`（`Protocol` + `normalizeProtocol`）、`client.ts`（`responsesStream` / `responsesChat` / `responsesChatTest` + 400 降级）                                                         | —        | `tsc` 干净                             |
+| **10** | **/responses 路由**                 | `llm-proxy.ts`（鉴权沿用 Bearer，**不单独写一份 header**）                                                                                                                                            | —        | `tsc` 干净                             |
+| **11** | **★ usage.detail 埋点**             | `shared/types`（`ChatChunk.usage.detail`）、`stream.ts` / `anthropic.ts` / `responses.ts` 三处协议边界                                                                                            | +6 一致性 ✅ | Responses 复用错归一化函数 → 打红              |
+| **12** | **★ Anthropic 补采 cache_creation** | `anthropic.ts` 新增 `startUsage` 缓存（输入侧在 message_start、输出侧在 message_delta）                                                                                                                 | +3 ✅     | 不传 startUsage → 缓存写入用例打红             |
+| **13** | **账本两表 + 写入口**                    | `apps/server/src/usage-ledger-sql.ts`（新，纯 SQL 单一来源）+ `db.ts` 建表 + `services/usage-ledger.ts`（新，recordUsage/getConversationUsage/checkAndSaveNotice/getCostBudgetConfig/summarizeByModel） | 9 ✅      | 原子累加（禁读改写，注释钉死）                      |
+| **14** | **提醒器**                           | `packages/shared/src/utils/cost-notice.ts`（新，`maybeNoticeCost` + `formatCostNotice`）                                                                                                     | 19 ✅     | 档位去重 / 默认永不停（hardStop=0）双向变异         |
+| **15** | **★ mock server 真跑**              | `tools/mock-llm-server.cjs`（新，三协议固定 SSE + 工具调用 + usage 全 0 模式 + 请求计数）+ `mock-llm-server.http.test.ts`（新，真 HTTP × 真解析器）                                                                   | 16 ✅     | 见下「抓到的真实 bug」                        |
+| **16** | **★ 修 Responses 工具参数双拼**          | `llm-task-manager.ts` `accumulateToolCallDeltas` 重发判据 `>` → `>=`                                                                                                                         | +1 回归 ✅  | 改回 `>` ⇒ 新用例精确打红（其余 7 例不红）           |
+| **17** | **★ 定价单位落库迁移（双端，坑 #20）**       | `shared/src/utils/pricing-migration.ts`（新：**换算 + 驱动的唯一实现**，复用 `normalizePricing` 的 ×1000）+ `server/services/pricing-unit-migration.ts`（新，同步 sqlite shim）+ `server/index.ts` 启动调用 + `ui/stores/platform.ts` 离线三处 `ensurePricingUnitMigrated` | 15 + 5 + 3 ✅ | 去掉 ×1000 ⇒ 9 红；UPDATE 参数错位 ⇒ 2 红；删 UI 调用 ⇒ 2 红 |
+| **18** | **★ 记账缺口收口（probe + 压缩摘要）**       | **probe**：`llm-proxy.ts` 非流式转发成功后 `recordProxyProbeUsage`（usage 归一化复用 shared 的 normalize*Usage，**代理不另写解析**；conversation_id=''，流式/SSE 不记）+ `usage-ledger.ts` 新增 `estimateUsageDetail` / `loadModelPricingRaw` / `recordStandaloneUsage`（无任务调用的记账唯一出口）。**摘要**：core `window.ts` `setSummaryUsageHook`（`summarize()` 捕获 usage + 输入/输出原文回调一次，抛错不炸压缩）+ `llm-task-manager` 三处 `buildContextView` 挂钩（主循环/子智能体走 `recordTaskUsage('summary')`，手动压缩走 `recordStandaloneUsage`）+ `recordTaskUsage` 估算分支改调 `estimateUsageDetail` | 5 + 3 ✅ + 39 回归 | 删 probe 调用 ⇒ 3 红；删 onUsage 捕获 ⇒ 1 红；假 ContextWindow 缺新方法 ⇒ 4 文件全红（白名单陷阱实锤） |
 
-已跑：`shared` 全量 62 ✅、`core` 全量 **343** ✅、`tsc`（core / shared / server 均无新增错误）。
-导出登记：`shared/src/index.ts`（价格表）、`shared/src/utils/index.ts`（token-usage / model-cost）、
+已跑：`shared` 全量 62 ✅、`core` 全量 **343** ✅、`tsc`（core / shared / server 均无新增错误）。  
+导出登记：`shared/src/index.ts`（价格表）、`shared/src/utils/index.ts`（token-usage / model-cost）、  
 `core/src/index.ts`（api-path —— server 的 llm-proxy 由此复用同一实现）。
 
-**★ 新增守卫**（`api-path.test.ts` 最后一条）：静态断言 `client.ts` / `llm-proxy.ts` 里
-**不得再出现 `v1/` 字面量**。理由：改用 kind 枚举后，将来有人为了"临时修个问题"手写回一个
-`'v1/chat/completions'` —— OpenAI 官方依然能用，**但国产厂商会静默 404**，而写的人和 review 的人
+**★ 新增守卫**（`api-path.test.ts` 最后一条）：静态断言 `client.ts` / `llm-proxy.ts` 里  
+**不得再出现 `v1/` 字面量**。理由：改用 kind 枚举后，将来有人为了"临时修个问题"手写回一个  
+`'v1/chat/completions'` —— OpenAI 官方依然能用，**但国产厂商会静默 404**，而写的人和 review 的人  
 都不会第一时间想到路径。这道守卫让"绕过唯一实现"在测试阶段就打红（已变异验证：插回去确实红）。
 
-**★ 本轮抓到的真实 bug**（`sse-frames.ts` 第一版）：SSE **最后一行没有换行结尾**时，
-它永远留在缓冲区里不被解析 ⇒ 最后一个事件（常常正是 `response.completed`）丢失 ⇒
-上层把**正常完成**的流误判成"被掐断"，触发本不必要的续写/报错。
+**★ 本轮抓到的真实 bug**（`sse-frames.ts` 第一版）：SSE **最后一行没有换行结尾**时，  
+它永远留在缓冲区里不被解析 ⇒ 最后一个事件（常常正是 `response.completed`）丢失 ⇒  
+上层把**正常完成**的流误判成"被掐断"，触发本不必要的续写/报错。  
 写测试前我自己没意识到这个分支，是"末帧不带空行"那条用例把它逼出来的。
 
-**★ 归一化的核心验收**（`usage-detail.test.ts`）：同样的实际用量（输入 1000、命中 400、输出 200），
-三家报法不同 —— OpenAI 把 cached 放进 prompt、Anthropic 把 cache_read 放在 input **之外** ——
+**★ 归一化的核心验收**（`usage-detail.test.ts`）：同样的实际用量（输入 1000、命中 400、输出 200），  
+三家报法不同 —— OpenAI 把 cached 放进 prompt、Anthropic 把 cache_read 放在 input **之外** ——  
 归一化后必须**完全一致**（全价输入都是 600）。这条断言同时钉住了坑 #1（语义相反）。
 
-**★ 本轮（10-18 01:00~01:15）抓到的真实 bug**（mock 真跑逼出，非单测能发现）：
-`accumulateToolCallDeltas` 的「重发去重」判据原本是 `incArgs.length > prevArgs.length`。
-OpenAI Responses 的 `response.output_item.done` 会带**完整** arguments（真实 API 也是如此），
-而此前的增量分片已拼出**等长**的完整串 ⇒ 等长漏过判据 ⇒ 拼成 `{"tz":"UTC"}{"tz":"UTC"}` 非法 JSON
-⇒ `parseToolArguments` 失败 ⇒ **工具静默不执行**。修为 `>=`（等长且互为前缀 ⇒ 必然相同 ⇒ 替换是无操作）。
-⇒ 教训：**"网关重发完整 arguments" 这条防御早就存在，但只覆盖了"更长"一种形态**；
+**★ 本轮（10-18 01:00~01:15）抓到的真实 bug**（mock 真跑逼出，非单测能发现）：  
+`accumulateToolCallDeltas` 的「重发去重」判据原本是 `incArgs.length > prevArgs.length`。  
+OpenAI Responses 的 `response.output_item.done` 会带**完整** arguments（真实 API 也是如此），  
+而此前的增量分片已拼出**等长**的完整串 ⇒ 等长漏过判据 ⇒ 拼成 `{"tz":"UTC"}{"tz":"UTC"}` 非法 JSON  
+⇒ `parseToolArguments` 失败 ⇒ **工具静默不执行**。修为 `>=`（等长且互为前缀 ⇒ 必然相同 ⇒ 替换是无操作）。  
+⇒ 教训：**"网关重发完整 arguments" 这条防御早就存在，但只覆盖了"更长"一种形态**；  
 mock server 用真实 API 的帧序列一打，等长形态立刻现形。已加回归用例并变异验证。
 
 **下一批（按顺序，都要真跑验证）**：
 
-1. ~~`tools/mock-llm-server.cjs`~~ ✅
-2. ~~账本两表 + `usage-ledger.ts` + 提醒器~~ ✅
-3. ~~**接线**~~ ✅
-4. ~~UI：会话头金额 + 提醒提示条 + 设置项 + 智能体编辑~~ ✅（本轮：`stores/cost.ts` + ChatTopbar 金额/弹层 +
-   ChatMessageList 提示条（新开会话继续/知道了/复制）+ Settings「费用预算」块 + AgentEdit `maxCostCny`；
-   后端补 `GET/PUT /api/cost-budget` 与会话账单端点；顺手补了 `usdToCny` 与智能体级 `maxCostCny` 两个实现缺口）
+1. ~~`tools/mock-llm-server.cjs`~~ ✅ 已完成（16 用例 + 顺手修掉上述真 bug）
+2. 账本两表 + `usage-ledger.ts` + 提醒器 `maybeNoticeCost` ✅ 已完成（日志 00:49~00:56 落地，本轮补验 28 用例）
+3. **接线**（核心缺口，账本目前还是孤岛——`recordUsage` 零调用方）：     
+   a. `client.ts` options 加 `onUsage?(detail | undefined)`，三协议流式 + `chat()` 各回调**一次**（undefined = 没拿到，调用方自行估算）；     
+   b. `llm-task-manager.ts` 各调用点传 `recordUsage(task, source)`（主循环 1 / 子智能体 2 / 摘要 2-3 / judge 1）；     
+   c. 轮末 `checkAndSaveNotice(conversationId, getCostBudgetConfig())` → emit `task:cost` / `task:cost_notice`；     
+   d. 提醒时**先** `recordTaskProgress(task, 'cost_notice', …)` 再发文案（坑 #16）；`hard_stop` 才走现有停止路径（D4 唯一例外）；     
+   e. 子智能体用量同步进父任务 `totalTokens`（坑 #8）。     
+   ⚠️ 该文件刚被并行会话提交过（034189ce），动手前先 `git status` 复核。
+4. UI：会话头金额 + 提醒提示条 + 设置项（§3.5.1 全表）+ 智能体编辑 `maxCostCny`
 5. 三格式 UI 下拉（`Models.vue` / `PlatformConfigCard.vue`）+ 内置厂商宫格 + `CustomModelDialog.vue` + `/platforms/catalog` + `/platforms/custom-model`
-6. 单位迁移三层（server 落库 + **UI 端落库** + 读时兜底——读时兜底已在 `normalizePricing`）
+6. ~~单位迁移三层~~ ✅ 已完成（10-18 上午，23 用例）：
+   - **换算与驱动收口在 `shared/src/utils/pricing-migration.ts`**：`migratePricingJsonText`（纯函数，
+     ×1000 **复用 `normalizePricing`**，不写第二份换算）+ `planPricingUnitMigration` +
+     `runPricingUnitMigration`（驱动：逐个 try，**坏行/缺表都不炸启动**）。
+     驱动接口的方法**允许同步** ⇒ server 的 better-sqlite3 与 UI 的 async adapter **共用同一段逻辑**。
+   - **server 端**：`services/pricing-unit-migration.ts`（同步 shim）+ `index.ts` 启动段
+     `void migrateModelPricingUnit()`（微任务内跑完，失败只告警）；标记位 `app_config`
+     key `model_pricing_unit_per1m_v1`。
+   - **UI 端**：`stores/platform.ts` 的 `loadModels` / `addModel` / `updateModel` **离线直连库分支**
+     前各挂一次 `ensurePricingUnitMigrated()`（一次会话只跑一次）。
+     ⚠️ 当前 `useServerApi` 恒 true ⇒ 离线分支**线上走不到**（注释已写明"本地 adapter.db 分支已废弃"），
+     这条是**防守性接线**：分支一旦复活就带着正确单位，成本≈0（幂等、失败不外抛）。
+   - **幂等不靠标记位**：判据是"`unit !== 'per_1m'` 才改写"，改写后必带 per_1m ⇒ 第二次必然 0 写；
+     标记位只用于省一次全表扫描，**写不进去也无害**（UI 端 core schema 没有 `app_config`）。
+   - 验收 11（双端单位一致）已用**真库**钉住：迁移后金额 == 迁移前「读时兜底」金额
+     （1000×2 + 500×8 / 1e6），且抽样断言老值 `0.002 元/千 → 2 元/百万`。
+   - **未验证项**：未起整实例真跑后端启动（同 P0 记录）；`index.ts` 的挂载只有静态守卫。
+7. ~~probe / 压缩摘要记账~~ ✅ 已完成（10-18 上午，见上表 #18）。两个口径说明：
+   - **probe** 的 `conversation_id=''`：明细进账本（对账完整），**会话账单不显示**（按会话查）——
+     刻意的，别"顺手"把 probe 挂到某个会话上；
+   - **摘要记账**经 core 的 `setSummaryUsageHook` 回调（core 不依赖账本），server 端三处挂钩；
+     ★ 教训再现：4 个测试文件的假 `ContextWindow` 缺 `setSummaryUsageHook` ⇒ 任务直接 failed，
+     归属判定用「stash 后单独复跑」确认是我造成再补白名单（与坑 #15 mock 白名单同一族）。
 
-> ⚠️ **遗留缺口（接线时明确不做，需在 UI 批次或之后补）**：
-> ① 连通性测试（probe）没有会话上下文 ⇒ 暂不记账（方案 §3.1 要求 `source='probe'` 计入会话）；
-> ② 上下文压缩的摘要 LLM 调用在 `buildContextView` 内部（另一个 service），本轮未接线 ⇒ 摘要费用暂不进账本；
-> ③ 前端对 `task:cost` / `task:cost_notice` 尚无消费方（switch 无 default 抛错，安全忽略）。
-
-> ⚠️ 待办（**不在本批**）：`llm-task-manager.ts` 三处重复的 `Math.round((content+reasoning)/2)`
-> 应改用 shared 既有的高精度 `estimateTokens`，但会改变 token 预算触发点（估算变准 ⇒ 压缩更早触发），
+> ⚠️ 待办（**不在本批**）：`llm-task-manager.ts` 三处重复的 `Math.round((content+reasoning)/2)`>   
+> 应改用 shared 既有的高精度 `estimateTokens`，但会改变 token 预算触发点（估算变准 ⇒ 压缩更早触发），>   
 > 需单独评估；且该文件正被并行会话占用。
 
-> ⚠️ 未验证项：llm-proxy 的改动目前只过了 `tsc`，**没有起后端真跑**（后端需整实例启动）。
+> ⚠️ 未验证项：llm-proxy 的改动目前只过了 `tsc`，**没有起后端真跑**（后端需整实例启动）。>   
 > 应在下一批补一次端到端：建平台 → 拉模型 → 连通性测试。

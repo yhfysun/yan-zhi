@@ -11,6 +11,13 @@ import {
 } from '../services/token-pool.js';
 import { buildProtocolHeaders, resolveUpstreamUrl, type UpstreamKind } from '@yan-zhi/core';
 import {
+  isMissingUsage,
+  normalizeOpenAiUsage,
+  normalizeAnthropicUsage,
+  normalizeResponsesUsage,
+} from '@yan-zhi/shared';
+import { recordStandaloneUsage } from '../services/usage-ledger.js';
+import {
   isDashscopePlatform,
   dashscopeNativeRoot,
   toDashscopeSize,
@@ -19,6 +26,47 @@ import {
 
 const router = Router();
 router.use(authMiddleware);
+
+/**
+ * ★ probe 记账（2026-10-18）：非流式转发成功后，从响应体里抠 usage 记进账本。
+ *
+ * 为什么在代理记：连通性测试（`LlmClient.chatTest`，UI 直发）走的就是本代理的
+ * 非流式路径，**没有会话、没有任务**，llm-task-manager 那条记账链够不着它 ——
+ * 此前 probe 完全不记账，账本对不上（方案 §8 记录在案的缺口）。
+ *
+ * ★ 判据与口径：
+ *   · 只记 chat / messages / responses（embeddings/images 不按 token 计价，另议）；
+ *   · usage 归一化**复用 shared 的协议边界函数**（normalize*Usage），不在这里另写一套；
+ *   · conversationId = `''`（无会话）：明细进账本、会话账单不显示 —— 刻意的；
+ *   · 上游没给 usage ⇒ 按请求/响应原文估算（坑 #13 同款兜底，实现收口在
+ *     usage-ledger.recordStandaloneUsage）；
+ *   · 任何失败都吞掉 —— 记账是旁路，绝不能影响测试请求本身的返回。
+ */
+function recordProxyProbeUsage(p: any, kind: UpstreamKind, reqBody: any, rawText: string): void {
+  try {
+    if (kind !== 'chat' && kind !== 'messages' && kind !== 'responses') return;
+    let data: any;
+    try { data = JSON.parse(rawText); } catch { return; }
+    const usage = data?.usage;
+    let detail = kind === 'messages'
+      ? (usage ? normalizeAnthropicUsage(usage) : undefined)
+      : kind === 'responses'
+        ? (usage ? normalizeResponsesUsage(usage) : undefined)
+        : (usage ? normalizeOpenAiUsage(usage) : undefined);
+    if (detail && isMissingUsage(detail)) detail = undefined; // 全 0 = 没给 ⇒ 走估算
+    const content = data?.choices?.[0]?.message?.content;
+    recordStandaloneUsage({
+      conversationId: '',
+      userId: p.user_id,
+      platformId: p.id,
+      modelId: reqBody?.model || undefined,
+      source: 'probe',
+      detail,
+      inputText: JSON.stringify(reqBody ?? {}),
+      outputText: typeof content === 'string' ? content : JSON.stringify(data ?? {}).slice(0, 2000),
+    });
+  } catch { /* 记账是旁路，绝不影响转发 */ }
+}
 
 function loadPlatform(req: Request): any | null {
   const userId = req.user!.userId;
@@ -47,7 +95,12 @@ function upstreamHeaders(p: any, apiKey: string, anthropic: boolean): Record<str
   return h;
 }
 
-async function forward(upstream: Response, res: ExpressResponse): Promise<void> {
+async function forward(
+  upstream: Response,
+  res: ExpressResponse,
+  /** 非流式响应体的旁路钩子（probe 记账用）；抛错由调用方兜住，不影响转发 */
+  onNonStreamBody?: (rawText: string) => void,
+): Promise<void> {
   const ct = upstream.headers.get('content-type') || '';
   if (ct.includes('text/event-stream') && upstream.body) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -67,6 +120,9 @@ async function forward(upstream: Response, res: ExpressResponse): Promise<void> 
     return;
   }
   const text = await upstream.text().catch(() => '');
+  if (onNonStreamBody && text) {
+    try { onNonStreamBody(text); } catch { /* 记账失败不影响转发 */ }
+  }
   res.status(upstream.status).setHeader('Content-Type', ct || 'application/json');
   res.send(text);
 }
@@ -113,7 +169,11 @@ async function proxyWithRetry(
 
     if (upstream.ok) {
       if (token) recordSuccess(token.id);
-      await forward(upstream, res);
+      // ★ probe 记账（2026-10-18）：非流式响应体里带 usage，此前这笔（UI 的连通性
+      //   测试等）完全没进账本 ⇒ 账本对不上。路由传的 isStream 恒为 true 不可信，
+      //   实际按响应 Content-Type 分流（SSE = 流式，代理是字节转发不解析，真实会话
+      //   调用由 llm-task-manager 侧记账，别在这里重复记）。
+      await forward(upstream, res, (raw) => recordProxyProbeUsage(p, kind, body, raw));
       return;
     }
 

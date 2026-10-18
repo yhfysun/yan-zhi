@@ -21,6 +21,7 @@ import { loadSpaceMemoryForConversation, formatSpaceMemoryContext, appendTaskDec
 // 费用账本（2026-10-17）：会话级累计 + 逐次明细的唯一写入口；阈值**只提醒不停**（D4）
 import {
   recordUsage, getConversationUsage, checkAndSaveNotice, getCostBudgetConfig, summarizeByModel, resolveModelPricing,
+  recordStandaloneUsage, estimateUsageDetail,
 } from './services/usage-ledger.js';
 import {
   resolveExperienceBase, resolveSkillDraftsDir, appendExperienceEntry, buildExperienceContextForConversation,
@@ -2743,7 +2744,19 @@ export async function compressConversationNow(
       keepRecent: 6,
       keepFirst: 2,
       summaryCache: { ids: [], summary: '' },
-      setSummaryModel: (cw) => cw.setSummaryModel(platform, model),
+      setSummaryModel: (cw) => {
+        cw.setSummaryModel(platform, model);
+        // ★ 摘要记账（2026-10-18）：手动压缩也花钱，此前完全没进账本。
+        //   无 task ⇒ 走 recordStandaloneUsage（会话账单里 source='summary'）。
+        cw.setSummaryUsageHook((detail, info) => {
+          recordStandaloneUsage({
+            conversationId, userId,
+            platformId: platform.id, modelId: model.modelId,
+            source: 'summary', detail,
+            inputText: info.inputText, outputText: info.outputText,
+          });
+        });
+      },
       // ★ 手动触发：跳过阈值判定（其余走同一条流水线）
       forceCompress: true,
       beforeCompress: async (toCompress) => {
@@ -3265,7 +3278,17 @@ async function runReActLoop(task: LlmTask, params: {
           keepRecent: 6,
           keepFirst: 2,
           summaryCache: task.summaryCache ||= { ids: [], summary: '' },
-          setSummaryModel: (cw) => cw.setSummaryModel(sumLlm.platform, sumLlm.model),
+          setSummaryModel: (cw) => {
+            cw.setSummaryModel(sumLlm.platform, sumLlm.model);
+            // ★ 摘要记账（2026-10-18）：压缩摘要此前完全没进账本（会话账单对不上、
+            //   ¥5 阈值对摘要无感）。走 recordTaskUsage（source='summary'），与其它环节同口径：
+            //   单价任务内缓存解析、估算兜底（坑 #13）、失败不炸任务。
+            cw.setSummaryUsageHook((detail, info) => {
+              recordTaskUsage(task, 'summary', detail,
+                { platformId: sumLlm.platform?.id, modelId: sumLlm.model?.modelId },
+                { inputText: info.inputText, outputText: info.outputText });
+            });
+          },
           beforeCompress: async (toCompress) => {
             // ★★★ 抢救节流：**每个接力批次一次**，不是每个任务一次（2026-10-08 修）。
             //   此前 `flushedThisRun` 是 runReActLoop 的**函数级**变量，全程只置一次 →
@@ -6420,7 +6443,16 @@ async function runSubAgentImpl(
         summaryCache: subCache,
         // platform/model 经上方 `if (!platform || !model) return` 守卫后必为非空，
         // 但 TS 不收窄闭包捕获的 let，这里用断言保持类型干净（运行时契约不变）。
-        setSummaryModel: (cw) => cw.setSummaryModel(platform!, model!),
+        setSummaryModel: (cw) => {
+          cw.setSummaryModel(platform!, model!);
+          // ★ 摘要记账（2026-10-18）：子智能体的压缩摘要同主循环口径（source='summary'，
+          //   记在**父任务**上 —— 子智能体本来就是任务的延伸，坑 #8 同款收敛）。
+          cw.setSummaryUsageHook((detail, info) => {
+            recordTaskUsage(task, 'summary', detail,
+              { platformId: platform!.id, modelId: model!.modelId },
+              { inputText: info.inputText, outputText: info.outputText });
+          });
+        },
         persist: false,
       });
       const messagesToSend = subView.messages;
@@ -6891,7 +6923,7 @@ export function recordTaskUsage(
   source: 'main' | 'sub_agent' | 'summary' | 'judge',
   detail: TokenUsageDetail | undefined,
   meta: { platformId?: string; modelId?: string },
-  ctx: { messages?: unknown[]; content?: string; reasoning?: string },
+  ctx: { messages?: unknown[]; content?: string; reasoning?: string; inputText?: string; outputText?: string },
 ): void {
   try {
     const platformId = meta.platformId || task.platformId;
@@ -6901,14 +6933,11 @@ export function recordTaskUsage(
     if (!d || isMissingUsage(d)) {
       // ★ 坑 #13：中转站乱报（usage 全 0 且响应非空）= **没给**，不是"免费"。
       //   按内容估算并标 estimated（UI 显示 ≈）—— 直接当 0 会让费用恒 ¥0、阈值永不触发。
-      const inputText = ctx.messages ? JSON.stringify(ctx.messages) : '';
-      d = {
-        inputTokens: inputText ? estimateTokens(inputText) : 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        outputTokens: estimateTokens(`${ctx.content || ''}${ctx.reasoning || ''}`),
-        estimated: true,
-      };
+      //   估算公式收口在 usage-ledger.estimateUsageDetail（probe / 手动压缩同款，别在这里另写）。
+      d = estimateUsageDetail({
+        inputText: ctx.inputText ?? (ctx.messages ? JSON.stringify(ctx.messages) : ''),
+        outputText: ctx.outputText ?? `${ctx.content || ''}${ctx.reasoning || ''}`,
+      });
       estimated = true;
     }
     const pricing = resolveTaskModelPricing(task, platformId, modelId);

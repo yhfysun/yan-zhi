@@ -20,6 +20,7 @@ import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
 import workspaceFileRoutes from './routes/workspace-files.js';
 import { resolveArtifactDirFor, findArtifactFileInDirs, findArtifactFileAcrossRoots, resolveRegisteredFilePath, backfillRelativeArtifactPaths } from './services/artifact-dir.js';
+import { migrateModelPricingUnit } from './services/pricing-unit-migration.js';
 import { downloadMediaBinary } from './services/media-fetch.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/shared';
 import platformRoutes, { migrateLegacyLocalPlatformRows } from './routes/platforms.js';
@@ -717,6 +718,19 @@ try {
     logger.info(`[artifact] 产物路径回填：扫描 ${bf.scanned} 条，修正 ${bf.fixed} 条，仍无法定位 ${bf.unresolved} 条`);
   }
 } catch (e) { logger.warn('[artifact] 产物路径回填失败:', e); }
+
+// 定价单位落库迁移（2026-10-18）：库里仍是「元/千 token」的旧定价 ×1000 → 「元/百万」。
+// ★ 为什么必须落库迁移：UI 端（离线直连库）**也直接写 `model` 表**，只迁一端会出现
+//   「同一条记录两端单位不一致」——金额时大时小 1000 倍且极难复现（坑 #20）。
+//   换算与驱动的唯一实现在 `@yan-zhi/shared`，server / UI 两端各调一次同一段逻辑。
+// ★ 幂等：只改 `unit !== 'per_1m'` 的行；标记位写进 `app_config`（只省一次扫描，
+//   写失败也无害 —— 读时 `normalizePricing` 仍然兜底）。
+// ★ 不阻塞启动：整段在微任务里跑完（同步 sqlite），失败只告警。
+void migrateModelPricingUnit().then((r) => {
+  if (r.ran && (r.updated || r.failed.length)) {
+    logger.info(`[pricing] 定价单位迁移：扫描 ${r.scanned} 行，改写 ${r.updated} 行（元/千 → 元/百万）${r.failed.length ? `，失败 ${r.failed.length} 行` : ''}`);
+  }
+}).catch((e) => logger.warn('[pricing] 定价单位迁移失败（读时兜底仍生效）:', e));
 
 // 启动对话定时任务调度器（内部有 guard，只会启动一次）
 startScheduledTaskScheduler();

@@ -1,8 +1,18 @@
 // 上下文滑动窗口压缩
-import type { Message } from '@yan-zhi/shared';
+import type { Message, TokenUsageDetail } from '@yan-zhi/shared';
 import { estimateTokens } from '@yan-zhi/shared';
 import { LlmClient } from '../llm/client';
 import type { Model, Platform } from '@yan-zhi/shared';
+
+/** 摘要记账回调的上下文：`detail` 为 undefined（上游没给 usage）时，调用方按原文估算 */
+export interface SummaryUsageInfo {
+  /** 发给摘要模型的输入原文（渲染后的对话文本） */
+  inputText: string;
+  /** 摘要模型产出的文本 */
+  outputText: string;
+}
+export type SummaryUsageCallback =
+  (detail: TokenUsageDetail | undefined, info: SummaryUsageInfo) => void;
 
 /**
  * 压缩触发点系数：阈值 = 模型上下文窗口 × 该系数。
@@ -275,6 +285,8 @@ export class ContextWindow {
      *   ★ 参数保留仅为兼容既有调用（主循环/子智能体仍传 2），当前**无行为影响**。
      */
     private keepFirst: number = 0,
+    /** 摘要记账回调（server 端挂；core 不依赖账本，只递「调用事实」） */
+    private onSummaryUsage?: SummaryUsageCallback,
   ) {}
 
   /**
@@ -318,6 +330,19 @@ export class ContextWindow {
     this.summaryPlatform = platform;
     this.summaryModel = model;
     this.summaryClient = new LlmClient(platform, model);
+  }
+
+  /**
+   * ★ 摘要记账回调（2026-10-18）：压缩摘要**也要花钱**，此前这笔调用完全没进账本
+   *   （会话账单对不上、¥5 阈值对摘要无感）。挂上后每次真正调了 LLM 的摘要
+   *   会回调一次 `detail`（undefined = 上游没给 usage，调用方自行估算）+
+   *   `info`（摘要的输入/输出原文，供估算兜底用）。
+   *
+   * ★ 为什么不在 core 里直接记账：core 不依赖 server 账本；这里只把「调用事实」
+   *   递出去，怎么记（source='summary'、单价解析、落库）由 server 端决定。
+   */
+  setSummaryUsageHook(hook: SummaryUsageCallback | undefined): void {
+    this.onSummaryUsage = hook;
   }
 
   /**
@@ -575,6 +600,7 @@ export class ContextWindow {
       return this.fallbackSummary(messages);
     }
 
+    const inputText = messages.map(render).join('\n');
     const summaryMessages: Message[] = [
       {
         id: 'sum-instr',
@@ -595,17 +621,28 @@ export class ContextWindow {
         id: 'sum-input',
         conversationId: '',
         role: 'user',
-        content: messages.map(render).join('\n'),
+        content: inputText,
         createdAt: Date.now(),
       },
     ];
 
+    // ★ 记账（2026-10-18）：捕获本次摘要的 usage，连同输入/输出原文回调一次。
+    //   detail undefined = 上游没给 usage ⇒ 调用方按 info 原文估算（坑 #13 同款兜底）。
+    //   回调自身抛错绝不炸压缩（记账是旁路，不是主链路）。
+    let captured: TokenUsageDetail | undefined;
     const result = await this.summaryClient.chat(summaryMessages, {
       maxTokens: 800,
       temperature: 0.3,
+      onUsage: (detail) => { captured = detail; },
     });
+    const outputText = result.delta?.content || '';
+    if (this.onSummaryUsage) {
+      try {
+        this.onSummaryUsage(captured, { inputText, outputText });
+      } catch { /* 记账失败不炸压缩 */ }
+    }
 
-    return result.delta?.content || '';
+    return outputText;
   }
 
   /** 判断是否需要压缩 */

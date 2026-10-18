@@ -44,6 +44,8 @@ vi.mock('@yan-zhi/core', () => ({
     needsCompression() { return false; }
     compress(m: any[]) { return m; }
     setSummaryModel() {}
+    /** ★ 2026-10-18 摘要记账：主链路会调它挂回调，白名单不同步 = 任务直接 failed */
+    setSummaryUsageHook(_h?: unknown) {}
   },
   resolveToolPath: (input: unknown, ws?: string | null) => (typeof input === 'string' && input.trim()) || ws || '.',
   isAbsolutePath: (p: string) => /^([a-zA-Z]:[\\/]|[\\/]{2}|\/)/.test(String(p || '')),

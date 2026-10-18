@@ -181,3 +181,9 @@ export * from './model-cost';
 // 费用提醒器（D4：**只提醒，不停**）—— 整倍数档位去重 + hardStopCny 唯一例外。
 // ★ 与 `checkTaskBudgetHit` 刻意**不共用**：后者只有「停/不停」语义，混用会让提醒被当成停止信号。
 export * from './cost-notice';
+
+// 定价单位落库迁移（元/千 → 元/百万）——**server 端与 UI 端共用的唯一驱动**。
+// ★ 为什么放 shared：两端各有自己的 `model` 表写路径，只迁移一端会出现
+//   「同一条记录两端单位不一致」（坑 #20，金额时大时小 1000 倍且极难复现）。
+//   ×1000 的语义不在这里重写，复用 `model-cost.ts` 的 `normalizePricing`。
+export * from './pricing-migration';

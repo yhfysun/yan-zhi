@@ -159,6 +159,8 @@ const hoisted = vi.hoisted(() => {
     needsCompression(_m: any[]) { return false; }
     compress(m: any[]) { return m; }
     setSummaryModel(_p: any, _m: any) {}
+    /** ★ 2026-10-18 摘要记账：主链路会调它挂回调，白名单不同步 = 任务直接 failed（本文件既有教训） */
+    setSummaryUsageHook(_h?: unknown) {}
   }
 
   function vecToBytes(v: number[] | null): Buffer | null {

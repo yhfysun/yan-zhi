@@ -34,6 +34,8 @@ import {
   resolvePresetPricing,
   maybeNoticeCost,
   DEFAULT_COST_BUDGET,
+  estimateTokens,
+  isMissingUsage,
   type TokenUsageDetail,
   type ModelPricing,
   type CostBudgetConfig,
@@ -85,6 +87,89 @@ export function resolveModelPricing(modelId: string, rawPricing?: unknown): Mode
   if (manual && manual.configured) return manual;
   const preset = resolvePresetPricing(modelId);
   return preset?.pricing;
+}
+
+/**
+ * ★ 估算兜底的**唯一实现**（坑 #13，2026-10-18 收口）：上游没给 usage（或 usage 全 0
+ *   且响应非空）= **没给**，不是"免费"。按内容估算并标 `estimated`。
+ *
+ * 此前这份逻辑只活在 `llm-task-manager.recordTaskUsage` 里；probe（llm-proxy）与
+ * 手动压缩（compressConversationNow）也要记账后，再各抄一份必然漂移 ⇒ 收口到这里。
+ */
+export function estimateUsageDetail(o: { inputText?: string; outputText?: string }): TokenUsageDetail {
+  const inputText = o.inputText || '';
+  const outputText = o.outputText || '';
+  return {
+    inputTokens: inputText ? estimateTokens(inputText) : 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    outputTokens: estimateTokens(outputText),
+    estimated: true,
+  };
+}
+
+/** 从 `model` 表取用户手配的原始 pricing（用户行优先，回落平台级种子行；都没有 ⇒ undefined） */
+export function loadModelPricingRaw(
+  userId: string | undefined,
+  platformId: string | undefined,
+  modelId: string | undefined,
+): unknown {
+  if (!platformId || !modelId) return undefined;
+  const row = (userId
+    ? db.prepare(
+        'SELECT pricing_json FROM model WHERE platform_id = ? AND model_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1',
+      ).get(platformId, modelId, userId)
+    : undefined)
+    || db.prepare(
+      'SELECT pricing_json FROM model WHERE platform_id = ? AND model_id = ? ORDER BY created_at DESC LIMIT 1',
+    ).get(platformId, modelId);
+  const raw = (row as any)?.pricing_json;
+  return raw ? (() => { try { return JSON.parse(raw); } catch { return undefined; } })() : undefined;
+}
+
+/**
+ * 记一笔**无任务上下文**的调用（2026-10-18）：probe（llm-proxy 转发的非流式测试请求）
+ * 与手动压缩（`compressConversationNow`）没有 LlmTask，走不了 `recordTaskUsage`。
+ *
+ * ★ 与 recordTaskUsage 同一套语义：估算兜底（`estimateUsageDetail`）、单价解析
+ *   （用户手配 > 内置参考价）、汇率按调用当时 —— 差别只在没有 task 可累加内存量。
+ * ★ probe 的 `conversationId` 是 `''`（无会话）：明细进账本（对账完整），
+ *   会话账单按会话查所以不显示它 —— 这是刻意的，别"顺手"把它挂到某个会话上。
+ */
+export function recordStandaloneUsage(input: {
+  conversationId: string;
+  userId?: string;
+  platformId?: string;
+  modelId?: string;
+  source: UsageSource;
+  detail?: TokenUsageDetail | undefined;
+  /** detail 缺失时的估算原文 */
+  inputText?: string;
+  outputText?: string;
+}): { costCny: number; unpriced: boolean } {
+  try {
+    let d = input.detail;
+    let estimated = false;
+    if (!d || isMissingUsage(d)) {
+      d = estimateUsageDetail({ inputText: input.inputText, outputText: input.outputText });
+      estimated = true;
+    }
+    const { costCny, unpriced } = recordUsage({
+      conversationId: input.conversationId,
+      userId: input.userId,
+      platformId: input.platformId,
+      modelId: input.modelId,
+      source: input.source,
+      detail: d,
+      pricing: resolveModelPricing(input.modelId || '', loadModelPricingRaw(input.userId, input.platformId, input.modelId)),
+      usdToCny: getCostBudgetConfig().usdToCny,
+      estimated,
+    });
+    return { costCny, unpriced };
+  } catch {
+    // 记账失败绝不影响调用方（probe 测试 / 手动压缩照常返回）
+    return { costCny: 0, unpriced: true };
+  }
 }
 
 /**
