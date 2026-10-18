@@ -63,6 +63,8 @@ export const TOOL_RISK: Record<string, RiskLevel> = {
   baseline_scan: 'active',
   tls_audit: 'active',
   headers_audit: 'active',
+  // 主机侧基线（2026-10-18）：只读执行固定白名单命令、不发外部流量、不改任何设置 → passive
+  host_baseline: 'passive',
   watch: 'active',
   // 默认口令自查：会尝试真实认证，属侵入级
   brute: 'intrusive',
@@ -374,6 +376,8 @@ export function guard(i: GuardInput): GuardResult {
   const NO_TARGET_TOOLS = [
     'scope_list', 'scope_add', 'scope_remove', 'sec_report', 'detect_rules', 'log_hunt', 'asset_monitor',
     'host_env', 'range_deploy', 'range_list', 'range_stop', 'android_launch',
+    // 主机侧基线（2026-10-18）：核查对象是本机自己，不需要（也不该）登记 scope
+    'host_baseline',
     // P1：纯文本 / 本地记录 / 本机监听类工具没有"目标"概念
     'crypto_encode', 'crypto_decode', 'jwt_inspect', 'hash_id', 'target_state', 'proxy',
     // P2：模板库 / 情报 / 带外 / 状态机都没有"目标"概念

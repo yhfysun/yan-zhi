@@ -41,6 +41,8 @@ import { runOast } from './sec-lab-tools/oast.js';
 import { verifySqli, verifyXss, verifySsrf, updateFindingStatus } from './sec-lab-tools/verify.js';
 // —— P3：基线与巡检（2026-10-17）——
 import { runBaseline, runTlsAudit, runHeadersAudit } from './sec-lab-tools/baseline.js';
+// 本机主机基线（2026-10-18）：补 baseline.ts 明确不覆盖的"主机侧"（账号策略/SMB/RDP/防火墙/SSH），只读
+import { runHostBaseline } from './sec-lab-tools/hostbaseline.js';
 import { runWatch, stopAllWatchers } from './sec-lab-tools/watch.js';
 import { runBrute } from './sec-lab-tools/brute.js';
 import { runAttackMap } from './sec-lab-tools/attackmap.js';
@@ -85,6 +87,8 @@ export const secLabManifest: PluginManifest = {
       'verify_sqli', 'verify_xss', 'verify_ssrf', 'finding_status',
       // —— P3（2026-10-17）——
       'baseline_scan', 'tls_audit', 'headers_audit', 'watch', 'brute', 'attack_map',
+      // —— P3.1 主机侧基线（2026-10-18）——
+      'host_baseline',
       // —— P4（2026-10-17）——
       'sec_skill', 'warstory', 'cheatsheet', 'sast',
       // —— P5（2026-10-17）——
@@ -169,6 +173,7 @@ export const secLabManifest: PluginManifest = {
 
       // ── P3：基线与巡检（2026-10-17）────────────────────────────────────────
       { name: 'baseline', desc: '配置基线核查：响应头 + TLS + Cookie，按 owasp/cis/等保 出分（仅可远程核查子集）', usage: '/baseline <url> [--profile=owasp|cis|djbh]', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'baseline_scan', params: ['target'] },
+      { name: 'host-baseline', aliases: ['host_baseline'], desc: '本机主机基线（只读）：账号策略 / SMBv1 / RDP / UAC / Defender / 防火墙 / SSH / 审计服务，补远程核查不到的主机侧', usage: '/host-baseline', group: 'AUDIT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'host_baseline' },
       { name: 'tls-audit', aliases: ['tls_audit'], desc: 'TLS 审计：协议版本 / 加密套件 / 证书有效期与主体', usage: '/tls-audit <host[:port]>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'tls_audit', params: ['target'] },
       { name: 'headers-audit', aliases: ['headers_audit'], desc: 'HTTP 安全响应头审计（HSTS/CSP/XFO/nosniff/Referrer/Permissions）', usage: '/headers-audit <url>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'headers_audit', params: ['target'] },
       { name: 'watch', desc: '定时巡检：start / stop / list / tick（进程内定时器，重启需重开）', usage: '/watch <start|stop|list|tick> [--target=x] [--intervalMin=30]', group: 'ASSET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'watch', params: ['action'] },
@@ -1479,6 +1484,18 @@ function headersAuditTool(): BuiltInTool {
   };
 }
 
+function hostBaselineTool(): BuiltInTool {
+  return {
+    name: 'host_baseline',
+    description: '本机主机安全基线（只读体检，不改任何设置）：Windows 查密码策略/账户锁定/SMBv1/RDP/UAC/Defender/防火墙；Linux 查 SSH 配置/shadow 权限/防火墙/auditd/IP 转发。补 /baseline 远程核查不到的主机侧配置。',
+    inputSchema: { type: 'object', properties: {} },
+    async execute(args) {
+      // 无目标工具：仍然过 withGuard（同一套审计），只是不要求 scope
+      return withGuard('host_baseline', args, async () => runHostBaseline());
+    },
+  };
+}
+
 function watchTool(): BuiltInTool {
   return {
     name: 'watch',
@@ -1786,6 +1803,7 @@ function registerRoutes(ctx: PluginContext) {
         finding_status: findingStatusTool,
         // —— P3（2026-10-17）——
         baseline_scan: baselineTool,
+        host_baseline: hostBaselineTool,
         tls_audit: tlsAuditTool,
         headers_audit: headersAuditTool,
         watch: watchTool,
@@ -2029,6 +2047,8 @@ export const secLabModule: PluginModule = {
       verifySqliTool(), verifyXssTool(), verifySsrfTool(), findingStatusTool(),
       // —— P3（2026-10-17）——
       baselineTool(), tlsAuditTool(), headersAuditTool(), watchTool(), bruteTool(), attackMapTool(),
+      // —— P3.1 主机侧基线（2026-10-18）——
+      hostBaselineTool(),
       // —— P4（2026-10-17）——
       skillTool(), warstoryTool(), cheatsheetTool(), sastTool(),
       // —— P5（2026-10-17）——

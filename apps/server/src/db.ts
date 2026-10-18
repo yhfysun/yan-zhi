@@ -1548,6 +1548,8 @@ const SEC_AGENT_BUILTIN_TOOLS = [
   'plugin_sec-lab__toolchain',
   // 报告
   'plugin_sec-lab__sec_report',
+  // 主机侧基线（2026-10-18）：本机只读体检（账号策略/SMB/RDP/UAC/防火墙/SSH/审计服务）
+  'plugin_sec-lab__host_baseline',
   // 子智能体委派（P4）：侦察 / Web / 报告三个子体各管一段，主智能体只做编排
   'call_agent', 'list_sub_agents',
   // 经验库（自学习，P5）：只能提议/查看；审批是 HUMAN_ONLY，模型调不动
@@ -1572,6 +1574,7 @@ const SEC_AGENT_SYSTEM_PROMPT = `你是安全助手（secAgent），在用户已
 - webprobe（active）：Web 面——敏感路径与备份文件、Cookie 安全标志、CORS、组件指纹（Shiro/ThinkPHP/Jenkins 等）。
 - toolchain：先 action=detect 看本机有哪些外部工具（nmap/nuclei/nikto…）；有的话 action=run 接管，没有就用 A 轨工具，不要向用户抱怨缺工具。
 - sec_report：收尾时汇总历史发现项出 Markdown 报告，可按 target 过滤。
+- host_baseline（passive，无目标）：对**本机**做主机侧安全基线体检（密码策略/账户锁定/SMBv1/RDP/UAC/Defender/防火墙；Linux 为 SSH 配置/shadow 权限/防火墙/auditd）。只读，不改任何设置；不需要 scope。用户问"本机安不安全/加固了什么"时用它。
 
 ## 工作流程
 1. **确认授权**：scope_list → 目标未登记则引导登记后再继续。

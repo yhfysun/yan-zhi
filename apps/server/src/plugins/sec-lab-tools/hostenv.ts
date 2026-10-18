@@ -26,7 +26,8 @@ interface CmdResult {
   stderr: string;
 }
 
-function runCmd(bin: string, args: string[], timeoutMs = 15000): Promise<CmdResult> {
+/** 通用只读命令执行（shell:false，参数数组化，杜绝注入）。hostbaseline.ts 复用同一实现。 */
+export function runCmd(bin: string, args: string[], timeoutMs = 15000): Promise<CmdResult> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
