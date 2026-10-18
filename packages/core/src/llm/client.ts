@@ -14,6 +14,7 @@ import { resolveUpstreamUrl, upstreamRelPath, type UpstreamKind } from './api-pa
 // 见 message-order.ts 顶部 —— 「立即发送」注入点天然落在组中间，不规整则每次重放撞上游 400
 // （`tool_calls must be followed by tool messages`）。
 import { reorderToolGroups } from './message-order';
+import { healToolArguments } from './tool-arguments-heal';
 import {
   toAnthropicMessages,
   toAnthropicTools,
@@ -383,6 +384,32 @@ export class LlmClient {
     // 历史消息可能是旧版本落库的、或经压缩/迁移变形的，发送前自愈是最后一道、也是唯一可靠的一道。
     const healed = this.healToolCallIds(messages);
 
+    // ★★★ arguments 合法性自愈（2026-10-18，修上游 400 `1214 messages 参数非法`）：
+    //   现场见 tool-arguments-heal.ts 头注 —— 模型一批 5 个调用里 python_exec 的
+    //   68KB arguments 被 max_tokens **截断**（尾部无闭合），工具侧拒绝执行、
+    //   回执也落库了，但**原始坏串原样留在历史里**：上面三道自愈（id/配对/顺序）
+    //   都不校验 arguments 内容 ⇒ 原样回放 ⇒ GLM 校验不过 ⇒ 整轮 400、任务 failed。
+    //   ⇒ 发送侧唯一出口补上这个缺口：
+    //     · 修得好（非法转义，如 Windows 路径单反斜杠）→ 只改**发送副本**（不写库）；
+    //     · 修不好（截断/结构性损坏）→ 该调用进 badArgIds，**连同回执整组剥离**
+    //       （与下面「未执行空参剥离」同一条路径：模型本就没拿到结果，历史里留着
+    //         只会被模仿成"可以吐坏参数"；剥离后 assistant 有正文则保留正文）。
+    const badArgIds = new Set<string>();
+    const repairedArgs = new Map<string, string>();
+    for (const m of healed) {
+      if (m.role !== 'assistant' || !Array.isArray(m.tool_calls)) continue;
+      for (const tc of m.tool_calls) {
+        const raw = tc?.function?.arguments;
+        if (typeof raw !== 'string' || !raw) continue;
+        const fixed = healToolArguments(raw);
+        if (fixed === null) {
+          if (tc?.id) badArgIds.add(tc.id);
+        } else if (fixed !== raw && tc?.id) {
+          repairedArgs.set(tc.id, fixed);
+        }
+      }
+    }
+
     const toolCallIds = new Set(
       healed
         .filter((m) => m.role === 'tool' && m.tool_call_id)
@@ -420,9 +447,9 @@ export class LlmClient {
     const out: any[] = [];
     for (const m of healed) {
       if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
-        // 先剥掉「未执行」的坏调用；剩下的再做配对过滤
+        // 先剥掉「未执行」的坏调用与 arguments 修不了的坏调用；剩下的再做配对过滤
         const live = m.tool_calls.filter(
-          (tc: any) => !(tc?.id && unexecutedIds.has(tc.id)),
+          (tc: any) => !(tc?.id && (unexecutedIds.has(tc.id) || badArgIds.has(tc.id))),
         );
         if (live.length === 0) {
           // 该 assistant 原本**只因**坏调用而存在 → 连同其错误回执一起剥离
@@ -430,7 +457,13 @@ export class LlmClient {
           out.push(stripToolMeta(m)); // 有正文则保留正文（去掉 tool_calls 元数据）
           continue;
         }
-        const kept = live.filter((tc: any) => tc?.id && toolCallIds.has(tc.id));
+        const kept = live
+          .filter((tc: any) => tc?.id && toolCallIds.has(tc.id))
+          // ★ 发送副本上就地应用修好的 arguments（库里仍留原始坏串，可查原貌）
+          .map((tc: any) => {
+            const fixed = tc?.id ? repairedArgs.get(tc.id) : undefined;
+            return fixed ? { ...tc, function: { ...tc.function, arguments: fixed } } : tc;
+          });
         if (kept.length === 0) {
           out.push(stripToolMeta(m));
         } else {
@@ -438,6 +471,7 @@ export class LlmClient {
         }
       } else if (m.role === 'tool') {
         if (unexecutedIds.has(m.tool_call_id)) continue; // 坏回执一并剥离
+        if (badArgIds.has(m.tool_call_id)) continue; // 截断调用的回执（我们的拦截提示）一并剥离
         if (toolCallIds.has(m.tool_call_id)) out.push(m);
       } else {
         out.push(m);
@@ -787,7 +821,13 @@ export class LlmClient {
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
   ): AsyncIterable<ChatChunk> {
     // system 消息在 Responses 里没有对应 item ⇒ 合并进 instructions（toResponsesInput 已处理）
-    const { instructions, input } = toResponsesInput(messages.map(m => this.toApiMessage(m)));
+    // ★★ 必须过同一道发送前清洗（2026-10-18 收口）：Responses 是 10-17 新加的协议路径，
+    //   漏了 sanitizeToolMessages ⇒ 「截断 arguments 剥离 / 非法转义修复 / id 自愈 /
+    //   孤儿配对」在 Responses 下全部失效 —— 又一次"同一语义多个入口，只修一个必然漏"
+    //   （Anthropic 路径 2026-09-30 踩过同款，见 anthropicStream 处注释）。
+    const { instructions, input } = toResponsesInput(
+      this.sanitizeToolMessages(messages.map((m) => this.toApiMessage(m)), !!options?.tools?.length),
+    );
     const body: any = {
       model: this.model.modelId,
       input,
@@ -848,7 +888,10 @@ export class LlmClient {
     messages: Message[],
     options?: { tools?: unknown[]; temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; responseFormat?: { type: 'json_object' | 'json_schema'; json_schema?: unknown }; toolChoice?: ToolChoiceOption; signal?: AbortSignal },
   ): Promise<ChatChunk> {
-    const { instructions, input } = toResponsesInput(messages.map(m => this.toApiMessage(m)));
+    // ★ 与 responsesStream 同理：过同一道发送前清洗（2026-10-18 收口，见该处注释）
+    const { instructions, input } = toResponsesInput(
+      this.sanitizeToolMessages(messages.map((m) => this.toApiMessage(m)), !!options?.tools?.length),
+    );
     const body: any = { model: this.model.modelId, input, stream: false };
     if (instructions) body.instructions = instructions;
     if (options?.temperature != null) body.temperature = options.temperature;
