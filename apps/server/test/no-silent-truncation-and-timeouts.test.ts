@@ -29,6 +29,9 @@ vi.mock('../src/db.js', () => ({
   hasSqliteVec: false,
 }));
 vi.mock('@yan-zhi/core', () => ({
+  // repo-map（经 llm-task-manager import）模块加载期 loadTsCompiler() 预热 + parseWithTs 提符号；白名单 mock 必须同步补
+  loadTsCompiler: async () => null,
+  parseWithTs: () => null,
   runCodeDiagnostics: async () => ({ ran: [], projectRoot: null, problems: [], notes: [], durationMs: 0, text: '' }),
   invalidateDiagnosticsCache: () => {},
   SYNTHETIC_MESSAGE_IDS: new Set(['sys', 'summary', '__summary__']),

@@ -145,7 +145,10 @@ const hoisted = vi.hoisted(() => {
      * 后，这个**白名单式 mock** 只提供了 `new ContextWindow()` 的实例方法 →
      * `forContextWindow is not a function` → 任务一启动就 failed。
      *
-     * ★ 教训（值得写进测试基建约定）：`vi.mock('@yan-zhi/core', () => ({...}))` 这种
+     * ★ 教训（值得写进测试基建约定）：`vi.mock('@yan-zhi/core', () => ({
+  // repo-map（经 llm-task-manager import）模块加载期 loadTsCompiler() 预热 + parseWithTs 提符号；白名单 mock 必须同步补
+  loadTsCompiler: async () => null,
+  parseWithTs: () => null,...}))` 这种
      *   **手工白名单**极其脆弱 —— 生产代码每加一个导出，所有踩到它的测试就会**静默失同步**
      *   （表现为"任务 failed"，看不出是 mock 缺字段）。看到这类失败先查 mock 清单，别查业务逻辑。
      */
@@ -187,6 +190,9 @@ vi.mock('../src/db.js', () => ({
   hasSqliteVec: false,
 }));
 vi.mock('@yan-zhi/core', () => ({
+  // repo-map（经 llm-task-manager import）模块加载期 loadTsCompiler() 预热 + parseWithTs 提符号；白名单 mock 必须同步补
+  loadTsCompiler: async () => null,
+  parseWithTs: () => null,
   LlmClient: hoisted.MockLlmClient,
   getToolRegistry: () => ({ has: () => false, get: () => undefined, names: () => [], execute: async () => { throw new Error('no tool'); } }),
   getApiToolRegistry: () => new Map(),

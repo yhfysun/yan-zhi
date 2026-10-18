@@ -205,6 +205,9 @@ vi.mock('../src/db.js', () => ({
   hasSqliteVec: false,
 }));
 vi.mock('@yan-zhi/core', () => ({
+  // repo-map（经 llm-task-manager import）模块加载期 loadTsCompiler() 预热 + parseWithTs 提符号；白名单 mock 必须同步补
+  loadTsCompiler: async () => null,
+  parseWithTs: () => null,
   //   runCodeDiagnostics / invalidateDiagnosticsCache：编辑后自动诊断钩子（生产代码顶层 import）；
   //   SYNTHETIC_MESSAGE_IDS / isSyntheticMessageId：context-snapshot 从 core 取（白名单缺了
   //   连模块都加载不起来 —— 本文件「手工白名单 mock 的代价」教训的又一次兑现）。
