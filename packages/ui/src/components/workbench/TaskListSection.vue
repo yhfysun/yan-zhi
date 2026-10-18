@@ -309,14 +309,6 @@ const rows = useTaskRowActions({ focusRenameInput: focusRename });
 const treeMenuEl = ref<HTMLElement | null>(null);
 const rowMenuEl = ref<HTMLElement | null>(null);
 const moveMenuEl = ref<HTMLElement | null>(null);
-watch(
-  () => [treeMenu.visible, rowMenu.value.visible, rows.moveMenu.visible] as const,
-  ([tv, rv, mv]) => {
-    if (tv) placeMenuAfterRender(treeMenuEl, treeMenu, (p) => { treeMenu.x = p.x; treeMenu.y = p.y; });
-    if (rv && rowMenu.value) placeMenuAfterRender(rowMenuEl, rowMenu.value, (p) => { rowMenu.value = { ...rowMenu.value, ...p }; });
-    if (mv) placeMenuAfterRender(moveMenuEl, rows.moveMenu, (p) => { rows.moveMenu.x = p.x; rows.moveMenu.y = p.y; });
-  },
-);
 
 const effSpaceId = computed(() => (props.spaceId === undefined ? codeStore.projectSpaceId : props.spaceId));
 
@@ -442,6 +434,20 @@ function onTreeNewTask() {
 const rowMenu = ref<{ visible: boolean; x: number; y: number; conv: any }>({
   visible: false, x: 0, y: 0, conv: null,
 });
+// ===== 右键菜单贴光标：渲染后按真实尺寸校正（2026-10-18，与办公侧栏 ChatSidebar 同口径）=====
+// 旧 clampMenuPos 按猜的 320px 高度夹取，光标越靠下菜单被推得越远。打开时先落光标坐标，
+// 这里在各菜单 v-if 渲染完成后量真实尺寸校正（贴光标右下 / 放不下翻上方 / 再贴边）。
+// ★ 必须放在 rowMenu 声明**之后**：watch 创建时会同步跑一次 getter 收集依赖，
+//   写在前面就是「Cannot access 'rowMenu' before initialization」（TDZ）——组件 setup 直接抛错，
+//   表现为「模式切换整页空白 + App.vue 强制重挂连环报错」（2026-10-18 实报）。
+watch(
+  () => [treeMenu.visible, rowMenu.value.visible, rows.moveMenu.visible] as const,
+  ([tv, rv, mv]) => {
+    if (tv) placeMenuAfterRender(treeMenuEl, treeMenu, (p) => { treeMenu.x = p.x; treeMenu.y = p.y; });
+    if (rv && rowMenu.value) placeMenuAfterRender(rowMenuEl, rowMenu.value, (p) => { rowMenu.value = { ...rowMenu.value, ...p }; });
+    if (mv) placeMenuAfterRender(moveMenuEl, rows.moveMenu, (p) => { rows.moveMenu.x = p.x; rows.moveMenu.y = p.y; });
+  },
+);
 // ===== 移动端：任务行底部动作面板（Task 11.3）=====
 const rowSheet = ref<{ visible: boolean; conv: any }>({ visible: false, conv: null });
 function onRowCtx(e: MouseEvent, c: any) {
