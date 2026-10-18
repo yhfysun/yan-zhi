@@ -178,8 +178,9 @@ export * from './token-usage';
 // 模型计价（含单位迁移兜底与「免费 ≠ 未配价」三态）——**金额的唯一算式**。
 export * from './model-cost';
 
-// 费用提醒器（D4：**只提醒，不停**）—— 整倍数档位去重 + hardStopCny 唯一例外。
-// ★ 与 `checkTaskBudgetHit` 刻意**不共用**：后者只有「停/不停」语义，混用会让提醒被当成停止信号。
+// 费用提醒器（D4：**默认只提醒，不停**；hardStopCny 用户自填是唯一硬停例外）。
+// ★ 2026-10-18：原 P1-9 预算闸（checkTaskBudgetHit，token/墙钟触达自动停）已退役 ——
+//   本模块现在是任务里唯一的费用类判定，"提醒 ≠ 停止"的语义隔离仍是硬约束。
 export * from './cost-notice';
 
 // 定价单位落库迁移（元/千 → 元/百万）——**server 端与 UI 端共用的唯一驱动**。

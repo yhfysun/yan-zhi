@@ -71,104 +71,26 @@ export const EFFECTIVE_CONTEXT_FLOOR = 16384;
 export const MAX_SESSION_MESSAGES = 400;
 
 /**
- * 单任务预算（2026-10-07，P1-9）—— 步数/条数之外的**第三、四道**闸门。
+ * ═══ 任务预算闸（2026-10-07，P1-9）—— **已于 2026-10-18 退役** ═══
  *
- * ★ 为什么需要：步数上限只管"模型转了多少圈"，不管每圈烧多少 token、跑了多久。
- *   2026 生产共识（Datadog：60% LLM 故障是限流错误，多因失控循环）：
- *   每个长任务都需要 ① 步数上限 ② token 总预算 ③ 墙钟预算 ④ 无进度检测，四件套缺一不可。
- *   本项目已有 ①（EMPTY_ARGS / stepBudget）与 ④（noChangeStreak / 空转断路器），这里补 ② ③。
+ * 原 P1-9 在这里定义过任务级「token 总预算 + 墙钟预算」（TASK_TOKEN_BUDGET 100 万 /
+ * TASK_WALL_CLOCK_BUDGET_MS 15 分钟），触达后跳出循环走「结账 → 自评 → 接力」收尾。
+ * 其间修过两轮大坑（等待抵扣 wait-credit、预算基线 budgetBaselineAt 每批重置），
+ * 但用户实测后明确反馈：「**不要程序自动停，这样效果不好，就费用提醒就好了**」——
+ * 自动停会把做到一半的工作现场丢掉，用户宁可多花 token。
  *
- * 触达预算**不硬杀任务**：与步数上限走同一条「结账 → 自评 → 接力确认」路径
- * （见 runReActLoop 的 budgetReached 块）。
+ * ★ 2026-10-18 起，任务级"停"语义只剩：
+ *   ① 模型自然完成（无工具调用）；
+ *   ② 单批步数上限 → 结账 → 自评 → **接力**（有 autoContinueHardCap 30 批 + 停滞闸兜底）；
+ *   ③ 空转断路器 / 循环闸门（防的是**失控循环**，不是正常干活）；
+ *   ④ 费用提醒（cost-notice，默认只提醒不停）；
+ *   ⑤ 费用硬停 hardStopCny（用户自填 > 0 才启用，D4 唯一例外）；
+ *   ⑥ server 侧 TASK_TOTAL_WALL_CLOCK_HARD_CAP_MS（4h 总时长硬顶，防后端假死）+ 2h 回收看门狗。
+ *
+ * ⇒ 原常量（TASK_TOKEN_BUDGET / TASK_WALL_CLOCK_BUDGET_MS / resolveTaskBudgets /
+ *   checkTaskBudgetHit）与 wait-credit 三件套（TASK_WAIT_CREDIT_* / resolveWaitCredit /
+ *   addWaitCredit）随闸门一并删除 —— 唯一消费方没了，留壳只会造成"看似还有闸"的假象。
  */
-/** 任务累计 token 总预算（输入+输出合计）。默认 100 万 ≈ 8 个 128K 轮的量级。 */
-export const TASK_TOKEN_BUDGET = 1_000_000;
-/** 任务墙钟时间预算（毫秒）。默认 15 分钟（用户可配，长任务可调大）。 */
-export const TASK_WALL_CLOCK_BUDGET_MS = 15 * 60 * 1000;
-
-/**
- * ★★★ 工具**等待时间**不计入墙钟（2026-10-09）。
- *
- * 背景（实测根因，会话 84412558）：15 分钟墙钟是按**任务创建的墙钟**算的，
- * 而长任务里大块时间花在「等外部子进程」—— python_exec 跑 novel_tuiwen 出片
- * （edge-tts 22 段 + ffmpeg 合成）单次就 5~8 分钟，几轮轮询直接吃满预算 →
- * 每章必然超时、且收尾时预算已尽 → 接力被否决 → 用户体感「不能一趟跑出来」。
- *
- * ★ 判据：墙钟预算的语义是「**模型+工具**的开工时长」，不是「外部进程的运行时长」。
- *   等待期间模型没在烧 token、也没在决策，把它算作消耗只会惩罚"用外部工具干活"的正确做法。
- *   因此这里引入 wait-credit：工具执行耗时累计为抵扣额，判定时用 `elapsed - waitCredit`。
- *
- * ★ 两个硬约束（少一条就是「后端假死」）：
- *   ① 单次抵扣**封顶**（防工具卡死时把墙钟彻底架空成不设限）；
- *   ② 抵扣**不跨任务**（任务的等待额随任务对象走，收尾即弃）。
- * ★ 不能只抵扣"看起来慢"的工具 —— 抵扣条件必须可判定（子进程/网络等真实 IO 等待），
- *   不能凭工具名主观划分，否则又变成"两处各写一遍判定"的漂移源。
- */
-export const TASK_WAIT_CREDIT_CAP_MS = 10 * 60 * 1000;
-/** 单次工具执行的抵扣上限（毫秒）。超过视为"卡住"，超出部分仍然计入墙钟。 */
-export const TASK_WAIT_CREDIT_PER_CALL_CAP_MS = 5 * 60 * 1000;
-
-/**
- * 由单次工具执行耗时算出可抵扣的等待毫秒数。
- * 非 IO 等待类工具（毫秒级）自然得到 0，无需调用方传"工具类型"。
- */
-export function resolveWaitCredit(durationMs: number): number {
-  const d = Number(durationMs);
-  if (!Number.isFinite(d) || d <= 0) return 0;
-  return Math.min(Math.floor(d), TASK_WAIT_CREDIT_PER_CALL_CAP_MS);
-}
-
-/** 累计等待抵扣（带总量封顶）。供任务对象在每次工具执行后累加。 */
-export function addWaitCredit(current: number, durationMs: number): number {
-  const next = (Number.isFinite(current) ? Number(current) : 0) + resolveWaitCredit(durationMs);
-  return Math.min(next, TASK_WAIT_CREDIT_CAP_MS);
-}
-
-/** 从智能体 config_json 解析任务预算覆盖（非法值一律回落默认，绝不抛错）。 */
-export function resolveTaskBudgets(cfg?: unknown): { tokenBudget: number; wallClockMs: number } {
-  const o = (cfg && typeof cfg === 'object' ? cfg : {}) as Record<string, unknown>;
-  const t = Number(o.totalTokenBudget);
-  const w = Number(o.wallClockMinutes);
-  return {
-    tokenBudget: Number.isFinite(t) && t > 0 ? Math.floor(t) : TASK_TOKEN_BUDGET,
-    wallClockMs: Number.isFinite(w) && w > 0 ? Math.floor(w) * 60 * 1000 : TASK_WALL_CLOCK_BUDGET_MS,
-  };
-}
-
-/**
- * 任务预算判定（P1-9，**唯一定义处**；导出供测试与 server 主循环共用）。
- *
- * @param budgets 预算（resolveTaskBudgets 产出）；undefined = 不设限 → null
- * @param totalTokens 任务累计 token（输入+输出）
- * @param startedAt 任务起始时间戳（ms）
- * @param now 当前时间（默认 Date.now()；测试注入用）
- * @param waitCreditMs 累计**等待抵扣**（工具执行时的外部 IO 等待，见 resolveWaitCredit）。
- *   墙钟按 `elapsed - waitCreditMs` 判定 —— 见 TASK_WAIT_CREDIT_CAP_MS 的说明。
- * @returns 未触达 null；触达 {kind, used, limit}（token 优先于墙钟判定）
- */
-export function checkTaskBudgetHit(
-  budgets: { tokenBudget: number; wallClockMs: number } | undefined,
-  totalTokens: number,
-  startedAt: number,
-  now: number = Date.now(),
-  waitCreditMs: number = 0,
-): { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null {
-  if (!budgets) return null;
-  const used = Number(totalTokens) || 0;
-  if (used >= budgets.tokenBudget) return { kind: 'tokens', used, limit: budgets.tokenBudget };
-  // ★ startedAt 必须用 Number.isFinite 判（不能用 || 兜底）：startedAt=0（epoch）是合法值，
-  //   `Number(startedAt) || now` 会把它吞成 now → elapsed 恒 0 → 墙钟闸静默失效。
-  const start = Number(startedAt);
-  if (!Number.isFinite(start)) return null;
-  // ★ 等待抵扣：扣掉"等外部进程"的时间，只对"模型+工具的开工时长"计费。
-  //   抵扣额由调用方累计（addWaitCredit），此处只做算术，不判来源。
-  const credit = Number.isFinite(Number(waitCreditMs)) && Number(waitCreditMs) > 0
-    ? Math.min(Math.floor(Number(waitCreditMs)), TASK_WAIT_CREDIT_CAP_MS)
-    : 0;
-  const elapsed = Math.max(0, now - start - credit);
-  if (elapsed >= budgets.wallClockMs) return { kind: 'wallclock', used: elapsed, limit: budgets.wallClockMs };
-  return null;
-}
 
 /**
  * 计算**有效可用预算**（token）：`标称窗口 × 比例`，带小窗口下限。

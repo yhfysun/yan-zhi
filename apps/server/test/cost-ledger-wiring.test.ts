@@ -227,19 +227,18 @@ const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\
 describe('静态守卫：D4 硬约束（成本不进停止语义）', () => {
   const LTM = strip(read('apps/server/src/llm-task-manager.ts'));
 
-  it("checkTaskBudgetHit 返回类型仍是 'tokens' | 'wallclock'（未混入 'cost'）", () => {
-    expect(LTM).toContain("function checkTaskBudgetHit(task: LlmTask): { kind: 'tokens' | 'wallclock'");
+  it('2026-10-18：token/墙钟预算闸已退役（checkTaskBudgetHit 不得残留在主循环）', () => {
+    // 用户决策「不要程序自动停，费用提醒就好」→ 预算闸整体退役，stop 语义只剩费用硬停。
+    expect(LTM, '★ 预算闸残留 —— "不要程序自动停"的决策被回退了？').not.toContain('checkTaskBudgetHit');
     // 反向：整个文件里不得出现 kind: 'cost' 的停止语义
     expect(LTM).not.toContain("kind: 'cost'");
   });
 
-  it('noticeCostAtRoundEnd 挂在轮末（emittedStep++ 之前），与轮首的 checkTaskBudgetHit 不同址', () => {
+  it('noticeCostAtRoundEnd 挂在轮末（emittedStep++ 之前），是任务里唯一的费用类闸', () => {
     const noticeAt = LTM.indexOf('noticeCostAtRoundEnd(task)');
-    const budgetAt = LTM.indexOf('taskBudgetHit = checkTaskBudgetHit(task)');
     const stepIncAt = LTM.indexOf('emittedStep++');
     expect(noticeAt).toBeGreaterThan(-1);
     expect(stepIncAt, '锚点失效？').toBeGreaterThan(-1);
-    expect(noticeAt, '★ 轮末判定必须晚于轮首预算闸（不同址）').toBeGreaterThan(budgetAt);
     expect(noticeAt, '★ 必须在"继续下一轮 ReAct"之前').toBeLessThan(stepIncAt);
   });
 

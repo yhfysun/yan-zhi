@@ -4,7 +4,7 @@
 // UI 交互工具（ask_user/confirm_user 等）和 MCP/自定义工具委托前端，刷新时暂停等待重连。
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall, TokenUsageDetail, ModelPricing } from '@yan-zhi/shared';
-import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, resolveTaskBudgets, checkTaskBudgetHit as sharedCheckTaskBudgetHit, addWaitCredit, formatCostNotice, isMissingUsage, estimateTokens } from '@yan-zhi/shared';
+import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, formatCostNotice, isMissingUsage, estimateTokens } from '@yan-zhi/shared';
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
@@ -159,11 +159,11 @@ export const autoContinueHardCap = 30;
 /**
  * ★★★ 任务**总时长**硬顶（2026-10-09 新增，弹性墙钟的必要兜底）。
  *
- * 背景：2026-10-09 起墙钟预算改为「每批一份」（见 TASK_WAIT_CREDIT_CAP_MS 与接力块的基线重置），
- *   目的是让"单批必然超 15 分钟"的出片类长任务能一趟跑完。但这样一来：
+ * 背景：原 P1-9 墙钟闸「每批一份」（每批重置基线）退役后（2026-10-18，"不要程序自动停"），
+ *   接力批次数成了**唯一**的批次维度上限 —— 但批次数不足以兜底失控：
  *   - 计划已被清空的会话（见 clearPlan 自毁那类的后果）里 `readPlanRemainingSteps()===0`，
  *     停滞判定会判 `noPlanTracked && expectedContinue` ⇒ **永远算"有进展"** → 停滞闸失效；
- *   - 只剩 `autoContinueHardCap = 30 批` 兜底，按每批 15 分钟算 = **最坏 7.5 小时**。
+ *   - 只剩 `autoContinueHardCap = 30 批` 兜底，而每批步数上限可被用户调得很大。
  * ⇒ 必须有独立于"批次数"的**总墙钟**上限。
  *
  * ★ 这是"失控兜底"，不是"任务预算"：正常任务不该撞到（撞到说明 3 小时里没干成一件事）。
@@ -492,30 +492,11 @@ interface LlmTask {
    */
   workspaceDir?: string;
   /**
-   * ★ P1-9（2026-10-07）：任务预算四件套里的 ② token 总预算 与 ③ 墙钟预算。
-   * totalTokens 每步 LLM 调用后累加（usage 优先）；budgets 在 createTask 时从
-   * 智能体 config_json 解析（resolveTaskBudgets，@yan-zhi/shared 唯一定义处）。
-   * 触达预算**不硬杀**：跳出内层循环走与步数上限相同的「结账 → 自评 → 接力确认」块。
+   * 任务累计 token（输入+输出合计，usage 优先，缺失按内容长度粗估）。
+   * ★ 只做**可观测**（2026-10-18）：原 P1-9 预算闸（token/墙钟触达自动停）已按用户决策退役
+   *   ——「程序自动停」体感差（丢工作现场），停语义只剩费用硬停（hardStopCny，用户自填才启用）。
    */
   totalTokens?: number;
-  budgets?: { tokenBudget: number; wallClockMs: number };
-  /**
-   * ★★★ 墙钟**预算基线**（2026-10-09）：预算判定用 `budgetBaselineAt`，**不是** `createdAt`。
-   *
-   * 为什么必须拆成两个字段（不要合并回 createdAt）：
-   *   · `createdAt` 兼着两个**互斥**语义 —— ① 展示/审计的任务创建时刻；
-   *     ② `cleanupTasks()` 的任务回收看门狗基准（`now - createdAt > 2h` 强杀）。
-   *   · 预算接力需要**每批重置起点**（`budgetBaselineAt = Date.now()`），
-   *     若直接改 createdAt，看门狗基准被一起前移 → 任务**永远收不回** → 内存泄漏。
-   *   ★ 判据：一个字段被两处用**不同语义**读，改之前必须拆字段，不能复用。
-   */
-  budgetBaselineAt?: number;
-  /**
-   * ★★★ 等待抵扣累计（2026-10-09，见 shared/context-policy 的 TASK_WAIT_CREDIT_CAP_MS）：
-   *   工具执行耗时里"等外部子进程/网络"的部分（如 python_exec 出片 5~8 分钟）不计入墙钟。
-   *   由 executeTool 在**唯一工具出口**累加；预算判定时扣除。随任务对象回收，不落库。
-   */
-  waitCreditMs?: number;
   /**
    * ★ D1 可观测（2026-10-09）：prompt 缓存命中量。
    * · `lastCachedTokens` / `lastPromptTokens`：**最近一轮**的命中与总 prompt 量
@@ -1146,19 +1127,8 @@ export function createTask(params: {
       return DEFAULT_MAX_SPAWN_PER_TASK;
     })(),
     spawnCount: 0,
-    // ★ P1-9：任务预算（token 总预算 + 墙钟）。agent.config_json.totalTokenBudget /
-    //   wallClockMinutes 可覆盖；无智能体或非法值 → 默认（resolveTaskBudgets 内兜底）。
+    // 任务累计 token（只做可观测，2026-10-18 起不再参与任何停机判定）
     totalTokens: 0,
-    budgetBaselineAt: Date.now(),
-    waitCreditMs: 0,
-    budgets: (() => {
-      try {
-        if (!params.agentId) return resolveTaskBudgets(undefined);
-        const row = db.prepare('SELECT config_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(params.agentId, params.userId) as any;
-        const cfg = (() => { try { return JSON.parse(row?.config_json || '{}'); } catch { return {}; } })();
-        return resolveTaskBudgets(cfg);
-      } catch { return resolveTaskBudgets(undefined); }
-    })(),
     specFingerprints: new Map<string, number>(),
     backgroundSubAgents: new Map<string, BackgroundSubAgentInfo>(),
   };
@@ -3237,11 +3207,9 @@ async function runReActLoop(task: LlmTask, params: {
     })();
     // 本轮步数预算：每轮现读，允许跑中途调大/调小立即生效（见 readLiveParams 注释）
     let stepBudget = liveMaxSteps();
-    // ★ P1-9：任务预算触达状态（null=未触达）。token/墙钟触达时内层 break 跳出，
-    //   收尾块按 kind 生成对应文案，且**拒绝自动接力**（预算已尽，接力只会立刻再触达）。
-    let taskBudgetHit: { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null = null;
     // ★ 费用硬停触达（2026-10-17，D4 唯一例外）：用户自填 hardStopCny > 0 才会出现，
-    //   出厂默认 0 ⇒ 本标记永远是 null。与 taskBudgetHit 同路收尾，但文案独立。
+    //   出厂默认 0 ⇒ 本标记永远是 null。★ 2026-10-18：原 P1-9 预算闸（token/墙钟触达自动停）
+    //   已按用户决策退役 ——「不要程序自动停」，停语义只剩这一处（自填才启用）。
     let costHardStop: { used: number; limit: number } | null = null;
     // 累计已消耗步数（跨自动接力批次），用于 step 事件与日志的连续计数
     let emittedStep = 0;
@@ -3259,10 +3227,6 @@ async function runReActLoop(task: LlmTask, params: {
         //   （不必等任务结束重发）。调小则本轮在到达新上限后进入收尾决策。
         const budgetNow = liveMaxSteps();
         if (budgetNow !== stepBudget) stepBudget = budgetNow;
-        // ★ P1-9（2026-10-07）：任务预算闸（token 总预算 + 墙钟）。触达**不硬杀**，
-        //   跳出内层循环，走与步数上限相同的「结账 → 自评 → 接力确认」收尾块。
-        taskBudgetHit = checkTaskBudgetHit(task);
-        if (taskBudgetHit) break;
         task.step = step;
         emit(task, { type: 'step', step: emittedStep, batch });
 
@@ -3592,7 +3556,8 @@ async function runReActLoop(task: LlmTask, params: {
         //   否则下游看到 `undefined` 会归因成"模型没生成/参数被截断"，指向错误方向。
         task.lastFinishReason = streamFlag.terminated === false ? 'truncated' : streamFinish;
         // ★ P1-9：累计本任务 token 消耗（usage 优先，缺失时与 estTokens 同口径粗估），
-        // 供预算闸判定（checkTaskBudgetHit）。粗估口径：内容长度 / 2（与 estTokens 一致）。
+        // 供可观测（task.totalTokens，只记不停 —— 2026-10-18 预算闸退役后不再参与判定）。
+        // 粗估口径：内容长度 / 2（与 estTokens 一致）。
         task.totalTokens = (task.totalTokens || 0) + (usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2));
 
         // 文本模式工具调用解析：模型输出 [TOOL_CALL]...[/TOOL_CALL] 或 <function=xxx> 时转结构化 toolCalls
@@ -3959,9 +3924,10 @@ async function runReActLoop(task: LlmTask, params: {
         // 被循环闸门硬停 → 立刻跳出本轮，不再进入下一轮 ReAct
         if (forceStoppedByLoopGuard) break;
 
-        // ── 轮末费用判定（D4：只提醒，程序不停）──────────────────────────
-        //   ★ 与轮首的 checkTaskBudgetHit（token/墙钟，停止语义）**刻意不同址**：
-        //     成本只有"提醒"语义，混进停止判定点会被下游收尾块当刹车处理。
+        // ── 轮末费用判定（D4：默认只提醒；用户自填 hardStopCny 才硬停）──────────
+        //   ★ 2026-10-18：原轮首的 token/墙钟预算闸已退役，本判定是任务里**唯一**的
+        //     费用类闸：提醒分支（emit task:cost_notice）不停任务，硬停分支只在
+        //     用户自填了 hardStopCny 时才会走到（出厂 0 = 永不停）。
         //   ★ 提醒默认**不落会话消息**（emit task:cost_notice + 前端提示条）——
         //     落进消息会进上下文，后续每轮输入都多带这段，提醒自身在推高它提醒的数字（坑 #15）。
         if (noticeCostAtRoundEnd(task) === 'hard_stop') {
@@ -3991,11 +3957,7 @@ async function runReActLoop(task: LlmTask, params: {
       //   于是落库文案永远是「已达到最大循环数（200）」—— 把真因（墙钟 15 分钟）掩盖成"步数不够"，
       //   用户照着去加步数（错方向）。这里让预算触达时**先说预算**，步数信息并列为补充。
       const budgetReached = stepBudget;
-      let tipText = taskBudgetHit?.kind === 'tokens'
-        ? `已达到任务 token 总预算（累计 ${taskBudgetHit.used} / 上限 ${taskBudgetHit.limit}），请检查任务是否需要拆分，或在智能体 config_json 调高 totalTokenBudget。`
-        : taskBudgetHit?.kind === 'wallclock'
-        ? `已达到任务墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟，已扣除等外部进程的时间），请检查任务是否需要拆分，或在智能体 config_json 调高 wallClockMinutes。`
-        : costHardStop
+      let tipText = costHardStop
         // ★ D4 唯一例外：费用硬停（用户自填 hardStopCny，出厂默认 0 = 永不触发）。
         //   措辞必须点明"这是你自己设的上限"—— 默认配置下用户永远看不到这句。
         ? `已达到费用硬停上限（本会话累计约 ¥${costHardStop.used.toFixed(2)} / 上限 ¥${costHardStop.limit.toFixed(2)}），任务已停止。如需继续：调高「设置 → 费用预算 → 硬停上限」后把任务要求再发一次；设为 0 表示永不停（只提醒）。`
@@ -4026,10 +3988,8 @@ async function runReActLoop(task: LlmTask, params: {
           // ★ 2026-10-09 修：原实现**无条件**把 tipText 覆盖成"单批最大循环步数"，
           //   把预算真因（墙钟/token）冲掉 → 库里只剩「注：本次任务已达到单批最大循环步数（200）」，
           //   用户拿到的是"步数不够"的错方向。改为按实际触达的闸门措辞。
-          tipText = `${summaryText}\n\n（注：${taskBudgetHit
-            ? (taskBudgetHit.kind === 'tokens'
-              ? `本次任务已达到 token 总预算（${taskBudgetHit.used}/${taskBudgetHit.limit}）`
-              : `本次任务已达到墙钟时间上限（${Math.round(taskBudgetHit.limit / 60000)} 分钟，已扣除等外部进程的时间）`)
+          tipText = `${summaryText}\n\n（注：${costHardStop
+            ? '本次任务已达到费用硬停上限（用户自设）'
             : `本次任务已达到单批最大循环步数（${budgetReached}）`}。）`;
         }
 
@@ -4047,24 +4007,12 @@ async function runReActLoop(task: LlmTask, params: {
         //   偶发空参不再阻断（那正是最需要接力纠偏的场景）。
         const expectedContinue = judged.shouldContinue;
         const degenerate = consecutiveArgFailures >= EMPTY_ARGS_DEGENERATE_THRESHOLD;
-        // ★★★ P1-9 修正（2026-10-09，high）：预算触达**不再无条件否决接力**。
-        //
-        //   原实现 `!budgetExhausted` 横在接力分支前 → 触达墙钟/token 后**一次都不接力**，
-        //   即使计划里还剩 7 步也照样「未自动续跑：任务墙钟时间已耗尽」。实测（会话 84412558）：
-        //   17.2 分钟触达 15 分钟墙钟 → 自动接力 0 次 → 用户体感"不能一趟跑出来"。
-        //   这与 2026-09-29 修掉的「reason 说该继续、结论却不续」是**同类毛病换了个闸门复发**。
-        //
-        //   ★ 新语义：预算是"该结账了"的信号，不是"该放弃"的信号 —— 只要
-        //     (a) 机械信号说还有活（计划有剩余步骤 / 模型自评未完成）且
-        //     (b) 不是真失控（未中止、未空转退化）
-        //   就**允许有限接力**；失控兜底由 autoContinueHardCap(30) + 停滞判定负责。
-        //
-        //   ★ 但必须防"预算已尽 → 接力立刻再触达 → 无限空转"：
-        //     · token 预算：接力前把**累计值对齐到预算**（否则下一批第一步就再次触发），
-        //       相当于"本任务已用满配额，这批是最后一次"；
-        //     · 墙钟：把**起点前移**为下批开始时刻，即"每批给一份完整墙钟预算"。
-        const budgetExhausted = !!taskBudgetHit || !!costHardStop;
-        if (expectedContinue && !aborted && !degenerate) {
+        // ★★★ 接力决策（2026-10-18 修订）：原「预算触达 → 有限接力 + 基线重置」机制随
+        //   P1-9 预算闸一并退役 —— 用户明确「不要程序自动停，效果不好，费用提醒就好」：
+        //   token/墙钟只做可观测，不再参与停/续判定。
+        //   防失控兜底不变：autoContinueHardCap(30 批) + 停滞判定 + 4h 总时长硬顶 + 2h 回收看门狗。
+        //   费用硬停（costHardStop）是唯一例外：它本来就是用户自设的"到此为止"，不接力。
+        if (expectedContinue && !aborted && !degenerate && !costHardStop) {
           continuationCount++;
           // ★★★ 总时长失控闸（2026-10-09）：弹性墙钟（每批一份）之后，批次数不足以兜底 ——
           //   计划已被清空的会话里停滞闸会失效（noPlanTracked 恒真），只剩 30 批 × 15 分钟 = 最坏 7.5h。
@@ -4132,24 +4080,10 @@ async function runReActLoop(task: LlmTask, params: {
           });
           // 通知前端：不是结束，而是接着做（前端据此保持"运行中"态、不清输入锁）
           const contMsg = `已达单批步数上限（${budgetReached} 步），**自动接力第 ${continuationCount} 批**继续推进（停滞计数 ${stallCount}/${autoContinueMaxRounds}）。` +
-            (budgetExhausted ? `（本批为预算触达后的有限接力：${taskBudgetHit!.kind === 'tokens' ? 'token 已达上限' : '墙钟已达上限'}，接力只做最后一批）` : '') +
             (judged.reason ? `（依据：${judged.reason}）` : '');
           const contId = insertMessage(convId, userId, 'assistant', contMsg);
           emit(task, { type: 'message:added', message: { id: contId, role: 'assistant', content: contMsg } });
           emit(task, { type: 'continuation', round: continuationCount, maxRounds: autoContinueHardCap, reason: judged.reason });
-          // ★★★ 预算基线重置（2026-10-09）：预算触达后仍接力一次，必须让下一批有可用额度，
-          //   否则下一批第一步立刻再次触达 → 无限"接力-触达"空转。
-          //   · token：对齐到上限（这批是本任务最后一次）。
-          //   · 墙钟：起点前移为**此刻**（每批给一份完整墙钟预算）—— 对长任务这是关键：
-          //     出片这类任务单批就要 15 分钟以上，只有"每批一份预算"才能一趟跑完。
-          if (budgetExhausted) {
-            if (taskBudgetHit!.kind === 'tokens') {
-              task.totalTokens = taskBudgetHit!.limit;
-            } else {
-              task.budgetBaselineAt = Date.now();
-              task.waitCreditMs = 0;
-            }
-          }
           // ★ P1-8（2026-10-07）：接力前检查计划是否已与现实脱节 —— 现实变了计划不跟着变，
           //   下一批就会按过期计划做错事（planner-executor 共识：plan 会 stale，必须有 re-planning）。
           //   失败绝不阻塞接力（replan 是增强能力）。
@@ -4172,7 +4106,7 @@ async function runReActLoop(task: LlmTask, params: {
           ? (judged.reason || '模型判定任务已完成')
           : aborted ? '用户已中止'
           : degenerate ? `连续 ${consecutiveArgFailures} 步工具参数为空，判定为空转退化，为免继续消耗已停止`
-          : budgetExhausted ? (taskBudgetHit!.kind === 'tokens' ? '任务 token 总预算已耗尽' : '任务墙钟时间已耗尽')
+          : costHardStop ? '已达到费用硬停上限（用户自设，调高「设置 → 费用预算 → 硬停上限」后重发即可继续）'
           : (judged.blockedBy || '自动接力未开启')}）`;
       } catch { /* 总结失败回退固定文案 */ }
 
@@ -4274,14 +4208,6 @@ async function runReActLoop(task: LlmTask, params: {
   //     子智能体快照同属本会话（见下方 insertMessage 的子智能体分支），一并被裁。
   //   ★ try/catch：裁剪是"派生物治理"，绝不能影响任务结果与收尾上报。
   try { pruneOldSnapshots(convId, SNAPSHOT_KEEP_PER_CONV); } catch { /* 裁剪失败不影响任务 */ }
-}
-
-/**
- * ★ P1-9：任务预算判定——**实现下沉到 @yan-zhi/shared/context-policy 的 checkTaskBudgetHit**
- * （预算策略与常量同源，避免"判定逻辑复刻"）。此处只做 task 对象的取参适配。
- */
-function checkTaskBudgetHit(task: LlmTask): { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null {
-  return sharedCheckTaskBudgetHit(task.budgets, task.totalTokens || 0, task.budgetBaselineAt || task.createdAt || Date.now(), Date.now(), task.waitCreditMs || 0);
 }
 
 /**
@@ -5372,11 +5298,6 @@ async function executeTool(
       ? resolveToolPath(String(args?.path || ''), task.workspaceDir)
       : '';
     const before = snapPath ? await readFileOrNull(snapPath) : null;
-    // ★★★ 等待抵扣（2026-10-09，见 shared/context-policy 的 TASK_WAIT_CREDIT_CAP_MS）：
-    //   工具执行耗时里的大头是**等外部子进程**（如 python_exec 跑 novel_tuiwen 出片 5~8 分钟）。
-    //   把它计入墙钟 = 惩罚"用外部工具干活"，长任务必然每批超时。此处累计抵扣，预算判定时扣除。
-    //   ★ 放在**唯一工具出口**（registry.execute 两侧），覆盖原生/API/MCP/自定义全部工具，零遗漏。
-    const execStartedAt = Date.now();
     // ★★★ A4 根治（2026-10-10）：把**当前会话**告知 core 的浏览器工具 ——
     //   它们据此把 `x-yz-conversation-id` 带给浏览器路由，服务端按会话隔离"活动页"，
     //   避免"A 会话导航中、B 会话读取/截图拿到 A 的页面"（且静默无报错）。
@@ -5385,9 +5306,6 @@ async function executeTool(
     //   ★ 每次调用前都设置（含非 browser 工具）—— 保证不会残留上一个会话的值。
     setBrowserToolConversationId(task.conversationId);
     const r = await registry.execute(toolName, args, toolCtx);
-    try {
-      task.waitCreditMs = addWaitCredit(task.waitCreditMs || 0, Date.now() - execStartedAt);
-    } catch { /* 记账失败不影响工具结果 */ }
     let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
     const meta = (r as any)?._meta as { path?: string; beforeContent?: string | null } | undefined;
     // 把 _meta 交给调用方（供登记 conversation_file / 写 Diff 快照）
@@ -6412,15 +6330,9 @@ async function runSubAgentImpl(
   })();
   // 单批步数预算（接力时重置为 maxSteps）
   let subStepBudget = maxSteps;
-  // ★ D（2026-10-07）：子智能体自身预算（token/墙钟）—— 此前只有主循环有，子智能体跑几百步无人管。
-  //   预算从子智能体 agent.config_json 解析（resolveTaskBudgets，可与父任务独立配置），失败回落默认。
-  const subBudgets = (() => {
-    try { return resolveTaskBudgets(agent.config_json ? JSON.parse(agent.config_json) : undefined); }
-    catch { return resolveTaskBudgets(undefined); }
-  })();
-  let subTokensTotal = 0;
-  let subBudgetHit: { kind: 'tokens' | 'wallclock'; used: number; limit: number } | null = null;
-  const subStartedAt = Date.now();
+  // ★ 2026-10-18：原 D 方案的子智能体预算闸（subBudgets/subTokensTotal/subBudgetHit）已随
+  //   P1-9 预算闸一并退役 ——「不要程序自动停」。子智能体用量仍同步进父任务 totalTokens
+  //   （见循环内坑 #8 注），但只做可观测。
   // 「只写了工具名、没写参数体」的工具（见 parseTextModeToolCalls 空参防护）
   let skippedArgToolsSub: string[] = [];
 
@@ -6683,17 +6595,10 @@ async function runSubAgentImpl(
       if (toolCallAcc.length > 0) ensureToolCallIds(toolCallAcc);
       updateMessageContent(assistantMsgId, fullContent, fullReasoning, toolCallAcc.length > 0 ? toolCallAcc as any : undefined, usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2));
       emit(task, { type: 'message:updated', messageId: assistantMsgId, content: fullContent, reasoning: fullReasoning, toolCalls: toolCallAcc.length > 0 ? toolCallAcc : undefined });
-      // ★ D（2026-10-07）：累计子智能体自身 token 消耗（与主循环同口径粗估），供预算闸判定
-      subTokensTotal += usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2);
-      // ★ 坑 #8（2026-10-17 修）：子智能体用量此前**只进自己的** subTokensTotal，
-      //   父任务的 token 预算对子智能体完全无感 —— 一个狂派子智能体的父任务能把
-      //   总 token 烧到天际而 totalTokens 纹丝不动。这里同步累加进父任务
+      // ★ 坑 #8（2026-10-17 修）：子智能体用量必须同步累加进父任务
       //   （口径：子智能体的每次 LLM 调用都真实消耗父任务的配额）。
+      //   ★ 2026-10-18：只做可观测 —— 原预算闸已退役，不再据此停子智能体。
       task.totalTokens = (task.totalTokens || 0) + (usageTokens || Math.round((fullContent.length + fullReasoning.length) / 2));
-      // ★ D：子智能体预算闸（token/墙钟）。触达不硬杀——跳出内层，走与步数上限相同的接力决策，
-      //   只是在接力判定处**拒绝续批**（预算已尽，续批只会立刻再触达）。
-      subBudgetHit = sharedCheckTaskBudgetHit(subBudgets, subTokensTotal, subStartedAt);
-      if (subBudgetHit) break;
 
       // 无工具调用 → 子智能体完成
       if (toolCallAcc.length === 0) {
@@ -6744,9 +6649,7 @@ async function runSubAgentImpl(
     //   只在内部续一批；轮次上限 subAutoRounds 保证不会无限跑。
     if (subBatch < subAutoRounds && !task.abortController.signal.aborted) {
       let shouldContinue = false;
-      // ★ D：预算已耗尽 → 不再征求模型意见直接不接力（续批只会立刻再触达，白烧一次总结调用）
-      if (subBudgetHit) shouldContinue = false;
-      else try {
+      try {
         const hist = loadSubAgentMessages(task.conversationId, parentToolCallId).filter(m => m.content || m.toolCalls || m.role === 'tool');
         const history: Message[] = hist.map(m => ({
           id: m.id, conversationId: '', role: m.role,
@@ -6779,11 +6682,7 @@ async function runSubAgentImpl(
     emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
     // 达到最大步数：先请模型总结进展再返回给父智能体（父智能体可基于总结决策下一步），
     // 总结失败回退到固定文案。
-    let resultText = subBudgetHit
-      ? (subBudgetHit.kind === 'tokens'
-        ? `子智能体已达到自身 token 预算（累计 ${subBudgetHit.used} / 上限 ${subBudgetHit.limit}）`
-        : `子智能体已达到自身墙钟时间上限（${Math.round(subBudgetHit.limit / 60000)} 分钟）`)
-      : `子智能体已达到最大循环数（${maxSteps}）`;
+    let resultText = `子智能体已达到最大循环数（${maxSteps}）`;
     try {
       const hist = loadSubAgentMessages(task.conversationId, parentToolCallId).filter(m => m.content || m.toolCalls || m.role === 'tool');
       const history: Message[] = hist.map(m => ({
@@ -7009,11 +6908,12 @@ function resolveAgentCostLimit(task: LlmTask): number {
 }
 
 /**
- * 轮末费用判定（D4：**只提醒，程序不停**）。
+ * 轮末费用判定（D4：**默认只提醒**；hardStopCny 用户自填 > 0 是唯一硬停例外）。
  *
- * ★ 与 token/墙钟闸（checkTaskBudgetHit，在轮首）**刻意不同址**：那个函数只有
- *   「停/不停」两种语义，成本只有「提醒」语义 —— 混进同一个判定点，下游收尾块
- *   就会顺手把提醒当停止信号处理（D4 名存实亡）。
+ * ★ 2026-10-18：原轮首的 token/墙钟预算闸（checkTaskBudgetHit）已随"不要程序自动停"
+ *   的决策退役，本函数现在是任务里**唯一**的费用类判定。
+ *   语义隔离仍是硬约束：「提醒」（warn/exceeded）绝不产生停止信号 —— 下游收尾块
+ *   只认 'hard_stop'，其他返回值一律继续跑。
  *
  * @returns 'hard_stop' 时调用方应走停止路径（D4 唯一例外，hardStopCny 默认 0 = 不启用）
  */
