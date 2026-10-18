@@ -128,7 +128,8 @@ function inferModelType(modelId: string, apiType?: string): ModelType {
 function assertEditablePlatform(id: string) {
   const store = usePlatformStore();
   const p = store.platforms.find((x) => x.id === id);
-  if (p?.isBuiltin) {
+  // 目录厂商平台（preset）可编辑：名称/Token/停顿开放；协议/API URL 由 UI 只读 + 服务端拦截
+  if (p?.isBuiltin && !p?.presetKey) {
     throw new Error('内置平台不可编辑');
   }
 }

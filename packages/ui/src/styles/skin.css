@@ -1151,8 +1151,9 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   background-color: var(--glass-bg-hover);
 }
 
-/* 标签走玻璃 */
-[data-skin="on"] .el-tag {
+/* 标签走玻璃；但 effect="dark" 的语义色标签（内置 / 已禁用 / 可用 等）是**白字**，
+   玻璃白底 + 白字 = 不可读（2026-10-18 用户实报「已禁用标签看不清」）→ dark 档保留各自语义色背景 */
+[data-skin="on"] .el-tag:not(.el-tag--dark) {
   background-color: var(--btn-bg);
   border-color: var(--btn-border);
 }

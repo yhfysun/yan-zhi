@@ -141,10 +141,8 @@ async function forward(
  */
 function rejectDisabledPlatform(p: any, res: ExpressResponse): boolean {
   if (Number(p?.llm_enabled ?? 1) !== 0) return false;
-  res.status(403).json({
-    error: '该模型平台已禁用，不能调用其模型。请到「模型平台」页对该平台点「启用」后再试。',
-    platformId: p?.id,
-  });
+  // ★ 措辞只陈述事实，不引导「再试一次」——否则大模型/调用方会拿着同一句错误反复重试
+  res.status(403).json({ error: '模型平台已禁用，其模型不可用。', platformId: p?.id });
   return true;
 }
 
@@ -158,10 +156,7 @@ function rejectDisabledPlatform(p: any, res: ExpressResponse): boolean {
 function rejectAllTokensDisabled(p: any, res: ExpressResponse): boolean {
   if (!hasTokenPool(p?.id)) return false;
   if (getAvailableTokenCount(p.id) > 0) return false;
-  res.status(403).json({
-    error: '该平台所有 Token 均已停用：请在「模型平台」→ 编辑平台 → 已配置 Token 里启用或更换 Token。',
-    platformId: p?.id,
-  });
+  res.status(403).json({ error: '该平台所有 Token 均已停用，其模型不可用。', platformId: p?.id });
   return true;
 }
 

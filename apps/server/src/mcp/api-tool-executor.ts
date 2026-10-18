@@ -429,8 +429,10 @@ setJsExecDataBridge(async (args: { datasourceId?: string; sql: string; limit?: n
 // - 生视频：POST /v1/videos {mode:'text'} → GET /v1/videos/{taskId} 轮询（异步）
 // Key 来源：platform_api_key 的 Token 池（与 llm-proxy 同源），429/401/403 自动换下一把。
 function loadAgensMediaCtx(): { baseUrl: string; keys: string[] } {
+  // ★ 候选面过滤（2026-10-18）：平台级禁用（llm_enabled=0）的 agnes 平台直接不选 ——
+  //   工具内部换到候选池下一个模型，而不是调用一次 → 报错 → 大模型再调一次工具。
   const plat = db
-    .prepare("SELECT id, api_url, api_key_enc FROM platform WHERE api_url LIKE '%agnes-ai.com%' ORDER BY created_at ASC LIMIT 1")
+    .prepare("SELECT id, api_url, api_key_enc FROM platform WHERE api_url LIKE '%agnes-ai.com%' AND llm_enabled = 1 ORDER BY created_at ASC LIMIT 1")
     .get() as { id: string; api_url: string; api_key_enc: string | null } | undefined;
   const baseUrl = String(plat?.api_url || process.env.AGNES_API_URL || AGENS_API_URL).replace(/\/+$/, '');
   const keys: string[] = [];
@@ -519,7 +521,7 @@ function resolveMediaPlatform(args: Record<string, unknown>, userId?: string | n
   if (!hasTokenPool(platRow.id) && platRow.api_key_enc) keys.push(platRow.api_key_enc);
   const baseUrl = String(platRow.api_url || '').replace(/\/+$/, '');
   if (!baseUrl) return { ok: false, error: '该平台未配置 API 地址，请先在模型平台里补全', baseUrl: '', keys: [], isAgnes: false };
-  if (!keys.length) return { ok: false, error: '该平台没有可用的 API Key，请先在模型平台里配置', baseUrl, keys: [], isAgnes: false };
+  if (!keys.length) return { ok: false, error: '该平台没有可用的 API Key（Token 均已停用或未配置）', baseUrl, keys: [], isAgnes: false };
   return { ok: true, error: '', baseUrl, keys: [...new Set(keys)], isAgnes: /agnes-ai\.com/i.test(baseUrl) };
 }
 
@@ -899,7 +901,7 @@ async function mediaGenerateImageOnce(
   if (!ctx.ok) return fail(ctx.error);
   const baseUrl = ctx.baseUrl;
   const keys = ctx.keys;
-  if (!keys.length) return fail('未找到该平台的 API Key（Token 池为空），请先在模型平台里配置');
+  if (!keys.length) return fail('该平台没有可用的 API Key（Token 均已停用或未配置），无法生成');
 
   const imagesRaw = args.images;
   const imageList: string[] = Array.isArray(imagesRaw)
@@ -2626,7 +2628,7 @@ async function mediaGenerateVideoOnce(
   const baseUrl = ctx.baseUrl;
   const keys = ctx.keys;
   const isAgnes = ctx.isAgnes;
-  if (!keys.length) return fail('未找到该平台的 API Key（Token 池为空），请先在模型平台里配置');
+  if (!keys.length) return fail('该平台没有可用的 API Key（Token 均已停用或未配置），无法生成');
 
   // 1) 提交任务（429/401/403 换下一把 key）
   // 图生视频/关键帧：firstFrame/lastFrame 透传为 first_frame/last_frame（字段名已被接口识别，

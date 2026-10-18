@@ -124,6 +124,31 @@ describe('★ 目录来源内置平台：模型数据层开放，连接配置仍
     expect((db.prepare('SELECT llm_enabled FROM platform WHERE id = ?').get(pid) as any).llm_enabled).toBe(0);
   });
 
+  it('★ preset 平台可编辑名称与加 Token（2026-10-18：「agnes 卡上没有编辑按钮」），连接常量仍 403', async () => {
+    const { json } = await post('/from-preset', { presetKey: 'deepseek' });
+    const pid = json.data.id as string;
+    // 名称可改（厂商平台换个名字是正常诉求）
+    const rename = await fetch(`${base}/${pid}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '我的 DeepSeek' }),
+    });
+    expect(rename.status).toBe(200);
+    expect((db.prepare('SELECT name FROM platform WHERE id = ?').get(pid) as any).name).toBe('我的 DeepSeek');
+    // 加 Token 可用（换 Key 诉求；此前一刀切 403）
+    const addKey = await post(`/${pid}/keys`, { apiKey: 'sk-new-token', label: '换把新Key' });
+    expect(addKey.status).toBe(200);
+    const keys = db.prepare('SELECT api_key FROM platform_api_key WHERE platform_id = ?').all(pid) as any[];
+    expect(keys.some((k) => k.api_key === 'sk-new-token')).toBe(true);
+    // 连接常量仍只读：协议 / API URL / headers 任一 → 403
+    for (const body of [{ protocol: 'anthropic' }, { apiUrl: 'https://evil.example.com' }, { headers: { X: '1' } }]) {
+      const r = await fetch(`${base}/${pid}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(r.status).toBe(403);
+    }
+  });
+
   it('非目录内置平台（is_builtin=1 且无 preset_key，如历史受管平台）维持原守卫（不可加模型）', async () => {
     // ollama-local 实际是 is_builtin=0（按 ID 前缀特判），所以这里手工造一个真 builtin 行
     db.prepare(

@@ -36,6 +36,7 @@ import { createLogger } from './logger.js';
 import { rowToModel } from './model-resolve.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { matchesModelSlot } from '@yan-zhi/shared';
+import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
 
 const logger = createLogger('model-pools');
 
@@ -113,7 +114,9 @@ function loadEffectiveModels(db: YzSqliteDb, userId: string): EffectiveModelRow[
       `SELECT m.id, m.platform_id, m.model_id, m.alias, m.type, m.context_window,
               m.capabilities_json, m.description, m.is_default, m.created_at, p.name AS platform_name
          FROM model m JOIN platform p ON p.id = m.platform_id
-        WHERE m.user_id = ? AND m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1`,
+        WHERE m.user_id = ? AND m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1
+          -- Token 池全停用的平台整平台剔除：候选面过滤，选了必失败不如不选
+          AND p.id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`,
     )
     .all(userId) as EffectiveModelRow[];
 }

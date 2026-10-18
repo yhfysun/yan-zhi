@@ -5,6 +5,7 @@ import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { buildSystemPromptForBackend, buildToolsForBackend, createTask } from '../llm-task-manager.js';
 import { resolveFirstModel } from '../services/model-pools.js';
+import { TOKEN_DEAD_PLATFORM_IDS_SQL } from '../services/token-pool.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -149,6 +150,7 @@ router.post('/:id/dispatch', (req: Request, res: Response) => {
     const fallback = db.prepare(
       `SELECT m.id, m.platform_id FROM model m JOIN platform p ON p.id = m.platform_id
        WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
+         AND p.id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})
        ORDER BY CASE WHEN m.is_default = 1 AND p.is_builtin = 0 THEN 0 WHEN m.is_default = 1 THEN 1 ELSE 2 END, m.created_at ASC
        LIMIT 1`,
     ).get(userId) as any;
@@ -160,8 +162,24 @@ router.post('/:id/dispatch', (req: Request, res: Response) => {
   }
 
   // 3) 建会话 + 任务（指令自包含：发布任务看不到派发它时的上下文）
+  // ★ 会话必须先落库（2026-10-18 修）：createTask 的会话生命周期检查查不到行会直接抛
+  //   CONVERSATION_NOT_FOUND —— 此前只生成了 convId 没 INSERT，派发永远 409"会话不存在"，
+  //   新任务建不出来。与 appCreateTask / runScheduledTask 的建会话完全同构。
+  // 归属空间：继承队列条目来源会话的空间（用户口径：派发的任务应在同一个工作空间里）；
+  // 来源会话已删则落「未归类」。
+  let spaceId: string | null = null;
+  if (row.conversation_id) {
+    const src = db.prepare('SELECT space_id FROM conversation WHERE id = ?').get(row.conversation_id) as any;
+    spaceId = src?.space_id || null;
+  }
+  // 权限：派发本身是用户"人工点头"的动作（按钮触发），且发布 SOP 必须委派 pageAgent
+  // （call_agent 在 readonly 下属写操作必被拦）——这里给 default，readonly 会让任务必失败。
   const convId = uuid();
   const now = Date.now();
+  db.prepare(
+    `INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, task_type, title_source, source, source_meta_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '[]', '[]', 0, ?, 'office', NULL, 'auto', NULL, NULL, ?, ?)`,
+  ).run(convId, userId, `发布：${row.title}`, agentId, platformId, modelId, spaceId, 'default', now, now);
   const media = (() => { try { return row.media_paths_json ? JSON.parse(row.media_paths_json) as string[] : []; } catch { return []; } })();
   const userContent = [
     `[发布任务] 把一条已确认的内容发布到平台，完成后用 publish_mark_published 回写。`,
@@ -174,8 +192,8 @@ router.post('/:id/dispatch', (req: Request, res: Response) => {
     `- 合集：${row.collection || '（无，如平台支持建议创建/选择合集）'}`,
     `- 媒体文件：${media.length ? media.join('；') : '（无，纯文字发布）'}`,
     ``,
-    `要求：用 call_agent 委派 pageAgent（agentId: "a_builtin_page_agent"）执行实际发布操作——`,
-    `内容形态：${PLATFORM_KIND_HINTS[row.platform] || '创作者发布页'}（用户浏览器已有登录态），按标题/正文/标签填写并上传媒体文件后提交。`,
+    `要求：用 call_agent 委派**发布执行员**（agentId: "a_builtin_publish_agent"）执行实际发布操作——`,
+    `它是平台页面专职执行者，挂有各平台创作者中心实测配方；内容形态：${PLATFORM_KIND_HINTS[row.platform] || '创作者发布页'}（用户浏览器已有登录态），按标题/正文/标签填写并上传媒体文件后提交。`,
     row.collection ? `发布时务必把内容归入合集/专栏「${row.collection}」（平台支持时；合集不存在则先创建同名合集）。` : `如平台支持合集且用户有同名合集，顺带归入。`,
     `发布动作真实完成后调用 publish_mark_published { id: "${row.id}", note: "<发布链接或平台返回标识>" }；`,
     `如果发布失败（登录态失效/页面结构变化等），如实汇报失败原因，**不要**调用 publish_mark_published。`,
@@ -187,8 +205,13 @@ router.post('/:id/dispatch', (req: Request, res: Response) => {
       conversationId: convId, userId, platformId, modelId,
       userContent, agentId, systemPrompt, tools,
     });
+    // 回执记录实际执行模型（2026-10-18 教训：模型池全是失效条目时 L4 兜底会按"最新优先"
+    // 选到本地小模型，3B 跑不了 ReAct 工具调用——任务空转"完成"但什么都没做。
+    // 把模型写进 note，队列面板一眼可见，不再静默选歪。）
+    const mrow = db.prepare('SELECT m.model_id, m.alias, p.name AS plat FROM model m JOIN platform p ON p.id = m.platform_id WHERE m.id = ?').get(modelId) as any;
+    const modelLabel = mrow ? `${mrow.plat}/${mrow.alias || mrow.model_id}` : String(modelId);
     db.prepare('UPDATE publish_queue SET note = ?, updated_at = ? WHERE id = ?')
-      .run(`发布任务已派发：会话 ${convId}（任务 ${taskId}）`, now, id);
+      .run(`发布任务已派发：会话 ${convId}（任务 ${taskId}），执行模型 ${modelLabel}`, now, id);
     res.json({ data: { conversationId: convId, taskId } });
   } catch (e: any) {
     const msg = String(e?.message || e);

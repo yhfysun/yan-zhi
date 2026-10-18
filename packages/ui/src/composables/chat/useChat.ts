@@ -273,15 +273,20 @@ function createChat() {
     manualPlatformConfigVisible.value = true;
   }
 
-  async function onPlatformConfigSubmit() {
+  /**
+   * 打开模型平台配置弹窗：手动新建平台 + 模型，保存后自动拉取模型列表并设为默认。
+   * @param checkedModelIds 新增态「拉取模型列表」勾选的模型（空/未拉取 = 回退手填的 modelId）
+   */
+  async function onPlatformConfigSubmit(checkedModelIds?: string[]) {
     const f = platformConfigForm.value;
     const isEdit = !!platformConfigEditId.value;
     if (!f.name.trim() || !f.apiUrl.trim()) {
       ElMessage.warning('平台名称和 API URL 为必填');
       return;
     }
-    if (!isEdit && !f.modelId.trim()) {
-      ElMessage.warning('模型 ID 为必填');
+    const checked = (checkedModelIds || []).filter((x) => x && x.trim());
+    if (!isEdit && !f.modelId.trim() && checked.length === 0) {
+      ElMessage.warning('模型 ID 为必填（或先拉取模型列表勾选）');
       return;
     }
     platformConfigSaving.value = true;
@@ -289,13 +294,18 @@ function createChat() {
       let platformId: string;
       if (isEdit) {
         platformId = platformConfigEditId.value;
-        const patch: any = {
-          name: f.name.trim(),
-          protocol: f.protocol as any,
-          apiUrl: f.apiUrl.trim(),
-          pauseMinMs: f.pauseMinMs,
-          pauseMaxMs: f.pauseMaxMs,
-        };
+        // ★ 目录厂商平台（preset）：协议/API URL 是厂商文档常量（服务端同样拦截），不发这些字段
+        const cur = platformStore.platforms.find((x) => x.id === platformId);
+        const presetLocked = !!cur?.isBuiltin && !!cur?.presetKey;
+        const patch: any = presetLocked
+          ? { name: f.name.trim(), pauseMinMs: f.pauseMinMs, pauseMaxMs: f.pauseMaxMs }
+          : {
+              name: f.name.trim(),
+              protocol: f.protocol as any,
+              apiUrl: f.apiUrl.trim(),
+              pauseMinMs: f.pauseMinMs,
+              pauseMaxMs: f.pauseMaxMs,
+            };
         await platformStore.updatePlatform(platformId, patch);
         if (f.apiKey.trim()) {
           await platformStore.addApiKey(platformId, f.apiKey.trim());
@@ -311,16 +321,32 @@ function createChat() {
           pauseMinMs: f.pauseMinMs,
           pauseMaxMs: f.pauseMaxMs,
         });
-        await platformStore.addModel({
-          platformId,
-          modelId: f.modelId.trim(),
-          alias: f.alias.trim() || f.modelId.trim().split('/').pop() || f.modelId.trim(),
-          type: 'llm' as any,
-          contextWindow: Number(f.contextWindow) || DEFAULT_CONTEXT_WINDOW,
-          enabled: true,
-          isDefault: false,
-          capabilities: ['function_call'],
-        });
+        if (checked.length > 0) {
+          // 拉取列表勾选了多个：全部带入（首个稍后自动设默认）
+          for (const mid of checked) {
+            await platformStore.addModel({
+              platformId,
+              modelId: mid,
+              alias: mid.split('/').pop() || mid,
+              type: 'llm' as any,
+              contextWindow: Number(f.contextWindow) || DEFAULT_CONTEXT_WINDOW,
+              enabled: true,
+              isDefault: false,
+              capabilities: ['function_call'],
+            });
+          }
+        } else {
+          await platformStore.addModel({
+            platformId,
+            modelId: f.modelId.trim(),
+            alias: f.alias.trim() || f.modelId.trim().split('/').pop() || f.modelId.trim(),
+            type: 'llm' as any,
+            contextWindow: Number(f.contextWindow) || DEFAULT_CONTEXT_WINDOW,
+            enabled: true,
+            isDefault: false,
+            capabilities: ['function_call'],
+          });
+        }
       }
       // 平台创建/更新后自动拉取远程模型列表（失败仅提示，回退手动填写的模型）
       let remoteIds: string[] = [];

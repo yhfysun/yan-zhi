@@ -8,7 +8,7 @@ import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeS
 import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
-import { shouldRetryStatus } from './services/token-pool.js';
+import { shouldRetryStatus, TOKEN_DEAD_PLATFORM_IDS_SQL } from './services/token-pool.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
@@ -702,12 +702,14 @@ function listAvailableModels(userId: string, args: Record<string, unknown>, task
   const effType = catRule?.type ?? typeFilter;
   const effCap = catRule?.cap ?? capFilter;
 
-  // 查平台（含过滤）：平台级总开关关掉即整平台不可见
+  // 查平台（含过滤）：平台级总开关关掉即整平台不可见；
+  // Token 池全停用的平台同样整个剔除 —— list_models 是大模型选模型的**唯一清单源**，
+  // 在这里剔除 = 大模型根本选不到它（候选面过滤），而不是选了再报 401/403 让它重试。
   let platformRows: any[];
   if (platformId) {
-    platformRows = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ? AND llm_enabled = 1').all(platformId, userId) as any[];
+    platformRows = db.prepare(`SELECT * FROM platform WHERE id = ? AND user_id = ? AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(platformId, userId) as any[];
   } else {
-    platformRows = db.prepare('SELECT * FROM platform WHERE user_id = ? AND llm_enabled = 1').all(userId) as any[];
+    platformRows = db.prepare(`SELECT * FROM platform WHERE user_id = ? AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(userId) as any[];
   }
   if (platformRows.length === 0) return platformId ? `平台不存在或未对模型开放: ${platformId}` : '当前用户未配置任何可用于大模型的模型平台';
 
@@ -1242,6 +1244,7 @@ export async function appCreateTask(task: LlmTask, args: any): Promise<string> {
     const fallback = db.prepare(
       `SELECT m.id, m.platform_id FROM model m JOIN platform p ON p.id = m.platform_id
        WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
+         AND p.id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})
        ORDER BY CASE WHEN m.is_default = 1 AND p.is_builtin = 0 THEN 0 WHEN m.is_default = 1 THEN 1 ELSE 2 END, m.created_at ASC
        LIMIT 1`,
     ).get(task.userId) as any;

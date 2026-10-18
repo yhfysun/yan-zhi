@@ -64,6 +64,16 @@ export function hasTokenPool(platformId: string): boolean {
   return (row?.n || 0) > 0;
 }
 
+/**
+ * ★ 选模面的 Token 级过滤（唯一实现，2026-10-18）：返回「建过 Token 池但 enabled=1 的
+ *  Token 数为 0」的平台 id 子查询 SQL。所有**给大模型/后台选模型**的枚举查询都必须
+ *  `AND p.id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})` 把这类平台整个剔除 ——
+ *  让禁用的东西在**候选面直接消失**（大模型根本选不到、后台静默跳过），
+ *  而不是调用一次 → 报错 → 大模型再调一次工具。调用时闸（llm-proxy 403）只是最后防线。
+ */
+export const TOKEN_DEAD_PLATFORM_IDS_SQL =
+  'SELECT platform_id FROM platform_api_key GROUP BY platform_id HAVING COUNT(*) > 0 AND SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) = 0';
+
 export function recordSuccess(tokenId: string): void {
   try {
     const row = db.prepare('SELECT last_fail_at FROM platform_api_key WHERE id = ?').get(tokenId) as any;

@@ -13,6 +13,8 @@
 export const YANZHI_AGENT_ID = 'a_builtin_yanzhi_agent';
 
 const PAGE_AGENT_ID = 'a_builtin_page_agent';
+// 发布执行员（2026-10-18 三层编排）：平台页面动作（发布/归集/评论/读数）专职委派给它
+const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
 
 // 挂载口径：
 // - 应用编排四件套：派发任务 / 查状态 / 弹执行窗口 / 录屏（本智能体的看家本领）
@@ -55,8 +57,8 @@ export const YANZHI_AGENT_SYSTEM_PROMPT = `你是「言智代言官」（yanzhiA
 - **单段 ≤10 分钟**：录屏超长会自动截断；长流程拆多段，后期再拼。
 - **只入队不发布**：产出内容用 publish_enqueue 提交到「发布队列」，等用户确认后才是待发布状态——你**绝不**直接发布、不登录任何平台账号。标题过合规关（极限词会被工具直接退回），文案附话题标签建议。
 - **合集意识（涨粉关键）**：系列内容**必须**用 publish_enqueue 的 collection 参数指定合集名，且同一系列永远用同一个名字（如「言智·智能体工程实录」「AI 知识 60 秒」）——合集引导用户连续订阅，是账号成长的核心杠杆。单条散内容可省略。
-- **发布执行（你被发布任务指名时）**：指令里有队列条目 ID 与平台/媒体/标题/正文。委派 pageAgent 实际执行平台发布；**发布动作真实完成后**才能调用 publish_mark_published { id, note: "<发布链接>" }；失败就如实汇报，禁止标记。
-- **数据复盘（发布 48 小时后）**：委派 pageAgent 读平台创作者后台的真实数据，用 publish_record_stats { id, views/likes/comments/shares, note: "发布后 48h" } 记录；**数字必须来自后台页面**，读不到就说明，禁止编造。复盘输出：互动水平判断 + 下一条内容的 1 个改进点。
+- **发布执行（你被发布任务指名时）**：指令里有队列条目 ID 与平台/媒体/标题/正文。委派**发布执行员**执行平台页面动作：call_agent { agentId: "a_builtin_publish_agent", input: "<自包含指令：平台 / 媒体文件路径 / 标题 / 正文 / 标签 / 合集 / 发布后取回链接>" }——它挂了各平台创作者中心实测配方，你**不要**自己摸平台页面。**发布执行员回执明确成功（带回作品链接）后**才能调用 publish_mark_published { id, note: "<发布链接>" }；回执失败就如实汇报，禁止标记。
+- **数据复盘（发布 48 小时后）**：委派**发布执行员**读平台创作者后台的真实数据（call_agent { agentId: "a_builtin_publish_agent", input: "打开 <平台> 创作者后台，读取作品《标题》近 48h 的播放/点赞/评论/分享，只读不写" }），用 publish_record_stats { id, views/likes/comments/shares, note: "发布后 48h" } 记录；**数字必须来自执行员带回的后台页面数据**，读不到就说明，禁止编造。复盘输出：互动水平判断 + 下一条内容的 1 个改进点。
 - **科普动画场景选型（按内容选模板）**：解释概念/列要点 → concept；讲流程/步骤 → process；优劣对比 → compare；发展沿革/版本演进 → timeline（"标题|描述"）；强调数字/实测结果 → stat（"数值|标签"，≤3 个）；金句/观点停顿 → quote（引言放 heading、署名放 note）；设置悬念自问自答 → qa。每个场景一个明确的小标题，条目 ≤5 条、每条 ≤18 字。横屏（B站/公众号/文章）用 16:9，抖音/小红书用 9:16。
 - **素材获取**：需要图标/插画/照片时先调 design_asset_sites 查免费站点清单（阿里 iconfont、字节 IconPark、Openverse 免鉴权 API 等），再委派 pageAgent 下载或 http_request 直拉；下载素材落产物目录后使用。注意版权许可标注。
 - **任务结果不回注**：app_create_task 派发的任务结果不会自动出现在本会话，必须用 app_get_task_status 跟进。
@@ -79,8 +81,8 @@ export const builtinYanzhiAgentDefs: Array<Record<string, unknown>> = [
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(YANZHI_AGENT_BUILTIN_TOOLS),
     skill_ids: JSON.stringify([]),
-    // pageAgent：查各平台发布规则、竞品内容结构
-    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID]),
+    // pageAgent：查各平台发布规则、竞品内容结构；发布执行员：平台页面动作专职执行
+    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID, PUBLISH_AGENT_ID]),
     system_prompt: YANZHI_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     agent_kind: 'main',

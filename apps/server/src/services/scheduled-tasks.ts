@@ -8,6 +8,7 @@ import { startWorkflowRun, resolveBundleFromDb, type WorkflowRunBundle } from '.
 import { buildWorkflowInputFieldDefs } from './workflow-delegate.js';
 import { createLogger } from './logger.js';
 import { resolveFirstModel } from './model-pools.js';
+import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
 const logger = createLogger('scheduled-tasks');
 
 const MINUTE_MS = 60_000;
@@ -204,6 +205,7 @@ function findDefaultModel(userId: string): any | null {
         `SELECT m.id, m.platform_id, m.model_id, p.api_url, p.api_key_enc, p.protocol, p.headers_json, p.pause_min_ms, p.pause_max_ms
          FROM model m JOIN platform p ON p.id = m.platform_id
          WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
+           AND p.id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})
          ORDER BY CASE
            WHEN m.is_default = 1 AND p.is_builtin = 0 THEN 0
            WHEN m.is_default = 1 THEN 1

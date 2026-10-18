@@ -8,6 +8,8 @@ import { builtinTaskModeAgentDefs } from './builtin-task-mode-agents.js';
 import { builtinDouyinAgentDefs } from './builtin-douyin-agents.js';
 // 言智代言官（应用即工具元智能体：派发任务 / 弹执行窗口 / 录屏演示）
 import { builtinYanzhiAgentDefs } from './builtin-yanzhi-agent.js';
+// 发布执行员（三层编排的执行层：平台创作者中心发布/归集/评论/读数的专职动手智能体）
+import { builtinPublishAgentDefs } from './builtin-publish-agent.js';
 // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
 import { builtinShopAgentDefs } from './builtin-shop-agents.js';
 // 费用账本的建表/读写 SQL（纯字符串，不 import db，便于单测用真 SQLite 跑一遍）
@@ -2504,6 +2506,9 @@ export const seedAgents: Array<Record<string, unknown>> = [
   ...builtinDouyinAgentDefs,
   // 言智代言官（应用即工具元智能体：派发任务 / 弹执行窗口 / 录屏演示）—— 定义见 ./builtin-yanzhi-agent.ts
   ...builtinYanzhiAgentDefs,
+  // 发布执行员（三层编排的执行层：平台页面专职动手）—— 定义见 ./builtin-publish-agent.ts
+  // ★ 被代言官 / 小说推文助手按 sub_agent_ids 委派，发布队列 dispatch 指令也指名它
+  ...builtinPublishAgentDefs,
   // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
   // 与任务类型注册表（shared/utils/task-types.ts 的 shop_ops/shop_selection 的 agentId）成对维护
   ...builtinShopAgentDefs,

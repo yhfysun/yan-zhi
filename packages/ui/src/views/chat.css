@@ -2101,17 +2101,10 @@
 .sub-agent-result-content { padding: 8px 12px 10px; font-size: var(--font-size-base, 13px); line-height: 1.7; }
 .main-agent-result-content { padding: 8px 12px 10px; }
 
-/* 右侧预览面板展开时，弹窗遮罩与居中容器都限制在左侧主区域（排除预览宽度），
-   弹窗在剩余区域内居中，绝不跨入预览面板（BrowserView 原生图层） */
-body.yz-right-panel-open .el-overlay { right: var(--yz-right-w, 0px) !important; }
-body.yz-right-panel-open .el-overlay-dialog {
-  position: fixed !important;
-  left: 0 !important;
-  right: var(--yz-right-w, 0px) !important;
-  top: 0 !important;
-  bottom: 0 !important;
-  width: auto !important;
-}
+/* ★ 弹窗避让预览面板的约束已删（2026-10-18）：聊天弹窗打开期间 BrowserView 由单一闸门
+   （BrowserPanel shouldBeVisible）隐藏，弹窗全窗口居中即可，不再压到面板左侧。
+   旧的 body.yz-right-panel-open .el-overlay / .el-overlay-dialog right 约束会把弹窗
+   max-width 挤到两百多像素（用户实报「弹窗丑」），已随 applyDialogAvoidPanel 一并移除。 */
 
 /* ===== 输入框「+」聚合菜单（对齐 WorkBuddy：专家/技能/连接器/上传/目录统一入口） ===== */
 .plus-menu-popper { padding: 4px !important; }

@@ -1241,43 +1241,14 @@ function onMoreMenuVisible(visible: boolean) {
   moreMenuOpen.value = visible;
 }
 
-// 聊天区弹窗（模型平台/Skill/MCP/编辑智能体/工作目录/编辑空间/查看提示词）避让右侧预览面板：
-// 不隐藏 BrowserView（预览保持可见），而是把弹窗居中容器 .el-overlay-dialog 限制在面板左侧的可用区域，
-// 弹窗在排除预览宽度后的区域居中，绝不跨入预览面板。JS 直接读面板宽度设内联 style，可靠生效。
-function applyDialogAvoidPanel() {
-  if (!isElectron) return;
-  const panel = document.querySelector('.right-panel.open') as HTMLElement | null;
-  const panelW = panel ? panel.offsetWidth : 0;
-  document.querySelectorAll<HTMLElement>('.el-overlay-dialog').forEach(el => {
-    if (panelW > 0) {
-      el.style.setProperty('position', 'fixed', 'important');
-      el.style.setProperty('left', '0', 'important');
-      el.style.setProperty('right', panelW + 'px', 'important');
-      el.style.setProperty('top', '0', 'important');
-      el.style.setProperty('bottom', '0', 'important');
-    } else {
-      el.style.removeProperty('position');
-      el.style.removeProperty('left');
-      el.style.removeProperty('right');
-      el.style.removeProperty('top');
-      el.style.removeProperty('bottom');
-    }
-  });
-  document.querySelectorAll<HTMLElement>('.el-dialog').forEach(el => {
-    if (panelW > 0) {
-      el.style.setProperty('max-width', `calc(100vw - ${panelW}px - 24px)`, 'important');
-    } else {
-      el.style.removeProperty('max-width');
-    }
-  });
-}
-watch(
-  () => showMount.value || showSkills.value || platformConfigDialogVisible.value || snapshotDialog.value
+// ★ 弹窗不再「避让」右侧预览面板（2026-10-18 用户实报：编辑模型平台弹窗被挤成左侧一条，极丑）：
+//   旧做法是不隐藏 BrowserView、把 .el-overlay-dialog 压到面板左侧（applyDialogAvoidPanel + chat.css
+//   的 body.yz-right-panel-open 约束）—— 弹窗宽度被 max-width 压到两百多像素，不可用。
+//   现在与全局设置抽屉同一闸门：聊天弹窗打开期间直接隐藏 BrowserView（shouldBeVisible 返回 false），
+//   弹窗全窗口居中，关闭后由既有 watch 自动恢复预览。单一闸门，不再维护第二套避让机制。
+const chatDialogsOpen = computed(() =>
+  showMount.value || showSkills.value || platformConfigDialogVisible.value || snapshotDialog.value
     || showAgentEdit.value || showWorkspaceDir.value || showSpaceEdit.value,
-  (open) => {
-    if (!isElectron) return;
-    if (open) nextTick(() => requestAnimationFrame(applyDialogAvoidPanel));
-  },
 );
 
 // 常用网站 = 固定 pin + 历史常用（去重 host）
@@ -1846,7 +1817,8 @@ const shouldBeVisible = computed(() => {
   // webview 引擎下网页是普通 DOM 节点，弹窗/下拉天然浮在其上，无需本地隐藏。
   if (!isWebviewEngine.value) {
     if (moreMenuOpen.value || titleBarOverlayOpen.value || showBookmarks.value || showHistory.value ||
-        showSettings.value || showPasswords.value || showPasswordEditor.value || settingsDrawerOpen.value) return false;
+        showSettings.value || showPasswords.value || showPasswordEditor.value || settingsDrawerOpen.value ||
+        chatDialogsOpen.value) return false;
   }
   return browserScope === 'page'
     ? isBrowserPageRoute.value

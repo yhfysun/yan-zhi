@@ -61,7 +61,7 @@
         <div class="card-actions">
           <el-button size="small" :loading="testing === p.id" @click="test(p.id)">测试</el-button>
           <el-button size="small" @click="openPlatform(p.id)">管理模型</el-button>
-              <el-button v-if="!p.isBuiltin" size="small" @click="editPlatform(p)">编辑</el-button>
+              <el-button v-if="!p.isBuiltin || p.presetKey" size="small" @click="editPlatform(p)">编辑</el-button>
               <!-- 禁用开关（平台级 llm_enabled）：Token 过期等场景一键停用整平台，
                    模型行保留；下拉隐藏 + 全部调用通道（代理/定时任务）拒绝 -->
               <el-button
@@ -95,15 +95,16 @@
         <el-form-item label="名称"><el-input v-model="form.name" placeholder="如：OpenAI / DeepSeek" /></el-form-item>
         <el-form-item label="协议">
           <!-- 三格式（2026-10-17 方案 §2.1）：文案对齐厂商文档；custom 是历史遗留值，UI 不再提供 -->
-          <el-select v-model="form.protocol">
+          <!-- 目录厂商平台（preset）：协议/API URL 是厂商文档常量，编辑态只读 -->
+          <el-select v-model="form.protocol" :disabled="editingPresetLocked">
             <el-option label="OpenAI Chat Completions 格式" value="openai" />
             <el-option label="OpenAI Responses API 格式" value="openai-responses" />
             <el-option label="Anthropic Messages 格式" value="anthropic" />
           </el-select>
         </el-form-item>
         <el-form-item label="API URL">
-          <el-input v-model="form.apiUrl" placeholder="https://api.openai.com（填到域名，不要带 /v1）" />
-          <div class="form-tip">填基础地址即可（火山 /api/v3、智谱 /api/paas/v4 这类带版本段的照厂商文档填）；端点路径自动拼接</div>
+          <el-input v-model="form.apiUrl" :disabled="editingPresetLocked" placeholder="https://api.openai.com（填到域名，不要带 /v1）" />
+          <div class="form-tip">{{ editingPresetLocked ? '目录厂商平台的协议 / API URL 来自厂商文档，不可修改（名称与 Token 可编辑）' : '填基础地址即可（火山 /api/v3、智谱 /api/paas/v4 这类带版本段的照厂商文档填）；端点路径自动拼接' }}</div>
         </el-form-item>
         <el-form-item label="API Key">
           <div class="apikey-list">
@@ -151,9 +152,11 @@
         <el-empty v-if="store.apiKeys.length === 0" description="暂无 Token" :image-size="40" />
       </div>
 
-      <StatusActionBar v-if="!editingId" :status="formStatus" :status-type="formStatusType">
+      <StatusActionBar :status="formStatus" :status-type="formStatusType">
         <el-button :loading="testingForm" :icon="Connection" @click="testForm">测试连接</el-button>
-        <el-button :loading="fetching" :icon="Download" @click="fetchModels">拉取模型列表</el-button>
+        <!-- 新增态：预拉列表勾选带入；编辑态：直接全量同步远程模型（去重安全） -->
+        <el-button v-if="!editingId" :loading="fetching" :icon="Download" @click="fetchModels">拉取模型列表</el-button>
+        <el-button v-else :loading="syncing" :icon="Download" @click="syncRemoteModels">拉取远程模型</el-button>
       </StatusActionBar>
 
       <div v-if="!editingId && fetchedModels.length > 0" class="fetched-models">
@@ -348,6 +351,13 @@ const detailTitle = computed(() => {
 });
 const editingId = ref('');
 const testing = ref('');
+/** 编辑目录厂商平台（preset）：协议/API URL 只读（厂商文档常量），名称/Token/停顿可改 */
+const editingPresetLocked = computed(() => {
+  const p = store.platforms.find((x) => x.id === editingId.value);
+  return !!p?.isBuiltin && !!p?.presetKey;
+});
+/** 编辑态「拉取远程模型」全量同步中（fetchRemoteModels 去重安全：同名启用、新增入库、多余隐藏） */
+const syncing = ref(false);
 const form = ref({ name: '', protocol: 'openai', apiUrl: '', pauseMinMs: 0, pauseMaxMs: 0 });
 const formKeys = ref<Array<{ apiKey: string; label: string }>>([]);
 
@@ -495,8 +505,25 @@ function onCheckAll(val: any) {
   }
 }
 
+/** 编辑态拉取远程模型：与 PlatformDetail「拉取远程模型」同一全量同步语义（POST /models/batch） */
+async function syncRemoteModels() {
+  if (!editingId.value) return;
+  syncing.value = true;
+  try {
+    const ids = await store.fetchRemoteModels(editingId.value);
+    setStatus(`已同步 ${ids.length} 个远程模型`, 'ok');
+    ElMessage.success(`已同步 ${ids.length} 个远程模型（同名启用、新增入库）`);
+  } catch (e: any) {
+    setStatus('拉取失败: ' + (e?.message || e), 'err');
+    ElMessage.error('拉取失败: ' + (e?.message || e));
+  } finally {
+    syncing.value = false;
+  }
+}
+
 function editPlatform(p: any) {
-  if (p.isBuiltin) { ElMessage.warning('内置平台不可编辑'); return; }
+  // 目录厂商平台（preset）可编辑：名称/Token/停顿开放，协议/API URL 由厂商文档决定（表单内只读）
+  if (p.isBuiltin && !p.presetKey) { ElMessage.warning('内置平台不可编辑'); return; }
   editingId.value = p.id;
   form.value = { name: p.name, protocol: p.protocol || 'openai', apiUrl: p.apiUrl, pauseMinMs: p.pauseMinMs || 0, pauseMaxMs: p.pauseMaxMs || 0 };
   formKeys.value = [];
@@ -516,13 +543,20 @@ async function save() {
   saving.value = true;
   try {
     if (editingId.value) {
-      const patch: any = {
-        name: form.value.name,
-        protocol: form.value.protocol as any,
-        apiUrl: form.value.apiUrl,
-        pauseMinMs: form.value.pauseMinMs,
-        pauseMaxMs: form.value.pauseMaxMs,
-      };
+      // 目录厂商平台：协议/API URL 是厂商文档常量（服务端也拦），不发这些字段
+      const patch: any = editingPresetLocked.value
+        ? {
+            name: form.value.name,
+            pauseMinMs: form.value.pauseMinMs,
+            pauseMaxMs: form.value.pauseMaxMs,
+          }
+        : {
+            name: form.value.name,
+            protocol: form.value.protocol as any,
+            apiUrl: form.value.apiUrl,
+            pauseMinMs: form.value.pauseMinMs,
+            pauseMaxMs: form.value.pauseMaxMs,
+          };
       await store.updatePlatform(editingId.value, patch);
       for (const k of formKeys.value) {
         if (k.apiKey.trim()) {

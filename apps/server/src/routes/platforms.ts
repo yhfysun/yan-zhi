@@ -219,7 +219,15 @@ router.patch('/:id', (req: Request, res: Response) => {
       res.json({ data: rowToP(db.prepare('SELECT * FROM platform WHERE id = ?').get(pid)) }); return;
     }
   }
-  if ((existing as any).is_builtin) { res.status(403).json({ error: '内置平台不可编辑' }); return; }
+  if ((existing as any).is_builtin) {
+    // ★ 目录来源内置厂商平台（有 preset_key）：连接**常量**（协议/API URL/headers，来自厂商文档）仍只读，
+    //   但名称 / API Key / 请求停顿对用户开放（2026-10-18 实报「agnes 卡上没有编辑按钮」——
+    //   厂商平台换个名、换把 Key 是正常诉求）。非目录内置平台维持原守卫。
+    if (!(existing as any).preset_key) { res.status(403).json({ error: '内置平台不可编辑' }); return; }
+    if ([protocol, apiUrl, headers].some((v) => v !== undefined)) {
+      res.status(403).json({ error: '目录厂商平台的协议 / API URL 来自厂商文档，不可修改（名称与 Token 可编辑）' }); return;
+    }
+  }
   const sets: string[] = [];
   const vals: any[] = [];
   if (name !== undefined) { sets.push('name = ?'); vals.push(name); }
@@ -375,9 +383,10 @@ router.get('/:pid/keys', (req: Request, res: Response) => {
 
 router.post('/:pid/keys', (req: Request, res: Response) => {
   const pid = req.params.pid;
-  const platform = db.prepare('SELECT id, is_builtin FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
+  const platform = db.prepare('SELECT id, is_builtin, preset_key FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
   if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
-  if ((platform as any).is_builtin) { res.status(403).json({ error: '内置平台不可添加 Key' }); return; }
+  // 目录来源内置厂商平台（有 preset_key）允许加 Token（换 Key 是正常诉求）；非目录内置维持原守卫
+  if ((platform as any).is_builtin && !(platform as any).preset_key) { res.status(403).json({ error: '内置平台不可添加 Key' }); return; }
   const { apiKey, label } = req.body || {};
   if (!apiKey) { res.status(400).json({ error: 'apiKey 为必填项' }); return; }
   try {

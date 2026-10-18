@@ -56,12 +56,19 @@ async function mkDb() {
       is_public INTEGER DEFAULT 0,
       model_pools_json TEXT
     );
+    CREATE TABLE IF NOT EXISTS platform_api_key (id TEXT PRIMARY KEY, platform_id TEXT, user_id TEXT, api_key TEXT, label TEXT, fail_count INTEGER DEFAULT 0, last_fail_at INTEGER, enabled INTEGER DEFAULT 1, created_at INTEGER);
     CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT);
   `);
   const insP = db.prepare('INSERT INTO platform (id, user_id, name, llm_enabled) VALUES (?, ?, ?, ?)');
   insP.run('agens-guest', 'guest', 'agnes', 1);
   insP.run('bailian', 'guest', '百炼', 1);
   insP.run('closed', 'guest', '已关平台', 0); // llm_enabled=0：整平台模型不可用
+  insP.run('tokendead', 'guest', 'Token全停用平台', 1); // llm_enabled=1，但 Token 池全停用 → 候选面剔除
+  const insKey = db.prepare(
+    'INSERT INTO platform_api_key (id, platform_id, user_id, api_key, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  insKey.run('pak-dead', 'tokendead', 'guest', 'sk-expired', 0, 1); // 建过池但 enabled=0
+  insKey.run('pak-alive', 'agens-guest', 'guest', 'sk-alive', 1, 1); // agnes 池有活 Token，不受影响
   const insM = db.prepare(
     'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, capabilities_json, enabled, visible, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
@@ -76,6 +83,7 @@ async function mkDb() {
   insM.run('agens-guest-agnes-disabled', 'agens-guest', 'guest', 'agnes-disabled', '已停用', 'llm', '[]', 0, 1, 0, 600);
   insM.run('agens-guest-agnes-hidden', 'agens-guest', 'guest', 'agnes-hidden', '已隐藏', 'llm', '[]', 1, 0, 0, 700);
   insM.run('closed-ghost', 'closed', 'guest', 'ghost', '平台关闭', 'llm', '[]', 1, 1, 0, 800);
+  insM.run('tokendead-m1', 'tokendead', 'guest', 'token-dead-m1', 'Token死了', 'llm', '[]', 1, 1, 0, 850);
   insM.run('other-model', 'agens-guest', 'other', 'other', '别人的', 'llm', '[]', 1, 1, 0, 900);
   return db;
 }
@@ -170,6 +178,15 @@ describe('resolvePool · 三层回退', () => {
   it('autoPool vision 槽位只含 vision 模型；image 槽位只含生图模型', () => {
     expect(resolvePool(db, ctx, 'vision').map((e) => e.model.id)).toEqual(['agens-guest-agnes-vision']);
     expect(resolvePool(db, ctx, 'image').map((e) => e.model.id)).toEqual(['agens-guest-agnes-image-2.5']);
+  });
+
+  it('★ Token 池全停用的平台整平台从候选池剔除（候选面过滤，选了必失败不如不选）', () => {
+    const ids = resolvePool(db, ctx, 'llm').map((e) => e.model.id);
+    expect(ids).not.toContain('tokendead-m1');       // 建过池但全停用 → 大模型根本选不到
+    expect(ids).toContain('agens-guest-agnes-3.0-flash'); // 有活 Token 的平台不受影响
+    // 显式点名也一样被剔除（池配置里塞了也白塞）
+    setAgentPools(db, 'a1', { llm: ['tokendead-m1', 'agens-guest-agnes-3.0-flash'] });
+    expect(resolvePool(db, ctx, 'llm').map((e) => e.model.id)).toEqual(['agens-guest-agnes-3.0-flash']);
   });
 
   it('agent 层命中 → 直接用，保池内顺序', () => {

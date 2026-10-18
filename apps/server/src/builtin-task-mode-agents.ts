@@ -18,6 +18,9 @@
 //   而这份纪律正是任务模式要保证的东西。
 
 const PAGE_AGENT_ID = 'a_builtin_page_agent';
+// 发布执行员（2026-10-18 三层编排，定义见 ./builtin-publish-agent.ts）：
+// 平台页面动作（发布/合集/评论/回填的页面层）可整体委派的专职执行者
+const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
 
 /** 四个智能体共用的交互与规划工具（确认点全靠它们落地） */
 const COMMON_TALK_TOOLS = ['task_plan', 'task_step', 'ask_user', 'confirm_user'];
@@ -340,6 +343,7 @@ export const NOVEL_TUIWEN_AGENT_SYSTEM_PROMPT = `你是「小说推文助手」�
 4. **背景视频（自动）**：用户给过链接 → api_media_fetch { url, kind:"video", category:"source" } 下载（yt-dlp 缺失先 media_install_ytdlp）；本地文件直接用路径；都没有 → 省略 bg_video 用占位画面，不要干等。
 5. **出片**：novel_tuiwen { chapter: "novel/<书名>/ch01.txt", title: "<书名>", bg_video: "..." }。voice 默认 zh-CN-YunxiNeural；用户要女声用 zh-CN-XiaoyiNeural。
 6. **发布（抖音，用户发起即已授权，直接发）**：creator.douyin.com/creator-micro/content/upload 网页上传成片（首次需用户在浏览器面板登录抖音创作者）；标题带别名关键词 + 相关话题（**引导必须点名「番茄小说」App**：别名是番茄站内搜索词，观众只在抖音搜不到）；**直接点发布，不再二次确认**；发布后**立即发一条引导评论**「打开番茄小说搜「别名」可直达本书」（转化最高，且评论同样禁原书名）；⚠️ **置顶 Web 端做不到**（2026-10-14 穷尽验证），别去找置顶入口，需要置顶只能手机 App 手动。
+   ★ 页面层执行可整体委派**发布执行员**（2026-10-18 三层编排）：call_agent { agentId: "a_builtin_publish_agent", input: "<自包含指令：平台 / 成片路径 / 标题文案 / 合集名 / 评论与回填动作>" }——它挂了同一套平台配方 references 且专职平台页面动作。**自己直接操作同样允许**（配方就在本 skill）；委派时指令必须自包含（子执行者看不到本会话上下文），并验收其回执证据后再进入下一步。
    ★ 评论操作配方（2026-10-14 更新：入口以创作者后台为准）：**创作者后台互动评论页** \`https://creator.douyin.com/creator-micro/interactive/comment\`（选中作品 → 输入框键入）——2026-10-14 实测可发、接口核验 total=1；⚠️ \`/creator-micro/data/comment\` 会重定向到关注页，是坑。公开视频页 \`https://www.douyin.com/video/<aweme_id>\` 作备选（其评论区实测常只显示「暂时没有更多评论」）。输入区 \`.comment-input-inner-container\`；输入框是 **Draft.js** 编辑器 \`div.public-DraftEditor-content\`（contenteditable）。**必须走真实键盘输入**（先坐标点中输入框 → 用 \`browser_type\` 逐字键入，走 CDP；**禁止 JS 设 innerText**——实测那样文字在但 EditorState 没更新，发送键 \`display:none\`、评论发不出去、\`total\` 一直 0）。键入后发送键 \`#comment-input-container span.wchsYBpK\` 才变可见 → 点它发送（或真实键盘 Enter，JS dispatchEvent 无效）。**发完必验**：\`fetch('https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id=<id>&cursor=0&count=20&item_type=0&aid=6383',{credentials:'include'})\` 看 \`total ≥ 1\`。🚫 **置顶 Web 端做不到（2026-10-14 穷尽验证，别再试）**：后台评论管理只有「回复/删除/举报」，公开视频页评论「…」菜单无「置顶」项（is_pinned 恒 0）——只能**手机 App 手动**（评论区→自己那条→「…」→置顶），发完如实说明即可。
    ★ 登录前提：发布/互动评论都在 creator.douyin.com 登录态下可用；公开视频页 www.douyin.com 是**不同站**、cookie 不通用 —— 要用它需在 www.douyin.com 另登录一次。
    番茄小说无网页版可跳，0 粉走引导搜索、≥500 粉可开锚点挂链接。
@@ -528,8 +532,8 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(NOVEL_TUIWEN_AGENT_BUILTIN_TOOLS),
     skill_ids: JSON.stringify(NOVEL_TUIWEN_AGENT_SKILL_IDS),
-    // pageAgent：授权平台榜单/书架浏览与取文
-    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID]),
+    // pageAgent：授权平台榜单/书架浏览与取文；发布执行员：平台页面动作（发布/合集/评论/回填的页面层）可整体委派
+    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID, PUBLISH_AGENT_ID]),
     system_prompt: NOVEL_TUIWEN_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     agent_kind: 'main',

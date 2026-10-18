@@ -4,6 +4,7 @@ import { db, hasSqliteVec } from '../db.js';
 import { embedText, ollamaChat } from './ollama-embed.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { LlmClient } from '@yan-zhi/core';
+import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
 
 function now() {
   return Date.now();
@@ -764,7 +765,7 @@ function resolveGraphExtractLlm(userId: string, prefer?: { platformId?: string; 
   // 兜底的全局默认模型只认「可见」的：用户把模型/平台隐藏后不该再被自动挑中。
   // 上面的候选①是设置页显式下发的模型，不受可见性限制（用户显式选过）。
   const def = db
-    .prepare("SELECT m.id, m.platform_id FROM model m JOIN platform p ON p.id = m.platform_id WHERE m.is_default = 1 AND m.type = 'llm' AND m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1 ORDER BY m.created_at DESC LIMIT 1")
+    .prepare(`SELECT m.id, m.platform_id FROM model m JOIN platform p ON p.id = m.platform_id WHERE m.is_default = 1 AND m.type = 'llm' AND m.enabled = 1 AND m.visible = 1 AND p.llm_enabled = 1 AND p.id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL}) ORDER BY m.created_at DESC LIMIT 1`)
     .get() as { id: string; platform_id: string } | undefined;
   if (def) candidates.push({ pid: def.platform_id, mid: def.id });
   for (const c of candidates) {

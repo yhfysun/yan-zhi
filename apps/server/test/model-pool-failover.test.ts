@@ -22,6 +22,7 @@ async function mkDb() {
       is_default INTEGER DEFAULT 0, created_at INTEGER
     );
     CREATE TABLE agent (id TEXT PRIMARY KEY, user_id TEXT, is_public INTEGER DEFAULT 0, platform_id TEXT, model_pools_json TEXT);
+    CREATE TABLE IF NOT EXISTS platform_api_key (id TEXT PRIMARY KEY, platform_id TEXT, user_id TEXT, api_key TEXT, label TEXT, fail_count INTEGER DEFAULT 0, last_fail_at INTEGER, enabled INTEGER DEFAULT 1, created_at INTEGER);
     CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT);
   `);
   db.prepare('INSERT INTO platform (id, user_id, name) VALUES (?, ?, ?)').run('p1', 'u1', '平台A');

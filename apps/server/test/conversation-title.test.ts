@@ -90,6 +90,11 @@ function createTables(): void {
       id TEXT PRIMARY KEY, user_id TEXT, api_url TEXT, api_key_enc TEXT,
       protocol TEXT DEFAULT 'openai', headers_json TEXT, llm_enabled INTEGER DEFAULT 1, is_builtin INTEGER DEFAULT 0
     );
+    -- Token 池表（loadModelRow 回退查询的 Token 全停用剔除子查询需要；空表 = 无剔除）
+    CREATE TABLE IF NOT EXISTS platform_api_key (
+      id TEXT PRIMARY KEY, platform_id TEXT, user_id TEXT, api_key TEXT, label TEXT,
+      fail_count INTEGER DEFAULT 0, last_fail_at INTEGER, enabled INTEGER DEFAULT 1, created_at INTEGER
+    );
   `);
 }
 

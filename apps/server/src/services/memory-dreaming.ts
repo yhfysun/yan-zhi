@@ -9,6 +9,7 @@ import { vecToBytes, bumpMemoryCache, parseExtractedItems } from './memory-servi
 import { chatViaRow } from './llm-call.js';
 import { createLogger } from './logger.js';
 import { hasActiveUserTasks } from '../llm-task-manager.js';
+import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
 const logger = createLogger('memory-dreaming');
 
 const TICK_MS = 5 * 60_000;
@@ -63,6 +64,7 @@ function findDefaultModel(userId: string): any | null {
       `SELECT m.id, m.model_id, p.id AS pid, p.api_url, p.api_key_enc, p.protocol, p.headers_json
        FROM model m JOIN platform p ON p.id = m.platform_id
        WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
+         AND p.id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})
        ORDER BY CASE
          WHEN m.is_default = 1 AND p.is_builtin = 0 THEN 0
          WHEN m.is_default = 1 THEN 1
