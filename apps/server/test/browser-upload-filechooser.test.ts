@@ -71,6 +71,24 @@ describe('browser_upload filechooser 实现（桌面端 main.cjs）', () => {
     // 至少有一处用单数 nodeId 调用
     expect(main).toMatch(/setFileInputFiles',\s*\{\s*files:\s*\[[^\]]*\],\s*nodeId:/);
   });
+
+  it('★★★ verified 判据绝不能只用 inFiles 自证（CDP 注入本就写进 input.files ⇒ 恒真，同义反复）', () => {
+    // 抖音发布任务实测（2026-10-18）：3 次投递全 IPC 成功、inFiles 回读必命中 ⇒ 回执报
+    // "已核验：上传已成功，请勿重复调用"，而页面恒「未上传」⇒ 执行员被矛盾回执拖着空转 37 步。
+    // 修法：verified = 页面文本（文件名/进度）或网络层上传请求；inFiles 只作记录不作判据。
+    expect(main).not.toMatch(/verified\s*=\s*!!\(\s*ev\.inFiles\s*\|\|/); // 旧写法（inFiles 领头）禁止回归
+    expect(main).toMatch(/verified\s*=\s*!!\(\s*ev\.inText\s*\|\|\s*ev\.busy\s*\|\|\s*netSeen\s*\)/);
+  });
+
+  it('★★★ 投递成功≠上传开始：必须收集网络层上传请求作为硬证据（Network.requestWillBeSent）', () => {
+    // 页面进度 UI 常是自绘/iframe/shadow DOM，innerText 读不到；网络层是唯一跨站可靠的中层信号。
+    expect(main).toMatch(/await send\('Network\.enable'\)/);
+    expect(main).toContain("method !== 'Network.requestWillBeSent'");
+    expect(main).toContain('netUploads');   // 收集容器
+    // 回执必须把"未观察到任何证据"翻译成"页面尚未接管"，并给出非重复投递的下一步
+    expect(main).toContain('投递成功≠上传开始');
+    expect(main).toContain('不要盲目重复 upload');
+  });
 });
 
 describe('browser_upload 工具 schema（core）', () => {

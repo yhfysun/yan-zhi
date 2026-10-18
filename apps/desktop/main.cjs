@@ -3678,6 +3678,22 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           await send('Page.enable');
           await send('DOM.enable');
           await send('Runtime.enable');
+          // ★ 2026-10-18：网络层证据收集 —— "投递成功"≠"上传器接管"。
+          //   抖音发布任务实测（10-18）：setFileInputFiles 三次全部成功、回读 input.files 也命中，
+          //   但页面恒「未上传」⇒ 原 verified 读 input.files 自证（CDP 注入本就写进去 ⇒ 恒真），
+          //   同义反复把"投递成功"包装成"已核验：上传已成功"，执行员被矛盾回执拖着空转 37 步。
+          //   唯一跨站可靠的中层信号是**网络层**：上传器真启动必然发上传/存储类请求
+          //   （页面进度 UI 常是自绘/iframe/shadow DOM，innerText 经常读不到）。
+          const netUploads = [];
+          const onNetMessage = (_e, method, params) => {
+            if (method !== 'Network.requestWillBeSent') return;
+            const url = (params && params.request && params.request.url) || '';
+            if (!/upload|storage|put_object|media\/|file\/|multipart|apply.?upload|video\/poll/i.test(url)) return;
+            if (/log|monitor|track|report|beacon/i.test(url)) return;
+            if (netUploads.length < 8) netUploads.push({ method: params.request.method || '', url: url.slice(0, 160) });
+          };
+          try { await send('Network.enable'); dbg.on('message', onNetMessage); }
+          catch { /* Network 域不可用时只少一层证据，不阻断上传 */ }
 
           const useChooser = args.clickSelector != null || args.clickIndex !== undefined
             || (args.clickX !== undefined && args.clickY !== undefined);
@@ -3803,13 +3819,19 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             }
           }
           // ★★★ 2026-10-12（诊断报告 P0-3）：上传"成功"后**回读页面证据**再回报。
-          //   此前只报 `uploaded:true`，模型拿不到"页面确实收到了文件"的证据 ⇒ 不确定就
-          //   **再传一遍**（用户实报"上传重试多"）。这里回读：input[type=file] 的 files
-          //   是否含该文件 + 页面文本是否出现文件名/上传中提示，作为 verified 依据。
-          //   ★ 核验失败只降级为"未回读到证据"，绝不改变"文件已投递"这个事实本身。
+          //   ★★ 2026-10-18 重做证据语义（抖音发布任务实测教训）：原 verified 读 input.files 是否
+          //   含该文件 —— 但 CDP setFileInputFiles 本身就是写 input.files，回读必然命中 ⇒ 同义反复，
+          //   把"投递成功"包装成"已核验：上传已成功"误导执行员（实测 3 次投递全 ok、页面恒「未上传」）。
+          //   现在三层证据分开回报：
+          //   ① delivered（uploaded:true 的本义）：CDP 投递未抛错，不再拔高；
+          //   ② pageEvidence：页面出现文件名/进度文案（innerText，自绘 UI/iframe 内可能读不到）；
+          //   ③ networkUpload：网络层出现上传/存储类请求（上传器真启动的硬证据，跨站可靠）。
+          //   verified = ②或③；只有 ① 时明确告知"投递≠上传开始"并给出下一步，绝不诱导重复投递。
           if (result && result.uploaded) {
             try {
               const base = String(fp).split(/[/\\]/).pop() || String(fp);
+              // 观察窗：给页面/上传器 2s 反应时间，随后读页面文本（否则 React 尚未渲染，读了个寂寞）
+              await wait(2000);
               const ev = await wc.executeJavaScript(`(function(){
                 var name=${JSON.stringify(base)};
                 var inputs=document.querySelectorAll('input[type=file]');
@@ -3823,19 +3845,24 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
                 var busy=/上传中|正在上传|处理中|上传进度|上传完成|已上传/.test(t);
                 return {inFiles:inFiles,fileCount:count,inText:inText,busy:busy};
               })()`).catch(function(){return null;});
+              const netSeen = netUploads.length > 0;
               if (ev) {
-                result.verified = !!(ev.inFiles || ev.inText);
-                result.evidence = ev;
-                if (result.verified) {
-                  result.note = '已核验：文件已进入页面（' + (ev.inFiles ? 'input[type=file] 已含该文件' : '页面已出现文件名') + '）。**上传已成功，请勿重复调用 upload**。';
-                } else if (ev.busy) {
-                  result.note = '文件已投递，页面显示"上传中/处理中"——属于进行中，**请勿重复调用 upload**；可用 browser_get_page_content 轮询进度。';
+                result.evidence = { inFiles: ev.inFiles, fileCount: ev.fileCount, inText: ev.inText, busy: ev.busy, netUploads: netUploads };
+                // ★ inFiles 只作记录不作判据（同义反复，见上）；判据 = 页面文本或网络层硬证据
+                result.verified = !!(ev.inText || ev.busy || netSeen);
+                if (ev.inText || ev.busy) {
+                  result.note = '已核验：' + (ev.inText ? '页面已出现该文件名' : '页面显示"上传中/处理中"')
+                    + (netSeen ? '，且网络层已发出上传请求' : '') + '。**上传已开始，请勿重复调用 upload**；可用 browser_get_page_content 轮询进度。';
+                } else if (netSeen) {
+                  result.note = '页面文本暂未见文件名/进度（进度 UI 可能是自绘/iframe 内，读不到属正常），但网络层已发出 '
+                    + netUploads.length + ' 个上传类请求 —— 上传器已启动。**请勿重复调用 upload**；可轮询页面进度或稍后核实。';
                 } else {
-                  result.note = '文件已投递给页面，但未从页面回读到明显证据（可能仍在解析或站点未即时渲染）。**请先观察/轮询页面，不要立即重复 upload**。';
+                  result.note = '文件已投递（CDP 成功），但观察窗内页面未出现文件名/进度、网络层也无任何上传请求 —— **投递成功≠上传开始，页面尚未接管**。不要盲目重复 upload（大概率同样无响应）：先用 browser_get_page_info 检查弹窗/遮罩与上传控件状态，或改用 clickSelector 指定「上传」按钮走 filechooser 模式重试。';
                 }
               }
             } catch { /* 核验失败不影响上传本身的结果 */ }
           }
+          try { dbg.removeListener('message', onNetMessage); } catch { /* ignore */ }
           if (attachedHere) { try { dbg.detach(); } catch { /* ignore */ } }
           return result;
         } catch (e) {
