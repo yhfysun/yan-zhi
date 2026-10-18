@@ -299,6 +299,38 @@ function resolveAndroidToolchain({
   return { sdk, javaHome, javaSource };
 }
 
+/**
+ * 解析 pnpm 的启动方式（★★ 2026-10-18 加固，三处裸 spawn('pnpm') 的收口点）。
+ *
+ * ★ 本机病灶：三套 node（受管 / nvm / Program Files）都**没有独立安装 pnpm**
+ *   （`where pnpm` 为空，node 目录里只有 corepack）。直接 spawn('pnpm') 报
+ *   「'pnpm' 不是内部或外部命令」，看起来像"pnpm 没装"，实际 pnpm 能力一直
+ *   都在 —— 由 corepack 托管（缓存于 %LOCALAPPDATA%/node/corepack/v1/pnpm）。
+ *
+ * 解析顺序：
+ *   ① corepack.js（随 node 分发，位于 <node目录>/node_modules/corepack/dist/）
+ *      → `node corepack.js pnpm <args>`，完全不依赖 PATH；
+ *   ② 兜底裸 'pnpm'（环境真装了 pnpm 的场景，保留原行为）。
+ *
+ * 返回 { cmd, argv, extraEnv, via }：extraEnv 在走 corepack 时带
+ * COREPACK_ENABLE_DOWNLOAD_PROMPT=0 —— 缓存未命中的机器上不弹交互确认
+ * （打包脚本全是非交互链路，弹窗 = 挂死）。
+ *
+ * 纯逻辑：fs 探测注入 `exists`，便于在裸 Node 下单测两条分支。
+ */
+function resolvePnpm(argv, { exists = (p) => fsDefault.existsSync(p), execPath = process.execPath } = {}) {
+  const corepackJs = path.join(path.dirname(execPath), 'node_modules', 'corepack', 'dist', 'corepack.js');
+  if (exists(corepackJs)) {
+    return {
+      cmd: execPath,
+      argv: [corepackJs, 'pnpm', ...argv],
+      extraEnv: { COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' },
+      via: 'corepack（node 直调 corepack.js，不依赖 PATH）',
+    };
+  }
+  return { cmd: 'pnpm', argv, extraEnv: undefined, via: 'PATH 上的 pnpm（兜底）' };
+}
+
 module.exports = {
   ALL_EDITIONS,
   EDITION_CONFIG,
@@ -307,6 +339,7 @@ module.exports = {
   APP_OUT_DIRS,
   resolveArtifactSuffix,
   resolvePkgVersion,
+  resolvePnpm,
   editionDirName,
   checkOutputDirReady,
   clearAppOutDirs,

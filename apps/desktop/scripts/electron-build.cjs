@@ -113,7 +113,15 @@ const fs = require('fs');
 
 /** 解析 electron-builder 的启动方式：{ cmd, argv } —— 找不到任何入口时返回 null */
 function resolveElectronBuilder(desktopDir) {
-  // ① 首选 pnpm exec（正常环境；保留原行为）
+  // ① 首选 .bin 直调（★ 2026-10-18 改）：本机没有独立 pnpm（只有 corepack 托管，
+  //    `where pnpm` 为空），裸 spawn 'pnpm' 报「不是内部或外部命令」。
+  //    .bin/electron-builder.cmd 是 pnpm install 生成的启动壳，直调它完全不需要 pnpm。
+  //    注意：Node ≥18 spawn .cmd 必须 shell:true，否则 EINVAL（见下方 spawn 处）。
+  const binCmd = path.join(desktopDir, 'node_modules', '.bin', 'electron-builder.cmd');
+  if (process.platform === 'win32' && fs.existsSync(binCmd)) {
+    return { cmd: binCmd, argv: [], via: '.bin/electron-builder.cmd 直调（不依赖 pnpm）' };
+  }
+  // ①' 非 Windows 且 .bin 存在 → 走 pnpm exec（原行为）
   const binLink = path.join(desktopDir, 'node_modules', '.bin', 'electron-builder');
   if (fs.existsSync(binLink)) {
     return { cmd: 'pnpm', argv: ['exec', 'electron-builder'], via: 'pnpm exec' };
@@ -154,8 +162,8 @@ const args = [...eb.argv, '--config', config, ...extraArgs, '--publish', 'never'
 const child = spawn(eb.cmd, args, {
   stdio: 'inherit',
   env,
-  // pnpm 需要 shell（它是 .cmd）；直调 node + cli.js 则不需要，且更稳。
-  shell: eb.cmd === 'pnpm',
+  // pnpm / .cmd 需要 shell（.cmd 直调在 Node ≥18 无 shell 会 EINVAL）；直调 node + cli.js 则不需要。
+  shell: eb.cmd === 'pnpm' || eb.cmd.endsWith('.cmd'),
 });
 
 child.on('exit', (code) => process.exit(code ?? 1));

@@ -55,6 +55,7 @@ const {
   parseEditionsArgv,
   outDirForEdition,
   resolvePkgVersion,
+  resolvePnpm,
 } = require('./lib/pack-helpers.cjs');
 
 const { editions, separate, invalid } = parseEditionsArgv(process.argv.slice(2));
@@ -243,7 +244,11 @@ for (const edition of editions) {
 //    electron-builder 仍需**逐档各跑一次**（edition.json 打进 asar，档位是编译期固化的）。
 console.log('\n=== [2/3] 编译后端与前端（源码产物共用，只跑一次）===');
 preflight();
-run('pnpm', ['--filter', '@yan-zhi/server', 'build']);
+// ★ 不裸 spawn 'pnpm'：本机三套 node 都只有 corepack、没有独立 pnpm（where pnpm 为空），
+//   裸调报「'pnpm' 不是内部或外部命令」。解析逻辑收口在 pack-helpers.resolvePnpm。
+const pnpm = resolvePnpm(['--filter', '@yan-zhi/server', 'build']);
+console.log(`[build-all] pnpm 启动方式: ${pnpm.via}`);
+run(pnpm.cmd, pnpm.argv, pnpm.extraEnv);
 // 直接用包内 vite 可执行文件：不依赖 shell PATH，也不会像 npx 那样在受限网络下回源探测。
 run(process.execPath, [path.join(desktopDir, 'node_modules', 'vite', 'bin', 'vite.js'), 'build']);
 run(process.execPath, ['./scripts/prepare-server-runtime.cjs']);

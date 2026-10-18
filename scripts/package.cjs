@@ -67,7 +67,14 @@ const {
   outDirForEdition,
   resolvePkgVersion,
   pruneOldReleases,
+  resolvePnpm,
 } = require(path.join(__dirname, '..', 'apps', 'desktop', 'scripts', 'lib', 'pack-helpers.cjs'));
+
+/** 真编译 server（不裸 spawn 'pnpm'：本机只有 corepack 托管的 pnpm，收口见 pack-helpers.resolvePnpm） */
+function compileServer() {
+  const pnpm = resolvePnpm(['--filter', '@yan-zhi/server', 'build']);
+  run(pnpm.cmd, pnpm.argv, { env: pnpm.extraEnv });
+}
 const DESKTOP_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'desktop', 'package.json') });
 const MOBILE_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'mobile', 'package.json') });
 
@@ -702,7 +709,7 @@ function buildAndroid() {
   if (distStale()) {
     warn('apps/server/dist 陈旧或缺失 → 就地编译一次（build-mobile-server 只复制不编译）');
     info(c.dim('  首次或改动后需要，约 30-60 秒'));
-    run('pnpm', ['--filter', '@yan-zhi/server', 'build']);
+    compileServer();
     ok('server/dist 已重新编译');
   } else {
     ok('apps/server/dist 已是新鲜产物');
@@ -951,7 +958,7 @@ function cleanFreshRoot() {
 
   if (willCompile && !needCompile) {
     step('真编译 server（安卓前置）');
-    run('pnpm', ['--filter', '@yan-zhi/server', 'build']);
+    compileServer();
   }
 
   step('移位将撞删除保护的目录');
