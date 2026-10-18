@@ -1335,6 +1335,16 @@ watch(activeNavRound, () => {
 .inline-ask-card {
   display: flex; gap: 10px; margin: 12px auto; padding: 14px 16px;
   max-width: 85%;
+  /* ★★ 高度约束（2026-10-18 实拍截图：确认卡底部「补充说明/跳过/下一页」被裁掉且点不到）：
+     这批旁路卡渲染在 .messages 滚动容器**外面**，是聊天列（.cp-chat-msgs / .chat-column，
+     均 overflow:hidden）的直接 flex 子项。flex 子项默认 min-height:auto = 内容高度，
+     卡一高就拒绝收缩 → 列被撑爆 → 底部被 overflow:hidden 裁掉，按钮完全点不到。
+     修法 = 给卡限高（列高的 60%，保住 .messages 至少 40%）+ body 内部滚动。
+     ★ 只用 min-height:0 不够：收缩分配按 flex-basis 加权，.messages basis=0 吸收 0 收缩，
+       卡会把 .messages 挤到 0 高 —— 必须配合 max-height 把卡的基础尺寸先钳住。 */
+  min-height: 0;
+  max-height: 60%;
+  overflow: hidden;
   background: var(--glass-bg); backdrop-filter: var(--glass-filter);
   border: 1px solid var(--glass-border);
   border-radius: 16px; border-bottom-left-radius: 4px;
@@ -1345,6 +1355,10 @@ watch(activeNavRound, () => {
 .cost-notice-bar {
   display: flex; gap: 10px; margin: 12px auto; padding: 14px 16px;
   max-width: 85%;
+  /* 同 .inline-ask-card：旁路卡也要限高 + 内部滚动，否则高卡在矮列里被裁底 */
+  min-height: 0;
+  max-height: 60%;
+  overflow: hidden;
   background: var(--glass-bg); backdrop-filter: var(--glass-filter);
   border: 1px solid var(--el-color-warning-light-5);
   border-radius: 16px; border-bottom-left-radius: 4px;
@@ -1356,7 +1370,7 @@ watch(activeNavRound, () => {
   background: var(--el-color-warning); color: #fff;
   display: flex; align-items: center; justify-content: center; font-size: 16px;
 }
-.cost-notice-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.cost-notice-body { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 /* 文案由后端模板生成（多行）⇒ 保留换行；不落消息流所以这里的 pre-wrap 不会进上下文 */
 .cost-notice-text {
   font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
@@ -1369,7 +1383,7 @@ watch(activeNavRound, () => {
   background: var(--color-primary); color: #fff;
   display: flex; align-items: center; justify-content: center; font-size: 16px;
 }
-.inline-ask-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.inline-ask-body { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 .inline-ask-step { font-size: 12px; color: var(--el-text-color-secondary, #888); }
 .inline-ask-question { font-size: 14px; font-weight: 500; color: var(--el-text-color-primary, #fff); line-height: 1.5; }
 .inline-ask-desc { font-size: 13px; color: var(--el-text-color-secondary, #aaa); line-height: 1.4; }
