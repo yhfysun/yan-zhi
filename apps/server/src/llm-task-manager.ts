@@ -59,6 +59,9 @@ import { loadProjectSkills, truncateSkillBody } from './services/project-skills.
 import { parseSkillFiles, skillDirName, syncSkillsToWorkspace } from './services/skill-files.js';
 import { dirEntryFingerprint, makeFingerprintCache } from './services/fs-fingerprint.js';
 import { repoMapPromptSection, DEV_REPO_MAP_AGENT_IDS } from './services/repo-map.js';
+// 会话提示词合成（2026-10-19）：会话里存的常是建会话时的 agent 提示词快照，
+// 不能让旧快照永久遮蔽 agent 表里的新提示词（见 services/conv-prompt.ts 头注释）
+import { composeConversationBasePrompt } from './services/conv-prompt.js';
 import {
   canStartBackgroundSubAgent, makeBackgroundId, buildBackgroundReceipt, buildConcurrencyFullMessage,
   buildFinishNote, buildDeliveryText,
@@ -7556,10 +7559,13 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   }
 
   // 系统提示词：会话级优先，其次 agent 级（与前端 conv.systemPrompt || agent.systemPrompt 一致）
+  // ★ 2026-10-19：改为合成而非覆盖 —— 前端建会话时会写一份 agent+场景的快照，
+  //   若直接 `conv || agent`，agent 提示词此后所有更新都会被旧快照永久遮蔽
+  //   （实测开发模式新提示词完全没生效）。合成规则见 composeConversationBasePrompt。
   let basePrompt = '';
   if (agentId) {
     const agent = db.prepare('SELECT system_prompt, type, skill_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
-    basePrompt = convMounts.systemPrompt || agent?.system_prompt || '';
+    basePrompt = composeConversationBasePrompt(convMounts.systemPrompt, agent?.system_prompt);
     const isHarness = !agent?.type || agent.type === 'harness';
 
     // 工具描述（提示词模式才注入；原生 tools 模型走 schema）

@@ -189,7 +189,7 @@ export function visibleMessages(messages: Message[]): Message[] {
  *   `tokenCount`，否则「一边算一边降」两边口径不一致，会降不准。
  */
 export function enforceBudget(messages: Message[], budget: number, opts?: { placeholder?: string }): Message[] {
-  const placeholder = opts?.placeholder ?? '[历史工具结果已清理以释放上下文]';
+  const placeholder = opts?.placeholder ?? '[该条旧工具结果已从历史中清理以释放上下文——仅影响历史回放，新调用不受影响；需要内容请重新调用工具]';
   if (budget <= 0) return messages;
 
   // ① 长工具输出 → 占位符（从最长开始，直到降到预算内）
@@ -225,7 +225,7 @@ function sumTokens(messages: Message[]): number {
 /** 把超长文本裁成 头部 75% + 尾部 25%（错误信息/结论常在末尾），未超限原样返回。 */
 export function capLongText(text: string, max: number = COMPRESS_TOOL_CAP_CHARS): string {
   if (!text || text.length <= max) return text;
-  const marker = `\n…[已压缩：原文 ${text.length} 字符，此处为节选]…\n`;
+  const marker = `\n…[已压缩：原文 ${text.length} 字符，此处为节选；仅历史归档，新调用不受影响]…\n`;
   const head = Math.max(Math.floor((max - marker.length) * 0.75), 0);
   const tail = Math.max(max - head - marker.length, 0);
   if (head + tail <= 0) return text.slice(0, max);
