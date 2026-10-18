@@ -27,6 +27,8 @@ const hoisted = vi.hoisted(() => {
   };
   const conversations: Record<string, any> = {};
   const customTools: any[] = [];
+  // 2026-10-18 deny 预过滤测试用：用户钩子规则表（user-hooks.ts 的 loadAll 从这里读）
+  const userHooks: any[] = [];
   const llmTasks: any[] = [];
 
   function noop() { return { get: () => undefined, all: () => [], run: () => {} }; }
@@ -121,6 +123,10 @@ const hoisted = vi.hoisted(() => {
         return { get: () => undefined, all: () => [], run: () => {} };
       }
 
+      if (/FROM\s+user_hook/i.test(sql)) {
+        return { get: () => undefined, all: () => userHooks, run: () => {} };
+      }
+
       return noop();
     },
     exec: () => {},
@@ -185,7 +191,7 @@ const hoisted = vi.hoisted(() => {
     setSummaryUsageHook(_h?: unknown) {}
   }
 
-  return { db, mockRegistry, MockLlmClient, MockContextWindow, llmChunksQueue, conversations, messages, agents, customTools };
+  return { db, mockRegistry, MockLlmClient, MockContextWindow, llmChunksQueue, conversations, messages, agents, customTools, userHooks };
 });
 
 // ── mock 依赖模块 ──────────────────────────────────────────────────────────
@@ -269,6 +275,7 @@ vi.mock('../src/services/ollama-embed.js', () => ({ embedText: vi.fn().mockResol
 
 // ── import 被测模块（在 mock 之后）──
 import { createTask, subscribe, getTask, abortTask, buildToolsForBackend } from '../src/llm-task-manager.js';
+import { invalidateUserHookCache } from '../src/services/user-hooks.js';
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────────
 function waitForTaskDone(taskId: string, timeout = 8000): Promise<{ status: string; error?: string }> {
@@ -298,6 +305,7 @@ const AGENT_ID = 'a_default_assistant';
 beforeEach(() => {
   hoisted.llmChunksQueue.length = 0;
   hoisted.messages.length = 0;
+  hoisted.userHooks.length = 0;
 });
 afterEach(() => {
   hoisted.llmChunksQueue.length = 0;
@@ -512,6 +520,51 @@ describe('ReActLoopHistoryReplay', () => {
       agent.custom_tool_ids = prevCustomIds;
       hoisted.customTools.length = 0;
     }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 场景7: 装配期 deny 预过滤（2026-10-18，对标 CC 工具池装配管道的 deny 环节）
+  //   「精确工具名、无 pattern」的 deny 规则 → 工具面整体摘除该工具（模型看不到就不会调用）；
+  //   pattern 规则依赖参数 → 不摘（装配期看不到参数，仍由 executeTool 逐调用判定）。
+  // ─────────────────────────────────────────────────────────────────────
+  it('场景7: deny 规则（精确名无 pattern）在装配期摘除工具；pattern/confirm/他人规则不摘', () => {
+    const mkHook = (over: Partial<Record<string, any>>) => ({
+      id: 'uh_' + Math.random().toString(36).slice(2, 8),
+      user_id: USER_ID,
+      name: '规则',
+      trigger: 'before',
+      tool: 'file_read',
+      pattern: null,
+      action: 'deny',
+      enabled: 1,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      ...over,
+    });
+    const names = (tools: any[]) => tools.map((t: any) => t?.function?.name || t?.name);
+
+    // ① 精确名无 pattern 的 deny → 装配期整工具摘除
+    hoisted.userHooks.push(mkHook({}));
+    invalidateUserHookCache();
+    expect(names(buildToolsForBackend(AGENT_ID, USER_ID))).not.toContain('file_read');
+
+    // ② pattern 规则依赖参数 → 不摘（仍由 executeTool 逐调用判定）
+    hoisted.userHooks.length = 0;
+    hoisted.userHooks.push(mkHook({ pattern: 'secret' }));
+    invalidateUserHookCache();
+    expect(names(buildToolsForBackend(AGENT_ID, USER_ID))).toContain('file_read');
+
+    // ③ confirm 规则确认后放行 → 不摘
+    hoisted.userHooks.length = 0;
+    hoisted.userHooks.push(mkHook({ action: 'confirm' }));
+    invalidateUserHookCache();
+    expect(names(buildToolsForBackend(AGENT_ID, USER_ID))).toContain('file_read');
+
+    // ④ 他人（u_other）的 deny 规则 → 不摘（规则归属隔离）
+    hoisted.userHooks.length = 0;
+    hoisted.userHooks.push(mkHook({ user_id: 'u_other' }));
+    invalidateUserHookCache();
+    expect(names(buildToolsForBackend(AGENT_ID, USER_ID))).toContain('file_read');
   });
 
   // ─────────────────────────────────────────────────────────────────────

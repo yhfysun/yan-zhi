@@ -132,6 +132,37 @@ export function deleteUserHook(userId: string, id: string): boolean {
 
 // ── 匹配（executeTool 热路径）──
 
+/**
+ * 装配期 deny 预过滤（2026-10-18，对标 CC 工具池装配管道的 deny 环节）：
+ * 返回「应从工具面整体摘除」的工具名集合 —— 这些工具不再出现在发给模型的工具列表里，
+ * 模型看不到就不会调用，也不再为它的 schema 付 token。
+ *
+ * ★ 只有「精确工具名 + 无 pattern」的 deny 规则够格进这个集合：
+ *   · pattern 规则依赖**参数**参与匹配（如"拦 file_write 里带 生产.yaml 的调用"），
+ *     装配期看不到参数，整工具摘掉会误伤合法调用；
+ *   · '*' 通配同理（用户意图可能是"只拦某类调用"）。
+ *   这两类仍由 executeTool 的用户钩子段逐调用判定 —— 两层各管各的，互不替代。
+ *
+ * ★ 只读缓存，不抛错（fail-open：db 异常返回空集，工具面保持原样）。
+ */
+export function denyOnlyToolNames(userId: string | undefined | null): Set<string> {
+  const out = new Set<string>();
+  if (!userId) return out;
+  let hooks: UserHook[];
+  try {
+    hooks = loadAll();
+  } catch {
+    return out;
+  }
+  for (const h of hooks) {
+    if (!h.enabled || h.trigger !== 'before' || h.action !== 'deny') continue;
+    if (h.userId !== userId) continue;
+    if (h.tool === '*' || h.pattern) continue;
+    out.add(h.tool);
+  }
+  return out;
+}
+
 export interface UserHookVerdict {
   /** 命中的 deny 规则 —— 任一命中即拒绝（fail-safe：规则冲突时从紧） */
   denyRules: UserHook[];

@@ -5594,7 +5594,7 @@ ipcMain.handle('dialog:showOpenFiles', async () => {
 // ============================================================
 // IPC：MCP 子进程（child_process + JSON-RPC over stdin/stdout）
 // ============================================================
-ipcMain.handle('mcp:start', (e, command, args, env) => {
+ipcMain.handle('mcp:start', async (e, command, args, env) => {
   const childId = `mcp-${++mcpChildSeq}-${crypto.randomBytes(4).toString('hex')}`;
   const childEnv = { ...process.env, ...(env || {}) };
   const child = spawn(command, args || [], {
@@ -5602,10 +5602,35 @@ ipcMain.handle('mcp:start', (e, command, args, env) => {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  // 缓冲 stdout，按换行解析 JSON-RPC 响应
+  // 缓冲 stdout，按换行解析 JSON-RPC 消息
   let stdoutBuf = '';
-  // 等待响应的 Promise resolve 队列（按顺序）
-  const pendingResolvers = [];
+  // 等待响应的挂起表：按**请求 id** 路由（此前是 FIFO shift 配对——服务器一旦
+  // 乱序返回或夹杂 notification，响应会串到别的请求上）。
+  const pending = new Map(); // id -> { resolve, timer }
+  let nextId = 1;
+
+  const writeLine = (obj) => {
+    child.stdin.write(JSON.stringify(obj) + '\n');
+  };
+
+  /** 发一个 JSON-RPC 请求并等它的响应（按 id 配对 + 超时） */
+  const request = (method, params, timeoutMs) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      if (pending.has(id)) {
+        pending.delete(id);
+        reject(new Error(`MCP 调用超时(${Math.round(timeoutMs / 1000)}s): ${method}`));
+      }
+    }, timeoutMs);
+    pending.set(id, { resolve, reject });
+    try {
+      writeLine({ jsonrpc: '2.0', id, method, params: params ?? null });
+    } catch (err) {
+      clearTimeout(timer);
+      pending.delete(id);
+      reject(err);
+    }
+  });
 
   child.stdout.on('data', (chunk) => {
     stdoutBuf += chunk.toString('utf-8');
@@ -5616,8 +5641,17 @@ ipcMain.handle('mcp:start', (e, command, args, env) => {
       if (!line) continue;
       try {
         const msg = JSON.parse(line);
-        const resolver = pendingResolvers.shift();
-        if (resolver) resolver(msg);
+        // 只路由「响应」（带 id 且带 result/error）；notification 与服务器主动
+        // 发起的请求（带 id + method）没有对应挂起项，直接忽略。
+        if (msg && msg.id !== undefined && msg.id !== null && ('result' in msg || 'error' in msg)) {
+          const p = pending.get(msg.id);
+          if (p) {
+            pending.delete(msg.id);
+            clearTimeout(p.timer);
+            if (msg.error) p.reject(new Error(msg.error.message || `JSON-RPC error ${msg.error.code}`));
+            else p.resolve(msg.result);
+          }
+        }
       } catch (err) {
         // 非 JSON 行（日志输出），忽略
       }
@@ -5628,25 +5662,45 @@ ipcMain.handle('mcp:start', (e, command, args, env) => {
     console.error(`[mcp:${childId}] stderr:`, chunk.toString('utf-8'));
   });
 
+  const failAll = (message) => {
+    for (const [, p] of pending) {
+      clearTimeout(p.timer);
+      p.reject(new Error(message));
+    }
+    pending.clear();
+  };
+
   child.on('error', (err) => {
     console.error(`[mcp:${childId}] spawn error:`, err);
     // 失败时拒绝所有 pending 调用
-    while (pendingResolvers.length) {
-      const resolver = pendingResolvers.shift();
-      resolver({ error: { code: -1, message: String(err) } });
-    }
+    failAll(String(err));
   });
 
   child.on('exit', (code, signal) => {
     console.log(`[mcp:${childId}] exited code=${code} signal=${signal}`);
     mcpChildren.delete(childId);
-    while (pendingResolvers.length) {
-      const resolver = pendingResolvers.shift();
-      resolver({ error: { code: -1, message: `process exited code=${code} signal=${signal}` } });
-    }
+    failAll(`process exited code=${code} signal=${signal}`);
   });
 
-  mcpChildren.set(childId, { child, pendingResolvers });
+  mcpChildren.set(childId, { child, pending, nextIdRef: { v: nextId } });
+
+  // ★ MCP 规范握手（2026-10-18 修）：spawn 后必须先 initialize 再 notifications/initialized，
+  //   否则规范服务器对 tools/list 等请求直接回 -32002「Server not initialized」——
+  //   此前这里从不握手，规范服务器全挂、只有"宽容"服务器碰巧能用。
+  //   握手失败 = 子进程起不来或不是 MCP 服务器，kill 掉并把真因抛回给上层展示。
+  try {
+    await request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'yan-zhi', version: '0.1.0' },
+    }, 15000);
+    writeLine({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  } catch (handshakeErr) {
+    try { child.kill('SIGTERM'); } catch {}
+    mcpChildren.delete(childId);
+    throw new Error(`MCP stdio 握手失败（${command}）: ${handshakeErr?.message || handshakeErr}`);
+  }
+
   return childId;
 });
 
@@ -5655,16 +5709,22 @@ ipcMain.handle('mcp:call', (e, childId, method, params) => {
   if (!entry) {
     return { error: { code: -2, message: `unknown childId: ${childId}` } };
   }
-  const { child, pendingResolvers } = entry;
+  const { child } = entry;
+  const id = ++entry.nextIdRef.v;
   return new Promise((resolve) => {
-    pendingResolvers.push(resolve);
-    const msg = JSON.stringify({ jsonrpc: '2.0', method, params: params ?? null, id: pendingResolvers.length });
+    const timer = setTimeout(() => {
+      entry.pending.delete(id);
+      resolve({ error: { code: -4, message: `MCP 调用超时(60s): ${method}` } });
+    }, 60000);
+    entry.pending.set(id, {
+      resolve: (v) => { clearTimeout(timer); resolve(v); },
+      reject: (err) => { clearTimeout(timer); resolve({ error: { code: -1, message: String(err?.message || err) } }); },
+    });
     try {
-      child.stdin.write(msg + '\n');
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params: params ?? null }) + '\n');
     } catch (err) {
-      // 写入失败：从 pending 队列中移除刚加入的 resolver 并返回错误
-      const idx = pendingResolvers.indexOf(resolve);
-      if (idx >= 0) pendingResolvers.splice(idx, 1);
+      clearTimeout(timer);
+      entry.pending.delete(id);
       resolve({ error: { code: -3, message: String(err) } });
     }
   });

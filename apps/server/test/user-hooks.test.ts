@@ -22,7 +22,7 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock('../src/db.js', () => ({ db: { prepare: hoisted.prepare } }));
 
-import { matchUserHooks, userHookMatchText, invalidateUserHookCache } from '../src/services/user-hooks.js';
+import { matchUserHooks, userHookMatchText, invalidateUserHookCache, denyOnlyToolNames } from '../src/services/user-hooks.js';
 
 function mkRow(partial: Partial<Record<string, any>>) {
   return {
@@ -106,5 +106,36 @@ describe('userHookMatchText', () => {
     const t = userHookMatchText('file_write', { path: 'a.txt' });
     expect(t).toContain('a.txt');
     expect(t).toContain('file_write');
+  });
+});
+
+// 装配期 deny 预过滤（2026-10-18，对标 CC 工具池装配管道的 deny 环节）
+// 守住的语义：
+//   1) 只有「精确工具名 + 无 pattern」的 deny 规则进集合（pattern/'*' 依赖参数，不能整工具摘）；
+//   2) confirm 规则不进集合（确认后放行，工具必须留在工具面）；
+//   3) 归属隔离 + enabled=0 不生效；无 userId / db 异常 fail-open（空集）。
+describe('denyOnlyToolNames', () => {
+  it('精确名无 pattern 的 deny → 入集合；pattern / * / confirm / 他人 / disabled 均不入', () => {
+    rows.push(
+      mkRow({ tool: 'file_read', action: 'deny' }),
+      mkRow({ tool: 'cmd_exec', action: 'deny', pattern: 'rm ' }),
+      mkRow({ tool: '*', action: 'deny', name: '全局' }),
+      mkRow({ tool: 'file_write', action: 'confirm' }),
+      mkRow({ tool: 'browser_run_script', action: 'deny', user_id: 'u2' }),
+      mkRow({ tool: 'file_edit', action: 'deny', enabled: 0 }),
+    );
+    const set = denyOnlyToolNames('u1');
+    expect([...set]).toEqual(['file_read']);
+  });
+
+  it('无 userId → 空集；db 异常 → 空集（fail-open）', () => {
+    rows.push(mkRow({ tool: 'file_read' }));
+    invalidateUserHookCache();
+    expect(denyOnlyToolNames(null).size).toBe(0);
+    expect(denyOnlyToolNames(undefined).size).toBe(0);
+    hoisted.fail = true;
+    invalidateUserHookCache();
+    expect(denyOnlyToolNames('u1').size).toBe(0);
+    hoisted.fail = false;
   });
 });

@@ -5,7 +5,8 @@
 //
 //   此前**全仓没有任何一处校验目标路径是否在工作目录内**：
 //     · `resolveToolPath`（core/fs-walk.ts:57）注释写明「越界由上层决定」—— 但上层从未实现；
-//     · 唯一的 before 钩子扩展点（tool-hooks.ts 的 registerBeforeToolHook）**调用点为 0**；
+//     · 唯一的 before 钩子扩展点（tool-hooks.ts 的 registerBeforeToolHook）**当时调用点为 0**
+//       （2026-10-18 已接线：executeTool 漏斗在参数归一化后、循环防护前跑 runBeforeToolHooks）；
 //     · 已有的 4 处 `startsWith(root+sep)` 校验**只覆盖 UI 通道**
 //       （routes/workspace.ts:61,300 / services/git.ts:66 / plugins/computer-use.ts:542），
 //       模型走工具链根本不经过它们。

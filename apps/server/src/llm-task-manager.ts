@@ -39,7 +39,7 @@ import { toSnapshotMessages, buildSnapshotSystemFields, internSnapshotBlob, prun
 import { buildContextView, mainlineMessages } from './services/context-view.js';
 import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
-import { runAfterToolHooks } from './services/tool-hooks.js';
+import { runAfterToolHooks, runBeforeToolHooks } from './services/tool-hooks.js';
 // 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
 import { checkToolLoop, FORCE_STOP_MARKER, neutralizeForceStopMarker } from './services/tool-loop-guard.js';
 // ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
@@ -58,12 +58,13 @@ import { createPlan, runPlanToCompletion, getPlanStatusText, reassignPlanItem, r
 import { loadProjectSkills, truncateSkillBody } from './services/project-skills.js';
 import { parseSkillFiles, skillDirName, syncSkillsToWorkspace } from './services/skill-files.js';
 import { dirEntryFingerprint, makeFingerprintCache } from './services/fs-fingerprint.js';
+import { repoMapPromptSection, DEV_REPO_MAP_AGENT_IDS } from './services/repo-map.js';
 import {
   canStartBackgroundSubAgent, makeBackgroundId, buildBackgroundReceipt, buildConcurrencyFullMessage,
   buildFinishNote, buildDeliveryText,
   type BackgroundSubAgentInfo,
 } from './services/background-subagents.js';
-import { matchUserHooks } from './services/user-hooks.js';
+import { matchUserHooks, denyOnlyToolNames } from './services/user-hooks.js';
 import { guessMime } from './utils/mime.js';
 import { resolveArtifactDirFor, ensureArtifactDirFor } from './services/artifact-dir.js';
 // 工作目录边界守卫：判定在 path-guard（纯逻辑），这里只做"拿到 need-auth 后弹窗授权"
@@ -4794,6 +4795,22 @@ async function executeTool(
   // 参数归一化兜底：模型文本模式工具调用常把 url 放到 target/address/link 等字段，补齐避免误报缺参
   args = normalizeToolArgs(toolName, args);
 
+  // ★★★ 通用 before 钩子（P2-3 预留 → 2026-10-18 接线）：程序化前置钩子（services/tool-hooks.ts
+  //   的 registerBeforeToolHook）在此真正生效，用于"危险命令黑名单"式的主动拦截。
+  //   位置：参数归一化之后（钩子看到的是归一化后的 args）、循环防护之前（被钩子 block 的调用
+  //   没有执行，不应计入循环防护的重复计数）。与用户钩子（下方 deny/confirm）的分工：
+  //   这层是**代码注册**的钩子（如 path-guard 之外的扩展），用户层规则优先级语义见其自述段。
+  //   fail-open 由 runBeforeToolHooks 自身保证（单个钩子抛错只 warn）。
+  const beforeHook = await runBeforeToolHooks(toolName, args, {
+    taskId: task.id,
+    conversationId: task.conversationId,
+    userId: task.userId,
+  });
+  if (beforeHook.block) {
+    logger.warn(`[tool-hook] before 拦截: conv=${task.conversationId} tool=${toolName} 原因=${beforeHook.block}`);
+    return `工具 \`${toolName}\` 的本次调用被前置钩子拦截：${beforeHook.block}。请不要原样重试；如认为拦截有误，向用户说明原因。`;
+  }
+
   // ★ 防失控循环闸门（2026-10-09）：位置在归一化之后——key 按归一化后的参数算，
   //   模型把同一意图换字段名重发也能被识别为重复。放在缺参检查之前：连缺参调用
   //   都在刷屏的更该拦。被拦时提前 return，后续快照/权限副作用一律不发生。
@@ -6198,6 +6215,11 @@ function buildSubAgentSharedSections(resolvedId: string, conversationId: string)
       '不要写：本次改了哪些文件的流水账（那属于交付报告，不属于工程记忆）。',
     ].join('\n'));
   }
+  // 仓库地图（repo map）：探索者 + 实现者同样常驻（架构师走 buildSystemPromptForBackend 那条路）。
+  if (DEV_REPO_MAP_AGENT_IDS.has(resolvedId)) {
+    const m = repoMapPromptSection(dir);
+    if (m) parts.push(m);
+  }
   return parts.join('\n\n');
 }
 
@@ -7588,7 +7610,16 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         if (t) toolLines.push(`- \`${name}\`: ${t.description}${formatSchemaParams(t.inputSchema)}`);
       }
 
-      const sectionLines = toolLines.filter((l) => l.trim().length > 0);
+      // ★ deny 预过滤（2026-10-18）：与 buildToolsForBackend 的 6.5 段同源 ——
+      //   提示词模式的工具清单也必须摘掉用户 deny 的工具，否则提示词模型看到"可用"
+      //   却调不动（同一事实两处判定必须一致，canDelegate 教训的同类）。
+      //   行格式统一为 `- \`工具名\`: 描述`，按行首反引号名提取比对；`### 分组头` 保留。
+      const deniedNamesForPrompt = denyOnlyToolNames(userId);
+      const sectionLines = toolLines.filter((l) => l.trim().length > 0).filter((l) => {
+        if (deniedNamesForPrompt.size === 0) return true;
+        const m = /^-\s*`([^`]+)`/.exec(l);
+        return !(m && deniedNamesForPrompt.has(m[1]));
+      });
       if (sectionLines.length > 0) {
         parts.push('---\n## 可用工具\n' + sectionLines.join('\n'));
       }
@@ -7636,7 +7667,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
           '- `tools`：**只开需要的工具**（支持 `browser_*` 这类通配）。★ 只能是**你已挂载工具的子集**，多要会被拒绝并告诉你原因；',
           '- `platformId`/`modelId`：可选。简单活用轻量模型更划算（可先 `list_models` 查）。',
           '',
-          `'它返回一段结构化结论（做了什么 / 关键结果 / 未完成部分），你据此继续。',`,
+          '它返回一段结构化结论（做了什么 / 关键结果 / 未完成部分），你据此继续。',
         ].join('\n'),
       );
     }
@@ -7824,6 +7855,14 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       '- 已知坑：踩过的坑与规避方式（**这条最有价值，务必写**）',
       '不要写：本次改了哪些文件的流水账（那属于任务计划与交付报告，不属于工程记忆）。',
     ].join('\n'));
+  }
+
+  // ★★★ 仓库地图（repo map）常驻注入（2026-10-18，开发模式专项）：架构师 + 探索者 + 实现者。
+  //   此前模型只有检索工具没有"地图"，长任务反复逐目录盲探烧步数；现在地图常驻提示词。
+  //   段内容由 services/repo-map.ts 统一封装（含快照免责声明），失败静默降级不影响任务。
+  if (agentId && DEV_REPO_MAP_AGENT_IDS.has(agentId)) {
+    const repoMapSection = repoMapPromptSection(effectiveWorkspaceDir);
+    if (repoMapSection) parts.push(repoMapSection);
   }
 
   // 产物目录规范：直接把解析好的目录交给模型，省掉模型自己拼「日期-任务名」的出错空间。
@@ -8313,7 +8352,18 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
   // 6) ★ P2-1 动态工具路由（2026-10-07）：工具面超阈值时按任务相关性裁剪。
   //    规则与三道防线见 services/tool-router.ts；被裁工具只在本任务的工具面不可见，
   //    registry 执行面不受影响。裁剪结果打日志供「工具太多反而变笨」类问题排查。
-  const routed = dynamicToolRoute(tools, opts?.userContent);
+  // 6.5) ★ deny 预过滤（2026-10-18，对标 CC 工具池装配管道）：用户 deny 规则里
+  //    「精确工具名、无参数 pattern」的工具在装配期整体摘除 —— 模型看不到就不会调用，
+  //    也省 schema token。pattern/'*' 规则依赖参数，装配期看不到参数，
+  //    仍由 executeTool 的用户钩子段逐调用判定（denyOnlyToolNames 注释详述取舍）。
+  const deniedByHook = denyOnlyToolNames(userId);
+  const routedPool = deniedByHook.size
+    ? tools.filter((t: any) => {
+        const n = t?.function?.name || t?.name;
+        return !(typeof n === 'string' && deniedByHook.has(n));
+      })
+    : tools;
+  const routed = dynamicToolRoute(routedPool, opts?.userContent);
   if (routed.dropped.length) {
     logger.info(`[tool-router] 工具面 ${tools.length} > 阈值，按任务相关性裁剪 ${routed.dropped.length} 个: ${routed.dropped.join('、')}`);
   }
