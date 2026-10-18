@@ -600,7 +600,12 @@ function rowToMsg(row: any): Message {
 
 function loadPlatform(platformId: string, userId: string): Platform | null {
   const row = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId) as any;
-  if (!row) return null;
+  // ★ 禁用闸（2026-10-18）：llm_enabled=0 的平台对服务端一切调用不可用
+  //   （定时任务/记忆抽取/压缩/子智能体等显式钉平台的路径）—— 视同不存在，
+  //   由各调用方的既有「平台不存在」分支兜住，不再向上游发注定 401 的请求。
+  //   各后台选模查询（scheduled-tasks / memory-dreaming / model-pools 等）本就带
+  //   p.llm_enabled = 1，这里补的是"显式指定 platformId"这最后一类入口。
+  if (!row || Number(row.llm_enabled ?? 1) === 0) return null;
   return {
     id: row.id,
     name: row.name,

@@ -15,11 +15,11 @@
       </div>
     </header>
 
-    <!-- 平台级总开关：关掉后本平台全部模型对模型下拉与智能体动态选型隐藏（模型行保留，随时可恢复） -->
+    <!-- 平台级总开关：关掉后本平台全部模型不进下拉、不参与智能体选型，且所有调用通道（代理/定时任务）直接拒绝（模型行保留，随时可恢复） -->
     <div class="llm-expose-bar" :class="{ off: platform?.llmEnabled === false }">
       <div class="llm-expose-text">
         <span class="llm-expose-title">可供大模型调用</span>
-        <span class="llm-expose-desc">关闭后本平台全部模型对模型下拉与智能体选型隐藏；模型本身不会删除</span>
+        <span class="llm-expose-desc">关闭（禁用）后本平台全部模型从下拉隐藏，且不能再被调用（存量会话/定时任务也会被拒绝）；模型本身不会删除</span>
       </div>
       <el-switch :model-value="platform?.llmEnabled !== false" :loading="llmExposeSaving" @change="togglePlatformLlm" />
     </div>
@@ -502,7 +502,7 @@ async function togglePlatformLlm(v: string | number | boolean) {
   llmExposeSaving.value = true;
   try {
     await store.updatePlatform(pid, { llmEnabled: !!v });
-    ElMessage.success(v ? '已恢复：本平台模型可供大模型调用' : '已隐藏：本平台模型不再参与调用');
+    ElMessage.success(v ? '已启用：本平台模型恢复可调用' : '已禁用：本平台模型不可再调用，且不进下拉');
   } catch (e: any) {
     ElMessage.error(e?.message || '设置失败');
   } finally {

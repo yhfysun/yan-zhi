@@ -8,6 +8,8 @@ import {
   pauseIfNeeded,
   MAX_RETRY,
   shouldRetryStatus,
+  hasTokenPool,
+  getAvailableTokenCount,
 } from '../services/token-pool.js';
 import { buildProtocolHeaders, resolveUpstreamUrl, type UpstreamKind } from '@yan-zhi/core';
 import {
@@ -128,6 +130,47 @@ async function forward(
 }
 
 /**
+ * ★ 平台级禁用闸（2026-10-18）：llm_enabled=0 的平台不允许产生**任何**上游模型调用。
+ *
+ * 为什么收口在这里：本函数是 chat / messages / responses / embeddings / images / videos
+ * 六个调用端点的**唯一转发出口** —— 在这里拦一次等于全拦（判据：枚举端点必然漏）。
+ * 下拉隐藏与动态选型过滤（llm_enabled=1 的各查询）只解决"不再选它"，
+ * 拦不住**存量会话/定时任务还钉在禁用平台的模型上**继续发 401 请求 —— 这里兜死。
+ *
+ * 允许的例外：GET /models（拉取模型列表）是数据层管理操作，不走本函数，保持可用。
+ */
+function rejectDisabledPlatform(p: any, res: ExpressResponse): boolean {
+  if (Number(p?.llm_enabled ?? 1) !== 0) return false;
+  res.status(403).json({
+    error: '该模型平台已禁用，不能调用其模型。请到「模型平台」页对该平台点「启用」后再试。',
+    platformId: p?.id,
+  });
+  return true;
+}
+
+/**
+ * ★ Token 级全停用闸（2026-10-18）：平台**建过** Token 池且 enabled=1 的 Token 数为 0 ⇒ 403。
+ *
+ * 为什么必须有：代理的兜底链是「池里选一把 → 池空则退 api_key_enc」。池建过就说明用户在用
+ * Token 管理（api_key_enc 只是建池时的初始快照），全停用后若仍退 api_key_enc，等于把已停用的
+ * 过期 Key 从后门复活继续打 401。从未建池的平台（手工配置）才允许 api_key_enc 兜底。
+ */
+function rejectAllTokensDisabled(p: any, res: ExpressResponse): boolean {
+  if (!hasTokenPool(p?.id)) return false;
+  if (getAvailableTokenCount(p.id) > 0) return false;
+  res.status(403).json({
+    error: '该平台所有 Token 均已停用：请在「模型平台」→ 编辑平台 → 已配置 Token 里启用或更换 Token。',
+    platformId: p?.id,
+  });
+  return true;
+}
+
+/** 兜底 Key：建过 Token 池的平台一律不用 api_key_enc（防停用 Key 复活）；无池老平台保留原兜底 */
+function fallbackKeyOf(p: any): string {
+  return hasTokenPool(p.id) ? '' : (p.api_key_enc || '');
+}
+
+/**
  * 带 Token 池重试的代理请求：每次选最优 Token → 停顿 → fetch，
  * 成功则转发；失败（401/403/429/5xx/网络错误）则记录并换 Token 重试，最多 MAX_RETRY 次。
  * 业务错误（如 400 模型不支持）不换 Token，直接转发给前端。
@@ -140,11 +183,13 @@ async function proxyWithRetry(
   res: ExpressResponse,
   isStream: boolean,
 ): Promise<void> {
+  if (rejectDisabledPlatform(p, res)) return;
+  if (rejectAllTokensDisabled(p, res)) return;
   // ★ 与 LlmClient 共用同一个拼接函数：版本段由 base 决定（火山 /api/v3、智谱 /api/paas/v4、
   //   百炼 /compatible-mode/v1 的 base 自带版本段，再拼一个 v1/ 上去必然 404）。
   const url = resolveUpstreamUrl(baseUrl(p), kind);
   const triedIds: string[] = [];
-  const fallbackKey = p.api_key_enc || '';
+  const fallbackKey = fallbackKeyOf(p);
 
   for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
     const token = pickToken(p.id, triedIds);
@@ -331,7 +376,10 @@ router.post('/images/generations', async (req: Request, res: ExpressResponse) =>
   const payload = (req.body as any)?.payload ?? {};
   // ★ 百炼走原生通道：兼容模式不支持生图，原样转发只会拿到上游的空体 404（见上方注释）
   if (isDashscopePlatform(baseUrl(p))) {
-    const key = pickToken(p.id)?.apiKey || p.api_key_enc || '';
+    // 原生通道不经过 proxyWithRetry，禁用闸要单独兜一道
+    if (rejectDisabledPlatform(p, res)) return;
+    if (rejectAllTokensDisabled(p, res)) return;
+    const key = pickToken(p.id)?.apiKey || fallbackKeyOf(p) || '';
     const out = await dashscopeImageUrl(baseUrl(p), key, payload);
     if (!out.ok || !out.url) { res.status(out.status || 502).json({ error: out.error || '百炼生图失败' }); return; }
     // 回成 OpenAI 形状 —— 客户端（能力测试 / UI）无需任何改动
@@ -364,7 +412,7 @@ router.get('/models', async (req: Request, res: ExpressResponse) => {
   if (!p) { res.status(404).json({ error: '平台不存在' }); return; }
   try {
     const triedIds: string[] = [];
-    const fallbackKey = p.api_key_enc || '';
+    const fallbackKey = fallbackKeyOf(p);
     for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
       const token = pickToken(p.id, triedIds);
       const apiKey = token?.apiKey || fallbackKey;

@@ -46,6 +46,10 @@ export interface KeyringAdapter {
 export interface LlmKeyPoolAdapter {
   /** 取一个可用 Key（排除已试过的）。返回 null 表示池为空/耗尽，调用方回退 keyring 主 Key */
   acquire(platformId: string, excludeIds: string[]): Promise<{ id: string; apiKey: string } | null>;
+  /** 平台是否**建过** Token 池（不看可用性）。可选：未实现时视为"建过池"。
+   *  ★ 用途（2026-10-18）：区分「从未建池 → 允许回退 keyring 主 Key（老平台/手工配置）」与
+   *  「建过池但当前全停用 → **禁止**回退 keyring」—— 否则停用的过期 Key 会从 keyring 复活。 */
+  hasAny?(platformId: string): Promise<boolean>;
   /** 请求成功回写（衰减失败计数） */
   reportSuccess(id: string): void;
   /** 请求失败回写（任何错误：网络异常或非 2xx），下次 acquire 自动避开 */

@@ -628,8 +628,17 @@ export class LlmClient {
     let keySwaps = 0;
     if (pool) {
       try {
-        const t = await pool.acquire(this.platform.id, triedIds);
-        if (t) { tokenId = t.id; apiKey = t.apiKey; triedIds.push(t.id); }
+        // ★ Token 级停用闸（2026-10-18）：建过池的平台，acquire 取不到可用 Key 时**不得**
+        //   回退 keyring 主 Key —— 否则把池内 Token 全停用后，过期的旧 Key 会从 keyring
+        //   "复活"继续打 401（keyring 里存的就是当初那把）。只有「从未建过池」的老平台
+        //   才保留 keyring 兜底（适配器未实现 hasAny 时按"建过池"保守处理）。
+        if (pool.hasAny && !(await pool.hasAny(this.platform.id))) {
+          /* 无池：apiKey 保持 undefined → buildHeaders 走 keyring 主 Key（原行为） */
+        } else {
+          const t = await pool.acquire(this.platform.id, triedIds);
+          if (t) { tokenId = t.id; apiKey = t.apiKey; triedIds.push(t.id); }
+          else { apiKey = ''; } // 有池但全停用/耗尽 ⇒ 空 Key（不发 Authorization），让失败如实暴露
+        }
       } catch { /* 取 Key 失败 → 按无池处理，回退 keyring 主 Key */ }
     }
     /** 失败回写：只记「这个 Key 本身可能就是问题」的状态（401/403 鉴权、429 限流、5xx 上游）。

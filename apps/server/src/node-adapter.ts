@@ -11,7 +11,7 @@ import type {
   ShellAdapter,
 } from '@yan-zhi/core';
 import { decodeTextBytes } from '@yan-zhi/shared';
-import { pickToken, recordFailure, recordSuccess } from './services/token-pool.js';
+import { pickToken, recordFailure, recordSuccess, hasTokenPool } from './services/token-pool.js';
 import { serverState } from './state.js';
 
 // 服务端 database adapter：委托真实的 better-sqlite3 实例（./db.ts 的 db）。
@@ -215,6 +215,10 @@ const llmKeyPoolAdapter: LlmKeyPoolAdapter = {
   async acquire(platformId: string, excludeIds: string[]) {
     const t = pickToken(platformId, excludeIds);
     return t ? { id: t.id, apiKey: t.apiKey } : null;
+  },
+  async hasAny(platformId: string) {
+    // ★ 供 core 区分「从未建池（可回退 keyring）」与「建过池但全停用（禁回退，防过期 Key 复活）」
+    return hasTokenPool(platformId);
   },
   reportSuccess(id: string) {
     try { recordSuccess(id); } catch {}

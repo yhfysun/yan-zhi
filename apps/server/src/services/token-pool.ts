@@ -55,6 +55,15 @@ export function getAvailableTokenCount(platformId: string): number {
   return row?.n || 0;
 }
 
+/** 平台是否**建过** Token 池（不看 enabled）：区分「从未建池 → 允许 api_key_enc/keyring 兜底」
+ *  与「建过池但全停用 → 禁止兜底复活过期 Key」。导出给 node-adapter（core hasAny）与 llm-proxy 共用。 */
+export function hasTokenPool(platformId: string): boolean {
+  const row = db
+    .prepare('SELECT COUNT(*) as n FROM platform_api_key WHERE platform_id = ?')
+    .get(platformId) as any;
+  return (row?.n || 0) > 0;
+}
+
 export function recordSuccess(tokenId: string): void {
   try {
     const row = db.prepare('SELECT last_fail_at FROM platform_api_key WHERE id = ?').get(tokenId) as any;

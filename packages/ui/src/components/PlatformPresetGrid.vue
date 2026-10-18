@@ -1,8 +1,9 @@
 <template>
   <div class="preset-grid-wrap">
-    <div class="preset-grid-head">
+    <!-- 常驻页面时显示自带头部；收进「新增平台」弹窗时标题由 dialog 提供，:show-head="false" -->
+    <div v-if="showHead" class="preset-grid-head">
       <span class="preset-grid-title">快速添加厂商</span>
-      <span class="preset-grid-hint">点厂商卡 → 填 Key 即用；没找到？用右侧「自定义模型」</span>
+      <span class="preset-grid-hint">点厂商卡 → 填 Key 即用；没找到？用「自定义模型」或手动填表</span>
     </div>
     <div class="preset-grid">
       <div
@@ -53,6 +54,15 @@ export interface CatalogItem extends ModelProviderPreset {
   platformId: string | null;
   platformName: string | null;
 }
+
+const props = withDefaults(
+  defineProps<{
+    /** 是否显示「快速添加厂商」自带头部（弹窗内嵌时传 false） */
+    showHead?: boolean;
+  }>(),
+  { showHead: true },
+);
+void props;
 
 const emit = defineEmits<{
   /** 点了未添加的厂商 → 父组件弹「添加 {厂商}」对话框 */

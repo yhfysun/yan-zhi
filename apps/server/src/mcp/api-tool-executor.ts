@@ -9,6 +9,7 @@ import { softDeleteRow, lifecycleClause } from '../services/conversation-lifecyc
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { resolvePool } from '../services/model-pools.js';
+import { hasTokenPool } from '../services/token-pool.js';
 import { serverState } from '../state.js';
 import { resolveFfmpeg, installFfmpeg } from './ffmpeg-runtime.js';
 import {
@@ -439,7 +440,9 @@ function loadAgensMediaCtx(): { baseUrl: string; keys: string[] } {
       .prepare('SELECT api_key FROM platform_api_key WHERE platform_id = ? AND enabled = 1 ORDER BY fail_count ASC, id ASC')
       .all(plat.id) as { api_key: string }[];
     for (const r of rows) if (r.api_key) keys.push(r.api_key);
-    if (plat.api_key_enc) keys.push(plat.api_key_enc);
+    // ★ Token 级停用闸（2026-10-18）：建过 Token 池的平台不再退 api_key_enc 兜底
+    //   （否则全停用后过期的旧 Key 从这里复活继续 401）；从未建池的老平台保留兜底。
+    if (!hasTokenPool(plat.id) && plat.api_key_enc) keys.push(plat.api_key_enc);
   }
   return { baseUrl, keys: [...new Set(keys)] };
 }
@@ -512,7 +515,8 @@ function resolveMediaPlatform(args: Record<string, unknown>, userId?: string | n
   const rows = db.prepare('SELECT api_key FROM platform_api_key WHERE platform_id = ? AND enabled = 1 ORDER BY fail_count ASC, id ASC')
     .all(platRow.id) as { api_key: string }[];
   for (const r of rows) if (r.api_key) keys.push(r.api_key);
-  if (platRow.api_key_enc) keys.push(platRow.api_key_enc);
+  // ★ 同 loadAgensMediaCtx：建过 Token 池的平台不再退 api_key_enc 兜底（防停用 Key 复活）
+  if (!hasTokenPool(platRow.id) && platRow.api_key_enc) keys.push(platRow.api_key_enc);
   const baseUrl = String(platRow.api_url || '').replace(/\/+$/, '');
   if (!baseUrl) return { ok: false, error: '该平台未配置 API 地址，请先在模型平台里补全', baseUrl: '', keys: [], isAgnes: false };
   if (!keys.length) return { ok: false, error: '该平台没有可用的 API Key，请先在模型平台里配置', baseUrl, keys: [], isAgnes: false };

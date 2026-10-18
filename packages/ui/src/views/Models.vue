@@ -28,8 +28,7 @@
       </template>
     </SearchToolbar>
 
-    <!-- 内置厂商宫格（2026-10-17 方案 §2.3）：目录是「可添加清单」，不往库里塞空平台 -->
-    <PlatformPresetGrid ref="presetGridRef" @pick="onPickPreset" @open="openPlatform" @custom="showCustom = true" />
+    <!-- 内置厂商宫格已收进「新增平台」弹窗（2026-10-18）：页面不再常驻，点按钮先选厂商、再填信息 -->
 
     <div class="platform-grid">
       <template v-if="store.loading">
@@ -43,7 +42,7 @@
           </el-skeleton>
         </div>
       </template>
-      <el-card v-for="p in filteredPlatforms" :key="p.id" class="platform-card">
+      <el-card v-for="p in filteredPlatforms" :key="p.id" class="platform-card" :class="{ 'platform-card-disabled': p.llmEnabled === false }">
         <div class="card-head">
           <div class="platform-logo">{{ p.name.slice(0, 2) }}</div>
           <div class="card-info" @click="openPlatform(p.id)">
@@ -57,12 +56,20 @@
           <span>协议：{{ p.protocol }}</span>
           <span class="meta-sep">·</span>
           <span>{{ modelCount(p.id) }} 个模型</span>
-          <el-tag v-if="p.llmEnabled === false" size="small" type="info" effect="dark">已隐藏</el-tag>
+          <el-tag v-if="p.llmEnabled === false" size="small" type="danger" effect="dark">已禁用</el-tag>
         </div>
         <div class="card-actions">
           <el-button size="small" :loading="testing === p.id" @click="test(p.id)">测试</el-button>
           <el-button size="small" @click="openPlatform(p.id)">管理模型</el-button>
               <el-button v-if="!p.isBuiltin" size="small" @click="editPlatform(p)">编辑</el-button>
+              <!-- 禁用开关（平台级 llm_enabled）：Token 过期等场景一键停用整平台，
+                   模型行保留；下拉隐藏 + 全部调用通道（代理/定时任务）拒绝 -->
+              <el-button
+                size="small"
+                :type="p.llmEnabled === false ? 'success' : 'warning'"
+                :loading="togglingId === p.id"
+                @click="toggleDisabled(p)"
+              >{{ p.llmEnabled === false ? '启用' : '禁用' }}</el-button>
               <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
         </div>
       </el-card>
@@ -174,7 +181,13 @@
         <div v-if="filteredFetchedModels.length === 0" class="fetched-empty">没有匹配的模型，换个关键字试试</div>
       </div>
 
-      <!-- footer 用 FormDialog 默认底栏（取消/保存），保存中文案随编辑态切换 -->
+      <!-- footer：新增态带「上一步」回厂商选择；编辑态维持默认底栏 -->
+      <template #footer="{ close }">
+        <el-button v-if="!editingId" :disabled="saving" @click="backToVendorPicker">← 上一步</el-button>
+        <span style="flex:1"></span>
+        <el-button :disabled="saving" @click="close">{{ editingId ? '取消' : '取消' }}</el-button>
+        <el-button type="primary" :loading="saving" @click="save">{{ editingId ? '保存修改' : '保存' }}</el-button>
+      </template>
     </FormDialog>
 
     <!-- 管理模型：弹窗内嵌平台详情，不再路由跳转（在设置抽屉中打开也不会切走主页面） -->
@@ -188,6 +201,20 @@
       @closed="refreshModelCounts"
     >
       <PlatformDetail :key="detailId" :platform-id="detailId" embedded />
+    </el-dialog>
+
+    <!-- 新增平台 · 第一步：选择厂商（宫格收进弹窗 2026-10-18）；点厂商 → 第二步弹「添加 {厂商}」填信息 -->
+    <el-dialog
+      v-model="showVendorPicker"
+      title="新增平台 · 选择厂商"
+      width="880px"
+      top="6vh"
+      class="vendor-picker-dialog"
+    >
+      <PlatformPresetGrid ref="presetGridRef" :show-head="false" @pick="onPickPreset" @open="onPresetOpen" @custom="onCustomPick" />
+      <div class="vendor-manual">
+        <el-button text type="primary" @click="openManualForm">没找到厂商？手动填写完整表单 →</el-button>
+      </div>
     </el-dialog>
 
     <!-- Mobile FAB -->
@@ -226,25 +253,61 @@ const store = usePlatformStore();
 const showAdd = ref(false);
 const showLocalMarket = ref(false);
 
-// ── 内置厂商宫格 / 自定义模型（2026-10-17 方案 §2.3/§2.4） ──
+// ── 内置厂商宫格 / 自定义模型（2026-10-17 方案 §2.3/§2.4；2026-10-18 宫格收进「新增平台」弹窗） ──
 const presetGridRef = ref<InstanceType<typeof PlatformPresetGrid> | null>(null);
+const showVendorPicker = ref(false);
 const showAddPreset = ref(false);
 const addPresetTarget = ref<ModelProviderPreset | null>(null);
 const showCustom = ref(false);
 
-function onPickPreset(preset: ModelProviderPreset) {
-  addPresetTarget.value = preset;
-  showAddPreset.value = true;
+/** 新增平台第一步：弹厂商选择；宫格首次打开时由自身 onMounted 加载，之后每次打开刷新「已添加」态 */
+function openAdd() {
+  showVendorPicker.value = true;
+  void presetGridRef.value?.refresh();
 }
 
-/** 厂商添加成功：刷新宫格「已添加」态 + 平台列表（新平台立即可见） */
+function onPickPreset(preset: ModelProviderPreset) {
+  addPresetTarget.value = preset;
+  showAddPreset.value = true; // 第二步：填信息（叠在厂商选择之上）
+}
+
+/** 第一步里点了「已添加」厂商 → 关掉选择弹窗直接进详情 */
+function onPresetOpen(platformId: string) {
+  showVendorPicker.value = false;
+  openPlatform(platformId);
+}
+
+/** 第一步里点了「自定义模型」→ 关掉选择弹窗，进一步式创建 */
+function onCustomPick() {
+  showVendorPicker.value = false;
+  showCustom.value = true;
+}
+
+/** 第一步兜底：宫格里没有的厂商 → 旧版完整表单（多 Token / 停顿 / 拉取模型） */
+function openManualForm() {
+  showVendorPicker.value = false;
+  resetForm();
+  formKeys.value = [{ apiKey: '', label: '' }];
+  showAdd.value = true;
+}
+
+/** 表单「上一步」：放弃手填内容，回到厂商选择 */
+function backToVendorPicker() {
+  showAdd.value = false;
+  resetForm();
+  openAdd();
+}
+
+/** 厂商添加成功：关掉选择弹窗，刷新宫格「已添加」态 + 平台列表（新平台立即可见） */
 async function onPresetSaved() {
+  showVendorPicker.value = false;
   void presetGridRef.value?.refresh();
   await store.loadPlatforms();
 }
 
 /** 自定义模型创建成功：同上，并直接打开该平台详情（用户下一步通常是设默认） */
 async function onCustomCreated(platformId: string) {
+  showVendorPicker.value = false;
   void presetGridRef.value?.refresh();
   await store.loadPlatforms();
   if (platformId) openPlatform(platformId);
@@ -355,12 +418,6 @@ function modelCount(platformId: string) {
 function setStatus(msg: string, type: 'ok' | 'err' = 'ok') {
   formStatus.value = msg;
   formStatusType.value = type;
-}
-
-function openAdd() {
-  resetForm();
-  formKeys.value = [{ apiKey: '', label: '' }];
-  showAdd.value = true;
 }
 
 async function testForm() {
@@ -584,6 +641,27 @@ function openPlatform(id: string) {
   showDetail.value = true;
 }
 
+/** 平台级禁用开关（复用 llm_enabled 单一语义）：禁用 = 下拉隐藏 + 全部调用通道拒绝 */
+const togglingId = ref('');
+async function toggleDisabled(p: any) {
+  const enabling = p.llmEnabled === false; // 当前已禁用 → 本次点的是「启用」
+  togglingId.value = p.id;
+  try {
+    await store.updatePlatform(p.id, { llmEnabled: enabling });
+    // 以重拉后的库里状态为准确认生效（api 层不抛业务错误，不能只信"没抛异常"）
+    const now = store.platforms.find((x) => x.id === p.id);
+    if (!now || (now.llmEnabled === false) === enabling) {
+      ElMessage.success(enabling ? '已启用：平台模型恢复可用' : '已禁用：该平台模型已从下拉隐藏，且不可再调用');
+    } else {
+      ElMessage.error('操作未生效，请重试');
+    }
+  } catch (e: any) {
+    ElMessage.error('操作失败: ' + (e?.message || e));
+  } finally {
+    togglingId.value = '';
+  }
+}
+
 async function del(id: string) {
   const p = store.platforms.find((x) => x.id === id);
 
@@ -602,6 +680,9 @@ async function del(id: string) {
 .filter-select { width: 116px; }
 
 .platform-card { background: var(--glass-bg); backdrop-filter: var(--glass-filter); }
+/* 禁用的平台整卡降透明度 + 名称变灰，一眼可辨 */
+.platform-card-disabled { opacity: 0.55; }
+.platform-card-disabled .platform-name { text-decoration: line-through; color: var(--color-text-secondary); }
 .card-head { display: flex; align-items: center; gap: 12px; }
 .card-info { flex: 1; cursor: pointer; }
 .card-info:hover .platform-name { color: var(--color-primary); }
@@ -696,6 +777,9 @@ async function del(id: string) {
 .apikey-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .apikey-actions .el-button { padding: 5px 6px; }
 
+/* 新增平台弹窗第一步：宫格底部「手动填写」兜底入口 */
+.vendor-manual { margin-top: 12px; text-align: center; }
+
 </style>
 
 <style>
@@ -721,5 +805,9 @@ async function del(id: string) {
 }
 .platform-detail-dialog .page-title {
   display: block !important;
+}
+/* 新增平台 · 厂商选择弹窗：窄屏收窄，避免 880px 溢出 */
+@media (max-width: 767px) {
+  .vendor-picker-dialog { width: 94% !important; }
 }
 </style>
