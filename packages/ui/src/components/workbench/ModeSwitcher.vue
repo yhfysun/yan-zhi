@@ -11,10 +11,13 @@
   - 浮层展开时通知 BrowserPanel 避让原生 BrowserView（复用 titleBarOverlayOpen）
 -->
 <template>
-  <!-- 只有一个可见模式时不渲染下拉（阉割版仅办公：单选下拉无意义，且多一个无内容的浮层入口）。
-       用 v-if 而非把内容置空 —— 后者会留下一个可点但空白的气泡。 -->
-  <span v-if="hasChoice" class="mode-switcher-anchor">
+  <!-- 独立模式窗口里整条隐藏（打开即锁定单模式，用户拍板 2026-10-18）；
+       主窗口即使只有一个可见模式也要渲染弹出按钮（单模式同样可弹独立窗口）。 -->
+  <span v-if="!locked" class="mode-switcher-anchor">
+    <!-- 只有一个可见模式时不渲染下拉（阉割版仅办公：单选下拉无意义，且多一个无内容的浮层入口）。
+         用 v-if 而非把内容置空 —— 后者会留下一个可点但空白的气泡。 -->
     <el-popover
+      v-if="hasChoice"
       v-model:visible="open"
       :disabled="suppressHover"
       :trigger="isTouchLike ? 'click' : 'hover'"
@@ -39,17 +42,27 @@
       </template>
       <HoverMenu :items="menuItems" :width="216" @select="onPick" />
     </el-popover>
+    <!-- 独立窗口弹出按钮（Trae 式）：把当前模式弹到独立 OS 窗口，窗口内锁定该模式 -->
+    <button
+      class="title-nav-item mode-popout"
+      type="button"
+      title="在独立窗口打开当前模式（窗口内固定本模式）"
+      @click="openStandalone"
+    >
+      <el-icon :size="15"><CopyDocument /></el-icon>
+    </button>
   </span>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Check, Lock, ChatDotRound, Monitor, Platform, Connection, VideoCamera, Shop } from '@element-plus/icons-vue';
+import { Check, Lock, ChatDotRound, Monitor, Platform, Connection, VideoCamera, Shop, CopyDocument } from '@element-plus/icons-vue';
 import {
   activeMode, MODE_DEFS, setMode, modeRoute, visibleModeDefs,
   type AppMode, type ModeDef,
 } from '../../stores/mode';
+import { isModeWindow } from '../../utils/modeWindow';
 import { usePluginStore } from '../../stores/plugin';
 import { isCapacitor } from '../../api/client';
 import { titleBarOverlayOpen } from '../../composables/useTitleBarOverlay';
@@ -182,6 +195,32 @@ function isModeAvailable(key: AppMode): boolean {
   return pluginStore.plugins.some((p) => p.manifest.id === def.pluginId && p.state === 'enabled');
 }
 
+/** 独立模式窗口里锁定（本组件随之整条隐藏） */
+const locked = isModeWindow();
+
+/**
+ * 把当前模式弹到独立 OS 窗口（Trae 式，2026-10-18）。
+ * - 桌面端走 child-window IPC 开真窗口（同模式 key 聚焦复用，不重复开）；
+ *   Web 端 openChildWindow 内部降级为新标签页。
+ * - 路由带 ?window=mode 标记：子窗口里的 ModeSwitcher / 侧栏模式条目据此隐藏（锁定单模式）。
+ * - 不调 setMode：主窗口的模式状态不动（子窗口内容由路由决定）。
+ */
+async function openStandalone() {
+  const def = currentDef.value;
+  const route = `${modeRoute(def.key)}?window=mode`;
+  const { openChildWindow } = await import('../../utils/childWindow');
+  const ok = await openChildWindow({
+    key: `mode-${def.key}`,
+    route,
+    width: 1440,
+    height: 900,
+  });
+  if (!ok) {
+    // Web / 不支持真窗口：降级为新标签页加载同一路由（?window=mode 锁定照常生效）
+    window.open(`${location.origin}${location.pathname}#${route}`, '_blank');
+  }
+}
+
 // 浮层展开 → 避让 BrowserView（与「更多」菜单同一机制）
 watch(open, (v) => {
   if (v) titleBarOverlayOpen.value = true;
@@ -240,6 +279,28 @@ export default { name: 'ModeSwitcher' };
 
 .mode-switcher.active {
   background: color-mix(in srgb, var(--color-primary, #38bdf8) 12%, transparent);
+  color: var(--color-primary, #38bdf8);
+}
+
+/* 独立窗口弹出按钮（Trae 式）：与模式下拉同款式，hover 提示主色 */
+.mode-popout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary, #b0b8bc);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.mode-popout:hover {
+  background: var(--glass-bg-hover, #173848);
   color: var(--color-primary, #38bdf8);
 }
 

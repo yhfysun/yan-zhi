@@ -123,7 +123,8 @@ async function dispatch(it: QueueItem): Promise<void> {
   dispatching.value = it.id;
   try {
     const r = await api.post<{ conversationId: string; taskId: string }>(`/publish-queue/${it.id}/dispatch`, {});
-    const d = (r as any)?.data;
+    // ★ api 客户端已解开 {data} 信封（json.data 缺失才回落整个 json），不能再取一层 .data
+    const d = (r as any)?.data || r;
     ElMessage.success(`发布任务已派发，可在任务列表「${it.title}」里跟踪进度`);
     console.log('[publish-queue] dispatch →', d);
     await load();

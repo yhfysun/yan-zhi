@@ -242,6 +242,7 @@ import { usePlatform } from '../composables/usePlatform';
 import { useSidebarState } from '../composables/useSidebarState';
 import { usePluginStore } from '../stores/plugin';
 import { visibleModeDefs, isModeLicensed } from '../stores/mode';
+import { isModeWindow } from '../utils/modeWindow';
 import { resolvePluginIcon } from '../plugin-icons';
 import { isElectron, isCapacitor, isLocalClient } from '../api/client';
 
@@ -326,11 +327,13 @@ const pluginMoreItems = computed(() =>
     .filter((item) => item.moreGroup && item.moreGroup !== 'nav')
     .filter((item) => !routeBlockedByLicense(item.route)),
 );
-/** 内置条目按授权过滤：读 visibleModeDefs 是响应式的，换码后左栏会即时收敛（无需重启）。 */
+/** 内置条目按授权过滤：读 visibleModeDefs 是响应式的，换码后左栏会即时收敛（无需重启）。
+ *  ★ 独立模式窗口（?window=mode）里隐藏所有**模式切换**类条目（builtinNavItems 里带 mode 的）——
+ *    窗口锁定单模式（用户拍板 2026-10-18）；任务/浏览器/消息等非模式条目保留。 */
 const navItems = computed<NavItem[]>(() =>
   [...builtinNavItems, ...pluginNavItems.value]
     .filter((i) => !(i as any).hideOnMobile || !isMobile.value)
-    .filter((i) => !i.mode || visibleModeDefs.value.some((d) => d.key === i.mode)),
+    .filter((i) => !i.mode || (!isModeWindow() && visibleModeDefs.value.some((d) => d.key === i.mode))),
 );
 /** 桌面展开态按 group 分组渲染 */
 const navGroups = computed(() => {

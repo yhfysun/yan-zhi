@@ -1752,19 +1752,22 @@ function createChat() {
   }
 
   /**
-   * 在独立窗口打开任务（2026-10-17）：桌面端开真 OS 窗口（复用 child-window 设施），
-   * Web 端降级为新标签页加载同一条 /task-window/:convId 裸路由。
-   * key 按会话隔离 —— 同一任务重复打开聚焦已有窗口而不是再开一个。
+   * 在独立窗口打开会话（2026-10-18 改版）：与模式独立窗口同形态的**完整交互窗口**
+   * （1440×900，侧栏/输入框/预览全套保留，顶栏菜单隐藏防切走），固定加载该会话。
+   * 旧版 520×760 只读监控器（/task-window/:convId）保留给大模型链路 ——
+   * app_open_window / screen_record 的目标窗口 key 是 task-run-<convId>，此处改用
+   * conv- 前缀避免撞车（同 key 会聚焦复用，用户窗口会被录屏链路顶掉）。
+   * key 按会话隔离 —— 同一会话重复打开聚焦已有窗口而不是再开一个。
    */
   async function openTaskWindow(conv: any) {
     if (!conv?.id) return;
     const { openChildWindow } = await import('../../utils/childWindow');
-    const route = `/task-window/${conv.id}`;
+    const route = `/chat?window=conv&conv=${conv.id}`;
     const ok = await openChildWindow({
-      key: `task-run-${conv.id}`,
+      key: `conv-${conv.id}`,
       route,
-      width: 520,
-      height: 760,
+      width: 1440,
+      height: 900,
     });
     if (!ok) {
       // Web / 不支持真窗口 → 新标签页兜底（hash 路由，同一份产物即可）

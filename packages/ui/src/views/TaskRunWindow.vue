@@ -182,11 +182,14 @@ function stopPoll(): void {
 function openInMain(): void {
   // 主窗口可能不在本窗口进程里（真子窗口）：走 hash 直跳 —— Electron 下主窗口独立进程，
   // 这里退化为主窗口形态的浏览器跳转；应用内形态则用 router 跳回会话页。
+  // ★ 必须带 window=conv 引导（2026-10-18）：`/chat/:convId` 的路径参数全仓无人消费，
+  //   裸跳过去只会落到空草稿；带标记后 App.vue 的会话窗口引导会 selectConv 定位到本任务。
+  const target = `/chat?window=conv&conv=${convId}`;
   if (isChildWindowContext()) {
-    window.open(`${location.origin}${location.pathname}#/chat/${convId}`, '_blank');
+    window.open(`${location.origin}${location.pathname}#${target}`, '_blank');
     return;
   }
-  void router.push(`/chat/${convId}`);
+  void router.push(target);
 }
 
 async function onClose(): Promise<void> {

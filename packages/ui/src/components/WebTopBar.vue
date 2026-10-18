@@ -20,7 +20,11 @@
       <!-- 横排主导航：核心 3 页 + 更多下拉（其它功能入口 + 设置，统一收进弹层）
            ★ 窄屏（≤860px）只保留「当前页」那一项，其余导航项收进「更多 → 页面」分组。
            顶栏在窄屏放不下「首页/办公/浏览器/消息」四段文字，硬铺会把文字挤成竖排两行。 -->
-      <nav class="title-nav">
+      <!-- ★ 模式独立窗口（?window=mode）：主导航整条隐藏 —— 任何 router-link 都会把路由
+           切离当前模式，且丢失 window=mode 标记后窗口就"解锁"回不去固定模式了
+           （2026-10-18 用户：「上面这些菜单按钮不要啊，要不然按了之后都切不回去了」）。
+           模式窗口顶栏只保留：品牌 Logo + 主题切换 + 窗口控制。 -->
+      <nav v-if="!modeLocked" class="title-nav">
         <router-link
           v-for="m in navBefore"
           :key="m.path"
@@ -84,8 +88,9 @@
 
       <!-- 右侧：全局搜索（⌘K/Ctrl+K 或点按钮，基础版检索任务/空间）。
            「新任务」不放顶栏——ChatTopbar / 输入框工具条 / 侧栏三处已有入口，
-           再摆一个会和头像挤在一起（2026-10-04 用户红框反馈）。 -->
-      <div class="title-quick">
+           再摆一个会和头像挤在一起（2026-10-04 用户红框反馈）。
+           ★ 模式窗口同样隐藏（与主导航同一口径：不做任何能切走路由的入口）。 -->
+      <div v-if="!modeLocked" class="title-quick">
         <button class="title-nav-item title-nav-item--icon" type="button" title="全局搜索（Ctrl/⌘ K）" @click="onGlobalSearch">
           <el-icon :size="15"><Search /></el-icon>
         </button>
@@ -107,7 +112,7 @@
             · 否则显示"本"（本机），不暴露 guest 这个内部身份；
             · 下拉里给「设置 / 记忆管理」，**不提供退出登录**（没有登录态可退）。
           Web/移动端仍走「未登录 → 登录入口」的老逻辑（将来接用户体系要用）。 -->
-      <el-dropdown v-if="authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper yz-menu-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
+      <el-dropdown v-if="!modeLocked && authStore.isLoggedIn" trigger="click" popper-class="sidenav-user-popper yz-menu-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
         <span class="title-avatar" :title="authStore.user?.username">
           {{ authStore.user?.username?.slice(0, 1) || 'U' }}<i class="login-dot" />
         </span>
@@ -128,7 +133,7 @@
         </template>
       </el-dropdown>
       <!-- 桌面端：本机身份头像（中性，不引导登录） -->
-      <el-dropdown v-else-if="isElectron" trigger="click" popper-class="sidenav-user-popper yz-menu-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
+      <el-dropdown v-else-if="!modeLocked && isElectron" trigger="click" popper-class="sidenav-user-popper yz-menu-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
         <span class="title-avatar is-local" :title="localIdentityTitle">
           {{ localIdentityInitial }}
         </span>
@@ -148,8 +153,8 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <!-- Web/移动端：未登录 → 登录入口 -->
-      <button v-else class="title-login-btn" type="button" @click="$router.push('/login')">登录</button>
+      <!-- Web/移动端：未登录 → 登录入口（模式窗口不渲染，避免切走路由） -->
+      <button v-else-if="!modeLocked" class="title-login-btn" type="button" @click="$router.push('/login')">登录</button>
 
       <!-- 主题切换 -->
       <button class="win-btn title-theme-btn" type="button" title="切换主题" @click="toggleTheme">
@@ -199,6 +204,11 @@ import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { openSettingsDialog } from '../composables/useSettingsDialog';
 import ModeSwitcher from './workbench/ModeSwitcher.vue';
 import CommandPalette from './common/CommandPalette.vue';
+import { isStandaloneWindow } from '../utils/modeWindow';
+
+// 独立窗口锁定（模式窗口 / 会话窗口）：整个生命周期内上下文不变（窗口打开时即带
+// window= 标记），用常量而非 computed —— 避免模板里每个分支都走 hash 解析。
+const modeLocked = isStandaloneWindow();
 
 // Electron 渲染进程通过 contextBridge 注入的 API（web 端为 undefined，全部走可选链）
 const api = (window as any).electronAPI;

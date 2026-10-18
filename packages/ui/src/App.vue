@@ -147,6 +147,7 @@ import { useMobileShell } from './composables/useMobileShell';
 import { usePlatform } from './composables/usePlatform';
 import { useSidebarState } from './composables/useSidebarState';
 import { installSelectAllScope } from './utils/selectAllScope';
+import { isModeWindow, isConvWindow, convIdOfWindow, modeKeyOfRoute } from './utils/modeWindow';
 import * as modeModule from './stores/mode';
 import { useChat } from './composables/chat/useChat';
 import { useChatStore } from './stores/chat';
@@ -344,7 +345,36 @@ function scheduleModeViewWarmup() {
   idle(next);
 }
 
+// 会话/模式窗口共用的 chat 实例：onMounted 的会话窗口引导 + 下方「按模式记忆会话」
+// 都要用（useChat 在 App.vue 挂载一次，避免重复实例化注册两套监听）。
+const chat = useChat();
+const chatStore = useChatStore();
+
 onMounted(async () => {
+  // 独立模式窗口（2026-10-18）：把 activeMode 同步到弹出路由对应的模式。
+  // 子窗口与主窗口共享 localStorage 的 yz:mode —— 主窗口可能停在办公、弹出的却是运维窗口；
+  // 工作台组件（lead/placement 等）按 activeMode 渲染，不同步会出现"路由在 /code、
+  // 里面却按办公形态画"的错位。只影响子窗口自身（写回 localStorage 主窗口仅顶栏徽标跟着变，可接受）。
+  if (isModeWindow()) {
+    const mk = modeKeyOfRoute(route.path);
+    if (mk) modeModule.setMode(mk as modeModule.AppMode);
+  }
+  // 会话独立窗口（2026-10-18）：完整交互界面固定打开指定会话。
+  // ★ 必须走 selectConv —— `/chat/:convId` 的路径参数全仓无人消费（Chat.vue 不读
+  //   route.params）。守卫已把 activeMode 拨回 office，这里等会话清单就绪后选中目标；
+  //   就绪前 useChat.onMounted 的「恢复最近会话」可能先选中别的，最终以本引导为准。
+  if (isConvWindow()) {
+    modeModule.setMode('office');
+    const cid = convIdOfWindow();
+    if (cid) {
+      void (async () => {
+        try {
+          await chatStore.loadConversations();
+          await chat.selectConv(cid);
+        } catch { /* 目标会话可能已删除：维持草稿态即可 */ }
+      })();
+    }
+  }
   // 页面切换看门狗（见 ensureContentRendered 注释）：
   //   ② 回到可见 / 重新聚焦时查一次
   document.addEventListener('visibilitychange', onDocVisible);
@@ -493,8 +523,6 @@ authStore.loadUser();
 // 注意：只切视图上下文，不新建会话、不清消息（决策 10 契约仍然成立——切换的是「回到哪个会话」）。
 {
   const { activeMode } = modeModule;
-  const chat = useChat();
-  const chatStore = useChatStore();
   const agentStore = useAgentStore();
   const codeStore = useCodeStore();
   const CTX_KEY = 'yz:mode:ctx';

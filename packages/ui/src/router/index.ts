@@ -4,7 +4,7 @@ import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { isElectron, isCapacitor } from '../api/client';
-import { activeMode, modeRoute, visibleModeDefs, isModeLicensed, type AppMode } from '../stores/mode';
+import { activeMode, modeRoute, visibleModeDefs, isModeLicensed, setMode, type AppMode } from '../stores/mode';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
@@ -365,6 +365,13 @@ router.beforeEach(async (to) => {
   const targetMode = MODE_ROUTE_KEYS[to.path];
   if (targetMode && !isModeLicensed(targetMode)) {
     return { path: firstLicensedRoute() };
+  }
+  // 会话独立窗口（window=conv，2026-10-18）：强制办公形态。子窗口与主窗口共享
+  // localStorage 的 yz:mode —— 主窗口若停在 dev 等模式，这里不先把 activeMode 拨回
+  // office，下面那条「模式记忆」就会把 /chat 弹到别的模式工作台，会话窗口直接串台。
+  // 只影响子窗口自身（写回 localStorage，主窗口运行中不重读，可接受）。
+  if (to.query?.window === 'conv' && activeMode.value !== 'office') {
+    setMode('office');
   }
   // 模式记忆（泛化）：停留在非办公模式时去了别的页面，再回「任务」应恢复该模式工作台。
   // 四模式是同一份工作上下文的四个视图，切换入口统一在顶栏模式下拉（原「任务」项）。

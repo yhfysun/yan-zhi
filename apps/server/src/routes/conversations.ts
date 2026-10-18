@@ -99,6 +99,16 @@ router.get('/counts', (req: Request, res: Response) => {
   });
 });
 
+// GET /api/conversations/:id —— 单条会话行（2026-10-18）。
+// 独立执行窗口（TaskRunWindow）轮询用它拿标题 + task_plan_json；此前只有列表接口，
+// 子窗口第一步就 404（「加载任务失败」）。registered 在 /:id/... 参数子路由之前，无遮蔽问题。
+router.get('/:id', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const row = db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ?').get(req.params.id, userId) as any;
+  if (!row) { res.status(404).json({ error: '会话不存在' }); return; }
+  res.json({ data: row });
+});
+
 // POST /api/conversations/archive-all —— 一键归档某空间下的全部 active 会话（侧栏空间右键菜单）。
 // ★ 必须注册在 /:id 参数路由之前，否则 'archive-all' 会被当成会话 id。
 // ★ 单条 SQL 批量，不让前端 N 次循环调 POST /:id/archive（慢且中途失败会出现半归档状态）。
