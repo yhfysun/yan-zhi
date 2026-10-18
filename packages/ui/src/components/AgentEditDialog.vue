@@ -88,9 +88,12 @@
               </div>
               <div class="param-item">
                 <div class="param-head"><span class="param-label">思考模式</span></div>
+                <!-- 取值对齐 2026-10 OpenAI 标准 reasoning_effort：minimal/low/medium/high/xhigh
+                     （'' = 关闭，请求不带该参数）；不支持某档位的模型由模型侧报错兜底。 -->
                 <el-select v-model="form.reasoningEffort" placeholder="关闭" size="small" style="width:100%">
-                  <el-option label="关闭" value="" /><el-option label="低" value="low" />
-                  <el-option label="中" value="medium" /><el-option label="高" value="high" />
+                  <el-option label="关闭" value="" /><el-option label="最小" value="minimal" />
+                  <el-option label="低" value="low" /><el-option label="中" value="medium" />
+                  <el-option label="高" value="high" /><el-option label="超高" value="xhigh" />
                 </el-select>
               </div>
               <div class="param-item">

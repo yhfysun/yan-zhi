@@ -1208,6 +1208,18 @@
 .pop-model-platform { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pop-model-count { flex-shrink: 0; font-size: 10.5px; font-weight: 500; opacity: 0.75; }
 .pop-model-empty { padding: 14px 12px; text-align: center; font-size: 12px; color: var(--color-text-secondary); }
+
+/* 思考强度（reasoning_effort API 参数）：固定在模型弹层底部的参数行（对齐 WorkBuddy 模型卡片形态）。
+   flex-shrink:0 → 模型列表滚动区让位、参数行常驻可见；展开的选项列表自带限高滚动，
+   不把 340px 容器撑爆。Teleport 到 body → 必须写在全局块（chat.css），scoped 无效。 */
+.pop-effort-sep { flex-shrink: 0; height: 1px; margin: 4px 10px; background: var(--color-border, rgba(0, 0, 0, 0.08)); }
+.pop-effort-row { flex-shrink: 0; font-size: 12.5px; color: var(--color-text-secondary); }
+.pop-effort-row .pop-select-name { display: flex; align-items: center; gap: 5px; }
+.pop-effort-row .el-icon { color: var(--color-text-secondary, #8a8f98); }
+.pop-effort-row:hover { color: var(--color-text); }
+.pop-effort-opt { padding-top: 6px; padding-bottom: 6px; font-size: 12.5px; }
+/* 展开态选项限高滚动：模型列表（flex:1）让出空间，选项自身最多 ~7 行再内部滚动 */
+.pop-effort-options { flex-shrink: 0; max-height: 168px; overflow-y: auto; }
 /* ★ 模型下拉启用「打开即定位到当前选中项」后，默认的缩放过渡会把 transition 期内的
    offsetTop/scrollTop 一起"动画"过去 → 表现为打开瞬间滚到偏上、随后慢慢滑到位的抖动感。
    改为**纯透明度**过渡：不做任何位移/缩放，定位在首帧就落定。

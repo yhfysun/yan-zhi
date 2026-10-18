@@ -637,6 +637,12 @@ export const useChatStore = defineStore('chat', () => {
   const thinkingMode = ref(false);   // 深度思考：提示词要求充分推理后再作答
   const planMode = ref(false);       // 计划模式：先用 task_plan 登记计划再执行
   const answerOnly = ref(false);     // 仅回答：后端清空工具列表，禁一切工具调用
+  // 思考强度（reasoning_effort API 参数）—— 注意与上面的「深度思考」是两回事：
+  //   深度思考 = 提示词模式；思考强度 = 真正下发给 LLM 的 reasoning_effort / reasoning.effort。
+  //   null = 跟随智能体配置（默认：请求不带该参数，后端回退 agent.config.reasoningEffort）；
+  //   '' = 本会话强制关闭（后端 options.reasoningEffort='' 优先于智能体配置）；
+  //   'low' | 'medium' | 'high' = 会话级覆盖。切会话/刷新不持久（与 thinkingMode 同口径）。
+  const reasoningEffortOverride = ref<string | null>(null);
   // 会话级工具权限：readonly=只读（写类工具被后端硬拦截）/ default=标准 / full=全部放行。
   // 持久化在 conversation.permission_mode；新会话草稿态先存本地，创建会话时随 POST 落库。
   // ★★ 默认档是 readonly（2026-09-27 用户拍板：默认全放行太危险）——
@@ -3615,6 +3621,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     onTaskFinished,
     runningToolCallIds, isToolCallRunning,
     browserSteps, pushBrowserStep, rightPanelOpen, thinkingMode, planMode, answerOnly,
+    reasoningEffortOverride,
     permissionMode, setPermissionMode,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,
     previewTabs, activeTabId, activeTab,

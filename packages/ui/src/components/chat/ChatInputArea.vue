@@ -382,7 +382,7 @@
                       <span class="plus-menu-ic"><el-icon><ChatDotRound /></el-icon></span>
                       <div class="plus-menu-info">
                         <div class="plus-menu-label">深度思考</div>
-                        <div class="plus-menu-desc">推理更充分，回答稍慢</div>
+                        <div class="plus-menu-desc">查证 · 归纳 · 分步完成（更慢）</div>
                       </div>
                       <el-switch v-model="store.thinkingMode" size="small" @click.stop />
                     </div>
@@ -519,6 +519,26 @@
                 </template>
                 <div v-if="!filteredModelGroups.length" class="pop-model-empty">没有匹配的模型</div>
               </div>
+              <!-- 思考强度行：与桌面端模型弹层同一形态（同一 store.reasoningEffortOverride，两种入口一个真相） -->
+              <div class="pop-effort-sep"></div>
+              <div class="pop-select-item pop-effort-row" @click.stop="modelEffortOpen = !modelEffortOpen">
+                <span class="pop-select-name"><el-icon :size="12"><Odometer /></el-icon>思考强度</span>
+                <span class="pop-select-ctx">{{ effortLabel }} <el-icon :size="11"><ArrowRight /></el-icon></span>
+              </div>
+              <template v-if="modelEffortOpen">
+                <div class="pop-effort-options">
+                  <div
+                    v-for="o in EFFORT_OPTIONS"
+                    :key="String(o.value)"
+                    class="pop-select-item pop-effort-opt"
+                    :class="{ active: store.reasoningEffortOverride === o.value }"
+                    @click.stop="pickEffort(o.value)"
+                  >
+                    <span class="pop-select-name">{{ o.label }}</span>
+                    <el-icon v-if="store.reasoningEffortOverride === o.value"><Check /></el-icon>
+                  </div>
+                </div>
+              </template>
             </div>
           </el-popover>
         </div>
@@ -623,6 +643,31 @@
                 </template>
                 <div v-if="!filteredModelGroups.length" class="pop-model-empty">没有匹配的模型</div>
               </div>
+              <!-- 思考强度（reasoning_effort API 参数，对齐 WorkBuddy 模型卡片形态）：
+                   参数跟着模型走 → 入口放模型弹层底部（2026-10-18 用户拍板的概念归属），
+                   「+」菜单只放工作模式（深度思考/计划/仅回答）。 -->
+              <div class="pop-effort-sep"></div>
+              <div class="pop-select-item pop-effort-row" @click.stop="modelEffortOpen = !modelEffortOpen">
+                <span class="pop-select-name"><el-icon :size="12"><Odometer /></el-icon>思考强度</span>
+                <span class="pop-select-ctx">{{ effortLabel }} <el-icon :size="11"><ArrowRight /></el-icon></span>
+              </div>
+              <template v-if="modelEffortOpen">
+                <!-- 关闭 = '' 不下发该参数（用模型默认档）；不传显式 'none' —— 仅 5.1+ 支持，
+                     第三方网关/老模型会 400，跨平台不安全。minimal/xhigh 仅部分模型支持，
+                     模型不认时由模型侧报 400 兜底。 -->
+                <div class="pop-effort-options">
+                  <div
+                    v-for="o in EFFORT_OPTIONS"
+                    :key="String(o.value)"
+                    class="pop-select-item pop-effort-opt"
+                    :class="{ active: store.reasoningEffortOverride === o.value }"
+                    @click.stop="pickEffort(o.value)"
+                  >
+                    <span class="pop-select-name">{{ o.label }}</span>
+                    <el-icon v-if="store.reasoningEffortOverride === o.value"><Check /></el-icon>
+                  </div>
+                </div>
+              </template>
             </div>
           </el-popover>
           <!-- 模型项 hover → 左侧弹出上下文窗口快捷设置（与顶栏模型菜单共用同一面板组件） -->
@@ -756,7 +801,7 @@ import {
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight,
+  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight, Odometer,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 // ★ 移动端长按（触屏专属，内部只认 pointerType==='touch'，桌面端零影响）
@@ -1207,6 +1252,8 @@ const modesDesc = computed(() => {
   if (store.thinkingMode) on.push('深度思考');
   if (store.planMode) on.push('计划');
   if (store.answerOnly) on.push('仅回答');
+  // 注：思考强度（reasoning_effort API 参数）不属于工作模式，入口在模型选择弹层底部 ——
+  // 这里刻意不展示，避免「模式」摘要里混进模型参数（2026-10-18 用户拍板的概念归属）。
   return on.length ? on.join(' · ') : '默认';
 });
 const currentModelName = computed(() => {
@@ -1216,6 +1263,30 @@ const currentModelName = computed(() => {
   }
   return '选择模型';
 });
+
+// ===== 思考强度（reasoning_effort API 参数）=====
+// 概念归属（2026-10-18 用户拍板）：「+」菜单·模式 = 工作模式（深度思考/计划/仅回答，提示词层）；
+// 思考强度 = 模型 API 参数，跟着模型走 → 入口挂两个模型弹层（桌面胶囊 + 移动端）底部，
+// 同一份 store.reasoningEffortOverride，两种入口一个真相。
+const EFFORT_OPTIONS: Array<{ label: string; value: string | null }> = [
+  { label: '跟随智能体', value: null },   // 用智能体编辑里配的档位（后端回退 agent.config）
+  { label: '关闭', value: '' },           // 请求不带该参数（模型默认档）
+  { label: '最小', value: 'minimal' },
+  { label: '低', value: 'low' },
+  { label: '中', value: 'medium' },
+  { label: '高', value: 'high' },
+  { label: '超高', value: 'xhigh' },
+];
+const modelEffortOpen = ref(false);
+const effortLabel = computed(() => {
+  const v = store.reasoningEffortOverride;
+  if (v === null) return '跟随智能体';
+  return ({ '': '关闭', minimal: '最小', low: '低', medium: '中', high: '高', xhigh: '超高' } as Record<string, string>)[v] ?? v;
+});
+function pickEffort(v: string | null) {
+  store.reasoningEffortOverride = v;
+  modelEffortOpen.value = false;
+}
 
 // ===== 模型候选池下拉瘦身（model-candidate-pools P2）=====
 const platformStore = usePlatformStore();
@@ -1423,7 +1494,7 @@ async function onCtxWindowChange(tokens: number) {
 // 下拉收起时一并收掉上下文窗口浮层、清掉搜索词（下次打开是干净列表）
 // ★ 两个开关都要收尾（移动端与桌面端各自的弹层），漏一个会留下"幽灵弹层"没被清理
 watch([modelPopOpen, mobileModelPopOpen], ([desktopOpen, mobileOpen]) => {
-  if (!desktopOpen && !mobileOpen) { closeCtxPanelNow(); modelSearch.value = ''; return; }
+  if (!desktopOpen && !mobileOpen) { closeCtxPanelNow(); modelSearch.value = ''; modelEffortOpen.value = false; return; }
   // ★ 展开时兜底加载（2026-10-16，与 onAgentDropdownVisible 完全同口径）：
   //   冷启动那轮预热若没落地（后端未就绪 / 授权码未就绪 / 重试预算耗尽），共享缓存为空 →
   //   下拉只剩一个「显示全部模型」的空壳。用户能展开下拉时后端必然已就绪，这里补一次即可，

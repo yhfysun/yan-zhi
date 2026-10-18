@@ -81,6 +81,22 @@ function createChat() {
     distillMessages.value = [{ role: 'user', content: msg.content || '' }];
     showDistill.value = true;
   }
+
+  /**
+   * 解析本轮请求实际下发的思考强度（reasoning_effort）：
+   * ① 会话级覆盖（「+」菜单·模式·思考强度）：null=跟随智能体 / ''=强制关闭 / low|medium|high=覆盖；
+   * ② 未覆盖时回退 agent.config.reasoningEffort。
+   * ★ '' 与 undefined 语义不同：'' 必须原样下发 —— 后端 options 分支
+   *   （`options?.reasoningEffort !== undefined ? ... : agentConfig`）会采纳 '' 来**压过**
+   *   智能体配置实现强制关；转成 undefined 则整个不带、回退智能体配置，强制关就失效了。
+   *   client.ts 侧 '' 走 `if (options?.reasoningEffort)` 为假 → API 请求不带该参数，正确。
+   */
+  function resolveReasoningEffort(agent: { config?: { reasoningEffort?: string } } | null | undefined): string | undefined {
+    const ov = store.reasoningEffortOverride;
+    if (ov !== null) return ov; // '' → 强制关闭（原样下发）；low/medium/high → 覆盖
+    return (agent?.config as any)?.reasoningEffort || undefined;
+  }
+
   function distillAssistantMsg(round: any) {
     const msgs: Array<{ role: string; content: string }> = [];
     if (round.user) msgs.push({ role: 'user', content: round.user.content || '' });
@@ -3053,7 +3069,7 @@ async function healStalePlatform() {
         topP: agent?.topP,
         frequencyPenalty: agent?.frequencyPenalty,
         presencePenalty: agent?.presencePenalty,
-        reasoningEffort: (agent?.config as any)?.reasoningEffort || undefined,
+        reasoningEffort: resolveReasoningEffort(agent),
       }, convId);
 
     } catch (e: any) {
@@ -3184,7 +3200,7 @@ async function healStalePlatform() {
         topP: agent?.topP,
         frequencyPenalty: agent?.frequencyPenalty,
         presencePenalty: agent?.presencePenalty,
-        reasoningEffort: (agent?.config as any)?.reasoningEffort || undefined,
+        reasoningEffort: resolveReasoningEffort(agent),
       }, convId);
     } catch (e: any) {
       console.error('[Chat] 追加消息发送失败:', e);
