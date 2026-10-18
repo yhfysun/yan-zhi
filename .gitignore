@@ -230,3 +230,7 @@ apps/desktop/月饼礼盒推荐_2024.md
 # 此前只有本机 .git/info/exclude 的残留缓存掩盖，实际未忽略，会被 add 进提交）
 dist-pro/
 *.traineddata
+
+# 内置 Python 运行时的依赖标记（build-python-runtime.mjs 生成/刷新，每次构建都会
+# 变 `at` 时间戳 —— 内容可由 python-scripts 源重新推导，属构建产物不入库）
+apps/desktop/resources/.baked-deps.json
