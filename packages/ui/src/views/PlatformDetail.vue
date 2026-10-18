@@ -6,7 +6,7 @@
         <h2 class="page-title">{{ platform?.name || '平台详情' }}</h2>
         <span :class="['status-dot', platform?.status]"></span>
       </div>
-      <div v-if="!platform?.isBuiltin" class="header-actions header-actions-desktop">
+      <div v-if="platformManageable" class="header-actions header-actions-desktop">
         <el-button @click="fetchRemote" :loading="fetching">拉取远程模型</el-button>
         <el-button @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''">
           {{ batchMode ? '取消' : '批量' }}
@@ -115,7 +115,7 @@
         </div>
       </div>
 
-      <div v-if="!platform?.isBuiltin" class="model-card add-card" @click="openAddModel">
+      <div v-if="platformManageable" class="model-card add-card" @click="openAddModel">
         <el-icon :size="32"><Plus /></el-icon>
         <span>添加模型</span>
       </div>
@@ -257,7 +257,7 @@
     </el-dialog>
 
     <!-- Mobile: header-actions as a collapsible toolbar below header -->
-    <div v-if="!platform?.isBuiltin" class="header-actions-mobile">
+    <div v-if="platformManageable" class="header-actions-mobile">
       <el-button size="small" @click="fetchRemote" :loading="fetching">拉取</el-button>
       <el-button size="small" @click="batchMode = !batchMode" :type="batchMode ? 'warning' : ''">
         {{ batchMode ? '取消' : '批量' }}
@@ -265,7 +265,7 @@
     </div>
 
     <!-- Mobile FAB -->
-    <el-button v-if="!platform?.isBuiltin" type="primary" :icon="Plus" circle class="mobile-fab" @click="openAddModel" />
+    <el-button v-if="platformManageable" type="primary" :icon="Plus" circle class="mobile-fab" @click="openAddModel" />
   </div>
 </template>
 
@@ -292,6 +292,16 @@ const router = useRouter();
 const store = usePlatformStore();
 const platformId = computed(() => props.platformId || (route.params.platformId as string));
 const platform = computed(() => store.platforms.find((p) => p.id === platformId.value));
+/**
+ * 平台是否开放「拉取远程模型 / 手动添加 / 批量」管理入口。
+ * ★ 与数据层守卫同语义（stores/platform.ts 的 assertEditablePlatform / fetchRemoteModels、
+ *   本文件 fetchRemote()）：目录厂商平台（isBuiltin 且有 presetKey，如 DeepSeek / Z.ai）
+ *   本就允许管理，UI 不能只按 isBuiltin 一刀切隐藏——否则数据层开放、入口却不存在。
+ *   非目录内置平台（isBuiltin 且无 presetKey，模型由本地模型商城等服务端直写）才隐藏。
+ */
+const platformManageable = computed(
+  () => !platform.value?.isBuiltin || !!(platform.value as any)?.presetKey,
+);
 const models = computed(() => store.models.filter((m) => m.platformId === platformId.value));
 
 // ── 模型搜索 / 类型筛选（纯前端过滤，不动数据；空关键字 + 空类型 = 全量） ──

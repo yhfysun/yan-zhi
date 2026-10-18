@@ -17,21 +17,21 @@ import { createApp, nextTick, type App } from 'vue';
 import ElementPlus from 'element-plus';
 import * as Icons from '@element-plus/icons-vue';
 
-/** 假数据：刻意混入不同类型、大小写、空别名，贴近真实库 */
-const PLATFORM = { id: 'p1', name: '百炼大模型', apiUrl: 'https://dashscope.aliyuncs.com', protocol: 'openai', status: 'healthy' };
-const MODELS = [
-  { id: 'm1', platformId: 'p1', modelId: 'qwen3.8-omni-flash-realtime', alias: '通义实时语音', type: 'llm', description: '实时语音对话', enabled: true, contextWindow: 1048576 },
-  { id: 'm2', platformId: 'p1', modelId: 'deepseek-v4.1-flash', alias: 'DeepSeek', type: 'llm', description: '通用对话', enabled: true, contextWindow: null },
-  { id: 'm3', platformId: 'p1', modelId: 'text-embedding-v3', alias: '向量', type: 'embedding', description: '文本向量化', enabled: true, contextWindow: 8192 },
-  { id: 'm4', platformId: 'p1', modelId: 'cosyvoice-v2', alias: 'CosyVoice', type: 'tts', description: '语音合成', enabled: true, contextWindow: 4096 },
-];
-
 // 只 mock 数据源：组件其余依赖全部用真实现
 // ★ 白名单式 mock：**主链路每加一个 store 导出都必须同步**，否则组件 setup 时
 //   拿到 undefined 直接抛错（本例：新增的 useModelPoolStore 漏了 → 10 个挂载用例全崩）。
 vi.mock('../stores', () => {
+  /** 假数据：刻意混入不同类型、大小写、空别名，贴近真实库 */
+  const MODELS = [
+    { id: 'm1', platformId: 'p1', modelId: 'qwen3.8-omni-flash-realtime', alias: '通义实时语音', type: 'llm', description: '实时语音对话', enabled: true, contextWindow: 1048576 },
+    { id: 'm2', platformId: 'p1', modelId: 'deepseek-v4.1-flash', alias: 'DeepSeek', type: 'llm', description: '通用对话', enabled: true, contextWindow: null },
+    { id: 'm3', platformId: 'p1', modelId: 'text-embedding-v3', alias: '向量', type: 'embedding', description: '文本向量化', enabled: true, contextWindow: 8192 },
+    { id: 'm4', platformId: 'p1', modelId: 'cosyvoice-v2', alias: 'CosyVoice', type: 'tts', description: '语音合成', enabled: true, contextWindow: 4096 },
+  ];
+  /** 可变平台行：内置 preset 平台按钮可见性用例通过 __setPlatformRow 切换后重新 mount */
+  const platformRow: Record<string, any> = { id: 'p1', name: '百炼大模型', apiUrl: 'https://dashscope.aliyuncs.com', protocol: 'openai', status: 'healthy' };
   const store = {
-    platforms: [PLATFORM],
+    platforms: [platformRow],
     models: MODELS,
     apiKeys: [],
     loading: false,
@@ -62,7 +62,15 @@ vi.mock('../stores', () => {
     ensureModels: vi.fn(async () => {}),
     platformPoolOf: () => ({ llm: [], vision: [], image: [], video: [] }),
   };
-  return { usePlatformStore: () => store, useModelPoolStore: () => poolStore };
+  return {
+    usePlatformStore: () => store,
+    useModelPoolStore: () => poolStore,
+    /** 测试专用：整体替换平台行（切换 isBuiltin / presetKey），下次 mount 生效 */
+    __setPlatformRow: (row: Record<string, any>) => {
+      for (const k of Object.keys(platformRow)) delete platformRow[k];
+      Object.assign(platformRow, row);
+    },
+  };
 });
 
 vi.mock('vue-router', () => ({
@@ -180,5 +188,40 @@ describe('PlatformDetail 真挂载 · 卸干净（不给下一个用例留 DOM�
     app?.unmount();
     app = null;
     expect(host.innerHTML).toBe('');
+  });
+});
+
+/**
+ * ★ 2026-10-18 用户实报：管理模型弹窗里，DeepSeek / Z.ai 这类**内置目录平台**
+ *   （is_builtin=1 且 preset_key 非空）没有「拉取远程模型 / 批量 / 手动添加」按钮，
+ *   而自建平台（如 agnes）有。根因：模板 v-if 只按 `!platform?.isBuiltin` 一刀切，
+ *   与数据层守卫（`isBuiltin && !presetKey` 才禁，见 stores/platform.ts）不一致。
+ *   这三个用例钉住修好后的口径：preset 内置平台开放入口，非目录内置平台仍隐藏。
+ */
+describe('PlatformDetail 真挂载 · 管理入口可见性（内置 preset 平台不再被一刀切）', () => {
+  const DEFAULT_ROW = { id: 'p1', name: '百炼大模型', apiUrl: 'https://dashscope.aliyuncs.com', protocol: 'openai', status: 'healthy' };
+
+  it('DeepSeek 这类 isBuiltin + presetKey 目录平台：三按钮与「添加模型」卡片都在', async () => {
+    (await import('../stores') as any).__setPlatformRow({ ...DEFAULT_ROW, name: 'DeepSeek', isBuiltin: true, presetKey: 'deepseek' });
+    const host = await mount();
+    const btnTexts = [...host.querySelectorAll('.header-actions-desktop .el-button')].map((b) => b.textContent?.trim());
+    expect(btnTexts).toContain('拉取远程模型');
+    expect(btnTexts).toContain('批量');
+    expect(btnTexts).toContain('手动添加');
+    expect(host.querySelector('.add-card')).toBeTruthy();
+  });
+
+  it('非目录内置平台（isBuiltin 且无 presetKey）：入口仍然隐藏', async () => {
+    (await import('../stores') as any).__setPlatformRow({ ...DEFAULT_ROW, name: '本地模型', isBuiltin: true });
+    const host = await mount();
+    expect(host.querySelector('.header-actions-desktop')).toBeFalsy();
+    expect(host.querySelector('.add-card')).toBeFalsy();
+  });
+
+  it('普通自建平台（isBuiltin=false）：入口显示', async () => {
+    (await import('../stores') as any).__setPlatformRow({ ...DEFAULT_ROW, isBuiltin: false });
+    const host = await mount();
+    expect(host.querySelector('.header-actions-desktop')).toBeTruthy();
+    expect(host.querySelector('.add-card')).toBeTruthy();
   });
 });
