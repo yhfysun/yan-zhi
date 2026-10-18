@@ -1,7 +1,7 @@
 <template>
-  <div class="deliverable-grid">
+  <div class="deliverable-grid" ref="gridRef" :style="gridStyle">
     <div
-      v-for="f in files"
+      v-for="f in visibleFiles"
       :key="f.id"
       class="deliverable-file-card"
       :class="{ 'has-thumb': hasThumb(f) }"
@@ -46,13 +46,17 @@
         </div>
       </div>
     </div>
+    <!-- 超过两行折叠：占一个格位的「更多 (N) / 收起」钮（与文件卡同宽同列） -->
+    <button v-if="showToggle" type="button" class="deliverable-more-btn" @click="expanded = !expanded">
+      {{ expanded ? '收起' : `更多 (${hiddenCount})` }}
+    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { Download, FolderOpened } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
-import { computed, ref, onBeforeUnmount } from 'vue';
+import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue';
 import type { ConversationFile } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { useChatStore } from '../../stores/chat';
@@ -71,6 +75,53 @@ const props = defineProps<{ files: ConversationFile[] }>();
 
 const adapter = getPlatformAdapter();
 const canReveal = computed(() => !!adapter.shell && adapter.platform === 'desktop');
+
+/* ===== 宽度双因素 + 两行折叠（2026-10-18）=====
+ * 缺陷：助手侧 .msg-body 是 shrink-to-fit（align-items:flex-start 且无 flex:1），
+ * 正文短 → 整条消息收窄；而 auto-fill 网格在"可用宽度不确定"（内在尺寸阶段）下
+ * 退化为单列 COL_MIN 级别 → 「正文短 + 文件多」= 一行一个、纵向爆长。
+ * 修法（两方面考虑，不是简单脱钩）：
+ *   · 正文长 → 消息本来就宽 → 网格 auto-fill 自然多列（文件数量决定行数）；
+ *   · 正文短 → 网格按文件数量给 min-width 保底列数，自己把消息撑宽；
+ *   · 任何时刻超过两行 → 折叠成「更多 (N)」钮，点开展开全部。
+ * 100vw 兜底：min-width 里带 calc(100vw - 120px) 上限（聊天列 820px 居中 + 内边距/头像
+ * 约 108px），窄窗口/移动端自动让位，不会横向溢出。本组件目前只在聊天列挂载。 */
+const COL_MAX = 140;   // 单卡最大宽度：一行 5 个（736px 内容宽 ÷5≈140），与 <style> 列定义一致
+const COL_MIN = 100;   // 单卡最小宽度（窄容器收缩下限）
+const GRID_GAP = 6;    // 与 <style> gap 一致
+const MAX_ROWS = 2;    // 折叠前最多展示行数
+
+/** 按文件数量保底列数：≥5 个文件保 5 列（140×5+gap 恰好放进 736px 内容宽），少则按实际数保 */
+const gridStyle = computed(() => {
+  const n = props.files.length;
+  if (!n) return undefined;
+  const cols = Math.min(5, n);
+  const w = cols * COL_MAX + (cols - 1) * GRID_GAP;
+  return { minWidth: `min(${w}px, calc(100vw - 120px))` };
+});
+
+const gridRef = ref<HTMLElement | null>(null);
+const expanded = ref(false);
+/** 实测每行列数（容器宽度变化时跟随）；挂载前按桌面 3 列兜底 */
+const perRow = ref(3);
+let ro: ResizeObserver | null = null;
+onMounted(() => {
+  ro = new ResizeObserver((entries) => {
+    const w = entries[0]?.contentRect.width || 0;
+    if (w > 0) perRow.value = Math.max(1, Math.floor((w + GRID_GAP) / (COL_MAX + GRID_GAP)));
+  });
+  if (gridRef.value) ro.observe(gridRef.value);
+});
+onBeforeUnmount(() => { ro?.disconnect(); ro = null; });
+
+/** 折叠容量：两行减去「更多」钮占的一个格位；每行 1 列的窄屏至少保 2 个 */
+const collapseCap = computed(() => Math.max(2, perRow.value * MAX_ROWS - 1));
+const isCollapsed = computed(() => !expanded.value && props.files.length > collapseCap.value);
+const visibleFiles = computed(() => (isCollapsed.value ? props.files.slice(0, collapseCap.value) : props.files));
+const hiddenCount = computed(() => Math.max(0, props.files.length - collapseCap.value));
+const showToggle = computed(() => props.files.length > collapseCap.value);
+// 换一轮消息（文件集合变化）时复位展开态，不把上一轮的展开带到下一轮
+watch(() => props.files.map((f) => f.id).join('|'), () => { expanded.value = false; });
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i;
 const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v|ogg)$/i;
@@ -223,11 +274,11 @@ async function reveal(f: ConversationFile) {
 </script>
 
 <style scoped>
-/* 卡片网格：最大宽度 140px，紧凑 */
+/* 卡片网格：一行 5 个（2026-10-18 用户拍板：密度优先，列宽回到 140px）；min-width 保底见脚本 gridStyle */
 .deliverable-grid {
   margin-top: 8px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(110px, 100%), 140px));
+  grid-template-columns: repeat(auto-fill, minmax(min(100px, 100%), 140px));
   gap: 6px;
   justify-content: start;
 }
@@ -302,11 +353,31 @@ async function reveal(f: ConversationFile) {
   opacity: 1;
 }
 .deliverable-file-actions :deep(.el-button) {
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   padding: 0;
 }
 .deliverable-file-actions :deep(.el-icon) {
-  font-size: 11px;
+  font-size: 10px;
+}
+/* 超两行折叠钮：与文件卡同格位，虚线边框弱化存在感，hover 才点亮 */
+.deliverable-more-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 5px 7px;
+  border: 1px dashed var(--glass-border);
+  border-radius: 8px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.deliverable-more-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--glass-bg-hover);
 }
 </style>
