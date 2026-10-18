@@ -4,8 +4,9 @@
 覆盖：
   1. disp_w 全角标点计宽（…… —— 等 U+2000~U+206F = 全角）
   2. build_ass：长句切出的单行 Dialogue 在 PlayRes 宽度内不超屏
-  3. build_title_lines：标题条文本不含半角书名号渲染坑（「）、含『』
-  4. build_episode_filter：「第N集」大字 alpha 表达式 3 秒收尾 + % 转义
+  3. build_title_lines：标题条文本不含半角书名号渲染坑（「）、含『』、首帧无淡入
+  4. build_episode_filter：「第N集」大字首帧全显（无淡入）+ 3 秒收尾 + % 转义
+     build_episode_badge：右上角常驻角标（全程可见、无 alpha、box 安全）
   5. publish_copy：标题 ≤30 字、五段内容结构、章节号从文件名推断
 """
 import ast
@@ -90,16 +91,29 @@ def test_title_bar_escapes_specials():
     assert "text='搜『A\\:B\\%C』看全文" in joined
 
 
-# ---------- 4) 第N集大字 ----------
+def test_title_bar_no_fadein_first_frame_fully_visible():
+    """v4 (2026-10-18)：平台封面取 t=0 首帧 → 标题条禁止淡入（首帧必须全显
+    别名+平台，用户刷到首页缩略图就能看到基本信息）。"""
+    parts = compose_video.build_title_lines("搜『狐王痴狂』看全文｜番茄小说", 64)
+    joined = ",".join(parts)
+    assert "alpha=" not in joined, "标题条带淡入会导致首帧字几乎全透明（封面无信息）"
+
+
+# ---------- 4) 第N集大字 + 常驻角标 ----------
 
 def test_episode_filter_alpha_and_escape():
     f = compose_video.build_episode_filter("第12集", 25)
-    # alpha 表达式存在且 3s 处开始淡出、3.5s 归零
-    assert "if(lt(t,0.40),t/0.40" in f
+    # v4：无淡入（首帧全显）→ alpha 表达式直接从"保持到3s"开始，3s 处淡出、3.5s 归零
     assert "if(lt(t,3.00),1" in f
     assert "1-(t-3.00)/0.50" in f
     # 文本里的 % 已双转义（带 alpha 的 drawtext 必须 \%）
     assert "第12集" in f
+
+
+def test_episode_filter_no_fadein():
+    """v4：0.4s 淡入导致首帧集数几乎全透明（封面无集数）→ 禁止淡入段。"""
+    f = compose_video.build_episode_filter("第12集", 25)
+    assert "t/0.40" not in f and "t/0.4)" not in f
 
 
 def test_episode_filter_pct_escaped():
@@ -111,6 +125,32 @@ def test_episode_filter_no_box():
     """box+alpha 在老版 ffmpeg 淡出期出彩色伪影 → 禁止 box。"""
     f = compose_video.build_episode_filter("第1集", 25)
     assert "box=1" not in f
+
+
+def test_episode_badge_persistent_no_alpha():
+    """v4：右上角常驻角标——任何一帧当封面都带集数。
+    必须：含集数文本、box 压底（无 alpha 表达式 → box 安全）、定位在右上角。"""
+    f = compose_video.build_episode_badge("第7集")
+    assert "第7集" in f
+    assert "box=1" in f, "常驻角标无 alpha 表达式，box 安全且必须压底保可读"
+    assert "alpha=" not in f, "角标禁止 alpha（淡入/淡出都会让部分帧丢集数）"
+    assert "x=w-text_w-" in f and "y=" in f, "角标定位右上角"
+
+
+def test_extract_cover_names_cover_png(monkeypatch):
+    """封面图 = 抽成片第0帧，命名 <成片名>_封面.png（发布时直接当首页图片上传）。"""
+    calls = {}
+
+    def fake_run(cmd, **kw):
+        calls["cmd"] = cmd
+        return None
+
+    monkeypatch.setattr(compose_video.subprocess, "run", fake_run)
+    mp4 = os.path.join("out", "狐王痴狂_第1集.mp4")
+    cover = compose_video.extract_cover("ffmpeg", mp4)
+    assert cover == os.path.join("out", "狐王痴狂_第1集_封面.png")
+    assert calls["cmd"][-1] == cover
+    assert "-frames:v" in calls["cmd"], "必须只抽1帧（第0帧即封面）"
 
 
 # ---------- 5) publish_copy ----------

@@ -65,7 +65,7 @@ def main():
     ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
     ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）")
     ap.add_argument("--alias", default="", help="别名（顶部常驻「搜『别名』看全文｜番茄小说」+ 发布文案标题）")
-    ap.add_argument("--chapter", default="", help="第几集（如 3；画面「第N集」大字前3秒 + 文件名第N集 + 发布文案）")
+    ap.add_argument("--chapter", default="", help="第几集（如 3；首帧大字+全程角标 + 文件名第N集 + 发布文案 + 封面图）")
     ap.add_argument("--tags", default="", help="发布内容自定义话题标签，缺省 '#小说 #推文 <别名>'")
     ap.add_argument("--no-publish-copy", action="store_true", help="跳过生成 publish.txt 发布文案")
     ap.add_argument("--use-llm", action="store_true")

@@ -4,10 +4,14 @@ novel-tuiwen 视频合成器 v3 (ffmpeg, 4:3 1080x1440)
 两种画面模式:
   A. 背景视频模式(推荐): --bg-video 修驴蹄/骑单车等解压视频, 循环铺满全片
   B. 分镜图模式(默认兜底): 无图时生成深色文字占位帧, 后续接 ComfyUI
-画面结构 v3 (2026-10-12):
-  顶部  = 「搜『别名』看全文｜番茄小说」常驻标题条（集数不再常驻，走 --banner 覆盖）
-  中部  = 「第N集」大字，仅前3秒淡入淡出（--chapter 传入时）
+画面结构 v4 (2026-10-18):
+  顶部  = 「搜『别名』看全文｜番茄小说」常驻标题条（第0帧即全显，无淡入）
+  角标  = 「第N集」右上角常驻小角标（全程可见，任何一帧当封面都带集数）
+  中部  = 「第N集」大字，第0帧即全显，前3秒后淡出（--chapter 传入时）
   底部  = ASS 字幕单行快切（宽度系数 0.80 + 全角标点按全角计宽，防超出屏幕）
+  ★ 封面：合成完自动抽第0帧落盘 <成片名>_封面.png → 发布时直接当首页图片
+    （2026-10-18 用户反馈：v3 标题条/大字带淡入，首帧字几乎全透明，
+     平台封面取首帧 ⇒ 用户刷到看不到别名/平台/集数任何信息）
 用法:
   python compose_video.py --script script.json --outdir output/ \
       --bg-video bg1.mp4,bg2.mp4 [--alias 狐王痴狂 --chapter 1] [--bgm bgm.mp3]
@@ -216,7 +220,9 @@ def build_title_lines(top_text: str, title_size: int) -> list:
     """标题条 drawtext 滤镜片段（链式多行，兼容老版 ffmpeg）。
 
     ★ 2026-10-12：书名号改用『』——「」在老版 ffmpeg drawtext 渲染成窄引号；
-      底条 box 改 boxcolor=black@0.55 加重一档，压得住亮色背景视频。"""
+      底条 box 改 boxcolor=black@0.55 加重一档，压得住亮色背景视频。
+    ★ v4 (2026-10-18)：去掉 0.6s 淡入——平台封面取 t=0 首帧，淡入导致首帧标题
+      几乎全透明，用户刷到看不到别名/平台（改第0帧即全显，常驻本来就有）。"""
     max_chars = max(6, int(W * 0.90 / title_size))
     title_lines = wrap_title(top_text, max_chars)
     line_step = title_size + 12
@@ -229,8 +235,7 @@ def build_title_lines(top_text: str, title_size: int) -> list:
             f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{t}':"
             f"fontcolor=white:fontsize={title_size}:x=(w-text_w)/2:y={80 + i * line_step}:"
             f"box=1:boxcolor=black@0.55:boxborderw=14:"
-            f"borderw=3:bordercolor=black@0.7:"
-            f"alpha='if(lt(t,0.6),t/0.6,1)'"
+            f"borderw=3:bordercolor=black@0.7"
         )
     if not parts:
         t = esc_drawtext(top_text)
@@ -246,12 +251,13 @@ def build_title_lines(top_text: str, title_size: int) -> list:
 def make_placeholder(scene: str, out_png: str, ffmpeg: str):
     body = esc_drawtext(wrap_text(scene or ""))
     # ★ 2026-10-12：本机 2016 版 ffmpeg（N-80694）两处不兼容——
-    #   ① drawbox 不认 t=fill（2018+ 语法）→ t=max 等效填满，老新版本都兼容；
+    #   ① drawbox 不认 t=fill（2018+ 语法）→ 用大数值厚度等效填满（9999 > 任意画幅半边，
+    #      2026-10-18 实测本机 EVCapture ffmpeg 连 t=max 也不认 → 纯数字最稳）；
     #   ② drawtext 无 line_spacing 选项 → 去掉（占位帧观感略降，可接受）。
     #   v2 代码能跑是因为此前一直走背景视频模式，占位帧从没被真实执行过。
     body_one = body.replace("\n", " ")  # 无 line_spacing 也不换行渲染，直接压成一行
     vf = (
-        f"drawbox=x=80:y=80:w={W-160}:h={H-160}:color=0x16213E@1:t=max,"
+        f"drawbox=x=80:y=80:w={W-160}:h={H-160}:color=0x16213E@1:t=9999,"
         f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{body_one}':"
         f"fontcolor=0xe0e0e0:fontsize=40:x=(w-text_w)/2:y=h/2-text_h/2"
     )
@@ -274,19 +280,27 @@ def concat_audios(ffmpeg, audio_files, out_path):
         sys.exit(r.returncode)
 
 
-def build_episode_filter(ep_text: str, fps: int, fade_in: float = 0.4, fade_out: float = 0.5,
+def build_episode_filter(ep_text: str, fps: int, fade_in: float = 0.0, fade_out: float = 0.5,
                          show: float = 3.0) -> str:
-    """「第N集」大字：画面中部，0.4s淡入→保持到3s→0.5s淡出，之后完全消失。
+    """「第N集」大字：画面中部，第0帧即全显（v4）→ 保持到3s → 0.5s淡出。
 
+    ★ v4 (2026-10-18)：取消 0.4s 淡入——平台封面取 t=0 首帧，淡入导致首帧
+    集数几乎全透明，用户刷到不知道是第几集 → 首帧即全显。
     ★ 不加背景框：2026-10-12 实测老版 ffmpeg 的 box 与 alpha 表达式叠加，淡出中段会
     出现蓝/红色竖条状伪影（box 混合态渲染 bug）→ 改纯大字 + 黑描边 + 投影，任何底色都清晰。"""
     font_px = int(H * 0.115)
     y = int(H * 0.44)
-    a = (
-        f"if(lt(t,{fade_in:.2f}),t/{fade_in:.2f},"
-        f"if(lt(t,{show:.2f}),1,"
-        f"if(lt(t,{show + fade_out:.2f}),1-(t-{show:.2f})/{fade_out:.2f},0)))"
-    )
+    if fade_in > 0:
+        a = (
+            f"if(lt(t,{fade_in:.2f}),t/{fade_in:.2f},"
+            f"if(lt(t,{show:.2f}),1,"
+            f"if(lt(t,{show + fade_out:.2f}),1-(t-{show:.2f})/{fade_out:.2f},0)))"
+        )
+    else:
+        a = (
+            f"if(lt(t,{show:.2f}),1,"
+            f"if(lt(t,{show + fade_out:.2f}),1-(t-{show:.2f})/{fade_out:.2f},0))"
+        )
     t = esc_drawtext_pct(ep_text)
     return (
         f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{t}':"
@@ -294,6 +308,38 @@ def build_episode_filter(ep_text: str, fps: int, fade_in: float = 0.4, fade_out:
         f"borderw=4:bordercolor=black@0.85:shadowx=2:shadowy=2:shadowcolor=black@0.5:"
         f"alpha='{a}'"
     )
+
+
+def build_episode_badge(ep_text: str, y: int | None = None) -> str:
+    """「第N集」右上角常驻小角标（v4, 2026-10-18）：全程可见、无 alpha 表达式。
+
+    动机：中部大字只在前3秒 → 中后段任意帧都不带集数，而平台可能自动选任意帧当封面。
+    常驻角标保证**任何一帧**都含集数信息。注意：本滤镜无 alpha 表达式，
+    所以 box=1 安全（box 彩色伪影只在 box+alpha 叠加时出现）。
+    y 缺省贴顶（pad）——但顶部标题条居中、长标题几乎占满行宽，会与角标重叠
+    （2026-10-18 冒烟实测盖住「番茄小说」）→ main() 应传入标题条 2 行最大高度
+    之下方的 y，任何标题行数都不会重叠。"""
+    font_px = max(36, int(H * 0.042))
+    pad = int(H * 0.03)
+    y = pad if y is None else y
+    t = esc_drawtext(ep_text)
+    return (
+        f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{t}':"
+        f"fontcolor=white:fontsize={font_px}:x=w-text_w-{pad}:y={y}:"
+        f"box=1:boxcolor=black@0.45:boxborderw=12:"
+        f"borderw=2:bordercolor=black@0.6"
+    )
+
+
+def extract_cover(ffmpeg: str, final_mp4: str) -> str:
+    """抽成片第0帧落盘封面图（v4, 2026-10-18）：<成片名>_封面.png。
+
+    发布平台可手动上传封面：首帧已含 别名+平台（顶部标题条）+ 第N集（角标+大字），
+    用户刷到首页缩略图即知全部基本信息。"""
+    cover = os.path.splitext(final_mp4)[0] + "_封面.png"
+    subprocess.run([ffmpeg, "-y", "-v", "error", "-i", final_mp4,
+                    "-frames:v", "1", cover], check=True)
+    return cover
 
 
 def main():
@@ -306,7 +352,7 @@ def main():
     ap.add_argument("--aspect", default="4:3", choices=list(ASPECT_SIZES.keys()), help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名")
     ap.add_argument("--alias", default="", help="别名：顶部常驻「搜「别名」看全文｜番茄小说」（集数走 --ep 大字）")
-    ap.add_argument("--chapter", default="", help="第几章（如 3）：转成「第N集」大字（前3秒）并决定文件名（第N集）")
+    ap.add_argument("--chapter", default="", help="第几集（如 3）：「第N集」首帧大字+全程角标，并决定文件名（第N集）与封面图")
     ap.add_argument("--keep-temp", action="store_true")
     a = ap.parse_args()
     global W, H
@@ -371,9 +417,10 @@ def main():
     #   改为**按行链式 drawtext**（每行一个 filter，各自 y 下移）——不用 `text_align`，
     #   因为项目自带的 ffmpeg 是 2019 版（实测 `text_align` 报 Option not found；`line_spacing`/`alpha` 均支持）。
     #   链式多行在任意 ffmpeg 版本都稳，故不依赖 text_align。
-    #   alpha 表达式做 0.6s 淡入。
-    # ★ 画面结构 v3（2026-10-12）：上「别名+番茄小说」常驻 / 中「第N集」大字只显示前3秒 /
-    #   下字幕。「第N章」不再进标题条（此前常驻全片，占用画面且与集数信息重复）。
+    #   ★ v4 (2026-10-18)：0.6s 淡入已取消——平台封面取 t=0 首帧，淡入致首帧无字。
+    # ★ 画面结构 v4（2026-10-18）：上「别名+番茄小说」常驻首帧全显 /
+    #   右上角「第N集」常驻角标 / 中「第N集」大字首帧全显、前3秒后淡出 / 下字幕。
+    #   「第N章」不再进标题条（此前常驻全片，占用画面且与集数信息重复）。
     #   ★ 老版 ffmpeg 实测：drawtext 文本里同时写 % 与 \: 会被解析失败**整段丢弃**，
     #     且中文书名号「」在 drawtext 中渲染成窄引号 → 用『』替代。
     if a.banner:
@@ -391,11 +438,13 @@ def main():
     fontsdir_esc = FONTS_DIR.replace("\\", "/").replace(":", "\\:")
     # ASS 自带完整样式（PlayRes=真实像素），无需 force_style；fontsdir 供 libass 找雅黑
     sub_vf = f"subtitles='{srt_abs}':fontsdir='{fontsdir_esc}'"
-    # 「第N集」大字（前3秒）：仅传了章节号时叠加；放在字幕之后 → 大字压在字幕上方
+    # 「第N集」：右上角常驻角标（任何一帧都带集数）+ 中部大字（首帧全显，前3秒）
+    # 角标 y 必须在标题条 2 行最大高度之下（标题居中且长标题几乎占满行宽，贴顶会重叠）
     final_vf = sub_vf
     if a.chapter:
         ep_text = f"第{a.chapter}集"
-        final_vf += "," + build_episode_filter(ep_text, FPS)
+        badge_y = 80 + 2 * (a.title_size + 12) + 24
+        final_vf += "," + build_episode_badge(ep_text, badge_y) + "," + build_episode_filter(ep_text, FPS)
 
     # 文件名：传了别名/章节时用「别名_第N集.mp4」，否则回落旧命名
     if a.alias or a.chapter:
@@ -524,7 +573,10 @@ def main():
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass  # 清理失败不导致整体失败
+    # ---- 4) 封面图（v4, 2026-10-18）：抽成片第0帧 → 发布时直接当首页图片上传 ----
+    cover = extract_cover(ffmpeg, final)
     print(f"[compose] {final}  ({probe_duration(ffmpeg, final):.1f}s)")
+    print(f"[compose] 封面图（首帧含 别名+平台+集数）: {cover}")
 
 
 if __name__ == "__main__":
