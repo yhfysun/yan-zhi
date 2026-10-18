@@ -9,7 +9,7 @@ import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceFo
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus, TOKEN_DEAD_PLATFORM_IDS_SQL } from './services/token-pool.js';
-import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, type PermissionMode } from './tool-permission.js';
+import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, parseToolAuthResult, type PermissionMode } from './tool-permission.js';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
 import { getToolsFromDb, mcpShortIdOf, resolveMcpToolName, callMcpTool } from './mcp/client-manager.js';
@@ -379,6 +379,13 @@ interface LlmTask {
   createdAt: number;
   error?: string;
   pendingToolCalls: Map<string, PendingToolCall>;
+  /**
+   * ★ 只读会话授权制（2026-10-18）：本任务内已获用户批准放行的写类工具集合。
+   *   首次调用写类工具 → `_tool_authorize` 授权卡 → 批准后记入本集合，后续调用直接放行
+   *   （"批准一次，本任务内该工具放行"，与 pathGuard 的会话白名单同语义、粒度更细）。
+   *   仅存内存（任务生命周期即授权生命周期），不落库不跨任务。
+   */
+  authorizedTools?: Set<string>;
   seq: number;
   step: number;
   origin?: string;
@@ -1091,6 +1098,7 @@ export function createTask(params: {
     abortController: new AbortController(),
     createdAt: Date.now(),
     pendingToolCalls: new Map(),
+    authorizedTools: new Set<string>(),
     seq: 0,
     step: 0,
     origin: params.origin || 'chat',
@@ -1946,6 +1954,68 @@ function parsePathAuthResult(raw: string): 'once' | 'dir' | 'deny' | 'cancel' {
   if (/^allow_dir$/.test(s) || s === '允许该目录') return 'dir';
   if (s === '取消' || /cancel/i.test(s)) return 'cancel';
   return 'deny';
+}
+
+// ============================================================
+// 只读会话工具授权（2026-10-18，「只读 = 要授权，而不是不能执行」）
+// ============================================================
+
+/** 授权伪工具：与 `_path_authorize` 同机制 —— 不在 registry，由前端 tool:execute 通道拦截弹卡。 */
+const TOOL_AUTH_TOOL = '_tool_authorize';
+
+/**
+ * 请求用户授权在只读会话中执行写类工具（复用 pathGuard 的「委托前端 → 弹卡 → POST 回传」通道）。
+ *
+ * 返回：
+ *   { ok: true }           → 用户批准（已记入 task.authorizedTools，本任务内该工具放行）
+ *   { ok: false, message } → 未获授权，message 是给模型的指引（措辞让它**换方案/问用户**，
+ *                             而不是重试 —— 防止"反复弹卡"的骚扰循环）
+ *
+ * 无人值守（无前端订阅者）：fail-safe 直接拒绝且不挂起（与 requestPathAuthorization 同口径）。
+ */
+async function requestToolAuthorization(task: LlmTask, toolName: string, args: unknown): Promise<{ ok: boolean; message: string }> {
+  // 已批准过：本任务内直接放行（调用方也查，这里兜底防重入）
+  if (task.authorizedTools?.has(toolName)) return { ok: true, message: '' };
+
+  if (task.subscribers.size === 0) {
+    logger.warn(`[tool-auth] 无人值守拒绝: conv=${task.conversationId} tool=${toolName}`);
+    return {
+      ok: false,
+      message: `[无人值守] 只读会话中工具 ${toolName} 需要用户授权，但当前无前端在线、无人可确认，已拒绝执行。`
+        + `请在最终回复中说明需要用户授权该工具，或改用只读方案完成。`,
+    };
+  }
+
+  const argsPreview = (() => {
+    try {
+      const s = JSON.stringify(args ?? {});
+      return s.length > 600 ? s.slice(0, 600) + '…' : s;
+    } catch { return '(参数不可序列化)'; }
+  })();
+
+  let raw: string;
+  try {
+    // 超时 0 = 不设超时（授权卡与 pathGuard 授权弹窗同性质：用户可能隔天才回）
+    raw = await executeToolViaFrontend(task, TOOL_AUTH_TOOL, { toolName, argsPreview }, '', 0, 0);
+  } catch (e: any) {
+    return {
+      ok: false,
+      message: `授权确认失败（前端不可达）：${e?.message || e}。本次未执行；请改用只读方案，或向用户说明后等待其放开会话权限。`,
+    };
+  }
+
+  const decision = parseToolAuthResult(raw);
+  if (decision === 'allow') {
+    if (!task.authorizedTools) task.authorizedTools = new Set<string>();
+    task.authorizedTools.add(toolName);
+    logger.warn(`[tool-auth] 已授权 conv=${task.conversationId} tool=${toolName}（本任务内放行）`);
+    return { ok: true, message: '' };
+  }
+  logger.warn(`[tool-auth] 用户拒绝: conv=${task.conversationId} tool=${toolName} decision=${decision}`);
+  return {
+    ok: false,
+    message: `用户未授权执行工具 ${toolName}（只读会话写操作需授权）。**不要重试同一调用**；请改用只读方案，或先向用户说明为什么必须执行该操作并等待明确同意。`,
+  };
 }
 
 /**
@@ -4634,13 +4704,28 @@ async function executeTool(
    */
   browserFlowKey?: string,
 ): Promise<string> {
-  // 会话级权限拦截（readonly）：写类/不可控工具在此硬拒绝。
-  // 放在函数最顶端 —— 被拒时提前 return，file_write/file_edit 的 file_change 快照钩子
-  // （registry.execute 前后那段）自然不会执行，不会残留无意义的 pending 记录。
+  // 会话级权限闸（readonly）：写类/不可控工具**不再硬拒**（2026-10-18 授权制语义升级）——
+  // 命中即走 `_tool_authorize` 授权卡请求用户批准，批准后本任务内该工具放行；
+  // 拒绝/无人值守/前端不可达才拒绝执行。放在函数最顶端 —— 被拒时提前 return，
+  // file_write/file_edit 的 file_change 快照钩子（registry.execute 前后那段）自然不会执行。
   const perm = checkToolPermission(task.permissionMode || 'readonly', toolName);
   if (!perm.allowed) {
-    logger.warn(`[llm-task] 权限拦截: conv=${task.conversationId} mode=${task.permissionMode} tool=${toolName}`);
-    return perm.reason || `工具 ${toolName} 已被会话权限拒绝执行`;
+    if (perm.needsAuthorization && (task.permissionMode || 'readonly') === 'readonly') {
+      if (task.authorizedTools?.has(toolName)) {
+        // 本任务内已批准过：直接放行（授权集合是唯一事实源）
+      } else {
+        const auth = await requestToolAuthorization(task, toolName, args);
+        if (!auth.ok) {
+          logger.warn(`[llm-task] 授权未通过: conv=${task.conversationId} mode=${task.permissionMode} tool=${toolName}`);
+          return auth.message;
+        }
+        // 批准 → 落到下方正常执行
+      }
+    } else {
+      // 非 readonly 的 !allowed（理论上不可达）或显式无授权语义的拒绝
+      logger.warn(`[llm-task] 权限拦截: conv=${task.conversationId} mode=${task.permissionMode} tool=${toolName}`);
+      return perm.reason || `工具 ${toolName} 已被会话权限拒绝执行`;
+    }
   }
   const isUiTool = uiTools.has(toolName);
   const isMcp = toolName.startsWith('mcp_');

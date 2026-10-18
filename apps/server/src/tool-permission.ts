@@ -223,11 +223,23 @@ export interface ToolPermissionVerdict {
   allowed: boolean;
   /** 拒绝时返回给模型的原因（模型据此改策略，而不是反复重试） */
   reason?: string;
+  /**
+   * ★ 只读模式语义升级（2026-10-18，用户拍板：「只读代表其它命令要授权，而不是不能执行」）：
+   *   true = 该工具被写类清单命中，但**不再直接拒绝** —— 由运行时（llm-task-manager）走
+   *   `_tool_authorize` 授权卡向用户请求批准，批准后本任务内该工具放行。
+   *   无人值守（无前端订阅者）时运行时会立即拒绝，fail-safe 语义不变。
+   */
+  needsAuthorization?: boolean;
 }
 
 /**
  * 判定某个工具在当前权限模式下是否可执行。
  * full / default 一律放行（保持既有行为，权限拦截是 readonly 专属的收窄）。
+ *
+ * ★ 2026-10-18 起只读模式对写类/不可控/委派工具**不再硬拒**：返回
+ *   `{ allowed: false, needsAuthorization: true }`，由运行时请求用户授权。
+ *   `.allowed` 仍为 false —— 纯"可见性过滤"调用方（如命令面板 readOnlyBuiltinCommands）
+ *   行为不变；只有走授权流程的运行时才消费 needsAuthorization。
  */
 export function checkToolPermission(mode: PermissionMode, toolName: string): ToolPermissionVerdict {
   if (mode !== 'readonly') return { allowed: true };
@@ -235,39 +247,61 @@ export function checkToolPermission(mode: PermissionMode, toolName: string): Too
   if (INTERACTION_TOOLS.has(toolName)) return { allowed: true };
 
   if (WRITE_TOOLS.has(toolName)) {
-    return { allowed: false, reason: `当前会话为「只读权限」，工具 \`${toolName}\` 具有写副作用，已拒绝执行。` };
+    return { allowed: false, needsAuthorization: true, reason: `工具 \`${toolName}\` 具有写副作用，只读会话需用户授权后执行。` };
   }
   for (const p of UNCONTROLLABLE_PREFIXES) {
     if (toolName.startsWith(p)) {
-      return { allowed: false, reason: `当前会话为「只读权限」，外部来源工具 \`${toolName}\`（${p.slice(0, -1)}）的副作用不可判定，已拒绝执行。` };
+      return { allowed: false, needsAuthorization: true, reason: `外部来源工具 \`${toolName}\`（${p.slice(0, -1)}）的副作用不可判定，只读会话需用户授权后执行。` };
     }
   }
   if (DELEGATION_TOOLS.has(toolName)) {
-    return { allowed: false, reason: `当前会话为「只读权限」，\`${toolName}\` 委派的子智能体可能执行写操作，已拒绝执行。` };
+    return { allowed: false, needsAuthorization: true, reason: `\`${toolName}\` 委派的子智能体可能执行写操作，只读会话需用户授权后执行。` };
   }
   return { allowed: true };
 }
 
-/** 工具 schema 数组裁剪：readonly 模式下把写工具从工具列表里摘掉，模型看不到就不会白试。 */
+/**
+ * 工具 schema 数组裁剪：readonly 模式下把写工具从工具列表里摘掉，模型看不到就不会白试。
+ *
+ * ★★ 2026-10-18 语义升级：readonly **不再摘除**写类/不可控/委派工具 ——
+ *   它们保留在工具面上，运行时首次调用会向用户弹授权卡（`_tool_authorize` 通道），
+ *   批准后本任务内放行。这就是"只读 = 要授权，而不是不能执行"的落地：
+ *   工具被摘掉模型连请求授权的机会都没有，只会反复撞"没这个工具"的墙。
+ *   （安全边界不变：执行仍过运行时 gate，无人值守时立即拒绝。）
+ */
 export function filterToolsByPermission<T extends { name?: string; function?: { name?: string } }>(
-  mode: PermissionMode,
+  _mode: PermissionMode,
   tools: T[],
 ): T[] {
-  if (mode !== 'readonly') return tools;
-  return tools.filter((t) => {
-    const name = t?.name || t?.function?.name || '';
-    return checkToolPermission(mode, name).allowed;
-  });
+  return tools;
 }
 
 /** 生成喂给模型的权限指令段，让模型一开始就按只读方式规划，避免反复撞墙。 */
 export function permissionModePrompt(mode: PermissionMode): string {
   if (mode !== 'readonly') return '';
   return [
-    '- 只读权限模式：本次会话已被用户限制为只读。禁止创建、修改、删除任何文件，禁止执行命令、运行代码，',
-    '禁止执行任何会改变页面或远端状态的操作。可以读取文件、查看目录、联网检索、浏览网页内容、向用户提问。',
-    '若任务确实必须写入或修改，先向用户说明需要放开权限，不要尝试绕过限制。',
+    '- 只读权限模式（授权制，2026-10-18）：本次会话被用户限制为只读。读取文件、查看目录、联网检索、浏览网页内容、向用户提问均可直接执行。',
+    '写类操作（改/删文件、执行命令与代码、浏览器页面操作、发消息、委派子智能体等）**仍可发起，但首次调用会向用户弹授权卡**：',
+    '用户批准后本任务内该工具放行；**被拒或未响应时不要重试同一调用**，改为向用户说明理由、等待用户明确同意或换用只读方案。',
+    '不要为了绕开授权把一个写操作拆成多次只读调用 —— 那样既拿不到结果，也只会打扰用户。',
   ].join('\n');
+}
+
+/**
+ * 解析只读工具授权卡（`_tool_authorize`）的返回值。JSON 优先（`{decision}`），文本兜底
+ * （老前端/异常形态）。放在本文件而不是 llm-task-manager：纯函数、可直测，且与
+ * checkToolPermission 同属"权限判定"这一层 —— 同一语义只有一处实现。
+ */
+export function parseToolAuthResult(raw: string): 'allow' | 'deny' {
+  const s = (raw || '').trim();
+  if (!s) return 'deny';
+  try {
+    const obj = JSON.parse(s) as { decision?: string };
+    const d = String(obj.decision || '');
+    if (d === 'allow' || d === 'deny') return d;
+  } catch { /* 非 JSON，走文本兜底 */ }
+  if (/^allow$/i.test(s) || s === '允许' || s === '批准') return 'allow';
+  return 'deny';
 }
 
 // ============================================================

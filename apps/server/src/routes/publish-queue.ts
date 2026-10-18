@@ -1,5 +1,6 @@
 // 发布队列路由 —— 模型入队的内容在这里人工确认（2026-10-17 合规设计：模型只入队，发布必须人工点头）
 import { Router, Request, Response } from 'express';
+import fs from 'node:fs';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
@@ -123,6 +124,18 @@ router.post('/:id/dispatch', (req: Request, res: Response) => {
   if (!row) { res.status(404).json({ error: '队列条目不存在' }); return; }
   if (row.status !== 'approved') {
     res.status(409).json({ error: `条目状态是 ${row.status}，只有已确认（approved）的条目才能派发发布任务` });
+    return;
+  }
+
+  // ★★★ 派发前硬校验媒体文件（2026-10-18，fail-fast）：
+  //   媒体路径失效（文件被重命名/移动/删除）的任务派出去，执行员必然在 upload 上反复重试，
+  //   实测烧掉 27 条消息 + 一次 429 限流才终止 —— 这是"任务不自动止损空转烧钱"的根因之一。
+  //   ⇒ 文件不存在就**根本不启动任务**，409 报明缺哪个文件，用户修完路径再派。
+  //   判据：这是派发时刻就能静态判定的不可恢复错误，运行期任何重试都救不回来。
+  const mediaForCheck = (() => { try { return row.media_paths_json ? JSON.parse(row.media_paths_json) as string[] : []; } catch { return []; } })();
+  const missingMedia = mediaForCheck.filter((p) => !fs.existsSync(p));
+  if (missingMedia.length) {
+    res.status(409).json({ error: `媒体文件不存在，已拒绝派发（请在队列条目里修正媒体路径后重新派发）：${missingMedia.join('；')}` });
     return;
   }
 

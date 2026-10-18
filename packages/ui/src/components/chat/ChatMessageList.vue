@@ -461,6 +461,28 @@
     </div>
   </div>
 
+  <!-- 只读会话工具授权卡（服务端只读权限闸命中写类工具后下发；批准后本任务内该工具放行） -->
+  <div v-if="store.pendingToolAuth" class="inline-ask-card inline-auth-card">
+    <div class="inline-ask-icon inline-auth-icon"><el-icon><Lock /></el-icon></div>
+    <div class="inline-ask-body">
+      <div class="inline-ask-question">只读会话：工具需要你授权执行</div>
+      <div class="inline-ask-desc">
+        工具 <code>{{ store.pendingToolAuth.toolName }}</code> 具有写副作用。
+        批准后**本次任务内**该工具直接放行；拒绝后 AI 会改用只读方案。
+      </div>
+      <div v-if="store.pendingToolAuth.argsPreview" class="inline-auth-list">
+        <div class="inline-auth-item">
+          <span class="inline-auth-tag is-write">参数</span>
+          <span class="inline-auth-path" :title="store.pendingToolAuth.argsPreview">{{ store.pendingToolAuth.argsPreview }}</span>
+        </div>
+      </div>
+      <div class="inline-ask-actions">
+        <el-button size="small" @click="store.submitPendingToolAuth('deny')">拒绝</el-button>
+        <el-button size="small" type="primary" @click="store.submitPendingToolAuth('allow')">批准执行（本任务内放行）</el-button>
+      </div>
+    </div>
+  </div>
+
   <!-- confirm_user 内联表单（多页确认向导，独立渲染） -->
   <div v-if="store.pendingConfirmation && confirmCurrentPage" class="inline-ask-card">
     <div class="inline-ask-icon"><el-icon><ChatDotRound /></el-icon></div>

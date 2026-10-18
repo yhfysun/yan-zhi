@@ -555,6 +555,31 @@ function createChat() {
     store.rightPanelOpen = !store.rightPanelOpen;
   }
 
+  // ★★★ 后台任务自动展开预览面板（2026-10-18，「后台派发的发布任务 30s 建不出页面」根因修复）：
+  //   主进程在 agent navigate 时广播 `tabCreated`，真正建 `<webview>` 壳的是渲染层 BrowserPanel
+  //   的同名监听 —— 但它随组件**挂载**才注册，而「面板收起且无 browser 预览 tab」时
+  //   BrowserPanel 处于卸载态 ⇒ 广播无人接 ⇒ guest 30s 必超时（主进程日志铁证：
+  //   `已广播 tabCreated ... wc=NULL(30s 超时)`，表现为发布队列派发的任务卡死在打开创作者中心）。
+  //   既有兜底（browserStepSeq 首步开面板，见上）只覆盖「活跃会话的第一个浏览器步骤」：
+  //   后台派发任务（发布队列/定时任务）不是活跃会话、且本 renderer 会话内 seq 已 >0，
+  //   两个条件都不满足 ⇒ 面板永远不自动展开。
+  //   ⇒ 这里注册**应用级单例**监听（useChat 是模块级单例，本段随 App 启动常驻）：
+  //     广播到达时确保 browser 预览 tab 存在 + 面板展开；BrowserPanel 随之挂载并接管后续广播，
+  //     模型按报错指引的下一次重试（navigate 复用同 tab 会再广播 / get_page_content）即可建出页面。
+  //   ★ 只做"展开"，不碰 tab 的创建/关闭 —— 壳的唯一实现仍是 BrowserPanel.onTabCreated，不写第二份。
+  if (supportsBrowser) {
+    const api = (window as any).electronAPI?.browserView;
+    api?.onTabCreated?.((_tid: string, url: string | null, _scope?: string) => {
+      const bt = store.previewTabs.find((t) => t.kind === 'browser');
+      if (!bt) {
+        store.openTab({ kind: 'browser', name: '浏览器', url: url || '' });
+      } else if (!store.rightPanelOpen) {
+        store.rightPanelOpen = true;
+        store.activeTabId = bt.id;   // 面板是替后台任务自动展开的：直接亮出 agent 正操作的页面
+      }
+    });
+  }
+
   const expandedFileCategories = reactive<Record<string, boolean>>({ upload: true, intermediate: true, deliverable: true });
   const fileSearch = ref('');
   const workspaceFiles = ref<Array<{ name: string; path: string; size: number; isDir: boolean }>>([]);

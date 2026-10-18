@@ -3534,16 +3534,22 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       const waitForGuestStart = Date.now();
       try {
         if (tabId) broadcastTabUrl.set(String(tabId), cleanUrl);   // 同 URL 复用判据（2026-10-12）
-        mainWindow.webContents.send('browserView:tabCreated', tabId || null, cleanUrl, scope, bgFlow);
-        console.log(`[browser-action] 已广播 tabCreated: url=${cleanUrl} scope=${scope} tab=${tabId || '-'}`);
       } catch { /* ignore */ }
-      // 给渲染层建 <webview>(dom-ready)+注册 guest 的时间
-      // ★ 2026-10-11：8s → 30s。waitForGuest 已事件驱动化（register 即唤醒），
-      //   健康路径 guest 一到就返回，上限放宽零开销；渲染主线程被大会话拖卡时
-      //   IPC 迟到可达 30s+（实测 34.3s），8s 窗口必然失败 —— 放宽把"迟到=失败"
-      //   变成"慢成功"。
       const waitedTab = tabId || activeTabId;
-      wc = await waitForGuest(waitedTab, 30000);
+      // ★★★ 重试广播（2026-10-18，「后台任务页面永远建不出」的第二根因）：
+      //   单次 tabCreated 广播若发出时渲染层 BrowserPanel **尚未挂载**（面板收起且无 browser
+      //   预览 tab ⇒ 监听器未注册），广播即**永久丢失**，guest 永远建不出；而超时文案又告诫
+      //   模型"不要再 navigate 同一 URL" ⇒ 壳再无机会建出 = 死锁（实测第 6 次派发全程卡死）。
+      //   渲染层挂载是异步的（面板展开 → nextTick → onMounted 注册监听），⇒ 等待期间
+      //   **周期性重发**广播：挂载完成后的下一次广播即可建壳（渲染层对已有壳幂等）。
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        try {
+          mainWindow.webContents.send('browserView:tabCreated', tabId || null, cleanUrl, scope, bgFlow);
+          console.log(`[browser-action] 已广播 tabCreated: url=${cleanUrl} scope=${scope} tab=${tabId || '-'} attempt=${attempt}`);
+        } catch { /* ignore */ }
+        wc = await waitForGuest(waitedTab, 5000);
+        if (wc) break;
+      }
       // ★★★ 这条路径此前**零日志**（静默失效家族）：失败时只有下面 `wc.loadURL` 的原生
       //   TypeError，看不出"广播出去了没""等的是哪个 tab""等到没有"。2026-10-10 实报
       //   "页面打不开"就是靠读库反推才定位到 `wc=null`。⇒ 补一条可诊断日志。

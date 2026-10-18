@@ -279,6 +279,20 @@ export interface PendingPathAuth {
   resolve: (decision: 'once' | 'dir' | 'deny') => void;
 }
 
+/**
+ * 只读会话工具授权卡（2026-10-18，「只读 = 要授权，而不是不能执行」）。
+ * 由服务端只读权限闸命中写类工具后，经 `_tool_authorize` 工具走 tool:execute 通道下发。
+ * 与 PendingPathAuth 同机制（弹卡 → await → 回传决策），不复用：决策枚举不同
+ * （allow/deny，无 dir —— 授权粒度是"本任务内该工具放行"，由服务端 authorizedTools 记账）。
+ */
+export interface PendingToolAuth {
+  /** 请求授权的工具名 */
+  toolName: string;
+  /** 参数摘要（服务端已截断到 600 字符，仅展示帮助用户决策） */
+  argsPreview: string;
+  resolve: (decision: 'allow' | 'deny') => void;
+}
+
 export interface ConfirmationPage {
   question: string;
   description?: string;
@@ -879,6 +893,8 @@ export const useChatStore = defineStore('chat', () => {
   const pendingConfirmation = ref<PendingConfirmation | null>(null);
   // 越界访问授权卡 —— 服务端 path-guard 判定越界后下发，用户点同意才放行（2026-10-01）
   const pendingPathAuth = ref<PendingPathAuth | null>(null);
+  // 只读会话工具授权卡 —— 服务端只读权限闸命中写类工具后下发（2026-10-18 授权制）
+  const pendingToolAuth = ref<PendingToolAuth | null>(null);
   // E12c: 模型平台配置弹窗 —— configure_model_platform 工具触发，等待用户填写并保存平台/模型
   const pendingPlatformConfig = ref<PendingPlatformConfig | null>(null);
   /**
@@ -921,6 +937,14 @@ export const useChatStore = defineStore('chat', () => {
     const card = pendingPathAuth.value;
     if (!card) return;
     pendingPathAuth.value = null;
+    card.resolve(decision);
+  }
+
+  /** 用户提交只读会话工具授权卡的决议（allow=批准，本任务内该工具放行 / deny=拒绝） */
+  function submitPendingToolAuth(decision: 'allow' | 'deny') {
+    const card = pendingToolAuth.value;
+    if (!card) return;
+    pendingToolAuth.value = null;
     card.resolve(decision);
   }
 
@@ -1970,6 +1994,33 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           resolve: (decision) => {
             authSignal?.removeEventListener('abort', onAuthAbort);
             pendingPathAuth.value = null;
+            resolve({ ok: true, result: JSON.stringify({ decision }) });
+          },
+        };
+      });
+    }
+
+    // 0.5) 只读会话工具授权卡（2026-10-18 授权制）—— 服务端只读权限闸命中写类工具后下发，
+    //      等用户批准才放行执行。返回 JSON `{decision: 'allow'|'deny'}`，服务端 parseToolAuthResult 解析。
+    if (fullName === '_tool_authorize') {
+      const raw = (args || {}) as Record<string, unknown>;
+      const toolName = String(raw.toolName || '');
+      if (!toolName) return { ok: true, result: JSON.stringify({ decision: 'deny' }) };
+      const authSignal = abortControllers.get(currentConvId.value || '')?.signal;
+      return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
+        if (authSignal?.aborted) { resolve({ ok: false, msg: '用户已终止' }); return; }
+        const onAuthAbort = () => {
+          authSignal?.removeEventListener('abort', onAuthAbort);
+          pendingToolAuth.value = null;
+          resolve({ ok: false, msg: '用户已终止' });
+        };
+        authSignal?.addEventListener('abort', onAuthAbort);
+        pendingToolAuth.value = {
+          toolName,
+          argsPreview: String(raw.argsPreview || ''),
+          resolve: (decision) => {
+            authSignal?.removeEventListener('abort', onAuthAbort);
+            pendingToolAuth.value = null;
             resolve({ ok: true, result: JSON.stringify({ decision }) });
           },
         };
@@ -3570,6 +3621,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
     pendingPathAuth, submitPendingPathAuth,
+    pendingToolAuth, submitPendingToolAuth,
     pendingPrefill, prefillInput,
     submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
