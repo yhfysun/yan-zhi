@@ -181,11 +181,6 @@
                 <span class="field-help">同页的 Client Secret / AppSecret</span>
               </el-form-item>
             </template>
-            <template v-else>
-              <el-form-item label="名称">
-                <el-input v-model="form.name" placeholder="如：我的微信助手" />
-              </el-form-item>
-            </template>
             <!-- 个人微信一键面板（与名称同屏） -->
             <div v-if="form.provider === 'wechat-personal'" class="oc-panel">
               <div class="oc-env">

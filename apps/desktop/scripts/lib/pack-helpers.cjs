@@ -172,6 +172,50 @@ function androidOutDir({ repoRoot, version, outRoot = DEFAULT_RELEASE_ROOT }) {
 }
 
 /**
+ * 清理 dist-release/desktop/<档>/ 下过期的**版本目录**。
+ *
+ * ★★ 为什么需要（2026-10-17）：每升一次版本（apps/desktop/package.json 的 version），
+ *   构建都会新建 `dist-release/desktop/<档>/<版本>/`；旧版本目录从不清理 → 反复累积。
+ *   这是 C 盘「又不够了」的元凶之一（另一元凶见 scripts/package.cjs 的 tmp/_pkgbak 备份）。
+ *
+ * 行为：每个档位把版本目录名（即版本号字符串）升序排，保留最新的 `keep` 个，删其余。
+ *   · 版本号目录名来自 resolvePkgVersion，形如 `0.1.0` / `0.1.0-r8`，字符串升序即时间升序；
+ *   · 只删 `dist-release/desktop/<档>/` 下的**子目录**，不动交付物、不删当前构建目录；
+ *   · 删不动（被占用）的项跳过，下次构建再清 —— 不报错、不中断。
+ *
+ * @param {string} root 仓库根
+ * @param {{keep?: number, fs?: object}} [opts]
+ * @returns {{removed: string[], kept: string[]}}
+ */
+function pruneOldReleases(root, { keep = 2, fs = fsDefault } = {}) {
+  const removed = [];
+  const kept = [];
+  const desktopRoot = path.join(root, DEFAULT_RELEASE_ROOT, 'desktop');
+  if (!fs.existsSync(desktopRoot)) return { removed, kept };
+  for (const edition of ALL_EDITIONS) {
+    const edDir = path.join(desktopRoot, edition);
+    if (!fs.existsSync(edDir)) continue;
+    let names;
+    try {
+      names = fs.readdirSync(edDir).filter((n) => {
+        try { return fs.statSync(path.join(edDir, n)).isDirectory(); } catch { return false; }
+      }).sort();
+    } catch { continue; }
+    const excess = names.slice(0, Math.max(0, names.length - keep));
+    for (const n of excess) {
+      const p = path.join(edDir, n);
+      try {
+        fs.rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 });
+        removed.push(p);
+      } catch { /* 占用则跳过，下次再清 */ }
+    }
+    kept.push(...names.slice(Math.max(0, names.length - keep)).map((n) => path.join(edDir, n)));
+  }
+  return { removed, kept };
+}
+
+
+/**
  * 安卓工具链（SDK / JDK）候选路径 —— **纯函数，可单测**。
  *
  * ★★ 为什么必须抽出来（2026-10-08）：
@@ -269,6 +313,7 @@ module.exports = {
   parseEditionsArgv,
   outDirForEdition,
   androidOutDir,
+  pruneOldReleases,
   androidToolchainCandidates,
   resolveAndroidToolchain,
 };

@@ -66,6 +66,7 @@ const {
   androidOutDir,
   outDirForEdition,
   resolvePkgVersion,
+  pruneOldReleases,
 } = require(path.join(__dirname, '..', 'apps', 'desktop', 'scripts', 'lib', 'pack-helpers.cjs'));
 const DESKTOP_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'desktop', 'package.json') });
 const MOBILE_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'mobile', 'package.json') });
@@ -843,6 +844,70 @@ function cleanupTmp() {
   }
 }
 
+/**
+ * 清理上轮打包残留（★ 2026-10-04 根因修复：之前每次构建都会留下这些、从不清理，
+ * 反复累积把 C 盘吃空；且备份目录打包后会进回收站，更占地方）：
+ *   · tmp/_pkgbak_<时间戳>/  ← backupRoot() 每轮建的备份，cleanupTmp 只在成功时清当前轮，
+ *                              失败/被中断则永久遗留；
+ *   · tmp/_pkg_<label>.ps1   ← runPowerShell 落盘的脚本，从不清理；
+ *   · dist-release-<时间戳>/ ← switchToFreshRoot 在 EBUSY 时换的新根，copyDeliverablesBack
+ *                              只拷交付物回来、从不删新根 → 每撞一次锁留一个。
+ * 在 moveAway 之前调用，清的是「上一轮及更早」的残留，不影响本轮
+ * （本轮的 _pkgbak_ 还没建、FRESH_ROOT_USED 还是 null）。
+ */
+function cleanStaleBuildArtifacts() {
+  if (DRY) { info(c.dim('[dry-run] 跳过上轮残留清理')); return; }
+  step('清理上轮打包残留');
+  const removed = [];
+
+  // 1) tmp/ 下的 _pkgbak_* 与 _pkg_*.ps1
+  if (fs.existsSync(TMP)) {
+    for (const name of fs.readdirSync(TMP)) {
+      if (name.startsWith('_pkgbak_') || /^_pkg_.*\.ps1$/.test(name)) {
+        const p = path.join(TMP, name);
+        try {
+          fs.rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 });
+          removed.push(p);
+        } catch { /* 占用则跳过，下次再清 */ }
+      }
+    }
+  }
+
+  // 2) 仓库根下 dist-release-<10+位时间戳> 换根目录（EBUSY 残留）
+  try {
+    for (const name of fs.readdirSync(ROOT)) {
+      if (/^dist-release-\d{10,}$/.test(name)) {
+        const p = path.join(ROOT, name);
+        try {
+          fs.rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 });
+          removed.push(p);
+        } catch { /* 占用则跳过，下次再清 */ }
+      }
+    }
+  } catch { /* ROOT 读不了则跳过 */ }
+
+  if (removed.length) ok(`已清理 ${removed.length} 处上轮残留`);
+  else info(c.dim('无上轮残留'));
+}
+
+/**
+ * 若本轮换过产物根（EBUSY 绕锁），交付物已拷回标准树，这里把整棵换根目录删掉，
+ * 避免它像历史版本那样永久遗留（见 cleanStaleBuildArtifacts 注释）。
+ * 必须放在 verifyAll / listArtifacts 之后 —— 它们仍按 OUTPUT_DIRS（=新根路径）读产物校验。
+ */
+function cleanFreshRoot() {
+  if (!FRESH_ROOT_USED) return;
+  const p = path.join(ROOT, FRESH_ROOT_USED);
+  if (!fs.existsSync(p)) return;
+  step('清理换根产物目录');
+  try {
+    fs.rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 });
+    ok(`已清理换根目录 ${FRESH_ROOT_USED}（交付物已拷回 ${DEFAULT_RELEASE_ROOT}/）`);
+  } catch {
+    warn(`换根目录清理失败，可手动删除: ${path.relative(ROOT, p)}`);
+  }
+}
+
 // ─────────────────────── 主流程 ───────────────────────
 (async () => {
   let targets = parseTargets(argv);
@@ -890,12 +955,16 @@ function cleanupTmp() {
   }
 
   step('移位将撞删除保护的目录');
+  cleanStaleBuildArtifacts(); // 先清上轮残留，再开始本轮移位/构建
   moveAway(computeMovable(targets, willCompile));
   // 输出目录里除交付物外的全部中间产物（win-unpacked / nsis.7z / __uninstaller-* …）
   for (const e of targets.desktop) moveOutDirContents(e);
 
   try {
     if (targets.desktop.length) buildDesktop(targets.desktop);
+    // ★ 收口旧版本目录：每升一次 version 都会新建 dist-release/desktop/<档>/<版本>/，
+    //   这里每个档保留最新的 keep=2 个、删其余，避免反复累积吃满 C 盘。
+    if (targets.desktop.length) pruneOldReleases(ROOT);
     if (targets.android) buildAndroid();
     copyDeliverablesBack(); // 若换根，把交付物拷回标准树 dist-release/
 
@@ -904,6 +973,7 @@ function cleanupTmp() {
     const n = listArtifacts(targets);
 
     cleanupTmp();
+    cleanFreshRoot(); // 若本轮换过根，交付物已拷回标准树，删掉换根目录（必须晚于 verify/list）
 
     console.log('');
     if (verifyOk) {

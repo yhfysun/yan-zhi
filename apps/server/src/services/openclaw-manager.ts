@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -160,58 +161,137 @@ type LogFn = (line: string) => void;
 export async function ensurePortableNode(onLog: LogFn): Promise<string> {
   fs.mkdirSync(NODE_RUNTIME_DIR, { recursive: true });
   const okMarker = path.join(NODE_RUNTIME_DIR, 'portable-node.ok');
-  if (fs.existsSync(okMarker)) return path.join(NODE_RUNTIME_DIR, portableNodeRelativeBin());
+  if (fs.existsSync(okMarker)) {
+    const bin = path.join(NODE_RUNTIME_DIR, portableNodeRelativeBin());
+    if (fs.existsSync(bin)) return bin;
+    // marker 在但二进制缺失（损坏安装）：清掉重来
+    fs.rmSync(okMarker, { force: true });
+  }
 
   if (process.platform !== 'win32' && process.platform !== 'darwin' && process.platform !== 'linux') {
     throw new Error(`暂不支持的平台：${process.platform}`);
   }
+  const isWin = process.platform === 'win32';
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const sub =
-    process.platform === 'win32' ? `node-latest-v24.x/win-x64` : `node-latest-v24.x/${process.platform}-${arch}`;
-  const mirrors = [
-    `https://npmmirror.com/mirrors/node/${sub}/`,
-    `https://nodejs.org/dist/latest-v24.x/`,
+  const platformKey = isWin ? 'win-x64' : `${process.platform}-${arch}`;
+  const archiveExt = isWin ? 'zip' : 'tar.gz';
+
+  // 1. 解析最新 v24.x.x 版本（npmmirror 二进制 API 优先，nodejs.org 兜底）
+  const version = await resolveLatestV24(onLog);
+  if (!version) throw new Error('未能从任何镜像解析到 Node 24 下载地址');
+  onLog(`解析到 Node 最新 24 版本：v${version}`);
+
+  // 2. 候选下载地址（zip 真实路径在版本化目录根，不在 /<platform>/ 下）
+  const zipName = `node-v${version}-${platformKey}.${archiveExt}`;
+  const candidates = [
+    `https://registry.npmmirror.com/-/binary/node/v${version}/${zipName}`,
+    `https://nodejs.org/dist/v${version}/${zipName}`,
   ];
-  let zipName = '';
-  let zipUrl = '';
-  for (const base of mirrors) {
+
+  let zipPath: string | null = null;
+  for (const url of candidates) {
     try {
-      const res = await fetch(base, { signal: AbortSignal.timeout(15_000) });
-      const html = await res.text();
-      const m = html.match(/node-v(24\.\d+\.\d+)-(win-x64|arm64|x64)\.(zip|tar\.gz)/);
-      if (m) {
-        zipName = m[0];
-        zipUrl = base.replace(/latest-v24\.x\/.*$/, 'latest-v24.x/') + m[0];
-        // npmmirror 的目录结构是 node-latest-v24.x/，文件名同官方
-        zipUrl = `${base}${m[0]}`;
-        break;
+      onLog(`下载 ${url} ...`);
+      const res = await fetch(url, { signal: AbortSignal.timeout(600_000) });
+      if (!res.ok) {
+        onLog(`  HTTP ${res.status}，跳过`);
+        continue;
       }
+      const buf = Buffer.from(await res.arrayBuffer());
+      zipPath = path.join(NODE_RUNTIME_DIR, zipName);
+      fs.writeFileSync(zipPath, buf);
+      onLog(`下载完成 ${Math.round(buf.length / 1024 / 1024)}MB`);
+      break;
     } catch (e) {
-      onLog(`镜像探测失败 ${base}: ${e instanceof Error ? e.message : e}`);
+      onLog(`下载失败 ${url}: ${e instanceof Error ? e.message : e}`);
     }
   }
-  if (!zipUrl) throw new Error('未能从任何镜像解析到 Node 24 下载地址');
-  onLog(`下载 ${zipUrl} ...`);
-  const zipPath = path.join(NODE_RUNTIME_DIR, zipName);
-  {
-    const res = await fetch(zipUrl, { signal: AbortSignal.timeout(600_000) });
-    if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(zipPath, buf);
-    onLog(`下载完成 ${Math.round(buf.length / 1024 / 1024)}MB`);
-  }
-  onLog('解压中（tar）...');
-  const ext = await new Promise<number>((resolve) => {
-    const child = spawn('tar', ['-xf', zipPath, '-C', NODE_RUNTIME_DIR], { windowsHide: true });
+  if (!zipPath) throw new Error('所有镜像下载 Node 24 均失败');
+
+  // 3. 解压到临时目录，再拍平官方包的嵌套 node-v* 子目录到 NODE_RUNTIME_DIR
+  onLog('解压中...');
+  const extractDir = path.join(NODE_RUNTIME_DIR, '__extract__');
+  fs.rmSync(extractDir, { recursive: true, force: true });
+  fs.mkdirSync(extractDir, { recursive: true });
+  const extCode = await new Promise<number>((resolve) => {
+    const child = spawn('tar', ['-xf', zipPath, '-C', extractDir], { windowsHide: true });
     child.on('close', (c) => resolve(c ?? -1));
     child.on('error', () => resolve(-1));
   });
-  if (ext !== 0) throw new Error(`解压失败 exit=${ext}（需要系统 tar 支持）`);
+  if (extCode !== 0) {
+    if (isWin) {
+      await extractZipWithPowerShell(zipPath, extractDir);
+    } else {
+      throw new Error(`解压失败 exit=${extCode}（需要系统 tar 支持）`);
+    }
+  }
+  flattenExtractedNode(extractDir);
+  fs.rmSync(extractDir, { recursive: true, force: true });
+  fs.rmSync(zipPath, { force: true });
+
   fs.writeFileSync(okMarker, new Date().toISOString());
   const bin = path.join(NODE_RUNTIME_DIR, portableNodeRelativeBin());
   const v = await getNodeVersion(`"${bin}"`);
+  if (!v) throw new Error('解压后无法执行 node，请检查系统解压能力');
   onLog(`托管 Node 就绪：v${v}`);
   return bin;
+}
+
+/**
+ * 解析最新 Node 24.x.x 版本号（不含 v 前缀，如 "24.22.0"）。
+ * 优先 npmmirror 二进制 API（JSON listing），兜底 nodejs.org 目录 listing（HTML 正则）。
+ */
+export async function resolveLatestV24(onLog: LogFn): Promise<string | null> {
+  const fetchers: Array<() => Promise<string | null>> = [
+    async () => {
+      const res = await fetch('https://registry.npmmirror.com/-/binary/node/', { signal: AbortSignal.timeout(15_000) });
+      const list = (await res.json()) as Array<{ name?: string }>;
+      const vers = list
+        .map((x) => (x.name || '').replace(/\/$/, ''))
+        .filter((n) => /^v24\.\d+\.\d+$/.test(n))
+        .sort((a, b) => compareNodeVersion(a, b));
+      return vers.length ? vers[vers.length - 1].slice(1) : null;
+    },
+    async () => {
+      const res = await fetch('https://nodejs.org/dist/latest-v24.x/', { signal: AbortSignal.timeout(15_000) });
+      const html = await res.text();
+      // 取 listing 里所有匹配版本，按语义排序取最大（避免目录顺序导致拿到非最新版）
+      const all = [...html.matchAll(/node-v(24\.\d+\.\d+)-(?:win-x64|darwin-|linux-)/g)].map((m) => m[1]);
+      if (!all.length) return null;
+      return all.sort((a, b) => compareNodeVersion(`v${a}`, `v${b}`)).pop() as string;
+    },
+  ];
+  for (const f of fetchers) {
+    try {
+      const v = await f();
+      if (v) return v;
+    } catch (e) {
+      onLog(`版本解析失败: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  return null;
+}
+
+/** 把解压出的官方包（顶层 node-v* 子目录）内容提到上级目录并拍平 */
+export function flattenExtractedNode(extractDir: string): void {
+  const top = fs.readdirSync(extractDir).find((e) => /^node-v/.test(e));
+  if (!top) throw new Error('解压后未找到 node 目录（包结构可能变更）');
+  const srcDir = path.join(extractDir, top);
+  const destDir = path.dirname(extractDir);
+  for (const f of fs.readdirSync(srcDir)) {
+    fs.renameSync(path.join(srcDir, f), path.join(destDir, f));
+  }
+}
+
+/** Windows 上 tar 不可用时的 zip 解压兜底（PowerShell Expand-Archive，无需 Add-Type） */
+async function extractZipWithPowerShell(zipPath: string, dest: string): Promise<void> {
+  const esc = (s: string) => s.replace(/'/g, "''");
+  const ps = `Expand-Archive -Path '${esc(zipPath)}' -DestinationPath '${esc(dest)}' -Force`;
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('powershell', ['-NoProfile', '-Command', ps], { windowsHide: true });
+    child.on('close', (c) => (c === 0 ? resolve() : reject(new Error(`PowerShell 解压失败 exit=${c}`))));
+    child.on('error', reject);
+  });
 }
 
 async function npmGlobalInstall(nodeDir: string | null, pkg: string, onLog: LogFn): Promise<void> {
@@ -222,7 +302,15 @@ async function npmGlobalInstall(nodeDir: string | null, pkg: string, onLog: LogF
     // portable node 的全局 prefix 就是 node 目录本身
     env.npm_config_prefix = nodeDir;
   } else {
-    npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    // 系统 node 达标时直接用裸 npm.cmd 会被 PATH 里其它 node/npm 劫持（dev 仓库本地 npm 软链尤甚）。
+    // 优先用「运行服务的 node 自带的 npm-cli.js」，避免解析到错误 npm。
+    const nodeBin = process.execPath;
+    const npmCli = path.join(path.dirname(nodeBin), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    if (fs.existsSync(npmCli)) {
+      npmCmd = `"${nodeBin}" "${npmCli}"`;
+    } else {
+      npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    }
   }
   onLog(`npm install -g ${pkg} ...`);
   const r = await runCapture(`"${npmCmd}" install -g ${pkg}`, [], 900_000);
@@ -426,6 +514,38 @@ function writeOpenclawConfig(cfg: Record<string, any>): void {
   fs.writeFileSync(path.join(OPENCLAW_STATE_DIR, 'openclaw.json'), JSON.stringify(cfg, null, 2));
 }
 
+/**
+ * 解析 OpenClaw Gateway 的 HTTP 鉴权令牌（/tools/invoke 调用所需）。
+ * 优先级：环境变量 OPENCLAW_GATEWAY_TOKEN / OPENCLAW_GATEWAY_PASSWORD
+ *          → openclaw.json 的 gateway.auth.token / gateway.auth.password。
+ * 返回 null 表示未配置（此时直接调用会被网关 401 拒绝）。
+ */
+export function resolveOpenclawGatewayToken(): string | null {
+  const envTok = process.env.OPENCLAW_GATEWAY_TOKEN || process.env.OPENCLAW_GATEWAY_PASSWORD;
+  if (envTok) return envTok;
+  const cfg = readOpenclawConfig();
+  const auth = cfg?.gateway?.auth || {};
+  return auth.token || auth.password || null;
+}
+
+/**
+ * 确保 Gateway 已配置共享令牌：未配置则生成随机令牌并写回 openclaw.json。
+ * ⚠️ 必须在 gateway 启动/重启之前调用，否则运行中的网关不会加载新令牌（令牌在启动时读取）。
+ * 返回的令牌同时作为 /tools/invoke 调用凭据。
+ */
+export function ensureOpenclawGatewayToken(): string {
+  const cfg = readOpenclawConfig();
+  cfg.gateway = cfg.gateway || {};
+  cfg.gateway.auth = cfg.gateway.auth || {};
+  const existing = cfg.gateway.auth.token || cfg.gateway.auth.password;
+  if (existing) return existing;
+  const token = crypto.randomBytes(24).toString('hex');
+  cfg.gateway.auth.mode = 'token';
+  cfg.gateway.auth.token = token;
+  writeOpenclawConfig(cfg);
+  return token;
+}
+
 // ============================================================
 // 安装 / 装配 编排（长任务，走 job 轮询）
 // ============================================================
@@ -495,7 +615,7 @@ export function startInstallJob(): string {
       // 3. 微信通道插件（直接 plugins install，扫码单独走 login 会话）
       const cmd = await openclawCmdOf();
       log('安装微信通道插件 @tencent-weixin/openclaw-weixin@latest ...');
-      const ins = await runCapture(`${cmd} plugins install "@tencent-weixin/openclaw-weixin@latest"`, [], 600_000);
+      const ins = await runCapture(`${cmd} plugins install "@tencent-weixin/openclaw-weixin@latest" --accept-capabilities`, [], 600_000);
       if (ins.code !== 0 && !/already exists/.test(ins.stderr + ins.stdout)) {
         // 已装过会非零，容错重试 update
         const upd = await runCapture(`${cmd} plugins update openclaw-weixin`, [], 600_000);
@@ -526,7 +646,16 @@ export async function assembleBridge(opts: { endpoint: string; token: string; ti
   const dir = writeBridgePluginFiles();
   onLog(`桥接插件文件已生成：${dir}`);
 
-  const link = await runCapture(`${cmd} plugins install --link "${dir}" --force`, [], 120_000);
+  // 确保 Gateway 已配置共享令牌：主动外发（sendWechatPersonal）经 /tools/invoke 必须带此令牌。
+  // 必须在 gateway restart 之前写入，运行中的网关在启动时才读取令牌。
+  try {
+    const gwToken = ensureOpenclawGatewayToken();
+    onLog(`Gateway 鉴权令牌已就绪（${gwToken.slice(0, 6)}…），用于个人微信主动外发`);
+  } catch (e) {
+    onLog(`确保 Gateway 令牌失败（主动外发可能 401）：${e instanceof Error ? e.message : e}`);
+  }
+
+  const link = await runCapture(`${cmd} plugins install --link "${dir}" --force --accept-capabilities`, [], 120_000);
   onLog((link.stdout || link.stderr || '').trim().slice(-400) || 'plugins install --link 完成');
   if (link.code !== 0 && !/already/i.test(link.stdout + link.stderr)) {
     throw new Error(`桥接插件安装失败：${(link.stderr || link.stdout).slice(-500)}`);

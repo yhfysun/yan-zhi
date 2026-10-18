@@ -27,6 +27,7 @@ const {
   parseEditionsArgv,
   outDirForEdition,
   androidOutDir,
+  pruneOldReleases,
 } = require('../scripts/lib/pack-helpers.cjs');
 
 /** 假 fs：可指定存在的路径集合，并让指定路径的 rmSync 抛错（模拟 EBUSY 被占用）。 */
@@ -288,5 +289,108 @@ describe('checkOutputDirReady - 开工前可写性探测', () => {
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.blockers.length, 1);
     assert.strictEqual(r.blockers[0].code, 'EBUSY');
+  });
+});
+
+/**
+ * pruneOldReleases 的假 fs：按「版本目录树」建模，记录被删路径（removed），
+ * 并支持把指定目录标记为「被占用」让 rmSync 抛 EBUSY（验证跳过而非中断）。
+ */
+function fakePruneFs(versionDirs, { failOn = new Set() } = {}) {
+  const root = 'ROOT';
+  const desktopRoot = path.join(root, 'dist-release', 'desktop');
+  const dirs = new Set([desktopRoot]);
+  for (const ed of Object.keys(versionDirs)) {
+    const edDir = path.join(desktopRoot, ed);
+    dirs.add(edDir);
+    for (const v of versionDirs[ed]) dirs.add(path.join(edDir, v));
+  }
+  const removed = [];
+  return {
+    removed,
+    existsSync: (p) => dirs.has(p),
+    statSync: () => ({ isDirectory: () => true }),
+    readdirSync: (p) => {
+      const prefix = p.endsWith(path.sep) ? p : p + path.sep;
+      const out = [];
+      for (const d of dirs) {
+        if (d.startsWith(prefix)) {
+          const rest = d.slice(prefix.length);
+          if (rest && !rest.includes(path.sep)) out.push(path.basename(d));
+        }
+      }
+      return out;
+    },
+    rmSync: (p) => {
+      if (failOn.has(p)) {
+        const e = new Error('EBUSY: resource busy or locked');
+        e.code = 'EBUSY';
+        throw e;
+      }
+      for (const d of [...dirs]) {
+        if (d === p || d.startsWith(p + path.sep)) dirs.delete(d);
+      }
+      removed.push(p);
+    },
+  };
+}
+
+describe('pruneOldReleases - 旧版本目录收口（★ C 盘累积根因修复）', () => {
+  const root = 'ROOT';
+
+  test('desktopRoot 不存在时安全返回空（首次构建/无产物）', () => {
+    const fs = fakePruneFs({});
+    // 清空 dirs 以模拟 desktopRoot 不存在
+    const empty = { ...fs, existsSync: () => false };
+    const r = pruneOldReleases(root, { fs: empty });
+    assert.deepStrictEqual(r.removed, []);
+    assert.deepStrictEqual(r.kept, []);
+  });
+
+  test('★ 每档保留最新 keep=2 个版本目录，删其余（升序排、删最旧）', () => {
+    const fs = fakePruneFs({ lite: ['0.1.0', '0.1.1', '0.1.2'] });
+    const r = pruneOldReleases(root, { keep: 2, fs });
+    assert.deepStrictEqual(r.removed, [path.join(root, 'dist-release', 'desktop', 'lite', '0.1.0')]);
+    assert.deepStrictEqual(r.kept.sort(), [
+      path.join(root, 'dist-release', 'desktop', 'lite', '0.1.1'),
+      path.join(root, 'dist-release', 'desktop', 'lite', '0.1.2'),
+    ].sort());
+  });
+
+  test('★ 恰好等于 keep 数量时不删任何目录', () => {
+    const fs = fakePruneFs({ basic: ['0.1.0', '0.1.1'] });
+    const r = pruneOldReleases(root, { keep: 2, fs });
+    assert.deepStrictEqual(r.removed, []);
+    assert.strictEqual(r.kept.length, 2);
+  });
+
+  test('★ 多档独立收口，互不影响（pro 多、lite 少）', () => {
+    const fs = fakePruneFs({
+      lite: ['0.1.0', '0.1.1', '0.1.2'],
+      pro: ['0.1.0', '0.1.1', '0.1.2', '0.1.3'],
+    });
+    const r = pruneOldReleases(root, { keep: 2, fs });
+    // lite 删 1 个、pro 删 2 个，共 3 个
+    assert.strictEqual(r.removed.length, 3);
+    assert.ok(r.removed.includes(path.join(root, 'dist-release', 'desktop', 'lite', '0.1.0')));
+    assert.ok(r.removed.includes(path.join(root, 'dist-release', 'desktop', 'pro', '0.1.0')));
+    assert.ok(r.removed.includes(path.join(root, 'dist-release', 'desktop', 'pro', '0.1.1')));
+  });
+
+  test('★ 删除失败（EBUSY 被占用）时跳过、不抛异常、不中断后续清理', () => {
+    const locked = path.join(root, 'dist-release', 'desktop', 'lite', '0.1.0');
+    const fs = fakePruneFs({ lite: ['0.1.0', '0.1.1', '0.1.2'] }, { failOn: new Set([locked]) });
+    // 不应抛错
+    const r = pruneOldReleases(root, { keep: 2, fs });
+    // 被锁的最旧目录未被删（rmSync 抛错被 catch 吞掉）
+    assert.ok(!r.removed.includes(locked));
+    assert.strictEqual(r.removed.length, 0);
+  });
+
+  test('★ 空档位目录（某档从未构建过）被跳过，不报错', () => {
+    const fs = fakePruneFs({ pro: ['0.1.0', '0.1.1', '0.1.2'] }); // 没有 lite/basic
+    const r = pruneOldReleases(root, { keep: 2, fs });
+    assert.strictEqual(r.removed.length, 1);
+    assert.ok(r.removed[0].includes(path.join('desktop', 'pro')));
   });
 });

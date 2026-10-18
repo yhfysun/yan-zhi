@@ -179,7 +179,9 @@ describe('④ 源码锚点：桥接路由 / 飞书长连接 / 生命周期装配
   });
 
   it('★ 托管 Node 下载镜像 npmmirror 优先、官方源兜底（本机网络口径）', () => {
-    expect(manager).toContain('https://npmmirror.com/mirrors/node/');
+    // 修复后：npmmirror 走二进制 JSON API（registry.npmmirror.com/-/binary/node/），不再用会 302 跳 JSON 的旧 mirrors/node HTML 路径
+    expect(manager).toContain('registry.npmmirror.com/-/binary/node/');
+    expect(manager).not.toContain('npmmirror.com/mirrors/node/');
     expect(manager).toContain('https://nodejs.org/dist/latest-v24.x/');
   });
 
@@ -202,5 +204,67 @@ describe('④ 源码锚点：桥接路由 / 飞书长连接 / 生命周期装配
     expect(manager).toContain('{ handled: true, text: data.reply }');
     expect(manager).toContain("openclaw/plugin-sdk/plugin-entry");
     expect(manager).toContain('allowConversationAccess: true');
+  });
+});
+
+describe('⑤ 个人微信主动外发（sendWechatPersonal）：经 Gateway /tools/invoke 调 message 工具', () => {
+  const im = read('src/services/im.ts');
+  const manager = read('src/services/openclaw-manager.ts');
+
+  it('★★ 出站走 Gateway HTTP RPC：/tools/invoke + Bearer 令牌 + message 工具(action=send, channel=weixin)', () => {
+    expect(im).toContain('http://127.0.0.1:18789/tools/invoke');
+    expect(im).toContain("Authorization: `Bearer ${token}`");
+    expect(im).toContain("tool: 'message'");
+    expect(im).toContain("action: 'send'");
+    expect(im).toContain("channel: 'weixin'");
+  });
+
+  it('★★ 抛弃了「暂未开放」stub，改为真实外发实现', () => {
+    expect(im).not.toContain('个人微信主动外发暂未开放');
+    expect(im).toContain('export async function sendWechatPersonal(');
+  });
+
+  it('★★ 前置校验：网关可达性 + 令牌解析（resolveOpenclawGatewayToken），缺任一都给中文错误', () => {
+    expect(im).toContain('resolveOpenclawGatewayToken()');
+    expect(im).toContain('127.0.0.1:18789 不可达');
+    expect(im).toContain('未配置鉴权令牌');
+  });
+
+  it('★★ 文件优先本地路径（args.media）规避 2MB body 限制，无路径再 base64 data URL', () => {
+    expect(im).toContain('args.media = filePath;');
+    expect(im).toContain('data:${input.file.mimeType || ');
+  });
+
+  it('★★ manager：导出令牌解析/确保函数，且 assembleBridge 在 gateway restart 前写入令牌', () => {
+    expect(manager).toContain('export function resolveOpenclawGatewayToken(');
+    expect(manager).toContain('export function ensureOpenclawGatewayToken(');
+    expect(manager).toContain('OPENCLAW_GATEWAY_TOKEN');
+    // 必须在 gateway restart 之前调用（令牌在网关启动时读取）
+    const ensureIdx = manager.indexOf('ensureOpenclawGatewayToken()');
+    const restartIdx = manager.indexOf('gateway restart');
+    expect(ensureIdx, 'ensure 必须出现在 gateway restart 之前').toBeGreaterThan(0);
+    expect(ensureIdx).toBeLessThan(restartIdx);
+  });
+});
+
+describe('⑥ 便携 Node 自动安装（ensurePortableNode）下载地址 + 解压拍平修复', () => {
+  const manager = read('src/services/openclaw-manager.ts');
+
+  it('★★ 版本解析改走 npmmirror 二进制 JSON API（registry.npmmirror.com/-/binary/node/），不再用会 302 跳 JSON 的旧 mirrors/node HTML 路径', () => {
+    expect(manager).toContain('registry.npmmirror.com/-/binary/node/');
+    expect(manager).toContain('export async function resolveLatestV24(');
+    expect(manager).not.toContain('npmmirror.com/mirrors/node/');
+  });
+
+  it('★★ 解压后拍平嵌套 node-v* 子目录（旧实现直接 -C 目标目录导致 node.exe 落进子目录、后续找不到二进制）', () => {
+    expect(manager).toContain('export function flattenExtractedNode(');
+    expect(manager).toContain('flattenExtractedNode(extractDir)');
+    // 拍平后 node.exe 必须在 NODE_RUNTIME_DIR 根（portableNodeRelativeBin 预期平铺）
+    expect(manager).toContain("path.join(NODE_RUNTIME_DIR, portableNodeRelativeBin())");
+  });
+
+  it('★ npm 安装兜底：系统 node 达标时优先用运行服务的 node 自带 npm-cli.js，避免 PATH 劫持裸 npm.cmd', () => {
+    expect(manager).toContain('npm-cli.js');
+    expect(manager).toContain("'npm.cmd' : 'npm'");
   });
 });

@@ -101,6 +101,7 @@
               </el-tooltip>
               <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
                 <span class="task-row-act is-on" role="button" title="取消置顶" @click="rows.togglePinned(conv)"><el-icon :size="12"><Top /></el-icon></span>
+                <span class="task-row-act" role="button" title="独立窗口打开" @click="openTaskWindow(conv)"><el-icon :size="12"><Monitor /></el-icon></span>
                 <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)"><el-icon :size="12"><EditPen /></el-icon></span>
                 <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)"><el-icon :size="12"><Rank /></el-icon></span>
                 <span class="task-row-act" role="button" title="归档（可恢复；归档后只读）" @click="archiveConv(conv, true)"><el-icon :size="12"><FolderChecked /></el-icon></span>
@@ -171,6 +172,9 @@
                   :title="conv.pinned ? '取消置顶' : '置顶'"
                   @click="rows.togglePinned(conv)"
                 ><el-icon :size="12"><Top /></el-icon></span>
+                <span class="task-row-act" role="button" title="独立窗口打开（桌面端真窗口 / Web 新标签页）" @click="openTaskWindow(conv)">
+                  <el-icon :size="12"><Monitor /></el-icon>
+                </span>
                 <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
                   <el-icon :size="12"><EditPen /></el-icon>
                 </span>
@@ -288,6 +292,9 @@
                       :title="conv.pinned ? '取消置顶' : '置顶'"
                       @click="rows.togglePinned(conv)"
                     ><el-icon :size="12"><Top /></el-icon></span>
+                    <span class="task-row-act" role="button" title="独立窗口打开（桌面端真窗口 / Web 新标签页）" @click="openTaskWindow(conv)">
+                      <el-icon :size="12"><Monitor /></el-icon>
+                    </span>
                     <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
                       <el-icon :size="12"><EditPen /></el-icon>
                     </span>
@@ -344,6 +351,9 @@
                   :title="conv.pinned ? '取消置顶' : '置顶'"
                   @click="rows.togglePinned(conv)"
                 ><el-icon :size="12"><Top /></el-icon></span>
+                <span class="task-row-act" role="button" title="独立窗口打开（桌面端真窗口 / Web 新标签页）" @click="openTaskWindow(conv)">
+                  <el-icon :size="12"><Monitor /></el-icon>
+                </span>
                 <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
                   <el-icon :size="12"><EditPen /></el-icon>
                 </span>
