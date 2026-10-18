@@ -43,6 +43,25 @@ export const COMPRESS_TRIGGER_RATIO = 0.5;
 export const COMPRESS_TOOL_CAP_CHARS = 8 * 1024;
 
 /**
+ * 陈旧区工具结果上限（2026-10-18 分级 microcompact）：超出 3×keepRecent 窗口的老结果
+ * 裁到该值（首尾节选）。2KB ≈ 1K token，足够保留"调用过什么、结论是什么"，
+ * 又能把几十条陈旧 file_read/stdout 的常驻成本压到原来的 ~1/4。
+ */
+export const COMPRESS_STALE_TOOL_CAP_CHARS = 2 * 1024;
+
+/**
+ * 增量摘要链上限（字符）：超过则放弃增量拼接、退回**全量重摘**。
+ *
+ * ★ 为什么必须有（2026-10-18）：增量摘要是"旧摘要 + ## 后续进展（增量）"的**链式追加**
+ *   —— 批次数一多，链就无限变长且前段逐渐失真（旧摘要描述的还是几个批次前的现场）。
+ *   摘要作为 system 消息**每步都进上下文**，链太长既吃 token 又误导续跑。
+ *   6000 字符 ≈ 3~4K token：足够承载 8 节结构化摘要，又保证"超了就重摘"的代价可控
+ *   （全量重摘的输入是全部被摘要段，触发频率低）。对齐 Claude Code：compact 产物
+ *   始终是**一份新鲜紧凑的摘要**，而不是滚动追加的流水账。
+ */
+export const SUMMARY_CHAIN_MAX_CHARS = 6000;
+
+/**
  * 摘要缓存：跨 step 复用「已摘要过的前缀」，避免**每一步都重发一次全量摘要 LLM 请求**。
  *
  * ★★★ 为什么必须存在（2026-10-01 排障，high）：
@@ -214,7 +233,7 @@ export function capLongText(text: string, max: number = COMPRESS_TOOL_CAP_CHARS)
 }
 
 /**
- * ★★★ 常态裁剪「保留窗口之外」的老工具结果（D4，2026-10-09）。
+ * ★★★ 常态裁剪「保留窗口之外」的老工具结果（D4，2026-10-09；2026-10-18 分级化）。
  *
  * ★ 为什么必须有（实测）：`capLongText` 此前**唯一调用点**是 `compress` 内部的第 ① 级裁剪
  *   （见下方 `compress` 里那处）—— 也就是**只有超阈值触发压缩时才会裁**。
@@ -224,31 +243,44 @@ export function capLongText(text: string, max: number = COMPRESS_TOOL_CAP_CHARS)
  *   ⇒ 把"裁老工具输出"从"压缩时才做"提升为**每步常态**，逼近成熟产品的 microcompact
  *     （持续淘汰旧的大结果，而不是攒到阈值再一次性处理）。
  *
+ * ★★★ 三档分级（2026-10-18，对齐 Claude Code microcompact 的"越老越狠"）：
+ *   · 最近 `keepRecent` 条          → **原文**（模型刚用到，绝不能"刚读到就没了"）；
+ *   · `keepRecent` ~ `3×keepRecent` → `maxChars`（默认 8KB，原行为）；
+ *   · 更老的陈旧区                  → `staleMaxChars`（默认 2KB）。
+ *   ★ 为什么敢裁狠：开发类工具（file_read/file_edit/python_exec）都**从磁盘/进程现场取数**，
+ *     不依赖"记得上次读到的内容"——陈旧结果只需保留"我调用过什么、结论大概是什么"。
+ *     单条 8KB ≈ 4K token，50 条陈旧结果 = 20 万 token 常驻 —— 这是长任务上下文膨胀的
+ *     头号来源，分级后降到 ~1/4（配合压缩阈值，整段摘要触发得更晚甚至不触发）。
+ *
  * ★ 三条安全性（少一条都可能引入新 bug）：
  *   ① **只改 `content` 字符串长度，不动消息结构** —— 不增删消息、不改顺序，
  *      因此 tool_calls ↔ tool 的配对**不可能被破坏**（这是裁剪能常态化、而"丢消息"不能的前提）；
  *   ② **幂等**：已裁过的文本必然 < 上限，再裁是 no-op（`capLongText` 自身保证）；
- *   ③ **只裁保留窗口之外**：最近 `keepRecent` 条保持原文 —— 否则会出现"模型刚读到、
- *      下一步就没了"的诡异行为（那是比费 token 更糟的体验）。
+ *   ③ **只裁保留窗口之外**：最近 `keepRecent` 条保持原文。
  *
  * @param keepRecent 保留最近多少条 tool 结果原文（与 compress 的 keepRecent 同口径）
+ * @param maxChars    次新区（3× 窗口内）的工具结果上限
+ * @param staleMaxChars 陈旧区（3× 窗口外）的工具结果上限
  */
 export function capStaleToolResults(
   messages: Message[],
   keepRecent = 6,
   maxChars: number = COMPRESS_TOOL_CAP_CHARS,
+  staleMaxChars: number = COMPRESS_STALE_TOOL_CAP_CHARS,
 ): Message[] {
   if (!messages.length || keepRecent < 0) return messages;
-  // 定位"保留窗口"的起点：只裁它之前的 tool 消息
-  const boundary = Math.max(0, messages.length - keepRecent);
+  // 定位两档边界：只裁保留窗口之外的 tool 消息
+  const boundary = Math.max(0, messages.length - keepRecent);                  // 保留窗口（原文）
+  const staleBoundary = Math.max(0, messages.length - keepRecent * 3);         // 陈旧区起点
   let changed = false;
   const out = messages.map((m, i) => {
     if (i >= boundary) return m;                    // 保留窗口内 → 原文
     if (m.role !== 'tool') return m;                // 只处理 tool 结果
+    const cap = Math.min(i < staleBoundary ? staleMaxChars : maxChars, maxChars);
     const text = m.content || '';
-    if (text.length <= maxChars) return m;          // 未超限 → 不动（幂等）
+    if (text.length <= cap) return m;               // 未超限 → 不动（幂等）
     changed = true;
-    return { ...m, content: capLongText(text, maxChars) };
+    return { ...m, content: capLongText(text, cap) };
   });
   return changed ? out : messages;                  // 无变化返回原引用（避免无谓的响应式/比对开销）
 }
@@ -505,9 +537,11 @@ export class ContextWindow {
       } else {
         const fresh = toCompress.slice(hit);
         // 新增部分过大（超过已摘要段规模的一半）时，增量收益低且拼接摘要易失真 → 退回全量
+        // ★ 摘要链过长同理（2026-10-18）：链式追加会无限变长且前段失真，超限改走全量重摘，
+        //   让 compact 产物始终是"一份新鲜紧凑的摘要"（对齐 Claude Code），而不是滚动流水账。
         const freshTokens = this.tokenCount(fresh);
         const oldTokens = this.tokenCount(toCompress.slice(0, hit));
-        if (freshTokens > Math.max(oldTokens * 0.5, 512)) {
+        if (cache!.summary.length > SUMMARY_CHAIN_MAX_CHARS || freshTokens > Math.max(oldTokens * 0.5, 512)) {
           summary = await this.summarizeWithTimeout(toCompress, opts?.summaryTimeoutMs);
         } else {
           const delta = await this.summarizeWithTimeout(fresh, opts?.summaryTimeoutMs);
@@ -607,11 +641,19 @@ export class ContextWindow {
         conversationId: '',
         role: 'system',
         content: [
-          '请把以下对话压缩成结构化摘要，不超过 400 字，分节输出：',
+          // ★ 2026-10-18：对齐 Claude Code compact 的 8 节结构 —— 此前只有 4 节通用版，
+          //   缺开发模式续跑最需要的三类现场信息：改了哪些文件、踩过什么错、中断前在哪一步。
+          //   （CC 原版节名：primary request / key concepts / files and code sections /
+          //     errors and fixes / problem solving / pending tasks / current work / next step。）
+          '请把以下对话压缩成结构化摘要（供任务续跑时恢复现场），不超过 800 字，按以下小节输出（无内容的节可省略）：',
           '## 任务目标',
           '## 已完成',
+          '## 文件与代码',
+          '## 错误与修复',
           '## 关键决定',
           '## 待办/下一步',
+          '## 当前工作',
+          '各节要求：「文件与代码」优先列出改过/读过的**文件路径**与改动要点；「错误与修复」保留**报错原文**与已尝试的修法（失败的也要记，避免重复踩）；「当前工作」写明中断前正在执行的动作与进行到哪一步，让接手者能无缝继续。',
           '铁律（不可妥协）：文件路径、URL、命令、ID、函数名、API Key 占位符、错误信息原文等所有不透明标识符（opaque identifiers）必须原样保留、一字不改，禁止缩写、改写或省略。',
           '关键数据（数值、版本号、配置项）同样原样保留。',
         ].join('\n'),
@@ -631,7 +673,8 @@ export class ContextWindow {
     //   回调自身抛错绝不炸压缩（记账是旁路，不是主链路）。
     let captured: TokenUsageDetail | undefined;
     const result = await this.summaryClient.chat(summaryMessages, {
-      maxTokens: 800,
+      // 800 字中文摘要 ≈ 1100~1300 token；旧值 800 会把 8 节结构截断在半截（尤其文件路径多时）
+      maxTokens: 1600,
       temperature: 0.3,
       onUsage: (detail) => { captured = detail; },
     });
