@@ -316,6 +316,9 @@ export const NOVEL_TUIWEN_AGENT_BUILTIN_TOOLS = [
   ...COMMON_MEDIA_FETCH_TOOLS,
   // 选书/取文：授权平台页面的浏览与抓取委派 pageAgent
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
+  // ★ P1 站点配方（2026-10-19）：发布/合集这类固定流程可一次调用完成，
+  //   不必先委派执行员；submit 只在用户明确要求发布时传 true。
+  'browser_run_recipe',
   ...COMMON_SPACE_TOOLS,
   ...COMMON_MEMORY_TOOLS,
   ...COMMON_TALK_TOOLS,

@@ -102,14 +102,20 @@
                   <ArrowRight v-else />
                 </el-icon>
               </div>
-              <div v-if="vr.round.hasAgentProcess" v-show="isProcessOpen(vr.round, vr.ri)" class="agent-process-steps">
-                <div v-for="(step, si) in vr.round.steps" :key="'agent-step-' + vr.ri + '-' + si" class="agent-step">
+              <div v-if="vr.round.hasAgentProcess && isProcessOpen(vr.round, vr.ri)" class="agent-process-steps">
+                <div v-if="hasHiddenSteps(vr.round)" class="agent-steps-fold">
+                  <button type="button" class="agent-steps-fold-btn" @click="toggleEarlierSteps(vr.ri)">
+                    {{ expandedEarlierSteps['round-' + vr.ri] ? '收起更早的步骤' : `已折叠更早的 ${hiddenStepCount(vr.round, vr.ri)} 步 · 点击展开` }}
+                  </button>
+                </div>
+                <template v-for="(step, si) in vr.round.steps" :key="'agent-step-' + vr.ri + '-' + si">
+                <div v-if="isStepRendered(vr.round, vr.ri, si)" class="agent-step">
                   <div v-if="step.reasoningContent" class="msg-reasoning">
                     <div class="reasoning-header" @click="toggleReasoning('agent-step-' + vr.ri + '-' + si)">
                       <el-icon><CaretRight v-if="!expandedReasoning['agent-step-' + vr.ri + '-' + si]" /><CaretBottom v-else /></el-icon>
                       <span>推理 {{ si + 1 }}</span>
                     </div>
-                    <div v-show="expandedReasoning['agent-step-' + vr.ri + '-' + si]" class="reasoning-body">{{ step.reasoningContent }}</div>
+                    <div v-if="expandedReasoning['agent-step-' + vr.ri + '-' + si]" class="reasoning-body">{{ step.reasoningContent }}</div>
                   </div>
                   <div v-if="step.partialContent" class="agent-step-partial" v-html="renderMarkdown(step.partialContent)" @click="handleContentClick"></div>
                   <div v-if="step.toolCalls.length" class="msg-reasoning" style="background:rgba(15,23,42,0.03);border-color:rgba(15,23,42,0.08)">
@@ -125,7 +131,7 @@
                         <ArrowRight v-else />
                       </el-icon>
                     </div>
-                    <div v-show="expandedStepTools['agent-step-' + vr.ri + '-' + si] !== false" class="tool-group-body" style="margin-top:6px;border-top:1px solid rgba(15,23,42,0.06);padding-top:6px">
+                    <div v-if="expandedStepTools['agent-step-' + vr.ri + '-' + si] !== false" class="tool-group-body" style="margin-top:6px;border-top:1px solid rgba(15,23,42,0.06);padding-top:6px">
                       <div v-for="(tc, idx) in step.toolCalls" :key="idx" class="tool-item">
                         <div class="tool-item-header" @click="toggleTool('agent-step-' + vr.ri + '-' + si + '-' + idx)">
                           <div class="tool-item-left">
@@ -151,7 +157,7 @@
                         <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到。
                              展开体里再放一份会重复，故只此一处；hover 浮层放大、双击进灯箱、右键取用。 -->
                         <ToolMediaPreview v-if="toolMedia(getStepToolResult(step, tc.id))" :media="toolMedia(getStepToolResult(step, tc.id))!" class="tool-item-media-inline" />
-                        <div v-show="isToolItemOpen(tc.id, 'agent-step-' + vr.ri + '-' + si + '-' + idx)" class="tool-item-body">
+                        <div v-if="isToolItemOpen(tc.id, 'agent-step-' + vr.ri + '-' + si + '-' + idx)" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
                             <pre class="tool-item-json">{{ resolveToolArgs(tc) }}</pre>
@@ -180,6 +186,7 @@
                     </div>
                   </div>
                 </div>
+                </template>
                 <div v-if="!vr.round.steps.length && vr.round.allToolCalls.length" class="agent-old-tools">
                   <div class="msg-reasoning">
                     <div class="reasoning-header" @click="toggleToolGroup('round-' + vr.ri)">
@@ -194,7 +201,7 @@
                         <ArrowRight v-else />
                       </el-icon>
                     </div>
-                    <div v-show="!expandedToolGroups['round-' + vr.ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed color-mix(in srgb, var(--color-primary) 12%, transparent);padding-top:6px">
+                    <div v-if="!expandedToolGroups['round-' + vr.ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed color-mix(in srgb, var(--color-primary) 12%, transparent);padding-top:6px">
                       <div v-for="(tc, idx) in vr.round.allToolCalls" :key="idx" class="tool-item">
                         <div class="tool-item-header" @click="toggleTool('round-' + vr.ri + '-' + idx)">
                           <div class="tool-item-left">
@@ -214,7 +221,7 @@
                         </div>
                         <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到 -->
                           <ToolMediaPreview v-if="toolMedia(getToolResult(tc.id))" :media="toolMedia(getToolResult(tc.id))!" class="tool-item-media-inline" />
-                          <div v-show="expandedTools['round-' + vr.ri + '-' + idx]" class="tool-item-body">
+                          <div v-if="expandedTools['round-' + vr.ri + '-' + idx]" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
                             <pre class="tool-item-json">{{ resolveToolArgs(tc) }}</pre>
@@ -271,7 +278,7 @@
                         <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + vr.ri]" /><CaretBottom v-else /></el-icon>
                         <span>思考过程</span>
                       </div>
-                      <div v-show="expandedReasoning['agent-fa-' + vr.ri]" class="reasoning-body">{{ vr.round.finalAssistant.reasoningContent }}</div>
+                      <div v-if="expandedReasoning['agent-fa-' + vr.ri]" class="reasoning-body">{{ vr.round.finalAssistant.reasoningContent }}</div>
                     </div>
                     <template v-if="vr.round.finalAssistant?.content">
                       <div class="msg-content" v-html="renderAssistantMarkdown(vr.round.finalAssistant.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
@@ -574,13 +581,14 @@ import {
   CircleClose, CopyDocument, EditPen, Files, Delete, View, Fold, Refresh, Link, Download,
   Grid, Document, Connection, ChatLineSquare, Lock, WarningFilled,
 } from '@element-plus/icons-vue';
-import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, reactive, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
 import { useChat } from '../../composables/chat/useChat';
 import { useMobileShell } from '../../composables/useMobileShell';
 import { bindLongPress } from '../../composables/useLongPress';
 import type { MessageRound } from '../../composables/chat/useChat';
+import { stepRenderRange, ROUND_STEP_RENDER_LIMIT } from '../../composables/chat/message-rounds';
 import SkeletonList from '../common/SkeletonList.vue';
 import { useCodeStore } from '../../stores/code';
 import { activeMode } from '../../stores/mode';
@@ -931,11 +939,21 @@ watch(
 );
 
 /** 从工具结果文本中检测本机路径（文件或目录），供「浏览文件」入口使用 */
+// ★ 2026-10-19：模板每次重渲都会对**每条**工具结果调用本函数（长任务一轮近 200 条、
+//   单条可达 8KB）—— 实测是流式卡顿的固定开销。结果按原文做有界缓存，命中即返回。
+const DETECT_PATH_CACHE_MAX = 300;
+const detectPathCache = new Map<string, string | null>();
 function detectPath(text: unknown): string | null {
   if (text == null) return null;
   const s = typeof text === 'string' ? text : JSON.stringify(text);
+  if (typeof s !== 'string') return null;
+  const cached = detectPathCache.get(s);
+  if (cached !== undefined) return cached;
   const m = s.match(/(?:[A-Za-z]:[\\/][^\s"'<>|]+)|(?:\/(?:home|Users|root|tmp|opt|var|src|projects|code|workspace)[^\s"'<>|]*)/);
-  return m ? m[0].replace(/["',]+$/, '') : null;
+  const out = m ? m[0].replace(/["',]+$/, '') : null;
+  if (detectPathCache.size >= DETECT_PATH_CACHE_MAX) detectPathCache.clear();
+  detectPathCache.set(s, out);
+  return out;
 }
 
 /** 文件改动类工具：结果里带路径的，在卡片下内联 diff 卡（聊天流内 review，2026-10-03 P0） */
@@ -972,6 +990,38 @@ function isProcessOpen(round: MessageRound, ri: number): boolean {
   return !!expandedAgentProcess['round-' + ri] || isLastRoundStreaming(round, ri);
 }
 
+/**
+ * 单轮步骤渲染窗口（2026-10-19，修「长任务一跑界面卡死」）。
+ *
+ * 实测：抖音发布任务跑了 2 小时，**同一轮**里产生 193 个助手步骤 / 196 条工具结果
+ * （124KB 文本）。按「轮」开窗对"一轮几百步"无效 ⇒ 全量挂 DOM，流式每帧整树重渲。
+ * 这里只渲染末尾 40 步，更早的折叠成一行按钮；用户点开即恢复全量。
+ *
+ * ★ key 用全量下标（`agent-step-{ri}-{si}`）不变 —— 折叠只影响是否渲染，不影响交互状态。
+ */
+const expandedEarlierSteps = reactive<Record<string, boolean>>({});
+// 换会话时清掉展开态：轮次下标按会话重置，旧 key 会误命中新会话的同下标轮次
+watch(() => store.currentConvId, () => {
+  for (const k of Object.keys(expandedEarlierSteps)) delete expandedEarlierSteps[k];
+});
+function stepRangeFor(round: MessageRound, ri: number): { start: number; end: number } {
+  return stepRenderRange(round.steps.length, !!expandedEarlierSteps['round-' + ri]);
+}
+function hiddenStepCount(round: MessageRound, ri: number): number {
+  return stepRangeFor(round, ri).start;
+}
+function hasHiddenSteps(round: MessageRound): boolean {
+  return round.steps.length > ROUND_STEP_RENDER_LIMIT;
+}
+function isStepRendered(round: MessageRound, ri: number, si: number): boolean {
+  const r = stepRangeFor(round, ri);
+  return si >= r.start && si < r.end;
+}
+function toggleEarlierSteps(ri: number): void {
+  const key = 'round-' + ri;
+  expandedEarlierSteps[key] = !expandedEarlierSteps[key];
+}
+
 // ===== 截图工具结果内嵌预览（仅流式期间） =====
 // 截图类工具（computer_screenshot 等）在结果 JSON 里带 screenshotUrl；流式进行中在
 // 工具卡片下方直接展示画面，任务结束（store.streaming 变 false）后由响应式自动移除，
@@ -980,16 +1030,22 @@ function isProcessOpen(round: MessageRound, ri: number): boolean {
  * 从工具结果文本解析内嵌预览地址；非 JSON / 无 screenshotUrl 返回 null。
  * 地址补全统一走 absoluteMediaSrc（API_BASE 已含 /api，服务端地址自身也带 /api）。
  */
+const SCREENSHOT_URL_CACHE_MAX = 200;
+const screenshotUrlCache = new Map<string, string | null>();
 function resolveScreenshotUrl(resultText: string | null): string | null {
   if (!resultText) return null;
+  const cached = screenshotUrlCache.get(resultText);
+  if (cached !== undefined) return cached;
+  let out: string | null = null;
   try {
     const j = JSON.parse(resultText) as { screenshotUrl?: unknown; type?: unknown };
     const u = j.screenshotUrl;
-    if (typeof u !== 'string' || !u) return null;
     // 带 type 的是生图产物（走产品预览通道，常驻展示），这里只认临时截图
-    if (j.type === 'image') return null;
-    return absoluteMediaSrc(u);
-  } catch { return null; }
+    if (typeof u === 'string' && u && j.type !== 'image') out = absoluteMediaSrc(u);
+  } catch { out = null; }
+  if (screenshotUrlCache.size >= SCREENSHOT_URL_CACHE_MAX) screenshotUrlCache.clear();
+  screenshotUrlCache.set(resultText, out);
+  return out;
 }
 
 /**

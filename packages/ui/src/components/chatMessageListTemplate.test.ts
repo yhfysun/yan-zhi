@@ -181,3 +181,36 @@ describe('③ 折叠状态 key 读写前缀必须逐字一致（字符串字面�
     ).toEqual([]);
   });
 });
+
+/**
+ * ④ 长任务步骤窗口（2026-10-19）：浏览器自动化任务一轮可产生近 200 步 / 124KB 工具结果，
+ *   全部挂进 DOM 会让流式期间每帧重渲整棵树（用户实报「任务一跑界面就卡死」）。
+ *   本组测试钉住三条渲染契约，防止后续改模板时静默退回全量渲染。
+ */
+describe('④ 长任务步骤窗口（防"一轮几百步全量挂 DOM"）', () => {
+  it('★★★ 步骤必须经 isStepRendered 窗口过滤（不是裸 v-for 全量渲染）', () => {
+    expect(TEMPLATE, '★ 步骤 v-for 外层缺少 isStepRendered 窗口判断 —— 长任务会全量挂 DOM')
+      .toMatch(/v-if="isStepRendered\(vr\.round, vr\.ri, si\)"/);
+    expect(TEMPLATE, '★ 缺少"展开更早步骤"入口').toMatch(/@click="toggleEarlierSteps\(vr\.ri\)"/);
+    expect(TEMPLATE, '★ 折叠按钮缺少显隐条件').toMatch(/v-if="hasHiddenSteps\(vr\.round\)"/);
+    expect(TEMPLATE, '★ 步骤 v-for 必须是 template 包裹 key（v-for + v-if 同元素在 Vue 3 里 v-if 拿不到 si）')
+      .toMatch(/<template v-for="\(step, si\) in vr\.round\.steps"/);
+  });
+
+  it('★★ 折叠体必须用 v-if（v-show 会把参数/结果/推理全文留在 DOM 里）', () => {
+    expect(TEMPLATE, '★ 工具详情体还在用 v-show —— 折叠状态仍占满文本节点')
+      .not.toMatch(/v-show="isToolItemOpen\(/);
+    expect(TEMPLATE, '★ 推理正文还在用 v-show').not.toMatch(/v-show="expandedReasoning\[/);
+    expect(TEMPLATE, '★ 步骤工具组还在用 v-show').not.toMatch(/v-show="expandedStepTools\[/);
+    // 正面钉住：至少保留 v-if 形态（防止"删掉整段"也算通过）
+    expect(TEMPLATE).toMatch(/v-if="isToolItemOpen\(/);
+    expect(TEMPLATE).toMatch(/v-if="expandedReasoning\[/);
+  });
+
+  it('★★ 子智能体组件同样按窗口渲染（子智能体是长任务的主要步数来源）', () => {
+    const SUB = readFileSync(resolve(REPO, 'packages/ui/src/components/chat/SubAgentRoundView.vue'), 'utf8');
+    expect(SUB, '★ 子智能体步骤未走窗口过滤').toMatch(/v-if="isStepRendered\(si\)"/);
+    expect(SUB, '★ 子智能体缺少展开更早步骤入口').toMatch(/@click="toggleEarlierSteps"/);
+    expect(SUB, '★ 子智能体工具详情体还在用 v-show').not.toMatch(/v-show="toolOpen\[/);
+  });
+});

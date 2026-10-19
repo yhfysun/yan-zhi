@@ -29,6 +29,8 @@ const WRITE_TOOLS = new Set([
   'browser_fill_form', 'browser_submit_form', 'browser_select_option',
   'browser_check', 'browser_uncheck', 'browser_drag', 'browser_scroll_into_view',
   'browser_upload', 'browser_download', 'browser_login_saved',
+  // 配方会执行上传/填表/点发布（可能改变远端状态）——按写操作管控
+  'browser_run_recipe',
   // —— Git 写操作（pull/fetch 会改动本地工作区，同样算写）——
   'api_git_add', 'api_git_commit', 'api_git_push', 'api_git_pull', 'api_git_fetch',
   'api_git_checkout', 'api_git_restore', 'api_git_stash_save', 'api_git_stash_pop',

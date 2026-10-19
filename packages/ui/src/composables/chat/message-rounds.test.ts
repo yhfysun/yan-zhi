@@ -24,7 +24,7 @@
  *   ⇒ 必须真的喂"无 user 的一页"进去，看 rounds 出来几个。
  */
 import { describe, it, expect } from 'vitest';
-import { buildMessageRounds, type MessageRound } from './message-rounds';
+import { buildMessageRounds, stepRenderRange, ROUND_STEP_RENDER_LIMIT, type MessageRound } from './message-rounds';
 
 /** 宽松构造消息（只给被测逻辑关心的字段） */
 const M = (over: Record<string, any>) => ({ id: 'm' + Math.random().toString(36).slice(2, 8), role: 'assistant', content: '', ...over }) as any;
@@ -191,5 +191,58 @@ describe('④ 源码契约：不得退回"必须有 user 才开轮"', () => {
       src,
       '★ useChat 里又出现了 `const stepByToolCallId = new Map` —— 分轮实现被复制回来了（两份实现必然漂移）',
     ).not.toMatch(/stepByToolCallId/);
+  });
+});
+
+describe('⑤ 单轮步骤渲染窗口（长任务一跑界面卡死）', () => {
+  it('步骤数不超过上限时全量渲染', () => {
+    // Arrange
+    const total = 12;
+
+    // Act
+    const range = stepRenderRange(total, false, 40);
+
+    // Assert
+    expect(range).toEqual({ start: 0, end: 12 });
+  });
+
+  it('步骤数超过上限时只渲染末尾 limit 步', () => {
+    // Arrange
+    const total = 193;
+
+    // Act
+    const range = stepRenderRange(total, false, 40);
+
+    // Assert
+    expect(range).toEqual({ start: 153, end: 193 });
+  });
+
+  it('用户主动展开后恢复全量', () => {
+    // Arrange
+    const total = 193;
+
+    // Act
+    const range = stepRenderRange(total, true, 40);
+
+    // Assert
+    expect(range).toEqual({ start: 0, end: 193 });
+  });
+
+  it('空轮次返回空区间', () => {
+    expect(stepRenderRange(0, false, 40)).toEqual({ start: 0, end: 0 });
+  });
+
+  it('负数步骤数按 0 处理（脏数据不产生负下标）', () => {
+    expect(stepRenderRange(-5, false, 40)).toEqual({ start: 0, end: 0 });
+  });
+
+  it('limit 非法（0 / 负数）时至少渲染最后 1 步，避免整轮变空', () => {
+    expect(stepRenderRange(10, false, 0)).toEqual({ start: 9, end: 10 });
+    expect(stepRenderRange(10, false, -3)).toEqual({ start: 9, end: 10 });
+  });
+
+  it('默认上限是 ROUND_STEP_RENDER_LIMIT（40）', () => {
+    const range = stepRenderRange(100, false);
+    expect(range.end - range.start).toBe(ROUND_STEP_RENDER_LIMIT);
   });
 });

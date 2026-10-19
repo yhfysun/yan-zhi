@@ -589,6 +589,20 @@
 .agent-process-steps::-webkit-scrollbar { width: 5px; }
 .agent-process-steps::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, rgba(0,0,0,0.12)); border-radius: 3px; }
 
+/* 长任务步骤折叠（2026-10-19）：默认只渲染末尾 40 步，更早的收成一行按钮 */
+.agent-steps-fold { margin-bottom: 8px; }
+.agent-steps-fold-btn {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-primary) 5%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--color-primary) 16%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.agent-steps-fold-btn:hover { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 9%, transparent); }
+
 .agent-step {
   margin-bottom: 8px; padding: 6px 10px;
   /* 扁平化：步骤只保留极淡分隔，不再套灰底盒子（与工具组/工具项重复嵌套显脏） */

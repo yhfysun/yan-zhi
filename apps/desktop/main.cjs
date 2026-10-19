@@ -2873,11 +2873,85 @@ async function injectYzAssistant(wc) {
      *     （execCommand 虽被标记 deprecated，但**没有替代品**能触发富文本编辑管线，
      *      各大自动化工具（Playwright/Puppeteer 的 fill）至今都在用它。）
      */
+    /**
+     * 填表幂等判据（2026-10-19，P0：修「清空—重填—回读」循环）。
+     *
+     * 根因：typeIn / cdpTypeText 每次调用都**无条件**全选删除再重填。抖音描述框是
+     * Draft.js contenteditable，反复 selectAll+delete 会让内部 model 与 DOM 不同步，
+     * 实测出现「拜师那天拜师那天，师父递给我…」这种重复前缀；回读判"不对"→ 模型再清一次
+     * ⇒ 2 小时空转、表单填好却始终没点发布。
+     *
+     * 规则：写前先读。当前值规范化后**等于**目标 → 不再碰编辑器；**包含**目标（页面可能
+     * 追加了话题/格式）→ 也视为已填，禁止为了"追求完全相等"反复清空。
+     * 规范化：去零宽字符、折叠空白、trim（页面常对文本做格式化）。
+     *
+     * ★ 本段用哨兵包裹，测试从 main.cjs 抽取后真跑（见 test/page-fill-idempotence.test.cjs）。
+     */
+    // ===YZ-FILL-RULES-START===
+    function yzNormText(s){
+      return String(s==null?'':s)
+        .replace(/[\u200B-\u200D\uFEFF]/g,'')
+        .replace(/\s+/g,' ')
+        .trim();
+    }
+    /** 比较当前值与期望值。两套"已填"判据：
+     *  · applied（富文本）：相等或包含即已填 —— 页面会追加话题/格式；
+     *  · appliedForm（普通 input/textarea）：相等，或"当前是目标的截断前缀"（maxlength）。
+     *    ★ 普通输入框是**替换语义**：当前值比目标长（如想从「hello world」改成「hello」）
+     *      不能算已填，否则替换会静默失效。 */
+    function yzFillCompare(current, expected){
+      var got=yzNormText(current), want=yzNormText(expected);
+      var equal=got===want;
+      var contains=!!want&&!!got&&(got.indexOf(want)>=0||want.indexOf(got)>=0);
+      // ★ 重复前缀识别（2026-10-19 抖音现场）：反复 selectAll+delete 会让富文本变成
+      //   「拜师那天」+「拜师那天，师父…」= 前缀 + 完整目标。它虽然 includes(want)，
+      //   但内容是坏的 → 不能当已填；标记 duplicatePrefix，允许一次修复，再由熔断兜底。
+      var duplicatePrefix=false;
+      if(!equal&&!!want&&got.length>want.length&&got.slice(got.length-want.length)===want){
+        var pre=got.slice(0,got.length-want.length);
+        if(pre&&want.indexOf(pre)===0)duplicatePrefix=true;
+      }
+      var truncated=!!want&&!!got&&got.length<want.length&&want.indexOf(got)===0;
+      return {equal:equal,contains:contains,duplicatePrefix:duplicatePrefix,truncated:truncated,
+        applied:equal||(contains&&!duplicatePrefix),
+        appliedForm:equal||truncated,
+        got:got,want:want};
+    }
+    /**
+     * 同字段失败熔断：同一元素 + 同一期望文本连续 2 次未生效 → forceStop。
+     * 成功即清空状态。返回 {state, fails, forceStop}；state 由调用方挂回元素。
+     */
+    function yzNextFillState(prev, key, applied, limit){
+      var cap=limit||2;
+      if(applied) return {state:null,fails:0,forceStop:false};
+      var fails=(prev&&prev.key===key)?(prev.fails||0)+1:1;
+      return {state:{key:key,fails:fails},fails:fails,forceStop:fails>=cap};
+    }
+    /** 把熔断状态挂回元素（元素随页面销毁，状态自然回收） */
+    function yzFillGuard(el,text,applied){
+      var g=yzNextFillState(el.__yzFillFailState, yzNormText(text), applied, 2);
+      try{el.__yzFillFailState=g.state;}catch(e){}
+      return g;
+    }
+    // ===YZ-FILL-RULES-END===
+
     function typeIn(el,text){
       var t=String(text==null?'':text);
       var isCE=el.isContentEditable===true;
       var isForm=!isCE&&(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement);
       var set=isForm?nativeValueSetter(el):null;
+
+      // ★★★ 幂等短路（2026-10-19，P0「清空—重填—回读」根因修复）：
+      //   写前先读。当前值规范化后等于/包含目标 → 直接返回，**不执行全选删除**。
+      //   Draft.js 等富文本被反复 selectAll+delete 会让内部 model 与 DOM 不同步，
+      //   实测产生重复前缀（「拜师那天拜师那天，师父递给我…」），越填越乱。
+      var _cur=isCE?String(el.textContent||''):String(el.value==null?'':el.value);
+      var _pre=yzFillCompare(_cur,t);
+      var _already=isCE?_pre.applied:_pre.appliedForm;
+      if(_already){
+        try{el.__yzFillFailState=null;}catch(e2){}
+        return{applied:true,unchanged:_pre.equal,contained:!_pre.equal,normalized:!_pre.equal,value:String(_cur).slice(0,120)};
+      }
 
       // ① 聚焦事件（真人点击输入框：focus 之前会有 focusin；部分组件靠 focusin 初始化）
       el.focus();
@@ -2930,14 +3004,16 @@ async function injectYzAssistant(wc) {
       // ⑤ change + 失焦确认（真人输入完通常会点别处/提交，change 是表单校验的触发点）
       try{el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
 
-      // 回读核验（宽松等价，2026-10-12 P0-2）：页面常对文本做 trim/折叠空白/maxlength 截断，
-      // 用严格相等会误判"未生效"→ 模型反复重填。规范化空白后：相等 / 互相包含 任一即算填入。
+      // 回读核验（2026-10-19 P0 统一口径）：yzFillCompare 做规范化（去零宽/折叠空白/trim），
+      // 相等或包含即算填入 —— 页面常对文本 trim/折叠空白/maxlength 截断，严格相等会误判。
+      // ★ 非空守卫已在 yzFillCompare 内：期望为空时不会因 indexOf('') 恒 0 而误判。
       var got=isCE?(el.textContent||''):(el.value!=null?String(el.value):'');
-      var _n=function(s){return String(s==null?'':s).replace(/\\s+/g,' ').trim();};
-      var _ga=_n(got),_ex=_n(t);
-      // ★ 非空守卫：回读为空时 _ex.indexOf('') 恒为 0 → 会把“组件重置为空”误判成已填入。
-      var _applied=(_ga===_ex)||(!!_ex&&!!_ga&&(_ga.indexOf(_ex)>=0||_ex.indexOf(_ga)>=0));
-      return{applied:_applied,normalized:_applied&&String(got)!==String(t),value:got.slice(0,120)};
+      var _cmp=yzFillCompare(got,t);
+      var _ok=isCE?_cmp.applied:_cmp.appliedForm;
+      // 同字段连续两次未生效 → forceStop，工具层会要求模型停止重填并汇报（不再空转）
+      var _guard=yzFillGuard(el,t,_ok);
+      return{applied:_ok,normalized:_ok&&String(got)!==String(t),
+        value:got.slice(0,120),forceStop:_guard.forceStop,fails:_guard.fails};
     }
     // 为元素生成尽量稳定的唯一 CSS 选择器
     function genSel(el){
@@ -2985,10 +3061,11 @@ async function injectYzAssistant(wc) {
     }
     function resolve(sel){var a=resolveAll(sel);return a.length?a[0]:null;}
     window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,register:register,
+      yzNormText:yzNormText,yzFillCompare:yzFillCompare,yzFillGuard:yzFillGuard,
       /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
          改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
          ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
-      __yzVersion:1};
+      __yzVersion:2};
   })()`);
 }
 
@@ -3108,7 +3185,7 @@ async function cdpTypeText(wc, target, text, pressEnter) {
     const sel = target?.selector != null ? String(target.selector) : '';
     const idx = Number.isFinite(Number(target?.index)) ? Number(target.index) : -1;
     const focusRes = await wc.executeJavaScript(`(function(){
-      var sel=${JSON.stringify(sel)};var idx=${idx};
+      var sel=${JSON.stringify(sel)};var idx=${idx};var expected=${JSON.stringify(String(text || ''))};
       var el=null;
       if(idx>=0){el=window.__yzElements&&window.__yzElements[idx];}
       if(!el&&sel){try{el=document.querySelector(sel);}catch(e){}}
@@ -3117,6 +3194,20 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       if(!el.isConnected)return{error:'元素已从页面移除（index/selector 已过期），请重新获取页面元素列表'};
       try{el.scrollIntoView({block:'center'});}catch(e){}
       el.focus();
+      // ★★★ 幂等短路（2026-10-19 P0「清空—重填—回读」根因修复）：
+      //   当前值规范化后等于/包含目标 → 直接返回 already，**不清空编辑器**。
+      //   抖音描述框是 Draft.js，反复 selectAll+delete 会让内部 model 与 DOM 不同步，
+      //   实测产生重复前缀、越填越乱；这里从入口处断掉重填。
+      var cur=el.isContentEditable===true?(el.textContent||''):(el.value!=null?String(el.value):'');
+      var pre=(window.__yzAssistant&&window.__yzAssistant.yzFillCompare)
+        ? window.__yzAssistant.yzFillCompare(cur,expected)
+        : {applied:false,appliedForm:false,equal:false};
+      // 富文本用 applied（允许页面追加话题）；普通输入框用 appliedForm（替换语义，不认"包含"）
+      var already=!!expected&&(pre.equal||(el.isContentEditable===true?pre.applied:pre.appliedForm));
+      if(already){
+        try{ if(window.__yzAssistant){var rc0=el.getBoundingClientRect();window.__yzAssistant.showCursor(rc0.x+rc0.width/2,rc0.y+rc0.height/2,'已填写');} }catch(e){}
+        return {ok:true, already:true, isCE:el.isContentEditable===true, tag:el.tagName, value:String(cur)};
+      }
       // 富文本/输入框：先清空（选中全部再删），避免与已有内容拼接
       try{
         if(el.isContentEditable){
@@ -3132,6 +3223,20 @@ async function cdpTypeText(wc, target, text, pressEnter) {
     if (!focusRes || focusRes.error) {
       // 定位失败不是"CDP 不可用"，而是真错误 —— 交给调用方按原逻辑回报（不回落，避免重复报错）
       return { locateError: (focusRes && focusRes.error) || '目标元素定位失败' };
+    }
+    // ★★★ 幂等短路命中（2026-10-19 P0）：目标已经是期望值 → 不打字、不清空。
+    //   只保留 pressEnter 的真实回车语义（搜索框/表单"内容已填，按回车提交"）。
+    if (focusRes.already) {
+      if (pressEnter) {
+        const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', ...key, text: '\r', unmodifiedText: '\r' });
+        await send('Input.dispatchKeyEvent', { type: 'char', ...key, text: '\r', unmodifiedText: '\r' });
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+      }
+      return {
+        applied: true, unchanged: true, normalized: true,
+        typed: 0, value: String(focusRes.value || ''), via: 'idempotent-skip',
+      };
     }
     let formVia = ''; // 表单分支实际走的注入路径（guest-typein / cdp-keyboard），回填到 via
 
@@ -3214,16 +3319,32 @@ async function cdpTypeText(wc, target, text, pressEnter) {
       if (fb && fb.applied) { applied = true; cmp = { applied: true, normalized: false }; got = String(fb.value || ''); fallback = true; }
     }
 
+    // ★ 同字段失败熔断（2026-10-19 P0）：连续 2 次未生效 → forceStop。
+    //   工具层据此要求模型停止重填并汇报，而不是换个写法继续空转。
+    const guard = await wc.executeJavaScript(`(function(){
+      var A=window.__yzAssistant; var el=null;
+      var idx=${idx}; var s=${JSON.stringify(sel)};
+      if(idx>=0){el=window.__yzElements&&window.__yzElements[idx];}
+      if(!el&&s){try{el=document.querySelector(s);}catch(e){}}
+      if(!el)el=document.activeElement;
+      if(!el||!A||!A.yzFillGuard)return {forceStop:false,fails:0};
+      return A.yzFillGuard(el,${JSON.stringify(String(text || ''))},${applied});
+    })()`).catch(() => ({ forceStop: false, fails: 0 }));
+
     return {
       applied,
       // normalized=true：不是逐字相等，但规范化后判定已填入（页面做了格式化/截断）
       normalized: cmp.normalized,
       typed: expected.length,
       value: got.slice(0, 120),
+      forceStop: !!(guard && guard.forceStop),
+      fails: Number(guard && guard.fails) || 0,
       via: fallback ? 'js-typein' : (formVia || (focusRes && focusRes.isCE ? 'ce-execcommand' : 'cdp-keyboard')),
       ...(applied
         ? {}
-        : { hint: '输入未生效（受控组件重置或输入被页面拦截）。已尝试 guest 内 typeIn 兜底仍失败 —— 请用 browser_get_page_content 核验输入框当前值后再决定，**不要盲目重复输入**。' }),
+        : { hint: (guard && guard.forceStop)
+          ? '同一字段连续 2 次未生效：**停止重填**，不要再用 browser_type / run_script 清空重写。请回读一次页面确认当前值，向用户报告"字段无法写入"及现场，由用户决定手填或换方案。'
+          : '输入未生效（受控组件重置或输入被页面拦截）。已尝试 guest 内 typeIn 兜底仍失败 —— 请用 browser_get_page_content 核验输入框当前值后再决定，**不要盲目重复输入**。' }),
     };
   } catch (e) {
     // CDP 不可用（未就绪/被占用/引擎不支持）→ 返回 null 让调用方回落 JS 实现
@@ -4174,7 +4295,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             var rect=el.getBoundingClientRect();A.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'输入');
             var r=A.typeIn(el,a.text);
             var out={success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value,via:'js-fallback'};
-            if(!r.applied)out.hint='输入框未接受文本（可能为受控组件且拦截了程序化输入，或输入被页面重置）。建议截图核验实际值；若被重置，改用 browser_press_key 逐键或让用户手输。';
+            if(r.forceStop){out.forceStop=true;out.hint='同一字段连续 2 次未生效：**停止重填**，回读一次页面确认当前值并向用户报告现场，不要再用 browser_type / run_script 清空重写。';}
+            else if(!r.applied)out.hint='输入框未接受文本（可能为受控组件且拦截了程序化输入，或输入被页面重置）。建议截图核验实际值；若被重置，改用 browser_press_key 逐键或让用户手输。';
             if(a.pressEnter){
               var ko={bubbles:true,cancelable:true,key:'Enter',code:'Enter',keyCode:13,which:13};
               el.dispatchEvent(new KeyboardEvent('keydown',ko));el.dispatchEvent(new KeyboardEvent('keypress',ko));el.dispatchEvent(new KeyboardEvent('keyup',ko));
@@ -4203,7 +4325,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             return typeEl(els[0]);
           }
           var el=document.activeElement;if(!el)return{error:'无聚焦元素'};
-          var r=A.typeIn(el,a.text);return{success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value};
+          var r=A.typeIn(el,a.text);return{success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value,forceStop:!!r.forceStop};
         })()`);
       }
       case 'press': {
@@ -4614,15 +4736,16 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
                 // 10-13 实测（抖音编辑页）：作品描述是 contenteditable，旧实现当普通文本框填 →
                 // 表面成功实际没写进 → 模型反复重填（"反复填写一个表单"的机制之一）。
                 if(el.isContentEditable){
-                  try{ el.focus(); }catch(e2){}
-                  var sel2=window.getSelection();
-                  try{ sel2.selectAllChildren(el); }catch(e2){ var rg=document.createRange();rg.selectNodeContents(el);sel2.removeAllRanges();sel2.addRange(rg); }
+                  // ★★★ 2026-10-19 P0：**删除这里的预全选**。
+                  //   旧实现先 selectAllChildren 再调 typeIn —— 预全选发生在 typeIn 的
+                  //   "已填就跳过"判断**之前**，等于先把 Draft.js 的选区/内部状态破坏掉，
+                  //   幂等短路永远命中不了。清空动作统一由 typeIn 内部在"确认需要重写"后执行。
                   var r2=window.__yzAssistant.typeIn(el,String(f.value==null?'':f.value));
-                  if(r2&&r2.applied===false){failed.push({selector:sel,reason:'富文本值未生效 当前值='+String(r2.value||'').slice(0,40)});window.__yzAssistant.hideCursor();continue;}
+                  if(r2&&r2.applied===false){failed.push({selector:sel,reason:'富文本值未生效 当前值='+String(r2.value||'').slice(0,40)+(r2.forceStop?'；已连续失败 2 次，停止重填并汇报':'')});window.__yzAssistant.hideCursor();continue;}
                 }else{
-                  // 普通文本：沿用 typeIn（清空→nativeSetter→IME 序列→input→change→回读核验）
+                  // 普通文本：沿用 typeIn（写前先读 → 需要时才清空 → nativeSetter/IME → 回读核验）
                   var r=window.__yzAssistant.typeIn(el,String(f.value==null?'':f.value));
-                  if(r&&r.applied===false){failed.push({selector:sel,reason:'值未生效（受控组件未接受）当前值='+r.value});window.__yzAssistant.hideCursor();continue;}
+                  if(r&&r.applied===false){failed.push({selector:sel,reason:'值未生效（受控组件未接受）当前值='+r.value+(r.forceStop?'；已连续失败 2 次，停止重填并汇报':'')});window.__yzAssistant.hideCursor();continue;}
                 }
               }
               filled.push(sel);

@@ -278,3 +278,62 @@ describe('循环闸门误伤修复（2026-10-14）', () => {
     expect(neutralizeForceStopMarker(null as unknown as string)).toBe('');
   });
 });
+
+/**
+ * 任务级累计硬停（2026-10-19）：真实任务里 `browser_run_script` 2 小时被拦 10 次，
+ * 但每次拦截之间都有"被放行"的调用 ⇒ 连续硬停计数被反复清零 ⇒ 永远够不到阈值。
+ * 本闸门用**不随放行清零**的任务级累计数兜住这种"换着写法硬磕"的形态。
+ */
+describe('任务级累计硬停（跨放行清零）', () => {
+  /** 模拟真实轨迹：每轮同参连打 3 次（第 3 次被 A 线拦），再用其他工具与换参调用打断 */
+  function runRounds(check: (task: object, tool: string, args: unknown) => string | null, task: object, rounds: number): string[] {
+    const blocked: string[] = [];
+    for (let round = 0; round < rounds; round++) {
+      for (let i = 0; i < 3; i++) {
+        const r = check(task, 'browser_run_script', { script: `命中第 ${round} 轮` });
+        if (r) blocked.push(r);
+      }
+      check(task, 'file_read', { path: `第 ${round} 章.md` });
+      check(task, 'browser_run_script', { script: `新一轮 ${round}` });
+    }
+    return blocked;
+  }
+
+  it('同一工具被拦满 TOOL_BLOCK_TASK_LIMIT 次后，即使中间被放行也升级为硬停', async () => {
+    const { checkToolLoop: check, TOOL_BLOCK_TASK_LIMIT: LIMIT, FORCE_STOP_MARKER: MARK, toolBlockTotal } =
+      await import('../src/services/tool-loop-guard.js');
+    const task = {};
+
+    // Act
+    const blocked = runRounds(check, task, LIMIT);
+
+    // Assert
+    expect(toolBlockTotal(task, 'browser_run_script'), '任务级累计数不得被放行清零').toBe(LIMIT);
+    expect(blocked.filter((s) => s.startsWith(MARK)), '★ 累计到阈值仍未硬停').toHaveLength(1);
+    expect(blocked[blocked.length - 1]).toContain('立即停止所有工具调用');
+  });
+
+  it('仅偶发误拦（未到任务级阈值）不升级硬停', async () => {
+    const { checkToolLoop: check, TOOL_BLOCK_TASK_LIMIT: LIMIT, FORCE_STOP_MARKER: MARK } =
+      await import('../src/services/tool-loop-guard.js');
+    const task = {};
+
+    // Act
+    const blocked = runRounds(check, task, LIMIT - 1);
+
+    // Assert
+    expect(blocked.filter((s) => s.startsWith(MARK)), '★ 未到阈值就硬停会误伤正常任务').toHaveLength(0);
+  });
+
+  it('不同工具的任务级累计互相隔离', async () => {
+    const { checkToolLoop: check, toolBlockTotal } = await import('../src/services/tool-loop-guard.js');
+    const task = {};
+    for (let i = 0; i < 3; i++) check(task, 'browser_run_script', { script: 'x' });
+
+    // Act
+    const other = toolBlockTotal(task, 'browser_click');
+
+    // Assert
+    expect(other).toBe(0);
+  });
+});
