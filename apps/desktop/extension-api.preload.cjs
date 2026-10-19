@@ -228,6 +228,120 @@ function installMainWorld () {
   } catch (err) {
     console.error('[action] 注入失败', err)
   }
+
+  // ---- chrome.scripting ----
+  function serializeInjection (injection) {
+    const result = Object.assign({}, injection || {})
+    if (typeof result.func === 'function') {
+      result.funcSource = result.func.toString()
+      delete result.func
+    }
+    return result
+  }
+
+  function scriptingCall (method, args, callback, map) {
+    const promise = invokeWithRetry('scripting.' + method, args)
+    if (typeof callback !== 'function' && typeof map !== 'function') {
+      promise.catch(() => {})
+      return promise
+    }
+    return settleValue(promise, callback, map)
+  }
+
+  const scriptingApi = {
+    executeScript (injection, callback) {
+      return scriptingCall('executeScript', [serializeInjection(injection)], callback, (value) => value || [])
+    },
+    insertCSS (injection, callback) {
+      return scriptingCall('insertCSS', [serializeInjection(injection)], callback)
+    },
+    removeCSS (injection, callback) {
+      return scriptingCall('removeCSS', [serializeInjection(injection)], callback)
+    },
+    getRegisteredContentScripts (filter, callback) {
+      return scriptingCall('getRegisteredContentScripts', [filter || {}], callback, (value) => value || [])
+    },
+    registerContentScripts (scripts, callback) {
+      return scriptingCall('registerContentScripts', [scripts || []], callback)
+    },
+    updateContentScripts (scripts, callback) {
+      return scriptingCall('updateContentScripts', [scripts || []], callback)
+    },
+    unregisterContentScripts (filter, callback) {
+      return scriptingCall('unregisterContentScripts', [filter || {}], callback)
+    },
+  }
+
+  try {
+    Object.defineProperty(chromeObject, 'scripting', {
+      value: scriptingApi,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    })
+  } catch (err) {
+    console.error('[scripting] 注入失败', err)
+  }
+
+  // ---- chrome.tabs.executeScript / insertCSS / removeCSS（MV2）----
+  function tabsArgs (first, second, third) {
+    if (first && typeof first === 'object') {
+      return { tabId: null, details: first, callback: typeof second === 'function' ? second : undefined }
+    }
+    return {
+      tabId: first === undefined ? null : first,
+      details: second && typeof second === 'object' ? second : {},
+      callback: typeof third === 'function' ? third : (typeof second === 'function' ? second : undefined),
+    }
+  }
+
+  function defineTabsMethod (name, implementation) {
+    try {
+      const tabs = chromeObject.tabs
+      if (!tabs || tabs[name]) return
+      Object.defineProperty(tabs, name, {
+        value: implementation,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    } catch (err) {
+      console.error('[tabs.' + name + '] 注入失败', err)
+    }
+  }
+
+  defineTabsMethod('executeScript', function (first, second, third) {
+    const args = tabsArgs(first, second, third)
+    const injection = {
+      target: { tabId: args.tabId, allFrames: !!args.details.allFrames },
+      file: args.details.file,
+      files: args.details.files,
+      code: args.details.code,
+    }
+    return scriptingCall('executeScript', [injection], args.callback, (results) => (results || []).map((item) => item.result))
+  })
+
+  defineTabsMethod('insertCSS', function (first, second, third) {
+    const args = tabsArgs(first, second, third)
+    const injection = {
+      target: { tabId: args.tabId, allFrames: !!args.details.allFrames },
+      file: args.details.file,
+      files: args.details.files,
+      css: args.details.code,
+    }
+    return scriptingCall('insertCSS', [injection], args.callback)
+  })
+
+  defineTabsMethod('removeCSS', function (first, second, third) {
+    const args = tabsArgs(first, second, third)
+    const injection = {
+      target: { tabId: args.tabId, allFrames: !!args.details.allFrames },
+      file: args.details.file,
+      files: args.details.files,
+      css: args.details.code,
+    }
+    return scriptingCall('removeCSS', [injection], args.callback)
+  })
 }
 
 function install () {

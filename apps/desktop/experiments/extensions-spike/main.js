@@ -28,6 +28,8 @@ let ses = null
 let finished = false
 let cmShim = null
 let actionManager = null
+let scriptingManager = null
+let guestWc = null
 
 function log (...args) { console.log(...args) }
 
@@ -171,15 +173,23 @@ app.whenReady().then(async () => {
     try {
       const { createContextMenuShim, registerExtensionPreload } = require('../../extension-context-menus.cjs')
       const { createActionManager } = require('../../extension-actions.cjs')
+      const { createScriptingManager } = require('../../extension-scripting.cjs')
       const { readManifest } = require('../../browser-extensions.cjs')
       registerExtensionPreload(ses, path.join(__dirname, '..', '..', 'extension-api.preload.cjs'))
       result.preloads = ses.getPreloadScripts().map((p) => ({ id: p.id, type: p.type, filePath: p.filePath }))
       cmShim = createContextMenuShim({
         session: ses,
         handleMethod: (extensionId, method, args) => {
+          const isScripting = String(method).startsWith('scripting.')
           try {
-            if (!actionManager) throw new Error('actionManager 未就绪')
-            const value = actionManager.invoke(extensionId, method, args)
+            let value
+            if (isScripting) {
+              if (!scriptingManager) throw new Error('scriptingManager 未就绪')
+              value = scriptingManager.invoke(extensionId, method, args)
+            } else {
+              if (!actionManager) throw new Error('actionManager 未就绪')
+              value = actionManager.invoke(extensionId, method, args)
+            }
             result.actionInvokes = (result.actionInvokes || []).concat([{ extensionId, method, ok: true }])
             return value
           } catch (err) {
@@ -220,6 +230,16 @@ app.whenReady().then(async () => {
         readManifest,
       })
       result.actionManager = 'installed'
+      scriptingManager = createScriptingManager({
+        getExtensions: () => result.extensions.map((e) => ({
+          key: e.fixture,
+          electronId: e.id,
+          enabled: true,
+          dir: path.join(__dirname, 'fixtures', e.fixture),
+        })),
+        getSession: () => ses,
+        getActiveWebContents: () => guestWc,
+      })
       ses.serviceWorkers.on('console-message', (_event, details) => {
         result.swConsole = (result.swConsole || []).concat([
           'sw-console: ' + ((details && (details.message || details.sourceId)) || JSON.stringify(details)),
@@ -272,6 +292,29 @@ app.whenReady().then(async () => {
         await actionManager.click(ext.fixture)
       }
     }
+    if (scriptingManager && guestWc) {
+      const ext = result.extensions.find((item) => /scripting/.test(item.fixture))
+      if (ext) {
+        const exec = await scriptingManager.executeScript(ext.id, {
+          target: { tabId: guestWc.id },
+          funcSource: "() => { document.title = 'SCRIPTING_OK'; return 42 }",
+        })
+        const title = await guestWc.executeJavaScript('document.title')
+        await scriptingManager.insertCSS(ext.id, {
+          target: { tabId: guestWc.id },
+          css: 'body{outline: 3px solid rgb(1, 2, 3) !important}',
+        })
+        const outline = await guestWc.executeJavaScript('getComputedStyle(document.body).outlineColor')
+        scriptingManager.registerContentScripts(ext.id, [{
+          id: 'auto',
+          matches: ['http://127.0.0.1/*'],
+          js: ['auto.js'],
+        }])
+        await scriptingManager.runRegisteredScripts(guestWc)
+        const injected = await guestWc.executeJavaScript('window.__yz_auto_injected || null')
+        result.scripting = { exec, title, outline, injected }
+      }
+    }
   }
 
   try {
@@ -292,6 +335,8 @@ app.whenReady().then(async () => {
 
   win.webContents.on('did-attach-webview', (_event, guest) => {
     result.guestAttached = true
+    guestWc = guest
+    result.guestWcId = guest.id
     if (global.__ext) {
       try {
         global.__ext.addTab(guest, win)
