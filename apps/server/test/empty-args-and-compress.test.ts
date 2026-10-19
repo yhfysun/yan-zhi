@@ -168,9 +168,9 @@ describe('resolveContextWindow：未声明窗口时按 32K 保守估算（否则
     }
   });
 
-  it('★ 恰好等于建库默认 1M → 视为"用户没填"，退回 32K', () => {
-    // 这是最关键的一条：此前兜底 1M → 阈值 52 万 → 压缩几乎永不触发
-    expect(resolveContextWindow(DEFAULT_CONTEXT_WINDOW)).toBe(SAFE_CONTEXT_WINDOW);
+  it('★ 恰好等于建库默认 1M → 按真 1M 采用（2026-10-19 用户拍板；NULL 才是未声明）', () => {
+    // 旧判据会把这里退回 32K；现在"未填"由写入路径存 NULL 区分，1M 是可信声明值。
+    expect(resolveContextWindow(DEFAULT_CONTEXT_WINDOW)).toBe(DEFAULT_CONTEXT_WINDOW);
   });
 
   it('用户显式声明的合理窗口 → 原样采用', () => {
@@ -181,7 +181,7 @@ describe('resolveContextWindow：未声明窗口时按 32K 保守估算（否则
   it('结果换算成的阈值必须显著小于窗口（保证压缩会触发）', () => {
     const cw = ContextWindow.forContextWindow(resolveContextWindow(DEFAULT_CONTEXT_WINDOW), 6);
     expect((cw as any).maxTokens).toBeLessThan(DEFAULT_CONTEXT_WINDOW);
-    expect((cw as any).maxTokens).toBe(Math.floor(SAFE_CONTEXT_WINDOW * 0.5));
+    expect((cw as any).maxTokens).toBe(Math.floor(DEFAULT_CONTEXT_WINDOW * 0.5));
   });
 });
 

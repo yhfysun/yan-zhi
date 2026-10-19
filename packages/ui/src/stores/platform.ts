@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import type { Platform, Model, ModelType, PlatformApiKey } from '@yan-zhi/shared';
-import { CHAT_MODEL_TYPES, runPricingUnitMigration, PRICING_UNIT_FLAG_KEY, inferContextWindow } from '@yan-zhi/shared';
+import { CHAT_MODEL_TYPES, runPricingUnitMigration, PRICING_UNIT_FLAG_KEY } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient } from '@yan-zhi/core';
 import type { CapabilityTestKind, CapabilityTestResult } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { api } from '../api/client';
 import type { ApiError } from '../api/client';
+import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import { useAuthStore } from './auth';
 
 function rowToPlatform(r: any): Platform {
@@ -502,14 +503,8 @@ export const usePlatformStore = defineStore('platform', () => {
     if (on()) {
       await api.post('/platforms/models/batch', {
         platformId,
-        // ★ 2026-10-19：按模型家族推断真实窗口，不再一律写 DEFAULT_CONTEXT_WINDOW(1M)。
-        //   1M 恰好是"用户没填"的哨兵值 → 服务端会按 32K 保守估算，长任务反复触发压缩。
-        //   不认识的模型写 null（未声明），交给服务端保守兜底。
-        models: list.map((m) => ({
-          modelId: m.id,
-          type: inferModelType(m.id, m.type),
-          contextWindow: (m as any).contextWindow ?? inferContextWindow(m.id) ?? null,
-        })),
+        // 2026-10-19 用户拍板：默认一律 1M（与建库默认同值，且 resolveContextWindow 已改为信任 1M）。
+        models: list.map((m) => ({ modelId: m.id, type: inferModelType(m.id, m.type), contextWindow: DEFAULT_CONTEXT_WINDOW })),
       });
     } else {
       const adapter = getPlatformAdapter();
@@ -533,7 +528,7 @@ export const usePlatformStore = defineStore('platform', () => {
         } else {
           await adapter.db.exec(
             'INSERT INTO model (id, platform_id, model_id, type, context_window, enabled, is_default) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [uid('m_'), platformId, item.id, type, inferContextWindow(item.id) ?? null, 1, 0],
+            [uid('m_'), platformId, item.id, type, DEFAULT_CONTEXT_WINDOW, 1, 0],
           );
         }
       }

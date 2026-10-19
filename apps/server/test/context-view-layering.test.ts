@@ -218,12 +218,12 @@ describe('③ 预算分配：有效窗口折算（对齐 Chroma 的有效上下�
     expect(effectiveWindowOf(131072)).toBeLessThan(131072);
   });
 
-  it('★★ 两层折扣**不叠加**：未声明窗口已被判不可信 → 不再乘比例（防双重保守）', () => {
-    // resolveContextWindow(1M) 会因"等于建库默认值"判不可信 → 退回 32K。
-    // 此时若再乘 25% 就只剩 8K → 触发得离谱地早；正确做法是直接用 32K 有效值。
-    expect(effectiveWindowOf(1048576)).toBe(32768);
-    // ★ 与"把 1M 当可信"对照：那才是按 256K 算（判为不可信意味着我们已按小窗口保守估算）
-    expect(effectiveWindowOf(1048576)).toBeLessThan(262144);
+  it('★★ 两层折扣**不叠加**：未声明（NULL）已按 32K，不再乘比例；1M 是可信声明值', () => {
+    // 2026-10-19 用户拍板：1M 按真 1M 用（NULL/非法才是"未声明"）。
+    // 未声明时 resolveContextWindow 已退回 32K，此时若再乘 25% 就只剩 8K（双重保守）；
+    // 正确做法是直接用 32K 有效值。1M 可信 → 按 25% 折算 262144。
+    expect(effectiveWindowOf(null)).toBe(32768);
+    expect(effectiveWindowOf(1048576)).toBe(262144);
   });
 
   it('可信的大窗口（显式声明 2M）→ 按 500K 有效区算', () => {

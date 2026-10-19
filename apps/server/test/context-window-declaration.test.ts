@@ -74,13 +74,14 @@ describe('② 后端必须保留 null（否则前端改动白做）', () => {
   });
 });
 
-describe('③ 判据本身不得动（防"顺手"改坏 sentinel 语义）', () => {
-  it('★★★ resolveContextWindow 必须仍按"恰好等于默认值"判不可信', () => {
+describe('③ 判据策略（2026-10-19 用户拍板：默认真 1M → 1M 可信；NULL 才是未声明）', () => {
+  it('★★★ resolveContextWindow 不得再把"恰好 1M"判不可信', () => {
     const i = CONSTS.indexOf('export function resolveContextWindow');
     expect(i, '★ 锚点缺失').toBeGreaterThan(-1);
-    const body = CONSTS.slice(i, i + 400);
-    expect(body, '★ 判据被改了 —— 它服务的 sentinel 语义被 effectiveWindowOf 依赖（改了会破坏两层折扣分工）')
-      .toMatch(/n === DEFAULT_CONTEXT_WINDOW\) return SAFE_CONTEXT_WINDOW/);
+    const body = CONSTS.slice(i, i + 500);
+    expect(body, '★ 仍在把 1M 判不可信 —— 会把真 1M 模型按 32K 估（用户已拍板要按 1M 用）')
+      .not.toMatch(/n === DEFAULT_CONTEXT_WINDOW\) return SAFE_CONTEXT_WINDOW/);
+    expect(body, '★ 非法/未声明的 32K 兜底丢了').toMatch(/return SAFE_CONTEXT_WINDOW/);
   });
 
   it('★★ effectiveWindowOf 的 sentinel 依赖仍在（配套约束）', () => {

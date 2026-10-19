@@ -49,18 +49,18 @@ export const SAFE_CONTEXT_WINDOW = 32768;
 /**
  * 解析「用于压缩阈值估算的上下文窗口」。
  *
- * 取值优先级：显式声明且**合理**的窗口 > SAFE_CONTEXT_WINDOW。
- * 「合理」判据（两条任一命中即视为不可信 → 退回保守值）：
- *   ① 非法（NaN / <= 0 / 非数字）；
- *   ② **恰好等于建库默认值 1M** —— 这几乎必然意味着"用户根本没填，是我们写进去的默认值"，
- *      而不是"这个模型真的有 1M 窗口"（真有 1M 的模型用户会主动声明，且值往往不是这个整数）。
- * ★ 为什么敢按"等于默认值"就判不可信：这是**误判成本不对称**的选择 ——
- *   判错（其实是真 1M）只是压缩得早一点，功能不受影响；
- *   判对（其实是没填）则避免了"压缩永不触发 → 长任务 400"。
+ * 取值优先级：正数 → 原样采用（**包括 1M**；2026-10-19 用户拍板：默认就是真 1M）；
+ * 非法/缺失（NULL 才是"未声明"·D7 约定）→ SAFE_CONTEXT_WINDOW。
+ *
+ * ★ 判据变更史（别回退）：
+ *   旧实现把"恰好等于建库默认值 1M"判为"用户没填"→ 32K，理由是当时拉模型会**一律**写 1M，
+ *   "没填"与"真 1M"同形。D7 已把两条写入路径改为"未填存 NULL"、拉模型改为按家族推断，
+ *   同形问题不再存在；继续把 1M 判不可信会让真 1M 模型（实测生产库含 glm-5.3-prime /
+ *   deepseek-v4.1-flash 等）全部被按 32K 估 → 长任务反复压缩丢结果。
+ *   ⇒ 现在：NULL/非法 = 未声明（32K 保守兜底）；任何正数（含 1048576）= 可信声明值。
  */
 export function resolveContextWindow(declared: unknown): number {
   const n = typeof declared === 'number' ? declared : Number(declared);
   if (!Number.isFinite(n) || n <= 0) return SAFE_CONTEXT_WINDOW;
-  if (n === DEFAULT_CONTEXT_WINDOW) return SAFE_CONTEXT_WINDOW;
   return n;
 }

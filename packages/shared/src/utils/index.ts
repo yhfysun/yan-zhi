@@ -6,9 +6,6 @@ export * from './text-encoding';
 // 有效上下文策略（标称窗口 ≠ 可用窗口）—— 服务端压缩预算与前端用量展示的**同一口径**
 export * from './context-policy';
 
-// 按模型 ID 推断上下文窗口（2026-10-19）：拉取远程模型时避免把所有模型写成默认哨兵值
-export * from './model-context';
-
 // 按 key 分桶的「连续无变化计数」（B7）——**服务端与桌面两链路共用的唯一实现**。
 // ★ 为什么放 shared：两处（`server/routes/browser.ts` 与 `desktop/main.cjs`）本各写一份
 //   模块级单值，正是"跨会话互相污染"的根源；共用一份才能保证两链路行为一致。
