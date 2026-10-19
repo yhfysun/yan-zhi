@@ -250,6 +250,15 @@ function isInstalled(storeId: string) {
 
 async function installStore(w: WhitelistEntry) {
   if (!api) return;
+  try {
+    await ElMessageBox.confirm(
+      `即将从 Chrome 商店安装「${w.name}」。\n\n${w.note}\n\n该扩展可以读取你在内置浏览器中访问的页面内容（包括已登录站点）。`,
+      '安装浏览器扩展',
+      { type: 'warning', confirmButtonText: '安装', cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
   storeInstalling.value = w.id;
   try {
     const r = await api.installStore(w.id);

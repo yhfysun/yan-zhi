@@ -15,12 +15,14 @@ const inst = require('./instance.cjs');
 //   ④ guest 的 popup 重定向。判据见 url-guard.cjs 顶部注释。
 const { isSafeExternalUrl, isAllowedGuestNavigation, guardNavigation } = require('./url-guard.cjs');
 // 浏览器扩展管理器（P1，免费路径）：只用 Electron 内置 ses.extensions.*，不依赖 GPL 库。
-const { createExtensionManager } = require('./browser-extensions.cjs');
+const { createExtensionManager, readManifest, manifestInfo } = require('./browser-extensions.cjs');
 const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
 
 let mainWindow = null;
 let extensionManager = null;
+/** 扩展功能总开关（P5）：YZ_BROWSER_EXTENSIONS=off 可整体关闭 */
+const EXTENSIONS_ENABLED = process.env.YZ_BROWSER_EXTENSIONS !== 'off';
 
 /** 是否开发实例（由 dev 编排器注入 YANZHI_DEV_INSTANCE=1） */
 const IS_DEV_INSTANCE = inst.isDevInstance(process.env);
@@ -2015,8 +2017,41 @@ ipcMain.handle('ext:installDir', async () => {
     ? await dialog.showOpenDialog(mainWindow, opts)
     : await dialog.showOpenDialog(opts);
   if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return { ok: false, canceled: true };
+  const srcDir = picked.filePaths[0];
+  // P4：安装前二次确认——展示权限清单 + 登录态警告，默认取消。
+  let info;
   try {
-    return await extensionManager.installFromDir(picked.filePaths[0]);
+    info = manifestInfo(readManifest(srcDir));
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+  const permissionLines = [
+    ...info.permissions.map((p) => '· ' + p),
+    ...info.hostPermissions.map((p) => '· 站点: ' + p),
+  ];
+  const detail = [
+    `版本：${info.version}`,
+    info.description ? `说明：${info.description}` : '',
+    permissionLines.length ? `权限：\n${permissionLines.join('\n')}` : '权限：无',
+    '',
+    '警告：扩展可以读取你在内置浏览器中访问的页面内容（包括已登录站点）。请只安装可信来源。',
+  ].filter(Boolean).join('\n');
+  const confirmOpts = {
+    type: 'warning',
+    buttons: ['取消', '安装'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: '安装浏览器扩展',
+    message: `确定安装「${info.name}」？`,
+    detail,
+  };
+  const confirmed = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showMessageBox(mainWindow, confirmOpts)
+    : await dialog.showMessageBox(confirmOpts);
+  if (confirmed.response !== 1) return { ok: false, canceled: true };
+  try {
+    return await extensionManager.installFromDir(srcDir);
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -6875,43 +6910,47 @@ app.whenReady().then(async () => {
 
   // 浏览器扩展（P1/P2）：放在 UA 伪装 / popup 拦截之后，确保扩展后台页启动时 session 已配置完成；
   // 必须在 createWindow() 之前恢复启用列表。Electron 不会跨重启记忆扩展，所以每次启动都要 load。
-  // 商店下载走代理感知 fetch：主进程 fetch 不走系统代理，P0 实测直连商店域名会失败。
-  // ★ 必须在 require('electron-chrome-web-store') 之前安装：库在模块初始化时就捕获了 fetch。
-  try {
-    installStoreFetch({ resolveProxy: (url) => session.defaultSession.resolveProxy(url) });
-  } catch (err) {
-    console.warn('[ext] 商店代理 fetch 安装失败:', err && err.message);
-  }
-  let extensionStore = null;
-  try {
-    extensionStore = require('electron-chrome-web-store');
-  } catch (err) {
-    console.warn('[ext] 商店模块不可用:', err && err.message);
-  }
-  extensionManager = createExtensionManager({
-    rootDir: path.join(app.getPath('userData'), 'browser-extensions'),
-    storeDir: path.join(app.getPath('userData'), 'browser-extensions', 'store'),
-    store: extensionStore,
-    whitelist: { isAllowed: isAllowedStoreExtension, list: listWhitelist },
-    getSession: () => session.fromPartition('persist:browser-view'),
-  });
-  try {
-    const extResult = await extensionManager.loadAll();
-    if (extResult.loaded) console.log('[ext] 已加载扩展:', extResult.loaded);
-  } catch (err) {
-    console.warn('[ext] 启动加载失败:', err && err.message);
-  }
-  if (extensionStore) {
-    const checkUpdates = () => {
-      extensionManager.updateAll()
-        .then(() => console.log('[ext] 商店更新检查完成'))
-        .catch((err) => console.warn('[ext] 商店更新检查失败:', err && err.message));
-    };
-    // 启动 20s 后一次（避开启动高峰），之后每 6 小时
-    const updateTimer = setTimeout(checkUpdates, 20000);
-    if (updateTimer.unref) updateTimer.unref();
-    const updateInterval = setInterval(checkUpdates, 6 * 60 * 60 * 1000);
-    if (updateInterval.unref) updateInterval.unref();
+  if (!EXTENSIONS_ENABLED) {
+    console.log('[ext] 已通过 YZ_BROWSER_EXTENSIONS=off 关闭');
+  } else {
+    // 商店下载走代理感知 fetch：主进程 fetch 不走系统代理，P0 实测直连商店域名会失败。
+    // ★ 必须在 require('electron-chrome-web-store') 之前安装：库在模块初始化时就捕获了 fetch。
+    try {
+      installStoreFetch({ resolveProxy: (url) => session.defaultSession.resolveProxy(url) });
+    } catch (err) {
+      console.warn('[ext] 商店代理 fetch 安装失败:', err && err.message);
+    }
+    let extensionStore = null;
+    try {
+      extensionStore = require('electron-chrome-web-store');
+    } catch (err) {
+      console.warn('[ext] 商店模块不可用:', err && err.message);
+    }
+    extensionManager = createExtensionManager({
+      rootDir: path.join(app.getPath('userData'), 'browser-extensions'),
+      storeDir: path.join(app.getPath('userData'), 'browser-extensions', 'store'),
+      store: extensionStore,
+      whitelist: { isAllowed: isAllowedStoreExtension, list: listWhitelist },
+      getSession: () => session.fromPartition('persist:browser-view'),
+    });
+    try {
+      const extResult = await extensionManager.loadAll();
+      if (extResult.loaded) console.log('[ext] 已加载扩展:', extResult.loaded);
+    } catch (err) {
+      console.warn('[ext] 启动加载失败:', err && err.message);
+    }
+    if (extensionStore) {
+      const checkUpdates = () => {
+        extensionManager.updateAll()
+          .then(() => console.log('[ext] 商店更新检查完成'))
+          .catch((err) => console.warn('[ext] 商店更新检查失败:', err && err.message));
+      };
+      // 启动 20s 后一次（避开启动高峰），之后每 6 小时
+      const updateTimer = setTimeout(checkUpdates, 20000);
+      if (updateTimer.unref) updateTimer.unref();
+      const updateInterval = setInterval(checkUpdates, 6 * 60 * 60 * 1000);
+      if (updateInterval.unref) updateInterval.unref();
+    }
   }
 
   // ============================================================
