@@ -1760,30 +1760,21 @@ const CODE_AGENT_BUILTIN_TOOLS = [
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 任务拆解与用户交互
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
-  // ── API 能力（2026-09-29 补）─────────────────────────────────────────────
+  // ── API 能力（只留「发现入口 + 工程记忆」，其余按需发现）──────────────────
   //
-  // ★★★ 为什么必须补：本清单此前**没有任何 `api_*`**，而 `buildToolsForBackend` 的
-  //   `alwaysApiTools` 兜底**只在 `mountedApiTools` 为空时才触发** —— 本智能体挂了 20+ 内置工具
-  //   → `mountedApiTools` 非空 → 兜底永不生效 → 开发模式**看不到任何 API 工具**。
-  //   后果（实测）：默认助手挂上了整套自举工具集（见 DEFAULT_AGENT_BUILTIN_TOOLS），
-  //   但**开发模式一个都拿不到** —— 「发现缺能力 → 自造工具 / 自装 skill」这条闭环对开发模式是空的；
-  //   空间记忆读写也没有 → 长任务的结论无法沉淀、接力时读不到。
+  // ★★★ 2026-10-20 收敛（用户实测：工具面 51 > 阈值，编码任务被噪声工具拖累）：
+  //   此前这里把整套自举工具（api_custom_tool_* / api_skill_* / api_marketplace_* /
+  //   install / api_agent_mount）**全挂上**，37 个内置工具常驻上下文。但编码任务中途
+  //   根本不会去"造工具/逛商城/装 skill"——这些 schema 每步都占着 token 认知预算。
   //
-  // ★ `get_api_tools` 是「按需发现」的总入口：模型按模块名查到 API 工具的
-  //   name/description/inputSchema 再按需调用，不必把上百个工具全塞进上下文。
+  //   ★ 自举能力没有丢：`get_api_tools` 就是「按需发现」总入口（模型按模块名查到
+  //     name/description/inputSchema 再按需调用，见 db.ts:1238），那些工具仍在
+  //     api registry 里、可通过它发现。这里只保留：
+  //     - `get_api_tools` —— 需要造/装/挂时现查现用；
+  //     - 空间记忆读/写 —— 工程记忆（结构/约定/坑）沉淀与回读，编码任务高频使用。
+  //   37 → 23，砍掉的都是"偶尔用一次、却每步都付费"的元工具。
   'get_api_tools',
-  // 空间记忆：开发模式的工程记忆（结构/约定/坑）与任务进展靠它沉淀与回读
   'api_space_memory_read', 'api_space_memory_append',
-  // 自造工具（Node 沙箱 / Python 子进程）并立即调用 —— 对标 CodeBuddy「缺能力就自己写一个」
-  'api_custom_tool_list', 'api_custom_tool_get',
-  'api_custom_tool_create', 'api_custom_tool_update', 'api_custom_tool_execute',
-  // 技能：查 / 造 / 改 / 从商城装（缺方法论时先找再装，而不是硬做）
-  'api_skill_list', 'api_skill_get',
-  'api_skill_create', 'api_skill_update',
-  'api_marketplace_sources', 'api_marketplace_browse',
-  'api_tool_install', 'api_skill_install',
-  // 把造出来 / 装好的东西挂到智能体
-  'api_agent_mount',
 ];
 /** 架构师 skill：需求架构 / 横切统一 / 接口契约 / 评审 / Git / 文档 */
 const CODE_AGENT_SKILL_IDS = [
