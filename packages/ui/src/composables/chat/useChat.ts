@@ -1416,7 +1416,9 @@ function createChat() {
   //     单会话轮次数有限（1024 条 ≈ 300 轮），最坏情形退化为现状，典型收益在"会话打开
   //     初期只挂末尾 30 轮"——重会话切回时的卡顿与内存大头正在这里。
   // ==================================================================
-  const ROUND_WINDOW_SIZE = 30;   // 跟随末尾时的窗口大小（轮）
+  const ROUND_WINDOW_SIZE = 12;   // 跟随末尾时的窗口大小（轮）
+  // ★ 2026-10-19：30 → 12。实测 18 轮/1423 条消息的长会话，30 轮窗口等于全量渲染，
+  //   叠加流式 flush 把渲染进程主线程压死。12 轮足够日常阅读；向上滚动仍会懒扩窗。
   const ROUND_WINDOW_STEP = 20;   // 每次向上扩窗的步长（轮）
   /** 窗口起始轮的**身份锚**（该轮 user 消息 id）；null = 跟随末尾。
    *  ★ 用身份而不是下标：向上翻页 loadMoreHistory 会把更早消息 prepend 到数组头部，
@@ -3465,6 +3467,9 @@ async function healStalePlatform() {
     const el = messagesRef.value;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    // 长会话内存治理：只有用户在看底部时才允许裁剪头部旧消息；
+    // 向上翻历史时置 false，避免把正在读的内容抽走。
+    store.setChatAtBottom(atBottom);
     const canScroll = el.scrollHeight > el.clientHeight;
     showScrollBottom.value = canScroll && !atBottom;
     showScrollTop.value = canScroll && el.scrollTop > el.clientHeight;

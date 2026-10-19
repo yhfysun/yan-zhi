@@ -6661,6 +6661,36 @@ if (!gotTheLock) {
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
+
+  // ── 渲染进程心跳看门狗（2026-10-19）────────────────────────────────────
+  //   实测：长任务/长会话会把渲染进程主线程占死，界面点击完全无响应（CDP 都进不去）。
+  //   渲染层每 2s 发一次心跳；15s 收不到就自动重载窗口。后端任务不受影响，
+  //   重载后前端会重连 SSE；比永久冻结、只能杀进程好。
+  const RENDERER_HEARTBEAT_STALE_MS = 15000;
+  const RENDERER_RELOAD_COOLDOWN_MS = 30000;
+  const rendererLastBeat = new Map();
+  let lastRendererReloadAt = 0;
+  ipcMain.on('yz:renderer-heartbeat', (e) => {
+    try { rendererLastBeat.set(e.sender.id, Date.now()); } catch { /* ignore */ }
+  });
+  setInterval(() => {
+    const now = Date.now();
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win === splashWindow) continue;                       // splash 没有心跳，不参与
+      if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+      if (win.isMinimized() || !win.isVisible()) continue;      // 后台节流不是卡死
+      const wc = win.webContents;
+      if (!wc.getURL() || wc.isLoading()) continue;             // 启动/加载中不算卡死
+      const last = rendererLastBeat.get(wc.id);
+      if (!last) { rendererLastBeat.set(wc.id, now); continue; }
+      if (now - last <= RENDERER_HEARTBEAT_STALE_MS) continue;
+      if (now - lastRendererReloadAt < RENDERER_RELOAD_COOLDOWN_MS) continue;
+      lastRendererReloadAt = now;
+      rendererLastBeat.set(wc.id, now);
+      console.warn(`[watchdog] 渲染进程 ${wc.id} 心跳停止 ${now - last}ms → 自动重载窗口`);
+      try { wc.reload(); } catch (err) { console.warn('[watchdog] reload 失败:', err && err.message); }
+    }
+  }, 3000).unref?.();
   if (process.platform === 'win32') {
     // ★ Windows 任务栏图标（2026-10-05 定案）：任务栏按钮图标 = **窗口 icon**（WM_SETICON）。
     //   千万不要给 dev 设自定义 AUMID —— 自定义 AUMID 没有开始菜单快捷方式时，Explorer
