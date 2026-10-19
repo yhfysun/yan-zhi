@@ -435,6 +435,9 @@ function installMainWorld () {
 
 function install () {
   if (!electron) return
+  // ★ 子帧不注入：扩展后台页/扩展页面都在主帧；广告 iframe 多的页面可省掉一遍执行。
+  //   SW preload 里 process.isMainFrame 不存在，只在普通帧上判断。
+  if (typeof process !== 'undefined' && process.type !== 'service-worker' && process.isMainFrame === false) return
   if (!shouldInstall()) return
   const bridge = {
     invoke: (method, args) => ipcRenderer.invoke(INVOKE_CHANNEL, method, args),

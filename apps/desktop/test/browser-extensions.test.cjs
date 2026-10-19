@@ -251,3 +251,17 @@ describe('商店扩展（白名单 + store）', () => {
     assert.throws(() => normalizeStoreId('not-an-id'), /扩展 ID/);
   });
 });
+
+describe('manifest 解析缓存', () => {
+  test('文件变化后按 mtime 失效', () => {
+    const dir = makeRoot();
+    writeExt(dir, { manifest_version: 3, name: 'A', version: '1.0.0' });
+    assert.strictEqual(readManifest(dir).name, 'A');
+    writeExt(dir, { manifest_version: 3, name: 'B', version: '1.0.0' });
+    // 强制 mtime 前进，避免文件系统时间精度导致缓存不失效
+    const file = path.join(dir, 'manifest.json');
+    const future = new Date(Date.now() + 5000);
+    fs.utimesSync(file, future, future);
+    assert.strictEqual(readManifest(dir).name, 'B');
+  });
+});

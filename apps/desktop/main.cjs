@@ -243,17 +243,31 @@ function contextMenuTabInfo(wc) {
   return { ...base, active: false, highlighted: false, selected: false };
 }
 
-/** 取当前所有 guest（两种引擎）的 webContents id，供 cookies.getAllCookieStores */
-function allGuestWebContentsIds() {
-  const ids = new Set();
+/** 取当前所有 guest（两种引擎）的 webContents */
+function allGuestWebContents() {
+  const list = [];
+  const seen = new Set();
   for (const [tabId] of webviewTabs) {
     const wc = guestWebContents(tabId);
-    if (wc && !wc.isDestroyed()) ids.add(wc.id);
+    if (wc && !wc.isDestroyed() && !seen.has(wc.id)) { seen.add(wc.id); list.push(wc); }
   }
   for (const [, entry] of browserViews) {
-    if (entry && entry.view && !entry.view.webContents.isDestroyed()) ids.add(entry.view.webContents.id);
+    const wc = entry && entry.view ? entry.view.webContents : null;
+    if (wc && !wc.isDestroyed() && !seen.has(wc.id)) { seen.add(wc.id); list.push(wc); }
   }
-  return [...ids];
+  return list;
+}
+
+/** 取当前所有 guest（两种引擎）的 webContents id，供 cookies.getAllCookieStores */
+function allGuestWebContentsIds() {
+  return allGuestWebContents().map((wc) => wc.id);
+}
+
+/** 窗口最小化时关闭 guest 后台节流（agent 仍可继续跑），恢复时重新开启 */
+function setGuestBackgroundThrottling(allowed) {
+  for (const wc of allGuestWebContents()) {
+    try { wc.setBackgroundThrottling(allowed); } catch { /* ignore */ }
+  }
 }
 
 /** 取当前激活 tab 的 guest webContents（两种引擎统一） */
@@ -859,9 +873,9 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false,
-      // 最小化/隐藏窗口时暂停页面合成与导航事件 —— 会让"AI 上网查资料+用户最小化去干别的"时
-      // guest 导航卡在 started 而 didn't-fire did-navigate，UI 还停在首页。关闭全局后台节流。
-      backgroundThrottling: false,
+      // 默认允许后台节流（Chrome 同款）：窗口最小化时只对 guest 临时关闭，
+      // 保证「AI 上网查资料 + 用户最小化」时导航继续；见 setGuestBackgroundThrottling。
+      backgroundThrottling: true,
       // ★ 把**主进程算好的** API 端口显式下发给渲染层（preload 读 process.argv）。
       //   为什么不用 process.env：直启 `electron .` 时环境里没有 YANZHI_API_PORT，
       //   主进程会算出实例默认（2026-10-10 起 dev/生产同为 3001），而 preload 读 env 可能取不到 → 两边不一致。
@@ -934,6 +948,8 @@ function createWindow() {
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
     webPreferences.nodeIntegrationInWorker = false;
+    // guest 显式允许后台节流（不继承窗口的关源设置）
+    webPreferences.backgroundThrottling = true;
     delete webPreferences.preload;
     delete webPreferences.preloadURL;
     // ★★★ 原生弹窗（B4，2026-10-09）：webview 引擎的 guest 同样要禁用原生对话框。
@@ -944,6 +960,11 @@ function createWindow() {
     //     与服务端 Playwright"未注册 handler 时自动 dismiss"的行为对齐。
     webPreferences.disableDialogs = true;
   });
+
+  // 窗口最小化：临时关闭 guest 后台节流，保证 agent 导航/脚本继续；
+  // 恢复窗口后重新开启，避免多个后台页面按前台速度跑。
+  mainWindow.on('minimize', () => setGuestBackgroundThrottling(false));
+  mainWindow.on('restore', () => setGuestBackgroundThrottling(true));
 
   // 渲染进程完整重载（HMR full-reload / F5）时，隐藏并摘除所有 BrowserView。
   // BrowserView 是主进程原生图层，生命周期不跟随渲染进程 DOM；HMR 只替换渲染模块、
@@ -1109,6 +1130,7 @@ function createBrowserViewFor(tabId, entry) {
   bv.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 
   const wc = bv.webContents;
+  try { wc.setBackgroundThrottling(true); } catch { /* ignore */ }
   // 扩展右键菜单（P3）：BrowserView 引擎的 guest 同样接入扩展 contextMenus
   if (extensionContextMenus) extensionContextMenus.attachToWebContents(wc);
   if (extensionScripting) extensionScripting.attachToWebContents(wc);
@@ -2039,6 +2061,7 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   // 给这个 guest 宿主 wc 挂弹窗重定向（window.open/target=_blank → 应用内新标签页）
   try {
     const wc = webContents.fromId(wcId);
+    if (wc) { try { wc.setBackgroundThrottling(true); } catch { /* ignore */ } }
     setupGuestPopupRedirect(wc, t.scope);
     // 扩展右键菜单（P3）：webview 引擎的 guest 挂 contextMenus 弹出点
     if (wc && extensionContextMenus) extensionContextMenus.attachToWebContents(wc);

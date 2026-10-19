@@ -21,11 +21,28 @@ const crypto = require('crypto')
 
 const REGISTRY_VERSION = 1
 const MAX_EXTENSIONS = 50
+const MANIFEST_CACHE_MAX = 200
+
+/**
+ * manifest 解析缓存。
+ * ★ list() 会被 action / webNavigation 等热路径高频调用，此前每次都读盘 + JSON.parse；
+ *   按「文件 mtime + size」缓存，安装/更新/开关后 mtime 变化自动失效。
+ */
+const manifestCache = new Map()
 
 /** manifest 校验 + 解析；失败抛出可直接展示给用户的中文错误 */
 function readManifest (dir) {
   const file = path.join(dir, 'manifest.json')
-  if (!fs.existsSync(file)) throw new Error('缺少 manifest.json')
+  let stat
+  try {
+    stat = fs.statSync(file)
+  } catch {
+    throw new Error('缺少 manifest.json')
+  }
+  const cached = manifestCache.get(file)
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.manifest
+  }
   let manifest
   try {
     manifest = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -36,6 +53,8 @@ function readManifest (dir) {
   const mv = Number(manifest.manifest_version)
   if (mv !== 2 && mv !== 3) throw new Error('仅支持 Manifest V2 / V3')
   if (!manifest.name || !manifest.version) throw new Error('manifest 缺少 name 或 version')
+  if (manifestCache.size >= MANIFEST_CACHE_MAX) manifestCache.clear()
+  manifestCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, manifest })
   return manifest
 }
 
