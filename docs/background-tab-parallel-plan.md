@@ -285,7 +285,7 @@
 **仍未做（诚实清单）**
 - §4.4 的**降级路径**（面板被收起时后台流改用页内 fetch / 排队）：后台页在面板收起时确实会掉帧（P0 实测），
   但"什么时候需要降级"还没有判据落地 —— 现状是不降级、由 §0.5 的 rAF 判据将来补；
-- §4.1 提到的**子智能体配置项** `browser_target`（默认继承）：只实现了 `call_agent` 入参，未做 agent 配置兜底；
+- §4.1 提到的**子智能体配置项** `browser_target`（默认继承）：2026-10-19 已补配置兜底 —— `browserFlowKeyOf(args, parentToolCallId, agentConf)` 先读 `call_agent` 入参，再读 `agent.config_json.browserTarget/browser_target`，最后回落共享页；
 - §4.5 的 **LRU 持有保护**：后台流的页在**首次锚定之后**由既有 `convAnchors` 钉住（不会被逐出/空闲回收），
   首次锚定之前的窗口未额外保护（窗口很短：第一条 navigate 就锚上了）；
 - §5 的**真跑**（两个 `call_agent` 并发各占一页）尚未做 —— 这是接下来最该做的一步。

@@ -32,6 +32,7 @@ const ZIP_MAX_TOTAL_BYTES = 256 * 1024 * 1024
  *   按「文件 mtime + size」缓存，安装/更新/开关后 mtime 变化自动失效。
  */
 const manifestCache = new Map()
+const iconCache = new Map()
 
 /** manifest 校验 + 解析；失败抛出可直接展示给用户的中文错误 */
 function readManifest (dir) {
@@ -85,6 +86,63 @@ function manifestInfo (manifest) {
     optionsPage: (manifest.options_ui && typeof manifest.options_ui.page === 'string' ? manifest.options_ui.page : '')
       || (typeof manifest.options_page === 'string' ? manifest.options_page : ''),
   }
+}
+
+/** manifest 里声明的图标候选（icons 优先，且从大尺寸到小尺寸；再退回 action/browser_action） */
+function iconCandidates (manifest) {
+  const out = []
+  const push = (value) => {
+    if (typeof value === 'string') out.push(value)
+    else if (value && typeof value === 'object') {
+      for (const path of Object.values(value)) if (typeof path === 'string') out.push(path)
+    }
+  }
+  if (manifest.icons && typeof manifest.icons === 'object') {
+    const keys = Object.keys(manifest.icons).map((k) => Number(k) || 0).sort((a, b) => b - a)
+    for (const key of keys) push(manifest.icons[String(key)])
+  }
+  push(manifest.action && manifest.action.default_icon)
+  push(manifest.browser_action && manifest.browser_action.default_icon)
+  push(manifest.page_action && manifest.page_action.default_icon)
+  return out
+}
+
+/**
+ * 读取扩展图标为 data URL（管理页展示用）。
+ * ★ 缓存按文件 mtime+size 失效；单图上限 512KB，避免把大图塞进 IPC。
+ */
+function readIconDataUrl (dir, manifest) {
+  for (const rel of iconCandidates(manifest)) {
+    const file = path.join(dir, rel)
+    const relCheck = path.relative(dir, file)
+    if (!relCheck || relCheck.startsWith('..') || path.isAbsolute(relCheck)) continue
+    let stat
+    try {
+      stat = fs.statSync(file)
+    } catch {
+      continue
+    }
+    if (!stat.isFile() || stat.size > 512 * 1024) continue
+    const key = `${stat.mtimeMs}:${stat.size}`
+    const cached = iconCache.get(file)
+    if (cached && cached.key === key) return cached.dataUrl
+    let buffer
+    try {
+      buffer = fs.readFileSync(file)
+    } catch {
+      continue
+    }
+    const ext = path.extname(file).toLowerCase()
+    const mime = ext === '.svg' ? 'image/svg+xml'
+      : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg'
+        : ext === '.webp' ? 'image/webp'
+          : 'image/png'
+    const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`
+    if (iconCache.size >= MANIFEST_CACHE_MAX) iconCache.clear()
+    iconCache.set(file, { key, dataUrl })
+    return dataUrl
+  }
+  return ''
 }
 
 function slugify (name) {
@@ -321,14 +379,68 @@ function createExtensionManager ({
     return ses && ses.extensions && typeof ses.extensions.loadExtension === 'function' ? ses.extensions : null
   }
 
+  /**
+   * 商店目录对账：Chrome 商店页里点「添加至 Chrome」由库直接落盘并加载，
+   * 不会经过本管理器的 registry。这里扫描 storeDir，把未登记的商店扩展补进注册表，
+   * 保证管理页/工具条能看见它们。
+   * @returns {number} 新增条目数
+   */
+  function reconcileStoreExtensions () {
+    if (!storeDir) return 0
+    let dirs = []
+    try {
+      dirs = fs.readdirSync(storeDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && /^[a-p]{32}$/.test(d.name))
+        .map((d) => d.name)
+    } catch {
+      return 0
+    }
+    if (!dirs.length) return 0
+    loadRegistry()
+    const ses = sessionObject()
+    const api = ses && ses.extensions && typeof ses.extensions.getExtension === 'function' ? ses.extensions : null
+    let added = 0
+    for (const storeId of dirs) {
+      if (registry.extensions.some((e) => e.storeId === storeId)) continue
+      const dir = findStoreDir(storeId)
+      if (!dir) continue
+      try {
+        readManifest(dir)
+      } catch {
+        continue
+      }
+      let electronId = storeId
+      try {
+        const ext = api ? api.getExtension(storeId) : null
+        if (ext && ext.id) electronId = ext.id
+      } catch { /* ignore */ }
+      registry.extensions.push({
+        key: 'store-' + storeId,
+        storeId,
+        source: 'store',
+        enabled: true,
+        installedAt: now(),
+        loadError: null,
+        electronId,
+      })
+      added++
+    }
+    if (added) saveRegistry()
+    return added
+  }
+
   function list () {
     loadRegistry()
+    reconcileStoreExtensions()
     return registry.extensions.map((entry) => {
       const dir = entryDir(entry)
       let info
+      let iconDataUrl = ''
       try {
         if (!dir) throw new Error('扩展文件缺失')
-        info = manifestInfo(readManifest(dir))
+        const manifest = readManifest(dir)
+        info = manifestInfo(manifest)
+        iconDataUrl = readIconDataUrl(dir, manifest)
       } catch (err) {
         info = {
           manifestVersion: null,
@@ -352,6 +464,7 @@ function createExtensionManager ({
         loadError: entry.loadError || null,
         fingerprint: entry.fingerprint || null,
         origin: entry.origin || null,
+        iconDataUrl,
         dir,
         ...info,
       }
@@ -629,6 +742,7 @@ function createExtensionManager ({
     pageUrl,
     whitelistEntries,
     fingerprintDir: computeDirFingerprint,
+    reconcileStoreExtensions,
   }
 }
 

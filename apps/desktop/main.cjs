@@ -3137,6 +3137,9 @@ ipcMain.handle('browserView:setZoomFactor', (_e, tabId, factor) => {
   // 真值先落账：挂起态（无视图）也生效，复活后由 did-finish-load 回放
   entry.zoomFactor = f;
   try { entry.view.webContents.setZoomFactor(f); } catch { /* ignore */ }
+  // L6：缩放会改变页面渲染尺寸，强制走一次显隐收敛（重算/重挂 bounds），
+  // 避免 150% 缩回 100% 后内容与占位区错位。
+  applyVisibility(entry);
 });
 
 // 取当前实际缩放因子（单一真相源）：切换标签/恢复时前端据此校正 UI 显示
@@ -3382,6 +3385,57 @@ async function injectYzAssistant(wc) {
       return{applied:_ok,normalized:_ok&&String(got)!==String(t),
         value:got.slice(0,120),forceStop:_guard.forceStop,fails:_guard.fails};
     }
+    // ===FUZZY-START=== 文本模糊匹配：:contains / :has-text 在选择器文本漂移后的二级降级
+    function yzTextNorm(s){return String(s||'').replace(/\\s+/g,'').trim();}
+    function yzTextScore(a,b){
+      a=yzTextNorm(a);b=yzTextNorm(b);
+      if(!a||!b)return 0;
+      if(a===b)return 3;
+      if(a.indexOf(b)>=0||b.indexOf(a)>=0)return 2;
+      var seen={},hit=0;
+      for(var i=0;i<a.length;i++)seen[a.charAt(i)]=1;
+      for(var j=0;j<b.length;j++){if(seen[b.charAt(j)])hit++;}
+      return hit/Math.max(a.length,b.length)>=0.7?1:0;
+    }
+    function yzFuzzyFind(meta){
+      if(!meta)return null;
+      var tag=meta.tag&&/^[a-z0-9-]+$/i.test(meta.tag)?meta.tag:'*';
+      var els;try{els=document.querySelectorAll(tag);}catch(e){return null;}
+      var best=null,bestScore=0;
+      for(var i=0;i<els.length;i++){
+        var el=els[i];
+        if(el.offsetParent===null)continue;
+        var s=Math.max(yzTextScore(el.textContent,meta.text),
+          yzTextScore(el.getAttribute&&el.getAttribute('aria-label'),meta.aria));
+        if(s>bestScore){bestScore=s;best=el;}
+      }
+      return bestScore>=2?best:null;
+    }
+    function yzResolveFuzzy(sel){
+      var m=String(sel||'').match(/^([\\s\\S]*?)(?::contains|:has-text)\\(\\s*["']([\\s\\S]*?)["']\\s*\\)\\s*$/);
+      if(!m)return [];
+      var base=m[1]||'*',target=m[2],out=[];
+      var els;try{els=document.querySelectorAll(base);}catch(e){return[];}
+      for(var i=0;i<els.length;i++){
+        var el=els[i];
+        if(el.offsetParent===null)continue;
+        if(yzTextScore(el.textContent,target)>=2)out.push(el);
+      }
+      return out;
+    }
+    // ===FUZZY-END===
+    // 统一操作反馈：URL + 可见文本 + 可交互元素数（与服务端 snapshotFn 同口径）
+    function yzSnap(){
+      try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return{url:location.href,t:'',n:0};}
+    }
+    async function yzFinish(res,before){
+      await new Promise(function(r){setTimeout(r,250);});
+      var after=yzSnap();
+      res.status=res.status||'ok';
+      res.urlChanged=after.url!==before.url;
+      res.pageChanged=res.urlChanged||after.t!==before.t||after.n!==before.n;
+      return res;
+    }
     // 为元素生成尽量稳定的唯一 CSS 选择器
     function genSel(el){
       function esc(s){return String(s).replace(/"/g,'\\\\"');}
@@ -3411,6 +3465,13 @@ async function injectYzAssistant(wc) {
       var i=window.__yzElements.push(el)-1;
       try{el.__yzIndex=i;}catch(e){/* 跨域对象不可挂属性时忽略 */}
       var sel=genSel(el);if(sel)window.__yzSelMap[i]=sel;
+      // 记录文本/标签快照：选择器失效时按「同标签 + 相似文本/aria」做二级重定位
+      try{
+        if(!window.__yzMeta)window.__yzMeta={};
+        window.__yzMeta[i]={tag:el.tagName.toLowerCase(),
+          text:(el.textContent||'').trim().slice(0,80),
+          aria:(el.getAttribute&&el.getAttribute('aria-label')||'').trim().slice(0,80)};
+      }catch(e){/* 跨域对象不可读时忽略 */}
       return i;
     }
     // 解析选择器为元素数组（:contains 伪选择器返回全部匹配）
@@ -3428,11 +3489,12 @@ async function injectYzAssistant(wc) {
     }
     function resolve(sel){var a=resolveAll(sel);return a.length?a[0]:null;}
     window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,register:register,
+      resolveFuzzy:yzResolveFuzzy,fuzzyFind:yzFuzzyFind,snap:yzSnap,finish:yzFinish,
       yzNormText:yzNormText,yzFillCompare:yzFillCompare,yzFillGuard:yzFillGuard,
       /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
          改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
          ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
-      __yzVersion:2};
+      __yzVersion:3};
   })()`);
 }
 
@@ -4592,7 +4654,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           //     2026-10-16 实测 dev 启动失败）。所以本段及同模板内任何注释都禁止出现反引号，
           //     需要引用代码名一律用引号。
           function notFound(sel){
-            var out={error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};
+            var out={status:'not_found',error:'元素未找到: '+sel,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};
             try{
               var base=String(sel).replace(/:contains\(\s*["'][\s\S]*?["']\s*\)/g,'')||'*';
               var els;
@@ -4617,13 +4679,27 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           // ===NOTFOUND-END===
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
+            var relocated='';
             // 自动降级：index 失效时用注册时记录的 selector 快照重定位一次，避免多一次 get_page_info 往返
             if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){
               var snap=window.__yzSelMap[a.index];
-              var f=document.querySelector(snap);if(f){el=f;el.__yzIndex=a.index;window.__yzElements[a.index]=el;}
+              var f=document.querySelector(snap);if(f){el=f;el.__yzIndex=a.index;window.__yzElements[a.index]=el;relocated='selector';}
             }
-            if(!el||!el.isConnected)return{error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
-            return clickEl(el).then(function(r){r.index=a.index;return r;});
+            // 二级降级：选择器也失效时，按「同标签 + 相似文本/aria」模糊重定位（文本漂移兜底）
+            if((!el||!el.isConnected)&&window.__yzMeta&&window.__yzMeta[a.index]){
+              var fz=A.fuzzyFind(window.__yzMeta[a.index]);
+              if(fz){el=fz;relocated='fuzzy';try{el.__yzIndex=a.index;}catch(e){}window.__yzElements[a.index]=el;}
+            }
+            if(!el||!el.isConnected)return{status:'stale_index',error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
+            var beforeIdx=yzSnap();
+            return clickEl(el).then(function(r){
+              r.index=a.index;
+              if(relocated==='fuzzy'){
+                r.autoRelocated='fuzzy-text';
+                r.hint='原选择器失效，已按同标签+相似文本重定位；请用 browser_get_page_content 复核是否点中了目标。';
+              }
+              return yzFinish(r,beforeIdx);
+            });
           }
           if(a.selector){
             var els=A.resolveAll(a.selector);
@@ -4632,6 +4708,16 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             //   （实测抖音「继续编辑」按钮即此场景）。改为：可见优先，无可见时放宽到
             //   "DOM 中存在即可"并明确标注 —— DOM click 不受视口裁切影响（见 clickEl）。
             if(els.length===0){
+              // 二级降级：文本漂移（:contains 原文本对不上）时按同标签+相似文本重定位
+              var fuzzy=A.resolveFuzzy(a.selector);
+              if(fuzzy.length){
+                var beforeFz=yzSnap();
+                return clickEl(fuzzy[0]).then(function(r){
+                  r.autoRelocated='fuzzy-text';
+                  r.hint='选择器文本已漂移，已按同标签+相似文本重定位到「'+((fuzzy[0].textContent||'').trim().slice(0,30))+'」。请用 browser_get_page_content 复核是否点中目标。';
+                  return yzFinish(r,beforeFz);
+                });
+              }
               var loose=[];
               try{
                 var cm=String(a.selector).match(/^([\s\S]*?):contains\(\s*["']([\s\S]*?)["']\s*\)\s*$/);
@@ -4643,22 +4729,28 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               }catch(e){}
               if(loose.length===0)return notFound(a.selector);
               // clickEl 返回 Promise（executeJavaScript 会自动 await），故用 then 修饰结果
+              var beforeLoose=yzSnap();
               return clickEl(loose[0]).then(function(r){
                 r.hiddenFallback=true;
                 r.hint='元素在 DOM 中但当前不可见（折叠菜单/弹层/未滚到视口），已按 DOM 点击执行；如未生效请先展开对应菜单或滚动到该区域再点。';
-                return r;
+                return yzFinish(r,beforeLoose);
               });
             }
             if(els.length>1){
               var cands=els.slice(0,10).map(function(el){
                 return{index:A.register(el),tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,40),selector:A.genSel(el)};
               });
-              return{ambiguous:true,matched:els.length,candidates:cands,hint:'该选择器匹配多个元素，请从候选列表选一个 index 重新调用 click'};
+              return{status:'ambiguous',ambiguous:true,matched:els.length,candidates:cands,hint:'该选择器匹配多个元素，请从候选列表选一个 index 重新调用 click'};
             }
-            return clickEl(els[0]);
+            var beforeSel=yzSnap();
+            return clickEl(els[0]).then(function(r){return yzFinish(r,beforeSel);});
           }
-          if(a.x!=null&&a.y!=null){var tag=A.clickAt(a.x,a.y);return{success:true,via:'real-mouse',x:a.x,y:a.y,tag:tag};}
-          return{error:'需要 index、selector 或 x/y'};
+          if(a.x!=null&&a.y!=null){
+            var beforeXY=yzSnap();
+            var tag=A.clickAt(a.x,a.y);
+            return yzFinish({success:true,via:'real-mouse',x:a.x,y:a.y,tag:tag},beforeXY);
+          }
+          return{status:'invalid_args',error:'需要 index、selector 或 x/y'};
         })()`);
       }
       case 'type': {
@@ -4666,17 +4758,27 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         //   JS 改值缺 keydown/keyup/composition、富文本内部 model 不同步，
         //   而评论框/搜索框正是这些场景。
         //   成功则直接用其结果；不可用（CDP 未就绪）才回落下面的 JS 实现。
+        // ★ 统一反馈：CDP 路径在输入前后各采一次页面快照（与服务端 snapshotFn 同口径）
+        const typeSnapJs = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
+        const typeBefore = await wc.executeJavaScript(typeSnapJs).catch(() => null);
         const cdpRes = await cdpTypeText(wc, { index: args.index, selector: args.selector }, args.text, args.pressEnter === true);
         if (cdpRes && cdpRes.locateError) {
           // 定位失败是真错误（元素不存在/编号过期），原样回报 —— 回落 JS 只会重复同一个失败
-          return { error: cdpRes.locateError };
+          return { status: 'stale_index', error: cdpRes.locateError };
         }
-        if (cdpRes) return { success: !!cdpRes.applied, ...cdpRes };
+        if (cdpRes) {
+          const typeAfter = await wc.executeJavaScript(typeSnapJs).catch(() => null);
+          const urlChanged = !!(typeBefore && typeAfter && typeAfter.url !== typeBefore.url);
+          const pageChanged = !!(typeBefore && typeAfter
+            && (urlChanged || typeAfter.t !== typeBefore.t || typeAfter.n !== typeBefore.n));
+          return { ...cdpRes, success: !!cdpRes.applied, status: cdpRes.applied ? 'ok' : 'failed', urlChanged, pageChanged };
+        }
         // ↓ CDP 不可用 → 回落 JS 实现（Web 端 / CDP 被占用等）
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
-          function typeEl(el){
+          async function typeEl(el){
+            var before=yzSnap();
             el.scrollIntoView({behavior:'smooth',block:'center'});
             var rect=el.getBoundingClientRect();A.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'输入');
             var r=A.typeIn(el,a.text);
@@ -4688,30 +4790,50 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               el.dispatchEvent(new KeyboardEvent('keydown',ko));el.dispatchEvent(new KeyboardEvent('keypress',ko));el.dispatchEvent(new KeyboardEvent('keyup',ko));
               out.entered=true;
             }
-            return out;
+            return yzFinish(out,before);
           }
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
+            var relocated='';
             if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){
               var snap=window.__yzSelMap[a.index];
-              var f=document.querySelector(snap);if(f){el=f;el.__yzIndex=a.index;window.__yzElements[a.index]=el;}
+              var f=document.querySelector(snap);if(f){el=f;el.__yzIndex=a.index;window.__yzElements[a.index]=el;relocated='selector';}
             }
-            if(!el||!el.isConnected)return{error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
-            return typeEl(el);
+            if((!el||!el.isConnected)&&window.__yzMeta&&window.__yzMeta[a.index]){
+              var fz=A.fuzzyFind(window.__yzMeta[a.index]);
+              if(fz){el=fz;relocated='fuzzy';try{el.__yzIndex=a.index;}catch(e){}window.__yzElements[a.index]=el;}
+            }
+            if(!el||!el.isConnected)return{status:'stale_index',error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
+            return typeEl(el).then(function(r){
+              if(relocated==='fuzzy'){r.autoRelocated='fuzzy-text';r.hint='原选择器失效，已按同标签+相似文本重定位；请用 browser_get_page_content 复核输入框是否正确。';}
+              return r;
+            });
           }
           if(a.selector){
             var els=A.resolveAll(a.selector);
-            if(els.length===0)return{error:'元素未找到: '+a.selector,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};
+            if(els.length===0){
+              var fuzzy=A.resolveFuzzy(a.selector);
+              if(fuzzy.length){
+                return typeEl(fuzzy[0]).then(function(r){
+                  r.autoRelocated='fuzzy-text';
+                  r.hint='选择器文本已漂移，已按同标签+相似文本重定位。请用 browser_get_page_content 复核输入框是否正确。';
+                  return r;
+                });
+              }
+              return{status:'not_found',error:'元素未找到: '+a.selector,hint:'建议先调用 browser_get_page_info 获取编号元素列表，再用 index 参数定位'};
+            }
             if(els.length>1){
               var cands=els.slice(0,10).map(function(el){
                 return{index:A.register(el),tag:el.tagName.toLowerCase(),text:(el.textContent||'').trim().slice(0,40),selector:A.genSel(el)};
               });
-              return{ambiguous:true,matched:els.length,candidates:cands,hint:'该选择器匹配多个元素，请从候选列表选一个 index 重新调用 type'};
+              return{status:'ambiguous',ambiguous:true,matched:els.length,candidates:cands,hint:'该选择器匹配多个元素，请从候选列表选一个 index 重新调用 type'};
             }
             return typeEl(els[0]);
           }
-          var el=document.activeElement;if(!el)return{error:'无聚焦元素'};
-          var r=A.typeIn(el,a.text);return{success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value,forceStop:!!r.forceStop};
+          var el=document.activeElement;if(!el)return{status:'not_found',error:'无聚焦元素'};
+          var beforeAE=yzSnap();
+          var r=A.typeIn(el,a.text);
+          return yzFinish({success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value,forceStop:!!r.forceStop},beforeAE);
         })()`);
       }
       case 'press': {
@@ -7179,13 +7301,48 @@ app.whenReady().then(async () => {
       console.warn('[ext] 商店模块不可用:', err && err.message);
     }
     const browserSession = session.fromPartition('persist:browser-view');
+    const extensionsRoot = path.join(app.getPath('userData'), 'browser-extensions');
+    const extensionsStoreDir = path.join(extensionsRoot, 'store');
     extensionManager = createExtensionManager({
-      rootDir: path.join(app.getPath('userData'), 'browser-extensions'),
-      storeDir: path.join(app.getPath('userData'), 'browser-extensions', 'store'),
+      rootDir: extensionsRoot,
+      storeDir: extensionsStoreDir,
       store: extensionStore,
       whitelist: { isAllowed: isAllowedStoreExtension, list: listWhitelist },
       getSession: () => browserSession,
     });
+    // 商店页内一键安装（P2 最后一块）：接管 chromewebstore.google.com 的「添加至 Chrome」。
+    // ★ loadExtensions:false —— 扩展加载统一由本应用 registry 负责，避免双加载；
+    //   autoUpdate:false —— 更新仍由下方每 6 小时的 updateAll 负责。
+    // ★ allowlist 只放精选 ID；beforeInstall 再走一次原生确认（默认取消）。
+    if (extensionStore && typeof extensionStore.installChromeWebStore === 'function') {
+      try {
+        await extensionStore.installChromeWebStore({
+          session: browserSession,
+          extensionsPath: extensionsStoreDir,
+          loadExtensions: false,
+          autoUpdate: false,
+          allowlist: listWhitelist().map((w) => w.id),
+          beforeInstall: async ({ id, localizedName, manifest }) => {
+            let info;
+            try {
+              info = manifestInfo(manifest || {});
+            } catch {
+              info = { name: localizedName || id, version: '', description: '', permissions: [], hostPermissions: [] };
+            }
+            if (!info.name || info.name === 'undefined') info.name = localizedName || id;
+            const ok = await confirmExtensionInstall({
+              info,
+              fingerprint: '',
+              sourceLabel: 'Chrome Web Store · ' + id,
+            });
+            return { action: ok ? 'allow' : 'cancel' };
+          },
+        });
+        console.log('[ext] 商店页内安装已接管（仅白名单）');
+      } catch (err) {
+        console.warn('[ext] 商店页内安装接管失败:', err && err.message);
+      }
+    }
     // 扩展右键菜单（P3，免费路径）：Electron 没有 chrome.contextMenus，用 preload 注入 + 原生 Menu 自研。
     // ★ preload 必须先注册再 loadAll，否则已装扩展的后台页/SW 启动时拿不到 API。
     try {
@@ -7257,6 +7414,13 @@ app.whenReady().then(async () => {
     } catch (err) {
       console.warn('[ext] 启动加载失败:', err && err.message);
     }
+    // 商店页内安装由库直接落盘、没有完成回调：定期对账 storeDir，发现新扩展就刷新工具条。
+    const reconcileTimer = setInterval(() => {
+      try {
+        if (extensionManager && extensionManager.reconcileStoreExtensions() > 0) broadcastExtensionActions();
+      } catch { /* ignore */ }
+    }, 10000);
+    if (reconcileTimer.unref) reconcileTimer.unref();
     if (extensionStore) {
       const checkUpdates = () => {
         extensionManager.updateAll()

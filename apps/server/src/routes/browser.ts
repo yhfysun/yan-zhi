@@ -769,7 +769,45 @@ function ensureYzReg() {
   const w = window as any;
   if (w.__yzReg) return w.__yzReg;
   w.__yzElements = w.__yzElements || [];
+  w.__yzMeta = w.__yzMeta || {};
   const esc = (s: string) => String(s).replace(/"/g, '\\"');
+  // 文本模糊匹配：:has-text / :contains 文本漂移时的二级降级（与桌面端同口径）
+  const textNorm = (s: unknown) => String(s ?? '').replace(/\s+/g, '').trim();
+  const textScore = (a: unknown, b: unknown): number => {
+    const x = textNorm(a); const y = textNorm(b);
+    if (!x || !y) return 0;
+    if (x === y) return 3;
+    if (x.includes(y) || y.includes(x)) return 2;
+    const seen = new Set(x.split(''));
+    let hit = 0;
+    for (const ch of y) if (seen.has(ch)) hit++;
+    return hit / Math.max(x.length, y.length) >= 0.7 ? 1 : 0;
+  };
+  const fuzzyFind = (meta: any): Element | null => {
+    if (!meta) return null;
+    const tag = meta.tag && /^[a-z0-9-]+$/i.test(meta.tag) ? meta.tag : '*';
+    let els: Element[] = [];
+    try { els = Array.from(document.querySelectorAll(tag)); } catch { return null; }
+    let best: Element | null = null; let bestScore = 0;
+    for (const el of els) {
+      if ((el as any).offsetParent === null) continue;
+      const score = Math.max(textScore(el.textContent, meta.text), textScore(el.getAttribute('aria-label'), meta.aria));
+      if (score > bestScore) { bestScore = score; best = el; }
+    }
+    return bestScore >= 2 ? best : null;
+  };
+  const resolveFuzzy = (sel: string): Element[] => {
+    const m = String(sel || '').match(/^([\s\S]*?)(?::contains|:has-text)\(\s*["']([\s\S]*?)["']\s*\)\s*$/);
+    if (!m) return [];
+    const base = m[1] || '*'; const target = m[2]; const out: Element[] = [];
+    let els: Element[] = [];
+    try { els = Array.from(document.querySelectorAll(base)); } catch { return []; }
+    for (const el of els) {
+      if ((el as any).offsetParent === null) continue;
+      if (textScore(el.textContent, target) >= 2) out.push(el);
+    }
+    return out;
+  };
   const genSel = (el: any): string => {
     const tag = el.tagName.toLowerCase();
     if (el.id && /^[A-Za-z][\w-]*$/.test(el.id)) { try { if (document.querySelectorAll('#' + el.id).length === 1) return '#' + el.id; } catch {} }
@@ -799,10 +837,21 @@ function ensureYzReg() {
       // 记录 index → 稳定 selector 快照，供 index 失效时自动降级重定位
       const sel = genSel(el);
       if (sel) { w.__yzSelMap = w.__yzSelMap || new Map(); try { w.__yzSelMap.set(i, sel); } catch { /* ignore */ } }
+      // 文本/标签快照：选择器也失效时按「同标签 + 相似文本/aria」二级重定位
+      try {
+        w.__yzMeta[i] = {
+          tag: el.tagName.toLowerCase(),
+          text: (el.textContent || '').trim().slice(0, 80),
+          aria: (el.getAttribute && el.getAttribute('aria-label') || '').trim().slice(0, 80),
+        };
+      } catch { /* ignore */ }
       return i;
     },
     get(i: number) { return w.__yzElements[i]; },
     selOf(i: number) { return (w.__yzSelMap || new Map()).get(i); },
+    metaOf(i: number) { return (w.__yzMeta || {})[i]; },
+    fuzzyFind,
+    resolveFuzzy,
     genSel,
   };
   return w.__yzReg;
@@ -815,6 +864,21 @@ const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'chec
 //   两个方向都错且不报错。按 tab 分桶是因为：① 语义上这是页面状态；
 //   ② 服务端 `/action` **拿不到会话标识**（单活动页架构）；③ 两链路都能拿到 tabId。
 const noChangeStreaks = new KeyedStreak({ threshold: 3 });
+/** 统一 click/type 结果：补稳定 status，便于模型按同一套字段判断成败 */
+function unifyActionStatus(result: any): any {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  if (result.status) return result;
+  if (result.ambiguous) result.status = 'ambiguous';
+  else if (result.error) {
+    const msg = String(result.error);
+    result.status = /已失效/.test(msg) ? 'stale_index'
+      : /未找到/.test(msg) ? 'not_found'
+        : /未提供定位/.test(msg) ? 'invalid_args'
+          : 'error';
+  } else if (result.success === false || result.applied === false) result.status = 'failed';
+  else result.status = 'ok';
+  return result;
+}
 const snapshotFn = () => { try { const d = document.body; return { url: location.href, t: (d ? d.innerText : '').slice(0, 2000), n: document.querySelectorAll('a,button,input,select,textarea').length }; } catch { return null; } };
 
 router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
@@ -868,6 +932,12 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
                 if (found) { el = found as Element; locator = 'index=' + p.idx + '→selector=' + snap; degraded = true; }
               }
             }
+            // 二级降级：选择器也失效时，按「同标签 + 相似文本/aria」模糊重定位（文本漂移兜底）
+            if ((!el || !el.isConnected) && p.idx != null) {
+              const meta = R.metaOf ? R.metaOf(p.idx) : null;
+              const found = meta && R.fuzzyFind ? R.fuzzyFind(meta) : null;
+              if (found) { el = found; locator = 'index=' + p.idx + '→fuzzy'; degraded = true; }
+            }
             if (!el || !el.isConnected) return { error: `${locator} 已失效（页面已变化），请重新调用 get_page_info 获取最新 ref/index 列表` };
             el.scrollIntoView({ block: 'center' });
             const rect = el.getBoundingClientRect();
@@ -902,6 +972,22 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
           // 多匹配歧义检测：返回带编号的候选列表
           const count = await page.locator(selector).count().catch(() => -1);
           if (count === 0) {
+            // 二级降级：文本漂移（:has-text 原文本对不上）时按同标签+相似文本重定位
+            await page.evaluate(ensureYzReg);
+            const fuzzy = await page.evaluate((sel: string) => {
+              const R = (window as any).__yzReg;
+              const els = R.resolveFuzzy ? R.resolveFuzzy(sel) : [];
+              if (!els.length) return null;
+              const el = els[0];
+              el.scrollIntoView({ block: 'center' });
+              const r = el.getBoundingClientRect();
+              return { x: r.x + r.width / 2, y: r.y + r.height / 2, text: (el.textContent || '').trim().slice(0, 40) };
+            }, String(args.selector)).catch(() => null);
+            if (fuzzy) {
+              await page.mouse.click((fuzzy as any).x, (fuzzy as any).y);
+              result = { success: true, via: 'fuzzy-text', autoRelocated: 'fuzzy-text', matchedText: (fuzzy as any).text };
+              break;
+            }
             result = { error: `元素未找到: ${args.selector}`, hint: '建议先调用 get_page_info 获取编号元素列表，再用 index 参数定位' };
             break;
           }
@@ -957,6 +1043,12 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
                 const found = document.querySelector(snap);
                 if (found) { el = found as any; locator = 'index=' + p.idx + '→selector=' + snap; }
               }
+            }
+            // 二级降级：选择器也失效时，按「同标签 + 相似文本/aria」模糊重定位
+            if ((!el || !el.isConnected) && p.idx != null) {
+              const meta = R.metaOf ? R.metaOf(p.idx) : null;
+              const found = meta && R.fuzzyFind ? R.fuzzyFind(meta) : null;
+              if (found) { el = found as any; locator = 'index=' + p.idx + '→fuzzy'; }
             }
             if (!el || !el.isConnected) return { error: `${locator} 已失效（页面已变化），请重新调用 get_page_info 获取最新 ref/index 列表` };
             el.scrollIntoView({ block: 'center' });
@@ -1014,7 +1106,29 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         if (selector) {
           const count = await page.locator(selector).count().catch(() => -1);
           if (count === 0) {
-            result = { error: `元素未找到: ${args.selector}`, hint: '建议先调用 get_page_info 获取编号元素列表，再用 index 参数定位' };
+            // 二级降级：文本漂移时按同标签+相似文本重定位，再聚焦输入
+            await page.evaluate(ensureYzReg);
+            const fuzzy = await page.evaluate((sel: string) => {
+              const R = (window as any).__yzReg;
+              const els = R.resolveFuzzy ? R.resolveFuzzy(sel) : [];
+              if (!els.length) return null;
+              const el = els[0];
+              el.scrollIntoView({ block: 'center' });
+              const r = el.getBoundingClientRect();
+              return { x: r.x + r.width / 2, y: r.y + r.height / 2, text: (el.textContent || '').trim().slice(0, 40) };
+            }, String(args.selector)).catch(() => null);
+            if (!fuzzy) {
+              result = { error: `元素未找到: ${args.selector}`, hint: '建议先调用 get_page_info 获取编号元素列表，再用 index 参数定位' };
+              break;
+            }
+            await page.mouse.click((fuzzy as any).x, (fuzzy as any).y);
+            await page.keyboard.type(text || '', { delay: 30 });
+            const fuzzyOut: Record<string, unknown> = {
+              typed: text?.length || 0, via: 'fuzzy-text',
+              autoRelocated: 'fuzzy-text', matchedText: (fuzzy as any).text,
+            };
+            if (args.pressEnter) { await page.keyboard.press('Enter'); fuzzyOut.entered = true; }
+            result = fuzzyOut;
             break;
           }
           if (count > 1) {
@@ -1920,6 +2034,8 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
       default:
         res.status(400).json({ error: '未知 action: ' + action }); return;
     }
+    // 统一 click/type 结果结构（P0）：status 与 pageChanged / urlChanged 同一套口径
+    if (action === 'click' || action === 'type') result = unifyActionStatus(result);
     // 变化检测：操作后对比快照，为模型提供 pageChanged / noChangeStreak 反馈
     const r = result as any;
     if (beforeState && r && !r.error && !r.ambiguous) {

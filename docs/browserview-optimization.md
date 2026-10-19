@@ -206,9 +206,18 @@ watch(shouldBeVisible, () => { nextTick(() => syncBrowserViewBounds(true)); }, {
 
 **校验**：`node --check main.cjs` ✅ / `preload.cjs` ✅ / `vue-tsc --noEmit` 0 错误。
 
-### ⬜ 未完成（本文档 §6 逐项展开）
+### ✅ 2026-10-19 收尾
 
-剩余 7 项：L1 / L4 / L5 / L6 / L7 / L8 / L9。
+剩余项已逐项处理（现役引擎为 webview，旧 BrowserView 路径仅作回退）：
+
+| 项 | 结论 |
+|---|---|
+| L1 `scrollbarCssKey` 泄漏 | 已按「不清 key」方案固化，见 `resize`/`hide` 处注释 |
+| L4 后台节流 / L7 tab 上限 | 已实现 `MAX_TABS` + LRU + 空闲回收 + 非激活降帧 |
+| L5 closeTab 顶替 | 已实现（渲染层顶替 + 主进程兜底） |
+| L6 缩放后 bounds | 本次补 `applyVisibility(entry)`，缩放后强制重挂重算 |
+| L8 多窗口 ownerWindow | 字段已加入 entry，`applyVisibility`/`ensureFallbackBounds` 已优先读 `entry.ownerWindow` |
+| L9 兜底宽度 | 已优先复用 `lastGoodBounds`（来自真实 resize），写死 480 仅首次导航的极端兜底 |
 
 ---
 

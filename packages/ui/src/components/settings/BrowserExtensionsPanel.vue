@@ -56,11 +56,29 @@
       </div>
     </div>
 
+    <div v-if="supported && extensions.length" class="ext-toolbar">
+      <el-input
+        v-model="search"
+        size="small"
+        clearable
+        placeholder="搜索扩展名称或描述"
+        class="ext-search"
+      />
+      <span class="ext-count">{{ filteredExtensions.length }} / {{ extensions.length }}</span>
+    </div>
+
     <div v-if="supported && !loading && !extensions.length" class="ext-empty">
       还没有安装扩展。点击右上角，选择一个包含 <code>manifest.json</code> 的已解压目录。
     </div>
+    <div v-else-if="supported && extensions.length && !filteredExtensions.length" class="ext-empty">
+      没有匹配「{{ search }}」的扩展。
+    </div>
 
-    <div v-for="ext in extensions" :key="ext.key" class="ext-card">
+    <div v-for="ext in filteredExtensions" :key="ext.key" class="ext-card">
+      <div class="ext-icon">
+        <img v-if="ext.iconDataUrl" :src="ext.iconDataUrl" alt="" />
+        <span v-else class="ext-icon-fallback">{{ (ext.name || '?').slice(0, 1) }}</span>
+      </div>
       <div class="ext-card-main">
         <div class="ext-name-row">
           <span class="ext-name">{{ ext.name }}</span>
@@ -73,15 +91,28 @@
         </div>
         <div v-if="ext.description" class="ext-desc">{{ ext.description }}</div>
         <div v-if="ext.permissions.length || ext.hostPermissions.length" class="ext-perms">
-          <el-tag v-for="p in ext.permissions" :key="'perm-' + p" size="small" class="perm-chip">{{ p }}</el-tag>
+          <el-tag
+            v-for="p in ext.permissions"
+            :key="'perm-' + p"
+            size="small"
+            class="perm-chip"
+            :title="permissionLabel(p)"
+          >{{ p }}</el-tag>
           <el-tag
             v-for="p in ext.hostPermissions"
             :key="'host-' + p"
             size="small"
             type="danger"
             class="perm-chip"
+            :title="'可读取/修改这些站点的内容：' + p"
           >{{ p }}</el-tag>
         </div>
+        <div class="ext-meta">
+          <span>{{ sourceLabel(ext) }}</span>
+          <span v-if="ext.installedAt">安装于 {{ formatDate(ext.installedAt) }}</span>
+          <span v-if="ext.storeId" class="ext-mono">{{ ext.storeId }}</span>
+        </div>
+        <div v-if="ext.origin" class="ext-origin" :title="ext.origin">来源：{{ ext.origin }}</div>
         <div v-if="ext.manifestError" class="ext-warn">manifest 读取失败：{{ ext.manifestError }}</div>
         <div v-else-if="ext.loadError" class="ext-warn">加载失败：{{ ext.loadError }}</div>
         <div v-if="ext.fingerprint" class="ext-fingerprint" :title="ext.origin || ''">
@@ -109,7 +140,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 
 interface ExtensionEntry {
@@ -125,12 +156,15 @@ interface ExtensionEntry {
   enabled: boolean;
   loadError: string | null;
   manifestError?: string;
-  source?: 'folder' | 'store';
+  source?: 'folder' | 'zip' | 'store';
   storeId?: string | null;
+  installedAt?: string | null;
   /** 安装包指纹（zip 为文件 SHA-256；目录为内容 SHA-256） */
   fingerprint?: string | null;
   /** 安装来源：目录路径或 zip 文件路径 */
   origin?: string | null;
+  /** manifest 声明的图标（data URL，管理页展示用） */
+  iconDataUrl?: string;
 }
 
 interface WhitelistEntry {
@@ -163,6 +197,55 @@ const storeInstalling = ref('');
 const updating = ref(false);
 const busyKey = ref('');
 const error = ref('');
+const search = ref('');
+
+/** 常见权限的中文解释（未收录的原样展示权限名） */
+const PERMISSION_LABELS: Record<string, string> = {
+  storage: '读写扩展自己的本地存储',
+  unlimitedStorage: '不受配额限制地存储数据',
+  tabs: '读取标签页标题与网址',
+  activeTab: '在你点击扩展时访问当前页面',
+  scripting: '向页面注入脚本或样式',
+  cookies: '读取和修改网站 Cookie（含登录态）',
+  webRequest: '监听或拦截网络请求',
+  webNavigation: '读取页面导航事件',
+  contextMenus: '添加浏览器右键菜单项',
+  notifications: '显示系统通知',
+  downloads: '管理下载任务',
+  history: '读取浏览历史',
+  bookmarks: '读写书签',
+  clipboardRead: '读取剪贴板',
+  clipboardWrite: '写入剪贴板',
+  alarms: '设置定时任务',
+  identity: '读取账号身份信息',
+  management: '管理其它扩展',
+  debugger: '调试页面与扩展',
+};
+
+function permissionLabel(p: string) {
+  return PERMISSION_LABELS[p] || p;
+}
+
+const filteredExtensions = computed(() => {
+  const q = search.value.trim().toLowerCase();
+  if (!q) return extensions.value;
+  return extensions.value.filter((ext) =>
+    (ext.name || '').toLowerCase().includes(q) || (ext.description || '').toLowerCase().includes(q),
+  );
+});
+
+function sourceLabel(ext: ExtensionEntry) {
+  if (ext.source === 'store') return 'Chrome 商店';
+  if (ext.source === 'zip') return '本地 zip 包';
+  return '本地目录';
+}
+
+function formatDate(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 async function refresh() {
   if (!api) return;
@@ -380,6 +463,46 @@ onMounted(() => {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   border-radius: 10px;
+}
+.ext-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ext-search { max-width: 280px; }
+.ext-count { font-size: 12px; color: var(--color-text-secondary); }
+.ext-icon {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--glass-bg-hover);
+}
+.ext-icon img { width: 100%; height: 100%; object-fit: contain; }
+.ext-icon-fallback { font-size: 16px; font-weight: 600; color: var(--color-text-secondary); }
+.ext-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  opacity: 0.85;
+}
+.ext-mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.ext-origin {
+  margin-top: 4px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  opacity: 0.7;
 }
 .ext-card-main { min-width: 0; flex: 1; }
 .ext-name-row {

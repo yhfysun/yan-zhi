@@ -268,6 +268,67 @@ describe('manifest 解析缓存', () => {
   });
 });
 
+describe('商店目录对账与管理页展示', () => {
+  const STORE_ID = 'eimadpbcbfnmbkopoojfekhnkhdbieeh';
+
+  function makeStoreExt (root, { withIcon = true } = {}) {
+    const storeDir = path.join(root, 'store');
+    const dir = path.join(storeDir, STORE_ID, '1.0.0_0');
+    writeExt(dir, {
+      manifest_version: 3,
+      name: 'Store Ext',
+      version: '1.0.0',
+      ...(withIcon ? { icons: { 128: 'icon.png' } } : {}),
+    });
+    if (withIcon) fs.writeFileSync(path.join(dir, 'icon.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    return { storeDir, dir };
+  }
+
+  test('库直接安装的商店扩展会被对账补进注册表并带图标', () => {
+    const root = makeRoot();
+    makeStoreExt(root);
+    const manager = createExtensionManager({
+      rootDir: root,
+      storeDir: path.join(root, 'store'),
+      getSession: () => fakeSession(),
+      now: () => NOW,
+    });
+    const list = manager.list();
+    assert.strictEqual(list.length, 1);
+    assert.strictEqual(list[0].source, 'store');
+    assert.strictEqual(list[0].storeId, STORE_ID);
+    assert.strictEqual(list[0].enabled, true);
+    assert.match(list[0].iconDataUrl, /^data:image\/png;base64,/);
+  });
+
+  test('对账幂等：多次 list 不重复登记', () => {
+    const root = makeRoot();
+    makeStoreExt(root);
+    const manager = createExtensionManager({
+      rootDir: root,
+      storeDir: path.join(root, 'store'),
+      getSession: () => fakeSession(),
+    });
+    assert.strictEqual(manager.list().length, 1);
+    assert.strictEqual(manager.list().length, 1);
+    assert.strictEqual(manager.reconcileStoreExtensions(), 0);
+  });
+
+  test('manifest 指到目录外的图标路径不会被读取', () => {
+    const root = makeRoot();
+    const { dir } = makeStoreExt(root, { withIcon: false });
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    manifest.icons = { 128: '../outside.png' };
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+    const manager = createExtensionManager({
+      rootDir: root,
+      storeDir: path.join(root, 'store'),
+      getSession: () => fakeSession(),
+    });
+    assert.strictEqual(manager.list()[0].iconDataUrl, '');
+  });
+});
+
 describe('本地 zip 安装与指纹（P2 兜底 / P4 来源约束）', () => {
   function makeZip (files, name = 'ext.zip') {
     const dir = makeRoot();

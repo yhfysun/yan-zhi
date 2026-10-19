@@ -2551,9 +2551,30 @@ function toolIdsIncludeBrowser(ids: unknown): boolean {
  *
  *  ★ 导出供测试真跑（判据错了的表现是"以为各占一页、其实抢同一页"，不报错且难查）。
  */
-export function browserFlowKeyOf(args: any, parentToolCallId: string): string {
-  const t = String(args?.browserTarget ?? args?.browser_target ?? '').trim().toLowerCase();
+export function browserFlowKeyOf(args: any, parentToolCallId: string, agentConf?: any): string {
+  let conf = agentConf;
+  if (typeof conf === 'string') {
+    try { conf = JSON.parse(conf); } catch { conf = null; }
+  }
+  // call_agent 入参优先，其次子智能体配置（默认继承），最后回落共享页
+  const t = String(
+    args?.browserTarget ?? args?.browser_target
+    ?? conf?.browserTarget ?? conf?.browser_target
+    ?? '',
+  ).trim().toLowerCase();
   return t === 'background' ? `bg:sub:${parentToolCallId}` : SHARED_FLOW;
+}
+
+/** 读取子智能体配置（供 browser_target 默认继承）；查不到/损坏一律返回 null */
+function agentConfigOf(agentId: unknown, userId: string): any {
+  const id = String(agentId ?? '').trim();
+  if (!id) return null;
+  try {
+    const row = db.prepare('SELECT config_json FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(id, userId) as any;
+    return row?.config_json ? JSON.parse(row.config_json) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 前端提交工具执行结果 */
@@ -3952,7 +3973,7 @@ async function runReActLoop(task: LlmTask, params: {
           const capable = a === null ? true : isBrowserCapableSubAgent(a?.agentId ?? a?.agent_id ?? a?.id, task.userId);
           batchCallAgentBrowser.set(tc, capable);
           // 解析失败按"浏览器型 + 共享页"兜底（与上面的兜底同一取向）
-          if (capable) batchCallAgentTabKey.set(tc, a === null ? SHARED_FLOW : browserFlowKeyOf(a, String(tc.id || '')));
+          if (capable) batchCallAgentTabKey.set(tc, a === null ? SHARED_FLOW : browserFlowKeyOf(a, String(tc.id || ''), agentConfigOf(a?.agentId ?? a?.agent_id ?? a?.id, task.userId)));
         }
         // 每个 tabKey 上**只放一个**进并发批（同页的第二个改串行 —— 同一页上并发才会互踩）
         const tabKeyTaken = new Set<string>();
@@ -6056,7 +6077,7 @@ async function startBackgroundSubAgent(
   //   ⇒ 浏览器型后台子任务在别的流占用期间**直接拒绝**（不排队、更不静默并发驱动）。
   const bgFlowId = `sub:${toolCallId}`;
   // ★ 这条后台流要占的**标签页键**（与 runSubAgent 同源同值：一处取值、两处共用）
-  const bgTabKey = browserFlowKeyOf(args, toolCallId);
+  const bgTabKey = browserFlowKeyOf(args, toolCallId, agentConfigOf(agentId, task.userId));
   const bgBrowserCapable = isBrowserCapableSubAgent(agentId, task.userId);
   if (bgBrowserCapable) {
     task.browserFlows ||= createFlowLocks();
@@ -6174,7 +6195,7 @@ async function runSubAgent(
   const flowId = `sub:${parentToolCallId}`;
   // ★ 本子智能体要占的**标签页键**：`shared`（缺省 = 与主面板共用同一个操作页）或 `bg:<flowId>`
   //   （自己一个后台页，可与别的流真正并行）。取值口径**只在 browserFlowKeyOf 一处**。
-  const tabKey = browserFlowKeyOf(args, parentToolCallId);
+  const tabKey = browserFlowKeyOf(args, parentToolCallId, agentConfigOf((args as any)?.agentId ?? (args as any)?.agent_id ?? (args as any)?.id, task.userId));
   const browserCapable = specOverride
     ? toolIdsIncludeBrowser(specOverride.toolIds)
     : isBrowserCapableSubAgent((args as any)?.agentId ?? (args as any)?.agent_id ?? (args as any)?.id, task.userId);
@@ -6509,7 +6530,7 @@ async function runSubAgentImpl(
     subAgentDepth: depth + 1,
     // ★ 这条流在浏览器上占哪一页（`shared` / `bg:<flowId>`）——一路带到桥调用，
     //   桌面端据此把「锚 / 归属」分到各自流上。取值与流锁同一处（browserFlowKeyOf）。
-    browserFlowKey: browserFlowKeyOf(args, parentToolCallId),
+    browserFlowKey: browserFlowKeyOf(args, parentToolCallId, agent.config_json),
   };
   let client = new LlmClient(platform, model);
   // 子智能体步数上限：尊重 agent 配置的 maxReActSteps（如 pageAgent 的 50），

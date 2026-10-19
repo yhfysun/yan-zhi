@@ -201,6 +201,14 @@ describe('④ ★★★ 后台标签页的流键推导 browserFlowKeyOf【真跑
     expect(browserFlowKeyOf({ browser_target: 'background' }, 'tc-9')).toBe('bg:sub:tc-9');
   });
 
+  it('子智能体配置 browserTarget 默认继承：入参优先，配置兜底', async () => {
+    const { browserFlowKeyOf } = await import('../src/llm-task-manager.js');
+    expect(browserFlowKeyOf({}, 'tc-1', { browserTarget: 'background' })).toBe('bg:sub:tc-1');
+    expect(browserFlowKeyOf({ browser_target: 'background' }, 'tc-2', '{"browserTarget":"shared"}')).toBe('bg:sub:tc-2');
+    expect(browserFlowKeyOf({ browserTarget: 'shared' }, 'tc-3', { browserTarget: 'background' })).toBe(SHARED_FLOW);
+    expect(browserFlowKeyOf({}, 'tc-4', '{broken')).toBe(SHARED_FLOW);
+  });
+
   it('★★ 后台键必须与共享键不同，且带 `bg:` 前缀（桌面端就靠它识别后台流）', async () => {
     const { browserFlowKeyOf } = await import('../src/llm-task-manager.js');
     const bg = browserFlowKeyOf({ browserTarget: 'background' }, 'tc-1');

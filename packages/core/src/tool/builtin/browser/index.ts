@@ -234,7 +234,7 @@ export class BrowserOpenExternalTool implements BuiltInTool {
 // ========== 点击 ==========
 export class BrowserClickTool implements BuiltInTool {
   name = 'browser_click';
-  description = 'Click an element in the browser. 三种定位方式任选其一：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；坐标仅在前两者都拿不到时使用。Uses real mouse movement. Returns pageChanged/noChangeStreak feedback; if ambiguous, a candidate list with indexes is returned.';
+  description = 'Click an element in the browser. 三种定位方式任选其一：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；坐标仅在前两者都拿不到时使用。Uses real mouse movement. 返回统一结构：status（ok / ambiguous / not_found / stale_index / invalid_args / failed）、pageChanged、urlChanged；歧义时附 candidates，失败时附 hint。选择器文本漂移时会自动按「同标签 + 相似文本」重定位（autoRelocated=fuzzy-text），index 失效时先按 selector 快照、再按文本模糊降级。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -265,7 +265,9 @@ export class BrowserTypeTool implements BuiltInTool {
     + '评论框、发帖框、搜索框这类"看着填了、提交却是空的"问题由它解决。\n'
     + '★ 参数 text 是**替换**语义（先清空再输入），不是追加。返回里的 applied 字段表示回读核验是否一致；'
     + '★ 幂等保护（2026-10-19）：写前先读 —— 当前值规范化后已等于/包含目标文本时**不会清空重填**，直接返回 unchanged:true；'
-    + '同一字段连续 2 次未生效会返回 forceStop:true，此时**必须停止重填**，回读一次确认现场并向用户报告，不要换写法继续试。';
+    + '同一字段连续 2 次未生效会返回 forceStop:true，此时**必须停止重填**，回读一次确认现场并向用户报告，不要换写法继续试。\n'
+    + '★ 返回统一结构：status（ok / ambiguous / not_found / stale_index / failed）、pageChanged、urlChanged；'
+    + 'selector 文本漂移时会按「同标签 + 相似文本」自动重定位（autoRelocated=fuzzy-text）。';
   inputSchema = {
     type: 'object',
     properties: {
