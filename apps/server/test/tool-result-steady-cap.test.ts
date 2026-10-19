@@ -61,10 +61,13 @@ describe('② 行为断言（真跑 —— 裁剪逻辑必须真验）', () => {
       asstMsg('a2'),
       toolMsg('t2', big),   // 老 → 应裁
       asstMsg('a3'),
-      toolMsg('t3', big),   // 最近（keepRecent=3 内）→ 保原文
+      toolMsg('t3', big),   // 最近（keepRecent=1 内，按工具结果条数计）→ 保原文
       asstMsg('a4'),
     ] as any[];
-    const out = fn(msgs, 3) as any[];
+    // ★ 2026-10-19 语义变更：保护窗口按「工具结果条数」计（不再按消息条数）——
+    //   并行工具调用场景下"最近 6 条消息"实际只护住 ~3 条结果，同批其余必被裁（实测事故）。
+    //   这里 keepRecent=1：t3 受保护，t1/t2 属次新区（8KB 上限）。
+    const out = fn(msgs, 1) as any[];
     expect(out.length, '★ 消息条数被改变（结构被动过，可能破 tool 配对）').toBe(msgs.length);
     expect(out[1].content.length, '★ 老工具结果未裁剪').toBeLessThan(9 * 1024);
     expect(out[3].content.length, '★ 老工具结果未裁剪').toBeLessThan(9 * 1024);

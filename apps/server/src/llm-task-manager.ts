@@ -59,6 +59,8 @@ import { loadProjectSkills, truncateSkillBody } from './services/project-skills.
 import { parseSkillFiles, skillDirName, syncSkillsToWorkspace } from './services/skill-files.js';
 import { dirEntryFingerprint, makeFingerprintCache } from './services/fs-fingerprint.js';
 import { repoMapPromptSection, DEV_REPO_MAP_AGENT_IDS } from './services/repo-map.js';
+// 超大工具输出落盘（2026-10-19）：非 file_read 的大输出全文写中间产物目录，上下文只留首尾+路径
+import { spillOversizedToolOutput } from './services/tool-output-spill.js';
 // 会话提示词合成（2026-10-19）：会话里存的常是建会话时的 agent 提示词快照，
 // 不能让旧快照永久遮蔽 agent 表里的新提示词（见 services/conv-prompt.ts 头注释）
 import { composeConversationBasePrompt } from './services/conv-prompt.js';
@@ -774,8 +776,33 @@ function loadSubAgentMessages(convId: string, parentToolCallId: string): Message
 // 工具结果单条上限：极端结果（如整页 DOM/网络日志几十上百 KB）入库和进入下轮上下文前先压缩，
 // 保留头尾（头部通常是关键摘要，尾部常有分页/汇总信息），中段丢弃并在原位标注。
 const MAX_TOOL_RESULT_CHARS = 48000;
-function capToolResult(result: string): string {
-  if (!result || result.length <= MAX_TOOL_RESULT_CHARS) return result;
+/**
+ * @param spillCtx 超大输出落盘上下文（2026-10-19，对齐 Claude Code spill）：
+ *   - 非 file_read 的工具（cmd_exec / python_exec / 页面正文）超过 16KB → 全文落盘，
+ *     上下文只留首尾 + 落盘路径（file_read 可按路径回读）；
+ *   - **file_read 不复制落盘**：原文本来就在盘上，截断时直接告诉模型原文件路径，
+ *     用 offset/limit 分段读取 —— 复制一份既浪费磁盘，又会引出"读转储再转储"的递归。
+ */
+function capToolResult(result: string, spillCtx?: {
+  conversationId: string; toolName: string; originalPath?: string;
+}): string {
+  if (!result) return result;
+  if (spillCtx && result.length > MAX_TOOL_RESULT_CHARS) {
+    if (spillCtx.toolName === 'file_read' && spillCtx.originalPath) {
+      const head = 40000, tail = 6000;
+      return result.slice(0, head)
+        + `\n\n...[file_read 输出过长已截断：共 ${result.length} 字符；文件原文在 ${spillCtx.originalPath}，`
+        + `请用 file_read 的 offset/limit 分段读取需要的区段]...\n`
+        + result.slice(-tail);
+    }
+    const spilled = spillOversizedToolOutput({
+      conversationId: spillCtx.conversationId,
+      toolName: spillCtx.toolName,
+      text: result,
+    });
+    if (spilled.spilled) return spilled.text;
+  }
+  if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
   const head = 40000, tail = 6000;
   return result.slice(0, head)
     + `\n\n...[工具结果过长已压缩：原文 ${result.length} 字符，保留头 ${head} / 尾 ${tail}，中段省略]...\n`
@@ -967,7 +994,11 @@ async function runToolCallAndPersist(opts: {
   //   于是缓冲里实际驻留的字节数没有上界，且每个订阅者都要把它重新序列化一遍。
   //   截断口径与落库**同一函数**（capToolResult → MAX_TOOL_RESULT_CHARS），保证
   //   "实时看到的"与"重载后落库的"一致（此前实时全量、重载截断，本身就是不一致）。
-  const cappedResult = capToolResult(result);
+  const cappedResult = capToolResult(result, {
+    conversationId: convId,
+    toolName,
+    originalPath: toolName === 'file_read' ? String((args as any)?.path || '') : undefined,
+  });
   emit(task, { type: 'tool:result', toolName, result: cappedResult, ...subEvt });
 
   // ★★★ 工具执行完的"副作用"走钩子（P2-3）：产物登记等由 services/artifact-hooks.ts
