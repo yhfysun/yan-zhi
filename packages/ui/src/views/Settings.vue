@@ -525,6 +525,9 @@
           </div>
         </div>
       </el-tab-pane>
+      <el-tab-pane label="扩展管理" name="extensions" lazy>
+        <BrowserExtensionsPanel />
+      </el-tab-pane>
       <el-tab-pane label="语音包" name="voicepack" lazy>
         <VoicePackPanel />
       </el-tab-pane>
@@ -609,6 +612,7 @@ import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 import VoicePackPanel from '../components/VoicePackPanel.vue';
 import UserHooksPanel from '../components/settings/UserHooksPanel.vue';
+import BrowserExtensionsPanel from '../components/settings/BrowserExtensionsPanel.vue';
 
 const settingsStore = useSettingsStore();
 const platformStore = usePlatformStore();
@@ -640,7 +644,7 @@ const mobileGroups: SettingsGroup[] = [
   { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩 · 快捷键', icon: Setting, tabs: [{ name: 'general', label: '通用' }, { name: 'shortcuts', label: '快捷键' }] },
   { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
   { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
-  { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }] },
+  { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理 · 浏览器扩展', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }, { name: 'extensions', label: '扩展' }] },
   { key: 'service', label: '服务与连接', desc: '本机 IP · 商城服务端 · 局域网访问 · 语音包', icon: Link, tabs: [{ name: 'localip', label: '本机 IP' }, { name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'verification', label: '验证码' }, { name: 'voicepack', label: '语音包' }] },
   { key: 'about', label: '关于', desc: '版本 · 开源信息', icon: InfoFilled, tabs: [{ name: 'about', label: '关于' }] },
 ];

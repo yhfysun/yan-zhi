@@ -1,0 +1,7 @@
+{
+  "manifest_version": 2,
+  "name": "Spike MV2 Background",
+  "version": "1.0.0",
+  "background": { "scripts": ["bg.js"], "persistent": true },
+  "permissions": ["http://127.0.0.1/*"]
+}

@@ -14,8 +14,13 @@ const inst = require('./instance.cjs');
 //   ③ 任意 webContents 的 will-navigate + will-frame-navigate（guardNavigation，子帧靠它）
 //   ④ guest 的 popup 重定向。判据见 url-guard.cjs 顶部注释。
 const { isSafeExternalUrl, isAllowedGuestNavigation, guardNavigation } = require('./url-guard.cjs');
+// 浏览器扩展管理器（P1，免费路径）：只用 Electron 内置 ses.extensions.*，不依赖 GPL 库。
+const { createExtensionManager } = require('./browser-extensions.cjs');
+const { installStoreFetch } = require('./proxy-fetch.cjs');
+const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
 
 let mainWindow = null;
+let extensionManager = null;
 
 /** 是否开发实例（由 dev 编排器注入 YANZHI_DEV_INSTANCE=1） */
 const IS_DEV_INSTANCE = inst.isDevInstance(process.env);
@@ -1984,6 +1989,107 @@ ipcMain.handle('browser:wv:unregister', (_e, tabId) => {
   const t = webviewTabs.get(tabId);
   if (t) { t.wcId = null; t.lastActiveAt = Date.now(); }
   return true;
+});
+
+// ============================================================
+// 浏览器扩展（P1，免费路径）
+// 安装 = 用户选一个「已解压的扩展目录」，复制到 userData/browser-extensions 并加载。
+// 商店下载/zip 解包属于 P2；toolbar popup 用独立 BrowserWindow 兜底。
+// ============================================================
+ipcMain.handle('ext:list', () => {
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪', extensions: [] };
+  try {
+    return { ok: true, extensions: extensionManager.list() };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err), extensions: [] };
+  }
+});
+
+ipcMain.handle('ext:installDir', async () => {
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
+  const opts = {
+    title: '选择已解压的 Chrome 扩展目录（含 manifest.json）',
+    properties: ['openDirectory'],
+  };
+  const picked = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showOpenDialog(mainWindow, opts)
+    : await dialog.showOpenDialog(opts);
+  if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return { ok: false, canceled: true };
+  try {
+    return await extensionManager.installFromDir(picked.filePaths[0]);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('ext:toggle', async (_e, key, enabled) => {
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
+  try {
+    return await extensionManager.setEnabled(String(key), !!enabled);
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('ext:remove', async (_e, key) => {
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
+  try {
+    return await extensionManager.remove(String(key));
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('ext:whitelist', () => ({ ok: true, extensions: listWhitelist() }));
+
+ipcMain.handle('ext:installStore', async (_e, idOrUrl) => {
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
+  try {
+    return await extensionManager.installFromStore(String(idOrUrl || ''));
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('ext:update', async () => {
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
+  try {
+    return await extensionManager.updateAll();
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('ext:openPage', async (_e, key, kind) => {
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
+  try {
+    const which = kind === 'options' ? 'options' : 'popup';
+    const url = extensionManager.pageUrl(String(key), which);
+    if (!url) return { ok: false, error: which === 'options' ? '该扩展没有选项页' : '该扩展没有弹窗页' };
+    const win = new BrowserWindow({
+      parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+      width: which === 'options' ? 720 : 420,
+      height: which === 'options' ? 640 : 600,
+      title: '扩展页面',
+      autoHideMenuBar: true,
+      webPreferences: {
+        // 必须与扩展所在 session 一致，否则 chrome-extension:// 无法解析
+        partition: 'persist:browser-view',
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    });
+    // 只对该窗口放行 chrome-extension://（见 url-guard.cjs 的 guardNavigation）
+    win.webContents.__yzAllowExtensionUrls = true;
+    win.loadURL(url).catch((err) => {
+      console.warn('[ext] 扩展页面加载失败:', err && err.message);
+      try { win.destroy(); } catch { /* ignore */ }
+    });
+    return { ok: true, url };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
 });
 
 // 创建新标签页，返回 tabId。
@@ -6562,6 +6668,7 @@ if (!gotTheLock) {
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
+
   if (process.platform === 'win32') {
     // ★ Windows 任务栏图标（2026-10-05 定案）：任务栏按钮图标 = **窗口 icon**（WM_SETICON）。
     //   千万不要给 dev 设自定义 AUMID —— 自定义 AUMID 没有开始菜单快捷方式时，Explorer
@@ -6613,6 +6720,47 @@ app.whenReady().then(async () => {
       });
     } catch { /* ignore */ }
   })();
+
+  // 浏览器扩展（P1/P2）：放在 UA 伪装 / popup 拦截之后，确保扩展后台页启动时 session 已配置完成；
+  // 必须在 createWindow() 之前恢复启用列表。Electron 不会跨重启记忆扩展，所以每次启动都要 load。
+  // 商店下载走代理感知 fetch：主进程 fetch 不走系统代理，P0 实测直连商店域名会失败。
+  // ★ 必须在 require('electron-chrome-web-store') 之前安装：库在模块初始化时就捕获了 fetch。
+  try {
+    installStoreFetch({ resolveProxy: (url) => session.defaultSession.resolveProxy(url) });
+  } catch (err) {
+    console.warn('[ext] 商店代理 fetch 安装失败:', err && err.message);
+  }
+  let extensionStore = null;
+  try {
+    extensionStore = require('electron-chrome-web-store');
+  } catch (err) {
+    console.warn('[ext] 商店模块不可用:', err && err.message);
+  }
+  extensionManager = createExtensionManager({
+    rootDir: path.join(app.getPath('userData'), 'browser-extensions'),
+    storeDir: path.join(app.getPath('userData'), 'browser-extensions', 'store'),
+    store: extensionStore,
+    whitelist: { isAllowed: isAllowedStoreExtension, list: listWhitelist },
+    getSession: () => session.fromPartition('persist:browser-view'),
+  });
+  try {
+    const extResult = await extensionManager.loadAll();
+    if (extResult.loaded) console.log('[ext] 已加载扩展:', extResult.loaded);
+  } catch (err) {
+    console.warn('[ext] 启动加载失败:', err && err.message);
+  }
+  if (extensionStore) {
+    const checkUpdates = () => {
+      extensionManager.updateAll()
+        .then(() => console.log('[ext] 商店更新检查完成'))
+        .catch((err) => console.warn('[ext] 商店更新检查失败:', err && err.message));
+    };
+    // 启动 20s 后一次（避开启动高峰），之后每 6 小时
+    const updateTimer = setTimeout(checkUpdates, 20000);
+    if (updateTimer.unref) updateTimer.unref();
+    const updateInterval = setInterval(checkUpdates, 6 * 60 * 60 * 1000);
+    if (updateInterval.unref) updateInterval.unref();
+  }
 
   // ============================================================
   // Content-Security-Policy：注入到主窗口所在 session 的响应头

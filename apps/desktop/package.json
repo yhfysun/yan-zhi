@@ -28,6 +28,7 @@
     "@yan-zhi/shared": "workspace:*",
     "@yan-zhi/ui": "workspace:*",
     "better-sqlite3": "13.0.3",
+    "electron-chrome-web-store": "0.13.0",
     "element-plus": "^2.8.0",
     "pinia": "^2.2.0",
     "sqlite-vec": "^0.1.9",

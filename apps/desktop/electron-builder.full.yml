@@ -40,6 +40,14 @@ files:
   #   多页语义（显式 tabId / new_tab 是否改写当前操作页）的**唯一判定**。
   #   漏登记 = 打包版**启动即崩**（Cannot find module './browser-target.cjs'）——同 browser-bridge.cjs。
   - browser-target.cjs
+  # ★★★ 浏览器扩展管理器（P1，2026-10-19）：main.cjs 顶层 require('./browser-extensions.cjs')。
+  #   漏登记 = 打包版**启动即崩**（Cannot find module './browser-extensions.cjs'）——同 browser-bridge.cjs。
+  #   由 packaged-entry-modules.test.cjs 守门。
+  - browser-extensions.cjs
+  # ★★★ 商店下载代理适配 + 精选白名单（P2，2026-10-19）：main.cjs 顶层 require。
+  #   漏登记 = 打包版启动即崩。
+  - proxy-fetch.cjs
+  - extension-whitelist.cjs
   # ★★★ 主进程/渲染层日志落盘（2026-10-10 新增）：main.cjs 顶层 require('./main-log.cjs')。
   #   漏登记 = 打包版**启动即崩**（Cannot find module './main-log.cjs'）——同 browser-bridge.cjs。
   #   ★ 由 packaged-entry-modules.test.cjs 守门（本次就是它抓出来的）。

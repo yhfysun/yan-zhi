@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Spike MV3 DNR",
+  "version": "1.0.0",
+  "permissions": ["declarativeNetRequest"],
+  "declarative_net_request": {
+    "rule_resources": [{ "id": "ruleset", "enabled": true, "path": "rules.json" }]
+  },
+  "host_permissions": ["http://127.0.0.1/*"]
+}

@@ -83,6 +83,8 @@ function guardNavigation(wc) {
   wc.__yzNavGuarded = true;
   const block = (event, url) => {
     if (isAllowedGuestNavigation(url)) return;
+    // 扩展页面专用窗口（P1）：由主进程显式标记，只放行 chrome-extension://
+    if (wc.__yzAllowExtensionUrls && /^chrome-extension:\/\//i.test(String(url || '').trim())) return;
     try { console.log('[nav] 拦截非 http(s) 导航:', url); } catch { /* ignore */ }
     if (event && typeof event.preventDefault === 'function') event.preventDefault();
   };

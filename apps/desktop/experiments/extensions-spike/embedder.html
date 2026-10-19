@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>html, body { margin: 0; height: 100%; } webview { width: 100%; height: 100%; }</style>
+</head>
+<body>
+  <webview id="wv" partition="persist:spike-ext" allowpopups></webview>
+  <script>
+    var port = new URLSearchParams(location.search).get('port')
+    document.getElementById('wv').setAttribute('src', 'http://127.0.0.1:' + port + '/page.html')
+  </script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+node_modules/
+userdata/
+store-crx/
+result-*.json

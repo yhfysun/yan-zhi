@@ -283,4 +283,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     wvRegister: (tabId, wcId, scope) => ipcRenderer.invoke('browser:wv:register', tabId, wcId, scope),
     wvUnregister: (tabId) => ipcRenderer.invoke('browser:wv:unregister', tabId),
   },
+
+  // 浏览器扩展（P1/P2）：安装/开关/卸载/打开扩展页面/商店白名单
+  extensions: {
+    list: () => ipcRenderer.invoke('ext:list'),
+    installDir: () => ipcRenderer.invoke('ext:installDir'),
+    toggle: (key, enabled) => ipcRenderer.invoke('ext:toggle', key, enabled),
+    remove: (key) => ipcRenderer.invoke('ext:remove', key),
+    openPage: (key, kind) => ipcRenderer.invoke('ext:openPage', key, kind),
+    whitelist: () => ipcRenderer.invoke('ext:whitelist'),
+    installStore: (idOrUrl) => ipcRenderer.invoke('ext:installStore', idOrUrl),
+    update: () => ipcRenderer.invoke('ext:update'),
+  },
 });

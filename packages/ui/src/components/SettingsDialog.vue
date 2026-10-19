@@ -57,7 +57,7 @@ import { useZIndex } from 'element-plus';
 import {
   Setting, MagicStick, Cpu, Files, Suitcase, FolderOpened, SetUp,
   Shop, Monitor, Message, Memo, Microphone, Document, InfoFilled, Close,
-  Key, Connection,
+  Key, Connection, Box,
 } from '@element-plus/icons-vue';
 // Settings.vue 走异步组件：保持与 /settings 路由、SettingsDrawer 相同的懒加载分包，
 // 不因弹窗常驻 App 壳而把它拉进首包。
@@ -83,6 +83,7 @@ const categories: SettingsCategory[] = [
   { key: 'tools', label: '工具与连接', icon: Suitcase, comp: 'tools' },
   { key: 'data', label: '数据', icon: FolderOpened, pane: 'data' },
   { key: 'userhooks', label: '钩子', icon: SetUp, pane: 'userhooks' },
+  { key: 'extensions', label: '扩展管理', icon: Box, pane: 'extensions' },
   { key: 'localip', label: '本机 IP', icon: Connection, pane: 'localip' },
   { key: 'marketplace', label: '商城服务端', icon: Shop, pane: 'marketplace' },
   { key: 'lan', label: '局域网', icon: Monitor, pane: 'lan' },
