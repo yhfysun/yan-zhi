@@ -1196,12 +1196,18 @@ export class BrowserRunRecipeTool implements BuiltInTool {
     + `可用配方：${listRecipes().join('、')}。`
     + 'douyin-publish-video 参数：{ videoPath, title, description, collectionName?, submit? }。'
     + '★ submit 默认 false，只做前置步骤；仅当用户明确要求发布时传 submit:true。'
+    + '★ 被验证码/滑块拦住时返回 blockedByVerification 与 resumeStep：先 ask_user 请用户完成验证，'
+    + '用户确认后带同一个 resumeStep 再调用本工具续跑（不要重跑全流程、不要重新上传）。'
     + '★ 配方失败会返回失败步骤与页面现场，**不要重复运行同一配方**，先按原因处理或向用户报告。';
   inputSchema = {
     type: 'object',
     properties: {
       recipe: { type: 'string', enum: listRecipes(), description: 'Recipe id.' },
       params: { type: 'object', description: 'Recipe parameters (see recipe description).' },
+      resumeStep: {
+        type: 'number',
+        description: '可选：用户完成安全验证后续跑的步骤下标（0 基）。只能用上一次 blockedByVerification 返回的 resumeStep；普通执行不要传。',
+      },
     },
     required: ['recipe'],
   };
@@ -1218,14 +1224,31 @@ export class BrowserRunRecipeTool implements BuiltInTool {
         .map(([key]) => key);
       if (missing.length) return err(`缺少必填参数：${missing.join('、')}`);
 
+      const resumeStep = Number.isFinite(Number(args.resumeStep)) ? Number(args.resumeStep) : undefined;
+      if (resumeStep !== undefined && (resumeStep < 0 || resumeStep >= recipe.steps.length)) {
+        return err(`resumeStep 越界：${resumeStep}（配方共 ${recipe.steps.length} 步，下标 0 基）。` +
+          '应使用上一次 blockedByVerification 返回的 resumeStep；普通执行不要传该参数。');
+      }
+
       const result = await runRecipe(recipe, params, {
         navigate: (url: string) => callBrowserApi('/navigate', 'POST', { url }),
         action: (action: string, actionArgs: Record<string, unknown>) =>
           callBrowserApi('/action', 'POST', { action, ...actionArgs }),
-      });
+      }, { resumeStep });
       const lines = result.steps
         .map((s, i) => `${i + 1}. ${s.ok ? '✅' : '⛔'} ${s.step}: ${s.detail}`)
         .join('\n');
+      if (result.blockedByVerification) {
+        return err(
+          `配方 ${recipe.id} 被安全验证拦住：${result.verificationText}\n${lines}\n`
+          + `页面现场：${result.title || '(无标题)'} ${result.url || ''}\n\n`
+          + '下一步（**不要重跑全流程，不要重新上传**）：\n'
+          + `1) 立即调用 ask_user：请用户在浏览器面板完成滑块/验证码，完成后回复"继续"；\n`
+          + `2) 用户确认后，再次调用 browser_run_recipe：params 保持不变，并加 resumeStep: ${result.resumeStep}；\n`
+          + `3) 续跑会从第 ${(result.resumeStep ?? 0) + 1} 步继续`
+          + `${result.submitted ? '（发布已点过，只等验证结果，不会重复点）' : '（不会重新上传/填表）'}。`,
+        );
+      }
       if (!result.ok) {
         return err(
           `配方 ${recipe.id} 失败：${result.error}\n${lines}\n`

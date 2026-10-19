@@ -20,6 +20,8 @@ interface FakeState {
   fillResult?: any;
   clickResult?: (selector: string) => any;
   afterClickText?: string;
+  /** 执行 fill_form 时把页面切换成该文本（模拟填写时弹出验证） */
+  fillText?: string;
 }
 
 function makeApi(state: FakeState) {
@@ -41,6 +43,7 @@ function makeApi(state: FakeState) {
       }
       if (action === 'upload') return { via: 'filechooser' };
       if (action === 'fill_form') {
+        if (state.fillText) state.pageText = state.fillText;
         if (state.fillResult) return state.fillResult;
         const fields = Array.isArray((args as any).fields) ? (args as any).fields : [];
         return {
@@ -180,11 +183,53 @@ describe('② 执行流程', () => {
     expect(indexed.map((c) => (c.args as any).index)).toContain(12);
   });
 
-  it('页面出现安全验证 → 失败并要求用户处理', async () => {
+  it('页面出现安全验证 → 返回 blockedByVerification 与续跑步骤（不要求重跑全流程）', async () => {
     const { api } = makeApi({ pageText: '上传成功', afterClickText: '请完成安全验证' });
     const res = await runRecipe(fastSubmitWait(), { ...BASE_PARAMS, submit: true }, api);
     expect(res.ok).toBe(false);
-    expect(res.error).toContain('安全验证');
+    expect(res.blockedByVerification).toBe(true);
+    expect(res.verificationText).toContain('安全验证');
+    expect(res.submitted, '发布已点过，续跑不应重复点').toBe(true);
+    // 续跑起点必须是"等成功判据"那一步，而不是发布点击那一步
+    expect(res.resumeStep).toBeGreaterThan(0);
+    expect(res.blockedAtStep).toBe(res.resumeStep);
+  });
+
+  it('用户完成验证后带 resumeStep 续跑：不重新导航/上传/填表，直接验证结果', async () => {
+    const first = makeApi({ pageText: '上传成功', afterClickText: '请完成安全验证' });
+    const blocked = await runRecipe(fastSubmitWait(), { ...BASE_PARAMS, submit: true }, first.api);
+    expect(blocked.blockedByVerification).toBe(true);
+
+    // 用户已在浏览器面板完成滑块；页面现在显示发布成功
+    const second = makeApi({ pageText: '发布成功' });
+    const res = await runRecipe(
+      fastSubmitWait(),
+      { ...BASE_PARAMS, submit: true },
+      second.api,
+      { resumeStep: blocked.resumeStep },
+    );
+    expect(res.ok).toBe(true);
+    expect(res.submitted).toBe(true);
+    expect(res.verified).toBe(true);
+    // 关键：续跑不能重新上传/填表
+    expect(second.calls.some((c) => c.action === 'navigate')).toBe(false);
+    expect(second.calls.some((c) => c.action === 'upload')).toBe(false);
+    expect(second.calls.some((c) => c.action === 'fill_form')).toBe(false);
+    expect(res.steps[0].step).toBe('resume');
+  });
+
+  it('填写阶段被验证拦住 → resumeStep 指向填写那一步（验证后补填，不重传）', async () => {
+    const { api } = makeApi({
+      pageText: '上传成功',
+      fillText: '请完成安全验证',
+      fillResult: { filled: 0, failed: [{ selector: '.zone-container.editor-kit-container', reason: '被验证遮挡' }], state: [] },
+    });
+    const res = await runRecipe(DOUYIN_PUBLISH_RECIPE, BASE_PARAMS, api);
+    expect(res.ok).toBe(false);
+    expect(res.blockedByVerification).toBe(true);
+    const fillStepIndex = DOUYIN_PUBLISH_RECIPE.steps.findIndex((s) => s.kind === 'fill');
+    expect(res.resumeStep).toBe(fillStepIndex);
+    expect(res.submitted).toBe(false);
   });
 
   it('上传迟迟不成功 → 失败并返回现场（不会继续填表）', async () => {

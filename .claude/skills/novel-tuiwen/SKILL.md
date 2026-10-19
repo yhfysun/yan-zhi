@@ -77,6 +77,8 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 6. **发布**（需 confirm_user）：抖音 / 快手各见其 `publish-video.md`。
    ★ 工具列表里有 `browser_run_recipe` 时**优先用配方**（如 `douyin-publish-video`）：
    模型只传参数，上传/填表/回读/发布由代码按固定步骤执行；`submit` 只在用户明确要求发布时传 true。
+   ★ 被验证码/滑块拦住（`blockedByVerification`）→ 先 `ask_user` 请用户在浏览器面板完成验证，
+   再带返回的 `resumeStep` 续跑；**不要重跑全流程**（会重新上传/重置表单）。
 7. **引导评论**：抖音发布后发引导评论 → `pages/douyin/comment/post-comment.md`
 8. **回填发文**：番茄达人中心别名管理 → `backfill.md` —— **不回填不结算**
 9. **回报**：选书理由 + 成片路径 + 发布/回填状态

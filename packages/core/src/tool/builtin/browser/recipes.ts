@@ -67,6 +67,17 @@ export interface RecipeRunResult {
   submitted: boolean;
   /** 点发布后是否在页面看到成功判据 */
   verified: boolean;
+  /** 被验证码/滑块拦住（不是普通失败） */
+  blockedByVerification?: boolean;
+  /** 拦住的页面文案（如「请完成安全验证」） */
+  verificationText?: string;
+  /** 被拦住的步骤下标（0 基） */
+  blockedAtStep?: number;
+  /**
+   * 续跑起点（0 基）：用户完成验证后，带 `resumeStep` 再调用本工具，
+   * 只执行该步骤及之后，**不重新上传/填表**。
+   */
+  resumeStep?: number;
   error?: string;
   pageSnippet?: string;
 }
@@ -87,6 +98,24 @@ const isTruthy = (v: unknown): boolean =>
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const BLOCK_TEXTS = ['验证码', '安全验证', '拖动滑块', '请完成验证'];
+
+/** 被安全验证拦住：保留验证文案，供上层转成「请用户完成验证后续跑」的回执 */
+class VerificationBlockedError extends Error {
+  constructor(public blockedText: string) {
+    super(`页面出现安全验证（${blockedText}）`);
+    this.name = 'VerificationBlockedError';
+  }
+}
+
+/** 读一次页面，判断是否被验证码/滑块拦住（读页失败返回空串，不掩盖原始错误） */
+async function detectVerification(api: RecipeApi): Promise<string> {
+  try {
+    const page = await readPage(api, 800);
+    return BLOCK_TEXTS.find((t) => norm(page.text).includes(t)) || '';
+  } catch {
+    return '';
+  }
+}
 
 async function readPage(api: RecipeApi, maxTextLength = 3000): Promise<PageSnapshot> {
   const d = await api.action('get_page_content', { maxTextLength, maxInteractive: 0 });
@@ -188,7 +217,7 @@ async function runUpload(api: RecipeApi, step: Extract<RecipeStep, { kind: 'uplo
   if (!started) throw new Error(`文件上传失败：${lastErr}`);
 
   const { matched, page, blocked } = await waitForAny(api, step.successTexts, timeoutMs);
-  if (blocked) throw new Error(`页面出现安全验证（${blocked}），需要用户手动处理后重试`);
+  if (blocked) throw new VerificationBlockedError(blocked);
   const body = norm(page.text);
   const fail = (step.failureTexts || []).find((t) => body.includes(norm(t)));
   if (fail) throw new Error(`上传失败：页面出现「${fail}」`);
@@ -198,87 +227,127 @@ async function runUpload(api: RecipeApi, step: Extract<RecipeStep, { kind: 'uplo
   return `已上传 ${filePath}（页面出现「${matched}」）`;
 }
 
+export interface RecipeRunOptions {
+  /** 用户完成安全验证后，从该步骤（0 基）继续；只执行该步骤及之后 */
+  resumeStep?: number;
+}
+
 export async function runRecipe(
   recipe: PublishRecipe,
   rawParams: Record<string, unknown>,
   api: RecipeApi,
+  opts?: RecipeRunOptions,
 ): Promise<RecipeRunResult> {
   const params = { ...rawParams };
   const steps: RecipeStepResult[] = [];
+  const startIndex = Number.isInteger(opts?.resumeStep)
+    ? Math.max(0, Math.min(Number(opts!.resumeStep), recipe.steps.length - 1))
+    : 0;
+  const submitClickIndex = recipe.steps.findIndex((s) => s.kind === 'clickText' && s.when === 'submit');
   let url = '';
   let title = '';
-  let submitted = false;
+  // 从"发布点击"之后的步骤续跑：说明上一次已经点过发布，submitted 视为 true（避免谎报未提交）
+  let submitted = submitClickIndex >= 0 && startIndex > submitClickIndex;
   let verified = false;
   const push = (step: string, ok: boolean, detail: string) => steps.push({ step, ok, detail });
+  if (startIndex > 0) push('resume', true, `从第 ${startIndex + 1} 步继续（用户已完成验证）`);
+
+  const blockedResult = (blockedText: string, stepIndex: number): RecipeRunResult => ({
+    recipe: recipe.id,
+    ok: false,
+    steps,
+    url,
+    title,
+    readyToSubmit: false,
+    submitted,
+    verified,
+    blockedByVerification: true,
+    verificationText: blockedText,
+    blockedAtStep: stepIndex,
+    resumeStep: stepIndex,
+    error: `页面出现安全验证（${blockedText}）`,
+  });
 
   try {
-    for (const step of recipe.steps) {
-      const when = 'when' in step ? step.when : undefined;
-      if (when && !isTruthy(params[when])) {
-        push(step.kind, true, `跳过（参数 ${when} 未提供）`);
-        continue;
-      }
-
-      if (step.kind === 'navigate') {
-        const target = interp(step.url, params);
-        await api.navigate(target);
-        const page = await readPage(api, 800);
-        url = page.url;
-        title = page.title;
-        push('navigate', true, `已打开 ${target}`);
-        continue;
-      }
-
-      if (step.kind === 'upload') {
-        push('upload', true, await runUpload(api, step, params));
-        continue;
-      }
-
-      if (step.kind === 'fill') {
-        const fields = step.fields.map((f) => ({
-          selector: interp(f.selector, params),
-          value: interp(f.value, params),
-          label: f.label,
-        }));
-        push('fill', true, await runFill(api, fields));
-        continue;
-      }
-
-      if (step.kind === 'clickText') {
-        const texts = step.texts.map((t) => interp(t, params)).filter(Boolean);
-        if (!texts.length) {
-          push('clickText', true, '跳过（目标文本为空）');
+    for (let i = startIndex; i < recipe.steps.length; i++) {
+      const step = recipe.steps[i];
+      try {
+        const when = 'when' in step ? step.when : undefined;
+        if (when && !isTruthy(params[when])) {
+          push(step.kind, true, `跳过（参数 ${when} 未提供）`);
           continue;
         }
-        let detail = '';
-        let ok = false;
-        let lastError: unknown = null;
-        for (const text of texts) {
-          try {
-            detail = await clickText(api, text, !!step.optional);
-            ok = true;
-            break;
-          } catch (e) {
-            lastError = e;
-          }
-        }
-        if (!ok && !step.optional) throw lastError instanceof Error ? lastError : new Error(String(lastError));
-        if (!ok) detail = `未找到「${texts.join(' / ')}」（可选步骤，跳过）`;
-        if (ok && step.when === 'submit') submitted = true;
-        push(`clickText ${texts.join(' / ')}`, ok || !!step.optional, detail);
-        continue;
-      }
 
-      if (step.kind === 'waitText') {
-        const texts = step.texts.map((t) => interp(t, params)).filter(Boolean);
-        const { matched, page, blocked } = await waitForAny(api, texts, step.timeoutMs || 30000);
-        url = page.url || url;
-        title = page.title || title;
-        if (blocked) throw new Error(`页面出现安全验证（${blocked}），需要用户手动处理后重试`);
-        if (!matched && !step.optional) throw new Error(`等待文本超时：${texts.join(' / ')}`);
-        if (submitted && step.when === 'submit') verified = !!matched;
-        push(`waitText ${texts.join(' / ')}`, !!matched, matched ? `出现「${matched}」` : '超时未出现（可选）');
-        continue;
+        if (step.kind === 'navigate') {
+          const target = interp(step.url, params);
+          await api.navigate(target);
+          const page = await readPage(api, 800);
+          url = page.url;
+          title = page.title;
+          push('navigate', true, `已打开 ${target}`);
+          continue;
+        }
+
+        if (step.kind === 'upload') {
+          push('upload', true, await runUpload(api, step, params));
+          continue;
+        }
+
+        if (step.kind === 'fill') {
+          const fields = step.fields.map((f) => ({
+            selector: interp(f.selector, params),
+            value: interp(f.value, params),
+            label: f.label,
+          }));
+          push('fill', true, await runFill(api, fields));
+          continue;
+        }
+
+        if (step.kind === 'clickText') {
+          const texts = step.texts.map((t) => interp(t, params)).filter(Boolean);
+          if (!texts.length) {
+            push('clickText', true, '跳过（目标文本为空）');
+            continue;
+          }
+          let detail = '';
+          let ok = false;
+          let lastError: unknown = null;
+          for (const text of texts) {
+            try {
+              detail = await clickText(api, text, !!step.optional);
+              ok = true;
+              break;
+            } catch (e) {
+              lastError = e;
+            }
+          }
+          if (!ok && !step.optional) throw lastError instanceof Error ? lastError : new Error(String(lastError));
+          if (!ok) detail = `未找到「${texts.join(' / ')}」（可选步骤，跳过）`;
+          if (ok && step.when === 'submit') submitted = true;
+          push(`clickText ${texts.join(' / ')}`, ok || !!step.optional, detail);
+          continue;
+        }
+
+        if (step.kind === 'waitText') {
+          const texts = step.texts.map((t) => interp(t, params)).filter(Boolean);
+          const { matched, page, blocked } = await waitForAny(api, texts, step.timeoutMs || 30000);
+          url = page.url || url;
+          title = page.title || title;
+          if (blocked) throw new VerificationBlockedError(blocked);
+          if (!matched && !step.optional) throw new Error(`等待文本超时：${texts.join(' / ')}`);
+          if (submitted && step.when === 'submit') verified = !!matched;
+          push(`waitText ${texts.join(' / ')}`, !!matched, matched ? `出现「${matched}」` : '超时未出现（可选）');
+          continue;
+        }
+      } catch (e: any) {
+        // 安全验证不是普通失败：记住**当前步骤下标**作为续跑起点 —— 用户完成后只跑这里往后，
+        // 不会重新上传/填表，也不会重复点发布。
+        const blocked = e instanceof VerificationBlockedError ? e.blockedText : await detectVerification(api);
+        if (blocked) {
+          push(recipe.steps[i].kind, false, `被安全验证拦住：${blocked}`);
+          return blockedResult(blocked, i);
+        }
+        throw e;
       }
     }
 
@@ -287,7 +356,7 @@ export async function runRecipe(
       url = finalPage.url || url;
       title = finalPage.title || title;
     }
-    const hasSubmitStep = recipe.steps.some((s) => s.kind === 'clickText' && s.when === 'submit');
+    const hasSubmitStep = submitClickIndex >= 0;
     return {
       recipe: recipe.id,
       ok: true,
