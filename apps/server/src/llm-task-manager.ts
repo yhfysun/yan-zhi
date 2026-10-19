@@ -5,7 +5,7 @@
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall, TokenUsageDetail, ModelPricing } from '@yan-zhi/shared';
 import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, formatCostNotice, isMissingUsage, estimateTokens } from '@yan-zhi/shared';
-import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, type SummaryCache } from '@yan-zhi/core';
+import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, DEFAULT_SKIP_DIRS, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus, TOKEN_DEAD_PLATFORM_IDS_SQL } from './services/token-pool.js';
@@ -5454,7 +5454,12 @@ async function executeTool(
     setBrowserToolConversationId(task.conversationId);
     const r = await registry.execute(toolName, args, toolCtx);
     let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
-    const meta = (r as any)?._meta as { path?: string; beforeContent?: string | null } | undefined;
+    const meta = (r as any)?._meta as {
+      path?: string;
+      beforeContent?: string | null;
+      /** apply_patch 多文件补丁：工具已回传每个文件的 before/after（整份补丁原子落盘） */
+      changes?: Array<{ path: string; beforeContent: string | null; afterContent: string | null }>;
+    } | undefined;
     // 把 _meta 交给调用方（供登记 conversation_file / 写 Diff 快照）
     if (metaOut) metaOut.value = (meta as Record<string, unknown> | undefined) || null;
     if (toolName === 'file_write' && meta?.path) {
@@ -5464,6 +5469,16 @@ async function executeTool(
         try {
           db.prepare('INSERT INTO file_change (id, user_id, conversation_id, task_id, path, before_content, after_content, tool, status, step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
             .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, meta.path, meta.beforeContent ?? null, after, toolName, 'pending', task.step, Date.now());
+        } catch { /* 快照失败不影响工具结果 */ }
+      }
+    } else if (Array.isArray(meta?.changes)) {
+      // apply_patch（多文件补丁）：逐文件写快照。路径/before/after 全部来自工具回传
+      // （调用方执行前不可能知道补丁会改哪些文件）；删除的文件 after=null。
+      for (const c of meta.changes) {
+        if (!c?.path || c.beforeContent === c.afterContent) continue;
+        try {
+          db.prepare('INSERT INTO file_change (id, user_id, conversation_id, task_id, path, before_content, after_content, tool, status, step, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run('fc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), task.userId, task.conversationId, task.id, c.path, c.beforeContent ?? null, c.afterContent ?? null, toolName, 'pending', task.step, Date.now());
         } catch { /* 快照失败不影响工具结果 */ }
       }
     } else if (snapPath && before !== undefined && !text.startsWith('Error') && !text.startsWith('工具执行失败')) {
@@ -6224,7 +6239,7 @@ function buildSubAgentSharedSections(resolvedId: string, conversationId: string)
     const rules = loadProjectRules(dir);
     if (rules.length) {
       parts.push([
-        '## 项目规则（自动读取自工作目录，优先级高于默认行为）',
+        '## 项目规则（自动读取自工作目录，优先级高于默认行为；source 是相对路径，目录越深范围越窄，与上层冲突时以更深的为准）',
         '> 以下是本项目**用户自己写下的规则**。与默认做法冲突时以本节为准；',
         '> 若某条规则与任务要求冲突，在交付报告里说明你偏离了哪条规则。',
         '',
@@ -7862,7 +7877,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       if (rules.length) {
         parts.push([
           '---',
-          '## 项目规则（自动读取自工作目录，优先级高于默认行为）',
+          '## 项目规则（自动读取自工作目录，优先级高于默认行为；source 是相对路径，目录越深范围越窄，与上层冲突时以更深的为准）',
           '> 以下是本项目**用户自己写下的规则**。与默认做法冲突时以本节为准；',
           '> 若某条规则与用户当前明确要求冲突，以用户当前要求为准并说明你偏离了哪条规则。',
           '',
@@ -8121,6 +8136,44 @@ const PROJECT_RULES_CACHE = makeFingerprintCache<Array<{ source: string; content
 const RULE_FILE_MAX_CHARS = 8000;
 const RULE_TOTAL_MAX_CHARS = 20000;
 
+// ── 嵌套 AGENTS.md 发现（2026-10-19，对标 Codex 的分层规则发现）──
+// Codex 从仓库根一路读到当前工作目录，子目录的 AGENTS.md 只影响其子树。
+// 我们的提示词是每轮固定构建的、不知道"下一步要改哪个文件"，所以采用**全量发现 + 标注目录**：
+// 每个规则条目的 source 是相对路径（如 packages/ui/AGENTS.md），并明确"越深越优先"。
+// ★ 发现结果按 60s TTL 缓存：目录遍历比读文件贵得多，不能每轮 ReAct 都走一遍；
+//   新增的嵌套规则最多 60s 后生效（内容缓存仍按 mtime 指纹，改内容即时生效）。
+const RULE_DISCOVERY_TTL_MS = 60_000;
+const RULE_DISCOVERY_MAX_DEPTH = 3;
+const RULE_DISCOVERY_MAX_DIRS = 400;
+const AGENTS_DISCOVERY_CACHE = new Map<string, { at: number; files: string[] }>();
+
+export function discoverNestedAgents(workspaceDir: string): string[] {
+  const hit = AGENTS_DISCOVERY_CACHE.get(workspaceDir);
+  if (hit && Date.now() - hit.at < RULE_DISCOVERY_TTL_MS) return hit.files;
+  const files: string[] = [];
+  let visited = 0;
+  const walk = (dir: string, depth: number) => {
+    if (depth > RULE_DISCOVERY_MAX_DEPTH || visited >= RULE_DISCOVERY_MAX_DIRS) return;
+    visited++;
+    let entries: ReturnType<typeof readdirSync>;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }) as any;
+    } catch { return; }
+    // 根目录的 AGENTS.md 由 loadProjectRules 单独收（source 与既有行为保持一致：'AGENTS.md'）
+    if (depth > 0) {
+      const a = (entries as any[]).find((e) => e.isFile() && e.name.toLowerCase() === 'agents.md');
+      if (a) files.push(path.join(dir, a.name));
+    }
+    const dirs = (entries as any[])
+      .filter((e) => e.isDirectory() && !DEFAULT_SKIP_DIRS.has(e.name) && !e.name.startsWith('.'))
+      .sort((x, y) => String(x.name).localeCompare(String(y.name)));
+    for (const e of dirs) walk(path.join(dir, e.name), depth + 1);
+  };
+  walk(workspaceDir, 0);
+  AGENTS_DISCOVERY_CACHE.set(workspaceDir, { at: Date.now(), files });
+  return files;
+}
+
 function loadProjectRules(workspaceDir: string): Array<{ source: string; content: string }> {
   const candidates: Array<{ source: string; path: string }> = [];
   // ① AGENTS.md（根）
@@ -8134,6 +8187,13 @@ function loadProjectRules(workspaceDir: string): Array<{ source: string; content
       }
     }
   } catch { /* rules 目录不存在/不可读，正常 */ }
+  // ③ 子目录 AGENTS.md（深度 ≤ 3）：source 用相对路径，模型据此判断适用子目录
+  try {
+    for (const f of discoverNestedAgents(workspaceDir)) {
+      const rel = path.relative(workspaceDir, f).replace(/\\/g, '/');
+      candidates.push({ source: rel, path: f });
+    }
+  } catch { /* 遍历失败按"只有根规则"处理 */ }
 
   // 指纹：存在的文件 + 各自 mtime + size（变了才重读）
   const existing = candidates.filter((c) => { try { return statSync(c.path).isFile(); } catch { return false; } });
