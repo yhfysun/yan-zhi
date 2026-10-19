@@ -12,7 +12,10 @@ vi.mock('../src/services/artifact-dir.js', () => ({
 
 import {
   spillOversizedToolOutput,
+  gcSpillFiles,
   TOOL_SPILL_THRESHOLD_CHARS,
+  TOOL_SPILL_TTL_MS,
+  TOOL_SPILL_MAX_FILES,
 } from '../src/services/tool-output-spill.js';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-spill-test-'));
@@ -56,5 +59,53 @@ describe('spillOversizedToolOutput', () => {
     expect(r.spilled).toBe(false);
     expect(r.text).toBe(text);
     hoisted.dir = TMP; // 恢复
+  });
+});
+
+describe('gcSpillFiles（自动清理）', () => {
+  const GC = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-gc-test-'));
+  afterAll(() => { fs.rmSync(GC, { recursive: true, force: true }); });
+
+  function makeFile(name: string, ageMs: number): string {
+    const p = path.join(GC, name);
+    fs.writeFileSync(p, 'x');
+    const t = new Date(Date.now() - ageMs);
+    fs.utimesSync(p, t, t);
+    return p;
+  }
+
+  it('按 TTL 删除过期文件；新文件与非本机制文件保留', () => {
+    const old = makeFile('tool-output-old.txt', TOOL_SPILL_TTL_MS + 60_000);
+    const fresh = makeFile('tool-output-fresh.txt', 60_000);
+    const userArtifact = makeFile('report.docx', TOOL_SPILL_TTL_MS + 60_000);
+    const deleted = gcSpillFiles(GC, { now: Date.now() });
+    expect(deleted).toBe(1);
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    expect(fs.existsSync(userArtifact)).toBe(true); // ★ 不碰用户产物
+  });
+
+  it('超过数量上限时从最老的删', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spill-gc-cap-'));
+    try {
+      for (let i = 0; i < 5; i++) {
+        const p = path.join(dir, `tool-output-${i}.txt`);
+        fs.writeFileSync(p, 'x');
+        const t = new Date(Date.now() - (5 - i) * 60_000); // i 越小越老
+        fs.utimesSync(p, t, t);
+      }
+      const deleted = gcSpillFiles(dir, { now: Date.now(), maxFiles: 3 });
+      expect(deleted).toBe(2);
+      expect(fs.existsSync(path.join(dir, 'tool-output-0.txt'))).toBe(false);
+      expect(fs.existsSync(path.join(dir, 'tool-output-1.txt'))).toBe(false);
+      expect(fs.existsSync(path.join(dir, 'tool-output-4.txt'))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('缺省常量有界（TTL 7 天 / 每目录 200 个）', () => {
+    expect(TOOL_SPILL_TTL_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(TOOL_SPILL_MAX_FILES).toBe(200);
   });
 });

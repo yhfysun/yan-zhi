@@ -23,6 +23,57 @@ export const TOOL_SPILL_THRESHOLD_CHARS = 16 * 1024;
 const KEEP_HEAD = 6 * 1024;
 const KEEP_TAIL = 2 * 1024;
 
+// ── 自动清理（2026-10-19）：落盘文件不能无限累积 ─────────────────────────
+// 策略：每次落盘时**顺带**清扫同目录，双保险 —— ① 超过 TTL（默认 7 天）删除；
+// ② 超过数量上限（默认 200）时从最老的删。只碰本机制自己的文件
+// （tool-output-*.txt），不碰用户产物；每目录每小时最多扫一次，避免频繁 IO。
+export const TOOL_SPILL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const TOOL_SPILL_MAX_FILES = 200;
+const GC_INTERVAL_MS = 60 * 60 * 1000;
+
+const lastGcAt = new Map<string, number>();
+
+/** 清理目录内的落盘文件（可单测：now/ttl/max 可注入）。返回删除数量。 */
+export function gcSpillFiles(dir: string, opts?: { now?: number; ttlMs?: number; maxFiles?: number }): number {
+  const now = opts?.now ?? Date.now();
+  const ttl = opts?.ttlMs ?? TOOL_SPILL_TTL_MS;
+  const maxFiles = opts?.maxFiles ?? TOOL_SPILL_MAX_FILES;
+  let deleted = 0;
+  try {
+    const files = fs.readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && /^tool-output-.*\.txt$/.test(e.name))
+      .map((e) => {
+        const p = path.join(dir, e.name);
+        let mtime = 0;
+        try { mtime = fs.statSync(p).mtimeMs; } catch { mtime = 0; }
+        return { p, mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime); // 新 → 老
+    for (let i = 0; i < files.length; i++) {
+      const { p, mtime } = files[i];
+      const expired = now - mtime > ttl;
+      const overCap = i >= maxFiles;
+      if (!expired && !overCap) continue;
+      try { fs.unlinkSync(p); deleted++; } catch { /* 被占用/已删：跳过 */ }
+    }
+  } catch { /* 目录不可读：GC 失败不影响落盘 */ }
+  return deleted;
+}
+
+/** 带节流的清扫（每目录每小时最多一次） */
+function gcSpillDirThrottled(dir: string): void {
+  const now = Date.now();
+  const last = lastGcAt.get(dir) ?? 0;
+  if (now - last < GC_INTERVAL_MS) return;
+  lastGcAt.set(dir, now);
+  gcSpillFiles(dir, { now });
+}
+
+/** 测试钩子：重置清扫节流表 */
+export function resetSpillGcThrottle(): void {
+  lastGcAt.clear();
+}
+
 export interface SpillResult {
   text: string;
   /** 落盘后的绝对路径（未落盘时为 undefined） */
@@ -45,6 +96,8 @@ export function spillOversizedToolOutput(opts: {
     const fileName = `tool-output-${safeTool}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`;
     const abs = path.join(dir.dir, fileName);
     fs.writeFileSync(abs, text, 'utf-8');
+    // 落盘后顺带清扫（节流：同目录每小时最多一次；失败静默，不影响本次落盘结果）
+    gcSpillDirThrottled(dir.dir);
     const marker = `\n\n…[工具输出已落盘：全文 ${text.length} 字符保存在 ${abs}`
       + `；需要完整内容请用 file_read 读取该路径（支持 offset/limit 分段）——这里只展示首尾节选]…\n\n`;
     return {
