@@ -76,6 +76,8 @@ import queryContractRoutes from './routes/query-contract.js';
 import ontologyRoutes from './routes/ontologies.js';
 import llmProxyRoutes from './routes/llm-proxy.js';
 import llmTaskRoutes from './routes/llm-tasks.js';
+// 无头执行（对标 codex exec）：一次性跑完任务返回 JSON，供 CI / 脚本调用（2026-10-19）
+import execRoutes from './routes/exec.js';
 import publishQueueRoutes from './routes/publish-queue.js';
 import llmLogsRoutes from './routes/llm-logs.js';
 // 模型候选池三层配置（model-candidate-pools）：global/platform/agent 读写集中一处
@@ -399,6 +401,8 @@ app.get('/api/media/proxy', async (req, res) => {
 app.use('/api/git', gitRoutes);
 app.use('/api/llm', llmProxyRoutes);
 app.use('/api/llm', llmTaskRoutes);
+// 无头执行入口（POST /api/exec）：一次性任务 → JSON（进程内等待终态，非 SSE）
+app.use('/api/exec', execRoutes);
 // LLM 交互日志（按 用户/会话/模型 统计，口径：一条 assistant 消息 = 一次 LLM 调用）
 app.use('/api/llm', llmLogsRoutes);
 // PDF 高保真预览通道（PyMuPDF 栅格化，作为 unpdf 文本提取的升级渲染）
