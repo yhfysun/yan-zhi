@@ -5508,6 +5508,30 @@ ipcMain.handle('dialog:saveFile', async (_e, opts) => {
 // IPC：Shell（child_process）
 // ============================================================
 /**
+ * 杀整棵进程树（2026-10-19）。
+ *
+ * ★ 为什么不能只用 child.kill()：Windows 上它只终止直接子进程，孙进程
+ *   （`npm test` → node、`cmd /c` → python、ffmpeg 的辅助进程）会变成孤儿继续跑，
+ *   占着端口/文件句柄，用户表现为"命令超时了但进程还在"。taskkill /T /F 按进程树清。
+ * POSIX：先 SIGTERM，2 秒后仍未退出则 SIGKILL。
+ */
+function killProcessTree(child) {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === 'win32') {
+    if (!child.pid) { try { child.kill(); } catch {} return; }
+    try {
+      execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+      return;
+    } catch { /* taskkill 不可用 → 走下面的兜底 */ }
+  }
+  try { child.kill('SIGTERM'); } catch {}
+  const t = setTimeout(() => {
+    try { if (child.exitCode === null) child.kill('SIGKILL'); } catch {}
+  }, 2000);
+  if (typeof t.unref === 'function') t.unref();
+}
+
+/**
  * ★★★ 子进程输出**不做 UTF-8 解码**（2026-10-01 用户实报「安装包任务里工具输出乱码」）：
  *   Windows 下子进程按 OEM 代码页（GBK/CP936）输出（`cmd /c echo 中文`、`dir`，
  *   以及无 `PYTHONIOENCODING` 的 Python），原先这里写死 `toString('utf-8')` → 满屏 U+FFFD。
@@ -5524,7 +5548,9 @@ ipcMain.handle('shell:exec', (e, command, args, options) => {
     if (options?.env) opts.env = { ...process.env, ...options.env };
     const toB64 = (v) => (Buffer.isBuffer(v) ? v.toString('base64')
       : Buffer.from(String(v || ''), 'utf-8').toString('base64'));
+    let timer = null;
     const child = execFile(command, args ?? [], opts, (err, stdout, stderr) => {
+      if (timer) { clearTimeout(timer); timer = null; }
       resolve({
         stdoutB64: toB64(stdout),
         stderrB64: toB64(stderr),
@@ -5532,9 +5558,7 @@ ipcMain.handle('shell:exec', (e, command, args, options) => {
       });
     });
     if (options?.timeout && typeof options.timeout === 'number' && options.timeout > 0) {
-      setTimeout(() => {
-        try { child.kill('SIGTERM'); } catch {}
-      }, options.timeout);
+      timer = setTimeout(() => { killProcessTree(child); }, options.timeout);
     }
   });
 });

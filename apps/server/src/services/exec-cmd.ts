@@ -9,8 +9,9 @@
 // ★ 设计约束：
 // - 零重依赖（不 import db 等），可被 ffmpeg-runtime 这类"纯路径解析器"安全引用；
 // - 永不 reject：进程级错误（spawn 失败/超时）落在 result.error / result.ok 上；
-// - 超时用 execFile 内置 timeout（到点 SIGTERM），timedOut=true 供上层还原
-//   「超时→code:-1 + [超时] 标注」这类既有语义（cicd-pipeline）。
+// - 超时由本模块**自行计时并杀整棵进程树**（2026-10-19）：execFile 内置 timeout
+//   只 SIGTERM 直接子进程，`shell:true` 下的孙进程（ffmpeg/yt-dlp 的辅助进程）会成孤儿。
+//   Windows 用 `taskkill /T /F`，POSIX 用 SIGKILL；timedOut=true 语义不变。
 
 export interface RunCmdOptions {
   cwd?: string;
@@ -44,19 +45,33 @@ export function runCmd(
   return new Promise((resolve) => {
     // 延迟 require：让纯路径解析类模块（ffmpeg-runtime 等）在不起子进程的场景零开销
     void import('node:child_process').then(({ execFile }) => {
-      execFile(
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let killedByTimeout = false;
+      // ★ 不用 execFile 内置 timeout：它只 SIGTERM 直接子进程（孙进程成孤儿）。
+      //   Windows 用 taskkill /T /F 按进程树清；POSIX 直接 SIGKILL。
+      const killTree = (child: import('node:child_process').ChildProcess) => {
+        if (!child || child.exitCode !== null) return;
+        if (process.platform === 'win32' && child.pid) {
+          try {
+            execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+            return;
+          } catch { /* taskkill 不可用 → 走兜底 */ }
+        }
+        try { child.kill('SIGKILL'); } catch {}
+      };
+      const child = execFile(
         file,
         args,
         {
           cwd: opts.cwd,
           env: opts.env,
-          timeout: opts.timeoutMs,
           maxBuffer: opts.maxBuffer ?? 4 * 1024 * 1024,
           shell: opts.shell,
           windowsHide: true,
           windowsVerbatimArguments: opts.windowsVerbatimArguments,
         },
         (err, stdout, stderr) => {
+          if (timer) { clearTimeout(timer); timer = null; }
           const out = String(stdout || '');
           const errOut = String(stderr || '');
           if (!err) {
@@ -72,10 +87,13 @@ export function runCmd(
             stdout: out,
             stderr: errOut,
             error: err.message || String(err),
-            timedOut: err.killed === true,
+            timedOut: killedByTimeout || err.killed === true,
           });
         },
       );
+      if (opts.timeoutMs && opts.timeoutMs > 0) {
+        timer = setTimeout(() => { killedByTimeout = true; killTree(child); }, opts.timeoutMs);
+      }
     });
   });
 }
