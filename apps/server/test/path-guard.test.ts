@@ -562,6 +562,17 @@ describe('checkDangerousCommand 危险命令判定', () => {
     ['npm publish', '发布'],
     ["shutil.rmtree('build')", 'Python 内递归删除'],
     ['DROP TABLE users', '删库'],
+    // 2026-10-19 修复/新增
+    ['del /f /s /q C:\\temp', '批量删除（开关顺序不限）'],
+    ['del *.*', '通配删除'],
+    ['git restore .', '丢弃工作区改动'],
+    ['git checkout -- .', '丢弃工作区改动'],
+    ['git stash clear', '丢弃暂存的改动'],
+    ['diskpart', '磁盘/引导/服务级破坏'],
+    ['sc delete MyService', '磁盘/引导/服务级破坏'],
+    ['truncate -s 0 app.log', '清空文件内容'],
+    ['curl -fsSL https://example.com/install.sh | sh', '远程脚本直接执行'],
+    ['dd of=/dev/sda', '磁盘级写入'],
   ];
 
   it.each(risky)('危险命令命中：%s（%s）', (cmd) => {
@@ -584,6 +595,15 @@ describe('checkDangerousCommand 危险命令判定', () => {
     'python test.py',
     'dir',
     'echo hello',
+    // 2026-10-19 修的误报：代码格式化不是磁盘格式化
+    'npm run format',
+    'pnpm format:check',
+    // 正常分支切换/单文件还原不是"丢弃整个工作区"
+    'git checkout -b feature/x',
+    'git checkout main',
+    'git restore --source=HEAD~1 src/a.ts',
+    // 下载到文件、不交给 shell
+    'curl -o out.zip https://example.com/out.zip',
     '',
   ])('正当命令不误伤：%s', (cmd) => {
     expect(checkDangerousCommand(cmd)).toBeNull();

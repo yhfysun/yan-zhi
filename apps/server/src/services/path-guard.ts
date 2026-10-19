@@ -129,18 +129,28 @@ export const COMMAND_TOOLS = COMMAND_TOOL_NAMES;
 /** 破坏性命令模式（按匹配顺序报首个命中原因）。覆盖 cmd / PowerShell / bash / git / python。 */
 const DANGEROUS_COMMAND_PATTERNS: Array<{ re: RegExp; why: string }> = [
   { re: /\brm\s+(?:-{1,2}[\w-]+\s+)*-{1,2}\w*r\w*(?:\s|$)/i, why: '递归删除（rm -r）' },
-  { re: /\bdel\s+(?:\/[sq]\s+)+/i, why: '批量删除（del /s /q）' },
+  // ★ 开关顺序不限：`del /f /s /q` 以 /f 开头，旧写法 `(?:\/[sq]\s+)+` 会漏（2026-10-19 修）
+  { re: /\bdel\s+(?:\/[a-z]+\s+)*\/[a-z]*[sq][a-z]*\b/i, why: '批量删除（del /s /q）' },
+  { re: /\bdel\s+[^\n|;&]*\*\.\*/i, why: '通配删除（del *.*）' },
   { re: /\b(?:rd|rmdir)\s+\/s/i, why: '递归删除目录（rd /s）' },
   { re: /\bRemove-Item\b[^&|;>]*-Recurse/i, why: 'PowerShell 递归删除（Remove-Item -Recurse）' },
   { re: /\brm\s+-\w*f\w*r\w*\s+\/(?:\s|$)/, why: '删除文件系统根（rm -rf /）' },
-  { re: /\bformat\b\s|\bmkfs(?:\.\w+)?\b|\bdd\s+if=/i, why: '格式化/磁盘级写入' },
+  // ★ 旧写法 `\bformat\b\s` 会误伤 `npm run format`（2026-10-19 修）：必须跟盘符才像磁盘格式化
+  { re: /\bformat\s+[a-z]:(?:\s|$)|\bFormat-Volume\b|\bmkfs(?:\.\w+)?\b|\bdd\b[^|;&]*(?:if=|of=)/i, why: '格式化/磁盘级写入' },
   { re: /\bshutdown\b|\breboot\b|\bpoweroff\b|\bhalt\b/i, why: '关机/重启' },
   { re: /\bgit\s+push\b[^&|;]*(?:--force(?!-with-lease)|\s-f\b)/, why: '强制推送（覆盖远端历史）' },
   { re: /\bgit\s+reset\s+--hard\b/, why: '丢弃全部未提交改动（git reset --hard）' },
+  // ★ checkout/restore 加 "." 或 "-- ." 与 reset --hard 同性质（丢弃工作区改动）
+  { re: /\bgit\s+(?:checkout|restore)\s+(?:[^\n|;&]*\s)?(?:--\s+)?\.(?:\s|$)/, why: '丢弃工作区改动（git checkout/restore .）' },
+  { re: /\bgit\s+stash\s+(?:drop|clear)\b/, why: '丢弃暂存的改动（git stash drop/clear）' },
   { re: /\bgit\s+clean\b[^\n|;&]*-f/, why: '删除未跟踪文件（git clean -f）' },
   { re: /\bchmod\s+-R\b|\bchown\s+-R\b/i, why: '递归修改文件权限/属主' },
   { re: /\btaskkill\s+\/f\b/i, why: '强制结束进程（taskkill /f）' },
   { re: /\breg(?:edit|\.exe)?\s+(?:add|delete|import)\b/i, why: '写/删 Windows 注册表' },
+  { re: /\bdiskpart\b|\bbcdedit\b|\bvssadmin\b[^\n|;&]*\bdelete\b|\bsc(?:\.exe)?\s+delete\b/i, why: '磁盘/引导/服务级破坏' },
+  { re: /\btruncate\s+-s\s*0\b/, why: '清空文件内容（truncate -s 0）' },
+  // 远端脚本直接交给 shell：内容不可预知，等于远程代码执行
+  { re: /\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b/i, why: '远程脚本直接执行（curl/wget | sh）' },
   { re: /\b(?:npm|pnpm|yarn)\s+(?:publish|unpublish)\b/, why: '发布/撤包（影响公共仓库）' },
   { re: /shutil\.rmtree|os\.system\s*\(\s*['"]rm\s|subprocess\.(?:call|run|Popen)\s*\(\s*['"][^'"]*\brm\s+-\w*r/i, why: 'Python 内递归删除/系统删除' },
   { re: /\bDROP\s+(?:TABLE|DATABASE)\b/i, why: '删库（DROP TABLE/DATABASE）' },
