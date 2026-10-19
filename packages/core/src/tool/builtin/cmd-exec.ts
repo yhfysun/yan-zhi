@@ -1,8 +1,9 @@
 // cmd_exec 内置工具 — 在系统 shell 中执行命令（支持 cmd/python/java 等）
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { capToolOutput } from './output-cap';
+import { resolveToolPath } from './fs-walk';
 import { toolError } from '../result';
 
 /** Windows shell 内置命令白名单（where 对这些返回非 0，需放行不预检） */
@@ -118,7 +119,7 @@ export class CmdExecTool implements BuiltInTool {
       },
       cwd: {
         type: 'string',
-        description: 'Working directory for the command. Defaults to current directory.',
+        description: 'Working directory. Defaults to the session workspace. Relative paths are resolved against the workspace.',
       },
       timeout: {
         type: 'number',
@@ -128,7 +129,7 @@ export class CmdExecTool implements BuiltInTool {
     required: ['command'],
   };
 
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const shell = getPlatformAdapter().shell;
     if (!shell) {
       return toolError('Error: cmd_exec is only available on desktop. Browser/web builds do not support shell commands.');
@@ -136,8 +137,14 @@ export class CmdExecTool implements BuiltInTool {
 
     const command = args.command as string;
     const cmdArgs = (args.args as string[]) || [];
-    const cwd = args.cwd as string | undefined;
     const timeout = Math.min((args.timeout as number) || 30000, 300000);
+
+    // ★ cwd 默认取工作目录（2026-10-19）：此前省略 cwd 时 execFile 继承的是**桌面主进程目录**
+    //   （启动目录/安装目录，生产环境可能是 System32），相对路径与产物落点因此不可预期。
+    //   显式相对 cwd 也按工作目录解析 —— 与 file_* 系列的路径语义保持一致。
+    const workspaceDir = (ctx?.workspaceDir || '').trim();
+    const rawCwd = typeof args.cwd === 'string' ? args.cwd.trim() : '';
+    const cwd = rawCwd ? resolveToolPath(rawCwd, workspaceDir) : (workspaceDir || undefined);
 
     if (!command) {
       return toolError('Error: command is required');

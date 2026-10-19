@@ -265,6 +265,12 @@ export interface PendingPathAuthItem {
   rawPath: string;
   /** 解析后的绝对路径（可能为空：命令类工具） */
   absPath: string;
+  /** 命令类：执行目录（省略时默认会话工作目录；无工作目录时为空串） */
+  cwd?: string;
+  /** 命令类：执行目录是否在允许根内；undefined = 无法判定 */
+  cwdInside?: boolean;
+  /** 命令类：是否显式给了 cwd */
+  cwdExplicit?: boolean;
 }
 
 export interface PendingPathAuth {
@@ -1979,6 +1985,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             action: (String(it.action) === 'write' ? 'write' : 'read') as 'read' | 'write',
             rawPath: String(it.rawPath || ''),
             absPath: String(it.absPath || ''),
+            // 命令类执行目录：cwdInside 只在服务端判定得出时才有（相对/未指定 → undefined）
+            cwd: typeof it.cwd === 'string' ? it.cwd : undefined,
+            cwdInside: typeof it.cwdInside === 'boolean' ? it.cwdInside : undefined,
+            cwdExplicit: typeof it.cwdExplicit === 'boolean' ? it.cwdExplicit : undefined,
           }))
         : [];
       if (items.length === 0) return { ok: true, result: JSON.stringify({ decision: 'deny' }) };

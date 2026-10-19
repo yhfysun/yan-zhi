@@ -173,6 +173,17 @@ export interface PathAccessItem {
   absPath: string;
   /** 模型原始给的路径（弹窗里要让用户看到"它想访问什么"） */
   rawPath: string;
+  /**
+   * 命令类工具的执行目录（2026-10-19，授权卡展示用）。
+   * - 显式绝对路径 → 解析后的路径，并给出 `cwdInside`
+   * - 显式相对路径 → 有工作目录时解析为绝对；无工作目录时原样、`cwdInside` 为 undefined
+   * - 未给 → 会话工作目录（无工作目录时为空串）
+   */
+  cwd?: string;
+  /** 执行目录是否在允许根内；undefined = 无法判定（未指定 / 相对路径） */
+  cwdInside?: boolean;
+  /** 是否显式给了 cwd（区分"未指定"的文案） */
+  cwdExplicit?: boolean;
 }
 
 /**
@@ -352,6 +363,8 @@ export function checkPathAccess(input: PathGuardInput): PathGuardVerdict {
         action: 'write',
         absPath: '',
         rawPath: summarizeCommandArgs(args),
+        // 授权卡要能看到"这条命令在哪个目录跑"；命令类工具省略 cwd 时默认工作目录
+        ...commandExecutionScope(args, roots, workspaceDir || ''),
       }],
     };
   }
@@ -386,6 +399,30 @@ export function summarizeCommandArgs(args: Record<string, unknown> | null | unde
     return args.code.replace(/\s+/g, ' ').trim().slice(0, 500);
   }
   try { return JSON.stringify(args).slice(0, 500); } catch { return ''; }
+}
+
+/**
+ * 命令类工具的执行目录（授权卡展示 + 越界提示，2026-10-19）。
+ *
+ * ★ 只对**绝对路径 cwd** 做越界判定：解析后仍非绝对（无工作目录的裸相对路径）时，
+ *   execFile 的基准是**桌面主进程目录**，服务端算不准 —— 宁可标"无法判定"。
+ * ★ `defaultCwd` 是"省略 cwd 时的默认目录"，由命令类工具传会话工作目录
+ *   （执行侧 CmdExecTool / PythonExecTool 同口径）。
+ */
+export function commandExecutionScope(
+  args: Record<string, unknown> | null | undefined,
+  roots: string[],
+  defaultCwd = '',
+): { cwd: string; cwdInside?: boolean; cwdExplicit: boolean } {
+  const raw = args && typeof args.cwd === 'string' ? args.cwd.trim() : '';
+  const fallback = (defaultCwd || '').trim();
+  if (!raw && !fallback) return { cwd: '', cwdExplicit: false };
+  // 与 CmdExecTool 同一解析出口：显式相对 cwd 也基于工作目录
+  const effective = raw ? resolveToolPath(raw, fallback) : fallback;
+  if (!isAbsolutePath(effective)) return { cwd: effective, cwdExplicit: !!raw };
+  const abs = path.resolve(effective);
+  const inside = roots.filter((r) => !!r && !!r.trim()).some((r) => isWithinRoot(abs, r));
+  return { cwd: abs, cwdInside: inside, cwdExplicit: !!raw };
 }
 
 // ───────────────────────── 会话级授权状态（内存） ─────────────────────────

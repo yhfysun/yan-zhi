@@ -83,6 +83,7 @@ import {
   authorizeDir,
   isCommandAuthorized,
   authorizeCommand,
+  commandExecutionScope,
   type PathAccessItem,
 } from './services/path-guard.js';
 import { modelSupportsTools } from './services/model-caps.js';
@@ -4888,8 +4889,14 @@ async function executeTool(
   // 匹配逻辑只有一份（services/user-hooks.ts），与「判定/执行分离」的既有风格一致。
   // ══════════════════════════════════════════════════════════════════════════
   const hookVerdict = matchUserHooks(task.userId, toolName, args);
+  // 命令类工具的执行目录信息（授权卡展示用）；非命令工具为空对象
+  const guardRoots = allowedRootsFor(task.workspaceDir, task.conversationId);
+  const commandScope = COMMAND_TOOLS.has(toolName)
+    ? commandExecutionScope(args, guardRoots, task.workspaceDir || '')
+    : {};
   const hookItem: PathAccessItem = {
     toolName, action: 'write', absPath: '', rawPath: summarizeCommandArgs(args) || JSON.stringify(args ?? {}).slice(0, 200),
+    ...commandScope,
   };
   if (hookVerdict.denyRules.length > 0) {
     const why = hookVerdict.denyRules.map((r) => `「${r.name}」`).join('、');
@@ -4939,6 +4946,7 @@ async function executeTool(
   if (dangerHit) {
     const dangerItems: PathAccessItem[] = [{
       toolName, action: 'write', absPath: '', rawPath: summarizeCommandArgs(args),
+      ...commandScope,
     }];
     auditPathAccess({
       userId: task.userId, conversationId: task.conversationId, taskId: task.id,
@@ -4962,7 +4970,7 @@ async function executeTool(
       toolName,
       args,
       workspaceDir: task.workspaceDir,
-      allowedRoots: allowedRootsFor(task.workspaceDir, task.conversationId),
+      allowedRoots: guardRoots,
       authorizedDirs: getAuthorizedDirs(task.conversationId),
     });
     if (pathVerdict.kind === 'need-auth') {

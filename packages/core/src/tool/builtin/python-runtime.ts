@@ -192,11 +192,12 @@ export async function findPython(): Promise<string> {
 
 /** 执行一段内嵌 Python 代码（用户自定义工具用）。
  *  约定：代码从环境变量 YZ_PY_ARGS（base64 JSON）读取入参，结果打印到 stdout。
- *  opts.pythonPath：额外 PYTHONPATH 目录（自定义工具按需安装的隔离站点包）—— 见 server 的 tool-deps.ts。 */
+ *  opts.pythonPath：额外 PYTHONPATH 目录（自定义工具按需安装的隔离站点包）—— 见 server 的 tool-deps.ts。
+ *  opts.cwd：子进程工作目录（python_exec 传会话工作目录，2026-10-19）。 */
 export async function runPythonCode(
   code: string,
   args: Record<string, unknown> = {},
-  opts: { timeout?: number; pythonPath?: string } = {},
+  opts: { timeout?: number; pythonPath?: string; cwd?: string } = {},
 ): Promise<McpCallResult> {
   const shell = getPlatformAdapter().shell;
   if (!shell) {
@@ -221,7 +222,12 @@ export async function runPythonCode(
       const sep = process.platform === 'win32' ? ';' : ':';
       env.PYTHONPATH = env.PYTHONPATH ? `${opts.pythonPath}${sep}${env.PYTHONPATH}` : opts.pythonPath;
     }
-    const r = await shell.exec(py, [tmp], { timeout: Math.min(opts.timeout || 30000, 300000), env });
+    const r = await shell.exec(py, [tmp], {
+      timeout: Math.min(opts.timeout || 30000, 300000),
+      env,
+      // 脚本走绝对临时路径，cwd 只影响代码里的相对路径（产物落点）
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    });
     const lines: string[] = [];
     if (r.stdout) lines.push(capToolOutput(r.stdout));
     if (r.stderr) lines.push('[stderr]\n' + capToolOutput(r.stderr));

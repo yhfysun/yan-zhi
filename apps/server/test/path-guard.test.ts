@@ -353,6 +353,98 @@ describe('命令类工具：路径抽不到 → 整条命令授权', () => {
     }
   });
 
+  it('cmd_exec 授权项携带执行目录（工作区内 / 外 / 未指定）', () => {
+    const inside = checkPathAccess({
+      toolName: 'cmd_exec',
+      args: { command: 'npm', args: ['test'], cwd: WS },
+      workspaceDir: WS,
+      allowedRoots: [WS],
+    });
+    expect(inside.kind).toBe('need-auth');
+    if (inside.kind === 'need-auth') {
+      expect(inside.items[0].cwdExplicit).toBe(true);
+      expect(inside.items[0].cwdInside).toBe(true);
+      expect(normalizeForCompare(inside.items[0].cwd!)).toBe(normalizeForCompare(WS));
+    }
+
+    const outside = checkPathAccess({
+      toolName: 'cmd_exec',
+      args: { command: 'npm', args: ['test'], cwd: OUTSIDE },
+      workspaceDir: WS,
+      allowedRoots: [WS],
+    });
+    expect(outside.kind).toBe('need-auth');
+    if (outside.kind === 'need-auth') expect(outside.items[0].cwdInside).toBe(false);
+
+    // 未指定 cwd：cmd_exec 默认工作目录（与执行侧 CmdExecTool 同口径）
+    const none = checkPathAccess({
+      toolName: 'cmd_exec',
+      args: { command: 'npm' },
+      workspaceDir: WS,
+      allowedRoots: [WS],
+    });
+    expect(none.kind).toBe('need-auth');
+    if (none.kind === 'need-auth') {
+      expect(normalizeForCompare(none.items[0].cwd!)).toBe(normalizeForCompare(WS));
+      expect(none.items[0].cwdExplicit).toBe(false);
+      expect(none.items[0].cwdInside).toBe(true);
+    }
+
+    // 相对 cwd：同样基于工作目录解析（与 file_* 路径语义一致）
+    const rel = checkPathAccess({
+      toolName: 'cmd_exec',
+      args: { command: 'npm', cwd: 'sub/dir' },
+      workspaceDir: WS,
+      allowedRoots: [WS],
+    });
+    expect(rel.kind).toBe('need-auth');
+    if (rel.kind === 'need-auth') {
+      expect(normalizeForCompare(rel.items[0].cwd!)).toBe(normalizeForCompare(join(WS, 'sub', 'dir')));
+      expect(rel.items[0].cwdExplicit).toBe(true);
+      expect(rel.items[0].cwdInside).toBe(true);
+    }
+
+    // 无工作目录：无法判定，保持"未指定"（不臆测）
+    const noWs = checkPathAccess({
+      toolName: 'cmd_exec',
+      args: { command: 'npm' },
+      workspaceDir: '',
+      allowedRoots: [],
+    });
+    expect(noWs.kind).toBe('need-auth');
+    if (noWs.kind === 'need-auth') {
+      expect(noWs.items[0].cwd).toBe('');
+      expect(noWs.items[0].cwdInside).toBeUndefined();
+    }
+  });
+
+  it('python_exec 与 cmd_exec 同口径：省略 cwd → 工作目录', () => {
+    const v = checkPathAccess({
+      toolName: 'python_exec',
+      args: { code: 'print(1)' },
+      workspaceDir: WS,
+      allowedRoots: [WS],
+    });
+    expect(v.kind).toBe('need-auth');
+    if (v.kind === 'need-auth') {
+      expect(normalizeForCompare(v.items[0].cwd!)).toBe(normalizeForCompare(WS));
+      expect(v.items[0].cwdExplicit).toBe(false);
+      expect(v.items[0].cwdInside).toBe(true);
+    }
+
+    const noWs = checkPathAccess({
+      toolName: 'python_exec',
+      args: { code: 'print(1)' },
+      workspaceDir: '',
+      allowedRoots: [],
+    });
+    expect(noWs.kind).toBe('need-auth');
+    if (noWs.kind === 'need-auth') {
+      expect(noWs.items[0].cwd).toBe('');
+      expect(noWs.items[0].cwdInside).toBeUndefined();
+    }
+  });
+
   it('python_exec → need-auth，rawPath 是代码片段', () => {
     const v = checkPathAccess({
       toolName: 'python_exec',

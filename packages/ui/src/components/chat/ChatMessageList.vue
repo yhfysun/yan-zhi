@@ -442,6 +442,20 @@
             {{ it.action === 'write' ? '写入' : '读取' }}
           </span>
           <span class="inline-auth-path" :title="it.absPath || it.rawPath">{{ it.rawPath }}</span>
+          <!-- 命令类：执行目录（模型可传 cwd；此前用户看不到命令在哪个目录跑） -->
+          <div
+            v-if="authIsCommand"
+            class="inline-auth-cwd"
+            :style="it.cwdInside === false ? 'color:#e5484d' : 'color:#8a8f98'"
+          >
+            <template v-if="it.cwd">
+              执行目录 <code>{{ it.cwd }}</code>
+              <span v-if="it.cwdInside === false">· 在工作目录之外</span>
+              <span v-else-if="it.cwdInside === undefined">· 相对路径，基准为桌面主进程目录</span>
+              <span v-else-if="it.cwdExplicit === false">· 默认工作目录</span>
+            </template>
+            <template v-else>执行目录未指定（继承桌面主进程目录）</template>
+          </div>
         </div>
       </div>
       <div class="inline-ask-actions">
