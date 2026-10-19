@@ -8,14 +8,20 @@
       <span class="sub-agent-stats">({{ reasoningCount }} 次推理，{{ toolCallCount }} 个工具调用)</span>
       <el-icon :size="11" class="sub-agent-chevron"><ArrowDown v-if="!rootOpen" /><ArrowRight v-else /></el-icon>
     </div>
-    <div v-show="rootOpen" class="sub-agent-body">
-      <div v-for="(step, si) in round.steps" :key="'sub-' + idPrefix + '-' + si" class="agent-step">
+    <div v-if="rootOpen" class="sub-agent-body">
+      <div v-if="hasHiddenSteps" class="agent-steps-fold">
+        <button type="button" class="agent-steps-fold-btn" @click="toggleEarlierSteps">
+          {{ showAllSteps ? '收起更早的步骤' : `已折叠更早的 ${hiddenStepCount} 步 · 点击展开` }}
+        </button>
+      </div>
+      <template v-for="(step, si) in round.steps" :key="'sub-' + idPrefix + '-' + si">
+      <div v-if="isStepRendered(si)" class="agent-step">
         <div v-if="step.reasoningContent" class="msg-reasoning">
           <div class="reasoning-header" @click="toggleReasoning(idPrefix + '-' + si)">
             <el-icon><CaretRight v-if="!reasoningOpen[idPrefix + '-' + si]" /><CaretBottom v-else /></el-icon>
             <span>推理 {{ si + 1 }}</span>
           </div>
-          <div v-show="reasoningOpen[idPrefix + '-' + si]" class="reasoning-body">{{ step.reasoningContent }}</div>
+          <div v-if="reasoningOpen[idPrefix + '-' + si]" class="reasoning-body">{{ step.reasoningContent }}</div>
         </div>
         <div v-if="step.partialContent" class="agent-step-partial" v-html="renderMarkdown(step.partialContent)"></div>
         <div v-if="step.toolCalls.length" class="msg-reasoning" style="background:rgba(15,23,42,0.03);border-color:rgba(15,23,42,0.08)">
@@ -24,7 +30,7 @@
             <span>调用 {{ step.toolCalls.length }} 个工具</span>
             <el-icon :size="12" style="margin-left:auto;color:var(--color-text-secondary)"><ArrowDown v-if="stepOpen[idPrefix + '-' + si] !== false" /><ArrowRight v-else /></el-icon>
           </div>
-          <div v-show="stepOpen[idPrefix + '-' + si] !== false" class="tool-group-body" style="margin-top:6px;border-top:1px solid rgba(15,23,42,0.06);padding-top:6px">
+          <div v-if="stepOpen[idPrefix + '-' + si] !== false" class="tool-group-body" style="margin-top:6px;border-top:1px solid rgba(15,23,42,0.06);padding-top:6px">
             <div v-for="(tc, idx) in step.toolCalls" :key="idx" class="tool-item">
               <div class="tool-item-header" @click="toggleToolItem(idPrefix + '-' + si + '-' + idx)">
                 <div class="tool-item-left">
@@ -35,7 +41,7 @@
                 </div>
                 <el-icon :size="12" class="tool-item-chevron"><ArrowDown v-if="toolOpen[idPrefix + '-' + si + '-' + idx]" /><ArrowRight v-else /></el-icon>
               </div>
-              <div v-show="toolOpen[idPrefix + '-' + si + '-' + idx]" class="tool-item-body">
+              <div v-if="toolOpen[idPrefix + '-' + si + '-' + idx]" class="tool-item-body">
                 <div class="tool-item-section">
                   <div class="tool-item-label">参数</div>
                   <pre class="tool-item-json">{{ resolveToolArgs(tc) }}</pre>
@@ -54,6 +60,7 @@
           </div>
         </div>
       </div>
+      </template>
 
     </div>
   </div>
@@ -65,6 +72,7 @@ import { CaretRight, CaretBottom, ArrowDown, ArrowRight, CircleCheck } from '@el
 import { useChat } from '../../composables/chat/useChat';
 import { useChatStore } from '../../stores';
 import type { SubAgentRound, AgentStep } from '../../composables/chat/useChat';
+import { stepRenderRange, ROUND_STEP_RENDER_LIMIT } from '../../composables/chat/message-rounds';
 
 const props = defineProps<{ round: SubAgentRound; idPrefix: string }>();
 
@@ -77,6 +85,21 @@ const rootOpen = ref(true);
 const reasoningOpen = ref<Record<string, boolean>>({});
 const stepOpen = ref<Record<string, boolean>>({});
 const toolOpen = ref<Record<string, boolean>>({});
+
+/**
+ * 子智能体步骤窗口（2026-10-19）：实测一次长任务里子智能体产生 193 步 / 124KB 结果，
+ * 全量挂 DOM 会让流式期间每帧重渲整棵树。默认只渲染末尾 40 步，点按钮恢复全量。
+ */
+const showAllSteps = ref(false);
+const stepRange = computed(() => stepRenderRange(props.round.steps.length, showAllSteps.value));
+const hiddenStepCount = computed(() => stepRange.value.start);
+const hasHiddenSteps = computed(() => props.round.steps.length > ROUND_STEP_RENDER_LIMIT);
+function isStepRendered(si: number): boolean {
+  return si >= stepRange.value.start && si < stepRange.value.end;
+}
+function toggleEarlierSteps(): void {
+  showAllSteps.value = !showAllSteps.value;
+}
 
 function toggleRoot() { rootOpen.value = !rootOpen.value; }
 function toggleReasoning(k: string) { reasoningOpen.value[k] = !reasoningOpen.value[k]; }

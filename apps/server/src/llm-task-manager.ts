@@ -306,6 +306,8 @@ const BROWSER_SLOW_TOOLS = new Set([
   'browser_navigate', 'browser_click', 'browser_type', 'browser_upload',
   'browser_submit_form', 'browser_fill_form', 'browser_action_and_observe',
   'browser_login_saved', 'browser_download', 'browser_wait_for', 'browser_drag',
+  // 配方一次性跑完上传→转码→填表→发布，必须给足慢档（默认未登记也走慢档，这里显式登记）
+  'browser_run_recipe',
 ]);
 const BROWSER_FAST_TOOLS = new Set([
   'browser_get_page_content', 'browser_get_visible_text', 'browser_get_page_info',

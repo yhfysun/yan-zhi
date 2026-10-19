@@ -48,6 +48,19 @@ export const TOOL_CONSEC_LIMIT = 8;
  *   `FORCE_STOP_MARKER` 前缀，由调用方识别并**终止内层 ReAct 循环**、强制走收尾。
  */
 export const TOOL_BLOCK_HARD_LIMIT = 3;
+/**
+ * 同一任务内、同一工具**累计**被拦截多少次后强制收口（2026-10-19 新增，跨"放行清零"生效）。
+ *
+ * ★ 为什么还要这道闸（实测 conv cd857565，2026-10-19）：
+ *   抖音发布任务里 `browser_run_script` 在 2 小时内被拦 **10 次**，但每次拦截之间都夹着
+ *   一次"被放行"的调用（换脚本继续试）⇒ `clearBlockCount` 一遍遍把计数清零
+ *   ⇒ 连续硬停（3 次）永远够不到 ⇒ 任务在「被拦 → 换个写法再试」里空转到 2 小时超时，
+ *   用户眼看着表单都填好了却没点发布。
+ *   ⇒ 单独记一份**不随放行清零**的任务级累计数：同一工具被拦到本阈值，判定"此路确实不通"。
+ *   ★ 阈值取 8 而不是 3：正常任务偶发几次误拦（历史实测 5 次）不应被掐死；
+ *     连续 8 次被同一闸门拦下才说明模型在硬磕。
+ */
+export const TOOL_BLOCK_TASK_LIMIT = 8;
 /** 强制收口标记：调用方（llm-task-manager）据此终止内层循环，而不是继续把文本回灌给模型 */
 export const FORCE_STOP_MARKER = '[FORCE_STOP]';
 
@@ -70,6 +83,8 @@ export function neutralizeForceStopMarker(text: string): string {
 const taskToolHistory = new WeakMap<object, Array<{ name: string; key: string }>>();
 /** 每任务、每工具的**累计拦截次数**（与历史窗口无关 —— 窗口会滑动，拦截计数不该被滑走） */
 const taskBlockCounts = new WeakMap<object, Map<string, number>>();
+/** 每任务、每工具的**任务级累计拦截次数**（不随"放行"清零，见 TOOL_BLOCK_TASK_LIMIT） */
+const taskBlockTotals = new WeakMap<object, Map<string, number>>();
 
 /** 归一化 key：工具名 + 排序后的参数 JSON（截断 600 字符，防超长脚本撑爆内存） */
 export function toolCallKey(toolName: string, args: unknown): string {
@@ -93,6 +108,11 @@ function clearBlockCount(task: object, toolName: string): void {
 /** 取该工具累计被拦次数（供调用方/测试观察） */
 export function toolBlockCount(task: object, toolName: string): number {
   return taskBlockCounts.get(task)?.get(toolName) || 0;
+}
+
+/** 取该工具**任务级**累计被拦次数（不随放行清零，供测试观察） */
+export function toolBlockTotal(task: object, toolName: string): number {
+  return taskBlockTotals.get(task)?.get(toolName) || 0;
 }
 
 /**
@@ -130,12 +150,23 @@ export function checkToolLoop(
     taskBlockCounts.set(task, m);
     return n;
   };
+  /** 任务级累计（不随放行清零）：见 TOOL_BLOCK_TASK_LIMIT */
+  const bumpTotal = () => {
+    const m = taskBlockTotals.get(task) || new Map<string, number>();
+    const n = (m.get(toolName) || 0) + 1;
+    m.set(toolName, n);
+    taskBlockTotals.set(task, m);
+    return n;
+  };
   /** 达到硬闸 → 前缀标记，调用方终止内层循环 */
-  const withHardStop = (text: string, n: number) =>
-    n >= TOOL_BLOCK_HARD_LIMIT
-      ? `${FORCE_STOP_MARKER} 工具 ${toolName} 已被拦截 ${n} 次，判定当前路径不可行。**立即停止所有工具调用**，` +
-        `直接输出结论性汇报（已尝试什么 / 为什么不可行 / 建议下一步）。`
-      : text;
+  const withHardStop = (text: string, n: number) => {
+    const total = bumpTotal();
+    if (n >= TOOL_BLOCK_HARD_LIMIT || total >= TOOL_BLOCK_TASK_LIMIT) {
+      return `${FORCE_STOP_MARKER} 工具 ${toolName} 已被拦截 ${n} 次（本任务累计 ${total} 次），判定当前路径不可行。` +
+        `**立即停止所有工具调用**，直接输出结论性汇报（已尝试什么 / 为什么不可行 / 建议下一步）。`;
+    }
+    return text;
+  };
 
   if (dupCount >= TOOL_DUP_LIMIT) {
     const n = bump();

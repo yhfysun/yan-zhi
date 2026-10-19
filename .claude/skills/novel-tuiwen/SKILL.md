@@ -74,7 +74,11 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 3. **正文**：达人中心书详情逐章抓全文 → `file_write` 到 `<工作目录>/novel/<书名>/chNN.txt`（其他平台不给全文时 `ask_user`）
 4. **背景**：优先本地素材；题材与选法见 `pipeline.md`「背景素材选取」
 5. **出片**：`novel_tuiwen { chapter, title, alias, chapter, bg_video }` → `pipeline.md`
-6. **发布**（需 confirm_user）：抖音 / 快手各见其 `publish-video.md`
+6. **发布**（需 confirm_user）：抖音 / 快手各见其 `publish-video.md`。
+   ★ 工具列表里有 `browser_run_recipe` 时**优先用配方**（如 `douyin-publish-video`）：
+   模型只传参数，上传/填表/回读/发布由代码按固定步骤执行；`submit` 只在用户明确要求发布时传 true。
+   ★ 被验证码/滑块拦住（`blockedByVerification`）→ 先 `ask_user` 请用户在浏览器面板完成验证，
+   再带返回的 `resumeStep` 续跑；**不要重跑全流程**（会重新上传/重置表单）。
 7. **引导评论**：抖音发布后发引导评论 → `pages/douyin/comment/post-comment.md`
 8. **回填发文**：番茄达人中心别名管理 → `backfill.md` —— **不回填不结算**
 9. **回报**：选书理由 + 成片路径 + 发布/回填状态
@@ -93,6 +97,13 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
    只保留该给用户看的成果页。**只能关自己开的**，用户手开的关不掉也别反复试
 6. 新建/切换标签页：`browser_new_tab` / `browser_switch_tab` ——
    **要让用户看到某个页，就用 `browser_switch_tab` 显式切过去**，别指望它自己跟着走
+7. ⚠️ **填表单一律用 `browser_fill_form`（或 `browser_type`），禁止用 `browser_run_script` 做
+   selectAll → delete → insertText 的"清空重填"**：
+   - 富文本（Draft.js/ProseMirror/Slate）反复清空会让内部 model 与 DOM 不同步，产出重复前缀
+     （实测「拜师那天拜师那天，师父递给我…」），越填越乱，最终表单看着填好却一直不提交；
+   - 填完以工具返回的 `state` / `applied` 为准，**包含目标文本即视为成功**，不要再读一遍再填；
+   - 返回 `forceStop:true`（同字段连续 2 次未生效）→ **立即停止重填**，回读一次现场并向用户
+     报告"字段无法写入"，由用户决定手填或换方案。绝不允许换个选择器/换段脚本继续试。
 
 ## 书名红线
 

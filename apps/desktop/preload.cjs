@@ -25,6 +25,14 @@ function resolveApiPort() {
 }
 const API_PORT = resolveApiPort();
 
+// ★ 渲染层心跳（2026-10-19）：主线程被长任务/大列表占死时，页面里的定时器也会停。
+//   主进程看门狗据此判定"界面已卡死"并自动重载窗口 —— 用户不再需要点任何东西。
+try {
+  setInterval(() => {
+    try { ipcRenderer.send('yz:renderer-heartbeat'); } catch { /* 窗口正在销毁 */ }
+  }, 2000);
+} catch { /* preload 顶层异常不应阻断 API 暴露 */ }
+
 // 通过 contextBridge 安全地暴露 API 到渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
   // 本实例后端端口 / 基址（含 /api 前缀）—— 所有前端请求地址都从这里取，禁止再写 3001

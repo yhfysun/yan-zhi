@@ -1377,6 +1377,26 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
    *  裁剪只丢头部旧条目），切回去时再按需向前翻页（loadMoreHistory）补。
    *  ★ 只在"切走"时裁 —— 当前会话不裁（视图正渲染它，裁了会闪）。 */
   const MESSAGE_RESIDENCY_LIMIT = 200;
+  /** 当前会话的消息驻留上限（2026-10-19，修「长会话把渲染进程主线程压死」）。
+   *  实测：同一会话开了一整天、累积 1423 条消息（18 轮）后，流式 flush 每 160ms
+   *  重算/重渲整棵列表，渲染进程主线程被占死（CDP Runtime.evaluate 8s 无响应），
+   *  而抖音 webview 仍正常 —— 说明卡的是应用聊天 UI，不是目标网页。
+   *  这里只裁**内存**数组头部；更早历史仍可从服务端翻页（hasMore=true）。
+   *  ★ 只在用户位于底部时裁：正在向上翻历史时裁剪会把他正在读的内容抽走。 */
+  const CURRENT_MESSAGE_RESIDENCY_LIMIT = 600;
+  let chatAtBottom = true;
+  function setChatAtBottom(v: boolean): void {
+    chatAtBottom = v;
+  }
+  function trimCurrentResidency(convId: string): void {
+    // 只裁"当前正在看的会话"；后台会话由 pruneMessageResidency 在切走时裁到 200 条
+    if (convId !== currentConvId.value) return;
+    if (!chatAtBottom) return;
+    const arr = messagesByConv.value[convId];
+    if (!arr || arr.length <= CURRENT_MESSAGE_RESIDENCY_LIMIT) return;
+    messagesByConv.value[convId] = arr.slice(arr.length - CURRENT_MESSAGE_RESIDENCY_LIMIT);
+    historyPagingOf(convId).hasMore = true;
+  }
   function pruneMessageResidency(exceptConvId: string) {
     for (const convId of Object.keys(messagesByConv.value)) {
       if (convId === exceptConvId) continue;
@@ -1657,6 +1677,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         const row = r.data as any;
         const m = rowToMsg(row);
         (messagesByConv.value[targetConvId] ||= []).push(m);
+        trimCurrentResidency(targetConvId);
         return m.id;
       }
       throw new Error('添加消息失败');
@@ -1687,6 +1708,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       console.warn('[Chat] addMessage 落库失败，降级仅存内存:', e);
     }
     (messagesByConv.value[targetConvId] ||= []).push({ ...msg, id, createdAt: ts });
+    trimCurrentResidency(targetConvId);
     return id;
   }
 
@@ -1697,6 +1719,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     const id = uid('msg_');
     const ts = Date.now();
     (messagesByConv.value[targetConvId] ||= []).push({ ...msg, id, createdAt: ts });
+    trimCurrentResidency(targetConvId);
     const dbPromise = (async (): Promise<string> => {
       if (isServerMode()) {
         const r = await api.post<any>(`/conversations/${targetConvId}/messages`, {
@@ -2657,8 +2680,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     const FLUSH_BASE_MS = 50;
     const FLUSH_LARGE_MS = 160;
     const FLUSH_LARGE_THRESHOLD = 120; // 消息数阈值：超过视为大会话
+    // ★ 2026-10-19：超大会话再降一档。实测同一会话累积 1400+ 条时，160ms 的 flush
+    //   仍会把渲染进程主线程压死（CDP 探测都进不去）。320ms 肉眼仍接近实时。
+    const FLUSH_HUGE_MS = 320;
+    const FLUSH_HUGE_THRESHOLD = 500;
     function flushIntervalMs(convId: string): number {
       const n = messagesByConv.value[convId]?.length || 0;
+      if (n >= FLUSH_HUGE_THRESHOLD) return FLUSH_HUGE_MS;
       return n >= FLUSH_LARGE_THRESHOLD ? FLUSH_LARGE_MS : FLUSH_BASE_MS;
     }
     function scheduleFlush(convId: string) {
@@ -2767,6 +2795,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
                 createdAt: Date.now(),
               } as any);
             }
+            trimCurrentResidency(convId);
             if (msg.role === 'assistant') {
               if (msg.subAgentId) st.subAgentMsgIds.set(subAgentKeyOf(msg.subAgentId, msg.parentToolCallId), msg.id);
               else st.assistantMsgId = msg.id;
@@ -3652,6 +3681,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     archiveAllInSpace, dropConvRuntime,
     loadConversationsByScope,
     loadMoreHistory, historyPagingByConv, HISTORY_PAGE_SIZE,
+    /** 当前会话消息驻留裁剪的开关：UI 滚到底部时置 true，向上翻历史时置 false */
+    setChatAtBottom,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,
     getMergedMounts,
   };

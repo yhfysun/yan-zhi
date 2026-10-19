@@ -225,3 +225,29 @@ export function buildMessageRounds(
   }
   return rounds;
 }
+
+/**
+ * 单轮内默认渲染的步骤数上限（2026-10-19，「长任务一跑界面卡死」治理）。
+ *
+ * 背景（用户实报 + 数据库实测）：一个浏览器自动化任务跑了 2 小时，产生
+ * **193 个助手步骤 / 196 条工具结果 / 124KB 结果文本**，而它们全部属于**同一轮**
+ * （同一个 `user` 消息之后）。`useChat` 的窗口化按「轮」开窗（末尾 30 轮），
+ * 对这种"一轮几百步"的形态完全失效 ⇒ 193 个工具卡片同时挂在 DOM 里，
+ * 流式期间每帧（50–160ms）整棵列表重渲 ⇒ 主线程被压死、界面卡住。
+ *
+ * 处理：模板只渲染末尾 `limit` 步，更早的步骤折叠成一行「展开更早的 N 步」。
+ * 用户主动展开后恢复全量（`showAll=true`）—— 既不丢信息，也不让默认 DOM 无上限。
+ */
+export const ROUND_STEP_RENDER_LIMIT = 40;
+
+/** 计算某轮实际渲染的步骤区间 `[start, end)`（纯函数，供模板与单测共用） */
+export function stepRenderRange(
+  total: number,
+  showAll: boolean,
+  limit: number = ROUND_STEP_RENDER_LIMIT,
+): { start: number; end: number } {
+  const n = Math.max(0, total);
+  const cap = Math.max(1, limit);
+  if (showAll || n <= cap) return { start: 0, end: n };
+  return { start: n - cap, end: n };
+}

@@ -1,36 +1,110 @@
 # publish-video — 抖音发布一条作品
 
-## 页面锚点
+> 站点：`creator.douyin.com` ｜ 上传页：`/creator-micro/content/upload`
+> 依据：2026-10-14 ~ 10-19 多集实战（含 10-19 描述框反复清空事故）
+
+## 首选：一行配方（2026-10-19 起）
+
+工具列表里有 `browser_run_recipe` 时，**优先用它**，不要自己逐页操作：
+
+```text
+browser_run_recipe {
+  recipe: 'douyin-publish-video',
+  params: {
+    videoPath: '<成片绝对路径>',
+    title: '<标题>',
+    description: '<描述正文>',
+    collectionName: '<合集名，可选>',
+    submit: true   // 只有用户明确要求发布时才传；默认 false 只上传+填表
+  }
+}
+```
+
+- 配方内部完成：导航 → filechooser 上传 → 等转码 → 一次填表（幂等）→ 可选选合集 → 可选点发布 → 验证成功。
+- 返回 `readyToSubmit:true`（submit=false 跑完）时：用户确认后**直接 `browser_click` 页面上的「发布」**；
+  **不要重新运行配方** —— 会重新上传视频并重置表单。
+- 返回 `blockedByVerification:true`（滑块/验证码）时，按**验证交接**处理：
+  1. 立即 `ask_user`：「请在浏览器面板完成滑块/验证码，完成后回复继续」；
+  2. 用户确认后，再次调用 `browser_run_recipe`，**params 保持不变**，并加上返回的 `resumeStep`；
+  3. 续跑只执行验证之后的步骤（发布已点过就只等结果），**不会重新上传/填表/重复点发布**；
+  4. 若续跑仍返回 `blockedByVerification`，说明验证还没完成，再次请用户处理，不要换脚本硬试。
+- 返回失败步骤与页面现场时：**不要重复运行同一配方**。先按失败原因处理（补登录 / 等上传完成 / 换参数），仍不行就向用户报告。
+- 配方不可用或站点改版时，才走下面的手动步骤。
+
+## 输入参数
+
+- `videoPath`：本地成片 `.mp4`（`novel_tuiwen` 产物）
+- `title`：作品标题（≤ 30 字，带别名关键词，**禁书名**）
+- `description`：描述正文（≤ 1000 字，带别名关键词 + 引导语，可含 `#话题`）
+- `collectionName`：可选，已有合集名（如「骨债阴阳」）
+- `submit`：是否点「发布」；**默认必须经 `confirm_user` 确认**
+
+## 页面锚点（实抓，改版时以 `browser_get_page_content` 复核为准）
 
 ```
 https://creator.douyin.com/creator-micro/content/upload
-├─ 上传入口：拖拽区（文本「点击上传」/「拖拽文件到这里」）或 button 上传
-│   → browser_upload（filechooser 模式：clickSelector 点上传按钮自动投递本地文件）
-├─ 标题/文案编辑器：div[contenteditable=true] 或 .notranslate（placeholder「填写作品标题…」）
-│   → 受控 contenteditable：focus 后 document.execCommand('insertText', false, 文案)
-├─ 话题：文案里输入 # 触发下拉（li 文本匹配）
-├─ 「发布设置」区：谁可以看 / 定时发布 / 合集 …
-│   └─「添加到合集」/「选择合集」入口（**有权限才显示**）
-└─ 底部：button「发布」          ← confirm_user 确认后才点
+├─ 上传区：文本「点击上传」/「拖拽文件到这里」或 button
+│   → browser_upload（filechooser 模式：clickSelector 点上传按钮投递本地文件）
+├─ 标题：input[placeholder*="填写作品标题"]（上传页仅 1 个 input[type=text]）
+│   计数器「0 / 30」在 editor-kit-root-container 内
+├─ 描述：.zone-container.editor-kit-container
+│   contenteditable=true（Draft.js）｜计数器「N / 1000」在右侧 toolbar
+├─ 上传状态：正文出现「已上传：… 剩余时间：…」→「上传成功 / 重新上传」
+├─ 合集入口：文本「选择合集」/「添加到合集」（有权限才显示）
+└─ 发布按钮：底部 button 文本「发布」（文本可能不唯一，用容器收窄或编号定位）
 ```
 
-## 发布按钮被悬浮层遮挡（2026-10-12 已解，无需人工）
+⚠️ **计数器不可信**：标题/描述计数器会与字段真实值不同步（实测标题 22 字显示 `0/30`）。
+回读一律以 `input.value` / `innerText` 为准，**禁止拿计数器反推内容**。
 
-底部「发布」常被悬浮提示条 / 权限气泡 / 上传进度遮罩盖住，点不到或点了不生效。
-桌面端 `main.cjs` 的 click **已做遮挡感知 + 自动关层**：检测到按钮中心被盖住时，
-先点遮挡层的关闭控件（`× / 关闭 / 取消`），找不到则退 `Esc`，再对真实按钮派发点击，
-并返回 `occluded:true` + `covering` 信息。**不再依赖脆弱的坐标绕过。**
+## 填表协议（P0，2026-10-19 起强制）
 
-## 步骤（配方）
+1. 只调**一次** `browser_get_page_content` 确认锚点；不要每一步都读全页。
+2. **一次 `browser_fill_form` 同时填标题与描述**：
 
-1. 点「发布」前用 `browser_get_page_content` 看附近有无悬浮层；
-   若 `browser_click` 返回 `occluded:true` 或点下去没反应 →
-   按 `Esc` / 点关闭按钮 / `browser_wait_for 2000` 等它消失后重试
-2. 点「发布」后用 `browser_get_page_content` **轮询**「发布成功 / 已提交 / 等待审核」文案
-   + 到「内容管理」确认视频在列表
-3. ⚠️ **严禁再次 navigate 回上传页** —— 会重置流程、清空已填标题（之前反复踩的根因）
-4. 坐标点击（x/y）仅当 index/selector 都失效且已确认坐标时作最后兜底，点后必须读状态复核
+   ```text
+   fields = [
+     { selector: 'input[placeholder*="填写作品标题"]', value: title },
+     { selector: '.zone-container.editor-kit-container', value: description }
+   ]
+   ```
+
+3. 以返回的 `state` / `applied` 为准：**包含目标文本即视为成功**，不要为了“完全相等”再填一遍。
+4. **禁止**用 `browser_run_script` 做 `selectAll → delete → insertText` 的“清空重填”。
+   富文本反复清空会让 Draft.js 内部 model 与 DOM 不同步，产出重复前缀
+   （实测「拜师那天拜师那天，师父递给我…」），越填越乱。
+5. 若 `applied:false`：只允许换一次选择器重试；仍失败就停止，回读当前值并报告。
+6. 若返回 `forceStop:true`（同字段连续 2 次未生效）：**立即停止重填**，不要换脚本继续试，
+   向用户报告“描述框无法写入”及当前值，由用户决定手填或换方案。
+
+## 步骤（确定性配方）
+
+1. `browser_navigate` 上传页（一次到位，别先开空 tab）
+2. `browser_upload` 投递 `videoPath`：
+   - `clickSelector` 指向上传按钮/拖拽区（优先 selector，别依赖易漂移的 index）
+   - 等待正文出现「上传成功 / 重新上传」，且**没有**「上传中 / 转码」
+3. `browser_fill_form` 填标题 + 描述（见上面的协议）
+4. 若传了 `collectionName`：
+   - 点「选择合集」/「添加到合集」→ 按文本选中 `collectionName` → 确认
+   - 若弹出「继续编辑 / 放弃」对话框，选「继续编辑」（放弃会丢已填内容）
+5. `confirm_user` 确认 → 点底部「发布」
+6. 轮询成功判据（见下）；**严禁再 navigate 回上传页** —— 会重置流程、清空已填内容
+7. 取 `aweme_id` / 作品链接 → 发引导评论（见 `../comment/post-comment.md`）
 
 ## 成功判据
 
-跳转/出现「发布成功」提示 → 「内容管理」列表出现该视频。
+1. URL 离开 `/content/post/video`，或页面出现「发布成功 / 已提交 / 等待审核」类文案
+2. 「内容管理」列表出现该作品
+3. 合集已选中时，`/web/api/mix/item/list/` 能查到该 `aweme_id`
+
+> 只读核验优先用页面内 `fetch`（`credentials:'include'`）：`/web/api/mix/list/`、
+> `/web/api/mix/detail/`、`/web/api/mix/item/list/`，比反复读 DOM 稳定。
+
+## 常见坑
+
+- **描述框重复前缀**：见「填表协议」第 4、6 条；出现重复就按失败处理，不要继续清空。
+- **上传中途导航**：上传/转码期间 navigate 或刷新会丢失整个表单，只能重传。
+- **发布按钮被遮挡**：`browser_click` 已做遮挡感知（返回 `occluded:true`）；按 `Esc` 或点关闭层后再点。
+- **微前端假死**：预览面板收起时页面可能停在「加载中，请稍候...」；让用户展开面板后再操作。
+- **「继续编辑/放弃」弹窗**：离开编辑页时出现，选「继续编辑」，否则已填内容全部丢弃。
+- **严禁坐标硬点**：仅当 index/selector 都失效且已确认坐标时兜底，点后必须回读复核。

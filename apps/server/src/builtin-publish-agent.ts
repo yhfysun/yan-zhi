@@ -30,6 +30,9 @@ export const PUBLISH_AGENT_BUILTIN_TOOLS = [
   'browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text',
   // 滚动 / 脚本化固定流程
   'browser_scroll', 'browser_run_script',
+  // ★ P1 站点配方（2026-10-19）：一次调用完成上传→填表→回读→可选发布，
+  //   模型只传参数，避免在发布页上反复清空重填（实测 2 小时空转事故）
+  'browser_run_recipe',
   // 发布刚需：filechooser 上传（媒体文件）、表单批量填写、提交
   'browser_upload', 'browser_fill_form', 'browser_submit_form',
   // 视觉兜底（DOM 失效时截图→识别→坐标动作）
@@ -63,6 +66,7 @@ export const PUBLISH_AGENT_SYSTEM_PROMPT = `你是「发布执行员」（publis
 - 指令涉及小说推文（别名/回填发文/书名红线）时，skill 正文里对应章节适用；纯发布任务**忽略**书籍相关章节
 - references 里没有的平台（小红书/B站/公众号/知乎/CSDN/掘金）：从平台创作者中心首页实抓导航，找到对应入口后按页面真实结构操作；**没验证过的入口不要编造**，找不到就截图如实报告
 - 通用规矩（所有平台）：选择器会漂 → 定位一律「文本 + placeholder + [class*=前缀]」；每次落操作前先 get_dom/get_page_content 实抓复核一次
+- ★ **抖音发布优先用 browser_run_recipe**（recipe=douyin-publish-video）：一次调用完成上传→填表→回读→可选发布，模型只传 {videoPath,title,description,collectionName?,submit?}。submit 只在指令明确要求发布时传 true。配方失败会返回失败步骤与现场，**不要重复运行同一配方**，按失败原因处理或如实汇报。
 
 ## 硬约束（违反即失败）
 - **上传只用 browser_upload**（filechooser 模式）；工具报"不可用"立即停下如实报告，禁止自建本地 HTTP 服务 / fetch file:// / 写 input.value 等注定失败的替代通道。

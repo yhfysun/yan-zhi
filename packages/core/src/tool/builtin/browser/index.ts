@@ -8,6 +8,7 @@ import { toolError } from '../../result';
 //   该原则：core 被前端/bundle 引用时静态解析失败。
 import { getPlatformAdapter } from '../../../platform/types';
 import { joinPath } from '../fs-walk';
+import { getRecipe, listRecipes, runRecipe } from './recipes';
 
 /** 获取 auth token（浏览器/web/桌面端均可访问 localStorage） */
 function getAuthToken(): string | null {
@@ -263,7 +264,8 @@ export class BrowserTypeTool implements BuiltInTool {
     + '对受控组件（React/Vue）、富文本编辑器（ProseMirror/Slate/Draft.js）、中文输入法场景都有效 —— '
     + '评论框、发帖框、搜索框这类"看着填了、提交却是空的"问题由它解决。\n'
     + '★ 参数 text 是**替换**语义（先清空再输入），不是追加。返回里的 applied 字段表示回读核验是否一致；'
-    + '若 applied:false，请用 browser_get_page_content 核验输入框当前值，不要盲目重复调用。';
+    + '★ 幂等保护（2026-10-19）：写前先读 —— 当前值规范化后已等于/包含目标文本时**不会清空重填**，直接返回 unchanged:true；'
+    + '同一字段连续 2 次未生效会返回 forceStop:true，此时**必须停止重填**，回读一次确认现场并向用户报告，不要换写法继续试。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -462,7 +464,7 @@ export class BrowserScreenshotTool implements BuiltInTool {
 // ========== 批量填写表单 ==========
 export class BrowserFillFormTool implements BuiltInTool {
   name = 'browser_fill_form';
-  description = 'Fill multiple form fields at once. Each field: {selector, value, type?} where type is "text"|"select"|"checkbox"|"radio". For select use label or value. For checkbox/radio set value true/false. 普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror）都支持：富文本字段直接传 selector 指向该 div，value 为要填的纯文本。返回 state 数组 = 各字段填写后的当前值（回读核验），据此判断是否全部生效，不要凭猜测重复填写。';
+  description = 'Fill multiple form fields at once. Each field: {selector, value, type?} where type is "text"|"select"|"checkbox"|"radio". For select use label or value. For checkbox/radio set value true/false. 普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror/Draft.js）都支持：富文本字段直接传 selector 指向该 div，value 为要填的纯文本。返回 state 数组 = 各字段填写后的当前值（回读核验），据此判断是否全部生效。★ 幂等保护（2026-10-19）：已等于/包含目标值的字段会跳过（不清空重填）；同一字段连续 2 次未生效会标记 forceStop，此时停止重填并汇报，不要用 run_script 反复清空重写。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -1185,6 +1187,89 @@ export class BrowserRunScriptTool implements BuiltInTool {
 }
 
 /** 所有浏览器工具类列表 */
+export class BrowserRunRecipeTool implements BuiltInTool {
+  name = 'browser_run_recipe';
+  // 读+写页面：结果取决于外部站点状态；且内部会做多次动作
+  readsExternalState = true;
+  description = 'Run a deterministic site recipe in ONE call. 用确定性配方完成整站流程：模型只传参数，'
+    + '上传/等待转码/填表/回读核验/可选选合集/可选点发布全部由代码按固定步骤执行，避免在页面上反复试错。'
+    + `可用配方：${listRecipes().join('、')}。`
+    + 'douyin-publish-video 参数：{ videoPath, title, description, collectionName?, submit? }。'
+    + '★ submit 默认 false，只做前置步骤；仅当用户明确要求发布时传 submit:true。'
+    + '★ 被验证码/滑块拦住时返回 blockedByVerification 与 resumeStep：先 ask_user 请用户完成验证，'
+    + '用户确认后带同一个 resumeStep 再调用本工具续跑（不要重跑全流程、不要重新上传）。'
+    + '★ 配方失败会返回失败步骤与页面现场，**不要重复运行同一配方**，先按原因处理或向用户报告。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      recipe: { type: 'string', enum: listRecipes(), description: 'Recipe id.' },
+      params: { type: 'object', description: 'Recipe parameters (see recipe description).' },
+      resumeStep: {
+        type: 'number',
+        description: '可选：用户完成安全验证后续跑的步骤下标（0 基）。只能用上一次 blockedByVerification 返回的 resumeStep；普通执行不要传。',
+      },
+    },
+    required: ['recipe'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const recipeId = String(args.recipe || '').trim();
+      const recipe = getRecipe(recipeId);
+      if (!recipe) return err(`未知配方「${recipeId}」。可用：${listRecipes().join('、')}`);
+      const params = (args.params && typeof args.params === 'object')
+        ? args.params as Record<string, unknown>
+        : {};
+      const missing = Object.entries(recipe.params)
+        .filter(([key, def]) => def.required && (params[key] == null || String(params[key]).trim() === ''))
+        .map(([key]) => key);
+      if (missing.length) return err(`缺少必填参数：${missing.join('、')}`);
+
+      const resumeStep = Number.isFinite(Number(args.resumeStep)) ? Number(args.resumeStep) : undefined;
+      if (resumeStep !== undefined && (resumeStep < 0 || resumeStep >= recipe.steps.length)) {
+        return err(`resumeStep 越界：${resumeStep}（配方共 ${recipe.steps.length} 步，下标 0 基）。` +
+          '应使用上一次 blockedByVerification 返回的 resumeStep；普通执行不要传该参数。');
+      }
+
+      const result = await runRecipe(recipe, params, {
+        navigate: (url: string) => callBrowserApi('/navigate', 'POST', { url }),
+        action: (action: string, actionArgs: Record<string, unknown>) =>
+          callBrowserApi('/action', 'POST', { action, ...actionArgs }),
+      }, { resumeStep });
+      const lines = result.steps
+        .map((s, i) => `${i + 1}. ${s.ok ? '✅' : '⛔'} ${s.step}: ${s.detail}`)
+        .join('\n');
+      if (result.blockedByVerification) {
+        return err(
+          `配方 ${recipe.id} 被安全验证拦住：${result.verificationText}\n${lines}\n`
+          + `页面现场：${result.title || '(无标题)'} ${result.url || ''}\n\n`
+          + '下一步（**不要重跑全流程，不要重新上传**）：\n'
+          + `1) 立即调用 ask_user：请用户在浏览器面板完成滑块/验证码，完成后回复"继续"；\n`
+          + `2) 用户确认后，再次调用 browser_run_recipe：params 保持不变，并加 resumeStep: ${result.resumeStep}；\n`
+          + `3) 续跑会从第 ${(result.resumeStep ?? 0) + 1} 步继续`
+          + `${result.submitted ? '（发布已点过，只等验证结果，不会重复点）' : '（不会重新上传/填表）'}。`,
+        );
+      }
+      if (!result.ok) {
+        return err(
+          `配方 ${recipe.id} 失败：${result.error}\n${lines}\n`
+          + `页面现场：${result.title || '(无标题)'} ${result.url || ''}\n${result.pageSnippet || ''}\n`
+          + '★ 不要重复运行同一配方。先按失败步骤处理（补登录 / 等上传完成 / 换参数），仍不行就向用户报告现场。',
+        );
+      }
+      const tail = result.submitted
+        ? (result.verified
+            ? '发布已点击，页面出现成功判据。'
+            : '发布已点击，但未在页面看到成功判据 —— 请到「内容管理」核实，**不要重复点发布**。')
+        : (result.readyToSubmit
+            ? '前置步骤已完成，未点发布（submit=false）。用户确认后请直接 browser_click 页面上的「发布」按钮；**不要重新运行配方**（会重新上传视频并重置表单）。'
+            : '配方执行完成。');
+      return ok(`配方 ${recipe.id} 执行完成\n${lines}\n\n${tail}\n最终页面：${result.title || ''} ${result.url || ''}`);
+    } catch (e: any) {
+      return err(e?.message || '配方执行失败');
+    }
+  }
+}
+
 export const BrowserToolClasses = [
   BrowserNavigateTool,
   BrowserOpenExternalTool,
@@ -1232,6 +1317,8 @@ export const BrowserToolClasses = [
   BrowserDragTool,
   // P1-5 代码模式（2026-10-07）
   BrowserRunScriptTool,
+  // P1 站点配方（2026-10-19）
+  BrowserRunRecipeTool,
 ];
 
 /** 所有浏览器工具的暴露名（裸名） */
@@ -1260,4 +1347,6 @@ export const BROWSER_TOOL_NAMES = [
   'browser_drag',
   // P1-5 代码模式（2026-10-07）
   'browser_run_script',
+  // P1 站点配方（2026-10-19）
+  'browser_run_recipe',
 ];

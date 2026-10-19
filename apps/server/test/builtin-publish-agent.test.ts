@@ -49,6 +49,7 @@ const KNOWN_TOOL_NAMES = new Set([
   'browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text',
   'browser_scroll', 'browser_run_script',
   'browser_upload', 'browser_fill_form', 'browser_submit_form',
+  'browser_run_recipe',
   'browser_screenshot',
 ]);
 
@@ -124,8 +125,8 @@ describe('发布执行员 · 工具面收口', () => {
     expect(unknown).toEqual([]);
   });
 
-  it('★ 发布刚需工具齐全：upload / fill_form / run_script / 截图兜底', () => {
-    for (const t of ['browser_upload', 'browser_fill_form', 'browser_run_script', 'browser_screenshot', 'image_analyze']) {
+  it('★ 发布刚需工具齐全：upload / fill_form / run_script / 配方 / 截图兜底', () => {
+    for (const t of ['browser_upload', 'browser_fill_form', 'browser_run_script', 'browser_run_recipe', 'browser_screenshot', 'image_analyze']) {
       expect(PUBLISH_AGENT_BUILTIN_TOOLS, `缺 ${t}`).toContain(t);
     }
   });
