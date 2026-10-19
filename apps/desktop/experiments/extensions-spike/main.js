@@ -7,6 +7,7 @@ const PARTITION = 'persist:spike-ext'
 const PORT = 38217
 const MODE = process.env.SPIKE_MODE || 'builtin'
 const STORE_TEST = process.env.SPIKE_STORE === '1'
+const CM_TEST = process.env.SPIKE_CONTEXTMENU === '1'
 
 app.setPath('userData', path.join(__dirname, 'userdata'))
 app.commandLine.appendSwitch('disable-gpu')
@@ -25,6 +26,7 @@ const result = {
 
 let ses = null
 let finished = false
+let cmShim = null
 
 function log (...args) { console.log(...args) }
 
@@ -32,9 +34,9 @@ function startServer () {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const url = (req.url || '/').split('?')[0]
-      if (url.startsWith('/ping-')) {
-        result.pings.push(url)
-        log('[PING]', url)
+      if (url.startsWith('/ping-') || url.startsWith('/cm-')) {
+        result.pings.push(req.url)
+        log('[PING]', req.url)
         res.writeHead(200, { 'content-type': 'text/plain' })
         res.end('ok')
         return
@@ -164,6 +166,65 @@ app.whenReady().then(async () => {
     }
   }
 
+  if (CM_TEST) {
+    try {
+      const { createContextMenuShim, registerExtensionPreload } = require('../../extension-context-menus.cjs')
+      registerExtensionPreload(ses, path.join(__dirname, '..', '..', 'extension-api.preload.cjs'))
+      result.preloads = ses.getPreloadScripts().map((p) => ({ id: p.id, type: p.type, filePath: p.filePath }))
+      cmShim = createContextMenuShim({
+        session: ses,
+        logger: {
+          warn: function () { result.errors.push({ warn: Array.prototype.join.call(arguments, ' ') }) },
+          log: function () { result.swConsole = (result.swConsole || []).concat([Array.prototype.join.call(arguments, ' ')]) },
+        },
+        getTabInfo: () => ({
+          id: 7, windowId: 1, index: 0, active: true, highlighted: true,
+          selected: true, pinned: false, incognito: false,
+          url: 'https://example.com/article', title: 'spike',
+        }),
+      })
+      cmShim.install()
+      result.contextMenuShim = 'installed'
+      ses.serviceWorkers.on('console-message', (_event, details) => {
+        result.swConsole = (result.swConsole || []).concat([
+          'sw-console: ' + ((details && (details.message || details.sourceId)) || JSON.stringify(details)),
+        ])
+      })
+    } catch (err) {
+      result.errors.push({ contextMenuShim: String((err && err.message) || err) })
+    }
+  }
+
+  async function runContextMenuChecks () {
+    if (!cmShim) return
+    const params = {
+      pageURL: 'https://example.com/article',
+      frameURL: 'https://example.com/article',
+      selectionText: 'hello',
+      mediaType: 'none',
+      isEditable: false,
+    }
+    result.contextMenu = {
+      template: JSON.parse(JSON.stringify(cmShim.buildTemplate(params))),
+    }
+    for (const ext of result.extensions) {
+      if (!/contextmenu/.test(ext.fixture)) continue
+      const itemId = ext.fixture.indexOf('mv2') === 0 ? 'mv2-item' : 'mv3-item'
+      cmShim.deliverClick(ext.id, {
+        menuItemId: itemId,
+        pageUrl: params.pageURL,
+        frameUrl: params.frameURL,
+        selectionText: params.selectionText,
+        linkUrl: '',
+        srcUrl: '',
+        mediaType: 'none',
+        editable: false,
+        wasChecked: false,
+        checked: false,
+      })
+    }
+  }
+
   try {
     await startServer()
   } catch (err) {
@@ -196,6 +257,14 @@ app.whenReady().then(async () => {
           result.probe = await guest.executeJavaScript('(function(){return {mv2Dom:!!document.getElementById("spike-mv2-content"),mv3Dom:!!document.getElementById("spike-mv3-content"),blockedLoaded:!!window.__BLOCKED_LOADED__,dnrBlockedLoaded:!!window.__DNR_BLOCKED_LOADED__,marker:(document.getElementById("spike-marker")||{}).textContent||null,url:location.href}})()')
         } catch (err) {
           result.errors.push({ probe: String((err && err.message) || err) })
+        }
+        if (CM_TEST) {
+          try {
+            await runContextMenuChecks()
+          } catch (err) {
+            result.errors.push({ contextMenuChecks: String((err && err.message) || err) })
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1200))
         }
         finish()
       }, 3000)

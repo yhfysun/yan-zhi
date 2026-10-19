@@ -45,6 +45,10 @@ files:
   #   漏登记 = 打包版启动即崩。
   - proxy-fetch.cjs
   - extension-whitelist.cjs
+  # ★★★ 扩展右键菜单（P3，2026-10-19）：main.cjs 顶层 require('./extension-context-menus.cjs')；
+  #   preload 由 registerExtensionPreload 按绝对路径注册，漏登记 = 扩展 contextMenus 全部失效。
+  - extension-context-menus.cjs
+  - extension-api.preload.cjs
   # ★★★ 主进程/渲染层日志落盘（2026-10-10 新增）：main.cjs 顶层 require('./main-log.cjs')。
   #   漏登记 = 打包版**启动即崩**（Cannot find module './main-log.cjs'）——同 browser-bridge.cjs。
   #   ★ 由 packaged-entry-modules.test.cjs 守门（本次就是它抓出来的）。

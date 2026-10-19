@@ -16,11 +16,13 @@ const inst = require('./instance.cjs');
 const { isSafeExternalUrl, isAllowedGuestNavigation, guardNavigation } = require('./url-guard.cjs');
 // 浏览器扩展管理器（P1，免费路径）：只用 Electron 内置 ses.extensions.*，不依赖 GPL 库。
 const { createExtensionManager, readManifest, manifestInfo } = require('./browser-extensions.cjs');
+const { createContextMenuShim, registerExtensionPreload } = require('./extension-context-menus.cjs');
 const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
 
 let mainWindow = null;
 let extensionManager = null;
+let extensionContextMenus = null;
 /** 扩展功能总开关（P5）：YZ_BROWSER_EXTENSIONS=off 可整体关闭 */
 const EXTENSIONS_ENABLED = process.env.YZ_BROWSER_EXTENSIONS !== 'off';
 
@@ -212,6 +214,26 @@ const BROWSER_ENGINE_DEFAULT = 'webview';
 let browserEngine = BROWSER_ENGINE_DEFAULT;
 // tabId → { scope, lastActiveAt, wcId }（wcId 由渲染层 <webview> 挂载后注册）
 const webviewTabs = new Map();
+
+/** 扩展右键菜单点击回调需要的 Tab 形状（Chrome Tab 的最小子集） */
+function contextMenuTabInfo(wc) {
+  if (!wc || wc.isDestroyed()) return null;
+  let url = '';
+  let title = '';
+  try { url = wc.getURL(); title = wc.getTitle(); } catch { /* ignore */ }
+  const base = { id: wc.id, windowId: 1, index: 0, pinned: false, incognito: false, url, title };
+  for (const [tabId, entry] of webviewTabs) {
+    if (entry.wcId === wc.id) {
+      return { ...base, active: activeTabId === tabId, highlighted: activeTabId === tabId, selected: activeTabId === tabId };
+    }
+  }
+  for (const [tabId, entry] of browserViews) {
+    if (entry && entry.view && entry.view.webContents && entry.view.webContents.id === wc.id) {
+      return { ...base, active: activeTabId === tabId, highlighted: activeTabId === tabId, selected: activeTabId === tabId };
+    }
+  }
+  return { ...base, active: false, highlighted: false, selected: false };
+}
 
 function isWebviewEngine() { return browserEngine === 'webview'; }
 /** 取 guest webContents（webview 模式）；未注册/已销毁返回 null */
@@ -1057,6 +1079,8 @@ function createBrowserViewFor(tabId, entry) {
   bv.setBounds({ x: 0, y: 0, width: 0, height: 0 });
 
   const wc = bv.webContents;
+  // 扩展右键菜单（P3）：BrowserView 引擎的 guest 同样接入扩展 contextMenus
+  if (extensionContextMenus) extensionContextMenus.attachToWebContents(wc);
 
   // 页面 title 变化 → 推送渲染层更新 tab 标题（真实网站名，而非 URL fallback）
   wc.on('did-page-title-updated', (_e, title) => {
@@ -1984,6 +2008,8 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   try {
     const wc = webContents.fromId(wcId);
     setupGuestPopupRedirect(wc, t.scope);
+    // 扩展右键菜单（P3）：webview 引擎的 guest 挂 contextMenus 弹出点
+    if (wc && extensionContextMenus) extensionContextMenus.attachToWebContents(wc);
   } catch { /* wcId 无效/已销毁则忽略，导航后会随新 did-finish 再注册 */ }
   return true;
 });
@@ -6926,13 +6952,29 @@ app.whenReady().then(async () => {
     } catch (err) {
       console.warn('[ext] 商店模块不可用:', err && err.message);
     }
+    const browserSession = session.fromPartition('persist:browser-view');
     extensionManager = createExtensionManager({
       rootDir: path.join(app.getPath('userData'), 'browser-extensions'),
       storeDir: path.join(app.getPath('userData'), 'browser-extensions', 'store'),
       store: extensionStore,
       whitelist: { isAllowed: isAllowedStoreExtension, list: listWhitelist },
-      getSession: () => session.fromPartition('persist:browser-view'),
+      getSession: () => browserSession,
     });
+    // 扩展右键菜单（P3，免费路径）：Electron 没有 chrome.contextMenus，用 preload 注入 + 原生 Menu 自研。
+    // ★ preload 必须先注册再 loadAll，否则已装扩展的后台页/SW 启动时拿不到 API。
+    try {
+      extensionContextMenus = createContextMenuShim({
+        session: browserSession,
+        getPopupWindow: () => mainWindow,
+        getTabInfo: (wc) => contextMenuTabInfo(wc),
+      });
+      extensionContextMenus.install();
+      registerExtensionPreload(browserSession, path.join(__dirname, 'extension-api.preload.cjs'));
+      console.log('[ext] contextMenus shim 已启用');
+    } catch (err) {
+      extensionContextMenus = null;
+      console.warn('[ext] contextMenus shim 初始化失败:', err && err.message);
+    }
     try {
       const extResult = await extensionManager.loadAll();
       if (extResult.loaded) console.log('[ext] 已加载扩展:', extResult.loaded);

@@ -1,0 +1,7 @@
+{
+  "manifest_version": 2,
+  "name": "Spike ContextMenus MV2",
+  "version": "1.0.0",
+  "permissions": ["contextMenus"],
+  "background": { "scripts": ["bg.js"], "persistent": true }
+}
