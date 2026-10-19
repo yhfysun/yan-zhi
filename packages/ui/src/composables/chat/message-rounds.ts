@@ -76,7 +76,39 @@ export function buildMessageRounds(
     // 子智能体消息：归入父 step 的 subAgentRounds
     if (msg.parentToolCallId) {
       const parentStep = stepByToolCallId.get(msg.parentToolCallId);
-      if (!parentStep) continue;
+      if (!parentStep) {
+        // ★★★ 2026-10-19：父步骤不在本页时**不能直接丢**。
+        //   分页首拉（limit=50）经常整页都是子智能体的尾部消息（父步骤在更早的页），
+        //   旧逻辑 `continue` 会把整页丢光 ⇒ rounds=0 ⇒ 会话内容空白（本次实报）。
+        //   降级为普通步骤渲染：内容至少可见；父步骤在窗口内时仍走正常的子智能体分组。
+        if (!currentRound) currentRound = { user: null, steps: [], allToolCalls: [], finalAssistant: null };
+        if (msg.role === 'assistant') {
+          const step: AgentStep = {
+            reasoningContent: msg.reasoningContent,
+            toolCalls: msg.toolCalls || [],
+            toolResults: [],
+            partialContent: msg.content || undefined,
+            messageId: msg.id,
+          };
+          currentRound.steps.push(step);
+          for (const tc of step.toolCalls) {
+            if (tc?.id) stepByToolCallId.set(tc.id, step);
+          }
+        } else if (msg.role === 'tool') {
+          for (let s = currentRound.steps.length - 1; s >= 0; s--) {
+            const step = currentRound.steps[s];
+            if (step.toolCalls.some((tc: any) => tc.id === msg.toolCallId)) {
+              step.toolResults.push({
+                callId: msg.toolCallId || '',
+                content: msg.content || '',
+                isError: isToolError(msg.content || ''),
+              });
+              break;
+            }
+          }
+        }
+        continue;
+      }
       if (!parentStep.subAgentRounds) parentStep.subAgentRounds = [];
       let subRound = parentStep.subAgentRounds.find((r) => r.toolCallId === msg.parentToolCallId);
       if (!subRound) {
