@@ -49,8 +49,8 @@ describe('① ★★★ 页内没有主链路 user 时，必须仍能分轮（�
     expect(rounds[0].steps.length, '★ 页内的 assistant 步骤应被完整保留').toBeGreaterThanOrEqual(1);
   });
 
-  it('★★★ 复刻本次现场：50 条全是子智能体消息 → 不崩、不抛异常、rounds 为 0 但**不白屏**（无主链路消息可渲染）', () => {
-    // 25 组 assistant+sub / tool+sub（子消息的父 step 不在本页 → 无处安放）
+  it('★★★ 复刻本次现场：50 条全是子智能体消息 → 不崩、不抛异常，且降级渲染（不能整页空白）', () => {
+    // 25 组 assistant+sub / tool+sub（子消息的父 step 不在本页 → 旧逻辑全部丢弃）
     const msgs: any[] = [];
     for (let i = 0; i < 25; i++) {
       msgs.push(M({ id: 'as' + i, role: 'assistant', parentToolCallId: 'parent-missing', toolCalls: [{ id: 'sc' + i }] }));
@@ -58,8 +58,9 @@ describe('① ★★★ 页内没有主链路 user 时，必须仍能分轮（�
     }
     let rounds: MessageRound[] = [];
     expect(() => { rounds = build(msgs); }, '★ 不得抛异常（分轮里任何未捕获异常都会让 computed 抛 → 整块 UI 崩）').not.toThrow();
-    // 本页确实没有"可归属的主链路内容" → 0 轮是正确的（不该硬造空轮）
-    expect(rounds.length, '★ 纯子消息页无可渲染内容，0 轮合理 —— 关键是下面的混合页必须能渲染').toBe(0);
+    // 父步骤不在本页 → 降级为普通步骤渲染；整页丢弃就是"会话内容看不到"的真凶
+    expect(rounds.length, '★ 纯子消息页不能 0 轮（0 轮 = 整片空白）').toBe(1);
+    expect(rounds[0].steps.length).toBe(25);
   });
 
   it('★★★ 子智能体消息 + 主链路消息混合（真实场景）→ 主链路部分必须渲染出来', () => {
@@ -244,5 +245,20 @@ describe('⑤ 单轮步骤渲染窗口（长任务一跑界面卡死）', () => 
   it('默认上限是 ROUND_STEP_RENDER_LIMIT（40）', () => {
     const range = stepRenderRange(100, false);
     expect(range.end - range.start).toBe(ROUND_STEP_RENDER_LIMIT);
+  });
+});
+
+describe('⑥ 父步骤不在本页的子智能体消息不能整页丢弃（会话内容空白）', () => {
+  it('★★★ 一页全是子智能体消息且父步骤缺失 → 仍要产出可渲染的轮次', () => {
+    // 分页首拉 limit=50 经常整页都是子智能体尾部消息，父 call_agent 步骤在更早的页
+    const msgs = [
+      M({ id: 'a1', role: 'assistant', parentToolCallId: 'parent-1', subAgentId: 'sa1', toolCalls: [{ id: 'c1', function: { name: 'browser_click' } }] }),
+      M({ id: 't1', role: 'tool', parentToolCallId: 'parent-1', subAgentId: 'sa1', toolCallId: 'c1', content: 'ok' }),
+      M({ id: 'a2', role: 'assistant', parentToolCallId: 'parent-1', subAgentId: 'sa1', content: '完成' }),
+    ];
+    const rounds = build(msgs);
+    expect(rounds.length, '★ rounds=0 ⇒ 左侧会话内容整片空白').toBe(1);
+    expect(rounds[0].steps.length, '★ 子智能体步骤必须降级渲染').toBeGreaterThan(0);
+    expect(rounds[0].steps[0].toolResults[0]?.content).toBe('ok');
   });
 });
