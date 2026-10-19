@@ -342,6 +342,95 @@ function installMainWorld () {
     }
     return scriptingCall('removeCSS', [injection], args.callback)
   })
+
+  // ---- 通用事件与调用（cookies / webNavigation）----
+  function makeEvent (listeners) {
+    return {
+      addListener (listener) {
+        if (typeof listener === 'function' && listeners.indexOf(listener) < 0) listeners.push(listener)
+      },
+      removeListener (listener) {
+        const index = listeners.indexOf(listener)
+        if (index >= 0) listeners.splice(index, 1)
+      },
+      hasListener (listener) {
+        return listeners.indexOf(listener) >= 0
+      },
+    }
+  }
+
+  function apiCall (method, args, callback, map) {
+    const promise = invokeWithRetry(method, args)
+    if (typeof callback !== 'function' && typeof map !== 'function') {
+      promise.catch(() => {})
+      return promise
+    }
+    return settleValue(promise, callback, map)
+  }
+
+  // ---- chrome.cookies ----
+  const cookieListeners = []
+  bridge.onCookieChanged((change) => {
+    for (const listener of cookieListeners.slice()) {
+      try { listener(change) } catch (err) { console.error('[cookies.onChanged]', err) }
+    }
+  })
+
+  const cookiesApi = {
+    get (details, callback) { return apiCall('cookies.get', [details || {}], callback) },
+    getAll (details, callback) { return apiCall('cookies.getAll', [details || {}], callback) },
+    set (details, callback) { return apiCall('cookies.set', [details || {}], callback) },
+    remove (details, callback) { return apiCall('cookies.remove', [details || {}], callback) },
+    getAllCookieStores (callback) { return apiCall('cookies.getAllCookieStores', [], callback) },
+    onChanged: makeEvent(cookieListeners),
+  }
+
+  try {
+    Object.defineProperty(chromeObject, 'cookies', {
+      value: cookiesApi,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    })
+  } catch (err) {
+    console.error('[cookies] 注入失败', err)
+  }
+
+  // ---- chrome.webNavigation ----
+  const navListeners = {
+    onBeforeNavigate: [],
+    onCommitted: [],
+    onDOMContentLoaded: [],
+    onCompleted: [],
+    onHistoryStateUpdated: [],
+    onErrorOccurred: [],
+  }
+  bridge.onWebNavigation((eventName, details) => {
+    const listeners = navListeners[eventName]
+    if (!listeners) return
+    for (const listener of listeners.slice()) {
+      try { listener(details) } catch (err) { console.error('[' + eventName + ']', err) }
+    }
+  })
+
+  const webNavigationApi = {
+    getFrame (details, callback) { return apiCall('webNavigation.getFrame', [details || {}], callback) },
+    getAllFrames (details, callback) { return apiCall('webNavigation.getAllFrames', [details || {}], callback) },
+  }
+  for (const eventName of Object.keys(navListeners)) {
+    webNavigationApi[eventName] = makeEvent(navListeners[eventName])
+  }
+
+  try {
+    Object.defineProperty(chromeObject, 'webNavigation', {
+      value: webNavigationApi,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    })
+  } catch (err) {
+    console.error('[webNavigation] 注入失败', err)
+  }
 }
 
 function install () {
@@ -354,6 +443,12 @@ function install () {
     },
     onActionClicked: (callback) => {
       ipcRenderer.on('yz-ext-action:clicked', (_event, tab) => callback(tab))
+    },
+    onCookieChanged: (callback) => {
+      ipcRenderer.on('yz-ext-cookie:changed', (_event, change) => callback(change))
+    },
+    onWebNavigation: (callback) => {
+      ipcRenderer.on('yz-ext-webnav', (_event, eventName, details) => callback(eventName, details))
     },
   }
 

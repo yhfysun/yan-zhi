@@ -19,6 +19,8 @@ const { createExtensionManager, readManifest, manifestInfo } = require('./browse
 const { createContextMenuShim, registerExtensionPreload } = require('./extension-context-menus.cjs');
 const { createActionManager } = require('./extension-actions.cjs');
 const { createScriptingManager } = require('./extension-scripting.cjs');
+const { createCookiesManager } = require('./extension-cookies.cjs');
+const { createWebNavigationManager } = require('./extension-web-navigation.cjs');
 const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
 
@@ -27,6 +29,8 @@ let extensionManager = null;
 let extensionContextMenus = null;
 let extensionActions = null;
 let extensionScripting = null;
+let extensionCookies = null;
+let extensionWebNavigation = null;
 /** 扩展功能总开关（P5）：YZ_BROWSER_EXTENSIONS=off 可整体关闭 */
 const EXTENSIONS_ENABLED = process.env.YZ_BROWSER_EXTENSIONS !== 'off';
 
@@ -237,6 +241,19 @@ function contextMenuTabInfo(wc) {
     }
   }
   return { ...base, active: false, highlighted: false, selected: false };
+}
+
+/** 取当前所有 guest（两种引擎）的 webContents id，供 cookies.getAllCookieStores */
+function allGuestWebContentsIds() {
+  const ids = new Set();
+  for (const [tabId] of webviewTabs) {
+    const wc = guestWebContents(tabId);
+    if (wc && !wc.isDestroyed()) ids.add(wc.id);
+  }
+  for (const [, entry] of browserViews) {
+    if (entry && entry.view && !entry.view.webContents.isDestroyed()) ids.add(entry.view.webContents.id);
+  }
+  return [...ids];
 }
 
 /** 取当前激活 tab 的 guest webContents（两种引擎统一） */
@@ -1095,6 +1112,7 @@ function createBrowserViewFor(tabId, entry) {
   // 扩展右键菜单（P3）：BrowserView 引擎的 guest 同样接入扩展 contextMenus
   if (extensionContextMenus) extensionContextMenus.attachToWebContents(wc);
   if (extensionScripting) extensionScripting.attachToWebContents(wc);
+  if (extensionWebNavigation) extensionWebNavigation.attachToWebContents(wc);
 
   // 页面 title 变化 → 推送渲染层更新 tab 标题（真实网站名，而非 URL fallback）
   wc.on('did-page-title-updated', (_e, title) => {
@@ -2025,6 +2043,7 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
     // 扩展右键菜单（P3）：webview 引擎的 guest 挂 contextMenus 弹出点
     if (wc && extensionContextMenus) extensionContextMenus.attachToWebContents(wc);
     if (wc && extensionScripting) extensionScripting.attachToWebContents(wc);
+    if (wc && extensionWebNavigation) extensionWebNavigation.attachToWebContents(wc);
   } catch { /* wcId 无效/已销毁则忽略，导航后会随新 did-finish 再注册 */ }
   return true;
 });
@@ -7044,11 +7063,20 @@ app.whenReady().then(async () => {
         session: browserSession,
         getPopupWindow: () => mainWindow,
         getTabInfo: (wc) => contextMenuTabInfo(wc),
-        // chrome.action.* / chrome.scripting.* 等非菜单 API 交给对应模块
+        // chrome.action.* / chrome.scripting.* / cookies.* / webNavigation.* 等交由对应模块
         handleMethod: (extensionId, method, args) => {
-          if (String(method).startsWith('scripting.') || /^tabs\.(executeScript|insertCSS|removeCSS)$/.test(String(method))) {
+          const name = String(method);
+          if (name.startsWith('scripting.') || /^tabs\.(executeScript|insertCSS|removeCSS)$/.test(name)) {
             if (!extensionScripting) throw new Error('扩展脚本模块未就绪');
             return extensionScripting.invoke(extensionId, method, args);
+          }
+          if (name.startsWith('cookies.')) {
+            if (!extensionCookies) throw new Error('扩展 Cookie 模块未就绪');
+            return extensionCookies.invoke(extensionId, method, args);
+          }
+          if (name.startsWith('webNavigation.')) {
+            if (!extensionWebNavigation) throw new Error('扩展导航模块未就绪');
+            return extensionWebNavigation.invoke(extensionId, method, args);
           }
           if (!extensionActions) throw new Error('扩展动作模块未就绪');
           return extensionActions.invoke(extensionId, method, args);
@@ -7074,6 +7102,18 @@ app.whenReady().then(async () => {
         getExtensions: () => extensionManager.list(),
         getSession: () => browserSession,
         getActiveWebContents: () => activeGuestWebContents(),
+      });
+      extensionCookies = createCookiesManager({
+        getSession: () => browserSession,
+        deliverEvent: extensionContextMenus.deliverEvent,
+        getExtensions: () => extensionManager.list(),
+        getTabIds: () => allGuestWebContentsIds(),
+      });
+      extensionCookies.install();
+      extensionWebNavigation = createWebNavigationManager({
+        getExtensions: () => extensionManager.list(),
+        deliverEvent: extensionContextMenus.deliverEvent,
+        getSession: () => browserSession,
       });
       registerExtensionPreload(browserSession, path.join(__dirname, 'extension-api.preload.cjs'));
       console.log('[ext] contextMenus shim 已启用');

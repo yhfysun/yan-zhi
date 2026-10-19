@@ -29,6 +29,8 @@ let finished = false
 let cmShim = null
 let actionManager = null
 let scriptingManager = null
+let cookiesManager = null
+let webNavManager = null
 let guestWc = null
 
 function log (...args) { console.log(...args) }
@@ -174,18 +176,27 @@ app.whenReady().then(async () => {
       const { createContextMenuShim, registerExtensionPreload } = require('../../extension-context-menus.cjs')
       const { createActionManager } = require('../../extension-actions.cjs')
       const { createScriptingManager } = require('../../extension-scripting.cjs')
+      const { createCookiesManager } = require('../../extension-cookies.cjs')
+      const { createWebNavigationManager } = require('../../extension-web-navigation.cjs')
       const { readManifest } = require('../../browser-extensions.cjs')
       registerExtensionPreload(ses, path.join(__dirname, '..', '..', 'extension-api.preload.cjs'))
       result.preloads = ses.getPreloadScripts().map((p) => ({ id: p.id, type: p.type, filePath: p.filePath }))
       cmShim = createContextMenuShim({
         session: ses,
         handleMethod: (extensionId, method, args) => {
-          const isScripting = String(method).startsWith('scripting.')
+          const name = String(method)
+          const isScripting = name.startsWith('scripting.')
           try {
             let value
             if (isScripting) {
               if (!scriptingManager) throw new Error('scriptingManager 未就绪')
               value = scriptingManager.invoke(extensionId, method, args)
+            } else if (name.startsWith('cookies.')) {
+              if (!cookiesManager) throw new Error('cookiesManager 未就绪')
+              value = cookiesManager.invoke(extensionId, method, args)
+            } else if (name.startsWith('webNavigation.')) {
+              if (!webNavManager) throw new Error('webNavManager 未就绪')
+              value = webNavManager.invoke(extensionId, method, args)
             } else {
               if (!actionManager) throw new Error('actionManager 未就绪')
               value = actionManager.invoke(extensionId, method, args)
@@ -239,6 +250,26 @@ app.whenReady().then(async () => {
         })),
         getSession: () => ses,
         getActiveWebContents: () => guestWc,
+      })
+      function spikeExtensions () {
+        return result.extensions.map((e) => {
+          const dir = path.join(__dirname, 'fixtures', e.fixture)
+          let permissions = []
+          try { permissions = readManifest(dir).permissions || [] } catch { permissions = [] }
+          return { key: e.fixture, electronId: e.id, enabled: true, dir, permissions }
+        })
+      }
+      cookiesManager = createCookiesManager({
+        getSession: () => ses,
+        deliverEvent: cmShim.deliverEvent,
+        getExtensions: spikeExtensions,
+        getTabIds: () => (guestWc ? [guestWc.id] : []),
+      })
+      cookiesManager.install()
+      webNavManager = createWebNavigationManager({
+        getExtensions: spikeExtensions,
+        deliverEvent: cmShim.deliverEvent,
+        getSession: () => ses,
       })
       ses.serviceWorkers.on('console-message', (_event, details) => {
         result.swConsole = (result.swConsole || []).concat([
@@ -315,6 +346,23 @@ app.whenReady().then(async () => {
         result.scripting = { exec, title, outline, injected }
       }
     }
+    const apiExt = result.extensions.find((item) => item.fixture === 'capabilities')
+    if (apiExt && cookiesManager) {
+      try {
+        const set = await cookiesManager.invoke(apiExt.id, 'cookies.set', [{ url: 'http://127.0.0.1:38217/', name: 'yz_spike', value: '1' }])
+        const got = await cookiesManager.invoke(apiExt.id, 'cookies.get', [{ url: 'http://127.0.0.1:38217/', name: 'yz_spike' }])
+        const stores = await cookiesManager.invoke(apiExt.id, 'cookies.getAllCookieStores', [])
+        result.cookies = { set, got, stores }
+      } catch (err) {
+        result.cookies = { error: String((err && err.message) || err) }
+      }
+    }
+    if (apiExt && webNavManager && guestWc) {
+      result.webNav = {
+        frame: webNavManager.getFrame(apiExt.id, { tabId: guestWc.id, frameId: 0 }),
+        frames: webNavManager.getAllFrames(apiExt.id, { tabId: guestWc.id }),
+      }
+    }
   }
 
   try {
@@ -337,6 +385,7 @@ app.whenReady().then(async () => {
     result.guestAttached = true
     guestWc = guest
     result.guestWcId = guest.id
+    if (webNavManager) webNavManager.attachToWebContents(guest)
     if (global.__ext) {
       try {
         global.__ext.addTab(guest, win)
