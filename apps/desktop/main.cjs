@@ -31,8 +31,17 @@ let extensionActions = null;
 let extensionScripting = null;
 let extensionCookies = null;
 let extensionWebNavigation = null;
-/** 扩展功能总开关（P5）：YZ_BROWSER_EXTENSIONS=off 可整体关闭 */
-const EXTENSIONS_ENABLED = process.env.YZ_BROWSER_EXTENSIONS !== 'off';
+/**
+ * 扩展功能灰度开关（P5）：YZ_BROWSER_EXTENSIONS=off|shadow|on
+ *   off    — 完全不加载扩展（无管理器、无 IPC 可用）
+ *   shadow — 扩展照常加载（内部 dogfood），但渲染层隐藏工具条图标与设置入口
+ *   on     — 全量（默认）
+ */
+const EXTENSIONS_MODE = (() => {
+  const raw = String(process.env.YZ_BROWSER_EXTENSIONS || '').trim().toLowerCase();
+  return raw === 'off' || raw === 'shadow' ? raw : 'on';
+})();
+const EXTENSIONS_ENABLED = EXTENSIONS_MODE !== 'off';
 
 /** 是否开发实例（由 dev 编排器注入 YANZHI_DEV_INSTANCE=1） */
 const IS_DEV_INSTANCE = inst.isDevInstance(process.env);
@@ -220,7 +229,9 @@ let webviewPanelVisible = true;
 // ============================================================
 const BROWSER_ENGINE_DEFAULT = 'webview';
 let browserEngine = BROWSER_ENGINE_DEFAULT;
-// tabId → { scope, lastActiveAt, wcId }（wcId 由渲染层 <webview> 挂载后注册）
+// tabId → { scope, lastActiveAt, wcId, url, suspended }（wcId 由渲染层 <webview> 挂载后注册）
+//   suspended — 内存回收后的休眠态：guest 已销毁、tab 壳与 url 保留；
+//               用户切回或 agent 动作时由渲染层重建 <webview>（见 suspendWebviewTab/ensureGuest）
 const webviewTabs = new Map();
 
 /** 扩展右键菜单点击回调需要的 Tab 形状（Chrome Tab 的最小子集） */
@@ -357,9 +368,37 @@ async function waitForGuest(tabId, timeoutMs = 5000) {
 function resolveTabWebContents(tabId) {
   const tid = tabId || activeTabId;
   if (!tid) return null;
-  if (isWebviewEngine()) return guestWebContents(tid) || (activeTabId ? guestWebContents(activeTabId) : null);
+  if (isWebviewEngine()) {
+    const wc = guestWebContents(tid);
+    if (wc) return wc;
+    // ★ 显式指定 tabId 时**绝不回落到其它 tab**：休眠/未注册的 tab 宁可返回 null，
+    //   否则动作会悄悄落到当前激活页上（"看起来成功、改错了页"）。
+    if (tabId) return null;
+    return activeTabId ? guestWebContents(activeTabId) : null;
+  }
   const entry = browserViews.get(tid);
   return entry?.view?.webContents || null;
+}
+
+/**
+ * 确保 webview tab 的 guest 存在；休眠态先请求渲染层重建 <webview>。
+ *
+ * ★ 不能直接 waitForGuest：休眠 tab 没有 guest，渲染层也不会主动注册 ⇒ 必然等到超时。
+ *   这里先把渲染层状态切成"活跃"，渲染层重建元素后走 onWebviewReady → register 唤醒 waiter。
+ */
+async function ensureGuest(tabId, timeoutMs = 5000) {
+  const tid = tabId || activeTabId;
+  if (!tid) return null;
+  const wc = guestWebContents(tid);
+  if (wc) return wc;
+  const t = webviewTabs.get(tid);
+  if (t && t.suspended) {
+    t.suspended = false;
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('browserView:tabResume', tid);
+    } catch { /* ignore */ }
+  }
+  return waitForGuest(tid, timeoutMs);
 }
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1351,43 +1390,67 @@ function evictLruTabIfNeeded() {
 }
 
 /**
- * webview 引擎的 tab 上限收口（2026-10-10 三次根因修复）。
+ * webview 引擎 tab 上限 / 空闲回收的统一方式：挂起（销毁 guest、保留 tab 壳与 url）。
  *
- * ★★★ 为什么必须：`evictLruTabIfNeeded` / `MAX_TABS` / 空闲巡检**只遍历 `browserViews`**
- *   （旧 BrowserView 引擎），webview 分支此前是**无保护缺口**。而 webview 引擎下
- *   **每个 tab = 渲染层一个 `<webview>` = 一个 Chromium 渲染进程**，
- *   agent 反复重试（或任何 tab 泄漏路径）会无上限堆积 ⇒ `MaxListenersExceededWarning`
+ * ★★★ 为什么必须收口（2026-10-10 三次根因修复）：`evictLruTabIfNeeded` / `MAX_TABS` /
+ *   空闲巡检此前**只遍历 `browserViews`**（旧 BrowserView 引擎），webview 分支是
+ *   **无保护缺口**。而 webview 引擎下每个 tab = 渲染层一个 `<webview>` = 一个 Chromium
+ *   渲染进程，agent 反复重试（或任何 tab 泄漏路径）会无上限堆积 ⇒ `MaxListenersExceededWarning`
  *   + CPU/内存爆炸 ⇒ **整个应用卡死**（用户实报"pageAgent 一跑就卡住"）。
  *
- * ★ 与 BrowserView 版的关键差异：这里**不能"挂起保留壳"**（guest 归渲染层所有），
- *   必须**真正移除 + 广播 tabClosed** 让渲染层销毁 `<webview>` 元素 → 否则进程不释放。
- *   保护的 tab：当前激活 tab、本会话 agent 正在用的锚定 tab（防逐出正在操作的页）。
+ * ★ 回收≠关闭（2026-10-19）：早期实现直接 `webviewTabs.delete` + 广播 tabClosed，
+ *   渲染层会 splice 掉 tab —— 用户开着的页面会在 10 分钟后凭空消失（与文档 A1
+ *   「壳与 url 保留」相矛盾）。现在渲染层只销毁 `<webview>` 元素，tab 壳与 url 保留，
+ *   切回或 agent 动作时重建并重载。保护的 tab：当前激活、会话锚定、正在跑动作的。
  */
+function suspendWebviewTab(tabId, reason) {
+  const t = webviewTabs.get(tabId);
+  if (!t || t.suspended) return false;
+  let url = t.url || '';
+  try {
+    const wc = t.wcId ? webContents.fromId(t.wcId) : null;
+    if (wc && !wc.isDestroyed()) {
+      url = wc.getURL() || url;
+      try { wc.stop?.(); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  t.url = url;
+  t.wcId = null;
+  t.suspended = true;
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browserView:tabSuspended', tabId, url);
+    }
+  } catch { /* ignore */ }
+  console.log(`[browserView] webview 休眠(${reason}): ${tabId} ${url}`);
+  return true;
+}
+
+/** 当前存活的 webview tab 数（休眠态不计入内存预算） */
+function countLiveWebviewTabs() {
+  let n = 0;
+  for (const t of webviewTabs.values()) if (!t.suspended) n++;
+  return n;
+}
+
+/** 超限按 LRU 休眠最久未激活的非当前 tab（当前激活/锚定/忙碌的永不逐出） */
 function evictLruWebviewTabIfNeeded() {
   let guard = 0;
-  while (webviewTabs.size >= MAX_TABS && guard++ < 32) {
+  while (countLiveWebviewTabs() >= MAX_TABS && guard++ < 32) {
     let lruId = null, lruAt = Infinity;
     // 受保护的 tab：当前激活 + 正被某会话锚定的（防逐出 agent 正在操作的页）
     const pinned = new Set(convAnchors.values());
     for (const [id, t] of webviewTabs) {
       if (id === activeTabId) continue;                       // 当前激活：永不逐
+      if (t.suspended) continue;                              // 已休眠：不在预算内
       if (pinned.has(id)) continue;                           // 正被某会话锚定：永不逐
       if (tabActionBusy.has(id)) continue;                    // ★ 正在跑动作：永不逐（见 tabActionBusy 注释）
       const at = t.lastActiveAt || 0;
       if (at < lruAt) { lruAt = at; lruId = id; }
     }
     if (!lruId) break; // 只剩受保护的 tab，无处可逐
-    console.log(`[browserView] LRU 逐出 webview tab: ${lruId}（当前 ${webviewTabs.size} 个）`);
-    webviewTabs.delete(lruId);
-    // 让渲染层销毁对应 <webview> 元素（不广播的话元素与 guest 进程都会残留）
-    try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('browserView:tabClosed', lruId);
-      }
-    } catch { /* ignore */ }
-    // 锚/touched 记账一并失效（唯一收口，避免留下幽灵 tabId）
-    clearFlowAnchorsForTab(lruId);
-    clearFormSnapshot(lruId);   // 表单快照同生命周期（防 Map 随长时间运行累积）
+    console.log(`[browserView] LRU 休眠 webview tab: ${lruId}（当前存活 ${countLiveWebviewTabs()} 个）`);
+    suspendWebviewTab(lruId, 'LRU');
   }
 }
 
@@ -1406,28 +1469,22 @@ function scheduleTabIdleCheck() {
         suspendBrowserViewEntry(id, e);
       }
     }
-    // ★★★ webview 引擎空闲回收（2026-10-13，内存治理 A）：
+    // ★★★ webview 引擎空闲回收（2026-10-13，内存治理 A；2026-10-19 改为挂起保留壳）：
     //   旧巡检只遍历 browserViews —— 而现役引擎是 webview（每 tab = 一个完整 Chromium
     //   渲染进程）。实测（会话 253bd3f4）：弹窗转出的 tab-2 全天 0 次使用却白挂 8 小时
     //   （≈0.5GB）。这里对 webview 补同一语义：非激活、未被任何会话锚定、空闲超过
-    //   TAB_IDLE_UNLOAD_MS 的 tab，广播 tabClosed 让渲染层销毁 <webview> 元素（壳与
-    //   url 由渲染层 tab 记账保留，切回时按 url 重载）——与 LRU 逐出同一条链路，行为一致。
+    //   TAB_IDLE_UNLOAD_MS 的 tab 进入休眠 —— 渲染层销毁 <webview> 释放进程，
+    //   tab 壳与 url 保留，切回时自动重载（与 BrowserView 的挂起复活一致）。
     if (isWebviewEngine()) {
       const pinned = new Set(convAnchors.values());
       for (const [id, t] of webviewTabs) {
+        if (t.suspended) continue;                  // 已休眠：不重复处理
         if (id === activeTabId) continue;           // 当前激活：不回收
         if (pinned.has(id)) continue;               // 某会话锚定（agent 正在操作）：不回收
         if (tabActionBusy.has(id)) continue;        // ★ 正在跑动作：不回收（见 tabActionBusy 注释）
         if ((t.lastActiveAt || 0) > now - TAB_IDLE_UNLOAD_MS) continue;
-        console.log('[browserView] webview 空闲回收:', id, '（空闲超过', TAB_IDLE_UNLOAD_MS / 60000, '分钟）');
-        try {
-          webviewTabs.delete(id);
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('browserView:tabClosed', id);
-          }
-        } catch { /* ignore */ }
-        clearFlowAnchorsForTab(id);
-        clearFormSnapshot(id);
+        console.log('[browserView] webview 空闲休眠:', id, '（空闲超过', TAB_IDLE_UNLOAD_MS / 60000, '分钟）');
+        suspendWebviewTab(id, 'idle');
       }
     }
     // ★★★ 后台 tab 降帧（2026-10-13，内存/卡顿治理 C）：
@@ -2041,6 +2098,7 @@ app.on('web-contents-created', (_e, contents) => {
 ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   const t = webviewTabs.get(tabId) || { scope: scope || 'preview', lastActiveAt: Date.now(), wcId: null };
   t.wcId = wcId;
+  t.suspended = false;
   if (scope) t.scope = scope;
   t.lastActiveAt = Date.now();
   webviewTabs.set(tabId, t);
@@ -2082,13 +2140,16 @@ ipcMain.handle('browser:wv:unregister', (_e, tabId) => {
 // 商店下载/zip 解包属于 P2；toolbar popup 用独立 BrowserWindow 兜底。
 // ============================================================
 ipcMain.handle('ext:list', () => {
-  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪', extensions: [] };
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪', extensions: [], mode: EXTENSIONS_MODE };
   try {
-    return { ok: true, extensions: extensionManager.list() };
+    return { ok: true, extensions: extensionManager.list(), mode: EXTENSIONS_MODE };
   } catch (err) {
-    return { ok: false, error: String((err && err.message) || err), extensions: [] };
+    return { ok: false, error: String((err && err.message) || err), extensions: [], mode: EXTENSIONS_MODE };
   }
 });
+
+/** 灰度模式查询（渲染层据此隐藏入口）；不依赖管理器是否就绪 */
+ipcMain.handle('ext:mode', () => ({ ok: true, mode: EXTENSIONS_MODE }));
 
 /** 安装/开关/卸载后让渲染层整体刷新工具条 action */
 function broadcastExtensionActions() {
@@ -2096,6 +2157,43 @@ function broadcastExtensionActions() {
     if (!extensionActions || !mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send('ext:action:updated', { refresh: true, actions: extensionActions.list() });
   } catch { /* ignore */ }
+}
+
+/** 安装前二次确认：权限清单 + SHA-256 指纹 + 登录态警告，默认取消（P4） */
+async function confirmExtensionInstall ({ info, fingerprint, sourceLabel }) {
+  const permissionLines = [
+    ...info.permissions.map((p) => '· ' + p),
+    ...info.hostPermissions.map((p) => '· 站点: ' + p),
+  ];
+  const detail = [
+    `版本：${info.version}`,
+    info.description ? `说明：${info.description}` : '',
+    sourceLabel ? `来源：${sourceLabel}` : '',
+    fingerprint ? `SHA-256：${fingerprint}` : '',
+    permissionLines.length ? `权限：\n${permissionLines.join('\n')}` : '权限：无',
+    '',
+    '警告：扩展可以读取你在内置浏览器中访问的页面内容（包括已登录站点）。请只安装可信来源。',
+  ].filter(Boolean).join('\n');
+  const opts = {
+    type: 'warning',
+    buttons: ['取消', '安装'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: '安装浏览器扩展',
+    message: `确定安装「${info.name}」？`,
+    detail,
+  };
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showMessageBox(mainWindow, opts)
+    : await dialog.showMessageBox(opts);
+  return result.response === 1;
+}
+
+/** 扩展安装/更新/加载失败统一记录（console.* 已被 main-log 接管落盘，[ext] 前缀便于 grep） */
+function logExtensionFailure (action, err, extra) {
+  const msg = `[ext] ${action}失败: ${String((err && err.message) || err)}${extra ? ' ' + extra : ''}`;
+  console.warn(msg);
 }
 
 ipcMain.handle('ext:installDir', async () => {
@@ -2109,43 +2207,48 @@ ipcMain.handle('ext:installDir', async () => {
     : await dialog.showOpenDialog(opts);
   if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return { ok: false, canceled: true };
   const srcDir = picked.filePaths[0];
-  // P4：安装前二次确认——展示权限清单 + 登录态警告，默认取消。
-  let info;
+  let info, fingerprint;
   try {
     info = manifestInfo(readManifest(srcDir));
+    fingerprint = extensionManager.fingerprintDir(srcDir);
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
-  const permissionLines = [
-    ...info.permissions.map((p) => '· ' + p),
-    ...info.hostPermissions.map((p) => '· 站点: ' + p),
-  ];
-  const detail = [
-    `版本：${info.version}`,
-    info.description ? `说明：${info.description}` : '',
-    permissionLines.length ? `权限：\n${permissionLines.join('\n')}` : '权限：无',
-    '',
-    '警告：扩展可以读取你在内置浏览器中访问的页面内容（包括已登录站点）。请只安装可信来源。',
-  ].filter(Boolean).join('\n');
-  const confirmOpts = {
-    type: 'warning',
-    buttons: ['取消', '安装'],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-    title: '安装浏览器扩展',
-    message: `确定安装「${info.name}」？`,
-    detail,
-  };
-  const confirmed = mainWindow && !mainWindow.isDestroyed()
-    ? await dialog.showMessageBox(mainWindow, confirmOpts)
-    : await dialog.showMessageBox(confirmOpts);
-  if (confirmed.response !== 1) return { ok: false, canceled: true };
+  if (!await confirmExtensionInstall({ info, fingerprint, sourceLabel: srcDir })) {
+    return { ok: false, canceled: true };
+  }
   try {
-    const result = await extensionManager.installFromDir(srcDir);
+    const result = await extensionManager.installFromDir(srcDir, { fingerprint, origin: srcDir });
     if (result && result.ok) broadcastExtensionActions();
     return result;
   } catch (err) {
+    logExtensionFailure('安装目录扩展', err, srcDir);
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+/** 本地 zip 包安装（P2 兜底 / P4 来源约束）：解包 → 校验 → 二次确认（含指纹）→ 安装 */
+ipcMain.handle('ext:installZip', async () => {
+  if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
+  const opts = {
+    title: '选择 Chrome 扩展 zip 包',
+    properties: ['openFile'],
+    filters: [{ name: 'Chrome 扩展包', extensions: ['zip'] }],
+  };
+  const picked = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showOpenDialog(mainWindow, opts)
+    : await dialog.showOpenDialog(opts);
+  if (picked.canceled || !picked.filePaths || !picked.filePaths[0]) return { ok: false, canceled: true };
+  const zipPath = picked.filePaths[0];
+  try {
+    const result = await extensionManager.installFromZip(zipPath, {
+      confirm: ({ info, fingerprint, fileName }) =>
+        confirmExtensionInstall({ info, fingerprint, sourceLabel: fileName }),
+    });
+    if (result && result.ok) broadcastExtensionActions();
+    return result;
+  } catch (err) {
+    logExtensionFailure('安装 zip 扩展', err, zipPath);
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
@@ -2181,6 +2284,7 @@ ipcMain.handle('ext:installStore', async (_e, idOrUrl) => {
     if (result && result.ok) broadcastExtensionActions();
     return result;
   } catch (err) {
+    logExtensionFailure('商店安装', err, String(idOrUrl || ''));
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
@@ -2192,6 +2296,7 @@ ipcMain.handle('ext:update', async () => {
     if (result && result.ok) broadcastExtensionActions();
     return result;
   } catch (err) {
+    logExtensionFailure('检查扩展更新', err);
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
@@ -2491,7 +2596,7 @@ ipcMain.handle('browserView:activateTab', (_e, tabId) => {
   if (isWebviewEngine()) {
     activeTabId = tabId;
     const t = webviewTabs.get(tabId);
-    if (t) t.lastActiveAt = Date.now();
+    if (t) { t.lastActiveAt = Date.now(); t.suspended = false; }
     return;
   }
   const entry = browserViews.get(tabId);
@@ -2576,7 +2681,7 @@ ipcMain.handle('browserView:load', async (e, tabId, url) => {
   if (!/^https?:\/\//i.test(cleanUrl)) return { error: `无效 URL: ${cleanUrl}` };
   if (isWebviewEngine()) {
     // webview 模式：guest 由渲染层 <webview> 承载，等其注册后直接用 guest 导航
-    const wc = await waitForGuest(tabId);
+    const wc = await ensureGuest(tabId);
     if (!wc) return { error: '浏览器视图未就绪（<webview> 尚未挂载）' };
     activeTabId = tabId || activeTabId;
     const t = webviewTabs.get(tabId);
@@ -2760,7 +2865,7 @@ ipcMain.handle('browser:call', async (event, action, args) => {
   args = args || {};
   let wc = null;
   if (isWebviewEngine()) {
-    wc = await waitForGuest(activeTabId, 3000);
+    wc = await ensureGuest(activeTabId, 3000);
   } else {
     const bv = getActiveBrowserViewForAgent();
     wc = bv?.webContents;
@@ -3856,7 +3961,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
   let wc = null;
   if (isWebviewEngine()) {
     // webview 引擎：guest 由渲染层 <webview> 承载，fromId 拿到后复用下面全部 action 实现
-    wc = await waitForGuest(tabId || activeTabId, 3000);
+    wc = await ensureGuest(tabId || activeTabId, 3000);
     // navigate 是特例：面板停在"浏览器首页/主页"（无任何已导航页）时还没有 <webview>、
     // guest 自然不存在。此时不能直接报"未打开"——应先让渲染层在该 scope 打开目标页并建出
     // <webview>（:src=url → dom-ready → 注册 guest），再等 guest 出现后继续导航。
@@ -5335,7 +5440,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           const wc2 = guestWebContents(id);
           // ★ agentOpened 随列表返回（2026-10-08）：让模型**先知道**哪些页能关，
           //   而不是关失败了才知道 —— 配合 close_tab 的权限闸门，形成"事前可见 + 事后强制"。
-          tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : '', title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview', agentOpened: t.agentOpened === true, active: id === activeTabId, loading: wc2 && typeof wc2.isLoading === 'function' ? !!wc2.isLoading() : false });
+          // ★ suspended（2026-10-19）：休眠 tab 无 wc，但 url 仍可读，agent 可据此判断页面还在。
+          tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : (t.url || ''), title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview', agentOpened: t.agentOpened === true, active: id === activeTabId, suspended: t.suspended === true, loading: wc2 && typeof wc2.isLoading === 'function' ? !!wc2.isLoading() : false });
         }
         return { tabs: tabs2, activeTabId };
       }
@@ -7058,6 +7164,7 @@ app.whenReady().then(async () => {
   if (!EXTENSIONS_ENABLED) {
     console.log('[ext] 已通过 YZ_BROWSER_EXTENSIONS=off 关闭');
   } else {
+    if (EXTENSIONS_MODE === 'shadow') console.log('[ext] shadow 灰度：扩展照常加载，渲染层入口隐藏');
     // 商店下载走代理感知 fetch：主进程 fetch 不走系统代理，P0 实测直连商店域名会失败。
     // ★ 必须在 require('electron-chrome-web-store') 之前安装：库在模块初始化时就捕获了 fetch。
     try {

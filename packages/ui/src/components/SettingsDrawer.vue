@@ -42,7 +42,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import {
   Setting,
@@ -92,13 +92,28 @@ const builtinSections: SettingsSection[] = [
   { section: 'plugins', label: '插件管理', icon: Box },
 ];
 
+// P5 灰度：shadow/off 模式隐藏扩展管理入口（扩展仍可在主进程加载，供内部 dogfood）
+const extensionsMode = ref<'on' | 'shadow' | 'off'>('on');
+onMounted(() => {
+  const api = (window as any).electronAPI?.extensions;
+  if (api?.mode) {
+    api.mode().then((r: any) => { if (r?.mode) extensionsMode.value = r.mode; }).catch(() => { /* ignore */ });
+  }
+});
+watch(extensionsMode, (m) => {
+  if (m !== 'on' && settingsDrawerSection.value === 'extensions') settingsDrawerSection.value = 'general';
+});
+
 const sections = computed<SettingsSection[]>(() => {
   const pluginTabs: SettingsSection[] = pluginStore.settingsTabs.map((t) => ({
     section: `plugin:${t.id}` as SettingsDrawerSection,
     label: t.label,
     icon: resolvePluginIcon(t.icon || ''),
   }));
-  return [...builtinSections, ...pluginTabs];
+  const base = extensionsMode.value === 'on'
+    ? builtinSections
+    : builtinSections.filter((item) => item.section !== 'extensions');
+  return [...base, ...pluginTabs];
 });
 
 const builtinComponents: Record<string, ReturnType<typeof defineAsyncComponent>> = {

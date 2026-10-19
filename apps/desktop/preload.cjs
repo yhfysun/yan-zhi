@@ -249,6 +249,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('browserView:tabClosed', h);
       return () => ipcRenderer.removeListener('browserView:tabClosed', h);
     },
+    // tab 休眠广播（2026-10-19）：内存回收不再关 tab，只销毁 guest 并保留壳与 url
+    onTabSuspended: (callback) => {
+      const h = (_e, tabId, url) => callback(tabId, url);
+      ipcRenderer.on('browserView:tabSuspended', h);
+      return () => ipcRenderer.removeListener('browserView:tabSuspended', h);
+    },
+    // tab 唤醒广播：agent 动作命中休眠 tab 时主进程请求渲染层重建 <webview>（不切可见）
+    onTabResume: (callback) => {
+      const h = (_e, tabId) => callback(tabId);
+      ipcRenderer.on('browserView:tabResume', h);
+      return () => ipcRenderer.removeListener('browserView:tabResume', h);
+    },
     // 页面 title 变化推送，渲染层更新 tab 标题（真实网站名而非 URL）
     onTitleUpdated: (callback) => {
       const h = (_e, tabId, title) => callback(tabId, title);
@@ -301,7 +313,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 浏览器扩展（P1/P2）：安装/开关/卸载/打开扩展页面/商店白名单
   extensions: {
     list: () => ipcRenderer.invoke('ext:list'),
+    mode: () => ipcRenderer.invoke('ext:mode'),
     installDir: () => ipcRenderer.invoke('ext:installDir'),
+    installZip: () => ipcRenderer.invoke('ext:installZip'),
     toggle: (key, enabled) => ipcRenderer.invoke('ext:toggle', key, enabled),
     remove: (key) => ipcRenderer.invoke('ext:remove', key),
     openPage: (key, kind) => ipcRenderer.invoke('ext:openPage', key, kind),

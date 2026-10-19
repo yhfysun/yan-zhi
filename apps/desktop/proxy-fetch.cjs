@@ -327,6 +327,25 @@ function requestViaProxy (target, { method, headers, body, proxy }) {
 }
 
 /**
+ * 请求级重试：只对传输层失败（连接 reset/超时/DNS）重试，HTTP 状态码原样返回。
+ * ★ 商店下载经代理时偶发 CONNECT reset；单次失败就抛给上层会让「安装」表现为随机失败。
+ */
+async function withRetry (fn, { attempts = 3, baseDelayMs = 300 } = {}) {
+  let lastErr
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      if (i === attempts - 1) break
+      console.warn(`[proxy-fetch] 商店请求重试 ${i + 1}/${attempts - 1}:`, err && err.message)
+      await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)))
+    }
+  }
+  throw lastErr
+}
+
+/**
  * 商店 fetch（签名与全局 fetch 兼容）。
  * @param {string|Request} input
  * @param {RequestInit} [init]
@@ -343,25 +362,27 @@ async function storeFetch (input, init = {}, { resolveProxy, fallbackFetch, pref
   const initialProxy = await resolveProxy(url)
   if (initialProxy && preferCurl && await hasCurl()) {
     // curl -L 自己处理重定向；走到这里说明代理对 Node 的 TLS 指纹不友好
-    return curlFetch(url, { method, headers, body, proxy: initialProxy })
+    return withRetry(() => curlFetch(url, { method, headers, body, proxy: initialProxy }))
   }
 
   for (let i = 0; i < MAX_REDIRECTS; i++) {
     const target = new URL(current)
     const proxy = await resolveProxy(current)
-    let res
-    if (!proxy) {
-      const response = await fallbackFetch(current, { method, headers, body })
-      res = {
-        status: response.status,
-        headers: headersToObject(response.headers),
-        body: Buffer.from(await response.arrayBuffer()),
+    // 单跳请求重试：重定向本身不进重试（由外层循环处理）
+    const res = await withRetry(async () => {
+      if (!proxy) {
+        const response = await fallbackFetch(current, { method, headers, body })
+        return {
+          status: response.status,
+          headers: headersToObject(response.headers),
+          body: Buffer.from(await response.arrayBuffer()),
+        }
       }
-    } else if (target.protocol === 'https:') {
-      res = await requestViaTunnel(target, { method, headers, body, proxy })
-    } else {
-      res = await requestViaProxy(target, { method, headers, body, proxy })
-    }
+      if (target.protocol === 'https:') {
+        return requestViaTunnel(target, { method, headers, body, proxy })
+      }
+      return requestViaProxy(target, { method, headers, body, proxy })
+    })
 
     if (REDIRECT_STATUSES.has(res.status) && res.headers.location) {
       current = new URL(res.headers.location, current).toString()
@@ -408,4 +429,5 @@ module.exports = {
   parseProxyRule,
   normalizeProxy,
   createProxyResolver,
+  withRetry,
 }

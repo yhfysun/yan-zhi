@@ -8,7 +8,30 @@ const {
   normalizeProxy,
   createProxyResolver,
   storeFetch,
+  withRetry,
 } = require('../proxy-fetch.cjs');
+
+describe('重试', () => {
+  test('失败后重试并成功', async () => {
+    let calls = 0;
+    const value = await withRetry(async () => {
+      calls += 1;
+      if (calls < 3) throw new Error('reset');
+      return 'ok';
+    }, { baseDelayMs: 1 });
+    assert.strictEqual(value, 'ok');
+    assert.strictEqual(calls, 3);
+  });
+
+  test('用尽重试后抛最后一个错误', async () => {
+    let calls = 0;
+    await assert.rejects(
+      () => withRetry(async () => { calls += 1; throw new Error('attempt-' + calls); }, { attempts: 2, baseDelayMs: 1 }),
+      /attempt-2/,
+    );
+    assert.strictEqual(calls, 2);
+  });
+});
 
 describe('代理规则解析', () => {
   test('PROXY / HTTPS 规则', () => {

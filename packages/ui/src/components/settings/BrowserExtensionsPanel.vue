@@ -7,9 +7,14 @@
           仅对内置浏览器生效（独立 session，不影响应用界面）。支持已解压的 Manifest V2 / V3 扩展目录。
         </div>
       </div>
-      <el-button type="primary" :loading="installing" :disabled="!supported" @click="install">
-        安装扩展目录
-      </el-button>
+      <div class="ext-head-actions">
+        <el-button :loading="installing" :disabled="!supported" @click="install">
+          安装扩展目录
+        </el-button>
+        <el-button type="primary" :loading="installingZip" :disabled="!supported" @click="installZip">
+          安装 zip 包
+        </el-button>
+      </div>
     </div>
 
     <el-alert
@@ -79,6 +84,9 @@
         </div>
         <div v-if="ext.manifestError" class="ext-warn">manifest 读取失败：{{ ext.manifestError }}</div>
         <div v-else-if="ext.loadError" class="ext-warn">加载失败：{{ ext.loadError }}</div>
+        <div v-if="ext.fingerprint" class="ext-fingerprint" :title="ext.origin || ''">
+          指纹 SHA-256 {{ ext.fingerprint.slice(0, 16) }}…
+        </div>
       </div>
       <div class="ext-actions">
         <el-switch
@@ -119,6 +127,10 @@ interface ExtensionEntry {
   manifestError?: string;
   source?: 'folder' | 'store';
   storeId?: string | null;
+  /** 安装包指纹（zip 为文件 SHA-256；目录为内容 SHA-256） */
+  fingerprint?: string | null;
+  /** 安装来源：目录路径或 zip 文件路径 */
+  origin?: string | null;
 }
 
 interface WhitelistEntry {
@@ -131,6 +143,7 @@ interface WhitelistEntry {
 interface ExtensionApi {
   list: () => Promise<{ ok: boolean; error?: string; extensions?: ExtensionEntry[] }>;
   installDir: () => Promise<{ ok: boolean; canceled?: boolean; error?: string; entry?: { name?: string } }>;
+  installZip: () => Promise<{ ok: boolean; canceled?: boolean; error?: string; entry?: { name?: string } }>;
   toggle: (key: string, enabled: boolean) => Promise<{ ok: boolean; error?: string }>;
   remove: (key: string) => Promise<{ ok: boolean; error?: string }>;
   openPage: (key: string, kind: 'popup' | 'options') => Promise<{ ok: boolean; error?: string }>;
@@ -145,6 +158,7 @@ const extensions = ref<ExtensionEntry[]>([]);
 const whitelist = ref<WhitelistEntry[]>([]);
 const loading = ref(false);
 const installing = ref(false);
+const installingZip = ref(false);
 const storeInstalling = ref('');
 const updating = ref(false);
 const busyKey = ref('');
@@ -184,6 +198,25 @@ async function install() {
     ElMessage.error(e?.message || String(e));
   } finally {
     installing.value = false;
+  }
+}
+
+async function installZip() {
+  if (!api) return;
+  installingZip.value = true;
+  try {
+    const r = await api.installZip();
+    if (r?.canceled) return;
+    if (!r?.ok) {
+      ElMessage.error(r?.error || '安装失败');
+      return;
+    }
+    ElMessage.success('已安装：' + (r.entry?.name || '扩展'));
+    await refresh();
+  } catch (e: any) {
+    ElMessage.error(e?.message || String(e));
+  } finally {
+    installingZip.value = false;
   }
 }
 
@@ -313,6 +346,15 @@ onMounted(() => {
   gap: 16px;
 }
 .ext-head-main { min-width: 0; }
+.ext-head-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.ext-fingerprint {
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: var(--el-font-family-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  color: var(--color-text-secondary);
+  opacity: 0.8;
+  word-break: break-all;
+}
 .ext-title { font-size: 15px; font-weight: 600; color: var(--color-text-primary); }
 .ext-sub {
   margin-top: 4px;

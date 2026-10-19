@@ -32,6 +32,11 @@ export interface BrowserTab {
    * 用户自己开的页、前台 agent 开的页都不带这个标记。
    */
   background?: boolean;
+  /**
+   * 休眠态（2026-10-19）：主进程内存回收后 guest 已销毁，tab 壳与 url 保留。
+   * 渲染层据此不挂 <webview>；切回该 tab 或收到 tabResume 时按 url 重新加载。
+   */
+  suspended?: boolean;
 }
 
 export type BrowserScope = string;

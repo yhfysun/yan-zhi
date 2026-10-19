@@ -16,12 +16,15 @@
  */
 
 const fs = require('fs')
+const os = require('os')
 const path = require('path')
 const crypto = require('crypto')
 
 const REGISTRY_VERSION = 1
 const MAX_EXTENSIONS = 50
 const MANIFEST_CACHE_MAX = 200
+const ZIP_MAX_ENTRIES = 20000
+const ZIP_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 
 /**
  * manifest 解析缓存。
@@ -109,6 +112,96 @@ function compareVersions (a, b) {
     if (diff) return diff
   }
   return 0
+}
+
+/** 递归列出目录内文件（不跟随符号链接，避免把外部文件算进指纹） */
+function walkFiles (root, rel = '', out = []) {
+  let entries
+  try {
+    entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const dirent of entries) {
+    const relPath = rel ? rel + '/' + dirent.name : dirent.name
+    if (dirent.isDirectory()) walkFiles(root, relPath, out)
+    else if (dirent.isFile()) out.push(relPath)
+  }
+  return out
+}
+
+/** 目录内容指纹：排序后的「相对路径 + 内容」逐文件喂进 SHA-256 */
+function computeDirFingerprint (dir) {
+  const files = walkFiles(dir).sort()
+  const hash = crypto.createHash('sha256')
+  for (const rel of files) {
+    hash.update(rel)
+    hash.update('\0')
+    hash.update(fs.readFileSync(path.join(dir, rel)))
+    hash.update('\0')
+  }
+  return hash.digest('hex')
+}
+
+/** 文件指纹（zip 包等） */
+function fileSha256 (file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+}
+
+/**
+ * 解压 zip 到系统临时目录，返回临时根目录（调用方负责删除）。
+ * ★ 三道防护：zip-slip（路径穿越）、条目数上限、解压后总大小上限。
+ */
+function extractZipToTemp (zipPath) {
+  let AdmZip
+  try {
+    AdmZip = require('adm-zip')
+  } catch {
+    throw new Error('缺少解压组件 adm-zip')
+  }
+  let zip
+  try {
+    zip = new AdmZip(zipPath)
+  } catch {
+    throw new Error('不是有效的 zip 文件')
+  }
+  const entries = zip.getEntries()
+  if (!entries.length) throw new Error('zip 包为空')
+  if (entries.length > ZIP_MAX_ENTRIES) throw new Error('zip 包文件数量过多')
+  let total = 0
+  for (const entry of entries) {
+    const name = String(entry.entryName || '')
+    const segments = name.split(/[\\/]/)
+    if (!name || path.isAbsolute(name) || segments.includes('..')) {
+      throw new Error('zip 包包含非法路径: ' + name)
+    }
+    total += Number(entry.header && entry.header.size) || 0
+  }
+  if (total > ZIP_MAX_TOTAL_BYTES) throw new Error('zip 包解压后过大')
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'yz-ext-zip-'))
+  try {
+    zip.extractAllTo(tmp, true)
+    return tmp
+  } catch (err) {
+    try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
+    throw new Error('解压失败: ' + String((err && err.message) || err))
+  }
+}
+
+/** zip 常见两种布局：manifest 在根，或包在单层目录里 */
+function locateManifestRoot (root) {
+  if (fs.existsSync(path.join(root, 'manifest.json'))) return root
+  let found = null
+  for (const dirent of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) continue
+    const dir = path.join(root, dirent.name)
+    if (fs.existsSync(path.join(dir, 'manifest.json'))) {
+      if (found) throw new Error('zip 包内存在多个 manifest.json，无法确定扩展目录')
+      found = dir
+    }
+  }
+  if (!found) throw new Error('zip 包内未找到 manifest.json')
+  return found
 }
 
 /**
@@ -257,13 +350,20 @@ function createExtensionManager ({
         storeId: entry.storeId || null,
         installedAt: entry.installedAt || null,
         loadError: entry.loadError || null,
+        fingerprint: entry.fingerprint || null,
+        origin: entry.origin || null,
         dir,
         ...info,
       }
     })
   }
 
-  async function installFromDir (srcDir) {
+  /**
+   * @param {string} srcDir 已解压的扩展目录
+   * @param {{fingerprint?:string, origin?:string, source?:'folder'|'zip'}} [meta]
+   *   zip 安装时由调用方传入 zip 文件指纹；目录安装时按目录内容计算。
+   */
+  async function installFromDir (srcDir, meta = {}) {
     return serialize(async () => {
       const abs = path.resolve(srcDir)
       const rel = path.relative(rootDir, abs)
@@ -291,14 +391,47 @@ function createExtensionManager ({
         key,
         electronId: ext.id,
         enabled: true,
-        source: 'folder',
+        source: meta.source || 'folder',
         installedAt: now(),
         loadError: null,
+        fingerprint: meta.fingerprint || computeDirFingerprint(dest),
+        origin: meta.origin || abs,
       }
       registry.extensions.push(entry)
       saveRegistry()
       return { ok: true, entry: { ...entry, ...info, dir: dest } }
     })
+  }
+
+  /**
+   * 从本地 zip 包安装（商店不可达时的降级入口）。
+   * @param {string} zipPath
+   * @param {{confirm?: (ctx:{info:object,fingerprint:string,fileName:string})=>Promise<boolean>}} [opts]
+   *   confirm 在解压/校验之后、真正落盘之前调用；返回 false 视为用户取消。
+   */
+  async function installFromZip (zipPath, { confirm } = {}) {
+    const abs = path.resolve(String(zipPath || ''))
+    let stat
+    try {
+      stat = fs.statSync(abs)
+    } catch {
+      throw new Error('文件不存在')
+    }
+    if (!stat.isFile()) throw new Error('不是文件')
+    if (!/\.zip$/i.test(abs)) throw new Error('仅支持 .zip 扩展包')
+    const fingerprint = fileSha256(abs)
+    const tmp = extractZipToTemp(abs)
+    try {
+      const srcDir = locateManifestRoot(tmp)
+      const info = manifestInfo(readManifest(srcDir))
+      if (typeof confirm === 'function') {
+        const ok = await confirm({ info, fingerprint, fileName: path.basename(abs) })
+        if (!ok) return { ok: false, canceled: true }
+      }
+      return await installFromDir(srcDir, { fingerprint, origin: abs, source: 'zip' })
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
+    }
   }
 
   async function installFromStore (idOrUrl) {
@@ -487,6 +620,7 @@ function createExtensionManager ({
     loadRegistry,
     list,
     installFromDir,
+    installFromZip,
     installFromStore,
     setEnabled,
     remove,
@@ -494,6 +628,7 @@ function createExtensionManager ({
     updateAll,
     pageUrl,
     whitelistEntries,
+    fingerprintDir: computeDirFingerprint,
   }
 }
 
@@ -504,4 +639,7 @@ module.exports = {
   slugify,
   normalizeStoreId,
   compareVersions,
+  computeDirFingerprint,
+  fileSha256,
+  locateManifestRoot,
 }

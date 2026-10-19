@@ -60,7 +60,7 @@ Node 服务端（Express + sqlite + LLM 任务管理）全部跑在 Electron 主
 
 | 项 | 机制 | 预期 |
 |---|---|---|
-| A1 空闲 tab 回收 | 非激活+未锚定 10 分钟 → 广播销毁 `<webview>`（壳与 url 保留，切回重载）。**修复了巡检从未在 webview 引擎启动的缺陷** | 每个忘关 tab −0.4~0.5GB |
+| A1 空闲 tab 回收 | 非激活+未锚定 10 分钟 → 挂起 guest 释放渲染进程，**tab 壳与 url 保留**，切回或 agent 动作时自动重载。**修复了巡检从未在 webview 引擎启动的缺陷**。★ 2026-10-19 修正：此前实现广播 tabClosed 会让渲染层直接删掉 tab（与「壳保留」不符），现改为独立 `tabSuspended` 事件 + `suspended` 标记，LRU 逐出同理 | 每个忘关 tab −0.4~0.5GB |
 | A2 同站 tab 复用 | 弹窗 URL 与既有 tab 同 host+path → 原地导航不新建进程 | tab-2 类永不复现 |
 | A3 后台降帧 | 非激活 guest 1fps（激活/锚定 60fps），补偿全局关闭的 backgroundThrottling | 后台合成 CPU −90%，卡顿传导链第一环拆除 |
 | A4 填表单/动作效率 | 前置等待闸 + fill_form 富文本 + 终态回执（见另一报告） | 动作次数下降 = 页面重载次数下降 = 位图缓存重建次数下降 |

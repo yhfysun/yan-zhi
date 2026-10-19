@@ -525,7 +525,7 @@
           </div>
         </div>
       </el-tab-pane>
-      <el-tab-pane label="扩展管理" name="extensions" lazy>
+      <el-tab-pane v-if="extensionsMode === 'on'" label="扩展管理" name="extensions" lazy>
         <BrowserExtensionsPanel />
       </el-tab-pane>
       <el-tab-pane label="语音包" name="voicepack" lazy>
@@ -640,7 +640,9 @@ watch(
 // 多 tab 分组在子页顶部给一排页内子分段。返回键经 MobilePageShell.backHandler 先退回首层而非离开路由。
 interface SettingsGroupTab { name: string; label: string }
 interface SettingsGroup { key: string; label: string; desc: string; icon: Component; tabs: SettingsGroupTab[] }
-const mobileGroups: SettingsGroup[] = [
+// P5 灰度：shadow/off 模式隐藏扩展管理入口
+const extensionsMode = ref<'on' | 'shadow' | 'off'>('on');
+const MOBILE_GROUPS_BASE: SettingsGroup[] = [
   { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩 · 快捷键', icon: Setting, tabs: [{ name: 'general', label: '通用' }, { name: 'shortcuts', label: '快捷键' }] },
   { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
   { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
@@ -648,6 +650,12 @@ const mobileGroups: SettingsGroup[] = [
   { key: 'service', label: '服务与连接', desc: '本机 IP · 商城服务端 · 局域网访问 · 语音包', icon: Link, tabs: [{ name: 'localip', label: '本机 IP' }, { name: 'marketplace', label: '商城' }, { name: 'lan', label: '局域网' }, { name: 'verification', label: '验证码' }, { name: 'voicepack', label: '语音包' }] },
   { key: 'about', label: '关于', desc: '版本 · 开源信息', icon: InfoFilled, tabs: [{ name: 'about', label: '关于' }] },
 ];
+const mobileGroups = computed<SettingsGroup[]>(() => {
+  if (extensionsMode.value === 'on') return MOBILE_GROUPS_BASE;
+  return MOBILE_GROUPS_BASE
+    .map((g) => ({ ...g, tabs: g.tabs.filter((t) => t.name !== 'extensions') }))
+    .filter((g) => g.tabs.length > 0);
+});
 const mobileGroup = ref<SettingsGroup | null>(null);
 /** 页面头标题：二级子页显示分组名，首层与桌面显示「设置」 */
 const shellTitle = computed(() => (pageShell.value && mobileGroup.value ? mobileGroup.value.label : '设置'));
@@ -1422,6 +1430,10 @@ function formatBytes(n: number): string {
 onMounted(() => {
   void loadLanIps();
   void loadDataDirInfo();
+  const extApi = (window as any).electronAPI?.extensions;
+  if (extApi?.mode) {
+    extApi.mode().then((r: any) => { if (r?.mode) extensionsMode.value = r.mode; }).catch(() => { /* ignore */ });
+  }
 });
 
 // 短信验证码面板：仅在「本职区可见」时轮询（切走/卸载立刻停，避免无谓请求堆积）。

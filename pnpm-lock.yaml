@@ -36,6 +36,9 @@ importers:
       '@yan-zhi/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      adm-zip:
+        specifier: ^0.5.16
+        version: 0.5.18
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3

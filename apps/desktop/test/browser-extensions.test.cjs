@@ -11,7 +11,9 @@ const {
   manifestInfo,
   slugify,
   normalizeStoreId,
+  computeDirFingerprint,
 } = require('../browser-extensions.cjs');
+const AdmZip = require('adm-zip');
 
 const NOW = '2026-10-19T00:00:00.000Z';
 
@@ -263,5 +265,99 @@ describe('manifest 解析缓存', () => {
     const future = new Date(Date.now() + 5000);
     fs.utimesSync(file, future, future);
     assert.strictEqual(readManifest(dir).name, 'B');
+  });
+});
+
+describe('本地 zip 安装与指纹（P2 兜底 / P4 来源约束）', () => {
+  function makeZip (files, name = 'ext.zip') {
+    const dir = makeRoot();
+    const zip = new AdmZip();
+    for (const [rel, content] of Object.entries(files)) zip.addFile(rel, Buffer.from(content));
+    const out = path.join(dir, name);
+    zip.writeZip(out);
+    return out;
+  }
+
+  function setupManager () {
+    const root = makeRoot();
+    const ses = fakeSession();
+    const manager = createExtensionManager({ rootDir: path.join(root, 'store'), getSession: () => ses, now: () => NOW });
+    return { root, ses, manager };
+  }
+
+  test('根目录布局：确认回调拿到信息与指纹，安装后记录 source=fingerprint=origin', async () => {
+    const { manager } = setupManager();
+    const zipPath = makeZip({
+      'manifest.json': JSON.stringify(MV3),
+      'popup.html': '<html>popup</html>',
+    });
+    let seen = null;
+    const result = await manager.installFromZip(zipPath, {
+      confirm: (ctx) => { seen = ctx; return true; },
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(seen.fileName, 'ext.zip');
+    assert.strictEqual(seen.info.name, 'Test Extension');
+    assert.match(seen.fingerprint, /^[0-9a-f]{64}$/);
+    assert.strictEqual(result.entry.source, 'zip');
+    assert.strictEqual(result.entry.origin, zipPath);
+    assert.strictEqual(result.entry.fingerprint, seen.fingerprint);
+    assert.strictEqual(manager.list().length, 1);
+    assert.strictEqual(manager.list()[0].fingerprint, seen.fingerprint);
+  });
+
+  test('单层目录布局也能定位 manifest', async () => {
+    const { manager } = setupManager();
+    const zipPath = makeZip({
+      'my-ext/manifest.json': JSON.stringify({ ...MV3, name: 'Nested Ext' }),
+      'my-ext/a.js': 'console.log(1)',
+    });
+    const result = await manager.installFromZip(zipPath, { confirm: () => true });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.entry.name, 'Nested Ext');
+  });
+
+  test('用户取消时不留下任何扩展目录', async () => {
+    const { root, ses, manager } = setupManager();
+    const zipPath = makeZip({ 'manifest.json': JSON.stringify(MV3) });
+    const result = await manager.installFromZip(zipPath, { confirm: () => false });
+    assert.deepStrictEqual(result, { ok: false, canceled: true });
+    assert.strictEqual(manager.list().length, 0);
+    assert.strictEqual(ses.loaded.size, 0);
+    assert.ok(!fs.existsSync(path.join(root, 'store')) || fs.readdirSync(path.join(root, 'store')).length === 0);
+  });
+
+  test('拒绝非 zip 文件与路径穿越条目', async () => {
+    const { manager } = setupManager();
+    const txt = path.join(makeRoot(), 'ext.txt');
+    fs.writeFileSync(txt, 'nope');
+    await assert.rejects(() => manager.installFromZip(txt), /zip/);
+
+    const dir = makeRoot();
+    const zip = new AdmZip();
+    zip.addFile('placeholder.txt', Buffer.from('x'));
+    zip.getEntries()[0].entryName = '../evil.txt';
+    const badZip = path.join(dir, 'bad.zip');
+    zip.writeZip(badZip);
+    await assert.rejects(() => manager.installFromZip(badZip, { confirm: () => true }), /非法路径/);
+  });
+
+  test('目录指纹：内容变化会改变指纹', () => {
+    const dir = makeRoot();
+    writeExt(dir, MV3);
+    const before = computeDirFingerprint(dir);
+    assert.match(before, /^[0-9a-f]{64}$/);
+    fs.writeFileSync(path.join(dir, 'extra.js'), '1');
+    assert.notStrictEqual(computeDirFingerprint(dir), before);
+  });
+
+  test('目录安装同样记录指纹与来源', async () => {
+    const { manager } = setupManager();
+    const src = path.join(makeRoot(), 'src');
+    writeExt(src, MV3);
+    const result = await manager.installFromDir(src);
+    assert.match(result.entry.fingerprint, /^[0-9a-f]{64}$/);
+    assert.strictEqual(result.entry.origin, src);
+    assert.strictEqual(result.entry.source, 'folder');
   });
 });

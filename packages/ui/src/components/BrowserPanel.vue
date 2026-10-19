@@ -21,6 +21,8 @@
           <span class="tab-title">{{ tab.title || tab.url || '新标签页' }}</span>
           <!-- 后台流的工作页打标：它是 agent 自己开的页，别让用户以为是自己开的（方案 §4.6） -->
           <span class="tab-bg-badge" v-if="tab.background" title="后台子智能体自己开的工作页（不是你打开的那一页）">后台</span>
+          <!-- 休眠页（内存回收）：页面进程已释放，切到该 tab 会按 url 自动重载 -->
+          <span class="tab-sleep-badge" v-if="tab.suspended" title="已休眠释放内存，点击切换即恢复">休眠</span>
           <button class="tab-close" @click.stop="closeTab(tab.id)" v-if="tabs.length > 1" title="关闭标签页">×</button>
         </div>
         <button class="tab-new" @click="newTab()" title="新建标签页">
@@ -162,7 +164,7 @@
             <el-dropdown-item command="history">浏览历史 ({{ recentList.length }})</el-dropdown-item>
             <el-dropdown-item command="passwords">密码管理 ({{ savedPasswords.length }})</el-dropdown-item>
             <el-dropdown-item command="settings">浏览器设置</el-dropdown-item>
-            <el-dropdown-item command="extensions">扩展管理</el-dropdown-item>
+            <el-dropdown-item v-if="!extensionsHidden" command="extensions">扩展管理</el-dropdown-item>
             <el-dropdown-item command="bookmarks" divided>收藏夹 ({{ bookmarks.length }})</el-dropdown-item>
             <el-dropdown-item command="clearBookmarks">清空收藏夹</el-dropdown-item>
           </el-dropdown-menu>
@@ -292,22 +294,23 @@
       ></div>
       <!-- Electron + webview 引擎：DOM 内嵌 <webview>，浮层可覆盖（替代原生 BrowserView 图层） -->
       <template v-if="isWebviewEngine">
-        <webview
-          v-for="t in tabs"
-          :key="t.id"
-          :ref="bindWebviewRef(t.id)"
-          class="page-webview"
-          :class="{ 'wv-active': t.id === activeTabId, 'wv-locked': inputLocked, 'wv-capturing': !!captureVisibleTabs[t.id] }"
-          :src="t.srcUrl || 'about:blank'"
-          partition="persist:browser-view"
-          allowpopups="true"
-          @dom-ready="onWebviewReady(t.id)"
-          @did-navigate="onWebviewNavigated(t.id, $event)"
-          @did-navigate-in-page="onWebviewNavigated(t.id, $event)"
-          @page-title-updated="onWebviewTitle(t.id, $event)"
-          @did-start-loading="onWebviewLoading(t.id, true)"
-          @did-stop-loading="onWebviewLoading(t.id, false)"
-        ></webview>
+        <template v-for="t in tabs" :key="t.id">
+          <webview
+            v-if="!t.suspended"
+            :ref="bindWebviewRef(t.id)"
+            class="page-webview"
+            :class="{ 'wv-active': t.id === activeTabId, 'wv-locked': inputLocked, 'wv-capturing': !!captureVisibleTabs[t.id] }"
+            :src="t.srcUrl || 'about:blank'"
+            partition="persist:browser-view"
+            allowpopups="true"
+            @dom-ready="onWebviewReady(t.id)"
+            @did-navigate="onWebviewNavigated(t.id, $event)"
+            @did-navigate-in-page="onWebviewNavigated(t.id, $event)"
+            @page-title-updated="onWebviewTitle(t.id, $event)"
+            @did-start-loading="onWebviewLoading(t.id, true)"
+            @did-stop-loading="onWebviewLoading(t.id, false)"
+          ></webview>
+        </template>
       </template>
       <!-- Electron + 旧引擎：BrowserView 占位 div（原生 BrowserView 会覆盖此区域） -->
       <div v-else-if="isElectron" ref="browserViewPlaceholder" class="browser-view-placeholder"></div>
@@ -927,6 +930,11 @@ async function switchTab(tabId: string) {
   activeTabId.value = tabId;
   const tab = tabs.value.find(t => t.id === tabId);
   if (!tab) return;
+  // 休眠页切回：清休眠标记让 <webview> 重新挂载，:src 按最后 url 重载
+  if (tab.suspended) {
+    if (tab.url) tab.srcUrl = tab.url;
+    tab.suspended = false;
+  }
   // 恢复标签状态到当前 ref
   urlInput.value = tab.urlInput;
   history.value = [...tab.history];
@@ -1236,16 +1244,18 @@ const recentList = ref<any[]>([]);
 
 // ── 扩展工具条 action ──
 const extensionActions = ref<ExtensionAction[]>([]);
+const extensionsHidden = ref(false);
 // 非激活 webview 默认 visibility:hidden（Chromium 视作隐藏 → 停 rAF/降频）；
 // 截图前主进程会临时点亮目标 tab，这里记录临时可见的 tab。
 const captureVisibleTabs = ref<Record<string, boolean>>({});
 
 async function loadExtensionActions() {
+  if (extensionsHidden.value) { extensionActions.value = []; return; }
   const ext = (window as any).electronAPI?.extensions;
   if (!ext?.actions) return;
   try {
     const r = await ext.actions();
-    if (r?.ok) extensionActions.value = r.actions || [];
+    if (r?.ok && !extensionsHidden.value) extensionActions.value = r.actions || [];
   } catch { /* 扩展模块不可用时静默 */ }
 }
 
@@ -2391,9 +2401,20 @@ onMounted(async () => {
     const api = (window as any).electronAPI;
     // 扩展工具条：初次拉取 + 订阅 setBadgeText/setIcon 等运行时更新
     const extApi = api.extensions;
+    // P5 灰度：shadow/off 模式下隐藏工具条与「扩展管理」入口（不阻塞后面的监听器注册）
+    if (extApi?.mode) {
+      extApi.mode().then((m: any) => {
+        if (m?.mode && m.mode !== 'on') {
+          extensionsHidden.value = true;
+          extensionActions.value = [];
+        }
+      }).catch(() => { /* ignore */ });
+    }
     if (extApi?.actions) {
       void loadExtensionActions();
-      trackIpc(extApi.onActionUpdated?.(aliveGuard((state: any) => applyExtensionAction(state))));
+      trackIpc(extApi.onActionUpdated?.(aliveGuard((state: any) => {
+        if (!extensionsHidden.value) applyExtensionAction(state);
+      })));
     }
     // 截图临时点亮非激活 webview
     trackIpc(api.browserView.onCaptureVisible?.(aliveGuard((tid: string, visible: boolean) => {
@@ -2546,6 +2567,20 @@ onMounted(async () => {
         const next = activeTabId.value;
         if (next) switchTab(next).catch(() => { /* ignore */ });
       }
+    })));
+    // ★ 内存回收（2026-10-19）：主进程不再关 tab，只广播休眠。这里保留 tab 壳、销毁 <webview>；
+    //   切回该 tab 时由 switchTab 清标记并重载 url；agent 动作则由 tabResume 在后台重建。
+    trackIpc(api.browserView.onTabSuspended?.(aliveGuard((tid: string, url: string) => {
+      const tab = tabs.value.find(t => t.id === tid);
+      if (!tab || !isWebviewEngine.value) return;
+      if (url) { tab.url = url; tab.srcUrl = url; }
+      tab.suspended = true;
+    })));
+    trackIpc(api.browserView.onTabResume?.(aliveGuard((tid: string) => {
+      const tab = tabs.value.find(t => t.id === tid);
+      if (!tab || !isWebviewEngine.value) return;
+      if (tab.url) tab.srcUrl = tab.url;
+      tab.suspended = false;
     })));
     // 页面 title 变化 → 更新 tab 标题（真实网站名而非 URL）+ 对话页 browser tab 名
     // 对话页 tab chip 名称只由 preview 空间实例更新（page 空间的网页标题不牵连对话页）
@@ -2922,6 +2957,13 @@ onUnmounted(() => {
   font-size: 10px; line-height: 15px; white-space: nowrap;
   color: var(--el-text-color-secondary);
   background: var(--el-fill-color, rgba(0, 0, 0, 0.06));
+}
+.tab-sleep-badge {
+  flex: none; margin-left: 4px; padding: 0 5px; border-radius: 999px;
+  font-size: 10px; line-height: 15px; white-space: nowrap;
+  color: var(--el-color-info);
+  background: var(--el-fill-color-light, rgba(0, 0, 0, 0.04));
+  opacity: 0.85;
 }
 .tab-close {
   display: inline-flex; align-items: center; justify-content: center;
