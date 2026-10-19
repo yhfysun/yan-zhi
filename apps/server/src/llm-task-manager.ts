@@ -4961,10 +4961,13 @@ async function executeTool(
   // 档位（设置项 pathGuard，默认 ask）：off 明示不检查；strict 越界直接拒（不给授权入口）。
 
   // ── 危险命令护栏（2026-10-03，P1）：与路径守卫独立，pathGuard=off 也拦 ──
-  // 破坏性命令（递归删除/格式化/强推/关机…）**每次调用单独弹窗**，不复用"首次授权"，
-  // 且授权通过也不记入会话授权集合 —— 单独点头，永不记忆。
+  // ★★★ 2026-10-20 修正（用户实测「已经 all 权限了怎么还要确认」）：all 权限契约是
+  //   danger-full-access + 从不询问（PERMISSION_MATRIX['all'].approval='never'），此前此处
+  //   不看 permission_mode，all 会话里危险命令（递归删除/格式化/强推…）仍被单独弹窗。
+  //   all = 用户已明确承担风险 → 跳过危险护栏。readonly / default 仍每次单独确认
+  //   （危险命令不记入会话授权、永不记忆的语义不变）。
   const isCommandTool = COMMAND_TOOLS.has(toolName);
-  const dangerHit = isCommandTool ? checkDangerousCommand(summarizeCommandArgs(args)) : null;
+  const dangerHit = (isCommandTool && task.permissionMode !== 'all') ? checkDangerousCommand(summarizeCommandArgs(args)) : null;
   let dangerGranted = false;
   if (dangerHit) {
     const dangerItems: PathAccessItem[] = [{
@@ -8353,9 +8356,16 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     }
   }
 
-  // 1.5) 多智能体编排工具（2026-10-08）：无条件暴露 —— 长任务规划是主智能体的通用能力，
+  // 1.5) 多智能体规划工具（2026-10-08 收窄 2026-10-20）：只无条件暴露「规划三件套」——
+  //      plan_tasks / get_plan_status / reassign_task 是主智能体长任务编排的通用能力，
   //      不随挂载变化（子智能体侧由 runSubAgent 的工具裁剪 + depth>=1 拦截双重排除）。
-  for (const name of ['plan_tasks', 'get_plan_status', 'reassign_task', 'app_create_task', 'app_get_task_status', 'app_open_window', 'screen_record', 'demo_compose', 'anim_compose', 'publish_enqueue', 'publish_mark_published', 'publish_record_stats', 'design_asset_sites']) {
+  // ★★★ 2026-10-20 收敛（用户实测：内容生产工具被无条件广播到所有智能体，编码助手/
+  //    pageAgent 都背着 publish_enqueue / anim_compose / screen_record 等纯噪音）：
+  //    应用编排（app_create_task / app_open_window / screen_record）、后期合成
+  //    （demo_compose / anim_compose）、发布队列（publish_*）、设计素材（design_asset_sites）
+  //    这套工具**已由「言智代言官」在 builtin-yanzhi-agent.ts 声明**，谁用谁挂，
+  //    不再无条件广播（发布执行员走 browser_run_recipe，根本不碰 publish_*）。
+  for (const name of ['plan_tasks', 'get_plan_status', 'reassign_task']) {
     if (seen.has(name) || !registry.has(name)) continue;
     const def = registry.get(name)!;
     seen.add(name);

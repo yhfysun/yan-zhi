@@ -185,14 +185,16 @@ describe('接线守卫（源码四道，漏一道即静默失效）', () => {
     }
   });
 
-  it('接线全覆盖（拦截/暴露/权限/核心集/代言官挂载）', () => {
+  it('接线全覆盖（拦截/权限/核心集；不再无条件暴露，改由代言官挂载）', () => {
     const FAMILY = ['app_create_task', 'app_get_task_status', 'app_open_window', 'screen_record', 'demo_compose', 'anim_compose', 'publish_enqueue', 'publish_mark_published', 'publish_record_stats', 'design_asset_sites'];
+    const loop = LTM.match(/for \(const name of \[([^\]]+)\]\)/)![1];
     for (const name of FAMILY) {
       if (['app_create_task', 'app_get_task_status', 'app_open_window', 'screen_record', 'publish_enqueue', 'publish_mark_published', 'publish_record_stats'].includes(name)) {
         expect(LTM).toContain(`toolName === '${name}'`); // server 拦截族；demo_compose/anim_compose/design_asset_sites 走 registry 直执行
       }
-      const loop = LTM.match(/for \(const name of \[([^\]]+)\]\)/)![1];
-      expect(loop).toContain(`'${name}'`);
+      // ★ 2026-10-20：内容生产工具不再无条件广播（llm-task-manager 1.5 步收窄到规划三件套），
+      //   改由「言智代言官」builtin-yanzhi-agent.ts 声明挂载 —— 谁用谁挂，其余不占上下文。
+      expect(loop).not.toContain(`'${name}'`);
       expect(LTM).toMatch(new RegExp(`ALWAYS_ALLOWED_BUILTINS[\\s\\S]{0,400}'${name}'`));
       expect(TOOL_ROUTE_CORE.has(name)).toBe(true);
     }
@@ -205,10 +207,10 @@ describe('接线守卫（源码四道，漏一道即静默失效）', () => {
     }
   });
 
-  it('无条件暴露 + ALWAYS_ALLOWED 覆盖四个工具', () => {
+  it('★ 2026-10-20：应用编排四工具不再无条件暴露（保留 ALWAYS_ALLOWED 放行）', () => {
     const loop = LTM.match(/for \(const name of \[([^\]]+)\]\)/)![1];
     for (const name of ['app_create_task', 'app_get_task_status', 'app_open_window', 'screen_record']) {
-      expect(loop).toContain(`'${name}'`);
+      expect(loop).not.toContain(`'${name}'`);
       expect(LTM).toMatch(new RegExp(`ALWAYS_ALLOWED_BUILTINS[\\s\\S]{0,400}'${name}'`));
     }
   });
