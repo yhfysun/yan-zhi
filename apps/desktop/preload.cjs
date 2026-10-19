@@ -302,5 +302,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     whitelist: () => ipcRenderer.invoke('ext:whitelist'),
     installStore: (idOrUrl) => ipcRenderer.invoke('ext:installStore', idOrUrl),
     update: () => ipcRenderer.invoke('ext:update'),
+    actions: () => ipcRenderer.invoke('ext:actions'),
+    actionClick: (key) => ipcRenderer.invoke('ext:actionClick', key),
+    onActionUpdated: (callback) => {
+      const handler = (_event, state) => callback(state);
+      ipcRenderer.on('ext:action:updated', handler);
+      return () => ipcRenderer.removeListener('ext:action:updated', handler);
+    },
   },
 });

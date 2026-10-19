@@ -17,12 +17,14 @@ const { isSafeExternalUrl, isAllowedGuestNavigation, guardNavigation } = require
 // 浏览器扩展管理器（P1，免费路径）：只用 Electron 内置 ses.extensions.*，不依赖 GPL 库。
 const { createExtensionManager, readManifest, manifestInfo } = require('./browser-extensions.cjs');
 const { createContextMenuShim, registerExtensionPreload } = require('./extension-context-menus.cjs');
+const { createActionManager } = require('./extension-actions.cjs');
 const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
 
 let mainWindow = null;
 let extensionManager = null;
 let extensionContextMenus = null;
+let extensionActions = null;
 /** 扩展功能总开关（P5）：YZ_BROWSER_EXTENSIONS=off 可整体关闭 */
 const EXTENSIONS_ENABLED = process.env.YZ_BROWSER_EXTENSIONS !== 'off';
 
@@ -233,6 +235,15 @@ function contextMenuTabInfo(wc) {
     }
   }
   return { ...base, active: false, highlighted: false, selected: false };
+}
+
+/** 取当前激活 tab 的 guest webContents（两种引擎统一） */
+function activeGuestWebContents() {
+  if (!activeTabId) return null;
+  if (isWebviewEngine()) return guestWebContents(activeTabId);
+  const entry = browserViews.get(activeTabId);
+  if (!entry || !entry.view || entry.view.webContents.isDestroyed()) return null;
+  return entry.view.webContents;
 }
 
 function isWebviewEngine() { return browserEngine === 'webview'; }
@@ -2033,6 +2044,14 @@ ipcMain.handle('ext:list', () => {
   }
 });
 
+/** 安装/开关/卸载后让渲染层整体刷新工具条 action */
+function broadcastExtensionActions() {
+  try {
+    if (!extensionActions || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send('ext:action:updated', { refresh: true, actions: extensionActions.list() });
+  } catch { /* ignore */ }
+}
+
 ipcMain.handle('ext:installDir', async () => {
   if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
   const opts = {
@@ -2077,7 +2096,9 @@ ipcMain.handle('ext:installDir', async () => {
     : await dialog.showMessageBox(confirmOpts);
   if (confirmed.response !== 1) return { ok: false, canceled: true };
   try {
-    return await extensionManager.installFromDir(srcDir);
+    const result = await extensionManager.installFromDir(srcDir);
+    if (result && result.ok) broadcastExtensionActions();
+    return result;
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -2086,7 +2107,9 @@ ipcMain.handle('ext:installDir', async () => {
 ipcMain.handle('ext:toggle', async (_e, key, enabled) => {
   if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
   try {
-    return await extensionManager.setEnabled(String(key), !!enabled);
+    const result = await extensionManager.setEnabled(String(key), !!enabled);
+    if (result && result.ok) broadcastExtensionActions();
+    return result;
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -2095,7 +2118,9 @@ ipcMain.handle('ext:toggle', async (_e, key, enabled) => {
 ipcMain.handle('ext:remove', async (_e, key) => {
   if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
   try {
-    return await extensionManager.remove(String(key));
+    const result = await extensionManager.remove(String(key));
+    if (result && result.ok) broadcastExtensionActions();
+    return result;
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -2106,7 +2131,9 @@ ipcMain.handle('ext:whitelist', () => ({ ok: true, extensions: listWhitelist() }
 ipcMain.handle('ext:installStore', async (_e, idOrUrl) => {
   if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
   try {
-    return await extensionManager.installFromStore(String(idOrUrl || ''));
+    const result = await extensionManager.installFromStore(String(idOrUrl || ''));
+    if (result && result.ok) broadcastExtensionActions();
+    return result;
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -2115,13 +2142,15 @@ ipcMain.handle('ext:installStore', async (_e, idOrUrl) => {
 ipcMain.handle('ext:update', async () => {
   if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
   try {
-    return await extensionManager.updateAll();
+    const result = await extensionManager.updateAll();
+    if (result && result.ok) broadcastExtensionActions();
+    return result;
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
 });
 
-ipcMain.handle('ext:openPage', async (_e, key, kind) => {
+function openExtensionPageWindow(key, kind) {
   if (!extensionManager) return { ok: false, error: '扩展管理器未就绪' };
   try {
     const which = kind === 'options' ? 'options' : 'popup';
@@ -2148,6 +2177,26 @@ ipcMain.handle('ext:openPage', async (_e, key, kind) => {
       try { win.destroy(); } catch { /* ignore */ }
     });
     return { ok: true, url };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+}
+
+ipcMain.handle('ext:openPage', (_e, key, kind) => openExtensionPageWindow(key, kind));
+
+ipcMain.handle('ext:actions', () => {
+  if (!extensionActions) return { ok: false, error: '扩展动作模块未就绪', actions: [] };
+  try {
+    return { ok: true, actions: extensionActions.list() };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err), actions: [] };
+  }
+});
+
+ipcMain.handle('ext:actionClick', async (_e, key) => {
+  if (!extensionActions) return { ok: false, error: '扩展动作模块未就绪' };
+  try {
+    return await extensionActions.click(String(key));
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -6967,8 +7016,28 @@ app.whenReady().then(async () => {
         session: browserSession,
         getPopupWindow: () => mainWindow,
         getTabInfo: (wc) => contextMenuTabInfo(wc),
+        // chrome.action.* 等非菜单 API 交给动作模块
+        handleMethod: (extensionId, method, args) => {
+          if (!extensionActions) throw new Error('扩展动作模块未就绪');
+          return extensionActions.invoke(extensionId, method, args);
+        },
       });
       extensionContextMenus.install();
+      extensionActions = createActionManager({
+        getExtensions: () => extensionManager.list(),
+        deliverEvent: extensionContextMenus.deliverEvent,
+        openPopup: (key) => openExtensionPageWindow(key, 'popup'),
+        getActiveTab: () => {
+          const wc = activeGuestWebContents();
+          return wc ? contextMenuTabInfo(wc) : null;
+        },
+        notify: (state) => {
+          try {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ext:action:updated', state);
+          } catch { /* ignore */ }
+        },
+        readManifest,
+      });
       registerExtensionPreload(browserSession, path.join(__dirname, 'extension-api.preload.cjs'));
       console.log('[ext] contextMenus shim 已启用');
     } catch (err) {

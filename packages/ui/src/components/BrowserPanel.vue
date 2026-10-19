@@ -138,6 +138,20 @@
         <svg v-else viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
       </button>
 
+      <!-- 扩展工具条（chrome.action / browserAction）：图标 + 角标，点击开弹窗或触发 onClicked -->
+      <button
+        v-for="action in extensionActions"
+        :key="action.key"
+        class="nav-btn ext-action-btn"
+        :class="{ disabled: !action.enabled }"
+        :title="action.title"
+        @click="clickExtensionAction(action)"
+      >
+        <img v-if="action.iconDataUrl" :src="action.iconDataUrl" alt="" />
+        <span v-else class="ext-action-fallback">{{ (action.name || '?').slice(0, 1) }}</span>
+        <span v-if="action.badgeText" class="ext-action-badge" :style="{ background: action.badgeColor }">{{ action.badgeText }}</span>
+      </button>
+
       <!-- 更多菜单 ⋮ -->
       <el-dropdown trigger="click" @visible-change="onMoreMenuVisible" @command="onMenuCommand">
         <button class="nav-btn" title="更多工具">
@@ -761,6 +775,17 @@ const {
 
 
 interface Bookmark { url: string; title: string; }
+interface ExtensionAction {
+  key: string;
+  extensionId: string;
+  name: string;
+  title: string;
+  badgeText: string;
+  badgeColor: string;
+  iconDataUrl: string;
+  hasPopup: boolean;
+  enabled: boolean;
+}
 interface Pin { name: string; url: string; host?: string; }
 
 const SEARCH_ENGINES: Record<string, { name: string; url: (q: string) => string }> = {
@@ -1207,6 +1232,39 @@ const isBookmarked = computed(() => bookmarks.value.some(b => b.url === currentU
 
 // ── 主页数据：常用/最近/今日分析 ──
 const recentList = ref<any[]>([]);
+
+// ── 扩展工具条 action ──
+const extensionActions = ref<ExtensionAction[]>([]);
+
+async function loadExtensionActions() {
+  const ext = (window as any).electronAPI?.extensions;
+  if (!ext?.actions) return;
+  try {
+    const r = await ext.actions();
+    if (r?.ok) extensionActions.value = r.actions || [];
+  } catch { /* 扩展模块不可用时静默 */ }
+}
+
+/** 主进程推送单个扩展状态；{refresh:true} 表示安装/开关后整体刷新 */
+function applyExtensionAction(state: any) {
+  if (!state) return;
+  if (state.refresh) {
+    if (Array.isArray(state.actions)) extensionActions.value = state.actions;
+    else void loadExtensionActions();
+    return;
+  }
+  if (!state.key) return;
+  const index = extensionActions.value.findIndex((item) => item.key === state.key);
+  if (index >= 0) extensionActions.value[index] = { ...extensionActions.value[index], ...state };
+  else extensionActions.value = [...extensionActions.value, state];
+}
+
+async function clickExtensionAction(action: ExtensionAction) {
+  const ext = (window as any).electronAPI?.extensions;
+  if (!ext?.actionClick || !action.enabled) return;
+  const result = await ext.actionClick(action.key);
+  if (result && result.ok === false && result.error) ElMessage.warning(result.error);
+}
 const frequentList = ref<any[]>([]);
 const analysis = ref<any>(null);
 const analysisGenerating = ref(false);
@@ -2326,6 +2384,12 @@ onMounted(async () => {
   // Electron 桌面端：注册 BrowserView 导航/加载回调 + 启动 ResizeObserver 同步 bounds
   if (isElectron) {
     const api = (window as any).electronAPI;
+    // 扩展工具条：初次拉取 + 订阅 setBadgeText/setIcon 等运行时更新
+    const extApi = api.extensions;
+    if (extApi?.actions) {
+      void loadExtensionActions();
+      trackIpc(extApi.onActionUpdated?.(aliveGuard((state: any) => applyExtensionAction(state))));
+    }
     // 监听 BrowserView 导航事件，同步地址栏 URL（带 tabId）
     // 导航/标题统一走 applyNavigated / applyTitle（webview 元素事件也复用同一套，避免两份漂移）
     trackIpc(api.browserView.onNavigated(aliveGuard((tid: string, url: string) => applyNavigated(tid, url))));
@@ -2893,6 +2957,22 @@ onUnmounted(() => {
 [data-theme="dark"] .nav-btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); }
 .nav-btn:disabled { opacity: 0.4; cursor: default; }
 .nav-btn.active { color: var(--el-color-primary); }
+.ext-action-btn { position: relative; }
+.ext-action-btn img { width: 18px; height: 18px; display: block; border-radius: 3px; }
+.ext-action-btn.disabled { opacity: 0.45; }
+.ext-action-fallback {
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px; background: var(--el-fill-color, #eee);
+  font-size: 11px; font-weight: 600;
+}
+.ext-action-badge {
+  position: absolute; right: 0; bottom: 0;
+  min-width: 12px; height: 12px; padding: 0 2px;
+  border-radius: 6px; color: #fff;
+  font-size: 9px; line-height: 12px; text-align: center;
+  pointer-events: none;
+}
 
 .url-bar {
   flex: 1; display: flex; align-items: center; gap: 6px;

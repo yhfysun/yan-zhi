@@ -1,0 +1,11 @@
+{
+  "manifest_version": 2,
+  "name": "Spike Action MV2",
+  "version": "1.0.0",
+  "permissions": ["tabs"],
+  "background": { "scripts": ["bg.js"], "persistent": true },
+  "browser_action": {
+    "default_title": "MV2 Action",
+    "default_icon": "icon.png"
+  }
+}

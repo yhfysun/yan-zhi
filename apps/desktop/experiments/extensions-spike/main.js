@@ -27,6 +27,7 @@ const result = {
 let ses = null
 let finished = false
 let cmShim = null
+let actionManager = null
 
 function log (...args) { console.log(...args) }
 
@@ -34,7 +35,7 @@ function startServer () {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const url = (req.url || '/').split('?')[0]
-      if (url.startsWith('/ping-') || url.startsWith('/cm-')) {
+      if (url.startsWith('/ping-') || url.startsWith('/cm-') || url.startsWith('/cap')) {
         result.pings.push(req.url)
         log('[PING]', req.url)
         res.writeHead(200, { 'content-type': 'text/plain' })
@@ -169,10 +170,25 @@ app.whenReady().then(async () => {
   if (CM_TEST) {
     try {
       const { createContextMenuShim, registerExtensionPreload } = require('../../extension-context-menus.cjs')
+      const { createActionManager } = require('../../extension-actions.cjs')
+      const { readManifest } = require('../../browser-extensions.cjs')
       registerExtensionPreload(ses, path.join(__dirname, '..', '..', 'extension-api.preload.cjs'))
       result.preloads = ses.getPreloadScripts().map((p) => ({ id: p.id, type: p.type, filePath: p.filePath }))
       cmShim = createContextMenuShim({
         session: ses,
+        handleMethod: (extensionId, method, args) => {
+          try {
+            if (!actionManager) throw new Error('actionManager 未就绪')
+            const value = actionManager.invoke(extensionId, method, args)
+            result.actionInvokes = (result.actionInvokes || []).concat([{ extensionId, method, ok: true }])
+            return value
+          } catch (err) {
+            result.actionInvokes = (result.actionInvokes || []).concat([{
+              extensionId, method, ok: false, error: String((err && err.message) || err),
+            }])
+            throw err
+          }
+        },
         logger: {
           warn: function () { result.errors.push({ warn: Array.prototype.join.call(arguments, ' ') }) },
           log: function () { result.swConsole = (result.swConsole || []).concat([Array.prototype.join.call(arguments, ' ')]) },
@@ -185,6 +201,25 @@ app.whenReady().then(async () => {
       })
       cmShim.install()
       result.contextMenuShim = 'installed'
+      actionManager = createActionManager({
+        getExtensions: () => result.extensions
+          .filter((e) => /action/.test(e.fixture))
+          .map((e) => ({ key: e.fixture, electronId: e.id, enabled: true, dir: path.join(__dirname, 'fixtures', e.fixture) })),
+        deliverEvent: cmShim.deliverEvent,
+        openPopup: async () => ({ ok: true }),
+        getActiveTab: () => ({ id: 7, url: 'https://example.com/article' }),
+        notify: (state) => {
+          result.actionUpdates = (result.actionUpdates || []).concat([{
+            title: state.title,
+            badgeText: state.badgeText,
+            badgeColor: state.badgeColor,
+            hasIcon: !!state.iconDataUrl,
+            enabled: state.enabled,
+          }])
+        },
+        readManifest,
+      })
+      result.actionManager = 'installed'
       ses.serviceWorkers.on('console-message', (_event, details) => {
         result.swConsole = (result.swConsole || []).concat([
           'sw-console: ' + ((details && (details.message || details.sourceId)) || JSON.stringify(details)),
@@ -222,6 +257,20 @@ app.whenReady().then(async () => {
         wasChecked: false,
         checked: false,
       })
+    }
+    if (actionManager) {
+      result.actions = actionManager.list().map((state) => ({
+        key: state.key,
+        title: state.title,
+        badgeText: state.badgeText,
+        badgeColor: state.badgeColor,
+        hasIcon: !!state.iconDataUrl,
+        hasPopup: state.hasPopup,
+      }))
+      for (const ext of result.extensions) {
+        if (!/action/.test(ext.fixture)) continue
+        await actionManager.click(ext.fixture)
+      }
     }
   }
 

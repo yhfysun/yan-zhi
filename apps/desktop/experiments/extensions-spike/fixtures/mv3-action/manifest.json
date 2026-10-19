@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Spike Action MV3",
+  "version": "1.0.0",
+  "permissions": ["tabs"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "sw.js" },
+  "action": {
+    "default_title": "MV3 Action",
+    "default_icon": "icon.png"
+  }
+}

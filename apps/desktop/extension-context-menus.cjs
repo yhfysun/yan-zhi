@@ -207,6 +207,7 @@ function createContextMenuShim ({
   session,
   getPopupWindow = null,
   getTabInfo = null,
+  handleMethod = null,
   logger = console,
 } = {}) {
   if (!session) throw new Error('session required')
@@ -273,6 +274,8 @@ function createContextMenuShim ({
         list.clear()
         return { ok: true }
       default:
+        // 其它扩展 API（chrome.action.* 等）交给外部路由器
+        if (typeof handleMethod === 'function') return handleMethod(extensionId, method, args)
         throw new Error('不支持的方法: ' + method)
     }
   }
@@ -424,15 +427,15 @@ function createContextMenuShim ({
     return tab
   }
 
-  function deliverClick (extensionId, info, wc = null, params = {}) {
-    const tab = tabInfoFor(wc, params)
+  /** 向扩展的所有上下文（后台页/扩展页/MV3 SW）投递事件 */
+  function deliverEvent (extensionId, channel, ...args) {
     const prefix = 'chrome-extension://' + extensionId + '/'
     for (const wc of webContents.getAllWebContents()) {
       if (!wc || wc.isDestroyed() || wc.session !== session) continue
       let url = ''
       try { url = wc.getURL() } catch { continue }
       if (!url.startsWith(prefix)) continue
-      try { wc.send(CLICKED_CHANNEL, info, tab) } catch (err) {
+      try { wc.send(channel, ...args) } catch (err) {
         logger.warn && logger.warn('[ext-menu] 事件投递失败:', err && err.message)
       }
     }
@@ -440,9 +443,13 @@ function createContextMenuShim ({
     Promise.resolve()
       .then(() => session.serviceWorkers.startWorkerForScope(prefix))
       .then((worker) => {
-        if (worker && !worker.isDestroyed?.()) worker.send(CLICKED_CHANNEL, info, tab)
+        if (worker && !worker.isDestroyed?.()) worker.send(channel, ...args)
       })
       .catch(() => { /* 非 MV3 或无法唤醒：忽略 */ })
+  }
+
+  function deliverClick (extensionId, info, wc = null, params = {}) {
+    deliverEvent(extensionId, CLICKED_CHANNEL, info, tabInfoFor(wc, params))
   }
 
   function attachToWebContents (wc) {
@@ -476,6 +483,7 @@ function createContextMenuShim ({
     invoke,
     buildTemplate,
     deliverClick,
+    deliverEvent,
     dispose,
     _menus: menus,
   }
