@@ -204,6 +204,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getZoomFactor: (tabId) => ipcRenderer.invoke('browserView:getZoomFactor', tabId),
     setTheme: (tabId, theme) => ipcRenderer.invoke('browserView:setTheme', tabId, theme),
     action: (tabId, action, args) => ipcRenderer.invoke('browserView:action', tabId, action, args),
+    // 截图临时可见：非激活 webview 默认 visibility:hidden（省 CPU），截图前主进程临时点亮
+    onCaptureVisible: (callback) => {
+      const h = (_e, tabId, visible) => callback(tabId, visible);
+      ipcRenderer.on('browser:wv:captureVisible', h);
+      return () => ipcRenderer.removeListener('browser:wv:captureVisible', h);
+    },
     // ★★★ 2026-10-11：所有 onXxx 改为**返回 unsubscribe 函数**。
     //   此前每个 onXxx 只 `ipcRenderer.on` 不注销 ⇒ 组件每次挂载都新增一份监听器
     //   ⇒ 实测 `MaxListenersExceededWarning: 11 browserView:tabCreated listeners added`

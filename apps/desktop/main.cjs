@@ -3703,6 +3703,25 @@ const tabActionChains = new Map();
  */
 const tabActionBusy = new Set();
 
+/**
+ * 截图前临时点亮非激活 webview。
+ * 非激活 tab 默认 visibility:hidden（让 Chromium 判定页面隐藏、停掉 rAF/降频），
+ * 但隐藏后没有合成 surface，capturePage 会失败 ⇒ 截图前临时可见，截完恢复。
+ */
+async function revealWebviewForCapture(tabId) {
+  if (!isWebviewEngine() || !tabId || tabId === activeTabId) return () => {};
+  if (!mainWindow || mainWindow.isDestroyed()) return () => {};
+  try {
+    mainWindow.webContents.send('browser:wv:captureVisible', tabId, true);
+  } catch {
+    return () => {};
+  }
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  return () => {
+    try { mainWindow.webContents.send('browser:wv:captureVisible', tabId, false); } catch { /* ignore */ }
+  };
+}
+
 async function runBrowserAction(convId, tabId, action, args, flow) {
   args = args || {};
   // ★★★ 2026-10-15：本执行流的**流键** = `${convId}::${flow}`（判定本体在 browser-target.cjs 的 flowKeyOf）。
@@ -4644,43 +4663,48 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             }
           }
         };
-        if (args.annotate) {
-          // 元素标注截图：注入覆盖层画编号框（与 server Playwright 端对齐），截图后移除
-          const overlayId = '__yz_annotate_overlay';
-          await wc.executeJavaScript(`(function(){
-            var oid=${JSON.stringify(overlayId)};
-            var prev=document.getElementById(oid);if(prev)prev.remove();
-            var A=window.__yzAssistant;if(!A)return false;
-            var S='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
-            var ov=document.createElement('div');ov.id=oid;
-            ov.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
-            function visible(el){var r=el.getBoundingClientRect();return r.width>=2&&r.height>=2&&r.top>=0&&r.left>=0&&r.bottom<=window.innerHeight&&r.right<=window.innerWidth;}
-            function paint(root){
-              var found;try{found=root.querySelectorAll(S);}catch(e){return;}
-              for(var i=0;i<found.length;i++){var el=found[i];if(!visible(el))continue;
-                var idx=A.register(el);var r=el.getBoundingClientRect();
-                var b=document.createElement('div');
-                b.style.cssText='position:fixed;left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px;border:2px solid #f97316;box-sizing:border-box;';
-                var t=document.createElement('span');t.textContent=idx;
-                t.style.cssText='position:fixed;left:'+r.left+'px;top:'+Math.max(0,r.top-18)+'px;background:#f97316;color:#fff;font:bold 12px/16px sans-serif;padding:0 5px;border-radius:2px;';
-                ov.appendChild(b);ov.appendChild(t);
+        const restoreCaptureVisibility = await revealWebviewForCapture(tabId);
+        try {
+          if (args.annotate) {
+            // 元素标注截图：注入覆盖层画编号框（与 server Playwright 端对齐），截图后移除
+            const overlayId = '__yz_annotate_overlay';
+            await wc.executeJavaScript(`(function(){
+              var oid=${JSON.stringify(overlayId)};
+              var prev=document.getElementById(oid);if(prev)prev.remove();
+              var A=window.__yzAssistant;if(!A)return false;
+              var S='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
+              var ov=document.createElement('div');ov.id=oid;
+              ov.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+              function visible(el){var r=el.getBoundingClientRect();return r.width>=2&&r.height>=2&&r.top>=0&&r.left>=0&&r.bottom<=window.innerHeight&&r.right<=window.innerWidth;}
+              function paint(root){
+                var found;try{found=root.querySelectorAll(S);}catch(e){return;}
+                for(var i=0;i<found.length;i++){var el=found[i];if(!visible(el))continue;
+                  var idx=A.register(el);var r=el.getBoundingClientRect();
+                  var b=document.createElement('div');
+                  b.style.cssText='position:fixed;left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px;border:2px solid #f97316;box-sizing:border-box;';
+                  var t=document.createElement('span');t.textContent=idx;
+                  t.style.cssText='position:fixed;left:'+r.left+'px;top:'+Math.max(0,r.top-18)+'px;background:#f97316;color:#fff;font:bold 12px/16px sans-serif;padding:0 5px;border-radius:2px;';
+                  ov.appendChild(b);ov.appendChild(t);
+                }
+                if(root.shadowRoot)paint(root.shadowRoot);
+                var all;try{all=root.querySelectorAll('*');}catch(e){return;}
+                for(var j=0;j<all.length;j++){var n=all[j];if(n.tagName==='IFRAME'){try{var cd=n.contentDocument;if(cd)paint(cd.body);}catch(e){}}}
               }
-              if(root.shadowRoot)paint(root.shadowRoot);
-              var all;try{all=root.querySelectorAll('*');}catch(e){return;}
-              for(var j=0;j<all.length;j++){var n=all[j];if(n.tagName==='IFRAME'){try{var cd=n.contentDocument;if(cd)paint(cd.body);}catch(e){}}}
-            }
-            paint(document.documentElement);
-            document.documentElement.appendChild(ov);
-            return true;
-          })()`);
+              paint(document.documentElement);
+              document.documentElement.appendChild(ov);
+              return true;
+            })()`);
+            const image = await capturePageWithRetry();
+            await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
+            const archivedFile = await saveShotArchive(image);
+            return { base64: image.toDataURL().split(',')[1], annotated: true, ...(archivedFile ? { file: archivedFile } : {}) };
+          }
           const image = await capturePageWithRetry();
-          await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
           const archivedFile = await saveShotArchive(image);
-          return { base64: image.toDataURL().split(',')[1], annotated: true, ...(archivedFile ? { file: archivedFile } : {}) };
+          return { base64: image.toDataURL().split(',')[1], ...(archivedFile ? { file: archivedFile } : {}) };
+        } finally {
+          restoreCaptureVisibility();
         }
-        const image = await capturePageWithRetry();
-        const archivedFile = await saveShotArchive(image);
-        return { base64: image.toDataURL().split(',')[1], ...(archivedFile ? { file: archivedFile } : {}) };
       }
       case 'get_page_info': {
         // 穿透 iframe / Shadow DOM 收集可交互元素并编号注册（含 iframe 内弹窗元素）

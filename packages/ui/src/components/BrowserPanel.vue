@@ -296,7 +296,7 @@
           :key="t.id"
           :ref="bindWebviewRef(t.id)"
           class="page-webview"
-          :class="{ 'wv-active': t.id === activeTabId, 'wv-locked': inputLocked }"
+          :class="{ 'wv-active': t.id === activeTabId, 'wv-locked': inputLocked, 'wv-capturing': !!captureVisibleTabs[t.id] }"
           :src="t.srcUrl || 'about:blank'"
           partition="persist:browser-view"
           allowpopups="true"
@@ -1235,6 +1235,9 @@ const recentList = ref<any[]>([]);
 
 // ── 扩展工具条 action ──
 const extensionActions = ref<ExtensionAction[]>([]);
+// 非激活 webview 默认 visibility:hidden（Chromium 视作隐藏 → 停 rAF/降频）；
+// 截图前主进程会临时点亮目标 tab，这里记录临时可见的 tab。
+const captureVisibleTabs = ref<Record<string, boolean>>({});
 
 async function loadExtensionActions() {
   const ext = (window as any).electronAPI?.extensions;
@@ -2390,6 +2393,10 @@ onMounted(async () => {
       void loadExtensionActions();
       trackIpc(extApi.onActionUpdated?.(aliveGuard((state: any) => applyExtensionAction(state))));
     }
+    // 截图临时点亮非激活 webview
+    trackIpc(api.browserView.onCaptureVisible?.(aliveGuard((tid: string, visible: boolean) => {
+      captureVisibleTabs.value = { ...captureVisibleTabs.value, [tid]: !!visible };
+    })));
     // 监听 BrowserView 导航事件，同步地址栏 URL（带 tabId）
     // 导航/标题统一走 applyNavigated / applyTitle（webview 元素事件也复用同一套，避免两份漂移）
     trackIpc(api.browserView.onNavigated(aliveGuard((tid: string, url: string) => applyNavigated(tid, url))));
@@ -3144,15 +3151,17 @@ onUnmounted(() => {
 .browser-view-placeholder { width: 100%; height: 100%; flex: 1; min-height: 0; }
 
 /* webview 引擎：<webview> 作为普通 DOM 节点铺满视口。
-   非激活 tab 保留渲染（后台 tab 的截图 / JS 注入仍可用），只移出视觉层，
-   不用 display:none —— 那会让 guest 停止合成，capturePage 截到空白。 */
+   ★ 非激活 tab 用 visibility:hidden（不是 opacity:0）：Chromium 会把页面判定为隐藏，
+     停掉 rAF 并按后台页降频，避免开 2-3 个重页面就把进程打满（Chrome 同款行为）。
+     代价是没有合成 surface ⇒ 截图前主进程发 browser:wv:captureVisible 临时点亮目标 tab。 */
 .page-webview {
   position: absolute; left: 0; top: 0; right: 0; bottom: 0;
   width: 100%; height: 100%;
   border: 0; background: #fff;
-  opacity: 0; pointer-events: none; z-index: 0;
+  visibility: hidden; opacity: 0; pointer-events: none; z-index: 0;
 }
-.page-webview.wv-active { opacity: 1; pointer-events: auto; z-index: 1; }
+.page-webview.wv-active { visibility: visible; opacity: 1; pointer-events: auto; z-index: 1; }
+.page-webview.wv-capturing { visibility: visible; opacity: 1; }
 /* 双保险：agent 接管锁定期间，连 webview 本体也不接收指针事件（正常情况下 shield 已在更上层拦截；
    这条是防 shield 因层叠/合成异常未生效时，用户仍无法点中网页）。 */
 .page-webview.wv-locked { pointer-events: none !important; }
