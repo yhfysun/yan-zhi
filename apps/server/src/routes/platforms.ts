@@ -353,6 +353,17 @@ router.post('/models/batch', (req: Request, res: Response) => {
         // 同名：不动别名/类型/上下文等用户配置，仅「重新启用」（enabled=1），
         // 使远端再次出现的模型自动放开；is_builtin 行本就一直启用，跳过
         db.prepare('UPDATE model SET enabled = 1 WHERE platform_id = ? AND user_id = ? AND model_id = ? AND is_builtin = 0').run(platformId, uid, m.modelId);
+        // ★ 2026-10-19 校准：历史行曾被一律写成哨兵默认值 1M（服务端把它当"未声明"→ 按 32K 估算，
+        //   长任务反复压缩）。本次拉取若带来明确窗口，且该行仍是 NULL/哨兵值（说明用户没手填过），补写。
+        //   用户手动改过的值一律不动。
+        const incoming = Number((m as any).contextWindow);
+        if (Number.isFinite(incoming) && incoming > 0) {
+          db.prepare(
+            `UPDATE model SET context_window = ?
+             WHERE platform_id = ? AND user_id = ? AND model_id = ? AND is_builtin = 0
+               AND (context_window IS NULL OR context_window = ?)`,
+          ).run(incoming, platformId, uid, m.modelId, DEFAULT_CONTEXT_WINDOW);
+        }
         continue;
       }
       // ★ D7：null = 未声明，不兜成 1M
