@@ -11,6 +11,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { resolveToolPath } from './fs-walk';
+import { applyHunksToContent, parseApplyPatch, summarizeOp, type PatchOp } from './apply-patch';
 import { toolError } from '../result';
 
 interface EditSpec {
@@ -110,14 +111,31 @@ function parseEditSpecs(args: Record<string, unknown>): { specs: EditSpec[]; err
 
 export class FileEditTool implements BuiltInTool {
   name = 'file_edit';
-  description = '对已有文件做局部替换编辑：把 old_string 精确替换为 new_string。old_string 需与文件内容一致且唯一（多处时扩大上下文或传 replace_all=true）；行尾空白差异会自动容忍。一次改多处传 edits 数组 [{old_string,new_string},...]（原子生效：任一处未命中则整个调用不写入）。适合修改大文件/配置，比 file_write 整文件覆盖更安全省 token。新建文件请用 file_write。';
+  description = '对已有文件做局部编辑。两种用法：① 传 patch（apply_patch 补丁文本）——**多文件或多处改动优先用它**：按行上下文定位，不需要复述整段原文，也不会因 old_string 过短而撞上"多处命中"；一个补丁跨文件原子生效（任一失败则全不落盘）。② 传 old_string/new_string 或 edits 数组——单处小改时用，old_string 需与文件内容一致且唯一（行尾空白差异自动容忍）。新建文件用 file_write（或用补丁的 *** Add File）。';
 
   inputSchema = {
     type: 'object',
     properties: {
+      patch: {
+        type: 'string',
+        description: [
+          'apply_patch 补丁文本（多文件/多处改动首选）。格式：',
+          '*** Begin Patch',
+          '*** Update File: src/a.ts',
+          '@@ 可选锚点说明',
+          ' 未修改的上下文行（行首一个空格）',
+          '-要删除的行',
+          '+要新增的行',
+          '*** Add File: src/b.ts',
+          '+新文件内容逐行',
+          '*** Delete File: src/c.ts',
+          '*** End Patch',
+          '规则：上下文行必须与文件逐行一致（缩进/空行都算，仅容忍行尾空白）；每块至少带 2~3 行上下文；同一文件只出现一次；整个补丁原子生效。',
+        ].join('\n'),
+      },
       path: {
         type: 'string',
-        description: 'The file to edit (absolute or relative path). Must already exist — use file_write to create new files.',
+        description: 'The file to edit (absolute or relative path). Must already exist — use file_write to create new files. 传 patch 时不需要它（路径写在段头里）。',
       },
       old_string: {
         type: 'string',
@@ -145,15 +163,27 @@ export class FileEditTool implements BuiltInTool {
         description: 'Replace ALL occurrences of old_string. Defaults to false (requires unique match).',
       },
     },
-    required: ['path'],
+    // ★ 不再静态声明 required: ['path'] —— patch 模式的路径写在段头里，静态必填会让
+    //   「只传 patch」的合法调用被 missingRequiredArgs 挡在门外。必填校验改在 execute 里按模式做。
+    required: [],
   };
 
   async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
+
+    // ── 模式一：apply_patch 补丁（Codex 语法；多文件/多处改动优先）──────────
+    const patchText = typeof args.patch === 'string' ? args.patch : '';
+    if (patchText.trim()) {
+      if (args.old_string !== undefined || args.edits !== undefined) {
+        return toolError('Error: 不要同时传 patch 与 old_string/edits —— 两种模式二选一。patch 的文件路径写在 "*** Update File:" 段头里。');
+      }
+      return this.executePatch(patchText, ctx);
+    }
+
     // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
     const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
     if (!rawPath) {
-      return toolError('Error: path is required');
+      return toolError('Error: path is required（或改用 patch 模式，把路径写在 "*** Update File:" 段头里）');
     }
     // ★ 相对路径基于**工作目录**解析（见 fs-walk.ts:resolveToolPath）
     const path = resolveToolPath(rawPath, ctx?.workspaceDir);
@@ -219,4 +249,116 @@ export class FileEditTool implements BuiltInTool {
       _meta: { path, category: 'intermediate', bytes: next.length, edits: totalReplaced },
     };
   }
+
+  /**
+   * apply_patch 模式：解析 → **在内存里算完所有文件** → 全部成功才落盘。
+   *
+   * ★ 为什么跨文件原子：一次补丁常同时改实现与测试/类型。若逐文件落盘，第二处失败时
+   *   第一处已写入 → 仓库停在"实现改了、测试没改"的半截状态，回滚还得靠用户。
+   *   先把所有 before/after 算出来，失败的补丁**一个字节都不写**。
+   */
+  private async executePatch(patchText: string, ctx?: ToolContext): Promise<McpCallResult> {
+    const { fs } = getPlatformAdapter();
+    const parsed = parseApplyPatch(patchText);
+    if (!parsed.ok) {
+      return toolError(`Error: invalid patch — ${parsed.error}\n补丁未执行，文件未被修改。`);
+    }
+
+    interface PendingChange {
+      op: PatchOp;
+      path: string;
+      before: string | null;
+      after: string | null;
+      added: number;
+      removed: number;
+      fuzzy: boolean;
+    }
+    const pending: PendingChange[] = [];
+    // ★ 解析层只按字面查重（a.ts vs ./a.ts 查不出来），这里按**解析后的绝对路径**再查一次：
+    //   同一文件两段会让原子语义与后段匹配都变得不可靠。
+    const claimed = new Set<string>();
+
+    for (const op of parsed.ops) {
+      const filePath = resolveToolPath(op.path, ctx?.workspaceDir);
+      const resolvedKey = filePath.replace(/\\/g, '/');
+      if (claimed.has(resolvedKey)) {
+        return toolError(`Error: 同一文件在补丁中出现多次：${filePath}。请合并成一个段。\n补丁未执行，文件未被修改。`);
+      }
+      claimed.add(resolvedKey);
+      const exists = await fs.exists(filePath);
+
+      if (op.kind === 'update') {
+        if (!exists) {
+          return toolError(`Error: *** Update File 目标不存在：${filePath}。新建文件请用 *** Add File。\n补丁未执行，文件未被修改。`);
+        }
+        const before = await fs.readFile(filePath);
+        const r = applyHunksToContent(before, op.hunks, filePath);
+        if (!r.ok) {
+          return toolError(`Error: ${r.error}\n补丁未执行，文件未被修改（整份补丁原子生效）。`);
+        }
+        // 保留原换行风格（与 old_string 路径同一口径）
+        const isCrlf = before.includes('\r\n');
+        const after = isCrlf ? r.content.replace(/\n/g, '\r\n') : r.content;
+        pending.push({ op, path: filePath, before, after, added: r.added, removed: r.removed, fuzzy: r.fuzzy });
+      } else if (op.kind === 'add') {
+        if (exists) {
+          return toolError(`Error: *** Add File 目标已存在：${filePath}。要修改它请用 *** Update File。\n补丁未执行，文件未被修改。`);
+        }
+        const after = op.addLines.length ? `${op.addLines.join('\n')}\n` : '';
+        pending.push({ op, path: filePath, before: null, after, added: op.addLines.length, removed: 0, fuzzy: false });
+      } else {
+        if (!exists) {
+          return toolError(`Error: *** Delete File 目标不存在：${filePath}。\n补丁未执行，文件未被修改。`);
+        }
+        const before = await fs.readFile(filePath);
+        pending.push({ op, path: filePath, before, after: null, added: 0, removed: before.split('\n').length, fuzzy: false });
+      }
+    }
+
+    // ── 落盘（此时内容已全部校验通过，失败只可能是 IO/权限）──
+    const failed: string[] = [];
+    for (const p of pending) {
+      try {
+        if (p.op.kind === 'delete') {
+          await fs.remove(p.path);
+        } else {
+          const dir = dirNameOf(p.path);
+          if (dir && !(await fs.exists(dir))) await fs.mkdir(dir);
+          await fs.writeFile(p.path, p.after!);
+        }
+      } catch (e: unknown) {
+        failed.push(`${p.path}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    if (failed.length) {
+      return toolError(`Error: 补丁校验通过，但写入失败：\n${failed.join('\n')}\n已写入 ${pending.length - failed.length}/${pending.length} 个文件。请检查路径/权限后重试。`);
+    }
+
+    const lines = pending.map((p) => summarizeOp(p.op, { added: p.added, removed: p.removed }));
+    const totalAdded = pending.reduce((n, p) => n + p.added, 0);
+    const totalRemoved = pending.reduce((n, p) => n + p.removed, 0);
+    const fuzzyNote = pending.some((p) => p.fuzzy)
+      ? '\n（有块按行尾空白容忍匹配成功 —— 后续尽量逐字复制上下文行）'
+      : '';
+    return {
+      content: [{
+        type: 'text',
+        text: `Successfully applied patch: ${pending.length} file${pending.length > 1 ? 's' : ''}, +${totalAdded}/-${totalRemoved} lines.\n${lines.join('\n')}${fuzzyNote}`,
+      }],
+      // _meta.changes 供调用方逐文件写 file_change 快照（前端 Diff 卡片按文件展示）
+      _meta: {
+        path: pending[0]?.path || '',
+        category: 'intermediate',
+        edits: pending.reduce((n, p) => n + p.op.hunks.length, 0),
+        bytes: pending.reduce((n, p) => n + (p.after?.length || 0), 0),
+        changes: pending.map((p) => ({ path: p.path, beforeContent: p.before, afterContent: p.after })),
+      },
+    } as McpCallResult;
+  }
+}
+
+/** 取目录部分（兼容 / 与 \；无分隔符返回空串） */
+function dirNameOf(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return i > 0 ? p.slice(0, i) : '';
 }

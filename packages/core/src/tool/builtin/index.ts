@@ -5,6 +5,9 @@ export { resolveToolPath, isAbsolutePath, joinPath, DEFAULT_SKIP_DIRS } from './
 export { FileToMarkdownTool } from './file-to-markdown';
 export { FileWriteTool } from './file-write';
 export { FileEditTool } from './file-edit';
+// apply_patch 解析/应用（2026-10-19）：server 的 path-guard 要从补丁文本里抽目标路径做越界判定，
+// 所以必须从包根透出 —— 路径抽取不能另写一份解析器（两套解析必然漂移）。
+export { parseApplyPatch, applyHunksToContent, type PatchOp, type PatchHunk } from './apply-patch';
 export { FileGrepTool } from './file-grep';
 export { FileListTool } from './file-list';
 export { CodeSearchTool } from './code-search';
