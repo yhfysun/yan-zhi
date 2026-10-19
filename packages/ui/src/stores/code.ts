@@ -1,7 +1,7 @@
 // 代码模式工作台状态：打开的文件、项目目录、断点、运行配置。
 // 与聊天 store 解耦 —— 代码模式是独立页面，但右侧对话区仍复用 chat store。
 import { defineStore } from 'pinia';
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import { api } from '../api/client';
 import { useSettingsStore } from './settings';
 
@@ -45,6 +45,7 @@ export interface AiFileChangeItem {
 
 const LS_DIR = 'yz:code:projectDir';
 const LS_FILES = 'yz:code:openFiles';
+const LS_ACTIVE = 'yz:code:activePath';
 const LS_CFG = 'yz:code:runConfigs';
 const LS_BP = 'yz:code:breakpoints';
 
@@ -113,6 +114,8 @@ export const useCodeStore = defineStore('code', () => {
   // ===== 打开的文件 =====
   const openFiles = ref<OpenFile[]>([]);
   const activePath = ref<string | null>(null);
+  /** 恢复阶段标记：rememberTabs 设置 activePath 不应触发「点文件自动展开编辑器」的 watch */
+  const restoringTabs = ref(false);
 
   const activeFile = computed(() => openFiles.value.find((f) => f.path === activePath.value) || null);
   const dirtyCount = computed(() => openFiles.value.filter((f) => f.content !== f.original).length);
@@ -126,13 +129,20 @@ export const useCodeStore = defineStore('code', () => {
   /** 把「路径/文件名」恢复到标签栏（内容留空，点开才读盘，避免启动时大量 IO） */
   function rememberTabs() {
     const saved = readJson<Array<{ path: string; name: string }>>(LS_FILES, []);
+    // 恢复阶段：本函数设 activePath 不应触发「点文件自动展开编辑器」的 watch（否则重挂载
+    // 会把用户已收起的编辑器重新顶开）。reset 放 nextTick，越过 watch 的 pre-flush。
+    restoringTabs.value = true;
     openFiles.value = saved
       .filter((f) => f?.path)
       .map((f) => ({ path: f.path, name: f.name, content: '', original: '', loading: false, error: '', saving: false, mtime: 0 }));
     if (openFiles.value.length) {
-      activePath.value = openFiles.value[0].path;
-      void loadContent(openFiles.value[0].path);
+      // 恢复到**上次激活**的文件，而不是永远第一个 tab（否则重开后显示的不是用户正在编辑的那个）
+      const lastActive = localStorage.getItem(LS_ACTIVE);
+      const target = openFiles.value.find((f) => f.path === lastActive) || openFiles.value[0];
+      activePath.value = target.path;
+      void loadContent(target.path);
     }
+    nextTick(() => { restoringTabs.value = false; });
   }
 
   async function openFile(path: string, name?: string) {
@@ -140,6 +150,7 @@ export const useCodeStore = defineStore('code', () => {
     const exist = openFiles.value.find((f) => f.path === path);
     if (exist) {
       activePath.value = path;
+      localStorage.setItem(LS_ACTIVE, path);
       if (!exist.content && !exist.error) await loadContent(path);
       return;
     }
@@ -155,6 +166,7 @@ export const useCodeStore = defineStore('code', () => {
     };
     openFiles.value.push(file);
     activePath.value = path;
+    localStorage.setItem(LS_ACTIVE, path);
     persistFiles();
     await loadContent(path);
   }
@@ -205,6 +217,7 @@ export const useCodeStore = defineStore('code', () => {
     openFiles.value.splice(idx, 1);
     if (activePath.value === path) {
       activePath.value = (openFiles.value[idx] || openFiles.value[idx - 1] || null)?.path ?? null;
+      localStorage.setItem(LS_ACTIVE, activePath.value || '');
     }
     persistFiles();
   }
@@ -329,7 +342,7 @@ export const useCodeStore = defineStore('code', () => {
     projectDir, projectName, setProjectDir,
     projectSpaceId, setProjectSpaceId,
     codeModeActive: codeModeActiveRef,
-    openFiles, activePath, activeFile, dirtyCount,
+    openFiles, activePath, activeFile, dirtyCount, restoringTabs,
     openFile, loadContent, updateContent, saveFile, closeFile, closeOthers, closeAll, rememberTabs,
     sidebarView, openGitPanel,
     breakpoints, toggleBreakpoint, clearBreakpoints,

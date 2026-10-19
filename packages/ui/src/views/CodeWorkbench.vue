@@ -317,7 +317,9 @@ const paletteOpen = ref(false);
 // human → 编辑器居中、任务在右栏（编辑模式，= 改造前现状，零结构改动）
 const lead = computed<LeadMode>(() => leadOf(activeMode.value));
 /** AI 模式右栏编辑器展开态（三屏结构；默认展开，可收起为纯对话两屏） */
-const editorOpen = ref(true);
+const editorOpen = ref(localStorage.getItem('yz:code:editorOpen') !== '0');
+// 用户收起/展开编辑器是**持久意图**，重挂载（模式重定向弹回、切 lead、HMR）不应复位（与 consoleOpen 同口径）
+watch(editorOpen, (v) => localStorage.setItem('yz:code:editorOpen', v ? '1' : '0'));
 
 /** 切形态：只改 lead（重排 chatPlacement）——不换会话、不重开文件、不重连终端 */
 function onLeadChange(v: LeadMode) {
@@ -331,7 +333,8 @@ function onLeadChange(v: LeadMode) {
 watch(
   () => code.activePath,
   (p) => {
-    if (p && lead.value === 'ai') editorOpen.value = true;
+    // 跳过 rememberTabs 恢复阶段：重挂载不该把用户已收起的编辑器重新顶开
+    if (p && lead.value === 'ai' && !code.restoringTabs) editorOpen.value = true;
   },
 );
 
