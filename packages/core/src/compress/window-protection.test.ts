@@ -21,12 +21,12 @@ describe('capStaleToolResults：保护窗口按工具结果条数计', () => {
     const tools = out.filter((m: any) => m.role === 'tool');
     // 最近的 6 条（t2..t7）保持原文
     for (let i = 2; i < 8; i++) {
-      expect(tools[i].content.length, `tool t${i} 应保持原文`).toBe(10000);
+      expect(tools[i]!.content!.length, `tool t${i} 应保持原文`).toBe(10000);
     }
     // 较早的 2 条（t0,t1）被裁剪且带标记
-    expect(tools[0].content.length).toBeLessThan(10000);
-    expect(tools[0].content).toContain('已压缩');
-    expect(tools[1].content).toContain('已压缩');
+    expect(tools[0]!.content!.length).toBeLessThan(10000);
+    expect(tools[0]!.content).toContain('已压缩');
+    expect(tools[1]!.content).toContain('已压缩');
   });
 
   it('消息里混有非工具消息也不占保护名额', () => {
@@ -34,8 +34,8 @@ describe('capStaleToolResults：保护窗口按工具结果条数计', () => {
     for (let i = 0; i < 7; i++) msgs.push(toolMsg(`t${i}`, 10000), assistantMsg(`a${i}`));
     const out = capStaleToolResults(msgs, 6);
     const tools = out.filter((m: any) => m.role === 'tool');
-    for (let i = 1; i < 7; i++) expect(tools[i].content.length).toBe(10000);
-    expect(tools[0].content).toContain('已压缩');
+    for (let i = 1; i < 7; i++) expect(tools[i]!.content!.length).toBe(10000);
+    expect(tools[0]!.content).toContain('已压缩');
   });
 });
 
