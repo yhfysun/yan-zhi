@@ -20,7 +20,8 @@
 //   —— 判定逻辑只有一份，避免「同一语义在两处判定」必然漂移（本项目既有教训）。
 
 import path from 'node:path';
-import { resolveToolPath, isAbsolutePath } from '@yan-zhi/core';
+import { resolveToolPath, isAbsolutePath, parseApplyPatch } from '@yan-zhi/core';
+import { permissionDecision, COMMAND_TOOL_NAMES, type PermissionMode } from '../tool-permission.js';
 import { resolveArtifactDirFor } from './artifact-dir.js';
 import { serverState } from '../state.js';
 
@@ -112,7 +113,7 @@ const TOOL_PATH_ARGS: Record<string, PathArgSpec[]> = {
  *   本会话首次调用弹窗过目「命令 + 参数」，之后本会话放行；**每次调用都落审计**。
  *   —— 这样既拦住静默越界，又不骚扰 `npm install` / 跑测试这类高频正当用途。
  */
-export const COMMAND_TOOLS = new Set(['cmd_exec', 'python_exec']);
+export const COMMAND_TOOLS = COMMAND_TOOL_NAMES;
 
 // ───────────────────────── 危险命令护栏（2026-10-03，P1）─────────────────────────
 //
@@ -237,6 +238,28 @@ export function collectPathArgs(
       absPath: resolveToolPath(rawPath, workspaceDir),
     });
   }
+
+  // ★ file_edit 的 patch 模式（2026-10-19）：目标路径写在补丁段头里，args.path 为空。
+  //   不在这里抽 → 一条 *** Update File: C:/Windows/... 的补丁会**绕过越界判定**静默写入。
+  //   解析器复用 core 的唯一实现（不在这里另写一份）。
+  //   语法不合法时补丁根本不会执行（工具会返回错误），故无需在此拦截。
+  if (toolName === 'file_edit' && typeof args.patch === 'string' && args.patch.trim()) {
+    const parsed = parseApplyPatch(args.patch);
+    if (parsed.ok) {
+      for (const op of parsed.ops) {
+        const p = op.path.trim();
+        if (!p) continue;
+        if (!ws && !isAbsolutePath(p)) continue; // 与上方同一口径：无工作目录的相对路径不判
+        out.push({
+          toolName,
+          action: 'write',
+          rawPath: p,
+          absPath: resolveToolPath(p, workspaceDir),
+        });
+      }
+    }
+  }
+
   return out;
 }
 
@@ -245,6 +268,13 @@ export interface PathGuardInput {
   args: Record<string, unknown> | null | undefined;
   /** 当前会话工作目录（相对路径的解析基准） */
   workspaceDir?: string | null;
+  /**
+   * 会话权限模式（审批矩阵的输入）。
+   * ★ 可选，缺省 `'default'` —— 与改动前行为完全一致（越界才问）。
+   *   传 `'readonly'` 时界内写也会判为需授权（与 checkToolPermission 的口径统一，纵深防御）；
+   *   传 `'all'` 时直接放行（调用方通常已整体跳过本守卫）。
+   */
+  mode?: PermissionMode;
   /**
    * ★★★ 允许访问的根集合。**必须包含产物目录** ——
    *   产物根 = 空间目录 > 工作目录 > 数据根（services/artifact-dir.ts:100-104），
@@ -308,11 +338,13 @@ export type PathGuardVerdict =
  *   —— 逐个弹是体验灾难（本项目既有约定：一次问全，不要挤牙膏）。
  */
 export function checkPathAccess(input: PathGuardInput): PathGuardVerdict {
-  const { toolName, args, workspaceDir, allowedRoots, authorizedDirs = [] } = input;
+  const { toolName, args, workspaceDir, allowedRoots, authorizedDirs = [], mode = 'default' } = input;
   const roots = [...allowedRoots, ...authorizedDirs].filter((r): r is string => !!r && !!r.trim());
 
   // 命令类：抽不到路径 → 整条命令授权（调用方按会话记「首次授权」）
+  // ★ 是否询问由审批矩阵决定：exec + 位置不可知 → readonly/default 询问，all 放行。
   if (COMMAND_TOOLS.has(toolName)) {
+    if (permissionDecision(mode, 'exec', 'unknown') === 'allow') return { kind: 'allow' };
     return {
       kind: 'need-auth',
       items: [{
@@ -332,9 +364,16 @@ export function checkPathAccess(input: PathGuardInput): PathGuardVerdict {
     // 这里保守报 need-auth，让调用方在"无人值守"时明确拒绝、有前端时问用户。
     return { kind: 'need-auth', items };
   }
-  const outside = items.filter((it) => !roots.some((r) => isWithinRoot(it.absPath, r)));
-  if (outside.length === 0) return { kind: 'allow' };
-  return { kind: 'need-auth', items: outside };
+  // ★ 这里只回答**位置**问题（界内/越界），动作级审批已由 checkToolPermission 处理过。
+  //   所以固定用 action='read' 过矩阵：否则 readonly 下"界内写"会在这里**二次弹窗**
+  //   （用户刚在工具授权卡上点过同意，紧接着又被问一遍同一个调用）。
+  //   矩阵对"越界"和 all/readonly 的区分仍然生效，单一实现不破。
+  const needAuth = items.filter((it) => {
+    const scope = roots.some((r) => isWithinRoot(it.absPath, r)) ? 'inside' : 'outside';
+    return permissionDecision(mode, 'read', scope) === 'ask';
+  });
+  if (needAuth.length === 0) return { kind: 'allow' };
+  return { kind: 'need-auth', items: needAuth };
 }
 
 /** 把命令类工具的入参压成一行给用户过目（截断防超长）；危险命令判定也用它做扫描文本 */

@@ -126,6 +126,37 @@ describe('collectPathArgs —— 按声明表抽，只抽显式给出', () => {
     expect(collectPathArgs('ask_user', { question: 'q' }, WS)).toHaveLength(0);
   });
 
+  // ★★ 2026-10-19：file_edit 新增 patch 模式后，目标路径不再出现在 args.path 里。
+  //   不抽段头路径 → `*** Update File: C:/Windows/...` 会**静默绕过**越界判定。
+  it('★★ file_edit patch 模式：目标路径从段头抽，且按工作目录解析', () => {
+    const patch = [
+      '*** Begin Patch',
+      `*** Update File: ${join('src', 'a.ts')}`,
+      ' const a = 1;',
+      '-const b = 2;',
+      '+const b = 3;',
+      '*** End Patch',
+    ].join('\n');
+    const items = collectPathArgs('file_edit', { patch }, WS);
+    expect(items).toHaveLength(1);
+    expect(items[0].action).toBe('write');
+    expect(normalizeForCompare(items[0].absPath)).toBe(normalizeForCompare(join(WS, 'src', 'a.ts')));
+    expect(isWithinRoot(items[0].absPath, WS)).toBe(true);
+  });
+
+  it('★★ patch 里的绝对越界路径 → 抽得出来且判为越界', () => {
+    const outside = join(OUTSIDE, 'evil.ts');
+    const patch = ['*** Begin Patch', `*** Delete File: ${outside}`, '*** End Patch'].join('\n');
+    const items = collectPathArgs('file_edit', { patch }, WS);
+    expect(items).toHaveLength(1);
+    expect(isWithinRoot(items[0].absPath, WS)).toBe(false);
+  });
+
+  it('patch 语法不合法 → 不抽（工具本身会拒绝执行，不存在写入）；old_string 模式行为不变', () => {
+    expect(collectPathArgs('file_edit', { patch: 'not a patch' }, WS)).toHaveLength(0);
+    expect(collectPathArgs('file_edit', { path: 'a.ts', old_string: 'x' }, WS)).toHaveLength(1);
+  });
+
   it('★ media_edit 的 6 个路径字段全都要抽（漏一个 = 那条 op 静默越界）', () => {
     const items = collectPathArgs('media_edit', {
       video: join(OUTSIDE, 'a.mp4'),

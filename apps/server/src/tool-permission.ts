@@ -232,6 +232,88 @@ export interface ToolPermissionVerdict {
   needsAuthorization?: boolean;
 }
 
+/** 命令执行类工具：目标路径藏在命令/代码字符串里，静态抽不出来（与 path-guard 的 COMMAND_TOOLS 同义） */
+export const COMMAND_TOOL_NAMES = new Set(['cmd_exec', 'python_exec']);
+
+// ───────────────────────── 审批矩阵（2026-10-19，对标 Codex 的 sandbox × approval）─────────
+//
+// ★ 为什么要有这张表：权限判定此前**三段散落** ——
+//     · checkToolPermission：按工具名判（只读模式拦写类）；
+//     · path-guard.checkPathAccess：按目标路径是否在允许根内判；
+//     · permissionModePrompt：再用自然语言描述一遍。
+//   三处各写一遍必然漂移（本项目反复踩过"同一语义多处实现"）。现在收敛成一张表：
+//   `mode × action × scope → allow | ask`，执行层与提示词都从同一个函数取值。
+//
+// ★ 语义对齐 Codex（**不改现有安全默认**）：
+//   readonly ≈ read-only 沙箱 + 写操作一律询问；
+//   default  ≈ workspace-write 沙箱 + 仅越界/命令询问；
+//   all      ≈ danger-full-access + 从不询问。
+//   ★ 只对齐**判定矩阵**，不承诺进程隔离 —— Codex 的 OS 级沙箱（Seatbelt/Landlock）我们没有实现。
+export type PermissionAction = 'read' | 'write' | 'exec';
+export type PermissionScope = 'inside' | 'outside' | 'unknown';
+export type PermissionDecision = 'allow' | 'ask';
+export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
+export type ApprovalPolicy = 'always' | 'on-violation' | 'never';
+
+export interface PermissionPolicy {
+  sandbox: SandboxMode;
+  approval: ApprovalPolicy;
+  /** 一句话说明（提示词直接引用，保证"说的"和"做的"同源） */
+  summary: string;
+}
+
+export const PERMISSION_MATRIX: Record<PermissionMode, PermissionPolicy> = {
+  readonly: {
+    sandbox: 'read-only',
+    approval: 'always',
+    summary: '界内读取直接执行；任何写操作、命令执行、越界访问都要先问用户。',
+  },
+  default: {
+    sandbox: 'workspace-write',
+    approval: 'on-violation',
+    summary: '工作目录内读写直接执行；越界访问与命令执行要先问用户。',
+  },
+  all: {
+    sandbox: 'danger-full-access',
+    approval: 'never',
+    summary: '不再询问：任何读写与命令都直接执行（用户已明确承担风险）。',
+  },
+  // 'full' 是历史档位（已并入 all）。normalizePermissionMode 会把存量迁移掉，
+  // 但类型里仍保留该键 → 矩阵必须补一项，否则 Record 不完整。
+  full: {
+    sandbox: 'danger-full-access',
+    approval: 'never',
+    summary: '不再询问：任何读写与命令都直接执行（用户已明确承担风险）。',
+  },
+};
+
+/**
+ * 审批矩阵的**唯一判定入口**（checkToolPermission / path-guard / 提示词共用）。
+ * 改这里即改全部 —— 不要再在任何调用点另写一份 if。
+ */
+export function permissionDecision(
+  mode: PermissionMode,
+  action: PermissionAction,
+  scope: PermissionScope,
+): PermissionDecision {
+  const policy = PERMISSION_MATRIX[mode] || PERMISSION_MATRIX.readonly;
+  if (policy.approval === 'never' || policy.sandbox === 'danger-full-access') return 'allow';
+  if (scope !== 'inside') return 'ask';      // 越界 / 位置不可知：一律先问
+  if (action === 'read') return 'allow';     // 界内读：任何模式都放行
+  if (policy.sandbox === 'read-only') return 'ask';
+  return 'allow';                            // workspace-write：界内写放行
+}
+
+/** 工具 → 动作分类（按副作用的**实现**判，不按名字猜；依据见上面各清单的注释） */
+export function classifyToolAction(toolName: string): PermissionAction {
+  if (INTERACTION_TOOLS.has(toolName)) return 'read';
+  if (COMMAND_TOOL_NAMES.has(toolName)) return 'exec';
+  if (WRITE_TOOLS.has(toolName)) return 'write';
+  for (const p of UNCONTROLLABLE_PREFIXES) if (toolName.startsWith(p)) return 'write';
+  if (DELEGATION_TOOLS.has(toolName)) return 'write';
+  return 'read';
+}
+
 /**
  * 判定某个工具在当前权限模式下是否可执行。
  * full / default 一律放行（保持既有行为，权限拦截是 readonly 专属的收窄）。
@@ -242,10 +324,14 @@ export interface ToolPermissionVerdict {
  *   行为不变；只有走授权流程的运行时才消费 needsAuthorization。
  */
 export function checkToolPermission(mode: PermissionMode, toolName: string): ToolPermissionVerdict {
-  if (mode !== 'readonly') return { allowed: true };
+  // ★ 工具级判定只回答「这个动作在**界内**是否需要授权」；越界问题由 path-guard 用同一张矩阵判
+  //   （两处共用 permissionDecision，不再各写一份 if）。动作分类按副作用实现判，不按名字猜。
+  const action = classifyToolAction(toolName);
+  if (permissionDecision(mode, action, 'inside') === 'allow') return { allowed: true };
 
-  if (INTERACTION_TOOLS.has(toolName)) return { allowed: true };
-
+  if (action === 'exec') {
+    return { allowed: false, needsAuthorization: true, reason: `工具 \`${toolName}\` 会执行命令，只读会话需用户授权后执行。` };
+  }
   if (WRITE_TOOLS.has(toolName)) {
     return { allowed: false, needsAuthorization: true, reason: `工具 \`${toolName}\` 具有写副作用，只读会话需用户授权后执行。` };
   }
@@ -279,7 +365,10 @@ export function filterToolsByPermission<T extends { name?: string; function?: { 
 /** 生成喂给模型的权限指令段，让模型一开始就按只读方式规划，避免反复撞墙。 */
 export function permissionModePrompt(mode: PermissionMode): string {
   if (mode !== 'readonly') return '';
+  // ★ 来自矩阵而非手写：改 PERMISSION_MATRIX 后提示词自动同步，不会出现"说的和做的两套"。
+  const policy = PERMISSION_MATRIX.readonly;
   return [
+    `- 权限矩阵：沙箱=${policy.sandbox}，审批=${policy.approval}；${policy.summary}`,
     '- 只读权限模式（授权制，2026-10-18）：本次会话被用户限制为只读。读取文件、查看目录、联网检索、浏览网页内容、向用户提问均可直接执行。',
     '写类操作（改/删文件、执行命令与代码、浏览器页面操作、发消息、委派子智能体等）**仍可发起，但首次调用会向用户弹授权卡**：',
     '用户批准后本任务内该工具放行；**被拒或未响应时不要重试同一调用**，改为向用户说明理由、等待用户明确同意或换用只读方案。',
