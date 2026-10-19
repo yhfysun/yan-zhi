@@ -3545,12 +3545,22 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       void fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, {
         method: 'POST', headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
       }).catch(() => {});
+      dropStreamState(taskId);
+      taskEventCounts.delete(taskId);
     }
+    abortControllers.delete(target);
+    taskIds.delete(target);
+    // ★ 本地兜底（2026-10-19）：渲染层重载 / SSE 断连后，controller 与 taskId 可能都已为空，
+    //   但 runningConvIds 仍挂着 → 点「停止」毫无反应。无条件清本地运行态，
+    //   保证停止按钮在任何状态下都能把 UI 拉回可输入。
+    const wasRunning = runningConvIds.value.has(target);
+    runningConvIds.value.delete(target);
+    if (wasRunning) markRunEnd(target, 'aborted');
     // 手动终止时 SSE 连接已被 abort，后端随后的「task:aborted」事件不会再到达前端，
     // task:aborted 分支里的 emitTaskFinished 走不到 → 排队的追加消息不会自动发送。
     // 这里手动补发一次结束回调；即便与 task:completed 双发也安全
     // （flushQueuedAfterTask 有按会话在途守卫，重复触发只处理一条，不会撞同会话互斥丢消息）。
-    if (controller || taskId) emitTaskFinished(target);
+    if (controller || taskId || wasRunning) emitTaskFinished(target);
     if (pendingPlatformConfig.value) {
       cancelPlatformConfig();
     }
