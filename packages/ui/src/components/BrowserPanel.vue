@@ -162,6 +162,7 @@
             <el-dropdown-item command="history">浏览历史 ({{ recentList.length }})</el-dropdown-item>
             <el-dropdown-item command="passwords">密码管理 ({{ savedPasswords.length }})</el-dropdown-item>
             <el-dropdown-item command="settings">浏览器设置</el-dropdown-item>
+            <el-dropdown-item command="extensions">扩展管理</el-dropdown-item>
             <el-dropdown-item command="bookmarks" divided>收藏夹 ({{ bookmarks.length }})</el-dropdown-item>
             <el-dropdown-item command="clearBookmarks">清空收藏夹</el-dropdown-item>
           </el-dropdown-menu>
@@ -507,7 +508,7 @@ import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
 import { API_BASE, buildRequestHeaders } from '../api/client';
 import { useRoute } from 'vue-router';
-import { settingsDrawerOpen } from '../composables/useSettingsDrawer';
+import { settingsDrawerOpen, openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { startVisiblePolling } from '../utils/visible-polling';
 import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { useChat } from '../composables/chat/useChat';
@@ -2360,6 +2361,7 @@ function onMenuCommand(cmd: string) {
   if (cmd === 'history') openHistory();
   else if (cmd === 'passwords') openPasswordManager();
   else if (cmd === 'settings') showSettings.value = true;
+  else if (cmd === 'extensions') openSettingsDrawer('extensions');
   else if (cmd === 'bookmarks') showBookmarks.value = true;
   else if (cmd === 'clearBookmarks') {
     bookmarks.value = [];

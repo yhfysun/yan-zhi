@@ -88,6 +88,7 @@ const builtinSections: SettingsSection[] = [
 
   { section: 'connections', label: 'IM 连接', icon: Promotion },
   { section: 'env', label: '开发环境', icon: Monitor },
+  { section: 'extensions', label: '扩展管理', icon: Box },
   { section: 'plugins', label: '插件管理', icon: Box },
 ];
 
@@ -113,6 +114,7 @@ const builtinComponents: Record<string, ReturnType<typeof defineAsyncComponent>>
 
   connections: defineAsyncComponent(() => import('../views/Connections.vue')),
   env: defineAsyncComponent(() => import('../views/EnvConfig.vue')),
+  extensions: defineAsyncComponent(() => import('../components/settings/BrowserExtensionsPanel.vue')),
   plugins: defineAsyncComponent(() => import('./plugin/PluginManager.vue')),
 };
 
