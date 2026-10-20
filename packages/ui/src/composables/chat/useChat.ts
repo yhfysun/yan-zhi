@@ -1007,7 +1007,10 @@ function createChat() {
   async function fetchSnapshotFor(m: any): Promise<string | undefined> {
     if (m.systemPromptSnapshot) return m.systemPromptSnapshot;
     try {
-      if (authStore.isLoggedIn) {
+      // ★ 判据必须是 useServerApi（数据源单一真相源），不是 isLoggedIn：
+      //   本地桌面 guest 身份下 isLoggedIn 恒 false（guest 不算登录态），但数据在 server 库
+      //   → 此前走本地 adapter 直查 → 查无 → 快照弹窗恒「没有找到提示词数据」。
+      if (authStore.useServerApi) {
         const r = await api.get<any>(`/messages/${m.id}/snapshot`);
         if ('data' in r) return (r.data as any)?.systemPromptSnapshot || undefined;
         return undefined;

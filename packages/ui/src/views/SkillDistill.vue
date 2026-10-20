@@ -924,7 +924,9 @@ async function selectConv(convId: string) {
   // 残留的旧会话行由 deliverables 的 conversationId 过滤挡掉。
   void fileStore.loadConversationFiles(convId).catch(() => {});
   convMessages.value = [];
-  if (authStore.isLoggedIn) {
+  // ★ 判据必须是 useServerApi（数据源单一真相源）：本地 guest 身份下 isLoggedIn 恒 false，
+  //   但数据在 server 库 → 走本地 adapter 会查空。与 fetchSnapshotFor 同修（2026-10-20）。
+  if (authStore.useServerApi) {
     const r = await api.get<any[]>(`/conversations/${convId}/messages`);
     if ('data' in r) convMessages.value = r.data as any[];
   } else {
