@@ -267,6 +267,12 @@
                     </div>
                   </div>
                 </div>
+                <!-- 收起过程（2026-10-20）：展开后摘要条消失，必须有显式收回入口 -->
+                <div class="agent-process-collapse-row">
+                  <button type="button" class="agent-steps-fold-btn" @click="toggleAgentProcess('round-' + vr.ri)">
+                    收起过程 ▲
+                  </button>
+                </div>
               </div>
               <div class="agent-response-body">
                 <template v-if="vr.round.subAgentResults?.length">
