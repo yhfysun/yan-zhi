@@ -810,10 +810,8 @@
 .reasoning-body {
   margin-top: 8px; padding: 8px 4px; white-space: pre-wrap; line-height: 1.55; opacity: 0.85;
   border-top: 1px dashed color-mix(in srgb, var(--color-primary) 15%, transparent);
-  /* 改动②：限高 + 内滚 + 底部渐变遮罩，长思考过程不撑破界面 */
+  /* 限高 + 内滚；不再用 mask 渐变收尾——它会连短内容的最后几行一起擦掉 */
   max-height: 300px; overflow-y: auto;
-  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 22px), transparent 100%);
-  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 22px), transparent 100%);
 }
 
 /* ===== 工具调用分组 ===== */
@@ -848,7 +846,25 @@
 
 .tool-group-body {
   border-top: 1px solid rgba(15,23,42,0.06);
+  margin-top: 2px;
+  padding-top: 4px;
 }
+
+/* 工具调用组：不再复用 .msg-reasoning 卡片（卡片→组→条目→代码块四层盒子）。
+   现在只有一条分隔线和悬停底色，视觉上直接挂在推理步骤下面。 */
+.tool-group-card {
+  margin: 2px 0 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+}
+.tool-group-card > .reasoning-header {
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.tool-group-card > .reasoning-header:hover { background: rgba(15,23,42,0.04); }
 
 /* 单个工具条目 */
 .tool-item {
@@ -877,7 +893,7 @@
 }
 .tool-item-chevron { color: var(--color-text-secondary); flex-shrink: 0; }
 
-.tool-item-body { padding: 0 12px 8px 26px; }
+.tool-item-body { padding: 0 6px 8px 20px; }
 /* 工具产出的图片/视频：贴在工具卡片上、折叠体之外 —— 工具收起时也常显（生图结果一眼可见）。
    左内边距与 .tool-item-body 对齐，视觉上仍归属这条工具。 */
 .tool-item-media-inline { padding: 0 12px 8px 26px; }
@@ -892,11 +908,16 @@
   font-size: 11px; color: var(--color-text-secondary); line-height: 1.45;
   background: rgba(15,23,42,0.03); padding: 7px 10px; border-radius: 5px;
   white-space: pre-wrap; word-break: break-all;
-  /* 改动②：限高调到 400px + 内滚 + 底部渐变遮罩，长工具结果不撑破界面 */
+  /* 限高 + 内滚；不用 mask 渐变，否则短结果的最后几行也会被擦掉。
+     长内容由「展开全部结果」按钮切 .is-clamped（220px）。 */
   max-height: 400px; overflow-y: auto; margin: 0;
-  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 22px), transparent 100%);
-  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 22px), transparent 100%);
 }
+.tool-item-json.is-clamped { max-height: 220px; }
+.tool-item-expand {
+  margin-top: 4px; padding: 0; border: none; background: none;
+  color: var(--color-primary); font-size: 11px; cursor: pointer;
+}
+.tool-item-expand:hover { text-decoration: underline; }
 .tool-item-json::-webkit-scrollbar { width: 4px; }
 .tool-item-json::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb, rgba(0,0,0,0.1)); border-radius: 2px; }
 .tool-item-json-error { color: #dc2626; }

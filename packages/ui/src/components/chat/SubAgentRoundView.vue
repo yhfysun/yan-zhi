@@ -24,13 +24,13 @@
           <div v-if="reasoningOpen[idPrefix + '-' + si]" class="reasoning-body">{{ step.reasoningContent }}</div>
         </div>
         <div v-if="step.partialContent" class="agent-step-partial" v-html="renderMarkdown(step.partialContent)"></div>
-        <div v-if="step.toolCalls.length" class="msg-reasoning" style="background:rgba(15,23,42,0.03);border-color:rgba(15,23,42,0.08)">
+        <div v-if="step.toolCalls.length" class="tool-group-card">
           <div class="reasoning-header" @click="toggleStep(idPrefix + '-' + si)" style="color:var(--color-text-secondary)">
             <el-icon :size="14" class="tool-group-dot"><CircleCheck /></el-icon>
             <span>调用 {{ step.toolCalls.length }} 个工具</span>
             <el-icon :size="12" style="margin-left:auto;color:var(--color-text-secondary)"><ArrowDown v-if="stepOpen[idPrefix + '-' + si] !== false" /><ArrowRight v-else /></el-icon>
           </div>
-          <div v-if="stepOpen[idPrefix + '-' + si] !== false" class="tool-group-body" style="margin-top:6px;border-top:1px solid rgba(15,23,42,0.06);padding-top:6px">
+          <div v-if="stepOpen[idPrefix + '-' + si] !== false" class="tool-group-body">
             <div v-for="(tc, idx) in step.toolCalls" :key="idx" class="tool-item">
               <div class="tool-item-header" @click="toggleToolItem(idPrefix + '-' + si + '-' + idx)">
                 <div class="tool-item-left">

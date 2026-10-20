@@ -118,7 +118,7 @@
                     <div v-if="expandedReasoning['agent-step-' + vr.ri + '-' + si]" class="reasoning-body">{{ step.reasoningContent }}</div>
                   </div>
                   <div v-if="step.partialContent" class="agent-step-partial" v-html="renderMarkdown(step.partialContent)" @click="handleContentClick"></div>
-                  <div v-if="step.toolCalls.length" class="msg-reasoning" style="background:rgba(15,23,42,0.03);border-color:rgba(15,23,42,0.08)">
+                  <div v-if="step.toolCalls.length" class="tool-group-card">
                     <div class="reasoning-header" @click="toggleStepTools('agent-step-' + vr.ri + '-' + si)" style="color:var(--color-text-secondary)">
                       <el-icon :size="14" class="tool-group-dot" :class="getStepToolGroupClass(step)">
                         <Loading v-if="isStepToolsRunning(step)" class="is-loading" />
@@ -131,7 +131,7 @@
                         <ArrowRight v-else />
                       </el-icon>
                     </div>
-                    <div v-if="expandedStepTools['agent-step-' + vr.ri + '-' + si] !== false" class="tool-group-body" style="margin-top:6px;border-top:1px solid rgba(15,23,42,0.06);padding-top:6px">
+                    <div v-if="expandedStepTools['agent-step-' + vr.ri + '-' + si] !== false" class="tool-group-body">
                       <div v-for="(tc, idx) in step.toolCalls" :key="idx" class="tool-item">
                         <div class="tool-item-header" @click="toggleTool('agent-step-' + vr.ri + '-' + si + '-' + idx)">
                           <div class="tool-item-left">
@@ -164,8 +164,21 @@
                           </div>
                           <div v-if="getStepToolResult(step, tc.id)" class="tool-item-section">
                             <div class="tool-item-label">结果</div>
-                            <pre v-if="resolveToolDisplay(tc).tool !== 'call_agent'" class="tool-item-json" :class="{ 'tool-item-json-error': isStepToolError(step, tc.id) }">{{ getStepToolResult(step, tc.id) }}</pre>
+                            <pre
+                              v-if="resolveToolDisplay(tc).tool !== 'call_agent'"
+                              class="tool-item-json"
+                              :class="{
+                                'is-clamped': isLongToolResult(getStepToolResult(step, tc.id)) && !expandedToolResults['agent-step-' + vr.ri + '-' + si + '-' + idx + '-res'],
+                                'tool-item-json-error': isStepToolError(step, tc.id),
+                              }"
+                            >{{ getStepToolResult(step, tc.id) }}</pre>
                             <div v-else class="tool-item-note">子智能体已完成，最终结果见下方卡片正文</div>
+                            <button
+                              v-if="resolveToolDisplay(tc).tool !== 'call_agent' && isLongToolResult(getStepToolResult(step, tc.id))"
+                              type="button"
+                              class="tool-item-expand"
+                              @click.stop="toggleToolResult('agent-step-' + vr.ri + '-' + si + '-' + idx + '-res')"
+                            >{{ expandedToolResults['agent-step-' + vr.ri + '-' + si + '-' + idx + '-res'] ? '收起结果' : '展开全部结果' }}</button>
                           </div>
                           <div v-if="detectPath(getStepToolResult(step, tc.id))" class="tool-item-section">
                             <el-button size="small" @click="openPath(detectPath(getStepToolResult(step, tc.id))!)">浏览文件</el-button>
@@ -188,7 +201,7 @@
                 </div>
                 </template>
                 <div v-if="!vr.round.steps.length && vr.round.allToolCalls.length" class="agent-old-tools">
-                  <div class="msg-reasoning">
+                  <div class="tool-group-card">
                     <div class="reasoning-header" @click="toggleToolGroup('round-' + vr.ri)">
                       <el-icon :size="14" class="tool-group-dot" :class="getToolGroupStatusClass(null, vr.round.allToolCalls)">
                         <Loading v-if="isToolGroupRunning(vr.round.allToolCalls)" class="is-loading" />
@@ -201,7 +214,7 @@
                         <ArrowRight v-else />
                       </el-icon>
                     </div>
-                    <div v-if="!expandedToolGroups['round-' + vr.ri]" class="tool-group-body" style="margin-top:6px;border-top:1px dashed color-mix(in srgb, var(--color-primary) 12%, transparent);padding-top:6px">
+                    <div v-if="!expandedToolGroups['round-' + vr.ri]" class="tool-group-body">
                       <div v-for="(tc, idx) in vr.round.allToolCalls" :key="idx" class="tool-item">
                         <div class="tool-item-header" @click="toggleTool('round-' + vr.ri + '-' + idx)">
                           <div class="tool-item-left">
@@ -228,7 +241,19 @@
                           </div>
                           <div v-if="getToolResult(tc.id)" class="tool-item-section">
                             <div class="tool-item-label">结果</div>
-                            <pre class="tool-item-json" :class="{ 'tool-item-json-error': isToolError(tc.id) }">{{ getToolResult(tc.id) }}</pre>
+                            <pre
+                              class="tool-item-json"
+                              :class="{
+                                'is-clamped': isLongToolResult(getToolResult(tc.id)) && !expandedToolResults['round-' + vr.ri + '-' + idx + '-res'],
+                                'tool-item-json-error': isToolError(tc.id),
+                              }"
+                            >{{ getToolResult(tc.id) }}</pre>
+                            <button
+                              v-if="isLongToolResult(getToolResult(tc.id))"
+                              type="button"
+                              class="tool-item-expand"
+                              @click.stop="toggleToolResult('round-' + vr.ri + '-' + idx + '-res')"
+                            >{{ expandedToolResults['round-' + vr.ri + '-' + idx + '-res'] ? '收起结果' : '展开全部结果' }}</button>
                           </div>
                           <div v-if="detectPath(getToolResult(tc.id))" class="tool-item-section">
                             <el-button size="small" @click="openPath(detectPath(getToolResult(tc.id))!)">浏览文件</el-button>
@@ -642,6 +667,14 @@ const {
   costStore, startContinuedConversation,
 } = useChat();
 
+// 长工具结果默认限高，点「展开全部结果」看全；此前靠 mask 渐变收尾，短结果也会被吃掉最后几行。
+const expandedToolResults = reactive<Record<string, boolean>>({});
+function toggleToolResult(key: string) { expandedToolResults[key] = !expandedToolResults[key]; }
+function isLongToolResult(text?: string | null): boolean {
+  if (!text) return false;
+  return text.length > 1200 || text.split('\n').length > 24;
+}
+
 // ── 费用提醒条（2026-10-17，D4：只提醒、任务不停）────────────────────────────
 // ★ 提示条是**旁路 UI**，不落消息流：落进消息会进上下文，提醒自身在推高它提醒的数字（坑 #15）。
 const costNotice = computed(() => costStore.activeNotice(store.currentConvId));
@@ -999,9 +1032,13 @@ function getRoundDeliverableFiles(round: MessageRound) {
   return fileStore.filesByCategory.deliverable.filter((f) => f.messageId && ids.has(f.messageId));
 }
 
-/** 智能体思考过程是否展开：流式过程中强制展开（让工具调用进度实时可见），结束后由用户控制可折叠 */
+/** 智能体思考过程是否展开：
+ *  - 用户手动点过 → 听用户的（运行中也能收起，不必等任务结束）
+ *  - 没点过 → 运行中默认展开看进度，结束后默认收起 */
 function isProcessOpen(round: MessageRound, ri: number): boolean {
-  return !!expandedAgentProcess['round-' + ri] || isLastRoundStreaming(round, ri);
+  const explicit = expandedAgentProcess['round-' + ri];
+  if (explicit !== undefined) return explicit;
+  return isLastRoundStreaming(round, ri);
 }
 
 /**

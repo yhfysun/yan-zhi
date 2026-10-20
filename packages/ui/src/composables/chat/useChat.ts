@@ -2168,7 +2168,12 @@ async function healStalePlatform() {
   });
 
   watch(() => store.currentMessages.length, () => nextTick(() => {
-    if (messagesRef.value) { messagesRef.value.scrollTop = messagesRef.value.scrollHeight; handleScroll(); }
+    if (messagesRef.value) {
+      // 只在用户本来就贴着底部时跟随；向上翻历史/看工具结果时不抢滚动条。
+      // （此前无条件 scrollTop = scrollHeight，任务运行中会把正在读的内容一直顶走）
+      if (!showScrollBottom.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
+      handleScroll();
+    }
     if (!store.isConvStreaming(store.currentConvId)) collapseEarlyOnMobile();
   }));
 
@@ -2204,7 +2209,9 @@ async function healStalePlatform() {
     //   当前轮执行中的展开由模板里的 isLastRoundStreaming(round, ri) 实时负责，
     //   不需要也不能在这里写 expandedAgentProcess。
     if (isStreaming) {
-      for (const k of Object.keys(expandedAgentProcess)) expandedAgentProcess[k] = false;
+      // 清空为「未表态」而非 false：false 表示用户手动收起，会让新任务默认也折叠。
+      // 未表态时由模板的 isLastRoundStreaming 决定——运行中展开，结束后收起。
+      for (const k of Object.keys(expandedAgentProcess)) delete expandedAgentProcess[k];
     }
   });
 
@@ -3534,7 +3541,16 @@ async function healStalePlatform() {
       }
     }
   }
-  function toggleAgentProcess(key: string) { expandedAgentProcess[key] = !expandedAgentProcess[key]; }
+  function toggleAgentProcess(key: string) {
+    const cur = expandedAgentProcess[key];
+    if (cur !== undefined) { expandedAgentProcess[key] = !cur; return; }
+    // 未表态：运行中默认展开 → 首次点击收起；已结束默认收起 → 首次点击展开。
+    // （旧实现 `!undefined` 恒为 true，运行中点折叠没反应。）
+    const m = /^round-(\d+)$/.exec(key);
+    const ri = m ? Number(m[1]) : -1;
+    const round = ri >= 0 ? messageRounds.value[ri] : undefined;
+    expandedAgentProcess[key] = round ? !isLastRoundStreaming(round, ri) : true;
+  }
   function toggleStepTools(key: string) { expandedStepTools[key] = !expandedStepTools[key]; }
 
   function isLastRoundStreaming(round: MessageRound, ri: number): boolean {
