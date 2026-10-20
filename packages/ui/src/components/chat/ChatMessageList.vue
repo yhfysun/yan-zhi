@@ -90,6 +90,23 @@
               <span class="collapsed-hint">点击展开</span>
             </div>
             <div v-show="!collapsedMessages[vr.round.finalAssistant?.id || '']">
+              <!-- ★ 运行状态摘要条（2026-10-20，对齐 WorkBuddy 式过程反馈）：
+                   工具过程默认收起（见 isProcessOpen），但收起 ≠ 隐形 —— 思考中/工具执行中/生成中
+                   都要给用户一行实时状态，否则长任务期间消息区只有打字光标，像"卡死了"。
+                   条件与下方 agent-process-steps 互斥（isProcessOpen 为 false 才显示）：
+                   ① live：等待模型响应 / 正在执行 <工具> / 生成回复中（Loading 转圈）
+                   ② 已结束：N 步推理 · M 次工具调用（点击展开详情） -->
+              <div v-if="!isProcessOpen(vr.round, vr.ri) && (isRoundLive(vr.round, vr.ri) || vr.round.hasAgentProcess)"
+                   class="agent-process-summary"
+                   :class="{ 'is-clickable': vr.round.hasAgentProcess }"
+                   @click="vr.round.hasAgentProcess && toggleAgentProcess('round-' + vr.ri)">
+                <el-icon :size="13" class="agent-process-summary-icon">
+                  <Loading v-if="isRoundLive(vr.round, vr.ri)" class="is-loading" />
+                  <CircleCheck v-else />
+                </el-icon>
+                <span class="agent-process-summary-text">{{ processSummaryText(vr.round, vr.ri) }}</span>
+                <el-icon v-if="vr.round.hasAgentProcess" :size="12" class="agent-process-summary-chevron"><ArrowRight /></el-icon>
+              </div>
               <div v-if="vr.round.hasAgentProcess && isProcessOpen(vr.round, vr.ri)" class="agent-process-steps">
                 <div v-if="hasHiddenSteps(vr.round)" class="agent-steps-fold">
                   <button type="button" class="agent-steps-fold-btn" @click="toggleEarlierSteps(vr.ri)">
@@ -1025,6 +1042,30 @@ function isProcessOpen(round: MessageRound, ri: number): boolean {
   return false;
 }
 
+/** 摘要条文案（2026-10-20）：运行中给"正在干啥"的实时状态，结束后给过程规模摘要。
+ *  分档优先级：执行中工具 > 思考中（尚无步骤）> 生成回复中（工具间歇）> 结束摘要。 */
+function processSummaryText(round: MessageRound, ri: number): string {
+  const live = isRoundLive(round, ri);
+  if (live) {
+    // 从最近的步骤往前找第一个未完成工具（运行中的就挂在那）
+    for (let si = round.steps.length - 1; si >= 0; si--) {
+      const tcs = round.steps[si].toolCalls || [];
+      for (let i = tcs.length - 1; i >= 0; i--) {
+        if (!isToolResultDone(tcs[i].id)) {
+          const d = resolveToolDisplay(tcs[i]);
+          return `正在执行 ${d.server ? d.server + ' · ' : ''}${d.tool}…`;
+        }
+      }
+    }
+    if (!round.steps.length) return '等待模型响应…';
+    return '生成回复中…';
+  }
+  const stats = round.agentStats;
+  const stepCount = stats?.stepCount ?? round.steps.length;
+  const toolCount = stats?.toolCallCount ?? round.allToolCalls.length;
+  return `已处理 ${stepCount} 步 · ${toolCount} 次工具调用`;
+}
+
 /**
  * 单轮步骤渲染窗口（2026-10-19，修「长任务一跑界面卡死」）。
  *
@@ -1552,6 +1593,40 @@ watch(activeNavRound, () => {
 }
 .agent-process-steps {
   animation: fadeInDown 0.3s ease-out;
+}
+
+/* ===== 运行状态摘要条（2026-10-20）：工具过程默认收起后的"过程还活着"证据 ===== */
+.agent-process-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light, #f5f7fa);
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 12px;
+  line-height: 16px;
+  user-select: none;
+}
+.agent-process-summary.is-clickable {
+  cursor: pointer;
+}
+.agent-process-summary.is-clickable:hover {
+  background: var(--el-fill-color, #ebeef5);
+  color: var(--el-text-color-regular, #606266);
+}
+.agent-process-summary-icon {
+  flex: 0 0 auto;
+}
+.agent-process-summary-text {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-process-summary-chevron {
+  flex: 0 0 auto;
 }
 @keyframes fadeInDown {
   from { opacity: 0; transform: translateY(-6px); }
