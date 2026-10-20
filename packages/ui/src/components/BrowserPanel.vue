@@ -107,6 +107,11 @@
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 11V7a5 5 0 0110 0v4M5 11h14a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a2 2 0 012-2z"/></svg>
       </button>
 
+      <!-- 高亮编号（2026-10-20）：页面叠加常驻「可点击元素描边 + 编号」层，实时看到 agent 操作目标 -->
+      <button v-if="isElectron" class="nav-btn" :class="{ active: highlightOn }" @click="toggleHighlight" :title="highlightOn ? '关闭元素编号高亮' : '高亮可点击元素并编号'">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+
       <!-- 🤖 AI 菜单（页面内对话方案 §4.5）：
            ① 页面对话 = 就地停靠对话面板（P0 新增，轻任务在这页上直接做）；
            ② 页面移交给主智能体 / ③ 页面追加到任务中 = 原有的「交给 AI」「引用到任务」两个入口，
@@ -766,6 +771,27 @@ const {
   loading: Ref<boolean>;
 };
 const activeTab = computed(() => tabs.value.find((t: BrowserTab) => t.id === activeTabId.value));
+
+// 常驻元素编号高亮（2026-10-20）：面板开关 → 主进程 browserView:action 'highlight' 注入覆盖层。
+const highlightOn = ref(false);
+async function toggleHighlight() {
+  if (!activeTabId.value) { ElMessage.warning('请先打开一个网页'); return; }
+  const next = !highlightOn.value;
+  try {
+    const r: any = await (window as any).electronAPI.browserView.action(activeTabId.value, 'highlight', { on: next });
+    if (r && r.error) { ElMessage.warning(r.error); highlightOn.value = false; return; }
+    highlightOn.value = !!(r && r.highlight);
+  } catch (e: any) {
+    highlightOn.value = false;
+    ElMessage.warning('高亮切换失败：' + (e?.message || e));
+  }
+}
+// 切 tab 时：若开着高亮，给新激活页补一层（幂等；该页若本就有覆盖层则只重绘）。
+watch(activeTabId, (tid) => {
+  if (highlightOn.value && tid) {
+    (window as any).electronAPI.browserView.action(tid, 'highlight', { on: true }).catch(() => {});
+  }
+});
 
 // 路由 query（支持从对话页跳转并传初始 URL）
 const route = useRoute();

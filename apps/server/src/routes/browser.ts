@@ -765,6 +765,47 @@ function ensureYzRefs() {
   return w.__yzRefs;
 }
 
+// ★★★ P2（2026-10-20）表单填写聚焦高亮（与桌面端 main.cjs 的 FIELD_FLASH_BODY **同源同款**）：
+//   fill_form / type 操作字段时在页内画蓝色 focus 框 + 「⌨ 值」角标（~1.8s 淡出 / 2.4s 移除），
+//   让用户实时看到"agent 正在往哪个字段填什么"。蓝色 #3b82f6 区分 P0 编号层的橙色 #f97316。
+// ★ id 单例（__yz_field_flash）：连续填多字段时"当前字段"覆盖前一个。
+// ★ 纯视觉辅助：任何失败静默，不进动作回执。片段约定：作用域里必须有 `el` 与 `v`。
+//   （服务端这份通过 page.evaluate 的**字符串表达式**执行 —— 与桌面端一样是模板拼接，
+//     正文不能出现反引号；Playwright evaluate 接受字符串源码。）
+const FIELD_FLASH_BODY = `var OLDID='__yz_field_flash';var old=document.getElementById(OLDID);if(old)old.remove();var r=el.getBoundingClientRect();var ov=document.createElement('div');ov.id=OLDID;ov.style.cssText='position:fixed;left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px;border:2px solid #3b82f6;box-sizing:border-box;pointer-events:none;z-index:2147483647;border-radius:2px;box-shadow:0 0 0 2px rgba(59,130,246,.35);transition:opacity .4s;';var tg=document.createElement('div');tg.textContent='⌨ '+String(v==null?'':v).slice(0,24);tg.style.cssText='position:fixed;left:'+r.left+'px;top:'+Math.max(0,r.top-20)+'px;background:#3b82f6;color:#fff;font:bold 12px/16px sans-serif;padding:0 6px;border-radius:2px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;';document.documentElement.appendChild(ov);document.documentElement.appendChild(tg);setTimeout(function(){try{ov.style.opacity='0';tg.style.opacity='0';}catch(e){}},1800);setTimeout(function(){try{ov.remove();tg.remove();}catch(e){}},2400);`;
+
+/** 按选择器定位字段并画聚焦框（fill_form 逐字段 / type 的 selector 路径用） */
+async function flashFieldBySelector(page: any, selector: string, value: unknown): Promise<void> {
+  try {
+    await page.evaluate(`(function(){
+      try{
+        var el=document.querySelector(${JSON.stringify(String(selector || ''))});
+        var v=${JSON.stringify(String(value ?? ''))};
+        if(el){${FIELD_FLASH_BODY}}
+      }catch(e){}
+    })()`);
+  } catch { /* 纯视觉辅助，失败静默 */ }
+}
+
+/** 按 ref/index 解析链定位字段并画聚焦框（type 的 ref/index 路径用；与桌面端 CDP 补刀同构） */
+async function flashFieldOnPage(page: any, locate: { ref?: string | null; index?: number | null; selector?: string | null }, value: string): Promise<void> {
+  try {
+    await page.evaluate(`(function(){
+      try{
+        var a=${JSON.stringify(locate || {})};
+        var v=${JSON.stringify(String(value ?? ''))};
+        var el=null;
+        var R=window.__yzReg;var Refs=window.__yzRefs;
+        if(a.ref&&Refs){el=Refs.resolve(a.ref);}
+        if((!el||!el.isConnected)&&a.index!=null&&R){el=R.get(a.index);
+          if((!el||!el.isConnected)&&R.selOf){var snap=R.selOf(a.index);if(snap){var f=document.querySelector(snap);if(f)el=f;}}}
+        if((!el||!el.isConnected)&&a.selector){el=document.querySelector(a.selector);}
+        if(el){${FIELD_FLASH_BODY}}
+      }catch(e){}
+    })()`);
+  } catch { /* 纯视觉辅助，失败静默 */ }
+}
+
 function ensureYzReg() {
   const w = window as any;
   if (w.__yzReg) return w.__yzReg;
@@ -1099,6 +1140,10 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
             await page.keyboard.press('Enter').catch(() => {});
             (r as any).entered = true;
           }
+          // ★ P2 聚焦高亮：type 成功后按 ref/index 解析链补画蓝框 + 值角标（与桌面端 CDP 路径同构）
+          if ((r as any)?.applied) {
+            void flashFieldOnPage(page, { ref: typeRef, index: args.index != null ? Number(args.index) : null }, String(text || ''));
+          }
           result = r;
           break;
         }
@@ -1123,6 +1168,8 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
             }
             await page.mouse.click((fuzzy as any).x, (fuzzy as any).y);
             await page.keyboard.type(text || '', { delay: 30 });
+            // ★ P2 聚焦高亮：模糊重定位路径也补一刀（按 ref 链拿不到，这里用原始 selector 尽力定位）
+            void flashFieldBySelector(page, String(args.selector || ''), String(text || ''));
             const fuzzyOut: Record<string, unknown> = {
               typed: text?.length || 0, via: 'fuzzy-text',
               autoRelocated: 'fuzzy-text', matchedText: (fuzzy as any).text,
@@ -1144,6 +1191,8 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
           await page.locator(selector).click().catch(() => {});
         }
         await page.keyboard.type(text || '', { delay: 30 });
+        // ★ P2 聚焦高亮：selector 路径补画（同 fill_form，用原始 selector 尽力定位）
+        void flashFieldBySelector(page, String(args.selector || ''), String(text || ''));
         const out: Record<string, unknown> = { typed: text?.length || 0 };
         if (args.pressEnter) { await page.keyboard.press('Enter'); out.entered = true; }
         result = out;
@@ -1301,6 +1350,13 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
               await page.locator(sel).fill(String(f.value ?? ''));
             }
             filled.push(sel);
+            // ★ P2 聚焦高亮（Web 端与桌面端同款）：本字段画蓝框 + 值角标。
+            //   用**原始 selector**（toPw 的 :has-text 是 Playwright 方言，querySelector 不认；
+            //   解析不到就静默跳过）。
+            void flashFieldBySelector(page, String(f?.selector || ''),
+              ftype === 'checkbox' || ftype === 'radio'
+                ? (f.value === false || f.value === 'false' ? '✗' : '✓')
+                : (f.label !== undefined ? String(f.label) : String(f.value ?? '')));
           } catch (e: any) {
             failed.push({ selector: sel, reason: e?.message ? String(e.message).slice(0, 160) : '填写失败' });
           }
@@ -2029,6 +2085,99 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
               : '执行失败。若脚本含顶层 return，请包成 (() => { ... })() 或改写为表达式。',
           };
         }
+        break;
+      }
+      case 'highlight': {
+        // 常驻元素编号高亮（2026-10-20）：与桌面端 main.cjs 的 runHighlight 同语义，两处保持一致。
+        const wantOn = args.on !== false;
+        await page.evaluate(ensureYzReg);
+        const overlayId = '__yz_highlight_overlay';
+        const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
+        result = await page.evaluate((opts: { overlayId: string; S: string; off: boolean }) => {
+          const w = window as any;
+          const R = w.__yzReg;
+          if (!R) return { error: '页面助手未注入' };
+          const { overlayId, S, off } = opts;
+          if (off) {
+            const h = w.__yzHighlight;
+            if (h && h.dispose) { try { h.dispose(); } catch { /* ignore */ } }
+            w.__yzHighlight = null;
+            const p = document.getElementById(overlayId); if (p) p.remove();
+            return { highlight: false };
+          }
+          // 幂等重入：先清理上一次的覆盖层与监听（避免 tab 切换 / 重注入叠加重复监听）
+          const prev = w.__yzHighlight;
+          if (prev && prev.dispose) { try { prev.dispose(); } catch { /* ignore */ } }
+          w.__yzHighlight = null;
+          const vis = (el: any) => {
+            if (el.disabled === true) return false;
+            const r = el.getBoundingClientRect();
+            if (r.width < 2 || r.height < 2) return false;
+            if (r.bottom < 0 || r.right < 0 || r.top > window.innerHeight || r.left > window.innerWidth) return false;
+            return true;
+          };
+          let ov = document.getElementById(overlayId) as HTMLDivElement | null;
+          if (!ov) {
+            ov = document.createElement('div');
+            ov.id = overlayId;
+            ov.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647;';
+            document.documentElement.appendChild(ov);
+          }
+          const paint = () => {
+            ov!.innerHTML = '';
+            let n = 0;
+            const walk = (root: any) => {
+              if (n >= 250) return;
+              let found: Element[] = [];
+              try { found = Array.from(root.querySelectorAll(S)); } catch { return; }
+              for (const el of found) {
+                if (n >= 250) return;
+                if (!vis(el)) continue;
+                const idx = R.register(el);
+                const r = el.getBoundingClientRect();
+                const b = document.createElement('div');
+                b.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;border:2px solid #f97316;box-sizing:border-box;`;
+                const t = document.createElement('span');
+                t.textContent = String(idx);
+                t.style.cssText = `position:fixed;left:${r.left}px;top:${Math.max(0, r.top - 18)}px;background:#f97316;color:#fff;font:bold 12px/16px sans-serif;padding:0 5px;border-radius:2px;`;
+                ov!.appendChild(b); ov!.appendChild(t); n++;
+              }
+              if (root.shadowRoot) walk(root.shadowRoot);
+              let all: Element[] = [];
+              try { all = Array.from(root.querySelectorAll('*')); } catch { return; }
+              for (const nd of all) {
+                if (nd.tagName === 'IFRAME') { try { const cd = (nd as any).contentDocument; if (cd) walk(cd.body); } catch { /* ignore */ } }
+              }
+            };
+            walk(document.documentElement);
+            return n;
+          };
+          const count = paint();
+          let raf: number | null = null;
+          let lastPaint = 0;
+          let disposed = false;
+          const schedule = () => {
+            if (disposed) return;
+            const now = Date.now(); if (now - lastPaint < 150) return;
+            if (raf) return;
+            raf = requestAnimationFrame(() => { raf = null; lastPaint = Date.now(); if (!disposed) paint(); });
+          };
+          const dispose = () => {
+            disposed = true;
+            window.removeEventListener('scroll', schedule, true);
+            window.removeEventListener('resize', schedule);
+            const mo = w.__yzHighlightObs;
+            if (mo) { try { mo.disconnect(); } catch { /* ignore */ } w.__yzHighlightObs = null; }
+            const p = document.getElementById(overlayId); if (p) p.remove();
+          };
+          window.addEventListener('scroll', schedule, true);
+          window.addEventListener('resize', schedule);
+          if (!w.__yzHighlightObs) {
+            try { const mo = new MutationObserver(schedule); mo.observe(document.body, { childList: true, subtree: true }); w.__yzHighlightObs = mo; } catch { /* ignore */ }
+          }
+          w.__yzHighlight = { refresh: paint, dispose };
+          return { highlight: true, count };
+        }, { overlayId, S, off: !wantOn });
         break;
       }
       default:

@@ -3501,6 +3501,147 @@ async function injectYzAssistant(wc) {
 // 通用 action handler
 // 变化检测：这些 action 可能改变页面状态，执行后对比前后快照，防止模型盲操作死循环
 const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
+
+// 常驻元素编号高亮（2026-10-20）：用户开关「高亮编号」时置真，navigate/new_tab 收尾据此重注入。
+let highlightEnabled = false;
+
+/**
+ * 常驻元素编号高亮：把「可点击元素描边 + 编号」画进页面，供用户在面板里**实时**看到 agent 的操作目标。
+ * ★ 与 screenshot(annotate) 的一次性覆盖层不同：本层**常驻**并自维护（scroll/resize/MutationObserver 节流重绘）。
+ * ★ 编号用 A.register —— 与 browser_click 的 index **同源**（同一注册表，idempotent，天然一致，无漂移风险）。
+ * ★ 覆盖层依赖 __yzAssistant，未注入先注入（navigate 后新文档会缺）。
+ */
+async function runHighlight(wc, on) {
+  if (!wc || wc.isDestroyed()) return { error: '浏览器未就绪' };
+  if (on) {
+    try { await Promise.race([injectYzAssistant(wc), new Promise((r) => setTimeout(r, 3000))]); } catch { /* ignore */ }
+  }
+  const overlayId = '__yz_highlight_overlay';
+  const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
+  // ★ 注意：注入脚本是模板字符串，正文里**绝不能出现反引号**（否则提前闭合）。
+  const js = `(function(){
+    var A=window.__yzAssistant;if(!A)return{error:'页面助手未注入'};
+    var OID=${JSON.stringify(overlayId)};
+    var off=${on ? 'false' : 'true'};
+    if(off){
+      var h=window.__yzHighlight;
+      if(h&&h.dispose){try{h.dispose();}catch(e){}}
+      window.__yzHighlight=null;
+      var p0=document.getElementById(OID);if(p0)p0.remove();
+      return{highlight:false};
+    }
+    var prev=window.__yzHighlight;
+    if(prev&&prev.dispose){try{prev.dispose();}catch(e){}}
+    window.__yzHighlight=null;
+    var S=${JSON.stringify(S)};
+    function vis(el){
+      if(el.disabled===true)return false;
+      var r=el.getBoundingClientRect();
+      if(r.width<2||r.height<2)return false;
+      if(r.bottom<0||r.right<0||r.top>window.innerHeight||r.left>window.innerWidth)return false;
+      return true;
+    }
+    var ov=document.getElementById(OID);
+    if(!ov){ov=document.createElement('div');ov.id=OID;ov.style.cssText='position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647;';document.documentElement.appendChild(ov);}
+    function paint(){
+      ov.innerHTML='';
+      var n=0;
+      function walk(root){
+        if(n>=250)return;
+        var found;try{found=root.querySelectorAll(S);}catch(e){return;}
+        for(var i=0;i<found.length;i++){if(n>=250)return;var el=found[i];
+          if(!vis(el))continue;
+          var idx=A.register(el);var r=el.getBoundingClientRect();
+          var b=document.createElement('div');
+          b.style.cssText='position:fixed;left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px;border:2px solid #f97316;box-sizing:border-box;';
+          var t=document.createElement('span');t.textContent=String(idx);
+          t.style.cssText='position:fixed;left:'+r.left+'px;top:'+Math.max(0,r.top-18)+'px;background:#f97316;color:#fff;font:bold 12px/16px sans-serif;padding:0 5px;border-radius:2px;';
+          ov.appendChild(b);ov.appendChild(t);n++;
+        }
+        if(root.shadowRoot)walk(root.shadowRoot);
+        var all;try{all=root.querySelectorAll('*');}catch(e){return;}
+        for(var j=0;j<all.length;j++){var nd=all[j];
+          if(nd.tagName==='IFRAME'){try{var cd=nd.contentDocument;if(cd)walk(cd.body);}catch(e){}}
+        }
+      }
+      walk(document.documentElement);
+      return n;
+    }
+    var count=paint();
+    var raf=null,lastPaint=0,disposed=false;
+    function schedule(){
+      if(disposed)return;
+      var now=Date.now();if(now-lastPaint<150)return;
+      if(raf)return;
+      raf=requestAnimationFrame(function(){raf=null;lastPaint=Date.now();if(!disposed)paint();});
+    }
+    function dispose(){
+      disposed=true;
+      window.removeEventListener('scroll',schedule,true);
+      window.removeEventListener('resize',schedule);
+      var mo=window.__yzHighlightObs;
+      if(mo){try{mo.disconnect();}catch(e){}window.__yzHighlightObs=null;}
+      var p=document.getElementById(OID);if(p)p.remove();
+    }
+    window.addEventListener('scroll',schedule,true);
+    window.addEventListener('resize',schedule);
+    if(!window.__yzHighlightObs){
+      try{var mo=new MutationObserver(schedule);mo.observe(document.body,{childList:true,subtree:true});window.__yzHighlightObs=mo;}catch(e){}
+    }
+    window.__yzHighlight={refresh:paint,dispose:dispose};
+    return{highlight:true,count:count};
+  })()`;
+  try {
+    return await Promise.race([
+      wc.executeJavaScript(js),
+      new Promise((r) => setTimeout(() => r({ error: '高亮注入超时' }), 3000)),
+    ]);
+  } catch (e) {
+    return { error: (e && e.message) || '高亮注入失败' };
+  }
+}
+
+// ★★★ P2（2026-10-20）表单填写聚焦高亮：fill_form / browser_type 操作字段时，
+//   在页内画**蓝色 focus 框 + 「⌨ 值」角标**（~1.8s 淡出 / 2.4s 移除），让用户实时看到
+//   "agent 正在往哪个字段填什么"。与 P0 橙色编号层（runHighlight）互补：编号层回答
+//   "页面上有哪些可操作点"，本层回答"**这一步**正在操作谁"。
+// ★ 视觉设计对齐 P0：2px 实线框 + 左上角标；蓝色 #3b82f6 区分 P0 的橙色 #f97316。
+// ★ id 单例（__yz_field_flash）：连续填多字段时"当前字段"覆盖前一个，不堆积。
+// ★ 纯视觉辅助：任何失败静默，不进动作回执。
+// ★ 注入脚本是模板字符串，正文里**绝不能出现反引号 / ${**（否则提前闭合）——
+//   本片段只用字符串拼接，安全嵌入各 executeJavaScript 模板。
+//   片段约定：调用方作用域里必须有 `el`（目标元素）与 `v`（展示值）两个变量。
+const FIELD_FLASH_BODY = `var OLDID='__yz_field_flash';var old=document.getElementById(OLDID);if(old)old.remove();var r=el.getBoundingClientRect();var ov=document.createElement('div');ov.id=OLDID;ov.style.cssText='position:fixed;left:'+r.left+'px;top:'+r.top+'px;width:'+r.width+'px;height:'+r.height+'px;border:2px solid #3b82f6;box-sizing:border-box;pointer-events:none;z-index:2147483647;border-radius:2px;box-shadow:0 0 0 2px rgba(59,130,246,.35);transition:opacity .4s;';var tg=document.createElement('div');tg.textContent='⌨ '+String(v==null?'':v).slice(0,24);tg.style.cssText='position:fixed;left:'+r.left+'px;top:'+Math.max(0,r.top-20)+'px;background:#3b82f6;color:#fff;font:bold 12px/16px sans-serif;padding:0 6px;border-radius:2px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;';document.documentElement.appendChild(ov);document.documentElement.appendChild(tg);setTimeout(function(){try{ov.style.opacity='0';tg.style.opacity='0';}catch(e){}},1800);setTimeout(function(){try{ov.remove();tg.remove();}catch(e){}},2400);`;
+
+/**
+ * P2：type 的 **CDP 真键盘路径**无法在注入脚本里顺带画高亮（元素解析在 CDP 内部完成），
+ * 成功后补一刀：按与 JS 回落同源的解析链（__yzElements / __yzSelMap / assistant.resolve）
+ * 定位字段画焦点框。解析不到就静默跳过（纯视觉，不做二次模糊匹配拖慢动作）。
+ */
+async function runFieldFocusFlash(wc, locate, value) {
+  if (!wc || wc.isDestroyed()) return;
+  const js2 = `(function(){
+    try{
+      var a=${JSON.stringify(locate || {})};
+      var v=${JSON.stringify(String(value ?? ''))};
+      var el=null;
+      if(a.index!=null){
+        el=(window.__yzElements&&window.__yzElements[a.index])||null;
+        if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){
+          var f=document.querySelector(window.__yzSelMap[a.index]);if(f)el=f;
+        }
+      }
+      if((!el||!el.isConnected)&&a.selector&&window.__yzAssistant){el=window.__yzAssistant.resolve(a.selector);}
+      if(el){${FIELD_FLASH_BODY}}
+    }catch(e){}
+  })()`;
+  try {
+    await Promise.race([
+      wc.executeJavaScript(js2),
+      new Promise((r) => setTimeout(r, 1500)),
+    ]);
+  } catch { /* 纯视觉辅助，失败静默 */ }
+}
 // ★★★ B7（2026-10-09）：由模块级单值改为**按 tab 分桶**，与服务端（server/routes/browser.ts）同口径。
 //   单值会让"甲页面卡住"与"乙页面正常"互相污染：乙收到"连续 3 次无变化"的**假告警**
 //   （它其实只操作了一次），而甲的真告警会被乙的成功操作**清零** —— 两个方向都错且不报错。
@@ -3803,7 +3944,7 @@ const DESKTOP_BROWSER_ACTIONS = [
   'get_text', 'get_dom', 'wait', 'back', 'forward', 'reload', 'get_url',
   'new_tab', 'switch_tab', 'close_tab', 'get_tabs', 'wait_for_request', 'get_network_log',
   'extract_list', 'visual_locate', 'download', 'scroll_into_view', 'is_visible', 'drag',
-  'run_script',
+  'run_script', 'highlight',
 ];
 
 /** 渲染层可查询桌面端支持哪些 action（避免两份硬编码清单漂移） */
@@ -4565,6 +4706,10 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           result.note = (result.note ? result.note + '\n' : '') +
             '这看起来是**接口地址**（JSON 端点）：直接导航会占用导航+渲染，并把"当前操作页"带到 JSON 上。取数优先用 browser_run_script 在页面内 fetch（credentials:"include" 可带登录态），比导航更稳更快。';
         }
+        // ★ 常驻高亮（2026-10-20）：导航会销毁旧文档里的覆盖层，若用户开着「高亮编号」就重注入。
+        if (highlightEnabled) {
+          try { await runHighlight(wc, true); } catch { /* 重注入失败不影响导航结果 */ }
+        }
         return result;
       }
       case 'click': {
@@ -4771,10 +4916,14 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           const urlChanged = !!(typeBefore && typeAfter && typeAfter.url !== typeBefore.url);
           const pageChanged = !!(typeBefore && typeAfter
             && (urlChanged || typeAfter.t !== typeBefore.t || typeAfter.n !== typeBefore.n));
+          // ★ P2：聚焦高亮（用户看得到"正在往哪个框填什么"）。CDP 路径解析在 CDP 内部，
+          //   这里按 index/selector 同源解析链补画；解析不到静默跳过，不影响回执。
+          if (cdpRes.applied) void runFieldFocusFlash(wc, { index: args.index, selector: args.selector }, args.text);
           return { ...cdpRes, success: !!cdpRes.applied, status: cdpRes.applied ? 'ok' : 'failed', urlChanged, pageChanged };
         }
         // ↓ CDP 不可用 → 回落 JS 实现（Web 端 / CDP 被占用等）
-        return await wc.executeJavaScript(`(function(){
+        return await wc.executeJavaScript(`var __yzFF=function(el,v){${FIELD_FLASH_BODY}};
+          (function(){
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
           async function typeEl(el){
@@ -4782,6 +4931,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             el.scrollIntoView({behavior:'smooth',block:'center'});
             var rect=el.getBoundingClientRect();A.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'输入');
             var r=A.typeIn(el,a.text);
+            if(r&&r.applied)__yzFF(el,a.text); /* ★ P2 聚焦高亮 */
             var out={success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value,via:'js-fallback'};
             if(r.forceStop){out.forceStop=true;out.hint='同一字段连续 2 次未生效：**停止重填**，回读一次页面确认当前值并向用户报告现场，不要再用 browser_type / run_script 清空重写。';}
             else if(!r.applied)out.hint='输入框未接受文本（可能为受控组件且拦截了程序化输入，或输入被页面重置）。建议截图核验实际值；若被重置，改用 browser_press_key 逐键或让用户手输。';
@@ -4833,6 +4983,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           var el=document.activeElement;if(!el)return{status:'not_found',error:'无聚焦元素'};
           var beforeAE=yzSnap();
           var r=A.typeIn(el,a.text);
+          if(r&&r.applied)__yzFF(el,a.text); /* ★ P2 聚焦高亮 */
           return yzFinish({success:r.applied,typed:(a.text||'').length,applied:r.applied,value:r.value,forceStop:!!r.forceStop},beforeAE);
         })()`);
       }
@@ -5183,7 +5334,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         //   ③ **静默跳过**（`if(!el)continue`）：元素没找到时**不报错**，
         //      返回值里也不出现该字段 ⇒ 模型无法区分"填了"与"没填到"。
         //   ⇒ 一并按服务端（browser.ts 同名分支）语义对齐。
-        return await wc.executeJavaScript(`(function(){
+        return await wc.executeJavaScript(`var __yzFF=function(el,v){${FIELD_FLASH_BODY}};
+        (function(){
           var a=${JSON.stringify(args)};var fields=a.fields||[];
           var filled=[],failed=[];
           function setNativeValue(el,v){
@@ -5262,6 +5414,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
                 }
               }
               filled.push(sel);
+              // ★ P2 聚焦高亮：本字段画蓝框 + 值角标（checkbox/radio 显示 ✓/✗，select 显示 label/value）
+              __yzFF(el, (ftype==='checkbox'||ftype==='radio') ? (el.checked?'✓':'✗') : (f.label!==undefined?String(f.label):String(f.value==null?'':f.value)));
             }catch(e){
               failed.push({selector:sel,reason:'填写异常: '+(e&&e.message?e.message:String(e))});
             }
@@ -5477,6 +5631,10 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           let wc2 = await waitForGuest(tabId, 6000);
           if (target && wc2) {
             try { await wc2.loadURL(/^https?:\/\//i.test(target) ? target : 'https://' + target); } catch { /* ignore */ }
+          }
+          // ★ 常驻高亮（2026-10-20）：新开页也要有编号层（若用户开着）。runHighlight 内部会先注入助手。
+          if (highlightEnabled && wc2) {
+            try { await runHighlight(wc2, true); } catch { /* 不影响开新页 */ }
           }
           return { tabId, url: target || (wc2 && wc2.getURL()) || '', title: (wc2 && wc2.getTitle()) || '' };
         }
@@ -5777,6 +5935,11 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             hint,
           };
         }
+      }
+      case 'highlight': {
+        // 常驻元素编号高亮开关（2026-10-20）：面板「高亮编号」按钮经 browserView:action 直达这里。
+        highlightEnabled = args.on !== false;
+        return await runHighlight(wc, highlightEnabled);
       }
       default:
         return { error: '未知操作: ' + action };
