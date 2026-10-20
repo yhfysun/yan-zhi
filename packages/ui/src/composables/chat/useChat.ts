@@ -3544,12 +3544,8 @@ async function healStalePlatform() {
   function toggleAgentProcess(key: string) {
     const cur = expandedAgentProcess[key];
     if (cur !== undefined) { expandedAgentProcess[key] = !cur; return; }
-    // 未表态：运行中默认展开 → 首次点击收起；已结束默认收起 → 首次点击展开。
-    // （旧实现 `!undefined` 恒为 true，运行中点折叠没反应。）
-    const m = /^round-(\d+)$/.exec(key);
-    const ri = m ? Number(m[1]) : -1;
-    const round = ri >= 0 ? messageRounds.value[ri] : undefined;
-    expandedAgentProcess[key] = round ? !isLastRoundStreaming(round, ri) : true;
+    // 未表态 → 默认收起，首次点击展开（与 Claude Code / ChatGPT 一致，不默认展示工具细节）
+    expandedAgentProcess[key] = true;
   }
   function toggleStepTools(key: string) { expandedStepTools[key] = !expandedStepTools[key]; }
 
@@ -3729,6 +3725,27 @@ async function healStalePlatform() {
    */
   function getToolResult(toolCallId: string): string | null {
     return toolResultIndex.value.get(toolCallId)?.content ?? null;
+  }
+
+  /**
+   * ★ 2026-10-20 懒加载：工具是否**已有结果**（role='tool' 消息存在），与「正文是否已加载」
+   *   解耦。列表下发时普通工具回执正文被掏空（见 store.stripToolResultContent），
+   *   getToolResult 对"已结束但未加载"也会返回 null —— 模板据此区分 running / done。
+   */
+  function isToolResultDone(toolCallId: string): boolean {
+    return toolResultIndex.value.has(toolCallId);
+  }
+  /** 打开工具卡片时按需拉取结果（幂等，见 store.fetchToolResult） */
+  function requestToolResult(toolCallId: string): void {
+    const convId = store.currentConvId;
+    if (!toolCallId || !convId) return;
+    void store.fetchToolResult(convId, toolCallId);
+  }
+  /** 展开工具项并触发懒加载（取代 toggleTool 的 header 点击） */
+  function openToolItem(key: string, toolCallId: string): void {
+    const willOpen = !isToolItemOpen(toolCallId, key);
+    expandedTools[key] = !expandedTools[key];
+    if (willOpen) requestToolResult(toolCallId);
   }
 
   /** 保留原实现（仅供测试对照 / 极端回退用；正常路径不再调用） */
@@ -4197,6 +4214,7 @@ async function healStalePlatform() {
     getStepToolResult, isStepToolError, isStepToolsRunning, isStepToolsError, getStepToolGroupClass, getStepToolStatusClass,
     isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, toolTargetHint, safeJson, isToolError, getToolStatusClass, getToolResult,
     toolResultIndex, getToolResultUncached,
+    isToolResultDone, requestToolResult, openToolItem,
     copyMsg, editMsg, quoteMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
     // 会话生命周期（2026-10-16 归档 + 回收站）
     archiveConv, restoreConv, purgeConv, loadLifecycleLists, archivedConversations, trashedConversations,

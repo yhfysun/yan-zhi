@@ -152,8 +152,6 @@ describe('③ 折叠状态 key 读写前缀必须逐字一致（字符串字面�
     // expandedReasoning 天然有两个前缀（步骤推理 agent-step- / 主智能体思考 agent-fa-），
     // 所以断言的是**集合相等**而非「只有一个前缀」。
     const pairs: Array<[string, string]> = [
-      ['expandedToolGroups', 'toggleToolGroup'],
-      ['expandedStepTools', 'toggleStepTools'],
       ['expandedReasoning', 'toggleReasoning'],
     ];
     for (const [mapName, fnName] of pairs) {

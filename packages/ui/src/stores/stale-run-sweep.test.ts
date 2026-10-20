@@ -6,8 +6,9 @@
  *   「轮询？这个不是早就去掉了？不是改成 websocket 双向通讯了？轮询效率肯定差啊」
  *
  * 查证结论（本文件钉住的三个事实）：
- *   ① 业务主链路**从来没有 WebSocket** —— 任务流是 fetch + ReadableStream 手读 SSE；
- *      真正存在的是**轮询**（`/llm/tasks/active`），已改为会话级长连订阅。
+ *   ① 业务主链路的推送通道（2026-10-20 更新）：任务/会话流已从 fetch SSE 切到
+ *      **WebSocket**（`utils/chat-ws` 单一长连接）；cicd / page-chat 等其余面板仍走 SSE。
+ *      真正被消除的是**轮询**（`/llm/tasks/active` 主路径），已改为会话级长连订阅。
  *   ② `sweepStaleBrowserTakeover` 的 120s 宽限是"禁用标志挂着不掉"的**主因**（已降到 30s）。
  *   ③ `BrowserPanel` 的 3s `setInterval(nowTick)` 是**常驻空转**（已改事件驱动）。
  */
@@ -68,10 +69,13 @@ describe('② shouldSweepConv：行为级（谁被清、谁不被清）', () => 
   });
 });
 
-describe('③ 轮询消除：主路径改为会话级长连订阅', () => {
-  it('★★★ 前端必须订阅会话级事件总线（conversations/:id/stream）', () => {
-    expect(CODE_CHAT, '★ 未订阅会话级流 → 终态推不出去 → 只能靠轮询兜底')
-      .toMatch(/\/llm\/conversations\/\$\{encodeURIComponent\(convId\)\}\/stream/);
+describe('③ 轮询消除：主路径改为会话级长连订阅（2026-10-20 起走 WS）', () => {
+  it('★★★ 前端必须通过 WS 订阅会话级事件总线（subscribe_conversation）', () => {
+    const i = CODE_CHAT.indexOf('async function subscribeConversationEvents');
+    expect(i, '★ 找不到 subscribeConversationEvents').toBeGreaterThan(-1);
+    const seg = CODE_CHAT.slice(i, i + 4600);
+    expect(seg, '★ 未通过 WS 订阅会话级总线 → 终态推不出去 → 只能靠轮询兜底')
+      .toMatch(/requestChatWs\('subscribe_conversation'/);
   });
 
   it('★★★ 必须处理终态三类（completed/aborted/error）并清残留', () => {
@@ -85,17 +89,16 @@ describe('③ 轮询消除：主路径改为会话级长连订阅', () => {
     expect(seg, '★ 收到终态不清浏览器记账 → 输入锁不掉').toMatch(/clearBrowserTaskActive\(convId\)/);
   });
 
-  it('★★★ 必须是**长连 + 重连**（不能收完就退，会话流是长活通道）', () => {
+  it('★★★ 必须是**长连 + 断线重订**（不能收完就退，会话流是长活通道）', () => {
     const i = CODE_CHAT.indexOf('async function subscribeConversationEvents');
     // ★ 窗口改用"到下一个顶层函数定义为止"，不再用魔数 2600（2026-10-12）：
     //   魔数窗口在函数体因注释/逻辑增长后被挤出边界 → 假失败。
-    //   实测：pushBrowserStep 的注释加长后本函数体 3243 字符 > 2600，退避（offset 2911）
-    //   被推出窗口。这属**锚点窗口偏移**（不是行为变化）—— 但用魔数必然会再犯。
     const nextFn = CODE_CHAT.indexOf('\n  async function', i + 10);
     const nextFn2 = CODE_CHAT.indexOf('\n  function', i + 10);
     const end = [nextFn, nextFn2].filter((x) => x > 0).sort((a, b) => a - b)[0] ?? CODE_CHAT.length;
     const seg = CODE_CHAT.slice(i, end);
-    expect(seg, '★ 缺重连循环 → 断一次就永久失效').toMatch(/while \(!ac\.signal\.aborted\)/);
+    // ★ 2026-10-20 迁 WS：重订挂在 onChatWsClose（服务端订阅随连接释放，socket 重连由 chat-ws 负责）
+    expect(seg, '★ 缺 WS 断开重订钩子 → 断一次就永久失效').toMatch(/onChatWsClose\(/);
     expect(seg, '★ 缺退避').toMatch(/Math\.min\(500 \* Math\.pow\(2/);
   });
 
@@ -114,9 +117,9 @@ describe('③ 轮询消除：主路径改为会话级长连订阅', () => {
 
   it('★★★ 终态推送必须可观测（"禁用标志凭什么解除"的唯一现场证据）', () => {
     const i = CODE_CHAT.indexOf('async function subscribeConversationEvents');
-    const seg = CODE_CHAT.slice(i, i + 3200);
+    const seg = CODE_CHAT.slice(i, i + 4600);
     expect(seg, '★ 终态推送无日志 → 排障只能读代码猜').toMatch(/会话级终态推送/);
-    expect(seg, '★ 断线重连无日志 → 通道健康度不可见').toMatch(/会话级流断连/);
+    expect(seg, '★ 断线重订无日志 → 通道健康度不可见').toMatch(/会话级 WS 订阅失败/);
   });
 
   it('★★ 输入锁翻转必须可观测（打印四个条件的值，不只是布尔）', () => {
@@ -149,10 +152,15 @@ describe('④ 轮询消除：nowTick 不得再用常驻 setInterval', () => {
   });
 });
 
-describe('⑤ 通信机制事实（防后人误引"已改 WebSocket"）', () => {
-  it('★★★ 任务流必须是 fetch SSE（本项目**未**引入业务 WebSocket）', () => {
-    expect(CODE_CHAT, '★ 任务流实现变了？').toMatch(/\/llm\/tasks\/\$\{taskId\}\/stream/);
-    expect(CODE_CHAT, '★ 出现 EventSource（本项目刻意不用，因要带 x-license 头）')
+describe('⑤ 通信机制事实（2026-10-20 起：任务/会话流必须走业务 WebSocket）', () => {
+  it('★★★ 任务流必须是 WS 订阅（subscribe_task + onTaskEvent），不得回退 fetch SSE', () => {
+    expect(CODE_CHAT, '★ 任务流未走 WS 订阅？')
+      .toMatch(/requestChatWs\('subscribe_task'/);
+    expect(CODE_CHAT, '★ 任务事件未挂 onTaskEvent 回调？')
+      .toMatch(/onTaskEvent\(/);
+    expect(CODE_CHAT, '★ 任务流又回退成 fetch SSE 流了？')
+      .not.toMatch(/\/llm\/tasks\/\$\{taskId\}\/stream/);
+    expect(CODE_CHAT, '★ 出现 EventSource（本项目刻意不用，历史 SSE 也走 fetch 手读）')
       .not.toMatch(/new EventSource\(/);
   });
 });

@@ -12,9 +12,11 @@ import { useSettingsStore } from './settings';
 import { useFileStore } from './file';
 import { chainBrowserOp, dropBrowserOpChain, type BrowserOpChains } from './browser-op-queue';
 import { useBrowserStore } from './browser';
-import { api, API_BASE, buildRequestHeaders } from '../api/client';
+import { api } from '../api/client';
 import { getWithRetry } from './platform';
-import { consumeSseStream } from '../utils/sse';
+// ★ 2026-10-20：聊天主链路事件流已从 SSE 切到 WebSocket（utils/chat-ws 单一长连接）。
+//   cicd / page-chat 等其余面板仍走 utils/sse，那条通道不受影响。
+import { requestChatWs, sendChatWs, onTaskEvent, onConvEvent, onChatWsClose } from '../utils/chat-ws';
 import { useAuthStore } from './auth';
 // 会话按模式隔离：loadConversations / createConversation 都要知道"当前在哪个模式"
 import { activeMode } from './mode';
@@ -238,7 +240,20 @@ function rowToMsg(r: any): Message {
   };
 }
 
-interface ToolCallRecord { id: string; name: string; arguments: string; }
+/**
+ * 工具回执正文懒加载（2026-10-20）：列表下发时把**普通工具回执**（非子智能体结果）的
+ * content 掏空，展开工具卡片时按需拉取（见 fetchToolResult）。
+ *
+ * ★ 为什么子智能体结果（subAgentId 非空）保留正文：call_agent 的最终答案会被提升到主内容区
+ *   直接展示（message-rounds 的 subAgentResults），是交付物而非"过程细节"；且子智能体回执
+ *   通常短小。真正的大文本（浏览器页面正文 / file_read / code_search）都在主智能体的普通回执里。
+ */
+function stripToolResultContent(msg: Message): Message {
+  if (msg.role === 'tool' && !msg.subAgentId && msg.content) {
+    return { ...msg, content: '' };
+  }
+  return msg;
+}
 
 function safeParseJson(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -565,7 +580,7 @@ export const useChatStore = defineStore('chat', () => {
   //        → 5min 硬上限误判"残留" → 四样 UI 一起消失。
   /** 接管条活性宽限：最后一次浏览器工具事件后，条子保留多久（覆盖 wait_for 30s 类长工具） */
   const BROWSER_LIVE_GRACE_MS = 45000;
-  /** 登记「本会话正在跑浏览器任务」（幂等；由工具事件驱动，见 subscribeTaskSse 的 tool 分支） */
+  /** 登记「本会话正在跑浏览器任务」（幂等；由工具事件驱动，见 subscribeTaskWs 的 tool 分支） */
   function markBrowserTaskActive(convId: string) {
     if (!convId) return;
     if (browserTaskConvs.value.has(convId)) return;
@@ -767,13 +782,17 @@ export const useChatStore = defineStore('chat', () => {
     if (injectingQueued.value.has(id)) return { ok: true, duplicate: true };
     injectingQueued.value = new Set(injectingQueued.value).add(id);
     try {
-      const r = await api.post<any>('/llm/tasks/inject', {
-        conversationId: convId,
-        content: hit.content,
-        clientMsgId: id, // 幂等键：后端据此去重（连点 / 网络重试同一 id 只落一条）
-      });
-      if ('error' in (r as any)) return { ok: false, duplicate: false };
-      const data = (r as any)?.data || {};
+      let data: any = {};
+      try {
+        const r = await requestChatWs<any>('inject', {
+          conversationId: convId,
+          content: hit.content,
+          clientMsgId: id, // 幂等键：后端据此去重（连点 / 网络重试同一 id 只落一条）
+        });
+        data = r?.data || {};
+      } catch {
+        return { ok: false, duplicate: false };
+      }
       if (data.status === 'injected') {
         removeQueuedMessage(convId, id);
         // ★ 本地立即回显：不依赖 SSE。按真实 id 去重（后到的 message:added 会被挡住）。
@@ -1092,7 +1111,7 @@ export const useChatStore = defineStore('chat', () => {
   /**
    * 跨重连的**流内状态**（2026-10-08）。
    *
-   * ★★★ 为什么必须外提：此前这些状态全是 `subscribeTaskSse` 的**函数内局部变量** ——
+   * ★★★ 为什么必须外提：此前这些状态全是 `subscribeTaskWs`（原 subscribeTaskSse）的**函数内局部变量** ——
    *   每次重连都新建一套，于是：
    *   ① `executedToolCallIds` 重置 → 服务端重放同一 `tool:execute` 会被**再执行一次**
    *      （同一动作在页面上做两遍；浏览器点击重复提交、文件重复上传）；
@@ -1423,7 +1442,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       const p = historyPagingOf(convId);
       const r = await api.get<any[]>(`/conversations/${convId}/messages?limit=${HISTORY_PAGE_SIZE}`);
       if ('data' in r) {
-        messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg);
+        messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg).map(stripToolResultContent);
         // hasMore / oldestCursor 经 apiFetch 顶层字段透传（见 client.ts），不再是 data 内字段
         p.hasMore = (r as any).hasMore === true;
         p.cursor = (r as any).oldestCursor ?? null;
@@ -1452,7 +1471,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       [convId, HISTORY_PAGE_SIZE],
     );
     const page = rows.slice().reverse();
-    messagesByConv.value[convId] = page.map(rowToMsg);
+    messagesByConv.value[convId] = page.map(rowToMsg).map(stripToolResultContent);
     const pLocal = historyPagingOf(convId);
     pLocal.hasMore = rows.length === HISTORY_PAGE_SIZE; // 恰好取满一页才可能有更多（本地无游标探测，够用）
     pLocal.cursor = page.length > 0 ? { createdAt: page[0].created_at, id: page[0].id } : null;
@@ -1481,7 +1500,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         const q = `limit=${HISTORY_PAGE_SIZE}&before=${p.cursor.createdAt}&beforeId=${encodeURIComponent(p.cursor.id)}`;
         const r = await api.get<any[]>(`/conversations/${convId}/messages?${q}`);
         if ('data' in r && Array.isArray(r.data) && r.data.length > 0) {
-          const older = (r.data as any[]).map(rowToMsg);
+          const older = (r.data as any[]).map(rowToMsg).map(stripToolResultContent);
           const cur = messagesByConv.value[convId];
           if (cur) messagesByConv.value[convId] = [...older, ...cur];
           p.hasMore = (r as any).hasMore === true;
@@ -1497,7 +1516,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         [convId, p.cursor.createdAt, p.cursor.createdAt, p.cursor.id, HISTORY_PAGE_SIZE],
       );
       if (rows.length > 0) {
-        const older = rows.slice().reverse().map(rowToMsg);
+        const older = rows.slice().reverse().map(rowToMsg).map(stripToolResultContent);
         const cur = messagesByConv.value[convId];
         if (cur) messagesByConv.value[convId] = [...older, ...cur];
         const first = older[0];
@@ -1509,6 +1528,33 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     } finally {
       p.loading = false;
     }
+  }
+
+  /** 按需拉取单条工具回执正文（2026-10-20 懒加载）。写入对应 role='tool' 消息的 content，
+   *  触发 messageRounds / toolResultIndex 重算，工具卡片随即展示。幂等：content 已非空则直接返回。 */
+  async function fetchToolResult(convId: string, toolCallId: string): Promise<void> {
+    if (!convId || !toolCallId) return;
+    const arr = messagesByConv.value[convId];
+    if (!arr) return;
+    const existing = arr.find((m) => m.role === 'tool' && m.toolCallId === toolCallId);
+    if (!existing || existing.content) return;
+    let content = '';
+    try {
+      if (isServerMode()) {
+        const r = await api.get<{ toolCallId: string; content: string }>(`/conversations/${convId}/tool-result/${toolCallId}`);
+        if ('data' in r && r.data) content = r.data.content || '';
+      } else {
+        const adapter = getPlatformAdapter();
+        const rows = await adapter.db.query<any>(
+          'SELECT content FROM message WHERE conversation_id = ? AND tool_call_id = ? AND role = ? ORDER BY created_at ASC, id ASC LIMIT 1',
+          [convId, toolCallId, 'tool'],
+        );
+        if (rows.length) content = rows[0].content || '';
+      }
+    } catch { /* 拉取失败保持空，用户可再点 */ }
+    if (!content) return;
+    const target = messagesByConv.value[convId]?.find((m) => m.role === 'tool' && m.toolCallId === toolCallId);
+    if (target && !target.content) target.content = content;
   }
 
   async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string; taskType?: string | null; source?: string; sourceMeta?: { url?: string; host?: string; scope?: string } }): Promise<string> {
@@ -2648,28 +2694,31 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     return 1000; // 默认 1000（与后端 DEFAULT_MAX_REACT_STEPS 同值）
   }
 
+  /** 业务终态错误（task:error）：重连包装必须原样上抛（任务真失败了，重试无意义） */
+  function taskFinalError(msg: string): Error {
+    const e = new Error(msg);
+    (e as any).taskFinal = true;
+    return e;
+  }
+
   /**
-   * 订阅后端任务 SSE 事件流，更新前端消息状态。callLlm 和重连均使用此函数。
+   * 订阅后端任务事件流（WS 版），更新前端消息状态。callLlm 和重连均使用此函数。
+   *
+   * ★ 2026-10-20 SSE→WS 迁移：GET /llm/tasks/:id/stream（fetch+consumeSseStream）→
+   *   `requestChatWs('subscribe_task', { taskId, since })` + `onTaskEvent` 回调。
+   *   事件处理（processEvent）与原 SSE 帧回调**逐字同义**，只是传输层换了。
    *
    * ★ 跨重连状态（`assistantMsgId` / `subAgentMsgIds` / `executedToolCallIds` / `chunkBuffer`）
    *   保存在模块级 `sseStreamStates`（按 taskId 分桶），**不随函数返回而丢失** ——
    *   否则重连会把已执行的 tool:execute 再执行一遍。详见 `SseStreamState` 注释。
    */
-  async function subscribeTaskSse(
+  async function subscribeTaskWs(
     convId: string,
     taskId: string,
     signal: AbortSignal,
     onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
     since: number = 0,
   ): Promise<void> {
-    const token = localStorage.getItem('auth_token') || '';
-    const sseRes = await fetch(`${API_BASE}/llm/tasks/${taskId}/stream?since=${since}`, {
-      // SSE 请求走 fetch（非 EventSource），可以带自定义头 → 授权门禁开启时需附 x-license
-      headers: buildRequestHeaders(token ? { Authorization: `Bearer ${token}` } : undefined),
-      signal,
-    });
-    if (!sseRes.ok || !sseRes.body) throw new Error('SSE 连接失败');
-
     // 跨重连状态（外提见 SseStreamState）
     const st = streamStateOf(taskId);
     const chunkBuffer = st.chunkBuffer;
@@ -2725,19 +2774,12 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       chunkBuffer.clear();
     }
 
-    // SSE 解码统一走 utils/sse（P5 收口）：分帧/注释帧/裁剪规则全前端单点。
-    // 帧处理是 async（事件分支内有 await，如工具执行），sse 层逐帧串行等待，与原循环语义一致。
-    // ★ try/finally 保证**任何**退出路径（正常结束 / task:error 抛出 / AbortSignal 中止）
-    //   都把节流缓冲里的尾巴落进消息列表 —— 见下方 finally 注释。
-    try {
-    // ★ 回调显式标注 `Promise<void | false>`：函数体内既有 `break`（→ undefined）又有
-    //   `return false`（→ false），不标注会被 TS 推断成 `Promise<boolean>`，
-    //   与 `consumeSseStream` 期望的 `false | void` 不兼容（TS2345）。
-    await consumeSseStream(sseRes.body, async (payload): Promise<void | false> => {
-      {
-        let event: any;
-        try { event = JSON.parse(payload); } catch { return; }
-
+    // ★ WS 版事件处理（processEvent）：与原 SSE 帧回调逐字同义 —— 游标口径、各事件分支、
+    //   终态 return false、task:error 抛出全部保留，只是传输层换成 WS。
+    //   显式标注 `Promise<void | false>`：函数体内既有 `break`（→ undefined）又有
+    //   `return false`（→ false），不标注会被 TS 推断成 `Promise<boolean>`，与下方
+    //   drain 循环的「返回 false 停止消费」契约不兼容。
+    const processEvent = async (event: any): Promise<void | false> => {
         // ★ 追踪事件数（重连时作为 since 参数，避免重放旧事件）。
         // ★★★ 游标口径必须是**事件自己的 seq**，不能是"累计收到多少条"（2026-10-15 修，根因）：
         //   服务端 `subscribe(taskId, since, ...)` 按 `seq > since` 重放，而 `emit` 在
@@ -2783,7 +2825,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             if (!arr.some(m => m.id === msg.id)) {
               arr.push({
                 id: msg.id, conversationId: convId, role: msg.role,
-                content: msg.content || '', toolCallId: msg.toolCallId,
+                content: (msg.role === 'tool' && !msg.subAgentId) ? '' : (msg.content || ''), toolCallId: msg.toolCallId,
                 parentToolCallId: msg.parentToolCallId,
                 reasoningContent: msg.role === 'assistant' ? '' : undefined,
                 toolCalls: msg.role === 'assistant' ? [] : undefined,
@@ -2965,37 +3007,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
                 const resultStr = r.ok
                   ? (typeof r.result === 'string' ? r.result : JSON.stringify(r.result || ''))
                   : (r.msg || '工具执行失败');
-                const t = localStorage.getItem('auth_token') || '';
-                const postResult = async (retry = 0) => {
-                  try {
-                    const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
-                      method: 'POST',
-                      headers: buildRequestHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }),
-                      body: JSON.stringify({ callId, result: resultStr }),
-                    });
-                    if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
-                  } catch (e: any) {
-                    if (retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postResult(retry + 1); }
-                    console.error('[Chat] tool-result POST 失败:', e?.message || e);
-                  }
-                };
-                void postResult();
+                sendChatWs('tool_result', { taskId, callId, result: resultStr });
               } catch (e: any) {
-                const t = localStorage.getItem('auth_token') || '';
-                const postError = async (retry = 0) => {
-                  try {
-                    const resp = await fetch(`${API_BASE}/llm/tasks/${taskId}/tool-result`, {
-                      method: 'POST',
-                      headers: buildRequestHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` }),
-                      body: JSON.stringify({ callId, result: `工具执行失败: ${e?.message || e}` }),
-                    });
-                    if (!resp.ok && retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
-                  } catch (e2: any) {
-                    if (retry < 2) { await new Promise(r => setTimeout(r, 1000)); return postError(retry + 1); }
-                    console.error('[Chat] tool-error POST 失败:', e2?.message || e2);
-                  }
-                };
-                void postError();
+                sendChatWs('tool_result', { taskId, callId, result: `工具执行失败: ${e?.message || e}` });
               }
             })();
             break;
@@ -3004,11 +3018,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             try { await useFileStore().loadConversationFiles(event.conversationId || convId); } catch {}
             break;
           }
-          // ★★ 必须 return false（不是裸 return）——consumeSseStream 的契约是「回调返回 false
-          //   才停止读取」（见 utils/sse.ts）。服务端 sseStream **从不 res.end()**，只在客户端
-          //   断开时才退订，所以这是客户端唯一的收尾时机。
-          //   历史缺陷（2026-10-04）：此处原是裸 `return`（= undefined）→ 流不停 → reader.read()
-          //   永久挂起 → subscribeTaskSse 不返回 → callLlm 的 finally 不执行 →
+          // ★★ 必须 return false（不是裸 return）——drain 循环的契约是「processEvent 返回 false
+          //   才停止消费并收尾」。WS 下服务端订阅在连接存续期间一直活着，所以这是客户端唯一的收尾时机。
+          //   历史缺陷（2026-10-04，SSE 时代）：此处原是裸 `return`（= undefined）→ 流不停 → reader.read()
+          //   永久挂起 → 订阅循环不返回 → callLlm 的 finally 不执行 →
           //   runningConvIds 里的会话 id 永不删除 → store.streaming 恒 true，
           //   表现为「回答已完整输出（含生成的图片）却一直显示『任务运行中』+ 停止按钮」。
           // ★ 终态必须清掉跨重连状态（否则 sseStreamStates 无界增长；且同 taskId 不会被复用，
@@ -3017,7 +3030,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           //   同族，本文件多处收尾都做同样的清理）。放在**三态共同出口**（completed/aborted/error）。
           case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
           case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
-          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw new Error(event.error || '任务执行失败');
+          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw taskFinalError(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;
           case 'context:compacted': {
@@ -3045,37 +3058,88 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             break;
           }
         }
-      }
+    };
+
+    // ★ 订阅生命周期（WS 版）：requestChatWs('subscribe_task') 建立服务端订阅
+    //   （服务端重放 seq>since 的事件）→ onTaskEvent 收事件 → 串行队列逐条消费。
+    //   退出路径（全部经 finish，顺带把节流缓冲尾巴落进消息列表 —— 对齐原 SSE 版 try/finally，
+    //   否则 task:error 抛出会跳过 flushNow，最后 ~50ms 的流式增量永久丢失）：
+    //   ① 终态（processEvent 返回 false）→ resolve；
+    //   ② task:error → reject（错误带 taskFinal 标记 → 重连包装原样上抛，不重试业务终态）；
+    //   ③ AbortSignal（用户停止）→ reject(AbortError)（对齐 SSE 版 fetch reader 中止语义）；
+    //   ④ WS 断开 → reject('WS 连接断开')：服务端订阅已随连接释放，
+    //     由外层重连包装按 taskEventCounts 的 since 续传重订（socket 重连由 chat-ws 模块负责）。
+    await new Promise<void>((resolve, reject) => {
+      let unsubEvent: () => void = () => {};
+      let unsubClose: () => void = () => {};
+      let settled = false;
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        try { unsubEvent(); } catch { /* 已释放 */ }
+        try { unsubClose(); } catch { /* 已释放 */ }
+        flushNow(convId);
+        if (err) reject(err); else resolve();
+      };
+
+      // ★ 串行队列：WS 事件回调是即发即弃的，这里必须保持「逐条 await」的串行语义
+      //   （与原 consumeSseStream 一致）—— file:registered 分支有 await（等文件列表刷新）、
+      //   tool:execute 依赖「先登记 executedToolCallIds 再放行下一个事件」的去重顺序，
+      //   并行消费会让重放窗口内的同一调用被并发执行两遍。
+      const queue: any[] = [];
+      let draining = false;
+      const drain = async () => {
+        if (draining) return;
+        draining = true;
+        try {
+          while (queue.length && !settled) {
+            const r = await processEvent(queue.shift()!);
+            if (settled) return; // processEvent 内部触发了 finish（终态/错误/中止）
+            if (r === false) { finish(); return; }
+          }
+        } catch (e: any) {
+          finish(e instanceof Error ? e : new Error(String(e)));
+          return;
+        }
+        draining = false;
+      };
+
+      unsubEvent = onTaskEvent((tid, event) => {
+        if (settled || tid !== taskId) return;
+        queue.push(event);
+        void drain();
       });
-    } finally {
-      // 流结束（正常终态 **或被中间层掐断**）都要把节流缓冲落进消息列表。
-      // ★ 2026-10-08：改到 finally 里无条件执行 —— 此前只在"正常路径"调用，
-      //   而 `task:error` 分支会 throw（`consumeSseStream` 的 await onData 抛出 → 直接
-      //   跳到本函数的调用方），`flushNow` 整段被跳过 → 最后 ~50ms 的流式增量永久丢失。
-      //   放在 finally 还顺带覆盖了"重连前"的每一次断流：断流前未提交的尾巴不会丢。
-      flushNow(convId);
-    }
+
+      unsubClose = onChatWsClose(() => {
+        if (settled) return;
+        finish(new Error('WS 连接断开'));
+      });
+
+      const abortErr = () => new DOMException('The operation was aborted', 'AbortError');
+      signal.addEventListener('abort', () => finish(abortErr()), { once: true });
+
+      requestChatWs('subscribe_task', { taskId, since })
+        .then(() => { if (signal.aborted) finish(abortErr()); })
+        .catch((e: any) => finish(e instanceof Error ? e : new Error(String(e))));
+    });
   }
 
   /**
-   * SSE 断连自动重连包装（2026-10-08）。
+   * WS 断连自动续传重订包装（原 SSE 断连重连包装，2026-10-08 建，2026-10-20 随迁移改 WS）。
    *
    * ★ 为什么必须（用户实报「长任务经常断，一个会话执行不下去」+ 日志「浏览器工具前端暂时不可达」）：
-   *   服务端 sseStream 只在客户端断开时退订、**从不 res.end()**，所以「流正常结束」有两种含义：
-   *   ① 任务真到终态（task:completed/aborted/error）——已由各分支 return false 收尾；
-   *   ② 连接被中间层掐断（代理/长连接超时/服务端重启）——reader 读到 done，consumeSseStream
-   *      正常返回，我们**无从区分**。此前直接返回 → callLlm 的 finally 清掉运行态 →
-   *      UI 显示已结束而后端任务仍在跑 → 后端后续 tool:execute 无人应答 → 卡 2 分钟报
-   *      「前端暂时不可达」。长任务里工具执行的 await 会阻塞帧循环数十秒，连接空闲被掐的概率极高。
-   *   ★ 配套措施（同日）：服务端 `sseStream` 已加 15s 注释帧心跳保活，把"静默期"从数十秒
-   *     压到 ≤15s，从源头降低被掐概率；本函数是它失败后的兜底。
-   *
-   * ★ 做法：subscribeTaskSse 返回后查一次任务是否仍在运行（GET /llm/tasks/active）；
-   *   仍在运行 → 按 taskEventCounts 记录的**最后一个事件 seq** 做 since **续传重订**
-   *   （服务端重放 `seq > since` 的事件，不丢帧）；指数退避重试，上限 8 次；AbortSignal 触发（用户停止）时立即退出。
-   *   任务已终态或查询失败 → 正常返回，交由调用方 finally 收尾。
+   *   WS 断开 ⇒ 服务端订阅已随连接释放（chat-ws 模块会自动重连 socket，但**不会**重发
+   *   subscribe_task —— 订阅生命周期归本 store 管），「订阅结束」有三种含义：
+   *   ① 任务真到终态（task:completed/aborted/error）——已由各分支收尾（resolve / 抛 taskFinal）；
+   *   ② WS 断开 / 订阅请求失败 —— subscribeTaskWs 以传输层错误 reject；
+   *   ③ 用户停止（AbortSignal）—— reject(AbortError)。
+   *   对 ②：查一次任务是否仍在运行（GET /llm/tasks/active），仍在运行 → 按 taskEventCounts
+   *   记录的**最后一个事件 seq** 做 since **续传重订**（服务端重放 `seq > since` 的事件，不丢帧）；
+   *   指数退避重试，上限 8 次。任务已终态或查询失败 → 正常返回，交由调用方 finally 收尾。
+   *   对 ①③：AbortError / taskFinal（业务终态 task:error）**原样上抛** —— 保持调用方
+   *   markRunEnd('aborted'/'error') 的既有语义，重试反而会把真失败掩盖成"还在跑"。
    */
-  async function subscribeTaskSseWithReconnect(
+  async function subscribeTaskWsWithReconnect(
     convId: string,
     taskId: string,
     signal: AbortSignal,
@@ -3083,9 +3147,28 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
   ): Promise<void> {
     const MAX_RETRY = 8;
     for (let attempt = 0; ; attempt++) {
-      await subscribeTaskSse(convId, taskId, signal, onChunk, taskEventCounts.get(taskId) || 0);
+      try {
+        await subscribeTaskWs(convId, taskId, signal, onChunk, taskEventCounts.get(taskId) || 0);
+      } catch (e: any) {
+        if (e?.name === 'AbortError') throw e;   // 用户停止 → 调用方落 aborted 态
+        if (e?.taskFinal) throw e;               // 业务终态错误（task:error）→ 不重试
+        if (signal.aborted) return;
+        if (attempt >= MAX_RETRY) {
+          console.warn(`[Chat] WS 重订超过 ${MAX_RETRY} 次仍未完成，放弃（任务仍在后端运行，可切走再切回恢复）`);
+          return;
+        }
+        // 指数退避：0.5s → 1s → 2s → 4s，封顶 5s（瞬断立刻回来，真故障不空转）
+        const delay = Math.min(500 * Math.pow(2, attempt), 5000);
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, delay);
+          signal.addEventListener('abort', () => { clearTimeout(t); resolve(null); }, { once: true });
+        });
+        if (signal.aborted) return;
+        console.log(`[Chat] WS 断连，第 ${attempt + 1} 次续传重订 (since=${taskEventCounts.get(taskId) || 0})`);
+        continue;
+      }
       if (signal.aborted) return;
-      // 流结束 → 判定任务是否仍在运行（终态时 active 查询为空，直接收工）
+      // 订阅正常结束 → 判定任务是否仍在运行（终态时 active 查询为空，直接收工）
       let stillRunning = false;
       try {
         const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
@@ -3094,7 +3177,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       } catch { /* 查询失败按结束了处理，避免无限重连 */ }
       if (!stillRunning) return;
       if (attempt >= MAX_RETRY) {
-        console.warn(`[Chat] SSE 重连超过 ${MAX_RETRY} 次仍未完成，放弃（任务仍在后端运行，可切走再切回恢复）`);
+        console.warn(`[Chat] WS 重订超过 ${MAX_RETRY} 次仍未完成，放弃（任务仍在后端运行，可切走再切回恢复）`);
         return;
       }
       // 指数退避：0.5s → 1s → 2s → 4s，封顶 5s（瞬断立刻回来，真故障不空转）
@@ -3104,7 +3187,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         signal.addEventListener('abort', () => { clearTimeout(t); resolve(null); }, { once: true });
       });
       if (signal.aborted) return;
-      console.log(`[Chat] SSE 断连，第 ${attempt + 1} 次续传重订 (since=${taskEventCounts.get(taskId) || 0})`);
+      console.log(`[Chat] WS 断连，第 ${attempt + 1} 次续传重订 (since=${taskEventCounts.get(taskId) || 0})`);
     }
   }
 
@@ -3154,12 +3237,12 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     abortControllers.set(convId, abortController);
     void (async () => {
       try {
-        // ★★★ 走带重连的包装（2026-10-08 修，high）：此前这里直接调 `subscribeTaskSse`，
+        // ★★★ 走带重连的包装（2026-10-08 修，high）：此前这里直接调单次订阅（不带重连），
         //   于是**手动重连（切走再切回）拿到的流一旦再被掐断就永久停了** —— 而且它拿到的
         //   `connected` 帧会把 `taskEventCounts` 虚高 1，使该任务**之后所有自动重连
         //   都从错位下标开始**（漏事件 → 工具不执行 → 报「前端暂时不可达」）。
         //   与 callLlm 走同一条路径，行为才一致。
-        await subscribeTaskSseWithReconnect(convId, taskId, abortController.signal, undefined);
+        await subscribeTaskWsWithReconnect(convId, taskId, abortController.signal, undefined);
       } catch (e: any) {
         markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
         if (e?.name === 'AbortError') return;
@@ -3235,9 +3318,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
   //     前端在这里挂一条**与任务无关、长活的会话级订阅**，任务结束的瞬间就能收到
   //     `task:completed/aborted/error` ⇒ **不再需要任何轮询**。
   //
-  //   ★ 为什么这条订阅能覆盖"订阅断掉"的场景：会话级总线（`GET /llm/conversations/:id/stream`）
-  //     是独立于任务的通道，不随任务终态关闭；它有自己的断线重连（下方 while 循环 + 指数退避）。
-  //     服务端 `emitConversation` 在无人在线时静默（内容已落库），零额外成本。
+  //   ★ 为什么这条订阅能覆盖"订阅断掉"的场景：会话级总线（2026-10-20 起走 WS 的
+  //     `subscribe_conversation`）是独立于任务的通道，不随任务终态关闭；它有自己的断线重订
+  //     （onChatWsClose 钩子 + 指数退避）。服务端 `emitConversation` 在无人在线时静默（内容已落库），零额外成本。
   //
   //   ★ 保留的角色分工：
   //     · 本订阅 —— **实时**告知"任务结束了"（主路径，毫秒级）
@@ -3248,10 +3331,14 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
   const conversationSseSubscribed = new Set<string>();
 
   /**
-   * 订阅会话级事件总线（长活，自动重连）。
+   * 订阅会话级事件总线（长活，断线自动重订）。
    *
-   * ★ 生命周期：**跟随会话**，不跟随任务 —— 任务结束、SSE 断流、切会话都不影响它继续活着。
+   * ★ 生命周期：**跟随会话**，不跟随任务 —— 任务结束、WS 断连、切会话都不影响它继续活着。
    *   因此它能收到"任务级订阅已经断掉时"的终态事件，这正是消除轮询的关键。
+   *
+   * ★ 2026-10-20 迁 WS：GET /llm/conversations/:id/stream（SSE while 重连循环）→
+   *   requestChatWs('subscribe_conversation')。WS 断开后服务端订阅随连接释放 →
+   *   在 onChatWsClose 里重订（socket 重连由 chat-ws 模块负责，订阅重挂归本函数）。
    */
   async function subscribeConversationEvents(convId: string): Promise<void> {
     if (!isServerMode() || !convId) return;
@@ -3259,81 +3346,91 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     conversationSseSubscribed.add(convId);
     const ac = new AbortController();
     conversationSseAborts.set(convId, ac);
-    // 断线重连：指数退避 0.5s → 5s 封顶（与任务流同口径），直到会话被显式退订
-    let attempt = 0;
-    while (!ac.signal.aborted) {
-      try {
-        const res = await fetch(`${API_BASE}/llm/conversations/${encodeURIComponent(convId)}/stream`, {
-          headers: buildRequestHeaders({ Accept: 'text/event-stream' }),
-          signal: ac.signal,
-        });
-        if (!res.ok || !res.body) throw new Error(`会话流 HTTP ${res.status}`);
-        attempt = 0; // 连上了就重置退避
-        await consumeSseStream(res.body, async (payload): Promise<void | false> => {
-          let event: any;
-          try { event = JSON.parse(payload); } catch { return; }
-          // ★ 2026-10-11 消费 `message:added`（服务端 notifyConversation 在任务**已结束**
-          //   时把落库消息推到会话总线 —— 典型场景：任务收尾的"完成提示"消息、
-          //   注入的追加消息）。收到的就是双通道都没赶上时的漏网消息 ⇒ 直接补进本地
-          //   列表，替代"等轮询兜底来补"的场景（双向通信改造的最后一环）。
-          //   ★ 幂等：任务级流正常时会先送达同一 id，`some(m => m.id === ...)` 去重挡住。
-          if (event.type === 'message:added' && event.message?.id) {
-            const msg = event.message;
-            const arr = messagesByConv.value[convId];
-            if (arr && !arr.some(m => m.id === msg.id)) {
-              arr.push({
-                id: msg.id,
-                conversationId: convId,
-                role: msg.role,
-                content: msg.content || '',
-                toolCallId: msg.toolCallId,
-                parentToolCallId: msg.parentToolCallId,
-                subAgentId: msg.subAgentId,
-                subAgentName: msg.subAgentName,
-                subAgentDepth: msg.subAgentDepth,
-                createdAt: msg.createdAt || Date.now(),
-              } as any);
-            }
-            return;
-          }
-          // ★ 会话标题自动生成（2026-10-11）：服务端首个任务 completed 后由 LLM 生成标题，
-          //   经会话级总线推过来 —— 就地更新列表里的标题（无轮询、无刷新）。
-          //   只更新内存与本地视图，不再回写服务端（服务端已落库，回写反而会把 title_source 洗成 'user'）。
-          if (event.type === 'conversation:title' && event.conversationId === convId && typeof event.title === 'string' && event.title) {
-            const conv = conversations.value.find((c) => c.id === convId);
-            if (conv && conv.title !== event.title) conv.title = event.title;
-            return;
-          }
-          // ★ 处理**终态**（服务端在任务结束时任一双通道都会送达）。
-          //   收到即意味着"该会话的任务已结束" → 清残留运行态与浏览器记账。
-          //   ★ 幂等：正常订阅期间任务流也会送达同一事件；此处的清理操作全是幂等的
-          //     （`markRunEnd` / `delete` / `clearBrowserTaskActive` 重复调用无副作用）。
-          if (event.type === 'task:completed' || event.type === 'task:aborted' || event.type === 'task:error') {
-            if (runningConvIds.value.has(convId)) {
-              markRunEnd(convId, event.type === 'task:completed' ? 'completed'
-                : event.type === 'task:aborted' ? 'aborted' : 'error');
-              runningConvIds.value.delete(convId);
-              abortControllers.delete(convId);
-              taskIds.delete(convId);
-              clearBrowserTaskActive(convId);
-              emitTaskFinished(convId);
-              // ★ 可观测（排障命门）：这条是"禁用标志凭什么解除"的**唯一现场证据**。
-              //   此前该路径零日志 → 「没有任务但输入框还锁着」只能靠读代码猜。
-              console.log(`[Chat] 会话级终态推送：${event.type} conv=${convId} → 已清运行态与浏览器记账（输入锁将解除）`);
-            }
-          }
-          return; // 长连，永不 return false（不主动关流）
-        });
-      } catch (e: any) {
-        if (ac.signal.aborted) return;
-        // 断线 → 退避重连（会话流是长活通道，必须自愈；失败静默，不打扰用户）
-        attempt++;
-        const delay = Math.min(500 * Math.pow(2, Math.min(attempt, 4)), 5000);
-        // ★ 可观测：重连是"推送通道健康度"的唯一线索（首页打开后若一直刷这条，说明通道有问题）
-        console.warn(`[Chat] 会话级流断连，第 ${attempt} 次重连（${delay}ms 后）conv=${convId}`);
-        await new Promise((r) => { const t = setTimeout(r, delay); ac.signal.addEventListener('abort', () => { clearTimeout(t); r(null); }, { once: true }); });
+
+    // 事件处理：与原 SSE 版逐字同义（message:added 补漏 / 标题生成 / 终态清运行态），全幂等。
+    const unsubConv = onConvEvent((cid, event) => {
+      if (cid !== convId) return;
+      // ★ 2026-10-11 消费 `message:added`（服务端 notifyConversation 在任务**已结束**
+      //   时把落库消息推到会话总线 —— 典型场景：任务收尾的"完成提示"消息、
+      //   注入的追加消息）。收到的就是双通道都没赶上时的漏网消息 ⇒ 直接补进本地
+      //   列表，替代"等轮询兜底来补"的场景（双向通信改造的最后一环）。
+      //   ★ 幂等：任务级流正常时会先送达同一 id，`some(m => m.id === ...)` 去重挡住。
+      if (event.type === 'message:added' && event.message?.id) {
+        const msg = event.message;
+        const arr = messagesByConv.value[convId];
+        if (arr && !arr.some(m => m.id === msg.id)) {
+          arr.push({
+            id: msg.id,
+            conversationId: convId,
+            role: msg.role,
+            content: msg.content || '',
+            toolCallId: msg.toolCallId,
+            parentToolCallId: msg.parentToolCallId,
+            subAgentId: msg.subAgentId,
+            subAgentName: msg.subAgentName,
+            subAgentDepth: msg.subAgentDepth,
+            createdAt: msg.createdAt || Date.now(),
+          } as any);
+        }
+        return;
       }
-    }
+      // ★ 会话标题自动生成（2026-10-11）：服务端首个任务 completed 后由 LLM 生成标题，
+      //   经会话级总线推过来 —— 就地更新列表里的标题（无轮询、无刷新）。
+      //   只更新内存与本地视图，不再回写服务端（服务端已落库，回写反而会把 title_source 洗成 'user'）。
+      if (event.type === 'conversation:title' && event.conversationId === convId && typeof event.title === 'string' && event.title) {
+        const conv = conversations.value.find((c) => c.id === convId);
+        if (conv && conv.title !== event.title) conv.title = event.title;
+        return;
+      }
+      // ★ 处理**终态**（服务端在任务结束时任一双通道都会送达）。
+      //   收到即意味着"该会话的任务已结束" → 清残留运行态与浏览器记账。
+      //   ★ 幂等：正常订阅期间任务流也会送达同一事件；此处的清理操作全是幂等的
+      //     （`markRunEnd` / `delete` / `clearBrowserTaskActive` 重复调用无副作用）。
+      if (event.type === 'task:completed' || event.type === 'task:aborted' || event.type === 'task:error') {
+        if (runningConvIds.value.has(convId)) {
+          markRunEnd(convId, event.type === 'task:completed' ? 'completed'
+            : event.type === 'task:aborted' ? 'aborted' : 'error');
+          runningConvIds.value.delete(convId);
+          abortControllers.delete(convId);
+          taskIds.delete(convId);
+          clearBrowserTaskActive(convId);
+          emitTaskFinished(convId);
+          // ★ 可观测（排障命门）：这条是"禁用标志凭什么解除"的**唯一现场证据**。
+          //   此前该路径零日志 → 「没有任务但输入框还锁着」只能靠读代码猜。
+          console.log(`[Chat] 会话级终态推送：${event.type} conv=${convId} → 已清运行态与浏览器记账（输入锁将解除）`);
+        }
+      }
+    });
+
+    // 初订 + 断线重订：指数退避 0.5s → 5s 封顶（与原 SSE 会话流同口径），直到成功或被退订
+    const resubscribe = async (): Promise<void> => {
+      let attempt = 0;
+      for (;;) {
+        if (ac.signal.aborted) return;
+        try {
+          await requestChatWs('subscribe_conversation', { conversationId: convId });
+          return;
+        } catch {
+          if (ac.signal.aborted) return;
+          attempt++;
+          const delay = Math.min(500 * Math.pow(2, Math.min(attempt, 4)), 5000);
+          // ★ 可观测：重订是"推送通道健康度"的唯一线索（首页打开后若一直刷这条，说明通道有问题）
+          console.warn(`[Chat] 会话级 WS 订阅失败，第 ${attempt} 次重试（${delay}ms 后）conv=${convId}`);
+          await new Promise((r) => { const t = setTimeout(r, delay); ac.signal.addEventListener('abort', () => { clearTimeout(t); r(null); }, { once: true }); });
+        }
+      }
+    };
+    // WS 断开 → 服务端订阅已释放 → socket 重连后必须重挂订阅
+    const unsubClose = onChatWsClose(() => { if (!ac.signal.aborted) void resubscribe(); });
+
+    // 显式退订（unsubscribeConversationEvents abort）：释放本地回调 + 精确退订服务端订阅
+    ac.signal.addEventListener('abort', () => {
+      unsubConv();
+      unsubClose();
+      sendChatWs('unsubscribe_conversation', { conversationId: convId });
+    }, { once: true });
+
+    await resubscribe();
   }
 
   /** 退订会话级事件总线（会话被删除/切换清理时调用） */
@@ -3406,13 +3503,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         const content = options.userContent;
         if (content && content.trim()) {
           try {
-            const inj = await api.post<any>('/llm/tasks/inject', {
+            const inj = await requestChatWs<any>('inject', {
               conversationId: convId,
               content,
               // 幂等键：任务 id + 内容长度，覆盖"连点/网络重试"重复下单
               clientMsgId: `${activeTaskId}:${content.length}`,
             });
-            if (!('error' in inj) && (inj as any).data?.status === 'injected') {
+            if (inj?.data?.status === 'injected') {
               try {
                 const { ElMessage } = await import('element-plus');
                 ElMessage.info('已并入运行中的任务，将在下一轮执行时生效');
@@ -3457,7 +3554,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       const appGuide = appSettings.appGuide;
       const maxSteps = getMaxReActSteps();
 
-      const taskRes = await api.post<any>('/llm/tasks', {
+      const taskRes = await requestChatWs<any>('create_task', {
         conversationId: convId,
         platformId: platform.id,
         modelId: model.id,
@@ -3490,7 +3587,6 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           reasoningEffort: options.reasoningEffort,
         },
       });
-      if ('error' in taskRes) throw new Error(taskRes.error);
       const taskId = taskRes.data.taskId;
       taskIds.set(convId, taskId);
 
@@ -3503,7 +3599,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         } catch { /* 提示失败不影响订阅 */ }
       }
 
-      await subscribeTaskSseWithReconnect(convId, taskId, abortController.signal, onChunk);
+      await subscribeTaskWsWithReconnect(convId, taskId, abortController.signal, onChunk);
     } catch (e: any) {
       markRunEnd(convId, e?.name === 'AbortError' ? 'aborted' : 'error');
       if (e?.name === 'AbortError') return;
@@ -3541,10 +3637,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     // 终止后端任务
     const taskId = taskIds.get(target);
     if (taskId) {
-      const token = localStorage.getItem('auth_token') || '';
-      void fetch(`${API_BASE}/llm/tasks/${taskId}/abort`, {
-        method: 'POST', headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
-      }).catch(() => {});
+      sendChatWs('abort', { taskId });
       dropStreamState(taskId);
       taskEventCounts.delete(taskId);
     }
@@ -3578,12 +3671,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     if (!taskId) return;
     pausedConvIds.value.add(target!);
     browserLockInput.value = false; // 暂停 = 用户接管
-    const token = localStorage.getItem('auth_token') || '';
-    try {
-      await fetch(`${API_BASE}/llm/tasks/${taskId}/pause`, {
-        method: 'POST', headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
-      });
-    } catch { /* SSE task:paused 分支会再同步一次状态 */ }
+    sendChatWs('pause', { taskId });
   }
 
   async function resumeTask(convId?: string) {
@@ -3594,12 +3682,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     if (runningConvIds.value.has(target!) && browserSteps.value.length > 0) {
       browserLockInput.value = true; // 恢复 = agent 继续驾驶
     }
-    const token = localStorage.getItem('auth_token') || '';
-    try {
-      await fetch(`${API_BASE}/llm/tasks/${taskId}/resume`, {
-        method: 'POST', headers: buildRequestHeaders({ Authorization: `Bearer ${token}` }),
-      });
-    } catch { /* ignore */ }
+    sendChatWs('resume', { taskId });
   }
 
   async function ensureMcpConnections() {
@@ -3691,6 +3774,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     archiveAllInSpace, dropConvRuntime,
     loadConversationsByScope,
     loadMoreHistory, historyPagingByConv, HISTORY_PAGE_SIZE,
+    fetchToolResult,
     /** 当前会话消息驻留裁剪的开关：UI 滚到底部时置 true，向上翻历史时置 false */
     setChatAtBottom,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,

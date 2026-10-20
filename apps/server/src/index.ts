@@ -13,6 +13,7 @@ import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
 import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicenseCode, verifyLicenseCached } from './license-guard.js';
 import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
+import { handleChatUpgrade } from './chat-ws.js';
 import conversationRoutes from './routes/conversations.js';
 import clipRoutes from './routes/clip.js';
 import messageRoutes from './routes/messages.js';
@@ -549,6 +550,12 @@ function currentWsRoutes(): PluginWsRoute[] {
 }
 
 httpServer.on('upgrade', (req, socket, head) => {
+  // 聊天主链路 WS（2026-10-20，SSE→WS 迁移第一步）：/ws/chat 直接走聊天通道，
+  // 不经过插件 WS 路由 / license 校验（聊天是核心能力，与聊天 HTTP 路由同源 guest 身份）。
+  if ((req.url || '').startsWith('/ws/chat')) {
+    handleChatUpgrade(req, socket, head);
+    return;
+  }
   const route = matchPluginWsRoute(currentWsRoutes(), req.url || '');
   if (!route) {
     // 无人认领：保持 Node 在没有 upgrade 监听时的默认行为（销毁 socket），避免连接悬挂

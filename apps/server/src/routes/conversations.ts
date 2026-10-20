@@ -538,6 +538,29 @@ router.get('/:id/messages', (req: Request, res: Response) => {
   });
 });
 
+// GET /api/conversations/:id/tool-result/:toolCallId
+// 按需拉取单条工具回执正文（2026-10-20，工具细节懒加载）。
+//
+// ★ 为什么单独开接口而不是随消息列表下发：工具回执（浏览器页面正文 / file_read /
+//   code_search）单条可达几十 KB，长任务累积数百条。全量随 messages 下发会把这些大文本
+//   灌进渲染进程，既是内存大头，也是流式 flush 全量重扫 + 重渲的 CPU 大头（卡死主因之一，
+//   见 docs/流式渲染卡顿-方案-20261020.md）。与 system_prompt_snapshot 走
+//   GET /api/messages/:mid/snapshot 同一模式：列表不下发重列，展开时按需取。
+router.get('/:id/tool-result/:toolCallId', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const toolCallId = req.params.toolCallId;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const row = db.prepare(
+    `SELECT content FROM message
+      WHERE conversation_id = ? AND tool_call_id = ? AND role = 'tool'
+      ORDER BY created_at ASC, id ASC LIMIT 1`,
+  ).get(cid, toolCallId) as { content: string } | undefined;
+  if (!row) { res.status(404).json({ error: '工具结果不存在' }); return; }
+  res.json({ data: { toolCallId, content: row.content } });
+});
+
 // POST /api/conversations/:id/messages
 router.post('/:id/messages', (req: Request, res: Response) => {
   const userId = req.user!.userId;

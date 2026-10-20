@@ -9,7 +9,7 @@
  *      在 `await` **之后**，连点两次时两条都还在队列里 → 两个 POST → 后端落两条。
  *
  * ★ 本测试钉住 store 层的两个修复点（后端幂等由 server 侧测试覆盖）：
- *   1) 在途守卫：同一条连点两次，api.post 只发**一次**；
+ *   1) 在途守卫：同一条连点两次，请求只发**一次**；
  *   2) 本地回显：注入成功即把消息按真实 msgId 插入当前会话列表（不依赖 SSE）。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -23,8 +23,22 @@ vi.mock('../api/client', () => ({
 vi.mock('element-plus', () => ({
   ElMessage: { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
+// ★ 2026-10-20 SSE→WS 迁移：注入（inject）已从 POST /llm/tasks/:id/inject 切到
+//   requestChatWs('inject')，mock 必须跟着切（否则打到真实 chat-ws → WebSocket 不存在 → 全挂）。
+vi.mock('../utils/chat-ws', () => ({
+  requestChatWs: vi.fn(),
+  sendChatWs: vi.fn(),
+  onTaskEvent: vi.fn(() => () => {}),
+  onConvEvent: vi.fn(() => () => {}),
+  onChatWsClose: vi.fn(() => () => {}),
+  closeChatWs: vi.fn(),
+  isChatWsOpen: vi.fn(),
+  chatWsUrl: () => 'ws://localhost:3001/ws/chat',
+}));
 
-import { api } from '../api/client';
+import { requestChatWs } from '../utils/chat-ws';
+
+const mockRequestChatWs = requestChatWs as unknown as ReturnType<typeof vi.fn>;
 
 async function freshStore() {
   vi.resetModules();
@@ -43,20 +57,20 @@ function deferred<T>() {
 describe('追加消息 · 立即发送的幂等与回显', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
-  it('★★★ 连点同一条：api.post 只发一次（在途守卫），且成功后队列移除 + 本地回显', async () => {
+  it('★★★ 连点同一条：请求只发一次（在途守卫），且成功后队列移除 + 本地回显', async () => {
     const st = await freshStore();
     st.currentConvId = 'conv_q';
     const item = st.enqueueMessage('conv_q', '追加要求：改用表格');
 
     const gate = deferred<any>();
-    (api.post as unknown as ReturnType<typeof vi.fn>).mockReturnValue(gate.p);
+    mockRequestChatWs.mockReturnValue(gate.p);
 
     // 第一次点击：进入在途（尚未 resolve）
     const p1 = st.injectQueuedMessage('conv_q', item.id);
     // 第二次点击（连点）：应被在途守卫直接拦下，不再发起请求
     const p2 = st.injectQueuedMessage('conv_q', item.id);
 
-    expect((api.post as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect(mockRequestChatWs.mock.calls.length).toBe(1);
 
     gate.resolve({ data: { status: 'injected', msgId: 'msg_real_1', duplicate: false } });
     const r1 = await p1;
@@ -66,7 +80,7 @@ describe('追加消息 · 立即发送的幂等与回显', () => {
     expect(r1.duplicate).toBe(false);
     // 第二次被守卫拦下 → 视为重复
     expect(r2.duplicate).toBe(true);
-    expect((api.post as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect(mockRequestChatWs.mock.calls.length).toBe(1);
 
     // 队列条目已移除
     expect(st.queuedOf('conv_q').length).toBe(0);
@@ -82,12 +96,12 @@ describe('追加消息 · 立即发送的幂等与回显', () => {
     const st = await freshStore();
     st.currentConvId = 'conv_q2';
     const item = st.enqueueMessage('conv_q2', '第二条要求');
-    (api.post as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    mockRequestChatWs.mockResolvedValue({
       data: { status: 'injected', msgId: 'msg_real_2', duplicate: false },
     });
 
     await st.injectQueuedMessage('conv_q2', item.id);
-    const body = (api.post as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as any;
+    const body = mockRequestChatWs.mock.calls[0][1] as any;
     expect(body.clientMsgId).toBe(item.id);
     expect(body.content).toBe('第二条要求');
     expect(body.conversationId).toBe('conv_q2');
@@ -97,7 +111,7 @@ describe('追加消息 · 立即发送的幂等与回显', () => {
     const st = await freshStore();
     st.currentConvId = 'conv_q3';
     const item = st.enqueueMessage('conv_q3', '任务已结束时的追加');
-    (api.post as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ data: { status: 'no-task' } });
+    mockRequestChatWs.mockResolvedValue({ data: { status: 'no-task' } });
 
     const r = await st.injectQueuedMessage('conv_q3', item.id);
     expect(r.ok).toBe(false);
@@ -125,7 +139,7 @@ describe('追加消息 · 立即发送的幂等与回显', () => {
     const st = await freshStore();
     st.currentConvId = 'conv_q5';
     const item = st.enqueueMessage('conv_q5', '只应出现一次');
-    (api.post as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    mockRequestChatWs.mockResolvedValue({
       data: { status: 'injected', msgId: 'msg_real_5', duplicate: false },
     });
     await st.injectQueuedMessage('conv_q5', item.id);

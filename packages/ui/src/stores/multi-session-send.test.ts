@@ -36,8 +36,19 @@ vi.mock('element-plus', () => ({
 vi.mock('./auth', () => ({ useAuthStore: () => ({ useServerApi: true }) }));
 vi.mock('./agent', () => ({ useAgentStore: () => ({ selectedAgent: null, selectedId: '' }) }));
 vi.mock('./settings', () => ({ useSettingsStore: () => ({ settings: {} }) }));
+vi.mock('../utils/chat-ws', () => ({
+  requestChatWs: vi.fn(),
+  sendChatWs: vi.fn(),
+  onTaskEvent: vi.fn(() => () => {}),
+  onConvEvent: vi.fn(() => () => {}),
+  onChatWsClose: vi.fn(() => () => {}),
+  closeChatWs: vi.fn(),
+  isChatWsOpen: vi.fn(),
+  chatWsUrl: () => 'ws://localhost:3001/ws/chat',
+}));
 
 import { api } from '../api/client';
+import { requestChatWs } from '../utils/chat-ws';
 
 const UI_SRC = resolve(__dirname, '..');
 const CHAT_SRC = readFileSync(resolve(UI_SRC, 'stores/chat.ts'), 'utf8');
@@ -76,7 +87,7 @@ describe('多会话发送 · callLlm 同会话守卫（核心根因）', () => {
     (api.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
     // 起新任务必然打 POST /llm/tasks；让它**失败**（避免真跑 ReAct），
     // 我们只关心"有没有走到起任务这一步"（= 没被静默吞）。
-    (api.post as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ error: 'STOP_AFTER_PROBE' });
+    (requestChatWs as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('STOP_AFTER_PROBE'));
 
     let threw = false;
     try {
@@ -88,8 +99,8 @@ describe('多会话发送 · callLlm 同会话守卫（核心根因）', () => {
     expect(getCalls.some((u) => u.includes('/llm/tasks/active') && u.includes(convId)),
       '★ 命中 runningConvIds 后必须查服务端活动任务，而不是直接丢消息').toBe(true);
     // ② 确实继续走了 → 尝试起新任务（POST /llm/tasks）
-    const postCalls = (api.post as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    expect(postCalls.some((u) => u === '/llm/tasks'),
+    const postCalls = (requestChatWs as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(postCalls.some((u) => u === 'create_task'),
       '★ 假运行态残留必须被清掉并继续发送（不能因为死记账让会话永久发不出消息）').toBe(true);
     // ③ 残留已被清理
     expect(st.runningConvIds.has(convId), '★ 残留运行态未清除').toBe(false);
@@ -103,16 +114,16 @@ describe('多会话发送 · callLlm 同会话守卫（核心根因）', () => {
     (api.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: [{ id: 'task_x', conversationId: convId, status: 'running' }],
     });
-    (api.post as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (requestChatWs as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { status: 'injected', msgId: 'msg_inj', duplicate: false },
     });
 
     await st.sendMessage('追加要求', PLATFORM, MODEL, undefined, undefined, convId);
 
-    const urls = (api.post as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    expect(urls.some((u) => u.includes('/llm/tasks/inject')),
+    const urls = (requestChatWs as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u === 'inject'),
       '★ 真在跑时必须走注入复用，消息才会落库并回显').toBe(true);
-    expect(urls.includes('/llm/tasks'),
+    expect(urls.includes('create_task'),
       '★ 注入成功却又起了新任务（会双跑）').toBe(false);
   });
 
