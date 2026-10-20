@@ -32,6 +32,7 @@ import { api } from '../../api/client';
 import { waitForBackend } from '../../api/backend-ready';
 import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath, TASK_TYPES, getTaskType, isParentTaskType, getChildTaskTypes, effectiveContextLimit, contextUsagePercent } from '@yan-zhi/shared';
+import { computeCost, normalizePricing, formatCny } from '@yan-zhi/shared';
 import {
   selectMedia,
   openMediaViewer,
@@ -988,19 +989,43 @@ function createChat() {
   const snapshotDialog = ref(false);
   const snapshotActiveTab = ref('');
   const snapshotLoading = ref(false);
-  const currentSnapshots = ref<Array<{ id: string; label: string; content: string }>>([]);
-  function buildSnapshotEntry(m: any): { id: string; label: string; content: string } {
+  const currentSnapshots = ref<Array<{ id: string; label: string; content: string; chars: number; tokens: number; costLabel: string }>>([]);
+  function buildSnapshotEntry(m: any): { id: string; label: string; content: string; chars: number; tokens: number; costLabel: string } {
     const parsed = tryParseSnapshot(m.systemPromptSnapshot);
     const step = parsed?.step ?? 0;
+    let content: string;
     if (m.parentToolCallId) {
       // 子智能体快照：以子智能体名标注，避免和主智能体标签混淆
       const subName = parsed?.subAgent?.name || m.subAgentName || '子智能体';
       const label = step === 0 ? `任务 → ${subName}` : `${subName}（#${step}）`;
-      return { id: m.id, label, content: formatSnapshot(m.systemPromptSnapshot) };
+      content = formatSnapshot(m.systemPromptSnapshot);
+      return finalizeSnapshotEntry(m.id, label, content, parsed);
     }
     const agentName = agentStore.selectedAgent?.name || '智能体';
     const label = step === 0 ? `Human → ${agentName}` : `${agentName}（#${step}）`;
-    return { id: m.id, label, content: formatSnapshot(m.systemPromptSnapshot) };
+    content = formatSnapshot(m.systemPromptSnapshot);
+    return finalizeSnapshotEntry(m.id, label, content, parsed);
+  }
+
+  /** 快照条目统计尾注（2026-10-20）：字符数 / token 估算 / 花费预估。
+   *  token 复用全仓唯一实现 estimateTokens（@yan-zhi/shared，勿另建同名函数）；
+   *  花费按**全 input** 估（快照是"本轮实际发送"的上下文，输出侧不在其中），
+   *  单价从 platformStore.models 按 snapshot 里的 model.id/alias 匹配，没配价显示"未配置价格"。 */
+  function finalizeSnapshotEntry(id: string, label: string, content: string, parsed: any) {
+    const tokens = estimateTokens(content);
+    let costLabel = '未配置价格';
+    try {
+      const mid = parsed?.model?.id;
+      const malias = parsed?.model?.alias;
+      const model = platformStore.models.find((x: any) =>
+        (malias && x.alias === malias) || (mid && (x.modelId === mid || String(x.id || '').endsWith(mid))));
+      const cost = computeCost(
+        { inputTokens: tokens, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, estimated: true },
+        normalizePricing(model?.pricing),
+      );
+      if (!cost.unpriced) costLabel = `≈ ${formatCny(cost.cny)}`;
+    } catch { /* 统计失败不影响快照展示 */ }
+    return { id, label, content, chars: content.length, tokens, costLabel };
   }
 
   /** 按需获取单条消息快照：内存里有直接用（本轮流式产生的消息）；历史消息走独立接口/本地库直查 */
@@ -1040,7 +1065,7 @@ function createChat() {
     const entries = (await Promise.all(candidates.map(async (m) => {
       const snap = await fetchSnapshotFor(m);
       return snap ? buildSnapshotEntry({ ...m, systemPromptSnapshot: snap }) : null;
-    }))).filter(Boolean) as Array<{ id: string; label: string; content: string }>;
+    }))).filter(Boolean) as Array<{ id: string; label: string; content: string; chars: number; tokens: number; costLabel: string }>;
     currentSnapshots.value = entries;
     snapshotActiveTab.value = entries[0]?.id || '';
     snapshotLoading.value = false;

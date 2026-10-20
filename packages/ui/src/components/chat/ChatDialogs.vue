@@ -3,6 +3,17 @@
     <el-tabs v-model="snapshotActiveTab" type="card">
       <el-tab-pane v-for="s in currentSnapshots" :key="s.id" :label="s.label" :name="s.id">
         <pre class="snapshot-body">{{ s.content }}</pre>
+        <!-- 统计尾注（2026-10-20）：字符数 / token 估算 / 花费预估 + 一键复制 -->
+        <div class="snapshot-meta">
+          <span class="snapshot-meta-item">{{ s.chars.toLocaleString() }} 字符</span>
+          <span class="snapshot-meta-sep">|</span>
+          <span class="snapshot-meta-item">≈ {{ s.tokens.toLocaleString() }} tokens</span>
+          <span class="snapshot-meta-sep">|</span>
+          <span class="snapshot-meta-item">花费 {{ s.costLabel }}</span>
+          <el-button size="small" text type="primary" class="snapshot-copy-btn" @click="copySnapshot(s)">
+            <el-icon style="margin-right: 4px"><CopyDocument /></el-icon>复制
+          </el-button>
+        </div>
       </el-tab-pane>
     </el-tabs>
     <el-empty v-if="currentSnapshots.length === 0" description="没有找到提示词数据" :image-size="80" />
@@ -86,7 +97,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { Connection, Download } from '@element-plus/icons-vue';
+import { Connection, Download, CopyDocument } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatformStore } from '../../stores';
@@ -103,6 +114,23 @@ const {
 } = useChat();
 
 const platformStore = usePlatformStore();
+
+/** 复制当前快照正文（2026-10-20）：clipboard API 不可用（非 https/权限）时回退 execCommand */
+async function copySnapshot(s: { content: string }) {
+  try {
+    await navigator.clipboard.writeText(s.content);
+    ElMessage.success('已复制到剪贴板');
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = s.content;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); ElMessage.success('已复制到剪贴板'); } catch { ElMessage.error('复制失败，请手动选择文本'); }
+    ta.remove();
+  }
+}
 
 // ── 测试连接 / 拉取模型（口径与 Models.vue 同源：store.testPlatformConfig / fetchModelsPreview / fetchRemoteModels） ──
 /** 编辑目录厂商平台（preset）：协议/API URL 只读（厂商文档常量，服务端同样拦截） */
@@ -199,4 +227,20 @@ function cfgCheckAll(v: any) {
 }
 .cfg-fetched-list { display: flex; flex-direction: column; gap: 2px; }
 .cfg-fetched-id { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
+
+/* ===== 快照统计尾注（2026-10-20）：字符数 / token / 花费 + 复制 ===== */
+.snapshot-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px 2px;
+  border-top: 1px solid var(--color-border-light, #e2e8f0);
+  margin-top: 8px;
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 12px;
+  line-height: 18px;
+}
+.snapshot-meta-item { white-space: nowrap; }
+.snapshot-meta-sep { opacity: 0.5; }
+.snapshot-copy-btn { margin-left: auto; }
 </style>
