@@ -5,14 +5,44 @@ import { sseStream } from '../services/sse.js';
 import {
   createTask, subscribe, subscribeConversation, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId, validateTaskModel,
 } from '../llm-task-manager.js';
+import type { OpsContextInput } from '../ops-context.js';
 
 const router = Router();
 router.use(authMiddleware);
 
+/**
+ * 运维现场入参白名单化（2026-10-21）。
+ *
+ * 这个字段的内容最终会进入**系统提示词**，所以不能原样透传：
+ * 只取约定字段，字符串长度封顶。前端只该传 id + 终端尾部文本，
+ * 连接名/主机等详情由服务端按 id 回查（防伪造、防改名后残留旧值）。
+ */
+function normalizeOpsContext(raw: unknown): OpsContextInput | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const o = raw as Record<string, unknown>;
+  const str = (v: unknown, max: number): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.slice(0, max) : undefined;
+  const out: OpsContextInput = {};
+  if (typeof o.connectionId === 'string' || o.connectionId === null) {
+    out.connectionId = o.connectionId === null ? null : String(o.connectionId).slice(0, 128);
+  }
+  if (Array.isArray(o.recentCommands)) {
+    out.recentCommands = o.recentCommands
+      .filter((c): c is string => typeof c === 'string')
+      .slice(-6)
+      .map((c) => c.slice(0, 2000));
+  }
+  const tail = str(o.terminalTail, 8000);
+  if (tail) out.terminalTail = tail;
+  const rp = str(o.releaseProjectId, 128);
+  if (rp) out.releaseProjectId = rp;
+  return Object.keys(out).length ? out : undefined;
+}
+
 // POST /api/llm/tasks  创建任务
 router.post('/tasks', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds, workspaceDir, pathGuard } = req.body || {};
+  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds, workspaceDir, pathGuard, opsContext } = req.body || {};
   if (!conversationId || !platformId || !modelId) {
     res.status(400).json({ error: '缺少 conversationId/platformId/modelId' });
     return;
@@ -44,6 +74,9 @@ router.post('/tasks', (req: Request, res: Response) => {
     taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined,
       // 越界守卫档位（2026-10-01）：与 workspaceDir 同一条下发通道（同一份设置来源）
       pathGuard: (pathGuard === 'strict' || pathGuard === 'off' || pathGuard === 'ask') ? pathGuard : undefined,
+      // 运维现场（2026-10-21）：薄描述，服务端回查详情后注入系统提示词。
+      // ★ 白名单化 —— 只接受约定字段，防止调用方往系统提示词里塞任意内容。
+      opsContext: normalizeOpsContext(opsContext),
     });
   } catch (e: any) {
     // 会话被归档/删除/不存在时不给 500：前端要靠这个状态码给出「去恢复」的入口

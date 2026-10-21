@@ -298,7 +298,7 @@ function resolveRemotePath(conn: StoredConnection, remotePath: string): string {
 // ---------- 发布项目（four-mode-workspace 7b） ----------
 
 /** 发布项目存储：ops-shell 插件域内（与连接/分组同仓） */
-async function loadReleaseProjects(): Promise<ReleaseProject[]> {
+export async function loadReleaseProjects(): Promise<ReleaseProject[]> {
   if (!pluginStorage) return [];
   const rows = await pluginStorage.get<ReleaseProject[]>('release-projects');
   if (!Array.isArray(rows)) return [];

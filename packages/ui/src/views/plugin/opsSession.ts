@@ -28,6 +28,40 @@ export interface OpsMsg {
   toolCalls?: OpsToolCall[];
   /** role === 'tool' 的结果消息回填到哪个 toolCallId */
   toolCallId?: string;
+  /**
+   * 模型思考内容（深度思考）。后端 `message.reasoning_content` 有落库、SSE 也发 `reasoning`，
+   * 但此前**前端完全没接** —— 表现就是用户看不到任何思考过程（2026-10-21 实报）。
+   */
+  reasoning?: string;
+}
+
+/**
+ * 一轮执行（用户一句话 → 模型的多步推理与最终回答）。
+ *
+ * ★ 为什么要在前端组装"轮"（2026-10-21 用户实报「参考人家的交互：思考内容、工具内容、
+ *   响应内容的展示」）：此前是两层平铺 —— 消息列表按条渲染（assistant 的中间态和最终答复
+ *   混在一起，多次工具调用后会出现好几段互不相干的话），步骤卡又整体堆在列表底部。
+ *   用户无法回答"这句话对应哪次执行、它的思考/工具/结论分别是什么"。
+ *   组装成轮之后，思考 / 工具 / 回复就近排在同一轮里，和主对话的呈现保持一致。
+ */
+export interface OpsRound {
+  /** 用户消息（本轮起点）；没有则为空（历史残缺数据） */
+  user?: OpsMsg;
+  /** 本轮的思考内容（多个 assistant 分段累加） */
+  reasoning: string;
+  /** 本轮所有工具步骤（已按调用顺序回填结果） */
+  steps: OpsStep[];
+  /** 本轮最终回复（最后一条非空 assistant 正文） */
+  answer: string;
+  /**
+   * 流式期的过渡叙述（"我先看下目录…"）：已归入 reasoning，但本轮还没结束时
+   * 正文区为空，需要用它顶上，否则用户对着一个空白的回答区等。
+   * 本轮结束（answer 出现）后由 UI 忽略。
+   */
+  liveNarration: string;
+  /** 本轮仍在流式输出 */
+  streaming: boolean;
+  createdAt: number;
 }
 
 /** 一个执行步骤（由 assistant.toolCalls + 对应 tool 结果消息推导，无后端改动） */
@@ -144,29 +178,125 @@ export const TYPE_VIEWS: Record<ConnType, ViewKey[]> = {
 };
 
 /** 从窗口消息推导执行步骤：assistant.toolCalls 发起 → role=tool 消息回填输出 */
+/** 单步投影（buildSteps 与 buildOpsRounds 共用同一口径，避免两套"是否失败"判定漂移） */
+function makeStep(index: number, tc: OpsToolCall, result: OpsMsg | undefined, startedAt: number): OpsStep {
+  const raw = result?.content || '';
+  const failed = /^(执行失败|错误|Error)/i.test(raw.trim()) || /失败[:：]/.test(raw.slice(0, 80));
+  return {
+    index,
+    callId: tc.id,
+    toolName: tc.name || 'tool',
+    argsText: tc.arguments || '',
+    status: result ? (failed ? 'failed' : 'done') : 'running',
+    output: raw,
+    durationMs: result && result.createdAt && startedAt ? Math.max(0, result.createdAt - startedAt) : null,
+    needConfirm: /确认|confirmed/i.test(raw) || /确认|confirmed/i.test(tc.arguments || ''),
+  };
+}
+
 export function buildSteps(messages: OpsMsg[]): OpsStep[] {
   const out: OpsStep[] = [];
-  let idx = 0;
   for (const m of messages) {
     if (m.role !== 'assistant' || !m.toolCalls?.length) continue;
     for (const tc of m.toolCalls) {
-      idx += 1;
       const result = messages.find((r) => r.role === 'tool' && r.toolCallId === tc.id);
-      const raw = result?.content || '';
-      const failed = /^(执行失败|错误|Error)/i.test(raw.trim()) || /失败[:：]/.test(raw.slice(0, 80));
-      out.push({
-        index: idx,
-        callId: tc.id,
-        toolName: tc.name || 'tool',
-        argsText: tc.arguments || '',
-        status: result ? (failed ? 'failed' : 'done') : 'running',
-        output: raw,
-        durationMs: result && result.createdAt && m.createdAt ? Math.max(0, result.createdAt - m.createdAt) : null,
-        needConfirm: /确认|confirmed/i.test(raw) || /确认|confirmed/i.test(tc.arguments || ''),
-      });
+      out.push(makeStep(out.length + 1, tc, result, m.createdAt));
     }
   }
   return out;
+}
+
+/**
+ * 只取**最后一轮**（最后一条 user 消息之后）的步骤。
+ *
+ * 为什么（2026-10-21 用户实报「最后面还有工具调用详情」）：会话里历史各轮的步骤
+ * 被 buildSteps 全量摊平堆在消息列表末尾，聊几轮之后底部就挂着几十张早就过期的卡，
+ * 和当前这句指令毫无关系。执行过程属于「那一轮」，应当贴在该轮助手回复附近，
+ * 而不是在列表尾部无限累加。历史轮的步骤仍可在「操作日志」里查。
+ */
+export function buildRoundSteps(messages: OpsMsg[]): OpsStep[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') return buildSteps(messages.slice(i + 1));
+  }
+  return buildSteps(messages);
+}
+
+/**
+ * 把平铺的消息组装成「轮」：每轮 = 用户一句话 + 该轮的思考 / 工具 / 最终回复。
+ *
+ * 规则（与主对话的 MessageRound 语义对齐，但数据源是消息表而非流事件）：
+ *   - 以 user 消息为切分点，user 之后的所有 assistant/tool 归入该轮；
+ *   - 轮内**所有** assistant 的 reasoning 按顺序拼接（模型可能多步推理）；
+ *   - 工具步骤按 assistant.toolCalls 的调用顺序收集，结果从 role=tool 回填；
+ *   - answer 取**最后一条非空** assistant 正文：中间轮次里模型常有"我来看一下…"这类过渡句，
+ *     拼起来会变成一坨；只留最终答复，过渡句归到思考区（见 collectNarration）；
+ *   - 连续多轮之间按发生顺序返回；开头没有 user 的孤立消息单独成轮（恢复不完整的历史会话）。
+ */
+export function buildOpsRounds(messages: OpsMsg[]): OpsRound[] {
+  const rounds: OpsRound[] = [];
+  let cur: OpsRound | null = null;
+  /** 工具结果索引（toolCallId → 结果消息），一次建表避免每步全表 find（O(n²)） */
+  const resultByCall = new Map<string, OpsMsg>();
+  for (const m of messages) {
+    if (m.role === 'tool' && m.toolCallId) resultByCall.set(m.toolCallId, m);
+  }
+
+  const flush = () => {
+    if (!cur) return;
+    const hasAny = cur.user || cur.reasoning || cur.steps.length || cur.answer;
+    if (hasAny) rounds.push(cur);
+    cur = null;
+  };
+  const ensure = (): OpsRound => {
+    if (!cur) {
+      cur = { reasoning: '', steps: [], answer: '', liveNarration: '', streaming: false, createdAt: 0 };
+    }
+    return cur;
+  };
+
+  for (const m of messages) {
+    if (m.role === 'user') {
+      flush();
+      cur = {
+        user: m,
+        reasoning: '',
+        steps: [],
+        answer: '',
+        liveNarration: '',
+        streaming: false,
+        createdAt: m.createdAt || 0,
+      };
+      continue;
+    }
+    const r = ensure();
+    if (r.createdAt === 0 && m.createdAt) r.createdAt = m.createdAt;
+    if (m.streaming) r.streaming = true;
+
+    if (m.role === 'assistant') {
+      if (m.reasoning && m.reasoning.trim()) {
+        r.reasoning += (r.reasoning ? '\n\n' : '') + m.reasoning.trim();
+      }
+      const text = (m.content || '').trim();
+      if (text) {
+        // 带工具调用的正文 = 过渡叙述（"我先看下目录…"）→ 一律归思考区；
+        // 无工具调用的正文 = 最终答复 → 后到的覆盖先到的。
+        // 流式期"只有过渡句"的情况由 UI 兜底：answer 为空但有 liveNarration 时照常显示，
+        // 避免思考区默认收起导致画面空白（见 OpsRound.liveNarration）。
+        if (m.toolCalls?.length) {
+          r.reasoning = r.reasoning ? `${text}\n\n${r.reasoning}` : text;
+          r.liveNarration = text;
+        } else {
+          r.answer = text;
+          r.liveNarration = '';
+        }
+      }
+      for (const tc of m.toolCalls || []) {
+        r.steps.push(makeStep(r.steps.length + 1, tc, resultByCall.get(tc.id), m.createdAt));
+      }
+    }
+  }
+  flush();
+  return rounds;
 }
 
 // ===== 跨路由切换保留的会话状态 =====

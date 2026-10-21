@@ -38,6 +38,8 @@ import { toSnapshotMessages, buildSnapshotSystemFields, internSnapshotBlob, prun
 // 上下文组装的**唯一出口**（主循环与子智能体循环共用）—— 压缩落库 + 子智能体隔离 + 预算分配
 import { buildContextView, mainlineMessages } from './services/context-view.js';
 import { serverState } from './state.js';
+// 运维现场注入（2026-10-21）：现场信息进**系统提示词**，用户回合只留用户原话。
+import { buildOpsFieldContext, type OpsContextInput, type OpsConnectionInfo, type OpsReleaseProjectInfo } from './ops-context.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks, runBeforeToolHooks } from './services/tool-hooks.js';
 // 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
@@ -1086,6 +1088,11 @@ export function createTask(params: {
    * ask（默认）/ strict / off；未下发或非法值一律按 **ask**（fail-safe：宁可多问一次，不静默放行）。
    */
   pathGuard?: 'ask' | 'strict' | 'off';
+  /**
+   * 运维现场（2026-10-21）：AI 模式窗口下发的薄描述（连接 id + 终端尾部）。
+   * 服务端回查连接/发布项目详情后注入**系统提示词** —— 用户回合只留用户原话。
+   */
+  opsContext?: OpsContextInput;
 }): string {
   // 幂等保护：同 conversationId 已有 running 任务则复用（避免重连重试创建多任务）
   for (const [id, existing] of tasks) {
@@ -2967,6 +2974,33 @@ export function getTaskRow(taskId: string): any | undefined {
 // ============================================================
 // ReAct 循环（后端独立运行）
 // ============================================================
+/**
+ * 回查运维现场并组装成系统提示词片段（2026-10-21）。
+ *
+ * 前端只下发 **id + 终端尾部文本**（薄描述）；连接名称/主机/类型、发布项目详情
+ * 一律按 id 回查 —— 前端传什么信什么会导致"显示 A 实际连 B"，且连接改名后旧值残留。
+ * 插件未启用（ops-shell 不可用）时静默返回空串：不阻断任务，模型仍可 conn_list 自查。
+ */
+async function loadOpsFieldContext(input: OpsContextInput): Promise<string> {
+  try {
+    const mod = await import('./plugins/ops-shell.js');
+    const conns = await mod.loadConnections();
+    const connection = input.connectionId ? (conns.find((c) => c.id === input.connectionId) || null) : null;
+    const project = input.releaseProjectId
+      ? ((await mod.loadReleaseProjects()).find((p) => p.id === input.releaseProjectId) || null)
+      : null;
+    return buildOpsFieldContext({
+      input,
+      connection: connection as OpsConnectionInfo | null,
+      releaseProject: project as OpsReleaseProjectInfo | null,
+      resolveConnectionName: (id) => conns.find((c) => c.id === id)?.name,
+    });
+  } catch {
+    // 插件未启用 / 存储不可用：不注入现场（模型仍可 conn_list 自查），不阻断任务
+    return '';
+  }
+}
+
 async function runReActLoop(task: LlmTask, params: {
   conversationId: string;
   userId: string;
@@ -2982,6 +3016,8 @@ async function runReActLoop(task: LlmTask, params: {
   maxSteps?: number;
   includeUiTools?: boolean;
   workspaceDir?: string;
+  /** 运维现场（AI 模式窗口）：服务端回查连接/发布项目后注入系统提示词，不进用户回合 */
+  opsContext?: OpsContextInput;
 }) {
   const { conversationId: convId, userId, options } = params;
   // ★★★ 运行参数（温度/最大输出/最大步数）**每轮实时读库**，不再用创建任务时的快照。
@@ -3278,6 +3314,15 @@ async function runReActLoop(task: LlmTask, params: {
     // 浏览器记忆不做自动注入：按需召回模式，智能体需要时调用 api_browser_memory_read 工具拉取
     if (modePrompt.length) {
       systemPromptBuilt += '\n\n## 模式指令（用户在输入框开启，优先级高于默认行为）\n' + modePrompt.join('\n');
+    }
+    // 运维现场注入（2026-10-21）：连接名/主机/终端现场/发布目标。
+    // ★ 这些信息**只进系统提示词，不进用户回合** —— 用户消息保持原话入库，
+    //   现场每轮现算（连接改名、终端输出变化都能立刻反映），历史不会被脏数据污染。
+    if (params.opsContext) {
+      try {
+        const ctx = await loadOpsFieldContext(params.opsContext);
+        if (ctx) systemPromptBuilt += '\n\n' + ctx;
+      } catch { /* 现场注入失败不影响任务（模型仍可用 conn_list 自查） */ }
     }
     let toolsBuilt = params.tools !== undefined
       ? params.tools

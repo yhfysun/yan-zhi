@@ -42,11 +42,24 @@ function identityBlock(): string {
   return TOPBAR_CODE.slice(Math.max(0, start - 600), end);
 }
 
+/**
+ * ★ 2026-10-21 修：断言**不得写死前一个分支的条件**。
+ *
+ * 原来的断言是 `v-else-if="isElectron"` / `v-else class="title-login-btn"`，
+ * 而身份区现在是三分支（已登录 / 桌面端本机 / 其他端登录入口），
+ * 第三个分支自然是 `v-else-if="!modeLocked"` 而不是 `v-else` ——
+ * 于是三条断言全红，但**实现完全正确**（红的是测试的假设，不是代码）。
+ *
+ * 判据：只看"该分支自身条件"，不关心它前面挂了几句 v-if。
+ * ★ 条件必须**恰好是** `!modeLocked && isElectron`（不接受额外表达式）——
+ *   否则 `isElectron && false` 这种把桌面端分支关掉的改动会漏网（已用变异验证过）。
+ */
+const ELECTRON_BRANCH = /v-else-if="!modeLocked && isElectron"/;
+
 describe('桌面端身份区：必须有头像，且不得是登录入口', () => {
   it('★★ 桌面端必须有身份头像（不能只剩"登录"按钮，也不能什么都没有）', () => {
     const block = identityBlock();
-    // 桌面端分支存在，且渲染头像
-    expect(block, '★★ 桌面端没有身份分支（用户看不到任何身份入口）').toMatch(/v-else-if="isElectron"/);
+    expect(block, '★★ 桌面端没有身份分支（用户看不到任何身份入口）').toMatch(ELECTRON_BRANCH);
     expect(block, '★★ 桌面端分支里没有头像').toMatch(/title-avatar/);
   });
 
@@ -61,7 +74,8 @@ describe('桌面端身份区：必须有头像，且不得是登录入口', () =
 
   it('★★ 桌面端头像不得是登录入口（点了不能跳 /login）', () => {
     const block = identityBlock();
-    const localBranch = block.slice(block.indexOf('v-else-if="isElectron"'));
+    const start = block.search(ELECTRON_BRANCH);
+    const localBranch = block.slice(start);
     expect(localBranch.slice(0, 400), '★★ 桌面端头像仍跳 /login（就是"点了被弹回"的死按钮）')
       .not.toMatch(/'\/login'/);
     // 路由侧仍然声明桌面端无登录概念 —— UI 必须与它一致
@@ -72,7 +86,14 @@ describe('桌面端身份区：必须有头像，且不得是登录入口', () =
   it('★ Web/移动端保留登录入口（未来接用户体系要用）', () => {
     const block = identityBlock();
     expect(block, '★ 登录按钮被整体删除（Web 端没有登录入口了）').toMatch(/title-login-btn/);
-    expect(block, '★ 登录按钮无条件渲染（桌面端又会出现死按钮）').toMatch(/v-else class="title-login-btn"/);
+    // 含 !isElectron 或落在桌面端分支之后（v-else-if="!modeLocked"）——关键是桌面端拿不到它
+    expect(block, '★ 登录按钮无条件渲染（桌面端又会出现死按钮）')
+      .toMatch(/v-else(?:-if)?="[^"]*"[^>]*class="title-login-btn"/);
+    // 更强的判据：桌面端分支（isElectron）必须出现在登录按钮之前，否则桌面端会先命中登录
+    const electronIdx = block.search(ELECTRON_BRANCH);
+    const loginIdx = block.indexOf('title-login-btn');
+    expect(electronIdx, '★★ isElectron 分支必须在登录按钮之前（顺序反了桌面端会落到登录按钮）')
+      .toBeLessThan(loginIdx);
   });
 
   it('★★ guest 不算登录态（三条分支的前提，不能回归）', () => {
@@ -85,8 +106,12 @@ describe('桌面端身份区：必须有头像，且不得是登录入口', () =
 
   it('★ 桌面端头像下拉给常用入口，但不提供"退出登录"', () => {
     const block = identityBlock();
-    const localBranch = block.slice(block.indexOf('v-else-if="isElectron"'));
-    const menu = localBranch.slice(0, 1400);
+    // 从桌面端分支起，截到该 el-dropdown 结束（不能用固定字数 —— 菜单项增删会误判）
+    const start = block.search(ELECTRON_BRANCH);
+    expect(start, '★ 找不到桌面端身份分支').toBeGreaterThan(-1);
+    const rest = block.slice(start);
+    const menuEnd = rest.indexOf('</el-dropdown>');
+    const menu = menuEnd > 0 ? rest.slice(0, menuEnd) : rest;
     expect(menu, '★ 桌面端头像下拉缺设置入口').toMatch(/command="\/settings"/);
     expect(menu, '★ 桌面端头像下拉缺记忆管理入口').toMatch(/command="\/memory"/);
     expect(menu, '★★ 桌面端头像下拉出现"退出登录"（没有登录态可退，点了会造成困扰）')

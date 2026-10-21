@@ -10,7 +10,7 @@
 // 说明：utils/childWindow.ts 依赖 ../api/client（isElectron 在模块加载时读 window），
 // 故这里用 vi.resetModules + 桩 window 的方式逐例重建模块。
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 
 type AnyRec = Record<string, unknown>;
 
@@ -86,6 +86,23 @@ async function loadModule(win: AnyRec) {
 }
 
 const g = globalThis as AnyRec;
+
+/**
+ * ★ 2026-10-21 修「第一条用例必超时」：
+ *
+ * `loadModule` 每例都 `vi.resetModules()`，**第一条**会把整张依赖图
+ * （childWindow → api/client → …）从零转译，实测 5～8.5s，而默认 testTimeout=5000
+ * → 永远红在第一个用例上，后面每例只要 0.2～0.5s（模块已被转译过）。
+ * 这不是实现问题，是测试把"首次冷启动成本"算进了第一条用例的超时预算。
+ *
+ * 处理：beforeAll 里先跑一次完整的 loadModule（同样 resetModules + 挂桩），
+ * 把转译成本前置到 hook（hookTimeout 默认更长；实测 ~9s 内完成），
+ * 各用例只承担真实逻辑耗时。断言强度不变（仍是逐例重建模块）。
+ */
+beforeAll(async () => {
+  await loadModule(stubWindow(makeChildApi()));
+  clearGlobals();
+}, 60_000);
 
 describe('supportsChildWindow：环境判定', () => {
   afterEach(() => { clearGlobals(); });

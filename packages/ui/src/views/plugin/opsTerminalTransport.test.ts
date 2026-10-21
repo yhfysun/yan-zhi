@@ -17,6 +17,45 @@ const strip = (s: string) =>
 const CONSOLE = strip(readFileSync(resolve(__dirname, 'OpsConsole.vue'), 'utf8'));
 const SESSION = strip(readFileSync(resolve(__dirname, 'opsSession.ts'), 'utf8'));
 
+/**
+ * 取 openWsTermTransport 的函数体。
+ *
+ * ★ 2026-10-21：原正则 `/function openWsTermTransport\([\s\S]*?\n\}\n/` 假定参数表与函数名同一行。
+ *   该函数后来被格式化成**多行签名**（`function openWsTermTransport(\n  ...\n) {`），
+ *   于是整组断言恒为 null —— 表现为「找不到 openWsTermTransport」，红的是正则而不是实现。
+ *   这里改为从函数名起，找到签名结束的 `) {` 再按大括号深度截取函数体。
+ */
+function wsTransportFn(): string {
+  const start = CONSOLE.indexOf('function openWsTermTransport(');
+  if (start < 0) return '';
+  // ★ 不能直接找 `) {`：签名里有嵌套括号（如 onOutput: (t: string) => void），会提前命中。
+  //   改为从函数名起点做**括号配对**，找到参数表真正闭合的那个 `)`，其后第一个 `{` 即函数体开始。
+  let depthParen = 0;
+  let bodyOpen = -1;
+  for (let i = start + 'function openWsTermTransport'.length; i < CONSOLE.length; i++) {
+    const ch = CONSOLE[i];
+    if (ch === '(') depthParen += 1;
+    else if (ch === ')') {
+      depthParen -= 1;
+      if (depthParen === 0) {
+        bodyOpen = CONSOLE.indexOf('{', i);
+        break;
+      }
+    }
+  }
+  if (bodyOpen < 0) return '';
+  let depth = 0;
+  for (let i = bodyOpen; i < CONSOLE.length; i++) {
+    const ch = CONSOLE[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return CONSOLE.slice(start, i + 1);
+    }
+  }
+  return CONSOLE.slice(start);
+}
+
 describe('TermTransport · 通道抽象', () => {
   it('接口只暴露 send / resize / exec / close 四件事', () => {
     const iface = SESSION.match(/export interface TermTransport \{[\s\S]*?\n\}/);
@@ -57,7 +96,8 @@ describe('OpsConsole · 通道选择与回退', () => {
   });
 
   it('★ 按键以二进制帧发出、连接以 arraybuffer 接收', () => {
-    const fn = CONSOLE.match(/function openWsTermTransport\([\s\S]*?\n\}\n/);
+    const body = wsTransportFn();
+    const fn = body ? [body] : null;
     expect(fn, '找不到 openWsTermTransport').toBeTruthy();
     expect(fn![0]).toMatch(/sock\.binaryType = 'arraybuffer'/);
     // send(string) 是文本帧，服务端会当 JSON 丢掉；必须编码成字节
@@ -73,7 +113,8 @@ describe('OpsConsole · 通道选择与回退', () => {
   });
 
   it('握手阶段的错误要触发回退，就绪后的错误只提示', () => {
-    const fn = CONSOLE.match(/function openWsTermTransport\([\s\S]*?\n\}\n/);
+    const body = wsTransportFn();
+    const fn = body ? [body] : null;
     expect(fn![0]).toMatch(/if \(settled\) ElMessage\.error[\s\S]{0,90}else fail\(/);
   });
 
@@ -82,9 +123,17 @@ describe('OpsConsole · 通道选择与回退', () => {
   });
 
   it('★ 已就绪后连接断开 → 走统一收尾（释放句柄 + 提示可重连）', () => {
-    const fn = CONSOLE.match(/function openWsTermTransport\([\s\S]*?\n\}\n/);
-    expect(fn, '找不到 openWsTermTransport').toBeTruthy();
-    expect(fn![0], '断开未走统一收尾').toMatch(/else markTermDisconnected\(w\)/);
+    const body = wsTransportFn();
+    expect(body, '找不到 openWsTermTransport').toBeTruthy();
+    // 语义断言：onclose 里必须区分「握手未完成 → fail（回退 SSE）」与「已就绪 → markTermDisconnected」。
+    // ★ 不绑死 `else ...` 写法（实现改成早返回 `if (!settled) { fail(...); return; }` 同样正确，
+    //   此前按字面匹配 else，实现一调整就误报）。
+    const onclose = body.slice(body.indexOf('sock.onclose'));
+    expect(onclose, '断开未走统一收尾').toMatch(/markTermDisconnected\(w\)/);
+    expect(onclose, '握手中途关闭必须走 fail（回退到 SSE）').toMatch(/fail\(new Error\('WebSocket 已关闭'\)\)/);
+    const failIdx = onclose.indexOf("fail(new Error('WebSocket 已关闭'))");
+    const discIdx = onclose.indexOf('markTermDisconnected(w)');
+    expect(failIdx, '★ 必须先判「未就绪」再判「已就绪」（顺序反了会把握手失败当断开）').toBeLessThan(discIdx);
     // 清掉连接与录制状态：断开后还显示「录制中」，用户以为还在录
     const dis = CONSOLE.match(/function disposeTerminal\(w: OpsWin\)[\s\S]*?\n\}/)?.[0] ?? '';
     expect(dis, '找不到 disposeTerminal').not.toBe('');
@@ -126,7 +175,8 @@ describe('OpsConsole · SSE 回退通道', () => {
     expect(CONSOLE).toMatch(/const onOutput = \(text: string\) => \{/);
     expect(CONSOLE).toMatch(/openTermTransport\(w, c, cols, rows, onOutput\)/);
     // xterm 的写入只应出现在 onOutput 里，通道工厂不该各写一遍（否则两条路径会漂移）
-    const wsFn = CONSOLE.match(/function openWsTermTransport\([\s\S]*?\n\}\n/);
+    const _wsBody = wsTransportFn();
+    const wsFn = _wsBody ? [_wsBody] : null;
     expect(wsFn, '找不到 openWsTermTransport').toBeTruthy();
     expect(wsFn![0]).not.toMatch(/\.term\.write\(/);
     expect(CONSOLE.match(/\.term\.write\(/g) ?? []).toHaveLength(1);

@@ -53,7 +53,8 @@ describe('OpsConsole · 录像入口', () => {
     const dis = CONSOLE.match(/function disposeTerminal\(w: OpsWin\)[\s\S]*?\n\}/)?.[0] ?? '';
     expect(dis, '找不到 disposeTerminal').not.toBe('');
     expect(dis, '释放时未清录制标识（用户会以为还在录）').toMatch(/w\.termRecording = false/);
-    expect(CONSOLE, 'WS 断开未走统一收尾').toMatch(/else markTermDisconnected\(w\)/);
+    // 语义断言：断开必须走 markTermDisconnected（不绑死 `else` 写法，见 opsTerminalTransport 同名说明）
+    expect(CONSOLE, 'WS 断开未走统一收尾').toMatch(/markTermDisconnected\(w\)/);
   });
 });
 

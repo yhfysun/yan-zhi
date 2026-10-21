@@ -3,8 +3,9 @@
     <!-- 左侧：资源列表（可整体收起；目录行可折叠；空白处右键新建，资源行右键出操作菜单）
          ★ 盒子（布局 / 分隔条 / 折叠条 / 宽度持久化）在 components/console/ConsoleShell.vue -->
     <template #aside>
-        <!-- 任务段（决策 13 / 5f.4）：四模式同构，读同一份会话列表；资源树之下保留 -->
-        <div class="ops-side-tasks">
+        <!-- 任务段（决策 13 / 5f.4）：四模式同构，读同一份会话列表；资源树之下保留
+             ★ 可折叠：顶栏「历史任务」按钮控制（用户实报「历史任务按钮没了 / 发送后任务就没了」） -->
+        <div v-show="taskListVisible" class="ops-side-tasks">
           <TaskListSection :space-id="null" />
         </div>
         <!-- 发布项目（7b）：本地目录 + 服务器 + 流水线；绑定后工具面挂到当前窗口会话 -->
@@ -135,8 +136,17 @@
                   </div>
                 </div>
 
-                <!-- 整体设置：文件面板开关，所有窗口共用（区别于下面每个连接自己的操作） -->
+                <!-- 整体设置：历史任务 / 文件面板开关，所有窗口共用（区别于每个连接自己的操作） -->
                 <div class="ops-topbar-global">
+                  <!-- 历史任务：左栏任务段可折叠，收起来时就找不到入口 —— 这里常驻一个，
+                       点开左栏任务段（折叠状态自动展开）。内部优化，不加额外提示文案。 -->
+                  <el-button
+                    size="small"
+                    :icon="Clock"
+                    :type="taskListVisible ? 'primary' : ''"
+                    title="历史任务"
+                    @click="toggleTaskList"
+                  />
                   <el-button
                     v-if="canFileNow"
                     size="small"
@@ -274,23 +284,72 @@
                               也能直接帮你新建连接和资源目录。
                             </p>
                           </div>
-                          <div v-for="m in w.chatMessages" :key="m.id" :class="['ops-msg', m.role === 'user' ? 'msg-user' : 'msg-assistant']">
-                            <div class="ops-msg-avatar" :class="m.role === 'user' ? 'avatar-user' : 'avatar-assistant'">
-                              <el-icon :size="15"><component :is="m.role === 'user' ? User : ChatDotRound" /></el-icon>
-                            </div>
-                            <div class="ops-msg-body">
-                              <div class="ops-msg-meta">
-                                <span class="ops-msg-role-name">{{ m.role === 'user' ? '我' : (m.subAgentName || '运维助手') }}</span>
-                                <span v-if="m.createdAt" class="ops-msg-time">{{ fmtTime(m.createdAt) }}</span>
-                                <span v-if="m.streaming" class="ops-msg-streaming">输出中…</span>
+                          <!-- 按「轮」渲染（2026-10-21 对齐 WorkBuddy 的呈现）：
+                               每轮 = 用户一句话 + 该轮 思考 / 工具 / 回复，三段就近聚在一起。
+                               此前是按条平铺 + 步骤卡堆在列表底部，用户看不出
+                               "这句话的执行过程在哪、它的结论是哪段"。 -->
+                          <div v-for="(rd, ri) in roundsOf(w)" :key="rd.user?.id || 'rd-' + ri" class="ops-round">
+                            <!-- 用户消息 -->
+                            <div v-if="rd.user" class="ops-msg msg-user">
+                              <div class="ops-msg-avatar avatar-user"><el-icon :size="15"><User /></el-icon></div>
+                              <div class="ops-msg-body">
+                                <div class="ops-msg-meta">
+                                  <span class="ops-msg-role-name">我</span>
+                                  <span v-if="rd.user.createdAt" class="ops-msg-time">{{ fmtTime(rd.user.createdAt) }}</span>
+                                </div>
+                                <div class="ops-msg-content">{{ rd.user.content }}</div>
                               </div>
-                              <!-- 用户消息纯文本；助手消息 markdown 渲染（对齐主对话：代码高亮 + 复制 + 工具调用 chip） -->
-                              <div v-if="m.role === 'user'" class="ops-msg-content">{{ m.content }}</div>
-                              <div v-else class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(m.content)"></div>
+                            </div>
+
+                            <!-- 助手侧：思考 → 工具 → 回复 -->
+                            <div class="ops-msg msg-assistant">
+                              <div class="ops-msg-avatar avatar-assistant">
+                                <el-icon :size="15"><ChatDotRound /></el-icon>
+                              </div>
+                              <div class="ops-msg-body">
+                                <div class="ops-msg-meta">
+                                  <span class="ops-msg-role-name">运维助手</span>
+                                  <span v-if="rd.streaming" class="ops-msg-streaming">输出中…</span>
+                                </div>
+
+                                <!-- ① 深度思考：与主对话同一个徽标组件，默认收起，点开看全文 -->
+                                <div v-if="rd.reasoning" class="msg-reasoning">
+                                  <DeepThinkBadge
+                                    :state="rd.streaming && !rd.answer ? 'thinking' : 'done'"
+                                    :chars="rd.reasoning.length"
+                                    :open="!!expandedReasoning[activeWinId + ':' + ri]"
+                                    @toggle="toggleRoundReasoning(ri)"
+                                  />
+                                  <div v-if="expandedReasoning[activeWinId + ':' + ri]" class="reasoning-body">{{ rd.reasoning }}</div>
+                                </div>
+
+                                <!-- ② 工具：一行摘要（执行中转圈 / 结束后 N 次调用），点开才是步骤明细 -->
+                                <div
+                                  v-if="rd.steps.length"
+                                  class="ops-tool-summary"
+                                  :class="{ 'is-live': rd.streaming, 'is-open': stepsOpen[activeWinId + ':' + ri] }"
+                                  @click="toggleRoundSteps(ri)"
+                                >
+                                  <el-icon :size="13" class="ops-tool-summary-icon">
+                                    <Loading v-if="rd.streaming" class="is-loading" />
+                                    <CircleCheck v-else-if="!rd.steps.some((s) => s.status === 'failed')" />
+                                    <WarningFilled v-else />
+                                  </el-icon>
+                                  <span class="ops-tool-summary-text">{{ roundToolSummary(rd.steps) }}</span>
+                                  <el-icon :size="11" class="ops-tool-summary-caret"><ArrowRight /></el-icon>
+                                </div>
+                                <div v-if="stepsOpen[activeWinId + ':' + ri]" class="ops-tool-steps">
+                                  <OpsStepCards :steps="rd.steps" />
+                                </div>
+
+                                <!-- ③ 回复：流式期间原样显示增量，结束后 markdown -->
+                                <div v-if="roundAnswerText(rd)" class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(roundAnswerText(rd))"></div>
+                                <div v-else-if="rd.streaming && !roundAnswerText(rd) && !rd.reasoning && !rd.steps.length" class="ops-msg-content ops-typing">
+                                  <span class="typing-dots"><span></span><span></span><span></span></span>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                          <!-- AI 模式：每一步渲染成可展开步骤卡（工具名 + 状态 + 耗时 + 真实输出） -->
-                          <OpsStepCards :steps="stepsOf(w)" />
                         </div>
                         <div class="ops-chat-input">
                           <el-input
@@ -302,13 +361,23 @@
                             :placeholder="chatPlaceholder(w)"
                             @keydown.ctrl.enter="submitWinChat(w)"
                           />
-                          <!-- 输入框工具条（P0）：左=动作语义，右=模型 / 静默权限 / 发送 -->
+                          <!-- 输入框工具条（P0）：左=动作语义 + 工作目录，右=模型 / 静默权限 / 发送 -->
                           <div class="ops-input-toolbar">
                             <div class="ops-toolbar-group">
                               <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'exec' }" plain title="执行模式：发送时直接写终端，不经过模型" @click="w.chatMode = 'exec'">执行</el-button>
                               <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'agent' }" plain title="Agent 模式：发送给运维助手执行" @click="w.chatMode = 'agent'">Agent</el-button>
                               <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'background' }" plain title="后台模式：提交为后台 AI 任务，关掉面板也会继续" @click="w.chatMode = 'background'">后台</el-button>
                             </div>
+                            <!-- 工作目录（对齐主对话输入区）：点开即切换本窗口任务的根目录 -->
+                            <button
+                              class="ops-dir-btn"
+                              type="button"
+                              :title="`工作目录：${workspaceDirLabel}\n点击切换（影响本窗口 AI 任务的读写与相对路径解析）`"
+                              @click="showDirPicker = true"
+                            >
+                              <el-icon :size="13"><FolderOpened /></el-icon>
+                              <span class="ops-dir-name">{{ workspaceDirName }}</span>
+                            </button>
                             <div class="ops-toolbar-spacer"></div>
                             <el-select
                               v-model="w.modelId"
@@ -373,17 +442,40 @@
                         <div v-show="w.cmdChatOpen" class="ops-cmdchat-body">
                           <div :ref="(el: any) => setStripEl(w.id, el)" class="ops-cmdchat-msgs" @click="onMdClick">
                             <div v-if="!w.chatMessages.length" class="ops-cmdchat-empty">描述运维任务让助手执行，或点下面的快捷指令</div>
-                            <div v-for="m in w.chatMessages" :key="'s' + m.id" :class="['ops-msg', 'ops-msg-sm', m.role === 'user' ? 'msg-user' : 'msg-assistant']">
-                              <div class="ops-msg-body">
-                                <div class="ops-msg-meta">
-                                  <span class="ops-msg-role-name">{{ m.role === 'user' ? '我' : (m.subAgentName || '运维助手') }}</span>
-                                  <span v-if="m.streaming" class="ops-msg-streaming">输出中…</span>
+                            <!-- 与 AI 模式同构：按轮展示，思考/工具/回复就近（折叠条空间小，工具明细默认收起） -->
+                            <div v-for="(rd, ri) in roundsOf(w)" :key="'s' + (rd.user?.id || ri)" class="ops-round ops-round-sm">
+                              <div v-if="rd.user" class="ops-msg ops-msg-sm msg-user">
+                                <div class="ops-msg-body">
+                                  <div class="ops-msg-meta"><span class="ops-msg-role-name">我</span></div>
+                                  <div class="ops-msg-content">{{ rd.user.content }}</div>
                                 </div>
-                                <div v-if="m.role === 'user'" class="ops-msg-content">{{ m.content }}</div>
-                                <div v-else class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(m.content)"></div>
+                              </div>
+                              <div class="ops-msg ops-msg-sm msg-assistant">
+                                <div class="ops-msg-body">
+                                  <div class="ops-msg-meta">
+                                    <span class="ops-msg-role-name">运维助手</span>
+                                    <span v-if="rd.streaming" class="ops-msg-streaming">输出中…</span>
+                                  </div>
+                                  <div v-if="rd.reasoning" class="msg-reasoning">
+                                    <DeepThinkBadge
+                                      :state="rd.streaming && !rd.answer ? 'thinking' : 'done'"
+                                      :chars="rd.reasoning.length"
+                                      :open="!!expandedReasoning['sm:' + activeWinId + ':' + ri]"
+                                      @toggle="toggleRoundReasoning(ri, 'sm:')"
+                                    />
+                                    <div v-if="expandedReasoning['sm:' + activeWinId + ':' + ri]" class="reasoning-body">{{ rd.reasoning }}</div>
+                                  </div>
+                                  <div v-if="rd.steps.length" class="ops-tool-summary" :class="{ 'is-live': rd.streaming }">
+                                    <el-icon :size="12" class="ops-tool-summary-icon">
+                                      <Loading v-if="rd.streaming" class="is-loading" />
+                                      <CircleCheck v-else />
+                                    </el-icon>
+                                    <span class="ops-tool-summary-text">{{ roundToolSummary(rd.steps) }}</span>
+                                  </div>
+                                  <div v-if="roundAnswerText(rd)" class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(roundAnswerText(rd))"></div>
+                                </div>
                               </div>
                             </div>
-                            <OpsStepCards :steps="stepsOf(w)" compact />
                           </div>
                           <div class="ops-cmdchat-chips">
                             <button
@@ -487,6 +579,9 @@
         </el-tabs>
       </section>
 
+    <!-- 工作目录选择（输入框工具条入口）：选定后写入全局设置，本窗口任务按它解析相对路径 -->
+    <WorkspaceDirDialog v-model="showDirPicker" :current-path="workspaceDirLabel" @selected="onWorkspaceDirSelected" />
+
     <!-- 资源 / 目录 右键菜单（自绘，与文件页同款） -->
     <Teleport to="body">
 <div
@@ -568,6 +663,9 @@ import {
   type ConnType,
   type OpsGroup,
   type OpsWin,
+  type OpsMsg,
+  type OpsRound,
+  type OpsStep,
   type OpsToolCall,
   type TermHandle,
   type TermTransport,
@@ -576,7 +674,8 @@ import {
   TYPE_LABELS,
   VIEW_LABEL,
   PRIMARY_VIEW,
-  buildSteps,
+  buildRoundSteps,
+  buildOpsRounds,
   opsWindows,
   opsActiveWinId,
   opsFilePanelOpen,
@@ -594,7 +693,8 @@ import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import {
   Folder, FolderOpened,
   ArrowDown, ArrowRight, ArrowUp, Close, Plus,
-  ChatDotRound, User, Setting, Promotion,
+  ChatDotRound, User, Setting, Promotion, Clock,
+  Loading, CircleCheck, WarningFilled,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Terminal } from '@xterm/xterm';
@@ -612,6 +712,7 @@ import OpsMetricsPanel from '../../components/ops/OpsMetricsPanel.vue';
 import OpsRecordingsPanel from '../../components/ops/OpsRecordingsPanel.vue';
 import OpsKnownHostsPanel from '../../components/ops/OpsKnownHostsPanel.vue';
 import OpsStepCards from '../../components/ops/OpsStepCards.vue';
+import DeepThinkBadge from '../../components/chat/DeepThinkBadge.vue';
 import ReleaseProjectPanel from '../../components/ops/ReleaseProjectPanel.vue';
 import OpsBroadcastDialog from '../../components/ops/OpsBroadcastDialog.vue';
 import CicdConsole from './CicdConsole.vue';
@@ -619,6 +720,7 @@ import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
 import ConsoleShell from '../../components/console/ConsoleShell.vue';
+import WorkspaceDirDialog from '../../components/WorkspaceDirDialog.vue';
 import { useResizable } from '../../composables/useResizable';
 
 // 类型与常量定义见上方 <script> 模块块（跨路由切换需要保留的会话状态也在那里）
@@ -1025,8 +1127,9 @@ function openWsTermTransport(
     sock.onclose = () => {
       failExecWaiters('终端已断开');
       // 握手中途被关 → 回退到 SSE；已就绪后关闭 → 断开收尾（窗口还在，可点「连接终端」重连）
-      if (!settled) fail(new Error('WebSocket 已关闭'));
-      else markTermDisconnected(w);
+      // ★ 判据用 settled 的快照：fail() 内部会把它置 true，先判再调才是"当时是否已就绪"
+      if (!settled) { fail(new Error('WebSocket 已关闭')); return; }
+      markTermDisconnected(w);
     };
   });
 }
@@ -1222,29 +1325,88 @@ function stripAnsi(s: string): string {
     .replace(/\u001b\][^\u0007]*\u0007/g, '')
     .replace(/\u001b[@-Z\\-_]/g, '');
 }
-/** 该窗口终端现场摘要（仅终端已连接且有内容时返回，避免污染普通对话） */
-function terminalContextHint(w: OpsWin): string {
-  if (!w.termOpen) return '';
-  const cmds = w.lastCommands.slice(-6).join('\n');
-  const out = stripAnsi(w.outputBuffer).slice(-1200).trim();
-  if (!cmds && !out) return '';
-  return `\n\n（当前终端现场——最近命令：\n${cmds || '（无）'}\n最近输出尾部：\n${out || '（无）'}）`;
+/**
+ * 窗口 → 服务端「运维现场」入参（2026-10-21）。
+ *
+ * ★ 只下发**薄描述**：连接 id、终端尾部、发布项目 id。
+ *   连接名/主机/类型/发布目标等详情由服务端按 id 回查后写进系统提示词 ——
+ *   前端不再拼字符串进 userContent（用户原话必须干净入库）。
+ */
+function opsContextOf(w: OpsWin): Record<string, unknown> {
+  const ctx: Record<string, unknown> = {
+    connectionId: w.connectionId || null,
+    releaseProjectId: w.releaseProject?.id || null,
+  };
+  if (w.termOpen) {
+    ctx.recentCommands = w.lastCommands.slice(-6);
+    const tail = stripAnsi(w.outputBuffer).trim();
+    if (tail) ctx.terminalTail = tail.slice(-4000);
+  }
+  return ctx;
+}
+
+// ===== 历史任务段（左栏顶部）============
+// 默认展开；顶栏「历史任务」按钮可收起/展开。收起后列表数据仍留在 chatStore（不清空），
+// 重新展开不会重新拉数据、也不会丢当前选中行。
+const taskListVisible = ref(true);
+function toggleTaskList() {
+  taskListVisible.value = !taskListVisible.value;
+  // 展开时顺手刷一次：任务可能在别处（办公模式）新建过
+  if (taskListVisible.value) void refreshTaskList();
+}
+
+// ===== 工作目录（输入框工具条）：与主对话同一份设置，避免"设置里一处、运维里另一处" =====
+const showDirPicker = ref(false);
+/** 完整路径（对话框 current-path + 按钮 title 用） */
+const workspaceDirLabel = computed(() => settingsStore.settings.workspaceDir || '');
+/** 按钮上只显示末级目录名，路径全量放 title —— 工具条 32px 高放不下整条路径 */
+const workspaceDirName = computed(() => {
+  const p = (workspaceDirLabel.value || '').replace(/[\\/]+$/, '');
+  if (!p) return '工作目录';
+  const seg = p.split(/[\\/]/).filter(Boolean);
+  return seg.length ? seg[seg.length - 1] : p;
+});
+function onWorkspaceDirSelected(dir: string) {
+  if (!dir) return;
+  settingsStore.settings.workspaceDir = dir;
+  showDirPicker.value = false;
+  ElMessage.success(`工作目录已切换到 ${dir}`);
 }
 
 // ===== 对话模式：每窗口独立会话，不依赖全局 chat store =====
 // 关键约束：普通对话页的 currentConvId/currentMessages 是全局单例状态，
 // 这里绝不读写它们 —— 每个窗口各自一条 conversation 行（绑定 a_builtin_ops_agent），
 // 消息走窗口自有列表 + 后端 message 表（含 tool_calls_json），互不串扰。
+/**
+ * 建窗口会话（每窗口一条 conversation 行，绑定运维助手智能体）。
+ *
+ * ★★★ 必须带 `mode: 'ops'`（2026-10-21 用户实报「发送后任务就没了，也没有列表能看到」）：
+ *   后端 POST /conversations 在不传 mode 时**默认落 'office'**（见 routes/conversations.ts
+ *   的 `VALID_MODES.has(mode) ? mode : 'office'`）。而左栏任务列表按 `activeMode`（运维 = 'ops'）
+ *   过滤 → 会话建在 office 里，运维任务列表永远查不到它，表现为「任务凭空消失」。
+ *   会话按模式隔离是既定设计（用户 2026-09-18 拍板），所以这里必须显式声明。
+ */
 async function ensureWinConversation(w: OpsWin): Promise<string> {
   if (w.conversationId) return w.conversationId;
   const c = connOf(w);
   const r = await api.post<any>('/conversations', {
     title: `运维控制台${c ? ' · ' + c.name : ''}`,
     agentId: OPS_AGENT_ID,
+    mode: 'ops',
   });
   if ('error' in r) throw new Error(r.error);
   w.conversationId = (r.data as any).id as string;
+  // 新会话要立刻出现在左栏任务列表：重拉一次（本页不看 chatStore 的实时推送）
+  void refreshTaskList();
   return w.conversationId;
+}
+
+/** 重拉任务列表数据源（chatStore.conversations），失败静默（列表保持旧值） */
+async function refreshTaskList() {
+  try {
+    const { useChatStore } = await import('../../stores/chat');
+    await useChatStore().loadConversations();
+  } catch { /* 列表刷新失败不影响任务本身 */ }
 }
 
 async function loadWinMessages(w: OpsWin) {
@@ -1257,6 +1419,8 @@ async function loadWinMessages(w: OpsWin) {
       // 工具调用：assistant.tool_calls_json 发起 → role=tool 的结果消息回填（步骤卡数据源）
       toolCalls: parseToolCalls(m.tool_calls_json),
       toolCallId: m.tool_call_id || undefined,
+      // 深度思考：后端一直有落库，此前没读 → 历史会话里看不到任何思考（2026-10-21 修）
+      reasoning: m.reasoning_content || undefined,
     }));
   }
 }
@@ -1293,22 +1457,92 @@ function scrollChatBottom(w: OpsWin) {
 
 // ===== AI 模式步骤卡 + 底部命令行（任务 7.6 / 7.7）=====
 // 步骤完全由消息推导（assistant.toolCalls 发起 + role=tool 结果回填），后端零改动。
+// ★ 只取最后一轮（最后一条 user 之后的步骤），不再把历史各轮全摊在列表尾部。
 function stepsOf(w: OpsWin) {
-  return buildSteps(w.chatMessages);
+  return buildRoundSteps(w.chatMessages);
+}
+
+// ===== 按轮渲染（2026-10-21：思考 / 工具 / 回复 三段就近展示）=====
+/** 思考展开态、工具明细展开态：都按 "窗口id:轮序号" 记，避免多窗口串状态 */
+const expandedReasoning = ref<Record<string, boolean>>({});
+const stepsOpen = ref<Record<string, boolean>>({});
+/** 轮次组装缓存：key 用「消息条数 + 末条内容长度 + 末条流式态」，命中即复用 */
+const roundsCache = new WeakMap<OpsMsg[], { rounds: OpsRound[]; sig: string }>();
+function roundsOf(w: OpsWin): OpsRound[] {
+  const msgs = w.chatMessages;
+  const last = msgs[msgs.length - 1];
+  // 流式期间 chunk 改的是末条 content（对象引用不变）→ 必须把长度纳入签名，否则正文不更新
+  const sig = `${msgs.length}|${last?.id || ''}|${last?.content?.length || 0}|${last?.streaming ? 1 : 0}|${last?.reasoning?.length || 0}`;
+  const hit = roundsCache.get(msgs);
+  if (hit && hit.sig === sig) return hit.rounds;
+  const rounds = buildOpsRounds(msgs);
+  roundsCache.set(msgs, { rounds, sig });
+  return rounds;
+}
+/** 展开态 key：`<前缀?><窗口id>:<轮序号>` —— 前缀区分主区域与折叠条（两处各自独立展开） */
+function reasoningKey(ri: number, prefix = ''): string {
+  return `${prefix}${activeWinId.value}:${ri}`;
+}
+/**
+ * 正文显示什么：最终答复优先；本轮未结束且还没有答复时，用过渡叙述顶上，
+ * 避免"工具跑着、回答区一片空白"（思考区默认收起，用户不知道在等什么）。
+ */
+function roundAnswerText(rd: OpsRound): string {
+  if (rd.answer) return rd.answer;
+  return rd.streaming ? rd.liveNarration : '';
+}
+function toggleRoundReasoning(ri: number, prefix = '') {
+  const k = reasoningKey(ri, prefix);
+  expandedReasoning.value = { ...expandedReasoning.value, [k]: !expandedReasoning.value[k] };
+}
+function toggleRoundSteps(ri: number) {
+  const k = reasoningKey(ri);
+  stepsOpen.value = { ...stepsOpen.value, [k]: !stepsOpen.value[k] };
+}
+/**
+ * 工具摘要文案：读起来像人话，不堆工具名。
+ * 例：「检索了 2 个文件，读取了 3 个文件，执行了 5 个工具」/「执行中 · ssh_exec」。
+ */
+function roundToolSummary(steps: OpsStep[]): string {
+  const running = steps.find((s) => s.status === 'running');
+  if (running) return `执行中 · ${shortTool(running.toolName)}`;
+  const buckets: Record<string, number> = {};
+  let other = 0;
+  for (const s of steps) {
+    const name = shortTool(s.toolName);
+    if (/^search|grep|find/i.test(name)) buckets['检索'] = (buckets['检索'] || 0) + 1;
+    else if (/^(read|cat|sftp_list)/i.test(name)) buckets['读取文件'] = (buckets['读取文件'] || 0) + 1;
+    else if (/^(write|edit|upload)/i.test(name)) buckets['修改文件'] = (buckets['修改文件'] || 0) + 1;
+    else other += 1;
+  }
+  const parts = Object.entries(buckets).map(([k, n]) => `${k} ${n} 处`);
+  if (other) parts.push(`执行了 ${other} 个工具`);
+  const failed = steps.filter((s) => s.status === 'failed').length;
+  const base = parts.length ? parts.join('，') : `执行了 ${steps.length} 个工具`;
+  return failed ? `${base}（${failed} 个失败）` : base;
 }
 /** 底部命令行文案：正在执行第 N 步 / 需确认 / 等待指令 */
 function cmdlineText(w: OpsWin): string {
+  if (w.chatStreaming) {
+    const steps = stepsOf(w);
+    const running = steps.find((s) => s.status === 'running');
+    if (running) return `正在执行第 ${running.index} 步 · ${shortTool(running.toolName)}`;
+    return steps.length ? `本轮已执行 ${steps.length} 步 · 思考中…` : '思考中…';
+  }
   const steps = stepsOf(w);
   if (!steps.length) return '输入运维任务或追加指令，我来执行';
-  const running = steps.find((s) => s.status === 'running');
-  if (running) return `正在执行第 ${running.index} 步 · ${running.toolName}`;
   const pending = steps.find((s) => s.needConfirm && s.status === 'done');
-  if (pending) return `第 ${pending.index} 步「${pending.toolName}」需确认 · 回复「确认执行」继续`;
+  if (pending) return `第 ${pending.index} 步「${shortTool(pending.toolName)}」需确认 · 回复「确认执行」继续`;
   const last = steps[steps.length - 1];
-  return `已完成 ${steps.length} 步（最后：${last.toolName}）· 可继续追加指令`;
+  const failed = steps.filter((s) => s.status === 'failed').length;
+  return `本轮已完成 ${steps.length} 步${failed ? `（${failed} 步失败）` : ''}（最后：${shortTool(last.toolName)}）· 可继续追加指令`;
 }
 function cmdlineNeedConfirm(w: OpsWin): boolean {
   return stepsOf(w).some((s) => s.needConfirm && s.status === 'done');
+}
+/** 工具名去插件前缀：plugin_ops-shell__ssh_exec → ssh_exec（界面上叫全名没信息量） */
+function shortTool(name: string): string {
+  return (name || 'tool').replace(/^plugin_[\w-]+__/, '');
 }
 /** 点击命令行 = 聚焦输入框，支持自然语言追加指令 */
 const chatInputEls = new Map<string, { focus: () => void } | null>();
@@ -1480,20 +1714,10 @@ const RELEASE_TOOL_IDS = [
 ];
 
 /**
- * 发布项目上下文：本地目录 / 技术栈 / 构建命令 / 部署目标。
- * ★ 只带连接名与 host（配合 conn_list 的「密钥永不返回」约定），不把 secretEnc 拼进来。
+ * 发布项目上下文：本地目录 / 技术栈 / 部署目标。
+ * ★ 2026-10-21 起前端**不再拼接**这段文本 —— 只下发 releaseProjectId，
+ *   由服务端按 id 回查后写进系统提示词（连接名同样服务端解析，避免改名后残留旧值）。
  */
-function releaseProjectHint(w: OpsWin): string {
-  const p = w.releaseProject;
-  if (!p) return '';
-  const targets = p.targets.map((t) => {
-    const c = connections.value.find((x) => x.id === t.connectionId);
-    return `- ${t.name}：${c ? `${c.name}（${c.username}@${c.host}）` : '连接已删除'}；发布目录 ${t.remotePath || '（未填）'}；重启 ${t.restartScript || '（未填）'}`;
-  }).join('\n');
-  const build = p.buildHint?.command ? `；构建命令 ${p.buildHint.command}` : '';
-  const artifact = p.buildHint?.artifact ? `；产物 ${p.buildHint.artifact}` : '';
-  return `\n\n（已绑定发布项目：${p.name}；本地目录 ${p.localDir}；技术栈 ${p.techStack?.buildType || '未识别'}${build}${artifact}\n部署目标：\n${targets || '（未配置）'}）`;
-}
 
 /** 绑定发布项目：会话落 release_project_id + 合并挂载 CICD/连接工具（幂等） */
 async function onBindReleaseProject(project: ReleaseProject) {
@@ -1543,15 +1767,10 @@ async function onUnbindReleaseProject() {
   ElMessage.success('已解绑发布项目');
 }
 
-/** 把当前连接（含类型）作为上下文提示带给运维助手（对话 / 后台任务共用） */
-function winConnHint(w: OpsWin): string {
-  const c = connOf(w);
-  if (!c) return '\n\n（尚未选定连接，请先选择或在工具参数里指定连接名）';
-  const extra = connType(c) === 'database'
-    ? `，${c.dbType === 'postgres' ? 'PostgreSQL' : 'MySQL'}，库名 ${c.database || '（未指定）'}`
-    : '';
-  return `\n\n（当前选定连接：${c.name}，类型 ${TYPE_LABELS[connType(c)]}，${c.username}@${c.host}:${c.port}${extra}${c.tag ? '，标签 ' + c.tag : ''}）`;
-}
+/**
+ * 当前连接上下文：**前端不再拼接**（2026-10-21）。
+ * 只下发 connectionId，连接名/类型/host 由服务端按 id 回查 —— 见 opsContextOf。
+ */
 
 /** 输入框提交：按当前模式分派（执行 / Agent / 后台）；`/` 前缀始终按直接执行 */
 function submitWinChat(w: OpsWin) {
@@ -1589,15 +1808,14 @@ async function sendWinChat(w: OpsWin) {
     return;
   }
 
-  // 上下文提示：把本窗口的连接（含类型）带给运维助手
-  const connHint = winConnHint(w);
+  // ★★★ 2026-10-21：现场上下文**不再拼进 userContent**（用户原话干净入库），
+  //   改为随任务下发结构化 opsContext，由服务端回查连接/发布项目后注入系统提示词。
+  //   旧做法把「（当前选定连接…）（终端现场…）」拼进用户消息入库，导致 ①库里存脏数据
+  //   ②消息列表得靠正则剥离才能显示正常 ③每轮重复把整份现场塞进用户回合。
   w.chatInput = '';
   w.chatStreaming = true;
   w.chatMessages.push({ id: `local-${Date.now()}`, role: 'user', content, createdAt: Date.now() });
   scrollChatBottom(w);
-
-  // 终端已连接时把现场（最近命令 + 输出尾部）一并带上，让助手直接看到报错现场
-  const prompt = content + connHint + terminalContextHint(w) + releaseProjectHint(w);
 
   const ac = new AbortController();
   chatAborts.set(w.id, ac);
@@ -1606,8 +1824,9 @@ async function sendWinChat(w: OpsWin) {
       conversationId: w.conversationId,
       platformId: platform.id,
       modelId: model.id,
-      userContent: prompt,
+      userContent: content,
       agentId: OPS_AGENT_ID,
+      opsContext: opsContextOf(w),
     });
     if ('error' in taskRes) throw new Error(taskRes.error);
     const taskId = String(taskRes.data.taskId);
@@ -1647,13 +1866,13 @@ async function sendBackground(w: OpsWin) {
     ElMessage.error('创建会话失败: ' + (e as Error).message);
     return;
   }
-  const prompt = content + winConnHint(w) + terminalContextHint(w) + releaseProjectHint(w);
   const taskRes = await api.post<any>('/llm/tasks', {
     conversationId: w.conversationId,
     platformId: platform.id,
     modelId: model.id,
-    userContent: prompt,
+    userContent: content,
     agentId: OPS_AGENT_ID,
+    opsContext: opsContextOf(w),
   });
   if ('error' in taskRes) { ElMessage.error('提交失败: ' + taskRes.error); return; }
   if (taskRes.data.reused) {
@@ -1745,6 +1964,9 @@ async function subscribeWinTask(w: OpsWin, taskId: string, ac: AbortController):
         for (let i = list.length - 1; i >= 0; i--) {
           if (list[i].role === 'assistant' && list[i].streaming) {
             if (event.content) list[i].content += event.content;
+            // ★ 思考增量（2026-10-21）：后端 emit 的字段是 `reasoning`，与 `content` 并行。
+            //   此前只接 content → 运维模式永远看不到模型思考，用户以为"没思考直接答"。
+            if (event.reasoning) list[i].reasoning = (list[i].reasoning || '') + event.reasoning;
             scrollChatBottom(w);
             break;
           }
@@ -1768,16 +1990,20 @@ const md = new MarkdownIt({
   html: false, linkify: true, breaks: true,
   highlight(str: string, lang: string): string {
     const codeClass = lang ? ` class="language-${lang}"` : '';
+    // 语言标签与复制按钮同属「代码块 chrome」：都绝对定位，不占正文行
     const langLabel = lang ? `<span class="code-lang">${lang}</span>` : '';
     if (lang && hljs.getLanguage(lang)) {
       try {
         const h = hljs.highlight(str, { language: lang }).value;
-        return `<pre class="hljs ops-code">${langLabel}<button class="code-copy-btn" data-code="${encodeURIComponent(str)}">复制</button><code${codeClass}>${h}</code></pre>`;
+        return `<pre class="hljs ops-code${lang ? ' has-lang' : ''}">${langLabel}<button class="code-copy-btn" data-code="${encodeURIComponent(str)}">复制</button><code${codeClass}>${h}</code></pre>`;
       } catch {}
     }
-    return `<pre class="hljs ops-code">${langLabel}<button class="code-copy-btn" data-code="${encodeURIComponent(str)}">复制</button><code${codeClass}>${md.utils.escapeHtml(str)}</code></pre>`;
+    return `<pre class="hljs ops-code${lang ? ' has-lang' : ''}">${langLabel}<button class="code-copy-btn" data-code="${encodeURIComponent(str)}">复制</button><code${codeClass}>${md.utils.escapeHtml(str)}</code></pre>`;
   },
 });
+
+/** 内联工具 chip 的占位标记（模板里配 v-html 用） */
+const INLINE_TOOL_HTML = '<span class="ops-inline-tool">⚙ 正在调用工具</span>';
 
 function renderAssistantMarkdown(content?: string): string {
   let c = content || '';
@@ -1790,7 +2016,7 @@ function renderAssistantMarkdown(content?: string): string {
   c = c.replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]\s*$/g, '').split('\n@@REASON@@\n')[0].trim();
   return c.split(/(\[tool_call\])/g).map((part) => {
     if (part === '[tool_call]') {
-      return '<span class="ops-inline-tool">⚙ 正在调用工具</span>';
+      return INLINE_TOOL_HTML;
     }
     return md.render(part);
   }).join('');
@@ -2337,6 +2563,10 @@ async function decideApproval(row: ApprovalRow, approve: boolean) {
 onMounted(() => {
   // 待批准命令：可见性感知轮询（3s）—— 助手一登记就该尽快出现在界面上
   approvalPoll = startVisiblePolling(loadApprovals, { intervalMs: 3000 });
+  // 任务列表兜底重拉（2026-10-21）：App.vue 切模式时才 loadConversations，
+  // 本页直开/子窗口进入时不一定会触发 —— 列表可能是别的模式的旧数据（空）。
+  // 失败静默（列表保持现有值，不影响控制台使用）。
+  void refreshTaskList();
   void nextTick(() => {
     // 恢复主导方形态（AI 模式下激活窗口回到 chat 视图）
     applyLeadToActiveWin();
@@ -2603,6 +2833,47 @@ onUnmounted(() => {
 .ops-msg { display: flex; gap: 10px; animation: opsMsgIn 0.28s cubic-bezier(0.16, 1, 0.3, 1); }
 @keyframes opsMsgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .ops-msg.msg-user { flex-direction: row-reverse; }
+/* 轮：用户问 + 助手答（含思考/工具）为一组，组间留白大于组内 */
+.ops-round { display: flex; flex-direction: column; gap: 10px; }
+.ops-round + .ops-round { margin-top: 5px; }
+
+/* 工具摘要条（WorkBuddy 式）：默认一行，点开才出步骤明细 */
+.ops-tool-summary {
+  display: flex; align-items: center; gap: 6px;
+  align-self: flex-start; max-width: 100%;
+  padding: 3px 9px; margin: 2px 0 4px;
+  border: 1px solid var(--glass-border); border-radius: 7px;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent);
+  font-size: 11.5px; color: var(--color-text-secondary);
+  cursor: pointer; user-select: none;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.ops-tool-summary:hover { color: var(--color-text); border-color: color-mix(in srgb, var(--color-primary) 35%, transparent); }
+.ops-tool-summary-icon { flex-shrink: 0; color: var(--el-color-success, #16a34a); }
+.ops-tool-summary.is-live .ops-tool-summary-icon { color: var(--color-primary); }
+.ops-tool-summary-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-tool-summary-caret { flex-shrink: 0; color: var(--color-text-tertiary); transition: transform 0.15s ease; }
+.ops-tool-summary.is-open .ops-tool-summary-caret { transform: rotate(90deg); }
+.ops-tool-steps { margin: 0 0 6px; }
+
+/* 深度思考（复用主对话 DeepThinkBadge + .reasoning-body，这里只补运维侧的外边距） */
+.ops-msg-body .msg-reasoning { margin: 2px 0 6px; }
+.ops-msg-body .reasoning-body { margin-top: 4px; max-height: 220px; overflow-y: auto; }
+
+/* 思考中的三点初始态 */
+.ops-typing { padding: 4px 2px; }
+.typing-dots { display: inline-flex; gap: 4px; align-items: center; }
+.typing-dots > span {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--color-text-tertiary);
+  animation: opsTyping 1.2s infinite ease-in-out;
+}
+.typing-dots > span:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots > span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes opsTyping {
+  0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-3px); }
+}
 .ops-msg-avatar {
   width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
@@ -2640,13 +2911,35 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--color-text) 8%, transparent);
   padding: 1px 5px; border-radius: 4px;
 }
+/* 代码块（2026-10-21）：此前无 position 定位，highlight() 注入的「复制」按钮是 <pre> 的
+   首个子元素、按文档流排在最前一行 → 压在 1./2. 标题文字中间（截图实报）。改为 relative
+   + 按钮 absolute 右上角，hover 才显形；配色改浅底（原深底在白面板里像打补丁）。 */
 .ops-md pre {
-  /* 代码块走皮肤「凹陷层」（未开皮肤时保持原深色，行为不变） */
-  background: var(--skin-surface-sunken, #0f172a); color: var(--skin-text, #e2e8f0); padding: 12px 14px; border-radius: 8px;
+  position: relative;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+  border: 1px solid var(--glass-border);
+  color: var(--color-text); padding: 9px 12px; border-radius: 8px;
   overflow-x: auto; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px;
-  margin: 8px 0; max-width: 100%; white-space: pre-wrap; word-break: break-all;
+  line-height: 1.55;
+  margin: 6px 0; max-width: 100%;
+  white-space: pre-wrap; word-break: break-word;
 }
 .ops-md pre code { background: transparent; padding: 0; color: inherit; }
+.ops-md pre :deep(.code-lang) {
+  position: absolute; top: 7px; left: 12px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--color-text-tertiary);
+}
+.ops-md pre.has-lang { padding-top: 22px; }
+.ops-md pre :deep(.code-copy-btn) {
+  position: absolute; top: 6px; right: 6px;
+  opacity: 0; transition: opacity 0.15s ease;
+  border: 1px solid var(--glass-border); background: var(--color-surface);
+  color: var(--color-text-secondary); font-family: inherit; font-size: 10.5px;
+  padding: 1px 7px; border-radius: 6px; cursor: pointer;
+}
+.ops-md pre:hover :deep(.code-copy-btn) { opacity: 1; }
+.ops-md pre :deep(.code-copy-btn:hover) { color: var(--color-primary); border-color: var(--color-primary); }
 .ops-md blockquote {
   margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--color-primary);
   background: color-mix(in srgb, var(--color-primary) 6%, transparent); border-radius: 0 6px 6px 0;
@@ -2679,6 +2972,27 @@ onUnmounted(() => {
 .ops-input-toolbar { display: flex; align-items: center; gap: 8px; padding: 0 56px 2px 6px; min-height: 28px; }
 .ops-toolbar-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .ops-toolbar-spacer { flex: 1; min-width: 4px; }
+
+/* 工作目录按钮（对齐主对话输入区的目录入口）：只显示末级目录名，全路径进 title */
+.ops-dir-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  flex-shrink: 0; max-width: 168px; min-width: 0;
+  height: 24px; padding: 0 8px;
+  border: 1px solid var(--glass-border); border-radius: 7px;
+  background: transparent; color: var(--color-text-secondary);
+  font-family: inherit; font-size: 11.5px; cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.ops-dir-btn:hover {
+  color: var(--color-primary);
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
+}
+.ops-dir-btn > .el-icon { flex-shrink: 0; }
+.ops-dir-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: Consolas, monospace;
+}
 .ops-input-toolbar :deep(.el-button + .el-button) { margin-left: 0; }
 .ops-tool-btn { height: 24px; padding: 0 10px; font-size: 11.5px; }
 .ops-tool-btn-active { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }

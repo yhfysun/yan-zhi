@@ -1523,7 +1523,15 @@ const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负责在用
 1. 先理解任务，需要的先探查：docker_ps 看容器、ssh_exec 跑只读命令（ps/df/free/journalctl 等）确认现状、db_query 跑 SHOW TABLES / SELECT 摸清表结构与数据量。
 2. 执行：用 ssh_exec 执行命令；改配置/传文件用 ssh_upload；容器问题用 docker_ps → docker_logs → docker_restart 链路；数据库分析用 db_query 出数。
 3. 验证：变更后必须回查确认（如 restart 后 docker_ps 看状态、改配置后 cat 复核）。
-4. 回答：给出关键命令输出摘要 + 结论 + 风险提示。
+4. 回答：按下面「回答格式」输出结论与依据，不要复述过程。
+
+## 回答格式（重要，直接影响可读性）
+- **先给结论**：第一行一句话回答用户问的事（有 / 没有、能 / 不能、是什么状态）。不要在开头铺陈"好的，我来看看…"。
+- **再给依据**：判断依据用短列表，每条一行，关键值加粗（如 版本号 / 路径 / 权限位 / 进程数）。**不要整段粘贴命令原始输出** —— 需要展示命令时，只贴与结论相关的那几行，并说明它证明了什么。
+- **原始输出不要贴进回答**：执行过程与完整输出已经在「执行步骤」卡里，用户可以自己展开；正文里重复一遍只会把结论淹掉。
+- **风险/下一步**（仅在需要时）：要用户做决定的，列出 1～3 个可选动作及各自影响，明确推荐哪个，不要只抛问题。
+- 措辞：中文、陈述句、不用"我们"、不加表情；同一事实只说一次。
+- 反面例子（禁止）：把 docker --version、ps aux | grep 的完整输出原样贴出，再让用户自己找结论。
 
 ## 硬约束
 - 危险命令（rm -rf /、mkfs、dd、shutdown、fork bomb 等）会被服务端黑名单直接拒绝，不要尝试。
@@ -5298,6 +5306,18 @@ export function resetBuiltinTaskType(taskTypeId: string): boolean {
     r.sort_order, Date.now(), taskTypeId);
   return true;
 }
+
+// ===== 存量修正：运维助手会话的模式归属（2026-10-21）=====
+// 背景：OpsConsole 建会话时长期没传 mode，后端默认落 'office'；而运维任务列表按
+//   activeMode='ops' 过滤 → 用户的历史运维会话在运维页「凭空消失」（实报）。
+// 修正：agent_id 是运维助手（a_builtin_ops_agent）的会话一律归位 ops。
+//   - 只动 mode，不碰标题/消息/绑定，可重复执行（等值即跳过）；
+//   - 只迁移非 ops 的行，已正确的行零写入（避免每次启动刷 updated_at）。
+try {
+  db.prepare(
+    "UPDATE conversation SET mode = 'ops' WHERE agent_id = 'a_builtin_ops_agent' AND COALESCE(NULLIF(mode, ''), 'office') <> 'ops'",
+  ).run();
+} catch { /* 表/列缺失（极老库）→ 跳过，不影响启动 */ }
 
 /**
  * 生效任务类型清单：**库行 ∪ 内置代码定义**（库行为准）。

@@ -112,9 +112,16 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   })) as unknown as typeof window.matchMedia;
 }
 
+/**
+ * ★ 2026-10-21：显式给 hook 60s。
+ *   这里要首次编译 Settings.vue（连带 settings 面板整棵子树），单跑约 1.3s，
+ *   但**全量并发跑**时 CPU 被其他 worker 占满，曾超过 hookTimeout 默认 10s
+ *   → 表现为「整个文件 Failed Suites」，看起来像 Settings 坏了。
+ *   hook 只做一次模块加载，放宽超时不降低断言强度。
+ */
 beforeAll(async () => {
   Settings = (await import('./Settings.vue')).default;
-});
+}, 60_000);
 
 /** 挂载真组件；paneRef 为 ref 时支持挂载后改 prop（模拟左导航切换） */
 async function mount(pane: string | { value: string }): Promise<HTMLElement> {

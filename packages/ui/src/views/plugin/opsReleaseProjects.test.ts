@@ -41,13 +41,14 @@ describe('运维左栏 · 发布项目面板', () => {
     expect(CONSOLE).toContain("'plugin_ops-shell__conn_list'");
   });
 
-  it('★ 发布上下文只带连接名/host，绝不带密钥', () => {
-    const fn = CONSOLE.match(/function releaseProjectHint\(w: OpsWin\)[\s\S]*?\n\}/);
-    expect(fn, '找不到 releaseProjectHint').toBeTruthy();
-    expect(fn![0]).toMatch(/c\.host/);
-    expect(fn![0]).not.toMatch(/secretEnc/);
-    // 对话与后台任务两条链路都要带上
-    expect((CONSOLE.match(/releaseProjectHint\(w\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
+  it('★ 发布上下文不再由前端拼接（改由服务端按 id 回查注入系统提示词）', () => {
+    // 2026-10-21：releaseProjectHint 已删除 —— 前端拼进 userContent 会让用户消息入库即脏
+    expect(CONSOLE).not.toMatch(/function releaseProjectHint/);
+    expect(CONSOLE).not.toMatch(/releaseProjectHint\(w\)/);
+    // 改为下发 releaseProjectId（详情与 secretEnc 的守护在服务端 ops-context.test.ts）
+    expect(CONSOLE).toMatch(/releaseProjectId: w\.releaseProject\?\.id \|\| null/);
+    // 对话与后台任务两条链路都要带上现场
+    expect((CONSOLE.match(/opsContext: opsContextOf\(w\)/g) ?? []).length).toBe(2);
   });
 
   it('绑定后会话顶部有项目条；解绑会清空 conversation 绑定', () => {

@@ -12,7 +12,7 @@
  *   1) 在途守卫：同一条连点两次，请求只发**一次**；
  *   2) 本地回显：注入成功即把消息按真实 msgId 插入当前会话列表（不依赖 SSE）。
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 vi.mock('../api/client', () => ({
@@ -53,6 +53,14 @@ function deferred<T>() {
   const p = new Promise<T>((r) => { resolve = r; });
   return { p, resolve };
 }
+
+/**
+ * ★ 2026-10-21 修「第一条用例必超时」：
+ *   freshStore 每例都 `vi.resetModules()` 再 import 3.7k 行的 stores/chat.ts，
+ *   **第一条**承担整张依赖图的首次转译（实测 ~6s），默认 testTimeout=5000 → 永远红在第一条，
+ *   后面每例只要几百 ms。这里把冷启动成本前置到 hook（断言强度不变，仍逐例重建模块）。
+ */
+beforeAll(async () => { await freshStore(); }, 60_000);
 
 describe('追加消息 · 立即发送的幂等与回显', () => {
   beforeEach(() => { vi.clearAllMocks(); });

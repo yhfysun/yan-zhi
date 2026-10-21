@@ -19,7 +19,7 @@
  *
  * ⚠️ 源码结构断言必须先**剥注释**（项目既有坑：注释里写着旧代码字样会把 not.toMatch 误伤）。
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -75,6 +75,14 @@ async function freshChatStore() {
   const mod = await import('./chat');
   return mod.useChatStore();
 }
+
+/**
+ * ★ 2026-10-21 修「第一条用例必超时」：
+ *   freshChatStore 每例都 `vi.resetModules()` 再 import 3.7k 行的 stores/chat.ts，
+ *   **第一条**承担整张依赖图的首次转译（实测 ~6s），默认 testTimeout=5000 → 永远红在第一条，
+ *   后面每例只要几百 ms。这里把冷启动成本前置到 hook（断言强度不变，仍逐例重建模块）。
+ */
+beforeAll(async () => { await freshChatStore(); }, 60_000);
 
 describe('多会话发送 · callLlm 同会话守卫（核心根因）', () => {
   beforeEach(() => { vi.clearAllMocks(); });
