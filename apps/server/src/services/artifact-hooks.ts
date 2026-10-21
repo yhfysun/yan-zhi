@@ -16,6 +16,12 @@ import { collectArtifact } from './artifacts.js';
 const MEDIA_TOOLS = new Set([
   'api_image_generate', 'api_video_generate', 'api_video_status',
   'api_tts_speak', 'api_srt_generate', 'media_compose', 'media_edit',
+  // 本地 AI 配乐（music_compose）：产物是会话交付目录里的 m4a，不登记则文件管理看不到
+  'music_compose',
+  // 外部音乐大模型（music_generate）：整首歌产物同样在交付目录，必须登记
+  'music_generate',
+  // 音效库（api_sfx action=render）：合成的音效文件要能被文件管理看到
+  'api_sfx',
   // 剪辑渲染产物（clip_project op=render）：漏登记的表现是"成片渲染成功但文件管理里看不到"
   'clip_project',
 ]);

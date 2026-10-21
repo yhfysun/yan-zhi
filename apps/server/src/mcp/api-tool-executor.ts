@@ -39,6 +39,10 @@ import {
 } from '../services/experience.js';
 import { listVerificationCodes } from '../services/verification-codes.js';
 import { ensureArtifactDirFor, resolveArtifactDirFor } from '../services/artifact-dir.js';
+import { composeMusic } from '../services/music-render.js';
+import { generateSong } from '../services/music-generate.js';
+import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
+import { singingStatus, installSingingRuntime, importModelZip } from '../services/music-sing-install.js';
 import { applyClipOp, summarizeProject, type ClipProject } from '../services/clip-project.js';
 import { buildRenderPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
 import { readClipProject, writeClipProject } from '../services/clip-store.js';
@@ -372,6 +376,10 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_tts_speak', 'api_tts_voices',
   // 合成层：字幕生成 + ffmpeg 音视频合成（含按需下载 ffmpeg）
   'api_srt_generate', 'media_compose', 'media_install_ffmpeg', 'media_install_ytdlp',
+  // 外部音乐大模型：整首歌（人声+伴奏），走本机 new-api 的 Suno 路由
+  'music_generate',
+  // 音效库：ffmpeg 现场合成（免版权），模型可列/搜/取
+  'api_sfx',
   // 本地语音识别（whisper.cpp）：音频/视频 → 带时间轴的 SRT（不上传云端）+ 按需安装
   'media_asr_transcribe', 'whisper_install',
   // 剪辑与特效层：裁剪/变速/抽帧/变换/淡入淡出/调色/转场/画中画/图片运镜/BGM/音量/响度（统一走 media_edit 的 op）
@@ -1928,6 +1936,204 @@ async function mediaSrtGenerate(
   } catch (e: unknown) {
     return fail(`字幕落盘失败：${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/**
+ * 歌声合成运行时安装器（DiffSinger ONNX）。
+ * action=install（默认）/ status / import（手动导入 model.zip）。
+ */
+async function mediaInstallSinging(
+  args: Record<string, unknown>,
+): Promise<MpcToolExecutionResult> {
+  const action = String(args.action || 'install').trim();
+  if (action === 'status') {
+    return ok(JSON.stringify({ ok: true, ...(await singingStatus()) }));
+  }
+  if (action === 'import') {
+    const zip = String(args.zipPath || '').trim();
+    if (!zip) return fail('action=import 时必须提供 zipPath（本地 model.zip 路径）');
+    const r = await importModelZip(zip);
+    return ok(JSON.stringify(r));
+  }
+  if (action !== 'install') return fail('action 只能是 install / status / import');
+  const r = await installSingingRuntime();
+  return ok(JSON.stringify(r));
+}
+
+async function mediaComposeMusic(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const melodyRaw = Array.isArray(args.melody) ? args.melody : [];
+  const melody = melodyRaw.map((m) => {
+    const o = (m || {}) as Record<string, unknown>;
+    return {
+      start: Number(o.start),
+      len: Number(o.len),
+      pitch: o.pitch as string | number,
+    };
+  }).filter((m) => Number.isFinite(m.start) && Number.isFinite(m.len));
+
+  const lyricsRaw = Array.isArray(args.lyrics) ? args.lyrics : [];
+  const lyrics = lyricsRaw.map((l) => {
+    const o = (l || {}) as Record<string, unknown>;
+    return {
+      text: String(o.text ?? ''),
+      py: String(o.py ?? ''),
+      start: Number(o.start),
+      len: Number(o.len),
+      pitch: o.pitch as string | number,
+    };
+  }).filter((l) => Number.isFinite(l.start) && Number.isFinite(l.len));
+
+  const spec = {
+    title: typeof args.title === 'string' ? args.title : undefined,
+    bpm: Number.isFinite(Number(args.bpm)) ? Number(args.bpm) : undefined,
+    beatsPerBar: Number.isFinite(Number(args.beatsPerBar)) ? Number(args.beatsPerBar) : undefined,
+    bars: Number.isFinite(Number(args.bars)) ? Number(args.bars) : undefined,
+    style: typeof args.style === 'string' ? (args.style as never) : undefined,
+    chords: Array.isArray(args.chords) ? args.chords.map((c) => String(c)) : undefined,
+    drums: typeof args.drums === 'string' ? (args.drums as never) : undefined,
+    melody: melody.length ? melody : undefined,
+    lyrics: lyrics.length ? lyrics : undefined,
+    instruments: args.instruments && typeof args.instruments === 'object' ? args.instruments : undefined,
+    seed: Number.isFinite(Number(args.seed)) ? Number(args.seed) : undefined,
+  };
+
+  // ffmpeg 只用于 wav→m4a；不可用时 composeMusic 会降级交付 wav
+  let ffmpeg = '';
+  try {
+    const ff = await resolveFfmpeg();
+    if (ff.ok) ffmpeg = ff.ffmpeg;
+  } catch { /* 解析失败按不可用处理（降级 wav） */ }
+
+  const target = mediaTarget({ conversationId, kind: 'audios' });
+  const out = await composeMusic({ spec, dir: target.dir, ffmpeg, baseName: spec.title, vocalVoice: typeof args.vocalVoice === 'string' ? args.vocalVoice : undefined });
+  if (!out.ok || !out.file) return fail(out.error || '配乐生成失败');
+
+  return ok(JSON.stringify({
+    ok: true,
+    type: 'audio',
+    engine: 'local-synth',
+    file: out.file,
+    url: `${target.urlBase}/${encodeURIComponent(path.basename(out.file))}`,
+    bytes: out.bytes,
+    duration: out.duration,
+    audioSeconds: out.audioSeconds,
+    bpm: out.bpm,
+    bars: out.bars,
+    style: out.style,
+    chords: out.chordNames,
+    vocalEngine: out.vocalEngine,
+    warnings: out.warnings,
+    note: '本地合成器音色（非真实乐器采样，不含人声）；可直接作为 BGM 或按节拍对齐使用',
+  }));
+}
+
+/** 音效库：list / search / render。素材由 ffmpeg 现场合成（免版权，不打包二进制）。 */
+async function mediaSfx(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const action = String(args.action || 'list').trim();
+  const brief = (s: (typeof SFX_LIBRARY)[number]) => ({
+    id: s.id, label: s.label, desc: s.desc, group: s.group, maxSec: s.maxSec,
+  });
+
+  if (action === 'list') {
+    const groups = new Map<string, ReturnType<typeof brief>[]>();
+    for (const s of SFX_LIBRARY) {
+      if (!groups.has(s.group)) groups.set(s.group, []);
+      groups.get(s.group)!.push(brief(s));
+    }
+    return ok(JSON.stringify({
+      ok: true,
+      total: SFX_LIBRARY.length,
+      groups: [...groups.entries()].map(([group, items]) => ({ group, items })),
+    }));
+  }
+
+  if (action === 'search') {
+    const q = String(args.query || '').trim().toLowerCase();
+    const hits = SFX_LIBRARY.filter((s) => !q
+      || [s.id, s.label, s.desc, s.group].some((v) => String(v).toLowerCase().includes(q)));
+    return ok(JSON.stringify({ ok: true, count: hits.length, items: hits.map(brief) }));
+  }
+
+  if (action !== 'render') return fail('action 只能是 list / search / render');
+
+  const item = sfxById(String(args.id || '').trim());
+  if (!item) return fail(`音效不存在：${String(args.id || '')}`);
+  let ffmpeg = '';
+  try {
+    const ff = await resolveFfmpeg();
+    if (ff.ok) ffmpeg = ff.ffmpeg;
+  } catch { /* 下面统一报错 */ }
+  if (!ffmpeg) return fail('ffmpeg 不可用（音效是现场合成的，需要 ffmpeg）');
+
+  const target = mediaTarget({ conversationId, kind: 'audios' });
+  await mkdir(target.dir, { recursive: true });
+  const file = path.join(target.dir, `sfx-${item.id}-${Date.now()}.m4a`);
+  const r = await runCmd(ffmpeg, [
+    '-y', '-v', 'error', ...item.input,
+    '-af', item.af, '-t', String(item.maxSec),
+    '-c:a', 'aac', '-ar', '44100', '-ac', '2', file,
+  ], { timeoutMs: 60000, maxBuffer: 2 * 1024 * 1024 });
+  if (!r.ok) return fail(`生成失败：${(r.stderr || r.error).slice(-200)}`);
+  const name = path.basename(file);
+  return ok(JSON.stringify({
+    ok: true, type: 'audio', id: item.id, label: item.label, group: item.group,
+    file, url: `${target.urlBase}/${encodeURIComponent(name)}`, maxSec: item.maxSec,
+  }));
+}
+
+async function mediaGenerateMusic(
+  args: Record<string, unknown>,
+  userId: string | undefined,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  let uid: string;
+  try { uid = requireUser(userId); } catch (e: unknown) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+  const lyrics = typeof args.lyrics === 'string' ? args.lyrics : '';
+  if (!lyrics.trim()) return fail('music_generate 必须提供 lyrics（整首歌词，可用换行分段）');
+
+  let ffmpeg = '';
+  try {
+    const ff = await resolveFfmpeg();
+    if (ff.ok) ffmpeg = ff.ffmpeg;
+  } catch { /* ffmpeg 只用于转 m4a，不可用也能交付原始音频 */ }
+
+  const target = mediaTarget({ conversationId, kind: 'audios' });
+  const out = await generateSong({
+    lyrics,
+    style: typeof args.style === 'string' ? args.style : undefined,
+    title: typeof args.title === 'string' ? args.title : undefined,
+    instrumental: args.instrumental === true,
+    gender: args.gender === 'male' || args.gender === 'female' ? args.gender : undefined,
+    mv: typeof args.mv === 'string' ? args.mv : undefined,
+    baseUrl: typeof args.baseUrl === 'string' ? args.baseUrl : undefined,
+    apiKey: typeof args.apiKey === 'string' ? args.apiKey : undefined,
+    model: typeof args.model === 'string' ? args.model : undefined,
+  }, {
+    dir: target.dir,
+    userId: uid,
+    ffmpeg,
+    baseName: typeof args.title === 'string' ? args.title : undefined,
+  });
+  if (!out.ok || !out.file) return fail(out.error || '音乐生成失败');
+  const name = path.basename(out.file);
+  return ok(JSON.stringify({
+    ok: true,
+    type: 'audio',
+    engine: out.engine || 'suno',
+    file: out.file,
+    url: `${target.urlBase}/${encodeURIComponent(name)}`,
+    title: out.title,
+    warnings: out.warnings,
+    note: '外部音乐模型生成的整首歌（人声+伴奏）；旋律由模型决定，需要逐音符/卡点控制请用 music_compose',
+  }));
 }
 
 async function mediaCompose(
@@ -4422,6 +4628,14 @@ export async function executeApiTool(
         return await mediaTtsVoices();
       case 'api_srt_generate':
         return await mediaSrtGenerate(args, conversationId);
+      case 'music_compose':
+        return await mediaComposeMusic(args, conversationId);
+      case 'music_generate':
+        return await mediaGenerateMusic(args, userId, conversationId);
+      case 'api_sfx':
+        return await mediaSfx(args, conversationId);
+      case 'media_install_singing':
+        return await mediaInstallSinging(args);
       case 'media_compose':
         return await mediaCompose(args, conversationId);
       case 'media_edit':

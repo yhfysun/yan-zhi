@@ -366,6 +366,27 @@ interface PendingToolCall {
 const INTERACTIVE_TOOLS = new Set(['ask_user', 'confirm_user']);
 
 /**
+ * 危险工具：**每次执行前都要用户点确认**（2026-10-21 用户拍板）。
+ *
+ * 为什么在权限层拦而不是在提示词里叮嘱：可发现 ≠ 可执行。工具一旦开放给模型，
+ * 提示词被网页/文件内容注入就可能被拿来执行不可逆操作（跑命令、装东西、对外发布）。
+ * 复用既有的 requestPathAuthorization（挂起式授权卡），无人值守时 fail-safe 拒绝。
+ *
+ * 清单口径：跑任意代码 / 安装运行时 / 对外发布与发消息。其余（读写文件、查数据、生成媒体）不拦。
+ */
+export const DANGEROUS_TOOLS = new Set([
+  'cmd_exec', 'python_exec', 'js_exec',
+  'media_install_ffmpeg', 'media_install_singing', 'whisper_install', 'media_install_ytdlp',
+  'publish_enqueue', 'publish_mark_published',
+  'tcp_send', 'udp_send',
+]);
+
+/** 危险工具判定（供执行器与测试共用）：外部 IM 发送类 API 同样按危险处理。 */
+export function isDangerousTool(name: string): boolean {
+  return DANGEROUS_TOOLS.has(name) || name.startsWith('api_im_');
+}
+
+/**
  * 清掉一个 pending 工具调用的**全部**定时器（原始超时 + 断连宽限）。
  *
  * ★ 为什么要收口成一处：拆出 `graceTimer` 之前，这两类定时器共用一个字段，于是
@@ -5029,6 +5050,31 @@ async function executeTool(
       return granted.message;
     }
     logger.warn(`[user-hook] confirm 通过 conv=${task.conversationId} tool=${toolName} 规则=${hookVerdict.confirmRules.map((r) => r.name).join(',')}`);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 危险工具默认确认（2026-10-21 用户拍板：「危险工具要么确认呗」）
+  //   清单见 DANGEROUS_TOOLS：跑任意代码 / 安装运行时 / 对外发布与发消息。
+  //   用户已配置的 confirm 规则若已放行则不重复弹窗；无人值守 fail-safe 拒绝。
+  // ══════════════════════════════════════════════════════════════════════════
+  if (hookVerdict.confirmRules.length === 0 && isDangerousTool(toolName)) {
+    auditPathAccess({
+      userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+      toolName, decision: 'danger-confirm', reason: '危险工具默认需要确认', items: [hookItem],
+    });
+    const granted = await requestPathAuthorization(
+      task, toolName, [hookItem], COMMAND_TOOLS.has(toolName), `危险操作需要确认：${toolName}`,
+    );
+    if (!granted.ok) {
+      auditPathAccess({
+        userId: task.userId, conversationId: task.conversationId, taskId: task.id,
+        toolName, decision: 'user-hook-denied', reason: '危险工具未获确认', items: [hookItem],
+      });
+      logger.warn(`[danger] 未确认，拒绝 conv=${task.conversationId} tool=${toolName}`);
+      return granted.message
+        || `工具 \`${toolName}\` 属于危险操作（执行命令 / 安装运行时 / 对外发布），用户未确认，已取消。`;
+    }
+    logger.warn(`[danger] 已确认 conv=${task.conversationId} tool=${toolName}`);
   }
 
   // ══════════════════════════════════════════════════════════════════════════

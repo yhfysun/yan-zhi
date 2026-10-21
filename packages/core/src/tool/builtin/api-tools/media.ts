@@ -1,6 +1,6 @@
 import type { ToolDefinition } from '../../types';
 import type { ApiModuleName } from './index';
-import { COLOR_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectIds, effectCatalogText, TEXT_ANIMATIONS } from '@yan-zhi/shared';
+import { COLOR_EFFECTS, FX_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectIds, effectCatalogText, TEXT_ANIMATIONS } from '@yan-zhi/shared';
 
 /**
  * 效果清单从 @yan-zhi/shared 的效果库**自动生成**（单一真相源）。
@@ -13,6 +13,7 @@ import { COLOR_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectIds, effectCatalogText
  *   → 现在新增一个滤镜**只改 shared/utils/clip-effects.ts 一处**。
  */
 const COLOR_IDS = effectIds(COLOR_EFFECTS);
+const FX_IDS = effectIds(FX_EFFECTS);
 const TRANSITION_IDS = effectIds(TRANSITIONS);
 const AUDIO_FX_IDS = effectIds(AUDIO_EFFECTS);
 const TEXT_ANIM_IDS = effectIds(TEXT_ANIMATIONS);
@@ -144,6 +145,121 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**model**（模型层音色名）。' +
         '做多角色配音前调用它可了解有哪些声音；也可用于排查「传了 voice 却没生效」。',
       inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'media_install_singing',
+      description:
+        '安装/检查本地歌声合成运行时（DiffSinger ONNX，无需 GPU/torch）。' +
+        'action=install 会：同步内置推理代码 → pip 装依赖（清华/阿里镜像回退）→ 下载模型（256MB，按 gh-proxy / ghfast / GitHub 顺序回退，支持断点续传）→ 解压自检。' +
+        'action=status 只检查是否就绪。action=import 用本地已下载的 model.zip（zipPath）离线导入。' +
+        '★ 首次安装需下载约 400MB；失败会给出可操作的下一步，不会静默卡住。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['install', 'status', 'import'], description: '默认 install' },
+          zipPath: { type: 'string', description: 'action=import 时的本地 model.zip 路径' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'music_compose',
+      description:
+        '本地合成一段器乐配乐（AI 作曲）：**你负责写乐谱决定**（调性/和弦进行/旋律/风格/鼓型），' +
+        '工具负责配器与音频合成，输出 m4a（返回 {type:"audio", file, url}）。完全本地、免版权、BPM 精确，可直接当卡点 BGM。' +
+        '★ 边界：不能生成人声演唱，音色是合成器（不是真实乐器采样）。' +
+        '用法：给视频配 BGM 时先算小节数（bars ≈ 时长秒 × bpm / 60 / 每小节拍数），' +
+        '给 2~4 个和弦循环（如 ["Am","F","C","G"]），要旋律就写 melody（音名如 "C5" + 拍数）。' +
+        '同一 seed 得到同一版编曲；要换一版就换 seed。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: '曲名（用于文件名）' },
+          bpm: { type: 'number', description: '每分钟拍数 60~180（默认 96）' },
+          beatsPerBar: { type: 'number', description: '每小节拍数 3/4/6（默认 4）' },
+          bars: { type: 'number', description: '总小节数 1~64（默认 8）' },
+          style: { type: 'string', enum: ['gentle', 'ballad', 'lofi', 'pop', 'epic', 'edm', 'rock', 'folk', 'cn'], description: '风格：gentle 温柔 / ballad 钢琴抒情 / lofi 慵懒 / pop 流行 / epic 史诗 / edm 电子 / rock 摇滚（失真吉他+声学鼓）/ folk 民谣（指弹吉他）/ cn 国风（古筝+笛子+二胡）' },
+          chords: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '每小节一个和弦符号（循环使用），如 ["C","G","Am","F"]；支持 Am / F#m7 / Bb / Gsus4 / D7',
+          },
+          drums: { type: 'string', enum: ['none', 'ballad', 'pop', 'rock', 'edm', 'lofi'], description: '鼓型；不传按风格自动选' },
+          melody: {
+            type: 'array',
+            description: '主旋律（可选）：{start: 起始拍, len: 时值拍, pitch: "C5" 或 MIDI}',
+            items: {
+              type: 'object',
+              properties: {
+                start: { type: 'number', description: '起始拍（相对整段开头，0 开始）' },
+                len: { type: 'number', description: '时值（拍）' },
+                pitch: { type: 'string', description: '音名如 C5 / F#5（也接受 MIDI 数字）' },
+              },
+              required: ['start', 'len', 'pitch'],
+            },
+          },
+          seed: { type: 'number', description: '随机种子（同种子同编曲）' },
+          lyrics: {
+            type: 'array',
+            description: '歌词演唱（可选）：每字一个音 + **拼音**（无声调，如 yue/shang/wo）。装了 DiffSinger 运行时走神经歌声合成（更像真人）；未安装时回落到本地合成人声（机器人音色），可用 media_install_singing 安装。',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: '歌词字/词' },
+                py: { type: 'string', description: '拼音（无声调，必要时带 -n/-ng 尾，如 yue / shang / wo）' },
+                start: { type: 'number', description: '起始拍' },
+                len: { type: 'number', description: '时值（拍）' },
+                pitch: { type: 'string', description: '音名如 C4 / E5' },
+              },
+              required: ['text', 'py', 'start', 'len', 'pitch'],
+            },
+          },
+          instruments: {
+            type: 'object',
+            description: '覆盖声部乐器（可选）：keys/pad/bass/lead 可设为 piano|epiano|organ|strings|erhu|dizi|guitar|guzheng|pipa|dist_guitar|ebass|synth_bass|synth_pad|synth_lead',
+          },
+          vocalVoice: { type: 'string', description: '演唱音色（可选）：zh-CN-XiaoxiaoNeural 女声（默认）/ zh-CN-YunxiNeural 男声 / zh-CN-XiaoyiNeural 等 Edge 音色；连不上 Edge 会自动回落本地合成人声' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'music_generate',
+      description:
+        '用外部音乐大模型生成**整首歌**（人声演唱 + 伴奏），输出 m4a/mp3（返回 {type:"audio", file, url}）。' +
+        '适合"要好听的人声演唱"，旋律由模型决定、不可逐音符控制。' +
+        '★ 与 music_compose 并存：需要精确和弦/BPM/卡点用 music_compose；要自然的人声演唱用 music_generate。' +
+        '★ 前置条件：本机 new-api 网关里要配好 Suno 渠道（否则会返回"网关里没有 Suno 通道"）。' +
+        '歌词用 \\n 分段，可用 [Verse]/[Chorus] 这类标签引导结构。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          lyrics: { type: 'string', description: '整首歌词（中文即可），用 \\n 分段；可含 [Verse]/[Chorus] 结构标签' },
+          style: { type: 'string', description: '风格描述，如「国风 古筝 女声 抒情 慢速 80bpm」' },
+          title: { type: 'string', description: '曲名（也用于文件名）' },
+          instrumental: { type: 'boolean', description: '只要伴奏、不要人声（默认 false）' },
+          gender: { type: 'string', enum: ['female', 'male'], description: '演唱性别（默认 female；阿里/火山/MiniMax 支持）' },
+          mv: { type: 'string', description: 'Suno 模型版本，默认 chirp-v3-5；可选 chirp-v4 等（取决于渠道支持）' },
+        },
+        required: ['lyrics'],
+      },
+    },
+    {
+      name: 'api_sfx',
+      description:
+        '音效库：列出 / 搜索 / 合成单个音效（ffmpeg 现场合成，完全免版权）。' +
+        '分类含 转场(whoosh/riser/impact)、提示(ding/notify)、节奏(hit/heartbeat)、氛围(rain/wind/hum/pad_soft) 等。' +
+        '★ 只能做音效与氛围垫，**不能做旋律 BGM**（合成器做不出编曲，BGM 用 music_compose）。' +
+        '给视频加音效时：先 list/search 选 id，再 render 拿到文件，交给 media_edit / clip_project 合入。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'search', 'render'], description: 'list=按分类列出全部；search=关键词搜索；render=合成一个音效文件' },
+          query: { type: 'string', description: 'search 的关键词（匹配 id/label/desc/group），如「转场」「心跳」「雨」' },
+          id: { type: 'string', description: 'render 的音效 id（先用 list/search 取得）' },
+        },
+        required: ['action'],
+      },
     },
     {
       name: 'api_srt_generate',
@@ -329,7 +445,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**create** 建工程/改元信息 { name, size, fps }；' +
         '**get** 读工程（默认返回紧凑摘要：各段 index/id/时间轴起止/时长 + 字幕；summaryOnly=true 时只给摘要）；' +
         '**set_output** 改导出规格 { size:"1080x1920", fps }；' +
-        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, fadeIn?, fadeOut?, kenburns?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）；' +
+        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, fx?, fadeIn?, fadeOut?, kenburns?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）；' +
         '**update_clip** 改某段 { id 或 index, patch:{...同 add_clip 字段} }；**remove_clip** { id|index }；**move_clip** { id|index, to }；**clear_clips**；' +
         '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, position?, safeArea? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
         '**update_text** { id|index, patch }；**remove_text** { id|index }；**clear_texts**；' +
@@ -366,6 +482,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 trimEnd: { type: 'number', description: '裁剪终点（秒）；不传=到素材结尾' },
                 speed: { type: 'number', description: '变速倍数 0.25~4（>1 加快，<1 放慢）；不传=不变' },
                 colorPreset: { type: 'string', enum: COLOR_IDS, description: `调色/滤镜预设（可选：${effectCatalogText(COLOR_EFFECTS, ['none'])}）` },
+                fx: { type: 'string', enum: FX_IDS, description: `动态特效（可选：${effectCatalogText(FX_EFFECTS)}）。与 colorPreset 可叠加：先调色、再上结构类特效` },
                 fadeIn: { type: 'number', description: '该段画面淡入秒数' },
                 fadeOut: { type: 'number', description: '该段画面淡出秒数' },
                 kenburns: { type: 'object', description: '图片素材运镜：{ direction:"in"|"out", duration }' },
