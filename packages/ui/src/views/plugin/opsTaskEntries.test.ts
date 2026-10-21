@@ -103,7 +103,7 @@ describe('历史任务入口', () => {
   });
 
   it('任务段仍渲染「全部会话」视图（space-id=null），四模式同构', () => {
-    expect(CODE).toMatch(/<TaskListSection :space-id="null" \/>/);
+    expect(CODE).toMatch(/<TaskListSection :space-id="null"/);
   });
 
   it('展开时重拉列表；挂载时也兜底重拉（App 只在切模式时拉）', () => {

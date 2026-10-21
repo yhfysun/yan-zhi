@@ -199,6 +199,10 @@ function rowToConv(r: any): Conversation {
     //   douyin 已于 2026-10-16 下线；库里存量 mode='douyin' 的行由 db.ts 的迁移改判 office，
     //   迁移先于本白名单生效，故这里少一项不会造成遗漏。
     mode: (['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop'].includes(r.mode) ? r.mode : 'office') as Conversation['mode'],
+    // 运维会话 → 服务器连接（2026-10-21，会话跟着服务器走）；发布项目绑定（7b）
+    // ★ 两种写法都认：server 库回蛇形，部分 IPC 通道直接回对象
+    opsConnectionId: r.ops_connection_id ?? r.opsConnectionId ?? null,
+    releaseProjectId: r.release_project_id ?? r.releaseProjectId ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     // ── 生命周期三列（2026-10-16「归档 + 回收站」）──────────────────────────

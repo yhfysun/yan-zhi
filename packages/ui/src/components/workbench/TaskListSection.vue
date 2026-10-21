@@ -283,6 +283,14 @@ const BROWSER_PAGE_SOURCE = CONV_SOURCE_BROWSER_PAGE;
 const props = withDefaults(defineProps<{
   /** 过滤会话的 spaceId：默认取 codeStore.projectSpaceId（开发模式语义），传 null 显示全部 */
   spaceId?: string | null;
+  /**
+   * 行点击的自定义出口（2026-10-21）。
+   *
+   * ★ 为什么需要：默认行为是 `chat.selectConv`（全局 chat store），但运维模式下
+   *   "一条会话"意味着"一台服务器"——点会话必须顺带把对应服务器打开。
+   *   父级传了这个回调就完全接管点击，不传则保持通用行为（办公/开发/安全共用本组件）。
+   */
+  onOpen?: (convId: string) => void;
 }>(), { spaceId: undefined });
 
 const chatStore = useChatStore();
@@ -418,8 +426,9 @@ function batchSelectAllHere() {
 }
 
 function onRowClick(c: any) {
-  if (batchMode.value) toggleConvSelect(c.id);
-  else rows.activate(c);
+  if (batchMode.value) { toggleConvSelect(c.id); return; }
+  if (props.onOpen) { props.onOpen(c.id); return; }
+  rows.activate(c);
 }
 function onNew() {
   void chat.startNewChat(effSpaceId.value || null);

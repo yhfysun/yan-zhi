@@ -6,7 +6,7 @@
         <!-- 任务段（决策 13 / 5f.4）：四模式同构，读同一份会话列表；资源树之下保留
              ★ 可折叠：顶栏「历史任务」按钮控制（用户实报「历史任务按钮没了 / 发送后任务就没了」） -->
         <div v-show="taskListVisible" class="ops-side-tasks">
-          <TaskListSection :space-id="null" />
+          <TaskListSection :space-id="null" :on-open="onTaskRowOpen" />
         </div>
         <!-- 发布项目（7b）：本地目录 + 服务器 + 流水线；绑定后工具面挂到当前窗口会话 -->
         <div class="ops-side-release">
@@ -777,6 +777,7 @@ import CicdConsole from './CicdConsole.vue';
 import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
+import { useChatStore } from '../../stores/chat';
 import ConsoleShell from '../../components/console/ConsoleShell.vue';
 import WorkspaceDirDialog from '../../components/WorkspaceDirDialog.vue';
 import { useResizable } from '../../composables/useResizable';
@@ -830,6 +831,8 @@ function preferredView(connTypeKey: ConnType): ViewKey {
 // 资源树数据同样来自模块作用域（切回来先渲染旧数据，init() 再刷新）
 const groups = opsGroups;
 const connections = opsConnections;
+/** 会话列表（任务段与"点会话→开服务器"共用同一份数据源） */
+const chatStore = useChatStore();
 const collapsed = opsCollapsedGroups;
 const UNGROUPED = '__ungrouped__';
 
@@ -931,6 +934,83 @@ function activateWindow(id: string) {
   void nextTick(() => fitTerm(w));
 }
 
+/**
+ * 从任务列表点开一个运维会话 → **自动打开它绑定的那台服务器**（2026-10-21 用户实报
+ * 「点击会话应该自动打开上次的服务器，会话是跟着服务器走的」）。
+ *
+ * 此前点会话只走 `chat.selectConv`（全局 chat store），运维窗口毫无反应：
+ * 用户看到的是上一次残留的窗口，或干脆什么都没有 —— 会话与服务器是两张皮。
+ *
+ * 规则：
+ *   - 会话已绑连接（ops_connection_id）→ 有窗口就地激活，没有就按该连接开窗（AI 模式进对话视图）；
+ *   - 已绑但连接被删 → 明确提示一次，不静默开一个空窗口（让用户知道要找的是哪台）；
+ *   - 未绑（老数据）→ 退回"当前激活窗口"，只把会话挂上去，不擅自换服务器。
+ */
+async function openConvFromTaskList(convId: string) {
+  const conv = chatStore.conversations.find((c) => c.id === convId) as any;
+  if (!conv) return;
+  const connId: string | null = conv.opsConnectionId ?? null;
+
+  // 已有窗口挂着这条会话 → 直接激活（不重连、不重载）
+  const existing = windows.value.find((w) => w.conversationId === convId);
+  if (existing) {
+    activateWindow(existing.id);
+    void openConvOnWindow(existing, conv);
+    return;
+  }
+
+  if (!connId) {
+    // 老数据没记连接：挂到当前窗口，保持用户眼前的服务器不变
+    const w = activeWin.value;
+    if (w) { await openConvOnWindow(w, conv); activateWindow(w.id); }
+    return;
+  }
+
+  const conn = connections.value.find((c) => c.id === connId);
+  if (!conn) {
+    ElMessage.warning(`该会话绑定的服务器已删除（id=${connId}），请在资源栏重新选择连接`);
+    return;
+  }
+
+  // 同一连接已有窗口 → 复用它（避免为每条会话堆一堆重复窗口）
+  let w = windows.value.find((x) => x.connectionId === conn.id);
+  if (!w) {
+    const view: ViewKey = lead.value === 'ai' ? 'chat' : preferredView(connType(conn));
+    w = newWin(conn, view);
+    windows.value.push(w);
+    if (w.view === 'term') void openTerminal(w);
+  }
+  await openConvOnWindow(w, conv);
+  activateWindow(w.id);
+}
+
+/** 把一条会话挂到窗口上（会话、消息、发布项目一起恢复） */
+async function openConvOnWindow(w: OpsWin, conv: any) {
+  if (w.chatStreaming) return; // 有任务在跑，不抢它的会话
+  const changed = w.conversationId !== conv.id;
+  w.conversationId = conv.id;
+  // 会话侧的发布项目绑定优先（窗口对象只是缓存）；按 id 回查详情，不依赖本页是否持有列表
+  const rpId = conv.releaseProjectId || '';
+  if (!rpId) {
+    w.releaseProject = undefined;
+  } else if (w.releaseProject?.id !== rpId) {
+    try {
+      const r = await api.get<any[]>('/plugin/ops-shell/release-projects');
+      const list = 'data' in r ? (r as any).data : [];
+      w.releaseProject = Array.isArray(list) ? list.find((p: any) => p.id === rpId) : undefined;
+    } catch { /* 回查失败不影响会话打开 */ }
+  }
+  if (changed) {
+    await loadWinMessages(w);
+    void nextTick(() => scrollChatBottom(w));
+  }
+}
+
+/** 从任务列表点开运维会话（TaskListSection 的行点击出口） */
+function onTaskRowOpen(convId: string) {
+  void openConvFromTaskList(convId);
+}
+
 function closeWindow(id: string) {
   const idx = windows.value.findIndex((w) => w.id === id);
   if (idx < 0) return;
@@ -997,6 +1077,29 @@ function b64ToUtf8(b64: string): string {
  *   把 renderer 日志整个刷满）。预量一次、无变化直接返回，是打断该环最彻底的一刀：
  *   不动 DOM 就绝不会触发下一次投递。
  */
+/**
+ * 临时解除元素祖先链上的 display:none（v-show 隐藏），使其可测量；返回还原函数。
+ *
+ * ★ 为什么不用改 v-show：容器由 `w.view` / `w.termOpen` 两个开关控制，改动它们会引发
+ *   视图闪烁与状态竞争。直接改内联样式只在本次同步测量期间生效，最稳。
+ * ★ 用 visibility:hidden 而非 display:block：前者仍占布局（可测尺寸），对用户不可见。
+ */
+function pendingUnhide(el: HTMLElement): () => void {
+  const touched: Array<{ node: HTMLElement; display: string; visibility: string }> = [];
+  let node: HTMLElement | null = el;
+  while (node && node !== document.body) {
+    if (node.style.display === 'none') {
+      touched.push({ node, display: node.style.display, visibility: node.style.visibility });
+      node.style.display = '';
+      node.style.visibility = 'hidden';
+    }
+    node = node.parentElement;
+  }
+  return () => {
+    for (const t of touched) { t.node.style.display = t.display; t.node.style.visibility = t.visibility; }
+  };
+}
+
 function fitTerm(w: OpsWin) {
   const h = terms.get(w.id);
   if (!h) return;
@@ -1272,6 +1375,10 @@ async function openTerminal(w: OpsWin) {
     await nextTick();
     const el = termEls.get(w.id);
     if (!el) { w.termOpen = false; return; }
+    // ★ 2026-10-21：对话视图里执行命令时，终端容器被 v-show 隐藏（display:none）→
+    //   测出的尺寸是 0，xterm 无法正常排版（字符挤成一团、复制取不到文本）。
+    //   这里临时把外层容器做成「有尺寸但不可见」再测，测完还原。
+    const restores = pendingUnhide(el);
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 13,
@@ -1288,6 +1395,7 @@ async function openTerminal(w: OpsWin) {
     };
     terms.set(w.id, handle);
     fitTerm(w);
+    restores(); // 尺寸已量到（或按默认值开 PTY），把隐藏态还原
     const cols = term.cols || 120;
     const rows = term.rows || 32;
 
@@ -1509,12 +1617,23 @@ function toAbsoluteRemote(target: string, prev: string): string {
  *   会话按模式隔离是既定设计（用户 2026-09-18 拍板），所以这里必须显式声明。
  */
 async function ensureWinConversation(w: OpsWin): Promise<string> {
-  if (w.conversationId) return w.conversationId;
+  if (w.conversationId) {
+    // 老会话没记连接（本字段之前不存在）→ 用户当前在这台服务器上操作，按它补齐。
+    // 不补的后果：这条会话永远"找不到服务器"，点开只会落到残留窗口上。
+    const conv = chatStore.conversations.find((c) => c.id === w.conversationId) as any;
+    if (conv && !conv.opsConnectionId && w.connectionId) {
+      void api.patch(`/conversations/${w.conversationId}`, { opsConnectionId: w.connectionId });
+      conv.opsConnectionId = w.connectionId; // 本地同步，避免紧接着再发一次
+    }
+    return w.conversationId;
+  }
   const c = connOf(w);
   const r = await api.post<any>('/conversations', {
     title: `运维控制台${c ? ' · ' + c.name : ''}`,
     agentId: OPS_AGENT_ID,
     mode: 'ops',
+    // ★ 会话跟着服务器走（2026-10-21）：把连接落到会话上，下次点开这条会话才能自动连回
+    opsConnectionId: w.connectionId || null,
   });
   if ('error' in r) throw new Error(r.error);
   w.conversationId = (r.data as any).id as string;
@@ -1526,7 +1645,6 @@ async function ensureWinConversation(w: OpsWin): Promise<string> {
 /** 重拉任务列表数据源（chatStore.conversations），失败静默（列表保持旧值） */
 async function refreshTaskList() {
   try {
-    const { useChatStore } = await import('../../stores/chat');
     await useChatStore().loadConversations();
   } catch { /* 列表刷新失败不影响任务本身 */ }
 }
@@ -1780,7 +1898,15 @@ async function resolveWinModel(w: OpsWin): Promise<{ platform: Platform; model: 
 /**
  * P1 执行指令：把输入原样写进当前窗口的终端，不经过模型。
  * 触发：输入以 `/` 开头，或点工具条的「执行」。
- * 没有活终端时自动切到命令模式并建连（仅 SSH 连接有终端）。
+ *
+ * ★★★ 2026-10-21 用户实报「ai 模式下执行命令也是在聊天里面展示命令结果啊而不是跳到命令模式」：
+ *   此前这里无条件 `switchWinView(w, 'term')` —— 用户在**对话视图**里点「执行」，界面
+ *   突然跳到命令模式，聊天里什么都不留，用户只看到"页面被切走了"。
+ *
+ *   现在的规则：
+ *   · 用户本来就在命令视图（human 主导）→ 维持原样，直接在终端里跑；
+ *   · 用户在对话视图 → **留在对话视图**，把这次执行当成一轮对话（用户气泡 + 结果气泡）展示；
+ *     终端在后台建连并执行（PTY 全程 v-show 保活，切过去仍能看到完整输出）。
  */
 async function execDirect(w: OpsWin, raw: string) {
   const command = raw.trim().replace(/^\//, '').trim();
@@ -1790,16 +1916,54 @@ async function execDirect(w: OpsWin, raw: string) {
     ElMessage.warning('只有 SSH 连接的窗口可以执行终端指令');
     return;
   }
-  if (w.view !== 'term') switchWinView(w, 'term');
+  const stayInChat = w.view === 'chat';
+  if (!stayInChat && w.view !== 'term') switchWinView(w, 'term');
   if (!w.termOpen || !terms.get(w.id)?.transport) await openTerminal(w);
   const transport = terms.get(w.id)?.transport;
   if (!transport) {
     ElMessage.warning('终端未连接，指令未执行');
     return;
   }
+  // 对话视图下把这次执行记成一轮：用户的那条命令 + 结果（结果由终端输出回填）
+  let roundMsgId = '';
+  if (stayInChat) {
+    w.chatInput = '';
+    roundMsgId = `local-exec-${Date.now().toString(36)}`;
+    w.chatMessages.push(
+      { id: `${roundMsgId}-u`, role: 'user', content: command, createdAt: Date.now() },
+      {
+        id: `${roundMsgId}-a`, role: 'assistant', content: '', createdAt: Date.now(), streaming: true,
+        toolCalls: [{ id: `${roundMsgId}-c`, name: 'terminal_exec', arguments: JSON.stringify({ command }) }],
+      } as any,
+    );
+    scrollChatBottom(w);
+  }
+  /** 收尾：把结果写进对话里那一轮（成功/失败都写，不静默） */
+  const finishRound = (out: string, failed: boolean) => {
+    if (!roundMsgId) return;
+    const msg = w.chatMessages.find((m) => m.id === `${roundMsgId}-a`);
+    if (!msg) return;
+    msg.streaming = false;
+    msg.content = failed ? `执行失败：${out}` : '';
+    // 工具结果消息（role=tool）由步骤卡消费；正文只放一句结论，避免和原始输出重复
+    w.chatMessages.push({
+      id: `${roundMsgId}-r`, role: 'tool', content: out, createdAt: Date.now(),
+      toolCallId: `${roundMsgId}-c`,
+    } as any);
+    void nextTick(() => scrollChatBottom(w));
+  };
+  // 采集本次执行的终端输出（从执行时刻起算；超时兜底避免一直"执行中"）
+  const fromLen = w.outputBuffer.length;
+  const collect = () => stripAnsi(w.outputBuffer.slice(fromLen)).trim();
   try {
     await transport.exec(command);
-    w.chatInput = '';
+    if (stayInChat) {
+      w.chatInput = '';
+      // 命令回执到达时给终端一点时间吐输出，再收口这一轮
+      window.setTimeout(() => finishRound(collect() || '（命令已执行，无输出）', false), 900);
+    } else {
+      w.chatInput = '';
+    }
   } catch (e) {
     const err = e as Error & { code?: string };
     if (err.code === 'NEED_CONFIRM') {
@@ -1807,16 +1971,23 @@ async function execDirect(w: OpsWin, raw: string) {
       const ok = await ElMessageBox.confirm(err.message, '生产连接确认', {
         confirmButtonText: '仍然执行', cancelButtonText: '取消', type: 'warning',
       }).then(() => true).catch(() => false);
-      if (!ok) return;
+      if (!ok) {
+        finishRound('用户取消执行', true);
+        return;
+      }
       try {
         await transport.exec(command, { confirmed: true });
         w.chatInput = '';
+        if (stayInChat) window.setTimeout(() => finishRound(collect() || '（命令已执行，无输出）', false), 900);
       } catch (e2) {
-        ElMessage.error(`执行失败：${(e2 as Error).message}`);
+        const m = (e2 as Error).message;
+        ElMessage.error(`执行失败：${m}`);
+        finishRound(m, true);
       }
       return;
     }
     ElMessage.error(`执行失败：${err.message}`);
+    finishRound(err.message, true);
   }
 }
 

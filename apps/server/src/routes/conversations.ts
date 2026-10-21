@@ -124,7 +124,7 @@ router.post('/archive-all', (req: Request, res: Response) => {
 // POST /api/conversations
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { title, platformId, modelId, agentId, spaceId, permissionMode, mode, taskType, source, sourceMeta } = req.body || {};
+  const { title, platformId, modelId, agentId, spaceId, permissionMode, mode, taskType, source, sourceMeta, opsConnectionId } = req.body || {};
   if (!title) { res.status(400).json({ error: '标题为必填项' }); return; }
   const id = uuid();
   const now = Date.now();
@@ -135,7 +135,7 @@ router.post('/', (req: Request, res: Response) => {
     if (def) resolvedAgentId = 'a_default_assistant';
   }
   db.prepare(
-    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, task_type, title_source, source, source_meta_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, task_type, title_source, source, source_meta_json, ops_connection_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, normalizePermissionMode(permissionMode),
     // 归属模式：前端建会话时带上当前模式；缺省 office（与存量迁移口径一致）
     VALID_MODES.has(String(mode)) ? String(mode) : 'office',
@@ -148,6 +148,8 @@ router.post('/', (req: Request, res: Response) => {
     // 置空也不报错：来源只是"能认出来"的线索，不该让一次笔误把整条建会话链路打挂。
     normalizeConversationSource(source),
     normalizeSourceMeta(sourceMeta),
+    // 运维会话绑定的服务器连接（点回来要自动重连它）；非字符串一律 NULL
+    typeof opsConnectionId === 'string' && opsConnectionId.trim() ? opsConnectionId.trim().slice(0, 128) : null,
     now, now);
   const row = db.prepare('SELECT * FROM conversation WHERE id = ?').get(id);
   res.json({ data: row });
@@ -270,6 +272,17 @@ router.patch('/:id', (req: Request, res: Response) => {
     }
     sets.push('release_project_id = ?');
     vals.push(rp ? String(rp).trim() : null);
+  }
+  // 运维会话绑定的服务器连接（2026-10-21）：null = 解绑；字符串 = 连接 id。
+  // 窗口切连接时同步落库，下次点开这条会话才能自动连回同一台服务器。
+  if (req.body.opsConnectionId !== undefined) {
+    const oc = req.body.opsConnectionId;
+    if (oc !== null && typeof oc !== 'string') {
+      res.status(400).json({ error: 'opsConnectionId 必须是字符串或 null' });
+      return;
+    }
+    sets.push('ops_connection_id = ?');
+    vals.push(oc ? String(oc).trim().slice(0, 128) : null);
   }
   if (req.body.pinned !== undefined) { sets.push('pinned = ?'); vals.push(req.body.pinned ? 1 : 0); }
   if (sets.length === 0) { res.json({ data: existing }); return; }

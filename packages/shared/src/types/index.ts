@@ -160,6 +160,16 @@ export interface Conversation {
    *   插件 shop-ops 贡献独立控制台）。
    */
   mode?: 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'shop';
+  /**
+   * 运维会话绑定的服务器连接 id（2026-10-21）。
+   *
+   * ★ 「会话跟着服务器走」：运维窗口与会话一一对应，但会话侧必须记住是哪台服务器，
+   *   否则关掉窗口/切走再点回来就找不回了（用户实报「点击会话应该自动打开上次的服务器」）。
+   *   null/缺省 = 老数据或用户当时没选连接。
+   */
+  opsConnectionId?: string | null;
+  /** 绑定的发布项目 id（7b）；null = 未绑定 */
+  releaseProjectId?: string | null;
   createdAt: number;
   updatedAt: number;
   /**

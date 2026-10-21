@@ -341,6 +341,13 @@ try {
   if (!convColsRel.some((c) => c.name === 'release_project_id')) {
     db.exec(`ALTER TABLE conversation ADD COLUMN release_project_id TEXT`);
   }
+  // 运维会话绑定的服务器连接（2026-10-21 用户实报「点击会话应该自动打开上次的服务器，
+  //   会话是跟着服务器走的」）。此前运维窗口与会话是一一对应的，但**会话侧没存连接**，
+  //   于是会话关掉/切走之后再点回来，窗口找不回那台服务器。
+  //   NULL = 老数据（未记录），或用户当时没选连接。
+  if (!convColsRel.some((c) => c.name === 'ops_connection_id')) {
+    db.exec(`ALTER TABLE conversation ADD COLUMN ops_connection_id TEXT`);
+  }
 } catch {}
 
 // 会话级任务类型（2026-10-14「父任务」层）：多任务目录（空间绑了父类型）里，
