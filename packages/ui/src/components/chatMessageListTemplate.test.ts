@@ -212,3 +212,32 @@ describe('④ 长任务步骤窗口（防"一轮几百步全量挂 DOM"）', () 
     expect(SUB, '★ 子智能体工具详情体还在用 v-show').not.toMatch(/v-show="toolOpen\[/);
   });
 });
+
+/**
+ * ④ 「深度思考」徽标（2026-10-21 用户：「就跟 workbuddy 一样啊，有个深度思考标志然后跑马灯啊」）
+ *
+ * 钉三件会**静默坏掉**的事：
+ *   ④-1 组件必须被 import —— 本仓踩过 AiDiffView 未 import（模板写了、运行时静默不渲染）；
+ *   ④-2 流式态不得再无条件平铺 reasoning 正文（必须受 expandedReasoning['stream-…'] 控制）；
+ *   ④-3 新增的折叠 key 前缀写端 === 读端（同 ③，机械替换/手写都会漂）。
+ */
+describe('④ 深度思考徽标（WorkBuddy 式）', () => {
+  it('组件已 import 且模板真的用了它', () => {
+    expect(SCRIPT).toMatch(/import\s+DeepThinkBadge\s+from\s+'\.\/DeepThinkBadge\.vue'/);
+    expect(TEMPLATE).toContain('<DeepThinkBadge');
+    expect(TEMPLATE).toMatch(/state="thinking"/);
+    expect(TEMPLATE).toMatch(/state="done"/);
+  });
+
+  it('★ 流式思考正文受展开状态控制（不再整段平铺）', () => {
+    expect(TEMPLATE).toMatch(/v-if="expandedReasoning\['stream-'\s*\+\s*vr\.ri\]"\s+class="reasoning-body"/);
+    expect(TEMPLATE).toContain('reasoningPeek');
+  });
+
+  it('★ 流式态折叠 key：写端前缀集合 === 读端前缀集合（含新增的 stream-）', () => {
+    const write = [...TEMPLATE.matchAll(/toggleReasoning\('([^']*)'\s*\+/g)].map((m) => m[1]);
+    const read = [...TEMPLATE.matchAll(/expandedReasoning\['([^']*)'\s*\+/g)].map((m) => m[1]);
+    expect(write).toContain('stream-');
+    expect([...new Set(write)].sort()).toEqual([...new Set(read)].sort());
+  });
+});

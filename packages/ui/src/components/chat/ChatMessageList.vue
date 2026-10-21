@@ -304,10 +304,12 @@
                   </div>
                   <div v-show="!collapsedMainResults['mar-' + vr.ri]" class="main-agent-result-content">
                     <div v-if="vr.round.finalAssistant?.reasoningContent && !vr.round.hasAgentProcess" class="msg-reasoning" :data-card-variant="(vr.ri + 1) % 4">
-                      <div class="reasoning-header" @click="toggleReasoning('agent-fa-' + vr.ri)">
-                        <el-icon><CaretRight v-if="!expandedReasoning['agent-fa-' + vr.ri]" /><CaretBottom v-else /></el-icon>
-                        <span>思考过程</span>
-                      </div>
+                      <DeepThinkBadge
+                        state="done"
+                        :chars="vr.round.finalAssistant.reasoningContent.length"
+                        :open="!!expandedReasoning['agent-fa-' + vr.ri]"
+                        @toggle="toggleReasoning('agent-fa-' + vr.ri)"
+                      />
                       <div v-if="expandedReasoning['agent-fa-' + vr.ri]" class="reasoning-body">{{ vr.round.finalAssistant.reasoningContent }}</div>
                     </div>
                     <template v-if="vr.round.finalAssistant?.content">
@@ -336,10 +338,16 @@
                     <template v-else-if="isLastRoundStreaming(vr.round, vr.ri)">
                       <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
                       <div v-if="getStreamingText(vr.round, vr.ri)" class="msg-content streaming-content" v-html="renderStreamingContent(getStreamingText(vr.round, vr.ri))" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
-                      <!-- 有思考但无正文：显示正在思考 + 实时思考内容 -->
+                      <!-- 有思考但无正文：「深度思考」徽标 + 跑马灯 + 单行摘要（不铺整段，避免挤占正文） -->
                       <div v-else-if="getStreamingReasoning(vr.round, vr.ri)" class="msg-reasoning streaming-reasoning">
-                        <div class="reasoning-header"><span>正在思考…</span></div>
-                        <div class="reasoning-body">{{ getStreamingReasoning(vr.round, vr.ri) }}</div>
+                        <DeepThinkBadge
+                          state="thinking"
+                          :chars="getStreamingReasoning(vr.round, vr.ri).length"
+                          :open="!!expandedReasoning['stream-' + vr.ri]"
+                          @toggle="toggleReasoning('stream-' + vr.ri)"
+                        />
+                        <div v-if="expandedReasoning['stream-' + vr.ri]" class="reasoning-body">{{ getStreamingReasoning(vr.round, vr.ri) }}</div>
+                        <div v-else class="dtb-peek">{{ reasoningPeek(getStreamingReasoning(vr.round, vr.ri)) }}</div>
                       </div>
                       <!-- 刚开始无任何内容：三点初始态 -->
                       <div v-else class="msg-content streaming">
@@ -657,6 +665,7 @@ import MediaContextMenu from '../media/MediaContextMenu.vue';
 import MediaHoverFloat from '../media/MediaHoverFloat.vue';
 import ToolMediaPreview from './ToolMediaPreview.vue';
 import ChatFileChangeCard from './ChatFileChangeCard.vue';
+import DeepThinkBadge from './DeepThinkBadge.vue';
 import ChatTaskChangeSummary from './ChatTaskChangeSummary.vue';
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 
@@ -1188,6 +1197,19 @@ function getStreamingReasoning(round: MessageRound, ri: number): string {
   return step?.reasoningContent || '';
 }
 
+/**
+ * 流式思考的「跑马灯摘要」：只取最后 140 个字压成一行。
+ *
+ * ★ 为什么不铺全文：思考正文常常几千字，平铺会把正在生成的回答挤到屏幕外
+ *   （用户原话「模型深度思考内容会展示出来？」—— 他看到的就是这种刷屏）。
+ *   想看全的点徽标展开，全文仍在 reasoning-body 里。
+ */
+function reasoningPeek(text: string): string {
+  const flat = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  return flat.length > 140 ? `…${flat.slice(-140)}` : flat;
+}
+
 /** 流式渲染：正文 markdown + 末尾闪烁光标（跑马灯进行中指示） */
 function renderStreamingContent(content: string): string {
   return renderAssistantMarkdown(content) + '<span class="streaming-cursor" aria-hidden="true"></span>';
@@ -1601,6 +1623,24 @@ watch(activeNavRound, () => {
 }
 .streaming-reasoning .reasoning-header { color: var(--color-primary); }
 .streaming-reasoning .reasoning-body { color: var(--color-text); }
+/* 「深度思考」徽标下方的实时摘要：单行、右端渐隐（读起来像在滚动播报） */
+.dtb-peek {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-mask-image: linear-gradient(90deg, #000 84%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 84%, transparent 100%);
+  animation: dtbPeekIn 0.35s ease-out;
+}
+@keyframes dtbPeekIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 0.85; transform: none; }
+}
 
 /* 思考过程区域：平滑出现动画 */
 .agent-process-header {
