@@ -10,8 +10,9 @@ import type {
   PlatformAdapter,
   ShellAdapter,
 } from '@yan-zhi/core';
-import { decodeTextBytes } from '@yan-zhi/shared';
+import { decodeTextBytes, encodeTextBytes, type TextEncoding } from '@yan-zhi/shared';
 import { pickToken, recordFailure, recordSuccess, hasTokenPool } from './services/token-pool.js';
+import { decideWriteEncoding } from './services/text-write-encoding.js';
 import { serverState } from './state.js';
 
 // 服务端 database adapter：委托真实的 better-sqlite3 实例（./db.ts 的 db）。
@@ -50,23 +51,54 @@ const dbAdapter: DatabaseAdapter = {
   },
 };
 
+/**
+ * 路径 → 上次读出的编码（写回时原样还原）。
+ * ★★★ 2026-10-21 用户实报：「默认都 utf-8？gbk 也要支持啊，修改文件肯定要根据文件编码类型啊」
+ *   读侧早就会识别 GBK/UTF-16，但写侧写死 'utf8' ⇒ 模型改一次 GBK 的 .bat/.txt，
+ *   整份文件被悄悄转成 UTF-8，cmd/记事本/老程序立刻乱码，而且**没有任何提示**。
+ *   这里记住读出来的编码 + BOM，落盘时按原样写回（看不到就按盘上现有字节判断）。
+ */
+const pathEncoding = new Map<string, { encoding: TextEncoding; bom?: TextEncoding }>();
+const encKey = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+
 const fsAdapter: FsAdapter = {
   // ★ 不能写死 'utf8'（2026-09-27 乱码根因）：GBK/ANSI 中文 txt 用 UTF-8 解会满屏 U+FFFD。
   //   先读字节再走 shared 的自动识别（BOM → 严格 UTF-8 → GB18030 兜底）。
   async readFile(filePath: string) {
     const buf = await readFile(filePath);
-    return decodeTextBytes(new Uint8Array(buf)).text;
+    const decoded = decodeTextBytes(new Uint8Array(buf));
+    pathEncoding.set(encKey(filePath), { encoding: decoded.encoding, bom: decoded.bom });
+    return decoded.text;
   },
   async readFileBase64(filePath: string) {
     return readFile(filePath).then((buf) => buf.toString('base64'));
   },
   async writeFile(filePath: string, content: string) {
     await mkdir(path.dirname(filePath), { recursive: true }).catch(() => undefined);
-    await writeFile(filePath, content, 'utf8');
+
+    // ① 定编码：本进程读过 → 用读到的；没读过但盘上有 → 用盘上的；都没有 → 按新文件规则
+    const key = encKey(filePath);
+    let meta = pathEncoding.get(key);
+    if (!meta) {
+      const existing = await readFile(filePath).catch(() => null);
+      if (existing) {
+        const decoded = decodeTextBytes(new Uint8Array(existing));
+        meta = { encoding: decoded.encoding, bom: decoded.bom };
+      }
+    }
+
+    const plan = decideWriteEncoding(filePath, content, meta);
+    const body = plan.crlf ? content.replace(/\r?\n/g, '\r\n') : content;
+    const bytes = encodeTextBytes(body, plan.encoding, { withBom: plan.withBom });
+    await writeFile(filePath, bytes);
+    pathEncoding.set(key, { encoding: plan.encoding, bom: plan.withBom ? plan.encoding : undefined });
   },
   async writeFileBase64(filePath: string, b64: string) {
     await mkdir(path.dirname(filePath), { recursive: true }).catch(() => undefined);
     await writeFile(filePath, Buffer.from(b64, 'base64'));
+    // ★ 字节级写入后，路径上记的"原编码"就过期了：file_transcode 把 GBK 转成 UTF-8 之后，
+    //   若缓存还留着 gb18030，紧接着的一次 file_edit 会把内容按 GBK 写回去 —— 转码等于没转。
+    pathEncoding.delete(encKey(filePath));
   },
   async exists(filePath: string) {
     return stat(filePath).then(() => true).catch(() => false);

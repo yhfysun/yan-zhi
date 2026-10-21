@@ -20,6 +20,9 @@ import { resolve } from 'node:path';
 import {
   decodeTextBytes,
   decodeTextBytesAs,
+  encodeTextBytes,
+  resolveEncodingName,
+  SUPPORTED_ENCODINGS,
   looksBinaryBytes,
   base64ToBytes,
   encodingLabel,
@@ -308,5 +311,152 @@ describe('④ 子进程输出采集必须按字节解码（2026-10-01 「工具�
     const fsSide = strip(readRepo('apps/server/src/node-adapter.ts'));
     expect(fsSide, 'fs 侧识别器丢了').toMatch(/readFile\(filePath\)[\s\S]{0,120}decodeTextBytes/);
     expect(fsSide, 'shell 侧识别器丢了').toMatch(/decodeChildOutput/);
+  });
+});
+// ── 2026-10-21 新增：编码（写回）必须与识别配套 ──────────────────────────────
+// 实报：「默认都 utf-8？gbk 也要支持啊，修改文件肯定要根据文件编码类型啊」。
+// 此前只有解码侧识别，写入侧写死 utf8 ⇒ 改一次 GBK 文件，整份转成 UTF-8 且无任何提示。
+describe('④ 编码写回（encodeTextBytes 与识别互逆）', () => {
+  it('★★ GBK 往返：写出去的字节能被识别回原文本与原编码', () => {
+    const text = 'set "JAVA_HOME=C://APP//Java//jdk-17"/r/necho 中文构建完成\r\n';
+    const bytes = encodeTextBytes(text, 'gb18030');
+    const back = decodeTextBytes(bytes);
+    expect(back.text).toBe(text);
+    expect(back.encoding).toBe('gb18030');
+  });
+
+  it('GBK 写出的字节确实不是 UTF-8（否则等于没转码）', () => {
+    const bytes = encodeTextBytes('中文', 'gb18030');
+    expect(Array.from(bytes.slice(0, 2))).toEqual([0xd6, 0xd0]); // 「中」的 GBK
+    expect(decodeTextBytes(bytes).encoding).toBe('gb18030');
+  });
+
+  it('UTF-8 BOM 往返：withBom 写出后识别结果带 bom 标记', () => {
+    const bytes = encodeTextBytes('hello 中文', 'utf-8', { withBom: true });
+    expect(Array.from(bytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+    const back = decodeTextBytes(bytes);
+    expect(back.text).toBe('hello 中文');
+    expect(back.encoding).toBe('utf-8');
+    expect(back.bom).toBe('utf-8');
+  });
+
+  it('UTF-16LE / BE 往返（含 BOM 识别）', () => {
+    for (const enc of ['utf-16le', 'utf-16be'] as const) {
+      const bytes = encodeTextBytes('中文 ab', enc, { withBom: true });
+      const back = decodeTextBytes(bytes);
+      expect(back.text).toBe('中文 ab');
+      expect(back.encoding).toBe(enc);
+      expect(back.bom).toBe(enc);
+    }
+  });
+
+  it('emoji 在 UTF-8 下完整往返（GBK 表达不了 → 降级为 ?）', () => {
+    expect(decodeTextBytes(encodeTextBytes('😀 ok', 'utf-8')).text).toBe('😀 ok');
+    expect(decodeTextBytes(encodeTextBytes('😀 ok', 'gb18030')).text).toBe('? ok');
+  });
+});
+
+// ── 2026-10-21 扩面：用户要求「大部分编码都要支持」──────────────────────────
+// 覆盖三组：Unicode / 中日韩多字节 / 单字节西文与西里尔。
+// 每条都做「编码 → 自动识别 → 文本一致」的闭环，防止"能解名但写不出字节"。
+describe('⑤ 编码扩面：多语种往返 + 自动识别', () => {
+  const cases: Array<[string, string, string]> = [
+    ['gb18030', '中文', '构建完成，请检查输出目录。'],
+    ['big5', '繁体中文', '繁體中文測試，這是一個檔案，我們來看看能不能正確辨識。'],
+    ['shift_jis', '日文(SJIS)', 'これは日本語のテストです。文字コードの判定を確認します。'],
+    ['euc-jp', '日文(EUC)', 'これは日本語のテストです。文字コードの判定を確認します。'],
+    ['euc-kr', '韩文', '한국어 테스트입니다. 인코딩 판별을 확인합니다.'],
+    ['windows-1252', '西欧', 'café résumé naïve déjà vu, à bientôt.'],
+    ['windows-1251', '俄文(1251)', 'Съешь же ещё этих мягких французских булок, да выпей чаю.'],
+    ['koi8-r', '俄文(KOI8)', 'Съешь же ещё этих мягких французских булок, да выпей чаю.'],
+    ['iso-8859-5', '俄文(8859-5)', 'Съешь же ещё этих мягких французских булок, да выпей чаю.'],
+    ['ibm866', '俄文(866)', 'Съешь же ещё этих мягких французских булок, да выпей чаю.'],
+  ];
+
+  for (const [enc, label, text] of cases) {
+    it(`${label}：${enc} 写出去 → 自动识别回同一编码与文本`, () => {
+      const bytes = encodeTextBytes(text, enc as never);
+      const back = decodeTextBytes(bytes);
+      expect(back.text).toBe(text);
+      expect(back.encoding).toBe(enc);
+    });
+  }
+
+  it('别名归一：gbk/gb2312/ansi → gb18030；sjis/cp932 → shift_jis；latin1 → windows-1252', () => {
+    expect(resolveEncodingName('GBK')).toBe('gb18030');
+    expect(resolveEncodingName('gb2312')).toBe('gb18030');
+    expect(resolveEncodingName('ansi')).toBe('gb18030');
+    expect(resolveEncodingName('sjis')).toBe('shift_jis');
+    expect(resolveEncodingName('cp932')).toBe('shift_jis');
+    expect(resolveEncodingName('latin1')).toBe('windows-1252');
+    expect(resolveEncodingName('Shift_JIS')).toBe('shift_jis');
+    expect(resolveEncodingName('no-such-encoding')).toBeNull();
+  });
+
+  it('支持的编码数量覆盖中日韩 + 西欧/西里尔/希腊', () => {
+    const list = new Set(SUPPORTED_ENCODINGS);
+    for (const enc of ['utf-8', 'utf-16le', 'gb18030', 'big5', 'shift_jis', 'euc-jp', 'euc-kr', 'windows-1252', 'windows-1251', 'iso-8859-7', 'koi8-r', 'macintosh']) {
+      expect(list.has(enc as never)).toBe(true);
+    }
+    expect(SUPPORTED_ENCODINGS.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('显式指定编码的读取接口对全部受支持编码可用（不依赖自动识别）', () => {
+    const text = '繁體中文測試';
+    const bytes = encodeTextBytes(text, 'big5');
+    expect(decodeTextBytesAs(bytes, 'big5')).toBe(text);
+    expect(decodeTextBytesAs(bytes, 'utf-8')).not.toBe(text); // 换错编码就会坏 → 说明参数真的生效
+  });
+});
+
+// ── 2026-10-21 用户追问「要有自动识别能力啊」────────────────────────────────
+// 实测缺口：UTF-16 文件（记事本"Unicode"存盘）在编辑器里被判成**二进制拒绝打开**，
+// 因为二进制判定只查 NUL 字节，而 UTF-16 的高字节天然全是 0x00。
+describe('⑥ UTF-16 自动识别与二进制判定', () => {
+  const utf16le = (s: string) => new Uint8Array(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(s, 'utf16le')]));
+  const utf16be = (s: string) => {
+    const le = Buffer.from(s, 'utf16le');
+    const be = Buffer.alloc(le.length);
+    for (let i = 0; i < le.length; i += 2) { be[i] = le[i + 1]; be[i + 1] = le[i]; }
+    return new Uint8Array(Buffer.concat([Buffer.from([0xfe, 0xff]), be]));
+  };
+  const utf16leNoBom = (s: string) => new Uint8Array(Buffer.from(s, 'utf16le'));
+  const utf16beNoBom = (s: string) => {
+    const le = Buffer.from(s, 'utf16le');
+    for (let i = 0; i < le.length; i += 2) { const t = le[i]; le[i] = le[i + 1]; le[i + 1] = t; }
+    return new Uint8Array(le);
+  };
+
+  it('★ UTF-16LE(带 BOM) 不再被判成二进制', () => {
+    const bytes = utf16le('UTF-16 中文测试');
+    expect(looksBinaryBytes(bytes)).toBe(false);
+    const r = decodeTextBytes(bytes);
+    expect(r.encoding).toBe('utf-16le');
+    expect(r.text).toBe('UTF-16 中文测试');
+    expect(r.bom).toBe('utf-16le');
+  });
+
+  it('★ 无 BOM 的 UTF-16LE / BE 也能识别（端序不能搞反）', () => {
+    const le = decodeTextBytes(utf16leNoBom('无BOM的UTF16文本 abc def'));
+    expect(le.encoding).toBe('utf-16le');
+    expect(le.text).toBe('无BOM的UTF16文本 abc def');
+
+    const be = decodeTextBytes(utf16beNoBom('无BOM的UTF16BE文本 abc'));
+    expect(be.encoding).toBe('utf-16be');
+    expect(be.text).toBe('无BOM的UTF16BE文本 abc');
+  });
+
+  it('UTF-16BE(带 BOM) 同样放行且文本正确', () => {
+    const bytes = utf16be('中文 BE');
+    expect(looksBinaryBytes(bytes)).toBe(false);
+    expect(decodeTextBytes(bytes).text).toBe('中文 BE');
+  });
+
+  it('真二进制仍然被拒（不能被 UTF-16 判据放宽误伤）', () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+    expect(looksBinaryBytes(png)).toBe(true);
+    const exe = new Uint8Array(64);
+    exe[0] = 0x4d; exe[1] = 0x5a; exe[10] = 0x00; exe[11] = 0x01;
+    expect(looksBinaryBytes(exe)).toBe(true);
   });
 });
