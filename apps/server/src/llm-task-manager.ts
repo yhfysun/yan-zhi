@@ -1300,7 +1300,7 @@ export async function appCreateTask(task: LlmTask, args: any): Promise<string> {
         topP: modelParams.topP,
         reasoningEffort: modelParams.reasoningEffort,
       },
-      maxSteps: modelParams.maxReActSteps || 100,
+      maxSteps: modelParams.maxReActSteps || 500,
       // pathGuard 同样继承父任务档位（不升级）；createTask 会对非法值兜底 ask
       pathGuard: task.pathGuard,
     });

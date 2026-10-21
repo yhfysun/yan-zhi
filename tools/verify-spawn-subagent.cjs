@@ -125,11 +125,11 @@ const DIST = path.resolve('apps/server/dist/apps/server/src/services/subagent-sp
       maxSteps: 9999,
     });
     ck('  合法 spec 通过', !ok1.error);
-    ck('★ maxSteps 被夹到上限 200', ok1.maxSteps === 200, 'maxSteps=' + ok1.maxSteps);
+    ck('★ maxSteps 被夹到上限 500', ok1.maxSteps === 500, 'maxSteps=' + ok1.maxSteps);
     const ok2 = S.normalizeSubAgentSpec({ instruction: '这是一个足够长的子任务指令描述', maxSteps: 1 });
     ck('  maxSteps 被夹到下限 5', ok2.maxSteps === 5, 'maxSteps=' + ok2.maxSteps);
     const ok3 = S.normalizeSubAgentSpec({ instruction: '这是一个足够长的子任务指令描述' });
-    ck('  缺省 maxSteps = 60', ok3.maxSteps === 60, 'maxSteps=' + ok3.maxSteps);
+    ck('  缺省 maxSteps = 500', ok3.maxSteps === 500, 'maxSteps=' + ok3.maxSteps);
   }
 
   console.log('');

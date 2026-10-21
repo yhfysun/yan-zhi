@@ -83,8 +83,8 @@ describe('内置办公岗位智能体 · seed 条目结构', () => {
   });
 
   it.each([
-    ['翻译助手', TRANSLATE_AGENT_ID, 40],
-    ['个人生意助手', BUSINESS_AGENT_ID, 40],
+    ['翻译助手', TRANSLATE_AGENT_ID, 500],
+    ['个人生意助手', BUSINESS_AGENT_ID, 500],
   ])('%s：maxReActSteps 给足（长链路任务）', (_name, id, steps) => {
     const def = builtinOfficeAgentDefs.find((d) => d.id === id)!;
     expect(JSON.parse(String(def.config_json))).toEqual({ maxReActSteps: steps });

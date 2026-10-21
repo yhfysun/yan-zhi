@@ -100,6 +100,6 @@ export const builtinPublishAgentDefs: Array<Record<string, unknown>> = [
     system_prompt: PUBLISH_AGENT_SYSTEM_PROMPT,
     force_sync: true,
     // 发布链路长（登录态判断 → 上传 → 转码等待 → 表单 → 提交 → 核验），步数给足
-    config_json: JSON.stringify({ maxReActSteps: 80 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
 ];

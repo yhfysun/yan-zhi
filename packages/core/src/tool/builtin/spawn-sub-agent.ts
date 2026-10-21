@@ -41,7 +41,7 @@ export class SpawnSubAgentTool implements BuiltInTool {
       },
       platformId: { type: 'string', description: '可选。执行模型所在平台 id；缺省沿用你当前的模型。可先用 list_models 查询。' },
       modelId: { type: 'string', description: '可选。执行模型 id（需属于 platformId）。简单任务建议用轻量模型以省成本。' },
-      maxSteps: { type: 'number', description: '可选。该子智能体的步数上限（5-200，默认 60）。' },
+      maxSteps: { type: 'number', description: '可选。该子智能体的步数上限（5-500，默认 500）。' },
       deliverable: { type: 'string', description: '可选。期望产出的形状描述（如"一张三列对比表""一份带出处的清单"），写清楚它才好交付。' },
       role: {
         type: 'string',

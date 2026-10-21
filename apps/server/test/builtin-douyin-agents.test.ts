@@ -83,8 +83,8 @@ describe('抖音运营助手 · seed 条目结构', () => {
     expect(builtinDouyinAgentDefs[0].force_sync).toBe(true);
   });
 
-  it('maxReActSteps=40（选题+脚本+选品+复盘一条长链路）', () => {
-    expect(JSON.parse(String(builtinDouyinAgentDefs[0].config_json))).toEqual({ maxReActSteps: 40 });
+  it('maxReActSteps=500（统一默认 500 步）', () => {
+    expect(JSON.parse(String(builtinDouyinAgentDefs[0].config_json))).toEqual({ maxReActSteps: 500 });
   });
 
   it('挂 pageAgent 作为子智能体（查平台规则 / 热点 / 竞品）', () => {

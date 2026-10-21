@@ -103,8 +103,8 @@ describe('发布执行员 · seed 条目结构', () => {
     expect(def.force_sync).toBe(true);
   });
 
-  it('maxReActSteps=80（登录态判断→上传→转码→表单→提交→核验，链路长）', () => {
-    expect(JSON.parse(String(builtinPublishAgentDefs[0].config_json))).toEqual({ maxReActSteps: 80 });
+  it('maxReActSteps=500（统一默认 500 步）', () => {
+    expect(JSON.parse(String(builtinPublishAgentDefs[0].config_json))).toEqual({ maxReActSteps: 500 });
   });
 
   it('叶子执行者：不挂子智能体（防委派链膨胀）', () => {

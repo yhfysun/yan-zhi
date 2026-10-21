@@ -87,7 +87,7 @@ export const SPEC_TOOL_BLACKLIST: ReadonlySet<string> = new Set([
   'api_skill_toggle',
 ]);
 
-export const DEFAULT_SPEC_MAX_STEPS = 60;
+export const DEFAULT_SPEC_MAX_STEPS = 500;
 export const MIN_SPEC_MAX_STEPS = 5;
 /** 2026-10-05 与子智能体兜底上限同步放大到 500（长任务靠上下文压缩承载，不靠截断） */
 export const MAX_SPEC_MAX_STEPS = 500;

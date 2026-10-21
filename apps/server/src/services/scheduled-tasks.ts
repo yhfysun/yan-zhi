@@ -385,7 +385,7 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
         topP: modelParams.topP,
         reasoningEffort: modelParams.reasoningEffort,
       },
-      maxSteps: modelParams.maxReActSteps || 100,
+      maxSteps: modelParams.maxReActSteps || 500,
     });
     return finishTask(task, convId, now, true);
   } catch (e) {

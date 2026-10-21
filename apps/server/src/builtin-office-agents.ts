@@ -164,7 +164,7 @@ export const builtinOfficeAgentDefs: Array<Record<string, unknown>> = [
     agent_kind: 'main',
     category: '办公',
     // 长文档要分块翻 + 自检（漏译/数字/回译/术语一致性四查），链路比普通问答长
-    config_json: JSON.stringify({ maxReActSteps: 40 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: BUSINESS_AGENT_ID,
@@ -182,6 +182,6 @@ export const builtinOfficeAgentDefs: Array<Record<string, unknown>> = [
     agent_kind: 'main',
     category: '办公',
     // 核算 + 多方案对比 + 交付表格，步数给足
-    config_json: JSON.stringify({ maxReActSteps: 40 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
 ];

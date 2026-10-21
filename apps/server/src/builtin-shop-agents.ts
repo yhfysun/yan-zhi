@@ -107,6 +107,6 @@ export const builtinShopAgentDefs: Array<Record<string, unknown>> = [
     agent_kind: 'main',
     category: '办公',
     // 选品分析要跑「抓数 → 同款匹配 → 测算 → 成稿」多轮，步数给足
-    config_json: JSON.stringify({ maxReActSteps: 50 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
 ];

@@ -473,7 +473,7 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     agent_kind: 'main',
     category: '任务模式',
     // 长稿逐批改写 + 一致性检查，链路比普通问答长
-    config_json: JSON.stringify({ maxReActSteps: 50 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: SCRIPT_AGENT_ID,
@@ -490,7 +490,7 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     force_sync: true,
     agent_kind: 'main',
     category: '任务模式',
-    config_json: JSON.stringify({ maxReActSteps: 40 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: AUDIOBOOK_AGENT_ID,
@@ -507,7 +507,7 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     force_sync: true,
     agent_kind: 'main',
     category: '任务模式',
-    config_json: JSON.stringify({ maxReActSteps: 50 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: DUBBING_AGENT_ID,
@@ -524,7 +524,7 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     force_sync: true,
     agent_kind: 'main',
     category: '任务模式',
-    config_json: JSON.stringify({ maxReActSteps: 40 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: NOVEL_TUIWEN_AGENT_ID,
@@ -543,7 +543,7 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     category: '任务模式',
     // 200（2026-10-05）：全流程（选书/抓正文/申词/出片/发布/回填）链路长，
     // 50 步实测跑到抓正文就被腰斩；委派 pageAgent 的 200 步与其对齐。
-    config_json: JSON.stringify({ maxReActSteps: 200 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: CLIP_AGENT_ID,
@@ -561,6 +561,6 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     agent_kind: 'main',
     category: '剪辑',
     // 剪辑链路（摸底→骨架→精修→字幕→声音→预览→渲染）步骤多，给足步数
-    config_json: JSON.stringify({ maxReActSteps: 60 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
 ];

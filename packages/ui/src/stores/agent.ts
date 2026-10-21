@@ -134,7 +134,7 @@ const DEFAULT_AGENT_DATA = {
   knowledgeBaseIds: ['builtin-app-guide'],
   category: '默认',
   isDefault: true,
-  config: { maxReActSteps: 10 },
+  config: { maxReActSteps: 500 },
 };
 
 /**
@@ -242,7 +242,7 @@ const PAGE_AGENT_DATA = {
   frequencyPenalty: 0,
   presencePenalty: 0,
   isBuiltin: true,
-  config: { maxReActSteps: 50 },
+  config: { maxReActSteps: 500 },
 };
 
 // ========== P4.1: dataAgent（内置数据查询分析智能体） ==========
@@ -326,8 +326,8 @@ const DATA_AGENT_DATA = {
   frequencyPenalty: 0,
   presencePenalty: 0,
   isBuiltin: true,
-  // 取数短链路（overview → brief? → query → 回答），16 步足够；放宽只会让跑偏时打转更久
-  config: { maxReActSteps: 16 },
+  // 16 → 500（2026-10-20 用户诉求：所有智能体统一 500 步）。
+  config: { maxReActSteps: 500 },
 };
 
 export const useAgentStore = defineStore('agent', () => {

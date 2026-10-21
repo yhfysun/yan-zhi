@@ -61,13 +61,13 @@ describe('novel-tuiwen skill seed 关键锚点（防漂移）', () => {
     }
   });
 
-  it('步数配置：pageAgent=500、小说推文主智能体=200（50 会腰斩正常抓正文）', () => {
+  it('步数配置：pageAgent=500、小说推文主智能体=500（统一默认 500 步）', () => {
     expect(SERVER_DB()).toContain("id: 'a_builtin_page_agent'");
     // ★ 2026-10-09 同步：pageAgent 200→500。推文链路实测 200 步仍会撞顶
     //   （登录/抓书目/逐章抓正文/回填全压在 pageAgent 身上），故提到 500。
-    //   小说推文**主智能体**仍为 200（它把重活委派给 pageAgent），保持不变。
+    //   小说推文**主智能体**也统一到 500（2026-10-20 用户诉求：所有智能体默认 500）。
     expect(SERVER_DB()).toMatch(/maxReActSteps: 500/);
-    expect(AGENTS()).toMatch(/NOVEL_TUIWEN_AGENT_ID,[\s\S]{0,600}maxReActSteps: 200/);
+    expect(AGENTS()).toMatch(/NOVEL_TUIWEN_AGENT_ID,[\s\S]{0,600}maxReActSteps: 500/);
     // 旧的 50 配置不得回到这两个 agent 上
     const dbSrc = SERVER_DB();
     const pageBlock = dbSrc.slice(dbSrc.indexOf("id: 'a_builtin_page_agent'"), dbSrc.indexOf("id: 'a_builtin_page_agent'") + 800);

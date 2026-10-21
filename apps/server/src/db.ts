@@ -2288,7 +2288,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: WORKFLOW_ASSISTANT_SYSTEM_PROMPT,
     // 工作流要跑很久（循环 + 媒体生成），步数给宽一点；提示词/工具挂载以代码为准
     force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 32 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: 'a_builtin_page_agent',
@@ -2315,9 +2315,8 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: DATA_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词/步数配置以代码为准，强制同步旧库残留
     force_sync: true,
-    // 取数是短链路（overview → brief? → query → 回答），16 步足够；
-    // 放宽步数只会让跑偏的模型在无关工具上原地打转更久。
-    config_json: JSON.stringify({ maxReActSteps: 16 }),
+    // 16 → 500（2026-10-20 用户诉求：所有智能体统一 500 步）。
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: 'a_builtin_ops_agent',
@@ -2331,7 +2330,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: OPS_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
     force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 30 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: 'a_builtin_sec_agent',
@@ -2351,7 +2350,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     ]),
     system_prompt: SEC_AGENT_SYSTEM_PROMPT,
     force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 30 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   // ── 安全子智能体（P4，2026-10-17）：主安全助手按阶段委派 ──────────────────
   // ★ 子体只挂**本阶段需要的工具**：挂得越少，模型越不容易跑题，权限面也越小。
@@ -2377,7 +2376,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
 4. 输出结构化清单，供父智能体继续做 Web 面验证。`,
     force_sync: true,
     agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 20 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: 'a_builtin_sec_web_agent',
@@ -2400,7 +2399,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
 4. 每条结论必须附请求与响应证据；没有证据就说"未确认"。`,
     force_sync: true,
     agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 25 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: 'a_builtin_sec_report_agent',
@@ -2422,7 +2421,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
 5. 报告结论先行，每条含证据与修复建议，不夸大。`,
     force_sync: true,
     agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 20 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     // Java 开发助手：代码编写助手的专属子智能体，Java 项目检测/构建/分析/调试/测试
@@ -2437,7 +2436,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     force_sync: true,
     // sub：仅作为子智能体被代码编写助手引用委派，不在会话的智能体选择器中出现
     agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 30 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     // CI/CD 发布助手：代码编写助手的专属子智能体，发布流水线创建与执行
@@ -2452,7 +2451,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     force_sync: true,
     // sub：仅作为子智能体被代码编写助手引用委派，不在会话的智能体选择器中出现
     agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 30 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     // 代码编写助手（架构师）：绑定「代码开发」场景（前端场景卡片切换到此智能体）
@@ -2478,8 +2477,9 @@ export const seedAgents: Array<Record<string, unknown>> = [
     // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
     force_sync: true,
     // 架构师职责 = 委派 + 验收 + 集成，步数要够一次完整开发；配合子智能体自动接力（见 runSubAgent）。
-    // 原 40 步对"勘查 → 设计 → 派 3~4 个子智能体 → 验收 → 打回重派"明显偏紧。
-    config_json: JSON.stringify({ maxReActSteps: 80, autoContinueMaxRounds: 2 }),
+    // 80 → 500（2026-10-20 用户诉求）：写代码的智能体不该比别的智能体步数更少，
+    // 单批 80 步对"勘查 → 设计 → 派 3~4 个子智能体 → 验收 → 打回重派"仍会触顶。
+    config_json: JSON.stringify({ maxReActSteps: 500, autoContinueMaxRounds: 2 }),
   },
   {
     // 短剧导演助手：小说/创意方向 → 设定集 + 分集大纲 + 分镜表 + 视频提示词 + 可选成片生产
@@ -2501,7 +2501,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     force_sync: true,
     agent_kind: 'main',
     // 分镜链路长（取材 → 设定 → 大纲 → 分镜 → 提示词 → 导出），叠加生产段（逐镜出图配音）会显著增长
-    config_json: JSON.stringify({ maxReActSteps: 60 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     // 设计创意助手：绑定「设计创意」场景（前端场景卡片切换到此智能体）
@@ -2517,7 +2517,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: DESIGN_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
     force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 30 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   // 办公岗位专属内置智能体（翻译助手 / 个人生意助手）—— 定义见 ./builtin-office-agents.ts
   ...builtinOfficeAgentDefs,
@@ -2549,7 +2549,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     force_sync: true,
     // sub：仅作为子智能体被代码编写助手引用委派，不在会话的智能体选择器中出现
     agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 30 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     // 高级程序助手：代码编写助手的专属子智能体，接口设计 + 后端/服务端代码编写
@@ -2564,9 +2564,8 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: BACKEND_DEV_SYSTEM_PROMPT,
     force_sync: true,
     agent_kind: 'sub',
-    // 60 步 + 接力 2 批（2026-10-18）：40 步对"读完工程记忆 → 吃透契约 → 写完整功能 → 自测"
-    // 偏紧，截断即半成品；接力默认 1 批不够翻面。
-    config_json: JSON.stringify({ maxReActSteps: 60, autoContinueMaxRounds: 2 }),
+    // 60 → 500（2026-10-20 用户诉求：编码子智能体与主智能体统一 500 步，长任务靠上下文压缩承载，不靠截断）。
+    config_json: JSON.stringify({ maxReActSteps: 500, autoContinueMaxRounds: 2 }),
   },
   {
     // 设计助手：代码编写助手的专属子智能体，页面设计规格（不写业务代码）
@@ -2581,7 +2580,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: UI_DESIGNER_SYSTEM_PROMPT,
     force_sync: true,
     agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 30 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     // 前端助手：代码编写助手的专属子智能体，按设计规格编写前端页面
@@ -2596,9 +2595,8 @@ export const seedAgents: Array<Record<string, unknown>> = [
     system_prompt: FRONTEND_DEV_SYSTEM_PROMPT,
     force_sync: true,
     agent_kind: 'sub',
-    // 60 步 + 接力 2 批（2026-10-18）：与 backend_dev 同口径 —— 组件多/交互态全的页面
-    // 40 步装不下，截断即半成品。
-    config_json: JSON.stringify({ maxReActSteps: 60, autoContinueMaxRounds: 2 }),
+    // 60 → 500（2026-10-20 用户诉求：编码子智能体与主智能体统一 500 步）。
+    config_json: JSON.stringify({ maxReActSteps: 500, autoContinueMaxRounds: 2 }),
   },
 ];
 for (const a of seedAgents) {

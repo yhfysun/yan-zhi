@@ -99,6 +99,6 @@ export const builtinDouyinAgentDefs: Array<Record<string, unknown>> = [
     agent_kind: 'main',
     category: '办公',
     // 选题 + 脚本 + 选品 + 复盘一条链路走完，步数给足
-    config_json: JSON.stringify({ maxReActSteps: 40 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
 ];

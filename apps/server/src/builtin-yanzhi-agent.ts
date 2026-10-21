@@ -88,6 +88,6 @@ export const builtinYanzhiAgentDefs: Array<Record<string, unknown>> = [
     agent_kind: 'main',
     category: '办公',
     // 演示链路长（对齐 → 脚本 → 派发 → 录制 → 等待 → 收尾），步数给足
-    config_json: JSON.stringify({ maxReActSteps: 60 }),
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
 ];
