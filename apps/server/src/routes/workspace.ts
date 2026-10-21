@@ -7,6 +7,7 @@ import { db } from '../db.js';
 import { isWithinRoot } from '../services/path-guard.js';
 // 文本落盘的唯一出口：按目标文件现有编码写回（GBK 文件不会被悄悄转成 UTF-8）
 import { writeTextFilePreservingEncoding } from '../services/text-file-write.js';
+import { diffStatLines } from '../services/hunk-apply.js';
 // 编码：编辑器要能"按实际编码读出 + 主动转码"（2026-10-21 用户追问）
 import { decodeTextBytes, decodeTextBytesAs, encodeTextBytes, resolveEncodingName, encodingLabel, looksBinaryBytes, type TextEncoding } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -622,7 +623,29 @@ router.get('/changes/summary', (req, res) => {
     }
   }
   const items = [...byPath.values()].sort((a, b) => b.lastAt - a.lastAt);
-  res.json({ items, totalFiles: items.length, totalWrites: rows.length });
+
+  // 行数统计（2026-10-21 用户：「聊天框只是有文件路径，修改行数」）：
+  // 只对聚合后每个文件的**最新一条**快照读 before/after 全文 —— 文件数一般是个位到几十，
+  // 一次性把所有快照正文塞进 SELECT 才会把响应撑爆（正文一律不进响应，行数在这里算完就丢）。
+  let totalAdded = 0;
+  let totalDeleted = 0;
+  let statStmt: any = null;
+  try { statStmt = db.prepare('SELECT before_content, after_content FROM file_change WHERE id = ?'); } catch { statStmt = null; }
+  for (const it of items as Array<Record<string, unknown>>) {
+    let stat = { added: 0, deleted: 0, truncated: false };
+    try {
+      const row = statStmt?.get(it.id) as { before_content?: string | null; after_content?: string | null } | undefined;
+      // before 为 NULL = 新建文件（'' 起算，全部算新增，对齐 git）
+      stat = diffStatLines(row?.before_content ?? '', row?.after_content ?? '');
+    } catch { /* 读不到就不给行数，清单本身照常展示 */ }
+    it.added = stat.added;
+    it.deleted = stat.deleted;
+    it.truncated = stat.truncated;
+    totalAdded += stat.added;
+    totalDeleted += stat.deleted;
+  }
+
+  res.json({ items, totalFiles: items.length, totalWrites: rows.length, totalAdded, totalDeleted });
 });
 
 /** 同路径的所有 pending 记录统一置为某状态（回退/应用是文件级操作，历史链一并收口） */function markChange(id: string, status: string): any {

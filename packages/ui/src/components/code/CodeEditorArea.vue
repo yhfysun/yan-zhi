@@ -91,12 +91,23 @@
       />
     </div>
 
-    <!-- ===== 模型修改提示条：对比 / 处理 ===== -->
-    <div v-if="activeAiChange && !showDiff" class="cea-ai-bar">
+    <!-- ===== 模型修改提示条：对比 / 处理 + 全部保存 =====
+         ★ 「全部保存」在 diff 视图里也保留（v-if 只判 activeAiChange）：
+           用户点开 diff 时正是最可能想"这堆都保留"的时刻，此时藏掉按钮等于让他在两个视图间来回切。 -->
+    <div v-if="activeAiChange" class="cea-ai-bar">
       <el-icon :size="13"><MagicStick /></el-icon>
       <span class="cea-ai-text">模型已修改此文件<template v-if="activeAiChange.count > 1">（{{ activeAiChange.count }} 次修改）</template></span>
       <span class="cea-ai-spacer"></span>
-      <button class="cea-ai-btn" @click="showDiff = true">对比 / 处理</button>
+      <button v-if="!showDiff" class="cea-ai-btn" @click="showDiff = true">对比 / 处理</button>
+      <!-- 范围说明：这里是**当前项目目录**下的全部待审改动（聊天卡头部那个是会话范围） -->
+      <button
+        class="cea-ai-btn primary"
+        :disabled="savingAll"
+        title="保存当前项目下所有待审的模型改动（只确认，不改内容）"
+        @click="saveAllChanges"
+      >
+        {{ savingAll ? '保存中…' : '全部保存' }}
+      </button>
     </div>
 
     <!-- ===== 合并冲突提示条 ===== -->
@@ -269,7 +280,7 @@ import {
   Close, Document, Loading, WarningFilled, Warning, FolderOpened, Monitor, FullScreen,
   ArrowLeft, ArrowRight, View, CaretBottom, Check, MagicStick,
 } from '@element-plus/icons-vue';
-import { useCodeStore } from '../../stores/code';
+import { useCodeStore, type AiFileChangeItem } from '../../stores/code';
 import { useResizableV } from '../../composables/useResizableV';
 import { api } from '../../api/client';
 import CodeEditorPane from './CodeEditorPane.vue';
@@ -420,14 +431,44 @@ function onCursor(e: { line: number; col: number }) {
 
 // ===== 模型修改快照（Diff / 应用 / 回退）=====
 const showDiff = ref(false);
-const activeAiChange = computed(() => {
+
+/**
+ * 从聊天「本次修改」卡跳转进来时指定的快照 id。
+ * ★ 为什么需要它：聊天卡的汇总按**会话**聚合，而编辑器里的 aiChanges 按**项目目录**拉取
+ *   （GET /workspace/changes?dir=）。当改动文件不在当前项目目录下时，aiChangeByPath 找不到，
+ *   直接 showDiff 会空白一片 —— 表现成"点了没反应"。
+ */
+const forcedChange = ref<{ id: string; path: string } | null>(null);
+const samePath = (a: string, b: string) => a.replace(/[\\/]+/g, '/') === b.replace(/[\\/]+/g, '/');
+
+const activeAiChange = computed<AiFileChangeItem | null>(() => {
   const f = code.activeFile;
   if (!f) return null;
+  const forced = forcedChange.value;
+  if (forced && forced.id && samePath(forced.path, f.path)) {
+    return { id: forced.id, path: f.path, tool: 'file_edit', createdAt: Date.now(), count: 1 };
+  }
   return code.aiChangeByPath(f.path) || null;
 });
 
+const savingAll = ref(false);
+async function saveAllChanges() {
+  if (savingAll.value) return;
+  savingAll.value = true;
+  try {
+    const r = await code.applyAllAiChanges();
+    if (!r.ok && !r.failed) ElMessage.info('没有待保存的模型修改');
+    else if (r.failed) ElMessage.warning(`已保存 ${r.ok} 个，${r.failed} 个失败`);
+    else ElMessage.success(`已保存 ${r.ok} 个文件的修改`);
+    forcedChange.value = null;
+  } finally {
+    savingAll.value = false;
+  }
+}
+
 async function onAiActed(kind: 'apply' | 'revert' | 'dismiss', info?: { deleted?: boolean }) {
   showDiff.value = false;
+  forcedChange.value = null;
   void code.fetchAiChanges();
   const f = code.activeFile;
   if (!f) return;
@@ -469,10 +510,30 @@ watch(() => code.pendingConflict, async (p) => {
   conflictMode.value = true;
 });
 
-// 切标签时退出 diff / 冲突视图
-watch(() => code.activePath, () => {
-  showDiff.value = false;
+// 切标签时退出 diff / 冲突视图。
+//
+// ★★ 这里**不能**无条件清 forcedChange（2026-10-21 实测的时序竞争）：
+//   聊天卡点击 → 设 forcedChange → openFile() 改 activePath → **本 watch 立刻触发** →
+//   若清掉 forcedChange，等 await loadContent 回来时 activeAiChange 已经是 null，
+//   showDiff 被算成 false ⇒ 用户点了文件却打不开 diff（表现成"点了没反应"）。
+//   正确判据是**路径**：切到目标文件就保持 diff 打开，切到别的文件才作废。
+watch(() => code.activePath, (p) => {
   conflictMode.value = false;
+  const forced = forcedChange.value;
+  if (forced && p && samePath(forced.path, p)) {
+    showDiff.value = true;
+    return;
+  }
+  forcedChange.value = null;
+  showDiff.value = false;
+});
+
+// 聊天「本次修改」卡点文件 → 这里打开并直接进 diff
+watch(() => code.pendingDiff, async (p) => {
+  if (!p || !p.path) return;
+  forcedChange.value = p.changeId ? { id: p.changeId, path: p.path } : null;
+  await code.openFile(p.path);
+  if (forcedChange.value) showDiff.value = true;
 });
 
 watch(() => code.projectDir, () => { void loadConflictPaths(); });
@@ -1004,6 +1065,13 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 .cea-ai-btn:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
+.cea-ai-btn.primary {
+  background: var(--color-primary, #c2410c);
+  border-color: var(--color-primary, #c2410c);
+  color: #fff;
+}
+.cea-ai-btn.primary:hover { filter: brightness(1.06); color: #fff; }
+.cea-ai-btn:disabled { opacity: 0.6; cursor: default; }
 
 /* ===== 控制台 ===== */
 .cea-handle-v {

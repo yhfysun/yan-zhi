@@ -157,3 +157,34 @@ export function applyHunkSelection(before: string, after: string, selected: Hunk
   const { eol, trailingNewline } = detectEnding(after, before);
   return out.join(eol) + (trailingNewline ? eol : '');
 }
+
+export interface DiffStat {
+  /** 新增行数 */
+  added: number;
+  /** 删除行数 */
+  deleted: number;
+  /** 文件太大（超 LCS 护栏）→ 行数没算，调用方应显示「大改动」而不是 0 */
+  truncated: boolean;
+}
+
+/**
+ * before/after 的增删行数（聊天汇总卡显示 `+N −M` 用）。
+ *
+ * ★ 为什么放在这里而不是再写一份：本模块的 `splitLines` + `lineOps` 是服务端唯一的行级 LCS 实现。
+ *   统计口径必须与「hunk 级接受」一致 —— 否则卡片上写 `+3`、点开 diff 却是 5 行，用户没法信任。
+ * ★ 超护栏（5000 行）返回 truncated：此时算行数只会卡死，如实说「大改动」比给个假数字好。
+ */
+export function diffStatLines(before: string, after: string): DiffStat {
+  const a = splitLines(before);
+  const b = splitLines(after);
+  if (a.length > MAX_LCS_LINES || b.length > MAX_LCS_LINES) {
+    return { added: 0, deleted: 0, truncated: true };
+  }
+  let added = 0;
+  let deleted = 0;
+  for (const op of lineOps(a, b)) {
+    if (op.type === 'ins') added += 1;
+    else if (op.type === 'del') deleted += 1;
+  }
+  return { added, deleted, truncated: false };
+}

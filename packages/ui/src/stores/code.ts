@@ -355,6 +355,40 @@ export const useCodeStore = defineStore('code', () => {
   const aiChangeByPath = (path: string) =>
     aiChanges.value.find((c) => c.path.replace(/[\\/]+/g, '/') === path.replace(/[\\/]+/g, '/'));
 
+  // ===== 从聊天「本次修改」卡点文件 → 编辑器直接进 diff 视图（2026-10-21）=====
+  //
+  // ★ 为什么不复用 pendingConflict：合并冲突与模型改动是两种不同视图，
+  //   共用一个信号会让"点文件看改动"偶尔打开冲突解决器（作用到错对象且不报错）。
+  const pendingDiff = ref<{ path: string; changeId: string; ts: number } | null>(null);
+  function openDiff(path: string, changeId?: string) {
+    if (!path) return;
+    pendingDiff.value = { path, changeId: changeId || '', ts: Date.now() };
+  }
+
+  /**
+   * 「保存」一批待审改动 = 标记为已接受（保留磁盘现状，**不重写文件**）。
+   *
+   * ★ 循环只有这一份实现：编辑器提示条（按项目目录的 aiChanges）与聊天汇总卡
+   *   （按会话聚合的 items，可能跨目录）都必须走它 —— 两处各写一遍，迟早一处漏 refresh。
+   */
+  async function applyAiChanges(ids: string[]): Promise<{ ok: number; failed: number }> {
+    let ok = 0;
+    let failed = 0;
+    for (const id of ids) {
+      if (!id) continue;
+      const r = await api.post(`/workspace/changes/${encodeURIComponent(id)}/apply`, {});
+      if (r && typeof r === 'object' && 'error' in r) failed += 1;
+      else ok += 1;
+    }
+    await fetchAiChanges();
+    return { ok, failed };
+  }
+
+  /** 「全部保存」：当前项目目录下所有待审改动 */
+  function applyAllAiChanges(): Promise<{ ok: number; failed: number }> {
+    return applyAiChanges(aiChanges.value.map((c) => c.id));
+  }
+
   // ===== 冲突解决信号（git 面板点击冲突文件 → 编辑区打开冲突解决器）=====
   const pendingConflict = ref<{ path: string; ts: number } | null>(null);
   function openConflict(path: string) {
@@ -379,7 +413,8 @@ export const useCodeStore = defineStore('code', () => {
     consoleOpen, toggleConsole,
     editorCursor, setEditorCursor,
     explorerCommand, runExplorerCommand,
-    aiChanges, fetchAiChanges, aiChangeByPath,
+    aiChanges, fetchAiChanges, aiChangeByPath, applyAiChanges, applyAllAiChanges,
+    pendingDiff, openDiff,
     pendingConflict, openConflict,
   };
 });

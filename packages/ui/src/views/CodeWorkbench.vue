@@ -338,6 +338,20 @@ watch(
   },
 );
 
+/**
+ * 聊天「本次修改」卡点文件 → 顶开右栏编辑器。
+ *
+ * ★ 为什么不能只靠上面的 activePath watch：那个只在路径**变化**时触发；
+ *   若该文件已经在标签里打开（很常见：刚被模型改过的文件用户先前看过），
+ *   activePath 不变 ⇒ 编辑器保持收起 ⇒ 用户点了没有任何反应。
+ */
+watch(
+  () => code.pendingDiff,
+  (p) => {
+    if (p && lead.value === 'ai') editorOpen.value = true;
+  },
+);
+
 // 在子组件创建前就标记代码模式，确保 ChatMessageList 首次渲染时 isCodeMode 已为 true
 setCodeModeActive(true);
 
