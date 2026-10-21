@@ -162,9 +162,51 @@
               <div v-if="windows.length" class="ops-body">
               <div class="ops-win-body">
                 <div v-for="w in windows" :key="w.id" v-show="w.id === activeWinId" class="ops-win">
-                  <!-- 窗口头：连接信息 + 本连接自己的操作（对话 ⇄ 命令视图的切换见右下角主导方悬浮胶囊） -->
+                  <!-- 窗口头：连接信息 + **远端当前目录**（可点开切换）。
+                       ★ 2026-10-21 用户实报「服务器当前路径没有显示啊，也没有切换的地方」：
+                       此前头部只有 user@host:port，用户不知道自己在哪一级目录，也没法一键 cd。 -->
                   <div class="ops-win-head">
                     <span class="ops-win-conn">{{ winConnInfo(w) }}</span>
+                    <el-popover
+                      v-if="w.view === 'term' && connType(connOf(w) as OpsConn) !== 'database'"
+                      placement="bottom-start"
+                      :width="420"
+                      trigger="click"
+                      @show="onCwdPopoverOpen(w)"
+                    >
+                      <template #reference>
+                        <button class="ops-cwd-chip" type="button" :title="w.remoteCwd ? `远端当前目录：${w.remoteCwd}（点击切换）` : '远端目录未知（等待 shell 提示符）'">
+                          <el-icon :size="12"><FolderOpened /></el-icon>
+                          <span class="ops-cwd-text">{{ w.remoteCwd || '…' }}</span>
+                          <el-icon :size="10" class="ops-cwd-caret"><ArrowDown /></el-icon>
+                        </button>
+                      </template>
+                      <div class="ops-cwd-panel">
+                        <div class="ops-cwd-title">远端目录 · {{ connOf(w)?.name }}</div>
+                        <div class="ops-cwd-cur" :title="w.remoteCwd || ''">{{ w.remoteCwd || '未知（shell 还没输出提示符）' }}</div>
+                        <el-input
+                          v-model="cwdInput"
+                          size="small"
+                          placeholder="输入绝对路径或相对路径，回车跳转"
+                          @keyup.enter="gotoRemoteDir(w, cwdInput)"
+                        >
+                          <template #append>
+                            <el-button size="small" :disabled="!cwdInput.trim()" @click="gotoRemoteDir(w, cwdInput)">跳转</el-button>
+                          </template>
+                        </el-input>
+                        <div v-if="cwdHistory.length" class="ops-cwd-hist">
+                          <div class="ops-cwd-hist-title">最近访问</div>
+                          <button
+                            v-for="d in cwdHistory"
+                            :key="d"
+                            type="button"
+                            class="ops-cwd-hist-item"
+                            :title="d"
+                            @click="gotoRemoteDir(w, d)"
+                          >{{ d }}</button>
+                        </div>
+                      </div>
+                    </el-popover>
                     <div class="ops-win-head-actions">
                       <span v-if="w.view === 'term' && w.termConnecting" class="ops-term-hint">连接中…</span>
                       <span
@@ -351,7 +393,7 @@
                             </div>
                           </div>
                         </div>
-                        <div class="ops-chat-input">
+                        <div class="ops-chat-input" :class="{ 'is-exec-mode': (w.chatMode || 'agent') === 'exec' }">
                           <el-input
                             :ref="(el: any) => setChatInputEl(w.id, el)"
                             v-model="w.chatInput"
@@ -367,17 +409,32 @@
                               <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'exec' }" plain title="执行模式：发送时直接写终端，不经过模型" @click="w.chatMode = 'exec'">执行</el-button>
                               <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'agent' }" plain title="Agent 模式：发送给运维助手执行" @click="w.chatMode = 'agent'">Agent</el-button>
                               <el-button size="small" class="ops-tool-btn" :class="{ 'ops-tool-btn-active': (w.chatMode || 'agent') === 'background' }" plain title="后台模式：提交为后台 AI 任务，关掉面板也会继续" @click="w.chatMode = 'background'">后台</el-button>
+                              <!-- 「/」快捷执行的存在性提示：否则用户在 Agent 模式敲 /ls 会被直接丢进终端，毫无预期 -->
+                              <span
+                                v-if="(w.chatMode || 'agent') !== 'exec'"
+                                class="ops-slash-hint"
+                                title="任何模式下，以 / 开头都会直接发到终端（例：/ls -lh）"
+                              >/ 直连终端</span>
                             </div>
-                            <!-- 工作目录（对齐主对话输入区）：点开即切换本窗口任务的根目录 -->
-                            <button
-                              class="ops-dir-btn"
-                              type="button"
-                              :title="`工作目录：${workspaceDirLabel}\n点击切换（影响本窗口 AI 任务的读写与相对路径解析）`"
-                              @click="showDirPicker = true"
-                            >
-                              <el-icon :size="13"><FolderOpened /></el-icon>
-                              <span class="ops-dir-name">{{ workspaceDirName }}</span>
-                            </button>
+                            <!-- 工作目录（对齐主对话输入区）：点开即切换本窗口任务的根目录；
+                                已设置时右侧出 ×，可清空回到"未指定"（此前设了就撤不掉） -->
+                            <span class="ops-dir-wrap" :title="`工作目录：${workspaceDirLabel || '未设置'}`">
+                              <button
+                                class="ops-dir-btn"
+                                type="button"
+                                @click="showDirPicker = true"
+                              >
+                                <el-icon :size="13"><FolderOpened /></el-icon>
+                                <span class="ops-dir-name">{{ workspaceDirName }}</span>
+                              </button>
+                              <button
+                                v-if="workspaceDirLabel"
+                                class="ops-dir-clear"
+                                type="button"
+                                title="清空工作目录"
+                                @click.stop="clearWorkspaceDirFromOps"
+                              ><el-icon :size="10"><Close /></el-icon></button>
+                            </span>
                             <div class="ops-toolbar-spacer"></div>
                             <el-select
                               v-model="w.modelId"
@@ -703,6 +760,7 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import '@xterm/xterm/css/xterm.css';
 import { api, API_BASE, wsUrl, buildRequestHeaders } from '../../api/client';
+import { parsePromptCwd, applyPromptCwd } from './remote-cwd';
 import type { Platform, Model, ReleaseProject } from '@yan-zhi/shared';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
@@ -829,7 +887,7 @@ function newWin(c: OpsConn, view: ViewKey): OpsWin {
     connectionId: c.id,
     view,
     termOpen: false, termConnecting: false, termRecording: false,
-    pendingInput: '', lastCommands: [], outputBuffer: '',
+    pendingInput: '', lastCommands: [], outputBuffer: '', remoteCwd: '',
     containers: [], containersError: '',
     dbTables: [], dbTable: '', dbSql: '', dbLoading: false, dbError: '', dbResult: null,
     conversationId: '', chatMessages: [], chatInput: '', chatStreaming: false,
@@ -1099,10 +1157,13 @@ function openWsTermTransport(
 
     sock.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
-        let msg: { type?: string; message?: string; defaultCommand?: string | null; autoRun?: boolean; recording?: boolean; token?: string; code?: string };
+        let msg: { type?: string; message?: string; defaultCommand?: string | null; autoRun?: boolean; recording?: boolean; token?: string; code?: string; cwd?: string | null };
         try { msg = JSON.parse(ev.data); } catch { return; }
         if (msg.type === 'ready') {
           w.termRecording = !!msg.recording;
+          // 服务端随 ready 下发的初始 pwd（exec 取的，不写进 PTY）。
+          // 作为「相对提示符」的基准：CentOS 默认 PS1 只有末级目录名，没基准只能显示 "opt"。
+          if (msg.cwd) { w.remoteCwd = msg.cwd; rememberCwd(msg.cwd); }
           if (msg.autoRun && msg.defaultCommand) ElMessage.info(`已自动执行默认命令: ${msg.defaultCommand}`);
           succeed();
         } else if (msg.type === 'error') {
@@ -1312,6 +1373,15 @@ function closeTerminal(w: OpsWin) {
 // 在对话模式发送时随消息带上，让运维助手「看得见」当前终端现场。
 function accumulateOutput(w: OpsWin, text: string) {
   w.outputBuffer = (w.outputBuffer + text).slice(-MAX_OUTPUT_CHARS);
+  // 远端当前目录：从提示符解析（服务端不知道用户 cd 到哪，只有 shell 自己打出来的算数）
+  const parsed = parsePromptCwd(text);
+  if (parsed) {
+    const next = applyPromptCwd(w.remoteCwd, parsed);
+    if (next !== undefined && next !== w.remoteCwd) {
+      w.remoteCwd = next;
+      rememberCwd(next);
+    }
+  }
 }
 function resetTerminalContext(w: OpsWin) {
   w.pendingInput = '';
@@ -1371,6 +1441,58 @@ function onWorkspaceDirSelected(dir: string) {
   settingsStore.settings.workspaceDir = dir;
   showDirPicker.value = false;
   ElMessage.success(`工作目录已切换到 ${dir}`);
+}
+/**
+ * 清空工作目录（2026-10-21 用户实报「不能清空？？？」）。
+ *
+ * 目录一旦设置就没有回退入口 —— 用户想取消限制只能去设置页手动删。
+ * 清空后任务回到"未指定目录"（后端按会话绑定空间 / 全局兜底解析）。
+ */
+async function clearWorkspaceDirFromOps() {
+  try {
+    const { useChat } = await import('../../composables/chat/useChat');
+    await useChat().clearWorkspaceDir();
+    ElMessage.success('已清空工作目录');
+  } catch (e) {
+    ElMessage.error('清空失败：' + (e as Error).message);
+  }
+}
+
+// ===== 远端当前目录（服务器上的 pwd）=====
+const cwdInput = ref('');
+/** 最近访问过的远端目录（按连接无关的全局历史，最多 8 条；只用于快速回跳） */
+const cwdHistory = ref<string[]>([]);
+function rememberCwd(dir: string) {
+  if (!dir) return;
+  const list = cwdHistory.value.filter((d) => d !== dir);
+  list.unshift(dir);
+  cwdHistory.value = list.slice(0, 8);
+}
+function onCwdPopoverOpen(w: OpsWin) {
+  cwdInput.value = w.remoteCwd || '';
+}
+/** 在终端里执行 `cd`（不经过模型：这是用户直接操作终端） */
+function gotoRemoteDir(w: OpsWin, dir: string) {
+  const target = (dir || '').trim();
+  if (!target) return;
+  const h = terms.get(w.id);
+  if (!h) { ElMessage.warning('终端未连接'); return; }
+  // 经 onData 同一条通道写入，确保 PTY 收到的是真实按键（带 \r 才会执行）
+  h.term.paste(`cd ${quoteForShell(target)}\r`);
+  rememberCwd(target);
+  w.remoteCwd = toAbsoluteRemote(target, w.remoteCwd);
+  ElMessage.success(`已切换目录：${w.remoteCwd}`);
+}
+/** 给命令里的路径加引号（含空格/特殊字符时必须，否则 cd 只吃到第一段） */
+function quoteForShell(p: string): string {
+  if (/^[\w./~@%+=:,-]+$/.test(p)) return p;
+  return `'${p.replace(/'/g, `'\\''`)}'`;
+}
+/** 相对路径补成绝对（用于即时显示；真正的值以 shell 提示符为准） */
+function toAbsoluteRemote(target: string, prev: string): string {
+  if (target.startsWith('/') || target.startsWith('~')) return target;
+  if (!prev) return target;
+  return `${prev.replace(/\/+$/, '')}/${target}`.replace(/\/+/g, '/');
 }
 
 // ===== 对话模式：每窗口独立会话，不依赖全局 chat store =====
@@ -1786,11 +1908,19 @@ function sendLabel(w: OpsWin): string {
   const mode = w.chatMode || 'agent';
   return mode === 'exec' ? '执行' : mode === 'background' ? '后台提交' : '发送';
 }
+/**
+ * 输入框占位文案（2026-10-21 用户实报「输入 ll 怎么还跳出这里了？变成命令模式了」）。
+ *
+ * 根因是**文案误导**：执行模式下写「输入命令，Ctrl+Enter 直接发到终端」，
+ * 但输入框外观与 Agent 模式完全一样 —— 用户按普通输入框的理解敲了 `ll`，
+ * 结果绕过模型直接进了 PTY，观感就是"输入什么变成了命令模式"。
+ * 现在执行模式明确标注"直连终端 · 不经模型"，并与 Agent 模式在视觉上区分。
+ */
 function chatPlaceholder(w: OpsWin): string {
   const mode = w.chatMode || 'agent';
-  if (mode === 'exec') return '输入命令，Ctrl+Enter 直接发到终端（危险命令会被拦截）';
+  if (mode === 'exec') return '执行模式：敲的命令原样发到服务器终端（不经模型，不会帮你判断）';
   if (mode === 'background') return '输入后台任务，Ctrl+Enter 提交（关掉面板也会继续）';
-  return '输入运维任务，Ctrl+Enter 发送';
+  return '描述你要做的事，运维助手会判断该跑什么命令（例：看看 /opt 下有什么）';
 }
 
 async function sendWinChat(w: OpsWin) {
@@ -2961,6 +3091,17 @@ onUnmounted(() => {
   border-color: var(--color-primary);
   box-shadow: 0 6px 28px color-mix(in srgb, var(--color-primary) 13%, transparent);
 }
+/* 执行模式：直连终端 —— 用警告色边框 + 等宽字体表明「这不是跟 AI 说话」，
+   避免用户把它当普通输入框（用户实报「输入 ll 怎么变成命令模式了」） */
+.ops-chat-input.is-exec-mode {
+  border-color: color-mix(in srgb, var(--el-color-warning, #e6a23c) 55%, transparent);
+  background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 4%, var(--color-surface));
+}
+.ops-chat-input.is-exec-mode:focus-within {
+  border-color: var(--el-color-warning, #e6a23c);
+  box-shadow: 0 6px 28px color-mix(in srgb, var(--el-color-warning, #e6a23c) 16%, transparent);
+}
+.ops-chat-input.is-exec-mode :deep(.el-textarea__inner) { font-family: Consolas, monospace; }
 .ops-chat-input :deep(.el-textarea__inner) {
   border: none; background: transparent; box-shadow: none !important;
   padding: 8px 10px; border-radius: 10px; font-size: 13px; line-height: 1.6; resize: none;
@@ -2974,6 +3115,7 @@ onUnmounted(() => {
 .ops-toolbar-spacer { flex: 1; min-width: 4px; }
 
 /* 工作目录按钮（对齐主对话输入区的目录入口）：只显示末级目录名，全路径进 title */
+.ops-dir-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
 .ops-dir-btn {
   display: inline-flex; align-items: center; gap: 4px;
   flex-shrink: 0; max-width: 168px; min-width: 0;
@@ -2993,7 +3135,53 @@ onUnmounted(() => {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: Consolas, monospace;
 }
+/* 清空按钮：贴在目录按钮右内侧，hover 才明显（不占额外宽度，工具条本来就窄） */
+.ops-dir-clear {
+  position: absolute; right: -5px; top: -5px;
+  width: 14px; height: 14px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--glass-border); border-radius: 50%;
+  background: var(--color-surface); color: var(--color-text-tertiary);
+  cursor: pointer; opacity: 0; transition: opacity 0.12s ease, color 0.12s ease;
+}
+.ops-dir-wrap:hover .ops-dir-clear { opacity: 1; }
+.ops-dir-clear:hover { color: var(--el-color-danger, #e74c3c); border-color: currentColor; }
+
+/* 远端当前目录 chip（窗口头）：窄、等宽、点了才弹面板 */
+.ops-cwd-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 340px; min-width: 0; height: 20px; padding: 0 7px;
+  border: 1px solid var(--glass-border); border-radius: 6px;
+  background: transparent; color: var(--color-text-secondary);
+  font-family: Consolas, monospace; font-size: 11px; cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.ops-cwd-chip:hover { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
+.ops-cwd-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-cwd-caret { flex-shrink: 0; }
+.ops-cwd-panel { display: flex; flex-direction: column; gap: 8px; }
+.ops-cwd-title { font-size: 12px; font-weight: 600; color: var(--color-text); }
+.ops-cwd-cur {
+  font-family: Consolas, monospace; font-size: 11px; color: var(--color-text-secondary);
+  padding: 4px 7px; border-radius: 5px;
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ops-cwd-hist { display: flex; flex-direction: column; gap: 2px; }
+.ops-cwd-hist-title { font-size: 10.5px; color: var(--color-text-tertiary); }
+.ops-cwd-hist-item {
+  text-align: left; border: none; background: transparent; padding: 3px 6px;
+  border-radius: 5px; cursor: pointer;
+  font-family: Consolas, monospace; font-size: 11px; color: var(--color-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ops-cwd-hist-item:hover { background: var(--glass-bg-hover); color: var(--color-primary); }
 .ops-input-toolbar :deep(.el-button + .el-button) { margin-left: 0; }
+.ops-slash-hint {
+  font-size: 10.5px; color: var(--color-text-tertiary);
+  padding: 0 4px; white-space: nowrap; cursor: default;
+  font-family: Consolas, monospace;
+}
 .ops-tool-btn { height: 24px; padding: 0 10px; font-size: 11.5px; }
 .ops-tool-btn-active { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
 .ops-model-select { width: 168px; max-width: 34vw; }

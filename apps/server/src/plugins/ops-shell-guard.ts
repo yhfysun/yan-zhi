@@ -23,13 +23,49 @@ export const DANGEROUS_PATTERNS: RegExp[] = [
   /\bsystemctl\s+(stop|disable|mask)\s+(sshd|network|firewall)/i,
 ];
 
-/** 只读命令白名单：生产连接上这些命令无需 confirmed（前缀匹配，按首个 token 判定） */
+/**
+ * 只读命令白名单：生产连接上这些命令无需 confirmed（前缀匹配，按首个 token 判定）。
+ *
+ * ★ 2026-10-21 用户实报「ll 怎么变成不是只读命令了」：列表里只有 `ls`，没有 `ll`/`la`/`l`。
+ *   而这三个是绝大多数发行版 `/etc/profile` 预置的 `ls -l` / `ls -A` 别名，纯只读，
+ *   却被判成写操作 → 在生产连接上弹确认框，把「看个目录」变成「危险操作」。
+ *   `dir`（coreutils 的 ls 同义）、`ll -h` 这类带参数的写法由前缀匹配天然覆盖。
+ */
 export const READONLY_PREFIXES = [
-  'ls', 'pwd', 'cat', 'head', 'tail', 'grep', 'find', 'ps', 'top', 'df', 'du', 'free',
-  'uptime', 'whoami', 'hostname', 'uname', 'date', 'which', 'echo', 'wc', 'stat', 'id',
-  'systemctl status', 'systemctl list', 'journalctl', 'docker ps', 'docker images',
-  'docker inspect', 'docker logs', 'docker stats', 'docker version', 'docker top', 'docker port',
+  'ls', 'll', 'la', 'l', 'dir', 'pwd', 'cat', 'tac', 'head', 'tail', 'less', 'more', 'grep',
+  'egrep', 'fgrep', 'rg', 'find', 'locate', 'ps', 'top', 'htop', 'df', 'du', 'free',
+  'uptime', 'whoami', 'hostname', 'uname', 'date', 'which', 'whereis', 'echo', 'printf', 'wc', 'stat', 'id',
+  'systemctl status', 'systemctl list', 'systemctl show', 'systemctl is-active', 'systemctl is-enabled',
+  'journalctl', 'docker ps', 'docker images', 'docker inspect', 'docker logs', 'docker stats',
+  'docker version', 'docker top', 'docker port', 'docker info', 'docker compose ps',
+  'ss', 'netstat', 'ip addr', 'ip a', 'ip route', 'ifconfig', 'ping', 'traceroute', 'dig', 'nslookup',
+  'md5sum', 'sha256sum', 'file', 'tree', 'env', 'printenv', 'getent', 'lsof', 'nproc', 'lscpu', 'lsblk',
+  'mount', 'history', 'type', 'alias', 'readlink', 'realpath', 'basename', 'dirname', 'cut', 'sort', 'uniq',
+  'sed', 'awk', 'jq', 'curl', 'wget',
 ];
+
+/**
+ * 破坏性**动词**：即使出现在只读前缀里也必须判为写操作（白名单按前缀匹配，只管第一个 token）。
+ *
+ * ★ 为什么需要这张表：`find / -delete`、`sed -i`、`curl -o`、`awk` 写文件都能借"只读命令"的外壳
+ *   造成实际修改 —— 只按首个 token 判定会把它们全部放行。这里的判定比逐条枚举参数更保守：
+ *   宁可在生产连接上多问一次，也不放过一次误删。
+ */
+const MUTATING_FLAGS: RegExp[] = [
+  /\bfind\b.*\s-(delete|exec|execdir|ok|fprint|fls)\b/i,
+  /\bsed\b.*\s-i(\s|$|['"])/i,
+  /\b(awk|gawk)\b.*\b(print|printf)\b\s*[^|]*>/i,
+  /\bcurl\b.*\s(-o|-O|--output|--remote-name)\b/i,
+  /\bwget\b/i, // wget 默认落盘
+  /\btee\b/i,
+];
+
+/** 判断命令是否只读（生产连接免确认放行依据） */
+export function isReadonly(command: string): boolean {
+  const c = command.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (MUTATING_FLAGS.some((re) => re.test(c))) return false;
+  return READONLY_PREFIXES.some((p) => c === p || c.startsWith(p + ' ') || c.startsWith(p + '|') || c.startsWith(p + ';') || c.startsWith(p + '&&'));
+}
 
 /** 判断命令是否命中危险黑名单 */
 export function isDangerous(command: string): boolean {
@@ -60,12 +96,6 @@ export function resolveSilent(
 ): SilentDecision {
   if (action === 'exec' && command && isDangerous(command)) return 'approve';
   return conn.silent?.[action] === true ? 'silent' : 'approve';
-}
-
-/** 判断命令是否只读（生产连接免确认放行依据） */
-export function isReadonly(command: string): boolean {
-  const c = command.trim().toLowerCase().replace(/\s+/g, ' ');
-  return READONLY_PREFIXES.some((p) => c === p || c.startsWith(p + ' ') || c.startsWith(p + '|') || c.startsWith(p + ';') || c.startsWith(p + '&&'));
 }
 
 /** 生产连接的写操作必须显式 confirmed=true */

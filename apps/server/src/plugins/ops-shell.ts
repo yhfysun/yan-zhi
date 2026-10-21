@@ -2433,8 +2433,9 @@ export async function handleTerminalWs(ws: PluginWebSocket, req: PluginWsRequest
   if (conn.type === 'database') { fail('数据库连接不支持交互终端'); return; }
 
   let stream: ClientChannel;
+  let client: Client;
   try {
-    const client = await getSsh(conn);
+    client = await getSsh(conn);
     stream = await new Promise<ClientChannel>((resolve, reject) => {
       client.shell({ cols, rows }, (err, s) => (err ? reject(err) : resolve(s)));
     });
@@ -2541,7 +2542,23 @@ export async function handleTerminalWs(ws: PluginWebSocket, req: PluginWsRequest
   const defaultCommand = String(query.get('defaultCommand') ?? conn.defaultCommand ?? '').trim();
   const autoRun = query.get('autoRun') !== 'false' && !!defaultCommand;
 
-  sendWsJson(ws, { type: 'ready', defaultCommand: defaultCommand || null, autoRun, recording: !!recorder });
+  // 初始工作目录：单独走一次 exec 拿 `pwd`（**不写进 PTY** —— 否则用户会看到一条
+  // 自己没敲过的命令和一行输出）。拿去给前端做「当前目录」的基准值：
+  // 有些发行版（CentOS 默认 `\W`）提示符只有末级目录名 `[app@host opt]$`，
+  // 没有绝对基准就拼不出 /opt，显示成 "opt" 反而误导。
+  const initialCwd = await new Promise<string>((resolve) => {
+    try {
+      client.exec('pwd', (err, s) => {
+        if (err || !s) { resolve(''); return; }
+        let out = '';
+        s.on('data', (d: Buffer) => { out += d.toString('utf8'); });
+        s.on('close', () => resolve(out.split('\n').map((l) => l.trim()).filter(Boolean).pop() || ''));
+        s.on('error', () => resolve(''));
+      });
+    } catch { resolve(''); }
+  });
+
+  sendWsJson(ws, { type: 'ready', defaultCommand: defaultCommand || null, autoRun, recording: !!recorder, cwd: initialCwd || null });
 
   // 默认命令：shell 起来后自动执行一次（与 SSE 版同样的「等登录 banner」处理）
   if (autoRun) {

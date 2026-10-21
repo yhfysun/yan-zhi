@@ -31,7 +31,16 @@ describe('输入框工具条 · 工作目录入口', () => {
 
   it('按钮显示末级目录名，完整路径进 title（工具条只有 32px 高）', () => {
     expect(CODE).toContain('workspaceDirName');
-    expect(CODE).toMatch(/title="`工作目录：\$\{workspaceDirLabel\}/);
+    // title 挂在外层 wrap 上（按钮右侧还要挂清空 ×，两者共用同一个提示）
+    expect(CODE).toMatch(/title="`工作目录：\$\{workspaceDirLabel \|\| '未设置'\}`"/);
+  });
+
+  it('★ 已设置目录时可清空（此前设了就撤不掉）', () => {
+    expect(CODE, '★ 缺清空入口：用户只能去设置页手动删').toMatch(/v-if="workspaceDirLabel"[\s\S]{0,240}清空工作目录/);
+    expect(CODE).toContain('clearWorkspaceDirFromOps');
+    // 必须复用主对话的 clearWorkspaceDir，不另起一套清理逻辑
+    const fn = CODE.slice(CODE.indexOf('async function clearWorkspaceDirFromOps'), CODE.indexOf('async function clearWorkspaceDirFromOps') + 500);
+    expect(fn).toContain('useChat().clearWorkspaceDir()');
   });
 
   it('选定目录写回全局设置（与主对话同一份，不另起一套）', () => {
@@ -39,6 +48,50 @@ describe('输入框工具条 · 工作目录入口', () => {
     expect(fn).toContain('settingsStore.settings.workspaceDir = dir');
     // 不允许在运维页自己造一份目录设置
     expect(CODE).not.toMatch(/opsWorkspaceDir/);
+  });
+});
+
+describe('服务器当前目录（远端 pwd）', () => {
+  it('窗口头显示当前目录，可点开切换', () => {
+    expect(CODE, '★ 用户实报「服务器当前路径没有显示」').toContain('ops-cwd-chip');
+    expect(CODE).toMatch(/\{\{ w\.remoteCwd \|\| '…' \}\}/);
+    expect(CODE).toContain('gotoRemoteDir');
+  });
+
+  it('解析提示符而不是发 pwd（不在终端留用户没敲过的命令）', () => {
+    expect(CODE).toContain("import { parsePromptCwd, applyPromptCwd } from './remote-cwd'");
+    expect(CODE).toMatch(/const parsed = parsePromptCwd\(text\)/);
+  });
+
+  it('服务端随 ready 下发初始 pwd，作为相对提示符的基准', () => {
+    expect(CODE).toMatch(/if \(msg\.cwd\) \{ w\.remoteCwd = msg\.cwd/);
+  });
+});
+
+describe('★ 执行模式不得伪装成普通输入框（用户输入 ll 被当命令）', () => {
+  it('占位文案明确说明「不经模型」', () => {
+    const fn = CODE.slice(CODE.indexOf('function chatPlaceholder'), CODE.indexOf('function chatPlaceholder') + 700);
+    expect(fn, '★ 执行模式文案必须点明直连终端').toMatch(/不经模型/);
+    expect(fn, '★ Agent 模式文案要引导"描述要做什么"').toMatch(/描述你要做的事/);
+  });
+
+  it('执行模式有独立视觉（警告色边框 + 等宽字体）', () => {
+    expect(CODE).toMatch(/'is-exec-mode': \(w\.chatMode \|\| 'agent'\) === 'exec'/);
+    expect(CODE).toMatch(/\.ops-chat-input\.is-exec-mode \{[^}]*border-color/);
+    expect(CODE).toMatch(/\.ops-chat-input\.is-exec-mode :deep\(\.el-textarea__inner\) \{ font-family: Consolas/);
+  });
+
+  it('「/ 直连终端」这个隐形规则有可见提示', () => {
+    expect(CODE).toContain('ops-slash-hint');
+    expect(CODE).toMatch(/以 \/ 开头都会直接发到终端/);
+  });
+});
+
+describe('工具长输出折叠后，命令与输出视觉分离', () => {
+  it('步骤卡里命令用 osc-cmd（左侧强调条），与输出区分', () => {
+    const STEP = readFileSync(resolve(__dirname, '../../components/ops/OpsStepCards.vue'), 'utf8');
+    expect(STEP).toMatch(/v-if="commandOf\(s\.argsText\)"/);
+    expect(STEP).toMatch(/\.osc-cmd \{[^}]*border-left/);
   });
 });
 

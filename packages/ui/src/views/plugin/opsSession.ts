@@ -97,6 +97,12 @@ export interface OpsWin {
   pendingInput: string;
   lastCommands: string[];
   outputBuffer: string;
+  /**
+   * 远端 shell 的当前目录（从提示符解析，字符串为空 = 未知）。
+   * ★ 与服务端 SFTP 的路径、连接配置里的目录**不是一回事**：用户 `cd` 后服务端无从得知，
+   *   只能靠 shell 自己打出来的提示符（见 remote-cwd.ts）。
+   */
+  remoteCwd: string;
   // 容器
   containers: DockerRow[];
   containersError: string;
