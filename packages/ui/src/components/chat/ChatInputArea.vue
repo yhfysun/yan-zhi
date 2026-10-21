@@ -328,14 +328,7 @@
                   <span class="plus-menu-ic"><el-icon><UploadFilled /></el-icon></span>
                   <div class="plus-menu-info"><div class="plus-menu-label">上传文件</div></div>
                 </div>
-                <!-- 店铺运营按「项目=会话」隔离，不继承办公项目的工作目录：
-                     这一项在店铺模式下隐藏，避免看到别的项目目录（2026-10-21 用户实报）。 -->
-                <div
-                  v-if="!isShopMode"
-                  class="plus-menu-item"
-                  @mouseenter="closeSubNow"
-                  @click="closePlus(() => { showWorkspaceDir = true; })"
-                >
+                <div class="plus-menu-item" @mouseenter="closeSubNow" @click="closePlus(() => { showWorkspaceDir = true; })">
                   <span class="plus-menu-ic"><el-icon><FolderOpened /></el-icon></span>
                   <div class="plus-menu-info">
                     <div class="plus-menu-label">工作目录</div>
@@ -794,7 +787,6 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
-import { activeMode } from '../../stores/mode';
 import type { Component } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../../api/client';
@@ -844,9 +836,6 @@ const {
   // 归档会话只读（2026-10-16）：禁用输入 + 占位符说明去向
   currentConvArchived,
 } = useChat();
-
-/** 店铺运营：工作目录按「项目=会话」隔离，输入框菜单不显示全局项目目录 */
-const isShopMode = computed(() => activeMode.value === 'shop');
 
 /** 当前会话已发生的自动压缩次数（消息流里的 compact_boundary 标记数），供胶囊明细展示 */
 const compactCount = computed(() =>

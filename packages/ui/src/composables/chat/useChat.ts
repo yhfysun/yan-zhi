@@ -802,10 +802,21 @@ function createChat() {
 
   const showWorkspaceDir = ref(false);
   const settingsStore = useSettingsStore();
+  /** 店铺运营：工作目录按项目（=店铺会话绑定的空间）隔离，未绑定就是空 —— 不继承全局 */
+  const shopProjectDir = computed(() => {
+    if (activeMode.value !== 'shop') return '';
+    const conv = store.conversations.find((c) => c.id === store.currentConvId);
+    const sp = conv?.spaceId ? spaceStore.spaces.find((s) => s.id === conv.spaceId) : undefined;
+    return sp?.dirPath || '';
+  });
   // 对外暴露，UI 展示用（未设置时显示 'workspace'）
-  const workspaceDir = computed(() => settingsStore.settings.workspaceDir || 'workspace');
+  const workspaceDir = computed(() => (activeMode.value === 'shop'
+    ? (shopProjectDir.value || 'workspace')
+    : (settingsStore.settings.workspaceDir || 'workspace')));
   // 是否已真实设置工作目录（区分 'workspace' 兜底显示与真正选过目录）
-  const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
+  const hasWorkspaceDir = computed(() => (activeMode.value === 'shop'
+    ? !!shopProjectDir.value
+    : !!settingsStore.settings.workspaceDir));
 
   async function loadWorkspaceDir() {
     if (!settingsStore.loaded) await settingsStore.load();
@@ -828,6 +839,15 @@ function createChat() {
   }
 
   async function onWorkspaceDirSelected(path: string) {
+    // 店铺运营：目录绑定到「当前店铺项目」的空间，**不动全局**（否则会串到办公项目）
+    if (activeMode.value === 'shop') {
+      try {
+        const spaceId = await spaceStore.findOrCreateByDirPath(path);
+        if (store.currentConvId) await store.updateConversation(store.currentConvId, { spaceId });
+        await store.loadConversations();
+      } catch { /* 绑定失败不影响其它操作 */ }
+      return;
+    }
     await settingsStore.update({ workspaceDir: path });
     await pushWorkspaceDir(path);
 
