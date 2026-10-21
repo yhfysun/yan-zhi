@@ -163,18 +163,202 @@ const PLATFORM_BY_ID = new Map(SHOP_PLATFORMS.map((p) => [p.id, p]));
  * ★ 全部带 demo 标记 + 「测试」标签：一键清空只删这些，且绝不代表任何真实账号。
  * 名称刻意用「演示 ·」前缀，用户在列表里一眼能区分真假。
  */
-const DEMO_CONNECTIONS: ReadonlyArray<{
-  platform: ShopPlatform['id'];
-  site: string;
-  shopName: string;
+/**
+ * 演示快照（2026-10-21）：让「管理」看得见 —— 只有登记记录时，控制台和助手都无从下手。
+ * ★ 全部是**合成数据**，固定字符串、不含任何真实账号信息；界面与工具回复都必须带「演示」前缀。
+ * 按 shopName 索引，与 DEMO_PROJECTS 各模板的连接一一对应。
+ */
+export interface ShopDemoSnapshot {
+  kpis: Array<{ label: string; value: string; hint?: string }>;
+  table?: { title: string; columns: string[]; rows: string[][] };
   note: string;
-}> = [
-  { platform: 'amazon', site: 'US', shopName: '演示 · 亚马逊家居店', note: '演示数据：跨境家居类目，主看转化率与 ACoS。' },
-  { platform: 'taobao', site: 'tmall', shopName: '演示 · 天猫女装店', note: '演示数据：国内女装，主看 DSR 与退款率。' },
-  { platform: 'pdd', site: '拼多多', shopName: '演示 · 拼多多日用百货', note: '演示数据：低价走量，主看价格力与纠纷率。' },
-  { platform: '1688', site: '义乌', shopName: '演示 · 1688 家居货源', note: '演示数据：货源比价用，不代下单。' },
-  { platform: 'warehouse', site: 'US-West', shopName: '演示 · 美国海外仓', note: '演示数据：库存台账与可售天数。' },
-  { platform: 'sf-express', site: '', shopName: '演示 · 顺丰月结账号', note: '演示数据：物流商只登记，轨迹接口需 appKey/secret。' },
+}
+
+export const DEMO_SNAPSHOTS: Record<string, ShopDemoSnapshot> = {
+  '演示 · 亚马逊家居店': {
+    kpis: [
+      { label: '今日销售额', value: '$12,480', hint: '较昨日 +6.4%' },
+      { label: '订单数', value: '86', hint: '客单价 $145' },
+      { label: '转化率', value: '8.2%', hint: '类目均值 6.5%' },
+      { label: '广告 ACoS', value: '27%', hint: '目标 ≤30%' },
+    ],
+    table: {
+      title: 'Top 商品 · 利润与库存',
+      columns: ['商品', '售价', '单件利润', '可售天数'],
+      rows: [
+        ['竹制收纳架', '$29.99', '$7.40', '41 天'],
+        ['硅胶厨具 6 件套', '$24.99', '$5.80', '28 天'],
+        ['折叠沥水架', '$18.99', '$4.10', '12 天 ⚠ 补货'],
+      ],
+    },
+    note: '演示数据：跨境家居类目。真实数值需你在浏览器面板登录卖家中心后由 pageAgent 取。',
+  },
+  '演示 · 天猫女装店': {
+    kpis: [
+      { label: '今日支付 GMV', value: '¥38,600', hint: '较上周同日 +12%' },
+      { label: '访客数', value: '21,400', hint: '主推款带来 38%' },
+      { label: '支付转化率', value: '3.1%', hint: '行业均值 3.4%' },
+      { label: '退款率', value: '8.4%', hint: '针织开衫偏高' },
+    ],
+    table: {
+      title: '主推款 · 毛利与退款',
+      columns: ['商品', '售价', '毛利率', '7 日退款率'],
+      rows: [
+        ['法式连衣裙', '¥199', '52%', '6.2%'],
+        ['针织开衫', '¥159', '48%', '11.5% ⚠'],
+        ['高腰阔腿裤', '¥139', '55%', '5.1%'],
+      ],
+    },
+    note: '演示数据：国内女装。退款率是当前最该拆的指标，建议先看尺码与色差差评。',
+  },
+  '演示 · 拼多多日用百货': {
+    kpis: [
+      { label: '今日单量', value: '1,240', hint: '较昨日 +18%' },
+      { label: '客单价', value: '¥23.5', hint: '低价走量' },
+      { label: '纠纷率', value: '0.6%', hint: '低于阈值 1%' },
+      { label: '活动报名', value: '3 个', hint: '2 个待审' },
+    ],
+    table: {
+      title: '商品 · 价格力',
+      columns: ['商品', '售价', '日销', '价格力'],
+      rows: [
+        ['一次性洗脸巾', '¥9.9', '680', '强'],
+        ['垃圾袋 100 只', '¥7.9', '420', '中'],
+        ['厨房抹布 10 条', '¥12.9', '140', '弱 ⚠'],
+      ],
+    },
+    note: '演示数据：低价日百。价格力弱的品优先看同款竞品券后价，而不是直接降价。',
+  },
+  '演示 · 1688 家居货源': {
+    kpis: [
+      { label: '在谈供应商', value: '6 家', hint: '2 家可打样' },
+      { label: '最低起订量', value: '50 件', hint: '竹制收纳架' },
+      { label: '拿货价差', value: '32%', hint: '同款最高/最低' },
+      { label: '打样周期', value: '3–7 天', hint: '定制贴牌另算' },
+    ],
+    table: {
+      title: '货源 · 阶梯价与交期',
+      columns: ['货源', '阶梯价', 'MOQ', '交期'],
+      rows: [
+        ['竹制收纳架', '¥12.8 起', '50', '7 天'],
+        ['硅胶厨具 6 件套', '¥9.6 起', '100', '10 天'],
+        ['折叠沥水架', '¥7.2 起', '200', '5 天'],
+      ],
+    },
+    note: '演示数据：货源比价。本模式不代下单；付款必须由你人工完成。',
+  },
+  '演示 · 美国海外仓': {
+    kpis: [
+      { label: '在仓库存', value: '12,480 件', hint: '3 个 SKU' },
+      { label: '在途库存', value: '3,200 件', hint: '预计 5 天到仓' },
+      { label: '可售天数', value: '41 天', hint: '低于 21 天需补货' },
+      { label: '滞销 SKU', value: '1 个', hint: '库龄 >180 天' },
+    ],
+    table: {
+      title: '库存台账 · 在仓 / 在途',
+      columns: ['SKU', '在仓', '在途', '日均销', '可售天数'],
+      rows: [
+        ['竹制收纳架', '4,200', '1,200', '102', '41'],
+        ['硅胶厨具 6 件套', '7,420', '2,000', '190', '39'],
+        ['折叠沥水架', '860', '0', '72', '12 ⚠'],
+      ],
+    },
+    note: '演示数据：库存台账。真实台账可把服务商导出的 CSV 放进任务目录 00-source。',
+  },
+  '演示 · 顺丰月结账号': {
+    kpis: [
+      { label: '本月运单', value: '1,860', hint: '月结账号' },
+      { label: '签收率', value: '97.2%', hint: '异常件 14' },
+      { label: '平均时效', value: '2.4 天', hint: '较上月 -0.3 天' },
+      { label: '异常件', value: '14', hint: '破损 5 / 退回 9' },
+    ],
+    table: {
+      title: '轨迹示例 · SF1234567890',
+      columns: ['时间', '地点', '节点'],
+      rows: [
+        ['2026-10-20 09:12', '深圳', '已揽收'],
+        ['2026-10-20 18:40', '深圳', '已发出，下一站上海'],
+        ['2026-10-21 08:05', '上海', '到达派送网点'],
+        ['2026-10-21 11:26', '上海', '派送中'],
+        ['2026-10-21 15:02', '上海', '已签收'],
+      ],
+    },
+    note: '演示轨迹：真实轨迹需填 partnerID / checkword 后点「测试连接」与「查轨迹」。',
+  },
+  '演示 · 华东仓': {
+    kpis: [
+      { label: '在仓库存', value: '8,640 件', hint: '2 个 SKU' },
+      { label: '在途库存', value: '1,500 件', hint: '预计 2 天入仓' },
+      { label: '可售天数', value: '26 天', hint: '低于 21 天需补货' },
+      { label: '滞销 SKU', value: '0 个', hint: '库龄健康' },
+    ],
+    table: {
+      title: '库存台账 · 在仓 / 在途',
+      columns: ['SKU', '在仓', '在途', '日均销', '可售天数'],
+      rows: [
+        ['法式连衣裙', '5,200', '1,000', '210', '24'],
+        ['针织开衫', '3,440', '500', '120', '28'],
+      ],
+    },
+    note: '演示数据：国内仓。真实台账可把服务商导出的 CSV 放进任务目录 00-source。',
+  },
+  '演示 · 云途物流': {
+    kpis: [
+      { label: '本月运单', value: '2,340', hint: '跨境小包' },
+      { label: '签收率', value: '95.8%', hint: '异常件 27' },
+      { label: '平均时效', value: '7.6 天', hint: '较上月 -0.4 天' },
+      { label: '异常件', value: '27', hint: '清关滞留 11 / 退回 6' },
+    ],
+    table: {
+      title: '轨迹示例 · YT2207711010000002',
+      columns: ['时间', '地点', '节点'],
+      rows: [
+        ['2026-10-18 14:20', '深圳', '已揽收'],
+        ['2026-10-19 03:10', '深圳', '已交航'],
+        ['2026-10-21 09:40', '洛杉矶', '清关中'],
+        ['2026-10-23 16:05', '芝加哥', '到达派送网点'],
+      ],
+    },
+    note: '演示轨迹：真实轨迹需在连接里填 ADDR / 客户编号 / ApiSecret 后点「测试连接」。',
+  },
+};
+
+export interface DemoProjectTemplate {
+  key: string;
+  title: string;
+  connections: ReadonlyArray<{
+    platform: ShopPlatform['id'];
+    site: string;
+    shopName: string;
+    note: string;
+  }>;
+}
+
+/**
+ * 两套演示项目（2026-10-21）：演示数据必须按「项目 → 店铺/仓储/物流」组织，
+ * 否则切换项目只会看到同一份平铺列表，演示不出项目隔离。
+ */
+export const DEMO_PROJECTS: readonly DemoProjectTemplate[] = [
+  {
+    key: 'home-abroad',
+    title: '演示 · 家居出海',
+    connections: [
+      { platform: 'amazon', site: 'US', shopName: '演示 · 亚马逊家居店', note: '演示数据：跨境家居类目，主看转化率与 ACoS。' },
+      { platform: '1688', site: '义乌', shopName: '演示 · 1688 家居货源', note: '演示数据：货源比价用，不代下单。' },
+      { platform: 'warehouse', site: 'US-West', shopName: '演示 · 美国海外仓', note: '演示数据：库存台账与可售天数。' },
+      { platform: 'sf-express', site: '', shopName: '演示 · 顺丰月结账号', note: '演示数据：物流商只登记，轨迹接口需 appKey/secret。' },
+    ],
+  },
+  {
+    key: 'women-cn',
+    title: '演示 · 国内女装',
+    connections: [
+      { platform: 'taobao', site: 'tmall', shopName: '演示 · 天猫女装店', note: '演示数据：国内女装，主看 DSR 与退款率。' },
+      { platform: 'pdd', site: '拼多多', shopName: '演示 · 拼多多日用百货', note: '演示数据：低价走量，主看价格力与纠纷率。' },
+      { platform: 'warehouse', site: '华东', shopName: '演示 · 华东仓', note: '演示数据：国内仓库存台账。' },
+      { platform: 'yunexpress', site: '', shopName: '演示 · 云途物流', note: '演示数据：跨境小包轨迹。' },
+    ],
+  },
 ];
 
 interface StoredConnection {
@@ -188,6 +372,8 @@ interface StoredConnection {
   tag?: string;
   note?: string;
   groupId?: string;
+  /** 所属项目 = 一条店铺会话 id（与剪辑项目同模型）；缺省 = 未归属 */
+  projectId?: string;
   /** 演示数据标记：一键清空只删这些，绝不误伤用户真实登记 */
   demo?: boolean;
   /** API 凭据密文（iv:tag:ct）。纯浏览器自动化的平台留空。 */
@@ -321,6 +507,8 @@ interface ConnInput {
   tag?: string;
   note?: string;
   groupId?: string;
+  /** 所属项目（店铺会话 id）；留空 = 未归属 */
+  projectId?: string;
 }
 
 function parseConnInput(body: Record<string, unknown>): ConnInput {
@@ -341,6 +529,7 @@ function parseConnInput(body: Record<string, unknown>): ConnInput {
     tag: opt(body.tag),
     note: opt(body.note),
     groupId: opt(body.groupId),
+    projectId: opt(body.projectId),
   };
 }
 
@@ -365,6 +554,7 @@ function buildConnection(input: ConnInput, base?: StoredConnection): StoredConne
     tag: input.tag,
     note: input.note,
     groupId: input.groupId ?? base?.groupId,
+    projectId: input.projectId ?? base?.projectId,
     createdAt: base?.createdAt ?? Date.now(),
     lastCheckAt: base?.lastCheckAt,
   };
@@ -454,6 +644,7 @@ export function makeShopTools(): BuiltInTool[] {
         secret: { type: 'string', description: 'API 凭据（可选；纯浏览器流程不需要）' },
         tag: { type: 'string', description: '生产 / 测试（生产会触发后续版本的写操作强确认）' },
         note: { type: 'string', description: '备注' },
+        projectId: { type: 'string', description: '所属项目（店铺会话 id；留空 = 未归属）' },
       },
       required: ['platform', 'shopName'],
     },
@@ -462,7 +653,9 @@ export function makeShopTools(): BuiltInTool[] {
       const invalid = validateConnInput(input);
       if (invalid) return textResult(invalid);
       const list = await loadConnections();
-      if (list.some((c) => c.shopName === input.shopName)) return textResult(`店铺「${input.shopName}」已存在`);
+      if (list.some((c) => c.shopName === input.shopName && c.projectId === input.projectId)) {
+        return textResult(`项目内已存在「${input.shopName}」`);
+      }
       const conn = buildConnection(input);
       list.push(conn);
       try {
@@ -487,6 +680,7 @@ export function makeShopTools(): BuiltInTool[] {
         secret: { type: 'string', description: '新凭据；留空沿用原值' },
         tag: { type: 'string' },
         note: { type: 'string' },
+        projectId: { type: 'string', description: '改归属项目（店铺会话 id）' },
       },
       required: ['shopName'],
     },
@@ -606,6 +800,40 @@ export function makeShopTools(): BuiltInTool[] {
         r.message || '',
         ...(lines.length ? lines : ['（暂无轨迹）']),
       ].filter(Boolean).join('\n'));
+    },
+  };
+
+  // ---------- 经营快照（演示数据；真实连接暂无数据源） ----------
+  const shopSnapshot: BuiltInTool = {
+    name: 'shop_snapshot',
+    description:
+      '读取一条连接的经营快照（KPI + 明细表）。演示店铺返回合成演示数据；'
+      + '真实店铺目前没有接入数据源，会如实说明 —— 抓数请用 pageAgent 打开卖家后台或让用户提供导出文件。',
+    inputSchema: {
+      type: 'object',
+      properties: { shopName: { type: 'string', description: '连接名（按名称定位）' } },
+      required: ['shopName'],
+    },
+    execute: async (args) => {
+      const name = String(args.shopName || '').trim();
+      const conn = (await loadConnections()).find((c) => c.shopName === name);
+      if (!conn) return textResult(`未找到连接「${name}」—— 先用 conn_list 看看已登记了哪些。`);
+      const snap = conn.demo ? DEMO_SNAPSHOTS[conn.shopName] : undefined;
+      if (!snap) {
+        return textResult(`「${conn.shopName}」没有接入数据源：本版本不持有登录态，也不存平台数据。请用 pageAgent 打开卖家后台取数，或让用户提供导出的 Excel/CSV。`);
+      }
+      const kpis = snap.kpis.map((k) => `- ${k.label}：${k.value}${k.hint ? `（${k.hint}）` : ''}`);
+      const table = snap.table
+        ? ['', `【${snap.table.title}】`, snap.table.columns.join(' | '), ...snap.table.rows.map((r) => r.join(' | '))]
+        : [];
+      return textResult([
+        `【演示数据】${conn.shopName}`,
+        ...kpis,
+        ...table,
+        '',
+        snap.note,
+        '★ 以上均为合成演示数据，不代表任何真实账号。',
+      ].join('\n'));
     },
   };
 
@@ -1055,7 +1283,7 @@ export function makeShopTools(): BuiltInTool[] {
 
   return [
     connList, connCreate, connUpdate, connDelete, connCheck,
-    spApiCheckTool, shopTrackQuery,
+    spApiCheckTool, shopTrackQuery, shopSnapshot,
     priceUpdate, stockUpdate, listingPublish, listingCreate, campaignApply, replySend, orderPlace,
     writeLog,
   ];
@@ -1078,6 +1306,8 @@ export const shopOpsManifest: PluginManifest = {
       'shop_sp_api_check',
       // 只读物流轨迹（顺丰丰桥 / 云途，需要用户先在控制台填凭据）
       'shop_track_query',
+      // 经营快照（演示店铺有合成数据；真实店铺如实说明没有数据源）
+      'shop_snapshot',
       // 七个受闸门约束的写动作（未确认一律拒绝执行）
       'shop_price_update', 'shop_stock_update', 'shop_listing_publish', 'shop_listing_create',
       'shop_campaign_apply', 'shop_reply_send', 'shop_order_place',
@@ -1157,8 +1387,8 @@ const shopOpsModule: PluginModule = {
         const invalid = validateConnInput(input);
         if (invalid) { failRes(res, 400, invalid); return; }
         const list = await loadConnections();
-        if (list.some((c) => c.shopName === input.shopName)) {
-          failRes(res, 409, `店铺「${input.shopName}」已存在`); return;
+        if (list.some((c) => c.shopName === input.shopName && c.projectId === input.projectId)) {
+          failRes(res, 409, `项目内已存在「${input.shopName}」`); return;
         }
         const conn = buildConnection(input);
         list.push(conn);
@@ -1180,8 +1410,8 @@ const shopOpsModule: PluginModule = {
         const input = parseConnInput({ ...base, ...body, platform: body.platform ?? base.platform });
         const invalid = validateConnInput(input);
         if (invalid) { failRes(res, 400, invalid); return; }
-        if (list.some((c) => c.id !== id && c.shopName === input.shopName)) {
-          failRes(res, 409, `店铺「${input.shopName}」已存在`); return;
+        if (list.some((c) => c.id !== id && c.shopName === input.shopName && c.projectId === input.projectId)) {
+          failRes(res, 409, `项目内已存在「${input.shopName}」`); return;
         }
         list[idx] = buildConnection(
           input.secret ? { ...input, secret: mergeLogisticsSecret(input.secret, base) } : input,
@@ -1287,12 +1517,43 @@ const shopOpsModule: PluginModule = {
         }
       });
 
-      // 演示数据：一键创建（幂等：同名已存在则跳过）
-      r.post('/demo/seed', async (_req: unknown, res: unknown) => {
+      // 演示快照：按店铺名返回合成经营数据（只返回当前存在的演示连接）
+      r.get('/demo/data', async (_req: unknown, res: unknown) => {
+        const list = await loadConnections();
+        const names = new Set(list.filter((c) => c.demo).map((c) => c.shopName));
+        const out: Record<string, ShopDemoSnapshot> = {};
+        for (const [name, snap] of Object.entries(DEMO_SNAPSHOTS)) {
+          if (names.has(name)) out[name] = snap;
+        }
+        jsonRes(res).json({ data: out });
+      });
+
+      // 演示模板清单：前端据此创建对应的「店铺项目」（项目 = 一条店铺会话）
+      r.get('/demo/templates', async (_req: unknown, res: unknown) => {
+        jsonRes(res).json({
+          data: DEMO_PROJECTS.map((p) => ({ key: p.key, title: p.title, count: p.connections.length })),
+        });
+      });
+
+      // 演示数据：按模板创建（幂等：同项目内同名已存在则跳过）
+      r.post('/demo/seed', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const projectId = String(body.projectId || '').trim() || undefined;
+        const templateKey = String(body.template || '').trim();
+        const template = DEMO_PROJECTS.find((p) => p.key === templateKey);
+        if (!template) { failRes(res, 400, '未知的演示模板'); return; }
         const list = await loadConnections();
         let created = 0;
-        for (const d of DEMO_CONNECTIONS) {
-          if (list.some((c) => c.shopName === d.shopName)) continue;
+        let moved = 0;
+        for (const d of template.connections) {
+          if (list.some((c) => c.shopName === d.shopName && c.projectId === projectId)) continue;
+          // 旧版演示数据没有项目归属：直接归到当前项目，避免"演示数据重复一份"
+          const orphan = list.find((c) => c.shopName === d.shopName && c.demo && !c.projectId);
+          if (orphan) {
+            orphan.projectId = projectId;
+            moved++;
+            continue;
+          }
           list.push({
             id: `shop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
             platform: d.platform,
@@ -1303,25 +1564,29 @@ const shopOpsModule: PluginModule = {
             secretEnc: '',
             createdAt: Date.now(),
             demo: true,
+            projectId,
           });
           created++;
         }
-        if (created) {
+        if (created || moved) {
           try {
             await saveConnections(list);
           } catch (e) { failRes(res, 500, (e as Error).message); return; }
-          await audit('demo.seed', { connection: `新增 ${created} 条演示店铺`, ok: true });
+          await audit('demo.seed', { connection: `新增 ${created} 条、归入项目 ${moved} 条演示店铺`, ok: true });
         }
-        jsonRes(res).json({ data: { created } });
+        jsonRes(res).json({ data: { created, moved } });
       });
 
-      // 演示数据：一键清空（★ 只删 demo 标记，用户真实登记一条不动）
-      r.delete('/demo', async (_req: unknown, res: unknown) => {
+      // 演示数据：一键清空（★ 只删 demo 标记；传 projectId 时只清该项目的演示数据）
+      r.delete('/demo', async (req: unknown, res: unknown) => {
+        const q = (req as { query: Record<string, unknown> }).query || {};
+        const projectId = String(q.projectId || '').trim();
         const list = await loadConnections();
-        const removed = list.filter((c) => c.demo).length;
+        const hit = (c: StoredConnection) => !!c.demo && (!projectId || c.projectId === projectId);
+        const removed = list.filter(hit).length;
         if (removed) {
           try {
-            await saveConnections(list.filter((c) => !c.demo));
+            await saveConnections(list.filter((c) => !hit(c)));
           } catch (e) { failRes(res, 500, (e as Error).message); return; }
           await audit('demo.clear', { connection: `删除 ${removed} 条演示店铺`, ok: true });
         }

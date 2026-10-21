@@ -18,12 +18,16 @@ import fs from 'node:fs';
 
 const hoisted = vi.hoisted(() => {
   // conversation.space_id 与 space.dir_path 的最小内存模型
-  const conversations: Record<string, { space_id?: string | null }> = {
+  const conversations: Record<string, { space_id?: string | null; mode?: string }> = {
     conv_spaceA: { space_id: 'spA' },
     conv_spaceB: { space_id: 'spB' },
     conv_loose: { space_id: null },
     conv_empty_dir: { space_id: 'sp_empty' }, // 空间存在但 dir_path 为空 → 应继续走全局兜底
     conv_missing_space: { space_id: 'sp_ghost' }, // 空间行不存在 → 同上
+    // 店铺运营：未绑空间且**不得**继承全局项目目录（2026-10-21 串项目事故）
+    conv_shop: { space_id: null, mode: 'shop' },
+    // 店铺会话若显式绑了空间（用户自己建的店铺资源目录），仍应使用空间目录
+    conv_shop_space: { space_id: 'spA', mode: 'shop' },
   };
   const spaces: Record<string, { dir_path: string | null }> = {
     spA: { dir_path: 'C:\\ws\\space-a' },
@@ -50,6 +54,13 @@ const hoisted = vi.hoisted(() => {
       if (/^SELECT permission_mode FROM conversation WHERE id = \?$/.test(s)) {
         return { get: () => ({ permission_mode: null }), all: () => [], run: () => {} };
       }
+      // 按模式收紧工作目录（店铺模式不继承全局项目目录）
+      if (/^SELECT mode FROM conversation WHERE id = \?$/.test(s)) {
+        return {
+          get: (id: string) => (conversations[id] ? { mode: conversations[id].mode ?? null } : undefined),
+          all: () => [], run: () => {},
+        };
+      }
       return { get: () => undefined, all: () => [], run: () => {} };
     },
     exec: () => {},
@@ -75,6 +86,7 @@ vi.mock('../src/state.js', () => ({ serverState: hoisted.serverState }));
 
 import {
   resolveConversationWorkspaceDir,
+  resolveEffectiveWorkspaceDir,
   buildSystemPromptForBackend,
 } from '../src/llm-task-manager.js';
 
@@ -142,15 +154,28 @@ describe('buildSystemPromptForBackend 工作目录取值链（提示词侧同源
   });
 });
 
+describe('店铺模式不继承全局工作目录（2026-10-21 串项目事故）', () => {
+  it('未绑空间的店铺会话 → 无工作目录（助手不该去翻别的项目）', () => {
+    expect(resolveEffectiveWorkspaceDir('conv_shop')).toBeUndefined();
+  });
+
+  it('店铺会话显式绑了空间 → 仍以空间目录为准', () => {
+    expect(resolveEffectiveWorkspaceDir('conv_shop_space')).toBe('C:\\ws\\space-a');
+  });
+
+  it('店铺模式的提示词里不出现全局项目目录', () => {
+    const p = buildSystemPromptForBackend(null, 'u1', undefined, { conversationId: 'conv_shop' });
+    expect(p).not.toContain('当前工作目录：C:\\ws\\global-last');
+  });
+});
+
 describe('createTask 工作目录取值链（任务快照侧）', () => {
   // createTask 会立即启动 ReAct 循环（void runReActLoop），这里不起真循环：
   // 用 spies 断言 task.workspaceDir 的唯一可靠途径是走 createTask → persistTaskRow 落库行。
   // 但 llm-task-manager import 链重（拉起 core/浏览器桥等），已有集成测试覆盖 createTask 链；
-  // 本文件聚焦解析函数与提示词侧（同一取值链的两个消费端），createTask 侧的取值链
-  // 就是 `params.workspaceDir?.trim() || resolveConversationWorkspaceDir(...) || serverState.workspaceDir`
-  // 一行表达式，由上方两 describe 的解析函数测试 + 提示词测试共同钉死口径。
+  // 本文件聚焦解析函数与提示词侧（同一取值链的两个消费端），createTask 侧统一走
+  // resolveEffectiveWorkspaceDir（显式 > 空间 > 非店铺模式的全局兜底）。
   it('取值链表达式口径（防回归说明性锚点）：三级顺序编译期已定', () => {
-    // 直接验证解析函数本身是 createTask 中间级
     expect(resolveConversationWorkspaceDir('conv_spaceA')).toBe('C:\\ws\\space-a');
     expect(hoisted.serverState.workspaceDir).toBe('C:\\ws\\global-last');
   });

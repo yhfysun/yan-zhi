@@ -19,6 +19,8 @@ export interface ShopConnection {
   tag?: string;
   note?: string;
   groupId?: string;
+  /** 所属项目 = 一条店铺会话 id（与剪辑项目同模型）；缺省 = 未归属 */
+  projectId?: string;
   /** 演示数据标记（一键清空只删这些） */
   demo?: boolean;
   createdAt: number;
@@ -70,6 +72,13 @@ export interface ShopProbeResult {
   step?: string;
 }
 
+/** 演示经营快照（合成数据，按 shopName 索引；仅演示连接有） */
+export interface ShopDemoSnapshot {
+  kpis: Array<{ label: string; value: string; hint?: string }>;
+  table?: { title: string; columns: string[]; rows: string[][] };
+  note: string;
+}
+
 export interface ShopPlatformInfo {
   id: string;
   label: string;
@@ -105,6 +114,8 @@ export const shopCheckId = ref<string>('');
 export const shopLoading = ref(false);
 export const shopError = ref<string>('');
 export const shopAudit = ref<Array<Record<string, unknown>>>([]);
+/** 演示经营快照：按 shopName 索引（后端只返回当前存在的演示连接） */
+export const shopDemoData = ref<Record<string, ShopDemoSnapshot>>({});
 
 /** 未分组根节点 id —— 只用于渲染兜底，不落库（与 ops 控制台同做法） */
 export const SHOP_UNGROUPED = '__ungrouped__';
@@ -145,6 +156,12 @@ async function loadAudit(): Promise<void> {
   if ('data' in r) shopAudit.value = r.data;
 }
 
+async function loadDemoData(): Promise<void> {
+  const r = await api.get<Record<string, ShopDemoSnapshot>>('/plugin/shop-ops/demo/data');
+  if ('data' in r) shopDemoData.value = r.data;
+  else shopDemoData.value = {};
+}
+
 /** 进控制台时拉一次全量（平台清单只需一次，但重复拉无害且并发更省心） */
 export async function loadShopConsole(force = false): Promise<void> {
   if (shopLoading.value) return;
@@ -152,7 +169,7 @@ export async function loadShopConsole(force = false): Promise<void> {
   shopLoading.value = true;
   shopError.value = '';
   try {
-    await Promise.all([loadPlatforms(), loadGroups(), loadConnections(), loadAudit()]);
+    await Promise.all([loadPlatforms(), loadGroups(), loadConnections(), loadAudit(), loadDemoData()]);
   } finally {
     shopLoading.value = false;
   }
@@ -178,6 +195,8 @@ interface ConnPayload {
   tag?: string;
   note?: string;
   groupId?: string;
+  /** 所属项目（店铺会话 id） */
+  projectId?: string;
 }
 
 export async function createShop(payload: ConnPayload): Promise<string> {
@@ -232,18 +251,32 @@ export async function trackShopLogistics(
   return { error: '', result: r.data };
 }
 
-/** 一键创建演示店铺（幂等：同名跳过；后端只写 demo 标记的行） */
-export async function seedDemoShops(): Promise<string> {
-  const r = await api.post<{ created: number }>('/plugin/shop-ops/demo/seed', {});
+/** 演示项目模板（后端下发：每套自带店铺/仓储/物流） */
+export interface DemoTemplate { key: string; title: string; count: number }
+
+export async function getDemoTemplates(): Promise<{ error: string; items: DemoTemplate[] }> {
+  const r = await api.get<DemoTemplate[]>('/plugin/shop-ops/demo/templates');
+  if (!('data' in r)) return { error: errText(r), items: [] };
+  return { error: '', items: r.data };
+}
+
+/** 一键创建演示店铺（按模板；幂等：同项目内同名跳过） */
+export async function seedDemoShops(projectId?: string, template?: string): Promise<string> {
+  const r = await api.post<{ created: number }>('/plugin/shop-ops/demo/seed', {
+    ...(projectId ? { projectId } : {}),
+    ...(template ? { template } : {}),
+  });
   if (!('data' in r)) return errText(r);
   await loadConnections();
   await loadAudit();
+  await loadDemoData();
   return '';
 }
 
-/** 一键清空演示店铺（★ 只删 demo 标记，真实登记一条不动） */
-export async function clearDemoShops(): Promise<string> {
-  const r = await api.delete<{ removed: number }>('/plugin/shop-ops/demo');
+/** 一键清空演示店铺（★ 只删 demo 标记；传 projectId 时只清该项目的演示数据） */
+export async function clearDemoShops(projectId?: string): Promise<string> {
+  const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  const r = await api.delete<{ removed: number }>(`/plugin/shop-ops/demo${q}`);
   if (!('data' in r)) return errText(r);
   await loadConnections();
   await loadAudit();

@@ -1061,6 +1061,41 @@ export function resolveConversationWorkspaceDir(conversationId: string | null | 
   } catch { return null; }
 }
 
+/** 会话所属模式（失败返回 null）。用于按模式收紧工作目录/经验的继承。 */
+export function resolveConversationMode(conversationId: string | null | undefined): string | null {
+  if (!conversationId) return null;
+  try {
+    const row = db.prepare('SELECT mode FROM conversation WHERE id = ?').get(conversationId) as
+      | { mode: string | null }
+      | undefined;
+    return row?.mode ? String(row.mode) : null;
+  } catch { return null; }
+}
+
+/**
+ * 店铺运营模式**不继承**全局工作目录（2026-10-21 用户实报「切到店铺还关联其他目录」）：
+ * 店铺会话通常不绑空间，此前会回退到 serverState 里最后一次点选的项目目录 ——
+ * 用户在小说推文项目里切到店铺运营，助手一翻文件就看到小说项目的视频与文案，
+ * 回复里开始聊别的项目的发布进度。这是串项目上下文，不是能力。
+ * 收紧后店铺会话没有工作目录：取数走 pageAgent / 用户附件，不翻办公项目。
+ */
+export function isWorkspaceInheritingMode(mode: string | null | undefined): boolean {
+  return mode !== 'shop';
+}
+
+/** 任务与提示词同源的有效工作目录：显式下发 > 会话空间 >（非店铺模式）全局兜底 */
+export function resolveEffectiveWorkspaceDir(
+  conversationId: string | null | undefined,
+  explicit?: string | null,
+): string | undefined {
+  const given = String(explicit || '').trim();
+  if (given) return given;
+  const spaceDir = resolveConversationWorkspaceDir(conversationId);
+  if (spaceDir) return spaceDir;
+  if (!isWorkspaceInheritingMode(resolveConversationMode(conversationId))) return undefined;
+  return serverState.workspaceDir || undefined;
+}
+
 export function createTask(params: {
   conversationId: string;
   userId: string;
@@ -1154,15 +1189,13 @@ export function createTask(params: {
     memoryExtractModelId: params.memoryExtractModelId || undefined,
     ontologyIds: params.ontologyIds,
     permissionMode,
-    // ★ 工作目录：与提示词注入同源（前端下发 > 会话绑定空间 > 全局），供工具解析相对路径用。
+    // ★ 工作目录：与提示词注入同源（前端下发 > 会话绑定空间 > 非店铺模式的全局兜底）。
     //   见 LlmTask.workspaceDir 注释 —— 两处不同源会产生"提示词说 A、工具在 B 找"的不一致。
     //   ★ 2026-10-12 插入「会话绑定空间」一级：前端 workspaceDir 是全局设置（最后一次点选的
     //     目录），切会话不同步它 → A 会话的任务曾带着 B 空间目录跑（串工作目录）。
-    //     会话挂了空间时以 space.dir_path 为准；没挂空间才落全局兜底。
-    workspaceDir: params.workspaceDir?.trim()
-      || resolveConversationWorkspaceDir(params.conversationId)
-      || serverState.workspaceDir
-      || undefined,
+    //   ★ 2026-10-21 店铺模式不再回退全局（resolveEffectiveWorkspaceDir）：
+    //     否则切到店铺运营时，助手会用办公项目的目录翻文件、聊到别的项目进度。
+    workspaceDir: resolveEffectiveWorkspaceDir(params.conversationId, params.workspaceDir),
     // ★ 越界守卫档位：非法/未下发 → ask（fail-safe，与 normalizePermissionMode 同取向）
     pathGuard: (params.pathGuard === 'strict' || params.pathGuard === 'off') ? params.pathGuard : 'ask',
     pendingInjects: [],
@@ -3305,10 +3338,15 @@ async function runReActLoop(task: LlmTask, params: {
     } catch { /* 任务类型注入失败不影响任务 */ }
     // 领域经验注入（自进化经验层）：按任务文本匹配 .yan-zhi/experience/ 档案（索引 + 命中正文）。
     // 历史任务的坑/验证过的步骤在此进入上下文 —— 同主题任务不再从零摸索。失败不阻塞。
+    // ★ 店铺模式且没有有效目录时不注入：否则会读到全局工作目录下**别的项目**的经验档案。
     try {
-      const expCtx = buildExperienceContextForConversation(convId, params.userContent, params.workspaceDir);
-      if (expCtx) {
-        systemPromptBuilt += '\n\n' + expCtx;
+      const effDir = resolveEffectiveWorkspaceDir(convId, params.workspaceDir);
+      const skipForShop = resolveConversationMode(convId) === 'shop' && !effDir;
+      if (!skipForShop) {
+        const expCtx = buildExperienceContextForConversation(convId, params.userContent, effDir);
+        if (expCtx) {
+          systemPromptBuilt += '\n\n' + expCtx;
+        }
       }
     } catch { /* 经验注入失败不影响任务 */ }
     // 浏览器记忆不做自动注入：按需召回模式，智能体需要时调用 api_browser_memory_read 工具拉取
@@ -7679,11 +7717,10 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
   const parts: string[] = [];
   const convMounts = loadConversationMounts(opts?.conversationId);
   const includeUiTools = !!opts?.includeUiTools;
-  // 工作目录（会话指定 > 会话绑定空间 > 全局兜底）——项目技能目录与 AGENTS.md/rules 段共用同一取值口径
+  // 工作目录（会话指定 > 会话绑定空间 > 非店铺模式的全局兜底）——项目技能目录与 AGENTS.md/rules 段共用同一取值口径
   // ★ 2026-10-12：与 createTask 同源插入「会话绑定空间」一级（修串工作目录，见该函数注释）
-  const effectiveWorkspaceDir = (opts?.workspaceDir && opts.workspaceDir.trim())
-    || resolveConversationWorkspaceDir(opts?.conversationId)
-    || serverState.workspaceDir;
+  // ★ 2026-10-21：店铺模式不再回退全局（否则提示词/项目规则会读到别的项目目录）
+  const effectiveWorkspaceDir = resolveEffectiveWorkspaceDir(opts?.conversationId, opts?.workspaceDir) || '';
 
   // 应用指引（用户在前端配置的全局上下文/行为约束）：无条件注入，保证三条入口行为一致
   if (appGuide && appGuide.trim()) {
