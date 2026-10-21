@@ -8,7 +8,7 @@
  *   还会打断用户正在编辑的命令行。
  */
 import { describe, expect, it } from 'vitest';
-import { parsePromptCwd, parsePromptLine, applyPromptCwd, cwdFromCdCommand, stripAnsi } from './remote-cwd';
+import { parsePromptCwd, parsePromptLine, applyPromptCwd, cwdFromCdCommand, stripAnsi, stripCommandEcho } from './remote-cwd';
 
 describe('parsePromptLine —— 各发行版默认 PS1', () => {
   it('Ubuntu/Debian：app@web-01:/opt/app$', () => {
@@ -129,5 +129,48 @@ describe('stripAnsi', () => {
   it('去掉 CSI（颜色）与 OSC（标题）', () => {
     expect(stripAnsi('\u001b[1;32mok\u001b[0m')).toBe('ok');
     expect(stripAnsi('\u001b]0;title\u0007text')).toBe('text');
+  });
+});
+
+describe('stripCommandEcho —— 去掉 PTY 回显（用户实报「两个 ll 干嘛？」）', () => {
+  it('截图实况：界面已有 $ ll，输出里不该再出现一行 ll', () => {
+    // PTY 实际吐回的内容：命令回显 + 结果 + 新提示符
+    const raw = [
+      'll',
+      'll',
+      '总用量 156',
+      '-rw-rw-r--.  1 app app 144630 8月 15 2025 arthas-boot.jar',
+      'drwxrwxr-x.  7 app app   917 21 22:41 insight',
+      '(base) [app@localhost insight-gpt-ai]$',
+    ].join('\n');
+    const out = stripCommandEcho(raw, 'll');
+    expect(out.split('\n')[0], '★ 开头仍是回显行').toBe('总用量 156');
+    expect(out, '★ 输出里不该再有单独一行 ll').not.toMatch(/^ll$/m);
+    expect(out, '★ 末尾的新提示符要去掉').not.toContain('[app@localhost');
+  });
+
+  it('回显行前面挂着提示符残片也能去掉', () => {
+    const raw = ']$ ls -l\n-rw-r--r-- 1 a b 0 x';
+    expect(stripCommandEcho(raw, 'ls -l')).toBe('-rw-r--r-- 1 a b 0 x');
+  });
+
+  it('正常输出不得被误删（首行恰好以命令结尾但其实是结果）', () => {
+    // 输出第一行是 "running: ll" 这种，不是回显（整行 != 命令，也不是"提示符+命令"）
+    const raw = 'running: ll';
+    expect(stripCommandEcho(raw, 'll')).toBe('running: ll');
+  });
+
+  it('没有任何回显时原样返回', () => {
+    expect(stripCommandEcho('总用量 4\ndrwxr-xr-x', 'll')).toBe('总用量 4\ndrwxr-xr-x');
+  });
+
+  it('空命令 / 空输出不炸', () => {
+    expect(stripCommandEcho('abc', '')).toBe('abc');
+    expect(stripCommandEcho('', 'll')).toBe('');
+  });
+
+  it('输出里的 @ 行不被当成提示符误删（普通日志含 @ 且以 $ 结尾）', () => {
+    const out = stripCommandEcho('user@host is ok$', 'll');
+    expect(out, '★ 非提示符形态（没有"提示符符号紧跟行尾的 @ 用户名"结构）应保留').toBe('user@host is ok$');
   });
 });

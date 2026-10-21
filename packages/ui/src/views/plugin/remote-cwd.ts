@@ -92,6 +92,78 @@ export function stripAnsi(s: string): string {
 }
 
 /**
+ * 从终端输出里去掉「命令自身的回显」，得到纯结果。
+ *
+ * ★ 2026-10-21 用户实报「两个 ll 干嘛？」：
+ *   直接执行时界面已经画了一行 `$ ll`，而 PTY 会把用户敲的命令**原样回显**到输出流里，
+ *   于是采集到的那段文本以 `ll` 开头 —— 渲染出来就是 `$ ll` 下面又一行 `ll`。
+ *
+ * 只去掉**开头那一段与命令完全一致的行**（允许前缀提示符残留），不碰后面任何内容：
+ *   - 多行命令（含 `&&`）时，回显可能被 shell 折成一行或多行，逐行比对处理；
+ *   - 回显里常带前一个提示符尾巴（如 `]`），按"行尾等于命令"判定，不要求整行相等。
+ */
+export function stripCommandEcho(raw: string, command: string): string {
+  const cmd = (command || '').trim();
+  if (!cmd) return (raw || '').trim();
+  const lines = (raw || '').replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+  // ★ 回显可能**不止一行**：PTY 的 echo + 终端的本地回显 + bracketed-paste 的包裹，
+  //   实测 `ll` 会连续回来两行（用户截图"两个 ll"正是这个）。
+  //
+  // ★ 判据必须收紧到两种形态，不能用 `line.endsWith(cmd)`：
+  //   否则 `running: ll` 这类**真实输出**会被当成回显删掉（测试钉住这条）。
+  //     ① 整行 === 命令
+  //     ② 提示符残片 + 命令：去掉最后一个提示符符号及其前缀后 === 命令
+  const isEcho = (line: string): boolean => {
+    if (line === cmd) return true;
+    const stripped = line.replace(/^.*[$#>»%]\s*/, '');
+    return stripped === cmd;
+  };
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (!line) { i += 1; continue; }
+    if (isEcho(line)) { i += 1; continue; }
+    break;
+  }
+  let out = lines.slice(i);
+  // 末尾的"新提示符"也去掉：命令执行完 shell 会打印下一行提示符（含路径/用户@主机），
+  // 它不是命令输出，留着会让人以为输出里混进了别的东西。
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  if (out.length && isPromptLine(out[out.length - 1])) out.pop();
+  while (out.length && !out[out.length - 1].trim()) out.pop();
+  return out.join('\n').trim();
+}
+
+/**
+ * 整行是否是 shell 提示符。
+ *
+ * ★ 判据必须收紧：早期版本只要求"含 @ 且以提示符符号结尾"，会把
+ *   `user@host is ok$` 这种**真实输出**当提示符删掉（测试钉住）。
+ *   真实提示符的形态是固定的：`[可选前缀] 用户@主机[ :路径| 空格]` 紧跟提示符符号。
+ */
+function isPromptLine(line: string): boolean {
+  const s = line.trim();
+  if (!s) return false;
+  // 末尾必须是提示符符号（允许尾随空格）
+  const m = s.match(/^(.*?)\s*[$#>»%]\s*$/);
+  if (!m) return false;
+  const head = m[1].trim();
+  if (!head.includes('@')) return false;
+  const at = head.indexOf('@');
+  if (at <= 0) return false;
+  const hostAfter = head.slice(at + 1);
+  // 主机名之后只允许三种形态（其余视为自由文本，不是提示符）：
+  //   ① 直接结束：        root@h
+  //   ② `:` + 路径：        app@web-01:/opt/app
+  //   ③ 空白 + **单个**路径令牌：  [app@localhost ~] / [root@h opt]
+  //      → 路径令牌里不能有空格，`user@host is ok` 才不会被误判
+  return /^[\w.-]+$/.test(hostAfter)
+    || /^[\w.-]+:\S*$/.test(hostAfter)
+    || /^[\w.-]+\s+[^\s\[\]]+$/.test(hostAfter)
+    || /^[\w.-]+\s+[^\s]+[\]]$/.test(hostAfter);
+}
+
+/**
  * 把解析结果落到"当前目录"：
  *   - 绝对路径 → 直接采用；
  *   - `~` 开头但不知道家目录 → 原样显示（用户看得懂，且不编造）；

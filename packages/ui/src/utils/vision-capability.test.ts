@@ -33,6 +33,7 @@ const CHAT = read('packages/ui/src/stores/chat.ts');
 /** 本模块源码（用于断言"实现里真的分层了"这类结构事实） */
 const SRC = read('packages/ui/src/utils/vision-capability.ts');
 
+
 describe('① 三态语义（真跑）', () => {
   it('★★★ 默认是 unknown（缺标记不得当"不支持"）', async () => {
     const m = await import('./vision-capability');
@@ -155,10 +156,17 @@ describe('④ 运行时必须真的用缓存', () => {
   });
 
   it('★★ 缓存模块异常必须 fail-open（不能因缓存问题让识图失败）', () => {
-    const i = CHAT.indexOf('getVisionCapability(p.id, m.id)');
-    expect(i, '★ 锚点缺失').toBeGreaterThan(-1);
-    const around = CHAT.slice(Math.max(0, i - 800), i + 1200);
-    expect(around, '★ 未兜住缓存异常（会让一次普通识图直接失败）').toMatch(/能力缓存异常/);
+    // ★ 2026-10-21 修：原断言在 getVisionCapability 附近取 ±N 字符窗口找"能力缓存异常"。
+    //   chat.ts 三千多行、这段代码后来被推远 → 窗口取不到 catch 分支，断言恒红
+    //   （实现其实是好的，红的是切片范围）。改为**直接验证两处事实**，不依赖位置：
+    //     ① 该文案确实存在于 chat.ts（fail-open 的告警）
+    //     ② 它出现在一个 catch 分支里（而不是普通日志）
+    expect(CHAT, '★ fail-open 告警文案缺失（缓存异常会让一次识图直接失败）').toContain('能力缓存异常');
+    const at = CHAT.indexOf('能力缓存异常');
+    const before = CHAT.slice(Math.max(0, at - 200), at);
+    expect(before, '★ 该告警不在 catch 分支里').toMatch(/catch\s*\(/);
+    // 兜底路径必须继续走"原试错"，而不是直接 return 失败
+    expect(CHAT.slice(at, at + 800), '★ catch 里没有继续尝试其它候选').toMatch(/new LlmClient\(p, m\)/);
   });
 
   it('★★★ 不得改 capabilities_json 语义（那是 model-caps 明确警告的坑）', () => {

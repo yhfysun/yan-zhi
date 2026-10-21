@@ -59,8 +59,9 @@ describe('服务器当前目录（远端 pwd）', () => {
   });
 
   it('解析提示符而不是发 pwd（不在终端留用户没敲过的命令）', () => {
-    expect(CODE).toContain("import { parsePromptCwd, applyPromptCwd } from './remote-cwd'");
-    expect(CODE).toMatch(/const parsed = parsePromptCwd\(text\)/);
+    expect(CODE).toMatch(/import \{ parsePromptCwd, applyPromptCwd[^}]*\} from '\.\/remote-cwd'/);
+    // ★ 解析的是累积缓冲尾部（PTY 分片会把一行提示符切碎，逐帧解析永远认不出）
+    expect(CODE).toMatch(/parsePromptCwd\(tail\)/);
   });
 
   it('服务端随 ready 下发初始 pwd，作为相对提示符的基准', () => {

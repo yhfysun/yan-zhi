@@ -186,3 +186,46 @@ describe('AI 模式下的直接执行 = 命令行（完整显示，不折叠）'
     expect(css, '★ 不允许给主区域的输出限高（就是不要折叠）').not.toMatch(/max-height/);
   });
 });
+
+describe('服务器当前目录 chip 必须真的看得见、点得动（用户两次实报）', () => {
+  it('★★ chip 不得只在命令视图显示（AI 模式下也要有）', () => {
+    const at = CODE.indexOf('<el-popover');
+    const seg = CODE.slice(at, at + 260);
+    expect(seg, '★ v-if 限制 w.view === term → 对话视图完全没有目录入口')
+      .not.toMatch(/v-if="w\.view === 'term' &&/);
+    expect(seg).toMatch(/connOf\(w\) && connType/);
+  });
+
+  it('★★ AI 模式也要后台建终端（否则拿不到 pwd / 提示符）', () => {
+    const fn = CODE.slice(CODE.indexOf('function openConnection'), CODE.indexOf('function openConnection') + 1500);
+    expect(fn, '★ 只在 term 视图 openTerminal → 对话模式下 remoteCwd 永远空')
+      .not.toMatch(/if \(w\.view === 'term'\) void openTerminal\(w\);/);
+    expect(fn).toMatch(/void openTerminal\(w\);/);
+  });
+
+  it('★ 提示符解析基于累积缓冲尾部（PTY 分片会把一行切碎）', () => {
+    const fn = CODE.slice(CODE.indexOf('function accumulateOutput'), CODE.indexOf('function accumulateOutput') + 1200);
+    expect(fn, '★ 只解析本帧 text → 提示符被切片就永远认不出来').toMatch(/parsePromptCwd\(tail\)/);
+    expect(fn).toMatch(/slice\(-400\)/);
+  });
+
+  it('chip 不会被连接信息挤成 0 宽（flex 不收缩 + 实体底色）', () => {
+    const css = CODE.slice(CODE.indexOf('.ops-cwd-chip {'), CODE.indexOf('.ops-cwd-chip {') + 700);
+    expect(css, '★ 可收缩 → 被 user@host 挤没，看起来"没有路径"').toMatch(/flex: 0 0 auto/);
+    expect(css, '★ 透明背景看着像注释，不像可点入口').toMatch(/background: color-mix/);
+    // 连接信息让位
+    const connCss = CODE.slice(CODE.indexOf('.ops-win-conn {'), CODE.indexOf('.ops-win-conn {') + 300);
+    expect(connCss).toMatch(/max-width: 40%/);
+  });
+
+  it('切目录走 transport.send 真实字节，并等提示符确认', () => {
+    const fn = CODE.slice(CODE.indexOf('async function gotoRemoteDir'), CODE.indexOf('async function gotoRemoteDir') + 1800);
+    expect(fn, '★ 用 term.paste 会被 bracketed paste 影响').not.toMatch(/term\.paste\(/);
+    expect(fn).toMatch(/h\.transport\.send\(`cd \$\{quoteForShell\(target\)\}\\r`\)/);
+    expect(fn, '★ 失败必须如实告知，不能一律报成功').toMatch(/切换失败，仍在/);
+  });
+
+  it('后台建连不弹「已自动执行默认命令」打扰对话', () => {
+    expect(CODE).toMatch(/msg\.autoRun && msg\.defaultCommand && w\.view === 'term'/);
+  });
+});

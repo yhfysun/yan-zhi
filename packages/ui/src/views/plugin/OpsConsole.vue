@@ -168,7 +168,7 @@
                   <div class="ops-win-head">
                     <span class="ops-win-conn">{{ winConnInfo(w) }}</span>
                     <el-popover
-                      v-if="w.view === 'term' && connType(connOf(w) as OpsConn) !== 'database'"
+                      v-if="connOf(w) && connType(connOf(w) as OpsConn) !== 'database'"
                       placement="bottom-start"
                       :width="420"
                       trigger="click"
@@ -775,7 +775,7 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import '@xterm/xterm/css/xterm.css';
 import { api, API_BASE, wsUrl, buildRequestHeaders } from '../../api/client';
-import { parsePromptCwd, applyPromptCwd } from './remote-cwd';
+import { parsePromptCwd, applyPromptCwd, stripCommandEcho } from './remote-cwd';
 import type { Platform, Model, ReleaseProject } from '@yan-zhi/shared';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
@@ -929,7 +929,11 @@ function openConnection(c: OpsConn, want: 'primary' | 'chat' | 'file' = 'primary
   const w = newWin(c, targetView);
   windows.value.push(w);
   activateWindow(w.id);
-  if (w.view === 'term') void openTerminal(w);
+  // 终端**始终**在后台建立（不只是命令模式）：
+  //   ★ 2026-10-21 用户实报「服务当前路径没有啊」——AI 模式不建终端就拿不到 pwd/提示符，
+  //     顶部目录 chip 永远显示「…」，点击也换不了目录。后台建连不影响对话界面
+  //     （终端在 v-show 隐藏容器里，pendingUnhide 负责量尺寸）。
+  void openTerminal(w);
 }
 
 /** 强制新开一个窗口（同一连接可多开） */
@@ -937,7 +941,11 @@ function openConnectionNew(c: OpsConn) {
   const w = newWin(c, preferredView(connType(c)));
   windows.value.push(w);
   activateWindow(w.id);
-  if (w.view === 'term') void openTerminal(w);
+  // 终端**始终**在后台建立（不只是命令模式）：
+  //   ★ 2026-10-21 用户实报「服务当前路径没有啊」——AI 模式不建终端就拿不到 pwd/提示符，
+  //     顶部目录 chip 永远显示「…」，点击也换不了目录。后台建连不影响对话界面
+  //     （终端在 v-show 隐藏容器里，pendingUnhide 负责量尺寸）。
+  void openTerminal(w);
 }
 
 function activateWindow(id: string) {
@@ -1320,7 +1328,8 @@ function openWsTermTransport(
           // 服务端随 ready 下发的初始 pwd（exec 取的，不写进 PTY）。
           // 作为「相对提示符」的基准：CentOS 默认 PS1 只有末级目录名，没基准只能显示 "opt"。
           if (msg.cwd) { w.remoteCwd = msg.cwd; rememberCwd(msg.cwd); }
-          if (msg.autoRun && msg.defaultCommand) ElMessage.info(`已自动执行默认命令: ${msg.defaultCommand}`);
+          // 只在用户真的看着终端时提示：AI 模式后台建连不该弹这种打扰
+          if (msg.autoRun && msg.defaultCommand && w.view === 'term') ElMessage.info(`已自动执行默认命令: ${msg.defaultCommand}`);
           succeed();
         } else if (msg.type === 'error') {
           // 握手前的错误（连接不存在等）要回退；已就绪后的错误只需提示
@@ -1362,7 +1371,8 @@ async function openSseTermTransport(
   if ('error' in r) throw new Error(r.error);
   const sessionId = r.data.sessionId;
   if (r.data.autoRun && r.data.defaultCommand) {
-    ElMessage.info(`已自动执行默认命令: ${r.data.defaultCommand}`);
+    // 回退通道拿不到窗口引用（签名里没有 w），这里只在真的需要时提示；
+    // 该提示本属辅助信息，静默更安全（AI 模式后台建连时不打扰用户）。
   }
   const ac = new AbortController();
   void (async () => {
@@ -1534,8 +1544,14 @@ function closeTerminal(w: OpsWin) {
 // 在对话模式发送时随消息带上，让运维助手「看得见」当前终端现场。
 function accumulateOutput(w: OpsWin, text: string) {
   w.outputBuffer = (w.outputBuffer + text).slice(-MAX_OUTPUT_CHARS);
-  // 远端当前目录：从提示符解析（服务端不知道用户 cd 到哪，只有 shell 自己打出来的算数）
-  const parsed = parsePromptCwd(text);
+  // 远端当前目录：从提示符解析（服务端不知道用户 cd 到哪，只有 shell 自己打出来的算数）。
+  //
+  // ★ 必须解析**累积缓冲的尾部**，不能只解析本帧 text（2026-10-21 实测）：
+  //   PTY 输出是按字节流分片到达的，`app@host:/opt/app$ ` 完全可能被切成
+  //   `app@host:` + `/opt/app$` 两帧 —— 逐帧解析两帧都不完整 → 一个都认不出来，
+  //   表现为目录一直停在旧值或「…」。这里取尾部一小段（足够容纳一行提示符）。
+  const tail = stripAnsi(w.outputBuffer).slice(-400);
+  const parsed = parsePromptCwd(tail);
   if (parsed) {
     const next = applyPromptCwd(w.remoteCwd, parsed);
     if (next !== undefined && next !== w.remoteCwd) {
@@ -1633,16 +1649,44 @@ function onCwdPopoverOpen(w: OpsWin) {
   cwdInput.value = w.remoteCwd || '';
 }
 /** 在终端里执行 `cd`（不经过模型：这是用户直接操作终端） */
-function gotoRemoteDir(w: OpsWin, dir: string) {
+/**
+ * 在远端终端里切目录。
+ *
+ * ★ 2026-10-21 用户实报「点击可以切换目录也要实现啊」。
+ *   上一版用 `term.paste(...)` —— 它走 xterm 的 paste 通道（触发 bracketed paste），
+ *   PTY 侧没开对应支持时 \r 可能被当成字面字符吞掉，表现为"点了没反应"。
+ *   改为直接经 transport.send 写真实字节（与敲键盘同一条通道），末尾 \r 即回车。
+ *
+ * ★ 不"立刻宣布成功"：路径以 shell 回吐的提示符为准。发完后等 3s，
+ *   提示符变了 → 成功；没变（目录不存在/无权限，shell 报错后仍停在原目录）→ 如实告知。
+ */
+async function gotoRemoteDir(w: OpsWin, dir: string) {
   const target = (dir || '').trim();
   if (!target) return;
   const h = terms.get(w.id);
-  if (!h) { ElMessage.warning('终端未连接'); return; }
-  // 经 onData 同一条通道写入，确保 PTY 收到的是真实按键（带 \r 才会执行）
-  h.term.paste(`cd ${quoteForShell(target)}\r`);
+  if (!h?.transport) {
+    ElMessage.warning('终端未连接，无法切换目录');
+    return;
+  }
+  const before = w.remoteCwd;
+  const expected = toAbsoluteRemote(target, before);
+  h.transport.send(`cd ${quoteForShell(target)}\r`);
   rememberCwd(target);
-  w.remoteCwd = toAbsoluteRemote(target, w.remoteCwd);
+
+  // 等 shell 把新的提示符吐回来（最多 3s）。判据：remoteCwd 被 accumulateOutput 更新。
+  const deadline = Date.now() + 3000;
+  const prev = before;
+  while (Date.now() < deadline) {
+    if (w.remoteCwd !== prev) break;
+    await new Promise((r) => window.setTimeout(r, 80));
+  }
+  if (w.remoteCwd === prev) {
+    // shell 没回新提示符（cd 失败会先报错再回原提示符 → 路径不变）
+    ElMessage.error(`切换失败，仍在 ${before || '原目录'}（目录不存在或无权限？）`);
+    return;
+  }
   ElMessage.success(`已切换目录：${w.remoteCwd}`);
+  void expected; // 乐观值仅用于相对路径推算，最终以提示符为准
 }
 /** 给命令里的路径加引号（含空格/特殊字符时必须，否则 cd 只吃到第一段） */
 function quoteForShell(p: string): string {
@@ -2012,7 +2056,8 @@ async function execDirect(w: OpsWin, raw: string) {
   };
   // 采集本次执行的终端输出（从执行时刻起算；超时兜底避免一直"执行中"）
   const fromLen = w.outputBuffer.length;
-  const collect = () => stripAnsi(w.outputBuffer.slice(fromLen)).trim();
+  // 去掉 PTY 回显（否则界面上的 `$ ll` 下面会再出现一行 `ll`）
+  const collect = () => stripCommandEcho(stripAnsi(w.outputBuffer.slice(fromLen)), command);
   try {
     await transport.exec(command);
     if (stayInChat) {
@@ -3131,8 +3176,9 @@ onUnmounted(() => {
 .ops-body { flex: 1; display: flex; gap: 6px; min-height: 0; }
 .ops-win-body { flex: 1; min-width: 0; min-height: 0; }
 .ops-win { position: relative; height: 100%; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-.ops-win-head { display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 20px; }
-.ops-win-conn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--color-text-secondary); font-family: Consolas, monospace; }
+.ops-win-head { display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-height: 22px; flex-wrap: wrap; }
+/* 连接信息让位给目录 chip：user@host:port 不该霸占整行（路径才是用户当前关注的） */
+.ops-win-conn { flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--color-text-secondary); font-family: Consolas, monospace; }
 .ops-win-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .ops-win-head-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .ops-term-hint { font-size: 11px; color: var(--color-text-tertiary); }
@@ -3414,17 +3460,27 @@ onUnmounted(() => {
 .ops-dir-clear:hover { color: var(--el-color-danger, #e74c3c); border-color: currentColor; }
 
 /* 远端当前目录 chip（窗口头）：窄、等宽、点了才弹面板 */
+/* 远端当前目录 chip（窗口头）：要**一眼看到**，不能做成若有若无的小字。
+   2026-10-21 用户两次反馈"服务当前路径没有啊" —— 第一版是 20px 高、透明背景、
+   灰色小字，实际看着像一段不可点的注释。这里改成带底色 + 边框的实体 chip。 */
 .ops-cwd-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  max-width: 340px; min-width: 0; height: 20px; padding: 0 7px;
-  border: 1px solid var(--glass-border); border-radius: 6px;
-  background: transparent; color: var(--color-text-secondary);
-  font-family: Consolas, monospace; font-size: 11px; cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 420px; min-width: 0; height: 22px; padding: 0 9px;
+  /* ★ 不参与挤压：连接信息那一行是 flex，chip 若可收缩会被压成 0 宽而"看不见" */
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  color: var(--color-text);
+  font-family: Consolas, monospace; font-size: 11.5px; cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
-.ops-cwd-chip:hover { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
+.ops-cwd-chip:hover {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
 .ops-cwd-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ops-cwd-caret { flex-shrink: 0; }
+.ops-cwd-caret { flex-shrink: 0; color: var(--color-text-tertiary); }
 .ops-cwd-panel { display: flex; flex-direction: column; gap: 8px; }
 .ops-cwd-title { font-size: 12px; font-weight: 600; color: var(--color-text); }
 .ops-cwd-cur {
