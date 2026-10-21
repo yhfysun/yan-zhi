@@ -33,6 +33,22 @@ export interface OpsMsg {
    * 但此前**前端完全没接** —— 表现就是用户看不到任何思考过程（2026-10-21 实报）。
    */
   reasoning?: string;
+  /**
+   * 用户自己直接执行命令（执行模式 / `/` 前缀）的输出消息。
+   *
+   * ★ 渲染规则与工具调用**完全不同**：它不是模型的一次工具调用，而是用户的操作，
+   *   结果要像命令行一样**完整铺开**（等宽、不折叠、自动滚到底）。
+   *   2026-10-21 用户实报「直接显示这个完整的啊，还折叠起来干嘛用户怎么看啊」。
+   */
+  exec?: boolean;
+  /** exec 消息对应的命令原文（回车那一刻记下，避免再从别处反推） */
+  execCommand?: string;
+}
+
+/** 取 exec 消息的命令（没有则回退到 content 的第一行，兼容早期消息） */
+function execCommandOf(m: OpsMsg): string {
+  if (m.execCommand) return m.execCommand;
+  return (m.content || '').split('\n')[0] || '';
 }
 
 /**
@@ -61,6 +77,12 @@ export interface OpsRound {
   liveNarration: string;
   /** 本轮仍在流式输出 */
   streaming: boolean;
+  /**
+   * 用户直接执行的命令块（可能多个，按顺序）。
+   * 与 answer 分开：这些是"用户敲的命令 + 它的输出"，渲染成终端样式，
+   * 不能混进模型的回答里（否则会被 markdown 当普通段落重排、换行丢失）。
+   */
+  execs: Array<{ command: string; output: string; streaming: boolean }>;
   createdAt: number;
 }
 
@@ -255,7 +277,7 @@ export function buildOpsRounds(messages: OpsMsg[]): OpsRound[] {
   };
   const ensure = (): OpsRound => {
     if (!cur) {
-      cur = { reasoning: '', steps: [], answer: '', liveNarration: '', streaming: false, createdAt: 0 };
+      cur = { reasoning: '', steps: [], answer: '', liveNarration: '', streaming: false, execs: [], createdAt: 0 };
     }
     return cur;
   };
@@ -270,6 +292,7 @@ export function buildOpsRounds(messages: OpsMsg[]): OpsRound[] {
         answer: '',
         liveNarration: '',
         streaming: false,
+        execs: [],
         createdAt: m.createdAt || 0,
       };
       continue;
@@ -278,6 +301,11 @@ export function buildOpsRounds(messages: OpsMsg[]): OpsRound[] {
     if (r.createdAt === 0 && m.createdAt) r.createdAt = m.createdAt;
     if (m.streaming) r.streaming = true;
 
+    // 用户直接执行的命令块：独立收集，不参与 answer / reasoning 的判定
+    if (m.role === 'assistant' && m.exec) {
+      r.execs.push({ command: execCommandOf(m), output: m.content || '', streaming: !!m.streaming });
+      continue;
+    }
     if (m.role === 'assistant') {
       if (m.reasoning && m.reasoning.trim()) {
         r.reasoning += (r.reasoning ? '\n\n' : '') + m.reasoning.trim();

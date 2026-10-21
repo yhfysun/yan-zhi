@@ -64,7 +64,7 @@
             type="button"
             class="tls-item"
             :class="{
-              active: c.id === chatStore.currentConvId && !batchMode,
+              active: c.id === (props.activeConvId || chatStore.currentConvId) && !batchMode,
               pinned: c.pinned,
               selecting: batchMode,
             }"
@@ -291,7 +291,16 @@ const props = withDefaults(defineProps<{
    *   父级传了这个回调就完全接管点击，不传则保持通用行为（办公/开发/安全共用本组件）。
    */
   onOpen?: (convId: string) => void;
-}>(), { spaceId: undefined });
+  /**
+   * 当前高亮的会话 id（2026-10-21）。
+   *
+   * ★ 为什么需要：默认高亮判定读 `chatStore.currentConvId`（全局单例），
+   *   而运维模式每条会话挂在各自窗口上，全局那个值根本不是它 →
+   *   点击后行永远不高亮，用户实报「切换点击效果都没有」。
+   *   传了就用外部值，不传保持原逻辑。
+   */
+  activeConvId?: string;
+}>(), { spaceId: undefined, activeConvId: '' });
 
 const chatStore = useChatStore();
 const codeStore = useCodeStore();

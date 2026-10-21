@@ -51,20 +51,49 @@ describe('会话跟着服务器走 —— 交互', () => {
   });
 
   it('运维页把行点击接到「打开会话 + 打开服务器」', () => {
-    expect(CODE).toMatch(/<TaskListSection :space-id="null" :on-open="onTaskRowOpen" \/>/);
+    expect(CODE).toMatch(/<TaskListSection :space-id="null" :on-open="onTaskRowOpen"/);
     expect(CODE).toContain('openConvFromTaskList');
   });
 
   it('打开会话时按绑定连接找/建窗口，而不是只切全局 currentConvId', () => {
-    const fn = CODE.slice(CODE.indexOf('async function openConvFromTaskList'), CODE.indexOf('async function openConvFromTaskList') + 2000);
+    const fn = CODE.slice(CODE.indexOf('async function openConvFromTaskList'), CODE.indexOf('async function openConvFromTaskList') + 2600);
     expect(fn).toMatch(/conv\.opsConnectionId/);
     expect(fn).toMatch(/windows\.value\.find\(\(w\) => w\.conversationId === convId\)/);
-    expect(fn).toMatch(/connectionId === conn\.id/);
+    // 复用窗口的选择收口到 pickWindow（按连接 id 找，优先空闲）
+    expect(fn).toMatch(/pickWindow\(conn\.id\)/);
+    const pick = CODE.slice(CODE.indexOf('const pickWindow'), CODE.indexOf('const pickWindow') + 400);
+    expect(pick).toMatch(/x\.connectionId === connId2/);
   });
 
   it('连接已被删除时明确提示，不静默开空窗口', () => {
     const fn = CODE.slice(CODE.indexOf('async function openConvFromTaskList'), CODE.indexOf('async function openConvFromTaskList') + 2000);
     expect(fn).toMatch(/绑定的服务器已删除/);
+  });
+
+  it('★★ 老会话 + 没有激活窗口时不得静默返回（用户实报「点击无用」）', () => {
+    const fn = CODE.slice(CODE.indexOf('async function openConvFromTaskList'), CODE.indexOf('async function openConvFromTaskList') + 2600);
+    // 旧写法 `if (w) {...} return;` 在无窗口时什么都不做 —— 那条路径必须消失
+    expect(fn, '★ 无激活窗口时仍直接 return：点了看着没反应').not.toMatch(/if \(w\) \{ await openConvOnWindow\(w, conv\); activateWindow\(w\.id\); \}\s*return;/);
+    // 兜底：唯一连接 → 直接为它开窗并挂上会话
+    expect(fn).toMatch(/connections\.value\.length === 1/);
+    // 多个连接且无激活窗口 → 明确提示，而不是无声失败
+    expect(fn).toMatch(/请先在左侧资源里选一个连接再打开/);
+  });
+
+  it('窗口正忙时要么让开、要么给出提示（不静默吞掉点击）', () => {
+    const fn = CODE.slice(CODE.indexOf('async function openConvOnWindow'), CODE.indexOf('async function openConvOnWindow') + 900);
+    expect(fn, '★ chatStreaming 时直接 return = 点了没反应').not.toMatch(/if \(w\.chatStreaming\) return; \/\/ 有任务在跑/);
+    expect(fn).toMatch(/该服务器上还有任务在运行/);
+  });
+
+  it('打开会话要切到对话视图（否则消息载入了却看不见）', () => {
+    const fn = CODE.slice(CODE.indexOf('async function openConvOnWindow'), CODE.indexOf('async function openConvOnWindow') + 900);
+    expect(fn).toMatch(/if \(w\.view !== 'chat'\) \{ w\.view = 'chat'; \}/);
+  });
+
+  it('复用窗口优先选空闲的，不抢正在跑任务的窗口', () => {
+    const fn = CODE.slice(CODE.indexOf('const pickWindow'), CODE.indexOf('const pickWindow') + 400);
+    expect(fn).toMatch(/!x\.chatStreaming && !x\.conversationId/);
   });
 
   it('老会话（未记连接）建会话时按当前窗口补齐', () => {
@@ -86,7 +115,7 @@ describe('AI 模式执行命令不得跳走视图', () => {
     const fn = CODE.slice(CODE.indexOf('async function execDirect'), CODE.indexOf('async function execDirect') + 2600);
     expect(fn).toMatch(/w\.chatMessages\.push/);
     expect(fn).toMatch(/role: 'user', content: command/);
-    expect(fn).toMatch(/toolCalls: \[\{ id: `\$\{roundMsgId\}-c`, name: 'terminal_exec'/);
+    expect(fn).toMatch(/exec: true/);
     expect(fn).toMatch(/finishRound/);
   });
 
@@ -100,5 +129,60 @@ describe('AI 模式执行命令不得跳走视图', () => {
     const fn = CODE.slice(CODE.indexOf('async function openTerminal'), CODE.indexOf('async function openTerminal') + 2600);
     expect(fn).toContain('pendingUnhide(el)');
     expect(fn, '★ 量完必须还原，否则终端一直不可见').toMatch(/restores\(\)/);
+  });
+});
+
+describe('点击态：运维用窗口会话 id 高亮，不靠全局 currentConvId', () => {
+  it('TaskListSection 支持外部 activeConvId', () => {
+    expect(TASK_LIST).toMatch(/activeConvId\?: string/);
+    expect(TASK_LIST, '★ 仍只读 chatStore.currentConvId → 运维点会话行永不高亮')
+      .toMatch(/c\.id === \(props\.activeConvId \|\| chatStore\.currentConvId\)/);
+  });
+
+  it('运维页把当前窗口的会话 id 传进去', () => {
+    expect(CODE).toMatch(/:active-conv-id="activeWin\?\.conversationId \|\| ''"/);
+  });
+
+  it('active 态有可见样式（不只是改字色）', () => {
+    expect(TASK_LIST).toMatch(/\.tls-item\.active \{[^}]*background/);
+  });
+});
+
+describe('行尾操作按钮不得挤压标题（用户实报「名词就显示一个字」）', () => {
+  const CSS = readFileSync(resolve(__dirname, '../../styles/task-row.css'), 'utf8');
+
+  it('操作组脱离文档流，显隐都不参与宽度分配', () => {
+    const block = CSS.slice(CSS.indexOf('.task-row-actions {'), CSS.indexOf('.task-row-act {'));
+    expect(block, '★ 仍用 opacity 隐性占位 → 窄栏里标题被挤成一个字').toMatch(/position: absolute/);
+    expect(block).toMatch(/visibility:\s*hidden/);
+    // 绝对定位后必须有定位基准
+    expect(CSS).toMatch(/\.conv-item,\s*\n?\.tls-item \{ position: relative; \}/);
+  });
+
+  it('标题有省略号兜底，长标题不会撑破行', () => {
+    expect(TASK_LIST).toMatch(/\.tls-label \{[\s\S]{0,160}text-overflow: ellipsis/);
+  });
+});
+
+describe('AI 模式下的直接执行 = 命令行（完整显示，不折叠）', () => {
+  it('exec 消息不再挂 toolCalls（否则被步骤卡折叠）', () => {
+    const fn = CODE.slice(CODE.indexOf('async function execDirect'), CODE.indexOf('async function execDirect') + 2000);
+    expect(fn, '★ 仍走工具步骤卡 → 输出又被折叠成"展开输出"').not.toMatch(/name: 'terminal_exec'/);
+    expect(fn).toMatch(/exec: true/);
+    expect(fn).toMatch(/execCommand: command/);
+  });
+
+  it('结果直接写进正文（失败也保留原始输出）', () => {
+    const fn = CODE.slice(CODE.indexOf('async function execDirect'), CODE.indexOf('async function execDirect') + 2400);
+    expect(fn).toMatch(/msg\.content = failed \? `执行失败：\$\{out\}` : out/);
+  });
+
+  it('渲染成终端块：$ 命令 + <pre> 原文，等宽不折行', () => {
+    expect(CODE).toMatch(/class="ops-exec-block"/);
+    expect(CODE).toMatch(/class="ops-exec-out">\{\{ ex\.output \}\}/);
+    // 只取主区域那一条规则（不含 .ops-exec-block-sm 变体，折叠条允许限高）
+    const css = CODE.slice(CODE.indexOf('.ops-exec-out {'), CODE.indexOf('.ops-exec-pending {'));
+    expect(css).toMatch(/white-space: pre/);
+    expect(css, '★ 不允许给主区域的输出限高（就是不要折叠）').not.toMatch(/max-height/);
   });
 });

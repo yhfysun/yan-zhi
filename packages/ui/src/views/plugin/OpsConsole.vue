@@ -6,7 +6,7 @@
         <!-- 任务段（决策 13 / 5f.4）：四模式同构，读同一份会话列表；资源树之下保留
              ★ 可折叠：顶栏「历史任务」按钮控制（用户实报「历史任务按钮没了 / 发送后任务就没了」） -->
         <div v-show="taskListVisible" class="ops-side-tasks">
-          <TaskListSection :space-id="null" :on-open="onTaskRowOpen" />
+          <TaskListSection :space-id="null" :on-open="onTaskRowOpen" :active-conv-id="activeWin?.conversationId || ''" />
         </div>
         <!-- 发布项目（7b）：本地目录 + 服务器 + 流水线；绑定后工具面挂到当前窗口会话 -->
         <div class="ops-side-release">
@@ -384,9 +384,19 @@
                                   <OpsStepCards :steps="rd.steps" />
                                 </div>
 
+                                <!-- ②' 用户直接执行的命令块：**终端样式，完整铺开不折叠**。
+                                     这是用户自己敲的命令，不是模型的工具调用 —— 跟命令行一样，
+                                     命令一行、输出全量，看不到结论就等于没执行。 -->
+                                <div v-for="(ex, ei) in rd.execs" :key="'ex' + ei" class="ops-exec-block">
+                                  <div class="ops-exec-cmd"><span class="ops-exec-prompt">$</span>{{ ex.command }}</div>
+                                  <pre v-if="ex.output" class="ops-exec-out">{{ ex.output }}</pre>
+                                  <div v-else-if="ex.streaming" class="ops-exec-out ops-exec-pending">执行中…</div>
+                                  <div v-else class="ops-exec-out ops-exec-pending">（无输出）</div>
+                                </div>
+
                                 <!-- ③ 回复：流式期间原样显示增量，结束后 markdown -->
                                 <div v-if="roundAnswerText(rd)" class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(roundAnswerText(rd))"></div>
-                                <div v-else-if="rd.streaming && !roundAnswerText(rd) && !rd.reasoning && !rd.steps.length" class="ops-msg-content ops-typing">
+                                <div v-else-if="rd.streaming && !roundAnswerText(rd) && !rd.reasoning && !rd.steps.length && !rd.execs.length" class="ops-msg-content ops-typing">
                                   <span class="typing-dots"><span></span><span></span><span></span></span>
                                 </div>
                               </div>
@@ -528,6 +538,11 @@
                                       <CircleCheck v-else />
                                     </el-icon>
                                     <span class="ops-tool-summary-text">{{ roundToolSummary(rd.steps) }}</span>
+                                  </div>
+                                  <!-- 直接执行的命令块（折叠条里同样完整显示，只是限高滚动） -->
+                                  <div v-for="(ex, ei) in rd.execs" :key="'smex' + ei" class="ops-exec-block ops-exec-block-sm">
+                                    <div class="ops-exec-cmd"><span class="ops-exec-prompt">$</span>{{ ex.command }}</div>
+                                    <pre v-if="ex.output" class="ops-exec-out">{{ ex.output }}</pre>
                                   </div>
                                   <div v-if="roundAnswerText(rd)" class="ops-msg-content ops-md" v-html="renderAssistantMarkdown(roundAnswerText(rd))"></div>
                                 </div>
@@ -959,10 +974,32 @@ async function openConvFromTaskList(convId: string) {
     return;
   }
 
+  /** 选一个"可以装下这条会话"的窗口：优先空闲窗口，避免抢走正在跑任务的窗口 */
+  const pickWindow = (connId2: string) =>
+    windows.value.find((x) => x.connectionId === connId2 && !x.chatStreaming && !x.conversationId)
+    || windows.value.find((x) => x.connectionId === connId2 && !x.chatStreaming)
+    || windows.value.find((x) => x.connectionId === connId2);
+
   if (!connId) {
-    // 老数据没记连接：挂到当前窗口，保持用户眼前的服务器不变
+    // 老数据没记连接（本字段 2026-10-21 才加）：按"用户眼前的服务器"处理。
+    //   ★ 原来这里是 `if (w) {...} return;` —— 当前没有激活窗口时直接**什么都不做**，
+    //     用户看到的就是"点任务没反应、右侧一片空白"（2026-10-21 截图实报）。
+    //   现在的兜底顺序：① 当前窗口 ② 唯一连接（只有一台服务器时等于没歧义）
+    //   ③ 该会话的历史消息里出现过的连接无从推断 → 明确提示，让用户先选连接。
     const w = activeWin.value;
-    if (w) { await openConvOnWindow(w, conv); activateWindow(w.id); }
+    if (w) { await openConvOnWindow(w, conv); activateWindow(w.id); return; }
+    const only = connections.value.length === 1 ? connections.value[0] : null;
+    if (only) {
+      let nw = pickWindow(only.id);
+      if (!nw) {
+        nw = newWin(only, lead.value === 'ai' ? 'chat' : preferredView(connType(only)));
+        windows.value.push(nw);
+      }
+      await openConvOnWindow(nw, conv);
+      activateWindow(nw.id);
+      return;
+    }
+    ElMessage.warning('这条会话没有记录服务器，请先在左侧资源里选一个连接再打开');
     return;
   }
 
@@ -972,13 +1009,11 @@ async function openConvFromTaskList(convId: string) {
     return;
   }
 
-  // 同一连接已有窗口 → 复用它（避免为每条会话堆一堆重复窗口）
-  let w = windows.value.find((x) => x.connectionId === conn.id);
+  // 同一连接已有空闲窗口 → 复用它（避免为每条会话堆一堆重复窗口）
+  let w = pickWindow(conn.id);
   if (!w) {
-    const view: ViewKey = lead.value === 'ai' ? 'chat' : preferredView(connType(conn));
-    w = newWin(conn, view);
+    w = newWin(conn, lead.value === 'ai' ? 'chat' : preferredView(connType(conn)));
     windows.value.push(w);
-    if (w.view === 'term') void openTerminal(w);
   }
   await openConvOnWindow(w, conv);
   activateWindow(w.id);
@@ -986,7 +1021,22 @@ async function openConvFromTaskList(convId: string) {
 
 /** 把一条会话挂到窗口上（会话、消息、发布项目一起恢复） */
 async function openConvOnWindow(w: OpsWin, conv: any) {
-  if (w.chatStreaming) return; // 有任务在跑，不抢它的会话
+  // 窗口正在跑别的会话：不抢（抢了会把正在输出的消息搅乱），但要**说出来**
+  if (w.chatStreaming && w.conversationId !== conv.id) {
+    ElMessage.warning('该服务器上还有任务在运行，结束后再打开这条会话');
+    return;
+  }
+  if (w.chatStreaming) {
+    // 同一条会话正在跑：只切视图看它，不动消息
+    if (w.view !== 'chat') w.view = 'chat';
+    void nextTick(() => scrollChatBottom(w));
+    return;
+  }
+  // ★ 点开一条会话 = 要看它的对话记录：即使当前是命令模式（窗口停在终端），
+  //   也要把视图切到对话，否则消息载入了却看不见，用户仍觉得"点了没反应"。
+  //   注意 switchWinView 内部会按**当前** conversationId 补拉消息，所以必须先切视图
+  //   再改 conversationId，否则它会去拉旧会话（下面 changed 分支再拉一次新的）。
+  if (w.view !== 'chat') { w.view = 'chat'; }
   const changed = w.conversationId !== conv.id;
   w.conversationId = conv.id;
   // 会话侧的发布项目绑定优先（窗口对象只是缓存）；按 id 回查详情，不依赖本页是否持有列表
@@ -1002,6 +1052,9 @@ async function openConvOnWindow(w: OpsWin, conv: any) {
   }
   if (changed) {
     await loadWinMessages(w);
+    void nextTick(() => scrollChatBottom(w));
+  } else {
+    // 同一条会话、只是从命令视图切回来：仍要滚到底
     void nextTick(() => scrollChatBottom(w));
   }
 }
@@ -1924,7 +1977,14 @@ async function execDirect(w: OpsWin, raw: string) {
     ElMessage.warning('终端未连接，指令未执行');
     return;
   }
-  // 对话视图下把这次执行记成一轮：用户的那条命令 + 结果（结果由终端输出回填）
+  // 对话视图下把这次执行记成一轮：用户的那条命令 + 终端样式的完整输出。
+  //
+  // ★★★ 2026-10-21 用户实报「直接显示这个完整的啊，还折叠起来干嘛用户怎么看啊……ai 模式
+  //   下面的执行就和命令行一样啊」：
+  //   上一版把直接执行塞进工具步骤卡（terminal_exec），于是长输出被折叠成"14 行·661 字符"
+  //   加一个「展开输出」——用户敲一条命令，结果还得再点一次才能看全，完全不符合终端的直觉。
+  //   直接执行**不是模型的工具调用**，它是用户自己的操作，就该像命令行一样：命令一行、
+  //   输出全量铺开、等比等宽、自动滚到底。
   let roundMsgId = '';
   if (stayInChat) {
     w.chatInput = '';
@@ -1933,7 +1993,9 @@ async function execDirect(w: OpsWin, raw: string) {
       { id: `${roundMsgId}-u`, role: 'user', content: command, createdAt: Date.now() },
       {
         id: `${roundMsgId}-a`, role: 'assistant', content: '', createdAt: Date.now(), streaming: true,
-        toolCalls: [{ id: `${roundMsgId}-c`, name: 'terminal_exec', arguments: JSON.stringify({ command }) }],
+        // exec: 标记"这是直接执行的终端输出"，渲染成代码块（不走工具步骤卡）
+        exec: true,
+        execCommand: command,
       } as any,
     );
     scrollChatBottom(w);
@@ -1944,12 +2006,8 @@ async function execDirect(w: OpsWin, raw: string) {
     const msg = w.chatMessages.find((m) => m.id === `${roundMsgId}-a`);
     if (!msg) return;
     msg.streaming = false;
-    msg.content = failed ? `执行失败：${out}` : '';
-    // 工具结果消息（role=tool）由步骤卡消费；正文只放一句结论，避免和原始输出重复
-    w.chatMessages.push({
-      id: `${roundMsgId}-r`, role: 'tool', content: out, createdAt: Date.now(),
-      toolCallId: `${roundMsgId}-c`,
-    } as any);
+    // 输出原样进正文（外层按 <pre> 渲染）；失败只在最前面加一行标记，不吞原输出
+    msg.content = failed ? `执行失败：${out}` : out;
     void nextTick(() => scrollChatBottom(w));
   };
   // 采集本次执行的终端输出（从执行时刻起算；超时兜底避免一直"执行中"）
@@ -3156,6 +3214,43 @@ onUnmounted(() => {
 .ops-tool-summary-caret { flex-shrink: 0; color: var(--color-text-tertiary); transition: transform 0.15s ease; }
 .ops-tool-summary.is-open .ops-tool-summary-caret { transform: rotate(90deg); }
 .ops-tool-steps { margin: 0 0 6px; }
+
+/**
+ * 用户直接执行的命令块（执行模式 / `/` 前缀）—— **终端观感，完整铺开**。
+ *
+ * ★ 2026-10-21 用户实报「直接显示这个完整的啊，还折叠起来干嘛用户怎么看啊……
+ *   ai 模式下面的执行就和命令行一样啊」。
+ *   所以这里：① 不折叠、不给 max-height；② 等宽字体保留列对齐（ls -l 的列才对得齐）；
+ *   ③ 命令一行带 $ 提示符，与输出视觉分离。
+ */
+.ops-exec-block { margin: 4px 0 8px; }
+.ops-exec-cmd {
+  display: flex; gap: 6px; align-items: baseline;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px; line-height: 1.6;
+  color: var(--color-text);
+  padding: 3px 0;
+  word-break: break-all;
+}
+.ops-exec-prompt { color: var(--color-primary); flex-shrink: 0; user-select: none; }
+.ops-exec-out {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  /* 等宽 + 不换行：保留 ls -l 那种列表格的对齐（换行会把列拆散） */
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--color-text);
+}
+.ops-exec-pending { color: var(--color-text-tertiary); font-style: italic; }
+/* 折叠对话条空间小：仍然完整、只是限高滚动（不折叠成"展开"按钮） */
+.ops-exec-block-sm .ops-exec-out { max-height: 160px; overflow-y: auto; }
+.ops-exec-block-sm .ops-exec-cmd { font-size: 11px; }
 
 /* 深度思考（复用主对话 DeepThinkBadge + .reasoning-body，这里只补运维侧的外边距） */
 .ops-msg-body .msg-reasoning { margin: 2px 0 6px; }

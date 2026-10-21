@@ -6,20 +6,49 @@
    ============================================================ */
 
 /* ===== 行尾 hover 操作按钮组（置顶 / 重命名 / 移动空间 / 删除） ===== */
+/**
+ * ★★★ 2026-10-21 用户实报「名词就显示一个字」。
+ *
+ * 原实现只把 opacity 设为 0，按钮**仍然占宽**（4×20px + 间隙 ≈ 90px）。
+ * 办公侧栏宽，看不出问题；运维/工作台左栏窄，标题被挤到只剩一个字。
+ *
+ * 改法：操作组**脱离文档流**贴到行右端（绝对定位）。这样它无论显隐都不参与宽度分配，
+ * 标题永远拿到整行剩余空间 —— 比"hover 时才撑开固定宽"更稳（后者在窄行里照样会挤压）。
+ * 行本身需要 position: relative（见下方 .conv-item / .tls-item 补的那条）。
+ */
 .task-row-actions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
   opacity: 0;
-  transition: opacity var(--motion-fast) var(--ease-out);
+  visibility: hidden;
+  /* 悬浮层需要背景：否则会与标题文字叠在一起看不清 */
+  padding: 1px 3px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+  transition: opacity var(--motion-fast) var(--ease-out),
+              visibility 0s linear var(--motion-fast);
+  z-index: 2;
 }
 /* 触屏没有 hover：整组不渲染（隐形按钮会拦截点按），操作由长按菜单兜底 */
 @media (hover: none) {
   .task-row-actions { display: none; }
 }
 .conv-item:hover .task-row-actions,
-.tls-item:hover .task-row-actions { opacity: 1; }
+.tls-item:hover .task-row-actions {
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+/* 行需要定位基准（原先只有 flex 布局，没有 position） */
+.conv-item,
+.tls-item { position: relative; }
 
 .task-row-act {
   display: inline-flex;
