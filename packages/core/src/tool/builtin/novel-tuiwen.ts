@@ -32,6 +32,8 @@ export class NovelTuiwenTool implements BuiltInTool {
       voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunxiNeural（年轻男声）；女声可用 zh-CN-XiaoyiNeural。' },
       out: { type: 'string', description: '输出目录，默认 <工作目录>/output/。' },
       use_llm: { type: 'boolean', description: '用 LLM 做钩子化改编（需环境变量 OPENAI_BASE_URL/OPENAI_API_KEY）。默认规则切分。' },
+      ambience: { type: 'string', description: '环境音：auto（默认，按剧情情绪自动选）/ none / pad_soft / room / wind / rain / hum / space / fire。音量很低且会被旁白自动闪避，不会盖过配音。' },
+      sfx: { type: 'string', enum: ['auto', 'none'], description: '高能点缀音效：auto=只在开头和高能句点缀（最多 5 个，间隔≥6s）；none=不加。默认 auto。' },
     },
     required: ['chapter'],
   };
@@ -68,6 +70,8 @@ export class NovelTuiwenTool implements BuiltInTool {
     if (args.voice) argv.push('--voice', String(args.voice));
     if (bgVideo) argv.push('--bg-video', bgVideo);
     if (args.use_llm) argv.push('--use-llm');
+    if (typeof args.ambience === 'string' && args.ambience.trim()) argv.push('--ambience', args.ambience.trim());
+    if (args.sfx === 'none' || args.sfx === 'auto') argv.push('--sfx', args.sfx);
     if (args.aspect && ['4:3', '9:16', '16:9'].includes(String(args.aspect))) argv.push('--aspect', String(args.aspect));
     if (typeof args.ending === 'string' && args.ending.trim()) argv.push('--ending', args.ending.trim());
     if (typeof args.banner === 'string' && args.banner.trim()) argv.push('--banner', args.banner.trim());

@@ -9,45 +9,19 @@ import os
 import subprocess
 import sys
 
-# ★ 子进程静默（2026-10-09）：ffmpeg/ffprobe/python 子进程在"无控制台的父进程"下会弹黑框。
-#   本模块给 subprocess.Popen 打默认 CREATE_NO_WINDOW 补丁 → 本文件后续所有子进程自动静默。
-import _winquiet  # noqa: E402
-_winquiet.apply_popen_defaults()
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 
-# 默认 ffmpeg 位置(可被环境变量覆盖)；★ 2026-10-09 补多候选：原只写 C:\APP\EVCapture（本机不存在）
-def _first_existing(*cands):
-    import shutil
-    for c in cands:
-        if c and os.path.exists(c):
-            return c
-    return None
-
-_FF_CANDS = [r"C:\Program Files\EVCapture\ffmpeg.exe", r"C:\APP\EVCapture\ffmpeg.exe"]
-_FP_CANDS = [r"C:\Program Files\EVCapture\ffprobe.exe", r"C:\APP\EVCapture\ffprobe.exe"]
+# 默认 ffmpeg 位置(可被环境变量覆盖)
 if not os.environ.get("FFMPEG"):
-    _ff = _first_existing(*_FF_CANDS) or (__import__("shutil").which("ffmpeg"))
-    if _ff:
-        os.environ["FFMPEG"] = _ff
+    os.environ["FFMPEG"] = r"C:\APP\EVCapture\ffmpeg.exe"
 if not os.environ.get("FFPROBE"):
-    _fp = _first_existing(*_FP_CANDS) or (__import__("shutil").which("ffprobe"))
-    if _fp:
-        os.environ["FFPROBE"] = _fp
+    os.environ["FFPROBE"] = r"C:\APP\EVCapture\ffprobe.exe"
 
 
 def run(cmd):
     print("+", " ".join(cmd), file=sys.stderr)
-    # ★ 2026-10-09：子进程输出必须**显式透传**并能被上层采集。
-    #   pythonw / 无控制台父进程下 sys.stdout 可能为 None，此时传 None 会抛错 → 用条件透传。
-    #   用户侧曾出现"pipeline.log 为空"，排障时被误判成"卡住不动"——日志拿不到是排障力的损失。
-    kw = {}
-    if sys.stdout is not None:
-        kw['stdout'] = sys.stdout
-    if sys.stderr is not None:
-        kw['stderr'] = sys.stderr
-    r = subprocess.run(cmd, **kw)
+    r = subprocess.run(cmd)
     if r.returncode != 0:
         sys.exit(r.returncode)
 
@@ -60,24 +34,17 @@ def main():
     ap.add_argument("--title", default="小说推文")
     ap.add_argument("--voice", default="zh-CN-YunxiNeural")
     ap.add_argument("--bgm", default="")
+    ap.add_argument("--ambience", default="auto", help="环境音: auto/none/pad_soft/room/wind/rain/hum/space/fire")
+    ap.add_argument("--ambience-level", type=float, default=0.12, help="环境音音量（旁白会把它闪避压下去）")
+    ap.add_argument("--sfx", default="auto", help="高能点缀音效: auto / none")
+    ap.add_argument("--sfx-level", type=float, default=0.5, help="点缀音效音量")
     ap.add_argument("--bg-video", default="", help="背景视频(修驴蹄/骑单车等), 逗号分隔多段")
     ap.add_argument("--aspect", default="4:3", help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
-    ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）")
-    ap.add_argument("--alias", default="", help="别名（顶部常驻「搜『别名』看全文｜番茄小说」+ 发布文案标题）")
-    ap.add_argument("--chapter", default="", help="第几集（如 3；首帧大字+全程角标 + 文件名第N集 + 发布文案 + 封面图）")
-    ap.add_argument("--tags", default="", help="发布内容自定义话题标签，缺省 '#小说 #推文 <别名>'")
-    ap.add_argument("--no-publish-copy", action="store_true", help="跳过生成 publish.txt 发布文案")
+    ap.add_argument("--banner", default="", help="顶部常驻引导语（发抖音传：搜「别名」看全文）")
     ap.add_argument("--use-llm", action="store_true")
     a = ap.parse_args()
 
-    # 章节号：显式传 > 从文件名推断（ch03/chapter03/03.txt -> 3）
-    chapter = a.chapter
-    if not chapter:
-        import re as _re
-        m = _re.search(r"(?:ch|chapter)?0*(\d+)", os.path.basename(a.input), _re.IGNORECASE)
-        if m:
-            chapter = m.group(1)
     base = os.path.splitext(os.path.basename(a.input))[0]
     workdir = a.workdir or os.path.join(a.outdir, f"{base}_work")
     os.makedirs(workdir, exist_ok=True)
@@ -99,16 +66,9 @@ def main():
          "--script", script_json, "--outdir", out_dir]
         + (["--bg-video", a.bg_video] if a.bg_video else [])
         + (["--bgm", a.bgm] if a.bgm else [])
-        + ["--aspect", a.aspect] + (["--banner", a.banner] if a.banner else [])
-        + (["--alias", a.alias] if a.alias else [])
-        + (["--chapter", chapter] if chapter else []))
-    # 4) 发布文案（表单标题+内容模板）→ <workdir>/publish.txt
-    if not a.no_publish_copy:
-        run([PY, os.path.join(HERE, "publish_copy.py"),
-             "--script", script_json, "--outdir", workdir, "--stdout"]
-            + (["--alias", a.alias] if a.alias else [])
-            + (["--chapter", chapter] if chapter else [])
-            + (["--tags", a.tags] if a.tags else []))
+        + ["--ambience", a.ambience, "--ambience-level", str(a.ambience_level)]
+        + ["--sfx", a.sfx, "--sfx-level", str(a.sfx_level)]
+        + ["--aspect", a.aspect] + (["--banner", a.banner] if a.banner else []))
 
 
 if __name__ == "__main__":

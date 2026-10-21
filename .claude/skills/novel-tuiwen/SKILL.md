@@ -73,7 +73,8 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 2. **过滤**：题材热度 / 开头钩子 / 竞争度打分，取 Top1-3
 3. **正文**：达人中心书详情逐章抓全文 → `file_write` 到 `<工作目录>/novel/<书名>/chNN.txt`（其他平台不给全文时 `ask_user`）
 4. **背景**：优先本地素材；题材与选法见 `pipeline.md`「背景素材选取」
-5. **出片**：`novel_tuiwen { chapter, title, alias, chapter, bg_video }` → `pipeline.md`
+5. **出片**：`novel_tuiwen { chapter, title, alias, chapter, bg_video, ambience, sfx }` → `pipeline.md`
+   ★ 声音层：`ambience` 默认 `auto` 按剧情自动选（雨→rain / 荒野夜→wind / 悬疑→hum / 默认 pad_soft），音量 0.12 且被旁白**侧链闪避**，不盖配音；`sfx` 默认 `auto`，只在开头与高能句点缀（≤5 个、间隔≥6s），不做全程铺满。用户要「安静/不要音效」才传 `sfx:"none"` / `ambience:"none"`。
 6. **发布**（需 confirm_user）：抖音 / 快手各见其 `publish-video.md`。
    ★ 工具列表里有 `browser_run_recipe` 时**优先用配方**（如 `douyin-publish-video`）：
    模型只传参数，上传/填表/回读/发布由代码按固定步骤执行；`submit` 只在用户明确要求发布时传 true。
