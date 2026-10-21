@@ -31,7 +31,8 @@ export type EffectGroup =
   | '滑动' | '形状' | '特效'                                 // 转场
   | '进阶'                                                   // 文字动画
   | '变声' | '空间'                                          // 音效
-  | '分屏' | '抠像';                                         // 蒙版
+  | '分屏' | '抠像'                                          // 蒙版
+  | '动效' | '故障' | '氛围' | '扭曲' | '像素';               // 特效（FX）
 
 /**
  * 调色/滤镜预设。
@@ -266,6 +267,90 @@ export const AUDIO_EFFECTS: EffectPreset[] = [
   { id: 'chipmunk', label: '尖细', desc: '升调，卡通感', filter: 'asetrate=44100*1.12,aresample=44100,atempo=0.893', group: '变声' },
   { id: 'reverb', label: '空间混响', desc: '大房间混响，空旷感', filter: 'aecho=0.8:0.85:60|120:0.5|0.3', group: '空间' },
 ];
+
+/**
+ * 动态特效（FX）—— 与「滤镜」分开的一张表。
+ *
+ * ★★★ 为什么单独一张表（2026-10-21 用户：「再加点特效？」）：
+ *   调色表里的 32 项全是**静态颜色变换**（eq/colorbalance/hue）。剪映/Premiere 的「特效」
+ *   是另一类东西：扫描线、故障、残影、柔光、马赛克 —— 改的是画面结构，不是色调。
+ *   混进调色表等于让「我想调个色」在 45 项里翻找。
+ *
+ * ★ 滤镜串里的 {W}/{H} 是**画幅占位符**，渲染时由 fxFilter() 换成工程输出尺寸。
+ *   为什么需要：震动/马赛克这类效果必须精确产出 W×H —— 差一个像素，
+ *   整条片子的 concat -c copy 就会失败或被迫重编码（而报错完全指不到这里）。
+ */
+export const FX_EFFECTS: EffectPreset[] = [
+  // ── 动效 ──
+  {
+    id: 'shake', label: '镜头震动', group: '动效',
+    desc: '手持晃动感，动作/爆点镜头用',
+    filter: `scale={W}*1.08:-2,crop={W}:{H}:x='(iw-{W})/2+iw*0.006*sin(t*23)':y='(ih-{H})/2+ih*0.006*cos(t*19)',setsar=1`,
+  },
+  {
+    id: 'drift', label: '呼吸漂浮', group: '动效',
+    desc: '缓慢上下浮动，静态照片也能"活"起来',
+    filter: `scale={W}*1.06:-2,crop={W}:{H}:x='(iw-{W})/2':y='(ih-{H})/2+ih*0.01*sin(t*1.6)',setsar=1`,
+  },
+  {
+    id: 'ghost', label: '残影拖尾', group: '动效',
+    desc: '前几帧叠影，运动镜头有速度感',
+    filter: `tmix=frames=6:weights='1 1 1 1 1 1'`,
+  },
+
+  // ── 故障 ──
+  {
+    id: 'scanline', label: '扫描线', group: '故障',
+    desc: '老显示器横向扫描纹，赛博/复古科技感',
+    filter: `geq=lum='lum(X,Y)*if(mod(Y,3),1,0.82)':cb='cb(X,Y)':cr='cr(X,Y)'`,
+  },
+  {
+    id: 'vhs', label: '录像带', group: '故障',
+    desc: '色偏+噪点，九十年代家用录像',
+    filter: `chromashift=cbh=3:crh=-3,eq=saturation=1.25:contrast=1.05,noise=alls=10:allf=t`,
+  },
+  {
+    id: 'glitch', label: '色差故障', group: '故障',
+    desc: '红蓝通道错位，电子故障感',
+    filter: `chromashift=cbh=6:crh=-6,noise=alls=6:allf=t`,
+  },
+
+  // ── 氛围 ──
+  {
+    id: 'bloom', label: '柔光', group: '氛围',
+    desc: '高光溢出的柔焦，人像/回忆镜头',
+    filter: `split[a][b];[b]gblur=sigma=14[g];[a][g]blend=all_mode=screen:all_opacity=0.35`,
+  },
+  {
+    id: 'oldfilm', label: '老电影', group: '氛围',
+    desc: '颗粒+暗角+褪色，年代感',
+    filter: `noise=alls=14:allf=t,curves=vintage,vignette=PI/4`,
+  },
+  {
+    id: 'dream', label: '梦境叠影', group: '氛围',
+    desc: '柔化叠回原片，朦胧幻想感',
+    filter: `split[a][b];[b]gblur=sigma=8[g];[a][g]blend=all_mode=overlay:all_opacity=0.4`,
+  },
+
+  // ── 扭曲 ──
+  { id: 'fisheye', label: '鱼眼', group: '扭曲', desc: '广角畸变，夸张/搞笑镜头', filter: `lenscorrection=k1=0.4:k2=0.2` },
+  { id: 'mirror', label: '镜像', group: '扭曲', desc: '水平翻转，制造对称构图', filter: `hflip` },
+  { id: 'tilt', label: '倾斜', group: '扭曲', desc: '轻微旋转，动感/不安定', filter: `rotate=0.06:ow=iw:oh=ih:fillcolor=black` },
+
+  // ── 像素 ──
+  { id: 'pixelate', label: '马赛克', group: '像素', desc: '像素块化，遮挡/风格化', filter: `scale=iw/12:ih/12,scale={W}:{H}:flags=neighbor` },
+];
+
+/**
+ * 取 FX 滤镜串（把 {W}/{H} 换成真实画幅）。
+ * ★ 找不到返回 null —— 调用方应"什么都不加"，绝不回退到别的特效：
+ *   让模型/用户传错 id 时静默变成另一种观感，比不生效更难查。
+ */
+export function fxFilter(id: string, W: number, H: number): string | null {
+  const hit = FX_EFFECTS.find((e) => e.id === id);
+  if (!hit || !hit.filter) return null;
+  return hit.filter.replace(/\{W\}/g, String(Math.round(W))).replace(/\{H\}/g, String(Math.round(H)));
+}
 
 /** 按 id 取滤镜串（找不到返回 null，调用方决定报错还是回落）。 */
 export function effectFilter(id: string, table: EffectPreset[]): string | null {

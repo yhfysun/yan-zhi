@@ -12,6 +12,8 @@
 //   · 片段内时间（trimStart/trimEnd/speed）→ **相对该段原始素材**；
 //   · 字幕/BGM 时间 → **相对成片（拼接后）**，由调用方按各段时长累计推算。
 
+import { FX_EFFECTS } from '@yan-zhi/shared';
+
 export interface ClipSegment {
   id: string;
   /** 素材本机绝对路径 */
@@ -24,8 +26,10 @@ export interface ClipSegment {
   trimEnd?: number;
   /** 变速倍数：>1 加快 <1 放慢（1/缺省=不变） */
   speed?: number;
-  /** 调色预设（warm/cool/bw/vintage/vivid/film/fade） */
+  /** 调色预设（见 shared 的 COLOR_EFFECTS，32 项） */
   colorPreset?: string;
+  /** 动态特效 id（见 shared 的 FX_EFFECTS：震动/扫描线/残影/柔光/马赛克…） */
+  fx?: string;
   /** 画面淡入秒（相对该段起点） */
   fadeIn?: number;
   /** 画面淡出秒（相对该段终点） */
@@ -456,6 +460,9 @@ export function applyClipOp(
         const fadeOut = optionalPositive(c.fadeOut);
         const label = String(c.label ?? '').trim();
         const colorPreset = String(c.colorPreset ?? '').trim();
+        // 特效 id 必须真实存在：写进一个拼错的 id 会让渲染"什么都没发生"却不报错
+        const fxRaw = String(c.fx ?? '').trim().toLowerCase();
+        const fx = FX_EFFECTS.some((e) => e.id === fxRaw) ? fxRaw : '';
         const audioFile = String(c.audioFile ?? '').trim();
         const crop = normalizeCrop(c.crop);
         const keyframes = normalizeKeyframes(c.keyframes);
@@ -467,6 +474,7 @@ export function applyClipOp(
           ...(trimEnd != null ? { trimEnd } : {}),
           ...(speed != null && Math.abs(speed - 1) > 0.001 ? { speed } : {}),
           ...(colorPreset ? { colorPreset: colorPreset.toLowerCase() } : {}),
+          ...(fx ? { fx } : {}),
           ...(fadeIn != null ? { fadeIn } : {}),
           ...(fadeOut != null ? { fadeOut } : {}),
           ...(kb ? { kenburns: { direction: kb.direction === 'out' ? 'out' : 'in', duration: Math.max(1, numOr(kb.duration, 6)) } } : {}),
@@ -491,7 +499,7 @@ export function applyClipOp(
       const cur = project.clips[loc.idx];
       const patch = (args.patch && typeof args.patch === 'object' ? args.patch : args) as Record<string, unknown>;
       // 允许 1 基序号定位后不传参数？不允许 —— 静默无变更等于骗人。
-      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'crop', 'keyframes'];
+      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'fx', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'crop', 'keyframes'];
       if (!KEYS.some((k) => patch[k] !== undefined)) {
         return { ok: false, error: `update_clip 至少要改一个字段：${KEYS.join(' / ')}` };
       }
@@ -514,6 +522,15 @@ export function applyClipOp(
       if (patch.colorPreset !== undefined) {
         const cp = String(patch.colorPreset).trim().toLowerCase();
         if (cp) next.colorPreset = cp; else delete next.colorPreset;
+      }
+      if (patch.fx !== undefined) {
+        const fx = String(patch.fx).trim().toLowerCase();
+        if (!fx) delete next.fx;
+        // ★ 未知 id 直接报错（不静默忽略）：模型拼错时必须让它自己看到可选清单，
+        //   否则用户会得到一条"看起来加了特效、其实没加"的片子。
+        else if (!FX_EFFECTS.some((e) => e.id === fx)) {
+          return { ok: false, error: `未知特效：${fx}（可选：${FX_EFFECTS.map((e) => e.id).join(' / ')}）` };
+        } else next.fx = fx;
       }
       if (patch.fadeIn !== undefined) { const v = optionalPositive(patch.fadeIn); if (v == null) delete next.fadeIn; else next.fadeIn = v; }
       if (patch.fadeOut !== undefined) { const v = optionalPositive(patch.fadeOut); if (v == null) delete next.fadeOut; else next.fadeOut = v; }
@@ -734,6 +751,7 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
       ...(c.trimEnd != null ? { trimEnd: c.trimEnd } : {}),
       ...(c.speed ? { speed: c.speed } : {}),
       ...(c.colorPreset ? { colorPreset: c.colorPreset } : {}),
+      ...(c.fx ? { fx: c.fx } : {}),
       ...(c.fadeIn ? { fadeIn: c.fadeIn } : {}),
       ...(c.fadeOut ? { fadeOut: c.fadeOut } : {}),
       ...(c.kenburns ? { kenburns: c.kenburns } : {}),

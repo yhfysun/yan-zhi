@@ -237,6 +237,29 @@
             >
               <el-icon :size="13" :class="{ 'cp-spin': asrRunning }"><Microphone /></el-icon>
             </button>
+            <button
+              class="cp-mini"
+              :title="beatRunning ? '正在分析节拍…' : '智能踩点：分析 BGM（或选中片段）的节拍，按节拍自动切分片段'"
+              :disabled="beatRunning || !clipCount"
+              @click="splitAtBeats"
+            >
+              <el-icon :size="13" :class="{ 'cp-spin': beatRunning }"><Headset /></el-icon>
+            </button>
+            <button
+              class="cp-mini"
+              title="一句话成片：把需求交给剪辑师智能体（它会用当前工程素材自动剪、配字幕、出预览档）"
+              :disabled="!clipCount"
+              @click="askAgentOneShot"
+            >
+              <el-icon :size="13"><VideoPlay /></el-icon>
+            </button>
+            <button
+              class="cp-mini"
+              title="AI 配乐：本地合成器生成器乐 BGM（模型写和弦与旋律，不含人声）"
+              @click="openMusicDialog"
+            >
+              <el-icon :size="13"><MagicStick /></el-icon>
+            </button>
             <span class="cp-spacer"></span>
             <span class="cp-hint">拖动素材入轨 · 拖动播放头定位 · 选中片段/字幕改参数</span>
           </div>
@@ -379,14 +402,18 @@
               <label>音量 <span class="cp-val">{{ (clipPatch.volume ?? 1).toFixed(2) }}</span></label>
               <input v-model.number="clipPatch.volume" class="cp-range" type="range" min="0" max="2" step="0.05" />
             </div>
+            <!-- 调色：缩略图卡片（预览帧用**当前工程画面**渲染，看到的就是成片效果） -->
             <div class="cp-field">
               <label>调色</label>
-              <select v-model="clipPatch.colorPreset" class="cp-select">
-                <option value="">原片（不调色）</option>
-                <optgroup v-for="g in COLOR_GROUPS" :key="g.group" :label="g.group">
-                  <option v-for="e in g.items" :key="e.id" :value="e.id" :title="e.desc">{{ e.label }}</option>
-                </optgroup>
-              </select>
+              <EffectCardGrid
+                kind="color"
+                :groups="COLOR_GROUPS"
+                :value="clipPatch.colorPreset || 'none'"
+                :conversation-id="convId"
+                :width="240"
+                :height="135"
+                @pick="clipPatch.colorPreset = $event"
+              />
             </div>
             <div class="cp-field">
               <label>淡入 / 淡出（秒）</label>
@@ -395,6 +422,21 @@
                 <span class="cp-tilde">/</span>
                 <input v-model.number="clipPatch.fadeOut" class="cp-num wide" type="number" step="0.1" min="0" placeholder="0" />
               </div>
+            </div>
+
+            <!-- 特效：结构类效果（震动/扫描线/残影/柔光/马赛克…）—— 与调色分工 -->
+            <div class="cp-field">
+              <label>特效 <span v-if="clipPatch.fx" class="cp-val">{{ fxLabelOf(clipPatch.fx) }}</span></label>
+              <EffectCardGrid
+                kind="fx"
+                :groups="FX_GROUPS"
+                :value="clipPatch.fx"
+                :conversation-id="convId"
+                :width="240"
+                :height="135"
+                @pick="clipPatch.fx = clipPatch.fx === $event ? '' : $event"
+              />
+              <button v-if="clipPatch.fx" class="cp-btn full" @click="clipPatch.fx = ''">移除特效</button>
             </div>
 
             <!-- 蒙版：形状取景 / 色键抠像（此前完全没有此能力） -->
@@ -413,33 +455,27 @@
               <div v-show="maskOpen" class="cp-grp-body">
                 <div class="cp-field">
                   <label>形状</label>
-                  <div class="cp-preset-grid sm">
-                    <button
-                      v-for="m in MASK_SHAPES"
-                      :key="m.id"
-                      class="cp-preset"
-                      :class="{ on: clipPatch.maskShape === m.id }"
-                      :title="m.desc"
-                      @click="pickMaskShape(m.id)"
-                    >
-                      <span class="cp-preset-label">{{ m.label }}</span>
-                    </button>
-                  </div>
+                  <EffectCardGrid
+                    kind="mask"
+                    :groups="MASK_SHAPE_GROUPS"
+                    :value="clipPatch.maskShape"
+                    :conversation-id="convId"
+                    :width="200"
+                    :height="113"
+                    @pick="pickMaskShape"
+                  />
                 </div>
                 <div class="cp-field">
                   <label>抠像（按颜色抠除背景）</label>
-                  <div class="cp-preset-grid sm">
-                    <button
-                      v-for="k in MASK_KEYS.filter((x) => x.id !== 'none')"
-                      :key="k.id"
-                      class="cp-preset"
-                      :class="{ on: clipPatch.maskKey === k.id }"
-                      :title="k.desc"
-                      @click="pickMaskKey(k.id)"
-                    >
-                      <span class="cp-preset-label">{{ k.label }}</span>
-                    </button>
-                  </div>
+                  <EffectCardGrid
+                    kind="mask"
+                    :groups="MASK_KEY_GROUPS"
+                    :value="clipPatch.maskKey"
+                    :conversation-id="convId"
+                    :width="200"
+                    :height="113"
+                    @pick="pickMaskKey"
+                  />
                 </div>
                 <div v-if="clipPatch.maskShape && clipPatch.maskShape !== 'none'" class="cp-field">
                   <label>蒙版大小 <span class="cp-val">{{ (clipPatch.maskScale ?? 0.9).toFixed(2) }}</span></label>
@@ -475,12 +511,16 @@
                 <template v-else>
                   <div class="cp-field">
                     <label>转场类型</label>
-                    <select v-model="clipPatch.transitionType" class="cp-select" @change="syncTransitionDuration">
-                      <option value="">无（直接硬切）</option>
-                      <optgroup v-for="g in TRANSITION_GROUPS" :key="g.group" :label="g.group">
-                        <option v-for="t in g.items" :key="t.id" :value="t.id" :title="t.desc">{{ t.label }}</option>
-                      </optgroup>
-                    </select>
+                    <button class="cp-btn full" :class="{ 'primary': !clipPatch.transitionType }" @click="clearClipTransition">无（直接硬切）</button>
+                    <EffectCardGrid
+                      kind="transition"
+                      :groups="TRANSITION_GROUPS"
+                      :value="clipPatch.transitionType"
+                      :conversation-id="convId"
+                      :width="240"
+                      :height="135"
+                      @pick="pickTransition"
+                    />
                   </div>
                   <div v-if="clipPatch.transitionType" class="cp-field">
                     <label>转场时长 <span class="cp-val">{{ (clipPatch.transitionDuration ?? 0.8).toFixed(2) }}s</span></label>
@@ -588,17 +628,14 @@
             <!-- 样式模板：一键套用成套样式（对标剪映/必剪的字幕模板） -->
             <div class="cp-field">
               <label>样式模板</label>
-              <div class="cp-preset-grid sm">
-                <button
-                  v-for="s in TEXT_STYLES"
-                  :key="s.id"
-                  class="cp-preset"
-                  :title="s.desc"
-                  @click="applyTextStyle(s)"
-                >
-                  <span class="cp-preset-label">{{ s.label }}</span>
-                </button>
-              </div>
+              <EffectCardGrid
+                kind="style"
+                :groups="TEXT_STYLE_GROUPS"
+                :conversation-id="convId"
+                :width="240"
+                :height="135"
+                @pick="applyTextStyleById"
+              />
             </div>
 
             <div class="cp-field">
@@ -766,22 +803,61 @@
         <div v-for="g in sfxGroups" :key="g.group" class="cp-sfxl-group">
           <div class="cp-sfxl-gtitle">{{ g.group }}</div>
           <div class="cp-sfxl-items">
-            <button
-              v-for="it in g.items"
-              :key="it.id"
-              class="cp-sfxl-item"
-              :disabled="sfxBusy === it.id"
-              :title="it.desc"
-              @click="generateSfx(it.id)"
-            >
+            <div v-for="it in g.items" :key="it.id" class="cp-sfxl-item" :title="it.desc">
               <span class="cp-sfxl-label">{{ it.label }}</span>
               <span class="cp-sfxl-desc">{{ it.desc }}</span>
               <span class="cp-sfxl-meta">{{ it.maxSec }}s</span>
-              <span v-if="sfxBusy === it.id" class="cp-sfxl-busy">生成中…</span>
-            </button>
+              <div class="cp-sfxl-acts">
+                <button class="cp-mini" :title="sfxPlaying === it.id ? '停止试听' : '试听'" @click="previewSfx(it.id)">
+                  <el-icon :size="11"><component :is="sfxPlaying === it.id ? 'VideoPause' : 'VideoPlay'" /></el-icon>
+                </button>
+                <button class="cp-mini" :disabled="sfxBusy === it.id" title="生成并加入素材库" @click="generateSfx(it.id)">
+                  <span v-if="sfxBusy === it.id" class="cp-sfxl-busy">生成中…</span>
+                  <el-icon v-else :size="12"><Plus /></el-icon>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
+    </el-dialog>
+
+    <!-- AI 配乐：本地合成器（模型写和弦/旋律，工具渲染；不含人声） -->
+    <el-dialog v-model="musicDialog" title="AI 配乐（本地合成）" width="440px" :append-to-body="true">
+      <div class="cp-np">
+        <div class="cp-field">
+          <label>风格</label>
+          <select v-model="musicStyle" class="cp-select">
+            <option value="gentle">温柔 · 分解和弦</option>
+            <option value="lofi">Lo-Fi · 慵懒</option>
+            <option value="pop">流行 · 琶音</option>
+            <option value="epic">史诗 · 八度强奏</option>
+            <option value="edm">电子 · 四踩卡点</option>
+          </select>
+        </div>
+        <div class="cp-field">
+          <label>BPM / 时长（秒）</label>
+          <div class="cp-field-row">
+            <input v-model.number="musicBpm" class="cp-num wide" type="number" min="60" max="180" />
+            <input v-model.number="musicSec" class="cp-num wide" type="number" min="5" max="300" />
+          </div>
+        </div>
+        <div class="cp-field">
+          <label>情绪 / 配器（可留空）</label>
+          <input v-model="musicDesc" class="cp-num wide" type="text" placeholder="例如：温暖、钢琴为主、慢速" />
+        </div>
+        <div class="cp-field">
+          <label>歌词（可选，填了就会"唱"）</label>
+          <textarea v-model="musicLyrics" class="cp-textarea" rows="2" placeholder="例如：床前明月光 / 疑是地上霜"></textarea>
+        </div>
+        <div class="cp-ins-hint">
+          本地合成器音色（不是真实乐器采样）。填了歌词会走本地歌声合成：字能听清、音准正确，但是"合成人声"，不是真人。
+        </div>
+      </div>
+      <template #footer>
+        <button class="cp-btn" @click="musicDialog = false">取消</button>
+        <button class="cp-btn primary" @click="composeMusicWithAgent">生成</button>
+      </template>
     </el-dialog>
 
     <!-- 删除项目确认（外部动作：删会话与工程文件，不删素材源文件） -->
@@ -832,18 +908,19 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, DArrowLeft, Delete,
-  Close, EditPen, FolderOpened, Headset, Loading, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, VideoCamera, VideoPlay, View, WarningFilled,
+  Close, EditPen, FolderOpened, Headset, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, VideoCamera, VideoPlay, View, WarningFilled,
 } from '@element-plus/icons-vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
 import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
+import EffectCardGrid from '../components/clip/EffectCardGrid.vue';
 import { useSpaceStore } from '../stores/space';
 import { leadOf, activeMode, type LeadMode } from '../stores/mode';
 import { useChat } from '../composables/chat/useChat';
 import { api, API_BASE, getLicenseCode } from '../api/client';
 import { clampMenuPos } from '../utils/menuPosition';
 import {
-  COLOR_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
+  COLOR_EFFECTS, FX_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
   TRANSITIONS, OVERLAY_POSITIONS, groupEffects, effectIds, type TextStylePreset,
 } from '@yan-zhi/shared';
 
@@ -857,6 +934,12 @@ const ANIMATION_GROUPS = groupEffects(TEXT_ANIMATIONS);
 const COLOR_GROUPS = groupEffects(COLOR_EFFECTS);
 const AUDIO_GROUPS = groupEffects(AUDIO_EFFECTS);
 const TRANSITION_GROUPS = groupEffects(TRANSITIONS);
+// 动态特效（FX）：震动/扫描线/残影/柔光…，与调色是两类东西，单独一栏
+const FX_GROUPS = groupEffects(FX_EFFECTS);
+// 蒙版/字幕模板也走同一套卡片渲染（分组来自注册表，UI 与后端不会有第二份清单）
+const MASK_SHAPE_GROUPS = groupEffects(MASK_SHAPES);
+const MASK_KEY_GROUPS = groupEffects(MASK_KEYS.filter((k) => k.id !== 'none'));
+const TEXT_STYLE_GROUPS = [{ group: '字幕模板', items: TEXT_STYLES }];
 const POSITIONS = [{ v: 'bottom', label: '底部' }, { v: 'center', label: '居中' }, { v: 'top', label: '顶部' }];
 
 /** 新建项目时的画幅预设（建项目时定规格，见下方注释）。 */
@@ -870,6 +953,8 @@ const SPEC_PRESETS = [
 interface ClipSegment {
   id: string; file: string; label?: string;
   trimStart?: number; trimEnd?: number; speed?: number; colorPreset?: string;
+  /** 动态特效 id（见 shared 的 FX_EFFECTS） */
+  fx?: string;
   fadeIn?: number; fadeOut?: number; kenburns?: { direction: 'in' | 'out'; duration: number };
   /** 蒙版：形状取景（shape）或色键抠像（key）；字段与后端 clip-project 的 ClipSegment.mask 一致 */
   mask?: {
@@ -965,7 +1050,7 @@ const videoEl = ref<HTMLVideoElement | null>(null);
 const clipPatch = reactive({
   trimStart: undefined as number | undefined, trimEnd: undefined as number | undefined,
   speed: 1, volume: 1, fadeIn: undefined as number | undefined,
-  fadeOut: undefined as number | undefined, colorPreset: '',
+  fadeOut: undefined as number | undefined, colorPreset: '', fx: '',
   // 蒙版（形状与抠像互斥，色键优先）
   maskShape: '', maskKey: '', maskScale: 0.9, maskOffsetX: 0, maskOffsetY: 0, maskFeather: 0,
   // 转场（与前一段之间）
@@ -1614,10 +1699,10 @@ async function clearClipEffects() {
   pendingLabel.value = '清空片段效果';
   const c = selectedClip.value;
   if (!c) return;
-  delete c.colorPreset; delete c.mask; delete c.speed; delete c.volume;
+  delete c.colorPreset; delete c.fx; delete c.mask; delete c.speed; delete c.volume;
   delete c.fadeIn; delete c.fadeOut; delete c.kenburns;
   dirty.value = true; await save();
-  Object.assign(clipPatch, { colorPreset: '', maskShape: '', maskKey: '', speed: 1, volume: 1,
+  Object.assign(clipPatch, { colorPreset: '', fx: '', maskShape: '', maskKey: '', speed: 1, volume: 1,
     fadeIn: undefined, fadeOut: undefined, maskScale: 0.9, maskOffsetX: 0, maskOffsetY: 0, maskFeather: 0 });
   scheduleFrameFetch(150);
   note('已清空该片段的效果');
@@ -2154,7 +2239,7 @@ function selectClip(id: string) {
   Object.assign(clipPatch, {
     trimStart: c.trimStart, trimEnd: c.trimEnd,
     speed: c.speed ?? 1, volume: c.volume ?? 1,
-    fadeIn: c.fadeIn, fadeOut: c.fadeOut, colorPreset: c.colorPreset || '',
+    fadeIn: c.fadeIn, fadeOut: c.fadeOut, colorPreset: c.colorPreset || '', fx: c.fx || '',
     maskShape: c.mask?.shape || '', maskKey: c.mask?.key || '',
     maskScale: c.mask?.scale ?? 0.9, maskOffsetX: c.mask?.offsetX ?? 0,
     maskOffsetY: c.mask?.offsetY ?? 0, maskFeather: c.mask?.feather ?? 0,
@@ -2226,6 +2311,30 @@ interface SfxLibItem { id: string; label: string; desc: string; group: string; m
 const sfxLibOpen = ref(false);
 const sfxLibItems = ref<SfxLibItem[]>([]);
 const sfxBusy = ref('');
+
+/**
+ * 试听：单独一条极短音频，**不写素材库**（试五个就多五个垃圾文件是不可接受的）。
+ * ★ 用 HTMLAudioElement 而不是 <audio> 标签：弹窗里几十个条目各挂一个 <audio> 太重，
+ *   同一时刻也只该有一个在播。
+ */
+const sfxPlaying = ref('');
+let sfxAudio: HTMLAudioElement | null = null;
+function previewSfx(id: string) {
+  if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; }
+  if (sfxPlaying.value === id) { sfxPlaying.value = ''; return; }  // 再点一次 = 停止
+  const code = getLicenseCode();
+  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const a = new Audio(`${API_BASE}/clip/library/sfx-preview?id=${encodeURIComponent(id)}${qs}`);
+  a.onended = () => { if (sfxPlaying.value === id) sfxPlaying.value = ''; };
+  a.onerror = () => { sfxPlaying.value = ''; note('试听失败（ffmpeg 不可用？）'); };
+  sfxPlaying.value = id;
+  sfxAudio = a;
+  void a.play().catch(() => { sfxPlaying.value = ''; });
+}
+// 关弹窗就停音：否则用户关掉面板后声音还在响，会以为是 bug
+watch(sfxLibOpen, (open) => {
+  if (!open && sfxAudio) { sfxAudio.pause(); sfxAudio = null; sfxPlaying.value = ''; }
+});
 
 /** 音效库分组（弹窗按组渲染） */
 const sfxGroups = computed(() => {
@@ -2309,9 +2418,15 @@ function shapeLabelOf(id: string): string { return MASK_SHAPES.find((m) => m.id 
 function keyLabelOf(id: string): string { return MASK_KEYS.find((m) => m.id === id)?.label || id; }
 
 function transitionLabelOf(id: string): string { return TRANSITIONS.find((t) => t.id === id)?.label || id; }
+function fxLabelOf(id: string): string { return FX_EFFECTS.find((e) => e.id === id)?.label || id; }
 /** 选了转场但时长还是默认值时给个合理值（不同转场的舒服时长不同）。 */
 function syncTransitionDuration() {
   if (clipPatch.transitionType && !clipPatch.transitionDuration) clipPatch.transitionDuration = 0.8;
+}
+/** 卡片点选转场（原 select 的 @change 语义保留：选完补齐默认时长）。 */
+function pickTransition(id: string) {
+  clipPatch.transitionType = id;
+  syncTransitionDuration();
 }
 function clearClipTransition() { clipPatch.transitionType = ''; }
 
@@ -2350,6 +2465,12 @@ function applyTextStyle(s: TextStylePreset) {
   note(`已套用样式「${s.label}」，点「应用字幕参数」生效`);
 }
 
+/** 卡片网格回调：按 id 找模板再套用（保持与旧按钮同一套逻辑）。 */
+function applyTextStyleById(id: string) {
+  const s = TEXT_STYLES.find((x) => x.id === id);
+  if (s) applyTextStyle(s);
+}
+
 async function applyClipPatch() {
   pendingLabel.value = '修改片段参数';
   const c = selectedClip.value;
@@ -2365,6 +2486,7 @@ async function applyClipPatch() {
   c.fadeIn = clean(clipPatch.fadeIn);
   c.fadeOut = clean(clipPatch.fadeOut);
   if (clipPatch.colorPreset) c.colorPreset = clipPatch.colorPreset; else delete c.colorPreset;
+  if (clipPatch.fx) c.fx = clipPatch.fx; else delete c.fx;
   // 蒙版：形状与抠像至少给一个才写；都要清空时删字段
   const shape = String(clipPatch.maskShape || '').trim();
   const key = String(clipPatch.maskKey || '').trim();
@@ -2510,6 +2632,149 @@ async function splitAtPlayhead() {
   project.value.clips.splice(i + 1, 0, rest);
   dirty.value = true; await save();
   note(`已在 ${playhead.value.toFixed(2)}s 分割`);
+}
+
+/**
+ * 成片时间 t 处切分（若落在某段内部）。
+ * ★ 与 splitAtPlayhead 同一套换算：段内偏移 × speed 才是素材内时间。
+ */
+function splitAtTimelineTime(t: number): boolean {
+  const list = clips.value;
+  let cursor = 0;
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    const dur = segSeconds(c);
+    if (t > cursor + 0.15 && t < cursor + dur - 0.15) {
+      const cut = (c.trimStart ?? 0) + (t - cursor) * (c.speed ?? 1);
+      const rest: ClipSegment = { ...c, id: nextClipId(), trimStart: Number(cut.toFixed(3)) };
+      c.trimEnd = Number(cut.toFixed(3));
+      list.splice(i + 1, 0, rest);
+      return true;
+    }
+    cursor += dur;
+  }
+  return false;
+}
+
+/**
+ * 智能踩点：分析 BGM（或选中片段）的节拍，在成片时间轴上按节拍切分。
+ *
+ * ★★★ 为什么做（2026-10-21 用户：「向剪映靠齐…AI 一键能力」）：
+ *   卡点剪辑是短视频最高频的诉求，手动对拍要反复拖播放头。这里一次分析 + 批量切分，
+ *   切完用户再删/调段即可（比"自动生成整片"可控得多）。
+ * ★ 节拍点来自服务端能量突变检测（services/clip-beats），**没有明显节拍就不切** ——
+ *   硬凑的点会让片子变成一堆碎段。
+ */
+const beatRunning = ref(false);
+/**
+ * 「一句话成片」：把需求交给剪辑师智能体（不自己造一条自动剪辑流水线）。
+ * ★ 为什么是"交给智能体"而不是本地规则：模型已经挂了 clip_project / media_* 全套工具，
+ *   真正缺的是**入口**——用户不知道可以对着右栏说话。按钮只是把可发现性补上，
+ *   并带上当前工程规格（时长/画幅），避免它问一堆已知信息。
+ */
+async function askAgentOneShot() {
+  await ensureConversation();
+  rightTab.value = 'chat';
+  const total = Math.round(estTotal.value);
+  const spec = `${outSize.value}@${outFps.value}fps`;
+  chat.input.value =
+    `把当前剪辑工程做成一条完整成片（规格 ${spec}${total > 0 ? `，素材总长约 ${total} 秒` : ''}）。` +
+    `先 clip_project op=get 看现有素材与片段，然后：按内容重排/裁剪、加合适的转场与调色、` +
+    `需要时用 api_srt_generate 或 ASR 加字幕，最后 op=render preview=true 出预览档。` +
+    `每步说一句你在做什么，最后只回文件路径与时长。`;
+  await chat.send();
+}
+
+// ===== AI 配乐（本地合成器）=====
+const musicDialog = ref(false);
+const musicStyle = ref<'gentle' | 'lofi' | 'pop' | 'epic' | 'edm'>('gentle');
+const musicBpm = ref(96);
+const musicSec = ref(30);
+const musicDesc = ref('');
+const musicLyrics = ref('');
+
+function openMusicDialog() {
+  // 时长默认对齐当前工程（用户不用自己算），风格/BPM 给常见值
+  const total = Math.round(estTotal.value);
+  musicSec.value = total > 3 ? Math.min(300, total) : 30;
+  musicBpm.value = 96;
+  musicStyle.value = 'gentle';
+  musicDesc.value = '';
+  musicLyrics.value = '';
+  musicDialog.value = true;
+}
+
+/**
+ * 交给剪辑师智能体去写乐谱并调用 music_compose。
+ * ★ 为什么不在前端直接算音符：音乐决策（和弦/旋律/气质）是模型该做的事，
+ *   前端只负责收参数、算 bars（算术）并把约束说清楚。
+ */
+async function composeMusicWithAgent() {
+  musicDialog.value = false;
+  await ensureConversation();
+  rightTab.value = 'chat';
+  const bpm = Math.max(60, Math.min(180, Math.round(Number(musicBpm.value) || 96)));
+  const sec = Math.max(5, Math.min(300, Math.round(Number(musicSec.value) || 30)));
+  const bars = Math.max(1, Math.min(64, Math.round((sec * bpm) / 60 / 4)));
+  const desc = musicDesc.value.trim();
+  const lyrics = musicLyrics.value.trim().replace(/\s*\n+\s*/g, ' / ');
+  chat.input.value =
+    `用 music_compose 给当前工程配一段 BGM：风格 ${musicStyle.value}，BPM ${bpm}，约 ${sec} 秒（bars=${bars}，4/4 拍）。` +
+    `${desc ? `情绪/配器：${desc}。` : ''}` +
+    (lyrics
+      ? `歌词：${lyrics}。请为每个字补上无声调拼音（py）并写进 lyrics 数组（每字一个音，start/len 以拍计），` +
+        `旋律用五声音阶为主、句尾拖长；这是本地合成人声，音色偏机器人，不是真人。`
+      : `你先自己定 2~4 个和弦循环写进 chords；需要记忆点时补 melody（音名 + 拍数，起点以拍为单位）。`) +
+    `生成后把返回的 file 用 clip_project op=set_bgm 挂到 BGM 轨（volume 0.25；有旁白就 duck=true），` +
+    `最后只回 BPM、时长与文件路径。`;
+  await chat.send();
+}
+
+async function splitAtBeats() {
+  await ensureConversation();
+  const p = project.value;
+  if (!p || !p.clips.length) { note('还没有片段可切'); return; }
+  const src = p.bgm?.file || selectedClip.value?.audioFile || selectedClip.value?.file || '';
+  if (!src) { note('请先设置 BGM 或选中一段素材'); return; }
+
+  beatRunning.value = true;
+  try {
+    const r = await api.post<{ ok: boolean; beats: number[]; bpm: number; duration: number; note?: string }>('/clip/beats', {
+      conversationId: convId.value, path: src,
+    });
+    if ('error' in r) { note(`节拍分析失败：${r.error}`); return; }
+    const d = r.data as { ok?: boolean; beats?: number[]; bpm?: number; note?: string; error?: string };
+    if (d.error) { note(`节拍分析失败：${d.error}`); return; }
+    const beats = Array.isArray(d.beats) ? d.beats : [];
+    if (!beats.length) { note(d.note || '没检测到明显节拍，未做切分'); return; }
+
+    // 节拍时间 → 成片时间：BGM 从 0 开始；片段音频则要按该段起点/速度换算
+    let toTimeline = (t: number) => t;
+    if (p.bgm?.file !== src) {
+      let cursor = 0;
+      for (const c of p.clips) {
+        const dur = segSeconds(c);
+        if (c.file === src || c.audioFile === src) {
+          const seg = cursor, ts = c.trimStart ?? 0, sp = c.speed ?? 1;
+          toTimeline = (t: number) => seg + (t - ts) / sp;
+          break;
+        }
+        cursor += dur;
+      }
+    }
+
+    const MAX_SPLIT = 100;
+    const times = beats.map(toTimeline).filter((t) => Number.isFinite(t) && t > 0).slice(0, MAX_SPLIT);
+    let made = 0;
+    for (const t of times) if (splitAtTimelineTime(t)) made++;
+    if (!made) { note(`检测到 ${beats.length} 个节拍（约 ${d.bpm || '?'} BPM），但都落在段边界附近，无需切分`); return; }
+    dirty.value = true;
+    await save();
+    scheduleFrameFetch(120);
+    note(`已按节拍切分 ${made} 处（约 ${d.bpm || '?'} BPM${beats.length > MAX_SPLIT ? `，只取前 ${MAX_SPLIT} 个点` : ''}）`);
+  } finally {
+    beatRunning.value = false;
+  }
 }
 
 /**
@@ -2685,7 +2950,7 @@ async function render(preview: boolean) {
 watch(playhead, () => { scheduleFrameFetch(); });
 
 // 工程内容变化（参数改了/加删段）→ 立刻刷新当前帧，让改动马上可见
-watch(() => [clipCount.value, JSON.stringify(project.value?.clips?.map((c) => [c.colorPreset, c.mask, c.speed, c.trimStart, c.trimEnd, c.fadeIn, c.fadeOut, c.mask]))], () => {
+watch(() => [clipCount.value, JSON.stringify(project.value?.clips?.map((c) => [c.colorPreset, c.fx, c.mask, c.speed, c.trimStart, c.trimEnd, c.fadeIn, c.fadeOut, c.mask]))], () => {
   if (monitorMode.value === 'live') scheduleFrameFetch(200);
 });
 
@@ -2693,6 +2958,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown);
   if (playTimer) { clearInterval(playTimer); playTimer = null; }
   if (frameTimer) clearTimeout(frameTimer);
+  if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; }
   replaceFrameUrl('');
 });
 
@@ -2823,9 +3089,9 @@ onMounted(async () => {
 .cp-sfxl-group { display: flex; flex-direction: column; gap: 5px; }
 .cp-sfxl-gtitle { font-size: 12px; font-weight: 600; color: var(--el-text-color-regular); }
 .cp-sfxl-items { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.cp-sfxl-item { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 7px 9px; text-align: left; border: 1px solid var(--el-border-color-lighter); border-radius: 5px; background: var(--el-fill-color-blank); cursor: pointer; }
-.cp-sfxl-item:hover:not(:disabled) { border-color: var(--el-color-primary); }
-.cp-sfxl-item:disabled { opacity: .6; cursor: wait; }
+.cp-sfxl-item { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 7px 9px; text-align: left; border: 1px solid var(--el-border-color-lighter); border-radius: 5px; background: var(--el-fill-color-blank); }
+.cp-sfxl-item:hover { border-color: var(--el-color-primary); }
+.cp-sfxl-acts { display: flex; gap: 4px; margin-top: 2px; }
 .cp-sfxl-label { font-size: 12px; font-weight: 600; }
 .cp-sfxl-desc { font-size: 10px; color: var(--el-text-color-secondary); }
 .cp-sfxl-meta { position: absolute; right: 6px; top: 6px; font-size: 10px; color: var(--el-text-color-placeholder); font-variant-numeric: tabular-nums; }

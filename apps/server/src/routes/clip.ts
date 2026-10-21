@@ -19,6 +19,8 @@ import { summarizeProject } from '../services/clip-project.js';
 import { ensureArtifactDirFor } from '../services/artifact-dir.js';
 import { parseProbeJson, probeArgs } from '../services/clip-render.js';
 import { renderPreviewFrame } from '../services/clip-preview.js';
+import { ensureEffectPreview } from '../services/clip-effect-preview.js';
+import { analyzeBeats } from '../services/clip-beats.js';
 import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import {
@@ -213,6 +215,41 @@ router.post('/library/sfx', async (req: Request, res: Response) => {
   return res.json({ ok: true, name: fileName, path: outFile, bytes: size, label: item.label });
 });
 
+// GET /api/clip/library/sfx-preview?id=whoosh —— **试听**（不落素材库）
+//
+// ★★★ 为什么单独一条（2026-10-21 用户：「搞点音效库？」）：
+//   此前想听一个音效只能先"生成"——它会写进会话素材库，试五个就多五个垃圾文件。
+//   试听是一次性的，产物落临时缓存即可，不进 conversation_file。
+// ★ 缓存键 = id + 参数版本：合成参数改了必须改 SFX_CACHE_VERSION，否则用户一直听到旧音。
+const SFX_CACHE_VERSION = 'v1';
+
+router.get('/library/sfx-preview', async (req: Request, res: Response) => {
+  const id = String(req.query.id || '').trim();
+  const item = sfxById(id);
+  if (!item) return res.status(404).json({ error: `音效不存在：${id}` });
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用' });
+
+  const dir = path.join(tmpdir(), `yz-sfx-preview-${SFX_CACHE_VERSION}`);
+  const file = path.join(dir, `${id}.m4a`);
+  if (!fs.existsSync(file)) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const r = await runFfmpeg(ff.ffmpeg, [
+        '-y', '-v', 'error', ...item.input,
+        '-af', item.af, '-t', String(item.maxSec),
+        '-c:a', 'aac', '-ar', '44100', '-ac', '2', file,
+      ], 60000);
+      if (!r.ok) return res.status(500).json({ error: `试听生成失败：${r.stderr.slice(-300)}` });
+    } catch (e: unknown) {
+      return res.status(500).json({ error: `试听生成异常：${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+  res.setHeader('Content-Type', 'audio/mp4');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return res.sendFile(file);
+});
+
 // POST /api/clip/asr —— 语音转字幕（本地 whisper.cpp）
 //
 // ★★★ 为什么要有这条（2026-10-08）：ASR 能力此前只能从**对话**触发
@@ -332,6 +369,88 @@ router.get('/frame', async (req: Request, res: Response) => {
   res.setHeader('X-Segment-Index', String(out.segmentIndex || 0));
   res.setHeader('X-Frame-Cached', out.cached ? '1' : '0');
   return res.end(out.png);
+});
+
+// GET /api/clip/effect-preview?conversationId=xxx&kind=color&id=warm&w=320&h=180
+//
+// **效果卡片缩略图**：调色/蒙版/字幕模板出 jpg，转场出 1.2s 循环 mp4。
+//
+// ★★★ 为什么样例来自"当前工程"而不是固定样张（2026-10-21）：
+//   用户是在自己这条片子上去挑效果的 —— 拿同一帧自家画面做对比，比通用风景样张
+//   更能判断"这个滤镜上我的脸会不会发灰"。取帧失败/没有工程时才退到合成测试图。
+// ★ 与 /frame 一样用 no-store：URL 里没有工程指纹，浏览器缓存会拿旧图骗人；
+//   真正的缓存由服务端落盘（键含样例文件 mtime），重复打开面板不会重复起 ffmpeg。
+router.get('/effect-preview', async (req: Request, res: Response) => {
+  const conversationId = String(req.query.conversationId || '').trim();
+  const kind = String(req.query.kind || '').trim() as 'color' | 'fx' | 'mask' | 'style' | 'transition';
+  const id = String(req.query.id || '').trim();
+  const w = Math.max(120, Math.min(640, Math.round(Number(req.query.w) || 320)));
+  const h = Math.max(68, Math.min(640, Math.round(Number(req.query.h) || 180)));
+  if (!kind || !id) return res.status(400).json({ error: 'kind 与 id 必填' });
+  if (!['color', 'fx', 'mask', 'style', 'transition'].includes(kind)) {
+    return res.status(400).json({ error: `未知 kind：${kind}` });
+  }
+  if (conversationId && !conversationExists(conversationId)) {
+    return res.status(404).json({ error: '会话不存在' });
+  }
+
+  // 样例：工程里前两段不同素材的同位置帧（转场需要两个不同画面）
+  let sample: { file: string; atSec: number } | null = null;
+  let sampleB: { file: string; atSec: number } | null = null;
+  if (conversationId) {
+    try {
+      const project = readClipProject(conversationId);
+      const picks = (project?.clips || []).filter((c) => !!c.file);
+      if (picks[0]) sample = { file: picks[0].file, atSec: (picks[0].trimStart ?? 0) + 0.5 };
+      const other = picks.find((c) => c.file !== picks[0]?.file);
+      if (other) sampleB = { file: other.file, atSec: (other.trimStart ?? 0) + 0.5 };
+    } catch { /* 工程读不出来就退合成样张，不该因此看不到缩略图 */ }
+  }
+
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（效果预览需要它）' });
+
+  const out = await ensureEffectPreview({ kind, id, ffmpeg: ff.ffmpeg, sample, sampleB, width: w, height: h });
+  if (!out.ok || !out.file) return res.status(500).json({ error: out.error || '预览生成失败' });
+  res.setHeader('Content-Type', out.mime || 'image/jpeg');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Preview-Cached', out.cached ? '1' : '0');
+  return res.sendFile(out.file);
+});
+
+// POST /api/clip/beats  body: { conversationId, path }
+//
+// **智能踩点**：分析一段音频（通常是 BGM）的节拍点，前端据此自动切分片段。
+//
+// ★ 安全边界与 /waveform 一致：path 必须是本会话工程引用或素材库登记的文件，
+//   否则这个接口就成了"任意路径音频解析器"。
+// ★ 结果少于 6 个点会返回空数组 + 说明 —— 硬凑出来的点会让用户切出一堆碎段。
+router.post('/beats', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const p = String(req.body?.path || '').trim();
+  if (!conversationId || !p) return res.status(400).json({ error: 'conversationId 与 path 必填' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+
+  const project = readClipProject(conversationId);
+  const referenced =
+    !!project &&
+    (project.clips.some((c) => c.file === p || c.audioFile === p) || project.bgm?.file === p);
+  let registered = false;
+  try {
+    registered = !!db.prepare('SELECT id FROM conversation_file WHERE conversation_id = ? AND path = ?').get(conversationId, p);
+  } catch { /* 表查询失败按未登记处理 */ }
+  if (!referenced && !registered) return res.status(403).json({ error: '该文件不属于当前会话（未在工程或素材库中引用）' });
+  if (!fs.existsSync(p)) return res.status(404).json({ error: '文件不存在' });
+
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用' });
+
+  const r = await analyzeBeats(ff.ffmpeg, p);
+  if (!r.ok) return res.status(500).json({ error: r.error || '节拍分析失败' });
+  if (!r.beats.length) {
+    return res.json({ ok: true, beats: [], bpm: 0, duration: r.duration, note: '这段音频的节拍不明显（少于 6 个点），不做自动切分' });
+  }
+  return res.json({ ok: true, beats: r.beats, bpm: r.bpm, duration: r.duration });
 });
 
 // GET /api/clip/project?conversationId=xxx

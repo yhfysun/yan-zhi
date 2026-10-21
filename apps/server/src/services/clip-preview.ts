@@ -60,7 +60,7 @@ export interface PreviewFrameResult {
 function projectFingerprint(p: ClipProject): string {
   return JSON.stringify({
     o: p.output,
-    c: p.clips.map((c) => [c.id, c.file, c.trimStart, c.trimEnd, c.speed, c.colorPreset, c.fadeIn, c.fadeOut, c.kenburns, c.mask, c.crop, c.keyframes]),
+    c: p.clips.map((c) => [c.id, c.file, c.trimStart, c.trimEnd, c.speed, c.colorPreset, c.fx, c.fadeIn, c.fadeOut, c.kenburns, c.mask, c.crop, c.keyframes]),
     // 画中画影响合成画面，必须进指纹（改了画中画不换帧 = 预览骗人）
     ov: (p.overlays || []).map((o) => [o.id, o.file, o.start, o.end, o.pos, o.scale]),
   });

@@ -259,8 +259,10 @@ describe('ClipWorkbench · 蒙版与字幕样式（对标商用软件的"能建�
   it('★★ 蒙版必须能在 UI 里设置（此前完全没有此能力）', () => {
     expect(CODE).toContain('MASK_SHAPES');
     expect(CODE).toContain('MASK_KEYS');
-    expect(CODE).toMatch(/@click="pickMaskShape/);
-    expect(CODE).toMatch(/@click="pickMaskKey/);
+    // 2026-10-21：蒙版从文字按钮升级为**缩略图卡片**（EffectCardGrid），入口语义不变
+    expect(CODE).toMatch(/@pick="pickMaskShape"/);
+    expect(CODE).toMatch(/@pick="pickMaskKey"/);
+    expect(CODE).toContain('kind="mask"');
   });
 
   it('★ 形状与抠像互斥（同时生效会让用户搞不清哪个起作用）', () => {
@@ -412,7 +414,8 @@ describe('ClipWorkbench · 转场 / 音效 / 音效库（对标商用软件的�
   it('★★ 属性面板必须有转场入口（此前效果库有 25 种转场但 UI 没接）', () => {
     expect(CODE).toContain('TRANSITION_GROUPS');
     expect(CODE).toContain('clipPatch.transitionType');
-    expect(CODE).toMatch(/<optgroup v-for="g in TRANSITION_GROUPS"/);
+    // 2026-10-21：转场升级为可悬停播放的**卡片网格**（EffectCardGrid）
+    expect(CODE).toMatch(/kind="transition"[\s\S]{0,160}:groups="TRANSITION_GROUPS"/);
   });
 
   it('★★ 第一段不该有转场选项（没有"前一段"，接了也是无效配置）', () => {
@@ -579,7 +582,9 @@ describe('ClipWorkbench · 与后端契约一致', () => {
   it('★★ 调色/音效下拉也来自效果库（按 group 分组渲染）', () => {
     expect(CODE).toContain('COLOR_EFFECTS');
     expect(CODE).toContain('COLOR_GROUPS');
-    expect(CODE).toMatch(/<optgroup v-for="g in COLOR_GROUPS"/);
+    // 2026-10-21：调色改为缩略图卡片（分组仍来自注册表）
+    expect(CODE).toMatch(/kind="color"[\s\S]{0,160}:groups="COLOR_GROUPS"/);
+    expect(CODE).toContain('EffectCardGrid');
   });
 
   it('预览地址参数名与 FilePreview 一致（license=，非 x-license）', () => {

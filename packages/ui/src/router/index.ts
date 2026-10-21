@@ -366,6 +366,17 @@ router.beforeEach(async (to) => {
   if (targetMode && !isModeLicensed(targetMode)) {
     return { path: firstLicensedRoute() };
   }
+  /**
+   * ★★★ 直接进模式路由（手输 / 刷新 / 书签）必须同步 activeMode（2026-10-21 实测踩到）：
+   *   此前只有「弹出窗口」会同步。主窗口直接打开 `#/clip` 时 activeMode 仍停在办公 →
+   *   工作台里「新建项目」调用 createConversation 带的是 office →
+   *   **剪辑项目被静默存成一条办公会话**（列表里看不到，工程文件却写了），
+   *   用户只看到"点新建没反应"。这正是剪辑方案里记过的同类缺陷，换个入口又冒出来。
+   *   /chat 不参与同步：它映射到 office，且下面「模式记忆」重定向依赖原 activeMode。
+   */
+  if (targetMode && targetMode !== 'office' && activeMode.value !== targetMode) {
+    setMode(targetMode);
+  }
   // 会话独立窗口（window=conv，2026-10-18）：强制办公形态。子窗口与主窗口共享
   // localStorage 的 yz:mode —— 主窗口若停在 dev 等模式，这里不先把 activeMode 拨回
   // office，下面那条「模式记忆」就会把 /chat 弹到别的模式工作台，会话窗口直接串台。

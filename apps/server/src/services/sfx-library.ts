@@ -44,6 +44,24 @@ export const SFX_LIBRARY: SfxItem[] = [
     af: 'asetrate=44100*1.35,aresample=44100,highpass=f=120,afade=t=in:st=0:d=0.3,afade=t=out:st=1.0:d=0.2,volume=0.45',
     maxSec: 1.2,
   },
+  {
+    id: 'whoosh_hard', label: '重呼', desc: '更重更长的一阵风，转场更有力', group: '转场',
+    input: ['-f', 'lavfi', '-i', 'anoisesrc=d=0.6:c=pink:a=0.6'],
+    af: 'highpass=f=180,lowpass=f=4500,afade=t=in:st=0:d=0.05,afade=t=out:st=0.38:d=0.22,volume=0.8',
+    maxSec: 0.6,
+  },
+  {
+    id: 'impact', label: '撞击', desc: '低频重击，硬切/爆点收尾', group: '转场',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=70:duration=0.5'],
+    af: 'lowpass=f=220,afade=t=out:st=0.05:d=0.45,volume=1.0',
+    maxSec: 0.5,
+  },
+  {
+    id: 'transition_sweep', label: '掠过', desc: '窄带噪声快速掠过，适合快剪', group: '转场',
+    input: ['-f', 'lavfi', '-i', 'anoisesrc=d=0.3:c=white:a=0.55'],
+    af: 'bandpass=f=1800:width_type=h:w=2200,afade=t=in:st=0:d=0.04,afade=t=out:st=0.12:d=0.18,volume=0.7',
+    maxSec: 0.3,
+  },
 
   // ── 提示 ──
   {
@@ -65,6 +83,36 @@ export const SFX_LIBRARY: SfxItem[] = [
     af: 'asetrate=44100*0.85,aresample=44100,lowpass=f=900,afade=t=out:st=0.3:d=0.4,volume=0.6',
     maxSec: 0.7,
   },
+  {
+    id: 'success', label: '完成', desc: '轻快上扬，任务完成/达成', group: '提示',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=988:duration=0.5'],
+    af: 'vibrato=f=5:d=0.5,afade=t=out:st=0.12:d=0.35,volume=0.55',
+    maxSec: 0.5,
+  },
+  {
+    id: 'click', label: '点击', desc: '极短清脆，按钮/字幕出现', group: '提示',
+    input: ['-f', 'lavfi', '-i', 'anoisesrc=d=0.05:c=white:a=0.8'],
+    af: 'bandpass=f=3000:width_type=h:w=2500,afade=t=out:st=0:d=0.05,volume=0.6',
+    maxSec: 0.05,
+  },
+  {
+    id: 'pop', label: '气泡', desc: '短促弹开，贴纸/关键词弹出', group: '提示',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=420:duration=0.14'],
+    af: 'asetrate=44100*1.5,aresample=44100,afade=t=out:st=0.02:d=0.12,volume=0.6',
+    maxSec: 0.14,
+  },
+  {
+    id: 'coin', label: '金币', desc: '高频双颤，奖励/得分', group: '提示',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=1568:duration=0.4'],
+    af: 'vibrato=f=14:d=0.8,afade=t=out:st=0.1:d=0.3,volume=0.5',
+    maxSec: 0.4,
+  },
+  {
+    id: 'alert', label: '警报', desc: '重复脉冲，强提醒', group: '提示',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=660:duration=0.9'],
+    af: 'vibrato=f=7:d=1,afade=t=out:st=0.6:d=0.3,volume=0.6',
+    maxSec: 0.9,
+  },
 
   // ── 节奏 ──
   {
@@ -78,6 +126,30 @@ export const SFX_LIBRARY: SfxItem[] = [
     input: ['-f', 'lavfi', '-i', 'anoisesrc=d=0.06:c=white:a=0.7'],
     af: 'bandpass=f=2600:width_type=h:w=1200,afade=t=out:st=0:d=0.06,volume=0.5',
     maxSec: 0.06,
+  },
+  {
+    id: 'kick', label: '底鼓', desc: '短促低频鼓，卡点主力', group: '节奏',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=60:duration=0.22'],
+    af: 'lowpass=f=150,afade=t=out:st=0.02:d=0.2,volume=1.1',
+    maxSec: 0.22,
+  },
+  {
+    id: 'clap', label: '拍手', desc: '噪声拍手，节奏打点', group: '节奏',
+    input: ['-f', 'lavfi', '-i', 'anoisesrc=d=0.28:c=white:a=0.9'],
+    af: 'bandpass=f=1600:width_type=h:w=2600,afade=t=out:st=0.04:d=0.24,volume=0.7',
+    maxSec: 0.28,
+  },
+  {
+    id: 'shaker', label: '沙锤', desc: '高频沙沙，轻快律动', group: '节奏',
+    input: ['-f', 'lavfi', '-i', 'anoisesrc=d=0.12:c=white:a=0.6'],
+    af: 'highpass=f=5000,afade=t=out:st=0:d=0.12,volume=0.5',
+    maxSec: 0.12,
+  },
+  {
+    id: 'heartbeat', label: '心跳', desc: '两声低频搏动，紧张/悬疑', group: '节奏',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=55:duration=0.8'],
+    af: 'lowpass=f=120,vibrato=f=3:d=0.6,afade=t=out:st=0.5:d=0.3,volume=1.0',
+    maxSec: 0.8,
   },
 
   // ── 氛围 ──
@@ -97,6 +169,36 @@ export const SFX_LIBRARY: SfxItem[] = [
     id: 'wind', label: '风声', desc: '空旷外景氛围（10 秒循环）', group: '氛围',
     input: ['-f', 'lavfi', '-i', 'anoisesrc=d=10:c=brown:a=0.5'],
     af: 'lowpass=f=1200,highpass=f=120,vibrato=f=0.3:d=0.6,volume=0.45',
+    maxSec: 10,
+  },
+  {
+    id: 'rain', label: '雨声', desc: '连续雨幕，外景/情绪铺垫（10 秒循环）', group: '氛围',
+    input: ['-f', 'lavfi', '-i', 'anoisesrc=d=10:c=pink:a=0.4'],
+    af: 'highpass=f=400,lowpass=f=8000,volume=0.35',
+    maxSec: 10,
+  },
+  {
+    id: 'cafe', label: '室内人声底', desc: '低频人声嘈杂感，餐厅/咖啡馆氛围', group: '氛围',
+    input: ['-f', 'lavfi', '-i', 'anoisesrc=d=10:c=brown:a=0.4'],
+    af: 'lowpass=f=1500,highpass=f=200,vibrato=f=1.2:d=0.3,volume=0.28',
+    maxSec: 10,
+  },
+  {
+    id: 'hum', label: '电流嗡鸣', desc: '低频持续嗡声，机房/紧张感', group: '氛围',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=50:duration=10'],
+    af: 'lowpass=f=200,volume=0.22',
+    maxSec: 10,
+  },
+  {
+    id: 'space', label: '太空', desc: '极低频缓慢起伏，科幻/未知', group: '氛围',
+    input: ['-f', 'lavfi', '-i', 'sine=frequency=45:duration=10'],
+    af: 'vibrato=f=0.5:d=0.8,lowpass=f=180,volume=0.3',
+    maxSec: 10,
+  },
+  {
+    id: 'fire', label: '篝火', desc: '噼啪低频，温暖/野外', group: '氛围',
+    input: ['-f', 'lavfi', '-i', 'anoisesrc=d=10:c=brown:a=0.5'],
+    af: 'lowpass=f=900,tremolo=f=6:d=0.7,volume=0.3',
     maxSec: 10,
   },
 ];

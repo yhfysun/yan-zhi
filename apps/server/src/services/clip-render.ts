@@ -16,7 +16,7 @@
 import path from 'node:path';
 import { runCmd } from './exec-cmd.js';
 import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-style.js';
-import { MASK_KEYS, AUDIO_EFFECTS, effectFilter, buildPiecewiseExpr, overlayAnchorOf } from '@yan-zhi/shared';
+import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, overlayAnchorOf } from '@yan-zhi/shared';
 import { buildMaskFilter } from './clip-mask.js';
 import type { ClipProject, ClipSegment } from './clip-project.js';
 
@@ -122,7 +122,7 @@ function safeStem(s: string): string {
 }
 
 /** subtitles 滤镜路径转义（Windows 盘符冒号是 filtergraph 特殊字符）。 */
-function escFilterPath(p: string): string {
+export function escFilterPath(p: string): string {
   return p.replace(/\\/g, '/').replace(/:/g, '\\:');
 }
 
@@ -208,7 +208,21 @@ export function buildSegmentFilters(opts: {
   const mf = seg.mask ? buildMaskFilter(seg.mask, opts.keyFilterOf) : null;
   if (mf) filters.push(mf);
 
-  if (seg.colorPreset) filters.push(colorFilter(seg.colorPreset));
+  // ★★ 调色走效果库注册表（2026-10-21 修）：此处原有一份手写的 7 项 COLOR_PRESETS，
+  //   而 UI/工具侧能选 32 项 —— 选到不在那 7 项里的滤镜（黄昏/青橙/素描…）会**静默回退成"鲜艳"**，
+  //   用户只觉得"选什么都一个样"却查不出原因。注册表才是唯一真相源，缺项应当没有效果而不是错效果。
+  if (seg.colorPreset && seg.colorPreset !== 'none') {
+    const cf = effectFilter(seg.colorPreset, COLOR_EFFECTS);
+    if (cf) filters.push(cf);
+  }
+
+  // ★ 动态特效（FX）排在调色之后、淡入淡出之前：
+  //   先定色调再上结构类效果（扫描线/马赛克/残影），否则"调色"会把特效的纹理一起洗掉；
+  //   而 fade 必须最后 —— 它是整段黑场过渡，被特效再处理一遍就不均匀了。
+  if (seg.fx && seg.fx !== 'none') {
+    const fx = fxFilter(seg.fx, W, H);
+    if (fx) filters.push(fx);
+  }
   // 变速：对已统一的帧率做 setpts（必须在 scale 之后）
   const speed = isImage ? 1 : (seg.speed ?? 1);
   if (Math.abs(speed - 1) > 0.001) {
@@ -576,22 +590,8 @@ function atempoChain(factor: number): string {
   return parts.join(',');
 }
 
-const COLOR_PRESETS: Record<string, string> = {
-  warm: 'colorbalance=rs=.15:gs=.05:bs=-.10,eq=saturation=1.06',
-  cool: 'colorbalance=rs=-.08:bs=.15,eq=saturation=1.02',
-  bw: 'hue=s=0',
-  vintage: 'curves=vintage,eq=saturation=.85:contrast=1.05',
-  vivid: 'eq=saturation=1.35:contrast=1.08',
-  film: 'eq=contrast=1.10:saturation=.90:gamma=.96,noise=alls=6:allf=t',
-  fade: 'eq=brightness=.05:saturation=.75:contrast=.92',
-};
-
-function colorFilter(preset: string): string {
-  return COLOR_PRESETS[preset] || COLOR_PRESETS.vivid;
-}
-
 /** #RRGGBB → libass &HAABBGGRR&（字节序反转）。 */
-function hexToAss(v: string | undefined, fallback: string): string {
+export function hexToAss(v: string | undefined, fallback: string): string {
   const s = String(v || '').trim().replace(/^#/, '');
   if (!/^[0-9a-fA-F]{6}$/.test(s)) return fallback;
   const r = s.slice(0, 2), g = s.slice(2, 4), b = s.slice(4, 6);

@@ -11,6 +11,10 @@
  * ★ ffmpeg 层面"真能生成"由 tools/gen-sfx-verify.cjs 实跑核验（11/11 通过）。
  */
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { SFX_LIBRARY, sfxById } from '../src/services/sfx-library';
 
 describe('音效库 · 数据契约', () => {
@@ -86,4 +90,34 @@ describe('音效库 · 数据契约', () => {
       expect(s.maxSec, `${s.id} 节奏音太长`).toBeLessThanOrEqual(1);
     }
   });
+});
+
+/**
+ * ★★★ 实跑层（`YZ_LIVE_MEDIA=1` 才跑）：数据契约全对也说明不了滤镜链真的能跑。
+ *   实测踩过：`riser` 早期用 aeval 参数写错、aac 拒绝单声道 —— 都是"静态断言全绿、一跑就炸"。
+ *   一次跑完 25 条约 2s，值得每次改音效库时真验一遍。
+ */
+describe.skipIf(process.env.YZ_LIVE_MEDIA !== '1')('音效库 · 实跑生成', () => {
+  const FFMPEG = process.env.YZ_FFMPEG_BIN?.trim() ||
+    path.join(process.env.APPDATA || '', 'yan-zhi/server-data/ffmpeg/ffmpeg.exe');
+
+  it('每一项都能生成非空 m4a', () => {
+    const dir = path.join(os.tmpdir(), 'yz-sfx-verify');
+    fs.mkdirSync(dir, { recursive: true });
+    const bad: string[] = [];
+    for (const s of SFX_LIBRARY) {
+      const out = path.join(dir, `${s.id}.m4a`);
+      try {
+        execFileSync(FFMPEG, [
+          '-y', '-v', 'error', ...s.input, '-af', s.af, '-t', String(s.maxSec),
+          '-c:a', 'aac', '-ar', '44100', '-ac', '2', out,
+        ], { timeout: 60000 });
+        const size = fs.statSync(out).size;
+        if (size < 1000) bad.push(`${s.id}: 产物 ${size}B（太小，多半是损坏文件）`);
+      } catch (e) {
+        bad.push(`${s.id}: ${e instanceof Error ? e.message.slice(0, 160) : String(e)}`);
+      }
+    }
+    expect(bad, bad.join('\n')).toEqual([]);
+  }, 120000);
 });
