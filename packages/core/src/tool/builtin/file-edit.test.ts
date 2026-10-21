@@ -138,3 +138,112 @@ describe('file_edit 单 hunk 兼容（老用法）', () => {
     expect(text).toContain('edits');
   });
 });
+
+// 2026-10-21 实报（conv 9e9bcd12）：449 行文件上连续 5 次 old_string 未命中，
+// 唯一的反馈是「文件头 300 字符」⇒ 模型反复整读文件再猜。未命中必须指向落点。
+describe('file_edit 未命中反馈（指向落点）', () => {
+  it('回带行号的最接近片段，供模型照抄修正', async () => {
+    const files = new Map([[FILE, CONTENT]]);
+    const r = await run(files, {
+      path: FILE,
+      old_string: 'export function alpha() {\n  return 999;\n}',
+      new_string: 'export function alpha2() {}',
+    });
+    expect(r.isError).toBe(true);
+    const text = (r.content as Array<{ text: string }>)[0].text;
+    expect(text).toMatch(/最接近的片段在第 \d+-\d+ 行/);
+    expect(text).toContain('export function alpha() {');
+    expect(text).toContain('return 1;'); // 窗口里带着真实原文
+    expect(text).toContain('逐字照抄');
+    expect(text).not.toContain('File head preview'); // 旧的无效线索必须消失
+    expect(files.get(FILE)).toBe(CONTENT); // 仍然不落盘
+  });
+
+  it('找不到相近片段时引导 grep，而不是给一个错落点', async () => {
+    const files = new Map([[FILE, CONTENT]]);
+    const r = await run(files, {
+      path: FILE,
+      old_string: 'zzz qqq unrelated payload\nsecond line',
+      new_string: 'x',
+    });
+    expect(r.isError).toBe(true);
+    const text = (r.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain('找不到相近片段');
+    expect(text).toContain('file_grep');
+    expect(text).not.toMatch(/最接近的片段在第/);
+  });
+
+  it('提示行号按「已套用前几个 hunk 后」的内容计数', async () => {
+    const files = new Map([[FILE, CONTENT]]);
+    const r = await run(files, {
+      path: FILE,
+      edits: [
+        { old_string: 'export function alpha() {', new_string: 'export function alpha() {\n  // inserted' },
+        { old_string: 'export function beta() {\n  return 9999;\n}', new_string: 'x' },
+      ],
+    });
+    expect(r.isError).toBe(true);
+    const text = (r.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain('已套用前几个 hunk 后');
+  });
+});
+
+// 2026-10-21 用户要求「文件格式对齐 trae / codex / claude code」：
+// 三家生态的入参命名与补丁格式都认，别让模型按训练习惯发参数时被判"缺参/未命中"。
+describe('file_edit 格式兼容（trae / claude code / codex）', () => {
+  it('file_path 别名等价于 path（Claude Code / Codex 命名）', async () => {
+    const files = new Map([[FILE, CONTENT]]);
+    const r = await run(files, {
+      file_path: FILE,
+      old_string: 'export function beta() {',
+      new_string: 'export function beta(x: number) {',
+    });
+    expect(r.isError).toBeFalsy();
+    expect(files.get(FILE)).toContain('export function beta(x: number) {');
+  });
+
+  it('Trae / Cline 的 SEARCH/REPLACE 块（<<<<<<< 风格）', async () => {
+    const files = new Map([[FILE, CONTENT]]);
+    const block = [
+      '<<<<<<< SEARCH',
+      'export function beta() {',
+      '  return 2;',
+      '}',
+      '=======',
+      'export function beta() {',
+      '  return 22;',
+      '}',
+      '>>>>>>> REPLACE',
+    ].join('\n');
+    const r = await run(files, { path: FILE, search_replace: block });
+    expect(r.isError).toBeFalsy();
+    expect(files.get(FILE)).toContain('return 22;');
+    expect(files.get(FILE)).toContain('return 1;'); // 未涉及的 alpha 原样
+  });
+
+  it('Cline 的 ------- SEARCH / +++++++ REPLACE 写法也认', async () => {
+    const files = new Map([[FILE, CONTENT]]);
+    const block = ['------- SEARCH', '  return 1;', '=======', '  return 11;', '+++++++ REPLACE'].join('\n');
+    const r = await run(files, { file_path: FILE, diff: block });
+    expect(r.isError).toBeFalsy();
+    expect(files.get(FILE)).toContain('return 11;');
+  });
+
+  it('多块一次原子生效：任一块不匹配则整份不落盘', async () => {
+    const files = new Map([[FILE, CONTENT]]);
+    const okBlock = ['<<<<<<< SEARCH', '  return 1;', '=======', '  return 111;', '>>>>>>> REPLACE'].join('\n');
+    const badBlock = ['<<<<<<< SEARCH', 'THIS DOES NOT EXIST', '=======', 'x', '>>>>>>> REPLACE'].join('\n');
+    const r = await run(files, { path: FILE, search_replace: `${okBlock}\n${badBlock}` });
+    expect(r.isError).toBe(true);
+    expect(files.get(FILE)).toBe(CONTENT); // 原子：一个字都没写
+  });
+
+  it('块结构不完整 → 明确报错（不静默当成 old_string 去乱改）', async () => {
+    const files = new Map([[FILE, CONTENT]]);
+    const r = await run(files, { path: FILE, search_replace: '<<<<<<< SEARCH\n  return 1;\n' });
+    expect(r.isError).toBe(true);
+    const text = (r.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain('SEARCH/REPLACE');
+    expect(files.get(FILE)).toBe(CONTENT);
+  });
+});

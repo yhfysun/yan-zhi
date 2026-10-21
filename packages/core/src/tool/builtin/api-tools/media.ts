@@ -444,7 +444,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**kenburns** 静态图片做推拉运镜成视频 { image, duration, size, direction }；' +
         '**bgsound** 加背景音乐并压低原声 { video, audio, volume, duck, fadeOut }；' +
         '**volume** 音量调整 { media, db|factor }；' +
-        '**loudnorm** 响度归一 { media, target }（多段拼接后音量忽大忽小，用它拉平）。' +
+        '**loudnorm** 响度归一 { media, target }（多段拼接后音量忽大忽小，用它拉平）；' +
+        '**convert** 格式转换 { media, to }（图片 png/jpg/webp/bmp/tiff/gif；音频 mp3/wav/m4a/aac/flac/ogg；视频 mp4/mkv/mov/webm/avi；视频转音频即抽音轨，视频转图片取第一帧）。' +
         '输入一律为本机绝对路径（前序工具返回的 file 字段）；返回 {type, url, file}。未找到 ffmpeg 时会给出安装指引。',
       inputSchema: {
         type: 'object',
@@ -454,13 +455,17 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
             enum: [
               'trim', 'speed', 'snapshot', 'transform', 'fade',
               'color', 'transition', 'overlay', 'kenburns',
-              'bgsound', 'volume', 'loudnorm',
+              'bgsound', 'volume', 'loudnorm', 'audio_fx', 'convert',
             ],
             description: '加工操作（一次一个）',
           },
           video: { type: 'string', description: '主视频本机绝对路径（trim/speed/snapshot/transform/fade/color/transition/overlay/bgsound）' },
           video2: { type: 'string', description: 'transition：第二段视频本机绝对路径' },
-          media: { type: 'string', description: 'volume/loudnorm：音频或视频本机绝对路径' },
+          media: { type: 'string', description: 'volume/loudnorm/audio_fx/convert：音频或视频本机绝对路径' },
+          to: {
+            type: 'string',
+            description: 'convert：目标格式（不带点）。png/jpg/jpeg/webp/bmp/tiff/gif / mp3/wav/m4a/aac/flac/ogg / mp4/mkv/mov/webm/avi',
+          },
           image: { type: 'string', description: 'kenburns：静态图片本机绝对路径（png/jpg/webp/bmp）' },
           overlay: { type: 'string', description: 'overlay：叠加的图片/视频本机绝对路径（水印、贴图、画中画）' },
           audio: { type: 'string', description: 'bgsound：背景音乐本机绝对路径' },

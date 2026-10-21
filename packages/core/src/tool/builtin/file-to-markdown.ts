@@ -7,12 +7,17 @@ import { getPlatformAdapter } from '../../platform/types';
 import { extractDocxHtml, extractPdfPages, extractExcelSheets } from '../../preview';
 import { htmlToMarkdown } from './file-read';
 import { resolveToolPath } from './fs-walk';
+import { readPathArg } from './path-args';
 import { toolError } from '../result';
+import { decodeTextBytes } from '@yan-zhi/shared';
 
 const DOCX_EXTS = ['docx'];
 const EXCEL_EXTS = ['xlsx', 'xls'];
 const PPTX_EXTS = ['pptx'];
 const PDF_EXTS = ['pdf'];
+// 2026-10-21 扩面（用户要求「格式转换也要有」）：网页与分隔符表格也直接转 md
+const HTML_EXTS = ['html', 'htm', 'xhtml'];
+const DELIMITED_EXTS = ['csv', 'tsv'];
 const LEGACY_EXTS = ['doc', 'ppt', 'rtf'];
 const MD_TABLE_MAX_ROWS = 500;
 
@@ -89,6 +94,65 @@ async function pptxToMarkdown(b64: string): Promise<string> {
   return parts.join('\n');
 }
 
+/**
+ * HTML → Markdown：正文抽取后复用 htmlToMarkdown（与 file_read 同一套实现）。
+ * ★ 先去脚本/样式：网页 <script> 里的 JS 会污染正文，且体积巨大。
+ */
+function htmlFileToMarkdown(b64: string): string {
+  const html = decodeTextBytes(base64ToBytes(b64)).text;
+  const body = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  return htmlToMarkdown(body).trim() || '(未提取到正文)';
+}
+
+/** CSV / TSV → Markdown 表格（首行表头；支持双引号转义；超行数截断） */
+function delimitedToMarkdown(b64: string, sep: string): string {
+  const raw = decodeTextBytes(base64ToBytes(b64)).text;
+  const rows = parseDelimited(raw, sep);
+  if (!rows.length) return '(空表)';
+  const width = Math.max(...rows.map((r) => r.length));
+  const padded = rows.map((r) => r.concat(Array(width - r.length).fill('')));
+  const head = padded[0];
+  const body = padded.slice(1, MD_TABLE_MAX_ROWS + 1);
+  const lines = [
+    '| ' + head.map(escapeCell).join(' | ') + ' |',
+    '|' + Array(width).fill(' --- ').join('|') + '|',
+    ...body.map((r) => '| ' + r.map(escapeCell).join(' | ') + ' |'),
+  ];
+  if (padded.length - 1 > MD_TABLE_MAX_ROWS) {
+    lines.push(`\n[注意: 超过 ${MD_TABLE_MAX_ROWS} 行，已截断。]`);
+  }
+  return lines.join('\n');
+}
+
+/** 极简 CSV/TSV 解析（双引号内允许分隔符与换行；"" 表示一个引号） */
+function parseDelimited(text: string, sep: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { cell += '"'; i += 1; } else { quoted = false; }
+      } else {
+        cell += ch;
+      }
+      continue;
+    }
+    if (ch === '"') { quoted = true; continue; }
+    if (ch === sep) { row.push(cell); cell = ''; continue; }
+    if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; continue; }
+    if (ch === '\r') continue;
+    cell += ch;
+  }
+  if (cell.length || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter((r) => r.length > 1 || (r[0] ?? '').trim() !== '');
+}
+
 /** PDF → Markdown（分页文本，每页一节） */
 async function pdfToMarkdown(b64: string): Promise<string> {
   const { totalPages, pages } = await extractPdfPages(b64);
@@ -98,7 +162,7 @@ async function pdfToMarkdown(b64: string): Promise<string> {
 
 export class FileToMarkdownTool implements BuiltInTool {
   name = 'file_to_markdown';
-  description = '将办公文档转换为 Markdown 文件并返回 .md 路径。支持 .docx（标题/段落/表格/列表）、.xlsx/.xls（每个工作表一个 Markdown 表格）、.pptx（按幻灯片分节）、.pdf（分页文本）。转换后先用 file_read 读取 .md 内容，再用 file_grep 定位。旧格式 .doc/.ppt/.rtf 不支持，请另存为新格式。output 可指定 .md 输出路径，默认写到源文件同目录同名 .md（覆盖）。';
+  description = '将文档转换为 Markdown 文件并返回 .md 路径。支持 .docx（标题/段落/表格/列表）、.xlsx/.xls（每个工作表一个 Markdown 表格）、.pptx（按幻灯片分节）、.pdf（分页文本）、.html/.htm（正文转 md，自动去脚本样式）、.csv/.tsv（首行表头 → 管道表格）。转换后先用 file_read 读取 .md 内容，再用 file_grep 定位。旧格式 .doc/.ppt/.rtf 不支持，请另存为新格式。output 可指定 .md 输出路径，默认写到源文件同目录同名 .md（覆盖）。';
 
   inputSchema = {
     type: 'object',
@@ -118,7 +182,8 @@ export class FileToMarkdownTool implements BuiltInTool {
   async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
     const { fs } = getPlatformAdapter();
     // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
-    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    // 路径别名：path / file_path / filePath（Claude Code、Codex 命名）
+    const rawPath = readPathArg(args);
     if (!rawPath) {
       return toolError('Error: path is required');
     }
@@ -132,8 +197,9 @@ export class FileToMarkdownTool implements BuiltInTool {
     if (LEGACY_EXTS.includes(ext)) {
       return toolError(`Error: 不支持旧格式 .${ext}，请另存为 .${ext === 'rtf' ? 'docx' : ext + 'x'} 后再转换。`);
     }
-    if (!DOCX_EXTS.includes(ext) && !EXCEL_EXTS.includes(ext) && !PPTX_EXTS.includes(ext) && !PDF_EXTS.includes(ext)) {
-      return toolError(`Error: 不支持的格式 .${ext}。支持 docx/xlsx/xls/pptx/pdf；纯文本类文件直接用 file_read 读取即可。`);
+    if (!DOCX_EXTS.includes(ext) && !EXCEL_EXTS.includes(ext) && !PPTX_EXTS.includes(ext)
+      && !PDF_EXTS.includes(ext) && !HTML_EXTS.includes(ext) && !DELIMITED_EXTS.includes(ext)) {
+      return toolError(`Error: 不支持的格式 .${ext}。支持 docx/xlsx/xls/pptx/pdf/html/csv/tsv；纯文本类文件直接用 file_read 读取即可。`);
     }
 
     try {
@@ -145,6 +211,10 @@ export class FileToMarkdownTool implements BuiltInTool {
         md = await excelToMarkdown(b64);
       } else if (PPTX_EXTS.includes(ext)) {
         md = await pptxToMarkdown(b64);
+      } else if (HTML_EXTS.includes(ext)) {
+        md = htmlFileToMarkdown(b64);
+      } else if (DELIMITED_EXTS.includes(ext)) {
+        md = delimitedToMarkdown(b64, ext === 'tsv' ? '\t' : ',');
       } else {
         md = await pdfToMarkdown(b64);
       }

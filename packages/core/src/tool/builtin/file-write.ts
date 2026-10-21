@@ -2,6 +2,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { resolveToolPath } from './fs-walk';
+import { readPathArg } from './path-args';
 import { toolError } from '../result';
 
 /**
@@ -55,6 +56,10 @@ export class FileWriteTool implements BuiltInTool {
         description:
           '文件分类，必须正确选择：deliverable=最终交付给用户的成果（报告、最终文档、生成的源代码、导出数据、图片成品等用户会直接使用或保存的文件）；intermediate=过程性中间产物（调试输出、临时草稿、中间计算结果、将被后续步骤覆盖或删除的临时文件）。凡用户最终想要的结果文件必须显式传 deliverable，不要省略该参数，也不要把交付物误标为 intermediate。',
       },
+      file_path: {
+        type: 'string',
+        description: '`path` 的别名（Claude Code / Codex 的 file_path 命名），二者等价。',
+      },
       path: {
         type: 'string',
         description:
@@ -75,7 +80,8 @@ export class FileWriteTool implements BuiltInTool {
       return toolError('Error: content is required');
     }
 
-    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    // 路径参数兼容 path / file_path / filePath（Claude Code、Codex 用 file_path）
+    const rawPath = readPathArg(args);
     const rawName = typeof args.file_name === 'string' ? args.file_name.trim() : '';
 
     // 文件名：优先 file_name；模型若仍按旧习惯传了 path，则取其 basename 当名字。

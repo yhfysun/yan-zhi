@@ -11,6 +11,7 @@ import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { resolveToolPath } from './fs-walk';
+import { readPathArg } from './path-args';
 import { applyHunksToContent, parseApplyPatch, summarizeOp, type PatchOp } from './apply-patch';
 import { toolError } from '../result';
 
@@ -43,6 +44,65 @@ function findFuzzyMatches(lines: string[], oldLines: string[]): number[] {
     if (match) hits.push(start);
   }
   return hits;
+}
+
+/** 字符二元组 Dice 系数（0..1），只用于"哪一行最像"，不参与是否命中的判定 */
+function diceCoefficient(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
+  const grams = (s: string) => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const g = s.slice(i, i + 2);
+      m.set(g, (m.get(g) || 0) + 1);
+    }
+    return m;
+  };
+  const ga = grams(a);
+  const gb = grams(b);
+  let overlap = 0;
+  for (const [g, n] of ga) overlap += Math.min(n, gb.get(g) || 0);
+  return (2 * overlap) / (a.length - 1 + b.length - 1);
+}
+
+/**
+ * 未命中时定位"最接近的片段"，供模型**照抄**修正 old_string。
+ *
+ * ★★★ 为什么需要（2026-10-21 实报，conv 9e9bcd12）：模型在 449 行的 `home_page.dart` 上
+ *   连续 5 次 file_edit 全部「old_string 未命中」，每次拿到的唯一线索是**文件头 300 字符**
+ *   （全是 import），于是它反复整读 449 行文件、再猜一次 ⇒ 6 分钟、25 步全耗在原地，
+ *   最后用户手动终止。判据：未命中反馈必须**指向落点**，否则模型只能靠重读+猜。
+ *   ⇒ 用 old_string 里最长的一行做锚点，二分查最相似行，回一段带行号的原文窗口。
+ * 命中率低于 0.5 视为无相近片段（宁可不给，也不能给错落点）。
+ */
+function findNearestRegion(
+  lines: string[],
+  oldLines: string[],
+): { startLine: number; endLine: number; text: string; score: number } | null {
+  const anchors = oldLines
+    .map((l) => l.trim())
+    .filter((l) => l.length >= 3)
+    .sort((a, b) => b.length - a.length);
+  const anchor = anchors[0];
+  if (!anchor) return null;
+
+  let bestIdx = -1;
+  let bestScore = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const score = diceCoefficient(lines[i].trim(), anchor);
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
+  }
+  if (bestIdx < 0 || bestScore < 0.5) return null;
+
+  const start = Math.max(0, bestIdx - 2);
+  const end = Math.min(lines.length, bestIdx + Math.max(oldLines.length, 3) + 2);
+  return {
+    startLine: start + 1,
+    endLine: end,
+    text: lines.slice(start, end).join('\n'),
+    score: bestScore,
+  };
 }
 
 /** 单个 hunk 的替换：先精确（LF 规范空间），失败后模糊回退 */
@@ -84,8 +144,68 @@ function applyEdit(norm: string, spec: EditSpec): ApplyResult {
   return { ok: true, text: lines.join('\n'), count: targets.length, strategy: 'whitespace-tolerant' };
 }
 
+/**
+ * Trae / Cline 的 **SEARCH/REPLACE 块** 解析（2026-10-21 对齐三家格式）。
+ *
+ * 格式（两家写法都认）：
+ *   <<<<<<< SEARCH        |  ------- SEARCH
+ *   原文逐行               |  原文逐行
+ *   =======               |  =======
+ *   新文逐行               |  新文逐行
+ *   >>>>>>> REPLACE       |  +++++++ REPLACE
+ *
+ * ★ 为什么支持：模型在 Trae / Cline 里训练出的编辑习惯就是发这种块，而本仓原实现只认
+ *   `edits` 数组与 apply_patch —— 参数名/格式对不上时模型会把整块当成 old_string，
+ *   必然"未命中"，然后陷入重试。
+ */
+const SR_START = /^(?:<{5,}\s*SEARCH|-{5,}\s*SEARCH)$/i;
+const SR_MID = /^={5,}$/;
+const SR_END = /^(?:>{5,}\s*REPLACE|\+{5,}\s*REPLACE)$/i;
+
+function parseSearchReplaceBlocks(text: string): EditSpec[] {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const specs: EditSpec[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!SR_START.test(lines[i].trim())) { i += 1; continue; }
+    i += 1;
+    const oldLines: string[] = [];
+    while (i < lines.length && !SR_MID.test(lines[i].trim()) && !SR_END.test(lines[i].trim())) {
+      oldLines.push(lines[i]);
+      i += 1;
+    }
+    if (i >= lines.length || !SR_MID.test(lines[i].trim())) break; // 结构不完整 → 交给调用方报错
+    i += 1;
+    const newLines: string[] = [];
+    while (i < lines.length && !SR_END.test(lines[i].trim())) {
+      newLines.push(lines[i]);
+      i += 1;
+    }
+    i += 1; // 跳过结束标记
+    const oldText = oldLines.join('\n');
+    if (!oldText.trim()) continue; // 空 SEARCH 段无意义
+    specs.push({ old: oldText, new: newLines.join('\n'), replaceAll: false });
+  }
+  return specs;
+}
+
 /** 解析入参成 EditSpec 列表：优先 edits 数组（multi-hunk），兼容单 old_string/new_string */
 function parseEditSpecs(args: Record<string, unknown>): { specs: EditSpec[]; error?: string } {
+  // ① Trae / Cline 的 SEARCH/REPLACE 块（可能是 edits 字符串、diff 或 search_replace 字段）
+  const blockSource = typeof args.search_replace === 'string' ? args.search_replace
+    : typeof args.diff === 'string' ? args.diff
+      : typeof args.edits === 'string' ? args.edits
+        : '';
+  if (blockSource && /(?:<<<<<<<|-------)\s*SEARCH/i.test(blockSource)) {
+    const specs = parseSearchReplaceBlocks(blockSource);
+    if (!specs.length) {
+      return {
+        specs: [],
+        error: 'SEARCH/REPLACE 块解析失败：结构应为「<<<<<<< SEARCH / ======= / >>>>>>> REPLACE」（或 Cline 的 ------- / +++++++），且 SEARCH 段不能为空。',
+      };
+    }
+    return { specs };
+  }
   if (Array.isArray(args.edits)) {
     const specs: EditSpec[] = [];
     for (let i = 0; i < args.edits.length; i++) {
@@ -111,7 +231,7 @@ function parseEditSpecs(args: Record<string, unknown>): { specs: EditSpec[]; err
 
 export class FileEditTool implements BuiltInTool {
   name = 'file_edit';
-  description = '对已有文件做局部编辑。两种用法：① 传 patch（apply_patch 补丁文本）——**多文件或多处改动优先用它**：按行上下文定位，不需要复述整段原文，也不会因 old_string 过短而撞上"多处命中"；一个补丁跨文件原子生效（任一失败则全不落盘）。② 传 old_string/new_string 或 edits 数组——单处小改时用，old_string 需与文件内容一致且唯一（行尾空白差异自动容忍）。新建文件用 file_write（或用补丁的 *** Add File）。';
+  description = '对已有文件做局部编辑。两种用法：① 传 patch（apply_patch 补丁文本）——**多文件或多处改动优先用它**：按行上下文定位，不需要复述整段原文，也不会因 old_string 过短而撞上"多处命中"；一个补丁跨文件原子生效（任一失败则全不落盘）。② 传 old_string/new_string 或 edits 数组——单处小改时用，old_string 需与文件内容一致且唯一（行尾空白差异自动容忍）。③ 传 search_replace——Trae/Cline 的 SEARCH/REPLACE 块文本（<<<<<<< SEARCH / ======= / >>>>>>> REPLACE），多块原子生效。路径参数可用 path 或 file_path（Claude Code / Codex 命名）。新建文件用 file_write（或用补丁的 *** Add File）。';
 
   inputSchema = {
     type: 'object',
@@ -135,7 +255,11 @@ export class FileEditTool implements BuiltInTool {
       },
       path: {
         type: 'string',
-        description: 'The file to edit (absolute or relative path). Must already exist — use file_write to create new files. 传 patch 时不需要它（路径写在段头里）。',
+        description: 'The file to edit (absolute or relative path). Must already exist — use file_write to create new files. 传 patch 时不需要它（路径写在段头里）。也接受 file_path（Claude Code / Codex 命名）。',
+      },
+      file_path: {
+        type: 'string',
+        description: '`path` 的别名（Claude Code / Codex 的 file_path 命名），二者等价。',
       },
       old_string: {
         type: 'string',
@@ -144,6 +268,18 @@ export class FileEditTool implements BuiltInTool {
       new_string: {
         type: 'string',
         description: 'The replacement text. Use empty string to delete the matched text.',
+      },
+      search_replace: {
+        type: 'string',
+        description: [
+          'Trae / Cline 的 SEARCH/REPLACE 块文本（与 edits 等价，用它更省 token）：',
+          '<<<<<<< SEARCH',
+          '原文（逐字，含缩进）',
+          '=======',
+          '新文',
+          '>>>>>>> REPLACE',
+          '可连续写多块，一次调用全部原子生效。',
+        ].join('\n'),
       },
       edits: {
         type: 'array',
@@ -181,7 +317,8 @@ export class FileEditTool implements BuiltInTool {
     }
 
     // ★★ 必填校验看**原始入参**（先校验再解析，理由见 file-read.ts 同处注释）
-    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    // 路径参数兼容 path / file_path / filePath（Claude Code、Codex 用 file_path）
+    const rawPath = readPathArg(args);
     if (!rawPath) {
       return toolError('Error: path is required（或改用 patch 模式，把路径写在 "*** Update File:" 段头里）');
     }
@@ -219,9 +356,19 @@ export class FileEditTool implements BuiltInTool {
       const spec: EditSpec = { ...specs[i], old: specs[i].old.replace(/\r\n/g, '\n'), new: specs[i].new.replace(/\r\n/g, '\n') };
       const r = applyEdit(work, spec);
       if (!r.ok) {
-        const preview = fileNorm.slice(0, 300);
         const done = i > 0 ? `（前 ${i} 个 hunk 已在内存中匹配成功，但**未落盘** —— 本调用原子生效）` : '';
-        return toolError(`Error: edit ${i + 1}/${specs.length} failed: ${r.error}. ${done}\nRe-read the file (or use file_grep to locate the region) and copy old_string verbatim.\nFile head preview:\n${preview}`);
+        const where = i > 0 ? '（行号按「已套用前几个 hunk 后」的内容计）' : '';
+        const near = findNearestRegion(work.split('\n'), spec.old.split('\n'));
+        const hint = near
+          ? `\n最接近的片段在第 ${near.startLine}-${near.endLine} 行${where}（相似度 ${near.score.toFixed(2)}）：\n` +
+            `---8<---\n${near.text}\n--->8---\n` +
+            `请**逐字照抄**上面这段原文作为 old_string（不要凭记忆重写，也不要只改其中一行）。`
+          : `\n文件里找不到相近片段${where}：先用 file_grep 搜关键字定位，再按 offset/limit 读那一段；` +
+            `若目标文本已不存在，改用 file_write 或 patch。`;
+        return toolError(
+          `Error: edit ${i + 1}/${specs.length} failed: ${r.error}. ${done}${hint}\n` +
+          `不要拿同一个 old_string 再试一次（相同输入必然再次失败）。`,
+        );
       }
       work = r.text;
       totalReplaced += r.count;

@@ -2200,7 +2200,38 @@ const MEDIA_EDIT_OPS = [
   'bgsound', 'volume', 'loudnorm',
   // 音频效果（降噪/变声/混响/电话音等，走效果库 AUDIO_EFFECTS）
   'audio_fx',
+  // 格式转换（图片/音频/视频互转，含视频抽音频）—— 2026-10-21 用户要求「格式转换也要有」
+  'convert',
 ] as const;
+
+/**
+ * 格式转换目标表（2026-10-21）。
+ * ★ 全表只有这一份：核心 schema 的 enum、参数校验、ffmpeg 参数都从这里取，
+ *   避免"三处各写一份编码参数"（本仓吃过多次清单漂移的亏）。
+ */
+const CONVERT_TARGETS: Record<string, { kind: 'images' | 'audios' | 'videos'; ext: string; args: string[] }> = {
+  // 图片
+  png: { kind: 'images', ext: '.png', args: ['-c:v', 'png'] },
+  jpg: { kind: 'images', ext: '.jpg', args: ['-c:v', 'mjpeg', '-q:v', '2'] },
+  jpeg: { kind: 'images', ext: '.jpg', args: ['-c:v', 'mjpeg', '-q:v', '2'] },
+  webp: { kind: 'images', ext: '.webp', args: ['-c:v', 'libwebp', '-q:v', '80'] },
+  bmp: { kind: 'images', ext: '.bmp', args: ['-c:v', 'bmp'] },
+  tiff: { kind: 'images', ext: '.tiff', args: ['-c:v', 'tiff'] },
+  gif: { kind: 'images', ext: '.gif', args: ['-c:v', 'gif'] },
+  // 音频
+  mp3: { kind: 'audios', ext: '.mp3', args: ['-vn', '-c:a', 'libmp3lame', '-q:a', '2'] },
+  wav: { kind: 'audios', ext: '.wav', args: ['-vn', '-c:a', 'pcm_s16le'] },
+  m4a: { kind: 'audios', ext: '.m4a', args: ['-vn', '-c:a', 'aac', '-b:a', '192k'] },
+  aac: { kind: 'audios', ext: '.aac', args: ['-vn', '-c:a', 'aac', '-b:a', '192k'] },
+  flac: { kind: 'audios', ext: '.flac', args: ['-vn', '-c:a', 'flac'] },
+  ogg: { kind: 'audios', ext: '.ogg', args: ['-vn', '-c:a', 'libvorbis', '-q:a', '5'] },
+  // 视频
+  mp4: { kind: 'videos', ext: '.mp4', args: ['-c:v', 'libx264', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart'] },
+  mkv: { kind: 'videos', ext: '.mkv', args: ['-c:v', 'libx264', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac'] },
+  mov: { kind: 'videos', ext: '.mov', args: ['-c:v', 'libx264', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart'] },
+  webm: { kind: 'videos', ext: '.webm', args: ['-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-c:a', 'libopus'] },
+  avi: { kind: 'videos', ext: '.avi', args: ['-c:v', 'mpeg4', '-q:v', '5', '-c:a', 'libmp3lame'] },
+};
 
 // 效果库（滤镜/转场/文字动画/音效）来自 services/clip-effects.ts 的**单一真相源**；
 // 此处不再维护第二份清单（此前 COLOR_PRESETS / XFADE_TYPES 与 schema enum 三处各一份，必然漂移）。
@@ -2545,6 +2576,42 @@ async function mediaEdit(
       r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
       if (!r.ok) return fail(`响度归一失败：${r.stderr}`);
       note = `响度已归一到 I=${i} LUFS / TP=${tp} dBTP`;
+    } else if (op === 'convert') {
+      // 格式转换：图片/音频/视频互转；视频 → 音频即"抽音轨"
+      const srcArg = args.media ?? args.video ?? args.image ?? args.audio;
+      const src = requireLocalFile(srcArg, 'media（媒体文件）');
+      if (!src.ok) return fail(src.error);
+      const toRaw = str(args, 'to').trim().toLowerCase().replace(/^\./, '');
+      const target = CONVERT_TARGETS[toRaw];
+      if (!target) {
+        return fail(`不支持的目标格式 "${toRaw || '(空)'}"。可用：${Object.keys(CONVERT_TARGETS).join(' / ')}`);
+      }
+      const srcIsVideo = VIDEO_EXT.test(src.file);
+      const srcIsImage = /\.(png|jpe?g|webp|bmp|tiff?|gif)$/i.test(src.file);
+      if (target.kind === 'videos' && !srcIsVideo && !srcIsImage) {
+        return fail('目标为视频时，源必须是视频或图片（音频无法转成视频）');
+      }
+      if (target.kind === 'images' && !srcIsImage && !srcIsVideo) {
+        return fail('目标为图片时，源必须是图片或视频（视频会取第一帧）');
+      }
+      // 视频 → 音频（抽音轨）：源没有音轨时 ffmpeg 只会报"Output file does not contain any stream"，
+      // 对着这句报错用户根本猜不到原因，这里先探一次给出人话
+      if (target.kind === 'audios' && srcIsVideo) {
+        const info = await probeMedia(ff.ffprobe, src.file);
+        if (!info.hasAudio) return fail('该视频没有音轨，无法提取音频（转 mp3/wav 需要源文件本身带声音）');
+      }
+      out = await mkOut(target.kind, target.ext);
+      const cmd = ['-y'];
+      // 视频 → 单帧图片：只取第一帧，否则 ffmpeg 会把整段视频写成多张图（覆盖同一个文件名）
+      if (target.kind === 'images' && srcIsVideo && !srcIsImage) cmd.push('-i', src.file, '-frames:v', '1');
+      else cmd.push('-i', src.file);
+      cmd.push(...target.args);
+      // 图片转图片不需要音轨相关参数（-vn 已在音频目标里）
+      if (target.kind === 'images') cmd.push('-an');
+      cmd.push(out.file);
+      r = await runFfmpeg(ff.ffmpeg, cmd, 900000);
+      if (!r.ok) return fail(`格式转换失败（${path.extname(src.file)} → .${toRaw}）：${r.stderr}`);
+      note = `${path.basename(src.file)} → ${path.basename(out.file)}`;
     } else if (op === 'audio_fx') {
       // 音频效果：降噪 / 变声 / 混响 / 电话音 / 收音机 —— 走效果库 AUDIO_EFFECTS
       const m = requireLocalFile(args.media, 'media');
@@ -2573,10 +2640,11 @@ async function mediaEdit(
     }
 
     const st = await stat(out.file);
-    const isImage = /\.(jpe?g|png|webp)$/i.test(out.file);
+    const isImage = /\.(jpe?g|png|webp|bmp|tiff?|gif)$/i.test(out.file);
+    const isAudio = /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(out.file);
     return ok(JSON.stringify({
       ok: true,
-      type: isImage ? 'image' : 'video',
+      type: isImage ? 'image' : isAudio ? 'audio' : 'video',
       engine: 'ffmpeg', op, source: ff.source,
       url: `${out.tg.urlBase}/${path.basename(out.file)}`,
       file: out.file, bytes: st.size,

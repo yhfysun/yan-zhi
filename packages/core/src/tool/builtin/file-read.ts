@@ -3,6 +3,7 @@ import type { McpCallResult } from '../../mcp/client';
 import { getPlatformAdapter } from '../../platform/types';
 import { decodeTextBytesAs, base64ToBytes } from '@yan-zhi/shared';
 import { resolveToolPath } from './fs-walk';
+import { readPathArg } from './path-args';
 import { toolError } from '../result';
 
 const EXCEL_EXTENSIONS = ['xlsx', 'xls', 'csv'];
@@ -86,7 +87,11 @@ export class FileReadTool implements BuiltInTool {
     properties: {
       path: {
         type: 'string',
-        description: 'The absolute or relative path to the file to read.',
+        description: 'The absolute or relative path to the file to read. 也接受 file_path（Claude Code / Codex 命名）。',
+      },
+      file_path: {
+        type: 'string',
+        description: '`path` 的别名（Claude Code / Codex 的 file_path），二者等价。',
       },
       encoding: {
         type: 'string',
@@ -123,7 +128,8 @@ export class FileReadTool implements BuiltInTool {
     // ★★★ 必填校验必须看**原始入参**（2026-09-30）：`resolveToolPath('')` 会返回工作目录根，
     //   若先解析再判空 → "没给 path" 被变成 "读工作目录" → `required:['path']` 静默失效。
     //   （这正是本项目反复踩的"校验对象被上游改写"同类问题：**先校验原值，再解析**。）
-    const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
+    // 路径参数兼容 path / file_path / filePath（Claude Code、Codex 用 file_path）
+    const rawPath = readPathArg(args);
     if (!rawPath) {
       return toolError('Error: path is required');
     }
@@ -169,7 +175,9 @@ export class FileReadTool implements BuiltInTool {
         const asEnc = decodeTextBytesAs(base64ToBytes(b64), enc);
         // 不认识的编码名 → 明确报错，不静默按 UTF-8 读（否则又是"看着成功实则是乱码"）
         if (asEnc === null) {
-          return toolError(`Error: 不支持的编码 "${args.encoding}"（可选 auto/utf-8/gbk/gb18030/gb2312/utf-16le/utf-16be/base64）`);
+          return toolError(
+            `Error: 不支持的编码 "${args.encoding}"。可选：auto / base64 / utf-8 / utf-16le / utf-16be / gbk(gb18030/gb2312) / big5 / shift_jis / euc-jp / euc-kr / windows-125x / iso-8859-x / koi8-r / macintosh …`,
+          );
         }
         content = asEnc;
       } else {
