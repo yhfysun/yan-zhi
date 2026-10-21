@@ -92,6 +92,11 @@
                 <span class="shop-conn-meta">{{ platformLabel(row.platform) }}<template v-if="row.site"> · {{ row.site }}</template></span>
               </template>
             </el-table-column>
+            <el-table-column v-if="k.kind === 'store'" label="核心指标" min-width="340">
+              <template #default="{ row }">
+                <span :class="{ 'shop-na': !snapshotOf(row) }">{{ kpiSummary(row) }}</span>
+              </template>
+            </el-table-column>
             <el-table-column
               v-for="col in tabColumns(k.kind)"
               :key="col.label"
@@ -516,14 +521,16 @@ function snapshotOf(c: { demo?: boolean; shopName: string }) {
 function kpiOf(c: { demo?: boolean; shopName: string }, label: string): string {
   return snapshotOf(c)?.kpis.find((k) => k.label === label)?.value || '—';
 }
+/** 把该连接自己的 KPI 压成一行（店铺类平台指标差异大，固定列会全是 —） */
+function kpiSummary(c: { demo?: boolean; shopName: string }): string {
+  const s = snapshotOf(c);
+  return s ? s.kpis.map((k) => `${k.label} ${k.value}`).join(' · ') : '—（未接入数据）';
+}
 /** 三个页签各自展示哪些经营指标（列名与快照 KPI 同名） */
 const TAB_COLUMNS: Record<ShopKind, Array<{ label: string; kpi: string }>> = {
-  store: [
-    { label: '今日销售额', kpi: '今日销售额' },
-    { label: '订单', kpi: '订单数' },
-    { label: '转化率', kpi: '转化率' },
-    { label: 'ACoS', kpi: '广告 ACoS' },
-  ],
+  // 店铺类平台的指标差异大（亚马逊看 ACoS、1688 看起订量、拼多多看价格力），
+  // 固定列只会全是「—」。店铺页签改为单列「核心指标」，按该连接自己的快照渲染。
+  store: [],
   warehouse: [
     { label: '在仓', kpi: '在仓库存' },
     { label: '在途', kpi: '在途库存' },
@@ -885,9 +892,9 @@ onMounted(async () => {
 .shop-empty-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; }
 .shop-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; gap: 6px; position: relative; }
 .shop-work { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
-/* ★ 不能写 height:100%：el-tabs 会把内容裁在内部（.el-tabs__content 默认 overflow:hidden），
-   页签内容一超长就既看不全也滚不动。改成 min-height 让内容自然增高，滚动交给 .shop-work。 */
-.shop-tabs { min-height: 100%; }
+/* ★ 页签按内容高度：详情卡已经是页签的**兄弟节点**，再写 min-height:100% 会把详情卡
+   顶到整屏之外，中间留一大块空白。 */
+.shop-tabs { min-height: 0; }
 
 /* ===== 常驻 AI 对话栏 =====
    human：工作台占主区、对话固定宽在右；ai：工作台收起、对话占主区（LeadToggle 切换）。 */
