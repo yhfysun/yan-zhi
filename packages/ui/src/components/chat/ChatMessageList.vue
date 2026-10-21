@@ -378,6 +378,14 @@
       </div>
     </template>
 
+    <!-- 任务结束后的「本次改了哪些文件」汇总（trae 式 review）：跑的过程中不显示，
+         结束后按会话聚合 pending 快照，可逐文件看 diff、保留或撤销。 -->
+    <ChatTaskChangeSummary
+      v-if="store.currentConvId"
+      :conversation-id="store.currentConvId"
+      :streaming="store.streaming"
+    />
+
     <!-- 工作流模式专属空态：办公模式的场景轮播欢迎卡是「白底大卡 + 三张场景卡」，
          塞进工作流模式 352px 的对话窄栏会又白又挤（深色主题下尤其刺眼）。
          这里给一份窄栏友好的极简引导，与「开发模式专属空态」同一思路。 -->
@@ -649,6 +657,7 @@ import MediaContextMenu from '../media/MediaContextMenu.vue';
 import MediaHoverFloat from '../media/MediaHoverFloat.vue';
 import ToolMediaPreview from './ToolMediaPreview.vue';
 import ChatFileChangeCard from './ChatFileChangeCard.vue';
+import ChatTaskChangeSummary from './ChatTaskChangeSummary.vue';
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 
 const {

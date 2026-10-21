@@ -41,7 +41,7 @@ import { serverState } from './state.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks, runBeforeToolHooks } from './services/tool-hooks.js';
 // 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
-import { checkToolLoop, FORCE_STOP_MARKER, neutralizeForceStopMarker } from './services/tool-loop-guard.js';
+import { checkToolLoop, FORCE_STOP_MARKER, neutralizeForceStopMarker, noteToolOutcome } from './services/tool-loop-guard.js';
 // ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
 //   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
 import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode, isBridgeTransportError } from './browser-bridge.js';
@@ -5488,6 +5488,13 @@ async function executeTool(
     setBrowserToolConversationId(task.conversationId);
     const r = await registry.execute(toolName, args, toolCtx);
     let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
+    // ★ C 线（2026-10-21）：连续失败提醒 —— A 线（同参重复）/B 线（严格连续同工具）都抓不到
+    //   「一直失败但每次换参数」的形态（实测 file_edit 5 次未命中、中间夹 file_read）。
+    //   判定用**结构化 isError**，退回文本前缀兜底；只提示不硬停（失败是可自救的）。
+    const failedResult = (r as any)?.isError === true
+      || /^(Error|工具执行失败)/.test(String(text).trim());
+    const failNudge = noteToolOutcome(task, toolName, !failedResult);
+    if (failNudge) text = `${text}\n\n${failNudge}`;
     const meta = (r as any)?._meta as {
       path?: string;
       beforeContent?: string | null;

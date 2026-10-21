@@ -65,6 +65,55 @@ export const TOOL_BLOCK_TASK_LIMIT = 8;
 export const FORCE_STOP_MARKER = '[FORCE_STOP]';
 
 /**
+ * 同一工具「连续失败」阈值（2026-10-21 新增 C 线）。
+ *
+ * ★★★ 为什么需要（实测 conv 9e9bcd12，2026-10-21）：模型在 449 行的 `home_page.dart` 上
+ *   连做 5 次 `file_edit`，**每次 old_string 都不一样** —— A 线（同参重复）判不出来；
+ *   中间还夹着 `file_read` 换上下文 ⇒ B 线（严格连续 8 次）也够不到。
+ *   结果 6 分钟、25 步全耗在「改不中 → 整读文件 → 再猜一次」，用户只能手动终止。
+ *   ⇒ 补一条**只看结果**的线：同一工具连续失败（不论参数）到本阈值就明确告知
+ *   「方法错了，换策略」，而不是继续把同样的错误回灌给模型自我强化。
+ *   阈值 3：正常任务偶发一次失败（瞬断/路径写错）不该被念；连续 3 次同工具失败才是死循环。
+ */
+export const TOOL_FAIL_STREAK_LIMIT = 3;
+
+/** 每任务、每工具的**连续失败次数**（成功即清零） */
+const taskFailStreak = new WeakMap<object, Map<string, number>>();
+
+/** 观测用：当前连续失败次数 */
+export function toolFailStreak(task: object, toolName: string): number {
+  return taskFailStreak.get(task)?.get(toolName) || 0;
+}
+
+/**
+ * 记录一次工具执行结果，连续失败达阈值时返回**给模型看的改策略提示**（否则 null）。
+ * ★ 只提示、不硬停：失败是模型能自救的场景（换工具/照抄原文），硬停会把可完成的任务掐死；
+ *   真失控由 A/B 线以及任务级超时兜底。
+ */
+export function noteToolOutcome(task: object, toolName: string, ok: boolean): string | null {
+  const m = taskFailStreak.get(task) || new Map<string, number>();
+  if (ok) {
+    if (m.has(toolName)) {
+      m.delete(toolName);
+      taskFailStreak.set(task, m);
+    }
+    return null;
+  }
+  const n = (m.get(toolName) || 0) + 1;
+  m.set(toolName, n);
+  taskFailStreak.set(task, m);
+  if (n < TOOL_FAIL_STREAK_LIMIT) return null;
+
+  const advice = toolName === 'file_edit' || toolName === 'file_write'
+    ? '工具结果里已经给了「最接近的片段/行号」时，**逐字照抄**它作为 old_string；' +
+      '拿不到就先用 file_grep 定位、再按 offset/limit 读那一段；' +
+      '改动面大或目标文本已不存在时，改用 patch（apply_patch）或 file_write 整文件重写。'
+    : '换一个工具或换一条路径完成同一目标（先读取事实再动手），不要再调整参数重发同一调用。';
+  return `⛔ ${toolName} 已连续失败 ${n} 次（参数不同也算）——这是「方法错了」的信号，不是「再试一次」的信号。` +
+    `\n请立刻换策略：${advice}\n若确实做不到，直接向用户说明卡在哪里、已经排除了什么。`;
+}
+
+/**
  * 把**文本中提到**的 FORCE_STOP 标记改写成无害文案（回传子智能体报告前用）。
  *
  * ★★★ 为什么必须去毒（2026-10-14 实报，high）：子智能体的收尾报告**必然**会引用它收到的

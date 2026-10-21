@@ -9,6 +9,7 @@ import path from 'node:path';
 import {
   checkToolLoop, toolCallKey, TOOL_CONSEC_LIMIT, TOOL_DUP_LIMIT,
   FORCE_STOP_MARKER, neutralizeForceStopMarker,
+  noteToolOutcome, toolFailStreak, TOOL_FAIL_STREAK_LIMIT,
 } from '../src/services/tool-loop-guard.js';
 
 describe('tool-loop-guard 防失控循环闸门', () => {
@@ -335,5 +336,57 @@ describe('任务级累计硬停（跨放行清零）', () => {
 
     // Assert
     expect(other).toBe(0);
+  });
+});
+
+/**
+ * C 线：连续失败提醒（2026-10-21 实报 conv 9e9bcd12）。
+ * 形态：file_edit 连续 5 次 old_string 未命中，**每次参数都不同**，中间还夹着 file_read ——
+ * A 线（同参重复）与 B 线（严格连续 8 次同工具）都判不出来，25 步全耗在原地。
+ */
+describe('C 线：连续失败提示（noteToolOutcome）', () => {
+  it('前两次失败不打扰（瞬断/路径写错属正常）', () => {
+    const task = {};
+    expect(noteToolOutcome(task, 'file_edit', false)).toBeNull();
+    expect(noteToolOutcome(task, 'file_edit', false)).toBeNull();
+    expect(toolFailStreak(task, 'file_edit')).toBe(2);
+  });
+
+  it('第三次连续失败 → 明确要求换策略，并给出 file_edit 的替代路径', () => {
+    const task = {};
+    noteToolOutcome(task, 'file_edit', false);
+    noteToolOutcome(task, 'file_edit', false);
+    const nudge = noteToolOutcome(task, 'file_edit', false);
+    expect(nudge).toBeTruthy();
+    expect(nudge).toContain('连续失败 3 次');
+    expect(nudge).toContain('逐字照抄');       // 指向 file_edit 自己的正确解法
+    expect(nudge).toContain('apply_patch');    // 换工具的出路
+    expect(nudge).not.toContain(FORCE_STOP_MARKER); // 只提示，不硬停
+  });
+
+  it('成功即清零：失败两次 → 成功 → 再失败不触发', () => {
+    const task = {};
+    noteToolOutcome(task, 'file_edit', false);
+    noteToolOutcome(task, 'file_edit', false);
+    expect(noteToolOutcome(task, 'file_edit', true)).toBeNull();
+    expect(toolFailStreak(task, 'file_edit')).toBe(0);
+    expect(noteToolOutcome(task, 'file_edit', false)).toBeNull();
+    expect(noteToolOutcome(task, 'file_edit', false)).toBeNull();
+  });
+
+  it('按工具分账：A 工具的失败不连累 B 工具', () => {
+    const task = {};
+    noteToolOutcome(task, 'file_edit', false);
+    noteToolOutcome(task, 'file_edit', false);
+    expect(noteToolOutcome(task, 'browser_click', false)).toBeNull();
+    expect(noteToolOutcome(task, 'file_edit', false)).toContain('连续失败 3 次');
+  });
+
+  it('阈值常量与实现一致（防线：改阈值时不会漏改文案里的数字）', () => {
+    const task = {};
+    for (let i = 1; i < TOOL_FAIL_STREAK_LIMIT; i++) {
+      expect(noteToolOutcome(task, 'x_tool', false)).toBeNull();
+    }
+    expect(noteToolOutcome(task, 'x_tool', false)).toContain(`连续失败 ${TOOL_FAIL_STREAK_LIMIT} 次`);
   });
 });
