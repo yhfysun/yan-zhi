@@ -303,14 +303,17 @@
                     <el-icon :size="12" class="main-agent-result-chevron"><ArrowDown v-if="!collapsedMainResults['mar-' + vr.ri]" /><ArrowRight v-else /></el-icon>
                   </div>
                   <div v-show="!collapsedMainResults['mar-' + vr.ri]" class="main-agent-result-content">
-                    <div v-if="vr.round.finalAssistant?.reasoningContent && !vr.round.hasAgentProcess" class="msg-reasoning" :data-card-variant="(vr.ri + 1) % 4">
+                    <!-- 深度思考（WorkBuddy 式）：**带工具调用的轮次也显示** —— 此前被
+                         `!hasAgentProcess` 挡掉，开发模式下几乎总在调工具 ⇒ 用户根本看不到思考标识。
+                         字数用轻量累加（模板热路径），全文只在展开时拼（见 reasoning-summary.ts）。 -->
+                    <div v-if="roundReasoningChars(vr.round) > 0" class="msg-reasoning" :data-card-variant="(vr.ri + 1) % 4">
                       <DeepThinkBadge
                         state="done"
-                        :chars="vr.round.finalAssistant.reasoningContent.length"
+                        :chars="roundReasoningChars(vr.round)"
                         :open="!!expandedReasoning['agent-fa-' + vr.ri]"
                         @toggle="toggleReasoning('agent-fa-' + vr.ri)"
                       />
-                      <div v-if="expandedReasoning['agent-fa-' + vr.ri]" class="reasoning-body">{{ vr.round.finalAssistant.reasoningContent }}</div>
+                      <div v-if="expandedReasoning['agent-fa-' + vr.ri]" class="reasoning-body">{{ roundReasoningText(vr.round) }}</div>
                     </div>
                     <template v-if="vr.round.finalAssistant?.content">
                       <div class="msg-content" v-html="renderAssistantMarkdown(vr.round.finalAssistant.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
@@ -666,6 +669,7 @@ import MediaHoverFloat from '../media/MediaHoverFloat.vue';
 import ToolMediaPreview from './ToolMediaPreview.vue';
 import ChatFileChangeCard from './ChatFileChangeCard.vue';
 import DeepThinkBadge from './DeepThinkBadge.vue';
+import { roundReasoningChars, roundReasoningText } from '../../composables/chat/reasoning-summary';
 import ChatTaskChangeSummary from './ChatTaskChangeSummary.vue';
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 
@@ -1178,10 +1182,16 @@ function isRoundLive(round: MessageRound, ri: number): boolean {
   return store.streaming && ri === messageRounds.value.length - 1;
 }
 
-/** 是否渲染主智能体「任务结果」卡片：有正文 / 有独立思考过程 / 正在流式输出 */
+/**
+ * 是否渲染主智能体「任务结果」卡片：有正文 / 有思考（含 agent 各步骤）/ 正在流式输出。
+ *
+ * ★ 2026-10-21：思考判定从「只看最终回答的 reasoningContent 且无工具调用」改成
+ *   `roundReasoningChars(round) > 0` —— 否则 agent 模式（几乎总在调工具）里
+ *   卡片压根不渲染，「深度思考」徽标也就永远看不到。
+ */
 function hasMainResult(round: MessageRound, ri: number): boolean {
   return !!(round.finalAssistant?.content ||
-    (round.finalAssistant?.reasoningContent && !round.hasAgentProcess) ||
+    roundReasoningChars(round) > 0 ||
     isLastRoundStreaming(round, ri));
 }
 

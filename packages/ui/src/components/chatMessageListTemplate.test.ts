@@ -241,3 +241,29 @@ describe('④ 深度思考徽标（WorkBuddy 式）', () => {
     expect([...new Set(write)].sort()).toEqual([...new Set(read)].sort());
   });
 });
+
+/**
+ * ⑤ 深度思考徽标接入业务条件（2026-10-21 用户确认「可以」后补）
+ *
+ * ★ 上一轮的坑：徽标做出来了，但**渲染条件**里还留着 `!round.hasAgentProcess` ——
+ *   开发模式几乎总在调工具，于是徽标永远不出现（"做了但用户看不到"）。
+ *   这里把两处条件都钉死，并防住"图省事用拼串算字数"的性能退化。
+ */
+describe('⑤ 深度思考徽标的接入条件', () => {
+  it('★ 不再按 hasAgentProcess 排除思考展示', () => {
+    expect(TEMPLATE).not.toContain('!vr.round.hasAgentProcess');
+    expect(SCRIPT).not.toContain('!round.hasAgentProcess');
+  });
+
+  it('★ 主结果卡片的渲染条件用轻量字数判定（agent 模式也要能出卡片）', () => {
+    const fn = SCRIPT.slice(SCRIPT.indexOf('function hasMainResult'), SCRIPT.indexOf('function getStreamingText'));
+    expect(fn).toContain('roundReasoningChars(round) > 0');
+    expect(fn).not.toContain('hasAgentProcess');
+  });
+
+  it('★ 字数判定不许走全文拼接（roundReasoningText(...).length 是性能陷阱）', () => {
+    expect(TEMPLATE).toContain('roundReasoningChars(vr.round)');
+    expect(TEMPLATE).not.toMatch(/roundReasoningText\([^)]*\)\s*\.length/);
+    expect(SCRIPT).not.toMatch(/roundReasoningText\([^)]*\)\s*\.length/);
+  });
+});
