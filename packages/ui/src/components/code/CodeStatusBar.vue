@@ -15,7 +15,34 @@
       <span v-if="active" class="csb-seg">{{ langLabel(active.name) }}</span>
       <span v-if="active" class="csb-seg">Ln {{ cursor.line }}, Col {{ cursor.col }}</span>
       <span v-if="active" class="csb-seg">空格: 2</span>
-      <span v-if="active" class="csb-seg">UTF-8</span>
+      <!-- 编码：显示后端识别出的真实编码；点击可转码（GBK ↔ UTF-8 等） -->
+      <el-dropdown v-if="active" trigger="click" size="small" @command="onPickEncoding">
+        <button class="csb-seg" :title="`当前编码：${encodingText}（点击转换）`">
+          <span>{{ encodingText }}</span>
+          <el-icon :size="10"><ArrowUp /></el-icon>
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item
+              v-for="enc in commonEncodings"
+              :key="'c-' + enc"
+              :command="enc"
+              :disabled="enc === active.encoding || converting"
+            >
+              {{ labelOf(enc) }}<span v-if="enc === active.encoding" class="csb-cur">（当前）</span>
+            </el-dropdown-item>
+            <el-dropdown-item divided disabled class="csb-group">其它编码</el-dropdown-item>
+            <el-dropdown-item
+              v-for="enc in otherEncodings"
+              :key="'o-' + enc"
+              :command="enc"
+              :disabled="enc === active.encoding || converting"
+            >
+              {{ labelOf(enc) }}
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <span v-if="active" class="csb-seg">LF</span>
       <span v-if="active && bpCount" class="csb-seg bp">
         <el-icon :size="11"><VideoPlay /></el-icon>{{ bpCount }} 断点
@@ -27,10 +54,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
-import { Share, VideoPlay } from '@element-plus/icons-vue';
+import { computed, ref } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { Share, VideoPlay, ArrowUp } from '@element-plus/icons-vue';
 import { useCodeStore } from '../../stores/code';
 import { langLabel } from './codeLang';
+import { SUPPORTED_ENCODINGS, encodingLabel } from '@yan-zhi/shared';
 
 const props = withDefaults(defineProps<{
   gitBranch?: string | null;
@@ -45,6 +74,52 @@ const bpCount = computed(() => (active.value ? (code.breakpoints[active.value.pa
 
 function goGit() {
   code.sidebarView = 'git';
+}
+
+// ── 编码显示与转码（2026-10-21）──────────────────────────────────────────────
+// 状态栏此前硬编码 "UTF-8"：GBK 文件在编辑器里乱码，用户连"是编码问题"都看不出来。
+const converting = ref(false);
+const encodingText = computed(() => (active.value ? labelOf(active.value.encoding) : 'UTF-8'));
+const COMMON = ['utf-8', 'gb18030', 'big5', 'shift_jis', 'euc-kr', 'utf-16le', 'utf-16be', 'windows-1252'];
+const commonEncodings = computed(() => COMMON.filter((e) => (SUPPORTED_ENCODINGS as readonly string[]).includes(e)));
+const otherEncodings = computed(() =>
+  (SUPPORTED_ENCODINGS as readonly string[]).filter((e) => !COMMON.includes(e)),
+);
+
+function labelOf(enc: string): string {
+  try {
+    return encodingLabel(enc as never);
+  } catch {
+    return enc.toUpperCase();
+  }
+}
+
+async function onPickEncoding(to: string) {
+  const f = active.value;
+  if (!f || converting.value) return;
+  const fromLabel = labelOf(f.encoding);
+  const toLabel = labelOf(to);
+  try {
+    await ElMessageBox.confirm(
+      `将 ${f.name} 从 ${fromLabel} 转换为 ${toLabel}（直接改写磁盘文件）。\n` +
+        '若文件里有目标编码无法表示的字符，会拒绝转换并保持原样。',
+      '转换文件编码',
+      { type: 'warning', confirmButtonText: `转为 ${toLabel}`, cancelButtonText: '取消' },
+    );
+  } catch {
+    return;
+  }
+  converting.value = true;
+  try {
+    const r = await code.reencodeFile(f.path, to);
+    if (!r.ok) {
+      ElMessage.error(r.error || '转码失败');
+      return;
+    }
+    ElMessage.success(`已转换为 ${toLabel}`);
+  } finally {
+    converting.value = false;
+  }
 }
 </script>
 
@@ -76,4 +151,6 @@ button.csb-seg:hover { background: var(--glass-bg-hover, #e7e4dc); color: var(--
 }
 .csb-seg.bp { color: var(--color-primary, #c2410c); }
 .csb-seg.dirty { color: var(--color-warning, #b45309); font-weight: 600; }
+.csb-cur { color: var(--color-text-secondary, #6b6b66); font-size: 11px; }
+.csb-group { font-size: 11px; opacity: 0.6; cursor: default; }
 </style>

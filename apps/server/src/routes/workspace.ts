@@ -5,6 +5,11 @@ import { spawn } from 'node:child_process';
 import { serverState } from '../state.js';
 import { db } from '../db.js';
 import { isWithinRoot } from '../services/path-guard.js';
+// 文本落盘的唯一出口：按目标文件现有编码写回（GBK 文件不会被悄悄转成 UTF-8）
+import { writeTextFilePreservingEncoding } from '../services/text-file-write.js';
+// 编码：编辑器要能"按实际编码读出 + 主动转码"（2026-10-21 用户追问）
+import { decodeTextBytes, decodeTextBytesAs, encodeTextBytes, resolveEncodingName, encodingLabel, looksBinaryBytes, type TextEncoding } from '@yan-zhi/shared';
+import { getPlatformAdapter } from '@yan-zhi/core';
 
 const router = Router();
 
@@ -145,10 +150,10 @@ function toAbs(p: unknown): string | null {
 }
 
 /** 单文件二进制探测：读前 8KB，出现 NUL 即视为二进制 */
+// ★ 二进制判定只有一处实现（shared.looksBinaryBytes）：这里此前是"含 NUL 即二进制"的
+//   简版副本，正是它把 UTF-16 文本判成二进制（2026-10-21 实测 UTF-16LE 文件无法在编辑器打开）。
 function looksBinary(buf: Buffer): boolean {
-  const n = Math.min(buf.length, 8192);
-  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
-  return false;
+  return looksBinaryBytes(new Uint8Array(buf));
 }
 
 const TEXT_EXT = new Set([
@@ -212,7 +217,18 @@ router.get('/file', (req, res) => {
     if (st.size > 8 * 1024 * 1024) return res.status(413).json({ error: '文件超过 8MB，代码编辑器暂不支持打开' });
     const buf = fs.readFileSync(abs);
     if (!isTextFile(abs, buf)) return res.status(415).json({ error: '二进制文件，无法在编辑器中打开' });
-    res.json({ path: abs, name: path.basename(abs), content: buf.toString('utf8'), size: st.size, mtime: st.mtimeMs });
+    // ★ 不能 `buf.toString('utf8')`（2026-10-21 修）：GBK/ANSI 文件在编辑器里会整篇乱码，
+    //   而且用户完全不知道是"编码不对"还是"文件坏了"。走统一识别器，并把编码回给前端显示。
+    const decoded = decodeTextBytes(new Uint8Array(buf));
+    res.json({
+      path: abs,
+      name: path.basename(abs),
+      content: decoded.text,
+      encoding: decoded.encoding,
+      encodingLabel: encodingLabel(decoded.encoding),
+      size: st.size,
+      mtime: st.mtimeMs,
+    });
   } catch (err) {
     res.status(404).json({ error: `读取失败：${err instanceof Error ? err.message : String(err)}` });
   }
@@ -225,12 +241,86 @@ router.put('/file', (req, res) => {
   if (!abs) return res.status(400).json({ error: '缺少 path 参数' });
   if (typeof content !== 'string') return res.status(400).json({ error: 'content 必须是字符串' });
   try {
-    fs.writeFileSync(abs, content, 'utf8');
-    res.json({ ok: true, path: abs, size: Buffer.byteLength(content, 'utf8'), mtime: fs.statSync(abs).mtimeMs });
+    // 传了 encoding 就按它写（"另存为编码"）；不传则保持文件原编码（默认，也是安全默认）
+    const wanted = typeof req.body?.encoding === 'string' ? resolveEncodingName(req.body.encoding) : null;
+    const encoding = wanted
+      ? writeTextAsEncoding(abs, content, wanted)
+      : writeTextFilePreservingEncoding(abs, content);
+    const label = encodingLabel(encoding);
+    res.json({ ok: true, path: abs, size: fs.statSync(abs).size, encoding, encodingLabel: label, mtime: fs.statSync(abs).mtimeMs });
   } catch (err) {
     res.status(500).json({ error: `保存失败：${err instanceof Error ? err.message : String(err)}` });
   }
 });
+
+// POST /api/workspace/file/reencode  { path, to } —— 把文件**转码**成目标编码（原地）
+//
+// ★ 与 PUT 的区别（2026-10-21）：PUT 是"保存编辑器内容"（默认保持原编码，绝不动编码），
+//   本端点是用户**显式要求换编码**。两者都走无损校验：
+//   目标编码表示不了的字符 → 400 并说明，绝不静默写成 '?'。
+router.post('/file/reencode', (req, res) => {
+  const abs = toAbs(req.body?.path);
+  const to = resolveEncodingName(String(req.body?.to || ''));
+  if (!abs) return res.status(400).json({ error: '缺少 path 参数' });
+  if (!to) return res.status(400).json({ error: `不支持的目标编码 "${req.body?.to}"` });
+  try {
+    const st = fs.statSync(abs);
+    if (st.isDirectory()) return res.status(400).json({ error: '目标是目录，不是文件' });
+    const buf = fs.readFileSync(abs);
+    if (!isTextFile(abs, buf)) return res.status(415).json({ error: '二进制文件不支持转码' });
+    const decoded = decodeTextBytes(new Uint8Array(buf));
+    if (decoded.text.includes('\ufffd')) {
+      return res.status(400).json({ error: '按识别出的编码解码仍有替换符（文件可能损坏或编码特殊），请先确认源编码' });
+    }
+    const encoded = encodeTextBytes(decoded.text, to, { withBom: Boolean(decoded.bom) && decoded.encoding === to });
+    // 无损校验：编码后再解回来必须逐字相同
+    const back = decodeAsStrict(encoded, to);
+    if (back !== decoded.text) {
+      return res.status(400).json({
+        error: `${encodingLabel(to)} 无法无损表示该文件的内容（有字符会被写成 ?），未做任何修改`,
+      });
+    }
+    // 走适配器写入：它会顺手清掉"原编码"缓存，避免后续工具按旧编码写回
+    try {
+      const fsAdapter = getPlatformAdapter().fs;
+      fsAdapter.writeFileBase64(abs, Buffer.from(encoded).toString('base64'));
+    } catch {
+      fs.writeFileSync(abs, Buffer.from(encoded));
+    }
+    res.json({
+      ok: true,
+      path: abs,
+      from: decoded.encoding,
+      fromLabel: encodingLabel(decoded.encoding),
+      encoding: to,
+      encodingLabel: encodingLabel(to),
+      bytes: encoded.length,
+      mtime: fs.statSync(abs).mtimeMs,
+    });
+  } catch (err) {
+    res.status(500).json({ error: `转码失败：${err instanceof Error ? err.message : String(err)}` });
+  }
+});
+
+/** 按指定编码写入（PUT 带 encoding 时用），返回实际编码 */
+function writeTextAsEncoding(filePath: string, content: string, to: TextEncoding): TextEncoding {
+  const decoded = decodeTextBytes(new Uint8Array(fs.readFileSync(filePath)));
+  const encoded = encodeTextBytes(content, to, { withBom: Boolean(decoded.bom) && decoded.encoding === to });
+  if (decodeAsStrict(encoded, to) !== content) {
+    throw new Error(`${encodingLabel(to)} 无法无损表示当前内容（有字符会被写成 ?）`);
+  }
+  try {
+    getPlatformAdapter().fs.writeFileBase64(filePath, Buffer.from(encoded).toString('base64'));
+  } catch {
+    fs.writeFileSync(filePath, Buffer.from(encoded));
+  }
+  return to;
+}
+
+/** 用指定编码解回文本（无损校验用；解不动返回 null） */
+function decodeAsStrict(bytes: Uint8Array, enc: TextEncoding): string | null {
+  return decodeTextBytesAs(bytes, enc);
+}
 
 // POST /api/workspace/mkdir  { path } —— 新建目录（含父级）
 router.post('/mkdir', (req, res) => {
@@ -492,8 +582,50 @@ router.get('/changes/latest', (req, res) => {
   });
 });
 
-/** 同路径的所有 pending 记录统一置为某状态（回退/应用是文件级操作，历史链一并收口） */
-function markChange(id: string, status: string): any {
+// GET /api/workspace/changes/summary?conversationId=&taskId= —— 本会话/本任务的改动汇总
+//
+// ★★★ 为什么需要（2026-10-21 用户实报）：「开发模式修改文件最后不会统计修改了哪些文件、
+//   哪些内容，人工可以回退确认，就像 trae 一样」。此前只有**逐条工具卡片**（ChatFileChangeCard），
+//   任务跑完 N 步之后，用户要自己一屏屏翻聊天记录才知道模型到底动了哪些文件。
+//   ⇒ 按路径聚合 pending 快照：文件数 / 写入次数 / 最近一次时间 + 可回退的 id。
+//   内容（before/after）不在这里返回 —— 大文件会把响应撑爆，展开某一行时再走 /changes/content。
+router.get('/changes/summary', (req, res) => {
+  const conversationId = String(req.query.conversationId || '').trim();
+  const taskId = String(req.query.taskId || '').trim();
+  if (!conversationId && !taskId) {
+    return res.status(400).json({ error: '缺少 conversationId 或 taskId 参数' });
+  }
+  let rows: any[] = [];
+  try {
+    rows = (taskId
+      ? db.prepare("SELECT id, path, tool, created_at FROM file_change WHERE task_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 2000").all(taskId)
+      : db.prepare("SELECT id, path, tool, created_at FROM file_change WHERE conversation_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 2000").all(conversationId)) as any[];
+  } catch { rows = []; }
+
+  const norm = (s: string) => String(s || '').split('\\').join('/').replace(/\/+$/, '');
+  const byPath = new Map<string, {
+    id: string; path: string; tool: string; writes: number; firstAt: number; lastAt: number;
+  }>();
+  for (const r of rows) {
+    // 会话产物目录（.yan-zhi/tasks/<id>/intermediate）是智能体自己的草稿，不是用户的代码改动
+    if (/[\\/]\.yan-zhi[\\/]/.test(String(r.path || ''))) continue;
+    const key = norm(r.path);
+    const at = Number(r.created_at) || 0;
+    const hit = byPath.get(key);
+    if (hit) {
+      hit.writes += 1;
+      hit.lastAt = Math.max(hit.lastAt, at);
+      hit.firstAt = Math.min(hit.firstAt, at);
+      // id 保留**最新**一条：SQL 已按 created_at DESC 排序，首见即最新（不要在这里覆盖）
+    } else {
+      byPath.set(key, { id: r.id, path: r.path, tool: r.tool, writes: 1, firstAt: at, lastAt: at });
+    }
+  }
+  const items = [...byPath.values()].sort((a, b) => b.lastAt - a.lastAt);
+  res.json({ items, totalFiles: items.length, totalWrites: rows.length });
+});
+
+/** 同路径的所有 pending 记录统一置为某状态（回退/应用是文件级操作，历史链一并收口） */function markChange(id: string, status: string): any {
   const row = db.prepare('SELECT id, path FROM file_change WHERE id = ?').get(id) as any;
   if (!row) return null;
   db.prepare("UPDATE file_change SET status = ? WHERE path = ? AND status = 'pending'").run(status, row.path);
@@ -507,7 +639,7 @@ router.post('/changes/:id/apply', (req, res) => {
   if (row.after_content == null) return res.status(400).json({ error: '该记录没有可应用的内容' });
   try {
     fs.mkdirSync(path.dirname(row.path), { recursive: true });
-    fs.writeFileSync(row.path, row.after_content, 'utf-8');
+    writeTextFilePreservingEncoding(row.path, row.after_content);
   } catch (e) {
     return res.status(500).json({ error: (e as Error).message });
   }
@@ -543,7 +675,7 @@ router.post('/changes/:id/apply-hunks', (req, res) => {
   }
   if (merged == null) return res.status(400).json({ error: '选择与快照差异不匹配（可能 diff 已过期），请刷新后重试' });
   try {
-    fs.writeFileSync(row.path, merged, 'utf-8');
+    writeTextFilePreservingEncoding(row.path, merged);
   } catch (e) {
     return res.status(500).json({ error: (e as Error).message });
   }
@@ -559,7 +691,7 @@ router.post('/changes/:id/revert', (req, res) => {
     if (row.before_content == null) {
       if (fs.existsSync(row.path)) fs.unlinkSync(row.path);
     } else {
-      fs.writeFileSync(row.path, row.before_content, 'utf-8');
+      writeTextFilePreservingEncoding(row.path, row.before_content);
     }
   } catch (e) {
     return res.status(500).json({ error: (e as Error).message });
@@ -594,7 +726,7 @@ router.post('/changes/rollback-all', (req, res) => {
         deleted++;
       } else {
         fs.mkdirSync(path.dirname(p), { recursive: true });
-        fs.writeFileSync(p, row.before_content, 'utf-8');
+        writeTextFilePreservingEncoding(p, row.before_content);
         reverted++;
       }
       markChange(row.id, 'reverted');
@@ -663,7 +795,7 @@ router.post('/tasks/:taskId/rollback', (req, res) => {
         reverted.push({ path: p, action: 'deleted' });
       } else {
         fs.mkdirSync(path.dirname(p), { recursive: true });
-        fs.writeFileSync(p, info.before, 'utf-8');
+        writeTextFilePreservingEncoding(p, info.before);
         reverted.push({ path: p, action: 'restored' });
       }
     } catch (e) {

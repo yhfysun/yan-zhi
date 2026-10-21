@@ -18,6 +18,8 @@ export interface OpenFile {
   saving: boolean;
   /** 打开后是否从未激活过（用于「预览态」斜体标签，暂未启用） */
   mtime: number;
+  /** 文件实际编码（后端识别；状态栏显示 + 转码用） */
+  encoding: string;
 }
 
 export interface RunConfigItem {
@@ -134,7 +136,7 @@ export const useCodeStore = defineStore('code', () => {
     restoringTabs.value = true;
     openFiles.value = saved
       .filter((f) => f?.path)
-      .map((f) => ({ path: f.path, name: f.name, content: '', original: '', loading: false, error: '', saving: false, mtime: 0 }));
+      .map((f) => ({ path: f.path, name: f.name, content: '', original: '', loading: false, error: '', saving: false, mtime: 0, encoding: 'utf-8' }));
     if (openFiles.value.length) {
       // 恢复到**上次激活**的文件，而不是永远第一个 tab（否则重开后显示的不是用户正在编辑的那个）
       const lastActive = localStorage.getItem(LS_ACTIVE);
@@ -163,6 +165,7 @@ export const useCodeStore = defineStore('code', () => {
       error: '',
       saving: false,
       mtime: 0,
+      encoding: 'utf-8',
     };
     openFiles.value.push(file);
     activePath.value = path;
@@ -176,7 +179,7 @@ export const useCodeStore = defineStore('code', () => {
     if (!f) return;
     f.loading = true;
     f.error = '';
-    const r = await api.get<{ content: string; name: string; mtime: number }>(
+    const r = await api.get<{ content: string; name: string; mtime: number; encoding?: string }>(
       `/workspace/file?path=${encodeURIComponent(path)}`,
     );
     f.loading = false;
@@ -188,6 +191,30 @@ export const useCodeStore = defineStore('code', () => {
     f.original = f.content;
     f.name = r.data.name || f.name;
     f.mtime = r.data.mtime || 0;
+    // 后端按文件实际编码解码并回报；状态栏显示它，避免"看起来是 UTF-8 其实是 GBK"
+    f.encoding = r.data.encoding || 'utf-8';
+  }
+
+  /**
+   * 把文件**转码**成目标编码（原地）。
+   *
+   * ★ 与 saveFile 的分工：save 默认保持原编码（绝不悄悄改），本函数是用户显式换编码。
+   *   有未保存改动时先保存（否则会把盘上旧内容转码，编辑器的改动白丢）。
+   */
+  async function reencodeFile(path: string, to: string): Promise<{ ok: boolean; error?: string; fromLabel?: string }> {
+    const f = openFiles.value.find((x) => x.path === path);
+    if (!f) return { ok: false, error: '文件未打开' };
+    if (f.content !== f.original) {
+      const saved = await saveFile(path);
+      if (!saved) return { ok: false, error: '先保存失败，未转码' };
+    }
+    const r = await api.post<{ encoding: string; encodingLabel: string; fromLabel: string }>(
+      '/workspace/file/reencode',
+      { path, to },
+    );
+    if ('error' in r) return { ok: false, error: r.error };
+    await loadContent(path);
+    return { ok: true, fromLabel: r.data?.fromLabel };
   }
 
   function updateContent(path: string, content: string) {
@@ -343,7 +370,7 @@ export const useCodeStore = defineStore('code', () => {
     projectSpaceId, setProjectSpaceId,
     codeModeActive: codeModeActiveRef,
     openFiles, activePath, activeFile, dirtyCount, restoringTabs,
-    openFile, loadContent, updateContent, saveFile, closeFile, closeOthers, closeAll, rememberTabs,
+    openFile, loadContent, updateContent, saveFile, reencodeFile, closeFile, closeOthers, closeAll, rememberTabs,
     sidebarView, openGitPanel,
     breakpoints, toggleBreakpoint, clearBreakpoints,
     runConfigs, activeConfigId, saveRunConfig, removeRunConfig,
