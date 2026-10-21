@@ -18,6 +18,7 @@
           <el-icon class="shop-project-icon"><ChatLineSquare /></el-icon>
           <span class="shop-project-name" :title="p.title">{{ p.title || '未命名项目' }}</span>
           <span class="shop-project-count">{{ projectCount(p.id) }}</span>
+          <button class="shop-project-del" title="删除项目" @click.stop="deleteProject(p)">×</button>
         </div>
 
         <!-- 历史连接没有 projectId：单独列出，避免"看不见/丢数据" -->
@@ -401,7 +402,7 @@ import {
   shopConnections, shopGroups, shopPlatforms, shopActiveId, shopCheck, shopCheckId,
   shopAudit, shopDemoData,
   loadShopConsole, selectShop, createShop, updateShop, deleteShop, checkShop,
-  seedDemoShops, clearDemoShops, testShopLogistics, trackShopLogistics, getDemoTemplates,
+  seedDemoShops, clearDemoShops, testShopLogistics, trackShopLogistics, getDemoTemplates, reassignProject,
   type ShopProbeResult, type ShopTrackResult,
 } from './shopSession';
 
@@ -509,6 +510,25 @@ async function createProject(): Promise<void> {
     selectShop('');
     tab.value = 'store';
   } catch { /* 取消 */ }
+}
+
+/** 删除项目 = 删这条店铺会话；资源先迁出（演示数据清除，真实资源归到未归属） */
+async function deleteProject(p: { id: string; title?: string }): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `删除项目「${p.title || '未命名'}」？项目里的演示数据会清除，你自己登记的资源会移到「未归属资源」，不会删连接本身。`,
+      '删除项目',
+      { type: 'warning' },
+    );
+  } catch { return; }
+  const err = await reassignProject(p.id);
+  if (err) { ElMessage.error(err); return; }
+  await chatStore.deleteConversation(p.id);
+  if (activeProjectId.value === p.id) {
+    activeProjectId.value = '';
+    selectShop('');
+  }
+  ElMessage.success('项目已删除');
 }
 
 const active = computed(() => projectConns.value.find((c) => c.id === shopActiveId.value) || null);
@@ -1030,6 +1050,14 @@ onMounted(async () => {
   font-size: 11px; color: var(--el-text-color-secondary);
   background: var(--el-fill-color); border-radius: 8px; padding: 0 6px;
 }
+.shop-project-del {
+  display: none; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; border: none; border-radius: 4px;
+  background: transparent; color: var(--el-text-color-secondary);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.shop-project:hover .shop-project-del { display: inline-flex; }
+.shop-project-del:hover { color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
 
 /* ===== 当前项目头 + 资源列表 ===== */
 .shop-work-head {

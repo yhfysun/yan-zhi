@@ -273,6 +273,16 @@ export async function seedDemoShops(projectId?: string, template?: string): Prom
   return '';
 }
 
+/** 删除项目前迁出资源：演示数据清除，真实资源归到「未归属」 */
+export async function reassignProject(fromProjectId: string): Promise<string> {
+  const r = await api.post<{ moved: number; removed: number }>('/plugin/shop-ops/connections/reassign', { fromProjectId });
+  if (!('data' in r)) return errText(r);
+  await loadConnections();
+  await loadAudit();
+  await loadDemoData();
+  return '';
+}
+
 /** 一键清空演示店铺（★ 只删 demo 标记；传 projectId 时只清该项目的演示数据） */
 export async function clearDemoShops(projectId?: string): Promise<string> {
   const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';

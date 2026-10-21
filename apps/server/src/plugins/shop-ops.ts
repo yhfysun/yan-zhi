@@ -1517,6 +1517,33 @@ const shopOpsModule: PluginModule = {
         }
       });
 
+      // 删除项目前迁移资源：演示数据直接清掉（它们只属于演示项目），
+      // 真实资源移到「未归属」，绝不因为删项目而删掉用户登记。
+      r.post('/connections/reassign', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const from = String(body.fromProjectId || '').trim();
+        const to = String(body.toProjectId || '').trim() || undefined;
+        if (!from) { failRes(res, 400, 'fromProjectId 必填'); return; }
+        const list = await loadConnections();
+        const next: StoredConnection[] = [];
+        let moved = 0;
+        let removed = 0;
+        for (const c of list) {
+          if (c.projectId !== from) { next.push(c); continue; }
+          if (c.demo) { removed++; continue; }
+          if (to) c.projectId = to; else delete c.projectId;
+          next.push(c);
+          moved++;
+        }
+        if (moved || removed) {
+          try {
+            await saveConnections(next);
+          } catch (e) { failRes(res, 500, (e as Error).message); return; }
+          await audit('connection.reassign', { connection: `迁出 ${moved} 条、清除演示 ${removed} 条`, ok: true });
+        }
+        jsonRes(res).json({ data: { moved, removed } });
+      });
+
       // 演示快照：按店铺名返回合成经营数据（只返回当前存在的演示连接）
       r.get('/demo/data', async (_req: unknown, res: unknown) => {
         const list = await loadConnections();
