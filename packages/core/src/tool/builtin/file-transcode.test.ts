@@ -147,3 +147,34 @@ describe('file_transcode · UTF-16 源文件', () => {
     expect(after.text).toBe(body);
   });
 });
+
+// 目录批量的**真实用法**（2026-10-21 补验）：recursive + extensions 白名单 + 真落盘
+// 之前只钉了 dry_run 预览的收集数量，没验证"白名单外的文件不动、UTF-8 文件不被无谓重写"。
+describe('file_transcode · 目录批量真落盘', () => {
+  it('★ recursive + extensions：只转白名单内的 GBK 文件，UTF-8 与名单外文件原样', async () => {
+    const root = 'C:/work/proj/batch';
+    const gbkTxt = `${root}/a.txt`;
+    const gbkBat = `${root}/sub/run.bat`;
+    const utf8Txt = `${root}/already.txt`;
+    const logFile = `${root}/debug.log`;
+    const utf8Bytes = encodeTextBytes(GBK_TEXT, 'utf-8');
+    const files = new Map<string, Uint8Array>([
+      [gbkTxt, encodeTextBytes(GBK_TEXT, 'gb18030')],
+      [gbkBat, encodeTextBytes('echo 中文\r\n', 'gb18030')],
+      [utf8Txt, utf8Bytes],
+      [logFile, encodeTextBytes('日志 中文', 'gb18030')],
+    ]);
+    const dirs = new Set([root, `${root}/sub`]);
+
+    const r = await run(files, dirs, {
+      path: root, to: 'utf-8', recursive: true, extensions: ['txt', 'bat'], dry_run: false,
+    });
+    const out = text(r as never);
+    // 2 个 GBK 真转 + 1 个已是 UTF-8（unchanged）+ .log 不在白名单
+    expect(out).toContain('已转换 2 个文件');
+    expect(decodeTextBytes(files.get(gbkTxt)!).encoding).toBe('utf-8');
+    expect(decodeTextBytes(files.get(gbkBat)!).text).toBe('echo 中文\r\n');
+    expect(files.get(utf8Txt)).toBe(utf8Bytes);      // 已是目标编码 → 字节不变
+    expect(decodeTextBytes(files.get(logFile)!).encoding).toBe('gb18030'); // 名单外未动
+  });
+});
