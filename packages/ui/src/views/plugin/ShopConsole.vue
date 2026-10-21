@@ -8,7 +8,7 @@
       </div>
 
       <div v-if="!shopConnections.length" class="shop-empty">
-        <p>还没有登记任何店铺 / 仓库。</p>
+        <p>还没有登记任何店铺 / 仓库 / 物流服务。</p>
         <p class="shop-empty-hint">
           登记只是"告诉助手我在经营哪家店"，用于对齐站点与成本口径；
           <strong>不需要填账号密码</strong> —— 平台数据由助手委派 pageAgent 打开卖家后台获取，
@@ -32,14 +32,29 @@
             <el-icon class="shop-item-icon"><Shop /></el-icon>
             <span class="shop-item-name" :title="c.shopName">{{ c.shopName }}</span>
             <el-tag v-if="c.isProduction" size="small" type="danger" effect="plain">生产</el-tag>
+            <el-tag v-if="c.demo" size="small" type="info" effect="plain">演示</el-tag>
             <span class="shop-item-site">{{ platformLabel(c.platform) }}<template v-if="c.site"> · {{ c.site }}</template></span>
           </div>
         </div>
       </div>
+
+      <!-- 演示数据：空控制台一眼看懂怎么用；一键清空只删 demo 标记的行 -->
+      <div class="shop-demo">
+        <template v-if="demoShops.length">
+          <span class="shop-demo-hint">{{ demoShops.length }} 条演示数据</span>
+          <el-button size="small" text type="danger" :loading="demoBusy" @click="clearDemos">清空演示</el-button>
+        </template>
+        <el-button v-else size="small" text type="primary" :loading="demoBusy" @click="makeDemos">＋ 创建演示店铺</el-button>
+      </div>
     </template>
 
-    <!-- ============ 主区 ============ -->
-    <section class="shop-main">
+    <!-- ============ 主区：工作台 + 常驻 AI 对话栏 ============ -->
+    <section
+      class="shop-main"
+      :class="{ 'is-lead-ai': lead === 'ai', 'is-chat-collapsed': chatCollapsed }"
+      :style="{ '--shop-chat-w': chatR.width.value + 'px' }"
+    >
+      <div class="shop-work">
       <el-tabs v-model="tab" class="shop-tabs">
         <el-tab-pane label="工作台" name="workbench">
           <div v-if="!active" class="shop-placeholder">
@@ -48,6 +63,9 @@
               本模式以<strong>只读分析</strong>为主：抓数、比价、算利润、出选品清单与优化建议。
               写操作目前只开放一项「申请改价」—— 必须经变更单 + 你确认（生产店铺还要额外批准），且全程审计。
             </p>
+            <el-button v-if="!shopConnections.length" size="small" type="primary" plain :loading="demoBusy" @click="makeDemos">
+              先创建几条演示店铺试试
+            </el-button>
           </div>
 
           <template v-else>
@@ -59,9 +77,9 @@
               </div>
               <dl class="shop-kv">
                 <div><dt>平台</dt><dd>{{ platformLabel(active.platform) }}</dd></div>
-                <div><dt>站点 / 市场</dt><dd>{{ active.site || '—' }}</dd></div>
+                <div><dt>{{ siteFieldLabel }}</dt><dd>{{ active.site || '—' }}</dd></div>
                 <div><dt>卖家 ID</dt><dd>{{ active.sellerId || '—' }}</dd></div>
-                <div><dt>API 凭据</dt><dd>{{ active.hasSecret ? '已配置' : '未配置（纯浏览器流程不需要）' }}</dd></div>
+                <div><dt>API 凭据</dt><dd>{{ active.hasSecret ? '已配置' : (activeKind === 'logistics' ? '未配置（物流接口需要 appKey/appSecret）' : '未配置（纯浏览器流程不需要）') }}</dd></div>
                 <div><dt>最近自检</dt><dd>{{ fmtTime(active.lastCheckAt) }}</dd></div>
                 <div v-if="active.note"><dt>备注</dt><dd>{{ active.note }}</dd></div>
               </dl>
@@ -70,6 +88,38 @@
                 <el-button size="small" :loading="checking" @click="runCheck()">配置自检</el-button>
                 <el-button size="small" @click="openEdit()">编辑</el-button>
                 <el-button size="small" type="danger" plain @click="removeShop()">删除</el-button>
+              </div>
+
+              <!-- 物流：测试连接 + 运单轨迹（只读；客户端未接的服务商只显示说明） -->
+              <div v-if="activeKind === 'logistics'" class="shop-logi">
+                <div class="shop-logi-row">
+                  <el-button size="small" :loading="logisticsBusy" :disabled="!logisticsReady" @click="runLogisticsTest()">测试连接</el-button>
+                  <span v-if="!logisticsReady" class="shop-form-tip">该服务商客户端未接，当前只能登记。</span>
+                  <span v-else-if="probeResult" class="shop-logi-note" :class="probeResult.ok ? 'ok' : 'err'">
+                    {{ probeResult.ok ? '✓' : '✗' }} {{ probeResult.message }}
+                  </span>
+                </div>
+
+                <template v-if="logisticsReady">
+                  <div class="shop-logi-row">
+                    <el-input v-model="trackNo" size="small" class="shop-logi-input" placeholder="运单号（顺丰 SF… / 云途 YT…）" @keyup.enter="runTrack()" />
+                    <el-input v-model="trackPhone" size="small" class="shop-logi-phone" placeholder="手机后四位（选填）" />
+                    <el-button size="small" type="primary" plain :loading="logisticsBusy" :disabled="!trackNo.trim()" @click="runTrack()">查轨迹</el-button>
+                  </div>
+                  <div v-if="trackResult" class="shop-logi-result" :class="trackResult.ok ? 'ok' : 'err'">
+                    <p class="shop-logi-result-head">
+                      {{ trackResult.message || (trackResult.ok ? '已返回轨迹' : `查询失败${trackResult.step ? `（${trackResult.step}）` : ''}`) }}
+                    </p>
+                    <ul v-if="trackResult.events.length" class="shop-logi-events">
+                      <li v-for="(e, i) in trackResult.events" :key="i">
+                        <span class="shop-logi-time">{{ e.time }}</span>
+                        <span v-if="e.location" class="shop-logi-loc">{{ e.location }}</span>
+                        <span class="shop-logi-desc">{{ e.description }}</span>
+                        <span v-if="e.status" class="shop-logi-status">{{ e.status }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                </template>
               </div>
             </div>
 
@@ -90,7 +140,7 @@
             <div class="shop-next">
               <p class="shop-next-title">下一步：让助手干活</p>
               <p class="shop-empty-hint">
-                在对话里直接说要做什么（例：<em>帮我分析这个品类的竞品和利润，目标站点美国</em>）。
+                在右侧对话里直接说要做什么（例：<em>帮我分析这个品类的竞品和利润，目标站点美国</em>）。
                 若要开一个长期目录，建议在左侧任务列表建一个绑「店铺运营」类型的目录 —— 那样选品清单与测算表会
                 自动落到该目录的资源结构里（00-source / 02-work / 03-output），跨会话可复用。
               </p>
@@ -115,21 +165,28 @@
             具体数值由助手指引你在浏览器面板登录后取（本插件不存账号密码，也不假装能自动取到）。
           </p>
 
-          <div class="shop-ref-grid">
-            <div v-for="p in shopPlatforms" :key="p.id" class="shop-ref-card">
-              <div class="shop-ref-head">
-                <strong>{{ p.label }}</strong>
-                <el-tag size="small" effect="plain" :type="p.kind === 'warehouse' ? 'warning' : 'info'">
-                  {{ p.kind === 'warehouse' ? '仓储' : '店铺' }}
-                </el-tag>
+          <!-- 按 店铺 / 仓储 / 物流 分组：服务商越来越多，平铺一屏看不出边界 -->
+          <div v-for="g in refGroups" :key="g.kind" class="shop-ref-group">
+            <p class="shop-ref-group-title">{{ g.label }}（{{ g.items.length }}）</p>
+            <div class="shop-ref-grid">
+              <div v-for="p in g.items" :key="p.id" class="shop-ref-card">
+                <div class="shop-ref-head">
+                  <strong>{{ p.label }}</strong>
+                  <el-tag size="small" effect="plain" :type="kindTagType(p.kind)">{{ kindLabel(p.kind) }}</el-tag>
+                </div>
+                <ul class="shop-ref-list">
+                  <li v-for="(m, i) in p.keyMetrics" :key="i">{{ m }}</li>
+                </ul>
+                <p v-if="p.entryUrl" class="shop-ref-entry">
+                  入口：<a :href="p.entryUrl" target="_blank" rel="noreferrer noopener">{{ p.entryUrl }}</a>
+                </p>
+                <p class="shop-ref-note">{{ p.loginNote }}</p>
+                <!-- 对接状态必须如实标：有 API ≠ 本版本已接上 -->
+                <p v-if="p.integration" class="shop-ref-api" :class="`is-${p.integration.client}`">
+                  {{ integrationLabel(p.integration) }}
+                  <a v-if="p.integration.docsUrl" :href="p.integration.docsUrl" target="_blank" rel="noreferrer noopener">开放平台文档</a>
+                </p>
               </div>
-              <ul class="shop-ref-list">
-                <li v-for="(m, i) in p.keyMetrics" :key="i">{{ m }}</li>
-              </ul>
-              <p v-if="p.entryUrl" class="shop-ref-entry">
-                入口：<a :href="p.entryUrl" target="_blank" rel="noreferrer noopener">{{ p.entryUrl }}</a>
-              </p>
-              <p class="shop-ref-note">{{ p.loginNote }}</p>
             </div>
           </div>
 
@@ -144,19 +201,52 @@
           </div>
         </el-tab-pane>
       </el-tabs>
+      </div>
+
+      <!-- 拖拽条：工作台 ↔ 对话栏（任一侧收起时不渲染） -->
+      <div
+        v-show="!chatCollapsed"
+        class="rs-handle"
+        :class="{ dragging: chatR.dragging.value }"
+        @mousedown="chatR.startDrag($event, 'right')"
+      ></div>
+
+      <!-- 常驻 AI 对话栏：与办公/开发/剪辑共用同一份会话（chat.css 由下方 style src 引入） -->
+      <aside v-show="!chatCollapsed" class="shop-chat">
+        <div class="shop-chat-head">
+          <el-icon :size="13" class="shop-chat-icon"><ChatDotRound /></el-icon>
+          <span class="shop-chat-title">AI 助手</span>
+          <span class="shop-chat-spacer"></span>
+          <LeadToggle :model-value="lead" mode="shop" @update:model-value="onLeadChange" />
+          <button class="shop-chat-btn" title="收起对话" @click="chatCollapsed = true">
+            <el-icon :size="12"><ArrowRight /></el-icon>
+          </button>
+        </div>
+        <ChatMessageList />
+        <ChatInputArea />
+      </aside>
+
+      <!-- 对话栏收起后右下角的悬浮入口 -->
+      <button v-if="chatCollapsed" class="shop-chat-fab" title="展开 AI 对话" @click="chatCollapsed = false">
+        <el-icon :size="13"><ChatDotRound /></el-icon><span>AI</span>
+      </button>
     </section>
 
+    <ChatDialogs />
+
     <!-- ============ 新建 / 编辑弹窗 ============ -->
-    <el-dialog v-model="dialogVisible" :title="editing ? `编辑店铺 · ${form.shopName}` : '新建店铺 / 仓库'" width="560px">
+    <el-dialog v-model="dialogVisible" :title="editing ? `编辑店铺 · ${form.shopName}` : '新建店铺 / 仓库 / 物流服务'" width="560px">
       <el-form label-width="110px">
         <el-form-item label="平台" required>
           <el-select v-model="form.platform" :disabled="!!editing" class="shop-form-full">
-            <el-option v-for="p in shopPlatforms" :key="p.id" :label="p.label" :value="p.id" />
+            <el-option-group v-for="g in formPlatformGroups" :key="g.kind" :label="g.label">
+              <el-option v-for="p in g.items" :key="p.id" :label="p.label" :value="p.id" />
+            </el-option-group>
           </el-select>
         </el-form-item>
-        <el-form-item label="站点 / 市场">
-          <el-input v-model="form.site" :placeholder="isWarehouse ? '仓库名（如 US-West 海外仓）' : '如亚马逊 US/EU/JP、淘宝 taobao/tmall'" />
-          <span class="shop-form-tip">站点会影响佣金、税与竞争口径的判断，务必与实际经营站点一致。</span>
+        <el-form-item :label="formSiteLabel">
+          <el-input v-model="form.site" :placeholder="formSitePlaceholder" />
+          <span class="shop-form-tip">{{ formSiteTip }}</span>
         </el-form-item>
         <el-form-item label="店铺名" required>
           <el-input v-model="form.shopName" placeholder="唯一标识，如 家居店-US" />
@@ -171,9 +261,29 @@
           </el-radio-group>
           <span class="shop-form-tip">标记「生产」后，后续版本的写操作会对它做二次强确认。</span>
         </el-form-item>
-        <el-form-item label="API 凭据">
+        <!-- 物流商：凭据字段由后端下发（顺丰 partnerID/checkword/env；云途 baseUrl/客户编号/ApiSecret） -->
+        <template v-if="formPlatformKind === 'logistics' && formCredentials.length">
+          <el-form-item v-for="f in formCredentials" :key="f.key" :label="f.label" :required="!!f.required">
+            <el-select v-if="f.options" v-model="credForm[f.key]" class="shop-form-full">
+              <el-option v-for="o in f.options" :key="o.value" :label="o.label" :value="o.value" />
+            </el-select>
+            <el-input
+              v-else
+              v-model="credForm[f.key]"
+              :type="f.secret ? 'password' : 'text'"
+              :show-password="!!f.secret"
+              :placeholder="f.placeholder || ''"
+            />
+            <span v-if="f.hint" class="shop-form-tip">{{ f.hint }}</span>
+          </el-form-item>
+          <p class="shop-cred-note">凭据整组加密存储；密钥字段永不回显，编辑时留空表示沿用原值。</p>
+        </template>
+        <el-form-item v-else-if="formPlatformKind === 'logistics'" label="凭据">
+          <span class="shop-form-tip">该服务商还没有客户端，先登记即可；接好后再来这里填凭据。</span>
+        </el-form-item>
+        <el-form-item v-else label="API 凭据">
           <el-input v-model="form.secret" type="password" show-password :placeholder="editing ? '留空沿用原有凭据' : '可选；纯浏览器流程不需要'" />
-          <span class="shop-form-tip">仅当要用平台 API（如亚马逊 SP-API）时才需要。凭据加密存储，接口永不回显。</span>
+          <span class="shop-form-tip">仅当要用平台 API 时才需要（亚马逊 SP-API 的凭据 JSON）。凭据加密存储，接口永不回显。</span>
         </el-form-item>
         <el-form-item label="目录">
           <el-select v-model="form.groupId" clearable placeholder="未分组" class="shop-form-full">
@@ -196,16 +306,65 @@
 // 店铺运营控制台（/shop）。形态照 OpsConsole 的三段式（左栏资源 + 主区 + 页签），
 // 但**刻意只做 P0 能诚实交付的东西**：资源管理 + 配置自检 + 审计。
 // 不在这里假装"店铺概览指标"——那需要真实取数，而取数走对话里的 pageAgent。
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, Shop } from '@element-plus/icons-vue';
+import { Plus, Shop, ChatDotRound, ArrowRight } from '@element-plus/icons-vue';
 import ConsoleShell from '../../components/console/ConsoleShell.vue';
-import { setLead } from '../../stores/mode';
+import ChatMessageList from '../../components/chat/ChatMessageList.vue';
+import ChatInputArea from '../../components/chat/ChatInputArea.vue';
+import ChatDialogs from '../../components/chat/ChatDialogs.vue';
+import LeadToggle from '../../components/workbench/LeadToggle.vue';
+import { useResizable } from '../../composables/useResizable';
+import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
 import {
   shopConnections, shopGroups, shopPlatforms, shopActiveId, shopCheck, shopCheckId,
   shopAudit, SHOP_UNGROUPED,
   loadShopConsole, selectShop, createShop, updateShop, deleteShop, checkShop,
+  seedDemoShops, clearDemoShops, testShopLogistics, trackShopLogistics,
+  type ShopProbeResult, type ShopTrackResult,
 } from './shopSession';
+
+// 对话栏：宽度可拖拽并持久化（与运维/工作流同一个 useResizable）
+const chatR = useResizable('shop_chat', 380, 300, 760);
+const chatCollapsed = ref(false);
+/** 主导方：human=工作台居中+对话在右；ai=对话居中、工作台收起（LeadToggle 真实生效） */
+const lead = computed<LeadMode>(() => leadOf(activeMode.value));
+function onLeadChange(v: LeadMode): void {
+  setLead(activeMode.value, v);
+}
+
+type ShopKind = 'store' | 'warehouse' | 'logistics';
+const KIND_META: Record<ShopKind, { label: string; tag: 'info' | 'warning' | 'success' }> = {
+  store: { label: '店铺', tag: 'info' },
+  warehouse: { label: '仓储', tag: 'warning' },
+  logistics: { label: '物流', tag: 'success' },
+};
+function kindLabel(k: string): string {
+  return KIND_META[k as ShopKind]?.label ?? '店铺';
+}
+function kindTagType(k: string): 'info' | 'warning' | 'success' {
+  return KIND_META[k as ShopKind]?.tag ?? 'info';
+}
+
+/** 对接状态的诚实措辞：接口已知但客户端没接，就说没接 */
+function integrationLabel(i: { auth: string; client: string; enterprise?: boolean }): string {
+  if (i.client === 'ready') return 'API 客户端已实现';
+  if (i.client === 'pending') {
+    const auth = i.auth === 'app-key-secret' ? 'appKey/appSecret 签名接口'
+      : i.auth === 'api-key' ? 'API Key 接口'
+        : i.auth === 'oauth' ? 'OAuth 授权接口' : '开放平台接口';
+    return `${auth} · 客户端未接${i.enterprise ? ' · 需企业入驻' : ''}`;
+  }
+  return '仅登记，无 API 对接';
+}
+
+/** 口径速查按 店铺 → 仓储 → 物流 分组 */
+const refGroups = computed(() => (['store', 'warehouse', 'logistics'] as const)
+  .map((kind) => ({ kind, label: kindLabel(kind), items: shopPlatforms.value.filter((p) => p.kind === kind) }))
+  .filter((g) => g.items.length));
+
+/** 新建弹窗的平台下拉也按同一口径分组 */
+const formPlatformGroups = computed(() => refGroups.value);
 
 const tab = ref<'workbench' | 'audit' | 'reference'>('workbench');
 
@@ -255,7 +414,130 @@ function platformLabel(id: string): string {
   return shopPlatforms.value.find((p) => p.id === id)?.label || id;
 }
 
-const isWarehouse = computed(() => form.value.platform === 'warehouse');
+const activePlatformInfo = computed(() => shopPlatforms.value.find((p) => p.id === active.value?.platform));
+const activeKind = computed<ShopKind>(() => (activePlatformInfo.value?.kind ?? 'store') as ShopKind);
+const siteFieldLabel = computed(() => (activeKind.value === 'warehouse' ? '仓库' : activeKind.value === 'logistics' ? '服务范围' : '站点 / 市场'));
+
+const formPlatformKind = computed<ShopKind>(
+  () => (shopPlatforms.value.find((p) => p.id === form.value.platform)?.kind ?? 'store') as ShopKind,
+);
+const formSiteLabel = computed(() => (formPlatformKind.value === 'warehouse' ? '仓库名 / 站点' : formPlatformKind.value === 'logistics' ? '服务范围' : '站点 / 市场'));
+const formSitePlaceholder = computed(() => (formPlatformKind.value === 'warehouse'
+  ? '如 US-West 海外仓'
+  : formPlatformKind.value === 'logistics'
+    ? '如 华东 / 美西（可留空）'
+    : '如亚马逊 US/EU/JP、淘宝 taobao/tmall'));
+const formSiteTip = computed(() => (formPlatformKind.value === 'store'
+  ? '站点会影响佣金、税与竞争口径的判断，务必与实际经营站点一致。'
+  : formPlatformKind.value === 'logistics'
+    ? '物流商没有"站点"概念，这里只填合作范围，可留空。'
+    : '仓库名即口径，建议与服务商系统里的名称一致。'));
+
+// ---------- 物流凭据表单（由后端下发的 credentials 字段驱动） ----------
+const formPlatformInfo = computed(() => shopPlatforms.value.find((p) => p.id === form.value.platform));
+const formCredentials = computed(() => formPlatformInfo.value?.credentials || []);
+const credForm = ref<Record<string, string>>({});
+
+function resetCredForm(prefill?: Record<string, string>): void {
+  const o: Record<string, string> = {};
+  for (const f of formCredentials.value) o[f.key] = prefill?.[f.key] || f.defaultValue || '';
+  // 编辑时 credMeta 里的非密钥字段优先
+  if (prefill) for (const [k, v] of Object.entries(prefill)) if (!o[k]) o[k] = v;
+  credForm.value = o;
+}
+
+/** 切换平台 → 重建凭据字段（默认值会跟着变，如顺丰的 env） */
+watch(() => form.value.platform, () => {
+  if (dialogVisible.value) resetCredForm();
+});
+
+/** 组装凭据 JSON；全空返回空串（= 不配置/沿用旧值） */
+function buildCredsPayload(): string {
+  const o: Record<string, string> = {};
+  for (const f of formCredentials.value) {
+    const v = String(credForm.value[f.key] ?? '').trim();
+    if (v) o[f.key] = v;
+    else if (f.defaultValue) o[f.key] = f.defaultValue;
+  }
+  return Object.keys(o).length ? JSON.stringify(o) : '';
+}
+
+// ---------- 物流测试 / 轨迹查询 ----------
+const logisticsBusy = ref(false);
+const probeResult = ref<ShopProbeResult | null>(null);
+const trackResult = ref<ShopTrackResult | null>(null);
+const trackNo = ref('');
+const trackPhone = ref('');
+const logisticsReady = computed(() => activePlatformInfo.value?.integration?.client === 'ready');
+
+watch(shopActiveId, () => {
+  probeResult.value = null;
+  trackResult.value = null;
+  trackNo.value = '';
+  trackPhone.value = '';
+});
+
+async function runLogisticsTest(): Promise<void> {
+  const c = active.value;
+  if (!c) return;
+  logisticsBusy.value = true;
+  try {
+    const r = await testShopLogistics(c.id);
+    if (r.error) ElMessage.error(r.error);
+    else probeResult.value = r.result || null;
+  } finally {
+    logisticsBusy.value = false;
+  }
+}
+
+async function runTrack(): Promise<void> {
+  const c = active.value;
+  if (!c || !trackNo.value.trim()) return;
+  logisticsBusy.value = true;
+  try {
+    const r = await trackShopLogistics(c.id, {
+      trackingNo: trackNo.value.trim(),
+      phone: trackPhone.value.trim() || undefined,
+    });
+    if (r.error) ElMessage.error(r.error);
+    else trackResult.value = r.result || null;
+  } finally {
+    logisticsBusy.value = false;
+  }
+}
+
+// ---------- 演示数据 ----------
+const demoShops = computed(() => shopConnections.value.filter((c) => c.demo));
+const demoBusy = ref(false);
+
+async function makeDemos(): Promise<void> {
+  demoBusy.value = true;
+  try {
+    const err = await seedDemoShops();
+    if (err) ElMessage.error(err);
+    else ElMessage.success('已创建演示店铺 —— 全部带「演示」标记，可一键清空');
+  } finally {
+    demoBusy.value = false;
+  }
+}
+
+async function clearDemos(): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `清空 ${demoShops.value.length} 条演示店铺？只会删除带「演示」标记的记录，你自己登记的一条不动。`,
+      '清空演示数据',
+      { type: 'warning' },
+    );
+  } catch { return; }
+  demoBusy.value = true;
+  try {
+    const err = await clearDemoShops();
+    if (err) ElMessage.error(err);
+    else ElMessage.success('演示数据已清空');
+  } finally {
+    demoBusy.value = false;
+  }
+}
 
 // ---------- 表单 ----------
 const dialogVisible = ref(false);
@@ -270,6 +552,7 @@ function resetForm(): void {
 function openCreate(): void {
   editing.value = '';
   resetForm();
+  resetCredForm();
   dialogVisible.value = true;
 }
 
@@ -281,11 +564,29 @@ function openEdit(): void {
     platform: c.platform, site: c.site, shopName: c.shopName, sellerId: c.sellerId || '',
     tag: c.tag || '', secret: '', groupId: c.groupId || '', note: c.note || '',
   };
+  // 非密钥字段（partnerID / customerNo / env）回填；密钥永远留空
+  resetCredForm(c.credMeta);
   dialogVisible.value = true;
 }
 
 async function submit(): Promise<void> {
   if (!form.value.shopName.trim()) { ElMessage.warning('店铺名必填'); return; }
+
+  // 物流连接：凭据按服务商声明的字段组装成 JSON（整组加密存储）
+  let secret = form.value.secret;
+  const logisticsWithSchema = formPlatformKind.value === 'logistics' && formCredentials.value.length > 0;
+  if (logisticsWithSchema) {
+    const anyFilled = formCredentials.value.some((f) => String(credForm.value[f.key] ?? '').trim());
+    if (anyFilled) {
+      // 编辑时密钥字段可留空（沿用旧值），其余必填项仍需填写
+      const missing = formCredentials.value
+        .filter((f) => f.required && !String(credForm.value[f.key] ?? '').trim() && !(editing.value && f.secret))
+        .map((f) => f.label);
+      if (missing.length) { ElMessage.warning(`请填写：${missing.join('、')}`); return; }
+    }
+    secret = buildCredsPayload();
+  }
+
   saving.value = true;
   try {
     const payload = {
@@ -294,7 +595,7 @@ async function submit(): Promise<void> {
       shopName: form.value.shopName.trim(),
       sellerId: form.value.sellerId.trim() || undefined,
       tag: form.value.tag || undefined,
-      secret: form.value.secret,
+      secret,
       groupId: form.value.groupId || undefined,
       note: form.value.note.trim() || undefined,
     };
@@ -335,14 +636,18 @@ async function removeShop(): Promise<void> {
   else ElMessage.success('已删除');
 }
 
-/** 切到 AI 主导：对话居中，便于直接下分析指令 */
+/** 切到 AI 主导：对话居中（工作台收起），便于直接下分析指令 */
 function goAiLed(): void {
   setLead('shop', 'ai');
-  ElMessage.info('已切到 AI 主导 —— 目标框已让给对话');
+  ElMessage.info('已切到 AI 主导 —— 对话已占主区，右上角的切换按钮可切回工作台');
 }
 
 onMounted(() => { void loadShopConsole(); });
 </script>
+
+<!-- 对话区样式来自 chat.css（与办公/开发/剪辑同一份）：.messages 的 flex/滚动/内边距都在那里，
+     不引就会「消息顶到最上沿 + 被上方条压住」。 -->
+<style src="./chat.css"></style>
 
 <style scoped>
 /* ★ 布局盒子（左栏 + 分隔条 + 折叠条 + 主区）已交给 components/console/ConsoleShell.vue，
@@ -380,7 +685,56 @@ onMounted(() => { void loadShopConsole(); });
 .shop-item-site { font-size: 11px; color: var(--el-text-color-secondary); white-space: nowrap; }
 .shop-empty { font-size: 13px; color: var(--el-text-color-regular); }
 .shop-empty-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; }
-.shop-main { min-width: 0; overflow: auto; }
+.shop-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; gap: 6px; position: relative; }
+.shop-work { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+
+/* ===== 常驻 AI 对话栏 =====
+   human：工作台占主区、对话固定宽在右；ai：工作台收起、对话占主区（LeadToggle 切换）。 */
+.shop-chat {
+  flex: 0 0 var(--shop-chat-w, 380px); width: var(--shop-chat-w, 380px);
+  min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+  border-left: 1px solid var(--el-border-color-lighter);
+  padding-left: 6px;
+}
+.shop-main.is-lead-ai .shop-work { display: none; }
+.shop-main.is-lead-ai .shop-chat {
+  flex: 1 1 auto; width: auto; border-left: none; padding-left: 0;
+}
+.shop-chat-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; flex: none;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.shop-chat-icon { color: var(--el-color-primary); }
+.shop-chat-title { font-size: 12px; font-weight: 600; color: var(--el-text-color-regular); }
+.shop-chat-spacer { flex: 1; }
+.shop-chat-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border: none; border-radius: 6px;
+  background: transparent; color: var(--el-text-color-secondary); cursor: pointer;
+}
+.shop-chat-btn:hover { background: var(--el-fill-color-light); color: var(--el-color-primary); }
+
+/* LeadToggle 默认是右下角悬浮，在本页会压住发送按钮 —— 收进对话栏头部做内联按钮 */
+.shop-chat-head :deep(.lead-toggle-wrap) { position: static; right: auto; bottom: auto; z-index: auto; }
+.shop-chat-head :deep(.lead-fab) {
+  width: 24px; height: 24px; border-radius: 6px;
+  box-shadow: none; background: transparent;
+}
+.shop-chat-head :deep(.lead-fab:hover) { background: var(--el-fill-color-light); }
+.shop-chat-head :deep(.lead-fab-tip) { right: 0; bottom: auto; top: calc(100% + 6px); }
+
+/* 对话栏收起后的悬浮入口 */
+.shop-chat-fab {
+  position: absolute; right: 14px; bottom: 14px; z-index: 6;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 10px; border-radius: 16px; cursor: pointer;
+  border: 1px solid var(--el-border-color); background: var(--el-bg-color);
+  color: var(--el-color-primary); font-size: 12px;
+  box-shadow: var(--el-box-shadow-light);
+}
+.shop-chat-fab:hover { border-color: var(--el-color-primary); }
 .shop-tabs { height: 100%; }
 .shop-placeholder { padding: 24px 4px; color: var(--el-text-color-regular); }
 .shop-card {
@@ -396,6 +750,33 @@ onMounted(() => { void loadShopConsole(); });
 .shop-kv dt { color: var(--el-text-color-secondary); min-width: 72px; margin: 0; }
 .shop-kv dd { margin: 0; word-break: break-all; }
 .shop-card-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+/* ===== 物流：测试连接 + 轨迹 ===== */
+.shop-logi {
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+}
+.shop-logi-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.shop-logi-row + .shop-logi-row { margin-top: 8px; }
+.shop-logi-input { flex: 1; min-width: 200px; }
+.shop-logi-phone { width: 150px; }
+.shop-logi-note { font-size: 12px; line-height: 1.6; }
+.shop-logi-note.ok { color: var(--el-color-success); }
+.shop-logi-note.err { color: var(--el-color-danger); }
+.shop-logi-result {
+  margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+  font-size: 12px; background: var(--el-fill-color-lighter);
+}
+.shop-logi-result.ok { background: var(--el-color-success-light-9); }
+.shop-logi-result.err { background: var(--el-color-danger-light-9); }
+.shop-logi-result-head { margin: 0; font-weight: 600; line-height: 1.6; }
+.shop-logi-events { margin: 8px 0 0; padding-left: 16px; max-height: 260px; overflow: auto; }
+.shop-logi-events li { line-height: 1.8; display: flex; gap: 8px; flex-wrap: wrap; }
+.shop-logi-time { color: var(--el-text-color-secondary); white-space: nowrap; }
+.shop-logi-loc { color: var(--el-color-primary); white-space: nowrap; }
+.shop-logi-desc { flex: 1; min-width: 180px; }
+.shop-logi-status { color: var(--el-text-color-secondary); }
+.shop-cred-note { margin: 0 0 8px 110px; font-size: 12px; color: var(--el-text-color-secondary); }
 .shop-check { border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
 .shop-check.ok { background: var(--el-color-success-light-9); border: 1px solid var(--el-color-success-light-7); }
 .shop-check.err { background: var(--el-color-warning-light-9); border: 1px solid var(--el-color-warning-light-7); }
@@ -409,8 +790,28 @@ onMounted(() => { void loadShopConsole(); });
 .shop-form-tip { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
 .shop-audit { margin-top: 4px; }
 
+/* 演示数据入口：贴在左栏底部，不占资源列表的视觉重心 */
+.shop-demo {
+  margin-top: auto; padding-top: 8px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+}
+.shop-demo-hint { font-size: 11px; color: var(--el-text-color-secondary); }
+
 /* 「口径速查」页签 */
 .shop-ref-lead { margin: 0 0 12px; }
+.shop-ref-group { margin-bottom: 16px; }
+.shop-ref-group-title {
+  font-size: 12px; font-weight: 600; color: var(--el-text-color-regular);
+  margin: 0 0 8px;
+}
+.shop-ref-api {
+  font-size: 11px; margin: 8px 0 0; line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+.shop-ref-api a { margin-left: 6px; color: var(--el-color-primary); }
+.shop-ref-api.is-pending { color: var(--el-color-warning); }
+.shop-ref-api.is-ready { color: var(--el-color-success); }
 .shop-ref-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
 .shop-ref-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 12px 14px; }
 .shop-ref-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; }

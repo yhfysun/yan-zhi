@@ -19,11 +19,15 @@ export interface ShopConnection {
   tag?: string;
   note?: string;
   groupId?: string;
+  /** 演示数据标记（一键清空只删这些） */
+  demo?: boolean;
   createdAt: number;
   lastCheckAt?: number;
   /** 后端算好的派生字段：是否已配置凭据（密文永不回显）、是否生产店铺 */
   hasSecret: boolean;
   isProduction: boolean;
+  /** 凭据里的非密钥字段回显（partnerID / customerNo / env 等），编辑时预填 */
+  credMeta?: Record<string, string>;
 }
 
 export interface ShopGroup {
@@ -32,14 +36,57 @@ export interface ShopGroup {
   createdAt: number;
 }
 
+/** 凭据字段（由后端 /platforms 下发，控制台据此渲染表单） */
+export interface ShopCredentialField {
+  key: string;
+  label: string;
+  placeholder?: string;
+  required?: boolean;
+  secret?: boolean;
+  hint?: string;
+  options?: Array<{ label: string; value: string }>;
+  defaultValue?: string;
+}
+
+export interface ShopTrackEvent {
+  time: string;
+  description: string;
+  location?: string;
+  status?: string;
+}
+
+export interface ShopTrackResult {
+  ok: boolean;
+  provider: string;
+  trackingNo: string;
+  events: ShopTrackEvent[];
+  message?: string;
+  step?: string;
+}
+
+export interface ShopProbeResult {
+  ok: boolean;
+  message: string;
+  step?: string;
+}
+
 export interface ShopPlatformInfo {
   id: string;
   label: string;
-  kind: 'store' | 'warehouse';
+  kind: 'store' | 'warehouse' | 'logistics';
   entryUrl: string;
   loginNote: string;
   /** 该平台该盯哪些指标（控制台「口径速查」渲染；只读参考） */
   keyMetrics: string[];
+  /** 对接状态：client=none 仅登记 / pending 接口已知未接 / ready 已实现客户端 */
+  integration?: {
+    docsUrl?: string;
+    auth: 'none' | 'api-key' | 'app-key-secret' | 'oauth' | 'enterprise';
+    client: 'none' | 'pending' | 'ready';
+    enterprise?: boolean;
+  };
+  /** 物流商的凭据字段（没有客户端时缺省） */
+  credentials?: ShopCredentialField[];
 }
 
 export interface ShopCheckResult {
@@ -163,6 +210,45 @@ export async function checkShop(id: string): Promise<string> {
   shopCheckId.value = id;
   await loadConnections();
   await loadAudit();
+  return '';
+}
+
+/** 物流凭据连通性测试（只读探活，用假单号，不碰真实运单） */
+export async function testShopLogistics(id: string): Promise<{ error: string; result?: ShopProbeResult }> {
+  const r = await api.post<ShopProbeResult>(`/plugin/shop-ops/connections/${id}/logistics/test`, {});
+  if (!('data' in r)) return { error: errText(r) };
+  await loadAudit();
+  return { error: '', result: r.data };
+}
+
+/** 运单轨迹查询（只读） */
+export async function trackShopLogistics(
+  id: string,
+  payload: { trackingNo: string; phone?: string },
+): Promise<{ error: string; result?: ShopTrackResult }> {
+  const r = await api.post<ShopTrackResult>(`/plugin/shop-ops/connections/${id}/logistics/track`, payload);
+  if (!('data' in r)) return { error: errText(r) };
+  await loadAudit();
+  return { error: '', result: r.data };
+}
+
+/** 一键创建演示店铺（幂等：同名跳过；后端只写 demo 标记的行） */
+export async function seedDemoShops(): Promise<string> {
+  const r = await api.post<{ created: number }>('/plugin/shop-ops/demo/seed', {});
+  if (!('data' in r)) return errText(r);
+  await loadConnections();
+  await loadAudit();
+  return '';
+}
+
+/** 一键清空演示店铺（★ 只删 demo 标记，真实登记一条不动） */
+export async function clearDemoShops(): Promise<string> {
+  const r = await api.delete<{ removed: number }>('/plugin/shop-ops/demo');
+  if (!('data' in r)) return errText(r);
+  await loadConnections();
+  await loadAudit();
+  shopCheck.value = null;
+  shopCheckId.value = '';
   return '';
 }
 

@@ -19,21 +19,44 @@ import { encrypt, decrypt } from '../utils/crypto.js';
 import { pushPluginAudit } from '../services/plugin-audit.js';
 import { isProductionTag } from './ops-shell-guard.js';
 import { parseSpApiCreds, spApiCheck } from '../services/amazon-sp-api.js';
+import {
+  credentialFieldsOf, logisticsClientOf, missingFields,
+  type CredentialField, type LogisticsCredentials,
+} from '../services/logistics/index.js';
 import { createLogger } from '../services/logger.js';
 
 const logger = createLogger('shop-ops');
 
 export const SHOP_OPS_ID = 'shop-ops';
 
+/**
+ * 对接状态。★ 必须诚实标注：`client` 表示客户端代码做没做，
+ * 而不是"服务商有没有 API" —— 大平台都有开放平台，但没有企业入驻与凭据时一行也跑不通。
+ */
+export interface ShopIntegration {
+  /** 官方开放平台文档。不确定时留空，宁可不给链接也不给错的 */
+  docsUrl?: string;
+  /** 认证方式 */
+  auth: 'none' | 'api-key' | 'app-key-secret' | 'oauth' | 'enterprise';
+  /** none=仅登记；pending=接口已知未接；ready=已实现客户端 */
+  client: 'none' | 'pending' | 'ready';
+  /** 是否要企业入驻 / 应用审核 / IP 白名单 */
+  enterprise?: boolean;
+}
+
 /** 支持的平台。entryUrl/loginNote/keyMetrics 给智能体与用户看：P0 的抓数全靠 pageAgent 打开这些页面。 */
 export interface ShopPlatform {
-  id: 'amazon' | 'taobao' | 'pdd' | '1688' | 'tiktok' | 'shopify' | 'warehouse';
+  id: 'amazon' | 'taobao' | 'pdd' | '1688' | 'tiktok' | 'shopify' | 'warehouse'
+    | 'sf-express' | 'jd-logistics' | 'cainiao' | '4px' | 'yunexpress' | 'winit';
   label: string;
-  kind: 'store' | 'warehouse';
+  kind: 'store' | 'warehouse' | 'logistics';
   entryUrl: string;
   loginNote: string;
   /** 该平台该盯哪些指标（控制台「口径速查」用；只读参考，不假装能自动取到） */
   keyMetrics: string[];
+  integration?: ShopIntegration;
+  /** 物流商的凭据字段（控制台按它渲染表单；没有客户端时缺省） */
+  credentials?: CredentialField[];
 }
 
 export const SHOP_PLATFORMS: readonly ShopPlatform[] = [
@@ -78,10 +101,81 @@ export const SHOP_PLATFORMS: readonly ShopPlatform[] = [
     entryUrl: '',
     loginNote: '多数是自有台账或服务商系统：没有统一入口，用导出的 Excel/CSV 放进任务目录 00-source 即可。',
     keyMetrics: ['入库预约与箱规/标签要求', '库存台账：在仓 / 在途 / 日均销 / 可售天数', '头程报价与门到门时效（含清关派送）', '长期仓储费与滞销库存'],
+    integration: { auth: 'none', client: 'none' },
+  },
+  {
+    id: 'winit', label: '万邑通海外仓（WINIT）', kind: 'warehouse',
+    entryUrl: 'https://www.winit.com.cn/',
+    loginNote: '服务商系统需客户账号；库存与入库单也可按页导出 CSV 放进 00-source。',
+    keyMetrics: ['海外仓在库/在途/库龄', '入库预约与收货差异', '出库时效与妥投率', '仓储费与附加费明细'],
+    // 万邑通有开放平台，但要客户账号开通才拿得到 appKey —— 代码客户端尚未实现
+    integration: { auth: 'app-key-secret', client: 'pending', enterprise: true },
+  },
+
+  // ===== 物流服务商（2026-10-21 增补）=====
+  // ★ 对接状态分两档，必须如实区分：
+  //   - ready：客户端已按官方文档实现（顺丰丰桥 / 云途 OMS），填凭据即可测试与查轨迹；
+  //     但**没有在真实账号上跑通过**，联调结果会如实返回错误码。
+  //   - pending：接口存在但需要企业入驻/客户端未接（4PX / 京东 / 菜鸟），只做登记与口径。
+  {
+    id: 'sf-express', label: '顺丰速运（丰桥）', kind: 'logistics',
+    entryUrl: 'https://www.sf-express.com/',
+    loginNote: '丰桥开放平台需企业入驻并申请应用（appKey/appSecret），运单轨迹按「路由查询」接口取；生产环境常常还要 IP 白名单。',
+    keyMetrics: ['运单轨迹与节点时效', '签收率与异常件（破损/丢失/退回）', '首重续重与偏远附加费', '揽收及时率'],
+    integration: { docsUrl: 'https://open.sf-express.com/', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: credentialFieldsOf('sf-express'),
+  },
+  {
+    id: 'jd-logistics', label: '京东物流', kind: 'logistics',
+    entryUrl: 'https://www.jdl.com/',
+    loginNote: '京东物流开放平台需企业开发者认证；轨迹/下单走签名接口，部分能力要服务商资质。',
+    keyMetrics: ['运单轨迹与时效达成', '签收/拒收与售后件', '运费与增值服务费', '仓配一体库存周转'],
+    integration: { docsUrl: 'https://open.jdl.com/', auth: 'app-key-secret', client: 'pending', enterprise: true },
+  },
+  {
+    id: 'cainiao', label: '菜鸟 / 菜鸟国际', kind: 'logistics',
+    entryUrl: 'https://www.cainiao.com/',
+    loginNote: '菜鸟开放平台主要面向商家与服务商，跨境线路需对应渠道开通；轨迹查询按渠道不同接口也不同。',
+    keyMetrics: ['跨境轨迹（揽收-干线-清关-派送）', '时效达成与异常滞留', '头程/尾程费用拆分', '妥投率与客诉'],
+    integration: { auth: 'app-key-secret', client: 'pending', enterprise: true },
+  },
+  {
+    id: '4px', label: '4PX 递四方', kind: 'logistics',
+    entryUrl: 'https://www.4px.com/',
+    loginNote: '4PX 开放平台需客户账号开通；轨迹、报价、下单分属不同接口，签名为 appKey+签名串。',
+    keyMetrics: ['轨迹节点与清关状态', '渠道时效对比（经济/标准/快线）', '计费重与体积重差异', '退件与丢件处理时效'],
+    integration: { auth: 'app-key-secret', client: 'pending', enterprise: true },
+  },
+  {
+    id: 'yunexpress', label: '云途物流', kind: 'logistics',
+    entryUrl: 'https://www.yunexpress.com/',
+    loginNote: '云途开放平台需客户账号申请 appKey/appSecret；轨迹与报价接口按渠道区分。',
+    keyMetrics: ['轨迹与妥投时效', '渠道报价与燃油附加', '异常件与赔付规则', '揽收截单时间'],
+    integration: { auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: credentialFieldsOf('yunexpress'),
   },
 ];
 
 const PLATFORM_BY_ID = new Map(SHOP_PLATFORMS.map((p) => [p.id, p]));
+
+/**
+ * 演示店铺（2026-10-21）：让空控制台一眼能看懂"这套东西怎么用"。
+ * ★ 全部带 demo 标记 + 「测试」标签：一键清空只删这些，且绝不代表任何真实账号。
+ * 名称刻意用「演示 ·」前缀，用户在列表里一眼能区分真假。
+ */
+const DEMO_CONNECTIONS: ReadonlyArray<{
+  platform: ShopPlatform['id'];
+  site: string;
+  shopName: string;
+  note: string;
+}> = [
+  { platform: 'amazon', site: 'US', shopName: '演示 · 亚马逊家居店', note: '演示数据：跨境家居类目，主看转化率与 ACoS。' },
+  { platform: 'taobao', site: 'tmall', shopName: '演示 · 天猫女装店', note: '演示数据：国内女装，主看 DSR 与退款率。' },
+  { platform: 'pdd', site: '拼多多', shopName: '演示 · 拼多多日用百货', note: '演示数据：低价走量，主看价格力与纠纷率。' },
+  { platform: '1688', site: '义乌', shopName: '演示 · 1688 家居货源', note: '演示数据：货源比价用，不代下单。' },
+  { platform: 'warehouse', site: 'US-West', shopName: '演示 · 美国海外仓', note: '演示数据：库存台账与可售天数。' },
+  { platform: 'sf-express', site: '', shopName: '演示 · 顺丰月结账号', note: '演示数据：物流商只登记，轨迹接口需 appKey/secret。' },
+];
 
 interface StoredConnection {
   id: string;
@@ -94,6 +188,8 @@ interface StoredConnection {
   tag?: string;
   note?: string;
   groupId?: string;
+  /** 演示数据标记：一键清空只删这些，绝不误伤用户真实登记 */
+  demo?: boolean;
   /** API 凭据密文（iv:tag:ct）。纯浏览器自动化的平台留空。 */
   secretEnc: string;
   createdAt: number;
@@ -109,7 +205,58 @@ interface ShopGroup {
 /** 出库视图：**永不回显凭据**，只回"有没有配置" */
 function toClientView(c: StoredConnection) {
   const { secretEnc, ...rest } = c;
-  return { ...rest, hasSecret: !!secretEnc, isProduction: isProductionTag(c.tag) };
+  return { ...rest, hasSecret: !!secretEnc, isProduction: isProductionTag(c.tag), credMeta: publicCredMeta(c) };
+}
+
+/**
+ * 凭据里的**非密钥字段**（如 partnerID / customerNo / env）回显给控制台，
+ * 编辑时不用重填；secret=true 的字段一律不回显。
+ */
+function publicCredMeta(c: StoredConnection): Record<string, string> | undefined {
+  if (!c.secretEnc) return undefined;
+  const fields = credentialFieldsOf(c.platform);
+  if (!fields.length) return undefined;
+  const creds = parseLogisticsCreds(c);
+  const out: Record<string, string> = {};
+  for (const f of fields) {
+    if (!f.secret && creds[f.key]) out[f.key] = creds[f.key];
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * 物流凭据：secretEnc 里存的是 JSON（如 { partnerID: "xxx", checkword: "***", env: "prod" }）。
+ * 解析失败一律当"未配置" —— 不把密文/异常栈带进日志或响应。
+ */
+function parseLogisticsCreds(conn: StoredConnection): LogisticsCredentials {
+  if (!conn.secretEnc) return {};
+  try {
+    const raw = JSON.parse(decrypt(conn.secretEnc)) as Record<string, unknown>;
+    const out: LogisticsCredentials = {};
+    for (const [k, v] of Object.entries(raw || {})) out[k] = String(v ?? '');
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 编辑物流连接时，前端拿不到已保存的密钥（永不回显）—— 空字段沿用旧值。
+ * 只对"JSON 对象凭据"生效；解析不了就原样返回（交给 buildConnection 按旧逻辑处理）。
+ */
+function mergeLogisticsSecret(newSecret: string, base?: StoredConnection): string {
+  if (!newSecret || !base?.secretEnc) return newSecret;
+  try {
+    const next = JSON.parse(newSecret) as Record<string, unknown>;
+    const prev = JSON.parse(decrypt(base.secretEnc)) as Record<string, unknown>;
+    if (!next || typeof next !== 'object' || !prev || typeof prev !== 'object') return newSecret;
+    for (const [k, v] of Object.entries(prev)) {
+      if (!String(next[k] ?? '').trim()) next[k] = v;
+    }
+    return JSON.stringify(next);
+  } catch {
+    return newSecret;
+  }
 }
 
 function textResult(text: string): McpCallResult {
@@ -200,8 +347,9 @@ function parseConnInput(body: Record<string, unknown>): ConnInput {
 /** 必填校验；返回错误文案，通过则返回 null */
 function validateConnInput(input: ConnInput): string | null {
   if (!input.shopName) return '店铺名（或仓库名）必填';
-  // 中转仓没有站点概念（仓库名即 site），其余平台站点必填：站点决定佣金/税/竞争口径
-  if (input.platform !== 'warehouse' && !input.site) return '站点/市场必填（如亚马逊 US/EU/JP、淘宝 taobao/tmall）';
+  // 只有店铺类才有"站点"概念：中转仓/物流商的名称本身即口径，不能强制填站点
+  const platform = PLATFORM_BY_ID.get(input.platform);
+  if (platform?.kind === 'store' && !input.site) return '站点/市场必填（如亚马逊 US/EU/JP、淘宝 taobao/tmall）';
   return null;
 }
 
@@ -239,10 +387,22 @@ function checkConnection(conn: StoredConnection): { ok: boolean; issues: string[
   if (platform && platform.kind === 'warehouse') {
     hints.push('中转仓/海外仓没有统一后台：把服务商导出的 Excel/CSV 放进任务目录的 00-source 再分析。');
   }
-  if (platform?.entryUrl) hints.push(`卖家后台入口：${platform.entryUrl}`);
+  if (platform && platform.kind === 'logistics') {
+    const hasClient = !!logisticsClientOf(platform.id);
+    hints.push(hasClient
+      ? '已实现轨迹查询客户端：按下面的字段填好凭据后，可在工作台点「测试连接」并查询运单轨迹。'
+      : '该服务商客户端未接（需要企业入驻与 appKey/secret 才能联调），本版本只做登记与口径，轨迹请查官网或用导出的账单。');
+    if (platform.integration?.docsUrl) hints.push(`开放平台文档：${platform.integration.docsUrl}`);
+  }
+  if (platform?.entryUrl) {
+    const entryLabel = platform.kind === 'store' ? '卖家后台入口' : platform.kind === 'logistics' ? '服务商官网' : '服务商入口';
+    hints.push(`${entryLabel}：${platform.entryUrl}`);
+  }
   if (platform?.loginNote) hints.push(platform.loginNote);
   if (!conn.secretEnc) {
-    hints.push('未配置 API 凭据 —— 纯浏览器流程不需要它；若要用平台 API（如亚马逊 SP-API）再补。');
+    hints.push(platform?.kind === 'logistics'
+      ? '未配置开放平台凭据（appKey / appSecret）—— 物流接口必须先配凭据，配置后仍需客户端支持才调得通。'
+      : '未配置 API 凭据 —— 纯浏览器流程不需要它；若要用平台 API（如亚马逊 SP-API）再补。');
   }
   if (isProductionTag(conn.tag)) {
     hints.push('★ 该店铺标记为「生产」：后续版本的写操作会对它做二次强确认，请确认标记正确。');
@@ -287,7 +447,7 @@ export function makeShopTools(): BuiltInTool[] {
     inputSchema: {
       type: 'object',
       properties: {
-        platform: { type: 'string', description: 'amazon / taobao / pdd / 1688 / tiktok / shopify / warehouse' },
+        platform: { type: 'string', description: 'amazon / taobao / pdd / 1688 / tiktok / shopify / warehouse / winit / sf-express / jd-logistics / cainiao / 4px / yunexpress' },
         site: { type: 'string', description: '站点/市场：亚马逊 US/EU/JP、淘宝 taobao/tmall；中转仓可留空' },
         shopName: { type: 'string', description: '店铺名（或仓库名），唯一标识' },
         sellerId: { type: 'string', description: '卖家 ID（可选，用于对账）' },
@@ -396,6 +556,56 @@ export function makeShopTools(): BuiltInTool[] {
         return [head, ...lines].join('\n');
       });
       return textResult(blocks.join('\n\n'));
+    },
+  };
+
+  // ---------- 物流轨迹（只读，不涉及写闸门） ----------
+  //
+  // 凭据由用户在控制台按服务商字段填写（加密存 secretEnc），工具只消费、不回显。
+  // 未实现客户端的服务商明确拒绝，并指出当前支持哪两家 —— 不假装能查。
+  const shopTrackQuery: BuiltInTool = {
+    name: 'shop_track_query',
+    description:
+      '查询物流运单轨迹。仅支持已实现客户端的服务商（顺丰丰桥 sf-express、云途 yunexpress）；'
+      + '先用 conn_list 找到对应的物流连接，凭据由用户在控制台填写。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '物流连接名（按名称定位）' },
+        trackingNo: { type: 'string', description: '运单号（云途也接受跟踪号）' },
+        phone: { type: 'string', description: '可选：顺丰收寄人手机号后四位' },
+        orderNo: { type: 'string', description: '可选：按客户订单号查询' },
+      },
+      required: ['shopName', 'trackingNo'],
+    },
+    execute: async (args) => {
+      const name = String(args.shopName || '').trim();
+      const trackingNo = String(args.trackingNo || '').trim();
+      if (!trackingNo) return textResult('运单号为空。');
+      const conn = (await loadConnections()).find((c) => c.shopName === name);
+      if (!conn) return textResult(`未找到连接「${name}」—— 先用 conn_list 看看已登记了哪些。`);
+      const client = logisticsClientOf(conn.platform);
+      if (!client) {
+        return textResult(`「${conn.shopName}」的服务商「${conn.platform}」还没有客户端（当前支持：顺丰丰桥 sf-express / 云途 yunexpress）。先按口径查官网或导出账单。`);
+      }
+      const creds = parseLogisticsCreds(conn);
+      const miss = missingFields(client, creds);
+      if (miss.length) {
+        return textResult(`「${conn.shopName}」凭据不完整：缺 ${miss.join('、')}。请在「店铺运营」控制台编辑该连接补上。`);
+      }
+      const r = await client.track(creds, {
+        trackingNo,
+        phone: args.phone ? String(args.phone) : undefined,
+        orderNo: args.orderNo ? String(args.orderNo) : undefined,
+      });
+      await audit('logistics.track', { connection: conn.shopName, detail: trackingNo, ok: r.ok });
+      if (!r.ok) return textResult(`查询失败（${r.step || 'api'}）：${r.message || '未知错误'}`);
+      const lines = r.events.map((e) => `- ${e.time}${e.location ? ` ${e.location}` : ''} ${e.description}${e.status ? `（${e.status}）` : ''}`);
+      return textResult([
+        `${r.provider} · ${r.trackingNo}`,
+        r.message || '',
+        ...(lines.length ? lines : ['（暂无轨迹）']),
+      ].filter(Boolean).join('\n'));
     },
   };
 
@@ -845,7 +1055,7 @@ export function makeShopTools(): BuiltInTool[] {
 
   return [
     connList, connCreate, connUpdate, connDelete, connCheck,
-    spApiCheckTool,
+    spApiCheckTool, shopTrackQuery,
     priceUpdate, stockUpdate, listingPublish, listingCreate, campaignApply, replySend, orderPlace,
     writeLog,
   ];
@@ -866,6 +1076,8 @@ export const shopOpsManifest: PluginManifest = {
     tools: [
       'conn_list', 'conn_create', 'conn_update', 'conn_delete', 'conn_check',
       'shop_sp_api_check',
+      // 只读物流轨迹（顺丰丰桥 / 云途，需要用户先在控制台填凭据）
+      'shop_track_query',
       // 七个受闸门约束的写动作（未确认一律拒绝执行）
       'shop_price_update', 'shop_stock_update', 'shop_listing_publish', 'shop_listing_create',
       'shop_campaign_apply', 'shop_reply_send', 'shop_order_place',
@@ -882,7 +1094,7 @@ export const shopOpsManifest: PluginManifest = {
     properties: {
       defaultPlatform: {
         type: 'string',
-        description: '新建连接时默认选中的平台（amazon / taobao / pdd / 1688 / tiktok / shopify / warehouse）',
+        description: '新建连接时默认选中的平台（amazon / taobao / pdd / 1688 / tiktok / shopify / warehouse / winit / sf-express / jd-logistics / cainiao / 4px / yunexpress）',
       },
     },
   },
@@ -971,7 +1183,10 @@ const shopOpsModule: PluginModule = {
         if (list.some((c) => c.id !== id && c.shopName === input.shopName)) {
           failRes(res, 409, `店铺「${input.shopName}」已存在`); return;
         }
-        list[idx] = buildConnection(input, base);
+        list[idx] = buildConnection(
+          input.secret ? { ...input, secret: mergeLogisticsSecret(input.secret, base) } : input,
+          base,
+        );
         try {
           await saveConnections(list);
         } catch (e) { failRes(res, 500, (e as Error).message); return; }
@@ -1029,6 +1244,88 @@ const shopOpsModule: PluginModule = {
         } catch { /* 时间戳写不进不影响自检结论 */ }
         await audit('connection.check', { connection: conn.shopName, ok: result.ok });
         jsonRes(res).json({ data: result });
+      });
+
+      // 物流：凭据连通性测试（只读探活；用一个不存在的单号，不碰用户真实运单）
+      r.post('/connections/:id/logistics/test', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const conn = (await loadConnections()).find((c) => c.id === id);
+        if (!conn) { failRes(res, 404, '店铺连接不存在'); return; }
+        const client = logisticsClientOf(conn.platform);
+        if (!client) { failRes(res, 400, '该服务商还没有客户端（当前支持：顺丰丰桥 / 云途）'); return; }
+        try {
+          const result = await client.probe(parseLogisticsCreds(conn));
+          await audit('logistics.test', { connection: conn.shopName, ok: result.ok });
+          jsonRes(res).json({ data: result });
+        } catch (e) {
+          await audit('logistics.test', { connection: conn.shopName, ok: false });
+          failRes(res, 500, (e as Error).message);
+        }
+      });
+
+      // 物流：运单轨迹查询（只读）
+      r.post('/connections/:id/logistics/track', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const trackingNo = String(body.trackingNo || '').trim();
+        if (!trackingNo) { failRes(res, 400, '运单号必填'); return; }
+        const conn = (await loadConnections()).find((c) => c.id === id);
+        if (!conn) { failRes(res, 404, '店铺连接不存在'); return; }
+        const client = logisticsClientOf(conn.platform);
+        if (!client) { failRes(res, 400, '该服务商还没有客户端（当前支持：顺丰丰桥 / 云途）'); return; }
+        try {
+          const result = await client.track(parseLogisticsCreds(conn), {
+            trackingNo,
+            phone: body.phone ? String(body.phone) : undefined,
+            orderNo: body.orderNo ? String(body.orderNo) : undefined,
+          });
+          await audit('logistics.track', { connection: conn.shopName, detail: trackingNo, ok: result.ok });
+          jsonRes(res).json({ data: result });
+        } catch (e) {
+          await audit('logistics.track', { connection: conn.shopName, detail: trackingNo, ok: false });
+          failRes(res, 500, (e as Error).message);
+        }
+      });
+
+      // 演示数据：一键创建（幂等：同名已存在则跳过）
+      r.post('/demo/seed', async (_req: unknown, res: unknown) => {
+        const list = await loadConnections();
+        let created = 0;
+        for (const d of DEMO_CONNECTIONS) {
+          if (list.some((c) => c.shopName === d.shopName)) continue;
+          list.push({
+            id: `shop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            platform: d.platform,
+            site: d.site,
+            shopName: d.shopName,
+            tag: '测试',
+            note: d.note,
+            secretEnc: '',
+            createdAt: Date.now(),
+            demo: true,
+          });
+          created++;
+        }
+        if (created) {
+          try {
+            await saveConnections(list);
+          } catch (e) { failRes(res, 500, (e as Error).message); return; }
+          await audit('demo.seed', { connection: `新增 ${created} 条演示店铺`, ok: true });
+        }
+        jsonRes(res).json({ data: { created } });
+      });
+
+      // 演示数据：一键清空（★ 只删 demo 标记，用户真实登记一条不动）
+      r.delete('/demo', async (_req: unknown, res: unknown) => {
+        const list = await loadConnections();
+        const removed = list.filter((c) => c.demo).length;
+        if (removed) {
+          try {
+            await saveConnections(list.filter((c) => !c.demo));
+          } catch (e) { failRes(res, 500, (e as Error).message); return; }
+          await audit('demo.clear', { connection: `删除 ${removed} 条演示店铺`, ok: true });
+        }
+        jsonRes(res).json({ data: { removed } });
       });
 
       // 审计（控制台「操作日志」页签）
