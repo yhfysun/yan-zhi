@@ -2126,6 +2126,12 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
     if (wc && extensionScripting) extensionScripting.attachToWebContents(wc);
     if (wc && extensionWebNavigation) extensionWebNavigation.attachToWebContents(wc);
   } catch { /* wcId 无效/已销毁则忽略，导航后会随新 did-finish 再注册 */ }
+  // ★ 2026-10-22：guest 就绪即补编号层。新开/后台 tab 的高亮请求往往早于 guest 注册，
+  //   那一刻必然以"浏览器未就绪"失败；这里补一次（幂等，runHighlight 内部先注入助手）。
+  if (highlightEnabled) {
+    const wcH = guestWebContents(tabId);
+    if (wcH) { runHighlight(wcH, true).catch(() => { /* 纯视觉辅助，失败静默 */ }); }
+  }
   return true;
 });
 ipcMain.handle('browser:wv:unregister', (_e, tabId) => {
@@ -3231,6 +3237,22 @@ async function injectYzAssistant(wc) {
       var el=document.elementFromPoint(x,y);if(el){var o={bubbles:true,cancelable:true,clientX:x,clientY:y,view:window};
         el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mousedown',o));
         el.dispatchEvent(new MouseEvent('mouseup',o));el.dispatchEvent(new MouseEvent('click',o));}return el?el.tagName+'.'+(el.className||''):null;}
+    // ★ 2026-10-22：脚本驱动的交互（run_script 里 el.click() / dispatchEvent / 真实键入）也要让虚拟鼠标动起来。
+    //   捕获阶段只记录坐标、不改事件流；主进程在每个动作收尾都会读走 __yzLastCursor 并广播给宿主层光标。
+    document.addEventListener('click',function(e){
+      try{
+        var t=e.target, x=e.clientX, y=e.clientY;
+        if((!x&&!y)&&t&&t.getBoundingClientRect){var rr=t.getBoundingClientRect();x=rr.x+rr.width/2;y=rr.y+rr.height/2;}
+        if(x||y)window.__yzLastCursor={x:x,y:y,label:'点击',at:Date.now(),kind:'click'};
+      }catch(err){}
+    },true);
+    document.addEventListener('input',function(e){
+      try{
+        var t=e.target;if(!t||!t.getBoundingClientRect)return;
+        var rr=t.getBoundingClientRect();
+        window.__yzLastCursor={x:rr.x+rr.width/2,y:rr.y+rr.height/2,label:'输入',at:Date.now()};
+      }catch(err){}
+    },true);
     // ★ 受控组件兼容：React/Vue 会用原型属性覆盖 value setter，直接 el.value= 赋值不触发其 onChange。
     // 必须用原型上的原生 value setter（native setter）写入再派发 input 事件，框架才能感知到变化。
     function nativeValueSetter(el){
@@ -3507,7 +3529,7 @@ async function injectYzAssistant(wc) {
       /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
          改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
          ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
-      __yzVersion:4};
+      __yzVersion:5};
   })()`);
 }
 
@@ -3515,8 +3537,8 @@ async function injectYzAssistant(wc) {
 // 变化检测：这些 action 可能改变页面状态，执行后对比前后快照，防止模型盲操作死循环
 const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
 
-// 常驻元素编号高亮（2026-10-20）：用户开关「高亮编号」时置真，navigate/new_tab 收尾据此重注入。
-let highlightEnabled = false;
+// 常驻元素编号高亮（2026-10-20）：默认开启（用户要"一眼看到 AI 在操作哪"），面板开关可关。
+let highlightEnabled = true;
 
 /**
  * 常驻元素编号高亮：把「可点击元素描边 + 编号」画进页面，供用户在面板里**实时**看到 agent 的操作目标。
@@ -3530,7 +3552,7 @@ async function runHighlight(wc, on) {
     try { await Promise.race([injectYzAssistant(wc), new Promise((r) => setTimeout(r, 3000))]); } catch { /* ignore */ }
   }
   const overlayId = '__yz_highlight_overlay';
-  const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
+  const S = 'a,button,input,select,textarea,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=textbox],[role=combobox],[role=switch],[role=tab],[role=menuitem],[role=option],[role=treeitem],[onclick],[tabindex]';
   // ★ 注意：注入脚本是模板字符串，正文里**绝不能出现反引号**（否则提前闭合）。
   const js = `(function(){
     var A=window.__yzAssistant;if(!A)return{error:'页面助手未注入'};
@@ -3558,6 +3580,14 @@ async function runHighlight(wc, on) {
     if(!ov){ov=document.createElement('div');ov.id=OID;ov.style.cssText='position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647;';document.documentElement.appendChild(ov);}
     function paint(){
       ov.innerHTML='';
+      // ★ 2026-10-22：整页淡橙色罩 + 角标 —— 一眼看出"这一页正在被 AI 操作"。
+      //   pointer-events:none 不影响任何点击；编号框随后追加，自然画在色罩之上。
+      var tint=document.createElement('div');
+      tint.style.cssText='position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(249,115,22,0.06);box-shadow:inset 0 0 0 2px rgba(249,115,22,0.55);pointer-events:none;';
+      var tip=document.createElement('div');
+      tip.textContent='AI 正在操作本页';
+      tip.style.cssText='position:fixed;left:8px;top:8px;background:#f97316;color:#fff;font:bold 12px/18px sans-serif;padding:2px 9px;border-radius:9px;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25);';
+      ov.appendChild(tint);ov.appendChild(tip);
       var n=0;
       function walk(root){
         if(n>=250)return;
@@ -5108,7 +5138,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               var oid=${JSON.stringify(overlayId)};
               var prev=document.getElementById(oid);if(prev)prev.remove();
               var A=window.__yzAssistant;if(!A)return false;
-              var S='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
+              var S='a,button,input,select,textarea,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=textbox],[role=combobox],[role=switch],[role=tab],[role=menuitem],[role=option],[role=treeitem],[onclick],[tabindex]';
               var ov=document.createElement('div');ov.id=oid;
               ov.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
               function visible(el){var r=el.getBoundingClientRect();return r.width>=2&&r.height>=2&&r.top>=0&&r.left>=0&&r.bottom<=window.innerHeight&&r.right<=window.innerWidth;}
@@ -5146,7 +5176,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         // 穿透 iframe / Shadow DOM 收集可交互元素并编号注册（含 iframe 内弹窗元素）
         return await wc.executeJavaScript(`(function(){
           var A=window.__yzAssistant;
-          var S='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          var S='a,button,input,select,textarea,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=textbox],[role=combobox],[role=switch],[role=tab],[role=menuitem],[role=option],[role=treeitem],[onclick],label[for],summary,details,[tabindex]';
           var els=[];
           function visible(el){
             if(el.disabled===true)return false;
@@ -5213,7 +5243,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             if(n.nodeType===3){var t=n.textContent.trim();if(t)s+=t+' ';}
             else if(n.nodeType===1){var st=getComputedStyle(n);if(st.display!=='none'&&st.visibility!=='hidden'&&st.opacity!=='0')s+=visibleText(n);}
           });return s;}
-          var S='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          var S='a,button,input,select,textarea,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=textbox],[role=combobox],[role=switch],[role=tab],[role=menuitem],[role=option],[role=treeitem],[onclick],label[for],summary,details,[tabindex]';
           var els=[];
           function visible(el){
             if(el.disabled===true)return false;
@@ -5354,6 +5384,19 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         (function(){
           var a=${JSON.stringify(args)};var fields=a.fields||[];
           var filled=[],failed=[];
+          // ★ 2026-10-22：字段支持 index（与高亮层 / browser_click 同一注册表），
+          //   模型可以直接用页面上看到的编号填表，不必再换算 selector。
+          function pickEl(f){
+            if(!f)return null;
+            if(f.index!=null){
+              var e=(window.__yzElements&&window.__yzElements[f.index])||null;
+              if(e&&e.isConnected)return e;
+              if(window.__yzSelMap&&window.__yzSelMap[f.index]){var g=document.querySelector(window.__yzSelMap[f.index]);if(g)return g;}
+            }
+            if(f.selector)return window.__yzAssistant.resolve(f.selector);
+            return null;
+          }
+          function tagOf(f){return f.selector||('index '+f.index);}
           function setNativeValue(el,v){
             // 受控组件必须走 native setter，否则 React 的 value tracker 认不出变化
             try{
@@ -5363,8 +5406,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             try{el.value=v;return true;}catch(e){return false;}
           }
           for(var i=0;i<fields.length;i++){
-            var f=fields[i];var sel=f.selector;
-            var el=window.__yzAssistant.resolve(sel);
+            var f=fields[i];var sel=tagOf(f);
+            var el=pickEl(f);
             if(!el){
               // ★ 不再静默跳过：记入 failed（含原因），让调用方与模型都能看见
               failed.push({selector:sel,reason:'元素未找到'});
@@ -5443,13 +5486,38 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           var state=[];
           try{
             for(var si=0;si<fields.length;si++){
-              var sf=fields[si];var se=window.__yzAssistant.resolve(sf.selector);
+              var sf=fields[si];var se=pickEl(sf);
               var sv=se?(se.isContentEditable?String(se.innerText||''):String(se.value==null?'':se.value)):'(元素不存在)';
-              state.push({selector:sf.selector,value:sv.slice(0,60)});
+              state.push({selector:tagOf(sf),value:sv.slice(0,60)});
             }
           }catch(e2){}
+          // ★ 2026-10-22：可选在同一次调用里提交，省一次往返。不传 submit = 只填不提交。
+          //   submit:true → 找提交按钮点；submit:{selector|index} → 点指定按钮；都没有则 requestSubmit / 回车。
+          var submitRes=null;
+          if(a.submit){
+            try{
+              var sb=null;
+              if(typeof a.submit==='object'){
+                if(a.submit.index!=null)sb=(window.__yzElements&&window.__yzElements[a.submit.index])||null;
+                if(!sb&&a.submit.selector)sb=window.__yzAssistant.resolve(a.submit.selector);
+              }
+              if(!sb)sb=document.querySelector('button[type=submit],input[type=submit],[type=submit]');
+              if(sb){
+                sb.scrollIntoView({block:'center'});
+                var sr=sb.getBoundingClientRect();
+                window.__yzAssistant.showCursor(sr.x+sr.width/2,sr.y+sr.height/2,'提交');
+                sb.click();
+                submitRes={submitted:true,via:'click'};
+              }else{
+                var lf=fields.length?pickEl(fields[fields.length-1]):null;
+                if(lf&&lf.form&&lf.form.requestSubmit){lf.form.requestSubmit();submitRes={submitted:true,via:'requestSubmit'};}
+                else if(lf){lf.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));submitRes={submitted:true,via:'enter'};}
+                else submitRes={submitted:false,error:'未找到可提交的按钮或表单'};
+              }
+            }catch(se){submitRes={submitted:false,error:String(se&&se.message||se)};}
+          }
           setTimeout(function(){window.__yzAssistant.hideCursor();},500);
-          return{filled:filled.length,fields:filled,failed:failed,state:state};
+          return{filled:filled.length,fields:filled,failed:failed,state:state,submit:submitRes};
         })()`);
       }
       case 'submit_form': {
@@ -5537,7 +5605,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           var a=${JSON.stringify(args)};
           var maxDepth=a.depth||12,maxNodes=a.maxNodes||1000;
           var skip=new Set(['SCRIPT','STYLE','SVG','NOSCRIPT','TEMPLATE','LINK','META','HEAD']);
-          var SELS='a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],label[for],summary,details,[tabindex]';
+          var SELS='a,button,input,select,textarea,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=textbox],[role=combobox],[role=switch],[role=tab],[role=menuitem],[role=option],[role=treeitem],[onclick],label[for],summary,details,[tabindex]';
           var count=0,sameOriginIframes=0,crossOriginIframes=0,shadowRoots=0;
           function walk(el,depth){
             if(count>=maxNodes||skip.has(el.tagName)||depth>maxDepth)return null;

@@ -466,21 +466,25 @@ export class BrowserScreenshotTool implements BuiltInTool {
 // ========== 批量填写表单 ==========
 export class BrowserFillFormTool implements BuiltInTool {
   name = 'browser_fill_form';
-  description = 'Fill multiple form fields at once. Each field: {selector, value, type?} where type is "text"|"select"|"checkbox"|"radio". For select use label or value. For checkbox/radio set value true/false. 普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror/Draft.js）都支持：富文本字段直接传 selector 指向该 div，value 为要填的纯文本。返回 state 数组 = 各字段填写后的当前值（回读核验），据此判断是否全部生效。★ 幂等保护（2026-10-19）：已等于/包含目标值的字段会跳过（不清空重填）；同一字段连续 2 次未生效会标记 forceStop，此时停止重填并汇报，不要用 run_script 反复清空重写。';
+  description = 'Fill multiple form fields at once. Each field: {selector?, index?, value, type?} where type is "text"|"select"|"checkbox"|"radio". index 与高亮编号 / browser_click 同源，可直接替代 selector。For select use label or value. For checkbox/radio set value true/false. 普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror/Draft.js）都支持：富文本字段直接传 selector（或 index）指向该 div，value 为要填的纯文本。可选 submit：true=填完点页面上的提交按钮；{selector|index}=点指定按钮；不传=只填不提交。返回 state 数组 = 各字段填写后的当前值（回读核验）+ submit 结果。★ 幂等保护（2026-10-19）：已等于/包含目标值的字段会跳过（不清空重填）；同一字段连续 2 次未生效会标记 forceStop，此时停止重填并汇报，不要用 run_script 反复清空重写。';
   inputSchema = {
     type: 'object',
     properties: {
       fields: {
         type: 'array',
-        description: 'Array of {selector, value, type?, label?} to fill.',
+        description: 'Array of {selector?, index?, value, type?, label?} to fill. 优先用 index（来自 get_page_info / 页面高亮编号）。',
         items: { type: 'object' },
+      },
+      submit: {
+        description: '可选：填完后提交。true=点页面上的提交按钮；对象 {selector|index}=点指定按钮；不传=不提交。发布类动作仅当指令明确授权时才传 true。',
+        anyOf: [{ type: 'boolean' }, { type: 'object' }],
       },
     },
     required: ['fields'],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'fill_form', fields: args.fields }) as any;
+      const data = await callBrowserApi('/action', 'POST', { action: 'fill_form', fields: args.fields, submit: args.submit }) as any;
       // ★★★ B3（2026-10-10）：必须**透传逐字段失败原因**。
       //   此前只回 `Filled N fields: [...]` —— 而桌面端元素找不到时是**静默跳过**
       //   （不计数、不报错），于是"只填上 1 个、其余全没找到"在模型看来与
@@ -497,7 +501,11 @@ export class BrowserFillFormTool implements BuiltInTool {
           `建议：用 browser_get_page_info 重新获取元素编号与 selector 后重试。`,
         );
       }
-      return ok(`Filled ${data.filled} fields: ${JSON.stringify(data.fields)}`);
+      const sub = data?.submit;
+      const subLine = sub
+        ? (sub.submitted ? `；已提交（via ${sub.via || 'click'}）` : `；提交未成功：${sub.error || '未知原因'}`)
+        : '';
+      return ok(`Filled ${data.filled} fields: ${JSON.stringify(data.fields)}${subLine}`);
     } catch (e: any) { return err(e?.message || '填表单失败'); }
   }
 }
