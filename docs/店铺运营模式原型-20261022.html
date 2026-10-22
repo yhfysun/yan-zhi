@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>店铺运营模式 · 原型图 2026-10-22</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #e4e7ed;
+    --text: #303133;
+    --text2: #606266;
+    --text3: #909399;
+    --primary: #409eff;
+    --success: #67c23a;
+    --warning: #e6a23c;
+    --danger: #f56c6c;
+    --info: #909399;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); font-size: 13px; }
+
+  /* ===== 原型画布外壳 ===== */
+  .proto-note { max-width: 1440px; margin: 20px auto 0; padding: 12px 20px; background: #fffbe6; border: 1px solid #ffe58f; border-radius: 8px; color: #874d00; line-height: 1.8; }
+  .proto-note b { color: #ad6800; }
+  .screen-label { max-width: 1440px; margin: 28px auto 10px; padding: 0 4px; font-size: 15px; font-weight: 600; color: #1f2d3d; }
+  .screen-label .idx { display: inline-block; width: 22px; height: 22px; line-height: 22px; text-align: center; background: #1f2d3d; color: #fff; border-radius: 6px; margin-right: 8px; font-size: 12px; }
+  .screen-label small { color: var(--text3); font-weight: normal; margin-left: 10px; }
+  .frame { max-width: 1440px; margin: 0 auto 50px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.06); }
+
+  /* ===== 控制台骨架 ===== */
+  .console { display: flex; height: 860px; }
+  .aside { width: 232px; border-right: 1px solid var(--border); background: #fafbfc; display: flex; flex-direction: column; flex-shrink: 0; }
+  .aside-head { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .aside-head .t { font-weight: 600; }
+  .aside-body { flex: 1; overflow: auto; padding: 8px; }
+  .proj { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+  .proj:hover { background: #f0f2f5; }
+  .proj.active { background: #ecf5ff; color: var(--primary); font-weight: 600; }
+  .proj .cnt { margin-left: auto; color: var(--text3); font-size: 12px; }
+  .proj-badge { font-size: 10px; padding: 1px 5px; border-radius: 4px; }
+  .b-demo { background: #f4f4f5; color: #909399; }
+  .b-test { background: #fdf6ec; color: #e6a23c; }
+  .b-prod { background: #fef0f0; color: #f56c6c; }
+
+  /* ===== 主区 ===== */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .toolbar { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .toolbar .shop-name { font-size: 15px; font-weight: 600; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .seg button { border: none; background: #fff; padding: 5px 12px; font-size: 12px; color: var(--text2); cursor: pointer; border-right: 1px solid var(--border); }
+  .seg button:last-child { border-right: none; }
+  .seg button.on { background: var(--primary); color: #fff; }
+  .seg.demo button.on { background: #909399; }
+  .seg.prod button.on { background: var(--danger); }
+  .tb-label { color: var(--text3); font-size: 12px; }
+  .tb-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .btn { border: 1px solid var(--border); background: #fff; border-radius: 7px; padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text); }
+  .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .btn.plain { color: var(--primary); border-color: #b3d8ff; background: #ecf5ff; }
+  .btn.sm { padding: 3px 9px; font-size: 12px; border-radius: 5px; }
+  .btn.link { border: none; background: none; color: var(--primary); padding: 2px 4px; }
+
+  .tabsbar { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+  .tabitem { padding: 10px 16px; cursor: pointer; color: var(--text2); border-bottom: 2px solid transparent; }
+  .tabitem.on { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+  .tabitem .n { color: var(--text3); font-size: 11px; }
+
+  .content { flex: 1; overflow: auto; padding: 14px 16px; background: #fafbfc; }
+
+  /* ===== 概览 ===== */
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+  .kpi { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .kpi .l { color: var(--text3); font-size: 12px; }
+  .kpi .v { font-size: 22px; font-weight: 700; margin: 6px 0 2px; }
+  .kpi .h { font-size: 12px; color: var(--text3); }
+  .kpi .h.up { color: var(--success); }
+  .kpi .h.down { color: var(--danger); }
+  .two-col { display: grid; grid-template-columns: 1.6fr 1fr; gap: 12px; }
+  .card { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .card .card-t { font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
+  .card .card-t .more { font-size: 12px; color: var(--primary); font-weight: normal; cursor: pointer; }
+
+  /* ===== 表格 ===== */
+  table { width: 100%; border-collapse: collapse; background: #fff; }
+  th { text-align: left; font-weight: 600; color: var(--text2); font-size: 12px; padding: 9px 10px; border-bottom: 1px solid var(--border); background: #fafbfc; white-space: nowrap; }
+  td { padding: 9px 10px; border-bottom: 1px solid #f0f2f5; vertical-align: middle; }
+  tr:hover td { background: #f5f7fa; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 11px; }
+  .tg-online { background: #f0f9eb; color: var(--success); }
+  .tg-offline { background: #f4f4f5; color: var(--info); }
+  .tg-draft { background: #fdf6ec; color: var(--warning); }
+  .tg-pending { background: #fdf6ec; color: var(--warning); }
+  .tg-paid { background: #ecf5ff; color: var(--primary); }
+  .tg-sourcing { background: #f0f9eb; color: var(--success); }
+  .tg-shipped { background: #ecf5ff; color: var(--primary); }
+  .tg-completed { background: #f0f9eb; color: var(--success); }
+  .tg-refunded { background: #fef0f0; color: var(--danger); }
+  .tg-warn { background: #fdf6ec; color: var(--warning); }
+  .sku-name { display: flex; align-items: center; gap: 8px; }
+  .thumb { width: 34px; height: 34px; border-radius: 6px; background: linear-gradient(135deg,#e8eef5,#d6e2ee); display: inline-flex; align-items: center; justify-content: center; color: #b0bcc8; font-size: 15px; flex-shrink: 0; }
+  .nm { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .src-ref { font-size: 11px; color: var(--text3); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: middle; }
+  .mono { font-family: Consolas, monospace; font-size: 12px; color: var(--text2); }
+  .muted { color: var(--text3); }
+  .profit-pos { color: var(--success); }
+  .stock-low { color: var(--warning); font-weight: 600; }
+  .stock-zero { color: var(--danger); }
+  .row-ops { white-space: nowrap; }
+  .checkbox { width: 14px; height: 14px; border: 1px solid #c0c4cc; border-radius: 3px; display: inline-block; vertical-align: middle; }
+  .checkbox.on { background: var(--primary); border-color: var(--primary); position: relative; }
+  .checkbox.on::after { content: "✓"; color: #fff; font-size: 10px; position: absolute; top: -1px; left: 1px; }
+
+  /* ===== AI 模式 ===== */
+  .ai-layout { flex: 1; display: flex; min-height: 0; }
+  .ai-result { flex: 1.4; border-right: 1px solid var(--border); background: #fafbfc; overflow: auto; padding: 14px 16px; }
+  .ai-chat { flex: 1; display: flex; flex-direction: column; background: #fff; min-width: 320px; }
+  .chat-head { padding: 10px 16px; border-bottom: 1px solid var(--border); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .chat-head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
+  .chat-msgs { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 92%; line-height: 1.65; }
+  .msg.user { align-self: flex-end; background: #ecf5ff; border: 1px solid #d9ecff; padding: 8px 12px; border-radius: 10px 10px 2px 10px; }
+  .msg.ai { align-self: flex-start; width: 92%; }
+  .msg .bubble { background: #f5f7fa; border: 1px solid #ebeef5; padding: 10px 12px; border-radius: 2px 10px 10px 2px; }
+  .ticket { background: #fff; border: 1px solid var(--border); border-left: 3px solid var(--warning); border-radius: 8px; padding: 12px 14px; margin-top: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.04); }
+  .ticket .tt { font-weight: 600; color: #ad6800; margin-bottom: 8px; }
+  .ticket .kv { display: flex; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+  .ticket .kv .k { color: var(--text3); width: 64px; flex-shrink: 0; }
+  .ticket .kv .delta-down { color: var(--success); font-weight: 600; }
+  .ticket-ops { margin-top: 10px; display: flex; gap: 8px; }
+  .result-toast { background: #f0f9eb; border: 1px solid #e1f3d8; border-radius: 8px; padding: 10px 12px; color: #529b2e; margin-top: 6px; }
+  .chat-input { border-top: 1px solid var(--border); padding: 10px 14px; }
+  .chat-input .box { border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px; color: var(--text3); }
+  .chat-input .hint { margin-top: 6px; font-size: 11px; color: var(--text3); }
+
+  /* ===== 内嵌平台后台 ===== */
+  .plat-steps { background: #ecf5ff; border-bottom: 1px solid #d9ecff; padding: 8px 16px; display: flex; align-items: center; gap: 10px; font-size: 12.5px; flex-wrap: wrap; }
+  .plat-steps .st { color: var(--primary); font-weight: 600; }
+  .plat-steps .arrow { color: #a0cfff; }
+  .plat-steps .done { margin-left: auto; display: flex; gap: 8px; }
+  .plat-view { flex: 1; background: #dfe4ea; display: flex; align-items: center; justify-content: center; position: relative; }
+  .plat-mock { width: 88%; height: 82%; background: #fff; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,.15); overflow: hidden; display: flex; flex-direction: column; }
+  .plat-mock .pm-bar { background: #f5f6f8; border-bottom: 1px solid var(--border); padding: 8px 14px; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text3); }
+  .pm-url { flex: 1; background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 4px 12px; color: var(--text2); font-size: 12px; }
+  .plat-mock .pm-body { flex: 1; display: flex; }
+  .pm-side { width: 150px; background: #fafbfc; border-right: 1px solid var(--border); padding: 10px 0; }
+  .pm-side div { padding: 8px 16px; color: var(--text2); }
+  .pm-side div.on { background: #ecf5ff; color: var(--primary); border-right: 2px solid var(--primary); }
+  .pm-main { flex: 1; padding: 14px; }
+  .pm-main .pm-t { font-weight: 600; margin-bottom: 10px; }
+  .pm-row { display: flex; gap: 10px; margin-bottom: 10px; }
+  .pm-field { flex: 1; }
+  .pm-field .fl { font-size: 11px; color: var(--text3); margin-bottom: 3px; }
+  .pm-field .fi { border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-size: 12px; color: var(--text2); background: #fff; }
+  .pm-table { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .pm-table .pmt-h { display: flex; background: #fafbfc; border-bottom: 1px solid var(--border); }
+  .pm-table .pmt-h div { padding: 7px 10px; font-size: 11px; color: var(--text2); flex: 1; }
+  .pm-table .pmt-r { display: flex; border-bottom: 1px solid #f0f2f5; }
+  .pm-table .pmt-r div { padding: 8px 10px; font-size: 12px; flex: 1; }
+  .pm-save { margin-top: 12px; display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* ===== 发货/轨迹 ===== */
+  .timeline { margin: 6px 0 0 6px; }
+  .tl-item { display: flex; gap: 10px; padding: 6px 0; }
+  .tl-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--primary); margin-top: 5px; flex-shrink: 0; }
+  .tl-item.done .tl-dot { background: var(--success); }
+  .tl-body .tt { font-size: 12.5px; }
+  .tl-body .tm { font-size: 11px; color: var(--text3); }
+
+  /* ===== 库存流水 ===== */
+  .move-in { color: var(--success); font-weight: 600; }
+  .move-out { color: var(--danger); font-weight: 600; }
+  .foot-note { max-width: 1440px; margin: 0 auto 60px; padding: 0 4px; color: var(--text3); font-size: 12px; line-height: 1.8; }
+</style>
+</head>
+<body>
+
+<div class="proto-note">
+  <b>店铺运营模式原型 · 2026-10-22</b>（配套 <b>docs/店铺运营模式重构方案-20261022.md</b>）<br>
+  概念分层：<b>店铺类型</b>＝演示 / 测试 / 生产（店铺属性）；<b>货源模式</b>＝有货源 / 无货源（店铺属性）；<b>人工 / AI</b>＝工作台切换（只决定谁操作，不改数据与权限）。<br>
+  共 6 屏：① 人工工作台·商品 ② 订单（无货源形态） ③ 发货与轨迹 ④ 仓储库存 ⑤ AI 工作台 ⑥ 平台后台内嵌。全部数据为合成演示值。
+</div>
+
+<!-- ======================= 屏 1：人工工作台 · 商品 ======================= -->
+<div class="screen-label"><span class="idx">1</span>人工工作台 · 商品页<small>表格/表单居中，对话靠边；顶部三个控件：店铺类型 / 货源模式 / 工作台模式</small></div>
+<div class="frame">
+  <div class="console">
+    <!-- 左栏 -->
+    <div class="aside">
+      <div class="aside-head">
+        <span class="t">项目</span>
+        <button class="btn sm plain">＋ 新建</button>
+      </div>
+      <div class="aside-body">
+        <div class="proj active">
+          <span>🏠 家居出海</span>
+          <span class="proj-badge b-demo">演示</span>
+          <span class="cnt">12</span>
+        </div>
+        <div class="proj">
+          <span>🧥 国内女装</span>
+          <span class="proj-badge b-test">测试</span>
+          <span class="cnt">8</span>
+        </div>
+        <div class="proj">
+          <span>📦 无货源百货</span>
+          <span class="proj-badge b-demo">演示</span>
+          <span class="cnt">6</span>
+        </div>
+        <div class="proj">
+          <span>🏭 自营旗舰</span>
+          <span class="proj-badge b-prod">生产</span>
+          <span class="cnt">24</span>
+        </div>
+        <div class="proj" style="margin-top:14px; color:var(--text3);">
+          <span>未归属资源</span>
+          <span class="cnt">2</span>
+        </div>
+        <div style="padding:12px 10px; border-top:1px dashed var(--border); margin-top:12px; color:var(--text3); font-size:12px; line-height:1.7;">
+          角标说明：项目显示<b>店铺类型</b>角标；点进项目后，每条店铺连接还显示<b>货源模式</b>。
+        </div>
+      </div>
+    </div>
+
+    <!-- 主区 -->
+    <div class="main">
+      <!-- 顶部工具条 -->
+      <div class="toolbar">
+        <span class="shop-name">演示 · 亚马逊家居店</span>
+        <span class="tb-label">店铺类型</span>
+        <div class="seg demo">
+          <button class="on">演示</button><button>测试</button><button>生产</button>
+        </div>
+        <span class="tb-label">货源模式</span>
+        <div class="seg">
+          <button class="on">有货源</button><button>无货源</button>
+        </div>
+        <span class="tb-label">工作台</span>
+        <div class="seg">
+          <button class="on">人工</button><button>AI</button>
+        </div>
+        <div class="tb-right">
+          <button class="btn plain">打开平台后台</button>
+          <button class="btn primary">＋ 新建商品</button>
+        </div>
+      </div>
+
+      <!-- 页签 -->
+      <div class="tabsbar">
+        <div class="tabitem on">商品（12）</div>
+        <div class="tabitem">概览</div>
+        <div class="tabitem">订单（86）</div>
+        <div class="tabitem">发货（64）</div>
+        <div class="tabitem">仓储</div>
+        <div class="tabitem">物流（2）</div>
+        <div class="tabitem">平台后台</div>
+        <div class="tabitem">操作日志</div>
+        <div class="tabitem">口径速查</div>
+      </div>
+
+      <!-- 商品表 -->
+      <div class="content">
+        <div class="card" style="padding:0;">
+          <div style="padding:10px 14px; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:center;">
+            <span class="checkbox on"></span>
+            <span class="muted">已选 3 项</span>
+            <button class="btn sm">批量上架</button>
+            <button class="btn sm">批量下架</button>
+            <button class="btn sm">批量改价</button>
+            <span style="flex:1"></span>
+            <span class="muted">搜索 SKU / 标题…</span>
+            <span style="border:1px solid var(--border); border-radius:6px; padding:4px 10px; color:var(--text3);">全部状态 ▾</span>
+            <span style="border:1px solid var(--border); border-radius:6px; padding:4px 10px; color:var(--text3);">全部类目 ▾</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:34px;"><span class="checkbox"></span></th>
+                <th>商品</th>
+                <th>货源</th>
+                <th>成本</th>
+                <th>售价</th>
+                <th>毛利</th>
+                <th>库存</th>
+                <th>状态</th>
+                <th>更新时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="checkbox on"></span></td>
+                <td><div class="sku-name"><span class="thumb">🪴</span><div><div class="nm">竹制收纳架 三层</div><div class="mono muted">SKU-001</div></div></div></td>
+                <td><span class="tag tg-online">自营</span></td>
+                <td>$8.20</td>
+                <td><b>$29.99</b></td>
+                <td class="profit-pos">$7.40</td>
+                <td><span class="stock-low">41</span> <span class="muted">(安全 30)</span></td>
+                <td><span class="tag tg-online">在售</span></td>
+                <td class="muted">10-22 09:12</td>
+                <td class="row-ops">
+                  <button class="btn link sm">下架</button>
+                  <button class="btn link sm">改价</button>
+                  <button class="btn link sm">改库存</button>
+                  <button class="btn link sm">编辑</button>
+                </td>
+              </tr>
+              <tr>
+                <td><span class="checkbox on"></span></td>
+                <td><div class="sku-name"><span class="thumb">🍳</span><div><div class="nm">硅胶厨具 6 件套</div><div class="mono muted">SKU-002</div></div></div></td>
+                <td><span class="tag tg-online">自营</span></td>
+                <td>$6.50</td>
+                <td><b>$24.99</b></td>
+                <td class="profit-pos">$5.80</td>
+                <td>128 <span class="muted">(安全 40)</span></td>
+                <td><span class="tag tg-online">在售</span></td>
+                <td class="muted">10-22 08:40</td>
+                <td class="row-ops">
+                  <button class="btn link sm">下架</button>
+                  <button class="btn link sm">改价</button>
+                  <button class="btn link sm">改库存</button>
+                  <button class="btn link sm">编辑</button>
+                </td>
+              </tr>
+              <tr>
+                <td><span class="checkbox on"></span></td>
+                <td><div class="sku-name"><span class="thumb">🧺</span><div><div class="nm">折叠沥水架 不锈钢</div><div class="mono muted">SKU-003</div></div></div></td>
+                <td><span class="tag tg-online">自营</span></td>
+                <td>$5.10</td>
+                <td><b>$18.99</b></td>
+                <td class="profit-pos">$4.10</td>
+                <td><span class="stock-zero">12</span> <span class="muted">(安全 30)</span> <span class="tag tg-warn">补货</span></td>
+                <td><span class="tag tg-online">在售</span></td>
+                <td class="muted">10-21 17:03</td>
+                <td class="row-ops">
+                  <button class="btn link sm">下架</button>
+                  <button class="btn link sm">改价</button>
+                  <button class="btn link sm">改库存</button>
+                  <button class="btn link sm">编辑</button>
+                </td>
+              </tr>
+              <tr>
+                <td><span class="checkbox"></span></td>
+                <td><div class="sku-name"><span class="thumb">💡</span><div><div class="nm">LED 感应夜灯</div><div class="mono muted">SKU-004</div></div></div></td>
+                <td><span class="tag tg-online">自营</span></td>
+                <td>$3.90</td>
+                <td><b>$15.99</b></td>
+                <td class="profit-pos">$3.20</td>
+                <td>302 <span class="muted">(安全 50)</span></td>
+                <td><span class="tag tg-offline">已下架</span></td>
+                <td class="muted">10-20 11:26</td>
+                <td class="row-ops">
+                  <button class="btn link sm">上架</button>
+                  <button class="btn link sm">改价</button>
+                  <button class="btn link sm">改库存</button>
+                  <button class="btn link sm">编辑</button>
+                </td>
+              </tr>
+              <tr>
+                <td><span class="checkbox"></span></td>
+                <td><div class="sku-name"><span class="thumb">🪑</span><div><div class="nm">儿童学习凳 加高</div><div class="mono muted">SKU-005</div></div></div></td>
+                <td><span class="tag tg-draft">1688</span></td>
+                <td>$9.80</td>
+                <td><b>$32.99</b></td>
+                <td class="profit-pos">$8.10</td>
+                <td>66 <span class="muted">(安全 30)</span></td>
+                <td><span class="tag tg-draft">草稿</span></td>
+                <td class="muted">10-19 15:47</td>
+                <td class="row-ops">
+                  <button class="btn link sm">上架</button>
+                  <button class="btn link sm">改价</button>
+                  <button class="btn link sm">改库存</button>
+                  <button class="btn link sm">编辑</button>
+                </td>
+              </tr>
+              <tr style="background:#fffbe6;">
+                <td><span class="checkbox"></span></td>
+                <td><div class="sku-name"><span class="thumb">🧸</span><div><div class="nm">毛绒玩偶 · 新品待定价</div><div class="mono muted">SKU-006</div></div></div></td>
+                <td><span class="tag tg-draft">1688</span></td>
+                <td class="muted">—</td>
+                <td class="muted">—</td>
+                <td class="muted">—</td>
+                <td>50</td>
+                <td><span class="tag tg-draft">草稿</span></td>
+                <td class="muted">10-19 10:02</td>
+                <td class="row-ops">
+                  <button class="btn link sm">上架</button>
+                  <button class="btn link sm">改价</button>
+                  <button class="btn link sm">改库存</button>
+                  <button class="btn link sm">编辑</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="padding:10px 14px; display:flex; justify-content:space-between; color:var(--text3); font-size:12px; border-top:1px solid var(--border);">
+            <span>共 12 个商品 · 在售 3 · 草稿 2 · 已下架 1</span>
+            <span>‹ 1 2 ›</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 屏 2：订单（无货源形态） ======================= -->
+<div class="screen-label"><span class="idx">2</span>订单页 · 无货源形态<small>「货源模式＝无货源」时：库存列消失、订单出现「去采购」；演示店铺同样全可操作</small></div>
+<div class="frame">
+  <div class="console">
+    <div class="aside">
+      <div class="aside-head"><span class="t">项目</span><button class="btn sm plain">＋ 新建</button></div>
+      <div class="aside-body">
+        <div class="proj"><span>🏠 家居出海</span><span class="proj-badge b-demo">演示</span><span class="cnt">12</span></div>
+        <div class="proj active"><span>📦 无货源百货</span><span class="proj-badge b-demo">演示</span><span class="cnt">6</span></div>
+        <div class="proj"><span>🧥 国内女装</span><span class="proj-badge b-test">测试</span><span class="cnt">8</span></div>
+        <div class="proj"><span>🏭 自营旗舰</span><span class="proj-badge b-prod">生产</span><span class="cnt">24</span></div>
+      </div>
+    </div>
+    <div class="main">
+      <div class="toolbar">
+        <span class="shop-name">演示 · 无货源百货店</span>
+        <span class="tb-label">店铺类型</span>
+        <div class="seg demo"><button class="on">演示</button><button>测试</button><button>生产</button></div>
+        <span class="tb-label">货源模式</span>
+        <div class="seg">
+          <button>有货源</button><button class="on">无货源</button>
+        </div>
+        <span class="tb-label">工作台</span>
+        <div class="seg"><button class="on">人工</button><button>AI</button></div>
+        <div class="tb-right"><button class="btn plain">打开平台后台</button></div>
+      </div>
+      <div class="tabsbar">
+        <div class="tabitem">概览</div>
+        <div class="tabitem">商品（6）</div>
+        <div class="tabitem on">订单（38）</div>
+        <div class="tabitem">发货（21）</div>
+        <div class="tabitem">仓储</div>
+        <div class="tabitem">物流（1）</div>
+        <div class="tabitem">平台后台</div>
+        <div class="tabitem">操作日志</div>
+      </div>
+      <div class="content">
+        <div class="card" style="padding:0;">
+          <div style="padding:10px 14px; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:center;">
+            <span style="border:1px solid var(--border); border-radius:6px; padding:4px 10px; color:var(--text3);">全部状态 ▾</span>
+            <span class="tag tg-sourcing" style="font-size:12px;">采购中 3</span>
+            <span class="tag tg-pending" style="font-size:12px;">待发货 5</span>
+            <span class="tag tg-shipped" style="font-size:12px;">已发货 21</span>
+            <span style="flex:1"></span>
+            <span class="muted">搜索订单号 / 买家…</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>订单号</th>
+                <th>买家</th>
+                <th>商品</th>
+                <th>金额</th>
+                <th>货源链接</th>
+                <th>状态</th>
+                <th>下单时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono">#20261022-086</td>
+                <td>A***a</td>
+                <td class="nm">收纳盒三件套 ×1</td>
+                <td><b>$23.99</b></td>
+                <td><span class="src-ref" title="https://detail.1688.com/offer/xxx.html">1688 · 义乌××百货…</span></td>
+                <td><span class="tag tg-pending">待付款</span></td>
+                <td class="muted">10-22 09:41</td>
+                <td class="row-ops"><span class="muted">—</span></td>
+              </tr>
+              <tr>
+                <td class="mono">#20261022-085</td>
+                <td>J**n</td>
+                <td class="nm">桌面化妆镜 LED ×2</td>
+                <td><b>$31.98</b></td>
+                <td><span class="src-ref">1688 · 深圳××家居…</span></td>
+                <td><span class="tag tg-sourcing">采购中</span></td>
+                <td class="muted">10-22 08:17</td>
+                <td class="row-ops"><button class="btn link sm">标记已采购</button></td>
+              </tr>
+              <tr>
+                <td class="mono">#20261022-084</td>
+                <td>M**e</td>
+                <td class="nm">硅胶沥水垫 ×1</td>
+                <td><b>$12.99</b></td>
+                <td><span class="src-ref">1688 · 金华××塑业…</span></td>
+                <td><span class="tag tg-paid">已付款·待采购</span></td>
+                <td class="muted">10-22 07:52</td>
+                <td class="row-ops"><button class="btn link sm">去 1688 采购</button></td>
+              </tr>
+              <tr>
+                <td class="mono">#20261021-083</td>
+                <td>K**y</td>
+                <td class="nm">厨房纸巾架 ×3</td>
+                <td><b>$27.97</b></td>
+                <td><span class="src-ref">1688 · 台州××五金…</span></td>
+                <td><span class="tag tg-pending">待发货</span></td>
+                <td class="muted">10-21 22:30</td>
+                <td class="row-ops"><button class="btn link sm">登记运单</button></td>
+              </tr>
+              <tr>
+                <td class="mono">#20261021-082</td>
+                <td>L***s</td>
+                <td class="nm">浴室置物架 ×1</td>
+                <td><b>$16.49</b></td>
+                <td><span class="src-ref">1688 · 广州××卫浴…</span></td>
+                <td><span class="tag tg-shipped">已发货</span></td>
+                <td class="muted">10-21 19:05</td>
+                <td class="row-ops"><button class="btn link sm">查轨迹</button></td>
+              </tr>
+              <tr>
+                <td class="mono">#20261021-081</td>
+                <td>R**d</td>
+                <td class="nm">挂钩组合装 ×4</td>
+                <td><b>$19.96</b></td>
+                <td><span class="src-ref">1688 · 义乌××百货…</span></td>
+                <td><span class="tag tg-completed">已完成</span></td>
+                <td class="muted">10-21 14:22</td>
+                <td class="row-ops"><span class="muted">—</span></td>
+              </tr>
+              <tr>
+                <td class="mono">#20261021-080</td>
+                <td>T**a</td>
+                <td class="nm">冰格模具 ×2</td>
+                <td><b>$14.98</b></td>
+                <td><span class="src-ref">1688 · 宁波××厨品…</span></td>
+                <td><span class="tag tg-refunded">已退款</span></td>
+                <td class="muted">10-21 11:48</td>
+                <td class="row-ops"><span class="muted">—</span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="padding:10px 14px; color:var(--text3); font-size:12px; border-top:1px solid var(--border); display:flex; justify-content:space-between;">
+            <span>无货源店铺：不持库存，出单后去货源平台采购、供应商直发；付款一律由你人工完成。</span>
+            <span>‹ 1 2 3 ›</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 屏 3：发货与轨迹 ======================= -->
+<div class="screen-label"><span class="idx">3</span>发货页 · 轨迹时间线<small>发货单关联物流商连接；已接客户端的（顺丰/云途）查真实轨迹，未接的如实提示</small></div>
+<div class="frame">
+  <div class="console">
+    <div class="aside">
+      <div class="aside-head"><span class="t">项目</span><button class="btn sm plain">＋ 新建</button></div>
+      <div class="aside-body">
+        <div class="proj active"><span>🏠 家居出海</span><span class="proj-badge b-demo">演示</span><span class="cnt">12</span></div>
+        <div class="proj"><span>🧥 国内女装</span><span class="proj-badge b-test">测试</span><span class="cnt">8</span></div>
+      </div>
+    </div>
+    <div class="main">
+      <div class="toolbar">
+        <span class="shop-name">演示 · 亚马逊家居店</span>
+        <div class="seg demo"><button class="on">演示</button><button>测试</button><button>生产</button></div>
+        <div class="seg"><button class="on">有货源</button><button>无货源</button></div>
+        <div class="seg"><button class="on">人工</button><button>AI</button></div>
+        <div class="tb-right"><button class="btn primary">＋ 创建发货</button></div>
+      </div>
+      <div class="tabsbar">
+        <div class="tabitem">概览</div>
+        <div class="tabitem">商品</div>
+        <div class="tabitem">订单</div>
+        <div class="tabitem on">发货（64）</div>
+        <div class="tabitem">仓储</div>
+        <div class="tabitem">物流（2）</div>
+        <div class="tabitem">平台后台</div>
+      </div>
+      <div class="content">
+        <div class="two-col">
+          <!-- 发货列表 -->
+          <div class="card" style="padding:0;">
+            <div style="padding:10px 14px; border-bottom:1px solid var(--border); display:flex; gap:8px;">
+              <span style="border:1px solid var(--border); border-radius:6px; padding:4px 10px; color:var(--text3);">全部状态 ▾</span>
+              <span class="tag tg-shipped">在途 12</span>
+              <span class="tag tg-completed">已签收 41</span>
+              <span class="tag tg-warn">异常 1</span>
+            </div>
+            <table>
+              <thead>
+                <tr><th>运单号</th><th>物流商</th><th>订单</th><th>状态</th><th>发出时间</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                <tr style="background:#ecf5ff;">
+                  <td class="mono">SF1630221…</td>
+                  <td>顺丰速运</td>
+                  <td class="mono">#…-082</td>
+                  <td><span class="tag tg-shipped">在途</span></td>
+                  <td class="muted">10-21 19:10</td>
+                  <td class="row-ops"><button class="btn link sm">刷新</button></td>
+                </tr>
+                <tr>
+                  <td class="mono">YT43219…</td>
+                  <td>云途物流</td>
+                  <td class="mono">#…-081</td>
+                  <td><span class="tag tg-completed">已签收</span></td>
+                  <td class="muted">10-19 16:44</td>
+                  <td class="row-ops"><span class="muted">—</span></td>
+                </tr>
+                <tr>
+                  <td class="mono">YT43188…</td>
+                  <td>云途物流</td>
+                  <td class="mono">#…-079</td>
+                  <td><span class="tag tg-warn">异常 · 清关滞留</span></td>
+                  <td class="muted">10-17 10:21</td>
+                  <td class="row-ops"><button class="btn link sm">查轨迹</button></td>
+                </tr>
+                <tr>
+                  <td class="mono">SF16298…</td>
+                  <td>顺丰速运</td>
+                  <td class="mono">#…-078</td>
+                  <td><span class="tag tg-completed">已签收</span></td>
+                  <td class="muted">10-16 18:02</td>
+                  <td class="row-ops"><span class="muted">—</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- 轨迹详情 -->
+          <div class="card">
+            <div class="card-t">轨迹 · SF1630221…<span class="more">顺丰 · 已接客户端</span></div>
+            <div class="timeline">
+              <div class="tl-item done">
+                <div class="tl-dot"></div>
+                <div class="tl-body"><div class="tt">快件已签收，感谢使用顺丰速运</div><div class="tm">10-22 09:02 · 深圳 · 已签收</div></div>
+              </div>
+              <div class="tl-item done">
+                <div class="tl-dot"></div>
+                <div class="tl-body"><div class="tt">快件到达【深圳集散中心】</div><div class="tm">10-21 23:40</div></div>
+              </div>
+              <div class="tl-item">
+                <div class="tl-dot"></div>
+                <div class="tl-body"><div class="tt">快件由【深圳南山营业点】发出</div><div class="tm">10-21 19:10</div></div>
+              </div>
+              <div class="tl-item">
+                <div class="tl-dot"></div>
+                <div class="tl-body"><div class="tt">顺丰速运已揽收快件</div><div class="tm">10-21 18:35 · 揽收</div></div>
+              </div>
+            </div>
+            <div style="margin-top:12px; padding:9px 12px; background:#fafbfc; border:1px dashed var(--border); border-radius:8px; color:var(--text3); font-size:12px; line-height:1.7;">
+              演示店铺的运单为合成数据；真实物流商凭据配置后，此处查的是<b>真实轨迹接口</b>。未接客户端的服务商只登记、不查询。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 屏 4：仓储库存 ======================= -->
+<div class="screen-label"><span class="idx">4</span>仓储库存页<small>有货源店铺：入库 / 出库 / 盘点 + 全量流水；无货源店铺本页显示「不持库存」引导</small></div>
+<div class="frame">
+  <div class="console">
+    <div class="aside">
+      <div class="aside-head"><span class="t">项目</span><button class="btn sm plain">＋ 新建</button></div>
+      <div class="aside-body">
+        <div class="proj active"><span>🏠 家居出海</span><span class="proj-badge b-demo">演示</span><span class="cnt">12</span></div>
+        <div class="proj"><span>📦 无货源百货</span><span class="proj-badge b-demo">演示</span><span class="cnt">6</span></div>
+      </div>
+    </div>
+    <div class="main">
+      <div class="toolbar">
+        <span class="shop-name">演示 · 亚马逊家居店</span>
+        <div class="seg demo"><button class="on">演示</button><button>测试</button><button>生产</button></div>
+        <div class="seg"><button class="on">有货源</button><button>无货源</button></div>
+        <div class="seg"><button class="on">人工</button><button>AI</button></div>
+        <div class="tb-right">
+          <button class="btn">入库</button>
+          <button class="btn">出库</button>
+          <button class="btn">盘点</button>
+        </div>
+      </div>
+      <div class="tabsbar">
+        <div class="tabitem">概览</div>
+        <div class="tabitem">商品</div>
+        <div class="tabitem">订单</div>
+        <div class="tabitem">发货</div>
+        <div class="tabitem on">仓储</div>
+        <div class="tabitem">物流</div>
+        <div class="tabitem">平台后台</div>
+      </div>
+      <div class="content">
+        <div class="two-col">
+          <div>
+            <div class="card" style="padding:0;">
+              <div style="padding:10px 14px; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:center;">
+                <span class="tag tg-warn">低库存 2</span>
+                <span class="muted">按库存余量排序</span>
+                <span style="flex:1"></span>
+                <span class="muted">搜索 SKU…</span>
+              </div>
+              <table>
+                <thead><tr><th>商品</th><th>当前库存</th><th>安全库存</th><th>日均销</th><th>可售天数</th><th>操作</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <td><div class="sku-name"><span class="thumb">🧺</span><div class="nm">折叠沥水架</div></div></td>
+                    <td><span class="stock-zero">12</span></td>
+                    <td>30</td>
+                    <td>3.2</td>
+                    <td><span class="tag tg-warn">4 天 ⚠</span></td>
+                    <td class="row-ops"><button class="btn link sm">入库</button><button class="btn link sm">调整</button></td>
+                  </tr>
+                  <tr>
+                    <td><div class="sku-name"><span class="thumb">🪴</span><div class="nm">竹制收纳架</div></div></td>
+                    <td><span class="stock-low">41</span></td>
+                    <td>30</td>
+                    <td>1.4</td>
+                    <td><span class="tag tg-warn">29 天</span></td>
+                    <td class="row-ops"><button class="btn link sm">入库</button><button class="btn link sm">调整</button></td>
+                  </tr>
+                  <tr>
+                    <td><div class="sku-name"><span class="thumb">🍳</span><div class="nm">硅胶厨具 6 件套</div></div></td>
+                    <td>128</td>
+                    <td>40</td>
+                    <td>2.1</td>
+                    <td><span class="tag tg-online">61 天</span></td>
+                    <td class="row-ops"><button class="btn link sm">入库</button><button class="btn link sm">调整</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-t">库存流水 · SKU-003 折叠沥水架</div>
+            <table>
+              <thead><tr><th>时间</th><th>类型</th><th>数量</th><th>变动</th><th>经手</th><th>备注</th></tr></thead>
+              <tbody>
+                <tr><td class="muted">10-22 09:12</td><td><span class="move-out">出库</span></td><td>2</td><td class="mono">14 → 12</td><td>AI</td><td class="muted">订单 #…-084 发货</td></tr>
+                <tr><td class="muted">10-21 20:40</td><td><span class="move-out">出库</span></td><td>1</td><td class="mono">15 → 14</td><td>人工</td><td class="muted">订单 #…-082 发货</td></tr>
+                <tr><td class="muted">10-20 14:00</td><td><span class="move-in">入库</span></td><td>20</td><td class="mono">-5 → 15</td><td>人工</td><td class="muted">头程到仓入 20 件</td></tr>
+                <tr><td class="muted">10-19 11:30</td><td><span class="move-out">调整</span></td><td>-1</td><td class="mono">16 → 15</td><td>人工</td><td class="muted">盘点差异 -1</td></tr>
+              </tbody>
+            </table>
+            <div style="margin-top:10px; color:var(--text3); font-size:12px;">
+              每笔经手方（人工 / AI）与前后值都留痕，可追溯到具体对话或表格操作。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 屏 5：AI 工作台 ======================= -->
+<div class="screen-label"><span class="idx">5</span>AI 工作台<small>对话居中、变更单确认流；右侧表格实时反映 AI 执行结果；数据/权限/闸门与人工模式完全一致</small></div>
+<div class="frame">
+  <div class="console">
+    <div class="aside" style="width:200px;">
+      <div class="aside-head"><span class="t">项目</span></div>
+      <div class="aside-body">
+        <div class="proj active"><span>🏠 家居出海</span><span class="proj-badge b-demo">演示</span></div>
+        <div class="proj"><span>📦 无货源百货</span><span class="proj-badge b-demo">演示</span></div>
+      </div>
+    </div>
+    <div class="main">
+      <div class="toolbar">
+        <span class="shop-name">演示 · 亚马逊家居店</span>
+        <div class="seg demo"><button class="on">演示</button><button>测试</button><button>生产</button></div>
+        <div class="seg"><button class="on">有货源</button><button>无货源</button></div>
+        <div class="seg"><button>人工</button><button class="on">AI</button></div>
+      </div>
+      <div class="ai-layout">
+        <!-- 结果视图（原工作台收窄） -->
+        <div class="ai-result">
+          <div class="card" style="padding:10px 14px; margin-bottom:10px;">
+            <div class="card-t" style="margin-bottom:8px;">商品 · 刚被 AI 更新</div>
+            <table>
+              <thead><tr><th>商品</th><th>售价</th><th>库存</th><th>状态</th></tr></thead>
+              <tbody>
+                <tr style="background:#f0f9eb;">
+                  <td class="nm">竹制收纳架 <span class="tag tg-online" style="margin-left:4px;">已改价</span></td>
+                  <td><b>$27.99</b> <span class="muted" style="text-decoration:line-through;">$29.99</span></td>
+                  <td><span class="stock-low">41</span></td>
+                  <td><span class="tag tg-online">在售</span></td>
+                </tr>
+                <tr>
+                  <td class="nm">硅胶厨具 6 件套</td>
+                  <td><b>$24.99</b></td>
+                  <td>128</td>
+                  <td><span class="tag tg-online">在售</span></td>
+                </tr>
+                <tr>
+                  <td class="nm">折叠沥水架</td>
+                  <td><b>$18.99</b></td>
+                  <td><span class="stock-zero">12</span></td>
+                  <td><span class="tag tg-online">在售</span></td>
+                </tr>
+              </tbody>
+            </table>
+            <div style="margin-top:8px; color:var(--text3); font-size:12px;">AI 执行后表格实时刷新；人工模式下这张表就是直接操作的表格。</div>
+          </div>
+          <div class="card">
+            <div class="card-t">概览 KPI</div>
+            <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr); margin:0;">
+              <div class="kpi" style="padding:10px 12px;"><div class="l">今日销售额</div><div class="v" style="font-size:18px;">$12,480</div><div class="h up">↑ 6.4%</div></div>
+              <div class="kpi" style="padding:10px 12px;"><div class="l">待发货</div><div class="v" style="font-size:18px;">5</div><div class="h">含采购中 3</div></div>
+              <div class="kpi" style="padding:10px 12px;"><div class="l">低库存</div><div class="v" style="font-size:18px;">2</div><div class="h down">SKU-003 · SKU-001</div></div>
+              <div class="kpi" style="padding:10px 12px;"><div class="l">广告 ACoS</div><div class="v" style="font-size:18px;">27%</div><div class="h up">目标 ≤30%</div></div>
+            </div>
+          </div>
+        </div>
+        <!-- 对话栏 -->
+        <div class="ai-chat">
+          <div class="chat-head"><span class="dot"></span>店铺助手 · AI 工作台</div>
+          <div class="chat-msgs">
+            <div class="msg user">把竹制收纳架的价格改成 27.99，顺便看看有什么要补货的</div>
+            <div class="msg ai">
+              <div class="bubble">先处理改价，已生成变更单：</div>
+              <div class="ticket">
+                <div class="tt">⚠ 改价变更单 · 演示店铺</div>
+                <div class="kv"><span class="k">商品</span><span>SKU-001 竹制收纳架</span></div>
+                <div class="kv"><span class="k">价格</span><span>$29.99 → <b>$27.99</b>（<span class="delta-down">-6.7%</span>）</span></div>
+                <div class="kv"><span class="k">理由</span><span>用户指定调价</span></div>
+                <div class="kv"><span class="k">回滚</span><span>改回 $29.99</span></div>
+                <div class="ticket-ops">
+                  <button class="btn sm primary">确认执行</button>
+                  <button class="btn sm">取消</button>
+                </div>
+              </div>
+            </div>
+            <div class="msg ai">
+              <div class="result-toast">✓ 已执行：$29.99 → $27.99（演示库已更新，左侧表格已刷新）</div>
+            </div>
+            <div class="msg ai">
+              <div class="bubble">补货检查结果：2 个 SKU 低于安全库存——
+                <br>· <b>折叠沥水架</b> 库存 12 / 安全 30，按日均销 3.2 约 4 天售罄，建议补 60 件；
+                <br>· <b>竹制收纳架</b> 库存 41 / 安全 30，约 29 天，建议列入下次头程。
+                <br>需要我现在生成「入库变更单」吗？</div>
+            </div>
+            <div class="msg user">把折叠沥水架入库 60 件</div>
+            <div class="msg ai">
+              <div class="bubble">好的，变更单如下：</div>
+              <div class="ticket">
+                <div class="tt">⚠ 入库变更单 · 演示店铺</div>
+                <div class="kv"><span class="k">商品</span><span>SKU-003 折叠沥水架</span></div>
+                <div class="kv"><span class="k">入库</span><span>+60（12 → 72）</span></div>
+                <div class="kv"><span class="k">经手</span><span>AI（你确认后执行）</span></div>
+                <div class="ticket-ops">
+                  <button class="btn sm primary">确认执行</button>
+                  <button class="btn sm">取消</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="chat-input">
+            <div class="box">输入指令，例如「把 SKU-002 下架」「这周哪个品卖得最好」…</div>
+            <div class="hint">人工/AI 只是工作台切换：数据、权限、闸门完全一致；演示店铺的写操作同样留审计。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= 屏 6：平台后台内嵌 ======================= -->
+<div class="screen-label"><span class="idx">6</span>平台后台 · 内嵌页签<small>复用 BrowserPanel（scope="shop"）：跳转步骤条 + 内嵌真实后台页面；登录态复用 browser_login_saved</small></div>
+<div class="frame">
+  <div class="console">
+    <div class="aside" style="width:200px;">
+      <div class="aside-head"><span class="t">项目</span></div>
+      <div class="aside-body">
+        <div class="proj active"><span>🧥 国内女装</span><span class="proj-badge b-test">测试</span></div>
+        <div class="proj"><span>🏠 家居出海</span><span class="proj-badge b-demo">演示</span></div>
+      </div>
+    </div>
+    <div class="main">
+      <div class="toolbar">
+        <span class="shop-name">测试 · 天猫女装店</span>
+        <div class="seg demo"><button>演示</button><button class="on">测试</button><button>生产</button></div>
+        <div class="seg"><button class="on">有货源</button><button>无货源</button></div>
+        <div class="seg"><button class="on">人工</button><button>AI</button></div>
+      </div>
+      <div class="tabsbar">
+        <div class="tabitem">概览</div>
+        <div class="tabitem">商品</div>
+        <div class="tabitem">订单</div>
+        <div class="tabitem">发货</div>
+        <div class="tabitem">仓储</div>
+        <div class="tabitem">物流</div>
+        <div class="tabitem on">平台后台</div>
+        <div class="tabitem">操作日志</div>
+      </div>
+      <!-- 跳转步骤条 -->
+      <div class="plat-steps">
+        <span class="st">跳转任务</span>
+        <span>确认已登录千牛</span><span class="arrow">→</span>
+        <span>进入商品管理</span><span class="arrow">→</span>
+        <span>找到「奶油风连衣裙」</span><span class="arrow">→</span>
+        <span>改价为 ¥129</span>
+        <span class="done">
+          <button class="btn sm primary">已处理</button>
+          <button class="btn sm">外部全屏打开</button>
+        </span>
+      </div>
+      <!-- 内嵌 BrowserPanel（mock） -->
+      <div class="plat-view">
+        <div class="plat-mock">
+          <div class="pm-bar">
+            <span>◀</span><span>▶</span><span>⟳</span>
+            <span class="pm-url">myseller.taobao.com/item.htm …</span>
+            <span>🔗</span><span>⤢</span>
+          </div>
+          <div class="pm-body">
+            <div class="pm-side">
+              <div>首页</div>
+              <div class="on">商品管理</div>
+              <div>订单管理</div>
+              <div>营销中心</div>
+              <div>客服中心</div>
+            </div>
+            <div class="pm-main">
+              <div class="pm-t">商品管理 · 编辑商品</div>
+              <div class="pm-row">
+                <div class="pm-field"><div class="fl">商品名称</div><div class="fi">奶油风法式连衣裙 秋季新款</div></div>
+              </div>
+              <div class="pm-row">
+                <div class="pm-field"><div class="fl">一口价（元）</div><div class="fi">129</div></div>
+                <div class="pm-field"><div class="fl">宝贝数量</div><div class="fi">88</div></div>
+                <div class="pm-field"><div class="fl">状态</div><div class="fi">上架</div></div>
+              </div>
+              <div class="pm-table">
+                <div class="pmt-h"><div>规格</div><div>价格</div><div>库存</div></div>
+                <div class="pmt-r"><div>S 码</div><div>129</div><div>30</div></div>
+                <div class="pmt-r"><div>M 码</div><div>129</div><div>40</div></div>
+                <div class="pmt-r"><div>L 码</div><div>129</div><div>18</div></div>
+              </div>
+              <div class="pm-save">
+                <button class="btn">取消</button>
+                <button class="btn primary">保存</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="foot-note">
+  <b>设计要点对照方案：</b><br>
+  ① 三个控件只在顶部工具条：<b>店铺类型</b>（演示/测试/生产，切换需确认并写审计）、<b>货源模式</b>（有货源/无货源，切口径不删数据）、<b>工作台</b>（人工/AI，全局切换，复用 lead 布局）。<br>
+  ② 人工与 AI 共用同一份数据、同一套闸门与审计：人工在表格直接改（actor=human），AI 走变更单确认后由工具改（actor=ai），表格实时同步。<br>
+  ③ 演示店铺：全部业务数据来自本地库种子，可增删改查；<b>比价/选品仍走真实网站</b>；平台侧动作只出跳转计划。<br>
+  ④ 无货源：商品带 1688 货源链接、不持库存；订单流是「去 1688 采购（付款人工）→ 标记已采购 → 供应商直发 → 登记运单」。<br>
+  ⑤ 平台后台内嵌：<b>tabs/ShopPlatformView.vue</b> 复用 <b>BrowserPanel scope="shop"</b>，登录态复用 browser_login_saved；顶部步骤条对应 JumpPlan，完成后点「已处理」写审计；也可一键外部全屏打开。
+</div>
+
+</body>
+</html>

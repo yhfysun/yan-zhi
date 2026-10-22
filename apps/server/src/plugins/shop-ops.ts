@@ -24,6 +24,10 @@ import {
   type CredentialField, type LogisticsCredentials,
 } from '../services/logistics/index.js';
 import { createLogger } from '../services/logger.js';
+import { db } from '../db.js';
+import { initShopStore, __setDbForTest } from '../shop/store.js';
+import { runShopAction, setPlatformLookup } from '../shop/actions.js';
+import type { ShopContext, ShopType, SupplyMode } from '../shop/types.js';
 
 const logger = createLogger('shop-ops');
 
@@ -376,6 +380,10 @@ interface StoredConnection {
   projectId?: string;
   /** 演示数据标记：一键清空只删这些，绝不误伤用户真实登记 */
   demo?: boolean;
+  /** 店铺类型：demo 演示 / test 测试 / production 生产（2026-10-22 重构 §3.1；老库由 demo/tag 推导） */
+  shopType?: ShopType;
+  /** 货源模式：stocked 有货源 / dropship 无货源 */
+  supplyMode?: SupplyMode;
   /** API 凭据密文（iv:tag:ct）。纯浏览器自动化的平台留空。 */
   secretEnc: string;
   createdAt: number;
@@ -1333,6 +1341,11 @@ export const shopOpsManifest: PluginManifest = {
 const shopOpsModule: PluginModule = {
   activate(ctx) {
     pluginStorage = ctx.storage;
+    initShopStore(db);
+    setPlatformLookup((platformId: string) => {
+      const p = PLATFORM_BY_ID.get(platformId as Parameters<typeof PLATFORM_BY_ID.get>[0]);
+      return { url: p?.entryUrl ?? '', label: p?.label ?? platformId };
+    });
 
     for (const tool of makeShopTools()) {
       ctx.registerTool(tool);
@@ -1625,6 +1638,7 @@ const shopOpsModule: PluginModule = {
         const list = (pluginStorage ? await pluginStorage.get<unknown[]>('audit') : []) || [];
         jsonRes(res).json({ data: list });
       });
+      registerShopBusinessRoutes(r);
     });
 
     logger.info('[shop-ops] 已激活（P0：只读 + 店铺连接管理，无写操作）');
@@ -1636,3 +1650,124 @@ const shopOpsModule: PluginModule = {
 };
 
 export { shopOpsModule };
+
+/** 连接 → ShopContext（shop/ 模块的动作层入口） */
+function shopContextOf(c: StoredConnection): ShopContext {
+  return {
+    id: c.id,
+    platform: c.platform,
+    site: c.site,
+    shopName: c.shopName,
+    shopType: c.shopType ?? (c.demo ? 'demo' : (isProductionTag(c.tag) ? 'production' : 'test')),
+    supplyMode: c.supplyMode ?? 'stocked',
+    hasSecret: !!c.secretEnc,
+  };
+}
+
+/** 2026-10-22 重构：业务路由（dashboard/products/orders/shipments/stock/mode/open）——全部经 runShopAction */
+function registerShopBusinessRoutes(r: Record<string, (path: string, handler: (req: unknown, res: unknown) => void) => void>): void {
+  const jsonRes = (res: unknown) => res as { json: (d: unknown) => void };
+  const failRes = (res: unknown, code: number, msg: string) => (res as { status: (n: number) => { json: (d: unknown) => void } }).status(code).json({ error: msg });
+  /** 按连接 id 取店铺上下文；找不到返回 null */
+  const ctxOf = async (id: string): Promise<ShopContext | null> => {
+    const c = (await loadConnections()).find((c) => c.id === id);
+    return c ? shopContextOf(c) : null;
+  };
+
+  r.post('/products', async (req: unknown, res: unknown) => {
+    const body = (req as { body: Record<string, unknown> }).body || {};
+    const shop = await ctxOf(String(body.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'product.create', body, 'human');
+    await audit('product.create', { connection: shop.shopName, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  r.patch('/products/:id', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(String(p.body?.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'product.update', { ...p.body, productId: p.params.id }, 'human');
+    await audit('product.update', { connection: shop.shopName, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  r.post('/products/:id/listing', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(String(p.body?.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const online = String((p.body as { listing?: string }).listing ?? 'online') !== 'offline';
+    const out = await runShopAction(shop, 'product.publish', { ...p.body, productId: p.params.id, online }, 'human');
+    await audit('product.publish', { connection: shop.shopName, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  r.post('/products/:id/price', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(String(p.body?.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'product.price', { ...p.body, productId: p.params.id }, 'human');
+    await audit('product.price', { connection: shop.shopName, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  r.post('/products/:id/stock', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(String(p.body?.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'product.stock', { ...p.body, productId: p.params.id }, 'human');
+    await audit('product.stock', { connection: shop.shopName, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  r.get('/orders', async (req: unknown, res: unknown) => {
+    const q = (req as { query: Record<string, unknown> }).query || {};
+    const shop = await ctxOf(String(q.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'order.list', {}, 'human');
+    jsonRes(res).json({ data: out });
+  });
+  r.post('/orders/:id/source', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(String(p.body?.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'order.markSourced', { ...p.body, orderId: p.params.id }, 'human');
+    await audit('order.markSourced', { connection: shop.shopName, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  r.post('/orders/:id/ship', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(String(p.body?.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'order.ship', { ...p.body, orderId: p.params.id }, 'human');
+    await audit('order.ship', { connection: shop.shopName, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  r.get('/shipments', async (req: unknown, res: unknown) => {
+    const q = (req as { query: Record<string, unknown> }).query || {};
+    const shop = await ctxOf(String(q.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'shipment.list', {}, 'human');
+    jsonRes(res).json({ data: out });
+  });
+  r.get('/stock/moves', async (req: unknown, res: unknown) => {
+    const q = (req as { query: Record<string, unknown> }).query || {};
+    const shop = await ctxOf(String(q.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'stock.moves', {}, 'human');
+    jsonRes(res).json({ data: out });
+  });
+  r.patch('/shops/:id', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: { shopType?: string; supplyMode?: string } };
+    const list = await loadConnections();
+    const c = list.find((c) => c.id === p.params.id);
+    if (!c) { failRes(res, 404, '店铺不存在'); return; }
+    if (p.body.shopType === 'demo' || p.body.shopType === 'test' || p.body.shopType === 'production') c.shopType = p.body.shopType;
+    if (p.body.supplyMode === 'stocked' || p.body.supplyMode === 'dropship') c.supplyMode = p.body.supplyMode;
+    try { await saveConnections(list); } catch (e) { failRes(res, 500, (e as Error).message); return; }
+    await audit('shop.mode', { connection: c.shopName, ok: true, note: JSON.stringify(p.body) });
+    jsonRes(res).json({ data: toClientView(c) });
+  });
+  r.post('/shops/:id/open', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(p.params.id);
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'shop.open', {}, 'human');
+    jsonRes(res).json({ data: out });
+  });
+}

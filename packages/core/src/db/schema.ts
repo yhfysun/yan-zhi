@@ -409,6 +409,78 @@ CREATE TABLE IF NOT EXISTS plugin_storage (
   FOREIGN KEY (plugin_id) REFERENCES plugin(id) ON DELETE CASCADE
 );
 
+-- 店铺运营业务表（2026-10-22 重构方案 §3.2 · 真源在 SQLite，连接登记仍在 plugin_storage）
+-- 商品：shop_id 对应 connections.id；无货源商品 supply_mode='dropship'，stock 恒 0 不参与口径
+CREATE TABLE IF NOT EXISTS shop_product (
+  id             TEXT PRIMARY KEY,
+  shop_id        TEXT NOT NULL,
+  sku            TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  image_url      TEXT,
+  category       TEXT,
+  supply_mode    TEXT NOT NULL DEFAULT 'stocked',
+  source_ref     TEXT,
+  cost_cents     INTEGER NOT NULL DEFAULT 0,
+  price_cents    INTEGER NOT NULL DEFAULT 0,
+  currency       TEXT NOT NULL DEFAULT 'CNY',
+  stock          INTEGER NOT NULL DEFAULT 0,
+  safety_stock   INTEGER NOT NULL DEFAULT 0,
+  listing_status TEXT NOT NULL DEFAULT 'draft',
+  attrs_json     TEXT DEFAULT '{}',
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  UNIQUE(shop_id, sku)
+);
+
+-- 订单：status 流转 pending|paid|sourcing|shipped|completed|refunded；items_json 存 [{sku,title,qty,priceCents}]
+CREATE TABLE IF NOT EXISTS shop_order (
+  id           TEXT PRIMARY KEY,
+  shop_id      TEXT NOT NULL,
+  order_no     TEXT NOT NULL,
+  buyer        TEXT,
+  amount_cents INTEGER NOT NULL DEFAULT 0,
+  currency     TEXT NOT NULL DEFAULT 'CNY',
+  status       TEXT NOT NULL DEFAULT 'pending',
+  items_json   TEXT NOT NULL DEFAULT '[]',
+  address_json TEXT DEFAULT '{}',
+  created_at   INTEGER NOT NULL,
+  paid_at      INTEGER,
+  UNIQUE(shop_id, order_no)
+);
+
+-- 发货单：carrier 对应 SHOP_PLATFORMS 的物流平台 id；订单/发货不允许删除，只允许状态流转
+CREATE TABLE IF NOT EXISTS shop_shipment (
+  id           TEXT PRIMARY KEY,
+  shop_id      TEXT NOT NULL,
+  order_id     TEXT NOT NULL,
+  carrier      TEXT,
+  tracking_no  TEXT,
+  status       TEXT NOT NULL DEFAULT 'pending',
+  shipped_at   INTEGER,
+  delivered_at INTEGER,
+  note         TEXT,
+  created_at   INTEGER NOT NULL
+);
+
+-- 库存流水：kind=in|out|adjust|reserve；actor=human|ai；防超卖靠事务内 UPDATE ... WHERE stock >= ?
+CREATE TABLE IF NOT EXISTS shop_stock_move (
+  id          TEXT PRIMARY KEY,
+  shop_id     TEXT NOT NULL,
+  product_id  TEXT NOT NULL,
+  kind        TEXT NOT NULL,
+  qty         INTEGER NOT NULL,
+  before_qty  INTEGER NOT NULL,
+  after_qty   INTEGER NOT NULL,
+  reason      TEXT,
+  actor       TEXT NOT NULL DEFAULT 'human',
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shop_product_shop ON shop_product(shop_id, listing_status);
+CREATE INDEX IF NOT EXISTS idx_shop_order_shop   ON shop_order(shop_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_shop_ship_shop    ON shop_shipment(shop_id, status);
+CREATE INDEX IF NOT EXISTS idx_shop_stock_shop   ON shop_stock_move(shop_id, product_id, created_at);
+
 -- 浏览器「页面指令」（2026-10-16 · 页面内对话与页面指令方案 §5 的 P1）
 -- 一条指令 = 站点匹配 + 一段"任务描述"（kind='task'，走页面内对话通道执行）。
 -- kind='script'（页面脚本）留到 P2：脚本在页面主世界跑、可读 cookie/带凭据 fetch，

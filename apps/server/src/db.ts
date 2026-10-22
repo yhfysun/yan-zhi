@@ -4833,6 +4833,76 @@ db.exec(`
   );
 `);
 
+// ===== 店铺运营业务表（2026-10-22 重构方案 §3.2；与 packages/core/src/db/schema.ts 同构）=====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS shop_product (
+    id             TEXT PRIMARY KEY,
+    shop_id        TEXT NOT NULL,
+    sku            TEXT NOT NULL,
+    title          TEXT NOT NULL,
+    image_url      TEXT,
+    category       TEXT,
+    supply_mode    TEXT NOT NULL DEFAULT 'stocked',
+    source_ref     TEXT,
+    cost_cents     INTEGER NOT NULL DEFAULT 0,
+    price_cents    INTEGER NOT NULL DEFAULT 0,
+    currency       TEXT NOT NULL DEFAULT 'CNY',
+    stock          INTEGER NOT NULL DEFAULT 0,
+    safety_stock   INTEGER NOT NULL DEFAULT 0,
+    listing_status TEXT NOT NULL DEFAULT 'draft',
+    attrs_json     TEXT DEFAULT '{}',
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL,
+    UNIQUE(shop_id, sku)
+  );
+
+  CREATE TABLE IF NOT EXISTS shop_order (
+    id           TEXT PRIMARY KEY,
+    shop_id      TEXT NOT NULL,
+    order_no     TEXT NOT NULL,
+    buyer        TEXT,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    currency     TEXT NOT NULL DEFAULT 'CNY',
+    status       TEXT NOT NULL DEFAULT 'pending',
+    items_json   TEXT NOT NULL DEFAULT '[]',
+    address_json TEXT DEFAULT '{}',
+    created_at   INTEGER NOT NULL,
+    paid_at      INTEGER,
+    UNIQUE(shop_id, order_no)
+  );
+
+  CREATE TABLE IF NOT EXISTS shop_shipment (
+    id           TEXT PRIMARY KEY,
+    shop_id      TEXT NOT NULL,
+    order_id     TEXT NOT NULL,
+    carrier      TEXT,
+    tracking_no  TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    shipped_at   INTEGER,
+    delivered_at INTEGER,
+    note         TEXT,
+    created_at   INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS shop_stock_move (
+    id          TEXT PRIMARY KEY,
+    shop_id     TEXT NOT NULL,
+    product_id  TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    qty         INTEGER NOT NULL,
+    before_qty  INTEGER NOT NULL,
+    after_qty   INTEGER NOT NULL,
+    reason      TEXT,
+    actor       TEXT NOT NULL DEFAULT 'human',
+    created_at  INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_shop_product_shop ON shop_product(shop_id, listing_status);
+  CREATE INDEX IF NOT EXISTS idx_shop_order_shop   ON shop_order(shop_id, status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_shop_ship_shop    ON shop_shipment(shop_id, status);
+  CREATE INDEX IF NOT EXISTS idx_shop_stock_shop   ON shop_stock_move(shop_id, product_id, created_at);
+`);
+
 // ===== 用户工具钩子（P2-7 P2a：设置页可编程的 before 规则，deny/confirm）=====
 // trigger 目前只有 'before'（P2b 再加 after/script）；tool 为 '*' 或空 = 匹配所有工具；
 // pattern 为大小写不敏感的**子串**（不是正则 —— 声明式规则可预测性优先，P2b 再议正则）。
