@@ -1047,6 +1047,80 @@ export async function removeRemoteRecursive(
   onDeleted?.(target, true);
 }
 
+/** 递归改权限的条目上限：改权限是逐条 RTT，比删除更保守（不删数据，可分批重试） */
+export const MAX_RECURSIVE_CHMOD_ENTRIES = 5000;
+/** 单次请求最多回传多少条失败明细（其余只计数，避免响应体过大） */
+export const MAX_CHMOD_FAILURES = 50;
+
+/**
+ * 解析权限输入：只接受 1~4 位**八进制字符串**（"755" / "0755" / "2775"）。
+ *
+ * ★ 刻意不收 JSON 数字：`755` 与十进制 755（= 0o1363）无法区分，按十进制收下的话
+ *   用户在界面填 755 会得到一组完全不同的权限位。
+ */
+export function parseModeInput(v: unknown): number | null {
+  const s = String(v ?? '').trim();
+  if (!/^[0-7]{1,4}$/.test(s)) return null;
+  return parseInt(s, 8);
+}
+
+export interface ChmodFailure {
+  path: string;
+  error: string;
+}
+
+/**
+ * 修改远程权限（recursive 时深度遍历目录），返回成功条数。
+ *
+ * ★ 软链一律跳过：SFTP 的 chmod 作用于**链接目标**，顺着软链递归会把「改这个目录」
+ *   变成「改系统里别处的文件」。顶层目标本身是软链时由路由直接拒绝。
+ * ★ 单个条目失败不中断整棵树：其余条目继续改，失败明细回传给界面（常见于无属主权限的文件）。
+ */
+export async function chmodRemote(
+  sftp: SFTPWrapper,
+  target: string,
+  mode: number,
+  recursive: boolean,
+  budget = { n: 0 },
+  failures: ChmodFailure[] = [],
+): Promise<number> {
+  budget.n += 1;
+  if (budget.n > MAX_RECURSIVE_CHMOD_ENTRIES) {
+    throw new Error(
+      `目录内条目超过 ${MAX_RECURSIVE_CHMOD_ENTRIES} 个，已中止以免长时间占用连接；`
+      + '请改用 ssh_exec 的 chmod -R（有危险命令护栏与人工批准）',
+    );
+  }
+  const st = await lstatRemote(sftp, target);
+  if (modeIsLink(st.mode)) return 0;
+  let changed = 0;
+  try {
+    await new Promise<void>((resolve, reject) =>
+      sftp.chmod(target, mode, (err) => (err ? reject(err) : resolve())),
+    );
+    changed = 1;
+  } catch (e) {
+    if (failures.length < MAX_CHMOD_FAILURES) failures.push({ path: target, error: (e as Error).message });
+  }
+  if (recursive && st.isDir) {
+    const names = await new Promise<string[]>((resolve, reject) => {
+      sftp.readdir(target, (err, list) => (err ? reject(err) : resolve((list || []).map((x) => x.filename))));
+    });
+    for (const n of names) {
+      if (n === '.' || n === '..') continue;
+      changed += await chmodRemote(
+        sftp,
+        `${target.replace(/\/+$/, '')}/${n}`,
+        mode,
+        true,
+        budget,
+        failures,
+      );
+    }
+  }
+  return changed;
+}
+
 export async function statRemote(sftp: SFTPWrapper, path: string): Promise<{ mode: number; size: number; mtime: number; isDir: boolean }> {
   const st = await new Promise<{ mode: number; size: number; mtime: number }>((resolve, reject) =>
     sftp.stat(path, (err, s) => (err ? reject(err) : resolve(s as never))),
@@ -3344,6 +3418,50 @@ const opsShellModule: PluginModule = {
           json(res, { data: { ok: true } });
         } catch (e) {
           fail(res, 500, `重命名失败: ${(e as Error).message}`);
+        } finally {
+          try { got.sftp.end(); } catch { /* ignore */ }
+        }
+      });
+
+      // 修改权限（目录可递归应用到全部下级；生产二次确认）
+      //
+      // ★ 走 SFTP 的 chmod 而不是 `ssh_exec chmod`：一是不触发危险命令护栏（`chmod -R 777 /`
+      //   会被拦，但任何合法的递归 chmod 也可能被误伤），二是能逐条统计成功/失败条数。
+      r.post('/sftp/chmod', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const got = await resolveSftpConn(req, res, String(body.connectionId || ''));
+        if (!got) return;
+        if (isProduction(got.conn) && !body.confirmed) {
+          fail(res, 428, '生产连接修改权限需二次确认');
+          try { got.sftp.end(); } catch { /* ignore */ }
+          return;
+        }
+        const root = await resolveRemoteRoot(got.sftp, got.conn.sftpPath);
+        const path = normalizeRemotePath(String(body.path || ''), root);
+        const mode = parseModeInput(body.mode);
+        if (mode === null) {
+          fail(res, 400, '权限值无效：请填 1~4 位八进制，如 755');
+          try { got.sftp.end(); } catch { /* ignore */ }
+          return;
+        }
+        try {
+          const st = await lstatRemote(got.sftp, path);
+          if (modeIsLink(st.mode)) {
+            fail(res, 400, '不支持修改符号链接的权限（chmod 会作用到链接目标）');
+            return;
+          }
+          const recursive = body.recursive === true && st.isDir;
+          const failures: ChmodFailure[] = [];
+          const changed = await chmodRemote(got.sftp, path, mode, recursive, { n: 0 }, failures);
+          const octal = mode.toString(8).padStart(4, '0');
+          await audit('sftp.chmod', {
+            connection: got.conn.name,
+            detail: `${octal}${recursive ? ' 递归' : ''} ${path}`,
+            ok: failures.length === 0,
+          });
+          json(res, { data: { ok: failures.length === 0, changed, recursive, failed: failures } });
+        } catch (e) {
+          fail(res, 500, `修改权限失败: ${(e as Error).message}`);
         } finally {
           try { got.sftp.end(); } catch { /* ignore */ }
         }

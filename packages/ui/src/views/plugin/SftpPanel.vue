@@ -213,17 +213,18 @@
           @drop="onRemoteDrop"
           @contextmenu.prevent="onListCtx"
         >
-          <div class="sftp-cols-head">
+          <div class="sftp-cols-head is-remote">
             <span class="sftp-c-name">名称</span>
             <span class="sftp-c-size">大小</span>
+            <span v-if="!compact" class="sftp-c-mode">权限</span>
             <span v-if="!compact" class="sftp-c-time">修改时间</span>
           </div>
           <div v-if="remoteLoading" class="sftp-state">加载中…</div>
           <div
             v-for="(e, i) in remoteEntries"
             :key="e.name"
-            class="sftp-row"
-            :class="{ selected: remoteSelected.has(e.name), 'is-drop': dropPane === 'remote' && dropName === e.name, 'is-drag-src': dragPane === 'remote' && dragNames.includes(e.name) }"
+            class="sftp-row is-remote"
+            :class="{ 'selected': remoteSelected.has(e.name), 'is-drop': dropPane === 'remote' && dropName === e.name, 'is-drag-src': dragPane === 'remote' && dragNames.includes(e.name) }"
             :title="e.name"
             draggable="true"
             @dragstart="onRemoteRowDragStart(e)"
@@ -239,6 +240,7 @@
             </el-icon>
             <span class="sftp-name">{{ e.name }}</span>
             <span class="sftp-size">{{ e.type === 'dir' ? '—' : fmtSize(e.size) }}</span>
+            <span v-if="!compact" class="sftp-mode" :title="fmtMode(e.mode)">{{ fmtMode(e.mode) }}</span>
             <span v-if="!compact" class="sftp-time">{{ fmtTime(e.mtime) }}</span>
             <span class="sftp-row-actions" @click.stop>
               <el-button
@@ -366,6 +368,7 @@
           <!-- 「下载」改叫「复制到本地」：目录也支持（递归下载），文案与本地栏对称 -->
           <div class="sftp-ctxmenu-item" @click="copyCtxToOther(); closeCtx()">复制到本地</div>
           <div class="sftp-ctxmenu-item" @click="promptRename(); closeCtx()">重命名</div>
+          <div class="sftp-ctxmenu-item" @click="openPermDialog(); closeCtx()">权限…</div>
           <div v-if="!ctx.isDir" class="sftp-ctxmenu-item" @click="backupSelected(); closeCtx()">备份</div>
           <div class="sftp-ctxmenu-item is-danger" @click="deleteSelected(); closeCtx()">删除</div>
         </template>
@@ -385,6 +388,54 @@
       </template>
     </div>
 </Teleport>
+
+    <!-- 权限编辑：八进制输入与 rwx 勾选双向联动（远程栏专用；本地栏在 Windows 上没有 POSIX 权限位） -->
+    <el-dialog v-model="perm.visible" title="修改权限" width="420px" append-to-body>
+      <div class="sftp-perm">
+        <div class="sftp-perm-target" :title="perm.path">{{ perm.path }}</div>
+
+        <div class="sftp-perm-line">
+          <span class="sftp-perm-label">权限值</span>
+          <el-input
+            v-model="perm.draft"
+            size="small"
+            class="sftp-perm-input"
+            maxlength="4"
+            placeholder="755"
+            @keyup.enter="submitPerm"
+          />
+          <span class="sftp-perm-preview" :class="{ 'is-bad': !permValid }">{{ permPreview }}</span>
+        </div>
+
+        <div class="sftp-perm-grid">
+          <span />
+          <span class="sftp-perm-col">读</span>
+          <span class="sftp-perm-col">写</span>
+          <span class="sftp-perm-col">执行</span>
+          <template v-for="g in PERM_GROUPS" :key="g.key">
+            <span class="sftp-perm-label">{{ g.label }}</span>
+            <el-checkbox
+              v-for="b in PERM_BITS"
+              :key="g.key + b.key"
+              :model-value="permBit(g.key, b.mask)"
+              @update:model-value="togglePerm(g.key, b.mask)"
+            />
+          </template>
+        </div>
+
+        <el-checkbox v-if="perm.isDir" v-model="perm.recursive" class="sftp-perm-recursive">
+          递归应用到目录内所有文件与子目录
+        </el-checkbox>
+        <div v-if="perm.isDir && perm.recursive" class="sftp-perm-hint">
+          目录及其全部下级都会被设为同一权限，软链接会被跳过。
+        </div>
+        <div v-if="perm.isProd" class="sftp-perm-warn">生产连接：修改权限会立即生效。</div>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="perm.visible = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="perm.busy" :disabled="!permValid" @click="submitPerm">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -771,6 +822,21 @@ function fmtTime(ms: number): string {
 }
 function basename(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || p;
+}
+/**
+ * mode → `rwxr-xr-x`（含 setuid/setgid/sticky 的 s/S/t/T 写法）。
+ * 列表只显示低 12 位；高位的文件类型位（S_IFDIR 等）由「类型」列表达，不在这里重复。
+ */
+function fmtMode(mode: number): string {
+  const m = (mode || 0) & 0o7777;
+  const tri = (n: number): string[] => [n & 4 ? 'r' : '-', n & 2 ? 'w' : '-', n & 1 ? 'x' : '-'];
+  const u = tri((m >> 6) & 7);
+  const g = tri((m >> 3) & 7);
+  const o = tri(m & 7);
+  if (m & 0o4000) u[2] = u[2] === 'x' ? 's' : 'S';
+  if (m & 0o2000) g[2] = g[2] === 'x' ? 's' : 'S';
+  if (m & 0o1000) o[2] = o[2] === 'x' ? 't' : 'T';
+  return [...u, ...g, ...o].join('');
 }
 function isProdTag(tag: string): boolean {
   const t = (tag || '').toLowerCase();
@@ -1489,6 +1555,96 @@ async function promptRename() {
   await (pane === 'local' ? loadLocal() : loadRemote());
 }
 
+// ===== 权限编辑（远程栏；本地栏在 Windows 上没有 POSIX 权限位） =====
+const PERM_GROUPS = [
+  { key: 'u', label: '所有者', shift: 6 },
+  { key: 'g', label: '所属组', shift: 3 },
+  { key: 'o', label: '其他', shift: 0 },
+] as const;
+const PERM_BITS = [
+  { key: 'r', mask: 4 },
+  { key: 'w', mask: 2 },
+  { key: 'x', mask: 1 },
+] as const;
+type PermGroupKey = (typeof PERM_GROUPS)[number]['key'];
+
+const perm = ref({
+  visible: false,
+  path: '',
+  draft: '',
+  isDir: false,
+  isProd: false,
+  recursive: false,
+  busy: false,
+});
+/** 输入框里的八进制 → 数值；无效时 null（确定按钮随之禁用） */
+const permOctal = computed(() => {
+  const s = perm.value.draft.trim();
+  return /^[0-7]{1,4}$/.test(s) ? parseInt(s, 8) : null;
+});
+const permValid = computed(() => permOctal.value !== null);
+const permPreview = computed(() => (permOctal.value === null ? '无效' : fmtMode(permOctal.value)));
+
+function permShift(g: PermGroupKey): number {
+  return PERM_GROUPS.find((x) => x.key === g)?.shift ?? 0;
+}
+function permBit(g: PermGroupKey, mask: number): boolean {
+  return (((permOctal.value ?? 0) >> permShift(g)) & mask) !== 0;
+}
+/** 勾选与八进制输入双向联动；输入无效时从 0 重建，避免把脏字符带进掩码运算 */
+function togglePerm(g: PermGroupKey, mask: number) {
+  const next = ((permOctal.value ?? 0) ^ (mask << permShift(g))) & 0o7777;
+  perm.value.draft = next.toString(8);
+}
+
+function openPermDialog() {
+  const name = ctx.value.name;
+  if (!name || ctx.value.pane !== 'remote') return;
+  const entry = remoteEntries.value.find((x) => x.name === name);
+  const mode = (entry?.mode ?? 0) & 0o7777;
+  perm.value = {
+    visible: true,
+    path: joinRemote(remotePath.value, name),
+    draft: mode.toString(8),
+    isDir: entry ? entry.type === 'dir' : ctx.value.isDir,
+    isProd: isProdTag(props.conn.tag || ''),
+    recursive: false,
+    busy: false,
+  };
+}
+
+async function submitPerm() {
+  if (!permValid.value || perm.value.busy) return;
+  const { path, isDir, isProd } = perm.value;
+  const mode = perm.value.draft.trim();
+  const recursive = isDir && perm.value.recursive;
+  if (isProd) {
+    const ok = await ElMessageBox.confirm(
+      `生产连接：确认把 ${path}${recursive ? ' 及其全部下级' : ''} 的权限改为 ${mode}？`,
+      '确认修改权限', { type: 'warning' },
+    ).then(() => true).catch(() => false);
+    if (!ok) return;
+  }
+  perm.value.busy = true;
+  try {
+    const res = await api.post<{ ok: boolean; changed: number; recursive: boolean; failed: { path: string; error: string }[] }>(
+      '/plugin/ops-shell/sftp/chmod',
+      { connectionId: props.connectionId, path, mode, recursive, confirmed: isProd },
+    );
+    if ('error' in res) { ElMessage.error(res.error); return; }
+    perm.value.visible = false;
+    const failed = res.data?.failed ?? [];
+    if (failed.length) {
+      ElMessage.warning(`已修改 ${res.data.changed} 项，${failed.length} 项失败：${failed[0].path} — ${failed[0].error}`);
+    } else {
+      ElMessage.success(`权限已改为 ${mode}${recursive ? `（含 ${res.data.changed} 项）` : ''}`);
+    }
+    await loadRemote();
+  } finally {
+    perm.value.busy = false;
+  }
+}
+
 async function deleteSelected() {
   const pane = ctx.value.pane;
   const names = ctxNames();
@@ -1670,7 +1826,7 @@ onUnmounted(() => {
   background: var(--color-surface); border-bottom: 1px solid var(--glass-border);
 }
 .sftp-c-name { padding-left: 2px; }
-.sftp-c-size, .sftp-c-time { text-align: right; }
+.sftp-c-size, .sftp-c-time, .sftp-c-mode { text-align: right; }
 
 .sftp-row {
   position: relative; display: grid; grid-template-columns: 16px 1fr 72px 92px; gap: 8px;
@@ -1691,6 +1847,39 @@ onUnmounted(() => {
   background: linear-gradient(90deg, transparent, var(--glass-bg-hover) 30%);
 }
 .sftp-row:hover .sftp-row-actions { display: flex; }
+
+/* 远程栏多一列「权限」；本地栏（Windows）没有 POSIX 权限位，保持原列宽 */
+.sftp-panel:not(.is-compact) .sftp-cols-head.is-remote { grid-template-columns: 1fr 72px 84px 92px; }
+.sftp-panel:not(.is-compact) .sftp-row.is-remote { grid-template-columns: 16px 1fr 72px 84px 92px; }
+.sftp-mode {
+  font-size: 11px; font-family: Consolas, monospace; text-align: right; white-space: nowrap;
+  color: var(--color-text-tertiary);
+}
+
+/* ===== 权限编辑弹窗 ===== */
+.sftp-perm { display: flex; flex-direction: column; gap: 10px; font-size: 12px; }
+.sftp-perm-target {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: Consolas, monospace; font-size: 11px; color: var(--color-text-secondary);
+  padding: 4px 8px; border-radius: 6px; background: var(--glass-bg);
+}
+.sftp-perm-line { display: flex; align-items: center; gap: 8px; }
+.sftp-perm-label { color: var(--color-text-secondary); white-space: nowrap; }
+.sftp-perm-input { width: 90px; }
+.sftp-perm-input :deep(.el-input__inner) { font-family: Consolas, monospace; text-align: center; letter-spacing: 0.12em; }
+.sftp-perm-preview {
+  font-family: Consolas, monospace; letter-spacing: 0.06em; color: var(--color-text-primary);
+}
+.sftp-perm-preview.is-bad { color: var(--color-danger, #f56c6c); }
+.sftp-perm-grid {
+  display: grid; grid-template-columns: 72px repeat(3, 64px); gap: 4px 8px; align-items: center;
+}
+.sftp-perm-col { text-align: center; font-size: 11px; color: var(--color-text-tertiary); }
+.sftp-perm-grid :deep(.el-checkbox) { margin-right: 0; justify-content: center; }
+.sftp-perm-grid :deep(.el-checkbox__label) { display: none; }
+.sftp-perm-recursive { margin-top: 2px; }
+.sftp-perm-hint { font-size: 11px; color: var(--color-text-tertiary); line-height: 1.5; }
+.sftp-perm-warn { font-size: 11px; color: var(--color-warning, #e6a23c); }
 
 /* ===== 紧凑模式（并排嵌在终端右侧）：隐藏修改时间列 ===== */
 .sftp-panel.is-compact .sftp-cols-head { grid-template-columns: 1fr 60px; padding-right: 20px; }
