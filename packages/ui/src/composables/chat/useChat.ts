@@ -2551,6 +2551,8 @@ async function healStalePlatform() {
    *     每条任务都被当成"还没选线"，用户每次都要在对话里重选。
    */
   async function startNewChat(spaceId?: string | null, taskType?: string | null) {
+    // 切走前先存草稿 —— 必须在 currentConvId 被清空之前，否则会存到草稿键上
+    saveCurrentDraft();
     // 任务级类型先定值：选线框确认后会带着子线再进本函数，建会话时用它
     pendingTaskType.value = taskType || null;
     store.currentConvId = '';
@@ -2558,11 +2560,8 @@ async function healStalePlatform() {
     mountedSkillIds.value = [];
     // 任务域状态全部归零（文件列表 / 预览 tab / MCP 挂载 / 权限 / 批量态 …）
     resetTaskScopedState();
-    // 草稿态额外清理：输入内容与「待发送的引用」属于本次草稿，换任务必须清空
-    input.value = '';
-    uploadedFiles.value = [];
-    selectedFilePaths.value = new Set();
-    quotedUrls.value = [];
+    // 恢复草稿态自己的待发内容：在草稿态写过一半、中途去看别的任务再回来，内容还在
+    restoreDraft('');
     if (isCodeModeActive()) {
       setScene('code');
       if (spaceId === undefined) spaceId = useCodeStore().projectSpaceId;
@@ -2636,6 +2635,58 @@ async function healStalePlatform() {
     quotedUrls.value = [];
   }
 
+  /* ===== 输入草稿池（2026-10-22 用户诉求：切任务后输入框里的文字/图片不该丢）=====
+   * 每个会话各存一份「文字 + 粘贴的图片 + @ 引用勾选 + 链接引用」：
+   * 切走时落一份、切回时原样填回，发送成功后清掉
+   * （不清的话切回会把已经发出去的内容又填回输入框）。
+   * ★ 只放内存：图片是 base64 dataUrl，直接落 localStorage 会撑爆配额；
+   *   与用户确认过的口径一致 —— 「本次运行内保留」。
+   * ★ 草稿态（还没建会话）用 '__draft__' 作键，与发送互斥锁同一口径。 */
+  interface DraftSnapshot {
+    input: string;
+    uploadedFiles: Array<{ name: string; size: number; type: string; dataUrl: string }>;
+    selectedFilePaths: Set<string>;
+    quotedUrls: Array<{ url: string; name: string }>;
+  }
+  const DRAFT_KEY = '__draft__';
+  const draftPool = new Map<string, DraftSnapshot>();
+
+  function draftKeyOf(convId: string): string {
+    return convId || DRAFT_KEY;
+  }
+
+  /** 切走前落一份；空草稿直接删键（发送后不会「复活」旧内容） */
+  function saveCurrentDraft() {
+    const key = draftKeyOf(store.currentConvId);
+    const snap: DraftSnapshot = {
+      input: input.value,
+      uploadedFiles: [...uploadedFiles.value],
+      selectedFilePaths: new Set(selectedFilePaths.value),
+      quotedUrls: [...quotedUrls.value],
+    };
+    const isEmpty = !snap.input.trim()
+      && snap.uploadedFiles.length === 0
+      && snap.selectedFilePaths.size === 0
+      && snap.quotedUrls.length === 0;
+    if (isEmpty) draftPool.delete(key);
+    else draftPool.set(key, snap);
+  }
+
+  /** 切回时恢复该会话的草稿；没有草稿就归零 */
+  function restoreDraft(convId: string) {
+    const snap = draftPool.get(draftKeyOf(convId));
+    if (!snap) { resetDraftState(); return; }
+    input.value = snap.input;
+    uploadedFiles.value = [...snap.uploadedFiles];
+    selectedFilePaths.value = new Set(snap.selectedFilePaths);
+    quotedUrls.value = [...snap.quotedUrls];
+  }
+
+  /** 发送出去即清掉，避免切回来把已发送的文字/图片又填回输入框 */
+  function dropDraft(convId: string) {
+    draftPool.delete(draftKeyOf(convId));
+  }
+
   /** 历史消息加载态：拉取既有会话历史期间为 true，消息区据此在顶部渲染骨架屏。
    *  ★ 新建会话路径（send 里 createConversation 后的 loadMessages）不置位 —— 空会话没有
    *    "历史"可加载，骨架一闪而过反而压掉欢迎卡。 */
@@ -2651,6 +2702,8 @@ async function healStalePlatform() {
   }
 
   async function selectConv(id: string) {
+    // 切走前把当前输入框（文字 / 粘贴的图片 / @ 引用）存进草稿池，切回来还在
+    saveCurrentDraft();
     await loadHistory(id);
     isDraftMode.value = false;
     // 切会话即退出浏览器实况态：锁定/放大只属于发起浏览器任务的那个会话
@@ -2660,8 +2713,8 @@ async function healStalePlatform() {
     //   （清了就会出现"切走再切回，agent 还在操作但页面能被点"）。记账的清理时机是
     //   **任务收尾**（onTaskFinished）与**新任务开头**（resetTaskScopedState），不是切会话。
     store.clearAgentCursor();
-    // 草稿域归零（附件 chip / @ 引用勾选 / 输入内容不跨任务残留）
-    resetDraftState();
+    // 填入目标会话自己的草稿（没有则归零）—— 各任务的待发内容互不干扰
+    restoreDraft(id);
     // 瞬时 UI 也随会话切换收回：搜索词、轮次高亮、会话列表的批量/重命名/抽屉态
     search.value = '';
     activeNavRound.value = null;
@@ -2821,6 +2874,8 @@ async function healStalePlatform() {
         if (!queueTextEarly) return;
         store.enqueueMessage(runningConvEarly, queueTextEarly);
         input.value = '';
+        // 已入队发送 → 同步清掉草稿，切走再切回不能把这段又填回输入框
+        dropDraft(runningConvEarly);
         return;
       }
     }
@@ -2842,6 +2897,8 @@ async function healStalePlatform() {
 
   async function sendInner() {
     if (!input.value.trim() && uploadedFiles.value.length === 0 && quotedUrls.value.length === 0) return;
+    // 内容已确定要发出：清掉该会话草稿，避免切走再切回把已发送的内容又填回输入框
+    dropDraft(store.currentConvId);
 
     const hasPlatform = platformStore.platforms.length > 0;
     const hasModel = !!selectedModelId.value && !!platformStore.models.find((m) => m.id === selectedModelId.value);

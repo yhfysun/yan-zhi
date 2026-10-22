@@ -159,16 +159,24 @@ describe('① 新建任务 / 切会话：任务域状态必须整体归零', () 
     expect(body, '★ 浏览器地址残留（新任务继承上个任务的 URL）').toMatch(/currentBrowserUrl\s*=\s*''/);
   });
 
-  it('★ 草稿域（输入内容 / 附件 / @ 引用勾选）不得跨任务残留', () => {
-    const body = bodyOf(SRC, 'function resetTaskScopedState');
-    const draft = body + bodyOf(SRC, 'function resetDraftState');
+  it('★ 草稿域按会话隔离：切走存、切回取、发送后清（不得串台）', () => {
+    // 归零函数本身仍要能清干净（没草稿时会走它）
+    const draft = bodyOf(SRC, 'function resetDraftState');
     expect(draft, '★ 附件 chip 未清（输入框残留上个任务的文件）').toMatch(/uploadedFiles\.value\s*=\s*\[\]/);
     expect(draft, '★ @ 引用勾选未清').toMatch(/selectedFilePaths\.value\s*=\s*new Set\(\)/);
-    // 新建任务与切会话都要走草稿归零
-    expect(bodyOf(SRC, 'async function startNewChat'), '★ 新建任务未清草稿域')
-      .toMatch(/resetDraftState\(\)|uploadedFiles\.value\s*=\s*\[\]/);
-    expect(bodyOf(SRC, 'async function selectConv'), '★ 切会话未清草稿域')
-      .toMatch(/resetDraftState\(\)/);
+
+    // 2026-10-22 用户诉求「任务切换后输入框里的图片和文字都丢了」：
+    // 由「一律清空」改为「切走存 / 切回取」，发送后清（否则切回会复活已发内容）
+    const startNew = bodyOf(SRC, 'async function startNewChat');
+    expect(startNew, '★ 新建任务前未保存当前草稿').toMatch(/saveCurrentDraft\(\)/);
+    expect(startNew, '★ 新建任务后未恢复草稿态输入').toMatch(/restoreDraft\(''\)/);
+
+    const sel = bodyOf(SRC, 'async function selectConv');
+    expect(sel, '★ 切会话前未保存当前草稿').toMatch(/saveCurrentDraft\(\)/);
+    expect(sel, '★ 切会话后未恢复目标会话草稿').toMatch(/restoreDraft\(id\)/);
+
+    expect(bodyOf(SRC, 'async function sendInner'), '★ 发送后未清草稿（切回会把已发送内容填回去）')
+      .toMatch(/dropDraft\(/);
   });
 
   it('★ 按消息 id 分桶的展开态要清（否则死键无界增长 + 旧会话折叠态串到新会话）', () => {
