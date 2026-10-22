@@ -20,7 +20,7 @@ import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
 import workspaceFileRoutes from './routes/workspace-files.js';
-import { resolveArtifactDirFor, findArtifactFileInDirs, findArtifactFileAcrossRoots, resolveRegisteredFilePath, backfillRelativeArtifactPaths } from './services/artifact-dir.js';
+import { resolveArtifactDirFor, findArtifactFileInDirs, findArtifactFileAcrossRoots, resolveRegisteredFilePath, backfillRelativeArtifactPaths, backfillWindowsPathSeparators } from './services/artifact-dir.js';
 import { migrateModelPricingUnit } from './services/pricing-unit-migration.js';
 import { downloadMediaBinary } from './services/media-fetch.js';
 import { buildArtifactRelDir, buildArtifactRelDirCandidates } from '@yan-zhi/shared';
@@ -729,6 +729,16 @@ try {
     logger.info(`[artifact] 产物路径回填：扫描 ${bf.scanned} 条，修正 ${bf.fixed} 条，仍无法定位 ${bf.unresolved} 条`);
   }
 } catch (e) { logger.warn('[artifact] 产物路径回填失败:', e); }
+
+// Windows 混合分隔符回填（2026-10-22）：`C:\a/b\c` → `C:\a\b\c`。
+// ★ 为什么：joinArtifactPath 旧版无条件用 `/` 拼根，历史登记行的 path 是混合路径。
+//   Node fs 读得动，所以预览一直正常；但「在文件夹中显示」走 explorer /select，
+//   混合路径会让它**静默失败**并打开默认目录（用户实报「跳到了文档」）。
+//   源头已修，这里把存量洗净；幂等，只在 win32 上执行。
+try {
+  const sepBf = backfillWindowsPathSeparators();
+  if (sepBf.fixed) logger.info(`[artifact] 分隔符回填：扫描 ${sepBf.scanned} 条，修正 ${sepBf.fixed} 条`);
+} catch (e) { logger.warn('[artifact] 分隔符回填失败:', e); }
 
 // 定价单位落库迁移（2026-10-18）：库里仍是「元/千 token」的旧定价 ×1000 → 「元/百万」。
 // ★ 为什么必须落库迁移：UI 端（离线直连库）**也直接写 `model` 表**，只迁一端会出现

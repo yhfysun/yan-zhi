@@ -47,6 +47,21 @@ describe('parseToolResultContent（分支等价性）', () => {
     expect(parseToolResultContent(JSON.stringify('hello'))).toEqual({ content: 'hello', isError: false });
   });
 
+  it('★ content 是字符串而非数组（2026-10-21 白屏回归）→ 原字符串即展示文本，不再抛错', () => {
+    // 现场脏数据形态：{"content":"- [2026-10-14] 📌铁律 | …"} —— 旧代码 `"xxx".length` 为真
+    // 走 .filter 直接 TypeError ⇒ toolResultIndex computed 首求值抛错 ⇒ .value 恒 undefined
+    // ⇒ isToolResultDone "reading 'has'" ⇒ 渲染树整棵挂 = 白屏。
+    const raw = JSON.stringify({ content: '- [2026-10-14] 📌铁律 | 抖音发布页不存草稿' });
+    expect(parseToolResultContent(raw)).toEqual({
+      content: '- [2026-10-14] 📌铁律 | 抖音发布页不存草稿',
+      isError: false,
+    });
+    // 非数组对象 content 同样不抛，落到 stringify 分支
+    const obj = parseToolResultContent(JSON.stringify({ content: { a: 1 } }));
+    expect(obj.isError).toBe(false);
+    expect(typeof obj.content).toBe('string');
+  });
+
   it('★ 其它对象 → stringify(parsed, 2)', () => {
     const parsed = { foo: 1, bar: [1, 2] };
     expect(parseToolResultContent(JSON.stringify(parsed))).toEqual({

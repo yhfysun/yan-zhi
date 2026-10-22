@@ -520,6 +520,15 @@
         <el-button size="small" type="primary" @click="store.submitPendingPathAuth('once')">
           {{ store.pendingPathAuth.dangerWhy ? '我已确认，仅此次执行' : '仅此次允许' }}
         </el-button>
+        <!-- 危险工具（python_exec 等）默认确认：可一次授权，本会话内同一工具不再询问。
+             只对"默认确认"发放（服务端 allowSessionTool），用户自定义规则/破坏性命令仍只给"仅此次"。 -->
+        <el-button
+          v-if="store.pendingPathAuth.allowSessionTool"
+          size="small"
+          @click="store.submitPendingPathAuth('tool')"
+        >
+          本会话内允许 {{ store.pendingPathAuth.allowSessionTool }}
+        </el-button>
         <!-- 危险命令不给"记住本会话"：不可逆动作每次单独点头 -->
         <el-button
           v-if="!store.pendingPathAuth.dangerWhy"

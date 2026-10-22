@@ -124,12 +124,21 @@ export function buildArtifactRelDirCandidates(opts: {
 
 /**
  * 把相对产物目录挂到指定根上。根可以是绝对路径（工作目录）或相对路径（数据根）。
- * 会自动归一化多余分隔符与重复斜杠，不改变根的原有分隔符风格。
+ * 会自动归一化多余分隔符与重复斜杠，并**沿用根的原有分隔符风格**。
+ *
+ * ★ 2026-10-22 用户实报「交付物卡片点打开文件夹跳到了文档」：
+ *   此前这里无条件用正斜杠拼根，产出 `C:\Users\x\第一本/03-output\a.mp4` 这种混合路径。
+ *   Node fs 宽容，但系统文件管理器不宽容 —— `explorer.exe /select,<混合路径>` 解析失败时
+ *   **不报错**，直接退化成打开默认目录。所以 Windows 绝对根必须拼原生反斜杠；
+ *   相对根（浏览器 OPFS / 静态路由用的 relDir）仍保持正斜杠。
  */
 export function joinArtifactPath(root: string, relDir: string): string {
   const base = (root || '').replace(/[\\/]+$/, '');
   const rel = (relDir || '').replace(/^[\\/]+/, '');
   if (!base) return rel;
   if (!rel) return base;
-  return `${base}${SEP}${rel}`;
+  const isWindowsAbs = /^[A-Za-z]:|^\\\\/.test(base);
+  return isWindowsAbs
+    ? `${base}\\${rel.replace(/\//g, '\\')}`
+    : `${base}${SEP}${rel}`;
 }

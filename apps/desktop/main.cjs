@@ -3201,20 +3201,33 @@ async function injectYzAssistant(wc) {
   try { await wc.insertCSS(YZ_CURSOR_CSS); } catch { /* ignore */ }
   await wc.executeJavaScript(`(function(){
     if(!document.body)return;
+    // ★ 2026-10-22：webview 引擎下页内光标本身可见，宿主层（BrowserPanel）会画真正的 AI 鼠标，
+    //   这里只记录 __yzLastCursor 供主进程广播，不再重复画一只（否则页面上出现两个光标）。
+    var HOSTCUR=${isWebviewEngine() ? 'true' : 'false'};
     var c=document.getElementById('__yz-cursor');
     var r=document.getElementById('__yz-ring');
     var b=document.getElementById('__yz-badge');
-    if(!c){c=document.createElement('div');c.id='__yz-cursor';c.style.display='none';document.body.appendChild(c);}
-    if(!r){r=document.createElement('div');r.id='__yz-ring';document.body.appendChild(r);}
-    if(!b){b=document.createElement('div');b.id='__yz-badge';b.style.display='none';document.body.appendChild(b);}
-    function showCursor(x,y,label){c.style.display='';c.style.left=x+'px';c.style.top=y+'px';
-      if(label){b.style.display='';b.textContent=label;b.style.left=x+'px';b.style.top=y+'px';}else{b.style.display='none';}
-      window.__yzLastCursor={x:x,y:y,label:label||'',at:Date.now()};}
-    function hideCursor(){c.style.display='none';b.style.display='none';}
-    function clickAt(x,y){c.style.display='';c.style.left=x+'px';c.style.top=y+'px';c.classList.add('clicking');
+    if(HOSTCUR){
+      ['__yz-cursor','__yz-ring','__yz-badge'].forEach(function(id){var e=document.getElementById(id);if(e)e.remove();});
+    }
+    if(!HOSTCUR){
+      if(!c){c=document.createElement('div');c.id='__yz-cursor';c.style.display='none';document.body.appendChild(c);}
+      if(!r){r=document.createElement('div');r.id='__yz-ring';document.body.appendChild(r);}
+      if(!b){b=document.createElement('div');b.id='__yz-badge';b.style.display='none';document.body.appendChild(b);}
+    }
+    function showCursor(x,y,label){
+      window.__yzLastCursor={x:x,y:y,label:label||'',at:Date.now()};
+      if(HOSTCUR)return;
+      c.style.display='';c.style.left=x+'px';c.style.top=y+'px';
+      if(label){b.style.display='';b.textContent=label;b.style.left=x+'px';b.style.top=y+'px';}else{b.style.display='none';}}
+    function hideCursor(){if(HOSTCUR)return;c.style.display='none';b.style.display='none';}
+    function clickAt(x,y){
       window.__yzLastCursor={x:x,y:y,label:'',at:Date.now(),kind:'click'};
-      r.style.display='';r.style.left=x+'px';r.style.top=y+'px';r.classList.remove('active');void r.offsetWidth;r.classList.add('active');
-      setTimeout(function(){c.classList.remove('clicking');},200);
+      if(!HOSTCUR){
+        c.style.display='';c.style.left=x+'px';c.style.top=y+'px';c.classList.add('clicking');
+        r.style.display='';r.style.left=x+'px';r.style.top=y+'px';r.classList.remove('active');void r.offsetWidth;r.classList.add('active');
+        setTimeout(function(){c.classList.remove('clicking');},200);
+      }
       var el=document.elementFromPoint(x,y);if(el){var o={bubbles:true,cancelable:true,clientX:x,clientY:y,view:window};
         el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mousedown',o));
         el.dispatchEvent(new MouseEvent('mouseup',o));el.dispatchEvent(new MouseEvent('click',o));}return el?el.tagName+'.'+(el.className||''):null;}
@@ -3494,7 +3507,7 @@ async function injectYzAssistant(wc) {
       /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
          改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
          ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
-      __yzVersion:3};
+      __yzVersion:4};
   })()`);
 }
 
@@ -3632,7 +3645,7 @@ async function runFieldFocusFlash(wc, locate, value) {
         }
       }
       if((!el||!el.isConnected)&&a.selector&&window.__yzAssistant){el=window.__yzAssistant.resolve(a.selector);}
-      if(el){${FIELD_FLASH_BODY}}
+      if(el){try{var _r=el.getBoundingClientRect();window.__yzAssistant.showCursor(_r.x+_r.width/2,_r.y+_r.height/2,'输入');}catch(e){}${FIELD_FLASH_BODY}}
     }catch(e){}
   })()`;
   try {
@@ -4460,7 +4473,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
                 if(a.selector){el=A.resolve(a.selector);}
                 if(!el && a.index!=null){el=(window.__yzElements&&window.__yzElements[a.index])||null;
                   if((!el||!el.isConnected)&&window.__yzSelMap&&window.__yzSelMap[a.index]){el=document.querySelector(window.__yzSelMap[a.index]);}}
-                if(el){el.scrollIntoView({block:'center'});el.click();return{clicked:true};}
+                if(el){el.scrollIntoView({block:'center'});try{var _ur=el.getBoundingClientRect();A.showCursor(_ur.x+_ur.width/2,_ur.y+_ur.height/2,'上传');}catch(e){}el.click();return{clicked:true};}
                 if(a.x!=null&&a.y!=null){var t=A.clickAt(a.x,a.y);return{clicked:true,via:'real-mouse',tag:t};}
                 return {error:'未找到上传按钮（index 已失效？请重新 get_page_info）'};
               })()`).catch((e) => ({ error: String((e && e.message) || e) }));
@@ -4762,6 +4775,9 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           async function clickEl(el){
             // 先滚入视口（instant，避免 smooth 异步未到位导致后续坐标过期）
             try{el.scrollIntoView({block:'center'});}catch(e){}
+            // ★ 可见光标（2026-10-21）：DOM 派发点击不经过真实鼠标，必须显式补一次光标定位，
+            //   否则宿主层虚拟鼠标永远不动（showCursor 写 __yzLastCursor，主进程据此广播）。
+            try{var _cr=el.getBoundingClientRect();A.showCursor(_cr.x+_cr.width/2,_cr.y+_cr.height/2,'点击');}catch(e){}
             var occ=detectOcclusion(el);
             var autoDismissed=false, coveringInfo=null;
             if(occ){coveringInfo=occ.covering; autoDismissed=await tryDismiss(occ.coveringEl);

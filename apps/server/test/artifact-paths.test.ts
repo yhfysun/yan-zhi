@@ -92,7 +92,26 @@ describe('buildArtifactRelDirCandidates 读取侧候选', () => {
 describe('joinArtifactPath 与 id 目录配合', () => {
   it('会话 id 作为目录段拼接无损（uuid 含连字符不产生额外分隔）', () => {
     const dir = joinArtifactPath('D:\\ws', `.yan-zhi/tasks/${CID}/deliverables`);
-    expect(dir).toBe(`D:\\ws/.yan-zhi/tasks/${CID}/deliverables`);
+    expect(dir).toBe(`D:\\ws\\.yan-zhi\\tasks\\${CID}\\deliverables`);
+  });
+
+  it('★ Windows 绝对根必须拼原生反斜杠（混合分隔符会让 explorer /select 静默失败）', () => {
+    const dir = joinArtifactPath('C:\\Users\\x\\小说推文\\第一本', `.yan-zhi/tasks/${CID}/deliverables`);
+    expect(dir).not.toMatch(/\//);
+    expect(dir).toBe(`C:\\Users\\x\\小说推文\\第一本\\.yan-zhi\\tasks\\${CID}\\deliverables`);
+  });
+
+  it('相对部分自带反斜杠时也统一成根的分隔符（03-output\\a.mp4 场景）', () => {
+    const dir = joinArtifactPath('C:\\ws', '03-output\\第7集.mp4');
+    expect(dir).toBe('C:\\ws\\03-output\\第7集.mp4');
+  });
+
+  it('UNC 根同样按 Windows 规则处理', () => {
+    expect(joinArtifactPath('\\\\nas\\share', 'a/b')).toBe('\\\\nas\\share\\a\\b');
+  });
+
+  it('相对根（OPFS / 静态路由）保持正斜杠', () => {
+    expect(joinArtifactPath('workspace', 'a/b')).toBe('workspace/a/b');
   });
 
   it('根为空时返回相对 id 目录（数据根缺失降级）', () => {

@@ -20,7 +20,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { eventsSince } from '../src/llm-task-manager.js';
+import { eventsSince, dropResolvedToolExecutes } from '../src/llm-task-manager.js';
 
 /** 造一个「已被 emit 裁剪过」的事件缓冲：seq 从 from 到 to 连续。 */
 function trimmedBuffer(from: number, to: number): Array<{ type: string; seq: number }> {
@@ -85,5 +85,39 @@ describe('SSE 重连游标：按 seq 重放（2026-10-15）', () => {
     const body = src.slice(at, at + 400);
     expect(body, 'subscribe 未使用 eventsSince —— 判据可能又被写回下标语义').toMatch(/eventsSince\(\s*task\.events\s*,\s*since\s*\)/);
     expect(body, 'subscribe 里不应再出现按下标迭代的重放').not.toMatch(/for \(let i = since;/);
+  });
+});
+
+describe('重放去僵尸弹窗：已答过的 tool:execute 不再重放（2026-10-21）', () => {
+  const ev = (seq: number, type: string, extra: Record<string, unknown> = {}) => ({ seq, type, ...extra }) as any;
+
+  it('pending 里的调用保留，已回收的剔除', () => {
+    const buf = [
+      ev(1, 'chunk'),
+      ev(2, 'tool:execute', { callId: 'call_answered', toolName: 'confirm_user' }),
+      ev(3, 'tool:result', { callId: 'call_answered' }),
+      ev(4, 'tool:execute', { callId: 'call_waiting', toolName: 'ask_user' }),
+    ];
+    const got = dropResolvedToolExecutes(buf, (id) => id === 'call_waiting');
+    expect(got.map((e: any) => e.seq)).toEqual([1, 3, 4]);
+  });
+
+  it('非 tool:execute 事件一律保留（正文与工具结果不能丢）', () => {
+    const buf = [ev(1, 'chunk'), ev(2, 'tool:result', { callId: 'x' }), ev(3, 'message:updated')];
+    expect(dropResolvedToolExecutes(buf, () => false).length).toBe(3);
+  });
+
+  it('缺 callId 的 tool:execute 保留（防御：判据不足时不擅自丢弃）', () => {
+    const buf = [ev(1, 'tool:execute', { toolName: 'x' })];
+    expect(dropResolvedToolExecutes(buf, () => false).length).toBe(1);
+  });
+
+  it('★ subscribe 必须真的走 dropResolvedToolExecutes（包装不能被绕开）', () => {
+    const src = readFileSync(resolve(__dirname, '..', 'src', 'llm-task-manager.ts'), 'utf8');
+    const at = src.indexOf('export function subscribe(');
+    const body = src.slice(at, at + 400);
+    expect(body, 'subscribe 重放未过滤已回收的 tool:execute —— 复活成僵尸向导').toMatch(
+      /dropResolvedToolExecutes\(\s*eventsSince\(/,
+    );
   });
 });

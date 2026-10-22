@@ -298,10 +298,15 @@ export interface PendingPathAuth {
   isCommand: boolean;
   /** 危险命令命中原因（非空 = 破坏性命令单独授权：无"记住本会话"选项） */
   dangerWhy?: string;
+  /**
+   * 非空 = 危险工具默认确认，前端可给「本会话内允许该工具」按钮（2026-10-21）。
+   * 值为工具名；服务端只认它来记账，避免前端凭一个 decision 值扩大授权。
+   */
+  allowSessionTool?: string;
   workspaceDir: string;
   items: PendingPathAuthItem[];
-  /** 决议回传：once=仅此次 / dir=允许该目录且本会话记住 / deny=拒绝 */
-  resolve: (decision: 'once' | 'dir' | 'deny') => void;
+  /** 决议回传：once=仅此次 / dir=允许该目录且本会话记住 / tool=本会话内允许该工具 / deny=拒绝 */
+  resolve: (decision: 'once' | 'dir' | 'tool' | 'deny') => void;
 }
 
 /**
@@ -968,7 +973,7 @@ export const useChatStore = defineStore('chat', () => {
   const planSteps = computed<PlanStepT[]>(() => readPlan(plansByConv.value, planKeyOf())?.steps || []);
 
   /** 用户提交越界访问授权卡的决议（once=仅此次 / dir=允许该目录且本会话记住 / deny=拒绝） */
-  function submitPendingPathAuth(decision: 'once' | 'dir' | 'deny') {
+  function submitPendingPathAuth(decision: 'once' | 'dir' | 'tool' | 'deny') {
     const card = pendingPathAuth.value;
     if (!card) return;
     pendingPathAuth.value = null;
@@ -2078,6 +2083,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           toolName: String(raw.toolName || ''),
           isCommand: !!raw.isCommand,
           dangerWhy: String(raw.dangerWhy || '') || undefined,
+          allowSessionTool: String(raw.allowSessionTool || '') || undefined,
           workspaceDir: String(raw.workspaceDir || ''),
           items,
           resolve: (decision) => {

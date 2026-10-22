@@ -85,6 +85,8 @@ import {
   authorizeDir,
   isCommandAuthorized,
   authorizeCommand,
+  isDangerToolAuthorized,
+  authorizeDangerTool,
   commandExecutionScope,
   type PathAccessItem,
 } from './services/path-guard.js';
@@ -384,6 +386,29 @@ export const DANGEROUS_TOOLS = new Set([
 /** 危险工具判定（供执行器与测试共用）：外部 IM 发送类 API 同样按危险处理。 */
 export function isDangerousTool(name: string): boolean {
   return DANGEROUS_TOOLS.has(name) || name.startsWith('api_im_');
+}
+
+/**
+ * 危险工具是否还需要弹确认（2026-10-21）。
+ *
+ * ★ `all` = 用户已明确承担全部风险（PERMISSION_MATRIX['all'].approval = 'never'）。
+ *   与危险**命令**护栏（checkDangerousCommand）同一口径：该护栏早已在 all 下跳过，
+ *   而"危险工具默认确认"这条同日新增时漏了 —— 用户在 All 模式下调 python_exec 仍被反复弹窗。
+ *
+ * ★ 用户自己配的 confirm 规则不在此列：那是显式设置，任何档位都照常生效（由调用方前置处理）。
+ */
+export function needsDangerConfirm(params: {
+  toolName: string;
+  permissionMode?: string;
+  /** 用户 confirm 规则已命中（前面的分支已问过/放行） */
+  hasConfirmRules: boolean;
+  /** 本会话已「允许该工具」 */
+  alreadyAuthorized: boolean;
+}): boolean {
+  if (params.hasConfirmRules) return false;
+  if (params.permissionMode === 'all') return false;
+  if (params.alreadyAuthorized) return false;
+  return isDangerousTool(params.toolName);
 }
 
 /**
@@ -1751,6 +1776,35 @@ export function eventsSince(events: SSEEvent[], since: number): SSEEvent[] {
 }
 
 /**
+ * 重放过滤：**已回收**的前端工具调用不再重放（2026-10-21 修，根因）。
+ *
+ * ★ 现场（用户实报「同一个问题又问一遍」「答完的确认框还挂在页面上」）：
+ *   前端刷新/新开任务窗口时 `taskEventCounts`（游标）与 `executedToolCallIds`（去重集）
+ *   都是**内存态**，一起归零 ⇒ 以 `since=0` 全量重放该任务的整段事件缓冲。
+ *   缓冲里那条 `tool:execute`（confirm_user 三页向导）被原样再发一遍 → 前端重新弹出向导，
+ *   而此时用户**早就答过**、服务端 `pendingToolCalls` 里已经没有这个 callId。
+ *   结果是：任务继续跑到第 N 步，页面却停在「第 1 / 3 页」问第一页；
+ *   再答一次也不生效（resolveToolResult 找不到 pending 直接 return）——纯粹的僵尸弹窗。
+ *
+ * ★ 判据用服务端的 `pendingToolCalls`（唯一权威），不在前端猜：
+ *   callId 还在 ⇒ 真的还等着用户，必须重放（重连不能丢提问）；
+ *   callId 没了 ⇒ 结果已回收，重放只会重复弹窗。
+ *
+ * @param isPending 该 callId 是否仍在等待前端结果
+ */
+export function dropResolvedToolExecutes(
+  events: SSEEvent[],
+  isPending: (callId: string) => boolean,
+): SSEEvent[] {
+  return events.filter((ev) => {
+    if (ev.type !== 'tool:execute') return true;
+    const callId = (ev as { callId?: unknown }).callId;
+    if (!callId) return true;
+    return isPending(String(callId));
+  });
+}
+
+/**
  * 订阅任务事件（重放 seq > since 的事件 + 后续实时事件）。
  *
  * ★★★ `since` 的语义 =「客户端**已收到的最后一个事件的 seq**」（0 = 从头全量重放）。
@@ -1771,7 +1825,10 @@ export function eventsSince(events: SSEEvent[], since: number): SSEEvent[] {
 export function subscribe(taskId: string, since: number, onEvent: (event: SSEEvent) => void): () => void {
   const task = tasks.get(taskId);
   if (!task) return () => {};
-  for (const ev of eventsSince(task.events, since)) {
+  const replay = dropResolvedToolExecutes(eventsSince(task.events, since), (id) => task.pendingToolCalls.has(id));
+  // ★ 2026-10-21：重放前先剔掉「已经答过」的前端工具调用 —— 否则刷新/重连会把
+  //   早已回收的 confirm_user 向导再弹一遍（用户看到同一个问题被重复提问）。
+  for (const ev of replay) {
     try { onEvent(ev); } catch {}
   }
   task.subscribers.add(onEvent);
@@ -1958,6 +2015,26 @@ function auditPathAccess(opts: {
 }
 
 /**
+ * 区分「任务被用户终止」与「前端真的不可达」（2026-10-21 修，根因）。
+ *
+ * ★ 现场（用户实报「点了停止，助手却说前端不可达、还让我重试」）：
+ *   `abortTask()` 用 `DOMException('Aborted', 'AbortError')` reject 掉**所有** pending，
+ *   而授权弹窗的 catch 一律按"前端不可达"措辞回给模型，并附上一句"请稍后重试"。
+ *   于是用户点停止 ⇒ 模型收到"重试"指引 ⇒ 再发一次工具 ⇒ 立刻又被 abort ——
+ *   界面看起来就是"反复弹窗 / 一直卡着不动"。
+ *
+ * ★ 授权卡（`PATH_AUTH_TIMEOUT_MS = 0`）与工具授权（timeout 0）**都不设超时**，
+ *   即这两处的 reject 只可能来自 abort 或无人值守 ⇒ 把它们说成"前端不可达"几乎恒为误判。
+ */
+export function isTaskAbort(e: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  const name = (e as { name?: string } | null)?.name;
+  if (name === 'AbortError') return true;
+  const msg = String((e as { message?: unknown } | null)?.message ?? e ?? '').trim();
+  return /^aborted$/i.test(msg);
+}
+
+/**
  * 请求用户授权越界访问（复用 ask_user 那套「委托前端 → 弹窗 → POST 回传」通道）。
  *
  * 返回值：
@@ -1972,6 +2049,8 @@ async function requestPathAuthorization(
   isCommand: boolean,
   /** 危险命令命中原因（危险命令单独授权时展示，普通路径授权为空） */
   dangerWhy?: string,
+  /** 非空 = 危险工具默认确认，可提供「本会话内允许该工具」选项（记在本参数的工具名下） */
+  allowSessionTool?: string,
 ): Promise<{ ok: boolean; reason: string; message: string }> {
   // 无人值守（定时任务/后台工作流）：fail-safe **直接拒绝**，且**不挂起**。
   // 与 unattendedToolResult 既有口径一致 —— 定时任务没人守着，挂起 = 任务永久卡住。
@@ -1992,6 +2071,8 @@ async function requestPathAuthorization(
     toolName,
     isCommand,
     dangerWhy: dangerWhy || '',
+    // 前端据此决定是否显示「本会话内允许该工具」按钮（只在危险工具默认确认时给）
+    allowSessionTool: allowSessionTool || '',
     workspaceDir: task.workspaceDir || '',
     items: items.map((it) => ({
       action: it.action,
@@ -2004,6 +2085,15 @@ async function requestPathAuthorization(
   try {
     raw = await executeToolViaFrontend(task, PATH_AUTH_TOOL, payload, '', 0, PATH_AUTH_TIMEOUT_MS);
   } catch (e: any) {
+    // ★ 2026-10-21：用户点「停止」≠ 前端不可达。混为一谈会让模型照着"请稍后重试"再发一次，
+    //   而任务已被 abort ⇒ 再次被拒 ⇒ 用户看到的就是"同一个授权卡反复弹"。
+    if (isTaskAbort(e, task.abortController.signal)) {
+      return {
+        ok: false,
+        reason: 'aborted',
+        message: '任务已被用户终止，授权未完成。**不要重试**，直接结束本轮。',
+      };
+    }
     return {
       ok: false,
       reason: 'frontend-error',
@@ -2024,6 +2114,16 @@ async function requestPathAuthorization(
       message: `用户未授权访问：${what}。请改用工作目录内的路径，或先向用户说明为什么要访问该位置并征求同意。`,
     };
   }
+  // 「本会话内允许该工具」（2026-10-21）：只在服务端主动发放了 allowSessionTool 时才认，
+  // 否则降级为"仅此次"，防止旧前端/异常载荷凭一个 decision 值扩大授权。
+  let effective = decision;
+  if (decision === 'tool' && !allowSessionTool) {
+    logger.warn(`[path-guard] decision=tool 但未提供 allowSessionTool，降级为 once conv=${task.conversationId}`);
+    effective = 'once';
+  } else if (decision === 'tool' && allowSessionTool) {
+    authorizeDangerTool(task.conversationId, allowSessionTool);
+    logger.warn(`[danger] 已记录「本会话内允许」conv=${task.conversationId} tool=${allowSessionTool}`);
+  }
   // 允许：落白名单（会话级，父目录粒度）
   if (isCommand) {
     authorizeCommand(task.conversationId);
@@ -2034,20 +2134,20 @@ async function requestPathAuthorization(
   }
   auditPathAccess({
     userId: task.userId, conversationId: task.conversationId, taskId: task.id,
-    toolName, decision: 'allowed', reason: decision, items,
+    toolName, decision: 'allowed', reason: effective, items,
   });
-  logger.warn(`[path-guard] 已授权 conv=${task.conversationId} tool=${toolName} scope=${decision} n=${items.length}`);
-  return { ok: true, reason: decision, message: '' };
+  logger.warn(`[path-guard] 已授权 conv=${task.conversationId} tool=${toolName} scope=${effective} n=${items.length}`);
+  return { ok: true, reason: effective, message: '' };
 }
 
 /** 解析前端授权卡的返回值。JSON 优先（`{decision}`），纯文本兜底（老前端/异常形态）。 */
-function parsePathAuthResult(raw: string): 'once' | 'dir' | 'deny' | 'cancel' {
+function parsePathAuthResult(raw: string): 'once' | 'dir' | 'tool' | 'deny' | 'cancel' {
   const s = (raw || '').trim();
   if (!s) return 'deny';
   try {
     const obj = JSON.parse(s) as { decision?: string };
     const d = String(obj.decision || '');
-    if (d === 'once' || d === 'dir' || d === 'deny' || d === 'cancel') return d;
+    if (d === 'once' || d === 'dir' || d === 'tool' || d === 'deny' || d === 'cancel') return d;
   } catch { /* 非 JSON，走文本兜底 */ }
   if (/^allow(_once)?$/.test(s) || s === '允许' || s === '仅此次允许') return 'once';
   if (/^allow_dir$/.test(s) || s === '允许该目录') return 'dir';
@@ -2097,6 +2197,10 @@ async function requestToolAuthorization(task: LlmTask, toolName: string, args: u
     // 超时 0 = 不设超时（授权卡与 pathGuard 授权弹窗同性质：用户可能隔天才回）
     raw = await executeToolViaFrontend(task, TOOL_AUTH_TOOL, { toolName, argsPreview }, '', 0, 0);
   } catch (e: any) {
+    // 同 requestPathAuthorization：用户终止与真故障必须分开报，否则模型会照着"重试"再弹一次。
+    if (isTaskAbort(e, task.abortController.signal)) {
+      return { ok: false, message: '任务已被用户终止，授权未完成。**不要重试**，直接结束本轮。' };
+    }
     return {
       ok: false,
       message: `授权确认失败（前端不可达）：${e?.message || e}。本次未执行；请改用只读方案，或向用户说明后等待其放开会话权限。`,
@@ -5056,14 +5160,22 @@ async function executeTool(
   // 危险工具默认确认（2026-10-21 用户拍板：「危险工具要么确认呗」）
   //   清单见 DANGEROUS_TOOLS：跑任意代码 / 安装运行时 / 对外发布与发消息。
   //   用户已配置的 confirm 规则若已放行则不重复弹窗；无人值守 fail-safe 拒绝。
+  //   ★ 同日补（用户：「All 模式也不问」「能不能一次授权就好」）：
+  //     · `all` 档位直接跳过（与危险命令护栏同口径：用户已明确承担风险）；
+  //     · 用户选过「本会话内允许该工具」后，同工具不再问。
   // ══════════════════════════════════════════════════════════════════════════
-  if (hookVerdict.confirmRules.length === 0 && isDangerousTool(toolName)) {
+  if (needsDangerConfirm({
+    toolName,
+    permissionMode: task.permissionMode,
+    hasConfirmRules: hookVerdict.confirmRules.length > 0,
+    alreadyAuthorized: isDangerToolAuthorized(task.conversationId, toolName),
+  })) {
     auditPathAccess({
       userId: task.userId, conversationId: task.conversationId, taskId: task.id,
       toolName, decision: 'danger-confirm', reason: '危险工具默认需要确认', items: [hookItem],
     });
     const granted = await requestPathAuthorization(
-      task, toolName, [hookItem], COMMAND_TOOLS.has(toolName), `危险操作需要确认：${toolName}`,
+      task, toolName, [hookItem], COMMAND_TOOLS.has(toolName), `危险操作需要确认：${toolName}`, toolName,
     );
     if (!granted.ok) {
       auditPathAccess({
@@ -5934,7 +6046,9 @@ async function deliverWorkflowFile(ctx: WorkflowDeliveryCtx, item: { name: strin
   if (!filePath && item.content) {
     const { dir } = resolveArtifactDirFor({ conversationId: ctx.conversationId, category: 'deliverable' });
     await fsp.mkdir(dir, { recursive: true });
-    filePath = `${dir}/${item.name}`;
+    // 必须 path.join：产物目录在 Windows 下是反斜杠，用 `/` 手拼会产出
+    // `C:\a/b\c` 混合路径，登记后交给资源管理器 /select 会被静默丢弃
+    filePath = path.join(dir, item.name);
     await fsp.writeFile(filePath, item.content, item.encoding === 'base64' ? 'base64' : 'utf8');
   }
   if (!filePath) return;

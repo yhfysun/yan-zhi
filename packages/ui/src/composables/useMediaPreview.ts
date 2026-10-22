@@ -12,6 +12,7 @@ import { reactive, readonly } from 'vue';
 import { ElMessage } from 'element-plus';
 import { resolveServerUrl } from '@yan-zhi/shared';
 import { api as apiClient, API_BASE } from '../api/client';
+import { toWindowsPath } from '../utils/file-open';
 import { buildDocx, measureImage } from '../utils/docx';
 
 /** 一个可预览媒体（图片 / 视频 / 音频 / 普通文件）的来源描述 */
@@ -367,9 +368,12 @@ export async function revealMedia(t?: MediaTarget) {
     ElMessage.info('该媒体没有本机文件，无法打开所在目录');
     return;
   }
+  // ★ 登记路径可能是混合分隔符（`C:\a/03-output\b.mp4`），系统文件管理器只认原生分隔符，
+  //   否则 explorer 的 /select 静默失败并退回默认目录（用户实报「跳到文档」）。
+  const nativePath = toWindowsPath(target.path);
   if (electron?.shell?.showItemInFolder) {
     try {
-      await electron.shell.showItemInFolder(target.path);
+      await electron.shell.showItemInFolder(nativePath);
       return;
     } catch { /* 回退 */ }
   }
@@ -377,7 +381,7 @@ export async function revealMedia(t?: MediaTarget) {
     const { getPlatformAdapter } = await import('@yan-zhi/core');
     const adapter = getPlatformAdapter();
     if (!adapter.shell) throw new Error('无 shell 能力');
-    const p = target.path;
+    const p = nativePath;
     const isWin = /win/i.test(navigator.platform);
     const isMac = /mac/i.test(navigator.platform);
     if (isWin) await adapter.shell.exec('explorer.exe', [`/select,${p}`]);
@@ -529,7 +533,8 @@ async function saveDocxBytes(bytes: Uint8Array, name: string): Promise<void> {
     } catch { /* 走兜底目录 */ }
   }
   if (!dir) dir = 'workspace';
-  const full = `${dir}/${name}`;
+  // 登记进 conversation_file 的路径必须是原生分隔符，否则资源管理器定位会静默失败
+  const full = toWindowsPath(`${dir}/${name}`);
 
   if (adapter.platform !== 'desktop') {
     downloadBytes(bytes, name);

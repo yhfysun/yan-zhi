@@ -338,16 +338,16 @@
       <!-- Agent 虚拟鼠标（宿主层常驻）：webview 引擎下 guest 内光标被 shield 盖住且瞬闪看不见，
            主进程动作完成后广播坐标，这里画在 webview/shield 之上。仅预览空间 + 有步骤日志时显示。 -->
       <div
-        v-if="agentCursorVisible && cursorPos"
+        v-if="cursorShown"
         class="agent-cursor"
-        :class="{ 'cursor-clicking': cursorPos.kind === 'click' }"
-        :key="cursorPos.at"
-        :style="{ left: cursorPos.x + 'px', top: cursorPos.y + 'px' }"
+        :class="{ 'cursor-clicking': cursorShown.kind === 'click', 'cursor-working': cursorShown.x < 0 }"
+        :key="cursorShown.at"
+        :style="cursorStyle(cursorShown)"
       >
         <svg class="cursor-arrow" width="26" height="26" viewBox="0 0 28 28">
           <path d="M5 3L5 20L10 16L13 22L16 21L13 15L19 15Z" fill="#4a9eff" stroke="white" stroke-width="1.5"/>
         </svg>
-        <span v-if="cursorPos.label" class="cursor-label">{{ cursorPos.label }}</span>
+        <span v-if="cursorShown.label" class="cursor-label">{{ cursorShown.label }}</span>
       </div>
 
       <!-- Agent 步骤清单：实况锁定时叠加视口右上，与当前会话的 task_plan 同步
@@ -714,6 +714,16 @@ const cursorPos = computed(() => {
   if (c.tabId && c.tabId !== activeTabId.value) return null;
   return c;
 });
+// 常驻「AI 工作中」光标（2026-10-21）：run_script 这类动作不产生坐标，仍要让用户看到 agent 正在这一页干活。
+// 有坐标用真实坐标；没有就停在视口中部，任务结束（agentCursorVisible 变假）随之消失。
+const cursorShown = computed(() => {
+  if (!agentCursorVisible.value || !activeTabId.value) return null;
+  if (cursorPos.value) return cursorPos.value;
+  return { tabId: activeTabId.value, x: -1, y: -1, label: 'AI 工作中', kind: '', at: 0 };
+});
+function cursorStyle(c: { x: number; y: number }) {
+  return c.x < 0 ? { left: '50%', top: '50%' } : { left: c.x + 'px', top: c.y + 'px' };
+}
 const isConvStreamingNow = computed(() => isPreviewScope && chatStore.streaming);
 const pausedNow = computed(() => isPreviewScope && chatStore.browserPaused);
 function toggleExpanded() {
@@ -774,22 +784,36 @@ const activeTab = computed(() => tabs.value.find((t: BrowserTab) => t.id === act
 
 // 常驻元素编号高亮（2026-10-20）：面板开关 → 主进程 browserView:action 'highlight' 注入覆盖层。
 const highlightOn = ref(false);
-async function toggleHighlight() {
-  if (!activeTabId.value) { ElMessage.warning('请先打开一个网页'); return; }
-  const next = !highlightOn.value;
+// ★ 2026-10-21：编号层改为「agent 操作时自动开启」。用户手动关过一次后，本次挂载内不再自动开。
+const highlightUserOff = ref(false);
+async function applyHighlight(on: boolean, silent = false) {
+  if (!activeTabId.value) { if (!silent) ElMessage.warning('请先打开一个网页'); return; }
   try {
-    const r: any = await (window as any).electronAPI.browserView.action(activeTabId.value, 'highlight', { on: next });
-    if (r && r.error) { ElMessage.warning(r.error); highlightOn.value = false; return; }
+    const r: any = await (window as any).electronAPI.browserView.action(activeTabId.value, 'highlight', { on });
+    if (r && r.error) { if (!silent) ElMessage.warning(r.error); highlightOn.value = false; return; }
     highlightOn.value = !!(r && r.highlight);
   } catch (e: any) {
     highlightOn.value = false;
-    ElMessage.warning('高亮切换失败：' + (e?.message || e));
+    if (!silent) ElMessage.warning('高亮切换失败：' + (e?.message || e));
   }
 }
-// 切 tab 时：若开着高亮，给新激活页补一层（幂等；该页若本就有覆盖层则只重绘）。
+async function toggleHighlight() {
+  // 当前开着 = 用户要关：记住这个意图，之后不再自动开启
+  highlightUserOff.value = highlightOn.value;
+  await applyHighlight(!highlightOn.value);
+}
+// 切 tab / 面板挂载时：若开着高亮，或 agent 正在操作（且用户没手动关过），给激活页补一层（幂等）。
 watch(activeTabId, (tid) => {
-  if (highlightOn.value && tid) {
-    (window as any).electronAPI.browserView.action(tid, 'highlight', { on: true }).catch(() => {});
+  if (!tid) return;
+  if (!highlightOn.value && (highlightUserOff.value || !chatStore.browserTaskActive)) return;
+  (window as any).electronAPI.browserView.action(tid, 'highlight', { on: true })
+    .then((r: any) => { if (r && r.highlight) highlightOn.value = true; })
+    .catch(() => {});
+}, { immediate: true });
+// agent 开始操作浏览器 → 自动打开编号层（否则用户会以为这个能力消失了）。
+watch(() => chatStore.browserTaskActive, (active) => {
+  if (active && !highlightOn.value && !highlightUserOff.value && activeTabId.value) {
+    void applyHighlight(true, true);
   }
 });
 
@@ -1186,6 +1210,23 @@ function runBoundsSync() {
     // ResizeObserver 会在过渡期间连续回调；不判断可见性会把 hide() 的效果覆盖回去，
     // 导致原生图层残留（容器 UI 已隐藏、网页却仍浮在窗口上）。
     const el = browserViewPlaceholder.value;
+    // ★ 2026-10-22：webview 引擎没有占位 div（el 恒为 null），此前会一路 hideBrowserView()
+    //   ⇒ 主进程 webviewPanelVisible 被永久置假 ⇒ 面板明明可见，截图却一直报"面板处于收起/隐藏状态"。
+    //   网页本身是 DOM 节点不需要 bounds，但仍要经 resize 通道上报可见性，截图闸门才准。
+    if (isWebviewEngine.value) {
+      const host = viewportRef.value;
+      if (!shouldBeVisible.value || !host) { hideBrowserView(); return; }
+      const r = host.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return;
+      (window as any).electronAPI.browserView.resize(
+        activeTabId.value,
+        Math.round(r.left),
+        Math.round(r.top),
+        Math.round(r.width),
+        Math.round(r.height),
+      );
+      return;
+    }
     if (!shouldBeVisible.value || !el) { hideBrowserView(); return; }
     const rect = el.getBoundingClientRect();
     // 面板可见但尺寸仍为 0（CSS 过渡中）：跳过本次，等尾部补的那一次同步对齐
@@ -1995,6 +2036,11 @@ function onWebviewReady(tabId: string) {
     console.log(`[BrowserPanel] onWebviewReady tabId=${tabId} wcId=${id} scope=${browserScope}`);
     if (id) {
       (window as any).electronAPI?.browser?.wvRegister?.(tabId, id, browserScope);
+      // ★ 2026-10-22：guest 就绪后再补一次编号层。任务刚开始时 guest 往往还没注册，
+      //   那一次 highlight 会以"浏览器未就绪"失败，之后没人重试 → 用户看不到编号。
+      if (tabId === activeTabId.value && !highlightOn.value && !highlightUserOff.value && chatStore.browserTaskActive) {
+        void applyHighlight(true, true);
+      }
     } else {
       console.warn('[browser] webview.getWebContentsId 不可用，pageAgent 将无法操作该 tab');
     }
@@ -2814,6 +2860,12 @@ onUnmounted(() => {
   to { transform: scale(1); opacity: 1; }
 }
 .agent-cursor .cursor-arrow { position: absolute; left: -4px; top: -2px; }
+/* 无坐标动作（run_script 等）的常驻光标：轻微呼吸，表示 agent 正在这一页工作 */
+.agent-cursor.cursor-working { animation: agent-cursor-breathe 1.8s ease-in-out infinite; }
+@keyframes agent-cursor-breathe {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
 .agent-cursor.cursor-clicking .cursor-arrow { transform: scale(0.6); transform-origin: 4px 4px; }
 .agent-cursor .cursor-label {
   position: absolute;

@@ -280,6 +280,43 @@ export function resolveRegisteredFilePath(
 }
 
 /**
+ * 一次性回填：把 Windows 绝对路径里的**混合分隔符**统一成反斜杠。
+ *
+ * ★ 2026-10-22 用户实报「交付物卡片点打开文件夹跳到了文档」：
+ *   joinArtifactPath 此前无条件用正斜杠拼根，Windows 上登记出
+ *   `C:\Users\x\第一本/03-output\a.mp4` 这种混合路径。Node fs 容忍，但
+ *   `explorer.exe /select,<路径>` 不容忍 —— 解析失败不报错，直接打开默认目录。
+ *   源头（joinArtifactPath + 手拼 `dir/name`）已改，本函数把历史行洗净。
+ *
+ * ★ 幂等且只换分隔符：不去 fs 校验（Windows 上 `C:\a/b` 与 `C:\a\b` 指向同一文件），
+ *   只动盘符 / UNC 开头的行，URL 与相对路径一律不碰。
+ */
+export function backfillWindowsPathSeparators(): { scanned: number; fixed: number } {
+  if (process.platform !== 'win32') return { scanned: 0, fixed: 0 };
+  let scanned = 0, fixed = 0;
+  try {
+    const rows = db
+      .prepare("SELECT id, path FROM conversation_file WHERE path LIKE '%/%'")
+      .all() as Array<{ id: string; path: string }>;
+    for (const r of rows) {
+      const p = String(r.path || '');
+      // 只认 Windows 绝对路径：盘符（C:\ / C:/）或 UNC（\\server\share）
+      if (!/^[A-Za-z]:[\\/]|^\\\\/.test(p)) continue;
+      scanned++;
+      const native = p.replace(/\//g, '\\');
+      if (native === p) continue;
+      try {
+        db.prepare('UPDATE conversation_file SET path = ? WHERE id = ?').run(native, r.id);
+        fixed++;
+      } catch { /* 单条失败不影响其它 */ }
+    }
+  } catch (e: unknown) {
+    logger.warn('[artifact-dir] Windows 路径分隔符回填失败:', e instanceof Error ? e.message : e);
+  }
+  return { scanned, fixed };
+}
+
+/**
  * 一次性回填：把 conversation_file 里的**相对路径**补成绝对路径。
  *
  * ★ 为什么需要：历史数据里存在相对路径登记（实测 1 条），

@@ -25,7 +25,13 @@ export interface ToolResultEntry {
  *   2. 非法 JSON（parse 抛） → `{ content: raw, isError: false }`（原样返回）
  *   3. `parsed.isError` 真   → `{ content: JSON.stringify(parsed, null, 2), isError: true }`
  *   4. `parsed.content` 有 text 块 → `{ content: 各 text 以 \n 连接, isError: false }`
- *      4b. 有 content 但无 text 块 → `{ content: JSON.stringify(parsed, null, 2), isError: false }`
+ *      4b. content 是字符串       → `{ content: 原字符串, isError: false }`
+ *          （★ 2026-10-21 白屏根修：库里有 tool 消息形如 `{"content":"纯文本"}` —— content
+ *           不是数组。旧代码 `"xxx".length` 为真走 `.filter` 直接抛 TypeError，
+ *           `toolResultIndex` computed 首次求值即抛 ⇒ `.value` 恒为 undefined ⇒
+ *           `isToolResultDone` 报 "reading 'has'" ⇒ 渲染树整棵挂掉 = 白屏。
+ *           字符串场景直接把原文当展示文本，非数组对象才落到 stringify。）
+ *      4c. 有 content 但无 text 块 → `{ content: JSON.stringify(parsed, null, 2), isError: false }`
  *   5. `parsed` 是字符串     → `{ content: parsed, isError: false }`
  *   6. 其它对象              → `{ content: JSON.stringify(parsed, null, 2), isError: false }`
  */
@@ -36,14 +42,18 @@ export function parseToolResultContent(raw: string | null | undefined): ToolResu
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // 非 JSON：原样返回（旧实现 catch 分支 `return toolMsg.content`）
+    // 非 JSON：原样返回（旧实现 catch 分支 `return toolMsgContent`）
     return { content: raw, isError: false };
   }
 
   const isError = !!parsed?.isError;
   if (isError) return { content: JSON.stringify(parsed, null, 2), isError: true };
 
-  if (parsed?.content?.length) {
+  if (typeof parsed?.content === 'string') {
+    // 4b：历史脏数据形态 `{"content":"纯文本"}`（实测库里有），字符串本身就是展示文本
+    return { content: parsed.content, isError: false };
+  }
+  if (Array.isArray(parsed?.content) && parsed.content.length) {
     const texts = parsed.content
       .filter((c: any) => c?.type === 'text')
       .map((c: any) => c?.text)

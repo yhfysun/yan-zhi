@@ -60,6 +60,7 @@ import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue';
 import type { ConversationFile } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { useChatStore } from '../../stores/chat';
+import { toWindowsPath } from '../../utils/file-open';
 import {
   absoluteMediaSrc,
   openMediaMenu,
@@ -255,7 +256,9 @@ async function download(f: ConversationFile) {
 async function reveal(f: ConversationFile) {
   if (!adapter.shell) return;
   try {
-    const p = f.path;
+    // ★ 必须转成纯反斜杠：登记路径可能是 `C:\a/03-output\b.mp4` 这种混合分隔符，
+    //   explorer 对 /select 的混合路径会静默失败并退化成打开默认目录（用户报「跳到文档」）。
+    const p = toWindowsPath(f.path);
     const isWin = /win/i.test(navigator.platform);
     const isMac = /mac/i.test(navigator.platform);
     if (isWin) {

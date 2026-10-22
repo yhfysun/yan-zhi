@@ -115,8 +115,12 @@ export class FileWriteTool implements BuiltInTool {
 
       // 成功文案：给模型一句明确指引 + 文件名（不要把绝对路径当主体，
       // 否则模型容易在正文里把盘上路径复述给用户，用户并不需要看）
+      // ★ 2026-10-21：**必须**带上绝对路径。现场（conv 6aaa59f5）：模型用相对文件名写
+      //   ch07-09.txt → 实际落到会话产物目录 deliverable/，随后它按自己猜的
+      //   `novel/骨债阴阳/ch07.txt` 去核验 → 三个全 MISSING → 又花 3 分半重新排查。
+      //   只报「文件名 + 类别」时模型无从得知真实落点，只能猜。
       return {
-        content: [{ type: 'text', text: `Successfully wrote ${len} bytes to ${fileName}（会话产物目录：${category}）` }],
+        content: [{ type: 'text', text: `Successfully wrote ${len} bytes to ${fileName}（会话产物目录：${category}；绝对路径：${path}）` }],
         // _meta 供 llm-task-manager 登记 conversation_file：
         // ★ path 用**绝对路径**（"落盘即权威"口径）—— 读取端应信任登记路径，而不是重算产物根。
         _meta: { path, name: fileName, category, bytes: len, beforeContent },

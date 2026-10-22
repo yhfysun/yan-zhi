@@ -4,6 +4,7 @@
 // 运行状态全量落库 workflow_run（与 llm_task 同思路）：节点级 SSE 事件带单调 seq，
 // 断线用 since=seq 续传；server 重启后遗留 running 由 markOrphanWorkflowRunsInterrupted() 回收。
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { writeFileSync, statSync } from 'node:fs';
 import { WorkflowEngine, LlmClient, runUserCode, getToolRegistry, createRunContext, buildSubgraphPlan } from '@yan-zhi/core';
 import type { NodeHandler, RunContext, NodeResult } from '@yan-zhi/core';
@@ -1124,7 +1125,9 @@ export function persistRunArtifacts(
     for (const item of items) {
       let filePath = item.path || '';
       if (!filePath && item.content) {
-        filePath = `${dir}/${item.name}`;
+        // 必须 path.join：产物目录在 Windows 下是反斜杠，用 `/` 手拼会产出
+        // `C:\a/b\c` 混合路径，登记后交给资源管理器 /select 会被静默丢弃
+        filePath = path.join(dir, item.name);
         writeFileSync(filePath, item.content, item.encoding === 'base64' ? 'base64' : 'utf8');
       }
       if (!filePath) continue;

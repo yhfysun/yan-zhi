@@ -70,6 +70,22 @@ export function normalizePath(p: string): string {
 }
 
 /**
+ * 交给系统文件管理器的路径必须是原生分隔符。
+ *
+ * ★ 2026-10-22 用户实报：交付物卡片点「打开文件夹」打开的是「文档」。
+ *   根因是登记进 conversation_file 的 path 是混合分隔符
+ *   （`C:\Users\x\第一本/03-output\a.mp4`，见 shared 的 joinArtifactPath），
+ *   而 `explorer.exe /select,<这种路径>` 解析失败时**不报错**，直接退化成打开默认目录。
+ *   只按 Windows 路径形态判断（盘符或 UNC 开头），不依赖运行平台，
+ *   Unix 路径不会以盘符开头，不会被误伤。
+ */
+export function toWindowsPath(p: string): string {
+  const s = String(p || '').trim();
+  if (!/^[A-Za-z]:|^\\\\/.test(s)) return s;
+  return s.replace(/\//g, '\\');
+}
+
+/**
  * 打开分流：文件交给通用预览，目录交给目录树。
  * stat 不可用的端（Web/OPFS）由调用方传 false，落到文件分支 —— FilePreview 自身会给出结果或报错。
  */

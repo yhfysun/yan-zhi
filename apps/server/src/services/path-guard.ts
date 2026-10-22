@@ -446,6 +446,16 @@ export function commandExecutionScope(
 const authorizedDirsByConv = new Map<string, Set<string>>();
 /** 会话 → 是否已授权命令类工具（cmd_exec / python_exec） */
 const commandAuthorizedConvs = new Set<string>();
+/**
+ * 会话 → 已「本会话内允许」的危险工具集合（2026-10-21）。
+ *
+ * ★ 为什么需要：危险工具默认确认（`isDangerousTool` 那条）此前**只给"仅此次"**，
+ *   而 python_exec 这类工具一个任务里会被调几十次（抓一章跑一次），于是每次都要点一遍
+ *   "我已确认" —— 用户实报「能不能一次授权就好了」。
+ *   粒度刻意按**工具名 + 会话**：放行的是 `python_exec`、不是"所有命令"，换工具仍会问，
+ *   换会话也重新问，不会把授权扩散成长期攻击面。
+ */
+const dangerAuthorizedByConv = new Map<string, Set<string>>();
 
 /** 记录「允许该目录（本会话）」。dir 传目标路径，内部存其父目录。 */
 export function authorizeDir(conversationId: string, targetAbsPath: string): string {
@@ -472,16 +482,31 @@ export function authorizeCommand(conversationId: string): void {
   commandAuthorizedConvs.add(conversationId);
 }
 
+/** 本会话是否已「允许该危险工具」（2026-10-21，按工具名粒度） */
+export function isDangerToolAuthorized(conversationId: string, toolName: string): boolean {
+  return dangerAuthorizedByConv.get(conversationId)?.has(toolName) === true;
+}
+
+/** 记录「本会话内允许该危险工具」（只放行这一个工具，不扩散到其它危险工具） */
+export function authorizeDangerTool(conversationId: string, toolName: string): void {
+  if (!conversationId || !toolName) return;
+  let set = dangerAuthorizedByConv.get(conversationId);
+  if (!set) { set = new Set(); dangerAuthorizedByConv.set(conversationId, set); }
+  set.add(toolName);
+}
+
 /** 清理会话授权（会话删除/结束时调用；不调也只是内存泄漏一小块，不影响正确性） */
 export function clearAuthorization(conversationId: string): void {
   authorizedDirsByConv.delete(conversationId);
   commandAuthorizedConvs.delete(conversationId);
+  dangerAuthorizedByConv.delete(conversationId);
 }
 
 /** 供测试重置全部状态 */
 export function resetAllAuthorizations(): void {
   authorizedDirsByConv.clear();
   commandAuthorizedConvs.clear();
+  dangerAuthorizedByConv.clear();
 }
 
 // ───────────────────────── 已知不覆盖（必须随交付说明，不能装作没有）─────────────────────────

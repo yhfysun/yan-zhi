@@ -207,6 +207,7 @@ import { Document, Download, EditPen, FolderOpened } from '@element-plus/icons-v
 import { extractPdfPages, extractDocxHtml } from '@yan-zhi/core';
 import { decodeTextBytes, base64ToBytes, looksBinaryBytes, encodingLabel, type TextEncoding } from '@yan-zhi/shared';
 import { renderPdfToImages } from '../utils/pdf-render';
+import { toWindowsPath } from '../utils/file-open';
 import { parseExcelStyled, type ExcelStyledSheet } from '../utils/excel-styled';
 import AudioPlayer from './media/AudioPlayer.vue';
 
@@ -382,7 +383,8 @@ async function openWithSystemApp() {
   try {
     const api = (window as unknown as { electronAPI?: { shell?: { openPath?: (p: string) => Promise<unknown> } } }).electronAPI;
     if (api?.shell?.openPath) {
-      await api.shell.openPath(props.file.path);
+      // 混合分隔符（`C:\a/b\c.png`）交出去前转原生 —— 系统 Shell 只认反斜杠
+      await api.shell.openPath(toWindowsPath(props.file.path));
     } else {
       ElMessage.info('内嵌预览暂不支持该格式，桌面端可用本机应用打开');
     }
@@ -396,7 +398,7 @@ async function openContainingFolder() {
   try {
     const api = (window as unknown as { electronAPI?: { shell?: { showItemInFolder?: (p: string) => Promise<unknown> } } }).electronAPI;
     if (api?.shell?.showItemInFolder) {
-      await api.shell.showItemInFolder(props.file.path);
+      await api.shell.showItemInFolder(toWindowsPath(props.file.path));
     } else {
       ElMessage.info('仅桌面端支持打开文件目录');
     }

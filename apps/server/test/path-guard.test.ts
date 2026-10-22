@@ -24,6 +24,8 @@ import {
   getAuthorizedDirs,
   isCommandAuthorized,
   authorizeCommand,
+  authorizeDangerTool,
+  isDangerToolAuthorized,
   clearAuthorization,
   resetAllAuthorizations,
   COMMAND_TOOLS,
@@ -607,5 +609,42 @@ describe('checkDangerousCommand 危险命令判定', () => {
     '',
   ])('正当命令不误伤：%s', (cmd) => {
     expect(checkDangerousCommand(cmd)).toBeNull();
+  });
+});
+
+describe('危险工具「本会话一次授权」（2026-10-21）', () => {
+  const CONV = 'conv_danger_1';
+
+  it('默认未授权', () => {
+    expect(isDangerToolAuthorized(CONV, 'python_exec')).toBe(false);
+  });
+
+  it('授权后本会话内该工具放行', () => {
+    authorizeDangerTool(CONV, 'python_exec');
+    expect(isDangerToolAuthorized(CONV, 'python_exec')).toBe(true);
+  });
+
+  it('★ 只放行被授权的那个工具（python_exec 放行 ≠ cmd_exec 放行）', () => {
+    authorizeDangerTool(CONV, 'python_exec');
+    expect(isDangerToolAuthorized(CONV, 'python_exec')).toBe(true);
+    expect(isDangerToolAuthorized(CONV, 'cmd_exec')).toBe(false);
+  });
+
+  it('★ 不跨会话（另一个会话仍要问）', () => {
+    authorizeDangerTool(CONV, 'python_exec');
+    expect(isDangerToolAuthorized('conv_other', 'python_exec')).toBe(false);
+  });
+
+  it('空参数不记脏账', () => {
+    authorizeDangerTool('', 'python_exec');
+    authorizeDangerTool(CONV, '');
+    expect(isDangerToolAuthorized('', 'python_exec')).toBe(false);
+    expect(isDangerToolAuthorized(CONV, '')).toBe(false);
+  });
+
+  it('clearAuthorization 会一并清掉危险工具授权', () => {
+    authorizeDangerTool(CONV, 'python_exec');
+    clearAuthorization(CONV);
+    expect(isDangerToolAuthorized(CONV, 'python_exec')).toBe(false);
   });
 });

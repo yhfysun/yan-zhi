@@ -1,7 +1,7 @@
 import { ref, computed, reactive, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { isChatSelectableAgent } from '../../utils/agentSelectable';
 import { DEFAULT_CONTEXT_WINDOW } from '../../utils/context-window';
-import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocalPaths } from '../../utils/file-open';
+import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocalPaths, toWindowsPath } from '../../utils/file-open';
 import { buildToolResultIndex } from '../../utils/tool-result';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
@@ -917,11 +917,14 @@ function createChat() {
  *  ★ 空路径与"非桌面端"都要给出**可读提示**，不静默失败 —— 之前 catch 里只有一句
  *    「仅桌面端支持…」，空路径（如空间没绑定目录）也会走到这里，提示就答非所问了。 */
   async function openPathInSystem(path: string, asDir = false) {
-    const p = String(path || '').trim();
-    if (!p) {
+    const raw = String(path || '').trim();
+    if (!raw) {
       ElMessage.info(asDir ? '该空间未绑定本地目录' : '该文件没有本机路径');
       return;
     }
+    // ★ 混合分隔符（`C:\a/03-output\b.mp4`）交给资源管理器会被静默丢弃，
+    //   表现为「点了跳去文档」；统一转成原生分隔符再交出去。
+    const p = toWindowsPath(raw);
     const electron = (window as unknown as { electronAPI?: any }).electronAPI;
     try {
       // 桌面端优先：目录用 openPath 直接打开，文件用 showItemInFolder 在父目录中选中
