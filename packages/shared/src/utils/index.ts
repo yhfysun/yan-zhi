@@ -27,6 +27,10 @@ export * from './clip-effects';
 //   改一处忘一处 → 出现"源码 65536、库里表定义仍是 2048"的撕裂，直接导致
 //   推理模型（deepseek-flash）输出预算被思考吃光 → 正文恒空、任务假装"完成"。
 export * from './agent-defaults';
+// 工具分类单一真相源（2026-10-22）：工具发现三件套 + 守门测试共用
+export * from './tool-taxonomy';
+// 下载源与体积常量（2026-10-22）：国内优先口径的单点定义
+export * from './download-sources';
 
 /** 生成唯一 ID */
 export function uid(prefix = ''): string {

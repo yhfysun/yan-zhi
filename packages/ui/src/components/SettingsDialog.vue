@@ -90,6 +90,8 @@ const categories: SettingsCategory[] = [
   { key: 'verification', label: '短信验证码', icon: Message, pane: 'verification' },
   { key: 'memory', label: '记忆管理', icon: Memo, pane: 'memory' },
   { key: 'voicepack', label: '语音包', icon: Microphone, pane: 'voicepack' },
+  // 本地模型统一安装入口（2026-10-22）
+  { key: 'localmodel', label: '本地模型', icon: Box, pane: 'localmodel' },
   { key: 'logs', label: '日志', icon: Document, pane: 'logs' },
   { key: 'about', label: '关于', icon: InfoFilled, pane: 'about' },
 ];

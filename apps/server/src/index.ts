@@ -63,6 +63,9 @@ import pageCommandRoutes from './routes/page-commands.js';
 import userHookRoutes from './routes/user-hooks.js';
 import ollamaMarketRoutes from './routes/ollama-market.js';
 import ttsPackRoutes from './routes/tts-packs.js';
+// 本地资源安装（2026-10-22）：通道 A（用户点击）的统一入口，
+// 与 install_resource 工具共用同一套 install()
+import installRoutes from './routes/install.js';
 import pluginRoutes, { pluginAssetsRouter, PLUGINS_DIR } from './routes/plugins.js';
 import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
@@ -232,6 +235,8 @@ app.use('/api/system', systemRoutes);
 app.use('/api/user-hooks', userHookRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
 app.use('/api/tts-packs', ttsPackRoutes);
+// 本地资源安装（ffmpeg / yt-dlp / whisper / DiffSinger / 语音包 / ACE-Step）
+app.use('/api/install', installRoutes);
 app.use('/api/plugins', pluginRoutes);
 // 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId 下的子路径
 app.use('/api/plugin-assets', pluginAssetsRouter);

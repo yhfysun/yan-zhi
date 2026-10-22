@@ -100,5 +100,7 @@ export function registerManagementTools(registry: ToolRegistry, getDb: () => any
   registry.register(new ListSkillsTool(getDb));
   registry.register(new ListAgentsTool(getDb));
   registry.register(new SearchMarketplaceTool(getDb));
-  registry.register(new GetApiToolsTool());
+  // ★ 注入内置工具读取器：get_api_tools 要把 58 个内置工具也纳入分类清单。
+  //   不直接 import getToolRegistry 是为了避免循环依赖（registry ← builtin/index ← 本文件）。
+  registry.register(new GetApiToolsTool(() => registry.list()));
 }

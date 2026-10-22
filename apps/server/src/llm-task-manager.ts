@@ -10,6 +10,9 @@ import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes 
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus, TOKEN_DEAD_PLATFORM_IDS_SQL } from './services/token-pool.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, parseToolAuthResult, type PermissionMode } from './tool-permission.js';
+// ★ 安装类资源强制确认（2026-10-22）：任何权限模式都要问，与只读授权闸分离
+import { getInstaller } from './services/installer-registry.js';
+import { humanBytes } from '@yan-zhi/shared';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { executeApiTool, isApiExecutableTool } from './mcp/api-tool-executor.js';
 import { getToolsFromDb, mcpShortIdOf, resolveMcpToolName, callMcpTool } from './mcp/client-manager.js';
@@ -2218,6 +2221,104 @@ async function requestToolAuthorization(task: LlmTask, toolName: string, args: u
   return {
     ok: false,
     message: `用户未授权执行工具 ${toolName}（只读会话写操作需授权）。**不要重试同一调用**；请改用只读方案，或先向用户说明为什么必须执行该操作并等待明确同意。`,
+  };
+}
+
+/**
+ * 安装类资源的**强制确认**（2026-10-22）。
+ *
+ * 设计要点（每条都对应一个真实风险）：
+ * 1. **任何权限模式都问** —— 与 readonly 授权闸分离，见调用处注释。
+ * 2. **已装不弹** —— 幂等判定放在确认之前，否则每次调用都弹一次，用户会烦到关掉确认。
+ * 3. **确认卡必须给四样信息**：体积（多大）、来源（国内还是国外）、落地目录（放哪）、
+ *    预计耗时（等多久）。少一样，用户就是在盲签。
+ * 4. **拒绝后明确"别重试"** —— 否则模型会循环再弹，用户被反复骚扰
+ *    （与 requestToolAuthorization 的措辞保持一致）。
+ * 5. **无人值守直接拒** —— 没有前端就没人能确认，不能默认放行。
+ */
+async function confirmResourceInstall(
+  task: LlmTask,
+  args: unknown,
+): Promise<{ ok: boolean; message: string }> {
+  const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
+  const action = String(a.action ?? 'list');
+  // list / status 不下载，不打扰用户
+  if (action !== 'install') return { ok: true, message: '' };
+
+  const resourceId = String(a.resource ?? '').trim();
+  if (!resourceId) return { ok: true, message: '' }; // 让工具自己报参数错误
+
+  const inst = getInstaller(resourceId);
+  if (!inst) return { ok: true, message: '' }; // 未知资源交给工具报错
+
+  const variant = typeof a.variant === 'string' && a.variant.trim() ? a.variant.trim() : undefined;
+
+  // 幂等：已装则跳过确认（本任务内也记一次，避免重复查询）
+  const key = `install:${resourceId}:${variant ?? ''}`;
+  if (task.authorizedTools?.has(key)) return { ok: true, message: '' };
+  try {
+    if (await inst.isInstalled(variant)) {
+      if (!task.authorizedTools) task.authorizedTools = new Set<string>();
+      task.authorizedTools.add(key);
+      logger.info(`[install-confirm] 已安装，跳过确认 resource=${resourceId}`);
+      return { ok: true, message: '' };
+    }
+  } catch {
+    // 探测失败（目录不可读等）继续走确认 —— 宁可多问一次，不要静默跳过
+  }
+
+  if (task.subscribers.size === 0) {
+    logger.warn(`[install-confirm] 无人值守拒绝 resource=${resourceId}`);
+    return {
+      ok: false,
+      message:
+        `[无人值守] 安装 ${inst.title} 需要用户确认，但当前无前端在线、无人可确认，已跳过下载。` +
+        `请在最终回复中告知用户：可在「设置」中自行下载安装（${inst.title}，${humanBytes(inst.bytes(variant))}），` +
+        `或稍后在界面上重新发起本任务。`,
+    };
+  }
+
+  const bytes = inst.bytes(variant);
+  const sources = inst.sources();
+  const srcText = sources.slice(0, 3).map((s) => `${s.label}`).join(' → ');
+  const spec = {
+    title: `需要下载：${inst.title}`,
+    purpose: inst.purpose,
+    size: humanBytes(bytes),
+    sizeBytes: bytes,
+    sources: srcText || '内置源',
+    target: inst.targetDir(),
+    eta: inst.eta(variant),
+    manualHint: inst.manualHint(),
+  };
+
+  let raw: string;
+  try {
+    // 超时 0 = 不设超时（用户可能隔很久才回，与授权卡同性质）
+    raw = await executeToolViaFrontend(task, TOOL_AUTH_TOOL, { toolName: 'install_resource', argsPreview: JSON.stringify(spec) }, '', 0, 0);
+  } catch (e: any) {
+    if (isTaskAbort(e, task.abortController.signal)) {
+      return { ok: false, message: '任务已被用户终止，下载未开始。**不要重试**，直接结束本轮。' };
+    }
+    return {
+      ok: false,
+      message: `下载确认失败（前端不可达）：${e?.message || e}。本次未开始下载，请告知用户可在「设置」中自行安装。`,
+    };
+  }
+
+  const decision = parseToolAuthResult(raw);
+  if (decision === 'allow') {
+    if (!task.authorizedTools) task.authorizedTools = new Set<string>();
+    task.authorizedTools.add(key);
+    logger.warn(`[install-confirm] 用户已批准 resource=${resourceId} bytes=${bytes}`);
+    return { ok: true, message: '' };
+  }
+  logger.warn(`[install-confirm] 用户拒绝 resource=${resourceId}`);
+  return {
+    ok: false,
+    message:
+      `用户拒绝下载 ${inst.title}（${humanBytes(bytes)}）。**不要重试同一安装**；` +
+      `请告知用户他可以在「设置」中自行下载安装，并继续用已有能力完成当前任务（不要因此停下）。`,
   };
 }
 
@@ -4986,6 +5087,24 @@ async function executeTool(
   // 命中即走 `_tool_authorize` 授权卡请求用户批准，批准后本任务内该工具放行；
   // 拒绝/无人值守/前端不可达才拒绝执行。放在函数最顶端 —— 被拒时提前 return，
   // file_write/file_edit 的 file_change 快照钩子（registry.execute 前后那段）自然不会执行。
+  // ★★★ 安装类资源：**任何权限模式都要确认**（2026-10-22）
+  //
+  // 背景（用户原话）：「这些需要下载别的应用也要弄成工具，这样大模型可以自己下载
+  //   不用用户手动点击，但是要弹出让用户确认」。
+  //
+  // 为什么不能靠下面的 readonly 授权闸：
+  //   ① 那个闸只在 permissionMode === 'readonly' 时生效，default/all 模式**完全不问**；
+  //   ② 安装工具不在 WRITE_TOOLS 里（它的风险是流量/磁盘/时间，不是"写文件"），
+  //      即使只读会话也不会触发。
+  //   结果是「模型一句'装个 ffmpeg'就直接下 100MB」，用户完全无感知。
+  //
+  // 为什么放在权限闸之前：安装确认与读写权限是两件事 —— 全权限会话也该被告知
+  //   "要下 8.9GB、从哪下、放哪里"。已装则直接跳过（幂等，避免每次调用都弹）。
+  if (toolName === 'install_resource') {
+    const confirmed = await confirmResourceInstall(task, args);
+    if (!confirmed.ok) return confirmed.message;
+  }
+
   const perm = checkToolPermission(task.permissionMode || 'readonly', toolName);
   if (!perm.allowed) {
     if (perm.needsAuthorization && (task.permissionMode || 'readonly') === 'readonly') {

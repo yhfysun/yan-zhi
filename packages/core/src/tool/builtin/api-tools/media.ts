@@ -339,8 +339,89 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '按当前平台从官方静态构建源下载到应用数据目录，一次安装长期可用。' +
         '当 media_compose 报「尚未安装 ffmpeg」时调用本工具。' +
         '★ 安装体积策略：不超过 50MB 的依赖会被静默安装；ffmpeg 约 100MB，超过阈值，**调用前应先用 confirm_user 告知用户**（含体积与用途），征得同意再装。' +
-        '已安装时直接返回可用状态（幂等）。',
+        '已安装时直接返回可用状态（幂等）。' +
+        '★ 新代码优先用 install_resource({resource:"ffmpeg"}) —— 它会自动弹确认卡，不用手动 confirm_user。',
       inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      // ★ 2026-10-22：统一安装入口。此前 ffmpeg / yt-dlp / whisper / DiffSinger / 语音包
+      //   各有各的工具（语音包甚至没有工具），确认一律写在描述里当"建议"，模型可以不理。
+      //   收敛成一个工具 + 强制确认卡，新增资源不用再加工具。
+      name: 'install_resource',
+      description:
+        '下载并安装本地资源（可选：ffmpeg / yt-dlp / whisper 语音识别 / DiffSinger 歌声引擎 / 本地语音包）。' +
+        '★ 调用后会**自动弹出确认卡**（体积 / 来源 / 落地目录 / 预计耗时），用户批准才开始下载 —— ' +
+        '所以你不需要再手动 confirm_user，直接把用户意图转成一次调用即可。' +
+        '★ 已安装时幂等返回状态，不弹确认、不重复下载。' +
+        '★ 下载源按「国内优先（ModelScope / hf-mirror / gh-proxy / 清华源）→ 国外 → 多点冗余」自动降级，失败会自动换源。' +
+        '★ 用法：先 action="list" 看有哪些资源和是否已装，再 action="install" 装需要的那个。' +
+        '★ 用户拒绝后不要重试 —— 直接告诉他可以在「设置」里自行安装。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          resource: {
+            type: 'string',
+            description: '资源 id：ffmpeg / ytdlp / whisper / diffsinger / tts-pack。先调 action="list" 获取',
+          },
+          action: {
+            type: 'string',
+            enum: ['list', 'status', 'install'],
+            description: 'list=列出全部资源及安装状态（默认）；status=查单个；install=下载安装',
+          },
+          variant: {
+            type: 'string',
+            description: '可选变体：whisper 的 base/small/medium，语音包的 pack id',
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      // ★ 2026-10-22：本地 AI 写歌。与既有两条路的关系不是替代：
+      //   music_compose  本地合成器，和弦/BPM 精确，**不能唱**
+      //   music_generate 外部大模型，人声自然但**要 key、要钱、要联网**
+      //   music_sing     ← 本工具：本地模型，**给词就唱**，不上传歌词、不花钱
+      name: 'music_sing',
+      description:
+        '本地 AI 写歌：给歌词（可带 [verse]/[chorus] 分段）+ 风格描述，直接生成**带人声演唱**的完整歌曲，' +
+        '不需要曲谱、不需要配置任何 API key、歌词不会上传。' +
+        '★ 与另外两个音乐工具的区别：music_compose 只能出器乐（合成器，不能唱）；' +
+        'music_generate 要外部 key 且要联网；本工具纯本地推理。' +
+        '★ 首次使用需先安装运行时（约 8.9GB）：先调 install_resource({resource:"acestep",action:"status"}) 查，' +
+        '没装再 action="install"（会弹确认卡）。' +
+        '★ 性能参考：RTX 3050 6GB 上，20 秒歌约 27 秒、60 秒歌约 80 秒。' +
+        '★ 提示：歌词用 [verse]/[chorus] 标注段落会让主副歌对比更明显；' +
+        'vocal_forward=true（默认）会压低配器密度让人声更清楚 —— 实测人声频段占比从 1.2% 提到 6%+。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          lyrics: {
+            type: 'string',
+            description: '歌词全文。用 [verse]/[chorus]/[bridge] 标注段落效果更好。必填',
+          },
+          style: {
+            type: 'string',
+            description: '风格描述，如「中文流行 温暖女声 吉他钢琴」。越具体越稳；省略则用通用流行',
+          },
+          duration: {
+            type: 'integer',
+            description: '时长（秒），默认 60，范围 10~240。超过 120 秒在 6GB 卡上会明显变慢',
+          },
+          vocal_forward: {
+            type: 'boolean',
+            description: '人声靠前（默认 true）：压低配器密度，避免人声被盖住。要强烈伴奏感可设 false',
+          },
+          vocal_language: {
+            type: 'string',
+            description: '演唱语言，默认 zh。可用 zh/en/ja 等',
+          },
+          seed: {
+            type: 'integer',
+            description: '固定种子可复现同一版；不给则随机。想换一版就换 seed',
+          },
+        },
+        required: ['lyrics'],
+      },
     },
     {
       name: 'api_media_fetch',

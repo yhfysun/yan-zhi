@@ -25,7 +25,32 @@ const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
 /** 四个智能体共用的交互与规划工具（确认点全靠它们落地） */
 const COMMON_TALK_TOOLS = ['task_plan', 'task_step', 'ask_user', 'confirm_user'];
 /** 四个智能体共用的读资料与交付工具 */
-const COMMON_FILE_TOOLS = ['file_list', 'file_read', 'file_write', 'file_grep'];
+const COMMON_FILE_TOOLS_BASE = ['file_list', 'file_read', 'file_write', 'file_grep'];
+/**
+ * 工具发现与安装（2026-10-22，所有任务模式共用）。
+ *
+ * ★ 为什么挂在公共集而不是逐个模式加：
+ *   ① 用户要求「默认挂载」—— 挂在这里，所有任务模式一次性获得，不需要逐个改
+ *      （逐个改要动 db.ts 里 40+ 智能体的 builtin_tool_ids，既易漏又与并行开发冲突）。
+ *   ② 三个发现工具的成本极低（合计约 600 token），收益是**任何模式下都能查到
+ *      自己没挂的能力** —— 这正是「即使没挂载也能找到工具」的落地。
+ *   ③ `install_resource` 必须和发现工具一起挂：发现到"缺 ffmpeg / 缺语音包"之后，
+ *      下一步就得能装。否则模型只能回头让用户手动点 —— 那正是要消灭的断点。
+ *      ★ 它自带强制确认卡（见 llm-task-manager.confirmResourceInstall），
+ *        任何权限模式都会先问用户，不会静默下 100MB+。
+ */
+const COMMON_DISCOVERY_TOOLS = [
+  'get_api_tools',      // 分类浏览 / 全量分页
+  'api_tool_search',    // 关键词搜索
+  'api_tool_detail',    // 查参数详情
+  'install_resource',   // 统一安装（弹确认）
+];
+/**
+ * ★ 合并：发现工具跟着"文件工具"一起下发。
+ *   合成一个常量而不是改 6 处工具数组 —— 少改一处就少一个冲突点，
+ *   而且以后新增模式只要用 COMMON_FILE_TOOLS 就自动带上发现能力。
+ */
+const COMMON_FILE_TOOLS = [...COMMON_FILE_TOOLS_BASE, ...COMMON_DISCOVERY_TOOLS];
 /**
  * 任务模式共用的**素材获取与规格统一**工具。
  *
@@ -396,6 +421,8 @@ export const CLIP_AGENT_BUILTIN_TOOLS = [
   // 本地 AI 配乐：模型写和弦/旋律，本地合成器出器乐 BGM（免版权、BPM 精确）
   // 想让它「唱」时还需要歌声合成运行时（DiffSinger ONNX，按需安装）
   'music_compose', 'media_install_singing',
+  // 【2026-10-22】外部大模型出整首带唱的歌（要配置 key；没有就走 music_compose 本地合成）
+  'music_generate',
   // 素材获取与规格统一；图片理解（用户给参考图/分镜图时）
   ...COMMON_MEDIA_FETCH_TOOLS,
   'image_analyze',

@@ -24,6 +24,8 @@ import { registerGitTools } from './git';
 import { registerToolTools } from './tool';
 import { registerVerificationTools } from './verification';
 import { registerWorkspaceTools } from './workspace';
+// 工具发现：查详情 / 关键词搜索（2026-10-22）。分类浏览与分页在 get_api_tools 内置工具里。
+import { registerDiscoveryTools } from './discovery';
 
 export type ApiModuleName =
   | 'agent'
@@ -49,7 +51,8 @@ export type ApiModuleName =
   | 'task-type'
   | 'verification'
   | 'data'
-  | 'experience';
+  | 'experience'
+  | 'discovery';
 
 export const API_MODULES: ApiModuleName[] = [
   'agent',
@@ -76,6 +79,7 @@ export const API_MODULES: ApiModuleName[] = [
   'verification',
   'data',
   'experience',
+  'discovery',
 ];
 
 export function createApiToolRegistry(): Map<ApiModuleName, ToolDefinition[]> {
@@ -118,5 +122,7 @@ export function initApiToolRegistry(): void {
   registerVerificationTools(registry);
   registerDataTools(registry);
   registerExperienceTools(registry);
+  // 发现工具最后注册：它描述的是「其它工具」，放最后读起来顺
+  registerDiscoveryTools(registry);
   _instance = registry;
 }

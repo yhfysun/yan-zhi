@@ -159,7 +159,19 @@ import {
   ontologyValuesForAgent,
 } from '../services/data-query.js';
 import type { QueryIntent } from '../services/ontology-compiler.js';
-import { setJsExecDataBridge } from '@yan-zhi/core';
+import { setJsExecDataBridge, getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
+// 工具分类单一真相源（2026-10-22）：内置工具清单与 get_api_tools 共用同一套分类
+import { categoryOf, paginate, TOOL_CATEGORIES, MAX_TOOLS_PER_CATEGORY, groupByCategory } from '@yan-zhi/shared';
+// 统一安装器注册表（2026-10-22）：UI 通道与模型通道共用同一个 install()
+import { getInstaller, listInstallers, INSTALLERS, type ProgressFn } from '../services/installer-registry.js';
+import { humanBytes } from '@yan-zhi/shared';
+// 本地 AI 写歌（2026-10-22）：给词就唱，纯本地推理
+import { acestepStatus, singWithAcestep } from '../services/music-acestep.js';
+import { copyFile } from 'node:fs/promises';
+// ★ classifyToolAction：判定工具副作用的**唯一口径**（read/exec/write）。
+//   api_tool_detail 用它告诉模型「这个工具会弹确认卡」，避免模型以为卡住而重试。
+//   不复用未导出的 WRITE_TOOLS 集合 —— 那个是内部实现，classifyToolAction 才是公开语义。
+import { classifyToolAction } from '../tool-permission.js';
 import { createLogger } from '../services/logger.js';
 
 // ★ 文件内另有 tesseract.js 选项属性 { logger: () => {} }（第三方 API 名，不可改名）；
@@ -335,6 +347,13 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_skill_create', 'api_skill_update',
   'api_custom_tool_list', 'api_custom_tool_get', 'api_custom_tool_create', 'api_custom_tool_update', 'api_custom_tool_delete', 'api_custom_tool_toggle',
   'api_builtin_tool_list',
+  // ★ 工具发现三件套（2026-10-22）：分类浏览在 get_api_tools（内置），
+  //   这里补「查详情」与「关键词搜索」。同样受本白名单管辖 ——
+  //   写 case 不写白名单 = 模型列不到（这条坑本文件顶上已记过，别再犯）。
+  'api_tool_detail', 'api_tool_search',
+  // 统一安装入口（2026-10-22）：ffmpeg/yt-dlp/whisper/DiffSinger/语音包 都走它。
+  //   确认不靠白名单，靠 llm-task-manager.confirmResourceInstall（任何权限模式都弹）。
+  'install_resource',
   'api_custom_tool_execute', 'api_tool_ocr', 'api_tool_install',
   'api_marketplace_sources', 'api_marketplace_add_source', 'api_marketplace_delete_source', 'api_marketplace_browse', 'api_marketplace_install',
   'api_workspace_list_dir', 'api_workspace_search_files',
@@ -378,6 +397,20 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_srt_generate', 'media_compose', 'media_install_ffmpeg', 'media_install_ytdlp',
   // 外部音乐大模型：整首歌（人声+伴奏），走本机 new-api 的 Suno 路由
   'music_generate',
+  // ★ 2026-10-22：本地音乐三件套此前**只在注册表、不在本白名单** ——
+  //   schema 写了、executeApiTool 的 case 也写了，但模型侧根本列不到（isApiExecutableTool 为 false），
+  //   表现为「让它配个 BGM，它说没这个工具」。补齐后与 music_generate 同一族可用。
+  'music_compose', 'media_install_singing',
+  // 本地 AI 写歌（2026-10-22）：给词就唱，纯本地推理，不花钱不上传
+  'music_sing',
+  // Git 写/进阶：2026-10-22 用户明确要求全开（拉代码/并代码/改代码要闭环）。
+  //   ★ 安全性不靠白名单收窄，靠 tool-permission.ts 的 WRITE_TOOLS →
+  //     checkToolPermission 返回 needsAuthorization → 运行时弹 _tool_authorize 授权卡。
+  //     这些名字都已在 WRITE_TOOLS 登记，只读会话会被要求授权，不会静默执行。
+  'api_git_fetch', 'api_git_stash_save', 'api_git_stash_list', 'api_git_stash_pop',
+  'api_git_tag_create', 'api_git_tag_list', 'api_git_tag_delete',
+  'api_git_revert', 'api_git_reset', 'api_git_cherry_pick', 'api_git_rebase',
+  'api_git_merge', 'api_git_remote_branches', 'api_git_blame',
   // 音效库：ffmpeg 现场合成（免版权），模型可列/搜/取
   'api_sfx',
   // 本地语音识别（whisper.cpp）：音频/视频 → 带时间轴的 SRT（不上传云端）+ 按需安装
@@ -3647,7 +3680,17 @@ export async function executeApiTool(
         db.prepare('UPDATE custom_tool SET enabled = ? WHERE id = ? AND user_id = ?').run(args.enabled ? 1 : 0, str(args, 'id'), requireUser(userId));
         return ok({ updated: true });
       case 'api_builtin_tool_list':
-        return ok(getBuiltinToolDefinitions());
+        return ok(
+          getBuiltinToolDefinitions(
+            typeof args.category === 'string' && args.category.trim() ? args.category.trim() : undefined,
+            num(args, 'page', 1),
+            num(args, 'pageSize', MAX_TOOLS_PER_CATEGORY),
+          ),
+        );
+      case 'api_tool_detail':
+        return await toolDetail(str(args, 'name'), userId);
+      case 'api_tool_search':
+        return await toolSearch(args, userId);
 
       // Marketplace
       case 'api_marketplace_sources':
@@ -4632,10 +4675,14 @@ export async function executeApiTool(
         return await mediaComposeMusic(args, conversationId);
       case 'music_generate':
         return await mediaGenerateMusic(args, userId, conversationId);
+      case 'music_sing':
+        return await mediaSingWithAcestep(args, conversationId);
       case 'api_sfx':
         return await mediaSfx(args, conversationId);
       case 'media_install_singing':
         return await mediaInstallSinging(args);
+      case 'install_resource':
+        return await installResource(args);
       case 'media_compose':
         return await mediaCompose(args, conversationId);
       case 'media_edit':
@@ -4664,17 +4711,359 @@ export async function executeApiTool(
   }
 }
 
-function getBuiltinToolDefinitions() {
-  return [
-    { name: 'file_read', description: '读取文件内容，支持指定路径和行数范围' },
-    { name: 'file_write', description: '写入内容到指定文件路径' },
-    { name: 'cmd_exec', description: '执行系统命令' },
-    { name: 'ask_user', description: '向用户反问澄清问题并等待回答' },
-    { name: 'confirm_user', description: '多页确认向导，逐页收集用户选择、文字回答和补充说明' },
-    { name: 'task_plan', description: '创建任务计划并展示进度' },
-    { name: 'task_step', description: '更新任务步骤状态' },
-    { name: 'configure_model_platform', description: '弹出模型平台/模型配置表单，等待用户填写后创建平台与模型' },
-  ];
+/**
+ * 本地 AI 写歌（2026-10-22）—— 给歌词就唱，纯本地推理。
+ *
+ * ★ 与 mediaComposeMusic / mediaGenerateMusic 的三方分工：
+ *   music_compose  本地合成器：和弦/BPM 精确，**不能唱**
+ *   music_generate 外部大模型：人声自然，但**要 key、要联网、要钱**
+ *   music_sing     ← 本函数：本地模型，不上传歌词、不花钱
+ *
+ * ★ 产物落到会话交付目录（deliverable），让文件管理面板能看到、能直接播放。
+ */
+async function mediaSingWithAcestep(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const lyrics = String(args.lyrics ?? '').trim();
+  if (!lyrics) return fail('music_sing 必须提供 lyrics（整首歌词，可用 [verse]/[chorus] 分段）');
+
+  // 先探状态：没装就给出明确的下一步（而不是让它跑到一半失败）
+  const st = await acestepStatus();
+  if (st.state === 'not-installed') {
+    return fail(
+      `AI 写歌运行时尚未安装。缺少：${(st.missing || []).join('、')}。\n` +
+      '请调用 install_resource({ resource: "acestep", action: "install" }) 安装（约 8.9GB，会先弹确认卡让用户批准）。',
+    );
+  }
+  if (st.state === 'error') {
+    return fail(`AI 写歌运行时不健康：${st.message}`);
+  }
+
+  try {
+    const r = await singWithAcestep({
+      lyrics,
+      style: typeof args.style === 'string' ? args.style : undefined,
+      duration: typeof args.duration === 'number' ? args.duration : 60,
+      seed: typeof args.seed === 'number' ? args.seed : undefined,
+      vocalForward: args.vocal_forward !== false,
+      vocalLanguage: typeof args.vocal_language === 'string' ? args.vocal_language : 'zh',
+      onProgress: (stage, p, msg) => {
+        // 只记关键阶段，避免长任务把日志刷满
+        if (stage === 'diffuse' || stage === 'decode') logger.info(`[music_sing] ${stage} ${Math.round(p * 100)}% ${msg}`);
+      },
+    });
+
+    // 落到会话交付目录（与其它媒体产物同口径）
+    let outPath = r.file;
+    try {
+      const art = resolveArtifactDirFor({ conversationId, category: 'deliverable' });
+      if (art?.dir) {
+        const fileName = `song_${Date.now()}.flac`;
+        const dest = path.join(art.dir, fileName);
+        await copyFile(r.file, dest);
+        outPath = dest;
+      }
+    } catch (e: unknown) {
+      logger.warn(`[music_sing] 复制到交付目录失败，保留原路径：${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    return ok({
+      type: 'audio',
+      file: outPath,
+      duration: r.duration,
+      sampleRate: r.sampleRate,
+      seed: r.seed,
+      elapsedSec: r.elapsedSec,
+      note:
+        '本地模型生成（歌词未上传）。要换一版就换 seed；' +
+        '人声不够清楚可用 vocal_forward=true（默认已开）或缩短时长再试。',
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return fail(`music_sing 生成失败：${msg}`);
+  }
+}
+
+/**
+ * 统一安装入口（2026-10-22）。
+ *
+ * ★ 此前每个资源各有一个工具、各写一份确认建议（而且语音包压根没有工具）。
+ *   现在收敛到这里，真正的确认在 `llm-task-manager.confirmResourceInstall` 里做
+ *   （**任何权限模式都弹**，已装则跳过）。本函数只负责：查清单 / 查状态 / 执行安装。
+ *
+ * ★ 执行一律转发给 INSTALLERS[id].install —— 与 UI 通道**同一个函数**。
+ *   这是本设计的核心：两套实现必然漂移（UI 下好了工具说没装，或反之）。
+ */
+async function installResource(args: Record<string, unknown>): Promise<MpcToolExecutionResult> {
+  const action = String(args.action ?? 'list');
+  const resourceId = String(args.resource ?? '').trim();
+  const variant = typeof args.variant === 'string' && args.variant.trim() ? args.variant.trim() : undefined;
+
+  if (action === 'list' || !resourceId) {
+    const rows = await listInstallers();
+    return ok({
+      resources: rows,
+      hint: '用 install_resource({ resource: "<id>", action: "install" }) 安装。安装前会自动弹确认卡。',
+    });
+  }
+
+  const inst = getInstaller(resourceId);
+  if (!inst) {
+    return fail(
+      `未知资源 "${resourceId}"。可用：${Object.keys(INSTALLERS).join(' / ')}`,
+    );
+  }
+
+  if (action === 'status') {
+    const installed = await inst.isInstalled(variant);
+    return ok({
+      resource: resourceId,
+      title: inst.title,
+      installed,
+      size: humanBytes(inst.bytes(variant)),
+      target: inst.targetDir(),
+      sources: inst.sources().map((s) => s.label),
+    });
+  }
+
+  if (action !== 'install') return fail(`action 只能是 list / status / install（收到 "${action}"）`);
+
+  // 已装：幂等返回，不重复下载（确认阶段也已跳过，这里是双保险）
+  if (await inst.isInstalled(variant)) {
+    return ok({ resource: resourceId, installed: true, message: `${inst.title} 已就绪，无需重复安装`, target: inst.targetDir() });
+  }
+
+  const logs: string[] = [];
+  const onProgress: ProgressFn = (msg, p) => {
+    // 只留最近若干条，避免长下载把工具输出撑爆
+    logs.push(p !== undefined ? `[${p}%] ${msg}` : msg);
+    if (logs.length > 40) logs.shift();
+  };
+
+  logger.info(`[install_resource] 开始安装 resource=${resourceId} variant=${variant ?? '-'}`);
+  const r = await inst.install(variant, onProgress);
+
+  if (!r.ok) {
+    return fail(
+      `安装 ${inst.title} 失败：${r.error || '未知错误'}\n` +
+      `下载源已按国内优先自动降级过。手动兜底：${inst.manualHint().text}\n` +
+      `目标目录：${inst.manualHint().dir}\n\n最近日志：\n${logs.slice(-8).join('\n')}`,
+    );
+  }
+
+  return ok({
+    resource: resourceId,
+    installed: true,
+    title: inst.title,
+    path: r.path,
+    target: inst.targetDir(),
+    ...(r.notes?.length ? { steps: r.notes } : {}),
+    log: logs.slice(-10),
+  });
+}
+
+/**
+ * 查单个工具的完整定义（2026-10-22 新增）。
+ *
+ * ★ 为什么必须补（用户明确点名）：
+ *   模型从清单里看到工具名，但没有「查详情」的入口就只能瞎猜参数，
+ *   或者干脆不用它 —— 这是"能力有、通道没接线"的又一例。
+ *
+ * ★ `executable` 字段是关键：它区分「有这个工具定义」与「这个工具真的能跑」。
+ *   历史缺陷：`get_api_tools` 返回了 music_compose 的 schema，模型调用却报
+ *   「内置工具不存在」（不在 SUPPORTED_API_TOOLS）→ 反复重试 → 烧 token 后失败。
+ *   现在 false 会明说「未开放，别调，换同类」。
+ */
+async function toolDetail(name: string, userId?: string): Promise<MpcToolExecutionResult> {
+  const toolName = String(name || '').trim();
+  if (!toolName) return fail('name 必填（工具名，如 music_compose）');
+
+  // 1) api 工具：从注册表取（schema 最完整）
+  let def: any = null;
+  let source: 'api' | 'builtin' | 'custom' | 'mcp' = 'api';
+  for (const tools of getApiToolRegistry().values()) {
+    const hit = tools.find((t) => t.name === toolName);
+    if (hit) { def = hit; break; }
+  }
+  // 2) 内置工具
+  if (!def) {
+    const hit = getToolRegistry().list().find((t) => t.name === toolName);
+    if (hit) { def = hit; source = 'builtin'; }
+  }
+  // 3) 自定义工具
+  if (!def && userId) {
+    const row = db.prepare('SELECT name, description, parameters FROM custom_tool WHERE name = ? AND user_id = ?').get(toolName, userId) as any;
+    if (row) {
+      let schema: any = { type: 'object', properties: {}, required: [] };
+      try { if (row.parameters) schema = JSON.parse(row.parameters); } catch { /* 坏数据当空 schema */ }
+      def = { name: row.name, description: row.description, inputSchema: schema };
+      source = 'custom';
+    }
+  }
+
+  if (!def) {
+    return ok({
+      name: toolName,
+      found: false,
+      hint: '没有这个工具。用 get_api_tools({module:"all", keyword:"<关键词>"}) 或 api_tool_search 找找同类。',
+      categories: TOOL_CATEGORIES,
+    });
+  }
+
+  const category = categoryOf(toolName);
+  // ★ 可执行判定复用唯一口径：isApiExecutableTool（api_ 前缀 或 白名单内）
+  const executable = source === 'builtin' || source === 'custom' ? true : isApiExecutableTool(toolName);
+
+  return ok({
+    name: def.name,
+    found: true,
+    source,
+    category,
+    // ★ false 时给出一句可操作的话，而不是让模型自己猜"为什么"
+    executable,
+    ...(executable
+      ? {}
+      : { warning: '该工具未开放执行（不在能力白名单），调用会失败。不要重试，改用同类可执行工具。' }),
+    description: def.description || '',
+    inputSchema: def.inputSchema || { type: 'object', properties: {}, required: [] },
+    // ★ 自动生成 example：只给 schema 时模型常把必填项写错；
+    //   给一个填好的样例，调用成功率明显更高（无需为每个工具手写 examples）。
+    example: buildExampleFromSchema(def.inputSchema),
+    requiresUserConfirm: classifyToolAction(toolName) !== 'read',
+  });
+}
+
+/** 由 JSON Schema 生成最小可用示例：必填字段填类型占位，枚举取首值，有 default 用 default。 */
+function buildExampleFromSchema(schema: any): Record<string, unknown> {
+  const props = schema?.properties;
+  if (!props || typeof props !== 'object') return {};
+  const required: string[] = Array.isArray(schema.required) ? schema.required : [];
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(props)) {
+    // 只填必填项：非必填全填会让示例臃肿且误导
+    if (required.length && !required.includes(key)) continue;
+    if (!required.length) continue;
+    out[key] = sampleValue(props[key]);
+  }
+  return out;
+}
+
+function sampleValue(p: any): unknown {
+  if (!p || typeof p !== 'object') return '<value>';
+  if (p.default !== undefined) return p.default;
+  if (Array.isArray(p.enum) && p.enum.length) return p.enum[0];
+  switch (p.type) {
+    case 'string': return '<string>';
+    case 'integer':
+    case 'number': return 0;
+    case 'boolean': return false;
+    case 'array': return [sampleValue(p.items)];
+    case 'object': return buildExampleFromSchema(p);
+    default: return '<value>';
+  }
+}
+
+/**
+ * 按关键词搜索全部工具（2026-10-22 新增）。
+ *
+ * ★ 场景：模型不知道有哪个工具能干活时（"我想弄点声音出来"），
+ *   直接搜「音频」「音乐」比逐个分类翻快得多。
+ * ★ 排序：工具名精确 = 100 > 工具名包含 = 60 > 分类包含 = 40 > 描述包含 = 20。
+ *   同分按名字字母序，保证结果稳定（模型可复现地选到同一个工具）。
+ */
+async function toolSearch(args: Record<string, unknown>, userId?: string): Promise<MpcToolExecutionResult> {
+  const q = String(args.query ?? '').trim().toLowerCase();
+  if (!q) return fail('query 必填（关键词，如「音乐」「下载」）');
+  const sourceFilter = String(args.source ?? '').trim() as '' | 'api' | 'builtin' | 'custom' | 'mcp';
+  const page = num(args, 'page', 1);
+  const pageSize = num(args, 'pageSize', MAX_TOOLS_PER_CATEGORY);
+
+  type Row = { name: string; summary: string; source: 'api' | 'builtin' | 'custom' | 'mcp'; executable: boolean; score: number };
+  const rows: Row[] = [];
+
+  for (const tools of getApiToolRegistry().values()) {
+    for (const t of tools) {
+      rows.push({
+        name: t.name,
+        summary: String(t.description || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+        source: 'api',
+        executable: isApiExecutableTool(t.name),
+        score: 0,
+      });
+    }
+  }
+  for (const t of getToolRegistry().list()) {
+    rows.push({
+      name: t.name,
+      summary: String(t.description || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      source: 'builtin',
+      executable: true,
+      score: 0,
+    });
+  }
+
+  const scored = rows
+    .filter((r) => (sourceFilter ? r.source === sourceFilter : true))
+    .map((r) => {
+      const n = r.name.toLowerCase();
+      const cat = (categoryOf(r.name) ?? '').toLowerCase();
+      let score = 0;
+      if (n === q) score = 100;
+      else if (n.includes(q)) score = 60;
+      else if (cat.includes(q)) score = 40;
+      else if (r.summary.toLowerCase().includes(q)) score = 20;
+      return { ...r, score };
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+
+  const pg = paginate(scored, page, pageSize);
+  return ok({
+    query: q,
+    ...(sourceFilter ? { source: sourceFilter } : {}),
+    page: pg.page,
+    total: pg.total,
+    totalPages: pg.totalPages,
+    // 搜索只回精简信息，详情让模型再调 api_tool_detail —— 避免一次塞满上下文
+    tools: pg.items.map((r) => ({ name: r.name, summary: r.summary, source: r.source, executable: r.executable })),
+    ...(pg.total === 0 ? { hint: '没搜到。换个关键词（如「音频」「图片」「下载」「git」），或用 get_api_tools({module:"list"}) 看全部分类。' } : {}),
+    ...(pg.totalPages > pg.page ? { hint: `还有第 ${pg.page + 1} 页，传 page=${pg.page + 1}` } : {}),
+  });
+}
+
+/**
+ * 列出全部内置工具（2026-10-22 重写）。
+ *
+ * ★★★ 原实现硬编码 8 条，而实际内置工具有 58 个 —— 模型问「有哪些文件工具」时
+ *   只能看到 file_read / file_write，看不到 file_edit / file_grep / file_list /
+ *   file_to_markdown / file_transcode，于是误以为"没有这个能力"，转而让用户手动操作。
+ *   这与本文件顶上 isApiExecutableTool 注释里记录过的那次缺陷是同一类问题：
+ *   **工具存在但清单没同步**，不报错，只是能力静默消失。
+ *
+ * ★ 现在改为反射 core registry（真实注册表），并附分类与分页。
+ *   category 取自 packages/shared 的 TOOL_TAXONOMY（单一真相源）。
+ */
+function getBuiltinToolDefinitions(category?: string, page = 1, pageSize = MAX_TOOLS_PER_CATEGORY) {
+  const all = getToolRegistry()
+    .list()
+    .map((t) => ({
+      name: t.name,
+      summary: String(t.description || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+      category: categoryOf(t.name),
+    }))
+    .filter((t) => !!t.category);
+  const filtered = category ? all.filter((t) => t.category === category) : all;
+  const pg = paginate(filtered, page, pageSize);
+  return {
+    category: category ?? null,
+    page: pg.page,
+    pageSize: pg.pageSize,
+    total: pg.total,
+    totalPages: pg.totalPages,
+    tools: pg.items,
+    ...(pg.totalPages > pg.page ? { hint: `还有第 ${pg.page + 1} 页，传 page=${pg.page + 1}` } : {}),
+  };
 }
 
 /** 校验定时任务调度配置：interval 优先，其次 cron（5 字段分钟粒度）；返回错误信息或 null */
