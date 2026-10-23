@@ -2309,7 +2309,7 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   const wcH = guestWebContents(tabId);
   if (wcH) {
     injectYzAssistant(wcH).catch(() => { /* 注入失败不影响页面 */ });
-    if (highlightEnabled) runHighlight(wcH, true).catch(() => { /* 纯视觉辅助，失败静默 */ });
+    if (highlightEnabled && !highlightIdleHidden) runHighlight(wcH, true).catch(() => { /* 纯视觉辅助，失败静默 */ });
   }
   return true;
 });
@@ -3733,6 +3733,28 @@ const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'chec
 //   任务结束后面板会关掉它（2026-10-22：否则用户自己操作时满屏编号框消不掉）。
 let highlightEnabled = false;
 
+// ★ 编号层跟随"pageAgent 正在操作"（2026-10-23 用户拍板）：
+//   浏览器动作在跑 → 亮；停手 N 秒（这一轮浏览器操作结束/agent 转去做别的）→ 自动收起。
+//   否则用户在 agent 只合成视频的时候也被满屏橙框挡着，连自己点都不方便。
+//   `highlightEnabled` 仍表示渲染层"要显示"的**意图**，实际是否在画由动作活跃度决定。
+const HIGHLIGHT_ACTION_IDLE_MS = 4000;
+let highlightIdleTimer = null;
+let highlightIdleHidden = false; // 因空闲被自动收起（下一次动作要重新亮起）
+function scheduleHighlightIdleHide() {
+  if (highlightIdleTimer) { clearTimeout(highlightIdleTimer); highlightIdleTimer = null; }
+  if (highlightIdleHidden) {
+    highlightIdleHidden = false;
+    for (const wc of allGuestWebContents()) { runHighlight(wc, true).catch(() => { /* 纯视觉 */ }); }
+  }
+  highlightIdleTimer = setTimeout(() => {
+    highlightIdleTimer = null;
+    if (!highlightEnabled) return;
+    highlightIdleHidden = true;
+    for (const wc of allGuestWebContents()) { runHighlight(wc, false).catch(() => { /* 纯视觉 */ }); }
+  }, HIGHLIGHT_ACTION_IDLE_MS);
+  if (typeof highlightIdleTimer.unref === 'function') highlightIdleTimer.unref();
+}
+
 /**
  * 常驻元素编号高亮：把「可点击元素描边 + 编号」画进页面，供用户在面板里**实时**看到 agent 的操作目标。
  * ★ 与 screenshot(annotate) 的一次性覆盖层不同：本层**常驻**并自维护（scroll/resize/MutationObserver 节流重绘）。
@@ -3870,6 +3892,8 @@ async function runHighlight(wc, on) {
  */
 async function runHighlightOffAll() {
   highlightEnabled = false;
+  if (highlightIdleTimer) { clearTimeout(highlightIdleTimer); highlightIdleTimer = null; }
+  highlightIdleHidden = false;
   let tabs = 0;
   for (const wc of allGuestWebContents()) {
     try { await runHighlight(wc, false); tabs += 1; } catch { /* 单页失败不影响其它页 */ }
@@ -4365,6 +4389,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
   //   最小化时据此决定要不要走"后台停靠"，避免改变普通用户的最小化语义。
   if (convId) {
     lastBrowserActionAt = Date.now();
+    // 编号层跟着 pageAgent 走：有动作就亮、停手 4s 自动收起（见 scheduleHighlightIdleHide）
+    if (highlightEnabled) scheduleHighlightIdleHide();
     // 用户先最小化/关窗、任务后开始：动作到达时补一次停靠。否则页面停在 hidden，
     // creator.douyin.com 这类微前端根本不挂载，后续动作必然超时。
     if (!dockedOffscreen && isWindowOffView()) enterBackgroundDock();
@@ -4991,7 +5017,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             '这看起来是**接口地址**（JSON 端点）：直接导航会占用导航+渲染，并把"当前操作页"带到 JSON 上。取数优先用 browser_run_script 在页面内 fetch（credentials:"include" 可带登录态），比导航更稳更快。';
         }
         // ★ 常驻高亮（2026-10-20）：导航会销毁旧文档里的覆盖层，若用户开着「高亮编号」就重注入。
-        if (highlightEnabled) {
+        if (highlightEnabled && !highlightIdleHidden) {
           try { await runHighlight(wc, true); } catch { /* 重注入失败不影响导航结果 */ }
         }
         return result;
@@ -5964,7 +5990,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             try { await wc2.loadURL(/^https?:\/\//i.test(target) ? target : 'https://' + target); } catch { /* ignore */ }
           }
           // ★ 常驻高亮（2026-10-20）：新开页也要有编号层（若用户开着）。runHighlight 内部会先注入助手。
-          if (highlightEnabled && wc2) {
+          if (highlightEnabled && !highlightIdleHidden && wc2) {
             try { await runHighlight(wc2, true); } catch { /* 不影响开新页 */ }
           }
           return { tabId, url: target || (wc2 && wc2.getURL()) || '', title: (wc2 && wc2.getTitle()) || '' };
@@ -6270,6 +6296,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       case 'highlight': {
         // 常驻元素编号高亮开关（2026-10-20）：面板「高亮编号」按钮经 browserView:action 直达这里。
         highlightEnabled = args.on !== false;
+        if (highlightEnabled) highlightIdleHidden = false;
         return await runHighlight(wc, highlightEnabled);
       }
       default:

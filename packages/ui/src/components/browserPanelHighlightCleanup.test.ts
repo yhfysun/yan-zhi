@@ -95,4 +95,14 @@ describe('编号层收尾清理 · 主进程', () => {
     expect(PRELOAD).toContain('browserView:highlightOffAll');
     expect(MAIN, '主进程必须真的接上这个通道').toContain("ipcMain.handle('browserView:highlightOffAll'");
   });
+
+  // ★ 2026-10-23 用户口径：「pageAgent 任务一断这些就没了，一启动又出来」——
+  //   编号层是"agent 正在操作"的指示，不是整任务的装饰；停手必须自动收起，
+  //   而且导航重画不能把它又画回来（否则用户自己点页面时橙框永驻）。
+  it('★ 编号层跟随 pageAgent 动作：停手自动收起、下次动作再亮', () => {
+    expect(MAIN).toContain('HIGHLIGHT_ACTION_IDLE_MS');
+    expect(MAIN).toContain('function scheduleHighlightIdleHide');
+    expect(MAIN, '动作到达时要重置空闲计时').toMatch(/if \(highlightEnabled\) scheduleHighlightIdleHide\(\)/);
+    expect(MAIN, '导航/新开页的重画必须尊重"空闲已收起"').not.toMatch(/if \(highlightEnabled\) runHighlight/);
+  });
 });
