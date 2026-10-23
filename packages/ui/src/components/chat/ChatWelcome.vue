@@ -4,6 +4,20 @@
       <div class="cw-avatar"><el-icon :size="26"><ChatDotRound /></el-icon></div>
       <h2 class="cw-title">{{ greeting }}，今天想做什么？</h2>
       <p class="cw-sub">选择一个场景开始，或直接在下方输入你的任务</p>
+      <!-- 工作目录（2026-10-23 用户实报「不知道是在哪个工作目录下面」）：
+           新建任务的文件读写、产物落点全在这个目录，欢迎页就要看得见 + 能改 -->
+      <button
+        type="button"
+        class="cw-dir"
+        :class="{ 'is-empty': !hasWorkspaceDir }"
+        :title="hasWorkspaceDir ? workspaceDir : '未设置工作目录，点击选择一个'"
+        @click="showWorkspaceDir = true"
+      >
+        <el-icon :size="13"><FolderOpened /></el-icon>
+        <span class="cw-dir-label">工作目录</span>
+        <code class="cw-dir-path">{{ hasWorkspaceDir ? workspaceDir : '未设置 · 点击选择' }}</code>
+        <span class="cw-dir-edit">更改</span>
+      </button>
     </div>
 
     <!-- 3D 循环轮播（容器不够宽自动降级为横向列表 / 按钮行） -->
@@ -19,12 +33,12 @@
 
 <script setup lang="ts">
 import { computed, nextTick } from 'vue';
-import { ChatDotRound } from '@element-plus/icons-vue';
+import { ChatDotRound, FolderOpened } from '@element-plus/icons-vue';
 import SceneCarousel from './SceneCarousel.vue';
 import { useChat } from '../../composables/chat/useChat';
 import { useSceneConfigStore } from '../../stores/sceneConfig';
 
-const { sceneMode, setScene, clearScene, input, agentStore } = useChat();
+const { sceneMode, setScene, clearScene, input, agentStore, workspaceDir, hasWorkspaceDir, showWorkspaceDir } = useChat();
 // 场景（模式）配置：运行时以后端 scene_config 表为准（含用户/应用自建模式）；
 // store 初始值 = scenes.ts 内置兜底，首屏立即可见
 const sceneConfigStore = useSceneConfigStore();
@@ -104,6 +118,36 @@ async function focusInput() {
   font-size: 13px;
   color: var(--el-text-color-secondary, #64748b);
 }
+
+/* 工作目录：低调一行、长路径省略；点击打开既有的目录选择对话框 */
+.cw-dir {
+  margin: 10px auto 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--el-border-color-lighter, #e5e7eb);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--el-text-color-secondary, #64748b);
+  font-size: 12px;
+  cursor: pointer;
+}
+.cw-dir:hover {
+  border-color: var(--el-color-primary-light-5, #a78bfa);
+  color: var(--el-color-primary, #7c3aed);
+}
+.cw-dir.is-empty { border-style: dashed; }
+.cw-dir-label { white-space: nowrap; }
+.cw-dir-path {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--el-font-family-mono, ui-monospace, monospace);
+}
+.cw-dir-edit { white-space: nowrap; opacity: 0.75; }
 
 @media (max-width: 767px) {
   .chat-welcome { padding: 20px 12px 8px; gap: 14px; }
