@@ -3,7 +3,13 @@
     <el-button class="hamburger-btn" text circle @click="drawerOpen = !drawerOpen">
       <el-icon :size="20"><Expand /></el-icon>
     </el-button>
-    <span class="conv-title-display">{{ currentConv?.title || '新任务' }}</span>
+    <!-- 所属空间（2026-10-23 用户要求）：标题前先给一眼归属；悬停看最全信息
+         （标题全称 + 空间 + 空间目录 + 当前工作目录） -->
+    <span class="conv-head" :title="convHeadTip">
+      <span v-if="convSpaceName" class="conv-space-chip">{{ convSpaceName }}</span>
+      <span v-if="convSpaceName" class="conv-space-sep">/</span>
+      <span class="conv-title-display">{{ currentConv?.title || '新任务' }}</span>
+    </span>
     <!-- 会话累计花费（2026-10-17 方案 §3.7）：等宽小字，点击展开明细（按模型/按来源）。
          ★ 不加大图标、不加 tip —— 它是"仪表读数"，不是入口。金额读库（切会话/刷新不丢），
            运行中由 task:cost 事件实时刷新。花费为 0 时不占位。 -->
@@ -114,11 +120,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { Expand, FolderOpened, Fold, DataLine, Monitor, Operation, DocumentAdd, SwitchButton, Avatar, Platform } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
+import { useSpaceStore } from '../../stores/space';
 import { isLocalClient } from '../../api/client';
 import ChatFilePanel from './ChatFilePanel.vue';
 
@@ -129,6 +136,28 @@ const {
 } = useChat();
 
 const settingsStore = useSettingsStore();
+const spaceStore = useSpaceStore();
+// 所属空间（2026-10-23）：只读展示，空间列表一般侧栏已加载；为空时这里补一次
+const convSpace = computed(() => {
+  const id = currentConv.value?.spaceId;
+  if (!id) return null;
+  return spaceStore.spaces.find((s) => s.id === id) || null;
+});
+const convSpaceName = computed(() => convSpace.value?.name || '');
+// 悬停给最全信息：标题全称（标题本身会省略号）+ 空间 + 空间目录 + 当前工作目录
+const convHeadTip = computed(() => {
+  const lines = [`标题：${currentConv.value?.title || '新任务'}`];
+  if (convSpaceName.value) {
+    const dir = convSpace.value?.dirPath;
+    lines.push(`所属空间：${convSpaceName.value}${dir ? `\n空间目录：${dir}` : ''}`);
+  }
+  const ws = settingsStore.settings.workspaceDir;
+  if (ws) lines.push(`当前工作目录：${ws}`);
+  return lines.join('\n');
+});
+onMounted(() => {
+  if (!spaceStore.spaces.length) void spaceStore.loadSpaces().catch(() => { /* 拉不到就不显示标签 */ });
+});
 // E12: 移动端不支持内置浏览器——隐藏「浏览器预览」下拉入口
 const { supportsBrowser } = usePlatform();
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
