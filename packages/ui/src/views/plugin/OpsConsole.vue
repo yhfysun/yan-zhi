@@ -801,7 +801,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import MarkdownIt from 'markdown-it';
-import hljs from 'highlight.js';
+import hljs from '../../utils/highlight';
 import '@xterm/xterm/css/xterm.css';
 import { api, API_BASE, wsUrl, buildRequestHeaders } from '../../api/client';
 import { parsePromptCwd, applyPromptCwd, stripCommandEcho } from './remote-cwd';

@@ -925,7 +925,7 @@ import type { CommandDef } from '@yan-zhi/core';
 import { useCommandsStore } from '../../stores/commands';
 import { formatHelp, planCommandInput, planPlaybookSummon, type ParsedCommand } from '../../utils/commandParser';
 import MarkdownIt from 'markdown-it';
-import hljs from 'highlight.js';
+import hljs from '../../utils/highlight';
 
 const BASE = '/plugin/sec-lab';
 

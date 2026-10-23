@@ -201,7 +201,7 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue';
 import MarkdownIt from 'markdown-it';
-import hljs from 'highlight.js';
+import hljs from '../utils/highlight';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Document, Download, EditPen, FolderOpened } from '@element-plus/icons-vue';
 import { extractPdfPages, extractDocxHtml } from '@yan-zhi/core';

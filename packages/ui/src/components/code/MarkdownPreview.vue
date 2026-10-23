@@ -5,7 +5,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import MarkdownIt from 'markdown-it';
-import hljs from 'highlight.js';
+import hljs from '../../utils/highlight';
 
 const props = defineProps<{ content: string }>();
 const rootRef = ref<HTMLElement | null>(null);

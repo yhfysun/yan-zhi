@@ -5,7 +5,7 @@ import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocal
 import { buildToolResultIndex } from '../../utils/tool-result';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
-import hljs from 'highlight.js';
+import hljs from '../../utils/highlight';
 import {
   useChatStore,
   usePlatformStore,
