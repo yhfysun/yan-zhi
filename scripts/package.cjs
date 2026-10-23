@@ -27,6 +27,10 @@
  *                                  # 只把「办公 + 开发」的代码打进包：
  *                                  # 未选模式的入口/页面/插件视图不产出 chunk。
  *                                  # 与 --editions 正交（后者决定授权档与预置码）。
+ *   node scripts/package.cjs --pick-modes
+ *                                  # 交互式勾选模式（与上面「选包」同一套界面）
+ *   node scripts/package.cjs --list-modes
+ *                                  # 列出全部模式与档位预设
  *
  * 产物目录（统一树，路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，单一真相源）：
  *   dist-release/desktop/<档>/<版本>/   ← 安装包 + win-unpacked/
@@ -503,7 +507,7 @@ function preflight(targets) {
 
 // ─────────────────────── 交互式选择 ───────────────────────
 /**
- * 空格多选（checkbox 式）：↑/↓ 移动，空格勾/去，a 全选/全不选，回车确认。
+ * 通用空格多选（checkbox 式）：↑/↓ 移动，空格勾/去，a 全选/全不选，回车确认。
  *
  * ★ 为什么不用「输序号单选」：桌面三档 × 安卓共 2^4 种组合，单选菜单要么枚举不全
  *   （旧版只有 6 个固定选项），要么列全了没人看。多选是最直接的表达。
@@ -511,27 +515,20 @@ function preflight(targets) {
  * 键位实现注意：rawMode 下逐键监听（readline emitKeypressEvents + keypress），
  * ' '（空格）会作为独立 name:'space' 事件到达，不能靠 rl.question 读整行。
  * 退出前必须 setRawMode(false)，否则终端回显被吃掉。
+ *
+ * @param {object} opts
+ * @param {string} opts.title 顶部提示语
+ * @param {Array<{id:string,label:string,checked?:boolean}>} opts.items
+ * @param {boolean} [opts.emptySelectsAll] 一个都没勾时按回车：true=全选并留在界面；false=返回 null
+ * @param {boolean} [opts.escapeReturnsNull] Esc/Ctrl+C：true=返回 null；false=直接退出进程
+ * @returns {Promise<string[]|null>} 选中的 id；取消/未选返回 null
  */
-async function askTargets() {
-  // ★ 非交互环境（CI / 管道 / 被 spawn）不能阻塞等输入 —— 否则脚本永久挂起。
-  //   判据：stdin 不是 TTY，或显式给了 --yes。此时按默认（全部）走。
-  if (!process.stdin.isTTY || flags.has('--yes') || flags.has('-y')) {
-    console.log('');
-    warn('非交互环境（stdin 非 TTY），按默认目标执行：桌面三档 + 安卓 APK');
-    info(c.dim('  如需指定，请显式传参，如: pnpm package desktop:pro'));
-    return { desktop: [...ALL_EDITIONS], android: true };
-  }
-
-  // 候选项：桌面三档 + 安卓（desktop:full 与 basic 等价，不单列）
-  const items = [
-    ...ALL_EDITIONS.map((e) => ({ id: `desktop:${e}`, label: `桌面 · ${e}（${EDITION_LABEL[e]}）`, checked: false })),
-    { id: 'android', label: '安卓 APK', checked: false },
-  ];
+async function multiPick({ title, items, emptySelectsAll = false, escapeReturnsNull = false }) {
   let cursor = 0;
   const render = () => {
     // 光标回退到列表首行重绘（比整屏 clear 干净，历史里只留最终态）
     process.stdout.write(`\x1b[${items.length + 1}A\x1b[J`);
-    console.log(c.bold('  请选择要打的包（空格勾选，回车开始打包，a 全选/反全选）：'));
+    console.log(c.bold(title));
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       const pointer = i === cursor ? c.cyan('❯') : ' ';
@@ -559,18 +556,21 @@ async function askTargets() {
         for (const it of items) it.checked = !allOn;
       } else if (key.name === 'return' || key.name === 'enter') {
         if (!items.some((it) => it.checked)) {
-          // 一个没选：按回车 = 全选（与旧版"默认全部"对齐），不退出
+          if (!emptySelectsAll) {
+            process.stdin.removeListener('keypress', onKey);
+            return resolve(null);
+          }
           for (const it of items) it.checked = true;
         } else {
           process.stdin.removeListener('keypress', onKey);
           return resolve(items.filter((it) => it.checked).map((it) => it.id));
         }
       } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
-        // Esc / Ctrl+C：不打任何包，干净退出
         process.stdin.removeListener('keypress', onKey);
         process.stdin.setRawMode(false);
         process.stdin.pause();
         console.log('');
+        if (escapeReturnsNull) return resolve(null);
         process.exit(0);
       } else {
         return; // 其它按键不动界面
@@ -583,11 +583,64 @@ async function askTargets() {
 
   process.stdin.setRawMode(false);
   process.stdin.pause();
+  return result;
+}
+
+async function askTargets() {
+  // ★ 非交互环境（CI / 管道 / 被 spawn）不能阻塞等输入 —— 否则脚本永久挂起。
+  //   判据：stdin 不是 TTY，或显式给了 --yes。此时按默认（全部）走。
+  if (!process.stdin.isTTY || flags.has('--yes') || flags.has('-y')) {
+    console.log('');
+    warn('非交互环境（stdin 非 TTY），按默认目标执行：桌面三档 + 安卓 APK');
+    info(c.dim('  如需指定，请显式传参，如: pnpm package desktop:pro'));
+    return { desktop: [...ALL_EDITIONS], android: true };
+  }
+
+  // 候选项：桌面三档 + 安卓（desktop:full 与 basic 等价，不单列）
+  const items = [
+    ...ALL_EDITIONS.map((e) => ({ id: `desktop:${e}`, label: `桌面 · ${e}（${EDITION_LABEL[e]}）`, checked: false })),
+    { id: 'android', label: '安卓 APK', checked: false },
+  ];
+  const result = await multiPick({
+    title: '  请选择要打的包（空格勾选，回车开始打包，a 全选/反全选）：',
+    items,
+    emptySelectsAll: true,
+    escapeReturnsNull: false,
+  }) || [];
 
   const desktop = result.filter((id) => id.startsWith('desktop:')).map((id) => id.split(':')[1]);
   // 保持 lite → basic → pro 的构建顺序（勾选顺序不影响实际构建顺序）
   desktop.sort((x, y) => ALL_EDITIONS.indexOf(x) - ALL_EDITIONS.indexOf(y));
   return { desktop, android: result.includes('android') };
+}
+
+/**
+ * 交互式选择要打进包的模式（--pick-modes）。
+ *
+ * 返回 null = 不裁剪（按档位预设/全量）；返回数组 = 本次物理编译的模式。
+ */
+async function askModes() {
+  if (!process.stdin.isTTY || flags.has('--yes') || flags.has('-y')) {
+    warn('非交互环境，模式按档位预设执行（可用 --modes=office,dev 显式指定）');
+    return null;
+  }
+  const catalog = readModeCatalog();
+  const items = Object.entries(catalog.modes).map(([id, d]) => ({
+    id,
+    label: `${d.label}  ${d.route}`,
+    checked: false,
+  }));
+  const picked = await multiPick({
+    title: '  请选择要打进包的模式（空格勾选，回车确认；不勾 = 按档位预设，a 全选/反选）：',
+    items,
+    emptySelectsAll: false,
+    escapeReturnsNull: true,
+  });
+  if (!picked || !picked.length) {
+    info(c.dim('未选择模式 → 按档位预设打包'));
+    return null;
+  }
+  return resolveBuildModes({ catalog, modes: picked, edition: null });
 }
 
 // ─────────────────────── 目标解析 ───────────────────────
@@ -975,10 +1028,17 @@ function cleanFreshRoot() {
     process.exit(1);
   }
 
+  // 交互式模式多选：显式 --modes 优先；否则 --pick-modes 打开勾选界面；
+  // 都没给 → 沿用档位预设（不改变既有行为）。
+  if (!BUILD_MODES && flags.has('--pick-modes')) {
+    BUILD_MODES = await askModes();
+  }
+
   console.log(c.bold(`\n言智打包 —— 目标：${
     [targets.desktop.length ? `桌面 ${targets.desktop.join('/')}` : null, targets.android ? '安卓 APK' : null]
       .filter(Boolean).join(' + ')
   }`));
+  if (BUILD_MODES) info(`代码模式：${BUILD_MODES.join(', ')}（未选模式的代码不会进包）`);
 
   preflight(targets);
 
