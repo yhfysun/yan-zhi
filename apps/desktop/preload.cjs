@@ -312,6 +312,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     wvUnregister: (tabId) => ipcRenderer.invoke('browser:wv:unregister', tabId),
   },
 
+  // 收藏夹：从本机 Chrome/Edge 只读导入（返回归一化书签树，id/合并由渲染层处理）
+  bookmarks: {
+    importChrome: () => ipcRenderer.invoke('bookmarks:importChrome'),
+  },
+
   // 浏览器扩展（P1/P2）：安装/开关/卸载/打开扩展页面/商店白名单
   extensions: {
     list: () => ipcRenderer.invoke('ext:list'),

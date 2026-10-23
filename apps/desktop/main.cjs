@@ -23,6 +23,8 @@ const { createCookiesManager } = require('./extension-cookies.cjs');
 const { createWebNavigationManager } = require('./extension-web-navigation.cjs');
 const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
+// 收藏夹：只读解析本机 Chrome/Edge 书签文件（纯函数模块，有单测）
+const { discoverChromeBookmarks } = require('./bookmarks-import.cjs');
 
 let mainWindow = null;
 /**
@@ -3355,6 +3357,16 @@ ipcMain.handle('browserView:setTheme', async (_e, tabId) => {
 
 // ★ 2026-10-23：任务收尾统一清编号层（不依赖面板是否还挂着、也不依赖面板的本地状态）。
 ipcMain.handle('browserView:highlightOffAll', () => runHighlightOffAll());
+
+// 收藏夹导入：扫描本机 Chrome/Edge 的 profile 书签（只读）。
+// 返回的 roots 是归一化树，渲染层负责转 id 与合并去重。
+ipcMain.handle('bookmarks:importChrome', () => {
+  try {
+    return { ok: true, ...discoverChromeBookmarks() };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+});
 
 // ============================================================
 // IPC：BrowserView 自动化操作（pageAgent 直接操作可见的 BrowserView）

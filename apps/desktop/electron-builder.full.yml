@@ -30,6 +30,9 @@ files:
   #   guest will-navigate 闸门都靠它。漏登记 = 打包版启动即崩（Cannot find module './url-guard.cjs'），
   #   且「页面自定义协议（bitbrowser://）弹系统框」的修复会完全失效。
   - url-guard.cjs
+  # 收藏夹导入（2026-10-23）：main.cjs require('./bookmarks-import.cjs')，
+  #   漏登记 = 打包版启动即崩（Cannot find module './bookmarks-import.cjs'）。
+  - bookmarks-import.cjs
   # ★★★ 桥路径同 tab 动作串行（2026-10-14）：main.cjs 模块级 require('./browser-op-chain.cjs')，
   #   消除"超时后上一个动作仍在跑、模型又发下一个"造成的同页并发打架。
   #   漏登记 = 打包版**启动即崩**（Cannot find module './browser-op-chain.cjs'）

@@ -98,7 +98,7 @@
       </button>
 
       <!-- 收藏按钮 -->
-      <button class="nav-btn" :class="{ active: isBookmarked }" @click="toggleBookmark" :title="isBookmarked ? '取消收藏' : '收藏此页'">
+      <button class="nav-btn" :class="{ active: isBookmarked }" @click="openBookmarkEditor" :title="isBookmarked ? '编辑收藏' : '收藏此页'">
         <svg viewBox="0 0 24 24" width="18" height="18"><path :fill="isBookmarked ? 'currentColor' : 'none'" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
       </button>
 
@@ -170,8 +170,8 @@
             <el-dropdown-item command="passwords">密码管理 ({{ savedPasswords.length }})</el-dropdown-item>
             <el-dropdown-item command="settings">浏览器设置</el-dropdown-item>
             <el-dropdown-item v-if="!extensionsHidden" command="extensions">扩展管理</el-dropdown-item>
-            <el-dropdown-item command="bookmarks" divided>收藏夹 ({{ bookmarks.length }})</el-dropdown-item>
-            <el-dropdown-item command="clearBookmarks">清空收藏夹</el-dropdown-item>
+            <el-dropdown-item command="bookmarks" divided>收藏夹 ({{ bookmarkTotal }})</el-dropdown-item>
+            <el-dropdown-item command="toggleBookmarksBar">{{ showBookmarksBar ? '隐藏收藏栏' : '显示收藏栏' }}</el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
@@ -210,12 +210,36 @@
       </button>
     </div>
 
-    <!-- 收藏夹栏 -->
-    <div v-if="bookmarks.length > 0" class="bookmarks-bar">
-      <div v-for="bm in bookmarks.slice(0, 12)" :key="bm.url" class="bookmark-item" @click="visitBookmark(bm.url)" :title="bm.url">
-        <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-        <span>{{ bm.title || bm.url.replace(/^https?:\/\//, '').split('/')[0] }}</span>
-      </div>
+    <!-- 收藏夹栏：根级网址直接点开；文件夹点开弹出子项（支持多级） -->
+    <div v-if="showBookmarksBar && bookmarks.length > 0" class="bookmarks-bar">
+      <template v-for="bm in bookmarks" :key="bm.id">
+        <el-popover
+          v-if="bm.type === 'folder'"
+          trigger="click"
+          :width="260"
+          placement="bottom-start"
+          popper-class="bm-popover"
+        >
+          <template #reference>
+            <button class="bookmark-item bookmark-folder" :title="bm.title">
+              <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M10 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2h-8l-2-2z"/></svg>
+              <span>{{ bm.title }}</span>
+            </button>
+          </template>
+          <div class="bm-popover-list">
+            <BookmarkTreeNode
+              v-for="child in bm.children"
+              :key="child.id"
+              :node="child"
+              @open="visitBookmark"
+            />
+          </div>
+        </el-popover>
+        <button v-else class="bookmark-item" @click="visitBookmark(bm.url || '')" :title="bm.url">
+          <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          <span>{{ bm.title }}</span>
+        </button>
+      </template>
     </div>
 
     <!-- 内容区：起始主页 / 网页视口 +（右侧）页面对话停靠面板。
@@ -395,14 +419,25 @@
     <!-- 页面指令管理（P1）：站点匹配 + 任务描述的指令库；命中当前页的在对话面板里一键发出 -->
     <PageCommandsDialog v-model="showPageCommands" :url="currentUrl" />
 
-    <!-- 收藏夹弹窗 -->
-    <el-dialog v-model="showBookmarks" title="收藏夹" width="480px" class="el-dialog--sm" append-to-body>
-      <div v-if="bookmarks.length === 0" style="text-align:center;padding:30px;color:var(--el-text-color-secondary)">暂无收藏</div>
-      <div v-for="(bm, i) in bookmarks" :key="bm.url" class="bookmark-row">
-        <span class="bm-title" @click="visitBookmark(bm.url)">{{ bm.title || bm.url }}</span>
-        <el-button size="small" text type="danger" @click="removeBookmark(i)">删除</el-button>
-      </div>
-    </el-dialog>
+    <!-- 收藏夹管理弹窗（文件夹 / 搜索 / 从 Chrome 导入） -->
+    <BookmarksManagerDialog
+      v-model="showBookmarks"
+      :nodes="bookmarks"
+      :can-import="isElectron"
+      @change="onBookmarksChange"
+      @open-url="visitBookmark"
+    />
+
+    <!-- 收藏编辑弹窗（点星号） -->
+    <BookmarkEditorDialog
+      v-model="showBookmarkEditor"
+      :url="bookmarkEditorUrl"
+      :default-title="bookmarkEditorTitle"
+      :nodes="bookmarks"
+      :existing="bookmarkEditorExisting"
+      @save="saveBookmark"
+      @remove="removeBookmark"
+    />
 
     <!-- 浏览历史弹窗 -->
     <el-dialog v-model="showHistory" title="浏览历史" width="520px" class="el-dialog--sm" append-to-body>
@@ -512,6 +547,22 @@ import { usePageCommandsStore } from '../stores/page-commands';
 import { useSettingsStore } from '../stores/settings';
 import PageChatDock from './browser/PageChatDock.vue';
 import PageCommandsDialog from './browser/PageCommandsDialog.vue';
+import BookmarkTreeNode from './browser/BookmarkTreeNode.vue';
+import BookmarkEditorDialog from './browser/BookmarkEditorDialog.vue';
+import BookmarksManagerDialog from './browser/BookmarksManagerDialog.vue';
+import {
+  addNode,
+  countUrls,
+  findUrlNode,
+  makeFolderNode,
+  makeUrlNode,
+  moveNode,
+  parseStoredBookmarks,
+  removeNode,
+  serializeBookmarks,
+  updateNode,
+  type BookmarkNode,
+} from '../utils/browserBookmarks';
 import { usePlatform } from '../composables/usePlatform';
 import { LlmClient } from '@yan-zhi/core';
 import { API_BASE, buildRequestHeaders } from '../api/client';
@@ -885,7 +936,6 @@ const {
 } = useChat();
 
 
-interface Bookmark { url: string; title: string; }
 interface ExtensionAction {
   key: string;
   extensionId: string;
@@ -1360,8 +1410,70 @@ function safeSetString(key: string, value: string) {
   try { localStorage.setItem(key, value); } catch { /* ignore */ }
 }
 
-const bookmarks = ref<Bookmark[]>(safeGetJson('browser_bookmarks', []));
-const isBookmarked = computed(() => bookmarks.value.some(b => b.url === currentUrl.value));
+// 收藏夹：树形（文件夹 + 网址），旧扁平数据在 parseStoredBookmarks 里自动迁移
+const bookmarks = ref<BookmarkNode[]>(parseStoredBookmarks(safeGetString('browser_bookmarks', '')));
+const bookmarkTotal = computed(() => countUrls(bookmarks.value));
+const isBookmarked = computed(() => !!findUrlNode(bookmarks.value, currentUrl.value));
+const showBookmarksBar = ref(safeGetString('browser_bookmarks_bar', '1') === '1');
+
+const showBookmarkEditor = ref(false);
+const bookmarkEditorUrl = ref('');
+const bookmarkEditorTitle = ref('');
+const bookmarkEditorExisting = computed(() => (
+  bookmarkEditorUrl.value ? findUrlNode(bookmarks.value, bookmarkEditorUrl.value) : null
+));
+
+function persistBookmarks() {
+  safeSetString('browser_bookmarks', serializeBookmarks(bookmarks.value));
+}
+function onBookmarksChange(nodes: BookmarkNode[]) {
+  bookmarks.value = nodes;
+  persistBookmarks();
+}
+function openBookmarkEditor() {
+  const url = currentUrl.value;
+  if (!url) {
+    ElMessage.warning('请先打开一个网页');
+    return;
+  }
+  bookmarkEditorUrl.value = url;
+  bookmarkEditorTitle.value = activeTab.value?.title || '';
+  showBookmarkEditor.value = true;
+}
+function saveBookmark(payload: { title: string; folderId: string | null; newFolderTitle: string }) {
+  const url = bookmarkEditorUrl.value;
+  if (!url) return;
+  let nodes = bookmarks.value;
+  let targetFolderId = payload.folderId;
+  if (payload.newFolderTitle) {
+    const folder = makeFolderNode(payload.newFolderTitle);
+    nodes = addNode(nodes, null, folder);
+    targetFolderId = folder.id;
+  }
+  const existing = findUrlNode(nodes, url);
+  if (existing) {
+    nodes = updateNode(nodes, existing.id, { title: payload.title });
+    nodes = moveNode(nodes, existing.id, targetFolderId);
+  } else {
+    nodes = addNode(nodes, targetFolderId, makeUrlNode(url, payload.title));
+  }
+  bookmarks.value = nodes;
+  persistBookmarks();
+  ElMessage.success(existing ? '收藏已更新' : '已收藏');
+}
+function removeBookmark() {
+  const url = bookmarkEditorUrl.value;
+  const existing = url ? findUrlNode(bookmarks.value, url) : null;
+  if (!existing) return;
+  bookmarks.value = removeNode(bookmarks.value, existing.id);
+  persistBookmarks();
+  ElMessage.success('已取消收藏');
+}
+function toggleBookmarksBar() {
+  showBookmarksBar.value = !showBookmarksBar.value;
+  safeSetString('browser_bookmarks_bar', showBookmarksBar.value ? '1' : '0');
+  if (showBookmarksBar.value) nextTick(() => syncBrowserViewBounds(true));
+}
 
 // ── 主页数据：常用/最近/今日分析 ──
 const recentList = ref<any[]>([]);
@@ -2335,23 +2447,6 @@ function parseAnalysis(text: string, stats: any): any {
 }
 
 // ── 收藏 ──
-function toggleBookmark() {
-  const u = currentUrl.value;
-  if (!u) return;
-  const idx = bookmarks.value.findIndex(b => b.url === u);
-  if (idx >= 0) {
-    bookmarks.value.splice(idx, 1);
-    ElMessage.success('已取消收藏');
-  } else {
-    bookmarks.value.unshift({ url: u, title: '' });
-    ElMessage.success('已收藏');
-  }
-  safeSetJson('browser_bookmarks', bookmarks.value);
-}
-function removeBookmark(idx: number) {
-  bookmarks.value.splice(idx, 1);
-  safeSetJson('browser_bookmarks', bookmarks.value);
-}
 function visitBookmark(url: string) {
   urlInput.value = url;
   navigate();
@@ -2504,11 +2599,7 @@ function onMenuCommand(cmd: string) {
   else if (cmd === 'settings') showSettings.value = true;
   else if (cmd === 'extensions') openSettingsDrawer('extensions');
   else if (cmd === 'bookmarks') showBookmarks.value = true;
-  else if (cmd === 'clearBookmarks') {
-    bookmarks.value = [];
-    safeSetJson('browser_bookmarks', []);
-    ElMessage.success('收藏夹已清空');
-  }
+  else if (cmd === 'toggleBookmarksBar') toggleBookmarksBar();
 }
 
 onMounted(async () => {
@@ -3200,13 +3291,15 @@ onUnmounted(() => {
 [data-theme="dark"] .bookmarks-bar { background: var(--el-bg-color); }
 .bookmark-item {
   display: flex; align-items: center; gap: 4px;
-  padding: 4px 10px; border-radius: 12px;
-  cursor: pointer; font-size: 12px; white-space: nowrap;
+  padding: 4px 10px; border: none; background: transparent; border-radius: 12px;
+  cursor: pointer; font-size: 12px; white-space: nowrap; font-family: inherit;
   color: var(--el-text-color-regular, #5f6368);
   transition: background 0.15s;
 }
 .bookmark-item:hover { background: rgba(0,0,0,0.08); }
 [data-theme="dark"] .bookmark-item:hover { background: rgba(255,255,255,0.1); }
+.bookmark-folder { font-weight: 600; }
+.bm-popover-list { max-height: 320px; overflow-y: auto; padding: 2px; }
 
 /* 起始主页 */
 /* 用 background-color 而非 background 简写：简写会把 background-image 一并重置成 none，
