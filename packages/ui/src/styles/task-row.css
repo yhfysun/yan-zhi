@@ -132,3 +132,33 @@
   box-shadow: var(--shadow-1);
 }
 
+/* ===== 组头「+ 新建任务」悬浮按钮（2026-10-23 实报：工作目录/未归类组头没有新建任务入口）=====
+   与办公侧栏目录行的 .tree-add-icon（chat.css）同交互：hover 显示、@click.stop 不冒泡到组头。
+   置顶组不提供入口。TaskListSection 四模式共用本文件。 */
+.tls-group-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-left: 2px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary, var(--color-text-secondary));
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  border-radius: var(--radius-sm);
+  transition: opacity var(--motion-fast) var(--ease-out),
+              color var(--motion-fast) var(--ease-out),
+              background var(--motion-fast) var(--ease-out);
+}
+.tls-group-add:hover {
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+.tls-group-head:hover .tls-group-add {
+  opacity: 1;
+  pointer-events: auto;
+}
+

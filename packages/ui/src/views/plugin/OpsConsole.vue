@@ -6,7 +6,10 @@
         <!-- 任务段（决策 13 / 5f.4）：四模式同构，读同一份会话列表；资源树之下保留
              ★ 可折叠：顶栏「历史任务」按钮控制（用户实报「历史任务按钮没了 / 发送后任务就没了」） -->
         <div v-show="taskListVisible" class="ops-side-tasks">
-          <TaskListSection :space-id="null" :on-open="onTaskRowOpen" :active-conv-id="activeWin?.conversationId || ''" />
+          <!-- ★ 行尾 hover 操作组关掉（2026-10-23 实报「很容易误点击」）：
+               操作组悬浮盖在标题上，窄栏里想点行打开任务容易误点成删除；
+               置顶/重命名/移动/归档/删除右键、移动端长按面板都有。 -->
+          <TaskListSection :space-id="null" :on-open="onTaskRowOpen" :active-conv-id="activeWin?.conversationId || ''" :row-actions="false" />
         </div>
         <!-- 发布项目（7b）：本地目录 + 服务器 + 流水线；绑定后工具面挂到当前窗口会话 -->
         <div class="ops-side-release">
@@ -183,7 +186,21 @@
                       </template>
                       <div class="ops-cwd-panel">
                         <div class="ops-cwd-title">远端目录 · {{ connOf(w)?.name }}</div>
-                        <div class="ops-cwd-cur" :title="w.remoteCwd || ''">{{ w.remoteCwd || '未知（shell 还没输出提示符）' }}</div>
+                        <!-- 层级面包屑（2026-10-23 实报「目录和上级目录都要显示出来，要不然怎么点击切换」）：
+                             /home/app → / / home / app，每级可点直接 cd 过去；提示符还没出来时降级为原纯文本。 -->
+                        <nav v-if="remoteCwdCrumbs(w.remoteCwd || '').length" class="ops-cwd-crumbs" title="点击任意层级切换目录">
+                          <template v-for="(c, i) in remoteCwdCrumbs(w.remoteCwd || '')" :key="c.path">
+                            <span v-if="i" class="ops-cwd-crumb-sep">/</span>
+                            <button
+                              type="button"
+                              class="ops-cwd-crumb"
+                              :class="{ 'is-cur': i === remoteCwdCrumbs(w.remoteCwd || '').length - 1 }"
+                              :title="c.path"
+                              @click="gotoRemoteDir(w, c.path)"
+                            >{{ c.label }}</button>
+                          </template>
+                        </nav>
+                        <div v-else class="ops-cwd-cur">未知（shell 还没输出提示符）</div>
                         <el-input
                           v-model="cwdInput"
                           size="small"
@@ -1698,6 +1715,20 @@ function toAbsoluteRemote(target: string, prev: string): string {
   if (target.startsWith('/') || target.startsWith('~')) return target;
   if (!prev) return target;
   return `${prev.replace(/\/+$/, '')}/${target}`.replace(/\/+/g, '/');
+}
+
+/** 远端路径拆层级面包屑（2026-10-23 实报「目录和上级目录都要显示出来」）。
+ *  '/home/app' → [{label:'/',path:'/'},{label:'home',path:'/home'},{label:'app',path:'/home/app'}]；
+ *  相对/带 ~ 的提示符不拆（罕见，降级走纯文本行）。 */
+function remoteCwdCrumbs(p: string): Array<{ label: string; path: string }> {
+  if (!p || !p.startsWith('/')) return [];
+  const out: Array<{ label: string; path: string }> = [{ label: '/', path: '/' }];
+  let acc = '';
+  for (const seg of p.split('/').filter(Boolean)) {
+    acc += `/${seg}`;
+    out.push({ label: seg, path: acc });
+  }
+  return out;
 }
 
 // ===== 对话模式：每窗口独立会话，不依赖全局 chat store =====
@@ -3484,6 +3515,39 @@ onUnmounted(() => {
 .ops-cwd-panel { display: flex; flex-direction: column; gap: 8px; }
 .ops-cwd-title { font-size: 12px; font-weight: 600; color: var(--color-text); }
 .ops-cwd-cur {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ops-cwd-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--glass-bg, var(--color-surface));
+}
+.ops-cwd-crumb {
+  border: none;
+  background: transparent;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out);
+}
+.ops-cwd-crumb:hover { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, transparent); }
+.ops-cwd-crumb.is-cur { color: var(--color-text); font-weight: 600; }
+.ops-cwd-crumb-sep { color: var(--color-text-tertiary); font-size: 11px; }
   font-family: Consolas, monospace; font-size: 11px; color: var(--color-text-secondary);
   padding: 4px 7px; border-radius: 5px;
   background: color-mix(in srgb, var(--color-text) 5%, transparent);

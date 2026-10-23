@@ -219,7 +219,13 @@
             <span v-if="!compact" class="sftp-c-mode">权限</span>
             <span v-if="!compact" class="sftp-c-time">修改时间</span>
           </div>
-          <div v-if="remoteLoading" class="sftp-state">加载中…</div>
+          <!-- 加载态（2026-10-23 实报「加载中很唐突」）：旧版把整列内容替换成"加载中…"，
+               列表瞬间清空再闪回。改为保留旧内容 + 轻遮罩（局部 spinner 浮在列表上），
+               加载完直接回到原列表，无跳变。 -->
+          <div v-if="remoteLoading" class="sftp-loading">
+            <span class="sftp-loading-spinner" />
+            <span>加载中…</span>
+          </div>
           <div
             v-for="(e, i) in remoteEntries"
             :key="e.name"
@@ -294,7 +300,10 @@
             <span v-if="!compact" class="sftp-c-time">修改时间</span>
           </div>
           <div v-if="!isElectron" class="sftp-state">本地目录浏览仅桌面端可用（网页端可用行内「下载」按钮）</div>
-          <div v-else-if="localLoading" class="sftp-state">加载中…</div>
+          <div v-else-if="localLoading" class="sftp-loading">
+            <span class="sftp-loading-spinner" />
+            <span>加载中…</span>
+          </div>
           <div
             v-for="(e, i) in localEntries"
             :key="e.name"
@@ -1817,7 +1826,33 @@ onUnmounted(() => {
   border: 1px solid var(--glass-border); border-radius: 8px; background: var(--glass-bg);
   transition: border-color 0.12s ease, background 0.12s ease;
 }
-.sftp-list.is-busy { opacity: 0.6; pointer-events: none; }
+.sftp-list.is-busy { pointer-events: none; }
+/* 加载遮罩：绝对定位盖在列表上（旧内容仍在下方渲染），半透明底 + spinner。
+   首次加载（列表为空）时列表区没高度 → 遮罩需要 min-height 撑住。 */
+.sftp-loading {
+  position: absolute;
+  inset: 28px 0 0; /* 让出 sticky 表头 */
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 120px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  background: color-mix(in srgb, var(--color-surface) 55%, transparent);
+  backdrop-filter: blur(1px);
+  pointer-events: none;
+}
+.sftp-loading-spinner {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--color-primary) 25%, transparent);
+  border-top-color: var(--color-primary);
+  animation: sftp-spin 0.8s linear infinite;
+}
+@keyframes sftp-spin { to { transform: rotate(360deg); } }
 .sftp-list.is-over { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 5%, transparent); }
 .sftp-cols-head {
   position: sticky; top: 0; z-index: 1;

@@ -125,7 +125,11 @@ function collectPascalTags(vue: string): string[] {
  *   会被当成真 import ⇒ 漏判（本项目"注释里提到就算数"的老坑，见 browser-bridge-direct）。
  */
 function stripComments(s: string): string {
-  return s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  // ★ 必须**先剥行注释再剥块注释**（2026-10-23 ShopConsole 实报）：
+  //   行注释里带路径 glob（「页签拆到 ./shop/tabs/*」）时，其 /* 会被当成块注释开始，
+  //   非贪婪匹配吞到几十行外的第一个 */ → 整个 import 区被当成注释 → 全部组件误判"未注册"。
+  //   行注释的 [^:] 保护 URL scheme://；块注释的 [^:/] 保护路径分隔（a/b* 后跟块注释的场景）。
+  return s.replace(/(^|[^:])\/\/.*$/gm, '$1').replace(/(^|[^:/])\/\*[\s\S]*?\*\//g, '$1');
 }
 
 function isRegistered(vue: string, tag: string, fileName?: string): boolean {

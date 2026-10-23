@@ -18,7 +18,7 @@
        - 根节点上的 .stop 是关键：运维页左栏父级 .ops-connections 也挂了 contextmenu，
          不拦住会出现「任务段右键同时弹出资源菜单」的两菜单叠加。
        注意 openTreeMenu 内部会过滤 .tls-item / .tls-group-head（它们有自己的菜单）。 -->
-  <div class="tls" @contextmenu.prevent.stop="openTreeMenu($event)" v-on="bindLongPress((ev) => openTreeMenu(ev))">
+  <div class="tls" @contextmenu.prevent.stop="openTlsTreeMenu($event)" v-on="bindLongPress((ev) => openTlsTreeMenu(ev))">
     <div class="tls-head">
       <span class="tls-title">任务 ({{ convs.length }})</span>
       <button
@@ -41,6 +41,7 @@
         v-for="grp in visibleGroups"
         :key="grp.id"
         class="tls-group"
+        :data-group-id="grp.id"
       >
         <div class="tls-group-head" @click="toggleGroup(grp.id)" @dblclick="onGroupDblClick(grp.id)">
           <el-icon class="tls-caret" :class="{ expanded: !collapsed[grp.id] }"><CaretRight /></el-icon>
@@ -55,6 +56,16 @@
             @change="toggleSelectAllInGroup(grp.id)"
           />
           <span class="tls-count">{{ grp.convs.length }}</span>
+          <!-- 组头「新建任务」入口（2026-10-23 实报：运维的工作目录/未归类组头没有新建任务按钮）。
+               与办公侧栏组头行尾 +（chat.css .tree-add-icon）同交互：hover 显示、@click.stop 不触发折叠。
+               置顶组是虚拟分组不提供；未归类（__root__）新建进 null；真实空间组新建进该空间。 -->
+          <span
+            v-if="grp.id !== '__pinned__'"
+            class="tls-group-add"
+            role="button"
+            title="在此目录新建任务"
+            @click.stop="newChatInGroup(grp.id)"
+          ><el-icon :size="12"><Plus /></el-icon></span>
         </div>
 
         <div v-show="!collapsed[grp.id]" class="tls-children">
@@ -100,8 +111,10 @@
               @keydown.esc.prevent="rows.cancelRename"
             />
             <!-- 行尾 hover 操作组：置顶/重命名/移动空间/删除；「移动」与右键菜单同一 moveTo 流程。
-                 行是 <button>，故内层用 span[role=button]，避免交互元素嵌套。 -->
-            <span v-if="!batchMode && renamingId !== c.id" class="task-row-actions" @click.stop @dblclick.stop>
+                 行是 <button>，故内层用 span[role=button]，避免交互元素嵌套。
+                 ★ rowActions=false（运维）：整组不渲染 —— 操作组悬浮盖在标题上，窄栏里
+                 想点行打开任务很容易误点成删除（2026-10-23 实报）；动作右键/长按面板全有。 -->
+            <span v-if="rowActions && !batchMode && renamingId !== c.id" class="task-row-actions" @click.stop @dblclick.stop>
               <span
                 class="task-row-act"
                 :class="{ 'is-on': c.pinned }"
@@ -157,6 +170,20 @@
           <el-icon><ChatDotRound /></el-icon>新建任务
         </li>
         <li @click="treeMenuNewSpace">
+          <el-icon><FolderOpened /></el-icon>新建目录
+        </li>
+      </ul>
+    </Teleport>
+
+    <!-- 组头（未归类 / 工作目录）右键菜单：新建任务（进该组）/ 新建目录。
+         此前组头被 openTreeMenu 过滤（返回、不弹空白区菜单）却没配自己的菜单
+         = 右键组头毫无反应（2026-10-23 实报「没有新建任务按钮」）。 -->
+    <Teleport to="body">
+      <ul v-if="groupMenu.visible" ref="groupMenuEl" class="ctx-menu" :style="{ top: groupMenu.y + 'px', left: groupMenu.x + 'px' }">
+        <li @click="onGroupMenuNewTask">
+          <el-icon><ChatDotRound /></el-icon>新建任务
+        </li>
+        <li @click="onGroupMenuNewSpace">
           <el-icon><FolderOpened /></el-icon>新建目录
         </li>
       </ul>
@@ -300,7 +327,16 @@ const props = withDefaults(defineProps<{
    *   传了就用外部值，不传保持原逻辑。
    */
   activeConvId?: string;
-}>(), { spaceId: undefined, activeConvId: '' });
+  /**
+   * 行尾 hover 操作组开关（2026-10-23）。
+   *
+   * ★ 为什么需要：操作组绝对定位贴行尾、悬浮盖在标题上（styles/task-row.css），
+   *   运维左栏窄、标题短，想点行打开任务很容易误点成归档/删除 —— 用户实报「很容易误点击」。
+   *   传 false 整组不渲染，操作收敛到右键菜单 / 移动端长按面板（同一批动作，不缺功能）。
+   *   默认 true：办公/开发/安全的行内操作不变。
+   */
+  rowActions?: boolean;
+}>(), { spaceId: undefined, activeConvId: '', rowActions: true });
 
 const chatStore = useChatStore();
 const codeStore = useCodeStore();
@@ -405,6 +441,12 @@ function onGroupDblClick(id: string) {
   void startNewChat(id);
 }
 
+/** 在某组（未归类 = null / 某空间 = spaceId）下新建任务：与列表头「新建任务」按钮同 startNewChat 流程 */
+function newChatInGroup(groupId: string) {
+  const spaceId = groupId === '__root__' || groupId === '__pinned__' ? null : groupId;
+  void chat.startNewChat(spaceId);
+}
+
 /** 无 spaceId 过滤时，空的「未归类」组不占位（仅在有任务或搜索时显示） */
 const visibleGroups = computed(() => {
   if (effSpaceId.value) return groups.value;
@@ -452,6 +494,36 @@ function onTreeNewTask() {
 const rowMenu = ref<{ visible: boolean; x: number; y: number; conv: any }>({
   visible: false, x: 0, y: 0, conv: null,
 });
+
+// ===== 组头（未归类 / 工作目录）右键菜单（2026-10-23 实报：目录组头右键什么都不弹）=====
+// 通用 openTreeMenu 会过滤 .tls-group-head（它"有自己的菜单"），但本组件此前并没给它配菜单
+// → 右键组头 = 毫无反应。这里补一个组头专属菜单：新建任务（进该组）/ 新建目录。
+// 与空白区菜单（treeMenu）分开一份状态，互不干扰。
+const groupMenu = ref<{ visible: boolean; x: number; y: number; groupId: string }>({
+  visible: false, x: 0, y: 0, groupId: '',
+});
+const groupMenuEl = ref<HTMLElement | null>(null);
+
+/** 根节点 contextmenu 分流：组头 → 组头菜单；其余（空白区/标题行） → 空白区菜单（批量/新建） */
+function openTlsTreeMenu(e: MouseEvent) {
+  const head = (e.target as HTMLElement)?.closest?.('.tls-group-head')?.closest('.tls-group') as HTMLElement | null;
+  if (head) {
+    const id = head.getAttribute('data-group-id') || '';
+    groupMenu.value = { visible: true, x: e.clientX, y: e.clientY, groupId: id };
+    return;
+  }
+  openTreeMenu(e);
+}
+function closeGroupMenu() { groupMenu.value = { ...groupMenu.value, visible: false }; }
+function onGroupMenuNewTask() {
+  const id = groupMenu.value.groupId;
+  closeGroupMenu();
+  newChatInGroup(id);
+}
+function onGroupMenuNewSpace() {
+  closeGroupMenu();
+  treeMenuNewSpace();
+}
 // ===== 右键菜单贴光标：渲染后按真实尺寸校正（2026-10-18，与办公侧栏 ChatSidebar 同口径）=====
 // 旧 clampMenuPos 按猜的 320px 高度夹取，光标越靠下菜单被推得越远。打开时先落光标坐标，
 // 这里在各菜单 v-if 渲染完成后量真实尺寸校正（贴光标右下 / 放不下翻上方 / 再贴边）。
@@ -459,11 +531,12 @@ const rowMenu = ref<{ visible: boolean; x: number; y: number; conv: any }>({
 //   写在前面就是「Cannot access 'rowMenu' before initialization」（TDZ）——组件 setup 直接抛错，
 //   表现为「模式切换整页空白 + App.vue 强制重挂连环报错」（2026-10-18 实报）。
 watch(
-  () => [treeMenu.visible, rowMenu.value.visible, rows.moveMenu.visible] as const,
-  ([tv, rv, mv]) => {
+  () => [treeMenu.visible, rowMenu.value.visible, rows.moveMenu.visible, groupMenu.value.visible] as const,
+  ([tv, rv, mv, gv]) => {
     if (tv) placeMenuAfterRender(treeMenuEl, treeMenu, (p) => { treeMenu.x = p.x; treeMenu.y = p.y; });
     if (rv && rowMenu.value) placeMenuAfterRender(rowMenuEl, rowMenu.value, (p) => { rowMenu.value = { ...rowMenu.value, ...p }; });
     if (mv) placeMenuAfterRender(moveMenuEl, rows.moveMenu, (p) => { rows.moveMenu.x = p.x; rows.moveMenu.y = p.y; });
+    if (gv) placeMenuAfterRender(groupMenuEl, groupMenu.value, (p) => { groupMenu.value = { ...groupMenu.value, ...p }; });
   },
 );
 // ===== 移动端：任务行底部动作面板（Task 11.3）=====
@@ -567,6 +640,9 @@ function onDocMouseDown(e: MouseEvent) {
   const t = e.target;
   if (t instanceof Element && t.closest('.ctx-menu')) return;
   // 行内「移动」浮层：点浮层外任何位置都收起（含 .tls 内部的其它行）
+  // 组头菜单：点浮层内不关，点浮层外就关（与行菜单/移动浮层同规则；
+  // .ctx-menu 的命中在上方已提前 return，这里只兜"菜单开着点别处"）
+  if (groupMenu.value.visible) closeGroupMenu();
   rows.closeMoveMenu();
   if (t instanceof Element && (t.closest('.tls') || t.closest('.as-sheet'))) return;
   closeRowMenu();
@@ -582,6 +658,7 @@ onBeforeUnmount(() => {
   // 本组件卸载即视为「离开该模式的任务列表」，一并复位。
   closeRowMenu();
   closeTreeMenu();
+  closeGroupMenu();
   if (batchMode.value) exitBatchMode();
 });
 </script>

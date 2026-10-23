@@ -101,7 +101,9 @@ describe('beforeEach 不得再阻塞等插件路由（黑屏的直接成因）',
   });
 
   it('★ 模式记忆重定向不许指向"还没注册"的模式路由（否则每次回对话都被弹回空白页）', () => {
-    const at = GUARD.indexOf('isModeLicensed(activeMode.value)');
+    // 2026-10-23 随打包裁剪改名：守卫判据从 isModeLicensed 升级为 isModeAvailable
+    // （授权 ∩ 编译模式）。测试同步认新名；isModeLicensed 语义未废，仍在 store 导出。
+    const at = GUARD.indexOf('isModeAvailable(activeMode.value)');
     expect(at, '找不到模式记忆重定向').toBeGreaterThan(-1);
     const cond = GUARD.slice(at, at + 260);
     expect(cond, '模式记忆重定向未确认目标路由已注册').toContain('isModeRouteRegistered(activeMode.value)');
@@ -109,7 +111,8 @@ describe('beforeEach 不得再阻塞等插件路由（黑屏的直接成因）',
 
   it('授权与版本档门禁仍在守卫里（撤等待不能连着把门禁一起撤掉）', () => {
     expect(GUARD).toContain('licenseStore.init()');
-    expect(GUARD).toContain('isModeLicensed(targetMode)');
+    // 2026-10-23 随打包裁剪改名：isModeAvailable = 授权门禁 ∩ 构建期模式裁剪
+    expect(GUARD).toContain('isModeAvailable(targetMode)');
   });
 });
 
