@@ -443,6 +443,7 @@ CREATE TABLE IF NOT EXISTS shop_order (
   status       TEXT NOT NULL DEFAULT 'pending',
   items_json   TEXT NOT NULL DEFAULT '[]',
   address_json TEXT DEFAULT '{}',
+  attrs_json   TEXT DEFAULT '{}',
   created_at   INTEGER NOT NULL,
   paid_at      INTEGER,
   UNIQUE(shop_id, order_no)
@@ -480,6 +481,23 @@ CREATE INDEX IF NOT EXISTS idx_shop_product_shop ON shop_product(shop_id, listin
 CREATE INDEX IF NOT EXISTS idx_shop_order_shop   ON shop_order(shop_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_shop_ship_shop    ON shop_shipment(shop_id, status);
 CREATE INDEX IF NOT EXISTS idx_shop_stock_shop   ON shop_stock_move(shop_id, product_id, created_at);
+
+-- 无货源采购单（2026-10-22）：出单后去 1688 采购、供应商直发；付款一律人工
+CREATE TABLE IF NOT EXISTS shop_purchase (
+  id               TEXT PRIMARY KEY,
+  shop_id          TEXT NOT NULL,
+  order_id         TEXT NOT NULL,
+  product_id       TEXT,
+  sku              TEXT NOT NULL,
+  offer_ref        TEXT NOT NULL,
+  qty              INTEGER NOT NULL DEFAULT 1,
+  unit_cost_cents  INTEGER NOT NULL DEFAULT 0,
+  status           TEXT NOT NULL DEFAULT 'planned', -- planned|ordered|paid|received|cancelled
+  note             TEXT,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shop_purchase_shop ON shop_purchase(shop_id, status, created_at);
 
 -- 浏览器「页面指令」（2026-10-16 · 页面内对话与页面指令方案 §5 的 P1）
 -- 一条指令 = 站点匹配 + 一段"任务描述"（kind='task'，走页面内对话通道执行）。

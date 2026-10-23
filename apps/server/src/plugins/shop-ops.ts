@@ -2,15 +2,12 @@
 // 形态对齐 ops-shell（manifest + 入口模块 + 权限声明 + 审计 + 插件存储），默认启用
 // （仅首次注册生效，之后随 DB 状态）。
 //
-// ★★ P0 的能力边界（2026-10-16，必须先说清）：**只读 + 配置管理，没有任何写操作工具**。
-//   - 本插件负责：店铺/仓库这条"资源"的增删改查（凭据加密落 plugin_storage）、配置自检、
-//     资源目录分组、审计留痕，以及给控制台 /shop 提供接口。
-//   - 本插件**不负责**抓数：平台数据一律由智能体委派 pageAgent 走 browser_* 打开页面获取
-//     （登录态由用户自己在浏览器面板登录，插件不存账号密码）。这样 P0 就能闭环，
-//     且不引入任何"代用户操作店铺"的风险面。
-//   - 写操作（改价/上下架/回消息）是 P2：届时新增 shop-write 权限 + 写工具族，
-//     每个动作强制走 confirm_user 变更单 + 生产店铺强确认 + 审计。
-//     现在**不要**提前声明 shop-write 权限，也不要放占位的写工具 —— 声明了就要拦得住。
+// ★★ 能力边界（2026-10-22 重构 P0 更新）：本地业务闭环已落地。
+//   - 商品 / 订单 / 发货 / 库存以 SQLite 为真源（shop/ 模块 + 演示种子），人工工作台直接增删改查；
+//   - AI 工具经 write gate：变更单 → 用户确认 →（生产店铺额外批准）→ runShopAction 执行并回读；
+//   - 平台侧动作（上下架同步到真实店铺等）在 P0 一律返回 JumpPlan/执行指引，绝不假装已同步；
+//   - 凭据加密落 plugin_storage；抓数仍由智能体委派 pageAgent 打开卖家后台（登录由用户完成）。
+//   - 回消息/报名活动/1688 采购仍只是闸门 + 执行指引（不落库），属后续版本。
 //
 // 与 ops-shell 的复用关系：凭据加密（utils/crypto）、审计（services/plugin-audit）、
 // 生产标记判定（ops-shell-guard 的 isProductionTag）、插件存储用法全部照抄，不另发明一套。
@@ -26,7 +23,16 @@ import {
 import { createLogger } from '../services/logger.js';
 import { db } from '../db.js';
 import { initShopStore, __setDbForTest } from '../shop/store.js';
+import * as shopStore from '../shop/store.js';
+import { seedShopBusinessData } from '../shop/seed.js';
+import {
+  importOrdersFromPlatform, importProductsFromPlatform, pushProductToPlatform, pushShipmentToPlatform,
+  type SyncField,
+} from '../shop/sync.js';
 import { runShopAction, setPlatformLookup } from '../shop/actions.js';
+import { platformApiOf, platformCapabilitiesOf, platformCredentialFieldsOf } from '../services/platform-api/index.js';
+import { readbackPlatformAction, runPlatformAction } from '../services/platform-api/dispatch.js';
+import type { PlatformApiCapability } from '../services/platform-api/types.js';
 import type { ShopContext, ShopType, SupplyMode } from '../shop/types.js';
 
 const logger = createLogger('shop-ops');
@@ -67,38 +73,51 @@ export const SHOP_PLATFORMS: readonly ShopPlatform[] = [
   {
     id: 'amazon', label: '亚马逊', kind: 'store',
     entryUrl: 'https://sellercentral.amazon.com/',
-    loginNote: '卖家中心需登录（各站点子域不同：sellercentral.amazon.co.uk / .co.jp 等）。首次请你在浏览器面板自行登录，之后 cookie 复用。',
+    loginNote: '卖家中心需登录（各站点子域不同）。已接 SP-API（LWA + IAM 凭据），商品/订单/库存优先走 API。',
     keyMetrics: ['业务报告：会话数 / 转化率 / 客单价', '广告报表：曝光-点击-花费-单量（算 ACoS）', '库存与 FBA 费用（含长期仓储费）', '退货率与差评关键词'],
+    integration: { docsUrl: 'https://developer-docs.amazon.com/sp-api/', auth: 'app-key-secret', client: 'ready' },
+    credentials: platformCredentialFieldsOf('amazon'),
   },
   {
     id: 'taobao', label: '淘宝 / 天猫', kind: 'store',
     entryUrl: 'https://myseller.taobao.com/',
-    loginNote: '卖家中心（千牛网页版）需登录。反爬较强，取数优先找页面自身的 XHR 接口而不是点 DOM。',
+    loginNote: '已接淘宝 TOP（App Key/Secret + 卖家授权 session，均在 open.taobao.com 控制台获取）；后台反爬较强，有 API 时优先走 API。',
     keyMetrics: ['生意参谋：访客数 / 支付转化率 / 客单价', '主推款的核心关键词排名', 'DSR 三项与退款/纠纷率', '流量结构与活动资源位'],
+    integration: { docsUrl: 'https://open.taobao.com/api.htm', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: platformCredentialFieldsOf('taobao'),
   },
   {
     id: 'pdd', label: '拼多多', kind: 'store',
     entryUrl: 'https://mms.pinduoduo.com/',
-    loginNote: '商家后台需登录（常需短信验证码，可能需你人工完成一次）。',
+    loginNote: '已接拼多多开放平台（client_id/secret + 商家授权 access_token，在 open.pinduoduo.com 获取）；无沙箱，联调即正式调用。',
     keyMetrics: ['商家后台：曝光 / 点击 / 转化', '退款率与纠纷率', '活动报名要素与价格力'],
+    integration: { docsUrl: 'https://open.pinduoduo.com/application/document/api', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: platformCredentialFieldsOf('pdd'),
   },
   {
     id: '1688', label: '1688（货源）', kind: 'store',
     entryUrl: 'https://www.1688.com/',
-    loginNote: '部分阶梯价与供应商信息登录后才可见。主要用于货源比价，本模式不代下单。',
+    loginNote: '已接 1688 开放平台（App Key/Secret + 卖家授权 access_token，在 open.1688.com 获取）。主要用于货源与采购；付款必须人工完成。',
     keyMetrics: ['阶梯价与起订量 MOQ', '发货地与供货能力（日产能/是否现货）', '评分与回头率', '是否可定制（贴牌/改包装）'],
+    integration: { docsUrl: 'https://open.1688.com/api/overview.htm?id=product_new', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: platformCredentialFieldsOf('1688'),
   },
   {
     id: 'tiktok', label: 'TikTok Shop', kind: 'store',
     entryUrl: 'https://seller.tiktokglobalshop.com/',
-    loginNote: '跨境卖家后台需登录，常有风控校验。',
+    loginNote: '跨境卖家后台需登录，常有风控校验。已接 Partner Open API（需应用审核与卖家授权）。',
     keyMetrics: ['商品卡与短视频带货数据', '达人合作与佣金口径', '履约时效与差评'],
+    integration: { docsUrl: 'https://partner.tiktokshop.com/docv2/page/tts-api-concepts-overview', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: platformCredentialFieldsOf('tiktok'),
   },
   {
     id: 'shopify', label: 'Shopify 独立站', kind: 'store',
     entryUrl: 'https://admin.shopify.com/',
-    loginNote: '后台需登录；有 API 时优先用 API 而非浏览器。',
+    loginNote: '后台需登录；已接 Admin API（私有 App token），优先走 API 而不是点页面。',
     keyMetrics: ['流量来源与转化漏斗', '弃单率', '物流时效与退款率'],
+    // 私有 App 的 Admin API token 在店铺后台即可生成，不需要企业审核
+    integration: { docsUrl: 'https://shopify.dev/docs/api/admin-rest', auth: 'api-key', client: 'ready' },
+    credentials: platformCredentialFieldsOf('shopify'),
   },
   {
     id: 'warehouse', label: '跨境中转仓 / 海外仓', kind: 'warehouse',
@@ -110,10 +129,10 @@ export const SHOP_PLATFORMS: readonly ShopPlatform[] = [
   {
     id: 'winit', label: '万邑通海外仓（WINIT）', kind: 'warehouse',
     entryUrl: 'https://www.winit.com.cn/',
-    loginNote: '服务商系统需客户账号；库存与入库单也可按页导出 CSV 放进 00-source。',
+    loginNote: '服务商系统需客户账号；已接 WINIT 开放平台（卖家授权 token + 应用 client_secret 双签名）。',
     keyMetrics: ['海外仓在库/在途/库龄', '入库预约与收货差异', '出库时效与妥投率', '仓储费与附加费明细'],
-    // 万邑通有开放平台，但要客户账号开通才拿得到 appKey —— 代码客户端尚未实现
-    integration: { auth: 'app-key-secret', client: 'pending', enterprise: true },
+    integration: { docsUrl: 'https://developer.winit.com.cn/document/detail/id/1.html', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: platformCredentialFieldsOf('winit'),
   },
 
   // ===== 物流服务商（2026-10-21 增补）=====
@@ -132,23 +151,26 @@ export const SHOP_PLATFORMS: readonly ShopPlatform[] = [
   {
     id: 'jd-logistics', label: '京东物流', kind: 'logistics',
     entryUrl: 'https://www.jdl.com/',
-    loginNote: '京东物流开放平台需企业开发者认证；轨迹/下单走签名接口，部分能力要服务商资质。',
+    loginNote: '京东宙斯开放平台需企业开发者认证与应用授权；轨迹客户端已按公开接口实现，尚未在真实账号联调。',
     keyMetrics: ['运单轨迹与时效达成', '签收/拒收与售后件', '运费与增值服务费', '仓配一体库存周转'],
-    integration: { docsUrl: 'https://open.jdl.com/', auth: 'app-key-secret', client: 'pending', enterprise: true },
+    integration: { docsUrl: 'https://open.jdl.com/', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: credentialFieldsOf('jd-logistics'),
   },
   {
     id: 'cainiao', label: '菜鸟 / 菜鸟国际', kind: 'logistics',
     entryUrl: 'https://www.cainiao.com/',
-    loginNote: '菜鸟开放平台主要面向商家与服务商，跨境线路需对应渠道开通；轨迹查询按渠道不同接口也不同。',
+    loginNote: '菜鸟速递 EDI 轨迹：对接码与密钥线下提供，网关地址按客户分配；客户端已实现签名与轨迹解析，尚未真实联调。',
     keyMetrics: ['跨境轨迹（揽收-干线-清关-派送）', '时效达成与异常滞留', '头程/尾程费用拆分', '妥投率与客诉'],
-    integration: { auth: 'app-key-secret', client: 'pending', enterprise: true },
+    integration: { docsUrl: 'https://openapi.express.cainiao.com/docs/', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: credentialFieldsOf('cainiao'),
   },
   {
     id: '4px', label: '4PX 递四方', kind: 'logistics',
     entryUrl: 'https://www.4px.com/',
-    loginNote: '4PX 开放平台需客户账号开通；轨迹、报价、下单分属不同接口，签名为 appKey+签名串。',
+    loginNote: '4PX 开放平台需客户账号开通 OAuth；轨迹客户端已实现通用签名与轨迹解析，尚未在真实账号联调。',
     keyMetrics: ['轨迹节点与清关状态', '渠道时效对比（经济/标准/快线）', '计费重与体积重差异', '退件与丢件处理时效'],
-    integration: { auth: 'app-key-secret', client: 'pending', enterprise: true },
+    integration: { docsUrl: 'https://open.4px.com/', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: credentialFieldsOf('4px'),
   },
   {
     id: 'yunexpress', label: '云途物流', kind: 'logistics',
@@ -335,6 +357,8 @@ export interface DemoProjectTemplate {
     site: string;
     shopName: string;
     note: string;
+    /** 演示店铺的货源模式；缺省 stocked。拼多多演示店给 dropship，让两种模式都能演示到 */
+    supplyMode?: SupplyMode;
   }>;
 }
 
@@ -358,7 +382,7 @@ export const DEMO_PROJECTS: readonly DemoProjectTemplate[] = [
     title: '演示 · 国内女装',
     connections: [
       { platform: 'taobao', site: 'tmall', shopName: '演示 · 天猫女装店', note: '演示数据：国内女装，主看 DSR 与退款率。' },
-      { platform: 'pdd', site: '拼多多', shopName: '演示 · 拼多多日用百货', note: '演示数据：低价走量，主看价格力与纠纷率。' },
+      { platform: 'pdd', site: '拼多多', shopName: '演示 · 拼多多日用百货', note: '演示数据：低价走量、无货源形态（不持库存，出单去采购）。', supplyMode: 'dropship' },
       { platform: 'warehouse', site: '华东', shopName: '演示 · 华东仓', note: '演示数据：国内仓库存台账。' },
       { platform: 'yunexpress', site: '', shopName: '演示 · 云途物流', note: '演示数据：跨境小包轨迹。' },
     ],
@@ -384,6 +408,10 @@ interface StoredConnection {
   shopType?: ShopType;
   /** 货源模式：stocked 有货源 / dropship 无货源 */
   supplyMode?: SupplyMode;
+  /** 同步冲突策略（D）：platform-first 平台优先 / local-first 本地优先 */
+  syncPolicy?: 'local-first' | 'platform-first';
+  /** 定时同步间隔（分钟）；0/缺省 = 关闭 */
+  syncIntervalMin?: number;
   /** API 凭据密文（iv:tag:ct）。纯浏览器自动化的平台留空。 */
   secretEnc: string;
   createdAt: number;
@@ -402,15 +430,27 @@ function toClientView(c: StoredConnection) {
   return { ...rest, hasSecret: !!secretEnc, isProduction: isProductionTag(c.tag), credMeta: publicCredMeta(c) };
 }
 
+/** 平台凭据字段：物流服务商由 logistics 声明，店铺平台由 platform-api 客户端声明 */
+function credentialFieldsFor(platform: string): Array<{ key: string; secret?: boolean }> {
+  const logi = credentialFieldsOf(platform);
+  if (logi.length) return logi;
+  return platformCredentialFieldsOf(platform);
+}
+
 /**
- * 凭据里的**非密钥字段**（如 partnerID / customerNo / env）回显给控制台，
+ * 凭据里的**非密钥字段**（如 partnerID / customerNo / env / shopDomain）回显给控制台，
  * 编辑时不用重填；secret=true 的字段一律不回显。
  */
 function publicCredMeta(c: StoredConnection): Record<string, string> | undefined {
   if (!c.secretEnc) return undefined;
-  const fields = credentialFieldsOf(c.platform);
+  const fields = credentialFieldsFor(c.platform);
   if (!fields.length) return undefined;
-  const creds = parseLogisticsCreds(c);
+  let creds: Record<string, string>;
+  try {
+    creds = credentialFieldsOf(c.platform).length
+      ? parseLogisticsCreds(c) as Record<string, string>
+      : JSON.parse(decrypt(c.secretEnc)) as Record<string, string>;
+  } catch { return undefined; }
   const out: Record<string, string> = {};
   for (const f of fields) {
     if (!f.secret && creds[f.key]) out[f.key] = creds[f.key];
@@ -506,7 +546,7 @@ async function audit(action: string, opts: Record<string, unknown> = {}): Promis
 
 // ---------- 入参解析与校验 ----------
 
-interface ConnInput {
+export interface ConnInput {
   platform: ShopPlatform['id'];
   site: string;
   shopName: string;
@@ -517,6 +557,12 @@ interface ConnInput {
   groupId?: string;
   /** 所属项目（店铺会话 id）；留空 = 未归属 */
   projectId?: string;
+  /** 店铺类型/货源模式/demo 标记：编辑时必须原样保留，否则会破坏三层概念 */
+  shopType?: ShopType;
+  supplyMode?: SupplyMode;
+  demo?: boolean;
+  syncPolicy?: 'local-first' | 'platform-first';
+  syncIntervalMin?: number;
 }
 
 function parseConnInput(body: Record<string, unknown>): ConnInput {
@@ -528,6 +574,10 @@ function parseConnInput(body: Record<string, unknown>): ConnInput {
     const s = String(v ?? '').trim();
     return s || undefined;
   };
+  const shopType = body.shopType === 'demo' || body.shopType === 'test' || body.shopType === 'production'
+    ? body.shopType as ShopType : undefined;
+  const supplyMode = body.supplyMode === 'stocked' || body.supplyMode === 'dropship'
+    ? body.supplyMode as SupplyMode : undefined;
   return {
     platform,
     site: String(body.site || '').trim(),
@@ -538,6 +588,11 @@ function parseConnInput(body: Record<string, unknown>): ConnInput {
     note: opt(body.note),
     groupId: opt(body.groupId),
     projectId: opt(body.projectId),
+    shopType,
+    supplyMode,
+    demo: body.demo === true ? true : (body.demo === false ? false : undefined),
+    syncPolicy: body.syncPolicy === 'local-first' || body.syncPolicy === 'platform-first' ? body.syncPolicy : undefined,
+    syncIntervalMin: Number.isFinite(Number(body.syncIntervalMin)) ? Math.max(0, Math.trunc(Number(body.syncIntervalMin))) : undefined,
   };
 }
 
@@ -550,7 +605,7 @@ function validateConnInput(input: ConnInput): string | null {
   return null;
 }
 
-function buildConnection(input: ConnInput, base?: StoredConnection): StoredConnection {
+export function buildConnection(input: ConnInput, base?: StoredConnection): StoredConnection {
   return {
     id: base?.id ?? `shop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     platform: input.platform,
@@ -563,6 +618,13 @@ function buildConnection(input: ConnInput, base?: StoredConnection): StoredConne
     note: input.note,
     groupId: input.groupId ?? base?.groupId,
     projectId: input.projectId ?? base?.projectId,
+    // ★ 编辑连接只改连接信息，不能把店铺类型/货源模式/demo 标记丢掉：
+    //   丢了之后 shopContextOf 会把演示店回退成 test、无货源回退成 stocked。
+    shopType: input.shopType ?? base?.shopType,
+    supplyMode: input.supplyMode ?? base?.supplyMode,
+    demo: input.demo ?? base?.demo,
+    syncPolicy: input.syncPolicy ?? base?.syncPolicy,
+    syncIntervalMin: input.syncIntervalMin ?? base?.syncIntervalMin,
     createdAt: base?.createdAt ?? Date.now(),
     lastCheckAt: base?.lastCheckAt,
   };
@@ -811,39 +873,115 @@ export function makeShopTools(): BuiltInTool[] {
     },
   };
 
-  // ---------- 经营快照（演示数据；真实连接暂无数据源） ----------
-  const shopSnapshot: BuiltInTool = {
-    name: 'shop_snapshot',
+  // ---------- 经营看板 / 商品 / 订单（P0：读本地业务库，数据来自人工操作与演示种子） ----------
+
+  /** 店铺上下文（动作层入口） */
+  const shopOf = (conn: StoredConnection): ShopContext => shopContextOf(conn);
+
+  const shopTypeLabel = (t: ShopType): string => (t === 'demo' ? '演示' : t === 'production' ? '生产' : '测试');
+  const supplyLabel = (m: SupplyMode): string => (m === 'dropship' ? '无货源' : '有货源');
+  const money = (cents: number, currency: string): string => `${currency === 'USD' ? '$' : '¥'}${(cents / 100).toFixed(2)}`;
+  const orderStatusLabel: Record<string, string> = { pending: '待付款', paid: '待发货', sourcing: '采购中', shipped: '已发货', completed: '已完成', refunded: '已退款' };
+
+  const shopDashboard: BuiltInTool = {
+    name: 'shop_dashboard',
     description:
-      '读取一条连接的经营快照（KPI + 明细表）。演示店铺返回合成演示数据；'
-      + '真实店铺目前没有接入数据源，会如实说明 —— 抓数请用 pageAgent 打开卖家后台或让用户提供导出文件。',
+      '读取一条店铺的经营看板（本地业务库聚合）：今日销售额 / 订单数 / 待发货 / 低库存 / 最近订单。'
+      + '数据是这家店在应用里的真实业务记录（演示店铺为合成种子）。要逐条明细用 shop_product_list / shop_order_list。',
     inputSchema: {
       type: 'object',
       properties: { shopName: { type: 'string', description: '连接名（按名称定位）' } },
       required: ['shopName'],
     },
     execute: async (args) => {
-      const name = String(args.shopName || '').trim();
-      const conn = (await loadConnections()).find((c) => c.shopName === name);
-      if (!conn) return textResult(`未找到连接「${name}」—— 先用 conn_list 看看已登记了哪些。`);
-      const snap = conn.demo ? DEMO_SNAPSHOTS[conn.shopName] : undefined;
-      if (!snap) {
-        return textResult(`「${conn.shopName}」没有接入数据源：本版本不持有登录态，也不存平台数据。请用 pageAgent 打开卖家后台取数，或让用户提供导出的 Excel/CSV。`);
-      }
-      const kpis = snap.kpis.map((k) => `- ${k.label}：${k.value}${k.hint ? `（${k.hint}）` : ''}`);
-      const table = snap.table
-        ? ['', `【${snap.table.title}】`, snap.table.columns.join(' | '), ...snap.table.rows.map((r) => r.join(' | '))]
-        : [];
-      return textResult([
-        `【演示数据】${conn.shopName}`,
-        ...kpis,
-        ...table,
-        '',
-        snap.note,
-        '★ 以上均为合成演示数据，不代表任何真实账号。',
-      ].join('\n'));
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 看看已登记了哪些。`);
+      const out = await runShopAction(shopOf(conn), 'shop.dashboard', {}, 'ai');
+      if (out.kind !== 'done') return textResult(out.kind === 'unsupported' ? `看板读取失败：${out.reason}` : '看板需要打开平台后台，请用 shop_platform_open。');
+      const d = out.data as import('../shop/types.js').ShopDashboard;
+      const demoPrefix = shopOf(conn).shopType === 'demo' ? '【演示数据】' : '';
+      const lines = [
+        `${demoPrefix}${conn.shopName}（${shopTypeLabel(shopOf(conn).shopType)} · ${supplyLabel(shopOf(conn).supplyMode)}）`,
+        `- 今日销售额：${money(d.todaySalesCents, conn.platform === 'amazon' ? 'USD' : 'CNY')}`,
+        `- 今日订单：${d.todayOrders} 单`,
+        `- 待发货：${d.pendingShip} 单`,
+        ...(d.orderStatusCounts && Object.keys(d.orderStatusCounts).length
+          ? [`- 状态分布：${Object.entries(d.orderStatusCounts).map(([k, v]) => `${orderStatusLabel[k] ?? k} ${v}`).join(' · ')}`]
+          : []),
+        ...(shopOf(conn).supplyMode === 'dropship'
+          ? ['- 库存：无货源店铺不持库存（低库存不参与口径）']
+          : d.lowStock.length
+            ? ['- 低库存：' + d.lowStock.map((x) => `${x.sku} ${x.title}（${x.stock}/${x.safetyStock}）`).join('；')]
+            : ['- 低库存：无']),
+        ...(d.recentOrders.length
+          ? ['', '最近订单：', ...d.recentOrders.map((o) => `- ${o.orderNo} ${o.buyer ?? ''} ${money(o.amountCents, 'CNY')} ${orderStatusLabel[o.status] ?? o.status}`)]
+          : ['', '还没有订单。']),
+      ];
+      return textResult(lines.join('\n'));
     },
   };
+
+  const shopProductList: BuiltInTool = {
+    name: 'shop_product_list',
+    description:
+      '列出店铺的本地商品（SKU / 标题 / 货源 / 成本 / 售价 / 库存 / 上下架状态）。'
+      + '改价、改库存、上下架之前先用它定位 SKU 与现值；无货源商品库存恒为 0（不持库存）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '连接名' },
+        status: { type: 'string', description: '仅看某状态：draft 草稿 / online 在售 / offline 已下架' },
+        search: { type: 'string', description: '按 SKU 或标题模糊搜' },
+      },
+      required: ['shopName'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const out = await runShopAction(shopOf(conn), 'product.list', { status: args.status, search: args.search }, 'ai');
+      if (out.kind !== 'done') return textResult('商品列表读取失败：' + (out.kind === 'unsupported' ? out.reason : '需要打开平台后台'));
+      const rows = out.data as Array<import('../shop/types.js').Product>;
+      if (!rows.length) return textResult(`「${conn.shopName}」本地库还没有商品。可以让我用 shop_product_create 建一个，或让用户先在控制台商品页新建。`);
+      const drop = shopOf(conn).supplyMode === 'dropship';
+      const lines = rows.map((p) => {
+        const stock = p.supplyMode === 'dropship' ? '不持库存' : `库存 ${p.stock}`;
+        const src = p.sourceRef ? ` · 货源 ${p.sourceRef}` : '';
+        return `- ${p.sku} ${p.title}｜${money(p.priceCents, p.currency)}（成本 ${money(p.costCents, p.currency)}）｜${stock}｜${p.listingStatus === 'online' ? '在售' : p.listingStatus === 'offline' ? '已下架' : '草稿'}${src}`;
+      });
+      return textResult(`「${conn.shopName}」共 ${rows.length} 个商品${drop ? '（无货源：不持库存）' : ''}：\n${lines.join('\n')}`);
+    },
+  };
+
+  const shopOrderList: BuiltInTool = {
+    name: 'shop_order_list',
+    description:
+      '列出店铺的本地订单（订单号 / 买家 / 金额 / 状态 / 下单时间）。'
+      + '状态下：pending 待付款、paid 待发货、sourcing 采购中、shipped 已发货、completed 已完成、refunded 已退款。'
+      + '无货源店铺「采购中」的订单可标记已采购；已付款订单可创建发货。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '连接名' },
+        status: { type: 'string', description: '按状态过滤（pending/paid/sourcing/shipped/completed/refunded）' },
+        search: { type: 'string', description: '按订单号或买家模糊搜' },
+      },
+      required: ['shopName'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const out = await runShopAction(shopOf(conn), 'order.list', { status: args.status, search: args.search }, 'ai');
+      if (out.kind !== 'done') return textResult('订单读取失败：' + (out.kind === 'unsupported' ? out.reason : '需要打开平台后台'));
+      const rows = out.data as Array<import('../shop/types.js').Order>;
+      if (!rows.length) return textResult(`「${conn.shopName}」还没有订单。`);
+      const lines = rows.map((o) => {
+        const t = new Date(o.createdAt).toISOString().slice(0, 16).replace('T', ' ');
+        return `- ${o.orderNo}｜${o.buyer ?? '—'}｜${money(o.amountCents, o.currency)}｜${orderStatusLabel[o.status] ?? o.status}｜${t}`;
+      });
+      return textResult(`「${conn.shopName}」共 ${rows.length} 条订单：\n${lines.join('\n')}`);
+    },
+  };
+
 
   // ---------- 写操作：统一走「申请 → 用户确认 →（生产额外批准）」闸门 ----------
   //
@@ -865,8 +1003,10 @@ export function makeShopTools(): BuiltInTool[] {
     target: string;
     /** 变更单正文行（不含标题与店铺行） */
     lines: string[];
-    /** 获批后交给 pageAgent 的执行指引 */
+    /** 获批后交给 pageAgent 的执行指引（本地已执行成功时不出现） */
     exec: string;
+    /** 获批后的真实执行（本地库/适配器）；返回一行执行结果。执行失败抛错，由闸门如实回报 */
+    run?: () => Promise<string>;
     confirmed?: boolean;
     approveProduction?: boolean;
   }
@@ -894,6 +1034,25 @@ export function makeShopTools(): BuiltInTool[] {
     await audit(`${req.action}.approved`, {
       connection: req.conn.shopName, detail: req.target, ok: true, summary: req.lines.join(' | '),
     });
+
+    // ★ 获批后**真的执行**：本地业务动作直接落库并回读；平台侧动作退化为跳转/执行指引。
+    if (req.run) {
+      try {
+        const done = await req.run();
+        await audit(`${req.action}.executed`, { connection: req.conn.shopName, detail: req.target, ok: true });
+        return textResult(
+          `${order}\n\n✓ 已批准并已执行（已记审计）。\n${done}\n`
+          + '本地业务动作以库内回读为准；平台动作以返回值与回读说明为准。若结果与变更单不符，按上面的回滚方式处理并如实说明。',
+        );
+      } catch (e) {
+        await audit(`${req.action}.executed`, { connection: req.conn.shopName, detail: req.target, ok: false, note: (e as Error).message });
+        return textResult(
+          `${order}\n\n✓ 已批准（已记审计），但**执行失败**：${(e as Error).message}\n`
+          + '如果该动作分多步（例如多字段同步/多明细采购），可能已有部分改动 —— 请先到平台后台/业务库核对，再决定是否重试。'
+          + `也可以改用执行指引：${req.exec}`,
+        );
+      }
+    }
     return textResult(
       `${order}\n\n✓ 已批准（已记审计）。执行方式：${req.exec}\n`
       + '改完**回读页面确认已生效**再回报；若失败或结果与变更单不符，按上面的回滚方式处理并如实说明。',
@@ -909,17 +1068,18 @@ export function makeShopTools(): BuiltInTool[] {
     '【受闸门约束的写操作】首次调用（不带 confirmed）只返回一张变更单并**拒绝执行**；'
     + '把变更单交给用户确认、用户明确同意后，原样重试并带 confirmed: true 才放行。'
     + '标记为「生产」的店铺还需要额外的人工批准（approveProduction: true）。'
-    + '放行后由你用 pageAgent 在卖家后台执行并回读确认。';
+    + '放行后：本地业务库命中的商品直接改库并回读（控制台实时可见）；平台侧动作按执行指引由 pageAgent 完成。';
 
   const priceUpdate: BuiltInTool = {
     name: 'shop_price_update',
-    description: `${GATE_HINT}本动作：改单个商品的售价。一次只改一个商品。`,
+    description: `${GATE_HINT}本动作：改单个商品的售价。一次只改一个商品。`
+      + '商品在本地业务库存在时，获批后直接改库并回读；不存在时退化为 pageAgent 执行指引。',
     inputSchema: {
       type: 'object',
       properties: {
         shopName: { type: 'string', description: '店铺名（必须已登记）' },
-        sku: { type: 'string', description: '商品唯一标识（亚马逊 ASIN / 淘宝商品 ID / 卖家 SKU）' },
-        currentPrice: { type: 'number', description: '当前价格（变更单的「从什么改成什么」）' },
+        sku: { type: 'string', description: '商品唯一标识（本地商品 SKU / 亚马逊 ASIN / 淘宝商品 ID）' },
+        currentPrice: { type: 'number', description: '当前价格（变更单的「从什么改成什么」；本地库有该 SKU 时以库为准）' },
         newPrice: { type: 'number', description: '目标价格' },
         reason: { type: 'string', description: '为什么改（用户给的理由，禁止编造）' },
         ...WRITE_GATE_PROPS,
@@ -936,19 +1096,31 @@ export function makeShopTools(): BuiltInTool[] {
       if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
       if (!sku) return textResult('sku 必填（亚马逊 ASIN / 淘宝商品 ID / 卖家 SKU）。');
       if (!reason) return textResult('reason 必填 —— 改价理由必须来自用户，不要编造。');
-      if (!Number.isFinite(currentPrice) || !Number.isFinite(newPrice) || newPrice <= 0) {
-        return textResult('currentPrice / newPrice 必须是正数。');
+      if (!Number.isFinite(newPrice) || newPrice <= 0) {
+        return textResult('newPrice 必须是正数。');
       }
-      const delta = currentPrice > 0 ? ((newPrice - currentPrice) / currentPrice) * 100 : 0;
+      let prod: import('../shop/types.js').Product | undefined;
+      try { prod = shopStore.findProductBySku(conn.id, sku); } catch { prod = undefined; }
+      const from = prod ? prod.priceCents / 100 : currentPrice;
+      if (!Number.isFinite(from) || from < 0) return textResult('currentPrice 必须是非负数。');
+      const delta = from > 0 ? ((newPrice - from) / from) * 100 : 0;
       return runWriteGate({
         action: 'write.price_update', conn, title: '改价变更单', target: sku,
         lines: [
           `商品：${sku}`,
-          `价格：${currentPrice} → ${newPrice}（${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%）`,
+          `价格：${from} → ${newPrice}（${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%）`,
           `理由：${reason}`,
-          `回滚方式：改回 ${currentPrice}`,
+          `回滚方式：改回 ${from}`,
+          ...(prod ? ['★ 命中本地业务库：获批后直接改库并回读'] : ['★ 本地库无此 SKU：获批后按指引去平台后台执行']),
         ],
-        exec: `用 pageAgent 在登录态的卖家后台把 ${sku} 的价格从 ${currentPrice} 改成 ${newPrice}。`,
+        exec: `用 pageAgent 在登录态的卖家后台把 ${sku} 的价格从 ${from} 改成 ${newPrice}。`,
+        run: prod
+          ? async () => {
+            const out = await runShopAction(shopOf(conn), 'product.price', { productId: prod!.id, newPriceCents: Math.round(newPrice * 100) }, 'ai');
+            if (out.kind !== 'done') throw new Error(out.kind === 'unsupported' ? out.reason : '需要平台后台执行');
+            return out.summary;
+          }
+          : undefined,
         confirmed: args.confirmed === true,
         approveProduction: args.approveProduction === true,
       });
@@ -957,13 +1129,14 @@ export function makeShopTools(): BuiltInTool[] {
 
   const stockUpdate: BuiltInTool = {
     name: 'shop_stock_update',
-    description: `${GATE_HINT}本动作：改单个商品的库存数量（含售罄下架式的置零）。一次只改一个商品。`,
+    description: `${GATE_HINT}本动作：改单个商品的库存数量（含售罄下架式的置零）。一次只改一个商品。`
+      + '本地库命中的商品获批后直接改库并写库存流水；无货源商品不持库存，会如实拒绝。',
     inputSchema: {
       type: 'object',
       properties: {
         shopName: { type: 'string', description: '店铺名（必须已登记）' },
         sku: { type: 'string', description: '商品唯一标识' },
-        currentStock: { type: 'number', description: '当前库存' },
+        currentStock: { type: 'number', description: '当前库存（本地库有该 SKU 时以库为准）' },
         newStock: { type: 'number', description: '目标库存（0 = 售罄）' },
         reason: { type: 'string', description: '为什么改（用户给的理由，禁止编造）' },
         ...WRITE_GATE_PROPS,
@@ -980,18 +1153,32 @@ export function makeShopTools(): BuiltInTool[] {
       if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
       if (!sku) return textResult('sku 必填。');
       if (!reason) return textResult('reason 必填 —— 改库存理由必须来自用户，不要编造。');
-      if (!Number.isInteger(currentStock) || !Number.isInteger(newStock) || newStock < 0) {
-        return textResult('currentStock / newStock 必须是非负整数。');
+      if (!Number.isInteger(newStock) || newStock < 0) {
+        return textResult('newStock 必须是非负整数。');
       }
+      let prod: import('../shop/types.js').Product | undefined;
+      try { prod = shopStore.findProductBySku(conn.id, sku); } catch { prod = undefined; }
+      const from = prod ? prod.stock : currentStock;
+      if (!Number.isInteger(from) || from < 0) return textResult('currentStock 必须是非负整数。');
+      const delta = newStock - from;
       return runWriteGate({
         action: 'write.stock_update', conn, title: '改库存变更单', target: sku,
         lines: [
           `商品：${sku}`,
-          `库存：${currentStock} → ${newStock}${newStock === 0 ? '（置零 = 售罄下架）' : ''}`,
+          `库存：${from} → ${newStock}${newStock === 0 ? '（置零 = 售罄下架）' : ''}`,
           `理由：${reason}`,
-          `回滚方式：改回 ${currentStock}`,
+          `回滚方式：改回 ${from}`,
+          ...(prod ? ['★ 命中本地业务库：获批后直接改库并写库存流水'] : ['★ 本地库无此 SKU：获批后按指引去平台后台执行']),
         ],
-        exec: `用 pageAgent 在登录态的卖家后台把 ${sku} 的可售库存从 ${currentStock} 改成 ${newStock}。`,
+        exec: `用 pageAgent 在登录态的卖家后台把 ${sku} 的可售库存从 ${from} 改成 ${newStock}。`,
+        run: prod
+          ? async () => {
+            if (delta === 0) throw new Error('目标库存与当前一致，未产生改动');
+            const out = await runShopAction(shopOf(conn), 'product.stock', { productId: prod!.id, kind: 'adjust', qty: delta, reason }, 'ai');
+            if (out.kind !== 'done') throw new Error(out.kind === 'unsupported' ? out.reason : '需要平台后台执行');
+            return out.summary;
+          }
+          : undefined,
         confirmed: args.confirmed === true,
         approveProduction: args.approveProduction === true,
       });
@@ -1023,6 +1210,8 @@ export function makeShopTools(): BuiltInTool[] {
       if (listing !== 'online' && listing !== 'offline') return textResult('listing 只能是 online 或 offline。');
       if (!reason) return textResult('reason 必填 —— 上下架理由必须来自用户，不要编造。');
       const label = listing === 'online' ? '上架' : '下架';
+      let prod: import('../shop/types.js').Product | undefined;
+      try { prod = shopStore.findProductBySku(conn.id, sku); } catch { prod = undefined; }
       return runWriteGate({
         action: 'write.listing_publish', conn, title: `${label}变更单`, target: sku,
         lines: [
@@ -1030,11 +1219,263 @@ export function makeShopTools(): BuiltInTool[] {
           `动作：${label}`,
           `理由：${reason}`,
           `回滚方式：${listing === 'online' ? '改回下架' : '改回上架'}`,
+          ...(prod ? ['★ 命中本地业务库：获批后直接改库并回读'] : ['★ 本地库无此 SKU：获批后按指引去平台后台执行']),
         ],
         exec: `用 pageAgent 在登录态的卖家后台把 ${sku} ${label}（商品管理页的上下架开关）。`,
+        run: prod
+          ? async () => {
+            const out = await runShopAction(shopOf(conn), 'product.publish', { productId: prod!.id, listing }, 'ai');
+            if (out.kind !== 'done') throw new Error(out.kind === 'unsupported' ? out.reason : '需要平台后台执行');
+            return out.summary;
+          }
+          : undefined,
         confirmed: args.confirmed === true,
         approveProduction: args.approveProduction === true,
       });
+    },
+  };
+
+  const productCreate: BuiltInTool = {
+    name: 'shop_product_create',
+    description: `${GATE_HINT}本动作：**新建本地商品**（进店铺业务库，商品页与看板立即生效）。`
+      + '无货源店铺必须给 sourceRef（1688 链接/供应商货号），库存恒为 0；有货源店铺可给初始库存（会写入库流水）。'
+      + '平台侧铺货（真正上架到亚马逊/淘宝）仍走 shop_listing_create 或 pageAgent。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺名（必须已登记）' },
+        sku: { type: 'string', description: '商品 SKU（店内唯一）' },
+        title: { type: 'string', description: '商品标题' },
+        price: { type: 'number', description: '售价（元/美元，正数）' },
+        cost: { type: 'number', description: '成本（元/美元，可空）' },
+        stock: { type: 'number', description: '初始库存（有货源；无货源忽略）' },
+        safetyStock: { type: 'number', description: '安全库存（低库存预警阈值）' },
+        category: { type: 'string', description: '类目（可空）' },
+        sourceRef: { type: 'string', description: '货源标识（无货源必填：1688 链接 / 供应商货号）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'sku', 'title', 'price'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const sku = String(args.sku || '').trim();
+      const title = String(args.title || '').trim();
+      const price = Number(args.price);
+      const cost = args.cost == null ? 0 : Number(args.cost);
+      const stock = args.stock == null ? 0 : Number(args.stock);
+      if (!sku || !title) return textResult('sku / title 必填。');
+      if (!Number.isFinite(price) || price <= 0) return textResult('price 必须是正数。');
+      const ctx = shopOf(conn);
+      const drop = ctx.supplyMode === 'dropship';
+      const currency = conn.platform === 'amazon' ? 'USD' : 'CNY';
+      return runWriteGate({
+        action: 'write.product_create', conn, title: '新建商品变更单', target: sku,
+        lines: [
+          `SKU：${sku}`,
+          `标题：${title}`,
+          `售价：${price}｜成本：${Number.isFinite(cost) ? cost : 0}`,
+          `货源模式：${supplyLabel(ctx.supplyMode)}${drop ? '（不持库存）' : `｜初始库存 ${Number.isFinite(stock) ? stock : 0}`}`,
+          ...(drop ? [`货源：${String(args.sourceRef || '（缺失）')}`] : []),
+          '回滚方式：删除该商品（本地库硬删，会记审计）',
+        ],
+        exec: '若需同时上架到真实平台，用 pageAgent 在卖家后台按同一信息新建商品。',
+        run: async () => {
+          const out = await runShopAction(ctx, 'product.create', {
+            sku, title,
+            priceCents: Math.round(price * 100),
+            costCents: Math.round((Number.isFinite(cost) ? cost : 0) * 100),
+            stock, safetyStock: args.safetyStock,
+            category: args.category, sourceRef: args.sourceRef,
+            currency, supplyMode: ctx.supplyMode, listingStatus: 'draft',
+          }, 'ai');
+          if (out.kind !== 'done') throw new Error(out.kind === 'unsupported' ? out.reason : '需要平台后台执行');
+          return out.summary;
+        },
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const productUpdate: BuiltInTool = {
+    name: 'shop_product_update',
+    description: `${GATE_HINT}本动作：**编辑本地商品**（标题/成本/售价/安全库存/货源）。SKU 定位，改哪项传哪项。`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺名' },
+        sku: { type: 'string', description: '要改的商品 SKU' },
+        title: { type: 'string', description: '新标题（可空）' },
+        price: { type: 'number', description: '新售价（可空）' },
+        cost: { type: 'number', description: '新成本（可空）' },
+        safetyStock: { type: 'number', description: '新安全库存（可空）' },
+        sourceRef: { type: 'string', description: '新货源标识（可空）' },
+        reason: { type: 'string', description: '为什么改（用户给的理由，禁止编造）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'sku', 'reason'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const sku = String(args.sku || '').trim();
+      const reason = String(args.reason || '').trim();
+      if (!sku) return textResult('sku 必填。');
+      if (!reason) return textResult('reason 必填。');
+      let prod: import('../shop/types.js').Product | undefined;
+      try { prod = shopStore.findProductBySku(conn.id, sku); } catch { prod = undefined; }
+      if (!prod) return textResult(`本地库没有 SKU「${sku}」—— 先用 shop_product_list 确认，或用 shop_product_create 新建。`);
+      const lines: string[] = [`商品：${sku}（${prod.title}）`];
+      if (args.title != null) lines.push(`标题：${prod.title} → ${String(args.title)}`);
+      if (args.price != null) lines.push(`售价：${(prod.priceCents / 100).toFixed(2)} → ${Number(args.price).toFixed(2)}`);
+      if (args.cost != null) lines.push(`成本：${(prod.costCents / 100).toFixed(2)} → ${Number(args.cost).toFixed(2)}`);
+      if (args.safetyStock != null) lines.push(`安全库存：${prod.safetyStock} → ${Number(args.safetyStock)}`);
+      if (args.sourceRef != null) lines.push(`货源：${prod.sourceRef ?? '—'} → ${String(args.sourceRef)}`);
+      lines.push(`理由：${reason}`, '回滚方式：把改动项改回上表左侧原值');
+      return runWriteGate({
+        action: 'write.product_update', conn, title: '编辑商品变更单', target: sku,
+        lines,
+        exec: '本地库已可直接更新；如需同步平台，用 pageAgent 打开卖家后台商品编辑页。',
+        run: async () => {
+          const out = await runShopAction(shopOf(conn), 'product.update', {
+            productId: prod!.id,
+            title: args.title != null ? String(args.title) : undefined,
+            priceCents: args.price != null ? Math.round(Number(args.price) * 100) : undefined,
+            costCents: args.cost != null ? Math.round(Number(args.cost) * 100) : undefined,
+            safetyStock: args.safetyStock,
+            sourceRef: args.sourceRef != null ? String(args.sourceRef) : undefined,
+          }, 'ai');
+          if (out.kind !== 'done') throw new Error(out.kind === 'unsupported' ? out.reason : '更新失败');
+          return out.summary;
+        },
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const orderShip: BuiltInTool = {
+    name: 'shop_order_ship',
+    description: `${GATE_HINT}本动作：**给订单创建发货**（写发货单并推进订单状态）。`
+      + 'carrier 用物流商 id（sf-express / yunexpress 等），trackingNo 为真实或平台回传的运单号。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺名' },
+        orderNo: { type: 'string', description: '订单号（用 shop_order_list 查）' },
+        carrier: { type: 'string', description: '物流商（sf-express / yunexpress / jd-logistics / cainiao / 4px …）' },
+        trackingNo: { type: 'string', description: '运单号' },
+        note: { type: 'string', description: '备注（可空）' },
+        reason: { type: 'string', description: '为什么这样发货（用户给的口径）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'orderNo', 'carrier', 'trackingNo', 'reason'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const orderNo = String(args.orderNo || '').trim();
+      const carrier = String(args.carrier || '').trim();
+      const trackingNo = String(args.trackingNo || '').trim();
+      const reason = String(args.reason || '').trim();
+      if (!orderNo || !carrier || !trackingNo) return textResult('orderNo / carrier / trackingNo 必填。');
+      if (!reason) return textResult('reason 必填。');
+      let order: import('../shop/types.js').Order | undefined;
+      try { order = shopStore.findOrderByNo(conn.id, orderNo); } catch { order = undefined; }
+      if (!order) return textResult(`「${conn.shopName}」本地库没有订单 ${orderNo} —— 先用 shop_order_list 确认订单号。`);
+      if (order.status === 'shipped' || order.status === 'completed') {
+        return textResult(`订单 ${orderNo} 当前状态为「${orderStatusLabel[order.status]}」，已发货，无需重复创建。`);
+      }
+      return runWriteGate({
+        action: 'write.order_ship', conn, title: '发货变更单', target: orderNo,
+        lines: [
+          `订单：${orderNo}（${order.buyer ?? '—'}，${money(order.amountCents, order.currency)}）`,
+          `物流商：${carrier}｜运单号：${trackingNo}`,
+          `理由：${reason}`,
+          '回滚方式：发货单无法删除 —— 填错运单需联系物流商更正并另记备注',
+        ],
+        exec: `用 pageAgent 在卖家后台为订单 ${orderNo} 填运单号 ${trackingNo} 并发货。`,
+        run: async () => {
+          const out = await runShopAction(shopOf(conn), 'order.ship', { orderId: order!.id, carrier, trackingNo, note: args.note }, 'ai');
+          if (out.kind !== 'done') throw new Error(out.kind === 'unsupported' ? out.reason : '发货失败');
+          return out.summary;
+        },
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const shipmentTrack: BuiltInTool = {
+    name: 'shop_shipment_track',
+    description:
+      '查询一条发货单的物流轨迹：按店铺 + 运单号定位发货单，用同项目里的物流连接（顺丰丰桥 / 云途）查真实轨迹。'
+      + '没有对应物流连接、客户端未接或凭据缺失都会如实说明，不假装能查。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺连接名（发货单所属店铺）' },
+        trackingNo: { type: 'string', description: '运单号' },
+      },
+      required: ['shopName', 'trackingNo'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const trackingNo = String(args.trackingNo || '').trim();
+      if (!trackingNo) return textResult('运单号为空。');
+      let shipment: import('../shop/types.js').Shipment | undefined;
+      try { shipment = shopStore.findShipmentByTrackingNo(conn.id, trackingNo); } catch { shipment = undefined; }
+      if (!shipment) return textResult(`「${conn.shopName}」没有运单号为 ${trackingNo} 的发货单 —— 先用 shop_order_list 看订单，或先创建发货。`);
+      const carrier = shipment.carrier || '';
+      const client = logisticsClientOf(carrier);
+      if (!client) {
+        return textResult(`运单 ${trackingNo} 的物流商「${carrier || '未填'}」还没有客户端（当前支持：顺丰丰桥 sf-express / 云途 yunexpress）。先按口径查官网。`);
+      }
+      const list = await loadConnections();
+      const logiConn = list.find((c) => c.platform === carrier && (c.projectId || '') === (conn.projectId || ''))
+        || list.find((c) => c.platform === carrier);
+      if (!logiConn) {
+        return textResult(`还没有登记物流商「${carrier}」的连接 —— 先在控制台物流页登记并填凭据，再来查轨迹。`);
+      }
+      const creds = parseLogisticsCreds(logiConn);
+      const miss = missingFields(client, creds);
+      if (miss.length) return textResult(`物流连接「${logiConn.shopName}」凭据不完整：缺 ${miss.join('、')}。`);
+      const r = await client.track(creds, { trackingNo });
+      await audit('logistics.track', { connection: logiConn.shopName, detail: trackingNo, ok: r.ok });
+      if (!r.ok) return textResult(`查询失败（${r.step || 'api'}）：${r.message || '未知错误'}`);
+      const lines = r.events.map((e) => `- ${e.time}${e.location ? ` ${e.location}` : ''} ${e.description}${e.status ? `（${e.status}）` : ''}`);
+      return textResult([`${r.provider} · ${r.trackingNo}`, r.message || '', ...(lines.length ? lines : ['（暂无轨迹）'])].filter(Boolean).join('\n'));
+    },
+  };
+
+  const platformOpen: BuiltInTool = {
+    name: 'shop_platform_open',
+    description:
+      '返回打开发货/经营所在的平台后台的跳转计划（URL + 操作步骤）。'
+      + '演示店铺只返回演示计划，绝不真正触达平台；测试/生产店铺由控制台内嵌浏览器打开，登录态需用户自己完成。',
+    inputSchema: {
+      type: 'object',
+      properties: { shopName: { type: 'string', description: '店铺名' } },
+      required: ['shopName'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const out = await runShopAction(shopOf(conn), 'shop.open', {}, 'ai');
+      if (out.kind !== 'jump') {
+        return textResult(out.kind === 'unsupported' ? `无法打开平台后台：${out.reason}` : '该店铺的平台后台已在本地完成，无需跳转。');
+      }
+      const plan = out.plan;
+      return textResult([
+        `【跳转计划】${plan.title}`,
+        `URL：${plan.url || '（该平台未登记入口，请让用户提供后台地址）'}`,
+        ...plan.steps.map((s, i) => `${i + 1}. ${s}`),
+        plan.automatable
+          ? '★ 可由 pageAgent 在登录态下代跑非资金动作；付款/验证码必须由用户亲手完成。'
+          : '★ 演示店铺：本计划仅作演示，不会真正触达平台。',
+      ].join('\n'));
     },
   };
 
@@ -1268,6 +1709,418 @@ export function makeShopTools(): BuiltInTool[] {
     },
   };
 
+  const shopApiCheckTool: BuiltInTool = {
+    name: 'shop_api_check',
+    description:
+      '对一条店铺连接做**平台 API 连通性自检**（只读）：用连接里存的凭据调用官方无害接口，'
+      + '报告卡在哪一步（凭据不完整 / 网络 / 鉴权 / 限流 / 接口错误）。'
+      + '目前接入的客户端见平台清单的 apiCapabilities。',
+    inputSchema: {
+      type: 'object',
+      properties: { shopName: { type: 'string', description: '店铺连接名' } },
+      required: ['shopName'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      const client = platformApiOf(conn.platform);
+      if (!client) return textResult(`「${conn.shopName}」的平台「${conn.platform}」还没有 API 客户端；可先用 shop_platform_open 打开后台。`);
+      if (!conn.secretEnc) return textResult('该店铺未配置 API 凭据 —— 在控制台编辑弹窗按字段填写（字段提示里写了去哪获取）。');
+      let raw = '';
+      try { raw = decrypt(conn.secretEnc); } catch (e) { return textResult(`凭据解密失败：${(e as Error).message}`); }
+      const creds = client.parseCreds(raw);
+      if (!creds) return textResult('凭据格式不完整：请按控制台表单字段重填（密钥字段编辑时留空表示沿用原值）。');
+      const r = await client.test(creds);
+      await audit('api.test', { connection: conn.shopName, ok: r.ok, note: r.message });
+      const stepLabel: Record<string, string> = {
+        creds: '凭据不完整', network: '网络不可达', auth: '鉴权失败', rate: '触发限流', api: '接口返回错误', enterprise: '资质/权限未开通',
+      };
+      if (r.ok) return textResult(`✓ ${client.label} 可用：${r.message}`);
+      return textResult(`✗ ${client.label} 不可用 —— 卡在「${stepLabel[r.step || 'api'] ?? r.step}」：${r.message}`);
+    },
+  };
+
+  const platformApiTool: BuiltInTool = {
+    name: 'shop_platform_api',
+    description:
+      '调用店铺平台的官方 API（所有已实现能力的统一入口）。读动作直接执行；'
+      + '写动作（product.update/price/stock/listing、order.ship）先出变更单，用户确认后带 confirmed: true 才执行，生产店铺再加 approveProduction。'
+      + '动作：test / product.list / inventory.get / order.list（读）；product.update / product.price / product.stock / product.listing / order.ship（写）。'
+      + 'payload 需要平台侧标识，例如 Shopify price 要 variantId，淘宝要 numIid，拼多多要 goodsId，1688 要 productId，TikTok 要 productId+skuId。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺连接名' },
+        action: { type: 'string', description: '见工具说明中的动作枚举' },
+        payload: { type: 'object', description: '平台侧参数对象（各平台字段不同，按能力文档填）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'action'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const action = String(args.action || '').trim() as PlatformApiCapability;
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      const client = platformApiOf(conn.platform);
+      if (!client) return textResult(`「${conn.platform}」还没有 API 客户端。`);
+      if (!client.capabilities.includes(action)) {
+        return textResult(`「${client.label}」未实现能力 ${action}；已实现：${client.capabilities.join('、')}`);
+      }
+      if (!conn.secretEnc) return textResult('该店铺未配置 API 凭据 —— 在控制台编辑弹窗按字段填写（提示里写了去哪获取）。');
+      let raw = '';
+      try { raw = decrypt(conn.secretEnc); } catch (e) { return textResult(`凭据解密失败：${(e as Error).message}`); }
+      const creds = client.parseCreds(raw);
+      if (!creds) return textResult('凭据格式不完整：请按控制台表单字段重填。');
+      const payload = (args.payload && typeof args.payload === 'object') ? args.payload as Record<string, unknown> : {};
+      const write = ['product.update', 'product.price', 'product.stock', 'product.listing', 'order.ship'].includes(action);
+
+      if (!write) {
+        const r = await runPlatformAction(conn.platform, creds, action, payload);
+        await audit(`platform.api.${action.replace('.', '_')}`, { connection: conn.shopName, ok: r.ok, note: r.message });
+        if (!r.ok) return textResult(`✗ ${client.label} ${action} 失败${r.step ? `（${r.step}）` : ''}：${r.message}`);
+        const preview = r.data === undefined ? '' : `\n${JSON.stringify(r.data).slice(0, 1500)}`;
+        return textResult(`✓ ${client.label} ${action} 成功${preview}`);
+      }
+
+      return runWriteGate({
+        action: `platform.api.${action.replace('.', '_')}`, conn,
+        title: `平台 API 变更单 · ${client.label}`, target: String(payload.sku ?? payload.productId ?? payload.numIid ?? payload.goodsId ?? action),
+        lines: [
+          `平台：${client.label}`,
+          `动作：${action}`,
+          `参数：${JSON.stringify(payload).slice(0, 600)}`,
+          '回滚方式：按平台后台当前值恢复（执行后会尝试回读；客户端未提供回读时会如实说明）',
+        ],
+        exec: '经平台官方 API 直连执行（已实现的能力）',
+        run: async () => {
+          const r = await runPlatformAction(conn.platform, creds, action, payload);
+          if (!r.ok) throw new Error(`${r.message || '平台返回失败'}${r.step ? `（${r.step}）` : ''}`);
+          const rb = await readbackPlatformAction(conn.platform, creds, action, payload);
+          const rbNote = rb.supported === false
+            ? '该平台客户端未提供回读，结果以平台响应为准'
+            : rb.ok ? `回读成功：${JSON.stringify(rb.data).slice(0, 500)}` : `回读失败：${rb.message || '未知原因'}`;
+          return `${client.label} ${action} 已执行${r.data === undefined ? '' : `：${JSON.stringify(r.data).slice(0, 600)}`}\n回读：${rbNote}`;
+        },
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const platformSyncTool: BuiltInTool = {
+    name: 'shop_platform_sync',
+    description:
+      '本地业务库与平台之间的同步。import-products / import-orders 是平台→本地（读平台、写本地，直接执行）；'
+      + 'sync-all 是手动全量（商品+订单，按连接冲突策略，有界分页）；'
+      + 'push-product（按商品 attrs 里的平台 ID 推送价格/库存/标题/状态）与 push-shipment（回填运单）是本地→平台，'
+      + '先出变更单，用户确认后带 confirmed: true 执行；生产店铺再加 approveProduction。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺连接名' },
+        action: { type: 'string', description: 'import-products / import-orders / sync-all / push-product / push-shipment' },
+        productId: { type: 'string', description: 'push-product：本地商品 id' },
+        orderId: { type: 'string', description: 'push-shipment：本地订单 id' },
+        fields: { type: 'array', items: { type: 'string' }, description: 'push-product 的字段：price/stock/title/listing，默认 price+stock' },
+        keywords: { type: 'string', description: 'import-products：亚马逊商品搜索关键词' },
+        asins: { type: 'array', items: { type: 'string' }, description: 'import-products：亚马逊 ASIN 列表' },
+        syncPolicy: { type: 'string', description: '导入冲突策略：platform-first（默认，用平台值覆盖）或 local-first（保留本地价格/库存）' },
+        trackingNo: { type: 'string', description: 'push-shipment：运单号' },
+        carrier: { type: 'string', description: 'push-shipment：物流商 id（如 sf-express）' },
+        companyCode: { type: 'string', description: '淘宝/亚马逊物流公司编码' },
+        logisticsId: { type: 'number', description: '拼多多物流公司 id' },
+        cpCode: { type: 'string', description: '1688 物流公司编码' },
+        shippingProviderId: { type: 'string', description: 'TikTok 物流商 id' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'action'],
+    },
+    execute: async (args) => {
+      const shopName = String(args.shopName || '').trim();
+      const action = String(args.action || '').trim();
+      const conn = await findConn(shopName);
+      if (!conn) return textResult(`未找到店铺「${shopName}」—— 先用 conn_list 确认店铺名。`);
+      const client = platformApiOf(conn.platform);
+      if (!client) return textResult(`「${conn.platform}」还没有 API 客户端。`);
+      if (!conn.secretEnc) return textResult('该店铺未配置 API 凭据 —— 在控制台编辑弹窗按字段填写。');
+      let raw = '';
+      try { raw = decrypt(conn.secretEnc); } catch (e) { return textResult(`凭据解密失败：${(e as Error).message}`); }
+      const creds = client.parseCreds(raw);
+      if (!creds) return textResult('凭据格式不完整：请按控制台表单字段重填。');
+      const ctx = shopContextOf(conn);
+
+      if (action === 'import-products') {
+        const runImport = async (): Promise<string> => {
+          const sum = await importProductsFromPlatform(ctx, creds, {
+            keywords: args.keywords ? String(args.keywords) : undefined,
+            asins: Array.isArray(args.asins) ? args.asins.map(String) : undefined,
+            policy: args.syncPolicy === 'local-first' ? 'local-first' : 'platform-first',
+          });
+          await audit('sync.import_products', { connection: conn.shopName, ok: sum.errors.length === 0, note: `新增 ${sum.imported} / 更新 ${sum.updated} / 冲突 ${sum.conflicts} / 跳过 ${sum.skipped}` });
+          return [
+            `平台商品导入完成：新增 ${sum.imported}，更新 ${sum.updated}，冲突保留本地 ${sum.conflicts}，跳过 ${sum.skipped}`,
+            ...(sum.errors.length ? ['', '失败明细：', ...sum.errors.slice(0, 20).map((e) => `- ${e}`)] : []),
+          ].join('\n');
+        };
+        if (ctx.shopType === 'demo') return textResult('演示店铺不参与平台同步（演示数据不能被子覆盖）。');
+        if (ctx.shopType === 'production') {
+          return runWriteGate({
+            action: 'sync.import_products', conn, title: '平台商品导入变更单', target: '平台商品 → 本地库',
+            lines: ['导入会更新本地商品字段与平台 ID（local-first 策略下不覆盖本地价格/库存）', '生产店铺需要额外人工批准'],
+            exec: '从平台读取商品并写入本地业务库',
+            run: runImport,
+            confirmed: args.confirmed === true,
+            approveProduction: args.approveProduction === true,
+          });
+        }
+        return textResult(await runImport());
+      }
+      if (action === 'import-orders') {
+        const runImport = async (): Promise<string> => {
+          const sum = await importOrdersFromPlatform(ctx, creds, {});
+          await audit('sync.import_orders', { connection: conn.shopName, ok: sum.errors.length === 0, note: `新增 ${sum.imported} / 更新 ${sum.updated} / 冲突 ${sum.conflicts} / 跳过 ${sum.skipped}` });
+          return [
+            `平台订单导入完成：新增 ${sum.imported}，更新 ${sum.updated}，冲突保留本地 ${sum.conflicts}，跳过 ${sum.skipped}`,
+            ...(sum.errors.length ? ['', '失败明细：', ...sum.errors.slice(0, 20).map((e) => `- ${e}`)] : []),
+          ].join('\n');
+        };
+        if (ctx.shopType === 'demo') return textResult('演示店铺不参与平台同步（演示数据不能被子覆盖）。');
+        if (ctx.shopType === 'production') {
+          return runWriteGate({
+            action: 'sync.import_orders', conn, title: '平台订单导入变更单', target: '平台订单 → 本地库',
+            lines: ['导入只会推进订单状态，不会把已发货/已完成订单改回早期状态', '生产店铺需要额外人工批准'],
+            exec: '从平台读取订单并写入本地业务库',
+            run: runImport,
+            confirmed: args.confirmed === true,
+            approveProduction: args.approveProduction === true,
+          });
+        }
+        return textResult(await runImport());
+      }
+      if (action === 'sync-all') {
+        if (ctx.shopType === 'demo') return textResult('演示店铺不参与平台同步。');
+        const runAll = async (): Promise<string> => {
+          const entry = await runConnectionSync(conn, 'manual');
+          return [
+            `全量同步完成（${entry.ok ? '成功' : '有失败'}）：新增 ${entry.imported}，更新 ${entry.updated}，冲突保留本地 ${entry.conflicts}，失败 ${entry.errors}`,
+            ...(entry.note ? [`明细：${entry.note}`] : []),
+          ].join('\n');
+        };
+        if (ctx.shopType === 'production') {
+          return runWriteGate({
+            action: 'sync.run', conn, title: '全量同步变更单', target: '平台 → 本地',
+            lines: ['会按当前冲突策略更新本地商品/订单（订单状态只前进）', '生产店铺需要额外人工批准'],
+            exec: '从平台拉取商品与订单并写入本地业务库',
+            run: runAll,
+            confirmed: args.confirmed === true,
+            approveProduction: args.approveProduction === true,
+          });
+        }
+        return textResult(await runAll());
+      }
+      if (action === 'push-product') {
+        const productId = String(args.productId || '').trim();
+        const product = productId ? shopStore.getProduct(ctx.id, productId) : undefined;
+        if (!product) return textResult('没找到本地商品：先 shop_product_list 取 id，或从平台导入商品。');
+        const fields = (Array.isArray(args.fields) ? args.fields.map(String) : ['price', 'stock']) as SyncField[];
+        return runWriteGate({
+          action: 'sync.push_product', conn, title: '同步商品到平台变更单', target: product.sku,
+          lines: [
+            `平台：${client.label}`,
+            `商品：${product.sku} · ${product.title}`,
+            `字段：${fields.join('、')}`,
+            `平台 ID：${JSON.stringify(product.attrs).slice(0, 400)}`,
+            '回滚方式：按平台后台原值恢复（同步后会尝试回读；不支持的平台会如实说明）',
+          ],
+          exec: '经平台 API 推送字段（需要 attrs 里的平台 ID）',
+          run: async () => {
+            const r = await pushProductToPlatform(ctx, creds, product.id, fields);
+            if (!r.ok) throw new Error(r.message);
+            return r.message;
+          },
+          confirmed: args.confirmed === true,
+          approveProduction: args.approveProduction === true,
+        });
+      }
+      if (action === 'push-shipment') {
+        const orderId = String(args.orderId || '').trim();
+        const order = orderId ? shopStore.getOrder(ctx.id, orderId) : undefined;
+        if (!order) return textResult('没找到本地订单：先 shop_order_list 取 id，或从平台导入订单。');
+        const trackingNo = String(args.trackingNo || '').trim();
+        if (!trackingNo) return textResult('trackingNo 必填。');
+        return runWriteGate({
+          action: 'sync.push_shipment', conn, title: '回填运单到平台变更单', target: order.orderNo,
+          lines: [
+            `平台：${client.label}`,
+            `订单：${order.orderNo}`,
+            `运单：${trackingNo}（${String(args.carrier || '未填物流商')}）`,
+            '回滚方式：平台发货信息一般不可撤回，填错需联系物流商更正',
+          ],
+          exec: '经平台 API 回填运单（需要平台订单号与平台要求的物流标识）',
+          run: async () => {
+            const r = await pushShipmentToPlatform(ctx, creds, order.id, {
+              trackingNo,
+              carrier: String(args.carrier || ''),
+              companyCode: args.companyCode ? String(args.companyCode) : undefined,
+              logisticsId: args.logisticsId != null ? Number(args.logisticsId) : undefined,
+              cpCode: args.cpCode ? String(args.cpCode) : undefined,
+              shippingProviderId: args.shippingProviderId ? String(args.shippingProviderId) : undefined,
+            });
+            if (!r.ok) throw new Error(r.message);
+            return r.message;
+          },
+          confirmed: args.confirmed === true,
+          approveProduction: args.approveProduction === true,
+        });
+      }
+      return textResult('action 只能是 import-products / import-orders / push-product / push-shipment。');
+    },
+  };
+
+  // ---------- 无货源采购 ----------
+  const purchaseListTool: BuiltInTool = {
+    name: 'shop_purchase_list',
+    description: '列出无货源采购单（按店铺，可选订单号）。status：planned 待下单 / ordered 已下单 / paid 已付款 / received 已收货 / cancelled 已取消。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺连接名' },
+        orderNo: { type: 'string', description: '可选：只看某订单的采购单' },
+      },
+      required: ['shopName'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const orderNo = String(args.orderNo || '').trim();
+      const order = orderNo ? shopStore.findOrderByNo(conn.id, orderNo) : undefined;
+      if (orderNo && !order) return textResult(`本地没有订单 ${orderNo}。`);
+      const out = await runShopAction(shopContextOf(conn), 'purchase.list', { orderId: order?.id }, 'ai');
+      if (out.kind !== 'done') return textResult('采购单读取失败：' + (out.kind === 'unsupported' ? out.reason : '需要平台后台'));
+      const rows = out.data as Array<import('../shop/types.js').Purchase>;
+      if (!rows.length) return textResult(`「${conn.shopName}」还没有采购单。`);
+      const label: Record<string, string> = { planned: '待下单', ordered: '已下单', paid: '已付款', received: '已收货', cancelled: '已取消' };
+      return textResult(`共 ${rows.length} 条采购单：\n${rows.map((p) => `- ${p.sku} × ${p.qty}｜${label[p.status] || p.status}｜货源 ${p.offerRef}｜成本 ${(p.unitCostCents / 100).toFixed(2)}/件｜订单 ${p.orderId}`).join('\n')}`);
+    },
+  };
+
+  const purchaseCreateTool: BuiltInTool = {
+    name: 'shop_purchase_create',
+    description:
+      `${GATE_HINT}本动作：为无货源订单创建采购单（本地记录）。货源链接默认取商品的 sourceRef（1688 链接/货号）。`
+      + '创建后仍需用户去 1688 下单并**人工付款**；本工具不代付、不代提交支付。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺连接名' },
+        orderNo: { type: 'string', description: '订单号（shop_order_list 可查）' },
+        items: { type: 'array', items: { type: 'object' }, description: '可选：[{sku, qty, offerRef?, unitCostCents?}]，缺省用订单明细' },
+        note: { type: 'string', description: '备注（可空）' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'orderNo'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const orderNo = String(args.orderNo || '').trim();
+      const order = shopStore.findOrderByNo(conn.id, orderNo);
+      if (!order) return textResult(`本地没有订单 ${orderNo} —— 先用 shop_order_list 确认。`);
+      if (order.status !== 'paid' && order.status !== 'sourcing') {
+        return textResult(`订单 ${orderNo} 当前状态为「${order.status}」，只有已付款/采购中订单可创建采购。`);
+      }
+      const items = Array.isArray(args.items) ? args.items as Array<Record<string, unknown>> : [];
+      return runWriteGate({
+        action: 'purchase.create', conn, title: '采购单创建变更单', target: orderNo,
+        lines: [
+          `订单：${orderNo}（${order.buyer ?? '—'}）`,
+          items.length
+            ? `明细：${items.map((i) => `${String(i.sku)}×${Number(i.qty ?? 1)}`).join('、')}`
+            : `明细：按订单明细（${order.items.map((i) => `${i.sku}×${i.qty}`).join('、') || '无'}）`,
+          '★ 货源来自商品 sourceRef（1688 链接/货号）；付款必须由用户人工完成',
+          '回滚方式：删除采购单或标记 cancelled',
+        ],
+        exec: '创建本地采购记录；随后生成 1688 采购跳转计划',
+        run: async () => {
+          const out = await runShopAction(shopContextOf(conn), 'purchase.create', { orderId: order.id, items, note: args.note }, 'ai');
+          if (out.kind !== 'done') throw new Error(out.kind === 'unsupported' ? out.reason : '需要平台后台');
+          return out.summary;
+        },
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const purchaseUpdateTool: BuiltInTool = {
+    name: 'shop_purchase_update',
+    description: `${GATE_HINT}本动作：改采购单状态（planned/ordered/paid/received/cancelled）。付款动作本身仍由用户人工完成。`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺连接名' },
+        purchaseId: { type: 'string', description: '采购单 id（shop_purchase_list 可查）' },
+        status: { type: 'string', description: 'planned / ordered / paid / received / cancelled' },
+        ...WRITE_GATE_PROPS,
+      },
+      required: ['shopName', 'purchaseId', 'status'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const purchaseId = String(args.purchaseId || '').trim();
+      const status = String(args.status || '').trim();
+      if (!['planned', 'ordered', 'paid', 'received', 'cancelled'].includes(status)) {
+        return textResult('status 只能是 planned / ordered / paid / received / cancelled。');
+      }
+      const purchase = shopStore.getPurchase(conn.id, purchaseId);
+      if (!purchase) return textResult('采购单不存在 —— 先用 shop_purchase_list 查 id。');
+      return runWriteGate({
+        action: 'purchase.update', conn, title: '采购单状态变更单', target: purchase.sku,
+        lines: [
+          `采购单：${purchase.id}（${purchase.sku} × ${purchase.qty}）`,
+          `状态：${purchase.status} → ${status}`,
+          '回滚方式：改回原状态',
+        ],
+        exec: '更新本地采购状态（付款/收货仍由用户确认）',
+        run: async () => {
+          const out = await runShopAction(shopContextOf(conn), 'purchase.updateStatus', { purchaseId, status }, 'ai');
+          if (out.kind !== 'done') throw new Error(out.kind === 'unsupported' ? out.reason : '更新失败');
+          return out.summary;
+        },
+        confirmed: args.confirmed === true,
+        approveProduction: args.approveProduction === true,
+      });
+    },
+  };
+
+  const purchaseJumpTool: BuiltInTool = {
+    name: 'shop_purchase_jump',
+    description: '返回某条采购单的 1688 采购跳转计划（链接 + 步骤）。付款必须由用户人工完成，工具不代为付款。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        shopName: { type: 'string', description: '店铺连接名' },
+        purchaseId: { type: 'string', description: '采购单 id' },
+      },
+      required: ['shopName', 'purchaseId'],
+    },
+    execute: async (args) => {
+      const conn = await findConn(String(args.shopName || '').trim());
+      if (!conn) return textResult(`未找到店铺「${args.shopName}」—— 先用 conn_list 确认店铺名。`);
+      const out = await runShopAction(shopContextOf(conn), 'purchase.jump', { purchaseId: String(args.purchaseId || '') }, 'ai');
+      if (out.kind !== 'jump') return textResult(out.kind === 'unsupported' ? out.reason : '无法生成采购跳转');
+      return textResult([
+        `【采购跳转】${out.plan.title}`,
+        `URL：${out.plan.url}`,
+        ...out.plan.steps.map((s, i) => `${i + 1}. ${s}`),
+        '★ 付款必须由用户人工完成；助手只可代跑加购/填单等非资金步骤。',
+      ].join('\n'));
+    },
+  };
+
   const writeLog: BuiltInTool = {
     name: 'shop_write_log',
     description: '查看写操作记录（申请 / 被拒 / 已批准），用于回溯某个店铺改过什么、当时谁批的。只读。',
@@ -1291,8 +2144,12 @@ export function makeShopTools(): BuiltInTool[] {
 
   return [
     connList, connCreate, connUpdate, connDelete, connCheck,
-    spApiCheckTool, shopTrackQuery, shopSnapshot,
+    spApiCheckTool, shopTrackQuery, shopApiCheckTool, platformApiTool, platformSyncTool,
+    shopDashboard, shopProductList, shopOrderList,
+    productCreate, productUpdate,
     priceUpdate, stockUpdate, listingPublish, listingCreate, campaignApply, replySend, orderPlace,
+    orderShip, shipmentTrack, platformOpen,
+    purchaseListTool, purchaseCreateTool, purchaseUpdateTool, purchaseJumpTool,
     writeLog,
   ];
 }
@@ -1303,7 +2160,7 @@ export const shopOpsManifest: PluginManifest = {
   version: '0.1.0',
   category: '操作',
   description:
-    '店铺运营工作台：登记亚马逊 / 淘宝 / 拼多多 / 1688 / TikTok Shop / 独立站 / 跨境中转仓的店铺与仓库，按目录归类并审计留痕；「更多 → 店铺运营」打开 /shop 控制台（店铺列表 + 工作台 + 口径速查）。平台数据由智能体委派 pageAgent 打开卖家后台获取（登录态由你自己在浏览器面板登录）。写操作仅开放「申请改价」一个动作打样，且必须经变更单 + 二次确认（生产店铺额外强确认）后才放行、全程审计。默认开启，可在插件管理页停用。',
+    '店铺运营工作台：登记亚马逊 / 淘宝 / 拼多多 / 1688 / TikTok Shop / 独立站 / 跨境中转仓的店铺与仓库，按目录归类并审计留痕；「更多 → 店铺运营」打开 /shop 控制台（项目 + 店铺本地业务：商品/订单/发货/库存/物流 + 口径速查）。数据以本地业务库为准，演示店铺带合成种子；写操作（改价/改库存/上下架/新建商品/发货）必须经变更单 + 二次确认（生产店铺额外批准、禁止批量）后执行并全程审计。平台侧动作没有 API 时返回跳转计划，由你在浏览器面板登录后台完成。默认开启，可在插件管理页停用。',
   // ★ P0/P1 只声明 network（抓数走 pageAgent）。P2 加入 'shop-write'：
   //   权限声明是给用户与插件管理页看的**告知面**，真正的拦截在 shop_price_update 的闸门里
   //   （未确认 / 生产未额外批准一律拒绝执行），不依赖调用方自觉。
@@ -1314,11 +2171,21 @@ export const shopOpsManifest: PluginManifest = {
       'shop_sp_api_check',
       // 只读物流轨迹（顺丰丰桥 / 云途，需要用户先在控制台填凭据）
       'shop_track_query',
-      // 经营快照（演示店铺有合成数据；真实店铺如实说明没有数据源）
-      'shop_snapshot',
-      // 七个受闸门约束的写动作（未确认一律拒绝执行）
+      // 平台 API 连通性自检（Shopify 等已接入客户端；只读无害接口）
+      'shop_api_check',
+      // 平台 API 能力统一入口（读直接执行；写走变更单闸门）
+      'shop_platform_api',
+      // 本地 ↔ 平台同步（导入直接执行；推送走变更单闸门）
+      'shop_platform_sync',
+      // 无货源采购（列表只读；创建/改状态走闸门；跳转只返回计划）
+      'shop_purchase_list', 'shop_purchase_create', 'shop_purchase_update', 'shop_purchase_jump',
+      // 经营看板与本地业务库读取（P0：SQLite 真源）
+      'shop_dashboard', 'shop_product_list', 'shop_order_list',
+      // 本地业务写操作（受闸门约束：未确认一律拒绝执行；命中本地库则直接落库）
+      'shop_product_create', 'shop_product_update',
       'shop_price_update', 'shop_stock_update', 'shop_listing_publish', 'shop_listing_create',
       'shop_campaign_apply', 'shop_reply_send', 'shop_order_place',
+      'shop_order_ship', 'shop_shipment_track', 'shop_platform_open',
       'shop_write_log',
     ],
     // ★ 与 ops-shell / sec-lab 同口径：不贡献 sidebar ——「更多」里的分组与顶栏模式下拉
@@ -1347,6 +2214,18 @@ const shopOpsModule: PluginModule = {
       return { url: p?.entryUrl ?? '', label: p?.label ?? platformId };
     });
 
+    // §3.1 连接字段迁移 + 演示店铺业务种子：幂等、异步，失败只记日志不阻断插件挂载
+    void (async () => {
+      try {
+        await migrateAndSeedDemoShops();
+      } catch (e) {
+        logger.warn(`[shop-ops] 连接迁移/演示种子失败：${(e as Error).message}`);
+      }
+    })();
+
+    // 定时同步调度（D）：连接上配置了 syncIntervalMin 才跑；演示店铺/无凭据自动跳过
+    startSyncScheduler();
+
     for (const tool of makeShopTools()) {
       ctx.registerTool(tool);
     }
@@ -1363,9 +2242,11 @@ const shopOpsModule: PluginModule = {
       const failRes = (res: unknown, code: number, msg: string) =>
         (res as { status: (n: number) => { json: (d: unknown) => void } }).status(code).json({ error: msg });
 
-      // 平台清单（控制台下拉用；顺带把入口与登录提示带给前端）
+      // 平台清单（控制台下拉用；顺带把入口、登录提示与 API 能力带给前端）
       r.get('/platforms', (_req: unknown, res: unknown) => {
-        jsonRes(res).json({ data: SHOP_PLATFORMS });
+        jsonRes(res).json({
+          data: SHOP_PLATFORMS.map((p) => ({ ...p, apiCapabilities: platformCapabilitiesOf(p.id) })),
+        });
       });
 
       // 店铺连接列表（凭据永不回显）
@@ -1489,6 +2370,23 @@ const shopOpsModule: PluginModule = {
         jsonRes(res).json({ data: result });
       });
 
+      // 平台 API 连通性自检（只读无害接口；凭据解密只在本进程内，永不回显）
+      r.post('/connections/:id/api/test', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const conn = (await loadConnections()).find((c) => c.id === id);
+        if (!conn) { failRes(res, 404, '店铺连接不存在'); return; }
+        const client = platformApiOf(conn.platform);
+        if (!client) { failRes(res, 400, `「${conn.platform}」还没有 API 客户端；当前已接：Shopify 等（见平台清单的 apiCapabilities）`); return; }
+        if (!conn.secretEnc) { failRes(res, 400, '尚未配置 API 凭据 —— 在连接编辑弹窗按字段填写，字段提示里写了去哪获取'); return; }
+        let raw = '';
+        try { raw = decrypt(conn.secretEnc); } catch (e) { failRes(res, 500, `凭据解密失败：${(e as Error).message}`); return; }
+        const creds = client.parseCreds(raw);
+        if (!creds) { failRes(res, 400, '凭据格式不完整：请按表单字段重填（密钥字段编辑时留空表示沿用原值）'); return; }
+        const result = await client.test(creds);
+        await audit('api.test', { connection: conn.shopName, ok: result.ok, note: result.message });
+        jsonRes(res).json({ data: result });
+      });
+
       // 物流：凭据连通性测试（只读探活；用一个不存在的单号，不碰用户真实运单）
       r.post('/connections/:id/logistics/test', async (req: unknown, res: unknown) => {
         const id = (req as { params: { id: string } }).params.id;
@@ -1604,6 +2502,8 @@ const shopOpsModule: PluginModule = {
             secretEnc: '',
             createdAt: Date.now(),
             demo: true,
+            shopType: 'demo',
+            supplyMode: d.supplyMode ?? 'stocked',
             projectId,
           });
           created++;
@@ -1612,6 +2512,10 @@ const shopOpsModule: PluginModule = {
           try {
             await saveConnections(list);
           } catch (e) { failRes(res, 500, (e as Error).message); return; }
+          // 新建/归入的演示店铺补业务种子（幂等：已有商品不重播）
+          for (const c of list) {
+            if (c.projectId === projectId && c.demo) seedDemoBusiness(c);
+          }
           await audit('demo.seed', { connection: `新增 ${created} 条、归入项目 ${moved} 条演示店铺`, ok: true });
         }
         jsonRes(res).json({ data: { created, moved } });
@@ -1641,15 +2545,162 @@ const shopOpsModule: PluginModule = {
       registerShopBusinessRoutes(r);
     });
 
-    logger.info('[shop-ops] 已激活（P0：只读 + 店铺连接管理，无写操作）');
+    logger.info('[shop-ops] 已激活（P0：店铺本地业务闭环 —— 商品/订单/发货/库存 + 演示种子）');
   },
 
   deactivate() {
+    stopSyncScheduler();
     pluginStorage = null;
   },
 };
 
 export { shopOpsModule };
+
+// ---------- 同步增强（D）：定时/手动全量 + 冲突策略 + 重试 + 审计汇总 ----------
+
+export interface SyncRunEntry {
+  at: number;
+  shopId: string;
+  shopName: string;
+  trigger: 'manual' | 'scheduled';
+  imported: number;
+  updated: number;
+  conflicts: number;
+  errors: number;
+  ok: boolean;
+  note?: string;
+}
+
+const SYNC_LOG_KEY = 'syncLog';
+const SYNC_LOG_LIMIT = 100;
+const syncRunning = new Set<string>();
+const lastSyncAt = new Map<string, number>();
+let syncTimer: ReturnType<typeof setInterval> | null = null;
+
+async function loadSyncLog(): Promise<SyncRunEntry[]> {
+  if (!pluginStorage) return [];
+  const rows = await pluginStorage.get<SyncRunEntry[]>(SYNC_LOG_KEY);
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function appendSyncLog(entry: SyncRunEntry): Promise<void> {
+  if (!pluginStorage) return;
+  const list = await loadSyncLog();
+  list.unshift(entry);
+  await pluginStorage.set(SYNC_LOG_KEY, list.slice(0, SYNC_LOG_LIMIT));
+}
+
+/** 跑一轮同步：商品按 policy 导入（亚马逊无全量商品列表，跳过）；订单只前进不倒退 */
+async function runConnectionSync(conn: StoredConnection, trigger: 'manual' | 'scheduled'): Promise<SyncRunEntry> {
+  const entry: SyncRunEntry = {
+    at: Date.now(), shopId: conn.id, shopName: conn.shopName, trigger,
+    imported: 0, updated: 0, conflicts: 0, errors: 0, ok: false,
+  };
+  // ★ 演示店铺硬隔离：即使被误调用也不触达平台
+  if (conn.shopType === 'demo' || conn.demo === true) {
+    entry.note = '演示店铺不参与平台同步';
+    await appendSyncLog(entry);
+    await audit('sync.run', { connection: conn.shopName, ok: false, note: entry.note });
+    return entry;
+  }
+  const client = platformApiOf(conn.platform);
+  if (!client) { entry.note = `「${conn.platform}」没有 API 客户端`; }
+  else if (!conn.secretEnc) { entry.note = '未配置 API 凭据'; }
+  else {
+    try {
+      const creds = client.parseCreds(decrypt(conn.secretEnc));
+      if (!creds) throw new Error('凭据格式不完整（按表单字段重填）');
+      const shop = shopContextOf(conn);
+      const notes: string[] = [];
+      if (client.capabilities.includes('product.list')) {
+        const p = await importProductsFromPlatform(shop, creds, { limit: 100, pages: 5, policy: conn.syncPolicy });
+        entry.imported += p.imported;
+        entry.updated += p.updated;
+        entry.conflicts += p.conflicts;
+        entry.errors += p.errors.length;
+        if (p.errors.length) notes.push(`商品：${p.errors.slice(0, 3).join('；')}`);
+      }
+      if (conn.platform !== 'winit' && client.capabilities.includes('order.list')) {
+        const o = await importOrdersFromPlatform(shop, creds, { limit: 50, pages: 5 });
+        entry.imported += o.imported;
+        entry.updated += o.updated;
+        entry.conflicts += o.conflicts;
+        entry.errors += o.errors.length;
+        if (o.errors.length) notes.push(`订单：${o.errors.slice(0, 3).join('；')}`);
+      } else if (conn.platform === 'winit') {
+        notes.push('万邑通订单走出库单，不做订单导入');
+      }
+      entry.ok = entry.errors === 0;
+      entry.note = notes.length ? notes.join(' | ') : undefined;
+    } catch (e) {
+      entry.errors += 1;
+      entry.note = (e as Error).message;
+    }
+  }
+  lastSyncAt.set(conn.id, entry.at);
+  await appendSyncLog(entry);
+  await audit('sync.run', {
+    connection: conn.shopName, ok: entry.ok,
+    note: `${trigger}：新增 ${entry.imported} / 更新 ${entry.updated} / 冲突 ${entry.conflicts} / 失败 ${entry.errors}${entry.note ? `（${entry.note}）` : ''}`,
+  });
+  return entry;
+}
+
+/** 测试钩子：直接跑一轮同步（不启动定时器） */
+export const __runConnectionSyncForTest = runConnectionSync;
+
+/** 定时同步：每 60s 检查一次，按连接的 syncIntervalMin（≥5 分钟）串行执行 */
+async function syncTick(): Promise<void> {
+  const list = await loadConnections();
+  for (const c of list) {
+    const interval = Number(c.syncIntervalMin || 0);
+    if (!Number.isFinite(interval) || interval < 5) continue;
+    if (c.shopType === 'demo' || c.demo === true || !c.secretEnc) continue;
+    // ★ 生产店铺不做定时自动写库：每次都必须人工批准（手动「全量同步」才走 approveProduction）
+    if (c.shopType === 'production' || isProductionTag(c.tag)) continue;
+    if (!platformApiOf(c.platform)) continue;
+    if (syncRunning.has(c.id)) continue;
+    const last = lastSyncAt.get(c.id) || 0;
+    if (last && Date.now() - last < interval * 60_000) continue;
+    syncRunning.add(c.id);
+    try { await runConnectionSync(c, 'scheduled'); } finally { syncRunning.delete(c.id); }
+  }
+}
+
+function startSyncScheduler(): void {
+  if (syncTimer) return;
+  syncTimer = setInterval(() => { void syncTick(); }, 60_000);
+  (syncTimer as unknown as { unref?: () => void }).unref?.();
+}
+
+/** 测试/关停用 */
+export function stopSyncScheduler(): void {
+  if (syncTimer) clearInterval(syncTimer);
+  syncTimer = null;
+}
+export const __stopSyncSchedulerForTest = stopSyncScheduler;
+
+/** §3.1 幂等迁移：老连接补 shopType/supplyMode；随后给演示店铺播种业务数据 */
+async function migrateAndSeedDemoShops(): Promise<void> {
+  const list = await loadConnections();
+  let changed = false;
+  for (const c of list) {
+    const t: ShopType = c.shopType ?? (c.demo ? 'demo' : (isProductionTag(c.tag) ? 'production' : 'test'));
+    const m: SupplyMode = c.supplyMode ?? 'stocked';
+    if (c.shopType !== t) { c.shopType = t; changed = true; }
+    if (c.supplyMode !== m) { c.supplyMode = m; changed = true; }
+  }
+  if (changed) await saveConnections(list);
+  for (const c of list) seedDemoBusiness(c);
+}
+
+/** 演示店铺（且是店铺类平台）才播种；仓库/物流不生成商品订单 */
+function seedDemoBusiness(c: StoredConnection): void {
+  const type: ShopType = c.shopType ?? (c.demo ? 'demo' : (isProductionTag(c.tag) ? 'production' : 'test'));
+  if (type !== 'demo') return;
+  if (PLATFORM_BY_ID.get(c.platform)?.kind !== 'store') return;
+  seedShopBusinessData(c.id, c.supplyMode ?? 'stocked', c.platform === 'amazon' ? 'USD' : 'CNY');
+}
 
 /** 连接 → ShopContext（shop/ 模块的动作层入口） */
 function shopContextOf(c: StoredConnection): ShopContext {
@@ -1674,6 +2725,238 @@ function registerShopBusinessRoutes(r: Record<string, (path: string, handler: (r
     return c ? shopContextOf(c) : null;
   };
 
+  /** 取店铺上下文 + 解密后的 API 凭据（同步接口共用） */
+  const credsOf = async (id: string): Promise<{ shop?: ShopContext; creds?: Record<string, string>; error?: string }> => {
+    const c = (await loadConnections()).find((x) => x.id === id);
+    if (!c) return { error: '店铺不存在' };
+    const client = platformApiOf(c.platform);
+    if (!client) return { error: `「${c.platform}」没有 API 客户端` };
+    if (!c.secretEnc) return { error: '未配置 API 凭据（在连接编辑里按字段填写）' };
+    let raw = '';
+    try { raw = decrypt(c.secretEnc); } catch (e) { return { error: `凭据解密失败：${(e as Error).message}` }; }
+    const creds = client.parseCreds(raw);
+    if (!creds) return { error: '凭据格式不完整（按表单字段重填）' };
+    return { shop: shopContextOf(c), creds };
+  };
+
+  // ===== 本地 ↔ 平台同步 =====
+  r.post('/connections/:id/sync/products', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const got = await credsOf(p.params.id);
+    if (!got.shop || !got.creds) { failRes(res, 400, got.error || '无法同步'); return; }
+    const body = p.body || {};
+    // ★ 演示店铺不参与任何平台同步（方案 §9.8）；生产店铺导入会改本地价格/库存/状态，需额外批准
+    if (got.shop.shopType === 'demo') { failRes(res, 400, '演示店铺不参与平台同步（数据是合成的，不能覆盖）'); return; }
+    if (got.shop.shopType === 'production' && body.approveProduction !== true) {
+      failRes(res, 400, '生产店铺从平台导入商品需要额外批准（approveProduction: true）'); return;
+    }
+    const summary = await importProductsFromPlatform(got.shop, got.creds, {
+      keywords: body.keywords ? String(body.keywords) : undefined,
+      asins: Array.isArray(body.asins) ? body.asins.map(String) : undefined,
+      limit: body.limit != null ? Number(body.limit) : undefined,
+      policy: body.policy === 'local-first' ? 'local-first' : 'platform-first',
+    });
+    await audit('sync.import_products', { connection: got.shop.shopName, ok: summary.errors.length === 0, note: `新增 ${summary.imported} / 更新 ${summary.updated} / 跳过 ${summary.skipped}` });
+    jsonRes(res).json({ data: summary });
+  });
+
+  r.post('/connections/:id/sync/orders', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const got = await credsOf(p.params.id);
+    if (!got.shop || !got.creds) { failRes(res, 400, got.error || '无法同步'); return; }
+    const body = p.body || {};
+    if (got.shop.shopType === 'demo') { failRes(res, 400, '演示店铺不参与平台同步（数据是合成的，不能覆盖）'); return; }
+    if (got.shop.shopType === 'production' && body.approveProduction !== true) {
+      failRes(res, 400, '生产店铺从平台导入订单需要额外批准（approveProduction: true）'); return;
+    }
+    const summary = await importOrdersFromPlatform(got.shop, got.creds, {
+      limit: body.limit != null ? Number(body.limit) : undefined,
+    });
+    await audit('sync.import_orders', { connection: got.shop.shopName, ok: summary.errors.length === 0, note: `新增 ${summary.imported} / 更新 ${summary.updated} / 跳过 ${summary.skipped}` });
+    jsonRes(res).json({ data: summary });
+  });
+
+  // ===== 同步增强（D）：全量同步 / 定时配置 / 审计汇总 =====
+  r.post('/connections/:id/sync/all', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const body = p.body || {};
+    const conn = (await loadConnections()).find((c) => c.id === p.params.id);
+    if (!conn) { failRes(res, 404, '店铺不存在'); return; }
+    if (conn.shopType === 'demo' || conn.demo === true) { failRes(res, 400, '演示店铺不参与平台同步'); return; }
+    if ((conn.shopType === 'production' || isProductionTag(conn.tag)) && body.approveProduction !== true) {
+      failRes(res, 400, '生产店铺全量同步需要额外批准（approveProduction: true）'); return;
+    }
+    if (!conn.secretEnc) { failRes(res, 400, '未配置 API 凭据'); return; }
+    if (syncRunning.has(conn.id)) { failRes(res, 409, '该店铺正在同步，请稍后再试'); return; }
+    syncRunning.add(conn.id);
+    try {
+      const entry = await runConnectionSync(conn, 'manual');
+      jsonRes(res).json({ data: entry });
+    } finally {
+      syncRunning.delete(conn.id);
+    }
+  });
+
+  r.patch('/connections/:id/sync-config', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const body = p.body || {};
+    const list = await loadConnections();
+    const idx = list.findIndex((c) => c.id === p.params.id);
+    if (idx < 0) { failRes(res, 404, '店铺不存在'); return; }
+    if (body.syncPolicy === 'local-first' || body.syncPolicy === 'platform-first') list[idx].syncPolicy = body.syncPolicy;
+    if (body.syncIntervalMin != null) {
+      const n = Math.trunc(Number(body.syncIntervalMin));
+      if (!Number.isFinite(n) || n < 0) { failRes(res, 400, 'syncIntervalMin 必须是非负整数'); return; }
+      list[idx].syncIntervalMin = n === 0 ? 0 : Math.max(5, n);
+    }
+    try {
+      await saveConnections(list);
+    } catch (e) { failRes(res, 500, (e as Error).message); return; }
+    await audit('sync.config', { connection: list[idx].shopName, ok: true, note: JSON.stringify({ syncPolicy: list[idx].syncPolicy, syncIntervalMin: list[idx].syncIntervalMin }) });
+    jsonRes(res).json({ data: toClientView(list[idx]) });
+  });
+
+  r.get('/sync/log', async (req: unknown, res: unknown) => {
+    const q = (req as { query: Record<string, unknown> }).query || {};
+    const shopId = String(q.shopId || '').trim();
+    const list = await loadSyncLog();
+    jsonRes(res).json({ data: shopId ? list.filter((x) => x.shopId === shopId) : list });
+  });
+
+  /**
+   * 统一平台动作入口（前后端唯一契约）：
+   *   前端只发 { action, payload, confirmed?, approveProduction? }，后端按连接的平台
+   *   分发到对应客户端。写动作先返回变更单（kind:'ticket'），confirmed 后才执行，
+   *   生产店铺再加 approveProduction；执行成功后带 readback。
+   */
+  r.post('/connections/:id/platform-action', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const body = p.body || {};
+    const action = String(body.action || '').trim() as PlatformApiCapability;
+    const payload = (body.payload && typeof body.payload === 'object') ? body.payload as Record<string, unknown> : {};
+    if (!action) { failRes(res, 400, 'action 必填'); return; }
+    const got = await credsOf(p.params.id);
+    if (!got.shop || !got.creds) { failRes(res, 400, got.error || '无法调用平台'); return; }
+    if (got.shop.shopType === 'demo') { failRes(res, 400, '演示店铺不触达真实平台'); return; }
+    const client = platformApiOf(got.shop.platform);
+    if (!client) { failRes(res, 400, `「${got.shop.platform}」没有 API 客户端`); return; }
+    if (action !== 'test' && !client.capabilities.includes(action)) {
+      failRes(res, 400, `「${client.label}」未实现能力 ${action}；已实现：${client.capabilities.join('、')}`); return;
+    }
+    const write = ['product.update', 'product.price', 'product.stock', 'product.listing', 'order.ship'].includes(action);
+    const summary = [
+      `店铺：${got.shop.shopName}（${client.label}${got.shop.shopType === 'production' ? ' · ★生产' : ''}）`,
+      `动作：${action}`,
+      `参数：${JSON.stringify(payload).slice(0, 600)}`,
+    ].join('\n');
+
+    if (write && body.confirmed !== true) {
+      await audit(`platform.action.${action}.denied`, { connection: got.shop.shopName, ok: false, note: '未确认' });
+      jsonRes(res).json({ data: { kind: 'ticket', action, summary, requiresProductionApproval: got.shop.shopType === 'production' } });
+      return;
+    }
+    if (write && got.shop.shopType === 'production' && body.approveProduction !== true) {
+      await audit(`platform.action.${action}.denied`, { connection: got.shop.shopName, ok: false, note: '生产店铺未额外批准' });
+      failRes(res, 400, '生产店铺需要额外批准（approveProduction: true）');
+      return;
+    }
+    if (write) {
+      await audit(`platform.action.${action}.approved`, { connection: got.shop.shopName, ok: true, summary });
+    }
+    const result = await runPlatformAction(got.shop.platform, got.creds, action, payload);
+    const readback = write && result.ok
+      ? await readbackPlatformAction(got.shop.platform, got.creds, action, payload)
+      : undefined;
+    await audit(`platform.action.${action}.executed`, {
+      connection: got.shop.shopName, ok: result.ok,
+      note: [result.message, readback ? `回读：${readback.supported === false ? '平台未提供' : readback.ok ? '成功' : '失败'}` : ''].filter(Boolean).join(' | '),
+    });
+    jsonRes(res).json({
+      data: {
+        kind: result.ok ? 'done' : 'failed',
+        action,
+        result,
+        readback,
+        summary: result.ok ? `${client.label} ${action} 已执行` : `执行失败：${result.message || '未知错误'}`,
+      },
+    });
+  });
+
+  r.post('/products/:id/sync', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const body = p.body || {};
+    const got = await credsOf(String(body.shopId || ''));
+    if (!got.shop || !got.creds) { failRes(res, 400, got.error || '无法同步'); return; }
+    if (got.shop.shopType === 'demo') { failRes(res, 400, '演示店铺不参与平台同步'); return; }
+    const fields = (Array.isArray(body.fields) ? body.fields.map(String) : ['price', 'stock']) as SyncField[];
+    if (body.confirmed !== true) {
+      jsonRes(res).json({
+        data: {
+          kind: 'ticket',
+          summary: `同步商品到 ${got.shop.platform} 变更单：字段 ${fields.join('、')}；确认后才会调用平台写接口`,
+          requiresProductionApproval: got.shop.shopType === 'production',
+        },
+      });
+      return;
+    }
+    if (got.shop.shopType === 'production' && body.approveProduction !== true) {
+      failRes(res, 400, '生产店铺同步到平台需要额外批准（approveProduction: true）'); return;
+    }
+    const result = await pushProductToPlatform(got.shop, got.creds, p.params.id, fields);
+    await audit('sync.push_product', { connection: got.shop.shopName, detail: p.params.id, ok: result.ok, note: result.message });
+    jsonRes(res).json({ data: result });
+  });
+
+  r.post('/orders/:id/push-shipment', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const body = p.body || {};
+    const got = await credsOf(String(body.shopId || ''));
+    if (!got.shop || !got.creds) { failRes(res, 400, got.error || '无法同步'); return; }
+    if (got.shop.shopType === 'demo') { failRes(res, 400, '演示店铺不参与平台同步'); return; }
+    if (body.confirmed !== true) {
+      jsonRes(res).json({
+        data: {
+          kind: 'ticket',
+          summary: `回填运单到 ${got.shop.platform} 变更单：运单 ${String(body.trackingNo || '')}；确认后才会调用平台写接口`,
+          requiresProductionApproval: got.shop.shopType === 'production',
+        },
+      });
+      return;
+    }
+    if (got.shop.shopType === 'production' && body.approveProduction !== true) {
+      failRes(res, 400, '生产店铺回填运单需要额外批准（approveProduction: true）'); return;
+    }
+    const result = await pushShipmentToPlatform(got.shop, got.creds, p.params.id, {
+      trackingNo: String(body.trackingNo || ''),
+      carrier: String(body.carrier || ''),
+      companyCode: body.companyCode ? String(body.companyCode) : undefined,
+      logisticsId: body.logisticsId != null ? Number(body.logisticsId) : undefined,
+      cpCode: body.cpCode ? String(body.cpCode) : undefined,
+      shippingProviderId: body.shippingProviderId ? String(body.shippingProviderId) : undefined,
+    });
+    await audit('sync.push_shipment', { connection: got.shop.shopName, detail: p.params.id, ok: result.ok, note: result.message });
+    jsonRes(res).json({ data: result });
+  });
+
+  r.get('/dashboard', async (req: unknown, res: unknown) => {
+    const q = (req as { query: Record<string, unknown> }).query || {};
+    const shop = await ctxOf(String(q.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'shop.dashboard', {}, 'human');
+    jsonRes(res).json({ data: out });
+  });
+  r.get('/products', async (req: unknown, res: unknown) => {
+    const q = (req as { query: Record<string, unknown> }).query || {};
+    const shop = await ctxOf(String(q.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'product.list', {
+      status: q.status,
+      search: q.search,
+      limit: q.limit,
+      offset: q.offset,
+    }, 'human');
+    jsonRes(res).json({ data: out });
+  });
   r.post('/products', async (req: unknown, res: unknown) => {
     const body = (req as { body: Record<string, unknown> }).body || {};
     const shop = await ctxOf(String(body.shopId || ''));
@@ -1715,11 +2998,57 @@ function registerShopBusinessRoutes(r: Record<string, (path: string, handler: (r
     await audit('product.stock', { connection: shop.shopName, ok: out.kind === 'done' });
     jsonRes(res).json({ data: out });
   });
+  r.delete('/products/:id', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body?: Record<string, unknown>; query: Record<string, unknown> };
+    const shopId = String(p.body?.shopId || p.query?.shopId || '');
+    const shop = await ctxOf(shopId);
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'product.delete', { productId: p.params.id }, 'human');
+    await audit('product.delete', { connection: shop.shopName, detail: p.params.id, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  // 批量上下架/改价：生产店铺禁止批量（§5/§9）；逐条经 runShopAction，逐条留审计
+  r.post('/products/batch', async (req: unknown, res: unknown) => {
+    const body = (req as { body: Record<string, unknown> }).body || {};
+    const shop = await ctxOf(String(body.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    if (shop.shopType === 'production') { failRes(res, 400, '生产店铺禁止批量操作，请逐个处理'); return; }
+    const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
+    const action = String(body.action || '');
+    if (!ids.length) { failRes(res, 400, 'ids 必填'); return; }
+    if (action !== 'listing' && action !== 'price') { failRes(res, 400, 'action 只能是 listing 或 price'); return; }
+    const results: Array<{ id: string; kind: string; summary?: string; reason?: string }> = [];
+    for (const id of ids) {
+      const out = action === 'listing'
+        ? await runShopAction(shop, 'product.publish', { productId: id, listing: body.listing }, 'human')
+        : await runShopAction(shop, 'product.price', { productId: id, newPriceCents: body.newPriceCents }, 'human');
+      results.push(out.kind === 'done' ? { id, kind: 'done', summary: out.summary } : { id, kind: out.kind, reason: out.kind === 'unsupported' ? out.reason : undefined });
+    }
+    await audit(`product.batch.${action}`, { connection: shop.shopName, detail: `${ids.length} 条`, ok: results.every((r) => r.kind === 'done'), note: JSON.stringify(body) });
+    const okCount = results.filter((r) => r.kind === 'done').length;
+    const actionLabel = action === 'listing' ? '上下架' : '改价';
+    // 0 成功不能回 outcome=done（前端会当成功提示）；部分成功在 summary 里如实写
+    jsonRes(res).json({
+      data: okCount === 0
+        ? { kind: 'unsupported', reason: `批量${actionLabel}：${ids.length} 条全部失败，详见 data.results`, data: { results } }
+        : { kind: 'done', summary: `批量${actionLabel}：成功 ${okCount}/${ids.length}${okCount < ids.length ? '（有失败）' : ''}`, data: { results } },
+    });
+  });
   r.get('/orders', async (req: unknown, res: unknown) => {
     const q = (req as { query: Record<string, unknown> }).query || {};
     const shop = await ctxOf(String(q.shopId || ''));
     if (!shop) { failRes(res, 404, '店铺不存在'); return; }
-    const out = await runShopAction(shop, 'order.list', {}, 'human');
+    const out = await runShopAction(shop, 'order.list', { status: q.status, search: q.search }, 'human');
+    jsonRes(res).json({ data: out });
+  });
+  // 模拟订单：演示/测试店铺造一条订单，用来走通「发货」闭环（生产店铺拒绝、不动库存）
+  r.post('/orders/mock', async (req: unknown, res: unknown) => {
+    const body = (req as { body: Record<string, unknown> }).body || {};
+    const shop = await ctxOf(String(body.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    if (shop.shopType === 'production') { failRes(res, 400, '生产店铺不允许模拟订单'); return; }
+    const out = await runShopAction(shop, 'order.mock', body, 'human');
+    await audit('order.mock', { connection: shop.shopName, ok: out.kind === 'done' });
     jsonRes(res).json({ data: out });
   });
   r.post('/orders/:id/source', async (req: unknown, res: unknown) => {
@@ -1736,14 +3065,103 @@ function registerShopBusinessRoutes(r: Record<string, (path: string, handler: (r
     if (!shop) { failRes(res, 404, '店铺不存在'); return; }
     const out = await runShopAction(shop, 'order.ship', { ...p.body, orderId: p.params.id }, 'human');
     await audit('order.ship', { connection: shop.shopName, ok: out.kind === 'done' });
+    // 可选：发货后把运单回填到平台（需该平台已实现 order.ship 且有平台订单号）
+    let platformSync: { ok: boolean; message: string } | undefined;
+    if (out.kind === 'done' && p.body?.pushPlatform === true) {
+      const got = await credsOf(shop.id);
+      if (shop.shopType === 'demo') platformSync = { ok: false, message: '演示店铺不参与平台同步，运单只写本地' };
+      else if (p.body?.confirmed !== true) platformSync = { ok: false, message: '未确认，平台回填未执行' };
+      else if (!got.creds) platformSync = { ok: false, message: got.error || '无法回填平台' };
+      else if (shop.shopType === 'production' && p.body?.approveProduction !== true) {
+        platformSync = { ok: false, message: '生产店铺回填运单需要额外批准（approveProduction: true）' };
+      } else {
+        platformSync = await pushShipmentToPlatform(shop, got.creds, p.params.id, {
+          trackingNo: String(p.body?.trackingNo || ''),
+          carrier: String(p.body?.carrier || ''),
+          companyCode: p.body?.companyCode ? String(p.body.companyCode) : undefined,
+          logisticsId: p.body?.logisticsId != null ? Number(p.body.logisticsId) : undefined,
+          cpCode: p.body?.cpCode ? String(p.body.cpCode) : undefined,
+          shippingProviderId: p.body?.shippingProviderId ? String(p.body.shippingProviderId) : undefined,
+        });
+        await audit('sync.push_shipment', { connection: shop.shopName, detail: p.params.id, ok: platformSync.ok, note: platformSync.message });
+      }
+    }
+    jsonRes(res).json({ data: { outcome: out, platformSync } });
+  });
+  // ===== 无货源采购单 =====
+  r.get('/purchases', async (req: unknown, res: unknown) => {
+    const q = (req as { query: Record<string, unknown> }).query || {};
+    const shop = await ctxOf(String(q.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'purchase.list', { orderId: q.orderId, status: q.status }, 'human');
     jsonRes(res).json({ data: out });
   });
+  r.post('/orders/:id/purchase', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const body = p.body || {};
+    const shop = await ctxOf(String(body.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    if (shop.shopType === 'production' && body.approveProduction !== true) {
+      failRes(res, 400, '生产店铺创建采购单需要额外批准（approveProduction: true）'); return;
+    }
+    const out = await runShopAction(shop, 'purchase.create', { ...body, orderId: p.params.id }, 'human');
+    await audit('purchase.create', { connection: shop.shopName, detail: p.params.id, ok: out.kind === 'done' });
+    jsonRes(res).json({ data: out });
+  });
+  r.post('/purchases/:id/status', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const body = p.body || {};
+    const shop = await ctxOf(String(body.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    if (shop.shopType === 'production' && body.approveProduction !== true) {
+      failRes(res, 400, '生产店铺修改采购状态需要额外批准（approveProduction: true）'); return;
+    }
+    const out = await runShopAction(shop, 'purchase.updateStatus', { ...body, purchaseId: p.params.id }, 'human');
+    await audit('purchase.status', { connection: shop.shopName, detail: p.params.id, ok: out.kind === 'done', note: String(body.status || '') });
+    jsonRes(res).json({ data: out });
+  });
+  r.post('/purchases/:id/jump', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(String(p.body?.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const out = await runShopAction(shop, 'purchase.jump', { purchaseId: p.params.id }, 'human');
+    jsonRes(res).json({ data: out });
+  });
+
   r.get('/shipments', async (req: unknown, res: unknown) => {
     const q = (req as { query: Record<string, unknown> }).query || {};
     const shop = await ctxOf(String(q.shopId || ''));
     if (!shop) { failRes(res, 404, '店铺不存在'); return; }
-    const out = await runShopAction(shop, 'shipment.list', {}, 'human');
+    const out = await runShopAction(shop, 'shipment.list', { status: q.status }, 'human');
     jsonRes(res).json({ data: out });
+  });
+  // 运单轨迹：复用既有物流客户端（顺丰/云途）；无客户端或凭据缺失如实说明
+  r.post('/shipments/:id/track', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(String(p.body?.shopId || ''));
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    const shipment = shopStore.getShipment(shop.id, p.params.id);
+    if (!shipment) { failRes(res, 404, '发货单不存在'); return; }
+    const carrier = shipment.carrier || '';
+    const client = logisticsClientOf(carrier);
+    if (!client) { failRes(res, 400, `物流商「${carrier || '未填'}」还没有客户端（当前支持：顺丰丰桥 / 云途）`); return; }
+    if (!shipment.trackingNo) { failRes(res, 400, '该发货单没有运单号'); return; }
+    const list = await loadConnections();
+    const projectId = list.find((x) => x.id === shop.id)?.projectId || '';
+    const logiConn = list.find((c) => c.platform === carrier && (c.projectId || '') === projectId)
+      || list.find((c) => c.platform === carrier);
+    if (!logiConn) { failRes(res, 400, `还没有登记物流商「${carrier}」的连接 —— 先在物流页登记并填凭据`); return; }
+    const creds = parseLogisticsCreds(logiConn);
+    const miss = missingFields(client, creds);
+    if (miss.length) { failRes(res, 400, `物流连接「${logiConn.shopName}」凭据不完整：缺 ${miss.join('、')}`); return; }
+    try {
+      const result = await client.track(creds, { trackingNo: shipment.trackingNo });
+      await audit('logistics.track', { connection: logiConn.shopName, detail: shipment.trackingNo, ok: result.ok });
+      jsonRes(res).json({ data: result });
+    } catch (e) {
+      await audit('logistics.track', { connection: logiConn.shopName, detail: shipment.trackingNo, ok: false });
+      failRes(res, 500, (e as Error).message);
+    }
   });
   r.get('/stock/moves', async (req: unknown, res: unknown) => {
     const q = (req as { query: Record<string, unknown> }).query || {};
@@ -1769,5 +3187,13 @@ function registerShopBusinessRoutes(r: Record<string, (path: string, handler: (r
     if (!shop) { failRes(res, 404, '店铺不存在'); return; }
     const out = await runShopAction(shop, 'shop.open', {}, 'human');
     jsonRes(res).json({ data: out });
+  });
+  // 跳转任务「已处理」：只留审计（用户声称已在平台后台完成），不改任何业务数据
+  r.post('/shops/:id/jump-done', async (req: unknown, res: unknown) => {
+    const p = req as { params: { id: string }; body: Record<string, unknown> };
+    const shop = await ctxOf(p.params.id);
+    if (!shop) { failRes(res, 404, '店铺不存在'); return; }
+    await audit('shop.jump.done', { connection: shop.shopName, ok: true, note: String(p.body?.note || '') });
+    jsonRes(res).json({ data: { ok: true } });
   });
 }

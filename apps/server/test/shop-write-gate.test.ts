@@ -9,6 +9,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { validateManifest } from '@yan-zhi/core';
 import {
+  buildConnection,
+  __runConnectionSyncForTest,
   makeShopTools,
   __setStorageForTest,
   shopOpsManifest,
@@ -214,5 +216,48 @@ describe('守门 · 声明与清单必须同步', () => {
     const actual = makeShopTools().map((t) => t.name).sort();
     const declared = [...(shopOpsManifest.contributes?.tools ?? [])].sort();
     expect(actual).toEqual(declared);
+  });
+});
+
+describe('连接编辑 · 三层语义不能丢', () => {
+  const base = {
+    id: 'shop-1', platform: 'amazon', site: 'US', shopName: '演示店', tag: '测试',
+    shopType: 'demo', supplyMode: 'dropship', demo: true, secretEnc: 'enc', createdAt: 1,
+  } as never;
+
+  it('★★ 只改连接信息时，shopType / supplyMode / demo 原样保留', () => {
+    const next = buildConnection({ platform: 'amazon', site: 'US', shopName: '演示店', secret: '' }, base);
+    expect(next.shopType).toBe('demo');
+    expect(next.supplyMode).toBe('dropship');
+    expect(next.demo).toBe(true);
+    expect(next.secretEnc).toBe('enc');
+  });
+
+  it('★ 显式传入新类型时才覆盖（供 PATCH /shops/:id 使用）', () => {
+    const next = buildConnection({
+      platform: 'amazon', site: 'US', shopName: '演示店', secret: '',
+      shopType: 'test', supplyMode: 'stocked',
+    }, base);
+    expect(next.shopType).toBe('test');
+    expect(next.supplyMode).toBe('stocked');
+    expect(next.demo).toBe(true);
+  });
+});
+
+describe('同步增强 · 审计汇总', () => {
+  it('★ 无凭据时如实失败，并写 syncLog + sync.run 审计（不静默）', async () => {
+    const map = await withShop('测试');
+    const conn = {
+      id: 'shop-1', platform: 'amazon', site: 'US', shopName: '测试店', tag: '测试',
+      shopType: 'test', supplyMode: 'stocked', secretEnc: '', createdAt: 1,
+    } as never;
+    const entry = await __runConnectionSyncForTest(conn, 'manual');
+    expect(entry.ok).toBe(false);
+    expect(entry.note).toContain('未配置 API 凭据');
+
+    const log = (map.get('syncLog') as Array<{ trigger: string; ok: boolean }>) || [];
+    expect(log[0]).toMatchObject({ trigger: 'manual', ok: false });
+    const audit = auditOf(map);
+    expect(audit.some((e) => e.action === 'sync.run' && e.ok === false)).toBe(true);
   });
 });

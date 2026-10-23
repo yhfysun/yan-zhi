@@ -7,7 +7,7 @@
  */
 import type { YzSqliteDb } from '../services/sqlite-driver.js';
 import type {
-  Product, Order, Shipment, StockMove, OrderItem, ShopDashboard,
+  Product, Order, Shipment, StockMove, OrderItem, ShopDashboard, Purchase, PurchaseStatus,
   Actor, ListingStatus, OrderStatus, ShipmentStatus, SupplyMode, ShopType,
 } from './types.js';
 
@@ -66,6 +66,7 @@ function mapOrder(r: Record<string, unknown>): Order {
     status: String(r.status) as OrderStatus,
     items: (safeParse(r.items_json) ?? []) as OrderItem[],
     address: (safeParse(r.address_json) ?? {}) as Record<string, unknown>,
+    attrs: (safeParse(r.attrs_json) ?? {}) as Record<string, unknown>,
     createdAt: Number(r.created_at) || 0,
     paidAt: r.paid_at == null ? undefined : Number(r.paid_at),
   };
@@ -93,14 +94,8 @@ export interface ProductInput {
   supplyMode: SupplyMode; sourceRef?: string;
   costCents: number; priceCents: number; currency: string;
   stock: number; safetyStock: number; listingStatus: ListingStatus;
-}
-
-// ---------- 商品 CRUD ----------
-export interface ProductInput {
-  sku: string; title: string; imageUrl?: string; category?: string;
-  supplyMode: SupplyMode; sourceRef?: string;
-  costCents: number; priceCents: number; currency: string;
-  stock: number; safetyStock: number; listingStatus: ListingStatus;
+  /** 平台侧标识与同步状态（attrs_json） */
+  attrs?: Record<string, unknown>;
 }
 
 export function listProducts(shopId: string, opts: { status?: ListingStatus; search?: string; limit?: number; offset?: number } = {}): Product[] {
@@ -165,6 +160,12 @@ export function getProduct(shopId: string, id: string): Product | undefined {
   return r ? mapProduct(r) : undefined;
 }
 
+/** 按 SKU 定位商品（工具侧用 SKU 称呼商品，界面上也是 SKU 更常见） */
+export function findProductBySku(shopId: string, sku: string): Product | undefined {
+  const r = requireDb().prepare('SELECT * FROM shop_product WHERE shop_id = ? AND sku = ?').get(shopId, sku) as Record<string, unknown> | undefined;
+  return r ? mapProduct(r) : undefined;
+}
+
 
 function spId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -175,7 +176,7 @@ export function createProduct(shopId: string, input: ProductInput): Product {
   const now = Date.now();
   requireDb().prepare('INSERT INTO shop_product (id, shop_id, sku, title, image_url, category, supply_mode, source_ref, cost_cents, price_cents, currency, stock, safety_stock, listing_status, attrs_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .run(id, shopId, input.sku, input.title, input.imageUrl ?? null, input.category ?? null, input.supplyMode, input.sourceRef ?? null,
-      Math.round(input.costCents), Math.round(input.priceCents), input.currency || 'CNY', input.stock, input.safetyStock, input.listingStatus, '{}', now, now);
+      Math.round(input.costCents), Math.round(input.priceCents), input.currency || 'CNY', input.stock, input.safetyStock, input.listingStatus, JSON.stringify(input.attrs ?? {}), now, now);
   return getProduct(shopId, id)!;
 }
 
@@ -183,14 +184,21 @@ export function updateProduct(shopId: string, id: string, patch: Partial<Product
   const cur = getProduct(shopId, id);
   if (!cur) return undefined;
   const next = { ...cur, ...patch };
-  requireDb().prepare('UPDATE shop_product SET title=?, image_url=?, category=?, cost_cents=?, price_cents=?, currency=?, safety_stock=?, updated_at=? WHERE shop_id=? AND id=?')
-    .run(next.title, next.imageUrl ?? null, next.category ?? null, next.costCents, next.priceCents, next.currency, next.safetyStock, Date.now(), shopId, id);
+  requireDb().prepare('UPDATE shop_product SET title=?, image_url=?, category=?, source_ref=?, cost_cents=?, price_cents=?, currency=?, safety_stock=?, attrs_json=?, updated_at=? WHERE shop_id=? AND id=?')
+    .run(next.title, next.imageUrl ?? null, next.category ?? null, next.sourceRef ?? null, next.costCents, next.priceCents, next.currency, next.safetyStock, JSON.stringify(patch.attrs ?? cur.attrs ?? {}), Date.now(), shopId, id);
   return getProduct(shopId, id);
 }
 
 export function deleteProduct(shopId: string, id: string): boolean {
-  const r = requireDb().prepare('DELETE FROM shop_product WHERE shop_id=? AND id=?').run(shopId, id);
-  return r.changes > 0;
+  const d = requireDb();
+  // ★ 级联清理：商品硬删后，库存流水与采购单不能留下指向已删商品的孤儿引用
+  return d.transaction(() => {
+    const r = d.prepare('DELETE FROM shop_product WHERE shop_id=? AND id=?').run(shopId, id);
+    if (r.changes === 0) return false;
+    d.prepare('DELETE FROM shop_stock_move WHERE shop_id=? AND product_id=?').run(shopId, id);
+    d.prepare('UPDATE shop_purchase SET product_id=NULL, updated_at=? WHERE shop_id=? AND product_id=?').run(Date.now(), shopId, id);
+    return true;
+  })();
 }
 
 export function setListing(shopId: string, id: string, status: 'online' | 'offline'): Product | undefined {
@@ -217,22 +225,31 @@ export function setPrice(shopId: string, id: string, newCents: number): PriceCha
 
 export function changeStock(input: { shopId: string; productId: string; kind: 'in' | 'out' | 'adjust'; qty: number; reason?: string; actor: Actor }): { move: StockMove; product: Product } {
   const d = requireDb();
-  const prod = getProduct(input.shopId, input.productId);
-  if (!prod) throw new Error('商品不存在：' + input.productId);
-  if (prod.supplyMode === 'dropship') throw new Error('无货源商品不持库存，请走采购流程');
-  if (!Number.isInteger(input.qty) || input.qty === 0) throw new Error('qty 必须是非零整数');
-  const sign = input.kind === 'in' ? 1 : -1;
-  const delta = input.kind === 'adjust' ? input.qty : sign * Math.abs(input.qty);
-  const before = prod.stock;
-  const after = before + delta;
-  if (after < 0) throw new Error('库存不足');
-  d.prepare('UPDATE shop_product SET stock=?, updated_at=? WHERE shop_id=? AND id=?')
-    .run(after, Date.now(), input.shopId, input.productId);
-  const mvId = spId('mv');
-  d.prepare('INSERT INTO shop_stock_move (id, shop_id, product_id, kind, qty, before_qty, after_qty, reason, actor, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .run(mvId, input.shopId, input.productId, input.kind, delta, before, after, input.reason ?? null, input.actor, Date.now());
-  const move: StockMove = { id: mvId, shopId: input.shopId, productId: input.productId, kind: input.kind, qty: delta, beforeQty: before, afterQty: after, reason: input.reason, actor: input.actor, createdAt: Date.now() };
-  return { move, product: { ...prod, stock: after } };
+  // ★ 事务 + 守卫式 UPDATE：并发出库时后到的请求 changes=0 → 整笔回滚，不会超卖。
+  return d.transaction(() => {
+    const prod = getProduct(input.shopId, input.productId);
+    if (!prod) throw new Error('商品不存在：' + input.productId);
+    if (prod.supplyMode === 'dropship') throw new Error('无货源商品不持库存，请走采购流程');
+    if (!Number.isInteger(input.qty) || input.qty === 0) throw new Error('qty 必须是非零整数');
+    const delta = input.kind === 'adjust'
+      ? input.qty
+      : (input.kind === 'in' ? Math.abs(input.qty) : -Math.abs(input.qty));
+    const before = prod.stock;
+    const after = before + delta;
+    if (after < 0) throw new Error('库存不足');
+    const now = Date.now();
+    const upd = delta < 0
+      ? d.prepare('UPDATE shop_product SET stock=stock+?, updated_at=? WHERE shop_id=? AND id=? AND stock>=?')
+        .run(delta, now, input.shopId, input.productId, -delta)
+      : d.prepare('UPDATE shop_product SET stock=stock+?, updated_at=? WHERE shop_id=? AND id=?')
+        .run(delta, now, input.shopId, input.productId);
+    if (upd.changes === 0) throw new Error('库存不足');
+    const mvId = spId('mv');
+    d.prepare('INSERT INTO shop_stock_move (id, shop_id, product_id, kind, qty, before_qty, after_qty, reason, actor, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+      .run(mvId, input.shopId, input.productId, input.kind, delta, before, after, input.reason ?? null, input.actor, now);
+    const move: StockMove = { id: mvId, shopId: input.shopId, productId: input.productId, kind: input.kind, qty: delta, beforeQty: before, afterQty: after, reason: input.reason, actor: input.actor, createdAt: now };
+    return { move, product: { ...prod, stock: after } };
+  })();
 }
 
 // ---------- 订单 ----------
@@ -241,6 +258,8 @@ export interface OrderInput {
   orderNo: string; buyer?: string; amountCents: number; currency: string;
   status: OrderStatus; items: OrderItem[]; address?: Record<string, unknown>;
   createdAt?: number; paidAt?: number;
+  /** 平台侧标识与同步状态（attrs_json） */
+  attrs?: Record<string, unknown>;
 }
 
 export function listOrders(shopId: string, opts: { status?: OrderStatus; search?: string; limit?: number; offset?: number } = {}): Order[] {
@@ -257,11 +276,35 @@ export function getOrder(shopId: string, id: string): Order | undefined {
   return r ? mapOrder(r) : undefined;
 }
 
+/** 按订单号定位（工具侧按订单号称呼订单） */
+export function findOrderByNo(shopId: string, orderNo: string): Order | undefined {
+  const r = requireDb().prepare('SELECT * FROM shop_order WHERE shop_id = ? AND order_no = ?').get(shopId, orderNo) as Record<string, unknown> | undefined;
+  return r ? mapOrder(r) : undefined;
+}
+
+/** 写订单的平台标识/同步状态（attrs_json） */
+export function setOrderAttrs(shopId: string, id: string, attrs: Record<string, unknown>): Order | undefined {
+  requireDb().prepare('UPDATE shop_order SET attrs_json=? WHERE shop_id=? AND id=?').run(JSON.stringify(attrs), shopId, id);
+  return getOrder(shopId, id);
+}
+
+/** 改订单状态（平台导入时按平台状态映射回本地） */
+export function setOrderStatus(shopId: string, id: string, status: OrderStatus): Order | undefined {
+  requireDb().prepare('UPDATE shop_order SET status=? WHERE shop_id=? AND id=?').run(status, shopId, id);
+  return getOrder(shopId, id);
+}
+
+/** 按运单号定位发货单（轨迹查询用） */
+export function findShipmentByTrackingNo(shopId: string, trackingNo: string): Shipment | undefined {
+  const r = requireDb().prepare('SELECT * FROM shop_shipment WHERE shop_id = ? AND tracking_no = ? ORDER BY created_at DESC LIMIT 1').get(shopId, trackingNo) as Record<string, unknown> | undefined;
+  return r ? mapShipment(r) : undefined;
+}
+
 export function createOrder(shopId: string, input: OrderInput): Order {
   const id = spId('so');
   const now = input.createdAt ?? Date.now();
-  requireDb().prepare('INSERT INTO shop_order (id, shop_id, order_no, buyer, amount_cents, currency, status, items_json, address_json, created_at, paid_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-    .run(id, shopId, input.orderNo, input.buyer ?? null, input.amountCents, input.currency || 'CNY', input.status, JSON.stringify(input.items), JSON.stringify(input.address ?? {}), now, input.paidAt ?? null);
+  requireDb().prepare('INSERT INTO shop_order (id, shop_id, order_no, buyer, amount_cents, currency, status, items_json, address_json, attrs_json, created_at, paid_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id, shopId, input.orderNo, input.buyer ?? null, input.amountCents, input.currency || 'CNY', input.status, JSON.stringify(input.items), JSON.stringify(input.address ?? {}), JSON.stringify(input.attrs ?? {}), now, input.paidAt ?? null);
   return getOrder(shopId, id)!;
 }
 export function markOrderSourced(shopId: string, id: string): Order | undefined {
@@ -272,15 +315,19 @@ export function markOrderSourced(shopId: string, id: string): Order | undefined 
   return getOrder(shopId, id);
 }
 
-export function shipOrder(shopId: string, orderId: string, carrier: string, trackingNo: string, note?: string): { order: Order; shipment: Shipment } | undefined {
-  const cur = getOrder(shopId, orderId);
-  if (!cur) return undefined;
-  const sid = spId('ss');
-  const now = Date.now();
-  requireDb().prepare('INSERT INTO shop_shipment (id, shop_id, order_id, carrier, tracking_no, status, shipped_at, note, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(sid, shopId, orderId, carrier, trackingNo, 'shipped', now, note ?? null, now);
-  requireDb().prepare('UPDATE shop_order SET status=? WHERE shop_id=? AND id=?').run('shipped', shopId, orderId);
-  return { order: getOrder(shopId, orderId)!, shipment: getShipment(shopId, sid)! };
+export function shipOrder(shopId: string, orderId: string, carrier: string, trackingNo: string, note?: string, statusAfter: OrderStatus = 'shipped'): { order: Order; shipment: Shipment } | undefined {
+  const d = requireDb();
+  // ★ 发货单 + 订单状态同一事务：避免“发货单插入了、订单状态没改”的半成品
+  return d.transaction(() => {
+    const cur = getOrder(shopId, orderId);
+    if (!cur) return undefined;
+    const sid = spId('ss');
+    const now = Date.now();
+    d.prepare('INSERT INTO shop_shipment (id, shop_id, order_id, carrier, tracking_no, status, shipped_at, note, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(sid, shopId, orderId, carrier, trackingNo, 'shipped', now, note ?? null, now);
+    d.prepare('UPDATE shop_order SET status=? WHERE shop_id=? AND id=?').run(statusAfter, shopId, orderId);
+    return { order: getOrder(shopId, orderId)!, shipment: getShipment(shopId, sid)! };
+  })();
 }
 
 export function getShipment(shopId: string, id: string): Shipment | undefined {
@@ -294,4 +341,59 @@ export function listShipments(shopId: string, opts: { status?: ShipmentStatus; l
   const sql = `SELECT * FROM shop_shipment WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
   params.push(opts.limit ?? 200, opts.offset ?? 0);
   return (requireDb().prepare(sql).all(...params) as Record<string, unknown>[]).map(mapShipment);
+}
+
+// ---------- 无货源采购单 ----------
+
+export interface PurchaseInput {
+  orderId: string; productId?: string; sku: string; offerRef: string;
+  qty: number; unitCostCents: number; note?: string;
+}
+
+function mapPurchase(r: Record<string, unknown>): Purchase {
+  return {
+    id: String(r.id),
+    shopId: String(r.shop_id),
+    orderId: String(r.order_id),
+    productId: r.product_id == null ? undefined : String(r.product_id),
+    sku: String(r.sku),
+    offerRef: String(r.offer_ref),
+    qty: Number(r.qty) || 0,
+    unitCostCents: Number(r.unit_cost_cents) || 0,
+    status: String(r.status) as PurchaseStatus,
+    note: r.note == null ? undefined : String(r.note),
+    createdAt: Number(r.created_at) || 0,
+    updatedAt: Number(r.updated_at) || 0,
+  };
+}
+
+export function listPurchases(shopId: string, opts: { orderId?: string; status?: PurchaseStatus; limit?: number } = {}): Purchase[] {
+  const where: string[] = ['shop_id = ?']; const params: unknown[] = [shopId];
+  if (opts.orderId) { where.push('order_id = ?'); params.push(opts.orderId); }
+  if (opts.status) { where.push('status = ?'); params.push(opts.status); }
+  params.push(opts.limit ?? 200);
+  return (requireDb().prepare(`SELECT * FROM shop_purchase WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ?`).all(...params) as Record<string, unknown>[]).map(mapPurchase);
+}
+
+export function getPurchase(shopId: string, id: string): Purchase | undefined {
+  const r = requireDb().prepare('SELECT * FROM shop_purchase WHERE shop_id=? AND id=?').get(shopId, id) as Record<string, unknown> | undefined;
+  return r ? mapPurchase(r) : undefined;
+}
+
+export function findPurchaseByOrderSku(shopId: string, orderId: string, sku: string): Purchase | undefined {
+  const r = requireDb().prepare('SELECT * FROM shop_purchase WHERE shop_id=? AND order_id=? AND sku=? ORDER BY created_at DESC LIMIT 1').get(shopId, orderId, sku) as Record<string, unknown> | undefined;
+  return r ? mapPurchase(r) : undefined;
+}
+
+export function createPurchase(shopId: string, input: PurchaseInput): Purchase {
+  const id = spId('pu');
+  const now = Date.now();
+  requireDb().prepare('INSERT INTO shop_purchase (id, shop_id, order_id, product_id, sku, offer_ref, qty, unit_cost_cents, status, note, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id, shopId, input.orderId, input.productId ?? null, input.sku, input.offerRef, Math.max(1, Math.trunc(input.qty)), Math.round(input.unitCostCents), 'planned', input.note ?? null, now, now);
+  return getPurchase(shopId, id)!;
+}
+
+export function updatePurchaseStatus(shopId: string, id: string, status: PurchaseStatus): Purchase | undefined {
+  requireDb().prepare('UPDATE shop_purchase SET status=?, updated_at=? WHERE shop_id=? AND id=?').run(status, Date.now(), shopId, id);
+  return getPurchase(shopId, id);
 }

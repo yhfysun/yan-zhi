@@ -14,12 +14,30 @@ export type OrderStatus =
 export type ShipmentStatus = 'pending' | 'shipped' | 'in_transit' | 'delivered' | 'exception';
 export type StockMoveKind = 'in' | 'out' | 'adjust';
 export type Actor = 'human' | 'ai';
+export type PurchaseStatus = 'planned' | 'ordered' | 'paid' | 'received' | 'cancelled';
+
+/** 无货源采购单：出单后去 1688 采购、供应商直发；付款一律人工 */
+export interface Purchase {
+  id: string;
+  shopId: string;
+  orderId: string;
+  productId?: string;
+  sku: string;
+  offerRef: string;
+  qty: number;
+  unitCostCents: number;
+  status: PurchaseStatus;
+  note?: string;
+  createdAt: number;
+  updatedAt: number;
+}
 
 export type ActionKind =
   | 'product.list' | 'product.create' | 'product.update' | 'product.delete'
   | 'product.publish' | 'product.price' | 'product.stock'
-  | 'order.list' | 'order.markSourced' | 'order.ship'
+  | 'order.list' | 'order.markSourced' | 'order.ship' | 'order.mock'
   | 'shipment.list' | 'shipment.track'
+  | 'purchase.list' | 'purchase.create' | 'purchase.updateStatus' | 'purchase.jump'
   | 'stock.moves' | 'shop.dashboard' | 'shop.open';
 
 /** 跳转计划：平台无 API 时返回；前端内嵌 BrowserPanel 打开，automatable=true 时 pageAgent 可代跑非资金动作 */
@@ -87,6 +105,8 @@ export interface Order {
   status: OrderStatus;
   items: OrderItem[];
   address: Record<string, unknown>;
+  /** 平台侧标识与同步状态（attrs_json） */
+  attrs: Record<string, unknown>;
   createdAt: number;
   paidAt?: number;
 }

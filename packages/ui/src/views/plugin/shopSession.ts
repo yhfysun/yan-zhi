@@ -23,6 +23,13 @@ export interface ShopConnection {
   projectId?: string;
   /** 演示数据标记（一键清空只删这些） */
   demo?: boolean;
+  /** 店铺类型：demo 演示 / test 测试 / production 生产（2026-10-22 重构 §2.1） */
+  shopType?: 'demo' | 'test' | 'production';
+  /** 货源模式：stocked 有货源 / dropship 无货源 */
+  supplyMode?: 'stocked' | 'dropship';
+  /** 同步冲突策略；定时同步间隔（分钟，0=关闭） */
+  syncPolicy?: 'local-first' | 'platform-first';
+  syncIntervalMin?: number;
   createdAt: number;
   lastCheckAt?: number;
   /** 后端算好的派生字段：是否已配置凭据（密文永不回显）、是否生产店铺 */
@@ -94,8 +101,10 @@ export interface ShopPlatformInfo {
     client: 'none' | 'pending' | 'ready';
     enterprise?: boolean;
   };
-  /** 物流商的凭据字段（没有客户端时缺省） */
+  /** 物流商的凭据字段（没有客户端时缺省）；店铺平台的凭据字段同形 */
   credentials?: ShopCredentialField[];
+  /** 已实现的平台 API 能力（由后端 platform-api 注册表下发，如 test/product.list/order.list） */
+  apiCapabilities?: string[];
 }
 
 export interface ShopCheckResult {
@@ -235,6 +244,14 @@ export async function checkShop(id: string): Promise<string> {
 /** 物流凭据连通性测试（只读探活，用假单号，不碰真实运单） */
 export async function testShopLogistics(id: string): Promise<{ error: string; result?: ShopProbeResult }> {
   const r = await api.post<ShopProbeResult>(`/plugin/shop-ops/connections/${id}/logistics/test`, {});
+  if (!('data' in r)) return { error: errText(r) };
+  await loadAudit();
+  return { error: '', result: r.data };
+}
+
+/** 平台 API 连通性自检（Shopify 等已接入客户端；只读无害接口） */
+export async function testShopApi(id: string): Promise<{ error: string; result?: ShopProbeResult }> {
+  const r = await api.post<ShopProbeResult>(`/plugin/shop-ops/connections/${id}/api/test`, {});
   if (!('data' in r)) return { error: errText(r) };
   await loadAudit();
   return { error: '', result: r.data };

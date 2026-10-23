@@ -6,6 +6,9 @@
 //   控制台的凭据表单完全由客户端声明的 credentials 驱动，不需要改前端。
 import { sfClient } from './sf.js';
 import { yunExpressClient } from './yunexpress.js';
+import { jdClient } from './jd.js';
+import { cainiaoClient } from './cainiao.js';
+import { fourpxClient } from './fourpx.js';
 import type { CredentialField, LogisticsClient } from './types.js';
 
 export * from './types.js';
@@ -13,6 +16,9 @@ export * from './types.js';
 export const LOGISTICS_CLIENTS: Record<string, LogisticsClient> = {
   'sf-express': sfClient,
   yunexpress: yunExpressClient,
+  'jd-logistics': jdClient,
+  cainiao: cainiaoClient,
+  '4px': fourpxClient,
 };
 
 /** 按 platform id 取客户端；未实现的返回 undefined（调用方据此提示"客户端未接"） */

@@ -1,0 +1,248 @@
+/* 店铺运营控制台样式（2026-10-22 页签拆分后从 ShopConsole.vue 抽出）。
+   这些类名都带 shop- 前缀且在 .shop-console 内使用，放全局文件避免每个子组件重复 scoped 样式。 */
+.shop-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.shop-side-title { font-weight: 600; font-size: 13px; color: var(--el-text-color-regular); }
+.shop-empty { font-size: 13px; color: var(--el-text-color-regular); }
+.shop-empty-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; }
+.shop-main { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; gap: 6px; position: relative; }
+.shop-work { flex: 1; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.shop-tabs { min-height: 0; flex: 1; }
+
+/* ===== 顶部工作条（店铺类型 / 货源模式 / 工作台） ===== */
+.shop-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 2px 8px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.shop-toolbar-title { font-size: 14px; font-weight: 600; }
+.shop-toolbar-spacer { flex: 1; }
+.shop-tool-block { display: flex; align-items: center; gap: 4px; }
+.shop-tool-label { font-size: 11px; color: var(--el-text-color-secondary); }
+.shop-tool-select { width: 92px; }
+.shop-toolbar-actions { display: flex; align-items: center; gap: 6px; }
+
+/* ===== 常驻 AI 对话栏 ===== */
+.shop-chat {
+  flex: 0 0 var(--shop-chat-w, 380px); width: var(--shop-chat-w, 380px);
+  min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+  border-left: 1px solid var(--el-border-color-lighter);
+  padding-left: 6px;
+}
+.shop-main.is-lead-ai .shop-work { display: none; }
+.shop-main.is-lead-ai .shop-chat {
+  flex: 1 1 auto; width: auto; border-left: none; padding-left: 0;
+}
+.shop-chat-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; flex: none;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.shop-chat-icon { color: var(--el-color-primary); }
+.shop-chat-title { font-size: 12px; font-weight: 600; color: var(--el-text-color-regular); }
+.shop-chat-spacer { flex: 1; }
+.shop-chat-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border: none; border-radius: 6px;
+  background: transparent; color: var(--el-text-color-secondary); cursor: pointer;
+}
+.shop-chat-btn:hover { background: var(--el-fill-color-light); color: var(--el-color-primary); }
+
+/* LeadToggle 默认是右下角悬浮，在本页会压住发送按钮 —— 收进对话栏头部做内联按钮。
+   （全局样式文件不能用 :deep()，直接按类名命中子组件内部即可） */
+.shop-console .shop-chat-head .lead-toggle-wrap { position: static; right: auto; bottom: auto; z-index: auto; }
+.shop-console .shop-chat-head .lead-fab {
+  width: 24px; height: 24px; border-radius: 6px;
+  box-shadow: none; background: transparent;
+}
+.shop-console .shop-chat-head .lead-fab:hover { background: var(--el-fill-color-light); }
+.shop-console .shop-chat-head .lead-fab-tip { right: 0; bottom: auto; top: calc(100% + 6px); }
+
+/* 对话栏收起后的悬浮入口 */
+.shop-chat-fab {
+  position: absolute; right: 14px; bottom: 14px; z-index: 6;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 10px; border-radius: 16px; cursor: pointer;
+  border: 1px solid var(--el-border-color); background: var(--el-bg-color);
+  color: var(--el-color-primary); font-size: 12px;
+  box-shadow: var(--el-box-shadow-light);
+}
+.shop-chat-fab:hover { border-color: var(--el-color-primary); }
+.shop-placeholder { padding: 24px 4px; color: var(--el-text-color-regular); }
+.shop-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.shop-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.shop-card-head h3 { margin: 0; font-size: 16px; }
+.shop-kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 16px; margin: 0; }
+.shop-kv > div { display: flex; gap: 8px; font-size: 13px; }
+.shop-kv dt { color: var(--el-text-color-secondary); min-width: 72px; margin: 0; }
+.shop-kv dd { margin: 0; word-break: break-all; }
+
+/* ===== 概览 KPI ===== */
+.shop-kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.shop-kpi {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+}
+.shop-kpi-label { font-size: 11px; color: var(--el-text-color-secondary); }
+.shop-kpi-value { font-size: 18px; font-weight: 600; color: var(--el-text-color-primary); }
+.shop-kpi-hint { font-size: 11px; color: var(--el-text-color-secondary); }
+.shop-card-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+/* ===== 物流：测试连接 + 轨迹 ===== */
+.shop-logi {
+  margin-top: 12px; padding-top: 12px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+}
+.shop-logi-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.shop-logi-row + .shop-logi-row { margin-top: 8px; }
+.shop-logi-input { flex: 1; min-width: 200px; }
+.shop-logi-phone { width: 150px; }
+.shop-logi-note { font-size: 12px; line-height: 1.6; }
+.shop-logi-note.ok { color: var(--el-color-success); }
+.shop-logi-note.err { color: var(--el-color-danger); }
+.shop-logi-result {
+  margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+  font-size: 12px; background: var(--el-fill-color-lighter);
+}
+.shop-logi-result.ok { background: var(--el-color-success-light-9); }
+.shop-logi-result.err { background: var(--el-color-danger-light-9); }
+.shop-logi-result-head { margin: 0; font-weight: 600; line-height: 1.6; }
+.shop-logi-events { margin: 8px 0 0; padding-left: 16px; max-height: 260px; overflow: auto; }
+.shop-logi-events li { line-height: 1.8; display: flex; gap: 8px; flex-wrap: wrap; }
+.shop-logi-time { color: var(--el-text-color-secondary); white-space: nowrap; }
+.shop-logi-loc { color: var(--el-color-primary); white-space: nowrap; }
+.shop-logi-desc { flex: 1; min-width: 180px; }
+.shop-logi-status { color: var(--el-text-color-secondary); }
+.shop-cred-note { margin: 0 0 8px 110px; font-size: 12px; color: var(--el-text-color-secondary); }
+/* 凭据向导：写清「需要准备什么、去哪拿」 */
+.shop-cred-guide {
+  width: 100%; font-size: 12px; line-height: 1.7;
+  background: var(--el-fill-color-lighter); border-radius: 6px; padding: 8px 10px;
+  color: var(--el-text-color-regular);
+}
+.shop-cred-guide p { margin: 0 0 4px; }
+.shop-cred-guide p:last-child { margin-bottom: 0; }
+.shop-cred-guide a { color: var(--el-color-primary); }
+.shop-check { border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
+.shop-check.ok { background: var(--el-color-success-light-9); border: 1px solid var(--el-color-success-light-7); }
+.shop-check.err { background: var(--el-color-warning-light-9); border: 1px solid var(--el-color-warning-light-7); }
+.shop-check-head { font-weight: 600; }
+.shop-check-sub { font-weight: 400; font-size: 12px; color: var(--el-text-color-secondary); }
+.shop-check-list { margin: 6px 0 0; padding-left: 18px; line-height: 1.8; }
+.shop-check-list .is-issue { color: var(--el-color-danger); }
+.shop-next { border-top: 1px dashed var(--el-border-color-lighter); padding-top: 12px; }
+.shop-next-title { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+.shop-form-full { width: 100%; }
+.shop-form-tip { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
+.shop-audit { margin-top: 4px; }
+
+/* ===== 项目列表（左栏）===== */
+.shop-projects { flex: 1; min-height: 0; overflow: auto; }
+.shop-project {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+  font-size: 13px;
+}
+.shop-project:hover { background: var(--el-fill-color-light); }
+.shop-project.active { background: var(--el-color-primary-light-9); }
+.shop-project-icon { color: var(--el-color-primary); }
+.shop-project-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shop-project-count {
+  font-size: 11px; color: var(--el-text-color-secondary);
+  background: var(--el-fill-color); border-radius: 8px; padding: 0 6px;
+}
+.shop-project-del {
+  display: none; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; border: none; border-radius: 4px;
+  background: transparent; color: var(--el-text-color-secondary);
+  font-size: 14px; line-height: 1; cursor: pointer;
+}
+.shop-project:hover .shop-project-del { display: inline-flex; }
+.shop-project-del:hover { color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
+
+/* ===== 店铺列表（左栏下半）===== */
+.shop-shops { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter); }
+.shop-shops-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.shop-shop-row {
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+.shop-shop-row:hover { background: var(--el-fill-color-light); }
+.shop-shop-row.active { background: var(--el-color-primary-light-9); }
+.shop-shop-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shop-shop-badges { display: flex; gap: 3px; flex: none; }
+.shop-shop-badges .el-tag { height: 18px; padding: 0 4px; font-size: 10px; }
+.shop-kind-tag { font-size: 10px; }
+
+/* ===== 页签内表格与空态 ===== */
+.shop-tab-body { padding-top: 6px; }
+.shop-tab-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.shop-tab-toolbar .shop-spacer { flex: 1; }
+.shop-na { color: var(--el-text-color-placeholder); }
+.shop-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.shop-hint-line { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; margin: 8px 0 0; }
+.shop-warn-line { color: var(--el-color-warning); }
+
+/* 演示数据入口：贴在左栏底部 */
+.shop-demo {
+  margin-top: auto; padding-top: 8px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+}
+.shop-demo-hint { font-size: 11px; color: var(--el-text-color-secondary); }
+
+/* 「口径速查」页签 */
+.shop-ref-lead { margin: 0 0 12px; }
+.shop-ref-group { margin-bottom: 16px; }
+.shop-ref-group-title {
+  font-size: 12px; font-weight: 600; color: var(--el-text-color-regular);
+  margin: 0 0 8px;
+}
+.shop-ref-api {
+  font-size: 11px; margin: 8px 0 0; line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+.shop-ref-api a { margin-left: 6px; color: var(--el-color-primary); }
+.shop-ref-api.is-pending { color: var(--el-color-warning); }
+.shop-ref-api.is-ready { color: var(--el-color-success); }
+.shop-ref-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.shop-ref-card { border: 1px solid var(--el-border-color-lighter); border-radius: 8px; padding: 12px 14px; }
+.shop-ref-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; }
+.shop-ref-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.8; }
+.shop-ref-entry { font-size: 12px; margin: 8px 0 4px; word-break: break-all; }
+.shop-ref-entry a { color: var(--el-color-primary); }
+.shop-ref-note { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.7; margin: 4px 0 0; }
+.shop-ref-boundary {
+  margin-top: 16px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  padding-top: 12px;
+}
+.shop-ref-boundary-title { font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+
+/* ===== 平台后台（跳转计划） ===== */
+.shop-jump { max-width: 720px; }
+.shop-jump-steps { margin: 8px 0 0; padding-left: 20px; line-height: 2; font-size: 13px; }
+.shop-jump-url { word-break: break-all; font-size: 12px; color: var(--el-color-primary); }
+
+/* ===== 窄屏收敛 ===== */
+@media (max-width: 1280px) {
+  .shop-kv { grid-template-columns: 1fr; }
+  .shop-card { padding: 12px; }
+  .shop-ref-grid { grid-template-columns: 1fr; }
+  .shop-chat { padding-left: 4px; }
+}
+@media (max-width: 1024px) {
+  .shop-chat { flex-basis: 300px; width: 300px; }
+  .shop-chat-head { padding: 6px 4px; }
+}

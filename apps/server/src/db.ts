@@ -3120,6 +3120,19 @@ try {
   }
 } catch {}
 
+// 店铺运营七条技能共用的「经营底座与口径」前置段（2026-10-22 重构方案 §11）。
+// ★ 单一来源：三层概念/写闸门/无货源/演示边界只写一份，避免七条正文各自漂移。
+const SHOP_MODE_PREFACE = `## 经营底座与口径（2026-10-22 起，店铺类技能共用）
+
+- **本地业务库是真源**：商品 / 订单 / 发货 / 库存以 shop_* 工具（shop_dashboard / shop_product_list / shop_order_list …）与本地库为准；平台后台只用于核对与平台侧动作。
+- **三层概念不可混**：店铺类型 demo 演示 / test 测试 / production 生产（店铺属性）；货源模式 stocked 有货源 / dropship 无货源（店铺属性）；人工 / AI 只是工作台切换，不是店铺属性，不改变数据与权限。
+- **写操作先出变更单**：改价 / 改库存 / 上下架 / 新建或编辑商品 / 发货，先不带 confirmed 调工具出变更单，用户明确同意后带 confirmed: true 重试；生产店铺再加 approveProduction。获批且命中本地库时工具会直接落库并回读，控制台实时可见。
+- **无货源不持库存**：库存列与安全库存不参与口径；出单后「标记已采购 → 去货源平台采购 → 供应商直发」，付款一律由用户人工完成。
+- **演示店铺**：数据是合成种子，平台侧动作只返回跳转计划，绝不触达真实平台；回复里带「演示数据」前缀。
+- **费率 / 政策 / 类目准入一律现查**（委派 pageAgent 打开官方页面），不凭记忆写死。
+
+`;
+
 // 预置内置 skill：文档处理 / 代码安全 / 清华 AIR 开源（批量 upsert）
 // 提升为模块级常量：seed 循环与「恢复默认」reset 接口共用同一份默认定义（数据单一来源）。
 export const builtinSkillDefaults: Array<{ id: string; name: string; category: string; description: string; triggers: string[]; body: string }> = [
@@ -3680,7 +3693,7 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
       id: 'skill_shop_selection', name: '跨境选品分析', category: '电商运营',
       description: '跨境与国内店铺的选品分析：先对齐口径（站点/币种/含税/佣金/履约），再从需求-竞争-利润三维评估；跨平台同款匹配走 compare_products，利润按售价逐项扣减算到手毛利与盈亏平衡价；含侵权/认证/限售合规红线与「费率政策一律现查」纪律。',
       triggers: ['选品', '选品分析', '跨境选品', '亚马逊选品', '淘宝选品', '1688', '货源', '竞品分析', '利润测算', '到手毛利', '店铺运营', 'Listing'],
-      body: `# 跨境选品分析
+      body: `${SHOP_MODE_PREFACE}# 跨境选品分析
 
 选品的本质是**在一堆"看着能卖"的品里，找出"算完账还有钱赚、且你打得过"的那几个**。新手最常见的错不是分析不够深，而是拿错口径算账（币种、含税、佣金、履约费用漏项）——所以本文把「口径」放在第一位。
 
@@ -3762,7 +3775,7 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
       id: 'skill_amazon_listing', name: '亚马逊 Listing 与 A+', category: '电商运营',
       description: '亚马逊 Listing 全流程：先定改哪一个指标（曝光/点击/转化三选一）、关键词分层与埋词（Title/五点/后台 Search Term 规则不同）、五点卖点写法、Description 与 A+ 模块、变更单与观察窗口；含极限词与功效宣称等合规红线。',
       triggers: ['listing', 'listing优化', '亚马逊listing', '标题优化', '五点描述', 'a+', 'search term', '埋词', '商品详情', '亚马逊文案'],
-      body: `# 亚马逊 Listing 与 A+
+      body: `${SHOP_MODE_PREFACE}# 亚马逊 Listing 与 A+
 
 Listing 优化最常见的失败不是文案写得不好，而是**一次改了五个地方，然后不知道是哪一个起了作用**。所以本文第一件事是让你先选一个指标。
 
@@ -3838,7 +3851,7 @@ Listing 优化最常见的失败不是文案写得不好，而是**一次改了�
       id: 'skill_amazon_ads_profit', name: '亚马逊广告与利润测算', category: '电商运营',
       description: '亚马逊广告与利润测算：口径先行（窗口/币种/含税/佣金/FBA 费）、ACoS 与 TACoS、单件毛利与盈亏平衡 ACoS、三类投放诊断（高花费零转化/超平衡/可放量）、否词与竞价调整纪律、FBA 费用与头程分摊；含"一次只改一个变量 + 观察窗口"的执行纪律。',
       triggers: ['acos', 'tacos', '广告优化', '亚马逊广告', '盈亏平衡acos', 'ppc', '否词', '竞价', '利润率', 'fba费用', '头程分摊'],
-      body: `# 亚马逊广告与利润测算
+      body: `${SHOP_MODE_PREFACE}# 亚马逊广告与利润测算
 
 广告优化的第一步不是调竞价，是**把口径和盈亏平衡线算清楚**。没有盈亏平衡 ACoS，任何"这个 ACoS 高不高"的判断都是拍脑袋。
 
@@ -3897,7 +3910,7 @@ Listing 优化最常见的失败不是文案写得不好，而是**一次改了�
       id: 'skill_taobao_ops', name: '淘宝/天猫店铺运营', category: '电商运营',
       description: '淘宝/天猫店铺运营：与亚马逊的差别（搜索机制、活动、DSR）、标题与关键词（核心词前置、上下架时段）、主图五张的顺序合同、详情页结构、活动报名要素与价格力、DSR 与售后指标维护；含合规与"只出方案不代改"的边界。',
       triggers: ['淘宝运营', '天猫', '淘宝店铺', '千牛', 'dsr', '淘宝标题', '上下架', '主图点击率', '生意参谋', '淘系'],
-      body: `# 淘宝/天猫店铺运营
+      body: `${SHOP_MODE_PREFACE}# 淘宝/天猫店铺运营
 
 淘系与亚马逊最大的差别：**淘系的流量高度依赖搜索权重与活动资源位，且数据大多在后端接口里而不是页面上**。取数时优先找页面自身请求的 XHR 接口（用浏览器的网络日志定位），别逐元素点 DOM。
 
@@ -3963,7 +3976,7 @@ Listing 优化最常见的失败不是文案写得不好，而是**一次改了�
       id: 'skill_1688_sourcing', name: '1688 货源与铺货', category: '电商运营',
       description: '1688 货源与铺货：从目标站点与售价带反推采购价上限、找同款（图搜/关键词/竞品供应商反查）、读阶梯价与 MOQ 与供货能力、铺货差价测算、侵权与品牌授权的合规筛查；含"不代下单"边界与供应商询价清单。',
       triggers: ['1688', '货源', '铺货', '找货', '供应商', '阶梯价', '起订量', 'moq', '货源比价', '拿货价'],
-      body: `# 1688 货源与铺货
+      body: `${SHOP_MODE_PREFACE}# 1688 货源与铺货
 
 拿到一个货源的价钱不等于能赚钱 —— **先算采购价上限，再去找货**，顺序反了就变成"这个好便宜买来试试"，最后压在仓里。
 
@@ -4024,7 +4037,7 @@ Listing 优化最常见的失败不是文案写得不好，而是**一次改了�
       id: 'skill_overseas_warehouse', name: '跨境中转仓 / 海外仓', category: '电商运营',
       description: '跨境中转仓与海外仓：头程三条主线（海运/空运/快递，含快慢船）的成本时效比选口径、入库预约与标签箱规、库存周转与滞销断货预警、补货决策（日均销×补货周期+安全库存）、头程成本分摊到 SKU、可复用的库存台账。',
       triggers: ['海外仓', '中转仓', '头程', '跨境物流', 'fba头程', '海运', '空运', '入库预约', '库存周转', '补货', '滞销'],
-      body: `# 跨境中转仓 / 海外仓
+      body: `${SHOP_MODE_PREFACE}# 跨境中转仓 / 海外仓
 
 这个环节的钱往往不在"运费单价"上，而在**时效选错导致的断货**和**库存压太久产生的仓储费**上。所以比选头程与做补货计划要同时看。
 
@@ -4093,7 +4106,7 @@ Listing 优化最常见的失败不是文案写得不好，而是**一次改了�
       id: 'skill_shop_service', name: '客服与售后', category: '电商运营',
       description: '客服与售后处理方法论：先定渠道与处理权限口径、诉求分类分级与升级判定、话术四段结构（共情-澄清-方案-时效）、退款补偿只给依据不代做资金动作、差评与纠纷的留证与公开回复；含不诱导改评价等合规红线。',
       triggers: ['客服', '售后', '话术', '工单', '差评', '纠纷', '退款', '退换', '投诉', 'buyer message', '客诉'],
-      body: `# 客服与售后
+      body: `${SHOP_MODE_PREFACE}# 客服与售后
 
 客服的产出不是"回得快"，是**回对了**：给的方案在权限内、承诺能兑现、不留后患。所以话术之前先定口径。
 
@@ -4866,6 +4879,7 @@ db.exec(`
     status       TEXT NOT NULL DEFAULT 'pending',
     items_json   TEXT NOT NULL DEFAULT '[]',
     address_json TEXT DEFAULT '{}',
+    attrs_json   TEXT DEFAULT '{}',
     created_at   INTEGER NOT NULL,
     paid_at      INTEGER,
     UNIQUE(shop_id, order_no)
@@ -4901,7 +4915,32 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_shop_order_shop   ON shop_order(shop_id, status, created_at);
   CREATE INDEX IF NOT EXISTS idx_shop_ship_shop    ON shop_shipment(shop_id, status);
   CREATE INDEX IF NOT EXISTS idx_shop_stock_shop   ON shop_stock_move(shop_id, product_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS shop_purchase (
+    id              TEXT PRIMARY KEY,
+    shop_id         TEXT NOT NULL,
+    order_id        TEXT NOT NULL,
+    product_id      TEXT,
+    sku             TEXT NOT NULL,
+    offer_ref       TEXT NOT NULL,
+    qty             INTEGER NOT NULL DEFAULT 1,
+    unit_cost_cents INTEGER NOT NULL DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'planned',
+    note            TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_shop_purchase_shop ON shop_purchase(shop_id, status, created_at);
 `);
+
+// 店铺同步（2026-10-22）：新建库已带 shop_order.attrs_json；存量库在这里补列，
+// 用于存平台订单 ID 与「本地/待同步/已同步」状态。
+try {
+  const orderCols = db.prepare('PRAGMA table_info(shop_order)').all() as Array<{ name?: string }>;
+  if (!orderCols.some((c) => c.name === 'attrs_json')) {
+    db.exec("ALTER TABLE shop_order ADD COLUMN attrs_json TEXT DEFAULT '{}'");
+  }
+} catch { /* 表不存在/无权限：启动不因此中断 */ }
 
 // ===== 用户工具钩子（P2-7 P2a：设置页可编程的 before 规则，deny/confirm）=====
 // trigger 目前只有 'before'（P2b 再加 after/script）；tool 为 '*' 或空 = 匹配所有工具；

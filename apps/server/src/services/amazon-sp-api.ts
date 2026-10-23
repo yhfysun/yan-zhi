@@ -26,6 +26,10 @@ export interface AmazonSpApiCreds {
   awsSessionToken?: string;
   /** 分区：na（北美）/ eu（欧洲）/ fe（远东） */
   region?: 'na' | 'eu' | 'fe';
+  /** 默认站点 marketplace id（业务接口用；自检不需要） */
+  marketplaceIds?: string[];
+  /** 卖家 ID（Listings 接口路径需要） */
+  sellerId?: string;
 }
 
 /** 检查失败的步骤：creds=凭据没配 / lwa=换 token 失败 / sigv4=缺 IAM 凭据或签名错 / api=调用被拒 */
@@ -39,8 +43,24 @@ const HOSTS: Record<string, string> = {
   eu: 'sellingpartnerapi-eu.amazon.com',
   fe: 'sellingpartnerapi-fe.amazon.com',
 };
+/**
+ * ★ SigV4 用的 AWS region 与 SP-API 分区不是一回事（2026-10-22 修）：
+ *   之前直接把 na/eu/fe 塞进 credential scope，EU/FE 会得到 InvalidSignature。
+ *   官方对照：na→us-east-1、eu→eu-west-1、fe→us-west-2。
+ */
+const AWS_REGIONS: Record<string, string> = {
+  na: 'us-east-1',
+  eu: 'eu-west-1',
+  fe: 'us-west-2',
+};
 const LWA_URL = 'https://api.amazon.com/auth/o2/token';
 const SPAPI_SERVICE = 'execute-api';
+const USER_AGENT = 'yanzhi-shop-ops/1.0 (Language=Node.js)';
+
+/** RFC3986 编码（encodeURIComponent 不编码 !'()*，严格 SigV4 会因此签名不一致） */
+function rfc3986(s: string): string {
+  return encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
 
 /** 解析店铺连接里存的凭据 JSON；缺必填项返回 null（调用方据此提示"未配置"） */
 export function parseSpApiCreds(raw: string): AmazonSpApiCreds | null {
@@ -105,42 +125,51 @@ function signingKey(secret: string, date: string, region: string, service: strin
 }
 
 /**
- * 对 SP-API 发一个 SigV4 签名的 GET。
- * ★ 只支持 GET + 查询串（本模块只需要 marketplaceParticipations 这一支），
- *   不假装是通用客户端；要扩展写操作再说。
+ * 对 SP-API 发一个 SigV4 签名请求（GET / POST / PUT / PATCH，可选 JSON body）。
+ *
+ * 官方要点：
+ *   - credential scope 用 **AWS region**（us-east-1 / eu-west-1 / us-west-2），不是 na/eu/fe；
+ *   - query 用 RFC3986 编码并按名排序；body 的 sha256 参与 canonical request；
+ *   - 至少签 host / x-amz-date / x-amz-access-token；有 body 时加 content-type。
  */
-export async function spApiGet(
+export async function spApiRequest(
   creds: AmazonSpApiCreds,
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
   query: Record<string, string> = {},
+  body?: unknown,
 ): Promise<unknown> {
   if (!creds.awsAccessKeyId || !creds.awsSecretAccessKey) {
     const e = new Error('缺少 IAM 凭据（awsAccessKeyId / awsSecretAccessKey）—— SP-API 调用必须用 SigV4 签名');
     (e as Error & { step?: SpApiCheckStep }).step = 'sigv4';
     throw e;
   }
-  const region = creds.region || 'na';
-  const host = HOSTS[region];
+  const partition = creds.region || 'na';
+  const region = AWS_REGIONS[partition] || AWS_REGIONS.na;
+  const host = HOSTS[partition] || HOSTS.na;
   const { accessToken } = await lwaAccessToken(creds);
 
+  const bodyText = body === undefined ? '' : (typeof body === 'string' ? body : JSON.stringify(body));
   const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, ''); // YYYYMMDDTHHMMSSZ
   const dateStamp = amzDate.slice(0, 8);
   const canonicalQuery = Object.keys(query)
     .sort()
-    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`)
+    .map((k) => `${rfc3986(k)}=${rfc3986(query[k])}`)
     .join('&');
 
   const headers: Record<string, string> = {
     host,
     'x-amz-date': amzDate,
     'x-amz-access-token': accessToken,
+    'user-agent': USER_AGENT,
   };
+  if (bodyText) headers['content-type'] = 'application/json';
   if (creds.awsSessionToken) headers['x-amz-security-token'] = creds.awsSessionToken;
 
   const sortedKeys = Object.keys(headers).sort();
   const signedHeaders = sortedKeys.join(';');
   const canonicalHeaders = `${sortedKeys.map((k) => `${k}:${headers[k].trim()}`).join('\n')}\n`;
-  const canonicalRequest = ['GET', path, canonicalQuery, canonicalHeaders, signedHeaders, sha256Hex('')].join('\n');
+  const canonicalRequest = [method, path, canonicalQuery, canonicalHeaders, signedHeaders, sha256Hex(bodyText)].join('\n');
 
   const scope = `${dateStamp}/${region}/${SPAPI_SERVICE}/aws4_request`;
   const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, sha256Hex(canonicalRequest)].join('\n');
@@ -151,7 +180,11 @@ export async function spApiGet(
     + `SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
   const url = `https://${host}${path}${canonicalQuery ? `?${canonicalQuery}` : ''}`;
-  const res = await fetchWithTimeout(url, { method: 'GET', headers: { ...headers, authorization: authHeader } });
+  const res = await fetchWithTimeout(url, {
+    method,
+    headers: { ...headers, authorization: authHeader },
+    ...(bodyText ? { body: bodyText } : {}),
+  });
   const text = await res.text();
   if (!res.ok) {
     const e = new Error(`SP-API ${res.status}: ${text.slice(0, 300)}`);
@@ -159,6 +192,15 @@ export async function spApiGet(
     throw e;
   }
   return text ? JSON.parse(text) : {};
+}
+
+/** 兼容旧调用：只读 GET */
+export async function spApiGet(
+  creds: AmazonSpApiCreds,
+  path: string,
+  query: Record<string, string> = {},
+): Promise<unknown> {
+  return spApiRequest(creds, 'GET', path, query);
 }
 
 /**
