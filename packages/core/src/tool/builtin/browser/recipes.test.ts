@@ -246,3 +246,39 @@ describe('② 执行流程', () => {
     expect(calls.some((c) => c.action === 'fill_form')).toBe(false);
   });
 });
+
+describe('③ 系列任务首集必先建合集（2026-10-23）', () => {
+  const SERIES_PARAMS = { ...BASE_PARAMS, collectionName: '骨债阴阳', submit: true };
+
+  it('发布页找不到合集入口 → 停在发布前，绝不静默跳过', async () => {
+    const { api, calls } = makeApi({
+      pageText: '上传成功 重新上传',
+      clickResult: (sel) => (sel.includes('合集') ? { error: 'not found' } : null),
+    });
+    const res = await runRecipe(DOUYIN_PUBLISH_RECIPE, SERIES_PARAMS, api);
+    expect(res.ok).toBe(false);
+    expect(res.submitted).toBe(false);
+    expect(res.error).toContain('创建新合集');
+    expect(calls.some((c) => c.action === 'click' && JSON.stringify(c.args).includes('发布'))).toBe(false);
+  });
+
+  it('合集名不在列表（还没建）→ 停止，并提示先建合集再发布', async () => {
+    const { api, calls } = makeApi({
+      pageText: '上传成功 重新上传',
+      clickResult: (sel) => (sel.includes('骨债阴阳') ? { error: 'not found' } : null),
+    });
+    const res = await runRecipe(DOUYIN_PUBLISH_RECIPE, SERIES_PARAMS, api);
+    expect(res.ok).toBe(false);
+    expect(res.submitted).toBe(false);
+    expect(res.error).toContain('创建新合集');
+    expect(calls.some((c) => c.action === 'click' && JSON.stringify(c.args).includes('发布'))).toBe(false);
+  });
+
+  it('合集选中后正常走到发布（verified=true）', async () => {
+    const { api } = makeApi({ pageText: '上传成功 重新上传 骨债阴阳', afterClickText: '发布成功' });
+    const res = await runRecipe(fastSubmitWait(), SERIES_PARAMS, api);
+    expect(res.ok).toBe(true);
+    expect(res.submitted).toBe(true);
+    expect(res.verified).toBe(true);
+  });
+});

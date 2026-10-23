@@ -39,8 +39,8 @@ export type RecipeStep =
   | { kind: 'navigate'; url: string }
   | { kind: 'upload'; filePath: string; clickSelectors: string[]; successTexts: string[]; failureTexts?: string[]; timeoutMs?: number }
   | { kind: 'fill'; fields: FillFieldDef[] }
-  | { kind: 'clickText'; texts: string[]; optional?: boolean; when?: RecipeWhen }
-  | { kind: 'waitText'; texts: string[]; timeoutMs?: number; optional?: boolean; when?: RecipeWhen };
+  | { kind: 'clickText'; texts: string[]; optional?: boolean; when?: RecipeWhen; failHint?: string }
+  | { kind: 'waitText'; texts: string[]; timeoutMs?: number; optional?: boolean; when?: RecipeWhen; failHint?: string };
 
 export interface PublishRecipe {
   id: string;
@@ -177,7 +177,7 @@ async function runFill(api: RecipeApi, fields: FillFieldDef[]): Promise<string> 
   return `已填 ${prepared.length} 个字段（回读通过，未重复清空）`;
 }
 
-async function clickText(api: RecipeApi, text: string, optional: boolean): Promise<string> {
+async function clickText(api: RecipeApi, text: string, optional: boolean, failHint?: string): Promise<string> {
   const bases = ['button', 'div[role=button],a', 'span'];
   let lastErr = '';
   for (const base of bases) {
@@ -196,7 +196,7 @@ async function clickText(api: RecipeApi, text: string, optional: boolean): Promi
     }
   }
   if (optional) return `未找到「${text}」（可选步骤，跳过）`;
-  throw new Error(`未找到可点击的「${text}」：${lastErr}`);
+  throw new Error(`未找到可点击的「${text}」：${lastErr}${failHint ? `。${failHint}` : ''}`);
 }
 
 async function runUpload(api: RecipeApi, step: Extract<RecipeStep, { kind: 'upload' }>, params: Record<string, unknown>): Promise<string> {
@@ -314,7 +314,7 @@ export async function runRecipe(
           let lastError: unknown = null;
           for (const text of texts) {
             try {
-              detail = await clickText(api, text, !!step.optional);
+              detail = await clickText(api, text, !!step.optional, step.failHint);
               ok = true;
               break;
             } catch (e) {
@@ -334,7 +334,7 @@ export async function runRecipe(
           url = page.url || url;
           title = page.title || title;
           if (blocked) throw new VerificationBlockedError(blocked);
-          if (!matched && !step.optional) throw new Error(`等待文本超时：${texts.join(' / ')}`);
+          if (!matched && !step.optional) throw new Error(`等待文本超时：${texts.join(' / ')}${step.failHint ? `。${step.failHint}` : ''}`);
           if (submitted && step.when === 'submit') verified = !!matched;
           push(`waitText ${texts.join(' / ')}`, !!matched, matched ? `出现「${matched}」` : '超时未出现（可选）');
           continue;
@@ -390,12 +390,12 @@ export async function runRecipe(
  */
 export const DOUYIN_PUBLISH_RECIPE: PublishRecipe = {
   id: 'douyin-publish-video',
-  description: '抖音创作者中心发布一条视频：上传→填标题/描述→可选合集→（submit=true 时）点发布并验证',
+  description: '抖音创作者中心发布一条视频：上传→填标题/描述→合集（系列任务首集必选）→（submit=true 时）点发布并验证',
   params: {
     videoPath: { type: 'string', required: true, description: '本地成片 mp4 的绝对路径' },
     title: { type: 'string', required: true, description: '作品标题（≤30 字，带别名关键词，禁书名）' },
     description: { type: 'string', required: true, description: '描述正文（≤1000 字，可含 #话题）' },
-    collectionName: { type: 'string', description: '可选：要归入的已有合集名' },
+    collectionName: { type: 'string', description: '系列任务（≥2 集）首集必填：第一集发布前就要创建并选中合集；单集任务可空' },
     submit: { type: 'boolean', description: '是否点击「发布」。默认 false；仅当用户明确要求发布时传 true' },
   },
   steps: [
@@ -415,8 +415,21 @@ export const DOUYIN_PUBLISH_RECIPE: PublishRecipe = {
         { selector: '.zone-container.editor-kit-container', value: '{{description}}', label: '描述' },
       ],
     },
-    { kind: 'clickText', texts: ['选择合集', '添加到合集'], when: 'collectionName', optional: true },
-    { kind: 'clickText', texts: ['{{collectionName}}'], when: 'collectionName', optional: true },
+    {
+      // 系列任务首集必建合集：入口/合集名找不到就**停在发布前**，绝不静默跳过（2026-10-23）
+      kind: 'clickText',
+      texts: ['选择合集', '添加到合集'],
+      when: 'collectionName',
+      failHint: '系列任务首集需先在发布页「添加到合集」→「创建新合集」建好合集（或先到合集管理创建）。'
+        + '页面已完成上传+填表，**不要重跑配方**——在页面上手动建/选合集后直接点「发布」。'
+        + '若确认账号无合集权限（实名/手机号/申请均不满足），先如实报告用户，经同意才可单条发布。',
+    },
+    {
+      kind: 'clickText',
+      texts: ['{{collectionName}}'],
+      when: 'collectionName',
+      failHint: '该合集不在列表 = 合集还没建：请先在发布页「创建新合集」建好并选中；没选中合集不得点发布。',
+    },
     { kind: 'clickText', texts: ['确定', '保存', '完成'], when: 'collectionName', optional: true },
     { kind: 'waitText', texts: ['{{collectionName}}'], when: 'collectionName', optional: true, timeoutMs: 8000 },
     { kind: 'clickText', texts: ['发布'], when: 'submit' },

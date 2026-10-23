@@ -1202,7 +1202,7 @@ export class BrowserRunRecipeTool implements BuiltInTool {
   // 读+写页面：结果取决于外部站点状态；且内部会做多次动作
   readsExternalState = true;
   description = 'Run a deterministic site recipe in ONE call. 用确定性配方完成整站流程：模型只传参数，'
-    + '上传/等待转码/填表/回读核验/可选选合集/可选点发布全部由代码按固定步骤执行，避免在页面上反复试错。'
+    + '上传/等待转码/填表/回读核验/合集（系列任务首集必选）/可选点发布全部由代码按固定步骤执行，避免在页面上反复试错。'
     + `可用配方：${listRecipes().join('、')}。`
     + 'douyin-publish-video 参数：{ videoPath, title, description, collectionName?, submit? }。'
     + '★ submit 默认 false，只做前置步骤；仅当用户明确要求发布时传 submit:true。'

@@ -43,4 +43,8 @@ describe('推文智能体 prompt（本轮同步的配方）', () => {
     expect(p).toContain('添加到合集');
     expect(p).toContain('回填发文');
   });
+  it('★ 系列任务首集发布前必先建合集（2026-10-23）', () => {
+    expect(p).toContain('第一集发布前就要建好合集并勾选');
+    expect(p).toContain('禁止先发完再靠「合集管理」补归集');
+  });
 });
