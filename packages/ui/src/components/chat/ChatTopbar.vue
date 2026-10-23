@@ -10,6 +10,18 @@
       <span v-if="convSpaceName" class="conv-space-sep">/</span>
       <span class="conv-title-display">{{ currentConv?.title || '新任务' }}</span>
     </span>
+    <!-- 工作目录（2026-10-23 用户实报「新任务也要有」）：欢迎页那一行只存在于空会话，
+         一开始干活就消失；顶栏跟随整个任务生命周期，新任务也要能一眼看到落点，点击直接换目录。 -->
+    <button
+      type="button"
+      class="conv-dir-chip"
+      :class="{ 'is-empty': !hasWorkspaceDir }"
+      :title="hasWorkspaceDir ? `工作目录：${workspaceDir}` : '未设置工作目录，点击选择一个'"
+      @click="showWorkspaceDir = true"
+    >
+      <el-icon :size="12"><FolderOpened /></el-icon>
+      <span class="conv-dir-path">{{ hasWorkspaceDir ? workspaceDir : '未设置工作目录' }}</span>
+    </button>
     <!-- 会话累计花费（2026-10-17 方案 §3.7）：等宽小字，点击展开明细（按模型/按来源）。
          ★ 不加大图标、不加 tip —— 它是"仪表读数"，不是入口。金额读库（切会话/刷新不丢），
            运行中由 task:cost 事件实时刷新。花费为 0 时不占位。 -->
@@ -133,6 +145,7 @@ const {
   drawerOpen, currentConv, store, isMobile, authStore,
   contextSidebarOpen, toggleContextSidebar,
   startNewChat, costStore,
+  workspaceDir, hasWorkspaceDir, showWorkspaceDir,
 } = useChat();
 
 const settingsStore = useSettingsStore();
@@ -160,7 +173,6 @@ onMounted(() => {
 });
 // E12: 移动端不支持内置浏览器——隐藏「浏览器预览」下拉入口
 const { supportsBrowser } = usePlatform();
-const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
 
 /** 本会话累计花费（等宽小字的数据源；0 时不渲染） */
 const convCost = computed(() => costStore.usageOf(currentConv.value?.id));
@@ -201,6 +213,38 @@ function openConsoleTab() {
 .new-chat-btn {
   flex-shrink: 0;
   margin-left: 6px;
+}
+
+/* 工作目录：与空间标签同层级的弱化标签，长路径省略；点击打开目录选择对话框 */
+.conv-dir-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 280px;
+  padding: 2px 8px;
+  border: 1px solid var(--el-border-color-lighter, #e5e7eb);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--el-text-color-secondary, #64748b);
+  font-size: 12px;
+  cursor: pointer;
+}
+.conv-dir-chip:hover {
+  border-color: var(--el-color-primary-light-5, #a78bfa);
+  color: var(--el-color-primary, #7c3aed);
+}
+.conv-dir-chip.is-empty { border-style: dashed; }
+.conv-dir-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--el-font-family-mono, ui-monospace, monospace);
+}
+
+/* 移动端顶栏按钮多：目录只留一个短片段，别把标题挤掉 */
+@media (max-width: 767px) {
+  .conv-dir-chip { max-width: 120px; }
 }
 
 /* 会话累计花费：等宽小字（仪表读数，不是入口） */
