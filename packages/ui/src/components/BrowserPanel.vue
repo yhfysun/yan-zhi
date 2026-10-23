@@ -714,8 +714,7 @@ const cursorPos = computed(() => {
   if (c.tabId && c.tabId !== activeTabId.value) return null;
   return c;
 });
-// 常驻「AI 工作中」光标（2026-10-21）：run_script 这类动作不产生坐标，仍要让用户看到 agent 正在这一页干活。
-// 有坐标用真实坐标；没有就停在视口中部，任务结束（agentCursorVisible 变假）随之消失。
+// 常驻光标：任务进行中默认停在视口中部（"AI 工作中"），有真实坐标就移到目标上并停住。
 const cursorShown = computed(() => {
   if (!agentCursorVisible.value || !activeTabId.value) return null;
   if (cursorPos.value) return cursorPos.value;
@@ -786,7 +785,17 @@ const activeTab = computed(() => tabs.value.find((t: BrowserTab) => t.id === act
 const highlightOn = ref(false);
 // ★ 2026-10-21：编号层改为「agent 操作时自动开启」。用户手动关过一次后，本次挂载内不再自动开。
 const highlightUserOff = ref(false);
+// 本次开启是否由"agent 开始操作"自动触发 —— 任务结束时只自动关掉这种，不动用户手动开的。
+const highlightAuto = ref(false);
 async function applyHighlight(on: boolean, silent = false) {
+  if (!on) {
+    // 关：所有 tab 一并对掉，避免后台页残留编号框（任务结束后用户要能正常自己操作）。
+    highlightOn.value = false;
+    for (const t of tabs.value) {
+      try { (window as any).electronAPI.browserView.action(t.id, 'highlight', { on: false }); } catch { /* ignore */ }
+    }
+    return;
+  }
   if (!activeTabId.value) { if (!silent) ElMessage.warning('请先打开一个网页'); return; }
   try {
     const r: any = await (window as any).electronAPI.browserView.action(activeTabId.value, 'highlight', { on });
@@ -800,6 +809,7 @@ async function applyHighlight(on: boolean, silent = false) {
 async function toggleHighlight() {
   // 当前开着 = 用户要关：记住这个意图，之后不再自动开启
   highlightUserOff.value = highlightOn.value;
+  highlightAuto.value = false;   // 手动操作后不再视为"自动开"，避免任务结束时被自动关掉
   await applyHighlight(!highlightOn.value);
 }
 // 切 tab / 面板挂载时：若开着高亮，或 agent 正在操作（且用户没手动关过），给激活页补一层（幂等）。
@@ -810,10 +820,14 @@ watch(activeTabId, (tid) => {
     .then((r: any) => { if (r && r.highlight) highlightOn.value = true; })
     .catch(() => {});
 }, { immediate: true });
-// agent 开始操作浏览器 → 自动打开编号层（否则用户会以为这个能力消失了）。
+// agent 开始操作 → 自动开编号层；任务结束 → 自动关（用户自己操作时不该满屏编号框）。
 watch(() => chatStore.browserTaskActive, (active) => {
   if (active && !highlightOn.value && !highlightUserOff.value && activeTabId.value) {
+    highlightAuto.value = true;
     void applyHighlight(true, true);
+  } else if (!active && highlightOn.value && highlightAuto.value) {
+    highlightAuto.value = false;
+    void applyHighlight(false, true);
   }
 });
 

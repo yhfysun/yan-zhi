@@ -650,12 +650,10 @@ export const useChatStore = defineStore('chat', () => {
   // 盖住且只闪现 0.5s，等于看不见）。tabId 用于多面板实例归属判断；at 用于重触发 CSS 动画。
   const agentCursor = ref<{ tabId: string | null; x: number; y: number; label: string; kind: string; at: number } | null>(null);
   let agentCursorHideTimer: ReturnType<typeof setTimeout> | null = null;
-  /** 最后一次动作后光标停留多久淡出 */
-  const AGENT_CURSOR_LINGER_MS = 1200;
+  // ★ 2026-10-22：光标"移动后停住"——不再 1.2s 自动淡出，停在最后一次操作的位置；
+  //   任务结束 / 切会话时由 clearAgentCursor 统一清掉。
   function onAgentCursor(tabId: string | null, x: number, y: number, label: string, kind: string) {
     agentCursor.value = { tabId, x, y, label, kind, at: Date.now() };
-    if (agentCursorHideTimer) clearTimeout(agentCursorHideTimer);
-    agentCursorHideTimer = setTimeout(() => { agentCursor.value = null; }, AGENT_CURSOR_LINGER_MS);
   }
   function clearAgentCursor() {
     if (agentCursorHideTimer) { clearTimeout(agentCursorHideTimer); agentCursorHideTimer = null; }

@@ -132,5 +132,5 @@ test('接线契约：fill_form 不得在 typeIn 之前预全选（会破坏 Draf
 });
 
 test('接线契约：注入版本已递增（旧页面必须重新注入新脚本）', () => {
-  assert.match(MAIN, /__yzVersion:5\}/, '注入脚本内容变了但 __yzVersion 没递增，旧页面不会重新注入');
+  assert.match(MAIN, /__yzVersion:6\}/, '注入脚本内容变了但 __yzVersion 没递增，旧页面不会重新注入');
 });

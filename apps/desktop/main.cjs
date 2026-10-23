@@ -2126,11 +2126,12 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
     if (wc && extensionScripting) extensionScripting.attachToWebContents(wc);
     if (wc && extensionWebNavigation) extensionWebNavigation.attachToWebContents(wc);
   } catch { /* wcId 无效/已销毁则忽略，导航后会随新 did-finish 再注册 */ }
-  // ★ 2026-10-22：guest 就绪即补编号层。新开/后台 tab 的高亮请求往往早于 guest 注册，
-  //   那一刻必然以"浏览器未就绪"失败；这里补一次（幂等，runHighlight 内部先注入助手）。
-  if (highlightEnabled) {
-    const wcH = guestWebContents(tabId);
-    if (wcH) { runHighlight(wcH, true).catch(() => { /* 纯视觉辅助，失败静默 */ }); }
+  // ★ 2026-10-22：guest 就绪即注入助手 + 补编号层。
+  //   注入此前是懒的（首次动作/导航才跑）⇒ 新页面刚打开时既没有光标坐标监听，也没有编号。
+  const wcH = guestWebContents(tabId);
+  if (wcH) {
+    injectYzAssistant(wcH).catch(() => { /* 注入失败不影响页面 */ });
+    if (highlightEnabled) runHighlight(wcH, true).catch(() => { /* 纯视觉辅助，失败静默 */ });
   }
   return true;
 });
@@ -3253,6 +3254,16 @@ async function injectYzAssistant(wc) {
         window.__yzLastCursor={x:rr.x+rr.width/2,y:rr.y+rr.height/2,label:'输入',at:Date.now()};
       }catch(err){}
     },true);
+    // ★ 2026-10-22：聚焦也算一次"鼠标移动"——脚本用 .focus() / execCommand 改值时不一定触发 input，
+    //   只看 click/input 会让光标长时间不动（用户实报）。
+    document.addEventListener('focusin',function(e){
+      try{
+        var t=e.target;if(!t||!t.getBoundingClientRect)return;
+        var rr=t.getBoundingClientRect();
+        if(rr.width<1&&rr.height<1)return;
+        window.__yzLastCursor={x:rr.x+rr.width/2,y:rr.y+rr.height/2,label:'输入',at:Date.now()};
+      }catch(err){}
+    },true);
     // ★ 受控组件兼容：React/Vue 会用原型属性覆盖 value setter，直接 el.value= 赋值不触发其 onChange。
     // 必须用原型上的原生 value setter（native setter）写入再派发 input 事件，框架才能感知到变化。
     function nativeValueSetter(el){
@@ -3529,7 +3540,7 @@ async function injectYzAssistant(wc) {
       /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
          改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
          ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
-      __yzVersion:5};
+      __yzVersion:6};
   })()`);
 }
 
@@ -3537,8 +3548,9 @@ async function injectYzAssistant(wc) {
 // 变化检测：这些 action 可能改变页面状态，执行后对比前后快照，防止模型盲操作死循环
 const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'check', 'uncheck', 'submit_form', 'search', 'next_page', 'prev_page']);
 
-// 常驻元素编号高亮（2026-10-20）：默认开启（用户要"一眼看到 AI 在操作哪"），面板开关可关。
-let highlightEnabled = true;
+// 常驻元素编号高亮（2026-10-20）：默认关闭，由面板在"agent 开始操作"时打开；
+//   任务结束后面板会关掉它（2026-10-22：否则用户自己操作时满屏编号框消不掉）。
+let highlightEnabled = false;
 
 /**
  * 常驻元素编号高亮：把「可点击元素描边 + 编号」画进页面，供用户在面板里**实时**看到 agent 的操作目标。
@@ -3580,14 +3592,12 @@ async function runHighlight(wc, on) {
     if(!ov){ov=document.createElement('div');ov.id=OID;ov.style.cssText='position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647;';document.documentElement.appendChild(ov);}
     function paint(){
       ov.innerHTML='';
-      // ★ 2026-10-22：整页淡橙色罩 + 角标 —— 一眼看出"这一页正在被 AI 操作"。
-      //   pointer-events:none 不影响任何点击；编号框随后追加，自然画在色罩之上。
+      // ★ 2026-10-22：彩色渐晕（中间透明、四周彩色），去掉角标文字，不挡视线也不抢内容。
       var tint=document.createElement('div');
-      tint.style.cssText='position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(249,115,22,0.06);box-shadow:inset 0 0 0 2px rgba(249,115,22,0.55);pointer-events:none;';
-      var tip=document.createElement('div');
-      tip.textContent='AI 正在操作本页';
-      tip.style.cssText='position:fixed;left:8px;top:8px;background:#f97316;color:#fff;font:bold 12px/18px sans-serif;padding:2px 9px;border-radius:9px;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25);';
-      ov.appendChild(tint);ov.appendChild(tip);
+      tint.style.cssText='position:fixed;left:0;top:0;right:0;bottom:0;pointer-events:none;'
+        +'background:radial-gradient(ellipse at center,rgba(255,255,255,0) 48%,rgba(56,189,248,0.10) 78%,rgba(168,85,247,0.18) 100%);'
+        +'box-shadow:inset 0 0 0 2px rgba(99,102,241,0.55),inset 0 0 80px rgba(236,72,153,0.16);';
+      ov.appendChild(tint);
       var n=0;
       function walk(root){
         if(n>=250)return;
