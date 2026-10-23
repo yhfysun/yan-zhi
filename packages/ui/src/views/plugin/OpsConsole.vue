@@ -1734,21 +1734,44 @@ async function gotoRemoteDir(w: OpsWin, dir: string) {
   h.transport.send(`cd ${quoteForShell(target)}\r`);
   rememberCwd(target);
 
-  // 等 shell 把新的提示符吐回来（最多 3s）。判据：remoteCwd 被 accumulateOutput 更新。
-  const deadline = Date.now() + 3000;
+  // 第一判据：等提示符里的路径变化（PS1 带路径的 shell 大多 1s 内就到）。
+  const deadline = Date.now() + 1200;
   const prev = before;
   while (Date.now() < deadline) {
     if (w.remoteCwd !== prev) break;
-    await new Promise((r) => window.setTimeout(r, 80));
+    await new Promise((r) => window.setTimeout(r, 60));
   }
-  if (w.remoteCwd === prev) {
-    // shell 没回新提示符（cd 失败会先报错再回原提示符 → 路径不变）
-    ElMessage.error(`切换失败，仍在 ${before || '原目录'}（目录不存在或无权限？）`);
+  if (w.remoteCwd !== prev) {
+    ElMessage.success(`已切换目录：${w.remoteCwd}`);
+    void loadCwdSubdirs(w);
     return;
   }
-  ElMessage.success(`已切换目录：${w.remoteCwd}`);
-  void loadCwdSubdirs(w); // cd 成功后刷新子目录清单（2026-10-23「这些目录要列出来啊」）
-  void expected; // 乐观值仅用于相对路径推算，最终以提示符为准
+
+  // ★ 第二判据（2026-10-23 实报「切换失败，仍在 /home/app」但目录其实切成功了）：
+  //   PS1 不带路径的 shell（bash-5.1$、精简容器镜像很常见）cd 成功后提示符**纹丝不动**，
+  //   只靠"提示符变没变"判成败会全部误报失败。改用 SFTP 验证目标目录是否真的存在 ——
+  //   SFTP 与 shell 是两条会话，但"这个路径存不存在/进不进得去"是文件系统的事实，通用。
+  //   验证通过 → 按成功处理，目录显示用乐观值（提示符不显示路径，没有更准的来源）。
+  if (expected.startsWith('/')) {
+    const conn = connOf(w);
+    if (conn) {
+      let verified = false;
+      try {
+        const r = await api.get<{ path: string; entries: unknown[] }>(
+          `/plugin/ops-shell/sftp/list?connectionId=${conn.id}&path=${encodeURIComponent(expected)}`,
+        );
+        verified = 'data' in r;
+      } catch { /* 列不出来 = 目录不存在/无权限 → 走失败分支 */ }
+      if (verified) {
+        w.remoteCwd = expected;
+        ElMessage.success(`已切换目录：${expected}`);
+        void loadCwdSubdirs(w);
+        return;
+      }
+    }
+  }
+  // 真失败：shell 报错后仍停在原目录（SFTP 也证实目标不可达）
+  ElMessage.error(`切换失败，仍在 ${before || '原目录'}（目录不存在或无权限？）`);
 }
 /** 给命令里的路径加引号（含空格/特殊字符时必须，否则 cd 只吃到第一段） */
 function quoteForShell(p: string): string {
