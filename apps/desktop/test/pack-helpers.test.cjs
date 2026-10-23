@@ -20,6 +20,8 @@ const {
   DEFAULT_RELEASE_ROOT,
   APP_OUT_DIRS,
   resolveArtifactSuffix,
+  normalizeArtifactSuffix,
+  artifactSuffixFor,
   resolvePkgVersion,
   editionDirName,
   checkOutputDirReady,
@@ -392,5 +394,46 @@ describe('pruneOldReleases - 旧版本目录收口（★ C 盘累积根因修复
     const r = pruneOldReleases(root, { keep: 2, fs });
     assert.strictEqual(r.removed.length, 1);
     assert.ok(r.removed[0].includes(path.join('desktop', 'pro')));
+  });
+});
+
+describe('自定义产物名（--name / YZ_ARTIFACT_SUFFIX）', () => {
+  test('normalizeArtifactSuffix：统一带前导 -，非法字符收敛为 -', () => {
+    assert.strictEqual(normalizeArtifactSuffix('v2'), '-v2');
+    assert.strictEqual(normalizeArtifactSuffix('-v2'), '-v2');
+    assert.strictEqual(normalizeArtifactSuffix('  '), '');
+    assert.strictEqual(normalizeArtifactSuffix(undefined), '');
+    assert.strictEqual(normalizeArtifactSuffix('a/b:c'), '-a-b-c');
+    assert.strictEqual(normalizeArtifactSuffix('办公 测试'), '-办公-测试');
+  });
+
+  test('★ 自定义名优先于模式短码与档位', () => {
+    assert.strictEqual(
+      artifactSuffixFor({ edition: 'pro', modes: ['office', 'ops'], override: 'v2' }),
+      '-v2',
+    );
+    assert.strictEqual(artifactSuffixFor({ edition: 'pro', modes: ['office', 'ops'] }), '-pro-office-ops');
+    assert.strictEqual(artifactSuffixFor({ edition: 'pro', modes: null }), '-pro');
+  });
+
+  test('★ 不同命名各占一个产物目录 —— 换模式重打包不会覆盖上一份', () => {
+    const repoRoot = path.resolve('/repo');
+    const base = { repoRoot, version: '0.1.0' };
+    const dirOf = (name) =>
+      outDirForEdition('pro', {
+        ...base,
+        dirName: editionDirName(artifactSuffixFor({ edition: 'pro', override: name })),
+      });
+    assert.strictEqual(dirOf('v2'), path.resolve(repoRoot, 'dist-release', 'desktop', 'v2', '0.1.0'));
+    assert.strictEqual(dirOf('v3'), path.resolve(repoRoot, 'dist-release', 'desktop', 'v3', '0.1.0'));
+    assert.notStrictEqual(dirOf('v2'), dirOf('v3'));
+  });
+
+  test('未指定命名时目录仍是档位名（原行为不变）', () => {
+    const repoRoot = path.resolve('/repo');
+    assert.strictEqual(
+      outDirForEdition('pro', { repoRoot, version: '0.1.0' }),
+      path.resolve(repoRoot, 'dist-release', 'desktop', 'pro', '0.1.0'),
+    );
   });
 });

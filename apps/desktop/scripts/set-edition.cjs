@@ -14,10 +14,12 @@
  *   node scripts/set-edition.cjs lite
  *   node scripts/set-edition.cjs basic
  *   node scripts/set-edition.cjs pro
+ *   YZ_ARTIFACT_SUFFIX=-v2 node scripts/set-edition.cjs pro   # 自定义产物名后缀
  */
 const fs = require('fs');
 const path = require('path');
 const { readCatalog, parseModesArg, resolveModes } = require('../../../scripts/lib/mode-build.cjs');
+const { artifactSuffixFor } = require('./lib/pack-helpers.cjs');
 
 const EDITIONS = ['lite', 'basic', 'pro'];
 
@@ -59,10 +61,13 @@ try {
   console.error(`[set-edition] 模式参数非法: ${e.message}`);
   process.exit(1);
 }
-// 自定义模式时后缀带模式短码，避免同一档位不同模式组合的安装包互相覆盖。
-const customSuffix = process.env.YZ_BUILD_MODES
-  ? `-${edition}-${buildModes.join('-')}`
-  : `-${edition}`;
+// 自定义模式时后缀带模式短码，避免同一档位不同模式组合的安装包互相覆盖；
+// YZ_ARTIFACT_SUFFIX（package.cjs --name 透传）优先级最高，原样作为后缀。
+const customSuffix = artifactSuffixFor({
+  edition,
+  modes: process.env.YZ_BUILD_MODES ? buildModes : null,
+  override: process.env.YZ_ARTIFACT_SUFFIX,
+});
 
 const outPath = path.join(__dirname, '..', 'edition.json');
 const payload = {

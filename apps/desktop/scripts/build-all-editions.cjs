@@ -50,8 +50,10 @@ const {
   EDITION_CONFIG,
   EDITION_LABEL,
   DEFAULT_RELEASE_ROOT,
+  artifactSuffixFor,
   checkOutputDirReady,
   clearAppOutDirs,
+  editionDirName,
   parseEditionsArgv,
   outDirForEdition,
   resolvePkgVersion,
@@ -217,8 +219,33 @@ function preflight() {
 
 // ① 开工前先探输出目录：被占用的 appOutDir 能提前几十秒发现，
 //    不必等到 electron-builder 删文件时才炸（那时错误信息看不出是锁）。
-const outDirFor = (edition) =>
-  outDirForEdition(edition, { repoRoot, version: DESKTOP_VERSION, outRoot: OUT_ROOT });
+
+/**
+ * 本次构建的产物后缀 —— 目录名与安装包名都由它派生，**必须在打包前就定下来**
+ * （预检、清目录、set-edition、electron-build 四处用同一个值，不能各算各的）。
+ *
+ * 优先级：YZ_ARTIFACT_NAME（package.cjs --name）> YZ_ARTIFACT_SUFFIX > 模式短码 > 纯档位。
+ * 一次构建多档时 `--name` 追加档位名，否则三档会抢同一个文件名。
+ */
+function suffixFor(edition) {
+  const customName = process.env.YZ_ARTIFACT_NAME
+    ? (editions.length > 1 ? `${process.env.YZ_ARTIFACT_NAME}-${edition}` : process.env.YZ_ARTIFACT_NAME)
+    : null;
+  return artifactSuffixFor({
+    edition,
+    modes: parseModesArg(process.env.YZ_BUILD_MODES),
+    override: customName || process.env.YZ_ARTIFACT_SUFFIX,
+  });
+}
+
+function outDirFor(edition) {
+  return outDirForEdition(edition, {
+    repoRoot,
+    version: DESKTOP_VERSION,
+    outRoot: OUT_ROOT,
+    dirName: editionDirName(suffixFor(edition)),
+  });
+}
 
 console.log('=== [1/3] 检查输出目录可写性 ===');
 for (const edition of editions) {
@@ -309,27 +336,26 @@ console.log(`输出目录：${rel(path.resolve(repoRoot, OUT_ROOT, 'desktop'))}/
 
 for (const edition of editions) {
   console.log(`\n──────── ${edition}（${LABEL[edition]}）────────`);
+  // 后缀先算好：目录名、edition.json、安装包名三处必须同一个值。
+  const suffix = suffixFor(edition);
+  const outDir = outDirFor(edition);
   // ★ 必须先写 edition.json：electron-build.cjs 读它注入 YZ_ARTIFACT_SUFFIX 与档位 env，
   //   顺序颠倒会打出「产物名与内容档位不一致」的包。
-  run(process.execPath, ['./scripts/set-edition.cjs', edition]);
-  // 后缀由 set-edition 决定（自定义 --modes 会带模式短码），这里读同一份文件避免两处漂移。
-  const editionCfg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'edition.json'), 'utf8'));
-
-  const outDir = outDirFor(edition);
+  run(process.execPath, ['./scripts/set-edition.cjs', edition], { YZ_ARTIFACT_SUFFIX: suffix });
   clearOutputDir(outDir);
 
   // 显式传 YZ_OUTPUT_DIR + YZ_ARTIFACT_SUFFIX：
   //   · 输出目录严格落在期望位置，不会散落；
-  //   · 后缀与 edition.json 同源，避免读不到时回落到 -basic（档位与文件名不一致）。
+  //   · 后缀与目录名同源，避免读不到时回落到 -basic（档位与文件名不一致）。
   run(process.execPath, ['./scripts/electron-build.cjs', CONFIG[edition]], {
     YZ_OUTPUT_DIR: outDir,
-    YZ_ARTIFACT_SUFFIX: editionCfg.artifactSuffix || `-${edition}`,
+    YZ_ARTIFACT_SUFFIX: suffix,
   });
 }
 
 console.log(`\n=== 完成：已产出 ${editions.length} 个包 ===`);
 for (const e of editions) {
-  console.log(`  · ${LABEL[e]}（${e}）→ ${rel(outDirFor(e))}/  （产物名以 -${e} 结尾）`);
+  console.log(`  · ${LABEL[e]}（${e}）→ ${rel(outDirFor(e))}/  （产物名后缀 ${suffixFor(e)}）`);
 }
 console.log(
   '\n提示：最后写入的 edition.json 是 ' +

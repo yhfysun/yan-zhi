@@ -67,6 +67,36 @@ function editionDirName(artifactSuffix) {
 }
 
 /**
+ * 规范化用户指定的产物名（`--name=v2` / `--name 办公版`）。
+ *
+ * 返回**带前导 `-` 的后缀**（`-v2`），与 edition.json 的 artifactSuffix 同形态；
+ * 空值返回 ''，表示「没指定」。Windows 文件名非法字符一律替换为 `-`。
+ *
+ * ★ 为什么必须规范化：后缀直接拼进安装包名与目录名，原样透传时一个 `/`
+ *   或 `:` 就让写盘失败，而报错只会说路径不存在，看不出是参数里的字符捅的。
+ */
+function normalizeArtifactSuffix(input) {
+  const raw = String(input ?? '').trim();
+  if (!raw) return '';
+  const cleaned = raw.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-').replace(/^-+/, '');
+  return cleaned ? `-${cleaned}` : '';
+}
+
+/**
+ * 本次构建的产物后缀 —— **唯一判定**（set-edition 与 build-all-editions 共用）。
+ *
+ * 优先级：显式 override（--name / YZ_ARTIFACT_SUFFIX）> 模式短码 > 纯档位。
+ * ★ 两处判定必须同源：分叉会打出「目录名与安装包名不一致」的包，
+ *   表现为产物散落到两个地方、用户找不到。
+ */
+function artifactSuffixFor({ edition, modes, override } = {}) {
+  const custom = normalizeArtifactSuffix(override);
+  if (custom) return custom;
+  const list = Array.isArray(modes) ? modes.filter(Boolean) : [];
+  return list.length ? `-${edition}-${list.join('-')}` : `-${edition}`;
+}
+
+/**
  * electron-builder 会复用（并需要清空重建）的 appOutDir，按平台列举。
  *
  * 同一输出目录连续构建多档时，上一档留在这里的 app.asar 有 200MB+，
@@ -161,9 +191,14 @@ function parseEditionsArgv(argv) {
   return { editions, separate, invalid };
 }
 
-/** 桌面某档的输出目录（绝对路径）：dist-release/desktop/<档>/<版本>/。 */
-function outDirForEdition(edition, { repoRoot, version, outRoot = DEFAULT_RELEASE_ROOT }) {
-  return path.resolve(repoRoot, outRoot, 'desktop', edition, version || '0.0.0');
+/**
+ * 桌面某档的输出目录（绝对路径）：dist-release/desktop/<档>/<版本>/。
+ *
+ * `dirName` 覆盖中间的目录名 —— 用 `--name` 自定义命名时传进来，
+ * 这样每个命名各占一个目录，重打包不会碰上一份产物。
+ */
+function outDirForEdition(edition, { repoRoot, version, outRoot = DEFAULT_RELEASE_ROOT, dirName } = {}) {
+  return path.resolve(repoRoot, outRoot, 'desktop', dirName || edition, version || '0.0.0');
 }
 
 /** 安卓 APK 的输出目录（绝对路径）：dist-release/android/<版本>/。 */
@@ -338,6 +373,8 @@ module.exports = {
   DEFAULT_RELEASE_ROOT,
   APP_OUT_DIRS,
   resolveArtifactSuffix,
+  normalizeArtifactSuffix,
+  artifactSuffixFor,
   resolvePkgVersion,
   resolvePnpm,
   editionDirName,

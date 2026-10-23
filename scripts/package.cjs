@@ -27,6 +27,11 @@
  *                                  # 只把「办公 + 开发」的代码打进包：
  *                                  # 未选模式的入口/页面/插件视图不产出 chunk。
  *                                  # 与 --editions 正交（后者决定授权档与预置码）。
+ *   node scripts/package.cjs desktop:pro --name=办公测试
+ *                                  # 产物名与目录带上该名称：
+ *                                  #   yan-zhi-Setup-<版本>-x64-办公测试.exe
+ *                                  #   dist-release/desktop/办公测试/<版本>/
+ *                                  # 每个名称各占一份，换模式重打包不会覆盖上一份。
  *   node scripts/package.cjs --pick-modes
  *                                  # 兼容参数：交互式运行时本就会弹模式选择；
  *                                  # 该参数保留给"想显式声明"的脚本调用。
@@ -74,6 +79,7 @@ const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版' 
 const {
   DEFAULT_RELEASE_ROOT,
   androidOutDir,
+  editionDirName,
   outDirForEdition,
   resolvePkgVersion,
   pruneOldReleases,
@@ -95,12 +101,28 @@ const MOBILE_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'mob
 let RELEASE_ROOT = process.env.YZ_ALL_OUT_DIR || DEFAULT_RELEASE_ROOT;
 let OUTPUT_DIRS = null;
 let ANDROID_APK = null;
+/** `--name` 指定的产物名（null = 未指定）；本轮打几档，决定要不要拼档位名避免撞名。 */
+let DESKTOP_NAME = null;
+let DESKTOP_EDITION_COUNT = 1;
+
+/** 桌面产物目录名：命名构建各自独立目录，未命名则沿用档位名（与原行为一致）。 */
+function desktopDirName(edition) {
+  if (!DESKTOP_NAME) return edition;
+  const raw = DESKTOP_EDITION_COUNT > 1 ? `${DESKTOP_NAME}-${edition}` : DESKTOP_NAME;
+  return editionDirName(raw);
+}
+
 /** 按给定的产物根重算全部产物路径 */
 function computePaths(outRoot) {
   RELEASE_ROOT = outRoot;
   OUTPUT_DIRS = Object.fromEntries(ALL_EDITIONS.map((e) => [
     e,
-    path.relative(ROOT, outDirForEdition(e, { repoRoot: ROOT, version: DESKTOP_VERSION, outRoot })),
+    path.relative(ROOT, outDirForEdition(e, {
+      repoRoot: ROOT,
+      version: DESKTOP_VERSION,
+      outRoot,
+      dirName: desktopDirName(e),
+    })),
   ]));
   ANDROID_APK = path.join(
     path.relative(ROOT, androidOutDir({ repoRoot: ROOT, version: MOBILE_VERSION, outRoot })),
@@ -148,6 +170,26 @@ if (MODES_FLAG !== null) {
     console.error(`\x1b[31m[ERROR]\x1b[0m --modes 非法: ${e.message}`);
     process.exit(1);
   }
+}
+
+// ── 产物名（--name=v2 / --name 办公版）──
+// 每个命名各占一个产物目录、各出一个安装包名 —— 换模式/换用途重打包不会覆盖上一份。
+const NAME_FLAG = (() => {
+  const hit = argv.find((a) => a.startsWith('--name='));
+  if (hit) return hit.slice('--name='.length);
+  const i = argv.indexOf('--name');
+  const v = i >= 0 ? argv[i + 1] : null;
+  return v && !v.startsWith('-') ? v : null;
+})();
+if (argv.includes('--name') && !NAME_FLAG) {
+  console.error('\x1b[31m[ERROR]\x1b[0m --name 需要一个名称，例如 --name=v2');
+  process.exit(1);
+}
+if (NAME_FLAG) {
+  // 目录名跟着命名走：移位/校验/清单三处都读 OUTPUT_DIRS，这里必须同步重算。
+  // 档数此时未知，多档时的 `<名称>-<档>` 组合在主流程拿到 targets 后再补算一次。
+  DESKTOP_NAME = NAME_FLAG;
+  computePaths(RELEASE_ROOT);
 }
 
 // --list-modes：不打包，只列出可选模式与各档位预设，避免记参数。
@@ -773,7 +815,10 @@ function buildDesktop(editions) {
     path.join('apps', 'desktop', 'scripts', 'build-all-editions.cjs'),
     ...editions,
   ], {
-    env: BUILD_MODES ? { YZ_BUILD_MODES: BUILD_MODES.join(',') } : {},
+    env: {
+      ...(BUILD_MODES ? { YZ_BUILD_MODES: BUILD_MODES.join(',') } : {}),
+      ...(NAME_FLAG ? { YZ_ARTIFACT_NAME: NAME_FLAG } : {}),
+    },
   });
   ok('桌面构建完成');
 }
@@ -1025,6 +1070,11 @@ function cleanFreshRoot() {
 (async () => {
   let targets = parseTargets(argv);
   if (!targets) targets = await askTargets();
+  if (NAME_FLAG) {
+    // 多档同跑时各档追加档位名，否则三档会抢同一个文件名与目录。
+    DESKTOP_EDITION_COUNT = Math.max(1, targets.desktop.length);
+    computePaths(RELEASE_ROOT);
+  }
   if (!targets.desktop.length && !targets.android) {
     fail('未选择任何目标');
     process.exit(1);
@@ -1041,6 +1091,9 @@ function cleanFreshRoot() {
       .filter(Boolean).join(' + ')
   }`));
   if (BUILD_MODES) info(`代码模式：${BUILD_MODES.join(', ')}（未选模式的代码不会进包）`);
+  if (NAME_FLAG && targets.desktop.length) {
+    info(`产物命名：${NAME_FLAG}${targets.desktop.length > 1 ? '（每档追加档位名）' : ''} → dist-release/desktop/${desktopDirName(targets.desktop[0])}/`);
+  }
 
   preflight(targets);
 
