@@ -267,3 +267,39 @@ describe('⑤ 深度思考徽标的接入条件', () => {
     expect(SCRIPT).not.toMatch(/roundReasoningText\([^)]*\)\s*\.length/);
   });
 });
+
+/**
+ * ⑥ 流式期过程区自动跟随必须尊重用户滚动意图（2026-10-23 用户实报：
+ *   「我展开工具调用详情又会重新跳转到最下面，导致我又要滚动半天」）。
+ *
+ * 背景：`.agent-process-steps` 限高 60vh 内滚（长任务一轮近 200 步）。任务运行中每条
+ *   SSE 增量都会重算 messageRounds，原实现无条件 `last.scrollTop = last.scrollHeight`
+ *   —— 用户上翻读某次工具调用（展开详情还会触发按需拉取结果，再挖一次 messageRounds）
+ *   就被立刻顶回底部，长任务里过程区根本读不了。
+ *
+ * 钉：① 容器绑定 scroll 记录意图；② 跟随前必须查 stepsStick；③ 不得退回无条件贴底。
+ */
+describe('⑥ 过程区自动跟随尊重用户滚动意图', () => {
+  it('★★★ 过程区容器必须绑定 scroll（否则无法判断用户是否已上翻）', () => {
+    expect(TEMPLATE, '★ .agent-process-steps 没挂 @scroll —— 用户上翻意图无人记录')
+      .toMatch(/class="agent-process-steps"[^>]*@scroll[^=]*="onStepsScroll"/);
+    expect(SCRIPT, '★ 缺少 onStepsScroll（scroll 绑定了但没人写意图表）')
+      .toMatch(/function onStepsScroll\(/);
+  });
+
+  it('★★★ 自动跟随前必须查「用户是否贴底」，不得无条件贴底', () => {
+    expect(
+      SCRIPT,
+      '★ 跟随前没查 stepsStick —— 用户上翻看工具详情会被流式增量顶回底部',
+    ).toMatch(/if \(stepsStick\.get\(last\) === false\) return;[\s\S]{0,120}last\.scrollTop = last\.scrollHeight;/);
+  });
+
+  it('★ 意图表写入的是「是否贴底」（容差内算贴底，避免 1px 误判成上翻）', () => {
+    const start = SCRIPT.indexOf('function onStepsScroll');
+    expect(start, '★ 锚点缺失：function onStepsScroll').toBeGreaterThan(-1);
+    const fn = SCRIPT.slice(start, SCRIPT.indexOf('\n}', start));
+    expect(fn, '★ onStepsScroll 没写意图表').toMatch(/stepsStick\.set\(el,/);
+    expect(fn, '★ 贴底判定没有容差（scrollHeight - scrollTop - clientHeight 直接与 0 比会误判）')
+      .toMatch(/scrollHeight\s*-\s*el\.scrollTop\s*-\s*el\.clientHeight\s*<\s*\d+/);
+  });
+});

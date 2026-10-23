@@ -107,7 +107,7 @@
                 <span class="agent-process-summary-text">{{ processSummaryText(vr.round, vr.ri) }}</span>
                 <el-icon v-if="vr.round.hasAgentProcess" :size="12" class="agent-process-summary-chevron"><ArrowRight /></el-icon>
               </div>
-              <div v-if="vr.round.hasAgentProcess && isProcessOpen(vr.round, vr.ri)" class="agent-process-steps">
+              <div v-if="vr.round.hasAgentProcess && isProcessOpen(vr.round, vr.ri)" class="agent-process-steps" @scroll.passive="onStepsScroll">
                 <div v-if="hasHiddenSteps(vr.round)" class="agent-steps-fold">
                   <button type="button" class="agent-steps-fold-btn" @click="toggleEarlierSteps(vr.ri)">
                     {{ expandedEarlierSteps['round-' + vr.ri] ? '收起更早的步骤' : `已折叠更早的 ${hiddenStepCount(vr.round, vr.ri)} 步 · 点击展开` }}
@@ -1008,7 +1008,18 @@ watch(
   },
 );
 
-// 流式过程中：智能体思考过程区域限高后，自动滚到底部以看到最新工具调用进度
+// 流式过程中：智能体思考过程区域限高后，自动滚到底部以看到最新工具调用进度。
+// ★ 2026-10-23：原先无条件贴底 —— 任务运行中每条 SSE 增量都会重算 messageRounds，
+//   用户往上翻看某次工具调用（尤其是展开详情、按需拉取结果后）就被立刻顶回底部，
+//   长任务里根本读不了过程。改为**只在用户本来就贴着底部时**跟随：
+//   容器自身的 scroll 事件记录「用户主动上翻」意图，上翻后不再抢滚动条，
+//   滚回底部则恢复跟随。元素被 v-if 重建时无记录 → 默认跟随（新轮次本就该看最新）。
+const stepsStick = new WeakMap<HTMLElement, boolean>();
+function onStepsScroll(e: Event) {
+  const el = e.currentTarget as HTMLElement | null;
+  if (!el) return;
+  stepsStick.set(el, el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+}
 watch(
   messageRounds,
   () => {
@@ -1016,7 +1027,9 @@ watch(
     nextTick(() => {
       const all = messagesRef.value?.querySelectorAll<HTMLElement>('.agent-process-steps');
       const last = all?.[all.length - 1];
-      if (last) last.scrollTop = last.scrollHeight;
+      if (!last) return;
+      if (stepsStick.get(last) === false) return; // 用户已上翻：不抢滚动条
+      last.scrollTop = last.scrollHeight;
     });
   },
   { flush: 'post' },
