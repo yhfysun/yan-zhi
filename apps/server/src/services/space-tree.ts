@@ -120,16 +120,31 @@ export async function syncSpaceSubdirs(userId: string, spaceId: string): Promise
   return { spaceId, adopted, created, childLines: parent.task_type ? childLinesOf(parent.task_type) : [] };
 }
 
-/** 删父空间时子空间上提为顶层（与 task-types 删父类型"上提不级联"同语义） */
+/** 删父空间时子空间上提为**祖父**（没有祖父则到顶层）。
+ *  与 task-types 删父类型"上提不级联"同语义：删中间层不该把整棵子树拍平。 */
 export function promoteChildSpaces(spaceId: string): void {
-  try { db.prepare('UPDATE space SET parent_id = NULL WHERE parent_id = ?').run(spaceId); } catch { /* 列未迁移等：容忍 */ }
+  try {
+    const parent = db.prepare('SELECT parent_id FROM space WHERE id = ?').get(spaceId) as any;
+    db.prepare('UPDATE space SET parent_id = ? WHERE parent_id = ?').run(parent?.parent_id || null, spaceId);
+  } catch { /* 列未迁移等：容忍 */ }
 }
 
-/** parentId 合法性校验：父必须存在、不能是自己、只允许两级（父不能再有父） */
+/** parentId 合法性校验：父必须存在、不能是自己、不能挂到自己的子孙下（会成环）。
+ *  2026-10-23 用户拍板：放开「只支持两级」——目录树支持任意层级。 */
 export function validateParent(userId: string, spaceId: string | null, parentId: string): string | null {
   const parent = db.prepare('SELECT * FROM space WHERE id = ? AND user_id = ?').get(parentId, userId) as any;
   if (!parent) return '父空间不存在';
   if (spaceId && spaceId === parentId) return '空间不能以自己为父';
-  if (parent.parent_id) return '只支持两级目录（父任务目录下直接挂子目录）';
+  if (spaceId) {
+    // 从目标父往上走，撞到自己 = 把空间挂进了自己的子树 → 成环
+    let cur = parent;
+    const seen = new Set<string>();
+    while (cur) {
+      if (cur.id === spaceId) return '不能把空间挂到自己的子目录下（会成环）';
+      if (!cur.parent_id || seen.has(cur.id)) break;
+      seen.add(cur.id);
+      cur = db.prepare('SELECT * FROM space WHERE id = ? AND user_id = ?').get(cur.parent_id, userId) as any;
+    }
+  }
   return null;
 }

@@ -686,6 +686,10 @@ onUnmounted(() => {
   if (nowTickTimer) { clearTimeout(nowTickTimer); nowTickTimer = null; }
   // 每日分析调度器一并收口（此前无清理 → 组件卸载后 30 分钟一跳仍在跑）
   if (dailyAnalysisTimer) { dailyAnalysisTimer(); dailyAnalysisTimer = null; }
+  // ★ 2026-10-23：卸载时必须把编号层收掉。卸载后本组件不再有任何 watcher/事件，
+  //   主进程的 highlightEnabled 会一直为真 —— 之后每次导航/新开页都把橙框重画回来，
+  //   用户看到的就是「任务早停了，中间层还在」。
+  if (highlightOn.value) void applyHighlight(false, true);
 });
 const browserLiveFresh = computed(() =>
   pausedNow.value
@@ -799,10 +803,16 @@ const highlightUserOff = ref(false);
 const highlightAuto = ref(false);
 async function applyHighlight(on: boolean, silent = false) {
   if (!on) {
-    // 关：所有 tab 一并对掉，避免后台页残留编号框（任务结束后用户要能正常自己操作）。
+    // 关：先让主进程按自己的 tab 表全量清（含不在本面板 tabs 里的页/已隐藏页）。
+    // ★ 2026-10-23：此前只遍历本地 tabs 逐个发 off —— 面板状态一漂移就漏关，
+    //   而主进程的 highlightEnabled 仍为真，之后每次导航/新开页都把编号框重画回来。
     highlightOn.value = false;
+    const api = (window as any).electronAPI?.browserView;
+    if (typeof api?.highlightOffAll === 'function') {
+      try { await api.highlightOffAll(); return; } catch { /* 落回逐 tab 兜底 */ }
+    }
     for (const t of tabs.value) {
-      try { (window as any).electronAPI.browserView.action(t.id, 'highlight', { on: false }); } catch { /* ignore */ }
+      try { api?.action(t.id, 'highlight', { on: false }); } catch { /* ignore */ }
     }
     return;
   }
@@ -820,15 +830,19 @@ async function toggleHighlight() {
   // 当前开着 = 用户要关：记住这个意图，之后不再自动开启
   highlightUserOff.value = highlightOn.value;
   highlightAuto.value = false;   // 手动操作后不再视为"自动开"，避免任务结束时被自动关掉
+  // 手动开 → 收尾不自动关；手动关 → 收尾照常清（本就是要它消失）
+  chatStore.browserHighlightManual = !highlightOn.value;
   await applyHighlight(!highlightOn.value);
 }
 // 切 tab / 面板挂载时：若开着高亮，或 agent 正在操作（且用户没手动关过），给激活页补一层（幂等）。
 watch(activeTabId, (tid) => {
   if (!tid) return;
   if (!highlightOn.value && (highlightUserOff.value || !chatStore.browserTaskActive)) return;
-  (window as any).electronAPI.browserView.action(tid, 'highlight', { on: true })
-    .then((r: any) => { if (r && r.highlight) highlightOn.value = true; })
-    .catch(() => {});
+  // ★ 2026-10-23：这条「挂载/切 tab 补一层」同样属于**自动开**。此前不置 highlightAuto，
+  //   于是任务结束时 watcher 因 highlightAuto=false 而不关 —— 编号框永远留在页面上
+  //   （面板中途重挂一次就必现，用户反复实报「任务停了中间层还在」）。
+  if (!highlightOn.value) highlightAuto.value = true;
+  void applyHighlight(true, true);
 }, { immediate: true });
 // agent 开始操作 → 自动开编号层；任务结束 → 自动关（用户自己操作时不该满屏编号框）。
 watch(() => chatStore.browserTaskActive, (active) => {
@@ -2063,6 +2077,8 @@ function onWebviewReady(tabId: string) {
       // ★ 2026-10-22：guest 就绪后再补一次编号层。任务刚开始时 guest 往往还没注册，
       //   那一次 highlight 会以"浏览器未就绪"失败，之后没人重试 → 用户看不到编号。
       if (tabId === activeTabId.value && !highlightOn.value && !highlightUserOff.value && chatStore.browserTaskActive) {
+        // ★ 同上：这条也是自动开，必须记 auto，否则任务收尾关不掉
+        highlightAuto.value = true;
         void applyHighlight(true, true);
       }
     } else {

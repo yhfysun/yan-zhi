@@ -266,6 +266,13 @@ describe('⑤ 深度思考徽标的接入条件', () => {
     expect(TEMPLATE).not.toMatch(/roundReasoningText\([^)]*\)\s*\.length/);
     expect(SCRIPT).not.toMatch(/roundReasoningText\([^)]*\)\s*\.length/);
   });
+
+  // ★ 2026-10-23 用户实报「为啥有两个深度思考」：流式进行中，汇总徽标与流式徽标
+  //   条件同时成立 → 同一段 reasoning 被渲染两遍（字数也一样，看着像重复）。
+  it('★ 流式「思考中」徽标在场时，汇总徽标必须让位', () => {
+    expect(TEMPLATE).toContain('!isStreamingReasoningShown(vr.round, vr.ri)');
+    expect(SCRIPT).toContain('function isStreamingReasoningShown');
+  });
 });
 
 /**

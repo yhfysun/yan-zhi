@@ -142,6 +142,13 @@
           <SettingRow label="上下文保留条数" tip="触发压缩时保留的最近消息条数" tip-after>
             <el-input-number v-model="keepRecent" :min="2" :max="50" />
           </SettingRow>
+          <!-- 小说推文并发（2026-10-23）：随任务下发为子进程 env，模型也能在工具参数里覆盖 -->
+          <SettingRow label="小说推文 · TTS 并发" tip="Edge-TTS 并行路数（1-16）。网络好可调高提速；频繁 403/超时则调低" tip-after>
+            <el-input-number v-model="novelTtsConcurrency" :min="1" :max="16" style="width: 120px" />
+          </SettingRow>
+          <SettingRow label="小说推文 · 合成并发" tip="分段并行编码段数：0=按 CPU 自动，1=关闭分段退回整片单次编码，上限 8" tip-after>
+            <el-input-number v-model="novelComposeConcurrency" :min="0" :max="8" style="width: 120px" />
+          </SettingRow>
           <!-- 费用预算（2026-10-17 任务费用核算）：按会话累计 LLM 花费，到阈值**只提醒、不停任务**（D4）。
                智能体上还可配更严的「单任务费用上限」（取更严者生效）。 -->
           <SettingRow label="费用预算" tip="按会话累计花费，到阈值只提醒、不会停止任务；关闭后仍统计，只是不提醒" tip-after>
@@ -776,6 +783,9 @@ function clearMobileApiBase(): void {
 const defaultPlatformId = ref('');
 const defaultModelId = ref('');
 const keepRecent = ref(6);
+// 小说推文并发（2026-10-23）：TTS 路数 / 分段编码段数，随任务下发为 YZ_* 环境变量
+const novelTtsConcurrency = ref(5);
+const novelComposeConcurrency = ref(0);
 const enableCompression = ref(true);
 // ── 费用预算（2026-10-17）────────────────────────────────────────────────────
 // ★ 判定前**现读**（后端 getCostBudgetConfig 每次判定都查库）⇒ 这里保存后下一轮即生效，
@@ -977,6 +987,8 @@ onMounted(async () => {
   darkMode.value = settingsStore.settings.darkMode;
   liteMode.value = settingsStore.settings.liteMode;
   keepRecent.value = settingsStore.settings.keepRecent;
+  novelTtsConcurrency.value = Number(settingsStore.settings.novelTtsConcurrency) || 5;
+  novelComposeConcurrency.value = Math.max(0, Number(settingsStore.settings.novelComposeConcurrency) || 0);
   enableCompression.value = settingsStore.settings.enableCompression;
   memoryExtractPlatformId.value = settingsStore.settings.memoryExtractPlatformId;
   memoryExtractModelId.value = settingsStore.settings.memoryExtractModelId;
@@ -1034,11 +1046,13 @@ async function onPlatformChange() {
   });
 }
 
-watch([defaultModelId, keepRecent, enableCompression], async () => {
+watch([defaultModelId, keepRecent, enableCompression, novelTtsConcurrency, novelComposeConcurrency], async () => {
   await settingsStore.update({
     defaultModelId: defaultModelId.value,
     keepRecent: keepRecent.value,
     enableCompression: enableCompression.value,
+    novelTtsConcurrency: novelTtsConcurrency.value,
+    novelComposeConcurrency: novelComposeConcurrency.value,
   });
 });
 

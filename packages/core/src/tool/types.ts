@@ -78,6 +78,18 @@ export interface ToolContext {
    *   不要各自拼路径（否则基准再次漂移）。
    */
   workspaceDir?: string;
+  /**
+   * 任务中止信号（2026-10-23）：用户点「停止」时触发。
+   * 长时间子进程工具（python_exec / cmd_exec / novel_tuiwen…）把它透传给 shell 适配器，
+   * 由执行层按进程树杀掉子进程；否则停止只让上层不再等，python/ffmpeg 继续跑。
+   */
+  signal?: AbortSignal;
+  /**
+   * 任务级环境变量（2026-10-23）：页面设置（如小说推文并发 YZ_TTS_CONCURRENCY）随任务下发，
+   * 工具把它并入子进程 env —— 免得只靠全局 process.env 而"设置页改了不生效"。
+   * 工具自身的显式入参优先于这里的值。
+   */
+  env?: Record<string, string>;
 }
 
 /** 内置工具 = 定义 + 执行逻辑 */

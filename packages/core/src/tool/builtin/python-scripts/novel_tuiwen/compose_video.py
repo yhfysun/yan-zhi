@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 # ★ 子进程静默（2026-10-09）：本文件有 10 处 ffmpeg/ffprobe 调用，是"黑框一直闪"的主要来源。
 #   打一次补丁 → 后续所有 subprocess.Popen 自动带 CREATE_NO_WINDOW。
@@ -472,6 +473,111 @@ def extract_cover(ffmpeg: str, final_mp4: str) -> str:
     return cover
 
 
+def _compose_concurrency() -> int:
+    """分段编码并发路数。
+    ★ libx264 单实例就能吃满多核，并发路数取**物理核的一半且不超过 4**（再多只是互相抢核、
+      还推高内存）；YZ_COMPOSE_CONCURRENCY 可覆盖，1 = 关闭分段（退回单次整片编码）。"""
+    env = os.environ.get("YZ_COMPOSE_CONCURRENCY")
+    if env:
+        try:
+            return max(1, min(int(env), 8))
+        except ValueError:
+            pass
+    n = os.cpu_count() or 2
+    return max(1, min(4, n // 2))
+
+
+def _plan_chunks(cues, target_sec: float, workers: int):
+    """按**字幕句边界**把时间轴切块（切在句首，字幕永远不会跨块被截断）。
+
+    返回 [(start, end, cues_in_chunk), ...]；块数 ≈ 时长/target_sec，尾部过短的块并进上一块，
+    再用两两合并把块数压到 ≈ workers*2 以内（块太碎只会增加编码器启动开销）。
+    """
+    if not cues:
+        return []
+    target = max(3.0, min(120.0, target_sec))
+    chunks, cur, cur_start = [], [], None
+    for s, e, text in cues:
+        if cur_start is None:
+            cur_start = s
+        cur.append((s, e, text))
+        if e - cur_start >= target:
+            chunks.append((cur_start, e, cur))
+            cur, cur_start = [], None
+    if cur:
+        if chunks and (cur[-1][1] - cur_start) < target * 0.4:
+            s0, _e0, c0 = chunks[-1]
+            chunks[-1] = (s0, cur[-1][1], c0 + cur)
+        else:
+            chunks.append((cur_start, cur[-1][1], cur))
+    max_chunks = max(1, workers * 2)
+    while len(chunks) > max_chunks:
+        merged = []
+        i = 0
+        while i < len(chunks):
+            if i + 1 < len(chunks):
+                a, b = chunks[i], chunks[i + 1]
+                merged.append((a[0], b[1], a[2] + b[2]))
+                i += 2
+            else:
+                merged.append(chunks[i])
+                i += 1
+        chunks = merged
+    return chunks
+
+
+def _compose_chunks(ffmpeg: str, tmp: str, bg_full: str, chunks, title_vf: str,
+                    badge_vf: str, ep_vf: str, font_px: int, margin_v: int,
+                    workers: int) -> str:
+    """并行编码各分段（纯视频，不含音轨）→ concat demuxer -c copy 拼成整条视频轨。
+
+    ★ 为什么分段不带音频：每段各编一次 AAC，接缝会累积编码器 priming/padding，长片能听出
+      顿挫；音频由调用方在最后一步用**整条**混音一次 mux 进去，接缝天然无缝。
+    ★ 参数必须与整片模式完全一致（libx264 / preset fast / crf 23 / yuv420p），
+      concat -c copy 才能直接拼。
+    """
+    fontsdir_esc = FONTS_DIR.replace("\\", "/").replace(":", "\\:")
+
+    def run_one(k: int, start: float, end: float, chunk_cues) -> str:
+        dur = max(0.1, end - start)
+        ass_k = os.path.join(tmp, f"subs_{k:02d}.ass")
+        # 字幕时间轴按块内偏移重写（cue 边界切块 → 不会截断某句）
+        build_ass([(s - start, e - start, text) for s, e, text in chunk_cues], ass_k, font_px, margin_v)
+        srt = os.path.abspath(ass_k).replace("\\", "/").replace(":", "\\:")
+        vf = f"{title_vf},{badge_vf}" if badge_vf else title_vf
+        # 「第N集」大字是 t<3s 的 alpha 表达式 → 每块 PTS 都从 0 起，只有第 0 块能带
+        if ep_vf and k == 0:
+            vf += f",{ep_vf}"
+        vf += f",subtitles='{srt}':fontsdir='{fontsdir_esc}'"
+        out = os.path.join(tmp, f"part_{k:02d}.mp4")
+        fc = f"[0:v]setpts=PTS-STARTPTS[v0];[v0]{vf}[vout]"
+        r = subprocess.run(
+            [ffmpeg, "-y", "-v", "error", "-ss", f"{start:.3f}", "-i", bg_full,
+             "-t", f"{dur:.3f}", "-filter_complex", fc, "-map", "[vout]", "-an",
+             "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", out],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"分段 {k} 编码失败：\n{r.stderr[-1200:]}")
+        print(f"[compose] part_{k:02d} {dur:.1f}s（{start:.1f}→{end:.1f}）")
+        return out
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(run_one, k, s, e, c) for k, (s, e, c) in enumerate(chunks)]
+        parts = [f.result() for f in futs]  # 按序取，保持时间轴顺序
+
+    lst = os.path.join(tmp, "parts.txt")
+    with open(lst, "w", encoding="utf-8") as f:
+        for p in parts:
+            f.write(f"file '{os.path.basename(p)}'\n")
+    video_full = os.path.join(tmp, "video_full.mp4")
+    # ★ cwd=tmp + 列表内纯文件名：老版 ffmpeg 的 concat 把相对路径解析到进程 cwd
+    subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                    "-i", "parts.txt", "-c", "copy", os.path.abspath(video_full)],
+                   check=True, cwd=tmp)
+    return video_full
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True)
@@ -488,8 +594,14 @@ def main():
     ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名")
     ap.add_argument("--alias", default="", help="别名：顶部常驻「搜「别名」看全文｜番茄小说」（集数走 --ep 大字）")
     ap.add_argument("--chapter", default="", help="第几集（如 3）：「第N集」首帧大字+全程角标，并决定文件名（第N集）与封面图")
+    ap.add_argument("--chunk-concurrency", type=int, default=0,
+                    help="分段并行编码路数（0=自动按核数，1=关闭分段退回整片单次编码）")
+    ap.add_argument("--chunk-seconds", type=float, default=0,
+                    help="分块目标时长（秒）：0=按并发自动（时长/并发×2）")
     ap.add_argument("--keep-temp", action="store_true")
     a = ap.parse_args()
+    if a.chunk_concurrency and a.chunk_concurrency > 0:
+        os.environ["YZ_COMPOSE_CONCURRENCY"] = str(a.chunk_concurrency)
     global W, H
     W, H = ASPECT_SIZES.get(a.aspect, ASPECT_SIZES["4:3"])
     ffmpeg = find_ffmpeg()
@@ -572,11 +684,15 @@ def main():
     sub_vf = f"subtitles='{srt_abs}':fontsdir='{fontsdir_esc}'"
     # 「第N集」：右上角常驻角标（任何一帧都带集数）+ 中部大字（首帧全显，前3秒）
     # 角标 y 必须在标题条 2 行最大高度之下（标题居中且长标题几乎占满行宽，贴顶会重叠）
-    final_vf = sub_vf
+    badge_vf = ""
+    ep_vf = ""
     if a.chapter:
         ep_text = f"第{a.chapter}集"
         badge_y = 80 + 2 * (a.title_size + 12) + 24
-        final_vf += "," + build_episode_badge(ep_text, badge_y) + "," + build_episode_filter(ep_text, FPS)
+        badge_vf = build_episode_badge(ep_text, badge_y)
+        ep_vf = build_episode_filter(ep_text, FPS)
+    # 整片模式直接把角标/大字串在字幕后面；分段模式交给 _compose_chunks 按块拼
+    final_vf = sub_vf + (f",{badge_vf},{ep_vf}" if a.chapter else "")
 
     # 文件名：传了别名/章节时用「别名_第N集.mp4」，否则回落旧命名
     if a.alias or a.chapter:
@@ -656,16 +772,34 @@ def main():
                         "-i", "bglist.txt", "-c", "copy", os.path.abspath(bg_full)],
                        check=True, cwd=tmp)
 
-        fc = (f"[0:v]trim=duration={total:.2f},setpts=PTS-STARTPTS[vv];"
-              f"[vv]{title_vf},{final_vf}[vout]")
-        cmd = [ffmpeg, "-y", "-v", "error", "-i", bg_full, "-i", audio_out,
-               "-filter_complex", fc, "-map", "[vout]", "-map", "1:a",
-               "-t", f"{total:.2f}",
-               "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
-               "-c:a", "aac", "-b:a", "160k", "-shortest", final]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode != 0:
-            print(r.stderr[-2000:], file=sys.stderr); sys.exit(r.returncode)
+        # ---- 分段并行编码（2026-10-23）：长章节整片单次编码只能吃满一个核 ----
+        workers = _compose_concurrency()
+        target_sec = a.chunk_seconds if a.chunk_seconds and a.chunk_seconds > 0 else total / max(1, workers * 2)
+        chunks = _plan_chunks(cues, target_sec, workers) if workers > 1 else []
+        # 环境音/音效尾巴可能比口播长（total = max(口播, 混音)）：把尾块补到 total，
+        # 否则成片会在口播结束处提前收尾（与整片模式的 -t total 语义对齐）
+        if chunks and total > chunks[-1][1] + 0.05:
+            s0, _e0, c0 = chunks[-1]
+            chunks[-1] = (s0, total, c0)
+        if len(chunks) > 1:
+            print(f"[compose] 分段编码：{len(chunks)} 段，并发 {workers}")
+            video_full = _compose_chunks(ffmpeg, tmp, bg_full, chunks, title_vf,
+                                         badge_vf, ep_vf, sub_font_px, margin_v, workers)
+            # ★ 音轨整条一次 mux：视频 -c copy 不重编码（分段接缝天然无缝）
+            subprocess.run([ffmpeg, "-y", "-v", "error", "-i", video_full, "-i", audio_out,
+                            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", final],
+                           check=True)
+        else:
+            fc = (f"[0:v]trim=duration={total:.2f},setpts=PTS-STARTPTS[vv];"
+                  f"[vv]{title_vf},{final_vf}[vout]")
+            cmd = [ffmpeg, "-y", "-v", "error", "-i", bg_full, "-i", audio_out,
+                   "-filter_complex", fc, "-map", "[vout]", "-map", "1:a",
+                   "-t", f"{total:.2f}",
+                   "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", "160k", "-shortest", final]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                print(r.stderr[-2000:], file=sys.stderr); sys.exit(r.returncode)
     else:
         # 分镜图模式(兜底): 每段一个占位帧 + zoompan
         seg_files = []

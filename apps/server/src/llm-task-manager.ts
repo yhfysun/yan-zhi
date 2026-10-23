@@ -472,6 +472,9 @@ interface LlmTask {
   permissionMode?: 'readonly' | 'default' | 'full' | 'all';
   /** 工作目录边界守卫档位（2026-10-01）：ask（默认）/ strict / off */
   pathGuard?: 'ask' | 'strict' | 'off';
+  /** 任务级工具环境变量（2026-10-23）：页面设置随任务下发（如小说推文 YZ_TTS_CONCURRENCY），
+   *  由工具并入子进程 env；只收 YZ_* 小整数（路由层已白名单化）。 */
+  toolEnv?: Record<string, string>;
   /** 暂停旗标（工具边界暂停语义）：置位后主循环/子智能体循环/前端委托入口在边界处挂起，
    *  正在执行的单个动作不打断（原子操作，中途掐断会留半状态页面）。resume 后从边界继续。 */
   paused?: boolean;
@@ -1172,6 +1175,8 @@ export function createTask(params: {
    * ask（默认）/ strict / off；未下发或非法值一律按 **ask**（fail-safe：宁可多问一次，不静默放行）。
    */
   pathGuard?: 'ask' | 'strict' | 'off';
+  /** 任务级工具环境变量（2026-10-23）：页面设置随任务下发，工具并入子进程 env */
+  toolEnv?: Record<string, string>;
   /**
    * 运维现场（2026-10-21）：AI 模式窗口下发的薄描述（连接 id + 终端尾部）。
    * 服务端回查连接/发布项目详情后注入**系统提示词** —— 用户回合只留用户原话。
@@ -1247,6 +1252,7 @@ export function createTask(params: {
     workspaceDir: resolveEffectiveWorkspaceDir(params.conversationId, params.workspaceDir),
     // ★ 越界守卫档位：非法/未下发 → ask（fail-safe，与 normalizePermissionMode 同取向）
     pathGuard: (params.pathGuard === 'strict' || params.pathGuard === 'off') ? params.pathGuard : 'ask',
+    toolEnv: params.toolEnv,
     pendingInjects: [],
     injectedByClientId: new Map<string, string>(),
     pendingBackgroundResults: [],
@@ -5827,7 +5833,7 @@ async function executeTool(
     // ★ workspaceDir 必须传：工具用它把**相对路径**解析到工作目录（否则落到进程 cwd，
 //   实测 `02-work` / `.yan-zhi/tasks/<convId>` 一律 directory not found）。
 //   子智能体走同一个 executeTool → 自动同样受益。
-    const toolCtx = { conversationId: task.conversationId, userId: task.userId, artifactDirs, workspaceDir: task.workspaceDir };
+    const toolCtx = { conversationId: task.conversationId, userId: task.userId, artifactDirs, workspaceDir: task.workspaceDir, signal: task.abortController.signal, ...(task.toolEnv ? { env: task.toolEnv } : {}) };
 
     // 文件修改快照：file_edit 落盘前记下原内容，供前端 Diff 对比 / 应用 / 回退。
     // ★ file_write 不走这里 —— 它的落盘路径由工具按会话目录决定，调用方执行前无法预知，

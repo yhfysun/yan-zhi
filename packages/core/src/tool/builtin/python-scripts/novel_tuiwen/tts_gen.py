@@ -160,26 +160,39 @@ _TTS_403_HINT = (
 )
 
 
-def synth_with_retry(text: str, out_path: str, voice: str, retries: int = 3):
-    """逐段重试：edge-tts 到微软的连接偶发 NoAudioReceived/超时（实测一段成功后
+DEFAULT_CONCURRENCY = 5
+
+
+def _tts_concurrency() -> int:
+    """并发路数：edge-tts 以网络等待为主，5 路基本线性提速；上限 16 防止打爆端点。"""
+    try:
+        n = int(os.environ.get("YZ_TTS_CONCURRENCY") or DEFAULT_CONCURRENCY)
+    except ValueError:
+        n = DEFAULT_CONCURRENCY
+    return max(1, min(n, 16))
+
+
+async def synth_with_retry(text: str, out_path: str, voice: str, sem: "asyncio.Semaphore", retries: int = 3):
+    """逐段重试（并发版）：edge-tts 到微软的连接偶发 NoAudioReceived/超时（实测一段成功后
     下一段可能连断数次），整段管线失败重来代价太高（前面 20+ 段全部白合成）。
     单段 3 次重试 + 递增间隔，基本能把抖动吸收掉。
-    ★ 例外：端点 403 是确定性拒绝（版本/令牌问题），重试无意义 → 立即带指引失败。"""
-    import time as _time
-    last_err = None
-    for attempt in range(1, retries + 1):
-        try:
-            asyncio.run(synth(text, out_path, voice))
-            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-                return
-            raise RuntimeError("输出文件为空")
-        except Exception as e:
-            last_err = e
-            print(f"[tts] seg 失败(第{attempt}次): {type(e).__name__}: {str(e)[:80]}", file=sys.stderr)
-            if _is_endpoint_403(e):
-                raise RuntimeError(f"{_TTS_403_HINT}\n原始错误: {e}")
-            _time.sleep(attempt * 2)
-    raise RuntimeError(f"edge-tts 连续 {retries} 次失败: {last_err}")
+    ★ 例外：端点 403 是确定性拒绝（版本/令牌问题），重试无意义 → 立即带指引失败。
+    ★ 并发：由 semaphore 控制同时在跑的路数；每段独立文件，互不干扰。"""
+    async with sem:
+        last_err = None
+        for attempt in range(1, retries + 1):
+            try:
+                await synth(text, out_path, voice)
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                    return
+                raise RuntimeError("输出文件为空")
+            except Exception as e:
+                last_err = e
+                print(f"[tts] seg 失败(第{attempt}次): {type(e).__name__}: {str(e)[:80]}", file=sys.stderr)
+                if _is_endpoint_403(e):
+                    raise RuntimeError(f"{_TTS_403_HINT}\n原始错误: {e}")
+                await asyncio.sleep(attempt * 2)
+        raise RuntimeError(f"edge-tts 连续 {retries} 次失败: {last_err}")
 
 
 def main():
@@ -187,22 +200,41 @@ def main():
     ap.add_argument("--script", required=True)
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--voice", default=DEFAULT_VOICE)
+    ap.add_argument("--concurrency", type=int, default=0,
+                    help="并发路数（默认走 YZ_TTS_CONCURRENCY，再缺省 5；上限 16）")
     a = ap.parse_args()
+    if a.concurrency and a.concurrency > 0:
+        os.environ["YZ_TTS_CONCURRENCY"] = str(a.concurrency)
     os.makedirs(a.outdir, exist_ok=True)
     script = json.load(open(a.script, encoding="utf-8"))
 
     lines = [script.get("hook", "")] + [s["text"] for s in script["segments"]] + [script.get("ending", "")]
-    paths = []
-    for i, text in enumerate(lines):
-        if not text.strip():
-            continue
+    jobs = [(i, text) for i, text in enumerate(lines) if text.strip()]
+    concurrency = _tts_concurrency()
+    sem = asyncio.Semaphore(concurrency)
+
+    async def run_one(i: int, text: str):
         p = os.path.join(a.outdir, f"seg_{i:03d}.mp3")
         # 已存在的分段跳过（重跑时不必重新合成，网络抖动恢复后续跑即可）
         if not (os.path.exists(p) and os.path.getsize(p) > 0):
-            synth_with_retry(normalize_for_tts(text), p, a.voice)
+            await synth_with_retry(normalize_for_tts(text), p, a.voice, sem)
         d = audio_duration(p)
         print(f"[tts] seg_{i:03d} {d:.2f}s  {text[:18]}...")
-        paths.append((i, p, d))
+        return i, p, d
+
+    async def run_all():
+        tasks = [asyncio.create_task(run_one(i, t)) for i, t in jobs]
+        try:
+            return await asyncio.gather(*tasks)
+        except BaseException:
+            # 403 这类确定性失败要**立刻整体停**：其余在跑的段取消掉，别继续烧网络
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    print(f"[tts] 共 {len(jobs)} 段，并发 {concurrency}", file=sys.stderr)
+    paths = sorted(asyncio.run(run_all()), key=lambda x: x[0])
 
     # 写回时长: hook=segments[-1].hook前, 逐段对应
     idx = 0

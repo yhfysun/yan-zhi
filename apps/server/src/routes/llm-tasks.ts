@@ -42,7 +42,7 @@ function normalizeOpsContext(raw: unknown): OpsContextInput | undefined {
 // POST /api/llm/tasks  创建任务
 router.post('/tasks', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds, workspaceDir, pathGuard, opsContext } = req.body || {};
+  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds, workspaceDir, pathGuard, toolEnv: toolEnvRaw, opsContext } = req.body || {};
   if (!conversationId || !platformId || !modelId) {
     res.status(400).json({ error: '缺少 conversationId/platformId/modelId' });
     return;
@@ -70,10 +70,21 @@ router.post('/tasks', (req: Request, res: Response) => {
     return;
   }
   let taskId: string;
+  // 任务级工具环境变量（2026-10-23）：页面设置（如小说推文 TTS 并发）随任务下发。
+  // ★ 白名单化：只收 YZ_* 且值为 0–64 的整数，防止调用方往子进程 env 里塞任意东西。
+  const toolEnv: Record<string, string> = {};
+  if (toolEnvRaw && typeof toolEnvRaw === 'object') {
+    for (const [k, v] of Object.entries(toolEnvRaw as Record<string, unknown>)) {
+      if (!/^YZ_[A-Z0-9_]{1,40}$/.test(k)) continue;
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0 && n <= 64) toolEnv[k] = String(Math.round(n));
+    }
+  }
   try {
     taskId = createTask({ conversationId, userId, platformId, modelId, userContent, agentId: agentId ?? null, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds: Array.isArray(ontologyIds) ? ontologyIds.map(String) : undefined, includeUiTools: true, workspaceDir: typeof workspaceDir === 'string' ? workspaceDir : undefined,
       // 越界守卫档位（2026-10-01）：与 workspaceDir 同一条下发通道（同一份设置来源）
       pathGuard: (pathGuard === 'strict' || pathGuard === 'off' || pathGuard === 'ask') ? pathGuard : undefined,
+      toolEnv: Object.keys(toolEnv).length ? toolEnv : undefined,
       // 运维现场（2026-10-21）：薄描述，服务端回查详情后注入系统提示词。
       // ★ 白名单化 —— 只接受约定字段，防止调用方往系统提示词里塞任意内容。
       opsContext: normalizeOpsContext(opsContext),

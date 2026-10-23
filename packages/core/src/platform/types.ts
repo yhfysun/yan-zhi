@@ -67,7 +67,8 @@ export interface McpProcessAdapter {
 
 /** Shell 命令执行适配器（仅桌面端支持长时间运行的命令） */
 export interface ShellAdapter {
-  exec(command: string, args: string[], options?: { cwd?: string; timeout?: number; env?: Record<string, string> }): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /** signal：任务中止时由执行层按进程树杀掉子进程（否则「停止」只是上层不再等，python/ffmpeg 照跑） */
+  exec(command: string, args: string[], options?: { cwd?: string; timeout?: number; env?: Record<string, string>; signal?: AbortSignal }): Promise<{ stdout: string; stderr: string; exitCode: number }>;
 }
 
 /** 平台适配器聚合 */

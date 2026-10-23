@@ -2095,16 +2095,20 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         const S = 'a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[onclick],[tabindex]';
         result = await page.evaluate((opts: { overlayId: string; S: string; off: boolean }) => {
           const w = window as any;
-          const R = w.__yzReg;
-          if (!R) return { error: '页面助手未注入' };
           const { overlayId, S, off } = opts;
           if (off) {
+            // ★ 2026-10-23：与桌面端 main.cjs 同步 —— 关闸不依赖页面助手，
+            //   助手未注入时也要能删掉残留覆盖层（否则编号框永远留在页面上）。
             const h = w.__yzHighlight;
             if (h && h.dispose) { try { h.dispose(); } catch { /* ignore */ } }
             w.__yzHighlight = null;
+            const mo = w.__yzHighlightObs;
+            if (mo) { try { mo.disconnect(); } catch { /* ignore */ } w.__yzHighlightObs = null; }
             const p = document.getElementById(overlayId); if (p) p.remove();
             return { highlight: false };
           }
+          const R = w.__yzReg;
+          if (!R) return { error: '页面助手未注入' };
           // 幂等重入：先清理上一次的覆盖层与监听（避免 tab 切换 / 重注入叠加重复监听）
           const prev = w.__yzHighlight;
           if (prev && prev.dispose) { try { prev.dispose(); } catch { /* ignore */ } }

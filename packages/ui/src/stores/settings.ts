@@ -343,6 +343,14 @@ export interface AppSettings {
    */
   pathGuard: 'ask' | 'strict' | 'off';
   /**
+   * 小说推文并发（2026-10-23）：页面设置随任务下发到子进程 env ——
+   *   novelTtsConcurrency     → YZ_TTS_CONCURRENCY（Edge-TTS 并发，1-16，默认 5）
+   *   novelComposeConcurrency → YZ_COMPOSE_CONCURRENCY（合成并行段数，0=按 CPU 自动，1=关闭分段，上限 8）
+   * 模型也能在 novel_tuiwen 工具参数里覆盖（tts_concurrency / compose_concurrency）。
+   */
+  novelTtsConcurrency: number;
+  novelComposeConcurrency: number;
+  /**
    * 页面指令里的**脚本型**是否允许被标为"信任（不再每次确认）"。
    * ★ 默认 false：脚本在页面主世界跑，可读本页内容与登录态、可发请求、可改并提交表单；
    *   按用户拍板的口径「默认每次执行弹确认」，要免确认必须先在这里显式打开，
@@ -560,6 +568,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   workspaceDir: '',
   recentWorkspaceDirs: [],
   pathGuard: 'ask',
+  // 小说推文并发：TTS 默认 5 路（edge-tts 网络等待为主）；合成 0 = 按 CPU 自动（1 = 关闭分段）
+  novelTtsConcurrency: 5,
+  novelComposeConcurrency: 0,
   // 脚本型页面指令默认**每次执行都要确认**；要免确认必须先在这里显式打开（用户拍板口径）
   browserTrustScriptCommands: false,
   appGuide: DEFAULT_APP_GUIDE,

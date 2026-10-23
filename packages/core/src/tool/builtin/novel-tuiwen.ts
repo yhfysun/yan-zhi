@@ -34,6 +34,8 @@ export class NovelTuiwenTool implements BuiltInTool {
       use_llm: { type: 'boolean', description: '用 LLM 做钩子化改编（需环境变量 OPENAI_BASE_URL/OPENAI_API_KEY）。默认规则切分。' },
       ambience: { type: 'string', description: '环境音：auto（默认，按剧情情绪自动选）/ none / pad_soft / room / wind / rain / hum / space / fire。音量很低且会被旁白自动闪避，不会盖过配音。' },
       sfx: { type: 'string', enum: ['auto', 'none'], description: '高能点缀音效：auto=只在开头和高能句点缀（最多 5 个，间隔≥6s）；none=不加。默认 auto。' },
+      tts_concurrency: { type: 'number', description: 'TTS 并发路数（1-16）。默认取「设置 → 小说推文并发」；网络好可调高提速，频繁 403/超时则调低。' },
+      compose_concurrency: { type: 'number', description: '合成并行编码段数（1-8）。1 = 关闭分段、整片单次编码；默认取设置（0 = 按 CPU 自动）。' },
     },
     required: ['chapter'],
   };
@@ -84,12 +86,26 @@ export class NovelTuiwenTool implements BuiltInTool {
     // 中间产物与成片都收敛到 outDir
     argv.push('--outdir', outDirRaw);
 
+    // 并发：工具入参（模型可传）> 页面设置（ctx.env）> 脚本默认
+    const env: Record<string, string> = { ...(ctx?.env || {}) };
+    const clampInt = (v: unknown, lo: number, hi: number): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? Math.min(hi, Math.max(lo, Math.round(n))) : null;
+    };
+    const ttsN = clampInt(args.tts_concurrency, 1, 16);
+    if (ttsN) env.YZ_TTS_CONCURRENCY = String(ttsN);
+    const composeN = clampInt(args.compose_concurrency, 1, 8);
+    if (composeN) env.YZ_COMPOSE_CONCURRENCY = String(composeN);
+
     try {
       // 出片耗时随章节长度增长：第一章实测（6083 字 → 51 段 TTS → 19.5min 成片）TTS+合成 ≈ 12min；
       // 传 30min（runPythonScript 上限同步已提到 30min），ffmpeg 收尾被 kill 会产出缺 moov 的损坏 mp4
       // ★ 2026-10-14：改用**自愈执行** —— 缺依赖 / edge-tts 403 / 代理问题会自动修复并重跑一次
       //   （自愈能力由 server 注入，见 services/python-self-heal.ts）。
-      const r = await runPythonScriptHealing(script, argv, { timeout: 1800000, cwd: ws });
+      const r = await runPythonScriptHealing(script, argv, {
+        timeout: 1800000, cwd: ws, signal: ctx?.signal,
+        ...(Object.keys(env).length ? { env } : {}),
+      });
       const outParts: string[] = [];
       if (r.repairLog?.length) outParts.push('[自愈] ' + r.repairLog.join('；'));
       if (r.stdout) outParts.push(capToolOutput(r.stdout));

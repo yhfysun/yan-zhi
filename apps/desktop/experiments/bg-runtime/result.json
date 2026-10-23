@@ -1,0 +1,60 @@
+{
+  "ok": true,
+  "results": {
+    "normal": {
+      "probe": {
+        "visibility": "visible",
+        "hasFocus": false,
+        "rafPerSecond": 62,
+        "timerDelay": 301
+      },
+      "guestCapture": "ok",
+      "minimized": false,
+      "visible": true
+    },
+    "minimizedDefault": {
+      "probe": {
+        "visibility": "hidden",
+        "hasFocus": false,
+        "rafPerSecond": 0,
+        "timerDelay": 942
+      },
+      "guestCapture": "ok",
+      "minimized": true,
+      "visible": false
+    },
+    "minimizedThrottlingOff": {
+      "probe": {
+        "visibility": "hidden",
+        "hasFocus": false,
+        "rafPerSecond": 62,
+        "timerDelay": 304
+      },
+      "guestCapture": "ok",
+      "minimized": true,
+      "visible": false
+    },
+    "restored": {
+      "probe": {
+        "visibility": "visible",
+        "hasFocus": false,
+        "rafPerSecond": 61,
+        "timerDelay": 300
+      },
+      "guestCapture": "ok",
+      "minimized": false,
+      "visible": true
+    },
+    "offscreen": {
+      "probe": {
+        "visibility": "visible",
+        "hasFocus": false,
+        "rafPerSecond": 62,
+        "timerDelay": 308
+      },
+      "guestCapture": "ok",
+      "minimized": false,
+      "visible": true
+    }
+  }
+}

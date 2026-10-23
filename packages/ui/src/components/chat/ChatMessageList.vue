@@ -306,7 +306,7 @@
                     <!-- 深度思考（WorkBuddy 式）：**带工具调用的轮次也显示** —— 此前被
                          `!hasAgentProcess` 挡掉，开发模式下几乎总在调工具 ⇒ 用户根本看不到思考标识。
                          字数用轻量累加（模板热路径），全文只在展开时拼（见 reasoning-summary.ts）。 -->
-                    <div v-if="roundReasoningChars(vr.round) > 0" class="msg-reasoning" :data-card-variant="(vr.ri + 1) % 4">
+                    <div v-if="roundReasoningChars(vr.round) > 0 && !isStreamingReasoningShown(vr.round, vr.ri)" class="msg-reasoning" :data-card-variant="(vr.ri + 1) % 4">
                       <DeepThinkBadge
                         state="done"
                         :chars="roundReasoningChars(vr.round)"
@@ -1227,6 +1227,17 @@ function getStreamingText(round: MessageRound, ri: number): string {
 function getStreamingReasoning(round: MessageRound, ri: number): string {
   const step = getStreamingStep(round, ri);
   return step?.reasoningContent || '';
+}
+
+/**
+ * 流式进行中是否**已经在展示**「思考中」徽标（模板下方那个 streaming 徽标）。
+ * ★ 2026-10-23 用户实报「为啥有两个深度思考」：汇总徽标与流式徽标的条件同时成立，
+ *   同一段 reasoning 被画了两遍（字数也一样）。流式徽标在场时让汇总徽标让位。
+ * ★ 已有最终正文时不隐：那种情况走的就是汇总徽标（流式分支根本不渲染）。
+ */
+function isStreamingReasoningShown(round: MessageRound, ri: number): boolean {
+  if (round.finalAssistant?.content) return false;
+  return isLastRoundStreaming(round, ri) && !!getStreamingReasoning(round, ri);
 }
 
 /**

@@ -204,6 +204,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getZoomFactor: (tabId) => ipcRenderer.invoke('browserView:getZoomFactor', tabId),
     setTheme: (tabId, theme) => ipcRenderer.invoke('browserView:setTheme', tabId, theme),
     action: (tabId, action, args) => ipcRenderer.invoke('browserView:action', tabId, action, args),
+    // ★ 2026-10-23：任务收尾清编号层（主进程按自己的 tab 表逐个关，含已隐藏页面）
+    highlightOffAll: () => ipcRenderer.invoke('browserView:highlightOffAll'),
     // 截图临时可见：非激活 webview 默认 visibility:hidden（省 CPU），截图前主进程临时点亮
     onCaptureVisible: (callback) => {
       const h = (_e, tabId, visible) => callback(tabId, visible);

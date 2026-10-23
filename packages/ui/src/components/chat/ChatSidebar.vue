@@ -580,57 +580,42 @@
       <!-- 任务类型：「目录即任务」——选定后自动生成资源目录骨架，模型按流程分步引导。
            父任务类型（如抖音运营）可缩进显示其子线：选父 = 一个目录管多条任务，每条任务再选线 -->
       <el-form-item label="任务类型">
-        <!-- 子目录（挂在父任务目录下）：只能选父目录类型的子线（用户 2026-10-17 拍板），
-             否则子目录绑了个不相干的类型，父目录"一套资源目录管多线"的口径就被劈开了 -->
-        <template v-if="editingChildOf">
-          <el-select v-model="spaceEditForm.taskType" placeholder="未设置（建任务时再选线）" clearable style="width: 100%">
-            <el-option
-              v-for="c in childLineOptions"
-              :key="c.id"
-              :label="c.label"
-              :value="c.id"
+        <!-- 子目录与顶层用同一份列表（用户 2026-10-23 拍板：父任务下可再挂父任务，多级管理）：
+             子目录也能绑「抖音运营 / 店铺运营」这类父类型，成为下一级多任务目录，
+             新建任务时照常弹「选线」。不再限制「子目录只能选父目录的子线」。 -->
+        <el-select v-model="spaceEditForm.taskType" placeholder="未设置（建任务时再选线）" clearable style="width: 100%">
+          <!-- ★ 顺序由注册表（TASK_TYPES）定：通用第一、独立「父任务」类型第二（用户拍板），
+               不在 UI 层硬编码排序。★ 父子关系读 store（库行），用户自建的父子关系同样生效。
+               ★ 有注册子线的父类型（抖音运营/店铺运营）渲染成分组；独立「父任务」是普通选项。 -->
+          <template v-for="t in taskTypes" :key="t.id">
+            <el-option-group
+              v-if="t.id !== 'parent' && taskTypeStore.childrenOf(t.id).length > 0"
+              :label="`${t.label}（父任务目录 · 一套目录管多条任务线）`"
             >
-              <span class="tt-opt-label">{{ c.label }}</span>
-              <span class="tt-opt-summary">{{ c.summary }}</span>
-            </el-option>
-          </el-select>
-          <div class="tt-guide">
-            「{{ editingChildOf.name }}」是父任务目录，给这个子目录选一种工作类型（可选：{{ childLineOptions.map((c: any) => c.label).join(' / ') || '父目录类型暂无可用任务线' }}）。
-            选定后本目录生成 00-source 等资源骨架。
-          </div>
-        </template>
-        <template v-else>
-          <el-select v-model="spaceEditForm.taskType" placeholder="通用（不限定流程）" clearable style="width: 100%">
-            <!-- ★ 顺序由注册表（TASK_TYPES）定：通用第一、独立「父任务」类型第二（用户拍板），
-                 不在 UI 层硬编码排序。★ 父子关系读 store（库行），用户自建的父子关系同样生效。
-                 ★ 有注册子线的父类型（抖音运营/店铺运营）渲染成分组；独立「父任务」是普通选项。 -->
-            <template v-for="t in taskTypes" :key="t.id">
-              <el-option-group
-                v-if="t.id !== 'parent' && taskTypeStore.childrenOf(t.id).length > 0"
-                :label="`${t.label}（父任务目录 · 一套目录管多条任务线）`"
-              >
-                <el-option :label="t.label" :value="t.id">
-                  <span class="tt-opt-label">{{ t.label }}</span>
-                  <span class="tt-opt-summary">{{ t.summary }}</span>
-                </el-option>
-                <el-option
-                  v-for="c in taskTypeStore.childrenOf(t.id)"
-                  :key="c.id"
-                  :label="`　└ ${c.label}`"
-                  :value="c.id"
-                >
-                  <span class="tt-opt-label tt-opt-child">{{ c.label }}</span>
-                  <span class="tt-opt-summary">{{ c.summary }}</span>
-                </el-option>
-              </el-option-group>
-              <el-option v-else-if="!t.parentId" :label="t.label" :value="t.id">
+              <el-option :label="t.label" :value="t.id">
                 <span class="tt-opt-label">{{ t.label }}</span>
                 <span class="tt-opt-summary">{{ t.summary }}</span>
               </el-option>
-            </template>
-          </el-select>
-          <div v-if="spaceEditForm.taskType" class="tt-guide">{{ pickedTaskType.guide }}</div>
-        </template>
+              <el-option
+                v-for="c in taskTypeStore.childrenOf(t.id)"
+                :key="c.id"
+                :label="`　└ ${c.label}`"
+                :value="c.id"
+              >
+                <span class="tt-opt-label tt-opt-child">{{ c.label }}</span>
+                <span class="tt-opt-summary">{{ c.summary }}</span>
+              </el-option>
+            </el-option-group>
+            <el-option v-else-if="!t.parentId" :label="t.label" :value="t.id">
+              <span class="tt-opt-label">{{ t.label }}</span>
+              <span class="tt-opt-summary">{{ t.summary }}</span>
+            </el-option>
+          </template>
+        </el-select>
+        <div v-if="editingChildOf" class="tt-guide">
+          「{{ editingChildOf.name }}」是父任务目录；给这个子目录选任意类型都行，选父类型（抖音运营 / 店铺运营）它就变成下一级多任务目录，新建任务时再选线。
+        </div>
+        <div v-else-if="spaceEditForm.taskType" class="tt-guide">{{ pickedTaskType.guide }}</div>
       </el-form-item>
     </el-form>
   </FormDialog>
@@ -818,14 +803,6 @@ const taskLinePickerOpen = computed({
 });
 
 // ===== 父任务目录的「子目录」层级（2026-10-17）=====
-
-/** 子目录可选的工作类型：父目录是独立「父任务」类型 → 任意具体类型；
- *  父目录是业务父类型（抖音运营等）→ 只能选它注册的子线 */
-const childLineOptions = computed(() => {
-  const p = editingChildOf.value;
-  if (!p?.taskType) return [] as Array<{ id: string; label: string; summary: string }>;
-  return taskTypeStore.childrenOf(p.taskType) as Array<{ id: string; label: string; summary: string }>;
-});
 
 /** 当前编辑的是否子目录：返回其父空间（顶层空间 → null） */
 const editingChildOf = computed(() => {

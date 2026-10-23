@@ -533,6 +533,13 @@ function createChat() {
     //   下一个非浏览器任务也会锁住页面。★ 按 convId 精确清 —— 多会话并行时 A 会话收尾
     //   不得解开 B 会话正在跑的浏览器任务锁。
     store.clearBrowserTaskActive(convId);
+    // ★ 2026-10-23：任务收尾统一清编号层（用户实报两次「任务停了中间层还在」）。
+    //   放在这里而不是只靠 BrowserPanel 的 watcher：面板可能已被卸载/重挂，
+    //   而主进程的 highlightEnabled 会据此在每次导航时把橙框重画回来。
+    //   用户手动开的层尊重其意图，不自动关（manual 标记见 stores/chat.ts）。
+    if (!store.browserHighlightManual) {
+      try { (window as any).electronAPI?.browserView?.highlightOffAll?.(); } catch { /* 纯视觉清理 */ }
+    }
     store.pausedConvIds.clear();
     store.clearAgentCursor();
     // ★★ agent 开的页面 → **保留**（2026-10-12 用户拍板改向：
@@ -2526,6 +2533,9 @@ async function healStalePlatform() {
     store.browserLockInput = false;
     store.browserUserDismissed = false;
     store.clearBrowserTaskActive(); // 浏览器任务记账：新任务从头算（见 stores/chat.ts 注释）
+    // ★ 2026-10-23：手动开标记每轮任务重置。上一轮留下的手动标记会让本轮收尾跳过清理，
+    //   编号框就跨任务糊在页面上（用户实报「任务停了中间层还在」）。本轮内用户再点开仍照常生效。
+    store.browserHighlightManual = false;
     store.clearAgentOpenedTabs();   // agent 开过的 tab 记账同理（新任务的"待收拾"从零开始）
     store.pausedConvIds.clear();
     store.clearAgentCursor();

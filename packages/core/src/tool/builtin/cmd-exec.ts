@@ -162,7 +162,7 @@ export class CmdExecTool implements BuiltInTool {
     }
 
     try {
-      const result = await shell.exec(command, cmdArgs, { cwd, timeout });
+      const result = await shell.exec(command, cmdArgs, { cwd, timeout, signal: ctx?.signal });
       const lines: string[] = [];
       // 截断防上下文爆炸（如 dir /s、cat 大日志），保留头尾
       if (result.stdout) lines.push('[stdout]\n' + capToolOutput(result.stdout));

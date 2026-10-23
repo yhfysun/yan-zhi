@@ -25,6 +25,26 @@ const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
 
 let mainWindow = null;
+/**
+ * 后台停靠（2026-10-23）：agent 跑浏览器任务期间，用户最小化/关闭窗口时不真正最小化，
+ * 而是把窗口移出屏幕（仍 visible + 不占任务栏），托盘恢复。
+ *
+ * ★ 实测依据（apps/desktop/experiments/bg-runtime，Electron 44.7.2 + webview guest）：
+ *   窗口最小化后 `document.visibilityState` **恒为 hidden**，`setBackgroundThrottling(false)`
+ *   只能恢复 rAF/定时器，救不回 visibility ⇒ 抖音创作者中心这类微前端会停在"加载中"
+ *   不挂载内容，DOM 动作全部超时。
+ *   窗口移出屏幕但不最小化时：visibility=visible、rAF 62、定时器正常、capturePage 正常。
+ */
+let dockedOffscreen = null; // { x, y, width, height, maximized }
+/** 最小化确认弹窗是否已弹出（防连点弹多个；2026-10-23） */
+let minimizePromptOpen = false;
+/** 用户已明确选「仍然最小化」：放行这一次 minimize 事件，别又被自动停靠改回去 */
+let allowRealMinimizeOnce = false;
+/** 最近一次 agent 浏览器动作时间：只在"确实有任务在跑"时启用后台停靠 */
+let lastBrowserActionAt = 0;
+const BACKGROUND_DOCK_IDLE_MS = 10 * 60 * 1000;
+/** 托盘菜单刷新钩子（createTray 注册；后台停靠/恢复时调用） */
+let refreshTrayMenu = () => {};
 let extensionManager = null;
 let extensionContextMenus = null;
 let extensionActions = null;
@@ -274,11 +294,76 @@ function allGuestWebContentsIds() {
   return allGuestWebContents().map((wc) => wc.id);
 }
 
-/** 窗口最小化时关闭 guest 后台节流（agent 仍可继续跑），恢复时重新开启 */
-function setGuestBackgroundThrottling(allowed) {
+/** 窗口当前是否不在用户视野内（最小化 / 隐藏 / 后台停靠） */
+function isWindowOffView() {
+  if (dockedOffscreen) return true;
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  try { return mainWindow.isMinimized() || !mainWindow.isVisible(); } catch { return false; }
+}
+
+/** 按窗口可见性统一设置 guest 后台节流
+ *
+ * ★ 2026-10-23：此前只有 minimize 事件会给"当时已存在"的 guest 关节流，
+ *   而 `browser:wv:register`（每次 dom-ready 都会触发，导航后必触发）里**无条件**又设回 true
+ *   ⇒ 最小化后只要页面导航/重载一次，节流就复活了。现在两处同源：一律问 isWindowOffView()。
+ */
+function applyGuestThrottling() {
+  const offView = isWindowOffView();
+  const active = activeGuestWebContents();
   for (const wc of allGuestWebContents()) {
-    try { wc.setBackgroundThrottling(allowed); } catch { /* ignore */ }
+    // 活动页永远不节流；窗口不可见时所有 guest 都不节流（agent 仍要全速跑）
+    const allowThrottle = !offView && wc !== active;
+    try { wc.setBackgroundThrottling(allowThrottle); } catch { /* ignore */ }
   }
+}
+
+/** 最近 10 分钟内有 agent 浏览器动作 → 认为有任务在跑（决定是否值得后台停靠） */
+function browserWorkInProgress() {
+  return lastBrowserActionAt > 0 && Date.now() - lastBrowserActionAt < BACKGROUND_DOCK_IDLE_MS;
+}
+
+/**
+ * 把主窗口移到屏幕外（≈"后台运行"）：用户看不见，但窗口仍 visible、页面照常渲染。
+ * 实测：最小化时 visibilityState 恒 hidden，微前端会停摆；移出屏幕不会。
+ */
+function enterBackgroundDock() {
+  const win = mainWindow;
+  if (!win || win.isDestroyed() || dockedOffscreen) return false;
+  let bounds;
+  try { bounds = win.getBounds(); } catch { return false; }
+  dockedOffscreen = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height, maximized: false };
+  try { dockedOffscreen.maximized = win.isMaximized(); } catch { /* ignore */ }
+  try { if (win.isMinimized()) win.restore(); } catch { /* ignore */ }
+  try { if (win.isMaximized()) win.unmaximize(); } catch { /* ignore */ }
+  // ★ 保留任务栏按钮（2026-10-23 用户实报「直接缩到任务框里就没了」）：
+  //   原先 setSkipTaskbar(true) + 移出屏幕 ⇒ 任务栏入口也消失，用户只能翻托盘才找得回来。
+  //   现在按钮留着，点一下任务栏图标即触发 minimize → 下面的处理器会把它拉回前台。
+  try { win.setSkipTaskbar(false); } catch { /* ignore */ }
+  try { win.setPosition(-32000, -32000); } catch { /* ignore */ }
+  // 从 hide()（点 X 隐藏到托盘）过来的场景：必须重新 show 成"可见但移出屏幕"，
+  // 否则窗口仍然是 hidden，visibilityState 依旧 hidden。
+  try { if (!win.isVisible()) win.showInactive(); } catch { /* ignore */ }
+  applyGuestThrottling();
+  console.log('[bg-dock] 进入后台停靠：窗口移出屏幕，页面保持 visible');
+  try { refreshTrayMenu(); } catch { /* 菜单刷新不影响停靠 */ }
+  return true;
+}
+
+/** 从后台停靠恢复：放回原位 + 恢复任务栏按钮 */
+function leaveBackgroundDock(focus = true) {
+  const win = mainWindow;
+  const saved = dockedOffscreen;
+  if (!win || win.isDestroyed() || !saved) return false;
+  dockedOffscreen = null;
+  try { win.setSkipTaskbar(false); } catch { /* ignore */ }
+  try { if (win.isMinimized()) win.restore(); } catch { /* ignore */ }
+  try { win.setPosition(saved.x, saved.y); } catch { /* ignore */ }
+  if (saved.maximized) { try { win.maximize(); } catch { /* ignore */ } }
+  if (focus) { try { win.show(); win.focus(); } catch { /* ignore */ } }
+  applyGuestThrottling();
+  console.log('[bg-dock] 退出后台停靠');
+  try { refreshTrayMenu(); } catch { /* 菜单刷新不影响恢复 */ }
+  return true;
 }
 
 /** 取当前激活 tab 的 guest webContents（两种引擎统一） */
@@ -842,6 +927,9 @@ function startServer() {
       serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
+        // ★ windowsHide：主进程无控制台，不加这个 Windows 会给 node 子进程新开一个
+        //   可见终端窗口（之后的 python/ffmpeg 输出全刷在里面，任务停了窗口还在）。
+        windowsHide: true,
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
@@ -851,6 +939,7 @@ function startServer() {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
+        windowsHide: true,
         env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
@@ -867,6 +956,7 @@ function startServer() {
     logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
@@ -919,8 +1009,8 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       spellcheck: false,
-      // 默认允许后台节流（Chrome 同款）：窗口最小化时只对 guest 临时关闭，
-      // 保证「AI 上网查资料 + 用户最小化」时导航继续；见 setGuestBackgroundThrottling。
+      // 默认允许后台节流（Chrome 同款）：窗口不可见时由 applyGuestThrottling 统一关闭，
+      // 保证「AI 上网查资料 + 用户最小化」时页面继续渲染。
       backgroundThrottling: true,
       // ★ 把**主进程算好的** API 端口显式下发给渲染层（preload 读 process.argv）。
       //   为什么不用 process.env：直启 `electron .` 时环境里没有 YANZHI_API_PORT，
@@ -957,6 +1047,8 @@ function createWindow() {
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault();
+      // 有浏览器任务在跑时不能真隐藏：隐藏同样会让 visibilityState=hidden，页面停摆
+      if (browserWorkInProgress() && enterBackgroundDock()) return;
       mainWindow?.hide();
     }
   });
@@ -1015,8 +1107,9 @@ function createWindow() {
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
     webPreferences.nodeIntegrationInWorker = false;
-    // guest 显式允许后台节流（不继承窗口的关源设置）
-    webPreferences.backgroundThrottling = true;
+    // guest 显式设置后台节流（不继承窗口的关源设置）；
+    // 窗口已在后台时直接关掉，避免"最小化后才新建的页"重新被节流。
+    webPreferences.backgroundThrottling = !isWindowOffView();
     delete webPreferences.preload;
     delete webPreferences.preloadURL;
     // ★★★ 原生弹窗（B4，2026-10-09）：webview 引擎的 guest 同样要禁用原生对话框。
@@ -1028,10 +1121,20 @@ function createWindow() {
     webPreferences.disableDialogs = true;
   });
 
-  // 窗口最小化：临时关闭 guest 后台节流，保证 agent 导航/脚本继续；
-  // 恢复窗口后重新开启，避免多个后台页面按前台速度跑。
-  mainWindow.on('minimize', () => setGuestBackgroundThrottling(false));
-  mainWindow.on('restore', () => setGuestBackgroundThrottling(true));
+  // 窗口不在视野内时统一给 guest 关节流（agent 仍可全速跑）；回来再恢复节流。
+  // 最小化：有浏览器任务时改为"后台停靠"（窗口移出屏幕）——真最小化会让 visibilityState
+  // 恒为 hidden，creator.douyin.com 等微前端会停在"加载中"不挂载（实测见 experiments/bg-runtime）。
+  mainWindow.on('minimize', () => {
+    // 用户在确认框里明确选了「仍然最小化」→ 尊重这一次，不改成停靠
+    if (allowRealMinimizeOnce) { allowRealMinimizeOnce = false; applyGuestThrottling(); return; }
+    // 已停靠时再点任务栏图标 = 想把它叫回来（停靠态窗口本身是"可见但移出屏幕"，任务栏仍有点）
+    if (dockedOffscreen) { leaveBackgroundDock(); return; }
+    if (browserWorkInProgress() && enterBackgroundDock()) return;
+    applyGuestThrottling();
+  });
+  mainWindow.on('restore', () => applyGuestThrottling());
+  mainWindow.on('hide', () => applyGuestThrottling());
+  mainWindow.on('show', () => applyGuestThrottling());
 
   // 渲染进程完整重载（HMR full-reload / F5）时，隐藏并摘除所有 BrowserView。
   // BrowserView 是主进程原生图层，生命周期不跟随渲染进程 DOM；HMR 只替换渲染模块、
@@ -1792,7 +1895,36 @@ function childUrl(hashRoute) {
   return `${clean}#${hashRoute}${sep}szwin=1`;
 }
 
-ipcMain.on('window-minimize', (event) => winOf(event)?.minimize());
+ipcMain.on('window-minimize', (event) => {
+  const w = winOf(event);
+  if (!w) return;
+  // 没有浏览器任务在跑 → 就是普通最小化（用户预期优先）
+  if (w !== mainWindow || !browserWorkInProgress()) { w.minimize(); return; }
+  // 已停靠：按钮不可见，但兜底成「叫回前台」，避免再走一遍确认
+  if (dockedOffscreen) { leaveBackgroundDock(); return; }
+  if (minimizePromptOpen) return; // 连点不弹第二个窗
+  // ★ 2026-10-23 用户拍板：任务在跑时**先问**，不静默改行为，也不硬拦。
+  //   真最小化会让 visibilityState=hidden，抖音创作者页那类微前端会停在"加载中"。
+  minimizePromptOpen = true;
+  void dialog.showMessageBox(w, {
+    type: 'question',
+    title: '浏览器任务运行中',
+    message: '现在最小化，正在自动化的网页会暂停（页面可能停在"加载中"）。',
+    detail: '「后台运行」：窗口移到屏幕外，任务照常跑，点任务栏图标即可回来。\n「仍然最小化」：正常最小化到任务栏，网页可能停摆。',
+    buttons: ['后台运行', '仍然最小化', '取消'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  }).then(({ response }) => {
+    minimizePromptOpen = false;
+    if (response === 0) enterBackgroundDock();
+    else if (response === 1) {
+      // 用户执意最小化：放行本次 minimize 事件，否则会被自动停靠逻辑改回"移出屏幕"
+      allowRealMinimizeOnce = true;
+      try { w.minimize(); } catch { /* 已销毁 */ }
+    }
+  }).catch(() => { minimizePromptOpen = false; });
+});
 ipcMain.on('window-maximize', (event) => {
   const w = winOf(event);
   if (!w) return;
@@ -2147,7 +2279,7 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   // 给这个 guest 宿主 wc 挂弹窗重定向（window.open/target=_blank → 应用内新标签页）
   try {
     const wc = webContents.fromId(wcId);
-    if (wc) { try { wc.setBackgroundThrottling(true); } catch { /* ignore */ } }
+    if (wc) { try { wc.setBackgroundThrottling(!isWindowOffView()); } catch { /* ignore */ } }
     setupGuestPopupRedirect(wc, t.scope);
     // 扩展右键菜单（P3）：webview 引擎的 guest 挂 contextMenus 弹出点
     if (wc && extensionContextMenus) extensionContextMenus.attachToWebContents(wc);
@@ -3203,6 +3335,9 @@ ipcMain.handle('browserView:setTheme', async (_e, tabId) => {
 // （无法 removeInsertedCSS，每次调用永久多留一份样式表）。
 // 滚动条统一由主进程 injectScrollbarCss() 管理，前端只通过 browserView:setTheme 触发。
 
+// ★ 2026-10-23：任务收尾统一清编号层（不依赖面板是否还挂着、也不依赖面板的本地状态）。
+ipcMain.handle('browserView:highlightOffAll', () => runHighlightOffAll());
+
 // ============================================================
 // IPC：BrowserView 自动化操作（pageAgent 直接操作可见的 BrowserView）
 // 虚拟鼠标光标 + click/type/scroll/hover/screenshot/get_page_info 等
@@ -3595,16 +3730,20 @@ async function runHighlight(wc, on) {
   const S = 'a,button,input,select,textarea,[contenteditable=""],[contenteditable=true],[role=button],[role=link],[role=checkbox],[role=radio],[role=textbox],[role=combobox],[role=switch],[role=tab],[role=menuitem],[role=option],[role=treeitem],[onclick],[tabindex]';
   // ★ 注意：注入脚本是模板字符串，正文里**绝不能出现反引号**（否则提前闭合）。
   const js = `(function(){
-    var A=window.__yzAssistant;if(!A)return{error:'页面助手未注入'};
     var OID=${JSON.stringify(overlayId)};
     var off=${on ? 'false' : 'true'};
     if(off){
+      // ★ 2026-10-23：关闸**不依赖页面助手**。此前 __yzAssistant 检查在最前面，
+      //   助手没注入（新文档/注入失败）时直接返回错误 ⇒ 残留的覆盖层永远删不掉。
       var h=window.__yzHighlight;
       if(h&&h.dispose){try{h.dispose();}catch(e){}}
       window.__yzHighlight=null;
+      var ob=window.__yzHighlightObs;
+      if(ob){try{ob.disconnect();}catch(e){}window.__yzHighlightObs=null;}
       var p0=document.getElementById(OID);if(p0)p0.remove();
       return{highlight:false};
     }
+    var A=window.__yzAssistant;if(!A)return{error:'页面助手未注入'};
     var prev=window.__yzHighlight;
     if(prev&&prev.dispose){try{prev.dispose();}catch(e){}}
     window.__yzHighlight=null;
@@ -3649,25 +3788,45 @@ async function runHighlight(wc, on) {
       return n;
     }
     var count=paint();
-    var raf=null,lastPaint=0,disposed=false;
+    var raf=null,timer=null,lastPaint=0,disposed=false;
+    function fire(){
+      raf=null;lastPaint=Date.now();
+      if(!disposed)paint();
+    }
     function schedule(){
       if(disposed)return;
-      var now=Date.now();if(now-lastPaint<150)return;
-      if(raf)return;
-      raf=requestAnimationFrame(function(){raf=null;lastPaint=Date.now();if(!disposed)paint();});
+      var wait=150-(Date.now()-lastPaint);
+      if(wait<=0){if(!raf)raf=requestAnimationFrame(fire);return;}
+      // ★★★ 2026-10-23：此前是"未到 150ms 直接 return"——这次变化就**永久丢掉**了，
+      //   SPA 换排版后旧编号框会一直留在原地（实测同一批按钮出现两套编号）。
+      //   改为补一次尾随重绘：窗口内只记一个 timer，到点再画。
+      if(timer||raf)return;
+      timer=setTimeout(function(){timer=null;if(!raf)raf=requestAnimationFrame(fire);},wait);
     }
     function dispose(){
       disposed=true;
+      if(raf){try{cancelAnimationFrame(raf);}catch(e){}raf=null;}
+      if(timer){try{clearTimeout(timer);}catch(e){}timer=null;}
       window.removeEventListener('scroll',schedule,true);
       window.removeEventListener('resize',schedule);
+      window.removeEventListener('transitionend',schedule,true);
+      window.removeEventListener('animationend',schedule,true);
       var mo=window.__yzHighlightObs;
       if(mo){try{mo.disconnect();}catch(e){}window.__yzHighlightObs=null;}
       var p=document.getElementById(OID);if(p)p.remove();
     }
     window.addEventListener('scroll',schedule,true);
     window.addEventListener('resize',schedule);
+    window.addEventListener('transitionend',schedule,true);
+    window.addEventListener('animationend',schedule,true);
     if(!window.__yzHighlightObs){
-      try{var mo=new MutationObserver(schedule);mo.observe(document.body,{childList:true,subtree:true});window.__yzHighlightObs=mo;}catch(e){}
+      try{
+        var mo=new MutationObserver(schedule);
+        // ★ 只监听 childList 不够：按钮靠 class/style 改位置/显隐时不会触发，
+        //   编号框会停在旧坐标（2026-10-23 用户实测）。
+        mo.observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class','hidden','disabled','aria-hidden']});
+        window.__yzHighlightObs=mo;
+      }catch(e){}
     }
     window.__yzHighlight={refresh:paint,dispose:dispose};
     return{highlight:true,count:count};
@@ -3680,6 +3839,24 @@ async function runHighlight(wc, on) {
   } catch (e) {
     return { error: (e && e.message) || '高亮注入失败' };
   }
+}
+
+/**
+ * ★ 2026-10-23：一键关掉**所有**页面的编号层（任务收尾兜底）。
+ *
+ * 为什么必须由主进程兜底：编号层是否在画，真正说了算的是模块级 `highlightEnabled`
+ * （导航 4911 / 新开页 2254 都会据此重画）。渲染层那边只是"发一次 off"，
+ * 面板一旦卸载、状态漂移或某次 IPC 打空，`highlightEnabled` 就永远为真 ——
+ * 用户侧看到的就是「任务停了，中间层还在，而且越点越多」。
+ * ⇒ 收尾时按主进程自己的 tab 表逐个关，并把开关清零，与渲染层状态无关。
+ */
+async function runHighlightOffAll() {
+  highlightEnabled = false;
+  let tabs = 0;
+  for (const wc of allGuestWebContents()) {
+    try { await runHighlight(wc, false); tabs += 1; } catch { /* 单页失败不影响其它页 */ }
+  }
+  return { highlight: false, tabs };
 }
 
 // ★★★ P2（2026-10-20）表单填写聚焦高亮：fill_form / browser_type 操作字段时，
@@ -4166,6 +4343,14 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
   //   一切"给人看"的副作用都必须挡掉 —— 见下三处（不回落用户当前页 / 不激活它建的页 / 不切标签页）。
   //   判据只在 browser-target.cjs 的 isBackgroundFlow 一处（前后端不各写一份）。
   const bgFlow = isBackgroundFlow(flow);
+  // ★ 只有 agent 路径（convId 非空）才记账；用户自己点工具栏（convId=null）不算任务在跑。
+  //   最小化时据此决定要不要走"后台停靠"，避免改变普通用户的最小化语义。
+  if (convId) {
+    lastBrowserActionAt = Date.now();
+    // 用户先最小化/关窗、任务后开始：动作到达时补一次停靠。否则页面停在 hidden，
+    // creator.douyin.com 这类微前端根本不挂载，后续动作必然超时。
+    if (!dockedOffscreen && isWindowOffView()) enterBackgroundDock();
+  }
   // ★★★ 浏览器动作全链路日志（2026-10-10）：这是"面板开了却没导航"这类静默失效的**唯一可靠线索**。
   //   此前 grep 全仓：浏览器动作路径**零日志** —— 出问题时既看不到"有没有收到 action"，
   //   也看不到"tabId/scope 解析成什么"、"guest 拿到没有"，只能靠读代码猜。
@@ -5198,10 +5383,16 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               document.documentElement.appendChild(ov);
               return true;
             })()`);
-            const image = await capturePageWithRetry();
-            await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
-            const archivedFile = await saveShotArchive(image);
-            return { base64: image.toDataURL().split(',')[1], annotated: true, ...(archivedFile ? { file: archivedFile } : {}) };
+            try {
+              const image = await capturePageWithRetry();
+              const archivedFile = await saveShotArchive(image);
+              return { base64: image.toDataURL().split(',')[1], annotated: true, ...(archivedFile ? { file: archivedFile } : {}) };
+            } finally {
+              // ★ 2026-10-23：截图失败（最小化 / 被遮挡）时也必须清理。
+              //   此前清理语句在 capturePageWithRetry 之后，抛错就永远执行不到 →
+              //   编号层永久留在页面里，和常驻高亮叠成两套编号（用户实测）。
+              await wc.executeJavaScript(`(function(){var p=document.getElementById(${JSON.stringify(overlayId)});if(p)p.remove();})()`).catch(() => {});
+            }
           }
           const image = await capturePageWithRetry();
           const archivedFile = await saveShotArchive(image);
@@ -6471,7 +6662,10 @@ ipcMain.handle('shell:exec', (e, command, args, options) => {
     const toB64 = (v) => (Buffer.isBuffer(v) ? v.toString('base64')
       : Buffer.from(String(v || ''), 'utf-8').toString('base64'));
     let timer = null;
-    const child = execFile(command, args ?? [], opts, (err, stdout, stderr) => {
+    // ★ windowsHide（2026-10-23）：主进程是无控制台的 GUI 进程，缺这个选项时 Windows 会给
+    //   控制台子系统子进程**新开一个可见的控制台窗口**（Win11 默认终端 = Windows Terminal），
+    //   用户看到的就是莫名其妙弹出来的黑窗口。
+    const child = execFile(command, args ?? [], { ...opts, windowsHide: true }, (err, stdout, stderr) => {
       if (timer) { clearTimeout(timer); timer = null; }
       resolve({
         stdoutB64: toB64(stdout),
@@ -7336,6 +7530,7 @@ function triggerScreenshotHotkey() {
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
   if (!win) return;
   try {
+    if (dockedOffscreen) leaveBackgroundDock(false);
     if (win.isMinimized()) win.restore();
     if (!win.isVisible()) win.show();
     win.focus();
@@ -7475,9 +7670,13 @@ if (!gotTheLock) {
     // 第二个实例启动时，激活当前实例的窗口
     console.log('[single-instance] 检测到第二个实例启动，激活当前窗口');
     if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-      mainWindow.show();
+      if (dockedOffscreen) {
+        leaveBackgroundDock();
+      } else {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+        mainWindow.show();
+      }
     }
   });
 }
@@ -7493,6 +7692,10 @@ if (app.isPackaged) {
 }
 
 app.whenReady().then(async () => {
+  // ★ 单实例守卫（2026-10-23）：没抢到锁时上面的 app.quit() 是**异步**的，启动流程仍会继续跑——
+  //   实测第二个实例照样拉起后端（tsx watch）抢 3001 与同一个库，把先启动的那个实例搅坏。
+  //   抢锁失败直接返回，不再做任何启动动作。
+  if (!gotTheLock) return;
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
 
   // ── 渲染进程心跳看门狗（2026-10-19）────────────────────────────────────
@@ -7860,17 +8063,18 @@ app.whenReady().then(async () => {
     // 托盘提示带实例标识 —— 两个实例可同时运行，不能让用户分不清哪个是哪个
     tray.setToolTip(IS_DEV_INSTANCE ? `言智（开发实例 · 端口 ${API_PORT}）` : '言智');
     const updateTrayMenu = () => {
+      // 后台停靠时窗口 isVisible 仍为 true（只是移出了屏幕），不能按 isVisible 判"已显示"
+      const showing = !!mainWindow && !dockedOffscreen && mainWindow.isVisible();
+      const toggleMain = () => {
+        if (!mainWindow) { createWindow(); return; }
+        if (dockedOffscreen) { leaveBackgroundDock(); return; }
+        if (mainWindow.isVisible()) { mainWindow.hide(); }
+        else { mainWindow.show(); mainWindow.focus(); }
+      };
       const menu = Menu.buildFromTemplate([
         {
-          label: mainWindow && mainWindow.isVisible() ? '隐藏主窗口' : '显示主窗口',
-          click: () => {
-            if (mainWindow) {
-              if (mainWindow.isVisible()) { mainWindow.hide(); }
-              else { mainWindow.show(); mainWindow.focus(); }
-            } else {
-              createWindow();
-            }
-          },
+          label: showing ? '隐藏主窗口' : (dockedOffscreen ? '显示主窗口（后台运行中）' : '显示主窗口'),
+          click: toggleMain,
         },
         { type: 'separator' },
         {
@@ -7880,14 +8084,13 @@ app.whenReady().then(async () => {
       ]);
       tray.setContextMenu(menu);
     };
+    refreshTrayMenu = updateTrayMenu;
     updateTrayMenu();
     tray.on('click', () => {
-      if (mainWindow) {
-        if (mainWindow.isVisible()) { mainWindow.hide(); }
-        else { mainWindow.show(); mainWindow.focus(); }
-      } else {
-        createWindow();
-      }
+      if (!mainWindow) { createWindow(); return; }
+      if (dockedOffscreen) { leaveBackgroundDock(); return; }
+      if (mainWindow.isVisible()) { mainWindow.hide(); }
+      else { mainWindow.show(); mainWindow.focus(); }
     });
     // 窗口可见性变化时更新菜单
     if (mainWindow) {

@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import type {
   DatabaseAdapter,
   DirEntryInfo,
@@ -171,10 +171,29 @@ function decodeChildOutput(buf: Buffer): string {
   return decodeTextBytes(new Uint8Array(buf)).text;
 }
 
+/**
+ * 按**进程树**杀子进程（2026-10-23）。
+ * ★ 为什么：win32 下 `shell:true` 会多一层 `cmd.exe /d /s /c`，`child.kill()` 只终止
+ *   这层壳，真正的 python / ffmpeg 会变成孤儿继续跑（用户实报：任务已停，黑窗口里的
+ *   `[tts] seg_xxx` 还在刷）。`taskkill /T /F` 按进程树清；POSIX 直接 SIGKILL。
+ */
+function killTree(child: import('node:child_process').ChildProcess): void {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      // ★ 必须**同步**等 taskkill 跑完：异步 spawn 出去后调用方立刻 resolve/退出，
+      //   taskkill 可能还没执行就被一起带走（实测：python 活着、cmd 壳已被回收）。
+      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      return;
+    } catch { /* taskkill 不可用 → 走兜底 */ }
+  }
+  try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+}
+
 function execCommand(
   command: string,
   args: string[],
-  options?: { cwd?: string; timeout?: number; env?: Record<string, string> },
+  options?: { cwd?: string; timeout?: number; env?: Record<string, string>; signal?: AbortSignal },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
@@ -198,6 +217,7 @@ function execCommand(
     const finish = (exitCode: number, stderrOverride?: string): void => {
       settled = true;
       clearTimeout(timer);
+      if (onAbort) options?.signal?.removeEventListener('abort', onAbort);
       resolve({
         stdout: decodeChildOutput(Buffer.concat(outChunks)) +
           (outTruncated ? '\n[stdout truncated at 512KB capture limit]' : ''),
@@ -211,9 +231,21 @@ function execCommand(
     const timeout = options?.timeout || 30000;
     const timer = setTimeout(() => {
       if (settled) return;
-      try { child.kill(); } catch { /* 已退出 */ }
+      killTree(child);
       finish(124);
     }, timeout);
+
+    // ★ 任务中止（用户点「停止」）要真的停：此前 abort 只让上层不再等，子进程照跑到底
+    //   （实测：停掉任务后 python 仍在出片，黑窗口一直在刷）。这里把信号接到进程树上。
+    const onAbort = (): void => {
+      if (settled) return;
+      killTree(child);
+      finish(143, '已停止（用户中止）');
+    };
+    if (options?.signal) {
+      if (options.signal.aborted) { onAbort(); return; }
+      options.signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     child.stdout.on('data', (chunk: Buffer) => {
       if (outBytes >= MAX_CAPTURE_BYTES) return;

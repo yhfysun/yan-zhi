@@ -197,7 +197,7 @@ export async function findPython(): Promise<string> {
 export async function runPythonCode(
   code: string,
   args: Record<string, unknown> = {},
-  opts: { timeout?: number; pythonPath?: string; cwd?: string } = {},
+  opts: { timeout?: number; pythonPath?: string; cwd?: string; signal?: AbortSignal } = {},
 ): Promise<McpCallResult> {
   const shell = getPlatformAdapter().shell;
   if (!shell) {
@@ -225,6 +225,7 @@ export async function runPythonCode(
     const r = await shell.exec(py, [tmp], {
       timeout: Math.min(opts.timeout || 30000, 300000),
       env,
+      signal: opts.signal,
       // 脚本走绝对临时路径，cwd 只影响代码里的相对路径（产物落点）
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
     });
@@ -246,7 +247,7 @@ export async function runPythonCode(
 export async function runPythonScript(
   scriptPath: string,
   scriptArgs: string[] = [],
-  opts: { timeout?: number; cwd?: string; env?: Record<string, string> } = {},
+  opts: { timeout?: number; cwd?: string; env?: Record<string, string>; signal?: AbortSignal } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const shell = getPlatformAdapter().shell;
   if (!shell) throw new Error('python 执行需要桌面端或服务端环境（shell）。Web 浏览器端不支持。');
@@ -265,6 +266,7 @@ export async function runPythonScript(
     timeout: Math.min(opts.timeout || 60000, 1800000),
     cwd: opts.cwd,
     env,
+    signal: opts.signal,
   });
 }
 
@@ -279,7 +281,7 @@ export async function runPythonScript(
 export async function runPythonScriptHealing(
   scriptPath: string,
   scriptArgs: string[] = [],
-  opts: { timeout?: number; cwd?: string; env?: Record<string, string> } = {},
+  opts: { timeout?: number; cwd?: string; env?: Record<string, string>; signal?: AbortSignal } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number; repairLog: string[] }> {
   const first = await runPythonScript(scriptPath, scriptArgs, opts);
   const repairLog: string[] = [];

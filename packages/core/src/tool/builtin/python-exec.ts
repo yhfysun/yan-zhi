@@ -39,6 +39,6 @@ export class PythonExecTool implements BuiltInTool {
       return toolError(`Error: ${(e as Error).message}`);
     }
 
-    return runPythonCode(code, args || {}, { timeout, cwd });
+    return runPythonCode(code, args || {}, { timeout, cwd, signal: ctx?.signal });
   }
 }

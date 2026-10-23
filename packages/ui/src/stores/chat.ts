@@ -609,6 +609,13 @@ export const useChatStore = defineStore('chat', () => {
   }
   /** 当前会话是否正在跑浏览器任务（BrowserPanel 的锁定/实况判据） */
   const browserTaskActive = computed(() => !!currentConvId.value && browserTaskConvs.value.has(currentConvId.value));
+  /**
+   * 元素编号高亮是否由**用户手动打开**（2026-10-23）。
+   * ★ 存 store 而不是面板局部：面板可能被卸载/重挂，收尾清理却由 useChat 单例统一兜底 ——
+   *   局部状态一丢就会「任务结束把用户手动开的层也关掉」或「该关的没关」。
+   * ★ 只有"手动开"才置 true；手动关/自动开都置 false（自动开的层收尾必须清掉，用户实报过两次）。
+   */
+  const browserHighlightManual = ref(false);
 
   // ★★★ 浏览器执行面判据（「执行面直连化」P2-1，2026-10-10）：由**服务端单一给出**。
   //
@@ -3581,6 +3588,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         // 与 workspaceDir 同一条下发通道（同一份设置来源，避免"两处不同源"漂移）。
         // ★ all 档（2026-10-07）：跨目录访问 / 脚本执行不再逐次弹窗 → 直接下发 off 跳过路径守卫。
         pathGuard: permissionMode.value === 'all' ? 'off' : (appSettings.pathGuard || 'ask'),
+        // 小说推文并发（2026-10-23）：页面设置 → 任务级 env → 子进程（0/空 = 不下发，走脚本默认）
+        toolEnv: {
+          ...(Number(appSettings.novelTtsConcurrency) > 0
+            ? { YZ_TTS_CONCURRENCY: String(appSettings.novelTtsConcurrency) } : {}),
+          ...(Number(appSettings.novelComposeConcurrency) > 0
+            ? { YZ_COMPOSE_CONCURRENCY: String(appSettings.novelComposeConcurrency) } : {}),
+        },
         modeFlags: {
           thinking: thinkingMode.value,
           plan: planMode.value,
@@ -3747,7 +3761,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     runningConvIds, isConvStreaming, runStatsByConv,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
-    browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive,
+    browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive, browserHighlightManual,
     lastBrowserToolAt, browserStepSeq, resetBrowserStepSeq, BROWSER_LIVE_GRACE_MS,
     // 会话级长连订阅（2026-10-11：替代 /llm/tasks/active 轮询的主路径）
     subscribeConversationEvents, unsubscribeConversationEvents,
