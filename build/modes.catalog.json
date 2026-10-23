@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "_comment": "打包模式清单（唯一真相源）。mode.views 里列出的文件在未选该模式时不会进包；pluginId 用于过滤后端插件与前端插件视图。改这里必须同步 packages/ui/src/stores/mode.ts 的 AppMode 联合类型。",
+  "modes": {
+    "office": {
+      "label": "办公模式",
+      "icon": "ChatDotRound",
+      "desc": "文档 · 表格 · 岗位模板",
+      "route": "/chat",
+      "entry": null,
+      "pluginId": null,
+      "views": [],
+      "markers": []
+    },
+    "dev": {
+      "label": "开发模式",
+      "icon": "Monitor",
+      "desc": "写代码 · 改 Bug · 读项目",
+      "route": "/code",
+      "entry": "views/CodeWorkbench.vue",
+      "pluginId": null,
+      "views": ["views/CodeWorkbench.vue"],
+      "markers": ["CodeWorkbench"]
+    },
+    "ops": {
+      "label": "运维模式",
+      "icon": "Platform",
+      "desc": "服务器 · Docker · 数据库",
+      "route": "/ops",
+      "desktopOnly": true,
+      "entry": "views/plugin/OpsConsole.vue",
+      "pluginId": "ops-shell",
+      "views": [
+        "views/plugin/OpsConsole.vue",
+        "views/plugin/OpsConnectionDialog.vue",
+        "views/plugin/SftpPanel.vue"
+      ],
+      "markers": ["OpsConsole", "OpsConnectionDialog", "SftpPanel"]
+    },
+    "sec": {
+      "label": "安全模式",
+      "icon": "Lock",
+      "desc": "侦察 · 扫描 · 审计",
+      "route": "/sec",
+      "desktopOnly": true,
+      "entry": "views/plugin/SecConsole.vue",
+      "pluginId": "sec-lab",
+      "views": ["views/plugin/SecConsole.vue"],
+      "markers": ["SecConsole"]
+    },
+    "wf": {
+      "label": "工作流模式",
+      "icon": "Connection",
+      "desc": "运行 · 调试 · 定时",
+      "route": "/workflow",
+      "entry": "views/WorkflowWorkbench.vue",
+      "pluginId": null,
+      "views": ["views/WorkflowWorkbench.vue"],
+      "markers": ["WorkflowWorkbench"]
+    },
+    "clip": {
+      "label": "剪辑模式",
+      "icon": "VideoCamera",
+      "desc": "剪辑 · 字幕动画 · 成片",
+      "route": "/clip",
+      "entry": "views/ClipWorkbench.vue",
+      "pluginId": null,
+      "views": ["views/ClipWorkbench.vue"],
+      "markers": ["ClipWorkbench"]
+    },
+    "shop": {
+      "label": "店铺运营模式",
+      "icon": "Shop",
+      "desc": "选品 · Listing · 利润 · 仓储",
+      "route": "/shop",
+      "desktopOnly": true,
+      "entry": "views/plugin/ShopConsole.vue",
+      "pluginId": "shop-ops",
+      "views": ["views/plugin/ShopConsole.vue", "views/plugin/shop/**"],
+      "markers": ["ShopConsole"]
+    }
+  },
+  "editionPresets": {
+    "lite": ["office"],
+    "basic": ["office", "wf", "dev"],
+    "pro": ["office", "wf", "dev", "clip", "ops", "sec", "shop"]
+  }
+}

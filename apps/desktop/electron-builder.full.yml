@@ -6,6 +6,10 @@ directories:
   output: ${env.YZ_OUTPUT_DIR}
 # 同 lite：原生模块 ABI 由 fix-sqlite-binding.cjs（postinstall）处理，跳过 node-gyp 重编译
 npmRebuild: false
+# 安全加固：只从 app.asar 加载（配合 afterPack 写入的 OnlyLoadAppFromAsar fuse）。
+asar: true
+# 打包后、出安装包前：清理后端 sourcemap/.d.ts，并写入安全 fuses。
+afterPack: ./electron-builder.after-pack.cjs
 files:
   - dist/**/*
   - main.cjs
@@ -81,6 +85,12 @@ files:
 extraResources:
   - from: ../server/dist
     to: server/dist
+    # ★ extraResources 不走 files: 的排除规则，必须在这里再挡一次。
+    #   afterPack 还会兜底删除并断言（双保险）。
+    filter:
+      - '**/*'
+      - '!**/*.map'
+      - '!**/*.d.ts'
   - from: ../server/assets
     to: server/assets
   # ★ 刻意**不打包** ../server/src（后端源码）。

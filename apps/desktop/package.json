@@ -37,6 +37,7 @@
     "vue-router": "^4.4.0"
   },
   "devDependencies": {
+    "@electron/fuses": "1",
     "@electron/rebuild": "^4.2.0",
     "@vitejs/plugin-vue": "^5.1.0",
     "concurrently": "^9.0.0",

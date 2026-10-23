@@ -139,6 +139,7 @@ import SettingsDialog from './components/SettingsDialog.vue';
 import MobileNavDrawer from './components/MobileNavDrawer.vue';
 import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';
+import { MODE_VIEW_LOADERS } from './generated/build-modes';
 import { useLicenseStore } from './stores/license';
 import { usePlatformStore } from './stores/platform';
 import { waitForBackend } from './api/backend-ready';
@@ -324,14 +325,9 @@ const onDocVisible = () => { if (!document.hidden) ensureContentRendered(); };
  *   · 重复 import 走模块缓存，所以在看的那个也不必排除。
  */
 function scheduleModeViewWarmup() {
-  const loaders: Array<() => Promise<unknown>> = [
-    () => import('./views/plugin/OpsConsole.vue'),
-    () => import('./views/CodeWorkbench.vue'),
-    () => import('./views/WorkflowWorkbench.vue'),
-    () => import('./views/ClipWorkbench.vue'),
-    () => import('./views/plugin/ShopConsole.vue'),
-    () => import('./views/plugin/SecConsole.vue'),
-  ];
+  // ★ 只能预热本次构建实际包含的模式（生成表）：未选模式在这里**不能有 import 表达式**，
+  //   否则 Rollup 仍会为它产出 chunk，打包裁剪就失效了。
+  const loaders: Array<() => Promise<unknown>> = Object.values(MODE_VIEW_LOADERS);
   const ric = (window as unknown as {
     requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
   }).requestIdleCallback;

@@ -75,9 +75,31 @@ export function resolveBuildEdition(raw: unknown): Edition {
     : DEFAULT_BUILD_EDITION;
 }
 
-/** 构建档 ∩ 授权档 → 实际放行的模式。两个维度任一不放行，该模式就不出现。 */
-export function allowedModes(build: Edition, licensed: Edition): string[] {
-  const buildSet = new Set(EDITION_MODES[build]);
+/**
+ * 本次构建**物理包含**的模式（打包脚本经 YZ_BUILD_MODES 注入，来自 edition.json.modes）。
+ *
+ * ★ 为什么需要第三个维度：`--modes=office,dev` 会把未选模式的代码整体裁掉。
+ *   此时哪怕授权档是 pro，也不能把 ops 下发给前端 —— 那个页面根本不在了。
+ *   缺省（存量包没有该字段）时退回档位清单，行为与之前完全一致。
+ */
+export function resolveBuildModes(
+  raw: unknown = process.env.YZ_BUILD_MODES,
+  build?: Edition,
+): string[] {
+  const parsed = typeof raw === 'string'
+    ? raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+    : [];
+  if (parsed.length) return [...new Set(parsed)];
+  return build ? [...EDITION_MODES[build]] : [];
+}
+
+/** 构建档（物理内容）∩ 授权档 → 实际放行的模式。任一维度不放行，该模式就不出现。 */
+export function allowedModes(
+  build: Edition,
+  licensed: Edition,
+  buildModes: string[] = resolveBuildModes(undefined, build),
+): string[] {
+  const buildSet = new Set(buildModes);
   return EDITION_MODES[licensed].filter((m) => buildSet.has(m));
 }
 

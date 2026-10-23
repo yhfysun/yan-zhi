@@ -17,6 +17,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { readCatalog, parseModesArg, resolveModes } = require('../../../scripts/lib/mode-build.cjs');
 
 const EDITIONS = ['lite', 'basic', 'pro'];
 
@@ -43,25 +44,41 @@ if (!EDITIONS.includes(edition)) {
   process.exit(1);
 }
 
+// ★ 构建内容模式：优先 `YZ_BUILD_MODES`（package.cjs --modes 透传），否则用该档预设。
+//   写进 edition.json 后，main.cjs 通过 YZ_BUILD_MODES 传给后端，
+//   license.ts 用它算「物理编译进来的模式 ∩ 授权档」。
+const catalog = readCatalog();
+let buildModes;
+try {
+  buildModes = resolveModes({
+    catalog,
+    modes: parseModesArg(process.env.YZ_BUILD_MODES),
+    edition,
+  });
+} catch (e) {
+  console.error(`[set-edition] 模式参数非法: ${e.message}`);
+  process.exit(1);
+}
+// 自定义模式时后缀带模式短码，避免同一档位不同模式组合的安装包互相覆盖。
+const customSuffix = process.env.YZ_BUILD_MODES
+  ? `-${edition}-${buildModes.join('-')}`
+  : `-${edition}`;
+
 const outPath = path.join(__dirname, '..', 'edition.json');
 const payload = {
   edition,
   /** 预置授权码档位（可被 YZ_DEFAULT_LICENSE 整码覆盖，见 apps/server/src/license.ts）。 */
   defaultEdition: DEFAULT_EDITION[edition],
   label: LABEL[edition],
+  /** 本次构建物理包含的模式（决定包里有哪些代码）。 */
+  modes: buildModes,
   /** 产物名后缀，与 electron-builder.full.yml 的 artifactName 对应。 */
-  artifactSuffix: `-${edition}`,
+  artifactSuffix: customSuffix,
 };
 
 fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
 
-const MODES = {
-  lite: '仅办公模式',
-  basic: '办公 + 工作流 + 开发',
-  pro: '全部模式（办公/工作流/开发/运维/安全）',
-};
-
 console.log(`[set-edition] 已写入 ${path.relative(process.cwd(), outPath)}`);
-console.log(`[set-edition] 构建档: ${edition}（${LABEL[edition]}）→ ${MODES[edition]}`);
+console.log(`[set-edition] 构建档: ${edition}（${LABEL[edition]}）→ 模式: ${buildModes.join(', ')}`);
 console.log(`[set-edition] 预置码档: ${DEFAULT_EDITION[edition]}`);
-console.log(`[set-edition] 产物后缀: -${edition}`);
+console.log(`[set-edition] 产物后缀: ${customSuffix}`);

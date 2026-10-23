@@ -10,6 +10,10 @@ directories:
 #  - sqlite-vec / esbuild 为 N-API 预编译，无需重编译
 #  - 否则 canvas（unpdf 的可选依赖）会被扫描到并在 Windows 上因缺 MSVC 编译失败
 npmRebuild: false
+# 安全加固：只从 app.asar 加载（配合 afterPack 写入的 OnlyLoadAppFromAsar fuse）。
+asar: true
+# 打包后、出安装包前：清理后端 sourcemap/.d.ts，并写入安全 fuses。
+afterPack: ./electron-builder.after-pack.cjs
 files:
   - dist/**/*
   - main.cjs
@@ -80,6 +84,12 @@ files:
 extraResources:
   - from: ../server/dist
     to: server/dist
+    # ★ extraResources 不走 files: 的排除规则，必须在这里再挡一次。
+    #   afterPack 还会兜底删除并断言（双保险）。
+    filter:
+      - '**/*'
+      - '!**/*.map'
+      - '!**/*.d.ts'
   - from: ../server/assets
     to: server/assets
   # ★ 刻意不打包 ../server/src（后端源码）：生产模式只跑 server/dist 的编译产物，

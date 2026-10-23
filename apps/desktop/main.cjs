@@ -743,7 +743,14 @@ function readEditionEnv() {
     const env = { YZ_EDITION: cfg.edition };
     // 预置码档位与构建档是两件事（高级包带基础版码），故单独传，不合并。
     if (typeof cfg.defaultEdition === 'string') env.YZ_DEFAULT_EDITION = cfg.defaultEdition;
-    console.log('[版本档] 构建档=' + cfg.edition + ' 预置码档=' + (cfg.defaultEdition || '(默认)'));
+    // ★ 本次构建物理包含的模式：后端据此把「授权放行」再交一次「包里真的有」，
+    //   避免精简包里 /api/license/verify 仍下发未编译的模式。
+    if (Array.isArray(cfg.modes) && cfg.modes.length) env.YZ_BUILD_MODES = cfg.modes.join(',');
+    console.log(
+      '[版本档] 构建档=' + cfg.edition
+      + ' 预置码档=' + (cfg.defaultEdition || '(默认)')
+      + ' 模式=' + (Array.isArray(cfg.modes) ? cfg.modes.join(',') : '(全量)'),
+    );
     return env;
   } catch (e) {
     console.warn('[版本档] edition.json 读取失败，后端将使用默认档:', e && e.message);
@@ -980,6 +987,27 @@ function createWindow() {
   //   应用自身页面里的 iframe 若跳自定义协议，同样会把 Shell 拉起来弹窗 ⇒ 一并拦。
   //   （同步的全局 web-contents-created 也会挂，这里是显式声明，便于阅读与单测锚定。）
   guardNavigation(mainWindow.webContents);
+
+  /**
+   * ★ 打包版禁用 DevTools（P2 反白盒）。
+   *
+   * 覆盖两条入口：
+   *   ① `devtools-opened` 事件 —— 无论菜单/快捷键/`window.open` 里的开发者工具，
+   *      一旦打开立刻关闭；
+   *   ② `before-input-event` —— 拦 F12 与 Ctrl+Shift+I/J/C，避免快捷键绕过。
+   * 开发版（`app.isPackaged=false`）完全不受影响。
+   */
+  if (app.isPackaged) {
+    const wc = mainWindow.webContents;
+    wc.on('devtools-opened', () => {
+      try { wc.closeDevTools(); } catch { /* 已关闭 */ }
+    });
+    wc.on('before-input-event', (event, input) => {
+      const key = String(input.key || '').toLowerCase();
+      const devtoolsShortcut = input.shift && input.control && ['i', 'j', 'c'].includes(key);
+      if (key === 'f12' || devtoolsShortcut) event.preventDefault();
+    });
+  }
 
   // webview 引擎：guest 安全加固 —— 无论渲染层怎么声明，guest 一律无 node 集成 + 上下文隔离 +
   // 不加载任何 preload。外部网页永远拿不到 Node 能力与本地文件访问。
@@ -7452,6 +7480,16 @@ if (!gotTheLock) {
       mainWindow.show();
     }
   });
+}
+
+// ★ 打包版拒绝调试开关（P2 反白盒）：--inspect / --remote-debugging-port 会让任何人
+//   接管主进程或渲染层。开发版（app.isPackaged=false）不受影响，仍可正常调试。
+if (app.isPackaged) {
+  const debugArg = process.argv.find((a) => /^--(inspect|inspect-brk|remote-debugging-port)/.test(a));
+  if (debugArg) {
+    console.error(`[security] 打包版禁止调试开关: ${debugArg}`);
+    app.exit(1);
+  }
 }
 
 app.whenReady().then(async () => {

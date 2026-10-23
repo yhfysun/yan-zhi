@@ -23,6 +23,10 @@
  *   node scripts/package.cjs android             # 安卓 APK
  *   node scripts/package.cjs all                 # 桌面三档 + 安卓
  *   node scripts/package.cjs --editions=lite,pro # 等价 desktop:lite,pro（--edition= 同义）
+ *   node scripts/package.cjs desktop --modes=office,dev
+ *                                  # 只把「办公 + 开发」的代码打进包：
+ *                                  # 未选模式的入口/页面/插件视图不产出 chunk。
+ *                                  # 与 --editions 正交（后者决定授权档与预置码）。
  *
  * 产物目录（统一树，路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，单一真相源）：
  *   dist-release/desktop/<档>/<版本>/   ← 安装包 + win-unpacked/
@@ -112,6 +116,50 @@ const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith('--')));
 const VERIFY = !flags.has('--no-verify');
 const KEEP_TMP = flags.has('--keep-tmp');
+
+// ── 模式多选（--modes=office,dev）──
+// 与 --editions 正交：--editions 决定「授权档/预置码」，--modes 决定「包里真的有哪些代码」。
+const {
+  readCatalog: readModeCatalog,
+  parseModesArg: parseModesFlag,
+  resolveModes: resolveBuildModes,
+} = require('./lib/mode-build.cjs');
+const MODES_FLAG = (() => {
+  const hit = argv.find((a) => a.startsWith('--modes='));
+  if (hit) return hit.slice('--modes='.length);
+  const i = argv.indexOf('--modes');
+  return i >= 0 ? argv[i + 1] : null;
+})();
+let BUILD_MODES = null;
+if (MODES_FLAG !== null) {
+  try {
+    BUILD_MODES = resolveBuildModes({
+      catalog: readModeCatalog(),
+      modes: parseModesFlag(MODES_FLAG),
+      edition: null,
+    });
+  } catch (e) {
+    console.error(`\x1b[31m[ERROR]\x1b[0m --modes 非法: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+// --list-modes：不打包，只列出可选模式与各档位预设，避免记参数。
+if (flags.has('--list-modes')) {
+  const catalog = readModeCatalog();
+  console.log('\n可选模式（--modes=... 逗号分隔，可多选）:');
+  for (const [key, d] of Object.entries(catalog.modes)) {
+    console.log(`  ${key.padEnd(8)} ${d.label}  ${d.route}`);
+  }
+  console.log('\n档位预设（不传 --modes 时按所选档位自动决定）:');
+  for (const [edition, modes] of Object.entries(catalog.editionPresets || {})) {
+    console.log(`  ${edition.padEnd(8)} ${modes.join(', ')}`);
+  }
+  console.log('\n示例:');
+  console.log('  node scripts/package.cjs desktop:basic --modes=office,dev');
+  console.log('  pnpm package:desktop:lite --modes=office\n');
+  process.exit(0);
+}
 /**
  * 旧产物被句柄持有时（常见：dev 后端持有打包产物的 app.asar）是否**自动换产物根**继续构建。
  * 默认开启 —— 换根后把交付物拷回标准树，用户拿到的路径不变；只是旧 win-unpacked 原样留下。
@@ -663,12 +711,15 @@ function computeMovable(targets, willCompile) {
 function buildDesktop(editions) {
   step(`桌面打包：${editions.map((e) => `${e}(${EDITION_LABEL[e]})`).join(' / ')}`);
   info(`将依次：真编译 server → vite build → 逐档 electron-builder（约 3.5 分钟）`);
+  if (BUILD_MODES) info(`代码裁剪：只打入 ${BUILD_MODES.join(', ')}（未选模式的入口与页面不会进包）`);
   // build-all-editions.cjs 内部含真编译 + 逐档重写 edition.json + 清 appOutDir；
   // 每档独立输出到 dist-release/desktop/<档>/<版本>/（无需 --separate，那已是默认行为）。
   run(process.execPath, [
     path.join('apps', 'desktop', 'scripts', 'build-all-editions.cjs'),
     ...editions,
-  ]);
+  ], {
+    env: BUILD_MODES ? { YZ_BUILD_MODES: BUILD_MODES.join(',') } : {},
+  });
   ok('桌面构建完成');
 }
 
@@ -947,6 +998,7 @@ function cleanFreshRoot() {
     info(`目标: ${[targets.desktop.length ? `桌面 ${targets.desktop.join('/')}` : null, targets.android ? '安卓 APK' : null].filter(Boolean).join(' + ')}`);
     info(`将真编译 server: ${willCompile ? '是' : '否（复用现有 dist）'}`);
     info(`将构建: ${[needCompile ? '桌面三档/选档' : null, targets.android ? '安卓 APK' : null].filter(Boolean).join(' → ')}`);
+    info(`代码模式: ${BUILD_MODES ? BUILD_MODES.join(', ') : '按档位预设（可用 --modes=office,dev 指定）'}`);
     console.log('');
     step('将移走的目录');
     moveAway(computeMovable(targets, willCompile));

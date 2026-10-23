@@ -72,6 +72,11 @@ if (separate) {
 
 const desktopDir = path.join(__dirname, '..');
 const repoRoot = path.resolve(desktopDir, '..', '..');
+const {
+  readCatalog,
+  parseModesArg,
+  allModeKeys,
+} = require(path.join(repoRoot, 'scripts', 'lib', 'mode-build.cjs'));
 
 const CONFIG = EDITION_CONFIG;
 const LABEL = EDITION_LABEL;
@@ -239,11 +244,52 @@ for (const edition of editions) {
   console.log(`  ✓ ${rel(outDir)} 就绪`);
 }
 
-// ② 后端与前端只编一次：三档的**代码完全相同**（本轮不做按档裁剪）。
+/**
+ * 本次编译进包的模式。
+ *
+ * 优先级：YZ_BUILD_MODES（package.cjs --modes 透传）> 本次档位预设的并集。
+ * ★ 为什么多档同跑取并集：vite 只编一次，一份前端产物要同时服务本次所有档；
+ *   并集等于各档原有内容量（lite 单独构建时才真正只含 office）。
+ *   要精确裁剪单一组合，就单独构建那一档。
+ */
+function resolveBuildModesCsv() {
+  const explicit = parseModesArg(process.env.YZ_BUILD_MODES);
+  if (explicit) return explicit.join(',');
+  const catalog = readCatalog();
+  const picked = new Set();
+  for (const e of editions) {
+    for (const m of catalog.editionPresets?.[e] || []) picked.add(m);
+  }
+  if (!picked.size) return allModeKeys(catalog).join(',');
+  return allModeKeys(catalog).filter((m) => picked.has(m)).join(',');
+}
+
+const BUILD_MODES_CSV = resolveBuildModesCsv();
+
+/** 打包结束（含异常退出）恢复全量生成表，避免把裁剪后的表留在工作区。 */
+let modeTableRestored = false;
+function restoreModeTable() {
+  if (modeTableRestored) return;
+  modeTableRestored = true;
+  try {
+    execFileSync(process.execPath, [path.join(repoRoot, 'scripts', 'select-modes.cjs'), '--restore'], {
+      cwd: desktopDir,
+      stdio: 'ignore',
+    });
+  } catch {
+    console.warn('[build-all] 警告：恢复全量模式表失败，请手动执行 node scripts/select-modes.cjs --restore');
+  }
+}
+process.on('exit', restoreModeTable);
+
+// ② 后端与前端只编一次：本次所有档共用同一份源码产物（模式集合见 BUILD_MODES_CSV）。
 //    注意：这里「只编一次」省的是 tsc + vite（源码产物），
 //    electron-builder 仍需**逐档各跑一次**（edition.json 打进 asar，档位是编译期固化的）。
 console.log('\n=== [2/3] 编译后端与前端（源码产物共用，只跑一次）===');
+console.log(`[build-all] 编译模式: ${BUILD_MODES_CSV}`);
 preflight();
+// ★ 先写前端生成表：路由/插件视图表只包含选中模式，vite 才不会产出未选模式的 chunk。
+run(process.execPath, [path.join(repoRoot, 'scripts', 'select-modes.cjs'), `--modes=${BUILD_MODES_CSV}`]);
 // ★ 不裸 spawn 'pnpm'：本机三套 node 都只有 corepack、没有独立 pnpm（where pnpm 为空），
 //   裸调报「'pnpm' 不是内部或外部命令」。解析逻辑收口在 pack-helpers.resolvePnpm。
 const pnpm = resolvePnpm(['--filter', '@yan-zhi/server', 'build']);
@@ -251,6 +297,9 @@ console.log(`[build-all] pnpm 启动方式: ${pnpm.via}`);
 run(pnpm.cmd, pnpm.argv, pnpm.extraEnv);
 // 直接用包内 vite 可执行文件：不依赖 shell PATH，也不会像 npx 那样在受限网络下回源探测。
 run(process.execPath, [path.join(desktopDir, 'node_modules', 'vite', 'bin', 'vite.js'), 'build']);
+// ★ 泄漏断言必须在 electron-builder 之前：裁剪被破坏时立刻失败，
+//   而不是打出一个「名字精简、内容全量」的包。
+run(process.execPath, [path.join(repoRoot, 'scripts', 'verify-mode-prune.cjs')]);
 run(process.execPath, ['./scripts/prepare-server-runtime.cjs']);
 run(process.execPath, ['./scripts/clean-broken-symlinks.cjs']);
 
@@ -263,16 +312,18 @@ for (const edition of editions) {
   // ★ 必须先写 edition.json：electron-build.cjs 读它注入 YZ_ARTIFACT_SUFFIX 与档位 env，
   //   顺序颠倒会打出「产物名与内容档位不一致」的包。
   run(process.execPath, ['./scripts/set-edition.cjs', edition]);
+  // 后缀由 set-edition 决定（自定义 --modes 会带模式短码），这里读同一份文件避免两处漂移。
+  const editionCfg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'edition.json'), 'utf8'));
 
   const outDir = outDirFor(edition);
   clearOutputDir(outDir);
 
   // 显式传 YZ_OUTPUT_DIR + YZ_ARTIFACT_SUFFIX：
   //   · 输出目录严格落在期望位置，不会散落；
-  //   · 后缀直传，避免读不到 edition.json 时回落到 -basic（档位与文件名不一致）。
+  //   · 后缀与 edition.json 同源，避免读不到时回落到 -basic（档位与文件名不一致）。
   run(process.execPath, ['./scripts/electron-build.cjs', CONFIG[edition]], {
     YZ_OUTPUT_DIR: outDir,
-    YZ_ARTIFACT_SUFFIX: `-${edition}`,
+    YZ_ARTIFACT_SUFFIX: editionCfg.artifactSuffix || `-${edition}`,
   });
 }
 

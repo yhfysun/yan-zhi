@@ -4,7 +4,30 @@ import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { isElectron, isCapacitor } from '../api/client';
-import { activeMode, modeRoute, visibleModeDefs, isModeLicensed, setMode, type AppMode } from '../stores/mode';
+import { activeMode, modeRoute, visibleModeDefs, isModeAvailable, setMode, type AppMode } from '../stores/mode';
+import { MODE_VIEW_LOADERS } from '../generated/build-modes';
+
+/**
+ * 模式工作台路由（★ 构建期裁剪）。
+ *
+ * component 只能来自生成表 `MODE_VIEW_LOADERS` —— 这里**不能写** `() => import(...)`：
+ * 只要 import 表达式存在于源码，Rollup 就会为它产出 chunk，`--modes` 裁剪立即失效。
+ * 未选模式在生成表里没有键，对应路由也就不会注册。
+ */
+const MODE_ROUTE_TABLE: Array<{ mode: AppMode; path: string; title: string }> = [
+  { mode: 'dev', path: '/code', title: '代码' },
+  { mode: 'wf', path: '/workflow', title: '工作流' },
+  { mode: 'clip', path: '/clip', title: '剪辑' },
+];
+
+const modeRoutes = MODE_ROUTE_TABLE
+  .filter((r) => !!MODE_VIEW_LOADERS[r.mode])
+  .map((r) => ({
+    path: r.path,
+    name: r.mode,
+    component: MODE_VIEW_LOADERS[r.mode],
+    meta: { title: r.title },
+  }));
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
@@ -57,26 +80,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/Chat.vue'),
     meta: { title: '任务' },
   },
-  {
-    path: '/code',
-    name: 'code',
-    component: () => import('../views/CodeWorkbench.vue'),
-    meta: { title: '代码' },
-  },
-  {
-    // 工作流模式（第五模式，stores/mode.ts 的 wf）：运行台 + 任务对话，两形态由 LeadToggle 切换
-    path: '/workflow',
-    name: 'workflow',
-    component: () => import('../views/WorkflowWorkbench.vue'),
-    meta: { title: '工作流' },
-  },
-  {
-    // 剪辑模式（第六模式，stores/mode.ts 的 clip）：时间轴工作台 + 对话，两形态由 LeadToggle 切换
-    path: '/clip',
-    name: 'clip',
-    component: () => import('../views/ClipWorkbench.vue'),
-    meta: { title: '剪辑' },
-  },
+  ...modeRoutes,
   {
     path: '/chat-hub',
     name: 'chat-hub',
@@ -359,11 +363,11 @@ router.beforeEach(async (to) => {
       return { path: '/license' };
     }
   }
-  // ★ 版本档门禁：目标路由属于未授权模式 → 挡回首个可见模式。
+  // ★ 版本档 + 构建期裁剪：目标路由属于未授权、或未编译进本包的模式 → 挡回首个可用模式。
   //   必须在 licenseStore.init() 之后 —— 授权信息（放行模式清单）是 init 时拿到的，
   //   放在前面会因 modes 未就绪而全部放行（等于没拦）。
   const targetMode = MODE_ROUTE_KEYS[to.path];
-  if (targetMode && !isModeLicensed(targetMode)) {
+  if (targetMode && !isModeAvailable(targetMode)) {
     return { path: firstLicensedRoute() };
   }
   /**
@@ -390,8 +394,8 @@ router.beforeEach(async (to) => {
     to.path !== '/code' &&
     (to.path === '/chat' || to.path.startsWith('/chat/')) &&
     activeMode.value !== 'office' &&
-    // 当前模式已失权时不再跳回它（否则换低档码后 /chat 会被弹到一个不该存在的模式）
-    isModeLicensed(activeMode.value) &&
+    // 当前模式已失权 / 未编译进本包时不再跳回它（否则换低档码或精简包会弹到不存在的页面）
+    isModeAvailable(activeMode.value) &&
     // ★ 2026-10-16：目标模式路由还没注册时**不许**抢着重定向 —— 否则落点是空白页，
     //   而且会把每一次「回对话」都弹回同一个空白页（见 isModeRouteRegistered 注释）。
     isModeRouteRegistered(activeMode.value)

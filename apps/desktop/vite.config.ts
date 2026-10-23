@@ -60,7 +60,16 @@ export default defineConfig({
       },
     },
   },
+  // 生产构建加固：不输出 sourcemap、去掉注释与 debugger（防逆向的第一层）。
+  esbuild: {
+    legalComments: 'none',
+    drop: ['debugger'],
+  },
   build: {
     target: 'es2022',
+    sourcemap: false,
+    // ★ 构建清单：scripts/verify-mode-prune.cjs 用它断言「未选模式的源模块没有产出 chunk」。
+    //   清单本身就是产物的一部分（.vite/manifest.json，几 KB），不影响运行。
+    manifest: true,
   },
 });

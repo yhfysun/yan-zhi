@@ -21,6 +21,7 @@ import {
   DEFAULT_BUILD_EDITION,
   resolveEdition,
   resolveBuildEdition,
+  resolveBuildModes,
   allowedModes,
   verifyLicenseCodeWithKey,
   getDefaultLicenseCode,
@@ -176,6 +177,28 @@ describe('allowedModes · 构建档 ∩ 授权档', () => {
   it('兜底档参与交集时不会意外放大权限', () => {
     expect(allowedModes('lite', FALLBACK_EDITION)).toEqual(['office']);
     expect(allowedModes(DEFAULT_BUILD_EDITION, 'pro')).toEqual(['office', 'wf', 'dev']);
+  });
+});
+
+describe('resolveBuildModes · 物理构建模式（--modes）', () => {
+  it('★ 精简包：授权是 pro，也只能放行实际编译进来的模式', () => {
+    expect(allowedModes('pro', 'pro', ['office', 'dev'])).toEqual(['office', 'dev']);
+  });
+
+  it('未设置 YZ_BUILD_MODES 时退回档位清单（存量包行为不变）', () => {
+    expect(resolveBuildModes(undefined, 'basic')).toEqual([...EDITION_MODES.basic]);
+    expect(allowedModes('basic', 'pro')).toEqual(['office', 'wf', 'dev']);
+  });
+
+  it('解析逗号/空格/重复项，并保持集合语义', () => {
+    expect(resolveBuildModes('office, dev')).toEqual(['office', 'dev']);
+    expect(resolveBuildModes('office dev office')).toEqual(['office', 'dev']);
+    expect(allowedModes('pro', 'pro', resolveBuildModes('office,dev'))).toEqual(['office', 'dev']);
+  });
+
+  it('★ 空集合不会把授权模式全漏出去', () => {
+    // `--modes` 解析为空必须视为"没设置"，而不是"放行全部"。
+    expect(resolveBuildModes('  ', 'pro')).toEqual([...EDITION_MODES.pro]);
   });
 });
 

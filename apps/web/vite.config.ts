@@ -46,4 +46,12 @@ export default defineConfig({
       },
     },
   },
+  // 生产构建加固：不输出 sourcemap、去掉注释与 debugger。
+  esbuild: {
+    legalComments: 'none',
+    drop: ['debugger'],
+  },
+  build: {
+    sourcemap: false,
+  },
 });

@@ -9,6 +9,7 @@
 //   - 界面状态（编辑器标签 openFiles / OpsConsole 的 windows）各自保留，不随模式切换丢失
 //   - 「共享的是上下文，不是界面状态」
 import { ref, computed, watch, type ComputedRef, type Ref } from 'vue';
+import { BUILD_MODES, BUILD_MODE_DEFS } from '../generated/build-modes';
 
 export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'shop';
 /** 主导方：ai = 对话居中；human = 工作区居中（编辑器/终端/控制台），对话靠边 */
@@ -29,22 +30,18 @@ export interface ModeDef {
   desktopOnly?: boolean;
 }
 
-export const MODE_DEFS: ModeDef[] = [
-  { key: 'office', label: '办公模式', icon: 'ChatDotRound', desc: '文档 · 表格 · 岗位模板', route: '/chat' },
-  { key: 'dev', label: '开发模式', icon: 'Monitor', desc: '写代码 · 改 Bug · 读项目', route: '/code' },
-  // pluginId 必须与插件 manifest.id 完全一致（ops-shell / sec-lab），
-  // 写成 'ops' / 'sec' 会导致插件明明已启用却判定为「未启用」而置灰。
-  { key: 'ops', label: '运维模式', icon: 'Platform', desc: '服务器 · Docker · 数据库', route: '/ops', pluginId: 'ops-shell', desktopOnly: true },
-  { key: 'sec', label: '安全模式', icon: 'Lock', desc: '侦察 · 扫描 · 审计', route: '/sec', pluginId: 'sec-lab', desktopOnly: true },
-  // 工作流模式：无插件依赖（三端可用），承载「运行模式（人工填参执行）/ AI 模式（工作流助手）」两种形态
-  { key: 'wf', label: '工作流模式', icon: 'Connection', desc: '运行 · 调试 · 定时', route: '/workflow' },
-  // 剪辑模式：无插件依赖（三端可用），时间轴工作台 + 对话双驱动，工程由 clip_project 工具落盘
-  { key: 'clip', label: '剪辑模式', icon: 'VideoCamera', desc: '剪辑 · 字幕动画 · 成片', route: '/clip' },
-  // 店铺运营模式（第八模式，2026-10-16）：**重模式** —— 插件 shop-ops 贡献 /shop 控制台
-  //   （左侧店铺/仓库资源列表 + 主区工作台）。有 pluginId，故插件未启用时入口自动置灰；
-  //   desktopOnly 与 ops/sec 同档（控制台型页面不对移动端开放）。
-  { key: 'shop', label: '店铺运营模式', icon: 'Shop', desc: '选品 · Listing · 利润 · 仓储', route: '/shop', pluginId: 'shop-ops', desktopOnly: true },
-];
+/**
+ * 模式定义来自**构建期生成文件**（scripts/select-modes.cjs）。
+ *
+ * ★ 不能在这里手写全量清单：未选模式的 label/desc/pluginId 字符串会随包泄露，
+ *   而且入口会被误判为「有模式但没页面」。打包脚本按 `--modes` 只生成选中的定义。
+ */
+export const MODE_DEFS: ModeDef[] = BUILD_MODE_DEFS as unknown as ModeDef[];
+
+/** 该模式是否**物理编译进了本次产物**（与授权无关）。 */
+export function isModeBuilt(m: AppMode): boolean {
+  return BUILD_MODES.includes(m);
+}
 
 const MODE_KEY = 'yz:mode';
 const LEGACY_CODE_KEY = 'yz:code:active';
@@ -67,10 +64,10 @@ const licensedModes: Ref<string[] | null> = ref(null);
 /** 写入授权放行的模式（由 stores/license 在 init/activate 成功后调用）。 */
 export function setLicensedModes(modes: string[] | null): void {
   licensedModes.value = Array.isArray(modes) && modes.length ? modes.slice() : null;
-  // 当前模式一旦失权（换成了低档码），必须回落 —— 否则界面停在一个不该存在的模式上，
-  // 工作台会渲染出空壳（模式本身没了但 activeMode 还指着它）。
-  if (licensedModes.value && !licensedModes.value.includes(activeMode.value)) {
-    activeMode.value = 'office';
+  // 当前模式一旦失权（换低档码）或未编译进本包，必须回落 —— 否则界面停在
+  // 一个没有页面的模式上，工作台渲染空壳。
+  if (licensedModes.value && !isModeAvailable(activeMode.value)) {
+    activeMode.value = firstAvailableMode();
   }
 }
 
@@ -80,9 +77,25 @@ export function isModeLicensed(m: AppMode): boolean {
   return licensedModes.value.includes(m);
 }
 
-/** 当前授权下可见的模式定义（模式下拉 / 左栏入口都读它）。 */
+/**
+ * 该模式本次是否**可用** = 已编译进包 ∩ 授权放行。
+ *
+ * ★ 两个维度必须一起看：后端仍可能按授权档下发 ops，但若这个包是按
+ *   `--modes=office,dev` 构建的，ops 入口/页面根本不存在，界面不能露出来。
+ */
+export function isModeAvailable(m: AppMode): boolean {
+  return isModeBuilt(m) && isModeLicensed(m);
+}
+
+/** 当前可用模式里的第一个（回落落点）。 */
+export function firstAvailableMode(): AppMode {
+  const hit = MODE_DEFS.find((d) => isModeAvailable(d.key));
+  return hit ? hit.key : MODE_DEFS[0]?.key ?? 'office';
+}
+
+/** 当前授权 + 构建下可见的模式定义（模式下拉 / 左栏入口都读它）。 */
 export const visibleModeDefs: ComputedRef<ModeDef[]> = computed(() =>
-  MODE_DEFS.filter((d) => isModeLicensed(d.key)),
+  MODE_DEFS.filter((d) => isModeAvailable(d.key)),
 );
 
 /** 响应式暴露给组件（computed 直接用于模板）。 */
@@ -104,10 +117,13 @@ function readStoredMode(): AppMode {
     const v = localStorage.getItem(MODE_KEY);
     if (v && MODE_DEFS.some((d) => d.key === v)) return v as AppMode;
     // 旧标记迁移：yz:code:active === '1' → dev，随后删除旧键
+    // （dev 未编译进本包时直接丢弃该标记，避免落到一个不存在的路由）
     if (localStorage.getItem(LEGACY_CODE_KEY) === '1') {
-      localStorage.setItem(MODE_KEY, 'dev');
       localStorage.removeItem(LEGACY_CODE_KEY);
-      return 'dev';
+      if (isModeBuilt('dev')) {
+        localStorage.setItem(MODE_KEY, 'dev');
+        return 'dev';
+      }
     }
     return 'office';
   } catch {
@@ -156,6 +172,8 @@ watch(leads, (v) => {
 }, { deep: true });
 
 export function setMode(m: AppMode): void {
+  // 未编译的模式不切换：调用方若来自历史持久化/外部链接，切过去只会得到空工作台。
+  if (!isModeBuilt(m)) return;
   activeMode.value = m;
 }
 
@@ -220,5 +238,8 @@ function defineModeStore() {
     visibleModeDefs,
     setLicensedModes,
     isModeLicensed,
+    // 构建期裁剪：该模式是否真的在这个包里
+    isModeBuilt,
+    isModeAvailable,
   };
 }

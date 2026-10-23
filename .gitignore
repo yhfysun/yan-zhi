@@ -179,6 +179,9 @@ apps/desktop/electron-builder.*.relocated.yml
 yanzhi-dist-release/
 _tmp_*
 
+# 模式裁剪的构建清单（打包期由 scripts/select-modes.cjs 生成；模式清单本身入库）
+build/build-manifest.json
+
 # 运行时数据（浏览器历史等，不入库）
 workspace/
 # 临时 demo 页
