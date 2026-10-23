@@ -15,11 +15,13 @@ import type { Message } from '@yan-zhi/shared';
 export interface AgentStep {
   reasoningContent?: string;
   toolCalls: any[];
-  toolResults: Array<{ callId: string; content: string; isError: boolean }>;
+  toolResults: Array<{ callId: string; content: string; isError: boolean; at?: number }>;
   partialContent?: string;
   subAgentRounds?: SubAgentRound[];
   /** 关联的真实助手消息 id，用于匹配交付文件等按消息 id 索引的资源 */
   messageId?: string;
+  /** 该步消息的创建时间（ms）。配合 toolResults[].at 可算每次工具调用的耗时（2026-10-23） */
+  at?: number;
 }
 
 export interface SubAgentRound {
@@ -89,6 +91,7 @@ export function buildMessageRounds(
             toolResults: [],
             partialContent: msg.content || undefined,
             messageId: msg.id,
+            at: msg.createdAt,
           };
           currentRound.steps.push(step);
           for (const tc of step.toolCalls) {
@@ -102,6 +105,7 @@ export function buildMessageRounds(
                 callId: msg.toolCallId || '',
                 content: msg.content || '',
                 isError: isToolError(msg.content || ''),
+                at: msg.createdAt,
               });
               break;
             }
@@ -128,6 +132,7 @@ export function buildMessageRounds(
           toolResults: [],
           partialContent: msg.content || undefined,
           messageId: msg.id,
+          at: msg.createdAt,
         };
         subRound.steps.push(subStep);
         for (const tc of subStep.toolCalls) {
@@ -141,6 +146,7 @@ export function buildMessageRounds(
               callId: msg.toolCallId || '',
               content: msg.content || '',
               isError: isToolError(msg.content || ''),
+              at: msg.createdAt,
             });
             break;
           }
@@ -180,6 +186,7 @@ export function buildMessageRounds(
         toolResults: [],
         partialContent: msg.content || undefined,
         messageId: msg.id,
+        at: msg.createdAt,
       };
       currentRound.steps.push(step);
       for (const tc of step.toolCalls) {
@@ -197,6 +204,7 @@ export function buildMessageRounds(
             callId: msg.toolCallId || '',
             content: msg.content || '',
             isError: isToolError(msg.content || ''),
+            at: msg.createdAt,
           });
           break;
         }

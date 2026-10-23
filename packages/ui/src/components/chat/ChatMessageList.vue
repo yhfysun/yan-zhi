@@ -107,6 +107,17 @@
                 <span class="agent-process-summary-text">{{ processSummaryText(vr.round, vr.ri) }}</span>
                 <el-icon v-if="vr.round.hasAgentProcess" :size="12" class="agent-process-summary-chevron"><ArrowRight /></el-icon>
               </div>
+              <!-- 最耗时的 3 次工具调用（2026-10-23 用户要求：着力标注，方便下次优化）：
+                   只在已结束且过程收起时显示，避免和展开后的步骤列表重复占位 -->
+              <div v-if="!isProcessOpen(vr.round, vr.ri) && !isRoundLive(vr.round, vr.ri) && slowestToolCalls(vr.round, 3).length"
+                   class="agent-slow-calls">
+                <span class="asc-label">最耗时</span>
+                <span v-for="(c, ci) in slowestToolCalls(vr.round, 3)" :key="ci" class="asc-item">
+                  <b class="asc-rank">{{ ci + 1 }}</b>
+                  <span class="asc-name" :title="c.name">{{ c.name }}</span>
+                  <span class="asc-dur">{{ fmtDuration(c.ms) }}</span>
+                </span>
+              </div>
               <div v-if="vr.round.hasAgentProcess && isProcessOpen(vr.round, vr.ri)" class="agent-process-steps" @scroll.passive="onStepsScroll">
                 <div v-if="hasHiddenSteps(vr.round)" class="agent-steps-fold">
                   <button type="button" class="agent-steps-fold-btn" @click="toggleEarlierSteps(vr.ri)">
@@ -662,6 +673,7 @@ import { useMobileShell } from '../../composables/useMobileShell';
 import { bindLongPress } from '../../composables/useLongPress';
 import type { MessageRound } from '../../composables/chat/useChat';
 import { stepRenderRange, ROUND_STEP_RENDER_LIMIT } from '../../composables/chat/message-rounds';
+import { fmtDuration, roundElapsedMs, slowestToolCalls } from '../../composables/chat/round-timing';
 import SkeletonList from '../common/SkeletonList.vue';
 import { useCodeStore } from '../../stores/code';
 import { activeMode } from '../../stores/mode';
@@ -1113,7 +1125,9 @@ function processSummaryText(round: MessageRound, ri: number): string {
   const stats = round.agentStats;
   const stepCount = stats?.stepCount ?? round.steps.length;
   const toolCount = stats?.toolCallCount ?? round.allToolCalls.length;
-  return `已处理 ${stepCount} 步 · ${toolCount} 次工具调用`;
+  // 耗时（2026-10-23 用户要求）：用户提问 → 最后一条消息，按消息时间戳算
+  const total = roundElapsedMs(round);
+  return `已处理 ${stepCount} 步 · ${toolCount} 次工具调用${total > 0 ? ` · 耗时 ${fmtDuration(total)}` : ''}`;
 }
 
 /**
@@ -1714,6 +1728,29 @@ watch(activeNavRound, () => {
   background: var(--el-fill-color, #ebeef5);
   color: var(--el-text-color-regular, #606266);
 }
+
+/* 最耗时的 3 次工具调用（2026-10-23）：摘要条下一行小标签，弱化但可扫读 */
+.agent-slow-calls {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin: -4px 0 8px; padding: 0 2px;
+  font-size: 12px; color: var(--el-text-color-secondary, #909399);
+}
+.asc-label { flex: none; opacity: 0.8; }
+.asc-item {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 8px 1px 4px; border-radius: 999px;
+  background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 12%, transparent);
+  color: var(--el-color-warning-dark-2, #b88230);
+  max-width: 240px;
+}
+.asc-rank {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--el-color-warning, #e6a23c); color: #fff;
+  font-size: 10px; line-height: 1;
+}
+.asc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asc-dur { flex: none; font-variant-numeric: tabular-nums; }
 .agent-process-summary-icon {
   flex: 0 0 auto;
 }
