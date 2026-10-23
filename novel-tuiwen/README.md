@@ -6,13 +6,17 @@
 ## 一键出片
 
 ```bash
+# ★ 管线唯一源码：packages/core/src/tool/builtin/python-scripts/novel_tuiwen/
+#   运行时副本 <工作目录>/.yan-zhi/tools/novel_tuiwen/ 由 resolveWorkspacePythonScript
+#   按内容哈希自动同步 —— 不要再在别处维护第二份。
 PY=C:/Users/Administrator/.workbuddy/binaries/python/envs/default/Scripts/python.exe
-cd pipeline
+PIPE=packages/core/src/tool/builtin/python-scripts/novel_tuiwen
 # 背景视频模式(推荐)
-"$PY" run_pipeline.py --input ../sample/chapter01.txt --title 废井怀表 \
+"$PY" "$PIPE/run_pipeline.py" --input novel-tuiwen/sample/chapter01.txt \
+    --outdir novel-tuiwen/output --title 废井怀表 \
     --alias 狐王痴狂 --chapter 1 --bg-video "背景1.mp4,背景2.mp4"
-# 产物: ../output/狐王痴狂_第1集.mp4 (1080x1440 4:3)
-#      + ../output/chapter01_work/publish.txt (发布表单标题+内容)
+# 产物: novel-tuiwen/output/狐王痴狂_第1集.mp4 (1080x1440 4:3)
+#      + novel-tuiwen/output/chapter01_work/publish.txt (发布表单标题+内容)
 ```
 
 ## 画面结构 v4（2026-10-18）：首帧即含全部基本信息
@@ -39,15 +43,16 @@ cd pipeline
 ## 分步
 
 ```bash
+# 均在仓库根目录执行，PIPE 见上（"$PY" = 上面的 venv python）
 # 1) 改编: 章节txt -> 分镜脚本JSON (默认规则切分; --use-llm 走 OpenAI 兼容端点钩子化改编)
-python script_gen.py --input chapter.txt --output script.json [--use-llm]
+"$PY" "$PIPE/script_gen.py" --input chapter.txt --output script.json [--use-llm]
 # 2) 配音: Edge-TTS 逐段合成, 真实时长写回 script.json
-python tts_gen.py --script script.json --outdir audio/ [--voice zh-CN-YunxiNeural]
+"$PY" "$PIPE/tts_gen.py" --script script.json --outdir audio/ [--voice zh-CN-YunxiNeural]
 # 3) 合成: 背景视频(或分镜图) + 标题条 + 「第N集」大字/常驻角标 + libass字幕 + 配音 -> mp4 + 封面图
-python compose_video.py --script script.json --outdir ../output \
+"$PY" "$PIPE/compose_video.py" --script script.json --outdir novel-tuiwen/output \
     --bg-video bg1.mp4,bg2.mp4 [--alias 狐王痴狂 --chapter 1] [--bgm bgm.mp3] [--keep-temp]
 # 4) 发布文案: 表单标题+内容模板 -> <workdir>/publish.txt（run_pipeline 已自动跑）
-python publish_copy.py --script script.json --alias 狐王痴狂 --chapter 1 [--stdout]
+"$PY" "$PIPE/publish_copy.py" --script script.json --alias 狐王痴狂 --chapter 1 [--stdout]
 ```
 
 ## 发布文案模板（publish_copy.py，单一真相源）
@@ -99,7 +104,7 @@ python publish_copy.py --script script.json --alias 狐王痴狂 --chapter 1 [--
 ## 守门测试
 
 ```bash
-cd pipeline && python -m pytest test_screen_structure.py -v   # 13 项，无需 ffmpeg
+python -m pytest packages/core/src/tool/builtin/python-scripts/novel_tuiwen/test_screen_structure.py -v   # 13 项，无需 ffmpeg
 ```
 
 覆盖：全角标点计宽 / ASS 单行不超屏 / 标题条『』与特殊字符转义 / 第N集 alpha 收尾与 % 转义 /

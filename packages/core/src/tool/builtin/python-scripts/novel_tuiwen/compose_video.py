@@ -1,19 +1,31 @@
 # -*- coding: utf-8 -*-
 """
-novel-tuiwen 视频合成器 v2 (ffmpeg, 4:3 1080x1440)
+novel-tuiwen 视频合成器 v3 (ffmpeg, 4:3 1080x1440)
 两种画面模式:
   A. 背景视频模式(推荐): --bg-video 修驴蹄/骑单车等解压视频, 循环铺满全片
   B. 分镜图模式(默认兜底): 无图时生成深色文字占位帧, 后续接 ComfyUI
-统一: 小说标题(顶部) + 逐段字幕(libass烧录) + TTS配音拼接
+画面结构 v4 (2026-10-18):
+  顶部  = 「搜『别名』看全文｜番茄小说」常驻标题条（第0帧即全显，无淡入）
+  角标  = 「第N集」右上角常驻小角标（全程可见，任何一帧当封面都带集数）
+  中部  = 「第N集」大字，第0帧即全显，前3秒后淡出（--chapter 传入时）
+  底部  = ASS 字幕单行快切（宽度系数 0.80 + 全角标点按全角计宽，防超出屏幕）
+  ★ 封面：合成完自动抽第0帧落盘 <成片名>_封面.png → 发布时直接当首页图片
+    （2026-10-18 用户反馈：v3 标题条/大字带淡入，首帧字几乎全透明，
+     平台封面取首帧 ⇒ 用户刷到看不到别名/平台/集数任何信息）
 用法:
   python compose_video.py --script script.json --outdir output/ \
-      --bg-video bg1.mp4,bg2.mp4 [--title-size 64] [--bgm bgm.mp3]
+      --bg-video bg1.mp4,bg2.mp4 [--alias 狐王痴狂 --chapter 1] [--bgm bgm.mp3]
 """
 import argparse
 import json
 import os
 import subprocess
 import sys
+
+# ★ 子进程静默（2026-10-09）：本文件有 10 处 ffmpeg/ffprobe 调用，是"黑框一直闪"的主要来源。
+#   打一次补丁 → 后续所有 subprocess.Popen 自动带 CREATE_NO_WINDOW。
+import _winquiet  # noqa: E402
+_winquiet.apply_popen_defaults()
 
 # 画幅由 --aspect 决定（2026-10-07）：4:3=1080x1440(默认) / 9:16=1080x1920(抖音竖屏) / 16:9=1920x1080(横屏)
 ASPECT_SIZES = {"4:3": (1080, 1440), "9:16": (1080, 1920), "16:9": (1920, 1080)}
@@ -23,7 +35,17 @@ FONTS_DIR = r"C:\Windows\Fonts"
 
 
 def find_ffmpeg():
-    for p in (os.environ.get("FFMPEG"), r"C:\APP\EVCapture\ffmpeg.exe"):
+    # ★ 2026-10-09：原只找 C:\APP\EVCapture\ffmpeg.exe（本机不存在）→ 补多候选 + PATH 兜底
+    cands = [
+        os.environ.get("FFMPEG"),
+        r"C:\Program Files\EVCapture\ffmpeg.exe",
+        r"C:\APP\EVCapture\ffmpeg.exe",
+        os.path.join(os.path.dirname(os.environ.get("FFPROBE") or ""), "ffmpeg.exe")
+        if os.environ.get("FFPROBE") else None,
+    ]
+    import shutil
+    cands.append(shutil.which("ffmpeg"))
+    for p in cands:
         if p and os.path.exists(p):
             return p
     raise SystemExit("ffmpeg not found (set FFMPEG env)")
@@ -31,6 +53,9 @@ def find_ffmpeg():
 
 def probe_duration(ffmpeg, path):
     fp = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+    if not os.path.exists(fp):
+        import shutil
+        fp = shutil.which("ffprobe") or fp
     out = subprocess.run([fp, "-v", "error", "-show_entries", "format=duration",
                           "-of", "default=noprint_wrappers=1:nokey=1", path],
                          capture_output=True, text=True)
@@ -40,8 +65,29 @@ def probe_duration(ffmpeg, path):
         return 5.0
 
 
+def disp_w(ch: str) -> float:
+    """显示宽度：CJK/全角=1，半角（英文/数字）=0.55。
+    ★ 2026-10-12：U+2000~U+206F 通用标点（…… —— ‘’ "" – 等）在雅黑里按全角字形渲染，
+      旧版只认 0x2E80 以上 → 这些字符被低估成 0.55，是字幕偶尔超出屏幕的根因。"""
+    o = ord(ch)
+    if o >= 0x2E80 or 0x2000 <= o <= 0x206F:
+        return 1.0
+    return 0.55
+
+
 def wrap_text(s: str, width: int = 20):
-    return "\n".join(s[i:i + width] for i in range(0, len(s), width))
+    """按**显示宽度**换行（不再按字符个数），英文/数字混排时不会低估行宽导致字幕超出画面。"""
+    lines, cur, w = [], "", 0.0
+    for ch in s:
+        cw = disp_w(ch)
+        if w + cw > width and cur:
+            lines.append(cur)
+            cur, w = "", 0.0
+        cur += ch
+        w += cw
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
 
 
 def wrap_title(s: str, max_chars: int, max_lines: int = 2):
@@ -86,38 +132,134 @@ def esc_drawtext(s: str) -> str:
     return s
 
 
-def fmt_srt_ts(sec: float) -> str:
-    ms = int(round(sec * 1000))
-    h, ms = divmod(ms, 3600000)
-    m, ms = divmod(ms, 60000)
-    s, ms = divmod(ms, 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+def esc_drawtext_pct(s: str) -> str:
+    """★ 2026-10-12：alpha='if(lt(t,...)…)' 表达式里的 drawtext 的 % 必须转义为 \\%，
+    否则被当 expansion 序列解析（占位符展开失败时 ffmpeg 直接吞字符/截断文本）。
+    标题条文本里没有 alpha 表达式，无需双转义；「第N集」大字带 alpha → 必须用这个。"""
+    return esc_drawtext(s).replace("%", "\\%")
 
 
-def build_srt(cues, out_path):
-    """长句按 40 字切块(2 行 x 20), 时间按字数比例分摊, 避免单条字幕堆成文字墙。"""
-    CHUNK = 40
-    idx = 0
+def fmt_ass_ts(sec: float) -> str:
+    """ASS 时间戳 H:MM:SS.cc（厘秒两位，四舍五入进位后钳 99）。"""
+    cs = int(round(sec * 100))
+    if cs >= 100 * 3600 * 24:  # 防御：超长不崩
+        cs = 100 * 3600 * 24 - 1
+    h, rem = divmod(cs, 100 * 3600)
+    m, rem = divmod(rem, 100 * 60)
+    s, cs = divmod(rem, 100)
+    if cs == 100:  # round 进位兜底
+        cs = 99
+    return f"{h:01d}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def ass_clean(s: str) -> str:
+    """ASS 文本消毒：花括号/反斜杠会让 libass 把用户文本当内联标签吞掉，整组剥离。"""
+    import re
+    return re.sub(r"[{}\\]", "", s or "")
+
+
+def chunk_single_line(text: str, max_chars: int):
+    """按显示宽度把一条 cue 切成**单行**小块（时间按宽度比例分摊）。
+    单行快切 = 字幕逐句推进的"滚动感"，也彻底消灭两行长块。"""
+    pieces, cur, w = [], "", 0.0
+    for ch in text:
+        cw = disp_w(ch)
+        if cur and w + cw > max_chars:
+            pieces.append(cur)
+            cur, w = "", 0.0
+        cur += ch
+        w += cw
+    if cur:
+        pieces.append(cur)
+    return pieces or [text]
+
+
+def build_ass(cues, out_path, font_px: int, margin_v: int, fade_ms: int = 140):
+    """直接生成 ASS 字幕（替代 SRT，2026-10-11）：
+    - PlayRes = 真实分辨率 → FontSize 直接就是像素，不再经过 288 基准换算；
+    - 每条 Dialogue 单行 + {\\fad(fade_ms,fade_ms)} 淡入淡出，观感为逐句滚动推进；
+    - 无底框（BorderStyle=1）：白字加粗 + 黑描边(3px) + 轻投影(1px)，不再压一块黑底。
+    cues: (start, end, text)"""
+    max_chars = max(8, int(W * 0.80 / font_px))
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {W}",
+        f"PlayResY: {H}",
+        "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,Microsoft YaHei,{font_px},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,"
+        f"1,0,0,0,100,100,0,0,1,3,1,2,60,60,{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for start, end, text in cues:
+        dur = max(end - start, 0.001)
+        pieces = chunk_single_line(ass_clean(text), max_chars)
+        weights = [sum(disp_w(c) for c in p) for p in pieces]
+        total_w = sum(weights) or 1.0
+        t = start
+        for p, wgt in zip(pieces, weights):
+            d = dur * wgt / total_w
+            lines.append(
+                f"Dialogue: 0,{fmt_ass_ts(t)},{fmt_ass_ts(t + d)},Default,,0,0,0,,"
+                f"{{\\fad({fade_ms},{fade_ms})}}{p}"
+            )
+            t += d
     with open(out_path, "w", encoding="utf-8-sig") as f:
-        for start, end, text in cues:
-            chunks = [text[i:i + CHUNK] for i in range(0, len(text), CHUNK)] or [text]
-            dur = end - start
-            chars = [len(c) for c in chunks]
-            total_chars = sum(chars) or 1
-            t = start
-            for c, n in zip(chunks, chars):
-                d = dur * n / total_chars
-                idx += 1
-                f.write(f"{idx}\n{fmt_srt_ts(t)} --> {fmt_srt_ts(t + d)}\n{wrap_text(c)}\n\n")
-                t += d
+        f.write("\n".join(lines) + "\n")
+
+
+def build_title_lines(top_text: str, title_size: int) -> list:
+    """标题条 drawtext 滤镜片段（链式多行，兼容老版 ffmpeg）。
+
+    ★ 2026-10-12：书名号改用『』——「」在老版 ffmpeg drawtext 渲染成窄引号；
+      底条 box 改 boxcolor=black@0.55 加重一档，压得住亮色背景视频。
+    ★ v4 (2026-10-18)：去掉 0.6s 淡入——平台封面取 t=0 首帧，淡入导致首帧标题
+      几乎全透明，用户刷到看不到别名/平台（改第0帧即全显，常驻本来就有）。"""
+    max_chars = max(6, int(W * 0.90 / title_size))
+    title_lines = wrap_title(top_text, max_chars)
+    line_step = title_size + 12
+    parts = []
+    for i, ln in enumerate(title_lines):
+        if not ln:
+            continue
+        t = esc_drawtext(ln)
+        parts.append(
+            f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{t}':"
+            f"fontcolor=white:fontsize={title_size}:x=(w-text_w)/2:y={80 + i * line_step}:"
+            f"box=1:boxcolor=black@0.55:boxborderw=14:"
+            f"borderw=3:bordercolor=black@0.7"
+        )
+    if not parts:
+        t = esc_drawtext(top_text)
+        parts.append(
+            f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{t}':"
+            f"fontcolor=white:fontsize={title_size}:x=(w-text_w)/2:y=80:"
+            f"box=1:boxcolor=black@0.55:boxborderw=14:"
+            f"borderw=3:bordercolor=black@0.7"
+        )
+    return parts
 
 
 def make_placeholder(scene: str, out_png: str, ffmpeg: str):
     body = esc_drawtext(wrap_text(scene or ""))
+    # ★ 2026-10-12：本机 2016 版 ffmpeg（N-80694）两处不兼容——
+    #   ① drawbox 不认 t=fill（2018+ 语法）→ 用大数值厚度等效填满（9999 > 任意画幅半边，
+    #      2026-10-18 实测本机 EVCapture ffmpeg 连 t=max 也不认 → 纯数字最稳）；
+    #   ② drawtext 无 line_spacing 选项 → 去掉（占位帧观感略降，可接受）。
+    #   v2 代码能跑是因为此前一直走背景视频模式，占位帧从没被真实执行过。
+    body_one = body.replace("\n", " ")  # 无 line_spacing 也不换行渲染，直接压成一行
     vf = (
-        f"drawbox=x=80:y=80:w={W-160}:h={H-160}:color=0x16213e:t=fill,"
-        f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{body}':"
-        f"fontcolor=0xe0e0e0:fontsize=40:x=(w-text_w)/2:y=h/2-text_h/2:line_spacing=24"
+        f"drawbox=x=80:y=80:w={W-160}:h={H-160}:color=0x16213E@1:t=9999,"
+        f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{body_one}':"
+        f"fontcolor=0xe0e0e0:fontsize=40:x=(w-text_w)/2:y=h/2-text_h/2"
     )
     subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi",
                     "-i", f"color=c=0x1a1a2e:s={W}x{H}:d=1",
@@ -252,10 +394,13 @@ def build_audio_bed(ffmpeg, tmp, audio_items, bgm, ambience, amb_level, accents,
     for (idx, at, gain) in acc_entries:
         fc += f";[{idx}:a]adelay={int(at * 1000)}|{int(at * 1000)},volume={gain * n_mix:.4f}[acc{idx}]"
         mix_ins.append(f"[acc{idx}]")
+    # ★ 2026-10-21：混音后加 alimiter —— amix 按路数放大再衰减，瞬态（点缀音效 + 旁白峰值）
+    #   叠加会越过 0dBFS（实测 +4.5~+7.4dB），AAC 编码即硬削波 → 统一过限幅器（-1dBFS）。
     if len(mix_ins) == 1:
-        fc += ";[narx]anull[a]"
+        fc += ";[narx]alimiter=limit=0.89:level=0[a]"
     else:
-        fc += f";{''.join(mix_ins)}amix=inputs={len(mix_ins)}:duration=first[a]"
+        fc += (f";{''.join(mix_ins)}amix=inputs={len(mix_ins)}:duration=first,"
+               "alimiter=limit=0.89:level=0[a]")
     out = os.path.join(tmp, "narration.m4a")
     cmd += ["-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "160k", out]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -265,20 +410,84 @@ def build_audio_bed(ffmpeg, tmp, audio_items, bgm, ambience, amb_level, accents,
     return out
 
 
+def build_episode_filter(ep_text: str, fps: int, fade_in: float = 0.0, fade_out: float = 0.5,
+                         show: float = 3.0) -> str:
+    """「第N集」大字：画面中部，第0帧即全显（v4）→ 保持到3s → 0.5s淡出。
+
+    ★ v4 (2026-10-18)：取消 0.4s 淡入——平台封面取 t=0 首帧，淡入导致首帧
+    集数几乎全透明，用户刷到不知道是第几集 → 首帧即全显。
+    ★ 不加背景框：2026-10-12 实测老版 ffmpeg 的 box 与 alpha 表达式叠加，淡出中段会
+    出现蓝/红色竖条状伪影（box 混合态渲染 bug）→ 改纯大字 + 黑描边 + 投影，任何底色都清晰。"""
+    font_px = int(H * 0.115)
+    y = int(H * 0.44)
+    if fade_in > 0:
+        a = (
+            f"if(lt(t,{fade_in:.2f}),t/{fade_in:.2f},"
+            f"if(lt(t,{show:.2f}),1,"
+            f"if(lt(t,{show + fade_out:.2f}),1-(t-{show:.2f})/{fade_out:.2f},0)))"
+        )
+    else:
+        a = (
+            f"if(lt(t,{show:.2f}),1,"
+            f"if(lt(t,{show + fade_out:.2f}),1-(t-{show:.2f})/{fade_out:.2f},0))"
+        )
+    t = esc_drawtext_pct(ep_text)
+    return (
+        f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{t}':"
+        f"fontcolor=white:fontsize={font_px}:x=(w-text_w)/2:y={y}:"
+        f"borderw=4:bordercolor=black@0.85:shadowx=2:shadowy=2:shadowcolor=black@0.5:"
+        f"alpha='{a}'"
+    )
+
+
+def build_episode_badge(ep_text: str, y: int | None = None) -> str:
+    """「第N集」右上角常驻小角标（v4, 2026-10-18）：全程可见、无 alpha 表达式。
+
+    动机：中部大字只在前3秒 → 中后段任意帧都不带集数，而平台可能自动选任意帧当封面。
+    常驻角标保证**任何一帧**都含集数信息。注意：本滤镜无 alpha 表达式，
+    所以 box=1 安全（box 彩色伪影只在 box+alpha 叠加时出现）。
+    y 缺省贴顶（pad）——但顶部标题条居中、长标题几乎占满行宽，会与角标重叠
+    （2026-10-18 冒烟实测盖住「番茄小说」）→ main() 应传入标题条 2 行最大高度
+    之下方的 y，任何标题行数都不会重叠。"""
+    font_px = max(36, int(H * 0.042))
+    pad = int(H * 0.03)
+    y = pad if y is None else y
+    t = esc_drawtext(ep_text)
+    return (
+        f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{t}':"
+        f"fontcolor=white:fontsize={font_px}:x=w-text_w-{pad}:y={y}:"
+        f"box=1:boxcolor=black@0.45:boxborderw=12:"
+        f"borderw=2:bordercolor=black@0.6"
+    )
+
+
+def extract_cover(ffmpeg: str, final_mp4: str) -> str:
+    """抽成片第0帧落盘封面图（v4, 2026-10-18）：<成片名>_封面.png。
+
+    发布平台可手动上传封面：首帧已含 别名+平台（顶部标题条）+ 第N集（角标+大字），
+    用户刷到首页缩略图即知全部基本信息。"""
+    cover = os.path.splitext(final_mp4)[0] + "_封面.png"
+    subprocess.run([ffmpeg, "-y", "-v", "error", "-i", final_mp4,
+                    "-frames:v", "1", cover], check=True)
+    return cover
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True)
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--bg-video", default="", help="逗号分隔背景视频, 按顺序循环使用")
     ap.add_argument("--title-size", type=int, default=64)
-    ap.add_argument("--bgm", default="", help="外部 BGM 文件；给了就用它，否则按 --ambience 自动合成环境音")
+    ap.add_argument("--bgm", default="")
     ap.add_argument("--ambience", default="auto",
                     help="环境音：auto（按文案情绪选）/ none / pad_soft / room / wind / rain / hum / space / fire")
     ap.add_argument("--ambience-level", type=float, default=0.12, help="环境音音量（0~1，默认 0.12，会被旁白闪避压下去）")
     ap.add_argument("--sfx", default="auto", help="高能点缀音效：auto（开头+高能句）/ none（关闭）")
     ap.add_argument("--sfx-level", type=float, default=0.5, help="点缀音效音量（0~1，默认 0.5）")
     ap.add_argument("--aspect", default="4:3", choices=list(ASPECT_SIZES.keys()), help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
-    ap.add_argument("--banner", default="", help="顶部常驻引导语（发抖音传：搜「别名」看全文）。优先于 script.banner 与 script.title；书名红线：画面顶部禁原书名")
+    ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名")
+    ap.add_argument("--alias", default="", help="别名：顶部常驻「搜「别名」看全文｜番茄小说」（集数走 --ep 大字）")
+    ap.add_argument("--chapter", default="", help="第几集（如 3）：「第N集」首帧大字+全程角标，并决定文件名（第N集）与封面图")
     ap.add_argument("--keep-temp", action="store_true")
     a = ap.parse_args()
     global W, H
@@ -307,10 +516,19 @@ def main():
         cues.append((t, t + d, text))
         t += d
 
-    srt = os.path.join(tmp, "subs.srt")
-    build_srt(cues, srt)
+    # ★ 字幕效果（2026-10-11 重做）：改走 ASS 直接生成——
+    #   ① 无底框：白字加粗+黑描边(3px)+轻投影（黑底 box 用户反馈太丑，已撤）；
+    #   ② 字号随画幅：PlayRes=真实分辨率，FontSize=H*4.2%（4:3≈60px/9:16≈80px/16:9≈45px）；
+    #   ③ 单行快切：长句按显示宽度切成单行小块、时间按宽度分摊，字幕逐句推进（"滚动"观感），
+    #      彻底消灭两行长块换行；
+    #   ④ 每条 Dialogue 带 \fad(140,140) 淡入淡出，衔接更顺。老版 ffmpeg 的 libass 全兼容。
+    sub_font_px = max(40, int(H * 0.042))
+    margin_v = max(40, int(H * 0.05))
+    ass = os.path.join(tmp, "subs.ass")
+    build_ass(cues, ass, sub_font_px, margin_v)
 
-    # ---- 2) 音频：旁白 + 环境音（被旁白闪避）+ 高能点缀 ----
+    # ---- 2) 音频：旁白 + 环境音（被旁白侧链闪避）+ 高能点缀音效 ----
+    #   ★ 人声永远主轨：环境垫走 sidechaincompress 被旁白压下去，点缀音效只在高能句句首。
     script_text = " ".join(
         [script.get("hook", "")]
         + [s.get("text", "") for s in script.get("segments", [])]
@@ -331,61 +549,120 @@ def main():
     #   改为**按行链式 drawtext**（每行一个 filter，各自 y 下移）——不用 `text_align`，
     #   因为项目自带的 ffmpeg 是 2019 版（实测 `text_align` 报 Option not found；`line_spacing`/`alpha` 均支持）。
     #   链式多行在任意 ffmpeg 版本都稳，故不依赖 text_align。
-    #   alpha 表达式做 0.6s 淡入。
-    top_text = a.banner or script.get("banner") or script.get("title", "小说推文")
-    max_chars = max(6, int(W * 0.90 / a.title_size))
-    title_lines = wrap_title(top_text, max_chars)
-    _line_step = a.title_size + 12
-    _parts = []
-    for _i, _ln in enumerate(title_lines):
-        if not _ln:
-            continue
-        _t = esc_drawtext(_ln)
-        _parts.append(
-            f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{_t}':"
-            f"fontcolor=white:fontsize={a.title_size}:x=(w-text_w)/2:y={80 + _i * _line_step}:"
-            f"borderw=3:bordercolor=black@0.7:"
-            f"alpha='if(lt(t,0.6),t/0.6,1)'"
-        )
-    title_vf = ",".join(_parts) if _parts else (
-        f"drawtext=fontfile='C\\:/Windows/Fonts/msyh.ttc':text='{esc_drawtext(top_text)}':"
-        f"fontcolor=white:fontsize={a.title_size}:x=(w-text_w)/2:y=80:"
-        f"borderw=3:bordercolor=black@0.7"
-    )
-    srt_abs = os.path.abspath(srt).replace("\\", "/").replace(":", "\\:")
+    #   ★ v4 (2026-10-18)：0.6s 淡入已取消——平台封面取 t=0 首帧，淡入致首帧无字。
+    # ★ 画面结构 v4（2026-10-18）：上「别名+番茄小说」常驻首帧全显 /
+    #   右上角「第N集」常驻角标 / 中「第N集」大字首帧全显、前3秒后淡出 / 下字幕。
+    #   「第N章」不再进标题条（此前常驻全片，占用画面且与集数信息重复）。
+    #   ★ 老版 ffmpeg 实测：drawtext 文本里同时写 % 与 \: 会被解析失败**整段丢弃**，
+    #     且中文书名号「」在 drawtext 中渲染成窄引号 → 用『』替代。
+    if a.banner:
+        top_text = a.banner
+    elif a.alias:
+        top_text = f"搜『{a.alias}』看全文｜番茄小说"
+    elif script.get("banner"):
+        top_text = script["banner"]
+    else:
+        top_text = script.get("title", "小说推文")
+        print("[compose] ⚠️ 未传 --banner/--alias，标题条缺「别名+番茄小说」"
+              "（书名红线要求烧别名而非书名）", file=sys.stderr)
+    title_vf = ",".join(build_title_lines(top_text, a.title_size))
+    srt_abs = os.path.abspath(ass).replace("\\", "/").replace(":", "\\:")
     fontsdir_esc = FONTS_DIR.replace("\\", "/").replace(":", "\\:")
-    sub_vf = (f"subtitles='{srt_abs}':fontsdir='{fontsdir_esc}':"
-              f"force_style='FontName=Microsoft YaHei,FontSize=14,Outline=2,MarginV=60,Alignment=2'")
-    final_vf = f"{sub_vf},{title_vf}"
+    # ASS 自带完整样式（PlayRes=真实像素），无需 force_style；fontsdir 供 libass 找雅黑
+    sub_vf = f"subtitles='{srt_abs}':fontsdir='{fontsdir_esc}'"
+    # 「第N集」：右上角常驻角标（任何一帧都带集数）+ 中部大字（首帧全显，前3秒）
+    # 角标 y 必须在标题条 2 行最大高度之下（标题居中且长标题几乎占满行宽，贴顶会重叠）
+    final_vf = sub_vf
+    if a.chapter:
+        ep_text = f"第{a.chapter}集"
+        badge_y = 80 + 2 * (a.title_size + 12) + 24
+        final_vf += "," + build_episode_badge(ep_text, badge_y) + "," + build_episode_filter(ep_text, FPS)
 
-    out_name = f"{script.get('title', 'novel')}_{os.path.splitext(os.path.basename(a.script))[0]}.mp4"
+    # 文件名：传了别名/章节时用「别名_第N集.mp4」，否则回落旧命名
+    if a.alias or a.chapter:
+        out_name = f"{a.alias or script.get('title', 'novel')}" + (f"_第{a.chapter}集" if a.chapter else "") + ".mp4"
+    else:
+        out_name = f"{script.get('title', 'novel')}_{os.path.splitext(os.path.basename(a.script))[0]}.mp4"
     final = os.path.join(a.outdir, out_name)
 
     bg_clips = [p.strip() for p in a.bg_video.split(",") if p.strip()] if a.bg_video else []
     if bg_clips:
-        # 背景视频: 每段 cover 裁剪到 4:3, 多段 concat, 单段直接链; -stream_loop 循环兜底不够长
-        cmd = [ffmpeg, "-y", "-v", "error"]
-        for p in bg_clips:
-            cmd += ["-stream_loop", "-1", "-i", p]
-        cmd += ["-i", audio_out]
-        chains = []
-        for i in range(len(bg_clips)):
-            chains.append(f"[{i}:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
-                          f"crop={W}:{H},fps={FPS},setsar=1[v{i}]")
-        # 单段直接用 [v0]; 多段先 concat 成 [vc]
-        head = ";".join(chains) + ";"
-        if len(bg_clips) == 1:
-            vsrc = "[v0]"
-        else:
-            vsrc = "[vc]"
-            head += "".join(f"[v{i}]" for i in range(len(bg_clips))) \
-                    + f"concat=n={len(bg_clips)}:v=1:a=0[vc];"
-        fc = (head + f"{vsrc}trim=duration={total:.2f},setpts=PTS-STARTPTS[vv];"
-              f"[vv]{final_vf}[vout]")
-        cmd += ["-filter_complex", fc, "-map", "[vout]", "-map", f"{len(bg_clips)}:a",
-                "-t", f"{total:.2f}",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "160k", "-shortest", final]
+        # ★ 2026-10-09 重写：原「多输入 -stream_loop -1 + concat 滤镜」在项目自带 2019 版 ffmpeg 上
+        #   实测失效——输出被最短的一条输入轨截断（第1/2章成片都只有 108.2s，而口播 448s）。
+        #   新方案：① 每段背景先归一化（scale/crop/fps/setsar + 去音轨）成 clip_i.mp4；
+        #          ② 探测每段「实际可解码时长」（防元数据虚高、文件截断的坏素材）；
+        #          ③ 按顺序循环重复片段，拼到累计 ≥ total；
+        #          ④ concat demuxer（-c copy）生成 bg_full.mp4；
+        #          ⑤ 主命令改为**单输入 bg_full**，trim 到 total。
+        #   实测：3 段背景拼 4 轮 = 216.24s（精确）；单输入 -stream_loop/trim 均正常生效。
+        #   注：远端 origin 有同款修复但缺「坏素材检出」→ 本版为超集，保留检出 + 跳过 + 全坏报错。
+        clip_files, clip_durs = [], []
+        for i, p in enumerate(bg_clips):
+            if not os.path.exists(p):
+                print(f"[compose] 警告：背景 {p} 不存在，跳过", file=sys.stderr)
+                continue
+            clip = os.path.join(tmp, f"bgclip_{i:02d}.mp4")
+            subprocess.run(
+                [ffmpeg, "-y", "-v", "error", "-i", p,
+                 "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                        f"crop={W}:{H},fps={FPS},setsar=1",
+                 "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                 "-pix_fmt", "yuv420p", clip],
+                check=True,
+            )
+            dur = probe_duration(ffmpeg, clip)
+            # ★ 有效时长校验：坏素材（webm 截断）元数据报 14.6s 但实际只有 1.6s
+            fprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+            try:
+                r = subprocess.run([fprobe, "-v", "error", "-count_frames",
+                                    "-select_streams", "v:0",
+                                    "-show_entries", "stream=nb_read_frames",
+                                    "-of", "csv=p=0", clip],
+                                   capture_output=True, text=True)
+                n = int((r.stdout or "").strip().split(",")[0] or 0)
+                real = n / float(FPS)
+                if n > 0 and real < dur - 1.0:
+                    print(f"[compose] 警告：背景 {os.path.basename(p)} 只解出 {real:.1f}s"
+                          f"（元数据 {dur:.1f}s），疑似素材损坏/截断", file=sys.stderr)
+                    dur = real
+            except Exception:
+                pass
+            if dur < 1.0:
+                print(f"[compose] 警告：背景 {os.path.basename(p)} 有效时长 {dur:.1f}s 过短，跳过",
+                      file=sys.stderr)
+                continue
+            clip_files.append((os.path.basename(clip), dur))
+            clip_durs.append(dur)
+
+        if not clip_files:
+            raise SystemExit("所有背景素材均不可用（缺失或损坏），请检查 --bg-video")
+
+        # 循环重复片段，拼到累计 >= total（多留 1s 余量）
+        want = total + 1.0
+        seq, acc = [], 0.0
+        while acc < want:
+            for name, d in clip_files:
+                seq.append(name)
+                acc += d
+                if acc >= want:
+                    break
+        lst = os.path.join(tmp, "bglist.txt")
+        with open(lst, "w", encoding="utf-8") as f:
+            for name in seq:
+                f.write(f"file '{name}'\n")
+        bg_full = os.path.join(tmp, "bg_full.mp4")
+        # ★ concat demuxer（老版 ffmpeg）相对路径解析到**进程 cwd** → cwd=tmp + 纯文件名
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                        "-i", "bglist.txt", "-c", "copy", os.path.abspath(bg_full)],
+                       check=True, cwd=tmp)
+
+        fc = (f"[0:v]trim=duration={total:.2f},setpts=PTS-STARTPTS[vv];"
+              f"[vv]{title_vf},{final_vf}[vout]")
+        cmd = [ffmpeg, "-y", "-v", "error", "-i", bg_full, "-i", audio_out,
+               "-filter_complex", fc, "-map", "[vout]", "-map", "1:a",
+               "-t", f"{total:.2f}",
+               "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "160k", "-shortest", final]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stderr[-2000:], file=sys.stderr); sys.exit(r.returncode)
@@ -417,7 +694,7 @@ def main():
                         "-i", "list.txt", "-c", "copy", os.path.abspath(silent)],
                        check=True, cwd=tmp)
         subprocess.run([ffmpeg, "-y", "-v", "error", "-i", silent, "-i", audio_out,
-                        "-vf", final_vf, "-t", f"{total:.2f}",
+                        "-vf", f"{title_vf},{final_vf}", "-t", f"{total:.2f}",
                         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-shortest", final],
                        check=True)
@@ -428,7 +705,10 @@ def main():
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass  # 清理失败不导致整体失败
+    # ---- 4) 封面图（v4, 2026-10-18）：抽成片第0帧 → 发布时直接当首页图片上传 ----
+    cover = extract_cover(ffmpeg, final)
     print(f"[compose] {final}  ({probe_duration(ffmpeg, final):.1f}s)")
+    print(f"[compose] 封面图（首帧含 别名+平台+集数）: {cover}")
 
 
 if __name__ == "__main__":

@@ -83,9 +83,13 @@ novel_tuiwen { chapter: "novel/书名/ch03.txt", title: "书名", alias: "狐王
 ## CLI 直跑（开发）
 
 ```bash
+# ★ 管线唯一源码 = packages/core/src/tool/builtin/python-scripts/novel_tuiwen/
+#   运行时副本 <工作目录>/.yan-zhi/tools/novel_tuiwen/ 由工具按内容哈希自动同步 —— 别去手改副本，
+#   也不要再在别处维护第二份源码（仓库里曾有一份 novel-tuiwen/pipeline/，已删除）。
 PY=C:/Users/Administrator/.workbuddy/binaries/python/envs/default/Scripts/python.exe
-cd novel-tuiwen/pipeline
-"$PY" run_pipeline.py --input ../sample/chapter01.txt --title 废井怀表 \
+PIPE=packages/core/src/tool/builtin/python-scripts/novel_tuiwen
+"$PY" "$PIPE/run_pipeline.py" --input novel-tuiwen/sample/chapter01.txt \
+    --outdir novel-tuiwen/output --title 废井怀表 \
     --alias 狐王痴狂 --chapter 1 --bg-video "bg.mp4"
 ```
 
