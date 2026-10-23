@@ -3515,11 +3515,10 @@ onUnmounted(() => {
 .ops-cwd-panel { display: flex; flex-direction: column; gap: 8px; }
 .ops-cwd-title { font-size: 12px; font-weight: 600; color: var(--color-text); }
 .ops-cwd-cur {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-family: Consolas, monospace; font-size: 11px; color: var(--color-text-secondary);
+  padding: 4px 7px; border-radius: 5px;
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ops-cwd-crumbs {
   display: flex;
@@ -3548,11 +3547,6 @@ onUnmounted(() => {
 .ops-cwd-crumb:hover { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, transparent); }
 .ops-cwd-crumb.is-cur { color: var(--color-text); font-weight: 600; }
 .ops-cwd-crumb-sep { color: var(--color-text-tertiary); font-size: 11px; }
-  font-family: Consolas, monospace; font-size: 11px; color: var(--color-text-secondary);
-  padding: 4px 7px; border-radius: 5px;
-  background: color-mix(in srgb, var(--color-text) 5%, transparent);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 .ops-cwd-hist { display: flex; flex-direction: column; gap: 2px; }
 .ops-cwd-hist-title { font-size: 10.5px; color: var(--color-text-tertiary); }
 .ops-cwd-hist-item {
