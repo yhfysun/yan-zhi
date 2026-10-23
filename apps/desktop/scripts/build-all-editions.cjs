@@ -53,7 +53,6 @@ const {
   artifactSuffixFor,
   checkOutputDirReady,
   clearAppOutDirs,
-  editionDirName,
   parseEditionsArgv,
   outDirForEdition,
   resolvePkgVersion,
@@ -239,12 +238,9 @@ function suffixFor(edition) {
 }
 
 function outDirFor(edition) {
-  return outDirForEdition(edition, {
-    repoRoot,
-    version: DESKTOP_VERSION,
-    outRoot: OUT_ROOT,
-    dirName: editionDirName(suffixFor(edition)),
-  });
+  // 目录只按档位分（dist-release/desktop/<档>/<版本>/），不同模式/命名的区分靠**安装包名**，
+  // 不再为每个后缀建一个目录 —— 产物集中在一处，用户找包更省事。
+  return outDirForEdition(edition, { repoRoot, version: DESKTOP_VERSION, outRoot: OUT_ROOT });
 }
 
 console.log('=== [1/3] 检查输出目录可写性 ===');

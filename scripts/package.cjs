@@ -28,10 +28,10 @@
  *                                  # 未选模式的入口/页面/插件视图不产出 chunk。
  *                                  # 与 --editions 正交（后者决定授权档与预置码）。
  *   node scripts/package.cjs desktop:pro --name=办公测试
- *                                  # 产物名与目录带上该名称：
+ *                                  # 安装包名带上该名称：
  *                                  #   yan-zhi-Setup-<版本>-x64-办公测试.exe
- *                                  #   dist-release/desktop/办公测试/<版本>/
- *                                  # 每个名称各占一份，换模式重打包不会覆盖上一份。
+ *                                  # 输出目录仍是 dist-release/desktop/pro/<版本>/，
+ *                                  # 靠文件名区分，换模式重打包不会覆盖上一份。
  *   node scripts/package.cjs --pick-modes
  *                                  # 兼容参数：交互式运行时本就会弹模式选择；
  *                                  # 该参数保留给"想显式声明"的脚本调用。
@@ -79,8 +79,6 @@ const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版' 
 const {
   DEFAULT_RELEASE_ROOT,
   androidOutDir,
-  artifactSuffixFor,
-  editionDirName,
   outDirForEdition,
   resolvePkgVersion,
   pruneOldReleases,
@@ -102,41 +100,20 @@ const MOBILE_VERSION = resolvePkgVersion({ pkgPath: path.join(ROOT, 'apps', 'mob
 let RELEASE_ROOT = process.env.YZ_ALL_OUT_DIR || DEFAULT_RELEASE_ROOT;
 let OUTPUT_DIRS = null;
 let ANDROID_APK = null;
-/** `--name` 指定的产物名（null = 未指定）；本轮打几档，决定要不要拼档位名避免撞名。 */
-let DESKTOP_NAME = null;
-let DESKTOP_EDITION_COUNT = 1;
-
-/**
- * 桌面产物目录名 —— 必须与 build-all-editions.cjs 的 `suffixFor()` 得出同一个后缀。
- *
- * ★ 2026-10-23 修：原先这里直接用档位名，而 build-all 已按后缀建目录。
- *   带 --modes 构建时产物写进 `pro-office-dev-shop/`，校验却还在找 `pro/`，
- *   于是包明明打好了却报「缺 asar」并以 exit code 1 退出。
- */
-function desktopDirName(edition) {
-  const rawName = DESKTOP_NAME
-    ? (DESKTOP_EDITION_COUNT > 1 ? `${DESKTOP_NAME}-${edition}` : DESKTOP_NAME)
-    : null;
-  return editionDirName(artifactSuffixFor({ edition, modes: BUILD_MODES, override: rawName }));
-}
 
 /** 按给定的产物根重算全部产物路径 */
 function computePaths(outRoot) {
   RELEASE_ROOT = outRoot;
   OUTPUT_DIRS = Object.fromEntries(ALL_EDITIONS.map((e) => [
     e,
-    path.relative(ROOT, outDirForEdition(e, {
-      repoRoot: ROOT,
-      version: DESKTOP_VERSION,
-      outRoot,
-      dirName: desktopDirName(e),
-    })),
+    path.relative(ROOT, outDirForEdition(e, { repoRoot: ROOT, version: DESKTOP_VERSION, outRoot })),
   ]));
   ANDROID_APK = path.join(
     path.relative(ROOT, androidOutDir({ repoRoot: ROOT, version: MOBILE_VERSION, outRoot })),
     'app-debug.apk',
   );
 }
+computePaths(RELEASE_ROOT);
 
 const MOVABLE = [
   'apps/server/dist',
@@ -192,10 +169,6 @@ if (argv.includes('--name') && !NAME_FLAG) {
   console.error('\x1b[31m[ERROR]\x1b[0m --name 需要一个名称，例如 --name=v2');
   process.exit(1);
 }
-if (NAME_FLAG) DESKTOP_NAME = NAME_FLAG;
-// 产物目录名依赖 BUILD_MODES / --name，参数解析完才能算准（默认值只在函数定义处临时用）。
-// 多档时的 `<名称>-<档>` 组合在主流程拿到 targets 后再补算一次。
-computePaths(RELEASE_ROOT);
 
 // --list-modes：不打包，只列出可选模式与各档位预设，避免记参数。
 if (flags.has('--list-modes')) {
@@ -1086,18 +1059,13 @@ function cleanFreshRoot() {
     BUILD_MODES = await askModes();
   }
 
-  // 目标与模式都定了才能算准产物目录：带模式短码/命名时目录名与纯档位不同，
-  // 早算会导致「构建写到 A、校验找 B」（2026-10-23 实际踩到：包打好了却报缺 asar）。
-  DESKTOP_EDITION_COUNT = Math.max(1, targets.desktop.length);
-  computePaths(RELEASE_ROOT);
-
   console.log(c.bold(`\n言智打包 —— 目标：${
     [targets.desktop.length ? `桌面 ${targets.desktop.join('/')}` : null, targets.android ? '安卓 APK' : null]
       .filter(Boolean).join(' + ')
   }`));
   if (BUILD_MODES) info(`代码模式：${BUILD_MODES.join(', ')}（未选模式的代码不会进包）`);
-  if (targets.desktop.length) {
-    info(`产物目录：${path.relative(ROOT, path.join(ROOT, OUTPUT_DIRS[targets.desktop[0]]))}`);
+  if (NAME_FLAG && targets.desktop.length) {
+    info(`产物命名：${NAME_FLAG}${targets.desktop.length > 1 ? '（每档追加档位名）' : ''}`);
   }
 
   preflight(targets);

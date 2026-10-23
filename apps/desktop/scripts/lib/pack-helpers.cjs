@@ -191,14 +191,9 @@ function parseEditionsArgv(argv) {
   return { editions, separate, invalid };
 }
 
-/**
- * 桌面某档的输出目录（绝对路径）：dist-release/desktop/<档>/<版本>/。
- *
- * `dirName` 覆盖中间的目录名 —— 用 `--name` 自定义命名时传进来，
- * 这样每个命名各占一个目录，重打包不会碰上一份产物。
- */
-function outDirForEdition(edition, { repoRoot, version, outRoot = DEFAULT_RELEASE_ROOT, dirName } = {}) {
-  return path.resolve(repoRoot, outRoot, 'desktop', dirName || edition, version || '0.0.0');
+/** 桌面某档的输出目录（绝对路径）：dist-release/desktop/<档>/<版本>/。 */
+function outDirForEdition(edition, { repoRoot, version, outRoot = DEFAULT_RELEASE_ROOT } = {}) {
+  return path.resolve(repoRoot, outRoot, 'desktop', edition, version || '0.0.0');
 }
 
 /** 安卓 APK 的输出目录（绝对路径）：dist-release/android/<版本>/。 */

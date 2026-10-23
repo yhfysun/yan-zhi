@@ -416,20 +416,7 @@ describe('自定义产物名（--name / YZ_ARTIFACT_SUFFIX）', () => {
     assert.strictEqual(artifactSuffixFor({ edition: 'pro', modes: null }), '-pro');
   });
 
-  test('★ 不同命名各占一个产物目录 —— 换模式重打包不会覆盖上一份', () => {
-    const repoRoot = path.resolve('/repo');
-    const base = { repoRoot, version: '0.1.0' };
-    const dirOf = (name) =>
-      outDirForEdition('pro', {
-        ...base,
-        dirName: editionDirName(artifactSuffixFor({ edition: 'pro', override: name })),
-      });
-    assert.strictEqual(dirOf('v2'), path.resolve(repoRoot, 'dist-release', 'desktop', 'v2', '0.1.0'));
-    assert.strictEqual(dirOf('v3'), path.resolve(repoRoot, 'dist-release', 'desktop', 'v3', '0.1.0'));
-    assert.notStrictEqual(dirOf('v2'), dirOf('v3'));
-  });
-
-  test('未指定命名时目录仍是档位名（原行为不变）', () => {
+  test('目录只按档位分，不同命名共用同一目录（靠文件名区分）', () => {
     const repoRoot = path.resolve('/repo');
     assert.strictEqual(
       outDirForEdition('pro', { repoRoot, version: '0.1.0' }),
