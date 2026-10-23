@@ -28,9 +28,11 @@
  *                                  # 未选模式的入口/页面/插件视图不产出 chunk。
  *                                  # 与 --editions 正交（后者决定授权档与预置码）。
  *   node scripts/package.cjs --pick-modes
- *                                  # 交互式勾选模式（与上面「选包」同一套界面）
+ *                                  # 兼容参数：交互式运行时本就会弹模式选择；
+ *                                  # 该参数保留给"想显式声明"的脚本调用。
  *   node scripts/package.cjs --list-modes
  *                                  # 列出全部模式与档位预设
+ *   --yes                          # 跳过所有交互（含模式选择），按档位预设打包
  *
  * 产物目录（统一树，路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，单一真相源）：
  *   dist-release/desktop/<档>/<版本>/   ← 安装包 + win-unpacked/
@@ -1028,9 +1030,9 @@ function cleanFreshRoot() {
     process.exit(1);
   }
 
-  // 交互式模式多选：显式 --modes 优先；否则 --pick-modes 打开勾选界面；
-  // 都没给 → 沿用档位预设（不改变既有行为）。
-  if (!BUILD_MODES && flags.has('--pick-modes')) {
+  // 交互式模式多选：显式 --modes 优先；否则在交互式终端里**默认弹出**（选完包接着选模式）。
+  // 非 TTY / --yes 自动跳过，沿用档位预设 —— 不改变 CI 与非交互脚本的行为。
+  if (!BUILD_MODES && process.stdin.isTTY && !flags.has('--yes')) {
     BUILD_MODES = await askModes();
   }
 
