@@ -41,6 +41,27 @@ export default defineConfig({
     watch: {
       usePolling: true,
       interval: 500,
+      // 轮询是整棵树扫描：把不参与 HMR 的大目录排除，冷启动扫描量与常驻 CPU 都会降。
+      ignored: [
+        '**/node_modules/**',
+        '**/dist/**',
+        '**/dist-release/**',
+        '**/release/**',
+        '**/logs/**',
+        '**/tmp/**',
+        '**/.workbuddy/**',
+        '**/.git/**',
+      ],
+    },
+    // 首屏用到的入口提前转译：浏览器请求到时模块图已在缓存里，省掉串行冷转译的等待。
+    warmup: {
+      clientFiles: [
+        resolve(__dirname, 'src/main.ts'),
+        resolve(__dirname, '../../packages/ui/src/App.vue'),
+        resolve(__dirname, '../../packages/ui/src/router/index.ts'),
+        resolve(__dirname, '../../packages/ui/src/views/Chat.vue'),
+        resolve(__dirname, '../../packages/ui/src/composables/chat/useChat.ts'),
+      ],
     },
     // 代理后端 API（/api → 本机内嵌后端）
     // ★ 端口随实例：dev 实例 3002 / 生产 3001。写死 3001 会让开发实例的**相对路径**请求

@@ -29,6 +29,15 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // 首屏入口提前转译，省掉浏览器串行等待冷转译
+    warmup: {
+      clientFiles: [
+        resolve(__dirname, 'src/main.ts'),
+        resolve(__dirname, '../../packages/ui/src/App.vue'),
+        resolve(__dirname, '../../packages/ui/src/router/index.ts'),
+        resolve(__dirname, '../../packages/ui/src/views/Chat.vue'),
+      ],
+    },
     // /api 代理目标端口随实例（dev 编排器注入 YANZHI_API_PORT，默认 3001）。
     // ★ 与 desktop 的 vite.config.ts 同口径 —— 写死会让 dev 端的 web 界面打到正式版后端。
     proxy: {

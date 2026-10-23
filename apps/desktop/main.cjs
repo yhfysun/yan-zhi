@@ -8063,24 +8063,45 @@ app.whenReady().then(async () => {
   //      改为 splash 显示「启动失败」态（见 server.log）；
   //   ② dev 模式额外等 Vite(1420) 就绪 —— Vite 未起时建主窗同样白屏。
   const viteOrigin = 'http://localhost:1420';
-  const checkVite = (retries, onReady) => {
+  const isDevWindow = process.argv.includes('--dev') && !app.isPackaged;
+  let backendReady = false;
+  let viteReady = false;
+  let windowCreated = false;
+
+  // 就绪判定收敛到一处，保证 createWindow 只调用一次。
+  // ★ 旧实现里每个探测成功回调都直接 createWindow —— 并发重试链会让日志同一毫秒
+  //   刷出几十条「创建窗口」（实测 2026-10-23），白耗一次窗口初始化。
+  const tryCreateWindow = () => {
+    if (windowCreated || !backendReady || (isDevWindow && !viteReady)) return;
+    windowCreated = true;
+    console.log('[启动] 后端与前端均已就绪，创建窗口');
+    createWindow();
+  };
+
+  const checkVite = (retries = 0) => {
+    let settled = false;
+    const retry = () => {
+      if (settled) return;
+      settled = true;
+      setTimeout(() => checkVite(retries + 1), 150);
+    };
     const req = http.get(viteOrigin, (res) => {
       res.resume();
-      onReady();
+      if (settled) return;
+      settled = true;
+      viteReady = true;
+      console.log('[vite] dev server 就绪');
+      tryCreateWindow();
     });
-    req.on('error', () => setTimeout(() => checkVite(retries + 1, onReady), 500));
-    req.setTimeout(2000, () => { req.destroy(); setTimeout(() => checkVite(retries + 1, onReady), 500); });
+    req.on('error', retry);
+    req.setTimeout(1000, () => { req.destroy(); retry(); });
   };
+
   const onBackendReady = () => {
+    if (backendReady) return;
+    backendReady = true;
     console.log('[后端] 健康检查通过');
-    if (process.argv.includes('--dev') && !app.isPackaged) {
-      checkVite(0, () => {
-        console.log('[vite] dev server 就绪，创建窗口');
-        createWindow();
-      });
-    } else {
-      createWindow();
-    }
+    tryCreateWindow();
   };
   const startedAt = Date.now();
   const checkHealth = (retries = 0) => {
@@ -8093,24 +8114,35 @@ app.whenReady().then(async () => {
       });
       return;
     }
-    // 每 10 次重试（约 5 秒）刷新一次等待文案，避免用户面对静止画面
-    if (retries > 0 && retries % 10 === 0) {
+    // 每 20 次重试（约 3 秒）刷新一次等待文案，避免用户面对静止画面
+    if (retries > 0 && retries % 20 === 0) {
       const sec = Math.round((Date.now() - startedAt) / 1000);
       pushSplashUpdate({ caption: `正在启动后端服务…（已等待 ${sec} 秒）` });
     }
+    // settled 守卫：error 与 timeout 可能先后触发，不加会派生出多条并发重试链
+    let settled = false;
+    const retry = () => {
+      if (settled) return;
+      settled = true;
+      setTimeout(() => checkHealth(retries + 1), 150);
+    };
     const req = http.get(API_ORIGIN + '/api/health', (res) => {
       res.resume();
+      if (settled) return;
+      settled = true;
       if (res.statusCode === 200) {
         onBackendReady();
       } else {
-        setTimeout(() => checkHealth(retries + 1), 500);
+        setTimeout(() => checkHealth(retries + 1), 150);
       }
     });
-    req.on('error', () => setTimeout(() => checkHealth(retries + 1), 500));
-    req.setTimeout(2000, () => { req.destroy(); setTimeout(() => checkHealth(retries + 1), 500); });
+    req.on('error', retry);
+    req.setTimeout(1000, () => { req.destroy(); retry(); });
   };
   createSplashWindow();
-  setTimeout(checkHealth, 300);
+  // dev 下两条探测并行：后端启动时 Vite 也在起，串行等等于白等一轮
+  if (isDevWindow) checkVite();
+  setTimeout(checkHealth, 150);
 
   // 创建系统托盘图标（关闭窗口时后端保持守护运行，通过托盘退出）
   const createTray = () => {
