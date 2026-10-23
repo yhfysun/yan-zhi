@@ -310,3 +310,21 @@ describe('⑥ 过程区自动跟随尊重用户滚动意图', () => {
       .toMatch(/scrollHeight\s*-\s*el\.scrollTop\s*-\s*el\.clientHeight\s*<\s*\d+/);
   });
 });
+
+/**
+ * ⑦ 计划步骤记录（2026-10-23 用户实报「完成了也要有记录啊」）。
+ * 背景：块条件曾是 `showPlanTimingForRound(...) && planTop.length` —— 而 planTop 只收
+ *   耗时 > 0 的步骤。模型跳过 running 直接标 done 时每步耗时都是 0（修复前），
+ *   planTop 为空 ⇒ 整块「全部 N 个步骤」连同完成记录一起消失。
+ * 钉：是否展示只看「有没有计划」，不看「有没有 Top3」。
+ */
+describe('⑦ 全部计划步骤的记录不依赖 Top3 非空', () => {
+  it('★★★ agent-plan-steps 的 v-if 只要求有计划', () => {
+    const line = TEMPLATE.split('\n').find((l) => l.includes('class="agent-plan-steps"'));
+    expect(line, '★ 锚点缺失：agent-plan-steps 容器').toBeTruthy();
+    expect(line!, '★ 计划列表没绑 store.planSteps.length —— 无计划时也会渲染空壳')
+      .toContain('store.planSteps.length');
+    expect(line!, '★ 仍以 planTop.length 为条件 —— 耗时全为 0 时完成记录会被整块隐藏')
+      .not.toContain('planTop.length');
+  });
+});

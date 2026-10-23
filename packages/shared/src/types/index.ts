@@ -147,7 +147,24 @@ export interface Conversation {
   /** 会话级工具权限：readonly=只读（写类工具被后端拦截）/ default=默认 / full=全部放行 */
   permissionMode?: 'readonly' | 'default' | 'full' | 'all';
   /** 任务计划落盘（task_plan/task_step 写入，刷新/换设备后恢复进度卡片）。null/缺省 = 无计划 */
-  taskPlan?: { title: string; steps: Array<{ id: string; title: string; description?: string; status: 'pending' | 'running' | 'done' | 'failed'; note?: string }> } | null;
+  taskPlan?: {
+    title: string;
+    startedAt?: number;
+    finishedAt?: number;
+    steps: Array<{
+      id: string;
+      title: string;
+      description?: string;
+      status: 'pending' | 'running' | 'done' | 'failed';
+      note?: string;
+      /** 首次进入 running 的毫秒时间戳（服务端唯一的计时写入点） */
+      startedAt?: number;
+      /** 进入 done / failed 的毫秒时间戳 */
+      finishedAt?: number;
+      /** 返工时已累计的活跃时长（毫秒） */
+      activeMs?: number;
+    }>;
+  } | null;
   /**
    * 归属模式：会话按模式隔离，列表只显示当前模式的。
    *

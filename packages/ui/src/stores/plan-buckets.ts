@@ -15,10 +15,20 @@ export interface PlanStep {
   description?: string;
   status: PlanStepStatus;
   note?: string;
+  /** 首次进入 running 的毫秒时间戳（服务端写入，前端只展示） */
+  startedAt?: number;
+  /** 进入 done / failed 的毫秒时间戳 */
+  finishedAt?: number;
+  /** 返工时已累计的活跃时长（毫秒） */
+  activeMs?: number;
 }
 
 export interface Plan {
   title: string;
+  /** 计划创建时间（服务端落盘的任务起点；用于展示总耗时，前端不自算） */
+  createdAt?: number;
+  /** 全部步骤进入终态的时间（服务端落盘的任务终点） */
+  finishedAt?: number;
   steps: PlanStep[];
 }
 
@@ -60,12 +70,23 @@ export function readPlan(map: PlanMap, key: string): Plan | undefined {
 export function ensurePlanPresent(
   map: PlanMap,
   key: string,
-  persisted: { title?: string; steps?: unknown } | null | undefined,
+  persisted: {
+    title?: string; createdAt?: number; startedAt?: number; finishedAt?: number; steps?: unknown;
+  } | null | undefined,
 ): PlanMap {
   if (map[key] || !persisted) return map;
   const steps = Array.isArray(persisted.steps) ? (persisted.steps as PlanStep[]) : [];
   if (!steps.length) return map;
-  return { ...map, [key]: { title: String(persisted.title || '任务计划'), steps } };
+  const createdAt = Number(persisted.createdAt) || Number(persisted.startedAt) || 0;
+  return {
+    ...map,
+    [key]: {
+      title: String(persisted.title || '任务计划'),
+      steps,
+      ...(createdAt ? { createdAt } : {}),
+      ...(Number(persisted.finishedAt) ? { finishedAt: Number(persisted.finishedAt) } : {}),
+    },
+  };
 }
 
 /** 清掉某会话的计划；无该键时原样返回（保持引用稳定，避免无谓的响应式触发） */
@@ -125,7 +146,15 @@ export function applyTaskPlan(
 export function syncPlan(
   map: PlanMap,
   key: string,
-  plan: { title?: string; steps?: Array<{ id?: string; title?: string; status?: string; note?: string }> },
+  plan: {
+    title?: string;
+    createdAt?: number;
+    finishedAt?: number;
+    steps?: Array<{
+      id?: string; title?: string; status?: string; note?: string;
+      startedAt?: number; finishedAt?: number; activeMs?: number;
+    }>;
+  },
 ): PlanMap {
   const rawSteps = Array.isArray(plan?.steps) ? plan!.steps! : [];
   const steps: PlanStep[] = rawSteps
@@ -138,8 +167,19 @@ export function syncPlan(
       status: s.status === 'skipped' ? 'failed'
         : (['pending', 'running', 'done', 'failed'] as PlanStepStatus[]).includes(s.status as PlanStepStatus)
           ? (s.status as PlanStepStatus) : 'pending',
+      ...(Number(s.startedAt) ? { startedAt: Number(s.startedAt) } : {}),
+      ...(Number(s.finishedAt) ? { finishedAt: Number(s.finishedAt) } : {}),
+      ...(Number(s.activeMs) ? { activeMs: Number(s.activeMs) } : {}),
     }));
-  return { ...map, [key]: { title: String(plan?.title || '任务计划'), steps } };
+  return {
+    ...map,
+    [key]: {
+      title: String(plan?.title || '任务计划'),
+      steps,
+      ...(Number(plan?.createdAt) ? { createdAt: Number(plan.createdAt) } : {}),
+      ...(Number(plan?.finishedAt) ? { finishedAt: Number(plan.finishedAt) } : {}),
+    },
+  };
 }
 
 /**

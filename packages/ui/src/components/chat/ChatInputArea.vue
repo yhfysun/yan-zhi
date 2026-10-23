@@ -67,7 +67,14 @@
       </div>
       <!-- 主任务步骤详情：整份任务计划（task_plan/task_step），点击运行指示行展开/收缩 -->
       <div v-if="store.streaming && runDetailOpen && planTotal > 0" class="run-steps">
-        <div v-for="(s, i) in store.planSteps" :key="s.id" class="run-step" :class="s.status">
+        <div
+          v-for="(s, i) in store.planSteps"
+          :key="s.id || 'run-step-' + i"
+          class="run-step is-clickable"
+          :class="s.status"
+          title="点击查看该步骤的运行详情"
+          @click.stop="openPlanStep(i + 1)"
+        >
           <span class="run-step-idx">{{ i + 1 }}</span>
           <el-icon v-if="s.status === 'done'" class="run-step-mark done"><Check /></el-icon>
           <el-icon v-else-if="s.status === 'running'" class="run-step-mark running is-loading"><Loading /></el-icon>
@@ -77,6 +84,8 @@
             <div class="run-step-title">{{ s.title }}</div>
             <div v-if="s.note || s.description" class="run-step-note">{{ s.note || s.description }}</div>
           </div>
+          <span v-if="planTopIndexes.has(i + 1)" class="run-step-top">Top</span>
+          <span class="run-step-dur">{{ planStepDurText(s) }}</span>
         </div>
       </div>
 
@@ -214,7 +223,7 @@
                 :class="{ active: i === slashIndex }"
                 @click="pickSlashAgent(ag)"
               >
-                <span class="cmd-opt-avatar"><el-icon :size="15"><component :is="agentIconOf(ag.id, ag.name)" /></el-icon></span>
+                <span class="cmd-opt-avatar"><AgentAvatar :id="ag.id" :name="ag.name" :avatar="ag.avatar" :icon-size="15" /></span>
                 <div class="cmd-menu-info">
                   <div class="cmd-menu-label">{{ ag.name }}</div>
                   <div class="cmd-menu-desc">{{ ag.description || '—' }}</div>
@@ -783,6 +792,9 @@
     <input ref="fileInputRef" type="file" multiple accept="image/*,.pdf,.txt,.md,.json,.csv,.py,.js,.ts,.vue,.html,.css,.xml,.yaml,.yml,.log,.doc,.docx,.xlsx,.pptx,.zip" style="display:none" @change="handleFileChange" />
 
   </div>
+
+  <!-- 计划步骤运行详情（2026-10-23）：点击运行指示行里的任一步骤打开 -->
+  <PlanStepDetailDialog ref="planStepDialogRef" :conv-id="store.currentConvId" />
 </template>
 
 <script setup lang="ts">
@@ -809,12 +821,14 @@ import { bindLongPress } from '../../composables/useLongPress';
 import AttachmentPreview from './AttachmentPreview.vue';
 import ModelContextPanel from './ModelContextPanel.vue';
 import ContextUsagePill from './ContextUsagePill.vue';
+import PlanStepDetailDialog from './PlanStepDetailDialog.vue';
+import { fmtDuration, planStepElapsedMs, slowestPlanSteps } from '../../composables/chat/round-timing';
 import { useCodeStore } from '../../stores/code';
 import { useSettingsStore, usePlatformStore } from '../../stores';
 import { formatContextWindow } from '../../utils/context-window';
-import { resolveAgentIcon as agentIconOf } from '../../utils/agentIcon';
 import type { Model } from '@yan-zhi/shared';
 import { useRouter } from 'vue-router';
+import AgentAvatar from '../AgentAvatar.vue';
 import AgentPicker from './AgentPicker.vue';
 
 const {
@@ -858,6 +872,21 @@ function onAgentDropdownVisible(visible: boolean) {
 // ===== 7.3 运行指示的步骤进度：任务计划（task_plan/task_step）登记了步骤才显示「步骤 x/y」=====
 const planTotal = computed(() => store.planSteps.length);
 const planDoneCount = computed(() => store.planSteps.filter((s) => s.status === 'done').length);
+
+// 计划步骤耗时（2026-10-23）：时间戳由服务端写入，这里只展示 + 标出最慢的 3 步。
+const planTopIndexes = computed(
+  () => new Set(slowestPlanSteps({ steps: store.planSteps }, 3).map((d) => d.index)),
+);
+// 运行中的步骤要实时走秒：借 runElapsedSec 的每秒 tick 重新求值（不新增计时器）
+const planNow = computed(() => { void runElapsedSec.value; return Date.now(); });
+function planStepDurText(step: { startedAt?: number; finishedAt?: number; activeMs?: number }): string {
+  const ms = planStepElapsedMs(step, planNow.value);
+  return ms > 0 ? fmtDuration(ms) : '—';
+}
+const planStepDialogRef = ref<{ open: (index: number) => void } | null>(null);
+function openPlanStep(index: number) {
+  planStepDialogRef.value?.open(index);
+}
 
 // ===== 7.3 运行指示增强（2026-10-07）：进度条填充 + 总耗时走秒 + 结束状态回执 =====
 // 数据源是 store.runStatsByConv（SSE 终态 / callLlm finally 落定），UI 只负责展示与走秒。
@@ -2223,6 +2252,25 @@ onBeforeUnmount(() => {
   gap: 2px;
 }
 .run-step { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; }
+.run-step.is-clickable { cursor: pointer; border-radius: 6px; }
+.run-step.is-clickable:hover { background: var(--el-fill-color-light, #f5f7fa); }
+.run-step-dur {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--color-text-secondary);
+}
+.run-step-top {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 14px;
+  background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 14%, transparent);
+  color: var(--el-color-warning-dark-2, #b88230);
+}
 .run-step-idx {
   flex: 0 0 auto;
   min-width: 16px;

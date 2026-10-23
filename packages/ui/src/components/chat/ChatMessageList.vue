@@ -81,8 +81,10 @@
       </div>
 
       <div v-if="vr.round.finalAssistant || vr.round.steps.length > 0 || isLastRoundStreaming(vr.round, vr.ri)" class="msg msg-assistant" :class="{ 'is-actions-open': actionsShown(vr.round.finalAssistant?.id || '') }" v-on="msgLongPressHandlers(vr.round.finalAssistant?.id || '')">
-        <!-- 8.1 双头像身份：AI 头像 = 当前智能体名首字符（无则 🤖），桌面端显示（窄栏由 CSS 收起） -->
-        <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(vr.round, vr.ri) }">{{ assistantAvatarChar }}</div>
+        <!-- 8.1 双头像身份：AI 头像 = 当前智能体头像（图标/图片），桌面端显示（窄栏由 CSS 收起） -->
+        <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(vr.round, vr.ri) }">
+          <AgentAvatar :id="agentStore.selectedAgent?.id" :name="agentStore.selectedAgent?.name" :avatar="agentStore.selectedAgent?.avatar" :icon-size="17" />
+        </div>
         <div class="msg-body">
           <div class="agent-response-card" :class="{ 'msg-collapsed': collapsedMessages[vr.round.finalAssistant?.id || ''] }" @click="collapsedMessages[vr.round.finalAssistant?.id || ''] ? toggleMsgCollapse(vr.round.finalAssistant?.id || '') : null">
             <div v-show="collapsedMessages[vr.round.finalAssistant?.id || '']" class="msg-collapsed-placeholder">
@@ -107,16 +109,47 @@
                 <span class="agent-process-summary-text">{{ processSummaryText(vr.round, vr.ri) }}</span>
                 <el-icon v-if="vr.round.hasAgentProcess" :size="12" class="agent-process-summary-chevron"><ArrowRight /></el-icon>
               </div>
-              <!-- 最耗时的 3 次工具调用（2026-10-23 用户要求：着力标注，方便下次优化）：
-                   只在已结束且过程收起时显示，避免和展开后的步骤列表重复占位 -->
-              <div v-if="!isProcessOpen(vr.round, vr.ri) && !isRoundLive(vr.round, vr.ri) && slowestToolCalls(vr.round, 3).length"
+              <!-- 最耗时的 3 个**计划步骤**（2026-10-23 用户要求：按规划步骤而非工具统计）：
+                   只在本轮已结束且为最后一轮时显示（计划是会话级的，避免多轮重复）；
+                   无计划 / 存量计划无时间戳 → 不渲染，只留上面的总耗时。 -->
+              <div v-if="showPlanTimingForRound(vr.round, vr.ri) && planTop.length"
                    class="agent-slow-calls">
-                <span class="asc-label">最耗时</span>
-                <span v-for="(c, ci) in slowestToolCalls(vr.round, 3)" :key="ci" class="asc-item">
+                <span class="asc-label">最耗时步骤</span>
+                <button
+                  v-for="(c, ci) in planTop"
+                  :key="c.index"
+                  type="button"
+                  class="asc-item"
+                  title="点击查看该步骤运行详情"
+                  @click="openPlanStep(c.index)"
+                >
                   <b class="asc-rank">{{ ci + 1 }}</b>
-                  <span class="asc-name" :title="c.name">{{ c.name }}</span>
+                  <span class="asc-name" :title="c.title">{{ c.title }}</span>
                   <span class="asc-dur">{{ fmtDuration(c.ms) }}</span>
-                </span>
+                </button>
+              </div>
+              <!-- 全部计划步骤（可折叠）：每步尾部显示该步时长，Top3 加橙标，点击开详情弹窗。
+                   ★ 只要**有计划**就展示（不再依赖 planTop 非空）：存量/未计时步骤全是「—」时，
+                     用户仍要能看到「完成了哪些步骤」这份记录（2026-10-23 实报）。 -->
+              <div v-if="showPlanTimingForRound(vr.round, vr.ri) && store.planSteps.length" class="agent-plan-steps">
+                <button type="button" class="agent-plan-toggle" @click="planStepsOpen = !planStepsOpen">
+                  {{ planStepsOpen ? '收起全部步骤' : `全部 ${store.planSteps.length} 个步骤` }}
+                </button>
+                <ul v-if="planStepsOpen" class="agent-plan-list">
+                  <li
+                    v-for="(s, i) in store.planSteps"
+                    :key="s.id || 'plan-step-' + i"
+                    class="agent-plan-item"
+                    :class="s.status"
+                    title="点击查看该步骤运行详情"
+                    @click="openPlanStep(i + 1)"
+                  >
+                    <span class="ap-index">{{ i + 1 }}</span>
+                    <span class="ap-title">{{ s.title }}</span>
+                    <span v-if="planTopIndexSet.has(i + 1)" class="ap-top">Top</span>
+                    <span class="ap-dur">{{ planStepDurText(s) }}</span>
+                  </li>
+                </ul>
               </div>
               <div v-if="vr.round.hasAgentProcess && isProcessOpen(vr.round, vr.ri)" class="agent-process-steps" @scroll.passive="onStepsScroll">
                 <div v-if="hasHiddenSteps(vr.round)" class="agent-steps-fold">
@@ -657,6 +690,8 @@
   <MediaViewer />
   <MediaContextMenu />
   <MediaHoverFloat />
+  <!-- 计划步骤运行详情（2026-10-23）：点 Top3 胶囊或「全部步骤」列表项打开 -->
+  <PlanStepDetailDialog ref="planDetailRef" :conv-id="store.currentConvId" />
 </template>
 
 <script setup lang="ts">
@@ -673,7 +708,9 @@ import { useMobileShell } from '../../composables/useMobileShell';
 import { bindLongPress } from '../../composables/useLongPress';
 import type { MessageRound } from '../../composables/chat/useChat';
 import { stepRenderRange, ROUND_STEP_RENDER_LIMIT } from '../../composables/chat/message-rounds';
-import { fmtDuration, roundElapsedMs, slowestToolCalls } from '../../composables/chat/round-timing';
+import { fmtDuration, planElapsedMs, planStepElapsedMs, roundElapsedMs, slowestPlanSteps } from '../../composables/chat/round-timing';
+import PlanStepDetailDialog from './PlanStepDetailDialog.vue';
+import AgentAvatar from '../AgentAvatar.vue';
 import SkeletonList from '../common/SkeletonList.vue';
 import { useCodeStore } from '../../stores/code';
 import { activeMode } from '../../stores/mode';
@@ -862,12 +899,6 @@ function dateDividerFor(ri: number): string {
   //   前一轮在窗外时 rounds[ri-1] 仍存在（数据在，只是没渲染），逻辑天然正确。
   return formatDayLabel(ts);
 }
-
-/** AI 头像字符：当前智能体名首字符（按码点切，兼容 emoji 名），无名字回落 🤖 */
-const assistantAvatarChar = computed(() => {
-  const name = (agentStore.selectedAgent?.name || '').trim();
-  return Array.from(name)[0] || '🤖';
-});
 
 // ===== 移动端：长按消息露出那条操作排 =====
 //
@@ -1125,8 +1156,13 @@ function processSummaryText(round: MessageRound, ri: number): string {
   const stats = round.agentStats;
   const stepCount = stats?.stepCount ?? round.steps.length;
   const toolCount = stats?.toolCallCount ?? round.allToolCalls.length;
-  // 耗时（2026-10-23 用户要求）：用户提问 → 最后一条消息，按消息时间戳算
-  const total = roundElapsedMs(round);
+  // ★ 2026-10-23：优先用服务端**落盘**的任务起止时间（task_plan 的 createdAt/finishedAt），
+  //   不再每次都拿消息时间戳重算 —— 长会话分页缺轮头时旧算法会直接变 0。
+  //   仅最后一轮、且计划确实已结算时采用；存量计划没有 createdAt 才回退消息时间戳。
+  const recorded = ri === messageRounds.value.length - 1 && round.hasAgentProcess && store.planFinishedAt
+    ? planElapsedMs({ createdAt: store.planCreatedAt, finishedAt: store.planFinishedAt }, Date.now())
+    : 0;
+  const total = recorded || roundElapsedMs(round);
   return `已处理 ${stepCount} 步 · ${toolCount} 次工具调用${total > 0 ? ` · 耗时 ${fmtDuration(total)}` : ''}`;
 }
 
@@ -1216,6 +1252,25 @@ async function exportAssistantDocx(round: MessageRound) {
 /** 该轮是否仍在流式进行（仅最后一轮 + 当前会话在跑），决定截图是否展示；任务结束即随响应式移除 */
 function isRoundLive(round: MessageRound, ri: number): boolean {
   return store.streaming && ri === messageRounds.value.length - 1;
+}
+
+// ===== 计划步骤耗时（2026-10-23）=====
+// 计划是会话级的：只在**最后一轮**已结束的摘要下展示 Top3 与全部步骤，避免多轮重复同一份计划。
+const planTop = computed(() => slowestPlanSteps({ steps: store.planSteps }, 3));
+const planTopIndexSet = computed(() => new Set(planTop.value.map((d) => d.index)));
+const planStepsOpen = ref(false);
+const planDetailRef = ref<{ open: (index: number) => void } | null>(null);
+
+function showPlanTimingForRound(round: MessageRound, ri: number): boolean {
+  // 只挂在「最后一轮且有执行过程」的摘要下：纯问答轮不背上一份计划的 Top3（刷新后计划会恢复）
+  return round.hasAgentProcess === true && ri === messageRounds.value.length - 1 && !isRoundLive(round, ri);
+}
+function planStepDurText(step: { startedAt?: number; finishedAt?: number; activeMs?: number }): string {
+  const ms = planStepElapsedMs(step);
+  return ms > 0 ? fmtDuration(ms) : '—';
+}
+function openPlanStep(index: number) {
+  planDetailRef.value?.open(index);
 }
 
 /**
@@ -1729,7 +1784,7 @@ watch(activeNavRound, () => {
   color: var(--el-text-color-regular, #606266);
 }
 
-/* 最耗时的 3 次工具调用（2026-10-23）：摘要条下一行小标签，弱化但可扫读 */
+/* 最耗时的 3 个计划步骤（2026-10-23）：摘要条下一行小标签，点击查看该步运行详情 */
 .agent-slow-calls {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
   margin: -4px 0 8px; padding: 0 2px;
@@ -1739,10 +1794,12 @@ watch(activeNavRound, () => {
 .asc-item {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 1px 8px 1px 4px; border-radius: 999px;
+  border: none; font: inherit; cursor: pointer;
   background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 12%, transparent);
   color: var(--el-color-warning-dark-2, #b88230);
   max-width: 240px;
 }
+.asc-item:hover { background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 20%, transparent); }
 .asc-rank {
   display: inline-flex; align-items: center; justify-content: center;
   width: 14px; height: 14px; border-radius: 50%;
@@ -1751,6 +1808,45 @@ watch(activeNavRound, () => {
 }
 .asc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asc-dur { flex: none; font-variant-numeric: tabular-nums; }
+
+/* 全部计划步骤（可折叠）：每步尾部该步时长，Top3 橙标 */
+.agent-plan-steps { margin: -2px 0 10px; }
+.agent-plan-toggle {
+  padding: 2px 8px;
+  border: none; border-radius: 6px;
+  background: var(--el-fill-color-light, #f5f7fa);
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 12px; line-height: 18px; cursor: pointer;
+}
+.agent-plan-toggle:hover { background: var(--el-fill-color, #ebeef5); color: var(--el-text-color-regular, #606266); }
+.agent-plan-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter, #fafafa);
+}
+.agent-plan-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 6px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; color: var(--el-text-color-regular, #606266);
+}
+.agent-plan-item:hover { background: var(--el-fill-color-light, #f5f7fa); }
+.agent-plan-item + .agent-plan-item { border-top: 1px dashed var(--el-border-color-lighter, #ebeef5); }
+.agent-plan-item.done .ap-title { color: var(--el-text-color-secondary, #909399); }
+.agent-plan-item.running .ap-title { color: var(--el-color-primary, #409eff); font-weight: 600; }
+.ap-index {
+  flex: none; width: 16px; height: 16px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--el-fill-color, #ebeef5); color: var(--el-text-color-secondary, #909399);
+  font-size: 10px;
+}
+.ap-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-top {
+  flex: none; padding: 0 6px; border-radius: 999px;
+  background: var(--el-color-warning, #e6a23c); color: #fff; font-size: 10px; line-height: 14px;
+}
+.ap-dur { flex: none; font-variant-numeric: tabular-nums; color: var(--el-text-color-secondary, #909399); }
 .agent-process-summary-icon {
   flex: 0 0 auto;
 }

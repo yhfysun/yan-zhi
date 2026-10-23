@@ -976,6 +976,9 @@ export const useChatStore = defineStore('chat', () => {
   const planTitle = computed(() => readPlan(plansByConv.value, planKeyOf())?.title || '');
   /** 当前查看会话的计划步骤（其他会话的计划不会出现在这里） */
   const planSteps = computed<PlanStepT[]>(() => readPlan(plansByConv.value, planKeyOf())?.steps || []);
+  /** 计划落盘的任务起止时间（服务端唯一写入）—— 耗时直接读记录，不再每次拿消息时间戳算 */
+  const planCreatedAt = computed(() => readPlan(plansByConv.value, planKeyOf())?.createdAt || 0);
+  const planFinishedAt = computed(() => readPlan(plansByConv.value, planKeyOf())?.finishedAt || 0);
 
   /** 用户提交越界访问授权卡的决议（once=仅此次 / dir=允许该目录且本会话记住 / deny=拒绝） */
   function submitPendingPathAuth(decision: 'once' | 'dir' | 'tool' | 'deny') {
@@ -1068,34 +1071,25 @@ export const useChatStore = defineStore('chat', () => {
   function cancelPlatformConfig() {
     submitPlatformConfig({ cancelled: true, message: '用户关闭了模型平台配置弹窗' });
   }
-  /** 清空当前任务计划（用户关闭进度卡片 / 新任务开跑时调用）。只清指定会话，别会话的计划不受影响。
-   *  ★ 落盘写的是「防抖到期时的最新状态」而非 null：新任务开跑清旧计划后，若 800ms 窗口内
-   *    新任务已登记新计划，落盘的是新计划，不会把它误抹成 null。 */
+  /** 用户显式「清除计划」：清内存展示 + 服务端清库字段与工作目录 plan.md。
+   *  ★ 2026-10-23：计划写者收敛到服务端（task-plan-file 的 backendTaskPlan/backendTaskStep），
+   *    前端不再 PATCH taskPlan；清除是唯一的用户显式落盘动作，走 DELETE 专用接口。 */
   function clearPlan(convId?: string | null) {
     const key = planKeyOf(convId);
     plansByConv.value = removePlan(plansByConv.value, key);
     if (!key || key === DRAFT_PLAN_KEY || !isServerMode()) return;
-    if (planSaveTimer) clearTimeout(planSaveTimer);
-    planSaveTimer = setTimeout(() => {
-      planSaveTimer = null;
-      const plan = readPlan(plansByConv.value, key) || null;
-      void api.patch(`/conversations/${key}`, { taskPlan: plan });
-    }, 800);
+    void api.delete(`/conversations/${key}/plan`).catch(() => { /* 清除失败只影响持久化，不打断界面 */ });
   }
 
   /**
    * ★★★ 只清**界面展示**，不落盘（2026-10-09 修，high —— 跨会话接力被这里整条抹掉）。
    *
-   * 背景（实据）：`send()` 开跑新任务时会调 `clearPlan(convId)`，而 clearPlan 的防抖回调是
-   *   `readPlan(plansByConv, key)` —— 它读的是**自己刚清空的 map**，因此取到的永远是 `null`，
-   *   于是**每次发消息都 PATCH taskPlan:null**。服务端收到 null 会
-   *   ① 把 `conversation.task_plan_json` 置空 ② **unlink 工作目录的 plan.md**。
-   *   后果（与 §计划接力棒跨会话 的"三处落盘点全空"完全吻合）：
-   *   · 跨会话接力彻底不成立 —— 计划刚登记就被下一次发消息删掉；
-   *   · 收尾时 `readPlanRemainingSteps()` = 0 → 机械接力信号丢失，只剩模型自评（倾向"已完成"）。
+   * 背景（历史实据，2026-10-09）：`send()` 开跑新任务时会调 `clearPlan(convId)`，当时 clearPlan
+   *   的防抖回调读的是**自己刚清空的 map**，于是**每次发消息都 PATCH taskPlan:null**，把
+   *   `conversation.task_plan_json` 与工作目录 plan.md 一并抹掉，跨会话接力当场失效。
    *
    * ★ 判据：**"清展示"与"清持久化"是两件事，必须分开**。
-   *   TaskPlanCard 的「清除计划」按钮是用户显式动作 → 走 clearPlan（要落盘 null，合理）；
+   *   「清除计划」是用户显式动作 → 走 clearPlan（DELETE 服务端计划，合理）；
    *   新任务开跑只是"别让上一轮的卡片残留在进度行上" → 走本函数（只清内存）。
    *   把两者塞进同一个函数，就会让"顺带清一下显示"演变成"删掉用户的跨会话计划"。
    */
@@ -1104,18 +1098,6 @@ export const useChatStore = defineStore('chat', () => {
     plansByConv.value = removePlan(plansByConv.value, key);
   }
 
-  /** 计划落盘：写入 conversation.task_plan_json（刷新/换设备后 TaskPlanCard 可恢复）。
-   *  task_plan/task_step 在一轮任务里高频更新 → 800ms 防抖合并 PATCH。 */
-  let planSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  function persistPlan(convId: string, plan: unknown) {
-    // 草稿键（会话未建立）没有行可写；等会话创建后由下次 task_plan/task_step 落到真实键
-    if (!convId || convId === DRAFT_PLAN_KEY || !isServerMode()) return;
-    if (planSaveTimer) clearTimeout(planSaveTimer);
-    planSaveTimer = setTimeout(() => {
-      planSaveTimer = null;
-      void api.patch(`/conversations/${convId}`, { taskPlan: plan });
-    }, 800);
-  }
   let abortControllers = new Map<string, AbortController>();
   const taskIds = new Map<string, string>(); // convId → backend taskId（用于 abort）
   const taskEventCounts = new Map<string, number>(); // taskId → 已收到的**最后一个事件的 seq**（重连时作为 since）
@@ -2906,12 +2888,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             const key = planKeyOf(convId);
             // 用 syncPlan（保留 steps 自带状态），而非 applyTaskPlan（会把状态强制成 pending）
             plansByConv.value = syncPlan(plansByConv.value, key, event.plan as any);
-            // ★★★ 2026-10-15：`persisted:true` = 服务端**已经写好**了这份计划
-            //   （task_plan / task_step 已直连化，服务端是唯一写者）⇒ 前端**只展示、不回写**。
-            //   回写不只是多一次 PATCH：它会让"计划写者"变成两个，正是要消掉的那类漂移；
-            //   而这条推送的目的就是让卡片刷新**不再依赖渲染层往返**。
-            //   ★ PlanRunner 的 plan:updated 不带这个标记 → 维持原样回写（那条链路的写者仍是前端）。
-            if (event.persisted !== true) void persistPlan(key, plansByConv.value[key]);
+            // ★ 2026-10-23：无论是否带 persisted 标记，前端都**只展示、不回写**。
+            //   task_plan/task_step 与 PlanRunner 的 onPlanChange 都在服务端先落库再推送，
+            //   前端回写只会制造第二个计划写者（双写漂移），没有任何收益。
+            break;
             break;
           }
           case 'tool:start': {
@@ -3554,8 +3534,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     //   不清的话新任务运行指示会显示旧计划的「步骤 3/3 全完成」，看起来像已完成的任务卡在运行中。
     //   新任务若做规划，task_plan/task_step 会重新登记。复用运行中任务（下方 has 提前 return）不受影响。
     // ★★★ 2026-10-09 修：这里必须用 **clearPlanDisplayOnly**（只清内存），不能用 clearPlan ——
-    //   后者会 PATCH taskPlan:null，把工作目录的 plan.md 一并删掉，**跨会话接力当场失效**
-    //   （实测：发一条消息 → task_plan_json 变 NULL、plan.md 消失）。详见 clearPlanDisplayOnly 注释。
+    //   后者会 DELETE 服务端计划（清 task_plan_json + 删工作目录 plan.md），**跨会话接力当场失效**
+    //   （历史实测：发一条消息 → task_plan_json 变 NULL、plan.md 消失）。详见 clearPlanDisplayOnly 注释。
     clearPlanDisplayOnly(convId);
     const abortController = new AbortController();
     abortControllers.set(convId, abortController);
@@ -3786,7 +3766,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     pendingPrefill, prefillInput,
     submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
-    planSteps, planTitle, clearPlan, clearPlanDisplayOnly,
+    planSteps, planTitle, planCreatedAt, planFinishedAt, clearPlan, clearPlanDisplayOnly,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     // 会话生命周期（2026-10-16 归档 + 回收站）

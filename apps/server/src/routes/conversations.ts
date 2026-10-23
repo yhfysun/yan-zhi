@@ -10,6 +10,7 @@ import {
 } from '../services/conversation-lifecycle.js';
 import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
+import { buildPlanStepDetail } from '../services/plan-step-detail.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode, compressConversationNow } from '../llm-task-manager.js';
 import { estimateTokens } from '@yan-zhi/shared';
@@ -107,6 +108,33 @@ router.get('/:id', (req: Request, res: Response) => {
   const row = db.prepare('SELECT * FROM conversation WHERE id = ? AND user_id = ?').get(req.params.id, userId) as any;
   if (!row) { res.status(404).json({ error: '会话不存在' }); return; }
   res.json({ data: row });
+});
+
+// GET /api/conversations/:id/plan/steps/:index/detail —— 计划步骤运行详情（2026-10-23）。
+// 按该步的 startedAt..finishedAt 时间窗聚合工具调用（服务端唯一实现，见 plan-step-detail.ts）。
+// ★ 前端弹窗只传 convId + index，不自己拼时间窗 —— 计划可能横跨数小时、跨重连，
+//   前端消息窗口不完整，聚合放在服务端才不会被分页截断误导。
+router.get('/:id/plan/steps/:index/detail', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const result = buildPlanStepDetail(cid, Number(req.params.index));
+  if (!result.ok) { res.status(result.code).json({ error: result.error }); return; }
+  res.json({ data: result.detail });
+});
+
+// DELETE /api/conversations/:id/plan —— 用户显式「清除计划」。
+// ★ 2026-10-23：前端不再 PATCH taskPlan（计划写者收敛到服务端）；清除是唯一的
+//   用户显式落盘动作，走本接口同时清库字段与工作目录 plan.md（跨会话接力一并失效）。
+router.delete('/:id/plan', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  db.prepare('UPDATE conversation SET task_plan_json = NULL WHERE id = ?').run(cid);
+  void writeTaskPlanFile(cid, null).catch(() => { /* 已在 writeTaskPlanFile 内 fail-safe */ });
+  res.json({ ok: true });
 });
 
 // POST /api/conversations/archive-all —— 一键归档某空间下的全部 active 会话（侧栏空间右键菜单）。
@@ -208,6 +236,8 @@ router.patch('/:id', (req: Request, res: Response) => {
   // ★ 镜像写工作目录 plan.md（跨会话接力，2026-09-30）：task_plan_json 挂在会话行上，
   //   新会话读不到 —— 计划必须同时落在目录维度（与 decisions.md/progress.md 同族）。
   //   异步 fire-and-forget：文件写入失败不影响 PATCH 本身（fail-safe）。
+  // ★ 2026-10-23：前端已不再 PATCH taskPlan（计划写者只有服务端）；本分支仅为兼容旧客户端，
+  //   用户显式「清除计划」走 DELETE /:id/plan（同时删 plan.md）。
   if (req.body.taskPlan !== undefined) {
     let planForFile: any = null;
     if (req.body.taskPlan === null) {

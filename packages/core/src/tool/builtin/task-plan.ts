@@ -45,7 +45,9 @@ export class TaskStepTool implements BuiltInTool {
   name = 'task_step';
   description =
     'Update the status of a step in the current task plan so the user sees live progress. ' +
-    'Mark a step running before working on it and done (or failed) after finishing. ' +
+    'Mark a step running **before** you start working on it and done (or failed) as soon as it finishes. ' +
+    '步骤的开始/结束时间由服务端据此记录（耗时统计的唯一来源）；只在结束时标 done 的话，' +
+    '该步起点只能按上一步结束点估算，耗时会失真。' +
     '状态更新会同步持久化到工作目录计划文件，保证换会话/自动接力时进度不丢。';
   inputSchema = {
     type: 'object',

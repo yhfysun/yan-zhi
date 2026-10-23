@@ -640,7 +640,9 @@ export async function flushMemoriesBeforeCompression(params: FlushParams, toComp
             ...((existing?.steps || []) as any[]),
             ...fresh.map((title) => ({ title, status: 'pending' })),
           ];
-          const plan = { title: existing?.title || '任务计划（压缩前抢救）', steps };
+          // 展开原计划：createdAt / 计划级时间必须原样保留 ——
+          // 重建对象会把它丢掉，之后 done 步骤的耗时兜底起点就退回"现在"。
+          const plan = { ...(existing || {}), title: existing?.title || '任务计划（压缩前抢救）', steps };
           savePlanJson(params.conversationId, plan as any);
           await writeTaskPlanFile(params.conversationId, plan as any);
           logger.info(`[memory] 压缩前抢救: +${fresh.length} 条待办已并入任务计划`);

@@ -4738,7 +4738,8 @@ async function decideAutoContinue(args: {
  *   ② 用小模型（记忆抽取模型，回落任务主模型）判一次：剩余步骤是否仍有效；
  *   ③ 仅当「计划已失效且给出了修订步骤」才改写 —— 保留已完成步骤原状，替换剩余部分为 pending。
  *
- * 写入走**既有单一出口** backendTaskPlan + backendTaskStep（写库 + 镜像 plan.md），不另起炉灶。
+ * 写入走**既有单一出口** backendTaskPlan（写库 + 镜像 plan.md）；已完成步骤的计时通过
+ * 服务端内部参数 preserved 原样搬入，避免重规划把耗时抹成 0。
  * 任何失败由调用方 catch（本函数允许抛出，调用方已 try/catch 包住）。
  * @returns 是否实际改写了计划
  */
@@ -4789,16 +4790,20 @@ async function maybeReplanOnContinue(args: { task: LlmTask; conversationId: stri
       .map((s: any) => ({ title: String(s.title).trim(), ...(s.description ? { note: String(s.description) } : {}) }))
     : [];
   if (!revised.length) return false; // 判失效却没给修订版 → 保守保留原计划（宁可过期也别清空）
-  // 保留已完成/失败步骤原状（含状态），替换剩余部分；写入走 backendTaskPlan + 状态回填
+  // 保留已完成/失败步骤原状（状态 + 计时），替换剩余部分；一次写入，避免重置计时
   const doneOrFailed = plan.steps.filter((s) => s.status === 'done' || s.status === 'failed');
   const newSteps = [
     ...doneOrFailed.map((s) => ({ title: s.title, ...(s.note ? { note: s.note } : {}) })),
     ...revised,
   ];
-  await backendTaskPlan(args.conversationId, { title: plan.title || '任务计划', steps: newSteps });
-  for (let i = 0; i < doneOrFailed.length; i++) {
-    await backendTaskStep(args.conversationId, { index: i + 1, status: doneOrFailed[i].status });
-  }
+  const preserved = doneOrFailed.map((s, i) => ({
+    index: i + 1,
+    status: s.status as 'done' | 'failed',
+    ...(s.startedAt ? { startedAt: s.startedAt } : {}),
+    ...(s.finishedAt ? { finishedAt: s.finishedAt } : {}),
+    ...(s.activeMs ? { activeMs: s.activeMs } : {}),
+  }));
+  await backendTaskPlan(args.conversationId, { title: plan.title || '任务计划', steps: newSteps }, preserved);
   return true;
 }
 
@@ -8410,7 +8415,8 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         '- 这份计划是**同一任务跨轮次的接力棒**。开工前先看它，按未完成（[ ]/[~]）的步骤接着做。',
         '- **不要重做已完成（[x]）的步骤**；也不要因为"上下文里没有前面的过程"就从头再来 ——',
         '  已完成步骤的结论可从「空间记忆」与产物文件中获取。',
-        '- 每完成一步，用 task_step 把该步标记为 done（保持这份计划与实际进度一致，供下一批接力）。',
+        '- 每开始一步，先用 task_step 把该步标记为 running（服务端据此记录该步耗时的起点）；',
+        '  完成或失败后**立即**用 task_step 标记 done/failed，并写 note 概述结果 —— 计划与耗时统计都以它为准。',
         '- 计划与用户最新要求冲突时以用户为准，并用 task_plan 更新计划（而不是默默偏离）。',
       ].join('\n'));
     }
@@ -8485,10 +8491,14 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
 }
 
 /** 读会话任务计划（供提示词回注 / 自动接力判定）。读不到或结构非法返回 null。
- *  结构由前端 stores/chat.ts 的 persistPlan 写入：`{ title?, steps: [{ title, status, note? }] }`。
+ *  结构由服务端 task-plan-file 的 backendTaskPlan / backendTaskStep 写入（2026-10-23 起前端不再回写）：
+ *  `{ title?, startedAt?, finishedAt?, steps: [{ title, status, note?, startedAt?, finishedAt?, activeMs? }] }`。
  *  ★ 跨会话回退（2026-09-30）：会话行没有计划时读工作目录 plan.md（新会话接续上一会话的长任务）。
  *    顺序：会话计划优先（本会话实时进度最新）→ 文件计划（跨会话共享，task_step 每步镜像）。 */
-function loadTaskPlan(conversationId?: string | null): { title: string; steps: Array<{ title: string; status: string; note?: string }> } | null {
+function loadTaskPlan(conversationId?: string | null): {
+  title: string;
+  steps: Array<{ title: string; status: string; note?: string; startedAt?: number; finishedAt?: number; activeMs?: number }>;
+} | null {
   if (!conversationId) return null;
   try {
     const row = db.prepare('SELECT task_plan_json FROM conversation WHERE id = ?').get(conversationId) as
@@ -8504,6 +8514,9 @@ function loadTaskPlan(conversationId?: string | null): { title: string; steps: A
             title: String(s?.title || s?.description || '(未命名步骤)'),
             status: String(s?.status || 'pending'),
             note: s?.note ? String(s.note) : undefined,
+            ...(Number(s?.startedAt) ? { startedAt: Number(s.startedAt) } : {}),
+            ...(Number(s?.finishedAt) ? { finishedAt: Number(s.finishedAt) } : {}),
+            ...(Number(s?.activeMs) ? { activeMs: Number(s.activeMs) } : {}),
           })),
         };
       }

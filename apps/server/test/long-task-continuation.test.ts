@@ -90,7 +90,9 @@ describe('① 任务计划必须回注提示词（长任务"接力棒"）', () =
 
   it('★ loadTaskPlan 必须容错：非法/空计划返回 null，不能抛错拖垮提示词构建', () => {
     const i = anchor(LTM, 'function loadTaskPlan', 'loadTaskPlan');
-    const body = LTM.slice(i, i + 900);
+    // 窗口按「函数体大致长度」放宽到 2000：返回类型写多行（2026-10-23 加了计时字段）后
+    // 900 字符会截在 try 之前，导致「无 try/catch」假红。
+    const body = LTM.slice(i, i + 2000);
     expect(body, '★ loadTaskPlan 无 try/catch（坏数据会让整个任务起不来）').toMatch(/catch/);
     expect(body, '★ 无 steps 校验（空计划会让提示词出现空壳段落）').toMatch(/steps/);
   });

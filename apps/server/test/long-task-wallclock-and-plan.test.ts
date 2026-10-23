@@ -93,18 +93,22 @@ describe('E 计划接力棒不得被 send() 抹掉（跨会话接力的命门）
     expect(body, '★ 只清展示的函数未真正移除内存计划').toMatch(/removePlan\(plansByConv\.value/);
   });
 
-  it('★★ 用户显式「清除计划」仍必须落盘 null（不能一刀切禁掉）', () => {
+  it('★★ 用户显式「清除计划」仍必须落盘（走 DELETE 专用接口，不再是 PATCH）', () => {
     // 同样停在函数结束（否则会切到 clearPlanDisplayOnly / persistPlan 造成假红/假绿）
     const i = anchor(CHAT_STORE, 'function clearPlan(convId?', 'clearPlan');
     const rest = CHAT_STORE.slice(i);
     const end = rest.indexOf('\n  }');
     const body = end > 0 ? rest.slice(0, end) : rest.slice(0, 700);
     expect(body, '★ 用户显式清除不落盘了 → 服务端 task_plan_json 永远清不掉')
-      .toMatch(/api\.patch\(`\/conversations\/\$\{key\}`,\s*\{\s*taskPlan:\s*plan\s*\}\)/);
+      .toMatch(/api\.delete\(`\/conversations\/\$\{key\}\/plan`\)/);
+    expect(body, '★ 2026-10-23 起前端不得再 PATCH taskPlan（双写已收敛到服务端）')
+      .not.toMatch(/api\.patch/);
   });
 
   it('★ 两个函数都必须导出（TaskPlanCard 用 clearPlan，send 用 clearPlanDisplayOnly）', () => {
-    const i = anchor(CHAT_STORE, 'planSteps, planTitle, clearPlan', 'store 导出段');
+    // 锚在导出段的稳定前缀：计划新增了 planCreatedAt / planFinishedAt，
+    // 不能把「planTitle 后紧跟 clearPlan」写死（2026-10-23 假红过一次）。
+    const i = anchor(CHAT_STORE, 'planSteps, planTitle', 'store 导出段');
     const body = CHAT_STORE.slice(i, i + 200);
     expect(body, '★ clearPlan 未导出').toMatch(/clearPlan/);
     expect(body, '★ clearPlanDisplayOnly 未导出（send 调不到）').toMatch(/clearPlanDisplayOnly/);

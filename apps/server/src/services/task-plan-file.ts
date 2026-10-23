@@ -30,9 +30,56 @@ interface SpaceRow {
   dir_path: string | null;
 }
 
+export interface TaskPlanStep {
+  title: string;
+  status?: string;
+  note?: string;
+  /** 首次进入 running 的毫秒时间戳（幂等，重复 running 不覆盖） */
+  startedAt?: number;
+  /** 进入 done / failed 的毫秒时间戳 */
+  finishedAt?: number;
+  /** 返工时已累计的活跃时长（毫秒） */
+  activeMs?: number;
+}
+
 export interface TaskPlan {
   title?: string;
-  steps: Array<{ title: string; status?: string; note?: string }>;
+  /** 计划创建时间（步骤未标 running 时的耗时兜底起点；重规划沿用原值） */
+  createdAt?: number;
+  /** 计划级开始时间 = 首个步骤开始的时间 */
+  startedAt?: number;
+  /** 计划级结束时间 = 全部步骤进入终态的时间 */
+  finishedAt?: number;
+  steps: TaskPlanStep[];
+}
+
+/** 重规划时保留已完成步骤的计时（服务端内部参数，绝不来自模型入参） */
+export interface PreservedStepTiming {
+  /** 从 1 起，与新计划 steps 的下标一致 */
+  index: number;
+  status: 'done' | 'failed';
+  startedAt?: number;
+  finishedAt?: number;
+  activeMs?: number;
+}
+
+/** 步骤耗时：返工前的累计活跃时长 + 本轮时间窗 */
+export function stepElapsedMs(step: TaskPlanStep | null | undefined): number {
+  if (!step) return 0;
+  const active = Number(step.activeMs) || 0;
+  const started = Number(step.startedAt) || 0;
+  const finished = Number(step.finishedAt) || 0;
+  const current = started && finished > started ? finished - started : 0;
+  return active + current;
+}
+
+/** 由步骤时间戳推导计划级时间（steps 是唯一真相源） */
+function derivePlanTiming(plan: TaskPlan): void {
+  const started = plan.steps.map((s) => Number(s.startedAt) || 0).filter((n) => n > 0);
+  plan.startedAt = started.length ? Math.min(...started) : undefined;
+  const allTerminal = plan.steps.every((s) => s.status === 'done' || s.status === 'failed');
+  const finished = plan.steps.map((s) => Number(s.finishedAt) || 0).filter((n) => n > 0);
+  plan.finishedAt = allTerminal && finished.length === plan.steps.length ? Math.max(...finished) : undefined;
 }
 
 function getSpaceRowByConversation(conversationId: string): SpaceRow | null {
@@ -184,10 +231,28 @@ export function loadPlanJson(conversationId: string): TaskPlan | null {
   }
 }
 
-/** 无人值守 task_plan：创建/整体替换计划。返回给模型的回执文本。 */
-export async function backendTaskPlan(conversationId: string, args: Record<string, unknown>): Promise<string> {
+/** 步骤开始时间兜底 —— 模型常跳过 running 直接标 done（2026-10-23 实测：6 步计划全在
+ *  结束时一次性标记，每步 startedAt===finishedAt，界面耗时全是「—」）。
+ *  时间线连续地取「最近一个已结算的前序步骤的结束点」；没有则退回计划创建时间。 */
+function fallbackStepStart(plan: TaskPlan, index: number, now: number): number {
+  for (let i = index - 2; i >= 0; i--) {
+    const prevFinished = Number(plan.steps[i]?.finishedAt) || 0;
+    if (prevFinished > 0) return Math.min(prevFinished, now);
+  }
+  const created = Number(plan.createdAt) || 0;
+  return created > 0 ? Math.min(created, now) : now;
+}
+
+/** 无人值守 task_plan：创建/整体替换计划。返回给模型的回执文本。
+ *  ★ preserved 仅供服务端内部（重规划）使用：把已完成步骤的状态与计时原样搬进新计划，
+ *    避免「重规划把已完成步骤的耗时抹成 0」。模型入参永远不会走到这里。 */
+export async function backendTaskPlan(
+  conversationId: string,
+  args: Record<string, unknown>,
+  preserved?: PreservedStepTiming[],
+): Promise<string> {
   const rawSteps = Array.isArray(args?.steps) ? (args.steps as any[]) : [];
-  const steps = rawSteps
+  const steps: TaskPlanStep[] = rawSteps
     .filter((s: any) => s && s.title)
     .map((s: any) => ({
       title: String(s.title),
@@ -195,13 +260,34 @@ export async function backendTaskPlan(conversationId: string, args: Record<strin
       status: 'pending',
     }));
   if (!steps.length) return 'task_plan 失败：steps 里没有有效步骤（每项需要 title）';
-  const plan: TaskPlan = { title: String(args?.title || '任务计划'), steps };
+  for (const p of preserved || []) {
+    const step = steps[p.index - 1];
+    if (!step) continue;
+    step.status = p.status;
+    if (p.startedAt) step.startedAt = p.startedAt;
+    if (p.finishedAt) step.finishedAt = p.finishedAt;
+    if (p.activeMs) step.activeMs = p.activeMs;
+  }
+  // 重规划（传了 preserved，可能为空数组）沿用原计划的创建时间；
+  // 新任务的新计划才以此刻为起点 —— 否则兜底起点会被重置成"现在"，新步骤耗时又归零。
+  const carriedCreatedAt = preserved !== undefined
+    ? Number(loadPlanJson(conversationId)?.createdAt) || undefined
+    : undefined;
+  const plan: TaskPlan = { title: String(args?.title || '任务计划'), steps, createdAt: carriedCreatedAt ?? Date.now() };
+  derivePlanTiming(plan);
   if (!savePlanJson(conversationId, plan)) return 'task_plan 失败：写库失败';
   const ok = await writeTaskPlanFile(conversationId, plan);
   return `已创建任务计划「${plan.title}」，共 ${steps.length} 步${ok ? '' : '（工作目录计划文件写入失败，跨会话接力可能不可用）'}`;
 }
 
-/** 无人值守 task_step：推进某一步。返回给模型的回执文本。 */
+/**
+ * 无人值守 task_step：推进某一步。返回给模型的回执文本。
+ *
+ * ★ 计划计时**唯一写入点**（2026-10-23）：
+ *   running → startedAt ??= now（幂等）；done/failed → finishedAt = now；
+ *   done 后又 running（返工）→ 把上一轮时长并入 activeMs、重置 startedAt。
+ *   计划级 startedAt/finishedAt 由步骤时间推导，不单独记账。
+ */
 export async function backendTaskStep(conversationId: string, args: Record<string, unknown>): Promise<string> {
   const plan = loadPlanJson(conversationId);
   if (!plan) return '当前会话还没有任务计划，请先调用 task_plan 建立计划再推进步骤';
@@ -215,8 +301,25 @@ export async function backendTaskStep(conversationId: string, args: Record<strin
     return `task_step 的 status 非法（${status}），应为 pending/running/done/failed`;
   }
   const step = steps[idx - 1];
+  const now = Date.now();
+  if (status === 'running') {
+    if (step.finishedAt) {
+      // 返工：上一轮已结算 → 累计活跃时长，重新起算本轮
+      step.activeMs = (Number(step.activeMs) || 0) + stepElapsedMs({ ...step, activeMs: 0 });
+      step.startedAt = now;
+      step.finishedAt = undefined;
+    } else if (!step.startedAt) {
+      step.startedAt = now;
+    }
+  } else if (status === 'done' || status === 'failed') {
+    // 模型没标 running（常见于小模型）：起点回退到上一个已结算步骤的结束点，
+    // 保证完成的步骤仍有耗时记录，而不是 startedAt===finishedAt 的 0 秒。
+    if (!step.startedAt) step.startedAt = fallbackStepStart(plan, idx, now);
+    if (!step.finishedAt) step.finishedAt = now;
+  }
   step.status = status;
   if (args?.note != null) step.note = String(args.note);
+  derivePlanTiming(plan);
   if (!savePlanJson(conversationId, plan)) return 'task_step 失败：写库失败';
   const ok = await writeTaskPlanFile(conversationId, plan);
   return `已更新第 ${idx} 步状态为 ${status}${ok ? '' : '（工作目录计划文件写入失败）'}`;
