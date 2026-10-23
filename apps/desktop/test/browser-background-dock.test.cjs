@@ -45,6 +45,18 @@ describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', 
     assert.match(body, /if \(dockedOffscreen\) \{ leaveBackgroundDock\(\); return; \}/, '停靠态点任务栏必须恢复窗口');
   });
 
+  test('★ 恢复停靠必须回到原位置（用户实报「回来跑到左上角」）', () => {
+    const start = mainSrc.indexOf('function leaveBackgroundDock');
+    assert.ok(start > -1, '未找到 leaveBackgroundDock');
+    const body = mainSrc.slice(start, start + 2000);
+    assert.match(body, /win\.setBounds\(\{ x: saved\.x, y: saved\.y, width: saved\.width, height: saved\.height \}\)/,
+      '恢复必须按停靠前保存的几何 setBounds（只 setPosition 会被系统 restore 覆盖）');
+    assert.match(body, /win\.center\(\)/, '坐标非法时要居中兜底');
+    const showAt = body.indexOf('win.show();');
+    const boundsAt = body.indexOf('setBounds(');
+    assert.ok(showAt > -1 && boundsAt > showAt, '位置必须在 show/restore 之后落，否则会被系统还原位置覆盖');
+  });
+
   test('★ 自定义标题栏的最小化按钮：任务在跑先弹确认，没任务就是普通最小化', () => {
     const idx = mainSrc.indexOf("ipcMain.on('window-minimize'");
     assert.ok(idx > -1, '未找到 window-minimize handler');

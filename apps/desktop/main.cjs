@@ -357,9 +357,27 @@ function leaveBackgroundDock(focus = true) {
   dockedOffscreen = null;
   try { win.setSkipTaskbar(false); } catch { /* ignore */ }
   try { if (win.isMinimized()) win.restore(); } catch { /* ignore */ }
-  try { win.setPosition(saved.x, saved.y); } catch { /* ignore */ }
+  if (focus) { try { win.show(); } catch { /* ignore */ } }
+  // ★ 位置必须在 restore/show **之后**落（2026-10-23 用户实报「回来跑到左上角」）：
+  //   系统 restore 会把窗口摆回它记忆的"还原位置"（停靠时已被我们挪到 -32000），
+  //   先 setPosition 再 show 会被覆盖 → 连尺寸一起 setBounds 放在最后；
+  //   坐标非法（曾出现 -32000 被当成原始位置）就居中兜底。
+  const hasPos = Number.isFinite(saved.x) && Number.isFinite(saved.y)
+    && saved.x > -20000 && saved.y > -20000;
+  try {
+    if (hasPos) win.setBounds({ x: saved.x, y: saved.y, width: saved.width, height: saved.height });
+    else win.center();
+  } catch { /* ignore */ }
   if (saved.maximized) { try { win.maximize(); } catch { /* ignore */ } }
-  if (focus) { try { win.show(); win.focus(); } catch { /* ignore */ } }
+  if (focus) { try { win.focus(); } catch { /* ignore */ } }
+  // 系统的 minimize/restore 可能晚一拍落地（任务栏点击），把窗口又摆回默认位置或最小化 → 下一拍纠一次
+  setTimeout(() => {
+    try {
+      if (!win || win.isDestroyed()) return;
+      if (win.isMinimized()) win.restore();
+      if (hasPos) win.setBounds({ x: saved.x, y: saved.y, width: saved.width, height: saved.height });
+    } catch { /* ignore */ }
+  }, 0);
   applyGuestThrottling();
   console.log('[bg-dock] 退出后台停靠');
   try { refreshTrayMenu(); } catch { /* 菜单刷新不影响恢复 */ }
