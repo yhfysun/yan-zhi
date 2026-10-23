@@ -855,6 +855,25 @@ watch(() => chatStore.browserTaskActive, (active) => {
   }
 });
 
+// ★ 2026-10-23 用户实报「暂停的时候这些也都要隐藏啊」「用户能操作的时候就要隐藏」：
+//   暂停 = 用户接管页面，编号框是给 agent 定位用的，挡在用户面前只会误触/看不清。
+//   暂停时一律收起；恢复执行后按原状态（手动开 / 自动开）补回来。
+const highlightPausedRestore = ref(false);
+watch(() => chatStore.browserPaused, (paused) => {
+  if (paused) {
+    if (highlightOn.value) {
+      highlightPausedRestore.value = true;
+      void applyHighlight(false, true);
+    }
+    return;
+  }
+  if (!highlightPausedRestore.value) return;
+  highlightPausedRestore.value = false;
+  if (highlightUserOff.value || !activeTabId.value) return;
+  if (!chatStore.browserHighlightManual) highlightAuto.value = true;
+  void applyHighlight(true, true);
+});
+
 // 路由 query（支持从对话页跳转并传初始 URL）
 const route = useRoute();
 

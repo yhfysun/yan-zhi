@@ -63,6 +63,16 @@ describe('编号层收尾清理 · 渲染层', () => {
     expect(hook.slice(0, 1500)).toContain('highlightOffAll');
     expect(STORE, '状态必须放 store（面板局部状态会随卸载丢失）').toContain('browserHighlightManual');
   });
+
+  // ★ 2026-10-23 用户实报「暂停的时候这些也都要隐藏啊」：暂停 = 用户接管页面，
+  //   给 agent 定位用的编号框必须收起；恢复执行后再按原状态补回来。
+  it('★ 暂停时必须收起编号层，恢复后补回', () => {
+    const at = PANEL.indexOf('watch(() => chatStore.browserPaused');
+    expect(at, '缺少暂停 watcher').toBeGreaterThanOrEqual(0);
+    const body = PANEL.slice(at, at + 900);
+    expect(body, '暂停必须关层').toContain('applyHighlight(false');
+    expect(body, '恢复执行要补回').toContain('applyHighlight(true');
+  });
 });
 
 describe('编号层收尾清理 · 主进程', () => {
