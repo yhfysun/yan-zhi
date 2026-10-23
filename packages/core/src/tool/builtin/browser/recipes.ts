@@ -29,6 +29,8 @@ export interface RecipeParamDef {
 
 export interface FillFieldDef {
   selector: string;
+  /** 备用选择器：selector 未命中时按序回退（类名 hash 漂移的站点用它，避免模型现场换选择器） */
+  selectors?: string[];
   value: string;
   label?: string;
 }
@@ -110,8 +112,8 @@ class VerificationBlockedError extends Error {
 /** 读一次页面，判断是否被验证码/滑块拦住（读页失败返回空串，不掩盖原始错误） */
 async function detectVerification(api: RecipeApi): Promise<string> {
   try {
-    const page = await readPage(api, 800);
-    return BLOCK_TEXTS.find((t) => norm(page.text).includes(t)) || '';
+    const text = await pollText(api);
+    return BLOCK_TEXTS.find((t) => norm(text).includes(t)) || '';
   } catch {
     return '';
   }
@@ -127,23 +129,39 @@ async function readPage(api: RecipeApi, maxTextLength = 3000): Promise<PageSnaps
   };
 }
 
+/**
+ * 轮询用的廉价读页：只要可见文本，不要可交互元素清单和表单语义段。
+ * 上传/转码等待动辄几十次读取，get_page_content 在抖音这类重页面上每次都要遍历
+ * DOM + 计算样式，整段等待会被放大成分钟级；get_visible_text 只递归取文本。
+ * 读不到再退回整页读取（老浏览器动作不可用时保持兼容）。
+ */
+async function pollText(api: RecipeApi): Promise<string> {
+  try {
+    const d = await api.action('get_visible_text', {});
+    if (d && typeof d.text === 'string' && d.text.trim()) return String(d.text);
+  } catch { /* 回落整页读取 */ }
+  const page = await readPage(api);
+  return page.text;
+}
+
 async function waitForAny(
   api: RecipeApi,
   texts: string[],
   timeoutMs: number,
 ): Promise<{ matched: string; page: PageSnapshot; blocked: string }> {
   const deadline = Date.now() + timeoutMs;
-  let page = await readPage(api);
+  const snapshot = (text: string): PageSnapshot => ({ text, url: '', title: '', formFields: [] });
+  let text = await pollText(api);
   for (;;) {
-    const body = norm(page.text);
+    const body = norm(text);
     // 安全验证/验证码必须**立即**判定，不能等满超时 —— 用户不在场时等下去没有意义
     const blocked = BLOCK_TEXTS.find((t) => body.includes(t)) || '';
-    if (blocked) return { matched: '', page, blocked };
+    if (blocked) return { matched: '', page: snapshot(text), blocked };
     const matched = texts.map(norm).find((t) => t && body.includes(t)) || '';
-    if (matched) return { matched, page, blocked: '' };
-    if (Date.now() >= deadline) return { matched: '', page, blocked: '' };
+    if (matched) return { matched, page: snapshot(text), blocked: '' };
+    if (Date.now() >= deadline) return { matched: '', page: snapshot(text), blocked: '' };
     await sleep(1500);
-    try { page = await readPage(api); } catch { /* 页面忙：继续等，不重试写操作 */ }
+    try { text = await pollText(api); } catch { /* 页面忙：继续等，不重试写操作 */ }
   }
 }
 
@@ -157,24 +175,45 @@ function looksFilled(got: string, want: string): boolean {
   return a.length >= 20 && b.startsWith(a);
 }
 
+const selAt = (f: FillFieldDef, i: number): string =>
+  i === 0 ? f.selector : ((f.selectors && f.selectors[i - 1]) || f.selector);
+const selCount = (f: FillFieldDef): number => 1 + (f.selectors ? f.selectors.length : 0);
+
 async function runFill(api: RecipeApi, fields: FillFieldDef[]): Promise<string> {
-  const prepared = fields.map((f) => ({ selector: f.selector, value: f.value }));
-  const res = await api.action('fill_form', { fields: prepared });
-  const failed: any[] = Array.isArray(res?.failed) ? res.failed : [];
-  if (failed.length) {
-    const detail = failed.map((f) => `${f?.selector || '(无选择器)'} ${f?.reason || ''}`).join('；');
-    throw new Error(`填写失败：${detail}`);
-  }
-  const state: any[] = Array.isArray(res?.state) ? res.state : [];
-  const problems: string[] = [];
-  for (const f of fields) {
-    const st = state.find((s) => s?.selector === f.selector);
-    if (st && !looksFilled(String(st.value ?? ''), f.value)) {
-      problems.push(`${f.label || f.selector} 回读="${String(st.value ?? '').slice(0, 40)}"`);
+  const attempt = fields.map(() => 0);
+  const missing: string[] = [];
+  for (let round = 0; round < 4; round++) {
+    const prepared = fields.map((f, i) => ({ selector: selAt(f, attempt[i]), value: f.value }));
+    const res = await api.action('fill_form', { fields: prepared });
+    const failed: any[] = Array.isArray(res?.failed) ? res.failed : [];
+    // 元素未找到 → 换该字段的下一个备用选择器（同轮其它字段已填好的值是幂等的，typeIn 会跳过）
+    let advanced = false;
+    for (const f of failed) {
+      const idx = prepared.findIndex((p) => p.selector === f?.selector);
+      if (idx < 0) continue;
+      if (!/未找到|not found/i.test(String(f?.reason || ''))) continue;
+      if (attempt[idx] + 1 < selCount(fields[idx])) { attempt[idx]++; advanced = true; }
     }
+    if (failed.length) {
+      const detail = failed.map((f) => `${f?.selector || '(无选择器)'} ${f?.reason || ''}`).join('；');
+      if (!advanced) {
+        throw new Error(`填写失败：${detail}${missing.length ? `（此前 ${missing.join('；')}）` : ''}`);
+      }
+      missing.push(detail);
+      continue;
+    }
+    const state: any[] = Array.isArray(res?.state) ? res.state : [];
+    const problems: string[] = [];
+    for (let i = 0; i < fields.length; i++) {
+      const st = state.find((s) => s?.selector === prepared[i].selector);
+      if (st && !looksFilled(String(st.value ?? ''), fields[i].value)) {
+        problems.push(`${fields[i].label || prepared[i].selector} 回读="${String(st.value ?? '').slice(0, 40)}"`);
+      }
+    }
+    if (problems.length) throw new Error(`回读核验未通过：${problems.join('；')}`);
+    return `已填 ${prepared.length} 个字段（回读通过，未重复清空）`;
   }
-  if (problems.length) throw new Error(`回读核验未通过：${problems.join('；')}`);
-  return `已填 ${prepared.length} 个字段（回读通过，未重复清空）`;
+  throw new Error(`填写失败：备用选择器已用尽（${missing.join('；') || '元素未找到'}）`);
 }
 
 async function clickText(api: RecipeApi, text: string, optional: boolean, failHint?: string): Promise<string> {
@@ -222,7 +261,11 @@ async function runUpload(api: RecipeApi, step: Extract<RecipeStep, { kind: 'uplo
   const fail = (step.failureTexts || []).find((t) => body.includes(norm(t)));
   if (fail) throw new Error(`上传失败：页面出现「${fail}」`);
   if (!matched) {
-    throw new Error(`上传后 ${Math.round(timeoutMs / 1000)}s 内未出现成功标志（${step.successTexts.join(' / ')}）`);
+    const seen = norm(page.text).slice(0, 160) || '(页面文本为空)';
+    throw new Error(
+      `上传后 ${Math.round(timeoutMs / 1000)}s 内未出现成功标志（${step.successTexts.join(' / ')}）。`
+      + `页面当前文案：${seen}。若仍在「上传中/转码中」，等它传完再续跑，**不要重复上传**。`,
+    );
   }
   return `已上传 ${filePath}（页面出现「${matched}」）`;
 }
@@ -296,6 +339,7 @@ export async function runRecipe(
         if (step.kind === 'fill') {
           const fields = step.fields.map((f) => ({
             selector: interp(f.selector, params),
+            selectors: f.selectors ? f.selectors.map((s) => interp(s, params)) : undefined,
             value: interp(f.value, params),
             label: f.label,
           }));
@@ -406,7 +450,9 @@ export const DOUYIN_PUBLISH_RECIPE: PublishRecipe = {
       clickSelectors: ['div:contains("点击上传")', 'button:contains("上传")', 'div:contains("拖拽文件")'],
       successTexts: ['上传成功', '重新上传'],
       failureTexts: ['上传失败', '上传出错'],
-      timeoutMs: 240000,
+      // 上传+转码实测 1–6 分钟（大文件更久）。旧值 240s 会把正常慢传判成失败，
+      // 模型接着手工重传 → 单步耗到 15 分钟。宁可多等，也不要误判后重复上传。
+      timeoutMs: 600000,
     },
     {
       kind: 'fill',
@@ -437,8 +483,86 @@ export const DOUYIN_PUBLISH_RECIPE: PublishRecipe = {
   ],
 };
 
+/**
+ * 抖音引导评论配方（2026-10-23，依据 2026-10-15 实抓）
+ * 为什么要有：此前评论靠模型现场操作，提示词里的锚点还是 10-14 的失效版本
+ * （`.comment-input-inner-container` / `span.wchsYBpK`），实测一条评论花 14 分钟。
+ * 真实 DOM：输入框是 Draft.js `div.input-d24X73`，发送按钮是**文本「发送」**。
+ */
+export const DOUYIN_POST_COMMENT_RECIPE: PublishRecipe = {
+  id: 'douyin-post-comment',
+  description: '抖音创作者后台发一条引导评论：打开互动评论页→选中作品→真实键入→发送→回读核验',
+  params: {
+    videoTitle: { type: 'string', required: true, description: '目标作品标题（评论区左侧作品列表里可见的标题片段）' },
+    comment: { type: 'string', required: true, description: '评论文案（必须点名「番茄小说」App 与别名，禁原书名）' },
+  },
+  steps: [
+    // 服务端硬约束：/creator-micro/data/comment 会跳关注页，必须用 interactive/comment
+    { kind: 'navigate', url: 'https://creator.douyin.com/creator-micro/interactive/comment' },
+    {
+      kind: 'clickText',
+      texts: ['{{videoTitle}}'],
+      failHint: '作品列表里没找到该标题：确认作品已发布并在列表中；仍找不到就用 browser_click 手动选中作品后重跑本配方，'
+        + '**不要重复点发送**（可能已发过）。',
+    },
+    {
+      kind: 'fill',
+      fields: [{
+        // 首选语义锚点（类名 hash 会漂）：placeholder 文案「有爱评论，说点好听的~」
+        selector: 'div[contenteditable="true"][data-placeholder*="有爱评论"]',
+        selectors: ['div.input-d24X73', 'div[contenteditable="true"]'],
+        value: '{{comment}}',
+        label: '评论输入框',
+      }],
+    },
+    {
+      kind: 'clickText',
+      texts: ['发送'],
+      failHint: '发送按钮不可见/不可点：评论没真正写进 Draft.js（必须真实键盘输入）。'
+        + '回读输入框当前值后如实报告，不要换脚本反复重填。',
+    },
+    { kind: 'waitText', texts: ['{{comment}}'], optional: true, timeoutMs: 10000 },
+  ],
+};
+
+/**
+ * 抖音自定义封面配方（2026-10-23）
+ * 为什么要有：封面是转化位，但此前只有"本地怎么生成封面"，没有"发布页怎么设"的配方，
+ * 模型在 React 弹窗里现场摸索，实测一集封面花 7.5 分钟。
+ * 设计边界：只在**视频已上传**的发布页调用（发布配方 submit=false 之后），
+ * 失败即停并给出「放弃封面直接发布」的明确出路 —— 绝不重跑发布配方（会重新上传）。
+ */
+export const DOUYIN_SET_COVER_RECIPE: PublishRecipe = {
+  id: 'douyin-set-cover',
+  description: '抖音发布页设置自定义封面（视频已上传后调用）：打开封面弹窗→上传图片→确定',
+  params: {
+    coverPath: { type: 'string', required: true, description: '本地封面绝对路径（4:3 成片用 1080×1440，9:16 用 1080×1920；JPG/PNG）' },
+  },
+  steps: [
+    {
+      kind: 'clickText',
+      texts: ['选择封面', '编辑封面', '选封面'],
+      failHint: '发布页没找到封面入口：确认视频已上传完成、面板已展开。'
+        + '页面已完成上传/填表，**不要重跑发布配方**（会重新上传）；封面可放弃，直接点「发布」。',
+    },
+    { kind: 'clickText', texts: ['上传封面', '本地上传', '上传图片'], optional: true },
+    {
+      kind: 'upload',
+      filePath: '{{coverPath}}',
+      clickSelectors: ['div:contains("上传封面")', 'div:contains("点击上传")', 'button:contains("上传")'],
+      successTexts: ['上传成功', '重新上传', '裁剪'],
+      failureTexts: ['上传失败', '格式不支持', '图片过大'],
+      timeoutMs: 60000,
+    },
+    { kind: 'clickText', texts: ['确定', '完成', '保存'], optional: true },
+    { kind: 'waitText', texts: ['封面'], optional: true, timeoutMs: 8000 },
+  ],
+};
+
 export const RECIPES: Record<string, PublishRecipe> = {
   [DOUYIN_PUBLISH_RECIPE.id]: DOUYIN_PUBLISH_RECIPE,
+  [DOUYIN_POST_COMMENT_RECIPE.id]: DOUYIN_POST_COMMENT_RECIPE,
+  [DOUYIN_SET_COVER_RECIPE.id]: DOUYIN_SET_COVER_RECIPE,
 };
 
 export function getRecipe(id: string): PublishRecipe | undefined {

@@ -1204,7 +1204,10 @@ export class BrowserRunRecipeTool implements BuiltInTool {
   description = 'Run a deterministic site recipe in ONE call. 用确定性配方完成整站流程：模型只传参数，'
     + '上传/等待转码/填表/回读核验/合集（系列任务首集必选）/可选点发布全部由代码按固定步骤执行，避免在页面上反复试错。'
     + `可用配方：${listRecipes().join('、')}。`
-    + 'douyin-publish-video 参数：{ videoPath, title, description, collectionName?, submit? }。'
+    + 'douyin-publish-video 参数：{ videoPath, title, description, collectionName?, submit? }；'
+    + 'douyin-set-cover 参数：{ coverPath }（视频已上传后、点发布前调用）；'
+    + 'douyin-post-comment 参数：{ videoTitle, comment }（发布后发引导评论）。'
+    + '★ 发布/封面/评论这三个环节一律先试配方，不要自己逐页点：配方失败返回的现场比手工试错快得多。'
     + '★ submit 默认 false，只做前置步骤；仅当用户明确要求发布时传 submit:true。'
     + '★ 被验证码/滑块拦住时返回 blockedByVerification 与 resumeStep：先 ask_user 请用户完成验证，'
     + '用户确认后带同一个 resumeStep 再调用本工具续跑（不要重跑全流程、不要重新上传）。'

@@ -31,6 +31,22 @@ browser_run_recipe {
 - 返回失败步骤与页面现场时：**不要重复运行同一配方**。先按失败原因处理（补登录 / 等上传完成 / 换参数），仍不行就向用户报告。
 - 配方不可用或站点改版时，才走下面的手动步骤。
 
+## 封面 + 发布：三步调用（2026-10-23 起）
+
+手工逐页点实测「上传 15 分 / 封面 7.5 分」，现在固定为三次调用，不要自己找封面弹窗：
+
+```text
+① browser_run_recipe { recipe:'douyin-publish-video', params:{ videoPath, title, description, collectionName?, submit:false } }
+② 有封面图时：browser_run_recipe { recipe:'douyin-set-cover', params:{ coverPath } }
+③ browser_click 页面上的「发布」   // 不需要自定义封面时，①直接传 submit:true 一步到底
+```
+
+- `douyin-set-cover` 必须在**同一个已上传页面**调用；失败就放弃封面直接进 ③，
+  **绝不重跑 ①**（会重新上传并重置表单）。
+- 封面图规格：4:3 成片用 1080×1440，9:16 用 1080×1920（见 `references/cover-recipes.md`）。
+- 封面弹窗的锚点尚未逐版实抓（2026-10-23 首版配方），首次使用若卡在「选择封面」入口，
+  按回执提示放弃封面并如实报告，不要换脚本硬试。
+
 ## 输入参数
 
 - `videoPath`：本地成片 `.mp4`（`novel_tuiwen` 产物）

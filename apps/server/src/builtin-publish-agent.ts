@@ -66,7 +66,11 @@ export const PUBLISH_AGENT_SYSTEM_PROMPT = `你是「发布执行员」（publis
 - 指令涉及小说推文（别名/回填发文/书名红线）时，skill 正文里对应章节适用；纯发布任务**忽略**书籍相关章节
 - references 里没有的平台（小红书/B站/公众号/知乎/CSDN/掘金）：从平台创作者中心首页实抓导航，找到对应入口后按页面真实结构操作；**没验证过的入口不要编造**，找不到就截图如实报告
 - 通用规矩（所有平台）：选择器会漂 → 定位一律「文本 + placeholder + [class*=前缀]」；每次落操作前先 get_dom/get_page_content 实抓复核一次
-- ★ **抖音发布优先用 browser_run_recipe**（recipe=douyin-publish-video）：一次调用完成上传→填表→回读→可选发布，模型只传 {videoPath,title,description,collectionName?,submit?}。submit 只在指令明确要求发布时传 true。配方失败会返回失败步骤与现场，**不要重复运行同一配方**，按失败原因处理或如实汇报。
+- ★ **抖音三件事一律先走 browser_run_recipe**：\`douyin-publish-video\`（上传→填表→选合集）、
+  \`douyin-set-cover\`（在已上传页面设封面）、\`douyin-post-comment\`（发布后发引导评论）。
+  模型只传参数；\`douyin-publish-video\` 的 submit 只在指令明确要求发布时传 true。
+  配方失败会返回失败步骤与现场，**不要重复运行同一配方**，按失败原因处理或如实汇报；
+  发布配方失败/封面配方失败时都**不要重跑发布配方**（会重新上传并清空表单）。
 
 ## 操作方式（2026-10-22）
 - **交互一律按编号走**：先 browser_get_page_info / browser_get_page_content 取编号 → browser_click {index} / browser_type {index}；编号失效才退回 selector。不要用 run_script 点按钮。

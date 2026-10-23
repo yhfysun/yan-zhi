@@ -9,6 +9,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   DOUYIN_PUBLISH_RECIPE,
+  DOUYIN_POST_COMMENT_RECIPE,
+  DOUYIN_SET_COVER_RECIPE,
   getRecipe,
   listRecipes,
   runRecipe,
@@ -22,6 +24,8 @@ interface FakeState {
   afterClickText?: string;
   /** 执行 fill_form 时把页面切换成该文本（模拟填写时弹出验证） */
   fillText?: string;
+  /** 这些选择器的 fill_form 回「元素未找到」（验证备用选择器回退） */
+  failFillSelectors?: string[];
 }
 
 function makeApi(state: FakeState) {
@@ -33,6 +37,9 @@ function makeApi(state: FakeState) {
     },
     async action(action: string, args: Record<string, unknown>) {
       calls.push({ action, args });
+      if (action === 'get_visible_text') {
+        return { text: state.pageText };
+      }
       if (action === 'get_page_content') {
         return {
           text: state.pageText,
@@ -46,10 +53,15 @@ function makeApi(state: FakeState) {
         if (state.fillText) state.pageText = state.fillText;
         if (state.fillResult) return state.fillResult;
         const fields = Array.isArray((args as any).fields) ? (args as any).fields : [];
+        const failed = fields
+          .filter((f: any) => (state.failFillSelectors || []).includes(String(f.selector)))
+          .map((f: any) => ({ selector: f.selector, reason: '元素未找到' }));
         return {
-          filled: fields.length,
-          failed: [],
-          state: fields.map((f: any) => ({ selector: f.selector, value: f.value })),
+          filled: fields.length - failed.length,
+          failed,
+          state: fields
+            .filter((f: any) => !failed.some((x: any) => x.selector === f.selector))
+            .map((f: any) => ({ selector: f.selector, value: f.value })),
         };
       }
       if (action === 'click') {
@@ -244,6 +256,73 @@ describe('② 执行流程', () => {
     expect(res.ok).toBe(false);
     expect(res.error).toContain('未出现成功标志');
     expect(calls.some((c) => c.action === 'fill_form')).toBe(false);
+  });
+});
+
+describe('④ 评论/封面配方（2026-10-23，替代手工逐页点）', () => {
+  it('配方注册表同时暴露发布/封面/评论', () => {
+    expect(listRecipes()).toEqual(expect.arrayContaining([
+      'douyin-publish-video', 'douyin-set-cover', 'douyin-post-comment',
+    ]));
+    expect(getRecipe('douyin-post-comment')).toBe(DOUYIN_POST_COMMENT_RECIPE);
+    expect(getRecipe('douyin-set-cover')).toBe(DOUYIN_SET_COVER_RECIPE);
+  });
+
+  it('评论配方：主选择器漂移时自动回退到备用锚点，仍然只填一次有效值', async () => {
+    const { api, calls } = makeApi({
+      pageText: '互动评论 有爱评论，说点好听的~ 打开番茄小说搜「骨债阴阳」可直达本书',
+      failFillSelectors: ['div[contenteditable="true"][data-placeholder*="有爱评论"]'],
+    });
+    const res = await runRecipe(DOUYIN_POST_COMMENT_RECIPE, {
+      videoTitle: '骨债阴阳·第4集',
+      comment: '打开番茄小说搜「骨债阴阳」可直达本书',
+    }, api);
+    expect(res.ok, JSON.stringify({ err: res.error, steps: res.steps })).toBe(true);
+    const fills = calls.filter((c) => c.action === 'fill_form');
+    expect(fills.length).toBe(2);
+    expect(JSON.stringify(fills[0].args)).toContain('data-placeholder');
+    expect(JSON.stringify(fills[1].args)).toContain('div.input-d24X73');
+    // 只发一次：发送按钮只点一次，不进入重填循环
+    const sends = calls.filter((c) => c.action === 'click' && JSON.stringify(c.args).includes('发送'));
+    expect(sends.length).toBe(1);
+  });
+
+  it('评论配方：作品标题点不到 → 失败并提示不要重复点发送', async () => {
+    const { api, calls } = makeApi({
+      pageText: '互动评论',
+      clickResult: (sel) => (sel.includes('骨债阴阳') ? { error: 'not found' } : null),
+    });
+    const res = await runRecipe(DOUYIN_POST_COMMENT_RECIPE, {
+      videoTitle: '骨债阴阳·第4集', comment: '打开番茄小说搜「骨债阴阳」',
+    }, api);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('作品列表里没找到该标题');
+    expect(calls.some((c) => c.action === 'fill_form')).toBe(false);
+  });
+
+  it('封面配方：把 coverPath 投递给上传动作，并走完确定', async () => {
+    const { api, calls } = makeApi({ pageText: '上传成功 选择封面' });
+    const res = await runRecipe(DOUYIN_SET_COVER_RECIPE, { coverPath: 'C:/covers/e04.jpg' }, api);
+    expect(res.ok).toBe(true);
+    expect(calls.some((c) => c.action === 'upload' && (c.args as any).filePath === 'C:/covers/e04.jpg')).toBe(true);
+    expect(calls.some((c) => c.action === 'click' && JSON.stringify(c.args).includes('选择封面'))).toBe(true);
+  });
+
+  it('封面入口不存在 → 快速失败，并明确「不要重跑发布配方」', async () => {
+    const { api, calls } = makeApi({
+      pageText: '上传成功',
+      clickResult: (sel) => (sel.includes('封面') ? { error: 'not found' } : null),
+    });
+    const res = await runRecipe(DOUYIN_SET_COVER_RECIPE, { coverPath: 'C:/covers/e04.jpg' }, api);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('不要重跑发布配方');
+    expect(calls.some((c) => c.action === 'upload')).toBe(false);
+  });
+
+  it('等待类步骤用廉价可见文本轮询，不再每次整页读取', async () => {
+    const { api, calls } = makeApi({ pageText: '上传成功 重新上传' });
+    await runRecipe(DOUYIN_PUBLISH_RECIPE, BASE_PARAMS, api);
+    expect(calls.some((c) => c.action === 'get_visible_text')).toBe(true);
   });
 });
 

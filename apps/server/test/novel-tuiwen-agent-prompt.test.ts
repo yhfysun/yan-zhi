@@ -23,11 +23,19 @@ describe('推文智能体 prompt（本轮同步的配方）', () => {
     expect(p).toContain('catalogue__item-text');
     expect(p).toContain('54 秒');
   });
-  it('★ 评论区配方在（Draft.js 关键点）', () => {
+  it('★ 发布/封面/评论都强制走站点配方（2026-10-23：手工逐页点实测 15/7.5/14 分钟）', () => {
+    expect(p).toContain('douyin-publish-video');
+    expect(p).toContain('douyin-set-cover');
+    expect(p).toContain('douyin-post-comment');
+    expect(p).toContain('绝不重跑 ①');
+  });
+  it('★ 评论区配方以实抓锚点为准（旧锚点已失效，不得再出现）', () => {
     expect(p).toContain('Draft.js');
-    expect(p).toContain('public-DraftEditor-content');
-    expect(p).toContain('comment/list');
-    expect(p).toContain('wchsYBpK');
+    expect(p).toContain('input-d24X73');
+    // 2026-10-15 实抓：旧锚点（10-14 版）已失效 —— 留在提示词里会让模型先撞墙再重试
+    expect(p).not.toContain('comment-input-inner-container');
+    expect(p).not.toContain('wchsYBpK');
+    expect(p).not.toContain('public-DraftEditor-content');
   });
   it('★ 评论只发不置顶（Web 端无置顶入口，2026-10-14 穷尽验证）', () => {
     // 2026-10-14 实跑结论：评论可用创作者后台互动评论页发出，但置顶 Web 端无入口

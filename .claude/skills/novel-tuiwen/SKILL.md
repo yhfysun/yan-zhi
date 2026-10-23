@@ -75,9 +75,13 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
 4. **背景**：优先本地素材；题材与选法见 `pipeline.md`「背景素材选取」
 5. **出片**：`novel_tuiwen { chapter, title, alias, chapter, bg_video, ambience, sfx }` → `pipeline.md`
    ★ 声音层：`ambience` 默认 `auto` 按剧情自动选（雨→rain / 荒野夜→wind / 悬疑→hum / 默认 pad_soft），音量 0.12 且被旁白**侧链闪避**，不盖配音；`sfx` 默认 `auto`，只在开头与高能句点缀（≤5 个、间隔≥6s），不做全程铺满。用户要「安静/不要音效」才传 `sfx:"none"` / `ambience:"none"`。
-6. **发布**（需 confirm_user）：抖音 / 快手各见其 `publish-video.md`。
-   ★ 工具列表里有 `browser_run_recipe` 时**优先用配方**（如 `douyin-publish-video`）：
-   模型只传参数，上传/填表/回读/发布由代码按固定步骤执行；`submit` 只在用户明确要求发布时传 true。
+6. **发布**（用户下发发布即授权，不再二次确认）：抖音 / 快手各见其 `publish-video.md`。
+   ★ 工具列表里有 `browser_run_recipe` 时**必须先用配方**，不要手工逐页点
+   （2026-10-23 复盘：手工发一集实测「上传 15 分 / 封面 7.5 分 / 评论 14 分」）：
+   - `douyin-publish-video { videoPath, title, description, collectionName?, submit }` —— 上传 + 填表 + 选合集；
+   - `douyin-set-cover { coverPath }` —— **在同一个已上传页面**设封面（发布配方 submit:false 之后调用，失败就放弃封面直接发布）；
+   - `douyin-post-comment { videoTitle, comment }` —— 发布后发引导评论，一次调用完成「选作品→键入→发送→回读」。
+   `submit` 只在用户明确要求发布时传 true；不需要自定义封面的单集可以一步传 submit:true。
    ★ 被验证码/滑块拦住（`blockedByVerification`）→ 先 `ask_user` 请用户在浏览器面板完成验证，
    再带返回的 `resumeStep` 续跑；**不要重跑全流程**（会重新上传/重置表单）。
    ★★ **系列任务（≥2 集 / 用户说"系列、连着、合集"）：第一集发布前就要把合集建好并勾选** ——
@@ -86,7 +90,8 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
    合集创建要审核 1–3 小时，提前建好后续集直接勾选。**只有单集一次性任务才可不建**。
    ⚠️ 配方传了 `collectionName` 却没选中合集时会**停在发布前** —— 按回执在页面上手动建/选合集后直接点「发布」，
    **不要重跑配方**（会重新上传并重置表单）。
-7. **引导评论**：抖音发布后发引导评论 → `pages/douyin/comment/post-comment.md`
+7. **引导评论**：抖音发布后发引导评论 → 优先 `browser_run_recipe douyin-post-comment { videoTitle, comment }`；
+   手工兜底步骤见 `pages/douyin/comment/post-comment.md`（锚点以 2026-10-15 实抓为准）。
 8. **回填发文**：番茄达人中心别名管理 → `backfill.md` —— **不回填不结算**
 9. **回报**：选书理由 + 成片路径 + 发布/回填状态
 
