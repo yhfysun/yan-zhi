@@ -7,13 +7,56 @@
           <div class="tab-inner">
             <el-form label-width="80px" label-position="left">
               <el-form-item label="名称"><el-input v-model="form.name" placeholder="智能体名称" /></el-form-item>
+              <el-form-item label="头像">
+                <div class="avatar-picker">
+                  <div class="avatar-picker-head">
+                    <button
+                      type="button"
+                      class="icon-cell auto" :class="{ active: !form.avatar }"
+                      title="自动：按智能体名称/内置用途判定" @click="form.avatar = ''"
+                    >
+                      <component v-if="autoIcon" :is="autoIcon" theme="filled" :size="18" />
+                      <span v-else class="icon-cell-text">{{ autoInitial }}</span>
+                      <span>自动</span>
+                    </button>
+                    <div class="avatar-tabs">
+                      <button
+                        type="button"
+                        v-for="t in avatarTabs" :key="t.key"
+                        class="avatar-tab" :class="{ active: avatarTab === t.key }"
+                        @click="avatarTab = t.key"
+                      >{{ t.label }}</button>
+                    </div>
+                  </div>
+                  <div v-if="avatarTab === 'icon'" class="icon-picker">
+                    <button
+                      type="button"
+                      v-for="opt in AGENT_ICON_LIBRARY" :key="opt.key"
+                      class="icon-cell" :class="{ active: form.avatar === opt.key }"
+                      :title="opt.label" @click="form.avatar = opt.key"
+                    >
+                      <component :is="opt.icon" theme="filled" :size="18" />
+                      <span>{{ opt.label }}</span>
+                    </button>
+                  </div>
+                  <div v-else class="image-picker">
+                    <button
+                      type="button"
+                      v-for="img in avatarImagesOf(avatarTab)" :key="img.key"
+                      class="image-cell" :class="{ active: form.avatar === img.key }"
+                      :title="avatarTabLabel(avatarTab)" @click="form.avatar = img.key"
+                    >
+                      <img :src="img.src" alt="" draggable="false" />
+                    </button>
+                  </div>
+                </div>
+              </el-form-item>
               <el-form-item label="描述"><el-input v-model="form.description" placeholder="简短描述" /></el-form-item>
               <el-form-item label="分类">
                 <el-radio-group v-model="form.agentKind">
-                  <el-radio value="main">主智能体</el-radio>
-                  <el-radio value="sub">子智能体</el-radio>
+                  <el-radio value="main" title="主智能体：可在会话中直接选中">主智能体</el-radio>
+                  <el-radio value="sub" title="子智能体：只能被其他智能体引用委派，不会出现在会话的智能体选择列表中">子智能体</el-radio>
                 </el-radio-group>
-                <div class="kind-hint">子智能体只能被其他智能体引用委派，不会出现在会话的智能体选择列表中</div>
               </el-form-item>
               <el-form-item label="分类标签">
                 <el-input v-model="form.category" placeholder="如：工作 / 研发 / 生活（用于智能体列表分组，可留空）" />
@@ -277,6 +320,8 @@ import { DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
 import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore, useModelPoolStore } from '../stores';
 import { api } from '../api/client';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
+import { AGENT_ICON_LIBRARY, AVATAR_KEY_PREFIX, agentInitial, isKnownAgentIconKey, resolveAgentIcon } from '../utils/agentIcon';
+import { agentAvatarGroups, isKnownAgentAvatarImage } from '../utils/agentAvatarImages';
 
 const props = defineProps<{ modelValue: boolean; agent?: Agent | null }>();
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'saved', agentId: string): void; (e: 'deleted', agentId: string): void }>();
@@ -306,6 +351,8 @@ const MAX_TOKENS_SLIDER_MAX = DEFAULT_AGENT_PARAMS.maxTokens;
 
 const form = ref<any>({
   name: '', description: '', systemPrompt: '', modelId: '', type: 'harness',
+  // avatar：内置图标库的 key，空 = 自动（按内置 id / 名称关键词判定，见 utils/agentIcon.ts）
+  avatar: '',
   agentKind: 'main',
   modelPools: { llm: [], vision: [], image: [], video: [] },
   temperature: DEFAULT_AGENT_PARAMS.temperature, maxTokens: DEFAULT_AGENT_PARAMS.maxTokens,
@@ -451,6 +498,33 @@ function firstPoolName(slot: string): string {
 }
 const checkedToolCount = computed(() => (form.value.builtinToolIds?.length || 0) + (form.value.customToolIds?.length || 0) + (form.value.mcpToolMounts?.length || 0));
 
+/** 「自动」格的预览：内置智能体显示预设图标，自建助手显示名称首字（与 AgentAvatar 判定一致） */
+const autoIcon = computed(() => resolveAgentIcon(props.agent?.id));
+const autoInitial = computed(() => agentInitial(form.value.name));
+
+// ===== 头像选择器：图标 / 卡通 / 动漫 / 表情 / 摄影 =====
+const avatarTab = ref<string>('icon');
+const avatarGroups = computed(() => agentAvatarGroups());
+const avatarTabs = computed(() => [
+  { key: 'icon', label: '图标' },
+  ...avatarGroups.value.map((g) => ({ key: g.group, label: g.label })),
+]);
+function avatarImagesOf(group: string) {
+  return avatarGroups.value.find((g) => g.group === group)?.items || [];
+}
+function avatarTabLabel(group: string) {
+  return avatarGroups.value.find((g) => g.group === group)?.label || '头像';
+}
+/** 回填时把 tab 切到已选头像所在分组，避免「选过图片却停在图标页」 */
+function syncAvatarTab(avatar?: string | null) {
+  if (avatar && avatar.startsWith(AVATAR_KEY_PREFIX)) {
+    const group = avatarGroups.value.find((g) => g.items.some((i) => i.key === avatar))?.group;
+    avatarTab.value = group || 'icon';
+  } else {
+    avatarTab.value = 'icon';
+  }
+}
+
 /** 复制系统提示词到剪贴板（clipboard API 不可用时回退 execCommand） */
 async function copySystemPrompt() {
   const text = form.value.systemPrompt || '';
@@ -505,6 +579,7 @@ watch(() => [props.modelValue, props.agent], () => {
     const a = props.agent;
     form.value = {
       name: a?.name || '', description: a?.description || '', systemPrompt: a?.systemPrompt || '',
+      avatar: (isKnownAgentIconKey(a?.avatar) || isKnownAgentAvatarImage(a?.avatar)) ? (a!.avatar as string) : '',
       modelId: a?.modelId || '', type: a?.type || 'harness',
       modelPools: {
         llm: [...(a?.modelPools?.llm || [])],
@@ -530,6 +605,7 @@ watch(() => [props.modelValue, props.agent], () => {
       isPublic: !!a?.isPublic,
     };
     activeTab.value = 'basic'; mountTab.value = 'tools';
+    syncAvatarTab(form.value.avatar);
   }
 }, { immediate: true });
 
@@ -561,6 +637,8 @@ async function handleSave() {
   const m = poolModels.value.find((x: any) => x.id === form.value.modelId);
   const data: Partial<Agent> = {
     name: form.value.name.trim(), description: form.value.description?.trim() || '',
+    // avatar：图标库 key；空串 = 自动判定（服务端落 NULL）
+    avatar: form.value.avatar || '',
     systemPrompt: form.value.systemPrompt || '', modelId: form.value.modelId || '',
     modelPools: form.value.modelPools,
     platformId: m?.platformId || '', type: form.value.type,
@@ -632,6 +710,40 @@ async function handleDelete() {
 .prompt-copy { align-self: flex-start; margin-top: 2px; }
 
 .type-selector { display: flex; gap: 8px; }
+/* 头像选择器：自动格 + 分组 tab + 网格 */
+.avatar-picker { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+.avatar-picker-head { display: flex; align-items: center; gap: 10px; }
+.avatar-picker-head .icon-cell { width: 56px; flex-shrink: 0; }
+.avatar-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.avatar-tab {
+  padding: 4px 10px; border-radius: 999px; cursor: pointer; font-family: inherit;
+  font-size: 12px; border: 1px solid var(--glass-border); background: transparent;
+  color: var(--color-text-secondary); transition: all 0.15s;
+}
+.avatar-tab:hover { color: var(--color-text); border-color: var(--color-primary); }
+.avatar-tab.active { border-color: var(--color-primary); background: rgba(99,102,241,0.08); color: var(--color-primary); font-weight: 600; }
+.icon-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 6px; width: 100%; max-height: 132px; overflow-y: auto; padding: 2px; }
+.icon-picker::-webkit-scrollbar { width: 5px; }
+.icon-picker::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
+.icon-cell {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  padding: 6px 2px; border-radius: 8px; cursor: pointer; font-family: inherit;
+  border: 1.5px solid var(--glass-border); background: var(--glass-bg);
+  color: var(--color-text-secondary); font-size: 10px; line-height: 1.2; transition: all 0.15s;
+}
+.icon-cell:hover { border-color: var(--color-primary); color: var(--color-text); }
+.icon-cell-text { font-size: 15px; font-weight: 600; line-height: 1; }
+.icon-cell.active { border-color: var(--color-primary); background: rgba(99,102,241,0.08); color: var(--color-primary); font-weight: 600; }
+.image-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 6px; width: 100%; max-height: 132px; overflow-y: auto; padding: 2px; }
+.image-picker::-webkit-scrollbar { width: 5px; }
+.image-picker::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
+.image-cell {
+  aspect-ratio: 1; padding: 0; border-radius: 10px; overflow: hidden; cursor: pointer;
+  border: 2px solid transparent; background: rgba(15,23,42,0.04); transition: border-color 0.15s, transform 0.15s;
+}
+.image-cell img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.image-cell:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
+.image-cell.active { border-color: var(--color-primary); }
 .type-card {
   flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px 14px;
   border-radius: 8px; border: 1.5px solid var(--glass-border); cursor: pointer;

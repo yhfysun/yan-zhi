@@ -120,7 +120,7 @@
                 shadow="hover"
               >
                 <div class="agent-card-head" @click="agent.type === 'workflow' ? openCanvas(agent.id) : editAgent(agent)">
-                  <div class="agent-avatar"><el-icon :size="22"><component :is="agentIconOf(agent.id, agent.name)" /></el-icon></div>
+                  <div class="agent-avatar"><AgentAvatar :id="agent.id" :name="agent.name" :avatar="agent.avatar" :icon-size="22" /></div>
                   <div class="agent-info">
                     <div class="agent-name">
                       <el-icon v-if="agent.isDefault" class="lock-icon"><Lock /></el-icon>
@@ -195,7 +195,7 @@
       <div v-else class="agent-grid">
         <el-card v-for="item in filteredRemoteAgents" :key="item.id" class="agent-card remote-agent-card" shadow="hover">
           <div class="agent-card-head">
-            <div class="agent-avatar remote-avatar"><el-icon :size="22"><component :is="agentIconOf(item.id, item.name)" /></el-icon></div>
+            <div class="agent-avatar remote-avatar"><AgentAvatar :id="item.id" :name="item.name" :avatar="(item as any).avatar" :icon-size="22" /></div>
             <div class="agent-info">
               <div class="agent-name">{{ item.name }}</div>
               <div class="agent-desc">{{ item.description || '暂无描述' }}</div>
@@ -266,10 +266,10 @@ import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { useModelPoolStore, usePlatformStore } from '../stores';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
-import { resolveAgentIcon as agentIconOf } from '../utils/agentIcon';
 import { api } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
 import type { Agent } from '@yan-zhi/shared';
+import AgentAvatar from '../components/AgentAvatar.vue';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
 import FormDialog from '../components/FormDialog.vue';
 import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';

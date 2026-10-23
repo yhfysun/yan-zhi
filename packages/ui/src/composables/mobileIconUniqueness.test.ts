@@ -17,6 +17,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import * as IconPark from '@icon-park/vue-next';
 
 const UI_SRC = resolve(__dirname, '..');
 const read = (p: string) => readFileSync(resolve(UI_SRC, p), 'utf8');
@@ -40,15 +41,20 @@ function inlineIconsOf(src: string): string[] {
   return [...src.matchAll(/<el-icon[^>]*>\s*<([A-Z][A-Za-z0-9]*)\s*\/>\s*<\/el-icon>/g)].map((m) => m[1]);
 }
 
-/** 取 import 里 from '@element-plus/icons-vue' 的图标名单。 */
-function importedIconsOf(src: string): string[] {
-  const i = src.indexOf("from '@element-plus/icons-vue'");
+/** 取 import 里 from 指定模块的图标名单。 */
+function importedIconsFrom(src: string, moduleName: string): string[] {
+  const i = src.indexOf(`from '${moduleName}'`);
   if (i < 0) return [];
   const start = src.lastIndexOf('import', i);
   const block = src.slice(start, i);
   return [...block.matchAll(/[A-Za-z][A-Za-z0-9]*/g)]
     .map((m) => m[0])
     .filter((n) => n !== 'import' && /^[A-Z]/.test(n));
+}
+
+/** 取 import 里 from '@element-plus/icons-vue' 的图标名单。 */
+function importedIconsOf(src: string): string[] {
+  return importedIconsFrom(src, '@element-plus/icons-vue');
 }
 
 /**
@@ -135,14 +141,17 @@ describe('★ 图标唯一性：常驻可见的 TabBar 图标不得与对话页�
     expect(btnBlock, '★「收起面板」按钮内不得出现 Close').not.toMatch(/<Close\s*\/>/);
   });
 
-  it('★ agentIcon 兜底图标不得等于 TabBar 的任一图标（双向配对）', () => {
-    const m = AGENT_ICON.match(/AGENT_FALLBACK_ICON[^=]*=\s*([A-Z][A-Za-z0-9]*)\s*;/);
-    expect(m, '未找到 AGENT_FALLBACK_ICON 定义').toBeTruthy();
-    const fallback = m![1];
-    // ★★ 这条最容易错：TabBar 从 `User` 改成 `UserFilled` 时，
-    //    兜底必须同步从 `UserFilled` 改回 `User`，否则两边又撞脸。
-    expect(fallback, 'agentIcon 兜底图标不得与 TabBar 任一图标相同').toBe('User');
-    expect(tabBarIcons(), '兜底图标不得出现在 TabBar 里').not.toContain(fallback);
+  // 2026-10-23：智能体头像改为「用户所选 → 内置预设 → 名称首字」，
+  // 不再有全局兜底图标，原先的「兜底 vs TabBar 撞脸」断言随之退役；
+  // 与 TabBar 同屏的仍是 IconPark 图标库 + 首字，两套体系形状天然不同。
+
+  it('★ agentIcon 用到的 IconPark 图标必须真实导出（取错名字会白屏）', () => {
+    // 历史事故同源：`Brick` 在 d.ts 里有、运行时导出里没有 → 整页白屏。
+    // 任何图标库都存在"名字记错"风险，这里逐个比对运行时导出。
+    const icons = importedIconsFrom(AGENT_ICON, '@icon-park/vue-next');
+    expect(icons.length, 'agentIcon.ts 应导入若干 IconPark 图标').toBeGreaterThan(10);
+    const missing = icons.filter((n) => !(IconPark as Record<string, unknown>)[n]);
+    expect(missing, '以下 IconPark 图标不存在（会白屏）：' + missing.join(', ')).toEqual([]);
   });
 
   it('★ 用到的图标必须真的存在于 @element-plus/icons-vue 的运行时导出', () => {

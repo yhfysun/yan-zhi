@@ -482,6 +482,8 @@ export const useAgentStore = defineStore('agent', () => {
     const r = await api.post<any>('/agents', {
       name: data.name || '新智能体',
       description: data.description || '',
+      // 头像：图标库 key 或 img:* 图片 key；空串由服务端落 NULL（表示按名称自动判定）
+      avatar: data.avatar || '',
       systemPrompt: data.systemPrompt || defaults.systemPrompt,
       temperature: data.temperature ?? defaults.temperature,
       maxTokens: data.maxTokens ?? defaults.maxTokens,

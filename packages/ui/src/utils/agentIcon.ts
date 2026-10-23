@@ -1,128 +1,133 @@
-// 智能体图标解析（纯函数，可单测）
+// 智能体头像的「选择结果」解析（纯函数，可单测）。
 //
-// 背景：agent 表虽有 avatar 列，但内置助手 seed 从未赋过值（全部 NULL），
-// 所以「+」菜单的助手二级列表只能降级渲染「名称首字」色块（日/数/运/代…），
-// 而同一个菜单里技能 / MCP / 模式等都是真图标 —— 视觉上明显不统一。
-//
-// 方案（用户拍板）：按用途给内置助手配语义图标；用户自建助手用通用图标兜底。
-// 纯前端映射，不动数据库、不改 seed、不需要迁移。
+// 语义（2026-10-23 用户拍板）：
+//   · 用户选过头像 → 用所选（图标 key 或 `img:` 图片 key）
+//   · 内置智能体没选过 → 用内置 id 对应的预设图标（"内置的也要有 id"）
+//   · 用户自建且没选过 → 显示名称首字（不做按名称猜图标的自动判定）
 import {
-  Monitor, DataAnalysis, Platform, Lock, VideoCamera, Brush, Search, Box,
-  User, SetUp, Files, Reading, Cpu, Promotion, ChatDotRound, Suitcase,
-  Notebook, Shop,
-} from '@element-plus/icons-vue';
+  User, ApplicationMenu, CodeComputer, DataDisplay, Server, Shield, Search,
+  GraphicDesign, VideoTwo, FileText, Experiment, Headset, ShoppingBag, Shop,
+  Connection, Rocket, Brain, Wallet, ChartLine, School, MedicineBottle,
+  MusicRhythm, Picture, Local, MagicWand, Code, FileCode, DatabaseNetwork,
+  ApplicationOne, GraphicStitching, Translation, Videocamera, BookOne,
+} from '@icon-park/vue-next';
 import type { Component } from 'vue';
 
+export interface AgentIconOption {
+  /** 存入 agent.avatar 的稳定键（以后改名不影响已选图标） */
+  key: string;
+  label: string;
+  icon: Component;
+}
+
 /**
- * 内置助手 id → 图标。
- * ★ 这里只放「语义明确」的用途图标；未登记的一律走 fallback（不猜）。
+ * 图片头像在 agent.avatar 里的前缀（如 `img:animal-01`）。
+ * 图标键不带前缀，因此同一个 avatar 字段可同时承载两类值，且历史 NULL/URL 脏值一律不走本前缀。
+ */
+export const AVATAR_KEY_PREFIX = 'img:';
+
+/**
+ * 内置图标库：用户在「编辑智能体 → 头像」里可直选。
+ *
+ * ★ 刻意避开底部 TabBar 的语义（对话/模型/我的/更多）：
+ *   智能体图标会与 TabBar 同屏出现，同形同义会造成识别混淆。
+ */
+export const AGENT_ICON_LIBRARY: AgentIconOption[] = [
+  { key: 'general', label: '通用', icon: User },
+  { key: 'office', label: '办公', icon: ApplicationMenu },
+  { key: 'code', label: '代码', icon: CodeComputer },
+  { key: 'data', label: '数据', icon: DataDisplay },
+  { key: 'ops', label: '运维', icon: Server },
+  { key: 'security', label: '安全', icon: Shield },
+  { key: 'search', label: '检索', icon: Search },
+  { key: 'design', label: '设计', icon: GraphicDesign },
+  { key: 'video', label: '视频', icon: VideoTwo },
+  { key: 'doc', label: '文档', icon: FileText },
+  { key: 'research', label: '研究', icon: Experiment },
+  { key: 'service', label: '客服', icon: Headset },
+  { key: 'shop', label: '电商', icon: ShoppingBag },
+  { key: 'workflow', label: '流程', icon: Connection },
+  { key: 'launch', label: '发布', icon: Rocket },
+  { key: 'ai', label: '智能', icon: Brain },
+  { key: 'finance', label: '财务', icon: Wallet },
+  { key: 'chart', label: '图表', icon: ChartLine },
+  { key: 'edu', label: '教育', icon: School },
+  { key: 'health', label: '医疗', icon: MedicineBottle },
+  { key: 'audio', label: '音频', icon: MusicRhythm },
+  { key: 'photo', label: '图像', icon: Picture },
+  { key: 'local', label: '本地', icon: Local },
+  { key: 'creative', label: '创意', icon: MagicWand },
+];
+
+const AGENT_ICON_BY_KEY = new Map(AGENT_ICON_LIBRARY.map((o) => [o.key, o.icon]));
+
+/** avatar 里存的值是否为合法图标键（用于区分「用户显式选过」与「历史脏值」） */
+export function isKnownAgentIconKey(key?: string | null): boolean {
+  return !!key && AGENT_ICON_BY_KEY.has(key);
+}
+
+/**
+ * 内置智能体 id → 预设图标。
+ * ★ 与 apps/server 的 seed id 对齐；新增内置智能体时在这里补一行，
+ *   否则它会回落到「名称首字」而不是预设图标。
  */
 export const AGENT_ICON_BY_ID: Record<string, Component> = {
-  // 日常办公 / 通用助手
-  a_default_assistant: Suitcase,
+  // 日常办公 / 通用
+  a_default_assistant: ApplicationMenu,
   // 浏览器操作（pageAgent）
   a_builtin_page_agent: Search,
   // 数据查询分析
-  a_builtin_data_agent: DataAnalysis,
+  a_builtin_data_agent: DataDisplay,
   // 运维
-  a_builtin_ops_agent: Platform,
+  a_builtin_ops_agent: Server,
   // 安全
-  a_builtin_sec_agent: Lock,
+  a_builtin_sec_agent: Shield,
   // 代码类
-  a_builtin_code_agent: Monitor,
-  a_builtin_java_agent: Cpu,
-  a_builtin_code_explorer: Reading,
-  a_builtin_backend_dev: Files,
-  a_builtin_frontend_dev: Monitor,
+  a_builtin_code_agent: CodeComputer,
+  a_builtin_java_agent: Code,
+  a_builtin_code_explorer: FileCode,
+  a_builtin_backend_dev: DatabaseNetwork,
+  a_builtin_frontend_dev: ApplicationOne,
   // 设计类
-  a_builtin_design_agent: Brush,
-  a_builtin_ui_designer: Brush,
-  // 短剧
-  a_builtin_storyboard_agent: VideoCamera,
+  a_builtin_design_agent: GraphicDesign,
+  a_builtin_ui_designer: GraphicStitching,
+  // 短剧 / 剪辑
+  a_builtin_storyboard_agent: VideoTwo,
+  a_builtin_clip_agent: VideoTwo,
   // 发布 / CI-CD
-  a_builtin_cicd_agent: Promotion,
+  a_builtin_cicd_agent: Rocket,
+  a_builtin_publish_agent: Rocket,
   // 多语翻译
-  a_builtin_translate_agent: Notebook,
+  a_builtin_translate_agent: Translation,
   // 小微生意经营
   a_builtin_business_agent: Shop,
   // 抖音运营（图文带货 + 引流）
-  a_builtin_douyin_agent: VideoCamera,
+  a_builtin_douyin_agent: Videocamera,
+  // 小说 / 小说推文 / 脚本 / 有声小说 / 配音（任务模式）
+  a_builtin_novel_agent: BookOne,
+  a_builtin_novel_tuiwen_agent: BookOne,
+  a_builtin_script_agent: FileText,
+  a_builtin_audiobook_agent: Headset,
+  a_builtin_dubbing_agent: MusicRhythm,
 };
 
-/**
- * 名称关键词 → 图标（覆盖用户自建助手，按用途语义匹配）。
- * 顺序即优先级：先匹配到的胜出（更具体的词放前面）。
- *
- * ★ 刻意**不收录**「助手 / 助理」这类万能词：几乎所有自建助手都叫「XX助手」，
- *   收进来会把「代码编写助手」当成办公类（实测踩过），
- *   也会让本该走兜底的「小明的助手」被误判。只认真正的用途词。
- */
-const AGENT_ICON_BY_KEYWORD: Array<[RegExp, Component]> = [
-  // 店铺运营 —— 专指词，必须排最前（「选品分析」「店铺数据」里的「分析/数据」是通用词，
-  // 排后面会被设计/数据类抢走；与抖音的「带货」也要区分：这里认的是平台与店铺词）
-  [/亚马逊|amazon|店铺|选品|跨境|listing|1688|shopify|头程|海外仓/i, Shop],
-  // 抖音运营 —— 专指词，必须排最前（「抖音带货分析」这类名字里也含「分析」）
-  [/抖音|带货|引流|涨粉|起号|短视频|直播|douyin/i, VideoCamera],
-  [/短剧|分镜|导演|剧本/, VideoCamera],
-  // 翻译（放在「写作/文档」之前：翻译助手的活是译，不是写）。
-  // 用词覆盖实际起名习惯：翻译 / 中英互译 / 多语言 / 本地化 / 笔译口译 / 译员。
-  [/翻译|多语|本地化|互译|中英|英译|笔译|口译|译员|translate|i18n/i, Notebook],
-  // 小微生意经营 —— 必须排在「设计/数据」之前：
-  // 「门店经营分析」「生意数据复盘」这类名字里都含「分析/数据」，
-  // 排在后面会被通用词抢走（实测踩过）。这里认的都是高度专指的词。
-  [/生意|开店|经营|创业|盈亏/, Shop],
-  [/设计|创意|视觉|海报|ui|美工/i, Brush],
-  [/数据|分析|报表|统计|bi\b/i, DataAnalysis],
-  [/运维|服务器|docker|部署|sre/i, Platform],
-  [/安全|审计|渗透|漏洞|\bsec\b/i, Lock],
-  [/浏览器|爬虫|检索|联网|搜索/, Search],
-  [/测试|单测|\bqa\b/i, Reading],
-  [/代码|开发|编程|程序|前端|后端|java|python|重构|审查/i, Monitor],
-  [/流程|工作流|编排|流水线/, SetUp],
-  [/文档|写作|word|ppt|excel|办公|公文|邮件|会议|纪要|周报|汇报|表格/i, Suitcase],
-];
-
-/** 兜底图标：无法判定用途时的通用「智能体」图标。
- *
- * ★★ 必须**与底部 TabBar 的四个图标互不重叠**，否则"没登记用途的助手"会与常驻导航撞脸：
- *   - TabBar 是：ChatDotRound / Cpu / **UserFilled（实心）** / Setting（见 SideNav.mobilePrimaryItems）
- *   - agent 表 avatar 列内置 seed 全为 NULL → 大量助手会落到这个兜底图标
- *   ⇒ 兜底取**线框 `User`**：与 TabBar 的**实心 `UserFilled`** 形状不同（一个 circle+path、
- *     一个实心 path），用户能一眼区分；语义仍是"通用智能体"。
- *   ★ 这个配对关系是易错点：TabBar 从线框改实心时，兜底必须同时从实心改回线框
- *     （曾一度两边都是实心 → 又开始撞脸）。由
- *     `composables/mobileIconUniqueness.test.ts` 双向守门。 */
-export const AGENT_FALLBACK_ICON: Component = User;
-
-/**
- * 解析助手图标。
- * 判定顺序：内置 id 精确匹配 → 名称关键词 → 兜底。
- *
- * @param id   助手 id（可空）
- * @param name 助手名称（可空）
- */
-export function resolveAgentIcon(id?: string | null, name?: string | null): Component {
-  if (id && AGENT_ICON_BY_ID[id]) return AGENT_ICON_BY_ID[id];
-  const n = (name || '').trim();
-  if (n) {
-    for (const [re, ic] of AGENT_ICON_BY_KEYWORD) {
-      if (re.test(n)) return ic;
-    }
-  }
-  return AGENT_FALLBACK_ICON;
+/** 图标键 → 图标组件；非图标键返回 undefined */
+export function resolveAgentIconKey(key?: string | null): Component | undefined {
+  return key ? AGENT_ICON_BY_KEY.get(key) : undefined;
 }
 
 /**
- * 是否应该给该助手显示图标。
- * 约定：只要拿得到名称就显示图标（首字块退化为图标）；
- * 名称为空时返回 false，交由调用方继续渲染「?」占位。
+ * 解析助手的预设图标：
+ * 用户显式选择（avatar 图标键）→ 内置 id 预设 → undefined（调用方回落到名称首字）。
+ * 图片头像（`img:`）由 utils/agentAvatarImages.ts 先行处理，这里不参与。
  */
-export function shouldUseAgentIcon(id?: string | null, name?: string | null): boolean {
-  if (id && AGENT_ICON_BY_ID[id]) return true;
-  return !!(name || '').trim();
+export function resolveAgentIcon(id?: string | null, avatar?: string | null): Component | undefined {
+  const picked = avatar ? AGENT_ICON_BY_KEY.get(avatar) : undefined;
+  if (picked) return picked;
+  return id ? AGENT_ICON_BY_ID[id] : undefined;
 }
 
-/** 名称首字（保留原逻辑，供无图标场景使用） */
+/** 名称首字（按码点切，兼容 emoji 名）：未选头像且无内置图标时的占位 */
 export function agentInitial(name?: string | null, count = 1): string {
-  return (name || '?').slice(0, count);
+  return Array.from((name || '?').trim() || '?').slice(0, count).join('');
 }

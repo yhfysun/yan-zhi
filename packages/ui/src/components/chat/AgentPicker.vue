@@ -16,7 +16,7 @@
     <template #reference>
       <div class="agent-trigger" @click.stop>
         <span class="agent-trigger-avatar">
-          <el-icon :size="14"><component :is="agentIconOf(agentStore.selectedAgent?.id, agentStore.selectedAgent?.name)" /></el-icon>
+          <AgentAvatar :id="agentStore.selectedAgent?.id" :name="agentStore.selectedAgent?.name" :avatar="agentStore.selectedAgent?.avatar" :icon-size="14" />
         </span>
         <span class="agent-trigger-name">{{ agentStore.selectedAgent?.name || '选择智能体' }}</span>
         <el-icon class="agent-trigger-caret"><ArrowDown /></el-icon>
@@ -48,7 +48,7 @@
               @click="pick(ag.id)"
             >
               <span class="ap-avatar">
-                <el-icon :size="16"><component :is="agentIconOf(ag.id, ag.name)" /></el-icon>
+                <AgentAvatar :id="ag.id" :name="ag.name" :avatar="ag.avatar" :icon-size="16" />
               </span>
               <span class="ap-info">
                 <span class="ap-name">
@@ -72,7 +72,7 @@ import { computed, ref } from 'vue';
 import { ArrowDown, Check, Lock } from '@element-plus/icons-vue';
 import { useAgentStore } from '../../stores/agent';
 import { activeMode } from '../../stores/mode';
-import { resolveAgentIcon as agentIconOf } from '../../utils/agentIcon';
+import AgentAvatar from '../AgentAvatar.vue';
 
 const agentStore = useAgentStore();
 const query = ref('');
@@ -150,7 +150,11 @@ function onShow(): void {
 }
 .ap-item:hover { background: var(--glass-bg-hover); }
 .ap-item.active { background: color-mix(in srgb, var(--color-primary) 10%, transparent); border-color: color-mix(in srgb, var(--color-primary) 35%, transparent); }
-.ap-avatar { flex: none; color: var(--color-primary); }
+.ap-avatar {
+  flex: none; width: 16px; height: 16px; border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--color-primary); overflow: hidden;
+}
 .ap-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .ap-name { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--color-text); }
 .ap-lock { font-size: 11px; color: var(--color-text-tertiary); }
