@@ -211,6 +211,18 @@
                             <el-button size="small" :disabled="!cwdInput.trim()" @click="gotoRemoteDir(w, cwdInput)">跳转</el-button>
                           </template>
                         </el-input>
+                        <div v-if="w.cwdSubdirs.length" class="ops-cwd-hist">
+                          <div class="ops-cwd-hist-title">子目录（点击进入）</div>
+                          <div class="ops-cwd-subdirs">
+                            <button
+                              v-for="d in w.cwdSubdirs" :key="d"
+                              type="button"
+                              class="ops-cwd-subdir"
+                              :title="d"
+                              @click="onCwdSubdirClick(w, d)"
+                            >{{ d }}</button>
+                          </div>
+                        </div>
                         <div v-if="cwdHistory.length" class="ops-cwd-hist">
                           <div class="ops-cwd-hist-title">最近访问</div>
                           <button
@@ -922,7 +934,7 @@ function newWin(c: OpsConn, view: ViewKey): OpsWin {
     connectionId: c.id,
     view,
     termOpen: false, termConnecting: false, termRecording: false,
-    pendingInput: '', lastCommands: [], outputBuffer: '', remoteCwd: '',
+    pendingInput: '', lastCommands: [], outputBuffer: '', remoteCwd: '', cwdSubdirs: [],
     containers: [], containersError: '',
     dbTables: [], dbTable: '', dbSql: '', dbLoading: false, dbError: '', dbResult: null,
     conversationId: '', chatMessages: [], chatInput: '', chatStreaming: false,
@@ -1664,6 +1676,32 @@ function rememberCwd(dir: string) {
 }
 function onCwdPopoverOpen(w: OpsWin) {
   cwdInput.value = w.remoteCwd || '';
+  // 打开面板时拉当前目录的子目录（2026-10-23 实报「这些目录要列出来啊」）
+  void loadCwdSubdirs(w);
+}
+/**
+ * 拉当前目录的目录项（走 SFTP list 接口；2026-10-23 实报「这些目录要列出来啊」）。
+ *
+ * ★ 只取 type==='dir' 目录项；失败静默（面板仍可用：面包屑/输入框/最近访问照常）。
+ * ★ 仅在 remoteCwd 已知时拉：提示符还没出来（remoteCwd 空）没有锚点，拉了也没意义。
+ */
+async function loadCwdSubdirs(w: OpsWin) {
+  const dir = w.remoteCwd;
+  if (!dir) return;
+  const conn = connOf(w);
+  if (!conn) return;
+  try {
+    const r = await api.get<{ path: string; entries: Array<{ name: string; type: string }> }>(
+      `/plugin/ops-shell/sftp/list?connectionId=${conn.id}&path=${encodeURIComponent(dir)}`,
+    );
+    if ('data' in r) {
+      w.cwdSubdirs = r.data.entries.filter((e) => e.type === 'dir').map((e) => e.name);
+    }
+  } catch { /* 拉不到不影响面板，不提示 */ }
+}
+/** 子目录点击 → gotoRemoteDir（与面包屑同一流程：cd + 等提示符确认） */
+function onCwdSubdirClick(w: OpsWin, name: string) {
+  void gotoRemoteDir(w, name);
 }
 /** 在终端里执行 `cd`（不经过模型：这是用户直接操作终端） */
 /**
@@ -1686,6 +1724,12 @@ async function gotoRemoteDir(w: OpsWin, dir: string) {
     return;
   }
   const before = w.remoteCwd;
+  // 同目录短路（2026-10-23 实报「报错？」）：点面包屑末级（当前目录）时 cd 后提示符不变
+  // 是预期行为，旧逻辑会等 3s 后误报「切换失败，仍在 /home/app」。命中直接提示返回。
+  if (target === before) {
+    ElMessage.info('已在该目录');
+    return;
+  }
   const expected = toAbsoluteRemote(target, before);
   h.transport.send(`cd ${quoteForShell(target)}\r`);
   rememberCwd(target);
@@ -1703,6 +1747,7 @@ async function gotoRemoteDir(w: OpsWin, dir: string) {
     return;
   }
   ElMessage.success(`已切换目录：${w.remoteCwd}`);
+  void loadCwdSubdirs(w); // cd 成功后刷新子目录清单（2026-10-23「这些目录要列出来啊」）
   void expected; // 乐观值仅用于相对路径推算，最终以提示符为准
 }
 /** 给命令里的路径加引号（含空格/特殊字符时必须，否则 cd 只吃到第一段） */
@@ -3556,6 +3601,24 @@ onUnmounted(() => {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ops-cwd-hist-item:hover { background: var(--glass-bg-hover); color: var(--color-primary); }
+/* 子目录网格（2026-10-23 实报「这些目录要列出来啊」）：多列平铺、每项可点进入 */
+.ops-cwd-subdirs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 3px;
+}
+.ops-cwd-subdir {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 3px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: Consolas, monospace; font-size: 11px; color: var(--color-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ops-cwd-subdir:hover { background: var(--glass-bg-hover); color: var(--color-primary); }
+.ops-cwd-subdir::before { content: '📁 '; font-size: 10px; }
 .ops-input-toolbar :deep(.el-button + .el-button) { margin-left: 0; }
 .ops-slash-hint {
   font-size: 10.5px; color: var(--color-text-tertiary);

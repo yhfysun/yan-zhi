@@ -504,14 +504,24 @@ const groupMenu = ref<{ visible: boolean; x: number; y: number; groupId: string 
 });
 const groupMenuEl = ref<HTMLElement | null>(null);
 
-/** 根节点 contextmenu 分流：组头 → 组头菜单；其余（空白区/标题行） → 空白区菜单（批量/新建） */
+/** 根节点 contextmenu 分流：组头 → 组头菜单（toggle：同组再击收起）；其余 → 空白区菜单 */
 function openTlsTreeMenu(e: MouseEvent) {
   const head = (e.target as HTMLElement)?.closest?.('.tls-group-head')?.closest('.tls-group') as HTMLElement | null;
   if (head) {
     const id = head.getAttribute('data-group-id') || '';
+    // 同组右击第二次 = 收起（2026-10-23 实报「再右击隐藏？」）
+    if (groupMenu.value.visible && groupMenu.value.groupId === id) {
+      closeGroupMenu();
+      return;
+    }
     groupMenu.value = { visible: true, x: e.clientX, y: e.clientY, groupId: id };
+    closeRowMenu();
+    closeTreeMenu();
     return;
   }
+  // 右键空白区/标题行：收其它菜单再弹空白区菜单
+  closeRowMenu();
+  closeGroupMenu();
   openTreeMenu(e);
 }
 function closeGroupMenu() { groupMenu.value = { ...groupMenu.value, visible: false }; }
@@ -549,7 +559,16 @@ function onRowCtx(e: MouseEvent, c: any) {
     rowSheet.value = { visible: true, conv: c };
     return;
   }
-  // 先按光标落位（不猜高度夹取），渲染后由上方 placeMenuAfterRender 按真实尺寸校正
+  // 2026-10-23 实报「再点右击隐藏？」：右键同一行第二次 = 收起（toggle），
+  // 判据 = 菜单已开且目标就是这一行。
+  if (rowMenu.value.visible && rowMenu.value.conv?.id === c.id) {
+    closeRowMenu();
+    return;
+  }
+  // 先按光标重定位（不猜高度夹取），渲染后由 placeMenuAfterRender 按真实尺寸校正。
+  // 右键行 = 关组头/空白区菜单（contextmenu 处理器之间显式互斥）
+  closeGroupMenu();
+  closeTreeMenu();
   rowMenu.value = { visible: true, x: e.clientX, y: e.clientY, conv: c };
 }
 function closeRowSheet() { rowSheet.value = { ...rowSheet.value, visible: false }; }
@@ -634,17 +653,18 @@ function onSpaceDirSelected(path: string) {
 }
 
 function onDocMouseDown(e: MouseEvent) {
-  // target 可能是 document / window（无 closest），必须先做元素判定；
-  // 这里静默 return 会让菜单永不关闭，故用可选链 + instanceof 双保险。
-  // .as-sheet：底部动作面板（Teleport 到 body）——mousedown 先关面板会让 click 落空。
+  // ★ 右键（button=2）不在这里收：mousedown 先于 contextmenu 触发，若这里关了菜单，
+  //   contextmenu 里的「同目标再击=收起」toggle 判据（visible 已被置 false）永远失效。
+  //   右键的收/切由 contextmenu 处理器负责（onRowCtx / openTlsTreeMenu 内显式互斥）。
+  if (e.button === 2) return;
+  // .ctx-menu 命中即放行：mousedown 先关会让菜单项的 click 落空（与办公侧栏同规则）。
   const t = e.target;
   if (t instanceof Element && t.closest('.ctx-menu')) return;
-  // 行内「移动」浮层：点浮层外任何位置都收起（含 .tls 内部的其它行）
-  // 组头菜单：点浮层内不关，点浮层外就关（与行菜单/移动浮层同规则；
-  // .ctx-menu 的命中在上方已提前 return，这里只兜"菜单开着点别处"）
-  if (groupMenu.value.visible) closeGroupMenu();
+  // 2026-10-23 实报「右击下拉关不掉 / 点任务行没反应」：旧规则「点 .tls 内部一律 return（不关
+  // 行菜单）」是给行尾 hover 按钮时代留的例外 —— 点行想打开任务，菜单却挂在屏幕上。
+  // 改为：点浮层内不关，点浮层外（**含列表内部**）一律收起；行点击语义由 onRowClick 负责。
+  closeGroupMenu();
   rows.closeMoveMenu();
-  if (t instanceof Element && (t.closest('.tls') || t.closest('.as-sheet'))) return;
   closeRowMenu();
   closeRowSheet();
   closeTreeMenu();

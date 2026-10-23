@@ -125,6 +125,11 @@ export interface OpsWin {
    *   只能靠 shell 自己打出来的提示符（见 remote-cwd.ts）。
    */
   remoteCwd: string;
+  /**
+   * 目录 popover 开着时当前目录的子目录清单（SFTP list 拉的，仅前端状态，不落库）。
+   * 2026-10-23 实报「这些目录要列出来啊」：目录 popover 要能看/点进当前目录下的子目录。
+   */
+  cwdSubdirs: string[];
   // 容器
   containers: DockerRow[];
   containersError: string;
