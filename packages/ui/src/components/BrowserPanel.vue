@@ -654,10 +654,19 @@ const lockStaleByHardLimit = computed(() => {
   const last = chatStore.lastBrowserToolAt || 0;
   return last > 0 && (nowTick.value - last) > STALE_LOCK_MS;
 });
+// ★ 2026-10-23：**浏览器已经不干活就立刻解锁** —— 与接管条/虚拟鼠标用同一个活性判据。
+//   此前只认「任务在跑（convTaskRunning）+ 本会话跑过浏览器工具（browserTaskActive）」：
+//   pageAgent 收工后主任务还要继续跑 python / 文件等好几分钟，预览浏览器就一直禁用
+//   （实测 15:09 收工、15:14 才被 5 分钟硬上限放开，用户实报「pageAgent 结束了还是禁用」）。
+//   45s 宽限覆盖 wait_for(30s) / run_script(15s) 这类长工具，不会在操作中途误放。
+const browserIdleNow = computed(() =>
+  nowTick.value - (chatStore.lastBrowserToolAt || 0) >= chatStore.BROWSER_LIVE_GRACE_MS,
+);
 const inputLocked = computed(() =>
   isPreviewScope && !chatStore.browserPaused
   && convTaskRunning.value
   && chatStore.browserTaskActive
+  && !browserIdleNow.value
   && !lockStaleByHardLimit.value,   // ★ 硬上限兜底：残留锁定主动解除（不依赖服务端查询）
 );
 // ★ 可观测（2026-10-11，排障命门）：禁用标志**只在翻转时**打一条日志 ——
@@ -669,7 +678,8 @@ watch(inputLocked, (now, prev) => {
   console.log(
     `[BrowserPanel] 输入锁 ${prev ? 'true' : 'false'} → ${now ? 'true' : 'false'}` +
     `（scope=${browserScope} paused=${chatStore.browserPaused} streaming=${convTaskRunning.value}` +
-    ` browserTaskActive=${chatStore.browserTaskActive} 超5min兜底=${lockStaleByHardLimit.value}）`,
+    ` browserTaskActive=${chatStore.browserTaskActive} 浏览器空闲=${browserIdleNow.value}` +
+    ` 超5min兜底=${lockStaleByHardLimit.value}）`,
   );
 });
 onUnmounted(() => {

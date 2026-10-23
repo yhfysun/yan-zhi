@@ -838,6 +838,26 @@ function createChat() {
     } catch {}
   }
 
+  /**
+   * 把「全局工作目录」对齐到空间目录（设置 + server 默认 cwd 同一条通道）。
+   *
+   * ★ 2026-10-23 实报：「任务在第二本空间里，大模型却一直按第一本干活，+菜单里目录也没切」。
+   *   根因：工作目录是**全局单份设置**（最后一次点选的目录），而「草稿发送新建任务」与
+   *   「无参新建任务」只绑了会话的 space_id，没同步它 → 前端把旧目录当「显式下发」传给后端，
+   *   后端按「显式 > 空间目录」取值，于是提示词、工具、+ 菜单全停在上一个目录。
+   *   ⇒ 凡是"会话归属某个空间"的地方都调本函数，保证设置/提示词/工具执行面同源。
+   */
+  async function syncWorkspaceDirToSpace(spaceId: string | null | undefined): Promise<void> {
+    const sp = spaceId ? spaceStore.spaces.find((s) => s.id === spaceId) : undefined;
+    const dir = sp?.dirPath || '';
+    try {
+      if ((settingsStore.settings.workspaceDir || '') !== dir) {
+        await settingsStore.update({ workspaceDir: dir });
+      }
+    } catch { /* 设置落盘失败不阻塞切会话/发消息；服务端那一份仍会下发 */ }
+    await pushWorkspaceDir(dir);
+  }
+
   async function onWorkspaceDirSelected(path: string) {
     // 店铺运营：目录绑定到「当前店铺项目」的空间，**不动全局**（否则会串到办公项目）
     if (activeMode.value === 'shop') {
@@ -1717,7 +1737,7 @@ function createChat() {
   async function selectSpaceAndSyncDir(id: string) {
     spaceStore.selectSpace(id);
     const sp = spaceStore.spaces.find((s) => s.id === id);
-    if (sp?.dirPath) await settingsStore.update({ workspaceDir: sp.dirPath });
+    if (sp?.dirPath) await syncWorkspaceDirToSpace(id);
     // 选中时顺带展开：否则「选中了却看不到里面的任务」
     if (spaceCollapsed.value[id]) spaceCollapsed.value = { ...spaceCollapsed.value, [id]: false };
     // ★ 任务类型 → 专属智能体：选中一个已绑定任务模式的空间时，也把智能体对齐。
@@ -2614,14 +2634,17 @@ async function healStalePlatform() {
       }
       if (targetSpace?.taskType) applyTaskTypeAgent(taskType || targetSpace.taskType);
     }
-    if (spaceId !== undefined) {
-      spaceStore.selectSpace(spaceId);
-      if (spaceId) {
-        const sp = spaceStore.spaces.find((s) => s.id === spaceId);
-        await settingsStore.update({ workspaceDir: sp?.dirPath || '' });
-      } else {
-        await settingsStore.update({ workspaceDir: '' });
-      }
+    // ★ 无参调用（侧栏/工作台「+ 新建任务」）时空间回落到**当前选中空间** —— 新会话也会建在
+    //   它下面，所以工作目录必须一起对齐；此前只在显式传了 spaceId 时同步，无参路径留着上一个
+    //   目录，工具按旧目录解析相对路径（2026-10-23 实报「第二本的任务按第一本干活」）。
+    const dirSpaceId = spaceId !== undefined
+      ? spaceId
+      : (activeMode.value === 'office' ? spaceStore.currentSpaceId : undefined);
+    if (dirSpaceId !== undefined) {
+      spaceStore.selectSpace(dirSpaceId);
+      // 只有真正绑到空间才改目录；office 无选中空间时不动用户的全局设置
+      if (dirSpaceId) await syncWorkspaceDirToSpace(dirSpaceId);
+      else if (spaceId === null) await syncWorkspaceDirToSpace(null);
     }
   }
 
@@ -2735,9 +2758,7 @@ async function healStalePlatform() {
       const sp = spaceStore.spaces.find((s) => s.id === conv.spaceId);
       if (sp) {
         spaceStore.selectSpace(sp.id);
-        if (sp.dirPath && settingsStore.settings.workspaceDir !== sp.dirPath) {
-          void settingsStore.update({ workspaceDir: sp.dirPath });
-        }
+        if (sp.dirPath) await syncWorkspaceDirToSpace(sp.id);
       }
     }
     if (conv?.modelId && conv?.platformId) {
@@ -2922,6 +2943,8 @@ async function healStalePlatform() {
       if (!store.currentConvId) {
         const title = userContent ? titleFromContent(userContent) : '配置平台';
         const id = await store.createConversation(title, { skillIds: [...mountedSkillIds.value], spaceId, taskType: pendingTaskType.value });
+        // 新会话归属该空间 → 工作目录一起对齐（否则工具按上一个目录解析相对路径）
+        if (spaceId) await syncWorkspaceDirToSpace(spaceId);
         try { await saveMountToDb(id); } catch { /* 忽略挂载持久化失败 */ }
         await store.loadMessages(id);
         isDraftMode.value = false;
@@ -3027,6 +3050,10 @@ async function healStalePlatform() {
           taskType: pendingTaskType.value,
         });
         convId = id;
+        // ★ 新会话归属该空间 → 工作目录一起对齐（2026-10-23 实报）：草稿态下用户先选了
+        //   「第二本」空间再发第一条消息，此前只绑 space_id 不同步目录，全局仍是「第一本」，
+        //   后端按「前端显式下发 > 空间目录」取值 → 提示词/工具全落在第一本。
+        if (spaceId) await syncWorkspaceDirToSpace(spaceId);
         // 会话级 system_prompt：智能体提示词 + 场景提示词（会话级优先级高于 agent 级，需合并写入）
         const scenePrompt = currentScene.value?.prompt || '';
         const sysPrompt = [agent?.systemPrompt, scenePrompt].filter(Boolean).join('\n\n');

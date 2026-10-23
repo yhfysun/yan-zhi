@@ -170,7 +170,7 @@ describe('⑨ 空间归属：任务类型必须真的生效（修「选了跟没
       .toMatch(/selectSpaceAndSyncDir\(/);
     // 选中要同步工作目录，否则面板显示 A 空间资源、工具往 B 目录写
     const fn = USE_CHAT.slice(USE_CHAT.indexOf('async function selectSpaceAndSyncDir'), USE_CHAT.indexOf('function selectSpace('));
-    expect(fn, '★ selectSpaceAndSyncDir 未同步 workspaceDir').toMatch(/workspaceDir/);
+    expect(fn, '★ selectSpaceAndSyncDir 未同步 workspaceDir').toMatch(/syncWorkspaceDirToSpace|workspaceDir/);
     expect(fn, '★★ selectSpaceAndSyncDir 未真正 selectSpace（选中无效）')
       .toMatch(/spaceStore\.selectSpace\(id\)/);
   });
