@@ -79,6 +79,7 @@ const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版' 
 const {
   DEFAULT_RELEASE_ROOT,
   androidOutDir,
+  artifactSuffixFor,
   editionDirName,
   outDirForEdition,
   resolvePkgVersion,
@@ -105,11 +106,18 @@ let ANDROID_APK = null;
 let DESKTOP_NAME = null;
 let DESKTOP_EDITION_COUNT = 1;
 
-/** 桌面产物目录名：命名构建各自独立目录，未命名则沿用档位名（与原行为一致）。 */
+/**
+ * 桌面产物目录名 —— 必须与 build-all-editions.cjs 的 `suffixFor()` 得出同一个后缀。
+ *
+ * ★ 2026-10-23 修：原先这里直接用档位名，而 build-all 已按后缀建目录。
+ *   带 --modes 构建时产物写进 `pro-office-dev-shop/`，校验却还在找 `pro/`，
+ *   于是包明明打好了却报「缺 asar」并以 exit code 1 退出。
+ */
 function desktopDirName(edition) {
-  if (!DESKTOP_NAME) return edition;
-  const raw = DESKTOP_EDITION_COUNT > 1 ? `${DESKTOP_NAME}-${edition}` : DESKTOP_NAME;
-  return editionDirName(raw);
+  const rawName = DESKTOP_NAME
+    ? (DESKTOP_EDITION_COUNT > 1 ? `${DESKTOP_NAME}-${edition}` : DESKTOP_NAME)
+    : null;
+  return editionDirName(artifactSuffixFor({ edition, modes: BUILD_MODES, override: rawName }));
 }
 
 /** 按给定的产物根重算全部产物路径 */
@@ -129,7 +137,6 @@ function computePaths(outRoot) {
     'app-debug.apk',
   );
 }
-computePaths(RELEASE_ROOT);
 
 const MOVABLE = [
   'apps/server/dist',
@@ -185,12 +192,10 @@ if (argv.includes('--name') && !NAME_FLAG) {
   console.error('\x1b[31m[ERROR]\x1b[0m --name 需要一个名称，例如 --name=v2');
   process.exit(1);
 }
-if (NAME_FLAG) {
-  // 目录名跟着命名走：移位/校验/清单三处都读 OUTPUT_DIRS，这里必须同步重算。
-  // 档数此时未知，多档时的 `<名称>-<档>` 组合在主流程拿到 targets 后再补算一次。
-  DESKTOP_NAME = NAME_FLAG;
-  computePaths(RELEASE_ROOT);
-}
+if (NAME_FLAG) DESKTOP_NAME = NAME_FLAG;
+// 产物目录名依赖 BUILD_MODES / --name，参数解析完才能算准（默认值只在函数定义处临时用）。
+// 多档时的 `<名称>-<档>` 组合在主流程拿到 targets 后再补算一次。
+computePaths(RELEASE_ROOT);
 
 // --list-modes：不打包，只列出可选模式与各档位预设，避免记参数。
 if (flags.has('--list-modes')) {
@@ -1070,11 +1075,6 @@ function cleanFreshRoot() {
 (async () => {
   let targets = parseTargets(argv);
   if (!targets) targets = await askTargets();
-  if (NAME_FLAG) {
-    // 多档同跑时各档追加档位名，否则三档会抢同一个文件名与目录。
-    DESKTOP_EDITION_COUNT = Math.max(1, targets.desktop.length);
-    computePaths(RELEASE_ROOT);
-  }
   if (!targets.desktop.length && !targets.android) {
     fail('未选择任何目标');
     process.exit(1);
@@ -1086,13 +1086,18 @@ function cleanFreshRoot() {
     BUILD_MODES = await askModes();
   }
 
+  // 目标与模式都定了才能算准产物目录：带模式短码/命名时目录名与纯档位不同，
+  // 早算会导致「构建写到 A、校验找 B」（2026-10-23 实际踩到：包打好了却报缺 asar）。
+  DESKTOP_EDITION_COUNT = Math.max(1, targets.desktop.length);
+  computePaths(RELEASE_ROOT);
+
   console.log(c.bold(`\n言智打包 —— 目标：${
     [targets.desktop.length ? `桌面 ${targets.desktop.join('/')}` : null, targets.android ? '安卓 APK' : null]
       .filter(Boolean).join(' + ')
   }`));
   if (BUILD_MODES) info(`代码模式：${BUILD_MODES.join(', ')}（未选模式的代码不会进包）`);
-  if (NAME_FLAG && targets.desktop.length) {
-    info(`产物命名：${NAME_FLAG}${targets.desktop.length > 1 ? '（每档追加档位名）' : ''} → dist-release/desktop/${desktopDirName(targets.desktop[0])}/`);
+  if (targets.desktop.length) {
+    info(`产物目录：${path.relative(ROOT, path.join(ROOT, OUTPUT_DIRS[targets.desktop[0]]))}`);
   }
 
   preflight(targets);
