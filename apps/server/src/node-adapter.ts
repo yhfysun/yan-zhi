@@ -13,6 +13,7 @@ import type {
 import { decodeTextBytes, encodeTextBytes, type TextEncoding } from '@yan-zhi/shared';
 import { pickToken, recordFailure, recordSuccess, hasTokenPool } from './services/token-pool.js';
 import { decideWriteEncoding } from './services/text-write-encoding.js';
+import { quoteArgsForWindowsShell, quoteCmdArg } from './services/shell-quote.js';
 import { serverState } from './state.js';
 
 // 服务端 database adapter：委托真实的 better-sqlite3 实例（./db.ts 的 db）。
@@ -196,10 +197,16 @@ function execCommand(
   options?: { cwd?: string; timeout?: number; env?: Record<string, string>; signal?: AbortSignal },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, {
+    const useShell = process.platform === 'win32';
+    // 命令本身是带空格的路径（如安装目录下的 python.exe）也要加引号；但含 shell 元字符的
+    // 「整条命令行」不能包引号（会改变语义），只在纯路径形态下处理。
+    const spawnCmd = useShell && /\s/.test(command) && !/[&|<>^(]/.test(command)
+      ? quoteCmdArg(command)
+      : command;
+    const child = spawn(spawnCmd, useShell ? quoteArgsForWindowsShell(args) : args, {
       cwd: options?.cwd || serverState.workspaceDir || process.cwd(),
       env: { ...process.env, ...(options?.env || {}) },
-      shell: process.platform === 'win32',
+      shell: useShell,
       windowsHide: true,
     });
 

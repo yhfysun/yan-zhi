@@ -5011,6 +5011,8 @@ const ALWAYS_ALLOWED_BUILTINS = new Set([
   'design_asset_sites',
   // buildToolsForBackend 无条件暴露的两条委派入口（不依赖挂载）
   'call_agent', 'list_sub_agents',
+  // 后台作业状态轮询（只读，与 python_exec background=true 配套；见 buildToolsForBackend 同款暴露条件）
+  'job_status',
   ...INTERACTIVE_TOOLS,
 ]);
 
@@ -8759,6 +8761,20 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     tools.push({
       type: 'function',
       function: { name, description: def.description, parameters: def.inputSchema },
+    });
+  }
+
+  // 1.6) 后台作业状态轮询（2026-10-24）：只随「能跑代码」的工具一起暴露。
+  //      python_exec background=true 是长任务（ffmpeg 出片/渲染/下载）的正确走法，
+  //      但启动后必须有人读状态 —— 没挂 job_status 的话模型只能反复前台重跑，
+  //      又会被 30s 超时连坐杀掉子进程。cmd_exec 同属可能长跑的执行器，一并放行。
+  if ((toolIds.includes('python_exec') || toolIds.includes('cmd_exec'))
+      && registry.has('job_status') && !seen.has('job_status')) {
+    const def = registry.get('job_status')!;
+    seen.add('job_status');
+    tools.push({
+      type: 'function',
+      function: { name: 'job_status', description: def.description, parameters: def.inputSchema },
     });
   }
 

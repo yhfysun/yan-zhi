@@ -242,6 +242,189 @@ export async function runPythonCode(
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 后台作业（2026-10-24）：长任务（ffmpeg 渲染 / 大文件下载 / 批量处理）落到脚本 +
+// detached 进程，工具调用只负责「启动」，由 job_status 轮询状态。
+//
+// ★ 为什么必须（用户实报）：python_exec 默认超时 30s，到点 node-adapter 会
+//   `taskkill /T /F` 杀**整棵进程树** —— 正在出片的 ffmpeg 被连坐，产出缺 moov 的坏 mp4。
+//   把进程 detach 出去后，工具调用的超时再也碰不到它。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 作业根目录：<工作目录>/.yan-zhi/jobs（无工作目录时退到系统临时目录，避免污染任意 cwd） */
+export function jobsRootFor(workspaceDir?: string): string {
+  const base = (workspaceDir || '').trim();
+  if (base) return path.join(base, '.yan-zhi', 'jobs');
+  return path.join(os.tmpdir(), 'yan-zhi', 'jobs');
+}
+
+/** 作业 id 格式（同时用于校验入参，防路径穿越） */
+export const JOB_ID_RE = /^job_[a-z0-9]+_[a-f0-9]{8}$/;
+
+export interface PythonBgJob {
+  jobId: string;
+  jobDir: string;
+  logPath: string;
+  statusPath: string;
+  /** 启动器 pid（真正干活的 pid 由后台段写入 status.json） */
+  launcherPid?: number;
+}
+
+/**
+ * 后台跑一段 Python 代码：落盘 script.py → 用随包 run_job.py detach 启动 → 立即返回。
+ *
+ * ★ 不接收 AbortSignal：用户中止任务时**不该**杀掉已经出片的渲染进程 ——
+ *   那正是后台模式要避开的失败形态；要停请用 job_status 查到 pid 后自行处理。
+ */
+export async function runPythonCodeBackground(
+  code: string,
+  args: Record<string, unknown> = {},
+  opts: { cwd?: string; workspaceDir?: string; env?: Record<string, string> } = {},
+): Promise<{ ok: true; job: PythonBgJob } | { ok: false; error: string }> {
+  if (!code.trim()) return { ok: false, error: 'code 不能为空' };
+  let runner: string | null;
+  try {
+    runner = getPythonScript('_bg/run_job.py');
+  } catch {
+    runner = null;
+  }
+  if (!runner) return { ok: false, error: '未找到后台启动器 _bg/run_job.py（随包脚本缺失）' };
+
+  let py: string;
+  try {
+    py = await findPython();
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  const shell = getPlatformAdapter().shell;
+  if (!shell) return { ok: false, error: '后台作业需要桌面端或服务端环境（shell）。Web 浏览器端不支持。' };
+
+  const jobId = `job_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+  const jobDir = path.join(jobsRootFor(opts.workspaceDir), jobId);
+  const scriptPath = path.join(jobDir, 'script.py');
+  const logPath = path.join(jobDir, 'stdout.log');
+  const statusPath = path.join(jobDir, 'status.json');
+  try {
+    fs.mkdirSync(jobDir, { recursive: true });
+    fs.writeFileSync(scriptPath, code, 'utf-8');
+  } catch (e) {
+    return { ok: false, error: `作业目录写入失败: ${(e as Error).message}` };
+  }
+
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string') env[k] = v;
+  if (opts.env) Object.assign(env, opts.env);
+  env.YZ_PY_ARGS = Buffer.from(JSON.stringify(args)).toString('base64');
+  withUtf8Output(env);
+
+  let r: { stdout: string; stderr: string; exitCode: number };
+  try {
+    // 前台段只负责 detach + 立刻退出（实测 <1s），因此超时给 30s 足够；
+    // 目标脚本可能跑几十分钟，但已经不在这棵进程树里。
+    r = await shell.exec(py, [
+      runner, '--job-dir', jobDir, '--cwd', opts.cwd || '', '--',
+      py, scriptPath,
+    ], { timeout: 30000, cwd: jobDir, env });
+  } catch (e) {
+    return { ok: false, error: `后台启动失败: ${(e as Error).message}` };
+  }
+  if (r.exitCode !== 0) {
+    return { ok: false, error: `后台启动失败（exit ${r.exitCode}）：${(r.stderr || r.stdout || '').trim().slice(0, 500)}` };
+  }
+  let launcherPid: number | undefined;
+  try {
+    const j = JSON.parse((r.stdout || '').trim().split('\n').pop() || '{}');
+    if (typeof j?.launcherPid === 'number') launcherPid = j.launcherPid;
+  } catch { /* 启动器输出异常不影响作业本身 */ }
+  return { ok: true, job: { jobId, jobDir, logPath, statusPath, launcherPid } };
+}
+
+export interface JobSnapshot {
+  jobId: string;
+  jobDir: string;
+  /** status.json 原始内容（缺失时为 null） */
+  status: Record<string, unknown> | null;
+  /** 归一化状态：starting / running / completed / failed / stale（running 但进程已不在）/ missing */
+  state: 'starting' | 'running' | 'completed' | 'failed' | 'stale' | 'missing';
+  elapsedSec: number;
+  logTail: string;
+}
+
+/** 进程是否还活着（signal 0 只探活，不投递信号） */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM = 进程存在但无权限；其余（ESRCH）视为已退出
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/** 读一个后台作业的快照：状态 + 耗时 + 日志尾部。 */
+export function readJobSnapshot(
+  workspaceDir: string | undefined,
+  jobId: string,
+  opts: { tailLines?: number } = {},
+): JobSnapshot {
+  const jobDir = path.join(jobsRootFor(workspaceDir), jobId);
+  const statusPath = path.join(jobDir, 'status.json');
+  const logPath = path.join(jobDir, 'stdout.log');
+  let status: Record<string, unknown> | null = null;
+  try {
+    status = JSON.parse(fs.readFileSync(statusPath, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    status = null;
+  }
+
+  let state: JobSnapshot['state'] = 'missing';
+  let elapsedSec = 0;
+  if (status) {
+    const raw = String(status.state || '');
+    const startedAt = Number(status.startedAt || status.launchedAt || 0);
+    const finishedAt = Number(status.finishedAt || 0);
+    const end = finishedAt || Date.now() / 1000;
+    elapsedSec = startedAt ? Math.max(0, Math.round((end - startedAt) * 10) / 10) : 0;
+    if (raw === 'completed' || raw === 'failed') {
+      state = raw;
+    } else if (raw === 'running' || raw === 'starting') {
+      // ★ 看护进程没了但没写结束状态 = 被外部杀死（关机/强杀）：
+      //   如实报 stale，别让模型以为还在跑而无限轮询。
+      const pid = Number(status.pid || status.watchdogPid || 0);
+      const staleStarting = raw === 'starting' && startedAt > 0 && (Date.now() / 1000 - startedAt) > 60;
+      state = (pid && !isPidAlive(pid)) || staleStarting ? 'stale' : (raw as JobSnapshot['state']);
+    } else {
+      state = 'missing';
+    }
+  }
+
+  let logTail = '';
+  try {
+    const lines = Number(opts.tailLines ?? 40);
+    const buf = fs.readFileSync(logPath, 'utf-8').split(/\r?\n/);
+    logTail = buf.slice(Math.max(0, buf.length - Math.max(1, lines))).join('\n').trimEnd();
+  } catch {
+    logTail = '';
+  }
+  return { jobId, jobDir, status, state, elapsedSec, logTail };
+}
+
+/** 列出工作目录下最近的作业（新的在前），供 job_status 不带 jobId 时概览。 */
+export function listRecentJobs(workspaceDir: string | undefined, limit = 20): JobSnapshot[] {
+  const root = jobsRootFor(workspaceDir);
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(root).filter((n) => JOB_ID_RE.test(n));
+  } catch {
+    return [];
+  }
+  return names
+    .sort((a, b) => (a < b ? 1 : -1)) // id 内含时间戳（base36），字符串倒序即时间倒序
+    .slice(0, Math.max(1, limit))
+    .map((id) => readJobSnapshot(workspaceDir, id, { tailLines: 0 }));
+}
+
 /** 执行一个随包分发的 Python 脚本文件（doyz / security / pdf_preview 等用）。
  *  返回原始 stdout/stderr/exitCode，由调用方决定如何包装成 McpCallResult。 */
 export async function runPythonScript(

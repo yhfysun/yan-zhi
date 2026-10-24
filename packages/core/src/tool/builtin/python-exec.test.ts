@@ -16,11 +16,27 @@ const mocks = vi.hoisted(() => ({
       isError: false,
     }),
   ),
+  runPythonCodeBackground: vi.fn(
+    async (
+      _code: string,
+      _args: Record<string, unknown>,
+      opts?: { cwd?: string; workspaceDir?: string },
+    ) => ({
+      ok: true as const,
+      job: {
+        jobId: 'job_test_deadbeef',
+        jobDir: `${String(opts?.workspaceDir || '/tmp')}/.yan-zhi/jobs/job_test_deadbeef`,
+        logPath: '/tmp/log',
+        statusPath: '/tmp/status.json',
+      },
+    }),
+  ),
 }));
 
 vi.mock('./python-runtime', () => ({
   findPython: vi.fn(async () => '/usr/bin/python'),
   runPythonCode: mocks.runPythonCode,
+  runPythonCodeBackground: mocks.runPythonCodeBackground,
 }));
 
 import { PythonExecTool } from './python-exec';
@@ -34,6 +50,7 @@ function lastOptions(): { cwd?: string } | undefined {
 
 beforeEach(() => {
   mocks.runPythonCode.mockClear();
+  mocks.runPythonCodeBackground.mockClear();
 });
 
 describe('PythonExecTool cwd', () => {
@@ -50,5 +67,32 @@ describe('PythonExecTool cwd', () => {
   it('无工作目录且未给 cwd → 不传 cwd（保持旧行为）', async () => {
     await new PythonExecTool().execute({ code: 'print(1)' });
     expect(lastOptions()?.cwd).toBeUndefined();
+  });
+});
+
+describe('PythonExecTool background（2026-10-24：长任务不再被 30s 超时连坐）', () => {
+  it('background=true → 走后台启动，不占用前台执行', async () => {
+    const r = await new PythonExecTool().execute(
+      { code: 'print(1)', background: true },
+      { workspaceDir: WS },
+    );
+    expect(mocks.runPythonCode).not.toHaveBeenCalled();
+    expect(mocks.runPythonCodeBackground).toHaveBeenCalledTimes(1);
+    const text = (r as { content: Array<{ text: string }> }).content[0].text;
+    expect(text).toContain('job_test_deadbeef');
+    // 必须告诉模型怎么轮询，否则它会用前台重跑 → 再次被超时杀掉
+    expect(text).toContain('job_status');
+  });
+
+  it('background 模式把 cwd / workspaceDir 透传给后台启动器', async () => {
+    await new PythonExecTool().execute(
+      { code: 'print(1)', background: true, cwd: 'sub' },
+      { workspaceDir: WS },
+    );
+    const opts = mocks.runPythonCodeBackground.mock.calls[0][2] as
+      | { cwd?: string; workspaceDir?: string }
+      | undefined;
+    expect(path.normalize(opts?.cwd || '')).toBe(path.normalize(path.join(WS, 'sub')));
+    expect(opts?.workspaceDir).toBe(WS);
   });
 });

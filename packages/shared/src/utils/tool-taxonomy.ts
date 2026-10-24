@@ -91,6 +91,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   // ═══ 运行时 ═══
   python_exec: 'python-runtime',
   python_repair: 'python-runtime',
+  job_status: 'python-runtime',
   js_exec: 'python-runtime',
   cmd_exec: 'python-runtime',
 
@@ -322,6 +323,10 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   api_im_connector_delete: 'im',
   api_im_send: 'im',
   api_im_connector_test: 'im',
+  api_im_status: 'im',
+  api_im_send_message: 'im',
+  api_im_contact_search: 'im',
+  api_im_chat_list: 'im',
 
   // ═══ 验证码中继 ═══
   api_verification_code_latest: 'verification',

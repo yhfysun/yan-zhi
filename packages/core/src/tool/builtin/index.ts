@@ -27,6 +27,7 @@ export { UdpSendTool } from './udp-send';
 export { DnsLookupTool } from './dns-lookup';
 export { CmdExecTool } from './cmd-exec';
 export { PythonExecTool } from './python-exec';
+export { JobStatusTool } from './job-status';
 export { DoyzTool } from './doyz';
 export { NovelTuiwenTool } from './novel-tuiwen';
 export { SecurityTool } from './security';
@@ -91,6 +92,7 @@ import { UdpSendTool } from './udp-send';
 import { DnsLookupTool } from './dns-lookup';
 import { CmdExecTool } from './cmd-exec';
 import { PythonExecTool } from './python-exec';
+import { JobStatusTool } from './job-status';
 import { DoyzTool } from './doyz';
 import { NovelTuiwenTool } from './novel-tuiwen';
 import { SecurityTool } from './security';
@@ -152,6 +154,8 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   // registry.register(new DnsLookupTool());
   registry.register(new CmdExecTool());
   registry.register(new PythonExecTool());
+  // 后台作业状态轮询（与 python_exec background=true 配套；只读作业目录）
+  registry.register(new JobStatusTool());
   registry.register(new DoyzTool());
   // 有声小说推文视频生成（章节txt + 背景视频 → 标题/字幕/配音成片）
   registry.register(new NovelTuiwenTool());
