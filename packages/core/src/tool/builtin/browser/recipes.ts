@@ -33,6 +33,8 @@ export interface FillFieldDef {
   selectors?: string[];
   value: string;
   label?: string;
+  /** 控件类型：text（默认）/ select / checkbox / radio —— 必须透传给 fill_form，否则复选框会被当成文本框填 */
+  type?: 'text' | 'select' | 'checkbox' | 'radio';
 }
 
 export type RecipeWhen = 'submit' | 'collectionName';
@@ -185,7 +187,14 @@ async function runFill(api: RecipeApi, fields: FillFieldDef[]): Promise<string> 
   const attempt = fields.map(() => 0);
   const missing: string[] = [];
   for (let round = 0; round < 4; round++) {
-    const prepared = fields.map((f, i) => ({ selector: selAt(f, attempt[i]), value: f.value }));
+    // ★ 必须透传 label / type：此前只发 selector+value —— 复选框会被当文本框填、
+    //   按显示文本选下拉会变成按 value 选（2026-10-24 真实表单冒烟抓到）。
+    const prepared = fields.map((f, i) => ({
+      selector: selAt(f, attempt[i]),
+      value: f.value,
+      ...(f.label !== undefined ? { label: f.label } : {}),
+      ...(f.type ? { type: f.type } : {}),
+    }));
     const res = await api.action('fill_form', { fields: prepared });
     const failed: any[] = Array.isArray(res?.failed) ? res.failed : [];
     // 元素未找到 → 换该字段的下一个备用选择器（同轮其它字段已填好的值是幂等的，typeIn 会跳过）
@@ -360,6 +369,7 @@ export async function runRecipe(
             selectors: f.selectors ? f.selectors.map((s) => interp(s, params)) : undefined,
             value: interp(f.value, params),
             label: f.label,
+            type: f.type,
           }));
           push('fill', true, await runFill(api, fields));
           continue;
@@ -382,6 +392,9 @@ export async function runRecipe(
               selectors: Array.isArray(f?.selectors) ? f.selectors.map((s: any) => String(s)) : undefined,
               value: String(f?.value ?? ''),
               label: f?.label == null ? undefined : String(f.label),
+              type: ['text', 'select', 'checkbox', 'radio'].includes(String(f?.type))
+                ? (String(f.type) as FillFieldDef['type'])
+                : undefined,
             }))
             .filter((f: FillFieldDef) => f.selector);
           if (!fields.length) throw new Error(`参数 ${step.param} 里没有带 selector 的字段`);
