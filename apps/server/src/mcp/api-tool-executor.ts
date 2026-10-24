@@ -146,7 +146,12 @@ import {
   deleteImConnector,
   sendImMessage,
   testImConnector,
+  getImStatus,
+  sendImMessageUnified,
+  searchImContacts,
+  listImChats,
 } from '../services/im.js';
+import { ImMessagingError } from '../services/im/validate.js';
 import {
   listSourcesForAgent,
   listOntologiesForAgent,
@@ -192,6 +197,23 @@ function ok(value: unknown): MpcToolExecutionResult {
 
 function fail(message: string): MpcToolExecutionResult {
   return { content: [{ type: 'text', text: message }], isError: true };
+}
+
+const IM_ERROR_LABELS: Record<string, string> = {
+  platform_unavailable: '平台不可用',
+  ambiguous_connector: '需要指定连接器',
+  not_linked: '连接器未就绪',
+  unsupported_content: '内容形态不支持',
+  validation_failed: '参数校验失败',
+  send_failed: '发送失败',
+};
+
+/** IM 工具统一错误文案：带错误码，便于模型据此换方案而不是重试同一调用。 */
+function imErrorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof ImMessagingError)) return message;
+  const label = IM_ERROR_LABELS[error.code] || error.code;
+  return `[${error.code}] ${label}：${message}`;
 }
 
 /**
@@ -367,7 +389,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_file_list', 'api_file_set_category',
   'api_peer_register', 'api_peer_list', 'api_peer_ping', 'api_chat_send', 'api_chat_poll',
   'api_im_connector_list', 'api_im_connector_create', 'api_im_connector_update', 'api_im_connector_delete', 'api_im_send',
-  'api_im_connector_test',
+  'api_im_connector_test', 'api_im_status', 'api_im_send_message',
+  'api_im_contact_search', 'api_im_chat_list',
   'api_kb_list', 'api_kb_create', 'api_kb_update', 'api_kb_delete',
   'api_kb_document_add', 'api_kb_document_list', 'api_kb_document_delete', 'api_kb_search',
   'api_kb_builtin_guide_reset',
@@ -4011,6 +4034,69 @@ export async function executeApiTool(
           file: args.file as any,
           receiveIdType: str(args, 'receiveIdType') || undefined,
         }));
+      case 'api_im_status':
+        return ok(await getImStatus(requireUser(userId), str(args, 'platform') || undefined));
+      case 'api_im_send_message': {
+        const rawFilePath = args.filePath;
+        if (rawFilePath !== undefined && rawFilePath !== null) {
+          // 路径守卫只认字符串；这里先做类型闸门，避免数组/对象被 String() 强转后绕过守卫
+          if (typeof rawFilePath !== 'string') return fail('filePath 必须是字符串路径');
+          const filePath = rawFilePath.trim();
+          if (filePath) {
+            const baseDir = (workspaceDir || serverState.workspaceDir || '').trim() || null;
+            if (!path.isAbsolute(filePath) && !baseDir) {
+              return fail('未设置工作目录时 filePath 必须是绝对路径');
+            }
+            const deny = await guardApiToolPaths(
+              'api_im_send_message',
+              args,
+              baseDir,
+              conversationId,
+            );
+            if (deny) return fail(deny);
+          }
+        }
+        try {
+          return ok(
+            await sendImMessageUnified(requireUser(userId), {
+              platform: str(args, 'platform') || undefined,
+              connectorId: str(args, 'connectorId') || undefined,
+              recipientKind: str(args, 'recipientKind') || undefined,
+              recipientId: str(args, 'recipientId'),
+              text: str(args, 'text') || undefined,
+              filePath: str(args, 'filePath') || undefined,
+            }),
+          );
+        } catch (error) {
+          return fail(imErrorText(error));
+        }
+      }
+      case 'api_im_contact_search':
+        try {
+          return ok(
+            await searchImContacts(requireUser(userId), {
+              platform: str(args, 'platform') || undefined,
+              connectorId: str(args, 'connectorId') || undefined,
+              query: str(args, 'query'),
+              strategy: str(args, 'strategy') || undefined,
+              maxResults: num(args, 'maxResults', 0) || undefined,
+            }),
+          );
+        } catch (error) {
+          return fail(imErrorText(error));
+        }
+      case 'api_im_chat_list':
+        try {
+          return ok(
+            await listImChats(requireUser(userId), {
+              platform: str(args, 'platform') || undefined,
+              connectorId: str(args, 'connectorId') || undefined,
+              types: str(args, 'types') || undefined,
+            }),
+          );
+        } catch (error) {
+          return fail(imErrorText(error));
+        }
 
       // Knowledge base
       case 'api_kb_list':

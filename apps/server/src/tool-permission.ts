@@ -42,7 +42,7 @@ const WRITE_TOOLS = new Set([
   'api_kb_document_add', 'api_kb_document_delete',
   'api_conversation_file_add', 'api_conversation_file_update',
   // —— IM 连接器：发消息与增删配置不可逆 ——
-  'api_im_send', 'api_im_connector_create', 'api_im_connector_update',
+  'api_im_send', 'api_im_send_message', 'api_im_connector_create', 'api_im_connector_update',
   'api_im_connector_delete', 'api_im_connector_test',
   // —— 配置变更 ——
   'configure_model_platform',
@@ -441,7 +441,7 @@ const READONLY_SAFE_TOOLS = new Set([
   'api_git_status', 'api_git_log', 'api_git_diff', 'api_git_branch_list',
   'api_scheduled_task_list',
   'api_marketplace_sources', 'api_marketplace_browse',
-  'api_im_connector_list',
+  'api_im_connector_list', 'api_im_status', 'api_im_contact_search', 'api_im_chat_list',
   'api_space_memory_read', 'api_browser_memory_read',
   // 领域经验档案（自进化经验层）：读取路径纯只读（列目录 + 读 md）
   'api_experience_read',

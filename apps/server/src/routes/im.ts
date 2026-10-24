@@ -16,6 +16,10 @@ import {
   handleWechatInbound,
   handleWechatPersonalInbound,
   runWechatPersonalBridge,
+  startFeishuOAuth,
+  completeFeishuOAuthCallback,
+  getFeishuOAuthStatus,
+  disconnectFeishuOAuth,
 } from '../services/im.js';
 import { syncDingtalkStreamClients } from '../services/dingtalk-stream.js';
 import { syncFeishuStreamClients } from '../services/feishu-stream.js';
@@ -92,6 +96,84 @@ router.post('/connectors/:id/test', authMiddleware, async (req: Request, res: Re
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
+
+// ───────── 飞书用户态授权（找人策略对比用） ─────────
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] || c,
+  );
+}
+
+function oauthPage(title: string, message: string): string {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;background:#f6f7f9}
+main{background:#fff;padding:32px 40px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.08);max-width:520px}
+h1{font-size:18px;margin:0 0 12px}p{margin:0;color:#444;line-height:1.6}</style></head>
+<body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body></html>`;
+}
+
+// POST /api/im/connectors/:id/feishu/oauth/start → 返回授权 URL
+router.post(
+  '/connectors/:id/feishu/oauth/start',
+  authMiddleware,
+  (req: Request, res: Response) => {
+    try {
+      const fallback = `${req.protocol}://${req.get('host')}/api/im/feishu/oauth/callback`;
+      const redirectUri = String(req.body?.redirectUri || fallback);
+      res.json({ data: startFeishuOAuth(req.user!.userId, req.params.id, redirectUri) });
+    } catch (e: unknown) {
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+);
+
+// GET /api/im/feishu/oauth/callback?code=&state=  浏览器跳转回来（无登录态，靠 state 绑定）
+router.get('/feishu/oauth/callback', async (req: Request, res: Response) => {
+  const state = String(req.query.state || '');
+  const code = String(req.query.code || '');
+  const denied = String(req.query.error_description || req.query.error || '');
+  try {
+    if (denied) throw new Error(denied);
+    if (!state || !code) throw new Error('缺少 state 或 code');
+    const data = await completeFeishuOAuthCallback(state, code);
+    res.type('html').send(
+      oauthPage(
+        '飞书授权成功',
+        `${data.name ? `${data.name}，` : ''}已获得用户身份凭据，可以关闭此页回到应用。`,
+      ),
+    );
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    res.status(400).type('html').send(oauthPage('飞书授权失败', message));
+  }
+});
+
+// GET /api/im/connectors/:id/feishu/oauth/status
+router.get(
+  '/connectors/:id/feishu/oauth/status',
+  authMiddleware,
+  (req: Request, res: Response) => {
+    try {
+      res.json({ data: getFeishuOAuthStatus(req.user!.userId, req.params.id) });
+    } catch (e: unknown) {
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+);
+
+// POST /api/im/connectors/:id/feishu/oauth/disconnect
+router.post(
+  '/connectors/:id/feishu/oauth/disconnect',
+  authMiddleware,
+  (req: Request, res: Response) => {
+    try {
+      res.json({ data: disconnectFeishuOAuth(req.user!.userId, req.params.id) });
+    } catch (e: unknown) {
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+);
 
 // GET /api/im/events  查询入站消息（会话页用）
 router.get('/events', authMiddleware, (req: Request, res: Response) => {

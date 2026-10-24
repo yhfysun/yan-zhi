@@ -22,6 +22,19 @@
         </div>
         <div class="connector-name">{{ c.name }}</div>
         <div class="connector-config">{{ configSummary(c) }}</div>
+        <div v-if="c.provider === 'feishu'" class="feishu-auth">
+          <span class="feishu-auth-state" :class="{ linked: c.feishuUserAuth?.linked }">
+            {{ c.feishuUserAuth?.linked
+              ? `用户身份已授权${c.feishuUserAuth.name ? '：' + c.feishuUserAuth.name : ''}`
+              : '未授权用户身份 · 找人将遍历通讯录' }}
+          </span>
+          <el-button size="small" @click="startFeishuAuth(c)">
+            {{ c.feishuUserAuth?.linked ? '重新授权' : '授权用户身份' }}
+          </el-button>
+          <el-button v-if="c.feishuUserAuth?.linked" size="small" text @click="disconnectFeishuAuth(c)">
+            取消授权
+          </el-button>
+        </div>
         <div class="connector-actions">
           <el-button size="small" :icon="Connection" @click="testConnector(c)">测试</el-button>
           <el-button size="small" :icon="Promotion" @click="openExport(c)">导出码</el-button>
@@ -588,6 +601,45 @@ async function testConnector(c: any) {
   else ElMessage.success('连接正常');
 }
 
+async function startFeishuAuth(c: any) {
+  const res = await api.post<any>(`/im/connectors/${c.id}/feishu/oauth/start`, {});
+  if ('error' in res) {
+    ElMessage.error(res.error);
+    return;
+  }
+  const url = res.data?.url;
+  if (!url) {
+    ElMessage.error('未返回授权地址');
+    return;
+  }
+  window.open(url, '_blank', 'noopener');
+  ElMessage.info('已打开飞书授权页，完成后回到本页会自动刷新状态');
+  void pollFeishuAuth(c);
+}
+
+async function pollFeishuAuth(c: any) {
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const res = await api.get<any>(`/im/connectors/${c.id}/feishu/oauth/status`);
+    if ('error' in res) return;
+    if (res.data?.linked) {
+      c.feishuUserAuth = { linked: true, name: res.data.name };
+      ElMessage.success('飞书用户身份已授权');
+      return;
+    }
+  }
+}
+
+async function disconnectFeishuAuth(c: any) {
+  const res = await api.post<any>(`/im/connectors/${c.id}/feishu/oauth/disconnect`, {});
+  if ('error' in res) {
+    ElMessage.error(res.error);
+    return;
+  }
+  c.feishuUserAuth = { linked: false };
+  ElMessage.success('已取消飞书用户授权');
+}
+
 function providerLabel(p: string) {
   if (p === 'feishu') return '飞书';
   if (p === 'wechat-personal') return '个人微信';
@@ -747,6 +799,23 @@ async function decodeQrImage(file: File): Promise<string | null> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.feishu-auth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.feishu-auth-state {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.feishu-auth-state.linked {
+  color: #12a150;
 }
 
 .connector-actions {

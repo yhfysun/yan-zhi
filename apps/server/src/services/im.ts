@@ -1,41 +1,62 @@
 import { v4 as uuid } from 'uuid';
-import { readFile } from 'node:fs/promises';
-import fs from 'node:fs';
+import { basename } from 'node:path';
 import { db } from '../db.js';
 import { createTask, subscribe } from '../llm-task-manager.js';
 import { createLogger } from './logger.js';
-import { resolveOpenclawGatewayToken } from './openclaw-manager.js';
+import { imProviders } from './im/index.js';
+import {
+  IM_PLATFORMS,
+  type ImChatSummary,
+  type ImConnectorStatus,
+  type ImContactSearchResult,
+  type ImFeishuUserToken,
+  type ImPlatform,
+  type ImRecipientKind,
+  type ImSendInput,
+  type ImSearchStrategy,
+} from './im/types.js';
+import {
+  FEISHU_USER_SCOPES,
+  FEISHU_USER_TOKEN_KEY,
+  buildFeishuAuthorizeUrl,
+  completeFeishuOAuth,
+  readFeishuUserToken,
+  writeFeishuUserToken,
+} from './im/providers/feishu-client.js';
+import {
+  ImMessagingError,
+  extractMessageId,
+  parseRecipientKind,
+  resolveContent,
+  validateRecipient,
+} from './im/validate.js';
+
+// 各平台出站实现已拆到 ./im/providers/，这里保留原导出名供现有调用方与测试使用
+export { sendWechatPersonal } from './im/providers/wechat-personal.js';
 
 const logger = createLogger('im');
 
-type ImProvider = 'wechat' | 'feishu' | 'wechat-personal' | 'dingtalk';
-
 /** 钉钉 Stream 回调订阅 topic（机器人收消息） */
 export const DINGTALK_ROBOT_TOPIC = '/v1.0/im/bot/messages/get';
-
-interface ImSendInput {
-  to: string;
-  content?: string;
-  file?: {
-    name?: string;
-    path?: string;
-    data?: string;
-    mimeType?: string;
-  };
-  receiveIdType?: string;
-}
 
 function now() {
   return Date.now();
 }
 
 function rowToConnector(r: any) {
+  const config = parseConnectorConfig(r.config_json);
+  // 用户态凭据只留在服务端：对外只回授权状态，不回 token
+  const userToken = readFeishuUserToken(config);
+  delete config[FEISHU_USER_TOKEN_KEY];
   return {
     id: r.id,
     provider: r.provider,
     name: r.name,
-    config: r.config_json ? JSON.parse(r.config_json) : {},
+    config,
     enabled: !!r.enabled,
+    ...(r.provider === 'feishu'
+      ? { feishuUserAuth: { linked: !!userToken, name: userToken?.name } }
+      : {}),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -52,7 +73,7 @@ export function createImConnector(
   userId: string,
   input: { provider: string; name: string; config?: Record<string, unknown>; enabled?: boolean },
 ) {
-  if (!input.provider || !['wechat', 'feishu', 'wechat-personal', 'dingtalk'].includes(input.provider)) {
+  if (!input.provider || !IM_PLATFORMS.includes(input.provider as ImPlatform)) {
     throw new Error('provider 必须为 wechat / feishu / wechat-personal / dingtalk');
   }
   if (!input.name) throw new Error('连接器名称为必填项');
@@ -107,6 +128,14 @@ export function updateImConnector(
       if (!cfgOut.bridgeToken && existingToken) cfgOut.bridgeToken = existingToken;
       else if (!cfgOut.bridgeToken) cfgOut.bridgeToken = uuid();
     }
+    // 飞书：用户态 token 是服务端专属字段 —— 客户端传什么都不认，只保留库里已有值
+    if (existing.provider === 'feishu') {
+      delete cfgOut[FEISHU_USER_TOKEN_KEY];
+      const existingCfg = parseConnectorConfig(existing.config_json);
+      if (existingCfg[FEISHU_USER_TOKEN_KEY]) {
+        cfgOut[FEISHU_USER_TOKEN_KEY] = existingCfg[FEISHU_USER_TOKEN_KEY];
+      }
+    }
     sets.push('config_json = ?');
     vals.push(JSON.stringify(cfgOut));
   }
@@ -128,7 +157,58 @@ export function deleteImConnector(userId: string, connectorId: string) {
   return true;
 }
 
-export async function sendImMessage(userId: string, connectorId: string, input: ImSendInput) {
+export interface ImSendMeta {
+  recipientKind?: ImRecipientKind;
+}
+
+interface ImOutboundAuditEntry {
+  userId: string;
+  connectorId: string;
+  provider: string;
+  recipientKind: ImRecipientKind | null;
+  recipient: string;
+  contentKind: 'text' | 'file';
+  fileName: string | null;
+  ok: boolean;
+  errorCode?: string;
+  errorMessage?: string;
+  messageId?: string | null;
+}
+
+/** 审计写入失败只告警，不影响发送结果。 */
+function recordImOutbound(entry: ImOutboundAuditEntry) {
+  try {
+    db.prepare(
+      `INSERT INTO im_outbound_audit
+         (id, user_id, connector_id, provider, recipient_kind, recipient, content_kind, file_name,
+          ok, error_code, error_message, message_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      uuid(),
+      entry.userId,
+      entry.connectorId,
+      entry.provider,
+      entry.recipientKind,
+      entry.recipient,
+      entry.contentKind,
+      entry.fileName,
+      entry.ok ? 1 : 0,
+      entry.errorCode || null,
+      entry.errorMessage || null,
+      entry.messageId || null,
+      now(),
+    );
+  } catch (error) {
+    logger.warn(`IM 出站审计写入失败: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export async function sendImMessage(
+  userId: string,
+  connectorId: string,
+  input: ImSendInput,
+  meta: ImSendMeta = {},
+) {
   const connector = db.prepare('SELECT * FROM im_connector WHERE id = ? AND user_id = ?').get(connectorId, userId) as any;
   if (!connector) throw new Error('连接器不存在');
   if (!connector.enabled) throw new Error('连接器已禁用');
@@ -136,340 +216,359 @@ export async function sendImMessage(userId: string, connectorId: string, input: 
   if (!input.content && !input.file) throw new Error('content 或 file 至少提供一个');
 
   const config = connector.config_json ? JSON.parse(connector.config_json) : {};
-  if (connector.provider === 'feishu') {
-    return sendFeishu(config, input);
-  }
-  if (connector.provider === 'wechat') {
-    return sendWechat(config, input);
-  }
-  if (connector.provider === 'wechat-personal') {
-    return sendWechatPersonal(config, input);
-  }
-  if (connector.provider === 'dingtalk') {
-    return sendDingtalk(config, input);
-  }
-  throw new Error('不支持的 provider');
-}
-
-async function sendFeishu(config: any, input: ImSendInput) {
-  if (!config.appId || !config.appSecret) {
-    throw new Error('飞书连接器缺少 appId/appSecret');
-  }
-  const token = await getFeishuToken(config.appId, config.appSecret);
-  const receiveIdType = input.receiveIdType || 'open_id';
-  let fileKey: string | null = null;
-  if (input.file) {
-    const { name, buffer } = await resolveFile(input.file);
-    fileKey = await uploadFeishuFile(token, buffer, name);
-  }
-
-  const payload: Record<string, unknown> = {
-    receive_id: input.to,
-    msg_type: fileKey ? 'file' : 'text',
-    content: fileKey
-      ? JSON.stringify({ file_key: fileKey })
-      : JSON.stringify({ text: input.content || '' }),
+  const provider = imProviders.require(connector.provider);
+  const audit: ImOutboundAuditEntry = {
+    userId,
+    connectorId: connector.id,
+    provider: connector.provider,
+    recipientKind: meta.recipientKind || null,
+    recipient: input.to,
+    contentKind: input.file ? 'file' : 'text',
+    fileName: input.file?.name || (input.file?.path ? basename(input.file.path) : null),
+    ok: false,
   };
-  const res = await fetch(
-    `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=${encodeURIComponent(receiveIdType)}`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(payload),
-    },
-  );
-  const data = await res.json();
-  if (!res.ok || data.code !== 0) {
-    throw new Error(`飞书发送失败: ${data.msg || data.message || res.status}`);
-  }
-  return data.data || data;
-}
-
-async function sendWechat(config: any, input: ImSendInput) {
-  if (!config.corpId || !config.secret || !config.agentId) {
-    throw new Error('企业微信连接器缺少 corpId/secret/agentId');
-  }
-  const token = await getWechatToken(config.corpId, config.secret);
-  let mediaId: string | null = null;
-  if (input.file) {
-    const { name, buffer } = await resolveFile(input.file);
-    mediaId = await uploadWechatMedia(token, buffer, name, 'file');
-  }
-
-  const payload: Record<string, unknown> = {
-    touser: input.to,
-    msgtype: mediaId ? 'file' : 'text',
-    agentid: Number(config.agentId),
-  };
-  if (mediaId) {
-    payload.file = { media_id: mediaId };
-  } else {
-    payload.text = { content: input.content || '' };
-  }
-  const res = await fetch(
-    `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(token)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    },
-  );
-  const data = await res.json();
-  if (!res.ok || data.errcode !== 0) {
-    throw new Error(`企业微信发送失败: ${data.errmsg || data.message || res.status}`);
-  }
-  return data;
-}
-
-/**
- * 个人微信（OpenClaw）主动外发：让 AI / 手动入口能把文本或文件推给指定微信好友或群。
- *
- * 路径（2026-10-17 扒 openclaw 源码 + 文档核实）：微信会话由 OpenClaw Gateway 进程持有，
- * 另起 CLI 会被 SQLite 锁（EBUSY）挡住，因此出站唯一可靠入口是 Gateway 的 HTTP RPC：
- *   POST http://127.0.0.1:18789/tools/invoke
- *   Authorization: Bearer <gateway.auth.token>
- *   body: { tool: "message", args: { action: "send", channel: "weixin", target, message, media|buffer, filename, mimeType } }
- * `message` 是核心工具且不在 /tools/invoke 的 deny list 中，支持显式 channel+target 直发。
- */
-export async function sendWechatPersonal(_config: any, input: ImSendInput) {
-  const CTRL = 'http://127.0.0.1:18789/tools/invoke';
-  const GATEWAY_ROOT = 'http://127.0.0.1:18789/';
-
-  // 1. 网关可达性
   try {
-    const probe = await fetch(GATEWAY_ROOT, { signal: AbortSignal.timeout(3000) });
-    if (!probe.ok && probe.status >= 500) {
-      throw new Error('gateway_internal');
-    }
-  } catch {
-    throw new Error('OpenClaw Gateway 未在本机运行（127.0.0.1:18789 不可达），请先在连接器向导完成「一键安装并连接」，或手动 openclaw gateway start');
+    const result = await provider.send(config, input);
+    recordImOutbound({ ...audit, ok: true, messageId: extractMessageId(result) });
+    return result;
+  } catch (error) {
+    recordImOutbound({
+      ...audit,
+      errorCode: error instanceof ImMessagingError ? error.code : 'send_failed',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-
-  // 2. 鉴权令牌（assembleBridge 已写入 openclaw.json 的 gateway.auth.token）
-  const token = resolveOpenclawGatewayToken();
-  if (!token) {
-    throw new Error('OpenClaw Gateway 未配置鉴权令牌：请重新执行连接器「装配桥接」以写入 gateway.auth.token');
-  }
-
-  // 3. 组装 message 工具参数
-  const args: Record<string, unknown> = {
-    action: 'send',
-    channel: 'weixin',
-    target: input.to,
-  };
-  if (input.content) args.message = input.content;
-
-  if (input.file) {
-    const { name, buffer } = await resolveFile(input.file);
-    const filePath = input.file.path;
-    if (filePath && fs.existsSync(filePath)) {
-      // 优先传本地路径：weixin 通道直接读盘上传，规避 /tools/invoke 2MB body 限制
-      args.media = filePath;
-    } else {
-      // 仅 base64 时走 data URL（受 2MB body 限制，适合小文件）
-      args.buffer = `data:${input.file.mimeType || 'application/octet-stream'};base64,${buffer.toString('base64')}`;
-    }
-    args.filename = name;
-    if (input.file.mimeType) args.mimeType = input.file.mimeType;
-  }
-
-  // 4. 调用 Gateway RPC
-  const res = await fetch(CTRL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ tool: 'message', args }),
-    signal: AbortSignal.timeout(60_000),
-  });
-
-  const raw = await res.text();
-  let body: any = null;
-  try { body = JSON.parse(raw); } catch { /* 非 JSON 也照常处理 */ }
-
-  if (!res.ok) {
-    const msg = body?.error?.message || raw.slice(0, 200);
-    if (res.status === 401) {
-      throw new Error('OpenClaw Gateway 鉴权失败（令牌不匹配），请重新执行连接器「装配桥接」');
-    }
-    throw new Error(`个人微信发送失败：HTTP ${res.status} ${msg}`);
-  }
-  if (body && body.ok === false) {
-    throw new Error(`个人微信发送失败：${body?.error?.message || '未知错误'}`);
-  }
-  return body?.result ?? body ?? { ok: true };
-}
-
-/**
- * 钉钉发送：to 为群会话 openConversationId（cid 开头）走群聊接口，
- * 否则视为用户 userid 走单聊批量接口。仅支持文本。
- */
-async function sendDingtalk(config: any, input: ImSendInput) {
-  if (!config.clientId || !config.clientSecret) {
-    throw new Error('钉钉连接器缺少 clientId/clientSecret');
-  }
-  if (input.file) {
-    throw new Error('钉钉发送暂仅支持文本消息');
-  }
-  const token = await getDingtalkToken(config.clientId, config.clientSecret);
-  const robotCode = config.robotCode || config.clientId;
-  const to = input.to;
-  // openConversationId 以 cid 开头（钉钉约定），据此区分群聊 / 单聊目标
-  const isGroup = to.startsWith('cid');
-  const body = isGroup
-    ? {
-        robotCode,
-        openConversationId: to,
-        msgKey: 'sampleText',
-        msgParam: JSON.stringify({ content: input.content || '' }),
-      }
-    : {
-        robotCode,
-        userIds: [to],
-        msgKey: 'sampleText',
-        msgParam: JSON.stringify({ content: input.content || '' }),
-      };
-  const url = isGroup
-    ? 'https://api.dingtalk.com/v1.0/robot/groupMessages/send'
-    : 'https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend';
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-acs-dingtalk-access-token': token,
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!res.ok || data?.code) {
-    throw new Error(`钉钉发送失败: ${data?.message || res.status}`);
-  }
-  return data;
-}
-
-async function getDingtalkToken(clientId: string, clientSecret: string): Promise<string> {
-  const res = await fetch('https://api.dingtalk.com/v1.0/oauth2/accessToken', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ appKey: clientId, appSecret: clientSecret }),
-  });
-  const data = await res.json();
-  if (!res.ok || !data?.accessToken) {
-    throw new Error(`获取钉钉 access_token 失败: ${data?.message || res.status}`);
-  }
-  return String(data.accessToken);
-}
-
-async function getFeishuToken(appId: string, appSecret: string): Promise<string> {
-  const res = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
-  });
-  const data = await res.json();
-  if (!res.ok || !data.tenant_access_token) {
-    throw new Error(`获取飞书 access_token 失败: ${data.msg || data.message || res.status}`);
-  }
-  return data.tenant_access_token;
-}
-
-async function getWechatToken(corpId: string, secret: string): Promise<string> {
-  const res = await fetch(
-    `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(corpId)}&corpsecret=${encodeURIComponent(secret)}`,
-  );
-  const data = await res.json();
-  if (!res.ok || data.errcode !== 0) {
-    throw new Error(`获取企业微信 access_token 失败: ${data.errmsg || data.message || res.status}`);
-  }
-  return data.access_token;
-}
-
-async function uploadFeishuFile(token: string, buffer: Buffer, name: string): Promise<string> {
-  const form = new FormData();
-  form.append('file_type', 'stream');
-  form.append('file_name', name || 'file');
-  form.append('file', new Blob([buffer as unknown as BlobPart]), name || 'file');
-  const res = await fetch('https://open.feishu.cn/open-apis/im/v1/files', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
-  });
-  const data = await res.json();
-  if (!res.ok || data.code !== 0 || !data.data?.file_key) {
-    throw new Error(`飞书文件上传失败: ${data.msg || data.message || res.status}`);
-  }
-  return data.data.file_key;
-}
-
-async function uploadWechatMedia(token: string, buffer: Buffer, name: string, type: string): Promise<string> {
-  const form = new FormData();
-  form.append('media', new Blob([buffer as unknown as BlobPart]), name || 'file');
-  const res = await fetch(
-    `https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${encodeURIComponent(token)}&type=${type}`,
-    {
-      method: 'POST',
-      body: form,
-    },
-  );
-  const data = await res.json();
-  if (!res.ok || data.errcode !== 0 || !data.media_id) {
-    throw new Error(`企业微信文件上传失败: ${data.errmsg || data.message || res.status}`);
-  }
-  return data.media_id;
-}
-
-async function resolveFile(file: NonNullable<ImSendInput['file']>): Promise<{ name: string; buffer: Buffer }> {
-  const name = file.name || 'file';
-  if (file.path) {
-    const buffer = await readFile(file.path);
-    return { name, buffer };
-  }
-  if (file.data) {
-    const data = file.data.includes(',') ? file.data.slice(file.data.indexOf(',') + 1) : file.data;
-    return { name, buffer: Buffer.from(data, 'base64') };
-  }
-  throw new Error('文件需要 path 或 base64 data');
 }
 
 export async function testImConnector(userId: string, connectorId: string) {
   const connector = db.prepare('SELECT * FROM im_connector WHERE id = ? AND user_id = ?').get(connectorId, userId) as any;
   if (!connector) throw new Error('连接器不存在');
   const config = connector.config_json ? JSON.parse(connector.config_json) : {};
-  if (connector.provider === 'feishu') {
-    if (!config.appId || !config.appSecret) throw new Error('飞书连接器缺少 appId/appSecret');
-    await getFeishuToken(config.appId, config.appSecret);
-    return { provider: 'feishu', ok: true };
+  return imProviders.require(connector.provider).test(config);
+}
+
+function parseConnectorConfig(raw: any): Record<string, any> {
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
   }
-  if (connector.provider === 'wechat') {
-    if (!config.corpId || !config.secret) throw new Error('企业微信连接器缺少 corpId/secret');
-    await getWechatToken(config.corpId, config.secret);
-    return { provider: 'wechat', ok: true };
+}
+
+/** 各连接器当前是否可用。探测失败返回 ready=false，不抛异常。 */
+export async function getImStatus(userId: string, platform?: string): Promise<ImConnectorStatus[]> {
+  const target = (platform || '').trim();
+  if (target && !IM_PLATFORMS.includes(target as ImPlatform)) {
+    throw new ImMessagingError('platform_unavailable', `不支持的 IM 平台: ${target}`);
   }
-  if (connector.provider === 'wechat-personal') {
-    // 真校验：OpenClaw Gateway 必须在本机运行（桥接消息经它进出），
-    // 且连接器必须已带桥接令牌（一键装配后自动写入）
-    if (!config.bridgeToken) {
-      throw new Error('个人微信连接器缺少桥接令牌，请先在向导里完成「一键安装并连接」');
+  const rows = (target
+    ? db.prepare('SELECT * FROM im_connector WHERE user_id = ? AND provider = ? ORDER BY created_at ASC').all(userId, target)
+    : db.prepare('SELECT * FROM im_connector WHERE user_id = ? ORDER BY created_at ASC').all(userId)) as any[];
+
+  return Promise.all(
+    rows.map(async (row) => {
+      const provider = imProviders.require(row.provider);
+      const userToken =
+        row.provider === 'feishu' ? readFeishuUserToken(parseConnectorConfig(row.config_json)) : null;
+      const base = {
+        connectorId: row.id,
+        name: row.name,
+        platform: row.provider as ImPlatform,
+        enabled: !!row.enabled,
+        sendingMode: provider.capabilities.sendingMode,
+        ...(row.provider === 'feishu'
+          ? { userAuth: { linked: !!userToken, name: userToken?.name } }
+          : {}),
+      };
+      if (!row.enabled) return { ...base, ready: false, error: '连接器已禁用' };
+      try {
+        const tested = await provider.test(parseConnectorConfig(row.config_json));
+        return { ...base, ready: true, ...(tested.note ? { note: tested.note } : {}) };
+      } catch (error) {
+        return {
+          ...base,
+          ready: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }),
+  );
+}
+
+const IM_PLATFORM_LABEL: Record<ImPlatform, string> = {
+  feishu: '飞书',
+  wechat: '企业微信',
+  'wechat-personal': '个人微信',
+  dingtalk: '钉钉',
+};
+
+function requireImConnector(userId: string, platform?: string, connectorId?: string) {
+  const targetId = (connectorId || '').trim();
+  const targetPlatform = (platform || '').trim();
+  if (targetId) {
+    const row = db.prepare('SELECT * FROM im_connector WHERE id = ? AND user_id = ?').get(targetId, userId) as any;
+    if (!row) throw new ImMessagingError('validation_failed', '连接器不存在');
+    if (!row.enabled) {
+      throw new ImMessagingError('not_linked', `连接器「${row.name}」已禁用，请先在连接页启用`);
     }
-    const ctrl = 'http://127.0.0.1:18789/';
-    try {
-      const res = await fetch(ctrl, { signal: AbortSignal.timeout(3000) });
-      if (!res.ok) throw new Error(`Gateway 返回 ${res.status}`);
-    } catch {
-      throw new Error('OpenClaw Gateway 未在本机运行（127.0.0.1:18789 不可达），请重新运行一键安装或手动 `openclaw gateway start`');
+    if (targetPlatform && row.provider !== targetPlatform) {
+      throw new ImMessagingError(
+        'validation_failed',
+        `连接器「${row.name}」属于 ${row.provider}，与 platform=${targetPlatform} 不一致`,
+      );
     }
-    return { provider: 'wechat-personal', ok: true, note: 'OpenClaw Gateway 运行中' };
+    return row;
   }
-  if (connector.provider === 'dingtalk') {
-    if (!config.clientId || !config.clientSecret) throw new Error('钉钉连接器缺少 clientId/clientSecret');
-    await getDingtalkToken(config.clientId, config.clientSecret);
-    return { provider: 'dingtalk', ok: true };
+  if (!targetPlatform) {
+    throw new ImMessagingError('validation_failed', '需要指定 platform 或 connectorId');
   }
-  throw new Error('不支持的 provider');
+  if (!IM_PLATFORMS.includes(targetPlatform as ImPlatform)) {
+    throw new ImMessagingError('platform_unavailable', `不支持的 IM 平台: ${targetPlatform}`);
+  }
+  const rows = db
+    .prepare(
+      'SELECT * FROM im_connector WHERE user_id = ? AND provider = ? AND enabled = 1 ORDER BY created_at ASC',
+    )
+    .all(userId, targetPlatform) as any[];
+  if (rows.length === 0) {
+    const label = IM_PLATFORM_LABEL[targetPlatform as ImPlatform] || targetPlatform;
+    throw new ImMessagingError(
+      'platform_unavailable',
+      `没有可用的${label}连接器，请先在连接页添加并启用`,
+    );
+  }
+  if (rows.length > 1) {
+    const candidates = rows.map((r) => `${r.name}(${r.id})`).join('、');
+    throw new ImMessagingError(
+      'ambiguous_connector',
+      `存在多个 ${targetPlatform} 连接器：${candidates}，请用 connectorId 指定`,
+    );
+  }
+  return rows[0];
+}
+
+export interface ImUnifiedSendInput {
+  platform?: string;
+  connectorId?: string;
+  recipientKind?: string;
+  recipientId: string;
+  text?: string;
+  filePath?: string;
+}
+
+/** 平台无关发送：按 platform 自动选连接器，收件人与内容按该平台能力校验。 */
+export async function sendImMessageUnified(userId: string, input: ImUnifiedSendInput) {
+  const connector = requireImConnector(userId, input.platform, input.connectorId);
+  const provider = imProviders.require(connector.provider);
+  const kind = parseRecipientKind(input.recipientKind);
+  const recipientId = validateRecipient(provider.capabilities, kind, input.recipientId);
+  const content = resolveContent(provider.capabilities, input);
+  const result = await sendImMessage(
+    userId,
+    connector.id,
+    {
+      to: recipientId,
+      content: content.kind === 'text' ? content.text : undefined,
+      file:
+        content.kind === 'file' && content.filePath
+          ? { path: content.filePath, name: basename(content.filePath) }
+          : undefined,
+      receiveIdType:
+        connector.provider === 'feishu' ? (kind === 'group' ? 'chat_id' : 'open_id') : undefined,
+    },
+    { recipientKind: kind },
+  );
+  return {
+    ok: true,
+    platform: connector.provider as ImPlatform,
+    connectorId: connector.id,
+    connectorName: connector.name,
+    recipientKind: kind,
+    recipientId,
+    contentKind: content.kind,
+    messageId: extractMessageId(result),
+    result,
+  };
+}
+
+function persistFeishuUserToken(connectorId: string, token: ImFeishuUserToken | null) {
+  const row = db.prepare('SELECT config_json FROM im_connector WHERE id = ?').get(connectorId) as
+    | { config_json: string | null }
+    | undefined;
+  if (!row) return;
+  const next = writeFeishuUserToken(parseConnectorConfig(row.config_json), token);
+  db.prepare('UPDATE im_connector SET config_json = ?, updated_at = ? WHERE id = ?').run(
+    JSON.stringify(next),
+    now(),
+    connectorId,
+  );
+}
+
+function userTokenPersister(connectorId: string, provider: string) {
+  return provider === 'feishu'
+    ? (token: ImFeishuUserToken) => persistFeishuUserToken(connectorId, token)
+    : undefined;
+}
+
+function parseSearchStrategy(raw?: string): 'auto' | ImSearchStrategy {
+  const value = (raw || '').trim().toLowerCase();
+  if (!value || value === 'auto') return 'auto';
+  if (value === 'oauth' || value === 'contacts') return value;
+  throw new ImMessagingError('validation_failed', 'strategy 只能是 auto / oauth / contacts');
+}
+
+export interface ImContactSearchInput {
+  platform?: string;
+  connectorId?: string;
+  query: string;
+  strategy?: string;
+  maxResults?: number;
+}
+
+/** 按姓名找联系人：feishu 支持 OAuth 搜索与通讯录遍历，auto 优先用户态。 */
+export async function searchImContacts(userId: string, input: ImContactSearchInput) {
+  const connector = requireImConnector(userId, input.platform, input.connectorId);
+  const provider = imProviders.require(connector.provider);
+  if (!provider.capabilities.supportsContactSearch || !provider.searchUsers) {
+    const label = IM_PLATFORM_LABEL[connector.provider as ImPlatform] || connector.provider;
+    throw new ImMessagingError('unsupported_content', `${label} 暂不支持联系人搜索`);
+  }
+  const result = await provider.searchUsers(parseConnectorConfig(connector.config_json), input.query, {
+    strategy: parseSearchStrategy(input.strategy),
+    maxResults: input.maxResults,
+    onUserToken: userTokenPersister(connector.id, connector.provider),
+  });
+  return {
+    ...result,
+    connectorId: connector.id,
+    connectorName: connector.name,
+    platform: connector.provider as ImPlatform,
+  };
+}
+
+export interface ImChatListInput {
+  platform?: string;
+  connectorId?: string;
+  types?: string;
+}
+
+export async function listImChats(
+  userId: string,
+  input: ImChatListInput = {},
+): Promise<ImChatSummary[]> {
+  const connector = requireImConnector(userId, input.platform, input.connectorId);
+  const provider = imProviders.require(connector.provider);
+  if (!provider.capabilities.supportsChatList || !provider.listChats) {
+    const label = IM_PLATFORM_LABEL[connector.provider as ImPlatform] || connector.provider;
+    throw new ImMessagingError('unsupported_content', `${label} 暂不支持列出会话`);
+  }
+  return provider.listChats(parseConnectorConfig(connector.config_json), input.types, {
+    onUserToken: userTokenPersister(connector.id, connector.provider),
+  });
+}
+
+// ───────────────────────── 飞书用户态 OAuth ─────────────────────────
+
+const OAUTH_PENDING_TTL_MS = 10 * 60_000;
+const pendingFeishuOAuth = new Map<
+  string,
+  { userId: string; connectorId: string; redirectUri: string; expiresAt: number }
+>();
+
+function requireOwnedConnector(userId: string, connectorId: string) {
+  const row = db
+    .prepare('SELECT * FROM im_connector WHERE id = ? AND user_id = ?')
+    .get(connectorId, userId) as any;
+  if (!row) throw new ImMessagingError('validation_failed', '连接器不存在');
+  if (row.provider !== 'feishu') {
+    throw new ImMessagingError('validation_failed', '只有飞书连接器支持用户授权');
+  }
+  return row;
+}
+
+/** 发起授权：返回浏览器可打开的 URL，用户在飞书完成授权后回调换 token。 */
+export function startFeishuOAuth(userId: string, connectorId: string, redirectUri: string) {
+  const row = requireOwnedConnector(userId, connectorId);
+  const config = parseConnectorConfig(row.config_json);
+  if (!config.appId || !config.appSecret) {
+    throw new ImMessagingError('not_linked', '飞书连接器缺少 appId/appSecret');
+  }
+  let redirect: URL;
+  try {
+    redirect = new URL(redirectUri);
+  } catch {
+    throw new ImMessagingError('validation_failed', 'redirectUri 必须是合法 URL');
+  }
+  if (!/^https?:$/.test(redirect.protocol) || redirect.pathname !== '/api/im/feishu/oauth/callback') {
+    throw new ImMessagingError(
+      'validation_failed',
+      'redirectUri 必须指向本服务的 /api/im/feishu/oauth/callback',
+    );
+  }
+  const nowTs = Date.now();
+  for (const [key, value] of pendingFeishuOAuth) {
+    if (value.expiresAt < nowTs) pendingFeishuOAuth.delete(key);
+  }
+  const state = uuid();
+  pendingFeishuOAuth.set(state, {
+    userId,
+    connectorId,
+    redirectUri,
+    expiresAt: nowTs + OAUTH_PENDING_TTL_MS,
+  });
+  return {
+    url: buildFeishuAuthorizeUrl({ appId: String(config.appId), redirectUri, state }),
+    state,
+    scope: FEISHU_USER_SCOPES,
+    redirectUri,
+  };
+}
+
+/** OAuth 回调：校验 state 归属与有效期，换取并加密保存用户态凭据。 */
+export async function completeFeishuOAuthCallback(state: string, code: string) {
+  const pending = pendingFeishuOAuth.get(state);
+  if (!pending || pending.expiresAt < Date.now()) {
+    pendingFeishuOAuth.delete(state);
+    throw new ImMessagingError('oauth_failed', '授权已过期或 state 无效，请重新发起授权');
+  }
+  pendingFeishuOAuth.delete(state);
+  const row = db
+    .prepare('SELECT * FROM im_connector WHERE id = ? AND user_id = ?')
+    .get(pending.connectorId, pending.userId) as any;
+  if (!row) throw new ImMessagingError('validation_failed', '连接器不存在');
+  const token = await completeFeishuOAuth(
+    parseConnectorConfig(row.config_json),
+    code,
+    pending.redirectUri,
+  );
+  persistFeishuUserToken(row.id, token);
+  return {
+    connectorId: row.id,
+    name: token.name,
+    openId: token.openId,
+    scope: token.scope,
+    expiresAt: token.expiresAt,
+  };
+}
+
+export function getFeishuOAuthStatus(userId: string, connectorId: string) {
+  const row = requireOwnedConnector(userId, connectorId);
+  const token = readFeishuUserToken(parseConnectorConfig(row.config_json));
+  return {
+    linked: !!token,
+    name: token?.name,
+    openId: token?.openId,
+    scope: token?.scope,
+    expiresAt: token?.expiresAt,
+    refreshable: !!token?.refreshToken,
+  };
+}
+
+export function disconnectFeishuOAuth(userId: string, connectorId: string) {
+  const row = requireOwnedConnector(userId, connectorId);
+  persistFeishuUserToken(row.id, null);
+  return { linked: false };
 }
 
 export function listImEvents(
@@ -602,7 +701,7 @@ function readLastAssistantReply(conversationId: string): string {
 interface ImClosedLoopPayload {
   connectorId: string | undefined;
   userId: string;
-  provider: ImProvider;
+  provider: ImPlatform;
   externalId: string;
   text: string;
   fromUser: string;
