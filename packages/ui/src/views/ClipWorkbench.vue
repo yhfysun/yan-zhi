@@ -894,8 +894,6 @@
         <span v-if="item.shortcut" class="cp-ctx-key">{{ item.shortcut }}</span>
       </button>
     </div>
-    <!-- 点任意处关闭菜单（透明遮罩，不挡视觉） -->
-    <div v-if="ctxMenu.show" class="cp-ctx-mask" @click="closeCtxMenu" @contextmenu.prevent="closeCtxMenu"></div>
 
     <!-- 项目目录选择（复用空间机制：绑定 dirPath 后该项目的素材/成片都归档到该目录） -->
     <WorkspaceDirDialog v-model="spaceDirPicker" :current-path="currentSpaceDir" @selected="onDirSelected" />
@@ -1594,17 +1592,27 @@ interface CtxItem {
   danger?: boolean;
   action: () => void | Promise<void>;
 }
-const ctxMenu = reactive<{ show: boolean; x: number; y: number; title: string; items: CtxItem[] }>({
-  show: false, x: 0, y: 0, title: '', items: [],
+const ctxMenu = reactive<{ show: boolean; x: number; y: number; title: string; items: CtxItem[]; key: string }>({
+  show: false, x: 0, y: 0, title: '', items: [], key: '',
 });
 
-function openCtxMenu(e: MouseEvent, title: string, items: CtxItem[]) {
+function openCtxMenu(e: MouseEvent, title: string, items: CtxItem[], key: string) {
+  // 再次右击同一目标 = 收起（toggle）；不同目标直接切换 —— 右键落在目标上是原生的，
+  // 不再经过全屏遮罩（遮罩会吞掉右键，导致换目标要按两次）。
+  if (ctxMenu.show && ctxMenu.key === key) { closeCtxMenu(); return; }
   // ★ 必须做边界夹取（复用既有 clampMenuPos）：贴右侧/底部右击时菜单会跑出视窗，
   //   用户看不到最后几项且无法滚动（菜单是 fixed 定位，不受父容器滚动影响）
   const pos = clampMenuPos(e, 200, Math.min(400, 34 + items.length * 28));
-  Object.assign(ctxMenu, { show: true, x: pos.x, y: pos.y, title, items });
+  Object.assign(ctxMenu, { show: true, x: pos.x, y: pos.y, title, items, key });
 }
 function closeCtxMenu() { ctxMenu.show = false; }
+/** 点菜单外关闭：只吃左键 —— 右键要留给目标元素做「同目标收起 / 换目标切换」 */
+function onDocMouseDown(e: MouseEvent) {
+  if (e.button === 2) return;
+  if (!ctxMenu.show) return;
+  if ((e.target as HTMLElement)?.closest?.('.cp-ctx')) return;
+  closeCtxMenu();
+}
 function runCtxItem(it: CtxItem) {
   if (it.disabled) return;
   closeCtxMenu();
@@ -1628,7 +1636,7 @@ function onClipMenu(e: MouseEvent, c: ClipSegment) {
       action: clearClipEffects },
     { label: '在文件管理器中显示', icon: 'FolderOpened',
       action: () => revealInSystem(c.file) },
-  ]);
+  ], `clip:${c.id}`);
 }
 
 /** 字幕右键 */
@@ -1640,7 +1648,7 @@ function onTextMenu(e: MouseEvent, t: ClipText) {
     { label: '缩短 1 秒', icon: 'Minus', disabled: (t.end - t.start) <= 1.2, action: () => extendText(-1) },
     { label: '复制字幕', icon: 'CopyDocument', action: duplicateText },
     { label: '删除字幕', icon: 'Delete', shortcut: 'Delete', danger: true, action: removeText },
-  ]);
+  ], `text:${t.id}`);
 }
 
 /** 素材右键（尚未上轨的原始素材） */
@@ -1657,7 +1665,7 @@ function onMediaMenu(e: MouseEvent, f: ConvFile) {
       : [{ label: '设为背景音乐', icon: 'Headset', action: () => setBgm(f.path) }]),
     { label: '复制路径', icon: 'DocumentCopy', action: () => copyText(f.path) },
     { label: '在文件管理器中显示', icon: 'FolderOpened', action: () => revealInSystem(f.path) },
-  ]);
+  ], `media:${f.path}`);
 }
 
 /** 空白区右键（整片操作） */
@@ -1672,7 +1680,7 @@ function onEmptyMenu(e: MouseEvent) {
     { label: '出预览档', icon: 'VideoCamera', disabled: !clipCount.value, action: () => render(true) },
     { label: '导出成片', icon: 'Check', disabled: !clipCount.value, action: () => render(false) },
     { label: '刷新工程与素材', icon: 'Refresh', action: reloadAll },
-  ]);
+  ], 'timeline');
 }
 
 /** 复制文本到剪贴板（失败时如实提示，不静默）。 */
@@ -2217,7 +2225,7 @@ function onOverlayMenu(e: MouseEvent, o: { id: string; file: string }) {
         dirty.value = true; await save();
       } },
     { label: '删除画中画', icon: 'Delete', danger: true, action: () => removeOverlay(o.id) },
-  ]);
+  ], `overlay:${o.id}`);
 }
 
 async function applyOverlayPatch() {
@@ -2956,6 +2964,7 @@ watch(() => [clipCount.value, JSON.stringify(project.value?.clips?.map((c) => [c
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown);
+  document.removeEventListener('mousedown', onDocMouseDown, true);
   if (playTimer) { clearInterval(playTimer); playTimer = null; }
   if (frameTimer) clearTimeout(frameTimer);
   if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; }
@@ -2972,6 +2981,7 @@ watch(() => chat.store.currentConvId, async () => {
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown);
+  document.addEventListener('mousedown', onDocMouseDown, true);
   await loadFiles();
   await reload();
   // ★ 进剪辑模式的第一屏是**项目列表**（剪映式草稿箱），不是空白时间轴：
@@ -3106,7 +3116,6 @@ onMounted(async () => {
 
 /* ===== 右键菜单 ===== */
 .cp-ctx { position: fixed; z-index: 3000; min-width: 190px; padding: 4px; background: var(--el-bg-color-overlay, #fff); border: 1px solid var(--el-border-color); border-radius: 6px; box-shadow: 0 6px 24px rgb(0 0 0 / 16%); }
-.cp-ctx-mask { position: fixed; inset: 0; z-index: 2999; }
 .cp-ctx-title { padding: 5px 9px 6px; font-size: 11px; color: var(--el-text-color-placeholder); border-bottom: 1px solid var(--el-border-color-lighter); margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-ctx-item { display: flex; align-items: center; gap: 7px; width: 100%; padding: 6px 9px; font-size: 12px; text-align: left; border: none; background: none; color: var(--el-text-color-regular); cursor: pointer; border-radius: 4px; }
 .cp-ctx-item:hover:not(:disabled) { background: var(--el-fill-color-light); color: var(--el-color-primary); }

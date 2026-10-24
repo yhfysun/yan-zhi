@@ -979,10 +979,15 @@ function togglePause() {
   isPaused.value = !isPaused.value;
 }
 
+/** 菜单打开期间的外部点击监听：左键关闭，右键放行交给 onContextMenu 做 toggle */
+let ctxOutsideHandler: ((ev: MouseEvent) => void) | null = null;
+
 /** 右键打开控制菜单（坐标相对容器，超出右/下边界时向内收） */
 function onContextMenu(e: MouseEvent) {
   const container = containerRef.value;
   if (!container) return;
+  // 再次右击 = 收起（toggle）
+  if (ctxMenu.value.visible) { closeCtxMenu(); return; }
   const rect = container.getBoundingClientRect();
   const MENU_W = 168, MENU_H = 250;
   let x = e.clientX - rect.left;
@@ -990,11 +995,18 @@ function onContextMenu(e: MouseEvent) {
   if (x + MENU_W > rect.width) x = Math.max(4, rect.width - MENU_W - 4);
   if (y + MENU_H > rect.height) y = Math.max(4, rect.height - MENU_H - 4);
   ctxMenu.value = { visible: true, x, y };
-  window.addEventListener('mousedown', closeCtxMenu, { once: true });
+  // ★ 右键必须放行：mousedown 先于 contextmenu 触发，若在这里关了菜单，
+  //   「再次右击 = 收起」的判据（visible 已被置 false）永远失效。
+  ctxOutsideHandler = (ev: MouseEvent) => { if (ev.button !== 2) closeCtxMenu(); };
+  window.addEventListener('mousedown', ctxOutsideHandler, true);
   window.addEventListener('blur', closeCtxMenu, { once: true });
 }
 function closeCtxMenu() {
   ctxMenu.value.visible = false;
+  if (ctxOutsideHandler) {
+    window.removeEventListener('mousedown', ctxOutsideHandler, true);
+    ctxOutsideHandler = null;
+  }
 }
 
 /** 右键菜单动作分发 */

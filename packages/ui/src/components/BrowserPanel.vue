@@ -735,6 +735,7 @@ watch(inputLocked, (now, prev) => {
 });
 onUnmounted(() => {
   if (nowTickTimer) { clearTimeout(nowTickTimer); nowTickTimer = null; }
+  clearLoadingWatchdog();
   // 每日分析调度器一并收口（此前无清理 → 组件卸载后 30 分钟一跳仍在跑）
   if (dailyAnalysisTimer) { dailyAnalysisTimer(); dailyAnalysisTimer = null; }
   // ★ 2026-10-23：卸载时必须把编号层收掉。卸载后本组件不再有任何 watcher/事件，
@@ -846,6 +847,31 @@ const {
 };
 const activeTab = computed(() => tabs.value.find((t: BrowserTab) => t.id === activeTabId.value));
 
+// ★ 2026-10-24 用户实报「任务我都停止了浏览器还在转圈」：加载遮罩的总闸。
+//   webview 引擎的导航只靠 guest 的 did-start/did-stop-loading 收尾（navigate() 在 webview
+//   分支提前 return，连旧引擎那条 15s 超时都没有）。guest 换页/被回收、页面长连接不结束、
+//   或加载事件落在非激活 tab 上时，loading 会一直为真 —— 转圈盖住页面，用户以为任务没停。
+//   ⇒ loading 置真即起表，到点仍未收尾就强制收尾（并留一条日志，便于事后定位是哪次导航）。
+const LOADING_WATCHDOG_MS = 20000;
+let loadingWatchdog: ReturnType<typeof setTimeout> | null = null;
+function clearLoadingWatchdog() {
+  if (loadingWatchdog) { clearTimeout(loadingWatchdog); loadingWatchdog = null; }
+}
+function forceFinishLoading(reason: string) {
+  if (!loading.value) return;
+  console.warn(`[BrowserPanel] 强制结束加载态：${reason}`);
+  loading.value = false;
+  if (activeTab.value) activeTab.value.loading = false;
+}
+watch(loading, (on) => {
+  clearLoadingWatchdog();
+  if (!on) return;
+  loadingWatchdog = setTimeout(() => {
+    loadingWatchdog = null;
+    forceFinishLoading(`${LOADING_WATCHDOG_MS / 1000}s 内未收到 did-stop-loading`);
+  }, LOADING_WATCHDOG_MS);
+});
+
 // 常驻元素编号高亮（2026-10-20）：面板开关 → 主进程 browserView:action 'highlight' 注入覆盖层。
 const highlightOn = ref(false);
 // ★ 2026-10-21：编号层改为「agent 操作时自动开启」。用户手动关过一次后，本次挂载内不再自动开。
@@ -900,10 +926,17 @@ watch(() => chatStore.browserTaskActive, (active) => {
   if (active && !highlightOn.value && !highlightUserOff.value && activeTabId.value) {
     highlightAuto.value = true;
     void applyHighlight(true, true);
-  } else if (!active && highlightOn.value && highlightAuto.value) {
+  } else if (!active && highlightOn.value && (highlightAuto.value || !chatStore.browserHighlightManual)) {
+    // ★ 2026-10-24：补上"状态漂移"分支 —— 层明明开着（highlightOn）但 highlightAuto 已被
+    //   别的路径清掉时，旧判据不放行 ⇒ 编号框永驻。只要不是用户手动开的，agent 停手就收起。
     highlightAuto.value = false;
     void applyHighlight(false, true);
   }
+});
+// 任务收尾：agent 这次导航若还悬着，别让转圈盖住用户接下来要自己操作的页面
+//（页面真在加载会继续，下次导航会重新亮；这里只收 UI，不动 webview）。
+watch(convTaskRunning, (running) => {
+  if (!running) forceFinishLoading('任务已结束');
 });
 
 // ★ 2026-10-23 用户实报「暂停的时候这些也都要隐藏啊」「用户能操作的时候就要隐藏」：
@@ -912,6 +945,9 @@ watch(() => chatStore.browserTaskActive, (active) => {
 const highlightPausedRestore = ref(false);
 watch(() => chatStore.browserPaused, (paused) => {
   if (paused) {
+    // 蒙版/编号框都是「agent 在操作」的标识：用户一接管（暂停）就一起收掉，
+    // 不能等页面事件来收（事件可能永远不到）。
+    forceFinishLoading('用户暂停接管');
     if (highlightOn.value) {
       highlightPausedRestore.value = true;
       void applyHighlight(false, true);
@@ -920,6 +956,12 @@ watch(() => chatStore.browserPaused, (paused) => {
   }
   if (!highlightPausedRestore.value) return;
   highlightPausedRestore.value = false;
+  // ★★★ 2026-10-24 根因修复（用户实报「任务我都停止了浏览器还在转圈/还是满屏编号」）：
+  //   任务收尾的 onTaskFinished 会**顺带清 pausedConvIds**，于是这里也会收到 paused→false。
+  //   此前把它当成"恢复执行"，又把编号层补了回来 —— 而那时 browserTaskActive 已被清、
+  //   之后没有任何 watcher 会再关它（主进程空闲收起也只在有动作时重排），编号框就永驻页面。
+  //   ⇒ 只有任务确实还在跑、agent 确实还在操作时才恢复。
+  if (!convTaskRunning.value || !chatStore.browserTaskActive) return;
   if (highlightUserOff.value || !activeTabId.value) return;
   if (!chatStore.browserHighlightManual) highlightAuto.value = true;
   void applyHighlight(true, true);
@@ -1138,6 +1180,8 @@ async function switchTab(tabId: string) {
 // ── Tab 右键批量关闭菜单（关闭该页/左侧/右侧/其他/全部）──
 const tabCtx = ref<{ visible: boolean; x: number; y: number; tabId: string }>({ visible: false, x: 0, y: 0, tabId: '' });
 function openTabContextMenu(tabId: string, e: MouseEvent) {
+  // 再次右击同一标签 = 收起（toggle）；根容器只监听 click，右键不会被提前收掉
+  if (tabCtx.value.visible && tabCtx.value.tabId === tabId) { hideTabCtx(); return; }
   const W = 172, H = 206, pad = 8;
   const x = Math.min(e.clientX, window.innerWidth - W - pad);
   const y = Math.min(e.clientY, window.innerHeight - H - pad);

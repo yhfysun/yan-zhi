@@ -26,7 +26,9 @@
         <slot name="footer" :close="requestClose">
           <span class="fd-spacer" />
           <el-button :disabled="loading" @click="requestClose">{{ cancelText }}</el-button>
-          <el-button type="primary" :loading="loading" @click="emit('submit')">{{ confirmText }}</el-button>
+          <!-- 调用方给空文案 = 这个弹窗没有「确认」语义（如点选项即提交），按钮整颗不渲染，
+               否则会露出一个没有文字的蓝色空按钮（2026-10-24 实报）。 -->
+          <el-button v-if="confirmText" type="primary" :loading="loading" @click="emit('submit')">{{ confirmText }}</el-button>
         </slot>
       </div>
     </template>

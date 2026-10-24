@@ -584,6 +584,8 @@ function close(path: string) {
 const tabMenu = ref<{ open: boolean; x: number; y: number; path: string }>({ open: false, x: 0, y: 0, path: '' });
 
 function onTabMenu(e: MouseEvent, path: string) {
+  // 再次右击同一标签 = 收起（toggle）；关闭靠 click 监听，右键不会提前收掉
+  if (tabMenu.value.open && tabMenu.value.path === path) { closeTabMenu(); return; }
   tabMenu.value = { open: true, x: e.clientX, y: e.clientY, path };
 }
 function closeTabMenu() {

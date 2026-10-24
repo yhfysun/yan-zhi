@@ -943,6 +943,8 @@ const ctx = ref<{ visible: boolean; x: number; y: number; name: string; isDir: b
 /** 菜单元素：渲染后按真实尺寸校正位置（见 composables/useMenuPlacement） */
 const ctxMenuEl = ref<HTMLElement | null>(null);
 function openCtx(ev: MouseEvent, pane: CtxPane, name: string, isDir: boolean) {
+  // 再次右击同一目标（同一栏的同一项 / 同一块空白区）= 收起（toggle）
+  if (ctx.value.visible && ctx.value.pane === pane && ctx.value.name === name) { closeCtx(); return; }
   // ★ 先按光标落位，再由 placeMenuAfterRender 量出**真实尺寸**后校正：
   //   贴光标右下 / 下方放不下则翻到上方 / 不越界。旧实现按"猜 320px 高"硬夹，
   //   在窗口底部右击会把三行菜单推到光标上方两百多像素（用户：'隔这么远'）。

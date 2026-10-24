@@ -232,16 +232,23 @@ describe('④ 数据初始化：移动端冷启动必须等后端就绪', () => 
     const code = stripComments(LICENSE);
     const initIdx = code.indexOf('async function init()');
     expect(initIdx).toBeGreaterThan(0);
-    const body = code.slice(initIdx, initIdx + 1200);
+    const body = code.slice(initIdx, initIdx + 1600);
     // ★ 必须断言"被 await 调用"，不能只断言"包含 waitForBackend" ——
     //   变异测试证明：写成 `void waitForBackend;`（引用但不调用）也能通过"包含"检查，
     //   等于断言失效（本轮 m2 一开始就是这么漏的）。
     expect(body, '★ license.init 未真正等待后端就绪').toMatch(/await\s+waitForBackend\(\)/);
-    // ★ 必须**在取授权码之前**等（否则第一次 loadLicenseCode/verify 就打空后端）
+    // ★ 必须**在取授权码之前**等（否则第一次 loadLicenseCode/verify 就打空后端）。
+    //   2026-10-24 重构：取码/校验抽到 verifyCurrentCode()，init 只负责"先等后端、再调它"。
     const waitIdx = body.indexOf('await waitForBackend()');
-    const loadIdx = body.indexOf('loadLicenseCode');
+    const verifyIdx = body.indexOf('await verifyCurrentCode()');
     expect(waitIdx, '★ 等待必须发生在读取/校验授权码之前').toBeGreaterThan(-1);
-    expect(waitIdx).toBeLessThan(loadIdx);
+    expect(verifyIdx).toBeGreaterThan(-1);
+    expect(waitIdx).toBeLessThan(verifyIdx);
+    // 且真正取授权码的入口只允许在 verifyCurrentCode 里（别处直接取码会绕过就绪门）
+    const verifyFnIdx = code.indexOf('async function verifyCurrentCode()');
+    expect(verifyFnIdx).toBeGreaterThan(-1);
+    expect(code.slice(verifyFnIdx, verifyFnIdx + 200))
+      .toMatch(/loadLicenseCode\(\)/);
     // 超时不能把用户永久挡在授权页
     expect(body, '超时未放行（会把用户永久挡在授权页）').toMatch(/initialized\.value\s*=\s*true/);
   });

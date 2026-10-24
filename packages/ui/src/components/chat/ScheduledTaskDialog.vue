@@ -391,6 +391,8 @@ onMounted(() => {
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown, true));
 
 function onDocMouseDown(e: MouseEvent) {
+  // 右键（button=2）不在这里收：mousedown 先于 contextmenu，会废掉「再次右击 = 收起」的判据
+  if (e.button === 2) return;
   if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
   closeCtxMenu();
 }
@@ -426,17 +428,19 @@ interface MenuItem {
   handler: () => void;
   danger?: boolean;
 }
-const ctxMenu = ref<{ visible: boolean; x: number; y: number; items: MenuItem[] }>({
-  visible: false, x: 0, y: 0, items: [],
+const ctxMenu = ref<{ visible: boolean; x: number; y: number; items: MenuItem[]; key: string }>({
+  visible: false, x: 0, y: 0, items: [], key: '',
 });
 
 /** 打开右击菜单（四处菜单共用；原先各写一遍 ctxMenu.value = {...}）。
  *  ★ items 必须 markRaw：MenuItem.icon 是**组件对象**，塞进 ref 后被 reactive() 深度代理 →
  *    `<component :is="item.icon">` 拿到代理，Vue 在 createVNode 的 isProxy(type) 检查里
  *    每次渲染都警告「Component that was made a reactive object」（同 SceneCarousel 图标问题）。
- *    标记落在数组自身，ctxMenu 的 visible/x/y 仍是响应式，菜单开合不受影响。 */
-function showCtxMenu(e: MouseEvent, items: MenuItem[]) {
-  ctxMenu.value = { visible: true, ...clampMenuPos(e), items: markRaw(items) };
+ *    标记落在数组自身，ctxMenu 的 visible/x/y 仍是响应式，菜单开合不受影响。
+ *  ★ key 是右键目标的身份：再次右击同一目标 = 收起（toggle）。 */
+function showCtxMenu(e: MouseEvent, items: MenuItem[], key: string) {
+  if (ctxMenu.value.visible && ctxMenu.value.key === key) { closeCtxMenu(); return; }
+  ctxMenu.value = { visible: true, ...clampMenuPos(e), items: markRaw(items), key };
 }
 
 function openBlankMenu(e: MouseEvent) {
@@ -444,7 +448,7 @@ function openBlankMenu(e: MouseEvent) {
   showCtxMenu(e, [
     { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate() },
     { label: '新建分组', icon: FolderOpened, handler: () => createGroupInline() },
-  ]);
+  ], 'blank');
 }
 
 function openGroupMenu(e: MouseEvent, group: { id: string; name: string }) {
@@ -452,14 +456,14 @@ function openGroupMenu(e: MouseEvent, group: { id: string; name: string }) {
     { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate(group.id) },
     { label: '重命名分组', icon: EditPen, handler: () => startGroupRename(group.id, group.name) },
     { label: '删除分组', icon: Delete, handler: () => deleteGroupConfirm(group.id, group.name), danger: true },
-  ]);
+  ], `group:${group.id}`);
 }
 
 function openUngroupedMenu(e: MouseEvent) {
   showCtxMenu(e, [
     { label: '新建定时任务', icon: ChatDotRound, handler: () => openCreate() },
     { label: '新建分组', icon: FolderOpened, handler: () => createGroupInline() },
-  ]);
+  ], 'ungrouped');
 }
 
 function openTaskMenu(e: MouseEvent, task: ScheduledTask) {
@@ -467,7 +471,7 @@ function openTaskMenu(e: MouseEvent, task: ScheduledTask) {
     { label: '编辑', icon: EditPen, handler: () => openEdit(task) },
     { label: '立即运行', icon: VideoPlay, handler: () => onRun(task) },
     { label: '删除', icon: Delete, handler: () => onDelete(task), danger: true },
-  ]);
+  ], `task:${task.id}`);
 }
 
 function closeCtxMenu() {

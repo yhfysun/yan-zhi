@@ -653,7 +653,7 @@ const commitFileDiffLoading = ref(false);
 const reviewLoading = ref(false);
 const reviewResult = ref('');
 
-const contextMenu = ref<{ visible: boolean; x: number; y: number; items: MenuItem[] }>({ visible: false, x: 0, y: 0, items: [] });
+const contextMenu = ref<{ visible: boolean; x: number; y: number; items: MenuItem[]; key: string }>({ visible: false, x: 0, y: 0, items: [], key: '' });
 const blameDialog = ref<{ visible: boolean; file: string; data: Array<{ hash: string; author: string; line: number; content: string }> }>({ visible: false, file: '', data: [] });
 
 // ===== 派生数据 =====
@@ -1053,7 +1053,9 @@ function toggleAllGroups() {
   void persist();
 }
 
-function openContextMenu(e: MouseEvent, items: MenuItem[]) {
+function openContextMenu(e: MouseEvent, items: MenuItem[], key: string) {
+  // 再次右击同一目标 = 收起（toggle）；关闭靠 document click，右键不会被提前收掉
+  if (contextMenu.value.visible && contextMenu.value.key === key) { closeContextMenu(); return; }
   contextMenu.value = {
     visible: true,
     x: Math.min(e.clientX, window.innerWidth - 200),
@@ -1063,6 +1065,7 @@ function openContextMenu(e: MouseEvent, items: MenuItem[]) {
     //   每次渲染都警告「Component that was made a reactive object」（同 SceneCarousel 图标问题）。
     //   标记落在数组自身，外层 visible/x/y 仍是响应式，菜单照常开合。
     items: markRaw(items),
+    key,
   };
 }
 function closeContextMenu() { contextMenu.value.visible = false; }
@@ -1095,7 +1098,7 @@ function onFileContextMenu(e: MouseEvent, f: ChangedFile) {
     items.push({ label: '追溯 Blame', icon: Search, divided: true, handler: () => doBlame(f.path) });
   }
   items.push({ label: '复制路径', icon: CopyDocument, handler: () => copyText(f.path) });
-  openContextMenu(e, items);
+  openContextMenu(e, items, `file:${f.path}`);
 }
 /** 把未跟踪路径追加进仓库 .gitignore，成功后刷新（文件从未跟踪列表消失） */
 async function doIgnore(paths: string[]) {
@@ -1122,10 +1125,10 @@ function onBranchContextMenu(e: MouseEvent, b: string) {
     items.push({ label: '重命名…', icon: Edit, divided: true, handler: () => doRenameBranch(b) });
     items.push({ label: '删除', icon: Delete, danger: true, handler: () => doDeleteBranch(b) });
   }
-  openContextMenu(e, items);
+  openContextMenu(e, items, `branch:${b}`);
 }
 function onTagContextMenu(e: MouseEvent, t: string) {
-  openContextMenu(e, [{ label: '删除标签', icon: Delete, danger: true, handler: () => doTagDelete(t) }]);
+  openContextMenu(e, [{ label: '删除标签', icon: Delete, danger: true, handler: () => doTagDelete(t) }], `tag:${t}`);
 }
 function onCommitContextMenu(e: MouseEvent, c: { hash: string }) {
   openContextMenu(e, [
@@ -1136,7 +1139,7 @@ function onCommitContextMenu(e: MouseEvent, c: { hash: string }) {
     { label: '重置到此 Mixed', icon: RefreshLeft, handler: () => doReset('mixed', c.hash) },
     { label: '重置到此 Hard', icon: Delete, danger: true, handler: () => doReset('hard', c.hash) },
     { label: '创建标签…', icon: PriceTag, divided: true, handler: () => doTagCreate(c.hash) },
-  ]);
+  ], `commit:${c.hash}`);
 }
 function copyText(text: string) {
   navigator.clipboard?.writeText(text).then(() => ElMessage.success('已复制')).catch(() => {});

@@ -225,6 +225,8 @@ const ctxIsLast = computed(() => {
 });
 
 function openTabCtx(e: MouseEvent, tab: PreviewTab) {
+  // 再次右击同一标签 = 收起（toggle）
+  if (tabCtx.value.visible && tabCtx.value.tabId === tab.id) { closeTabCtx(); return; }
   tabCtx.value = { visible: true, ...clampMenuPos(e), tabId: tab.id };
 }
 function closeTabCtx() {
@@ -248,6 +250,8 @@ function ctxCloseAll() {
 }
 
 function onDocMouseDown(e: MouseEvent) {
+  // 右键（button=2）不在这里收：mousedown 先于 contextmenu，会废掉「再次右击 = 收起」的判据
+  if (e.button === 2) return;
   if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
   closeTabCtx();
 }

@@ -9,7 +9,7 @@
           <!-- ★ 行尾 hover 操作组关掉（2026-10-23 实报「很容易误点击」）：
                操作组悬浮盖在标题上，窄栏里想点行打开任务容易误点成删除；
                置顶/重命名/移动/归档/删除右键、移动端长按面板都有。 -->
-          <TaskListSection :space-id="null" :on-open="onTaskRowOpen" :active-conv-id="activeWin?.conversationId || ''" :row-actions="false" />
+          <TaskListSection :space-id="null" :on-open="onTaskRowOpen" :active-conv-id="activeWin?.conversationId || ''" />
         </div>
         <!-- 发布项目（7b）：本地目录 + 服务器 + 流水线；绑定后工具面挂到当前窗口会话 -->
         <div class="ops-side-release">
@@ -2866,6 +2866,15 @@ const treeCtx = ref<{ visible: boolean; x: number; y: number; conn: OpsConn | nu
 const treeMenuEl = ref<HTMLElement | null>(null);
 /** 资源树的三处右键共用：先按光标落位，渲染后按**真实尺寸**校正（贴光标 + 不越界） */
 function openTreeMenuAt(ev: MouseEvent, patch: { conn: OpsConn | null; group: TreeCtxGroup | null }) {
+  // 再次右击同一目标 = 收起（toggle）：同一个连接 / 同一个目录 / 同一块空白区。
+  // 右击不触发 click，所以 onDocClick 不会提前把菜单关掉（判据仍有效）。
+  const same = treeCtx.value.visible && (
+    (patch.conn && treeCtx.value.conn?.id === patch.conn.id)
+    || (patch.group && treeCtx.value.group?.id === patch.group.id)
+    || (!patch.conn && !patch.group && !treeCtx.value.conn && !treeCtx.value.group)
+  );
+  if (same) { closeTreeCtx(); return; }
+  if (tabCtx.value.visible) closeTabCtx();
   const at = { x: ev.clientX, y: ev.clientY };
   treeCtx.value = { visible: true, ...at, ...patch };
   placeMenuAfterRender(treeMenuEl, at, (p) => { treeCtx.value = { ...treeCtx.value, ...p }; });
@@ -2931,6 +2940,9 @@ const tabCtx = ref<{ visible: boolean; x: number; y: number; win: OpsWin | null 
 /** 窗口标签菜单元素：同上（渲染后按真实尺寸校正） */
 const tabMenuEl = ref<HTMLElement | null>(null);
 function onWinCtx(w: OpsWin, ev: MouseEvent) {
+  // 再次右击同一标签 = 收起（toggle）
+  if (tabCtx.value.visible && tabCtx.value.win?.id === w.id) { closeTabCtx(); return; }
+  if (treeCtx.value.visible) closeTreeCtx();
   const at = { x: ev.clientX, y: ev.clientY };
   tabCtx.value = { visible: true, ...at, win: w };
   placeMenuAfterRender(tabMenuEl, at, (p) => { tabCtx.value = { ...tabCtx.value, ...p }; });

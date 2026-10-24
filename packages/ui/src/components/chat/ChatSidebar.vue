@@ -99,14 +99,6 @@
               <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
                 <span class="conv-src-badge">页面</span>
               </el-tooltip>
-              <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
-                <span class="task-row-act is-on" role="button" title="取消置顶" @click="rows.togglePinned(conv)"><el-icon :size="12"><Top /></el-icon></span>
-                <span class="task-row-act" role="button" title="独立窗口打开" @click="openTaskWindow(conv)"><el-icon :size="12"><Monitor /></el-icon></span>
-                <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)"><el-icon :size="12"><EditPen /></el-icon></span>
-                <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)"><el-icon :size="12"><Rank /></el-icon></span>
-                <span class="task-row-act" role="button" title="归档（可恢复；归档后只读）" @click="archiveConv(conv, true)"><el-icon :size="12"><FolderChecked /></el-icon></span>
-                <span class="task-row-act is-danger" role="button" title="删除（移入回收站）" @click="rows.remove(conv)"><el-icon :size="12"><Delete /></el-icon></span>
-              </span>
             </div>
           </div>
         </div>
@@ -163,28 +155,6 @@
               <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
                 <span class="conv-src-badge">页面</span>
               </el-tooltip>
-              <!-- 行尾 hover 操作组：置顶/重命名/移动空间/删除（移动与右键菜单同一 moveTo 流程） -->
-              <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
-                <span
-                  class="task-row-act"
-                  :class="{ 'is-on': conv.pinned }"
-                  role="button"
-                  :title="conv.pinned ? '取消置顶' : '置顶'"
-                  @click="rows.togglePinned(conv)"
-                ><el-icon :size="12"><Top /></el-icon></span>
-                <span class="task-row-act" role="button" title="独立窗口打开（桌面端真窗口 / Web 新标签页）" @click="openTaskWindow(conv)">
-                  <el-icon :size="12"><Monitor /></el-icon>
-                </span>
-                <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
-                  <el-icon :size="12"><EditPen /></el-icon>
-                </span>
-                <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)">
-                  <el-icon :size="12"><Rank /></el-icon>
-                </span>
-                <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)">
-                  <el-icon :size="12"><Delete /></el-icon>
-                </span>
-              </span>
             </div>
             <!-- 空态（Task 3.2）：统一 EmptyState 组件；搜索无结果时不给 CTA -->
             <EmptyState
@@ -284,27 +254,6 @@
                   <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
                     <el-icon class="scheduled-badge"><Timer /></el-icon>
                   </el-tooltip>
-                  <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
-                    <span
-                      class="task-row-act"
-                      :class="{ 'is-on': conv.pinned }"
-                      role="button"
-                      :title="conv.pinned ? '取消置顶' : '置顶'"
-                      @click="rows.togglePinned(conv)"
-                    ><el-icon :size="12"><Top /></el-icon></span>
-                    <span class="task-row-act" role="button" title="独立窗口打开（桌面端真窗口 / Web 新标签页）" @click="openTaskWindow(conv)">
-                      <el-icon :size="12"><Monitor /></el-icon>
-                    </span>
-                    <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
-                      <el-icon :size="12"><EditPen /></el-icon>
-                    </span>
-                    <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)">
-                      <el-icon :size="12"><Rank /></el-icon>
-                    </span>
-                    <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)">
-                      <el-icon :size="12"><Delete /></el-icon>
-                    </span>
-                  </span>
                 </div>
               </div>
             </div>
@@ -342,28 +291,6 @@
               <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
                 <span class="conv-src-badge">页面</span>
               </el-tooltip>
-              <!-- 行尾 hover 操作组：与根列表同款，共用 useTaskRowActions -->
-              <span v-if="!batchMode && renamingId !== conv.id" class="task-row-actions" @click.stop @dblclick.stop>
-                <span
-                  class="task-row-act"
-                  :class="{ 'is-on': conv.pinned }"
-                  role="button"
-                  :title="conv.pinned ? '取消置顶' : '置顶'"
-                  @click="rows.togglePinned(conv)"
-                ><el-icon :size="12"><Top /></el-icon></span>
-                <span class="task-row-act" role="button" title="独立窗口打开（桌面端真窗口 / Web 新标签页）" @click="openTaskWindow(conv)">
-                  <el-icon :size="12"><Monitor /></el-icon>
-                </span>
-                <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(conv)">
-                  <el-icon :size="12"><EditPen /></el-icon>
-                </span>
-                <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(conv, $event)">
-                  <el-icon :size="12"><Rank /></el-icon>
-                </span>
-                <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(conv)">
-                  <el-icon :size="12"><Delete /></el-icon>
-                </span>
-              </span>
             </div>
             <EmptyState
               v-if="!spaceCollapsed[sp.id] && spaceStore.childSpacesOf(sp.id).length === 0 && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)"
@@ -719,7 +646,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import {
-  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, Top, FolderChecked, Box, RefreshLeft, Monitor, Refresh, Promotion,
+  Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, FolderChecked, Box, RefreshLeft, Monitor, Refresh, Promotion,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/shared';
@@ -957,6 +884,10 @@ async function saveSpaceMemory() {
 }
 
 function onDocMouseDown(e: MouseEvent) {
+  // ★ 右键（button=2）不在这里收：mousedown 先于 contextmenu 触发，若这里关了菜单，
+  //   contextmenu 里「再次右击同目标 = 收起」的 toggle 判据（visible 已被置 false）永远失效。
+  //   右键的收/切由各 open*Menu 处理器负责（与 TaskListSection 同规则）。
+  if (e.button === 2) return;
   if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
   closeCtxMenu();
   // 行内「移动」浮层：点浮层外任何位置（含任务行）都收起

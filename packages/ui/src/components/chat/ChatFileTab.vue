@@ -471,11 +471,14 @@ function parentRelOf(row: TreeRow): string {
 }
 function onRowMenu(e: MouseEvent, row: TreeRow) {
   if (row.loading) return;
+  // 再次右击同一行 = 收起（toggle）
+  if (rowMenu.value?.row.relPath === row.relPath) { closeMenus(); return; }
   bgMenu.value = null;
   rowMenu.value = { ...clampMenuPos(e), row };
 }
 function onBgMenu(e: MouseEvent) {
   if (!activeDir.value) return;
+  if (bgMenu.value) { closeMenus(); return; }
   rowMenu.value = null;
   bgMenu.value = { ...clampMenuPos(e) };
 }
@@ -534,6 +537,8 @@ const searchScope = ref<{ rel: string; label: string } | null>(null);
 const fileSearchRef = ref<InstanceType<typeof FileSearchPanel> | null>(null);
 
 function onDocMouseDown(e: MouseEvent) {
+  // 右键（button=2）不在这里收：mousedown 先于 contextmenu，会废掉「再次右击 = 收起」的判据
+  if (e.button === 2) return;
   if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
   closeMenus();
 }

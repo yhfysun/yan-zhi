@@ -744,11 +744,8 @@ describe('移动 vs 打开目录：图标语义必须可区分', () => {
   const menuIconOf = (src: string, label: string) =>
     [...src.matchAll(new RegExp(`<el-icon[^>]*>\\s*<([A-Z][A-Za-z0-9]*)\\s*\\/>\\s*<\\/el-icon>${label}`, 'g'))].map((m) => m[1]);
 
-  /** 行内按钮写法：`title="移动到空间" ... ><el-icon :size="12"><X /></el-icon>`（图标在 title 后面）。 */
-  const rowBtnIconOf = (src: string, label: string) =>
-    [...src.matchAll(new RegExp(`title="${label}"[\\s\\S]{0,160}?<el-icon[^>]*>\\s*<([A-Z][A-Za-z0-9]*)\\s*\\/>`, 'g'))].map(
-      (m) => m[1],
-    );
+  /** 行内 hover 按钮组已按用户要求整体删除（2026-10-24）：动作只剩右键菜单 / 移动端长按面板，
+      这两处都渲染文字标签，故只校验菜单项图标。 */
 
   it('★ 办公侧栏：右键菜单里「移动到空间」不得再用 FolderOpened', () => {
     const icons = menuIconOf(SIDEBAR, '移动到空间');
@@ -756,20 +753,10 @@ describe('移动 vs 打开目录：图标语义必须可区分', () => {
     expect(icons, '★★「移动到空间」与「打开目录」同菜单相邻，图标不能再撞脸').not.toContain('FolderOpened');
   });
 
-  it('★ 办公侧栏：行内按钮「移动到空间」不得再用 FolderOpened', () => {
-    const icons = rowBtnIconOf(SIDEBAR, '移动到空间');
-    // 未归类 / 已归类 / 空间分组三处行内按钮
-    expect(icons.length, '★ 没解析到行内「移动到空间」按钮').toBeGreaterThanOrEqual(3);
-    expect(icons, '★★ 行内按钮只有图标没有文字，撞脸等于没有辨识度').not.toContain('FolderOpened');
-  });
-
-  it('★ 工作台任务列表：菜单项 + 行内按钮同样不得用 FolderOpened', () => {
+  it('★ 工作台任务列表：菜单项不得用 FolderOpened', () => {
     const menu = menuIconOf(TASK_LIST, '移动到空间');
-    const row = rowBtnIconOf(TASK_LIST, '移动到空间');
     expect(menu.length, '★ 工作台缺「移动到空间」菜单项').toBeGreaterThan(0);
-    expect(row.length, '★ 工作台缺行内「移动到空间」按钮').toBeGreaterThan(0);
     expect(menu, '★★ 工作台菜单项撞脸').not.toContain('FolderOpened');
-    expect(row, '★★ 工作台行内按钮撞脸').not.toContain('FolderOpened');
   });
 
   it('★★ 「打开目录」必须仍然是 FolderOpened（本次修的是移动，别把打开目录也改了）', () => {
@@ -782,8 +769,8 @@ describe('移动 vs 打开目录：图标语义必须可区分', () => {
   });
 
   it('★★ 同一动作在两处组件里必须是同一个图标（否则功能相同时而像两件事）', () => {
-    const a = [...new Set([...menuIconOf(SIDEBAR, '移动到空间'), ...rowBtnIconOf(SIDEBAR, '移动到空间')])];
-    const b = [...new Set([...menuIconOf(TASK_LIST, '移动到空间'), ...rowBtnIconOf(TASK_LIST, '移动到空间')])];
+    const a = [...new Set(menuIconOf(SIDEBAR, '移动到空间'))];
+    const b = [...new Set(menuIconOf(TASK_LIST, '移动到空间'))];
     expect(a.length, '★ 办公侧栏内部对「移动到空间」用了多个图标').toBe(1);
     expect(b.length, '★ 工作台内部对「移动到空间」用了多个图标').toBe(1);
     expect(a[0], '★★ 两个组件的「移动到空间」图标不一致').toBe(b[0]);

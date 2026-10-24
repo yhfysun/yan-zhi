@@ -389,11 +389,14 @@ function parentRelOf(row: TreeRow): string {
 
 function onRowMenu(e: MouseEvent, row: TreeRow) {
   if (row.loading) return;
+  // 再次右击同一行 = 收起（toggle）；点击关闭监听只吃 click，不影响右键判据
+  if (menu.value?.row.relPath === row.relPath) { closeMenu(); return; }
   bgMenu.value = null;
   menu.value = { ...clampMenuPos(e), row, abs: joinPath(row.relPath) };
 }
 function onBgMenu(e: MouseEvent) {
   if (!code.projectDir) return;
+  if (bgMenu.value) { closeBgMenu(); return; }
   menu.value = null;
   bgMenu.value = { ...clampMenuPos(e) };
 }

@@ -1214,6 +1214,27 @@ function onShotMenu(cmd: string | number | object) {
   }
 }
 
+/**
+ * data URL → Blob（不走 fetch）。
+ *
+ * ★ 2026-10-24 实报：`fetch(res.dataUrl)` 被 CSP 的 `connect-src` 拦下
+ *   （渲染层日志里刷出整条 base64：`Fetch API cannot load data:image/png;base64,...`
+ *   + `violates the Content Security Policy directive: "connect-src ..."`）。
+ *   后果有两层：① 截图附件永远加不进去；② 每次失败都会把几 MB 的 data URL
+ *   完整打进控制台 → 主进程日志被刷爆（当天 main 日志里就有两条）。
+ *   base64 直接解码不经过网络栈，CSP 管不到，也不会产生那条巨型错误。
+ */
+function dataUrlToBlob(dataUrl: string): Blob {
+  const comma = dataUrl.indexOf(',');
+  const meta = comma >= 0 ? dataUrl.slice(0, comma) : '';
+  const body = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  const mime = /^data:([^;,]+)/i.exec(meta)?.[1] || 'image/png';
+  const binary = atob(body);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
 async function startScreenshot() {
   if (snipping.value || !canScreenshot) return;
   snipping.value = true;
@@ -1225,7 +1246,7 @@ async function startScreenshot() {
     const hideApp = useSettingsStore().settings.screenshotHideApp !== false;
     const res = await (window as any).electronAPI.screenshot.capture({ hideApp });
     if (res?.ok && res.dataUrl) {
-      const blob = await (await fetch(res.dataUrl)).blob();
+      const blob = dataUrlToBlob(res.dataUrl);
       const ts = new Date();
       const pad = (n: number) => String(n).padStart(2, '0');
       const name = `截图_${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}_${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}.png`;

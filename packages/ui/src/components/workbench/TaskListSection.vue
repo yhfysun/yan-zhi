@@ -110,32 +110,6 @@
               @keydown.enter.prevent="rows.commitRename"
               @keydown.esc.prevent="rows.cancelRename"
             />
-            <!-- 行尾 hover 操作组：置顶/重命名/移动空间/删除；「移动」与右键菜单同一 moveTo 流程。
-                 行是 <button>，故内层用 span[role=button]，避免交互元素嵌套。
-                 ★ rowActions=false（运维）：整组不渲染 —— 操作组悬浮盖在标题上，窄栏里
-                 想点行打开任务很容易误点成删除（2026-10-23 实报）；动作右键/长按面板全有。 -->
-            <span v-if="rowActions && !batchMode && renamingId !== c.id" class="task-row-actions" @click.stop @dblclick.stop>
-              <span
-                class="task-row-act"
-                :class="{ 'is-on': c.pinned }"
-                role="button"
-                :title="c.pinned ? '取消置顶' : '置顶'"
-                @click="rows.togglePinned(c)"
-              ><el-icon :size="12"><Top /></el-icon></span>
-              <span class="task-row-act" role="button" title="重命名" @click="rows.startRename(c)">
-                <el-icon :size="12"><EditPen /></el-icon>
-              </span>
-              <span class="task-row-act" role="button" title="移动到空间" @click="rows.openMoveMenu(c, $event)">
-                <el-icon :size="12"><Rank /></el-icon>
-              </span>
-              <!-- 归档（对齐办公侧栏同款入口）：移出工作台列表但数据全留，可在侧栏「已归档」恢复 -->
-              <span class="task-row-act" role="button" title="归档（可恢复；归档后只读）" @click="archiveConv(c, true)">
-                <el-icon :size="12"><FolderChecked /></el-icon>
-              </span>
-              <span class="task-row-act is-danger" role="button" title="删除" @click="rows.remove(c)">
-                <el-icon :size="12"><Delete /></el-icon>
-              </span>
-            </span>
           </button>
           <div v-if="!grp.convs.length" class="tls-empty">暂无任务</div>
         </div>
@@ -287,7 +261,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import {
-  EditPen, Top, Star, StarFilled, CaretRight, ChatDotRound, FolderOpened, Rank, Tools, Close, Delete, ArrowRight, Plus, FolderChecked,
+  EditPen, Star, StarFilled, CaretRight, ChatDotRound, FolderOpened, Rank, Tools, Close, Delete, ArrowRight, Plus, FolderChecked,
 } from '@element-plus/icons-vue';
 import { useChatStore } from '../../stores/chat';
 import { useChat } from '../../composables/chat/useChat';
@@ -327,16 +301,7 @@ const props = withDefaults(defineProps<{
    *   传了就用外部值，不传保持原逻辑。
    */
   activeConvId?: string;
-  /**
-   * 行尾 hover 操作组开关（2026-10-23）。
-   *
-   * ★ 为什么需要：操作组绝对定位贴行尾、悬浮盖在标题上（styles/task-row.css），
-   *   运维左栏窄、标题短，想点行打开任务很容易误点成归档/删除 —— 用户实报「很容易误点击」。
-   *   传 false 整组不渲染，操作收敛到右键菜单 / 移动端长按面板（同一批动作，不缺功能）。
-   *   默认 true：办公/开发/安全的行内操作不变。
-   */
-  rowActions?: boolean;
-}>(), { spaceId: undefined, activeConvId: '', rowActions: true });
+}>(), { spaceId: undefined, activeConvId: '' });
 
 const chatStore = useChatStore();
 const codeStore = useCodeStore();

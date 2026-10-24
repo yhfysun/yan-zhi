@@ -76,12 +76,13 @@ describe('会话置顶分组', () => {
   });
 
   it('★ 分组内仍能「取消置顶」（否则置顶进去就出不来）', () => {
-    // 取置顶组那段，确认里面有取消置顶的按钮
+    // 行内 hover 按钮已删（2026-10-24），取消置顶收敛到行右键/长按菜单；置顶组每一行同样绑了 openConvMenu
     const start = SIDEBAR.indexOf('tree-node tree-pinned');
     expect(start).toBeGreaterThan(0);
     const seg = SIDEBAR.slice(start, start + 3000);
-    expect(seg).toMatch(/rows\.togglePinned\(conv\)/);
-    expect(seg).toMatch(/取消置顶/);
+    expect(seg, '★ 置顶组行必须能呼出菜单（否则取消置顶没有入口）').toMatch(/openConvMenu/);
+    expect(SIDEBAR).toMatch(/rows\.togglePinned\(ctxMenu\.conv\)/);
+    expect(SIDEBAR).toMatch(/取消置顶/);
   });
 
   // ══════════════════════════════════════════════════════════════════════════

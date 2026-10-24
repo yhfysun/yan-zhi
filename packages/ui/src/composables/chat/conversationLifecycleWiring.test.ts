@@ -110,7 +110,8 @@ describe('UI · 两处列表同口径 + 归档只读', () => {
   });
 
   it('侧栏有归档入口、已归档分组与回收站（三个消费点都要接线）', () => {
-    expect(SIDEBAR).toMatch(/archiveConv\(conv, true\)/);
+    // 行内 hover 按钮已删（2026-10-24），归档只剩右键菜单 / 长按面板，宿主对象不再是 conv
+    expect(SIDEBAR).toMatch(/archiveConv\([^)]*,\s*true\)/);
     expect(SIDEBAR).toMatch(/archivedConversations/);
     expect(SIDEBAR).toMatch(/trashedConversations/);
     expect(SIDEBAR).toMatch(/restoreConv\(conv\)/);
