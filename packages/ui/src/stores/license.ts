@@ -37,6 +37,15 @@ export const EDITION_LABELS: Record<string, string> = {
   pro: '高级版',
 };
 
+/**
+ * 上次**校验通过**的结果缓存（localStorage）。
+ *
+ * 用途只有一个：后端暂不可达（dev 的 tsx watch 重启、应用重启窗口）时，
+ * 路由守卫不要把用户踢到 /license。它不是授权凭据 —— 真正的授权码在 keyring，
+ * 后端恢复后会用码重新校验并覆盖这里。
+ */
+const LAST_VERIFY_KEY = 'yz:license:last-verify';
+
 export const useLicenseStore = defineStore('license', () => {
   const verified = ref(false);
   const initialized = ref(false);
@@ -67,6 +76,48 @@ export const useLicenseStore = defineStore('license', () => {
     }
   }
 
+  /** 记下校验通过的结果，供后端不可达时兜底。 */
+  function rememberVerified(data: VerifyResult): void {
+    try {
+      localStorage.setItem(LAST_VERIFY_KEY, JSON.stringify({ ...data, valid: true }));
+    } catch {
+      // 存储不可用（隐私模式/配额满）→ 兜底降级为「仅本次会话有效」，不影响正常校验
+    }
+  }
+
+  function forgetVerified(): void {
+    try { localStorage.removeItem(LAST_VERIFY_KEY); } catch { /* ignore */ }
+  }
+
+  /** 读回缓存；过期（expireAt 已过）视为不可用。 */
+  function readLastVerified(): VerifyResult | null {
+    try {
+      const raw = localStorage.getItem(LAST_VERIFY_KEY);
+      if (!raw) return null;
+      const v = JSON.parse(raw) as VerifyResult;
+      if (!v || v.valid !== true) return null;
+      const exp = v.expireAt ? Date.parse(v.expireAt) : NaN;
+      if (Number.isFinite(exp) && exp < Date.now()) return null;
+      return v;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 缓存命中时恢复授权态（不读 keyring，不发请求）。 */
+  function restoreFromCache(): boolean {
+    const cached = readLastVerified();
+    if (!cached) return false;
+    verified.value = true;
+    info.value = cached;
+    machineMac.value = cached.machineMac || machineMac.value;
+    machineId.value = cached.machineIdLocal || machineId.value;
+    identitySource.value = cached.identitySource || identitySource.value;
+    applyEdition(cached);
+    return true;
+  }
+
+
   /** 从 keyring 读回当前授权码（授权管理页展示用）。 */
   async function loadCurrentCode(): Promise<string> {
     try {
@@ -83,6 +134,78 @@ export const useLicenseStore = defineStore('license', () => {
       machineMac.value = result.data.mac;
       machineId.value = result.data.machineId || '';
       identitySource.value = result.data.source;
+    }
+  }
+
+  /**
+   * 用本地授权码走一次后端校验。
+   *
+   * 返回 true  = 后端给出了结论（有效或无效，状态已落定）；
+   * 返回 false = 后端没给出结论（重启中 / 网络失败）。**此时绝不改动授权态**。
+   *
+   * ★ 2026-10-24：此前 `'error' in result` 会被当成「授权无效」→ `clearLicenseCode()`
+   *   + verified=false。dev 后端 tsx watch 重启的两三秒里恰好发请求，就会把用户的
+   *   授权码**删掉**并踢到 /license。网络失败 ≠ 授权失效，这条线必须分开。
+   */
+  async function verifyCurrentCode(): Promise<boolean> {
+    const code = await loadLicenseCode();
+    if (!code) {
+      // 首次运行：尝试预置试用授权码自动激活
+      const def = await api.get<VerifyResult & { code: string }>('/license/default');
+      if ('error' in def) return false;
+      initialized.value = true;
+      if (def.data.valid) {
+        await persistLicenseCode(def.data.code);
+        verified.value = true;
+        info.value = def.data;
+        machineMac.value = def.data.machineMac;
+        machineId.value = def.data.machineIdLocal || '';
+        identitySource.value = def.data.identitySource;
+        applyEdition(def.data);
+        rememberVerified(def.data);
+      } else {
+        verified.value = false;
+        applyEdition(def.data);
+        forgetVerified();
+      }
+      await loadCurrentCode();
+      return true;
+    }
+    currentCode.value = code;
+    const result = await api.post<VerifyResult>('/license/verify', { code });
+    if ('error' in result) return false;
+    initialized.value = true;
+    if (result.data.valid) {
+      verified.value = true;
+      info.value = result.data;
+      machineMac.value = result.data.machineMac;
+      machineId.value = result.data.machineIdLocal || '';
+      identitySource.value = result.data.identitySource;
+      applyEdition(result.data);
+      rememberVerified(result.data);
+    } else {
+      await clearLicenseCode();
+      forgetVerified();
+      verified.value = false;
+      info.value = result.data;
+      applyEdition(result.data);
+    }
+    return true;
+  }
+
+  /**
+   * 兜底期结束后端恢复时，把「缓存授权态」换成真校验结果。
+   *
+   * 只重试约 30s（20 次 × 1.5s）：后端一旦应答就落定，不再反复打接口。
+   * 失败也不清缓存 —— 兜底态宁可多留一会儿，也不要因为一次抖动把用户踢去授权页。
+   */
+  async function revalidateWhenBackendReady(): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+      if (await verifyCurrentCode()) {
+        error.value = '';
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
     }
   }
 
@@ -105,47 +228,17 @@ export const useLicenseStore = defineStore('license', () => {
       // 超时：不把用户永久挡在授权页。置 initialized 让守卫放行（门户大开好过整站打不开），
       // 后续业务请求失败时会各自走自己的错误路径；后端一旦起来，各页 onMounted 仍能补拉。
       initialized.value = true;
-      verified.value = false;
       error.value = '后端服务未就绪';
+      // ★ 2026-10-24：有上次校验通过的记录就沿用，别把正在重启的用户踢到 /license。
+      if (!restoreFromCache()) {
+        verified.value = false;
+        applyEdition(null);
+      }
+      void revalidateWhenBackendReady();
       return;
     }
 
-    const code = await loadLicenseCode();
-    if (!code) {
-      // 首次运行：尝试预置试用授权码自动激活
-      const def = await api.get<VerifyResult & { code: string }>('/license/default');
-      initialized.value = true;
-      if ('data' in def && def.data.valid) {
-        await persistLicenseCode(def.data.code);
-        verified.value = true;
-        info.value = def.data;
-        machineMac.value = def.data.machineMac;
-        machineId.value = def.data.machineIdLocal || '';
-        identitySource.value = def.data.identitySource;
-        applyEdition(def.data);
-      } else {
-        verified.value = false;
-        applyEdition('data' in def ? def.data : null);
-      }
-      await loadCurrentCode();
-      return;
-    }
-    currentCode.value = code;
-    const result = await api.post<VerifyResult>('/license/verify', { code });
-    initialized.value = true;
-    if ('data' in result && result.data.valid) {
-      verified.value = true;
-      info.value = result.data;
-      machineMac.value = result.data.machineMac;
-      machineId.value = result.data.machineIdLocal || '';
-      identitySource.value = result.data.identitySource;
-      applyEdition(result.data);
-    } else {
-      await clearLicenseCode();
-      verified.value = false;
-      info.value = 'data' in result ? result.data : null;
-      applyEdition('data' in result ? result.data : null);
-    }
+    await verifyCurrentCode();
   }
 
   /** 用户输入授权码激活。成功返回 true。 */
@@ -169,11 +262,13 @@ export const useLicenseStore = defineStore('license', () => {
     identitySource.value = result.data.identitySource;
     currentCode.value = code;
     applyEdition(result.data);
+    rememberVerified(result.data);
     return true;
   }
 
   async function deactivate() {
     await clearLicenseCode();
+    forgetVerified();
     verified.value = false;
     info.value = null;
     currentCode.value = '';
