@@ -186,6 +186,17 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '插件管理' },
   },
   {
+    // 远程控制「控制端」页（remote-control 插件）：手机/局域网浏览器访问被控端托管的
+    // 本页完成配对（授权码）并全屏操控被控端电脑。
+    // bare = 不套应用外壳（沉浸模式就是"隐藏所有按钮"的全屏画面）；
+    // guest = 免 license 门禁 —— 控制端鉴权是插件层的授权码/设备令牌（见
+    // server/plugins/remote-control.ts 头注释与 license-guard.ts 豁免清单）。
+    path: '/remote',
+    name: 'remote',
+    component: () => import('../views/RemoteControl.vue'),
+    meta: { title: '远程控制', bare: true, guest: true },
+  },
+  {
     path: '/data-sources',
     name: 'data-sources',
     component: () => import('../views/DataSourcesPage.vue'),

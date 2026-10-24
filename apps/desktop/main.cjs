@@ -7856,14 +7856,18 @@ function setScreenshotHotkey(accel) {
 }
 
 /** 急停热键实际动作：通知后端 panic（冻结输入工具并禁用插件）。
- *  插件未启用时后端返回 404，静默忽略；请求失败也不影响本进程。 */
+ *  插件未启用时后端返回 404，静默忽略；请求失败也不影响本进程。
+ *  computer-use（电脑使用）与 remote-control（远程控制）同时打：一次急停把两条
+ *  输入注入通道全部冻结 —— 远控若还在流式推帧，只冻 computer-use 是不够的。 */
 function triggerPanicHotkey() {
-  const req = http.request(API_ORIGIN + '/api/plugin/computer-use/panic', { method: 'POST', timeout: 3000 }, (res) => {
-    res.resume();
-  });
-  req.on('error', () => {});
-  req.on('timeout', () => req.destroy());
-  req.end();
+  for (const p of ['/api/plugin/computer-use/panic', '/api/plugin/remote-control/panic']) {
+    const req = http.request(API_ORIGIN + p, { method: 'POST', timeout: 3000 }, (res) => {
+      res.resume();
+    });
+    req.on('error', () => {});
+    req.on('timeout', () => req.destroy());
+    req.end();
+  }
   console.log('[panic] 急停热键触发');
 }
 
@@ -8052,6 +8056,35 @@ app.whenReady().then(async () => {
       session.defaultSession.setUserAgent(cleanUA);
       session.fromPartition('persist:browser-view').setUserAgent(cleanUA);
     } catch { /* ignore */ }
+  })();
+
+  // 远程控制（remote-control 插件）：被控端画面采集授权。
+  // 渲染层（Web UI）走 getDisplayMedia 触发本 handler，由主进程挑「主显示器整屏」源，
+  // Windows 上附带系统声音回采（audio:'loopback'，不含麦克风）——远控音频转发即由
+  // 同一条 WebRTC 连接的音频轨道承载。控制端权限由插件配对/白名单把守，本 handler
+  // 只在渲染层真的发起 getDisplayMedia 时触发（正常浏览不受影响）。
+  (function installDisplayMediaHandler() {
+    try {
+      session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+        desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
+          if (!sources || !sources.length) {
+            callback({});
+            return;
+          }
+          let primary = null;
+          try {
+            const pid = String(electronScreen.getPrimaryDisplay().id);
+            primary = sources.find((s) => String(s.display_id) === pid) || null;
+          } catch { /* ignore */ }
+          const video = primary || sources[0];
+          const isWin = process.platform === 'win32';
+          callback(isWin ? { video, audio: 'loopback' } : { video });
+        }).catch(() => callback({}));
+      });
+      console.log('[remote-control] display media handler 已注册');
+    } catch (e) {
+      console.warn('[remote-control] setDisplayMediaRequestHandler 失败:', e && e.message);
+    }
   })();
 
   // webview 引擎：网页 window.open / target=_blank / 中键新开 ——

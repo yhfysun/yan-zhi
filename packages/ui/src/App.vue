@@ -123,6 +123,10 @@
 
     <!-- 桌面端设置弹窗（Task 10.3）：WebTopBar 头像菜单 /「更多」入口打开 -->
     <SettingsDialog v-if="!isBareRoute" />
+
+    <!-- 远程控制被控端伴生（remote-control 插件）：配对确认弹窗 + WebRTC 采集应答。
+         bare 路由（控制端页 /remote 本身、独立子窗口）不挂载。 -->
+    <RemoteControlHost v-if="!isBareRoute" />
   </div>
 </template>
 
@@ -137,6 +141,7 @@ import SideNav from './components/SideNav.vue';
 import SettingsDrawer from './components/SettingsDrawer.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import MobileNavDrawer from './components/MobileNavDrawer.vue';
+import RemoteControlHost from './components/RemoteControlHost.vue';
 import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';
 import { MODE_VIEW_LOADERS } from './generated/build-modes';

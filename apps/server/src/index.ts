@@ -89,6 +89,8 @@ import modelPoolRoutes from './routes/model-pools.js';
 import costBudgetRoutes from './routes/cost-budget.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
+// 远程控制（向日葵式配对：授权码 + 白名单免确认 + WebRTC/JPEG 双通道），见 plugins/remote-control.ts 文件头
+import { remoteControlManifest, remoteControlModule } from './plugins/remote-control.js';
 import { registerBuiltinSkins } from './plugins/skins.js';
 import { opsShellManifest, opsShellModule } from './plugins/ops-shell.js';
 // 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理，见 plugins/shop-ops.ts 文件头
@@ -789,6 +791,9 @@ try {
     // 移动端（MOBILE_MODE）无桌面输入环境，跳过注册避免运行时崩溃
     if (!process.env.MOBILE_MODE) {
       await mgr.registerBuiltin(computerUseManifest, computerUseModule, true);
+      // remote-control 高危权限（desktop-input）：与 computer-use 同级的高危能力，
+      // 但涉及「被控端画面外发」，产品口径为**默认关闭**（用户在插件管理页显式开启）
+      await mgr.registerBuiltin(remoteControlManifest, remoteControlModule);
     }
     // 内置皮肤包：纯声明式（contributes.themes + 静态壁纸），默认启用，设置→皮肤库切换
     await registerBuiltinSkins();

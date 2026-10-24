@@ -455,6 +455,35 @@
             未发现其他言智节点（确认对方已启动、与本机同网段且端口为 {{ lanPort }}）
           </div>
         </div>
+        <!-- 远程控制（remote-control 插件）：授权码展示/换码/自定义。
+             授权码只回给带 host key 的请求（见插件 /status 实现），控制端页面拿不到。 -->
+        <div class="lan-section" style="margin-top: 16px">
+          <p class="lan-tip">远程控制：手机 / 局域网浏览器打开下方地址，输入授权码即可实时观看并操作本机；新设备首次连接需在本机确认（可信任后免确认）。Ctrl+Alt+Esc 急停。</p>
+          <template v-if="rcEnabled">
+            <div class="rc-card-box">
+              <div class="rc-line">
+                <span class="rc-k">授权码</span>
+                <code class="rc-v rc-v-code">{{ rcCode || '—' }}</code>
+                <el-button size="small" @click="rotateRcCode">换一个</el-button>
+                <el-button size="small" @click="copyRcInvite">复制邀请</el-button>
+              </div>
+              <div class="rc-line">
+                <span class="rc-k">控制端地址</span>
+                <code class="rc-v">{{ preferredLanIp ? `http://${preferredLanIp}:${lanPort}/remote` : '—（未检测到局域网 IP）' }}</code>
+              </div>
+              <div class="rc-line">
+                <span class="rc-k">自定义授权码</span>
+                <el-input v-model="rcCustom" size="small" style="width: 170px" placeholder="6-16 位（不含 0/1/i/l/o）" />
+                <el-button size="small" :disabled="!rcCustom.trim()" @click="applyRcCustom">使用</el-button>
+              </div>
+              <div class="rc-line rc-muted">
+                <span class="rc-k">通道</span>
+                <span>{{ rcMode === 'webrtc-capable' ? 'WebRTC 低延迟（本机界面已就绪）' : 'JPEG 兼容模式' }}</span>
+              </div>
+            </div>
+          </template>
+          <div v-else class="lan-empty">remote-control 插件未启用：在「插件管理」页开启后可使用远程控制</div>
+        </div>
       </el-tab-pane>
       <el-tab-pane v-if="!embedded || isPaneMode" label="短信验证码" name="verification" lazy>
         <div class="sms-section">
@@ -619,7 +648,7 @@ function toggleThemeQuick() {
   settingsStore.update({ darkMode: next });
 }
 import type { ThemeName } from '../stores/settings';
-import { api, API_BASE, isCapacitor, getMobileApiBase, setMobileApiBase } from '../api/client';
+import { api, API_BASE, buildRequestHeaders, isCapacitor, getMobileApiBase, setMobileApiBase } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 import VoicePackPanel from '../components/VoicePackPanel.vue';
@@ -1346,6 +1375,64 @@ function copyLanUrl(ip: string) {
   navigator.clipboard.writeText(`http://${ip}:${lanPort.value}`).then(() => ElMessage.success('已复制地址'));
 }
 
+// 远程控制（remote-control 插件）：授权码查看/换码/自定义。
+// 授权码属于「被控端主人」的管理面信息，/status 只对带 x-rc-host-key 的请求返回码值；
+// hostkey 本身仅用于 Web UI（桌面端本机）标识，真正的门禁是 license + 插件启停。
+const rcEnabled = ref(false);
+const rcCode = ref('');
+const rcMode = ref('');
+const rcCustom = ref('');
+let rcHostKey = '';
+
+async function loadRcStatus() {
+  try {
+    const k = await api.get<any>('/plugin/remote-control/hostkey');
+    if ('error' in k || !k?.data?.key) { rcEnabled.value = false; return; }
+    rcHostKey = String(k.data.key);
+    const r = await fetch(`${API_BASE}/plugin/remote-control/status`, {
+      headers: { ...buildRequestHeaders(), 'x-rc-host-key': rcHostKey },
+    });
+    const body = await r.json();
+    if (body?.error) { rcEnabled.value = false; return; }
+    rcEnabled.value = true;
+    rcCode.value = String(body?.data?.code?.current || '');
+    rcMode.value = String(body?.data?.mode || '');
+  } catch {
+    rcEnabled.value = false;
+  }
+}
+
+async function rotateRcCode() {
+  try {
+    const r = await api.post<any>('/plugin/remote-control/code/rotate');
+    if ('error' in r) { ElMessage.error(r.error || '换码失败'); return; }
+    rcCode.value = String(r?.data?.current || '');
+    ElMessage.success('已生成新授权码（旧码立即失效）');
+  } catch (e) {
+    ElMessage.error((e as Error)?.message || '换码失败');
+  }
+}
+
+async function applyRcCustom() {
+  const code = rcCustom.value.trim();
+  if (!code) return;
+  try {
+    const r = await api.post<any>('/plugin/remote-control/code/custom', { code });
+    if ('error' in r) { ElMessage.error(r.error || '设置失败'); return; }
+    rcCode.value = String(r?.data?.current || code);
+    ElMessage.success('自定义授权码已生效');
+  } catch (e) {
+    ElMessage.error((e as Error)?.message || '设置失败');
+  }
+}
+
+function copyRcInvite() {
+  const ip = preferredLanIp?.value || '';
+  if (!ip || !rcCode.value) return;
+  const text = `言智远程控制：浏览器打开 http://${ip}:${lanPort.value}/remote ，输入授权码 ${rcCode.value}`;
+  navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制邀请信息'));
+}
+
 function openLan(ip: string) {
   const url = `http://${ip}:${lanPort.value}`;
   // ★ 后端未托管前端静态资源时（dev 模式按设计如此，见 server/index.ts resolveWebDist），
@@ -1449,6 +1536,7 @@ function formatBytes(n: number): string {
 
 onMounted(() => {
   void loadLanIps();
+  void loadRcStatus();
   void loadDataDirInfo();
   const extApi = (window as any).electronAPI?.extensions;
   if (extApi?.mode) {
@@ -1667,6 +1755,13 @@ onMounted(async () => {
 .lan-section { max-width: 600px; }
 .lan-tip { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .lan-empty { color: var(--color-text-secondary); font-size: 13px; padding: 16px 0; }
+/* 远程控制卡片：码值用等宽放大展示（向日葵式「报码」的可读性优先） */
+.rc-card-box { border: 1px solid var(--color-border, #dcdfe6); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.rc-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rc-k { width: 92px; flex-shrink: 0; font-size: 13px; color: var(--color-text-secondary); }
+.rc-v { font-size: 13px; word-break: break-all; }
+.rc-v-code { font-size: 18px; font-weight: 700; letter-spacing: 3px; }
+.rc-muted { color: var(--color-text-secondary); font-size: 13px; }
 /* dev 模式未托管前端时的说明条：琥珀色系（警示但不阻断），与 tab 内其他 tip 同节奏 */
 .lan-web-warn {
   color: var(--el-color-warning, #E6A23C);
