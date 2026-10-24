@@ -4,8 +4,21 @@
 
 ```
 novel_tuiwen { chapter: "novel/书名/ch03.txt", title: "书名", alias: "狐王痴狂",
-               chapter: "3", bg_video: "bg1.mp4,bg2.mp4" }
+               chapter_num: "3", bg_video: "bg1.mp4,bg2.mp4",
+               bgm: "auto", ambience: "auto", sfx: "auto", out: "03-output" }
 ```
+
+`chapter` = 章节正文 txt 路径；`chapter_num` = 第几集（画面大字 + 文件名 + 发布文案）。
+
+`images`（2026-10-24）：图片轮播。图文成品做口播视频时，把轮播图路径逗号分隔按顺序传入；每张图覆盖若干整句，切图边界由**真实配音时长**算出，与字幕、配音同源，不会不同步。图片等比缩小 + 居中补底（不裁剪图内文字）。传了 `images` 就不要再传 `bg_video`。
+
+`rate`（2026-10-24）：配音语速，默认 `+10%`（短视频口播偏快更好完播）。传 `"0"` 回原速，也认 `1.1`（倍率）/ `10`（百分比）。语速变化会自动作废旧分段配音重合成。
+
+`bgm`（2026-10-24）：`auto`（默认）/ `none` / 音频路径。`auto` 先找 `<工作目录>/00-source/bgm/` 下的音频；没有就本地合成 4 和弦循环垫（免版权），缓存到 `<outdir>/.bgm/auto_<mood>.m4a`，全集复用。
+
+`verbatim`（2026-10-24）：通用口播模式。`true` 时按原稿逐段口播，不改写、不加钩子、不加小说默认结尾；未传 `aspect` 默认 `9:16`。适合抖音运营等非小说内容。
+
+`out_name`：成片文件名（不含路径）。
 
 产物：**4:3 (1080x1440) mp4**，deliverable，落 `<工作目录>/output/`，文件名 `别名_第N章.mp4`。
 
@@ -25,7 +38,17 @@ novel_tuiwen { chapter: "novel/书名/ch03.txt", title: "书名", alias: "狐王
 - **无底框**（黑底 box 太丑已撤）—— 白字加粗 + 黑描边(3px) + 轻投影
 - 字号随画幅 `H*4.2%`（ASS `PlayRes` = 真实分辨率，FontSize 即像素，4:3≈60px / 9:16≈80px）
 - **长句单行快切 + 每条 140ms 淡入淡出** = 字幕逐句推进的滚动观感，不再两行长块换行
+- `MarginV`：**9:16 = H*14%**（2026-10-24 上移，避开抖音底部账号名/进度条；此前 H*5% 约 96px 会被 UI 盖住，手机上看像「没有字幕」）；4:3 = H*7%；16:9 = H*5%
+- 9:16 字号 = H*4.6%，其余 H*4.2%
 - `MarginV = H*5%`；老版 ffmpeg(4.2) 兼容
+
+## BGM（2026-10-24）
+
+- 默认 `bgm:"auto"`：**素材优先** —— `<工作目录>/00-source/bgm/` 下按文件名排序取第一条（mp3/m4a/wav/flac/aac/ogg）；
+- 没有素材 → 本地合成：按剧情选 `warm` / `suspense` / `epic` 三套 4 和弦循环垫（正弦三和弦 + 慢速颤音 + 低通 + 淡入淡出），缓存到 `<outdir>/.bgm/auto_<mood>.m4a`；
+- 合成失败自动回落环境音，**不阻塞出片**；
+- BGM 与环境音可以**同时存在**：有 BGM 时环境音自动降到 0.05，两路都过 `sidechaincompress` 被旁白闪避；
+- 想统一系列风格：第一次出片前用 `music_compose` 生成一段（style `cn`/`gentle`、bpm 70–80、4 和弦、bars 16–32），放到 `00-source/bgm/<别名>.m4a`，后续自动复用。
 
 ## 顶部引导语（2026-10-11 实装）
 
@@ -51,6 +74,10 @@ novel_tuiwen { chapter: "novel/书名/ch03.txt", title: "书名", alias: "狐王
 - ⚠️ **素材完整性必查**：`bg-ocean-evening.webm` 曾是**坏素材**（元数据报 14.585s/30fps，
   实际只解出 **47 帧 = 1.6s**，报 `File ended prematurely`）→ 混进列表会把背景拼短。
   脚本现在会自动检出并跳过；但下载新素材后仍建议 `ffprobe -count_frames` 验一遍真实帧数。
+- ⚡ **性能缓存（2026-10-24）**：背景归一化结果按「源路径 + 大小 + mtime + 目标规格」缓存，
+  默认复用（`REUSE_BGCLIP=0` 可关）；源已是 h264/yuv420p 且规格匹配时直接 `-c:v copy` 不重编码；
+  坏素材校验改用 `-count_packets`（秒级），不再 `-count_frames` 全解码（259s 素材曾要十几分钟）。
+  `SKIP_FRAMECHECK=1` 可跳过校验。
 
 ## TTS 朗读规范化
 

@@ -236,19 +236,21 @@ describe('⑤ 抖音引流 / 图文带货任务类型：共用智能体、不混
           expect(legal, `★ ${id} 的步骤「${s.title}」落点非法：${s.output}`).toContain(s.output);
         }
       }
-      // 关键步骤必须有确认点（纯提示词的"请确认"不阻塞，模型会边说边跑）
+      // 2026-10-24 用户拍板：只在开工时问一次，之后全自动 → 确认点恰好 1 个
       const confirmed = t.steps.filter((s) => s.confirmTool);
-      expect(confirmed.length, `★ ${id} 没有确认点（会一路跑完不停下来）`).toBeGreaterThanOrEqual(2);
+      expect(confirmed.length, `★ ${id} 的确认点应为开工一次（实际 ${confirmed.length} 个）`).toBe(1);
+      expect(t.steps[0].confirmTool, `★ ${id} 的确认点必须在第一步（开工一次问全）`).toBe('confirm');
     }
   });
 
-  it('★ 两条线都不承诺收益/不代发布（合规红线必须写进 SOP）', async () => {
+  it('★ 两条线都不承诺收益，明确要求发布即代发（合规红线写进 SOP）', async () => {
     const { TASK_TYPES } = await import('@yan-zhi/shared');
     for (const id of ['douyin_traffic', 'douyin_sell']) {
       const t = TASK_TYPES.find((x) => x.id === id)!;
       const text = JSON.stringify(t);
-      expect(text, `★ ${id} 的 SOP 里没有"不代发布"红线`).toMatch(/不代发布/);
+      expect(text, `★ ${id} 的 SOP 里没有"发布授权"口径`).toMatch(/即视为授权/);
       expect(text, `★ ${id} 的 SOP 里没有"不承诺"红线`).toMatch(/不承诺/);
+      expect(text, `★ ${id} 仍在说"不代发布"（与用户拍板冲突）`).not.toMatch(/不代发布/);
     }
   });
 });

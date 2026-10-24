@@ -59,12 +59,15 @@ def main():
     ap.add_argument("--outdir", default=os.path.join(HERE, "..", "output"), help="成片输出目录")
     ap.add_argument("--title", default="小说推文")
     ap.add_argument("--voice", default="zh-CN-YunxiNeural")
-    ap.add_argument("--bgm", default="")
+    ap.add_argument("--bgm", default="auto", help="背景音乐：auto（素材优先+自动合成兜底）/ none / 音频文件")
     ap.add_argument("--ambience", default="auto", help="环境音: auto/none/pad_soft/room/wind/rain/hum/space/fire")
     ap.add_argument("--ambience-level", type=float, default=0.12, help="环境音音量（旁白会把它闪避压下去）")
     ap.add_argument("--sfx", default="auto", help="高能点缀音效: auto / none")
     ap.add_argument("--sfx-level", type=float, default=0.5, help="点缀音效音量")
     ap.add_argument("--bg-video", default="", help="背景视频(修驴蹄/骑单车等), 逗号分隔多段")
+    ap.add_argument("--images", default="", help="视觉素材图片, 逗号分隔(按顺序), 图片轮播: 每张覆盖若干句，边界来自真实配音时长")
+    ap.add_argument("--rate", default=os.environ.get("YZ_TTS_RATE", "+10%"),
+                    help="配音语速: +10%%(默认) / 0 / 1.1 / 10 均可；YZ_TTS_RATE 可覆盖默认")
     ap.add_argument("--aspect", default="4:3", help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
     ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）")
@@ -73,6 +76,9 @@ def main():
     ap.add_argument("--tags", default="", help="发布内容自定义话题标签，缺省 '#小说 #推文 <别名>'")
     ap.add_argument("--no-publish-copy", action="store_true", help="跳过生成 publish.txt 发布文案")
     ap.add_argument("--use-llm", action="store_true")
+    ap.add_argument("--verbatim", action="store_true",
+                    help="通用口播模式：原稿逐段成片（不改写/不加钩子/不加默认结尾）")
+    ap.add_argument("--out-name", default="", help="成片文件名（不含路径）")
     a = ap.parse_args()
 
     # 章节号：显式传 > 从文件名推断（ch03/chapter03/03.txt -> 3）
@@ -94,22 +100,27 @@ def main():
     run([PY, os.path.join(HERE, "script_gen.py"),
          "--input", a.input, "--output", script_json, "--title", a.title]
         + (["--ending", a.ending] if a.ending else [])
+        + (["--verbatim"] if a.verbatim else [])
         + (["--use-llm"] if a.use_llm else []))
     # 2) TTS
     run([PY, os.path.join(HERE, "tts_gen.py"),
-         "--script", script_json, "--outdir", audio_dir, "--voice", a.voice])
+         "--script", script_json, "--outdir", audio_dir, "--voice", a.voice]
+        + (["--rate", a.rate] if a.rate else []))
     # 3) 合成
     run([PY, os.path.join(HERE, "compose_video.py"),
          "--script", script_json, "--outdir", out_dir]
         + (["--bg-video", a.bg_video] if a.bg_video else [])
+        + (["--images", a.images] if a.images else [])
         + (["--bgm", a.bgm] if a.bgm else [])
         + ["--ambience", a.ambience, "--ambience-level", str(a.ambience_level)]
         + ["--sfx", a.sfx, "--sfx-level", str(a.sfx_level)]
         + ["--aspect", a.aspect] + (["--banner", a.banner] if a.banner else [])
         + (["--alias", a.alias] if a.alias else [])
+        + (["--out-name", a.out_name] if a.out_name else [])
         + (["--chapter", chapter] if chapter else []))
     # 4) 发布文案（表单标题+内容模板）→ <workdir>/publish.txt
-    if not a.no_publish_copy:
+    #    ★ verbatim 通用口播不生成：该模板是小说推文专用（搜别名看全文），套到口播上只会产出「第集」这类空壳。
+    if not a.no_publish_copy and not a.verbatim:
         run([PY, os.path.join(HERE, "publish_copy.py"),
              "--script", script_json, "--outdir", workdir, "--stdout"]
             + (["--alias", a.alias] if a.alias else [])

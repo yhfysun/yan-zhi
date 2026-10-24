@@ -58,14 +58,22 @@ describe('compose_video.py 背景循环实现不变量', () => {
     expect(bgBranch).toMatch(/crop=\{W\}:\{H\},fps=\{FPS\},setsar=1/);
   });
 
-  it('★ 探测每段真实可解码时长（-count_frames），坏素材告警并跳过', () => {
-    expect(bgBranch).toMatch(/-count_frames/);
-    expect(bgBranch).toMatch(/nb_read_frames/);
+  it('★ 探测每段真实可解码时长（-count_packets，秒级），坏素材告警并跳过', () => {
+    // 2026-10-24：-count_frames 会全解码，259s 素材要十几分钟 → 改读包（count_packets）。
+    expect(SRC).toMatch(/-count_packets/);
+    expect(SRC).toMatch(/nb_read_packets/);
     // 有「真实时长 < 元数据时长」的坏素材判定
     expect(bgBranch).toMatch(/real < dur - 1\.0/);
     // 过短素材直接跳过
     expect(bgBranch).toMatch(/if dur < 1\.0:/);
     expect(bgBranch).toMatch(/疑似素材损坏\/截断|有效时长.*过短/);
+  });
+
+  it('★ 背景归一化结果可复用（REUSE_BGCLIP 默认开，meta 键含源大小/mtime/规格）', () => {
+    expect(bgBranch).toMatch(/REUSE_BGCLIP/);
+    expect(bgBranch).toMatch(/meta_path/);
+    expect(bgBranch).toMatch(/"size": st\.st_size/);
+    expect(bgBranch).toMatch(/复用已转码片段/);
   });
 
   it('循环重复片段列表拼到累计 >= 总时长 + 余量', () => {

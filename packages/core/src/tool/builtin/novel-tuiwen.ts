@@ -14,7 +14,7 @@ import { toolError } from '../result';
 export class NovelTuiwenTool implements BuiltInTool {
   name = 'novel_tuiwen';
   description =
-    '有声小说推文视频生成：把小说章节文本自动改编成口播脚本，Edge-TTS 配音，与背景视频（**风景 / 海洋 / 动物世界 / 延时自然**等舒缓、无人声、可循环的素材）合成为 4:3 (1080x1440) mp4，含顶部标题与逐句字幕。chapter 必填（工作目录内的 .txt），bg_video 可选（逗号分隔多个背景视频，自动循环铺满）。产出最终视频（deliverable）。';
+    '有声小说推文视频生成：把小说章节文本自动改编成口播脚本，Edge-TTS 配音，与背景视频（**风景 / 海洋 / 动物世界 / 延时自然**等舒缓、无人声、可循环的素材）或**图片轮播**（images：图文成品做口播视频）合成为 4:3 (1080x1440) mp4，含顶部标题与逐句字幕。chapter 必填（工作目录内的 .txt），bg_video / images 可选（逗号分隔多个，按顺序）。画面切换、字幕、配音三条时间轴同源（都按真实配音时长），不会不同步。产出最终视频（deliverable）。';
 
   inputSchema = {
     type: 'object',
@@ -22,6 +22,7 @@ export class NovelTuiwenTool implements BuiltInTool {
       chapter: { type: 'string', description: '小说章节文本文件路径（.txt，相对工作目录或绝对路径）。必填。' },
       title: { type: 'string', description: '视频标题（顶部展示 + 文件名），默认取「小说推文」。' },
       bg_video: { type: 'string', description: '背景视频路径，多个用逗号分隔（按顺序轮播，循环铺满全片）。**题材建议：风景 / 海洋 / 动物世界 / 延时自然等舒缓、无人声、可循环的素材**（与口播不抢注意力，也更符合平台调性）；尽量选与故事氛围匹配的（悬疑配暗色/夜景、治愈配明亮自然）。省略则用深色文字占位画面。' },
+      images: { type: 'string', description: '图片路径，多个用逗号分隔（按顺序）。**图片轮播模式：图文成品 / 轮播图文做口播视频时用它**——每张图覆盖若干整句，切图边界与字幕、配音同源（都来自真实配音时长），不会出现画面/字幕/配音不同步。传了 images 就不要再传 bg_video（bg_video 优先）。图片按等比缩放居中补底，不裁剪图内文字。' },
       aspect: { type: 'string', enum: ['4:3', '9:16', '16:9'], description: '画幅：9:16=抖音竖屏 1080x1920（抖音发布用这个）；4:3=1080x1440（默认）；16:9=横屏 1920x1080。' },
       ending: { type: 'string', description: '结尾引导口播。发抖音必传：搜索别名XX看后续（XX=生效中的别名关键词）。禁止出现原书名。' },
       banner: { type: 'string', description: '视频顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名，传别名。' },
@@ -30,10 +31,14 @@ export class NovelTuiwenTool implements BuiltInTool {
       tags: { type: 'string', description: '发布内容自定义话题标签，缺省 "#小说 #推文 <别名>"。' },
       no_publish_copy: { type: 'boolean', description: '跳过生成 publish.txt 发布文案（默认生成到 <outdir>/.work/publish.txt）。' },
       voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunxiNeural（年轻男声）；女声可用 zh-CN-XiaoyiNeural。' },
+      rate: { type: 'string', description: '配音语速：默认 "+10%"（短视频口播偏快，完播率更好）；传 "0" 回原速，也可传 1.1（倍率）或 10（百分比）。语速变了会自动作废旧分段配音重合成。' },
       out: { type: 'string', description: '输出目录，默认 <工作目录>/output/。' },
       use_llm: { type: 'boolean', description: '用 LLM 做钩子化改编（需环境变量 OPENAI_BASE_URL/OPENAI_API_KEY）。默认规则切分。' },
       ambience: { type: 'string', description: '环境音：auto（默认，按剧情情绪自动选）/ none / pad_soft / room / wind / rain / hum / space / fire。音量很低且会被旁白自动闪避，不会盖过配音。' },
       sfx: { type: 'string', enum: ['auto', 'none'], description: '高能点缀音效：auto=只在开头和高能句点缀（最多 5 个，间隔≥6s）；none=不加。默认 auto。' },
+      bgm: { type: 'string', description: '背景音乐：auto（默认，优先用 <工作目录>/00-source/bgm/ 里的音频，没有就本地合成一段免版权器乐）/ none / 音频文件路径。' },
+      verbatim: { type: 'boolean', description: '通用口播模式：true 时按原稿逐段口播，不改写、不加钩子、不加小说默认结尾；未传 aspect 时默认 9:16。做非小说推文的抖音口播视频时传 true。' },
+      out_name: { type: 'string', description: '成片文件名（不含路径，可省 .mp4）。缺省按「别名_第N集.mp4」或标题命名。' },
       tts_concurrency: { type: 'number', description: 'TTS 并发路数（1-16）。默认取「设置 → 小说推文并发」；网络好可调高提速，频繁 403/超时则调低。' },
       compose_concurrency: { type: 'number', description: '合成并行编码段数（1-8）。1 = 关闭分段、整片单次编码；默认取设置（0 = 按 CPU 自动）。' },
     },
@@ -61,6 +66,13 @@ export class NovelTuiwenTool implements BuiltInTool {
         .join(',')
       : '';
 
+    // 图片轮播素材（图文成品 → 口播视频）：与 bg_video 一样按顺序、相对工作目录解析
+    const images = typeof args.images === 'string' && args.images.trim()
+      ? args.images.split(',').map((s) => s.trim()).filter(Boolean)
+        .map((p) => (isAbsolutePath(p) ? p : resolveToolPath(p, ws)))
+        .join(',')
+      : '';
+
     // 输出目录：默认 <工作目录>/output/；工作目录未知时退到系统临时目录
     const outDirRaw = typeof args.out === 'string' && args.out.trim()
       ? resolveToolPath(args.out.trim(), ws)
@@ -71,10 +83,26 @@ export class NovelTuiwenTool implements BuiltInTool {
     if (args.title) argv.push('--title', String(args.title));
     if (args.voice) argv.push('--voice', String(args.voice));
     if (bgVideo) argv.push('--bg-video', bgVideo);
+    if (images) argv.push('--images', images);
+    if (typeof args.rate === 'string' && args.rate.trim()) argv.push('--rate', args.rate.trim());
     if (args.use_llm) argv.push('--use-llm');
+    if (args.verbatim === true) argv.push('--verbatim');
     if (typeof args.ambience === 'string' && args.ambience.trim()) argv.push('--ambience', args.ambience.trim());
     if (args.sfx === 'none' || args.sfx === 'auto') argv.push('--sfx', args.sfx);
-    if (args.aspect && ['4:3', '9:16', '16:9'].includes(String(args.aspect))) argv.push('--aspect', String(args.aspect));
+    if (typeof args.bgm === 'string' && args.bgm.trim()) {
+      const b = args.bgm.trim();
+      argv.push('--bgm', b === 'auto' || b === 'none' ? b : resolveToolPath(b, ws));
+    } else {
+      argv.push('--bgm', 'auto');
+    }
+    if (typeof args.out_name === 'string' && args.out_name.trim()) {
+      argv.push('--out-name', args.out_name.trim());
+    }
+    if (args.aspect && ['4:3', '9:16', '16:9'].includes(String(args.aspect))) {
+      argv.push('--aspect', String(args.aspect));
+    } else if (args.verbatim === true) {
+      argv.push('--aspect', '9:16');
+    }
     if (typeof args.ending === 'string' && args.ending.trim()) argv.push('--ending', args.ending.trim());
     if (typeof args.banner === 'string' && args.banner.trim()) argv.push('--banner', args.banner.trim());
     // 标题条/集数（2026-10-12 画面v3）：alias→顶部常驻「搜『别名』看全文｜番茄小说」；

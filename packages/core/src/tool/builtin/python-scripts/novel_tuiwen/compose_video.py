@@ -17,8 +17,10 @@ novel-tuiwen 视频合成器 v3 (ffmpeg, 4:3 1080x1440)
       --bg-video bg1.mp4,bg2.mp4 [--alias 狐王痴狂 --chapter 1] [--bgm bgm.mp3]
 """
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -64,6 +66,28 @@ def probe_duration(ffmpeg, path):
         return float(out.stdout.strip())
     except ValueError:
         return 5.0
+
+
+def probe_packets_duration(ffmpeg, path, fps=FPS):
+    """用 -count_packets 估算可解码时长（读包，不逐帧解码）。
+
+    ★ 2026-10-24：原 -count_frames 会把整段背景全解码一遍，259s 1080p 素材要十几分钟，
+      用户被迫改脚本跳过校验。count_packets 是秒级，仍能识别「元数据虚高/文件截断」。
+      返回 0 表示探测失败。"""
+    fp = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+    if not os.path.exists(fp):
+        import shutil
+        fp = shutil.which("ffprobe") or fp
+    try:
+        r = subprocess.run([fp, "-v", "error", "-count_packets",
+                            "-select_streams", "v:0",
+                            "-show_entries", "stream=nb_read_packets",
+                            "-of", "csv=p=0", path],
+                           capture_output=True, text=True)
+        n = int((r.stdout or "").strip().split(",")[0] or 0)
+        return n / float(fps) if n > 0 else 0.0
+    except Exception:
+        return 0.0
 
 
 def disp_w(ch: str) -> float:
@@ -330,6 +354,100 @@ def pick_ambience(script_text, explicit):
     return 'pad_soft'
 
 
+# ── BGM（2026-10-24）：素材优先，缺失时本地合成 4 和弦循环垫 ──
+# 动机：此前只有 ambience（风声/雨声）没有音乐，成片很枯燥；而 run_pipeline 的 --bgm
+# 一直存在却没被工具面暴露。现在 auto = 先找 <工作目录>/00-source/bgm/ 下的音频，
+# 找不到就本地合成一段免版权器乐（完全离线，不依赖外部音乐模型）。
+BGM_EXTS = ('.mp3', '.m4a', '.wav', '.flac', '.aac', '.ogg')
+BGM_CHORDS = {
+    'warm': [('C4', 'E4', 'G4'), ('G3', 'B3', 'D4'), ('A3', 'C4', 'E4'), ('F3', 'A3', 'C4')],
+    'suspense': [('A3', 'C4', 'E4'), ('F3', 'A3', 'C4'), ('C4', 'E4', 'G4'), ('G3', 'B3', 'D4')],
+    'epic': [('D3', 'F3', 'A3'), ('Bb2', 'D3', 'F3'), ('F3', 'A3', 'C4'), ('C3', 'E3', 'G3')],
+}
+NOTE_SEMITONE = {'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11}
+
+
+def _note_freq(note):
+    """'A3' / 'F#4' / 'Bb2' → 频率（Hz）。"""
+    letter = note[0].upper()
+    i = 1
+    semi = NOTE_SEMITONE[letter]
+    if i < len(note) and note[i] in '#b':
+        semi += 1 if note[i] == '#' else -1
+        i += 1
+    midi = 12 * (int(note[i:]) + 1) + semi
+    return 440.0 * (2 ** ((midi - 69) / 12.0))
+
+
+def pick_bgm_mood(script_text):
+    text = script_text or ''
+    if any(w in text for w in ('战', '杀', '血', '死', '怒', '轰', '炸', '末日', '逃亡')):
+        return 'epic'
+    if any(w in text for w in ('悬', '怕', '恐怖', '尸', '阴', '诡', '夜')):
+        return 'suspense'
+    return 'warm'
+
+
+def render_bgm(ffmpeg, tmp, mood, out_path):
+    """本地合成 4 和弦循环垫（免版权）。失败抛异常，由调用方回落环境音。"""
+    chords = BGM_CHORDS.get(mood, BGM_CHORDS['warm'])
+    parts = []
+    for ci, chord in enumerate(chords):
+        expr = '+'.join(
+            f"{(0.075 if k == 0 else 0.055):.3f}*sin(2*PI*{_note_freq(n):.2f}*t)"
+            for k, n in enumerate(chord)
+        )
+        p = os.path.join(tmp, f"bgm_chord_{ci}.wav")
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi",
+                        "-i", f"aevalsrc={expr}:d=4:s=44100",
+                        "-af", "afade=t=in:st=0:d=1.1,afade=t=out:st=2.9:d=1.1,"
+                               "lowpass=f=1400,tremolo=f=0.25:d=0.12",
+                        "-ar", "44100", "-ac", "1", p], check=True)
+        parts.append(p)
+    cmd = [ffmpeg, "-y", "-v", "error"]
+    for p in parts:
+        cmd += ["-i", p]
+    fc = "".join(f"[{i}:a]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[a]"
+    cmd += ["-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "96k", out_path]
+    subprocess.run(cmd, check=True)
+    return out_path
+
+
+def resolve_bgm(ffmpeg, bgm, outdir, tmp, script_text):
+    """bgm 取值：''/'none' → 不加；'auto' → 素材优先、缺失则合成；其它 → 音频文件路径。"""
+    if not bgm or bgm == 'none':
+        return ''
+    if bgm != 'auto':
+        return bgm if os.path.exists(bgm) else ''
+    roots = []
+    for r in (os.getcwd(), os.path.dirname(os.path.abspath(outdir))):
+        if r and r not in roots:
+            roots.append(r)
+    for root in roots:
+        d = os.path.join(root, '00-source', 'bgm')
+        if not os.path.isdir(d):
+            continue
+        cands = sorted(f for f in os.listdir(d) if f.lower().endswith(BGM_EXTS))
+        if cands:
+            picked = os.path.join(d, cands[0])
+            print(f"[audio] bgm=素材 {picked}", file=sys.stderr)
+            return picked
+    mood = pick_bgm_mood(script_text)
+    cache_dir = os.path.join(outdir, '.bgm')
+    os.makedirs(cache_dir, exist_ok=True)
+    out = os.path.join(cache_dir, f"auto_{mood}.m4a")
+    if os.path.exists(out) and os.path.getsize(out) > 0:
+        print(f"[audio] bgm=缓存 {out}", file=sys.stderr)
+        return out
+    try:
+        render_bgm(ffmpeg, tmp, mood, out)
+        print(f"[audio] bgm=合成 {mood} → {out}", file=sys.stderr)
+        return out
+    except Exception as e:
+        print(f"[audio] bgm 合成失败，回落环境音：{e}", file=sys.stderr)
+        return ''
+
+
 def plan_accents(cues, enabled, level):
     """只在开头 + 高能句点缀，最多 5 个，间隔 ≥6s。返回 [(t, id, gain)]。"""
     if not enabled:
@@ -347,11 +465,12 @@ def plan_accents(cues, enabled, level):
     return plan
 
 
-def build_audio_bed(ffmpeg, tmp, audio_items, bgm, ambience, amb_level, accents, total_hint):
-    """旁白 + 环境垫（侧链闪避）+ 点缀音效，输出单条 aac。
+def build_audio_bed(ffmpeg, tmp, audio_items, bgm, ambience, amb_level, accents, total_hint,
+                    bgm_level=0.12):
+    """旁白 + BGM/环境垫（侧链闪避）+ 点缀音效，输出单条 aac。
 
-    ★ 人声永远主轨：环境垫走 sidechaincompress 被旁白压下去；
-      点缀音效只在句首出现且音量更低——「有氛围但不抢词」。
+    ★ 人声永远主轨：BGM 与环境垫都走 sidechaincompress 被旁白压下去；
+      有 BGM 时环境垫降到 0.05，避免两层氛围互相糊住。
     """
     files = [p for _, p in audio_items]
     n = len(files)
@@ -359,39 +478,44 @@ def build_audio_bed(ffmpeg, tmp, audio_items, bgm, ambience, amb_level, accents,
     for p in files:
         cmd += ["-i", p]
 
-    amb_idx = None
+    # 音床层：BGM（音乐）与环境垫（氛围）可以同时存在
+    beds = []  # [(input_index, level)]
+    next_idx = n
     if bgm and os.path.exists(bgm):
         cmd += ["-stream_loop", "-1", "-i", bgm]
-        amb_idx = n
-    elif ambience and ambience in AMBIENCE:
+        beds.append((next_idx, bgm_level))
+        next_idx += 1
+    if ambience and ambience in AMBIENCE:
         render_sfx(ffmpeg, AMBIENCE[ambience], os.path.join(tmp, f"amb_{ambience}.wav"))
         cmd += ["-stream_loop", "-1", "-i", os.path.join(tmp, f"amb_{ambience}.wav")]
-        amb_idx = n
+        beds.append((next_idx, min(amb_level, 0.05) if beds else amb_level))
+        next_idx += 1
 
     acc_entries = []
-    base_idx = n + (1 if amb_idx is not None else 0)
     for i, (at, sid, gain) in enumerate(accents):
         if sid not in ACCENTS:
             continue
         f = render_sfx(ffmpeg, ACCENTS[sid], os.path.join(tmp, f"sfx_{i}_{sid}.wav"))
         cmd += ["-i", f]
-        acc_entries.append((base_idx + len(acc_entries), at, gain))
+        acc_entries.append((next_idx + len(acc_entries), at, gain))
 
     fc = "".join(f"[{i}:a]" for i in range(n)) + f"concat=n={n}:v=0:a=1[nar]"
     # ★ 老版 ffmpeg(2019, EVCapture 自带) 没有 amix 的 normalize 选项，
     #   默认会按输入路数衰减。这里先给每路乘 N，再 amix，等价于 normalize=0。
-    n_mix = 1 + (1 if amb_idx is not None else 0) + len(acc_entries)
-    if amb_idx is not None:
-        # 老版 ffmpeg 的标签只能被消费一次：旁白 asplit 成两路（混音 / 侧链键）
-        fc += f";[nar]asplit=2[narA][narB];[narA]volume={n_mix}[narx]"
+    n_mix = 1 + len(beds) + len(acc_entries)
+    if beds:
+        # 老版 ffmpeg 的标签只能被消费一次：旁白 asplit 成 1+N 路（混音 + 每层音床一个侧链键）
+        labels = ["[narA]"] + [f"[narK{i}]" for i in range(len(beds))]
+        fc += f";[nar]asplit={len(labels)}" + "".join(labels)
+        fc += f";[narA]volume={n_mix}[narx]"
     else:
         fc += f";[nar]volume={n_mix}[narx]"
     mix_ins = ["[narx]"]
-    if amb_idx is not None:
-        fc += (f";[{amb_idx}:a]atrim=0:{max(1.0, total_hint):.2f}[ambt]"
-               ";[ambt][narB]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=420[ambd]"
-               f";[ambd]volume={amb_level * n_mix:.4f}[ambx]")
-        mix_ins.append("[ambx]")
+    for bi, (idx, lvl) in enumerate(beds):
+        fc += (f";[{idx}:a]atrim=0:{max(1.0, total_hint):.2f}[bed{bi}t]"
+               f";[bed{bi}t][narK{bi}]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=420[bed{bi}d]"
+               f";[bed{bi}d]volume={lvl * n_mix:.4f}[bed{bi}x]")
+        mix_ins.append(f"[bed{bi}x]")
     for (idx, at, gain) in acc_entries:
         fc += f";[{idx}:a]adelay={int(at * 1000)}|{int(at * 1000)},volume={gain * n_mix:.4f}[acc{idx}]"
         mix_ins.append(f"[acc{idx}]")
@@ -578,13 +702,40 @@ def _compose_chunks(ffmpeg: str, tmp: str, bg_full: str, chunks, title_vf: str,
     return video_full
 
 
+def plan_image_slots(cues, n_images):
+    """把时间轴按 cue 边界切成 n_images 段 → [(start, end), ...]（2026-10-24）。
+
+    切分点**只落在 cue 边界上**：一张图的显示区间恰好覆盖整数个句子，
+    于是换图、换字幕、换配音共用同一组时间点（用户实报的「不同步」就是三条轴各算各的）。
+    图比句多时按一句一图处理，多余张数由调用方告警忽略。
+    """
+    m = len(cues)
+    if m == 0 or n_images <= 0:
+        return []
+    if n_images >= m:
+        return [(cues[i][0], cues[i][1]) for i in range(m)]
+    slots = []
+    for i in range(n_images):
+        a = (i * m) // n_images
+        b = ((i + 1) * m) // n_images - 1
+        if b < a:
+            b = a
+        if b >= m:
+            b = m - 1
+        slots.append((cues[a][0], cues[b][1]))
+    return slots
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True)
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--bg-video", default="", help="逗号分隔背景视频, 按顺序循环使用")
+    ap.add_argument("--images", default="",
+                    help="逗号分隔图片（按顺序）：图片轮播模式，每张覆盖若干整句，切图边界=字幕/配音边界")
     ap.add_argument("--title-size", type=int, default=64)
-    ap.add_argument("--bgm", default="")
+    ap.add_argument("--bgm", default="", help="背景音乐：auto（默认素材优先+自动合成兜底）/ none / 音频文件")
+    ap.add_argument("--out-name", default="", help="成片文件名（不含路径；缺省按别名+集数或标题命名）")
     ap.add_argument("--ambience", default="auto",
                     help="环境音：auto（按文案情绪选）/ none / pad_soft / room / wind / rain / hum / space / fire")
     ap.add_argument("--ambience-level", type=float, default=0.12, help="环境音音量（0~1，默认 0.12，会被旁白闪避压下去）")
@@ -634,10 +785,18 @@ def main():
     #   ③ 单行快切：长句按显示宽度切成单行小块、时间按宽度分摊，字幕逐句推进（"滚动"观感），
     #      彻底消灭两行长块换行；
     #   ④ 每条 Dialogue 带 \fad(140,140) 淡入淡出，衔接更顺。老版 ffmpeg 的 libass 全兼容。
-    sub_font_px = max(40, int(H * 0.042))
-    margin_v = max(40, int(H * 0.05))
+    # ★ 字幕安全区（2026-10-24）：9:16 成片在抖音播放时底部有账号名/进度条/文案遮罩，
+    #   原 H*5%（约 96px）字幕正好被盖住，用户实际观感是「没有字幕」→ 上移到 14%。
+    if a.aspect == '9:16':
+        sub_font_px = max(40, int(H * 0.046))
+        margin_v = max(40, int(H * 0.14))
+    elif a.aspect == '4:3':
+        sub_font_px = max(40, int(H * 0.042))
+        margin_v = max(40, int(H * 0.07))
+    else:
+        sub_font_px = max(40, int(H * 0.042))
+        margin_v = max(40, int(H * 0.05))
     ass = os.path.join(tmp, "subs.ass")
-    build_ass(cues, ass, sub_font_px, margin_v)
 
     # ---- 2) 音频：旁白 + 环境音（被旁白侧链闪避）+ 高能点缀音效 ----
     #   ★ 人声永远主轨：环境垫走 sidechaincompress 被旁白压下去，点缀音效只在高能句句首。
@@ -648,12 +807,27 @@ def main():
     )
     ambience = pick_ambience(script_text, a.ambience)
     accents = plan_accents(cues, a.sfx != 'none', a.sfx_level)
+    bgm_path = resolve_bgm(ffmpeg, a.bgm, a.outdir, tmp, script_text)
     audio_out = build_audio_bed(
-        ffmpeg, tmp, audio_items, a.bgm, ambience,
+        ffmpeg, tmp, audio_items, bgm_path, ambience,
         max(0.0, min(1.0, a.ambience_level)), accents, t,
     )
-    print(f"[audio] ambience={ambience} level={a.ambience_level} accents={[x[1] for x in accents]}")
-    total = max(t, probe_duration(ffmpeg, audio_out))
+    print(f"[audio] bgm={os.path.basename(bgm_path) if bgm_path else 'none'} "
+          f"ambience={ambience} level={a.ambience_level} accents={[x[1] for x in accents]}")
+
+    # ★ 时间轴校正（2026-10-24 用户：「画面，字幕，配音不同步」）：
+    #   逐段 probe 出来的时长之和 ≠ 实际拼接后的音频长度（mp3 解码边界/采样取整，
+    #   每段差几十毫秒，几十段就累成秒级漂移）→ 字幕越往后越对不上配音。
+    #   以**真实旁白长度**为准，按比例把 cue 边界缩放回去；画面分段也用同一张 cue 表，
+    #   于是「画面 / 字幕 / 配音」三条时间轴天然同源。
+    real_audio = probe_duration(ffmpeg, audio_out)
+    if real_audio > 0 and t > 0 and abs(real_audio - t) > 0.15:
+        k = real_audio / t
+        cues = [(s * k, e * k, txt) for (s, e, txt) in cues]
+        print(f"[compose] 时间轴校正 ×{k:.4f}（逐段累计 {t:.2f}s → 实际旁白 {real_audio:.2f}s）")
+        t = real_audio
+    build_ass(cues, ass, sub_font_px, margin_v)
+    total = max(t, real_audio)
 
     # ---- 3) 视频轨 + 字幕 + 标题 ----
     # ★ 顶部引导语支持多行 + 淡入（2026-10-07）：
@@ -695,13 +869,18 @@ def main():
     final_vf = sub_vf + (f",{badge_vf},{ep_vf}" if a.chapter else "")
 
     # 文件名：传了别名/章节时用「别名_第N集.mp4」，否则回落旧命名
-    if a.alias or a.chapter:
+    # 文件名：显式 out-name > 别名+集数 > 标题（通用口播模式不再拼成「标题_script.mp4」）
+    if a.out_name:
+        safe_name = os.path.basename(a.out_name.strip())
+        out_name = safe_name if safe_name.lower().endswith('.mp4') else safe_name + '.mp4'
+    elif a.alias or a.chapter:
         out_name = f"{a.alias or script.get('title', 'novel')}" + (f"_第{a.chapter}集" if a.chapter else "") + ".mp4"
     else:
-        out_name = f"{script.get('title', 'novel')}_{os.path.splitext(os.path.basename(a.script))[0]}.mp4"
+        out_name = f"{script.get('title', 'novel')}.mp4"
     final = os.path.join(a.outdir, out_name)
 
     bg_clips = [p.strip() for p in a.bg_video.split(",") if p.strip()] if a.bg_video else []
+    images = [p.strip() for p in a.images.split(",") if p.strip()] if a.images else []
     if bg_clips:
         # ★ 2026-10-09 重写：原「多输入 -stream_loop -1 + concat 滤镜」在项目自带 2019 版 ffmpeg 上
         #   实测失效——输出被最短的一条输入轨截断（第1/2章成片都只有 108.2s，而口播 448s）。
@@ -712,37 +891,92 @@ def main():
         #          ⑤ 主命令改为**单输入 bg_full**，trim 到 total。
         #   实测：3 段背景拼 4 轮 = 216.24s（精确）；单输入 -stream_loop/trim 均正常生效。
         #   注：远端 origin 有同款修复但缺「坏素材检出」→ 本版为超集，保留检出 + 跳过 + 全坏报错。
+        # ★ 2026-10-24 性能：背景归一化结果按「源路径+大小+mtime+目标规格」缓存复用。
+        #   此前每集都重新转码，且用 -count_frames 全解码校验（259s 片段要十几分钟），
+        #   用户被迫手改脚本跳过。现在默认复用（REUSE_BGCLIP=0 可关），校验改读包（count_packets）。
+        reuse = os.environ.get("REUSE_BGCLIP", "1") != "0"
+        skip_framecheck = os.environ.get("SKIP_FRAMECHECK") == "1"
         clip_files, clip_durs = [], []
         for i, p in enumerate(bg_clips):
             if not os.path.exists(p):
                 print(f"[compose] 警告：背景 {p} 不存在，跳过", file=sys.stderr)
                 continue
             clip = os.path.join(tmp, f"bgclip_{i:02d}.mp4")
-            subprocess.run(
-                [ffmpeg, "-y", "-v", "error", "-i", p,
-                 "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,"
-                        f"crop={W}:{H},fps={FPS},setsar=1",
-                 "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                 "-pix_fmt", "yuv420p", clip],
-                check=True,
-            )
-            dur = probe_duration(ffmpeg, clip)
-            # ★ 有效时长校验：坏素材（webm 截断）元数据报 14.6s 但实际只有 1.6s
-            fprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
             try:
-                r = subprocess.run([fprobe, "-v", "error", "-count_frames",
-                                    "-select_streams", "v:0",
-                                    "-show_entries", "stream=nb_read_frames",
-                                    "-of", "csv=p=0", clip],
-                                   capture_output=True, text=True)
-                n = int((r.stdout or "").strip().split(",")[0] or 0)
-                real = n / float(FPS)
-                if n > 0 and real < dur - 1.0:
-                    print(f"[compose] 警告：背景 {os.path.basename(p)} 只解出 {real:.1f}s"
-                          f"（元数据 {dur:.1f}s），疑似素材损坏/截断", file=sys.stderr)
-                    dur = real
-            except Exception:
-                pass
+                st = os.stat(p)
+                key = {"src": os.path.abspath(p), "size": st.st_size, "mtime": int(st.st_mtime),
+                       "w": W, "h": H, "fps": FPS, "v": 2}
+                ck = hashlib.sha1(json.dumps(key, sort_keys=True).encode()).hexdigest()[:12]
+            except OSError:
+                key, ck = None, None
+            # ★ 缓存必须放在 tmp 之外：tmp 每次跑完会被清掉，放里面等于没缓存。
+            cache_dir = os.path.join(a.outdir, ".bgcache")
+            cache_clip = os.path.join(cache_dir, f"bgclip_{ck}.mp4") if ck else ""
+            meta_path = cache_clip + ".meta.json"
+
+            dur = 0.0
+            cached = False
+            if reuse and ck and os.path.exists(cache_clip) and os.path.getsize(cache_clip) > 0 \
+                    and os.path.exists(meta_path):
+                try:
+                    if json.load(open(meta_path, encoding="utf-8")) == key:
+                        shutil.copyfile(cache_clip, clip)
+                        dur = probe_duration(ffmpeg, clip)
+                        cached = dur >= 1.0
+                except Exception:
+                    cached = False
+            if cached:
+                print(f"[compose] 复用已转码片段 {os.path.basename(cache_clip)}", file=sys.stderr)
+            else:
+                copied = False
+                # 源规格已匹配（h264/yuv420p + 分辨率/帧率/SAR/无旋转）→ 直接 stream copy
+                try:
+                    spec = subprocess.run(
+                        [_ffprobe_path(ffmpeg), "-v", "error", "-select_streams", "v:0",
+                         "-show_entries",
+                         "stream=codec_name,width,height,r_frame_rate,sample_aspect_ratio,pix_fmt:stream_tags=rotate",
+                         "-of", "json", p], capture_output=True, text=True)
+                    s0 = (json.loads(spec.stdout or "{}").get("streams") or [{}])[0]
+                    num, _, den = (s0.get("r_frame_rate") or "0/1").partition("/")
+                    src_fps = (float(num) / float(den)) if float(den or 0) else 0.0
+                    rotate = (s0.get("tags") or {}).get("rotate") or "0"
+                    if (s0.get("codec_name") == "h264" and s0.get("pix_fmt") == "yuv420p"
+                            and int(s0.get("width") or 0) == W and int(s0.get("height") or 0) == H
+                            and abs(src_fps - FPS) < 0.01
+                            and (s0.get("sample_aspect_ratio") or "1:1") in ("1:1", "0:1", "N/A")
+                            and rotate in ("0", "")):
+                        subprocess.run([ffmpeg, "-y", "-v", "error", "-i", p,
+                                        "-an", "-c:v", "copy", clip], check=True)
+                        copied = True
+                        print(f"[compose] 规格已匹配，直接复用源视频 {os.path.basename(p)}",
+                              file=sys.stderr)
+                except Exception:
+                    copied = False
+                if not copied:
+                    subprocess.run(
+                        [ffmpeg, "-y", "-v", "error", "-i", p,
+                         "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,"
+                                f"crop={W}:{H},fps={FPS},setsar=1",
+                         "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                         "-pix_fmt", "yuv420p", clip],
+                        check=True,
+                    )
+                dur = probe_duration(ffmpeg, clip)
+                # ★ 有效时长校验：坏素材（webm 截断）元数据报 14.6s 但实际只有 1.6s
+                if not skip_framecheck:
+                    real = probe_packets_duration(ffmpeg, clip, FPS)
+                    if real > 0 and real < dur - 1.0:
+                        print(f"[compose] 警告：背景 {os.path.basename(p)} 只解出 {real:.1f}s"
+                              f"（元数据 {dur:.1f}s），疑似素材损坏/截断", file=sys.stderr)
+                        dur = real
+                if dur >= 1.0 and ck:
+                    try:
+                        os.makedirs(cache_dir, exist_ok=True)
+                        shutil.copyfile(clip, cache_clip)
+                        with open(meta_path, "w", encoding="utf-8") as mf:
+                            json.dump(key, mf)
+                    except Exception as e:
+                        print(f"[compose] 背景缓存写入失败（不影响出片）：{e}", file=sys.stderr)
             if dur < 1.0:
                 print(f"[compose] 警告：背景 {os.path.basename(p)} 有效时长 {dur:.1f}s 过短，跳过",
                       file=sys.stderr)
@@ -801,21 +1035,54 @@ def main():
             if r.returncode != 0:
                 print(r.stderr[-2000:], file=sys.stderr); sys.exit(r.returncode)
     else:
-        # 分镜图模式(兜底): 每段一个占位帧 + zoompan
+        # 画面轨：图片轮播（图文成品）优先，其次才是分镜占位帧兜底。
         seg_files = []
-        for n, (start, end, text) in enumerate(cues):
-            scene = script["segments"][n]["scene"] if n < len(script["segments"]) else text
-            img = os.path.join(tmp, f"img_{n:03d}.png")
-            make_placeholder(scene, img, ffmpeg)
-            d = max(end - start, 1.0)
-            vid = os.path.join(tmp, f"clip_{n:03d}.mp4")
-            vf = (f"scale={W*2}:{H*2},zoompan=z='min(zoom+0.0008,1.15)':"
-                  f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(d*FPS)}:s={W}x{H}:fps={FPS}")
-            subprocess.run([ffmpeg, "-y", "-v", "error", "-loop", "1", "-i", img,
-                            "-t", f"{d:.2f}", "-vf", vf,
-                            "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", vid],
-                           check=True)
-            seg_files.append(vid)
+        if images:
+            # ---- 图片轮播（2026-10-24）----
+            # 图片区间由 **cue 边界**切出（cue 来自真实配音时长），所以「换图 / 换字幕 /
+            # 换句配音」共用同一组时间点；最后一张图多铺 1s 再被 -t total 裁掉，
+            # 保证画面严格覆盖音频（此前手写脚本正是这里短了 5.6s）。
+            usable = [p for p in images if os.path.exists(p)]
+            for p in images:
+                if not os.path.exists(p):
+                    print(f"[compose] 警告：图片 {p} 不存在，跳过", file=sys.stderr)
+            if not usable:
+                raise SystemExit("--images 里的图片都不存在，请检查路径")
+            slots = plan_image_slots(cues, len(usable))
+            if len(usable) > len(slots):
+                print(f"[compose] 提示：{len(usable) - len(slots)} 张图没有对应句子，已忽略"
+                      f"（{len(slots)} 句 / {len(usable)} 图）", file=sys.stderr)
+            used = usable[:len(slots)]
+            print(f"[compose] 图片轮播：{len(used)} 张覆盖 {len(cues)} 句、{total:.2f}s")
+            for i, img in enumerate(used):
+                start, end = slots[i]
+                if i == len(used) - 1:
+                    end = total + 1.0  # 尾量：覆盖逐帧取整，最终由 -t total 裁齐
+                d = max(0.5, end - start)
+                vid = os.path.join(tmp, f"imgclip_{i:02d}.mp4")
+                # 图文素材自带文字：用「等比缩小 + 居中补底」而非裁剪，绝不切掉图内文字。
+                vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                      f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=0x101010,setsar=1")
+                subprocess.run([ffmpeg, "-y", "-v", "error", "-loop", "1",
+                                "-framerate", str(FPS), "-i", img, "-t", f"{d:.2f}",
+                                "-vf", vf, "-c:v", "libx264", "-preset", "fast",
+                                "-pix_fmt", "yuv420p", vid], check=True)
+                seg_files.append(vid)
+        else:
+            # 分镜图模式(兜底): 每段一个占位帧 + zoompan
+            for n, (start, end, text) in enumerate(cues):
+                scene = script["segments"][n]["scene"] if n < len(script["segments"]) else text
+                img = os.path.join(tmp, f"img_{n:03d}.png")
+                make_placeholder(scene, img, ffmpeg)
+                d = max(end - start, 1.0)
+                vid = os.path.join(tmp, f"clip_{n:03d}.mp4")
+                vf = (f"scale={W*2}:{H*2},zoompan=z='min(zoom+0.0008,1.15)':"
+                      f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={int(d*FPS)}:s={W}x{H}:fps={FPS}")
+                subprocess.run([ffmpeg, "-y", "-v", "error", "-loop", "1", "-i", img,
+                                "-t", f"{d:.2f}", "-vf", vf,
+                                "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", vid],
+                               check=True)
+                seg_files.append(vid)
         lst = os.path.join(tmp, "list.txt")
         with open(lst, "w", encoding="utf-8") as f:
             for v in seg_files:
@@ -835,7 +1102,6 @@ def main():
 
     if not a.keep_temp:
         try:
-            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             pass  # 清理失败不导致整体失败

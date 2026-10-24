@@ -70,6 +70,29 @@ def rule_based_script(text: str, title: str = "小说推文", ending: str = "") 
     return {"title": title, "hook": hook, "segments": segments, "ending": ending}
 
 
+def verbatim_script(text: str, title: str = "口播视频", ending: str = "") -> dict:
+    """通用口播模式（2026-10-24）：原稿逐段成片，不改写、不重复钩子、不加小说默认结尾。
+
+    段落划分：空行优先；整篇没有空行时按句子合并到 MAX_SEG_CHARS。
+    hook 恒为空 —— tts_gen 会把 hook 和 segments 一起念，留空才不会首段念两遍。"""
+    raw = text.replace("\r\n", "\n").split("\n")
+    paras, buf = [], ""
+    for ln in raw:
+        ln = ln.strip()
+        if not ln:
+            if buf:
+                paras.append(buf)
+                buf = ""
+            continue
+        buf += ln
+    if buf:
+        paras.append(buf)
+    if len(paras) <= 1:
+        paras = merge_to_segments(split_sentences(text))
+    segments = [{"text": p, "scene": "", "duration": None} for p in paras if p.strip()]
+    return {"title": title, "hook": "", "segments": segments, "ending": ending}
+
+
 def llm_script(text: str, endpoint: str, api_key: str, model: str) -> dict:
     """OpenAI 兼容端点做钩子化改编(可选)。"""
     import urllib.request
@@ -103,9 +126,14 @@ def main():
     ap.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
     ap.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
     ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
+    ap.add_argument("--verbatim", action="store_true",
+                    help="通用口播模式：按原稿逐段成片（不改写/不加钩子/不加默认结尾）")
     a = ap.parse_args()
     text = open(a.input, encoding="utf-8").read()
-    if a.use_llm and a.endpoint and a.api_key:
+    if a.verbatim:
+        script = verbatim_script(text, a.title, a.ending)
+        print("[script_gen] verbatim mode（原稿逐段）", file=sys.stderr)
+    elif a.use_llm and a.endpoint and a.api_key:
         script = llm_script(text, a.endpoint, a.api_key, a.model)
     else:
         script = rule_based_script(text, a.title, a.ending)

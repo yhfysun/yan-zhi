@@ -12,7 +12,7 @@
  *      否则后端 buildSystemPrompt 查不到 → 静默不注入流程指引。
  *   4) 挂载的工具必须在注册表 / SUPPORTED_API_TOOLS 里（api_image_generate 是 api_* 工具，
  *      不在 core registry，漏判 = 静默丢弃）。
- *   5) 抖音业务红线（不承诺涨粉/收益、不刷量、极限词、不代发布）必须写死在提示词里，
+ *   5) 抖音业务红线（不承诺涨粉/收益、不刷量、极限词、发布授权边界）必须写死在提示词里，
  *      不能被后续「精简提示词」顺手删掉。
  *
  * 本测试只 import 纯数据模块（不 import db，避免打开 SQLite / 依赖 better-sqlite3）。
@@ -43,6 +43,8 @@ const KNOWN_TOOL_NAMES = new Set([
   'call_agent', 'spawn_subagent', 'list_sub_agents', 'list_models',
   'ask_user', 'confirm_user', 'task_plan', 'task_step',
   'image_analyze',
+  // 口播成片（配音+字幕+BGM）与本地免版权配乐（2026-10-24）
+  'novel_tuiwen', 'music_compose',
   // 浏览器
   'browser_navigate', 'browser_get_page_content',
   // api_* 直查工具（不走 ToolRegistry，但必须并入判定集合）
@@ -87,8 +89,9 @@ describe('抖音运营助手 · seed 条目结构', () => {
     expect(JSON.parse(String(builtinDouyinAgentDefs[0].config_json))).toEqual({ maxReActSteps: 500 });
   });
 
-  it('挂 pageAgent 作为子智能体（查平台规则 / 热点 / 竞品）', () => {
-    expect(JSON.parse(String(builtinDouyinAgentDefs[0].sub_agent_ids))).toEqual(['a_builtin_page_agent']);
+  it('挂 pageAgent + publishAgent（查规则/热点 + 用户要求时执行发布）', () => {
+    expect(JSON.parse(String(builtinDouyinAgentDefs[0].sub_agent_ids)))
+      .toEqual(['a_builtin_page_agent', 'a_builtin_publish_agent']);
   });
 
   it('name / description / system_prompt 都非空', () => {
@@ -167,8 +170,22 @@ describe('抖音运营助手 · 提示词覆盖与业务红线', () => {
     expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('极限词');
   });
 
-  it('★ 红线三：不代发布（不登录用户抖音号）', () => {
-    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('不代发布');
+  it('★ 红线三：发布授权边界（明确要求才代发，未要求不自作主张）', () => {
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('发布授权');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('即视为授权');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('没要求发布就只交付');
+    // 2026-10-24 用户拍板：明确要求发布即代发，不再说「不代发布」
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).not.toContain('不代发布');
+  });
+
+  it('★ 只问一次 + 只允许三种停（2026-10-24 用户反馈「动不动就停下来问」）', () => {
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('之后一律不问');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('只允许三种停');
+  });
+
+  it('★ 挂口播成片工具（配音+字幕+BGM）', () => {
+    expect(DOUYIN_AGENT_BUILTIN_TOOLS).toContain('novel_tuiwen');
+    expect(DOUYIN_AGENT_BUILTIN_TOOLS).toContain('music_compose');
   });
 
   it('平台规则委派 pageAgent 核实，不凭记忆下结论', () => {

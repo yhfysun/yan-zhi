@@ -27,6 +27,34 @@ if sys.platform == "win32":
 
 DEFAULT_VOICE = "zh-CN-YunxiNeural"  # 年轻男声, 推文常用; 备选 zh-CN-XiaoyiNeural
 
+
+def normalize_rate(rate: str) -> str:
+    """语速参数归一成 Edge-TTS 认的 `+10%` / `-5%` 形态。
+
+    ★ 为什么加（2026-10-24 用户：「语速可以快点」）：Edge-TTS 支持 rate，但参数必须是
+      带符号的百分比字符串；模型/用户常写 `10`、`10%`、`1.1`、`+10%` 混着来。
+      这里统一宽容解析：1.1 这类小数按倍率换算（+10%），0 视为不变（返回空串）。
+    """
+    s = str(rate or "").strip().replace("－", "-").replace("＋", "+")
+    if not s:
+        return ""
+    try:
+        if s.endswith("%"):
+            pct = float(s[:-1])
+        else:
+            v = float(s)
+            if v == 0:
+                return ""
+            # 带小数且落在 0.2~3 之间的按**倍率**解释（1.1 → +10%，0.9 → -10%）；
+            # 其余按百分比（10 / 3 → +10% / +3%）。
+            pct = (v - 1.0) * 100.0 if ("." in s and 0.2 <= v <= 3.0) else v
+    except ValueError:
+        return ""
+    pct = max(-50.0, min(80.0, pct))  # 端点护栏：超出这个范围的音色会明显失真
+    if abs(pct) < 0.5:
+        return ""
+    return f"{'+' if pct > 0 else '-'}{abs(pct):.0f}%"
+
 import re
 
 # ============ 朗读规范化（2026-10-07）============
@@ -135,9 +163,9 @@ def audio_duration(path: str) -> float:
         return 0.0
 
 
-async def synth(text: str, out_path: str, voice: str):
+async def synth(text: str, out_path: str, voice: str, rate: str = ""):
     import edge_tts
-    tts = edge_tts.Communicate(text, voice)
+    tts = edge_tts.Communicate(text, voice, rate=rate) if rate else edge_tts.Communicate(text, voice)
     await tts.save(out_path)
 
 
@@ -172,7 +200,8 @@ def _tts_concurrency() -> int:
     return max(1, min(n, 16))
 
 
-async def synth_with_retry(text: str, out_path: str, voice: str, sem: "asyncio.Semaphore", retries: int = 3):
+async def synth_with_retry(text: str, out_path: str, voice: str, sem: "asyncio.Semaphore", retries: int = 3,
+                           rate: str = ""):
     """逐段重试（并发版）：edge-tts 到微软的连接偶发 NoAudioReceived/超时（实测一段成功后
     下一段可能连断数次），整段管线失败重来代价太高（前面 20+ 段全部白合成）。
     单段 3 次重试 + 递增间隔，基本能把抖动吸收掉。
@@ -182,7 +211,7 @@ async def synth_with_retry(text: str, out_path: str, voice: str, sem: "asyncio.S
         last_err = None
         for attempt in range(1, retries + 1):
             try:
-                await synth(text, out_path, voice)
+                await synth(text, out_path, voice, rate)
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
                     return
                 raise RuntimeError("输出文件为空")
@@ -202,11 +231,31 @@ def main():
     ap.add_argument("--voice", default=DEFAULT_VOICE)
     ap.add_argument("--concurrency", type=int, default=0,
                     help="并发路数（默认走 YZ_TTS_CONCURRENCY，再缺省 5；上限 16）")
+    ap.add_argument("--rate", default="", help="语速：+10%% / 10 / 1.1 均可（空=原速）")
     a = ap.parse_args()
     if a.concurrency and a.concurrency > 0:
         os.environ["YZ_TTS_CONCURRENCY"] = str(a.concurrency)
+    rate = normalize_rate(a.rate)
     os.makedirs(a.outdir, exist_ok=True)
     script = json.load(open(a.script, encoding="utf-8"))
+
+    # ★ 语速变了 → 旧分段音频全部作废（2026-10-24）：分段缓存靠文件名命中，
+    #   换语速后若沿用旧文件，画面/字幕时长会按**旧语速**排，和新配音错位。
+    #   只删本管线自己生成的 seg_*.mp3，不动用户素材。
+    prev_rate = str(script.get("tts_rate") or "")
+    if prev_rate != rate:
+        stale = 0
+        try:
+            for fn in os.listdir(a.outdir):
+                if fn.startswith("seg_") and fn.lower().endswith(".mp3"):
+                    os.remove(os.path.join(a.outdir, fn))
+                    stale += 1
+        except OSError:
+            pass
+        if stale:
+            print(f"[tts] 语速 {prev_rate or '原速'} → {rate or '原速'}：已清理 {stale} 段旧配音",
+                  file=sys.stderr)
+    script["tts_rate"] = rate
 
     lines = [script.get("hook", "")] + [s["text"] for s in script["segments"]] + [script.get("ending", "")]
     jobs = [(i, text) for i, text in enumerate(lines) if text.strip()]
@@ -217,7 +266,7 @@ def main():
         p = os.path.join(a.outdir, f"seg_{i:03d}.mp3")
         # 已存在的分段跳过（重跑时不必重新合成，网络抖动恢复后续跑即可）
         if not (os.path.exists(p) and os.path.getsize(p) > 0):
-            await synth_with_retry(normalize_for_tts(text), p, a.voice, sem)
+            await synth_with_retry(normalize_for_tts(text), p, a.voice, sem, rate=rate)
         d = audio_duration(p)
         print(f"[tts] seg_{i:03d} {d:.2f}s  {text[:18]}...")
         return i, p, d
