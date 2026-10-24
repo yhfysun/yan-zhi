@@ -30,7 +30,11 @@ for (const e of ENTRIES) {
   const startRe = new RegExp(`^// === generated:${e.id}:start[^\\n]* ===$`, 'm');
   const endRe = new RegExp(`^// === generated:${e.id}:end ===$`, 'm');
   if (startRe.test(out) && endRe.test(out)) {
-    out = out.replace(new RegExp(`${startRe.source}[\\s\\S]*?${endRe.source}`), block);
+    // ★ 组合正则必须带 'm'：source 里含 ^/$ 锚点，非多行模式下 $ 只匹配串尾，
+    //   replace 会**静默无操作**（症状：改了插件源码重跑本脚本，模板却不变）。
+    // ★ 替换串必须走函数形式：block 里含源码原文，`$'`/`` $` ``/$& 等序列会被
+    //   replace 当替换模式解释（实测 `'^wechat$')` 把模板块截断并注入文件尾部）。
+    out = out.replace(new RegExp(`${startRe.source}[\\s\\S]*?${endRe.source}`, 'm'), () => block);
   } else if (!startRe.test(out)) {
     const anchor = 'export const PLUGIN_TEMPLATES';
     const idx = out.indexOf(anchor);
