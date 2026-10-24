@@ -41,6 +41,8 @@ export type RecipeStep =
   | { kind: 'navigate'; url: string }
   | { kind: 'upload'; filePath: string; clickSelectors: string[]; successTexts: string[]; failureTexts?: string[]; timeoutMs?: number }
   | { kind: 'fill'; fields: FillFieldDef[] }
+  /** 字段清单来自参数里的 JSON（通用填表配方用）：支持备用选择器 + 回读核验 */
+  | { kind: 'fillFromJson'; param: string }
   | { kind: 'clickText'; texts: string[]; optional?: boolean; when?: RecipeWhen; failHint?: string }
   | { kind: 'waitText'; texts: string[]; timeoutMs?: number; optional?: boolean; when?: RecipeWhen; failHint?: string };
 
@@ -202,6 +204,22 @@ async function runFill(api: RecipeApi, fields: FillFieldDef[]): Promise<string> 
       missing.push(detail);
       continue;
     }
+    // ★ P1-2：deferred / skipped 不是"填失败"，但都会让后续回读核验报出一堆干扰信息。
+    //   配方是确定性流程，遇到这两种情况就直接说清原因，不进入无意义的自动重试。
+    const deferred = Array.isArray(res?.deferred) ? res.deferred : [];
+    if (deferred.length) {
+      throw new Error(
+        `依赖未就绪（先填上游字段再执行本步）：` +
+        deferred.map((d: any) => `${d?.selector || ''} ${d?.reason || ''}`).join('；'),
+      );
+    }
+    const skipped = Array.isArray(res?.skipped) ? res.skipped : [];
+    if (skipped.length) {
+      throw new Error(
+        `控件不支持批量填写（改用 browser_click 展开后选）：` +
+        skipped.map((d: any) => `${d?.selector || ''} ${d?.reason || ''}`).join('；'),
+      );
+    }
     const state: any[] = Array.isArray(res?.state) ? res.state : [];
     const problems: string[] = [];
     for (let i = 0; i < fields.length; i++) {
@@ -343,6 +361,30 @@ export async function runRecipe(
             value: interp(f.value, params),
             label: f.label,
           }));
+          push('fill', true, await runFill(api, fields));
+          continue;
+        }
+
+        // ★ P2-2（2026-10-24）通用填表：字段清单由参数传入（JSON），复用 runFill 的
+        //   备用选择器回退 + 回读核验，让任意站点也能一次调用闭环，不用模型现场逐字段试错。
+        if (step.kind === 'fillFromJson') {
+          const raw = params[step.param];
+          let list: any = raw;
+          if (typeof raw === 'string') {
+            try { list = JSON.parse(raw); } catch { list = null; }
+          }
+          if (!Array.isArray(list) || !list.length) {
+            throw new Error(`参数 ${step.param} 必须是字段 JSON 数组：[{selector, selectors?, value, label?}]`);
+          }
+          const fields = list
+            .map((f: any) => ({
+              selector: String(f?.selector ?? '').trim(),
+              selectors: Array.isArray(f?.selectors) ? f.selectors.map((s: any) => String(s)) : undefined,
+              value: String(f?.value ?? ''),
+              label: f?.label == null ? undefined : String(f.label),
+            }))
+            .filter((f: FillFieldDef) => f.selector);
+          if (!fields.length) throw new Error(`参数 ${step.param} 里没有带 selector 的字段`);
           push('fill', true, await runFill(api, fields));
           continue;
         }
@@ -559,10 +601,41 @@ export const DOUYIN_SET_COVER_RECIPE: PublishRecipe = {
   ],
 };
 
+/**
+ * 通用填表配方（2026-10-24，P2-2）：任意站点一次调用闭环。
+ *
+ * 与 fill_form 的差别：fill_form 是一次动作，失败就把 failed 丢回模型去重试；
+ * 本配方在**代码里**完成"备用选择器回退 → 回读核验 → 失败即停"，模型只出一轮。
+ * 适合字段多、类名带 hash、或需要"填完点保存并确认"的表单。
+ */
+export const FORM_FILL_RECIPE: PublishRecipe = {
+  id: 'form-fill',
+  description: '任意页面批量填表：按字段清单一次填完并回读核验（选择器未命中自动用备用选择器重试），可选填完后点提交按钮。',
+  params: {
+    fields: {
+      type: 'string',
+      required: true,
+      description: '字段 JSON 数组：[{selector, selectors?, value, label?}]。selector 用 get_page_content 编号元素自带的 selector；selectors 为备用选择器（按序回退）；下拉优先用 label。',
+    },
+    submit: { type: 'boolean', required: false, description: 'true = 填完后点击提交按钮（需同时传 submitText）' },
+    submitText: { type: 'string', required: false, description: '提交按钮文本，如 保存 / 提交 / 确定。仅 submit=true 时生效。' },
+  },
+  steps: [
+    { kind: 'fillFromJson', param: 'fields' },
+    {
+      kind: 'clickText',
+      texts: ['{{submitText}}'],
+      when: 'submit',
+      failHint: 'submit=true 时必须传 submitText（提交按钮的可见文本），并确认页面上确实有这个按钮',
+    },
+  ],
+};
+
 export const RECIPES: Record<string, PublishRecipe> = {
   [DOUYIN_PUBLISH_RECIPE.id]: DOUYIN_PUBLISH_RECIPE,
   [DOUYIN_POST_COMMENT_RECIPE.id]: DOUYIN_POST_COMMENT_RECIPE,
   [DOUYIN_SET_COVER_RECIPE.id]: DOUYIN_SET_COVER_RECIPE,
+  [FORM_FILL_RECIPE.id]: FORM_FILL_RECIPE,
 };
 
 export function getRecipe(id: string): PublishRecipe | undefined {

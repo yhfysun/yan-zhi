@@ -181,6 +181,8 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'python_exec', 'js_exec', 'cmd_exec',
   // 与 server db.ts 对齐（2026-10-11 F1）：表单批量填写/提交（此前漏挂载 → 只能逐个 browser_type）
   'browser_fill_form', 'browser_submit_form',
+  // 站点配方（2026-10-24 P2-2）：form-fill 通用批量填表（备用选择器回退 + 回读核验在代码里跑）
+  'browser_run_recipe',
   // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
   'ask_user',
 ];

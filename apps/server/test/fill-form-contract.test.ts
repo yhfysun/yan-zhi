@@ -145,3 +145,65 @@ describe('④ 不得引入回归（已证伪的猜测不要重复"修"）', () =
     expect(body, '★ 未用 typeIn 的 applied 结果判定失败').toMatch(/applied===false/);
   });
 });
+
+describe('⑤ 失败分档（2026-10-24）：deferred / skipped 不得混进 failed', () => {
+  it('★★★ 桌面端 select 选项未找到 → deferred（上游未就绪），不是 failed', () => {
+    const body = code(fillFormBody(MAIN));
+    expect(body, '★ 选项未找到仍记进 failed → 模型会原样重试同一批参数（反复填表）')
+      .toMatch(/deferred\.push\(\{selector:sel,reason:'选项未找到/);
+    expect(body, '★ 选项未找到不得再进 failed').not.toMatch(/failed\.push\(\{selector:sel,reason:'选项未找到/);
+  });
+
+  it('★★ 桌面端 select 目标不是原生下拉 → skipped（改用单步点击）', () => {
+    const body = code(fillFormBody(MAIN));
+    expect(body, '★ 自定义下拉被当成"选项未找到"，模型会一直重试')
+      .toMatch(/skipped\.push\(\{selector:sel,reason:'不是原生下拉/);
+  });
+
+  it('★★ 两条链路返回值都带 deferred / skipped', () => {
+    expect(code(fillFormBody(MAIN)), '★ 桌面返回值缺 deferred').toMatch(/deferred\s*:\s*deferred/);
+    expect(code(fillFormBody(MAIN)), '★ 桌面返回值缺 skipped').toMatch(/skipped\s*:\s*skipped/);
+    expect(code(fillFormBody(BROWSER)), '★ 服务端返回值缺 deferred').toMatch(/deferred/);
+    expect(code(fillFormBody(BROWSER)), '★ 服务端返回值缺 skipped').toMatch(/skipped/);
+  });
+
+  it('★★ 服务端按控件类型分档（不是 select 的失败不当成选项问题）', () => {
+    expect(BROWSER, '★ 缺少 classifyFillFailure 分档函数').toMatch(/function classifyFillFailure\(/);
+    expect(code(fillFormBody(BROWSER)), '★ 服务端未使用分档结果').toMatch(/classifyFillFailure\(ftype, msg\)/);
+  });
+
+  it('★★★ 工具层：只有 failed 才算 err，deferred/skipped 必须作为可读信息返回', () => {
+    expect(TOOL, '★ 工具层未读取 deferred').toMatch(/data\?\.deferred/);
+    expect(TOOL, '★ 工具层未读取 skipped').toMatch(/data\?\.skipped/);
+    const i = TOOL.indexOf('if (failed.length)');
+    const okLine = TOOL.slice(TOOL.indexOf('return ok(', i), TOOL.indexOf('return ok(', i) + 400);
+    expect(okLine, '★ deferred 未出现在成功回执里（模型看不到"等上游"的指令）').toMatch(/deferredNote/);
+  });
+});
+
+describe('⑥ 熔断（2026-10-24）：同页连续 2 次真失败 → 回执降级，不硬试批量', () => {
+  it('★★★ 桌面端按"有字段真失败"计数，换页清零，达 2 次标 degraded', () => {
+    const body = code(fillFormBody(MAIN));
+    expect(body, '★ 桌面端未维护熔断计数').toMatch(/__yzFillDegrade/);
+    expect(body, '★ 计数未按 failed 判定（deferred/skipped 不该计入）').toMatch(/dg\.strikes=failed\.length/);
+    expect(body, '★ 未在换页时清零').toMatch(/dg\.url!==location\.href/);
+    expect(body, '★ 阈值不是 2').toMatch(/strikes>=2/);
+    expect(body, '★ 返回值缺 degraded').toMatch(/degraded:degraded/);
+  });
+
+  it('★★ 服务端同样维护熔断计数并回传给工具层', () => {
+    expect(BROWSER, '★ 服务端未维护熔断计数').toMatch(/__yzFillDegrade/);
+    const body = code(fillFormBody(BROWSER));
+    expect(body, '★ 服务端返回值缺 degraded').toMatch(/degraded/);
+    expect(body, '★ 服务端口径不一致（应按 failed 判定）').toMatch(/failed\.length > 0/);
+  });
+
+  it('★★★ 工具层必须把降级提示透传给模型（否则熔断等于没做）', () => {
+    expect(TOOL, '★ 工具层未读取 degraded').toMatch(/data\?\.degraded/);
+    // ★ 必须锚定 fill_form 的那处 ok：文件里第一个 return ok( 属于别的工具，直接 indexOf 会假绿/假红
+    const from = TOOL.indexOf('const degradeNote');
+    const okIdx = TOOL.indexOf('return ok(', from);
+    expect(okIdx, '★ 锚点缺失：fill_form 的成功回执').toBeGreaterThan(from);
+    expect(TOOL.slice(okIdx, okIdx + 400), '★ 成功回执里没有降级提示').toMatch(/degradeNote/);
+  });
+});

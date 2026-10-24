@@ -5147,6 +5147,63 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             return out;
           }
           // ===NOTFOUND-END===
+          // ===CHECKBOX-GUARD-START=== 原生 checkbox 点击护栏；checkbox-guard.test.cjs 经此哨兵抽取真实代码
+          // 目标：模型用 click 逐个勾选原生 checkbox 时直接拒绝，并回传整页候选，逼它改用一次 fill_form。
+          // 依据：逐字段点选是"填表慢"的主要来源（每勾一个都多一轮推理，还会漏勾）。
+          // 逃生口：同一目标累计拒绝 2 次后放行，避免固执重试把任务烧到步数上限；换页自动清零。
+          // 不拦自定义控件（role=checkbox/switch、组件库 class）—— 那些本来就只能点。
+          function isNativeCheckbox(el){
+            try{ return !!el&&el.tagName==='INPUT'&&String(el.type||'').toLowerCase()==='checkbox'; }catch(e){ return false; }
+          }
+          function isCustomCheckbox(el){
+            try{
+              var role=String((el.getAttribute&&el.getAttribute('role'))||'').toLowerCase();
+              if(role==='checkbox'||role==='switch')return true;
+              var cn=typeof el.className==='string'?el.className:'';
+              return /(^|\s)(el-checkbox|ant-checkbox|n-checkbox|checkbox-wrapper|v-checkbox)/i.test(cn);
+            }catch(e){ return false; }
+          }
+          function checkboxLabel(el){
+            try{
+              var al=el.getAttribute&&el.getAttribute('aria-label');
+              if(al&&String(al).trim())return String(al).trim().slice(0,40);
+              var id=el.id;
+              if(id){var lb=document.querySelector('label[for="'+id+'"]');if(lb)return (lb.textContent||'').trim().slice(0,40);}
+              var p=el.closest&&el.closest('label');
+              if(p)return (p.textContent||'').trim().slice(0,40);
+              var nm=el.getAttribute&&el.getAttribute('name');
+              if(nm)return String(nm).slice(0,40);
+            }catch(e){}
+            return '(无标签)';
+          }
+          function collectNativeCheckboxes(limit){
+            var out=[];
+            try{
+              var reg=window.__yzElements||[];
+              for(var i=0;i<reg.length&&out.length<limit;i++){
+                var el=reg[i];
+                if(!el||!el.isConnected||!isNativeCheckbox(el)||isCustomCheckbox(el))continue;
+                out.push({index:i,label:checkboxLabel(el),checked:!!el.checked});
+              }
+            }catch(e){}
+            return out;
+          }
+          var CB_GUARD_MAX_REJECT=2;
+          function nativeCheckboxGuard(el,key){
+            if(!isNativeCheckbox(el)||isCustomCheckbox(el))return null;
+            try{
+              var g=window.__yzCbGuard;
+              if(!g||g.url!==location.href){g={url:location.href,counts:{}};window.__yzCbGuard=g;}
+              var seen=g.counts[key]||0;
+              if(seen>=CB_GUARD_MAX_REJECT)return null;
+              g.counts[key]=seen+1;
+              return {status:'rejected',reason:'native_checkbox',
+                error:'已拒绝点击「'+key+'」处的原生 checkbox：逐个点既多花步数又容易漏勾。',
+                hint:'改用 browser_fill_form 一次勾选：fields 传 [{index,value:"true"}]；两个以上要勾的 checkbox 请放进同一次调用（取消勾选传 "false"）。自定义控件（role=checkbox/switch）不受此限制。',
+                candidates:collectNativeCheckboxes(40)};
+            }catch(e){ return null; }
+          }
+          // ===CHECKBOX-GUARD-END===
           if(a.index!=null){
             var el=window.__yzElements&&window.__yzElements[a.index];
             var relocated='';
@@ -5161,6 +5218,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               if(fz){el=fz;relocated='fuzzy';try{el.__yzIndex=a.index;}catch(e){}window.__yzElements[a.index]=el;}
             }
             if(!el||!el.isConnected)return{status:'stale_index',error:'index '+a.index+' 已失效（页面已变化）。请重新调用 browser_get_page_info / browser_get_dom 获取最新编号列表。'};
+            var cbReject=nativeCheckboxGuard(el,'index '+a.index);
+            if(cbReject)return cbReject;
             var beforeIdx=yzSnap();
             return clickEl(el).then(function(r){
               r.index=a.index;
@@ -5212,6 +5271,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               });
               return{status:'ambiguous',ambiguous:true,matched:els.length,candidates:cands,hint:'该选择器匹配多个元素，请从候选列表选一个 index 重新调用 click'};
             }
+            var cbRejectSel=nativeCheckboxGuard(els[0],'selector '+a.selector);
+            if(cbRejectSel)return cbRejectSel;
             var beforeSel=yzSnap();
             return clickEl(els[0]).then(function(r){return yzFinish(r,beforeSel);});
           }
@@ -5668,7 +5729,11 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         return await wc.executeJavaScript(`var __yzFF=function(el,v){${FIELD_FLASH_BODY}};
         (function(){
           var a=${JSON.stringify(args)};var fields=a.fields||[];
-          var filled=[],failed=[];
+          // ★ P1-2（2026-10-24）失败分档：deferred = 上游未就绪（级联下拉选项还没出现），
+          //   skipped = fill_form 根本不支持这个控件。两者混进 failed 会诱导模型原样重试。
+          var filled=[],failed=[],deferred=[],skipped=[];
+          // ★ P1-3（2026-10-24）熔断文案：同一页面连续 2 次真失败后回执里明说降级，避免模型拿同一批参数硬试。
+          var FILL_DEGRADE_NOTE='批量填表在本页已连续 2 次出现字段失败，已降级：改用 browser_type / browser_click 单步操作，或先 browser_get_page_content 重新获取元素编号后再试一次；不要用同一批参数重复调用 fill_form。';
           // ★ 2026-10-22：字段支持 index（与高亮层 / browser_click 同一注册表），
           //   模型可以直接用页面上看到的编号填表，不必再换算 selector。
           function pickEl(f){
@@ -5704,6 +5769,11 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             var ftype=String(f.type||'text').toLowerCase();
             try{
               if(ftype==='select'){
+                // ★ P1-2：自定义下拉没有 options 可选，直接 skipped 并给出做法，不要伪装成"选项未找到"让模型重试
+                if(String(el.tagName||'').toUpperCase()!=='SELECT'){
+                  skipped.push({selector:sel,reason:'不是原生下拉（自定义/组件库控件）',hint:'用 browser_click 展开后按 index 选一项'});
+                  window.__yzAssistant.hideCursor();continue;
+                }
                 // ★ 支持 label（显示文本）与 value 两种选法（与服务端一致）
                 var target=null;
                 if(f.label!==undefined){
@@ -5718,7 +5788,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
                     if(String(el.options[oj].value)===val){target=el.options[oj];break;}
                   }
                 }
-                if(target){el.value=target.value;}else{failed.push({selector:sel,reason:'选项未找到: '+(f.label!==undefined?f.label:f.value)});window.__yzAssistant.hideCursor();continue;}
+                if(target){el.value=target.value;}else{deferred.push({selector:sel,reason:'选项未找到: '+(f.label!==undefined?f.label:f.value),hint:'可能上游字段未选或选项异步加载：先填上游，再回头补这一项；不要原样重试'});window.__yzAssistant.hideCursor();continue;}
                 el.dispatchEvent(new Event('input',{bubbles:true}));
                 el.dispatchEvent(new Event('change',{bubbles:true}));
               }
@@ -5802,11 +5872,19 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             }catch(se){submitRes={submitted:false,error:String(se&&se.message||se)};}
           }
           setTimeout(function(){window.__yzAssistant.hideCursor();},500);
-          return{filled:filled.length,fields:filled,failed:failed,state:state,submit:submitRes};
+          // ★ P1-3 熔断计数：只统计"有字段真失败"的调用（deferred/skipped 不算），换页清零。
+          var dg=window.__yzFillDegrade;
+          if(!dg||dg.url!==location.href){dg={url:location.href,strikes:0};window.__yzFillDegrade=dg;}
+          dg.strikes=failed.length?((dg.strikes||0)+1):0;
+          var degraded=dg.strikes>=2;
+          return{filled:filled.length,fields:filled,failed:failed,deferred:deferred,skipped:skipped,state:state,submit:submitRes,degraded:degraded,degradeNote:degraded?FILL_DEGRADE_NOTE:undefined};
         })()`);
       }
       case 'submit_form': {
-        var r = await wc.executeJavaScript(`(function(){
+        // ★ P2-1（2026-10-24）观察内联：点完提交直接回一段"页面判定"（成功提示/校验提示/是否还有表单），
+        //   省掉"提交→再读页确认"这一轮 LLM 往返。判定只是**证据**，不是结论 —— 提示词仍要求模型据它判断。
+        // ★ 判定必须单独一次注入：整页表单提交会销毁当前 JS 上下文，和点击写在同一次里会连带失败。
+        var sres = await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
           if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到: '+a.selector};
             var rect=el.getBoundingClientRect();window.__yzAssistant.clickAt(rect.x+rect.width/2,rect.y+rect.height/2);
@@ -5814,8 +5892,30 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           var form=document.querySelector('form');if(form){form.submit();return{success:true};}
           return{error:'未找到表单'};
         })()`);
-        if (r.error) return r;
-        return { submitted: true, url: wc.getURL(), title: wc.getTitle() };
+        if (sres.error) return sres;
+        await new Promise(function(r){setTimeout(r,600);});
+        var verdict = await wc.executeJavaScript(`(function(){
+          // ===SUBMIT-VERDICT-START=== 提交后页面判定；submit-verdict.test.cjs 经此哨兵抽取真实代码
+          function yzSubmitVerdict(){
+            try{
+              var body=String((document.body&&document.body.innerText)||'');
+              var SUCCESS=['保存成功','提交成功','发布成功','操作成功','添加成功','创建成功'];
+              var INVALID=['请填写','请选择','必填','不能为空','格式不正确','保存失败','提交失败','校验失败','请输入'];
+              var hit=function(list){for(var i=0;i<list.length;i++){if(body.indexOf(list[i])>=0)return list[i];}return '';};
+              var inputs=0;
+              try{inputs=document.querySelectorAll('input:not([type=hidden]),textarea,select').length;}catch(e){}
+              var forms=0;
+              try{
+                var fs=document.querySelectorAll('form');
+                for(var j=0;j<fs.length;j++){if(fs[j].offsetParent!==null)forms++;}
+              }catch(e){}
+              return {validText:hit(INVALID),successText:hit(SUCCESS),inputs:inputs,forms:forms,url:location.href};
+            }catch(e){return null;}
+          }
+          // ===SUBMIT-VERDICT-END===
+          return yzSubmitVerdict();
+        })()`).catch(function(){ return null; });
+        return { submitted: true, url: wc.getURL(), title: wc.getTitle(), verdict: verdict };
       }
       case 'search': {
         var r = await wc.executeJavaScript(`(function(){

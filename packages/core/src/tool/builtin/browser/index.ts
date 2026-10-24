@@ -234,7 +234,7 @@ export class BrowserOpenExternalTool implements BuiltInTool {
 // ========== 点击 ==========
 export class BrowserClickTool implements BuiltInTool {
   name = 'browser_click';
-  description = 'Click an element in the browser. 三种定位方式任选其一：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；坐标仅在前两者都拿不到时使用。Uses real mouse movement. 返回统一结构：status（ok / ambiguous / not_found / stale_index / invalid_args / failed）、pageChanged、urlChanged；歧义时附 candidates，失败时附 hint。选择器文本漂移时会自动按「同标签 + 相似文本」重定位（autoRelocated=fuzzy-text），index 失效时先按 selector 快照、再按文本模糊降级。';
+  description = 'Click an element in the browser. 三种定位方式任选其一：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；坐标仅在前两者都拿不到时使用。Uses real mouse movement. 返回统一结构：status（ok / ambiguous / not_found / stale_index / invalid_args / rejected / failed）、pageChanged、urlChanged；歧义时附 candidates，失败时附 hint。★ 点击原生 checkbox 会被拒绝（status=rejected，附整页 checkbox 候选清单）：改用 browser_fill_form 一次勾选，不要逐个点；同一目标被拒 2 次后放行，自定义控件不受限。选择器文本漂移时会自动按「同标签 + 相似文本」重定位（autoRelocated=fuzzy-text），index 失效时先按 selector 快照、再按文本模糊降级。★ 原生表单控件（checkbox / radio / select）不要用它逐个点：原生控件一律用 browser_fill_form —— 可一次填多个、有回读核验与幂等保护，逐个点既多花步数又容易漏勾。本工具用于：自定义下拉/组件库伪控件展开、联想输入选建议项、普通按钮与链接、以及 fill_form 不适用时的兜底。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -466,7 +466,7 @@ export class BrowserScreenshotTool implements BuiltInTool {
 // ========== 批量填写表单 ==========
 export class BrowserFillFormTool implements BuiltInTool {
   name = 'browser_fill_form';
-  description = 'Fill multiple form fields at once. Each field: {selector?, index?, value, type?} where type is "text"|"select"|"checkbox"|"radio". index 与高亮编号 / browser_click 同源，可直接替代 selector。For select use label or value. For checkbox/radio set value true/false. 普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror/Draft.js）都支持：富文本字段直接传 selector（或 index）指向该 div，value 为要填的纯文本。可选 submit：true=填完点页面上的提交按钮；{selector|index}=点指定按钮；不传=只填不提交。返回 state 数组 = 各字段填写后的当前值（回读核验）+ submit 结果。★ 幂等保护（2026-10-19）：已等于/包含目标值的字段会跳过（不清空重填）；同一字段连续 2 次未生效会标记 forceStop，此时停止重填并汇报，不要用 run_script 反复清空重写。';
+  description = 'Fill multiple form fields at once. Each field: {selector?, index?, value, type?} where type is "text"|"select"|"checkbox"|"radio". index 与高亮编号 / browser_click 同源，可直接替代 selector。For select use label or value. For checkbox/radio set value true/false. 普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror/Draft.js）都支持：富文本字段直接传 selector（或 index）指向该 div，value 为要填的纯文本。可选 submit：true=填完点页面上的提交按钮；{selector|index}=点指定按钮；不传=只填不提交。返回 state 数组 = 各字段填写后的当前值（回读核验）+ submit 结果。★ 批量效率硬规则（决定快慢）：① 同一页面 2 个及以上待填字段必须一次调用填完，禁止逐个 browser_type；② 原生 checkbox 勾选两个以上必须把全部 index 放进同一次调用（value 传 "true"/"false"），禁止用 browser_click 逐个勾；③ 原生 select 与 radio 并入同一批，替代「点开下拉→再点一项」的两步；④ 已经是目标值的字段不要动它。★ 不适用的控件（保持单步、别浪费调用）：自定义下拉/组件库伪控件（role=combobox|listbox|checkbox|radio|switch，class 含 el-select/ant-select/n-select/select2）、带联想输入（aria-autocomplete）、只读字段——这些用 browser_click 展开后按 index 选。★ 返回分三档：failed=真失败（按原因换定位重试）；deferred=依赖未就绪（上游字段没填/选项异步加载，先填上游再回头补这一项，严禁原样重试）；skipped=fill_form 不支持的控件（改用 browser_click 展开后选）。★ 幂等保护（2026-10-19）：已等于/包含目标值的字段会跳过（不清空重填）；同一字段连续 2 次未生效会标记 forceStop，此时停止重填并汇报，不要用 run_script 反复清空重写。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -492,20 +492,39 @@ export class BrowserFillFormTool implements BuiltInTool {
       //   「静默失效」家族：不报错、只是结果不对。
       //   ⇒ 有 failed 时**明确列出**（含 selector 与原因），让模型能重试/换选择器。
       const failed = Array.isArray(data?.failed) ? data.failed : [];
+      const deferred = Array.isArray(data?.deferred) ? data.deferred : [];
+      const skipped = Array.isArray(data?.skipped) ? data.skipped : [];
+      const listOf = (arr: any[]) => arr
+        .map((f: any) => `  - ${f?.selector || '(无选择器)'}: ${f?.reason || '未知原因'}${f?.hint ? `（${f.hint}）` : ''}`)
+        .join('\n');
+      const deferredNote = deferred.length
+        ? `\n未填写（依赖未就绪 ${deferred.length} 个 —— 先填上游字段再回头补这些，不要原样重试）：\n${listOf(deferred)}`
+        : '';
+      const skippedNote = skipped.length
+        ? `\n已跳过（fill_form 不支持的控件 ${skipped.length} 个）：\n${listOf(skipped)}`
+        : '';
+      // ★ P1-3 熔断：同页连续 2 次真失败后，回执里明确要求改走单步，不再让模型硬试批量
+      const degradeNote = data?.degraded
+        ? `\n⚠ ${data?.degradeNote || '批量填表在本页已降级：改用单步工具，或先重新获取元素编号再试一次。'}`
+        : '';
+      // ★ P2-1（2026-10-24）观察内联：把回读值直接带进回执。此前实现返回了 state、工具层却丢掉，
+      //   模型只能"再读一次页面"才能核对是否生效 —— 这正是每次填表多一轮的成因。
+      const state = Array.isArray(data?.state) ? data.state : [];
+      const readback = state.length
+        ? `\n回读：${state.map((s: any) => `${s?.selector || ''}=${String(s?.value ?? '').slice(0, 40) || '(空)'}`).join(' | ')}`
+        : '';
       if (failed.length) {
-        const lines = failed
-          .map((f: any) => `  - ${f?.selector || '(无选择器)'}: ${f?.reason || '未知原因'}`)
-          .join('\n');
         return err(
-          `部分字段未填写成功（成功 ${data?.filled ?? 0} 个，失败 ${failed.length} 个）：\n${lines}\n` +
-          `建议：用 browser_get_page_info 重新获取元素编号与 selector 后重试。`,
+          `部分字段未填写成功（成功 ${data?.filled ?? 0} 个，失败 ${failed.length} 个）：\n${listOf(failed)}\n` +
+          `建议：用 browser_get_page_info 重新获取元素编号与 selector 后重试失败项。` +
+          deferredNote + skippedNote + degradeNote + readback,
         );
       }
       const sub = data?.submit;
       const subLine = sub
         ? (sub.submitted ? `；已提交（via ${sub.via || 'click'}）` : `；提交未成功：${sub.error || '未知原因'}`)
         : '';
-      return ok(`Filled ${data.filled} fields: ${JSON.stringify(data.fields)}${subLine}`);
+      return ok(`Filled ${data.filled} fields: ${JSON.stringify(data.fields)}${deferredNote}${skippedNote}${degradeNote}${readback}${subLine}`);
     } catch (e: any) { return err(e?.message || '填表单失败'); }
   }
 }
@@ -513,7 +532,7 @@ export class BrowserFillFormTool implements BuiltInTool {
 // ========== 提交表单 ==========
 export class BrowserSubmitFormTool implements BuiltInTool {
   name = 'browser_submit_form';
-  description = 'Submit a form by clicking a submit button (selector) or pressing Enter, then wait for navigation.';
+  description = 'Submit a form by clicking a submit button (selector) or pressing Enter, then wait for navigation. ★ 提交成功不等于按钮点到了：提交后用 browser_get_page_content 重读页面 —— 离开表单（URL 变化或表单被列表/详情页取代）或出现成功提示才算成功；表单仍在且出现校验提示（请填写/请选择/必填/格式不正确/保存失败）时，照原话引用该提示、补上它点名的字段后再提交；同一提示连续出现 2 次就停止重试并如实汇报卡在哪个字段。';
   inputSchema = {
     type: 'object',
     properties: { selector: { type: 'string', description: 'CSS selector of submit button (optional, defaults to Enter).' } },
@@ -521,7 +540,18 @@ export class BrowserSubmitFormTool implements BuiltInTool {
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'submit_form', selector: args.selector }) as any;
-      return ok(`Form submitted. URL: ${data.url}\nTitle: ${data.title}`);
+      // ★ P2-1 观察内联：提交后附页面判定（成功提示 / 校验提示 / 是否还有表单），模型据此判断，不必再读一次页面
+      const v = data?.verdict;
+      const vLine = v
+        ? (v.successText
+          ? `；页面提示「${v.successText}」`
+          : v.validText
+            ? `；页面出现校验提示「${v.validText}」—— 提交多半未通过，按提示补填后重提`
+            : v.forms > 0
+              ? `；页面仍有 ${v.forms} 个表单，无法确认已离开表单（未见成功提示）`
+              : '；未发现成功提示（页面已变化，请结合任务判断）')
+        : '';
+      return ok(`Form submitted. URL: ${data.url}\nTitle: ${data.title}${vLine}`);
     } catch (e: any) { return err(e?.message || '提交失败'); }
   }
 }
@@ -1207,6 +1237,9 @@ export class BrowserRunRecipeTool implements BuiltInTool {
     + 'douyin-publish-video 参数：{ videoPath, title, description, collectionName?, submit? }；'
     + 'douyin-set-cover 参数：{ coverPath }（视频已上传后、点发布前调用）；'
     + 'douyin-post-comment 参数：{ videoTitle, comment }（发布后发引导评论）。'
+    + 'form-fill 参数：{ fields, submit?, submitText? } —— 任意站点的表单都优先用它：'
+    + 'fields 为 JSON 数组 [{selector, selectors?, value, label?}]（selector 用 get_page_content 编号元素自带的 selector，selectors 是备用选择器），'
+    + '代码会做备用选择器回退与回读核验，一次调用完成填写；submit=true 时还要传 submitText（按钮文本）。'
     + '★ 发布/封面/评论这三个环节一律先试配方，不要自己逐页点：配方失败返回的现场比手工试错快得多。'
     + '★ submit 默认 false，只做前置步骤；仅当用户明确要求发布时传 submit:true。'
     + '★ 被验证码/滑块拦住时返回 blockedByVerification 与 resumeStep：先 ask_user 请用户完成验证，'

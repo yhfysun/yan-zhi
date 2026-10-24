@@ -787,6 +787,20 @@ async function flashFieldBySelector(page: any, selector: string, value: unknown)
   } catch { /* 纯视觉辅助，失败静默 */ }
 }
 
+/**
+ * fill_form 单字段失败分档（2026-10-24）：
+ *   deferred —— 原生下拉的选项此刻不存在（省市区级联 / 异步加载）：先填上游，回头再补，不要原样重试；
+ *   skipped  —— 目标不是原生 select（自定义下拉 / 组件库伪控件）：fill_form 做不到，改用 click 展开再选；
+ *   failed   —— 其余真失败（选择器错、只读、被遮挡、超时）。
+ * 全都塞进 failed 时，模型只能反复重试同一批参数 —— 这是本项目"反复填表"的头号来源。
+ */
+function classifyFillFailure(ftype: string, msg: string): 'deferred' | 'skipped' | 'failed' {
+  if (ftype !== 'select') return 'failed';
+  if (/not a <select>|not a select element/i.test(msg)) return 'skipped';
+  if (/did not find some options|option[s]? not found|no option/i.test(msg)) return 'deferred';
+  return 'failed';
+}
+
 /** 按 ref/index 解析链定位字段并画聚焦框（type 的 ref/index 路径用；与桌面端 CDP 补刀同构） */
 async function flashFieldOnPage(page: any, locate: { ref?: string | null; index?: number | null; selector?: string | null }, value: string): Promise<void> {
   try {
@@ -980,6 +994,48 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
               if (found) { el = found; locator = 'index=' + p.idx + '→fuzzy'; degraded = true; }
             }
             if (!el || !el.isConnected) return { error: `${locator} 已失效（页面已变化），请重新调用 get_page_info 获取最新 ref/index 列表` };
+            // 原生 checkbox 护栏（与桌面端 runBrowserAction 同口径，2026-10-24）：逐个点既多花步数又容易漏勾，
+            // 拒绝并把整页 checkbox 候选回传，逼模型改用一次 fill_form；同一目标拒满 2 次后放行，换页清零。
+            // 自定义控件（role=checkbox/switch、组件库 class）不拦 —— 那些本来就只能点。
+            const cbCustom = (n: Element): boolean => {
+              const role = String(n.getAttribute('role') || '').toLowerCase();
+              const cls = typeof (n as HTMLElement).className === 'string' ? (n as HTMLElement).className : '';
+              return role === 'checkbox' || role === 'switch'
+                || /(^|\s)(el-checkbox|ant-checkbox|n-checkbox|checkbox-wrapper|v-checkbox)/i.test(cls);
+            };
+            const isNativeCb = (n: Element | null): boolean =>
+              !!n && n.tagName === 'INPUT' && String((n as HTMLInputElement).type).toLowerCase() === 'checkbox';
+            if (isNativeCb(el) && !cbCustom(el)) {
+              const key = locator || ('index=' + p.idx);
+              const prev: any = (window as any).__yzCbGuard;
+              const state = (!prev || prev.url !== location.href) ? { url: location.href, counts: {} as Record<string, number> } : prev;
+              const seen = state.counts[key] || 0;
+              if (seen < 2) {
+                state.counts[key] = seen + 1;
+                (window as any).__yzCbGuard = state;
+                const labelOf = (n: Element): string => {
+                  const al = n.getAttribute('aria-label');
+                  if (al && al.trim()) return al.trim().slice(0, 40);
+                  const id = (n as HTMLElement).id;
+                  if (id) { const lb = document.querySelector('label[for="' + id + '"]'); if (lb) return (lb.textContent || '').trim().slice(0, 40); }
+                  const wrapped = n.closest('label');
+                  if (wrapped) return (wrapped.textContent || '').trim().slice(0, 40);
+                  const nm = n.getAttribute('name');
+                  return nm ? nm.slice(0, 40) : '(无标签)';
+                };
+                const reg: any[] = (window as any).__yzElements || [];
+                const candidates: any[] = [];
+                for (let i = 0; i < reg.length && candidates.length < 40; i++) {
+                  const n = reg[i];
+                  if (!isNativeCb(n) || !n.isConnected || cbCustom(n)) continue;
+                  candidates.push({ index: i, label: labelOf(n), checked: !!(n as HTMLInputElement).checked });
+                }
+                return { rejected: true, status: 'rejected', reason: 'native_checkbox',
+                  error: '已拒绝点击「' + key + '」处的原生 checkbox：逐个点既多花步数又容易漏勾。',
+                  hint: '改用 browser_fill_form 一次勾选：fields 传 [{index,value:"true"}]；两个以上要勾的 checkbox 请放进同一次调用（取消勾选传 "false"）。',
+                  candidates };
+              }
+            }
             el.scrollIntoView({ block: 'center' });
             const rect = el.getBoundingClientRect();
             if (el.ownerDocument === document) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, degraded };
@@ -1333,6 +1389,13 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         //   而 Desktop 侧是静默跳过 —— 两条链路「部分成功」的语义不一致。
         //   ⇒ 统一为「尽力填 + 明确报告失败项」：单个字段失败不中断其余字段。
         const failed: Array<{ selector: string; reason: string }> = [];
+        // ★ P1-2（2026-10-24）：失败分档。deferred = 上游未就绪（级联下拉的选项还没出现），
+        //   skipped = fill_form 根本不支持这个控件。两者混进 failed 会诱导模型原样重试。
+        const deferred: Array<{ selector: string; reason: string; hint: string }> = [];
+        const skipped: Array<{ selector: string; reason: string; hint: string }> = [];
+        // ★ P2-1（2026-10-24）观察内联：逐字段回读，和桌面端同结构（此前服务端不返回 state，
+        //   工具层拿不到回读值，模型只能再读一次页面核对）。
+        const state: Array<{ selector: string; value: string }> = [];
         const toPw = (s: string) => String(s).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")');
         for (const f of fields) {
           const sel = toPw(f.selector);
@@ -1350,6 +1413,21 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
               await page.locator(sel).fill(String(f.value ?? ''));
             }
             filled.push(sel);
+            // ★ P2-1 回读：填完立刻取值，回执里带上，省掉"填完再读页核对"这一轮
+            try {
+              const loc = page.locator(sel).first();
+              let v = '';
+              if (ftype === 'checkbox' || ftype === 'radio') {
+                v = (await loc.isChecked()) ? 'true' : 'false';
+              } else if (ftype === 'select') {
+                v = String(await loc.evaluate((el: any) =>
+                  (el.selectedOptions && el.selectedOptions[0] && el.selectedOptions[0].textContent) || el.value || ''));
+              } else {
+                v = String(await loc.inputValue().catch(() =>
+                  loc.evaluate((el: any) => String(el.innerText || el.value || ''))));
+              }
+              state.push({ selector: sel, value: v.slice(0, 60) });
+            } catch { /* 回读失败不改变"已填"的结论 */ }
             // ★ P2 聚焦高亮（Web 端与桌面端同款）：本字段画蓝框 + 值角标。
             //   用**原始 selector**（toPw 的 :has-text 是 Playwright 方言，querySelector 不认；
             //   解析不到就静默跳过）。
@@ -1358,10 +1436,31 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
                 ? (f.value === false || f.value === 'false' ? '✗' : '✓')
                 : (f.label !== undefined ? String(f.label) : String(f.value ?? '')));
           } catch (e: any) {
-            failed.push({ selector: sel, reason: e?.message ? String(e.message).slice(0, 160) : '填写失败' });
+            const msg = e?.message ? String(e.message).slice(0, 160) : '填写失败';
+            const b = classifyFillFailure(ftype, msg);
+            if (b === 'failed') failed.push({ selector: sel, reason: msg });
+            else if (b === 'deferred') deferred.push({ selector: sel, reason: msg, hint: '可能上游字段未选或选项异步加载：先填上游，再回头补这一项；不要原样重试' });
+            else skipped.push({ selector: sel, reason: msg, hint: '不是原生下拉（自定义/组件库控件）：用 click 展开后按 index 选一项' });
           }
         }
-        result = { filled: filled.length, fields: filled, failed };
+        // ★ P1-3（2026-10-24）熔断：同页连续 2 次"有字段真失败"→ 回执里明确降级；
+        //   deferred/skipped 不计入（那是用户在等上游，不是 fill_form 出了问题）；换页自动清零。
+        const strikes = await page.evaluate((hadFail: boolean) => {
+          const w = window as any;
+          const prev = w.__yzFillDegrade;
+          const st = (!prev || prev.url !== location.href) ? { url: location.href, strikes: 0 } : prev;
+          st.strikes = hadFail ? (st.strikes || 0) + 1 : 0;
+          w.__yzFillDegrade = st;
+          return st.strikes;
+        }, failed.length > 0).catch(() => 0);
+        const degraded = strikes >= 2;
+        result = {
+          filled: filled.length, fields: filled, failed, deferred, skipped, state,
+          degraded,
+          degradeNote: degraded
+            ? '批量填表在本页已连续 2 次出现字段失败，已降级：改用 click / type 单步操作，或先 get_page_content 重新获取元素编号后再试一次；不要用同一批参数重复调用 fill_form。'
+            : undefined,
+        };
         break;
       }
       case 'submit_form': {
@@ -1372,7 +1471,25 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
           await page.keyboard.press('Enter');
         }
         await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
-        result = { submitted: true, url: page.url(), title: await page.title().catch(() => '') };
+        // ★ P2-1（2026-10-24）观察内联：提交后立刻回一段页面判定，省掉"提交→再读页确认"这一轮。
+        //   只是证据不是结论；整页导航时 evaluate 会失败，按 null 处理，不影响已完成的提交。
+        await page.waitForTimeout(600).catch(() => {});
+        const verdict = await page.evaluate(() => {
+          const body = String(document.body?.innerText || '');
+          const SUCCESS = ['保存成功', '提交成功', '发布成功', '操作成功', '添加成功', '创建成功'];
+          const INVALID = ['请填写', '请选择', '必填', '不能为空', '格式不正确', '保存失败', '提交失败', '校验失败', '请输入'];
+          const hit = (list: string[]) => list.find((t) => body.includes(t)) || '';
+          let inputs = 0;
+          try { inputs = document.querySelectorAll('input:not([type=hidden]),textarea,select').length; } catch { /* ignore */ }
+          let forms = 0;
+          try {
+            for (const f of Array.from(document.querySelectorAll('form'))) {
+              if ((f as HTMLElement).offsetParent !== null) forms++;
+            }
+          } catch { /* ignore */ }
+          return { validText: hit(INVALID), successText: hit(SUCCESS), inputs, forms, url: location.href };
+        }).catch(() => null);
+        result = { submitted: true, url: page.url(), title: await page.title().catch(() => ''), verdict };
         break;
       }
       case 'search': {
