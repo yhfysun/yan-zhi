@@ -8087,6 +8087,42 @@ app.whenReady().then(async () => {
     }
   })();
 
+  // 远程控制隐私屏（软件级）：所有显示器铺全黑置顶窗 + 点击穿透。
+  // focusable:false + setIgnoreMouseEvents(true) —— 窗口不抢焦点、不吃任何鼠标事件，
+  // 远控注入与本机真实键鼠照常作用于下层真实窗口；会话结束由伴生组件调 rcPrivacy(false) 撤除。
+  const rcPrivacyWindows = new Set();
+  ipcMain.handle('rc:privacy', (_e, on) => {
+    try {
+      if (on) {
+        if (rcPrivacyWindows.size) return { ok: true, count: rcPrivacyWindows.size };
+        for (const d of electronScreen.getAllDisplays()) {
+          const win = new BrowserWindow({
+            x: d.bounds.x, y: d.bounds.y,
+            width: d.bounds.width, height: d.bounds.height,
+            frame: false, resizable: false, movable: false, minimizable: false, maximizable: false,
+            fullscreenable: false, skipTaskbar: true, focusable: false, show: false,
+            backgroundColor: '#000000', title: '言智 · 远控中',
+          });
+          win.setIgnoreMouseEvents(true);
+          win.setAlwaysOnTop(true, 'screen-saver');
+          win.show();
+          rcPrivacyWindows.add(win);
+          win.on('closed', () => rcPrivacyWindows.delete(win));
+        }
+        console.log('[remote-control] 隐私屏已开启（显示器数=' + rcPrivacyWindows.size + '）');
+      } else {
+        for (const w of [...rcPrivacyWindows]) {
+          try { w.destroy(); } catch { /* ignore */ }
+        }
+        rcPrivacyWindows.clear();
+        console.log('[remote-control] 隐私屏已关闭');
+      }
+      return { ok: true, count: rcPrivacyWindows.size };
+    } catch (e) {
+      return { ok: false, error: e && e.message };
+    }
+  });
+
   // webview 引擎：网页 window.open / target=_blank / 中键新开 ——
   // 在 partition 上统一拦截（webview 元素事件无法可靠阻止弹窗），转成应用内新标签页，
   // 不让它逃逸成独立系统窗口。BrowserView 引擎走各自的 setWindowOpenHandler，不受影响。

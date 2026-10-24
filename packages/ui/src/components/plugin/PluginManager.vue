@@ -102,7 +102,7 @@
               <el-button size="small" text bg @click="openConfig(p)">配置</el-button>
               <el-button size="small" text bg @click="openDetail(p)">详情</el-button>
               <el-button size="small" text bg @click="onExport(p)">导出</el-button>
-              <el-button v-if="p.manifest.id === 'computer-use' && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
+              <el-button v-if="AUDIT_PLUGIN_IDS.includes(p.manifest.id) && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
               <el-button
                 v-if="p.source !== 'builtin'"
                 size="small"
@@ -418,14 +418,15 @@ async function onOpenTemplate() {
   templateOpen.value = true;
 }
 
-// 电脑使用操作审计
+// 输入面操作审计（computer-use 电脑使用 / remote-control 远程控制）
+const AUDIT_PLUGIN_IDS = ['computer-use', 'remote-control'];
 const auditOpen = ref(false);
 const auditList = ref<Array<{ t: number; op: string; detail?: Record<string, unknown> }>>([]);
 const auditPanic = ref(false);
 
-async function onAudit(_p: PluginInfo) {
+async function onAudit(p: PluginInfo) {
   const res = await api.get<{ panic: boolean; ops: Array<{ t: number; op: string; detail?: Record<string, unknown> }> }>(
-    '/plugin/computer-use/audit',
+    `/plugin/${p.manifest.id}/audit`,
   );
   if ('error' in res) { ElMessage.error(res.error); return; }
   auditPanic.value = !!res.data.panic;

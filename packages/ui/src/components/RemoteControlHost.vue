@@ -172,6 +172,26 @@ async function onMessage(msg: Record<string, unknown>): Promise<void> {
       }
       break;
     }
+    case 'audio.state': {
+      // 音频转发开关：启停音频轨道发送（轨道存在但不发数据；关闭≠销毁，重新打开免重协商）
+      const conn = pcs.get(String(msg.sessionId || ''));
+      const on = !!msg.on;
+      for (const sender of conn?.getSenders() || []) {
+        if (sender.track?.kind === 'audio') sender.track.enabled = on;
+      }
+      ElMessage({ message: on ? '音频转发已开启' : '音频转发已关闭', type: 'info', duration: 2000 });
+      break;
+    }
+    case 'privacy.on':
+    case 'privacy.off': {
+      // 隐私屏：主进程在所有显示器上铺全黑点击穿透窗；仅桌面端可用（Web 宿主无 electronAPI 自动跳过）
+      const on = type === 'privacy.on';
+      try {
+        (window as unknown as { electronAPI?: { rcPrivacy?: (on: boolean) => Promise<unknown> } }).electronAPI?.rcPrivacy?.(on);
+      } catch { /* ignore */ }
+      ElMessage({ message: on ? '隐私屏已开启（本机屏幕已遮黑）' : '隐私屏已关闭', type: 'info', duration: 2000 });
+      break;
+    }
     default:
       break;
   }
@@ -199,7 +219,11 @@ async function handleOffer(sessionId: string, sdp: string): Promise<void> {
     });
     const conn = new RTCPeerConnection(); // LAN 直连，无需 STUN
     pcs.set(sessionId, conn);
-    for (const track of stream.getTracks()) conn.addTrack(track, stream);
+    for (const track of stream.getTracks()) {
+      // 音频轨道默认不发送（隐私优先：控制端显式开启后才传出系统声音）
+      if (track.kind === 'audio') track.enabled = false;
+      conn.addTrack(track, stream);
+    }
     conn.onicecandidate = (e) => {
       if (ws && ws.readyState === 1 && e.candidate) {
         ws.send(JSON.stringify({ type: 'rtc.ice', sessionId, candidate: e.candidate.toJSON() }));

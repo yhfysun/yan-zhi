@@ -48,6 +48,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isMaximized: () => ipcRenderer.invoke('window-is-maximized'),
   // 界面刷新（顶栏刷新按钮）：由主进程执行 reloadIgnoringCache，界面卡住时的自救出口
   reload: () => ipcRenderer.send('window-reload'),
+  // 远程控制隐私屏（remote-control 插件）：true=所有显示器铺全黑点击穿透窗，false=撤掉
+  rcPrivacy: (on) => ipcRenderer.invoke('rc:privacy', !!on),
   // 平台标识
   platform: process.platform,
   isElectron: true,

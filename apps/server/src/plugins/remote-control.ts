@@ -11,9 +11,14 @@
 //       是被控端主人，走 license 门禁；控制端两个无 header 通道（/pair、/session/ws）
 //       已加入 license-guard 豁免清单（guard 开启时也不拦，本插件自带配对鉴权）。
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { getPluginManager } from '@yan-zhi/core';
 import type { PluginManifest, PluginModule, PluginContext, PluginWebSocket } from '@yan-zhi/core';
 import { pushPluginAudit } from '../services/plugin-audit.js';
+import { isWithinRoot } from '../services/path-guard.js';
 import { assertComboAllowed } from './cu-shared.js';
 import {
   RemoteControlAgent,
@@ -41,6 +46,7 @@ export const remoteControlManifest: PluginManifest = {
       allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认禁止）', default: false },
       allowExternalSubnet: { type: 'boolean', description: '允许非内网网段发起配对（默认拒绝）', default: false },
       idleTimeoutMin: { type: 'number', description: '会话空闲自动断开（分钟）', default: 30 },
+      receiveDir: { type: 'string', description: '远控文件收发目录（控制端发来的文件落这里，可下载的也只有这里）', default: '' },
     },
   },
 };
@@ -119,6 +125,21 @@ const timingEq = (a: string, b: string): boolean => {
   const bb = crypto.createHash('sha256').update(b).digest();
   return crypto.timingSafeEqual(ba, bb);
 };
+
+/** 上传文件名清洗：取 basename、去路径分隔/控制字符/保留名，空则回退；防穿越与非法名 */
+export function sanitizeRemoteFileName(name: string): string {
+  const base = path.basename(String(name || '')).replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').trim();
+  if (!base || base === '.' || base === '..') return `file-${Date.now()}`;
+  // Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9）
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(base)) return `_${base}`;
+  return base.length > 120 ? base.slice(-120) : base;
+}
+
+/** 远控文件单体积上限（字节） */
+export const RC_FILE_MAX_BYTES = 500 * 1024 * 1024;
+
+/** 剪贴板文本长度上限（字节，防一次注入撑爆管道） */
+export const RC_CLIPBOARD_MAX_CHARS = 100_000;
 
 export type PairStatus = 'granted' | 'pending';
 
@@ -242,6 +263,10 @@ interface RcSession {
   controllerWs: PluginWebSocket | null;
   limiter: SlidingWindowLimiter;
   readOnlyNotified?: boolean;
+  /** 隐私屏开启中（会话结束必须自动关闭，host 收 privacy.off 销毁黑屏窗） */
+  privacy: boolean;
+  /** 音频转发开启中（host 据此启停音频轨道发送） */
+  audioOn: boolean;
 }
 
 interface HostConn {
@@ -304,6 +329,103 @@ export const remoteControlModule: PluginModule = {
     };
 
     const mask = (s: string): string => (s.length <= 4 ? '****' : `${s.slice(0, 2)}****${s.slice(-2)}`);
+
+    // ---- 剪贴板（纯文本，一次性 powershell 进程：频次低，不值得进常驻代理）----
+    const runPowershell = (script: string, timeout = 8000): Promise<{ stdout: string; exitCode: number }> =>
+      new Promise((resolve, reject) => {
+        const file = path.join(os.tmpdir(), `yz-rc-clip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.ps1`);
+        fs.writeFileSync(file, '\uFEFF' + script, 'utf8');
+        const child = spawn(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file],
+          { windowsHide: true },
+        ) as unknown as {
+          stdout: NodeJS.ReadableStream | null;
+          on: (ev: string, cb: (...a: unknown[]) => void) => unknown;
+          kill: () => boolean;
+        };
+        let out = '';
+        child.stdout?.on('data', (d: Buffer) => {
+          out += d.toString('utf8');
+        });
+        child.on('exit', (code: unknown) => {
+          try {
+            fs.unlinkSync(file);
+          } catch {
+            /* ignore */
+          }
+          resolve({ stdout: out, exitCode: typeof code === 'number' ? code : -1 });
+        });
+        child.on('error', (e: unknown) => {
+          try {
+            fs.unlinkSync(file);
+          } catch {
+            /* ignore */
+          }
+          reject(e as Error);
+        });
+        setTimeout(() => {
+          try {
+            child.kill();
+          } catch {
+            /* ignore */
+          }
+        }, timeout).unref?.();
+      });
+    const clipboardSet = async (text: string): Promise<void> => {
+      const tmp = path.join(os.tmpdir(), `yz-rc-clip-in-${Date.now()}.txt`);
+      fs.writeFileSync(tmp, text, 'utf8');
+      try {
+        const r = await runPowershell(`Set-Clipboard -Value (Get-Content -Raw -LiteralPath '${tmp.replace(/'/g, "''")}')`);
+        if (r.exitCode !== 0) throw new Error('Set-Clipboard 失败');
+      } finally {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    const clipboardGet = async (): Promise<string> => {
+      const r = await runPowershell("try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}; Get-Clipboard -Raw");
+      return r.stdout.replace(/\r?\n$/, '');
+    };
+
+    // ---- 文件收发目录 ----
+    const receiveDir = (): string => {
+      const configured = String(cfg.receiveDir || '').trim();
+      const dir = configured || path.join(os.homedir(), 'Downloads', '言智远控');
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {
+        /* 目录创建失败在具体路由里报错 */
+      }
+      return dir;
+    };
+
+    // ---- JPEG 回退通道的远端光标：无轮询则画面里根本没有指针 ----
+    let cursorTimer: NodeJS.Timeout | null = null;
+    const ensureCursorLoop = (): void => {
+      if (cursorTimer) return;
+      cursorTimer = setInterval(() => {
+        const s = [...sessions.values()].find((x) => x.status === 'granted' && x.mode === 'jpeg' && x.controllerWs);
+        if (!s || !agent?.running) return;
+        void agent
+          .call({ op: 'cursor' }, 3000)
+          .then((e) => {
+            if (s.status === 'granted' && s.controllerWs) {
+              sendWsJson(s.controllerWs, {
+                type: 'cursor',
+                x: Number(e.x) || 0,
+                y: Number(e.y) || 0,
+                visible: !!e.visible,
+              });
+            }
+          })
+          .catch(() => undefined);
+      }, 250);
+      if (typeof cursorTimer.unref === 'function') cursorTimer.unref();
+    };
 
     // ---- 代理进程 ----
     const ensureAgent = async (): Promise<RemoteControlAgent> => {
@@ -373,6 +495,15 @@ export const remoteControlModule: PluginModule = {
         }
         s.controllerWs = null;
       }
+      // host 侧收尾：拆 WebRTC 连接 + 撤隐私屏（否则采集轨道与黑屏窗会残留）
+      if (s.mode === 'webrtc' || s.privacy || s.audioOn) {
+        if (s.mode === 'webrtc') notifyHost({ type: 'rtc.stop', sessionId: s.id });
+        if (s.privacy) {
+          s.privacy = false;
+          notifyHost({ type: 'privacy.off', sessionId: s.id });
+        }
+        s.audioOn = false;
+      }
       await audit('session-end', { sessionId: s.id, device: s.deviceName, reason });
       // 没有活动会话时停掉回退采集与代理进程（释放 CPU）
       if (![...sessions.values()].some((x) => x.status === 'granted')) {
@@ -428,7 +559,8 @@ export const remoteControlModule: PluginModule = {
             ...grantedMsg,
             screen: { x: info.x ?? 0, y: info.y ?? 0, w: info.w ?? 0, h: info.h ?? 0 },
           });
-          a.fire({ op: 'stream', fps: 10, scale: 1, quality: 60, changedOnly: true });
+            a.fire({ op: 'stream', fps: 10, scale: 1, quality: 60, changedOnly: true });
+          ensureCursorLoop();
         } catch (e) {
           ctx.log('[remote-control] JPEG 回退通道启动失败:', (e as Error)?.message);
           await endSession(s, `回退通道启动失败: ${(e as Error)?.message || e}`);
@@ -480,6 +612,7 @@ export const remoteControlModule: PluginModule = {
               screen: { x: info.x ?? 0, y: info.y ?? 0, w: info.w ?? 0, h: info.h ?? 0 },
             });
             a.fire({ op: 'stream', fps: 10, scale: 1, quality: 60, changedOnly: true });
+            ensureCursorLoop();
           } catch (e) {
             await endSession(s, `回退通道启动失败: ${(e as Error)?.message || e}`);
           }
@@ -501,6 +634,45 @@ export const remoteControlModule: PluginModule = {
               /* 代理没起来，忽略（会话结束时统一停） */
             }
           }
+          break;
+        }
+        case 'audio.state': {
+          // 音频转发开关：host 据此启停音频轨道（轨道采集常开，关闭=不发送，非静音）
+          s.audioOn = !!msg.on;
+          notifyHost({ type: 'audio.state', sessionId: s.id, on: s.audioOn });
+          await audit('audio-state', { sessionId: s.id, on: s.audioOn });
+          break;
+        }
+        case 'clipboard.set': {
+          const text = String(msg.text ?? '');
+          if (!text || text.length > RC_CLIPBOARD_MAX_CHARS) {
+            sendWsJson(s.controllerWs!, { type: 'clipboard.done', ok: false, error: '文本为空或超长' });
+            break;
+          }
+          try {
+            await clipboardSet(text);
+            sendWsJson(s.controllerWs!, { type: 'clipboard.done', ok: true });
+            await audit('clipboard-set', { chars: text.length });
+          } catch (e) {
+            sendWsJson(s.controllerWs!, { type: 'clipboard.done', ok: false, error: (e as Error)?.message || '写入失败' });
+          }
+          break;
+        }
+        case 'clipboard.get': {
+          try {
+            const text = await clipboardGet();
+            if (text.length > RC_CLIPBOARD_MAX_CHARS) throw new Error('远端剪贴板内容过大');
+            sendWsJson(s.controllerWs!, { type: 'clipboard.text', text });
+          } catch (e) {
+            sendWsJson(s.controllerWs!, { type: 'clipboard.done', ok: false, error: (e as Error)?.message || '读取失败' });
+          }
+          break;
+        }
+        case 'privacy.on':
+        case 'privacy.off': {
+          s.privacy = type === 'privacy.on';
+          notifyHost({ type, sessionId: s.id });
+          await audit(type, { sessionId: s.id });
           break;
         }
         case 'input': {
@@ -790,6 +962,8 @@ export const remoteControlModule: PluginModule = {
             mode: '',
             controllerWs: null,
             limiter: new SlidingWindowLimiter(maxInputs),
+            privacy: false,
+            audioOn: false,
           };
           sessions.set(session.id, session);
           if (verdict.status === 'granted') {
@@ -888,6 +1062,148 @@ export const remoteControlModule: PluginModule = {
         })();
       });
 
+      // -- 文件收发（控制端无 license，鉴权=会话令牌；license-guard 已豁免 /file 前缀）--
+      const fileParams = (req: unknown): Record<string, string> => {
+        try {
+          const u = String((req as { originalUrl?: string; url?: string }).originalUrl || (req as { url?: string }).url || '');
+          return Object.fromEntries(new URL(u, 'http://localhost').searchParams);
+        } catch {
+          return {};
+        }
+      };
+      const sessionByFileToken = (req: unknown): RcSession | null => {
+        const t = String(fileParams(req).token || '');
+        if (!t) return null;
+        const s = controllersByToken.get(t);
+        return s && s.status === 'granted' ? s : null;
+      };
+      // POST /file/upload?token=&name= —— body 为 application/octet-stream 原始流
+      r.post('/file/upload', (req, res) => {
+        const s = sessionByFileToken(req);
+        if (!s) {
+          res.json({ error: '会话不存在或已结束' });
+          return;
+        }
+        const dir = receiveDir();
+        const name = sanitizeRemoteFileName(String(fileParams(req).name || ''));
+        const target = path.join(dir, `${Date.now()}_${name}`);
+        if (!isWithinRoot(target, dir)) {
+          res.json({ error: '目标路径越界' });
+          return;
+        }
+        const lenHeader = Number((req as { headers?: Record<string, unknown> }).headers?.['content-length'] || 0);
+        if (lenHeader > RC_FILE_MAX_BYTES) {
+          res.json({ error: `文件超过上限（${Math.round(RC_FILE_MAX_BYTES / 1024 / 1024)}MB）` });
+          return;
+        }
+        const out = fs.createWriteStream(target);
+        let received = 0;
+        let done = false;
+        const fail = (msg: string): void => {
+          if (done) return;
+          done = true;
+          try {
+            out.destroy();
+          } catch {
+            /* ignore */
+          }
+          try {
+            fs.unlinkSync(target);
+          } catch {
+            /* ignore */
+          }
+          try {
+            (req as { destroy?: () => void }).destroy?.();
+          } catch {
+            /* ignore */
+          }
+          res.json({ error: msg });
+        };
+        (req as unknown as {
+          on: (ev: string, cb: (d?: Buffer | Error) => void) => unknown;
+          pause?: () => void;
+          resume?: () => void;
+        }).on('data', (d?: Buffer | Error) => {
+          if (done || !d || !(d instanceof Buffer)) return;
+          received += d.length;
+          if (received > RC_FILE_MAX_BYTES) {
+            fail(`文件超过上限（${Math.round(RC_FILE_MAX_BYTES / 1024 / 1024)}MB）`);
+            return;
+          }
+          if (!out.write(d)) {
+            try {
+              (req as unknown as { pause?: () => void }).pause?.();
+              out.once('drain', () => (req as unknown as { resume?: () => void }).resume?.());
+            } catch {
+              /* ignore */
+            }
+          }
+        });
+        (req as unknown as { on: (ev: string, cb: () => void) => unknown }).on('end', () => {
+          if (done) return;
+          done = true;
+          out.end(() => {
+            void audit('file-upload', { sessionId: s.id, device: s.deviceName, name, size: received });
+            res.json({ data: { name, size: received, dir: '言智远控' } });
+          });
+        });
+        (req as unknown as { on: (ev: string, cb: (e: Error) => void) => unknown }).on('error', () => fail('上传中断'));
+        out.on('error', () => fail('写入失败'));
+      });
+      // GET /file/list?token= —— 列接收目录（只暴露这一个目录，可下载的也只有这里）
+      r.get('/file/list', (req, res) => {
+        const s = sessionByFileToken(req);
+        if (!s) {
+          res.json({ error: '会话不存在或已结束' });
+          return;
+        }
+        const dir = receiveDir();
+        try {
+          const list = fs
+            .readdirSync(dir, { withFileTypes: true })
+            .filter((d) => d.isFile())
+            .map((d) => {
+              const st = fs.statSync(path.join(dir, d.name));
+              return { name: d.name, size: st.size, mtime: st.mtimeMs };
+            })
+            .sort((a, b) => b.mtime - a.mtime)
+            .slice(0, 200);
+          res.json({ data: list });
+        } catch (e) {
+          res.json({ error: (e as Error)?.message || '读取目录失败' });
+        }
+      });
+      // GET /file/download?token=&name= —— 只允许接收目录内的普通文件
+      r.get('/file/download', (req, res) => {
+        const s = sessionByFileToken(req);
+        if (!s) {
+          res.json({ error: '会话不存在或已结束' });
+          return;
+        }
+        const dir = receiveDir();
+        const name = sanitizeRemoteFileName(String(fileParams(req).name || ''));
+        const target = path.join(dir, name);
+        if (!isWithinRoot(target, dir) || !fs.existsSync(target) || !fs.statSync(target).isFile()) {
+          res.json({ error: '文件不存在' });
+          return;
+        }
+        const rs = res as unknown as {
+          setHeader: (k: string, v: string) => void;
+          status: (n: number) => { end: (d?: string) => void };
+          json: (d: unknown) => void;
+        };
+        try {
+          rs.setHeader('content-type', 'application/octet-stream');
+          rs.setHeader('content-disposition', `attachment; filename*=UTF-8''${encodeURI(name)}`);
+          fs.createReadStream(target)
+            .on('error', () => rs.status(500).end('read error'))
+            .pipe(rs as unknown as NodeJS.WritableStream);
+          void audit('file-download', { sessionId: s.id, device: s.deviceName, name, size: fs.statSync(target).size });
+        } catch (e) {
+          res.json({ error: (e as Error)?.message || '下载失败' });
+        }
+      });
+
       // -- 急停（桌面端 Ctrl+Alt+Esc 会同时打 computer-use 与本插件的 /panic）--
       r.post('/panic', (_req, res) => {
         if (getPluginManager().get('remote-control')?.state !== 'enabled') {
@@ -921,6 +1237,10 @@ export const remoteControlModule: PluginModule = {
 
     deactivateImpl = async () => {
       clearInterval(idleTimer);
+      if (cursorTimer) {
+        clearInterval(cursorTimer);
+        cursorTimer = null;
+      }
       panicActive = false;
       try {
         if (hostConn) {

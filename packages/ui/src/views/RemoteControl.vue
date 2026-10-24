@@ -41,9 +41,18 @@
       @wheel.prevent="onStageWheel"
       @dblclick="toggleFullscreen"
       @touchstart.passive="markTouch" @touchmove.passive="markTouch" @touchend.passive="markTouch"
+      @dragover.prevent="dragOver = true" @dragleave.prevent="dragOver = false" @drop.prevent="onFileDrop"
     >
-      <video v-show="mode === 'webrtc'" ref="videoRef" class="rc-video" autoplay playsinline muted></video>
-      <canvas v-show="mode === 'jpeg'" ref="canvasRef" class="rc-video"></canvas>
+      <video
+        v-show="mode === 'webrtc'" ref="videoRef" class="rc-video" autoplay playsinline muted
+        :style="mediaStyle" @loadedmetadata="syncNativeFromVideo" @resize="syncNativeFromVideo"
+      ></video>
+      <canvas v-show="mode === 'jpeg'" ref="canvasRef" class="rc-video" :style="mediaStyle"></canvas>
+
+      <!-- JPEG 模式远端光标（GDI 采集不含指针，客户端自绘） -->
+      <div class="rc-cursor" :style="cursorStyle">
+        <svg width="18" height="24" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#000" stroke-width="1.4"/></svg>
+      </div>
 
       <!-- 顶部工具条：普通模式可见，全屏沉浸时隐藏 -->
       <div class="rc-toolbar" :class="{ hidden: immersive && !toolbarPeek }">
@@ -54,28 +63,68 @@
           <option value="balance">均衡</option>
           <option value="sharp">清晰</option>
         </select>
+        <button class="rc-tbtn" @click="toggleZoom">{{ zoomLabel }}</button>
         <button class="rc-tbtn" @click="toggleFullscreen">{{ immersive ? '退出全屏' : '全屏' }}</button>
       </div>
 
-      <!-- 悬浮球：全屏沉浸时的唯一常驻控件（点按呼出，3s 无操作自动隐藏） -->
+      <!-- 悬浮球：全屏沉浸时的唯一常驻控件（拖动定位，点按呼出菜单，3s 无操作自动隐藏） -->
       <div
         v-show="immersive" ref="ballRef" class="rc-ball" :class="{ hidden: ballHidden }"
-        @pointerdown.stop="onBallPointerDown" @click.stop="ballMenuOpen = !ballMenuOpen"
-      >⌨</div>
-      <div v-if="immersive && ballMenuOpen" class="rc-ball-menu" :style="ballMenuStyle">
-        <button class="rc-mbtn" @click.stop="openKeyboardPanel">键盘输入</button>
-        <button class="rc-mbtn" @click.stop="toggleFullscreen">{{ immersive ? '退出全屏' : '全屏' }}</button>
-        <button class="rc-mbtn danger" @click.stop="disconnect">断开连接</button>
+        @pointerdown.stop="onBallPointerDown"
+      >⚙</div>
+      <div v-if="immersive && ballMenuOpen" class="rc-ball-menu" :style="ballMenuStyle" @pointerdown.stop>
+        <button class="rc-mbtn" @click.stop="openKeyboardPanel">⌨ 键盘输入</button>
+        <button class="rc-mbtn" @click.stop="openFilePanel">🗂 文件传输</button>
+        <button class="rc-mbtn" @click.stop="openClipboardPanel">📋 剪贴板</button>
+        <button class="rc-mbtn" @click.stop="toggleAudio">{{ audioOn ? '🔊 音频转发：开' : '🔇 音频转发：关' }}</button>
+        <button class="rc-mbtn" @click.stop="toggleZoom">{{ zoomLabel }}</button>
+        <button class="rc-mbtn" @click.stop="toggleFullscreen">{{ immersive ? '⛶ 退出全屏' : '⛶ 全屏' }}</button>
+        <button class="rc-mbtn danger" @click.stop="disconnect">✕ 断开连接</button>
       </div>
 
       <!-- 键盘整串输入面板（软键盘组字完成后一次性发送） -->
-      <div v-if="kbPanelOpen" class="rc-kbpanel" @pointerdown.stop @click.stop>
-        <textarea v-model="kbText" class="rc-kb-text" rows="3" placeholder="输入文字（支持中文输入法），发送后注入到被控端"></textarea>
-        <div class="rc-kb-actions">
+      <div v-if="kbPanelOpen" class="rc-panel" @pointerdown.stop @click.stop>
+        <div class="rc-panel-head">键盘输入<button class="rc-panel-x" @click="kbPanelOpen = false">✕</button></div>
+        <textarea v-model="kbText" class="rc-panel-text" rows="3" placeholder="输入文字（支持中文输入法），发送后整串注入被控端"></textarea>
+        <div class="rc-panel-actions">
           <button class="rc-btn rc-btn-primary" @click="sendKbText">发送 (Enter)</button>
-          <button class="rc-btn" @click="kbPanelOpen = false">关闭</button>
         </div>
       </div>
+
+      <!-- 剪贴板面板（纯文本；全屏下 Ctrl+V 直通注入 = 用被控端剪贴板粘贴） -->
+      <div v-if="clipPanelOpen" class="rc-panel" @pointerdown.stop @click.stop>
+        <div class="rc-panel-head">剪贴板互通<button class="rc-panel-x" @click="clipPanelOpen = false">✕</button></div>
+        <textarea v-model="clipText" class="rc-panel-text" rows="4" placeholder="把要发送的内容粘贴到这里；「取远端」会把被控端剪贴板填进来"></textarea>
+        <div class="rc-panel-actions">
+          <button class="rc-btn rc-btn-primary" :disabled="!clipText.trim() || clipBusy" @click="sendClipboard">发送到被控端</button>
+          <button class="rc-btn" :disabled="clipBusy" @click="pullClipboard">取被控端剪贴板</button>
+          <span v-if="clipBusy" class="rc-busy">…</span>
+        </div>
+        <div class="rc-hint">全屏下直接 Ctrl+V 会把按键注入被控端（粘贴其本地剪贴板）。</div>
+      </div>
+
+      <!-- 文件面板（发送 → 被控端接收目录；列表/下载 ← 接收目录） -->
+      <div v-if="filePanelOpen" class="rc-panel rc-panel-wide" @pointerdown.stop @click.stop>
+        <div class="rc-panel-head">文件传输<button class="rc-panel-x" @click="filePanelOpen = false">✕</button></div>
+        <div
+          class="rc-file-drop" :class="{ over: fileDrag }"
+          @dragover.prevent="fileDrag = true" @dragleave.prevent="fileDrag = false" @drop.prevent="onPanelFileDrop"
+          @click="fileInputRef?.click()"
+        >拖文件到这里发送，或点击选择（≤500MB/个）</div>
+        <input ref="fileInputRef" type="file" multiple style="display: none" @change="onFilePick" />
+        <div class="rc-file-list">
+          <div v-if="files.length === 0 && !fileBusy" class="rc-file-empty">接收目录暂无文件</div>
+          <div v-for="f in files" :key="f.name" class="rc-file-item">
+            <span class="rc-file-name" :title="f.name">{{ f.name }}</span>
+            <span class="rc-file-size">{{ fmtSize(f.size) }}</span>
+            <button class="rc-tbtn" @click="downloadFile(f.name)">下载</button>
+          </div>
+        </div>
+        <div v-if="fileBusy" class="rc-hint">传输中，请稍候…</div>
+      </div>
+
+      <!-- 拖拽投递遮罩 -->
+      <div v-if="dragOver" class="rc-drop-hint">松开发送到被控端「言智远控」目录</div>
     </div>
   </div>
 </template>
@@ -87,12 +136,22 @@
  * 通道：配对（授权码/设备令牌）→ WS（信令 + 输入 + JPEG 回退帧）→ WebRTC 视频主通道。
  * 沉浸模式：Fullscreen + 隐藏全部 UI，仅剩可拖动悬浮球（点按呼出 / 3s 自动隐藏）——
  * 「放大后跟直接操作电脑一样」的落点在本页。
+ * P1：音频转发开关 / 剪贴板互通 / 文件收发 / 适应窗口与 1:1 缩放（捏合缩放+平移）/
+ *     JPEG 模式远端光标自绘。
+ *
+ * ★ 坐标映射（自算显示矩形）：视频/画布按「contain」几何手工定位（object-fit:fill +
+ *   显式 left/top/width/height），toScreen 全程用 displayedRect 换算 —— 不依赖
+ *   getBoundingClientRect 与 object-fit 的组合行为，缩放/平移/黑边下都精确。
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import type { CSSProperties } from 'vue';
 import { ElMessage } from 'element-plus';
 
 type Phase = 'setup' | 'pending' | 'live' | 'ended';
 interface ScreenRect { x: number; y: number; w: number; h: number }
+interface FileEntry { name: string; size: number; mtime: number }
+
+const RC_FILE_MAX = 500 * 1024 * 1024;
 
 const phase = ref<Phase>('setup');
 const pairing = ref(false);
@@ -105,18 +164,37 @@ const ballHidden = ref(false);
 const ballMenuOpen = ref(false);
 const kbPanelOpen = ref(false);
 const kbText = ref('');
+const clipPanelOpen = ref(false);
+const clipText = ref('');
+const clipBusy = ref(false);
+const filePanelOpen = ref(false);
+const fileDrag = ref(false);
+const fileBusy = ref(false);
+const files = ref<FileEntry[]>([]);
+const audioOn = ref(false);
+const dragOver = ref(false);
 const qualityPreset = ref<'smooth' | 'balance' | 'sharp'>('balance');
+
+// ---- 缩放几何 ----
+const viewport = reactive({ w: 0, h: 0 });
+const native = reactive({ w: 0, h: 0 });
+const zoomMode = ref<'fit' | 'free'>('fit');
+const zoom = ref(1);
+const pan = reactive({ x: 0, y: 0 });
+
 const statusText = computed(() => {
-  if (mode.value === 'webrtc') return 'WebRTC 已连接';
-  if (mode.value === 'jpeg') return '兼容模式已连接';
+  if (mode.value === 'webrtc') return zoomMode.value === 'free' ? `WebRTC · ${Math.round(zoom.value * 100)}%` : 'WebRTC 已连接';
+  if (mode.value === 'jpeg') return zoomMode.value === 'free' ? `兼容模式 · ${Math.round(zoom.value * 100)}%` : '兼容模式已连接';
   return '连接中…';
 });
+const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '1:1' : '适应窗口'));
 
 const form = reactive({ host: window.location.origin, code: '' });
 const stageRef = ref<HTMLElement>();
 const videoRef = ref<HTMLVideoElement>();
 const canvasRef = ref<HTMLCanvasElement>();
 const ballRef = ref<HTMLElement>();
+const fileInputRef = ref<HTMLInputElement>();
 const ballMenuStyle = ref<Record<string, string>>({ right: '24px', bottom: '96px' });
 
 let ws: WebSocket | null = null;
@@ -129,6 +207,7 @@ let webrtcWatchdog: number | null = null;
 let pingTimer: number | null = null;
 let ballHideTimer: number | null = null;
 let jpegBitmap: ImageBitmap | null = null;
+const cursor = reactive({ x: 0, y: 0, visible: false });
 
 // ---- 设备身份（每个被控端一套 deviceId/deviceToken，存 localStorage）----
 const identityKey = (b: string) => `rc:identity:${b}`;
@@ -160,6 +239,127 @@ const wsOf = (b: string, p: string) => {
   u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${u.origin}/api/plugin/remote-control${p}`;
 };
+
+// ================= 几何：显示矩形自算 =================
+function syncViewport(): void {
+  const el = stageRef.value;
+  if (el) {
+    viewport.w = el.clientWidth;
+    viewport.h = el.clientHeight;
+  }
+}
+function syncNativeFromVideo(): void {
+  const v = videoRef.value;
+  if (v && v.videoWidth > 0) {
+    native.w = v.videoWidth;
+    native.h = v.videoHeight;
+  }
+}
+function syncNativeFromScreen(): void {
+  // 元数据未到前的宽高兜底：直接用屏幕几何（宽高比正确即可）
+  if (screen.value.w > 0 && screen.value.h > 0) {
+    native.w = screen.value.w;
+    native.h = screen.value.h;
+  }
+}
+/** contain 适配盒（未缩放） */
+function fitBox(): { w: number; h: number; x: number; y: number } {
+  if (!native.w || !native.h || !viewport.w || !viewport.h) return { w: 0, h: 0, x: 0, y: 0 };
+  let w = viewport.w;
+  let h = viewport.w * (native.h / native.w);
+  if (h > viewport.h) {
+    h = viewport.h;
+    w = viewport.h * (native.w / native.h);
+  }
+  return { w, h, x: (viewport.w - w) / 2, y: (viewport.h - h) / 2 };
+}
+/** 当前显示矩形（含缩放/平移，已夹取在视口内） */
+const displayedRect = computed(() => {
+  const b = fitBox();
+  if (!b.w) return { x: 0, y: 0, w: 0, h: 0 };
+  if (zoomMode.value === 'fit') return b;
+  const w = b.w * zoom.value;
+  const h = b.h * zoom.value;
+  const cx = (viewport.w - w) / 2;
+  const cy = (viewport.h - h) / 2;
+  const xMin = Math.min(0, viewport.w - w);
+  const xMax = Math.max(0, viewport.w - w);
+  const yMin = Math.min(0, viewport.h - h);
+  const yMax = Math.max(0, viewport.h - h);
+  return {
+    w,
+    h,
+    x: Math.min(xMax, Math.max(xMin, cx + pan.x)),
+    y: Math.min(yMax, Math.max(yMin, cy + pan.y)),
+  };
+});
+const mediaStyle = computed<CSSProperties>(() => {
+  const r = displayedRect.value;
+  return {
+    position: 'absolute',
+    left: `${r.x}px`,
+    top: `${r.y}px`,
+    width: `${r.w}px`,
+    height: `${r.h}px`,
+    objectFit: 'fill',
+  };
+});
+function panBy(dx: number, dy: number): void {
+  const b = fitBox();
+  const w = b.w * zoom.value;
+  const h = b.h * zoom.value;
+  const xMinOff = Math.min(0, viewport.w - w) - (viewport.w - w) / 2;
+  const xMaxOff = Math.max(0, viewport.w - w) - (viewport.w - w) / 2;
+  const yMinOff = Math.min(0, viewport.h - h) - (viewport.h - h) / 2;
+  const yMaxOff = Math.max(0, viewport.h - h) - (viewport.h - h) / 2;
+  pan.x = Math.min(xMaxOff, Math.max(xMinOff, pan.x + dx));
+  pan.y = Math.min(yMaxOff, Math.max(yMinOff, pan.y + dy));
+}
+function setZoom(z: number, anchorX?: number, anchorY?: number): void {
+  const before = displayedRect.value;
+  zoomMode.value = 'free';
+  zoom.value = Math.min(8, Math.max(1, z));
+  if (zoom.value <= 1.01) {
+    zoomMode.value = 'fit';
+    zoom.value = 1;
+    pan.x = 0;
+    pan.y = 0;
+    return;
+  }
+  // 以锚点（捏合中点/光标）为不动点：让锚点下的内容点缩放后仍停在锚点下
+  if (anchorX != null && anchorY != null && before.w > 0 && before.h > 0) {
+    const after = displayedRect.value;
+    const ux = (anchorX - before.x) / before.w;
+    const uy = (anchorY - before.y) / before.h;
+    pan.x += (anchorX - ux * after.w) - after.x;
+    pan.y += (anchorY - uy * after.h) - after.y;
+    panBy(0, 0); // 夹取越界
+  }
+}
+function toggleZoom(): void {
+  if (zoomMode.value === 'fit') {
+    // 1:1：显示像素 = 内容原生像素
+    const b = fitBox();
+    if (b.w > 0 && native.w > 0) {
+      setZoom(Math.min(8, native.w / b.w));
+    }
+  } else {
+    zoomMode.value = 'fit';
+    zoom.value = 1;
+    pan.x = 0;
+    pan.y = 0;
+  }
+}
+
+// ---- JPEG 远端光标（显示坐标 = 显示矩形反算）----
+const cursorStyle = computed<CSSProperties>(() => {
+  const r = displayedRect.value;
+  const s = screen.value;
+  if (!cursor.visible || !r.w || !s.w) return { display: 'none' };
+  const px = r.x + ((cursor.x - s.x) / s.w) * r.w;
+  const py = r.y + ((cursor.y - s.y) / s.h) * r.h;
+  return { display: 'block', left: `${px}px`, top: `${py}px` };
+});
 
 // ---- 配对 ----
 async function pair(): Promise<void> {
@@ -259,7 +459,7 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       if (msg.deviceToken) saveIdentity(base, String(msg.deviceToken));
       const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
       setMode(m);
-      if (msg.screen) screen.value = msg.screen as ScreenRect;
+      if (msg.screen) setScreen(msg.screen as ScreenRect);
       if (m === 'webrtc') startWebRtc();
       break;
     }
@@ -270,11 +470,16 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
     case 'session.mode': {
       const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
       setMode(m);
-      if (msg.screen) screen.value = msg.screen as ScreenRect;
+      if (msg.screen) setScreen(msg.screen as ScreenRect);
       break;
     }
     case 'screen.info':
-      screen.value = msg.screen as ScreenRect;
+      setScreen(msg.screen as ScreenRect);
+      break;
+    case 'cursor':
+      cursor.x = Number(msg.x) || 0;
+      cursor.y = Number(msg.y) || 0;
+      cursor.visible = !!msg.visible;
       break;
     case 'rtc.answer':
       if (pc) {
@@ -292,6 +497,25 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
         } catch { /* LAN 直连下个别 candidate 失败可忽略 */ }
       }
       break;
+    case 'clipboard.done':
+      clipBusy.value = false;
+      if (msg.ok) {
+        ElMessage.success('已发送到被控端剪贴板');
+        clipPanelOpen.value = false;
+      } else {
+        ElMessage.warning(String(msg.error || '剪贴板操作失败'));
+      }
+      break;
+    case 'clipboard.text':
+      clipBusy.value = false;
+      clipText.value = String(msg.text ?? '');
+      try {
+        await navigator.clipboard.writeText(clipText.value);
+        ElMessage.success('已取到被控端剪贴板并写入本机');
+      } catch {
+        ElMessage.info('已取到被控端剪贴板（非安全上下文无法自动写入，请在文本框复制）');
+      }
+      break;
     case 'input.rejected':
       ElMessage.warning(String(msg.reason || '输入被拒绝'));
       break;
@@ -303,6 +527,12 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
     default:
       break;
   }
+}
+
+function setScreen(s: ScreenRect): void {
+  screen.value = s;
+  syncNativeFromScreen();
+  syncViewport();
 }
 
 function setMode(m: 'webrtc' | 'jpeg'): void {
@@ -371,6 +601,10 @@ function onJpegFrame(data: ArrayBuffer): void {
     }
     const ctx = c.getContext('2d');
     ctx?.drawImage(bmp, 0, 0);
+    if (native.w !== bmp.width || native.h !== bmp.height) {
+      native.w = bmp.width;
+      native.h = bmp.height;
+    }
   }).catch(() => undefined);
 }
 
@@ -385,7 +619,7 @@ function applyQuality(): void {
 }
 watch(qualityPreset, applyQuality);
 
-// ---- 输入：指针（触屏=鼠标）----
+// ================= 输入：指针（触屏=鼠标 / 双指=缩放·平移·滚动）=================
 interface ActivePointer { x: number; y: number }
 const pointers = new Map<number, ActivePointer>();
 let downPos: { x: number; y: number } | null = null;
@@ -393,15 +627,14 @@ let dragging = false;
 let suppressUp = false;
 let longPressTimer: number | null = null;
 let lastMoveSent = 0;
-let pinchLastDy: number | null = null;
+let pinchPrev: { dist: number; midX: number; midY: number; active: boolean } | null = null;
 
 const toScreen = (clientX: number, clientY: number): { x: number; y: number } | null => {
-  const el = (mode.value === 'webrtc' ? videoRef.value : canvasRef.value) as HTMLElement | null;
-  if (!el) return null;
   if (screen.value.w <= 0 || screen.value.h <= 0) return null; // 屏幕几何未知时禁输入
-  const r = el.getBoundingClientRect();
-  const nx = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-  const ny = Math.max(0, Math.min(1, (clientY - r.top) / r.height));
+  const r = displayedRect.value;
+  if (!r.w || !r.h) return null;
+  const nx = Math.max(0, Math.min(1, (clientX - r.x) / r.w));
+  const ny = Math.max(0, Math.min(1, (clientY - r.y) / r.h));
   return {
     x: Math.round(screen.value.x + nx * screen.value.w),
     y: Math.round(screen.value.y + ny * screen.value.h),
@@ -417,14 +650,23 @@ function onStagePointerDown(e: PointerEvent): void {
   peekToolbar();
   wakeBall();
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (pointers.size > 1) {
-    // 双指 = 滚动模式：撤掉已按下的左键，避免误点
-    if (dragging && !suppressUp && downPos) input({ action: 'up', ...toScreen(downPos.x, downPos.y), button: 'left' });
+  if (pointers.size === 2) {
+    // 进入双指模式：撤掉已按下的左键，避免误点
+    if (dragging && !suppressUp && downPos) input({ action: 'up', ...toScreen(downPos.x, downPos.y)!, button: 'left' });
     dragging = false;
-    pinchLastDy = null;
+    suppressUp = false;
     clearLongPress();
+    downPos = null;
+    const pts = [...pointers.values()];
+    pinchPrev = {
+      dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+      midX: (pts[0].x + pts[1].x) / 2,
+      midY: (pts[0].y + pts[1].y) / 2,
+      active: true,
+    };
     return;
   }
+  if (pointers.size > 2) return;
   const p = toScreen(e.clientX, e.clientY);
   if (!p) return;
   downPos = { x: e.clientX, y: e.clientY };
@@ -445,16 +687,28 @@ function onStagePointerMove(e: PointerEvent): void {
   if (!pointers.has(e.pointerId)) return;
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (pointers.size >= 2) {
-    // 双指滚动：取第一根手指的纵向位移（手指下滑 = 内容下滚 = 注入负 delta）
     const pts = [...pointers.values()];
-    if (pinchLastDy !== null) {
-      const dy = pts[0].y - pinchLastDy;
-      if (dy !== 0) {
-        const p = toScreen(e.clientX, e.clientY);
-        if (p) input({ action: 'wheel', ...p, delta: Math.max(-400, Math.min(400, -Math.round(dy))) });
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    const midX = (pts[0].x + pts[1].x) / 2;
+    const midY = (pts[0].y + pts[1].y) / 2;
+    if (pinchPrev?.active) {
+      const ratio = dist / Math.max(1, pinchPrev.dist);
+      if (Math.abs(ratio - 1) > 0.02) {
+        // 捏合 → 缩放（以中点为锚）
+        setZoom(zoom.value * ratio, midX, midY);
+        pinchPrev.dist = dist;
+      } else if (zoomMode.value === 'free' && zoom.value > 1) {
+        panBy(midX - pinchPrev.midX, midY - pinchPrev.midY);
+      } else {
+        // 适应窗口下的双指平移退化为滚动（并行位移）
+        const dy = midY - pinchPrev.midY;
+        if (Math.abs(dy) > 2) {
+          const p = toScreen(midX, midY);
+          if (p) input({ action: 'wheel', ...p, delta: Math.max(-400, Math.min(400, -Math.round(dy))) });
+        }
       }
     }
-    pinchLastDy = pts[0].y;
+    pinchPrev = { dist, midX, midY, active: true };
     return;
   }
   if (!downPos) return;
@@ -474,7 +728,7 @@ function onStagePointerMove(e: PointerEvent): void {
 
 function onStagePointerUp(e: PointerEvent): void {
   pointers.delete(e.pointerId);
-  if (pointers.size < 2) pinchLastDy = null;
+  if (pointers.size < 2) pinchPrev = null;
   clearLongPress();
   if (suppressUp) {
     suppressUp = false;
@@ -491,6 +745,18 @@ function onStagePointerUp(e: PointerEvent): void {
 }
 
 function onStageWheel(e: WheelEvent): void {
+  // Ctrl+滚轮 = 缩放（桌面端）
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    setZoom(zoom.value * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
+    return;
+  }
+  // 缩放态下滚轮 = 平移（纵向），Shift 平移横向
+  if (zoomMode.value === 'free' && zoom.value > 1) {
+    if (e.shiftKey) panBy(-e.deltaY, 0);
+    else panBy(0, -e.deltaY);
+    return;
+  }
   const p = toScreen(e.clientX, e.clientY);
   if (!p) return;
   const delta = Math.max(-400, Math.min(400, -Math.round(e.deltaY)));
@@ -508,7 +774,7 @@ function markTouch(): void {
   peekToolbar();
 }
 
-// ---- 输入：键盘（直通 + 整串）----
+// ================= 输入：键盘（直通 + 整串）=================
 const KEY_MAP: Record<string, string> = {
   Enter: 'enter', Backspace: 'backspace', Tab: 'tab', Escape: 'esc', Delete: 'delete',
   Insert: 'insert', Home: 'home', End: 'end', PageUp: 'pageup', PageDown: 'pagedown',
@@ -557,12 +823,136 @@ function sendKbText(): void {
   kbText.value = '';
   kbPanelOpen.value = false;
 }
+
+// ================= 面板 =================
 function openKeyboardPanel(): void {
   kbPanelOpen.value = true;
+  clipPanelOpen.value = false;
+  filePanelOpen.value = false;
+  ballMenuOpen.value = false;
+}
+function openClipboardPanel(): void {
+  clipPanelOpen.value = true;
+  kbPanelOpen.value = false;
+  filePanelOpen.value = false;
+  ballMenuOpen.value = false;
+}
+function openFilePanel(): void {
+  filePanelOpen.value = true;
+  kbPanelOpen.value = false;
+  clipPanelOpen.value = false;
+  ballMenuOpen.value = false;
+  void refreshFiles();
+}
+function toggleAudio(): void {
+  audioOn.value = !audioOn.value;
+  send({ type: 'audio.state', on: audioOn.value });
   ballMenuOpen.value = false;
 }
 
-// ---- 全屏沉浸 + 悬浮球 ----
+async function sendClipboard(): Promise<void> {
+  const t = clipText.value;
+  if (!t) return;
+  clipBusy.value = true;
+  send({ type: 'clipboard.set', text: t.slice(0, 100_000) });
+  // 成功/失败提示由 clipboard.done 回执驱动；这里仅兜底防卡死
+  window.setTimeout(() => {
+    clipBusy.value = false;
+  }, 6000);
+}
+async function pullClipboard(): Promise<void> {
+  clipBusy.value = true;
+  send({ type: 'clipboard.get' });
+  window.setTimeout(() => {
+    if (clipBusy.value) {
+      clipBusy.value = false;
+      ElMessage.warning('被控端剪贴板读取超时');
+    }
+  }, 8000);
+}
+
+// ================= 文件收发 =================
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)}GB`;
+}
+async function refreshFiles(): Promise<void> {
+  if (!sessionToken) return;
+  try {
+    const res = await fetch(apiOf(base, `/file/list?token=${encodeURIComponent(sessionToken)}`));
+    const body = await res.json();
+    if (body.error) {
+      ElMessage.warning(body.error);
+      return;
+    }
+    files.value = (body.data || []) as FileEntry[];
+  } catch {
+    ElMessage.warning('文件列表获取失败');
+  }
+}
+async function uploadFiles(list: FileList | File[]): Promise<void> {
+  if (!sessionToken || fileBusy.value) return;
+  const arr = [...list].filter((f) => f.size <= RC_FILE_MAX);
+  if (!arr.length) {
+    ElMessage.warning('没有可发送的文件（单个 ≤500MB）');
+    return;
+  }
+  fileBusy.value = true;
+  try {
+    for (const f of arr) {
+      const res = await fetch(
+        apiOf(base, `/file/upload?token=${encodeURIComponent(sessionToken)}&name=${encodeURIComponent(f.name)}`),
+        { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: f },
+      );
+      const body = await res.json();
+      if (body.error) ElMessage.warning(`${f.name}: ${body.error}`);
+    }
+    ElMessage.success('发送完成');
+    await refreshFiles();
+  } catch {
+    ElMessage.error('发送失败');
+  } finally {
+    fileBusy.value = false;
+  }
+}
+function onFilePick(e: Event): void {
+  const input = e.target as HTMLInputElement;
+  if (input.files?.length) void uploadFiles(input.files);
+  input.value = '';
+}
+function onFileDrop(e: DragEvent): void {
+  dragOver.value = false;
+  fileDrag.value = false;
+  if (e.dataTransfer?.files?.length) void uploadFiles(e.dataTransfer.files);
+}
+function onPanelFileDrop(e: DragEvent): void {
+  fileDrag.value = false;
+  if (e.dataTransfer?.files?.length) void uploadFiles(e.dataTransfer.files);
+}
+async function downloadFile(name: string): Promise<void> {
+  if (!sessionToken) return;
+  try {
+    const res = await fetch(apiOf(base, `/file/download?token=${encodeURIComponent(sessionToken)}&name=${encodeURIComponent(name)}`));
+    const body = await res.json().catch(() => null);
+    if (body?.error) {
+      ElMessage.warning(body.error);
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch {
+    ElMessage.error('下载失败');
+  }
+}
+
+// ================= 全屏沉浸 + 悬浮球 =================
 async function toggleFullscreen(): Promise<void> {
   const el = stageRef.value;
   if (!el) return;
@@ -576,13 +966,17 @@ async function toggleFullscreen(): Promise<void> {
     // iOS Safari 不支持 Fullscreen API：降级为「伪全屏」（本页是 bare 路由，藏 UI 即可）
     immersive.value = !immersive.value;
   }
+  syncViewport();
 }
 function onFullscreenChange(): void {
   immersive.value = !!document.fullscreenElement;
   if (!immersive.value) {
     ballMenuOpen.value = false;
     kbPanelOpen.value = false;
+    clipPanelOpen.value = false;
+    filePanelOpen.value = false;
   }
+  window.setTimeout(syncViewport, 60);
 }
 function peekToolbar(): void {
   if (!immersive.value) return;
@@ -682,19 +1076,35 @@ function cleanup(): void {
   }
   sessionToken = '';
   sessionId = '';
+  audioOn.value = false;
+  cursor.visible = false;
+  zoomMode.value = 'fit';
+  zoom.value = 1;
+  pan.x = 0;
+  pan.y = 0;
+  kbPanelOpen.value = false;
+  clipPanelOpen.value = false;
+  filePanelOpen.value = false;
   if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
   immersive.value = false;
+}
+function onResize(): void {
+  syncViewport();
 }
 
 onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('compositionend', onCompositionEnd, true);
+  window.addEventListener('resize', onResize);
+  syncViewport();
+  syncNativeFromScreen();
 });
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onKeyDown, true);
   window.removeEventListener('compositionend', onCompositionEnd, true);
+  window.removeEventListener('resize', onResize);
   cleanup();
   if (ballHideTimer) clearTimeout(ballHideTimer);
 });
@@ -724,7 +1134,10 @@ onBeforeUnmount(() => {
 .rc-wait-sub { font-size: 12px; color: #8a94a3; }
 
 .rc-stage { position: absolute; inset: 0; overflow: hidden; background: #000; }
-.rc-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; touch-action: none; }
+/* ★ 显示矩形由 JS 自算（mediaStyle 内联定位），这里只留外观——不再用 inset:100% + contain，
+   否则 letterbox 黑边会算进坐标映射（点边缘会偏）。 */
+.rc-video { position: absolute; object-fit: fill; touch-action: none; background: #000; }
+.rc-cursor { position: absolute; z-index: 4; pointer-events: none; transform: translate(-2px, -2px); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
 .rc-toolbar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0)); transition: opacity 0.25s; z-index: 5; }
 .rc-toolbar.hidden { opacity: 0; pointer-events: none; }
 .rc-status { font-size: 12px; color: #b9c2cf; flex: 1; }
@@ -734,12 +1147,28 @@ onBeforeUnmount(() => {
 
 .rc-ball { position: absolute; right: 24px; bottom: 96px; width: 44px; height: 44px; border-radius: 50%; background: rgba(47,107,255,0.85); display: flex; align-items: center; justify-content: center; font-size: 18px; cursor: grab; box-shadow: 0 4px 16px rgba(0,0,0,0.45); transition: opacity 0.3s; z-index: 8; user-select: none; touch-action: none; }
 .rc-ball.hidden { opacity: 0.12; }
-.rc-ball-menu { position: absolute; display: flex; flex-direction: column; gap: 6px; background: #171c23; border: 1px solid #2a323e; border-radius: 10px; padding: 8px; z-index: 9; min-width: 130px; }
+.rc-ball-menu { position: absolute; display: flex; flex-direction: column; gap: 6px; background: #171c23; border: 1px solid #2a323e; border-radius: 10px; padding: 8px; z-index: 9; min-width: 170px; }
 .rc-mbtn { background: transparent; border: none; color: inherit; text-align: left; padding: 8px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; }
 .rc-mbtn:hover { background: #232b36; }
 .rc-mbtn.danger { color: #f0909d; }
 
-.rc-kbpanel { position: absolute; left: 50%; transform: translateX(-50%); bottom: 24px; width: min(480px, 92%); background: #171c23; border: 1px solid #2a323e; border-radius: 12px; padding: 12px; z-index: 10; }
-.rc-kb-text { width: 100%; background: #10151b; border: 1px solid #2a323e; border-radius: 8px; color: inherit; padding: 8px 10px; font-size: 14px; resize: none; outline: none; box-sizing: border-box; }
-.rc-kb-actions { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
+.rc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: 24px; width: min(480px, 92%); background: #171c23; border: 1px solid #2a323e; border-radius: 12px; padding: 12px; z-index: 10; }
+.rc-panel-wide { width: min(560px, 94%); }
+.rc-panel-head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.rc-panel-x { background: transparent; border: none; color: #8a94a3; cursor: pointer; font-size: 14px; }
+.rc-panel-text { width: 100%; background: #10151b; border: 1px solid #2a323e; border-radius: 8px; color: inherit; padding: 8px 10px; font-size: 14px; resize: none; outline: none; box-sizing: border-box; }
+.rc-panel-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+.rc-panel-actions .rc-btn { padding: 7px 12px; }
+.rc-busy { color: #8a94a3; font-size: 13px; }
+
+.rc-file-drop { border: 1.5px dashed #2a323e; border-radius: 8px; padding: 14px; text-align: center; font-size: 13px; color: #8a94a3; cursor: pointer; margin-bottom: 10px; }
+.rc-file-drop.over { border-color: #4c8dff; color: #9dc0ff; background: #16233a; }
+.rc-file-list { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.rc-file-item { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 2px; }
+.rc-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-file-size { color: #6d7684; font-size: 12px; flex-shrink: 0; }
+.rc-file-empty { color: #6d7684; font-size: 13px; text-align: center; padding: 10px; }
+.rc-file-item .rc-tbtn { padding: 3px 10px; font-size: 12px; }
+
+.rc-drop-hint { position: absolute; inset: 12px; border: 2px dashed #4c8dff; border-radius: 14px; background: rgba(22, 35, 58, 0.72); display: flex; align-items: center; justify-content: center; font-size: 16px; color: #bcd2ff; z-index: 12; pointer-events: none; }
 </style>

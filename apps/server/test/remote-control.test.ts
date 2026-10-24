@@ -16,6 +16,7 @@ import {
   evaluatePair,
   isPrivateRemoteAddr,
   isValidCustomCode,
+  sanitizeRemoteFileName,
   validateInputMsg,
   type StoredPairCode,
   type WhitelistEntry,
@@ -221,6 +222,31 @@ describe('validateInputMsg', () => {
   it('未知 action / 非法坐标拒绝', () => {
     expect(validateInputMsg({ action: 'format', x: 0, y: 0 }).ok).toBe(false);
     expect(validateInputMsg({ action: 'click', x: 'NaN?', y: 0 }).ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 文件名清洗（远控文件收发的防穿越守门）
+// ---------------------------------------------------------------------------
+describe('sanitizeRemoteFileName', () => {
+  it('取 basename，路径分隔符与穿越尝试全部剥掉', () => {
+    expect(sanitizeRemoteFileName('report.docx')).toBe('report.docx');
+    expect(sanitizeRemoteFileName('../../etc/passwd')).toBe('passwd');
+    expect(sanitizeRemoteFileName('C:\\Windows\\evil.exe')).toBe('evil.exe');
+    expect(sanitizeRemoteFileName('a/b/c.txt')).toBe('c.txt');
+  });
+  it('非法字符替换为下划线', () => {
+    expect(sanitizeRemoteFileName('a<b>:c?.txt')).toBe('a_b__c_.txt');
+  });
+  it('空/纯点回退为时间戳名，Windows 保留名加前缀', () => {
+    expect(sanitizeRemoteFileName('')).toMatch(/^file-\d+$/);
+    expect(sanitizeRemoteFileName('..')).toMatch(/^file-\d+$/);
+    expect(sanitizeRemoteFileName('CON')).toMatch(/^_CON$/i);
+    expect(sanitizeRemoteFileName('com1.txt')).toMatch(/^_com1\.txt$/i);
+  });
+  it('超长名截断但保留扩展名尾部', () => {
+    const long = `${'a'.repeat(200)}.txt`;
+    expect(sanitizeRemoteFileName(long).length).toBeLessThanOrEqual(120);
   });
 });
 

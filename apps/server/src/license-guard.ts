@@ -59,6 +59,8 @@ const EXEMPT_PREFIXES: readonly string[] = [
   //   /status、/code/*、/whitelist/*、/audit 等管理面是 fetch 调用、能带头，保持门禁。
   '/plugin/remote-control/pair',
   '/plugin/remote-control/session',
+  // 文件收发同上：控制端凭会话令牌鉴权（token 缺失/失效一律 403），目录锁定接收目录
+  '/plugin/remote-control/file',
 ];
 
 /**
