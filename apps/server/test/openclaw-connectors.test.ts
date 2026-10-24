@@ -139,6 +139,7 @@ describe('④ 源码锚点：桥接路由 / 飞书长连接 / 生命周期装配
   const manager = read('src/services/openclaw-manager.ts');
   const feishu = read('src/services/feishu-stream.ts');
   const im = read('src/services/im.ts');
+  const wechatPersonal = read('src/services/im/providers/wechat-personal.ts');
   const index = read('src/index.ts');
 
   it('★★ 桥接同步路由存在且用 bridgeToken 鉴权（不走登录态：调用方是本机 Gateway 进程）', () => {
@@ -164,9 +165,9 @@ describe('④ 源码锚点：桥接路由 / 飞书长连接 / 生命周期装配
   });
 
   it('★★ 测试连接对 wechat-personal 是真校验（Gateway 可达 + bridgeToken 存在），不是假 ok', () => {
-    expect(im).toContain('个人微信连接器缺少桥接令牌');
-    expect(im).toContain('127.0.0.1:18789');
-    expect(im).not.toContain('仅校验配置');
+    expect(wechatPersonal).toContain('个人微信连接器缺少桥接令牌');
+    expect(wechatPersonal).toContain('127.0.0.1:18789');
+    expect(wechatPersonal).not.toContain('仅校验配置');
   });
 
   it('★ manager：Node 门槛 → openclaw 宿主 → 微信插件 → 桥接 link 安装 → gateway restart 全链在位', () => {
@@ -208,7 +209,7 @@ describe('④ 源码锚点：桥接路由 / 飞书长连接 / 生命周期装配
 });
 
 describe('⑤ 个人微信主动外发（sendWechatPersonal）：经 Gateway /tools/invoke 调 message 工具', () => {
-  const im = read('src/services/im.ts');
+  const im = read('src/services/im/providers/wechat-personal.ts');
   const manager = read('src/services/openclaw-manager.ts');
 
   it('★★ 出站走 Gateway HTTP RPC：/tools/invoke + Bearer 令牌 + message 工具(action=send, channel=weixin)', () => {
