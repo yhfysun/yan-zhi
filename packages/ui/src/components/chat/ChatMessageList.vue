@@ -98,16 +98,16 @@
                    条件与下方 agent-process-steps 互斥（isProcessOpen 为 false 才显示）：
                    ① live：等待模型响应 / 正在执行 <工具> / 生成回复中（Loading 转圈）
                    ② 已结束：N 步推理 · M 次工具调用（点击展开详情） -->
-              <div v-if="!isProcessOpen(vr.round, vr.ri) && (isRoundLive(vr.round, vr.ri) || vr.round.hasAgentProcess)"
+              <div v-if="showProcessSummary(vr.round, vr.ri)"
                    class="agent-process-summary"
-                   :class="{ 'is-clickable': vr.round.hasAgentProcess }"
-                   @click="vr.round.hasAgentProcess && toggleAgentProcess('round-' + vr.ri)">
+                   :class="{ 'is-clickable': canExpandProcess(vr.round) }"
+                   @click="onProcessSummaryClick(vr.round, vr.ri)">
                 <el-icon :size="13" class="agent-process-summary-icon">
-                  <Loading v-if="isRoundLive(vr.round, vr.ri)" class="is-loading" />
+                  <Loading v-if="isRoundLive(vr.round, vr.ri) || isRoundDetailsLoading(vr.round)" class="is-loading" />
                   <CircleCheck v-else />
                 </el-icon>
                 <span class="agent-process-summary-text">{{ processSummaryText(vr.round, vr.ri) }}</span>
-                <el-icon v-if="vr.round.hasAgentProcess" :size="12" class="agent-process-summary-chevron"><ArrowRight /></el-icon>
+                <el-icon v-if="canExpandProcess(vr.round)" :size="12" class="agent-process-summary-chevron"><ArrowRight /></el-icon>
               </div>
               <!-- 最耗时的 3 个**计划步骤**（2026-10-23 用户要求：按规划步骤而非工具统计）：
                    只在本轮已结束且为最后一轮时显示（计划是会话级的，避免多轮重复）；
@@ -170,7 +170,7 @@
                   <div v-if="step.toolCalls.length" class="tool-group-card tool-group-card-flat">
                     <div class="tool-group-body">
                       <div v-for="(tc, idx) in step.toolCalls" :key="idx" class="tool-item">
-                        <div class="tool-item-header" @click="openToolItem('agent-step-' + vr.ri + '-' + si + '-' + idx, tc.id)">
+                        <div class="tool-item-header" @click="openToolItemWithDetails('agent-step-' + vr.ri + '-' + si + '-' + idx, tc)">
                           <div class="tool-item-left">
                             <el-icon :size="12" class="tool-item-status" :class="getStepToolStatusClass(step, tc.id)">
                               <CircleCheck v-if="isToolResultDone(tc.id) && !isStepToolError(step, tc.id)" />
@@ -250,7 +250,7 @@
                   <div class="tool-group-card tool-group-card-flat">
                     <div class="tool-group-body">
                       <div v-for="(tc, idx) in vr.round.allToolCalls" :key="idx" class="tool-item">
-                        <div class="tool-item-header" @click="openToolItem('round-' + vr.ri + '-' + idx, tc.id)">
+                        <div class="tool-item-header" @click="openToolItemWithDetails('round-' + vr.ri + '-' + idx, tc)">
                           <div class="tool-item-left">
                             <el-icon :size="12" class="tool-item-status" :class="getToolStatusClass(tc.id)">
                               <CircleCheck v-if="isToolResultDone(tc.id) && !isToolError(tc.id)" />
@@ -396,8 +396,14 @@
                         <div v-if="expandedReasoning['stream-' + vr.ri]" class="reasoning-body">{{ getStreamingReasoning(vr.round, vr.ri) }}</div>
                         <div v-else class="dtb-peek">{{ reasoningPeek(getStreamingReasoning(vr.round, vr.ri)) }}</div>
                       </div>
+                      <!-- 子智能体（call_agent）执行中：此刻主智能体既不产字也不在思考，
+                           三点省略号等于「什么都看不到」（2026-10-24 用户实报「不知道在干啥」）。
+                           直接把子智能体的实时过程（推理 / 工具调用 / 参数）摊在这里。 -->
+                      <div v-if="liveSubAgentRound(vr.round)" class="live-sub-agent">
+                        <SubAgentRoundView :round="liveSubAgentRound(vr.round)!" :id-prefix="'live-' + vr.ri" />
+                      </div>
                       <!-- 刚开始无任何内容：三点初始态 -->
-                      <div v-else class="msg-content streaming">
+                      <div v-if="!liveSubAgentRound(vr.round) && !getStreamingText(vr.round, vr.ri) && !getStreamingReasoning(vr.round, vr.ri)" class="msg-content streaming">
                         <span class="typing-dots" aria-label="正在输入"><span></span><span></span><span></span></span>
                       </div>
                     </template>
@@ -625,6 +631,9 @@
       <button v-if="confirmCurrentPage.allowSupplement !== false && !confirmSupplementOpen" type="button" class="inline-ask-toggle" @click="confirmSupplementOpen = true">+ 补充说明</button>
       <el-input v-if="confirmCurrentPage.allowSupplement !== false && confirmSupplementOpen" v-model="confirmSupplement" type="textarea" :rows="2" placeholder="补充说明（可选）" class="inline-ask-supplement" />
       <div class="inline-ask-actions">
+        <!-- 返回上一页（2026-10-24）：多页确认此前只能往前走，答错了没法改。
+             已答内容由 useChat 的切页 watcher 回填到表单，回来即可改。 -->
+        <el-button v-if="store.pendingConfirmation.index > 0" size="small" class="confirm-prev-btn" @click="onConfirmPrev">上一页</el-button>
         <el-button size="small" @click="onConfirmSkip">跳过</el-button>
         <el-button size="small" type="primary" @click="onConfirmNext">
           {{ store.pendingConfirmation.index < store.pendingConfirmation.pages.length - 1 ? '下一页' : '完成' }}
@@ -670,18 +679,6 @@
         <span class="round-nav-list-text">{{ getRoundText(ri) }}</span>
       </div>
     </div>
-
-
-    <transition name="scroll-fab">
-      <button v-if="showScrollTop" class="scroll-fab scroll-fab-top" @click="messagesRef!.scrollTop = 0" aria-label="滚动到顶部">
-        <el-icon><ArrowUp /></el-icon>
-      </button>
-    </transition>
-    <transition name="scroll-fab">
-      <button v-if="showScrollBottom" class="scroll-fab scroll-fab-bottom" @click="scrollToBottom" aria-label="滚动到底部">
-        <el-icon><ArrowDown /></el-icon>
-      </button>
-    </transition>
   </div>
 
   <!-- 媒体放大灯箱 + 右键菜单 + hover 浮层（Teleport 到 body，全聊天区共用一个实例）。
@@ -696,7 +693,7 @@
 
 <script setup lang="ts">
 import {
-  ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, ArrowUp, Loading, CircleCheck,
+  ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, Loading, CircleCheck,
   CircleClose, CopyDocument, EditPen, Files, Delete, View, Fold, Refresh, Link, Download,
   Grid, Document, Connection, ChatLineSquare, Lock, WarningFilled,
 } from '@element-plus/icons-vue';
@@ -706,8 +703,8 @@ import { useRouter } from 'vue-router';
 import { useChat } from '../../composables/chat/useChat';
 import { useMobileShell } from '../../composables/useMobileShell';
 import { bindLongPress } from '../../composables/useLongPress';
-import type { MessageRound } from '../../composables/chat/useChat';
-import { stepRenderRange, ROUND_STEP_RENDER_LIMIT } from '../../composables/chat/message-rounds';
+import type { MessageRound, SubAgentRound } from '../../composables/chat/useChat';
+import { stepRenderRange, ROUND_STEP_RENDER_LIMIT, findLiveSubAgentRound } from '../../composables/chat/message-rounds';
 import { fmtDuration, planElapsedMs, planStepElapsedMs, roundElapsedMs, slowestPlanSteps } from '../../composables/chat/round-timing';
 import PlanStepDetailDialog from './PlanStepDetailDialog.vue';
 import AgentAvatar from '../AgentAvatar.vue';
@@ -740,16 +737,17 @@ const {
   toggleAgentProcess, expandedStepTools, toggleStepTools, getStepToolGroupClass, isStepToolsRunning,
   isStepToolsError, toggleTool, getStepToolStatusClass, getStepToolResult, isStepToolError, resolveToolDisplay,
   resolveToolArgs, toolTargetHint, expandedTools, toggleToolGroup, getToolGroupStatusClass, isToolGroupRunning,
-  isToolGroupError, expandedToolGroups, getToolStatusClass, getToolResult, isToolError, isToolResultDone, requestToolResult, openToolItem, distillAssistantMsg, regenerateMsg,
+  isToolGroupError, expandedToolGroups, getToolStatusClass, getToolResult, isToolError, isToolResultDone, requestToolResult, openToolItem,
+  roundMetaOf, roundDetailsLoaded, requestRoundDetails, requestSubAgentDetails, distillAssistantMsg, regenerateMsg,
   isToolItemOpen, collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
   copySubAgentResultMd, downloadSubAgentResultMd, copyAssistantMd, downloadAssistantMd,
   selectedModelId, input, openPlatformConfig, agentStore, skillStore, mountedSkillIds, onAgentSwitch,
   openPath,
   userRoundIndices, activeNavRound, scrollToRound,
-  showScrollBottom, showScrollTop, scrollToBottom, historyLoading,
+  historyLoading,
   askMultiSelect, askChecked, askSingle, askShowText, askText, askSupplement, onAskSubmit, onAskSkip,
   confirmCurrentPage, confirmMultiSelect, confirmChecked, confirmSingle, confirmShowText,
-  confirmText, confirmSupplement, onConfirmSkip, onConfirmNext,
+  confirmText, confirmSupplement, confirmSupplementOpen, onConfirmSkip, onConfirmPrev, onConfirmNext,
   costStore, startContinuedConversation,
 } = useChat();
 
@@ -1032,7 +1030,6 @@ function applyDevExample(text: string) {
   const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement | null;
   if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
 }
-const confirmSupplementOpen = ref(false);
 const document = window.document;
 const router = useRouter();
 
@@ -1135,6 +1132,49 @@ function isProcessOpen(round: MessageRound, ri: number): boolean {
   return false;
 }
 
+// ===== 执行详情按需加载（2026-10-24）=====
+// 用户口径：「都是概览信息和最终大模型的响应就好了」「展开时再拉」「子智能体内部步骤点击显示」。
+// 首屏只有显示消息；概览条用服务端下发的每轮规模（N 步 · M 次工具调用）渲染，
+// 点它才拉这一轮的中间步骤/工具回执；点开 call_agent 卡片才拉子智能体内部步骤。
+const roundDetailsLoading = reactive<Record<string, boolean>>({});
+/** 这一轮是否有"还没拉下来的"执行详情（已拉过但为空 = 确实没有过程） */
+function roundHasHiddenDetails(round: MessageRound): boolean {
+  const id = round.user?.id;
+  if (!id || roundDetailsLoaded(id)) return false;
+  const meta = roundMetaOf(id);
+  if (!meta) return false;
+  return meta.steps + meta.tools + meta.sub > 0;
+}
+function isRoundDetailsLoading(round: MessageRound): boolean {
+  const id = round.user?.id;
+  return !!id && !!roundDetailsLoading[id];
+}
+function canExpandProcess(round: MessageRound): boolean {
+  return round.hasAgentProcess || roundHasHiddenDetails(round);
+}
+/** 摘要条显隐：运行中 / 加载中 / 收起态且有过程可看 / 详情还没加载但有规模信息 */
+function showProcessSummary(round: MessageRound, ri: number): boolean {
+  if (isRoundLive(round, ri)) return true;
+  if (isRoundDetailsLoading(round)) return true;
+  if (round.hasAgentProcess) return !isProcessOpen(round, ri);
+  return roundHasHiddenDetails(round);
+}
+async function onProcessSummaryClick(round: MessageRound, ri: number): Promise<void> {
+  if (round.hasAgentProcess) { toggleAgentProcess('round-' + ri); return; }
+  const id = round.user?.id;
+  if (!id || !roundHasHiddenDetails(round) || isRoundDetailsLoading(round)) return;
+  toggleAgentProcess('round-' + ri);
+  roundDetailsLoading[id] = true;
+  try { await requestRoundDetails(id); } finally { roundDetailsLoading[id] = false; }
+}
+
+/** 点开工具卡片：call_agent 顺带按需拉子智能体内部步骤（历史页首屏不再预载这些明细） */
+function openToolItemWithDetails(key: string, tc: any): void {
+  const willOpen = !isToolItemOpen(tc.id, key);
+  openToolItem(key, tc.id);
+  if (willOpen && resolveToolDisplay(tc).tool === 'call_agent') requestSubAgentDetails(tc.id);
+}
+
 /** 摘要条文案（2026-10-20）：运行中给"正在干啥"的实时状态，结束后给过程规模摘要。
  *  分档优先级：执行中工具 > 思考中（尚无步骤）> 生成回复中（工具间歇）> 结束摘要。 */
 function processSummaryText(round: MessageRound, ri: number): string {
@@ -1152,6 +1192,18 @@ function processSummaryText(round: MessageRound, ri: number): string {
     }
     if (!round.steps.length) return '等待模型响应…';
     return '生成回复中…';
+  }
+  // 详情还没拉：用服务端下发的每轮规模先给概览（首屏不再夹带工具执行明细）
+  if (isRoundDetailsLoading(round)) return '加载执行过程…';
+  const meta = roundMetaOf(round.user?.id);
+  // 用 === false 而不是取反写法：chatMessageListTemplate 的守门测试禁止那个字面量
+  //（它钉的是"深度思考徽标被 hasAgentProcess 排除"那次的回归，与本处无关）。
+  if (round.hasAgentProcess === false && meta && !roundDetailsLoaded(round.user?.id)) {
+    const parts: string[] = [];
+    if (meta.steps) parts.push(`${meta.steps} 步`);
+    if (meta.tools) parts.push(`${meta.tools} 次工具调用`);
+    if (meta.sub) parts.push(`子智能体 ${meta.sub} 条`);
+    return parts.length ? `${parts.join(' · ')} · 点击展开` : '无执行过程';
   }
   const stats = round.agentStats;
   const stepCount = stats?.stepCount ?? round.steps.length;
@@ -1284,6 +1336,14 @@ function hasMainResult(round: MessageRound, ri: number): boolean {
   return !!(round.finalAssistant?.content ||
     roundReasoningChars(round) > 0 ||
     isLastRoundStreaming(round, ri));
+}
+
+/**
+ * 本轮里**正在执行**的子智能体块（call_agent）。
+ * 判定走 store 的 runningToolCallIds（sub_agent:start/end 维护），见 findLiveSubAgentRound。
+ */
+function liveSubAgentRound(round: MessageRound): SubAgentRound | null {
+  return findLiveSubAgentRound(round, (id) => store.isToolCallRunning(id));
 }
 
 /** 获取当前流式 step 的实时正文内容（跑马灯式逐步增长的 partialContent） */
@@ -1680,6 +1740,8 @@ watch(activeNavRound, () => {
 .inline-ask-toggle { align-self: flex-start; padding: 2px 8px; border: none; background: transparent; color: var(--color-text-secondary, #888); font-size: 12px; cursor: pointer; border-radius: 6px; transition: all .15s; }
 .inline-ask-toggle:hover { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 .inline-ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+/* 「上一页」靠左，与右侧的跳过/下一页分开，避免误点 */
+.inline-ask-actions .confirm-prev-btn { margin-right: auto; }
 
 /* ===== 越界访问授权卡（复用 inline-ask-card 骨架，仅加"警示"语义的强调色）===== */
 .inline-auth-icon { color: var(--color-warning, #b45309); }

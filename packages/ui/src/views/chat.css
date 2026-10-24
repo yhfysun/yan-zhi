@@ -317,23 +317,6 @@
   white-space: nowrap;
 }
 
-/* 滚动到顶/底浮动按钮 */
-.scroll-fab {
-  position: absolute; right: 20px; z-index: 10;
-  width: 36px; height: 36px; border-radius: 50%;
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg); backdrop-filter: var(--glass-filter); -webkit-backdrop-filter: var(--glass-filter);
-  color: var(--color-text-secondary);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-  transition: color 0.15s, box-shadow 0.15s, transform 0.15s;
-}
-.scroll-fab:hover { color: var(--color-primary); box-shadow: 0 4px 14px color-mix(in srgb, var(--color-primary) 20%, transparent); transform: scale(1.06); }
-.scroll-fab-bottom { bottom: 16px; }
-.scroll-fab-top { bottom: 58px; }
-.scroll-fab-enter-active, .scroll-fab-leave-active { transition: opacity 0.2s, transform 0.2s; }
-.scroll-fab-enter-from, .scroll-fab-leave-to { opacity: 0; transform: translateY(8px); }
-
 .chat-topbar {
   display: flex; align-items: center; gap: 8px;
   padding: 10px max(20px, calc((100% - 820px) / 2));
@@ -2119,26 +2102,38 @@
 .sub-agent-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  /* 窄屏（分栏/手机）：允许整段换行 —— 统计另起一行，而不是把「浏览器操作助手」拆成两行 */
+  flex-wrap: wrap;
+  gap: 3px 6px;
+  padding: 6px 26px 6px 10px;
+  position: relative;
   cursor: pointer;
   user-select: none;
   font-size: 12px;
   color: var(--color-text-secondary);
 }
 .sub-agent-header:hover { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
-.sub-agent-icon { color: var(--color-primary); }
-.sub-agent-name { font-weight: 600; color: var(--color-primary); }
-.sub-agent-depth { opacity: 0.7; }
-.sub-agent-stats { opacity: 0.65; margin-left: 4px; }
-.sub-agent-chevron { margin-left: auto; }
+.sub-agent-icon { color: var(--color-primary); flex-shrink: 0; }
+.sub-agent-name { font-weight: 600; color: var(--color-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sub-agent-depth { opacity: 0.7; white-space: nowrap; }
+.sub-agent-stats { opacity: 0.65; margin-left: 4px; white-space: nowrap; }
+/* 箭头绝对定位在右上：换行时不会跟着被推到第二行末尾 */
+.sub-agent-chevron { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); margin: 0; }
 .sub-agent-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .sub-agent-header-actions .el-button { color: var(--color-text-secondary); }
 .sub-agent-header-actions .el-button:hover { color: var(--color-primary); }
 .sub-agent-body { padding: 6px 10px 8px; border-top: 1px dashed color-mix(in srgb, var(--color-primary) 16%, transparent); }
+/* 收起态的实时片段（思考摘要 + 正文）：限高可滚，一条长文不会把卡片撑爆 */
+.sub-agent-tail { padding: 4px 10px 8px; border-top: 1px dashed color-mix(in srgb, var(--color-primary) 16%, transparent); }
+.sub-agent-tail-content { margin-top: 4px; font-size: var(--font-size-base, 13px); line-height: 1.65; max-height: 220px; overflow-y: auto; }
 .sub-agent-status { font-size: 10px; line-height: 1; padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--el-color-success, #67c23a) 14%, transparent); color: var(--el-color-success, #67c23a); font-weight: 600; flex-shrink: 0; }
 .sub-agent-status.running { animation: sub-agent-pulse 1.2s ease-in-out infinite; }
 @keyframes sub-agent-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+/* 概览行里的「当前工具」：一眼看出在跑什么，不必展开步骤树 */
+.sub-agent-current { font-size: 11px; opacity: 0.85; color: var(--color-text-secondary); background: color-mix(in srgb, var(--color-primary) 8%, transparent); padding: 1px 6px; border-radius: 999px; flex-shrink: 0; white-space: nowrap; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+/* 子智能体执行中：主内容区的实时过程（替代三点省略号，2026-10-24 用户实报「不知道在干啥」） */
+.live-sub-agent { margin-top: 2px; }
+.live-sub-agent .sub-agent-round { margin-top: 6px; }
 .tool-item-note { font-size: 12px; color: var(--color-text-secondary); opacity: 0.8; }
 
 /* 子智能体结果卡片 + 主智能体「任务结果」卡片：同一种卡片语言，并列展示 */

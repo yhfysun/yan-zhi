@@ -24,7 +24,7 @@
  *   ⇒ 必须真的喂"无 user 的一页"进去，看 rounds 出来几个。
  */
 import { describe, it, expect } from 'vitest';
-import { buildMessageRounds, stepRenderRange, ROUND_STEP_RENDER_LIMIT, type MessageRound } from './message-rounds';
+import { buildMessageRounds, stepRenderRange, ROUND_STEP_RENDER_LIMIT, findLiveSubAgentRound, type MessageRound } from './message-rounds';
 
 /** 宽松构造消息（只给被测逻辑关心的字段） */
 const M = (over: Record<string, any>) => ({ id: 'm' + Math.random().toString(36).slice(2, 8), role: 'assistant', content: '', ...over }) as any;
@@ -260,5 +260,46 @@ describe('⑥ 父步骤不在本页的子智能体消息不能整页丢弃（会
     expect(rounds.length, '★ rounds=0 ⇒ 左侧会话内容整片空白').toBe(1);
     expect(rounds[0].steps.length, '★ 子智能体步骤必须降级渲染').toBeGreaterThan(0);
     expect(rounds[0].steps[0].toolResults[0]?.content).toBe('ok');
+  });
+});
+
+describe('⑦ findLiveSubAgentRound：主内容区要能看出「子智能体正在干啥」', () => {
+  // 用户实报（2026-10-24 截图）：子智能体跑起来后主内容区只剩一个「…」，
+  // 完全不知道它在干什么 —— 本轮改动就是按 runningToolCallIds 把它摊到主内容区。
+  const parentWithSub = () => build([
+    M({ id: 'a1', role: 'assistant', toolCalls: [{ id: 'call-1', function: { name: 'call_agent' } }] }),
+    M({ id: 'sa1', role: 'assistant', parentToolCallId: 'call-1', subAgentId: 'agentA', subAgentName: '抖音运营助手', subAgentDepth: 1, content: '我先看页面' }),
+  ]);
+
+  it('★★★ 运行中（isRunning 命中 parentToolCallId）→ 返回该子智能体块', () => {
+    const rounds = parentWithSub();
+    const live = findLiveSubAgentRound(rounds[0], (id) => id === 'call-1');
+    expect(live, '★ 取不到 ⇒ 渲染层退回三点省略号，用户又看不见子智能体在做什么').toBeTruthy();
+    expect(live!.subAgentName).toBe('抖音运营助手');
+    expect(live!.steps.length).toBe(1);
+  });
+
+  it('已结束（isRunning 全 false）→ 返回 null（不能把历史过程当实时展示）', () => {
+    const rounds = parentWithSub();
+    expect(findLiveSubAgentRound(rounds[0], () => false)).toBeNull();
+  });
+
+  it('只认正在跑的那个：两个 call_agent 一前一后时返回运行中的那个', () => {
+    const rounds = build([
+      M({ id: 'a1', role: 'assistant', toolCalls: [{ id: 'call-1' }, { id: 'call-2' }] }),
+      M({ id: 't1', role: 'tool', toolCallId: 'call-1', content: '第一批结果' }),
+      M({ id: 't2', role: 'tool', toolCallId: 'call-2', content: '第二批结果' }),
+      M({ id: 'sa1', role: 'assistant', parentToolCallId: 'call-1', subAgentId: 'A', content: '旧' }),
+      M({ id: 'sa2', role: 'assistant', parentToolCallId: 'call-2', subAgentId: 'B', content: '新' }),
+    ]);
+    const live = findLiveSubAgentRound(rounds[0], (id) => id === 'call-2');
+    expect(live?.subAgentId).toBe('B');
+  });
+
+  it('没有任何子智能体消息 → null（普通工具轮不该渲染这个块）', () => {
+    const rounds = build([
+      M({ id: 'a1', role: 'assistant', toolCalls: [{ id: 'call-1', function: { name: 'browser_click' } }] }),
+    ]);
+    expect(findLiveSubAgentRound(rounds[0], () => true)).toBeNull();
   });
 });

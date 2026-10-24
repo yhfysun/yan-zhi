@@ -21,6 +21,7 @@ import {
   useCostStore,
 } from '../../stores';
 import { useGitStore } from '../../stores/git';
+import { SKIP_PAGE_SUPPLEMENT } from '../../stores/chat';
 import { useSceneConfigStore } from '../../stores/sceneConfig';
 import { useTaskTypeStore } from '../../stores/taskType';
 import { isCodeModeActive, useCodeStore } from '../../stores/code';
@@ -165,6 +166,7 @@ function createChat() {
   const confirmChecked = ref<boolean[]>([]);
   const confirmShowText = ref(false);
   const confirmSupplement = ref('');
+  const confirmSupplementOpen = ref(false);
   const confirmDialogVisible = computed({
     get: () => !!store.pendingConfirmation,
     set: (v: boolean) => { if (!v) onConfirmDialogClose(); },
@@ -183,6 +185,7 @@ function createChat() {
     confirmChecked.value = [];
     confirmShowText.value = false;
     confirmSupplement.value = '';
+    confirmSupplementOpen.value = false;
   }
   function onConfirmNext() {
     const wizard = store.pendingConfirmation;
@@ -212,13 +215,42 @@ function createChat() {
     if (store.pendingConfirmation) store.skipPendingConfirmation();
     resetConfirmForm();
   }
+  /** 回到上一页：已答内容由下面的 watch 从 answers 回填，用户可直接改 */
+  function onConfirmPrev() {
+    if (store.pendingConfirmation) store.prevPendingConfirmation();
+  }
   function onConfirmDialogClose() {
     if (store.pendingConfirmation) store.cancelPendingConfirmation();
     resetConfirmForm();
   }
+  /** 切页时回填：返回上一页要能看到并修改此前答过的内容（此前是无条件清空 ⇒ 回退必空白） */
+  function restoreConfirmPageAnswer() {
+    resetConfirmForm();
+    const wizard = store.pendingConfirmation;
+    const page = confirmCurrentPage.value;
+    if (!wizard || !page) return;
+    const prev = wizard.answers[wizard.index];
+    if (!prev) return;
+    const answer = prev.answer || '';
+    if (confirmMultiSelect.value) {
+      const picked = answer ? answer.split('、') : [];
+      confirmChecked.value = (page.options || []).map((opt) => picked.includes(opt));
+    } else if (page.options?.length && answer && page.options.includes(answer)) {
+      confirmSingle.value = answer;
+    } else if (answer) {
+      // 自由文字，或不在当前选项里的旧答案 → 走「其他（文字输入）」
+      confirmShowText.value = true;
+      confirmText.value = answer;
+    }
+    const supplement = prev.supplement || '';
+    if (supplement && supplement !== SKIP_PAGE_SUPPLEMENT) {
+      confirmSupplement.value = supplement;
+      confirmSupplementOpen.value = true;
+    }
+  }
   watch(
     [() => store.pendingConfirmation, () => store.pendingConfirmation?.index],
-    () => { if (store.pendingConfirmation) resetConfirmForm(); },
+    () => { if (store.pendingConfirmation) restoreConfirmPageAnswer(); },
   );
 
   // E12c: 模型平台配置弹窗表单状态（configure_model_platform 工具触发）
@@ -1936,6 +1968,10 @@ function createChat() {
   function openSpaceMenu(e: MouseEvent, space: any) {
     e.preventDefault();
     e.stopPropagation();
+    // 再次右击同一空间 = 收起（toggle）
+    if (spaceMenuTarget.value?.space?.id === space.id) { closeSpaceMenu(); return; }
+    // 互斥：关掉会话 / 空白区 / 其它空间菜单
+    closeCtxMenu();
     // 先按光标落位（不猜高度夹取），渲染后由宿主组件的 placeMenuAfterRender 按真实尺寸校正
     spaceMenuTarget.value = { x: e.clientX, y: e.clientY, space };
   }
@@ -3886,6 +3922,28 @@ async function healStalePlatform() {
     if (!toolCallId || !convId) return;
     void store.fetchToolResult(convId, toolCallId);
   }
+  /**
+   * 执行详情按需加载（2026-10-24，用户：「都是概览信息和最终大模型的响应就好了」「展开时再拉」）。
+   * 首屏只有显示消息；这些函数只在用户点开某一轮 / 某个 call_agent 卡片时被调用。
+   */
+  /** 本轮过程规模（概览条文案用：N 步 · M 次工具调用） */
+  function roundMetaOf(userMessageId?: string) {
+    return store.roundMetaOf(store.currentConvId, userMessageId);
+  }
+  /** 这一轮的执行详情是否已加载（加载后 hasAgentProcess 才会变真） */
+  function roundDetailsLoaded(userMessageId?: string): boolean {
+    return store.isRoundDetailsLoaded(store.currentConvId, userMessageId);
+  }
+  /** 展开某一轮 → 拉中间步骤 + 工具回执（返回 Promise，调用方可等它落地再收 loading） */
+  function requestRoundDetails(userMessageId?: string): Promise<void> {
+    if (!userMessageId) return Promise.resolve();
+    return store.loadRoundDetails(store.currentConvId, userMessageId);
+  }
+  /** 展开某个 call_agent 卡片 → 拉该子智能体的内部步骤 */
+  function requestSubAgentDetails(toolCallId: string): void {
+    if (!toolCallId) return;
+    void store.loadSubAgentDetails(store.currentConvId, toolCallId);
+  }
   /** 展开工具项并触发懒加载（取代 toggleTool 的 header 点击） */
   function openToolItem(key: string, toolCallId: string): void {
     const willOpen = !isToolItemOpen(toolCallId, key);
@@ -4060,6 +4118,12 @@ async function healStalePlatform() {
   async function delMsg(msg: Message) { await store.deleteMessage(msg.id); }
 
   function openConvMenu(e: MouseEvent, conv: Conversation) {
+    // 2026-10-24：再次右击同一会话 = 收起（toggle，与任务列表 / 运维资源树同规则）。
+    // 判据 = 菜单已开且目标就是这一条；文档 mousedown 已排除右键，不会被提前关掉。
+    if (ctxMenu.visible && ctxMenu.conv?.id === conv.id) { closeCtxMenu(); return; }
+    // 互斥：会话 / 空间 / 空白区三份菜单同时只留一个
+    closeSpaceMenu();
+    closeTreeMenu();
     ctxMenu.visible = true; ctxMenu.x = e.clientX; ctxMenu.y = e.clientY; ctxMenu.conv = conv;
   }
   // ========== 会话树空白区右键菜单（新建任务/新建空间） ==========
@@ -4068,6 +4132,10 @@ async function healStalePlatform() {
     // 会话项与空间节点有各自的右键菜单，命中时不弹空白区菜单。
     // 办公侧栏用 .conv-item / .tree-space，四模式任务段（TaskListSection）用 .tls-item / .tls-group-head。
     if ((e.target as HTMLElement)?.closest('.conv-item, .tree-space .tree-node-head, .tls-item, .tls-group-head')) return;
+    // 再右击一次空白区 = 收起
+    if (treeMenu.visible) { closeTreeMenu(); return; }
+    ctxMenu.visible = false;
+    closeSpaceMenu();
     treeMenu.visible = true; treeMenu.x = e.clientX; treeMenu.y = e.clientY;
   }
   function treeMenuNewTask() {
@@ -4308,7 +4376,7 @@ async function healStalePlatform() {
     store, platformStore, mcpStore, skillStore, agentStore, authStore, spaceStore, fileStore, distillStore, isMobile,
     showDistill, distillMessages, distillUserMsg, distillAssistantMsg,
     askText, askSupplement, askSingle, askChecked, askShowText, askDialogVisible, askMultiSelect, resetAskForm, onAskSubmit, onAskSkip, onAskDialogClose,
-    confirmText, confirmSingle, confirmChecked, confirmShowText, confirmSupplement, confirmDialogVisible, confirmCurrentPage, confirmMultiSelect, resetConfirmForm, onConfirmNext, onConfirmSkip, onConfirmDialogClose,
+    confirmText, confirmSingle, confirmChecked, confirmShowText, confirmSupplement, confirmSupplementOpen, confirmDialogVisible, confirmCurrentPage, confirmMultiSelect, resetConfirmForm, onConfirmNext, onConfirmPrev, onConfirmSkip, onConfirmDialogClose,
     platformConfigSaving, manualPlatformConfigVisible, platformConfigEditId, platformConfigForm, platformConfigDialogVisible, resetPlatformConfigForm, openPlatformConfig, onPlatformConfigSubmit, onPlatformConfigCancel, onPlatformConfigClose,
     input, inputFocused, inputRef, fileInputRef, uploadedFiles,
 
@@ -4360,6 +4428,7 @@ async function healStalePlatform() {
     isToolGroupRunning, isToolGroupError, getToolGroupStatusClass, resolveToolDisplay, resolveToolArgs, toolTargetHint, safeJson, isToolError, getToolStatusClass, getToolResult,
     toolResultIndex, getToolResultUncached,
     isToolResultDone, requestToolResult, openToolItem,
+    roundMetaOf, roundDetailsLoaded, requestRoundDetails, requestSubAgentDetails,
     copyMsg, editMsg, quoteMsg, delMsg, openConvMenu, closeCtxMenu, togglePin, startRename, commitRename, deleteConv, toggleConvSelect, batchSelectAll, batchDeleteConvs,
     // 会话生命周期（2026-10-16 归档 + 回收站）
     archiveConv, restoreConv, purgeConv, loadLifecycleLists, archivedConversations, trashedConversations,

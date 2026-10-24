@@ -328,3 +328,27 @@ describe('⑦ 全部计划步骤的记录不依赖 Top3 非空', () => {
       .not.toContain('planTop.length');
   });
 });
+
+/**
+ * ⑧ 子智能体执行中的实时过程（2026-10-24 用户实报：截图里主内容区只剩一个「…」，
+ *    「子智能体的工具调用、思考内容这里也放出来啊，要不然都不知道在干啥」）。
+ * 钉两件事：主内容区必须挂出 live-sub-agent 块；该块在场时三点省略号必须让位
+ *   （两者同时显示 = 用户抱怨的症状原样保留）。
+ */
+describe('⑧ 子智能体执行中：主内容区摊开实时过程，不再只剩三点', () => {
+  it('★★★ 流式区里有 live-sub-agent 块，且以 liveSubAgentRound(vr.round) 为条件', () => {
+    const i = TEMPLATE.indexOf('class="live-sub-agent"');
+    expect(i, '★ 锚点缺失：主内容区的子智能体实时过程块').toBeGreaterThan(-1);
+    const tagStart = TEMPLATE.lastIndexOf('<div', i);
+    const tag = TEMPLATE.slice(tagStart, TEMPLATE.indexOf('>', i) + 1);
+    expect(tag, '★ 没有运行中判定（任何流式轮都会挂出子智能体块）')
+      .toMatch(/v-if="liveSubAgentRound\(vr\.round\)"/);
+  });
+
+  it('★★★ 子智能体块在场时三点省略号必须隐藏', () => {
+    const dots = TEMPLATE.split('\n').find((l) => l.includes('class="msg-content streaming"'));
+    expect(dots, '★ 锚点缺失：三点初始态').toBeTruthy();
+    expect(dots!, '★ 三点没让位：子智能体在跑时仍显示「…」—— 正是用户报的那一幕')
+      .toContain('!liveSubAgentRound(vr.round)');
+  });
+});

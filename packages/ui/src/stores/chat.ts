@@ -20,6 +20,8 @@ import { requestChatWs, sendChatWs, onTaskEvent, onConvEvent, onChatWsClose } fr
 import { useAuthStore } from './auth';
 // 会话按模式隔离：loadConversations / createConversation 都要知道"当前在哪个模式"
 import { activeMode } from './mode';
+// 历史窗口不变量（裁剪保留轮头 + 裁剪后游标对齐），纯函数，见该文件顶部注释
+import { trimStartIndex, syncPagingAfterTrim } from './history-window';
 
 // 从工具调用参数中健壮地提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
 // 或直接把 arguments 写成 JSON 字符串。只认 args.url 会导致「缺少 url 参数」误报。
@@ -338,6 +340,9 @@ export interface ConfirmationAnswer {
   answer: string;
   supplement?: string;
 }
+
+/** 跳过某页时写入 supplement 的标记文案（不是用户填的补充说明，回填表单时要排除） */
+export const SKIP_PAGE_SUPPLEMENT = '[用户跳过该问题]';
 
 // ===== 右栏多 tab 数据模型（Phase B1）=====
 // 替换旧三态互斥模型（rightPanelTab 单枚举 + previewingFile 单值）：
@@ -1030,9 +1035,17 @@ export const useChatStore = defineStore('chat', () => {
         .join('\n\n'),
     });
   }
+  /** 返回上一确认页：只回退指针，answers 里已有答案保留，供表单回填后修改。
+   *  ★ 不能"回退即清答案"：用户可能只是想回看上一页，再点「下一页」时应原样保留；
+   *    真要改则重新提交会覆盖同一 index 的答案。 */
+  function prevPendingConfirmation() {
+    const wizard = pendingConfirmation.value;
+    if (!wizard || wizard.index <= 0) return;
+    wizard.index -= 1;
+  }
   /** 跳过当前确认页：把这一页标记为跳过并进入下一页 */
   function skipPendingConfirmation() {
-    submitPendingConfirmation('', '[用户跳过该问题]');
+    submitPendingConfirmation('', SKIP_PAGE_SUPPLEMENT);
   }
   /** 用户关闭向导：以取消结果结束本次 confirm_user 调用。
    *  ★ 必须带上**已作答的部分**（2026-09-27 修的真实缺陷）：
@@ -1387,6 +1400,74 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     delete historyPagingByConv.value[convId];
   }
 
+  // ═══ 执行详情按需加载（2026-10-24，用户：「都是概览信息和最终大模型的响应就好了」「展开时再拉」）═══
+  // 首屏只下发显示消息；中间步骤/工具回执/子智能体内部步骤都在展开时按轮/按 call_agent 拉。
+  // 这里维护三样东西：每轮的过程规模（概览条文案用）、已拉过的标记（防重复请求）、合并去重。
+  /** 每轮过程规模：convId → userMessageId → { steps, tools, sub }（服务端随显示消息下发） */
+  const roundMetaByConv = ref<Record<string, Record<string, { steps: number; tools: number; sub: number }>>>({});
+  /** 已拉过执行详情的轮：`convId::userMessageId` */
+  const loadedRoundDetails = new Set<string>();
+  const loadingRoundDetails = new Set<string>();
+  /** 已拉过子智能体内部步骤的 call_agent：`convId::toolCallId` */
+  const loadedSubAgentDetails = new Set<string>();
+  const loadingSubAgentDetails = new Set<string>();
+
+  function roundMetaOf(convId: string, userMessageId?: string) {
+    if (!convId || !userMessageId) return null;
+    return roundMetaByConv.value[convId]?.[userMessageId] || null;
+  }
+  function isRoundDetailsLoaded(convId: string, userMessageId?: string): boolean {
+    return !!convId && !!userMessageId && loadedRoundDetails.has(convId + '::' + userMessageId);
+  }
+  /** 按 (createdAt, id) 归并进当前会话数组：去重 + 保持与 DB 一致的时序（详情是插在中间段落的） */
+  function mergeMessagesInOrder(convId: string, incoming: Message[]): void {
+    if (!incoming.length) return;
+    const cur = messagesByConv.value[convId] || [];
+    const seen = new Set(cur.map((m) => m.id));
+    const add = incoming.filter((m) => !seen.has(m.id));
+    if (!add.length) return;
+    messagesByConv.value[convId] = [...cur, ...add].sort((a, b) =>
+      (a.createdAt || 0) - (b.createdAt || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+  /** 重新加载整页消息后，之前拉过的详情行已被替换掉 → 标记失效，展开时重新拉 */
+  function resetDetailCaches(convId: string): void {
+    const prefix = convId + '::';
+    for (const k of Array.from(loadedRoundDetails)) if (k.startsWith(prefix)) loadedRoundDetails.delete(k);
+    for (const k of Array.from(loadedSubAgentDetails)) if (k.startsWith(prefix)) loadedSubAgentDetails.delete(k);
+  }
+  /** 拉某一轮的执行详情（中间步骤 + 工具回执，不含子智能体明细） */
+  async function loadRoundDetails(convId: string, userMessageId: string): Promise<void> {
+    if (!convId || !userMessageId) return;
+    const key = convId + '::' + userMessageId;
+    if (loadedRoundDetails.has(key) || loadingRoundDetails.has(key)) return;
+    loadingRoundDetails.add(key);
+    try {
+      const r = await api.get<any[]>(`/conversations/${convId}/messages/round/${userMessageId}`);
+      if ('data' in r && Array.isArray(r.data)) {
+        mergeMessagesInOrder(convId, (r.data as any[]).map(rowToMsg).map(stripToolResultContent));
+        loadedRoundDetails.add(key);
+      }
+    } finally {
+      loadingRoundDetails.delete(key);
+    }
+  }
+  /** 拉某个 call_agent 的子智能体内部步骤（点开那张卡片时才拉） */
+  async function loadSubAgentDetails(convId: string, toolCallId: string): Promise<void> {
+    if (!convId || !toolCallId) return;
+    const key = convId + '::' + toolCallId;
+    if (loadedSubAgentDetails.has(key) || loadingSubAgentDetails.has(key)) return;
+    loadingSubAgentDetails.add(key);
+    try {
+      const r = await api.get<any[]>(`/conversations/${convId}/messages/sub-agent/${encodeURIComponent(toolCallId)}`);
+      if ('data' in r && Array.isArray(r.data)) {
+        mergeMessagesInOrder(convId, (r.data as any[]).map(rowToMsg).map(stripToolResultContent));
+        loadedSubAgentDetails.add(key);
+      }
+    } finally {
+      loadingSubAgentDetails.delete(key);
+    }
+  }
+
   /** 非当前会话的消息驻留上限（B2，2026-10-13，内存治理）。
    *  后台会话的消息数组只保留尾部这么多条：流式期间消息照常追加（SSE 在写尾部，
    *  裁剪只丢头部旧条目），切回去时再按需向前翻页（loadMoreHistory）补。
@@ -1409,27 +1490,37 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     if (!chatAtBottom) return;
     const arr = messagesByConv.value[convId];
     if (!arr || arr.length <= CURRENT_MESSAGE_RESIDENCY_LIMIT) return;
-    messagesByConv.value[convId] = arr.slice(arr.length - CURRENT_MESSAGE_RESIDENCY_LIMIT);
-    historyPagingOf(convId).hasMore = true;
+    // ★ 2026-10-24：裁剪必须保留最新一轮的轮头，且游标跟着新的头走（见 history-window.ts）。
+    //   纯按条数切头部会把"用户刚发的任务"切走 ⇒ 视图里只剩隐式轮（用户实报
+    //   「跑着跑着历史都没了？用户发出的任务也没了？」）；游标不同步则被裁的那段翻不回来。
+    const from = trimStartIndex(arr, CURRENT_MESSAGE_RESIDENCY_LIMIT);
+    if (from <= 0) return;
+    const kept = arr.slice(from);
+    messagesByConv.value[convId] = kept;
+    syncPagingAfterTrim(historyPagingOf(convId), from, kept[0]);
   }
   function pruneMessageResidency(exceptConvId: string) {
     for (const convId of Object.keys(messagesByConv.value)) {
       if (convId === exceptConvId) continue;
       const arr = messagesByConv.value[convId];
       if (arr && arr.length > MESSAGE_RESIDENCY_LIMIT) {
-        messagesByConv.value[convId] = arr.slice(arr.length - MESSAGE_RESIDENCY_LIMIT);
-        // 裁剪后该会话的 hasMore 置真（头部被丢了，向前翻页才能补回）
-        const p = historyPagingOf(convId);
-        p.hasMore = true;
+        const from = trimStartIndex(arr, MESSAGE_RESIDENCY_LIMIT);
+        if (from <= 0) continue;
+        const kept = arr.slice(from);
+        messagesByConv.value[convId] = kept;
+        // 裁剪后游标对齐到新的头：切回来向上翻页时取到的正是刚被移出内存的那一段
+        syncPagingAfterTrim(historyPagingOf(convId), from, kept[0]);
       }
     }
   }
 
   async function loadMessages(convId: string) {
     currentConvId.value = convId;
-    // ★ 切会话时裁剪其它会话的驻留消息（B2）：长会话多开时驻留线性膨胀
+    // 切会话时裁剪其它会话的驻留消息（B2）：长会话多开时驻留线性膨胀
     //   （实测 5 个会话共 4000+ 条消息对象常驻），裁到尾部 200 条/会话。
     pruneMessageResidency(convId);
+    // 整页重载会丢掉之前按需拉进来的执行详情行 → 标记失效，展开时重新拉
+    resetDetailCaches(convId);
     if (isServerMode()) {
       // ★ 2026-10-09 同 loadConversations：失败不清空已加载的历史消息（瞬态失败
       //   把消息洗成空 = 「会话还在、点开记录没了」的表象）。
@@ -1437,11 +1528,17 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       //   403 条 / 122K 字符全量灌入是"任务一跑页面就卡死"的主链路之一。
       const p = historyPagingOf(convId);
       const r = await api.get<any[]>(`/conversations/${convId}/messages?limit=${HISTORY_PAGE_SIZE}`);
-      if ('data' in r) {
-        messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg).map(stripToolResultContent);
+      if ('data' in r && Array.isArray(r.data)) {
         // hasMore / oldestCursor 经 apiFetch 顶层字段透传（见 client.ts），不再是 data 内字段
+        // ★ 2026-10-24：服务端 `limit` 现在数的是「页面显示消息」（user 气泡 + 无工具调用的
+        //   assistant 回答），工具执行明细不再占额度；返回的仍是窗口内的顶层行（含中间步骤/
+        //   工具回执，工具卡片要用），子智能体明细不下发。首屏天然带轮头，客户端不再补页 ——
+        //   补页会把上千条明细重新拉回来（用户实报「怎么还是拉取所有消息」）。
+        messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg).map(stripToolResultContent);
         p.hasMore = (r as any).hasMore === true;
         p.cursor = (r as any).oldestCursor ?? null;
+        // 每轮的过程规模（概览条文案用；详情本身还没拉）
+        roundMetaByConv.value = { ...roundMetaByConv.value, [convId]: (r as any).roundMeta || {} };
       } else if (messagesByConv.value[convId] === undefined) {
         messagesByConv.value[convId] = [];
       }
@@ -1466,6 +1563,8 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       'SELECT id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, reasoning_content, tokens, parent_tool_call_id, sub_agent_id, sub_agent_name, sub_agent_depth, created_at FROM message WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
       [convId, HISTORY_PAGE_SIZE],
     );
+    // 本地通道（历史遗留，isServerMode 恒 true 走不到）保持原样：按行分页。
+    // 服务端的新口径见 routes/conversations.ts 的 `/:id/messages` 注释。
     const page = rows.slice().reverse();
     messagesByConv.value[convId] = page.map(rowToMsg).map(stripToolResultContent);
     const pLocal = historyPagingOf(convId);
@@ -1499,6 +1598,14 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
           const older = (r.data as any[]).map(rowToMsg).map(stripToolResultContent);
           const cur = messagesByConv.value[convId];
           if (cur) messagesByConv.value[convId] = [...older, ...cur];
+          // 更早页面的每轮过程规模也一并并进来（概览条文案用）
+          const meta = (r as any).roundMeta;
+          if (meta && typeof meta === 'object') {
+            roundMetaByConv.value = {
+              ...roundMetaByConv.value,
+              [convId]: { ...(roundMetaByConv.value[convId] || {}), ...meta },
+            };
+          }
           p.hasMore = (r as any).hasMore === true;
           p.cursor = (r as any).oldestCursor ?? null;
         } else {
@@ -1671,6 +1778,8 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     delete messagesByConv.value[id];
     delete queuedByConv.value[id];
     clearHistoryPaging(id);
+    resetDetailCaches(id);
+    delete roundMetaByConv.value[id];
     plansByConv.value = removePlan(plansByConv.value, id);
     // 浏览器操作串行链同样按会话清（防内存泄漏；进行中的操作不受影响）
     dropBrowserOpChain(browserOpChains, id);
@@ -3764,7 +3873,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     pendingPathAuth, submitPendingPathAuth,
     pendingToolAuth, submitPendingToolAuth,
     pendingPrefill, prefillInput,
-    submitPendingConfirmation, skipPendingConfirmation, cancelPendingConfirmation,
+    submitPendingConfirmation, skipPendingConfirmation, prevPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
     planSteps, planTitle, planCreatedAt, planFinishedAt, clearPlan, clearPlanDisplayOnly,
     activeAgent, activeAgentId,
@@ -3777,6 +3886,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     loadConversationsByScope,
     loadMoreHistory, historyPagingByConv, HISTORY_PAGE_SIZE,
     fetchToolResult,
+    // 执行详情按需加载（2026-10-24）：首屏只有显示消息，展开某一轮/某个 call_agent 时再拉
+    roundMetaByConv, roundMetaOf, loadRoundDetails, loadSubAgentDetails, isRoundDetailsLoaded,
     /** 当前会话消息驻留裁剪的开关：UI 滚到底部时置 true，向上翻历史时置 false */
     setChatAtBottom,
     addMessage, updateMessage, deleteMessage, sendMessage, regenerate, stop,

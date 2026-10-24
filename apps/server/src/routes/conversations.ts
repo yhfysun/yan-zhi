@@ -513,6 +513,13 @@ router.get('/:id/context-breakdown', (req: Request, res: Response) => {
   }
 });
 
+// ── 消息流的两层口径（2026-10-24）──
+/** 顶层行：主链路消息（中间步骤 / 工具回执都算），子智能体明细不算 */
+const TOP_LEVEL_SQL = "(parent_tool_call_id IS NULL OR parent_tool_call_id = '')";
+/** 页面显示消息：user 气泡 + 无工具调用的 assistant 回答（= 用户要的「概览 + 最终回答」） */
+const DISPLAY_MESSAGE_SQL = `${TOP_LEVEL_SQL} AND (role = 'user' OR (role = 'assistant'
+    AND (tool_calls_json IS NULL OR tool_calls_json = '' OR tool_calls_json = '[]')))`;
+
 // GET /api/conversations/:id/messages
 // 分页协议（2026-10-11，为解决 403 条消息全量拉取导致渲染主线程饱和）：
 //   - 不带参数：全量返回（旧行为，向后兼容，老调用方不受影响）
@@ -520,6 +527,26 @@ router.get('/:id/context-breakdown', (req: Request, res: Response) => {
 //   - limit + before + beforeId：向前翻页，取 (created_at, id) 组合游标**之前**的一页
 //     ★ 游标必须是组合键：流式批量插入同毫秒多条消息常见，单时间戳游标会漏消息
 //   - 排序统一 created_at ASC, id ASC（确定性次序，同毫秒内按 id 稳定，游标才能对齐）
+//
+// ★★★ 2026-10-24 分页口径修订（用户实报「怎么还是拉取所有消息？工具执行详情不能算到
+//   页面显示消息里面」）：
+//   limit 数的必须是「**页面显示消息**」，不是原始行。
+//
+//   实测会话 d2f1c43a：2098 行里 **1862 行是子智能体/工具执行明细**，
+//   真正显示在页面上的只有 13 条（user + 纯文本 assistant）。
+//   按行数分页时，`limit=50` 会被明细全部占满 ⇒ 首屏一条 user 都没有 ⇒
+//   窗口重载/重开会话后「我发的任务没了」（配合渲染看门狗的重载，用户实报本现象）。
+//   为了防止首屏没轮头，前端一度"向前补页直到找到 user"，结果又把上千条明细拉回来 ——
+//   错的不是补页，是口径。
+//
+//   新口径：
+//     · 计数单位 = 顶层（parent_tool_call_id 为空）的 user + 无 toolCalls 的 assistant
+//       = 页面上的"消息气泡"；
+//     · 返回内容 = 窗口内的**顶层**行 —— 包含中间 assistant 步骤与工具回执（工具卡片、
+//       步骤状态需要它们），但**不包含子智能体明细**（parent_tool_call_id 非空，
+//       那是工具执行详情，不属于页面消息流）；
+//     · hasMore = 窗口之前还有顶层行（不拿明细行充数）。
+//   ★ 无 limit 的全量分支保持旧行为不变（兼容老调用方 / 导出等场景）。
 router.get('/:id/messages', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const cid = req.params.id;
@@ -552,33 +579,143 @@ router.get('/:id/messages', (req: Request, res: Response) => {
     return;
   }
 
-  // 多取一条判断 hasMore，避免额外 COUNT 查询
-  const fetchLimit = limit + 1;
-  let rows: any[];
-  if (before !== null && beforeId) {
-    rows = db.prepare(
-      `SELECT ${MESSAGE_LIST_COLS} FROM message
-       WHERE conversation_id = ?
+  // ① 窗口下界：本页**最旧的那条显示消息**（= 更早的显示消息里的第 limit 条）
+  //    OFFSET = limit - 1：页内正好含 limit 条显示消息
+  const boundarySql = before !== null
+    ? `SELECT created_at, id FROM message
+       WHERE conversation_id = ? AND ${DISPLAY_MESSAGE_SQL}
          AND (created_at < ? OR (created_at = ? AND id < ?))
-       ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(cid, before, before, beforeId, fetchLimit);
-  } else {
-    rows = db.prepare(
-      `SELECT ${MESSAGE_LIST_COLS} FROM message WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ).all(cid, fetchLimit);
+       ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ?`
+    : `SELECT created_at, id FROM message
+       WHERE conversation_id = ? AND ${DISPLAY_MESSAGE_SQL}
+       ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ?`;
+  const boundaryArgs: any[] = before !== null
+    ? [cid, before, before, beforeId, limit - 1]
+    : [cid, limit - 1];
+  const boundary = db.prepare(boundarySql).get(...boundaryArgs) as { created_at: number; id: string } | undefined;
+
+  // ② 只取「页面显示消息」（user 气泡 + 无工具的 assistant 回答）。
+  //    中间步骤 / 工具回执 / 子智能体明细一律不进首屏 —— 用户要的是「概览 + 最终回答」，
+  //    执行详情在展开某一轮时再按需拉（见下方 /:id/messages/round/:userMessageId）。
+  const where: string[] = ['conversation_id = ?', DISPLAY_MESSAGE_SQL];
+  const args: any[] = [cid];
+  if (boundary) {
+    where.push('(created_at > ? OR (created_at = ? AND id >= ?))');
+    args.push(boundary.created_at, boundary.created_at, boundary.id);
   }
+  if (before !== null) {
+    where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+    args.push(before, before, beforeId);
+  }
+  const rows = db.prepare(
+    `SELECT ${MESSAGE_LIST_COLS} FROM message WHERE ${where.join(' AND ')}
+     ORDER BY created_at ASC, id ASC`,
+  ).all(...args) as any[];
 
-  const hasMore = rows.length > limit;
-  if (hasMore) rows = rows.slice(0, limit);
-  // DESC 取页后反转回 ASC，调用方拿到的顺序与全量接口一致
-  rows.reverse();
-
+  // ③ hasMore：还有更早的显示消息
   const oldest = rows.length > 0 ? rows[0] : null;
+  const hasMore = oldest
+    ? !!db.prepare(
+      `SELECT 1 FROM message WHERE conversation_id = ? AND ${DISPLAY_MESSAGE_SQL}
+         AND (created_at < ? OR (created_at = ? AND id < ?)) LIMIT 1`,
+    ).get(cid, oldest.created_at, oldest.created_at, oldest.id)
+    : false;
+
+  // ④ 每轮的过程规模（概览条要用）：首屏不拉明细，但仍要能显示"N 步 · M 次工具调用"。
+  //    一次扫描（只取判型列，不带正文），按"最近一条顶层 user"归属到轮。
+  const roundMeta: Record<string, { steps: number; tools: number; sub: number }> = {};
+  if (rows.length > 0) {
+    const scan = db.prepare(
+      `SELECT id, role, parent_tool_call_id,
+              (tool_calls_json IS NOT NULL AND tool_calls_json != '' AND tool_calls_json != '[]') AS has_tc
+         FROM message WHERE conversation_id = ? AND created_at >= ?
+         ORDER BY created_at ASC, id ASC`,
+    ).all(cid, oldest.created_at) as any[];
+    let cur: string | null = null;
+    for (const m of scan) {
+      const isSub = !!m.parent_tool_call_id;
+      if (!isSub && m.role === 'user') {
+        const roundId = String(m.id);
+        cur = roundId;
+        roundMeta[roundId] = { steps: 0, tools: 0, sub: 0 };
+        continue;
+      }
+      if (!cur) continue;
+      if (isSub) { roundMeta[cur].sub++; continue; }
+      // 只数「中间步骤」（带工具调用的 assistant）；最终回答不算过程
+      if (m.role === 'assistant' && !!m.has_tc) roundMeta[cur].steps++;
+      else if (m.role === 'tool') roundMeta[cur].tools++;
+    }
+  }
   res.json({
     data: rows,
     hasMore,
     oldestCursor: oldest ? { createdAt: oldest.created_at, id: oldest.id } : null,
+    roundMeta,
   });
+});
+
+/**
+ * GET /api/conversations/:id/messages/round/:userMessageId
+ *
+ * 单轮执行详情（2026-10-24，用户：「都是概览信息和最终大模型的响应就好了」「展开时再拉」）。
+ *
+ * 首屏只下发显示消息；点开某一轮的「执行过程」时才拉这一轮的中间步骤与工具回执：
+ *   · 范围 = 该 user 消息之后、下一条顶层 user 消息之前；
+ *   · 只取顶层行（子智能体明细仍不下发 —— 那是 call_agent 卡片自己的"加载结果"范畴）。
+ * 幂等、无副作用；前端按消息 id 去重合并。
+ */
+router.get('/:id/messages/round/:userMessageId', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+
+  const anchor = db.prepare(
+    `SELECT id, created_at FROM message
+      WHERE conversation_id = ? AND id = ? AND role = 'user' AND ${TOP_LEVEL_SQL}`,
+  ).get(cid, req.params.userMessageId) as { id: string; created_at: number } | undefined;
+  if (!anchor) { res.status(404).json({ error: '轮次不存在' }); return; }
+
+  const next = db.prepare(
+    `SELECT created_at, id FROM message
+      WHERE conversation_id = ? AND role = 'user' AND ${TOP_LEVEL_SQL}
+        AND (created_at > ? OR (created_at = ? AND id > ?))
+      ORDER BY created_at ASC, id ASC LIMIT 1`,
+  ).get(cid, anchor.created_at, anchor.created_at, anchor.id) as { created_at: number; id: string } | undefined;
+
+  const where: string[] = ['conversation_id = ?', TOP_LEVEL_SQL, '(created_at > ? OR (created_at = ? AND id > ?))'];
+  const args: any[] = [cid, anchor.created_at, anchor.created_at, anchor.id];
+  if (next) {
+    where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+    args.push(next.created_at, next.created_at, next.id);
+  }
+  const rows = db.prepare(
+    `SELECT ${MESSAGE_LIST_COLS} FROM message WHERE ${where.join(' AND ')}
+     ORDER BY created_at ASC, id ASC`,
+  ).all(...args) as any[];
+  res.json({ data: rows });
+});
+
+/**
+ * GET /api/conversations/:id/messages/sub-agent/:toolCallId
+ *
+ * 单个 call_agent 的子智能体内部步骤（2026-10-24，用户：「子智能体内部步骤……点击显示」）。
+ * 首屏与单轮详情都不带子智能体明细；展开某个 call_agent 卡片时才拉它自己的那一段。
+ */
+router.get('/:id/messages/sub-agent/:toolCallId', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ? AND user_id = ?').get(cid, userId);
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  const callId = String(req.params.toolCallId || '');
+  if (!callId) { res.status(400).json({ error: 'toolCallId 不能为空' }); return; }
+  const rows = db.prepare(
+    `SELECT ${MESSAGE_LIST_COLS} FROM message
+      WHERE conversation_id = ? AND parent_tool_call_id = ?
+      ORDER BY created_at ASC, id ASC`,
+  ).all(cid, callId) as any[];
+  res.json({ data: rows });
 });
 
 // GET /api/conversations/:id/tool-result/:toolCallId

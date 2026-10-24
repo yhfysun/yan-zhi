@@ -158,6 +158,103 @@ afterAll(() => {
   server?.close();
 });
 
+describe('GET /:id/messages 分页口径 · 显示消息 vs 工具执行明细（2026-10-24）', () => {
+  // 复刻实况：主链路里夹着中间步骤/工具回执，同时有大量子智能体明细。
+  // 计数只数"页面显示消息"（user + 无 toolCalls 的 assistant）；
+  // 返回窗口内的顶层行（工具卡片要用），子智能体明细不下发。
+  const CONV = 'conv_display';
+  const rows: Array<{ id: string; role: string; t: number; parent?: string; toolCalls?: string }> = [
+    { id: 'u1', role: 'user', t: 1 },
+    { id: 'a1', role: 'assistant', t: 2 },
+    { id: 'a2', role: 'assistant', t: 3, toolCalls: '[{"id":"call_1"}]' },  // 中间步骤（明细）
+    { id: 't2', role: 'tool', t: 4 },                                          // 工具回执（明细）
+    { id: 's1', role: 'assistant', t: 5, parent: 'call_1' },                   // 子智能体（明细，不下发）
+    { id: 's2', role: 'tool', t: 6, parent: 'call_1' },
+    { id: 'u2', role: 'user', t: 7 },
+    { id: 'a3', role: 'assistant', t: 8 },
+    { id: 's3', role: 'assistant', t: 9, parent: 'call_2' },
+    { id: 'a4', role: 'assistant', t: 10, toolCalls: '[{"id":"call_2"}]' },
+    { id: 't4', role: 'tool', t: 11 },
+  ];
+
+  beforeAll(() => {
+    conn.prepare('INSERT INTO conversation (id, user_id, title) VALUES (?, ?, ?)').run(CONV, hoisted.testUser, '显示消息口径');
+    const ins = conn.prepare(
+      'INSERT INTO message (id, conversation_id, user_id, role, content, tool_calls_json, tool_call_id, parent_tool_call_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    for (const r of rows) {
+      ins.run(r.id, CONV, hoisted.testUser, r.role, `${r.id}-content`, r.toolCalls ?? null, r.role === 'tool' ? 'call_x' : null, r.parent ?? null, r.t);
+    }
+  });
+
+  it('★ limit 数的是显示消息：limit=2 → 只有 u2 + a3（概览 + 最终回答）', async () => {
+    const res = await get(`/${CONV}/messages?limit=2`);
+    expect(res.status).toBe(200);
+    const ids = res.body.data.map((m: any) => m.id);
+    expect(ids).toEqual(['u2', 'a3']);
+    expect(res.body.hasMore).toBe(true);
+    expect(res.body.oldestCursor.id).toBe('u2');
+    // 过程规模随显示消息下发（概览条文案用），但明细本身没拉
+    expect(res.body.roundMeta).toEqual({ u2: { steps: 1, tools: 1, sub: 1 } });
+  });
+
+  it('★ 首屏不含工具执行明细与子智能体明细（用户要的只有概览 + 最终回答）', async () => {
+    const res = await get(`/${CONV}/messages?limit=50`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((m: any) => m.id)).toEqual(['u1', 'a1', 'u2', 'a3']);
+    for (const m of res.body.data) {
+      expect(m.parent_tool_call_id ?? null).toBeNull();
+      expect(m.role === 'assistant' ? !m.tool_calls_json : true).toBe(true);
+    }
+    expect(res.body.roundMeta).toEqual({
+      u1: { steps: 1, tools: 1, sub: 2 },
+      u2: { steps: 1, tools: 1, sub: 1 },
+    });
+  });
+
+  it('翻页拼接 == 全部显示消息（不丢最终回答，也不重复）', async () => {
+    const collected: string[] = [];
+    let cursor: { createdAt: number; id: string } | null = null;
+    for (let guard = 0; guard < 10; guard++) {
+      const q = cursor ? `limit=2&before=${cursor.createdAt}&beforeId=${cursor.id}` : 'limit=2';
+      const r = await get(`/${CONV}/messages?${q}`);
+      expect(r.status).toBe(200);
+      collected.unshift(...r.body.data.map((m: any) => m.id));
+      if (r.body.hasMore === false) break;
+      cursor = r.body.oldestCursor;
+      expect(cursor).toBeTruthy();
+    }
+    expect(collected).toEqual(['u1', 'a1', 'u2', 'a3']);
+  });
+
+  it('hasMore 只看显示消息（明细不充数，否则永远"还有下一页"）', async () => {
+    const r = await get(`/${CONV}/messages?limit=50`);
+    expect(r.body.hasMore).toBe(false);
+    expect(r.body.oldestCursor.id).toBe('u1');
+  });
+
+  it('★ 展开某一轮才拉执行详情：中间步骤 + 工具回执，子智能体明细仍不下发', async () => {
+    const r1 = await get(`/${CONV}/messages/round/u1`);
+    expect(r1.status).toBe(200);
+    expect(r1.body.data.map((m: any) => m.id)).toEqual(['a1', 'a2', 't2']);
+    expect(r1.body.data.every((m: any) => !m.parent_tool_call_id)).toBe(true);
+
+    const r2 = await get(`/${CONV}/messages/round/u2`);
+    expect(r2.body.data.map((m: any) => m.id)).toEqual(['a3', 'a4', 't4']);
+
+    const missing = await get(`/${CONV}/messages/round/nope`);
+    expect(missing.status).toBe(404);
+  });
+
+  it('★ 点开 call_agent 卡片才拉子智能体内部步骤', async () => {
+    const res = await get(`/${CONV}/messages/sub-agent/call_1`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((m: any) => m.id)).toEqual(['s1', 's2']);
+    const otherConv = await get(`/conv_other/messages/sub-agent/call_1`);
+    expect(otherConv.status).toBe(404);
+  });
+});
+
 describe('GET /:id/messages 分页协议 · 行为级不变量', () => {
   it('★★★ 核心不变量：按客户端真实用法（每页 prepend）翻完页，拼接结果与全量完全一致', async () => {
     // 全量基线
@@ -217,7 +314,7 @@ describe('GET /:id/messages 分页协议 · 行为级不变量', () => {
   it('空会话：hasMore=false、oldestCursor=null、data=[]', async () => {
     conn.prepare('INSERT INTO conversation (id, user_id, title) VALUES (?, ?, ?)').run('conv_empty', hoisted.testUser, '空');
     const r = await get('/conv_empty/messages?limit=10');
-    expect(r.body).toEqual({ data: [], hasMore: false, oldestCursor: null });
+    expect(r.body).toEqual({ data: [], hasMore: false, oldestCursor: null, roundMeta: {} });
   });
 
   it('参数校验：limit 非法 / before 与 beforeId 不成对 → 400', async () => {

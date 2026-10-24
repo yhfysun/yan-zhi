@@ -267,6 +267,30 @@ export function buildMessageRounds(
 }
 
 /**
+ * 找出本轮**正在执行**的子智能体块（`call_agent`）。
+ *
+ * ★ 2026-10-24 用户实报：「子智能体的工具调用、思考内容这里也放出来啊，要不然都不知道在干啥」
+ *   —— 子智能体跑起来后主内容区只剩一个三点省略号，看不出它在干什么。
+ *
+ * ★ 判据必须是**运行事实**（`sub_agent:start` / `sub_agent:end` 维护的 runningToolCallIds），
+ *   不能拿"最后一轮正在流式"来猜：主智能体自己在跑时同样流式，猜会让空态乱跳。
+ *
+ * @param isRunning 某 toolCallId 是否仍在执行（调用方注入，保持本模块零依赖）
+ */
+export function findLiveSubAgentRound(
+  round: MessageRound,
+  isRunning: (toolCallId: string) => boolean,
+): SubAgentRound | null {
+  let live: SubAgentRound | null = null;
+  for (const step of round.steps) {
+    for (const r of step.subAgentRounds || []) {
+      if (r.toolCallId && isRunning(r.toolCallId)) live = r;
+    }
+  }
+  return live;
+}
+
+/**
  * 单轮内默认渲染的步骤数上限（2026-10-19，「长任务一跑界面卡死」治理）。
  *
  * 背景（用户实报 + 数据库实测）：一个浏览器自动化任务跑了 2 小时，产生
