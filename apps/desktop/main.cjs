@@ -2311,7 +2311,7 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   const wcH = guestWebContents(tabId);
   if (wcH) {
     injectYzAssistant(wcH).catch(() => { /* 注入失败不影响页面 */ });
-    if (highlightEnabled && !highlightIdleHidden) runHighlight(wcH, true).catch(() => { /* 纯视觉辅助，失败静默 */ });
+    if (highlightShouldPaint()) runHighlight(wcH, true).catch(() => { /* 纯视觉辅助，失败静默 */ });
   }
   return true;
 });
@@ -3745,6 +3745,21 @@ const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'chec
 //   任务结束后面板会关掉它（2026-10-22：否则用户自己操作时满屏编号框消不掉）。
 let highlightEnabled = false;
 
+/**
+ * 此刻该不该往页面上画编号层 —— 所有「重画时机」（dom-ready / 导航完成 / 新开页）都必须问这里。
+ *
+ * ★ 2026-10-24 用户拍板：「刷新页面的时候就应该判断有没有 pageAgent 在操作」。
+ *   此前这几处只看 `highlightEnabled`（渲染层"要显示"的意图）：任务停了、面板失联、
+ *   或某次 IPC 打空之后它仍可能为真，于是用户随手刷新/换页又被画回满屏橙框。
+ *   ⇒ 判据 = 意图 && 没被空闲收起 && 最近 HIGHLIGHT_ACTION_IDLE_MS 内**确有**浏览器动作。
+ *
+ * 与 `scheduleHighlightIdleHide` 同源：动作在跑 → 亮；agent 停手超过该窗口 → 任何重画时机都不亮。
+ */
+function highlightShouldPaint() {
+  if (!highlightEnabled || highlightIdleHidden) return false;
+  return lastBrowserActionAt > 0 && Date.now() - lastBrowserActionAt < HIGHLIGHT_ACTION_IDLE_MS;
+}
+
 // ★ 编号层跟随"pageAgent 正在操作"（2026-10-23 用户拍板）：
 //   浏览器动作在跑 → 亮；停手 N 秒（这一轮浏览器操作结束/agent 转去做别的）→ 自动收起。
 //   否则用户在 agent 只合成视频的时候也被满屏橙框挡着，连自己点都不方便。
@@ -3793,6 +3808,9 @@ async function runHighlight(wc, on) {
       var ob=window.__yzHighlightObs;
       if(ob){try{ob.disconnect();}catch(e){}window.__yzHighlightObs=null;}
       var p0=document.getElementById(OID);if(p0)p0.remove();
+      // 截图标注层（__yz_annotate_overlay）：截图被打断/页面卡住时可能残留，
+      // 与编号层同色同形，用户分不出是哪套 —— 收尾一律清掉。
+      var pa=document.getElementById('__yz_annotate_overlay');if(pa)pa.remove();
       return{highlight:false};
     }
     var A=window.__yzAssistant;if(!A)return{error:'页面助手未注入'};
@@ -4384,6 +4402,22 @@ async function revealWebviewForCapture(tabId) {
   };
 }
 
+/**
+ * run_script 熔断计数（2026-10-24，P2）：按页面 URL 累计连续脚本调用次数。
+ *
+ * 依据（live 库实测，抖音合集任务）：一场会话刷了 175 次 run_script 找"创建合集/上传封面"按钮，
+ * 每次一轮 LLM，近 300 轮把任务拖到 20 分钟 —— 脚本被当成"试探哪个元素能点"的工具，
+ * 而它的定位本来就是批量提取/循环（没有元素重定位、没有防循环保护）。
+ * 8 次起在回执里警告，12 次直接拒绝（code=script_loop）；换页自动清零。
+ */
+async function scriptGateCheck(wc) {
+  try {
+    return await wc.executeJavaScript(
+      '(function(){var g=window.__yzScriptGuard;if(!g||g.url!==location.href){g={url:location.href,n:0};}g.n++;window.__yzScriptGuard=g;return g.n;})()'
+    );
+  } catch { return 0; }
+}
+
 async function runBrowserAction(convId, tabId, action, args, flow) {
   args = args || {};
   // ★★★ 2026-10-15：本执行流的**流键** = `${convId}::${flow}`（判定本体在 browser-target.cjs 的 flowKeyOf）。
@@ -4737,6 +4771,44 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             || (args.clickX !== undefined && args.clickY !== undefined);
           let result = null;
 
+          // ★ P0（2026-10-24）上传熔断 + 目标清单。
+          //   实测（抖音合集封面）：三次 upload 全部返回"投递成功"，但 input.files=0、网络层 0 请求 ——
+          //   页面根本没接管，模型只能反复重试（每次一轮 LLM）。同文件同页连吃 2 次假成功就停手，
+          //   并把页面里的 file input 清单交回去，让模型用 index 精确指定，而不是继续猜。
+          const uploadKey = String(fp).split(/[/\\]/).pop() || String(fp);
+          const inventoryFileInputs = () => wc.executeJavaScript(`(function(){
+            var A=window.__yzAssistant;var out=[];
+            var ins=document.querySelectorAll('input[type=file]');
+            for(var i=0;i<ins.length;i++){var el=ins[i];var near='';
+              try{var p=el.closest('label')||el.parentElement;near=String((p&&p.textContent)||'').replace(/\\s+/g,' ').trim().slice(0,40);}catch(e){}
+              out.push({index:(A&&A.register)?A.register(el):i,accept:String(el.accept||''),
+                cls:(typeof el.className==='string'?el.className:'').slice(0,60),
+                visible:el.offsetParent!==null,near:near});}
+            return out;
+          })()`).catch(() => []);
+          const readUploadGuard = () => wc.executeJavaScript(`(function(){
+            var g=window.__yzUploadGuard;
+            if(!g||g.url!==location.href)return 0;
+            return (g.counts&&g.counts[${JSON.stringify(uploadKey)}])||0;
+          })()`).catch(() => 0);
+          const bumpUploadGuard = () => wc.executeJavaScript(`(function(){
+            var g=window.__yzUploadGuard;
+            if(!g||g.url!==location.href){g={url:location.href,counts:{}};window.__yzUploadGuard=g;}
+            var k=${JSON.stringify(uploadKey)};
+            g.counts[k]=(g.counts[k]||0)+1;
+            return g.counts[k];
+          })()`).catch(() => 0);
+          const priorUploadFails = await readUploadGuard();
+          if (priorUploadFails >= 2) {
+            return {
+              error: '同一文件在本页已连续 2 次「CDP 投递成功但页面未接管」，已停止重试（上传熔断）。'
+                + '页面里的文件输入见 fileInputs：用 index 精确指定目标再试一次；'
+                + '若目标不在此列，说明上传器还没挂出来 —— 先 browser_click 打开「上传」入口再来。',
+              code: 'upload_loop',
+              fileInputs: await inventoryFileInputs(),
+            };
+          }
+
           // ① filechooser 模式：拦截原生文件对话框
           if (useChooser) {
             let chooserBackendId = null;
@@ -4804,6 +4876,15 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             if (chooserBackendId != null) {
               await send('DOM.setFileInputFiles', { files: [fp], backendNodeId: chooserBackendId });
               result = { uploaded: true, via: 'filechooser', filePath: fp };
+              // ★ P1：回传"拦到的是哪个 input" —— 多上传口页面排障全看这个
+              try {
+                const { node } = await send('DOM.describeNode', { backendNodeId: chooserBackendId, depth: 0 });
+                if (node) {
+                  const at = node.attributes || [];
+                  const attr = (k) => { const i = at.indexOf(k); return i >= 0 ? at[i + 1] : ''; };
+                  result.chooserNode = { name: node.nodeName, accept: attr('accept'), cls: attr('class').slice(0, 60) };
+                }
+              } catch { /* 描述失败只少一项证据 */ }
             } else if (domPick) {
               // 并发探测命中：直接注入（等价下面的 DOM 回落，但省掉 10s 空等）。标记便于排障。
               await send('DOM.setFileInputFiles', { files: [fp], nodeId: domPick.nodeId });
@@ -4819,7 +4900,31 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             if (!nodeIds || !nodeIds.length) {
               result = { error: '页面上未找到 input[type=file]，且未捕获到文件选择器：请确认「上传」按钮已点击、文件选择框确实弹出。' };
             } else {
-              const picked = await pickInjectable(nodeIds);
+              // ★ P1（2026-10-24）：直接模式真正支持 index/selector。
+              //   此前 schema 声明了这两个参数，实现却完全忽略、永远 pickInjectable 猜第一个 ——
+              //   封面上传页同时有头像/封面/视频多个 file input 时必然投错。
+              let targeted = null;
+              if (args.index != null || args.selector) {
+                const marked = await wc.executeJavaScript(`(function(){
+                  var a=${JSON.stringify({ index: args.index, selector: args.selector })};
+                  var el=null;
+                  if(a.index!=null) el=(window.__yzElements&&window.__yzElements[a.index])||null;
+                  if(!el && a.selector) el=document.querySelector(a.selector);
+                  if(!el) return { error: '指定的文件输入未找到（index 已失效？用 get_page_info 重新取编号）' };
+                  var old=document.querySelectorAll('input[type=file][data-yz-upload]');
+                  for(var i=0;i<old.length;i++) old[i].removeAttribute('data-yz-upload');
+                  el.setAttribute('data-yz-upload','1');
+                  return { ok:true };
+                })()`).catch((e) => ({ error: String((e && e.message) || e) }));
+                if (marked && marked.ok) {
+                  const { root: r2 } = await send('DOM.getDocument', { depth: -1, pierce: true });
+                  const { nodeIds: markedIds } = await send('DOM.querySelectorAll', { nodeId: r2.nodeId, selector: 'input[type=file][data-yz-upload="1"]' });
+                  if (markedIds && markedIds.length) targeted = markedIds[0];
+                } else if (marked && marked.error) {
+                  result = { error: marked.error, fileInputs: await inventoryFileInputs() };
+                }
+              }
+              const picked = targeted ? { nodeId: targeted, visible: true } : await pickInjectable(nodeIds);
               let target = picked ? picked.nodeId : null;
               // ★ B5：只有「一个存活且未禁用的节点都没有」才报错（此时 nodeId 确实失效，盲投会撞
               //   "Either nodeId, backendNodeId or objectId must be specified"）。
@@ -4895,7 +5000,17 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
                   result.note = '页面文本暂未见文件名/进度（进度 UI 可能是自绘/iframe 内，读不到属正常），但网络层已发出 '
                     + netUploads.length + ' 个上传类请求 —— 上传器已启动。**请勿重复调用 upload**；可轮询页面进度或稍后核实。';
                 } else {
-                  result.note = '文件已投递（CDP 成功），但观察窗内页面未出现文件名/进度、网络层也无任何上传请求 —— **投递成功≠上传开始，页面尚未接管**。不要盲目重复 upload（大概率同样无响应）：先用 browser_get_page_info 检查弹窗/遮罩与上传控件状态，或改用 clickSelector 指定「上传」按钮走 filechooser 模式重试。';
+                  const fails = await bumpUploadGuard();
+                  // ★ P0：投递了但页面/网络都没反应 = **没上传成功**，不能再只给一句提示让模型自己猜。
+                  result.uploaded = false;
+                  result.delivered = true;
+                  result.verified = false;
+                  result.code = 'not_started';
+                  result.fileInputs = await inventoryFileInputs();
+                  result.attempts = fails;
+                  result.note = '上传未启动：CDP 已投递，但页面没有出现文件名/进度，网络层也没有上传请求'
+                    + '（本页同文件第 ' + fails + ' 次）。不要原样重试 —— 从 fileInputs 里按 accept/near 选出正确目标，'
+                    + '用 index 精确指定再投一次；或改用 clickSelector 指向上传按钮走 filechooser。';
                 }
               }
             } catch { /* 核验失败不影响上传本身的结果 */ }
@@ -5028,8 +5143,9 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           result.note = (result.note ? result.note + '\n' : '') +
             '这看起来是**接口地址**（JSON 端点）：直接导航会占用导航+渲染，并把"当前操作页"带到 JSON 上。取数优先用 browser_run_script 在页面内 fetch（credentials:"include" 可带登录态），比导航更稳更快。';
         }
-        // ★ 常驻高亮（2026-10-20）：导航会销毁旧文档里的覆盖层，若用户开着「高亮编号」就重注入。
-        if (highlightEnabled && !highlightIdleHidden) {
+        // ★ 常驻高亮（2026-10-20）：导航会销毁旧文档里的覆盖层，agent 仍在操作时重注入。
+        //   ★ 2026-10-24：判据换成 highlightShouldPaint（agent 已停手就别画回来）。
+        if (highlightShouldPaint()) {
           try { await runHighlight(wc, true); } catch { /* 重注入失败不影响导航结果 */ }
         }
         return result;
@@ -6101,8 +6217,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           if (target && wc2) {
             try { await wc2.loadURL(/^https?:\/\//i.test(target) ? target : 'https://' + target); } catch { /* ignore */ }
           }
-          // ★ 常驻高亮（2026-10-20）：新开页也要有编号层（若用户开着）。runHighlight 内部会先注入助手。
-          if (highlightEnabled && !highlightIdleHidden && wc2) {
+          // ★ 常驻高亮（2026-10-20）：新开页也要有编号层（agent 正在操作时）。runHighlight 内部会先注入助手。
+          if (highlightShouldPaint() && wc2) {
             try { await runHighlight(wc2, true); } catch { /* 不影响开新页 */ }
           }
           return { tabId, url: target || (wc2 && wc2.getURL()) || '', title: (wc2 && wc2.getTitle()) || '' };
@@ -6362,9 +6478,17 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           script = `(() => { ${script}\n})()`;
           _autoWrapped = true;
         }
+        // ★ P2 脚本熔断（2026-10-24，实现见 scriptGateCheck）：8 次警告、12 次拒绝
+        const scriptGate = await scriptGateCheck(wc);
+        if (scriptGate >= 12) {
+          return {
+            error: 'run_script 在本页已连续执行 ' + scriptGate + ' 次（脚本熔断）。找元素请改用 browser_get_page_content 拿编号后 browser_click；换页后计数重置。',
+            code: 'script_loop',
+          };
+        }
         try {
           const r = await wc.executeJavaScript(script, false);
-          return { url: (typeof wc.getURL === 'function' ? wc.getURL() : '') || '', result: r === undefined ? null : r, ...(_autoWrapped ? { autoWrapped: true } : {}) };
+          return { url: (typeof wc.getURL === 'function' ? wc.getURL() : '') || '', result: r === undefined ? null : r, ...(_autoWrapped ? { autoWrapped: true } : {}), ...(scriptGate >= 8 ? { warning: '本页已连续 ' + scriptGate + ' 次 run_script：找元素请改用 browser_get_page_content + browser_click，脚本只用于批量提取/循环（12 次将被拒绝）' } : {}) };
         } catch (e) {
           // ★★★ 2026-10-15：失败时**二次取证**，把页面真实异常带回给模型。
           //
@@ -7855,12 +7979,18 @@ app.whenReady().then(async () => {
   if (!gotTheLock) return;
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
 
-  // ── 渲染进程心跳看门狗（2026-10-19）────────────────────────────────────
+  // ── 渲染进程心跳看门狗（2026-10-19，阈值 2026-10-24 调整）──────────────
   //   实测：长任务/长会话会把渲染进程主线程占死，界面点击完全无响应（CDP 都进不去）。
-  //   渲染层每 2s 发一次心跳；15s 收不到就自动重载窗口。后端任务不受影响，
+  //   渲染层每 2s 发一次心跳；收不到就自动重载窗口。后端任务不受影响，
   //   重载后前端会重连 SSE；比永久冻结、只能杀进程好。
-  const RENDERER_HEARTBEAT_STALE_MS = 15000;
-  const RENDERER_RELOAD_COOLDOWN_MS = 30000;
+  //
+  // ★ 15s → 45s（2026-10-24）：两千多条消息的会话首屏渲染要 16~35s（日志里 18 次
+  //   「心跳停止 15xxx~35209ms」全是这种情况），15s 阈值把「只是在忙」误判成「已卡死」，
+  //   于是重载 → 又从头渲染 → 再被判定卡死，自己把自己锁进 30s 一轮的重载循环。
+  //   45s 只拦真卡死（实测真卡死会一直不恢复），正常渲染能自己走完。
+  //   冷却同步放到 60s，避免极端情况下仍出现连续重载。
+  const RENDERER_HEARTBEAT_STALE_MS = 45000;
+  const RENDERER_RELOAD_COOLDOWN_MS = 60000;
   const rendererLastBeat = new Map();
   let lastRendererReloadAt = 0;
   ipcMain.on('yz:renderer-heartbeat', (e) => {

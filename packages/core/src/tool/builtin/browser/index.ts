@@ -1073,7 +1073,7 @@ export class BrowserVisualLocateTool implements BuiltInTool {
 // ========== C11 文件上传/下载 ==========
 export class BrowserUploadTool implements BuiltInTool {
   name = 'browser_upload';
-  description = 'Upload a local file into a web page. 上传本地文件到网页。两种用法：①【推荐·filechooser 模式】若「上传」按钮点击后弹出系统文件选择框、页面上看不到 input[type=file]（如抖音创作者平台/番茄等），用 clickSelector 或 clickIndex 指定这个按钮，工具会拦截文件选择器并投递文件；②若页面上有裸露的 input[type=file]，用 index 或 selector 直接定位。';
+  description = 'Upload a local file into a web page. 上传本地文件到网页。两种用法：①【推荐·filechooser 模式】若「上传」按钮点击后弹出系统文件选择框、页面上看不到 input[type=file]（如抖音创作者平台/番茄等），用 clickSelector 或 clickIndex 指定这个按钮，工具会拦截文件选择器并投递文件；②若页面上有裸露的 input[type=file]，用 index 或 selector 直接定位（多上传口页面——头像/封面/视频——必须用 index 指定目标，别让工具猜）。★ 结果语义：uploaded=true 只代表 CDP 投递完成；verified=true 才代表页面已接管（出现文件名/进度，或网络层有上传请求）。返回 uploaded=false + code=not_started 表示页面没接收：按 fileInputs（index/accept/near/visible）用 index 精确指定再试，或改用 clickSelector 指向上传按钮；同一文件在同一页连续 2 次这种情况会直接熔断（code=upload_loop），此时应停下来换入口或用 index 指定，不要原样重试。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -1202,7 +1202,7 @@ export class BrowserDragTool implements BuiltInTool {
 // ========== P1-5 代码模式（2026-10-07） ==========
 export class BrowserRunScriptTool implements BuiltInTool {
   name = 'browser_run_script';
-  description = 'Execute a JavaScript snippet in the current page context and return its JSON-serializable result. 代码模式：把多步固定操作收敛为一段脚本一次执行（如"滚动到底触发懒加载→收集全部列表项→返回 JSON"），替代多轮 click/scroll/get_page_content。脚本在页面主世界运行，可用 document / window / fetch；返回值必须可 JSON 序列化，用 return 返回（例：return JSON.stringify([...]) 或 return {...}）。★ 直接写 `const x=...; return x;` 即可（工具会自动包一层函数）；也可自己写成 (() => {...})() 或 (async () => {...})()。超时 30s，脚本长度上限 64000 字符。可传 tabId 在指定标签页执行。\n★ 适用边界（重要）：脚本只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】。查找并点击某个按钮、往输入框填文字这类单点交互请用 browser_click / browser_type / browser_fill_form —— 它们有元素重定位、防循环计数、回读核验等保护，脚本是裸奔的（选择器失效直接抛错、无任何防护）。页面找不到目标时先用 browser_get_page_content 重新定位，不要写脚本穷举选择器。';
+  description = 'Execute a JavaScript snippet in the current page context and return its JSON-serializable result. 代码模式：把多步固定操作收敛为一段脚本一次执行（如"滚动到底触发懒加载→收集全部列表项→返回 JSON"），替代多轮 click/scroll/get_page_content。脚本在页面主世界运行，可用 document / window / fetch；返回值必须可 JSON 序列化，用 return 返回（例：return JSON.stringify([...]) 或 return {...}）。★ 直接写 `const x=...; return x;` 即可（工具会自动包一层函数）；也可自己写成 (() => {...})() 或 (async () => {...})()。超时 30s，脚本长度上限 64000 字符。可传 tabId 在指定标签页执行。\n★ 同页连续执行 8 次会附 warning、12 次直接拒绝（code=script_loop）：脚本是用来批量提取/循环的，不是用来试探"哪个元素能点"；找元素请用 browser_get_page_content 拿编号后 browser_click。\n★ 适用边界（重要）：脚本只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】。查找并点击某个按钮、往输入框填文字这类单点交互请用 browser_click / browser_type / browser_fill_form —— 它们有元素重定位、防循环计数、回读核验等保护，脚本是裸奔的（选择器失效直接抛错、无任何防护）。页面找不到目标时先用 browser_get_page_content 重新定位，不要写脚本穷举选择器。';
   inputSchema = {
     type: 'object',
     properties: {
