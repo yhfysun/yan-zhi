@@ -109,6 +109,23 @@ describe('collectPathArgs —— 按声明表抽，只抽显式给出', () => {
     expect(collectPathArgs('file_read', { path: '   ' }, WS)).toHaveLength(0);
   });
 
+  it('★★ 非字符串路径参数不能跳过判定（数组强转可读出任意文件）', () => {
+    const items = collectPathArgs(
+      'api_im_send_message',
+      { filePath: ['C:/Users/x/.ssh/id_rsa'] },
+      WS,
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].absPath).toBe('');
+    const verdict = checkPathAccess({
+      toolName: 'api_im_send_message',
+      args: { filePath: ['C:/Users/x/.ssh/id_rsa'] },
+      workspaceDir: WS,
+      allowedRoots: [WS],
+    });
+    expect(verdict.kind).toBe('need-auth');
+  });
+
   it('★ doyz 的 out 是写、其余是读 —— 漏掉 out 就是"写越界静默放行"', () => {
     const items = collectPathArgs('doyz', { file: 'a.doyz', out: 'C:/x/a.docx' }, WS);
     const byField = Object.fromEntries(items.map((i) => [i.rawPath, i.action]));

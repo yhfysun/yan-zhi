@@ -80,6 +80,8 @@ const TOOL_PATH_ARGS: Record<string, PathArgSpec[]> = {
   api_code_semantic_search: [{ field: 'path', action: 'read' }],
   // 精确跳转定义（tsserver）：file 为目标源文件（读）
   api_code_definition: [{ field: 'file', action: 'read' }],
+  // IM 统一发送：filePath 是要读出来上传的本地文件（读）
+  api_im_send_message: [{ field: 'filePath', action: 'read' }],
   // ── OCR：传 path 读本地图片（读）；传 image(base64) 时不碰磁盘，抽不到自然不判 ──
   api_tool_ocr: [{ field: 'path', action: 'read' }],
   // ── 媒体加工（ffmpeg）：**输入一律本机绝对路径**（前序工具回传的 file 字段）──
@@ -240,8 +242,21 @@ export function collectPathArgs(
   const out: PathAccessItem[] = [];
   for (const spec of specs) {
     const raw = (args as Record<string, unknown>)[spec.field];
-    if (typeof raw !== 'string' || !raw.trim()) continue; // 未给 / 空串 → 不触发授权
+    if (raw === undefined || raw === null || raw === '') continue; // 未给 / 空串 → 不触发授权
+    // ★ 声明为路径字段却给了非字符串（数组/对象）：不能跳过 ——
+    //   `String([...])` 强转后能拿到真实路径（2026-10-24 审查发现的绕过），
+    //   这里把它当作越界项交给判定，绝不静默放行。
+    if (typeof raw !== 'string') {
+      out.push({
+        toolName,
+        action: spec.action,
+        rawPath: `[${typeof raw} 非字符串路径参数]`,
+        absPath: '',
+      });
+      continue;
+    }
     const rawPath = raw.trim();
+    if (!rawPath) continue;
     // ★★★ 无工作目录 + 相对路径 → **不参与判定**（2026-10-08 实测缺陷）。
     //   为什么：`resolveToolPath(raw, '')` 对无工作目录的相对路径**原样返回**
     //   （fs-walk.ts:67 的"旧行为"），于是 absPath 是 `"some-name"` 这种相对串，
