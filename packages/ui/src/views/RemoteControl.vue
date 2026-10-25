@@ -3,25 +3,63 @@
     <!-- ============ 配对/设置阶段 ============ -->
     <div v-if="phase === 'setup' || phase === 'pending' || phase === 'ended'" class="rc-setup">
       <div class="rc-card">
-        <div class="rc-brand">
-          <span class="rc-logo">言智 · 远程控制</span>
-          <span class="rc-sub">连接到局域网内运行言智的电脑</span>
+        <div class="rc-brand-row">
+          <div class="rc-brand">
+            <span class="rc-logo">言智 · 远程控制</span>
+            <span class="rc-sub">{{ setupTab === 'host' ? '本机作为被控端：扫码 / 地址即可连入' : '连接到局域网内运行言智的电脑' }}</span>
+          </div>
+          <button v-if="phase !== 'pending'" class="rc-close" title="关闭页面" @click="closeRemotePage">✕</button>
         </div>
 
-        <template v-if="phase === 'setup' || phase === 'ended'">
-          <div v-if="phase === 'ended'" class="rc-end-reason">{{ endedReason || '会话已结束' }}</div>
-          <label class="rc-label">被控端地址</label>
-          <input v-model="form.host" class="rc-input" placeholder="http://192.168.1.100:3001（同源时无需修改）" spellcheck="false" />
-          <label class="rc-label">授权码</label>
-          <input
-            v-model="form.code" class="rc-input rc-code" placeholder="被控端「设置 → 局域网」或插件页查看"
-            spellcheck="false" autocomplete="off" @keyup.enter="pair" />
-          <button class="rc-btn rc-btn-primary" :disabled="pairing || !form.code.trim()" @click="pair">
-            {{ pairing ? '配对中…' : '连接' }}
-          </button>
-          <button class="rc-btn" :disabled="pairing" @click="startScan">📷 扫码连接</button>
-          <div class="rc-hint">首次连接需要在被控端电脑上点击确认；可勾选「信任此设备」后免确认直连。</div>
-          <div class="rc-hint">跨公网：这里填被控端的公网地址（端口需放行或走内网穿透），并在被控端插件设置开启「允许非内网配对」。</div>
+        <template v-if="phase === 'setup'">
+          <div class="rc-tabs">
+            <button class="rc-tab" :class="{ active: setupTab === 'control' }" @click="setupTab = 'control'">控制电脑</button>
+            <button class="rc-tab" :class="{ active: setupTab === 'host' }" @click="openHostTab">被连 · 本机</button>
+          </div>
+
+          <template v-if="setupTab === 'control'">
+            <label class="rc-label">被控端地址</label>
+            <input v-model="form.host" class="rc-input" placeholder="http://192.168.1.100:3001（同源时无需修改）" spellcheck="false" />
+            <label class="rc-label">授权码</label>
+            <input
+              v-model="form.code" class="rc-input rc-code" placeholder="被控端「设置 → 局域网」或插件页查看"
+              spellcheck="false" autocomplete="off" @keyup.enter="pair" />
+            <button class="rc-btn rc-btn-primary" :disabled="pairing || !form.code.trim()" @click="pair">
+              {{ pairing ? '配对中…' : '连接' }}
+            </button>
+            <button v-if="isTouch" class="rc-btn" :disabled="pairing" @click="startScan">📷 扫码连接</button>
+            <div class="rc-hint">首次连接需要在被控端电脑上点击确认；可勾选「信任此设备」后免确认直连。</div>
+            <div class="rc-hint">跨公网：这里填被控端的公网地址（端口需放行或走内网穿透），并在被控端插件设置开启「允许非内网配对」。</div>
+          </template>
+
+          <template v-else>
+            <div v-if="hostTabLoading" class="rc-hint">加载中…</div>
+            <template v-else-if="hostPluginEnabled">
+              <div class="rc-host-qr">
+                <img v-if="hostQrUrl" :src="hostQrUrl" alt="控制端扫码连接二维码" />
+                <div v-else class="rc-hint">—（未检测到局域网 IP）</div>
+              </div>
+              <div class="rc-host-line"><span class="rc-k2">授权码</span><code class="rc-host-code">{{ hostCode || '—' }}</code></div>
+              <div class="rc-host-line"><span class="rc-k2">控制端地址</span><code class="rc-host-addr">{{ hostPreferredIp ? `http://${hostPreferredIp}:${hostPort}/remote` : '—' }}</code></div>
+              <div class="rc-host-line"><span class="rc-k2">通道</span><span class="rc-host-mode">{{ hostMode === 'webrtc-capable' ? 'WebRTC 低延迟（本机界面已就绪）' : 'JPEG 兼容模式' }}</span></div>
+              <div class="rc-host-actions">
+                <button class="rc-btn" @click="rotateHostCode">换一个码</button>
+                <button class="rc-btn" @click="copyHostInvite">复制邀请</button>
+                <button class="rc-btn" @click="router.push('/settings?pane=lan')">管理</button>
+              </div>
+              <div class="rc-hint">手机扫码或打开地址即可连接；新设备首次连接需在本机点击确认（可信任免确认）。急停：Ctrl+Alt+Esc。</div>
+            </template>
+            <template v-else>
+              <div class="rc-hint">remote-control 插件未启用（或当前无权限读取）。被控端管理仅在本机桌面端可用。</div>
+              <button class="rc-btn rc-btn-primary" @click="router.push('/plugins')">去插件管理启用</button>
+            </template>
+          </template>
+        </template>
+
+        <template v-else-if="phase === 'ended'">
+          <div class="rc-end-reason">{{ endedReason || '会话已结束' }}</div>
+          <button class="rc-btn" @click="resetToSetup">重新配对</button>
+          <button class="rc-btn rc-btn-primary" @click="closeRemotePage">关闭页面</button>
         </template>
 
         <template v-else-if="phase === 'pending'">
@@ -169,11 +207,14 @@
  *   getBoundingClientRect 与 object-fit 的组合行为，缩放/平移/黑边下都精确。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import type { CSSProperties } from 'vue';
 import { ElMessage } from 'element-plus';
+import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { parseRcScanPayload } from '../utils/rcScan';
+import { parseNetworkIpResponse, sortLanIps, type LanIp } from '../utils/lanIp';
+import { api, API_BASE, buildRequestHeaders } from '../api/client';
 
 type Phase = 'setup' | 'pending' | 'live' | 'ended';
 interface ScreenRect { x: number; y: number; w: number; h: number }
@@ -226,6 +267,11 @@ const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '1:1' : '适应窗�
 
 const form = reactive({ host: window.location.origin, code: '' });
 const route = useRoute();
+const router = useRouter();
+// setup 阶段双页签：控制电脑（控制端表单）/ 被连·本机（二维码+授权码，桌面子窗口一页两用）
+const setupTab = ref<'control' | 'host'>('control');
+/** 扫码按钮只给触屏设备：桌面 /remote 页上「电脑摄像头扫另一块屏」是伪需求，防误解 */
+const isTouch = (typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 0;
 const stageRef = ref<HTMLElement>();
 const videoRef = ref<HTMLVideoElement>();
 const canvasRef = ref<HTMLCanvasElement>();
@@ -504,6 +550,99 @@ function stopScan(): void {
     for (const track of scanStream.getTracks()) track.stop();
     scanStream = null;
   }
+}
+
+// ---- 被连 · 本机（桌面子窗口一页两用：本机二维码/授权码，省得回设置页找）----
+// 数据源与设置页局域网卡同口径：/network/ip（IP/端口）+ hostkey → /status（码/通道）。
+// 两个接口都走 license 门禁，所以本页签只在桌面端本机有意义（手机上看到的是未启用提示）。
+const hostTabLoading = ref(false);
+const hostLoaded = ref(false);
+const hostPluginEnabled = ref(false);
+const hostCode = ref('');
+const hostMode = ref('');
+const hostIps = ref<LanIp[]>([]);
+const hostPort = ref(3001);
+const hostQrUrl = ref('');
+let hostHostKey = '';
+const hostPreferredIp = computed(() => (hostIps.value[0]?.address || ''));
+
+function openHostTab(): void {
+  setupTab.value = 'host';
+  if (!hostLoaded.value) void loadHostInfo();
+}
+
+async function loadHostInfo(): Promise<void> {
+  hostTabLoading.value = true;
+  try {
+    const [net, key] = await Promise.allSettled([
+      api.get<any>('/network/ip'),
+      api.get<any>('/plugin/remote-control/hostkey'),
+    ]);
+    if (net.status === 'fulfilled') {
+      const { ips, port } = parseNetworkIpResponse(net.value);
+      if (port) hostPort.value = port;
+      hostIps.value = sortLanIps(ips);
+    }
+    if (key.status === 'fulfilled' && (key.value as any)?.data?.key) {
+      hostHostKey = String((key.value as any).data.key);
+      const r = await fetch(`${API_BASE}/plugin/remote-control/status`, {
+        headers: { ...buildRequestHeaders(), 'x-rc-host-key': hostHostKey },
+      });
+      const body = await r.json();
+      if (!body?.error) {
+        hostPluginEnabled.value = true;
+        hostCode.value = String(body?.data?.code?.current || '');
+        hostMode.value = String(body?.data?.mode || '');
+      }
+    }
+  } catch { /* 任一失败按未启用渲染 */ } finally {
+    hostTabLoading.value = false;
+    hostLoaded.value = true;
+  }
+  await renderHostQr();
+}
+
+async function renderHostQr(): Promise<void> {
+  const ip = hostPreferredIp.value;
+  if (!ip || !hostCode.value) { hostQrUrl.value = ''; return; }
+  try {
+    hostQrUrl.value = await QRCode.toDataURL(`http://${ip}:${hostPort.value}/remote?code=${encodeURIComponent(hostCode.value)}`, { width: 220, margin: 1 });
+  } catch { hostQrUrl.value = ''; }
+}
+
+async function rotateHostCode(): Promise<void> {
+  try {
+    const r = await api.post<any>('/plugin/remote-control/code/rotate');
+    if ('error' in r) { ElMessage.error(r.error || '换码失败'); return; }
+    hostCode.value = String(r?.data?.current || '');
+    ElMessage.success('已生成新授权码（旧码立即失效）');
+    await renderHostQr();
+  } catch (e) {
+    ElMessage.error((e as Error)?.message || '换码失败');
+  }
+}
+
+function copyHostInvite(): void {
+  const ip = hostPreferredIp.value;
+  if (!ip || !hostCode.value) return;
+  const text = `言智远程控制：浏览器打开 http://${ip}:${hostPort.value}/remote?code=${hostCode.value} 即可连接（首次需在本机点允许）`;
+  navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制邀请信息'));
+}
+
+// 关闭按钮：桌面子窗口 window.close() 直接生效；浏览器里脚本打开的标签可关，
+// 直接导航进来的关不掉就退回上一页（主窗口内嵌打开时即回到应用）。
+function closeRemotePage(): void {
+  window.close();
+  window.setTimeout(() => {
+    if (history.length > 1) history.back();
+  }, 80);
+}
+
+function resetToSetup(): void {
+  cleanup();
+  endedReason.value = '';
+  phase.value = 'setup';
+  setupTab.value = 'control';
 }
 
 // ---- WS ----
@@ -1255,6 +1394,21 @@ onBeforeUnmount(() => {
 .rc-page { position: fixed; inset: 0; background: #101418; color: #e6eaf0; font-family: inherit; z-index: 100; }
 .rc-setup { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; }
 .rc-card { width: min(420px, 100%); background: #171c23; border: 1px solid #262d38; border-radius: 14px; padding: 24px; display: flex; flex-direction: column; gap: 10px; }
+.rc-brand-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.rc-close { background: transparent; border: 1px solid #2a323e; color: #8a94a3; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; }
+.rc-close:hover { color: #e6eaf0; border-color: #4c8dff; }
+.rc-tabs { display: flex; gap: 6px; background: #10151b; border: 1px solid #262d38; border-radius: 10px; padding: 4px; margin-bottom: 6px; }
+.rc-tab { flex: 1; background: transparent; border: none; color: #8a94a3; border-radius: 7px; padding: 8px 0; font-size: 13.5px; cursor: pointer; }
+.rc-tab.active { background: #2f6bff; color: #fff; }
+.rc-host-qr { display: flex; justify-content: center; padding: 6px 0; }
+.rc-host-qr img { width: 190px; height: 190px; border-radius: 10px; background: #fff; padding: 8px; box-sizing: border-box; }
+.rc-host-line { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
+.rc-k2 { width: 88px; flex-shrink: 0; color: #8a94a3; font-size: 12.5px; }
+.rc-host-code { font-size: 19px; font-weight: 700; letter-spacing: 3px; color: #fff; }
+.rc-host-addr { word-break: break-all; color: #c7d2e0; }
+.rc-host-mode { color: #c7d2e0; }
+.rc-host-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.rc-host-actions .rc-btn { flex: 1; min-width: 96px; }
 .rc-brand { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .rc-logo { font-size: 20px; font-weight: 700; }
 .rc-sub { font-size: 13px; color: #8a94a3; }
