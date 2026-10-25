@@ -116,6 +116,30 @@ function writeManifest(pkgDir, id, manifestValue) {
   return file;
 }
 
+/** 工作区源码包（@yan-zhi/*）必须留在运行时解析，不许打进插件包。
+ *  ★ 实报（2026-10-25）：esbuild 会应用 tsconfig.base.json 的 paths（@yan-zhi/core →
+ *    packages/core/src），解析后变成普通相对路径 ⇒ `packages:'external'` **拦不住**
+ *    ⇒ core 整包被打进插件 bundle（远控包里有 83 个 core 模块）⇒ 插件拿到**第二个**
+ *    core 实例 ⇒ `getPluginManager()` 读的是自己那份空的 `_mgr` ⇒
+ *    /api/plugin/remote-control/hostkey 500「PluginManager 未初始化，请先传入 adapter」
+ *    （现象：插件明明已启用，前端却报"插件未启用"、二维码不渲染）。
+ *    必须在 external 里按**原始 specifier**显式声明（external 先于路径解析生效）。 */
+const WORKSPACE_PACKAGES = ['@yan-zhi/core', '@yan-zhi/shared', '@yan-zhi/ui'];
+
+/** 构建期硬闸：产物里出现内联的工作区源码即失败 —— 运行期静默多实例比构建期报错贵得多。 */
+function assertNoBundledWorkspaceSources(outfile) {
+  const src = fs.readFileSync(outfile, 'utf8');
+  const hits = WORKSPACE_PACKAGES
+    .map((p) => ({ p, n: src.split(`// ${p.replace('@yan-zhi/', 'packages/')}/src`).length - 1 }))
+    .filter((h) => h.n > 0);
+  if (!hits.length) return;
+  throw new Error(
+    `[build-plugins] ${path.basename(path.dirname(path.dirname(outfile)))}：工作区源码被打包进插件包（` +
+      hits.map((h) => `${h.p} ×${h.n}`).join('、') +
+      `）—— 会在插件里复制出第二份宿主单例。请让它走 ${JSON.stringify(WORKSPACE_PACKAGES)} 外部化或宿主桥。`,
+  );
+}
+
 /** 后端 bundle：bare import 全 external；host-bridge 重定向到 shim。
  *  ★ 入口包装：插件源文件是"清单 + 模块"的具名导出（gitExplorerModule 等），
  *    而装载器约定 default 导出 PluginModule —— 打包时套一层薄入口自动挑出
@@ -141,6 +165,9 @@ async function buildBackend(absBackendEntry, pkgDir, serverShimPath, tmpDir) {
       platform: 'node',
       target: 'node20',
       packages: 'external',
+      // ★ 工作区包按原始 specifier 外部化（见 WORKSPACE_PACKAGES 注释：paths 会让
+      //   packages:'external' 失效，必须显式声明，否则插件里会多出一份 core 单例）
+      external: [...WORKSPACE_PACKAGES],
       plugins: [hostBridgeRewritePlugin(serverShimPath)],
       sourcemap: false,
       minify: false,
@@ -150,6 +177,7 @@ async function buildBackend(absBackendEntry, pkgDir, serverShimPath, tmpDir) {
   } finally {
     fs.rmSync(wrapper, { force: true });
   }
+  assertNoBundledWorkspaceSources(outfile);
   return outfile;
 }
 
