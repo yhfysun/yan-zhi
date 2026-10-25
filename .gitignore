@@ -237,3 +237,17 @@ dist-pro/
 # 内置 Python 运行时的依赖标记（build-python-runtime.mjs 生成/刷新，每次构建都会
 # 变 `at` 时间戳 —— 内容可由 python-scripts 源重新推导，属构建产物不入库）
 apps/desktop/resources/.baked-deps.json
+
+# 插件包构建产物（scripts/build-plugins.mjs staging）与宿主共享 shim
+# （apps/desktop/scripts/generate-host-shims.mjs 生成，electron-builder files 随包分发，不入库）
+apps/server/plugins/build/
+apps/desktop/host-shims/
+# builtin/ 也是 build-plugins.mjs 的产物（builtin-packages.ts 注释：dev 落在
+# apps/server/plugins/builtin；含 ~1000 个皮肤 webp 素材，55MB），不入库
+apps/server/plugins/builtin/
+
+# 本地调试产物（日志/补丁/探测脚本，用后即弃）
+.tmp/
+
+# .zcode 工具数据（plans 等），同 .claude 性质不入库
+.zcode/

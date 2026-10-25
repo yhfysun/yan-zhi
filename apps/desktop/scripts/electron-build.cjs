@@ -158,6 +158,23 @@ if (!eb) {
 }
 console.log(`[electron-build] 启动方式: ${eb.via}`);
 
+// ★ 内置插件包（mode-pluginization P1）：yml 的 extraResources 整体拷 apps/server/plugins/builtin，
+//   目录缺失 = 打包直接失败。单档命令链（electron:build:*）不经 build-all-editions，
+//   这里幂等补一次构建（build-plugins.mjs 自身增量：未变文件不重写）。YZ_SKIP_PLUGIN_BUILD=1 跳过。
+if (!process.env.YZ_SKIP_PLUGIN_BUILD) {
+  const repoRoot = path.resolve(desktopDir, '..', '..');
+  const { spawnSync } = require('child_process');
+  const r = spawnSync(
+    process.execPath,
+    [path.join(desktopDir, 'scripts', 'build-plugins.mjs'), '--all', '--out=' + path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin')],
+    { stdio: 'inherit' },
+  );
+  if (r.status !== 0) {
+    console.error('[electron-build] 内置插件包构建失败（build-plugins.mjs）');
+    process.exit(1);
+  }
+}
+
 const args = [...eb.argv, '--config', config, ...extraArgs, '--publish', 'never'];
 const child = spawn(eb.cmd, args, {
   stdio: 'inherit',

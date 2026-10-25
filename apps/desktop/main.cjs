@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, Notification, screen: electronScreen, safeStorage } = require('electron');
+const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, Notification, screen: electronScreen, safeStorage, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -25,6 +25,11 @@ const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
 // 收藏夹：只读解析本机 Chrome/Edge 书签文件（纯函数模块，有单测）
 const { discoverChromeBookmarks } = require('./bookmarks-import.cjs');
+// 插件前端包装载协议（mode-pluginization P0）：yz://shared/**（共享依赖 shim）与
+// yz://plugin/<id>/**（插件前端 bundle）。纯函数解析器有单测（test/plugin-protocol.test.cjs）。
+const { YZ_SCHEME_PRIVILEGES, pluginDirCandidates, resolveYzTarget } = require('./plugin-protocol.cjs');
+// ★ privileged scheme 注册必须在 app ready 之前（模块顶层即执行）。
+protocol.registerSchemesAsPrivileged([YZ_SCHEME_PRIVILEGES]);
 
 let mainWindow = null;
 /**
@@ -7984,6 +7989,40 @@ app.whenReady().then(async () => {
   //   抢锁失败直接返回，不再做任何启动动作。
   if (!gotTheLock) return;
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
+
+  // ── 插件前端包装载协议 yz://（mode-pluginization P0）────────────────
+  //   渲染层经动态 import('yz://plugin/<id>/frontend/index.mjs') 装载插件前端 bundle；
+  //   共享依赖（vue/element-plus 等）经 yz://shared/*.mjs shim 委托回 window.__YZ_HOST__，
+  //   全程单实例、插件包零复制。file:// 源的跨源模块请求靠响应里的 ACAO:* 放行。
+  protocol.handle('yz', async (request) => {
+    try {
+      const target = resolveYzTarget(request.url, {
+        mainDir: __dirname,
+        resourcesPath: process.resourcesPath,
+        isPackaged: app.isPackaged,
+        shimsDir: path.join(__dirname, 'host-shims'),
+      });
+      if (!target.ok) return new Response(target.status === 400 ? 'bad request' : 'not found', { status: target.status });
+      const data = await fsp.readFile(target.filePath);
+      return new Response(data, {
+        headers: {
+          'content-type': target.mime,
+          'access-control-allow-origin': '*',
+          'cache-control': 'no-cache',
+        },
+      });
+    } catch (e) {
+      console.warn('[yz-protocol] 服务失败:', request.url, e && e.message);
+      return new Response('error', { status: 500 });
+    }
+  });
+  if (EXTENSIONS_ENABLED) {
+    // 触发一次目录解析，dev/打包布局错误在启动日志里尽早暴露（不影响启动）
+    try {
+      const roots = pluginDirCandidates({ mainDir: __dirname, resourcesPath: process.resourcesPath, isPackaged: app.isPackaged });
+      console.log('[yz-protocol] 插件目录: builtin=' + roots.builtin + ' installed=' + roots.installed);
+    } catch { /* 纯日志 */ }
+  }
 
   // ── 渲染进程心跳看门狗（2026-10-19，阈值 2026-10-24 调整）──────────────
   //   实测：长任务/长会话会把渲染进程主线程占死，界面点击完全无响应（CDP 都进不去）。

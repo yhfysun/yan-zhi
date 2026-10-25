@@ -11,6 +11,7 @@ import { ensureToolsInitialized } from './mcp/index.js';
 import { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from './constants.js';
 import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
+import { scanBuiltinPackages } from './plugins/builtin-packages.js';
 import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicenseCode, verifyLicenseCached } from './license-guard.js';
 import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
 import { handleChatUpgrade } from './chat-ws.js';
@@ -783,31 +784,59 @@ try {
 // 插件系统初始化：恢复已启用插件、同步工具到 ToolRegistry、挂载插件后端路由
 (async () => {
   try {
+    // 插件宿主桥注入（mode-pluginization P0）：插件包形态的后端入口经 globalThis.__YZ_SERVER_HOST__
+    // 取宿主能力；源码注册形态（现状全部内置插件）不走 globalThis，提前注入无害。
+    const { injectServerHostBridge } = await import('./host-bridge.js');
+    injectServerHostBridge();
     const mgr = getPluginManager(nodeAdapter);
     await mgr.init();
-    // 注册内置插件
-    await mgr.registerBuiltin(gitExplorerManifest, gitExplorerModule);
+    // 注册内置插件。mode-pluginization P1：git-explorer / skins 已有「预构建插件包」形态
+    // （build-plugins.mjs → plugins/builtin/<id>/），**包优先、源码兜底** ——
+    // 包缺失（未跑构建的 dev/CI）走源码注册，行为与历史完全一致。
+    const builtinPkgs = scanBuiltinPackages();
+    // 包优先、源码兜底的统一装载器（mode-pluginization P1/P2）
+    const registerPkgOrSource = async (id: string, source: () => Promise<void>): Promise<void> => {
+      const pkg = builtinPkgs.byId.get(id);
+      if (pkg) {
+        logger.info(`[plugin] ${id} 以内置插件包装载:`, pkg.packageDir);
+        await mgr.registerBuiltin(pkg.manifest, pkg.entryPath, true);
+        return;
+      }
+      await source();
+    };
+    await registerPkgOrSource('git-explorer', () => mgr.registerBuiltin(gitExplorerManifest, gitExplorerModule));
     // computer-use 高危权限（desktop-input）：产品口径为内置插件默认开启（用户仍可在插件管理页停用）
     // 移动端（MOBILE_MODE）无桌面输入环境，跳过注册避免运行时崩溃
     if (!process.env.MOBILE_MODE) {
-      await mgr.registerBuiltin(computerUseManifest, computerUseModule, true);
-      // remote-control 高危权限（desktop-input）：与 computer-use 同级的高危能力，
-      // 但涉及「被控端画面外发」，产品口径为**默认关闭**（用户在插件管理页显式开启）
-      await mgr.registerBuiltin(remoteControlManifest, remoteControlModule);
+      await registerPkgOrSource('computer-use', () => mgr.registerBuiltin(computerUseManifest, computerUseModule, true));
     }
-    // 内置皮肤包：纯声明式（contributes.themes + 静态壁纸），默认启用，设置→皮肤库切换
-    await registerBuiltinSkins();
+    // remote-control（2026-10-25 起移动端同样注册）：手机是「控制端」的重要形态 ——
+    // 看并操作桌面机只依赖 WS 信令 + REST（activate 期零桌面专属动作；C# 代理与剪贴板
+    // powershell 都是被控会话内**按需**拉起，移动端走不到那条路径）。
+    // 被控端（屏幕采集/输入注入/rc:* IPC）仍仅桌面可用 —— RemoteControlHost 无 electronAPI 自动跳过。
+    await registerPkgOrSource('remote-control', () => mgr.registerBuiltin(remoteControlManifest, remoteControlModule));
+    // 内置皮肤包：纯声明式（contributes.themes + 静态壁纸），默认启用，设置→皮肤库切换。
+    // 包形态 = skins 目录的 multi manifest（27 套各自注册，共享 noop 入口）；缺包回退源码注册。
+    const skinsPkg = builtinPkgs.multiPackages.find((p) => p.manifests.some((m) => typeof m.id === 'string' && m.id.startsWith('skin-')));
+    if (skinsPkg) {
+      for (const m of skinsPkg.manifests) {
+        await mgr.registerBuiltin(m, skinsPkg.entryPath, true);
+      }
+    } else {
+      await registerBuiltinSkins();
+    }
     // ops-shell 高危权限（remote-shell）：同上默认开启；移动端跳过
     if (!process.env.MOBILE_MODE) {
-      await mgr.registerBuiltin(opsShellManifest, opsShellModule, true);
+      await registerPkgOrSource('ops-shell', () => mgr.registerBuiltin(opsShellManifest, opsShellModule, true));
     // CICD 流水线插件：本地一键发布（打包→备份→上传→重启），复用 ops-shell SSH 连接
-    await mgr.registerBuiltin(cicdManifest, cicdModule, true);
+    // ★ 包形态自带一份 ops-shell 助手拷贝（连接池独立，凭据同源 plugin_storage —— P3 记录）
+    await registerPkgOrSource('cicd-pipeline', () => mgr.registerBuiltin(cicdManifest, cicdModule, true));
     // Java 开发套件：Maven/Gradle/Spring Boot/调试/测试/格式化/MyBatis
-    await mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true);
+    await registerPkgOrSource('java-suite', () => mgr.registerBuiltin(javaSuiteManifest, javaSuiteModule, true));
     // 安全工作台：授权范围内的侦察/扫描/审计（护栏：授权范围 + 危险动作黑名单 + 全量审计）
-    await mgr.registerBuiltin(secLabManifest, secLabModule, true);
+    await registerPkgOrSource('sec-lab', () => mgr.registerBuiltin(secLabManifest, secLabModule, true));
     // 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理；移动端跳过（同 ops/sec）
-    await mgr.registerBuiltin(shopOpsManifest, shopOpsModule, true);
+    await registerPkgOrSource('shop-ops', () => mgr.registerBuiltin(shopOpsManifest, shopOpsModule, true));
     }
     // 旧库一次性迁移：本版本起内置高危插件默认开启（新装库在 registerBuiltin 首次注册即启用；
     // 旧库已存在 disabled 行不会被动到），按标记只执行一次，之后用户停用状态永久尊重

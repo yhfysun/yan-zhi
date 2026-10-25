@@ -5,7 +5,8 @@ import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule } from '@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, basename, dirname, extname, relative } from 'node:path';
-import { runCmd } from '../services/exec-cmd.js';
+// ★ 宿主能力走宿主桥（mode-pluginization，见 computer-use.ts 同款注释）。
+import { runCmd } from '../host-bridge.js';
 
 export const JAVA_SUITE_ID = 'java-suite';
 

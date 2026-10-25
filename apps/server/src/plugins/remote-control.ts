@@ -17,8 +17,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { getPluginManager } from '@yan-zhi/core';
 import type { PluginManifest, PluginModule, PluginContext, PluginWebSocket } from '@yan-zhi/core';
-import { pushPluginAudit } from '../services/plugin-audit.js';
-import { isWithinRoot } from '../services/path-guard.js';
+// ★ 宿主能力走宿主桥（mode-pluginization，见 computer-use.ts 同款注释）。
+import { pushPluginAudit, isWithinRoot } from '../host-bridge.js';
 import { assertComboAllowed } from './cu-shared.js';
 import {
   RemoteControlAgent,

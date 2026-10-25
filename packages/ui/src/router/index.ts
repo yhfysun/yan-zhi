@@ -372,6 +372,13 @@ function markPluginRoutesSynced(): void {
 router.beforeEach(async (to) => {
   // 移动端重功能路由重定向到对话页，避免手动输 URL 进入
   if (isCapacitor && MOBILE_BLOCKED_PATHS.has(to.path)) {
+    // ★ 回 /chat 前必须把 activeMode 拨回 office（2026-10-25 真机空白根因）：
+    //   localStorage 恢复出被屏蔽的模式（如 dev，legacy yz:code:active 迁移）时，
+    //   下面「模式记忆」会把 /chat 再次弹回 /code → 本分支又弹回 /chat → 无限重定向，
+    //   vue-router 判定死循环并**中止导航**：内容区永远空白、route.name 落空 →
+    //   标题落到兜底「日常办公助手」、顶栏变成 App 级形态（真机截图全部吻合）。
+    //   先拨回 office，模式记忆便不再抢跳，环从源头断开。
+    if (activeMode.value !== 'office') setMode('office');
     return { path: '/chat' };
   }
   // 桌面端本地单机应用无登录概念：/login 直接回对话页
@@ -411,6 +418,12 @@ router.beforeEach(async (to) => {
   if (to.query?.window === 'conv' && activeMode.value !== 'office') {
     setMode('office');
   }
+  // ★ 移动端：恢复出的模式若落在屏蔽路径（dev/浏览器等，来自旧版本 localStorage 或
+  //   legacy yz:code:active 迁移），就地归位 office —— 否则 /chat 会以 dev 风味渲染
+  //   （代码欢迎页/代码输入框），而模式记忆又被上面第二道闸拦住，模式永远错位。
+  if (isCapacitor && activeMode.value !== 'office' && MOBILE_BLOCKED_PATHS.has(modeRoute(activeMode.value))) {
+    setMode('office');
+  }
   // 模式记忆（泛化）：停留在非办公模式时去了别的页面，再回「任务」应恢复该模式工作台。
   // 四模式是同一份工作上下文的四个视图，切换入口统一在顶栏模式下拉（原「任务」项）。
   if (
@@ -421,7 +434,10 @@ router.beforeEach(async (to) => {
     isModeAvailable(activeMode.value) &&
     // ★ 2026-10-16：目标模式路由还没注册时**不许**抢着重定向 —— 否则落点是空白页，
     //   而且会把每一次「回对话」都弹回同一个空白页（见 isModeRouteRegistered 注释）。
-    isModeRouteRegistered(activeMode.value)
+    isModeRouteRegistered(activeMode.value) &&
+    // ★ 2026-10-25：目标是移动端屏蔽路径（如 dev 的 /code）时不许跳 —— 与顶部屏蔽分支
+    //   构成死循环的另一半。setMode 兜底在屏蔽分支里，这里是第二道闸。
+    !(isCapacitor && MOBILE_BLOCKED_PATHS.has(modeRoute(activeMode.value)))
   ) {
     return { path: modeRoute(activeMode.value) };
   }

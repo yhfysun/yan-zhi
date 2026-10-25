@@ -12,16 +12,14 @@
 // 与 ops-shell 的复用关系：凭据加密（utils/crypto）、审计（services/plugin-audit）、
 // 生产标记判定（ops-shell-guard 的 isProductionTag）、插件存储用法全部照抄，不另发明一套。
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
-import { encrypt, decrypt } from '../utils/crypto.js';
-import { pushPluginAudit } from '../services/plugin-audit.js';
+// ★ 宿主能力走宿主桥（mode-pluginization P3）：宿主单例（db/crypto/audit/logger）禁止复制进插件包。
+import { encrypt, decrypt, pushPluginAudit, createLogger, db } from '../host-bridge.js';
 import { isProductionTag } from './ops-shell-guard.js';
 import { parseSpApiCreds, spApiCheck } from '../services/amazon-sp-api.js';
 import {
   credentialFieldsOf, logisticsClientOf, missingFields,
   type CredentialField, type LogisticsCredentials,
 } from '../services/logistics/index.js';
-import { createLogger } from '../services/logger.js';
-import { db } from '../db.js';
 import { initShopStore, __setDbForTest } from '../shop/store.js';
 import * as shopStore from '../shop/store.js';
 import { seedShopBusinessData } from '../shop/seed.js';
@@ -2166,6 +2164,11 @@ export const shopOpsManifest: PluginManifest = {
   //   （未确认 / 生产未额外批准一律拒绝执行），不依赖调用方自觉。
   permissions: ['network', 'shop-write'],
   contributes: {
+    // ★ 模式运行时化（P3）：模式定义随插件声明，前端动态合并
+    mode: {
+      key: 'shop', label: '店铺运营模式', icon: 'Shop', route: '/shop',
+      desktopOnly: true, fallbackAgent: 'a_builtin_shop_agent',
+    },
     tools: [
       'conn_list', 'conn_create', 'conn_update', 'conn_delete', 'conn_check',
       'shop_sp_api_check',

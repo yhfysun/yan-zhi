@@ -4,7 +4,7 @@
 // （桌面端底层 DPAPI/Keychain 加密）。该模块同时维护内存缓存，供同步的请求头构造读取。
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { api } from '../api/client';
+import { api, isCapacitor } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
 import { setLicensedModes } from './mode';
 import {
@@ -233,6 +233,16 @@ export const useLicenseStore = defineStore('license', () => {
       if (!restoreFromCache()) {
         verified.value = false;
         applyEdition(null);
+        // ★ 移动端（2026-10-25）：后端超时未就绪也放行进主界面 —— 内嵌后端起不来时，
+        //   弹授权页是死路（授权接口本身也不可达，「版本档位」永远"读取中"，实测截图）。
+        //   移动端是本地全量应用，授权门禁本就形同虚设（服务端 MOBILE_MODE 恒发全量档）；
+        //   宁可让用户看到会话页的降级/重试态，也不要一张永远激活不了的卡片。
+        //   后端恢复后 revalidateWhenBackendReady 会用真实校验覆盖这里。
+        if (isCapacitor) {
+          verified.value = true;
+          // modes 不带（undefined）—— 真校验到达前不让模式门禁按空清单误收敛
+          info.value = { valid: true, expireAt: null, mac: null, machineId: null, machineMac: '', machineIdLocal: '', identitySource: 'mobile', edition: 'pro', reason: 'mobile-backend-unreachable' };
+        }
       }
       void revalidateWhenBackendReady();
       return;

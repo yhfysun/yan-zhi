@@ -6,6 +6,7 @@ import 'element-plus/dist/index.css';
 import * as Icons from '@element-plus/icons-vue';
 import App from './App.vue';
 import { router } from '@yan-zhi/ui';
+import { initPluginHostBridge } from '@yan-zhi/ui';
 import { setPlatformAdapter, initSchema, seedBuiltinSkills, seedBuiltinPageCommands } from '@yan-zhi/core';
 import { localApiBase } from '@yan-zhi/shared';
 import { desktopAdapter } from './platform';
@@ -19,6 +20,11 @@ console.log(`[desktop] 实例: ${(window as any).electronAPI?.isDevInstance ? '�
 // ★ 基址随实例（生产 3001 / 开发 3002）—— 由 preload 下发，不写死。
 setPlatformAdapter({ ...desktopAdapter, llmProxyBase: `${localApiBase()}/llm` });
 console.log('[desktop] 平台适配器已注入');
+
+// 插件宿主桥（mode-pluginization）：任何插件前端装载之前必须挂好 window.__YZ_HOST__。
+// 桥本身只挂共享依赖命名空间与受控 api 白名单（store 为异步工厂），无需 pinia 就绪。
+initPluginHostBridge();
+console.log('[desktop] 插件宿主桥已挂载');
 
 // 初始化数据库 schema，完成后挂载 Vue 应用
 initSchema((sql) => desktopAdapter.db.exec(sql))

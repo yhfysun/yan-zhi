@@ -26,7 +26,10 @@ import type {
   RunStatus,
   BuildType,
 } from '@yan-zhi/shared';
-import { runCmd } from '../services/exec-cmd.js';
+// ★ 宿主能力走宿主桥（mode-pluginization P3）。ops-shell 的连接池助手保持直 import ——
+//   随包内复制一份（cicd 的发布流水线用自己的连接实例，与 ops-shell 运行页的池独立，
+//   凭据同源自 plugin_storage，功能不受影响；见 tasks.md P3 记录）。
+import { runCmd } from '../host-bridge.js';
 import { isProductionTag } from './ops-shell-guard.js';
 import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve, basename, dirname, relative } from 'node:path';

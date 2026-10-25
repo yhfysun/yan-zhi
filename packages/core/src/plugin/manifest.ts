@@ -29,5 +29,53 @@ export function validateManifest(m: unknown): PluginManifest {
       if (!VALID_PERMS.includes(p as PluginPermission)) throw new ManifestError(`未知权限: ${String(p)}`);
     }
   }
+  validateOptionalFields(o);
   return o as unknown as PluginManifest;
+}
+
+/** mode-pluginization 新增字段校验（全部可选，非法即抛——宁可拒绝安装也不带病运行） */
+function validateOptionalFields(o: Record<string, unknown>): void {
+  // engine：宿主兼容版本（semver range 简校验；安装时再做完整比对）
+  if (o.engine !== undefined) {
+    if (typeof o.engine !== 'string' || !/^(\^|~|>=?)?\d+\.\d+(\.\d+)?/.test(o.engine)) {
+      throw new ManifestError(`engine 必须为 semver range（如 '^0.1'），收到: ${String(o.engine)}`);
+    }
+  }
+  // ownedTables：插件自有表白名单（防 SQL 注入表名/越权摸主库）
+  if (o.ownedTables !== undefined) {
+    if (!Array.isArray(o.ownedTables)) throw new ManifestError('ownedTables 必须为数组');
+    for (const t of o.ownedTables) {
+      if (typeof t !== 'string' || !/^[a-z_][a-z0-9_]*$/.test(t)) {
+        throw new ManifestError(`ownedTables 表名非法: ${String(t)}`);
+      }
+    }
+  }
+  // ui：旧形态 string（兼容）；新形态对象 { entry }
+  if (o.ui !== undefined && typeof o.ui !== 'string') {
+    if (typeof o.ui !== 'object' || o.ui === null || Array.isArray(o.ui)) {
+      throw new ManifestError('ui 必须为字符串或 { entry } 对象');
+    }
+    const ui = o.ui as Record<string, unknown>;
+    if (ui.entry !== undefined && (typeof ui.entry !== 'string' || !ui.entry)) {
+      throw new ManifestError('ui.entry 必须为非空字符串');
+    }
+  }
+  // contributes.mode：模式声明（key 会进 conversation.mode 列与路由表，格式必须收紧）
+  const contributes = o.contributes as Record<string, unknown> | undefined;
+  const mode = contributes?.mode as Record<string, unknown> | undefined;
+  if (mode !== undefined) {
+    if (typeof mode !== 'object' || mode === null) throw new ManifestError('contributes.mode 必须为对象');
+    if (typeof mode.key !== 'string' || !/^[a-z][a-z0-9-]*$/.test(mode.key)) {
+      throw new ManifestError(`contributes.mode.key 必须为 kebab-case，收到: ${String(mode.key)}`);
+    }
+    if (typeof mode.route !== 'string' || !mode.route.startsWith('/')) {
+      throw new ManifestError('contributes.mode.route 必须为以 / 开头的路由');
+    }
+    if (mode.entry !== undefined && (typeof mode.entry !== 'string' || !mode.entry)) {
+      throw new ManifestError('contributes.mode.entry 必须为非空字符串');
+    }
+    if (mode.chatPlacement !== undefined && mode.chatPlacement !== 'center' && mode.chatPlacement !== 'side') {
+      throw new ManifestError("contributes.mode.chatPlacement 只允许 'center' | 'side'");
+    }
+  }
 }

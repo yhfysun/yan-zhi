@@ -70,6 +70,12 @@ files:
   # 版本档配置（scripts/set-edition.cjs 生成）：main.cjs 运行时读它拿构建档与预置码档。
   # ★ 漏登记 = 打包版读不到档位 → 落到兜底档（basic），且「阉割版只有办公」这条会静默失效。
   - edition.json
+  # ★★★ 插件前端包装载协议（mode-pluginization P0）：main.cjs require('./plugin-protocol.cjs')。
+  #   漏登记 = 打包版启动即崩（Cannot find module './plugin-protocol.cjs'）——同 instance.cjs 类坑。
+  - plugin-protocol.cjs
+  # 共享依赖 shim（scripts/generate-host-shims.mjs 生成，随包分发）：yz://shared/*.mjs 由
+  # protocol.handle 从 app.asar 内本目录读取。漏登记 = 插件前端装载全部 404。
+  - host-shims/**/*
   # ── 体积裁剪（2026-10-08 实测 asar 145.5MB / 14938 条目后定向排除）──
   # ★ sourcemap：仅调试用，运行时不加载。实测 3844 个文件共 **45MB**，
   #   占 asar 的 30%+（element-plus / lucide-vue-next / three 三家为主）。
@@ -85,6 +91,11 @@ files:
   - '!**/*.d.ts'
   - '!**/*.d.ts.map'
   # 合计实测可省 ≈54.5MB（asar 的 37.5%）。
+# ★ 语言包裁剪（与 lite/mac 一致，packaged-entry-modules.test.cjs 守门三份一致）：
+#   缺这段 = full/pro 档随包 Electron 全部语言包（实测 41MB）。
+electronLanguages:
+  - zh-CN
+  - en-US
 extraResources:
   - from: ../server/dist
     to: server/dist
@@ -96,6 +107,12 @@ extraResources:
       - '!**/*.d.ts'
   - from: ../server/assets
     to: server/assets
+  # ★★ 内置插件包（mode-pluginization P1）：build-all-editions 先经 build-plugins.mjs 生成
+  #   apps/server/plugins/builtin/<id>/，这里整体拷进包。运行时由 builtin-packages.ts 扫描
+  #   resources/server/dist/plugins/builtin 装载（包优先、源码兜底）。
+  #   P5 起改为按 --plugins 选择拷贝（未选插件的目录不进包）。
+  - from: ../server/plugins/builtin
+    to: server/dist/plugins/builtin
   # ★ 刻意**不打包** ../server/src（后端源码）。
   #   原先是随包的，但生产模式只运行 server/dist/... 的编译产物（见 main.cjs 的 serverPath），
   #   全仓没有任何代码读 resources/server/src —— 它随包等于把后端源码（含 license.ts 的

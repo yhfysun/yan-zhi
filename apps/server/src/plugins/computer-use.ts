@@ -9,10 +9,9 @@ import path from 'node:path';
 import { getPluginManager } from '@yan-zhi/core';
 import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
 import type { ShellAdapter } from '@yan-zhi/core';
-import { db } from '../db.js';
-import { pushPluginAudit } from '../services/plugin-audit.js';
-import { isWithinRoot } from '../services/path-guard.js';
-import { serverState } from '../state.js';
+// ★ 宿主能力一律走宿主桥（mode-pluginization）：直接 import '../db.js' 等会被
+//   build-plugins.mjs 连带把宿主单例复制进插件包（插件进程出现第二个 SQLite 实例）。
+import { db, pushPluginAudit, isWithinRoot, serverState } from '../host-bridge.js';
 import {
   OS_SETTINGS,
   SETTINGS_PAGES,

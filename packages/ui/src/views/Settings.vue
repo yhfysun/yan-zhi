@@ -633,7 +633,7 @@ const embedded = computed(() => props.embedded);
  * /settings 路由页与 SettingsDrawer 的 embedded 用法不受影响（pane 为空）。
  */
 const isPaneMode = computed(() => !!props.pane);
-import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled } from '@element-plus/icons-vue';
+import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
@@ -715,6 +715,9 @@ interface SettingsGroup { key: string; label: string; desc: string; icon: Compon
 const extensionsMode = ref<'on' | 'shadow' | 'off'>('on');
 const MOBILE_GROUPS_BASE: SettingsGroup[] = [
   { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩 · 快捷键', icon: Setting, tabs: [{ name: 'general', label: '通用' }, { name: 'shortcuts', label: '快捷键' }] },
+  // ★ 直达项（2026-10-25 用户反馈"埋太深没人找得到"）：不进子页，直接开 /remote 控制端。
+  //   enterMobileGroup 里对 key==='remote' 特判路由跳转；tabs 空数组仅满足类型（不会进入）。
+  { key: 'remote', label: '远程控制', desc: '用手机实时观看并操作你的电脑', icon: Monitor, tabs: [] },
   { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
   { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
   { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理 · 浏览器扩展', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }, { name: 'extensions', label: '扩展' }] },
@@ -725,7 +728,7 @@ const mobileGroups = computed<SettingsGroup[]>(() => {
   if (extensionsMode.value === 'on') return MOBILE_GROUPS_BASE;
   return MOBILE_GROUPS_BASE
     .map((g) => ({ ...g, tabs: g.tabs.filter((t) => t.name !== 'extensions') }))
-    .filter((g) => g.tabs.length > 0);
+    .filter((g) => g.key === 'remote' || g.tabs.length > 0);
 });
 const mobileGroup = ref<SettingsGroup | null>(null);
 /** 页面头标题：二级子页显示分组名，首层与桌面显示「设置」 */
@@ -733,6 +736,8 @@ const shellTitle = computed(() => (pageShell.value && mobileGroup.value ? mobile
 /** 二级子页的返回：先退回首层分组（页内层级），不离开 /settings；首层不传 → MobilePageShell 默认路由回退 */
 const mobileBackHandler = computed(() => (pageShell.value && mobileGroup.value ? exitMobileGroup : undefined));
 function enterMobileGroup(g: SettingsGroup) {
+  // ★ 直达项：远程控制不进子页，直接开 /remote（移动端 openRemotePage 应用内跳转）
+  if (g.key === 'remote') { openRemotePage(); return; }
   mobileGroup.value = g;
   tab.value = g.tabs[0].name;
 }
@@ -1487,6 +1492,12 @@ function openRemotePage() {
   const w = window as unknown as { electronAPI?: { childWindow?: { open?: (o: Record<string, unknown>) => Promise<unknown> } } };
   if (w.electronAPI?.childWindow?.open) {
     void w.electronAPI.childWindow.open({ key: 'remote-control', route: '/remote', width: 1100, height: 760 });
+    return;
+  }
+  // ★ 移动端（2026-10-25）：应用内跳转 —— Capacitor WebView 的 window.open('_blank')
+  //   不可靠（默认拦外部窗口），且 /remote 自带返回钮（history.back），直接推路由即可。
+  if (isCapacitor) {
+    void router.push('/remote');
     return;
   }
   const href = router?.resolve ? router.resolve({ path: '/remote' }).href : '/#/remote';

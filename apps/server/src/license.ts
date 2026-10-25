@@ -372,6 +372,20 @@ export function verifyLicenseCodeWithKey(
 ): VerifyResult {
   const { mac: machineMac, machineId: machineIdLocal, source: identitySource } = identity;
 
+  // ★ 移动端免激活（产品口径 2026-10-25，用户拍板）：移动端内置完整本地后端，
+  //   授权码体系（验签/机器绑定/预置码）是为桌面分发设计的 —— 移动包没有预置码文件，
+  //   自动激活必然失败 → 死路授权页（实测：App 停在「版本档位 读取中…」，且源码常量里的
+  //   预置码 2026-12-18 到期后桌面存量包也会踩到）。MOBILE_MODE 下跳过验签恒发全量档。
+  if (process.env.MOBILE_MODE) {
+    return {
+      valid: true, expireAt: null, mac: null, machineId: null,
+      machineMac, machineIdLocal, identitySource,
+      buildEdition: 'pro', edition: 'pro',
+      modes: [...EDITION_MODES.pro],
+      reason: 'mobile-full',
+    };
+  }
+
   // 早期失败分支（还没解析出 payload）用兜底档：此时 valid=false，前端会停在授权页，
   // modes 取什么都不会真的放行，取兜底档只是让返回结构统一，便于前端与排障。
   const earlyFail = (reason: string): VerifyResult => ({
