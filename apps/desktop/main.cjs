@@ -6299,7 +6299,9 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           return { closed: true };
       }
       case 'get_tabs': {
-        if (!isWebviewEngine()) return { tabs: [] };
+        // ★ panelVisible（2026-10-25 办公模式「浏览器现场」注入）：服务端提示词组装只消费本响应
+        //   （面板开合 + tab 清单一次拿全）。非 webview 引擎同样带出 —— 纯新增字段，旧调用方不受影响。
+        if (!isWebviewEngine()) return { tabs: [], panelVisible: webviewPanelVisible };
         const tabs2 = [];
         for (const [id, t] of webviewTabs) {
           const wc2 = guestWebContents(id);
@@ -6308,7 +6310,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           // ★ suspended（2026-10-19）：休眠 tab 无 wc，但 url 仍可读，agent 可据此判断页面还在。
           tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : (t.url || ''), title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview', agentOpened: t.agentOpened === true, active: id === activeTabId, suspended: t.suspended === true, loading: wc2 && typeof wc2.isLoading === 'function' ? !!wc2.isLoading() : false });
         }
-        return { tabs: tabs2, activeTabId };
+        return { tabs: tabs2, activeTabId, panelVisible: webviewPanelVisible };
       }
       // ========== C5 网络请求监听（桌面端用 performance API 轮询） ==========
       case 'wait_for_request': {

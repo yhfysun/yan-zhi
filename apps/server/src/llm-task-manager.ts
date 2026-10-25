@@ -32,6 +32,7 @@ import {
 } from './services/experience.js';
 // 安全经验库的注入闸门：只把**人工已批准**的条目拼进安全智能体的提示词（2026-10-17）
 import { isSecExperienceAgent, buildSecExperiencePromptSection } from './services/sec-experience-gate.js';
+import { loadBrowserFieldContext } from './services/browser-field.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
 import { insertSkillDraft } from './services/skill-draft-store.js';
 import { backendTaskPlan, backendTaskStep, loadPlanJson, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
@@ -3594,6 +3595,16 @@ async function runReActLoop(task: LlmTask, params: {
         if (ctx) systemPromptBuilt += '\n\n' + ctx;
       } catch { /* 现场注入失败不影响任务（模型仍可用 conn_list 自查） */ }
     }
+    // 浏览器现场注入（办公模式，2026-10-25）：预览面板开合 + 各 tab 的 URL/标题。
+    // ★ 与运维现场同型：只进系统提示词、每任务现算（面板开合 / tab 增删下轮即反映），
+    //   用户消息保持原话入库；桥不可用（web / 移动端 / 独立 server）自动不注入。
+    //   子智能体在 runSubAgentImpl 合流点按各自 spawn 时刻另行现拉。
+    if (resolveConversationMode(convId) === 'office') {
+      try {
+        const browserCtx = await loadBrowserFieldContext(convId);
+        if (browserCtx) systemPromptBuilt += '\n\n' + browserCtx;
+      } catch { /* 浏览器现场注入失败不影响任务（模型可用 browser_get_tabs 自查） */ }
+    }
     let toolsBuilt = params.tools !== undefined
       ? params.tools
       : buildToolsForBackend(params.agentId ?? null, userId, {
@@ -6914,7 +6925,13 @@ async function runSubAgentImpl(
   const systemPromptBase = agent.system_prompt || '你是一个智能助手。';
   // ★ 共享段注入（2026-10-18）：工作目录 / 项目规则 / 工程记忆约定 —— 见 buildSubAgentSharedSections 注释。
   //   接力总结（summarizeOnMaxSteps）与 ReAct 循环共用这一份，保证口径一致。
-  const systemPrompt = [systemPromptBase, buildSubAgentSharedSections(resolvedId, task.conversationId)]
+  // ★ 浏览器现场（2026-10-25）：办公模式下子智能体（call_agent 静态子体与 spawn_subagent
+  //   虚拟子体同走本合流点）同样注入预览面板 / tab 快照 —— 按 spawn 时刻现拉保新鲜
+  //   （pageAgent 等浏览器型子体是主要消费者）。非办公模式不注入。
+  const browserField = resolveConversationMode(task.conversationId) === 'office'
+    ? await loadBrowserFieldContext(task.conversationId)
+    : '';
+  const systemPrompt = [systemPromptBase, buildSubAgentSharedSections(resolvedId, task.conversationId), browserField]
     .filter(Boolean).join('\n\n');
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);
