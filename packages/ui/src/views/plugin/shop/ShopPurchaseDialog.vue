@@ -12,7 +12,7 @@
     </p>
 
     <!-- 已创建的采购单 -->
-    <el-table v-if="existing.length" :data="existing" size="small" style="margin-bottom: 10px;">
+    <el-table v-if="existing.length && !isMobile" :data="existing" size="small" style="margin-bottom: 10px;">
       <el-table-column prop="sku" label="SKU" width="120" />
       <el-table-column label="货源" min-width="170" show-overflow-tooltip>
         <template #default="{ row }">
@@ -40,11 +40,32 @@
         </template>
       </el-table-column>
     </el-table>
-    <p v-else class="shop-hint-line">该订单还没有采购单。下面按订单明细生成采购计划（货源默认取商品的 1688 链接/货号）。</p>
+    <!-- ★ 窄屏采购单卡片（§3：操作列 210px 塞 5 按钮 → 卡片动作行） -->
+    <div v-else-if="isMobile && existing.length" class="shop-mcard-list" style="margin-bottom: 10px;">
+      <div v-for="row in existing" :key="row.id" class="shop-mcard">
+        <div class="shop-mcard-head">
+          <span class="shop-mono shop-mcard-sku">{{ row.sku }}</span>
+          <el-tag size="small" effect="plain" :type="statusMeta(row.status).tag">{{ statusMeta(row.status).label }}</el-tag>
+        </div>
+        <div class="shop-mcard-meta">
+          <span>×{{ row.qty }}</span>
+          <span><b>{{ money(row.unitCostCents) }}</b>/件</span>
+          <a v-if="row.offerRef" :href="row.offerRef" target="_blank" rel="noreferrer noopener" style="word-break: break-all;">货源链接</a>
+        </div>
+        <div class="shop-mcard-actions">
+          <el-button size="small" type="primary" plain @click="go1688(row)">去 1688</el-button>
+          <el-button size="small" :disabled="row.status === 'ordered' || row.status === 'paid'" @click="setStatus(row, 'ordered')">已下单</el-button>
+          <el-button size="small" :disabled="row.status === 'paid'" @click="setStatus(row, 'paid')">已付款</el-button>
+          <el-button size="small" @click="setStatus(row, 'received')">已收货</el-button>
+          <el-button size="small" type="danger" plain @click="setStatus(row, 'cancelled')">取消</el-button>
+        </div>
+      </div>
+    </div>
+    <p v-if="!existing.length" class="shop-hint-line">该订单还没有采购单。下面按订单明细生成采购计划（货源默认取商品的 1688 链接/货号）。</p>
 
     <!-- 创建采购单 -->
     <template v-if="!existing.length">
-      <el-table :data="rows" size="small">
+      <el-table v-if="!isMobile" :data="rows" size="small">
         <el-table-column prop="sku" label="SKU" width="110" />
         <el-table-column label="货源（1688 链接/货号）" min-width="190">
           <template #default="{ row }">
@@ -62,6 +83,21 @@
           </template>
         </el-table-column>
       </el-table>
+      <!-- ★ 窄屏创建表单卡片化：表单型表格窄屏逐字段堆叠 -->
+      <div v-else class="shop-mcard-list">
+        <div v-for="(row, i) in rows" :key="i" class="shop-mcard">
+          <div class="shop-mcard-head">
+            <span class="shop-mono shop-mcard-sku">{{ row.sku }}</span>
+          </div>
+          <el-input v-model="row.offerRef" size="small" placeholder="货源（1688 链接/货号）" />
+          <div class="shop-mcard-meta" style="gap: 10px;">
+            <span>数量</span>
+            <el-input-number v-model="row.qty" size="small" :min="1" :step="1" controls-position="right" style="width: 120px;" />
+            <span>成本/件</span>
+            <el-input-number v-model="row.costYuan" size="small" :min="0" :precision="2" :step="1" controls-position="right" style="width: 120px;" />
+          </div>
+        </div>
+      </div>
       <p v-if="isProduction" style="margin-top: 10px;">
         <el-checkbox v-model="approveProduction">生产店铺：我已核对并批准创建采购单</el-checkbox>
       </p>
@@ -78,6 +114,7 @@
 // 无货源采购：按订单明细创建采购单、推进状态、跳转 1688（付款人工）。
 import { computed, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
+import { useIsMobile } from '../../../composables/useIsMobile';
 import { useChatStore } from '../../../stores/chat';
 import type { ShopConnection } from '../shopSession';
 import {
@@ -96,6 +133,7 @@ const emit = defineEmits<{
   (e: 'saved'): void;
 }>();
 
+const isMobile = useIsMobile();
 const chatStore = useChatStore();
 const busy = ref(false);
 const approveProduction = ref(false);

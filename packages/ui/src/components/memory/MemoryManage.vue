@@ -152,7 +152,7 @@
         :image-size="80"
       />
       <el-table
-        v-else
+        v-else-if="!isMobile"
         :data="store.rows"
         row-key="id"
         size="small"
@@ -209,6 +209,24 @@
           </template>
         </el-table-column>
       </el-table>
+      <!-- ★ 窄屏记忆卡片（§3）：6 列表格最小 ~930px，抽屉内容列必横滚 -->
+      <div v-else class="mm-card-list">
+        <div v-for="row in store.rows" :key="row.id" class="mm-card">
+          <div class="mm-card-content">{{ truncate(row.content, 160) }}</div>
+          <div v-if="parseTags(row.tags_json).length" class="mm-card-tags">
+            <el-tag v-for="t in parseTags(row.tags_json)" :key="t" size="small" type="info" effect="plain">{{ t }}</el-tag>
+          </div>
+          <div class="mm-card-meta">
+            <span>{{ formatTime(row.last_used_at || row.created_at) }}</span>
+            <span>用过 {{ (row as any).use_count ?? 0 }} 次</span>
+            <span v-if="row.agent_id">{{ agentName(row.agent_id) }}</span>
+          </div>
+          <div class="mm-card-actions">
+            <el-button size="small" @click="startEdit(row)">编辑</el-button>
+            <el-button size="small" type="danger" plain @click="removeRow(row)">删除</el-button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 分页 -->
@@ -232,9 +250,11 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMemoryStore, useAgentStore } from '../../stores';
 import type { MemoryDimension, MemoryRow } from '../../stores/memory';
 import FormDialog from '../FormDialog.vue';
+import { useIsMobile } from '../../composables/useIsMobile';
 
 const store = useMemoryStore();
 const agentStore = useAgentStore();
+const isMobile = useIsMobile();
 
 const dimension = ref<MemoryDimension>('profile');
 const agentFilter = ref<string>('');
@@ -668,4 +688,18 @@ onMounted(async () => {
     max-width: 100%;
   }
 }
+</style>
+<style scoped>
+/* ★ 窄屏记忆卡片（§3 表格卡片化） */
+.mm-card-list { display: flex; flex-direction: column; gap: 10px; }
+.mm-card {
+  border: 1px solid var(--glass-border, #e7e4dc); border-radius: 10px;
+  padding: 10px 12px; background: var(--glass-bg, rgba(255, 255, 255, 0.6));
+  display: flex; flex-direction: column; gap: 8px;
+}
+.mm-card-content { font-size: 13px; line-height: 1.5; word-break: break-word; white-space: pre-wrap; }
+.mm-card-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.mm-card-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--color-text-secondary); }
+.mm-card-actions { display: flex; gap: 6px; }
+.mm-card-actions .el-button { margin-left: 0; }
 </style>

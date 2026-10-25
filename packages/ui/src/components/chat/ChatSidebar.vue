@@ -480,6 +480,24 @@
     @select="onConvSheetSelect"
   />
 
+  <!-- ★ 移动端：空间行动作面板 —— 与任务行同形态（此前只有定位菜单，触屏上 hover 子菜单/窄屏定位都有问题） -->
+  <ActionSheet
+    :visible="isTouchShell && !!spaceMenuTarget"
+    :title="spaceMenuTarget?.space?.name || '空间操作'"
+    :actions="spaceSheetActions"
+    @close="closeSpaceMenu()"
+    @select="onSpaceSheetSelect"
+  />
+
+  <!-- ★ 移动端：任务树空白区动作面板（新建任务/新建空间/批量管理） -->
+  <ActionSheet
+    :visible="isTouchShell && treeMenu.visible"
+    title="任务树操作"
+    :actions="treeSheetActions"
+    @close="closeTreeMenu()"
+    @select="onTreeSheetSelect"
+  />
+
   <!-- 新建/编辑空间：统一 FormDialog（取消/保存底栏由组件默认渲染） -->
   <FormDialog
     v-model="showSpaceEdit"
@@ -594,7 +612,7 @@
   </el-dialog>
 
   <Teleport to="body">
-<ul v-if="spaceMenuTarget" ref="spaceMenuEl" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
+<ul v-if="spaceMenuTarget && !isTouchShell" ref="spaceMenuEl" class="ctx-menu" :style="{ top: spaceMenuTarget.y + 'px', left: spaceMenuTarget.x + 'px' }" @click.stop>
     <li @click="openSpaceEdit(spaceMenuTarget.space); closeSpaceMenu()">
       <el-icon><EditPen /></el-icon>{{ spaceMenuTarget.space.taskType ? '更改任务模式' : '设置任务模式' }}
     </li>
@@ -627,7 +645,7 @@
 
   <!-- 会话树空白区右键菜单 -->
   <Teleport to="body">
-<ul v-if="treeMenu.visible" ref="treeMenuEl" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
+<ul v-if="treeMenu.visible && !isTouchShell" ref="treeMenuEl" class="ctx-menu" :style="{ top: treeMenu.y + 'px', left: treeMenu.x + 'px' }">
     <li @click="toggleBatchMode(); closeTreeMenu()">
       <el-icon><Tools /></el-icon>{{ batchMode ? '退出批量模式' : '批量管理' }}
     </li>
@@ -788,6 +806,55 @@ function onConvSheetSelect(a: ActionSheetAction) {
   else if (a.key === 'move:null') rows.moveTo(c, null);
   else if (a.key.startsWith('move:')) rows.moveTo(c, a.key.slice(5));
   else if (a.key === 'delete') rows.remove(c);
+}
+
+// ===== 移动端：空间行动作面板（与桌面右键菜单同项）=====
+const spaceSheetActions = computed<ActionSheetAction[]>(() => {
+  const sp = spaceMenuTarget.value?.space;
+  if (!sp) return [];
+  const list: ActionSheetAction[] = [
+    { key: 'mode', label: sp.taskType ? '更改任务模式' : '设置任务模式' },
+  ];
+  if (isParentTaskType(sp.taskType)) {
+    list.push({ key: 'sync-subdirs', label: '同步子目录' });
+    list.push({ key: 'new-subdir', label: '新建子目录' });
+  }
+  list.push(
+    { key: 'open-dir', label: '打开目录' },
+    { key: 'memory', label: '空间记忆' },
+    { key: 'new-space', label: '新建空间' },
+    { key: 'archive-all', label: '全部归档' },
+    { key: 'delete', label: '删除空间', danger: true },
+  );
+  return list;
+});
+
+function onSpaceSheetSelect(a: ActionSheetAction) {
+  const sp = spaceMenuTarget.value?.space;
+  closeSpaceMenu();
+  if (!sp) return;
+  if (a.key === 'mode') openSpaceEdit(sp);
+  else if (a.key === 'sync-subdirs') syncSpaceSubdirsAction(sp);
+  else if (a.key === 'new-subdir') openSpaceCreate(sp.id);
+  else if (a.key === 'open-dir') openPathInSystem(sp.dirPath, true);
+  else if (a.key === 'memory') openSpaceMemory(sp);
+  else if (a.key === 'new-space') treeMenuNewSpace();
+  else if (a.key === 'archive-all') archiveAllInSpace(sp);
+  else if (a.key === 'delete') deleteSpaceConfirm(sp);
+}
+
+// ===== 移动端：任务树空白区动作面板 =====
+const treeSheetActions = computed<ActionSheetAction[]>(() => [
+  { key: 'batch', label: batchMode.value ? '退出批量模式' : '批量管理' },
+  { key: 'new-task', label: '新建任务' },
+  { key: 'new-space', label: '新建空间' },
+]);
+
+function onTreeSheetSelect(a: ActionSheetAction) {
+  closeTreeMenu();
+  if (a.key === 'batch') toggleBatchMode();
+  else if (a.key === 'new-task') treeMenuNewTask();
+  else if (a.key === 'new-space') treeMenuNewSpace();
 }
 
 /**

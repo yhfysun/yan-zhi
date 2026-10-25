@@ -232,6 +232,7 @@ import {
   Check, WarningFilled, DArrowLeft, DArrowRight, FullScreen, ScaleToOriginal,
 } from '@element-plus/icons-vue';
 import { useGitStore } from '../../stores/git';
+import { useIsMobile } from '../../composables/useIsMobile';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -259,7 +260,8 @@ const versions = ref<{ base: string; ours: string; theirs: string }>({ base: '',
 const result = ref('');
 const resolved = ref<Record<string, boolean>>({});
 const resolvedCount = computed(() => Object.values(resolved.value).filter(Boolean).length);
-const fullscreen = ref(false);
+// ★ 窄屏默认全屏：1240px 壳钳进 375px 后三向对比没法用（现有全屏按钮用户得先找到它）
+const fullscreen = ref(useIsMobile().value);
 const pane = ref<'merge' | 'result'>('merge');
 /** 逐块选择：key = 改动组序号 → 取值来源 */
 const choices = ref<Record<number, 'left' | 'right' | 'both'>>({});

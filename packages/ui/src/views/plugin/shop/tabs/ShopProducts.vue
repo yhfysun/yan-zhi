@@ -57,7 +57,7 @@
     </p>
 
     <el-table
-      v-if="filtered.length"
+      v-if="filtered.length && !isMobile"
       :data="filtered"
       size="small"
       @selection-change="(rows: BizProduct[]) => (selected = rows)"
@@ -118,6 +118,35 @@
         </template>
       </el-table-column>
     </el-table>
+    <!-- ★ 窄屏卡片列表：11 列表格（~1150px）在手机没法用；卡片只保留决策字段 + 全部行操作。
+         批量选择依赖表格勾选列，移动端不出现（工具栏批量按钮随 selected 为空自动隐藏）。 -->
+    <div v-else-if="isMobile && filtered.length" class="shop-mcard-list">
+      <div v-for="row in filtered" :key="row.id" class="shop-mcard">
+        <div class="shop-mcard-head">
+          <span class="shop-mono shop-mcard-sku">{{ row.sku }}</span>
+          <el-tag size="small" effect="plain" :type="listingMeta(row.listingStatus).tag">
+            {{ listingMeta(row.listingStatus).label }}
+          </el-tag>
+        </div>
+        <div class="shop-mcard-title">{{ row.title }}</div>
+        <div class="shop-mcard-meta">
+          <span>售价 <b>{{ money(row.priceCents, row.currency) }}</b></span>
+          <span :class="{ 'shop-warn-line': row.priceCents - row.costCents < 0 }">毛利 {{ money(row.priceCents - row.costCents, row.currency) }}</span>
+          <span v-if="row.supplyMode === 'dropship'" class="shop-na">不持库存</span>
+          <span v-else :class="{ 'shop-warn-line': row.stock <= row.safetyStock }">库存 {{ row.stock }}</span>
+          <el-tag v-if="syncStatusOf(row.attrs) === 'synced'" size="small" type="success" effect="plain">已同步</el-tag>
+          <el-tag v-else-if="syncStatusOf(row.attrs) === 'failed'" size="small" type="danger" effect="plain">同步失败</el-tag>
+        </div>
+        <div class="shop-mcard-actions">
+          <el-button size="small" @click="toggleListing(row)">{{ row.listingStatus === 'online' ? '下架' : '上架' }}</el-button>
+          <el-button size="small" @click="openPrice(row)">改价</el-button>
+          <el-button v-if="row.supplyMode !== 'dropship'" size="small" @click="openStock(row)">改库存</el-button>
+          <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button v-if="apiReady" size="small" type="primary" plain @click="openSync(row)">同步</el-button>
+          <el-button size="small" type="danger" plain @click="remove(row)">删除</el-button>
+        </div>
+      </div>
+    </div>
     <div v-else class="shop-placeholder">
       <p v-if="bizLoading">正在读取商品…</p>
       <p v-else-if="bizError">{{ bizError }}</p>
@@ -240,6 +269,7 @@ import { computed, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import ShopProductDrawer from '../ShopProductDrawer.vue';
 import { shopPlatforms, type ShopConnection } from '../../shopSession';
+import { useIsMobile } from '../../../../composables/useIsMobile';
 import {
   bizProducts, bizLoading, bizError, bizLastSummary,
   money, fmtTime, LISTING_STATUS_META,
@@ -254,6 +284,7 @@ const props = defineProps<{ shop: ShopConnection | null }>();
 const search = ref('');
 const status = ref('');
 const selected = ref<BizProduct[]>([]);
+const isMobile = useIsMobile();
 const isDropship = computed(() => (props.shop?.supplyMode ?? 'stocked') === 'dropship');
 const isProduction = computed(() => (props.shop?.shopType ?? (props.shop?.isProduction ? 'production' : 'test')) === 'production');
 const apiCaps = computed(() => shopPlatforms.value.find((p) => p.id === props.shop?.platform)?.apiCapabilities ?? []);
@@ -512,3 +543,4 @@ async function submitSync(): Promise<void> {
   }
 }
 </script>
+

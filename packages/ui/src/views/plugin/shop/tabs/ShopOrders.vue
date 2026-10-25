@@ -1,7 +1,12 @@
 <template>
   <div class="shop-tab-body">
     <div class="shop-tab-toolbar">
-      <el-radio-group v-model="status" size="small">
+      <!-- ★ 窄屏状态筛选改下拉：radio-button 7 个不可换行被裁切（全局兜底只管 wrap，宽度仍不够） -->
+      <el-select v-if="isMobile" v-model="status" size="small" style="width: 150px;">
+        <el-option label="全部" value="" />
+        <el-option v-for="s in statuses" :key="s" :value="s" :label="`${ORDER_STATUS_META[s].label}（${countOf(s)}）`" />
+      </el-select>
+      <el-radio-group v-else v-model="status" size="small">
         <el-radio-button value="">全部（{{ bizOrders.length }}）</el-radio-button>
         <el-radio-button v-for="s in statuses" :key="s" :value="s">
           {{ ORDER_STATUS_META[s].label }}（{{ countOf(s) }}）
@@ -13,7 +18,7 @@
       <el-button v-if="!isProduction" size="small" type="primary" plain @click="openMock()">＋ 模拟订单</el-button>
     </div>
 
-    <el-table v-if="filtered.length" :data="filtered" size="small">
+    <el-table v-if="filtered.length && !isMobile" :data="filtered" size="small">
       <el-table-column prop="orderNo" label="订单号" width="150">
         <template #default="{ row }"><span class="shop-mono">{{ row.orderNo }}</span></template>
       </el-table-column>
@@ -61,6 +66,28 @@
         </template>
       </el-table-column>
     </el-table>
+    <!-- ★ 窄屏订单卡片（§3）：订单表 ~1020px 在手机不可用；待发货/采购中的订单保留全部行操作 -->
+    <div v-else-if="isMobile && filtered.length" class="shop-mcard-list">
+      <div v-for="row in filtered" :key="row.id" class="shop-mcard">
+        <div class="shop-mcard-head">
+          <span class="shop-mono shop-mcard-sku">{{ row.orderNo }}</span>
+          <el-tag size="small" effect="plain" :type="orderMeta(row.status).tag">{{ orderMeta(row.status).label }}</el-tag>
+        </div>
+        <div class="shop-mcard-title">{{ (row.items || []).map((i: BizOrderItem) => `${i.title} ×${i.qty}`).join('；') || '—' }}</div>
+        <div class="shop-mcard-meta">
+          <span>买家 {{ row.buyer || '—' }}</span>
+          <span><b>{{ money(row.amountCents, row.currency) }}</b></span>
+          <el-tag v-if="syncStatusOf(row.attrs) === 'synced'" size="small" type="success" effect="plain">已同步</el-tag>
+          <el-tag v-else-if="syncStatusOf(row.attrs) === 'failed'" size="small" type="danger" effect="plain">同步失败</el-tag>
+          <span>{{ fmtTime(row.createdAt) }}</span>
+        </div>
+        <div v-if="row.status === 'paid' || row.status === 'sourcing'" class="shop-mcard-actions">
+          <el-button v-if="isDropship && row.status === 'paid'" size="small" type="primary" plain @click="markSourced(row)">标记已采购</el-button>
+          <el-button v-if="isDropship" size="small" type="warning" plain @click="openPurchase(row)">采购</el-button>
+          <el-button size="small" @click="openShip(row)">发货</el-button>
+        </div>
+      </div>
+    </div>
     <div v-else class="shop-placeholder">
       <p v-if="bizLoading">正在读取订单…</p>
       <p v-else-if="bizError">{{ bizError }}</p>
@@ -123,6 +150,7 @@ import { computed, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import ShopShipDialog from '../ShopShipDialog.vue';
 import ShopPurchaseDialog from '../ShopPurchaseDialog.vue';
+import { useIsMobile } from '../../../../composables/useIsMobile';
 import { shopPlatforms, type ShopConnection } from '../../shopSession';
 import {
   bizOrders, bizProducts, bizLoading, bizError, bizLastSummary,
@@ -136,6 +164,7 @@ const props = defineProps<{ shop: ShopConnection | null }>();
 const statuses: OrderStatus[] = ['pending', 'paid', 'sourcing', 'shipped', 'completed', 'refunded'];
 const status = ref('');
 const search = ref('');
+const isMobile = useIsMobile();
 const isDropship = computed(() => (props.shop?.supplyMode ?? 'stocked') === 'dropship');
 const isProduction = computed(() => (props.shop?.shopType ?? (props.shop?.isProduction ? 'production' : 'test')) === 'production');
 const apiCaps = computed(() => shopPlatforms.value.find((p) => p.id === props.shop?.platform)?.apiCapabilities ?? []);

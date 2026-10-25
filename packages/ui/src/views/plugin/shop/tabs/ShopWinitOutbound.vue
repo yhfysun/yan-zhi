@@ -28,13 +28,13 @@
 
         <el-divider content-position="left">收件人</el-divider>
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="姓名" required><el-input v-model="form.recipientName" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="电话" required><el-input v-model="form.recipientPhone" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="国家" required><el-input v-model="form.countryCode" placeholder="US / DE / GB" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="省/州"><el-input v-model="form.province" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="城市" required><el-input v-model="form.city" /></el-form-item></el-col>
-          <el-col :span="16"><el-form-item label="地址1" required><el-input v-model="form.address1" /></el-form-item></el-col>
-          <el-col :span="8"><el-form-item label="邮编" required><el-input v-model="form.postalCode" /></el-form-item></el-col>
+          <el-col :span="12" :xs="24"><el-form-item label="姓名" required><el-input v-model="form.recipientName" /></el-form-item></el-col>
+          <el-col :span="12" :xs="24"><el-form-item label="电话" required><el-input v-model="form.recipientPhone" /></el-form-item></el-col>
+          <el-col :span="8" :xs="24"><el-form-item label="国家" required><el-input v-model="form.countryCode" placeholder="US / DE / GB" /></el-form-item></el-col>
+          <el-col :span="8" :xs="24"><el-form-item label="省/州"><el-input v-model="form.province" /></el-form-item></el-col>
+          <el-col :span="8" :xs="24"><el-form-item label="城市" required><el-input v-model="form.city" /></el-form-item></el-col>
+          <el-col :span="16" :xs="24"><el-form-item label="地址1" required><el-input v-model="form.address1" /></el-form-item></el-col>
+          <el-col :span="8" :xs="24"><el-form-item label="邮编" required><el-input v-model="form.postalCode" /></el-form-item></el-col>
           <el-col :span="24"><el-form-item label="地址2"><el-input v-model="form.address2" placeholder="选填：门牌/单元" /></el-form-item></el-col>
         </el-row>
 
