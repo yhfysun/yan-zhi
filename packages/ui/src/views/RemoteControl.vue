@@ -19,6 +19,7 @@
           <button class="rc-btn rc-btn-primary" :disabled="pairing || !form.code.trim()" @click="pair">
             {{ pairing ? '配对中…' : '连接' }}
           </button>
+          <button class="rc-btn" :disabled="pairing" @click="startScan">📷 扫码连接</button>
           <div class="rc-hint">首次连接需要在被控端电脑上点击确认；可勾选「信任此设备」后免确认直连。</div>
           <div class="rc-hint">跨公网：这里填被控端的公网地址（端口需放行或走内网穿透），并在被控端插件设置开启「允许非内网配对」。</div>
         </template>
@@ -31,6 +32,16 @@
           </div>
           <button class="rc-btn" @click="abortPair">取消</button>
         </template>
+      </div>
+
+      <!-- 扫码浮层：摄像头取景解码（jsQR），对准被控端设置页二维码即可直达连接 -->
+      <div v-if="scanning" class="rc-scan" @click.self="stopScan">
+        <div class="rc-scan-box">
+          <video ref="scanVideoRef" class="rc-scan-video" autoplay playsinline muted></video>
+          <div class="rc-scan-tip">对准被控端「设置 → 局域网」的二维码</div>
+          <div v-if="scanError" class="rc-scan-err">{{ scanError }}</div>
+          <button class="rc-btn" @click="stopScan">取消</button>
+        </div>
       </div>
     </div>
 
@@ -157,9 +168,12 @@
  *   显式 left/top/width/height），toScreen 全程用 displayedRect 换算 —— 不依赖
  *   getBoundingClientRect 与 object-fit 的组合行为，缩放/平移/黑边下都精确。
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import type { CSSProperties } from 'vue';
 import { ElMessage } from 'element-plus';
+import jsQR from 'jsqr';
+import { parseRcScanPayload } from '../utils/rcScan';
 
 type Phase = 'setup' | 'pending' | 'live' | 'ended';
 interface ScreenRect { x: number; y: number; w: number; h: number }
@@ -211,6 +225,7 @@ const statusText = computed(() => {
 const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '1:1' : '适应窗口'));
 
 const form = reactive({ host: window.location.origin, code: '' });
+const route = useRoute();
 const stageRef = ref<HTMLElement>();
 const videoRef = ref<HTMLVideoElement>();
 const canvasRef = ref<HTMLCanvasElement>();
@@ -422,6 +437,73 @@ async function pair(): Promise<void> {
 function abortPair(): void {
   cleanup();
   phase.value = 'setup';
+}
+
+// ---- 扫码连接（jsQR 摄像头解码；载荷解析见 utils/rcScan.ts）----
+// 被控端二维码 = http://ip:port/remote?code=授权码：系统相机扫 → 打开本页自动连接；
+// 本页「扫码连接」按钮 → 摄像头取景反扫，双向都不用手敲地址和授权码。
+const scanning = ref(false);
+const scanError = ref('');
+const scanVideoRef = ref<HTMLVideoElement>();
+let scanStream: MediaStream | null = null;
+let scanTimer = 0;
+
+async function startScan(): Promise<void> {
+  scanError.value = '';
+  scanning.value = true;
+  await nextTick();
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch (e) {
+    scanError.value = `相机不可用：${(e as Error)?.message || e}。也可以用系统相机扫二维码（会直接打开本页并自动连接）。`;
+    return;
+  }
+  await nextTick();
+  const video = scanVideoRef.value;
+  if (!video) {
+    stopScan();
+    return;
+  }
+  video.srcObject = scanStream;
+  try { await video.play(); } catch { /* 个别浏览器需要手势，浮层里有取景画面即可 */ }
+  // 解码循环：降采样到 480 宽提帧率，250ms 一帧足够（二维码是静态的）
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  scanTimer = window.setInterval(() => {
+    if (!scanning.value || !video.videoWidth || !ctx) return;
+    const w = 480;
+    const h = Math.max(1, Math.round((video.videoHeight / video.videoWidth) * w));
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    const img = ctx.getImageData(0, 0, w, h);
+    const found = jsQR(img.data, w, h, { inversionAttempts: 'dontInvert' });
+    if (found?.data) onScanPayload(found.data);
+  }, 250);
+}
+
+function onScanPayload(text: string): void {
+  const t = parseRcScanPayload(text);
+  stopScan();
+  if (t.host) form.host = t.host;
+  if (t.code) {
+    form.code = t.code;
+    void pair();
+  } else {
+    ElMessage.info('二维码里没有授权码：已填入地址，请再输入授权码');
+  }
+}
+
+function stopScan(): void {
+  scanning.value = false;
+  if (scanTimer) {
+    clearInterval(scanTimer);
+    scanTimer = 0;
+  }
+  if (scanStream) {
+    for (const track of scanStream.getTracks()) track.stop();
+    scanStream = null;
+  }
 }
 
 // ---- WS ----
@@ -1150,12 +1232,20 @@ onMounted(() => {
   window.addEventListener('resize', onResize);
   syncViewport();
   syncNativeFromScreen();
+  // 扫码/邀请链接直达：?code= 授权码 → 预填并直接发起配对（被控端确认弹窗照常把关）。
+  // 裸路径引导（router/barePathHash.ts）会把 ?code= 原样带进 hash query。
+  const qc = route?.query?.code;
+  if (typeof qc === 'string' && qc && !form.code && phase.value === 'setup') {
+    form.code = qc;
+    void pair();
+  }
 });
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onKeyDown, true);
   window.removeEventListener('compositionend', onCompositionEnd, true);
   window.removeEventListener('resize', onResize);
+  stopScan();
   cleanup();
   if (ballHideTimer) clearTimeout(ballHideTimer);
 });
@@ -1225,4 +1315,11 @@ onBeforeUnmount(() => {
 .rc-file-item .rc-tbtn { padding: 3px 10px; font-size: 12px; }
 
 .rc-drop-hint { position: absolute; inset: 12px; border: 2px dashed #4c8dff; border-radius: 14px; background: rgba(22, 35, 58, 0.72); display: flex; align-items: center; justify-content: center; font-size: 16px; color: #bcd2ff; z-index: 12; pointer-events: none; }
+
+/* 扫码浮层（setup 阶段）：摄像头取景 + jsQR 解码 */
+.rc-scan { position: fixed; inset: 0; background: rgba(8, 11, 15, 0.86); display: flex; align-items: center; justify-content: center; z-index: 200; padding: 16px; }
+.rc-scan-box { width: min(440px, 100%); background: #171c23; border: 1px solid #2a323e; border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.rc-scan-video { width: 100%; max-width: 400px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 10px; background: #000; }
+.rc-scan-tip { font-size: 13px; color: #8a94a3; text-align: center; }
+.rc-scan-err { font-size: 12.5px; color: #f0b6c2; line-height: 1.6; text-align: center; }
 </style>

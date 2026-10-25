@@ -1458,14 +1458,18 @@ async function applyRcCustom() {
 function copyRcInvite() {
   const ip = preferredLanIp?.value || '';
   if (!ip || !rcCode.value) return;
-  const text = `言智远程控制：浏览器打开 http://${ip}:${lanPort.value}/remote ，输入授权码 ${rcCode.value}`;
+  const text = `言智远程控制：浏览器打开 http://${ip}:${lanPort.value}/remote?code=${rcCode.value} 即可连接（首次需在本机点允许）`;
   navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制邀请信息'));
 }
 
-// 控制端地址二维码：手机扫码直达 /remote（免手敲地址）；插件未启用/未检出 IP 时留空
+// 控制端地址二维码：**带授权码**（http://ip:port/remote?code=码）——手机系统相机扫码
+// 即打开 /remote 并自动发起配对（被控端确认弹窗照常把关）；码与卡片上大字展示的是
+// 同一个秘密，编码进二维码不增加暴露面。插件未启用/未检出 IP 时留空。
 const rcQrUrl = ref('');
 const rcInviteUrl = computed(() =>
-  rcEnabled.value && preferredLanIp?.value ? `http://${preferredLanIp.value}:${lanPort.value}/remote` : '',
+  rcEnabled.value && preferredLanIp?.value && rcCode.value
+    ? `http://${preferredLanIp.value}:${lanPort.value}/remote?code=${encodeURIComponent(rcCode.value)}`
+    : '',
 );
 watch(
   rcInviteUrl,
