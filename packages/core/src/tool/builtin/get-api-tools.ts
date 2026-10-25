@@ -17,7 +17,7 @@
 //
 // ★ 为什么把内置工具也并进来：模型不需要知道"这个工具是 api 还是 builtin"，
 //   那是实现细节。`source` 字段给需要区分时用。
-import type { BuiltInTool } from '../types';
+import type { BuiltInTool, ToolContext } from '../types';
 import { toolError, toolOk } from '../result';
 import { API_MODULES, getApiToolRegistry, initApiToolRegistry } from './api-tools';
 import { TOOL_CATEGORIES, MAX_TOOLS_PER_CATEGORY, categoryOf, groupByCategory, paginate, type ToolSource } from '@yan-zhi/shared';
@@ -46,12 +46,20 @@ function firstSentence(s: string): string {
 }
 
 /**
- * 汇总全部工具（api + builtin）。
+ * 汇总全部工具（api + builtin + 注入的额外来源）。
  *
  * ★ 可执行性（executable）这里是占位 true —— core 不能反向依赖 server 的
  *   SUPPORTED_API_TOOLS。server 侧在 executeApiTool 里会用真实白名单覆盖。
+ *
+ * ★ 2026-10-25 全量覆盖（用户要求：工具发现必须能查到系统里**所有**工具）：
+ *   getExtra 由 server 注入自定义工具与 MCP 工具清单（core 不直接依赖 DB/MCP），
+ *   userId 透传给实现方做数据归属过滤。
  */
-function collectTools(getBuiltin: () => Array<{ name: string; description?: string }>): ToolRow[] {
+function collectTools(
+  getBuiltin: () => Array<{ name: string; description?: string }>,
+  getExtra: (userId?: string) => Array<{ name: string; description?: string; source: ToolSource }>,
+  userId?: string,
+): ToolRow[] {
   ensureInit();
   const rows: ToolRow[] = [];
   for (const tools of getApiToolRegistry().values()) {
@@ -61,6 +69,9 @@ function collectTools(getBuiltin: () => Array<{ name: string; description?: stri
   }
   for (const t of getBuiltin()) {
     rows.push({ name: t.name, summary: firstSentence(t.description || ''), source: 'builtin', executable: true });
+  }
+  for (const t of getExtra(userId)) {
+    rows.push({ name: t.name, summary: firstSentence(t.description || ''), source: t.source, executable: true });
   }
   return rows;
 }
@@ -75,18 +86,22 @@ export class GetApiToolsTool implements BuiltInTool {
    * @param getBuiltin 注入内置工具列表读函数（由 server / registry 提供）。
    *   不直接 import getToolRegistry 是为了避免 core 内部循环依赖
    *   （registry ← builtin/index ← 本文件）。
+   * @param getExtra 注入自定义/MCP 等额外来源的工具清单（server 侧拼好可调用暴露名）。
    */
-  constructor(private readonly getBuiltin: () => Array<{ name: string; description?: string }> = () => []) {}
+  constructor(
+    private readonly getBuiltin: () => Array<{ name: string; description?: string }> = () => [],
+    private readonly getExtra: (userId?: string) => Array<{ name: string; description?: string; source: ToolSource }> = () => [],
+  ) {}
 
   name = 'get_api_tools';
   description =
-    '查询工具清单（工具发现的总入口）。三种用法：' +
+    '查询工具清单（工具发现的总入口，覆盖系统全量工具：api / 内置 / 自定义 / MCP）。三种用法：' +
     '① module="list"（默认）→ 列出所有分类及各自工具数量，**先看这个**；' +
-    '② module="all" → 一次列出全部工具（api + 内置，可按 keyword 过滤，分页）；' +
+    '② module="all" → 一次列出全部工具（可按 keyword 过滤，分页）；' +
     '③ module="<分类名>" → 该分类的工具（分页，每页最多 20）。' +
     '★ 手头没有合适工具时先查这里，再对感兴趣的工具调 api_tool_detail 看参数。' +
     '★ 返回里 executable=false 表示该工具未开放（调用会失败），不要去调它。' +
-    '★ 即使某工具没挂载到当前智能体，查到了也能直接调用 —— 执行只看能力白名单，不看挂载。';
+    '★ 查到的 api/内置工具即使没挂载到当前智能体也能直接调用；custom_/mcp_ 前缀的工具需挂载后调用。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -106,13 +121,13 @@ export class GetApiToolsTool implements BuiltInTool {
     required: [],
   };
 
-  async execute(args: Record<string, unknown>) {
+  async execute(args: Record<string, unknown>, ctx?: ToolContext) {
     const module = String(args.module ?? 'list').trim() || 'list';
     const page = num(args.page, 1);
     const pageSize = num(args.pageSize, MAX_TOOLS_PER_CATEGORY);
     const keyword = String(args.keyword ?? '').trim().toLowerCase();
 
-    const all = collectTools(this.getBuiltin);
+    const all = collectTools(this.getBuiltin, this.getExtra, ctx?.userId);
 
     // ── 分类概览 ──
     if (module === 'list') {

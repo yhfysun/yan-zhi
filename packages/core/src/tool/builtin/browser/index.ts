@@ -165,7 +165,7 @@ async function emptyTargetHint(): Promise<McpCallResult> {
 // ========== 导航 ==========
 export class BrowserNavigateTool implements BuiltInTool {
   name = 'browser_navigate';
-  description = 'Navigate the in-app browser preview panel to a URL (renders inside the app, not a system browser). 注意：一次只调用一个 browser_navigate，不要在同一批并行调用多个导航（浏览器是单活动页状态机，多个导航会互相覆盖，只有最后一个页面留存）。需要同时打开多个页面时：先调用一次本工具打开第一个，其余页面改用 browser_new_tab 新开标签页（返回 tabId），读取内容时给读取类工具传对应 tabId。';
+  description = 'Navigate the in-app browser preview panel to a URL (renders inside the app, not a system browser). 浏览器面板未打开时会自动拉起并打开目标页，无需请用户手动展开面板。注意：一次只调用一个 browser_navigate，不要在同一批并行调用多个导航（浏览器是单活动页状态机，多个导航会互相覆盖，只有最后一个页面留存）。需要同时打开多个页面时：先调用一次本工具打开第一个，其余页面改用 browser_new_tab 新开标签页（返回 tabId），读取内容时给读取类工具传对应 tabId。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -867,7 +867,7 @@ export class BrowserLoginSavedTool implements BuiltInTool {
 // ========== C4 多标签页管理 ==========
 export class BrowserNewTabTool implements BuiltInTool {
   name = 'browser_new_tab';
-  description = 'Open a new browser tab and optionally navigate to a URL. Returns the new tab id. 新开标签页并导航（可选 url），返回标签页 id。需要同时打开/对比多个页面时用本工具（不要并行调用多个 browser_navigate）；拿到 tabId 后可用读取类工具（browser_get_page_content 等）的 tabId 参数直接读取该页，无需切换标签页。'
+  description = 'Open a new browser tab and optionally navigate to a URL. Returns the new tab id. 新开标签页并导航（可选 url），返回标签页 id。浏览器面板/标签页未打开时会自动拉起并打开目标页，无需请用户手动展开面板。需要同时打开/对比多个页面时用本工具（不要并行调用多个 browser_navigate）；拿到 tabId 后可用读取类工具（browser_get_page_content 等）的 tabId 参数直接读取该页，无需切换标签页。'
     + ' 默认开新页会切到新页（用户能看到你在动哪页）；若这一页只是你自用的中间页、不想打断用户当前正在看的页面，传 background:true。'
     + ' ★ 要让用户看到某页，用 browser_switch_tab 显式切过去 —— 不要指望它自己跟着走。';
   inputSchema = {

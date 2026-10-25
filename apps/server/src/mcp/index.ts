@@ -6,9 +6,42 @@ import {
 } from '@yan-zhi/core';
 import { resolveJwtUser } from '../auth.js';
 import { executeApiTool, isApiExecutableTool, SUPPORTED_API_TOOLS } from './api-tool-executor.js';
+import { getToolsFromDb, mcpShortIdOf } from './client-manager.js';
 import { db } from '../db.js';
 
 const router = Router();
+
+/**
+ * 工具发现的额外来源：自定义工具 + MCP 工具（2026-10-25 全量覆盖）。
+ * 用户要求：查询工具列表的工具必须能查到系统里**所有**工具 —— api/内置由 registry 反射，
+ * 自定义与 MCP 在 server 侧拼好**可调用暴露名**（custom_<id8>_<name> / mcp_<shortId>__<name>，
+ * 与 buildToolsForBackend 的暴露口径逐字一致）注入给 get_api_tools。
+ */
+function collectExtraDiscoverySources(userId?: string): Array<{ name: string; description?: string; source: 'custom' | 'mcp' }> {
+  const rows: Array<{ name: string; description?: string; source: 'custom' | 'mcp' }> = [];
+  try {
+    const customs = (userId
+      ? db.prepare('SELECT id, name, description FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId)
+      : db.prepare('SELECT id, name, description FROM custom_tool WHERE enabled = 1').all()) as any[];
+    for (const ct of customs) {
+      rows.push({
+        name: 'custom_' + String(ct.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) + '_' + ct.name,
+        description: ct.description || ct.name,
+        source: 'custom',
+      });
+    }
+  } catch { /* 表不存在/坏数据不影响发现主路径 */ }
+  try {
+    const servers = db.prepare('SELECT id FROM mcp_server').all() as any[];
+    for (const s of servers) {
+      for (const t of getToolsFromDb(s.id)) {
+        if (t.enabled === false) continue;
+        rows.push({ name: `mcp_${mcpShortIdOf(s.id)}__${t.name}`, description: t.alias || t.description || t.name, source: 'mcp' });
+      }
+    }
+  } catch { /* 同上 */ }
+  return rows;
+}
 
 /** 确保管理类工具（get_api_tools/list_platforms 等）在首次获取 registry 时已就位 */
 let _toolsInitialized = false;
@@ -16,7 +49,7 @@ export function ensureToolsInitialized(): void {
   if (_toolsInitialized) return;
   _toolsInitialized = true;
   const registry = getToolRegistry();
-  registerManagementTools(registry, () => db);
+  registerManagementTools(registry, () => db, collectExtraDiscoverySources);
 }
 
 interface JsonRpcRequest {
