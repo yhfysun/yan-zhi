@@ -1,8 +1,26 @@
-import * as Lark from '@larksuiteoapi/node-sdk';
+// ★ 只做类型导入（编译期擦除）：本模块被 index.ts 顶层静态引用，
+//   若写运行时静态导入，移动端内嵌后端（node_modules 无此 SDK）会在
+//   ESM 解析阶段 ERR_MODULE_NOT_FOUND → index.js process.exit(1) → App 启动即闪退。
+//   运行时改为 connect() 内惰性加载；移动端不用飞书长连接则永不加载。
+import type * as Lark from '@larksuiteoapi/node-sdk';
 import { db } from '../db.js';
 import { handleImInbound } from './im.js';
 import { createLogger } from './logger.js';
 const logger = createLogger('feishu-stream');
+
+/** 惰性加载官方 SDK；加载失败（移动端内嵌后端）返回 null，由调用方跳过长连接 */
+async function loadLarkSdk(): Promise<typeof Lark | null> {
+  try {
+    const mod = await import('@larksuiteoapi/node-sdk');
+    return ((mod as any).default ?? mod) as typeof Lark;
+  } catch (e) {
+    logger.warn(
+      '[im-feishu] @larksuiteoapi/node-sdk 未安装，飞书长连接不可用（移动端内嵌后端不含此依赖）:',
+      e instanceof Error ? e.message : e,
+    );
+    return null;
+  }
+}
 
 /**
  * 飞书长连接客户端（官方 SDK WSClient，零公网回调）。
@@ -48,6 +66,12 @@ class FeishuStreamClient {
 
   private async connect() {
     if (this.stopped) return;
+    const Lark = await loadLarkSdk();
+    if (!Lark) {
+      // SDK 缺失（移动端）：不再无限重试，标记停止避免 30s 一轮的无效建连日志
+      this.stopped = true;
+      return;
+    }
     try {
       const dispatcher = new Lark.EventDispatcher({}).register({
         'im.message.receive_v1': async (data: any) => {
