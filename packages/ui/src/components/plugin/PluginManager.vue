@@ -104,6 +104,10 @@
               <el-button size="small" text bg @click="onExport(p)">导出</el-button>
               <el-button v-if="AUDIT_PLUGIN_IDS.includes(p.manifest.id) && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
               <el-button
+                v-if="p.manifest.id === 'remote-control' && p.state === 'enabled'"
+                size="small" text bg @click="gotoRcSetup"
+              >授权码</el-button>
+              <el-button
                 v-if="p.source !== 'builtin'"
                 size="small"
                 text
@@ -231,6 +235,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Document, Upload, Box, Collection, UploadFilled, Share, Mouse } from '@element-plus/icons-vue';
 import { usePluginStore, type PluginInfo } from '../../stores/plugin';
@@ -238,6 +243,7 @@ import { api } from '../../api/client';
 import type { PluginManifest } from '@yan-zhi/core';
 
 const pluginStore = usePluginStore();
+const router = useRouter();
 const keyword = ref('');
 const configOpen = ref(false);
 const configText = ref('');
@@ -420,6 +426,12 @@ async function onOpenTemplate() {
 
 // 输入面操作审计（computer-use 电脑使用 / remote-control 远程控制）
 const AUDIT_PLUGIN_IDS = ['computer-use', 'remote-control'];
+
+// 远控授权码/控制端地址/二维码都在「设置 → 服务与连接 → 局域网」卡片：
+// 插件管理页给个直达入口（深链 ?pane=lan，Settings.vue 消费）
+function gotoRcSetup() {
+  router.push({ path: '/settings', query: { pane: 'lan' } });
+}
 const auditOpen = ref(false);
 const auditList = ref<Array<{ t: number; op: string; detail?: Record<string, unknown> }>>([]);
 const auditPanic = ref(false);

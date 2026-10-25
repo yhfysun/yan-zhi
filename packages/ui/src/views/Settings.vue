@@ -471,6 +471,12 @@
                 <span class="rc-k">控制端地址</span>
                 <code class="rc-v">{{ preferredLanIp ? `http://${preferredLanIp}:${lanPort}/remote` : '—（未检测到局域网 IP）' }}</code>
               </div>
+              <div class="rc-line rc-qr-line">
+                <span class="rc-k">手机扫码</span>
+                <img v-if="rcQrUrl" :src="rcQrUrl" class="rc-qr" alt="控制端地址二维码" />
+                <span v-else class="rc-muted">—</span>
+                <el-button size="small" type="primary" plain @click="openRemotePage">打开控制页</el-button>
+              </div>
               <div class="rc-line">
                 <span class="rc-k">自定义授权码</span>
                 <el-input v-model="rcCustom" size="small" style="width: 170px" placeholder="6-16 位（不含 0/1/i/l/o）" />
@@ -617,6 +623,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, type Component } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import QRCode from 'qrcode';
 const props = withDefaults(defineProps<{ embedded?: boolean; pane?: string }>(), { embedded: false, pane: '' });
 const embedded = computed(() => props.embedded);
 /**
@@ -663,6 +671,27 @@ const pluginStore = usePluginStore();
 const toolsStore = useToolsStore();
 const vcode = useVerificationStore();
 const tab = ref('general');
+// 深链：/settings?pane=lan 直达某分区（插件管理「授权码」等外部入口跳转用）。
+// 仅 /settings 独立路由页生效 —— embedded / pane 模式由宿主显式传 prop，不吃 query。
+// ★ route 可能不存在（Settings 弹窗/抽屉内嵌挂载在无 router 上下文，如测试）：全防御
+const route = useRoute();
+const router = useRouter();
+function applyQueryPane() {
+  if (props.embedded || props.pane) return;
+  const qp = route?.query?.pane;
+  if (typeof qp !== 'string' || !qp) return;
+  // 只接受真实存在的分区名（内置组 + 插件贡献的设置页签），防 ?pane=xxx 打开空白
+  const valid = new Set<string>([
+    ...MOBILE_GROUPS_BASE.flatMap((g) => g.tabs.map((t) => t.name)),
+    ...pluginStore.settingsTabs.map((t) => String((t as { name?: string }).name || '')),
+  ]);
+  if (valid.has(qp)) tab.value = qp;
+}
+watch(
+  () => route?.query?.pane,
+  () => applyQueryPane(),
+);
+onMounted(applyQueryPane);
 
 // pane 模式：外部（SettingsDialog 左导航）切换分类 → 同步内部 el-tabs（isPaneMode 声明在上方）
 // ★ immediate 必须有（2026-10-17 用户实报「数据菜单串到通用里面」）：Settings 实例由
@@ -1433,6 +1462,33 @@ function copyRcInvite() {
   navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制邀请信息'));
 }
 
+// 控制端地址二维码：手机扫码直达 /remote（免手敲地址）；插件未启用/未检出 IP 时留空
+const rcQrUrl = ref('');
+const rcInviteUrl = computed(() =>
+  rcEnabled.value && preferredLanIp?.value ? `http://${preferredLanIp.value}:${lanPort.value}/remote` : '',
+);
+watch(
+  rcInviteUrl,
+  async (u) => {
+    if (!u) { rcQrUrl.value = ''; return; }
+    try { rcQrUrl.value = await QRCode.toDataURL(u, { width: 132, margin: 1 }); } catch { rcQrUrl.value = ''; }
+  },
+  { immediate: true },
+);
+
+// 打开控制页：桌面端走独立子窗口（主窗口 window.open 同源地址会被 setWindowOpenHandler
+// 拦掉；且 /remote 是全屏裸路由，主窗口内跳转没有返回钮）——用完即关不打扰主界面；
+// Web 端新标签页（浏览器可后退）。
+function openRemotePage() {
+  const w = window as unknown as { electronAPI?: { childWindow?: { open?: (o: Record<string, unknown>) => Promise<unknown> } } };
+  if (w.electronAPI?.childWindow?.open) {
+    void w.electronAPI.childWindow.open({ key: 'remote-control', route: '/remote', width: 1100, height: 760 });
+    return;
+  }
+  const href = router?.resolve ? router.resolve({ path: '/remote' }).href : '/#/remote';
+  window.open(href, '_blank');
+}
+
 function openLan(ip: string) {
   const url = `http://${ip}:${lanPort.value}`;
   // ★ 后端未托管前端静态资源时（dev 模式按设计如此，见 server/index.ts resolveWebDist），
@@ -1758,6 +1814,8 @@ onMounted(async () => {
 /* 远程控制卡片：码值用等宽放大展示（向日葵式「报码」的可读性优先） */
 .rc-card-box { border: 1px solid var(--color-border, #dcdfe6); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .rc-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rc-qr-line { align-items: flex-start; }
+.rc-qr { width: 104px; height: 104px; border-radius: 8px; background: #fff; padding: 5px; box-sizing: border-box; } /* 白底保证扫码对比度 */
 .rc-k { width: 92px; flex-shrink: 0; font-size: 13px; color: var(--color-text-secondary); }
 .rc-v { font-size: 13px; word-break: break-all; }
 .rc-v-code { font-size: 18px; font-weight: 700; letter-spacing: 3px; }

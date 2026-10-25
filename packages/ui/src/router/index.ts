@@ -6,6 +6,18 @@ import { resolvePluginComponent } from '../plugin-component-registry';
 import { isElectron, isCapacitor } from '../api/client';
 import { activeMode, modeRoute, visibleModeDefs, isModeAvailable, setMode, type AppMode } from '../stores/mode';
 import { MODE_VIEW_LOADERS } from '../generated/build-modes';
+import { barePathHashTarget } from './barePathHash';
+
+/**
+ * 裸路径引导：远控邀请/二维码给的是裸路径（见 barePathHash.ts 的说明），
+ * 建路由前把不带 hash 的 /remote 重定向到 #/remote，否则会落到应用首页。
+ */
+if (typeof window !== 'undefined') {
+  const target = barePathHashTarget(window.location.pathname, window.location.hash);
+  if (target) {
+    window.location.replace(`${window.location.origin}${window.location.pathname}#${target}${window.location.search}`);
+  }
+}
 
 /**
  * 模式工作台路由（★ 构建期裁剪）。
