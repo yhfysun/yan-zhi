@@ -316,6 +316,11 @@ async function doRename(r: GitRemote): Promise<void> {
 .grm-add-title { font-size: 12px; font-weight: 600; color: var(--color-text, #1a1a1a); }
 .grm-add-row { display: flex; gap: 6px; align-items: center; }
 .grm-add-name { width: 150px; flex-shrink: 0; }
+/* ★ 窄屏：name 150px 不缩 + URL 输入 + 按钮同行 → 三段两行化 */
+@media (max-width: 767px) {
+  .grm-add-row { flex-wrap: wrap; }
+  .grm-add-name { width: auto; flex: 1 1 120px; min-width: 0; }
+}
 .grm-btn {
   flex-shrink: 0; padding: 4px 10px; font-size: 12px; cursor: pointer;
   border: 1px solid var(--glass-border, #e7e4dc); border-radius: 6px; background: #fff;

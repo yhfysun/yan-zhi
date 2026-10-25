@@ -984,6 +984,9 @@ onMounted(load);
 .log-err {
   color: var(--el-color-danger);
   margin-left: auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 .run-output {
   margin-top: 8px;

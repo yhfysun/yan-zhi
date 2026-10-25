@@ -950,6 +950,12 @@ body {
 }
 .platform-mobile { max-width: 100vw; overflow-x: hidden; }
 
+/* ★ §4 大壳弹窗全局钳宽：768-980px 视口是 <767px 兜底的盲区（GitConflictResolver
+   1240px / GitCommitDialog 860px 等在该区间直接溢出视口）。桌面正常视口下各弹窗
+   宽度都小于视口，此规则不触发；只在「弹窗比视口宽」时钳住（内联 width 不设
+   max-width，样式表 max-width 可生效）。 */
+.el-dialog { max-width: calc(100vw - 24px); }
+
 /* ★ Capacitor 端：顶栏已显示当前页名（如「设置」），而页面里还有自己的
    <h2 class="page-title">（Settings.vue 的「设置」）→ 同屏两个一模一样的标题，白占一行。
    移动端顶栏承担定位职责后，页内大标题是冗余的 —— 整个隐藏。
@@ -1007,6 +1013,17 @@ body {
 
   /* Solid glass-tabs on mobile (used by Settings) */
   .glass-tabs { background: var(--el-bg-color) !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; border: 1px solid var(--el-border-color-lighter); }
+
+  /* ★ P0-G2：兜底盲区三件套（全局兜底此前只管 dialog/form/table）
+     ① el-popover：SftpPanel :width="400" 等内联固定宽在窄屏溢出 —— 内联只设
+        width、不设 max-width，样式表 max-width 可钳住；
+     ② el-radio-group 默认 inline-flex 不换行 → 筛选按钮多时被裁切且不可达
+        （ShopOrders 7 个状态按钮实报）；
+     ③ 固定像素宽的 select/input-number/date-picker 在抽屉内容列可溢出，钳到容器。
+     嵌入页按容器降级用 context class：.in-settings-drawer（SettingsDrawer 模板已挂）。 */
+  .el-popover.el-popper { max-width: 92vw !important; box-sizing: border-box; }
+  .el-radio-group { flex-wrap: wrap; row-gap: 4px; }
+  .el-select, .el-input-number, .el-input, .el-date-editor { max-width: 100%; }
 }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {

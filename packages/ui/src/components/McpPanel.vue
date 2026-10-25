@@ -979,12 +979,13 @@ async function del(id: string) {
 
 /* 入站访问端点信息框 */
 .endpoint-box { text-align: left; }
-.endpoint-url { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+/* ★ 接入点 URL + 复制按钮同行：URL 是长串，不换行时按钮被挤出容器（P1 同构病灶） */
+.endpoint-url { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
 .endpoint-url code, .endpoint-tip code {
   font-family: "JetBrains Mono", "Cascadia Code", monospace;
   background: rgba(15, 23, 42, 0.06); padding: 2px 6px; border-radius: 4px; font-size: 12px;
 }
-.endpoint-url code { color: var(--color-primary); }
+.endpoint-url code { color: var(--color-primary); word-break: break-all; min-width: 0; }
 .endpoint-tip { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; }
 
 @media (max-width: 767px) {

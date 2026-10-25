@@ -269,6 +269,7 @@ async function doImport(mode: 'merge' | 'replace') {
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+  flex-wrap: wrap; /* ★ 窄屏（钳 92vw 后 ~340px）：toolbar ~600px 无 wrap 必溢出 */
 }
 .bm-mgr-count { font-size: 12px; color: var(--el-text-color-secondary, #909399); }
 .bm-mgr-spacer { flex: 1; }
@@ -299,7 +300,7 @@ async function doImport(mode: 'merge' | 'replace') {
 }
 .bm-mgr-row.folder { background: var(--el-fill-color-lighter, #fafafa); }
 .bm-mgr-icon.folder { color: var(--el-color-warning, #e6a23c); flex-shrink: 0; }
-.bm-mgr-title-input { flex: 0 0 200px; }
+.bm-mgr-title-input { flex: 1 1 160px; min-width: 0; } /* ★ 原 0 0 200px 完全不缩，窄屏挤没 URL 列 */
 .bm-mgr-sub { font-size: 11px; color: var(--el-text-color-secondary, #909399); flex-shrink: 0; }
 .bm-mgr-url {
   flex: 1;
@@ -310,7 +311,7 @@ async function doImport(mode: 'merge' | 'replace') {
   font-size: 11px;
   color: var(--el-text-color-secondary, #909399);
 }
-.bm-mgr-move { flex: 0 0 130px; }
+.bm-mgr-move { flex: 0 1 130px; min-width: 0; } /* ★ 允许收缩，窄屏不再顶溢出 */
 .bm-mgr-favicon {
   display: inline-flex;
   align-items: center;

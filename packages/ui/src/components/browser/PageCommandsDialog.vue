@@ -417,7 +417,7 @@ async function onImportFile(e: Event) {
 .pc-row-title { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .pc-name { font-size: 13px; font-weight: 600; color: var(--el-text-color-primary, #303133); }
 .pc-row-desc { font-size: 12px; color: var(--el-text-color-secondary, #909399); margin-top: 3px; white-space: pre-wrap; word-break: break-word; }
-.pc-row-match { font-size: 11px; color: var(--el-text-color-placeholder, #a8abb2); margin-top: 3px; }
+.pc-row-match { font-size: 11px; color: var(--el-text-color-placeholder, #a8abb2); margin-top: 3px; word-break: break-all; } /* 匹配正则长串窄屏断词 */
 .pc-row-stat { font-size: 11px; color: var(--el-text-color-secondary, #909399); margin-top: 2px; }
 .pc-row-ops { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .pc-var-hint { font-size: 11px; color: var(--el-text-color-placeholder, #a8abb2); margin-top: 4px; line-height: 1.6; }

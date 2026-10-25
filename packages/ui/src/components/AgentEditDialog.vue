@@ -836,5 +836,8 @@ async function handleDelete() {
   .param-grid { grid-template-columns: 1fr; gap: 8px; }
   .param-item { padding: 8px 10px; }
   .mount-tab { padding: 6px 8px; font-size: 12px; }
+  /* ★ 补盲：ont-mount 双栏未收单列；mount-tabs 5 个 tab 不换行 */
+  .ont-mount { grid-template-columns: 1fr; }
+  .mount-tabs { flex-wrap: wrap; }
 }
 </style>

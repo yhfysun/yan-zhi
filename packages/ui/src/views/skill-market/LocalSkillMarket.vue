@@ -682,5 +682,11 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
   .skill-groups :deep(.cg) { grid-template-columns: minmax(0, 1fr); gap: 10px; width: 100%; padding: 0 14px 14px; box-sizing: border-box; }
   .editor-layout { grid-template-columns: 1fr; gap: 12px; }
   .preview-md { min-height: 180px; max-height: 280px; }
+  /* ★ preview-layout 220px+1fr 双栏此前漏收（editor-layout 已收、唯独漏它）；
+     subfile-row 无 wrap，长路径+按钮同行溢出 */
+  .preview-layout { grid-template-columns: 1fr; }
+  .preview-tree { max-height: 220px; }
+  .subfile-row { flex-wrap: wrap; }
+  .subfile-path { flex: 1 1 100%; min-width: 0; }
 }
 </style>

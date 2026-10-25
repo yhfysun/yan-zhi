@@ -912,6 +912,7 @@ async function decodeQrImage(file: File): Promise<string | null> {
 .guide-callback code {
   user-select: all;
   color: var(--color-primary);
+  word-break: break-all; /* 企微回调 URL 长串：92vw 弹窗内也会溢出 */
 }
 
 .step-form .field-help {

@@ -226,7 +226,7 @@ function cfgCheckAll(v: any) {
   background: var(--color-bg-secondary);
 }
 .cfg-fetched-list { display: flex; flex-direction: column; gap: 2px; }
-.cfg-fetched-id { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
+.cfg-fetched-id { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; overflow-wrap: anywhere; } /* 模型 ID 长串断词 */
 
 /* ===== 快照统计尾注（2026-10-20）：字符数 / token / 花费 + 复制 ===== */
 .snapshot-meta {

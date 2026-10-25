@@ -157,7 +157,7 @@
         <el-table-column prop="op" label="操作" width="150" />
         <el-table-column label="参数">
           <template #default="{ row }">
-            <span class="pm-detail">{{ JSON.stringify(row.detail ?? {}) }}</span>
+            <span class="pm-detail pm-param-cell">{{ JSON.stringify(row.detail ?? {}) }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -624,6 +624,12 @@ onMounted(() => pluginStore.refresh());
   gap: 14px;
   /* 关键：stretch（默认值）让同行卡片同高 */
   align-items: stretch;
+}
+/* ★ 窄屏（设置抽屉嵌入）回退单列：minmax(300px,1fr) 在 ~340px 内容列里卡片直接溢出 */
+@media (max-width: 767px) {
+  .pm-list { grid-template-columns: 1fr; }
+  /* 审计表格 JSON 参数单元格断词：长 JSON 不再撑破列 */
+  .pm-param-cell { word-break: break-all; }
 }
 .pm-card {
   background: var(--glass-bg);

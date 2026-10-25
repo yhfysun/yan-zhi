@@ -1752,6 +1752,12 @@ onMounted(async () => {
   .data-section .el-button:nth-child(1),
   .data-section .el-button:nth-child(2) { flex: 1 1 calc(50% - 4px); min-width: 0; white-space: nowrap; }
   .data-section .el-button:nth-child(3) { flex: 1 1 100%; }
+
+  /* ★ P0-G3：局域网 IP 卡片纵向堆叠 —— 360px 内容列里「URL+按钮」同行必互相挤压；
+     竖排后操作按钮底部平分（.rc-line 基样式已带 flex-wrap，无需重复处理）。 */
+  .lan-item { flex-direction: column; align-items: stretch; }
+  .lan-actions { width: 100%; }
+  .lan-actions .el-button { flex: 1 1 0; margin-left: 0; }
 }
 
 .theme-grid { display: flex; gap: 10px; flex-wrap: wrap; }

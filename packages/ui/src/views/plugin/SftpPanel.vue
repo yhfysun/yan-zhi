@@ -1892,6 +1892,16 @@ onUnmounted(() => {
   font-size: 11px; font-family: Consolas, monospace; text-align: right; white-space: nowrap;
   color: var(--color-text-tertiary);
 }
+/* ★ 窄屏 + compact（设置抽屉嵌入）：72/92px 固定列把文件名 1fr 挤到 ~0-30px ——
+   藏 size/time 列，文件名独占；行内操作悬浮逻辑不受影响 */
+@media (max-width: 767px) {
+  .sftp-panel.is-compact .sftp-cols-head { grid-template-columns: 1fr; }
+  .sftp-panel.is-compact .sftp-row { grid-template-columns: 16px 1fr; }
+  .sftp-panel.is-compact .sftp-c-size,
+  .sftp-panel.is-compact .sftp-c-time,
+  .sftp-panel.is-compact .sftp-size,
+  .sftp-panel.is-compact .sftp-time { display: none; }
+}
 
 /* ===== 权限编辑弹窗 ===== */
 .sftp-perm { display: flex; flex-direction: column; gap: 10px; font-size: 12px; }

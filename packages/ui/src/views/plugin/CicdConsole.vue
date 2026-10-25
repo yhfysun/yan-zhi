@@ -716,4 +716,19 @@ onMounted(async () => {
 .btn-primary:hover { background: var(--color-primary-dark); }
 .btn-danger { color: var(--color-danger); }
 .btn-sm { padding: 2px 7px; font-size: 11px; }
+
+/* ★ 窄屏：原生 input/select 完全不吃 el- 全局兜底；侧栏 220px 双栏互斥。
+   侧栏收顶部（纵向堆叠）、行内表单可换行、step 编辑行不挤竖排。 */
+@media (max-width: 767px) {
+  .cicd-body { flex-direction: column; }
+  .cicd-sidebar { width: auto; max-height: 150px; border-right: none; border-bottom: 1px solid var(--color-border); }
+  .form-row { flex-wrap: wrap; }
+  .form-item { flex: 1 1 200px; min-width: 0; }
+  .form-item.full { flex-basis: 100%; }
+  .step-edit-top { flex-wrap: wrap; }
+  .step-name-inp { flex: 1 1 200px; min-width: 0; }
+  .step-type-sel { flex-shrink: 0; }
+  .target-selector { flex-wrap: wrap; }
+  .detail-actions { flex-wrap: wrap; }
+}
 </style>
