@@ -50,6 +50,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   reload: () => ipcRenderer.send('window-reload'),
   // 远程控制隐私屏（remote-control 插件）：true=所有显示器铺全黑点击穿透窗，false=撤掉
   rcPrivacy: (on) => ipcRenderer.invoke('rc:privacy', !!on),
+  // 远控多显示器：枚举本机显示器（物理像素 bounds + 桌面采集源名）与选择采集目标
+  rcDisplays: () => ipcRenderer.invoke('rc:displays'),
+  rcSetCaptureDisplay: (id) => ipcRenderer.invoke('rc:set-capture-display', String(id == null ? '' : id)),
+  // 远控明示原则：会话开始弹系统通知（渲染层轮询发现新会话时调用）
+  rcNotify: (title, body) => ipcRenderer.invoke('rc:notify', String(title || ''), String(body || '')),
+  // 远控托盘状态：上报「远控中」会话（托盘提示/菜单随之更新）
+  rcSessionState: (active, device) => ipcRenderer.invoke('rc:session-state', !!active, String(device || '')),
+  // 托盘「一键断开」回调：主进程菜单点击 → 渲染层在 host WS 上发 session.stop {all:true}
+  onRcDisconnectAll: (cb) => ipcRenderer.on('rc:disconnect-all', () => { try { cb(); } catch { /* ignore */ } }),
   // 平台标识
   platform: process.platform,
   isElectron: true,

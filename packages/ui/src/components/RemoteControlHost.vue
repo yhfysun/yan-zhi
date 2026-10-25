@@ -10,6 +10,14 @@
     <div class="rcp-body">
       <div class="rcp-device">{{ pendingDevice }}</div>
       <div class="rcp-tip">请求远程观看并操作本机。拒绝将直接断开；允许后可在设置 → 远程控制查看会话记录。</div>
+      <div v-if="displays.length > 1" class="rcp-disp">
+        <div class="rcp-label">采集显示器（控制端看到哪块屏）</div>
+        <select v-model="captureDisplayId" class="rcp-select">
+          <option v-for="d in displays" :key="d.id" :value="d.id">
+            {{ (d.primary ? '主显示器 · ' : '') + d.label }}（{{ d.w }}×{{ d.h }}）
+          </option>
+        </select>
+      </div>
       <el-checkbox v-model="trustDevice">信任此设备，之后免确认直连</el-checkbox>
     </div>
     <template #footer>
@@ -36,11 +44,31 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { API_BASE, buildRequestHeaders, wsUrl } from '../api/client';
 
+/** 多显示器：主进程枚举的单屏信息（bounds 为虚拟屏物理像素，与注入坐标同系） */
+interface RcDisplayInfo { id: string; label: string; primary: boolean; x: number; y: number; w: number; h: number }
+interface RcElectronAPI {
+  rcPrivacy?: (on: boolean) => Promise<unknown>;
+  rcDisplays?: () => Promise<{ ok: boolean; displays?: RcDisplayInfo[] }>;
+  rcSetCaptureDisplay?: (id: string) => Promise<{ ok: boolean }>;
+  /** 会话开始系统通知（明示原则：远控不静默） */
+  rcNotify?: (title: string, body: string) => Promise<unknown>;
+  /** 托盘「远控中」状态上报（提示 + 一键断开菜单项随之更新） */
+  rcSessionState?: (active: boolean, device: string) => Promise<unknown>;
+  /** 托盘一键断开 → 在 host WS 上发 session.stop {all:true} */
+  onRcDisconnectAll?: (cb: () => void) => void;
+}
+const electron = (): RcElectronAPI | null =>
+  (window as unknown as { electronAPI?: RcElectronAPI }).electronAPI || null;
+
 const promptVisible = ref(false);
 const pendingDevice = ref('');
 const trustDevice = ref(true);
 const pluginEnabled = ref(false);
 const connected = ref(false);
+const displays = ref<RcDisplayInfo[]>([]);
+const captureDisplayId = ref('');
+/** 跨公网 ICE 配置（rtc.start 下发；LAN 会话为空数组 = 纯 host candidate 直连） */
+const rtcIceServers = ref<{ urls: string[]; username?: string; credential?: string }[]>([]);
 
 let hostKey = '';
 let ws: WebSocket | null = null;
@@ -83,12 +111,35 @@ async function poll(): Promise<void> {
     }
     const d = (res.data || {}) as Record<string, unknown>;
     pluginEnabled.value = true;
+    syncSessionUi(d.session as Record<string, unknown> | null | undefined);
     const needsWs = !!d.pendingCount || !!d.session;
     if (needsWs && !connected.value) openHostWs();
     else if (!needsWs && connected.value && !pcs.size) teardownWs();
   } catch {
     pluginEnabled.value = false;
   }
+}
+
+/** 上次通知过的会话设备（只在空 → 有 的跳变时弹系统通知，避免每轮轮询轰炸） */
+let notifiedDevice = '';
+/**
+ * 会话明示（护栏 10「明示原则」）+ 托盘「远控中」状态（护栏 13）。
+ * 以 /status 轮询为唯一真相源：渲染层重载、会话结束、插件停用都会在下一轮自愈，
+ * 不依赖 session.started/ended 消息（白名单直连不经过确认弹窗也覆盖）。
+ */
+function syncSessionUi(sess: Record<string, unknown> | null | undefined): void {
+  const api = electron();
+  if (!api) return;
+  const device = String((sess as { device?: string })?.device || '');
+  try {
+    void api.rcSessionState?.(!!device, device);
+    if (device && device !== notifiedDevice) {
+      notifiedDevice = device;
+      void api.rcNotify?.('远程控制', `${device} 正在远程观看并操作本机（托盘可一键断开）`);
+    } else if (!device) {
+      notifiedDevice = '';
+    }
+  } catch { /* ignore */ }
 }
 
 function openHostWs(): void {
@@ -129,6 +180,9 @@ function openHostWs(): void {
     }
     ws = null;
     teardownPcs();
+    rtcIceServers.value = [];
+    // 会话随 host WS 断开全部结束（服务端同口径）→ 托盘状态立即校正
+    try { electron()?.rcSessionState?.(false, ''); } catch { /* ignore */ }
   };
   sock.onerror = () => { /* onclose 统一收尾 */ };
 }
@@ -154,9 +208,13 @@ async function onMessage(msg: Record<string, unknown>): Promise<void> {
       pendingConfirmId.value = String(msg.confirmId || '');
       trustDevice.value = true;
       promptVisible.value = true;
+      void refreshDisplays(); // 弹窗里的采集显示器下拉框（仅 Electron 宿主有数据）
       break;
     case 'rtc.start':
-      // 会话 granted 且走 WebRTC：等控制端的 rtc.offer
+      // 会话 granted 且走 WebRTC：等控制端的 rtc.offer。跨公网 ICE 配置随本消息下发
+      rtcIceServers.value = Array.isArray(msg.iceServers)
+        ? (msg.iceServers as { urls: string[]; username?: string; credential?: string }[])
+        : [];
       break;
     case 'rtc.offer':
       await handleOffer(String(msg.sessionId || ''), String(msg.sdp || ''));
@@ -187,11 +245,15 @@ async function onMessage(msg: Record<string, unknown>): Promise<void> {
       // 隐私屏：主进程在所有显示器上铺全黑点击穿透窗；仅桌面端可用（Web 宿主无 electronAPI 自动跳过）
       const on = type === 'privacy.on';
       try {
-        (window as unknown as { electronAPI?: { rcPrivacy?: (on: boolean) => Promise<unknown> } }).electronAPI?.rcPrivacy?.(on);
+        electron()?.rcPrivacy?.(on);
       } catch { /* ignore */ }
       ElMessage({ message: on ? '隐私屏已开启（本机屏幕已遮黑）' : '隐私屏已关闭', type: 'info', duration: 2000 });
       break;
     }
+    case 'display.select':
+      // 控制端切换采集显示器：重新采集并 replaceTrack（无需重协商）
+      void switchCaptureDisplay(String(msg.sessionId || ''), String(msg.displayId || ''));
+      break;
     default:
       break;
   }
@@ -204,20 +266,88 @@ async function decide(allow: boolean): Promise<void> {
   const confirmId = pendingConfirmId.value;
   pendingConfirmId.value = '';
   if (!confirmId || !ws || ws.readyState !== 1) return;
+  if (allow) await applyCaptureDisplay(); // 弹窗选的采集源先对主进程生效，随后 handler 按此挑源
   try {
-    ws.send(JSON.stringify({ type: 'decision', confirmId, action: allow ? 'allow' : 'deny', trust: allow && trustDevice.value }));
+    ws.send(JSON.stringify({
+      type: 'decision',
+      confirmId,
+      action: allow ? 'allow' : 'deny',
+      trust: allow && trustDevice.value,
+      ...(allow && captureDisplayId.value ? { displayId: captureDisplayId.value } : {}),
+    }));
   } catch { /* ignore */ }
 }
 
-/** WebRTC 采集端：getDisplayMedia（主进程 handler 给主屏+系统声音）→ 应答 */
+/** 显示器枚举（仅 Electron 宿主）：填充弹窗下拉框并把默认选择钉在主屏 */
+async function refreshDisplays(): Promise<void> {
+  const api = electron();
+  if (!api?.rcDisplays) return;
+  try {
+    const r = await api.rcDisplays();
+    if (r?.ok && Array.isArray(r.displays) && r.displays.length) {
+      displays.value = r.displays;
+      // 记忆的选择已失效（显示器拔掉）→ 回主屏
+      if (!r.displays.some((d) => d.id === captureDisplayId.value)) {
+        captureDisplayId.value = (r.displays.find((d) => d.primary) || r.displays[0]).id;
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+/** 把弹窗/切换菜单选择的采集目标设置给主进程（''=主屏兜底） */
+async function applyCaptureDisplay(): Promise<void> {
+  const api = electron();
+  if (!api?.rcSetCaptureDisplay) return;
+  try {
+    await api.rcSetCaptureDisplay(captureDisplayId.value);
+  } catch { /* ignore */ }
+}
+
+/** 采集画面对应的屏幕几何（物理像素）+ 显示器清单 → 插件 → 控制端坐标换算 */
+function sendScreenAndDisplays(sessionId: string): void {
+  if (!ws || ws.readyState !== 1) return;
+  const d = displays.value.find((x) => x.id === captureDisplayId.value)
+    || displays.value.find((x) => x.primary)
+    || null;
+  if (d) {
+    ws.send(JSON.stringify({ type: 'rtc.screen', sessionId, x: d.x, y: d.y, w: d.w, h: d.h }));
+    ws.send(JSON.stringify({ type: 'displays', sessionId, list: displays.value, current: captureDisplayId.value }));
+  } else {
+    // 非 Electron 宿主拿不到显示器清单：沿用渲染层 window.screen（主屏假设）
+    const dpr = window.devicePixelRatio || 1;
+    ws.send(JSON.stringify({
+      type: 'rtc.screen',
+      sessionId,
+      x: 0,
+      y: 0,
+      w: Math.round(window.screen.width * dpr),
+      h: Math.round(window.screen.height * dpr),
+    }));
+  }
+}
+
+/** 系统弹条「停止共享」→ 结束会话。用 onended 属性挂接，切换显示器时置 null 防误报 */
+function guardTrackEnd(sessionId: string, track: MediaStreamTrack): void {
+  track.onended = () => {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'session.stop', sessionId }));
+    teardownPc(sessionId);
+  };
+}
+
+/** WebRTC 采集端：getDisplayMedia（主进程 handler 给选中显示器+系统声音）→ 应答 */
 async function handleOffer(sessionId: string, sdp: string): Promise<void> {
   if (!sdp) return;
   try {
+    await applyCaptureDisplay();
+    await refreshDisplays();
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: 30 },
       audio: true,
     });
-    const conn = new RTCPeerConnection(); // LAN 直连，无需 STUN
+    // 重连场景同一会话可能已有一条旧连接：先拆再建，避免泄漏
+    teardownPc(sessionId);
+    // LAN：host candidate 直连；跨公网：STUN 打洞 / TURN 中继（配置随 rtc.start 下发）
+    const conn = new RTCPeerConnection(rtcIceServers.value.length ? { iceServers: rtcIceServers.value } : {});
     pcs.set(sessionId, conn);
     for (const track of stream.getTracks()) {
       // 音频轨道默认不发送（隐私优先：控制端显式开启后才传出系统声音）
@@ -229,30 +359,48 @@ async function handleOffer(sessionId: string, sdp: string): Promise<void> {
         ws.send(JSON.stringify({ type: 'rtc.ice', sessionId, candidate: e.candidate.toJSON() }));
       }
     };
-    stream.getVideoTracks()[0]?.addEventListener('ended', () => {
-      // 用户在系统弹条里停止共享：通知插件结束会话
-      if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'session.stop', sessionId }));
-      teardownPc(sessionId);
-    });
+    const vt = stream.getVideoTracks()[0];
+    if (vt) guardTrackEnd(sessionId, vt);
     await conn.setRemoteDescription({ type: 'offer', sdp });
     const answer = await conn.createAnswer();
     await conn.setLocalDescription(answer);
     if (ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'rtc.answer', sessionId, sdp: conn.localDescription?.sdp || answer.sdp }));
-      // 屏幕几何（物理像素）：控制端据此把画面坐标换算成屏幕坐标（主屏假设，见方案 4.2）
-      const dpr = window.devicePixelRatio || 1;
-      ws.send(JSON.stringify({
-        type: 'rtc.screen',
-        sessionId,
-        x: 0,
-        y: 0,
-        w: Math.round(window.screen.width * dpr),
-        h: Math.round(window.screen.height * dpr),
-      }));
+      sendScreenAndDisplays(sessionId);
     }
   } catch (e) {
     ElMessage.warning('屏幕采集未授权，远控将使用兼容模式（JPEG）');
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'session.stop', sessionId }));
+  }
+}
+
+/** 会话中切换采集显示器（控制端发起）：重新采集 → replaceTrack（无需重协商）→ 推新几何 */
+async function switchCaptureDisplay(sessionId: string, displayId: string): Promise<void> {
+  if (!displayId) return;
+  captureDisplayId.value = displayId;
+  await applyCaptureDisplay();
+  await refreshDisplays();
+  const conn = pcs.get(sessionId);
+  if (!conn) return;
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) throw new Error('采集流无视频轨');
+    // 新采集附带的音轨直接停掉：沿用原会话音轨，避免系统声音被二次回采
+    for (const t of stream.getAudioTracks()) t.stop();
+    const sender = conn.getSenders().find((x) => x.track?.kind === 'video');
+    if (!sender) throw new Error('连接上没有视频发送器');
+    const old = sender.track;
+    await sender.replaceTrack(videoTrack);
+    if (old) {
+      old.onended = null;
+      try { old.stop(); } catch { /* ignore */ }
+    }
+    guardTrackEnd(sessionId, videoTrack);
+    sendScreenAndDisplays(sessionId);
+    ElMessage({ message: '采集显示器已切换', type: 'success', duration: 2000 });
+  } catch (e) {
+    ElMessage.warning('切换显示器失败：采集未授权或源不可用');
   }
 }
 
@@ -270,6 +418,14 @@ function teardownPcs(): void {
 }
 
 onMounted(() => {
+  // 托盘「一键断开」：主进程菜单 → 这里在 host WS 上发 session.stop {all:true}
+  electron()?.onRcDisconnectAll?.(() => {
+    if (ws && ws.readyState === 1) {
+      try {
+        ws.send(JSON.stringify({ type: 'session.stop', all: true }));
+      } catch { /* ignore */ }
+    }
+  });
   void poll();
   pollTimer = window.setInterval(() => void poll(), 6000);
 });
@@ -282,6 +438,8 @@ onBeforeUnmount(() => {
     clearInterval(pingTimer);
     pingTimer = null;
   }
+  // 组件卸载后没人再轮询上报 → 托盘状态必须立刻清掉（防「远控中」角标永久残留）
+  try { electron()?.rcSessionState?.(false, ''); } catch { /* ignore */ }
   teardownWs();
   teardownPcs();
 });
@@ -291,4 +449,7 @@ onBeforeUnmount(() => {
 .rcp-body { display: flex; flex-direction: column; gap: 10px; }
 .rcp-device { font-size: 15px; font-weight: 600; }
 .rcp-tip { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
+.rcp-disp { display: flex; flex-direction: column; gap: 6px; }
+.rcp-label { font-size: 12px; color: var(--el-text-color-secondary); }
+.rcp-select { width: 100%; }
 </style>

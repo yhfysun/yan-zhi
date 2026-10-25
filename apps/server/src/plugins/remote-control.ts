@@ -44,9 +44,13 @@ export const remoteControlManifest: PluginManifest = {
     properties: {
       maxInputs: { type: 'number', description: '10 分钟窗口内最大输入条数（触顶后本会话降级为只读观看）', default: 2000 },
       allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认禁止）', default: false },
-      allowExternalSubnet: { type: 'boolean', description: '允许非内网网段发起配对（默认拒绝）', default: false },
+      allowExternalSubnet: { type: 'boolean', description: '允许非内网网段发起配对（跨公网控制需开启，配合公网可达的本机端口；默认拒绝）', default: false },
       idleTimeoutMin: { type: 'number', description: '会话空闲自动断开（分钟）', default: 30 },
       receiveDir: { type: 'string', description: '远控文件收发目录（控制端发来的文件落这里，可下载的也只有这里）', default: '' },
+      stunUrls: { type: 'string', description: 'STUN 服务器（逗号分隔，stun: 开头；跨公网 P2P 打洞用，局域网会话不受影响）', default: 'stun:stun.qq.com:3478,stun:stun.l.google.com:19302' },
+      turnUrl: { type: 'string', description: 'TURN 中继地址（逗号分隔，turn/turns: 开头；两侧都是对称型 NAT 打洞失败时的兜底，留空不启用）', default: '' },
+      turnUsername: { type: 'string', description: 'TURN 用户名（与 turnUrl 同时配置才生效）', default: '' },
+      turnCredential: { type: 'string', description: 'TURN 凭证', default: '' },
     },
   },
 };
@@ -140,6 +144,108 @@ export const RC_FILE_MAX_BYTES = 500 * 1024 * 1024;
 
 /** 剪贴板文本长度上限（字节，防一次注入撑爆管道） */
 export const RC_CLIPBOARD_MAX_CHARS = 100_000;
+
+/** 显示器选项（被控端枚举 → 控制端切换菜单共用一套字段；坐标为虚拟屏物理像素） */
+export interface RcDisplayOption {
+  id: string;
+  label: string;
+  primary: boolean;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * display.select 消息校验：displayId 为被控端采集源标识。
+ * WebRTC = Electron display id（数字串）；JPEG = 代理枚举下标（数字串）或 'virtual'（整个桌面）。
+ */
+export function validateDisplaySelect(msg: Record<string, unknown>): { ok: boolean; displayId?: string; error?: string } {
+  const id = String(msg.displayId ?? '').trim();
+  if (!id) return { ok: false, error: '缺少 displayId' };
+  if (id.length > 64 || !/^[\w.-]+$/.test(id)) return { ok: false, error: 'displayId 非法' };
+  return { ok: true, displayId: id };
+}
+
+/**
+ * 代理 monitors 事件 → 控制端显示器选项列表（末尾补「整个桌面」虚拟屏项）。
+ * currentMon 为会话当前采集下标（-1=整个桌面）。
+ */
+export function assembleJpegDisplays(
+  monitors: unknown,
+  virtual: unknown,
+  currentMon: number,
+): { list: RcDisplayOption[]; current: string } {
+  const num = (v: unknown): number => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const list: RcDisplayOption[] = [];
+  if (Array.isArray(monitors)) {
+    monitors.forEach((raw, i) => {
+      const m = (raw || {}) as Record<string, unknown>;
+      const w = num(m.w);
+      const h = num(m.h);
+      if (w <= 0 || h <= 0) return; // 形状不对的条目直接丢，不让坏数据进控制端几何
+      list.push({
+        id: String(m.id ?? i),
+        label: String(m.label || `显示器 ${i + 1}`),
+        primary: !!m.primary,
+        x: num(m.x),
+        y: num(m.y),
+        w,
+        h,
+      });
+    });
+  }
+  const v = (virtual || {}) as Record<string, unknown>;
+  if (num(v.w) > 0 && num(v.h) > 0) {
+    list.push({
+      id: 'virtual',
+      label: '整个桌面',
+      primary: false,
+      x: num(v.x),
+      y: num(v.y),
+      w: num(v.w),
+      h: num(v.h),
+    });
+  }
+  return { list, current: currentMon >= 0 ? String(currentMon) : 'virtual' };
+}
+
+/** RTCPeerConnection 的 iceServers 条目（结构与 Web 标准 RTCIceServer 一致） */
+export interface RcIceServer {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+/**
+ * 组装跨公网用的 iceServers（纯函数，供单测）。
+ * - stunUrls：逗号/空白分隔的 stun: URL（打洞发现公网映射地址；局域网会话连 host
+ *   candidate 优先，STUN 只在跨公网时起作用）
+ * - turn 三件套（url+用户名+凭证）齐全才启用中继 —— 缺凭证的 turn 只会让 ICE 空转，
+ *   直接丢弃不上送
+ * - URL 形态校验（stun/turn/turns: + 合法字符），坏项丢弃；条数封顶防配置塞爆信令
+ */
+export function buildIceServers(cfg: Record<string, unknown>): { iceServers: RcIceServer[]; hasRelay: boolean } {
+  // STUN/TURN 的标准形态是 stun:host[:port]（RFC 7064/7065，无 //），浏览器也容忍 stun://
+  const okUrl = (u: string): boolean => /^(stuns?|turns?):(?:\/\/)?[A-Za-z0-9.\-_[\]:?=&@]+$/.test(u);
+  const list = (raw: unknown, scheme: RegExp): string[] =>
+    String(raw || '')
+      .split(/[\s,]+/)
+      .map((x) => x.trim())
+      .filter((x) => x && scheme.test(x) && okUrl(x));
+  const iceServers: RcIceServer[] = [];
+  const stuns = list(cfg.stunUrls, /^stun:/).slice(0, 4);
+  if (stuns.length) iceServers.push({ urls: stuns });
+  const turns = list(cfg.turnUrl, /^turns?:/i).slice(0, 2);
+  const turnUser = String(cfg.turnUsername || '').trim();
+  const turnPass = String(cfg.turnCredential || '');
+  let hasRelay = false;
+  if (turns.length && turnUser && turnPass) {
+    iceServers.push({ urls: turns, username: turnUser.slice(0, 128), credential: turnPass.slice(0, 256) });
+    hasRelay = true;
+  }
+  return { iceServers, hasRelay };
+}
 
 export type PairStatus = 'granted' | 'pending';
 
@@ -267,6 +373,12 @@ interface RcSession {
   privacy: boolean;
   /** 音频转发开启中（host 据此启停音频轨道发送） */
   audioOn: boolean;
+  /** WebRTC 采集源（Electron display id；''=主屏）。被控端确认弹窗/控制端切换设置，仅审计与透传 */
+  captureDisplay: string;
+  /** JPEG 回退采集的显示器下标（-1=整个虚拟桌面） */
+  captureMon: number;
+  /** JPEG 回退最近一次画质档（切换显示器时沿用，不回落默认） */
+  jpegStream?: { fps: number; scale: number; quality: number };
 }
 
 interface HostConn {
@@ -289,6 +401,9 @@ export const remoteControlModule: PluginModule = {
     const allowSelfWindowClick = !!cfg.allowSelfWindowClick;
     const allowExternalSubnet = !!cfg.allowExternalSubnet;
     const idleTimeoutMs = (Number(cfg.idleTimeoutMin) || 30) * 60_000;
+    // 跨公网 ICE 配置（STUN 打洞 + 可选 TURN 中继）：grant/resume 下发给控制端、
+    // rtc.start 下发给被控端采集层；局域网会话里 host candidate 优先，STUN 不影响直连
+    const iceConfig = buildIceServers(cfg);
 
     // ---- 存储 ----
     type Storage = PluginContext['storage'];
@@ -433,6 +548,10 @@ export const remoteControlModule: PluginModule = {
       if (!agentStarting) {
         agentStarting = (async () => {
           const a = agent ?? new RemoteControlAgent();
+          // 采集线程的失败回执（i=0 事件）：只落日志，不惊扰控制端（JPEG 是回退通道）
+          a.onEvent = (e) => {
+            if (!e.ok) ctx.log('[remote-control] 代理事件失败:', e.error || 'unknown');
+          };
           a.onFrame = (buf) => {
             // 回退通道：帧只发给当前 granted 会话
             for (const s of sessions.values()) {
@@ -519,6 +638,21 @@ export const remoteControlModule: PluginModule = {
       for (const s of [...sessions.values()]) await endSession(s, reason);
     };
 
+    // ---- JPEG 回退：显示器清单下发 / 按会话画质档推流（grant、降级、切换共用）----
+    const sendJpegDisplays = async (s: RcSession, a: RemoteControlAgent): Promise<void> => {
+      try {
+        const m = await a.call({ op: 'monitors' }, 10000);
+        const disp = assembleJpegDisplays(m.monitors, m.virtual, s.captureMon);
+        s.controllerWs && sendWsJson(s.controllerWs, { type: 'displays.info', list: disp.list, current: disp.current });
+      } catch {
+        /* 显示器枚举失败不阻断会话（控制端只少一个切换菜单） */
+      }
+    };
+    const startJpegStream = (s: RcSession, a: RemoteControlAgent): void => {
+      const p = s.jpegStream || { fps: 10, scale: 1, quality: 60 };
+      a.fire({ op: 'stream', fps: p.fps, scale: p.scale, quality: p.quality, changedOnly: true, mon: s.captureMon });
+    };
+
     const grantSession = async (s: RcSession, trust: boolean): Promise<void> => {
       s.status = 'granted';
       s.token = newDeviceToken();
@@ -549,6 +683,8 @@ export const remoteControlModule: PluginModule = {
         sessionId: s.id,
         token: s.token,
         mode: s.mode,
+        // 跨公网：控制端建 PeerConnection 用（jpeg 模式无媒体面，不下发）
+        ...(s.mode === 'webrtc' && iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
         ...(deviceToken ? { deviceToken } : {}),
       };
       if (s.mode === 'jpeg') {
@@ -559,7 +695,8 @@ export const remoteControlModule: PluginModule = {
             ...grantedMsg,
             screen: { x: info.x ?? 0, y: info.y ?? 0, w: info.w ?? 0, h: info.h ?? 0 },
           });
-            a.fire({ op: 'stream', fps: 10, scale: 1, quality: 60, changedOnly: true });
+          await sendJpegDisplays(s, a);
+          startJpegStream(s, a);
           ensureCursorLoop();
         } catch (e) {
           ctx.log('[remote-control] JPEG 回退通道启动失败:', (e as Error)?.message);
@@ -568,7 +705,8 @@ export const remoteControlModule: PluginModule = {
         }
       } else {
         s.controllerWs && sendWsJson(s.controllerWs, grantedMsg);
-        notifyHost({ type: 'rtc.start', sessionId: s.id });
+        // 被控端采集层建 PeerConnection 需要同一份 ICE 配置（rtc.start 恒先于 rtc.offer 到达）
+        notifyHost({ type: 'rtc.start', sessionId: s.id, ...(iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}) });
       }
       await audit('session-grant', {
         sessionId: s.id,
@@ -576,6 +714,7 @@ export const remoteControlModule: PluginModule = {
         trusted: s.trusted,
         mode: s.mode,
         trustSaved: !!deviceToken,
+        ...(s.mode === 'webrtc' && s.captureDisplay ? { captureDisplay: s.captureDisplay } : {}),
       });
     };
 
@@ -611,7 +750,8 @@ export const remoteControlModule: PluginModule = {
               type: 'session.mode', mode: 'jpeg',
               screen: { x: info.x ?? 0, y: info.y ?? 0, w: info.w ?? 0, h: info.h ?? 0 },
             });
-            a.fire({ op: 'stream', fps: 10, scale: 1, quality: 60, changedOnly: true });
+            await sendJpegDisplays(s, a);
+            startJpegStream(s, a);
             ensureCursorLoop();
           } catch (e) {
             await endSession(s, `回退通道启动失败: ${(e as Error)?.message || e}`);
@@ -619,21 +759,52 @@ export const remoteControlModule: PluginModule = {
           break;
         }
         case 'set.quality': {
-          // JPEG 回退通道的画质档（fps/scale/quality），直接转给代理进程的流参数
+          // JPEG 回退通道的画质档（fps/scale/quality），直接转给代理进程的流参数；
+          // 记在会话上，切换显示器时沿用（不回落默认档）
           if (s.mode === 'jpeg') {
+            const p = {
+              fps: Math.max(1, Math.min(20, Number(msg.fps) || 10)),
+              scale: Math.max(0.3, Math.min(1, Number(msg.scale) || 1)),
+              quality: Math.max(30, Math.min(90, Number(msg.quality) || 60)),
+            };
+            s.jpegStream = p;
             try {
               const a = await ensureAgent();
-              a.fire({
-                op: 'stream',
-                fps: Math.max(1, Math.min(20, Number(msg.fps) || 10)),
-                scale: Math.max(0.3, Math.min(1, Number(msg.scale) || 1)),
-                quality: Math.max(30, Math.min(90, Number(msg.quality) || 60)),
-                changedOnly: true,
-              });
+              a.fire({ op: 'stream', ...p, changedOnly: true, mon: s.captureMon });
             } catch {
               /* 代理没起来，忽略（会话结束时统一停） */
             }
           }
+          break;
+        }
+        case 'display.select': {
+          // 控制端切换采集显示器：WebRTC 转被控端渲染层（重新采集+replaceTrack，无需重协商）；
+          // JPEG 由服务端直接切代理采集目标并重推几何与清单
+          const v = validateDisplaySelect(msg);
+          if (!v.ok) {
+            sendWsJson(s.controllerWs!, { type: 'input.rejected', reason: v.error });
+            break;
+          }
+          if (s.mode === 'webrtc') {
+            s.captureDisplay = v.displayId!;
+            notifyHost({ type: 'display.select', sessionId: s.id, displayId: v.displayId! });
+          } else if (s.mode === 'jpeg') {
+            const mon = v.displayId === 'virtual' ? -1 : Number(v.displayId);
+            s.captureMon = Number.isInteger(mon) && mon >= 0 && mon < 32 ? mon : -1;
+            try {
+              const a = await ensureAgent();
+              const info = await a.call({ op: 'screensize', mon: s.captureMon }, 10000);
+              sendWsJson(s.controllerWs!, {
+                type: 'screen.info',
+                screen: { x: info.x ?? 0, y: info.y ?? 0, w: info.w ?? 0, h: info.h ?? 0 },
+              });
+              await sendJpegDisplays(s, a);
+              startJpegStream(s, a);
+            } catch (e) {
+              sendWsJson(s.controllerWs!, { type: 'input.rejected', reason: `切换显示器失败: ${(e as Error)?.message || e}` });
+            }
+          }
+          await audit('display-select', { sessionId: s.id, mode: s.mode, displayId: v.displayId! });
           break;
         }
         case 'audio.state': {
@@ -753,11 +924,23 @@ export const remoteControlModule: PluginModule = {
           }
           break;
         }
+        case 'displays': {
+          // 被控端渲染层推送显示器清单（WebRTC 采集端，grant 后/切换后各一次），转发给控制端
+          const s = [...sessions.values()].find((x) => x.id === msg.sessionId && x.status === 'granted');
+          if (s?.controllerWs && Array.isArray(msg.list)) {
+            sendWsJson(s.controllerWs, { type: 'displays.info', list: msg.list, current: String(msg.current || '') });
+          }
+          break;
+        }
         case 'decision': {
           const s = pendingByConfirm.get(String(msg.confirmId || ''));
           if (!s || s.status !== 'pending') return;
           if (String(msg.action) === 'allow') {
             s.trusted = false;
+            // 弹窗里选的采集显示器（host 侧已对主进程生效，这里留档进审计）
+            if (typeof msg.displayId === 'string' && /^[\w.-]{1,64}$/.test(msg.displayId)) {
+              s.captureDisplay = msg.displayId;
+            }
             await grantSession(s, !!msg.trust);
             if (s.controllerWs) sendWsJson(s.controllerWs, { type: 'pair.done' });
             notifyHost({ type: 'session.started', sessionId: s.id, device: s.deviceName, mode: s.mode });
@@ -846,7 +1029,13 @@ export const remoteControlModule: PluginModule = {
         if (kind === 'pending') {
           sendWsJson(ws, { type: 'pair.pending', confirmId: s.confirmId });
         } else if (s.token) {
-          sendWsJson(ws, { type: 'session.resume', sessionId: s.id, mode: s.mode });
+          // 断线重连/页面刷新走 resume：iceServers 一并重发（控制端可能已丢失会话内存态）
+          sendWsJson(ws, {
+            type: 'session.resume',
+            sessionId: s.id,
+            mode: s.mode,
+            ...(s.mode === 'webrtc' && iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
+          });
         }
         ws.on('message', (data: Buffer, isBinary: boolean) => {
           void handleControllerMessage(s, data, isBinary);
@@ -964,6 +1153,8 @@ export const remoteControlModule: PluginModule = {
             limiter: new SlidingWindowLimiter(maxInputs),
             privacy: false,
             audioOn: false,
+            captureDisplay: '',
+            captureMon: -1,
           };
           sessions.set(session.id, session);
           if (verdict.status === 'granted') {

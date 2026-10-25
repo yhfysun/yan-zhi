@@ -122,7 +122,13 @@ public class RcAgent
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool GetCursorInfo(out CURSORINFO ci);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
+  [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc proc, IntPtr data);
+  [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr hMon, ref MONITORINFO info);
+  public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdc, ref RECT rect, IntPtr data);
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
   [StructLayout(LayoutKind.Sequential)]
   public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT pt; }
   [StructLayout(LayoutKind.Sequential)]
@@ -154,7 +160,40 @@ public class RcAgent
   static volatile int frameQuality = 60;
   static volatile int frameFps = 10;
   static volatile bool changedOnly = true;
+  static volatile int frameMon = -1; // 采集目标显示器（-1=整个虚拟桌面）
   static ulong lastHash = 0;
+
+  // 显示器枚举（进程已 SetProcessDPIAware：矩形即物理像素，与注入坐标同系）
+  static List<Rectangle> monList = new List<Rectangle>();
+  static List<bool> monPrimary = new List<bool>();
+  static MonitorEnumProc monCb; // 静态持有防 GC 回调被回收
+  static void RefreshMonitors()
+  {
+    monList.Clear();
+    monPrimary.Clear();
+    monCb = new MonitorEnumProc(OnMonitorEnum);
+    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, monCb, IntPtr.Zero);
+  }
+  static bool OnMonitorEnum(IntPtr hMon, IntPtr hdc, ref RECT r, IntPtr data)
+  {
+    MONITORINFO mi = new MONITORINFO(); mi.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+    if (GetMonitorInfo(hMon, ref mi))
+    {
+      monList.Add(Rectangle.FromLTRB(mi.rcMonitor.Left, mi.rcMonitor.Top, mi.rcMonitor.Right, mi.rcMonitor.Bottom));
+      monPrimary.Add((mi.dwFlags & 1) != 0);
+    }
+    return true;
+  }
+  // mon>=0 → 该显示器 bounds（越界回退虚拟屏）；mon<0 → 整个虚拟桌面
+  static Rectangle CaptureRect(int mon)
+  {
+    if (mon >= 0)
+    {
+      RefreshMonitors();
+      if (mon < monList.Count) return monList[mon];
+    }
+    return VirtualRect();
+  }
 
   public static void Run()
   {
@@ -182,7 +221,8 @@ public class RcAgent
     int id = GetId(m);
     if (op == "config") { ApplyConfig(m); EmitEvent(Ok(id)); return; }
     if (op == "ping") { EmitEvent(Ok(id)); return; }
-    if (op == "screensize") { EmitEvent(ScreenInfo(id)); return; }
+    if (op == "monitors") { EmitEvent(MonitorsInfo(id)); return; }
+    if (op == "screensize") { EmitEvent(ScreenInfo(id, GetInt(m, "mon", -1))); return; }
     if (op == "cursor") { EmitEvent(CursorInfo(id)); return; }
     if (op == "click") { DoClick(GetInt(m, "x"), GetInt(m, "y"), GetStr(m, "button", "left"), GetBool(m, "double"), id); return; }
     if (op == "down") { PressAt(GetInt(m, "x"), GetInt(m, "y"), GetStr(m, "button", "left"), true); EmitEvent(Ok(id)); return; }
@@ -191,7 +231,7 @@ public class RcAgent
     if (op == "wheel") { DoWheel(m, id); return; }
     if (op == "key") { DoKey(m, id); return; }
     if (op == "type") { DoType(m, id); return; }
-    if (op == "frame") { CaptureOnce(GetDouble(m, "scale", frameScalePct / 100.0), (int)GetDouble(m, "quality", frameQuality), id); return; }
+    if (op == "frame") { CaptureOnce(GetDouble(m, "scale", frameScalePct / 100.0), (int)GetDouble(m, "quality", frameQuality), id, GetInt(m, "mon", -1)); return; }
     if (op == "stream") { ApplyStream(m); EmitEvent(Ok(id)); return; }
     EmitEvent(Err(id, "unknown op: " + op));
   }
@@ -212,6 +252,7 @@ public class RcAgent
     frameScalePct = (int)GetDouble(m, "scale", 1.0) * 100;
     frameQuality = (int)GetDouble(m, "quality", 60);
     changedOnly = GetBool(m, "changedOnly", true);
+    if (m.ContainsKey("mon")) { int nm = GetInt(m, "mon", -1); if (nm != frameMon) { frameMon = nm; lastHash = 0; } }
     if (fps > 0 && !streaming)
     {
       frameFps = fps;
@@ -227,11 +268,16 @@ public class RcAgent
 
   static void StreamLoop()
   {
+    bool lastFailed = false;
     while (streaming)
     {
       int interval = Math.Max(33, 1000 / Math.Max(1, frameFps));
-      try { CaptureOnce(frameScalePct / 100.0, frameQuality, 0); }
-      catch {}
+      try { CaptureOnce(frameScalePct / 100.0, frameQuality, 0, frameMon); lastFailed = false; }
+      catch (Exception e)
+      {
+        // 连续失败只报一次（i=0 事件走 Node 侧 onEvent），避免按帧率刷屏
+        if (!lastFailed) { lastFailed = true; EmitEvent(Err(0, "stream-loop: " + e.Message)); }
+      }
       Thread.Sleep(interval);
     }
   }
@@ -408,11 +454,11 @@ public class RcAgent
       GetSystemMetrics(78), GetSystemMetrics(79));
   }
 
-  static void CaptureOnce(double scale, int quality, int id)
+  static void CaptureOnce(double scale, int quality, int id, int mon)
   {
     lock (capLock)
     {
-      Rectangle r = VirtualRect();
+      Rectangle r = CaptureRect(mon);
       if (r.Width <= 0 || r.Height <= 0) { EmitEvent(Err(id, "虚拟屏尺寸无效")); return; }
       double sc = scale <= 0 ? 1.0 : scale;
       int w = Math.Max(1, (int)(r.Width * sc));
@@ -490,11 +536,37 @@ public class RcAgent
   }
 
   // ---- 状态事件 ----
-  static Dictionary<string, object> ScreenInfo(int id)
+  static Dictionary<string, object> ScreenInfo(int id, int mon)
   {
-    Rectangle r = VirtualRect();
+    Rectangle r = CaptureRect(mon);
     Dictionary<string, object> ev = Ok(id);
     ev["x"] = r.X; ev["y"] = r.Y; ev["w"] = r.Width; ev["h"] = r.Height;
+    return ev;
+  }
+
+  // 显示器清单（多显示器选择用）：monitors=单屏列表，virtual=整个虚拟桌面，current=当前采集目标
+  static Dictionary<string, object> MonitorsInfo(int id)
+  {
+    RefreshMonitors();
+    ArrayList arr = new ArrayList();
+    for (int i = 0; i < monList.Count; i++)
+    {
+      Rectangle r = monList[i];
+      Dictionary<string, object> d = new Dictionary<string, object>();
+      d["id"] = i.ToString();
+      d["label"] = "显示器 " + (i + 1);
+      d["primary"] = monPrimary[i];
+      d["x"] = r.X; d["y"] = r.Y; d["w"] = r.Width; d["h"] = r.Height;
+      arr.Add(d);
+    }
+    Rectangle v = VirtualRect();
+    Dictionary<string, object> virt = new Dictionary<string, object>();
+    virt["id"] = "virtual"; virt["label"] = "整个桌面"; virt["primary"] = false;
+    virt["x"] = v.X; virt["y"] = v.Y; virt["w"] = v.Width; virt["h"] = v.Height;
+    Dictionary<string, object> ev = Ok(id);
+    ev["monitors"] = arr;
+    ev["virtual"] = virt;
+    ev["current"] = frameMon;
     return ev;
   }
 
@@ -542,6 +614,7 @@ public class RcAgent
     return def;
   }
   static int GetInt(Dictionary<string, object> m, string k) { return (int)GetDouble(m, k, 0); }
+  static int GetInt(Dictionary<string, object> m, string k, int def) { return (int)GetDouble(m, k, def); }
 
   static bool GetBool(Dictionary<string, object> m, string k, bool def)
   {

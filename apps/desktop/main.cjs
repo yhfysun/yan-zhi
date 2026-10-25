@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, screen: electronScreen, safeStorage } = require('electron');
+const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, Notification, screen: electronScreen, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -8059,10 +8059,12 @@ app.whenReady().then(async () => {
   })();
 
   // 远程控制（remote-control 插件）：被控端画面采集授权。
-  // 渲染层（Web UI）走 getDisplayMedia 触发本 handler，由主进程挑「主显示器整屏」源，
+  // 渲染层（Web UI）走 getDisplayMedia 触发本 handler，由主进程挑「选中的显示器整屏」源
+  // （rcCaptureDisplayId 为空 = 主显示器；多显示器选择来自被控端确认弹窗/控制端会话中切换），
   // Windows 上附带系统声音回采（audio:'loopback'，不含麦克风）——远控音频转发即由
   // 同一条 WebRTC 连接的音频轨道承载。控制端权限由插件配对/白名单把守，本 handler
   // 只在渲染层真的发起 getDisplayMedia 时触发（正常浏览不受影响）。
+  let rcCaptureDisplayId = '';
   (function installDisplayMediaHandler() {
     try {
       session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
@@ -8071,12 +8073,17 @@ app.whenReady().then(async () => {
             callback({});
             return;
           }
-          let primary = null;
-          try {
-            const pid = String(electronScreen.getPrimaryDisplay().id);
-            primary = sources.find((s) => String(s.display_id) === pid) || null;
-          } catch { /* ignore */ }
-          const video = primary || sources[0];
+          let picked = null;
+          if (rcCaptureDisplayId) {
+            picked = sources.find((s) => String(s.display_id) === rcCaptureDisplayId) || null;
+          }
+          if (!picked) {
+            try {
+              const pid = String(electronScreen.getPrimaryDisplay().id);
+              picked = sources.find((s) => String(s.display_id) === pid) || null;
+            } catch { /* ignore */ }
+          }
+          const video = picked || sources[0];
           const isWin = process.platform === 'win32';
           callback(isWin ? { video, audio: 'loopback' } : { video });
         }).catch(() => callback({}));
@@ -8086,6 +8093,79 @@ app.whenReady().then(async () => {
       console.warn('[remote-control] setDisplayMediaRequestHandler 失败:', e && e.message);
     }
   })();
+
+  // 远控多显示器：枚举（被控端确认弹窗/控制端切换菜单）与采集目标选择。
+  // bounds 为物理像素（DIP × scaleFactor，多屏拼虚拟屏时 x/y 可为负）——
+  // 与注入的虚拟屏绝对坐标同系，控制端据此换算点击坐标。
+  ipcMain.handle('rc:displays', async () => {
+    try {
+      const displays = electronScreen.getAllDisplays();
+      const primary = electronScreen.getPrimaryDisplay();
+      const names = {};
+      try {
+        const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+        for (const s of sources) names[String(s.display_id)] = s.name;
+      } catch { /* 名字拿不到就用「显示器 N」兜底 */ }
+      const list = displays.map((d, i) => ({
+        id: String(d.id),
+        label: names[String(d.id)] || '显示器 ' + (i + 1),
+        primary: d.id === primary.id,
+        x: Math.round(d.bounds.x * d.scaleFactor),
+        y: Math.round(d.bounds.y * d.scaleFactor),
+        w: Math.round(d.bounds.width * d.scaleFactor),
+        h: Math.round(d.bounds.height * d.scaleFactor),
+      }));
+      return { ok: true, displays: list };
+    } catch (e) {
+      return { ok: false, error: e && e.message };
+    }
+  });
+  ipcMain.handle('rc:set-capture-display', (_e, id) => {
+    // 非法值不生效（保持原选择）；''=恢复主显示器
+    const v = String(id == null ? '' : id);
+    if (v !== '' && !/^[\w.\-]{1,64}$/.test(v)) return { ok: false, error: 'displayId 非法' };
+    rcCaptureDisplayId = v;
+    return { ok: true };
+  });
+
+  // 远控明示原则（护栏 10）：会话开始弹系统通知，不静默。渲染层伴生组件在
+  // /status 轮询发现新会话时调用（纯 Web 宿主无 electronAPI 自动跳过）。
+  ipcMain.handle('rc:notify', (_e, title, body) => {
+    try {
+      if (!Notification.isSupported()) return { ok: false, error: '系统不支持通知' };
+      const n = new Notification({
+        title: String(title || '远程控制').slice(0, 64),
+        body: String(body || '').slice(0, 200),
+        silent: false,
+        icon: getAppIconPath(),
+      });
+      n.show();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e && e.message };
+    }
+  });
+
+  // 远控托盘状态（隐私屏护栏 13 的「远控中」角标）：有会话时托盘提示与菜单给出
+  // 「一键断开」入口。渲染层经 /status 轮询上报（自愈：渲染层重载/会话结束都会校正）。
+  let rcRemoteSession = { active: false, device: '' };
+  ipcMain.handle('rc:session-state', (_e, active, device) => {
+    const next = { active: !!active, device: String(device || '').slice(0, 60) };
+    if (rcRemoteSession.active === next.active && rcRemoteSession.device === next.device) return { ok: true };
+    rcRemoteSession = next;
+    try {
+      const base = IS_DEV_INSTANCE ? `言智（开发实例 · 端口 ${API_PORT}）` : '言智';
+      tray?.setToolTip(next.active ? `${base} · 远控中（${next.device || '未知设备'}）` : base);
+    } catch { /* 托盘未就绪 */ }
+    refreshTrayMenu();
+    return { ok: true };
+  });
+  // 托盘「一键断开」→ 渲染层（host WS 在那里）→ 插件 session.stop {all:true}
+  ipcMain.on('rc:disconnect-all', () => {
+    try {
+      mainWindow?.webContents?.send('rc:disconnect-all');
+    } catch { /* ignore */ }
+  });
 
   // 远程控制隐私屏（软件级）：所有显示器铺全黑置顶窗 + 点击穿透。
   // focusable:false + setIgnoreMouseEvents(true) —— 窗口不抢焦点、不吃任何鼠标事件，
@@ -8464,6 +8544,11 @@ app.whenReady().then(async () => {
           label: showing ? '隐藏主窗口' : (dockedOffscreen ? '显示主窗口（后台运行中）' : '显示主窗口'),
           click: toggleMain,
         },
+        // 远控会话进行中：明示状态 + 一键断开（rcRemoteSession 由渲染层 /status 轮询经 IPC 上报）
+        ...(rcRemoteSession.active ? [{
+          label: `远控中：${rcRemoteSession.device || '未知设备'} —— 一键断开`,
+          click: () => { try { mainWindow?.webContents?.send('rc:disconnect-all'); } catch { /* ignore */ } },
+        }] : []),
         { type: 'separator' },
         {
           label: '退出',

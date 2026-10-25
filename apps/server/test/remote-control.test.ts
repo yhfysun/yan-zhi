@@ -13,10 +13,13 @@ import {
 } from '../src/plugins/remote-control-agent';
 import {
   SlidingWindowLimiter,
+  assembleJpegDisplays,
+  buildIceServers,
   evaluatePair,
   isPrivateRemoteAddr,
   isValidCustomCode,
   sanitizeRemoteFileName,
+  validateDisplaySelect,
   validateInputMsg,
   type StoredPairCode,
   type WhitelistEntry,
@@ -291,5 +294,90 @@ describe('createAgentStreamParser', () => {
     const { events, frames } = p.push(Buffer.concat([junk, frame(Buffer.from([9])), evt]));
     expect(frames).toHaveLength(1);
     expect(events).toEqual([{ i: 2, ok: false, error: 'x' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 多显示器选择（采集源）
+// ---------------------------------------------------------------------------
+describe('display select', () => {
+  it('display.select 校验：合法 id 通过（Electron 数字 id / virtual / 设备形 id）', () => {
+    expect(validateDisplaySelect({ displayId: '123456789' })).toEqual({ ok: true, displayId: '123456789' });
+    expect(validateDisplaySelect({ displayId: 'virtual' })).toEqual({ ok: true, displayId: 'virtual' });
+    expect(validateDisplaySelect({ displayId: ' dev-1.2-3 ' })).toEqual({ ok: true, displayId: 'dev-1.2-3' });
+  });
+
+  it('display.select 校验：缺失/超长/特殊字符拒绝', () => {
+    expect(validateDisplaySelect({}).ok).toBe(false);
+    expect(validateDisplaySelect({ displayId: '' }).ok).toBe(false);
+    expect(validateDisplaySelect({ displayId: 'x'.repeat(65) }).ok).toBe(false);
+    expect(validateDisplaySelect({ displayId: '../../etc' }).ok).toBe(false);
+    expect(validateDisplaySelect({ displayId: 'a b' }).ok).toBe(false);
+    expect(validateDisplaySelect({ displayId: 'a\nb' }).ok).toBe(false);
+  });
+
+  it('JPEG 显示器清单：代理条目映射 + 末尾补「整个桌面」+ 当前项还原', () => {
+    const { list, current } = assembleJpegDisplays(
+      [
+        { id: '0', label: '显示器 1', primary: true, x: 0, y: 0, w: 2560, h: 1440 },
+        { id: '1', label: '显示器 2', primary: false, x: -1920, y: 0, w: 1920, h: 1080 },
+      ],
+      { id: 'virtual', label: '整个桌面', x: -1920, y: 0, w: 4480, h: 1440 },
+      1,
+    );
+    expect(list.map((d) => d.id)).toEqual(['0', '1', 'virtual']);
+    expect(list[1]).toMatchObject({ x: -1920, w: 1920, primary: false });
+    expect(list[2]).toMatchObject({ id: 'virtual', label: '整个桌面', w: 4480 });
+    expect(current).toBe('1');
+  });
+
+  it('JPEG 显示器清单：当前为整个桌面时 current=virtual；坏条目（无宽高）被丢弃', () => {
+    const { list, current } = assembleJpegDisplays(
+      [{ id: '0', w: 0, h: 0 }, { id: '1', w: 100, h: 50 }],
+      { w: 100, h: 50 },
+      -1,
+    );
+    expect(list.map((d) => d.id)).toEqual(['1', 'virtual']);
+    expect(current).toBe('virtual');
+  });
+
+  it('JPEG 显示器清单：代理枚举不可用（空输入）时列表为空但不抛错', () => {
+    const { list, current } = assembleJpegDisplays(null, null, -1);
+    expect(list).toEqual([]);
+    expect(current).toBe('virtual');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 跨公网 ICE 配置（STUN 打洞 + 可选 TURN 中继）
+// ---------------------------------------------------------------------------
+describe('buildIceServers', () => {
+  it('STUN 逗号/空白分隔解析为单条目数组；局域网无配置时为空（纯直连）', () => {
+    const r = buildIceServers({ stunUrls: 'stun:stun.qq.com:3478, stun:stun.l.google.com:19302' });
+    expect(r.iceServers).toEqual([{ urls: ['stun:stun.qq.com:3478', 'stun:stun.l.google.com:19302'] }]);
+    expect(r.hasRelay).toBe(false);
+    expect(buildIceServers({}).iceServers).toEqual([]);
+  });
+
+  it('TURN 三件套齐全才启用中继；缺用户名/凭证整体丢弃（缺凭证的 turn 只会让 ICE 空转）', () => {
+    const ok = buildIceServers({ turnUrl: 'turn:relay.example.com:3478', turnUsername: 'u1', turnCredential: 'p1' });
+    expect(ok.hasRelay).toBe(true);
+    expect(ok.iceServers).toEqual([{ urls: ['turn:relay.example.com:3478'], username: 'u1', credential: 'p1' }]);
+    expect(buildIceServers({ turnUrl: 'turn:r.example.com', turnUsername: '', turnCredential: 'p' }).hasRelay).toBe(false);
+    expect(buildIceServers({ turnUrl: 'turn:r.example.com', turnUsername: 'u', turnCredential: '' }).iceServers).toEqual([]);
+  });
+
+  it('非法 URL（错误协议/坏字符）丢弃，不塞给 ICE；stun/turn 条数封顶', () => {
+    const r = buildIceServers({
+      stunUrls: 'http://evil.com, stun:ok.example.com, javascript:alert(1), stun:ok2.example.com',
+      turnUrl: 'turns://secure.example.com:5349?transport=tcp, turn:also.example.com, turn:third.example.com',
+      turnUsername: 'u',
+      turnCredential: 'p',
+    });
+    expect(r.iceServers[0].urls).toEqual(['stun:ok.example.com', 'stun:ok2.example.com']);
+    expect(r.iceServers[1].urls).toEqual(['turns://secure.example.com:5349?transport=tcp', 'turn:also.example.com']);
+    expect(r.hasRelay).toBe(true);
+    const many = buildIceServers({ stunUrls: ['stun:a.com', 'stun:b.com', 'stun:c.com', 'stun:d.com', 'stun:e.com'].join(',') });
+    expect(many.iceServers[0].urls).toHaveLength(4);
   });
 });

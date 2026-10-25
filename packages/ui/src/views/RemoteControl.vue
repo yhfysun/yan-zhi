@@ -20,6 +20,7 @@
             {{ pairing ? '配对中…' : '连接' }}
           </button>
           <div class="rc-hint">首次连接需要在被控端电脑上点击确认；可勾选「信任此设备」后免确认直连。</div>
+          <div class="rc-hint">跨公网：这里填被控端的公网地址（端口需放行或走内网穿透），并在被控端插件设置开启「允许非内网配对」。</div>
         </template>
 
         <template v-else-if="phase === 'pending'">
@@ -63,6 +64,12 @@
           <option value="balance">均衡</option>
           <option value="sharp">清晰</option>
         </select>
+        <select
+          v-if="displays.length > 1" v-model="currentDisplay"
+          class="rc-select" title="采集显示器" @change="selectDisplay(currentDisplay)"
+        >
+          <option v-for="d in displays" :key="d.id" :value="d.id">{{ displayLabel(d) }}</option>
+        </select>
         <button class="rc-tbtn" @click="toggleZoom">{{ zoomLabel }}</button>
         <button class="rc-tbtn" @click="toggleFullscreen">{{ immersive ? '退出全屏' : '全屏' }}</button>
       </div>
@@ -77,6 +84,13 @@
         <button class="rc-mbtn" @click.stop="openFilePanel">🗂 文件传输</button>
         <button class="rc-mbtn" @click.stop="openClipboardPanel">📋 剪贴板</button>
         <button class="rc-mbtn" @click.stop="toggleAudio">{{ audioOn ? '🔊 音频转发：开' : '🔇 音频转发：关' }}</button>
+        <template v-if="displays.length > 1">
+          <div class="rc-menu-label">🖥 采集显示器</div>
+          <button
+            v-for="d in displays" :key="d.id" class="rc-mbtn disp"
+            :class="{ active: currentDisplay === d.id }" @click.stop="selectDisplay(d.id)"
+          >{{ displayLabel(d) }}</button>
+        </template>
         <button class="rc-mbtn" @click.stop="toggleZoom">{{ zoomLabel }}</button>
         <button class="rc-mbtn" @click.stop="toggleFullscreen">{{ immersive ? '⛶ 退出全屏' : '⛶ 全屏' }}</button>
         <button class="rc-mbtn danger" @click.stop="disconnect">✕ 断开连接</button>
@@ -137,7 +151,7 @@
  * 沉浸模式：Fullscreen + 隐藏全部 UI，仅剩可拖动悬浮球（点按呼出 / 3s 自动隐藏）——
  * 「放大后跟直接操作电脑一样」的落点在本页。
  * P1：音频转发开关 / 剪贴板互通 / 文件收发 / 适应窗口与 1:1 缩放（捏合缩放+平移）/
- *     JPEG 模式远端光标自绘。
+ *     JPEG 模式远端光标自绘 / 多显示器切换（displays.info + display.select，悬浮球/顶栏）。
  *
  * ★ 坐标映射（自算显示矩形）：视频/画布按「contain」几何手工定位（object-fit:fill +
  *   显式 left/top/width/height），toScreen 全程用 displayedRect 换算 —— 不依赖
@@ -150,6 +164,10 @@ import { ElMessage } from 'element-plus';
 type Phase = 'setup' | 'pending' | 'live' | 'ended';
 interface ScreenRect { x: number; y: number; w: number; h: number }
 interface FileEntry { name: string; size: number; mtime: number }
+/** 被控端显示器（displays.info；坐标为虚拟屏物理像素，与注入坐标同系） */
+interface RcDisplayInfo { id: string; label: string; primary: boolean; x: number; y: number; w: number; h: number }
+/** ICE 服务器（跨公网打洞/中继；结构同 RTCIceServer） */
+interface RcIceServer { urls: string[]; username?: string; credential?: string }
 
 const RC_FILE_MAX = 500 * 1024 * 1024;
 
@@ -174,6 +192,9 @@ const files = ref<FileEntry[]>([]);
 const audioOn = ref(false);
 const dragOver = ref(false);
 const qualityPreset = ref<'smooth' | 'balance' | 'sharp'>('balance');
+const displays = ref<RcDisplayInfo[]>([]);
+const currentDisplay = ref('');
+const iceServers = ref<RcIceServer[]>([]);
 
 // ---- 缩放几何 ----
 const viewport = reactive({ w: 0, h: 0 });
@@ -457,6 +478,7 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       sessionId = String(msg.sessionId || '');
       if (!sessionToken) sessionToken = String(msg.token || '');
       if (msg.deviceToken) saveIdentity(base, String(msg.deviceToken));
+      if (Array.isArray(msg.iceServers)) iceServers.value = msg.iceServers as RcIceServer[];
       const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
       setMode(m);
       if (msg.screen) setScreen(msg.screen as ScreenRect);
@@ -465,7 +487,13 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
     }
     case 'session.resume':
       phase.value = 'live';
-      setMode(String(msg.mode || '') as 'webrtc' | 'jpeg');
+      if (Array.isArray(msg.iceServers)) iceServers.value = msg.iceServers as RcIceServer[];
+      {
+        const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
+        setMode(m);
+        // 白名单直连/断线重连走 resume：WebRTC 也要补发 offer，否则画面永远起不来
+        if (m === 'webrtc' && !videoRef.value?.srcObject) startWebRtc();
+      }
       break;
     case 'session.mode': {
       const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
@@ -476,6 +504,13 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
     case 'screen.info':
       setScreen(msg.screen as ScreenRect);
       break;
+    case 'displays.info': {
+      // 被控端显示器清单（WebRTC=Electron 枚举；JPEG=代理枚举+整个桌面项）
+      const list = Array.isArray(msg.list) ? (msg.list as RcDisplayInfo[]) : [];
+      displays.value = list.filter((d) => d && d.id);
+      if (msg.current) currentDisplay.value = String(msg.current);
+      break;
+    }
     case 'cursor':
       cursor.x = Number(msg.x) || 0;
       cursor.y = Number(msg.y) || 0;
@@ -551,7 +586,8 @@ function setMode(m: 'webrtc' | 'jpeg'): void {
 // ---- WebRTC（主通道）----
 function startWebRtc(): void {
   teardownWebRtc();
-  const conn = new RTCPeerConnection(); // LAN 内 host candidate 直连，无需 STUN
+  // LAN：host candidate 直连无需任何服务器；跨公网：经 STUN 打洞 / TURN 中继（服务端下发）
+  const conn = new RTCPeerConnection(iceServers.value.length ? { iceServers: iceServers.value } : {});
   pc = conn;
   conn.ontrack = (e) => {
     remoteStream = e.streams[0] || new MediaStream([e.track]);
@@ -850,6 +886,18 @@ function toggleAudio(): void {
   ballMenuOpen.value = false;
 }
 
+// ================= 多显示器切换 =================
+function displayLabel(d: RcDisplayInfo): string {
+  return `${(d.primary ? '主屏 · ' : '') + d.label} ${d.w}×${d.h}`;
+}
+function selectDisplay(id: string): void {
+  ballMenuOpen.value = false;
+  if (!id || id === currentDisplay.value) return;
+  // 乐观更新（host 切换成功后会回发 displays.info 校准），JPEG 模式服务端直接切
+  currentDisplay.value = id;
+  send({ type: 'display.select', displayId: id });
+}
+
 async function sendClipboard(): Promise<void> {
   const t = clipText.value;
   if (!t) return;
@@ -1078,6 +1126,9 @@ function cleanup(): void {
   sessionId = '';
   audioOn.value = false;
   cursor.visible = false;
+  displays.value = [];
+  currentDisplay.value = '';
+  iceServers.value = [];
   zoomMode.value = 'fit';
   zoom.value = 1;
   pan.x = 0;
@@ -1147,9 +1198,12 @@ onBeforeUnmount(() => {
 
 .rc-ball { position: absolute; right: 24px; bottom: 96px; width: 44px; height: 44px; border-radius: 50%; background: rgba(47,107,255,0.85); display: flex; align-items: center; justify-content: center; font-size: 18px; cursor: grab; box-shadow: 0 4px 16px rgba(0,0,0,0.45); transition: opacity 0.3s; z-index: 8; user-select: none; touch-action: none; }
 .rc-ball.hidden { opacity: 0.12; }
-.rc-ball-menu { position: absolute; display: flex; flex-direction: column; gap: 6px; background: #171c23; border: 1px solid #2a323e; border-radius: 10px; padding: 8px; z-index: 9; min-width: 170px; }
+.rc-ball-menu { position: absolute; display: flex; flex-direction: column; gap: 6px; background: #171c23; border: 1px solid #2a323e; border-radius: 10px; padding: 8px; z-index: 9; min-width: 170px; max-height: 70vh; overflow-y: auto; }
 .rc-mbtn { background: transparent; border: none; color: inherit; text-align: left; padding: 8px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; }
 .rc-mbtn:hover { background: #232b36; }
+.rc-mbtn.active { color: #7fa8ff; }
+.rc-mbtn.disp { padding: 6px 10px; font-size: 12px; color: #b9c2cf; }
+.rc-menu-label { font-size: 11px; color: #6d7684; padding: 4px 10px 0; border-top: 1px solid #232b36; margin-top: 2px; }
 .rc-mbtn.danger { color: #f0909d; }
 
 .rc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: 24px; width: min(480px, 92%); background: #171c23; border: 1px solid #2a323e; border-radius: 12px; padding: 12px; z-index: 10; }
