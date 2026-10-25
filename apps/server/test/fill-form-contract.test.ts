@@ -128,16 +128,26 @@ describe('③ 契约：不得静默跳过（必须报告逐字段失败）', () 
 });
 
 describe('④ 不得引入回归（已证伪的猜测不要重复"修"）', () => {
+  /** typeIn 函数体切片：到同缩进的下一个函数声明为止（固定窗口会随函数变长假红 ——
+   *  本文件 2026-10-19 加幂等短路块后 900 窗口即已够不着清空逻辑，本 helper 即为此而修） */
+  function typeInBody(src: string): string {
+    const i = src.indexOf('function typeIn(');
+    if (i < 0) return '';
+    const end = src.indexOf('\n    function ', i + 10);
+    return src.slice(i, end > i ? end : i + 6000);
+  }
+
   it('★★ typeIn 必须保持"清空现有内容"逻辑（防有人以为它是追加而改坏）', () => {
     expect(MAIN, '★ typeIn 的"先清空"逻辑丢失（会变成追加）').toMatch(/nativeValueSetter/);
-    const i = MAIN.indexOf('function typeIn(');
-    const body = MAIN.slice(i, i + 900);
-    expect(body, '★ typeIn 未清空现有内容').toMatch(/set\.call\(el,''\)/);
+    expect(typeInBody(MAIN), '★ typeIn 未清空现有内容').toMatch(/set\.call\(el,''\)/);
   });
 
   it('★★ typeIn 必须保持回读核验（applied 信号 —— 桌面端据此判断"值未生效"）', () => {
-    // ★ 2026-10-12：判据由严格相等改为宽松等价（`applied:_applied`，规范化后相等/互相包含）。
-    expect(MAIN, '★ typeIn 丢了回读核验（受控组件未接受时无法识别）').toMatch(/applied:_applied/);
+    // ★ 2026-10-12：判据由严格相等改为宽松等价（规范化后相等/互相包含）。
+    // ★ 2026-10-19 P0 统一口径：回读走 yzFillCompare + 连续失败 forceStop 守卫，
+    //   局部变量 _applied 改名 _ok —— 断言跟随新形态，语义不变。
+    expect(MAIN, '★ typeIn 丢了回读核验（受控组件未接受时无法识别）').toMatch(/yzFillCompare/);
+    expect(typeInBody(MAIN), '★ typeIn 返回值缺 applied 信号').toMatch(/applied:_ok/);
   });
 
   it('★★ 桌面端必须使用 typeIn 的回读结果判失败（而不是发了事件就算成功）', () => {

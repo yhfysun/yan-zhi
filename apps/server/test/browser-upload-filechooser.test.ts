@@ -85,9 +85,12 @@ describe('browser_upload filechooser 实现（桌面端 main.cjs）', () => {
     expect(main).toMatch(/await send\('Network\.enable'\)/);
     expect(main).toContain("method !== 'Network.requestWillBeSent'");
     expect(main).toContain('netUploads');   // 收集容器
-    // 回执必须把"未观察到任何证据"翻译成"页面尚未接管"，并给出非重复投递的下一步
-    expect(main).toContain('投递成功≠上传开始');
-    expect(main).toContain('不要盲目重复 upload');
+    // 回执必须把"未观察到任何证据"翻译成"上传未启动"，并给出非重复投递的下一步。
+    // ★ 2026-10-24 上传熔断（79c8b787）把回执改成分档（not_started / upload_loop）并改写了
+    //   文案 —— 断言从文案原文改为功能锚点：verified 判据 + not_started 分档 + 防重试指引。
+    expect(main).toMatch(/result\.verified = !!\(ev\.inText \|\| ev\.busy \|\| netSeen\)/);
+    expect(main).toContain("result.code = 'not_started'");
+    expect(main).toContain('不要原样重试');
   });
 });
 

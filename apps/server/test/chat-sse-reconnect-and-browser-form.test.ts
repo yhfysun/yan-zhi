@@ -7,6 +7,8 @@ import path from 'node:path';
  *
  * 背景（用户安装版实报 + server.log 实证）：
  *   1. 长任务经常断，一个会话执行不下去 → 日志 `浏览器工具 X 前端暂时不可达（SSE 断连或超时）`
+   ★ 2026-10-20 起事件流迁移为 WebSocket（87f53688）：重连包装改名 subscribeTaskSse*
+     → subscribeTaskWs*，本组断言跟随新名（机制逐条不变，见各用例）。
  *   2. 表单填写不顺畅 → 输入框看着填了，提交时是空的
  *   3. 视频上传不顺畅 → 投递后页面还在处理，被 18s 总闸误判超时
  *
@@ -28,30 +30,30 @@ function sliceFrom(src: string, startMarker: string, length = 4000): string {
   return i < 0 ? '' : src.slice(i, i + length);
 }
 
-describe('修复一：SSE 断连自动重连（长任务不再中途断死）', () => {
+describe('修复一：WS 断连自动续传重订（长任务不再中途断死）', () => {
   it('存在重连包装函数，且在流结束后查询任务是否仍在运行', () => {
-    expect(chat).toContain('subscribeTaskSseWithReconnect');
+    expect(chat).toContain('subscribeTaskWsWithReconnect');
     // 判定依据必须是「后端任务仍在 running」而不是盲猜 —— 只有真没跑完才续订
-    const fn = sliceFrom(chat, 'async function subscribeTaskSseWithReconnect', 3000);
+    const fn = sliceFrom(chat, 'async function subscribeTaskWsWithReconnect', 3000);
     expect(fn).toContain('/llm/tasks/active');
     expect(fn).toMatch(/status\s*===\s*'running'/);
   });
 
   it('重连必须按 taskEventCounts 续传（since），否则会重放旧事件造成消息重复', () => {
-    const fn = sliceFrom(chat, 'async function subscribeTaskSseWithReconnect', 3000);
+    const fn = sliceFrom(chat, 'async function subscribeTaskWsWithReconnect', 3000);
     expect(fn).toContain('taskEventCounts.get(taskId)');
-    // 续传值作为 subscribeTaskSse 的 since 参数（第 5 个实参）
-    expect(fn).toMatch(/subscribeTaskSse\([^)]*taskEventCounts\.get\(taskId\)/);
+    // 续传值作为 subscribeTaskWs 的 since 参数（第 5 个实参）
+    expect(fn).toMatch(/subscribeTaskWs\([^)]*taskEventCounts\.get\(taskId\)/);
   });
 
   it('重连有次数上限与退避，避免服务端长期不可用时无限空转', () => {
-    const fn = sliceFrom(chat, 'async function subscribeTaskSseWithReconnect', 3000);
+    const fn = sliceFrom(chat, 'async function subscribeTaskWsWithReconnect', 3000);
     expect(fn).toContain('MAX_RETRY');
     expect(fn).toMatch(/Math\.min\(\s*500\s*\*\s*Math\.pow\(2,\s*attempt\)/);
   });
 
   it('用户主动停止（signal.aborted）后不得继续重连', () => {
-    const fn = sliceFrom(chat, 'async function subscribeTaskSseWithReconnect', 3000);
+    const fn = sliceFrom(chat, 'async function subscribeTaskWsWithReconnect', 3000);
     const abortedChecks = fn.match(/signal\.aborted/g) || [];
     // 循环起点 + 退避等待后各一次，至少 2 处守卫
     expect(abortedChecks.length).toBeGreaterThanOrEqual(2);
@@ -59,13 +61,13 @@ describe('修复一：SSE 断连自动重连（长任务不再中途断死）', 
 
   it('主链路 callLlm 必须走重连版本（不能退回裸 subscribeTaskSse）', () => {
     const callLlm = sliceFrom(chat, 'async function callLlm', 12000);
-    expect(callLlm).toContain('subscribeTaskSseWithReconnect(');
+    expect(callLlm).toContain('subscribeTaskWsWithReconnect(');
     // 裸调用只允许出现在重连函数自身与 reconnectActiveTask 内部
-    expect(callLlm).not.toMatch(/await subscribeTaskSse\(/);
+    expect(callLlm).not.toMatch(/await subscribeTaskWs\(/);
   });
 });
 
-describe('修复二：tool:execute 不阻塞 SSE 帧循环（连接不再假死被掐）', () => {
+describe('修复二：tool:execute 不阻塞帧循环（连接不再假死被掐）', () => {
   it('tool:execute 分支用即发即忘派发，禁止在帧循环直接 await 工具执行', () => {
     // 只取 switch 分支体（到下一个 case 之前），避免越界把别的调用算进来
     const start = chat.indexOf("case 'tool:execute':");
@@ -84,10 +86,13 @@ describe('修复二：tool:execute 不阻塞 SSE 帧循环（连接不再假死�
     const start = chat.indexOf("case 'tool:execute':");
     const end = chat.indexOf("case 'file:registered':", start);
     const branch = chat.slice(start, end > start ? end : start + 4000);
+    // 去重：重放的 tool:execute 不重复执行
     expect(branch).toContain('executedToolCallIds');
-    expect(branch).toContain('/tool-result');
-    expect(branch).toContain('postResult');
-    expect(branch).toContain('postError');
+    // ★ 2026-10-20 SSE→WS 迁移（87f53688）：结果回传从 HTTP POST /tool-result
+    //   （postResult/postError 助手）改为 WS 帧 tool_result（callId 对齐），语义不变。
+    const wsResult = branch.match(/sendChatWs\('tool_result'/g) || [];
+    expect(wsResult.length, '成功与失败路径都要回传 tool_result 帧').toBeGreaterThanOrEqual(2);
+    expect(branch).toContain('callId');
   });
 });
 

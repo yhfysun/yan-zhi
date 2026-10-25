@@ -43,10 +43,12 @@ describe('isTaskAbort：区分用户终止与前端故障', () => {
     expect(isTaskAbort(null)).toBe(false);
   });
 
-  it('★ 两处授权 catch 都必须先判 abort（不能被改回一律"前端不可达"）', () => {
+  it('★ 三处授权 catch 都必须先判 abort（不能被改回一律"前端不可达"）', () => {
     const src = readFileSync(resolve(__dirname, '..', 'src', 'llm-task-manager.ts'), 'utf8');
     const hits = src.match(/if \(isTaskAbort\(e, task\.abortController\.signal\)\)/g) || [];
-    expect(hits.length, 'requestPathAuthorization / requestToolAuthorization 两处都要判').toBe(2);
+    // 2026-10-2x 起新增第三处：install_resource 下载确认（installResourceFrontend）——
+    // 同一模式：用户终止 ≠ 前端不可达，模型不得照"重试"再弹一次确认卡。
+    expect(hits.length, 'requestPathAuthorization / requestToolAuthorization / installResource 三处都要判').toBe(3);
     expect(src).toMatch(/任务已被用户终止，授权未完成/);
   });
 });
