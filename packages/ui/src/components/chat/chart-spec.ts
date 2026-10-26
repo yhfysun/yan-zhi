@@ -9,6 +9,8 @@ export interface ChartSpec {
   dim: string;
   /** Y 轴度量列 */
   measure: string;
+  /** 多度量（本体取数）：每个度量一条系列；缺省只看 measure */
+  measures?: string[];
   /** 第二维度（多系列）；缺省为单系列 */
   series?: string;
   /** 服务端已把值换算成百分比 */

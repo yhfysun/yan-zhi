@@ -6,6 +6,7 @@
 
 import type { ChartSpec } from '../components/chat/chart-spec';
 import type { DocumentDataContract, DocumentMetric } from './document-types';
+import type { DashboardWidget } from '@yan-zhi/shared';
 
 export const YDASH_VERSION = 1;
 export const YDASH_EXT = '.ydash';
@@ -138,4 +139,23 @@ export function parseYdash(text: string): YdashResult {
 export function toYdash(dash: Omit<YdashFile, 'version'>): string {
   const file: YdashFile = { version: YDASH_VERSION, ...dash };
   return JSON.stringify(file, null, 2);
+}
+
+/**
+ * .ydash widget → 看板（dashboard_widget）组件。
+ * 两者同构：看板面板只认「取数引用 + 图表定义 + 位置」，行数据打开时活取。
+ * 这里深拷贝一遍，避免看板侧改动反向污染聊天里的卡片。
+ */
+export function toDashboardWidget(w: YdashWidget): DashboardWidget {
+  return {
+    id: w.id,
+    kind: w.kind,
+    ...(w.title ? { title: w.title } : {}),
+    ...(w.contract ? { contract: { ...w.contract } } : {}),
+    ...(w.spec ? { spec: { ...w.spec } } : {}),
+    ...(typeof w.syntax === 'string' ? { syntax: w.syntax } : {}),
+    ...(typeof w.text === 'string' ? { text: w.text } : {}),
+    ...(w.metrics ? { metrics: w.metrics.map((m) => ({ ...m })) } : {}),
+    pos: { ...w.pos },
+  };
 }
