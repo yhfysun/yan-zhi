@@ -41,6 +41,7 @@ import {
 import { listVerificationCodes } from '../services/verification-codes.js';
 import { ensureArtifactDirFor, resolveArtifactDirFor } from '../services/artifact-dir.js';
 import { composeMusic } from '../services/music-render.js';
+import { listDocumentTypes } from '../services/document-type.js';
 import { generateSong } from '../services/music-generate.js';
 import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
 import { singingStatus, installSingingRuntime, importModelZip } from '../services/music-sing-install.js';
@@ -158,6 +159,7 @@ import {
   listOntologiesForAgent,
   searchOntologiesForAgent,
   queryDataForAgent,
+  previewDataForAgent,
   paginateDataForAgent,
   overviewOntologiesForAgent,
   briefOntologyForAgent,
@@ -411,8 +413,10 @@ export const SUPPORTED_API_TOOLS = new Set([
   // 任务类型配置（2026-10-14）：让模型能自己建"任务流程"= 类型 + 智能体 + skill 挂载，不必改代码发版
   'api_task_type_list', 'api_task_type_create', 'api_task_type_update', 'api_task_type_delete',
   // 数据查询（P4.1/P4.2：数据源 / 本体上下文链 / 只读取数 / 翻页）
-  'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_paginate',
+  'api_datasource_list', 'api_ontology_search', 'api_ontology_list', 'api_data_query', 'api_data_preview', 'api_data_paginate',
   'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
+  // 自定义文档类型（D1/D2）：让模型能发现用户建的模板，并用其 code 输出 document 围栏
+  'api_document_type_list',
   // AI 媒体生成（文生图/文生视频，agnes 平台）
   'api_image_generate', 'api_video_generate', 'api_video_status',
   // 文字转语音（模型层 + 系统语音兜底）+ 音色枚举
@@ -4609,6 +4613,13 @@ export async function executeApiTool(
             allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
           }),
         );
+      // 自定义文档类型（D1/D2）：只返回用户自建模板；内置模板由 skill_document_type 提供
+      case 'api_document_type_list': {
+        const keyword = str(args, 'keyword').toLowerCase();
+        const list = listDocumentTypes(requireUser(userId))
+          .filter((t) => !keyword || [t.code, t.name, t.category, t.description].some((s) => (s || '').toLowerCase().includes(keyword)));
+        return ok(list);
+      }
       // 本体上下文链（P4.2）：集合总览 → 单体简略 → 懒加载详情 → 属性值/枚举采样
       case 'api_ontology_overview':
         return ok(
@@ -4639,7 +4650,23 @@ export async function executeApiTool(
             ...(str(args, 'ontology') ? { ontology: str(args, 'ontology') } : {}),
             ...(Object.keys(intent).length ? { intent: intent as QueryIntent } : {}),
             ...(str(args, 'sql') ? { sql: str(args, 'sql') } : {}),
+            // ★ 2026-10-26：此前 contract 从未透传，工具描述/提示词都写着 contract=true，
+            //   但执行侧一直走非契约分支（自由 SQL 过滤器未被拦）。自检闭环要求两侧同口径。
+            contract: args.contract === true,
             limit: num(args, 'limit', 100),
+            allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
+          }),
+        );
+      }
+      case 'api_data_preview': {
+        const intent = obj(args, 'intent');
+        return ok(
+          await previewDataForAgent(requireUser(userId), {
+            ...(str(args, 'datasourceId') ? { datasourceId: str(args, 'datasourceId') } : {}),
+            ...(str(args, 'ontology') ? { ontology: str(args, 'ontology') } : {}),
+            ...(Object.keys(intent).length ? { intent: intent as QueryIntent } : {}),
+            ...(str(args, 'sql') ? { sql: str(args, 'sql') } : {}),
+            contract: args.contract === true,
             allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
           }),
         );

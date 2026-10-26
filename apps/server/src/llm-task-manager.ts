@@ -5,7 +5,7 @@
 // 注：web_search 已移除，联网查询统一委派 pageAgent（真实浏览器搜索引擎）。
 import type { Platform, Model, Message, DeltaToolCall, TokenUsageDetail, ModelPricing } from '@yan-zhi/shared';
 import { formatTaskTypeContext, formatTaskTypeSpecContext, formatParentTaskTypeSpecContext, DEFAULT_CONFIRM_BATCH_SIZE, formatCostNotice, isMissingUsage, estimateTokens } from '@yan-zhi/shared';
-import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, DEFAULT_SKIP_DIRS, type SummaryCache } from '@yan-zhi/core';
+import { LlmClient, getToolRegistry, getApiToolRegistry, ContextWindow, adviceForTruncatedArgs, runCodeDiagnostics, invalidateDiagnosticsCache, resolveToolPath, setBrowserToolConversationId, setBrowserToolWorkspaceDir, DEFAULT_SKIP_DIRS, BrowserRunRecipeTool, type SummaryCache } from '@yan-zhi/core';
 import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes } from './db.js';
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus, TOKEN_DEAD_PLATFORM_IDS_SQL } from './services/token-pool.js';
@@ -50,7 +50,7 @@ import { runAfterToolHooks, runBeforeToolHooks } from './services/tool-hooks.js'
 import { checkToolLoop, FORCE_STOP_MARKER, neutralizeForceStopMarker, noteToolOutcome } from './services/tool-loop-guard.js';
 // ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
 //   判定口径**只在本模块**（decideBrowserExecution），前端不得自行推断（防双执行 + 防 token 外泄）。
-import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, toolNameToAction, bridgeMode, isBridgeTransportError } from './browser-bridge.js';
+import { browserBridgeAvailable, decideBrowserExecution, callBrowserBridge, callBrowserBridgeRaw, toolNameToAction, bridgeMode, isBridgeTransportError } from './browser-bridge.js';
 import {
   createFlowLocks, flowLockFor, flowOwnerAt, tryAcquireFlow, acquireFlow, releaseFlow, flowOwnerOf,
   BROWSER_FLOW_WAIT_MS, SHARED_FLOW, type BrowserFlowLocks,
@@ -5737,12 +5737,45 @@ async function executeTool(
       }
     }
     const exec = decideBrowserExecution(toolNameToAction(toolName));
+    // ★★★ 2026-10-26（实报「发布页表单反复填了 4 分半还没完」的根因之一）：
+    //   `browser_run_recipe` 是**编排层**（内部再发一整套 navigate/upload/fill_form/click/读页），
+    //   不是桌面 action。此前它被当成普通 browser_* 一路透传给桥 ⇒ 主进程判
+    //   「不支持的浏览器 action: run_recipe」⇒ **为"填→读→再填"造的确定性配方在桌面上等于不存在**
+    //   （产物日志实证：抖音发布页 run_script 12 次被熔断、只能手工重试）。
+    //   ⇒ 直连档下：编排在**服务端**跑，每个子动作单独走桥。编排在服务端、动作在主进程，
+    //     单一执行面不变（不会分裂出第二个 Playwright 浏览器）。
+    if (exec === 'bridge' && toolName === 'browser_run_recipe') {
+      const flow = browserFlowKey || SHARED_FLOW;
+      const api = {
+        navigate: (url: string) =>
+          callBrowserBridgeRaw(task.conversationId, 'browser_navigate', { url }, resolveFrontendToolTimeout('browser_navigate'), flow),
+        action: async (action: string, actionArgs: Record<string, unknown>) => {
+          const subTool = `browser_${action}`;
+          const raw = await callBrowserBridgeRaw(task.conversationId, subTool, actionArgs, resolveFrontendToolTimeout(subTool), flow);
+          // ★ 桥把"动作执行失败"编码成 200 + {error}（与工具内 callBrowserApi 抛错同义）。
+          //   不转成异常的话配方会把失败当成功（fill_form 无 failed/state 时会被回读判"已填"）。
+          if (raw?.error && !raw?.timedOut) throw new Error(String(raw.error));
+          return raw;
+        },
+      };
+      const r = await BrowserRunRecipeTool.run(args, api);
+      let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
+      const nudge = noteToolOutcome(task, toolName, (r as any)?.isError !== true);
+      if (nudge) text = `${text}\n\n${nudge}`;
+      return text;
+    }
     if (exec === 'bridge') {
       const bridgeTimeout = resolveFrontendToolTimeout(toolName);
       try {
         // ★ 末位 = 本流在桌面端的流键（锚/归属按它隔离，见 main.cjs 的 flowKeyOf）。
         //   主循环/并发批缺省 = 共享主面板流；子智能体由 ownership 带下来（可能是 bg:<flowId>）。
-        const raw = await callBrowserBridge(task.conversationId, toolName, args, bridgeTimeout, browserFlowKey || SHARED_FLOW);
+        // ★ 随动作下发工作目录（2026-10-26）：桌面端据此把「导出/下载」触发的文件
+        //   落到 <工作目录>/downloads/，并把路径回传给模型。不下发的话只能落系统下载目录，
+        //   模型拿不到可读路径（且此前会被原生「另存为」框卡死，见 main.cjs 下载接管注释）。
+        const argsWithWs = (args && typeof args === 'object')
+          ? { ...(args as Record<string, unknown>), __workspaceDir: task.workspaceDir || undefined }
+          : args;
+        const raw = await callBrowserBridge(task.conversationId, toolName, argsWithWs, bridgeTimeout, browserFlowKey || SHARED_FLOW);
         // ★ 截图归档与 SSE 路径**共用同一后处理出口**（见 archiveDelegatedScreenshot 注释）——
         //   否则"截图进临时区但登记不进 conversation_file"会以新形态复发（C6 刚修过同一处）。
         if (toolName === 'browser_screenshot') {
@@ -5853,6 +5886,9 @@ async function executeTool(
     //     不需要逐个改 33 个工具的 execute 签名（那必然漏）。
     //   ★ 每次调用前都设置（含非 browser 工具）—— 保证不会残留上一个会话的值。
     setBrowserToolConversationId(task.conversationId);
+    // 工作目录同源透传（2026-10-26）：Playwright 链路的「导出/下载」据此落进
+    // <工作目录>/downloads/，模型才能用文件工具直接读到导出的 Excel。
+    setBrowserToolWorkspaceDir(task.workspaceDir);
     const r = await registry.execute(toolName, args, toolCtx);
     let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
     // ★ C 线（2026-10-21）：连续失败提醒 —— A 线（同参重复）/B 线（严格连续同工具）都抓不到
@@ -7895,7 +7931,7 @@ setInterval(() => cleanupTasks(), 5 * 60 * 1000);
 /** UI 交互工具集合 —— 定时任务等无前端场景下排除 */
 const UI_TOOL_NAMES = new Set([
   'ask_user', 'confirm_user', 'configure_model_platform', 'task_plan', 'task_step',
-  'image_analyze',
+  'image_analyze', 'data_query_view',
   'browser_navigate', 'browser_open_external',
 ]);
 
@@ -7907,7 +7943,7 @@ const UI_TOOL_NAMES = new Set([
  */
 export const UI_TOOLS = new Set([
   'ask_user', 'confirm_user', 'configure_model_platform', 'task_plan', 'task_step',
-  'image_analyze',
+  'image_analyze', 'data_query_view',
 ]);
 
 // ============================================================

@@ -185,7 +185,7 @@
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item command="capture">截图当前页</el-dropdown-item>
-            <el-dropdown-item command="record">{{ recState ? '停止录屏' : '录屏（当前窗口）' }}</el-dropdown-item>
+            <el-dropdown-item command="record">{{ screenRecorder.isRecording ? '停止录屏' : '录屏（选区）' }}</el-dropdown-item>
             <el-dropdown-item command="history">浏览历史 ({{ recentList.length }})</el-dropdown-item>
             <el-dropdown-item command="passwords">密码管理 ({{ savedPasswords.length }})</el-dropdown-item>
             <el-dropdown-item command="settings">浏览器设置</el-dropdown-item>
@@ -572,6 +572,7 @@ import BookmarkEditorDialog from './browser/BookmarkEditorDialog.vue';
 import BookmarksManagerDialog from './browser/BookmarksManagerDialog.vue';
 import { moveTabOrder } from './browser/tab-order';
 import { buildOmniboxSuggestions } from './browser/omnibox';
+import { useScreenRecorderStore } from '../stores/screen-recorder';
 import { formatTakeoverNote } from '../composables/chat/takeover-note';
 import {
   addNode,
@@ -761,12 +762,6 @@ onUnmounted(() => {
   clearLoadingWatchdog();
   // 接管留痕只在暂停期间有效：面板卸载时撤掉页面内监听（不上报）
   void endTakeoverRecording(false);
-  // 面板卸载后没有停止入口 → 主动收尾录屏（否则只能等 10 分钟兜底）
-  if (recState.value) {
-    const rid = recState.value.recordId;
-    recState.value = null;
-    try { void (window as any).electronAPI?.screenRecord?.stop?.({ recordId: rid }); } catch { /* ignore */ }
-  }
   // 每日分析调度器一并收口（此前无清理 → 组件卸载后 30 分钟一跳仍在跑）
   if (dailyAnalysisTimer) { dailyAnalysisTimer(); dailyAnalysisTimer = null; }
   // ★ 2026-10-23：卸载时必须把编号层收掉。卸载后本组件不再有任何 watcher/事件，
@@ -2852,37 +2847,13 @@ async function captureCurrentPage() {
   ElMessage.success(`已保存截图：${r.file}（路径已复制）`);
 }
 
-/** 当前窗口录屏（更多菜单）：复用智能体 screen_record 的成熟管线（capturePage 定帧 + ffmpeg → mp4） */
-const recState = ref<{ recordId: string; outPath: string; startedAt: number } | null>(null);
-async function toggleRecording() {
-  const api = (window as any).electronAPI;
-  if (!api?.screenRecord) { ElMessage.warning('当前环境不支持录屏（仅桌面端）'); return; }
-  if (recState.value) {
-    const { recordId } = recState.value;
-    recState.value = null;
-    let r: any = null;
-    try { r = await api.screenRecord.stop({ recordId }); } catch (e: any) { r = { ok: false, error: e?.message || String(e) }; }
-    if (r?.ok) {
-      try { await navigator.clipboard?.writeText(r.outPath); } catch { /* 剪贴板不可用时只提示路径 */ }
-      ElMessage.success(`录屏已保存：${r.outPath}（路径已复制）`);
-    } else {
-      ElMessage.warning('停止录屏失败：' + (r?.error || '未知错误'));
-    }
-    return;
-  }
-  let r: any = null;
-  try { r = await api.screenRecord.start({ fps: 15 }); } catch (e: any) { r = { ok: false, error: e?.message || String(e) }; }
-  if (r?.ok) {
-    recState.value = { recordId: r.recordId, outPath: r.outPath, startedAt: Date.now() };
-    ElMessage.success('开始录屏（单段上限 10 分钟），从「更多」菜单点「停止录屏」结束');
-  } else {
-    ElMessage.error('录屏失败：' + (r?.error || '未知错误'));
-  }
-}
+/** 选区录屏入口（更多菜单）：状态与启停流程在全局 store —— 聊天输入框截图下拉里也有同一入口，
+ *  两处必须共享状态，否则从 A 开始的录制在 B 里停不掉。 */
+const screenRecorder = useScreenRecorderStore();
 
 function onMenuCommand(cmd: string) {
   if (cmd === 'capture') void captureCurrentPage();
-  else if (cmd === 'record') void toggleRecording();
+  else if (cmd === 'record') void screenRecorder.toggle();
   else if (cmd === 'history') openHistory();
   else if (cmd === 'passwords') openPasswordManager();
   else if (cmd === 'settings') showSettings.value = true;

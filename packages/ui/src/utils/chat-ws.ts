@@ -18,6 +18,24 @@ let manualClose = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectDelay = 1000;
 
+// ★★★ 心跳与半开连接探测（2026-10-26 用户实报「任务发出去后没了」）：
+//   症状：后端重启后点发送，界面静默 30 秒才报「WS 请求超时: create_task」，
+//     用户消息既不落库也不显示，连「调用失败」提示都写不进会话（addMessage 同样走 WS）。
+//   根因：TCP **半开连接** —— 后端进程已死/已重启，而浏览器端 `socket.readyState`
+//     仍是 OPEN。`send()` 不报错、消息石沉大海，`ensureSocket()` 只看 readyState
+//     就复用了这条死连接。WebSocket 协议层没有自动保活，不主动探活就无从得知。
+//   ⇒ 定时 ping + 无入站超时判定：把「连接还活着」从假设变成可观测量。
+//     超时即 close，交给既有的 onclose → 指数退避重连。
+const HEARTBEAT_INTERVAL_MS = 15_000;
+/** 超过这个时长没有任何入站消息（含 pong）即判定连接已死 */
+const HEARTBEAT_DEAD_MS = 35_000;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let lastInboundAt = 0;
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+}
+
 const pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 const taskEventCbs = new Set<TaskEventCb>();
 const convEventCbs = new Set<ConvEventCb>();
@@ -39,10 +57,25 @@ function connect(): void {
   const sock = new WebSocket(wsUrl());
   ws = sock;
 
-  sock.onopen = () => { reconnectDelay = 1000; };
+  sock.onopen = () => {
+    reconnectDelay = 1000;
+    lastInboundAt = Date.now();
+    stopHeartbeat();
+    heartbeatTimer = setInterval(() => {
+      // 连接已被替换（重连换了新 socket）→ 旧计时器自行退出，不误判新连接
+      if (sock !== ws || sock.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - lastInboundAt > HEARTBEAT_DEAD_MS) {
+        // 半开：对端早就不在了。close 触发 onclose → 按退避重连，下一次发送走新连接
+        try { sock.close(); } catch { /* onclose 兜底 */ }
+        return;
+      }
+      try { sock.send(JSON.stringify({ type: 'ping' })); } catch { /* onclose 兜底 */ }
+    }, HEARTBEAT_INTERVAL_MS);
+  };
   sock.onerror = () => { /* onclose 兜底 */ };
 
   sock.onmessage = (ev) => {
+    lastInboundAt = Date.now();
     let msg: any;
     try { msg = JSON.parse(String(ev.data)); } catch { return; }
     if (msg && typeof msg.id === 'string' && pending.has(msg.id)) {
@@ -63,6 +96,7 @@ function connect(): void {
 
   sock.onclose = () => {
     ws = null;
+    stopHeartbeat();
     for (const [, p] of pending) p.reject(new Error('WS 已断开'));
     pending.clear();
     // ★ 先通知断开、再排重连：订阅方（store）在回调里决定重订节奏，
@@ -99,7 +133,16 @@ export function requestChatWs<T = any>(type: string, payload: Record<string, unk
     const fire = () => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ id, type, ...payload })); };
     if (sock.readyState === WebSocket.OPEN) fire();
     else sock.addEventListener('open', fire, { once: true });
-    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`WS 请求超时: ${type}`)); } }, 30000);
+    setTimeout(() => {
+      if (!pending.has(id)) return;
+      pending.delete(id);
+      reject(new Error(`WS 请求超时: ${type}`));
+      // ★ 超时即视为连接可能已半开（心跳最多 35s 才发现，用户可能正好落在这个窗口里）：
+      //   主动关闭触发重连，避免用户重试时又对着同一条死连接等满 30 秒。
+      if (sock === ws && sock.readyState === WebSocket.OPEN) {
+        try { sock.close(); } catch { /* onclose 兜底 */ }
+      }
+    }, 30000);
   });
 }
 
@@ -119,6 +162,7 @@ export function onConvEvent(cb: ConvEventCb): () => void {
 
 export function closeChatWs(): void {
   manualClose = true;
+  stopHeartbeat();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   ws?.close();
   ws = null;

@@ -7,6 +7,8 @@ import { resolve } from 'node:path';
 
 const REPO = resolve(__dirname, '../../../..');
 const PANEL = readFileSync(resolve(REPO, 'packages/ui/src/components/BrowserPanel.vue'), 'utf8');
+const INPUT = readFileSync(resolve(REPO, 'packages/ui/src/components/chat/ChatInputArea.vue'), 'utf8');
+const REC_STORE = readFileSync(resolve(REPO, 'packages/ui/src/stores/screen-recorder.ts'), 'utf8');
 const PRELOAD = readFileSync(resolve(REPO, 'apps/desktop/preload.cjs'), 'utf8');
 const MAIN = readFileSync(resolve(REPO, 'apps/desktop/main.cjs'), 'utf8');
 
@@ -61,16 +63,33 @@ describe('截图当前页', () => {
   });
 });
 
-describe('录屏入口（复用 screen_record 管线）', () => {
-  it('更多菜单可开始/停止，走 screenRecord.start/stop', () => {
-    expect(PANEL).toContain('command="record"');
-    expect(PANEL).toContain('async function toggleRecording');
-    expect(PANEL).toContain('screenRecord.start({ fps: 15 })');
-    expect(PANEL).toContain('screenRecord.stop({ recordId })');
+describe('选区录屏（像独立录屏软件）', () => {
+  it('★ 截图下拉里直接有录屏入口（不只藏在浏览器「更多」里）', () => {
+    expect(INPUT).toContain('command="record"');
+    expect(INPUT).toContain('screenRecorder.toggle()');
+    expect(INPUT).toContain("useScreenRecorderStore");
+    // 录制中要有可见标识，否则用户不知道在录
+    expect(INPUT).toContain('shot-rec-dot');
   });
 
-  it('主进程 outPath 可选，默认落到视频目录（渲染层拿不到系统路径）', () => {
+  it('两个入口共用同一份全局状态（否则 A 处开始、B 处停不掉）', () => {
+    expect(REC_STORE).toContain("defineStore('screen-recorder'");
+    expect(PANEL).toContain('useScreenRecorderStore');
+  });
+
+  it('菜单框选区域 → 选择显示器 → getDisplayMedia 录制 → 主进程落盘', () => {
+    expect(PANEL).toContain('command="record"');
+    expect(REC_STORE).toContain("mode: 'region'");
+    expect(REC_STORE).toContain('startRegionRecording');
+    expect(REC_STORE).toContain('screenRecord.selectDisplay');
+    expect(PRELOAD).toContain('screen-record:select-display');
+    expect(PRELOAD).toContain('screen-record:save-blob');
+    expect(MAIN).toContain("ipcMain.handle('screen-record:save-blob'");
+  });
+
+  it('主进程按选区所在显示器授权采集，并落到视频目录', () => {
+    expect(MAIN).toContain('snipCaptureDisplayId');
     expect(MAIN).toContain('YanZhi-Recordings');
-    expect(MAIN).toMatch(/outPath\s*=\s*path\.join\(dir/);
+    expect(MAIN).toContain("mode === 'region'");
   });
 });

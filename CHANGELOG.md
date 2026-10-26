@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- **智能体下载自动落盘（修「导出」卡死）**：页面「导出」类按钮（抖音创作者中心等，页面生成 blob 再下载）此前在桌面端会弹系统「另存为」框——智能体只会 JS/CDP，点不到原生对话框，任务卡在导出那一步。现在 `persist:browser-view` 分区统一接管 `will-download`：智能体动作窗口内（60s）触发的下载一律直接落盘、永不弹框，目录为 `<工作目录>/downloads/`（无工作目录时存 `系统下载目录/言知下载/`，同名自动加 (1) 后缀）；用户手动下载行为不变（仍走 Electron 默认）。`browser_click` 回执直接带 `downloaded.savedPath`（导出类按钮点击后最多等 3s），新增 `downloads` 动作 / `browser_download` 无参列表模式查最近下载；服务端 Playwright 链路同口径（记录 savedPath、工作目录经 `__workspaceDir` 透传）。9 例落盘单测 + 5 例格式化单测；顺带把 `takeover` 补进桌面端能力清单（消除能力清单 vs switch 的不一致）
 - **远控页双页签（控制电脑 / 被连·本机）+ 关闭按钮**：「更多 → 远程控制」打开的独立窗口一页两用——「控制电脑」保持原控制端表单；新增「被连 · 本机」页签：本机二维码（带授权码，手机扫码即连）/ 授权码大字 / 控制端地址 / 通道状态 / 换码 / 复制邀请 / 管理入口（深链设置局域网页签），数据与设置卡同口径（/network/ip + hostkey → /status，走 license 门禁，未启用/手机上显示引导提示）；右上角 ✕ 关闭按钮（桌面子窗口 window.close 即关，浏览器标签关不掉则后退），会话结束态收口为「重新配对 / 关闭页面」两钮（此前结束态没有任何退出出口）；「扫码连接」按钮只在实际有意义的触屏设备上显示（桌面端隐藏，消除「电脑扫谁」的歧义）
 - **远程控制·扫码直接连接**：被控端设置页二维码/复制邀请升级为**带授权码**的链接（http://ip:port/remote?code=码——码与卡片上大字展示的是同一秘密，编进二维码不增加暴露面；手机系统相机扫码 → 打开控制页自动发起配对，被控端确认弹窗照常把关；裸路径引导会把 ?code= 原样带进 hash query）；控制端 /remote 设置卡新增「扫码连接」：jsQR 摄像头取景解码（250ms/帧降采样，取消即停流），也容忍扫到纯授权码文本；新增 utils/rcScan.ts 载荷解析纯函数（URL query/hash/纯文本三形态，5 例守门单测）。新增依赖 jsqr
 - **远程控制入口体验补全**：「更多」菜单新增「远程控制」项（仅插件**启用**时渲染，未安装/停用不出现——用户拍板口径；桌面端点开走独立子窗口承载全屏裸路由 /remote，Web 端同窗口跳转）；设置 → 局域网远控卡片新增**二维码**（手机扫码直达控制页）与「打开控制页」按钮（桌面端 childWindow，Web 端新标签页）；插件管理 remote-control 条目新增「授权码」直达按钮（深链 /settings?pane=lan，Settings 支持 ?pane= 分区名白名单校验）；★ 修既有 bug：邀请文案/设置卡片/二维码给的 `http://ip:port/remote` 裸路径在 hash 路由下经 SPA fallback 会落到**应用首页**而非远控页——router 建路由前做裸路径引导（barePathHash，含 2 例守门单测），存量已复制的邀请链接随之修复
@@ -46,6 +47,7 @@
 - file_edit 修改快照存原始相对路径：before 快照按进程 cwd 读取错位、`/workspace/changes` 按目录前缀过滤永远匹配不上（编辑器提示条不出现）——快照路径现按工作目录解析为绝对路径
 
 ### Changed
+- **pnpm 配置迁到 pnpm-workspace.yaml**：pnpm 10+ 不再读 `package.json` 的 `pnpm` 字段（启动即告警且配置形同废纸）——`overrides`（canvas 置空）与构建脚本策略改写到 `pnpm-workspace.yaml`：`neverBuiltDependencies` 换成 `allowBuilds`（better-sqlite3 13 已免编译，改为显式放行现存的 7 个带安装脚本依赖，保持 pnpm 9 行为）；`packageManager` 同步到 `pnpm@11.20.0`（lockfile 仍为 9.0，`pnpm install --frozen-lockfile` 校验通过）
 - 技能正文截断收敛单点 `truncateSkillBody`（DB 技能内联 2000 与项目技能常量双份、半角/全角文案刚写就漂移 —— 统一为唯一实现，带守卫测试防再分叉）
 - **hunk 级选择性接受（P2-2）**：diff 每个 hunk「✓ 接受此块」——选中的块套用、未选中的回退 before（`services/hunk-apply.ts` LCS 三方合并；盘上被手改时 409 走整文件审查）；聊天 diff 卡片与审查视图均可按块接受
 - **@ 符号级引用（P2-1）**：`@` 浮层支持代码符号（服务端 `GET /workspace/symbols` 用 AST 解析 + 双缓存），选中内联注入「[符号 name · 路径:行号]」

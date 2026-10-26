@@ -71,6 +71,19 @@ describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', 
     assert.match(body, /else if \(response === 1\)/, '选「仍然最小化」必须真最小化');
   });
 
+  test('★ 没有存活网页时不算「任务在跑」（预览页没开不该弹最小化确认）', () => {
+    const start = mainSrc.indexOf('function browserWorkInProgress()');
+    assert.ok(start > -1, '未找到 browserWorkInProgress');
+    const body = mainSrc.slice(start, mainSrc.indexOf('\n}', start) + 2);
+    // ★ 2026-10-26 用户实报「预览页面没开也这样」：只按 10 分钟时间窗判定会让
+    //   零页面的情况下也弹「浏览器任务运行中」。必须同时要求有存活 guest。
+    assert.match(body, /hasLiveBrowserPage\(\)/, '★ 只按时间窗判定 → 没页面也会弹确认框');
+    const liveStart = mainSrc.indexOf('function hasLiveBrowserPage()');
+    assert.ok(liveStart > -1, '未找到 hasLiveBrowserPage');
+    const liveBody = mainSrc.slice(liveStart, mainSrc.indexOf('\n}', liveStart) + 2);
+    assert.match(liveBody, /allGuestWebContents\(\)\.length > 0/, '存活网页必须以实际 guest 为准');
+  });
+
   test('★ 点 X 关窗（隐藏到托盘）任务在跑时也必须停靠', () => {
     const idx = mainSrc.indexOf("mainWindow.on('close'");
     assert.ok(idx > -1, '未找到 close handler');

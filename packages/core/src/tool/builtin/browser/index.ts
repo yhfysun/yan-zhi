@@ -8,7 +8,7 @@ import { toolError } from '../../result';
 //   该原则：core 被前端/bundle 引用时静态解析失败。
 import { getPlatformAdapter } from '../../../platform/types';
 import { joinPath } from '../fs-walk';
-import { getRecipe, listRecipes, runRecipe } from './recipes';
+import { getRecipe, listRecipes, runRecipe, type RecipeApi } from './recipes';
 
 /** 获取 auth token（浏览器/web/桌面端均可访问 localStorage） */
 function getAuthToken(): string | null {
@@ -44,6 +44,25 @@ export function getBrowserToolConversationId(): string | null {
   return currentConversationId;
 }
 
+/**
+ * 当前任务的**工作目录**（与 currentConversationId 同一套模块级透传）。
+ *
+ * ★ 为什么（2026-10-26）：`browser_*` 触发的下载（页面「导出」按钮 = blob 下载）需要
+ *   落到 <工作目录>/downloads/ 才能被模型后续的文件工具直接读取；服务端 Playwright
+ *   链路的路由层拿不到 ToolContext，只能由执行器在每次任务执行前设置。
+ */
+let currentWorkspaceDir = '';
+
+/** 由执行器在调用 browser_* 工具前设置「当前工作目录」 */
+export function setBrowserToolWorkspaceDir(dir: string | null | undefined): void {
+  currentWorkspaceDir = dir ? String(dir) : '';
+}
+
+/** 读取当前工作目录（供守门测试与排障） */
+export function getBrowserToolWorkspaceDir(): string {
+  return currentWorkspaceDir;
+}
+
 /** 调用浏览器 API 端点 */
 async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', body?: unknown): Promise<unknown> {
   // 桌面端：将 /navigate 和 /action 转发到 IPC 直接操作可见的 BrowserView（含虚拟鼠标光标）
@@ -51,6 +70,10 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   if (electron && method === 'POST' && (path === '/navigate' || path === '/action')) {
     let ipcAction = path === '/navigate' ? 'navigate' : (body as any)?.action;
     let ipcArgs = path === '/navigate' ? (body as any) : (() => { const { action, ...rest } = body as any; return rest; })();
+    // 工作目录随动作下发（2026-10-26）：桌面端据此把下载落进 <工作目录>/downloads/
+    if (currentWorkspaceDir && ipcArgs && typeof ipcArgs === 'object') {
+      ipcArgs = { ...ipcArgs, __workspaceDir: currentWorkspaceDir };
+    }
     const result = await electron.browserView.action(null, ipcAction, ipcArgs);
     if (result?.error) throw new Error(result.error);
     return result;
@@ -71,7 +94,13 @@ async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', bod
   const res = await fetch(url, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body !== undefined
+      ? JSON.stringify(
+        isAgentAction && currentWorkspaceDir && body && typeof body === 'object'
+          ? { ...(body as Record<string, unknown>), __workspaceDir: currentWorkspaceDir }
+          : body,
+      )
+      : undefined,
   });
   const json = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (!res.ok || json.error) {
@@ -234,7 +263,7 @@ export class BrowserOpenExternalTool implements BuiltInTool {
 // ========== 点击 ==========
 export class BrowserClickTool implements BuiltInTool {
   name = 'browser_click';
-  description = 'Click an element in the browser. 三种定位方式任选其一：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；坐标仅在前两者都拿不到时使用。Uses real mouse movement. 返回统一结构：status（ok / ambiguous / not_found / stale_index / invalid_args / rejected / failed）、pageChanged、urlChanged；歧义时附 candidates，失败时附 hint。★ 点击原生 checkbox 会被拒绝（status=rejected，附整页 checkbox 候选清单）：改用 browser_fill_form 一次勾选，不要逐个点；同一目标被拒 2 次后放行，自定义控件不受限。选择器文本漂移时会自动按「同标签 + 相似文本」重定位（autoRelocated=fuzzy-text），index 失效时先按 selector 快照、再按文本模糊降级。★ 原生表单控件（checkbox / radio / select）不要用它逐个点：原生控件一律用 browser_fill_form —— 可一次填多个、有回读核验与幂等保护，逐个点既多花步数又容易漏勾。本工具用于：自定义下拉/组件库伪控件展开、联想输入选建议项、普通按钮与链接、以及 fill_form 不适用时的兜底。';
+  description = 'Click an element in the browser. 三种定位方式任选其一：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；坐标仅在前两者都拿不到时使用。Uses real mouse movement. 返回统一结构：status（ok / ambiguous / not_found / stale_index / invalid_args / rejected / failed）、pageChanged、urlChanged；歧义时附 candidates，失败时附 hint。★ 点击原生 checkbox 会被拒绝（status=rejected，附整页 checkbox 候选清单）：改用 browser_fill_form 一次勾选，不要逐个点；同一目标被拒 2 次后放行，自定义控件不受限。选择器文本漂移时会自动按「同标签 + 相似文本」重定位（autoRelocated=fuzzy-text），index 失效时先按 selector 快照、再按文本模糊降级。★ 原生表单控件（checkbox / radio / select）不要用它逐个点：原生控件一律用 browser_fill_form —— 可一次填多个、有回读核验与幂等保护，逐个点既多花步数又容易漏勾。本工具用于：自定义下拉/组件库伪控件展开、联想输入选建议项、普通按钮与链接、以及 fill_form 不适用时的兜底。★ 点击「导出 / 下载 / 生成报表」类按钮时，文件会自动落盘（不弹系统保存框），保存路径写在本回执的 downloaded 字段里 —— 直接用文件工具按该路径读取，不要重复点击导出。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -251,7 +280,11 @@ export class BrowserClickTool implements BuiltInTool {
         return await emptyTargetHint();
       }
       const data = await callBrowserApi('/action', 'POST', { action: 'click', index: args.index, selector: args.selector, x: args.x, y: args.y }) as any;
-      return ok(JSON.stringify(data));
+      const text = JSON.stringify(data);
+      if (data?.downloaded?.savedPath) {
+        return ok(`${text}\n\n已自动下载：${data.downloaded.savedPath}（文件已落盘，后续直接用文件工具按此路径读取，不要重复点击导出）`);
+      }
+      return ok(text);
     } catch (e: any) { return err(e?.message || '点击失败'); }
   }
 }
@@ -1105,18 +1138,29 @@ export class BrowserUploadTool implements BuiltInTool {
 }
 export class BrowserDownloadTool implements BuiltInTool {
   name = 'browser_download';
-  description = 'Trigger a download (click a link or navigate to url) and wait for it to finish, returns the saved path. 触发下载并等待完成，返回保存路径。savePath 不传则用默认下载目录。';
+  description = '触发下载并等待完成，返回保存路径；不传 url/selector 时列出最近的下载记录。'
+    + '★ 点「导出/下载」类按钮时，文件会**自动落盘**（不会弹系统「另存为」框），保存路径已直接写进 browser_click 回执的 downloaded 字段 —— 拿到路径就用文件工具读取，不要重复点导出。'
+    + '本工具的 list 模式用于事后查询（例如下载是页面异步生成、点击时还没开始）。';
   inputSchema = {
     type: 'object',
     properties: {
       url: { type: 'string', description: 'URL to navigate to trigger download (optional if using selector).' },
       selector: { type: 'string', description: 'CSS selector of a link/button to click to trigger download (optional if using url).' },
-      savePath: { type: 'string', description: 'Path to save the downloaded file (optional, defaults to workspace/downloads/).' },
+      savePath: { type: 'string', description: 'Path to save the downloaded file (optional). 相对路径基于工作目录；不传则存到 <工作目录>/downloads/（无工作目录时存到系统下载目录）。' },
+      limit: { type: 'number', description: '仅查询模式：返回最近的 N 条下载记录（默认 10，最多 50）。' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      if (!args.url && !args.selector) return err('需要 url 或 selector 来触发下载');
+      if (!args.url && !args.selector) {
+        const data = await callBrowserApi('/action', 'POST', { action: 'downloads', limit: args.limit }) as any;
+        if (data?.error) return err(data.error);
+        const records = Array.isArray(data?.records) ? data.records : [];
+        if (!records.length) return ok(`最近没有下载记录。下载目录: ${data?.dir || '(未知)'}`);
+        const lines = records.map((r: any) =>
+          `- ${r.filename}（${r.state}${r.bytes ? `，${Math.round(Number(r.bytes) / 1024)}KB` : ''}）\n  ${r.savedPath}`);
+        return ok(`最近下载（目录: ${data?.dir || '(未知)'}）：\n${lines.join('\n')}`);
+      }
       const data = await callBrowserApi('/action', 'POST', { action: 'download', url: args.url, selector: args.selector, savePath: args.savePath }) as any;
       if (data?.error) return err(data.error);
       return ok(`下载完成: ${data.filename}\n保存路径: ${data.savedPath}`);
@@ -1258,6 +1302,24 @@ export class BrowserRunRecipeTool implements BuiltInTool {
     required: ['recipe'],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    return BrowserRunRecipeTool.run(args, {
+      navigate: (url: string) => callBrowserApi('/navigate', 'POST', { url }),
+      action: (action: string, actionArgs: Record<string, unknown>) =>
+        callBrowserApi('/action', 'POST', { action, ...actionArgs }),
+    });
+  }
+
+  /**
+   * 执行体（动作通道可注入）。
+   *
+   * ★ 为什么必须可注入（2026-10-26 实报「发布页表单反复填」）：
+   *   桌面直连档下 `browser_*` 工具全部由桥转发给主进程执行，而 `run_recipe` **不是**
+   *   桌面 action（它内部要再发一整套动作）⇒ 桥直接判「不支持的 action」，
+   *   配方在桌面上等于不存在 —— 而配方正是为"填→读→再填"造的确定性解药（见 recipes.ts 头注）。
+   *   ⇒ 执行器（llm-task-manager）在直连档把「每个子动作走桥」的 api 注进来，
+   *     编排留在服务端、动作仍在主进程，单一执行面不变。
+   */
+  static async run(args: Record<string, unknown>, api: RecipeApi): Promise<McpCallResult> {
     try {
       const recipeId = String(args.recipe || '').trim();
       const recipe = getRecipe(recipeId);

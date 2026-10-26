@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-26
+goal: 桌面管理插件 —— 可后装（.yzp，默认打包不含）；智能体整理桌面 + 图标围栏 + 悬浮组件；基座只加通用 pluginWindow/desktopShell 能力
+phase: 方案(先出方案，不动代码)

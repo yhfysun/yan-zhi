@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   rcNotify: (title, body) => ipcRenderer.invoke('rc:notify', String(title || ''), String(body || '')),
   // 远控托盘状态：上报「远控中」会话（托盘提示/菜单随之更新）
   rcSessionState: (active, device) => ipcRenderer.invoke('rc:session-state', !!active, String(device || '')),
+  // 远控确认弹窗抬升：确认弹窗在主窗口，远控/二维码页是独立子窗口会压在它上面
+  rcRaisePrompt: (on) => ipcRenderer.invoke('rc:raise', !!on),
   // 托盘「一键断开」回调：主进程菜单点击 → 渲染层在 host WS 上发 session.stop {all:true}
   onRcDisconnectAll: (cb) => ipcRenderer.on('rc:disconnect-all', () => { try { cb(); } catch { /* ignore */ } }),
   // 平台标识
@@ -80,6 +82,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     start: (opts) => ipcRenderer.invoke('screen-record:start', opts),
     // opts: { recordId } → { ok, outPath, durationMs, frames, bytes } | { ok:false, error }
     stop: (opts) => ipcRenderer.invoke('screen-record:stop', opts),
+    // ★ 选区录屏（2026-10-26）：先指定选区所在显示器，下一次 getDisplayMedia 就抓这一块屏
+    selectDisplay: (displayId) => ipcRenderer.invoke('screen-record:select-display', displayId),
+    // 渲染层 MediaRecorder 产出的 webm 字节 → 落盘（能转 mp4 就转）：{ ok, file, ext } | { ok:false, error }
+    saveBlob: (data, mime) => ipcRenderer.invoke('screen-record:save-blob', { data, mime }),
   },
 
   // 数据库

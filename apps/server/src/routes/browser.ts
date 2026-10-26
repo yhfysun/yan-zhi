@@ -82,8 +82,28 @@ let lastActivityAt = 0;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟空闲后关闭
 
 // 下载记录（Playwright download 事件收集，内存中保留最近 50 条）
-interface DownloadRecord { url: string; filename: string; time: number; }
+interface DownloadRecord { url: string; filename: string; time: number; savedPath?: string; state?: string; bytes?: number; }
 const downloadRecords: DownloadRecord[] = [];
+/** download action 显式 savePath 的临时覆盖（执行期间有效，与桌面端 main.cjs 同口径） */
+let pendingDownloadSavePath = '';
+/** 最近一次动作下发的工作目录（下载保存基准；listener 拿不到 args，只能靠它） */
+let lastAgentWorkspaceDir = '';
+
+/** 下载保存基准目录：工作目录优先，兜底进程 cwd 下的 workspace/downloads */
+function downloadBaseDir(): string {
+  return lastAgentWorkspaceDir ? path.join(lastAgentWorkspaceDir, 'downloads') : path.resolve('workspace/downloads');
+}
+
+/** 等一条"本次动作之后"完成的下载记录（download action / 事后查询共用） */
+async function waitForDownloadRecord(sinceTime: number, timeoutMs: number): Promise<DownloadRecord | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rec = downloadRecords.find((r) => r.time >= sinceTime && r.state && r.state !== 'progressing');
+    if (rec) return rec;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return null;
+}
 
 /**
  * ★★★ 会话 → 活动页 绑定表（A4 根治，2026-10-10）。
@@ -365,15 +385,22 @@ function attachPageListeners(page: any) {
   //   不在此显式注册 handler 以避免与桌面端实现反向漂移 —— 见 native-dialog.test.ts ④）。
   // 监听下载事件，记录到 downloadRecords
   page.on('download', async (download: any) => {
+    const filename = download.suggestedFilename();
+    // 保存到 workspace/downloads/（绝对化后再回传，模型可直接用文件工具读取）；
+    // download action 显式给了 savePath 时用它的临时覆盖值。
+    const savePath = pendingDownloadSavePath || path.join(downloadBaseDir(), filename);
+    const rec: DownloadRecord = { url: download.url(), filename, time: Date.now(), savedPath: savePath, state: 'progressing' };
+    downloadRecords.unshift(rec);
+    if (downloadRecords.length > 50) downloadRecords.pop();
     try {
-      const filename = download.suggestedFilename();
-      const url = download.url();
-      downloadRecords.unshift({ url, filename, time: Date.now() });
-      if (downloadRecords.length > 50) downloadRecords.pop();
-      // 保存到 workspace/downloads/
-      const savePath = `workspace/downloads/${filename}`;
+      try { await fs.promises.mkdir(path.dirname(savePath), { recursive: true }); } catch {}
       await download.saveAs(savePath);
-    } catch {}
+      rec.state = 'completed';
+      try { rec.bytes = (await fs.promises.stat(savePath)).size; } catch {}
+    } catch (e: any) {
+      rec.state = 'failed';
+      logger.warn(`[download] 保存失败: ${e?.message || e}`);
+    }
   });
   // C5 网络请求完成事件，记录到 networkLog
   page.on('requestfinished', async (req: any) => {
@@ -950,6 +977,11 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
     }
     let result: unknown = null;
     let _actionRetried = false;
+    // ★ 工作目录随动作下发（2026-10-26）：下载监听器（attachPageListeners）拿不到 args，
+    //   在每次动作入口记一份，供「导出/下载」触发时决定落盘目录（工作目录/downloads）。
+    if (typeof args.__workspaceDir === 'string' && args.__workspaceDir.trim()) {
+      lastAgentWorkspaceDir = args.__workspaceDir.trim();
+    }
 
     // 变化检测：操作前采集页面快照
     let beforeState: any = null;
@@ -2061,20 +2093,51 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         break;
       }
       case 'download': {
-        const savePath = args.savePath ? String(args.savePath) : null;
-        const waitP = page.waitForEvent('download', { timeout: 15000 }).catch(() => null);
-        if (args.url) {
-          await page.goto(String(args.url), { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
-        } else if (selector) {
-          await page.locator(selector).click().catch(() => {});
+        // 保存统一由 attachPageListeners 的 download 监听完成（唯一实现，避免两处 saveAs 抢同一文件）；
+        // 这里只负责触发 + 等记录。显式 savePath 通过 pendingDownloadSavePath 覆盖。
+        const since = Date.now();
+        const explicit = args.savePath ? String(args.savePath).trim() : '';
+        pendingDownloadSavePath = explicit
+          ? (path.isAbsolute(explicit) ? explicit : path.join(downloadBaseDir(), explicit))
+          : '';
+        try {
+          if (args.url) {
+            await page.goto(String(args.url), { waitUntil: 'commit', timeout: 15000 }).catch(() => {});
+          } else if (selector) {
+            await page.locator(selector).click().catch(() => {});
+          } else if (args.index !== undefined && args.index !== null) {
+            await page.evaluate(ensureYzReg);
+            await page.evaluate((idx: number) => {
+              const R = (window as any).__yzReg;
+              const el = R.get(idx);
+              if (el) el.click();
+            }, Number(args.index)).catch(() => {});
+          } else {
+            result = { error: 'download 需要 url / selector / index 之一（都不传请改用 downloads 查询最近下载）' };
+            break;
+          }
+          const rec = await waitForDownloadRecord(since, 15000);
+          if (!rec) { result = { error: '未触发下载（超时）' }; break; }
+          if (rec.state === 'failed') { result = { error: '下载保存失败', filename: rec.filename }; break; }
+          result = { filename: rec.filename, savedPath: rec.savedPath, url: rec.url, bytes: rec.bytes };
+        } finally {
+          pendingDownloadSavePath = '';
         }
-        const download: any = await waitP;
-        if (!download) { result = { error: '未触发下载（超时）' }; break; }
-        const filename = download.suggestedFilename();
-        const sp = savePath || `workspace/downloads/${filename}`;
-        try { await fs.promises.mkdir(path.dirname(sp), { recursive: true }); } catch {}
-        await download.saveAs(sp);
-        result = { filename, savedPath: sp, url: download.url() };
+        break;
+      }
+      // ========== C11b 最近下载查询 ==========
+      case 'downloads': {
+        const n = Math.min(Math.max(Number(args.limit) || 10, 1), 50);
+        result = {
+          dir: downloadBaseDir(),
+          records: downloadRecords.slice(0, n).map((r) => ({
+            filename: r.filename,
+            savedPath: r.savedPath,
+            state: r.state || 'completed',
+            bytes: r.bytes,
+            time: r.time,
+          })),
+        };
         break;
       }
       // ========== C12 滚动到元素 / 可见性检测 ==========

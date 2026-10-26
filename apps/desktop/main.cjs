@@ -324,9 +324,21 @@ function applyGuestThrottling() {
   }
 }
 
-/** 最近 10 分钟内有 agent 浏览器动作 → 认为有任务在跑（决定是否值得后台停靠） */
+/** 是否有真正在渲染的网页（两种引擎的存活 guest）——「最小化会暂停页面」只对它成立 */
+function hasLiveBrowserPage() {
+  return allGuestWebContents().length > 0;
+}
+
+/** 最近 10 分钟内有 agent 浏览器动作 **且** 仍有页面在渲染 → 认为有任务在跑（决定是否值得后台停靠）
+ *
+ * ★ 2026-10-26：此前只按时间窗判定 —— 只要 10 分钟内有过动作，哪怕预览页/浏览器面板
+ *   早就关了（零 guest、无页面可暂停），最小化仍弹「浏览器任务运行中」。现在补上
+ *   hasLiveBrowserPage()：没页面就照普通最小化走。任务随后才开页的场景由
+ *   runBrowserAction 里的「动作到达时补停靠」兜底（见该函数 convId 分支）。
+ */
 function browserWorkInProgress() {
-  return lastBrowserActionAt > 0 && Date.now() - lastBrowserActionAt < BACKGROUND_DOCK_IDLE_MS;
+  if (!(lastBrowserActionAt > 0 && Date.now() - lastBrowserActionAt < BACKGROUND_DOCK_IDLE_MS)) return false;
+  return hasLiveBrowserPage();
 }
 
 /**
@@ -2176,6 +2188,43 @@ ipcMain.handle('screen-record:stop', (_e, opts = {}) => {
   if (!rec) return { ok: false, error: '录屏不存在或已停止（recordId 不对？）' };
   return stopRecording(rec).catch((e) => ({ ok: false, error: String(e?.message || e) }));
 });
+
+// ★ 2026-10-26：选区录屏落盘（渲染层 MediaRecorder 产出 webm）。
+// 能转 mp4 就转（与 screen_record 同一条 ffmpeg 解析链），转不了保留 webm —— 绝不丢素材。
+ipcMain.handle('screen-record:save-blob', async (_e, opts = {}) => {
+  try {
+    const data = opts && opts.data;
+    if (!data || !data.length) return { ok: false, error: '空录制数据' };
+    const buf = Buffer.from(data);
+    const dir = path.join(app.getPath('videos') || app.getPath('userData'), 'YanZhi-Recordings');
+    fsRec.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const webm = path.join(dir, `录屏_${ts}.webm`);
+    fsRec.writeFileSync(webm, buf);
+    try {
+      const ff = resolveFfmpegPath();
+      const mp4 = path.join(dir, `录屏_${ts}.mp4`);
+      await new Promise((resolve, reject) => {
+        const p = spawnRec(ff, ['-y', '-i', webm, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', mp4], { stdio: ['ignore', 'ignore', 'pipe'] });
+        let tail = '';
+        p.stderr.on('data', (d) => { tail = (tail + String(d)).slice(-2000); });
+        p.on('error', reject);
+        p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('ffmpeg ' + code + ': ' + tail))));
+      });
+      try {
+        if (fsRec.existsSync(mp4) && fsRec.statSync(mp4).size > 0) {
+          try { fsRec.unlinkSync(webm); } catch { /* 留着也无妨 */ }
+          return { ok: true, file: mp4, ext: 'mp4' };
+        }
+      } catch { /* 落到 webm */ }
+      return { ok: true, file: webm, ext: 'webm', warning: 'mp4 转换失败，已保留 webm' };
+    } catch {
+      return { ok: true, file: webm, ext: 'webm', warning: '缺少可用 ffmpeg，已保留 webm' };
+    }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+});
 // 录屏的窗口被关闭 → 立即收尾落盘（不然 ffmpeg 等不到输入结束，文件不可用）
 function closeRecordingsOfWindow(win) {
   for (const rec of [...activeRecordings.values()]) {
@@ -3405,8 +3454,8 @@ ipcMain.handle('browserView:captureTab', async (_e, tabId) => {
   const wc = guestWebContents(String(tabId || ''));
   if (!wc || wc.isDestroyed()) return { error: '页面未就绪，暂不能截图' };
   // 面板收起时 webview 没有合成面：先给可执行的提示，别让用户对着报错猜
-  if (isWebviewEngine() && !webviewPanelVisible) {
-    return { error: '浏览器面板已收起：展开面板后再点「截图当前页」' };
+  if (isWebviewEngine() && panelReallyHidden(wc)) {
+    return { error: '浏览器窗口当前不可见：把窗口恢复（或展开面板）后再点「截图当前页」' };
   }
   const restore = await revealWebviewForCapture(String(tabId));
   try {
@@ -4355,8 +4404,8 @@ const DESKTOP_BROWSER_ACTIONS = [
   'search', 'next_page', 'prev_page', 'wait_for', 'select_option', 'check', 'uncheck',
   'get_text', 'get_dom', 'wait', 'back', 'forward', 'reload', 'get_url',
   'new_tab', 'switch_tab', 'close_tab', 'get_tabs', 'wait_for_request', 'get_network_log',
-  'extract_list', 'visual_locate', 'download', 'scroll_into_view', 'is_visible', 'drag',
-  'run_script', 'highlight',
+  'extract_list', 'visual_locate', 'download', 'downloads', 'scroll_into_view', 'is_visible', 'drag',
+  'run_script', 'highlight', 'takeover',
 ];
 
 /** 渲染层可查询桌面端支持哪些 action（避免两份硬编码清单漂移） */
@@ -4500,6 +4549,192 @@ async function scriptGateCheck(wc) {
   } catch { return 0; }
 }
 
+/**
+ * 面板是否**真的**不可见 —— 动态核实，不信 `webviewPanelVisible` 这个全局缓存。
+ *
+ * ★★★ 为什么（2026-10-26 实报「面板明明开着，agent 却弹框让用户展开面板」）：
+ *   `webviewPanelVisible` 是**全局单一值**、最后写入者说了算，而 BrowserPanel 可能同时存在于
+ *   多个窗口（主窗口 + 分离出去的浏览器窗口）：任一边收起都会 `hide()` 把全局置假，
+ *   另一边**不会**再发 resize（尺寸本来就没变）⇒ 缓存永久为假。
+ *   ⇒ 截图闸门据此拒掉截图、`get_tabs.panelVisible` 也回假，模型照提示去"请用户展开面板"
+ *   （用户看到的面板就在旁边开着）。判据改为「宿主窗口是否真的可见」，缓存只做快路径。
+ */
+function panelReallyHidden(wc) {
+  if (webviewPanelVisible) return false; // 快路径：缓存说可见
+  try {
+    const win = wc?.getOwnerBrowserWindow?.();
+    if (win && !win.isDestroyed() && win.isVisible() && !win.isMinimized()) {
+      webviewPanelVisible = true; // 动态事实纠正缓存（下次直接走快路径）
+      return false;
+    }
+  } catch { /* 取不到宿主窗口 → 按不可见处理，由调用方的重试兜底 */ }
+  return true;
+}
+
+// ===DOWNLOAD-AUTOSAVE-START=== browser-download-autosave.test.cjs 经此哨兵抽取真实代码
+// ============================================================
+// 智能体下载落盘（2026-10-26，与 B4「原生弹窗」同族）
+//
+// ★ 现场：抖音创作者中心点「导出」= 页面生成 blob → 触发下载。分区
+//   `persist:browser-view` 此前**没有任何** will-download 处理 ⇒ Electron 默认弹
+//   系统「另存为」框。智能体只会 JS/CDP，点不到原生对话框 ⇒ 任务卡在导出那一步
+//   （后续动作还会被这层模态拖到总闸超时）；而 Playwright 链路
+//   （apps/server/src/routes/browser.ts 的 attachPageListeners）早已自动落盘 ——
+//   两条执行面行为不一致。
+// ★ 口径：**智能体动作活动窗口内**触发的下载一律自动落盘、永不弹框：
+//     工具调用带了 `__workspaceDir`（服务端/渲染层随动作下发）→ <工作目录>/downloads/
+//     否则 → 系统下载目录/言知下载/
+//   用户自己点工具栏（没有 agent 动作）触发的下载保持 Electron 默认（弹另存为），
+//   不改变手动浏览体验。
+// ★ 为什么按"活动窗口"而不是"谁点的"：blob 下载在 JS 点击返回后**才**开始，
+//   主进程无法把 will-download 与某次点击精确配对；给一个 60s 的活动窗口最稳。
+// ============================================================
+const DOWNLOAD_ACTIVITY_GRACE_MS = 60000;
+const DOWNLOAD_RECORDS_MAX = 50;
+const DOWNLOAD_FALLBACK_SUBDIR = '言知下载';
+const downloadRecords = [];      // 最近下载（新→旧），供 downloads action 查询
+const downloadWaiters = new Set(); // download action 的等待者（收到落盘完成即 resolve）
+let downloadSeq = 0;
+let agentBrowserActivityUntil = 0;
+let lastAgentWorkspaceDir = '';
+/** download action 显式 savePath 的临时覆盖（执行期间有效，见 case 'download'） */
+let pendingDownloadSavePath = '';
+
+/** 标记"智能体正在操作浏览器"（每次 agent 动作续期，见文件级注释） */
+function markAgentBrowserActivity() {
+  agentBrowserActivityUntil = Date.now() + DOWNLOAD_ACTIVITY_GRACE_MS;
+}
+
+/** 落盘目录：工作目录优先，兜底系统下载目录（用户明确拍板的口径） */
+function resolveDownloadDir(workspaceDir) {
+  const ws = typeof workspaceDir === 'string' ? workspaceDir.trim() : '';
+  if (ws) return path.join(ws, 'downloads');
+  try { return path.join(app.getPath('downloads'), DOWNLOAD_FALLBACK_SUBDIR); }
+  catch { return path.join(require('os').tmpdir(), DOWNLOAD_FALLBACK_SUBDIR); }
+}
+
+/** 同名文件不覆盖：追加 (1)(2)…（导出报表同名是常态） */
+function uniqueDownloadPath(dir, filename) {
+  const safe = String(filename || 'download').replace(/[\\/:*?"<>|]/g, '_') || 'download';
+  const ext = path.extname(safe);
+  const stem = ext ? safe.slice(0, -ext.length) : safe;
+  let candidate = path.join(dir, safe);
+  let i = 1;
+  while (fs.existsSync(candidate) && i < 500) {
+    candidate = path.join(dir, `${stem} (${i})${ext}`);
+    i += 1;
+  }
+  return candidate;
+}
+
+/** 记一条下载并交给等待者（download action / 点击后探测） */
+function pushDownloadRecord(rec) {
+  downloadRecords.unshift(rec);
+  if (downloadRecords.length > DOWNLOAD_RECORDS_MAX) downloadRecords.pop();
+  // 不清空整个集合：并发下载时，前一条记录不该清掉"等后一条"的等待者；
+  // 每个等待者自己判断 seq 并在 finish() 里移除（超时也会移除）。
+  for (const waiter of [...downloadWaiters]) {
+    try { waiter(rec); } catch { /* 单个等待者异常不影响其它 */ }
+  }
+}
+
+/** 等一个 seq 之后完成的下载（超时返回 null） */
+function awaitDownloadSince(beforeSeq, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (rec) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      downloadWaiters.delete(waiter);
+      resolve(rec || null);
+    };
+    const waiter = (rec) => { if (rec.id > beforeSeq) finish(rec); };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    downloadWaiters.add(waiter);
+  });
+}
+
+/** 已安装下载接管的分区 session（Electron 的 Session 对象不保证可挂自定义属性，用 WeakSet） */
+const downloadHandlerSessions = new WeakSet();
+
+/**
+ * 分区级下载接管（**唯一实现**）：BrowserView 与 <webview> guest 共用
+ * `persist:browser-view`，挂一次即覆盖两个引擎。
+ * 每次下载都 `setSavePath` ⇒ 不弹原生「另存为」（agent 无法操作它）。
+ */
+function installBrowserDownloadHandler(sess) {
+  if (!sess || downloadHandlerSessions.has(sess)) return;
+  downloadHandlerSessions.add(sess);
+  sess.on('will-download', (_event, item) => {
+    // 非智能体活动窗口：用户手动下载 —— 保持 Electron 默认（弹另存为）
+    if (Date.now() > agentBrowserActivityUntil) return;
+    const filename = item.getFilename();
+    const target = pendingDownloadSavePath || uniqueDownloadPath(resolveDownloadDir(lastAgentWorkspaceDir), filename);
+    try { fs.mkdirSync(path.dirname(target), { recursive: true }); } catch { /* 目录建不出来时交给 Electron 报错 */ }
+    item.setSavePath(target);
+    const rec = {
+      id: ++downloadSeq,
+      filename,
+      savedPath: target,
+      url: item.getURL(),
+      bytes: 0,
+      state: 'progressing',
+      time: Date.now(),
+    };
+    item.on('updated', () => { rec.bytes = item.getReceivedBytes(); });
+    item.once('done', (_e, state) => {
+      rec.state = state; // completed | cancelled | interrupted
+      rec.bytes = item.getReceivedBytes();
+      rec.time = Date.now();
+      if (rec.state === 'completed') console.log(`[browser-download] ${rec.filename} → ${rec.savedPath} (${rec.bytes}B)`);
+      else console.warn(`[browser-download] ${rec.filename} ${rec.state}`);
+      pushDownloadRecord(rec);
+    });
+  });
+}
+
+/**
+ * 点击后把"这一下触发了下载"的事实直接回给模型。
+ *
+ * ★ 为什么（2026-10-26 实报）：抖音「导出」按钮不是链接，点了以后页面生成 blob 再下载。
+ *   模型点完只知道"点击成功"，不知道文件去了哪，于是要么反复点、要么去猜路径；
+ *   而原生「另存为」框还会把任务彻底卡死。
+ * ★ 延迟代价只落在"像导出/下载的按钮"上：其它点击只做一次内存扫描（微秒级），不加等待。
+ */
+async function attachDownloadToClickResult(clickResult, beforeSeq) {
+  if (!clickResult || typeof clickResult !== 'object'
+    || clickResult.status === 'not_found'
+    || clickResult.status === 'invalid_args' || clickResult.status === 'stale_index') {
+    return clickResult;
+  }
+  const hint = `${clickResult.text || ''} ${clickResult.href || ''}`;
+  // ★ 关键词只收"导出/下载"语义：`保存 / save` 是普通表单按钮的常见文案（保存草稿等），
+  //   放进来会让每次保存白等 3 秒 —— 那不是下载。
+  const looksDownload = /导出|下载|报表|export|download|report|csv|excel|xlsx/i.test(hint)
+    || /^(blob:|data:)/i.test(String(clickResult.href || ''));
+  // 快路径：下载可能已经完成（小文件 blob 极快）
+  let rec = downloadRecords.find((r) => r.id > beforeSeq) || null;
+  if (!rec && looksDownload) {
+    rec = await awaitDownloadSince(beforeSeq, 3000);
+  }
+  if (!rec) {
+    if (looksDownload) {
+      return {
+        ...clickResult,
+        note: `${clickResult.note ? clickResult.note + ' ' : ''}该按钮可能触发下载，但 3 秒内未开始。若文件仍在生成，稍后用 browser_download 不传参数查询最近下载记录。`,
+      };
+    }
+    return clickResult;
+  }
+  return {
+    ...clickResult,
+    downloaded: { filename: rec.filename, savedPath: rec.savedPath, bytes: rec.bytes },
+    note: `${clickResult.note ? clickResult.note + ' ' : ''}已自动下载「${rec.filename}」到 ${rec.savedPath}（未弹保存框）。后续直接用文件工具按此路径读取，不要重复点击导出。`,
+  };
+}
+// ===DOWNLOAD-AUTOSAVE-END===
+
 async function runBrowserAction(convId, tabId, action, args, flow) {
   args = args || {};
   // ★★★ 2026-10-15：本执行流的**流键** = `${convId}::${flow}`（判定本体在 browser-target.cjs 的 flowKeyOf）。
@@ -4522,6 +4757,15 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     // 用户先最小化/关窗、任务后开始：动作到达时补一次停靠。否则页面停在 hidden，
     // creator.douyin.com 这类微前端根本不挂载，后续动作必然超时。
     if (!dockedOffscreen && isWindowOffView()) enterBackgroundDock();
+  }
+  // 下载落盘（见 installBrowserDownloadHandler）：只有 agent 路径才接管。
+  // 桥路径带 convId；渲染层 SSE 路径 convId=null，但 agent 工具会带 __workspaceDir
+  // （服务端/前端随动作下发）；download action 自身也必须接管（它就是干这个的）。
+  if (convId || args.__workspaceDir || action === 'download') {
+    markAgentBrowserActivity();
+    if (typeof args.__workspaceDir === 'string' && args.__workspaceDir.trim()) {
+      lastAgentWorkspaceDir = args.__workspaceDir.trim();
+    }
   }
   // ★★★ 浏览器动作全链路日志（2026-10-10）：这是"面板开了却没导航"这类静默失效的**唯一可靠线索**。
   //   此前 grep 全仓：浏览器动作路径**零日志** —— 出问题时既看不到"有没有收到 action"，
@@ -4757,18 +5001,75 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     //   （dom-ready 事件或 8s 上限，二者先到）。等待是有界的，健康路径（页面已就绪）
     //   **零开销**；慢站路径把"30s 饿死+模型重试"变成"先等一下再一次成功"。
     //   navigate 不在此列：它自身管理 loadURL 竞速（12s），语义不同。
+    //
+    // ★★★ 2026-10-26 二次修正（用户报"智能体跑任务还是很困难"）—— 上一版这个闸有两个硬伤：
+    //
+    //   ① 判据用 `isLoading()`（含所有子资源），等的却是 `dom-ready`（≈DOMContentLoaded）：
+    //      抖音创作者中心这类 SPA 的 load 永远等不到，但 dom-ready **早已触发过**，因此
+    //      await 里那个事件永远不会再来 ⇒ 每个动作老老实实睡满 8000ms。
+    //      实测日志：run_script 8217/9750/8374/8012ms、close_tab 11030ms —— 全是 8s 白等。
+    //      （CDP 实测同一页：readyState 长期停在 "interactive"，文档本身 852 节点、扫描 0.1ms，
+    //        所以慢的**不是**读页，是这个闸。）
+    //    ⇒ 改判据为 `isLoadingMainFrame()`：只有主框架真在换文档时才等，子资源加载不再触发。
+    //
+    //   ② 就算等到 dom-ready，SPA 的**主线程**仍在 hydrate，executeJavaScript 照样被饿死：
+    //      实测 navigate 成功后立刻 get_page_content → 8s 闸 + 15s 超时 = 26.8s 换一个错误，
+    //      同一次的两个 highlight 注入也同时超时（3s）—— 两条独立的 executeJavaScript 同时
+    //      饿死，说明卡的是主线程而非单个工具。
+    //    ⇒ 闸里补一步**主线程响应探测**：用极短的 `executeJavaScript('1')` 做探针，不响应就
+    //      退避重试，直到响应或 8s 上限。探针会被排在主线程队尾，因此它"答得快"就等于
+    //      "现在发真动作能跑"，这正是我们要判定的信号。
+    //
+    //   ③ close_tab / new_tab / switch_tab / get_tabs 不依赖页面文档，一律不等（见
+    //      NO_SETTLE_ACTIONS）—— close_tab 为别人的 tab 白等 8s 纯属浪费。
     if (action !== 'navigate' && wc && typeof wc.isLoading === 'function') {
-      let loadingNow = false;
-      try { loadingNow = !!wc.isLoading(); } catch { /* 取不到按未加载处理 */ }
-      if (loadingNow) {
+      const NO_SETTLE_ACTIONS = new Set(['new_tab', 'switch_tab', 'close_tab', 'get_tabs']);
+      if (!NO_SETTLE_ACTIONS.has(action)) {
         const SETTLE_MS = 8000;
-        await new Promise((resolve) => {
-          let done = false;
-          const finish = () => { if (!done) { done = true; try { wc.removeListener('dom-ready', finish); } catch { /* ignore */ } clearTimeout(timer); resolve(); } };
-          const timer = setTimeout(finish, SETTLE_MS);
-          try { wc.on('dom-ready', finish); } catch { clearTimeout(timer); resolve(); }
-        });
-        console.log(`[browser-action] ${action} 前置等待：页面加载中，已等至就绪/上限(${SETTLE_MS}ms)`);
+        const PROBE_MS = 400;
+        const startedAt = Date.now();
+        const deadline = startedAt + SETTLE_MS;
+
+        // ① 主框架正在换文档 → 等 dom-ready（有界）。子资源加载不触发本分支。
+        let mainFrameLoading = false;
+        try {
+          mainFrameLoading = typeof wc.isLoadingMainFrame === 'function'
+            ? !!wc.isLoadingMainFrame()
+            : false;
+        } catch { /* 取不到按"未在换文档"处理 */ }
+        if (mainFrameLoading) {
+          await new Promise((resolve) => {
+            let done = false;
+            const finish = () => {
+              if (done) return;
+              done = true;
+              try { wc.removeListener('dom-ready', finish); } catch { /* ignore */ }
+              clearTimeout(timer);
+              resolve();
+            };
+            const timer = setTimeout(finish, Math.max(0, deadline - Date.now()));
+            try { wc.on('dom-ready', finish); } catch { clearTimeout(timer); resolve(); }
+          });
+        }
+
+        // ② 主线程响应探测：不响应就退避重试，避免真动作被排进饱和队列后饿死。
+        let probes = 0;
+        while (Date.now() < deadline) {
+          probes += 1;
+          const responsive = await Promise.race([
+            wc.executeJavaScript('1').then(() => true).catch(() => false),
+            new Promise((r) => setTimeout(() => r(false), PROBE_MS)),
+          ]);
+          if (responsive) break;
+        }
+
+        const waited = Date.now() - startedAt;
+        if (waited > 300) {
+          console.log(
+            `[browser-action] ${action} 前置等待：页面仍在忙，已等 ${waited}ms` +
+            `（主框架加载=${mainFrameLoading}，主线程探测 ${probes} 次）`
+          );
+        }
       }
     }
 
@@ -5233,7 +5534,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         return result;
       }
       case 'click': {
-        return await wc.executeJavaScript(`(function(){
+        const beforeClickDownloadSeq = downloadSeq;
+        const clickResult = await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
           // ===OCCLUSION-START=== 遮挡感知 + 自动关闭遮挡层（2026-10-12）；click-occlusion.test.cjs 经此哨兵抽取真实代码
@@ -5296,7 +5598,9 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));
               el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));
               el.click(); // 原生 click：触发默认动作（onClick / 链接跳转 / 表单提交）
-              var res={success:true,via:'dom-click',tag:el.tagName.toLowerCase()};
+              var res={success:true,via:'dom-click',tag:el.tagName.toLowerCase(),
+                text:(el.textContent||'').trim().slice(0,40),
+                href:(el.getAttribute?el.getAttribute('href')||'':'')};
               if(occ){res.occluded=true;res.autoDismissed=autoDismissed;res.covering=coveringInfo;
                 res.note='目标中心被悬浮层遮挡；'+(autoDismissed?'已尝试自动关闭遮挡层，':'未找到可关闭的遮挡层，')+'已直接对目标派发 DOM 点击。请用 get_page_content 复核是否真的生效（未生效说明遮挡层仍阻断，需手动关闭后重试）。';}
               return res;
@@ -5305,7 +5609,9 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               var rect=el.getBoundingClientRect();
               var x=rect.x+rect.width/2,y=rect.y+rect.height/2;
               var tag=A.clickAt(x,y);
-              var res2={success:true,via:'real-mouse',tag:tag};
+              var res2={success:true,via:'real-mouse',tag:tag,
+                text:(el.textContent||'').trim().slice(0,40),
+                href:(el.getAttribute?el.getAttribute('href')||'':'')};
               if(occ){res2.occluded=true;res2.autoDismissed=autoDismissed;res2.covering=coveringInfo;}
               return res2;
             }
@@ -5481,6 +5787,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           }
           return{status:'invalid_args',error:'需要 index、selector 或 x/y'};
         })()`);
+        return await attachDownloadToClickResult(clickResult, beforeClickDownloadSeq);
       }
       case 'type': {
         // ★★★ 主路径：CDP 真键盘输入（2026-10-08）。见 cdpTypeText 注释 ——
@@ -5639,13 +5946,13 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         //   且**持续 6 分钟不自愈**（16:45:51 → 16:51:27，中间隔 20s 重试同样失败）。
         //   ⇒ 面板已知不可见时**直接快速失败**：既省掉后面的"等页面就绪"（页面早就就绪了，
         //     是画面没了，等它毫无意义 —— 实测每次白等 8s），也不让模型再白试几轮。
-        if (isWebviewEngine() && !webviewPanelVisible) {
+        //   ★ 2026-10-26：闸门改用 panelReallyHidden(wc) —— 缓存可能被另一个窗口的 hide()
+        //     置假而永不回真（见 panelReallyHidden 头注），再用它当硬闸门就会"面板开着却拒截图"。
+        if (isWebviewEngine() && panelReallyHidden(wc)) {
           return {
-            error: '截图不可用：浏览器面板当前处于收起/隐藏状态 —— 面板收起时该页面的合成画面不存在，'
-              + 'Chromium 无法截图（但页面仍在运行，读页类工具照常可用）。'
-              + '**不要重复调用 browser_screenshot**：改用 browser_get_page_content（正文 + 带编号的'
-              + '可交互元素）或 browser_get_page_info（元素坐标）读取页面，二者都不依赖可见画面；'
-              + '确实需要视觉定位时，请让用户先把浏览器面板展开。',
+            error: '截图不可用：浏览器窗口当前不可见（最小化/隐藏/被收起）—— 没有合成画面时 Chromium 无法截图（页面仍在运行）。'
+              + '**不要重复调用 browser_screenshot**：改用 browser_get_page_content（正文 + 带编号的可交互元素）'
+              + '或 browser_get_page_info（元素坐标）读页；确需视觉定位时，请用户把浏览器窗口恢复后再试一次。',
           };
         }
         // 面板可见却仍失败 → 属窗口被遮挡/最小化一类，重试一次再报（措辞与上面**区分开**，
@@ -6392,7 +6699,13 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           // ★ suspended（2026-10-19）：休眠 tab 无 wc，但 url 仍可读，agent 可据此判断页面还在。
           tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : (t.url || ''), title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview', agentOpened: t.agentOpened === true, active: id === activeTabId, suspended: t.suspended === true, loading: wc2 && typeof wc2.isLoading === 'function' ? !!wc2.isLoading() : false });
         }
-        return { tabs: tabs2, activeTabId, panelVisible: webviewPanelVisible };
+        return {
+          tabs: tabs2,
+          activeTabId,
+          // ★ 2026-10-26：不能直接回缓存 —— 多窗口下缓存会被另一窗口的 hide() 永久置假，
+          //   提示词据此注入"面板已收起"，模型就会去"请用户展开面板"（见 panelReallyHidden）。
+          panelVisible: !panelReallyHidden(activeTabId ? guestWebContents(activeTabId) : null),
+        };
       }
       // ========== C5 网络请求监听（桌面端用 performance API 轮询） ==========
       case 'wait_for_request': {
@@ -6466,26 +6779,51 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       // 无法真正写入本地文件路径（input.files 只读），一律失败，属于已废弃路径。
       // 需要改上传实现时，只改前面那处 case 'upload'（唯一实现处），不要在此处另开分支。
       case 'download': {
-        const savePath = args.savePath ? String(args.savePath) : null;
-        const sess = wc.session;
-        const downloadP = new Promise((resolve) => {
-          let settled = false;
-          sess.once('will-download', (e, item) => {
-            const filename = item.getFilename();
-            const sp = savePath || path.join(require('os').tmpdir(), filename);
-            try { fs.mkdirSync(path.dirname(sp), { recursive: true }); } catch {}
-            item.setSavePath(sp);
-            item.once('done', () => { if (!settled) { settled = true; resolve({ filename, savedPath: sp, url: item.getURL() }); } });
-            item.once('interrupted', () => { if (!settled) { settled = true; resolve({ error: '下载中断' }); } });
-          });
-          setTimeout(() => { if (!settled) { settled = true; resolve({ error: '未触发下载（超时）' }); } }, 15000);
-        });
-        if (args.url) {
-          wc.downloadURL(String(args.url));
-        } else if (args.selector) {
-          await wc.executeJavaScript(`(function(){var el=window.__yzAssistant.resolve(${JSON.stringify(args.selector)});if(el)el.click();return !!el;})()`).catch(() => null);
+        // 显式 savePath 优先（相对路径基于工作目录）；不传则走分区级自动落盘
+        // （installBrowserDownloadHandler → <工作目录>/downloads/）。
+        const explicitSave = args.savePath ? String(args.savePath).trim() : '';
+        if (explicitSave) {
+          pendingDownloadSavePath = path.isAbsolute(explicitSave)
+            ? explicitSave
+            : path.join(lastAgentWorkspaceDir || resolveDownloadDir(''), explicitSave);
         }
-        return await downloadP;
+        const beforeDownload = downloadSeq;
+        const waitP = awaitDownloadSince(beforeDownload, 20000);
+        try {
+          if (args.url) {
+            wc.downloadURL(String(args.url));
+          } else if (args.selector || args.index != null) {
+            await wc.executeJavaScript(`(function(){
+              var a=${JSON.stringify(args)};
+              var el=a.index!=null?(window.__yzElements&&window.__yzElements[a.index]):window.__yzAssistant.resolve(a.selector);
+              if(el){el.click();return true;}return false;
+            })()`).catch(() => null);
+          } else {
+            return { error: 'download 需要 url / selector / index 之一（都不传请改用 downloads 查询最近下载）' };
+          }
+          const rec = await waitP;
+          if (!rec) return { error: '未触发下载（超时）' };
+          if (rec.state !== 'completed') {
+            return { error: rec.state === 'cancelled' ? '下载被取消' : '下载中断', filename: rec.filename, savedPath: rec.savedPath };
+          }
+          return { filename: rec.filename, savedPath: rec.savedPath, url: rec.url, bytes: rec.bytes };
+        } finally {
+          pendingDownloadSavePath = '';
+        }
+      }
+      // ========== C11b 最近下载查询 ==========
+      case 'downloads': {
+        const n = Math.min(Math.max(Number(args.limit) || 10, 1), DOWNLOAD_RECORDS_MAX);
+        return {
+          dir: resolveDownloadDir(lastAgentWorkspaceDir),
+          records: downloadRecords.slice(0, n).map((r) => ({
+            filename: r.filename,
+            savedPath: r.savedPath,
+            state: r.state,
+            bytes: r.bytes,
+            time: r.time,
+          })),
+        };
       }
       // ========== C12 滚动到元素 / 可见性检测 ==========
       case 'scroll_into_view': {
@@ -6838,7 +7176,20 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     return result;
   } catch (e) {
     try { console.error(`[browser-action] ${action} → THREW: ${(e && e.stack) || e}`); } catch { /* ignore */ }
-    return { error: e?.message || String(e) };
+    const raw = e?.message || String(e);
+    // ★★★ 2026-10-26（实报「发布页表单反复填了 4 分半」）：Electron 的
+    //   "Script failed to execute…" 是**执行上下文被销毁/页面正在导航**的原生文案，对模型零信息量。
+    //   实测模型把它当"选择器不兼容"⇒ 改去写 run_script 硬点按钮 ⇒ 连撞 12 次脚本熔断，
+    //   于是回到"读页 → 再试 → 再失败"的空转。这里翻译成可行动事实，并明确别再走 run_script。
+    if (/Script failed to execute|Execution context|context was destroyed/i.test(raw)) {
+      return {
+        error: `动作 ${action} 未执行：页面此刻正在导航/重载（脚本执行上下文已销毁），**不是选择器问题**。`
+          + '先 browser_get_page_content / browser_get_page_info 读一次页面确认当前状态与元素编号，再决定下一步；'
+          + '**不要改用 browser_run_script 去模拟点击/填表**（同一上下文问题会继续失败，还会撞脚本熔断）。',
+        transient: true,
+      };
+    }
+    return { error: raw };
   }
 }
 
@@ -7674,6 +8025,8 @@ let gLastBasePath = null;
 ipcMain.handle('screenshot:capture', async (e, opts) => {
   // hideApp 由渲染层按设置传入；缺省/旧渲染层一律按隐藏处理（兼容行为不变）
   const hideApp = !(opts && opts.hideApp === false);
+  // ★ 2026-10-26：选区录屏复用同一套框选遮罩，只取矩形 + 显示器信息，不做截图合成。
+  const regionOnly = !!(opts && opts.mode === 'region');
   snipLog('capture start, hideApp=' + hideApp);
   // 上一次会话还可能挂着（用户没确认也没取消就切回主窗口再次点按钮 / 再按一次快捷键）。
   // 这时把旧会话静默取消、直接开新的一次，而不是抛「已有截图会话进行中」把用户卡死——
@@ -7724,7 +8077,7 @@ ipcMain.handle('screenshot:capture', async (e, opts) => {
     overlay.setAlwaysOnTop(true, 'screen-saver');
     let resolveFn;
     const p = new Promise((resolve) => { resolveFn = resolve; });
-    snipSession = { sender: e.sender, win, display: targetDisplay, overlay, settled: false, armedAt: Date.now(), busy: false, resolve: resolveFn, hotkey: hotkeyCtx, baseImage, basePath };
+    snipSession = { sender: e.sender, win, display: targetDisplay, overlay, settled: false, armedAt: Date.now(), busy: false, resolve: resolveFn, hotkey: hotkeyCtx, baseImage, basePath, regionOnly };
     // 焦点离开框选窗（用户切到别的软件/点了别的地方）即自动取消——对齐微信截图。
     // busy（合成/保存对话框进行中，窗口主动 hide）期间不取消。
     // armedAt 保护：窗口刚 show 的头 500ms 内系统可能先派发一次 blur，忽略以免尚未开始就被关掉。
@@ -7956,6 +8309,20 @@ ipcMain.on('snip:confirm', (e, rect) => {
   const s = snipSession;
   if (!s || !s.overlay || e.sender !== s.overlay.webContents) return;
   if (!rect || !(rect.width > 0) || !(rect.height > 0)) return;
+  // 选区录屏：只交矩形与显示器信息（录制由渲染层 getDisplayMedia + MediaRecorder 完成）
+  if (s.regionOnly) {
+    finishSnip({
+      ok: true,
+      mode: 'region',
+      rect,
+      display: {
+        id: String(s.display.id),
+        bounds: s.display.bounds,
+        scaleFactor: s.display.scaleFactor,
+      },
+    });
+    return;
+  }
   requestCompose(s, 'confirm', rect);
 });
 
@@ -7968,6 +8335,7 @@ ipcMain.on('snip:cancel', (e) => {
 ipcMain.on('snip:save-request', (e, rect) => {
   const s = snipSession;
   if (!s || !s.overlay || e.sender !== s.overlay.webContents) return;
+  if (s.regionOnly) return;   // 选区录屏没有"保存截图"语义
   const r = rect && rect.width > 0 && rect.height > 0
     ? rect
     : { x: 0, y: 0, width: s.display.size.width, height: s.display.size.height };
@@ -8140,9 +8508,16 @@ function resolveCdpEndpoint() {
 // Windows 下禁用原生窗口遮挡计算：窗口最小化/隐藏后，Chromium 会把 BrowserView 的
 // webContents 标记为「被完全遮挡」而停止产出新帧；恢复显示后合成器偶发不重新绘制，
 // 表现为预览面板全黑（GPU 合成层残留）。关掉该特性可从根上规避。
-if (process.platform === 'win32') {
-  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
-}
+//
+// ★ WebRtcHideLocalIpsWithMdns（远控 WebRTC 局域网直连的关键）：Chromium 默认把 ICE
+//   host candidate 里的真实内网 IP 换成随机 mDNS 主机名（xxxx.local），本意是防指纹。
+//   手机端（Android WebView）经常解析不了 .local → 双方只有一条走不通的候选，
+//   ICE 迟迟不连通，控制端 12 秒看门狗到点降级成 JPEG（表现为「兼容模式 + 卡 + 无光标」）。
+//   远控是本机主动开放的能力，关掉该混淆让 LAN 内直连按真实 IP 打通。
+const DISABLE_FEATURES = ['WebRtcHideLocalIpsWithMdns'];
+if (process.platform === 'win32') DISABLE_FEATURES.push('CalculateNativeWinOcclusion');
+// ★ 只调一次 appendSwitch：同一个 key 再调会覆盖前一次的值（早期两处分开写会把对方抹掉）
+app.commandLine.appendSwitch('disable-features', DISABLE_FEATURES.join(','));
 
 // 单实例锁：确保**同一实例**同一时间只有一个进程，避免安装新版本后旧进程残留导致数据冲突。
 //
@@ -8294,6 +8669,15 @@ app.whenReady().then(async () => {
     } catch { /* ignore */ }
   })();
 
+  // 下载接管（2026-10-26）：必须在任何 tab 创建之前挂上 —— 否则第一次导出
+  // （如抖音「导出」blob 下载）仍会弹系统「另存为」框，智能体点不到。
+  // 覆盖 BrowserView 与 <webview> 两个引擎（共用 persist:browser-view 分区）。
+  try {
+    installBrowserDownloadHandler(session.fromPartition('persist:browser-view'));
+  } catch (err) {
+    console.warn('[browser-download] 安装下载接管失败:', err && err.message);
+  }
+
   // 远程控制（remote-control 插件）：被控端画面采集授权。
   // 渲染层（Web UI）走 getDisplayMedia 触发本 handler，由主进程挑「选中的显示器整屏」源
   // （rcCaptureDisplayId 为空 = 主显示器；多显示器选择来自被控端确认弹窗/控制端会话中切换），
@@ -8301,6 +8685,14 @@ app.whenReady().then(async () => {
   // 同一条 WebRTC 连接的音频轨道承载。控制端权限由插件配对/白名单把守，本 handler
   // 只在渲染层真的发起 getDisplayMedia 时触发（正常浏览不受影响）。
   let rcCaptureDisplayId = '';
+  // ★ 2026-10-26：选区录屏（用户从浏览器面板「更多」菜单发起）—— 框选完成时记录选区所在的显示器，
+  //   渲染层随后 getDisplayMedia，本 handler 优先给这一块屏（否则多屏时会录错屏）。
+  //   只消费一次，避免影响远控链路后续的选屏。
+  let snipCaptureDisplayId = '';
+  ipcMain.handle('screen-record:select-display', (_e, displayId) => {
+    snipCaptureDisplayId = String(displayId || '');
+    return { ok: true };
+  });
   (function installDisplayMediaHandler() {
     try {
       session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
@@ -8312,6 +8704,10 @@ app.whenReady().then(async () => {
           let picked = null;
           if (rcCaptureDisplayId) {
             picked = sources.find((s) => String(s.display_id) === rcCaptureDisplayId) || null;
+          }
+          if (!picked && snipCaptureDisplayId) {
+            picked = sources.find((s) => String(s.display_id) === snipCaptureDisplayId) || null;
+            snipCaptureDisplayId = '';   // 一次性：录屏拿到流后不再影响后续
           }
           if (!picked) {
             try {
@@ -8376,6 +8772,40 @@ app.whenReady().then(async () => {
         icon: getAppIconPath(),
       });
       n.show();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e && e.message };
+    }
+  });
+
+  // 远控确认弹窗抬升：确认弹窗挂在主窗口，而「被连·本机」二维码页 / 远控页是独立子窗口
+  // （childWindow.open），默认会把主窗口里的弹窗整个盖住，用户根本看不到「允许/拒绝」。
+  // 待确认时把主窗口提到前台并短暂置顶；确认/拒绝后立即取消置顶，避免挡住远控子窗口。
+  let rcRaiseTimer = null;
+  ipcMain.handle('rc:raise', (_e, on) => {
+    try {
+      if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+      if (rcRaiseTimer) {
+        clearTimeout(rcRaiseTimer);
+        rcRaiseTimer = null;
+      }
+      if (on) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.setAlwaysOnTop(true, 'screen-saver');
+        mainWindow.focus();
+        try { mainWindow.flashFrame(true); } catch { /* ignore */ }
+        // 兜底：用户一直不点也不能让主窗口永久压住子窗口
+        rcRaiseTimer = setTimeout(() => {
+          rcRaiseTimer = null;
+          try {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
+          } catch { /* ignore */ }
+        }, 30000);
+      } else {
+        mainWindow.setAlwaysOnTop(false);
+        try { mainWindow.flashFrame(false); } catch { /* ignore */ }
+      }
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e && e.message };

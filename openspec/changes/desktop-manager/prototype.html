@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>桌面管理插件 · 整理前后原型</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #080b12;
+    color: #e8edf7;
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, -apple-system, sans-serif;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  /* ---------- 顶部工具条 ---------- */
+  header {
+    flex: 0 0 56px; display: flex; align-items: center; gap: 16px;
+    padding: 0 20px; background: rgba(255,255,255,.03);
+    border-bottom: 1px solid rgba(255,255,255,.07);
+  }
+  header .title { font-size: 14px; font-weight: 600; letter-spacing: .3px; }
+  header .sub { font-size: 12px; color: #7d889c; }
+  .spacer { flex: 1; }
+  .seg { display: flex; background: rgba(255,255,255,.06); border-radius: 10px; padding: 3px; }
+  .seg button {
+    border: 0; background: transparent; color: #9aa6ba; font-size: 13px;
+    padding: 6px 18px; border-radius: 8px; cursor: pointer; font-family: inherit;
+    transition: background .2s, color .2s;
+  }
+  .seg button.on { background: rgba(255,255,255,.14); color: #fff; }
+  .btn-ai {
+    border: 0; cursor: pointer; font-family: inherit; font-size: 13px;
+    padding: 8px 16px; border-radius: 9px; color: #fff;
+    background: linear-gradient(135deg, #4f6bff, #7a4dff);
+    box-shadow: 0 4px 16px rgba(90,90,255,.35);
+  }
+  .btn-ai:hover { filter: brightness(1.1); }
+
+  /* ---------- 舞台 ---------- */
+  .stage-wrap { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  #stage {
+    position: relative; width: 1280px; height: 960px; flex: none;
+    transform-origin: center center;
+    background:
+      radial-gradient(900px 520px at 18% 12%, rgba(64,130,255,.30), transparent 60%),
+      radial-gradient(760px 520px at 82% 24%, rgba(150,84,255,.24), transparent 62%),
+      radial-gradient(900px 600px at 62% 92%, rgba(24,180,190,.18), transparent 60%),
+      linear-gradient(135deg, #0a1628 0%, #102a4e 46%, #16324f 100%);
+    overflow: hidden;
+  }
+  #stage::after {
+    /* 壁纸纹理 */
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      radial-gradient(circle at 30% 20%, rgba(255,255,255,.05) 0 1px, transparent 1px),
+      radial-gradient(circle at 70% 60%, rgba(255,255,255,.04) 0 1px, transparent 1px);
+    background-size: 240px 240px, 320px 320px;
+  }
+
+  /* ---------- 围栏 ---------- */
+  .fence {
+    position: absolute; z-index: 2; opacity: 0; transform: scale(.96);
+    border-radius: 18px;
+    background: rgba(255,255,255,.055);
+    border: 1px solid rgba(255,255,255,.16);
+    box-shadow: 0 10px 40px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.10);
+    backdrop-filter: blur(10px);
+    transition: opacity .5s ease, transform .5s cubic-bezier(.22,1,.36,1);
+  }
+  .fence.on { opacity: 1; transform: scale(1); }
+  .fence .fh {
+    position: absolute; left: 14px; right: 14px; top: 10px; height: 24px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .fence .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 10px currentColor; }
+  .fence .lbl { font-size: 14px; font-weight: 600; color: #eef3ff; text-shadow: 0 1px 3px rgba(0,0,0,.45); }
+  .fence .cnt {
+    font-size: 11px; color: rgba(255,255,255,.55); margin-left: 2px;
+    background: rgba(255,255,255,.10); border-radius: 20px; padding: 1px 8px;
+  }
+  .fence .grip { margin-left: auto; color: rgba(255,255,255,.35); font-size: 13px; letter-spacing: 2px; }
+
+  /* ---------- 图标 ---------- */
+  .icon {
+    position: absolute; width: 84px; z-index: 4; text-align: center;
+    transition:
+      left .72s cubic-bezier(.22,1,.36,1),
+      top .72s cubic-bezier(.22,1,.36,1);
+    cursor: default; user-select: none;
+  }
+  .icon .tile {
+    width: 46px; height: 46px; margin: 0 auto 5px; border-radius: 11px;
+    display: flex; align-items: center; justify-content: center; font-size: 26px;
+    background: rgba(255,255,255,.10);
+    border: 1px solid rgba(255,255,255,.14);
+    box-shadow: 0 3px 10px rgba(0,0,0,.28);
+  }
+  .icon .nm {
+    font-size: 11px; line-height: 1.35; color: #f2f6ff;
+    text-shadow: 0 1px 3px rgba(0,0,0,.7), 0 0 2px rgba(0,0,0,.6);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    word-break: normal; overflow-wrap: break-word;
+  }
+  .icon.loose .tile { background: rgba(255,255,255,.07); }
+
+  /* ---------- 组件 ---------- */
+  .widget {
+    position: absolute; z-index: 3; opacity: 0; transform: translateY(14px);
+    border-radius: 16px; padding: 14px 16px;
+    background: rgba(16,22,36,.55);
+    border: 1px solid rgba(255,255,255,.13);
+    box-shadow: 0 14px 40px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.08);
+    backdrop-filter: blur(16px);
+    transition: opacity .55s ease, transform .55s cubic-bezier(.22,1,.36,1);
+  }
+  .widget.on { opacity: 1; transform: translateY(0); }
+  .widget .wt { font-size: 12px; color: rgba(255,255,255,.55); margin-bottom: 8px; letter-spacing: .4px; }
+  .clock .hm { font-size: 40px; font-weight: 300; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
+  .clock .dt { font-size: 12px; color: rgba(255,255,255,.62); margin-top: 2px; }
+  .todo { list-style: none; margin: 0; padding: 0; }
+  .todo li { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; padding: 6px 0; color: #dfe6f5; }
+  .todo li .ck {
+    width: 14px; height: 14px; border-radius: 4px; border: 1.5px solid rgba(255,255,255,.35);
+    flex: none; margin-top: 1px; display: flex; align-items: center; justify-content: center;
+    font-size: 10px; color: #7ef0b0;
+  }
+  .todo li.done { color: rgba(255,255,255,.38); text-decoration: line-through; }
+  .todo li.done .ck { border-color: rgba(126,240,176,.6); background: rgba(126,240,176,.15); }
+  .agent { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 12.5px; }
+  .agent .st { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .agent .nm2 { flex: 1; color: #e6ecfa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .agent .pg { font-size: 11px; color: rgba(255,255,255,.45); font-variant-numeric: tabular-nums; }
+  .bar { height: 4px; border-radius: 4px; background: rgba(255,255,255,.10); margin-top: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg,#4f6bff,#8f5bff); }
+  .metric .big { font-size: 30px; font-weight: 500; line-height: 1.15; }
+  .metric .cap { font-size: 11.5px; color: rgba(255,255,255,.55); margin-top: 1px; }
+  .metric .delta { font-size: 11px; color: #7ef0b0; margin-top: 4px; }
+
+  /* ---------- 任务栏 ---------- */
+  .taskbar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 44px; z-index: 5;
+    background: rgba(12,16,26,.62); backdrop-filter: blur(18px);
+    border-top: 1px solid rgba(255,255,255,.08);
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+  }
+  .taskbar .tb {
+    width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center;
+    justify-content: center; font-size: 16px; background: rgba(255,255,255,.07);
+  }
+  .taskbar .tb.win { background: linear-gradient(135deg,#2f7cf6,#6a4dff); }
+  .taskbar .right {
+    position: absolute; right: 16px; font-size: 12px; color: rgba(255,255,255,.75);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- 围栏模式提示 ---------- */
+  .mode-pill {
+    position: absolute; left: 20px; top: 12px; z-index: 6;
+    font-size: 11.5px; color: #cfe0ff; padding: 5px 12px; border-radius: 20px;
+    background: rgba(64,110,255,.22); border: 1px solid rgba(120,160,255,.35);
+    opacity: 0; transform: translateY(-6px); transition: all .4s ease;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .mode-pill.on { opacity: 1; transform: translateY(0); }
+  .mode-pill .live { width: 6px; height: 6px; border-radius: 50%; background: #7ef0b0; box-shadow: 0 0 8px #7ef0b0; }
+
+  /* ---------- 弹窗 ---------- */
+  .mask {
+    position: fixed; inset: 0; z-index: 50; background: rgba(4,7,12,.55);
+    display: none; align-items: center; justify-content: center; backdrop-filter: blur(4px);
+  }
+  .mask.on { display: flex; }
+  .dialog {
+    width: 640px; max-width: 92vw; border-radius: 18px; overflow: hidden;
+    background: #141a26; border: 1px solid rgba(255,255,255,.10);
+    box-shadow: 0 30px 90px rgba(0,0,0,.55);
+    animation: pop .28s cubic-bezier(.22,1,.36,1);
+  }
+  @keyframes pop { from { opacity: 0; transform: translateY(10px) scale(.98); } }
+  .dialog .dh { padding: 18px 22px 14px; border-bottom: 1px solid rgba(255,255,255,.07); }
+  .dialog .dh h3 { margin: 0 0 6px; font-size: 16px; }
+  .dialog .dh p { margin: 0; font-size: 12.5px; color: #8d99ad; line-height: 1.6; }
+  .dialog .db { padding: 8px 22px 4px; max-height: 380px; overflow: auto; }
+  .grp {
+    display: flex; align-items: center; gap: 12px; padding: 11px 0;
+    border-bottom: 1px dashed rgba(255,255,255,.07);
+  }
+  .grp:last-child { border-bottom: 0; }
+  .grp .gck {
+    width: 16px; height: 16px; border-radius: 5px; flex: none;
+    background: #4f6bff; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; color: #fff;
+  }
+  .grp .gn { width: 110px; font-size: 13px; }
+  .grp .gi { flex: 1; font-size: 11.5px; color: #8d99ad; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .grp .gc { font-size: 11.5px; color: #aab6c9; background: rgba(255,255,255,.07); border-radius: 20px; padding: 2px 9px; }
+  .dialog .df {
+    display: flex; align-items: center; gap: 10px; padding: 14px 22px 18px;
+    border-top: 1px solid rgba(255,255,255,.07);
+  }
+  .dialog .tip { flex: 1; font-size: 11.5px; color: #7d889c; }
+  .btn {
+    border: 0; cursor: pointer; font-family: inherit; font-size: 13px;
+    padding: 9px 18px; border-radius: 9px;
+  }
+  .btn.ghost { background: rgba(255,255,255,.08); color: #cfd8e8; }
+  .btn.primary { background: linear-gradient(135deg,#4f6bff,#7a4dff); color: #fff; }
+
+  /* ---------- 结果提示 ---------- */
+  .toast {
+    position: fixed; left: 50%; bottom: 92px; transform: translate(-50%, 20px);
+    z-index: 60; display: flex; align-items: center; gap: 14px;
+    background: rgba(18,24,36,.92); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 12px; padding: 11px 16px; font-size: 13px;
+    box-shadow: 0 16px 50px rgba(0,0,0,.5);
+    opacity: 0; pointer-events: none; transition: all .35s cubic-bezier(.22,1,.36,1);
+  }
+  .toast.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+  .toast .ok { width: 20px; height: 20px; border-radius: 50%; background: rgba(126,240,176,.16); color: #7ef0b0; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+  .toast button { background: transparent; border: 0; color: #8fb0ff; font-family: inherit; font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="title">桌面管理插件 · 交互原型</div>
+    <div class="sub">图标围栏 + 声明式组件 · 演示数据，非真实桌面</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="seg">
+    <button id="segBefore" class="on">整理前</button>
+    <button id="segAfter">整理后</button>
+  </div>
+  <button class="btn-ai" id="btnAi">✨ 让智能体整理</button>
+</header>
+
+<div class="stage-wrap">
+  <div id="stage">
+    <div class="mode-pill" id="modePill"><span class="live"></span>围栏模式已开启 · Ctrl+Alt+D 切回系统桌面</div>
+
+    <div id="fenceLayer"></div>
+    <div id="widgetLayer"></div>
+    <div id="iconLayer"></div>
+
+    <div class="taskbar">
+      <div class="tb win">⊞</div>
+      <div class="tb">🔍</div>
+      <div class="tb">📁</div>
+      <div class="tb">🌐</div>
+      <div class="tb">💬</div>
+      <div class="tb">🧠</div>
+      <div class="right" id="tbClock">--:--</div>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="mask">
+  <div class="dialog">
+    <div class="dh">
+      <h3>整理方案 · 待确认</h3>
+      <p>扫描到桌面共 31 个文件（含 5 个快捷方式）。建议分为 6 组移动到对应文件夹。<br/>移动前会记录操作日志，随时可整批撤销；不会删除任何文件。</p>
+    </div>
+    <div class="db" id="planBody"></div>
+    <div class="df">
+      <span class="tip">智能体不会自行执行，需你确认</span>
+      <button class="btn ghost" id="btnCancel">仅看方案</button>
+      <button class="btn primary" id="btnApply">执行整理</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast">
+  <span class="ok">✓</span>
+  <span id="toastText">已整理 31 个文件</span>
+  <button id="btnUndo">撤销</button>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============ 数据 ============ */
+  var PAD = 14, CELL_H = 104, HEADER = 34, CELL_W_COLS = 4;
+
+  var FENCES = [
+    { id: 'work',    label: '工作文档', color: '#5b8cff', x: 40,  y: 40,  w: 400 },
+    { id: 'report',  label: '报表数据', color: '#37c98b', x: 40,  y: 326, w: 400 },
+    { id: 'setup',   label: '安装包',   color: '#f0a03c', x: 40,  y: 508, w: 400 },
+    { id: 'image',   label: '图片截图', color: '#b07cff', x: 460, y: 40,  w: 400 },
+    { id: 'project', label: '项目·星图', color: '#2fc6c6', x: 460, y: 326, w: 400 },
+    { id: 'common',  label: '常用',     color: '#8ea3c4', x: 460, y: 612, w: 400 }
+  ];
+
+  var MEMBERS = {
+    work: [
+      { n: '需求说明.docx',      e: '📄', t: 'doc' },
+      { n: '报价单-final.xlsx',  e: '📊', t: 'sheet' },
+      { n: '合同扫描.pdf',       e: '📕', t: 'doc' },
+      { n: '项目周报.docx',      e: '📝', t: 'doc' },
+      { n: '会议纪要.md',        e: '🗒️', t: 'doc' },
+      { n: '技术方案.pptx',      e: '📽️', t: 'doc' },
+      { n: '接口文档.pdf',       e: '📘', t: 'doc' },
+      { n: '预算表.xlsx',        e: '📈', t: 'sheet' }
+    ],
+    report: [
+      { n: '销售-10月.xlsx',   e: '📊', t: 'sheet' },
+      { n: '用户增长.xlsx',    e: '📈', t: 'sheet' },
+      { n: '财务报表.xlsx',    e: '🧾', t: 'sheet' },
+      { n: '数据导出.csv',     e: '📋', t: 'sheet' }
+    ],
+    setup: [
+      { n: 'Node-setup.exe',   e: '⚙️', t: 'exe' },
+      { n: '微信安装包.exe',    e: '💬', t: 'exe' },
+      { n: 'VSCodeSetup.exe',  e: '🧩', t: 'exe' }
+    ],
+    image: [
+      { n: '截图 2026-10-26 151203.png', e: '🖼️', t: 'img' },
+      { n: '截图 2026-10-25 094412.png', e: '🖼️', t: 'img' },
+      { n: '产品原型-v3.png',            e: '🎨', t: 'img' },
+      { n: '桌面-整理前.png',            e: '🖼️', t: 'img' },
+      { n: '设计稿-首页.png',            e: '🎨', t: 'img' },
+      { n: '微信图片_20261024.jpg',      e: '🌄', t: 'img' }
+    ],
+    project: [
+      { n: '星图-立项书.docx',   e: '📘', t: 'doc' },
+      { n: '星图-接口约定.md',   e: '🗒️', t: 'doc' },
+      { n: '星图-里程碑.xlsx',   e: '📅', t: 'sheet' },
+      { n: '星图-评审记录.docx', e: '📝', t: 'doc' },
+      { n: '星图-上线清单.md',   e: '✅', t: 'doc' }
+    ],
+    common: [
+      { n: '远程桌面.lnk',   e: '🖥️', t: 'lnk' },
+      { n: '剪映.lnk',       e: '🎬', t: 'lnk' },
+      { n: 'Chrome.lnk',     e: '🌐', t: 'lnk' },
+      { n: '便签.lnk',       e: '🗒️', t: 'lnk' },
+      { n: '待发-客户A',      e: '📤', t: 'doc' }
+    ]
+  };
+
+  var WIDGETS = [
+    { id: 'clock',  cls: 'clock',  x: 880, y: 40,  w: 340, h: 120, title: '' },
+    { id: 'todo',   cls: 'todo-w', x: 880, y: 176, w: 340, h: 300, title: '今日待办' },
+    { id: 'agents', cls: 'agent-w',x: 880, y: 492, w: 340, h: 250, title: '智能体状态' },
+    { id: 'metric', cls: 'metric', x: 880, y: 758, w: 340, h: 122, title: '本周整理' }
+  ];
+
+  /* ============ 工具 ============ */
+  function el(tag, cls, text) {
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (text != null) d.textContent = text;
+    return d;
+  }
+  // 固定种子的伪随机，保证每次打开「乱」得一样
+  var seed = 20261026;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+
+  var stage = document.getElementById('stage');
+  var fenceLayer = document.getElementById('fenceLayer');
+  var iconLayer = document.getElementById('iconLayer');
+  var widgetLayer = document.getElementById('widgetLayer');
+
+  /* ============ 建围栏 ============ */
+  var fenceRects = {};
+  FENCES.forEach(function (f) {
+    var n = MEMBERS[f.id].length;
+    var cols = Math.min(CELL_W_COLS, n);
+    var rows = Math.ceil(n / cols);
+    var h = HEADER + PAD * 2 + rows * CELL_H;
+    fenceRects[f.id] = { x: f.x, y: f.y, w: f.w, h: h };
+
+    var d = el('div', 'fence');
+    d.dataset.fid = f.id;
+    d.style.left = f.x + 'px';
+    d.style.top = f.y + 'px';
+    d.style.width = f.w + 'px';
+    d.style.height = h + 'px';
+
+    var fh = el('div', 'fh');
+    var dot = el('span', 'dot');
+    dot.style.background = f.color;
+    dot.style.color = f.color;
+    var lbl = el('span', 'lbl', f.label);
+    var cnt = el('span', 'cnt', String(n));
+    var grip = el('span', 'grip', '⠿');
+    fh.appendChild(dot); fh.appendChild(lbl); fh.appendChild(cnt); fh.appendChild(grip);
+    d.appendChild(fh);
+    fenceLayer.appendChild(d);
+  });
+
+  /* ============ 建图标 ============ */
+  var icons = [];
+  var idx = 0;
+  FENCES.forEach(function (f) {
+    var list = MEMBERS[f.id];
+    var cols = Math.min(CELL_W_COLS, list.length);
+    var cellW = (f.w - PAD * 2) / cols;
+    list.forEach(function (m, i) {
+      var col = i % cols, row = Math.floor(i / cols);
+      var afterX = f.x + PAD + col * cellW + (cellW - 84) / 2;
+      var afterY = f.y + HEADER + PAD + row * CELL_H + 6;
+
+      // 整理前：带抖动的散落位置（避开左下角回收站）
+      var beforeX = 132 + (idx % 5) * 205 + rnd() * 88 - 28;
+      var beforeY = 26 + Math.floor(idx / 5) * 146 + rnd() * 80 - 22;
+
+      var d = el('div', 'icon');
+      var tile = el('div', 'tile', m.e);
+      var nm = el('div', 'nm', m.n);
+      d.appendChild(tile); d.appendChild(nm);
+      d.style.left = beforeX + 'px';
+      d.style.top = beforeY + 'px';
+      d.style.transitionDelay = (idx % 14) * 14 + 'ms';
+      iconLayer.appendChild(d);
+
+      icons.push({ el: d, before: { x: beforeX, y: beforeY }, after: { x: afterX, y: afterY } });
+      idx++;
+    });
+  });
+
+  // 回收站：不进围栏，保持原位（示意"并非所有东西都要被管"）
+  (function () {
+    var d = el('div', 'icon loose');
+    d.appendChild(el('div', 'tile', '🗑️'));
+    d.appendChild(el('div', 'nm', '回收站'));
+    d.style.left = '28px';
+    d.style.top = '800px';
+    iconLayer.appendChild(d);
+  })();
+
+  /* ============ 建组件 ============ */
+  var clockEl, clockDateEl, metricEl;
+  WIDGETS.forEach(function (w) {
+    var d = el('div', 'widget ' + w.cls);
+    d.style.left = w.x + 'px';
+    d.style.top = w.y + 'px';
+    d.style.width = w.w + 'px';
+    d.style.height = w.h + 'px';
+    d.dataset.wid = w.id;
+    if (w.title) d.appendChild(el('div', 'wt', w.title));
+
+    if (w.id === 'clock') {
+      clockEl = el('div', 'hm', '--:--');
+      clockDateEl = el('div', 'dt', '');
+      d.appendChild(clockEl); d.appendChild(clockDateEl);
+    } else if (w.id === 'todo') {
+      var ul = el('ul', 'todo');
+      [
+        ['确认星图项目上线清单', true],
+        ['整理本周桌面文件', true],
+        ['回复客户A报价单', false],
+        ['评审接口文档 v2', false],
+        ['提交十月销售报表', false]
+      ].forEach(function (it) {
+        var li = el('li', it[1] ? 'done' : '');
+        li.appendChild(el('span', 'ck', it[1] ? '✓' : ''));
+        li.appendChild(el('span', '', it[0]));
+        ul.appendChild(li);
+      });
+      d.appendChild(ul);
+    } else if (w.id === 'agents') {
+      [
+        ['桌面整理助手', '#37c98b', '完成', 100],
+        ['星图项目·周报生成', '#4f6bff', '62%', 62],
+        ['竞品资料收集', '#f0a03c', '38%', 38]
+      ].forEach(function (a) {
+        var row = el('div', 'agent');
+        var st = el('span', 'st');
+        st.style.background = a[1];
+        st.style.boxShadow = '0 0 8px ' + a[1];
+        var nm = el('span', 'nm2', a[0]);
+        var pg = el('span', 'pg', a[2]);
+        row.appendChild(st); row.appendChild(nm); row.appendChild(pg);
+        d.appendChild(row);
+        var bar = el('div', 'bar');
+        var fill = el('i');
+        fill.style.width = a[3] + '%';
+        bar.appendChild(fill);
+        d.appendChild(bar);
+      });
+    } else if (w.id === 'metric') {
+      metricEl = el('div', 'big', '31');
+      d.appendChild(metricEl);
+      d.appendChild(el('div', 'cap', '个文件已归入 6 个围栏'));
+      d.appendChild(el('div', 'delta', '桌面图标减少 90% · 0 个文件被删除'));
+    }
+    widgetLayer.appendChild(d);
+  });
+
+  /* ============ 状态切换 ============ */
+  var state = 'before';
+  var modePill = document.getElementById('modePill');
+  var segBefore = document.getElementById('segBefore');
+  var segAfter = document.getElementById('segAfter');
+
+  function applyState(s) {
+    state = s;
+    var after = s === 'after';
+    segBefore.classList.toggle('on', !after);
+    segAfter.classList.toggle('on', after);
+    modePill.classList.toggle('on', after);
+
+    icons.forEach(function (it) {
+      var p = after ? it.after : it.before;
+      it.el.style.left = p.x + 'px';
+      it.el.style.top = p.y + 'px';
+    });
+    Array.prototype.forEach.call(fenceLayer.children, function (f) {
+      f.classList.toggle('on', after);
+    });
+    Array.prototype.forEach.call(widgetLayer.children, function (w) {
+      w.classList.toggle('on', after);
+    });
+    if (!after) hideToast();
+  }
+
+  segBefore.addEventListener('click', function () { applyState('before'); });
+  segAfter.addEventListener('click', function () { applyState('after'); });
+
+  /* ============ 方案弹窗 ============ */
+  var mask = document.getElementById('mask');
+  var planBody = document.getElementById('planBody');
+  var TARGETS = {
+    work: '桌面/工作文档/', report: '桌面/报表数据/', setup: '桌面/安装包/',
+    image: '桌面/图片截图/', project: '桌面/项目·星图/', common: '桌面/常用/'
+  };
+  FENCES.forEach(function (f) {
+    var row = el('div', 'grp');
+    row.appendChild(el('span', 'gck', '✓'));
+    row.appendChild(el('span', 'gn', f.label));
+    var gi = el('span', 'gi', '→ ' + TARGETS[f.id] + '   ' + MEMBERS[f.id].map(function (m) { return m.n; }).join('、'));
+    row.appendChild(gi);
+    row.appendChild(el('span', 'gc', MEMBERS[f.id].length + ' 个'));
+    planBody.appendChild(row);
+  });
+
+  document.getElementById('btnAi').addEventListener('click', function () { mask.classList.add('on'); });
+  document.getElementById('btnCancel').addEventListener('click', function () { mask.classList.remove('on'); });
+  document.getElementById('btnApply').addEventListener('click', function () {
+    mask.classList.remove('on');
+    applyState('after');
+    showToast('已整理 31 个文件 · 操作已记录，可整批撤销');
+  });
+
+  /* ============ 提示条 ============ */
+  var toast = document.getElementById('toast');
+  var toastText = document.getElementById('toastText');
+  var toastTimer = null;
+  function showToast(msg) {
+    toastText.textContent = msg;
+    toast.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(hideToast, 8000);
+  }
+  function hideToast() { toast.classList.remove('on'); }
+  document.getElementById('btnUndo').addEventListener('click', function () {
+    applyState('before');
+    hideToast();
+  });
+
+  /* ============ 时钟 ============ */
+  function tick() {
+    var d = new Date();
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mm = String(d.getMinutes()).padStart(2, '0');
+    if (clockEl) clockEl.textContent = hh + ':' + mm;
+    var wd = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()];
+    if (clockDateEl) clockDateEl.textContent = d.getFullYear() + ' 年 ' + (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日 · ' + wd;
+    var tb = document.getElementById('tbClock');
+    if (tb) tb.textContent = hh + ':' + mm + '   2026/10/26';
+  }
+  tick();
+  setInterval(tick, 1000);
+
+  /* ============ 自适应缩放 ============ */
+  function fit() {
+    var wrap = stage.parentElement;
+    var s = Math.min((wrap.clientWidth - 32) / 1280, (wrap.clientHeight - 24) / 960);
+    stage.style.transform = 'scale(' + Math.max(0.4, Math.min(1, s)) + ')';
+  }
+  window.addEventListener('resize', fit);
+  fit();
+
+  applyState('before');
+})();
+</script>
+</body>
+</html>

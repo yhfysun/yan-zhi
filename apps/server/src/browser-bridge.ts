@@ -289,6 +289,24 @@ export function formatBridgeResult(action: string, r: any): string {
     if (rt.length > 8000) rt = rt.slice(0, 8000) + `…(截断，原长 ${rt.length})`;
     return `Executed in page. URL: ${r.url || ''}\nResult: ${rt || '(undefined)'}`;
   }
+  // 下载类（2026-10-26）：「导出」按钮触发的文件已自动落盘，路径必须逐字给到模型，
+  // 否则它会以为没下载成功而反复点（也正是原生「另存为」框卡死的成因）。
+  if (action === 'click') {
+    const dl = r.downloaded;
+    if (dl?.savedPath) {
+      return `点击成功；已自动下载「${dl.filename}」到 ${dl.savedPath}（已落盘，直接用文件工具读取，不要重复点导出）`
+        + (r.note ? `\n${r.note}` : '');
+    }
+    if (r.note && r.success) return `点击成功\n${r.note}`;
+  }
+  if (action === 'downloads') {
+    const recs = Array.isArray(r.records) ? r.records : [];
+    if (!recs.length) return `最近没有下载记录（目录: ${r.dir || '-'}）`;
+    return `最近下载（目录: ${r.dir || '-'}）：\n${recs.map((x: any) => `- ${x.filename}（${x.state}）→ ${x.savedPath}`).join('\n')}`;
+  }
+  if (action === 'download') {
+    return r.error ? String(r.error) : `下载完成: ${r.filename}\n保存路径: ${r.savedPath}`;
+  }
   if (r.success) return `${action} 执行成功`;
   return JSON.stringify(r).slice(0, 500);
 }
