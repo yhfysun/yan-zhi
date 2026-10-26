@@ -251,3 +251,8 @@ apps/server/plugins/builtin/
 
 # .zcode 工具数据（plans 等），同 .claude 性质不入库
 .zcode/
+
+# 安卓镜像调试工具（scrcpy 二进制，本地用，不进库）
+/tools/scrcpy/
+# 真机验证截图（一次性证据，不进库）
+/phone-*.png
