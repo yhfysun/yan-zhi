@@ -190,6 +190,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     pinTarget: (convId, flow, tabId) => ipcRenderer.invoke('browserView:pinTarget', convId, flow, tabId),
     unpinTarget: (convId, flow) => ipcRenderer.invoke('browserView:unpinTarget', convId, flow),
     activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
+    // 截图当前页（用户从「更多」菜单触发）：落盘到图片目录，返回 { file }
+    captureTab: (tabId) => ipcRenderer.invoke('browserView:captureTab', tabId),
     ensureActiveTab: (scope) => ipcRenderer.invoke('browserView:ensureActiveTab', scope),
     load: (tabId, url) => ipcRenderer.invoke('browserView:load', tabId, url),
     back: (tabId) => ipcRenderer.invoke('browserView:back', tabId),

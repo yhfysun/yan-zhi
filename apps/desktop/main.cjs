@@ -2069,7 +2069,17 @@ function resolveFfmpegPath() {
 
 ipcMain.handle('screen-record:start', (event, opts = {}) => {
   try {
-    const outPath = String(opts.outPath || '');
+    // ★ 2026-10-24：outPath 改为可选 —— 用户从面板菜单录屏时拿不到系统路径，
+    //   由主进程落到「视频/YanZhi-Recordings」，文件名带时间戳。
+    let outPath = String(opts.outPath || '');
+    if (!outPath) {
+      try {
+        const dir = path.join(app.getPath('videos') || app.getPath('userData'), 'YanZhi-Recordings');
+        fsRec.mkdirSync(dir, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        outPath = path.join(dir, `录屏_${ts}.mp4`);
+      } catch { /* 落默认路径失败 → 走下面的缺参报错 */ }
+    }
     if (!outPath) return { ok: false, error: '缺少产物路径（outPath）' };
     // 目标窗口：task:<convId> → 子窗口 key `task-run-<convId>`；否则调用方窗口（子窗口内录自己）/ 主窗口
     let win = null;
@@ -3357,6 +3367,73 @@ ipcMain.handle('browserView:setTheme', async (_e, tabId) => {
 
 // ★ 2026-10-23：任务收尾统一清编号层（不依赖面板是否还挂着、也不依赖面板的本地状态）。
 ipcMain.handle('browserView:highlightOffAll', () => runHighlightOffAll());
+
+// ★ 2026-10-24：面板「截图当前页」（接入参考客户端的 capture 菜单）。
+//   与 agent 的 browser_screenshot 共用同一条 capturePage 路径：webview 被隐藏时先临时点亮
+//   （隐藏态没有合成 surface，capturePage 必抛），截完复原。文件落到系统图片目录并返回路径。
+/**
+ * CDP 截图兜底：`capturePage` 依赖窗口合成面（被遮挡/最小化时拒绝），
+ * 而 CDP `Page.captureScreenshot` 直接向渲染进程要一帧，多数遮挡场景仍能出图。
+ * debugger 已由别的链路附着时直接复用（不能二次 attach），只 detach 自己 attach 的那次。
+ */
+async function cdpCapturePng(wc) {
+  if (!wc || typeof wc.debugger === 'undefined' || wc.isDestroyed()) return null;
+  const dbg = wc.debugger;
+  let attachedHere = false;
+  try {
+    if (!dbg.isAttached()) { dbg.attach('1.3'); attachedHere = true; }
+    for (const params of [{ format: 'png' }, { format: 'png', fromSurface: false }]) {
+      try {
+        const r = await dbg.sendCommand('Page.captureScreenshot', params);
+        if (r && r.data) return Buffer.from(r.data, 'base64');
+      } catch { /* 换下一种参数再试 */ }
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (attachedHere) { try { dbg.detach(); } catch { /* ignore */ } }
+  }
+}
+
+ipcMain.handle('browserView:captureTab', async (_e, tabId) => {
+  const wc = guestWebContents(String(tabId || ''));
+  if (!wc || wc.isDestroyed()) return { error: '页面未就绪，暂不能截图' };
+  // 面板收起时 webview 没有合成面：先给可执行的提示，别让用户对着报错猜
+  if (isWebviewEngine() && !webviewPanelVisible) {
+    return { error: '浏览器面板已收起：展开面板后再点「截图当前页」' };
+  }
+  const restore = await revealWebviewForCapture(String(tabId));
+  try {
+    let buf = null;
+    let via = 'capture';
+    try {
+      let image = null;
+      try { image = await wc.capturePage(); }
+      catch { await new Promise((r) => setTimeout(r, 400)); image = await wc.capturePage(); }
+      buf = image ? image.toPNG() : null;
+    } catch {
+      buf = null;
+    }
+    if (!buf || !buf.length) {
+      buf = await cdpCapturePng(wc);
+      via = 'cdp';
+    }
+    if (!buf || !buf.length) {
+      return { error: '截图失败：页面暂时无法合成图像（窗口被遮挡或最小化时，请展开窗口后重试）' };
+    }
+    const dir = path.join(app.getPath('pictures'), 'YanZhi-Screenshots');
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const file = path.join(dir, `page-${stamp}.png`);
+    fs.writeFileSync(file, buf);
+    return { file, via };
+  } catch (e) {
+    return { error: (e && e.message) || String(e) };
+  } finally {
+    try { restore(); } catch { /* ignore */ }
+  }
+});
 
 // 收藏夹导入：扫描本机 Chrome/Edge 的 profile 书签（只读）。
 // 返回的 roots 是归一化树，渲染层负责转 id 与合并去重。
@@ -6529,6 +6606,74 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           };
         }
       }
+      case 'takeover': {
+        // ★ 2026-10-24 接管留痕（接入 AgentScope 客户端的 page-agent-takeover-recorder 设计）：
+        //   暂停 = 用户接管页面。此期间用 `isTrusted` 过滤记录用户**真实**改动
+        //   （agent 自己写入派发的合成 input/change 一律不算），恢复时把字段清单交回渲染层，
+        //   由它作为一条观察注入任务 —— 否则 agent 下一轮会把用户手填的值再覆盖一遍。
+        //   ★ 按需开关，不依赖导航/加载事件；页面换文档后监听器天然消失（快照为空即无事发生）。
+        const offTakeover = args.on === false;
+        const takeoverJs = `(function(){
+          var w = window;
+          if (${offTakeover ? 'true' : 'false'}) {
+            var rec = w.__yzTakeover;
+            if (!rec) return { interacted: false, fields: [], omitted: 0 };
+            try { rec.dispose(); } catch (e) {}
+            w.__yzTakeover = null;
+            try { return rec.snapshot(); } catch (e) { return { interacted: false, fields: [], omitted: 0 }; }
+          }
+          if (w.__yzTakeover && w.__yzTakeover.dispose) { try { w.__yzTakeover.dispose(); } catch (e) {} }
+          var fields = [], seen = {}, interacted = false, disposed = false;
+          function labelOf(el) {
+            if (!el || !el.getAttribute) return '';
+            var s = '';
+            try { s = el.getAttribute('aria-label') || ''; } catch (e) {}
+            if (!s && el.labels && el.labels[0]) s = el.labels[0].innerText || el.labels[0].textContent || '';
+            if (!s && el.closest) { var p = el.closest('label'); if (p) s = p.innerText || p.textContent || ''; }
+            if (!s) s = el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('id') || '';
+            s = String(s).replace(/\\s+/g, ' ').trim().slice(0, 60);
+            return s || String(el.tagName || 'field').toLowerCase();
+          }
+          function isField(el) {
+            if (!el || !el.tagName) return false;
+            var t = String(el.tagName).toUpperCase();
+            if (t === 'TEXTAREA' || t === 'SELECT') return true;
+            if (t === 'INPUT') {
+              var ty = String(el.type || '').toLowerCase();
+              return ['hidden', 'submit', 'button', 'reset', 'image'].indexOf(ty) < 0;
+            }
+            return el.isContentEditable === true;
+          }
+          function onEvent(ev) {
+            if (!ev.isTrusted) return;            // 只认浏览器原生事件：agent 的合成事件不算用户操作
+            interacted = true;
+            var el = ev.target;
+            if (ev.type === 'click' || !isField(el)) return;
+            var lb = labelOf(el);
+            if (!lb || seen[lb] || disposed || fields.length >= 200) return;
+            seen[lb] = 1; fields.push(lb);
+          }
+          function dispose() {
+            disposed = true;
+            document.removeEventListener('input', onEvent, true);
+            document.removeEventListener('change', onEvent, true);
+            document.removeEventListener('click', onEvent, true);
+          }
+          document.addEventListener('input', onEvent, true);
+          document.addEventListener('change', onEvent, true);
+          document.addEventListener('click', onEvent, true);
+          w.__yzTakeover = {
+            dispose: dispose,
+            snapshot: function(){ return { interacted: interacted, fields: fields.slice(0, 12), omitted: Math.max(0, fields.length - 12) }; }
+          };
+          return { on: true };
+        })()`;
+        try {
+          return await wc.executeJavaScript(takeoverJs);
+        } catch (e) {
+          return { error: String((e && e.message) || e) };
+        }
+      }
       case 'highlight': {
         // 常驻元素编号高亮开关（2026-10-20）：面板「高亮编号」按钮经 browserView:action 直达这里。
         highlightEnabled = args.on !== false;
@@ -7470,7 +7615,14 @@ function finishSnip(result) {
   // 框选窗不销毁只隐藏：销毁的话下次截图要重新 loadFile 冷启动 renderer（300ms+），
   // 复用后第二次截图页面上次的状态都还在，整体感接近微信。
   try { if (s.overlay && !s.overlay.isDestroyed() && s.overlay.isVisible()) s.overlay.hide(); } catch {}
-  try { if (s.win && !s.win.isDestroyed() && !s.win.isVisible()) s.win.show(); } catch {}
+  // ★ 2026-10-24：从**别的应用**按快捷键截图 → 用 showInactive 回来，不抢焦点。
+  //   用户截完多半要就地 Ctrl+V 粘到原来的应用里；把本应用抢到前台等于把粘贴对象切走。
+  try {
+    if (s.win && !s.win.isDestroyed() && !s.win.isVisible()) {
+      if (s.hotkey && s.hotkey.wasFocused === false) s.win.showInactive();
+      else s.win.show();
+    }
+  } catch {}
   try { s.resolve(result); } catch {}
 }
 
@@ -7510,6 +7662,7 @@ async function getOverlayWindow() {
 }
 let gSnipOverlay = null;
 let gLastFramePath = null;
+let gLastBasePath = null;
 
 ipcMain.handle('screenshot:capture', async (e, opts) => {
   // hideApp 由渲染层按设置传入；缺省/旧渲染层一律按隐藏处理（兼容行为不变）
@@ -7519,20 +7672,44 @@ ipcMain.handle('screenshot:capture', async (e, opts) => {
   // 这时把旧会话静默取消、直接开新的一次，而不是抛「已有截图会话进行中」把用户卡死——
   // 卡死后没有任何 UI 能清理它，只能重启应用。
   if (snipSession) finishSnip({ ok: false, cancelled: true });
+  // 本次会话是否由全局快捷键从**别的应用**触发（决定收尾时抢不抢焦点）
+  const hotkeyCtx = snipHotkeyContext;
+  snipHotkeyContext = null;
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
   try {
     // 0. 框选窗提前准备好：首次调用会冷启动 renderer（唯一的一次 300ms+），
     //    之后全程复用。预热与窗口隐藏并行，不占时序。
     const overlayP = getOverlayWindow();
+    const targetDisplay = electronScreen.getDisplayNearestPoint(electronScreen.getCursorScreenPoint());
 
     // 1. 隐藏主窗口（可关）。30ms 足够 DWM 把窗口摘掉。
     if (win && hideApp) win.hide();
     await sleepMs(30);
 
+    // 1.5 ★ 2026-10-24：亮出遮罩前先冻结一帧（对齐微信截图）。
+    //   遮罩一出现就会抢走鼠标/焦点，页面上的 hover 弹窗、下拉、输入法候选随即消失 ——
+    //   用户实报「hover 的弹窗微信截图能出来，我们截图会消失」。
+    //   ⇒ 在遮罩出现之前把这一帧抓下来当遮罩背景，确认时也从这一帧裁剪，
+    //     "框选时看到的"与"截出来的"永远是同一帧。
+    //   hideApp 语义不变：true 时先隐藏本应用再抓（帧里没有本应用）；false 时抓的是
+    //   用户此刻看到的样子（本应用里的 hover 弹窗也在里面）。
+    let baseImage = null;
+    let basePath = null;
+    try {
+      const pre = await captureFrameClean(targetDisplay);
+      if (pre && pre.image && !pre.image.isEmpty()) {
+        const bp = path.join(app.getPath('temp'), 'yz-snip-base-' + Date.now() + '.png');
+        fs.writeFileSync(bp, pre.image.toPNG());
+        if (gLastBasePath && gLastBasePath !== bp) { try { fs.unlinkSync(gLastBasePath); } catch {} }
+        gLastBasePath = bp;
+        baseImage = pre.image;
+        basePath = bp;
+      }
+    } catch { /* 冻结失败 → requestCompose 回落实时抓帧（原行为） */ }
+
     // 2. 透明框选窗直接铺满光标所在显示器并亮出——实时屏幕透过窗口可见，
     //    框选体验是「在屏幕上画框」，没有任何「先截图再选图」的中间帧。
     const overlay = await overlayP;
-    const targetDisplay = electronScreen.getDisplayNearestPoint(electronScreen.getCursorScreenPoint());
     const b = targetDisplay.bounds;
     try {
       overlay.setBounds({ x: b.x, y: b.y, width: b.width, height: b.height });
@@ -7540,7 +7717,7 @@ ipcMain.handle('screenshot:capture', async (e, opts) => {
     overlay.setAlwaysOnTop(true, 'screen-saver');
     let resolveFn;
     const p = new Promise((resolve) => { resolveFn = resolve; });
-    snipSession = { sender: e.sender, win, display: targetDisplay, overlay, settled: false, armedAt: Date.now(), busy: false, resolve: resolveFn };
+    snipSession = { sender: e.sender, win, display: targetDisplay, overlay, settled: false, armedAt: Date.now(), busy: false, resolve: resolveFn, hotkey: hotkeyCtx, baseImage, basePath };
     // 焦点离开框选窗（用户切到别的软件/点了别的地方）即自动取消——对齐微信截图。
     // busy（合成/保存对话框进行中，窗口主动 hide）期间不取消。
     // armedAt 保护：窗口刚 show 的头 500ms 内系统可能先派发一次 blur，忽略以免尚未开始就被关掉。
@@ -7561,6 +7738,10 @@ ipcMain.handle('screenshot:capture', async (e, opts) => {
       if (snipSession && snipSession.overlay === overlay) finishSnip({ ok: false, cancelled: true });
     }, 5 * 60 * 1000);
     // 通知页面重置为新会话；页面回报 ready（纯状态重置，无图可等，<10ms）后亮窗。
+    // 冻结帧先下发（无则空串 → 回落实时背景），页面把它铺成遮罩背景。
+    let baseUrl = '';
+    try { baseUrl = basePath ? 'file:///' + encodeURI(basePath.replace(/\\/g, '/')) : ''; } catch { baseUrl = ''; }
+    try { overlay.webContents.send('snip:freeze', { frameUrl: baseUrl }); } catch {}
     overlay.webContents.send('snip:new-session');
     await new Promise((resolve) => {
       const s0 = snipSession;
@@ -7677,15 +7858,22 @@ function requestCompose(s, action, rect) {
   try { s.overlay.hide(); } catch {}
   setTimeout(async () => {
     try {
-      const cap = await captureFrameClean(s.display);
+      // ★ 2026-10-24：优先用亮窗前的冻结帧 —— 遮罩出现后实时屏幕已经被遮罩/焦点变化污染
+      //   （hover 弹窗消失），重新抓帧会与用户框选时看到的画面不一致。
+      const cap = (s.baseImage && !s.baseImage.isEmpty())
+        ? { image: s.baseImage }
+        : await captureFrameClean(s.display);
       if (!cap) {
         const msg = '屏幕画面捕获异常（全黑）。已把样本存到 logs/snip-black.png，请联系开发者排查';
         if (action === 'confirm') finishSnip({ ok: false, error: msg });
         else { s.busy = false; try { s.overlay.webContents.send('snip:save-result', { ok: false, error: msg }); } catch {} }
         return;
       }
-      const framePath = path.join(app.getPath('temp'), 'yz-snip-frame-' + Date.now() + '.png');
-      try { fs.writeFileSync(framePath, cap.image.toPNG()); } catch {}
+      let framePath = s.basePath || '';
+      if (!framePath) {
+        framePath = path.join(app.getPath('temp'), 'yz-snip-frame-' + Date.now() + '.png');
+        try { fs.writeFileSync(framePath, cap.image.toPNG()); } catch {}
+      }
       try { if (gLastFramePath && gLastFramePath !== framePath) { try { fs.unlinkSync(gLastFramePath); } catch {} } } catch {}
       gLastFramePath = framePath;
       const size = cap.image.getSize();
@@ -7799,6 +7987,9 @@ ipcMain.on('snip:composed', (e, payload) => {
 // 在前台都能触发；触发后先还原主窗口（可能最小化/隐藏）再通知渲染层走同一条框选流程。
 // ============================================================
 const DEFAULT_SHOT_ACCEL = 'Control+Alt+A';
+// ★ 2026-10-24：热键触发上下文（只在用户从**别的应用**按快捷键时置位）。
+//   finishSnip 据此决定回不回前台：别的应用按的键 → showInactive（不抢焦点，便于就地粘贴）。
+let snipHotkeyContext = null;
 const shotHotkey = { current: null };
 // AI 急停热键（computer-use 高危工具唯一安全阀）：★ 不可禁用，只允许换键/恢复默认。
 // 主进程启动即注册默认键（渲染层未就绪也能急停），渲染层就绪后用 settings.panicAccelerator 覆盖。
@@ -7811,6 +8002,10 @@ function triggerScreenshotHotkey() {
   const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
   if (!win) return;
   try {
+    // ★ 2026-10-24：记录触发时用户是否就在本应用里。
+    //   用户在别的应用（Excel/钉钉）按快捷键时，截完不该把本应用抢到前台——
+    //   否则焦点被夺走，剪贴板里的图也没法就地粘贴。
+    snipHotkeyContext = { wasFocused: win.isFocused() };
     if (dockedOffscreen) leaveBackgroundDock(false);
     if (win.isMinimized()) win.restore();
     if (!win.isVisible()) win.show();

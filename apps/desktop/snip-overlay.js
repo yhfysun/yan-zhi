@@ -596,6 +596,28 @@
   buildToolbar();
   if (window.snipAPI.onNewSession) window.snipAPI.onNewSession(resetSession);
 
+  // ===== 冻结帧背景（2026-10-24）=====
+  // 为什么需要：遮罩一出现就会抢鼠标/焦点，页面上的 hover 弹窗、下拉、输入法候选随即消失
+  // （用户实报「hover 的弹窗微信截图能出来，我们截图会消失」）。主进程在亮窗前抓好一帧发来，
+  // 这里铺成最底层背景：框选、裁剪都以它为准，所见即所得。
+  // z-index 0 在暗幕(1)/标注层(2,3)/选区阴影(10) 之下 —— 「挖洞」逻辑不变，只是洞后从实时屏幕
+  // 变成了这一帧静态图。
+  var freezeEl = document.createElement('img');
+  freezeEl.id = 'freeze';
+  freezeEl.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:0;display:none;object-fit:fill;pointer-events:none;';
+  document.body.appendChild(freezeEl);
+  if (window.snipAPI.onFreeze) {
+    window.snipAPI.onFreeze(function (info) {
+      if (info && info.frameUrl) {
+        freezeEl.src = info.frameUrl;
+        freezeEl.style.display = 'block';
+      } else {
+        freezeEl.removeAttribute('src');
+        freezeEl.style.display = 'none';
+      }
+    });
+  }
+
   // ===== 成品图合成：主进程确认/保存时抓干净帧回发，页面裁剪 + 重绘标注 =====
   window.snipAPI.onCompose(function (info) {
     var settledFlag = false;

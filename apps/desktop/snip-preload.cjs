@@ -5,6 +5,9 @@ const { ipcRenderer, contextBridge } = require('electron');
 contextBridge.exposeInMainWorld('snipAPI', {
   // 主进程开启新一轮截图（复用窗口，页面常驻）：重置状态后回报 ready
   onNewSession: (callback) => { ipcRenderer.on('snip:new-session', () => callback()); },
+  // ★ 2026-10-24：亮窗前下发的冻结帧（本轮截图"框选时看到的就是截出来的"那张底图）。
+  //   遮罩一亮 hover 弹窗/下拉就没了，所以底图必须在亮窗前抓。空帧 → 回落实时屏幕。
+  onFreeze: (callback) => { ipcRenderer.on('snip:freeze', (_e, info) => callback(info || {})); },
   // 状态重置完成，主进程此刻亮窗
   ready: () => ipcRenderer.send('snip:ready'),
   // 重新枚举可见窗口（hover 窗口识别）
