@@ -123,6 +123,7 @@ function seed(n: number): Array<{ id: string; createdAt: number }> {
       sub_agent_id TEXT,
       sub_agent_name TEXT,
       sub_agent_depth INTEGER,
+      data_view_json TEXT,
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_message_conv_created ON message(conversation_id, created_at, id);

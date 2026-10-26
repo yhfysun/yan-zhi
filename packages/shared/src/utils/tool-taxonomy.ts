@@ -173,6 +173,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   api_data_query: 'data',
   api_data_preview: 'data',
   api_data_paginate: 'data',
+  api_document_type_list: 'data',
 
   // ═══ 知识库 ═══
   api_kb_list: 'knowledge',

@@ -105,7 +105,7 @@ function seed() {
       tool_calls_json TEXT, tool_call_id TEXT, reasoning_content TEXT,
       system_prompt_snapshot TEXT, tokens INTEGER DEFAULT 0,
       parent_tool_call_id TEXT, sub_agent_id TEXT, sub_agent_name TEXT,
-      sub_agent_depth INTEGER, created_at INTEGER NOT NULL
+      sub_agent_depth INTEGER, data_view_json TEXT, created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS message_summary (
       id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, user_id TEXT,

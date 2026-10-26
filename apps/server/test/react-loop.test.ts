@@ -261,6 +261,10 @@ vi.mock('@yan-zhi/core', () => ({
   // ★ 2026-10-10 补：A4（读路由按会话隔离）新增 setBrowserToolConversationId 到 core 主链路/白名单，
   //   本手工白名单 mock 未同步 → 浏览器类工具报 No "setBrowserToolConversationId" export。
   setBrowserToolConversationId: () => {},
+  // ★ 2026-10-26 补：下载自动落盘新增工作目录透传（llm-task-manager 顶层 import），
+  //   同一类白名单缺失 —— 不补则工具执行即报 No "setBrowserToolWorkspaceDir" export。
+  setBrowserToolWorkspaceDir: () => {},
+  getBrowserToolWorkspaceDir: () => null,
 }));
 vi.mock('../src/mcp/index.js', () => ({ ensureToolsInitialized: () => {} }));
 vi.mock('../src/mcp/api-tool-executor.js', () => ({

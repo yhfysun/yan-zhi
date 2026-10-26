@@ -163,9 +163,16 @@ describe('③ 源码守门（注入点与数据源不能被顺手删掉）', () 
     expect(LTM, '★ 子智能体合流点缺 office 门控').toMatch(/resolveConversationMode\(task\.conversationId\) === 'office'/);
   });
 
-  it('★ 桌面端数据源：get_tabs 响应带 panelVisible', () => {
-    expect(MAIN, '★ main.cjs get_tabs 丢了 panelVisible').toMatch(
-      /return \{ tabs: tabs2, activeTabId, panelVisible: webviewPanelVisible \};/,
+  it('★ 桌面端数据源：get_tabs 响应带 panelVisible（按实时可见性计算）', () => {
+    // 2026-10-26：返回体改成多行，且 panelVisible 不再回缓存（多窗口下会被另一窗口的
+    // hide() 永久置假）—— 守门改为切块断言，避免把"修复"误判成"字段被删"。
+    const start = MAIN.indexOf("case 'get_tabs'");
+    expect(start, '★ 找不到 main.cjs 的 get_tabs 分支').toBeGreaterThanOrEqual(0);
+    const end = MAIN.indexOf("case 'wait_for_request'", start + 1);
+    const block = MAIN.slice(start, end > start ? end : undefined);
+    expect(block, '★ main.cjs get_tabs 丢了 panelVisible').toMatch(/panelVisible:/);
+    expect(block, '★ panelVisible 不得回缓存，必须走 panelReallyHidden 现算').toMatch(
+      /panelVisible:\s*!panelReallyHidden\(/,
     );
   });
 

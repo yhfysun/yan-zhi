@@ -4766,9 +4766,8 @@ file_write 生成 Markdown/PDF，对话给摘要与路径。`,
 不要生成 HTML 文件，不要贴外链图片。
 
 ## 语法
-先写三个反引号 + infographic，再按下面结构（两个空格缩进，键值用空格分隔，数组用 - 开头）：
+先写三个反引号 + infographic，围栏内容如下（两个空格缩进，键值用空格分隔，数组用 - 开头）：
 
-\`\`\`infographic
 infographic list-row-horizontal-icon-arrow
 data
   title 标题
@@ -4780,7 +4779,6 @@ data
       icon rocket
 theme
   palette #3b82f6 #8b5cf6 #f97316
-\`\`\`
 
 ## 模板选择
 - 步骤 / 流程 / 时间线 → sequence-*（时间线用 sequence-timeline-*）
@@ -4808,7 +4806,8 @@ theme
 不要生成 HTML，不要把大表数据写进 JSON。
 
 ## 结构
-\`\`\`document
+围栏语言标记为 document，围栏内容是一个 JSON 对象（形如下例，这里不写反引号）：
+
 {
   "type": "weekly-report",
   "title": "第 43 周数据周报",
@@ -4821,7 +4820,6 @@ theme
     { "kind": "table", "columns": ["事项", "负责人", "截止"], "rows": [["补齐渠道埋点", "张三", "10-30"]] }
   ]
 }
-\`\`\`
 
 ## 内置类型
 - data-report 数据分析报告：摘要 / 关键指标 / 趋势 / 结构洞察（信息图）/ 明细 / 结论
