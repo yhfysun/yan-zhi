@@ -17,6 +17,7 @@ import { getWithRetry } from './platform';
 // ★ 2026-10-20：聊天主链路事件流已从 SSE 切到 WebSocket（utils/chat-ws 单一长连接）。
 //   cicd / page-chat 等其余面板仍走 utils/sse，那条通道不受影响。
 import { requestChatWs, sendChatWs, onTaskEvent, onConvEvent, onChatWsClose } from '../utils/chat-ws';
+import { applyInlineDataViews, saveInlineDataView } from '../utils/inline-data-views';
 import { useAuthStore } from './auth';
 // 会话按模式隔离：loadConversations / createConversation 都要知道"当前在哪个模式"
 import { activeMode } from './mode';
@@ -229,6 +230,17 @@ function rowToConv(r: any): Conversation {
   };
 }
 
+/** message.data_view_json → Message.dataView（坏 JSON 当作没有，不让一条脏数据影响整页） */
+function parseDataView(raw: unknown): Message['dataView'] {
+  if (!raw || typeof raw !== 'string') return undefined;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === 'object' ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function rowToMsg(r: any): Message {
   return {
     id: r.id,
@@ -245,6 +257,7 @@ function rowToMsg(r: any): Message {
     subAgentId: r.sub_agent_id,
     subAgentName: r.sub_agent_name,
     subAgentDepth: r.sub_agent_depth,
+    dataView: parseDataView(r.data_view_json),
   };
 }
 
@@ -350,7 +363,7 @@ export const SKIP_PAGE_SUPPLEMENT = '[用户跳过该问题]';
 // 替换旧三态互斥模型（rightPanelTab 单枚举 + previewingFile 单值）：
 // 旧模型物理上无法同时打开 2 个文件。新模型 previewTabs[] 并存 + activeTabId 激活。
 // file tab 可多开（按 path 幂等）；browser/git 为单例（内容组件单实例，浏览器内部自管多 tab）。
-export type PreviewTabKind = 'file' | 'browser' | 'git' | 'data' | 'console';
+export type PreviewTabKind = 'file' | 'browser' | 'git' | 'data' | 'console' | 'dashboard';
 /** 数据浏览契约：与 shared.InlineDataView 对齐（聊天内嵌与右栏面板公用同一结构） */
 export type DataTabContract = InlineDataView;
 export interface PreviewTab {
@@ -1538,6 +1551,8 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         //   工具回执，工具卡片要用），子智能体明细不下发。首屏天然带轮头，客户端不再补页 ——
         //   补页会把上千条明细重新拉回来（用户实报「怎么还是拉取所有消息」）。
         messagesByConv.value[convId] = (r.data as any[]).map(rowToMsg).map(stripToolResultContent);
+        // 回填本地保存的内嵌看板契约（展示态，不在服务端消息表里）
+        applyInlineDataViews(messagesByConv.value[convId], convId);
         p.hasMore = (r as any).hasMore === true;
         p.cursor = (r as any).oldestCursor ?? null;
         // 每轮的过程规模（概览条文案用；详情本身还没拉）
@@ -1570,6 +1585,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     // 服务端的新口径见 routes/conversations.ts 的 `/:id/messages` 注释。
     const page = rows.slice().reverse();
     messagesByConv.value[convId] = page.map(rowToMsg).map(stripToolResultContent);
+    applyInlineDataViews(messagesByConv.value[convId], convId);
     const pLocal = historyPagingOf(convId);
     pLocal.hasMore = rows.length === HISTORY_PAGE_SIZE; // 恰好取满一页才可能有更多（本地无游标探测，够用）
     pLocal.cursor = page.length > 0 ? { createdAt: page[0].created_at, id: page[0].id } : null;
@@ -1599,6 +1615,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         const r = await api.get<any[]>(`/conversations/${convId}/messages?${q}`);
         if ('data' in r && Array.isArray(r.data) && r.data.length > 0) {
           const older = (r.data as any[]).map(rowToMsg).map(stripToolResultContent);
+          applyInlineDataViews(older, convId);
           const cur = messagesByConv.value[convId];
           if (cur) messagesByConv.value[convId] = [...older, ...cur];
           // 更早页面的每轮过程规模也一并并进来（概览条文案用）
@@ -1623,6 +1640,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
       );
       if (rows.length > 0) {
         const older = rows.slice().reverse().map(rowToMsg).map(stripToolResultContent);
+        applyInlineDataViews(older, convId);
         const cur = messagesByConv.value[convId];
         if (cur) messagesByConv.value[convId] = [...older, ...cur];
         const first = older[0];
@@ -2102,6 +2120,9 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     if (!target) return false;
     // 复用已有 dataView（一个消息同源多列合约少见，直接覆盖为最新）
     target.dataView = { ...target.dataView, ...view };
+    // 持久化：本地兜底 + 服务端落库（跨设备/重装后仍在；失败不阻断聊天）
+    saveInlineDataView(convId, target.id, target.dataView);
+    void api.patch(`/messages/${target.id}`, { dataView: target.dataView }).catch(() => {});
     return true;
   }
 
@@ -2406,14 +2427,25 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           } catch { /* 查询失败 → 退回兜底（不影响既有行为） */ }
         }
         if (action) {
+          // browser_download 不带 url/selector = 「列出最近下载」（桌面端 action 名为 downloads）
+          if (fullName === 'browser_download' && !(args as any)?.url && !(args as any)?.selector) {
+            action = 'downloads';
+          }
           try {
             const actTabId = await resolvePreviewTabId(ctx?.convId);
             // ★ 2026-10-08：upload/screenshot 放宽竞速窗口到 65s —— 主进程对这两个 action 的总闸
             //   已提到 60s（视频投递后等页面处理）。若这里仍是 20s，会在主进程返回前先判超时，
             //   用户看到"上传不顺"。其它 action 维持 20s（主进程 18s 总闸留 2s 余量）。
             const ipcTimeout = (action === 'upload' || action === 'screenshot') ? 65000 : 20000;
+            // ★ 工作目录随动作下发（2026-10-26）：主进程把「导出/下载」触发的文件落到
+            //   <工作目录>/downloads/ 并把路径回传，模型才能真正拿到文件。
+            //   与服务端 bridge 路径同一口径（见 llm-task-manager 的 argsWithWs）。
+            const wsDir = useSettingsStore().settings.workspaceDir || '';
+            const ipcArgs = wsDir
+              ? { ...(args as Record<string, unknown>), __workspaceDir: wsDir }
+              : args;
             const result = await Promise.race([
-              (window as any).electronAPI.browserView.action(actTabId, action, args),
+              (window as any).electronAPI.browserView.action(actTabId, action, ipcArgs),
               new Promise((_, reject) => setTimeout(() => reject(new Error(`IPC 调用超时（${ipcTimeout / 1000}s）: ${action}`)), ipcTimeout)),
             ]) as any;
             // browserView:action 返回 { error } 表示失败，否则成功
@@ -2488,6 +2520,18 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
                   ? `\n⚠ tabId=${stuck.join(', ')} 处于**加载中**：若长时间不变即为卡死页，不要靠反复导航"唤醒"，不需要时用 browser_close_tab 关掉。`
                   : '';
                 text = `浏览页 ${tabs.length} 个：\n${lines.join('\n') || '(无)'}${hint}${stuckHint}`;
+              } else if (action === 'click') {
+                // 导出/下载按钮：文件已自动落盘，路径直接给模型（见 main.cjs attachDownloadToClickResult）
+                const dl = (result as any).downloaded;
+                text = dl?.savedPath
+                  ? `点击成功；已自动下载「${dl.filename}」到 ${dl.savedPath}（已落盘，直接用文件工具读取，不要重复点导出）`
+                  : JSON.stringify(result).slice(0, 500);
+              } else if (action === 'downloads') {
+                const recs = Array.isArray((result as any).records) ? (result as any).records : [];
+                const dir = (result as any).dir || '-';
+                text = recs.length
+                  ? `最近下载（目录: ${dir}）：\n${recs.map((r: any) => `- ${r.filename}（${r.state}）→ ${r.savedPath}`).join('\n')}`
+                  : `最近没有下载记录（目录: ${dir}）`;
               } else {
                 text = result.success ? `${action} 执行成功` : JSON.stringify(result).slice(0, 500);
               }
@@ -2618,6 +2662,18 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     if (!rawPath) return { ok: false, msg: 'path 为必填项' };
     const prompt = args.prompt || '请详细描述这张图片的内容，包括其中的文字、物体、场景等信息。';
 
+    // ★★★ 整条链的**总预算**（2026-10-26）。
+    //   服务端把前端工具一刀切在 120s（`llm-task-manager.ts` 的 FRONTEND_TOOL_TIMEOUT_MS），
+    //   而这里对**每个候选**给 45s、候选数又取决于会话模型+显标 vision 模型+候选池，
+    //   3 个候选就是 135s ⇒ 必然撞穿 120s。实测（会话 ba426984）4 次 image_analyze
+    //   全部 ~120s 超时、共烧 8 分钟，任务产出早已完成却卡在"自检图片"这一步。
+    //   ⇒ 给识图候选一个总预算 90s（留 30s 给 OCR 与回程），到点不再试新候选、直接降级。
+    const ANALYZE_BUDGET_MS = 90_000;
+    const PER_CANDIDATE_MS = 45_000;   // 单候选上限（挂起的候选必须能被掐断）
+    const MIN_CANDIDATE_MS = 5_000;    // 剩余预算不足这个数就别再开了
+    const analyzeStartAt = Date.now();
+    const budgetLeftMs = () => ANALYZE_BUDGET_MS - (Date.now() - analyzeStartAt);
+
     // ★★★ 相对路径必须基于**工作目录**解析（2026-09-30 修）：
     //   此前直接把模型给的路径交给 fs → 落到进程 cwd → 相对路径一律"图片不存在"。
     //   与 core 侧工具同因（见 packages/core/src/tool/builtin/fs-walk.ts 的 resolveToolPath），
@@ -2672,6 +2728,12 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       if (!p || !m) return null;
       const key = `${p.id}/${m.id}`;
       if (tried.has(key)) return null;
+      // ★ 总预算闸：用完就停，不再开新候选（否则候选越多越必然撞穿 120s）
+      const leftMs = budgetLeftMs();
+      if (leftMs < MIN_CANDIDATE_MS) {
+        console.info('[image_analyze] 识图总预算已用尽，跳过剩余候选:', m.modelId);
+        return null;
+      }
       tried.add(key);
       // ★★★ C3（2026-10-10）：**已探明不支持的直接跳过** —— 此前失败结论不被记住
       //   （`platform.ts` 只写回成功项 `if (r.ok && r.capability)`），于是每次识图都
@@ -2679,7 +2741,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       //   ★ 三态语义：`no` = 已探明不支持（跳过）；`unknown` = 允许尝试（默认）。
       //     `no` 有 30 分钟 TTL，到期回到 unknown（防"一次抖动被永久记成不支持"）。
       try {
-        const { getVisionCapability, recordVisionAttempt } = await import('../utils/vision-capability');
+        const { getVisionCapability, recordVisionAttempt, isVisionCoolingDown, recordVisionTimeout } = await import('../utils/vision-capability');
+        // ★ 冷却闸（2026-10-26）：刚超时过的候选先别试 —— 超时**不是**能力结论
+        //   （三态仍记 unknown），但一轮任务里反复在它身上烧 45s 纯属浪费。
+        if (isVisionCoolingDown(p.id, m.id)) {
+          console.info('[image_analyze] 候选刚超时，冷却期内跳过:', m.modelId);
+          return null;
+        }
         if (getVisionCapability(p.id, m.id) === 'no') {
           console.info('[image_analyze] 跳过已探明不支持视觉的候选:', m.modelId);
           return null;
@@ -2687,9 +2755,11 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         try {
           const client = new LlmClient(p, m);
           // ★ 必须用 sendMime（压缩后可能是 image/jpeg；报原 mime 上游会解码失败）
-          // ★★ 单候选 45s 限时（无内置超时的挂起候选拖爆 120s 前端工具闸，实测三次）
+          // ★★ 单候选限时（无内置超时的挂起候选拖爆 120s 前端工具闸，实测三次）
+          //   ★ 2026-10-26：上限再受**总预算**约束 —— 剩余 12s 就别给 45s，否则照样撞穿闸。
+          const perCandidateMs = Math.min(PER_CANDIDATE_MS, leftMs);
           const text = await client.visionAnalyze(base64, sendMime, prompt, {
-            signal: AbortSignal.timeout(45_000),
+            signal: AbortSignal.timeout(perCandidateMs),
           });
           if (text) {
             recordVisionAttempt(p.id, m.id, true);
@@ -2702,6 +2772,11 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         } catch (e: any) {
           // ★ 只把能力性失败记成 no（网络/超时类不记，防抖动被永久误判）
           const marked = recordVisionAttempt(p.id, m.id, false, e?.message || String(e));
+          // ★ 2026-10-26：超时**另记一条短冷却**（5 分钟），与能力结论互不干扰 ——
+          //   能力仍是 unknown（下次仍可能支持），但本轮不再在这个挂起候选上重烧一个 45s。
+          if (/timeout|timed out|超时|abort/i.test(`${e?.name || ''} ${e?.message || ''}`)) {
+            recordVisionTimeout(p.id, m.id);
+          }
           console.warn(`[image_analyze] vision 失败，换下一候选: ${m.modelId}${marked ? '（已记为不支持）' : ''}`, e?.message || e);
           return null;
         }
@@ -2710,9 +2785,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         console.warn('[image_analyze] 能力缓存异常，按原有试错继续:', e?.message || e);
         try {
           const client = new LlmClient(p, m);
-          // 与上方主路径同口径：单候选 45s 限时（防单个挂起候选拖爆 120s 前端工具闸）
+          // 与上方主路径同口径：单候选限时，且受总预算约束（防挂起候选拖爆 120s 前端工具闸）
           const text = await client.visionAnalyze(base64, sendMime, prompt, {
-            signal: AbortSignal.timeout(45_000),
+            signal: AbortSignal.timeout(Math.min(PER_CANDIDATE_MS, leftMs)),
           });
           if (text) return text;
         } catch (e2: any) {

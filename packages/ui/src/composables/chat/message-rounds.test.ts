@@ -303,3 +303,33 @@ describe('⑦ findLiveSubAgentRound：主内容区要能看出「子智能体正
     expect(findLiveSubAgentRound(rounds[0], () => true)).toBeNull();
   });
 });
+
+describe('数据看板契约提到回合级（2026-10-26）', () => {
+  it('dataView 挂在工具调用那一步、最终正文是另一条消息 → 回合仍保留 dataView', () => {
+    const rounds = build([
+      M({ id: 'u1', role: 'user', content: '图表展示' }),
+      M({
+        id: 'a1',
+        role: 'assistant',
+        toolCalls: [{ id: 'c1', function: { name: 'data_query_view' } }],
+        dataView: { table: 'conversation', title: '智能体看板' },
+      }),
+      M({ id: 't1', role: 'tool', toolCallId: 'c1', content: 'ok' }),
+      M({ id: 'a2', role: 'assistant', content: '看板已内嵌' }),
+    ]);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0].dataView?.table).toBe('conversation');
+    expect(rounds[0].dataView?.title).toBe('智能体看板');
+    expect(rounds[0].finalAssistant?.content).toBe('看板已内嵌');
+  });
+
+  it('两条消息都带 dataView 时取合并结果（后写覆盖）', () => {
+    const rounds = build([
+      M({ id: 'u1', role: 'user', content: '看板' }),
+      M({ id: 'a1', role: 'assistant', dataView: { table: 't1', title: 'A' } }),
+      M({ id: 'a2', role: 'assistant', dataView: { table: 't2' } }),
+    ]);
+    expect(rounds[0].dataView?.table).toBe('t2');
+    expect(rounds[0].dataView?.title).toBe('A');
+  });
+});

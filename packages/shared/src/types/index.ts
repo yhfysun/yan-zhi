@@ -287,7 +287,7 @@ export interface Message {
   subAgentName?: string;
   parentToolCallId?: string;
   subAgentDepth?: number;
-  /** 内嵌于聊天消息里的动态看板（数据浏览）契约；非持久化 UI 增强，见 data-query-contract change */
+  /** 内嵌于聊天消息里的动态看板（数据浏览）契约；随消息落库（message.data_view_json）并跨端同步 */
   dataView?: InlineDataView;
   /**
    * ★★★ 仅**发送期**存在的图片附件（C1，2026-10-09）——**不落库**。
@@ -318,6 +318,45 @@ export interface InlineDataView {
   table?: string;
   base?: string;
   filterCols?: string[];
+  /** 取数通道：缺省按 table/base 走自由 SQL；ontology 只按本体字段名取数 */
+  mode?: 'table' | 'base' | 'ontology';
+  /** mode=ontology 时的本体 code（或 id） */
+  ontology?: string;
+}
+
+/** 看板 widget 的网格位置（12 列；x/y 从 0 起，w 1..12，h 为行数） */
+export interface DashboardWidgetPos {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export type DashboardWidgetKind = 'chart' | 'table' | 'metric' | 'text' | 'infographic';
+
+/**
+ * 看板 widget：只存「取数引用 + 图表定义 + 位置」，不存行数据。
+ * spec / metrics 在 shared 里保持宽类型 —— 具体形状由各端渲染层定义（ChartSpec / DocumentMetric）。
+ */
+export interface DashboardWidget {
+  id: string;
+  kind: DashboardWidgetKind;
+  title?: string;
+  contract?: InlineDataView;
+  spec?: Record<string, unknown>;
+  syntax?: string;
+  text?: string;
+  metrics?: Array<{ label: string; value: string; hint?: string }>;
+  pos: DashboardWidgetPos;
+}
+
+export interface Dashboard {
+  id: string;
+  title: string;
+  description?: string;
+  createdAt: number;
+  updatedAt: number;
+  widgets?: DashboardWidget[];
 }
 
 /** 工具调用 */

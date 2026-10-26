@@ -233,6 +233,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'SQL 控制台' },
   },
   {
+    path: '/document-types',
+    name: 'document-types',
+    component: () => import('../views/DocumentTypesPage.vue'),
+    meta: { title: '文档类型' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('../views/Settings.vue'),

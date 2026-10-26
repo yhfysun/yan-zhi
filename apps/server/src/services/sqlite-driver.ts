@@ -252,3 +252,15 @@ const instances = new Set<SqlJsDatabase>();
 function flushAllInstances(): void {
   for (const inst of instances) inst.flushIfDirty();
 }
+
+/**
+ * 主动把内存库落盘 —— 供「先判文件是否存在」的调用方在判断前刷一次。
+ *
+ * ★ 为什么需要导出：sql.js 是内存库，落盘有 250ms 防抖 + 周期兜底（默认 5s）。
+ *   进程刚起来的头几秒，data.db 可能**还没生成**，此时 fs.existsSync 会把
+ *   「尚未落盘」误判成「文件不存在」—— 手机上的表现就是内置本体（ontology）
+ *   每次启动都生成失败（connector.ts 的 ensureInit）。
+ */
+export function flushSqliteInstances(): void {
+  flushAllInstances();
+}

@@ -556,7 +556,7 @@ router.get('/:id/messages', (req: Request, res: Response) => {
   const limitRaw = req.query.limit;
   if (limitRaw === undefined) {
     const rows = db.prepare(
-      `SELECT ${MESSAGE_LIST_COLS} FROM message WHERE conversation_id = ? ORDER BY created_at ASC, id ASC`,
+      `SELECT ${MESSAGE_LIST_COLS}, data_view_json FROM message WHERE conversation_id = ? ORDER BY created_at ASC, id ASC`,
     ).all(cid);
     res.json({ data: rows });
     return;
@@ -608,7 +608,7 @@ router.get('/:id/messages', (req: Request, res: Response) => {
     args.push(before, before, beforeId);
   }
   const rows = db.prepare(
-    `SELECT ${MESSAGE_LIST_COLS} FROM message WHERE ${where.join(' AND ')}
+    `SELECT ${MESSAGE_LIST_COLS}, data_view_json FROM message WHERE ${where.join(' AND ')}
      ORDER BY created_at ASC, id ASC`,
   ).all(...args) as any[];
 
@@ -691,7 +691,7 @@ router.get('/:id/messages/round/:userMessageId', (req: Request, res: Response) =
     args.push(next.created_at, next.created_at, next.id);
   }
   const rows = db.prepare(
-    `SELECT ${MESSAGE_LIST_COLS} FROM message WHERE ${where.join(' AND ')}
+    `SELECT ${MESSAGE_LIST_COLS}, data_view_json FROM message WHERE ${where.join(' AND ')}
      ORDER BY created_at ASC, id ASC`,
   ).all(...args) as any[];
   res.json({ data: rows });

@@ -31,11 +31,11 @@ export { JobStatusTool } from './job-status';
 export { DoyzTool } from './doyz';
 export { NovelTuiwenTool } from './novel-tuiwen';
 export { SecurityTool } from './security';
-export { BrowserToolClasses, BROWSER_TOOL_NAMES } from './browser';
+export { BrowserToolClasses, BROWSER_TOOL_NAMES, BrowserRunRecipeTool } from './browser';
 // ★ A4 根治（2026-10-10）：会话标识透传的入口 —— 执行器在调用 browser_* 前设置，
 //   `callBrowserApi` 把它作为 `x-yz-conversation-id` 带给服务端（读路由据此按会话隔离）。
 //   ★ 本文件是**逐个具名导出**（无 `export *`）→ 漏了这一行则跨包引不到（TS2305）。
-export { setBrowserToolConversationId, getBrowserToolConversationId } from './browser';
+export { setBrowserToolConversationId, getBrowserToolConversationId, setBrowserToolWorkspaceDir, getBrowserToolWorkspaceDir } from './browser';
 export { CallAgentTool } from './call-agent';
 export { ListSubAgentsTool } from './list-sub-agents';
 export { GetSubTaskDetailTool } from './get-sub-task-detail';
@@ -43,6 +43,7 @@ export { SpawnSubAgentTool } from './spawn-sub-agent';
 export { PlanTasksTool, GetPlanStatusTool, ReassignTaskTool } from './plan-tasks';
 export { ListModelsTool } from './list-models';
 export { AskUserTool } from './ask-user';
+export { DataQueryViewTool } from './data-query-view';
 export { ConfirmUserTool } from './confirm-user';
 export { TaskPlanTool, TaskStepTool } from './task-plan';
 export { AppCreateTaskTool } from './app-create-task';
@@ -104,6 +105,7 @@ import { SpawnSubAgentTool } from './spawn-sub-agent';
 import { PlanTasksTool, GetPlanStatusTool, ReassignTaskTool } from './plan-tasks';
 import { ListModelsTool } from './list-models';
 import { AskUserTool } from './ask-user';
+import { DataQueryViewTool } from './data-query-view';
 import { ConfirmUserTool } from './confirm-user';
 import { TaskPlanTool, TaskStepTool } from './task-plan';
 import { AppCreateTaskTool } from './app-create-task';
@@ -181,6 +183,8 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new ListModelsTool());
   // 交互式工具（E12）：反问弹窗 + 任务规划进度（实际执行由 UI 层 dispatchToolCall 拦截）
   registry.register(new AskUserTool());
+  // 数据看板内嵌（2026-10-26）：schema 注册；实际执行由前端 chat.ts 拦截
+  registry.register(new DataQueryViewTool());
   registry.register(new ConfirmUserTool());
   registry.register(new TaskPlanTool());
   registry.register(new TaskStepTool());

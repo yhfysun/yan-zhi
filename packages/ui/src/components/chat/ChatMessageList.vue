@@ -111,22 +111,40 @@
               </div>
               <!-- 最耗时的 3 个**计划步骤**（2026-10-23 用户要求：按规划步骤而非工具统计）：
                    只在本轮已结束且为最后一轮时显示（计划是会话级的，避免多轮重复）；
-                   无计划 / 存量计划无时间戳 → 不渲染，只留上面的总耗时。 -->
+                   无计划 / 存量计划无时间戳 → 不渲染，只留上面的总耗时。
+                   2026-10-26：常驻的橙色胶囊行占位太吵，收成一个触发器 —— 悬停即展开，
+                   点击钉住（触屏无 hover，靠点击）；点条目进该步运行详情。 -->
               <div v-if="showPlanTimingForRound(vr.round, vr.ri) && planTop.length"
-                   class="agent-slow-calls">
-                <span class="asc-label">最耗时步骤</span>
+                   class="agent-slow-calls"
+                   :class="{ 'is-open': planTopHover || planTopOpen }"
+                   @mouseenter="planTopHover = true"
+                   @mouseleave="planTopHover = false">
                 <button
-                  v-for="(c, ci) in planTop"
-                  :key="c.index"
                   type="button"
-                  class="asc-item"
-                  title="点击查看该步骤运行详情"
-                  @click="openPlanStep(c.index)"
+                  class="asc-trigger"
+                  :aria-expanded="planTopHover || planTopOpen"
+                  @click="planTopOpen = !planTopOpen"
                 >
-                  <b class="asc-rank">{{ ci + 1 }}</b>
-                  <span class="asc-name" :title="c.title">{{ c.title }}</span>
-                  <span class="asc-dur">{{ fmtDuration(c.ms) }}</span>
+                  <el-icon :size="12"><Timer /></el-icon>
+                  <span>最耗时步骤</span>
+                  <el-icon :size="10" class="asc-chevron"><ArrowDown /></el-icon>
                 </button>
+                <div class="asc-popover" role="menu">
+                  <div class="asc-pop-title">最耗时的 {{ planTop.length }} 步</div>
+                  <button
+                    v-for="(c, ci) in planTop"
+                    :key="c.index"
+                    type="button"
+                    role="menuitem"
+                    class="asc-item"
+                    title="点击查看该步骤运行详情"
+                    @click="pickPlanTop(c.index)"
+                  >
+                    <b class="asc-rank">{{ ci + 1 }}</b>
+                    <span class="asc-name" :title="c.title">{{ c.title }}</span>
+                    <span class="asc-dur">{{ fmtDuration(c.ms) }}</span>
+                  </button>
+                </div>
               </div>
               <!-- 全部计划步骤（可折叠）：每步尾部显示该步时长，Top3 加橙标，点击开详情弹窗。
                    ★ 只要**有计划**就展示（不再依赖 planTop 非空）：存量/未计时步骤全是「—」时，
@@ -360,7 +378,7 @@
                       <div v-if="expandedReasoning['agent-fa-' + vr.ri]" class="reasoning-body">{{ roundReasoningText(vr.round) }}</div>
                     </div>
                     <template v-if="vr.round.finalAssistant?.content">
-                      <div class="msg-content" v-html="renderAssistantMarkdown(vr.round.finalAssistant.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
+                      <div class="msg-content" v-html="renderRoundContent(vr.round.finalAssistant.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
                       <PlatformConfigCard
                         v-if="parseConfigCard(vr.round.finalAssistant.content)"
                         :mode="parseConfigCard(vr.round.finalAssistant.content)!.mode"
@@ -371,16 +389,41 @@
                       />
                       <!-- 动态看板（数据浏览）：模型 data_query_view 产契约后内嵌到当前助手消息，嵌套在聊天流程里 -->
                       <div
-                        v-if="vr.round.finalAssistant?.dataView"
+                        v-if="roundDataView(vr.round)"
                         class="msg-inline-dataview"
                       >
                         <div class="dataview-title">
                           <el-icon><Grid /></el-icon>
-                          <span>{{ vr.round.finalAssistant.dataView.title || '数据明细' }}</span>
+                          <span>{{ roundDataView(vr.round)!.title || '数据明细' }}</span>
                           <span class="dataview-tag">可交互数据看板</span>
                         </div>
-                        <DataQueryWorkbench :key="vr.round.finalAssistant.id + '-dv'" :contract="vr.round.finalAssistant.dataView" />
+                        <DataQueryWorkbench :key="vr.round.finalAssistant.id + '-dv'" :contract="roundDataView(vr.round)!" />
                       </div>
+                      <!-- 信息图围栏块：模型输出 ```infographic 语法，前端就地渲染为 SVG（可导出） -->
+                      <InfographicBlock
+                        v-for="(ig, i) in roundInfographics(vr.round)"
+                        :key="vr.round.finalAssistant.id + '-ig-' + i"
+                        :syntax="ig.syntax"
+                        :title="ig.title"
+                      />
+                      <!-- 文档类型卡片：模型输出 document 围栏（JSON），前端渲染并可导出 Word -->
+                      <template v-for="(d, i) in roundDocuments(vr.round)" :key="vr.round.finalAssistant.id + '-doc-' + i">
+                        <DocumentCard v-if="d.ok" :doc="d.doc" />
+                        <div v-else class="msg-doc-error">文档结构有误：{{ d.error }}</div>
+                      </template>
+                      <!-- 看板卡片：模型输出 ydash 围栏（JSON），前端按 12 列网格渲染 -->
+                      <template v-for="(dash, i) in roundDashboards(vr.round)" :key="vr.round.finalAssistant.id + '-dash-' + i">
+                        <DashboardCard v-if="dash.ok" :dash="dash.dash" />
+                        <div v-else class="msg-doc-error">看板结构有误：{{ dash.error }}</div>
+                      </template>
+                      <!-- 静态 SVG 图表：围栏内容直接当图片渲染（img 内不执行脚本） -->
+                      <img
+                        v-for="(svg, i) in roundSvgs(vr.round)"
+                        :key="vr.round.finalAssistant.id + '-svg-' + i"
+                        class="msg-svg-chart"
+                        :src="svgToDataUrl(svg)"
+                        alt="图表"
+                      />
                     </template>
                     <template v-else-if="isLastRoundStreaming(vr.round, vr.ri)">
                       <!-- 有实时正文：跑马灯式流式显示 + 末尾闪烁光标 -->
@@ -695,9 +738,9 @@
 import {
   ChatDotRound, CaretRight, CaretBottom, ArrowDown, ArrowRight, Loading, CircleCheck,
   CircleClose, CopyDocument, EditPen, Files, Delete, View, Fold, Refresh, Link, Download,
-  Grid, Document, Connection, ChatLineSquare, Lock, WarningFilled,
+  Grid, Document, Connection, ChatLineSquare, Lock, WarningFilled, Timer,
 } from '@element-plus/icons-vue';
-import { ref, reactive, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, reactive, watch, nextTick, computed, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
 import { useChat } from '../../composables/chat/useChat';
@@ -715,6 +758,16 @@ import PlatformConfigCard from '../PlatformConfigCard.vue';
 import SubAgentRoundView from './SubAgentRoundView.vue';
 import DeliverableFileCard from './DeliverableFileCard.vue';
 import DataQueryWorkbench from './DataQueryWorkbench.vue';
+// 信息图只在消息里出现 ```infographic 围栏时才加载（AntV Infographic 包体大，不进首屏）
+const InfographicBlock = defineAsyncComponent(() => import('./InfographicBlock.vue'));
+// 文档类型卡片：同样按需加载（内含图表/信息图渲染与 Word 导出）
+const DocumentCard = defineAsyncComponent(() => import('./DocumentCard.vue'));
+// 看板卡片：.ydash 定义渲染（图表/指标/表格/信息图）
+const DashboardCard = defineAsyncComponent(() => import('./DashboardCard.vue'));
+import { extractInfographicBlocks, stripInfographicBlocks } from '../../utils/infographic-blocks';
+import { extractDocumentBlocks, stripDocumentBlocks } from '../../utils/document-blocks';
+import { extractDashboardBlocks, stripDashboardBlocks } from '../../utils/ydash-blocks';
+import { extractSvgBlocks, stripSvgBlocks, svgToDataUrl } from '../../utils/svg-blocks';
 import ChatWelcome from './ChatWelcome.vue';
 import SceneCarousel from './SceneCarousel.vue';
 import { DEV_TPLS } from '../../config/devTpls';
@@ -750,6 +803,33 @@ const {
   confirmText, confirmSupplement, confirmSupplementOpen, onConfirmSkip, onConfirmPrev, onConfirmNext,
   costStore, startContinuedConversation,
 } = useChat();
+
+// ===== 信息图围栏块（AntV Infographic）=====
+// 正文里的 ```infographic 块抽出来交给 InfographicBlock 渲染，围栏本身不进入 markdown。
+function roundInfographics(round: MessageRound) {
+  const content = round.finalAssistant?.content || '';
+  return content ? extractInfographicBlocks(content) : [];
+}
+function roundDataView(round: MessageRound) {
+  return round.dataView || round.finalAssistant?.dataView || null;
+}
+function roundDocuments(round: MessageRound) {
+  const content = round.finalAssistant?.content || '';
+  return content ? extractDocumentBlocks(content) : [];
+}
+function roundDashboards(round: MessageRound) {
+  const content = round.finalAssistant?.content || '';
+  return content ? extractDashboardBlocks(content) : [];
+}
+function roundSvgs(round: MessageRound) {
+  const content = round.finalAssistant?.content || '';
+  return content ? extractSvgBlocks(content) : [];
+}
+function renderRoundContent(content: string): string {
+  return renderAssistantMarkdown(
+    stripInfographicBlocks(stripSvgBlocks(stripDashboardBlocks(stripDocumentBlocks(content)))),
+  );
+}
 
 // 长工具结果默认限高，点「展开全部结果」看全；此前靠 mask 渐变收尾，短结果也会被吃掉最后几行。
 const expandedToolResults = reactive<Record<string, boolean>>({});
@@ -1311,6 +1391,9 @@ function isRoundLive(round: MessageRound, ri: number): boolean {
 const planTop = computed(() => slowestPlanSteps({ steps: store.planSteps }, 3));
 const planTopIndexSet = computed(() => new Set(planTop.value.map((d) => d.index)));
 const planStepsOpen = ref(false);
+// Top3 浮层：hover 临时展开、点击钉住（触屏没有 hover，只能靠点击）
+const planTopHover = ref(false);
+const planTopOpen = ref(false);
 const planDetailRef = ref<{ open: (index: number) => void } | null>(null);
 
 function showPlanTimingForRound(round: MessageRound, ri: number): boolean {
@@ -1323,6 +1406,10 @@ function planStepDurText(step: { startedAt?: number; finishedAt?: number; active
 }
 function openPlanStep(index: number) {
   planDetailRef.value?.open(index);
+}
+function pickPlanTop(index: number) {
+  planTopOpen.value = false;
+  openPlanStep(index);
 }
 
 /**
@@ -1846,30 +1933,69 @@ watch(activeNavRound, () => {
   color: var(--el-text-color-regular, #606266);
 }
 
-/* 最耗时的 3 个计划步骤（2026-10-23）：摘要条下一行小标签，点击查看该步运行详情 */
+/* 最耗时的 3 个计划步骤（2026-10-23；2026-10-26 改为 hover 下拉）：
+   常驻只留一枚小触发器，悬停/点击展开浮层，条目点击进该步运行详情 */
 .agent-slow-calls {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
-  margin: -4px 0 8px; padding: 0 2px;
-  font-size: 12px; color: var(--el-text-color-secondary, #909399);
+  position: relative;
+  display: inline-block;
+  margin: -4px 0 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
 }
-.asc-label { flex: none; opacity: 0.8; }
-.asc-item {
+.asc-trigger {
   display: inline-flex; align-items: center; gap: 4px;
-  padding: 1px 8px 1px 4px; border-radius: 999px;
-  border: none; font: inherit; cursor: pointer;
-  background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 12%, transparent);
+  padding: 2px 8px; border: none; border-radius: 6px;
+  background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 10%, transparent);
   color: var(--el-color-warning-dark-2, #b88230);
-  max-width: 240px;
+  font: inherit; line-height: 18px; cursor: pointer;
 }
-.asc-item:hover { background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 20%, transparent); }
+.asc-trigger:hover,
+.agent-slow-calls.is-open .asc-trigger {
+  background: color-mix(in srgb, var(--el-color-warning, #e6a23c) 20%, transparent);
+}
+.asc-chevron { transition: transform 0.15s ease; }
+.agent-slow-calls.is-open .asc-chevron { transform: rotate(180deg); }
+.asc-popover {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+  display: none;
+  flex-direction: column; gap: 2px;
+  min-width: 220px; max-width: 320px;
+  padding: 6px;
+  border: 1px solid var(--el-border-color-light, #e4e7ed);
+  border-radius: 8px;
+  background: var(--color-surface, #fff);
+  box-shadow: var(--shadow-2, 0 6px 16px rgba(0, 0, 0, 0.12));
+}
+.agent-slow-calls.is-open .asc-popover {
+  display: flex;
+  animation: fadeInDown 0.12s ease;
+}
+/* 触发器与浮层之间的 4px 空隙算作浮层热区，鼠标穿过时不触发 mouseleave */
+.asc-popover::before {
+  content: '';
+  position: absolute; left: 0; right: 0; top: -6px; height: 6px;
+}
+.asc-pop-title {
+  padding: 2px 6px 4px;
+  font-size: 11px; color: var(--el-text-color-secondary, #909399);
+}
+.asc-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px; border-radius: 6px;
+  border: none; background: transparent;
+  color: var(--el-text-color-regular, #606266);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.asc-item:hover { background: var(--el-fill-color-light, #f5f7fa); }
 .asc-rank {
+  flex: none;
   display: inline-flex; align-items: center; justify-content: center;
   width: 14px; height: 14px; border-radius: 50%;
   background: var(--el-color-warning, #e6a23c); color: #fff;
   font-size: 10px; line-height: 1;
 }
-.asc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.asc-dur { flex: none; font-variant-numeric: tabular-nums; }
+.asc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asc-dur { flex: none; font-variant-numeric: tabular-nums; color: var(--el-text-color-secondary, #909399); }
 
 /* 全部计划步骤（可折叠）：每步尾部该步时长，Top3 橙标 */
 .agent-plan-steps { margin: -2px 0 10px; }
@@ -1924,6 +2050,28 @@ watch(activeNavRound, () => {
 @keyframes fadeInDown {
   from { opacity: 0; transform: translateY(-6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* 静态 SVG 图表：直接以图片显示，不贴源码 */
+.msg-svg-chart {
+  display: block;
+  max-width: 100%;
+  margin: 8px 0;
+  border: 1px solid var(--el-border-color-lighter, #e2e8f0);
+  border-radius: 6px;
+  background: #fff;
+}
+
+/* 文档围栏解析失败时的提示（不渲染半截文档） */
+.msg-doc-error {
+  margin: 8px 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--color-danger, #dc2626);
+  background: color-mix(in srgb, var(--color-danger, #dc2626) 8%, transparent);
+  border-left: 3px solid var(--color-danger, #dc2626);
+  border-radius: 4px;
+  white-space: pre-wrap;
 }
 
 /* 聊天内嵌动态看板（DataQueryWorkbench）：固定高度内联在消息流里，顶部工具/过滤固定、表格独立滚动 */

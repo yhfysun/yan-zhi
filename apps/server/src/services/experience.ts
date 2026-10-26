@@ -29,8 +29,15 @@ const KIND_LABEL: Record<ExperienceKind, string> = {
 
 /** 注入预算（索引 + 命中文件正文，合计不超过这个字符量） */
 const INJECT_MAX_CHARS = 3000;
-/** 单条目 detail 上限（写入路径压平，防止一条经验写成长文撑爆文件） */
-const DETAIL_MAX_CHARS = 500;
+/** 单条目 detail 上限（写入路径压平，防止一条经验写成长文撑爆文件）
+ *
+ * ★ 500 → 900（2026-10-26，实测被切在**最要命的位置**）：
+ *   抖音采集任务写下的两条经验（`sites/creator.douyin.com.md`）都在 500 字处断掉 ——
+ *   一条停在「缺 item」，另一条停在「坑3：」，**恰恰是可直接照做的参数与坑位**。
+ *   前面大段是背景描述，真正省时间的是尾部操作细节。
+ *   ⇒ 900 能装下「结论 + 参数 + 坑位」三段；注入侧仍有 1600 字/文件尾部预算兜底，
+ *     不会因此把上下文撑大（尾部优先 = 最新经验优先，方向是对的）。 */
+const DETAIL_MAX_CHARS = 900;
 
 interface ExperienceBase { base: string }
 

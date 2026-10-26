@@ -1,7 +1,7 @@
 <!--
 数据浏览工作台（data-query-contract Q1+Q2）
 - 表格视图：左侧「列过滤器」按需动态生成；el-table 分页明细（仅参数化 /api/query-contract/run，不走 LLM）
-- 视图切换：表格 / 折线 / 柱 / 饼（/api/query-contract/aggregate 分组聚合）
+- 图表视图：ECharts（按需懒加载）。支持多系列、时间粒度、TopN、占比；导出 PNG
 - 主题对齐亮色；工具栏固定顶部，表格区独立滚动
 -->
 <template>
@@ -21,19 +21,85 @@
       </div>
       <div class="dqw-viewbar">
         <button
-          v-for="v in viewModes"
+          v-for="v in modeOptions"
           :key="v.key"
           class="dqw-view-btn"
           :class="{ on: mode === v.key }"
           @click="setMode(v.key)"
         >{{ v.label }}</button>
+        <el-select
+          v-if="mode === 'table' && columnOptions.length > 4"
+          v-model="visibleCols"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          size="small"
+          class="dqw-colsel"
+          placeholder="显示列"
+        >
+          <el-option v-for="c in columnOptions" :key="c" :label="c" :value="c" />
+        </el-select>
+        <div class="dqw-export">
+          <el-button size="small" @click="openPin">钉到看板</el-button>
+          <el-button size="small" :loading="exporting === 'word'" @click="exportWord">导出 Word</el-button>
+          <el-button size="small" :loading="exporting === 'excel'" @click="exportExcel">导出 Excel</el-button>
+        </div>
       </div>
     </div>
 
     <div v-if="error" class="dqw-error">{{ error }}</div>
 
+    <!-- 本体模式：按业务字段名取数（无自由 SQL） -->
+    <div v-if="isOntologyMode" class="dqw-ont">
+      <span class="dqw-cfg-label">本体</span>
+      <el-select v-model="ontologyRef" filterable size="small" placeholder="选择本体" style="width: 200px" @change="onOntPick">
+        <el-option v-for="o in ontologies" :key="o.code" :label="o.name" :value="o.code" />
+      </el-select>
+      <template v-if="menu">
+        <span class="dqw-cfg-label">维度</span>
+        <el-select v-model="ontDim" size="small" filterable clearable placeholder="不分组" style="width: 170px">
+          <el-option-group v-if="menu.timeDimensions.length" label="时间维度">
+            <el-option v-for="t in menu.timeDimensions" :key="t.name" :label="t.name" :value="t.name" />
+          </el-option-group>
+          <el-option-group v-if="menu.dimensions.length" label="维度">
+            <el-option v-for="d in menu.dimensions" :key="d.name" :label="d.name" :value="d.name" />
+          </el-option-group>
+        </el-select>
+        <el-select v-if="isTimeDim" v-model="ontGrain" size="small" clearable placeholder="原始" style="width: 88px">
+          <el-option label="日" value="day" />
+          <el-option label="周" value="week" />
+          <el-option label="月" value="month" />
+          <el-option label="季" value="quarter" />
+          <el-option label="年" value="year" />
+        </el-select>
+        <span class="dqw-cfg-label">度量</span>
+        <el-select v-model="ontMeasure" size="small" filterable clearable placeholder="不取度量" style="width: 170px">
+          <el-option v-for="m in menu.measures" :key="m.name" :label="m.name" :value="m.name" />
+        </el-select>
+        <el-select
+          v-if="menu.filters.length"
+          v-model="ontFilters"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          size="small"
+          placeholder="过滤器"
+          style="width: 180px"
+        >
+          <el-option v-for="f in menu.filters" :key="f.name" :label="f.name" :value="f.name" />
+        </el-select>
+        <el-select v-model="ontLimit" size="small" style="width: 92px">
+          <el-option label="200 行" :value="200" />
+          <el-option label="500 行" :value="500" />
+          <el-option label="1000 行" :value="1000" />
+        </el-select>
+        <el-button size="small" type="primary" :loading="loading" @click="runOntology">查询</el-button>
+      </template>
+      <span v-if="menu?.description" class="dqw-ont-desc" :title="menu.description">{{ menu.description }}</span>
+    </div>
+
     <!-- 过滤器条（可加列）  固定顶部 -->
-    <div v-if="mode === 'table'" class="dqw-filters">
+    <div v-if="mode === 'table' && !isOntologyMode" class="dqw-filters">
       <div class="dqw-filter-label">过滤器</div>
       <div class="dqw-filter-controls">
         <template v-for="active in activeFilterCols" :key="active">
@@ -88,16 +154,20 @@
           :data="result!.rows"
           height="100%"
           size="small"
-          border
+          stripe
+          highlight-current-row
           @sort-change="onSort"
         >
           <el-table-column
-            v-for="col in result!.columns"
+            v-for="col in visibleCols"
             :key="col"
             :prop="col"
             :label="col"
+            :width="columnMeta[col]?.width"
+            :align="columnMeta[col]?.align || 'left'"
             sortable="custom"
             show-overflow-tooltip
+            :formatter="(_row: any, _col: any, value: any) => formatCell(value)"
           />
         </el-table>
         <div v-if="result && result.columns.length" class="dqw-pagebar">
@@ -115,81 +185,109 @@
         </div>
       </template>
 
-      <!-- 聚合图视图 -->
+      <!-- 图表视图 -->
       <template v-else>
         <div class="dqw-chart-cfg">
           <div class="dqw-cfg-line">
-            <span class="dqw-cfg-label">分组(X 轴)</span>
-            <el-select v-model="chartDim" size="small" filterable placeholder="选择维度列">
-              <el-option v-for="c in aggDimCols" :key="c" :label="c" :value="c" />
+            <span class="dqw-cfg-label">图种</span>
+            <el-select v-model="chartKind" size="small" style="width: 96px">
+              <el-option label="折线" value="line" />
+              <el-option label="面积" value="area" />
+              <el-option label="柱状" value="bar" />
+              <el-option label="饼图" value="pie" />
+              <el-option label="散点" value="scatter" />
+            </el-select>
+            <span class="dqw-cfg-label">分组(X)</span>
+            <el-select v-model="chartDim" size="small" filterable placeholder="维度列" style="width: 150px">
+              <el-option v-for="c in result?.columns || []" :key="c" :label="c" :value="c" />
+            </el-select>
+            <span class="dqw-cfg-label">系列</span>
+            <el-select v-model="chartSeries" size="small" filterable clearable placeholder="不分组" style="width: 130px">
+              <el-option v-for="c in seriesCols" :key="c" :label="c" :value="c" />
+            </el-select>
+            <span class="dqw-cfg-label">度量(Y)</span>
+            <el-select v-model="chartMeasure" size="small" filterable placeholder="度量列" style="width: 150px">
+              <el-option v-for="c in result?.columns || []" :key="c" :label="c" :value="c" />
             </el-select>
           </div>
           <div class="dqw-cfg-line">
-            <span class="dqw-cfg-label">度量(Y 轴)</span>
-            <el-select v-model="chartMeasure" size="small" filterable placeholder="选择度量列">
-              <el-option v-for="c in chartMeasureCols" :key="c" :label="c" :value="c" />
-            </el-select>
-            <el-select v-model="chartAgg" size="small" style="width: 120px">
+            <span class="dqw-cfg-label">聚合</span>
+            <el-select v-model="chartAgg" size="small" style="width: 92px">
               <el-option label="计数" value="count" />
               <el-option label="求和" value="sum" />
               <el-option label="平均" value="avg" />
               <el-option label="最小" value="min" />
               <el-option label="最大" value="max" />
             </el-select>
+            <template v-if="canGrain">
+              <span class="dqw-cfg-label">粒度</span>
+              <el-select v-model="chartGrain" size="small" clearable placeholder="原始" style="width: 92px">
+                <el-option label="日" value="day" />
+                <el-option label="周" value="week" />
+                <el-option label="月" value="month" />
+                <el-option label="季" value="quarter" />
+                <el-option label="年" value="year" />
+              </el-select>
+            </template>
+            <span class="dqw-cfg-label">TopN</span>
+            <el-select v-model="chartTopN" size="small" clearable placeholder="不限" style="width: 84px">
+              <el-option v-for="n in [5, 10, 20, 50]" :key="n" :label="`前 ${n}`" :value="n" />
+            </el-select>
+            <el-checkbox v-model="chartPercent" size="small">占比</el-checkbox>
             <el-button size="small" type="primary" :loading="aggLoading" @click="loadAgg">生成</el-button>
+            <el-button size="small" :disabled="!agg || !agg.points.length" @click="exportPng">导出 PNG</el-button>
           </div>
         </div>
         <div v-if="aggLoading" class="dqw-empty">聚合中…</div>
-        <div v-else-if="!aggPoints.length" class="dqw-empty">请设 X/Y 后点「生成」，在当前过滤下展示分组聚合</div>
+        <div v-else-if="!agg || !agg.points.length" class="dqw-empty">请设 X/Y 后点「生成」，在当前过滤下展示分组聚合</div>
         <div v-else class="dqw-canvas">
-          <svg class="dqw-svg" :viewBox="'0 0 600 300'" preserveAspectRatio="xMidYMid meet">
-            <!-- 饼 -->
-            <template v-if="mode === 'pie'">
-              <path
-                v-for="(p, i) in pieArcs"
-                :key="i"
-                :d="p.path"
-                :fill="color(i)"
-                stroke="#fff" stroke-width="1"
-              />
-              <g font-size="10" fill="#334155">
-                <text
-                  v-for="(p, i) in aggPoints" :key="'t'+i"
-                  :x="labelX[i]" :y="labelY[i]" text-anchor="middle"
-                >{{ shortLabel(p.key) }}</text>
-              </g>
-            </template>
-            <!-- 折线/柱：共用坐标 -->
-            <template v-else>
-              <line v-for="g in gridLines" :key="'g'+g" :x1="padL" :x2="600-padR" :y1="g" :y2="g" stroke="#e2e8f0" />
-              <template v-if="mode === 'bar'">
-                <rect
-                  v-for="(p, i) in aggPoints" :key="i"
-                  :x="barX(i)" :y="barY(p.value)" :width="barW" :height="Math.max(plotH - (barY(p.value)-padT), 0)"
-                  :fill="color(i)" rx="1"
-                />
-              </template>
-              <polyline
-                v-else
-                :points="linePoints" fill="none" stroke="#3b82f6" stroke-width="2"
-              />
-            </template>
-            <g font-size="10" fill="#475569">
-              <text v-for="(label, i) in axisLabels" :key="'ax'+i" :x="axisX(i)" y="292" text-anchor="middle">{{ label }}</text>
-              <text v-for="t in yTicks" :key="'yt'+t" :x="padL-4" :y="yTickY(t)" text-anchor="end">{{ t }}</text>
-            </g>
-          </svg>
+          <DataChart ref="chartRef" :spec="chartSpec" :data="agg" />
         </div>
       </template>
     </div>
+    <!-- 钉到看板 -->
+    <el-dialog v-model="pinOpen" title="钉到看板" width="380px" append-to-body>
+      <div class="dqw-pin">
+        <el-select v-model="pinDashId" size="small" placeholder="选择看板" style="width: 100%">
+          <el-option
+            v-for="d in dashStore.list"
+            :key="d.id"
+            :label="`${d.title}（${d.widgetCount} 个组件）`"
+            :value="d.id"
+          />
+        </el-select>
+        <div class="dqw-pin-new">
+          <el-input v-model="pinNewTitle" size="small" placeholder="或新建看板名称" @keyup.enter="createPinDash" />
+          <el-button size="small" :disabled="!pinNewTitle.trim()" @click="createPinDash">新建</el-button>
+        </div>
+        <div class="dqw-pin-tip">
+          钉入的是「取数契约 + 图表定义」，不复制数据；打开看板时按当前数据活取数。
+        </div>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="pinOpen = false">取消</el-button>
+        <el-button size="small" type="primary" :disabled="!pinDashId" :loading="pinning" @click="doPin">钉入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue';
 import { Close } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import { api } from '../../api/client';
 import type { DataTabContract } from '../../stores/chat';
+import { useDashboardStore } from '../../stores/dashboard';
+import { useChat } from '../../composables/chat/useChat';
+import type { DashboardWidget } from '@yan-zhi/shared';
+import type { ChartData, ChartKind, ChartSpec } from './chart-spec';
+import { formatCell, inferColumnMeta } from '../../utils/table-meta';
+import type { DocxBlock } from '../../utils/report-docx';
+import type { XlsxSheet } from '../../utils/report-xlsx';
+
+// ECharts 只在首次打开图表视图时加载（组件异步 chunk，不进首屏）
+const DataChart = defineAsyncComponent(() => import('./DataChart.vue'));
 
 interface RunResp {
   columns: string[]; rows: Record<string, unknown>[];
@@ -197,15 +295,12 @@ interface RunResp {
   filterSamples?: Array<{ col: string; kind: string; values?: Array<{ label: string; raw: unknown }>; controllable: boolean }>;
 }
 interface FilterSampleMap { [col: string]: { kind: string; values?: Array<{ label: string; raw: unknown }> } }
-interface Point { key: string; value: number }
 
 const props = defineProps<{ contract: DataTabContract }>();
 
 const viewModes = [
   { key: 'table', label: '表格' },
-  { key: 'line', label: '折线' },
-  { key: 'bar', label: '柱状' },
-  { key: 'pie', label: '饼图' },
+  { key: 'chart', label: '图表' },
 ] as const;
 type Mode = typeof viewModes[number]['key'];
 
@@ -225,25 +320,114 @@ const activeFilterCols = ref<string[]>([]);
 function addableCols() { return result.value?.columns || []; }
 
 const sourceLabel = computed(() =>
-  props.contract.table
-    ? `表 ${props.contract.table}`
-    : (props.contract.base ? (props.contract.base as string).replace(/\s+/g, ' ').slice(0, 40) : '项目库'));
+  props.contract.mode === 'ontology'
+    ? (menu.value?.name || props.contract.ontology || '本体')
+    : props.contract.table
+      ? `表 ${props.contract.table}`
+      : (props.contract.base ? (props.contract.base as string).replace(/\s+/g, ' ').slice(0, 40) : '项目库'));
 const initialFilterCols = computed(() => props.contract.filterCols || []);
+
+// ===== 本体模式（mode=ontology）：按业务字段名取数，不暴露自由 SQL）=====
+interface OntMenu {
+  id: string;
+  code: string;
+  name: string;
+  description?: string;
+  datasourceId: string;
+  timeDimensions: Array<{ name: string; description?: string }>;
+  dimensions: Array<{ name: string; description?: string }>;
+  measures: Array<{ name: string; agg?: string; description?: string }>;
+  filters: Array<{ name: string; description?: string; isDefault?: boolean }>;
+  selections: Array<{ name: string }>;
+}
+
+const isOntologyMode = computed(() => props.contract.mode === 'ontology');
+// 本体模式只有明细视图：聚合走 /aggregate 需要 SQL 列名，不在本轮暴露
+const modeOptions = computed(() => (isOntologyMode.value ? viewModes.filter((v) => v.key === 'table') : viewModes));
+
+const ontologies = ref<Array<{ code: string; name: string; description?: string }>>([]);
+const ontologyRef = ref(props.contract.ontology || '');
+const menu = ref<OntMenu | null>(null);
+const ontDim = ref('');
+const ontGrain = ref<'' | Grain>('');
+const ontMeasure = ref('');
+const ontFilters = ref<string[]>([]);
+const ontLimit = ref(500);
+const isTimeDim = computed(() => !!menu.value?.timeDimensions.some((t) => t.name === ontDim.value));
+
+async function loadOntologies(): Promise<void> {
+  const r = await api.get<Array<{ code: string; name: string; description?: string }>>('/ontologies');
+  if ('error' in r) { error.value = String(r.error); return; }
+  ontologies.value = r.data || [];
+  if (!ontologyRef.value && ontologies.value.length) ontologyRef.value = ontologies.value[0].code;
+  if (ontologyRef.value) await loadMenu();
+}
+
+async function loadMenu(): Promise<void> {
+  if (!ontologyRef.value) return;
+  const r = await api.get<OntMenu>(`/query-contract/ontology/${encodeURIComponent(ontologyRef.value)}`);
+  if ('error' in r) { error.value = String(r.error); menu.value = null; return; }
+  menu.value = r.data;
+  // 默认选中：第一个时间维度（或维度）、第一个度量、声明为默认的过滤器
+  const dimExists = menu.value.timeDimensions.some((t) => t.name === ontDim.value)
+    || menu.value.dimensions.some((d) => d.name === ontDim.value);
+  if (!dimExists) ontDim.value = menu.value.timeDimensions[0]?.name || '';
+  if (!menu.value.measures.some((m) => m.name === ontMeasure.value)) ontMeasure.value = menu.value.measures[0]?.name || '';
+  ontFilters.value = menu.value.filters.filter((f) => f.isDefault).map((f) => f.name);
+  await runOntology();
+}
+
+async function onOntPick(): Promise<void> {
+  ontDim.value = ''; ontMeasure.value = ''; ontFilters.value = []; ontGrain.value = '';
+  await loadMenu();
+}
+
+async function runOntology(): Promise<void> {
+  if (!ontologyRef.value) { error.value = '请选择本体'; return; }
+  loading.value = true; error.value = '';
+  const intent: Record<string, unknown> = { limit: ontLimit.value };
+  if (ontDim.value) {
+    intent[isTimeDim.value ? 'timeDimension' : 'dimensions'] = isTimeDim.value
+      ? { name: ontDim.value, ...(ontGrain.value ? { grain: ontGrain.value } : {}) }
+      : [ontDim.value];
+  }
+  if (ontMeasure.value) {
+    const m = menu.value?.measures.find((x) => x.name === ontMeasure.value);
+    intent.measures = [{ name: ontMeasure.value, ...(m?.agg ? { agg: m.agg } : {}) }];
+  }
+  if (ontFilters.value.length) intent.filters = [...ontFilters.value];
+  try {
+    const resp = await api.post<RunResp>('/query-contract/ontology/run', { ontology: ontologyRef.value, intent });
+    if ('error' in resp) { error.value = String(resp.error); result.value = null; return; }
+    result.value = { ...resp.data, total: resp.data.rowCount ?? resp.data.rows.length };
+    page.value = 1;
+    sort.value = null;
+  } finally {
+    loading.value = false;
+  }
+}
+
+// 列显隐 + 类型感知宽度/对齐（明细列多时默认全选，用户可自行收敛）
+const visibleCols = ref<string[]>([]);
+const columnOptions = computed(() => result.value?.columns || []);
+const columnMeta = computed(() => inferColumnMeta(result.value?.columns || [], result.value?.rows || []));
+watch(() => result.value, (r) => {
+  const cols = r?.columns || [];
+  if (!cols.length) { visibleCols.value = []; return; }
+  // 用户手动收敛过的列优先保留；首次（或列全变了）自动隐藏整列空值/空 JSON 的噪声列
+  const kept = visibleCols.value.filter((c) => cols.includes(c));
+  if (kept.length) { visibleCols.value = kept; return; }
+  const meta = inferColumnMeta(cols, r?.rows || []);
+  const meaningful = cols.filter((c) => meta[c]?.kind !== 'empty');
+  visibleCols.value = meaningful.length >= 3 ? meaningful : [...cols];
+});
 
 async function runQuery(opts: { page?: number; size?: number; fetchSamples?: string[] } = {}) {
   const p = opts.page ?? page.value;
   const size = opts.size ?? pageSize.value;
   loading.value = true; error.value = '';
-  const body: Record<string, unknown> = {};
-  body.datasourceId = props.contract.datasourceId;
-  if (props.contract.table) body.table = props.contract.table;
-  else if (props.contract.base) body.base = props.contract.base;
-  else throw new Error('契约缺少 table 或 base');
-  const cleanedFilters = Object.entries(filterVals.value)
-    .filter(([, v]) => v !== '' && v != null)
-    .map(([col, v]) => ({ col, op: 'eq' as const, value: v }));
-  if (cleanedFilters.length) body.filters = cleanedFilters;
-  if (sort.value) body.sort = [sort.value];
+  const body = queryBody();
+  if (!body) { error.value = '契约缺少 table 或 base'; loading.value = false; return; }
   body.page = p; body.pageSize = size;
   if (opts.fetchSamples?.length) body.sampleFilters = opts.fetchSamples;
   const resp = await api.post<RunResp>('/query-contract/run', body);
@@ -275,9 +459,9 @@ async function applyAddColumn(col: string) {
   filterVals.value[col] = '';
   // 针对新列只采一次样（其余沿用本轮 result），再分页触发一次
   loading.value = true; error.value = '';
-  const body: Record<string, unknown> = { page: 1, pageSize: pageSize.value };
-  body.datasourceId = props.contract.datasourceId;
-  if (props.contract.table) body.table = props.contract.table; else body.base = props.contract.base;
+  const body = queryBody();
+  if (!body) { error.value = '契约缺少 table 或 base'; loading.value = false; return; }
+  body.page = 1; body.pageSize = pageSize.value;
   body.sampleFilters = [col];
   const resp = await api.post<RunResp>('/query-contract/run', body);
   loading.value = false;
@@ -302,111 +486,300 @@ function applyTextFilter(col: string, val: unknown) {
   void runQuery({ page: 1 });
 }
 
-// ===== Q2 聚合图 =====
-const chartDim = ref('');
-const chartMeasure = ref('');
-const chartAgg = ref<'sum' | 'count' | 'avg' | 'min' | 'max'>('sum');
-const aggPoints = ref<Point[]>([]);
-const aggLoading = ref(false);
-const aggErr = ref('');
+// ===== 图表（P0 图表层）=====
+type Grain = 'day' | 'week' | 'month' | 'quarter' | 'year';
 
-// 简单启发：取结果列做维度/度量候选
-const aggDimCols = computed(() => result.value?.columns || []);
-const chartMeasureCols = computed(() => result.value?.columns || []);
+const chartRef = ref<InstanceType<typeof DataChart> | null>(null);
+const chartKind = ref<ChartKind>('line');
+const chartDim = ref('');
+const chartSeries = ref('');
+const chartMeasure = ref('');
+const chartAgg = ref<'count' | 'sum' | 'avg' | 'min' | 'max'>('sum');
+const chartGrain = ref<'' | Grain>('');
+const chartTopN = ref<number | ''>('');
+const chartPercent = ref(false);
+const agg = ref<ChartData | null>(null);
+const aggLoading = ref(false);
+
+const seriesCols = computed(() => (result.value?.columns || []).filter((c) => c !== chartDim.value));
+
+/** 只有看起来像日期的列才给时间粒度，避免对普通字符串做 dateTrunc 全变空 */
+const DATE_DIM_RE = /(_at$|_date$|date|time|day|month|year|created|updated)/i;
+const canGrain = computed(() => DATE_DIM_RE.test(chartDim.value));
+watch(canGrain, (ok) => { if (!ok) chartGrain.value = ''; });
+
+const chartSpec = computed<ChartSpec>(() => ({
+  kind: chartKind.value,
+  dim: chartDim.value,
+  measure: chartMeasure.value,
+  ...(chartSeries.value ? { series: chartSeries.value } : {}),
+  percent: chartPercent.value,
+}));
 
 async function loadAgg() {
   if (!chartDim.value || !chartMeasure.value) { error.value = '请先选 X 维度列与 Y 度量列'; return; }
   aggLoading.value = true; error.value = '';
-  const body: Record<string, unknown> = { page: 1, pageSize: 0 };
-  body.datasourceId = props.contract.datasourceId;
-  if (props.contract.table) body.table = props.contract.table; else if (props.contract.base) body.base = props.contract.base;
-  const cleanedFilters = Object.entries(filterVals.value)
+  const body = queryBody();
+  if (!body) { error.value = '契约缺少 table 或 base'; aggLoading.value = false; return; }
+  body.page = 1; body.pageSize = 0;
+  body.dim = chartDim.value;
+  body.measureCol = chartMeasure.value;
+  body.agg = chartAgg.value;
+  if (chartSeries.value) body.series = chartSeries.value;
+  if (chartGrain.value) body.timeGrain = chartGrain.value;
+  if (chartTopN.value) body.topN = Number(chartTopN.value);
+  if (chartPercent.value) body.percent = true;
+  const resp = await api.post<ChartData>('/query-contract/aggregate', body);
+  aggLoading.value = false;
+  if ('error' in resp) { error.value = String(resp.error); agg.value = null; return; }
+  agg.value = resp.data;
+}
+
+function exportPng() {
+  const url = chartPng();
+  if (!url) { error.value = '图表尚未就绪，先点「生成」'; return; }
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${props.contract.title || props.contract.table || 'chart'}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+// ===== 导出 Word / Excel =====
+const WORD_DETAIL_LIMIT = 2000;
+const DOCX_KIND = { mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', label: 'Word' };
+const XLSX_KIND = { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', label: 'Excel' };
+const exporting = ref<'' | 'word' | 'excel'>('');
+
+const exportTitle = computed(() =>
+  props.contract.title || (props.contract.table ? `表 ${props.contract.table}` : '数据导出'));
+
+/** 当前契约 + 过滤 + 排序 → 请求体（明细 / 聚合 / 导出共用） */
+function queryBody(): Record<string, unknown> | null {
+  const body: Record<string, unknown> = { datasourceId: props.contract.datasourceId };
+  if (props.contract.table) body.table = props.contract.table;
+  else if (props.contract.base) body.base = props.contract.base;
+  else return null;
+  const filters = Object.entries(filterVals.value)
     .filter(([, v]) => v !== '' && v != null)
     .map(([col, v]) => ({ col, op: 'eq' as const, value: v }));
-  if (cleanedFilters.length) body.filters = cleanedFilters;
-  body.dim = chartDim.value; body.measureCol = chartMeasure.value; body.agg = chartAgg.value;
-  const resp = await api.post<{ points: Point[]; total: number }>('/query-contract/aggregate', body);
-  aggLoading.value = false;
-  if ('error' in resp) { error.value = String(resp.error); return; }
-  aggPoints.value = resp.data.points || [];
+  if (filters.length) body.filters = filters;
+  if (sort.value) body.sort = [sort.value];
+  return body;
+}
+
+/** 行对象 → 二维数组（对象值转 JSON 字符串，null 原样保留给 Excel 空单元格） */
+function matrixOf(rows: Record<string, unknown>[], columns: string[]): Array<Array<string | number | null>> {
+  return rows.map((row) => columns.map((col) => {
+    const v = row[col];
+    if (v == null) return null;
+    if (typeof v === 'number' || typeof v === 'string') return v;
+    return typeof v === 'object' ? JSON.stringify(v) : String(v);
+  }));
+}
+
+function chartPng(): string {
+  const handle = chartRef.value as unknown as { toPng?: (o?: { background?: string }) => string } | null;
+  return handle?.toPng?.({ background: '#ffffff' }) || '';
+}
+
+function chartKindLabel(): string {
+  return { line: '折线', area: '面积', bar: '柱状', pie: '饼图', scatter: '散点' }[chartKind.value] || chartKind.value;
+}
+
+function describeConditions(): string {
+  const parts: string[] = [];
+  const filters = Object.entries(filterVals.value)
+    .filter(([, v]) => v !== '' && v != null)
+    .map(([col, v]) => `${col} = ${v}`);
+  if (filters.length) parts.push('过滤：' + filters.join('；'));
+  if (sort.value) parts.push(`排序：${sort.value.col} ${sort.value.dir === 'desc' ? '降序' : '升序'}`);
+  parts.push(`导出时间：${new Date().toLocaleString()}`);
+  return parts.join('　');
+}
+
+/** 导出用全量明细（不走分页；服务端上限 5 万行） */
+async function fetchExportRows(): Promise<RunResp | null> {
+  // 本体模式：导出当前取数结果（已按上限 1000 行截断），不再走自由 SQL 通道
+  if (isOntologyMode.value) {
+    if (!result.value?.columns.length) { error.value = '请先查询本体数据'; return null; }
+    return result.value;
+  }
+  const body = queryBody();
+  if (!body) { error.value = '契约缺少 table 或 base'; return null; }
+  const resp = await api.post<RunResp>('/query-contract/export', body);
+  if ('error' in resp) { error.value = String(resp.error); return null; }
+  if (!resp.data.columns.length) { error.value = '当前条件无可导出数据'; return null; }
+  return resp.data;
+}
+
+async function exportExcel() {
+  exporting.value = 'excel';
+  error.value = '';
+  try {
+    const data = await fetchExportRows();
+    if (!data) return;
+    const sheets: XlsxSheet[] = [
+      { name: '明细', columns: data.columns, rows: matrixOf(data.rows, data.columns) },
+    ];
+    if (agg.value?.points.length) {
+      sheets.push({
+        name: '聚合',
+        columns: [agg.value.dim || chartDim.value, ...agg.value.series],
+        rows: agg.value.points.map((p) => [p.key, ...p.values]),
+      });
+    }
+    const [{ buildWorkbookXlsx }, { saveDeliverableBytes, safeFileName }] = await Promise.all([
+      import('../../utils/report-xlsx'),
+      import('../../utils/deliverable-save'),
+    ]);
+    const bytes = await buildWorkbookXlsx(sheets);
+    await saveDeliverableBytes(bytes, safeFileName(exportTitle.value, '数据导出') + '.xlsx', XLSX_KIND);
+  } catch (e: any) {
+    error.value = '导出失败：' + (e?.message || e);
+  } finally {
+    exporting.value = '';
+  }
+}
+
+async function exportWord() {
+  exporting.value = 'word';
+  error.value = '';
+  try {
+    const data = await fetchExportRows();
+    if (!data) return;
+    const blocks: DocxBlock[] = [];
+    blocks.push({ type: 'paragraph', text: describeConditions() });
+
+    const png = agg.value?.points.length ? chartPng() : '';
+    if (png) {
+      blocks.push({
+        type: 'image',
+        dataUrl: png,
+        caption: `图 1  ${chartDim.value} × ${chartMeasure.value}（${chartKindLabel()}）`,
+      });
+    }
+
+    const rows = data.rows.slice(0, WORD_DETAIL_LIMIT);
+    const truncated = data.rows.length > WORD_DETAIL_LIMIT;
+    blocks.push({ type: 'heading', level: 2, text: `明细（共 ${data.total >= 0 ? data.total : data.rows.length} 条）` });
+    blocks.push({
+      type: 'table',
+      columns: data.columns,
+      rows: matrixOf(rows, data.columns),
+      caption: truncated ? `表 1  仅含前 ${WORD_DETAIL_LIMIT} 行，完整明细请导出 Excel` : '表 1',
+    });
+
+    const [{ buildReportDocx }, { saveDeliverableBytes, safeFileName }] = await Promise.all([
+      import('../../utils/report-docx'),
+      import('../../utils/deliverable-save'),
+    ]);
+    const blob = await buildReportDocx({ title: exportTitle.value, subtitle: sourceLabel.value, blocks });
+    const name = safeFileName(exportTitle.value, '数据导出') + '.docx';
+    await saveDeliverableBytes(new Uint8Array(await blob.arrayBuffer()), name, DOCX_KIND);
+  } catch (e: any) {
+    error.value = '导出失败：' + (e?.message || e);
+  } finally {
+    exporting.value = '';
+  }
+}
+
+// ===== 钉到看板 =====
+const dashStore = useDashboardStore();
+const { store: chatStore } = useChat();
+const pinOpen = ref(false);
+const pinDashId = ref('');
+const pinNewTitle = ref('');
+const pinning = ref(false);
+
+async function openPin() {
+  pinDashId.value = '';
+  pinNewTitle.value = '';
+  pinOpen.value = true;
+  await dashStore.loadList();
+  pinDashId.value = dashStore.list[0]?.id || '';
+}
+
+async function createPinDash() {
+  const title = pinNewTitle.value.trim();
+  if (!title) return;
+  const created = await dashStore.create(title);
+  if (!created) { error.value = dashStore.error || '新建看板失败'; return; }
+  pinDashId.value = created.id;
+  pinNewTitle.value = '';
+}
+
+/** 钉入的是「取数契约 + 图表定义」，不含行数据 */
+function pinnedWidget(): DashboardWidget {
+  const hasChart = !!agg.value?.points.length;
+  const id = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? `dw_${crypto.randomUUID()}`
+    : `dw_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    id,
+    kind: hasChart ? 'chart' : 'table',
+    title: exportTitle.value,
+    contract: { ...props.contract },
+    ...(hasChart ? {
+      spec: {
+        kind: chartKind.value,
+        dim: chartDim.value,
+        measure: chartMeasure.value,
+        agg: chartAgg.value,
+        ...(chartSeries.value ? { series: chartSeries.value } : {}),
+        ...(chartGrain.value ? { timeGrain: chartGrain.value } : {}),
+        ...(chartTopN.value ? { topN: Number(chartTopN.value) } : {}),
+        ...(chartPercent.value ? { percent: true } : {}),
+      },
+    } : {}),
+    pos: hasChart ? { x: 0, y: 0, w: 6, h: 6 } : { x: 0, y: 0, w: 12, h: 5 },
+  };
+}
+
+async function doPin() {
+  if (!pinDashId.value) return;
+  pinning.value = true;
+  const saved = await dashStore.saveWidget(pinDashId.value, pinnedWidget());
+  pinning.value = false;
+  if (!saved) { error.value = dashStore.error || '钉入失败'; return; }
+  pinOpen.value = false;
+  chatStore.openTab({ kind: 'dashboard', name: '看板' });
+  ElMessage.success('已钉入看板');
 }
 
 function setMode(m: Mode) {
   mode.value = m;
-  if (m !== 'table' && !chartDim.value) {
-    // 默认把当前表第一个非 id 列当维度
-    const cols = result.value?.columns || [];
-    chartDim.value = cols.find((c) => !/^(id|_id)$/i.test(c)) || cols[0] || '';
-    // 度量默认选第一个不是图表已选的列
-    chartMeasure.value = cols.find((c) => c !== chartDim.value && !/^created|updated|_at$/i.test(c)) || '';
-    if (chartDim.value && chartMeasure.value) void loadAgg();
+  if (m !== 'chart') return;
+  const cols = result.value?.columns || [];
+  if (!chartDim.value) chartDim.value = cols.find((c) => !/^(id|_id)$/i.test(c)) || cols[0] || '';
+  if (!chartMeasure.value) {
+    chartMeasure.value = cols.find((c) => c !== chartDim.value && !/^created|updated|_at$/i.test(c))
+      || cols.find((c) => c !== chartDim.value)
+      || '';
   }
+  if (chartDim.value && chartMeasure.value && !agg.value && !aggLoading.value) void loadAgg();
 }
-
-// ===== 轻量 SVG 图渲染（无第三方依赖，深/亮主题内联）=====
-const padL = 46, padR = 16, padT = 12, padBottom = 26;
-const plotH = 300 - padT - padBottom;
-
-function color(i: number) {
-  const palette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f43f5e', '#84cc16', '#6366f1', '#14b8a6'];
-  return palette[i % palette.length];
-}
-const maxVal = computed(() => Math.max(1, ...aggPoints.value.map((p) => p.value)));
-const n = computed(() => Math.max(aggPoints.value.length, 1));
-
-function barY(v: number) { return padT + plotH - (v / maxVal.value) * plotH; }
-function barX(i: number) { return padL + (i / n.value) * (600 - padL - padR) + 2; }
-const barW = computed(() => Math.max((600 - padL - padR) / n.value - 4, 1));
-function linePoints() {
-  return aggPoints.value
-    .map((p, i) => {
-      const x = padL + (i / Math.max(n.value - 1, 1)) * (600 - padL - padR);
-      return `${x},${barY(p.value)}`;
-    })
-    .join(' ');
-}
-const gridLines = computed(() => [0.25, 0.5, 0.75].map((r) => padT + plotH - r * plotH));
-const yTicks = computed(() => [0, 0.5, 1].map((r) => Math.round(maxVal.value * r)));
-function yTickY(t: number) { return 300 - 6 - ((t / maxVal.value) * plotH); }
-const axisLabels = computed(() => aggPoints.value.map((p, i) => (i % Math.ceil(aggPoints.value.length / 8) === 0 ? shortLabel(p.key) : '')));
-function axisX(i: number) { return padL + (i / n.value) * (600 - padL - padR) + (600 - padL - padR) / (2 * n.value); }
-function shortLabel(k: string) { return k.length > 7 ? k.slice(0, 6) + '…' : k; }
-
-function polar(i: number, inner: number, outer: number) {
-  const total = aggPoints.value.reduce((s, p) => s + Math.max(p.value, 0), 1) || 1;
-  const start = aggPoints.value.slice(0, i).reduce((s, p) => s + Math.max(p.value, 0), 0) / total;
-  const ang = aggPoints.value[i] ? Math.max(aggPoints.value[i].value, 0) / total : 0;
-  const a0 = start * 2 * Math.PI - Math.PI / 2;
-  const a1 = (start + ang) * 2 * Math.PI - Math.PI / 2;
-  const cx = 300, cy = 150, R = 100;
-  const p = (a: number, r: number) => `${cx + r * Math.cos(a)},${cy + r * Math.sin(a)}`;
-  const large = ang > 0.5 ? 1 : 0;
-  const r = inner === 0 ? R : inner;
-  const ro = outer === 0 ? R : outer;
-  if (ang >= 0.9999) return `M ${cx},${cy} m -${R},0 a ${R},${R} 0 1,1 ${2 * R},0 a ${R},${R} 0 1,1 -${2 * R},0`;
-  return `M ${cx},${cy} L ${p(a0, ro)} A ${ro},${ro} 0 ${large} 1 ${p(a1, ro)} Z`;
-}
-const pieArcs = computed(() =>
-  aggPoints.value
-    .filter((p) => p.value > 0)
-    .map((_, i) => ({ path: polar(i, 0, 0) })));
-const labelX = computed(() => aggPoints.value.map(() => 300));
-const labelY = computed(() => aggPoints.value.map((_, i) => 170 + i * 16 - Math.max(aggPoints.value.length - 1, 0) * 8));
 
 watch(() => props.contract, () => { resetAll(); }, { deep: true });
 function resetAll() {
   mode.value = 'table'; result.value = null; samples.value = {};
-  filterVals.value = {}; activeFilterCols.value = initialFilterCols.value.slice(); aggPoints.value = [];
-  page.value = 1; sort.value = null; chartDim.value = ''; chartMeasure.value = '';
-  aggLoading.value = false; loading.value = false; error.value = '';
+  filterVals.value = {}; activeFilterCols.value = initialFilterCols.value.slice();
+  page.value = 1; sort.value = null; error.value = '';
+  agg.value = null; aggLoading.value = false;
+  chartKind.value = 'line'; chartDim.value = ''; chartSeries.value = ''; chartMeasure.value = '';
+  chartAgg.value = 'sum'; chartGrain.value = ''; chartTopN.value = ''; chartPercent.value = false;
+  loading.value = false;
+  if (isOntologyMode.value) { void loadOntologies(); return; }
   // 有声明过滤器 → 采样 + 带首页数据；无 → 直接首页
   if (initialFilterCols.value.length) { void samplePreset(); } else { void runQuery({ page: 1 }); }
 }
 async function samplePreset() {
   loading.value = true;
-  const body: Record<string, unknown> = { page: 1, pageSize: pageSize.value, sampleFilters: initialFilterCols.value };
-  body.datasourceId = props.contract.datasourceId;
-  if (props.contract.table) body.table = props.contract.table; else if (props.contract.base) body.base = props.contract.base;
+  const body = queryBody();
+  if (!body) { loading.value = false; error.value = '契约缺少 table 或 base'; return; }
+  body.page = 1; body.pageSize = pageSize.value;
+  body.sampleFilters = initialFilterCols.value;
   const resp = await api.post<RunResp>('/query-contract/run', body);
   loading.value = false;
   if (!('error' in resp)) {
@@ -430,6 +803,27 @@ onMounted(() => { resetAll(); });
 .dqw-view-btn { border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--color-text-secondary); padding: 3px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
 .dqw-view-btn:hover { background: var(--btn-bg-hover); color: var(--color-text); }
 .dqw-view-btn.on { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }
+.dqw-colsel { width: 180px; margin-left: auto; }
+.dqw-export { display: flex; gap: 6px; margin-left: auto; }
+.dqw-export :deep(.el-button + .el-button) { margin-left: 0; }
+.dqw-pin { display: flex; flex-direction: column; gap: 8px; }
+.dqw-pin-new { display: flex; gap: 6px; align-items: center; }
+.dqw-pin-tip { font-size: 11px; color: var(--color-text-tertiary); line-height: 1.5; }
+.dqw-ont { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 14px; border-bottom: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-lighter); }
+.dqw-ont-desc { font-size: 11px; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.dqw-table :deep(.el-table__header-wrapper th.el-table__cell) {
+  background: var(--el-fill-color-lighter);
+  font-weight: 600;
+  color: var(--color-text);
+}
+.dqw-table :deep(.el-table__cell) { padding: 4px 0; }
+.dqw-table :deep(.cell) { font-size: 12px; line-height: 1.5; }
+.dqw-table :deep(.el-table__row:hover > td.el-table__cell) {
+  background: color-mix(in srgb, var(--el-color-primary) 6%, transparent);
+}
+.dqw-table :deep(.el-table__row--striped td.el-table__cell) {
+  background: var(--el-fill-color-lighter);
+}
 .dqw-filters { flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--el-border-color-lighter); align-items: flex-start; flex-wrap: wrap; background: var(--el-fill-color-lighter); }
 .dqw-filter-label { font-size: 12px; color: var(--color-text-secondary); padding-top: 5px; }
 .dqw-filter-controls { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -445,9 +839,8 @@ onMounted(() => { resetAll(); });
 .dqw-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--color-text-tertiary); font-size: 13px; padding: 24px; }
 .dqw-error { flex: 0 0 auto; color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 8%, transparent); border-left: 3px solid var(--color-danger); padding: 6px 10px; font-size: 12px; white-space: pre-wrap; }
 .dqw-chart-cfg { padding: 8px 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
-.dqw-cfg-line { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.dqw-cfg-label { width: 86px; font-size: 12px; color: var(--color-text-secondary); flex: 0 0 auto; }
-.dqw-cfg-line :deep(.el-select) { width: 200px; }
-.dqw-canvas { height: 100%; display: flex; align-items: center; justify-content: center; padding: 8px; box-sizing: border-box; }
-.dqw-svg { width: 100%; height: 100%; max-height: 300px; }
+.dqw-cfg-line { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.dqw-cfg-label { font-size: 12px; color: var(--color-text-secondary); flex: 0 0 auto; }
+.dqw-canvas { height: 100%; display: flex; align-items: stretch; justify-content: center; padding: 10px 12px 6px; box-sizing: border-box; min-height: 260px; }
+.dqw-canvas > * { flex: 1 1 auto; min-height: 240px; }
 </style>

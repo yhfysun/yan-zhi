@@ -748,6 +748,8 @@ const TEXT_EXTS = new Set([
   'md', 'markdown', 'txt', 'log', 'json', 'py', 'js', 'ts', 'jsx', 'tsx', 'vue', 'html', 'htm', 'css', 'scss', 'less',
   'xml', 'yaml', 'yml', 'ini', 'cfg', 'conf', 'env', 'sh', 'bat', 'ps1', 'sql', 'java', 'kt', 'go', 'rs', 'c', 'h',
   'cpp', 'hpp', 'cs', 'php', 'rb', 'swift', 'toml', 'properties', 'gitignore', 'lock',
+  // 言智中间格式（纯文本 JSON：文档 / 看板）
+  'ydoc', 'ydash',
 ]);
 
 /** 图片扩展名 → data URL 的 MIME 类型 */

@@ -3335,6 +3335,18 @@ async function healStalePlatform() {
       console.error('[Chat] 发送失败:', e);
 
       const reason = e?.message || '请求失败';
+      // ★★★ 连接类失败 ≠ 模型调用失败（2026-10-26 用户实报「任务发出去后没了」）：
+      //   WS 半开时 create_task 静默等满 30s（见 utils/chat-ws.ts 的心跳注释），消息
+      //   **压根没到服务端**——既没落库也没回显。此时若继续走下面的「调用失败」分支，
+      //   连那条提示也要靠 addMessage 写进会话，而它同样走 WS ⇒ 一起失败 ⇒ 聊天区毫无反应。
+      //   ⇒ 单独处理：原文放回输入框 + 明确告知可重试。chat-ws 已在超时时主动重连，
+      //     重试必定走新连接（服务端若其实已建任务，会命中「注入运行中任务」语义，不会双开）。
+      const isConnectionFailure = /^(WS 请求超时|WS 已断开)/.test(reason);
+      if (isConnectionFailure) {
+        if (!input.value.trim()) input.value = content;
+        ElMessage.error('连接已断开并自动重连，这条消息未发出，请重试');
+        return;
+      }
       // 按错误类型区分提示：401（Key 无效）/404（URL 不对）/网络不通才是平台配置问题，
       // 引导用户修正配置；400（请求格式错误，如 tool_calls 配对）/429（频率超限）与配置无关，
       // 不再展示「平台无法访问」提示与 PLATFORM_CONFIG 配置卡片，避免误导用户改配置。

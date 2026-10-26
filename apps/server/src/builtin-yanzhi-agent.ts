@@ -24,6 +24,9 @@ const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
 export const YANZHI_AGENT_BUILTIN_TOOLS = [
   // 应用即工具（核心差异化能力）：派发 / 状态 / 弹窗 / 录屏 / 后期合成 / 科普动画 / 发布入队+回写+数据回传
   'app_create_task', 'app_get_task_status', 'app_open_window', 'screen_record', 'demo_compose', 'anim_compose', 'publish_enqueue', 'publish_mark_published', 'publish_record_stats',
+  // 本体数据链（2026-10-26 用户要求：挂全部本体；list 看列表 → brief 看基本信息 → detail 看口径，再取数）
+  'api_datasource_list', 'api_ontology_list', 'api_ontology_search', 'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
+  'api_data_preview', 'api_data_query', 'api_data_paginate', 'data_query_view',
   // 设计素材：免费站点清单查询（找配图/图标时用）
   'design_asset_sites',
   // 读资料与交付（演示脚本 / 文案 / 排期）
@@ -50,7 +53,16 @@ export const YANZHI_AGENT_SYSTEM_PROMPT = `你是「言智代言官」（yanzhiA
 7. **停止录制**：screen_record { action: "stop", recordId: <start 回执里的 id> } —— 产物 mp4 落在**当前会话**的产物目录（deliverable）。
 8. **后期合成**：demo_compose { raw: <stop 回执路径>, script: <演示脚本 JSON 字符串> } —— 脚本含 title / steps（每步 {t: 秒, text: 字幕}，t 可按执行节奏估算，宁略早勿晚）/ outro（如「由言智 App 自动录制」）。成片同样落在产物目录，对话里给成片与原始录像两个路径。
 
+## 本体数据（用户问应用里的数据 / 要图表时）
+你已挂载应用内**全部已发布本体**，按这条链查，不要猜表结构：
+1. **api_ontology_list** 列出全部本体（code/名称/字段名）；问题明确也可用 api_ontology_search 按问题召回。
+2. **api_ontology_brief** 看单个本体的字段、过滤器与选择列（基本信息）。
+3. 口径/表达式/粒度拿不准时 **api_ontology_detail** 懒加载完整定义；**api_ontology_values** 采样真实取值（禁止猜过滤器值）。
+4. **api_data_preview** 先核对命中行数、分组列空值、抽样值口径；确认后再 **api_data_query** 取数（contract=true，过滤器按名引用）。
+5. 报数只用 rows 里的数字；用户要图表时调 **data_query_view** { table 或 base, title } 内嵌可交互看板（可切折线/柱/饼/散点并导出 PNG），正文再用表格说明口径。
+
 ## 硬约束
+- **图表按需求选形式**：要交互/筛选/切图 → data_query_view { base: <api_data_query 返回的 sql>, title }；只要一张静态图 → 直接输出 SVG 围栏（三个反引号 + svg）或写 PNG 后按图片引用。**禁止把 SVG/HTML 源码裸贴当图表，也禁止只给路径不显示。**
 - **汇报纪律（最高优先级）**：只有**工具回执明确成功**才能说"已完成/已提交/已生成"；工具被拒、失败或没调用时，必须如实说明失败原因和用户能做的动作。**严禁**在工具没执行或执行失败的情况下声称"已提交到发布队列/已生成成片"——用户会去核对，谎报等于欺骗。
 - **权限前置检查**：本智能体的核心工具（录屏/后期/入队）都是**写操作**，readonly 会话会被直接拒绝。开工前先向用户确认会话权限已放开（默认档是只读！）；被权限拦截时如实转述"需要把会话权限切到默认以上"，不要转述成"环境缺依赖"之类的技术原因。
 - **真实录制**：只录真实操作过程，不摆拍、不伪造界面效果；任务失败就如实说明，可修脚本重录。
@@ -80,7 +92,8 @@ export const builtinYanzhiAgentDefs: Array<Record<string, unknown>> = [
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(YANZHI_AGENT_BUILTIN_TOOLS),
-    skill_ids: JSON.stringify([]),
+    // 本体取数 SOP（list → brief → detail → preview → query 的详细口径）
+    skill_ids: JSON.stringify(['skill_ontology_query']),
     // pageAgent：查各平台发布规则、竞品内容结构；发布执行员：平台页面动作专职执行
     sub_agent_ids: JSON.stringify([PAGE_AGENT_ID, PUBLISH_AGENT_ID]),
     system_prompt: YANZHI_AGENT_SYSTEM_PROMPT,

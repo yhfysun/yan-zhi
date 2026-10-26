@@ -78,6 +78,8 @@ import envRoutes from './routes/env.js';
 import systemRoutes from './routes/system.js';
 import debugRoutes from './routes/debug.js';
 import queryContractRoutes from './routes/query-contract.js';
+import dashboardRoutes from './routes/dashboards.js';
+import documentTypeRoutes from './routes/document-types.js';
 import ontologyRoutes from './routes/ontologies.js';
 import llmProxyRoutes from './routes/llm-proxy.js';
 import llmTaskRoutes from './routes/llm-tasks.js';
@@ -92,6 +94,8 @@ import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.j
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
 // 远程控制（向日葵式配对：授权码 + 白名单免确认 + WebRTC/JPEG 双通道），见 plugins/remote-control.ts 文件头
 import { remoteControlManifest, remoteControlModule } from './plugins/remote-control.js';
+// 安卓远控（scrcpy）：电脑上镜像并操作安卓手机，见 plugins/android-mirror.ts 文件头
+import { androidMirrorManifest, androidMirrorModule } from './plugins/android-mirror.js';
 import { registerBuiltinSkins } from './plugins/skins.js';
 import { opsShellManifest, opsShellModule } from './plugins/ops-shell.js';
 // 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理，见 plugins/shop-ops.ts 文件头
@@ -223,6 +227,8 @@ if (!process.env.MOBILE_MODE) {
   app.use('/api/local-console', localConsoleRoutes);
 }
 app.use('/api/query-contract', queryContractRoutes);
+app.use('/api/dashboards', dashboardRoutes);
+app.use('/api/document-types', documentTypeRoutes);
 app.use('/api/ontologies', ontologyRoutes);
 app.use('/api/std-attributes', stdAttributeRoutes);
 app.use('/api/ontology-groups', ontologyGroupRoutes);
@@ -815,6 +821,11 @@ try {
     // powershell 都是被控会话内**按需**拉起，移动端走不到那条路径）。
     // 被控端（屏幕采集/输入注入/rc:* IPC）仍仅桌面可用 —— RemoteControlHost 无 electronAPI 自动跳过。
     await registerPkgOrSource('remote-control', () => mgr.registerBuiltin(remoteControlManifest, remoteControlModule));
+    // android-mirror（安卓远控 / scrcpy）：依赖本机 adb 与 tools/scrcpy，只登记桌面端。
+    // 默认开启 —— 不点「连接」时不产生任何进程。
+    if (!process.env.MOBILE_MODE) {
+      await registerPkgOrSource('android-mirror', () => mgr.registerBuiltin(androidMirrorManifest, androidMirrorModule, true));
+    }
     // 内置皮肤包：纯声明式（contributes.themes + 静态壁纸），默认启用，设置→皮肤库切换。
     // 包形态 = skins 目录的 multi manifest（27 套各自注册，共享 noop 入口）；缺包回退源码注册。
     const skinsPkg = builtinPkgs.multiPackages.find((p) => p.manifests.some((m) => typeof m.id === 'string' && m.id.startsWith('skin-')));

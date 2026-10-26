@@ -176,6 +176,16 @@ class SqliteLikeConnector implements Connector {
       this.initPromise = (async () => {
         if (this.disposed) return;
         if (!fs.existsSync(this.file)) {
+          // ★ sql.js（移动端）是内存库：落盘有 250ms 防抖 + 周期兜底，进程刚起来
+          //   的头几秒 data.db 可能还没生成。直接判存在性会把「尚未落盘」误判成
+          //   「文件不存在」—— 手机上的表现就是内置本体每次启动都生成失败。
+          //   这里先主动刷一次，再走原来的判据。
+          try {
+            const { flushSqliteInstances } = await import('./sqlite-driver.js');
+            flushSqliteInstances();
+          } catch { /* 驱动不可用时保持原判据 */ }
+        }
+        if (!fs.existsSync(this.file)) {
           const hint = this.type === 'project' ? `（DATA_DIR=${process.env.DATA_DIR || '(未设置，按 server 源码目录推断)'}）` : '';
           throw new Error(`SQLite 文件不存在: ${this.file}${hint}`);
         }
@@ -205,8 +215,13 @@ class SqliteLikeConnector implements Connector {
     const stmt = this.conn!.prepare(sql);
     const all = stmt.all() as Record<string, unknown>[];
     // 列名：原生 stmt.columns() 优先；sql.js 回退到首行 keys（空结果集则无列名可给）
+    // ★ better-sqlite3 的 columns() 运行时返回 **对象数组**（{name, column, table, ...}），
+    //   类型声明却写成 string[]。不取 name 会让列名变成 "[object Object]"：
+    //   契约层的列白名单 / 工作台列头 / 预览类型统计全部失效。
     const columns = typeof stmt.columns === 'function'
-      ? stmt.columns()
+      ? (stmt.columns() as unknown as Array<{ name?: string } | string>)
+        .map((c) => (typeof c === 'string' ? c : String(c?.name ?? '')))
+        .filter(Boolean)
       : all.length ? Object.keys(all[0]) : [];
     const rows = all.slice(0, maxRows);
     return {
@@ -225,8 +240,11 @@ class SqliteLikeConnector implements Connector {
     const maxRows = opts?.maxRows ?? DEFAULT_MAX_ROWS;
     const stmt = this.conn!.prepare(sql);
     const all = stmt.all(...params) as Record<string, unknown>[];
+    // 同 query()：columns() 运行时是对象数组，必须取 name
     const columns = typeof stmt.columns === 'function'
-      ? stmt.columns()
+      ? (stmt.columns() as unknown as Array<{ name?: string } | string>)
+        .map((c) => (typeof c === 'string' ? c : String(c?.name ?? '')))
+        .filter(Boolean)
       : all.length ? Object.keys(all[0]) : [];
     const rows = all.slice(0, maxRows);
     return {

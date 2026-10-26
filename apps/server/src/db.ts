@@ -421,6 +421,11 @@ try {
   }
 } catch {}
 
+// 内嵌数据浏览/看板的展示态（列/图表/过滤）随消息跨端同步。
+// 新库由下面的 CREATE 带列；老库靠这条 ALTER 补（SQLite 无 IF NOT EXISTS，失败可忽略）。
+// 刻意不进 MESSAGE_LIST_COLS：那是喂 LLM 的热路径列，dataView 只是 UI 状态，不该占上下文。
+try { db.exec('ALTER TABLE message ADD COLUMN data_view_json TEXT'); } catch {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS message (
     id TEXT PRIMARY KEY,
@@ -433,6 +438,7 @@ db.exec(`
     reasoning_content TEXT,
     system_prompt_snapshot TEXT,
     tokens INTEGER DEFAULT 0,
+    data_view_json TEXT,
     created_at INTEGER NOT NULL
   );
 
@@ -1504,20 +1510,24 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - 终止条件：同一选择器连续 miss 2 次即停止盲试；返回 warning（连续 3 次无页面变化）立即停止并换策略；绝不进入截图→猜选择器→miss→换选择器、或坐标盲点的无界循环。`;
 // 数据查询智能体挂载：本体语义层取数工具链 + 分析/交付底座。
 // api_* 由后端直查执行（mcp/api-tool-executor.ts），其余为核心内置工具。
-// 注意：**不挂** call_agent / list_sub_agents —— 本智能体没有子智能体，挂上会让模型
-// 反复尝试「找子智能体」而放弃本体取数链（实测跑偏 140+ 步后凭空编造答案）。
+// 委派口径（2026-10-26 放开）：只在「无明确本体 / 需要跨本体比对」时委派 data-explorer；
+// 报告编排委派 report-writer。两者都不取数，取数始终留在主智能体，避免结果口径二手转述。
 const DATA_AGENT_BUILTIN_TOOLS = [
   // 数据源与取数
-  'api_datasource_list', 'api_data_query', 'api_data_paginate',
+  'api_datasource_list', 'api_data_query', 'api_data_preview', 'api_data_paginate', 'data_query_view',
   // 本体上下文链：问题召回 / 集合总览 / 单体简略 / 懒加载详情 / 属性值枚举采样
   'api_ontology_search', 'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
+  // 自定义文档类型（出正式文档前查一次，命中就用它的 code）
+  'api_document_type_list',
   // 分析与交付（只留统计与写文件：翻源码/列目录/读文件对取数无用，且是跑偏的主要出口）
   'python_exec', 'file_write',
+  // 子智能体委派（探查 / 报告）
+  'call_agent', 'list_sub_agents',
   // 任务规划与用户交互
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
 /** 数据分析/可视化/Excel 类 skill + 本体取数教材（与 skill 表种子对齐） */
-const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
+const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc', 'skill_infographic', 'skill_document_type'];
 
 // 运维助手挂载：ops-shell 插件工具（运行时名 plugin_ops-shell__<tool>）+ 用户交互。
 // 工具执行体在 ops-shell 插件内（ssh2），插件 disabled 时工具从 ToolRegistry 注销，委派会拿到明确报错。
@@ -2239,7 +2249,9 @@ const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析助手」。你通�
 1. 【选本体】调 api_ontology_overview 浏览全部已发布本体（或用 api_ontology_search 带 question 召回）。
    返回里有本体 = 有可用本体：从返回的 code 里挑与用户问题最相关的一个，在【下一步】里说明理由，然后直接进入第 2 步。不要因为"描述不完全匹配"就断定没有可用本体。
 2. 【看字段】overview 返回里已含 dimensions/measures 字段名；查"有多少/多少条/多少个"直接用度量 row_count，可跳过本步。拿不准口径时调 api_ontology_brief（字段清单+过滤器名）或 api_ontology_detail（懒加载表达式/聚合/粒度，include 按需）。
-3. 【取数】api_data_query { ontology: "<code>", intent: {...}, **contract: true }：
+3. 【自检】api_data_preview { ontology: "<code>", intent: {...}, contract: true }：只返回 SQL、命中总数、5 行抽样、分组列空值统计与告警。
+   报数前**必须**走这一步，核对三件事：① total 是否在预期数量级（预期 30 个日桶却返回 3 万行 → 先改查询）；② 分组列有无非预期空值；③ 抽样值是否符合业务口径（枚举/日期/金额对得上）。任何一项不符，先改 intent/过滤器再预览，不要直接取数。
+4. 【取数】api_data_query { ontology: "<code>", intent: {...}, **contract: true }：
    - ★ 2026-10-03 拍板（本体 × QueryContract 融合）：智能体取数**一律带 contract=true**（契约模式）——
      filters **只能按名引用**本体声明的过滤器，自由 SQL 条件会被拒绝（这是安全边界，不是限制）；
      返回里带 contract 菜单（dimensions/measures/filters/selections 的 name + 业务名说明）。
@@ -2248,17 +2260,19 @@ const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析助手」。你通�
    - selections：本体选择列名（一组命名字段展开并入 SELECT）
    - 过滤器的值拿不准 → 先 api_ontology_values 采样真实取值，禁止猜值
    - orderBy / limit：默认 100 行，上限 1000；行数不够用 api_data_paginate 翻页，禁止一次拉全表
-4. 【回答】用 markdown 表格呈现关键列，说明口径：本体 code、过滤器、时间范围、行数。需要统计/建模用 python_exec（仅限已拿到 rows 后）；交付文件用 file_write。
+5. 【回答】用 markdown 表格呈现关键列，说明口径：本体 code、过滤器、时间范围、行数。需要统计/建模用 python_exec（仅限已拿到 rows 后）；交付文件用 file_write。需要把结论做成信息图时，直接输出 infographic 围栏块（语法见 skill_infographic，首行 infographic <模板名> + data 块）；需要正式文档（周报/分析报告/纪要）时**先 api_document_type_list 查自定义模板**（命中就用它的 code 与 sections），再输出 document 围栏块（JSON，结构见 skill_document_type）；需要多图拼屏看板时输出 ydash 围栏块（JSON，widget 见 skill_document_type 的 .ydash 段）；要交互图表/看板时调 data_query_view { table 或 base, title }，只要静态图时直接输出 SVG 围栏（三个反引号 + svg）。前端会就地渲染，不要生成 HTML 或只贴图片路径。
 
 ## 硬约束
 - **工具结果即事实**：api_data_query 返回的 rows 是唯一可信数据源。最终答案里的每一个数字都必须能对应到某次 rows 里的值，对不上就不许写。
+- **报数前必须先预览**：未调用 api_data_preview 就直接 api_data_query 取数报数视为流程违规；预览返回的 warnings 必须逐条处理，或在回答里说明为什么可以忽略。预览与取数必须用**同一个 intent/过滤器**，改了条件就重新预览。
+- **图表按需求选形式**：要交互/筛选/切图 → data_query_view { base: <api_data_query 返回的 sql>, title }；只要一张静态图 → 直接输出 SVG 围栏（三个反引号 + svg）或写 PNG 后按图片引用，确保用户能看到图。**禁止把 SVG/HTML 源码裸贴当图表，也禁止只给文件路径不显示。**
 - **ontologyCount 不是业务数据**：api_ontology_overview 的 ontologyCount 是「本体（语义视图）的个数」，与任何业务数据的数量无关，严禁当作答案或参与回答。
-- **成功结果必须采信**：工具正常返回后禁止以"再验证一次"为由重复同样的调用；怀疑口径就换 intent（换度量/维度/加过滤器）查证，而不是原样重发。拿到 rows 后立即进入回答，不要继续调用工具。
+- **成功结果必须采信**：工具正常返回后禁止以"再验证一次"为由重复同样的调用；怀疑口径就换 intent（换度量/维度/加过滤器）查证，而不是原样重发。拿到 rows 后立即进入回答，不要继续调用工具。（api_data_preview → api_data_query 是规定顺序，不算重复调用。）
 - **必须真正取数才能回答**：走到 api_data_query 拿到 rows 后再作答。没有取到数 = 没有答案，禁止凭常识、记忆或推测编造数字/列表/表格。
 - **答案里禁止出现工具结果之外的分布/明细**：如"按状态分布""按模型分布"这类分组，必须真的用对应维度 group 查过 rows 才能写；没查过就一个字都不许编。
 - **只能用本体取数链拿数据**：禁止翻源码、列目录、读文件去猜表结构。
 - **禁止空参调用与原地打转**：api_ontology_search 必须带 question；同一工具连续 2 次没进展就换流程下一步。
-- **不要找子智能体**：你没有子智能体，禁止 list_sub_agents / call_agent。
+- **子智能体只在两个场景用**：① 指标/本体说不清、或需要跨多个本体比对时，委派 data-explorer（call_agent { agentId: "a_builtin_data_explorer_agent", input: "<指标定义 + 候选数据源 + 不确定点>" }）——它只回「推荐本体 code + 字段清单 + 不确定点」，不含数据；② 用户要成形的报告时，把**已取到的**结论要点与表格交给 report-writer（call_agent { agentId: "a_builtin_data_report_agent", input: "<标题 + 结论要点 + 表格数据 + 图表说明>" }）编排成 Markdown 文档。**取数永远自己做**：不把 query 交给子体，也不采信子体转述的任何数字。
 - **不要用知识库/记忆查库内数据**：api_kb_search / api_memory_search 查不到库内数据。
 - **只读取数**：禁止 INSERT / UPDATE / DELETE / DDL；兜底 SQL 有只读护栏。
 - **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，报「字段不存在」时按报错里的可用字段改名重试，最多 2 次；连续 2 次取数失败就停下如实说明原因与已尝试的本体 code。
@@ -2367,11 +2381,92 @@ export const seedAgents: Array<Record<string, unknown>> = [
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(DATA_AGENT_BUILTIN_TOOLS),
     skill_ids: JSON.stringify(DATA_AGENT_SKILL_IDS),
+    // 探查（不取数）与报告编排两个子体；取数仍留在主智能体
+    sub_agent_ids: JSON.stringify([
+      'a_builtin_data_explorer_agent',
+      'a_builtin_data_report_agent',
+    ]),
     system_prompt: DATA_AGENT_SYSTEM_PROMPT,
     // 内置定义由代码收敛：工具挂载/提示词/步数配置以代码为准，强制同步旧库残留
     force_sync: true,
     // 16 → 500（2026-10-20 用户诉求：所有智能体统一 500 步）。
     config_json: JSON.stringify({ maxReActSteps: 500 }),
+  },
+  // ── 数据线子智能体（2026-10-26）：探查只读本体、报告只编排产物 ─────────
+  // ★ 两个子体都**不挂取数工具**：数字只能来自主智能体的 api_data_* 回执，
+  //   避免「子体转述 → 主体复述」把口径洗一遍。
+  {
+    id: 'a_builtin_data_explorer_agent',
+    name: '数据探查助手',
+    description:
+      '数据子智能体（探查阶段）：指标定义不明确或需要跨多个本体比对时，检索本体列表/详情/枚举值，返回推荐本体 code、字段清单与不确定点；不取数、不写文件。由数据查询分析助手委派',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify([
+      'api_datasource_list',
+      'api_ontology_search', 'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
+      'ask_user',
+    ]),
+    system_prompt: `你是数据探查助手（dataExplorer）。你只回答「该用哪个本体、用哪些字段、哪里还不确定」，不返回任何业务数据。
+
+## 工作方式
+1. 先 api_ontology_search 用父体给的指标描述召回，再 api_ontology_overview / api_ontology_brief 看候选本体的字段与口径。
+2. 口径（表达式、聚合、粒度）拿不准时 api_ontology_detail 懒加载；过滤器取值不确定时 api_ontology_values 采样。
+3. 候选之间有重叠时逐一说明差异（粒度/时间维度/过滤口径），给出推荐顺序与理由。
+
+## 输出格式（严格照此，供父体直接消费）
+- 推荐本体：<code>（必填，且必须是真实存在的 code）
+- 建议字段：维度 [...] / 度量 [...]（含聚合）/ 时间维度 + 粒度
+- 候选对比：一句话说明为什么不是另一个本体
+- 不确定点：<需要父体用预览/采样确认的事项>
+
+## 硬约束
+- **不取数**：你没有 api_data_query / api_data_preview，禁止编造行数、金额、趋势等任何数字。
+- **不写文件**：你没有 file_write，产物由主智能体交付。
+- 找不到匹配本体就明确说"没有可用本体"，并列出最接近的 2 个 code 及差距。
+- 输出用中文，结论先行。`,
+    force_sync: true,
+    agent_kind: 'sub',
+    config_json: JSON.stringify({ maxReActSteps: 200 }),
+  },
+  {
+    id: 'a_builtin_data_report_agent',
+    name: '数据报告助手',
+    description:
+      '数据子智能体（产出阶段）：把主智能体已取到的结论要点、表格与图表说明编排成结构化 Markdown 报告（标题层级/表格/图注/口径说明）并落盘；不取数。由数据查询分析助手委派',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify([
+      'file_read', 'file_write',
+      'ask_user',
+    ]),
+    system_prompt: `你是数据报告助手（reportWriter）。父智能体已取好数据，你只负责把结论编排成一份可交付的报告。
+
+## 报告结构（默认顺序，可按用户要求裁剪）
+1. 标题 + 一句话摘要（结论先行）
+2. 关键指标：3~5 条最重要的事实（带数值与口径）
+3. 分节分析：每节一个小标题，先结论再证据
+4. 表格：列名用业务名，数字右对齐；表前有「表 N」编号
+5. 图表说明：为父体给的每张图写「图 N + 一句话读到什么」
+6. 口径与来源：本体 code、过滤器、时间范围、行数、导出口径
+
+## 交付形态（按优先级）
+1. **首选 document 围栏**：输出一个 document 围栏块（JSON：type / title / subtitle / sections），前端会就地渲染成文档卡片并支持「导出 Word」。type 用父体给的 code；父体没给就按内容选内置三种之一（data-report / weekly-report / meeting-notes），sections 严格按该类型的段落结构。
+2. **需要落盘时**再用 file_write 存一份 .md（文件名与标题一致），把路径与摘要回给父体。
+3. 两者都给时先围栏、后路径；**不要生成 HTML**。
+
+## 写作要求
+- 每个数字必须来自父体提供的材料；材料里没有的数字**一个字都不要写**，改用"材料未提供"。
+- 不写营销腔，不用"赋能/闭环/抓手"这类空词；短句、动词开头。
+- 表格与标题用标准 Markdown；图注统一「图 N」「表 N」。
+
+## 硬约束
+- **不取数**：你没有 api_data_query / api_data_preview，禁止自行查询或推测数据。
+- **不改写数字口径**：父体给的聚合方式、时间范围原样沿用；发现前后矛盾就指出，不要自行"修正"。
+- 输出用中文。`,
+    force_sync: true,
+    agent_kind: 'sub',
+    config_json: JSON.stringify({ maxReActSteps: 200 }),
   },
   {
     id: 'a_builtin_ops_agent',
@@ -2685,6 +2780,8 @@ const AGENT_MODE_BY_ID: Record<string, string> = {
   a_builtin_design_agent: 'office',
   a_builtin_storyboard_agent: 'office',
   a_builtin_data_agent: 'office',
+  a_builtin_data_explorer_agent: 'office',
+  a_builtin_data_report_agent: 'office',
   a_builtin_code_agent: 'dev',
   a_builtin_page_agent: 'dev',
   a_builtin_java_agent: 'dev',
@@ -3106,8 +3203,9 @@ const ONTOLOGY_QUERY_BODY = `# 本体取数与分析指南
 3. **api_ontology_brief**：单本体的字段名清单 + 过滤器名 + 选择列契约 + 所属数据源
 4. **api_ontology_detail**：懒加载完整定义（字段表达式/聚合/粒度/过滤器条件全文/行级策略），include 选择性加载
 5. **api_ontology_values**：对字段采样取值/枚举（优先标准属性枚举 → 缓存样本 → DISTINCT 采样）；**填过滤器的值前必须调用**
-6. **api_data_query**：取数（见下）
-7. **api_data_paginate**：翻页（offset/limit，单页 ≤200）
+6. **api_data_preview**：取数前自检（只返回最终 SQL、命中总数、≤5 行抽样、列类型、分组列空值统计与告警）；**报数前必须调用**
+7. **api_data_query**：取数（见下）
+8. **api_data_paginate**：翻页（offset/limit，单页 ≤200）
 
 ## 三、api_data_query 的两种用法
 **① 本体模式（推荐）**——语义层编译，字段受本体约束：
@@ -3131,6 +3229,7 @@ return { top: top, total: a.rowCount };
 
 ## 五、硬约束
 - 只读；禁止 INSERT/UPDATE/DELETE/DDL
+- **报数前必须先 api_data_preview**：核对命中总数数量级、分组列空值、抽样值口径；预览与取数必须同一 intent/过滤器
 - 字段只能来自本体声明（或 SQL 模式下确认存在的列）；报「字段不存在」按提示改名重试，最多 2 次
 - 过滤器的值先 api_ontology_values 采样，禁止编造取值
 - 结果注明口径：本体 code + 过滤器 + 时间范围 + 行数`;
@@ -3316,9 +3415,28 @@ export const builtinSkillDefaults: Array<{ id: string; name: string; category: s
     },
     {
       id: 'skill_data_visualization', name: '数据可视化', category: '办公',
-      description: '数据可视化。用 matplotlib/plotly/echarts 生成柱状/折线/饼/散点/热力/组合图，可存图片或交互 HTML。',
-      triggers: ['画图', '生成图表', '可视化数据', '柱状图', '折线图', '饼图', '热力图'],
-      body: `# 数据可视化\n\nmatplotlib/plotly/echarts 三选一。\n\n## 选型\n- 比较→柱状 / 趋势→折线 / 占比→饼 / 相关→散点 / 分布→箱线 / 密度→热力\n- 静态报告→matplotlib / 交互→plotly(write_html) / 网页→echarts\n\n## 要点\n- 中文设 SimHei，axes.unicode_minus=False\n- 保存 dpi=150 + bbox_inches=tight\n- 轴标签/标题/图例齐全\n\n详见 .claude/skills/data-visualization/SKILL.md`,
+      description: '数据可视化。要交互用 data_query_view 内嵌可交互看板（折线/柱/饼/散点，可切图/过滤/导出 PNG）；只要静态图可直接输出 SVG 围栏或 PNG，也可用 matplotlib/plotly/echarts 产文件。',
+      triggers: ['画图', '生成图表', '图表展示', '可视化数据', '柱状图', '折线图', '饼图', '热力图', '看板'],
+      body: `# 数据可视化
+
+## 先看用户要什么
+- **要交互**（筛选、切图、翻页、看板）→ **data_query_view { table 或 base, title }**：前端内嵌看板，明细表 + 折线/柱/饼/散点切换、过滤器、翻页、导出 PNG
+- **只要一张静态图**（截图/贴图/报告配图）→ 直接输出 **SVG 围栏**（三个反引号 + svg，首行 <svg ...>），前端会当图片渲染；或写 PNG 后用图片引用
+- base 直接用 api_data_query 返回的 sql（推荐），或传 table（表名）
+- 数字必须来自 api_data_query 的 rows
+
+## 禁止
+- 把 SVG/HTML 源码裸贴成正文（用户看到的是代码，不是图）
+- 只给文件路径、不把图显示出来
+
+## 图种选型
+比较→柱状 / 趋势→折线 / 占比→饼 / 相关→散点 / 分布→箱线 / 密度→热力
+
+## 要点
+- 轴标签/标题/图例齐全，单位写清楚
+- 色板不超过 8 色；饼图不超过 5 片
+
+详见 .claude/skills/data-visualization/SKILL.md`,
     },
     {
       id: 'skill_shopping_compare', name: '多平台购物对比', category: '购物',
@@ -4638,6 +4756,98 @@ file_write 生成 Markdown/PDF，对话给摘要与路径。`,
 - 高频问题补 FAQ；重复故障推动根因整改；
 - 工单结论与客户反馈回写知识库。`,
     },
+    {
+      id: 'skill_infographic', name: '信息图（AntV Infographic）', category: '办公',
+      description: '把内容做成信息图时输出 infographic 围栏块：内置约 200 套模板（流程/清单/对比/层级/关系/图表），前端就地渲染 SVG 并可导出。',
+      triggers: ['信息图', 'infographic', '做成一张图', '可视化摘要', '流程海报', '一图看懂'],
+      body: `# 信息图（AntV Infographic）
+
+把内容做成信息图时，直接输出一个 infographic 围栏块；前端会就地渲染成 SVG（可导出 SVG/PNG）。
+不要生成 HTML 文件，不要贴外链图片。
+
+## 语法
+先写三个反引号 + infographic，再按下面结构（两个空格缩进，键值用空格分隔，数组用 - 开头）：
+
+\`\`\`infographic
+infographic list-row-horizontal-icon-arrow
+data
+  title 标题
+  desc 一句话描述
+  lists
+    - label 要点
+      value 12.5
+      desc 说明
+      icon rocket
+theme
+  palette #3b82f6 #8b5cf6 #f97316
+\`\`\`
+
+## 模板选择
+- 步骤 / 流程 / 时间线 → sequence-*（时间线用 sequence-timeline-*）
+- 并列要点 / 功能清单 → list-row-* / list-grid-* / list-column-*
+- 双方对比 → compare-binary-*；SWOT → compare-swot；四象限 → compare-quadrant-*
+- 层级 / 思维导图 → hierarchy-*
+- 数据趋势 / 对比 / 占比 → chart-line-plain-text / chart-column-simple / chart-pie-*
+- 节点关系 / 流程依赖 → relation-*
+- 结构不确定 → 用 items 兜底
+
+## 规则
+- 首行必须是 infographic + 模板名；data 只放一个主数据字段（lists / sequences / compares / nodes / values 选一）
+- icon 写语义关键词（rocket / shield / chart line），不确定也要给，别省略
+- value 用纯数值，单位放 label 或 desc
+- 文案语言跟随用户语言；一张图只表达一个主题，要点 3–8 个
+- 数据必须来自已取到的 rows；没有数据就先取数，不要编造`,
+    },
+    {
+      id: 'skill_document_type', name: '文档类型（正式交付）', category: '办公',
+      description: '需要出正式文档时输出 document 围栏块（JSON）：内置数据分析报告 / 数据周报 / 会议纪要，可含表格、图表与信息图，前端渲染并支持导出 Word。',
+      triggers: ['出报告', '数据周报', '分析报告', '会议纪要', '生成文档', '导出 Word'],
+      body: `# 文档类型（正式交付）
+
+需要出正式文档时，输出一个 document 围栏块（内容是 JSON）；前端会渲染成文档卡片并支持「导出 Word」。
+不要生成 HTML，不要把大表数据写进 JSON。
+
+## 结构
+\`\`\`document
+{
+  "type": "weekly-report",
+  "title": "第 43 周数据周报",
+  "subtitle": "2026-10-20 ~ 2026-10-26",
+  "sections": [
+    { "kind": "paragraph", "text": "本周整体平稳，对话量环比 +6%。" },
+    { "kind": "metrics", "items": [{ "label": "对话数", "value": "1,284", "hint": "环比 +6.2%" }] },
+    { "kind": "chart", "contract": { "table": "conversation" }, "spec": { "kind": "line", "dim": "created_at", "measure": "id", "agg": "count", "timeGrain": "day" }, "caption": "图 1 每日对话量" },
+    { "kind": "infographic", "syntax": "infographic list-row-horizontal-icon-arrow\\ndata\\n  title 渠道结构\\n  lists\\n    - label 网页\\n      value 52\\n      icon monitor" },
+    { "kind": "table", "columns": ["事项", "负责人", "截止"], "rows": [["补齐渠道埋点", "张三", "10-30"]] }
+  ]
+}
+\`\`\`
+
+## 内置类型
+- data-report 数据分析报告：摘要 / 关键指标 / 趋势 / 结构洞察（信息图）/ 明细 / 结论
+- weekly-report 数据周报：概览 / 核心指标 / 趋势 / 渠道构成（信息图）/ 异常归因 / 下周计划
+- meeting-notes 会议纪要：会议信息 / 议题 / 关键结论（信息图）/ 待办（表格）/ 遗留问题
+
+## 自定义类型（用户自建）
+用户可能在「文档类型」页自建模板。出文档前先调 **api_document_type_list** 看有没有匹配的：
+- 命中就把它返回的 **code** 作为 document 围栏的 type，并**严格按它的 sections 顺序**逐段填写（kind/label 对应）；
+- 模板声明了 variables（如 week / region）时，你知道的值直接写实；不确定的保留「双花括号 + key」占位符，前端会渲染成填写表单；
+- 不要自己发挥模板里没有的段落；列表为空就退回内置类型。
+
+## 看板（.ydash）
+多图拼屏时输出 ydash 围栏（三个反引号 + ydash），JSON 形如：
+{"title":"运营看板","widgets":[{"id":"w1","kind":"chart","title":"趋势","contract":{"table":"conversation"},"spec":{"kind":"line","dim":"created_at","measure":"id","agg":"count"},"pos":{"x":0,"y":0,"w":8,"h":4}},{"id":"w2","kind":"metric","metrics":[{"label":"总量","value":"1,284"}],"pos":{"x":8,"y":0,"w":4,"h":4}}]}
+- widget kind：chart / table / metric / text / infographic；pos 用 12 列网格（x/y 从 0 起，w 1–12）
+- 图表只写 spec（dim/measure/agg/series/timeGrain/topN/percent），取数由前端完成
+
+## 规则
+- 围栏内容与 .ydoc 文件同构（version 可省略）；源文件交 .ydoc，最终交付交 .docx
+- 表格优先用 contract 取数（datasourceId/table/base + filters），不要内联超过 20 行
+- chart 的 spec 只需 dim/measure/agg/series/timeGrain/topN/percent，取数由前端完成
+- infographic 用 AntV Infographic 语法（见 skill_infographic），放结构/对比/结论，不要重复 chart
+- 数字必须来自已取到的 rows；没有数据先取数
+- 文档标题一句话；一份文档只讲一个主题`,
+    },
   ];
 
 // 批量 upsert 内置 skill：仅插入缺项 + 标记 source='builtin'，不覆盖用户改动的 body。
@@ -4676,7 +4886,9 @@ const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prom
   // 四模式岗位 skill（2026-10-17，openspec 5h）：新内置 body 一律进白名单
   'skill_ops_health_check', 'skill_ops_log_analysis', 'skill_ops_docker_ops', 'skill_ops_db_maintain', 'skill_ops_deploy_release', 'skill_ops_incident_response',
   'skill_sec_recon', 'skill_sec_web_probe', 'skill_sec_report', 'skill_sec_audit_review', 'skill_sec_hardening', 'skill_sec_blue_team',
-  'skill_office_finance', 'skill_office_hr', 'skill_office_operation', 'skill_office_legal', 'skill_office_data_report', 'skill_office_service'];
+  'skill_office_finance', 'skill_office_hr', 'skill_office_operation', 'skill_office_legal', 'skill_office_data_report', 'skill_office_service',
+  // 2026-10-26：图表展示改走 data_query_view；新增信息图/文档类型 skill，旧库一并刷新
+  'skill_data_visualization', 'skill_infographic', 'skill_document_type'];
 try {
   const getBody = db.prepare('SELECT body, files_json FROM skill WHERE id = ?');
   const setDef = db.prepare('UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ? WHERE id = ?');
@@ -5102,6 +5314,51 @@ db.exec(`
   );
 `);
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_data_source_user_name ON data_source(user_id, name)'); } catch {}
+
+// ===== 看板（数据查询 P1）=====
+// 一个看板 = 标题 + 若干 widget；widget 只存「取数契约 + 图表定义 + 位置」，不存行数据，
+// 打开时按 contract 活取数（与 .ydash 中间格式同构，widget_json 即 YdashWidget）。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS dashboard (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS dashboard_widget (
+    id TEXT PRIMARY KEY,
+    dashboard_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT,
+    widget_json TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_dashboard_user ON dashboard(user_id, updated_at)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_dashboard_widget_dash ON dashboard_widget(dashboard_id, sort_order)'); } catch {}
+
+// ===== 自定义文档类型（文档 D1/D2）=====
+// code 与用户组成主键：不同用户可各自定义同名 code；内置类型仍由前端常量提供，不落这张表。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS document_type (
+    code TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    category TEXT,
+    usage_text TEXT,
+    sections_json TEXT NOT NULL,
+    variables_json TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, code)
+  );
+`);
 
 // ===== 本体（text2sql 语义层，P3.1）=====
 // source_sql 输出列必须显式 AS 别名（保存时 services/ontology-validator.ts 校验）；

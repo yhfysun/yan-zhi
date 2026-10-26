@@ -5,8 +5,8 @@
 import { db } from '../db.js';
 import { getConnector, type DataSourceRow } from './connector.js';
 import { ensureProjectDataSource, listDataSources } from './datasource.js';
-import { ensureBuiltinOntologiesSync, listOntologies, queryOntologyByRef, type OntologyInfo } from './ontology.js';
-import { runOntologyContract } from './ontology-contract.js';
+import { compileOntology, ensureBuiltinOntologiesSync, listOntologies, queryOntologyByRef, type OntologyInfo } from './ontology.js';
+import { runOntologyContract, validateStrictIntent } from './ontology-contract.js';
 import type { QueryIntent } from './ontology-compiler.js';
 import { buildOntologyDigest, recallConfigFromEnv, scoreKeywords } from './ontology-recall.js';
 import { paginate, quoteIdent, type DialectType } from './dialect.js';
@@ -288,6 +288,192 @@ export async function queryDataForAgent(userId: string, input: DataQueryInput) {
     datasourceId: ds.id,
     sql: text,
     warnings: [] as string[],
+  };
+}
+
+// ===== 取数前自检（P0.5 校验闭环，2026-10-26）=====
+// 对齐 AgentScope dataagent 的 run_sql_preview：只编译 + COUNT + 抽样，不返回明细，
+// 让模型在报数前先核对数量级/空值/口径。与 api_data_query 共用同一条编译链，
+// 不新开执行通道（本体意图 OR 只读 SQL，二选一）。
+
+const PREVIEW_SAMPLE_ROWS = 5;
+const PREVIEW_LARGE_ROWS = 50_000;
+const MAX_NULL_CHECK_COLS = 10;
+
+/** 去掉编译器追加的尾部 LIMIT/OFFSET：COUNT 必须统计全量，不能被 LIMIT 截断 */
+const TRAILING_LIMIT_RE =
+  /\s+(?:LIMIT\s+\d+(?:\s+OFFSET\s+\d+)?|OFFSET\s+\d+\s+ROWS\s+FETCH\s+(?:FIRST|NEXT)\s+\d+\s+ROWS\s+ONLY|FETCH\s+(?:FIRST|NEXT)\s+\d+\s+ROWS\s+ONLY)\s*$/i;
+
+export function stripTrailingLimit(sql: string): string {
+  return String(sql || '').replace(TRAILING_LIMIT_RE, '').trim();
+}
+
+export type PreviewColumnType = 'number' | 'boolean' | 'date' | 'text' | 'null' | 'mixed';
+
+/** 抽样列类型粗判（只用于给模型看口径，不做强校验） */
+export function inferColumnTypes(
+  columns: string[],
+  rows: Array<Record<string, unknown>>,
+): Record<string, PreviewColumnType> {
+  const out: Record<string, PreviewColumnType> = {};
+  for (const col of columns) {
+    const kinds = new Set<PreviewColumnType>();
+    for (const row of rows) {
+      const v = row?.[col];
+      if (v === null || v === undefined) { kinds.add('null'); continue; }
+      if (typeof v === 'number') { kinds.add('number'); continue; }
+      if (typeof v === 'boolean') { kinds.add('boolean'); continue; }
+      if (v instanceof Date) { kinds.add('date'); continue; }
+      if (typeof v === 'string') {
+        if (/^\d{4}-\d{2}-\d{2}/.test(v)) kinds.add('date');
+        else if (v !== '' && !Number.isNaN(Number(v))) kinds.add('number');
+        else kinds.add('text');
+        continue;
+      }
+      kinds.add('text');
+    }
+    kinds.delete('null');
+    if (kinds.size === 0) out[col] = 'null';
+    else if (kinds.size === 1) out[col] = [...kinds][0];
+    else out[col] = 'mixed';
+  }
+  return out;
+}
+
+export interface PreviewSummaryInput {
+  total: number;
+  nullCounts: Record<string, number>;
+  warnings: string[];
+}
+
+/** 把预览的原始数字压成「给模型看的告警 + 下一步提示」 */
+export function summarizePreview(input: PreviewSummaryInput): { warnings: string[]; hint: string } {
+  const warnings = [...(input.warnings || [])];
+  if (input.total === 0) {
+    warnings.push('预览命中 0 行：先检查过滤器/时间窗是否过窄，或确认该本体/该 SQL 本身为空。');
+  }
+  for (const [col, n] of Object.entries(input.nullCounts || {})) {
+    if (!n) continue;
+    const pct = input.total > 0 ? Math.round((n / input.total) * 1000) / 10 : 0;
+    warnings.push(`分组列「${col}」有 ${n} 行为空（占 ${pct}%）；若是非预期的空分组，先修正维度或过滤再报数。`);
+  }
+  if (input.total > PREVIEW_LARGE_ROWS) {
+    warnings.push(`命中 ${input.total} 行，直接取数会被截断：建议先聚合或加过滤缩小范围。`);
+  }
+  const hint = input.total === 0
+    ? '不要直接回答：先改过滤条件/时间窗，或换本体，再预览一次。'
+    : '先核对 total 是否在预期数量级、分组列有无非预期空值、抽样值是否符合业务口径；确认后再调 api_data_query 取数。';
+  return { warnings, hint };
+}
+
+export interface DataPreviewResult {
+  mode: 'preview';
+  source: 'ontology' | 'sql';
+  ontology?: string;
+  datasourceId: string;
+  sql: string;
+  total: number;
+  sample: { columns: string[]; rows: Array<Record<string, unknown>>; rowCount: number };
+  sampleTypes: Record<string, PreviewColumnType>;
+  groupColumns: string[];
+  nullCounts: Record<string, number>;
+  warnings: string[];
+  hint: string;
+}
+
+/**
+ * 取数前自检：与 queryDataForAgent 同参，但只做
+ *   ① 编译最终 SQL（本体意图或只读 SQL）
+ *   ② SELECT COUNT(*) 拿命中总数
+ *   ③ 抽样 5 行看类型/取值
+ *   ④ 对分组列统计 NULL 数
+ * 不返回明细，避免模型在预览阶段把大结果集塞进上下文。
+ */
+export async function previewDataForAgent(userId: string, input: DataQueryInput): Promise<DataPreviewResult> {
+  let ds: DataSourceRow;
+  let sql: string;
+  let source: 'ontology' | 'sql';
+  let ontologyCode: string | undefined;
+  let groupColumns: string[] = [];
+  let compileWarnings: string[] = [];
+
+  if (input.ontology) {
+    const all = filterAllowed(await listOntologiesOf(userId), input.allowed);
+    const target = all.find((o) => o.id === input.ontology || o.code === input.ontology);
+    if (!target) throw new Error(await ontologyNotFoundMsg(userId, input.ontology, input.allowed));
+    // 契约模式与执行侧同口径：草稿本体不可见
+    if (input.contract && target.status !== 'published') {
+      throw new Error(`已发布本体不存在: ${input.ontology}（契约模式只查已发布本体；先用 api_ontology_overview 确认状态）`);
+    }
+    const intent = mergeIntent(target, input.intent, MAX_QUERY_ROWS);
+    if (input.contract) validateStrictIntent(target, intent);
+    const compiled = compileOntology(userId, target.id, intent);
+    sql = compiled.sql;
+    compileWarnings = compiled.warnings || [];
+    ds = loadDataSource(userId, target.datasourceId);
+    ontologyCode = target.code;
+    groupColumns = [
+      ...(intent.dimensions || []),
+      ...(intent.timeDimension ? [intent.timeDimension.name] : []),
+    ];
+    source = 'ontology';
+  } else if (input.sql?.trim()) {
+    ds = loadDataSource(userId, input.datasourceId);
+    sql = guardSingleSelect(input.sql);
+    source = 'sql';
+  } else {
+    throw new Error('必须提供 ontology（本体 id/code）或 sql（只读 SQL）之一');
+  }
+
+  const conn = getConnector(ds);
+  const dialect = dialectOf(ds);
+  const bareSql = stripTrailingLimit(sql);
+
+  const countRes = await conn.query(`SELECT COUNT(*) AS __pv_total FROM (${bareSql}) __pv`, {
+    maxRows: 1,
+    timeoutMs: DEFAULT_QUERY_TIMEOUT,
+  });
+  const total = Number((countRes.rows?.[0] as Record<string, unknown> | undefined)?.__pv_total) || 0;
+
+  const sampleRes = await conn.query(
+    `SELECT * FROM (${bareSql}) __pv ${paginate(dialect, { limit: PREVIEW_SAMPLE_ROWS })}`,
+    { maxRows: PREVIEW_SAMPLE_ROWS, timeoutMs: DEFAULT_QUERY_TIMEOUT },
+  );
+  const sampleColumns = sampleRes.columns || [];
+  const sampleRows = (sampleRes.rows || []) as Array<Record<string, unknown>>;
+
+  const nullCounts: Record<string, number> = {};
+  if (groupColumns.length && total > 0) {
+    const cols = groupColumns.slice(0, MAX_NULL_CHECK_COLS);
+    const exprs = cols
+      .map((c, i) => `SUM(CASE WHEN ${quoteIdent(dialect, c)} IS NULL THEN 1 ELSE 0 END) AS ${quoteIdent(dialect, `__pv_n${i}`)}`)
+      .join(', ');
+    try {
+      const r = await conn.query(`SELECT ${exprs} FROM (${bareSql}) __pv`, {
+        maxRows: 1,
+        timeoutMs: DEFAULT_QUERY_TIMEOUT,
+      });
+      const row = (r.rows?.[0] || {}) as Record<string, unknown>;
+      cols.forEach((c, i) => { nullCounts[c] = Number(row[`__pv_n${i}`]) || 0; });
+    } catch {
+      // 方言/别名不兼容时跳过 NULL 统计：预览主流程不因自检失败而中断
+    }
+  }
+
+  const summary = summarizePreview({ total, nullCounts, warnings: compileWarnings });
+  return {
+    mode: 'preview',
+    source,
+    ...(ontologyCode ? { ontology: ontologyCode } : {}),
+    datasourceId: ds.id,
+    sql,
+    total,
+    sample: { columns: sampleColumns, rows: sampleRows, rowCount: sampleRows.length },
+    sampleTypes: inferColumnTypes(sampleColumns, sampleRows),
+    groupColumns,
+    nullCounts,
+    warnings: summary.warnings,
+    hint: summary.hint,
   };
 }
 

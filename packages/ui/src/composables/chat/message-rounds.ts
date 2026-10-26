@@ -10,7 +10,7 @@
 //
 // ★ 入参 `isToolError` 由调用方注入（原实现直接调 `isToolErrorContent`），
 //   保持本模块**零依赖**、可独立单测。
-import type { Message } from '@yan-zhi/shared';
+import type { InlineDataView, Message } from '@yan-zhi/shared';
 
 export interface AgentStep {
   reasoningContent?: string;
@@ -38,6 +38,13 @@ export interface MessageRound {
   steps: AgentStep[];
   allToolCalls: any[];
   finalAssistant: Message | null;
+  /**
+   * 本轮内嵌的数据看板契约（data_query_view）。
+   * ★ 2026-10-26：此前只看 finalAssistant.dataView —— 但 finalAssistant 是**重新合成的对象**
+   *   （见下方 lastStep 分支），dataView 会被丢掉；且工具调用那一步与最终正文往往不是同一条消息。
+   *   提到回合级后，只要本轮任意消息带 dataView 就能渲染。
+   */
+  dataView?: InlineDataView;
   hasAgentProcess?: boolean;
   agentStats?: { stepCount: number; reasoningCount: number; toolCallCount: number };
   /** 子智能体最终结果（已从 call_agent 工具结果提上来，直接在主内容区展示） */
@@ -66,6 +73,11 @@ export function buildMessageRounds(
   const stepByToolCallId = new Map<string, AgentStep>();
 
   for (const msg of msgs) {
+    // 数据看板契约：挂到本轮（工具调用那一步与最终正文常常不是同一条消息）
+    if ((msg as { dataView?: InlineDataView }).dataView) {
+      if (!currentRound) currentRound = { user: null, steps: [], allToolCalls: [], finalAssistant: null };
+      currentRound.dataView = { ...(currentRound.dataView || {}), ...(msg as { dataView?: InlineDataView }).dataView };
+    }
     // 压缩标记（role='system' + compactMarker）：附到当前轮，不参与正文分轮逻辑
     if ((msg as any).compactMarker) {
       if (currentRound) {

@@ -31,6 +31,14 @@ router.patch('/:mid', (req: Request, res: Response) => {
   if (req.body.tokens !== undefined) { sets.push('tokens = ?'); vals.push(req.body.tokens); }
   if (req.body.toolCalls !== undefined) { sets.push('tool_calls_json = ?'); vals.push(JSON.stringify(req.body.toolCalls)); }
   if (req.body.systemPromptSnapshot !== undefined) { sets.push('system_prompt_snapshot = ?'); vals.push(req.body.systemPromptSnapshot); }
+  // 内嵌数据浏览/看板的展示态：只存 UI 状态，限 16KB 防滥用
+  if (req.body.dataView !== undefined) {
+    const view = req.body.dataView && typeof req.body.dataView === 'object' ? req.body.dataView : null;
+    const json = view ? JSON.stringify(view) : null;
+    if (json && json.length > 16 * 1024) { res.status(400).json({ error: 'dataView 过大（>16KB）' }); return; }
+    sets.push('data_view_json = ?');
+    vals.push(json);
+  }
   if (sets.length === 0) { res.json({ data: row }); return; }
   vals.push(mid);
   db.prepare(`UPDATE message SET ${sets.join(', ')} WHERE id = ?`).run(...vals);

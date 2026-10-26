@@ -50,6 +50,19 @@ export function registerDataTools(m: Map<ApiModuleName, ToolDefinition[]>) {
       },
     },
     {
+      name: 'api_document_type_list',
+      description:
+        '列出用户自定义的文档类型（code/名称/说明/段落结构/变量）。内置 3 个模板（data-report / weekly-report / meeting-notes）见 skill_document_type，不在此返回。' +
+        '要产出某类文档时先查这里，能命中就用它的 code 作为 document 围栏的 type，并按 sections 逐段填写',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          keyword: { type: 'string', description: '按 code/名称/分类过滤' },
+        },
+        required: [],
+      },
+    },
+    {
       name: 'api_data_query',
       description:
         '只读取数：优先传 ontology（本体 id 或 code）+ intent 走语义层编译（字段受本体约束，幻觉字段名会直接报错）；' +
@@ -64,6 +77,26 @@ export function registerDataTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           sql: { type: 'string', description: '兜底只读 SQL（单条 SELECT）；给了 ontology 时忽略' },
           datasourceId: { type: 'string', description: '数据源 id，缺省用内置项目库' },
           limit: { type: 'number', description: '最大返回行数，默认 100，上限 1000' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'api_data_preview',
+      description:
+        '取数前自检（**报数前必须先调**）：入参与 api_data_query 一致，但**不返回明细**——' +
+        '只编译最终 SQL、统计命中总行数、抽 5 行看类型与取值、统计分组列空值，并给出告警与下一步提示。' +
+        '用于核对：行数量级是否合理、分组列有无非预期空值、抽样值是否符合业务口径。' +
+        '不一致就先改 intent/过滤器（或 SQL）再预览；一致后再调 api_data_query 取数。' +
+        '返回 { sql, total, sample(≤5行), sampleTypes, groupColumns, nullCounts, warnings, hint }',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ontology: { type: 'string', description: '本体 id 或 code（来自 api_ontology_search，推荐）' },
+          intent: { type: 'object', description: INTENT_DESC },
+          contract: { type: 'boolean', description: '契约模式：filters 只能按名引用本体声明的过滤器（与 api_data_query 同口径）' },
+          sql: { type: 'string', description: '兜底只读 SQL（单条 SELECT）；给了 ontology 时忽略' },
+          datasourceId: { type: 'string', description: '数据源 id，缺省用内置项目库' },
         },
         required: [],
       },

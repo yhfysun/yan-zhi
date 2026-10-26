@@ -4,6 +4,7 @@
 import { v4 as uuid } from 'uuid';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { db } from '../db.js';
+import { YANZHI_AGENT_ID } from '../builtin-yanzhi-agent.js';
 import { getConnector, type DataSourceRow } from './connector.js';
 import { validateOntology, checkSourceSqlAliases } from './ontology-validator.js';
 import { buildTableOntologySpec, type TableSchemaLite } from './ontology-table-gen.js';
@@ -442,6 +443,36 @@ export async function tryRunOntology(userId: string, id: string, intent: QueryIn
  * 与 tryRunOntology 的区别：这里允许用 code 引用（LLM 从 api_ontology_search 拿到的是 code），
  * 且优先命中 published 版本（草稿对智能体不可见）。
  */
+function findRowByRef(userId: string, ref: string): OntologyRow {
+  const refText = (ref || '').trim();
+  if (!refText) throw new Error('本体引用（id 或 code）不能为空');
+  const rows = db
+    .prepare('SELECT * FROM ontology WHERE user_id = ? AND (id = ? OR code = ?)')
+    .all(userId, refText, refText) as OntologyRow[];
+  if (!rows.length) throw new Error(`本体不存在: ${refText}（先用 api_ontology_search / api_ontology_list 查可用本体）`);
+  return rows.find((r) => r.status === 'published') || rows[0];
+}
+
+/** 按 code/id 取本体详情（工作台字段菜单与智能体取数共用同一套定位口径） */
+export function findOntologyByRef(userId: string, ref: string): OntologyInfo {
+  return toInfo(findRowByRef(userId, ref));
+}
+
+// 工作台只能传这些意图字段：任何 SQL / 未知键一律丢弃，避免绕过本体口径
+const ONTOLOGY_INTENT_KEYS = new Set([
+  'dimensions', 'timeDimension', 'measures', 'filters', 'selections', 'orderBy', 'limit',
+]);
+
+/** 清洗前端提交的本体意图（白名单 + limit 1..1000） */
+export function sanitizeOntologyIntent(raw: unknown): QueryIntent {
+  const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const intent: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(src)) if (ONTOLOGY_INTENT_KEYS.has(k)) intent[k] = v;
+  const rawLimit = Number(intent.limit);
+  intent.limit = Math.min(Math.max(Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 200, 1), 1000);
+  return intent as QueryIntent;
+}
+
 export async function queryOntologyByRef(
   userId: string,
   ref: string,
@@ -449,13 +480,7 @@ export async function queryOntologyByRef(
   maxRows = 200,
   timeoutMs = 15_000,
 ) {
-  const refText = (ref || '').trim();
-  if (!refText) throw new Error('本体引用（id 或 code）不能为空');
-  const rows = db
-    .prepare('SELECT * FROM ontology WHERE user_id = ? AND (id = ? OR code = ?)')
-    .all(userId, refText, refText) as OntologyRow[];
-  if (!rows.length) throw new Error(`本体不存在: ${refText}（先用 api_ontology_search / api_ontology_list 查可用本体）`);
-  const row = rows.find((r) => r.status === 'published') || rows[0];
+  const row = findRowByRef(userId, ref);
   const { ds } = loadWithDatasource(userId, row.id);
   const compiled = compileOntologyQuery(getDialectOf(ds), getSpec(row), intent);
   const result = await getConnector(ds).query(compiled.sql, {
@@ -712,6 +737,8 @@ async function generateBuiltinOntologies(userId: string, opts?: { force?: boolea
   // 数据查询分析助理默认挂载：首次（挂载为空）挂上「应用本体包」全部本体；
   // 之后新生成/首次归包的内置本体自动追加（不复活用户手动移除的旧本体）。
   syncDataAgentMounts(userId, newBuiltInIds);
+  // 言智代言官：挂应用内全部已发布本体（含用户自建），每次对齐。
+  syncYanzhiAgentMounts(userId);
 
   // 词典驱动刷新：为内置本体补/刷业务描述（表描述 + 字段描述），内容来自 ontology-docs.ts 词典。
   // 只在词典内容与库中不同才写（幂等）；用户手动改过的 description 若与词典不同不覆盖——
@@ -806,6 +833,25 @@ function syncDataAgentMounts(userId: string, newIds: string[]): void {
   }
   db.prepare('UPDATE agent SET ontology_ids = ? WHERE id = ?').run(JSON.stringify(ids), DATA_AGENT_ID);
   logger.info(`[ensureBuiltin] 数据查询分析助理已挂载 ${ids.length} 个本体`);
+}
+
+/**
+ * 言智代言官挂载「应用内全部已发布本体」（2026-10-26 用户要求）。
+ * 与数据助手的区别：不做分组/增量，每次同步直接对齐全部 published —— 用户要的就是「所有本体」。
+ */
+function syncYanzhiAgentMounts(userId: string): void {
+  const agent = db
+    .prepare("SELECT ontology_ids FROM agent WHERE id = ? AND user_id = 'guest'")
+    .get(YANZHI_AGENT_ID) as { ontology_ids: string | null } | undefined;
+  if (!agent) return;
+  const ids = (db
+    .prepare("SELECT id FROM ontology WHERE user_id = ? AND status = 'published'")
+    .all(userId) as { id: string }[]).map((r) => r.id);
+  if (!ids.length) return;
+  const next = JSON.stringify(ids);
+  if (agent.ontology_ids === next) return;
+  db.prepare('UPDATE agent SET ontology_ids = ? WHERE id = ?').run(next, YANZHI_AGENT_ID);
+  logger.info(`[ensureBuiltin] 言智代言官已挂载 ${ids.length} 个本体`);
 }
 
 /** 列表接口用：不阻塞当前请求，生成完成后下次列表可见；项目库不可用时静默，下次列表重试 */

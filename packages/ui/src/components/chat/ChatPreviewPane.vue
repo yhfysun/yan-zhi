@@ -67,6 +67,10 @@
       <ChatConsolePanel />
     </div>
 
+    <div v-if="dashboardTab" v-show="dashboardTab.id === store.activeTabId" class="right-panel-body">
+      <DashboardPanel />
+    </div>
+
     <!-- 空态：无 tab 时各入口 -->
     <div v-if="store.previewTabs.length === 0" class="right-panel-empty">
       <button class="right-panel-empty-entry" @click="openFileEntry">
@@ -81,8 +85,14 @@
       <button class="right-panel-empty-entry" @click="store.openTab({ kind: 'data', name: '数据浏览', contract: defaultDataContract })">
         <el-icon><Grid /></el-icon><span>数据浏览</span>
       </button>
+      <button class="right-panel-empty-entry" @click="openOntologyEntry">
+        <el-icon><Collection /></el-icon><span>本体取数</span>
+      </button>
       <button class="right-panel-empty-entry" @click="openConsoleEntry">
         <el-icon><Monitor /></el-icon><span>控制台</span>
+      </button>
+      <button class="right-panel-empty-entry" @click="openDashboardEntry">
+        <el-icon><DataBoard /></el-icon><span>看板</span>
       </button>
     </div>
   </aside>
@@ -110,7 +120,7 @@
 import { computed, ref, onMounted, onBeforeUnmount, type Component } from 'vue';
 import { clampMenuPos } from '../../utils/menuPosition';
 import { useRouter } from 'vue-router';
-import { Close, Minus, Document, Link, Folder, Grid, Monitor, Back, Right, CircleClose } from '@element-plus/icons-vue';
+import { Close, Minus, Document, Link, Folder, Grid, Monitor, DataBoard, Collection, Back, Right, CircleClose } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
@@ -121,6 +131,7 @@ import BrowserPanel from '../BrowserPanel.vue';
 import ChatGitPanel from './ChatGitPanel.vue';
 import ChatConsolePanel from './ChatConsolePanel.vue';
 import DataQueryWorkbench from './DataQueryWorkbench.vue';
+import DashboardPanel from '../dashboard/DashboardPanel.vue';
 
 const { store, closeRightPanel } = useChat();
 // E12: 移动端不支持内置浏览器——隐藏「浏览器预览」入口
@@ -161,6 +172,7 @@ const gitTab = computed(() => store.previewTabs.find((t) => t.kind === 'git') ||
 const browserTab = computed(() => store.previewTabs.find((t) => t.kind === 'browser') || null);
 const dataTab = computed(() => store.previewTabs.find((t) => t.kind === 'data') || null);
 const consoleTab = computed(() => store.previewTabs.find((t) => t.kind === 'console') || null);
+const dashboardTab = computed(() => store.previewTabs.find((t) => t.kind === 'dashboard') || null);
 
 /** 空态「数据浏览」的默认契约：内置项目库的 conversation 表（真实存在的种子演示表） */
 const defaultDataContract: DataTabContract = {
@@ -180,6 +192,7 @@ function tabIconComp(tab: PreviewTab): Component {
   if (tab.kind === 'git') return Folder;
   if (tab.kind === 'data') return Grid;
   if (tab.kind === 'console') return Monitor;
+  if (tab.kind === 'dashboard') return DataBoard;
   return Link;
 }
 
@@ -210,6 +223,15 @@ function openGitEntry() {
 }
 function openConsoleEntry() {
   store.openTab({ kind: 'console', name: '控制台' });
+}
+
+function openDashboardEntry() {
+  store.openTab({ kind: 'dashboard', name: '看板' });
+}
+
+/** 本体取数：复用同一个数据 tab，契约切到本体模式（业务字段名，无自由 SQL） */
+function openOntologyEntry() {
+  store.openTab({ kind: 'data', name: '本体取数', contract: { mode: 'ontology' } });
 }
 
 // ===== 预览 tab 右键菜单：关闭 / 关闭左侧 / 关闭右侧 / 关闭全部 =====

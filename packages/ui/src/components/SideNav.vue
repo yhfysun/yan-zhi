@@ -64,6 +64,10 @@
               <el-icon><Operation /></el-icon>
               <span>SQL 控制台</span>
             </el-dropdown-item>
+            <el-dropdown-item @click="$router.push('/document-types')">
+              <el-icon><Document /></el-icon>
+              <span>文档类型</span>
+            </el-dropdown-item>
             <el-dropdown-item v-for="it in pluginMoreItems" :key="'more-' + it.id" @click="$router.push(it.route)">
               <el-icon><component :is="resolvePluginIcon(it.icon)" /></el-icon>
               <span>{{ it.label }}</span>
@@ -165,6 +169,10 @@
               <el-icon><Operation /></el-icon>
               <span>SQL 控制台</span>
             </el-dropdown-item>
+            <el-dropdown-item @click="$router.push('/document-types')">
+              <el-icon><Document /></el-icon>
+              <span>文档类型</span>
+            </el-dropdown-item>
             <el-dropdown-item v-for="it in pluginMoreItems" :key="'more2-' + it.id" @click="$router.push(it.route)">
               <el-icon><component :is="resolvePluginIcon(it.icon)" /></el-icon>
               <span>{{ it.label }}</span>
@@ -234,7 +242,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Setting, UserFilled, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, UserFilled, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document } from '@element-plus/icons-vue';
 import { Code } from 'lucide-vue-next';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { useAuthStore } from '../stores/auth';

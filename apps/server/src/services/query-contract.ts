@@ -13,11 +13,13 @@
 import { db } from '../db.js';
 import { getConnector, type DataSourceRow, type RunParam } from './connector.js';
 import { guardSqlConsole } from './sql-guard.js';
-import { quoteIdent, type DialectType } from './dialect.js';
+import { dateTrunc, quoteIdent, type DialectType, type TimeGrain } from './dialect.js';
 import { ensureProjectDataSource } from './datasource.js';
 
 const MAX_PAGE_SIZE = 200;
 const MAX_TIMEOUT_MS = 30_000;
+/** 导出上限：明细导出不分页，单次最多 5 万行（超过由连接器截断） */
+export const MAX_EXPORT_ROWS = 50_000;
 
 interface Loaded {
   row: DataSourceRow;
@@ -253,8 +255,17 @@ export async function runContractQuery(userId: string, req: QueryContractReq): P
   return result;
 }
 
-export type AggAgg = 'count' | 'sum' | 'avg' | 'min' | 'max';
+/**
+ * 导出主入口：与明细浏览同一套 base/过滤/排序，但不分页 —— 一次取回至多 MAX_EXPORT_ROWS 行。
+ * 供工作台「导出 Word / Excel」使用；超限由连接器截断并在 truncated 上体现。
+ */
+export async function runContractExport(userId: string, req: QueryContractReq): Promise<ContractRunResult> {
+  const loaded = loadDs(userId, req.dataSourceId);
+  const { srcSql, cols } = await resolveSource(loaded, req);
+  return compileAndRun(loaded, srcSql, cols, req.filters || [], req.sort || [], 1, MAX_EXPORT_ROWS);
+}
 
+export type AggAgg = 'count' | 'sum' | 'avg' | 'min' | 'max';
 export interface AggregateReq {
   dataSourceId?: string;
   table?: string;
@@ -263,27 +274,119 @@ export interface AggregateReq {
   sort?: { col: string; dir?: 'asc' | 'desc' }[];
   /** 分组列（白名单内） */
   dim: string;
-  /** 度量列 + 聚合；xName/label 可选展示名 */
+  /** 第二维度：多系列（白名单内）；缺省单系列 */
+  series?: string;
+  /** 度量列 + 聚合 */
   measureCol: string;
   agg?: AggAgg;
-  /** 结果数上限（默认与 cap 对齐），null 展示用 */
   measureName?: string;
+  /** 对 dim 做时间截断（仅日期列有意义） */
+  timeGrain?: TimeGrain;
+  /** 只保留度量前 N 组，其余合并为「其他」（1–50） */
+  topN?: number;
+  /** 排序口径；时间粒度默认按维度排，其余默认按度量排 */
+  orderBy?: 'measure' | 'dim';
+  /** 把值换算成百分比（总和为 100） */
+  percent?: boolean;
+  /** 结果数上限（topN 未设时生效） */
   limit?: number;
 }
 
 export interface AggregatePoint {
   key: string;
-  value: number;
+  /** 与 AggregateResult.series 一一对应 */
+  values: number[];
+}
+
+export interface AggregateResult {
+  series: string[];
+  points: AggregatePoint[];
+  total: number;
+  dim: string;
+  seriesDim?: string;
+  agg: AggAgg;
+  measure: string;
+  timeGrain?: TimeGrain;
+  sql: string;
+}
+
+/** 系列数上限：超过说明分错了维度，继续画出来也读不出信息 */
+const MAX_SERIES = 20;
+
+/**
+ * 聚合结果整形（纯函数，便于单测）：
+ *   - 多维展开：按 key × series 填成矩阵，缺失组合补 0；
+ *   - topN：按 key 的总量取前 N，其余每个系列分别求和合并成「其他」；
+ *   - percent：值换算成百分比（保留两位），total 仍返回原始总和。
+ */
+export function shapeAggregateRows(input: {
+  rows: Array<Record<string, unknown>>;
+  seriesDim?: string;
+  measureName: string;
+  topN?: number;
+  percent?: boolean;
+}): { series: string[]; points: AggregatePoint[]; total: number } {
+  const { rows, seriesDim, measureName } = input;
+  const seriesNames: string[] = [];
+  const keyOrder: string[] = [];
+  const cells = new Map<string, Map<string, number>>();
+
+  for (const row of rows || []) {
+    const rr = row as Record<string, unknown>;
+    const key = rr.__k == null ? '(空)' : String(rr.__k);
+    const sName = seriesDim ? (rr.__s == null ? '(空)' : String(rr.__s)) : measureName;
+    if (!cells.has(key)) {
+      cells.set(key, new Map());
+      keyOrder.push(key);
+    }
+    if (!seriesNames.includes(sName)) {
+      if (seriesNames.length >= MAX_SERIES) {
+        throw new Error(`系列过多（超过 ${MAX_SERIES} 个）：请先加过滤缩小「${seriesDim}」的取值范围，或换一个分组维度`);
+      }
+      seriesNames.push(sName);
+    }
+    const bucket = cells.get(key)!;
+    bucket.set(sName, (bucket.get(sName) || 0) + (Number(rr.__m) || 0));
+  }
+
+  const series = seriesDim ? seriesNames : [measureName];
+  let keys = keyOrder;
+
+  const topN = input.topN && input.topN > 0 ? Math.min(Math.trunc(input.topN), 50) : 0;
+  if (topN && keyOrder.length > topN) {
+    const totals = new Map(keyOrder.map((k) => [k, [...cells.get(k)!.values()].reduce((a, b) => a + b, 0)]));
+    const sorted = [...keyOrder].sort((a, b) => (totals.get(b) || 0) - (totals.get(a) || 0));
+    const kept = sorted.slice(0, topN);
+    const keepSet = new Set(kept);
+    const other = new Map<string, number>();
+    for (const k of keyOrder) {
+      if (keepSet.has(k)) continue;
+      for (const [s, v] of cells.get(k)!) other.set(s, (other.get(s) || 0) + v);
+    }
+    cells.set('其他', other);
+    keys = [...kept, '其他'];
+  }
+
+  const points: AggregatePoint[] = keys.map((key) => ({
+    key,
+    values: series.map((s) => cells.get(key)?.get(s) ?? 0),
+  }));
+  const total = points.reduce((sum, p) => sum + p.values.reduce((a, b) => a + b, 0), 0);
+
+  if (input.percent && total > 0) {
+    for (const p of points) {
+      p.values = p.values.map((v) => Math.round((v / total) * 10000) / 100);
+    }
+  }
+  return { series, points, total };
 }
 
 /**
- * Q2 视图(折线/柱/饼)取数：同一 base 同一过滤，做 GROUP BY 分组聚合系列。
+ * Q2 图表取数：同一 base 同一过滤，做 GROUP BY 分组聚合。
+ * 支持多系列（series）、时间粒度（timeGrain）、TopN、占比。
  * 与明细走同一套：列白名单 + 过滤值参数绑定。
  */
-export async function runAggregate(userId: string, req: AggregateReq): Promise<{
-  points: AggregatePoint[];
-  dim: string; agg: AggAgg; measure: string; total: number; sql: string;
-}> {
+export async function runAggregate(userId: string, req: AggregateReq): Promise<AggregateResult> {
   const loaded = loadDs(userId, req.dataSourceId);
   const { srcSql, cols } = await resolveSource(loaded, req);
 
@@ -294,33 +397,58 @@ export async function runAggregate(userId: string, req: AggregateReq): Promise<{
   if (!cols.has(String(req.measureCol).toLowerCase())) {
     throw new Error(`度量列「${req.measureCol}」不在输出列内，已拒绝`);
   }
+  if (req.series && !cols.has(String(req.series).toLowerCase())) {
+    throw new Error(`系列列「${req.series}」不在输出列内，已拒绝`);
+  }
   const agg = (String(req.agg || 'count').toLowerCase() || 'count') as AggAgg;
   if (!['count', 'sum', 'avg', 'min', 'max'].includes(agg)) throw new Error(`不支持聚合: ${agg}`);
 
-  const dIdent = quoteIdent(dialectOf(loaded), req.dim);
-  const mIdent = quoteIdent(dialectOf(loaded), req.measureCol);
-  const limit = Math.min(Math.max(Math.trunc(Number(req.limit) || 200), 1), 500);
+  const dialect = dialectOf(loaded);
+  const dimIdent = quoteIdent(dialect, req.dim);
+  const seriesIdent = req.series ? quoteIdent(dialect, req.series) : '';
+  const mIdent = quoteIdent(dialect, req.measureCol);
+  const dimExpr = req.timeGrain ? dateTrunc(dialect, dimIdent, req.timeGrain) : dimIdent;
+
+  const topN = req.topN ? Math.min(Math.max(Math.trunc(req.topN), 1), 50) : 0;
+  // topN 需要先拿到全部分组才能正确合并「其他」，所以放宽内部上限
+  const limit = topN ? 1000 : Math.min(Math.max(Math.trunc(Number(req.limit) || 200), 1), 500);
+  const orderBy = req.orderBy || (req.timeGrain ? 'dim' : 'measure');
 
   // 编译过滤（与 run 同一套占位游标）
   const { whereSql, vals } = buildWhere(loaded, cols, req.filters || []);
 
   const aggExpr = agg === 'count' ? 'COUNT(*)' : `${agg.toUpperCase()}(${mIdent})`;
+  const selectCols = seriesIdent
+    ? `${dimExpr} AS __k, ${seriesIdent} AS __s, ${aggExpr} AS __m`
+    : `${dimExpr} AS __k, ${aggExpr} AS __m`;
+  const groupBy = seriesIdent ? `GROUP BY ${dimExpr}, ${seriesIdent}` : `GROUP BY ${dimExpr}`;
   const sql = [
-    `SELECT ${dIdent} AS __k, ${aggExpr} AS __m`,
+    `SELECT ${selectCols}`,
     `FROM (${srcSql}) __qc`,
     whereSql || '',
-    `GROUP BY ${dIdent}`,
-    `ORDER BY __m DESC`,
+    groupBy,
+    orderBy === 'dim' ? 'ORDER BY __k ASC' : 'ORDER BY __m DESC',
     `LIMIT ${limit}`,
   ].filter(Boolean).join(' ');
 
   const r = await getConnector(loaded.row).queryParam(sql, vals, { maxRows: limit, timeoutMs: MAX_TIMEOUT_MS });
-  const points: AggregatePoint[] = (r.rows || []).map((row) => {
-    const rr = row as Record<string, unknown>;
-    return { key: rr.__k == null ? '(空)' : String(rr.__k), value: Number(rr.__m) || 0 };
+  const shaped = shapeAggregateRows({
+    rows: (r.rows || []) as Array<Record<string, unknown>>,
+    seriesDim: req.series,
+    measureName: req.measureName || req.measureCol,
+    topN,
+    percent: Boolean(req.percent),
   });
-  const total = points.reduce((s, p) => s + p.value, 0);
-  return { points, dim: req.dim, agg, measure: req.measureCol, total, sql };
+
+  return {
+    ...shaped,
+    dim: req.dim,
+    ...(req.series ? { seriesDim: req.series } : {}),
+    agg,
+    measure: req.measureCol,
+    ...(req.timeGrain ? { timeGrain: req.timeGrain } : {}),
+    sql,
+  };
 }
 
 /**
