@@ -158,21 +158,84 @@ if (!eb) {
 }
 console.log(`[electron-build] 启动方式: ${eb.via}`);
 
-// ★ 内置插件包（mode-pluginization P1）：yml 的 extraResources 整体拷 apps/server/plugins/builtin，
+// ★ 内置插件包（mode-pluginization P1/P5）：yml 的 extraResources 整体拷 apps/server/plugins/builtin，
 //   目录缺失 = 打包直接失败。单档命令链（electron:build:*）不经 build-all-editions，
 //   这里幂等补一次构建（build-plugins.mjs 自身增量：未变文件不重写）。YZ_SKIP_PLUGIN_BUILD=1 跳过。
+//
+//   ★ P5 选择集：只构建**选中**插件（build-plugins --plugins=），随后把未选目录移入
+//     `<plugins>/.prune-hold/` 再交给 electron-builder —— build-plugins 刻意不删未选目录，
+//     不 prune 就会把旧目录一起拷进"精简包"。打完（含失败/中断）在 finally 里移回来。
+const repoRoot = path.resolve(desktopDir, '..', '..');
+const BUILTIN_PLUGINS_DIR = path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin');
+const { loadCatalog } = require('./lib/plugin-build-selection.cjs');
+
+/** 本次打包的插件选择集（逗号分隔 id）；null = 全量（不裁剪）。
+ *
+ * 优先级：YZ_BUILD_PLUGINS（build-all-editions / package.cjs 下发）> edition.json.plugins
+ * （单档链路：set-edition 已按档位预设写入）。都没有 = 全量，行为与 P5 之前一致。 */
+function resolvePluginsCsv() {
+  const env = String(process.env.YZ_BUILD_PLUGINS || '').trim();
+  if (env) return env.split(/[,\s]+/).filter(Boolean).join(',');
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'edition.json'), 'utf8'));
+    if (Array.isArray(cfg.plugins) && cfg.plugins.length) return cfg.plugins.join(',');
+  } catch { /* 未跑 set-edition → 全量 */ }
+  return null;
+}
+
+const PLUGINS_CSV = resolvePluginsCsv();
+const { spawnSync } = require('child_process');
+
+function runPluginStage(action, extraArgs = []) {
+  const script = path.join(desktopDir, 'scripts', 'stage-plugins.mjs');
+  const args = [script, action, `--root=${BUILTIN_PLUGINS_DIR}`, ...(PLUGINS_CSV ? [`--plugins=${PLUGINS_CSV}`] : []), ...extraArgs];
+  const r = spawnSync(process.execPath, args, { stdio: 'inherit' });
+  return r.status === 0;
+}
+
 if (!process.env.YZ_SKIP_PLUGIN_BUILD) {
-  const repoRoot = path.resolve(desktopDir, '..', '..');
-  const { spawnSync } = require('child_process');
-  const r = spawnSync(
-    process.execPath,
-    [path.join(desktopDir, 'scripts', 'build-plugins.mjs'), '--all', '--with-frontend', '--out=' + path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin')],
-    { stdio: 'inherit' },
-  );
+  const buildArgs = [
+    path.join(desktopDir, 'scripts', 'build-plugins.mjs'),
+    PLUGINS_CSV ? `--plugins=${PLUGINS_CSV}` : '--all',
+    '--with-frontend',
+    '--out=' + BUILTIN_PLUGINS_DIR,
+  ];
+  const r = spawnSync(process.execPath, buildArgs, { stdio: 'inherit' });
   if (r.status !== 0) {
     console.error('[electron-build] 内置插件包构建失败（build-plugins.mjs）');
     process.exit(1);
   }
+}
+
+/** 暂存状态：prune 成功后置 true，退出前必须 restore（崩溃/中断也走 process.on('exit')）。 */
+let pluginsStaged = false;
+function restorePlugins() {
+  if (!pluginsStaged) return;
+  pluginsStaged = false;
+  if (!runPluginStage('restore')) {
+    console.error('[electron-build] ✗ 恢复被暂存的内置插件目录失败');
+    console.error(`  手动恢复: node apps/desktop/scripts/stage-plugins.mjs restore --root=${BUILTIN_PLUGINS_DIR}`);
+  }
+}
+process.on('exit', restorePlugins);
+
+if (!process.env.YZ_SKIP_PLUGIN_PRUNE) {
+  if (!runPluginStage('prune')) {
+    console.error('[electron-build] 内置插件目录暂存（prune）失败');
+    process.exit(1);
+  }
+  pluginsStaged = true;
+  // 目录状态断言（不含产物文本扫：多档构建的前端产物是各档并集，逐档扫会误报 ——
+  // 文本泄漏断言由 build-all-editions 在并集选择集上做一次，见 verify-plugin-prune）。
+  if (!runPluginStage('verify')) {
+    console.error('[electron-build] 内置插件目录与选择集不一致（prune 后仍缺件/残留）');
+    process.exit(1);
+  }
+  const catalog = loadCatalog();
+  console.log(
+    `[electron-build] 内置插件选择集: ${PLUGINS_CSV || '全量'}（catalog 共 ${Object.keys(catalog.plugins).length} 个，` +
+      `未选已移入 ${path.basename(path.dirname(BUILTIN_PLUGINS_DIR))}/.prune-hold/）`,
+  );
 }
 
 const args = [...eb.argv, '--config', config, ...extraArgs, '--publish', 'never'];
@@ -183,4 +246,12 @@ const child = spawn(eb.cmd, args, {
   shell: eb.cmd === 'pnpm' || eb.cmd.endsWith('.cmd'),
 });
 
-child.on('exit', (code) => process.exit(code ?? 1));
+child.on('exit', (code) => {
+  restorePlugins();
+  process.exit(code ?? 1);
+});
+child.on('error', (e) => {
+  console.error('[electron-build] 启动 electron-builder 失败:', e && e.message);
+  restorePlugins();
+  process.exit(1);
+});

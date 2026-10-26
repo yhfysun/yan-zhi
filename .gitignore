@@ -181,6 +181,10 @@ _tmp_*
 
 # 模式裁剪的构建清单（打包期由 scripts/select-modes.cjs 生成；模式清单本身入库）
 build/build-manifest.json
+# 插件选择集构建产物（打包期由 apps/desktop/scripts/build-plugins.mjs 生成）
+build/build-plugins.json
+# 插件 prune 暂存区（stage-plugins.mjs 移出未选插件目录用，构建结束恢复；崩溃残留下次先恢复）
+apps/server/plugins/.prune-hold/
 
 # 运行时数据（浏览器历史等，不入库）
 workspace/

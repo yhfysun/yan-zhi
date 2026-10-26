@@ -27,6 +27,12 @@
  *                                  # 只把「办公 + 开发」的代码打进包：
  *                                  # 未选模式的入口/页面/插件视图不产出 chunk。
  *                                  # 与 --editions 正交（后者决定授权档与预置码）。
+ *   node scripts/package.cjs desktop --plugins=office-core,skins,dev-mode
+ *                                  # 只把选中插件打进包（P5）：未选插件的后端目录打包时
+ *                                  # 暂存移出、前端视图不产出 chunk，打完自动恢复。
+ *                                  # 分组关键字 all/mode/feature/resource/skins；
+ *                                  # office-core 恒在，requires 自动勾选；与 --modes 同时给出时以本项为准。
+ *   node scripts/package.cjs --list-plugins   # 列出可选插件与三档预设
  *   node scripts/package.cjs desktop:pro --name=办公测试
  *                                  # 安装包名带上该名称：
  *                                  #   yan-zhi-Setup-<版本>-x64-办公测试.exe
@@ -160,6 +166,60 @@ if (MODES_FLAG !== null) {
   }
 }
 
+// ── 插件多选（--plugins=office-core,skins / --plugins=mode / --plugins=all）──
+// P5：后端插件包与前端模式一起按选择集裁剪（office 恒在、requires 自动闭包）。
+// 优先级：显式 --plugins > --modes（两者同时给出时以 --plugins 为准并提示）。
+// 选择集解析唯一收口在 apps/desktop/scripts/lib/plugin-build-selection.cjs。
+const {
+  loadCatalog: loadPluginCatalog,
+  loadModesCatalog: loadPluginModesCatalog,
+  resolveSelection: resolvePluginSelection,
+  modeKeysForSelection,
+} = require(path.join(__dirname, '..', 'apps', 'desktop', 'scripts', 'lib', 'plugin-build-selection.cjs'));
+
+const PLUGINS_FLAG = (() => {
+  const hit = argv.find((a) => a.startsWith('--plugins='));
+  if (hit) return hit.slice('--plugins='.length);
+  const i = argv.indexOf('--plugins');
+  return i >= 0 ? argv[i + 1] : null;
+})();
+let PLUGIN_SELECTION = null;
+if (PLUGINS_FLAG !== null) {
+  if (MODES_FLAG !== null) {
+    console.warn('\x1b[33m[WARN]\x1b[0m --plugins 与 --modes 同时给出：按约定以 --plugins 为准（模式由插件选择集推导）');
+  }
+  try {
+    const pluginCatalog = loadPluginCatalog();
+    PLUGIN_SELECTION = resolvePluginSelection({ catalog: pluginCatalog, plugins: PLUGINS_FLAG });
+    // 模式跟插件同源：只把选中插件贡献的 modeKey 编进前端，避免"插件在包、入口不在"或反之
+    BUILD_MODES = modeKeysForSelection(pluginCatalog, PLUGIN_SELECTION.ids, loadPluginModesCatalog());
+  } catch (e) {
+    console.error(`\x1b[31m[ERROR]\x1b[0m --plugins 非法: ${e.message}`);
+    process.exit(1);
+  }
+} else if (MODES_FLAG !== null && BUILD_MODES) {
+  // --modes 兼容映射（design §7）：模式 → 对应模式插件；**非模式插件（skins/git-explorer/
+  // computer-use/remote-control/java-suite/cicd）照旧全带** —— 它们不与模式一一对应，
+  // 按模式裁掉会让"只选办公"的包突然没有皮肤库，属于没预期的副作用。
+  try {
+    const pluginCatalog = loadPluginCatalog();
+    const modeSel = resolvePluginSelection({ catalog: pluginCatalog, modes: BUILD_MODES });
+    const keep = new Set([
+      ...modeSel.ids,
+      ...Object.keys(pluginCatalog.plugins).filter((id) => pluginCatalog.plugins[id].kind !== 'mode'),
+    ]);
+    const ids = Object.keys(pluginCatalog.plugins).filter((id) => keep.has(id));
+    PLUGIN_SELECTION = {
+      ids,
+      excluded: Object.keys(pluginCatalog.plugins).filter((id) => !keep.has(id)),
+      source: 'modes',
+    };
+  } catch (e) {
+    console.error(`\x1b[31m[ERROR]\x1b[0m --modes 到插件的映射失败: ${e.message}`);
+    process.exit(1);
+  }
+}
+
 // ── 产物名（--name=v2 / --name 办公版）──
 // 每个命名各占一个产物目录、各出一个安装包名 —— 换模式/换用途重打包不会覆盖上一份。
 const NAME_FLAG = (() => {
@@ -190,6 +250,56 @@ if (flags.has('--list-modes')) {
   console.log('  pnpm package:desktop:lite --modes=office\n');
   process.exit(0);
 }
+
+// --list-plugins：列出可选插件（分组关键字）与三档预设，--plugins 的参数自解释。
+if (flags.has('--list-plugins')) {
+  const cat = loadPluginCatalog();
+  console.log('\n可选插件（--plugins=... 逗号分隔；分组关键字：all / mode / feature / resource / skins）:');
+  for (const [id, e] of Object.entries(cat.plugins)) {
+    const extra = [
+      e.modeKey ? `mode=${e.modeKey}` : null,
+      e.requires ? `requires=${e.requires.join('+')}` : null,
+      e.core ? 'core(恒在)' : null,
+    ].filter(Boolean).join('  ');
+    console.log(`  ${id.padEnd(16)} ${String(e.kind).padEnd(9)} ${e.label}${extra ? '  ' + extra : ''}`);
+  }
+  console.log('\n档位预设（不传 --plugins 时按所选档位自动决定）:');
+  for (const [edition, list] of Object.entries(cat.editionPresets || {})) {
+    console.log(`  ${edition.padEnd(8)} ${list.join(', ')}`);
+  }
+  console.log('\n示例:');
+  console.log('  node scripts/package.cjs desktop:lite --plugins=office-core,skins');
+  console.log('  node scripts/package.cjs desktop --plugins=mode        # 全部模式插件（office 恒在 + requires 闭包）\n');
+  process.exit(0);
+}
+
+// --help：把最常用的用法打出来（长说明见文件头注释）。
+if (flags.has('--help') || flags.has('-h')) {
+  console.log(`
+言智打包入口
+
+用法:
+  node scripts/package.cjs [目标...] [选项]
+
+目标:
+  desktop[:档位]   桌面（lite/basic/pro，可逗号多档；不写档位 = 三档）
+  android          安卓 APK
+  all              桌面三档 + 安卓
+
+内容裁剪（互斥，--plugins 优先）:
+  --modes=<m,csv>    按模式裁剪前端入口/页面/插件视图
+  --plugins=<p,csv>  按插件裁剪（含后端插件包）：分组 all/mode/feature/resource/skins，
+                     office-core 恒在，requires 自动勾选；模式由选中插件推导
+
+其它:
+  --name=<名>        安装包名附加名称
+  --list-modes / --list-plugins   列出可选模式 / 插件
+  --dry-run          只打印计划（含选择集与排除项），不做任何改动
+  --yes              非交互（按档位预设）
+`);
+  process.exit(0);
+}
+
 /**
  * 旧产物被句柄持有时（常见：dev 后端持有打包产物的 app.asar）是否**自动换产物根**继续构建。
  * 默认开启 —— 换根后把交付物拷回标准树，用户拿到的路径不变；只是旧 win-unpacked 原样留下。
@@ -855,6 +965,7 @@ function buildDesktop(editions) {
   step(`桌面打包：${editions.map((e) => `${e}(${EDITION_LABEL[e]})`).join(' / ')}`);
   info(`将依次：真编译 server → vite build → 逐档 electron-builder（约 3.5 分钟）`);
   if (BUILD_MODES) info(`代码裁剪：只打入 ${BUILD_MODES.join(', ')}（未选模式的入口与页面不会进包）`);
+  if (PLUGIN_SELECTION) info(`插件裁剪：只打入 ${PLUGIN_SELECTION.ids.length} 个内置插件（其余目录打包时暂存移出，自动恢复）`);
   // build-all-editions.cjs 内部含真编译 + 逐档重写 edition.json + 清 appOutDir；
   // 每档独立输出到 dist-release/desktop/<档>/<版本>/（无需 --separate，那已是默认行为）。
   run(process.execPath, [
@@ -863,6 +974,7 @@ function buildDesktop(editions) {
   ], {
     env: {
       ...(BUILD_MODES ? { YZ_BUILD_MODES: BUILD_MODES.join(',') } : {}),
+      ...(PLUGIN_SELECTION ? { YZ_BUILD_PLUGINS: PLUGIN_SELECTION.ids.join(',') } : {}),
       ...(NAME_FLAG ? { YZ_ARTIFACT_NAME: NAME_FLAG } : {}),
     },
   });
@@ -1234,6 +1346,10 @@ function cleanFreshRoot() {
       .filter(Boolean).join(' + ')
   }`));
   if (BUILD_MODES) info(`代码模式：${BUILD_MODES.join(', ')}（未选模式的代码不会进包）`);
+  if (PLUGIN_SELECTION) {
+    info(`内置插件：${PLUGIN_SELECTION.ids.join(', ')}（${PLUGIN_SELECTION.source}）`);
+    info(`排除插件：${PLUGIN_SELECTION.excluded.length ? PLUGIN_SELECTION.excluded.join(', ') : '(无)'}`);
+  }
   if (NAME_FLAG && targets.desktop.length) {
     info(`产物命名：${NAME_FLAG}${targets.desktop.length > 1 ? '（每档追加档位名）' : ''}`);
   }
@@ -1257,6 +1373,10 @@ function cleanFreshRoot() {
     info(`将真编译 server: ${willCompile ? '是' : '否（复用现有 dist）'}`);
     info(`将构建: ${[needCompile ? '桌面三档/选档' : null, targets.android ? '安卓 APK' : null].filter(Boolean).join(' → ')}`);
     info(`代码模式: ${BUILD_MODES ? BUILD_MODES.join(', ') : '按档位预设（可用 --modes=office,dev 指定）'}`);
+    info(`内置插件: ${PLUGIN_SELECTION ? `${PLUGIN_SELECTION.ids.join(', ')}（${PLUGIN_SELECTION.source}）` : '按档位预设（可用 --plugins=office-core,skins 指定）'}`);
+    if (PLUGIN_SELECTION) {
+      info(`排除插件: ${PLUGIN_SELECTION.excluded.length ? PLUGIN_SELECTION.excluded.join(', ') : '(无)'}`);
+    }
     console.log('');
     step('将移走的目录');
     moveAway(computeMovable(targets, willCompile));

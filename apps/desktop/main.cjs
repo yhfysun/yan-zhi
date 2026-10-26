@@ -892,10 +892,17 @@ function readEditionEnv() {
     // ★ 本次构建物理包含的模式：后端据此把「授权放行」再交一次「包里真的有」，
     //   避免精简包里 /api/license/verify 仍下发未编译的模式。
     if (Array.isArray(cfg.modes) && cfg.modes.length) env.YZ_BUILD_MODES = cfg.modes.join(',');
+    // ★ P5 插件选择集：未选插件不注册（未装插件 = 种子/工具/路由都不存在）。
+    //   缺省（存量包没有这两个字段）时后端行为完全不变。
+    if (Array.isArray(cfg.plugins) && cfg.plugins.length) env.YZ_BUILD_PLUGINS = cfg.plugins.join(',');
+    if (Array.isArray(cfg.pluginsExcluded) && cfg.pluginsExcluded.length) {
+      env.YZ_BUILD_PLUGINS_EXCLUDED = cfg.pluginsExcluded.join(',');
+    }
     console.log(
       '[版本档] 构建档=' + cfg.edition
       + ' 预置码档=' + (cfg.defaultEdition || '(默认)')
-      + ' 模式=' + (Array.isArray(cfg.modes) ? cfg.modes.join(',') : '(全量)'),
+      + ' 模式=' + (Array.isArray(cfg.modes) ? cfg.modes.join(',') : '(全量)')
+      + ' 插件=' + (Array.isArray(cfg.plugins) ? cfg.plugins.length + ' 个' : '(全量)'),
     );
     return env;
   } catch (e) {

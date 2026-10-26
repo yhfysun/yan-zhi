@@ -83,3 +83,42 @@ describe('plugins.catalog.json 契约', () => {
     }
   });
 });
+
+// ── P5：选择集 → 模式交集（edition.json.plugins 与 license 的联动契约）──
+describe('插件选择集与模式清单联动（P5）', () => {
+  const modesCatalog = JSON.parse(readFileSync(new URL('../../../build/modes.catalog.json', import.meta.url), 'utf8')) as {
+    modes: Record<string, unknown>;
+    editionPresets: Record<string, string[]>;
+  };
+
+  const pluginModeKeys = (ids: string[]) =>
+    ids.map((id) => plugins[id]?.modeKey).filter((k): k is string => typeof k === 'string');
+
+  it('插件 modeKey 与 modes.catalog 的键一一对应', () => {
+    const fromPlugins = Object.values(plugins)
+      .map((e) => e.modeKey)
+      .filter((k): k is string => typeof k === 'string')
+      .sort();
+    expect(fromPlugins).toEqual(Object.keys(modesCatalog.modes).sort());
+  });
+
+  it('每档预设覆盖的模式 = modes.catalog 同档预设（两套清单不许漂移）', () => {
+    for (const [edition, preset] of Object.entries(catalog.editionPresets as Record<string, string[]>)) {
+      const derived = pluginModeKeys(preset).sort();
+      const fromModes = [...(modesCatalog.editionPresets[edition] || [])].sort();
+      expect(derived, `${edition} 档：插件预设与模式预设不一致`).toEqual(fromModes);
+    }
+  });
+});
+
+// ── P5：打包选择集的运行时消费（未选插件不注册）──
+describe('build-selection（YZ_BUILD_PLUGINS_EXCLUDED）', () => {
+  it('解析逗号/空格分隔，忽略空值与非法 id，去重', async () => {
+    const { parsePluginIdList, excludedPluginIds } = await import('../src/plugins/build-selection.js');
+    expect(parsePluginIdList('ops-shell, sec-lab  ops-shell,,BAD_ID,9bad')).toEqual(['ops-shell', 'sec-lab']);
+    expect(parsePluginIdList('')).toEqual([]);
+    expect(parsePluginIdList(undefined)).toEqual([]);
+    expect([...excludedPluginIds('skins')]).toEqual(['skins']);
+    expect(excludedPluginIds('').size).toBe(0);
+  });
+});

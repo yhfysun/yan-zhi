@@ -88,13 +88,20 @@
 - [x] **运行时补种（2026-10-26，P5 前置）**：db.ts 抽出 `upsertAgentDefs` / `seedSceneDefs` / `applyBuiltinSeed`；基座场景只剩 13 条办公岗位卡，模式场景与专属智能体由插件 activate 补种（实测：仅 db 时 13 条场景 / 0 个模式智能体；六插件补种后 18 条、sort 0–17 与原状一致）。`resetBuiltin*` 与场景 key 保留集合改为「基座 + 已补种」动态视图；桥面 +1（applyBuiltinSeed，38 导出）。构建器宿主闸撤掉 auth / conversation-lifecycle（纯代码、复制无害），只留 artifact-dir 等有状态单例。
 - [ ] 六模式全功能回归。
 
-## P5 打包集成
+## P5 打包集成（2026-10-26 主体完成，未跑真实 electron-builder）
 
-- [ ] package.cjs `--plugins=` 多选（分组/requires 自动勾选/office 锁定）+ `--modes=` 兼容映射。
-- [ ] extraResources 按选拷贝（皮肤资产随 skins、python 随 computer-use）；三档 preset 改插件集。
-- [ ] verify-plugin-prune：未选插件产物不进安装包断言。
-- [ ] edition.json 增 plugins 字段 → YZ_BUILD_PLUGINS → license 交集联动。
-- [ ] lite/basic/pro 三档产物内容断言 + 冒烟。
+- [x] build-plugins `--plugins=<csv|all|分组>`：选择集解析走 `scripts/lib/plugin-selection.cjs`，只构建选中、**不删未选目录**，写 `build/build-plugins.json {included,excluded,source,out,builtAt}`；临时入口文件移到 `<out>/.yz-tmp/` 并清理（此前 `__frontend-entry-*.mjs` 会落在产物根、被拷进安装包）。
+- [x] `apps/desktop/scripts/stage-plugins.mjs`（prune/restore/verify）+ `scripts/lib/plugin-stage.cjs` 纯逻辑：未选目录移入同级 `apps/server/plugins/.prune-hold/`（**先恢复上次崩溃残留**，未知目录不动，office-core 永不移动）；restore 时目标已存在则丢弃过期暂存副本。
+- [x] electron-build 前置 prune → stage verify，`exit` 钩子 + 子进程 exit 双保险 restore；`YZ_SKIP_PLUGIN_PRUNE=1` 可跳过。build-all 逐档下发该档预设、并在并集选择集上跑一次 `verify-plugin-prune`（前端产物一份服务所有档，逐档扫会误报）。
+- [x] `scripts/verify-plugin-prune.cjs`：目录断言（未选 id 目录不存在、选中 id 目录+manifest 齐全）+ 产物标记串扫描（用**视图组件名**，不用插件 id —— `/plugin/ops-shell/...` 字面量会误报）。
+- [x] package.cjs `--plugins=`（分组/requires 自动勾选/office 锁定；与 `--modes` 同时给出以 `--plugins` 为准；非法即报错）；`--modes` 按 design §7 映射到插件（模式插件 + 全部非模式插件照旧带上）；`--list-plugins` / `--help` / dry-run 展示选择集与排除项。
+- [x] `edition.json` 增 `plugins` / `pluginsExcluded`（`YZ_BUILD_PLUGINS` 优先，否则按档位预设）；`modes` 改由选中插件推导（显式 `YZ_BUILD_MODES` 只保留插件覆盖得到的部分）→ license 的三维交集（构建档 ∩ 授权档 ∩ 构建模式）继续成立。
+- [x] 运行时消费：main.cjs 注入 `YZ_BUILD_PLUGINS_EXCLUDED`；server `registerPkgOrSource` 与 skins 分支跳过未选插件（源码兜底不再把"目录已移走"的插件拉起来）。`plugins/build-selection.ts` 纯函数 + 守门。
+- [x] 前端同源裁剪：`select-modes --plugins=` 把未选插件的视图从生成表剔除（否则功能插件（不属任何模式）的 chunk 恒在主包，泄漏断言失真）。build-all 传并集。
+- [ ] extraResources 按选拷贝：皮肤资产随 skins（已随 `builtin/skins/assets` 一起 prune ✓）、**python 运行时随 computer-use 未做**（`resources/python` 仍是 yml 无条件 extraResources）。
+- [ ] lite/basic/pro 三档产物内容断言 + 冒烟（本机未跑真实 electron-builder；命令：`node scripts/package.cjs desktop:lite --plugins=... --dry-run` 先看计划）。
+- [ ] 设计 §7 尾项：server tsc 仍编译全部插件源码（`apps/server/dist/.../plugins/*.js`），目前靠 `YZ_BUILD_PLUGINS_EXCLUDED` 运行时不注册兜底；主产物真正变薄待做。
+- [ ] `android-mirror` 插件未登记进 `build/plugins.catalog.json`（历史遗漏）：它既不参与选择集裁剪，也永远不会被排除 —— 其 `views/plugin/AndroidMirror.vue` 恒在主包。
 
 ## P6 单独打包
 
@@ -133,12 +140,21 @@
 | 前端桥/装载器 | `packages/ui/src/plugin-host-bridge.ts`（window.__YZ_HOST__）、`plugin-runtime.ts`（yz:// 装载，**尚未接线到真实插件**——P4 用） |
 | yz:// 协议 | `apps/desktop/plugin-protocol.cjs`（纯函数有单测）+ main.cjs protocol.handle |
 | 打包链 | electron-build.cjs / build-all-editions.cjs 自动跑 build-plugins；三份 electron-builder yml 拷 `plugins/builtin`；build-mobile-server.cjs 步骤 2.5 同步拷入移动端 |
+| 插件选择集（P5） | `scripts/lib/plugin-selection.cjs`（规则）+ `apps/desktop/scripts/lib/plugin-build-selection.cjs`（统一解析：参数 > env > 档位预设；多档并集 / modeKeys） |
+| 插件目录暂存（P5） | `apps/desktop/scripts/lib/plugin-stage.cjs`（prune/restore/verify 纯逻辑）+ `apps/desktop/scripts/stage-plugins.mjs`（CLI）；暂存区 `apps/server/plugins/.prune-hold/` |
+| 裁剪泄漏断言（P5） | `scripts/verify-plugin-prune.cjs`（目录 + 产物标记串；读 `build/build-plugins.json` 兜底） |
+| 打包选择集产物 | `build/build-plugins.json`（included/excluded/source/out/builtAt，gitignore） |
 
 ## 常用命令
 
 ```bash
 node apps/desktop/scripts/build-plugins.mjs --all --out=apps/server/plugins/builtin   # 重建全部插件包（后端）
 node apps/desktop/scripts/build-plugins.mjs --all --with-frontend --out=apps/server/plugins/builtin  # 含前端 bundle（catalog.frontendBundle 的插件）
+node apps/desktop/scripts/build-plugins.mjs --plugins=office-core,skins --out=apps/server/plugins/builtin  # 只构建选中（写 build/build-plugins.json）
+node apps/desktop/scripts/stage-plugins.mjs prune|restore|verify --plugins=office-core,skins   # 未选插件目录暂存/恢复/断言
+node scripts/verify-plugin-prune.cjs --plugins=office-core,skins [--dirs=apps/desktop/dist]     # 裁剪泄漏断言
+node scripts/package.cjs desktop:lite --plugins=office-core,skins --dry-run                     # 先看选择集与排除项
+node scripts/select-modes.cjs --modes=office --plugins=office-core,skins                      # 生成表（未选插件视图也剔除）
 node scripts/package.cjs android --yes                                                # 出安卓 APK
 (cd apps/server && pnpm test) ; (cd apps/desktop && pnpm test)                        # 回归
 ```
@@ -150,10 +166,11 @@ node scripts/package.cjs android --yes                                          
 2. **运行时化第二层**（用户核心诉求"装了就有"）：前端 mode store 按 modeDefs 动态合并**新模式 key**（AppMode 联合放宽为 string）；router 对插件模式 `addRoute`（走现有 syncPluginRoutes 机制，component 需先落 P4b 前端 bundle 化经 yz:// 装载）；conversations.ts VALID_MODES 改"基座+已注册插件模式"动态集合（**SQL 一字不动**，conversation-mode.test.ts 钉着）。
 3. modes.catalog.json 退役（模式字段并入 plugins.catalog.json；select-modes/verify-mode-prune 适配）。
 
-### P5 打包可选（用户需求 2 完全体）
-- package.cjs 加 `--plugins=` 多选（分组：模式/皮肤/功能；requires 自动勾选；office-core 锁定）；`--modes=` 兼容映射。
-- extraResources 按选裁剪（builtin 目录按选择拷；皮肤资产随 skins、python 运行时随 computer-use——用 catalog 的 extraResources 字段）。
-- verify-plugin-prune：断言未选插件的目录/chunk 不进包。
+### P5 打包可选（2026-10-26 主体完成，剩 extraResources 按选 + 整包冒烟）
+- package.cjs `--plugins=` ✅（分组 / requires 闭包 / office 锁定；`--modes` 兼容映射）。
+- 插件目录 prune/restore/verify ✅、verify-plugin-prune ✅（已接进 build-all 的 electron-builder 之前）。
+- extraResources 按选：皮肤资产随 skins ✅（assets 在插件目录内）、**python 运行时随 computer-use ❌ 未做**。
+- 整包冒烟（三档产物内容断言）未跑 —— 需真实 electron-builder（约 3 分钟/档）。
 
 ### P6 单独打包 .yzp（用户需求 3）
 - `scripts/package-plugin.cjs --id=X`：zip plugins/builtin/X → dist-plugins/X-<ver>.yzp；插件管理页安装端到端（registerInstalled 链路已有）；engine 语义化版本校验。
@@ -170,3 +187,7 @@ node scripts/package.cjs android --yes                                          
 5. cicd-pipeline 包内自带一份 ops-shell 助手拷贝（连接池独立、凭据同源 plugin_storage）——功能等价，若未来要共享池，经桥暴露连接注册表。
 6. 别的任务的并行改动：feishu-stream.ts / scripts/package.cjs / 移动端管理页UI优化方案.md 单独一笔提交，勿混。
 7. **前端 bundle 两个构建坑**（2026-10-26 实测）：① `build.lib` 不配会去找 `index.html` 直接失败；② 工作区 `packages/shared/src` 里残留过编译的 `.js`（如 index.js，缺新导出），Vite 默认 `.js` 先于 `.ts`，会把 `findProviderPreset` 这类新导出解析没 —— 已在 buildFrontend 里把 `resolve.extensions` 调成 `.ts` 优先。根因是工作区里的陈旧产物，清掉更干净。
+8. **P5 裁剪的可恢复性**（2026-10-26）：未选插件目录是**移**到 `apps/server/plugins/.prune-hold/`，不是删。prune 开头先恢复上次残留；restore 遇到目标已存在（本轮重新构建过）会丢弃过期暂存副本。electron-build 有 `process.on('exit')` + 子进程 exit 双保险；`YZ_SKIP_PLUGIN_PRUNE=1` 可整段跳过。开发中若发现 builtin 少了插件目录，先跑 `stage-plugins.mjs restore`。
+9. **多档构建的断言边界**：vite 只编一次（前端产物 = 各档并集），所以**文本泄漏断言只在并集选择集上做一次**（build-all）；逐档 electron-build 只做目录断言 —— 逐档扫文本必然误报（lite 包里当然有 pro 的 chunk）。
+10. **build-plugins 的临时目录必须在 `--out` 内**：入口 stub 用 `packages:'external'` 打包，bare import（simple-git 等）要靠目录上溯解析到 server 的 node_modules；放系统 temp 会 `ERR_MODULE_NOT_FOUND`。现放在 `<out>/.yz-tmp/`，finally 整目录删除（此前临时入口落在产物根，会被 extraResources 拷进包）。
+11. **`--modes` 不再只是"裁前端"**（P5 起）：package 按 design §7 映射成插件选择集（模式插件 + 全部非模式插件照旧带上），后端插件目录也随之裁剪；只想裁前端请用 `YZ_SKIP_PLUGIN_PRUNE=1`。

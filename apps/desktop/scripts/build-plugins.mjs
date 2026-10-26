@@ -19,7 +19,16 @@
  *   node scripts/build-plugins.mjs --id=git-explorer
  *   node scripts/build-plugins.mjs --id=skins
  *   node scripts/build-plugins.mjs --all
+ *   node scripts/build-plugins.mjs --plugins=office-core,skins,dev-mode   # P5：按选择集构建
+ *   node scripts/build-plugins.mjs --plugins=mode                         # 分组关键字（all/mode/feature/skins）
  *   选项: --out=<dir>（默认 apps/server/plugins/build）  --with-frontend（P1 起用）
+ *
+ * ★ --plugins（P5）：选择集解析走 scripts/lib/plugin-selection.cjs（office 锁定 / requires 闭包 /
+ *   非法 id 报错），构建完成后写 build/build-plugins.json 记录本次 included / excluded。
+ *   **未选插件的目录原样保留**（构建器只重建选中的，绝不删除未选 —— 删除是可恢复 prune 的活，
+ *   由 stage-plugins.mjs 负责）。--id 是单插件调试入口，不写选择集文件（避免覆盖打包选择）。
+ *   临时入口文件落在 `<out>/.yz-tmp/`（bare import 要靠 out 上溯解析 node_modules），
+ *   构建结束整目录删除 —— 不落在产物根，否则会被原样拷进安装包。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,7 +39,9 @@ const require = createRequire(import.meta.url);
 const DESKTOP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..');
 const CATALOG_PATH = path.join(REPO_ROOT, 'build', 'plugins.catalog.json');
+const SELECTION_PATH = path.join(REPO_ROOT, 'build', 'build-plugins.json');
 const UI_SRC = path.join(REPO_ROOT, 'packages', 'ui', 'src');
+const { resolvePluginSelection } = require(path.join(REPO_ROOT, 'scripts', 'lib', 'plugin-selection.cjs'));
 
 /** 解析 ui 源码里的相对 import（无扩展名 / index）/ 返回绝对文件或 null */
 function resolveUiModule(absBase) {
@@ -90,14 +101,27 @@ async function hostModuleExportNames(esbuild, absFile) {
 }
 
 function parseArgs(argv) {
-  const args = { out: path.join(REPO_ROOT, 'apps', 'server', 'plugins', 'build'), withFrontend: false, ids: [] };
+  const args = {
+    out: path.join(REPO_ROOT, 'apps', 'server', 'plugins', 'build'),
+    withFrontend: false,
+    ids: [],
+    plugins: null,
+    modes: null,
+  };
   for (const a of argv) {
     if (a.startsWith('--id=')) args.ids.push(a.slice(5));
     else if (a === '--all') args.all = true;
     else if (a.startsWith('--out=')) args.out = path.resolve(a.slice(6));
     else if (a === '--with-frontend') args.withFrontend = true;
+    else if (a.startsWith('--plugins=')) args.plugins = a.slice('--plugins='.length);
+    else if (a.startsWith('--modes=')) args.modes = a.slice('--modes='.length);
     else if (a === '--help' || a === '-h') args.help = true;
   }
+  // 临时入口文件放产物目录下的隐藏子目录：**不能放系统临时目录** —— 入口 stub 用
+  // packages:'external' 打，bare import（simple-git 等）要靠目录上溯解析到 server 的
+  // node_modules，放到系统 temp 就解析不到。放在 out 内的隐藏目录可随 out 解析，
+  // 且 finally 里整目录删除（绝不落在产物根，否则会被 extraResources 拷进安装包）。
+  args.tmp = path.join(args.out, '.yz-tmp');
   return args;
 }
 
@@ -351,7 +375,7 @@ async function buildOne(catalog, id, opts, serverShimPath) {
 
   if (entry.backendEntry && entry.manifestExport) {
     const absBackendEntry = path.join(REPO_ROOT, entry.backendEntry);
-    const manifestValue = await extractManifest(absBackendEntry, entry.manifestExport, opts.out);
+    const manifestValue = await extractManifest(absBackendEntry, entry.manifestExport, opts.tmp);
     summary.manifest = writeManifest(pkgDir, id, manifestValue);
     if (entry.backendNoop) {
       // 纯声明式插件（skins 等 27 套皮肤）：数据全在 manifest.json，入口只补 activate 空实现
@@ -361,7 +385,7 @@ async function buildOne(catalog, id, opts, serverShimPath) {
       fs.writeFileSync(outfile, '// 声明式插件：contributes 全在 manifest.json，入口为空实现\nexport default { async activate() {} };\n', 'utf8');
       summary.backend = outfile;
     } else {
-      summary.backend = await buildBackend(absBackendEntry, pkgDir, serverShimPath, opts.out);
+      summary.backend = await buildBackend(absBackendEntry, pkgDir, serverShimPath, opts.tmp);
     }
   } else if (entry.backendEntry) {
     throw new Error(`插件 ${id} 缺 manifestExport（catalog 需声明 manifest 常量导出名）`);
@@ -372,7 +396,7 @@ async function buildOne(catalog, id, opts, serverShimPath) {
   //   所以"打包时全量构建"只覆盖已标 frontendBundle 的插件。
   const wantFrontend = opts.withFrontend && (entry.frontendBundle || opts.ids.includes(id));
   if (wantFrontend && (entry.frontendViews || []).length) {
-    summary.frontend = await buildFrontend(entry, pkgDir, opts.out);
+    summary.frontend = await buildFrontend(entry, pkgDir, opts.tmp);
   }
 
   if (entry.assetsDir) {
@@ -391,28 +415,77 @@ async function buildOne(catalog, id, opts, serverShimPath) {
   return summary;
 }
 
+/** 解析本次要构建的插件 id（以及选择集元数据）。
+ *
+ * ★ 三种入口的语义差别（写错就是"包名说精简、内容全量"）：
+ *   · --plugins / --modes：**选择集**，office 恒在 + requires 闭包，命中结果写 build-plugins.json；
+ *   · --id：单插件调试，不写选择集文件（否则会覆盖打包选择，断言读到错误基准）；
+ *   · --all：全量，也写选择集（included=全部、excluded=[]），让下游断言有统一真相源。
+ */
+function resolveBuildIds(catalog, args) {
+  if (args.plugins || args.modes) {
+    if (args.plugins && args.modes) {
+      console.warn('[build-plugins] --plugins 与 --modes 同时给出：按约定以 --plugins 为准');
+    }
+    const selection = resolvePluginSelection({ catalog, plugins: args.plugins, modes: args.modes });
+    return { ids: selection.ids, selection };
+  }
+  if (args.ids.length && !args.all) return { ids: args.ids, selection: null };
+  const all = Object.keys(catalog.plugins);
+  return { ids: all, selection: { ids: all, excluded: [], source: 'all' } };
+}
+
+function writeSelectionFile(selection, outDir) {
+  const payload = {
+    included: selection.ids,
+    excluded: selection.excluded,
+    source: selection.source,
+    out: path.relative(REPO_ROOT, outDir).replace(/\\/g, '/'),
+    builtAt: new Date().toISOString(),
+  };
+  fs.mkdirSync(path.dirname(SELECTION_PATH), { recursive: true });
+  fs.writeFileSync(SELECTION_PATH, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  return SELECTION_PATH;
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log('用法: node scripts/build-plugins.mjs --id=<id> | --all [--out=<dir>] [--with-frontend]');
+    console.log(
+      '用法: node scripts/build-plugins.mjs --id=<id> | --all | --plugins=<csv|all|mode|feature|skins> ' +
+        '[--modes=<mode,csv>] [--out=<dir>] [--with-frontend]',
+    );
     return;
   }
-  const catalog = await loadCatalog();
-  const ids = args.all ? Object.keys(catalog.plugins) : args.ids;
-  if (!ids.length) throw new Error('未指定插件：--id=<id> 或 --all');
+  try {
+    const catalog = await loadCatalog();
+    const { ids, selection } = resolveBuildIds(catalog, args);
+    if (!ids.length) throw new Error('未指定插件：--id=<id> / --all / --plugins=<选择集>');
 
-  // shim 就绪（幂等，缺则现场生成）
-  const { generateHostShims, shimsDir } = await import('./lib/host-shims.mjs');
-  const shims = await generateHostShims(DESKTOP_DIR);
-  const serverShimPath = path.join(shimsDir(DESKTOP_DIR), '__server-host__.mjs');
-  if (!fs.existsSync(serverShimPath)) throw new Error('server-host shim 生成失败: ' + serverShimPath);
+    // shim 就绪（幂等，缺则现场生成）
+    const { generateHostShims, shimsDir } = await import('./lib/host-shims.mjs');
+    const shims = await generateHostShims(DESKTOP_DIR);
+    const serverShimPath = path.join(shimsDir(DESKTOP_DIR), '__server-host__.mjs');
+    if (!fs.existsSync(serverShimPath)) throw new Error('server-host shim 生成失败: ' + serverShimPath);
 
-  fs.mkdirSync(args.out, { recursive: true });
-  const results = [];
-  for (const id of ids) {
-    results.push(await buildOne(catalog, id, args, serverShimPath));
+    fs.mkdirSync(args.out, { recursive: true });
+    fs.mkdirSync(args.tmp, { recursive: true });
+    const results = [];
+    for (const id of ids) {
+      results.push(await buildOne(catalog, id, args, serverShimPath));
+    }
+    if (selection) {
+      const file = writeSelectionFile(selection, args.out);
+      const excluded = selection.excluded.length ? selection.excluded.join(', ') : '(无)';
+      console.log(`[build-plugins] 选择集 → ${path.relative(REPO_ROOT, file)}  来源=${selection.source}`);
+      console.log(`[build-plugins] 未选（目录保留，由 stage-plugins prune 移出）: ${excluded}`);
+    }
+    console.log(`[build-plugins] 完成 ${results.length} 个插件 → ${args.out}`);
+  } finally {
+    // 临时入口文件（manifest 桩 / 后端包装入口 / 前端 lib 入口）在系统临时目录，
+    // 不能留在产物目录 —— 那会被 extraResources 原样拷进安装包。
+    fs.rmSync(args.tmp, { recursive: true, force: true });
   }
-  console.log(`[build-plugins] 完成 ${results.length} 个插件 → ${args.out}`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

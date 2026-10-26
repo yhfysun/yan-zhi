@@ -12,6 +12,7 @@ import { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from './constants.js';
 import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
 import { scanBuiltinPackages } from './plugins/builtin-packages.js';
+import { excludedPluginIds } from './plugins/build-selection.js';
 import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicenseCode, verifyLicenseCached } from './license-guard.js';
 import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
 import { handleChatUpgrade } from './chat-ws.js';
@@ -804,8 +805,19 @@ try {
     // （build-plugins.mjs → plugins/builtin/<id>/），**包优先、源码兜底** ——
     // 包缺失（未跑构建的 dev/CI）走源码注册，行为与历史完全一致。
     const builtinPkgs = scanBuiltinPackages();
+    // ★ P5 打包选择集：未选插件不注册 —— 包里的插件目录已被 prune 移出，但源码兜底
+    //   注册仍会把它们拉起来（目录没了、插件还在）。排除名单来自 edition.json.pluginsExcluded
+    //   （main.cjs → YZ_BUILD_PLUGINS_EXCLUDED）；开发态/存量包没有该 env = 空集。
+    const excludedPlugins = excludedPluginIds();
+    if (excludedPlugins.size) {
+      logger.info(`[plugin] 本次构建排除 ${excludedPlugins.size} 个插件，跳过注册:`, [...excludedPlugins].join(', '));
+    }
     // 包优先、源码兜底的统一装载器（mode-pluginization P1/P2）
     const registerPkgOrSource = async (id: string, source: () => Promise<void>): Promise<void> => {
+      if (excludedPlugins.has(id)) {
+        logger.info(`[plugin] ${id} 未包含在本次构建（YZ_BUILD_PLUGINS_EXCLUDED）→ 跳过`);
+        return;
+      }
       const pkg = builtinPkgs.byId.get(id);
       if (pkg) {
         logger.info(`[plugin] ${id} 以内置插件包装载:`, pkg.packageDir);
@@ -833,7 +845,9 @@ try {
     // 内置皮肤包：纯声明式（contributes.themes + 静态壁纸），默认启用，设置→皮肤库切换。
     // 包形态 = skins 目录的 multi manifest（27 套各自注册，共享 noop 入口）；缺包回退源码注册。
     const skinsPkg = builtinPkgs.multiPackages.find((p) => p.manifests.some((m) => typeof m.id === 'string' && m.id.startsWith('skin-')));
-    if (skinsPkg) {
+    if (excludedPlugins.has('skins')) {
+      logger.info('[plugin] skins 未包含在本次构建 → 跳过皮肤注册（壁纸资产也不随包）');
+    } else if (skinsPkg) {
       for (const m of skinsPkg.manifests) {
         await mgr.registerBuiltin(m, skinsPkg.entryPath, true);
       }

@@ -73,6 +73,19 @@ test('生成表只含选中模式的 import；未选模式字样不出现', () =
   assert.match(out, /GitExplorer\.vue/);
 });
 
+test('P5：未选插件的视图不进生成表（插件选择集裁剪，chunk 随之消失）', () => {
+  const uiSrc = path.resolve(__dirname, '..', '..', '..', 'packages', 'ui', 'src');
+  const pluginViews = collectPluginViewFiles(fs, uiSrc, {
+    catalog,
+    modes: ['office', 'dev'],
+    excludedPluginViews: ['views/plugin/GitExplorer.vue', 'views/plugin/GitSettings.vue'],
+  });
+  const out = renderGenerated({ catalog, modes: ['office', 'dev'], pluginViews });
+  assert.doesNotMatch(out, /GitExplorer\.vue/);
+  assert.doesNotMatch(out, /GitSettings\.vue/);
+  assert.match(out, /CodeWorkbench\.vue/); // 选中模式的入口视图照旧
+});
+
 test('构建清单记录排除项与标记串', () => {
   const manifest = buildManifest({ catalog, modes: ['office', 'dev'], edition: 'basic', now: new Date('2026-10-23T03:00:00Z') });
   assert.deepEqual(manifest.modes, ['office', 'dev']);

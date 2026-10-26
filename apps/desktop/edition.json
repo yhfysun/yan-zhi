@@ -11,5 +11,21 @@
     "clip",
     "shop"
   ],
+  "plugins": [
+    "office-core",
+    "dev-mode",
+    "wf-mode",
+    "clip-mode",
+    "ops-shell",
+    "sec-lab",
+    "shop-ops",
+    "cicd-pipeline",
+    "java-suite",
+    "git-explorer",
+    "computer-use",
+    "remote-control",
+    "skins"
+  ],
+  "pluginsExcluded": [],
   "artifactSuffix": "-pro"
 }

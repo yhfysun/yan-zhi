@@ -109,6 +109,11 @@ function isExcludedView(catalog, selected, relPath) {
  */
 function collectPluginViewFiles(fs = fsDefault, uiSrc = UI_SRC, opts = {}) {
   const out = [];
+  // ★ P5：未选插件的视图也要从这张表里剔掉 —— 否则它们的 lazy chunk 仍会进主包，
+  //   后端插件目录却被 prune 移走了（"界面在、插件不在"），泄漏断言也失去意义。
+  //   只过滤本次扫描出来的插件视图；选中模式的入口视图在下面单独并入（模式优先）。
+  const excludedPluginViews = opts.excludedPluginViews || [];
+  const excludedByPlugin = (rel) => excludedPluginViews.some((p) => matchViewPattern(p, rel));
   const walk = (absDir, relDir) => {
     let entries;
     try {
@@ -119,7 +124,7 @@ function collectPluginViewFiles(fs = fsDefault, uiSrc = UI_SRC, opts = {}) {
     for (const e of entries) {
       const rel = `${relDir}/${e.name}`;
       if (e.isDirectory()) walk(path.join(absDir, e.name), rel);
-      else if (e.isFile() && e.name.endsWith('.vue')) out.push(rel);
+      else if (e.isFile() && e.name.endsWith('.vue') && !excludedByPlugin(rel)) out.push(rel);
     }
   };
   for (const root of PLUGIN_VIEW_ROOTS) walk(path.join(uiSrc, root), root);
@@ -212,8 +217,8 @@ function buildManifest({ catalog, modes, edition, now }) {
   };
 }
 
-function writeGenerated({ catalog, modes, fs = fsDefault, uiSrc = UI_SRC, outPath = GENERATED_PATH }) {
-  const pluginViews = collectPluginViewFiles(fs, uiSrc, { catalog, modes });
+function writeGenerated({ catalog, modes, excludedPluginViews = [], fs = fsDefault, uiSrc = UI_SRC, outPath = GENERATED_PATH }) {
+  const pluginViews = collectPluginViewFiles(fs, uiSrc, { catalog, modes, excludedPluginViews });
   const content = renderGenerated({ catalog, modes, pluginViews });
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, content, 'utf8');

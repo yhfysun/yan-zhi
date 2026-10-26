@@ -20,6 +20,12 @@ const fs = require('fs');
 const path = require('path');
 const { readCatalog, parseModesArg, resolveModes } = require('../../../scripts/lib/mode-build.cjs');
 const { artifactSuffixFor } = require('./lib/pack-helpers.cjs');
+const {
+  loadCatalog: loadPluginCatalog,
+  loadModesCatalog,
+  resolveSelection,
+  modeKeysForSelection,
+} = require('./lib/plugin-build-selection.cjs');
 
 const EDITIONS = ['lite', 'basic', 'pro'];
 
@@ -46,26 +52,56 @@ if (!EDITIONS.includes(edition)) {
   process.exit(1);
 }
 
-// ★ 构建内容模式：优先 `YZ_BUILD_MODES`（package.cjs --modes 透传），否则用该档预设。
+// ★ 构建内容插件（P5）：YZ_BUILD_PLUGINS（package --plugins / --modes 映射、build-all 逐档下发）
+//   优先；否则三维解读 catalog.editionPresets[档位]。写进 edition.json 后两条链路消费：
+//     · main.cjs → YZ_BUILD_PLUGINS / YZ_BUILD_PLUGINS_EXCLUDED 传给后端（未选插件不注册）；
+//     · 打包脚本据此 prune 内置插件目录（未选不进包）。
+const pluginCatalog = loadPluginCatalog();
+const modesCatalog = loadModesCatalog();
+let pluginSelection;
+try {
+  pluginSelection = process.env.YZ_BUILD_PLUGINS
+    ? resolveSelection({ catalog: pluginCatalog, plugins: process.env.YZ_BUILD_PLUGINS })
+    : resolveSelection({ catalog: pluginCatalog, editions: [edition] });
+} catch (e) {
+  console.error(`[set-edition] 插件选择集非法: ${e.message}`);
+  process.exit(1);
+}
+
+// ★ 构建内容模式：与插件同源。
+//   · 显式 YZ_BUILD_MODES（package --modes）优先，但只保留**选中插件贡献的模式**
+//     （两者不一致时以插件为准：插件不在包里，模式就是空壳入口）；
+//   · 否则由插件选择集推导（office-core→office、ops-shell→ops…）。
 //   写进 edition.json 后，main.cjs 通过 YZ_BUILD_MODES 传给后端，
 //   license.ts 用它算「物理编译进来的模式 ∩ 授权档」。
-const catalog = readCatalog();
+const modesCatalogForResolve = readCatalog();
+const pluginModes = modeKeysForSelection(pluginCatalog, pluginSelection.ids, modesCatalog);
 let buildModes;
-try {
-  buildModes = resolveModes({
-    catalog,
-    modes: parseModesArg(process.env.YZ_BUILD_MODES),
-    edition,
-  });
-} catch (e) {
-  console.error(`[set-edition] 模式参数非法: ${e.message}`);
+const explicitModes = parseModesArg(process.env.YZ_BUILD_MODES);
+if (explicitModes) {
+  try {
+    const requested = resolveModes({ catalog: modesCatalogForResolve, modes: explicitModes });
+    buildModes = requested.filter((m) => pluginModes.includes(m));
+    const dropped = requested.filter((m) => !pluginModes.includes(m));
+    if (dropped.length) {
+      console.warn(`[set-edition] 模式 ${dropped.join(', ')} 未被选中插件包含，已排除出本包`);
+    }
+  } catch (e) {
+    console.error(`[set-edition] 模式参数非法: ${e.message}`);
+    process.exit(1);
+  }
+} else {
+  buildModes = pluginModes;
+}
+if (!buildModes.length) {
+  console.error('[set-edition] 构建模式为空：选中插件里没有任何模式插件（至少要有 office-core）');
   process.exit(1);
 }
 // 自定义模式时后缀带模式短码，避免同一档位不同模式组合的安装包互相覆盖；
 // YZ_ARTIFACT_SUFFIX（package.cjs --name 透传）优先级最高，原样作为后缀。
 const customSuffix = artifactSuffixFor({
   edition,
-  modes: process.env.YZ_BUILD_MODES ? buildModes : null,
+  modes: process.env.YZ_BUILD_MODES || process.env.YZ_BUILD_PLUGINS ? buildModes : null,
   override: process.env.YZ_ARTIFACT_SUFFIX,
 });
 
@@ -77,6 +113,9 @@ const payload = {
   label: LABEL[edition],
   /** 本次构建物理包含的模式（决定包里有哪些代码）。 */
   modes: buildModes,
+  /** 本次构建物理包含的插件（P5）；pluginsExcluded 供后端跳过注册（未装即不存在）。 */
+  plugins: pluginSelection.ids,
+  pluginsExcluded: pluginSelection.excluded,
   /** 产物名后缀，与 electron-builder.full.yml 的 artifactName 对应。 */
   artifactSuffix: customSuffix,
 };
@@ -85,5 +124,9 @@ fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
 
 console.log(`[set-edition] 已写入 ${path.relative(process.cwd(), outPath)}`);
 console.log(`[set-edition] 构建档: ${edition}（${LABEL[edition]}）→ 模式: ${buildModes.join(', ')}`);
+console.log(
+  `[set-edition] 插件: ${pluginSelection.ids.length} 个（${pluginSelection.source}）` +
+    (pluginSelection.excluded.length ? `，排除 ${pluginSelection.excluded.join(', ')}` : ''),
+);
 console.log(`[set-edition] 预置码档: ${DEFAULT_EDITION[edition]}`);
 console.log(`[set-edition] 产物后缀: ${customSuffix}`);

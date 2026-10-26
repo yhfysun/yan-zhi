@@ -78,6 +78,14 @@ const {
   parseModesArg,
   allModeKeys,
 } = require(path.join(repoRoot, 'scripts', 'lib', 'mode-build.cjs'));
+// ★ P5：插件选择集（唯一解析口，office 锁定 / requires 闭包 / 非法报错）
+const {
+  loadCatalog: loadPluginCatalog,
+  loadModesCatalog,
+  selectionFromEnv,
+  unionPresets,
+  modeKeysForSelection,
+} = require(path.join(desktopDir, 'scripts', 'lib', 'plugin-build-selection.cjs'));
 
 const CONFIG = EDITION_CONFIG;
 const LABEL = EDITION_LABEL;
@@ -268,16 +276,24 @@ for (const edition of editions) {
 }
 
 /**
- * 本次编译进包的模式。
+ * 本次编译的插件选择集与模式集合。
  *
- * 优先级：YZ_BUILD_MODES（package.cjs --modes 透传）> 本次档位预设的并集。
- * ★ 为什么多档同跑取并集：vite 只编一次，一份前端产物要同时服务本次所有档；
- *   并集等于各档原有内容量（lite 单独构建时才真正只含 office）。
- *   要精确裁剪单一组合，就单独构建那一档。
+ * 插件：YZ_BUILD_PLUGINS（package.cjs --plugins 下发）> 本次各档 catalog.editionPresets 的并集。
+ * 模式：YZ_BUILD_MODES（--modes 或 package 派生）> 由插件选择集推导（modeKey），
+ *       保证「前端裁到哪 → 后端只注册哪些」同源。
+ * ★ 多档同跑取并集：vite 只编一次、插件包也只构建一次，一份产物服务本次所有档；
+ *   逐档真正的内容裁剪在 electron-build 里做（按该档预设 prune，打完 restore）。
  */
+const PLUGIN_CATALOG = loadPluginCatalog();
+const MODES_CATALOG = loadModesCatalog();
+const EXPLICIT_PLUGINS = selectionFromEnv().plugins;
+const BUILD_PLUGINS_UNION = EXPLICIT_PLUGINS || unionPresets(PLUGIN_CATALOG, editions);
+
 function resolveBuildModesCsv() {
   const explicit = parseModesArg(process.env.YZ_BUILD_MODES);
   if (explicit) return explicit.join(',');
+  const derived = modeKeysForSelection(PLUGIN_CATALOG, BUILD_PLUGINS_UNION, MODES_CATALOG);
+  if (derived.length) return derived.join(',');
   const catalog = readCatalog();
   const picked = new Set();
   for (const e of editions) {
@@ -288,6 +304,30 @@ function resolveBuildModesCsv() {
 }
 
 const BUILD_MODES_CSV = resolveBuildModesCsv();
+
+/** 某档的插件选择集：显式选择（本次所有档同一份）> 该档预设。 */
+function pluginsCsvFor(edition) {
+  return (EXPLICIT_PLUGINS || unionPresets(PLUGIN_CATALOG, [edition])).join(',');
+}
+
+const BUILTIN_PLUGINS_DIR = path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin');
+const STAGE_PLUGINS_SCRIPT = path.join(desktopDir, 'scripts', 'stage-plugins.mjs');
+
+/** 把内置插件目录裁到本次选择集（未选移入 .prune-hold/），并在结束时恢复。 */
+function stagePlugins(action) {
+  run(process.execPath, [STAGE_PLUGINS_SCRIPT, action, `--root=${BUILTIN_PLUGINS_DIR}`, `--plugins=${BUILD_PLUGINS_UNION.join(',')}`]);
+}
+let pluginsStaged = false;
+function restoreStagedPlugins() {
+  if (!pluginsStaged) return;
+  pluginsStaged = false;
+  try {
+    stagePlugins('restore');
+  } catch {
+    console.warn('[build-all] 警告：恢复被暂存的内置插件目录失败，请手动执行 node apps/desktop/scripts/stage-plugins.mjs restore');
+  }
+}
+process.on('exit', restoreStagedPlugins);
 
 /** 打包结束（含异常退出）恢复全量生成表，避免把裁剪后的表留在工作区。 */
 let modeTableRestored = false;
@@ -310,9 +350,14 @@ process.on('exit', restoreModeTable);
 //    electron-builder 仍需**逐档各跑一次**（edition.json 打进 asar，档位是编译期固化的）。
 console.log('\n=== [2/3] 编译后端与前端（源码产物共用，只跑一次）===');
 console.log(`[build-all] 编译模式: ${BUILD_MODES_CSV}`);
+console.log(`[build-all] 内置插件: ${BUILD_PLUGINS_UNION.join(', ')}（未选 ${Object.keys(PLUGIN_CATALOG.plugins).length - BUILD_PLUGINS_UNION.length} 个）`);
 preflight();
-// ★ 先写前端生成表：路由/插件视图表只包含选中模式，vite 才不会产出未选模式的 chunk。
-run(process.execPath, [path.join(repoRoot, 'scripts', 'select-modes.cjs'), `--modes=${BUILD_MODES_CSV}`]);
+// ★ 先写前端生成表：路由/插件视图表只包含选中模式与选中插件，vite 才不会产出未选部分的 chunk。
+run(process.execPath, [
+  path.join(repoRoot, 'scripts', 'select-modes.cjs'),
+  `--modes=${BUILD_MODES_CSV}`,
+  `--plugins=${BUILD_PLUGINS_UNION.join(',')}`,
+]);
 // ★ 不裸 spawn 'pnpm'：本机三套 node 都只有 corepack、没有独立 pnpm（where pnpm 为空），
 //   裸调报「'pnpm' 不是内部或外部命令」。解析逻辑收口在 pack-helpers.resolvePnpm。
 const pnpm = resolvePnpm(['--filter', '@yan-zhi/server', 'build']);
@@ -323,9 +368,24 @@ run(process.execPath, [path.join(desktopDir, 'node_modules', 'vite', 'bin', 'vit
 // ★ 泄漏断言必须在 electron-builder 之前：裁剪被破坏时立刻失败，
 //   而不是打出一个「名字精简、内容全量」的包。
 run(process.execPath, [path.join(repoRoot, 'scripts', 'verify-mode-prune.cjs')]);
-// ★ 内置插件包（mode-pluginization P1）：把 catalog 里的插件构建成 plugins/builtin/<id>/
-//   （P1 全量拷进包；P5 起按 --plugins 选择裁剪）。幂等、增量（未变文件不重写）。
-run(process.execPath, [path.join(desktopDir, 'scripts', 'build-plugins.mjs'), '--all', '--with-frontend', '--out=' + path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin')]);
+// ★ 内置插件包（mode-pluginization P1/P5）：把选择集里的插件构建成 plugins/builtin/<id>/
+//   （只构建选中；未选目录**不删**，下面 prune 移到 .prune-hold/ 再交给 electron-builder）。
+run(process.execPath, [
+  path.join(desktopDir, 'scripts', 'build-plugins.mjs'),
+  `--plugins=${BUILD_PLUGINS_UNION.join(',')}`,
+  '--with-frontend',
+  '--out=' + BUILTIN_PLUGINS_DIR,
+]);
+// ★ 裁剪泄漏断言必须在 electron-builder 之前、且用**本次构建的并集选择集**：
+//   前端产物一份服务所有档，逐档扫描会误报（低档包里当然有高档的 chunk）。
+stagePlugins('prune');
+pluginsStaged = true;
+run(process.execPath, [
+  path.join(repoRoot, 'scripts', 'verify-plugin-prune.cjs'),
+  `--plugins=${BUILD_PLUGINS_UNION.join(',')}`,
+]);
+stagePlugins('restore');
+pluginsStaged = false;
 run(process.execPath, ['./scripts/prepare-server-runtime.cjs']);
 run(process.execPath, ['./scripts/clean-broken-symlinks.cjs']);
 
@@ -340,15 +400,21 @@ for (const edition of editions) {
   const outDir = outDirFor(edition);
   // ★ 必须先写 edition.json：electron-build.cjs 读它注入 YZ_ARTIFACT_SUFFIX 与档位 env，
   //   顺序颠倒会打出「产物名与内容档位不一致」的包。
-  run(process.execPath, ['./scripts/set-edition.cjs', edition], { YZ_ARTIFACT_SUFFIX: suffix });
+  //   YZ_BUILD_PLUGINS 逐档下发：edition.json.plugins 决定该档插件内容与 mode 交集。
+  const pluginsCsv = pluginsCsvFor(edition);
+  run(process.execPath, ['./scripts/set-edition.cjs', edition], { YZ_ARTIFACT_SUFFIX: suffix, YZ_BUILD_PLUGINS: pluginsCsv });
   clearOutputDir(outDir);
 
   // 显式传 YZ_OUTPUT_DIR + YZ_ARTIFACT_SUFFIX：
   //   · 输出目录严格落在期望位置，不会散落；
   //   · 后缀与目录名同源，避免读不到时回落到 -basic（档位与文件名不一致）。
+  // YZ_BUILD_PLUGINS：electron-build 据此只暂存该档选中的插件（打完自动 restore）。
+  // YZ_SKIP_PLUGIN_BUILD：并集插件包上面已经构建过（每档都是并集的子集），不再逐档重建。
   run(process.execPath, ['./scripts/electron-build.cjs', CONFIG[edition]], {
     YZ_OUTPUT_DIR: outDir,
     YZ_ARTIFACT_SUFFIX: suffix,
+    YZ_BUILD_PLUGINS: pluginsCsv,
+    YZ_SKIP_PLUGIN_BUILD: '1',
   });
 }
 
