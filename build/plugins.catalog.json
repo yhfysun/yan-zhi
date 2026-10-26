@@ -21,9 +21,16 @@
       "desc": "写代码 · 改 Bug · 读项目",
       "icon": "Monitor",
       "route": "/code",
-      "backendEntry": null,
-      "frontendViews": ["views/CodeWorkbench.vue", "components/code/**"],
-      "defaultEnabled": true
+      "backendEntry": "apps/server/src/plugins/dev-mode.ts",
+      "manifestExport": "devModeManifest",
+      "backendNoop": true,
+      "frontendViews": [
+        "views/CodeWorkbench.vue",
+        "components/code/**"
+      ],
+      "defaultEnabled": true,
+      "notes": "P4 纯视图插件：只贡献 mode 元数据与 /code 路由（code 工具留基座）",
+      "frontendBundle": true
     },
     "wf-mode": {
       "kind": "mode",
@@ -32,9 +39,15 @@
       "desc": "运行 · 调试 · 定时（workflow 引擎在 packages/core 基座，插件只含视图与种子）",
       "icon": "Connection",
       "route": "/workflow",
-      "backendEntry": null,
-      "frontendViews": ["views/WorkflowWorkbench.vue"],
-      "defaultEnabled": true
+      "backendEntry": "apps/server/src/plugins/wf-mode.ts",
+      "manifestExport": "wfModeManifest",
+      "backendNoop": true,
+      "frontendViews": [
+        "views/WorkflowWorkbench.vue"
+      ],
+      "defaultEnabled": true,
+      "notes": "P4 纯视图插件：只贡献 mode 元数据与 /workflow 路由（workflow 引擎留基座）",
+      "frontendBundle": true
     },
     "clip-mode": {
       "kind": "mode",
@@ -43,10 +56,15 @@
       "desc": "剪辑 · 字幕动画 · 成片",
       "icon": "VideoCamera",
       "route": "/clip",
-      "backendEntry": null,
-      "frontendViews": ["views/ClipWorkbench.vue", "components/clip/**"],
+      "backendEntry": "apps/server/src/plugins/clip-mode.ts",
+      "manifestExport": "clipModeManifest",
+      "frontendViews": [
+        "views/ClipWorkbench.vue",
+        "components/clip/**"
+      ],
       "defaultEnabled": true,
-      "notes": "P4 建插件：routes/clip.ts + services/clip-* + sfx-library.ts + mcp/ffmpeg-runtime、whisper-runtime、subtitle-style 迁入 backend"
+      "notes": "P4 已包化：routes/clip.ts + services/clip-* + sfx-library + mcp/{ffmpeg,whisper}-runtime、subtitle-style 随插件包；接口在 /api/plugin/clip-mode/*",
+      "frontendBundle": true
     },
     "ops-shell": {
       "kind": "mode",
@@ -56,10 +74,18 @@
       "icon": "Platform",
       "route": "/ops",
       "desktopOnly": true,
-      "requires": ["cicd-pipeline", "java-suite"],
+      "requires": [
+        "cicd-pipeline",
+        "java-suite"
+      ],
       "backendEntry": "apps/server/src/plugins/ops-shell.ts",
       "manifestExport": "opsShellManifest",
-      "frontendViews": ["views/plugin/OpsConsole.vue", "views/plugin/OpsConnectionDialog.vue", "views/plugin/SftpPanel.vue", "views/plugin/opsSession.ts"],
+      "frontendViews": [
+        "views/plugin/OpsConsole.vue",
+        "views/plugin/OpsConnectionDialog.vue",
+        "views/plugin/SftpPanel.vue",
+        "views/plugin/opsSession.ts"
+      ],
       "defaultEnabled": true
     },
     "sec-lab": {
@@ -72,7 +98,9 @@
       "desktopOnly": true,
       "backendEntry": "apps/server/src/plugins/sec-lab.ts",
       "manifestExport": "secLabManifest",
-      "frontendViews": ["views/plugin/SecConsole.vue"],
+      "frontendViews": [
+        "views/plugin/SecConsole.vue"
+      ],
       "defaultEnabled": true
     },
     "shop-ops": {
@@ -85,7 +113,10 @@
       "desktopOnly": true,
       "backendEntry": "apps/server/src/plugins/shop-ops.ts",
       "manifestExport": "shopOpsManifest",
-      "frontendViews": ["views/plugin/ShopConsole.vue", "views/plugin/shop/**"],
+      "frontendViews": [
+        "views/plugin/ShopConsole.vue",
+        "views/plugin/shop/**"
+      ],
       "defaultEnabled": true,
       "notes": "自有业务模块 src/shop/*、services/amazon-sp-api、services/logistics、services/platform-api 随插件打包（P2 归位）"
     },
@@ -96,7 +127,9 @@
       "desktopOnly": true,
       "backendEntry": "apps/server/src/plugins/cicd-pipeline.ts",
       "manifestExport": "cicdManifest",
-      "frontendViews": ["views/plugin/CicdConsole.vue"],
+      "frontendViews": [
+        "views/plugin/CicdConsole.vue"
+      ],
       "defaultEnabled": true
     },
     "java-suite": {
@@ -106,7 +139,9 @@
       "desktopOnly": true,
       "backendEntry": "apps/server/src/plugins/java-suite.ts",
       "manifestExport": "javaSuiteManifest",
-      "frontendViews": ["views/plugin/JavaSuite.vue"],
+      "frontendViews": [
+        "views/plugin/JavaSuite.vue"
+      ],
       "defaultEnabled": true
     },
     "git-explorer": {
@@ -115,7 +150,10 @@
       "desc": "仓库浏览 · diff · 历史",
       "backendEntry": "apps/server/src/plugins/git-explorer.ts",
       "manifestExport": "gitExplorerManifest",
-      "frontendViews": ["views/plugin/GitExplorer.vue", "views/plugin/GitSettings.vue"],
+      "frontendViews": [
+        "views/plugin/GitExplorer.vue",
+        "views/plugin/GitSettings.vue"
+      ],
       "defaultEnabled": true
     },
     "computer-use": {
@@ -127,7 +165,10 @@
       "manifestExport": "computerUseManifest",
       "frontendViews": [],
       "defaultEnabled": true,
-      "extraResources": ["resources/python", "resources/python-tools"]
+      "extraResources": [
+        "resources/python",
+        "resources/python-tools"
+      ]
     },
     "remote-control": {
       "kind": "feature",
@@ -136,7 +177,10 @@
       "desktopOnly": true,
       "backendEntry": "apps/server/src/plugins/remote-control.ts",
       "manifestExport": "remoteControlManifest",
-      "frontendViews": ["views/RemoteControl.vue", "components/RemoteControlHost.vue"],
+      "frontendViews": [
+        "views/RemoteControl.vue",
+        "components/RemoteControlHost.vue"
+      ],
       "defaultEnabled": false,
       "notes": "preload rc:* 专用通道留基座（主进程能力，不随插件裁剪）"
     },
@@ -154,8 +198,36 @@
     }
   },
   "editionPresets": {
-    "lite": ["office-core", "skins", "git-explorer", "computer-use", "remote-control"],
-    "basic": ["office-core", "skins", "git-explorer", "computer-use", "remote-control", "dev-mode", "wf-mode"],
-    "pro": ["office-core", "skins", "git-explorer", "computer-use", "remote-control", "dev-mode", "wf-mode", "clip-mode", "ops-shell", "cicd-pipeline", "java-suite", "sec-lab", "shop-ops"]
+    "lite": [
+      "office-core",
+      "skins",
+      "git-explorer",
+      "computer-use",
+      "remote-control"
+    ],
+    "basic": [
+      "office-core",
+      "skins",
+      "git-explorer",
+      "computer-use",
+      "remote-control",
+      "dev-mode",
+      "wf-mode"
+    ],
+    "pro": [
+      "office-core",
+      "skins",
+      "git-explorer",
+      "computer-use",
+      "remote-control",
+      "dev-mode",
+      "wf-mode",
+      "clip-mode",
+      "ops-shell",
+      "cicd-pipeline",
+      "java-suite",
+      "sec-lab",
+      "shop-ops"
+    ]
   }
 }

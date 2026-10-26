@@ -16,7 +16,6 @@ import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicens
 import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
 import { handleChatUpgrade } from './chat-ws.js';
 import conversationRoutes from './routes/conversations.js';
-import clipRoutes from './routes/clip.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
 import fileRoutes from './routes/files.js';
@@ -103,6 +102,11 @@ import { shopOpsManifest, shopOpsModule } from './plugins/shop-ops.js';
 import { cicdManifest, cicdModule } from './plugins/cicd-pipeline.js';
 import { javaSuiteManifest, javaSuiteModule } from './plugins/java-suite.js';
 import { secLabManifest, secLabModule } from './plugins/sec-lab.js';
+// 剪辑模式（P4）：工程/素材/字幕/音效接口以插件包形态提供，路由挂 /api/plugin/clip-mode
+import { clipModeManifest, clipModeModule } from './plugins/clip-mode.js';
+// 开发/工作流模式（P4）：纯视图模式插件 —— 只贡献模式元数据与路由（引擎/工具留基座）
+import { devModeManifest, devModeModule } from './plugins/dev-mode.js';
+import { wfModeManifest, wfModeModule } from './plugins/wf-mode.js';
 import { syncAgensPlatformForAllUsers, bumpModelContextWindowToDefault } from './agens-platform/service.js';
 import { ensureProjectDataSource } from './services/datasource.js';
 import { ensureBuiltinOntologies } from './services/ontology.js';
@@ -176,7 +180,7 @@ if (isLicenseGuardEnabled()) {
   logger.info('[license] 授权门禁已启用（YZ_LICENSE_GUARD=1）：业务 API 需携带 x-license 头');
 }
 app.use('/api/conversations', conversationRoutes);
-app.use('/api/clip', clipRoutes);
+// 剪辑接口已随 clip-mode 插件挂载：/api/plugin/clip-mode/*（mode-pluginization P4）
 app.use('/api/conversations', fileRoutes);
 app.use('/api/workspace', workspaceFileRoutes);
 app.use('/api/messages', messageRoutes);
@@ -836,6 +840,13 @@ try {
     } else {
       await registerBuiltinSkins();
     }
+    // 剪辑模式（P4）：后端接口 + /clip 路由 + 模式元数据都随插件；桌面与移动端都注册
+    // （剪辑不需要桌面专属能力，手机端同样可用）。
+    await registerPkgOrSource('clip-mode', () => mgr.registerBuiltin(clipModeManifest, clipModeModule));
+    // 开发 / 工作流模式（P4）：纯视图插件，贡献模式元数据与 /code、/workflow 路由。
+    // 引擎与工具留基座，停用只让入口消失（会话/工程数据不动）。
+    await registerPkgOrSource('dev-mode', () => mgr.registerBuiltin(devModeManifest, devModeModule));
+    await registerPkgOrSource('wf-mode', () => mgr.registerBuiltin(wfModeManifest, wfModeModule));
     // ops-shell 高危权限（remote-shell）：同上默认开启；移动端跳过
     if (!process.env.MOBILE_MODE) {
       await registerPkgOrSource('ops-shell', () => mgr.registerBuiltin(opsShellManifest, opsShellModule, true));

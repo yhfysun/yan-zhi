@@ -1070,7 +1070,7 @@ const textPatch = reactive({
 const convId = computed(() => chat.store.currentConvId || '');
 const clips = computed(() => project.value?.clips || []);
 /**
- * 素材真实元数据（路径 → 时长/分辨率），由服务端 ffprobe 探测（见 /api/clip/probe）。
+ * 素材真实元数据（路径 → 时长/分辨率），由服务端 ffprobe 探测（见 /api/plugin/clip-mode/probe）。
  * ★ 时间轴排布必须基于**真实时长**：用假值会让"总时长/字幕时间点"全部错位，
  *   而用户看到的是一个"看起来正常"的数字，无从察觉。
  */
@@ -1090,7 +1090,7 @@ async function loadMediaMeta() {
   const paths = clips.value.map((c) => c.file).filter((p) => p && !(p in mediaMeta.value));
   if (!paths.length) return;
   type ProbeItem = { path: string; duration: number; width: number; height: number; hasVideo: boolean; ok: boolean };
-  const r = await api.post<ProbeItem[]>('/clip/probe', { items: paths.map((p) => ({ path: p })) });
+  const r = await api.post<ProbeItem[]>('/plugin/clip-mode/probe', { items: paths.map((p) => ({ path: p })) });
   if ('error' in r) return;
   const list: ProbeItem[] = Array.isArray(r.data) ? r.data : [];
   const next = { ...mediaMeta.value };
@@ -1128,7 +1128,7 @@ async function fetchFrame() {
     // ★ URL 带工程版本（project.updatedAt）：改了参数 URL 就变，
     //   即使中间有代理/浏览器缓存也不会拿到旧帧（与 no-store 双保险）。
     const ver = project.value?.updatedAt || 0;
-    const url = `${API_BASE}/clip/frame?conversationId=${encodeURIComponent(convId.value)}&t=${playhead.value.toFixed(3)}&v=${ver}${qs}`;
+    const url = `${API_BASE}/plugin/clip-mode/frame?conversationId=${encodeURIComponent(convId.value)}&t=${playhead.value.toFixed(3)}&v=${ver}${qs}`;
     const res = await fetch(url);
     if (mySeq !== frameSeq) return;   // 有更新的请求在飞 → 本次结果作废
     if (!res.ok) {
@@ -1284,7 +1284,7 @@ function streamUrl(name: string): string {
 // ===== 工程读写 =====
 async function reload() {
   if (!convId.value) { project.value = null; return; }
-  const r = await api.get<{ exists: boolean; project: ClipProject | null }>(`/clip/project?conversationId=${encodeURIComponent(convId.value)}`);
+  const r = await api.get<{ exists: boolean; project: ClipProject | null }>(`/plugin/clip-mode/project?conversationId=${encodeURIComponent(convId.value)}`);
   if ('error' in r) { note(`读取工程失败：${r.error}`); return; }
   project.value = r.data.project || null;
   projectName.value = r.data.project?.name || '';
@@ -1386,7 +1386,7 @@ async function persistProject(): Promise<boolean> {
   project.value.name = projectName.value || project.value.name;
   project.value.output = { size: outSize.value, fps: outFps.value };
   project.value.updatedAt = Date.now();
-  const r = await api.put('/clip/project', { conversationId: convId.value, project: project.value });
+  const r = await api.put('/plugin/clip-mode/project', { conversationId: convId.value, project: project.value });
   if ('error' in r) { note(`保存失败：${r.error}`); return false; }
   dirty.value = false;
   return true;
@@ -1952,7 +1952,7 @@ function togglePlay() {
  */
 async function loadProjects() {
   loadingList.value = true;
-  const r = await api.get<{ projects: ProjectListItem[] }>('/clip/projects');
+  const r = await api.get<{ projects: ProjectListItem[] }>('/plugin/clip-mode/projects');
   loadingList.value = false;
   if ('error' in r) { note(`读取项目列表失败：${r.error}`); return; }
   projectList.value = r.data.projects || [];
@@ -1993,7 +1993,7 @@ async function createProject() {
       output: { size: newSize.value, fps: newFps.value },
       clips: [], texts: [],
     };
-    const r = await api.put('/clip/project', { conversationId: cid, project: blank });
+    const r = await api.put('/plugin/clip-mode/project', { conversationId: cid, project: blank });
     if ('error' in r) { note(`工程创建失败：${r.error}`); return; }
     newProjectDialog.value = false;
     newName.value = '';
@@ -2018,7 +2018,7 @@ function askDeleteProject(p: ProjectListItem) { delTarget.value = p; delDialog.v
 async function doDeleteProject() {
   const p = delTarget.value;
   if (!p) return;
-  const r = await api.delete(`/clip/projects/${encodeURIComponent(p.conversationId)}`);
+  const r = await api.delete(`/plugin/clip-mode/projects/${encodeURIComponent(p.conversationId)}`);
   if ('error' in r) { note(`删除失败：${r.error}`); return; }
   delDialog.value = false;
   delTarget.value = null;
@@ -2175,7 +2175,7 @@ function waveUrl(p: string, w = 600, h = 56): string {
   if (!convId.value || !p) return '';
   const code = getLicenseCode();
   const qs = code ? `&license=${encodeURIComponent(code)}` : '';
-  return `${API_BASE}/clip/waveform?conversationId=${encodeURIComponent(convId.value)}&path=${encodeURIComponent(p)}&w=${w}&h=${h}${qs}`;
+  return `${API_BASE}/plugin/clip-mode/waveform?conversationId=${encodeURIComponent(convId.value)}&path=${encodeURIComponent(p)}&w=${w}&h=${h}${qs}`;
 }
 
 /** 把素材设为画中画：落在播放头处 3 秒（夹住片尾），右下角 0.35 倍，之后在属性面板调。 */
@@ -2332,7 +2332,7 @@ function previewSfx(id: string) {
   if (sfxPlaying.value === id) { sfxPlaying.value = ''; return; }  // 再点一次 = 停止
   const code = getLicenseCode();
   const qs = code ? `&license=${encodeURIComponent(code)}` : '';
-  const a = new Audio(`${API_BASE}/clip/library/sfx-preview?id=${encodeURIComponent(id)}${qs}`);
+  const a = new Audio(`${API_BASE}/plugin/clip-mode/library/sfx-preview?id=${encodeURIComponent(id)}${qs}`);
   a.onended = () => { if (sfxPlaying.value === id) sfxPlaying.value = ''; };
   a.onerror = () => { sfxPlaying.value = ''; note('试听失败（ffmpeg 不可用？）'); };
   sfxPlaying.value = id;
@@ -2358,7 +2358,7 @@ const sfxGroups = computed(() => {
 async function openSfxLibrary() {
   sfxLibOpen.value = true;
   if (sfxLibItems.value.length) return;
-  const r = await api.get<{ sfx: SfxLibItem[] }>('/clip/library');
+  const r = await api.get<{ sfx: SfxLibItem[] }>('/plugin/clip-mode/library');
   if ('error' in r) { note(`读取音效库失败：${r.error}`); return; }
   sfxLibItems.value = r.data.sfx || [];
 }
@@ -2372,7 +2372,7 @@ async function generateSfx(id: string) {
   if (!cid) { note('无法创建会话，已中止'); return; }
   sfxBusy.value = id;
   try {
-    const r = await api.post<{ ok: boolean; name: string; label: string }>('/clip/library/sfx', { conversationId: cid, id });
+    const r = await api.post<{ ok: boolean; name: string; label: string }>('/plugin/clip-mode/library/sfx', { conversationId: cid, id });
     if ('error' in r) { note(`生成失败：${r.error}`); return; }
     await loadFiles();
     note(`音效「${r.data.label}」已加入素材库（${r.data.name}）`);
@@ -2747,7 +2747,7 @@ async function splitAtBeats() {
 
   beatRunning.value = true;
   try {
-    const r = await api.post<{ ok: boolean; beats: number[]; bpm: number; duration: number; note?: string }>('/clip/beats', {
+    const r = await api.post<{ ok: boolean; beats: number[]; bpm: number; duration: number; note?: string }>('/plugin/clip-mode/beats', {
       conversationId: convId.value, path: src,
     });
     if ('error' in r) { note(`节拍分析失败：${r.error}`); return; }
@@ -2833,7 +2833,7 @@ async function runAsrOnSelected() {
     // ★ 解包口径对齐 /clip/probe：apiFetch 已把响应解包成 `{ data: <接口 data 字段> }`，
     //   所以 r.data 就是 cues 数组本身（**不能再写 r.data.data**，会拿到 undefined）。
     //   失败时返回 `{ error }` → 先判 `'error' in r`，避免把错误当成功处理。
-    const r = await api.post<AsrCue[]>('/clip/asr', {
+    const r = await api.post<AsrCue[]>('/plugin/clip-mode/asr', {
       conversationId: convId.value, path: src, model: asrModel.value,
     }) as { data?: AsrCue[]; model?: string; requestedModel?: string; error?: string };
     if ('error' in r && r.error) {

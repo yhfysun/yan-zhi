@@ -11,12 +11,13 @@ import { Router, Request, Response } from 'express';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { authMiddleware } from '../auth.js';
-import { db } from '../db.js';
-import { hardDeleteRow } from '../services/conversation-lifecycle.js';
+// ★ P4（clip-mode 插件包）：宿主能力一律经 host-bridge —— 打包时这些 import 被重定向到
+//   __YZ_SERVER_HOST__ shim，插件包里不会出现第二份 db / 第二套目录解析。
+import {
+  authMiddleware, db, hardDeleteRow, ensureArtifactDirFor, runCmd,
+} from '../host-bridge.js';
 import { readClipProject, writeClipProject, clipProjectPath as clipProjectPathOf } from '../services/clip-store.js';
 import { summarizeProject } from '../services/clip-project.js';
-import { ensureArtifactDirFor } from '../services/artifact-dir.js';
 import { parseProbeJson, probeArgs } from '../services/clip-render.js';
 import { renderPreviewFrame } from '../services/clip-preview.js';
 import { ensureEffectPreview } from '../services/clip-effect-preview.js';
@@ -28,7 +29,6 @@ import {
   WHISPER_MODELS, DEFAULT_WHISPER_MODEL,
 } from '../mcp/whisper-runtime.js';
 import { parseSrt } from '../mcp/subtitle-style.js';
-import { runCmd } from '../services/exec-cmd.js';
 
 /** 跑 ffmpeg（复用既有 exec-cmd 的 runCmd，与其它媒体链路同一实现）。 */
 async function runFfmpeg(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stderr: string }> {
@@ -70,7 +70,7 @@ function conversationExists(id: string): boolean {
   }
 }
 
-// GET /api/clip/projects?userId=...
+// GET /api/plugin/clip-mode/projects?userId=...
 //
 // 剪辑项目管理：列出**全部剪辑任务（= 一个剪辑项目 = 一条时间线）**及工程摘要。
 //
@@ -116,7 +116,7 @@ router.get('/projects', (req: Request, res: Response) => {
   return res.json({ projects });
 });
 
-// DELETE /api/clip/projects/:conversationId —— 删项目 = 删该会话及其产物目录
+// DELETE /api/plugin/clip-mode/projects/:conversationId —— 删项目 = 删该会话及其产物目录
 //
 // ★ 只删**本会话自己的**文件（工程 + 会话产物目录），不碰素材源文件：
 //   素材是用户/其它任务的文件，删项目不该连带删掉它们（与剪映"删草稿不删素材"一致）。
@@ -149,7 +149,7 @@ router.delete('/projects/:conversationId', (req: Request, res: Response) => {
   return res.json({ ok: true, removedFiles, note: '已删除项目（素材源文件未动）' });
 });
 
-// POST /api/clip/probe —— 批量探测媒体时长（前端时间轴要按真实时长排布）
+// POST /api/plugin/clip-mode/probe —— 批量探测媒体时长（前端时间轴要按真实时长排布）
 //
 // ★★★ 为什么必须由服务端探（2026-10-07 用户报"10s 的素材只当 3s"）：
 //   前端拿到的是素材的**本机路径**，但要读时长只能靠 <video> 元数据 —— 对每个素材
@@ -173,7 +173,7 @@ router.post('/probe', async (req: Request, res: Response) => {
   return res.json({ data: out });
 });
 
-// GET /api/clip/library —— 内置音效库清单（合成式，免版权）
+// GET /api/plugin/clip-mode/library —— 内置音效库清单（合成式，免版权）
 //
 // ★ 诚实说明为什么只有"音效 + 氛围垫"没有旋律 BGM：
 //   合成器做不出编曲；打包真实音乐又涉及版权与体积。详见 services/sfx-library.ts 顶部注释。
@@ -184,7 +184,7 @@ router.get('/library', (_req: Request, res: Response) => {
   });
 });
 
-// POST /api/clip/library/sfx —— 生成一个音效到会话素材库
+// POST /api/plugin/clip-mode/library/sfx —— 生成一个音效到会话素材库
 // body: { conversationId, id }
 router.post('/library/sfx', async (req: Request, res: Response) => {
   const conversationId = String(req.body?.conversationId || '').trim();
@@ -215,7 +215,7 @@ router.post('/library/sfx', async (req: Request, res: Response) => {
   return res.json({ ok: true, name: fileName, path: outFile, bytes: size, label: item.label });
 });
 
-// GET /api/clip/library/sfx-preview?id=whoosh —— **试听**（不落素材库）
+// GET /api/plugin/clip-mode/library/sfx-preview?id=whoosh —— **试听**（不落素材库）
 //
 // ★★★ 为什么单独一条（2026-10-21 用户：「搞点音效库？」）：
 //   此前想听一个音效只能先"生成"——它会写进会话素材库，试五个就多五个垃圾文件。
@@ -250,7 +250,7 @@ router.get('/library/sfx-preview', async (req: Request, res: Response) => {
   return res.sendFile(file);
 });
 
-// POST /api/clip/asr —— 语音转字幕（本地 whisper.cpp）
+// POST /api/plugin/clip-mode/asr —— 语音转字幕（本地 whisper.cpp）
 //
 // ★★★ 为什么要有这条（2026-10-08）：ASR 能力此前只能从**对话**触发
 //   （模型调 media_asr_transcribe）。剪辑工作台里"素材只有音频、想自动打轴"时
@@ -319,7 +319,7 @@ router.post('/asr', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/clip/frame?conversationId=xxx&t=1.234
+// GET /api/plugin/clip-mode/frame?conversationId=xxx&t=1.234
 //
 // **实时预览帧**：拖动播放头时前端按 t 请求，返回 PNG 二进制。
 //
@@ -371,7 +371,7 @@ router.get('/frame', async (req: Request, res: Response) => {
   return res.end(out.png);
 });
 
-// GET /api/clip/effect-preview?conversationId=xxx&kind=color&id=warm&w=320&h=180
+// GET /api/plugin/clip-mode/effect-preview?conversationId=xxx&kind=color&id=warm&w=320&h=180
 //
 // **效果卡片缩略图**：调色/蒙版/字幕模板出 jpg，转场出 1.2s 循环 mp4。
 //
@@ -418,7 +418,7 @@ router.get('/effect-preview', async (req: Request, res: Response) => {
   return res.sendFile(out.file);
 });
 
-// POST /api/clip/beats  body: { conversationId, path }
+// POST /api/plugin/clip-mode/beats  body: { conversationId, path }
 //
 // **智能踩点**：分析一段音频（通常是 BGM）的节拍点，前端据此自动切分片段。
 //
@@ -453,7 +453,7 @@ router.post('/beats', async (req: Request, res: Response) => {
   return res.json({ ok: true, beats: r.beats, bpm: r.bpm, duration: r.duration });
 });
 
-// GET /api/clip/project?conversationId=xxx
+// GET /api/plugin/clip-mode/project?conversationId=xxx
 router.get('/project', (req: Request, res: Response) => {
   const conversationId = String(req.query.conversationId || '').trim();
   if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
@@ -462,7 +462,7 @@ router.get('/project', (req: Request, res: Response) => {
   return res.json({ exists: !!project, project });
 });
 
-// PUT /api/clip/project  body: { conversationId, project }
+// PUT /api/plugin/clip-mode/project  body: { conversationId, project }
 //
 // ★ 这里**不做编辑语义校验**：写入的是前端从 GET 拿到的工程 + 本地改动的整体覆盖，
 //   结构校验由 services/clip-project.ts 的 op 层负责（前端保存前已用同一套规则）。
@@ -480,7 +480,7 @@ router.put('/project', (req: Request, res: Response) => {
   return res.json({ ok: true, file });
 });
 
-// GET /api/clip/waveform?conversationId=xxx&path=...&w=600&h=64
+// GET /api/plugin/clip-mode/waveform?conversationId=xxx&path=...&w=600&h=64
 //
 // 音频波形图（PNG）—— BGM 轨与片段块的背景波形。
 //

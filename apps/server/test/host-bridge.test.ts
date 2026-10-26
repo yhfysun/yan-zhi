@@ -19,8 +19,10 @@ import {
 } from '../src/host-bridge.js';
 
 /** 桥面白名单快照 —— 扩面改这里 + design.md §6 + generate-host-shims.mjs（按本文件导出生成 shim）
- *  2026-10-25 P3 扩面：db 助手（dataDir/hasSqliteVec/消息摘要/任务类型）+ path-guard 整面 + exec-cmd 的 lookupOnPath */
+ *  2026-10-25 P3 扩面：db 助手（dataDir/hasSqliteVec/消息摘要/任务类型）+ path-guard 整面 + exec-cmd 的 lookupOnPath
+ *  2026-10-26 P4 扩面：authMiddleware / hardDeleteRow / resolveArtifactDirFor / ensureArtifactDirFor（clip-mode 包化） */
 const EXPECTED_EXPORTS = [
+  'applyBuiltinSeed', 'authMiddleware', 'ensureArtifactDirFor', 'hardDeleteRow', 'resolveArtifactDirFor',
   'COMMAND_TOOLS', 'allowedRootsFor', 'authorizeCommand', 'authorizeDangerTool', 'authorizeDir',
   'checkDangerousCommand', 'checkPathAccess', 'clearAuthorization', 'clearMessageSummaries',
   'collectPathArgs', 'commandExecutionScope', 'createLogger', 'dataDir', 'db', 'decrypt',

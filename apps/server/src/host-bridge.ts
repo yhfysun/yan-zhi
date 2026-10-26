@@ -30,6 +30,14 @@ import { gitService } from './services/git.js';
 import * as pathGuard from './services/path-guard.js';
 import { runCmd, lookupOnPath } from './services/exec-cmd.js';
 import { serverState } from './state.js';
+// P5 前置（P4 实装）：插件运行时补种（场景/智能体）走宿主种子写入器
+import { applyBuiltinSeed } from './db.js';
+// ★ 2026-10-26 P4（clip-mode 包化）：剪辑路由要用宿主的三样东西 ——
+//   鉴权中间件、会话硬删（删项目=删会话，必须走 lifecycle 唯一出口）、
+//   产物目录解析（hereDir 定位宿主资源，**不能**被复制进插件包，否则根目录算错）。
+import { authMiddleware } from './auth.js';
+import { hardDeleteRow } from './services/conversation-lifecycle.js';
+import { resolveArtifactDirFor, ensureArtifactDirFor } from './services/artifact-dir.js';
 
 /** 桥面版本：插件包 manifest.engine 与它比对；不兼容字段变更时递增 */
 export const HOST_BRIDGE_VERSION = 1;
@@ -40,6 +48,7 @@ export {
   loadEffectiveTaskTypes, MESSAGE_LIST_COLS,
   createLogger, pushPluginAudit, encrypt, decrypt, gitService,
   runCmd, lookupOnPath, serverState,
+  authMiddleware, hardDeleteRow, resolveArtifactDirFor, ensureArtifactDirFor, applyBuiltinSeed,
 };
 export const {
   COMMAND_TOOLS, allowedRootsFor, authorizeCommand, authorizeDangerTool, authorizeDir,
@@ -62,6 +71,7 @@ export function injectServerHostBridge(): void {
     loadEffectiveTaskTypes, MESSAGE_LIST_COLS,
     createLogger, pushPluginAudit, encrypt, decrypt, gitService,
     runCmd, lookupOnPath, serverState,
+    authMiddleware, hardDeleteRow, resolveArtifactDirFor, ensureArtifactDirFor, applyBuiltinSeed,
     ...pathGuard,
   };
 }

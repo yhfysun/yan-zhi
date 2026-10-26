@@ -8,7 +8,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveArtifactDirFor } from './artifact-dir.js';
+// 宿主目录解析经桥（P4）：本文件随 clip-mode 插件包分发，复制一份 artifact-dir 会把
+// hereDir 指向插件目录，产物根目录就全错了。
+import { resolveArtifactDirFor } from '../host-bridge.js';
 import type { ClipProject } from './clip-project.js';
 
 export const CLIP_PROJECT_FILE = 'clip-project.json';

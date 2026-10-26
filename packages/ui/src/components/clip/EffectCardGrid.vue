@@ -7,7 +7,7 @@
     前提就是**每个效果都有画面**。这里把注册表里的每一项渲染成"缩略图 + 名称"的卡片，
     转场卡片悬停播放真实过渡动效（服务端用 xfade 现渲的 1.2s 循环 mp4）。
 
-  ★ 预览图来自 /api/clip/effect-preview（服务端用**导出同一套滤镜**渲染），
+  ★ 预览图来自 /api/plugin/clip-mode/effect-preview（服务端用**导出同一套滤镜**渲染），
     不是另画的示意图 —— 卡片上看到的就是成片里的样子。
 
   ★ 懒加载：缩略图走 loading="lazy"（一次开面板要几十张，全量请求会明显卡）；
@@ -65,7 +65,7 @@ import { computed, onMounted, reactive, watch } from 'vue';
 import { API_BASE, getLicenseCode } from '../../api/client';
 
 const props = withDefaults(defineProps<{
-  /** 预览种类（与 /api/clip/effect-preview 的 kind 一致） */
+  /** 预览种类（与 /api/plugin/clip-mode/effect-preview 的 kind 一致） */
   kind: 'color' | 'fx' | 'mask' | 'style' | 'transition';
   /** 按 group 分好组的效果项（来自 @yan-zhi/shared 的效果库，单一真相源） */
   groups: Array<{ group: string; items: Array<{ id: string; label: string; desc?: string }> }>;
@@ -116,7 +116,7 @@ function urlOf(id: string): string {
   // 重试时带 r=n：URL 变了浏览器才会丢掉上一次失败的缓存重新拉
   const n = attempts.get(id) || 0;
   const rq = n ? `&r=${n}` : '';
-  return `${API_BASE}/clip/effect-preview?conversationId=${encodeURIComponent(props.conversationId || '')}` +
+  return `${API_BASE}/plugin/clip-mode/effect-preview?conversationId=${encodeURIComponent(props.conversationId || '')}` +
     `&kind=${props.kind}&id=${encodeURIComponent(id)}&w=${props.width}&h=${props.height}${rq}${qs}`;
 }
 

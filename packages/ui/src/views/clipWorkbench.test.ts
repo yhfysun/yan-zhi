@@ -233,17 +233,17 @@ describe('ClipWorkbench · 项目管理（剪映式草稿箱）', () => {
     const body = CODE.slice(start, CODE.indexOf('\n}', start));
     expect(body).toContain('createConversation');
     expect(body).toContain('selectConv');
-    expect(body).toContain("api.put('/clip/project'");
+    expect(body).toContain("api.put('/plugin/clip-mode/project'");
   });
 
-  it('项目列表走 /clip/projects 一次拉全（不逐会话 N+1）', () => {
+  it('项目列表走 /plugin/clip-mode/projects 一次拉全（不逐会话 N+1）', () => {
     const start = CODE.indexOf('async function loadProjects');
     const body = CODE.slice(start, CODE.indexOf('\n}', start));
-    expect(body).toContain("api.get<{ projects: ProjectListItem[] }>('/clip/projects')");
+    expect(body).toContain("api.get<{ projects: ProjectListItem[] }>('/plugin/clip-mode/projects')");
   });
 
   it('删除项目明确只删工程与会话（提示不删素材源文件）', () => {
-    expect(CODE).toMatch(/api\.delete\(`\/clip\/projects\//);
+    expect(CODE).toMatch(/api\.delete\(`\/plugin\/clip-mode\/projects\//);
     const body = CODE.slice(CODE.indexOf('async function doDeleteProject'), CODE.indexOf('const specLabel'));
     expect(body).toContain('素材源文件未动');
   });
@@ -594,9 +594,9 @@ describe('ClipWorkbench · 与后端契约一致', () => {
     expect(body).not.toContain('x-license=');
   });
 
-  it('工程读写走 /clip/project 接口（GET 带 conversationId、PUT 带 project）', () => {
-    expect(CODE).toContain('/clip/project?conversationId=');
-    expect(CODE).toMatch(/api\.put\('\/clip\/project'/);
+  it('工程读写走 /plugin/clip-mode/project 接口（GET 带 conversationId、PUT 带 project）', () => {
+    expect(CODE).toContain('/plugin/clip-mode/project?conversationId=');
+    expect(CODE).toMatch(/api\.put\('\/plugin\/clip-mode\/project'/);
   });
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -608,10 +608,10 @@ describe('ClipWorkbench · 与后端契约一致', () => {
   //   同样容易错的还有：忘了加**片段起点偏移**（ASR 时间轴是相对音频文件的，
   //   字幕要落成片时间轴）→ 字幕整体前移。
   // ══════════════════════════════════════════════════════════════════════════
-  it('★ 工作台有「语音转字幕」入口（按钮 + 处理函数 + 调 /clip/asr）', () => {
+  it('★ 工作台有「语音转字幕」入口（按钮 + 处理函数 + 调 /plugin/clip-mode/asr）', () => {
     expect(CODE).toContain('runAsrOnSelected');
     expect(CODE).toMatch(/runAsrOnSelected/);
-    expect(CODE).toContain("'/clip/asr'");
+    expect(CODE).toContain("'/plugin/clip-mode/asr'");
     // 按钮存在且带禁用条件（识别中/未选片段时不可点）
     expect(CODE).toMatch(/asrRunning/);
   });
