@@ -8,9 +8,14 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PLUGIN_TEMPLATES } from '../plugins/templates/index.js';
+import { assertPluginEngine, resolveHostVersion } from '../plugins/host-version.js';
+import { resolveInstalledEntryPath } from '../plugins/install-entry.js';
 
 const router = Router();
 router.use(authMiddleware);
+
+/** 宿主（应用）版本：engine 校验用，启动时解析一次 */
+const HOST_VERSION = resolveHostVersion();
 
 export const PLUGINS_DIR = path.resolve(fileURLToPath(import.meta.url), '..', '..', '..', 'plugins', 'installed');
 
@@ -50,7 +55,35 @@ function parseManifestFromZip(buffer: Buffer): PluginManifest {
   const raw = zip.readAsText(entry);
   let json: unknown;
   try { json = JSON.parse(raw); } catch { throw new ManifestError('manifest.json 不是合法 JSON'); }
-  return validateManifest(json);
+  // 多清单包（skins 的 { multi, manifests }）：内置装载支持，安装端尚未支持。
+  // 明确拒绝并给出出路，避免落到「缺少 id」这类看不出所以然的报错。
+  if (json && typeof json === 'object' && !Array.isArray(json) && Array.isArray((json as { manifests?: unknown }).manifests)) {
+    throw new ManifestError('多清单插件包暂不支持安装（如 skins 请按单套导出后安装）');
+  }
+  const manifest = validateManifest(json);
+  // P6：宿主版本兼容闸。缺 engine = 兼容（存量 .yzp 不受影响）；不兼容直接拒绝。
+  assertPluginEngine(manifest, HOST_VERSION);
+  return manifest;
+}
+
+/**
+ * 导出源码：优先读真实源码文件，读不到再回落内嵌模板。
+ *
+ * ★ 为什么要有内嵌模板这一份：安装包里没有 .ts（tsc 只编 dist，extraResources 不带源码），
+ *   打包版的导出功能只能读构建期内嵌的快照 —— 这是分发的需要，但不能放任两份漂移，
+ *   一致性由 test/plugin-templates-sync.test.ts 钉死（改源码忘同步 → 测试直接红）。
+ * ★ 为什么先读磁盘：dev 下永远导出当前源码，改完插件代码不必先跑同步脚本。
+ */
+function readPluginSourceFromDisk(id: string): string | null {
+  const base = path.resolve(fileURLToPath(import.meta.url), '..', '..', 'plugins');
+  for (const file of [path.join(base, `${id}.ts`), path.join(base, id, 'index.ts')]) {
+    try {
+      return readFileSync(file, 'utf8');
+    } catch {
+      /* 打包版不带源码，走内嵌回落 */
+    }
+  }
+  return null;
 }
 
 // GET /api/plugins
@@ -90,13 +123,19 @@ router.post('/install', async (req: Request, res: Response) => {
     const dir = path.join(PLUGINS_DIR, manifest.id);
     await fs.rm(dir, { recursive: true, force: true });
     await fs.mkdir(dir, { recursive: true });
-    const zip = new AdmZip(buffer);
-    zip.extractAllTo(dir, true);
+    try {
+      const zip = new AdmZip(buffer);
+      zip.extractAllTo(dir, true);
 
-    const entryFile = manifest.main || 'index.js';
-    const entryPath = path.join(dir, entryFile);
-    const entryUrl = (await import('node:url')).pathToFileURL(entryPath).href;
-    await mgr.registerInstalled(manifest, entryUrl);
+      // 入口三态解析（backend/index.js | manifest.main | index.js），见 install-entry.ts
+      const entryPath = resolveInstalledEntryPath(dir, manifest);
+      const entryUrl = (await import('node:url')).pathToFileURL(entryPath).href;
+      await mgr.registerInstalled(manifest, entryUrl);
+    } catch (e) {
+      // 失败即回滚：不留下半成品目录（否则 mgr 里没有、磁盘上残留，重装时状态难解释）
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw e;
+    }
     res.json({ data: toInfo(mgr.get(manifest.id)!) });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
@@ -135,7 +174,7 @@ router.get('/:id/export', (req: Request, res: Response) => {
       if (tpl) {
         const zip = new AdmZip();
         zip.addFile('manifest.json', Buffer.from(JSON.stringify(tpl.manifest, null, 2), 'utf8'));
-        zip.addFile('main.ts', Buffer.from(tpl.code, 'utf8'));
+        zip.addFile('main.ts', Buffer.from(readPluginSourceFromDisk(id) ?? tpl.code, 'utf8'));
         zip.addFile('README.md', Buffer.from(tpl.readme, 'utf8'));
         res.json({
           data: { format: 'source', filename: `${id}-${ver}-source.zip`, base64: zip.toBuffer().toString('base64') },
@@ -236,7 +275,13 @@ router.put('/:id/config', async (req: Request, res: Response) => {
 // DELETE /api/plugins/:id
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    await getPluginManager().uninstall(req.params.id);
+    const mgr = getPluginManager();
+    const before = mgr.get(req.params.id);
+    await mgr.uninstall(req.params.id);
+    // 已安装插件的目录随之删除（内置插件不碰磁盘：它的目录属于应用包）
+    if (before?.source === 'installed') {
+      await fs.rm(path.join(PLUGINS_DIR, req.params.id), { recursive: true, force: true });
+    }
     res.json({ data: { ok: true } });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });

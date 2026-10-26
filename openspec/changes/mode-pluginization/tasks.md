@@ -103,11 +103,15 @@
 - [ ] 设计 §7 尾项：server tsc 仍编译全部插件源码（`apps/server/dist/.../plugins/*.js`），目前靠 `YZ_BUILD_PLUGINS_EXCLUDED` 运行时不注册兜底；主产物真正变薄待做。
 - [ ] `android-mirror` 插件未登记进 `build/plugins.catalog.json`（历史遗漏）：它既不参与选择集裁剪，也永远不会被排除 —— 其 `views/plugin/AndroidMirror.vue` 恒在主包。
 
-## P6 单独打包
+## P6 单独打包（2026-10-26 完成主体）
 
-- [ ] `scripts/package-plugin.cjs --id=X` → dist-plugins/X-<version>.yzp（与内置同源产物）。
-- [ ] 插件管理页端到端：安装/启停/卸载/再装；engine 语义化校验拒绝不兼容宿主。
-- [ ] 模板同步 sync-plugin-templates.mjs ENTRIES 改目录枚举。
+- [x] `scripts/package-plugin.cjs --id=X [--out=dist-plugins]` → `dist-plugins/X-<version>.yzp`：直接 zip `apps/server/plugins/builtin/<id>/`（与内置产物同源，无第二条构建路径）；纯逻辑在 `scripts/lib/package-plugin.cjs`（排除 `.yz-tmp` / `__frontend-entry-*` / `.prune-hold` / `node_modules` / 系统垃圾文件）；校验 manifest 存在、JSON 合法、单清单 id === 目录名；输出文件清单 + sha256。守门 `apps/desktop/test/package-plugin.test.cjs`（7 例）。实测 git-explorer（3.4KB/2 文件）、skins（20.7MB/488 文件）产物回读正常。
+- [x] **manifest.engine 语义化校验**（本期关键闸）：宿主版本取应用版本（主进程 `app.getVersion()` 经 `YZ_HOST_VERSION` 注入 → dev 向上找 `apps/desktop/package.json` → server 包版本 → `0.0.0`）；`packages/core/src/plugin/semver.ts` 轻量 range 匹配（`^ ~ >= <= > < = ||`、裸 x.y、预发布规则，不新增依赖）；`/api/plugins/install/preview` 与 `/install` 共用解析即校验，不兼容/非法 range 均 400 并给出含双方版本的文案；**缺 engine = 兼容**（存量 .yzp 不受影响）。守门 `apps/server/test/plugin-install-guard.test.ts`（16 例：兼容/不兼容/缺字段/非法 range/宿主版本解析）。
+- [x] **安装链路修复（挡住端到端的真问题）**：① 入口三态解析 `backend/index.js | manifest.main | index.js`（原实现固定 `main || index.js`，第一方 .yzp 装回来必激活失败）→ `apps/server/src/plugins/install-entry.ts`；② 安装失败回滚半成品目录；③ 卸载 installed 插件时删除安装目录；④ 多清单包（skins）安装端明确拒绝并给出门路。
+- [x] **插件管理端到端**（临时 HTTP 脚本实测，服务端 `tsx` + 独立 DATA_DIR）：预览 → 安装 → 停用 → 启用 → 卸载（目录消失）→ 再装 全通；失败态文案实测：版本不兼容（preview 与 install 均 400）、重名 409、坏 zip 400、缺 manifest 400、缺后端入口 400 且不留目录。另用真实 `git-explorer-1.0.0.yzp` 验证「卸载内置 → 装回分发包」后 `state=enabled / source=installed / error 无`。
+- [x] **模板同步改自动发现**：`scripts/sync-plugin-templates.mjs` 删掉手维护 `ENTRIES`，改按模板文件里的 `generated:<id>` 标记发现，源码路径按 `catalog.backendEntry → plugins/<id>/index.ts → plugins/<id>.ts` 解析，常量名沿用区块内已有名字。**不做全量生成**：`ops-shell`(4280 行)/`shop-ops`(3205 行) 等全抄进来会让模板文件与后端产物 +约 700KB 且把全部内置插件变成源码分发出口（取舍见脚本头注释）。顺带把过期的 computer-use 模板同步成 host-bridge 写法（实测该模板已漂移）。
+- [x] 补充：导出源码**优先读真实源码**（dev 下永远导出当前文件），读不到才回落内嵌快照（打包版唯一来源）；一致性由 `apps/server/test/plugin-templates-sync.test.ts` 钉死（内嵌 === 磁盘，忘同步即红）。
+- 已知缺口（下一期）：多清单 .yzp（skins 整包）安装端未支持（内置装载支持、安装端明确拒绝）；`.yzp` 里前端 bundle 的入口字段（`ui.entry`/`mode.entry`）仍由构建器缺省不写，装回来只有后端能力 —— 与 P4「bundle 化收尾」同一件事。
 
 ## P7 收尾
 
@@ -126,6 +130,7 @@
 - **模式运行时化第一层完成**：ops/sec/shop 的 manifest 带 `contributes.mode`，`/api/plugins` 聚合 `modeDefs` 下发，前端 `pluginModeMeta()`（stores/mode.ts）查询，App.vue 切模式兜底智能体优先读插件声明。
 - **P4 首个切片（2026-10-26）**：clip-mode（后端接口 /api/plugin/clip-mode + /clip 路由）、dev-mode、wf-mode 三个模式插件落地；**六模式路由全部由插件 contributes.routes 提供**（router 里已无静态模式路由表）；宿主桥扩到 37 导出（authMiddleware/hardDeleteRow/resolveArtifactDir/ensureArtifactDir）；冷启动「模式记忆」在首次插件路由同步后补位；**种子归位两片完成**（剪辑师/工作流/代码/运维/安全/店铺 六套种子全部进各自插件目录，基座只组合；代码类智能体按用户拍板留基座=全局能力）。**三模式前端 bundle 化完成**（yz:// 装载 + 宿主模块外置 + 兜底链）；**运行时补种完成**（未装插件 = 种子不存在，P5 可直接按插件裁剪）。剩余：真机实跑确认后移除构建期视图、shop_* 任务类型归属、P5 打包可选、P6 .yzp、运行时化第二层。
 - **插队修复（真机已验证）**：移动端免激活（license MOBILE_MODE 恒 pro 全量）、路由死循环三道闸（dev 恢复→/chat↔/code 循环→空白）、冷启动等待提示页、experience.ts 的 `\p{}` 正则炸老 V8（运行时特性检测回落）、远程控制移动端可达（设置列表直达项 + /remote 应用内跳转）、工作目录移动预设形态。
+- **P6 完成（2026-10-26）**：单独打包 `scripts/package-plugin.cjs`（.yzp 与内置产物同源）、engine 兼容闸（宿主版本 = 应用版本，缺 engine 放行）、安装链路四修（入口三态/失败回滚/卸载删目录/多清单明确拒绝）、插件管理端到端实测全通、模板同步改标记发现 + 内嵌/磁盘一致性守门。
 - 测试基线：server 251 文件/3765 用例、desktop 385 用例、`pnpm -r typecheck` 全绿。
 
 ## 关键文件地图
@@ -144,6 +149,10 @@
 | 插件目录暂存（P5） | `apps/desktop/scripts/lib/plugin-stage.cjs`（prune/restore/verify 纯逻辑）+ `apps/desktop/scripts/stage-plugins.mjs`（CLI）；暂存区 `apps/server/plugins/.prune-hold/` |
 | 裁剪泄漏断言（P5） | `scripts/verify-plugin-prune.cjs`（目录 + 产物标记串；读 `build/build-plugins.json` 兜底） |
 | 打包选择集产物 | `build/build-plugins.json`（included/excluded/source/out/builtAt，gitignore） |
+| 单独打包 .yzp（P6） | `scripts/package-plugin.cjs`（CLI）+ `scripts/lib/package-plugin.cjs`（目录/排除/校验纯逻辑） |
+| engine 兼容闸（P6） | `apps/server/src/plugins/host-version.ts`（宿主版本 + 校验文案）+ `packages/core/src/plugin/semver.ts`（轻量 range） |
+| .yzp 安装入口 | `apps/server/src/plugins/install-entry.ts`（backend/index.js → manifest.main → index.js） |
+| 源码模板同步 | `scripts/sync-plugin-templates.mjs`（发现 generated 标记）+ `templates/index.ts`；一致性守门 `test/plugin-templates-sync.test.ts` |
 
 ## 常用命令
 
@@ -156,6 +165,8 @@ node scripts/verify-plugin-prune.cjs --plugins=office-core,skins [--dirs=apps/de
 node scripts/package.cjs desktop:lite --plugins=office-core,skins --dry-run                     # 先看选择集与排除项
 node scripts/select-modes.cjs --modes=office --plugins=office-core,skins                      # 生成表（未选插件视图也剔除）
 node scripts/package.cjs android --yes                                                # 出安卓 APK
+node scripts/package-plugin.cjs --id=git-explorer [--out=dist-plugins]                # 单独打 .yzp（含文件清单+sha256）
+node scripts/sync-plugin-templates.mjs                                               # 同步内嵌源码模板（按 generated 标记发现）
 (cd apps/server && pnpm test) ; (cd apps/desktop && pnpm test)                        # 回归
 ```
 
@@ -191,3 +202,6 @@ node scripts/package.cjs android --yes                                          
 9. **多档构建的断言边界**：vite 只编一次（前端产物 = 各档并集），所以**文本泄漏断言只在并集选择集上做一次**（build-all）；逐档 electron-build 只做目录断言 —— 逐档扫文本必然误报（lite 包里当然有 pro 的 chunk）。
 10. **build-plugins 的临时目录必须在 `--out` 内**：入口 stub 用 `packages:'external'` 打包，bare import（simple-git 等）要靠目录上溯解析到 server 的 node_modules；放系统 temp 会 `ERR_MODULE_NOT_FOUND`。现放在 `<out>/.yz-tmp/`，finally 整目录删除（此前临时入口落在产物根，会被 extraResources 拷进包）。
 11. **`--modes` 不再只是"裁前端"**（P5 起）：package 按 design §7 映射成插件选择集（模式插件 + 全部非模式插件照旧带上），后端插件目录也随之裁剪；只想裁前端请用 `YZ_SKIP_PLUGIN_PRUNE=1`。
+12. **.yzp 安装端只支持单清单包**（2026-10-26）：内置装载认 `{multi, manifests}`（skins 整包），安装端明确拒绝并提示按单套导出。package-plugin 仍可打出多清单包（分发单元），但装不回来 —— 别把它当成可用产物交付。
+13. **源码模板有两份**（内嵌快照 + 真实 .ts）：安装包不带 .ts，导出功能在打包版只能读内嵌快照；dev 下路由优先读磁盘。两份不许漂移 —— `test/plugin-templates-sync.test.ts` 钉着（改插件源码必须重跑 `node scripts/sync-plugin-templates.mjs`，否则测试红）。
+14. **宿主版本从主进程注入**（P6）：打包版 resources 里没有 `apps/desktop/package.json`，`YZ_HOST_VERSION` 由 main.cjs 用 `app.getVersion()` 注入；漏注入时后端回落到 server 包版本或 `0.0.0` —— 后者会让所有带 engine 的 .yzp 被拒（宁可显式失败，也不误装）。

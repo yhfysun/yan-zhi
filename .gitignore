@@ -185,6 +185,10 @@ build/build-manifest.json
 build/build-plugins.json
 # 插件 prune 暂存区（stage-plugins.mjs 移出未选插件目录用，构建结束恢复；崩溃残留下次先恢复）
 apps/server/plugins/.prune-hold/
+# 用户安装的插件（.yzp 解压落盘，运行时数据；分发产物走 dist-plugins/）
+apps/server/plugins/installed/
+# 单独打包的 .yzp 产物（scripts/package-plugin.cjs 输出）
+dist-plugins/
 
 # 运行时数据（浏览器历史等，不入库）
 workspace/

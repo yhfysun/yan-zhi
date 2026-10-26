@@ -4,6 +4,7 @@ export * from './registry';
 export * from './permissions';
 export * from './sandbox-db';
 export * from './manifest';
+export * from './semver';
 export * from './api';
 export * from './loader';
 export * from './manager';

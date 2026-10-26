@@ -914,6 +914,13 @@ function readEditionEnv() {
 const editionEnv = readEditionEnv();
 
 /**
+ * 宿主版本（P6）：.yzp 的 manifest.engine 与它比对（见 apps/server/src/plugins/host-version.ts）。
+ * 打包版 resources 里没有 apps/desktop/package.json 可读，后端无从推断 —— 必须主进程注入。
+ * 用 app.getVersion()（= 应用 package.json 的 version），与用户看到的版本一致。
+ */
+const hostEnv = { YZ_HOST_VERSION: app.getVersion() };
+
+/**
  * 授权门禁开关：`YZ_LICENSE_GUARD=1` 时后端会校验每个 `/api` 请求的 x-license 头，
  * 未激活/过期一律 403（见 apps/server/src/license-guard.ts）。
  *
@@ -1005,7 +1012,7 @@ function startServer() {
         // ★ windowsHide：主进程无控制台，不加这个 Windows 会给 node 子进程新开一个
         //   可见终端窗口（之后的 python/ffmpeg 输出全刷在里面，任务停了窗口还在）。
         windowsHide: true,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}), ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}), ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -1015,7 +1022,7 @@ function startServer() {
         stdio: 'inherit',
         shell: true,
         windowsHide: true,
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}), ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}), ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -1032,7 +1039,7 @@ function startServer() {
     serverProcess = spawn(process.execPath, [serverPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
     });
     serverProcess.stdout.on('data', (d) => logStream.write(d));
     serverProcess.stderr.on('data', (d) => logStream.write(d));
