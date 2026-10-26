@@ -12,6 +12,8 @@
 // 与 ops-shell 的复用关系：凭据加密（utils/crypto）、审计（services/plugin-audit）、
 // 生产标记判定（ops-shell-guard 的 isProductionTag）、插件存储用法全部照抄，不另发明一套。
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
+import { builtinShopAgentDefs, shopModeScene } from './shop-ops/seed.js';
+import { applyBuiltinSeed } from '../host-bridge.js';
 // ★ 宿主能力走宿主桥（mode-pluginization P3）：宿主单例（db/crypto/audit/logger）禁止复制进插件包。
 import { encrypt, decrypt, pushPluginAudit, createLogger, db } from '../host-bridge.js';
 import { isProductionTag } from './ops-shell-guard.js';
@@ -2210,6 +2212,7 @@ export const shopOpsManifest: PluginManifest = {
 
 const shopOpsModule: PluginModule = {
   activate(ctx) {
+    applyBuiltinSeed({ agents: builtinShopAgentDefs, scenes: [shopModeScene] });
     pluginStorage = ctx.storage;
     initShopStore(db);
     setPlatformLookup((platformId: string) => {

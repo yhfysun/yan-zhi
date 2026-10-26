@@ -8,6 +8,8 @@
 // 对话模式走现有聊天链路；命令模式为 /ops 控制台的 xterm 终端（WebSocket 优先，SSE + POST 回退）。
 // 护栏：remote-shell 权限声明 / 危险命令黑名单 / 生产连接写操作二次确认 / 空闲会话回收 / 全量审计（plugin_storage.audit）。
 import { getPluginManager } from '@yan-zhi/core';
+import { opsModeAgentDefs, opsModeScene } from './ops-shell/seed.js';
+import { applyBuiltinSeed } from '../host-bridge.js';
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule, PluginWebSocket, PluginWsRequest } from '@yan-zhi/core';
 import type { ReleaseProject, DeployTarget, ProjectDetectResult } from '@yan-zhi/shared';
 import { Client } from 'ssh2';
@@ -2651,6 +2653,7 @@ export async function handleTerminalWs(ws: PluginWebSocket, req: PluginWsRequest
 
 const opsShellModule: PluginModule = {
   activate(ctx) {
+    applyBuiltinSeed({ agents: opsModeAgentDefs, scenes: [opsModeScene] });
     pluginStorage = ctx.storage;
     // 录制开关：默认开（对齐堡垒机的合规口径），可在插件管理页关掉
     recordSessions = (ctx.config as { recordSessions?: boolean } | undefined)?.recordSessions !== false;

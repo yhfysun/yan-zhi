@@ -9,6 +9,8 @@
 // 合规声明（重要）：本模块仅用于自有资产或持有书面授权目标的安全评估。
 // 所有带目标的工具都会先过 sec-lab-guard 的授权范围校验，越界直接拒绝并记审计。
 import { randomUUID } from 'node:crypto';
+import { secModeAgentDefs, secModeScene } from './sec-lab/seed.js';
+import { applyBuiltinSeed } from '../host-bridge.js';
 import type { BuiltInTool, McpCallResult, PlaybookDef, PluginContext, PluginManifest, PluginModule, PluginStorage } from '@yan-zhi/core';
 import {
   DEFAULT_SEC_CONFIG, guard, normalizeTarget, isTrustedHumanCall, markTrustedHumanCall,
@@ -2036,6 +2038,7 @@ function registerRoutes(ctx: PluginContext) {
 
 export const secLabModule: PluginModule = {
   async activate(ctx: PluginContext) {
+    applyBuiltinSeed({ agents: secModeAgentDefs, scenes: [secModeScene] });
     store = ctx.storage;
     for (const t of [
       scopeListTool(), scopeAddTool(), scopeRemoveTool(),
