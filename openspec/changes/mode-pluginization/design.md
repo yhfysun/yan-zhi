@@ -59,6 +59,8 @@ plugins/<builtin|installed>/<id>/
   - `yz://plugin/<id>/<path>` → 定位插件目录（内置 resources 路径 → 已安装 PLUGINS_DIR → dev 的 `apps/server/plugins/{builtin,installed}/`），带 CORS 头（file:// 源的 Origin 为 null，须 `Access-Control-Allow-Origin: *`）。
 - 插件前端 bundle：vite lib mode 构建，共享依赖 external 并经 rollup `output.paths` 改写到 `yz://shared/*.mjs`。**改写命名导出问题**由 shim 解决：shim 文件内含被共享模块**全量命名导出**的转发（`export const ref = __m.ref; …`），导出名清单由生成脚本从真实模块枚举，并有守门测试断言每个导出运行时非 undefined。
 - 装载器（`packages/ui/src/plugin-runtime.ts`）：拉 `/api/plugins` 快照 → enabled 且有 `ui.entry`/`contributes.mode.entry` → `import('yz://plugin/<id>/frontend/index.mjs')`（web 构建回落 `http://<server>/api/plugin-assets/<id>/…`）→ 注册路由/侧栏/组件。失败走现有 `RouteFallback`，不黑屏。CSS 随插件 chunk 注入 `<link>`。
+- **宿主内部模块外置（P4 实装）**：工作台视图从 `stores/ composables/ api/ utils/` 取能力，这些模块含模块级单例（如 `stores/mode` 的 `activeMode`）。构建期把这些 import 改写为 `yz://shared/host/<key>.mjs`，shim 从 `window.__YZ_HOST__.mods[key]` 取**宿主同一份命名空间**（`packages/ui/src/host-modules.ts` 的 eager glob 登记）。随包复制只允许出现在组件（`.vue`）层——组件无模块级状态。
+- 路由解析顺序（P4）：插件前端 bundle → 构建期 `PLUGIN_VIEW_LOADERS` → `RouteFallback`。中间那层保证「没跑 `--with-frontend` 的包」行为与之前完全一致。
 
 ### 3.2 后端
 
@@ -93,7 +95,8 @@ plugins/<builtin|installed>/<id>/
 - 工具：apiFetch、pluginAssetUrl、ElMessage/ElNotification 透传
 - 公共组件：ConsoleShell、TaskListSection、HoverMenu
 - Electron：`window.electronAPI` 整体透传（主进程能力，含 remote-control 的 rc:* 通道）
-后端白名单（host-bridge 导出面）：db（受 ownedTables/沙箱约束）、createLogger、crypto（encrypt/decrypt）、pushPluginAudit、PLUGINS_DIR/resolveBuiltinAssetsDir 等路径工具。
+后端白名单（host-bridge 导出面）：db（受 ownedTables/沙箱约束）、createLogger、crypto（encrypt/decrypt）、pushPluginAudit、PLUGINS_DIR/resolveBuiltinAssetsDir 等路径工具；P3 增 path-guard 整面 + exec-cmd（runCmd/lookupOnPath）；P4（clip-mode）增 authMiddleware、hardDeleteRow（会话硬删唯一出口）、resolveArtifactDirFor/ensureArtifactDirFor（产物目录，**必须**走桥——模块内的 hereDir 若被复制进插件包会算错根目录）；P5 前置增 applyBuiltinSeed（插件 activate 运行时补种）。
+- 构建器宿主闸只拦**有状态的宿主单例**（db/state/plugin-audit/logger/crypto/path-guard/exec-cmd/git/artifact-dir）；auth 与 conversation-lifecycle 是无模块级状态的纯代码，复制无害，**不进闸**（进了会逼着桥面无限扩）。现有 38 导出。
 
 ## 7. 打包改造（P5）
 

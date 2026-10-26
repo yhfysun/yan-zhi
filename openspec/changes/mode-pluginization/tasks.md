@@ -62,10 +62,30 @@
 
 ## P4 新建三模式插件
 
-- [ ] clip-mode：routes/clip.ts + services/clip-* + sfx-library + mcp/ffmpeg-runtime、whisper-runtime、subtitle-style 迁入；ClipWorkbench 转 bundle；种子（剪辑师智能体/任务类型）归位。
-- [ ] dev-mode：CodeWorkbench 转 bundle；code 种子智能体/场景归位（code 工具留 packages/core 基座）。
-- [ ] wf-mode：WorkflowWorkbench 转 bundle；wf 种子归位（workflow 引擎留基座）。
-- [ ] builtin-task-mode-agents/builtin-scene-defs/builtin-task-type-defs 按模式拆分归位。
+- [x] **clip-mode 后端包化（2026-10-26）**：新增 `apps/server/src/plugins/clip-mode.ts`（manifest + `contributes.mode`(key=clip) + `contributes.routes`(/clip) + 后端路由挂载）。routes/clip.ts 与 services/clip-*、sfx-library、mcp/{ffmpeg,whisper}-runtime、subtitle-style 随插件包分发；接口前缀 `/api/clip` → **`/api/plugin/clip-mode`**（与 ops/sec/shop 同口径），前端调用点同步。宿主桥扩面 4 项（authMiddleware/hardDeleteRow/resolveArtifactDirFor/ensureArtifactDirFor），构建器宿主闸只收 artifact-dir（auth/lifecycle 无模块级状态，复制无害）。守门：clip-mode-plugin.test.ts（清单/装载表/路由挂载形状）+ host-bridge 快照（37 导出）。构建产物验证：better-sqlite3 引用 0、artifact-dir/lifecycle 未被复制。
+- [ ] clip-mode 剩余：ClipWorkbench 转前端 bundle（yz:// 装载）；种子（剪辑师智能体/任务类型）归位。
+- [x] **dev-mode / wf-mode 插件化（2026-10-26）**：新增 `plugins/dev-mode.ts` / `wf-mode.ts`（纯声明式，`backendNoop`）——只贡献 `contributes.mode` + `contributes.routes`（/code、/workflow），引擎与工具留基座。index.ts 经 registerPkgOrSource 注册；catalog 与 modes.catalog 同步（pluginId=dev-mode/wf-mode）。
+- [x] **模式路由全部改为插件贡献**：router 删除静态 `MODE_ROUTE_TABLE`（dev/wf/clip 三条），改由 syncPluginRoutes 的 addRoute 提供；生成表把选中模式的工作台视图并入 PLUGIN_VIEW_LOADERS（`collectPluginViewFiles` 适配），`--modes` 裁剪语义不变。
+- [x] **冷启动模式记忆补位**：三模式路由插件化后，首次导航必然早于 addRoute → 「模式记忆」闸不成立会停在 /chat。syncPluginRoutes 增加**仅首次同步**的 `restoreActiveModeRouteAfterSync()`（判据与守卫逐条对齐），pre-P4 行为不变。守门：coldStartRouteSync.test.ts 新增两组断言。
+- [x] **前端 bundle 化（2026-10-26，三模式）**：ClipWorkbench / CodeWorkbench / WorkflowWorkbench 已由 `build-plugins --with-frontend` 打成 `frontend/index.mjs`（catalog `frontendBundle:true`），运行时经 `yz://plugin/<id>/frontend/index.mjs` 装载；路由 **bundle 优先、构建期装载表兜底**（没跑 --with-frontend 的包行为零变化）。
+  - **宿主内部模块外置**：`stores/ composables/ api/ utils/` 的 import 构建期改写为 `yz://shared/host/<key>.mjs`，shim 从 `window.__YZ_HOST__.mods[key]` 取**宿主同一份实例**（否则 stores/mode 的 activeMode 会双份）。登记表 `packages/ui/src/host-modules.ts`（eager glob；目录清单真相源 host-shims.mjs 的 HOST_MODULE_DIRS）。
+  - 构建器补 `lib` 模式（此前缺 lib 直接找 index.html 失败）+ `resolve.extensions` 的 .ts 优先（工作区 src 里残留过编译 .js，会遮蔽新导出）。
+  - 守门：`host-modules-shim.test.cjs`（外置范围/单例转发/未登记报错）、`plugin-frontend-bundle.test.cjs`（bundle 视图 key ≡ manifest component、host shim 零缺失）、`pluginBundleRoute.test.ts`（bundle→装载表→兜底页的解析顺序）。
+  - **已知代价**：共享组件随包复制（懒加载 chunk），三模式 frontend 分别 5.9 / 9.1 / 5.9 MB。下一步可把 `components/**` 也外置（需异步组件注册表），或按 `views` 依赖收窄。
+- [ ] 前端 bundle 化收尾：真机/桌面实跑验证一次；确认后用 bundle 替代 `PLUGIN_VIEW_LOADERS` 并移除构建期视图（真正从主包裁掉）。
+- [x] **种子归位第 1 片（2026-10-26）**：定义搬进插件目录、基座只做组合（落库顺序与 force_sync 行为逐字不变）：
+  - 剪辑师（id/工具面/技能/提示词/seed 条目）→ `plugins/clip-mode/seed.ts`；`builtin-task-mode-agents.ts` 用 `...clipModeAgentDefs` 展开在原位置（数组末尾）。
+  - 工作流场景 + 工作流助手智能体 → `plugins/wf-mode/seed.ts`；scene 展开在末尾、agent 展开在 seedAgents 第二条。
+  - 代码开发场景 → `plugins/dev-mode/seed.ts`；展开在 shop 之后。
+  - 共用工具集抽到中立模块 `builtin-task-tool-sets.ts`（基座与插件种子单向依赖，消除 ESM 循环）。
+  - 守门：`mode-seed-home.test.ts`（定义在插件目录 + 组合顺序 + 基座不得再内联）；media-fetch-tools / conversation-self-config 的源码断言改读工具集模块。
+- [x] **种子归位第 2 片（2026-10-26）**：ops/sec/shop 三条模式场景 + 专属智能体全部进插件目录：
+  - `plugins/ops-shell/seed.ts`：运维场景 + 运维助手（工具面 plugin_ops-shell__*、skill、提示词、条目）。
+  - `plugins/sec-lab/seed.ts`：安全场景 + 安全主助手与侦察/Web/报告三个子体。
+  - `plugins/shop-ops/seed.ts`：店铺场景 + 店铺运营助手（原 `builtin-shop-agents.ts` 整体迁入并删除，引用改指新路径）。
+  - 基座组合顺序逐条钉住：shop=13 / code=14 / ops=15 / sec=16 / wf=17（真库实测一致）。
+- [ ] 种子归位剩余：`shop_*` 任务类型仍在 `packages/shared`（前端离线兜底与后端种子共用一份，拆分需先定兜底策略）；代码类智能体（codeAgent/子体）**经用户 2026-10-26 拍板留在基座**——它们被办公/任务模式复用，属全局能力、不可裁剪。
+- [x] **运行时补种（2026-10-26，P5 前置）**：db.ts 抽出 `upsertAgentDefs` / `seedSceneDefs` / `applyBuiltinSeed`；基座场景只剩 13 条办公岗位卡，模式场景与专属智能体由插件 activate 补种（实测：仅 db 时 13 条场景 / 0 个模式智能体；六插件补种后 18 条、sort 0–17 与原状一致）。`resetBuiltin*` 与场景 key 保留集合改为「基座 + 已补种」动态视图；桥面 +1（applyBuiltinSeed，38 导出）。构建器宿主闸撤掉 auth / conversation-lifecycle（纯代码、复制无害），只留 artifact-dir 等有状态单例。
 - [ ] 六模式全功能回归。
 
 ## P5 打包集成
@@ -91,12 +111,13 @@
 
 ---
 
-# 🤝 接管指南（2026-10-25 交接，供后续智能体接手）
+# 🤝 接管指南（2026-10-25 交接，供后续智能体接手；2026-10-26 P4 首个切片已续作）
 
-## 当前状态（全部已提交，测试全绿）
+## 当前状态（P0-P3 已提交；P4 首个切片见下）
 
 - **P0-P3 完成**：8 个内置插件（git-explorer/computer-use/remote-control/java-suite/ops-shell/cicd-pipeline/sec-lab/shop-ops）+ 28 套皮肤全部以「预构建插件包」形态运行（`apps/server/plugins/builtin/<id>/`，包优先、源码兜底）。
 - **模式运行时化第一层完成**：ops/sec/shop 的 manifest 带 `contributes.mode`，`/api/plugins` 聚合 `modeDefs` 下发，前端 `pluginModeMeta()`（stores/mode.ts）查询，App.vue 切模式兜底智能体优先读插件声明。
+- **P4 首个切片（2026-10-26）**：clip-mode（后端接口 /api/plugin/clip-mode + /clip 路由）、dev-mode、wf-mode 三个模式插件落地；**六模式路由全部由插件 contributes.routes 提供**（router 里已无静态模式路由表）；宿主桥扩到 37 导出（authMiddleware/hardDeleteRow/resolveArtifactDir/ensureArtifactDir）；冷启动「模式记忆」在首次插件路由同步后补位；**种子归位两片完成**（剪辑师/工作流/代码/运维/安全/店铺 六套种子全部进各自插件目录，基座只组合；代码类智能体按用户拍板留基座=全局能力）。**三模式前端 bundle 化完成**（yz:// 装载 + 宿主模块外置 + 兜底链）；**运行时补种完成**（未装插件 = 种子不存在，P5 可直接按插件裁剪）。剩余：真机实跑确认后移除构建期视图、shop_* 任务类型归属、P5 打包可选、P6 .yzp、运行时化第二层。
 - **插队修复（真机已验证）**：移动端免激活（license MOBILE_MODE 恒 pro 全量）、路由死循环三道闸（dev 恢复→/chat↔/code 循环→空白）、冷启动等待提示页、experience.ts 的 `\p{}` 正则炸老 V8（运行时特性检测回落）、远程控制移动端可达（设置列表直达项 + /remote 应用内跳转）、工作目录移动预设形态。
 - 测试基线：server 251 文件/3765 用例、desktop 385 用例、`pnpm -r typecheck` 全绿。
 
@@ -105,9 +126,9 @@
 | 主题 | 文件 |
 |---|---|
 | 方案（唯一真相源） | `build/plugins.catalog.json` + 本目录三份文档 |
-| 插件构建器 | `apps/desktop/scripts/build-plugins.mjs`（含**宿主边界硬闸**：db/state/audit/logger/crypto/path-guard/exec-cmd/git 任何导入形态一律重定向 shim，漏网新依赖构建期报 No matching export → 需扩桥） |
+| 插件构建器 | `apps/desktop/scripts/build-plugins.mjs`（含**宿主边界硬闸**：db/state/auth/audit/logger/crypto/path-guard/exec-cmd/git/artifact-dir/conversation-lifecycle 任何导入形态一律重定向 shim，漏网新依赖构建期报 No matching export → 需扩桥） |
 | 共享 shim 生成 | `apps/desktop/scripts/generate-host-shims.mjs` + `scripts/lib/host-shims.mjs`（改桥面后必跑；测试 host-shims.test.cjs 钉完备性） |
-| 宿主桥 | `apps/server/src/host-bridge.ts`（33 导出；扩面三同步：本文件 + design.md §6 + test/host-bridge.test.ts 快照） |
+| 宿主桥 | `apps/server/src/host-bridge.ts`（**38 导出**，P4 增 authMiddleware/hardDeleteRow/resolveArtifactDirFor/ensureArtifactDirFor；扩面三同步：本文件 + design.md §6 + test/host-bridge.test.ts 快照） |
 | 包扫描装载 | `apps/server/src/plugins/builtin-packages.ts`（plugins/builtin 目录 → registerBuiltin；index.ts 里 registerPkgOrSource 统一切换） |
 | 前端桥/装载器 | `packages/ui/src/plugin-host-bridge.ts`（window.__YZ_HOST__）、`plugin-runtime.ts`（yz:// 装载，**尚未接线到真实插件**——P4 用） |
 | yz:// 协议 | `apps/desktop/plugin-protocol.cjs`（纯函数有单测）+ main.cjs protocol.handle |
@@ -116,7 +137,8 @@
 ## 常用命令
 
 ```bash
-node apps/desktop/scripts/build-plugins.mjs --all --out=apps/server/plugins/builtin   # 重建全部插件包
+node apps/desktop/scripts/build-plugins.mjs --all --out=apps/server/plugins/builtin   # 重建全部插件包（后端）
+node apps/desktop/scripts/build-plugins.mjs --all --with-frontend --out=apps/server/plugins/builtin  # 含前端 bundle（catalog.frontendBundle 的插件）
 node scripts/package.cjs android --yes                                                # 出安卓 APK
 (cd apps/server && pnpm test) ; (cd apps/desktop && pnpm test)                        # 回归
 ```
@@ -147,3 +169,4 @@ node scripts/package.cjs android --yes                                          
 4. **合成 click 在真机不可靠**、`input tap` 被 MIUI 拦（需「USB 调试(安全设置)」，也要 SIM）——页面验证用 CDP evaluate / location.hash。
 5. cicd-pipeline 包内自带一份 ops-shell 助手拷贝（连接池独立、凭据同源 plugin_storage）——功能等价，若未来要共享池，经桥暴露连接注册表。
 6. 别的任务的并行改动：feishu-stream.ts / scripts/package.cjs / 移动端管理页UI优化方案.md 单独一笔提交，勿混。
+7. **前端 bundle 两个构建坑**（2026-10-26 实测）：① `build.lib` 不配会去找 `index.html` 直接失败；② 工作区 `packages/shared/src` 里残留过编译的 `.js`（如 index.js，缺新导出），Vite 默认 `.js` 先于 `.ts`，会把 `findProviderPreset` 这类新导出解析没 —— 已在 buildFrontend 里把 `resolve.extensions` 调成 `.ts` 优先。根因是工作区里的陈旧产物，清掉更干净。
