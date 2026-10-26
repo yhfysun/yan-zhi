@@ -2,6 +2,7 @@
   <!-- 被控端伴生组件：确认弹窗（Web UI 即被控端确认面） -->
   <el-dialog
     v-model="promptVisible"
+    class="compact-dialog"
     title="远程控制请求"
     width="360px"
     :close-on-click-modal="false"
@@ -56,9 +57,21 @@ interface RcElectronAPI {
   rcSessionState?: (active: boolean, device: string) => Promise<unknown>;
   /** 托盘一键断开 → 在 host WS 上发 session.stop {all:true} */
   onRcDisconnectAll?: (cb: () => void) => void;
+  /** 确认弹窗需要被看见：主窗口抬到前台并短暂置顶（远控页是独立子窗口，会压在弹窗上） */
+  rcRaisePrompt?: (on: boolean) => Promise<unknown>;
 }
 const electron = (): RcElectronAPI | null =>
   (window as unknown as { electronAPI?: RcElectronAPI }).electronAPI || null;
+
+/**
+ * 只有主窗口承担被控端职责。
+ * ★ 独立子窗口（会话/差异/模式窗口，URL 带 szwin=1）也挂 App 因而会渲染本组件：
+ *   它们同样轮询 /status，一旦有会话就再开一条 host WS —— 插件侧 hostConn 只有一条，
+ *   新连接会把主窗口那条顶掉，主窗口 onclose 随即 teardownPcs()，正在跑的 WebRTC
+ *   画面当场冻住，后续「切换显示器」等信令也发到了没有 PeerConnection 的窗口上
+ *   （表现为：切屏不生效 / 点一下就卡住）。子窗口只做好自己的事，不碰远控。
+ */
+const isChildWindow = typeof location !== 'undefined' && /[?&]szwin=1(&|$)/.test(location.hash);
 
 const promptVisible = ref(false);
 const pendingDevice = ref('');
@@ -208,6 +221,7 @@ async function onMessage(msg: Record<string, unknown>): Promise<void> {
       pendingConfirmId.value = String(msg.confirmId || '');
       trustDevice.value = true;
       promptVisible.value = true;
+      try { void electron()?.rcRaisePrompt?.(true); } catch { /* ignore */ }
       void refreshDisplays(); // 弹窗里的采集显示器下拉框（仅 Electron 宿主有数据）
       break;
     case 'rtc.start':
@@ -263,6 +277,7 @@ const pendingConfirmId = ref('');
 
 async function decide(allow: boolean): Promise<void> {
   promptVisible.value = false;
+  try { void electron()?.rcRaisePrompt?.(false); } catch { /* ignore */ }
   const confirmId = pendingConfirmId.value;
   pendingConfirmId.value = '';
   if (!confirmId || !ws || ws.readyState !== 1) return;
@@ -360,36 +375,85 @@ async function handleOffer(sessionId: string, sdp: string): Promise<void> {
       }
     };
     const vt = stream.getVideoTracks()[0];
-    if (vt) guardTrackEnd(sessionId, vt);
+    if (vt) {
+      // 屏幕内容：让编码器按「细节优先」并保住帧率 —— 默认降级策略会先砍帧率/分辨率，观感就是卡与糊
+      try { (vt as MediaStreamTrack & { contentHint?: string }).contentHint = 'detail'; } catch { /* ignore */ }
+      guardTrackEnd(sessionId, vt);
+    }
     await conn.setRemoteDescription({ type: 'offer', sdp });
     const answer = await conn.createAnswer();
     await conn.setLocalDescription(answer);
+    try {
+      for (const sender of conn.getSenders()) {
+        if (sender.track?.kind !== 'video') continue;
+        const p = sender.getParameters();
+        p.degradationPreference = 'maintain-framerate';
+        await sender.setParameters(p);
+      }
+    } catch { /* 个别内核不支持该参数：用默认策略 */ }
     if (ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'rtc.answer', sessionId, sdp: conn.localDescription?.sdp || answer.sdp }));
       sendScreenAndDisplays(sessionId);
     }
   } catch (e) {
-    ElMessage.warning('屏幕采集未授权，远控将使用兼容模式（JPEG）');
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'session.stop', sessionId }));
+    // 采集/协商失败：不要直接 session.stop（那会把整个会话断掉），把原因转给控制端，
+    // 由它立即改用兼容模式（JPEG），用户至少还有画面可用。
+    const reason = (e as Error)?.message || '屏幕采集失败';
+    ElMessage.warning(`屏幕采集失败，远控将使用兼容模式（JPEG）：${reason}`);
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'rtc.failed', sessionId, reason }));
+    }
   }
+}
+
+/** 把「当前真实采集目标」回推给控制端（切屏失败时让下拉回退到实际画面） */
+function announceDisplays(sessionId: string): void {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'displays', sessionId, list: displays.value, current: captureDisplayId.value }));
+}
+
+/** 采集请求兜底超时：Electron 的 getDisplayMedia 偶发不回调，不能让它把切换流程永远挂住 */
+function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = window.setTimeout(() => reject(new Error(msg)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
 }
 
 /** 会话中切换采集显示器（控制端发起）：重新采集 → replaceTrack（无需重协商）→ 推新几何 */
 async function switchCaptureDisplay(sessionId: string, displayId: string): Promise<void> {
   if (!displayId) return;
+  const prevId = captureDisplayId.value;
+  const conn = pcs.get(sessionId);
+  if (!conn) {
+    // 没有 PeerConnection = 本条信令落到了不持有画面的窗口（或会话已重连）
+    announceDisplays(sessionId);
+    ElMessage.warning('当前窗口没有这条远控连接，切屏未执行');
+    return;
+  }
   captureDisplayId.value = displayId;
   await applyCaptureDisplay();
-  await refreshDisplays();
-  const conn = pcs.get(sessionId);
-  if (!conn) return;
   try {
-    const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
+    const stream = await withTimeout(
+      navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true }),
+      8000,
+      '重新采集超时',
+    );
     const videoTrack = stream.getVideoTracks()[0];
-    if (!videoTrack) throw new Error('采集流无视频轨');
+    if (!videoTrack) {
+      for (const t of stream.getTracks()) t.stop();
+      throw new Error('采集流无视频轨');
+    }
     // 新采集附带的音轨直接停掉：沿用原会话音轨，避免系统声音被二次回采
     for (const t of stream.getAudioTracks()) t.stop();
     const sender = conn.getSenders().find((x) => x.track?.kind === 'video');
-    if (!sender) throw new Error('连接上没有视频发送器');
+    if (!sender) {
+      for (const t of stream.getTracks()) t.stop();
+      throw new Error('连接上没有视频发送器');
+    }
     const old = sender.track;
     await sender.replaceTrack(videoTrack);
     if (old) {
@@ -397,10 +461,15 @@ async function switchCaptureDisplay(sessionId: string, displayId: string): Promi
       try { old.stop(); } catch { /* ignore */ }
     }
     guardTrackEnd(sessionId, videoTrack);
+    await refreshDisplays();
     sendScreenAndDisplays(sessionId);
     ElMessage({ message: '采集显示器已切换', type: 'success', duration: 2000 });
   } catch (e) {
-    ElMessage.warning('切换显示器失败：采集未授权或源不可用');
+    // 回滚采集目标：否则下次重连会采到用户并没选中的那块屏
+    captureDisplayId.value = prevId;
+    await applyCaptureDisplay();
+    announceDisplays(sessionId);
+    ElMessage.warning(`切换显示器失败：${(e as Error)?.message || '采集不可用'}`);
   }
 }
 
@@ -418,6 +487,7 @@ function teardownPcs(): void {
 }
 
 onMounted(() => {
+  if (isChildWindow) return; // 子窗口不参与被控端（见 isChildWindow 注释）
   // 托盘「一键断开」：主进程菜单 → 这里在 host WS 上发 session.stop {all:true}
   electron()?.onRcDisconnectAll?.(() => {
     if (ws && ws.readyState === 1) {
@@ -430,6 +500,7 @@ onMounted(() => {
   pollTimer = window.setInterval(() => void poll(), 6000);
 });
 onBeforeUnmount(() => {
+  if (isChildWindow) return; // 子窗口从未登记，别把主窗口的「远控中」状态清掉
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;

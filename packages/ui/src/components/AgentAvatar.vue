@@ -1,6 +1,7 @@
 <!--
   智能体头像统一渲染，判定顺序：
-    ① 图片头像（img:*） ② 用户选的图标 / 内置 id 预设图标 ③ 名称首字
+    ① 用户选的图片头像（img:*） ② 用户选的图标键 / 内置 id 预设彩色头像
+    ③ 内置 id 的单色预设图标 ④ 名称首字
   全站 6 个渲染点都走这里，避免「列表 / 聊天 / 消息」三处头像不一致。
   尺寸由父容器决定（图片 width/height 100%），iconSize 控制图标字号。
 -->
@@ -18,8 +19,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { agentInitial, resolveAgentIcon } from '../utils/agentIcon';
-import { resolveAgentAvatarImage } from '../utils/agentAvatarImages';
+import { agentInitial, isKnownAgentIconKey, resolveAgentIcon } from '../utils/agentIcon';
+import { resolveAgentAvatarImage, resolveAgentAvatarImageByAgentId } from '../utils/agentAvatarImages';
 
 const props = withDefaults(defineProps<{
   id?: string | null;
@@ -28,8 +29,14 @@ const props = withDefaults(defineProps<{
   iconSize?: number;
 }>(), { iconSize: 20 });
 
-const src = computed(() => resolveAgentAvatarImage(props.avatar));
-const icon = computed(() => resolveAgentIcon(props.id, props.avatar));
+const src = computed(() => {
+  const picked = resolveAgentAvatarImage(props.avatar);
+  if (picked) return picked;
+  // 用户显式选过图标 → 图标优先，不允许内置预设彩色头像盖掉
+  if (isKnownAgentIconKey(props.avatar)) return undefined;
+  return resolveAgentAvatarImageByAgentId(props.id);
+});
+const icon = computed(() => (src.value ? undefined : resolveAgentIcon(props.id, props.avatar)));
 const initial = computed(() => agentInitial(props.name, 1));
 </script>
 
@@ -37,6 +44,8 @@ const initial = computed(() => agentInitial(props.name, 1));
 .agent-avatar-img {
   width: 100%; height: 100%; display: block;
   object-fit: cover; border-radius: inherit;
+  /* 彩色图标自带透明留白：用中性底色填满方框，避免父容器的主色淡染透上来串色 */
+  background: var(--color-surface);
 }
 .agent-avatar-icon { display: inline-flex; line-height: 1; color: inherit; }
 .agent-avatar-text { line-height: 1; font-weight: 600; color: inherit; }

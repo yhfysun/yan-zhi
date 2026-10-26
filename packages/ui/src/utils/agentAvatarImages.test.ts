@@ -7,12 +7,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   agentAvatarGroups, resolveAgentAvatarImage, isKnownAgentAvatarImage, AGENT_AVATAR_IMAGES,
+  AGENT_AVATAR_IMAGE_BY_ID, resolveAgentAvatarImageByAgentId,
 } from './agentAvatarImages';
 
 describe('图片头像 · 素材与分组', () => {
-  it('每个分组都有素材（动物/像素/机器人/涂鸦/3D/摄影）', () => {
+  it('每个分组都有素材（彩色3D/彩色扁平/iconfont/动物/像素/机器人/涂鸦/3D人物/摄影）', () => {
     const groups = agentAvatarGroups();
-    expect(groups.length, '应有 6 个分组').toBe(6);
+    expect(groups.length, '应有 9 个分组').toBe(9);
     for (const g of groups) {
       expect(g.items.length, `${g.label} 分组为空`).toBeGreaterThan(0);
     }
@@ -28,9 +29,25 @@ describe('图片头像 · 素材与分组', () => {
     }
   });
 
-  it('分组顺序稳定（图标之后依次 动物→像素→机器人→涂鸦→3D→摄影）', () => {
+  it('分组顺序稳定（彩色图标优先，其后 动物→像素→机器人→涂鸦→3D人物→摄影）', () => {
     expect(agentAvatarGroups().map((g) => g.group))
-      .toEqual(['animal', 'pixel', 'bot', 'croodle', 'three-d', 'scene']);
+      .toEqual(['tech', 'flat', 'iconfont', 'animal', 'pixel', 'bot', 'croodle', 'three-d', 'scene']);
+  });
+});
+
+describe('内置智能体 · 默认彩色头像预设', () => {
+  it('每条映射都指向真实存在的素材（写错 key = 头像静默空白）', () => {
+    const broken = Object.entries(AGENT_AVATAR_IMAGE_BY_ID)
+      .filter(([, key]) => !isKnownAgentAvatarImage(key))
+      .map(([id, key]) => `${id} -> ${key}`);
+    expect(broken, '找不到素材的映射：' + broken.join(', ')).toEqual([]);
+  });
+
+  it('resolveAgentAvatarImageByAgentId：内置 id 命中，自建/空值不命中', () => {
+    expect(resolveAgentAvatarImageByAgentId('a_builtin_data_agent')).toBeTruthy();
+    expect(resolveAgentAvatarImageByAgentId('user-123')).toBeUndefined();
+    expect(resolveAgentAvatarImageByAgentId(null)).toBeUndefined();
+    expect(resolveAgentAvatarImageByAgentId(undefined)).toBeUndefined();
   });
 });
 

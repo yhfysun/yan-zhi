@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@antv/infographic": "^0.2.20",
     "@codemirror/commands": "^6.11.0",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-css": "^6.3.1",
@@ -38,6 +39,8 @@
     "@yan-zhi/core": "workspace:*",
     "@yan-zhi/shared": "workspace:*",
     "codemirror": "^6.0.2",
+    "docx": "^9.14.0",
+    "echarts": "^6.1.0",
     "element-plus": "^2.8.0",
     "exceljs": "^4.4.0",
     "highlight.js": "^11.10.0",

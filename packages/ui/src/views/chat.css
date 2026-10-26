@@ -1042,7 +1042,15 @@
 .agent-edit-btn:hover { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 16%, transparent); border-color: color-mix(in srgb, var(--color-primary) 38%, transparent); }
 
 /* ===== 截图按钮（对齐微信：主体点击即框选 + 右侧下拉箭头 = 隐藏窗口开关/快捷键设置） ===== */
-.shot-btn-group { display: inline-flex; align-items: stretch; }
+.shot-btn-group { display: inline-flex; align-items: stretch; position: relative; }
+/* 录屏中：红点在截图按钮上常驻 —— 入口在下拉里，不给提示用户不知道正在录 */
+.shot-rec-dot {
+  position: absolute; top: -1px; right: -1px; width: 7px; height: 7px; border-radius: 50%;
+  background: #ef4444; box-shadow: 0 0 0 2px var(--color-bg, #fff);
+  animation: shot-rec-pulse 1.2s ease-in-out infinite; pointer-events: none;
+}
+@keyframes shot-rec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.shot-rec-text { font-size: 11px; color: #ef4444; }
 .shot-btn-group .shot-main {
   border-radius: 50px 0 0 50px;
   border-right: none;

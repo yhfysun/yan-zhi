@@ -42,6 +42,20 @@ export const VISION_NO_TTL_MS = 30 * 60 * 1000;
  *     过了 TTL 自然重探。 */
 export const VISION_EMPTY_TTL_MS = 10 * 60 * 1000;
 
+/** 「刚超时」冷却期（毫秒，2026-10-26）。
+ *
+ * ★★★ 为什么不塞进上面的三态缓存：两者回答的是**不同问题**。
+ *   · 三态缓存回答"这个模型**支持**视觉吗" —— 超时是**性能**现象，不能当能力结论
+ *     （本文件测试明确要求：超时后状态必须仍为 `unknown`，否则一次抖动会被永久误判）。
+ *   · 本冷却回答"**现在**再试它一次值不值" —— 纯粹为了不重复烧时间。
+ *
+ * ★ 为什么必须有（实测）：`runImageAnalyze` 给每个候选 45s，但候选池会逐个试，
+ *   而服务端 `FRONTEND_TOOL_TIMEOUT_MS` 只有 120s ⇒ 整条链必然超时。更糟的是
+ *   超时**不记负缓存**，于是同一条任务里 4 次 `image_analyze` 每次都从第一个挂起
+ *   候选重新烧起（实测 4 × 120s = 8 分钟纯浪费，任务产出早已完成却卡在自检）。
+ *   冷却 5 分钟：一轮任务内不再重踩同一个挂起候选，任务结束后自然过期重探。 */
+export const VISION_TIMEOUT_COOLDOWN_MS = 5 * 60 * 1000;
+
 interface Entry {
   state: 'yes' | 'no';
   at: number;
@@ -51,6 +65,10 @@ interface Entry {
 
 /** 缓存：`platformId/modelId` → 探测结论 */
 const cache = new Map<string, Entry>();
+
+/** 冷却表：`platformId/modelId` → 最近一次超时时间（与能力结论**分开**，见上） */
+const timeoutCache = new Map<string, number>();
+
 
 /** 缓存键（与运行时候选的标识口径一致） */
 export function visionCapKey(platformId: string, modelId: string): string {
@@ -125,9 +143,32 @@ export function recordVisionAttempt(
   return false;
 }
 
+/**
+ * 记录一次**超时**（不是"不支持"）。
+ *
+ * ★ 只影响「还要不要再试」，不影响能力三态 —— 调用方（`runImageAnalyze`）据此跳过
+ *   冷却期内的候选，避免同一挂起候选在一轮任务里被反复烧 45s。
+ */
+export function recordVisionTimeout(platformId: string, modelId: string, now = Date.now()): void {
+  timeoutCache.set(visionCapKey(platformId, modelId), now);
+}
+
+/** 该候选是否仍在超时冷却期内（过期自动清掉，fail-open：过期即允许重试） */
+export function isVisionCoolingDown(platformId: string, modelId: string, now = Date.now()): boolean {
+  const key = visionCapKey(platformId, modelId);
+  const at = timeoutCache.get(key);
+  if (at === undefined) return false;
+  if (now - at > VISION_TIMEOUT_COOLDOWN_MS) {
+    timeoutCache.delete(key);
+    return false;
+  }
+  return true;
+}
+
 /** 清空缓存（测试 / 用户手动重探） */
 export function clearVisionCapabilityCache(): void {
   cache.clear();
+  timeoutCache.clear();
 }
 
 /** 缓存规模（观测用） */

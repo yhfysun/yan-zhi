@@ -439,6 +439,7 @@
           <!-- 截图按钮（对齐微信设计）：主体点击即框选；右侧小箭头下拉 =
                「截图时隐藏本应用窗口」勾选项 + 快捷键设置入口。tooltip 带快捷键。 -->
           <div v-if="canScreenshot" class="shot-btn-group">
+            <span v-if="screenRecorder.isRecording" class="shot-rec-dot" title="正在录屏（从截图下拉里停止）"></span>
             <el-tooltip :content="shotTooltip" placement="top">
               <el-button size="small" circle class="ctx-btn shot-main" :disabled="snipping" @click="startScreenshot()">
                 <el-icon><Camera /></el-icon>
@@ -450,7 +451,13 @@
               </button>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item command="toggleHideApp">
+                  <el-dropdown-item command="record">
+                    <span class="shot-menu-row">
+                      <span>{{ screenRecorder.isRecording ? '停止录屏' : '录屏（选区）' }}</span>
+                      <span v-if="screenRecorder.isRecording" class="shot-rec-text">录制中</span>
+                    </span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="toggleHideApp" divided>
                     <span class="shot-menu-row">
                       <span>截图时隐藏本应用窗口</span>
                       <el-icon v-if="shotHideApp" class="shot-menu-check"><Check /></el-icon>
@@ -825,6 +832,7 @@ import PlanStepDetailDialog from './PlanStepDetailDialog.vue';
 import { fmtDuration, planStepElapsedMs, slowestPlanSteps } from '../../composables/chat/round-timing';
 import { useCodeStore } from '../../stores/code';
 import { useSettingsStore, usePlatformStore } from '../../stores';
+import { useScreenRecorderStore } from '../../stores/screen-recorder';
 import { formatContextWindow } from '../../utils/context-window';
 import type { Model } from '@yan-zhi/shared';
 import { useRouter } from 'vue-router';
@@ -1193,6 +1201,8 @@ function ilmNewTask() {
 // ===== 截图按钮微信式设计：tooltip 带快捷键 + 下拉「隐藏窗口」开关 =====
 const router = useRouter();
 const settingsStore2 = useSettingsStore();
+// 选区录屏（2026-10-26）：与浏览器面板「更多」菜单共用同一份全局状态
+const screenRecorder = useScreenRecorderStore();
 // 聊天发送键模式（settings.sendKeyMode）：'enter'（默认，与历史行为逐字节一致）=
 // Enter 发送 / Shift+Enter 换行；'ctrlEnter' = Ctrl+Enter 发送 / Enter 换行。
 // Shift+Enter 恒为换行，两种模式一致（用户拍板 2026-10-17 三态互换）。
@@ -1207,7 +1217,9 @@ const shotTooltip = computed(() => {
   return acc ? `截图（${acc}）` : '截图';
 });
 function onShotMenu(cmd: string | number | object) {
-  if (cmd === 'toggleHideApp') {
+  if (cmd === 'record') {
+    void screenRecorder.toggle();
+  } else if (cmd === 'toggleHideApp') {
     void settingsStore2.update({ screenshotHideApp: !shotHideApp.value });
   } else if (cmd === 'openSettings') {
     void (router as any)?.push?.('/settings');

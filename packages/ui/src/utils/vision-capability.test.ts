@@ -174,3 +174,59 @@ describe('④ 运行时必须真的用缓存', () => {
       .not.toMatch(/capabilities[^\n]{0,60}(remove|filter)[^\n]{0,40}'vision'/);
   });
 });
+
+/**
+ * ⑤ 超时冷却与总预算（2026-10-26）
+ *
+ * ★★★ 实测故障（会话 ba426984，抖音周报任务）：
+ *   单候选 45s、候选池逐个试 ⇒ 整条链 > 服务端 `FRONTEND_TOOL_TIMEOUT_MS`(120s) ⇒
+ *   4 次 `image_analyze` 全部 ~120s 超时，共烧 8 分钟；且超时不记负缓存 ⇒
+ *   每次重试都从第一个挂起候选重新烧起。任务产出（数据+信息图）早已完成，
+ *   却卡在"自检图片"这一步被拖死。
+ *
+ * 修法两条，**都不改能力三态语义**（超时 ≠ 不支持，见 ④ 的断言）：
+ *   ① 超时进 5 分钟「冷却」——只影响"还要不要再试"，与三态分开存；
+ *   ② 识图候选总预算 90s，单候选 = min(45s, 剩余预算)，用完不再开新候选、直接降级 OCR。
+ */
+describe('⑤ 超时冷却与总预算', () => {
+  it('★★★ 超时记的是冷却，不是"不支持"（三态必须仍为 unknown）', async () => {
+    const m = await import('./vision-capability');
+    m.clearVisionCapabilityCache();
+    expect(m.isVisionCoolingDown('p', 'm')).toBe(false);
+    m.recordVisionTimeout('p', 'm');
+    expect(m.isVisionCoolingDown('p', 'm'), '★ 超时后未进冷却 → 下一轮又在同一挂起候选上白烧 45s').toBe(true);
+    expect(m.getVisionCapability('p', 'm'), '★ 超时被记成能力结论 → 一次抖动会永久误判').toBe('unknown');
+  });
+
+  it('★★ 冷却到期自动解禁（fail-open，不永久封杀）', async () => {
+    const m = await import('./vision-capability');
+    m.clearVisionCapabilityCache();
+    const t0 = Date.now();
+    m.recordVisionTimeout('p', 'm', t0);
+    expect(m.isVisionCoolingDown('p', 'm', t0 + m.VISION_TIMEOUT_COOLDOWN_MS - 1)).toBe(true);
+    expect(m.isVisionCoolingDown('p', 'm', t0 + m.VISION_TIMEOUT_COOLDOWN_MS + 1)).toBe(false);
+  });
+
+  it('★★ 清缓存要把冷却一起清（否则"手动重探"仍会被跳过）', async () => {
+    const m = await import('./vision-capability');
+    m.recordVisionTimeout('p', 'm');
+    m.clearVisionCapabilityCache();
+    expect(m.isVisionCoolingDown('p', 'm')).toBe(false);
+  });
+
+  it('★★★ 运行时必须真的查冷却（定义了不用等于没做）', () => {
+    expect(CHAT, '★ runImageAnalyze 未查冷却').toMatch(/isVisionCoolingDown\(p\.id, m\.id\)/);
+    expect(CHAT, '★ 查了但没跳过').toMatch(/isVisionCoolingDown\(p\.id, m\.id\)[\s\S]{0,160}return null/);
+    expect(CHAT, '★ 超时后没记冷却（下次仍从头烧起）').toMatch(/recordVisionTimeout\(p\.id, m\.id\)/);
+  });
+
+  it('★★★ 单候选限时必须受总预算约束（否则候选一多必然撞穿 120s 前端闸）', () => {
+    expect(CHAT, '★ 缺总预算常量').toMatch(/ANALYZE_BUDGET_MS\s*=\s*90_000/);
+    expect(CHAT, '★ 单候选仍写死 45_000，没被预算约束')
+      .not.toMatch(/AbortSignal\.timeout\(\s*45_000\s*\)/);
+    expect(CHAT, '★ 单候选未取 min(上限, 剩余预算)')
+      .toMatch(/Math\.min\(PER_CANDIDATE_MS,\s*leftMs\)/);
+    expect(CHAT, '★ 预算用尽时没有停止开新候选')
+      .toMatch(/leftMs\s*<\s*MIN_CANDIDATE_MS[\s\S]{0,160}return null/);
+  });
+});

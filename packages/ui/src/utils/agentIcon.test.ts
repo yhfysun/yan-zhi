@@ -9,6 +9,7 @@ import {
   resolveAgentIcon, agentInitial, isKnownAgentIconKey,
   AGENT_ICON_BY_ID, AGENT_ICON_LIBRARY, AVATAR_KEY_PREFIX,
 } from './agentIcon';
+import { AGENT_AVATAR_IMAGE_BY_ID } from './agentAvatarImages';
 
 /** 内置助手 id 全量清单（与 apps/server seed 对齐；新增内置智能体时要同步补映射） */
 const BUILTIN_AGENT_IDS = [
@@ -49,6 +50,11 @@ describe('内置智能体必须全部有预设图标（漏登记 = 回落首字�
     for (const id of BUILTIN_AGENT_IDS) {
       expect(resolveAgentIcon(id, null), `${id} 解析不到图标`).toBeTruthy();
     }
+  });
+
+  it('清单里每个内置 id 都配了彩色头像预设（否则只显示旧的单色图标）', () => {
+    const missing = BUILTIN_AGENT_IDS.filter((id) => !AGENT_AVATAR_IMAGE_BY_ID[id]);
+    expect(missing, '未配置彩色头像的内置 id：' + missing.join(', ')).toEqual([]);
   });
 });
 

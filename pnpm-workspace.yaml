@@ -1,3 +1,19 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# pnpm 10+ 起这些设置只从本文件读取，package.json 的 "pnpm" 字段已废弃
+overrides:
+  canvas: "-"
+
+# pnpm 10+ 默认不执行任何依赖的安装脚本，逐个放行才与 pnpm 9 的行为一致
+allowBuilds:
+  "@capawesome/capacitor-nodejs": true
+  better-sqlite3: true
+  cpu-features: true
+  electron: true
+  esbuild: true
+  protobufjs: true
+  ssh2: true
+  tesseract.js: true
+  vue-demi: true

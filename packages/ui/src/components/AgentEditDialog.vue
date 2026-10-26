@@ -13,9 +13,10 @@
                     <button
                       type="button"
                       class="icon-cell auto" :class="{ active: !form.avatar }"
-                      title="自动：按智能体名称/内置用途判定" @click="form.avatar = ''"
+                      title="自动：内置智能体用预设彩色头像，自建助手用名称首字" @click="form.avatar = ''"
                     >
-                      <component v-if="autoIcon" :is="autoIcon" theme="filled" :size="18" />
+                      <img v-if="autoAvatarSrc" :src="autoAvatarSrc" class="icon-cell-img" alt="" draggable="false" />
+                      <component v-else-if="autoIcon" :is="autoIcon" theme="filled" :size="18" />
                       <span v-else class="icon-cell-text">{{ autoInitial }}</span>
                       <span>自动</span>
                     </button>
@@ -28,18 +29,7 @@
                       >{{ t.label }}</button>
                     </div>
                   </div>
-                  <div v-if="avatarTab === 'icon'" class="icon-picker">
-                    <button
-                      type="button"
-                      v-for="opt in AGENT_ICON_LIBRARY" :key="opt.key"
-                      class="icon-cell" :class="{ active: form.avatar === opt.key }"
-                      :title="opt.label" @click="form.avatar = opt.key"
-                    >
-                      <component :is="opt.icon" theme="filled" :size="18" />
-                      <span>{{ opt.label }}</span>
-                    </button>
-                  </div>
-                  <div v-else class="image-picker">
+                  <div class="image-picker">
                     <button
                       type="button"
                       v-for="img in avatarImagesOf(avatarTab)" :key="img.key"
@@ -320,8 +310,8 @@ import { DEFAULT_AGENT_PARAMS } from '@yan-zhi/shared';
 import { useAgentStore, usePlatformStore, useMcpStore, useSkillStore, useToolsStore, useAuthStore, useModelPoolStore } from '../stores';
 import { api } from '../api/client';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
-import { AGENT_ICON_LIBRARY, AVATAR_KEY_PREFIX, agentInitial, isKnownAgentIconKey, resolveAgentIcon } from '../utils/agentIcon';
-import { agentAvatarGroups, isKnownAgentAvatarImage } from '../utils/agentAvatarImages';
+import { AVATAR_KEY_PREFIX, agentInitial, isKnownAgentIconKey, resolveAgentIcon } from '../utils/agentIcon';
+import { agentAvatarGroups, isKnownAgentAvatarImage, resolveAgentAvatarImageByAgentId } from '../utils/agentAvatarImages';
 
 const props = defineProps<{ modelValue: boolean; agent?: Agent | null }>();
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void; (e: 'saved', agentId: string): void; (e: 'deleted', agentId: string): void }>();
@@ -498,31 +488,29 @@ function firstPoolName(slot: string): string {
 }
 const checkedToolCount = computed(() => (form.value.builtinToolIds?.length || 0) + (form.value.customToolIds?.length || 0) + (form.value.mcpToolMounts?.length || 0));
 
-/** 「自动」格的预览：内置智能体显示预设图标，自建助手显示名称首字（与 AgentAvatar 判定一致） */
-const autoIcon = computed(() => resolveAgentIcon(props.agent?.id));
+/** 「自动」格的预览：内置智能体的预设彩色头像 → 单色预设图标 → 名称首字（与 AgentAvatar 判定一致） */
+const autoAvatarSrc = computed(() => resolveAgentAvatarImageByAgentId(props.agent?.id));
+const autoIcon = computed(() => (autoAvatarSrc.value ? undefined : resolveAgentIcon(props.agent?.id)));
 const autoInitial = computed(() => agentInitial(form.value.name));
 
-// ===== 头像选择器：图标 / 卡通 / 动漫 / 表情 / 摄影 =====
-const avatarTab = ref<string>('icon');
+// ===== 头像选择器：彩色 3D / 彩色扁平 / 卡通 / 表情 / 摄影 =====
 const avatarGroups = computed(() => agentAvatarGroups());
-const avatarTabs = computed(() => [
-  { key: 'icon', label: '图标' },
-  ...avatarGroups.value.map((g) => ({ key: g.group, label: g.label })),
-]);
+/** 默认停在第一组（彩色 3D 图标） */
+const FIRST_AVATAR_TAB = 'tech';
+const avatarTab = ref<string>(FIRST_AVATAR_TAB);
+const avatarTabs = computed(() => avatarGroups.value.map((g) => ({ key: g.group, label: g.label })));
 function avatarImagesOf(group: string) {
   return avatarGroups.value.find((g) => g.group === group)?.items || [];
 }
 function avatarTabLabel(group: string) {
   return avatarGroups.value.find((g) => g.group === group)?.label || '头像';
 }
-/** 回填时把 tab 切到已选头像所在分组，避免「选过图片却停在图标页」 */
+/** 回填时把 tab 切到已选头像所在分组，避免「选过图片却停在别的分组」 */
 function syncAvatarTab(avatar?: string | null) {
-  if (avatar && avatar.startsWith(AVATAR_KEY_PREFIX)) {
-    const group = avatarGroups.value.find((g) => g.items.some((i) => i.key === avatar))?.group;
-    avatarTab.value = group || 'icon';
-  } else {
-    avatarTab.value = 'icon';
-  }
+  const group = avatar && avatar.startsWith(AVATAR_KEY_PREFIX)
+    ? avatarGroups.value.find((g) => g.items.some((i) => i.key === avatar))?.group
+    : undefined;
+  avatarTab.value = group || FIRST_AVATAR_TAB;
 }
 
 /** 复制系统提示词到剪贴板（clipboard API 不可用时回退 execCommand） */
@@ -722,9 +710,6 @@ async function handleDelete() {
 }
 .avatar-tab:hover { color: var(--color-text); border-color: var(--color-primary); }
 .avatar-tab.active { border-color: var(--color-primary); background: rgba(99,102,241,0.08); color: var(--color-primary); font-weight: 600; }
-.icon-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 6px; width: 100%; max-height: 132px; overflow-y: auto; padding: 2px; }
-.icon-picker::-webkit-scrollbar { width: 5px; }
-.icon-picker::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
 .icon-cell {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   padding: 6px 2px; border-radius: 8px; cursor: pointer; font-family: inherit;
@@ -733,6 +718,7 @@ async function handleDelete() {
 }
 .icon-cell:hover { border-color: var(--color-primary); color: var(--color-text); }
 .icon-cell-text { font-size: 15px; font-weight: 600; line-height: 1; }
+.icon-cell-img { width: 20px; height: 20px; display: block; object-fit: contain; }
 .icon-cell.active { border-color: var(--color-primary); background: rgba(99,102,241,0.08); color: var(--color-primary); font-weight: 600; }
 .image-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 6px; width: 100%; max-height: 132px; overflow-y: auto; padding: 2px; }
 .image-picker::-webkit-scrollbar { width: 5px; }

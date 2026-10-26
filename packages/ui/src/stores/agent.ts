@@ -254,7 +254,7 @@ const DATA_AGENT_ID = 'a_builtin_data_agent';
 /** dataAgent 挂载的取数工具集 —— 本体上下文链 + 取数 + 分析/交付底座 */
 const DATA_AGENT_BUILTIN_TOOLS = [
   // 数据源与取数
-  'api_datasource_list', 'api_data_query', 'api_data_paginate',
+  'api_datasource_list', 'api_data_query', 'api_data_preview', 'api_data_paginate', 'data_query_view',
   // 本体上下文链：问题召回 / 集合总览 / 单体简略 / 懒加载详情 / 属性值枚举采样
   'api_ontology_search', 'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
   // 分析与交付（只留统计与写文件：翻源码/列目录/读文件对取数无用，且是跑偏的主要出口）
@@ -263,7 +263,7 @@ const DATA_AGENT_BUILTIN_TOOLS = [
   'task_plan', 'task_step', 'ask_user', 'confirm_user',
 ];
 
-const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc'];
+const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc', 'skill_infographic', 'skill_document_type'];
 
 /**
  * dataAgent 定义版本（升级时强制覆盖库中副本，内置智能体行为属产品定义）：

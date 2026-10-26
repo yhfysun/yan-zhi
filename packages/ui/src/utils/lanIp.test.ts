@@ -144,6 +144,12 @@ describe('isVirtualNic（虚拟网卡判定）', () => {
     expect(isVirtualNic('vEthernet (Default Switch)')).toBe(true);
   });
 
+  it('★ ColorOS 虚拟网关 vgate0（真机实测：排在 wlan0 前会把手机自己的 IP 当成主机地址）', () => {
+    expect(isVirtualNic('vgate0')).toBe(true);
+    expect(isVirtualNic('tun0')).toBe(true);
+    expect(isVirtualNic('ppp0')).toBe(true);
+  });
+
   it('VMware / VirtualBox / WSL / Docker / VPN 虚拟网卡', () => {
     expect(isVirtualNic('VMware Network Adapter VMnet8')).toBe(true);
     expect(isVirtualNic('VirtualBox Host-Only Network')).toBe(true);

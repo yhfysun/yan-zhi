@@ -11,9 +11,9 @@
 import { reactive, readonly } from 'vue';
 import { ElMessage } from 'element-plus';
 import { resolveServerUrl } from '@yan-zhi/shared';
-import { api as apiClient, API_BASE } from '../api/client';
+import { API_BASE } from '../api/client';
 import { toWindowsPath } from '../utils/file-open';
-import { buildDocx, measureImage } from '../utils/docx';
+import { saveDeliverableBytes, safeFileName, bytesToBase64 } from '../utils/deliverable-save';
 
 /** 一个可预览媒体（图片 / 视频 / 音频 / 普通文件）的来源描述 */
 export interface MediaTarget {
@@ -465,25 +465,10 @@ export async function copySelectedMedia(): Promise<boolean> {
 
 // ===== Word 导出 =====
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
-}
-
-function downloadBytes(bytes: Uint8Array, name: string) {
-  const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], {
-    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+const DOCX_KIND = {
+  mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  label: 'Word',
+};
 
 /** 读取图片字节：本机文件优先走平台适配器，否则按地址取 */
 async function readImageBytes(t: MediaTarget): Promise<{ data: Uint8Array; ext: string } | null> {
@@ -511,121 +496,35 @@ async function readImageBytes(t: MediaTarget): Promise<{ data: Uint8Array; ext: 
 }
 
 /**
- * 保存 docx：桌面端写进当前会话的交付目录并登记到文件管理（与服务端同一套目录规则）；
- * 浏览器/移动端直接触发下载。
- */
-async function saveDocxBytes(bytes: Uint8Array, name: string): Promise<void> {
-  const { getPlatformAdapter } = await import('@yan-zhi/core');
-  const adapter = getPlatformAdapter();
-  const { useChatStore } = await import('../stores/chat');
-  const chatStore = useChatStore();
-  const convId = chatStore.currentConvId || '';
-
-  let dir = '';
-  if (convId) {
-    try {
-      const r = await apiClient.get<{ dir?: string; relDir?: string }>(
-        `/conversations/${convId}/artifact-dir?category=deliverable&ensure=1`,
-      );
-      if ('data' in r && r.data) {
-        dir = ((adapter.platform === 'desktop' ? r.data.dir : r.data.relDir) || '');
-      }
-    } catch { /* 走兜底目录 */ }
-  }
-  if (!dir) dir = 'workspace';
-  // 登记进 conversation_file 的路径必须是原生分隔符，否则资源管理器定位会静默失败
-  const full = toWindowsPath(`${dir}/${name}`);
-
-  if (adapter.platform !== 'desktop') {
-    downloadBytes(bytes, name);
-    ElMessage.success('已开始下载 ' + name);
-    return;
-  }
-
-  try {
-    // 接口的 ensure=1 已建好目录；接口不可用时兜底自建，避免写入因父目录缺失失败
-    try {
-      if (!(await adapter.fs.exists(dir))) await adapter.fs.mkdir(dir);
-    } catch { /* 已存在或无 mkdir 能力 */ }
-    await adapter.fs.writeFileBase64(full, bytesToBase64(bytes));
-  } catch (e: any) {
-    ElMessage.error('导出失败: ' + (e?.message || e));
-    return;
-  }
-  if (convId) {
-    try {
-      const { useFileStore } = await import('../stores/file');
-      await useFileStore().registerFile({
-        conversationId: convId,
-        name,
-        path: full,
-        category: 'deliverable',
-        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        size: bytes.length,
-        source: 'agent',
-      });
-    } catch { /* 登记失败不影响导出结果 */ }
-  }
-  ElMessage.success('已导出 Word：' + full);
-}
-
-/**
  * 「导出 Word」只服务一类对象：整轮智能体响应结果（正文 + 正文引用的附图），
  * 入口在助手回复的操作条上，实现见 exportMarkdownDocx。
  * 单个媒体不再单独导出 Word —— 图片/视频的取用走「另存为」，那是它的正确语义。
  */
 
-/** markdown 文本 → Word（图片按出现顺序内嵌，其余按段落写入） */
+/** 图片地址 → dataURL；取不到返回 null（解析器降级为文字占位，不中断整篇导出） */
+async function imageToDataUrl(src: string, alt: string): Promise<string | null> {
+  const media: MediaTarget = { src: absoluteMediaSrc(src), kind: 'image', name: alt || '图片' };
+  const bytes = await readImageBytes(media);
+  if (!bytes?.data.length) return null;
+  const ext = /^jpe?g$/i.test(bytes.ext) ? 'jpeg' : (bytes.ext || 'png');
+  return `data:image/${ext};base64,${bytesToBase64(bytes.data)}`;
+}
+
+/** markdown 文本 → 原生 Word（标题层级 / 表格 / 代码块 / 图片，走 report-docx） */
 export async function exportMarkdownDocx(markdown: string, title?: string) {
-  const src = markdown || '';
-  const { buildDocx } = await import('../utils/docx');
-
-  /** 极简 markdown → 纯文本段落（去标题/强调/行内代码标记） */
-  const toParagraphs = (raw: string): string[] =>
-    raw
-      .replace(/```[\s\S]*?```/g, '')
-      .replace(/^\s*#{1,6}\s*/gm, '')
-      .replace(/\*\*([^*]+)\*\*/g, '$1')
-      .replace(/(^|[^*])\*([^*]+)\*/g, '$1$2')
-      .replace(/`([^`]+)`/g, '$1')
-      .replace(/^\s*[-*+]\s+/gm, '· ')
-      .split('\n')
-      .map((l) => l.replace(/\s+$/, ''))
-      .filter((l, i, arr) => l.trim() !== '' || (i > 0 && arr[i - 1].trim() !== ''));
-
-  const sections: { text?: string; image?: any }[] = [];
-  const imgRe = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
-  const pending: { slot: number; src: string; alt: string }[] = [];
-  let cursor = 0;
-  let m: RegExpExecArray | null;
-  while ((m = imgRe.exec(src))) {
-    for (const line of toParagraphs(src.slice(cursor, m.index))) sections.push({ text: line });
-    pending.push({ slot: sections.length, src: m[2], alt: m[1] });
-    sections.push({});
-    cursor = m.index + m[0].length;
-  }
-  for (const line of toParagraphs(src.slice(cursor))) sections.push({ text: line });
-
-  await Promise.all(
-    pending.map(async (p) => {
-      const media: MediaTarget = { src: absoluteMediaSrc(p.src), kind: 'image', name: p.alt || '图片' };
-      const bytes = await readImageBytes(media);
-      if (!bytes) return;
-      const measured = await measureImage(media.src);
-      sections[p.slot] = {
-        image: { data: bytes.data, ext: bytes.ext, width: measured?.width, height: measured?.height, caption: p.alt || undefined },
-      };
-    }),
-  );
-
-  const real = sections.filter((s) => s.image || (s.text && s.text.trim()));
-  if (real.length === 0) {
+  const [{ markdownToDocxBlocks }, { buildReportDocx }] = await Promise.all([
+    import('../utils/markdown-docx'),
+    import('../utils/report-docx'),
+  ]);
+  const blocks = await markdownToDocxBlocks(markdown || '', { resolveImage: imageToDataUrl });
+  if (!blocks.length) {
     ElMessage.info('没有可导出的内容');
     return;
   }
-  const docxBytes = await buildDocx(real as any, title);
-  const name = ((title || '导出文档').replace(/[\\/:*?"<>|]/g, '').trim() || '导出文档') + '.docx';
-  await saveDocxBytes(docxBytes, name);
+  const docTitle = (title || '导出文档').trim() || '导出文档';
+  const blob = await buildReportDocx({ title: docTitle, blocks });
+  const name = safeFileName(docTitle, '导出文档') + '.docx';
+  await saveDeliverableBytes(new Uint8Array(await blob.arrayBuffer()), name, DOCX_KIND);
 }
 
 /** 悬浮层固定宽高比：视频通常 16:9，浮层按 16:9 预留高度（object-fit:contain 不会变形）。

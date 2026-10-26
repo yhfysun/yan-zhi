@@ -83,6 +83,8 @@ import {
   parseTaskPlanMarkdown,
   writeTaskPlanFile,
   loadTaskPlanFromFile,
+  backendTaskPlan,
+  backendTaskStep,
 } from '../src/services/task-plan-file';
 
 let tmp: string;
@@ -213,5 +215,40 @@ describe('链路接线（静态断言，防入口漂移）', () => {
     expect(TPF).not.toContain('seedTaskPlanFromFile');
     // 文件回退仍在（模型「找到之前的任务记录」的通道），不许被一起误删
     expect(LTM).toContain('loadTaskPlanFromFile');
+  });
+});
+
+/**
+ * ⑥ 未配工作目录 ≠ 写入失败（2026-10-26 误报修复）
+ *
+ * ★★★ 实测（任务 ba426984）：会话没绑空间、也没设全局工作目录时，
+ *   `getTaskPlanPath` 按设计返回 null → `writeTaskPlanFile` 返回 false →
+ *   回执渲染成「（工作目录计划文件写入失败）」。每次 `task_step` 都刷一次，
+ *   模型会以为计划没保存而反复补救（日志里连续 3 条）。
+ *   真正的"落盘失败"（配了目录但写不进去）仍必须报出来，不能一起吞掉。
+ */
+describe('⑥ 未配工作目录 ≠ 写入失败', () => {
+  it('★★★ 无任何可写目录时，task_plan / task_step 回执不得出现"写入失败"', async () => {
+    hoisted.serverState.workspaceDir = '';          // 全局未设
+    hoisted.conversations.conv_loose.space_id = null; // 且未挂空间
+    expect(getTaskPlanPath('conv_loose'), '前置：此时应无落盘目标').toBeNull();
+
+    const planMsg = await backendTaskPlan('conv_loose', { title: 'T', steps: [{ title: 'a' }, { title: 'b' }] });
+    expect(planMsg, '★ 按设计跳过被渲染成失败 → 模型会反复补救').not.toContain('写入失败');
+
+    const stepMsg = await backendTaskStep('conv_loose', { index: 1, status: 'done' });
+    expect(stepMsg, '★ 同上（task_step 路径）').not.toContain('写入失败');
+    expect(stepMsg).toContain('已更新第 1 步');
+  });
+
+  it('★★★ 配了目录但真写不进去时，仍必须报失败（真故障不能被一起吞掉）', async () => {
+    // 把 workspaceDir 指向一个**文件**：目录创建必然 ENOTDIR → 真失败
+    const blocker = path.join(tmp, 'blocker');
+    fs.writeFileSync(blocker, 'x');
+    hoisted.conversations.conv_loose.space_id = null;
+    hoisted.serverState.workspaceDir = blocker;
+
+    const planMsg = await backendTaskPlan('conv_loose', { title: 'T', steps: [{ title: 'a' }] });
+    expect(planMsg, '★ 真写失败被静默了 → 用户再也不会知道"跨会话接力"不可用').toContain('写入失败');
   });
 });

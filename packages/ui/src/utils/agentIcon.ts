@@ -27,7 +27,11 @@ export interface AgentIconOption {
 export const AVATAR_KEY_PREFIX = 'img:';
 
 /**
- * 内置图标库：用户在「编辑智能体 → 头像」里可直选。
+ * 内置单色图标库：**历史遗留的解析表**（2026-10-26 起头像选择器改为彩色图标，
+ * 见 utils/agentAvatarImages.ts 的 tech / flat 分组）。
+ *
+ * 保留原因：老数据里 agent.avatar 存的仍是这些图标键（如 `code`），
+ * 删掉会让这些智能体的头像直接退化成名称首字。同时充当内置 id 的最后一级兜底。
  *
  * ★ 刻意避开底部 TabBar 的语义（对话/模型/我的/更多）：
  *   智能体图标会与 TabBar 同屏出现，同形同义会造成识别混淆。
@@ -67,9 +71,10 @@ export function isKnownAgentIconKey(key?: string | null): boolean {
 }
 
 /**
- * 内置智能体 id → 预设图标。
- * ★ 与 apps/server 的 seed id 对齐；新增内置智能体时在这里补一行，
- *   否则它会回落到「名称首字」而不是预设图标。
+ * 内置智能体 id → 预设单色图标（兜底层）。
+ * ★ 正常情况下不会走到这里：内置 id 优先命中 agentAvatarImages 的彩色头像预设；
+ *   只有新增内置智能体时忘了补彩色映射，才会回落到本表。
+ * ★ 与 apps/server 的 seed id 对齐；新增内置智能体时在这里补一行。
  */
 export const AGENT_ICON_BY_ID: Record<string, Component> = {
   // 日常办公 / 通用

@@ -276,8 +276,15 @@ export async function backendTaskPlan(
   const plan: TaskPlan = { title: String(args?.title || '任务计划'), steps, createdAt: carriedCreatedAt ?? Date.now() };
   derivePlanTiming(plan);
   if (!savePlanJson(conversationId, plan)) return 'task_plan 失败：写库失败';
+  // ★★ 2026-10-26：区分「真的写失败」与「本就没配工作目录」。
+  //   `getTaskPlanPath` 在既未挂空间、也没设全局工作目录时返回 null ——
+  //   那是**按设计跳过**（见该函数注释），但旧代码把 false 一律渲染成
+  //   「工作目录计划文件写入失败」⇒ 未设工作目录的会话每推进一步就收到一次
+  //   "失败"回执（实测任务 ba426984 连刷 3 次），模型会以为计划没保存而反复补救。
+  const canPersist = getTaskPlanPath(conversationId) !== null;
   const ok = await writeTaskPlanFile(conversationId, plan);
-  return `已创建任务计划「${plan.title}」，共 ${steps.length} 步${ok ? '' : '（工作目录计划文件写入失败，跨会话接力可能不可用）'}`;
+  const warn = canPersist && !ok ? '（工作目录计划文件写入失败，跨会话接力可能不可用）' : '';
+  return `已创建任务计划「${plan.title}」，共 ${steps.length} 步${warn}`;
 }
 
 /**
@@ -321,6 +328,9 @@ export async function backendTaskStep(conversationId: string, args: Record<strin
   if (args?.note != null) step.note = String(args.note);
   derivePlanTiming(plan);
   if (!savePlanJson(conversationId, plan)) return 'task_step 失败：写库失败';
+  // 与 task_plan 同口径：未配工作目录 = 按设计跳过，不算失败（见上方 ★★ 2026-10-26 注释）
+  const canPersist = getTaskPlanPath(conversationId) !== null;
   const ok = await writeTaskPlanFile(conversationId, plan);
-  return `已更新第 ${idx} 步状态为 ${status}${ok ? '' : '（工作目录计划文件写入失败）'}`;
+  const warn = canPersist && !ok ? '（工作目录计划文件写入失败）' : '';
+  return `已更新第 ${idx} 步状态为 ${status}${warn}`;
 }

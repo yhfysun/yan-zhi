@@ -690,7 +690,18 @@ export const remoteControlModule: PluginModule = {
       if (s.mode === 'jpeg') {
         try {
           const a = await ensureAgent();
-          const info = await a.call({ op: 'screensize' }, 10000);
+          // ★ 默认采「主屏」而不是 -1（整个虚拟桌面）：双屏机器上 -1 会把两块屏拼成一张
+          //   超宽画面推给控制端，用户看到的是「两个屏幕同时出现」且点击坐标被拉偏。
+          //   captureMon 仍是 -1（用户没选过）时才自动落主屏，显式选择要尊重。
+          if (s.captureMon < 0) {
+            try {
+              const m = await a.call({ op: 'monitors' }, 8000);
+              const list = Array.isArray(m.monitors) ? (m.monitors as Record<string, unknown>[]) : [];
+              const idx = list.findIndex((x) => x && x.primary);
+              if (idx >= 0) s.captureMon = idx;
+            } catch { /* 枚举失败就沿用整个桌面 */ }
+          }
+          const info = await a.call({ op: 'screensize', mon: s.captureMon }, 10000);
           s.controllerWs && sendWsJson(s.controllerWs, {
             ...grantedMsg,
             screen: { x: info.x ?? 0, y: info.y ?? 0, w: info.w ?? 0, h: info.h ?? 0 },
@@ -851,7 +862,13 @@ export const remoteControlModule: PluginModule = {
             sendWsJson(s.controllerWs!, { type: 'input.rejected', reason: '急停已触发，输入已冻结' });
             return;
           }
-          if (!s.limiter.allow()) {
+          // ★ 鼠标移动不吃限流：拖动/滑动时客户端 30ms 一条 ≈ 33 条/秒，2000/10min 的额度
+          //   一分钟就烧光，之后整个会话被降级成「只读观看」—— 用户体感就是「突然只能看不能操作」。
+          //   移动本身无害且已由客户端节流；限流只统计真正改变系统状态的输入（按下/抬起/点击/
+          //   滚轮/按键/文本）。
+          const action = String((msg as Record<string, unknown>).action || '');
+          const countsTowardLimit = action !== 'move';
+          if (countsTowardLimit && !s.limiter.allow()) {
             if (!s.readOnlyNotified) {
               s.readOnlyNotified = true;
               sendWsJson(s.controllerWs!, {
@@ -863,7 +880,7 @@ export const remoteControlModule: PluginModule = {
             }
             return;
           }
-          s.limiter.hit();
+          if (countsTowardLimit) s.limiter.hit();
           const v = validateInputMsg(msg);
           if (!v.ok) {
             sendWsJson(s.controllerWs!, { type: 'input.rejected', reason: v.error });
@@ -905,9 +922,35 @@ export const remoteControlModule: PluginModule = {
           if (s?.controllerWs) sendWsJson(s.controllerWs, { type: 'rtc.ice', candidate: msg.candidate });
           break;
         }
-        case 'rtc.ready':
+        case 'rtc.ready': {
           if (hostConn) hostConn.canCapture = true;
+          // ★ 白名单设备是「免确认直连」：授权发生在被控端渲染层还没连上来的时候，
+          //   那一刻 canCapture=false → 会话被定成 JPEG，而且之后永远不会变。
+          //   （审计实录：首次配对 = webrtc，之后每次 trusted 重连全是 jpeg。）
+          //   主机一就绪就把这些会话原地升级成 WebRTC：控制端重发 offer 即可，不用重新授权。
+          for (const ss of sessions.values()) {
+            if (ss.status !== 'granted' || ss.mode !== 'jpeg' || !ss.controllerWs) continue;
+            ss.mode = 'webrtc';
+            ss.jpegStream = undefined;
+            try { agent?.fire({ op: 'stream', fps: 0 }); } catch { /* 代理没起来就算了 */ }
+            sendWsJson(ss.controllerWs, { type: 'session.mode', mode: 'webrtc' });
+            notifyHost({
+              type: 'rtc.start',
+              sessionId: ss.id,
+              ...(iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
+            });
+            ctx.log(`[remote-control] 会话 ${ss.id} 由 JPEG 升级为 WebRTC（被控端采集层已就绪）`);
+          }
           break;
+        }
+        case 'rtc.failed': {
+          // 被控端采集/WebRTC 建立失败：把原因转给控制端，让它立即走兼容模式而不是干等
+          const sf = [...sessions.values()].find((x) => x.id === msg.sessionId && x.status === 'granted');
+          if (sf?.controllerWs) {
+            sendWsJson(sf.controllerWs, { type: 'rtc.failed', reason: String(msg.reason || '') });
+          }
+          break;
+        }
         case 'rtc.screen': {
           // 被控端渲染层告知采集画面对应的屏幕几何（像素），控制端据此做坐标换算
           const ss = [...sessions.values()].find((x) => x.id === msg.sessionId && x.status === 'granted');

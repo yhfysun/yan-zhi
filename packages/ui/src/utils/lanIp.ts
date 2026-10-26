@@ -52,6 +52,11 @@ export function isVirtualNic(name: string): boolean {
     n.includes('wg') ||             // WireGuard
     n.includes('zerotier') ||
     n.includes('tailscale') ||
+    n.includes('vgate') ||          // ColorOS/OPPO 虚拟网关（真机实测 vgate0 = 172.30.x，排第一会顶掉 wlan0）
+    n.includes('vpn') ||
+    n.includes('ppp') ||            // 蜂窝数据 PPP 接口
+    n.includes('ipsec') ||
+    n.includes('utun') ||           // iOS / macOS VPN
     n.includes('openvpn') ||
     n.includes('nord') ||
     n.includes('pseudo') ||

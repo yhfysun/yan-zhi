@@ -695,10 +695,15 @@ describe('空间右键「打开目录」+ 子菜单样式', () => {
   const CSS = read('styles/menu.css');
 
   it('★★ 空间（目录）右键菜单必须有「打开目录」（用户报的就是这里）', () => {
-    // 空间菜单块（spaceMenuTarget）里要有 打开目录，且传空间自己的 dirPath
-    const start = SIDEBAR.indexOf('v-if="spaceMenuTarget"');
-    const end = SIDEBAR.indexOf('treeMenu.visible');
-    const block = SIDEBAR.slice(start, end > 0 ? end : undefined);
+    // 空间菜单块（spaceMenuTarget）里要有 打开目录，且传空间自己的 dirPath。
+    // ★ 2026-10-26：不能按完整属性串定位 —— 触屏端要给 MobileActionSheet 让路，
+    //   属性已变成 v-if="spaceMenuTarget && !isTouchShell"，整串 indexOf 会返回 -1。
+    const start = SIDEBAR.indexOf('v-if="spaceMenuTarget');
+    expect(start, '★ 找不到空间右键菜单块（spaceMenuTarget）').toBeGreaterThanOrEqual(0);
+    // 从菜单块之后找下一个菜单边界：文件上方还有 MobileActionSheet 的 :visible="treeMenu.visible"，
+    // 直接 indexOf 会拿到 start 之前的 499 行，slice 出空串。
+    const end = SIDEBAR.indexOf('treeMenu.visible', start + 1);
+    const block = SIDEBAR.slice(start, end > start ? end : undefined);
     expect(block, '★★ 空间右键缺「打开目录」（用户报"任务列表里面目录右击"没有）')
       .toMatch(/openPathInSystem\(spaceMenuTarget\.space\.dirPath,\s*true\)/);
     expect(block, '★ 菜单项文字不对').toMatch(/>\s*打开目录\s*</);

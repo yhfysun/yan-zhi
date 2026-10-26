@@ -40,8 +40,16 @@
                 <div v-else class="rc-hint">—（未检测到局域网 IP）</div>
               </div>
               <div class="rc-host-line"><span class="rc-k2">授权码</span><code class="rc-host-code">{{ hostCode || '—' }}</code></div>
+              <div v-if="hostIps.length > 1" class="rc-host-line">
+                <span class="rc-k2">连接 IP</span>
+                <select v-model="hostSelectedIp" class="rc-host-ipsel" title="手机用哪块网卡的 IP 连本机">
+                  <option v-for="ip in hostIps" :key="ip.address" :value="ip.address">
+                    {{ ip.address }}{{ ip.name ? ` · ${ip.name}` : '' }}{{ isVirtualNic(ip.name) ? '（虚拟网卡）' : '' }}
+                  </option>
+                </select>
+              </div>
               <div class="rc-host-line"><span class="rc-k2">控制端地址</span><code class="rc-host-addr">{{ hostPreferredIp ? `http://${hostPreferredIp}:${hostPort}/remote` : '—' }}</code></div>
-              <div class="rc-host-line"><span class="rc-k2">通道</span><span class="rc-host-mode">{{ hostMode === 'webrtc-capable' ? 'WebRTC 低延迟（本机界面已就绪）' : 'JPEG 兼容模式' }}</span></div>
+              <div class="rc-host-line"><span class="rc-k2">通道</span><span class="rc-host-mode">{{ hostMode === 'webrtc-capable' ? 'WebRTC 低延迟（本机界面已就绪）' : '待会话评估（连入时优先 WebRTC）' }}</span></div>
               <div class="rc-host-actions">
                 <button class="rc-btn" @click="rotateHostCode">换一个码</button>
                 <button class="rc-btn" @click="copyHostInvite">复制邀请</button>
@@ -89,7 +97,6 @@
       @contextmenu.prevent
       @pointerdown="onStagePointerDown" @pointermove="onStagePointerMove" @pointerup="onStagePointerUp" @pointercancel="onStagePointerUp"
       @wheel.prevent="onStageWheel"
-      @dblclick="toggleFullscreen"
       @touchstart.passive="markTouch" @touchmove.passive="markTouch" @touchend.passive="markTouch"
       @dragover.prevent="dragOver = true" @dragleave.prevent="dragOver = false" @drop.prevent="onFileDrop"
     >
@@ -99,7 +106,13 @@
       ></video>
       <canvas v-show="mode === 'jpeg'" ref="canvasRef" class="rc-video" :style="mediaStyle"></canvas>
 
-      <!-- JPEG 模式远端光标（GDI 采集不含指针，客户端自绘） -->
+      <!-- 首帧未到：明确告诉用户在建立画面，而不是留一块纯黑让人以为挂了 -->
+      <div v-if="phase === 'live' && !hasFrame" class="rc-wait-overlay">
+        <div class="rc-spinner"></div>
+        <div class="rc-wait-title">正在建立画面…</div>
+        <div class="rc-wait-sub">{{ mode === 'webrtc' ? 'WebRTC 协商中，12 秒未出画面会自动切兼容模式' : '兼容模式正在启动采集，首帧通常需要几秒' }}</div>
+      </div>
+
       <div class="rc-cursor" :style="cursorStyle">
         <svg width="18" height="24" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#000" stroke-width="1.4"/></svg>
       </div>
@@ -107,17 +120,24 @@
       <!-- 顶部工具条：普通模式可见，全屏沉浸时隐藏 -->
       <div class="rc-toolbar" :class="{ hidden: immersive && !toolbarPeek }">
         <button class="rc-tbtn" @click="disconnect">← 断开</button>
+        <!-- 显示器切换放最前面：这是第二常用的控件，不能让它被挤到要横向滑动才看得见 -->
+        <select
+          v-if="displays.length > 1" v-model="currentDisplay"
+          class="rc-select rc-select-disp" title="采集显示器" @change="selectDisplay(currentDisplay)"
+        >
+          <option v-for="(d, i) in displays" :key="d.id" :value="d.id">{{ displayShortLabel(d, i) }}</option>
+        </select>
         <span class="rc-status">{{ statusText }}</span>
+        <button v-if="!immersive" class="rc-tbtn" title="键盘输入" @click="openKeyboardPanel">⌨ 键盘</button>
+        <button
+          v-if="!immersive" class="rc-tbtn" :class="{ active: mouseMode }"
+          title="虚拟鼠标：拖动移动指针，点按左键，长按右键" @click="toggleMouseMode"
+        >🖱 {{ mouseMode ? '鼠标开' : '鼠标' }}</button>
+        <button v-if="!immersive && mouseMode" class="rc-tbtn" @click="rightClickHere">右键</button>
         <select v-if="mode === 'jpeg'" v-model="qualityPreset" class="rc-select" @change="applyQuality">
           <option value="smooth">流畅</option>
           <option value="balance">均衡</option>
           <option value="sharp">清晰</option>
-        </select>
-        <select
-          v-if="displays.length > 1" v-model="currentDisplay"
-          class="rc-select" title="采集显示器" @change="selectDisplay(currentDisplay)"
-        >
-          <option v-for="d in displays" :key="d.id" :value="d.id">{{ displayLabel(d) }}</option>
         </select>
         <button class="rc-tbtn" @click="toggleZoom">{{ zoomLabel }}</button>
         <button class="rc-tbtn" @click="toggleFullscreen">{{ immersive ? '退出全屏' : '全屏' }}</button>
@@ -130,6 +150,12 @@
       >⚙</div>
       <div v-if="immersive && ballMenuOpen" class="rc-ball-menu" :style="ballMenuStyle" @pointerdown.stop>
         <button class="rc-mbtn" @click.stop="openKeyboardPanel">⌨ 键盘输入</button>
+        <button class="rc-mbtn" :class="{ active: mouseMode }" @click.stop="toggleMouseMode">
+          {{ mouseMode ? '🖱 鼠标模式：开' : '🖱 鼠标模式：关' }}
+        </button>
+        <button v-if="mouseMode" class="rc-mbtn" @click.stop="rightClickHere">🖱 右键单击</button>
+        <button class="rc-mbtn" @click.stop="zoomStep(1.25)">🔍 放大</button>
+        <button class="rc-mbtn" @click.stop="zoomStep(0.8)">🔍 缩小</button>
         <button class="rc-mbtn" @click.stop="openFilePanel">🗂 文件传输</button>
         <button class="rc-mbtn" @click.stop="openClipboardPanel">📋 剪贴板</button>
         <button class="rc-mbtn" @click.stop="toggleAudio">{{ audioOn ? '🔊 音频转发：开' : '🔇 音频转发：关' }}</button>
@@ -145,12 +171,17 @@
         <button class="rc-mbtn danger" @click.stop="disconnect">✕ 断开连接</button>
       </div>
 
-      <!-- 键盘整串输入面板（软键盘组字完成后一次性发送） -->
-      <div v-if="kbPanelOpen" class="rc-panel" @pointerdown.stop @click.stop>
+      <!-- 键盘输入面板（软键盘实时注入：打字即发送，退格/回车/方向键直通） -->
+      <div v-if="kbPanelOpen" class="rc-panel rc-panel-kb" @pointerdown.stop @click.stop>
         <div class="rc-panel-head">键盘输入<button class="rc-panel-x" @click="kbPanelOpen = false">✕</button></div>
-        <textarea v-model="kbText" class="rc-panel-text" rows="3" placeholder="输入文字（支持中文输入法），发送后整串注入被控端"></textarea>
+        <textarea
+          ref="kbInputRef" v-model="kbText" class="rc-panel-text" rows="2"
+          placeholder="点这里调出键盘，边打边发到被控端"
+          @input="onKbInput" @keydown="onKbKeydown"
+          @compositionstart="kbComposing = true" @compositionend="kbComposing = false"
+        ></textarea>
         <div class="rc-panel-actions">
-          <button class="rc-btn rc-btn-primary" @click="sendKbText">发送 (Enter)</button>
+          <button class="rc-btn rc-btn-primary" @click="sendKbText">发送剩余文字</button>
         </div>
       </div>
 
@@ -213,7 +244,7 @@ import { ElMessage } from 'element-plus';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { parseRcScanPayload } from '../utils/rcScan';
-import { parseNetworkIpResponse, sortLanIps, type LanIp } from '../utils/lanIp';
+import { parseNetworkIpResponse, sortLanIps, pickDefaultLanIp, isVirtualNic, type LanIp } from '../utils/lanIp';
 import { api, API_BASE, buildRequestHeaders } from '../api/client';
 
 type Phase = 'setup' | 'pending' | 'live' | 'ended';
@@ -230,6 +261,8 @@ const phase = ref<Phase>('setup');
 const pairing = ref(false);
 const endedReason = ref('');
 const mode = ref<'' | 'webrtc' | 'jpeg'>('');
+/** 是否已收到第一帧（两种通道都算）：用来把「还在连接」和「黑屏故障」区分开 */
+const hasFrame = ref(false);
 const screen = ref<ScreenRect>({ x: 0, y: 0, w: 0, h: 0 });
 const immersive = ref(false);
 const toolbarPeek = ref(false);
@@ -237,6 +270,9 @@ const ballHidden = ref(false);
 const ballMenuOpen = ref(false);
 const kbPanelOpen = ref(false);
 const kbText = ref('');
+const kbInputRef = ref<HTMLTextAreaElement>();
+/** 中文输入法组字中：拼音阶段不发，组字完成后由随后的 input 事件整串发 */
+const kbComposing = ref(false);
 const clipPanelOpen = ref(false);
 const clipText = ref('');
 const clipBusy = ref(false);
@@ -254,7 +290,11 @@ const iceServers = ref<RcIceServer[]>([]);
 // ---- 缩放几何 ----
 const viewport = reactive({ w: 0, h: 0 });
 const native = reactive({ w: 0, h: 0 });
-const zoomMode = ref<'fit' | 'free'>('fit');
+const zoomMode = ref<'fit' | 'fill' | 'free'>('fit');
+/** UU 式虚拟鼠标：拖动移动指针、点按左键、长按右键，滚轮用双指滑动 */
+const mouseMode = ref(false);
+const mousePos = reactive({ x: 0, y: 0 });
+let lastMouseClient: { x: number; y: number } | null = null;
 const zoom = ref(1);
 const pan = reactive({ x: 0, y: 0 });
 
@@ -263,8 +303,11 @@ const statusText = computed(() => {
   if (mode.value === 'jpeg') return zoomMode.value === 'free' ? `兼容模式 · ${Math.round(zoom.value * 100)}%` : '兼容模式已连接';
   return '连接中…';
 });
-const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '1:1' : '适应窗口'));
+const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '铺满' : zoomMode.value === 'fill' ? '1:1' : '适应'));
 
+/** 上次连过的被控端地址：手机 App 里 window.location.origin 是壳的 localhost，毫无意义，
+ *  不记住的话每次都要手输一遍 IP */
+const RC_LAST_HOST_KEY = 'rc:lastHost';
 const form = reactive({ host: window.location.origin, code: '' });
 const route = useRoute();
 const router = useRouter();
@@ -330,6 +373,26 @@ function syncViewport(): void {
     viewport.h = el.clientHeight;
   }
 }
+/**
+ * 舞台在 setup 阶段是 v-show 隐藏的（display:none），挂载那一刻 clientWidth 恒为 0。
+ * 不在进入会话时重新量一次，displayedRect 会一直是 0×0 —— 画面元素宽高 0，
+ * 表现就是「竖屏进来全黑，横屏/旋转触发 resize 才出画面」。
+ */
+let stageRO: ResizeObserver | null = null;
+function observeStage(): void {
+  const el = stageRef.value;
+  if (!el || typeof ResizeObserver === 'undefined') return;
+  stageRO?.disconnect();
+  stageRO = new ResizeObserver(() => syncViewport());
+  stageRO.observe(el);
+}
+watch(phase, (p) => {
+  if (p !== 'live') return;
+  void nextTick(() => {
+    syncViewport();
+    observeStage();
+  });
+});
 function syncNativeFromVideo(): void {
   const v = videoRef.value;
   if (v && v.videoWidth > 0) {
@@ -355,13 +418,21 @@ function fitBox(): { w: number; h: number; x: number; y: number } {
   }
   return { w, h, x: (viewport.w - w) / 2, y: (viewport.h - h) / 2 };
 }
+/** cover 铺满盒：短边贴满视口，长边溢出（多余部分靠平移看）—— 手机竖屏全屏不再有黑边 */
+function coverBox(): { w: number; h: number; x: number; y: number } {
+  if (!native.w || !native.h || !viewport.w || !viewport.h) return { w: 0, h: 0, x: 0, y: 0 };
+  const s = Math.max(viewport.w / native.w, viewport.h / native.h);
+  const w = native.w * s;
+  const h = native.h * s;
+  return { w, h, x: (viewport.w - w) / 2, y: (viewport.h - h) / 2 };
+}
 /** 当前显示矩形（含缩放/平移，已夹取在视口内） */
 const displayedRect = computed(() => {
   const b = fitBox();
   if (!b.w) return { x: 0, y: 0, w: 0, h: 0 };
   if (zoomMode.value === 'fit') return b;
-  const w = b.w * zoom.value;
-  const h = b.h * zoom.value;
+  const w = zoomMode.value === 'fill' ? coverBox().w : b.w * zoom.value;
+  const h = zoomMode.value === 'fill' ? coverBox().h : b.h * zoom.value;
   const cx = (viewport.w - w) / 2;
   const cy = (viewport.h - h) / 2;
   const xMin = Math.min(0, viewport.w - w);
@@ -387,9 +458,10 @@ const mediaStyle = computed<CSSProperties>(() => {
   };
 });
 function panBy(dx: number, dy: number): void {
-  const b = fitBox();
-  const w = b.w * zoom.value;
-  const h = b.h * zoom.value;
+  const full = zoomMode.value === 'fill';
+  const b = full ? coverBox() : fitBox();
+  const w = full ? b.w : b.w * zoom.value;
+  const h = full ? b.h : b.h * zoom.value;
   const xMinOff = Math.min(0, viewport.w - w) - (viewport.w - w) / 2;
   const xMaxOff = Math.max(0, viewport.w - w) - (viewport.w - w) / 2;
   const yMinOff = Math.min(0, viewport.h - h) - (viewport.h - h) / 2;
@@ -419,18 +491,23 @@ function setZoom(z: number, anchorX?: number, anchorY?: number): void {
   }
 }
 function toggleZoom(): void {
+  pan.x = 0;
+  pan.y = 0;
+  // 三档循环：适应窗口 → 铺满（无黑边） → 1:1 → 适应窗口
   if (zoomMode.value === 'fit') {
-    // 1:1：显示像素 = 内容原生像素
-    const b = fitBox();
-    if (b.w > 0 && native.w > 0) {
-      setZoom(Math.min(8, native.w / b.w));
-    }
-  } else {
+    zoomMode.value = 'fill';
+    zoom.value = 1;
+    return;
+  }
+  if (zoomMode.value === 'fill') {
     zoomMode.value = 'fit';
     zoom.value = 1;
-    pan.x = 0;
-    pan.y = 0;
+    const b = fitBox();
+    if (b.w > 0 && native.w > 0) setZoom(Math.min(8, native.w / b.w));
+    return;
   }
+  zoomMode.value = 'fit';
+  zoom.value = 1;
 }
 
 // ---- JPEG 远端光标（显示坐标 = 显示矩形反算）----
@@ -463,6 +540,7 @@ async function pair(): Promise<void> {
     });
     const body = await res.json();
     if (body.error) throw new Error(body.error);
+    try { localStorage.setItem(RC_LAST_HOST_KEY, base); } catch { /* 隐私模式忽略 */ }
     const d = body.data || {};
     if (d.deviceToken) saveIdentity(base, d.deviceToken);
     if (d.status === 'granted' && d.token) {
@@ -570,8 +648,11 @@ const hostMode = ref('');
 const hostIps = ref<LanIp[]>([]);
 const hostPort = ref(3001);
 const hostQrUrl = ref('');
+/** 用户选的对外 IP（'' = 自动：第一个物理网卡）。二维码/地址/邀请文案全部跟随它 */
+const hostSelectedIp = ref('');
 let hostHostKey = '';
-const hostPreferredIp = computed(() => (hostIps.value[0]?.address || ''));
+const hostPreferredIp = computed(() => pickDefaultLanIp(hostIps.value, hostSelectedIp.value));
+watch(hostSelectedIp, () => void renderHostQr());
 
 function openHostTab(): void {
   setupTab.value = 'host';
@@ -726,6 +807,8 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
     case 'session.mode': {
       const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
       setMode(m);
+      // 兼容模式会话被升级成 WebRTC（白名单直连场景）：需要重新发起 offer
+      if (m === 'webrtc' && !videoRef.value?.srcObject) startWebRtc();
       if (msg.screen) setScreen(msg.screen as ScreenRect);
       break;
     }
@@ -752,6 +835,11 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
           console.warn('[rc] setRemoteDescription 失败', e);
         }
       }
+      break;
+    case 'rtc.failed':
+      // 被控端采集/协商失败：立即转兼容模式，别让用户对着黑屏等
+      ElMessage.warning(`WebRTC 不可用，已切到兼容模式：${String(msg.reason || '采集失败')}`);
+      send({ type: 'use.jpeg' });
       break;
     case 'rtc.ice':
       if (pc && msg.candidate) {
@@ -802,11 +890,15 @@ function setMode(m: 'webrtc' | 'jpeg'): void {
   mode.value = m;
   if (m === 'jpeg') {
     teardownWebRtc();
+    hasFrame.value = false; // 兼容模式首帧还没到，先显示等待层
   } else {
     // WebRTC 起不来（无 host 渲染层 / 全被拦）时 12s 无画面自动降级 JPEG
     if (webrtcWatchdog) clearTimeout(webrtcWatchdog);
     webrtcWatchdog = window.setTimeout(() => {
-      if (mode.value === 'webrtc' && !videoRef.value?.srcObject) send({ type: 'use.jpeg' });
+      if (mode.value === 'webrtc' && !videoRef.value?.srcObject) {
+        ElMessage.warning('WebRTC 未能出画面（局域网直连未打通），已切到兼容模式');
+        send({ type: 'use.jpeg' });
+      }
     }, 12_000);
   }
 }
@@ -819,10 +911,17 @@ function startWebRtc(): void {
   pc = conn;
   conn.ontrack = (e) => {
     remoteStream = e.streams[0] || new MediaStream([e.track]);
+    hasFrame.value = true;
     if (videoRef.value) {
       videoRef.value.srcObject = remoteStream;
       void videoRef.value.play().catch(() => undefined);
     }
+    // 局域网直连：把抖动缓冲/播放延迟压到最低（默认缓冲是给公网丢包留余量，LAN 上纯增延迟）
+    try {
+      const recv = e.receiver as RTCRtpReceiver & { playoutDelayHint?: number; jitterBufferTarget?: number };
+      recv.playoutDelayHint = 0;
+      recv.jitterBufferTarget = 0;
+    } catch { /* 老内核不支持则用默认 */ }
     if (webrtcWatchdog) {
       clearTimeout(webrtcWatchdog);
       webrtcWatchdog = null;
@@ -865,6 +964,7 @@ function onJpegFrame(data: ArrayBuffer): void {
     }
     const ctx = c.getContext('2d');
     ctx?.drawImage(bmp, 0, 0);
+    hasFrame.value = true;
     if (native.w !== bmp.width || native.h !== bmp.height) {
       native.w = bmp.width;
       native.h = bmp.height;
@@ -873,9 +973,10 @@ function onJpegFrame(data: ArrayBuffer): void {
 }
 
 const QUALITY_PRESETS: Record<string, { fps: number; scale: number; quality: number }> = {
-  smooth: { fps: 8, scale: 0.6, quality: 50 },
-  balance: { fps: 10, scale: 0.8, quality: 60 },
-  sharp: { fps: 12, scale: 1, quality: 70 },
+  // 局域网带宽足够：档位整体抬高帧率（原 8/10/12fps 是「省带宽」思路，体感就是卡+不同步）
+  smooth: { fps: 12, scale: 0.6, quality: 55 },
+  balance: { fps: 15, scale: 0.8, quality: 62 },
+  sharp: { fps: 20, scale: 1, quality: 72 },
 };
 function applyQuality(): void {
   const p = QUALITY_PRESETS[qualityPreset.value];
@@ -904,8 +1005,50 @@ const toScreen = (clientX: number, clientY: number): { x: number; y: number } | 
     y: Math.round(screen.value.y + ny * screen.value.h),
   };
 };
+/**
+ * 本地光标预测：WebRTC 帧里不带指针（Electron 桌面采集不含光标），JPEG 帧到得慢时
+ * 也跟不上手 —— 统一由控制端按自己的触点/鼠标位置自绘，点哪指哪、零延迟。
+ */
+let cursorHideTimer: number | null = null;
+function showCursorAt(x: number, y: number): void {
+  cursor.x = x;
+  cursor.y = y;
+  cursor.visible = true;
+  if (cursorHideTimer) clearTimeout(cursorHideTimer);
+  if (mouseMode.value) return; // 鼠标模式：指针常显，不自动隐藏
+  cursorHideTimer = window.setTimeout(() => { cursor.visible = false; }, 2500);
+}
+
+/** 虚拟指针位置初始化到画面中心（屏幕坐标） */
+function initMousePos(): void {
+  if (!screen.value.w || (mousePos.x && mousePos.y)) return;
+  mousePos.x = Math.round(screen.value.x + screen.value.w / 2);
+  mousePos.y = Math.round(screen.value.y + screen.value.h / 2);
+}
+function toggleMouseMode(): void {
+  mouseMode.value = !mouseMode.value;
+  ballMenuOpen.value = false;
+  if (mouseMode.value) {
+    initMousePos();
+    showCursorAt(mousePos.x, mousePos.y);
+  } else {
+    cursor.visible = false;
+  }
+}
+/** 在虚拟指针当前位置右键（悬浮球菜单/工具栏用） */
+function rightClickHere(): void {
+  if (!mouseMode.value || !screen.value.w) return;
+  input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button: 'right' });
+  ballMenuOpen.value = false;
+}
+/** 悬浮球里的缩放按钮（捏合之外的显式入口） */
+function zoomStep(factor: number): void {
+  setZoom(zoom.value * factor);
+  ballMenuOpen.value = false;
+}
 const input = (msg: Record<string, unknown>): void => {
   if (phase.value !== 'live') return;
+  if (typeof msg.x === 'number' && typeof msg.y === 'number') showCursorAt(msg.x, msg.y);
   send({ type: 'input', ...msg });
 };
 
@@ -931,6 +1074,21 @@ function onStagePointerDown(e: PointerEvent): void {
     return;
   }
   if (pointers.size > 2) return;
+  if (mouseMode.value) {
+    // 鼠标模式：单指拖动 = 移动虚拟指针（不下发按下），点按 = 左键，长按 = 右键
+    initMousePos();
+    downPos = { x: e.clientX, y: e.clientY };
+    lastMouseClient = { x: e.clientX, y: e.clientY };
+    dragging = false;
+    suppressUp = false;
+    clearLongPress();
+    longPressTimer = window.setTimeout(() => {
+      suppressUp = true;
+      if (navigator.vibrate) navigator.vibrate(30);
+      input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button: 'right' });
+    }, 550);
+    return;
+  }
   const p = toScreen(e.clientX, e.clientY);
   if (!p) return;
   downPos = { x: e.clientX, y: e.clientY };
@@ -961,18 +1119,40 @@ function onStagePointerMove(e: PointerEvent): void {
         // 捏合 → 缩放（以中点为锚）
         setZoom(zoom.value * ratio, midX, midY);
         pinchPrev.dist = dist;
-      } else if (zoomMode.value === 'free' && zoom.value > 1) {
-        panBy(midX - pinchPrev.midX, midY - pinchPrev.midY);
       } else {
-        // 适应窗口下的双指平移退化为滚动（并行位移）
+        // 双指平移 = 滚轮（所有缩放档位一致，和 UU 远控同手感）
         const dy = midY - pinchPrev.midY;
         if (Math.abs(dy) > 2) {
           const p = toScreen(midX, midY);
-          if (p) input({ action: 'wheel', ...p, delta: Math.max(-400, Math.min(400, -Math.round(dy))) });
+          if (p) input({ action: 'wheel', ...p, delta: Math.max(-400, Math.min(400, -Math.round(dy * 1.5))) });
         }
       }
     }
     pinchPrev = { dist, midX, midY, active: true };
+    return;
+  }
+  if (mouseMode.value) {
+    // 鼠标模式：按手指位移相对移动虚拟指针（屏幕像素比例换算，跟手且不受缩放影响）
+    if (!lastMouseClient) { lastMouseClient = { x: e.clientX, y: e.clientY }; return; }
+    const dx = e.clientX - lastMouseClient.x;
+    const dy = e.clientY - lastMouseClient.y;
+    lastMouseClient = { x: e.clientX, y: e.clientY };
+    if (!downPos) return;
+    const total = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
+    if (!dragging && total > 6) {
+      dragging = true;
+      clearLongPress();
+    }
+    if (!dragging) return;
+    const now = Date.now();
+    if (now - lastMoveSent < 30) return;
+    lastMoveSent = now;
+    const r = displayedRect.value;
+    if (!r.w || !r.h || !screen.value.w) return;
+    const k = screen.value.w / r.w;
+    mousePos.x = Math.min(screen.value.x + screen.value.w - 1, Math.max(screen.value.x, mousePos.x + dx * k));
+    mousePos.y = Math.min(screen.value.y + screen.value.h - 1, Math.max(screen.value.y, mousePos.y + dy * k));
+    input({ action: 'move', x: Math.round(mousePos.x), y: Math.round(mousePos.y) });
     return;
   }
   if (!downPos) return;
@@ -1000,6 +1180,17 @@ function onStagePointerUp(e: PointerEvent): void {
     dragging = false;
     return;
   }
+  if (mouseMode.value) {
+    lastMouseClient = null;
+    // 没拖动 = 在虚拟指针处左键单击（拖动只移动指针，不点）
+    if (!dragging && downPos) {
+      initMousePos();
+      input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button: 'left' });
+    }
+    downPos = null;
+    dragging = false;
+    return;
+  }
   if (downPos) {
     const p = toScreen(e.clientX, e.clientY) || { x: screen.value.x, y: screen.value.y };
     input({ action: 'up', ...p, button: 'left' });
@@ -1015,8 +1206,8 @@ function onStageWheel(e: WheelEvent): void {
     setZoom(zoom.value * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
     return;
   }
-  // 缩放态下滚轮 = 平移（纵向），Shift 平移横向
-  if (zoomMode.value === 'free' && zoom.value > 1) {
+  // 缩放/铺满态下滚轮 = 平移（纵向），Shift 平移横向
+  if (zoomMode.value === 'fill' || (zoomMode.value === 'free' && zoom.value > 1)) {
     if (e.shiftKey) panBy(-e.deltaY, 0);
     else panBy(0, -e.deltaY);
     return;
@@ -1080,6 +1271,31 @@ function onCompositionEnd(e: CompositionEvent): void {
   if (phase.value !== 'live' || !e.data) return;
   input({ action: 'type', text: e.data });
 }
+/** 软键盘边打边发：每敲一段就注入并清空输入框，输入框只当「键盘入口」用 */
+function flushKb(el: HTMLTextAreaElement | null | undefined): void {
+  if (!el) return;
+  const text = el.value;
+  if (!text) return;
+  el.value = '';
+  kbText.value = '';
+  input({ action: 'type', text });
+}
+function onKbInput(e: Event): void {
+  if (kbComposing.value) return;
+  flushKb(e.target as HTMLTextAreaElement);
+}
+/** 编辑键直通（退格/回车/方向键必须逐次注入，攒成文本发过去语义就错了） */
+const KB_KEY_MAP: Record<string, string> = {
+  Enter: 'enter', Backspace: 'backspace', Tab: 'tab', Escape: 'esc', Delete: 'delete',
+  ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+};
+function onKbKeydown(e: KeyboardEvent): void {
+  if (kbComposing.value) return; // 输入法组字过程中的回车/退格属于候选词操作，不发
+  const k = KB_KEY_MAP[e.key];
+  if (!k) return;
+  e.preventDefault();
+  input({ action: 'key', keys: [k] });
+}
 function sendKbText(): void {
   const t = kbText.value;
   if (!t) return;
@@ -1089,11 +1305,13 @@ function sendKbText(): void {
 }
 
 // ================= 面板 =================
-function openKeyboardPanel(): void {
+async function openKeyboardPanel(): Promise<void> {
   kbPanelOpen.value = true;
   clipPanelOpen.value = false;
   filePanelOpen.value = false;
   ballMenuOpen.value = false;
+  await nextTick();
+  kbInputRef.value?.focus(); // 手机上聚焦输入框 = 系统键盘弹出
 }
 function openClipboardPanel(): void {
   clipPanelOpen.value = true;
@@ -1117,6 +1335,11 @@ function toggleAudio(): void {
 // ================= 多显示器切换 =================
 function displayLabel(d: RcDisplayInfo): string {
   return `${(d.primary ? '主屏 · ' : '') + d.label} ${d.w}×${d.h}`;
+}
+/** 工具栏下拉用短标签：手机上长文案会把整条工具栏挤爆 */
+function displayShortLabel(d: RcDisplayInfo, i: number): string {
+  if (d.id === 'virtual') return '整个桌面';
+  return `${d.primary ? '主屏' : `屏 ${i + 1}`} ${d.w}×${d.h}`;
 }
 function selectDisplay(id: string): void {
   ballMenuOpen.value = false;
@@ -1229,23 +1452,59 @@ async function downloadFile(name: string): Promise<void> {
 }
 
 // ================= 全屏沉浸 + 悬浮球 =================
+/** 进全屏默认「适应窗口」：整块桌面（含任务栏）完整可见 —— 铺满是可选的，不是默认 */
+function applyImmersiveZoom(): void {
+  pan.x = 0;
+  pan.y = 0;
+}
+/** App 壳（Capacitor）里连系统状态栏一起隐藏；桌面/浏览器没有这个插件，静默跳过 */
+function setNativeImmersive(on: boolean): void {
+  try {
+    const cap = (window as unknown as {
+      Capacitor?: { Plugins?: Record<string, { set?: (o: { on: boolean }) => Promise<void> }> };
+    }).Capacitor;
+    void cap?.Plugins?.RcImmersive?.set?.({ on });
+  } catch { /* 非 App 宿主忽略 */ }
+}
+/** 触屏全屏时锁横屏（与 UU 远控一致）；不支持 orientation.lock 的环境静默跳过 */
+async function lockLandscape(on: boolean): Promise<void> {
+  if (!isTouch) return;
+  try {
+    const o = (window.screen as unknown as { orientation?: { lock?: (v: string) => Promise<void>; unlock?: () => void } }).orientation;
+    if (on) await o?.lock?.('landscape');
+    else o?.unlock?.();
+  } catch { /* 桌面/不支持：保持当前方向 */ }
+}
 async function toggleFullscreen(): Promise<void> {
   const el = stageRef.value;
   if (!el) return;
   try {
     if (!document.fullscreenElement) {
       await el.requestFullscreen();
+      applyImmersiveZoom();
+      void lockLandscape(true);
     } else {
       await document.exitFullscreen();
+      void lockLandscape(false);
     }
   } catch {
     // iOS Safari 不支持 Fullscreen API：降级为「伪全屏」（本页是 bare 路由，藏 UI 即可）
     immersive.value = !immersive.value;
+    setNativeImmersive(immersive.value);
+    if (immersive.value) {
+      applyImmersiveZoom();
+      void lockLandscape(true);
+    } else {
+      void lockLandscape(false);
+    }
   }
   syncViewport();
 }
 function onFullscreenChange(): void {
   immersive.value = !!document.fullscreenElement;
+  setNativeImmersive(immersive.value);
+  if (immersive.value) applyImmersiveZoom();
+  else void lockLandscape(false);
   if (!immersive.value) {
     ballMenuOpen.value = false;
     kbPanelOpen.value = false;
@@ -1352,6 +1611,7 @@ function cleanup(): void {
   }
   sessionToken = '';
   sessionId = '';
+  hasFrame.value = false;
   audioOn.value = false;
   cursor.visible = false;
   displays.value = [];
@@ -1366,6 +1626,9 @@ function cleanup(): void {
   filePanelOpen.value = false;
   if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
   immersive.value = false;
+  setNativeImmersive(false);
+  mouseMode.value = false;
+  lastMouseClient = null;
 }
 function onResize(): void {
   syncViewport();
@@ -1378,6 +1641,11 @@ onMounted(() => {
   window.addEventListener('resize', onResize);
   syncViewport();
   syncNativeFromScreen();
+  // 上次连过的地址优先于 location.origin（App 壳里 origin 是 localhost，填了也连不上）
+  try {
+    const last = localStorage.getItem(RC_LAST_HOST_KEY);
+    if (last) form.host = last;
+  } catch { /* ignore */ }
   // 扫码/邀请链接直达：?code= 授权码 → 预填并直接发起配对（被控端确认弹窗照常把关）。
   // 裸路径引导（router/barePathHash.ts）会把 ?code= 原样带进 hash query。
   const qc = route?.query?.code;
@@ -1387,6 +1655,8 @@ onMounted(() => {
   }
 });
 onBeforeUnmount(() => {
+  stageRO?.disconnect();
+  stageRO = null;
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onKeyDown, true);
   window.removeEventListener('compositionend', onCompositionEnd, true);
@@ -1414,6 +1684,7 @@ onBeforeUnmount(() => {
 .rc-host-code { font-size: 19px; font-weight: 700; letter-spacing: 3px; color: #fff; }
 .rc-host-addr { word-break: break-all; color: #c7d2e0; }
 .rc-host-mode { color: #c7d2e0; }
+.rc-host-ipsel { flex: 1; min-width: 0; background: #10151b; color: inherit; border: 1px solid #2a323e; border-radius: 8px; padding: 6px 8px; font-size: 13px; }
 .rc-host-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .rc-host-actions .rc-btn { flex: 1; min-width: 96px; }
 .rc-brand { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
@@ -1435,17 +1706,26 @@ onBeforeUnmount(() => {
 .rc-wait-title { font-size: 15px; font-weight: 600; }
 .rc-wait-sub { font-size: 12px; color: #8a94a3; }
 
-.rc-stage { position: absolute; inset: 0; overflow: hidden; background: #000; }
+/* touch-action:none 必须挂在舞台本身：手指落在画面外的黑边上时，手势归舞台接管，
+   否则浏览器会当成滚动/缩放而把 pointermove 变成 pointercancel —— 表现就是「滑动没反应」 */
+.rc-stage { position: absolute; inset: 0; overflow: hidden; background: #000; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 /* ★ 显示矩形由 JS 自算（mediaStyle 内联定位），这里只留外观——不再用 inset:100% + contain，
    否则 letterbox 黑边会算进坐标映射（点边缘会偏）。 */
 .rc-video { position: absolute; object-fit: fill; touch-action: none; background: #000; }
 .rc-cursor { position: absolute; z-index: 4; pointer-events: none; transform: translate(-2px, -2px); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
-.rc-toolbar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0)); transition: opacity 0.25s; z-index: 5; }
+/* 工具栏：手机上横向排不下时整条横向滚动（早期会让「断开」和状态文字竖排折行、
+   显示器切换下拉被挤出屏幕） */
+.rc-toolbar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0)); transition: opacity 0.25s; z-index: 5; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.rc-toolbar::-webkit-scrollbar { display: none; }
 .rc-toolbar.hidden { opacity: 0; pointer-events: none; }
-.rc-status { font-size: 12px; color: #b9c2cf; flex: 1; }
-.rc-tbtn { background: rgba(23,28,35,0.8); border: 1px solid #2a323e; color: inherit; border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.rc-status { font-size: 12px; color: #b9c2cf; flex: 1 1 auto; min-width: 42px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rc-tbtn { background: rgba(23,28,35,0.8); border: 1px solid #2a323e; color: inherit; border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; flex-shrink: 0; white-space: nowrap; }
 .rc-tbtn:hover { border-color: #4c8dff; }
-.rc-select { background: #171c23; color: inherit; border: 1px solid #2a323e; border-radius: 8px; padding: 5px 8px; font-size: 13px; }
+.rc-tbtn.active { border-color: #4c8dff; color: #9dc0ff; background: rgba(47,107,255,0.22); }
+.rc-select { background: #171c23; color: inherit; border: 1px solid #2a323e; border-radius: 8px; padding: 5px 8px; font-size: 13px; flex-shrink: 0; max-width: 44vw; }
+.rc-select-disp { max-width: 32vw; }
+/* 首帧等待层：黑屏时给出明确状态，并吃掉误触（此时画面还没有，点了也点不准） */
+.rc-wait-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; z-index: 3; pointer-events: none; background: #000; text-align: center; padding: 24px; }
 
 .rc-ball { position: absolute; right: 24px; bottom: 96px; width: 44px; height: 44px; border-radius: 50%; background: rgba(47,107,255,0.85); display: flex; align-items: center; justify-content: center; font-size: 18px; cursor: grab; box-shadow: 0 4px 16px rgba(0,0,0,0.45); transition: opacity 0.3s; z-index: 8; user-select: none; touch-action: none; }
 .rc-ball.hidden { opacity: 0.12; }
@@ -1459,6 +1739,8 @@ onBeforeUnmount(() => {
 
 .rc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: 24px; width: min(480px, 92%); background: #171c23; border: 1px solid #2a323e; border-radius: 12px; padding: 12px; z-index: 10; }
 .rc-panel-wide { width: min(560px, 94%); }
+/* 键盘面板固定顶部：系统键盘从底部升起，放底部的输入框会被键盘盖住 */
+.rc-panel-kb { top: 12px; bottom: auto; }
 .rc-panel-head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
 .rc-panel-x { background: transparent; border: none; color: #8a94a3; cursor: pointer; font-size: 14px; }
 .rc-panel-text { width: 100%; background: #10151b; border: 1px solid #2a323e; border-radius: 8px; color: inherit; padding: 8px 10px; font-size: 14px; resize: none; outline: none; box-sizing: border-box; }
