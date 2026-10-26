@@ -105,6 +105,18 @@ export function useTaskRowActions(options: UseTaskRowActionsOptions = {}) {
     if (task.id !== chatStore.currentConvId) void chat.selectConv(task.id);
   }
 
+  /**
+   * 新任务继续：按该任务的属性（空间 / 子线 / 智能体 / 模型）新建任务，
+   * 并把「从哪断的」预填到输入框（不自动发送，用户改完再发）。
+   * 浮层先收：新建会切到草稿态，菜单留着会挂在新页面上。
+   */
+  async function continueTask(task: Conversation | null) {
+    if (!task) return;
+    chat.closeCtxMenu();
+    chat.drawerOpen.value = false;
+    await chat.continueTaskAsNew(task);
+  }
+
   return {
     /** 当前重命名中的任务 id / 标题（模板渲染编辑框用，与 useChat 同一份 ref） */
     renamingId: chat.renamingId,
@@ -115,6 +127,8 @@ export function useTaskRowActions(options: UseTaskRowActionsOptions = {}) {
     cancelRename,
     remove,
     moveTo,
+    /** 新任务继续（继承任务属性 + 预填进度快照，不自动发送） */
+    continueTask,
     /** 行内「移动」按钮的空间选择浮层状态与动作（模板 Teleport 渲染用） */
     moveMenu,
     openMoveMenu,

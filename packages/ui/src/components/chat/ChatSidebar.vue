@@ -424,6 +424,11 @@
     <li @click="rows.startRename(ctxMenu.conv!)">
       <el-icon><EditPen /></el-icon>重命名
     </li>
+    <!-- 新任务继续（2026-10-24）：把本任务的空间/子线/智能体/模型带到新任务（属性永久生效），
+         首条消息只预填一份进度快照（不自动发送），用户改完再发。 -->
+    <li @click="rows.continueTask(ctxMenu.conv)">
+      <el-icon><ChatDotRound /></el-icon>新任务继续
+    </li>
     <!-- 在系统文件管理器里打开该任务的产物目录（仅桌面端有效，其它端给出提示） -->
     <li @click="openConvDir(ctxMenu.conv); closeCtxMenu()">
       <el-icon><FolderOpened /></el-icon>打开目录
@@ -759,6 +764,7 @@ const convSheetActions = computed<ActionSheetAction[]>(() => {
   if (batchMode.value) list.push({ key: 'exit-batch', label: '退出批量模式' });
   list.push(
     { key: 'pin', label: c.pinned ? '取消置顶' : '置顶' },    { key: 'rename', label: '重命名' },
+    { key: 'continue', label: '新任务继续' },
     { key: 'open-dir', label: '打开目录' },
   );
   // 归档（2026-10-16）：归档后只读，恢复后才能继续，所以入口放在「删除」之前
@@ -783,6 +789,7 @@ function onConvSheetSelect(a: ActionSheetAction) {
   } else if (a.key === 'exit-batch') exitBatchMode();
   else if (a.key === 'pin') rows.togglePinned(c);
   else if (a.key === 'rename') rows.startRename(c);
+  else if (a.key === 'continue') void rows.continueTask(c);
   else if (a.key === 'open-dir') openConvDir(c);
   else if (a.key === 'archive') archiveConv(c, true);
   else if (a.key === 'move:null') rows.moveTo(c, null);

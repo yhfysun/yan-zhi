@@ -440,7 +440,7 @@
                「截图时隐藏本应用窗口」勾选项 + 快捷键设置入口。tooltip 带快捷键。 -->
           <div v-if="canScreenshot" class="shot-btn-group">
             <el-tooltip :content="shotTooltip" placement="top">
-              <el-button size="small" circle class="ctx-btn shot-main" :disabled="snipping" @click="startScreenshot">
+              <el-button size="small" circle class="ctx-btn shot-main" :disabled="snipping" @click="startScreenshot()">
                 <el-icon><Camera /></el-icon>
               </el-button>
             </el-tooltip>
@@ -1235,7 +1235,7 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mime });
 }
 
-async function startScreenshot() {
+async function startScreenshot(fromHotkey = false) {
   if (snipping.value || !canScreenshot) return;
   snipping.value = true;
   try {
@@ -1246,6 +1246,19 @@ async function startScreenshot() {
     const hideApp = useSettingsStore().settings.screenshotHideApp !== false;
     const res = await (window as any).electronAPI.screenshot.capture({ hideApp });
     if (res?.ok && res.dataUrl) {
+      // ★ 2026-10-24：确认后一律写系统剪贴板 —— 截图最常见的去向是"粘到别的应用"，
+      //   此前只塞进聊天输入框，用户在 Excel/钉钉里 Ctrl+V 自然什么都粘不出来。
+      let copied = false;
+      try {
+        const r = await (window as any).electronAPI?.clipboard?.writeImage?.(res.dataUrl);
+        copied = !!(r && r.ok !== false);
+      } catch { /* 剪贴板失败不影响后续 */ }
+      if (fromHotkey) {
+        // 快捷键截图（多半在别的应用里触发）→ 只进剪贴板，不往输入框里加附件，
+        // 避免用户本来只想粘贴却被塞了一个待发送附件。
+        ElMessage.success(copied ? '截图已复制到剪贴板，可直接粘贴' : '截图完成，但剪贴板写入失败');
+        return;
+      }
       const blob = dataUrlToBlob(res.dataUrl);
       const ts = new Date();
       const pad = (n: number) => String(n).padStart(2, '0');
@@ -2168,7 +2181,7 @@ onMounted(() => {
     const w = window as any;
     if (!w.__yzShotHotkeyBound) {
       w.__yzShotHotkeyBound = true;
-      w.electronAPI.screenshot.onHotkey(() => { void startScreenshot(); });
+      w.electronAPI.screenshot.onHotkey(() => { void startScreenshot(true); });
       void syncScreenshotHotkey();
     }
   }

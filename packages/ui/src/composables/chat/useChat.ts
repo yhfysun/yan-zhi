@@ -47,6 +47,7 @@ import {
 //      只 re-export 会让文件内的引用全部 `Cannot find name`。re-export 是为了保持
 //      `from '.../useChat'` 的既有外部 import 全部有效（零破坏）。
 import { buildMessageRounds, type AgentStep, type SubAgentRound, type MessageRound } from './message-rounds';
+import { formatContinueTaskPrefill } from './continue-task';
 export type { AgentStep, SubAgentRound, MessageRound };
 export { buildMessageRounds };
 
@@ -1159,6 +1160,13 @@ function createChat() {
   const pendingTaskType = ref<string | null>(null);
   /** 父任务目录的「选线」框：{ spaceId, spaceName, children }；null = 不显示 */
   const taskLinePicker = ref<{ spaceId: string; spaceName: string; children: Array<{ id: string; label: string; summary: string }> } | null>(null);
+  /**
+   * 「新任务继续」的待填文案：startNewChat 收尾（restoreDraft('') 之后）写进输入框。
+   * ★ 必须由 startNewChat 统一落地：属于父任务目录时 startNewChat 会先弹「选线」框并提前返回，
+   *   用户选完线走的是 confirmTaskLine → startNewChat，这里存着的文案才不会丢。
+   *   ★ 只预填、不自动发送 —— 用户需要能改完再发。
+   */
+  const pendingContinuePrefill = ref<string | null>(null);
   const renamingId = ref('');
   const renamingTitle = ref('');
   const renameInputRef = ref<any>(null);
@@ -2595,6 +2603,57 @@ async function healStalePlatform() {
   /** 选线框取消：不建会话（父目录下不选线就没有 SOP，建了也是空跑） */
   function cancelTaskLine() {
     taskLinePicker.value = null;
+    // 取消选线 = 这次「新任务继续」没发生，别把待填文案漏给下一个新建任务
+    pendingContinuePrefill.value = null;
+  }
+
+  /**
+   * 「新任务继续」（轻量版）：按源任务的属性开一个新任务。
+   *
+   * ★ 属性怎么继承：空间 + 子线走 startNewChat 的原生入参（写进会话行、永久生效），
+   *   智能体沿用任务线的专属智能体（applyTaskTypeAgent），模型随后按源会话覆盖。
+   * ★ 一次性上下文只有首条消息的**进度快照**（formatContinueTaskPrefill）：
+   *   不复制 taskPlan 对象 —— 新任务要自己重新规划，顶着旧进度卡会假装"已完成"。
+   * ★ 不复制源任务的 systemPrompt / 历史消息：任务线提示词由后端按空间+子线现算，
+   *   历史消息留在源任务里（用户要看随时点回去）。
+   * ★ 与费用提醒条的 startContinuedConversation 区别：那个是"上下文写满后接力"，
+   *   建会话即落库、只带智能体/模型/空间；这里是"同一条线开下一个任务"，带子线 + 进度快照，
+   *   且停在草稿态让用户先改再发。
+   */
+  async function continueTaskAsNew(conv: Conversation) {
+    pendingContinuePrefill.value = formatContinueTaskPrefill({
+      title: conv.title,
+      taskType: conv.taskType,
+      taskPlan: conv.taskPlan,
+    });
+    try {
+      // 空间 + 子线：源任务有子线就不再弹选线框；没有子线时 startNewChat 会按目录规则弹
+      await startNewChat(conv.spaceId ?? null, conv.taskType || null);
+      // ★ 弹了选线框就到此为止：用户可能取消，此刻改全局智能体/模型会漏给下一个无关任务；
+      //   确认后走 confirmTaskLine → startNewChat，由所选任务线的智能体接管
+      //   （源任务本来就没选线，它的模型对下一条线没有继承意义）。
+      if (taskLinePicker.value) return;
+      // 智能体：源任务显式挂过（如通用任务手切了智能体）→ 一并带过来；类型专属智能体已由 applyTaskTypeAgent 处理
+      if (conv.agentId && conv.agentId !== agentStore.selectedId
+        && agentStore.agents.some((a) => a.id === conv.agentId)) {
+        onAgentSwitch(conv.agentId, false);
+        // 草稿态没有会话行可回填挂载，权威来源是智能体的 skill_ids；
+        // 不重算会带着上一条任务线智能体的技能（表现为"智能体换了、工具面还是旧的"）
+        syncMountsToAgent(conv.agentId);
+      }
+      // 模型放在最后：onAgentSwitch / applyTaskTypeAgent 都会按智能体回填模型，
+      // 源会话显式选过的模型优先级更高（否则"继续"出来的任务会偷偷换模型）
+      if (conv.modelId) {
+        const resolved = conv.platformId
+          ? platformStore.resolveModel(conv.modelId, conv.platformId)
+          : platformStore.resolveModel(conv.modelId);
+        if (resolved && CHAT_MODEL_TYPES.includes(resolved.type)) selectedModelId.value = resolved.id;
+      }
+    } catch {
+      // 新建失败时别把摘要留在待填位上，否则会漏给下一次无关的新建
+      pendingContinuePrefill.value = null;
+      ElMessage.error('新建继续任务失败，请重试');
+    }
   }
 
   /**
@@ -2691,6 +2750,15 @@ async function healStalePlatform() {
       // 只有真正绑到空间才改目录；office 无选中空间时不动用户的全局设置
       if (dirSpaceId) await syncWorkspaceDirToSpace(dirSpaceId);
       else if (spaceId === null) await syncWorkspaceDirToSpace(null);
+    }
+    // 「新任务继续」的预填：必须放在 restoreDraft('') 之后，否则会被草稿态归零吃掉。
+    // ★ 只填输入框、不自动发送 —— 预填的是进度快照，用户也要能先改再发。
+    // ★ 草稿里已有未发文字时**不顶掉**（用户可能正写到一半就点了「新任务继续」）：
+    //   摘要放前面，原文接在后面，两边都不丢。
+    if (pendingContinuePrefill.value) {
+      const prefill = pendingContinuePrefill.value;
+      pendingContinuePrefill.value = null;
+      input.value = input.value.trim() ? `${prefill}\n\n${input.value}` : prefill;
     }
   }
 
@@ -4413,7 +4481,7 @@ async function healStalePlatform() {
     onAgentSwitch, onModelChange,
     parseConfigCard, displayAssistantContent, getEditPlatform, getEditReason, onConfigSaved,
     queuedList, sendQueuedNow, editQueued, removeQueued, flushQueuedAfterTask,
-    startNewChat, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, sending, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
+    startNewChat, continueTaskAsNew, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, sending, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     // 费用账单（2026-10-17）：会话头金额 / 提醒条 / 「新开会话继续」
     costStore, startContinuedConversation,
     filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,

@@ -22,6 +22,8 @@ import { useAuthStore } from './auth';
 import { activeMode } from './mode';
 // 历史窗口不变量（裁剪保留轮头 + 裁剪后游标对齐），纯函数，见该文件顶部注释
 import { trimStartIndex, syncPagingAfterTrim } from './history-window';
+// 浏览器动作 → 人话（实况条展示「正在点击「发布」」，而不是干巴巴的"执行中"）
+import { describeBrowserAction } from '../composables/chat/browser-step-label';
 
 // 从工具调用参数中健壮地提取 URL —— 模型常把 URL 放在非 url 字段（target/address/link/href/page 等），
 // 或直接把 arguments 写成 JSON 字符串。只认 args.url 会导致「缺少 url 参数」误报。
@@ -476,7 +478,8 @@ export const useChatStore = defineStore('chat', () => {
   const mcpDisabledTools = ref<Record<string, string[]>>({});
   const mcpToolAliases = ref<Record<string, Record<string, string>>>({});
   // E11: 浏览器面板步骤日志 —— dispatchToolCall 中 browser_* 工具执行后推送
-  const browserSteps = ref<Array<{ action: string; result: string; time: number }>>([]);
+  // label：人类可读动作（「点击「发布」」），供实况条显示"agent 正在做什么"；见 browser-step-label.ts
+  const browserSteps = ref<Array<{ action: string; result: string; time: number; label?: string }>>([]);
 
   /**
    * 步骤日志容量与单条长度上限（2026-10-10，用户实报「pageAgent 一跑整个页面卡死」）。
@@ -544,13 +547,13 @@ export const useChatStore = defineStore('chat', () => {
     lastBrowserToolAt.value = 0;
   }
 
-  function pushBrowserStep(action: string, result: unknown) {
+  function pushBrowserStep(action: string, result: unknown, label?: string) {
     let text = typeof result === 'string' ? result : String(result ?? '');
     if (text.length > BROWSER_STEP_RESULT_MAX) {
       text = text.slice(0, BROWSER_STEP_RESULT_MAX) + `…（已省略 ${text.length - BROWSER_STEP_RESULT_MAX} 字）`;
     }
     const now = Date.now();
-    browserSteps.value.push({ action, result: text, time: now });
+    browserSteps.value.push({ action, label, result: text, time: now });
     if (browserSteps.value.length > BROWSER_STEPS_MAX) {
       browserSteps.value.splice(0, browserSteps.value.length - BROWSER_STEPS_MAX);
     }
@@ -2600,7 +2603,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       // E11: browser_* 工具执行后推送步骤日志到浏览器面板
       if (fullName.startsWith('browser_')) {
         if (ctx?.convId) markBrowserTaskActive(ctx.convId);
-        pushBrowserStep(fullName, text);
+        pushBrowserStep(fullName, text, describeBrowserAction(fullName, args as Record<string, unknown>));
       }
       return { ok: !res.isError, result: text, msg: res.isError ? text : undefined };
     }
@@ -3009,7 +3012,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               // ★ 控制信号先于展示信号登记（2026-10-08）：即使下面的步骤数组因断流/重放
               //   被清空，会话级的"浏览器任务进行中"事实也不会丢 → 输入锁不放。
               markBrowserTaskActive(convId);
-              pushBrowserStep(event.toolName, '执行中...');
+              pushBrowserStep(event.toolName, '执行中...', describeBrowserAction(event.toolName, event.args as Record<string, unknown>));
             }
             break;
           }
@@ -3796,6 +3799,22 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     sendChatWs('resume', { taskId });
   }
 
+  /**
+   * 把一条「系统观察」注入正在跑的任务：不打断当前轮，模型下一轮看到。
+   * 用于用户接管期间的改动告知（见 BrowserPanel 的 takeover 记录）等场景。
+   * 失败返回 false，由调用方决定要不要提示 —— 这里不弹窗。
+   */
+  async function injectTaskNote(convId: string, content: string): Promise<boolean> {
+    const text = String(content || '').trim();
+    if (!convId || !text) return false;
+    try {
+      const r = await requestChatWs<any>('inject', { conversationId: convId, content: text });
+      return !!(r && r.data && r.data.status === 'injected');
+    } catch {
+      return false;
+    }
+  }
+
   async function ensureMcpConnections() {
     const mcpStore = useMcpStore();
     for (const sid of mountedMcpServers.value) {
@@ -3858,7 +3877,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     browserExecutionByConv, isBrowserExecutionByBridge, setBrowserExecution, clearBrowserExecution,
     remainingAgentOpenedTabs, clearAgentOpenedTabs, markAgentOpenedTab,
     agentCursor, onAgentCursor, clearAgentCursor,
-    pauseTask, resumeTask,
+    pauseTask, resumeTask, injectTaskNote,
     compactNow,
     queuedByConv, queuedOf, enqueueMessage, removeQueuedMessage, updateQueuedMessage, promoteQueuedMessage, takeQueuedMessages, takeFirstQueuedMessage, injectQueuedMessage,
     onTaskFinished,

@@ -5,7 +5,7 @@
   - 两段各自可折叠由父级（模式左栏容器）负责，本组件自身可滚动
   - ★ 交互口径与办公侧栏（ChatSidebar）完全一致：
       空白处右键/长按 → 批量管理 / 新建任务 / 新建目录（空间）
-      任务行右键/长按 → 批量选择 / 置顶 / 重命名 / 移动到空间 / 删除
+      任务行右键/长按 → 批量选择 / 置顶 / 重命名 / 新任务继续 / 移动到空间 / 删除
       任务行行尾 hover 操作组 → 置顶 / 重命名 / 移动空间 / 删除（触屏无 hover，长按兜底）
       显式「新建任务」按钮 → 列表头部 + 空列表 CTA
       批量模式 → 行首勾选、目录节点整组勾选、底部批量条
@@ -178,6 +178,10 @@
         </li>
         <li @click="onRowMenuRename">
           <el-icon><EditPen /></el-icon>重命名
+        </li>
+        <!-- 新任务继续（2026-10-24）：继承本任务的空间/子线/智能体/模型，首条消息预填进度快照 -->
+        <li @click="onRowMenuContinue">
+          <el-icon><ChatDotRound /></el-icon>新任务继续
         </li>
         <!-- 归档（与办公侧栏右键菜单同项同语义） -->
         <li @click="archiveConv(rowMenu.conv, true); closeRowMenu()">
@@ -549,6 +553,7 @@ const rowSheetActions = computed<ActionSheetAction[]>(() => {
   list.push(
     { key: 'pin', label: c.pinned ? '取消置顶' : '置顶' },
     { key: 'rename', label: '重命名' },
+    { key: 'continue', label: '新任务继续' },
     { key: 'archive', label: '归档' },
   );
   if (spaceStore.spaces.length === 0) {
@@ -571,6 +576,7 @@ function onRowSheetSelect(a: ActionSheetAction) {
   } else if (a.key === 'exit-batch') exitBatchMode();
   else if (a.key === 'pin') rows.togglePinned(c);
   else if (a.key === 'rename') rows.startRename(c);
+  else if (a.key === 'continue') void rows.continueTask(c);
   else if (a.key === 'archive') archiveConv(c, true);
   else if (a.key === 'move:null') rows.moveTo(c, null);
   else if (a.key.startsWith('move:')) rows.moveTo(c, a.key.slice(5));
@@ -592,6 +598,12 @@ function onRowMenuRename() {
   const c = rowMenu.value.conv;
   closeRowMenu();
   if (c) rows.startRename(c);
+}
+/** 新任务继续：属性继承 + 首条消息预填（浮层先收，新建会切到草稿态） */
+function onRowMenuContinue() {
+  const c = rowMenu.value.conv;
+  closeRowMenu();
+  void rows.continueTask(c);
 }
 function onRowMenuMove(spaceId: string | null) {
   const c = rowMenu.value.conv;
