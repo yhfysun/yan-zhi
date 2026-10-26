@@ -56,24 +56,43 @@
         <el-option v-for="o in ontologies" :key="o.code" :label="o.name" :value="o.code" />
       </el-select>
       <template v-if="menu">
-        <span class="dqw-cfg-label">维度</span>
-        <el-select v-model="ontDim" size="small" filterable clearable placeholder="不分组" style="width: 170px">
-          <el-option-group v-if="menu.timeDimensions.length" label="时间维度">
-            <el-option v-for="t in menu.timeDimensions" :key="t.name" :label="t.name" :value="t.name" />
-          </el-option-group>
-          <el-option-group v-if="menu.dimensions.length" label="维度">
-            <el-option v-for="d in menu.dimensions" :key="d.name" :label="d.name" :value="d.name" />
-          </el-option-group>
+        <span class="dqw-cfg-label">时间</span>
+        <el-select v-model="ontTime" size="small" filterable clearable placeholder="不取" style="width: 140px">
+          <el-option v-for="t in menu.timeDimensions" :key="t.name" :label="t.name" :value="t.name" />
         </el-select>
-        <el-select v-if="isTimeDim" v-model="ontGrain" size="small" clearable placeholder="原始" style="width: 88px">
+        <el-select v-if="ontTime" v-model="ontGrain" size="small" clearable placeholder="原始" style="width: 80px">
           <el-option label="日" value="day" />
           <el-option label="周" value="week" />
           <el-option label="月" value="month" />
           <el-option label="季" value="quarter" />
           <el-option label="年" value="year" />
         </el-select>
+        <span class="dqw-cfg-label">维度</span>
+        <el-select
+          v-model="ontDims"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          filterable
+          clearable
+          size="small"
+          placeholder="不分组"
+          style="width: 180px"
+        >
+          <el-option v-for="d in menu.dimensions" :key="d.name" :label="d.name" :value="d.name" />
+        </el-select>
         <span class="dqw-cfg-label">度量</span>
-        <el-select v-model="ontMeasure" size="small" filterable clearable placeholder="不取度量" style="width: 170px">
+        <el-select
+          v-model="ontMeasures"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          filterable
+          clearable
+          size="small"
+          placeholder="不取度量"
+          style="width: 180px"
+        >
           <el-option v-for="m in menu.measures" :key="m.name" :label="m.name" :value="m.name" />
         </el-select>
         <el-select
@@ -84,7 +103,7 @@
           collapse-tags-tooltip
           size="small"
           placeholder="过滤器"
-          style="width: 180px"
+          style="width: 150px"
         >
           <el-option v-for="f in menu.filters" :key="f.name" :label="f.name" :value="f.name" />
         </el-select>
@@ -198,30 +217,67 @@
               <el-option label="散点" value="scatter" />
             </el-select>
             <span class="dqw-cfg-label">分组(X)</span>
-            <el-select v-model="chartDim" size="small" filterable placeholder="维度列" style="width: 150px">
+            <el-select
+              v-if="isOntologyMode"
+              v-model="chartOntX"
+              size="small"
+              filterable
+              placeholder="维度"
+              style="width: 150px"
+            >
+              <el-option-group v-if="menu?.timeDimensions.length" label="时间维度">
+                <el-option v-for="t in menu.timeDimensions" :key="t.name" :label="t.name" :value="t.name" />
+              </el-option-group>
+              <el-option v-for="d in menu?.dimensions || []" :key="d.name" :label="d.name" :value="d.name" />
+            </el-select>
+            <el-select v-else v-model="chartDim" size="small" filterable placeholder="维度列" style="width: 150px">
               <el-option v-for="c in result?.columns || []" :key="c" :label="c" :value="c" />
             </el-select>
-            <span class="dqw-cfg-label">系列</span>
-            <el-select v-model="chartSeries" size="small" filterable clearable placeholder="不分组" style="width: 130px">
-              <el-option v-for="c in seriesCols" :key="c" :label="c" :value="c" />
-            </el-select>
+            <template v-if="!isOntologyMode">
+              <span class="dqw-cfg-label">系列</span>
+              <el-select v-model="chartSeries" size="small" filterable clearable placeholder="不分组" style="width: 130px">
+                <el-option v-for="c in seriesCols" :key="c" :label="c" :value="c" />
+              </el-select>
+            </template>
             <span class="dqw-cfg-label">度量(Y)</span>
-            <el-select v-model="chartMeasure" size="small" filterable placeholder="度量列" style="width: 150px">
+            <el-select
+              v-if="isOntologyMode"
+              v-model="chartOntMeasures"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              filterable
+              size="small"
+              placeholder="度量"
+              style="width: 190px"
+            >
+              <el-option v-for="m in menu?.measures || []" :key="m.name" :label="m.name" :value="m.name" />
+            </el-select>
+            <el-select v-else v-model="chartMeasure" size="small" filterable placeholder="度量列" style="width: 150px">
               <el-option v-for="c in result?.columns || []" :key="c" :label="c" :value="c" />
             </el-select>
           </div>
           <div class="dqw-cfg-line">
-            <span class="dqw-cfg-label">聚合</span>
-            <el-select v-model="chartAgg" size="small" style="width: 92px">
-              <el-option label="计数" value="count" />
-              <el-option label="求和" value="sum" />
-              <el-option label="平均" value="avg" />
-              <el-option label="最小" value="min" />
-              <el-option label="最大" value="max" />
-            </el-select>
-            <template v-if="canGrain">
+            <template v-if="!isOntologyMode">
+              <span class="dqw-cfg-label">聚合</span>
+              <el-select v-model="chartAgg" size="small" style="width: 92px">
+                <el-option label="计数" value="count" />
+                <el-option label="求和" value="sum" />
+                <el-option label="平均" value="avg" />
+                <el-option label="最小" value="min" />
+                <el-option label="最大" value="max" />
+              </el-select>
+            </template>
+            <template v-if="isOntologyMode ? isOntTimeX : canGrain">
               <span class="dqw-cfg-label">粒度</span>
-              <el-select v-model="chartGrain" size="small" clearable placeholder="原始" style="width: 92px">
+              <el-select v-if="isOntologyMode" v-model="chartOntGrain" size="small" style="width: 92px">
+                <el-option label="日" value="day" />
+                <el-option label="周" value="week" />
+                <el-option label="月" value="month" />
+                <el-option label="季" value="quarter" />
+                <el-option label="年" value="year" />
+              </el-select>
+              <el-select v-else v-model="chartGrain" size="small" clearable placeholder="原始" style="width: 92px">
                 <el-option label="日" value="day" />
                 <el-option label="周" value="week" />
                 <el-option label="月" value="month" />
@@ -282,6 +338,7 @@ import { useDashboardStore } from '../../stores/dashboard';
 import { useChat } from '../../composables/chat/useChat';
 import type { DashboardWidget } from '@yan-zhi/shared';
 import type { ChartData, ChartKind, ChartSpec } from './chart-spec';
+import { buildOntologyIntent, ontologyRowsToChartData } from './ontology-view';
 import { formatCell, inferColumnMeta } from '../../utils/table-meta';
 import type { DocxBlock } from '../../utils/report-docx';
 import type { XlsxSheet } from '../../utils/report-xlsx';
@@ -342,18 +399,20 @@ interface OntMenu {
 }
 
 const isOntologyMode = computed(() => props.contract.mode === 'ontology');
-// 本体模式只有明细视图：聚合走 /aggregate 需要 SQL 列名，不在本轮暴露
-const modeOptions = computed(() => (isOntologyMode.value ? viewModes.filter((v) => v.key === 'table') : viewModes));
+// 本体模式同样支持表格/图表：图表直接用本体取数结果（已按维度聚合）搭 ChartData
+const modeOptions = viewModes;
 
 const ontologies = ref<Array<{ code: string; name: string; description?: string }>>([]);
 const ontologyRef = ref(props.contract.ontology || '');
 const menu = ref<OntMenu | null>(null);
-const ontDim = ref('');
+/** 时间维度：服务端只接受一个，单独一栏（可带粒度） */
+const ontTime = ref('');
 const ontGrain = ref<'' | Grain>('');
-const ontMeasure = ref('');
+/** 普通维度 / 度量：均可多选 */
+const ontDims = ref<string[]>([]);
+const ontMeasures = ref<string[]>([]);
 const ontFilters = ref<string[]>([]);
 const ontLimit = ref(500);
-const isTimeDim = computed(() => !!menu.value?.timeDimensions.some((t) => t.name === ontDim.value));
 
 async function loadOntologies(): Promise<void> {
   const r = await api.get<Array<{ code: string; name: string; description?: string }>>('/ontologies');
@@ -368,34 +427,35 @@ async function loadMenu(): Promise<void> {
   const r = await api.get<OntMenu>(`/query-contract/ontology/${encodeURIComponent(ontologyRef.value)}`);
   if ('error' in r) { error.value = String(r.error); menu.value = null; return; }
   menu.value = r.data;
-  // 默认选中：第一个时间维度（或维度）、第一个度量、声明为默认的过滤器
-  const dimExists = menu.value.timeDimensions.some((t) => t.name === ontDim.value)
-    || menu.value.dimensions.some((d) => d.name === ontDim.value);
-  if (!dimExists) ontDim.value = menu.value.timeDimensions[0]?.name || '';
-  if (!menu.value.measures.some((m) => m.name === ontMeasure.value)) ontMeasure.value = menu.value.measures[0]?.name || '';
+  // 默认选中：第一个时间维度、第一个维度、第一个度量、声明为默认的过滤器
+  if (!menu.value.timeDimensions.some((t) => t.name === ontTime.value)) ontTime.value = menu.value.timeDimensions[0]?.name || '';
+  ontDims.value = ontDims.value.filter((d) => menu.value!.dimensions.some((x) => x.name === d));
+  if (!ontDims.value.length && menu.value.dimensions.length) ontDims.value = [menu.value.dimensions[0].name];
+  ontMeasures.value = ontMeasures.value.filter((m) => menu.value!.measures.some((x) => x.name === m));
+  if (!ontMeasures.value.length && menu.value.measures.length) ontMeasures.value = [menu.value.measures[0].name];
   ontFilters.value = menu.value.filters.filter((f) => f.isDefault).map((f) => f.name);
   await runOntology();
 }
 
 async function onOntPick(): Promise<void> {
-  ontDim.value = ''; ontMeasure.value = ''; ontFilters.value = []; ontGrain.value = '';
+  ontTime.value = ''; ontDims.value = []; ontMeasures.value = []; ontFilters.value = []; ontGrain.value = '';
+  chartOntX.value = ''; chartOntMeasures.value = []; agg.value = null;
   await loadMenu();
 }
 
 async function runOntology(): Promise<void> {
   if (!ontologyRef.value) { error.value = '请选择本体'; return; }
   loading.value = true; error.value = '';
-  const intent: Record<string, unknown> = { limit: ontLimit.value };
-  if (ontDim.value) {
-    intent[isTimeDim.value ? 'timeDimension' : 'dimensions'] = isTimeDim.value
-      ? { name: ontDim.value, ...(ontGrain.value ? { grain: ontGrain.value } : {}) }
-      : [ontDim.value];
-  }
-  if (ontMeasure.value) {
-    const m = menu.value?.measures.find((x) => x.name === ontMeasure.value);
-    intent.measures = [{ name: ontMeasure.value, ...(m?.agg ? { agg: m.agg } : {}) }];
-  }
-  if (ontFilters.value.length) intent.filters = [...ontFilters.value];
+  const intent = buildOntologyIntent({
+    ...(ontTime.value ? { timeDimension: { name: ontTime.value, ...(ontGrain.value ? { grain: ontGrain.value } : {}) } } : {}),
+    dimensions: ontDims.value,
+    measures: ontMeasures.value.map((name) => ({
+      name,
+      ...(menu.value?.measures.find((m) => m.name === name)?.agg ? { agg: menu.value.measures.find((m) => m.name === name)!.agg } : {}),
+    })),
+    filters: ontFilters.value,
+    limit: ontLimit.value,
+  });
   try {
     const resp = await api.post<RunResp>('/query-contract/ontology/run', { ontology: ontologyRef.value, intent });
     if ('error' in resp) { error.value = String(resp.error); result.value = null; return; }
@@ -409,17 +469,25 @@ async function runOntology(): Promise<void> {
 
 // 列显隐 + 类型感知宽度/对齐（明细列多时默认全选，用户可自行收敛）
 const visibleCols = ref<string[]>([]);
+/** 上一次结果的列集合：用于识别「新出现的列」 */
+const prevCols = ref<string[]>([]);
 const columnOptions = computed(() => result.value?.columns || []);
 const columnMeta = computed(() => inferColumnMeta(result.value?.columns || [], result.value?.rows || []));
 watch(() => result.value, (r) => {
   const cols = r?.columns || [];
-  if (!cols.length) { visibleCols.value = []; return; }
-  // 用户手动收敛过的列优先保留；首次（或列全变了）自动隐藏整列空值/空 JSON 的噪声列
-  const kept = visibleCols.value.filter((c) => cols.includes(c));
-  if (kept.length) { visibleCols.value = kept; return; }
+  if (!cols.length) { visibleCols.value = []; prevCols.value = []; return; }
+  // 本体模式没有「显示列」开关（列数少时不渲染），一律全显——否则新加的维度列会被永久藏掉
+  if (isOntologyMode.value) { visibleCols.value = [...cols]; prevCols.value = cols; return; }
   const meta = inferColumnMeta(cols, r?.rows || []);
   const meaningful = cols.filter((c) => meta[c]?.kind !== 'empty');
-  visibleCols.value = meaningful.length >= 3 ? meaningful : [...cols];
+  // 首次（列多时）自动隐藏整列空值/空 JSON 的噪声列
+  const autoHidden = new Set(meaningful.length >= 3 ? cols.filter((c) => !meaningful.includes(c)) : []);
+  const prev = new Set(prevCols.value);
+  const kept = visibleCols.value.filter((c) => cols.includes(c));
+  // ★ 新出现的列必须并入：旧逻辑只保留旧列，先查一次再选维度会让维度列永久消失
+  const added = cols.filter((c) => !prev.has(c) && !autoHidden.has(c));
+  visibleCols.value = cols.filter((c) => kept.includes(c) || added.includes(c));
+  prevCols.value = cols;
 });
 
 async function runQuery(opts: { page?: number; size?: number; fetchSamples?: string[] } = {}) {
@@ -501,6 +569,18 @@ const chartPercent = ref(false);
 const agg = ref<ChartData | null>(null);
 const aggLoading = ref(false);
 
+// 本体模式的图表配置：X 用业务字段名，Y 可多选（多度量 → 多系列）
+const chartOntX = ref('');
+const chartOntMeasures = ref<string[]>([]);
+const chartOntGrain = ref<Grain>('day');
+const isOntTimeX = computed(() => !!menu.value?.timeDimensions.some((t) => t.name === chartOntX.value));
+// 切到本体模式时，把栏里已选的时间/维度/度量带进图表配置，少点两下
+watch(isOntologyMode, (on) => {
+  if (!on) return;
+  chartOntX.value = chartOntX.value || ontTime.value || ontDims.value[0] || '';
+  if (!chartOntMeasures.value.length) chartOntMeasures.value = [...ontMeasures.value];
+}, { immediate: true });
+
 const seriesCols = computed(() => (result.value?.columns || []).filter((c) => c !== chartDim.value));
 
 /** 只有看起来像日期的列才给时间粒度，避免对普通字符串做 dateTrunc 全变空 */
@@ -510,13 +590,42 @@ watch(canGrain, (ok) => { if (!ok) chartGrain.value = ''; });
 
 const chartSpec = computed<ChartSpec>(() => ({
   kind: chartKind.value,
-  dim: chartDim.value,
-  measure: chartMeasure.value,
-  ...(chartSeries.value ? { series: chartSeries.value } : {}),
+  dim: isOntologyMode.value ? chartOntX.value : chartDim.value,
+  measure: isOntologyMode.value ? (chartOntMeasures.value[0] || '') : chartMeasure.value,
+  ...(isOntologyMode.value || !chartSeries.value ? {} : { series: chartSeries.value }),
   percent: chartPercent.value,
 }));
 
+async function loadOntologyAgg(): Promise<void> {
+  if (!ontologyRef.value) { error.value = '请选择本体'; return; }
+  if (!chartOntX.value) { error.value = '请选择分组(X)维度'; return; }
+  if (!chartOntMeasures.value.length) { error.value = '请选择度量(Y)'; return; }
+  aggLoading.value = true; error.value = '';
+  const measures = chartOntMeasures.value.map((name) => {
+    const def = menu.value?.measures.find((m) => m.name === name);
+    return { name, ...(def?.agg ? { agg: def.agg } : {}) };
+  });
+  const intent = buildOntologyIntent({
+    ...(isOntTimeX.value
+      ? { timeDimension: { name: chartOntX.value, grain: chartOntGrain.value } }
+      : { dimensions: [chartOntX.value] }),
+    measures,
+    filters: ontFilters.value,
+    limit: ontLimit.value,
+  });
+  const resp = await api.post<RunResp>('/query-contract/ontology/run', { ontology: ontologyRef.value, intent });
+  aggLoading.value = false;
+  if ('error' in resp) { error.value = String(resp.error); agg.value = null; return; }
+  agg.value = ontologyRowsToChartData(resp.data.rows, {
+    xField: chartOntX.value,
+    measures: chartOntMeasures.value,
+    ...(chartTopN.value ? { topN: Number(chartTopN.value) } : {}),
+    ...(chartPercent.value ? { percent: true } : {}),
+  });
+}
+
 async function loadAgg() {
+  if (isOntologyMode.value) { await loadOntologyAgg(); return; }
   if (!chartDim.value || !chartMeasure.value) { error.value = '请先选 X 维度列与 Y 度量列'; return; }
   aggLoading.value = true; error.value = '';
   const body = queryBody();
@@ -553,7 +662,8 @@ const XLSX_KIND = { mimeType: 'application/vnd.openxmlformats-officedocument.spr
 const exporting = ref<'' | 'word' | 'excel'>('');
 
 const exportTitle = computed(() =>
-  props.contract.title || (props.contract.table ? `表 ${props.contract.table}` : '数据导出'));
+  props.contract.title
+  || (isOntologyMode.value ? (menu.value?.name || '本体数据') : props.contract.table ? `表 ${props.contract.table}` : '数据导出'));
 
 /** 当前契约 + 过滤 + 排序 → 请求体（明细 / 聚合 / 导出共用） */
 function queryBody(): Record<string, unknown> | null {
@@ -716,23 +826,30 @@ function pinnedWidget(): DashboardWidget {
   const id = typeof crypto !== 'undefined' && crypto.randomUUID
     ? `dw_${crypto.randomUUID()}`
     : `dw_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const dim = isOntologyMode.value ? chartOntX.value : chartDim.value;
+  const measures = isOntologyMode.value ? [...chartOntMeasures.value] : (chartMeasure.value ? [chartMeasure.value] : []);
   return {
     id,
     kind: hasChart ? 'chart' : 'table',
     title: exportTitle.value,
     contract: { ...props.contract },
-    ...(hasChart ? {
-      spec: {
-        kind: chartKind.value,
-        dim: chartDim.value,
-        measure: chartMeasure.value,
-        agg: chartAgg.value,
-        ...(chartSeries.value ? { series: chartSeries.value } : {}),
-        ...(chartGrain.value ? { timeGrain: chartGrain.value } : {}),
-        ...(chartTopN.value ? { topN: Number(chartTopN.value) } : {}),
-        ...(chartPercent.value ? { percent: true } : {}),
-      },
-    } : {}),
+    spec: {
+      ...(hasChart ? { kind: chartKind.value } : {}),
+      dim,
+      measure: measures[0] || '',
+      measures,
+      ...(isOntologyMode.value
+        ? {
+          ...(isOntTimeX.value ? { timeGrain: chartOntGrain.value } : {}),
+        }
+        : {
+          agg: chartAgg.value,
+          ...(chartSeries.value ? { series: chartSeries.value } : {}),
+          ...(chartGrain.value ? { timeGrain: chartGrain.value } : {}),
+        }),
+      ...(chartTopN.value ? { topN: Number(chartTopN.value) } : {}),
+      ...(chartPercent.value ? { percent: true } : {}),
+    },
     pos: hasChart ? { x: 0, y: 0, w: 6, h: 6 } : { x: 0, y: 0, w: 12, h: 5 },
   };
 }

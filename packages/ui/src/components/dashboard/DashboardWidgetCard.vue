@@ -72,6 +72,7 @@ import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue';
 import { api } from '../../api/client';
 import type { DashboardWidget } from '@yan-zhi/shared';
 import type { ChartData, ChartKind, ChartSpec } from '../chat/chart-spec';
+import { buildOntologyIntent, ontologyRowsToChartData, type OntologyGrain } from '../chat/ontology-view';
 
 const DataChart = defineAsyncComponent(() => import('../chat/DataChart.vue'));
 // 信息图依赖较重，只有真的出现该 widget 时才加载
@@ -125,7 +126,52 @@ function baseBody(): Record<string, unknown> | null {
   return body;
 }
 
+const isOntology = computed(() => props.widget.contract?.mode === 'ontology' && !!props.widget.contract?.ontology);
+
+interface OntRunResp {
+  columns: string[];
+  rows: Record<string, unknown>[];
+}
+
+/** 本体契约：按业务字段名取数（spec 里存的是本体字段名，不是 SQL 列名） */
+async function loadOntology(kind: 'chart' | 'table'): Promise<OntRunResp | null> {
+  const ontology = props.widget.contract?.ontology;
+  if (!ontology) return null;
+  const s = (props.widget.spec || {}) as Record<string, unknown>;
+  const measures = Array.isArray(s.measures) && s.measures.length
+    ? (s.measures as unknown[]).map(String).filter(Boolean)
+    : [String(s.measure || '')].filter(Boolean);
+  const dim = String(s.dim || '');
+  const seriesField = kind === 'chart' && s.series ? String(s.series) : '';
+  const isTime = !!s.timeGrain;
+  const intent = buildOntologyIntent({
+    ...(isTime && dim ? { timeDimension: { name: dim, grain: s.timeGrain as OntologyGrain } } : { dimensions: dim ? [dim] : [] }),
+    ...(seriesField ? { dimensions: [dim, seriesField].filter(Boolean) } : {}),
+    measures: measures.map((name) => ({ name })),
+    limit: kind === 'table' ? 20 : 1000,
+  });
+  const r = await api.post<OntRunResp>('/query-contract/ontology/run', { ontology, intent });
+  if ('error' in r) { error.value = String(r.error); return null; }
+  return r.data;
+}
+
 async function loadChart(): Promise<void> {
+  const s = (props.widget.spec || {}) as Record<string, unknown>;
+  if (isOntology.value) {
+    const data = await loadOntology('chart');
+    if (!data) return;
+    const measures = Array.isArray(s.measures) && s.measures.length
+      ? (s.measures as unknown[]).map(String).filter(Boolean)
+      : [String(s.measure || '')].filter(Boolean);
+    chartData.value = ontologyRowsToChartData(data.rows, {
+      xField: String(s.dim || ''),
+      measures,
+      ...(s.series ? { seriesField: String(s.series) } : {}),
+      ...(s.topN ? { topN: Number(s.topN) } : {}),
+      ...(s.percent ? { percent: true } : {}),
+    });
+    return;
+  }
   const body = baseBody();
   if (!body) { error.value = 'chart widget 缺少取数契约'; return; }
   const spec = chartSpec.value;
@@ -142,6 +188,12 @@ async function loadChart(): Promise<void> {
 }
 
 async function loadTable(): Promise<void> {
+  if (isOntology.value) {
+    const data = await loadOntology('table');
+    if (!data) return;
+    tableRows.value = { columns: data.columns, rows: data.rows };
+    return;
+  }
   const body = baseBody();
   if (!body) { error.value = 'table widget 缺少取数契约'; return; }
   body.page = 1;

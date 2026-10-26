@@ -82,9 +82,6 @@
       <button v-if="hasWorkspaceDir" class="right-panel-empty-entry" @click="openGitEntry">
         <el-icon><Folder /></el-icon><span>Git 文件</span>
       </button>
-      <button class="right-panel-empty-entry" @click="store.openTab({ kind: 'data', name: '数据浏览', contract: defaultDataContract })">
-        <el-icon><Grid /></el-icon><span>数据浏览</span>
-      </button>
       <button class="right-panel-empty-entry" @click="openOntologyEntry">
         <el-icon><Collection /></el-icon><span>本体取数</span>
       </button>
@@ -125,7 +122,7 @@ import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
 import { useSpaceStore } from '../../stores/space';
-import type { DataTabContract, PreviewTab } from '../../stores/chat';
+import type { PreviewTab } from '../../stores/chat';
 import FilePreview from '../FilePreview.vue';
 import BrowserPanel from '../BrowserPanel.vue';
 import ChatGitPanel from './ChatGitPanel.vue';
@@ -173,13 +170,6 @@ const browserTab = computed(() => store.previewTabs.find((t) => t.kind === 'brow
 const dataTab = computed(() => store.previewTabs.find((t) => t.kind === 'data') || null);
 const consoleTab = computed(() => store.previewTabs.find((t) => t.kind === 'console') || null);
 const dashboardTab = computed(() => store.previewTabs.find((t) => t.kind === 'dashboard') || null);
-
-/** 空态「数据浏览」的默认契约：内置项目库的 conversation 表（真实存在的种子演示表） */
-const defaultDataContract: DataTabContract = {
-  title: '任务明细',
-  table: 'conversation',
-  filterCols: ['pinned'],
-};
 
 /** 仓库名（Git tab 标题）——与 gitRepoDir 同源，避免标题与面板内容两个目录 */
 const repoName = computed(() => {

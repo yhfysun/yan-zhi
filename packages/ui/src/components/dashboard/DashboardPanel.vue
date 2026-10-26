@@ -35,9 +35,13 @@
         <div class="dash-main-head">
           <span class="dash-main-title">{{ store.current.title }}</span>
           <span class="dash-main-meta">{{ widgets.length }} / {{ MAX_WIDGETS }} 个组件 · 拖动卡片排序</span>
+          <el-button size="small" type="primary" @click="openAdd">+ 添加组件</el-button>
           <el-button size="small" text @click="renameCurrent">重命名</el-button>
         </div>
-        <div v-if="!widgets.length" class="dash-empty">这个看板还是空的</div>
+        <div v-if="!widgets.length" class="dash-empty">
+          <div>这个看板还是空的：选图表类型 → 选本体与维度度量，或者从数据工作台点「钉到看板」。</div>
+          <el-button type="primary" size="small" @click="openAdd">添加组件</el-button>
+        </div>
         <div v-else class="dash-grid">
           <div
             v-for="w in widgets"
@@ -59,6 +63,12 @@
         </div>
       </template>
     </section>
+
+    <DashboardAddWidgetDialog
+      v-if="store.current"
+      v-model="addOpen"
+      :dashboard-id="store.current.id"
+    />
   </div>
 </template>
 
@@ -68,12 +78,19 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import type { DashboardWidget } from '@yan-zhi/shared';
 import { useDashboardStore } from '../../stores/dashboard';
 import DashboardWidgetCard from './DashboardWidgetCard.vue';
+import DashboardAddWidgetDialog from './DashboardAddWidgetDialog.vue';
 
 const MAX_WIDGETS = 40;
 const store = useDashboardStore();
 const dragId = ref('');
+const addOpen = ref(false);
 
 const widgets = computed<DashboardWidget[]>(() => store.current?.widgets || []);
+
+function openAdd(): void {
+  if (!store.current) return;
+  addOpen.value = true;
+}
 
 function cellStyle(w: DashboardWidget) {
   return {
@@ -101,7 +118,9 @@ async function createNew(): Promise<void> {
     title = String(r.value || '').trim();
   } catch { return; }
   if (!title) return;
-  await store.create(title);
+  const created = await store.create(title);
+  // 新建后直接进入「添加组件」：否则空看板是个死胡同（没有任何可下手的地方）
+  if (created && !(created.widgets || []).length) addOpen.value = true;
 }
 
 async function renameCurrent(): Promise<void> {
