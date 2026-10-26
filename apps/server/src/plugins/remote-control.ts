@@ -1091,16 +1091,29 @@ export const remoteControlModule: PluginModule = {
       };
       const readBody = (req: unknown): Promise<Record<string, unknown>> =>
         new Promise((resolve) => {
+          const r = req as {
+            body?: unknown;
+            readableEnded?: boolean;
+            on?: (ev: string, cb: (d?: Buffer) => void) => void;
+          };
+          // ★ 全局 express.json()（index.ts）已把 application/json 请求体流消费掉并解析进
+          // req.body —— 流上再挂 data/end 永远等不到 end（事件已成过去式），Promise 永不
+          // resolve，表现即 /pair 无限挂起、控制端「一直配对中」。优先取现成解析结果。
+          if (r.body && typeof r.body === 'object') {
+            resolve(r.body as Record<string, unknown>);
+            return;
+          }
           const chunks: Buffer[] = [];
-          const rq = req as { on?: (ev: string, cb: (d?: Buffer) => void) => void };
-          rq.on?.('data', (d?: Buffer) => d && chunks.push(d));
-          rq.on?.('end', () => {
+          r.on?.('data', (d?: Buffer) => d && chunks.push(d));
+          r.on?.('end', () => {
             try {
               resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
             } catch {
               resolve({});
             }
           });
+          // 兜底：流已结束但 body 缺失（空体/非 json），不能无限等
+          if (r.readableEnded) resolve({});
         });
 
       // -- 控制端（license-guard 豁免，鉴权=授权码/设备令牌）--
