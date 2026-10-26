@@ -69,7 +69,7 @@ describe('编号层收尾清理 · 渲染层', () => {
   it('★ 暂停时必须收起编号层，恢复后补回', () => {
     const at = PANEL.indexOf('watch(() => chatStore.browserPaused');
     expect(at, '缺少暂停 watcher').toBeGreaterThanOrEqual(0);
-    const body = PANEL.slice(at, at + 900);
+    const body = PANEL.slice(at, at + 2200);
     expect(body, '暂停必须关层').toContain('applyHighlight(false');
     expect(body, '恢复执行要补回').toContain('applyHighlight(true');
   });

@@ -13,7 +13,12 @@
           v-for="tab in tabs" :key="tab.id"
           class="tab-item"
           :class="{ active: tab.id === activeTabId }"
-          @click="switchTab(tab.id)"
+          draggable="true"
+          @dragstart="onTabDragStart(tab.id, $event)"
+          @dragover.prevent="onTabDragOver(tab.id)"
+          @drop.prevent="onTabDragEnd()"
+          @dragend="onTabDragEnd()"
+          @click="onTabClick(tab.id)"
           @contextmenu.prevent="openTabContextMenu(tab.id, $event)"
         >
           <span class="tab-favicon" v-if="tab.loading">○</span>
@@ -73,10 +78,23 @@
       </button>
 
       <!-- 地址栏 -->
-      <div class="url-bar" :class="{ focused: urlFocused }">
+      <div class="url-bar" :class="{ focused: urlFocused || omniboxOpen }">
         <svg class="url-lock" viewBox="0 0 24 24" width="14" height="14" v-if="isSecure"><path fill="currentColor" d="M12 1a5 5 0 00-5 5v3H6a2 2 0 00-2 2v9a2 2 0 002 2h12a2 2 0 002-2v-9a2 2 0 00-2-2h-1V6a5 5 0 00-5-5zm3 8H9V6a3 3 0 016 0v3z"/></svg>
-        <input v-model="urlInput" class="url-input" placeholder="输入网址或搜索…" @keyup.enter="navigate" @focus="urlFocused = true" @blur="urlFocused = false" />
+        <input v-model="urlInput" class="url-input" placeholder="输入网址或搜索…" @input="onUrlInput" @keydown="onUrlKeydown" @focus="onUrlFocus" @blur="onUrlBlur" />
         <button v-if="urlInput" class="url-clear" @click="urlInput = ''">×</button>
+        <!-- 地址栏联想（接入参考客户端的 OmniboxSuggest）：书签 / 历史 / 搜索，↑↓ 选择、回车直达 -->
+        <div v-if="omniboxOpen" class="omnibox-panel" @mousedown.prevent>
+          <div
+            v-for="(it, i) in omniboxItems" :key="it.kind + ':' + it.url"
+            class="omnibox-item" :class="{ active: i === omniboxActive }"
+            @mousedown.prevent="pickOmnibox(it)"
+            @mouseenter="omniboxActive = i"
+          >
+            <span class="omnibox-kind" :class="'kind-' + it.kind">{{ it.kind === 'bookmark' ? '书签' : it.kind === 'history' ? '历史' : '搜索' }}</span>
+            <span class="omnibox-title">{{ it.title }}</span>
+            <span class="omnibox-host" v-if="it.host">{{ it.host }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- 页面缩放 -->
@@ -166,6 +184,8 @@
         </button>
         <template #dropdown>
           <el-dropdown-menu>
+            <el-dropdown-item command="capture">截图当前页</el-dropdown-item>
+            <el-dropdown-item command="record">{{ recState ? '停止录屏' : '录屏（当前窗口）' }}</el-dropdown-item>
             <el-dropdown-item command="history">浏览历史 ({{ recentList.length }})</el-dropdown-item>
             <el-dropdown-item command="passwords">密码管理 ({{ savedPasswords.length }})</el-dropdown-item>
             <el-dropdown-item command="settings">浏览器设置</el-dropdown-item>
@@ -181,11 +201,11 @@
         有 task_plan → 第 x/y 步 + 进度条；无计划 → 只显示「执行中」，不硬造数据。
         暂停/恢复 + 「↩ 收回控制权」（映射既有 chatStore.stop）。 -->
     <div v-if="liveControlVisible" class="agent-takeover-bar" :class="{ paused: pausedNow }">
-      <span class="takeover-dot" :class="pausedNow ? 'dot-paused' : 'dot-live'"></span>
+      <span class="takeover-dot" :class="'dot-' + activityPhase"></span>
       <span class="takeover-label">
         <template v-if="pausedNow">已暂停 · 你已接管页面</template>
-        <template v-else-if="planTotal > 0">Agent 接管中 · 第 {{ currentStepNo }}/{{ planTotal }} 步</template>
-        <template v-else>Agent 接管中 · 执行中</template>
+        <template v-else-if="planTotal > 0">Agent 接管中 · 第 {{ currentStepNo }}/{{ planTotal }} 步<span v-if="lastActionLabel"> · {{ lastActionLabel }}</span></template>
+        <template v-else>Agent 接管中 · {{ lastActionLabel || '执行中' }}</template>
       </span>
       <el-progress
         v-if="planTotal > 0"
@@ -550,6 +570,9 @@ import PageCommandsDialog from './browser/PageCommandsDialog.vue';
 import BookmarkTreeNode from './browser/BookmarkTreeNode.vue';
 import BookmarkEditorDialog from './browser/BookmarkEditorDialog.vue';
 import BookmarksManagerDialog from './browser/BookmarksManagerDialog.vue';
+import { moveTabOrder } from './browser/tab-order';
+import { buildOmniboxSuggestions } from './browser/omnibox';
+import { formatTakeoverNote } from '../composables/chat/takeover-note';
 import {
   addNode,
   countUrls,
@@ -736,6 +759,14 @@ watch(inputLocked, (now, prev) => {
 onUnmounted(() => {
   if (nowTickTimer) { clearTimeout(nowTickTimer); nowTickTimer = null; }
   clearLoadingWatchdog();
+  // 接管留痕只在暂停期间有效：面板卸载时撤掉页面内监听（不上报）
+  void endTakeoverRecording(false);
+  // 面板卸载后没有停止入口 → 主动收尾录屏（否则只能等 10 分钟兜底）
+  if (recState.value) {
+    const rid = recState.value.recordId;
+    recState.value = null;
+    try { void (window as any).electronAPI?.screenRecord?.stop?.({ recordId: rid }); } catch { /* ignore */ }
+  }
   // 每日分析调度器一并收口（此前无清理 → 组件卸载后 30 分钟一跳仍在跑）
   if (dailyAnalysisTimer) { dailyAnalysisTimer(); dailyAnalysisTimer = null; }
   // ★ 2026-10-23：卸载时必须把编号层收掉。卸载后本组件不再有任何 watcher/事件，
@@ -755,6 +786,26 @@ const liveControlVisible = computed(() =>
 );
 // Agent 接管形态的步骤进度/清单：取当前会话已登记的 task_plan（无计划 → 只显示「执行中」，不硬造步骤）
 const planStepsNow = computed(() => (isPreviewScope ? chatStore.planSteps : []));
+// ★ 2026-10-24 接入 AgentScope 客户端的「活动标签」：状态条说人话（「正在点击「发布」」），
+//   而不是永远「执行中」。数据源就是既有 browserSteps（此前只记账、无 UI 渲染）；
+//   tool:start 事件带 args，标签在入栈时算好（见 stores/chat.ts + browser-step-label.ts）。
+const lastActionLabel = computed(() => {
+  const steps = chatStore.browserSteps;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const label = steps[i].label;
+    if (label) return label;
+  }
+  return '';
+});
+// 状态点相位（接入参考客户端 AgentStatusBar 的语义配色）：
+//   思考蓝 = 还没动作 / 刚思考完；执行紫 = 有一步在等回执；重试黄 = 上一步超时未回执；暂停灰。
+const activityPhase = computed(() => {
+  if (pausedNow.value) return 'paused';
+  const s = chatStore.browserSteps[chatStore.browserSteps.length - 1];
+  if (s && /⏱|超时/.test(s.result)) return 'retrying';
+  if (s && s.result === '执行中...') return 'executing';
+  return 'thinking';
+});
 const planTotal = computed(() => planStepsNow.value.length);
 const planDone = computed(() => planStepsNow.value.filter(s => s.status === 'done').length);
 const planFailed = computed(() => planStepsNow.value.some(s => s.status === 'failed'));
@@ -811,7 +862,50 @@ function onShellKeydown(e: KeyboardEvent) {
 }
 function onStopTask() { chatStore.stop(); }
 function onPauseTask() { void chatStore.pauseTask(); }
-function onResumeTask() { void chatStore.resumeTask(); }
+
+// ── 用户接管留痕（2026-10-24，接入 AgentScope 客户端的 takeover recorder）──
+// 暂停 = 用户接管页面。暂停期间在页面内记录**用户真实改动**（主进程按 isTrusted 过滤，
+// agent 自己派发的合成事件不算），恢复时先把改动作为一条观察注入任务、再放行下一轮 ——
+// 否则 agent 会把用户刚手填的值再覆盖一遍。
+// 任务收尾会顺带清 paused 标记，那条路径只清监听、不上报（不是"恢复执行"）。
+let takeoverRecording = false;
+async function beginTakeoverRecording() {
+  const api = (window as any).electronAPI?.browserView;
+  const tid = activeTabId.value;
+  if (!api || !tid || takeoverRecording) return;
+  try {
+    const r: any = await api.action(tid, 'takeover', { on: true });
+    takeoverRecording = !(r && r.error);
+  } catch {
+    takeoverRecording = false;
+  }
+}
+async function endTakeoverRecording(report: boolean) {
+  if (!takeoverRecording) return;
+  takeoverRecording = false;
+  const api = (window as any).electronAPI?.browserView;
+  const tid = activeTabId.value;
+  if (!api || !tid) return;
+  let snap: any = null;
+  try { snap = await api.action(tid, 'takeover', { on: false }); } catch { return; }
+  if (!report || !snap || snap.error) return;
+  const note = formatTakeoverNote({
+    interacted: !!snap.interacted,
+    fields: Array.isArray(snap.fields) ? snap.fields : [],
+    omitted: Number(snap.omitted) || 0,
+  });
+  if (!note) return;
+  const convId = chatStore.currentConvId;
+  if (!convId) return;
+  const ok = await chatStore.injectTaskNote(convId, note);
+  if (ok) ElMessage.info('已把你接管期间的改动告知 AI');
+}
+function onResumeTask() {
+  void (async () => {
+    await endTakeoverRecording(true);   // 先注入用户改动，再让 agent 继续
+    void chatStore.resumeTask();
+  })();
+}
 
 // ── 人工浏览形态：「🤖 交给 AI」移交按钮 ──
 // 按现有能力落地：复用 addQuotedUrl 把当前页 URL 引用到关联会话输入框（preview 空间即当前会话），
@@ -878,6 +972,15 @@ const highlightOn = ref(false);
 const highlightUserOff = ref(false);
 // 本次开启是否由"agent 开始操作"自动触发 —— 任务结束时只自动关掉这种，不动用户手动开的。
 const highlightAuto = ref(false);
+// ★ 2026-10-24：蒙版/编号框的**唯一判据** —— 参考 AgentScope 客户端的设计
+//   （apps/desktop/src/agent-bundle/page-agent-entry.ts + page-agent-mask-gate.ts）：
+//   遮罩归 execute() 生命周期所有：开始即挂、暂停/结束必摘、finally 里复位状态；
+//   页面加载只负责"重画"，不负责"决定要不要画"。
+//   我们此前的判据散在多个 watcher（各自带半套条件），任务收尾清 paused 标记时被
+//   "恢复执行"分支把编号层画回来、再没人关 —— 用户实报的残留就是这么来的。
+const agentOperating = computed(() =>
+  isPreviewScope && !chatStore.browserPaused && chatStore.browserTaskActive && convTaskRunning.value,
+);
 async function applyHighlight(on: boolean, silent = false) {
   if (!on) {
     // 关：先让主进程按自己的 tab 表全量清（含不在本面板 tabs 里的页/已隐藏页）。
@@ -914,7 +1017,7 @@ async function toggleHighlight() {
 // 切 tab / 面板挂载时：若开着高亮，或 agent 正在操作（且用户没手动关过），给激活页补一层（幂等）。
 watch(activeTabId, (tid) => {
   if (!tid) return;
-  if (!highlightOn.value && (highlightUserOff.value || !chatStore.browserTaskActive)) return;
+  if (!highlightOn.value && (highlightUserOff.value || !agentOperating.value)) return;
   // ★ 2026-10-23：这条「挂载/切 tab 补一层」同样属于**自动开**。此前不置 highlightAuto，
   //   于是任务结束时 watcher 因 highlightAuto=false 而不关 —— 编号框永远留在页面上
   //   （面板中途重挂一次就必现，用户反复实报「任务停了中间层还在」）。
@@ -948,12 +1051,15 @@ watch(() => chatStore.browserPaused, (paused) => {
     // 蒙版/编号框都是「agent 在操作」的标识：用户一接管（暂停）就一起收掉，
     // 不能等页面事件来收（事件可能永远不到）。
     forceFinishLoading('用户暂停接管');
+    void beginTakeoverRecording();
     if (highlightOn.value) {
       highlightPausedRestore.value = true;
       void applyHighlight(false, true);
     }
     return;
   }
+  // 兜底：非"点恢复"路径（任务收尾顺带清 paused）只清监听、不上报
+  void endTakeoverRecording(false);
   if (!highlightPausedRestore.value) return;
   highlightPausedRestore.value = false;
   // ★★★ 2026-10-24 根因修复（用户实报「任务我都停止了浏览器还在转圈/还是满屏编号」）：
@@ -961,7 +1067,7 @@ watch(() => chatStore.browserPaused, (paused) => {
   //   此前把它当成"恢复执行"，又把编号层补了回来 —— 而那时 browserTaskActive 已被清、
   //   之后没有任何 watcher 会再关它（主进程空闲收起也只在有动作时重排），编号框就永驻页面。
   //   ⇒ 只有任务确实还在跑、agent 确实还在操作时才恢复。
-  if (!convTaskRunning.value || !chatStore.browserTaskActive) return;
+  if (!agentOperating.value) return;
   if (highlightUserOff.value || !activeTabId.value) return;
   if (!chatStore.browserHighlightManual) highlightAuto.value = true;
   void applyHighlight(true, true);
@@ -1175,6 +1281,36 @@ async function switchTab(tabId: string) {
     // 切回标签后以主进程实际状态为准刷新一次前进/后退（本地栈仍在，取不到也不影响可用）
     await syncNavState(tabId);
   }
+}
+
+// ── Tab 拖拽排序（接入参考客户端的标签手感：拖到哪一格就占哪一格）──
+// 用原生 HTML5 DnD：格子上悬停即换位，结束落盘到 store（顺序随 scope 保留）。
+// 拖拽尾随的 click 会误切页面 ⇒ 被拖过的这一次点击吞掉。
+const tabDragId = ref<string | null>(null);
+let tabDragJustMoved = false;
+function onTabDragStart(id: string, e: DragEvent) {
+  tabDragId.value = id;
+  tabDragJustMoved = false;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', id);
+  }
+}
+function onTabDragOver(id: string) {
+  if (!tabDragId.value || tabDragId.value === id) return;
+  const list = tabs.value;
+  const from = list.findIndex(t => t.id === tabDragId.value);
+  const to = list.findIndex(t => t.id === id);
+  if (from < 0 || to < 0) return;
+  tabs.value = moveTabOrder(list, from, to);
+  tabDragJustMoved = true;
+}
+function onTabDragEnd() {
+  tabDragId.value = null;
+}
+function onTabClick(id: string) {
+  if (tabDragJustMoved) { tabDragJustMoved = false; return; }
+  void switchTab(id);
 }
 
 // ── Tab 右键批量关闭菜单（关闭该页/左侧/右侧/其他/全部）──
@@ -1575,6 +1711,69 @@ const pinned = ref<Pin[]>(safeGetJson('browser_pinned', DEFAULT_PINNED));
 const searchEngine = ref(safeGetString('browser_search_engine', 'baidu'));
 const defaultProxy = ref(safeGetString('browser_default_proxy', '1') === '1');
 const engineName = computed(() => (SEARCH_ENGINES[searchEngine.value] || SEARCH_ENGINES.baidu).name);
+
+// ── 地址栏联想（2026-10-24 接入参考客户端的 OmniboxSuggest）──
+// 书签/历史按前缀→包含打分，搜索兜底永远在最后；↑↓ 选择、回车直达、Esc 收起。
+// ★ 用户口径（2026-10-24）：点别处不要立刻收起 —— 失焦后下拉与 hover 高亮都保留，
+//   直到 Esc / 选中一项 / 回车导航 / 清空输入。所以开关用 engaged 标记，不跟焦点走。
+const omniboxActive = ref(-1);
+const omniboxEngaged = ref(false);   // 聚焦过一次就开始"参与"；失焦不清
+const omniboxClosed = ref(false);    // Esc / 选中 / 导航后显式关闭
+const omniboxItems = computed(() => {
+  const eng = SEARCH_ENGINES[searchEngine.value] || SEARCH_ENGINES.baidu;
+  return buildOmniboxSuggestions({
+    query: urlInput.value,
+    bookmarks: bookmarks.value,
+    history: recentList.value,
+    searchName: eng.name,
+    searchUrl: eng.url,
+  });
+});
+const omniboxOpen = computed(() => omniboxEngaged.value && !omniboxClosed.value && omniboxItems.value.length > 0);
+function onUrlFocus() {
+  urlFocused.value = true;
+  omniboxEngaged.value = true;
+  omniboxClosed.value = false;
+}
+function onUrlBlur() {
+  // 只收聚焦样式；下拉与 hover 高亮保持（用户要求点别处也保留）
+  urlFocused.value = false;
+}
+function onUrlInput() {
+  omniboxClosed.value = false;
+  omniboxActive.value = -1;
+}
+function closeOmnibox() {
+  omniboxClosed.value = true;
+  omniboxActive.value = -1;
+}
+function pickOmnibox(item: { url: string }) {
+  urlInput.value = item.url;
+  omniboxEngaged.value = false;
+  closeOmnibox();
+  navigate();
+}
+function onUrlKeydown(e: KeyboardEvent) {
+  if (e.isComposing) return;   // 中文输入法组词中的 Enter/Esc 不当作导航
+  const items = omniboxItems.value;
+  if (e.key === 'Escape') { closeOmnibox(); return; }
+  if (e.key === 'ArrowDown' && items.length) {
+    e.preventDefault();
+    omniboxActive.value = (omniboxActive.value + 1) % items.length;
+    return;
+  }
+  if (e.key === 'ArrowUp' && items.length) {
+    e.preventDefault();
+    omniboxActive.value = (omniboxActive.value - 1 + items.length) % items.length;
+    return;
+  }
+  if (e.key === 'Enter') {
+    const pick = omniboxActive.value >= 0 ? items[omniboxActive.value] : null;
+    if (pick) { e.preventDefault(); pickOmnibox(pick); return; }
+    closeOmnibox();
+    navigate();
+  }
+}
 
 const showBookmarks = ref(false);
 const showHistory = ref(false);
@@ -2637,8 +2836,54 @@ async function deletePassword(p: SavedPassword) {
   }
 }
 
+/** 截图当前页（更多菜单）：主进程落盘到系统图片目录，返回路径；成功后复制路径方便粘贴 */
+async function captureCurrentPage() {
+  const tid = activeTabId.value;
+  const api = (window as any).electronAPI?.browserView;
+  if (!tid || typeof api?.captureTab !== 'function') {
+    ElMessage.warning('请先打开一个网页');
+    return;
+  }
+  let r: any = null;
+  try { r = await api.captureTab(tid); } catch (e: any) { r = { error: e?.message || String(e) }; }
+  if (r?.error) { ElMessage.warning('截图失败：' + r.error); return; }
+  if (!r?.file) return;
+  try { await navigator.clipboard?.writeText(r.file); } catch { /* 剪贴板不可用时只提示路径 */ }
+  ElMessage.success(`已保存截图：${r.file}（路径已复制）`);
+}
+
+/** 当前窗口录屏（更多菜单）：复用智能体 screen_record 的成熟管线（capturePage 定帧 + ffmpeg → mp4） */
+const recState = ref<{ recordId: string; outPath: string; startedAt: number } | null>(null);
+async function toggleRecording() {
+  const api = (window as any).electronAPI;
+  if (!api?.screenRecord) { ElMessage.warning('当前环境不支持录屏（仅桌面端）'); return; }
+  if (recState.value) {
+    const { recordId } = recState.value;
+    recState.value = null;
+    let r: any = null;
+    try { r = await api.screenRecord.stop({ recordId }); } catch (e: any) { r = { ok: false, error: e?.message || String(e) }; }
+    if (r?.ok) {
+      try { await navigator.clipboard?.writeText(r.outPath); } catch { /* 剪贴板不可用时只提示路径 */ }
+      ElMessage.success(`录屏已保存：${r.outPath}（路径已复制）`);
+    } else {
+      ElMessage.warning('停止录屏失败：' + (r?.error || '未知错误'));
+    }
+    return;
+  }
+  let r: any = null;
+  try { r = await api.screenRecord.start({ fps: 15 }); } catch (e: any) { r = { ok: false, error: e?.message || String(e) }; }
+  if (r?.ok) {
+    recState.value = { recordId: r.recordId, outPath: r.outPath, startedAt: Date.now() };
+    ElMessage.success('开始录屏（单段上限 10 分钟），从「更多」菜单点「停止录屏」结束');
+  } else {
+    ElMessage.error('录屏失败：' + (r?.error || '未知错误'));
+  }
+}
+
 function onMenuCommand(cmd: string) {
-  if (cmd === 'history') openHistory();
+  if (cmd === 'capture') void captureCurrentPage();
+  else if (cmd === 'record') void toggleRecording();
+  else if (cmd === 'history') openHistory();
   else if (cmd === 'passwords') openPasswordManager();
   else if (cmd === 'settings') showSettings.value = true;
   else if (cmd === 'extensions') openSettingsDrawer('extensions');
@@ -3130,7 +3375,10 @@ onUnmounted(() => {
 }
 .agent-takeover-bar.paused { background: color-mix(in srgb, var(--el-color-warning) 10%, var(--el-bg-color)); }
 .takeover-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.dot-live { background: var(--el-color-primary); animation: takeover-pulse 1.6s ease-in-out infinite; }
+/* 相位配色（对齐参考客户端的 AgentStatusBar）：思考蓝 / 执行紫 / 重试黄 / 暂停灰 */
+.dot-thinking { background: #39b6ff; animation: takeover-pulse 1.6s ease-in-out infinite; }
+.dot-executing { background: #bd45fb; animation: takeover-pulse 0.8s ease-in-out infinite; }
+.dot-retrying { background: #ffd600; animation: takeover-pulse 0.8s ease-in-out infinite; }
 .dot-paused { background: var(--el-color-warning); }
 @keyframes takeover-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .takeover-label {
@@ -3304,6 +3552,7 @@ onUnmounted(() => {
   border: 1px solid var(--el-border-color);
   border-radius: 999px;                 /* pill 形地址栏（spec 9.1） */
   transition: all 0.15s;
+  position: relative;                   /* 地址栏联想的定位锚点 */
 }
 [data-theme="dark"] .url-bar { background: var(--el-fill-color); }
 .url-bar.focused { border-color: var(--el-color-primary); box-shadow: 0 1px 6px color-mix(in srgb, var(--el-color-primary) 15%, transparent); }
@@ -3312,6 +3561,29 @@ onUnmounted(() => {
 .url-input::placeholder { color: var(--el-text-color-placeholder, #9aa0a6); }
 .url-clear { border: none; background: transparent; cursor: pointer; font-size: 18px; color: var(--el-text-color-secondary); line-height: 1; }
 .url-clear:hover { color: var(--el-text-color-primary); }
+/* 地址栏联想下拉：挂在 url-bar 之下、不抢焦点（item 用 mousedown.prevent） */
+.omnibox-panel {
+  position: absolute; left: 0; right: 0; top: calc(100% + 6px);
+  z-index: 60; max-height: 320px; overflow-y: auto;
+  background: var(--el-bg-color-overlay, #fff);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  padding: 4px;
+}
+.omnibox-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--el-text-color-primary);
+}
+.omnibox-item.active { background: var(--el-fill-color-light); }
+.omnibox-kind {
+  flex-shrink: 0; font-size: 11px; padding: 0 5px; border-radius: 4px;
+  background: var(--el-fill-color); color: var(--el-text-color-secondary);
+}
+.omnibox-kind.kind-search { background: color-mix(in srgb, var(--el-color-primary) 14%, transparent); color: var(--el-color-primary); }
+.omnibox-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.omnibox-host { flex-shrink: 0; font-size: 11px; color: var(--el-text-color-secondary); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 页面缩放组 */
 .zoom-group { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }

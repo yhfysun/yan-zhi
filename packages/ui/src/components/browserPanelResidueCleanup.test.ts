@@ -34,8 +34,8 @@ describe('pause 标记被收尾清掉时，不能把编号层画回来', () => {
     const at = PANEL.indexOf('watch(() => chatStore.browserPaused');
     expect(at, '缺少暂停 watcher').toBeGreaterThanOrEqual(0);
     const body = PANEL.slice(at, at + 2000);
-    expect(body, '★ 不校验 browserTaskActive → 任务收尾清 paused 时会把编号层重新画上，且再没人关')
-      .toMatch(/if \(!convTaskRunning\.value \|\| !chatStore\.browserTaskActive\) return;/);
+    expect(body, '★ 不校验 agentOperating → 任务收尾清 paused 时会把编号层重新画上，且再没人关')
+      .toMatch(/if \(!agentOperating\.value\) return;/);
   });
 
   it('暂停接管时蒙版也要收掉（蒙版 = agent 在操作的标识）', () => {
