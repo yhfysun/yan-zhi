@@ -325,7 +325,7 @@ run(process.execPath, [path.join(desktopDir, 'node_modules', 'vite', 'bin', 'vit
 run(process.execPath, [path.join(repoRoot, 'scripts', 'verify-mode-prune.cjs')]);
 // ★ 内置插件包（mode-pluginization P1）：把 catalog 里的插件构建成 plugins/builtin/<id>/
 //   （P1 全量拷进包；P5 起按 --plugins 选择裁剪）。幂等、增量（未变文件不重写）。
-run(process.execPath, [path.join(desktopDir, 'scripts', 'build-plugins.mjs'), '--all', '--out=' + path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin')]);
+run(process.execPath, [path.join(desktopDir, 'scripts', 'build-plugins.mjs'), '--all', '--with-frontend', '--out=' + path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin')]);
 run(process.execPath, ['./scripts/prepare-server-runtime.cjs']);
 run(process.execPath, ['./scripts/clean-broken-symlinks.cjs']);
 

@@ -68,3 +68,41 @@ export function invalidatePluginFrontendCache(pluginId?: string): void {
     if (key.startsWith(`${pluginId}#`)) loaded.delete(key);
   }
 }
+
+/** 插件前端 bundle 的默认导出契约（build-plugins.mjs 的 buildFrontend 产物） */
+export interface PluginFrontendBundle {
+  views?: Record<string, unknown>;
+  install?: (host: unknown) => void;
+}
+
+/**
+ * 从插件前端 bundle 取一个视图组件（P4 前端 bundle 化）。
+ *
+ * 契约：`<pkg>/frontend/index.mjs` 默认导出 `{ views: { 'views/ClipWorkbench.vue': 组件 } }`，
+ * key 与 manifest `contributes.routes[].component` 完全一致。
+ * 返回 undefined = 没这个视图或装载失败 —— 调用方回落到构建期装载表（不黑屏）。
+ */
+export async function loadPluginView(
+  pluginId: string,
+  entry: string | undefined,
+  componentPath: string,
+): Promise<unknown | undefined> {
+  if (!entry) return undefined;
+  const mod = (await loadPluginFrontend(pluginId, entry)) as PluginFrontendBundle | undefined;
+  const view = mod?.views?.[componentPath];
+  if (!view) return undefined;
+  injectPluginCss(pluginId);
+  return view;
+}
+
+/** 插件 bundle 的样式只注入一次（vite lib 产物：frontend/index.css） */
+function injectPluginCss(pluginId: string): void {
+  if (typeof document === 'undefined') return;
+  const id = `yz-plugin-css-${pluginId}`;
+  if (document.getElementById(id)) return;
+  const link = document.createElement('link');
+  link.id = id;
+  link.rel = 'stylesheet';
+  link.href = pluginFrontendUrl(pluginId, 'frontend/index.css');
+  document.head.appendChild(link);
+}

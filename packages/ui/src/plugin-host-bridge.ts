@@ -17,6 +17,7 @@ import * as elementPlus from 'element-plus';
 import * as elementPlusIcons from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus';
 import { API_BASE } from './api/client';
+import { HOST_MODULES } from './host-modules';
 
 export const HOST_API_VERSION = 1;
 
@@ -36,6 +37,8 @@ export interface YzHostBridge {
     elementPlus: typeof elementPlus;
     elementPlusIcons: typeof elementPlusIcons;
   };
+  /** 宿主内部模块登记表（P4）：key = 'stores/mode' 等；插件 shim 从这里取**同一份实例** */
+  mods: Record<string, unknown>;
   api: Record<string, unknown>;
 }
 
@@ -57,6 +60,7 @@ export function initPluginHostBridge(): void {
   const bridge: YzHostBridge = {
     apiVersion: HOST_API_VERSION,
     m: { vue, vueRouter, pinia, elementPlus, elementPlusIcons },
+    mods: HOST_MODULES,
     api: {
       // Element Plus 反馈组件（插件 UI 与宿主同一套弹层风格）
       ElMessage,

@@ -177,16 +177,20 @@ describe('模式定义完整性（路由与插件依赖）', () => {
     expect(m.modeRoute('ops')).toBe('/ops');
     expect(m.modeRoute('sec')).toBe('/sec');
     expect(m.modeRoute('wf')).toBe('/workflow');
-    // 剪辑模式（第六模式）：无插件依赖、三端可用（与 wf 同档）
+    // 剪辑模式（第六模式）：P4 起随 clip-mode 插件贡献（键不带 desktopOnly，三端可用）
     expect(m.modeRoute('clip')).toBe('/clip');
     // pluginId 必须与插件 manifest.id 完全一致（运行时已核实：/api/plugins 返回 ops-shell / sec-lab）
     expect(m.MODE_DEFS.find((d) => d.key === 'ops')?.pluginId).toBe('ops-shell');
     expect(m.MODE_DEFS.find((d) => d.key === 'sec')?.pluginId).toBe('sec-lab');
     expect(m.MODE_DEFS.find((d) => d.key === 'ops')?.desktopOnly).toBe(true);
-    // 工作流模式无插件依赖、三端可用（ModeSwitcher 对无 pluginId 的模式不置灰）
+    // P4：dev / wf / clip 全部改为插件贡献（模式 = 插件能力开关；停用即入口消失）。
+    // 三者都**不是** desktopOnly —— 插件默认启用，ModeSwitcher 不会置灰。
+    expect(m.MODE_DEFS.find((d) => d.key === 'dev')?.pluginId).toBe('dev-mode');
     const wf = m.MODE_DEFS.find((d) => d.key === 'wf');
-    expect(wf?.pluginId).toBeUndefined();
+    expect(wf?.pluginId).toBe('wf-mode');
     expect(wf?.desktopOnly).toBeUndefined();
+    expect(m.MODE_DEFS.find((d) => d.key === 'clip')?.pluginId).toBe('clip-mode');
+    expect(m.MODE_DEFS.find((d) => d.key === 'clip')?.desktopOnly).toBeUndefined();
     // 店铺运营模式（第八模式，2026-10-16）：重模式 —— 依赖插件，故必须带 pluginId（未启用则置灰）
     const shop = m.MODE_DEFS.find((d) => d.key === 'shop');
     expect(shop?.pluginId).toBe('shop-ops');

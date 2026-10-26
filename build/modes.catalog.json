@@ -18,7 +18,7 @@
       "desc": "写代码 · 改 Bug · 读项目",
       "route": "/code",
       "entry": "views/CodeWorkbench.vue",
-      "pluginId": null,
+      "pluginId": "dev-mode",
       "views": ["views/CodeWorkbench.vue"],
       "markers": ["CodeWorkbench"]
     },
@@ -54,7 +54,7 @@
       "desc": "运行 · 调试 · 定时",
       "route": "/workflow",
       "entry": "views/WorkflowWorkbench.vue",
-      "pluginId": null,
+      "pluginId": "wf-mode",
       "views": ["views/WorkflowWorkbench.vue"],
       "markers": ["WorkflowWorkbench"]
     },
@@ -64,7 +64,7 @@
       "desc": "剪辑 · 字幕动画 · 成片",
       "route": "/clip",
       "entry": "views/ClipWorkbench.vue",
-      "pluginId": null,
+      "pluginId": "clip-mode",
       "views": ["views/ClipWorkbench.vue"],
       "markers": ["ClipWorkbench"]
     },

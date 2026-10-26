@@ -166,7 +166,7 @@ if (!process.env.YZ_SKIP_PLUGIN_BUILD) {
   const { spawnSync } = require('child_process');
   const r = spawnSync(
     process.execPath,
-    [path.join(desktopDir, 'scripts', 'build-plugins.mjs'), '--all', '--out=' + path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin')],
+    [path.join(desktopDir, 'scripts', 'build-plugins.mjs'), '--all', '--with-frontend', '--out=' + path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin')],
     { stdio: 'inherit' },
   );
   if (r.status !== 0) {

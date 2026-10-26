@@ -3,9 +3,9 @@ import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-rou
 import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
+import { loadPluginView } from '../plugin-runtime';
 import { isElectron, isCapacitor } from '../api/client';
 import { activeMode, modeRoute, visibleModeDefs, isModeAvailable, setMode, type AppMode } from '../stores/mode';
-import { MODE_VIEW_LOADERS } from '../generated/build-modes';
 import { barePathHashTarget } from './barePathHash';
 
 /**
@@ -20,26 +20,20 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * 模式工作台路由（★ 构建期裁剪）。
+ * 模式工作台路由（★ 2026-10-26 P4：全部改为**插件贡献路由**）。
  *
- * component 只能来自生成表 `MODE_VIEW_LOADERS` —— 这里**不能写** `() => import(...)`：
- * 只要 import 表达式存在于源码，Rollup 就会为它产出 chunk，`--modes` 裁剪立即失效。
- * 未选模式在生成表里没有键，对应路由也就不会注册。
+ * dev / wf / clip 三个模式的插件（dev-mode / wf-mode / clip-mode）在 manifest 的
+ * `contributes.routes` 里声明了 /code、/workflow、/clip，由 `syncPluginRoutes()`
+ * 在插件快照到位后 addRoute —— 与 ops/sec/shop 同一机制。因此这里**不再有静态表**：
+ *
+ *   · 为什么必须这样：模式 = 插件能力开关。静态路由会在插件停用/未打包时仍然存在，
+ *     于是「入口还在、页面在、后端插件没了」—— 停用等于没停。
+ *   · 冷启动直接落在这些路径上时，路由尚未注册 → 末尾兜底路由渲染 RouteFallback
+ *     （"还在载入"），插件路由一到自动再进一次（见 whenPluginRoutesSynced /
+ *     recoverIfCurrentRouteUnmatched）。这段时序对 ops/sec/shop 早就是常态。
+ *   · 组件来源仍是构建期生成表 PLUGIN_VIEW_LOADERS（经 resolvePluginComponent），
+ *     未选中的模式不会产出 chunk，`--modes` 裁剪语义不变。
  */
-const MODE_ROUTE_TABLE: Array<{ mode: AppMode; path: string; title: string }> = [
-  { mode: 'dev', path: '/code', title: '代码' },
-  { mode: 'wf', path: '/workflow', title: '工作流' },
-  { mode: 'clip', path: '/clip', title: '剪辑' },
-];
-
-const modeRoutes = MODE_ROUTE_TABLE
-  .filter((r) => !!MODE_VIEW_LOADERS[r.mode])
-  .map((r) => ({
-    path: r.path,
-    name: r.mode,
-    component: MODE_VIEW_LOADERS[r.mode],
-    meta: { title: r.title },
-  }));
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/chat' },
@@ -92,7 +86,6 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/Chat.vue'),
     meta: { title: '任务' },
   },
-  ...modeRoutes,
   {
     path: '/chat-hub',
     name: 'chat-hub',
@@ -459,21 +452,66 @@ export async function syncPluginRoutes(): Promise<void> {
     const pluginStore = usePluginStore();
     for (const r of pluginStore.routes) {
       if (router.hasRoute(r.name)) continue;
-      const comp = resolvePluginComponent(r.component);
-      if (!comp) continue;
+      const built = resolvePluginComponent(r.component);
+      const canBundle = !!(r.pluginId && r.frontendEntry && r.component);
+      if (!built && !canBundle) continue;
       router.addRoute({
         path: r.path,
         name: r.name,
-        component: comp as () => Promise<unknown>,
+        component: (() => resolvePluginRouteComponent(r, built)) as () => Promise<unknown>,
         meta: r.meta,
       });
     }
     // 首次同步完成 → 放行冷启动里等着的导航（见 whenPluginRoutesSynced）
+    const firstSync = !pluginRoutesSynced;
     markPluginRoutesSynced();
+    // ★ 2026-10-26 P4：dev/wf/clip 的 /code、/workflow、/clip 也改成插件贡献后，
+    //   首次导航一定跑在 addRoute 之前 → 上面「模式记忆」那道闸（isModeRouteRegistered）
+    //   在冷启动时必然不成立，用户会停在 /chat 而不是自己的模式工作台。
+    //   这里补一次**仅首次**的就地恢复（等价于 pre-P4 静态路由下的行为）；
+    //   后续 sync（启用/停用插件触发）不恢复，避免把正在对话的用户弹走。
+    if (firstSync) restoreActiveModeRouteAfterSync();
     recoverIfCurrentRouteUnmatched();
   } catch {
     /* plugin store 未就绪 */
   }
+}
+
+/**
+ * 插件路由组件解析（P4 前端 bundle 化）：
+ *   ① 优先从插件前端 bundle（yz://plugin/<id>/frontend/index.mjs）取视图 —— 视图不再编进主包；
+ *   ② bundle 未构建 / 装载失败 / 没有这个视图 → 回落构建期 PLUGIN_VIEW_LOADERS；
+ *   ③ 都没有 → 兜底页（绝不黑屏）。
+ * ②是关键：打包链没跑 --with-frontend 时行为与以前完全一致，零回归。
+ */
+async function resolvePluginRouteComponent(
+  r: { component?: string; pluginId?: string; frontendEntry?: string },
+  built?: () => Promise<unknown>,
+): Promise<unknown> {
+  if (r.pluginId && r.frontendEntry && r.component) {
+    const view = await loadPluginView(r.pluginId, r.frontendEntry, r.component).catch(() => undefined);
+    if (view) return (view as { default?: unknown }).default ?? view;
+  }
+  if (built) {
+    const m = await built();
+    return (m as { default?: unknown })?.default ?? m;
+  }
+  return (await import('../views/RouteFallback.vue')).default;
+}
+
+/**
+ * 插件路由首次同步后，若当前停在对话页而「记忆中的模式」路由刚就绪 → 回该模式工作台。
+ *
+ * 只做**首次**（见调用点）。判据与 beforeEach 的「模式记忆」逐条对齐（同一个语义，
+ * 两处实现不要漂移）：非 office、模式可用（授权 ∩ 构建期裁剪）、目标路由确已注册。
+ */
+function restoreActiveModeRouteAfterSync(): void {
+  const cur = router.currentRoute.value;
+  if (cur.path !== '/chat' && !cur.path.startsWith('/chat/')) return;
+  const m = activeMode.value;
+  if (m === 'office' || !isModeAvailable(m) || !isModeRouteRegistered(m)) return;
+  if (isCapacitor && MOBILE_BLOCKED_PATHS.has(modeRoute(m))) return;
+  void router.replace({ path: modeRoute(m), query: cur.query, hash: cur.hash });
 }
 
 /**

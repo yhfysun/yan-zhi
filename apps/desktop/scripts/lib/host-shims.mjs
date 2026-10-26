@@ -142,6 +142,60 @@ function writeFileIfChanged(file, content) {
   return true;
 }
 
+// ─────────────────────── 宿主内部模块外置（P4 前端 bundle 化） ───────────────────────
+//
+// 背景：工作台视图（Clip/Code/Workflow）直接从 `stores/*`、`composables/*`、`api/*`、`utils/*`
+// 取宿主能力。这些模块里有**模块级单例**（如 stores/mode 的 activeMode/leads）——
+// 若随插件 bundle 复制一份，插件里的 activeMode 与宿主就是两个 ref，切模式立刻对不上。
+// 因此：构建期把这些 import 外置成 `yz://shared/host/<key>.mjs`，shim 再从
+// `window.__YZ_HOST__.mods[key]` 取回**宿主那份真实模块实例**（零复制、单实例）。
+//
+// key = 相对 packages/ui/src 的路径去扩展名（如 'stores/mode'）。
+// 组件（.vue）不在此列：它们随插件 bundle 打进去，无状态可复制。
+
+/** 参与外置的宿主目录（新增目录必须同步 packages/ui/src/host-modules.ts 的 glob） */
+export const HOST_MODULE_DIRS = ['stores/', 'composables/', 'api/', 'utils/'];
+
+/** 该相对路径（相对 packages/ui/src）是否应外置 */
+export function isHostModuleRel(rel) {
+  const norm = String(rel).replace(/\\/g, '/');
+  if (!/\.tsx?$/.test(norm) || norm.endsWith('.d.ts') || norm.endsWith('.test.ts')) return false;
+  return HOST_MODULE_DIRS.some((d) => norm.startsWith(d));
+}
+
+/** 模块相对路径 → 外置 key（去扩展名） */
+export function hostModuleKey(rel) {
+  return String(rel).replace(/\\/g, '/').replace(/\.tsx?$/, '');
+}
+
+/** 生成宿主模块 shim 源码：命名导出按宿主模块真实导出面逐条转发 */
+export function hostModuleShimSource(key, names) {
+  return (
+    shimBanner(`宿主内部模块 shim：${key} → window.__YZ_HOST__.mods[${JSON.stringify(key)}]（单实例）`) +
+    `const __h = globalThis.__YZ_HOST__;\n` +
+    `const __m = __h && __h.mods && __h.mods[${JSON.stringify(key)}];\n` +
+    `if (!__m) throw new Error('[yz-shim] 宿主模块未登记: ' + ${JSON.stringify(key)} + '（见 packages/ui/src/host-modules.ts）');\n` +
+    `export default __m;\n` +
+    names.map((n) => `export const ${n} = __m[${JSON.stringify(n)}];`).join('\n') +
+    `\n`
+  );
+}
+
+/** 写宿主模块 shim 到 host-shims/host/<key>.mjs（幂等）。modules: [{key, names}] */
+export function generateHostModuleShims(desktopDir, modules) {
+  const dir = path.join(shimsDir(desktopDir), 'host');
+  fs.mkdirSync(dir, { recursive: true });
+  const written = [];
+  for (const { key, names } of modules) {
+    const clean = [...new Set(names)].filter((n) => IDENT_RE.test(n) && !RESERVED.has(n) && n !== 'default').sort();
+    const file = path.join(dir, `${key}.mjs`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeFileIfChanged(file, hostModuleShimSource(key, clean));
+    written.push({ key, names: clean });
+  }
+  return { dir, written };
+}
+
 /** CLI 直跑入口（generate-host-shims.mjs 包装调用；被 import 时不执行） */
 export async function main() {
   const libDir = path.dirname(fileURLToPath(import.meta.url)); // apps/desktop/scripts/lib

@@ -6,11 +6,11 @@ export const BUILD_MODES: string[] = ["office","dev","ops","sec","wf","clip","sh
 
 export const BUILD_MODE_DEFS = [
   { key: "office", label: "办公模式", icon: "ChatDotRound", desc: "文档 · 表格 · 岗位模板", route: "/chat" },
-  { key: "dev", label: "开发模式", icon: "Monitor", desc: "写代码 · 改 Bug · 读项目", route: "/code" },
+  { key: "dev", label: "开发模式", icon: "Monitor", desc: "写代码 · 改 Bug · 读项目", route: "/code", pluginId: "dev-mode" },
   { key: "ops", label: "运维模式", icon: "Platform", desc: "服务器 · Docker · 数据库", route: "/ops", pluginId: "ops-shell", desktopOnly: true },
   { key: "sec", label: "安全模式", icon: "Lock", desc: "侦察 · 扫描 · 审计", route: "/sec", pluginId: "sec-lab", desktopOnly: true },
-  { key: "wf", label: "工作流模式", icon: "Connection", desc: "运行 · 调试 · 定时", route: "/workflow" },
-  { key: "clip", label: "剪辑模式", icon: "VideoCamera", desc: "剪辑 · 字幕动画 · 成片", route: "/clip" },
+  { key: "wf", label: "工作流模式", icon: "Connection", desc: "运行 · 调试 · 定时", route: "/workflow", pluginId: "wf-mode" },
+  { key: "clip", label: "剪辑模式", icon: "VideoCamera", desc: "剪辑 · 字幕动画 · 成片", route: "/clip", pluginId: "clip-mode" },
   { key: "shop", label: "店铺运营模式", icon: "Shop", desc: "选品 · Listing · 利润 · 仓储", route: "/shop", pluginId: "shop-ops", desktopOnly: true },
 ] as const;
 
@@ -24,6 +24,9 @@ export const MODE_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
 };
 
 export const PLUGIN_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
+  "views/ClipWorkbench.vue": () => import('../views/ClipWorkbench.vue'),
+  "views/CodeWorkbench.vue": () => import('../views/CodeWorkbench.vue'),
+  "views/WorkflowWorkbench.vue": () => import('../views/WorkflowWorkbench.vue'),
   "views/plugin/AndroidMirror.vue": () => import('../views/plugin/AndroidMirror.vue'),
   "views/plugin/CicdConsole.vue": () => import('../views/plugin/CicdConsole.vue'),
   "views/plugin/GitExplorer.vue": () => import('../views/plugin/GitExplorer.vue'),

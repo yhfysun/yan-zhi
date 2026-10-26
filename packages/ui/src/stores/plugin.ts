@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
+import { resolvePluginFrontendEntry } from '../plugin-runtime';
 import type {
   PluginManifest,
   PluginState,
@@ -66,9 +67,15 @@ export const usePluginStore = defineStore('plugin', () => {
       .flatMap((p) => p.manifest.contributes?.sidebar || [])
       .sort((a, b) => (a.order ?? 100) - (b.order ?? 100)),
   );
-  /** 贡献的前端路由 */
-  const routes = computed<RouteConfig[]>(() =>
-    enabledPlugins.value.flatMap((p) => p.manifest.contributes?.routes || []),
+  /** 贡献的前端路由（P4：附 pluginId + 插件前端入口，供运行时 bundle 装载） */
+  const routes = computed<Array<RouteConfig & { pluginId?: string; frontendEntry?: string }>>(() =>
+    enabledPlugins.value.flatMap((p) =>
+      (p.manifest.contributes?.routes || []).map((r) => ({
+        ...r,
+        pluginId: p.manifest.id,
+        frontendEntry: resolvePluginFrontendEntry(p.manifest),
+      })),
+    ),
   );
   /** 贡献的设置面板 */
   const settingsTabs = computed<SettingsTab[]>(() =>

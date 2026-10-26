@@ -98,8 +98,16 @@ function isExcludedView(catalog, selected, relPath) {
   return false;
 }
 
-/** 扫描前端插件视图（相对 packages/ui/src）。 */
-function collectPluginViewFiles(fs = fsDefault, uiSrc = UI_SRC) {
+/**
+ * 扫描前端插件视图（相对 packages/ui/src）。
+ *
+ * ★ 2026-10-26 P4：除 views/plugin 与 plugins 外，选中模式的**工作台视图**也要进这张表 ——
+ *   clip（以及后续 dev/wf）已改为「插件贡献路由」（manifest.contributes.routes），组件
+ *   由 `resolvePluginComponent` 按 PLUGIN_VIEW_LOADERS 解析。以前它们只走 MODE_VIEW_LOADERS
+ *   （静态路由表），插件化后静态路由表里没有它们，这张表漏了就是「插件已启用但页面空白」。
+ *   未选模式的视图仍由 isExcludedView 过滤，裁剪语义不变。
+ */
+function collectPluginViewFiles(fs = fsDefault, uiSrc = UI_SRC, opts = {}) {
   const out = [];
   const walk = (absDir, relDir) => {
     let entries;
@@ -115,6 +123,15 @@ function collectPluginViewFiles(fs = fsDefault, uiSrc = UI_SRC) {
     }
   };
   for (const root of PLUGIN_VIEW_ROOTS) walk(path.join(uiSrc, root), root);
+  const { catalog, modes } = opts;
+  if (catalog && Array.isArray(modes)) {
+    for (const key of modes) {
+      for (const rel of catalog.modes[key]?.views || []) {
+        if (!rel.endsWith('.vue') || out.includes(rel)) continue;
+        if (fs.existsSync(path.join(uiSrc, rel))) out.push(rel);
+      }
+    }
+  }
   return out.sort();
 }
 
@@ -196,7 +213,7 @@ function buildManifest({ catalog, modes, edition, now }) {
 }
 
 function writeGenerated({ catalog, modes, fs = fsDefault, uiSrc = UI_SRC, outPath = GENERATED_PATH }) {
-  const pluginViews = collectPluginViewFiles(fs, uiSrc);
+  const pluginViews = collectPluginViewFiles(fs, uiSrc, { catalog, modes });
   const content = renderGenerated({ catalog, modes, pluginViews });
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, content, 'utf8');
