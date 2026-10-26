@@ -260,9 +260,15 @@ function pruneOldReleases(root, { keep = 2, fs = fsDefault } = {}) {
  * @param {string} opts.platform  process.platform
  * @param {object} opts.env       process.env（取 ANDROID_HOME / JAVA_HOME / HOME 等）
  * @param {string} [opts.delimiter] PATH 分隔符（win32 为 ';'，其余 ':'）
+ * @param {string[]} [opts.extraJavaCandidates] 调用方扫出来的本机 JDK 目录（排在 JAVA_HOME 之后）
  * @returns {{sdkCandidates: string[], javaCandidates: string[]}}
  */
-function androidToolchainCandidates({ platform = process.platform, env = {}, delimiter } = {}) {
+function androidToolchainCandidates({
+  platform = process.platform,
+  env = {},
+  delimiter,
+  extraJavaCandidates = [],
+} = {}) {
   const isWin = platform === 'win32';
   const d = delimiter || (isWin ? ';' : ':');
 
@@ -279,9 +285,13 @@ function androidToolchainCandidates({ platform = process.platform, env = {}, del
         ]),
   ].filter(Boolean);
 
+  // ★ 不再写死 `C:\APP\Java\jdk-21.0.12.1+1`：那是「某一台机器」的实际目录名，
+  //   本机装的是 `C:\APP\Java\jdk-21` —— 硬编码等于没配，且在换机后静默失效。
+  //   失效表现很隐蔽：候选全 miss → 落到 PATH 反推 → 拿到 jdk-17 →
+  //   直到 capacitor-nodejs 按 Java 21 编译时才炸。改成由调用方扫真实目录传进来。
   const javaCandidates = [
     env.JAVA_HOME,
-    ...(isWin ? ['C:\\APP\\Java\\jdk-21.0.12.1+1'] : []),
+    ...extraJavaCandidates,
   ].filter(Boolean);
 
   // ★ PATH 反推：gradle 要的是 JAVA_HOME，而 CI 往往只把 javac 放进 PATH。
@@ -300,8 +310,15 @@ function androidToolchainCandidates({ platform = process.platform, env = {}, del
  * @param {string[]} opts.javaCandidates
  * @param {string[]} opts.javacNames
  * @param {string[]} opts.pathDirs
- * @param {(p: string) => boolean} opts.exists  判存在（SDK 判 platform-tools，JDK 判 bin/javac）
+ * @param {(p: string) => boolean} opts.exists  判 SDK 存在（看 platform-tools）
+ * @param {(p: string) => boolean} [opts.existsJava]  判 JDK 存在（看 bin/javac）；
+ *        ★ 必须与 exists 分开：两者的判据不同（SDK 目录里没有 platform-tools 以外的标志，
+ *        JDK 目录里没有 platform-tools）。共用同一个 exists 会让**所有 JDK 候选必然 miss**，
+ *        静默退回 PATH 反推 —— 于是拿到了 PATH 上的 jdk-17，直到 gradle 编译才炸。
  * @param {(dir: string, name: string) => boolean} opts.existsIn  判 dir/name 是否存在
+ * @param {(p: string) => boolean} [opts.acceptJava]  额外门槛（如「必须 JDK 21+」）。
+ *        ★ 为什么需要：JAVA_HOME 常常指向 jdk-17，它排在候选首位，
+ *        单靠「有 javac」会一直选中它 —— 而 Capacitor 8 的 nodejs 插件按 Java 21 编译。
  * @param {(p: string) => string} opts.dirname
  */
 function resolveAndroidToolchain({
@@ -310,16 +327,22 @@ function resolveAndroidToolchain({
   javacNames = [],
   pathDirs = [],
   exists = () => false,
+  existsJava = null,
   existsIn = () => false,
+  acceptJava = null,
   dirname = (p) => path.dirname(p),
 } = {}) {
   const sdk = sdkCandidates.find((p) => exists(p)) || null;
 
-  let javaHome = javaCandidates.find((p) => exists(p)) || null;
+  const javaExists = existsJava || exists;
+  const javaOk = (p) => javaExists(p) && (!acceptJava || acceptJava(p));
+  let javaHome = javaCandidates.find(javaOk) || null;
   let javaSource = javaHome ? 'env' : null;
   if (!javaHome) {
     for (const dir of pathDirs) {
-      if (javacNames.some((n) => existsIn(dir, n))) {
+      // PATH 分支的「存在」由 existsIn(目录, 可执行名) 判定，不能再套 javaOk ——
+      // javaOk 里的 javaExists 可能是 SDK 判据（无 existsJava 时回退到 exists）。
+      if (javacNames.some((n) => existsIn(dir, n)) && (!acceptJava || acceptJava(dirname(dir)))) {
         javaHome = dirname(dir);
         javaSource = 'PATH';
         break;

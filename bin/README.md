@@ -68,7 +68,7 @@ bash bin/build.sh web
 
 运行后自动扫描并给出 PASS / WARN / MISS 结果：
 
-- **基础**：Node.js (>=20)、pnpm (>=9)、Git、Python 3
+- **基础**：Node.js (>=20)、pnpm (>=11，由 packageManager 锁定)、Git、Python 3
 - **桌面端**：Python 3、Visual Studio Build Tools 2022（用于编译 better-sqlite3 / sqlite-vec 原生模块）
 - **移动端**：JDK、Android SDK、Xcode / CocoaPods (macOS)
 - **项目**：node_modules 状态
@@ -182,7 +182,7 @@ YZ_ALL_OUT_DIR=out-new pnpm build:desktop:all
 
 ### 桌面端 (Electron)
 
-- Node.js 20+、pnpm 9+
+- Node.js 20+、pnpm 11+
 - Python 3 + Visual Studio Build Tools 2022（用于编译 better-sqlite3 / sqlite-vec 原生模块；`postinstall` 会按 Electron ABI 自动 rebuild）
 - 内置模型引擎已改为 **Ollama**，打包不再下载 qwen / llama-server
 - 可选：内置 Python 运行时（`apps/desktop/resources/python`，由 `node scripts/build-python-runtime.mjs` 生成，

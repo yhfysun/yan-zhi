@@ -59,13 +59,18 @@ describe('androidToolchainCandidates — 平台候选表', () => {
     assert.strictEqual(sdkCandidates[1], '/other/sdk');
   });
 
-  test('JAVA_HOME 进候选；win32 追加项目约定的 jdk-21 落点', () => {
+  test('JAVA_HOME 进候选；本机扫描出的 JDK 紧随其后（不再写死目录名）', () => {
     const win = androidToolchainCandidates({
       platform: 'win32',
       env: { JAVA_HOME: 'D:\\jdk' },
+      extraJavaCandidates: ['C:\\APP\\Java\\jdk-21'],
     });
     assert.strictEqual(win.javaCandidates[0], 'D:\\jdk');
-    assert.ok(win.javaCandidates.includes('C:\\APP\\Java\\jdk-21.0.12.1+1'));
+    assert.strictEqual(win.javaCandidates[1], 'C:\\APP\\Java\\jdk-21');
+    assert.ok(
+      !win.javaCandidates.includes('C:\\APP\\Java\\jdk-21.0.12.1+1'),
+      '不应再写死某个机器上的 JDK 目录名（换机后静默失效）',
+    );
 
     const linux = androidToolchainCandidates({ platform: 'linux', env: {} });
     assert.ok(
@@ -171,6 +176,22 @@ describe('resolveAndroidToolchain — 选取逻辑', () => {
     assert.strictEqual(r.sdk, null);
     assert.strictEqual(r.javaHome, null);
     assert.strictEqual(r.javaSource, null);
+  });
+
+  test('JDK 判据与 SDK 分开：SDK 判据 miss 也不能拖累 JDK 候选', () => {
+    const jdkHome = j('C:\\APP\\Java\\jdk-21');
+    const cand = androidToolchainCandidates({
+      platform: 'win32',
+      env: {},
+      extraJavaCandidates: [jdkHome],
+    });
+    const r = resolveAndroidToolchain({
+      ...cand,
+      exists: () => false, // 没有任何 platform-tools（JDK 目录里当然也没有）
+      existsJava: (p) => p === jdkHome,
+    });
+    assert.strictEqual(r.javaHome, jdkHome, 'JDK 候选必须用自己的判据命中');
+    assert.strictEqual(r.javaSource, 'env');
   });
 
   test('SDK 判据是 platform-tools 在位：空目录不算（exists 返回 false 即跳过）', () => {

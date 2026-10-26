@@ -443,6 +443,59 @@ function distStale() {
 
 // ─────────────────────── 前置检查 ───────────────────────
 /**
+ * 扫本机 JDK 落点（只收 21+）。
+ *
+ * ★ 为什么扫而不是写死：Capacitor 8 的 @capawesome/capacitor-nodejs 按 Java 21 编译
+ *   （build.gradle 里 sourceCompatibility VERSION_21）。同一台机器上目录名可能是
+ *   `jdk-21`，而另一台是 `jdk-21.0.12.1+1` —— 写死任何一个都会在换机后静默 miss，
+ *   然后落到 PATH 反推出的 jdk-17，直到 gradle 编译期才炸（报错还跟 JDK 无关）。
+ */
+function scanLocalJdkHomes() {
+  if (process.platform !== 'win32') return [];
+  const roots = ['C:\\APP\\Java', 'C:\\Program Files\\Java', 'C:\\Program Files\\Eclipse Adoptium'];
+  const hits = [];
+  for (const root of roots) {
+    let names;
+    try {
+      names = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!/^jdk-?2[1-9]/.test(name)) continue;
+      const full = path.join(root, name);
+      if (!fs.existsSync(path.join(full, 'bin', 'javac.exe'))) continue;
+      hits.push(full);
+    }
+  }
+  // 大版本优先（jdk-25 排在 jdk-21 前），避免旧目录盖住新装的
+  const major = (p) => Number((/jdk-?(\d+)/.exec(path.basename(p)) || [])[1] || 0);
+  return hits.sort((a, b) => major(b) - major(a));
+}
+
+/** 从 `javac -version` 的输出里取主版本（`javac 21.0.7` / `javac 1.8.0_112`）。 */
+function parseJdkVersion(text) {
+  const m = /(\d+)\.(\d+)/.exec(text || '');
+  if (!m) return 0;
+  const major = Number(m[1]);
+  return major === 1 ? Number(m[2]) : major;
+}
+
+/** 读 JDK 主版本；跑不起来返回 0（视为不可用）。 */
+function jdkMajor(home, javac) {
+  try {
+    const out = execFileSync(path.join(home, 'bin', javac), ['-version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15000,
+    });
+    return parseJdkVersion(out);
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * 解析安卓工具链（SDK / JDK）—— **跨平台唯一真相源**。
  *
  * ★ 为什么必须抽出来：preflight 检查与 gradle 执行**读的是同一组路径**，
@@ -458,15 +511,24 @@ function androidToolchain() {
     path.join(__dirname, '..', 'apps', 'desktop', 'scripts', 'lib', 'pack-helpers.cjs'),
   );
   const isWin = process.platform === 'win32';
+  const javac = isWin ? 'javac.exe' : 'javac';
   const cand = androidToolchainCandidates({
     platform: process.platform,
     env: process.env,
     delimiter: path.delimiter,
+    extraJavaCandidates: scanLocalJdkHomes(),
   });
-  const javac = isWin ? 'javac.exe' : 'javac';
+  const MIN_JDK = 21;
   const { sdk, javaHome, javaSource } = resolveAndroidToolchain({
     ...cand,
+    // ★ SDK 与 JDK 分开判：SDK 看 platform-tools，JDK 看 bin/javac。
+    //   共用同一个 exists 会让 JDK 候选全部 miss（JDK 目录里当然没有 platform-tools）→
+    //   静默退回 PATH 反推 → 拿到 PATH 上的 jdk-17。
     exists: (p) => fs.existsSync(path.join(p, 'platform-tools')),
+    existsJava: (p) => fs.existsSync(path.join(p, 'bin', javac)),
+    // ★ 必须 21+：JAVA_HOME 常指向 jdk-17，它排在候选首位，
+    //   只判「有 javac」会一直选中它，直到 gradle 编译 native 插件时才炸。
+    acceptJava: (p) => jdkMajor(p, javac) >= MIN_JDK,
     existsIn: (dir, name) => fs.existsSync(path.join(dir, name)),
     dirname: (p) => path.dirname(p),
   });
@@ -474,12 +536,14 @@ function androidToolchain() {
   // JDK 的存在性判据与 SDK 不同（SDK 看 platform-tools，JDK 看 bin/javac）——
   // 单独再验一次，避免把「目录存在但没有 javac」当可用。
   const javaOk = javaHome && fs.existsSync(path.join(javaHome, 'bin', javac));
+  const jdkNote = javaHome ? null : `（需 JDK ${MIN_JDK}+，Capacitor 8 按 Java ${MIN_JDK} 编译）`;
   return {
     sdk,
     sdkTried: cand.sdkCandidates,
     javaHome: javaOk ? javaHome : null,
     javaSource,
     javaTried: [...cand.javaCandidates, 'PATH 上的 javac/java 反推'],
+    jdkNote,
   };
 }
 
@@ -520,7 +584,7 @@ function preflight(targets) {
     if (tc.sdk) ok(`Android SDK: ${tc.sdk}`);
     else problems.push(`Android SDK 未找到（缺 platform-tools）：${tc.sdkTried.join(' / ')}`);
     if (tc.javaHome) ok(`JDK: ${tc.javaHome}`);
-    else problems.push(`JDK 未找到（需 17+）：${tc.javaTried.join(' / ')}`);
+    else problems.push(`JDK 未找到${tc.jdkNote || ''}：${tc.javaTried.join(' / ')}`);
   }
 
   if (problems.length) {
@@ -805,10 +869,100 @@ function buildDesktop(editions) {
   ok('桌面构建完成');
 }
 
+/**
+ * gradle 发行包换源。
+ *
+ * ★ 症状：`Downloading from https://services.gradle.org/distributions/... failed: timeout`。
+ *   追下去发现 services.gradle.org 会 307 跳到 **github.com/gradle/gradle-distributions**，
+ *   而本机直连 GitHub 不通（要走代理）—— 所以不是网慢，是根本到不了终点。
+ * ★ 处理：android/ 是 cap 生成的 gitignore 目录，改它的 wrapper 属性不影响仓库与 CI。
+ *   探测一次官方源：通就保持原样（CI 上 GitHub 可达），不通才换腾讯镜像。
+ */
+function ensureGradleWrapper(mobile) {
+  const props = path.join(mobile, 'android', 'gradle', 'wrapper', 'gradle-wrapper.properties');
+  if (!fs.existsSync(props)) return;
+  let text = fs.readFileSync(props, 'utf8');
+
+  // 超时默认 10s 对国内网络偏短（镜像下载 150MB），放大到 120s
+  const timeoutMatch = /^networkTimeout=(\d+)$/m.exec(text);
+  if (timeoutMatch) {
+    if (Number(timeoutMatch[1]) < 120000) {
+      text = text.replace(timeoutMatch[0], 'networkTimeout=120000');
+    }
+  } else {
+    text += '\nnetworkTimeout=120000\n';
+  }
+
+  const m = /^distributionUrl=(.+)$/m.exec(text);
+  if (!m) {
+    fs.writeFileSync(props, text);
+    return;
+  }
+  const raw = m[1].trim();
+  const url = raw.replace(/\\:/g, ':');
+  if (!url.includes('services.gradle.org')) {
+    fs.writeFileSync(props, text);
+    return;
+  }
+
+  const reachable = (() => {
+    try {
+      const out = execFileSync(
+        'curl',
+        [
+          '-sIL',
+          '-o',
+          process.platform === 'win32' ? 'NUL' : '/dev/null',
+          '-w',
+          '%{http_code}',
+          '--max-time',
+          '6',
+          url,
+        ],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 9000 },
+      );
+      return out.trim() === '200';
+    } catch {
+      return false;
+    }
+  })();
+
+  if (!reachable) {
+    const mirrored = url.replace(
+      'https://services.gradle.org/distributions/',
+      'https://mirrors.cloud.tencent.com/gradle/',
+    );
+    if (mirrored !== url) {
+      text = text.replace(raw, mirrored);
+      info(`gradle 官方源不可达 → 改用镜像：${mirrored}`);
+    }
+  }
+  fs.writeFileSync(props, text);
+}
+
 // ─────────────────────── 安卓构建 ───────────────────────
 function buildAndroid() {
   step('安卓 APK 构建');
   const mobile = path.join(ROOT, 'apps', 'mobile');
+
+  // ⓪ 原生工程：android/ 是 cap 生成目录且被 gitignore，**干净机器上不存在**。
+  //   CI 里单独跑过 `cap add android`，本地开发机通常是「生成过一次就一直在」，
+  //   所以旧链路默认它存在 —— 新机器上会直接卡在「找不到 gradlew」。
+  //   ★ 必须早于图标脚本：图标要写进 android/app/src/main/res/。
+  if (!fs.existsSync(path.join(mobile, 'android'))) {
+    info('⓪ 首次生成 Android 工程（cap add android）');
+    // ★ 这里**不能**预建一个空的 apps/mobile/dist：
+    //   cap 的判据是「webDir 存在 → 必须有 index.html，否则抛错」；
+    //   webDir 不存在时它只告警。空目录反而把「告警」变成「失败」。
+    run(
+      process.execPath,
+      [path.join('node_modules', '@capacitor', 'cli', 'bin', 'capacitor'), 'add', 'android'],
+      { cwd: mobile },
+    );
+  }
+
+  // ⓪.5 gradle wrapper 换源（官方源会跳到 GitHub，本机直连不通）
+  ensureGradleWrapper(mobile);
 
   // ① 图标（必须在 vite build 之前）
   info('① 生成安卓图标');
@@ -830,6 +984,18 @@ function buildAndroid() {
   //   ★ 位置：必须早于 cap sync（sync 会重铺原生工程文件，晚于它则被覆盖）。
   info('②.5 应用原生改动（短信插件）');
   run(process.execPath, ['scripts/apply-native-sms.cjs'], { cwd: mobile });
+
+  // ②.6 原生权限 / 明文流量（同样的坑：mobile 的 build:android 里有，这里曾经漏了）
+  //   ★ 缺 usesCleartextTraffic 的后果不是"网络慢"，而是 **所有 /api 请求被
+  //     ERR_CLEARTEXT_NOT_PERMITTED 拦掉** —— WebView 里 fetch 直接 "Failed to fetch"，
+  //     界面永远停在骨架屏（模型/智能体列表看起来就是"数据全丢了"）。
+  //   ★ 缺 CAMERA 的后果：系统权限页根本不出现"相机"，用户无从授权。
+  info('②.6 应用原生权限（明文流量 / CAMERA）');
+  run(process.execPath, ['scripts/apply-native-permissions.cjs'], { cwd: mobile });
+
+  // ②.7 远控沉浸式全屏（本地原生插件：隐藏状态栏/导航栏，UU 远控同款观感）
+  info('②.7 应用原生插件（远控沉浸式全屏）');
+  run(process.execPath, ['scripts/apply-native-immersive.cjs'], { cwd: mobile });
 
   // ③ 内嵌后端（★ 先确保 server/dist 是新鲜的）
   //

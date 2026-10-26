@@ -24,6 +24,7 @@ export const MODE_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
 };
 
 export const PLUGIN_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
+  "views/plugin/AndroidMirror.vue": () => import('../views/plugin/AndroidMirror.vue'),
   "views/plugin/CicdConsole.vue": () => import('../views/plugin/CicdConsole.vue'),
   "views/plugin/GitExplorer.vue": () => import('../views/plugin/GitExplorer.vue'),
   "views/plugin/GitSettings.vue": () => import('../views/plugin/GitSettings.vue'),

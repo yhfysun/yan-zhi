@@ -171,6 +171,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   api_ontology_detail: 'data',
   api_ontology_values: 'data',
   api_data_query: 'data',
+  api_data_preview: 'data',
   api_data_paginate: 'data',
 
   // ═══ 知识库 ═══
