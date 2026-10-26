@@ -1,6 +1,8 @@
 // git-explorer 内置插件：manifest + 入口模块（注册 git 工具供 LLM 调用）
 import type { PluginManifest, PluginModule } from '@yan-zhi/core';
-import { gitService } from '../services/git.js';
+// ★ 宿主服务一律走宿主桥（mode-pluginization）：直接 import '../services/git.js' 会被
+//   build-plugins.mjs 连带把 db.ts 单例复制进插件包（插件进程里出现第二个 SQLite 实例）。
+import { gitService } from '../host-bridge.js';
 
 export const gitExplorerManifest: PluginManifest = {
   id: 'git-explorer',

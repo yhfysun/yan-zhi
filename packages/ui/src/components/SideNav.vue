@@ -215,12 +215,14 @@
         <el-icon :size="21"><component :is="item.icon" /></el-icon>
         <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>
       </router-link>
-      <!-- 「我的」：打开设置抽屉（非路由项） -->
+      <!-- 「我的」：移动端跳 /settings（移动版设置列表页）；桌面/窄窗开设置抽屉。
+           ★ 2026-10-25 修复：此前移动端也开桌面抽屉 —— 双栏弹窗在竖屏上溢出不可用
+           （真机截图：设置变成桌面弹窗）。 -->
       <button
         v-else
         type="button"
         class="tab-bar-item"
-        @click="openSettingsDrawer('general')"
+        @click="platformMobile ? router.push('/settings') : openSettingsDrawer('general')"
       >
         <el-icon :size="21"><component :is="item.icon" /></el-icon>
         <span class="tab-bar-label">{{ item.tabLabel || item.label }}</span>

@@ -843,5 +843,12 @@ async function del(id: string) {
 /* 新增平台 · 厂商选择弹窗：窄屏收窄，避免 880px 溢出 */
 @media (max-width: 767px) {
   .vendor-picker-dialog { width: 94% !important; }
+  /* ★ P1：apikey 备注 120px 不缩、fetched-search 180px flex-shrink:0 挤占、
+     平台 URL / 模型 ID 长串无断词（逐字符竖排） */
+  .apikey-row { flex-wrap: wrap; }
+  .apikey-label { width: auto; flex: 1 1 140px; min-width: 0; }
+  .fetched-header { flex-wrap: wrap; }
+  .fetched-search { width: auto; flex: 1 1 140px; margin-left: 0; min-width: 0; }
+  .model-id, .platform-url { overflow-wrap: anywhere; }
 }
 </style>

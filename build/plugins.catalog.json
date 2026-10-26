@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "_comment": "统一插件清单（唯一真相源，mode-pluginization P0）。office-core 为基座 core 模式，任何打包选择集必须包含。backendEntry/backend 指向当前源码；frontendViews 相对 packages/ui/src。editionPresets 是 P5 起打包脚本的目标预设（= 现状各档实际内容：后端插件全档随包，模式可见性由授权档决定）。改本文件必须同步 openspec/changes/mode-pluginization/tasks.md。",
+  "plugins": {
+    "office-core": {
+      "kind": "mode",
+      "core": true,
+      "modeKey": "office",
+      "label": "办公模式",
+      "desc": "文档 · 表格 · 岗位模板（应用基座，永不被裁剪）",
+      "icon": "ChatDotRound",
+      "route": "/chat",
+      "backendEntry": null,
+      "frontendViews": [],
+      "defaultEnabled": true
+    },
+    "dev-mode": {
+      "kind": "mode",
+      "modeKey": "dev",
+      "label": "开发模式",
+      "desc": "写代码 · 改 Bug · 读项目",
+      "icon": "Monitor",
+      "route": "/code",
+      "backendEntry": null,
+      "frontendViews": ["views/CodeWorkbench.vue", "components/code/**"],
+      "defaultEnabled": true
+    },
+    "wf-mode": {
+      "kind": "mode",
+      "modeKey": "wf",
+      "label": "工作流模式",
+      "desc": "运行 · 调试 · 定时（workflow 引擎在 packages/core 基座，插件只含视图与种子）",
+      "icon": "Connection",
+      "route": "/workflow",
+      "backendEntry": null,
+      "frontendViews": ["views/WorkflowWorkbench.vue"],
+      "defaultEnabled": true
+    },
+    "clip-mode": {
+      "kind": "mode",
+      "modeKey": "clip",
+      "label": "剪辑模式",
+      "desc": "剪辑 · 字幕动画 · 成片",
+      "icon": "VideoCamera",
+      "route": "/clip",
+      "backendEntry": null,
+      "frontendViews": ["views/ClipWorkbench.vue", "components/clip/**"],
+      "defaultEnabled": true,
+      "notes": "P4 建插件：routes/clip.ts + services/clip-* + sfx-library.ts + mcp/ffmpeg-runtime、whisper-runtime、subtitle-style 迁入 backend"
+    },
+    "ops-shell": {
+      "kind": "mode",
+      "modeKey": "ops",
+      "label": "运维模式",
+      "desc": "服务器 · Docker · 数据库",
+      "icon": "Platform",
+      "route": "/ops",
+      "desktopOnly": true,
+      "requires": ["cicd-pipeline", "java-suite"],
+      "backendEntry": "apps/server/src/plugins/ops-shell.ts",
+      "manifestExport": "opsShellManifest",
+      "frontendViews": ["views/plugin/OpsConsole.vue", "views/plugin/OpsConnectionDialog.vue", "views/plugin/SftpPanel.vue", "views/plugin/opsSession.ts"],
+      "defaultEnabled": true
+    },
+    "sec-lab": {
+      "kind": "mode",
+      "modeKey": "sec",
+      "label": "安全模式",
+      "desc": "侦察 · 扫描 · 审计",
+      "icon": "Lock",
+      "route": "/sec",
+      "desktopOnly": true,
+      "backendEntry": "apps/server/src/plugins/sec-lab.ts",
+      "manifestExport": "secLabManifest",
+      "frontendViews": ["views/plugin/SecConsole.vue"],
+      "defaultEnabled": true
+    },
+    "shop-ops": {
+      "kind": "mode",
+      "modeKey": "shop",
+      "label": "店铺运营模式",
+      "desc": "选品 · Listing · 利润 · 仓储",
+      "icon": "Shop",
+      "route": "/shop",
+      "desktopOnly": true,
+      "backendEntry": "apps/server/src/plugins/shop-ops.ts",
+      "manifestExport": "shopOpsManifest",
+      "frontendViews": ["views/plugin/ShopConsole.vue", "views/plugin/shop/**"],
+      "defaultEnabled": true,
+      "notes": "自有业务模块 src/shop/*、services/amazon-sp-api、services/logistics、services/platform-api 随插件打包（P2 归位）"
+    },
+    "cicd-pipeline": {
+      "kind": "feature",
+      "label": "CICD 流水线",
+      "desc": "本地一键发布（打包→备份→上传→重启），复用 ops-shell SSH 连接",
+      "desktopOnly": true,
+      "backendEntry": "apps/server/src/plugins/cicd-pipeline.ts",
+      "manifestExport": "cicdManifest",
+      "frontendViews": ["views/plugin/CicdConsole.vue"],
+      "defaultEnabled": true
+    },
+    "java-suite": {
+      "kind": "feature",
+      "label": "Java 开发套件",
+      "desc": "Maven/Gradle/Spring Boot/调试/测试/格式化/MyBatis",
+      "desktopOnly": true,
+      "backendEntry": "apps/server/src/plugins/java-suite.ts",
+      "manifestExport": "javaSuiteManifest",
+      "frontendViews": ["views/plugin/JavaSuite.vue"],
+      "defaultEnabled": true
+    },
+    "git-explorer": {
+      "kind": "feature",
+      "label": "Git 资源管理器",
+      "desc": "仓库浏览 · diff · 历史",
+      "backendEntry": "apps/server/src/plugins/git-explorer.ts",
+      "manifestExport": "gitExplorerManifest",
+      "frontendViews": ["views/plugin/GitExplorer.vue", "views/plugin/GitSettings.vue"],
+      "defaultEnabled": true
+    },
+    "computer-use": {
+      "kind": "feature",
+      "label": "电脑操作",
+      "desc": "桌面输入自动化（高危权限 desktop-input）",
+      "desktopOnly": true,
+      "backendEntry": "apps/server/src/plugins/computer-use.ts",
+      "manifestExport": "computerUseManifest",
+      "frontendViews": [],
+      "defaultEnabled": true,
+      "extraResources": ["resources/python", "resources/python-tools"]
+    },
+    "remote-control": {
+      "kind": "feature",
+      "label": "远程控制",
+      "desc": "WebRTC 主通道被控/控制（高危权限 desktop-input，产品口径默认关闭）",
+      "desktopOnly": true,
+      "backendEntry": "apps/server/src/plugins/remote-control.ts",
+      "manifestExport": "remoteControlManifest",
+      "frontendViews": ["views/RemoteControl.vue", "components/RemoteControlHost.vue"],
+      "defaultEnabled": false,
+      "notes": "preload rc:* 专用通道留基座（主进程能力，不随插件裁剪）"
+    },
+    "skins": {
+      "kind": "resource",
+      "label": "皮肤库",
+      "desc": "27 套声明式皮肤（壁纸/部件真图），分发单元=整个 skins 包",
+      "backendEntry": "apps/server/src/plugins/skins.ts",
+      "manifestExport": "SKIN_MANIFESTS",
+      "backendNoop": true,
+      "frontendViews": [],
+      "assetsDir": "apps/server/assets/plugin-assets",
+      "defaultEnabled": true,
+      "notes": "manifest 为数组（每套皮肤一个 PluginManifest）；.yzp 分发时打包为一个多清单包"
+    }
+  },
+  "editionPresets": {
+    "lite": ["office-core", "skins", "git-explorer", "computer-use", "remote-control"],
+    "basic": ["office-core", "skins", "git-explorer", "computer-use", "remote-control", "dev-mode", "wf-mode"],
+    "pro": ["office-core", "skins", "git-explorer", "computer-use", "remote-control", "dev-mode", "wf-mode", "clip-mode", "ops-shell", "cicd-pipeline", "java-suite", "sec-lab", "shop-ops"]
+  }
+}

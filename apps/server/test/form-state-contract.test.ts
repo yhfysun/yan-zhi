@@ -143,11 +143,15 @@ describe('④ 变化语义与有界性（防假差异 / 防累积）', () => {
     }
   });
 
-  it('★★ tab 生命周期结束要清快照（关闭/逐出/空闲回收）', () => {
-    expect(MAIN, '★ 关闭/逐出 tab 未清表单快照').toMatch(/clearFormSnapshot\(/);
-    // 至少三处调用点（LRU 逐出 / 空闲回收 / closeTabById）+ 1 处定义
-    const calls = (MAIN.match(/clearFormSnapshot\(/g) || []).length;
-    expect(calls, `★ clearFormSnapshot 调用点只有 ${calls} 处（应 ≥3 处调用 + 1 定义）`).toBeGreaterThanOrEqual(4);
+  it('★★ tab 真关闭要清快照（2026-10-19 起逐出/空闲=休眠保留壳，快照随之保留）', () => {
+    expect(MAIN, '★ 关闭 tab 未清表单快照').toMatch(/clearFormSnapshot\(/);
+    // ★ 2026-10-19「回收≠关闭」重构后清理点收敛：LRU 逐出/空闲回收改为休眠（tab 壳与
+    //   url 保留、切回复活）→ 快照随之保留是有意语义；真关闭（closeTabById）清一次，
+    //   无界增长由上一条「快照 Map 上限兜底」保证。断言从「≥3 调用点」改为「真关闭路径必清」。
+    const iClose = MAIN.indexOf('function closeTabById(');
+    expect(iClose, '★ 锚点缺失：closeTabById').toBeGreaterThan(-1);
+    const seg = MAIN.slice(iClose, iClose + 1400);
+    expect(seg, '★ closeTabById 未清表单快照').toMatch(/clearFormSnapshot\(tabId\)/);
   });
 });
 

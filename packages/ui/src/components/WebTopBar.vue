@@ -271,6 +271,11 @@ const navAfter = computed(() => (isNarrow.value ? [] : navMenus.slice(1)));
 
 // 插件注入的导航项：moreGroup 声明的进「更多」对应分组，其余进底部独立项（历史行为）
 const pluginStore = usePluginStore();
+// 远程控制（remote-control 插件）：仅插件**启用**时出「更多」入口 ——
+// 未安装/已停用时不渲染菜单项（用户拍板：没有这个插件就不该看到这个菜单）
+const rcPluginEnabled = computed(() =>
+  pluginStore.plugins.some((p) => p.manifest.id === 'remote-control' && p.state === 'enabled'),
+);
 const pluginSidebarItems = computed(() =>
   pluginStore.sidebar
     .filter((it) => !it.when || it.when === 'all' || it.when === 'desktop'),
@@ -366,6 +371,11 @@ const moreItems = computed<HoverMenuItem[]>(() => [
   }, 'connection'),
   // 插件声明的新分组（如 ops-shell 的「运维」），排在连接组之后
   ...pluginNewGroups.value.map((g) => ({ key: g.key, label: g.label, icon: Box, children: g.items })),
+  // 远程控制入口：remote-control 插件启用才有（控制端页 /remote，给手机/浏览器远控本机；
+  // 本机点开也可当控制端去控别的电脑）
+  ...(rcPluginEnabled.value
+    ? [{ key: 'remote-control', label: '远程控制', icon: Monitor, path: '/remote', desc: '手机 / 浏览器观看并操作本机' }]
+    : []),
   { key: 'divider-memory', label: '', divider: true },
   { key: 'memory', label: '记忆管理', icon: Memo, path: '/memory' },
   { key: 'plugins', label: '插件管理', icon: Box, path: '/plugins' },
@@ -414,6 +424,16 @@ function onMoreSelect(item: HoverMenuItem) {
   if (item.key === 'settings' && isElectron) {
     openSettingsDialog();
     return;
+  }
+  if (item.key === 'remote-control') {
+    // /remote 是全屏裸路由：主窗口内跳转会整个盖住应用且没有返回钮；主进程
+    // window.open 同源地址又被 setWindowOpenHandler 拦 —— 桌面端走独立子窗口
+    // （key 固定，重复点击聚焦已有窗口）；Web 端同窗口跳转（浏览器可后退）。
+    const w = window as unknown as { electronAPI?: { childWindow?: { open?: (o: Record<string, unknown>) => Promise<unknown> } } };
+    if (w.electronAPI?.childWindow?.open) {
+      void w.electronAPI.childWindow.open({ key: 'remote-control', route: '/remote', width: 1100, height: 760 });
+      return;
+    }
   }
   if (item.path) router.push(item.path);
 }

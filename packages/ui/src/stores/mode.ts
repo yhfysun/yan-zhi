@@ -10,6 +10,7 @@
 //   - 「共享的是上下文，不是界面状态」
 import { ref, computed, watch, type ComputedRef, type Ref } from 'vue';
 import { BUILD_MODES, BUILD_MODE_DEFS } from '../generated/build-modes';
+import { usePluginStore } from './plugin';
 
 export type AppMode = 'office' | 'dev' | 'ops' | 'sec' | 'wf' | 'clip' | 'shop';
 /** 主导方：ai = 对话居中；human = 工作区居中（编辑器/终端/控制台），对话靠边 */
@@ -179,6 +180,21 @@ export function setMode(m: AppMode): void {
 
 export function modeDefOf(m: AppMode): ModeDef {
   return MODE_DEFS.find((d) => d.key === m) || MODE_DEFS[0];
+}
+
+/**
+ * ★ 模式运行时化（P3）：插件贡献的模式元数据（contributes.mode）。
+ * 来自插件快照（usePluginStore.modeDefs，服务端聚合 enabled 插件下发）——
+ * fallbackAgent/label/icon 的运行时真相源；找不到（基座一等模式/插件未启用）返回 undefined，
+ * 调用方回落构建期表。pinia 未就绪时静默回落（模块级代码在启动早期也会 import 本文件）。
+ */
+export function pluginModeMeta(key: string): import('./plugin').PluginModeDef | undefined {
+  try {
+    // 静态导入 + 调用期取 store：模块加载期不触 pinia（mode.ts 被启动早期代码 import）
+    return usePluginStore().modeDefs.find((m) => m.key === key);
+  } catch {
+    return undefined;
+  }
 }
 
 export function modeRoute(m: AppMode): string {

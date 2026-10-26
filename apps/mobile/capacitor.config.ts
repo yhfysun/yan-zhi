@@ -6,10 +6,15 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   server: {
     androidScheme: 'https',
-    // androidScheme 是 https（存储 origin 稳定、可进安全上下文），但 WebView 默认拦截
-    // https → http 的混合内容：局域网节点后端恰恰是 http://192.168.x.x:3001。
-    // allowMixedContent 放行后，「设为后端」指向的局域网节点才真正可达；
-    // 纯 http 的 API 请求不涉及用户敏感凭据跨网明文之外的风险面（token 本就随请求走）。
+    // androidScheme 是 https（存储 origin 稳定、可进安全上下文）。混合内容放行见 android 段。
+  },
+  android: {
+    // ★ 混合内容放行：WebView 壳是 https://localhost，远程控制/局域网节点后端是
+    //   http://192.168.x.x:3001 —— https→http 会被 Mixed Content 策略拦截（127.0.0.1
+    //   有回环豁免，局域网 IP 没有）。放行后局域网节点才真正可达。
+    // ★★ Capacitor 8 的 CapConfig 只读 android.allowMixedContent / 顶层 allowMixedContent，
+    //   **不读 server.allowMixedContent**（Bridge.java:594 → MIXED_CONTENT_ALWAYS_ALLOW）——
+    //   放 server 段会静默无效（2026-10-26 手机实测实锤，此前一直被拦）。
     allowMixedContent: true,
   },
   plugins: {

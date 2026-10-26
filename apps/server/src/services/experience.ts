@@ -135,9 +135,24 @@ function refreshDate(block: string): string {
   return block.replace(/\[\d{4}-\d{2}-\d{2}\]/, `[${today()}]`);
 }
 
+/**
+ * ★ 移动端运行时兼容（2026-10-25 真机踩坑）：nodejs-mobile 的老 V8 不支持
+ *   Unicode 属性转义 `\p{P}`（解析期直接 SyntaxError → 内嵌后端整个起不来，
+ *   真机表现为"数据全没了"——后端死则一切接口不通）。运行时特性检测：
+ *   新运行时用全量 Unicode 正则，老运行时回落显式字符类（ASCII+CJK 标点，
+ *   覆盖实际会出现的语料；桌面行为不变）。
+ */
+const PUNCT_RE: RegExp = (() => {
+  try {
+    return new RegExp('[\\s\\p{P}]+', 'gu');
+  } catch {
+    return new RegExp('[\\s!"#$%&\'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~\u3001\u3002\uFF01\uFF1F\uFF1B\uFF1A\u201C\u201D\u2018\u2019\uFF08\uFF09\u300A\u300B\u3008\u3009\u3010\u3011\u2026\u2014\u00B7~\uFF5E]+', 'g');
+  }
+})();
+
 /** 标题相似度：字符 bigram Jaccard（CJK 友好，无需分词） */
 function titleSimilarity(a: string, b: string): number {
-  const norm = (s: string) => String(s || '').toLowerCase().replace(/[\s\p{P}]+/gu, '');
+  const norm = (s: string) => String(s || '').toLowerCase().replace(PUNCT_RE, '');
   const sa = norm(a);
   const sb = norm(b);
   if (!sa || !sb) return 0;
@@ -272,11 +287,20 @@ export function readExperienceFile(base: string, topic: string): { topic: string
   }
 }
 
+/** 词分隔符（\p{L}\p{N} 的老 V8 兼容形态，见上方 PUNCT_RE 注释） */
+const WORD_SEP_RE: RegExp = (() => {
+  try {
+    return new RegExp('[^\\p{L}\\p{N}_-]+', 'gu');
+  } catch {
+    return new RegExp('[^0-9A-Za-z\\u3400-\\u4dbf\\u4e00-\\u9fff_-]+', 'g');
+  }
+})();
+
 /** 从任务文本抽取匹配关键词：ASCII 词（≥3）+ CJK bigram */
 function keywordsOf(text: string | null | undefined): string[] {
   const t = String(text || '');
   const out = new Set<string>();
-  for (const w of t.split(/[^\p{L}\p{N}_-]+/u)) {
+  for (const w of t.split(WORD_SEP_RE)) {
     if (/^[a-z0-9_-]{3,}$/i.test(w)) out.add(w.toLowerCase());
   }
   const cjk = t.match(/[\u4e00-\u9fff]+/g) || [];

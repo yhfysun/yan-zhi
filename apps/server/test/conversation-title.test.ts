@@ -76,7 +76,9 @@ function createTables(): void {
       archived_at INTEGER, deleted_at INTEGER, last_activity_at INTEGER,
       -- 来源标记两列（2026-10-16 页面内对话历史）：POST /conversations 的 INSERT 会写它们，
       -- 本测试 mock 掉了 db.js ⇒ apps/server/src/db.ts 的启动迁移不作用于本库，夹具必须自带
-      source TEXT, source_meta_json TEXT
+      source TEXT, source_meta_json TEXT,
+      -- 运维会话绑定列（2026-10-2x IM/ops）：POST INSERT 同样会写，缺列 = no such column = 500
+      ops_connection_id TEXT
     );
     CREATE TABLE IF NOT EXISTS message (
       id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, user_id TEXT NOT NULL,

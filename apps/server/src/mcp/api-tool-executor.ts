@@ -12,6 +12,7 @@ import { resolvePool } from '../services/model-pools.js';
 import { hasTokenPool } from '../services/token-pool.js';
 import { serverState } from '../state.js';
 import { resolveFfmpeg, installFfmpeg } from './ffmpeg-runtime.js';
+import { getToolsFromDb, mcpShortIdOf } from './client-manager.js';
 import {
   resolveWhisper, installWhisper, ensureWav16k, runWhisperToSrt,
   WHISPER_MODELS, DEFAULT_WHISPER_MODEL,
@@ -4977,14 +4978,37 @@ async function toolDetail(name: string, userId?: string): Promise<MpcToolExecuti
     const hit = getToolRegistry().list().find((t) => t.name === toolName);
     if (hit) { def = hit; source = 'builtin'; }
   }
-  // 3) 自定义工具
+  // 3) 自定义工具（★ 2026-10-25：同时识别暴露名 custom_<id8>_<name> —— 搜索结果给的是暴露名，
+  //    旧实现只按裸名查会 miss，模型拿着搜索结果查详情会得到"没有这个工具"）
   if (!def && userId) {
-    const row = db.prepare('SELECT name, description, parameters FROM custom_tool WHERE name = ? AND user_id = ?').get(toolName, userId) as any;
+    let row: any = db.prepare('SELECT name, description, parameters FROM custom_tool WHERE name = ? AND user_id = ?').get(toolName, userId);
+    if (!row) {
+      const m = /^custom_([a-zA-Z0-9]{1,8})_(.+)$/.exec(toolName);
+      if (m) {
+        const rows = db.prepare('SELECT id, name, description, parameters FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId) as any[];
+        row = rows.find((r) => String(r.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) === m[1] && r.name === m[2]) || null;
+      }
+    }
     if (row) {
       let schema: any = { type: 'object', properties: {}, required: [] };
       try { if (row.parameters) schema = JSON.parse(row.parameters); } catch { /* 坏数据当空 schema */ }
-      def = { name: row.name, description: row.description, inputSchema: schema };
+      def = { name: toolName, description: row.description, inputSchema: schema };
       source = 'custom';
+    }
+  }
+  // 4) MCP 工具（暴露名 mcp_<shortId>__<name>；shortId 必须唯一命中一个 server，防前缀碰撞）
+  if (!def) {
+    const m = /^mcp_([a-zA-Z0-9]{1,8})__(.+)$/.exec(toolName);
+    if (m) {
+      const servers = db.prepare('SELECT id FROM mcp_server').all() as any[];
+      const hits = servers.filter((s) => mcpShortIdOf(s.id) === m[1]);
+      if (hits.length === 1) {
+        const hit = getToolsFromDb(hits[0].id).find((t) => t.name === m[2] && t.enabled !== false);
+        if (hit) {
+          def = { name: toolName, description: hit.alias || hit.description || hit.name, inputSchema: hit.inputSchema };
+          source = 'mcp';
+        }
+      }
     }
   }
 
@@ -5088,6 +5112,39 @@ async function toolSearch(args: Record<string, unknown>, userId?: string): Promi
       score: 0,
     });
   }
+  // ★ 2026-10-25 全量覆盖（用户要求：工具发现必须能查到系统里**所有**工具）：
+  //   描述承诺"跨 api/内置/自定义/MCP 四种来源"，此前实现只覆盖前两种 —— 补齐。
+  //   自定义/MCP 用**可调用暴露名**（custom_<id8>_<name> / mcp_<shortId>__<name>，与 buildToolsForBackend 一致），
+  //   模型查到即可直接按该名调用。
+  try {
+    const customs = (userId
+      ? db.prepare('SELECT id, name, description FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId)
+      : db.prepare('SELECT id, name, description FROM custom_tool WHERE enabled = 1').all()) as any[];
+    for (const ct of customs) {
+      rows.push({
+        name: 'custom_' + String(ct.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) + '_' + ct.name,
+        summary: String(ct.description || ct.name || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+        source: 'custom',
+        executable: true,
+        score: 0,
+      });
+    }
+  } catch { /* 表不存在/坏数据不影响搜索主路径 */ }
+  try {
+    const servers = db.prepare('SELECT id FROM mcp_server').all() as any[];
+    for (const s of servers) {
+      for (const t of getToolsFromDb(s.id)) {
+        if (t.enabled === false) continue;
+        rows.push({
+          name: `mcp_${mcpShortIdOf(s.id)}__${t.name}`,
+          summary: String(t.alias || t.description || t.name || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+          source: 'mcp',
+          executable: true,
+          score: 0,
+        });
+      }
+    }
+  } catch { /* 同上 */ }
 
   const scored = rows
     .filter((r) => (sourceFilter ? r.source === sourceFilter : true))

@@ -27,6 +27,20 @@ export interface YzStatement {
   run(...params: unknown[]): { changes: number; lastInsertRowid: number | string | undefined };
   get(...params: unknown[]): any;
   all(...params: unknown[]): any[];
+  /** 列名（可选能力：better-sqlite3 的 stmt.columns()；sql.js 用 getColumnNames()）。
+   *  connector 层取列名时优先调用，缺失则由调用方从首行 keys 兜底。 */
+  columns?(): string[];
+}
+
+export type SqliteDriverName = 'better-sqlite3' | 'sql.js';
+
+export interface OpenSqliteOptions {
+  /** 测试用：强制走 sql.js 路径（生产恒为自动探测） */
+  forceDriver?: 'sql.js';
+  /** 只读打开：原生路径透传给 better-sqlite3（驱动层禁写）；
+   *  sql.js 路径标记只读（任何写语句 markDirty 时抛错，杜绝内存库改动被落盘）。
+   *  连接器层的项目库/sqlite 数据源只读连接依赖此语义。 */
+  readonly?: boolean;
 }
 
 /** better-sqlite3 同款连接面（db.ts 及全部路由/服务的实际用量） */
@@ -43,13 +57,6 @@ export interface YzSqliteDb {
   loadExtension?(path: string): void;
 }
 
-export type SqliteDriverName = 'better-sqlite3' | 'sql.js';
-
-export interface OpenSqliteOptions {
-  /** 测试用：强制走 sql.js 路径（生产恒为自动探测） */
-  forceDriver?: 'sql.js';
-}
-
 export async function openSqlite(
   dbPath: string,
   opts?: OpenSqliteOptions,
@@ -58,13 +65,18 @@ export async function openSqlite(
   // 若跑在 ABI 127 的 node 上则 `new Database()` 才抛错（require 的 try/catch 拦不住
   // 懒加载）。测试需要真 SQL 语义时直接置此开关走 sql.js —— 与 CI 回退路径同源。
   if (process.env.YZ_TEST_FORCE_SQLJS === '1') {
-    return { db: await openSqlJs(dbPath), driver: 'sql.js' };
+    return { db: await openSqlJs(dbPath, !!opts?.readonly), driver: 'sql.js' };
   }
   if (!opts?.forceDriver) {
     try {
       const mod = await import('better-sqlite3');
       const BetterDatabase = mod.default;
-      const db = new BetterDatabase(dbPath) as unknown as YzSqliteDb;
+      // readonly 透传：连接器层的项目库/只读数据源依赖驱动层禁写。
+      // ★ fileMustExist 只随 readonly 收紧 —— 主库首次启动要靠默认行为建空库，不能全局开。
+      const db = new BetterDatabase(
+        dbPath,
+        opts?.readonly ? { readonly: true, fileMustExist: true } : undefined,
+      ) as unknown as YzSqliteDb;
       return { db, driver: 'better-sqlite3' };
     } catch (err) {
       // 典型两种：包没装进内嵌包（ERR_MODULE_NOT_FOUND）/ ABI 不匹配
@@ -73,14 +85,14 @@ export async function openSqlite(
       logger.warn('[sqlite-driver] better-sqlite3 不可用，回退 sql.js（WASM）:', msg.split('\n')[0]);
     }
   }
-  return { db: await openSqlJs(dbPath), driver: 'sql.js' };
+  return { db: await openSqlJs(dbPath, !!opts?.readonly), driver: 'sql.js' };
 }
 
 /**
  * sql.js 驱动。类型用 any 收窄面：sql.js 无官方类型，这里只依赖
  * export/bind/step/getAsObject/getRowsModified/run 这几个稳定 API。
  */
-async function openSqlJs(dbPath: string): Promise<YzSqliteDb> {
+async function openSqlJs(dbPath: string, readonlyMode = false): Promise<YzSqliteDb> {
   const initSqlJs = (await import('sql.js')).default;
   // locateFile：sql.js 主入口在 dist/sql-wasm.js，wasm 与它同目录。
   // 用 createRequire 解析而不是 import.meta.url 拼相对路径 —— 内嵌包里本文件位于
@@ -92,7 +104,7 @@ async function openSqlJs(dbPath: string): Promise<YzSqliteDb> {
 
   const existing = fs.existsSync(dbPath) ? fs.readFileSync(dbPath) : null;
   const sqlDb = existing ? new SQL.Database(new Uint8Array(existing)) : new SQL.Database();
-  return new SqlJsDatabase(sqlDb, dbPath);
+  return new SqlJsDatabase(sqlDb, dbPath, readonlyMode);
 }
 
 class SqlJsDatabase implements YzSqliteDb {
@@ -103,6 +115,7 @@ class SqlJsDatabase implements YzSqliteDb {
   constructor(
     private sqlDb: any,
     private dbPath: string,
+    private readonlyMode = false,
   ) {
     if (!SqlJsDatabase.exitHooksInstalled) {
       SqlJsDatabase.exitHooksInstalled = true;
@@ -118,6 +131,12 @@ class SqlJsDatabase implements YzSqliteDb {
       t.unref?.();
     }
     instances.add(this);
+  }
+
+  /** 只读连接（连接器层项目库/只读数据源）：**写发生前**拦下，语义对齐
+   *  better-sqlite3 readonly（在写发生时报错）。SELECT 不受影响。 */
+  private assertWritable(): void {
+    if (this.readonlyMode) throw new Error('SQLite 连接为只读（readonly），禁止写入');
   }
 
   private markDirty(): void {
@@ -148,8 +167,10 @@ class SqlJsDatabase implements YzSqliteDb {
   prepare(sql: string): YzStatement {
     const sqlDb = this.sqlDb;
     const markDirty = () => this.markDirty();
+    const assertWritable = () => this.assertWritable();
     return {
       run(...params: unknown[]) {
+        assertWritable();
         // 位置参数（全仓口径）；getRowsModified 是 sql.js 提供的全局计数
         sqlDb.run(sql, params as unknown[]);
         markDirty();
@@ -175,10 +196,21 @@ class SqlJsDatabase implements YzSqliteDb {
         }
         return rows;
       },
+      columns() {
+        // sql.js Statement API：getColumnNames()（新版）/ columns()（元素含 name）双兜底
+        const s = sqlDb.prepare(sql);
+        try {
+          if (typeof s.getColumnNames === 'function') return s.getColumnNames() as string[];
+          return ((s.columns?.() || []) as Array<{ name?: string }>).map((c) => c.name || '');
+        } finally {
+          try { s.free(); } catch { /* ignore */ }
+        }
+      },
     };
   }
 
   exec(sql: string): void {
+    this.assertWritable();
     this.sqlDb.exec(sql);
     this.markDirty();
   }
@@ -195,6 +227,7 @@ class SqlJsDatabase implements YzSqliteDb {
 
   transaction<F extends (...args: any[]) => any>(fn: F): (...args: Parameters<F>) => ReturnType<F> {
     return (...args: Parameters<F>): ReturnType<F> => {
+      this.assertWritable();
       this.sqlDb.run('BEGIN');
       try {
         const out = fn(...args);

@@ -210,8 +210,12 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   // registry.register(new CompareProductsTool());
 }
 
-/** 注册管理工具函数到 registry */
-export async function registerManagementTools(registry: ToolRegistry, getDb: () => any): Promise<void> {
+/** 注册管理工具函数到 registry（getExtraSources：自定义/MCP 等额外发现来源，由 server 注入） */
+export async function registerManagementTools(
+  registry: ToolRegistry,
+  getDb: () => any,
+  getExtraSources?: (userId?: string) => Array<{ name: string; description?: string; source: 'api' | 'builtin' | 'custom' | 'mcp' }>,
+): Promise<void> {
   const mod = await import('./management');
-  mod.registerManagementTools(registry, getDb);
+  mod.registerManagementTools(registry, getDb, getExtraSources);
 }

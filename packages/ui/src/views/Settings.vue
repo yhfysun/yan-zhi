@@ -455,6 +455,41 @@
             未发现其他言智节点（确认对方已启动、与本机同网段且端口为 {{ lanPort }}）
           </div>
         </div>
+        <!-- 远程控制（remote-control 插件）：授权码展示/换码/自定义。
+             授权码只回给带 host key 的请求（见插件 /status 实现），控制端页面拿不到。 -->
+        <div class="lan-section" style="margin-top: 16px">
+          <p class="lan-tip">远程控制：手机 / 局域网浏览器打开下方地址，输入授权码即可实时观看并操作本机；新设备首次连接需在本机确认（可信任后免确认）。Ctrl+Alt+Esc 急停。</p>
+          <template v-if="rcEnabled">
+            <div class="rc-card-box">
+              <div class="rc-line">
+                <span class="rc-k">授权码</span>
+                <code class="rc-v rc-v-code">{{ rcCode || '—' }}</code>
+                <el-button size="small" @click="rotateRcCode">换一个</el-button>
+                <el-button size="small" @click="copyRcInvite">复制邀请</el-button>
+              </div>
+              <div class="rc-line">
+                <span class="rc-k">控制端地址</span>
+                <code class="rc-v">{{ preferredLanIp ? `http://${preferredLanIp}:${lanPort}/remote` : '—（未检测到局域网 IP）' }}</code>
+              </div>
+              <div class="rc-line rc-qr-line">
+                <span class="rc-k">手机扫码</span>
+                <img v-if="rcQrUrl" :src="rcQrUrl" class="rc-qr" alt="控制端地址二维码" />
+                <span v-else class="rc-muted">—</span>
+                <el-button size="small" type="primary" plain @click="openRemotePage">打开控制页</el-button>
+              </div>
+              <div class="rc-line">
+                <span class="rc-k">自定义授权码</span>
+                <el-input v-model="rcCustom" size="small" style="width: 170px" placeholder="6-16 位（不含 0/1/i/l/o）" />
+                <el-button size="small" :disabled="!rcCustom.trim()" @click="applyRcCustom">使用</el-button>
+              </div>
+              <div class="rc-line rc-muted">
+                <span class="rc-k">通道</span>
+                <span>{{ rcMode === 'webrtc-capable' ? 'WebRTC 低延迟（本机界面已就绪）' : 'JPEG 兼容模式' }}</span>
+              </div>
+            </div>
+          </template>
+          <div v-else class="lan-empty">remote-control 插件未启用：在「插件管理」页开启后可使用远程控制</div>
+        </div>
       </el-tab-pane>
       <el-tab-pane v-if="!embedded || isPaneMode" label="短信验证码" name="verification" lazy>
         <div class="sms-section">
@@ -588,6 +623,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, type Component } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import QRCode from 'qrcode';
 const props = withDefaults(defineProps<{ embedded?: boolean; pane?: string }>(), { embedded: false, pane: '' });
 const embedded = computed(() => props.embedded);
 /**
@@ -596,7 +633,7 @@ const embedded = computed(() => props.embedded);
  * /settings 路由页与 SettingsDrawer 的 embedded 用法不受影响（pane 为空）。
  */
 const isPaneMode = computed(() => !!props.pane);
-import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled } from '@element-plus/icons-vue';
+import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
@@ -619,7 +656,7 @@ function toggleThemeQuick() {
   settingsStore.update({ darkMode: next });
 }
 import type { ThemeName } from '../stores/settings';
-import { api, API_BASE, isCapacitor, getMobileApiBase, setMobileApiBase } from '../api/client';
+import { api, API_BASE, buildRequestHeaders, isCapacitor, getMobileApiBase, setMobileApiBase } from '../api/client';
 import MemoryManage from '../components/memory/MemoryManage.vue';
 import LlmLogs from './LlmLogs.vue';
 import VoicePackPanel from '../components/VoicePackPanel.vue';
@@ -634,6 +671,27 @@ const pluginStore = usePluginStore();
 const toolsStore = useToolsStore();
 const vcode = useVerificationStore();
 const tab = ref('general');
+// 深链：/settings?pane=lan 直达某分区（插件管理「授权码」等外部入口跳转用）。
+// 仅 /settings 独立路由页生效 —— embedded / pane 模式由宿主显式传 prop，不吃 query。
+// ★ route 可能不存在（Settings 弹窗/抽屉内嵌挂载在无 router 上下文，如测试）：全防御
+const route = useRoute();
+const router = useRouter();
+function applyQueryPane() {
+  if (props.embedded || props.pane) return;
+  const qp = route?.query?.pane;
+  if (typeof qp !== 'string' || !qp) return;
+  // 只接受真实存在的分区名（内置组 + 插件贡献的设置页签），防 ?pane=xxx 打开空白
+  const valid = new Set<string>([
+    ...MOBILE_GROUPS_BASE.flatMap((g) => g.tabs.map((t) => t.name)),
+    ...pluginStore.settingsTabs.map((t) => String((t as { name?: string }).name || '')),
+  ]);
+  if (valid.has(qp)) tab.value = qp;
+}
+watch(
+  () => route?.query?.pane,
+  () => applyQueryPane(),
+);
+onMounted(applyQueryPane);
 
 // pane 模式：外部（SettingsDialog 左导航）切换分类 → 同步内部 el-tabs（isPaneMode 声明在上方）
 // ★ immediate 必须有（2026-10-17 用户实报「数据菜单串到通用里面」）：Settings 实例由
@@ -657,6 +715,9 @@ interface SettingsGroup { key: string; label: string; desc: string; icon: Compon
 const extensionsMode = ref<'on' | 'shadow' | 'off'>('on');
 const MOBILE_GROUPS_BASE: SettingsGroup[] = [
   { key: 'general', label: '通用设置', desc: '深色模式 · 布局 · 默认模型 · 上下文压缩 · 快捷键', icon: Setting, tabs: [{ name: 'general', label: '通用' }, { name: 'shortcuts', label: '快捷键' }] },
+  // ★ 直达项（2026-10-25 用户反馈"埋太深没人找得到"）：不进子页，直接开 /remote 控制端。
+  //   enterMobileGroup 里对 key==='remote' 特判路由跳转；tabs 空数组仅满足类型（不会进入）。
+  { key: 'remote', label: '远程控制', desc: '用手机实时观看并操作你的电脑', icon: Monitor, tabs: [] },
   { key: 'skin', label: '外观皮肤', desc: '主题色 · 内置系列皮肤 · 插件皮肤包', icon: Brush, tabs: [{ name: 'skin', label: '皮肤' }] },
   { key: 'data', label: '数据与日志', desc: '导出 / 导入备份 · 清空缓存 · LLM 日志', icon: DataLine, tabs: [{ name: 'data', label: '数据' }, { name: 'logs', label: '日志' }] },
   { key: 'hooks', label: '工具与钩子', desc: '自定义工具钩子 · 记忆管理 · 浏览器扩展', icon: MagicStick, tabs: [{ name: 'userhooks', label: '钩子' }, { name: 'memory', label: '记忆' }, { name: 'extensions', label: '扩展' }] },
@@ -667,7 +728,7 @@ const mobileGroups = computed<SettingsGroup[]>(() => {
   if (extensionsMode.value === 'on') return MOBILE_GROUPS_BASE;
   return MOBILE_GROUPS_BASE
     .map((g) => ({ ...g, tabs: g.tabs.filter((t) => t.name !== 'extensions') }))
-    .filter((g) => g.tabs.length > 0);
+    .filter((g) => g.key === 'remote' || g.tabs.length > 0);
 });
 const mobileGroup = ref<SettingsGroup | null>(null);
 /** 页面头标题：二级子页显示分组名，首层与桌面显示「设置」 */
@@ -675,6 +736,8 @@ const shellTitle = computed(() => (pageShell.value && mobileGroup.value ? mobile
 /** 二级子页的返回：先退回首层分组（页内层级），不离开 /settings；首层不传 → MobilePageShell 默认路由回退 */
 const mobileBackHandler = computed(() => (pageShell.value && mobileGroup.value ? exitMobileGroup : undefined));
 function enterMobileGroup(g: SettingsGroup) {
+  // ★ 直达项：远程控制不进子页，直接开 /remote（移动端 openRemotePage 应用内跳转）
+  if (g.key === 'remote') { openRemotePage(); return; }
   mobileGroup.value = g;
   tab.value = g.tabs[0].name;
 }
@@ -1346,6 +1409,101 @@ function copyLanUrl(ip: string) {
   navigator.clipboard.writeText(`http://${ip}:${lanPort.value}`).then(() => ElMessage.success('已复制地址'));
 }
 
+// 远程控制（remote-control 插件）：授权码查看/换码/自定义。
+// 授权码属于「被控端主人」的管理面信息，/status 只对带 x-rc-host-key 的请求返回码值；
+// hostkey 本身仅用于 Web UI（桌面端本机）标识，真正的门禁是 license + 插件启停。
+const rcEnabled = ref(false);
+const rcCode = ref('');
+const rcMode = ref('');
+const rcCustom = ref('');
+let rcHostKey = '';
+
+async function loadRcStatus() {
+  try {
+    const k = await api.get<any>('/plugin/remote-control/hostkey');
+    if ('error' in k || !k?.data?.key) { rcEnabled.value = false; return; }
+    rcHostKey = String(k.data.key);
+    const r = await fetch(`${API_BASE}/plugin/remote-control/status`, {
+      headers: { ...buildRequestHeaders(), 'x-rc-host-key': rcHostKey },
+    });
+    const body = await r.json();
+    if (body?.error) { rcEnabled.value = false; return; }
+    rcEnabled.value = true;
+    rcCode.value = String(body?.data?.code?.current || '');
+    rcMode.value = String(body?.data?.mode || '');
+  } catch {
+    rcEnabled.value = false;
+  }
+}
+
+async function rotateRcCode() {
+  try {
+    const r = await api.post<any>('/plugin/remote-control/code/rotate');
+    if ('error' in r) { ElMessage.error(r.error || '换码失败'); return; }
+    rcCode.value = String(r?.data?.current || '');
+    ElMessage.success('已生成新授权码（旧码立即失效）');
+  } catch (e) {
+    ElMessage.error((e as Error)?.message || '换码失败');
+  }
+}
+
+async function applyRcCustom() {
+  const code = rcCustom.value.trim();
+  if (!code) return;
+  try {
+    const r = await api.post<any>('/plugin/remote-control/code/custom', { code });
+    if ('error' in r) { ElMessage.error(r.error || '设置失败'); return; }
+    rcCode.value = String(r?.data?.current || code);
+    ElMessage.success('自定义授权码已生效');
+  } catch (e) {
+    ElMessage.error((e as Error)?.message || '设置失败');
+  }
+}
+
+function copyRcInvite() {
+  const ip = preferredLanIp?.value || '';
+  if (!ip || !rcCode.value) return;
+  const text = `言智远程控制：浏览器打开 http://${ip}:${lanPort.value}/remote?code=${rcCode.value} 即可连接（首次需在本机点允许）`;
+  navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制邀请信息'));
+}
+
+// 控制端地址二维码：**带授权码**（http://ip:port/remote?code=码）——手机系统相机扫码
+// 即打开 /remote 并自动发起配对（被控端确认弹窗照常把关）；码与卡片上大字展示的是
+// 同一个秘密，编码进二维码不增加暴露面。插件未启用/未检出 IP 时留空。
+const rcQrUrl = ref('');
+const rcInviteUrl = computed(() =>
+  rcEnabled.value && preferredLanIp?.value && rcCode.value
+    ? `http://${preferredLanIp.value}:${lanPort.value}/remote?code=${encodeURIComponent(rcCode.value)}`
+    : '',
+);
+watch(
+  rcInviteUrl,
+  async (u) => {
+    if (!u) { rcQrUrl.value = ''; return; }
+    try { rcQrUrl.value = await QRCode.toDataURL(u, { width: 132, margin: 1 }); } catch { rcQrUrl.value = ''; }
+  },
+  { immediate: true },
+);
+
+// 打开控制页：桌面端走独立子窗口（主窗口 window.open 同源地址会被 setWindowOpenHandler
+// 拦掉；且 /remote 是全屏裸路由，主窗口内跳转没有返回钮）——用完即关不打扰主界面；
+// Web 端新标签页（浏览器可后退）。
+function openRemotePage() {
+  const w = window as unknown as { electronAPI?: { childWindow?: { open?: (o: Record<string, unknown>) => Promise<unknown> } } };
+  if (w.electronAPI?.childWindow?.open) {
+    void w.electronAPI.childWindow.open({ key: 'remote-control', route: '/remote', width: 1100, height: 760 });
+    return;
+  }
+  // ★ 移动端（2026-10-25）：应用内跳转 —— Capacitor WebView 的 window.open('_blank')
+  //   不可靠（默认拦外部窗口），且 /remote 自带返回钮（history.back），直接推路由即可。
+  if (isCapacitor) {
+    void router.push('/remote');
+    return;
+  }
+  const href = router?.resolve ? router.resolve({ path: '/remote' }).href : '/#/remote';
+  window.open(href, '_blank');
+}
+
 function openLan(ip: string) {
   const url = `http://${ip}:${lanPort.value}`;
   // ★ 后端未托管前端静态资源时（dev 模式按设计如此，见 server/index.ts resolveWebDist），
@@ -1449,6 +1607,7 @@ function formatBytes(n: number): string {
 
 onMounted(() => {
   void loadLanIps();
+  void loadRcStatus();
   void loadDataDirInfo();
   const extApi = (window as any).electronAPI?.extensions;
   if (extApi?.mode) {
@@ -1593,6 +1752,12 @@ onMounted(async () => {
   .data-section .el-button:nth-child(1),
   .data-section .el-button:nth-child(2) { flex: 1 1 calc(50% - 4px); min-width: 0; white-space: nowrap; }
   .data-section .el-button:nth-child(3) { flex: 1 1 100%; }
+
+  /* ★ P0-G3：局域网 IP 卡片纵向堆叠 —— 360px 内容列里「URL+按钮」同行必互相挤压；
+     竖排后操作按钮底部平分（.rc-line 基样式已带 flex-wrap，无需重复处理）。 */
+  .lan-item { flex-direction: column; align-items: stretch; }
+  .lan-actions { width: 100%; }
+  .lan-actions .el-button { flex: 1 1 0; margin-left: 0; }
 }
 
 .theme-grid { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -1667,6 +1832,15 @@ onMounted(async () => {
 .lan-section { max-width: 600px; }
 .lan-tip { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .lan-empty { color: var(--color-text-secondary); font-size: 13px; padding: 16px 0; }
+/* 远程控制卡片：码值用等宽放大展示（向日葵式「报码」的可读性优先） */
+.rc-card-box { border: 1px solid var(--color-border, #dcdfe6); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.rc-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rc-qr-line { align-items: flex-start; }
+.rc-qr { width: 104px; height: 104px; border-radius: 8px; background: #fff; padding: 5px; box-sizing: border-box; } /* 白底保证扫码对比度 */
+.rc-k { width: 92px; flex-shrink: 0; font-size: 13px; color: var(--color-text-secondary); }
+.rc-v { font-size: 13px; word-break: break-all; }
+.rc-v-code { font-size: 18px; font-weight: 700; letter-spacing: 3px; }
+.rc-muted { color: var(--color-text-secondary); font-size: 13px; }
 /* dev 模式未托管前端时的说明条：琥珀色系（警示但不阻断），与 tab 内其他 tip 同节奏 */
 .lan-web-warn {
   color: var(--el-color-warning, #E6A23C);

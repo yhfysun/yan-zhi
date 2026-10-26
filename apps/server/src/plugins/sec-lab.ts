@@ -15,7 +15,8 @@ import {
   type ScopeEntry, type SecConfig,
 } from './sec-lab-guard.js';
 import { renderOutput, sortFindings, type Finding, type ToolOutput } from './sec-lab-types.js';
-import { pushPluginAudit } from '../services/plugin-audit.js';
+// ★ 宿主能力走宿主桥（mode-pluginization P3）。
+import { pushPluginAudit } from '../host-bridge.js';
 import { runRecon } from './sec-lab-tools/recon.js';
 import { runPortScan } from './sec-lab-tools/portscan.js';
 import { runWebProbe } from './sec-lab-tools/webprobe.js';
@@ -71,6 +72,11 @@ export const secLabManifest: PluginManifest = {
     '授权范围内的安全测试工作台：目标侦察、端口与服务识别、Web 漏洞探测、敏感路径审计、报告生成；检测到 nmap/nuclei/nikto 等外部工具时自动接管。三种用法：控制台手动执行、@剧本召唤（后续）、对话模式由安全助手自主编排。**仅限自有资产或持有书面授权的目标**，所有动作受授权范围与危险动作黑名单约束并全量审计。',
   permissions: ['shell', 'network'],
   contributes: {
+    // ★ 模式运行时化（P3）：模式定义随插件声明，前端动态合并
+    mode: {
+      key: 'sec', label: '安全模式', icon: 'Lock', route: '/sec',
+      desktopOnly: true, fallbackAgent: 'a_builtin_sec_agent',
+    },
     tools: [
       'scope_list', 'scope_add', 'scope_remove',
       'recon', 'portscan', 'webprobe', 'toolchain', 'sec_report',

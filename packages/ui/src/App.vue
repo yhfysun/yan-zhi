@@ -123,12 +123,28 @@
 
     <!-- 桌面端设置弹窗（Task 10.3）：WebTopBar 头像菜单 /「更多」入口打开 -->
     <SettingsDialog v-if="!isBareRoute" />
+
+    <!-- 远程控制被控端伴生（remote-control 插件）：配对确认弹窗 + WebRTC 采集应答。
+         bare 路由（控制端页 /remote 本身、独立子窗口）不挂载。 -->
+    <RemoteControlHost v-if="!isBareRoute" />
+
+    <!-- 移动端冷启动等待层（2026-10-25）：内嵌 Node 后端就绪前路由守卫挂起（license.init
+         里的 waitForBackend 最多 30s），首屏此前是**纯白**——用户会以为应用坏了
+         （真机实测反馈「要等后端启动还是干嘛？」）。用可读的等待提示替代白屏：
+         仅 Capacitor 壳渲染，路由就绪（无论落在哪个页）即消失。 -->
+    <div v-if="isMobilePlatform && !appBooted" class="yz-boot-splash">
+      <div class="yz-boot-card">
+        <div class="yz-boot-logo">言</div>
+        <div class="yz-boot-title">正在启动本地服务…</div>
+        <div class="yz-boot-sub">首次启动需要初始化数据库，可能需要十几秒，请稍候</div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, shallowRef, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { Avatar, SwitchButton, Moon, Sunny, Setting, Collection, Menu } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
 import { useSettingsStore } from './stores/settings';
@@ -137,6 +153,7 @@ import SideNav from './components/SideNav.vue';
 import SettingsDrawer from './components/SettingsDrawer.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import MobileNavDrawer from './components/MobileNavDrawer.vue';
+import RemoteControlHost from './components/RemoteControlHost.vue';
 import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';
 import { MODE_VIEW_LOADERS } from './generated/build-modes';
@@ -150,6 +167,7 @@ import { useSidebarState } from './composables/useSidebarState';
 import { installSelectAllScope } from './utils/selectAllScope';
 import { isModeWindow, isConvWindow, convIdOfWindow, modeKeyOfRoute } from './utils/modeWindow';
 import * as modeModule from './stores/mode';
+import { pluginModeMeta } from './stores/mode';
 import { useChat } from './composables/chat/useChat';
 import { useChatStore } from './stores/chat';
 import { useAgentStore } from './stores/agent';
@@ -218,6 +236,15 @@ const localIdentityInitial = computed(() => '本');
  * 若再套一层 SideNav / 顶栏就会出现「窗口里还有一整套应用导航」的错位。
  */
 const isBareRoute = computed(() => route.meta?.bare === true);
+
+/**
+ * 冷启动就绪位（2026-10-25）：路由首次导航完成前，路由守卫在 license.init 里等内嵌
+ * 后端（waitForBackend，最多 30s）—— 这段窗口整个页面是未挂载的白屏。appBooted
+ * 驱动 yz-boot-splash（仅移动端渲染）：给等待一个可见的形态，而不是"应用坏了"。
+ * router.isReady() 在**无论落到哪个页**（chat/license 均可）后 resolve。
+ */
+const appBooted = ref(false);
+void useRouter().isReady().then(() => { appBooted.value = true; });
 
 /** Task 11.1：移动端汉堡抽屉开合（仅 Capacitor 自绘顶栏的汉堡按钮会触发） */
 const navDrawerOpen = ref(false);
@@ -538,12 +565,16 @@ authStore.loadUser();
     // 其余模式回落日常办公助手。缺了对应分支的话，进该模式只能绑「日常办公助手」+
     // 场景提示词，人格与职责对不上（助手不知道该去调工作流/该怎么剪/该怎么算利润）。
     const saved = ctx[m];
+    // ★ 模式运行时化（P3）：兜底智能体优先取插件 manifest 的 contributes.mode.fallbackAgent
+    //   （ops/sec/shop 已随插件声明）；未声明/未装载的模式回落下方硬编码表（dev/wf/clip
+    //   仍是基座一等公民，P4 建插件时一并迁移）。
     const fallbackAgent =
-      m === 'dev' ? 'a_builtin_code_agent'
+      pluginModeMeta(m)?.fallbackAgent
+      ?? (m === 'dev' ? 'a_builtin_code_agent'
         : m === 'wf' ? 'a_builtin_workflow_assistant'
           : m === 'clip' ? 'a_builtin_clip_agent'  // 剪辑模式：剪辑师（人格/工具面与剪辑任务对齐）
             : m === 'shop' ? 'a_builtin_shop_agent'  // 店铺运营模式：口径先行 + compare_products 选品
-              : 'a_default_assistant';
+              : 'a_default_assistant');
     const agentId = saved?.agent || fallbackAgent;
     // syncConv=false：此刻 currentConvId 还停在旧模式会话上，回写会把新模式智能体
     // 绑进旧会话（实测把 a_builtin_code_agent 写进办公会话 → 切回办公助手"串"）。
@@ -919,6 +950,12 @@ body {
 }
 .platform-mobile { max-width: 100vw; overflow-x: hidden; }
 
+/* ★ §4 大壳弹窗全局钳宽：768-980px 视口是 <767px 兜底的盲区（GitConflictResolver
+   1240px / GitCommitDialog 860px 等在该区间直接溢出视口）。桌面正常视口下各弹窗
+   宽度都小于视口，此规则不触发；只在「弹窗比视口宽」时钳住（内联 width 不设
+   max-width，样式表 max-width 可生效）。 */
+.el-dialog { max-width: calc(100vw - 24px); }
+
 /* ★ Capacitor 端：顶栏已显示当前页名（如「设置」），而页面里还有自己的
    <h2 class="page-title">（Settings.vue 的「设置」）→ 同屏两个一模一样的标题，白占一行。
    移动端顶栏承担定位职责后，页内大标题是冗余的 —— 整个隐藏。
@@ -976,6 +1013,17 @@ body {
 
   /* Solid glass-tabs on mobile (used by Settings) */
   .glass-tabs { background: var(--el-bg-color) !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; border: 1px solid var(--el-border-color-lighter); }
+
+  /* ★ P0-G2：兜底盲区三件套（全局兜底此前只管 dialog/form/table）
+     ① el-popover：SftpPanel :width="400" 等内联固定宽在窄屏溢出 —— 内联只设
+        width、不设 max-width，样式表 max-width 可钳住；
+     ② el-radio-group 默认 inline-flex 不换行 → 筛选按钮多时被裁切且不可达
+        （ShopOrders 7 个状态按钮实报）；
+     ③ 固定像素宽的 select/input-number/date-picker 在抽屉内容列可溢出，钳到容器。
+     嵌入页按容器降级用 context class：.in-settings-drawer（SettingsDrawer 模板已挂）。 */
+  .el-popover.el-popper { max-width: 92vw !important; box-sizing: border-box; }
+  .el-radio-group { flex-wrap: wrap; row-gap: 4px; }
+  .el-select, .el-input-number, .el-input, .el-date-editor { max-width: 100%; }
 }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
@@ -1067,4 +1115,36 @@ body {
 .local-model-download-title { font-size: var(--font-size-lg); font-weight: 600; color: var(--color-text); }
 .local-model-download-desc { font-size: var(--font-size-base); line-height: 1.55; color: var(--color-text-secondary); }
 .local-model-download-message { min-height: 20px; font-size: var(--font-size-sm); color: var(--color-text-secondary); word-break: break-all; }
+
+/* ===== 移动端冷启动等待层（yz-boot-splash）：内嵌后端就绪前替代白屏 ===== */
+.yz-boot-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 用固定色而非主题变量：此刻主题 CSS 可能尚未应用（初始化早期） */
+  background: #f6f6f8;
+}
+[data-theme="dark"] .yz-boot-splash { background: #1d1d1c; }
+.yz-boot-card { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 0 32px; text-align: center; }
+.yz-boot-logo {
+  width: 64px; height: 64px; border-radius: 18px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #7c6cf6, #6a5ae0);
+  color: #fff; font-size: 30px; font-weight: 700;
+  animation: yz-boot-pulse 1.6s ease-in-out infinite;
+}
+.yz-boot-title { font-size: 17px; font-weight: 600; color: #2a2a30; }
+.yz-boot-sub { font-size: 13px; line-height: 1.6; color: #8a8a94; }
+[data-theme="dark"] .yz-boot-title { color: #eceaf6; }
+[data-theme="dark"] .yz-boot-sub { color: #8f8da0; }
+@keyframes yz-boot-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.92); opacity: 0.82; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .yz-boot-logo { animation: none; }
+}
 </style>

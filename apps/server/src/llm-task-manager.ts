@@ -32,6 +32,7 @@ import {
 } from './services/experience.js';
 // 安全经验库的注入闸门：只把**人工已批准**的条目拼进安全智能体的提示词（2026-10-17）
 import { isSecExperienceAgent, buildSecExperiencePromptSection } from './services/sec-experience-gate.js';
+import { loadBrowserFieldContext } from './services/browser-field.js';
 import { proposeSkillDraft, skillDraftNotifyText } from './services/skill-distill.js';
 import { insertSkillDraft } from './services/skill-draft-store.js';
 import { backendTaskPlan, backendTaskStep, loadPlanJson, loadTaskPlanFromFile, savePlanJson } from './services/task-plan-file.js';
@@ -3594,6 +3595,16 @@ async function runReActLoop(task: LlmTask, params: {
         if (ctx) systemPromptBuilt += '\n\n' + ctx;
       } catch { /* 现场注入失败不影响任务（模型仍可用 conn_list 自查） */ }
     }
+    // 浏览器现场注入（办公模式，2026-10-25）：预览面板开合 + 各 tab 的 URL/标题。
+    // ★ 与运维现场同型：只进系统提示词、每任务现算（面板开合 / tab 增删下轮即反映），
+    //   用户消息保持原话入库；桥不可用（web / 移动端 / 独立 server）自动不注入。
+    //   子智能体在 runSubAgentImpl 合流点按各自 spawn 时刻另行现拉。
+    if (resolveConversationMode(convId) === 'office') {
+      try {
+        const browserCtx = await loadBrowserFieldContext(convId);
+        if (browserCtx) systemPromptBuilt += '\n\n' + browserCtx;
+      } catch { /* 浏览器现场注入失败不影响任务（模型可用 browser_get_tabs 自查） */ }
+    }
     let toolsBuilt = params.tools !== undefined
       ? params.tools
       : buildToolsForBackend(params.agentId ?? null, userId, {
@@ -4996,7 +5007,14 @@ async function maybeAutoDiagnose(task: LlmTask, filePath: string, toolText: stri
 //   browser_run_script 换脚本硬试。两条线：同名同参重复 ≥3 次拦 / 同一工具
 //   严格连续 ≥8 次拦。只拦不罚，返回指引文本让模型走汇报收口路径。
 
-/** 编排/交互类工具：不依赖智能体挂载也必须可用（与 buildToolsForBackend 的无条件暴露口径一致） */
+/**
+ * 编排/交互类工具登记处（历史语义：不依赖智能体挂载也必须可用）。
+ * ★ 2026-10-25 挂载语义定版：**挂载只决定工具进不进提示词**（buildToolsForBackend），
+ *   执行面不再按挂载拦截 —— 注册表里的系统工具主循环一律可按名调用。本集合因此不再承担
+ *   "放行白名单"职责，仅保留两处实际作用：
+ *   ① 无前端场景（定时/无人值守）下 UI 交互工具的豁免名单（见 executeTool 的 UI 闸）；
+ *   ② app-create-task 守门测试引用（应用编排族必须始终可用的语义登记）。
+ */
 const ALWAYS_ALLOWED_BUILTINS = new Set([
   'plan_tasks', 'get_plan_status', 'reassign_task', 'get_sub_task_detail',
   // 应用即工具：模型自建顶层任务（仅主智能体，executeTool 内 depth 拦截）+ 状态跟进（纯读）
@@ -5015,35 +5033,6 @@ const ALWAYS_ALLOWED_BUILTINS = new Set([
   'job_status',
   ...INTERACTIVE_TOOLS,
 ]);
-
-/**
- * 当前任务是否有权执行某个后端内置工具。
- * ★ 口径必须与 `buildToolsForBackend` 一致（那才是模型真正看到的工具面）：
- *   agent.builtin_tool_ids ∪ 会话挂载；无 agent 且无会话挂载时沿用兜底（全部非 plugin/非 UI 内置）。
- * ★ 取不到配置时 **fail-closed**（拒绝），不因 DB 抖动放行 —— 与 collectParentToolIds 同取向。
- */
-function isBuiltinMountedForTask(task: LlmTask, toolName: string): boolean {
-  if (ALWAYS_ALLOWED_BUILTINS.has(toolName)) return true;
-  try {
-    const convMounts = loadConversationMounts(task.conversationId);
-    const isUi = UI_TOOL_NAMES.has(toolName);
-    if (isUi && !task.includeUiTools) return false;
-    if (!task.agentId && convMounts.builtinToolIds.length === 0) {
-      // buildToolsForBackend 的兜底分支：无 agent 且无会话挂载 → 暴露全部非 UI、非 plugin 内置工具
-      return !toolName.startsWith('plugin_');
-    }
-    let agentIds: string[] = [];
-    if (task.agentId) {
-      const row = db
-        .prepare('SELECT builtin_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)')
-        .get(task.agentId, task.userId) as any;
-      try { agentIds = row?.builtin_tool_ids ? JSON.parse(row.builtin_tool_ids) : []; } catch { agentIds = []; }
-    }
-    return new Set([...agentIds, ...convMounts.builtinToolIds]).has(toolName);
-  } catch {
-    return false;
-  }
-}
 
 /**
  * 自定义工具是否挂载到当前智能体/会话（与 buildToolsForBackend 的自定义工具口径一致）。
@@ -5144,30 +5133,35 @@ async function executeTool(
   //   executeApiTool 实现。统一用 isApiExecutableTool（见其注释里的完整链路说明）。
   const isApi = isApiExecutableTool(toolName);
 
-  // ★★★ 执行面必须与"模型实际看到的工具面"一致（2026-10-17，安全审查发现）：
-  //   `registry.execute` 只按名字执行、不校验挂载。模型只要猜中/被注入一个未挂载的工具名
-  //   （如 `http_request` / `browser_run_script`），就能直接执行 —— 实测可打本机无鉴权路由，
-  //   进而触发人工审批入口。这里在**唯一执行出口**做挂载校验，与 buildToolsForBackend 同源。
-  //   ★ 放在浏览器分支**之前**：browser_* 同为注册表工具，不能从这条路径漏过去。
-  //   ★ API 工具走 executeApiTool（含自己的权限判定与 discovery 语义），不在此处裁。
-  // ★ 模型实际看到的工具面优先（主循环与子智能体循环各自传入的 toolDefs）：
-  //   子智能体的工具集来自它自己的 builtin_tool_ids，而 task.agentId 仍是父体 ——
-  //   只查 DB 会误拒子体工具（如 recon 子体的 whois/subdomain）。
+  // ★★★ 挂载语义定版（2026-10-25）：**挂载只决定工具进不进提示词**（buildToolsForBackend），
+  //   执行面不再按挂载拦截 —— 系统注册表里的工具，主循环（depth=0）一律可按名调用。
+  //   背景：模型可经发现类工具（get_api_tools / api_tools_*）查到系统全量工具目录，
+  //   提示词/技能也会引用未挂载工具（实测：小说推文助手提示词教它直接 browser_*，
+  //   执行却撞"未挂载拒绝"→ 智能体自我设限卡死）。读写风险由上方会话权限闸
+  //   （checkToolPermission + readonly 授权卡 + DANGEROUS_TOOLS 确认）把关，与本闸无关。
+  //   保留两道与"挂载"无关的闸：
+  //   ① UI 交互工具：无前端场景（定时/无人值守 includeUiTools=false）提前拒绝 ——
+  //      委托前端的工具没有通道必然挂起，可行动的错误优于静默等超时；
+  //      ALWAYS_ALLOWED_BUILTINS 豁免（ask_user/confirm_user 无人值守有专属应答路径）。
+  //   ② 子智能体（depth>0）仍按它自己的工具面（declaredTools）判定 —— 提权隔离：
+  //      父智能体没授予子体的工具，子体不得按名提权（subagent-spec.ts 的口径）；
+  //      INTERACTIVE_TOOLS（ask_user/confirm_user）除外，与原 alwaysAllowed 语义一致。
   const declaredTools = new Set<string>();
   for (const d of (toolDefs || [])) {
     const n = (d as any)?.function?.name || (d as any)?.name;
     if (typeof n === 'string' && n) declaredTools.add(n);
   }
-  const alwaysAllowed = ALWAYS_ALLOWED_BUILTINS.has(toolName)
-    && (depth === 0 || INTERACTIVE_TOOLS.has(toolName));
-  // 主循环：按智能体/会话**挂载**判定（动态路由只隐藏工具、不改变挂载，不能因此拒绝）。
-  // 子智能体：按它自己的 subTools 判定（task.agentId 仍是父体，查 DB 会误拒子体工具）。
-  const toolAllowed = alwaysAllowed
-    || (depth > 0 ? declaredTools.has(toolName) : isBuiltinMountedForTask(task, toolName));
-  if (registry.has(toolName) && !isApi && !toolAllowed) {
-    logger.warn(`[llm-task] 未挂载工具执行被拒: conv=${task.conversationId} agent=${task.agentId || '-'} depth=${depth} tool=${toolName}`);
-    return `工具 \`${toolName}\` 未挂载到当前智能体/会话，拒绝执行。`
-      + `请只使用工具列表中实际提供的工具；不要猜测或调用其它工具名。`;
+  if (registry.has(toolName) && !isApi) {
+    if (depth === 0) {
+      if (UI_TOOL_NAMES.has(toolName) && !task.includeUiTools && !ALWAYS_ALLOWED_BUILTINS.has(toolName)) {
+        logger.warn(`[llm-task] 无前端场景调用 UI 工具被拒: conv=${task.conversationId} agent=${task.agentId || '-'} tool=${toolName}`);
+        return `工具 \`${toolName}\` 需要前端界面配合，当前为无人值守/定时任务场景（无前端通道），拒绝执行。请改用不依赖界面的替代路径。`;
+      }
+      // 主循环：挂载不拦执行（系统工具全放行，读写风险由权限闸把关）
+    } else if (!declaredTools.has(toolName) && !INTERACTIVE_TOOLS.has(toolName)) {
+      logger.warn(`[llm-task] 子智能体调用未授予工具被拒: conv=${task.conversationId} agent=${task.agentId || '-'} depth=${depth} tool=${toolName}`);
+      return `工具 \`${toolName}\` 未授予当前子智能体，拒绝执行。请只使用委派时给出的工具列表中的工具。`;
+    }
   }
 
   if (isCustom && (depth > 0 || !isCustomToolMountedForTask(task, toolName))) {
@@ -6931,7 +6925,13 @@ async function runSubAgentImpl(
   const systemPromptBase = agent.system_prompt || '你是一个智能助手。';
   // ★ 共享段注入（2026-10-18）：工作目录 / 项目规则 / 工程记忆约定 —— 见 buildSubAgentSharedSections 注释。
   //   接力总结（summarizeOnMaxSteps）与 ReAct 循环共用这一份，保证口径一致。
-  const systemPrompt = [systemPromptBase, buildSubAgentSharedSections(resolvedId, task.conversationId)]
+  // ★ 浏览器现场（2026-10-25）：办公模式下子智能体（call_agent 静态子体与 spawn_subagent
+  //   虚拟子体同走本合流点）同样注入预览面板 / tab 快照 —— 按 spawn 时刻现拉保新鲜
+  //   （pageAgent 等浏览器型子体是主要消费者）。非办公模式不注入。
+  const browserField = resolveConversationMode(task.conversationId) === 'office'
+    ? await loadBrowserFieldContext(task.conversationId)
+    : '';
+  const systemPrompt = [systemPromptBase, buildSubAgentSharedSections(resolvedId, task.conversationId), browserField]
     .filter(Boolean).join('\n\n');
   const modelCaps = model.capabilities as string[] | undefined;
   const supportsTools = modelSupportsTools(modelCaps);

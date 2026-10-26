@@ -55,7 +55,13 @@ function parseManifestFromZip(buffer: Buffer): PluginManifest {
 
 // GET /api/plugins
 router.get('/', (_req: Request, res: Response) => {
-  res.json({ data: getPluginManager().list().map(toInfo) });
+  const mgr = getPluginManager();
+  // ★ 模式运行时化（P3）：聚合已启用插件的 contributes.mode 为 modeDefs 随快照下发。
+  //   前端据此动态合并模式清单（基座 office + 插件模式），替代构建期硬编码的部分消费方。
+  const modeDefs = mgr.list()
+    .filter((p) => p.state === 'enabled' && p.manifest.contributes?.mode)
+    .map((p) => ({ pluginId: p.manifest.id, ...p.manifest.contributes!.mode! }));
+  res.json({ data: mgr.list().map(toInfo), modeDefs });
 });
 
 // POST /api/plugins/install/preview —— 预览 manifest（权限确认前）

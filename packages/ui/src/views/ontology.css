@@ -455,4 +455,8 @@
   .dw-root .ont-right-head,
   .dw-root .ont-right-tabs { padding-left: 10px; padding-right: 10px; }
   .dw-root .ont-actionbar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; }
+  /* ★ 表单双列网格收单列：≤640 不收时字段被压到 ~150px（嵌抽屉更窄） */
+  .dw-root .ont-fgrid { grid-template-columns: 1fr; }
+  /* code 串（ont-xxx）窄屏加省略号，不逐字符竖排 */
+  .dw-root .ont-li-code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }

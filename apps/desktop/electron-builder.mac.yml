@@ -66,6 +66,12 @@ files:
   - main-log.cjs
   # 版本档配置（scripts/set-edition.cjs 生成）；漏登记 → 打包版读不到档位，落到兜底档
   - edition.json
+  # ★★★ 插件前端包装载协议（mode-pluginization P0）：main.cjs require('./plugin-protocol.cjs')。
+  #   漏登记 = 打包版启动即崩（Cannot find module './plugin-protocol.cjs'）——同 instance.cjs 类坑。
+  - plugin-protocol.cjs
+  # 共享依赖 shim（scripts/generate-host-shims.mjs 生成，随包分发）：yz://shared/*.mjs 由
+  # protocol.handle 从 app.asar 内本目录读取。漏登记 = 插件前端装载全部 404。
+  - host-shims/**/*
   # ── 体积裁剪（三份 yml 必须逐行一致，改一处必须同步另两处，见 packaged-entry-modules 测试）──
   # ★ sourcemap 仅调试用，运行时不加载：实测 3844 个文件共 45MB（asar 的 30%+）。
   - '!**/*.js.map'
@@ -87,6 +93,10 @@ extraResources:
       - '!**/*.d.ts'
   - from: ../server/assets
     to: server/assets
+  # ★★ 内置插件包（mode-pluginization P1）：electron-build.cjs 先经 build-plugins.mjs 生成
+  #   apps/server/plugins/builtin/<id>/，这里整体拷进包（与 full.yml 逐行一致）。
+  - from: ../server/plugins/builtin
+    to: server/dist/plugins/builtin
   # ★ 刻意不打包 ../server/src（后端源码）：生产模式只跑 server/dist 的编译产物。
   #   详见 electron-builder.full.yml 同位置注释。
   - from: runtime/server-runtime/node_modules

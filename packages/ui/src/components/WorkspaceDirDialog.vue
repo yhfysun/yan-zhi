@@ -1,7 +1,26 @@
 <template>
   <el-dialog v-model="visible" title="选择工作目录" width="560px" :close-on-click-modal="false" @open="onOpen">
-    <!-- 工具栏：原生目录选择 + 手动输入路径 -->
-    <div class="wdd-toolbar">
+    <!-- ★ 移动端形态（2026-10-25 用户实报「选择不了工作目录」）：桌面目录树浏览器在
+         Capacitor 上注定失效（fs 沙箱 + 内嵌 Node 路径语义不同），改预设 + 自定义名，
+         全部落在应用数据区（前端 Capacitor 与内嵌后端都能访问的交集）。 -->
+    <div v-if="isMobile" class="wdd-mobile">
+      <div class="wdd-mobile-cur">当前：{{ props.currentPath || 'workspace（默认）' }}</div>
+      <div class="wdd-mobile-presets">
+        <button v-for="p in MOBILE_PRESETS" :key="p.value" type="button" class="wdd-mobile-preset" @click="pickMobile(p.value)">
+          <span class="wdd-mobile-preset-name">{{ p.label }}</span>
+          <span class="wdd-mobile-preset-desc">{{ p.desc }}</span>
+        </button>
+      </div>
+      <div class="wdd-mobile-custom">
+        <el-input v-model="mobileCustom" placeholder="自定义子目录名，如 我的项目" @keyup.enter="pickMobileCustom">
+          <template #append><el-button @click="pickMobileCustom" :disabled="!mobileCustom.trim()">使用</el-button></template>
+        </el-input>
+        <p class="wdd-mobile-note">手机上的工作目录位于应用数据区（workspace/ 下），可在「我的 → 数据与日志」导出。</p>
+      </div>
+    </div>
+
+    <!-- 工具栏：原生目录选择 + 手动输入路径（桌面端） -->
+    <div v-else class="wdd-toolbar">
       <el-button v-if="isDesktop" size="small" type="primary" plain @click="pickNativeDir" :loading="picking">
         <el-icon><FolderOpened /></el-icon> 浏览电脑目录
       </el-button>
@@ -19,7 +38,7 @@
     </div>
 
     <!-- 手动输入路径 -->
-    <div class="wdd-toolbar wdd-toolbar--second">
+    <div v-if="!isMobile" class="wdd-toolbar wdd-toolbar--second">
       <el-input
         v-model="manualPath"
         size="small"
@@ -34,7 +53,7 @@
     </div>
 
     <!-- 最近使用 -->
-    <div v-if="recentDirs.length" class="wdd-recent">
+    <div v-if="!isMobile && recentDirs.length" class="wdd-recent">
       <span class="wdd-recent-label">最近使用</span>
       <button
         v-for="dir in recentDirs"
@@ -49,7 +68,7 @@
     </div>
 
     <!-- 可点面包屑 -->
-    <div class="wdd-breadcrumb">
+    <div v-if="!isMobile" class="wdd-breadcrumb">
       <el-button size="small" circle @click="goUp" :disabled="!canGoUp">
         <el-icon><ArrowUp /></el-icon>
       </el-button>
@@ -69,7 +88,7 @@
     </div>
 
     <!-- 列表 -->
-    <div class="wdd-list">
+    <div v-if="!isMobile" class="wdd-list">
       <div v-if="loading" class="wdd-state">
         <el-icon class="is-loading"><Loading /></el-icon>
         <span>加载中...</span>
@@ -134,6 +153,26 @@ const visible = computed({
 });
 
 const isDesktop = getPlatformAdapter().platform === 'desktop';
+const isMobile = getPlatformAdapter().platform === 'mobile';
+
+/** 移动端预设（应用数据区内的稳定位置，前端 Capacitor 与内嵌 Node 都可达） */
+const MOBILE_PRESETS = [
+  { label: '默认工作区', value: 'workspace', desc: 'workspace · 出物默认落这里' },
+  { label: '文档', value: 'workspace/文档', desc: 'workspace/文档' },
+  { label: '项目', value: 'workspace/项目', desc: 'workspace/项目' },
+];
+const mobileCustom = ref('');
+
+function pickMobile(value: string) {
+  emit('selected', value);
+  visible.value = false;
+}
+
+function pickMobileCustom() {
+  const name = mobileCustom.value.trim().replace(/[\\/:*?"<>|]/g, '_');
+  if (!name) return;
+  pickMobile(`workspace/${name}`);
+}
 const settingsStore = useSettingsStore();
 
 interface DirEntry {
@@ -507,4 +546,19 @@ function clearDir() {
   color: var(--color-text-secondary);
   font-weight: 300;
 }
+
+/* ===== 移动端形态：预设 + 自定义名 ===== */
+.wdd-mobile { display: flex; flex-direction: column; gap: 14px; }
+.wdd-mobile-cur { font-size: 13px; color: var(--color-text-secondary); word-break: break-all; }
+.wdd-mobile-presets { display: flex; flex-direction: column; gap: 8px; }
+.wdd-mobile-preset {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 10px 14px; border-radius: 10px; text-align: left;
+  border: 1px solid var(--el-border-color-lighter); background: transparent;
+}
+.wdd-mobile-preset:active { border-color: var(--el-color-primary); }
+.wdd-mobile-preset-name { font-size: 15px; font-weight: 600; color: var(--color-text); }
+.wdd-mobile-preset-desc { font-size: 12px; color: var(--color-text-secondary); }
+.wdd-mobile-custom { display: flex; flex-direction: column; gap: 6px; }
+.wdd-mobile-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--color-text-secondary); }
 </style>

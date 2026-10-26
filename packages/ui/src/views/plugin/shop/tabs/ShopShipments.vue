@@ -1,6 +1,6 @@
 <template>
   <div class="shop-tab-body">
-    <el-table v-if="bizShipments.length" :data="bizShipments" size="small">
+    <el-table v-if="bizShipments.length && !isMobile" :data="bizShipments" size="small">
       <el-table-column label="运单号" width="170">
         <template #default="{ row }"><span class="shop-mono">{{ row.trackingNo || '—' }}</span></template>
       </el-table-column>
@@ -27,6 +27,24 @@
         </template>
       </el-table-column>
     </el-table>
+    <!-- ★ 窄屏发货单卡片（§3） -->
+    <div v-else-if="isMobile && bizShipments.length" class="shop-mcard-list">
+      <div v-for="row in bizShipments" :key="row.id" class="shop-mcard">
+        <div class="shop-mcard-head">
+          <span class="shop-mono shop-mcard-sku">{{ row.trackingNo || '—' }}</span>
+          <el-tag size="small" effect="plain" :type="shipmentMeta(row.status).tag">{{ shipmentMeta(row.status).label }}</el-tag>
+        </div>
+        <div class="shop-mcard-meta">
+          <span>物流商 {{ carrierLabel(row.carrier) }}</span>
+          <span>订单 {{ orderNoOf(row.orderId) }}</span>
+          <span>{{ fmtTime(row.shippedAt || row.createdAt) }}</span>
+        </div>
+        <div v-if="row.note" class="shop-mcard-title" style="font-weight: 400; color: var(--color-text-secondary);">{{ row.note }}</div>
+        <div class="shop-mcard-actions">
+          <el-button size="small" :loading="track.busy && track.shipment?.id === row.id" @click="openTrack(row)">查轨迹</el-button>
+        </div>
+      </div>
+    </div>
     <div v-else class="shop-placeholder">
       <p v-if="bizLoading">正在读取发货单…</p>
       <p v-else-if="bizError">{{ bizError }}</p>
@@ -66,6 +84,7 @@
 // 发货页签：发货单列表 + 运单轨迹（复用既有物流客户端，只读）。
 import { computed, reactive } from 'vue';
 import type { ShopConnection } from '../../shopSession';
+import { useIsMobile } from '../../../../composables/useIsMobile';
 import {
   bizOrders, bizShipments, bizLoading, bizError,
   fmtTime, SHIPMENT_STATUS_META, trackShipmentApi,
@@ -73,6 +92,7 @@ import {
 } from '../useShopApi';
 
 const props = defineProps<{ shop: ShopConnection | null }>();
+const isMobile = useIsMobile();
 
 /** 行内状态可能是 any（el-table slot），统一收口 */
 function shipmentMeta(s: string): { label: string; tag: 'info' | 'warning' | 'success' | 'danger' } {

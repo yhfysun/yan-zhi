@@ -18,6 +18,7 @@
       </div>
 
       <el-table
+        v-if="!isMobile"
         :data="sortedProducts"
         size="small"
         highlight-current-row
@@ -40,10 +41,30 @@
           </template>
         </el-table-column>
       </el-table>
+      <!-- ★ 窄屏库存商品卡片：点卡片选中（替代表格 current-row），再点工具栏入库/出库/盘点 -->
+      <div v-else class="shop-mcard-list">
+        <div
+          v-for="row in sortedProducts" :key="row.id"
+          class="shop-mcard"
+          :style="selectedProduct?.id === row.id ? 'border-color: var(--color-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 25%, transparent);' : ''"
+          @click="selectedProduct = row"
+        >
+          <div class="shop-mcard-head">
+            <span class="shop-mono shop-mcard-sku">{{ row.sku }}</span>
+            <el-tag v-if="row.stock <= row.safetyStock" size="small" type="warning" effect="plain">低库存</el-tag>
+            <span v-else class="shop-na">正常</span>
+          </div>
+          <div class="shop-mcard-title">{{ row.title }}</div>
+          <div class="shop-mcard-meta">
+            <span>库存 <b :class="{ 'shop-warn-line': row.stock <= row.safetyStock }">{{ row.stock }}</b></span>
+            <span>安全库存 {{ row.safetyStock }}</span>
+          </div>
+        </div>
+      </div>
 
       <div class="shop-card" style="margin-top: 14px;">
         <div class="shop-card-head"><h3 style="font-size: 14px;">库存流水（最近 {{ moves.length }} 条）</h3></div>
-        <el-table v-if="moves.length" :data="moves" size="small" max-height="320">
+        <el-table v-if="moves.length && !isMobile" :data="moves" size="small" max-height="320">
           <el-table-column label="时间" width="140">
             <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
           </el-table-column>
@@ -66,6 +87,20 @@
           </el-table-column>
           <el-table-column prop="reason" label="原因" min-width="140" show-overflow-tooltip />
         </el-table>
+        <!-- ★ 窄屏流水卡片（§3：7 列 ~760px → 时间/SKU/变动 + 前后余量） -->
+        <div v-else-if="moves.length" class="shop-mcard-list">
+          <div v-for="row in moves" :key="row.id" class="shop-mcard">
+            <div class="shop-mcard-head">
+              <span class="shop-mcard-meta" style="margin: 0;">{{ fmtTime(row.createdAt) }} · {{ moveKindLabel(row.kind) }} · {{ skuOf(row.productId) }}</span>
+              <span :class="row.qty > 0 ? 'shop-mcard-qty-in' : 'shop-warn-line'">{{ row.qty > 0 ? `+${row.qty}` : row.qty }}</span>
+            </div>
+            <div class="shop-mcard-meta">
+              <span class="shop-mono">{{ row.beforeQty }} → {{ row.afterQty }}</span>
+              <span>{{ row.actor === 'ai' ? 'AI' : '人工' }}</span>
+              <span v-if="row.reason">{{ row.reason }}</span>
+            </div>
+          </div>
+        </div>
         <p v-else class="shop-empty-hint">还没有库存流水。入库/出库/盘点都会在这里留痕。</p>
       </div>
     </template>
@@ -94,12 +129,14 @@
 import { computed, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import type { ShopConnection } from '../../shopSession';
+import { useIsMobile } from '../../../../composables/useIsMobile';
 import {
   bizProducts, bizMoves, bizLastSummary, changeStockApi, fmtTime,
   type BizProduct,
 } from '../useShopApi';
 
 const props = defineProps<{ shop: ShopConnection | null }>();
+const isMobile = useIsMobile();
 
 const isDropship = computed(() => (props.shop?.supplyMode ?? 'stocked') === 'dropship');
 const sortedProducts = computed(() => [...bizProducts.value].sort((a, b) => a.stock - b.stock));

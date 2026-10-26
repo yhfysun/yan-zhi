@@ -122,6 +122,10 @@ const MOVABLE = [
   'apps/mobile/dist',
   'apps/mobile/nodejs/dist',
   'apps/mobile/android/app/src/main/assets/public',
+  // ★ cap sync 的 update 阶段会 fs.remove 整个 cordova 插件模块目录再从模板重建。
+  //   它内部含 gradle build/ 中间产物（数千小文件），被沙箱安全删除 shim 转去
+  //   回收站搬运时 ETIMEDOUT（2026-10-25 实测）。提前整体移走 → remove 变空操作。
+  'apps/mobile/android/capacitor-cordova-android-plugins',
 ];
 
 const argv = process.argv.slice(2);

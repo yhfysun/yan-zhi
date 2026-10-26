@@ -161,4 +161,8 @@ async function save() {
 .cm-price-item { display: flex; align-items: center; gap: 8px; }
 .cm-price-label { font-size: 12px; color: var(--el-text-color-regular, #cfd3dc); flex-shrink: 0; }
 .cm-price-unit { grid-column: 1 / -1; }
+/* ★ ≤600px 价格网格收单列：双列 110px 写死输入框在窄弹窗里挤压标签 */
+@media (max-width: 600px) {
+  .cm-price-grid { grid-template-columns: 1fr; }
+}
 </style>

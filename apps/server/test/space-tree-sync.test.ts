@@ -155,12 +155,15 @@ describe('③④ 幂等与边界', () => {
   });
 });
 
-describe('⑤ validateParent', () => {
-  it('父不存在 / 是自己 / 隔代 都被拒', () => {
+describe('⑤ validateParent（2026-10-23 拍板：放开「只支持两级」→ 成环检测）', () => {
+  it('父不存在 / 是自己 / 挂进自己子树（成环）都被拒；多级挂载合法', () => {
     expect(validateParent(USER, null, 'sp_no')).toBe('父空间不存在');
     expect(validateParent(USER, 'sp_parent', 'sp_parent')).toBe('空间不能以自己为父');
     seed({ id: 'sp_child', name: '子', parent_id: 'sp_parent' });
-    expect(validateParent(USER, 'sp_x', 'sp_child')).toBe('只支持两级目录（父任务目录下直接挂子目录）');
+    // ★ 放开两级后：把空间挂到「子空间」下是合法的（任意层级）
+    expect(validateParent(USER, 'sp_x', 'sp_child')).toBeNull();
     expect(validateParent(USER, 'sp_x', 'sp_parent')).toBeNull();
+    // 成环：把祖先挂到自己的子孙下 → 拒（沿父链上溯撞到自己）
+    expect(validateParent(USER, 'sp_parent', 'sp_child')).toBe('不能把空间挂到自己的子目录下（会成环）');
   });
 });

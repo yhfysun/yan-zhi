@@ -1191,7 +1191,8 @@ try {
 // server agent 表无 user_id 列，归属靠 is_public=1 全局共享。
 // 注：此处是「默认助手可用工具」的白名单，必须与 builtin/index.ts 里 registry.register 的非 browser_* 工具对齐，
 // 否则会出现「已注册但智能体调不到」的断链（典型：内置 skill 里写了 compare_products，默认助手却没挂它）。
-// 已注册未挂载 = 工具在 UI 里看得见、LLM 调不了。新增内置工具时记得同步这里。
+// 挂载只决定工具进不进提示词（2026-10-25 语义定版）：未挂载的系统工具 LLM 仍可按名调用，
+// 但模型看不到 schema 时只能瞎猜参数 —— 同步本清单是为了让默认助手的工具面完整、调用靠谱。
 const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 文件读写
   'file_read', 'file_write', 'file_list',

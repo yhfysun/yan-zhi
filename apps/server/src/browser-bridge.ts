@@ -85,8 +85,12 @@ export function toolNameToAction(toolName: string): string {
   return TOOL_ACTION_ALIASES[raw] || raw;
 }
 
-/** 调用桥。失败抛错，由调用方决定是否降级。 */
-export async function callBrowserBridge(
+/**
+ * 调用桥，返回**原始 JSON** —— 供需要字段级消费的调用方（如办公模式「浏览器现场」
+ * 提示词注入读 `get_tabs` 的 `panelVisible`）。失败抛错，由调用方决定是否降级。
+ * ★ HTTP 200 + `{error}` 属**业务返回**，原样交回（与格式化层 callBrowserBridge 同一口径）。
+ */
+export async function callBrowserBridgeRaw(
   convId: string,
   toolName: string,
   args: unknown,
@@ -97,7 +101,7 @@ export async function callBrowserBridge(
    *   锚在另一把键上是最难查的一类漂移。缺省 = 共享主面板流 ⇒ 行为与今天一致。
    */
   flowKey?: string,
-): Promise<string> {
+): Promise<any> {
   const url = process.env.YZ_BROWSER_BRIDGE_URL as string;
   const token = process.env.YZ_BROWSER_BRIDGE_TOKEN as string;
   const action = toolNameToAction(toolName);
@@ -139,25 +143,7 @@ export async function callBrowserBridge(
       (err as any).bridgeTransport = true;
       throw err;
     }
-    const json: any = await res.json().catch(() => ({}));
-    // ★★★ HTTP 200 + `{error}` 是**动作执行失败**（业务错误），不是桥故障 —— 见 isBridgeTransportError 注释。
-    //   直接作为工具结果返回给模型（保留原始文案，模型据此换招），**不抛异常、不触发降级**。
-    //   ★★ 2026-10-12（诊断报告 P0-1）：超时/仍在加载（`timedOut`）**不是失败** ——
-    //     绝不能加"失败"前缀（"失败"二字会诱导模型重试，正是"pageAgent 一跑就卡"的成因之一）。
-    //     直接保留 main.cjs 原文案（其中已写明"不代表失败、不要重复调用同一动作"）。
-    if (json && json.error) {
-      // ★★★ 2026-10-15：非超时的失败必须**带上 hint**。此前只取 `json.error`，把 main.cjs
-      //   精心写的可自纠指引（`hint`：点击"元素不可见已按 DOM 点击"、输入"受控组件拦截、
-      //   建议截图核验"、脚本"选择器失效先重新读页"…）**整条丢在桥这一层** —— 模型只看得到
-      //   "失败了"，看不到"下一步该怎么试"，于是换着选择器盲试（"步骤不准、重复操作多"）。
-      //   ★ 超时路径（`timedOut`）**不追加**：那一条已写明"不代表失败、不要重复调用同一动作"，
-      //     且**绝不能**出现"失败"二字（会诱导重试，见上一条注释）。
-      if (json.timedOut) return String(json.error);
-      const hint = json.hint ? `\n${String(json.hint)}` : '';
-      return `浏览器操作失败: ${String(json.error)}${hint}`;
-    }
-    // ★ 桥返回与 `browserView:action` 逐字同构 ⇒ 走**同一份**结果格式化（见 llm-task-manager 的 bridge 分支）
-    return formatBridgeResult(action, json);
+    return await res.json().catch(() => ({}));
   } catch (e: any) {
     if (e?.name === 'AbortError') {
       const err = new Error(`浏览器桥调用超时（${Math.round(timeoutMs / 1000)}s）`);
@@ -168,6 +154,36 @@ export async function callBrowserBridge(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** 调用桥（格式化层）。失败抛错，由调用方决定是否降级。 */
+export async function callBrowserBridge(
+  convId: string,
+  toolName: string,
+  args: unknown,
+  timeoutMs: number,
+  flowKey?: string,
+): Promise<string> {
+  const action = toolNameToAction(toolName);
+  const json: any = await callBrowserBridgeRaw(convId, toolName, args, timeoutMs, flowKey);
+  // ★★★ HTTP 200 + `{error}` 是**动作执行失败**（业务错误），不是桥故障 —— 见 isBridgeTransportError 注释。
+  //   直接作为工具结果返回给模型（保留原始文案，模型据此换招），**不抛异常、不触发降级**。
+  //   ★★ 2026-10-12（诊断报告 P0-1）：超时/仍在加载（`timedOut`）**不是失败** ——
+  //     绝不能加"失败"前缀（"失败"二字会诱导模型重试，正是"pageAgent 一跑就卡"的成因之一）。
+  //     直接保留 main.cjs 原文案（其中已写明"不代表失败、不要重复调用同一动作"）。
+  if (json && json.error) {
+    // ★★★ 2026-10-15：非超时的失败必须**带上 hint**。此前只取 `json.error`，把 main.cjs
+    //   精心写的可自纠指引（`hint`：点击"元素不可见已按 DOM 点击"、输入"受控组件拦截、
+    //   建议截图核验"、脚本"选择器失效先重新读页"…）**整条丢在桥这一层** —— 模型只看得到
+    //   "失败了"，看不到"下一步该怎么试"，于是换着选择器盲试（"步骤不准、重复操作多"）。
+    //   ★ 超时路径（`timedOut`）**不追加**：那一条已写明"不代表失败、不要重复调用同一动作"，
+    //     且**绝不能**出现"失败"二字（会诱导重试，见上一条注释）。
+    if (json.timedOut) return String(json.error);
+    const hint = json.hint ? `\n${String(json.hint)}` : '';
+    return `浏览器操作失败: ${String(json.error)}${hint}`;
+  }
+  // ★ 桥返回与 `browserView:action` 逐字同构 ⇒ 走**同一份**结果格式化（见 llm-task-manager 的 bridge 分支）
+  return formatBridgeResult(action, json);
 }
 
 /**

@@ -53,6 +53,14 @@ const EXEMPT_PREFIXES: readonly string[] = [
   // 泄露的只是本机刚生成的截图，与 /generated 同性质。
   '/plugin/computer-use/screenshots',
   '/network/ip',    // 局域网地址展示，无敏感信息
+  // 远程控制的控制端通道（向日葵式配对）：控制端手机/浏览器没有本机授权码，
+  // 鉴权走插件自带的「授权码 → 会话令牌 + 白名单设备令牌」，见 plugins/remote-control.ts 头注释。
+  // ★ 只豁免控制端两条路径（/pair 配对 + /session/ws 会话通道），不豁免整个插件 ——
+  //   /status、/code/*、/whitelist/*、/audit 等管理面是 fetch 调用、能带头，保持门禁。
+  '/plugin/remote-control/pair',
+  '/plugin/remote-control/session',
+  // 文件收发同上：控制端凭会话令牌鉴权（token 缺失/失效一律 403），目录锁定接收目录
+  '/plugin/remote-control/file',
 ];
 
 /**

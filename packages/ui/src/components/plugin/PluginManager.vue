@@ -102,7 +102,11 @@
               <el-button size="small" text bg @click="openConfig(p)">配置</el-button>
               <el-button size="small" text bg @click="openDetail(p)">详情</el-button>
               <el-button size="small" text bg @click="onExport(p)">导出</el-button>
-              <el-button v-if="p.manifest.id === 'computer-use' && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
+              <el-button v-if="AUDIT_PLUGIN_IDS.includes(p.manifest.id) && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
+              <el-button
+                v-if="p.manifest.id === 'remote-control' && p.state === 'enabled'"
+                size="small" text bg @click="gotoRcSetup"
+              >授权码</el-button>
               <el-button
                 v-if="p.source !== 'builtin'"
                 size="small"
@@ -153,7 +157,7 @@
         <el-table-column prop="op" label="操作" width="150" />
         <el-table-column label="参数">
           <template #default="{ row }">
-            <span class="pm-detail">{{ JSON.stringify(row.detail ?? {}) }}</span>
+            <span class="pm-detail pm-param-cell">{{ JSON.stringify(row.detail ?? {}) }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -231,6 +235,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Document, Upload, Box, Collection, UploadFilled, Share, Mouse } from '@element-plus/icons-vue';
 import { usePluginStore, type PluginInfo } from '../../stores/plugin';
@@ -238,6 +243,7 @@ import { api } from '../../api/client';
 import type { PluginManifest } from '@yan-zhi/core';
 
 const pluginStore = usePluginStore();
+const router = useRouter();
 const keyword = ref('');
 const configOpen = ref(false);
 const configText = ref('');
@@ -418,14 +424,21 @@ async function onOpenTemplate() {
   templateOpen.value = true;
 }
 
-// 电脑使用操作审计
+// 输入面操作审计（computer-use 电脑使用 / remote-control 远程控制）
+const AUDIT_PLUGIN_IDS = ['computer-use', 'remote-control'];
+
+// 远控授权码/控制端地址/二维码都在「设置 → 服务与连接 → 局域网」卡片：
+// 插件管理页给个直达入口（深链 ?pane=lan，Settings.vue 消费）
+function gotoRcSetup() {
+  router.push({ path: '/settings', query: { pane: 'lan' } });
+}
 const auditOpen = ref(false);
 const auditList = ref<Array<{ t: number; op: string; detail?: Record<string, unknown> }>>([]);
 const auditPanic = ref(false);
 
-async function onAudit(_p: PluginInfo) {
+async function onAudit(p: PluginInfo) {
   const res = await api.get<{ panic: boolean; ops: Array<{ t: number; op: string; detail?: Record<string, unknown> }> }>(
-    '/plugin/computer-use/audit',
+    `/plugin/${p.manifest.id}/audit`,
   );
   if ('error' in res) { ElMessage.error(res.error); return; }
   auditPanic.value = !!res.data.panic;
@@ -611,6 +624,12 @@ onMounted(() => pluginStore.refresh());
   gap: 14px;
   /* 关键：stretch（默认值）让同行卡片同高 */
   align-items: stretch;
+}
+/* ★ 窄屏（设置抽屉嵌入）回退单列：minmax(300px,1fr) 在 ~340px 内容列里卡片直接溢出 */
+@media (max-width: 767px) {
+  .pm-list { grid-template-columns: 1fr; }
+  /* 审计表格 JSON 参数单元格断词：长 JSON 不再撑破列 */
+  .pm-param-cell { word-break: break-all; }
 }
 .pm-card {
   background: var(--glass-bg);

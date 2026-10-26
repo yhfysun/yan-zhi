@@ -130,13 +130,16 @@ describe('A. CDP 真键盘通道（主路径）', () => {
     expect(fn).toContain('locateError');
   });
 
-  it("case 'type' 必须优先走 CDP，失败才回落 JS", () => {
+  it("case 'type' 必须优先走 CDP，失败才回落 JS 改值", () => {
     const fn = activeTypeCase();
     const cdpIdx = fn.indexOf('cdpTypeText(wc');
-    const jsIdx = fn.indexOf('executeJavaScript');
+    const jsIdx = fn.indexOf("via:'js-fallback'");
     expect(cdpIdx, '未调用 CDP 真键盘').toBeGreaterThan(-1);
     expect(jsIdx, '未保留 JS 兜底').toBeGreaterThan(-1);
-    expect(cdpIdx, 'CDP 必须在 JS 兜底之前').toBeLessThan(jsIdx);
+    // ★ 2026-10-24 P2 快照反馈：CDP 输入前后各采一次页面快照（那次 executeJavaScript
+    //   属合法前置，不算"JS 兜底"）—— 顺序契约收窄为「CDP 真键盘必须先于 JS 改值兜底」，
+    //   以兜底块自己的 via 标识为锚，不再用任意 executeJavaScript 判位（会被快照误触发）。
+    expect(cdpIdx, 'CDP 必须在 JS 改值兜底之前').toBeLessThan(jsIdx);
   });
 
   it('JS 兜底结果必须带 via 标识（区分走了哪条路）', () => {
@@ -187,7 +190,9 @@ describe('B. JS 兜底路径必须补齐"人的输入"事件序列', () => {
     // ★ 2026-10-12：判据由"严格相等"改为"宽松等价"（规范化空白后相等/互相包含）——
     //   严格相等会把页面规整过（trim/折叠空白/maxlength 截断）的文本误判为"未生效"→
     //   模型反复重填（用户实报"填表单反复填写"）。applied 信号本身必须保留。
-    expect(fn, '★ typeIn 丢了回读核验').toMatch(/applied:_applied/);
+    // ★ 2026-10-19 P0 统一口径：回读走 yzFillCompare（规范化宽松等价）+ 连续失败
+    //   forceStop 守卫，局部变量 _applied 改名 _ok —— 断言跟随新形态，语义不变。
+    expect(fn, '★ typeIn 丢了回读核验').toMatch(/applied:_ok/);
     expect(fn, '★ 回读核验未做规范化的宽松等价（页面规整会被误判未生效→反复重填）').toMatch(/indexOf\(/);
   });
 

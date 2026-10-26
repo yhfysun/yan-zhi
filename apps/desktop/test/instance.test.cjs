@@ -117,7 +117,10 @@ describe('目录解析：状态隔离，大文件缓存共用', () => {
 describe('静态守门：源码里不得再出现「把正式版列入可杀名单」', () => {
   const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
   /** 剥注释 —— 本项目已多次踩「断言命中注释」导致假红/假绿 */
-  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const strip = (s) =>
+    // ★ 块注释必须以空白/行首开头才剥离：模板里的 glob 字面量（如 accept="image/*"）会把
+    //   12KB 模板连到下一个 */ 全吃掉，LOCAL_API_BASE 断言因此误红（2026-10-25 修复）。
+    s.replace(/(^|\s)\/\*[\s\S]*?\*\//g, '$1').replace(/^[ \t]*\/\/.*$/gm, '');
 
   test('dev.mjs 的 SAFE_TO_KILL 不含 yan-zhi / 言智', () => {
     const src = strip(read('bin/dev.mjs'));
@@ -184,7 +187,10 @@ describe('静态守门：源码里不得再出现「把正式版列入可杀名�
 
 describe('静态守门：前端不得再硬编码本机后端端口', () => {
   const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
-  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const strip = (s) =>
+    // ★ 块注释必须以空白/行首开头才剥离：模板里的 glob 字面量（如 accept="image/*"）会把
+    //   12KB 模板连到下一个 */ 全吃掉，LOCAL_API_BASE 断言因此误红（2026-10-25 修复）。
+    s.replace(/(^|\s)\/\*[\s\S]*?\*\//g, '$1').replace(/^[ \t]*\/\/.*$/gm, '');
 
   const FRONTEND_FILES = [
     'packages/ui/src/api/client.ts',
@@ -232,7 +238,10 @@ describe('静态守门：前端不得再硬编码本机后端端口', () => {
 describe('shared/local-server.ts 的解析规则（与 instance.cjs 口径一致）', () => {
   // shared 是 TS，这里只做静态断言（运行期由前端构建保证）
   const src = fs.readFileSync(path.join(ROOT, 'packages/shared/src/utils/local-server.ts'), 'utf8');
-  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const strip = (s) =>
+    // ★ 块注释必须以空白/行首开头才剥离：模板里的 glob 字面量（如 accept="image/*"）会把
+    //   12KB 模板连到下一个 */ 全吃掉，LOCAL_API_BASE 断言因此误红（2026-10-25 修复）。
+    s.replace(/(^|\s)\/\*[\s\S]*?\*\//g, '$1').replace(/^[ \t]*\/\/.*$/gm, '');
   const code = strip(src);
 
   test('★ 端口常量与 instance.cjs 一致（dev 与生产同为 3001）', () => {
@@ -269,7 +278,10 @@ describe('shared/local-server.ts 的解析规则（与 instance.cjs 口径一致
 // ══════════════════════════════════════════════════════════════════════════
 describe('端口冲突防护（同端口 3001 的必需配套）', () => {
   const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
-  const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const strip = (s) =>
+    // ★ 块注释必须以空白/行首开头才剥离：模板里的 glob 字面量（如 accept="image/*"）会把
+    //   12KB 模板连到下一个 */ 全吃掉，LOCAL_API_BASE 断言因此误红（2026-10-25 修复）。
+    s.replace(/(^|\s)\/\*[\s\S]*?\*\//g, '$1').replace(/^[ \t]*\/\/.*$/gm, '');
 
   test('★ server 的 app.listen 必须处理 EADDRINUSE（否则 Unhandled error 崩进程）', () => {
     const src = strip(read('apps/server/src/index.ts'));

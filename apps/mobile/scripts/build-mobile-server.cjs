@@ -92,6 +92,21 @@ if (!okCore || !okShared) {
   log('提示: core/shared 产物不完整，workspace import 可能解析失败');
 }
 
+// ── 步骤 2.5：内置插件包（mode-pluginization P1）──
+// apps/server/plugins/builtin/<id>/ 由 apps/desktop/scripts/build-plugins.mjs 生成
+// （桌面打包链经 electron-build/build-all-editions 幂等补建）。服务端 builtin-packages.ts
+// 的扫描候选含 <server>/plugins/builtin —— 拷到 nodejs/dist/plugins/builtin 即被扫到。
+// 缺目录（未跑过构建）只提示不拦：源码兜底注册仍在。
+{
+  const builtinSrc = path.join(SERVER_DIST, '..', 'plugins', 'builtin');
+  if (fs.existsSync(builtinSrc)) {
+    copyRecursive(builtinSrc, path.join(NODEJS_DIST, 'plugins', 'builtin'));
+    log('已复制 内置插件包 -> ' + path.relative(ROOT, path.join(NODEJS_DIST, 'plugins', 'builtin')));
+  } else {
+    log('提示: apps/server/plugins/builtin 不存在（未跑 build-plugins.mjs），内置插件走源码兜底注册');
+  }
+}
+
 // ── 步骤 3：为 workspace 包生成 node_modules stub ──
 // 编译产物中的 import '@yan-zhi/core' 需要在 node_modules 下可解析
 log('=== 步骤 3: 生成 workspace stub ===');
@@ -194,8 +209,11 @@ const indexJs = [
   'try {',
   "  await import(pathToFileURL(path.join(__dirname, 'dist', 'apps', 'server', 'src', 'index.js')).href);",
   '} catch (err) {',
-  "  console.error('[mobile-server] 启动失败:', err);",
-  '  process.exit(1);',
+  '  console.error(\'[mobile-server] 启动失败:\', err);',
+  '  // ★ 绝不能 process.exit：capacitor-nodejs 的 Node 运行时与 Android App 同进程，',
+  '  //   exit 会把整个 App 杀死（表现为安装后一启动就闪退）。',
+  '  //   后端起不来时保持进程存活，WebView 壳照常打开并显示后端不可达的降级界面。',
+  '  console.error(\'[mobile-server] 保持进程存活（不 exit），App 壳继续运行\');',
   '}',
   '',
 ].join('\n');

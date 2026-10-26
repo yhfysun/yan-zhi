@@ -28,7 +28,7 @@
               </button>
             </nav>
 
-            <div class="settings-drawer-content">
+            <div class="settings-drawer-content in-settings-drawer">
               <component
                 :is="resolveComponent(activeSection)"
                 :key="activeSection"
@@ -333,16 +333,42 @@ onBeforeUnmount(() => {
     padding: 13px 16px;
   }
 
+  /* ★ P0-G1：侧栏改「顶部横向 chip 滚动条」。原 150px 竖栏把 360px 手机的内容列
+     压到 ~186px，嵌入页任何 ≥200px 固定宽元素必溢出；横排后内容列恢复全宽，
+     13 个分区页面同时受益。做法参照 Agents.vue 分类侧栏横排。 */
+  .settings-drawer-body {
+    flex-direction: column;
+  }
+
   .settings-drawer-nav {
-    width: 150px;
-    padding: 10px 6px;
+    width: auto;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 8px 10px;
+    border-right: none;
+    border-bottom: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+    background: var(--el-fill-color-blank, #fff);
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; /* chip 滚动条在触屏上是噪音，藏掉（手势可滚） */
+  }
+
+  .settings-drawer-nav::-webkit-scrollbar {
+    display: none;
   }
 
   .settings-drawer-nav-item {
-    height: 44px; /* 移动端触控目标 ≥44px（Task 10.4） */
-    padding: 0 10px;
-    gap: 8px;
+    width: auto;
+    flex: 0 0 auto;
+    height: 40px;
+    padding: 0 12px;
+    gap: 6px;
     font-size: 12px;
+    white-space: nowrap;
+    border-radius: 999px;
   }
 
   .settings-drawer-content {

@@ -371,6 +371,7 @@ export const NOVEL_TUIWEN_AGENT_SYSTEM_PROMPT = `你是「小说推文助手」�
 - **交互按编号走**：先 browser_get_page_info / browser_get_page_content 取编号 → browser_click {index} / browser_type {index}；编号失效才退回 selector。
 - **表单一次填完**：browser_fill_form 的 fields 数组可同批填文本/富文本/下拉（type:"select" + label）/勾选，需要提交时传 submit:true，不要逐字段来回。
 - **run_script 只用于批量读取与抓正文**（如下面的目录/正文抓取配方），不要用它点按钮、填表单、提交——那样用户看不到操作过程，失败时也没有编号可核对。
+- **浏览器面板没开不要请用户手动展开（2026-10-25）**：browser_navigate 会自动拉起应用内预览面板，直接调即可；批量页面动作也可以整体委派 pageAgent。只有**登录/扫码/验证码**这类必须人参与的环节才 ask_user。
 
 ## 流程
 1. **选书（自动，多平台按序尝试）**：按序委派 pageAgent：① 番茄达人中心 kol.fanqieopen.com（按上面链路）② 七猫 zuozhe.qimao.com ③ 书旗 shuqi.com ④ 纵横 zongheng.com（登录态由浏览器持久化；未登录时 ask_user 请用户在浏览器面板登录一次）。某平台卡住 → 换下一家并如实记录；番茄官网 fanqienovel.com 有字体混淆，正文一律从达人中心书详情拿。

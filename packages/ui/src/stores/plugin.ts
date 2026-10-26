@@ -26,9 +26,26 @@ export interface PluginInfo {
   source: PluginSource;
 }
 
+/** 模式运行时化（P3）：插件贡献的模式元数据（contributes.mode + 来源 pluginId） */
+export interface PluginModeDef {
+  pluginId: string;
+  key: string;
+  label: string;
+  desc?: string;
+  icon?: string;
+  route: string;
+  entry?: string;
+  desktopOnly?: boolean;
+  fallbackAgent?: string;
+  chatPlacement?: 'center' | 'side';
+}
+
 export const usePluginStore = defineStore('plugin', () => {
   const plugins = ref<PluginInfo[]>([]);
   const loaded = ref(false);
+
+  /** 模式运行时化（P3）：enabled 插件 contributes.mode 聚合（服务端随 /api/plugins 下发） */
+  const modeDefs = ref<PluginModeDef[]>([]);
 
   /** 仅聚合已启用插件 */
   const enabledPlugins = computed(() => plugins.value.filter((p) => p.state === 'enabled'));
@@ -104,6 +121,10 @@ export const usePluginStore = defineStore('plugin', () => {
     const res = await api.get<PluginInfo[]>('/plugins');
     if ('error' in res) return res.error;
     plugins.value = res.data;
+    // ★ 模式运行时化（P3）：快照随带的 modeDefs（enabled 插件 contributes.mode 聚合）。
+    //   消费方见 mode.ts 的 pluginModeMeta —— 模式元数据/fallbackAgent 的单一真相源。
+    const raw = (res as unknown as { modeDefs?: unknown }).modeDefs;
+    if (Array.isArray(raw)) modeDefs.value = raw as PluginModeDef[];
     loaded.value = true;
     return undefined;
   }
@@ -139,6 +160,7 @@ export const usePluginStore = defineStore('plugin', () => {
   return {
     plugins,
     loaded,
+    modeDefs,
     canInstall,
     themes,
     layouts,

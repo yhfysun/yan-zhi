@@ -17,8 +17,8 @@ import { createServer, type Server } from 'node:net';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
-import { encrypt, decrypt } from '../utils/crypto.js';
-import { pushPluginAudit } from '../services/plugin-audit.js';
+// ★ 宿主能力走宿主桥（mode-pluginization P3）：宿主单例禁止复制进插件包。
+import { encrypt, decrypt, pushPluginAudit, createLogger, db } from '../host-bridge.js';
 import { guard, capOutput, isDangerous, isReadonly, isProductionTag, resolveSilent, type SilentCapability, type SilentFlags } from './ops-shell-guard.js';
 import {
   pruneApprovals, capApprovals, takeApproval, hasPending, makeRequest, pendingMessage, rejectedMessage,
@@ -32,7 +32,6 @@ import {
   hostPortOf, verifyHostKey, outcomeAllows, mismatchMessage, unknownHostMessage,
   type HostKeyRecord, type KnownHostMode, type VerifyOutcome,
 } from './ops-known-hosts.js';
-import { createLogger } from '../services/logger.js';
 const logger = createLogger('ops-shell');
 
 export const OPS_SHELL_ID = 'ops-shell';
@@ -46,6 +45,11 @@ export const opsShellManifest: PluginManifest = {
     '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询；「更多 → 运维」打开运维控制台：按连接类型呈现命令终端 / 容器面板 / SQL 查询 + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
   permissions: ['remote-shell', 'shell', 'network'],
   contributes: {
+    // ★ 模式运行时化（P3）：模式定义随插件声明，前端动态合并（替代构建期硬编码表的部分消费方）
+    mode: {
+      key: 'ops', label: '运维模式', icon: 'Platform', route: '/ops',
+      desktopOnly: true, fallbackAgent: 'a_builtin_ops_agent',
+    },
     tools: [
       'ssh_exec',
       'ssh_upload',
@@ -1199,7 +1203,7 @@ export function sftpUploadRange(
     // ★ pipe 必须挂完监听**之前**接上：先加 'data' 监听会把读流切进 flowing 态，
     //   在 pipe 接上之前到达的数据块会被直接丢掉（文件开头凭空少一截）。
     rs.pipe(ws);
-    rs.on('data', (chunk: Buffer) => {
+    rs.on('data', (chunk: string | Buffer) => {
       read += chunk.length;
       onStep(read);
       if (shouldAbort()) settle(() => resolve({ written: read, cancelled: true }));
@@ -3323,7 +3327,7 @@ const opsShellModule: PluginModule = {
         if (next.length === list.length) { fail(res, 404, '发布项目不存在'); return; }
         try { await saveReleaseProjects(next); } catch (e) { fail(res, 500, (e as Error).message); return; }
         try {
-          const { db } = await import('../db.js');
+          // 宿主 db 经桥（2026-10-25：原动态 import('../db.js') 会把 db.ts 整图卷进插件包）
           db.prepare('UPDATE conversation SET release_project_id = NULL WHERE release_project_id = ?').run(id);
         } catch { /* 清理绑定失败不影响删除本身 */ }
         await audit('release_project.delete', { detail: id, ok: true });

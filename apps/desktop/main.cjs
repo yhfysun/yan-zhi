@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, screen: electronScreen, safeStorage } = require('electron');
+const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, Notification, screen: electronScreen, safeStorage, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -25,6 +25,11 @@ const { installStoreFetch } = require('./proxy-fetch.cjs');
 const { listWhitelist, isAllowedStoreExtension } = require('./extension-whitelist.cjs');
 // 收藏夹：只读解析本机 Chrome/Edge 书签文件（纯函数模块，有单测）
 const { discoverChromeBookmarks } = require('./bookmarks-import.cjs');
+// 插件前端包装载协议（mode-pluginization P0）：yz://shared/**（共享依赖 shim）与
+// yz://plugin/<id>/**（插件前端 bundle）。纯函数解析器有单测（test/plugin-protocol.test.cjs）。
+const { YZ_SCHEME_PRIVILEGES, pluginDirCandidates, resolveYzTarget } = require('./plugin-protocol.cjs');
+// ★ privileged scheme 注册必须在 app ready 之前（模块顶层即执行）。
+protocol.registerSchemesAsPrivileged([YZ_SCHEME_PRIVILEGES]);
 
 let mainWindow = null;
 /**
@@ -6376,7 +6381,9 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           return { closed: true };
       }
       case 'get_tabs': {
-        if (!isWebviewEngine()) return { tabs: [] };
+        // ★ panelVisible（2026-10-25 办公模式「浏览器现场」注入）：服务端提示词组装只消费本响应
+        //   （面板开合 + tab 清单一次拿全）。非 webview 引擎同样带出 —— 纯新增字段，旧调用方不受影响。
+        if (!isWebviewEngine()) return { tabs: [], panelVisible: webviewPanelVisible };
         const tabs2 = [];
         for (const [id, t] of webviewTabs) {
           const wc2 = guestWebContents(id);
@@ -6385,7 +6392,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           // ★ suspended（2026-10-19）：休眠 tab 无 wc，但 url 仍可读，agent 可据此判断页面还在。
           tabs2.push({ tabId: id, url: wc2 ? wc2.getURL() : (t.url || ''), title: wc2 ? wc2.getTitle() : '', scope: t.scope || 'preview', agentOpened: t.agentOpened === true, active: id === activeTabId, suspended: t.suspended === true, loading: wc2 && typeof wc2.isLoading === 'function' ? !!wc2.isLoading() : false });
         }
-        return { tabs: tabs2, activeTabId };
+        return { tabs: tabs2, activeTabId, panelVisible: webviewPanelVisible };
       }
       // ========== C5 网络请求监听（桌面端用 performance API 轮询） ==========
       case 'wait_for_request': {
@@ -8051,14 +8058,18 @@ function setScreenshotHotkey(accel) {
 }
 
 /** 急停热键实际动作：通知后端 panic（冻结输入工具并禁用插件）。
- *  插件未启用时后端返回 404，静默忽略；请求失败也不影响本进程。 */
+ *  插件未启用时后端返回 404，静默忽略；请求失败也不影响本进程。
+ *  computer-use（电脑使用）与 remote-control（远程控制）同时打：一次急停把两条
+ *  输入注入通道全部冻结 —— 远控若还在流式推帧，只冻 computer-use 是不够的。 */
 function triggerPanicHotkey() {
-  const req = http.request(API_ORIGIN + '/api/plugin/computer-use/panic', { method: 'POST', timeout: 3000 }, (res) => {
-    res.resume();
-  });
-  req.on('error', () => {});
-  req.on('timeout', () => req.destroy());
-  req.end();
+  for (const p of ['/api/plugin/computer-use/panic', '/api/plugin/remote-control/panic']) {
+    const req = http.request(API_ORIGIN + p, { method: 'POST', timeout: 3000 }, (res) => {
+      res.resume();
+    });
+    req.on('error', () => {});
+    req.on('timeout', () => req.destroy());
+    req.end();
+  }
   console.log('[panic] 急停热键触发');
 }
 
@@ -8174,6 +8185,40 @@ app.whenReady().then(async () => {
   if (!gotTheLock) return;
   Menu.setApplicationMenu(null);  // 移除默认菜单栏
 
+  // ── 插件前端包装载协议 yz://（mode-pluginization P0）────────────────
+  //   渲染层经动态 import('yz://plugin/<id>/frontend/index.mjs') 装载插件前端 bundle；
+  //   共享依赖（vue/element-plus 等）经 yz://shared/*.mjs shim 委托回 window.__YZ_HOST__，
+  //   全程单实例、插件包零复制。file:// 源的跨源模块请求靠响应里的 ACAO:* 放行。
+  protocol.handle('yz', async (request) => {
+    try {
+      const target = resolveYzTarget(request.url, {
+        mainDir: __dirname,
+        resourcesPath: process.resourcesPath,
+        isPackaged: app.isPackaged,
+        shimsDir: path.join(__dirname, 'host-shims'),
+      });
+      if (!target.ok) return new Response(target.status === 400 ? 'bad request' : 'not found', { status: target.status });
+      const data = await fsp.readFile(target.filePath);
+      return new Response(data, {
+        headers: {
+          'content-type': target.mime,
+          'access-control-allow-origin': '*',
+          'cache-control': 'no-cache',
+        },
+      });
+    } catch (e) {
+      console.warn('[yz-protocol] 服务失败:', request.url, e && e.message);
+      return new Response('error', { status: 500 });
+    }
+  });
+  if (EXTENSIONS_ENABLED) {
+    // 触发一次目录解析，dev/打包布局错误在启动日志里尽早暴露（不影响启动）
+    try {
+      const roots = pluginDirCandidates({ mainDir: __dirname, resourcesPath: process.resourcesPath, isPackaged: app.isPackaged });
+      console.log('[yz-protocol] 插件目录: builtin=' + roots.builtin + ' installed=' + roots.installed);
+    } catch { /* 纯日志 */ }
+  }
+
   // ── 渲染进程心跳看门狗（2026-10-19，阈值 2026-10-24 调整）──────────────
   //   实测：长任务/长会话会把渲染进程主线程占死，界面点击完全无响应（CDP 都进不去）。
   //   渲染层每 2s 发一次心跳；收不到就自动重载窗口。后端任务不受影响，
@@ -8248,6 +8293,151 @@ app.whenReady().then(async () => {
       session.fromPartition('persist:browser-view').setUserAgent(cleanUA);
     } catch { /* ignore */ }
   })();
+
+  // 远程控制（remote-control 插件）：被控端画面采集授权。
+  // 渲染层（Web UI）走 getDisplayMedia 触发本 handler，由主进程挑「选中的显示器整屏」源
+  // （rcCaptureDisplayId 为空 = 主显示器；多显示器选择来自被控端确认弹窗/控制端会话中切换），
+  // Windows 上附带系统声音回采（audio:'loopback'，不含麦克风）——远控音频转发即由
+  // 同一条 WebRTC 连接的音频轨道承载。控制端权限由插件配对/白名单把守，本 handler
+  // 只在渲染层真的发起 getDisplayMedia 时触发（正常浏览不受影响）。
+  let rcCaptureDisplayId = '';
+  (function installDisplayMediaHandler() {
+    try {
+      session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+        desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
+          if (!sources || !sources.length) {
+            callback({});
+            return;
+          }
+          let picked = null;
+          if (rcCaptureDisplayId) {
+            picked = sources.find((s) => String(s.display_id) === rcCaptureDisplayId) || null;
+          }
+          if (!picked) {
+            try {
+              const pid = String(electronScreen.getPrimaryDisplay().id);
+              picked = sources.find((s) => String(s.display_id) === pid) || null;
+            } catch { /* ignore */ }
+          }
+          const video = picked || sources[0];
+          const isWin = process.platform === 'win32';
+          callback(isWin ? { video, audio: 'loopback' } : { video });
+        }).catch(() => callback({}));
+      });
+      console.log('[remote-control] display media handler 已注册');
+    } catch (e) {
+      console.warn('[remote-control] setDisplayMediaRequestHandler 失败:', e && e.message);
+    }
+  })();
+
+  // 远控多显示器：枚举（被控端确认弹窗/控制端切换菜单）与采集目标选择。
+  // bounds 为物理像素（DIP × scaleFactor，多屏拼虚拟屏时 x/y 可为负）——
+  // 与注入的虚拟屏绝对坐标同系，控制端据此换算点击坐标。
+  ipcMain.handle('rc:displays', async () => {
+    try {
+      const displays = electronScreen.getAllDisplays();
+      const primary = electronScreen.getPrimaryDisplay();
+      const names = {};
+      try {
+        const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+        for (const s of sources) names[String(s.display_id)] = s.name;
+      } catch { /* 名字拿不到就用「显示器 N」兜底 */ }
+      const list = displays.map((d, i) => ({
+        id: String(d.id),
+        label: names[String(d.id)] || '显示器 ' + (i + 1),
+        primary: d.id === primary.id,
+        x: Math.round(d.bounds.x * d.scaleFactor),
+        y: Math.round(d.bounds.y * d.scaleFactor),
+        w: Math.round(d.bounds.width * d.scaleFactor),
+        h: Math.round(d.bounds.height * d.scaleFactor),
+      }));
+      return { ok: true, displays: list };
+    } catch (e) {
+      return { ok: false, error: e && e.message };
+    }
+  });
+  ipcMain.handle('rc:set-capture-display', (_e, id) => {
+    // 非法值不生效（保持原选择）；''=恢复主显示器
+    const v = String(id == null ? '' : id);
+    if (v !== '' && !/^[\w.\-]{1,64}$/.test(v)) return { ok: false, error: 'displayId 非法' };
+    rcCaptureDisplayId = v;
+    return { ok: true };
+  });
+
+  // 远控明示原则（护栏 10）：会话开始弹系统通知，不静默。渲染层伴生组件在
+  // /status 轮询发现新会话时调用（纯 Web 宿主无 electronAPI 自动跳过）。
+  ipcMain.handle('rc:notify', (_e, title, body) => {
+    try {
+      if (!Notification.isSupported()) return { ok: false, error: '系统不支持通知' };
+      const n = new Notification({
+        title: String(title || '远程控制').slice(0, 64),
+        body: String(body || '').slice(0, 200),
+        silent: false,
+        icon: getAppIconPath(),
+      });
+      n.show();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e && e.message };
+    }
+  });
+
+  // 远控托盘状态（隐私屏护栏 13 的「远控中」角标）：有会话时托盘提示与菜单给出
+  // 「一键断开」入口。渲染层经 /status 轮询上报（自愈：渲染层重载/会话结束都会校正）。
+  let rcRemoteSession = { active: false, device: '' };
+  ipcMain.handle('rc:session-state', (_e, active, device) => {
+    const next = { active: !!active, device: String(device || '').slice(0, 60) };
+    if (rcRemoteSession.active === next.active && rcRemoteSession.device === next.device) return { ok: true };
+    rcRemoteSession = next;
+    try {
+      const base = IS_DEV_INSTANCE ? `言智（开发实例 · 端口 ${API_PORT}）` : '言智';
+      tray?.setToolTip(next.active ? `${base} · 远控中（${next.device || '未知设备'}）` : base);
+    } catch { /* 托盘未就绪 */ }
+    refreshTrayMenu();
+    return { ok: true };
+  });
+  // 托盘「一键断开」→ 渲染层（host WS 在那里）→ 插件 session.stop {all:true}
+  ipcMain.on('rc:disconnect-all', () => {
+    try {
+      mainWindow?.webContents?.send('rc:disconnect-all');
+    } catch { /* ignore */ }
+  });
+
+  // 远程控制隐私屏（软件级）：所有显示器铺全黑置顶窗 + 点击穿透。
+  // focusable:false + setIgnoreMouseEvents(true) —— 窗口不抢焦点、不吃任何鼠标事件，
+  // 远控注入与本机真实键鼠照常作用于下层真实窗口；会话结束由伴生组件调 rcPrivacy(false) 撤除。
+  const rcPrivacyWindows = new Set();
+  ipcMain.handle('rc:privacy', (_e, on) => {
+    try {
+      if (on) {
+        if (rcPrivacyWindows.size) return { ok: true, count: rcPrivacyWindows.size };
+        for (const d of electronScreen.getAllDisplays()) {
+          const win = new BrowserWindow({
+            x: d.bounds.x, y: d.bounds.y,
+            width: d.bounds.width, height: d.bounds.height,
+            frame: false, resizable: false, movable: false, minimizable: false, maximizable: false,
+            fullscreenable: false, skipTaskbar: true, focusable: false, show: false,
+            backgroundColor: '#000000', title: '言智 · 远控中',
+          });
+          win.setIgnoreMouseEvents(true);
+          win.setAlwaysOnTop(true, 'screen-saver');
+          win.show();
+          rcPrivacyWindows.add(win);
+          win.on('closed', () => rcPrivacyWindows.delete(win));
+        }
+        console.log('[remote-control] 隐私屏已开启（显示器数=' + rcPrivacyWindows.size + '）');
+      } else {
+        for (const w of [...rcPrivacyWindows]) {
+          try { w.destroy(); } catch { /* ignore */ }
+        }
+        rcPrivacyWindows.clear();
+        console.log('[remote-control] 隐私屏已关闭');
+      }
+      return { ok: true, count: rcPrivacyWindows.size };
+    } catch (e) {
+      return { ok: false, error: e && e.message };
+    }
+  });
 
   // webview 引擎：网页 window.open / target=_blank / 中键新开 ——
   // 在 partition 上统一拦截（webview 元素事件无法可靠阻止弹窗），转成应用内新标签页，
@@ -8590,6 +8780,11 @@ app.whenReady().then(async () => {
           label: showing ? '隐藏主窗口' : (dockedOffscreen ? '显示主窗口（后台运行中）' : '显示主窗口'),
           click: toggleMain,
         },
+        // 远控会话进行中：明示状态 + 一键断开（rcRemoteSession 由渲染层 /status 轮询经 IPC 上报）
+        ...(rcRemoteSession.active ? [{
+          label: `远控中：${rcRemoteSession.device || '未知设备'} —— 一键断开`,
+          click: () => { try { mainWindow?.webContents?.send('rc:disconnect-all'); } catch { /* ignore */ } },
+        }] : []),
         { type: 'separator' },
         {
           label: '退出',

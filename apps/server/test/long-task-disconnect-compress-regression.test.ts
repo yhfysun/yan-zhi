@@ -85,8 +85,9 @@ describe('环二：跨重连状态必须存活（否则重放会重复执行工�
     expect(chatSrc).toMatch(/function\s+dropStreamState\(taskId: string\)/);
   });
 
-  it('subscribeTaskSse 内部必须从 streamStateOf 取状态，而不是新建局部变量', () => {
-    const fn = sliceFrom(chatSrc, 'async function subscribeTaskSse(', 3000);
+  it('subscribeTaskWs 内部必须从 streamStateOf 取状态，而不是新建局部变量', () => {
+    // ★ 2026-10-20 SSE→WS 迁移（87f53688）：subscribeTaskSse 改名 subscribeTaskWs
+    const fn = sliceFrom(chatSrc, 'async function subscribeTaskWs(', 3000);
     expect(fn).toMatch(/const\s+st\s*=\s*streamStateOf\(taskId\)/);
     // 不能再出现"函数内新建这三个局部状态"的旧形态
     expect(fn).not.toMatch(/let\s+assistantMsgId\s*=\s*''/);
@@ -117,18 +118,26 @@ describe('环三：流结束无条件落缓冲（finally 而非正常路径）',
    * → 最后 ~50ms 的流式增量永久丢失。改 try/finally 后任何退出路径都落盘。
    */
 
-  it('subscribeTaskSse 必须用 try/finally 包住 consumeSseStream', () => {
-    // ★ 切片要到下一个顶层函数声明为止 —— 函数体很长（含大量事件分支注释），
-    //   固定长度会截断在 finally 之前。
-    const start = chatSrc.indexOf('async function subscribeTaskSse(');
-    const end = chatSrc.indexOf('async function subscribeTaskSseWithReconnect(', start);
-    const fn = start < 0 ? '' : chatSrc.slice(start, end > start ? end : start + 9000);
-    expect(fn).toMatch(/try\s*\{/);
-    expect(fn).toMatch(/\}\s*finally\s*\{\s*[\s\S]{0,600}?flushNow\(convId\)/);
+  it('subscribeTaskWs 所有退出路径必须经 finish 收口（含 flushNow，对齐原 try/finally）', () => {
+    // ★ 2026-10-20 SSE→WS 迁移：原「try/finally 包 consumeSseStream」改为 WS 版的
+    //   finish() 单一收口（注释明说"对齐原 SSE 版 try/finally"）—— 终态/错误/中止/断开
+    //   四条退出路径都必须走它，否则最后 ~50ms 的流式增量丢失的根因会复发。
+    // ★ 切片要到下一个顶层函数声明为止 —— 函数体很长（含大量事件分支注释）。
+    const start = chatSrc.indexOf('async function subscribeTaskWs(');
+    const end = chatSrc.indexOf('async function subscribeTaskWsWithReconnect(', start);
+    const fn = start < 0 ? '' : chatSrc.slice(start, end > start ? end : start + 12000);
+    expect(fn).toMatch(/const finish = \(err\?: Error\) => \{/);
+    expect(fn).toMatch(/finish[\s\S]{0,400}?flushNow\(convId\)/);
+    // 四条退出路径都要经 finish：WS 断开 / 用户中止 / 事件处理抛错 / 订阅请求失败
+    expect(fn).toContain("finish(new Error('WS 连接断开'))");
+    expect(fn).toContain('finish(abortErr())');
+    expect(fn).toMatch(/catch \(e: any\) \{\s*finish\(/);
   });
 
-  it('consumeSseStream 回调显式标注 Promise<void | false>（否则 TS2345）', () => {
-    expect(chatSrc).toMatch(/consumeSseStream\(sseRes\.body,\s*async\s*\(payload\):\s*Promise<void \| false>\s*=>/);
+  it('processEvent 显式标注 Promise<void | false>（否则 TS2345；对齐原 consumeSseStream 回调）', () => {
+    // ★ 2026-10-20 SSE→WS 迁移：帧回调从 consumeSseStream 改为 processEvent，
+    //   「返回 false = 终态」契约原样保留，类型标注也必须原样保留。
+    expect(chatSrc).toMatch(/const processEvent = async \(event: any\): Promise<void \| false> => \{/);
   });
 });
 
@@ -140,11 +149,12 @@ describe('环四：手动重连必须走续传版本', () => {
    * ② 它自己的流再被掐断就永久停（无重连包装）
    */
 
-  it('reconnectActiveTask 必须调用 subscribeTaskSseWithReconnect', () => {
+  it('reconnectActiveTask 必须调用 subscribeTaskWsWithReconnect', () => {
+    // ★ 2026-10-20 SSE→WS 迁移（87f53688）改名跟随
     const fn = sliceFrom(chatSrc, 'async function reconnectActiveTask(', 2500);
-    expect(fn).toContain('subscribeTaskSseWithReconnect');
+    expect(fn).toContain('subscribeTaskWsWithReconnect');
     // 不能再自己拼 since 后直调裸版本
-    expect(fn).not.toMatch(/const\s+since\s*=\s*taskEventCounts\.get\(taskId\)[\s\S]{0,200}?await\s+subscribeTaskSse\(/);
+    expect(fn).not.toMatch(/const\s+since\s*=\s*taskEventCounts\.get\(taskId\)[\s\S]{0,200}?await\s+subscribeTaskWs\(/);
   });
 });
 

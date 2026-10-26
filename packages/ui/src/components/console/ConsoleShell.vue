@@ -5,11 +5,11 @@
          grid），**不用这个壳**，故它不在迁移范围内。
        ★ 外壳只管"盒子"：左栏与主区的内容全部由使用方通过 slot 提供。 -->
   <div class="console-shell" :class="rootClass">
-    <div class="cs-layout" :style="{ '--cs-aside-w': (collapsed ? 0 : asideW) + 'px' }">
+    <div class="cs-layout" :style="{ '--cs-aside-w': (collapsed ? 0 : asideEffW) + 'px' }">
       <aside
         v-show="!collapsed"
         class="cs-aside"
-        :style="{ width: asideW + 'px' }"
+        :style="asideStyle"
         @contextmenu.prevent="$emit('aside-contextmenu', $event)"
       >
         <slot name="aside" />
@@ -41,9 +41,10 @@
 // 通用控制台外壳（2026-10-16 从 OpsConsole 抽出，运维与店铺共用）。
 // 宽度走 useResizable：localStorage 持久化，故每个模式必须给**不同的 storageKey**，
 // 否则两边的侧栏宽度会互相覆盖。
-import { ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { Expand, Fold } from '@element-plus/icons-vue';
 import { useResizable } from '../../composables/useResizable';
+import { useIsMobile } from '../../composables/useIsMobile';
 
 const props = withDefaults(defineProps<{
   /** 宽度持久化 key（每个模式一个，如 'ops_aside' / 'shop_aside'） */
@@ -59,7 +60,17 @@ defineEmits<{ (e: 'aside-contextmenu', ev: MouseEvent): void }>();
 
 const asideR = useResizable(props.storageKey, props.defaultWidth, props.minWidth, props.maxWidth);
 const asideW = asideR.width;
-const collapsed = ref(false);
+// ★ 移动端：默认收起侧栏（260px 吃掉 375px 屏的 70%），展开时宽度钳到 55vw
+//   （asideW 是 localStorage 持久值，手机上直接用会把主区挤成负宽）
+const isMobile = useIsMobile();
+const collapsed = ref(isMobile.value);
+watch(isMobile, (m) => { if (m) collapsed.value = true; });
+const asideEffW = computed(() => {
+  if (!isMobile.value) return asideW.value;
+  const cap = Math.round((typeof window !== 'undefined' ? window.innerWidth : 375) * 0.55);
+  return Math.min(asideW.value, cap);
+});
+const asideStyle = computed(() => ({ width: asideEffW.value + 'px' }));
 
 function toggleAside(): void {
   collapsed.value = !collapsed.value;

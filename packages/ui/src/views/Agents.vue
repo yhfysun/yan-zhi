@@ -515,7 +515,7 @@ async function remove(agent: Agent) {
 
 <style scoped>
 /* .page / .page-header / .page-title / .page-sub come from App.vue global */
-.page-sub.mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; }
+.page-sub.mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; overflow-wrap: anywhere; } /* base_url 长串断词 */
 /* 页头右侧按钮组（候选池 + 新建智能体）：改为弹性行内排布，避免两个按钮各占一行 */
 .header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 /* 候选池弹窗顶部说明（说明"对所有智能体生效"，避免与"模型平台"混淆） */

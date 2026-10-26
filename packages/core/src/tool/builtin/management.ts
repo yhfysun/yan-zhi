@@ -92,7 +92,12 @@ class SearchMarketplaceTool implements BuiltInTool {
   }
 }
 
-export function registerManagementTools(registry: ToolRegistry, getDb: () => any): void {
+export function registerManagementTools(
+  registry: ToolRegistry,
+  getDb: () => any,
+  /** 注入自定义/MCP 等额外来源（server 侧拼好可调用暴露名；core 不直接依赖 DB/MCP） */
+  getExtraSources?: (userId?: string) => Array<{ name: string; description?: string; source: 'api' | 'builtin' | 'custom' | 'mcp' }>,
+): void {
   registry.register(new ListPlatformsTool(getDb));
   registry.register(new ListToolsTool());
   registry.register(new EnableTool(getDb));
@@ -100,7 +105,7 @@ export function registerManagementTools(registry: ToolRegistry, getDb: () => any
   registry.register(new ListSkillsTool(getDb));
   registry.register(new ListAgentsTool(getDb));
   registry.register(new SearchMarketplaceTool(getDb));
-  // ★ 注入内置工具读取器：get_api_tools 要把 58 个内置工具也纳入分类清单。
+  // ★ 注入内置工具读取器：get_api_tools 要把内置工具也纳入分类清单。
   //   不直接 import getToolRegistry 是为了避免循环依赖（registry ← builtin/index ← 本文件）。
-  registry.register(new GetApiToolsTool(() => registry.list()));
+  registry.register(new GetApiToolsTool(() => registry.list(), getExtraSources));
 }

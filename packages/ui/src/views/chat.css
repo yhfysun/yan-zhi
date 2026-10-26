@@ -1402,6 +1402,13 @@
 .mount-tool-alias:focus { border-color: var(--color-primary); }
 .mount-tool-alias::placeholder { color: rgba(15,23,42,0.25); }
 
+/* ★ 窄屏（弹窗钳 92vw 后内容列 ~310px）：别名输入 80px + flex-shrink:0 与工具信息
+   同行，信息列被挤到 ~160px —— 换行到信息列下方占满整行 */
+@media (max-width: 767px) {
+  .mount-tool-item { flex-wrap: wrap; }
+  .mount-tool-alias { flex: 1 1 100%; width: auto; }
+}
+
 /* ★★ 2026-10-16：`.ctx-menu`（自绘右键/长按菜单）的**全部样式已搬到 `styles/menu.css`**。
    原来它写在这里，而本文件只由 `views/Chat.vue` 的 `<style src="./chat.css">` 引入 ⇒
    **只有访问过聊天页，全应用的右键菜单才有样式**。冷启动直接进运维（模式被记住）时，

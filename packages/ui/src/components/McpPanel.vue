@@ -344,7 +344,8 @@
     </el-dialog>
 
     <el-dialog v-model="resourcesDialog" title="资源列表" width="720px">
-      <el-table :data="currentResources" max-height="360" stripe>
+      <!-- ★ 窄屏卡片（§3）：三弹窗表格固定列 ~620px，92vw 弹窗里必横滚 -->
+      <el-table v-if="!isMobile" :data="currentResources" max-height="360" stripe>
         <el-table-column prop="uri" label="URI" min-width="240" />
         <el-table-column prop="name" label="名称" width="160" />
         <el-table-column prop="mimeType" label="MIME" width="140" />
@@ -354,11 +355,23 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mcp-card-list">
+        <div v-for="row in currentResources" :key="row.uri" class="mcp-card">
+          <div class="mcp-card-mono">{{ row.uri }}</div>
+          <div class="mcp-card-meta">
+            <span>{{ row.name || '—' }}</span>
+            <span v-if="row.mimeType">{{ row.mimeType }}</span>
+          </div>
+          <div class="mcp-card-actions">
+            <el-button size="small" type="primary" plain @click="readRes(row)">读取</el-button>
+          </div>
+        </div>
+      </div>
       <el-empty v-if="currentResources.length === 0" description="暂无资源" :image-size="80" />
     </el-dialog>
 
     <el-dialog v-model="promptsDialog" title="提示词列表" width="720px">
-      <el-table :data="currentPrompts" max-height="360" stripe>
+      <el-table v-if="!isMobile" :data="currentPrompts" max-height="360" stripe>
         <el-table-column prop="name" label="名称" width="200" />
         <el-table-column prop="description" label="描述" />
         <el-table-column label="参数" width="200">
@@ -374,6 +387,20 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-else class="mcp-card-list">
+        <div v-for="row in currentPrompts" :key="row.name" class="mcp-card">
+          <div class="mcp-card-head">
+            <span class="mcp-card-name">{{ row.name }}</span>
+            <el-button size="small" type="primary" plain @click="getPromptContent(row)">获取</el-button>
+          </div>
+          <div v-if="row.description" class="mcp-card-meta">{{ row.description }}</div>
+          <div v-if="(row.arguments || []).length" class="mcp-card-tags">
+            <el-tag v-for="a in (row.arguments || [])" :key="a.name" size="small" effect="plain">
+              {{ a.name }}{{ a.required ? '*' : '' }}
+            </el-tag>
+          </div>
+        </div>
+      </div>
       <el-empty v-if="currentPrompts.length === 0" description="暂无提示词" :image-size="80" />
     </el-dialog>
 
@@ -382,7 +409,7 @@
     </el-dialog>
 
     <el-dialog v-model="logDialog" title="连接日志" width="680px">
-      <el-table :data="currentLogs" max-height="400" size="small" stripe>
+      <el-table v-if="!isMobile" :data="currentLogs" max-height="400" size="small" stripe>
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ new Date(row.time).toLocaleString() }}</template>
         </el-table-column>
@@ -394,6 +421,16 @@
         </el-table-column>
         <el-table-column prop="msg" label="说明" min-width="100" />
       </el-table>
+      <div v-else class="mcp-card-list">
+        <div v-for="(row, i) in currentLogs" :key="i" class="mcp-card">
+          <div class="mcp-card-head">
+            <span class="mcp-card-meta" style="margin: 0;">{{ new Date(row.time).toLocaleString() }}</span>
+            <el-tag :type="row.ok ? 'success' : 'danger'" size="small" effect="dark">{{ row.ok ? '成功' : '失败' }}</el-tag>
+          </div>
+          <div class="mcp-card-mono">{{ row.method }}</div>
+          <div v-if="row.msg" class="mcp-card-meta">{{ row.msg }}</div>
+        </div>
+      </div>
       <el-empty v-if="currentLogs.length === 0" description="暂无日志" :image-size="80" />
     </el-dialog>
   </div>
@@ -410,6 +447,7 @@ import GlassCard from './common/GlassCard.vue';
 import CardGrid from './common/CardGrid.vue';
 import SchemaViewer from './common/SchemaViewer.vue';
 import ToggleListRow from './common/ToggleListRow.vue';
+import { useIsMobile } from '../composables/useIsMobile';
 
 const props = defineProps<{
   /** 深链聚焦：/mcp/:id 迁移后由 /tools?focus=<id> 传入，挂载后自动打开该服务的工具面板 */
@@ -417,6 +455,7 @@ const props = defineProps<{
 }>();
 
 const store = useMcpStore();
+const isMobile = useIsMobile();
 const activeTab = ref<'servers' | 'credentials'>('servers');
 const tabOptions = [
   { label: 'MCP 服务', value: 'servers' },
@@ -979,15 +1018,32 @@ async function del(id: string) {
 
 /* 入站访问端点信息框 */
 .endpoint-box { text-align: left; }
-.endpoint-url { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+/* ★ 接入点 URL + 复制按钮同行：URL 是长串，不换行时按钮被挤出容器（P1 同构病灶） */
+.endpoint-url { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
 .endpoint-url code, .endpoint-tip code {
   font-family: "JetBrains Mono", "Cascadia Code", monospace;
   background: rgba(15, 23, 42, 0.06); padding: 2px 6px; border-radius: 4px; font-size: 12px;
 }
-.endpoint-url code { color: var(--color-primary); }
+.endpoint-url code { color: var(--color-primary); word-break: break-all; min-width: 0; }
 .endpoint-tip { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; }
 
 @media (max-width: 767px) {
   .mcp-panel-toolbar { flex-wrap: wrap; }
 }
+</style>
+
+<style scoped>
+/* ★ 窄屏弹窗卡片（§3 表格卡片化：资源/提示词/日志三弹窗） */
+.mcp-card-list { display: flex; flex-direction: column; gap: 8px; }
+.mcp-card {
+  border: 1px solid var(--glass-border, #e7e4dc); border-radius: 10px;
+  padding: 9px 11px; display: flex; flex-direction: column; gap: 6px;
+}
+.mcp-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mcp-card-name { font-size: 13px; font-weight: 600; word-break: break-all; }
+.mcp-card-mono { font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px; word-break: break-all; }
+.mcp-card-meta { font-size: 12px; color: var(--color-text-secondary); display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.mcp-card-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.mcp-card-actions { display: flex; gap: 6px; }
+.mcp-card-actions .el-button { margin-left: 0; }
 </style>

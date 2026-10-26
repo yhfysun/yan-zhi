@@ -3296,9 +3296,9 @@ onUnmounted(() => {
 
 /* 主视图区（文件面板已提到 .ops-body 层，作为全局面板） */
 .ops-main { flex: 1; display: flex; gap: 6px; min-height: 0; }
-.ops-main-primary { flex: 1 1 auto; min-width: 260px; min-height: 0; }
+.ops-main-primary { flex: 1 1 auto; min-width: min(260px, 50vw); min-height: 0; }
 .ops-main-files {
-  flex: 0 0 auto; min-width: 280px; min-height: 0;
+  flex: 0 0 auto; min-width: min(280px, 40vw); min-height: 0;
   padding-left: 10px; border-left: 1px solid var(--glass-border);
 }
 

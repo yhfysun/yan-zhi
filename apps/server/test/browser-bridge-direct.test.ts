@@ -709,12 +709,22 @@ describe('⑬ ★★★ 锚定建立 + webview tab 上限（防"跑起来就卡�
     const iFn = m.indexOf('function createBrowserTab(scope)');
     const seg = m.slice(iFn, iFn + 900);
     expect(seg, '★ webview 分支未收口 → 建 tab 无上限').toMatch(/evictLruWebviewTabIfNeeded\(\)/);
-    // ③ 逐出必须广播 tabClosed（否则渲染层 <webview> 元素不销毁，进程不释放）
+    // ③ 逐出必须让渲染层销毁 <webview> 元素（guest 进程才释放）。
+    //   ★ 2026-10-19「回收≠关闭」重构：逐出改为**休眠**（suspendWebviewTab → 广播
+    //   tabSuspended，tab 壳与 url 保留、切回复活）——旧实现「删 tab + 广播 tabClosed」
+    //   会让用户开着的页面 10 分钟后凭空消失，已废弃。
     const iEv = m.indexOf('function evictLruWebviewTabIfNeeded(');
     const evSeg = m.slice(iEv, iEv + 1600);
-    expect(evSeg, '★ 逐出未广播 tabClosed → <webview> 元素与 guest 进程残留').toMatch(/send\('browserView:tabClosed'/);
-    // ④ 必须清锚（否则留下幽灵 tabId）
-    expect(evSeg, '★ 逐出未清锚 → 幽灵 tabId 残留').toMatch(/clearFlowAnchorsForTab\(/);
+    expect(evSeg, '★ 逐出未走 suspendWebviewTab → guest 进程不释放').toMatch(/suspendWebviewTab\(/);
+    const iSu = m.indexOf('function suspendWebviewTab(');
+    const suSeg = m.slice(iSu, iSu + 1200);
+    expect(suSeg, '★ 休眠未广播 tabSuspended → 渲染层 <webview> 元素不销毁，进程不释放')
+      .toMatch(/send\('browserView:tabSuspended'/);
+    // ④ 真关闭路径必须清锚（否则留下幽灵 tabId）——收口在 broadcastTabClosed
+    //   （休眠不清锚是有意语义：锚定的 tab 本就被逐出保护，壳也还在）
+    const iBc = m.indexOf('function broadcastTabClosed(');
+    const bcSeg = m.slice(iBc, iBc + 700);
+    expect(bcSeg, '★ 关闭广播未清锚 → 幽灵 tabId 残留').toMatch(/clearFlowAnchorsForTab\(/);
   });
 
   it('★★ 锚定决策必须可观测（"navigate 成功后读不到页"的唯一线索）', () => {

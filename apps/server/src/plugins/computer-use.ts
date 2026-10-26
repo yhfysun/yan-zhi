@@ -9,10 +9,9 @@ import path from 'node:path';
 import { getPluginManager } from '@yan-zhi/core';
 import type { McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
 import type { ShellAdapter } from '@yan-zhi/core';
-import { db } from '../db.js';
-import { pushPluginAudit } from '../services/plugin-audit.js';
-import { isWithinRoot } from '../services/path-guard.js';
-import { serverState } from '../state.js';
+// ★ 宿主能力一律走宿主桥（mode-pluginization）：直接 import '../db.js' 等会被
+//   build-plugins.mjs 连带把宿主单例复制进插件包（插件进程出现第二个 SQLite 实例）。
+import { db, pushPluginAudit, isWithinRoot, serverState } from '../host-bridge.js';
 import {
   OS_SETTINGS,
   SETTINGS_PAGES,
@@ -107,37 +106,9 @@ function recordOp(): void {
   lastOpAt = Date.now();
 }
 
-/** 危险组合键黑名单（小写、修饰符排序后匹配） */
-const DENIED_KEY_COMBOS = new Set([
-  'alt+f4',
-  'ctrl+alt+del',
-  'ctrl+alt+delete',
-  'ctrl+shift+esc',
-  'ctrl+shift+escape',
-]);
-
-/** open_app 进程名黑名单 */
-const DENIED_APPS = new Set([
-  'shutdown', 'logoff', 'restart', 'taskkill', 'tskill', 'format', 'diskpart',
-  'cipher', 'vssadmin', 'bcdedit', 'rundll32', 'reg', 'regedit', 'regsvr32',
-]);
-
-function assertComboAllowed(keys: string[]): void {
-  const norm = keys.map((k) => k.trim().toLowerCase()).filter(Boolean).sort().join('+');
-  if (!norm) throw new Error('keys 不能为空');
-  if (keys.some((k) => /^(win|super|meta|windows)$/.test(k.trim().toLowerCase()))) {
-    throw new Error('不允许使用 Win 键组合（黑名单）');
-  }
-  if (DENIED_KEY_COMBOS.has(norm)) throw new Error(`组合键 "${norm}" 在黑名单中，已拒绝`);
-}
-
-function assertAppAllowed(target: string): void {
-  const t = target.trim();
-  if (!t) throw new Error('target 不能为空');
-  if (/[&|;<>\^%"\n\r]/.test(t)) throw new Error('target 含非法字符（不允许 shell 元字符）');
-  const base = path.basename(t, '.exe').toLowerCase();
-  if (DENIED_APPS.has(base)) throw new Error(`应用 "${base}" 在黑名单中，已拒绝`);
-}
+// 危险组合键与应用黑名单已抽到 cu-shared.ts —— remote-control 远控与电脑使用
+// 必须共用同一份输入策略（聊天里按不得的键，远控面板同样按不得），见其头注释。
+import { assertComboAllowed, assertAppAllowed } from './cu-shared.js';
 
 /**
  * 工具文本结果。★ C5（2026-10-10）：新增可选 `meta` —— 产物类工具必须回传 `_meta.path`，

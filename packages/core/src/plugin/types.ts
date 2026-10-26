@@ -264,6 +264,38 @@ export interface RouteConfig {
   meta?: Record<string, unknown>;
 }
 
+/**
+ * 模式贡献（mode-pluginization）：模式插件用它声明一个应用模式。
+ * 服务端聚合进 /api/plugins 快照的 modeDefs（放行 = 物理在包 ∩ 用户启用 ∩ 授权档）；
+ * 前端运行时合并进 mode store 并动态注册路由，替代构建期硬编码的模式清单。
+ */
+export interface ModeContribution {
+  /** 模式键（kebab-case），与会话 conversation.mode 列取值一致，如 'clip' */
+  key: string;
+  label: string;
+  desc?: string;
+  icon?: string;
+  /** 模式路由，如 '/clip' */
+  route: string;
+  /**
+   * 模式工作台前端入口（插件包内相对路径，如 'frontend/index.mjs'）。
+   * 与 ui.entry 指向同一 bundle 时可不重复填（装载器先取 mode.entry 再回落 ui.entry）。
+   */
+  entry?: string;
+  /** 移动端无桌面环境：true 时 MOBILE_MODE 跳过注册、前端移动端隐藏 */
+  desktopOnly?: boolean;
+  /** 切到该模式时无会话可恢复的兜底智能体（App.vue 硬编码的替代） */
+  fallbackAgent?: string;
+  /** 对话区形态：center=对话居中（缺省），side=侧挂 */
+  chatPlacement?: 'center' | 'side';
+}
+
+/** 插件前端 bundle 声明（plugin 包内路径，运行时经 yz://plugin/<id>/ 装载） */
+export interface PluginUiContribution {
+  /** 前端 bundle 入口（如 'frontend/index.mjs'） */
+  entry?: string;
+}
+
 /** 设置面板（component 为组件路径） */
 export interface SettingsTab {
   id: string;
@@ -401,6 +433,8 @@ export interface PluginContributes {
   commands?: CommandDef[];
   /** 命令中枢：剧本（`@名字` 召唤的命令序列） */
   playbooks?: PlaybookDef[];
+  /** 模式贡献：模式插件声明应用模式（运行时合并进模式清单与路由） */
+  mode?: ModeContribution;
 }
 
 /** 插件清单 */
@@ -415,10 +449,21 @@ export interface PluginManifest {
   /** 插件类型：'application'=通用功能插件（侧栏菜单展示），'code'=代码模式专用插件（代码模式"更多"入口展示）。缺省='application' */
   kind?: 'application' | 'code';
   minAppVersion?: string;
+  /** 宿主兼容版本（semver range，如 '^0.1'）；.yzp 安装时与宿主版本比对，不兼容拒绝安装 */
+  engine?: string;
   main?: string;
-  ui?: string;
+  /**
+   * 前端声明。旧形态为 string（无消费者，保留兼容）；
+   * 插件包形态为对象：entry 指向插件包内前端 bundle，运行时经 yz://plugin/<id>/ 动态装载。
+   */
+  ui?: string | PluginUiContribution;
   permissions?: PluginPermission[];
   contributes?: PluginContributes;
+  /**
+   * 插件自有 SQL 表白名单（表名）。沙箱 db 只放行对这些表的 CRUD + plugin_storage KV，
+   * 未声明的表一律拒绝 —— 插件不允许摸主库其它 60 张表。
+   */
+  ownedTables?: string[];
   /** 配置 schema（JSON Schema） */
   config?: Record<string, unknown>;
 }
