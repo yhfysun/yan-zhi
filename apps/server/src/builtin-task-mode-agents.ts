@@ -17,71 +17,14 @@
 //   有声小说/配音最怕「音色没定就批量」。通用助手的提示词压不住这些专属纪律，
 //   而这份纪律正是任务模式要保证的东西。
 
-const PAGE_AGENT_ID = 'a_builtin_page_agent';
+import {
+  COMMON_FILE_TOOLS, COMMON_MEDIA_FETCH_TOOLS, COMMON_SPACE_TOOLS,
+  COMMON_MEMORY_TOOLS, COMMON_TALK_TOOLS, PAGE_AGENT_ID,
+} from './builtin-task-tool-sets.js';
+
 // 发布执行员（2026-10-18 三层编排，定义见 ./builtin-publish-agent.ts）：
 // 平台页面动作（发布/合集/评论/回填的页面层）可整体委派的专职执行者
 const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
-
-/** 四个智能体共用的交互与规划工具（确认点全靠它们落地） */
-const COMMON_TALK_TOOLS = ['task_plan', 'task_step', 'ask_user', 'confirm_user'];
-/** 四个智能体共用的读资料与交付工具 */
-const COMMON_FILE_TOOLS_BASE = ['file_list', 'file_read', 'file_write', 'file_grep'];
-/**
- * 工具发现与安装（2026-10-22，所有任务模式共用）。
- *
- * ★ 为什么挂在公共集而不是逐个模式加：
- *   ① 用户要求「默认挂载」—— 挂在这里，所有任务模式一次性获得，不需要逐个改
- *      （逐个改要动 db.ts 里 40+ 智能体的 builtin_tool_ids，既易漏又与并行开发冲突）。
- *   ② 三个发现工具的成本极低（合计约 600 token），收益是**任何模式下都能查到
- *      自己没挂的能力** —— 这正是「即使没挂载也能找到工具」的落地。
- *   ③ `install_resource` 必须和发现工具一起挂：发现到"缺 ffmpeg / 缺语音包"之后，
- *      下一步就得能装。否则模型只能回头让用户手动点 —— 那正是要消灭的断点。
- *      ★ 它自带强制确认卡（见 llm-task-manager.confirmResourceInstall），
- *        任何权限模式都会先问用户，不会静默下 100MB+。
- */
-const COMMON_DISCOVERY_TOOLS = [
-  'get_api_tools',      // 分类浏览 / 全量分页
-  'api_tool_search',    // 关键词搜索
-  'api_tool_detail',    // 查参数详情
-  'install_resource',   // 统一安装（弹确认）
-];
-/**
- * ★ 合并：发现工具跟着"文件工具"一起下发。
- *   合成一个常量而不是改 6 处工具数组 —— 少改一处就少一个冲突点，
- *   而且以后新增模式只要用 COMMON_FILE_TOOLS 就自动带上发现能力。
- */
-const COMMON_FILE_TOOLS = [...COMMON_FILE_TOOLS_BASE, ...COMMON_DISCOVERY_TOOLS];
-/**
- * 任务模式共用的**素材获取与规格统一**工具。
- *
- * ★ 为什么要进任务模式智能体（2026-09-27 用户诉求「让大模型去下载公开的解压视频」）：
- *   此前这些智能体只有 `call_agent`（委派 pageAgent 查资料），**没有任何"把素材取回本机"的手段**，
- *   于是缺素材时一律回"请上传"。而任务模式的素材约定就在本目录的 00-source ——
- *   下载工具带 `category:"source"` 正好落在那儿，模型就地取材形成闭环。
- * ★ `media_normalize` 是"多个视频拼成长视频"的**必做前置步**（concat 走 -c copy 直拼，
- *   参数不一致直接报错），挂在同一批智能体上，避免模型下载完发现拼不上又回头找人。
- */
-const COMMON_MEDIA_FETCH_TOOLS = ['api_media_fetch', 'api_media_normalize', 'media_install_ytdlp'];
-/**
- * 四个智能体共用：空间与任务模式 + 会话自配置。
- * ★ `api_space_set_task_type` 让模型能直接改这个目录的任务模式（会同步建资源目录骨架），
- *   用户说"这个目录以后都按配音来"时不必再让用户自己去 UI 里点。
- * ★ `api_space_list` 让它能看出当前有哪些目录、各自是什么模式（避免重复设置/设错目录）。
- * ★ `api_conversation_setup` 让它能设**当前会话**的智能体 / 技能 / 工作模式
- *   （用户说"你现在按 XX 来""挂上 XX 技能"时直接落，不必让用户去 UI 点）。
- */
-const COMMON_SPACE_TOOLS = ['api_space_list', 'api_space_set_task_type', 'api_conversation_setup'];
-/**
- * 四个智能体共用：空间记忆读写（MEMORY.md，跨会话、所有智能体共享）。
- *
- * ★ 为什么必须挂：任务模式的 SOP 明确要求「用户确认过的内容记入本目录任务记忆、
- *   同目录新开会话先复述再继续」，而模型要**主动**查/写这份记忆就必须有工具。
- *   此前这两个工具只注册了 schema 与 executor 却没挂给任何智能体 → 模型看不到 → 静默失效，
- *   长任务跨会话断线无法靠模型自愈（2026-09-27 用户报「长任务没完整需要总结记忆进入空间记忆」）。
- *   ⚠️ `api_space_memory_append` 已列进 `tool-permission.ts` 的 WRITE_TOOLS（它写磁盘），
- *   只读会话里会被拦 —— 这是对的，声明与实现一致。
- */
-const COMMON_MEMORY_TOOLS = ['api_space_memory_read', 'api_space_memory_append'];
 
 // ===== 小说改写助手 =====
 export const NOVEL_AGENT_ID = 'a_builtin_novel_agent';
@@ -398,6 +341,12 @@ export const NOVEL_TUIWEN_AGENT_SYSTEM_PROMPT = `你是「小说推文助手」�
    - 前提判断：本次任务若只做单章且用户没提系列 → 不必建合集；**做≥2章或用户说"系列/连着/合集"时，第一集发布前必须建好合集并勾选**（不是发完再补）。合集名要含关键词（别叫「我的作品集」）。
 6c. **封面（发布前必做，2026-10-12 补）**：每集出片后做**每集视频封面**（9:16 1080×1920，与成片同画幅）；建合集时做**合集封面**（1:1 1080×1080 JPG ≤5MB）。固定两段式：api_image_generate 只出**无字底图**（负向词必写：无文字/无字母/无水印）→ ffmpeg drawtext 烧字（只烧**别名**，书名红线同样管封面）；命令与 prompt 模板见 skill「封面制作」节与 references/cover-recipes.md。生图不可用 → 从成片抽帧兜底（第2秒正好「第N集」大字），别反复重试。
    ★ **设到抖音上只用配方**：发布配方（submit:false）跑完、视频已上传后，调 browser_run_recipe { recipe: "douyin-set-cover", params: { coverPath } } —— 打开封面弹窗、上传、确定都由代码执行；失败就放弃封面直接点发布，**不要重跑发布配方**。
+6d. **作品可见性（隐藏已有作品 / 设私密，2026-10-26 补）**：要把已发布作品从公开列表收起来时——
+   - **走批量入口，不要逐条点**：creator.douyin.com → 内容管理 → 我的作品 → 勾选多条 → 列表上方「批量操作」→「设置权限」→ 选「仅自己可见」→ 提交。App 端同理：作品列表长按封面 →「权限设置」→ 全选 → 私密。逐条点「设置权限」既慢又最容易卡在弹窗上。
+   - ⚠️ **「仅自己可见」可能呈禁用（灰色）不可点**（2026-10-26 实测，别当选择器问题）：遇到灰掉时**立刻停手**，不要重试、不要改用 browser_run_script 硬派事件 —— 同一弹窗反复失败会连撞脚本熔断与循环闸门，整个任务被强制收尾、后面的步骤全废。正确做法是先读页面判断范围：
+     - **部分作品灰** → 多半是那些作品**还在审核/发布中**，权限被平台锁定。跳过它们、只处理可点的，把灰掉的条目原样列给用户。
+     - **全部灰** → 账号/平台侧限制（平台未公开具体条件）。**停止该动作并如实报告**，交由用户手动处理，不要换入口再试。
+   - 隐藏 ≠ 删除：设为私密后播放/点赞/评论都还在，可随时改回公开。本 agent 不做删除，除非用户明确要求删。
 7. **回填发文**：达人中心别名管理行内「回填发文」抽屉 →「抖音发文→添加发文」填抖音号+视频链接提交（自动带出书名/别名）——不回填不结算；**新别名 7 天内不回填会失效**（2026-10-09 官方页面原文核实；此前误记 14 天已更正），发布完尽快回填。**不必每条视频都回填**（一个别名回填 1 条即生效），但**支持多次回填、每次把结算截止推到「最新发文 + 28 天」**→ 实操建议每章都回填（续结算窗口 + 留档）。
 7b. **结算口径（钱相关，用户问就讲清）**：官方**按拉新量结算**——用别名在【番茄小说 App】搜出本书并下载/注册/充值的用户才算（拉新约 3–9 元/人，充值再分成 15%–70%，满 100 元可提现）；订单 **T+2 出单、T+4 结算到账**（≈拉新后第 6 天）。
 8. **回报**：选了什么书、为什么、成片路径（03-output）、发布/回填状态。多章则逐章出片。
@@ -415,94 +364,6 @@ export const NOVEL_TUIWEN_AGENT_SYSTEM_PROMPT = `你是「小说推文助手」�
 - 平台页面结构变化导致抓取失败时，如实报告并请用户确认页面，不要静默编造书目。输出用中文。`;
 
 // ===== 剪辑师 =====
-export const CLIP_AGENT_ID = 'a_builtin_clip_agent';
-export const CLIP_AGENT_BUILTIN_TOOLS = [
-  ...COMMON_FILE_TOOLS,
-  // 剪辑工程：多段 + 字幕(含动画) + BGM 的工程化剪辑与渲染（本智能体的主战场）
-  'clip_project',
-  // 单素材加工：抽帧做封面 / 变速 / 转场 / 水印 / 响度归一（工程渲染之外的单点补刀）
-  'media_edit',
-  'media_compose',
-  'api_srt_generate',
-  // 本地语音转字幕（whisper.cpp）：素材只有音频时从**语音**识别出 SRT
-  // —— api_srt_generate 只做"按已有文本排版"，这条补的正是它做不到的。
-  'media_asr_transcribe', 'whisper_install',
-  // 配音与音色（要旁白/解说时）与 AI 素材生成（缺空镜时）
-  'api_tts_speak', 'api_tts_voices',
-  'api_image_generate', 'api_video_generate', 'api_video_status',
-  // 本地 AI 配乐：模型写和弦/旋律，本地合成器出器乐 BGM（免版权、BPM 精确）
-  // 想让它「唱」时还需要歌声合成运行时（DiffSinger ONNX，按需安装）
-  'music_compose', 'media_install_singing',
-  // 【2026-10-22】外部大模型出整首带唱的歌（要配置 key；没有就走 music_compose 本地合成）
-  'music_generate',
-  // 素材获取与规格统一；图片理解（用户给参考图/分镜图时）
-  ...COMMON_MEDIA_FETCH_TOOLS,
-  'image_analyze',
-  'media_install_ffmpeg',
-  // 需要查素材来源/平台参数时委派 pageAgent
-  'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
-  ...COMMON_SPACE_TOOLS,
-  ...COMMON_MEMORY_TOOLS,
-  ...COMMON_TALK_TOOLS,
-];
-export const CLIP_AGENT_SKILL_IDS = ['skill_video_editing', 'skill_video_shot_prompt'];
-
-export const CLIP_AGENT_SYSTEM_PROMPT = `你是「剪辑师」（clipAgent），把一堆素材剪成一条**能直接发**的成片。你不写文案、不配音——你负责节奏、画面、字幕、声音的组装。
-
-## 第一原则
-**先立骨架，再精修。** 素材与目标没对齐之前，不要开始调字幕动画和调色。
-
-## 开工前必须确认（一次问全，用 confirm_user 多页向导）
-用途与画幅（抖音/快手竖屏 1080x1920，B站/横屏 1920x1080）、成片时长上限、
-有无配音/要不要旁白、字幕有无与风格（要不要动画）、BGM 有无与调性、是否要封面。
-★ 素材不够时先说清缺什么、怎么补，**不要为了"有素材"自己造一个**。
-
-## 工具分工（务必分清，用错会做两遍功）
-- **clip_project**：多段拼接 + 字幕轨（含动画）+ BGM + 导出规格 —— **要成片都走它**。
-  工程按会话保存，用户与你在同一份工程上反复改，**改一处就继续在旧工程上改，不要重建**。
-- **media_edit**：只对**单个素材**做一次加工（抽帧做封面 / 变速 / 转场 / 水印 / 响度归一）——
-  这些是工程之外的补刀，不要用它替代工程渲染。
-- **api_tts_speak / api_tts_voices**：要旁白/解说时才用；音色先调 api_tts_voices 看本机可用音色再问用户。
-- **api_image_generate / api_video_generate**：缺空镜/转场画面时生成补位。
-- **api_media_fetch / api_media_normalize**：素材在网上时下载（落 source 目录）；多段要拼前先统一规格。
-
-## 剪辑 SOP
-1. **摸底**：file_list 看有哪些素材，用 clip_project op=get 看当前工程是否已有内容。
-   **有工程 → 在它之上继续改**（这是用户的上一次成果，别清空）；没有 → op=create 建工程。
-2. **建骨架**：op=add_clip 按播放顺序排好各段（{ file, trimStart, trimEnd } 先粗剪）；op=get 复核时间轴。
-3. 确认骨架后再精修（每步都可先 op=get 看时间轴，再动手）：
-   · 节奏：update_clip 的 speed（<1 放慢强调，>1 加快过场）；过长就用 trimStart/trimEnd 裁；
-   · 转场与调色：fadeIn/fadeOut 做段落呼吸；colorPreset 统一不同素材的色调；
-   · 画面不足：add_clip 里传 kenburns 把图片做成推拉镜头，或用 api_image_generate 生成空镜。
-4. **字幕**（op=add_text；start/end 相对**成片**时间轴，用 op=get 返回的 timelineStart/End 推算，不要自己瞎猜）：
-   默认无动画（干净）；用户要"字幕动效/好看点/卡点"时按语义选 animation：
-   悬念旁白→typewriter（打字机）/ 强调关键词→pop（弹跳）或 flicker（描边闪烁）/
-   跟读歌词→karaoke（逐字染色）/ 片头标题→zoom 或 flychar / 通用稳妥→fade。
-   **一个片子最多混用 2 种动画**，全片每一种字幕都不同会很乱。
-   发抖音/快手/视频号的字幕传 safeArea=true（避开底部进度条遮挡）。
-5. **声音**：有配音就用 add_clip 的 audioFile 挂到对应段（默认替换原声；要保留现场声传 keepOriginalAudio:true）；
-   全片 BGM 用 op=set_bgm（有旁白时传 duck=true，说话时自动压低）。
-   ★ 用户要"配一段音乐/BGM"而没现成素材时，用 **music_compose** 本地生成：
-   你写 style（gentle/ballad/lofi/pop/epic/edm/rock/folk/cn）、和弦进行（2~4 个循环，如 ["Am","F","C","G"]）、
-   bars = 目标秒数 × bpm ÷ 60 ÷ 每小节拍数，需要旋律就写 melody（音名 + 拍数）。
-   要**唱**就把歌词写进 lyrics：每字一个音 + 无声调拼音（py），旋律以五声音阶为主。
-   ★ 人声需要 DiffSinger 运行时：没装时先调 media_install_singing（约 400MB，多镜像下载）；
-   装好后 music_compose 会自动用神经歌声合成（更像真人），否则回落到合成人声。
-   ★ 必须如实说明：音色取决于模型/声库，不是真人演唱、不是真实乐器采样。
-6. **渲染**：先 op=render { preview:true } 出快速预览 → 让用户确认 → 再用 op=render 出正式成片。
-   交付时给：成片路径、时长、段数、字幕条数与用到的动画。
-
-## 硬约束（违反即失败）
-- **素材一律用本机绝对路径**（前序工具返回的 file 字段），不要写相对路径。
-- **不擅自加效果**：用户没要求调色/动画/BGM 就不加 —— 先交付干净的成片。
-- **渲染前先探规格**：多段时长/分辨率差异大时先 api_media_normalize 统一，避免拼接/转场失败。
-- 缺 ffmpeg 时用 confirm_user 告知体积（约 100MB）并征得同意，再调 media_install_ffmpeg。
-- 素材缺失时如实告诉用户缺什么，**不要自己造素材充数**。
-
-## 汇报口径
-给：成片路径与时长、各段顺序与时长、字幕条数与动画、BGM 与音量、还需补什么。
-**不要把工程 json 或整段对话贴回来。** 输出用中文。`;
-
 /**
  * 四个任务模式专属智能体的 seed 条目（由 db.ts 展开进 seedAgents）。
  *
@@ -598,24 +459,6 @@ export const builtinTaskModeAgentDefs: Array<Record<string, unknown>> = [
     category: '任务模式',
     // 200（2026-10-05）：全流程（选书/抓正文/申词/出片/发布/回填）链路长，
     // 50 步实测跑到抓正文就被腰斩；委派 pageAgent 的 200 步与其对齐。
-    config_json: JSON.stringify({ maxReActSteps: 500 }),
-  },
-  {
-    id: CLIP_AGENT_ID,
-    name: '剪辑师',
-    description:
-      '剪辑模式专属：把多段素材剪成能直接发的成片——先建工程骨架（多段裁剪排序），再精修节奏/转场/调色与字幕动画，最后配 BGM 与配音并渲染；工程按会话保存，可反复编辑',
-    type: 'harness',
-    is_builtin: 1,
-    builtin_tool_ids: JSON.stringify(CLIP_AGENT_BUILTIN_TOOLS),
-    skill_ids: JSON.stringify(CLIP_AGENT_SKILL_IDS),
-    // pageAgent：查素材来源与平台参数（不用于产片）
-    sub_agent_ids: JSON.stringify([PAGE_AGENT_ID]),
-    system_prompt: CLIP_AGENT_SYSTEM_PROMPT,
-    force_sync: true,
-    agent_kind: 'main',
-    category: '剪辑',
-    // 剪辑链路（摸底→骨架→精修→字幕→声音→预览→渲染）步骤多，给足步数
     config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
 ];

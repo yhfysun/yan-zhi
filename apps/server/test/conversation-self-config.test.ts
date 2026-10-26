@@ -25,6 +25,8 @@ const DB = read('src/db.ts');
 const PERM = read('src/tool-permission.ts');
 const SCHEMA = readRepo('packages/core/src/tool/builtin/api-tools/conversation.ts');
 const TASK_AGENTS = read('src/builtin-task-mode-agents.ts');
+// 共用工具集自 P4 起独立成中立模块（插件种子也复用；否则会与基座循环 import）
+const TASK_TOOL_SETS = read('src/builtin-task-tool-sets.ts');
 
 /** 取某 case 的实现体（到下一个 case 为止） */
 function caseBody(name: string): string {
@@ -45,7 +47,8 @@ describe('① 工具存在且可被模型看到', () => {
 
   it('★★ 要挂到智能体上（默认助手 + 任务模式智能体）', () => {
     expect(DB, '★★ 默认助手未挂 api_conversation_setup').toMatch(/'api_conversation_setup'/);
-    expect(TASK_AGENTS, '★★ 任务模式智能体未挂').toMatch(/COMMON_SPACE_TOOLS[\s\S]{0,200}api_conversation_setup/);
+    expect(TASK_TOOL_SETS, '★★ 共用工具集里没挂 api_conversation_setup').toMatch(/COMMON_SPACE_TOOLS[\s\S]{0,200}api_conversation_setup/);
+    expect(TASK_AGENTS, '★★ 任务模式智能体没有引用 COMMON_SPACE_TOOLS').toMatch(/\.\.\.COMMON_SPACE_TOOLS/);
   });
 
   it('★★ 只读会话必须拦住（换了身份会改变后续所有轮次的执行）', () => {

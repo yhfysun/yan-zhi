@@ -13,6 +13,9 @@ import { resolve } from 'node:path';
 
 const DB = readFileSync(resolve(__dirname, '../src/db.ts'), 'utf8');
 const SKINS = readFileSync(resolve(__dirname, '../src/plugins/skins.ts'), 'utf8');
+// P4 种子归位：运维/安全助手的 skill/工具/条目定义已搬进插件目录（基座只展开）
+const OPS_SEED = readFileSync(resolve(__dirname, '../src/plugins/ops-shell/seed.ts'), 'utf8');
+const SEC_SEED = readFileSync(resolve(__dirname, '../src/plugins/sec-lab/seed.ts'), 'utf8');
 
 const OPS = ['skill_ops_health_check', 'skill_ops_log_analysis', 'skill_ops_docker_ops', 'skill_ops_db_maintain', 'skill_ops_deploy_release', 'skill_ops_incident_response'];
 const SEC = ['skill_sec_recon', 'skill_sec_web_probe', 'skill_sec_report', 'skill_sec_audit_review', 'skill_sec_hardening', 'skill_sec_blue_team'];
@@ -47,12 +50,12 @@ describe('5h · 18 条岗位 skill', () => {
 
 describe('5h.5–5h.7 · 智能体挂载', () => {
   it('运维/安全/默认助手分别挂上岗位 skill', () => {
-    expect(DB).toMatch(/const OPS_AGENT_SKILL_IDS = \[[\s\S]*?skill_ops_incident_response/);
-    expect(DB).toMatch(/const SEC_AGENT_SKILL_IDS = \[[\s\S]*?skill_sec_blue_team/);
+    expect(OPS_SEED).toMatch(/const OPS_AGENT_SKILL_IDS = \[[\s\S]*?skill_ops_incident_response/);
+    expect(SEC_SEED).toMatch(/const SEC_AGENT_SKILL_IDS = \[[\s\S]*?skill_sec_blue_team/);
     expect(DB).toMatch(/const DEFAULT_AGENT_SKILL_IDS = \[[\s\S]*?skill_office_service/);
     // seed 里把常量挂上去（force_sync 会覆盖旧库）
-    expect(DB).toMatch(/builtin_tool_ids: JSON\.stringify\(OPS_AGENT_BUILTIN_TOOLS\),\s*skill_ids: JSON\.stringify\(OPS_AGENT_SKILL_IDS\)/);
-    expect(DB).toMatch(/builtin_tool_ids: JSON\.stringify\(SEC_AGENT_BUILTIN_TOOLS\),\s*skill_ids: JSON\.stringify\(SEC_AGENT_SKILL_IDS\)/);
+    expect(OPS_SEED).toMatch(/builtin_tool_ids: JSON\.stringify\(OPS_AGENT_BUILTIN_TOOLS\),\s*skill_ids: JSON\.stringify\(OPS_AGENT_SKILL_IDS\)/);
+    expect(SEC_SEED).toMatch(/builtin_tool_ids: JSON\.stringify\(SEC_AGENT_BUILTIN_TOOLS\),\s*skill_ids: JSON\.stringify\(SEC_AGENT_SKILL_IDS\)/);
     expect(DB).toMatch(/skill_ids: JSON\.stringify\(DEFAULT_AGENT_SKILL_IDS\)/);
   });
 });

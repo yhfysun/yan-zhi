@@ -10,12 +10,10 @@ import { builtinDouyinAgentDefs } from './builtin-douyin-agents.js';
 import { builtinYanzhiAgentDefs } from './builtin-yanzhi-agent.js';
 // 发布执行员（三层编排的执行层：平台创作者中心发布/归集/评论/读数的专职动手智能体）
 import { builtinPublishAgentDefs } from './builtin-publish-agent.js';
-// 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
-import { builtinShopAgentDefs } from './builtin-shop-agents.js';
 // 费用账本的建表/读写 SQL（纯字符串，不 import db，便于单测用真 SQLite 跑一遍）
 import { CONVERSATION_USAGE_SCHEMA, USAGE_EVENT_SCHEMA } from './usage-ledger-sql.js';
 // 场景（模式）配置内置种子 —— 与前端 packages/ui/src/config/scenes.ts 双源维护（见该文件头注）
-import { builtinSceneDefs } from './builtin-scene-defs.js';
+import { builtinSceneDefs, type BuiltinSceneDef } from './builtin-scene-defs.js';
 // 任务类型内置种子 —— 直接 re-export shared 的 TASK_TYPES（单一数据源，不另抄一份）
 import { builtinTaskTypeDefs, taskTypeToRow, taskTypeFromRow } from './builtin-task-type-defs.js';
 import type { TaskTypeSpec } from '@yan-zhi/shared';
@@ -1302,16 +1300,6 @@ const DEFAULT_AGENT_SKILL_IDS = [
   'skill_office_finance', 'skill_office_hr', 'skill_office_operation',
   'skill_office_legal', 'skill_office_data_report', 'skill_office_service',
 ];
-/** 运维助手内置 skill（5h.5） */
-const OPS_AGENT_SKILL_IDS = [
-  'skill_ops_health_check', 'skill_ops_log_analysis', 'skill_ops_docker_ops',
-  'skill_ops_db_maintain', 'skill_ops_deploy_release', 'skill_ops_incident_response',
-];
-/** 安全助手内置 skill（5h.6） */
-const SEC_AGENT_SKILL_IDS = [
-  'skill_sec_recon', 'skill_sec_web_probe', 'skill_sec_report',
-  'skill_sec_audit_review', 'skill_sec_hardening', 'skill_sec_blue_team',
-];
 // pageAgent 工具收口（与前端 packages/ui/src/stores/agent.ts 的 PAGE_AGENT_BUILTIN_TOOLS 对齐，
 // 含 v4 回补的 browser_scroll、v5 新增的 browser_run_script：四件套 + scroll + ask_user + run_script）。
 // 修复：旧版 36 个 browser_* 全量挂载 + 桌面端 get_dom 只回 "DOM 节点数"，
@@ -1529,145 +1517,6 @@ const DATA_AGENT_BUILTIN_TOOLS = [
 /** 数据分析/可视化/Excel 类 skill + 本体取数教材（与 skill 表种子对齐） */
 const DATA_AGENT_SKILL_IDS = ['skill_ontology_query', 'skill_xlsx_data_processing', 'skill_data_visualization', 'skill_markdown_doc', 'skill_infographic', 'skill_document_type'];
 
-// 运维助手挂载：ops-shell 插件工具（运行时名 plugin_ops-shell__<tool>）+ 用户交互。
-// 工具执行体在 ops-shell 插件内（ssh2），插件 disabled 时工具从 ToolRegistry 注销，委派会拿到明确报错。
-const OPS_AGENT_BUILTIN_TOOLS = [
-  'plugin_ops-shell__ssh_exec',
-  'plugin_ops-shell__ssh_upload',
-  'plugin_ops-shell__ssh_download',
-  'plugin_ops-shell__docker_ps',
-  'plugin_ops-shell__docker_logs',
-  'plugin_ops-shell__docker_restart',
-  // 数据库连接只读查询（database 类型连接，写操作一律拒绝）
-  'plugin_ops-shell__db_query',
-  // 资源管理：连接 / 目录（让模型能在对话里直接建资源）
-  'plugin_ops-shell__conn_list',
-  'plugin_ops-shell__conn_create',
-  'plugin_ops-shell__conn_update',
-  'plugin_ops-shell__conn_delete',
-  'plugin_ops-shell__conn_move',
-  'plugin_ops-shell__group_create',
-  'plugin_ops-shell__group_rename',
-  'plugin_ops-shell__group_delete',
-  // 文件管理（SFTP）：查看 / 建目录 / 改名 / 备份 / 删除
-  'plugin_ops-shell__sftp_list',
-  'plugin_ops-shell__sftp_mkdir',
-  'plugin_ops-shell__sftp_rename',
-  'plugin_ops-shell__sftp_backup',
-  'plugin_ops-shell__sftp_delete',
-  // 本地 Python（数据处理/脚本辅助）
-  'python_exec',
-  // 用户交互与任务规划
-  'task_plan', 'task_step', 'ask_user', 'confirm_user',
-];
-
-const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负责在用户的运维连接上执行任务。连接分三类：SSH 服务器（命令/文件）、Docker 宿主机（容器管理）、数据库（只读 SQL）。
-
-## 工具与连接
-- 所有 ssh_*/docker_*/db_query/sftp_* 工具都需要 connection 参数（连接名称）。用户消息通常会带「当前选定连接：<名称>（类型）」，优先用它；用户明确指定其他连接名时用指定的。
-- 连接在「运维控制台」中管理，但你也可以直接用 conn_create 帮用户建连接，不必让用户自己去界面点。
-- 类型匹配：ssh_*/docker_* 只能用于 ssh/docker 类型连接；db_query 只能用于 database 类型连接；sftp_* 不能用于 database 类型连接。用错类型会收到明确报错，换对应连接重试。
-
-## 资源与文件管理（可直接在对话里建资源）
-- conn_list：先调它看清现有连接与资源目录（改动资源前必做，同时拿到准确的连接名 / 目录名）。
-- conn_create / conn_update / conn_delete / conn_move：新建、修改、删除连接，以及把连接移动到目录。
-- group_create / group_rename / group_delete：资源目录的增 / 改 / 删。
-- sftp_list / sftp_mkdir / sftp_rename / sftp_backup / sftp_delete：看远程目录、建目录、改名、备份、删文件。
-- 用户说「建一个连接」时，缺的参数一次性问清（名称 / 主机 / 端口 / 用户名 / 密码或私钥 / 类型 / 归属目录），不要来回追问。
-- **改远程配置文件前先 sftp_backup 备份原文件再改**，这是默认习惯。
-
-## 工作流程
-1. 先理解任务，需要的先探查：docker_ps 看容器、ssh_exec 跑只读命令（ps/df/free/journalctl 等）确认现状、db_query 跑 SHOW TABLES / SELECT 摸清表结构与数据量。
-2. 执行：用 ssh_exec 执行命令；改配置/传文件用 ssh_upload；容器问题用 docker_ps → docker_logs → docker_restart 链路；数据库分析用 db_query 出数。
-3. 验证：变更后必须回查确认（如 restart 后 docker_ps 看状态、改配置后 cat 复核）。
-4. 回答：按下面「回答格式」输出结论与依据，不要复述过程。
-
-## 回答格式（重要，直接影响可读性）
-- **先给结论**：第一行一句话回答用户问的事（有 / 没有、能 / 不能、是什么状态）。不要在开头铺陈"好的，我来看看…"。
-- **再给依据**：判断依据用短列表，每条一行，关键值加粗（如 版本号 / 路径 / 权限位 / 进程数）。**不要整段粘贴命令原始输出** —— 需要展示命令时，只贴与结论相关的那几行，并说明它证明了什么。
-- **原始输出不要贴进回答**：执行过程与完整输出已经在「执行步骤」卡里，用户可以自己展开；正文里重复一遍只会把结论淹掉。
-- **风险/下一步**（仅在需要时）：要用户做决定的，列出 1～3 个可选动作及各自影响，明确推荐哪个，不要只抛问题。
-- 措辞：中文、陈述句、不用"我们"、不加表情；同一事实只说一次。
-- 反面例子（禁止）：把 docker --version、ps aux | grep 的完整输出原样贴出，再让用户自己找结论。
-
-## 硬约束
-- 危险命令（rm -rf /、mkfs、dd、shutdown、fork bomb 等）会被服务端黑名单直接拒绝，不要尝试。
-- 生产标签连接上的非只读操作**必须人工批准**：调用工具后会先返回「待批准」，运维人员在控制台点批准后，原样重试同一条命令才会执行。不要假定已获批准，也不要把 confirmed 参数当作批准凭证（它已失效）。
-- db_query 是严格只读的（仅 SELECT/SHOW/DESC/EXPLAIN/WITH，写关键字一律拒绝）：不要尝试写库、改表，需要变更时给用户 SQL 让其人工执行。
-- 命令失败时先读 stderr 判断原因（权限/路径/服务名/端口），最多换 2 种思路，仍失败就如实汇报已有信息。
-- 不要执行交互式命令（top/vim/apt 交互确认等），用非交互替代（free -m / sed / apt-get -y）。
-- 长输出会被截断：优先用 grep/tail/head 精确取关键行，必要时分段查看；db_query 结果超 200 行会截断，加 LIMIT/过滤条件缩小范围。
-- 只做用户请求范围内的操作，禁止顺带"优化"其他服务。`;
-
-// ===== 安全助手（sec-lab）=====
-const SEC_AGENT_BUILTIN_TOOLS = [
-  // 授权范围管理（动手前必查、目标未授权先登记）
-  'plugin_sec-lab__scope_list',
-  'plugin_sec-lab__scope_add',
-  'plugin_sec-lab__scope_remove',
-  // A 轨自研能力（零依赖，开箱即用）
-  'plugin_sec-lab__recon',
-  'plugin_sec-lab__portscan',
-  'plugin_sec-lab__webprobe',
-  // B 轨外部工具链（检测到 nmap/nuclei 等时接管；未安装自动降级到 A 轨）
-  'plugin_sec-lab__toolchain',
-  // 报告
-  'plugin_sec-lab__sec_report',
-  // 主机侧基线（2026-10-18）：本机只读体检（账号策略/SMB/RDP/UAC/防火墙/SSH/审计服务）
-  'plugin_sec-lab__host_baseline',
-  // 子智能体委派（P4）：侦察 / Web / 报告三个子体各管一段，主智能体只做编排
-  'call_agent', 'list_sub_agents',
-  // 经验库（自学习，P5）：只能提议/查看；审批是 HUMAN_ONLY，模型调不动
-  'plugin_sec-lab__sec_experience',
-  // 任务规划与用户交互
-  'task_plan', 'task_step', 'ask_user', 'confirm_user',
-];
-
-const SEC_AGENT_SYSTEM_PROMPT = `你是安全助手（secAgent），在用户已授权的目标范围内做安全评估：侦察、端口与服务识别、Web 漏洞探测、配置审计，最后产出带严重度分级的报告。
-
-## 合规硬约束（最高优先级，任何情况下不得绕过）
-- **只对自有资产或持有书面授权的目标动手。** 执行任何带 target 的工具前必须先 scope_list 确认目标已登记且未过期。
-- 目标不在授权范围内：**立即停止**，告诉用户「该目标未登记授权」，并引导用 scope_add 登记（授权人 / 证明材料 / 有效期 / 允许的最高风险级）。不要尝试换工具、换写法绕过。
-- 护栏会在服务端强制拦截越界请求并记录审计，反复尝试只会污染审计记录。
-- 不做任何破坏性动作（DoS、删改数据、清日志、反弹 shell、横向移动到范围外目标）。
-
-## 工具用法
-- scope_list：动手前先看授权清单，确认目标与允许的最高风险级（passive/active/intrusive）。
-- scope_add：用户明确目标已获授权时，主动帮他登记（问清授权人与有效期；不填视为长期）。
-- recon（passive）：目标画像——DNS 记录、TLS 证书有效期与协议版本、HTTP 安全响应头、子域发现。**探索阶段先跑它**。
-- portscan（active）：端口与服务识别，ports 支持 "common"（默认，快）/"80,443"/"1-1024"/"all"（最慢，谨慎）。
-- webprobe（active）：Web 面——敏感路径与备份文件、Cookie 安全标志、CORS、组件指纹（Shiro/ThinkPHP/Jenkins 等）。
-- toolchain：先 action=detect 看本机有哪些外部工具（nmap/nuclei/nikto…）；有的话 action=run 接管，没有就用 A 轨工具，不要向用户抱怨缺工具。
-- sec_report：收尾时汇总历史发现项出 Markdown 报告，可按 target 过滤。
-- host_baseline（passive，无目标）：对**本机**做主机侧安全基线体检（密码策略/账户锁定/SMBv1/RDP/UAC/Defender/防火墙；Linux 为 SSH 配置/shadow 权限/防火墙/auditd）。只读，不改任何设置；不需要 scope。用户问"本机安不安全/加固了什么"时用它。
-
-## 工作流程
-1. **确认授权**：scope_list → 目标未登记则引导登记后再继续。
-2. **先被动后主动**：recon 摸清暴露面 → 再决定要不要 portscan / webprobe。
-3. **侵入性动作**（爆破、注入验证）属于 intrusive 级，默认关闭。确需使用时：先向用户说明目标、动作、可能影响，用 confirm_user 取得确认，并提醒需在插件配置中开启「交战模式」。
-4. **收敛与报告**：把发现项按严重度（critical/high/medium/low/info）归类，给出可执行的修复建议，最后 sec_report 出报告。
-
-## 输出要求
-- 用中文。先给结论（暴露面如何、最严重的问题是什么），再给证据，最后给修复建议。
-- 每条发现项标明严重度与影响，不要只罗列原始工具输出。
-- 不确定的判断要说明不确定性，不要为了显得专业而夸大风险。
-
-## 子智能体分工（P4）
-遇到可以并行/跨阶段的大任务时，用 call_agent 委派给专职子体，自己只做编排与汇总：
-- \`a_builtin_sec_recon_agent\`：授权核对 + 被动/主动侦察（recon / whois / ctlog / osint / subdomain / portscan / service / udp）
-- \`a_builtin_sec_web_agent\`：Web 面（webprobe / crawl / js_endpoint / dirsearch / waf / poc_scan / headers-audit）
-- \`a_builtin_sec_report_agent\`：情报与产出（cve / sploit / attack-map / sec_report）
-★ 子体同样受授权范围与护栏约束；委派时把**目标与授权依据**一并交代清楚，不要只说"去扫一下"。
-
-## 经验库（自学习，P5）
-- 任务收尾时，若这次有**可复用**的结论（验证过的方法、踩过的坑、目标特性），用 \`sec_experience\` 的 action=propose 提交一条：title 写清问题，body 写做法与边界，source 写依据（finding id / 命令 / 报告）。
-- **提交 ≠ 生效**：条目先进入待审队列，必须由人在安全控制台批准后，才会进入后续任务的系统提示词。不要声称"已记住"，也不要据此改变本轮行为。
-- 不要写凭据、密码、token、客户隐私；不要提交一次性流水账或没有证据的猜测。
-- action=list 可查看已批准经验——它们会出现在系统提示词的「已审批的安全经验库」段；与本提示词的合规硬约束冲突时，以硬约束为准。`;
-
-
-
-// ===== Java 开发助手 =====
 const JAVA_AGENT_BUILTIN_TOOLS = [
   // Java 项目检测与分析
   'plugin_java-suite__java_detect_project',
@@ -2278,57 +2127,6 @@ const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析助手」。你通�
 - **字段只能引用本体已声明的维度/度量/时间维度/过滤器**，报「字段不存在」时按报错里的可用字段改名重试，最多 2 次；连续 2 次取数失败就停下如实说明原因与已尝试的本体 code。
 - 结果可能截断：关注 truncated 标记，必要时加过滤器缩小范围或翻页。`;
 
-// 工作流助手（工作流模式的 AI 形态宿主）。
-//
-// 为什么必须是 harness 而不是工作流型智能体：工作流型的 system_prompt 为 NULL、builtin_tool_ids 为 []，
-// 连 ask_user 都进不来，在会话里只会静默闲聊（既有坑，已在会话入口硬拦截）。
-//
-// ⚠️ 运行时要用的 wf_<id> 工具**不写在这里** —— 工作流是动态资产，用户会新增/删除，
-//    写死进 seed 会导致内置覆盖（force_sync）把用户挂的工作流冲掉或者出现悬空 id。
-//    真实做法：syncWorkflowTools() 启动时把每个工作流注册成工具，
-//    再由「会话挂载」（builtin_tool_ids_json）决定把哪几个暴露给模型。
-const WORKFLOW_ASSISTANT_BUILTIN_TOOLS = [
-  // 通用能力：读产物文件、看数据、问用户
-  'file_read', 'file_write', 'file_list',
-  'js_exec', 'python_exec',
-  'list_models',
-  'ask_user', 'confirm_user',
-  'task_plan', 'task_step',
-];
-
-const WORKFLOW_ASSISTANT_SYSTEM_PROMPT = `你是「工作流助手」，工作流模式下的运行与排障伙伴。
-
-## 你的核心工作
-用户手上有一批**工作流型智能体**（固定 DAG 流水线，不是对话型智能体）。你的职责是把它们跑起来、把结果讲明白。
-
-### 1. 先查清可用工作流与其入参
-可调用的工作流以工具形式挂在当前会话上（wf_ 开头的工具，每个对应一条流水线）。
-**不要在没确认入参的情况下直接调用**：缺参数会跑出一份看似正常、实则无意义的结果，而且不报错。
-- 单入参的工作流，直接传值。
-- 多入参的工作流必须传 JSON 对象，键名与工作流声明的入参一致（例如 { "topic": "...", "roles": [...] }）。
-- 用户没给全必填项时，**一次性问清所有缺的参数**，不要一个问题问一轮。
-
-### 2. 讲结果按节点顺序走
-回答时说清：哪个节点产出了什么 → 最终交付是什么。
-涉及产物文件时给出路径与用途，不要只说「已生成」。
-
-### 3. 失败要定位到节点
-报错里会带节点 id。你要判断并说清属于哪类：
-- **入参问题**（键名不对 / 缺字段 / 类型不符）→ 给出应该传什么，重跑；
-- **模型问题**（模型不可用、输出格式不符）→ 建议换模型或调该节点的模型参数（运行台允许覆盖）；
-- **工具问题**（工具没注册、依赖缺失，如 media_compose 缺 ffmpeg）→ 说明缺什么、怎么补。
-不要给「再试一次」这类空话，要指出具体改哪个参数。
-
-### 4. 长流程要有预期管理
-带循环或媒体生成的工作流可能跑十几分钟。启动后先说清会经历哪些阶段，别让它看起来像卡死。
-用户想中途停就在运行面板点取消。
-
-## 边界
-- 你**不自己编写工作流**。用户要改流程节点，引导他到「智能体」页的对应画布。
-- 你**不假装能改流程逻辑**：运行台只能覆盖模型/迭代上限这类参数；改 code 节点表达式属于改画布。
-- 内置工作流是只读资产，不要建议删掉它们来「清理列表」。
-- 输出用中文，结论先行，简洁结构化。`;
-
 export const seedAgents: Array<Record<string, unknown>> = [
   {
     id: 'a_default_assistant',
@@ -2344,20 +2142,6 @@ export const seedAgents: Array<Record<string, unknown>> = [
     knowledge_base_ids: JSON.stringify(['builtin-app-guide']),
     category: '默认',
     system_prompt: DEFAULT_AGENT_SYSTEM_PROMPT,
-  },
-  {
-    id: 'a_builtin_workflow_assistant',
-    name: '工作流助手',
-    description: '内置工作流运行助手：补全入参、调用工作流流水线、按节点解读产出与失败原因；工作流模式 AI 形态的默认智能体',
-    type: 'harness',
-    is_builtin: 1,
-    builtin_tool_ids: JSON.stringify(WORKFLOW_ASSISTANT_BUILTIN_TOOLS),
-    // 不挂子智能体：调用通道是 wf_<id> 工具（会话挂载时动态注入），不是 call_agent
-    sub_agent_ids: JSON.stringify([]),
-    system_prompt: WORKFLOW_ASSISTANT_SYSTEM_PROMPT,
-    // 工作流要跑很久（循环 + 媒体生成），步数给宽一点；提示词/工具挂载以代码为准
-    force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
   {
     id: 'a_builtin_page_agent',
@@ -2469,111 +2253,6 @@ export const seedAgents: Array<Record<string, unknown>> = [
     config_json: JSON.stringify({ maxReActSteps: 200 }),
   },
   {
-    id: 'a_builtin_ops_agent',
-    name: '运维助手',
-    description:
-      '内置运维助手：在 SSH 服务器连接上执行命令/传文件/管理 Docker 容器，配合「运维」插件的运维控制台使用（对话模式）；危险命令黑名单 + 生产连接二次确认',
-    type: 'harness',
-    is_builtin: 1,
-    builtin_tool_ids: JSON.stringify(OPS_AGENT_BUILTIN_TOOLS),
-    skill_ids: JSON.stringify(OPS_AGENT_SKILL_IDS),
-    system_prompt: OPS_AGENT_SYSTEM_PROMPT,
-    // 内置定义由代码收敛：工具挂载/提示词以代码为准，强制同步旧库残留
-    force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 500 }),
-  },
-  {
-    id: 'a_builtin_sec_agent',
-    name: '安全助手',
-    description:
-      '内置安全助手：在已授权目标上做侦察（DNS/TLS/HTTP/子域）、端口与服务识别、Web 漏洞探测与配置审计，产出带严重度分级的报告；授权范围校验 + 危险动作黑名单 + 全量审计，配合「安全工作台」插件使用',
-    type: 'harness',
-    is_builtin: 1,
-    builtin_tool_ids: JSON.stringify(SEC_AGENT_BUILTIN_TOOLS),
-    skill_ids: JSON.stringify(SEC_AGENT_SKILL_IDS),
-    // ★ P4 子智能体委派：主安全助手必须**声明**这三个子体，否则 list_sub_agents 为空、
-    //   新版 call_agent 白名单也会把合法委派挡掉（2026-10-17 补）。
-    sub_agent_ids: JSON.stringify([
-      'a_builtin_sec_recon_agent',
-      'a_builtin_sec_web_agent',
-      'a_builtin_sec_report_agent',
-    ]),
-    system_prompt: SEC_AGENT_SYSTEM_PROMPT,
-    force_sync: true,
-    config_json: JSON.stringify({ maxReActSteps: 500 }),
-  },
-  // ── 安全子智能体（P4，2026-10-17）：主安全助手按阶段委派 ──────────────────
-  // ★ 子体只挂**本阶段需要的工具**：挂得越少，模型越不容易跑题，权限面也越小。
-  // ★ 三个子体都保留 scope_list：子体第一步必须自己确认授权，不靠父体"已经看过了"。
-  {
-    id: 'a_builtin_sec_recon_agent',
-    name: '安全侦察助手',
-    description:
-      '安全子智能体（侦察阶段）：授权核对、被动与主动信息收集——DNS/WHOIS/CT 日志/OSINT/子域枚举/端口与服务/UDP。由安全助手委派',
-    type: 'harness',
-    is_builtin: 1,
-    builtin_tool_ids: JSON.stringify([
-      'plugin_sec-lab__scope_list',
-      'plugin_sec-lab__recon', 'plugin_sec-lab__whois', 'plugin_sec-lab__ctlog',
-      'plugin_sec-lab__osint', 'plugin_sec-lab__subdomain',
-      'plugin_sec-lab__portscan', 'plugin_sec-lab__service_scan', 'plugin_sec-lab__udp_scan',
-      'ask_user',
-    ]),
-    system_prompt: `你是安全侦察助手（reconAgent）。只做信息收集，不做漏洞验证、不改任何东西。
-1. 动面前先 plugin_sec-lab__scope_list 确认目标在授权范围内且未过期；不在就停下并说明。
-2. 顺序：被动画像 → 子域 → 端口与服务 → UDP。每一步都说明你拿到了什么。
-3. 只报事实（端口/服务/证书/子域），不要推断漏洞。
-4. 输出结构化清单，供父智能体继续做 Web 面验证。`,
-    force_sync: true,
-    agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 500 }),
-  },
-  {
-    id: 'a_builtin_sec_web_agent',
-    name: 'Web 验证助手',
-    description:
-      '安全子智能体（Web 阶段）：爬虫、JS 接口、目录爆破、WAF 识别、模板化 POC、反射型 XSS 与安全头审计。由安全助手委派',
-    type: 'harness',
-    is_builtin: 1,
-    builtin_tool_ids: JSON.stringify([
-      'plugin_sec-lab__scope_list',
-      'plugin_sec-lab__webprobe', 'plugin_sec-lab__crawl', 'plugin_sec-lab__js_endpoint',
-      'plugin_sec-lab__dirsearch', 'plugin_sec-lab__waf_detect',
-      'plugin_sec-lab__poc_scan', 'plugin_sec-lab__verify_xss', 'plugin_sec-lab__headers_audit',
-      'ask_user',
-    ]),
-    system_prompt: `你是 Web 验证助手（webAgent）。只做**只读检测**，不做利用、不投写入载荷。
-1. 先 scope_list 确认授权；只用父体交代的目标，不自行扩展。
-2. 顺序：爬虫/JS 接口 → 目录爆破 → 模板 POC → 安全头；按证据决定要不要再做 XSS 反射验证。
-3. 注入类（SQLi/SSRF）不在你的工具面里：需要时把线索交回父智能体，由它决定是否带确认执行。
-4. 每条结论必须附请求与响应证据；没有证据就说"未确认"。`,
-    force_sync: true,
-    agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 500 }),
-  },
-  {
-    id: 'a_builtin_sec_report_agent',
-    name: '安全报告助手',
-    description:
-      '安全子智能体（报告阶段）：CVE/KEV 情报、ATT&CK 映射、发现项状态维护与 Markdown/HTML/SARIF 报告生成。由安全助手委派',
-    type: 'harness',
-    is_builtin: 1,
-    builtin_tool_ids: JSON.stringify([
-      'plugin_sec-lab__scope_list',
-      'plugin_sec-lab__cve_intel', 'plugin_sec-lab__exploit_search',
-      'plugin_sec-lab__attack_map', 'plugin_sec-lab__finding_status', 'plugin_sec-lab__sec_report',
-    ]),
-    system_prompt: `你是安全报告助手（reportAgent）。只做情报核对与产出，不发起任何扫描。
-1. 用 cve_intel 核对漏洞编号与 KEV 状态；本地库没有就明说"未收录"，不要编。
-2. 用 attack_map 看覆盖了哪些 ATT&CK 技术，指出未覆盖的方向。
-3. 用 finding_status 把人工确认过的条目标为 verified、误报标 fp（fp 不进报告）。
-4. 最后 sec_report 出报告；格式按用户要求选 markdown / html / sarif。
-5. 报告结论先行，每条含证据与修复建议，不夸大。`,
-    force_sync: true,
-    agent_kind: 'sub',
-    config_json: JSON.stringify({ maxReActSteps: 500 }),
-  },
-  {
     // Java 开发助手：代码编写助手的专属子智能体，Java 项目检测/构建/分析/调试/测试
     id: 'a_builtin_java_agent',
     name: 'Java 开发助手',
@@ -2681,9 +2360,8 @@ export const seedAgents: Array<Record<string, unknown>> = [
   // 发布执行员（三层编排的执行层：平台页面专职动手）—— 定义见 ./builtin-publish-agent.ts
   // ★ 被代言官 / 小说推文助手按 sub_agent_ids 委派，发布队列 dispatch 指令也指名它
   ...builtinPublishAgentDefs,
-  // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 ./builtin-shop-agents.ts
+  // 店铺运营助手（亚马逊/淘宝/1688/跨境中转仓）—— 定义见 plugins/shop-ops/seed.ts（P4 归位）
   // 与任务类型注册表（shared/utils/task-types.ts 的 shop_ops/shop_selection 的 agentId）成对维护
-  ...builtinShopAgentDefs,
   {
     // 代码探索助手：代码编写助手的专属只读探索子智能体（对标 CodeBuddy codebase-explorer）
     id: 'a_builtin_code_explorer',
@@ -2749,7 +2427,9 @@ export const seedAgents: Array<Record<string, unknown>> = [
     config_json: JSON.stringify({ maxReActSteps: 500, autoContinueMaxRounds: 2 }),
   },
 ];
-for (const a of seedAgents) {
+/** 内置智能体 upsert（基座种子与插件运行时补种共用；幂等） */
+function upsertAgentDefs(list: Array<Record<string, unknown>>): void {
+  for (const a of list) {
   try {
     const has = db.prepare('SELECT id FROM agent WHERE id = ?').get(a.id as string);
     if (has) {
@@ -2771,7 +2451,10 @@ for (const a of seedAgents) {
       ).run(a.id, 'guest', a.name, a.description, a.system_prompt as string, a.type, a.builtin_tool_ids, (a.sub_agent_ids as string) || '[]', (a.skill_ids as string) || '[]', (a.knowledge_base_ids as string) || null, (a.category as string) || '', a.is_default || 0, a.is_builtin || 0, (a.config_json as string) || null, (a.agent_kind as string) || 'main', Date.now(), Date.now());
     }
   } catch {}
+  }
 }
+
+upsertAgentDefs(seedAgents);
 
 // 四模式归属（openspec 8b.1/8b.2）：不新增数据库列，写进 config_json.mode，
 // 供前端智能体选择器按模式分组（agent_kind='sub' 的子体仍会被选择器过滤掉）。
@@ -3847,7 +3530,7 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
     {
       // 跨境选品分析（2026-10-16，P0）：与「店铺运营助手」a_builtin_shop_agent 成对维护。
       // 同族另五条（Listing / 广告利润 / 淘宝 / 1688 货源 / 中转仓）见本数组后续条目，P1 补齐。
-      // ★ 增删任何一条都要同步 builtin-shop-agents.ts 的 SHOP_AGENT_SKILL_IDS。
+      // ★ 增删任何一条都要同步 plugins/shop-ops/seed.ts 的 SHOP_AGENT_SKILL_IDS。
       id: 'skill_shop_selection', name: '跨境选品分析', category: '电商运营',
       description: '跨境与国内店铺的选品分析：先对齐口径（站点/币种/含税/佣金/履约），再从需求-竞争-利润三维评估；跨平台同款匹配走 compare_products，利润按售价逐项扣减算到手毛利与盈亏平衡价；含侵权/认证/限售合规红线与「费率政策一律现查」纪律。',
       triggers: ['选品', '选品分析', '跨境选品', '亚马逊选品', '淘宝选品', '1688', '货源', '竞品分析', '利润测算', '到手毛利', '店铺运营', 'Listing'],
@@ -5507,7 +5190,9 @@ try { db.exec('CREATE INDEX IF NOT EXISTS idx_usage_event_conv ON usage_event(co
 //   - 不存在 → 插入；若同名 key 已被非内置行占用（历史数据），跳过不抢（UNIQUE(key) 会撞）；
 //   - 用户自建行（is_builtin=0，id 为 uuid）一律不碰。
 // 幂等：刷新后内容与代码一致，重复执行无变化。
-try {
+/** 内置场景 upsert（基座与插件补种共用）。offset = 未显式给 sortOrder 时的起始序号 */
+function seedSceneDefs(list: BuiltinSceneDef[], offset: number): void {
+  try {
   const sceneById = db.prepare('SELECT id FROM scene_config WHERE id = ?');
   const sceneByKey = db.prepare('SELECT id FROM scene_config WHERE key = ?');
   const sceneUpdate = db.prepare(
@@ -5521,13 +5206,14 @@ try {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 'guest', ?, ?)`,
   );
   const now = Date.now();
-  builtinSceneDefs.forEach((s, i) => {
+  list.forEach((s, i) => {
+    const order = s.sortOrder ?? (offset + i);
     try {
       const id = `scene_${s.key}`;
       if (sceneById.get(id)) {
         sceneUpdate.run(
           s.key, s.name, s.icon, s.color, s.description, s.agentId, s.prompt,
-          JSON.stringify(s.skillKeywords), JSON.stringify(s.examples), s.isMode ? 1 : 0, i, now, id,
+          JSON.stringify(s.skillKeywords), JSON.stringify(s.examples), s.isMode ? 1 : 0, order, now, id,
         );
         return;
       }
@@ -5535,11 +5221,14 @@ try {
       if (sceneByKey.get(s.key)) return;
       sceneInsert.run(
         id, s.key, s.name, s.icon, s.color, s.description, s.agentId, s.prompt,
-        JSON.stringify(s.skillKeywords), JSON.stringify(s.examples), s.isMode ? 1 : 0, i, now, now,
+        JSON.stringify(s.skillKeywords), JSON.stringify(s.examples), s.isMode ? 1 : 0, order, now, now,
       );
     } catch {}
   });
-} catch {}
+  } catch {}
+}
+
+seedSceneDefs(builtinSceneDefs, 0);
 
 // 内置任务类型种子 upsert（与 scene_config 种子同语义，2026-10-14）：
 //   - 内置行 id 固定为 tt_<key>，已存在 → 按代码收敛覆盖（force_sync）；
@@ -5620,8 +5309,46 @@ const STANDALONE_SKILL_DEFAULTS: Record<string, { name: string; description: str
 
 /** 恢复内置 agent 默认值（system_prompt / 工具挂载 / 子智能体 / skill / config）。
  *  返回 true=已恢复，false=非内置或不存在。 */
+// ===== 插件运行时补种（P5 前置，2026-10-26）=====
+// 模式插件在自己的 activate 里补种（场景/智能体），基座**不再**静态携带未装模式的种子：
+// 「插件不在包 = 种子不存在」。幂等：与基座种子同一套 upsert 语义（force_sync 覆盖）。
+const runtimeAgentDefs = new Map<string, Record<string, unknown>>();
+const runtimeSceneDefs: BuiltinSceneDef[] = [];
+
+export interface BuiltinSeedPayload {
+  agents?: Array<Record<string, unknown>>;
+  agentModes?: Record<string, string>;
+  scenes?: BuiltinSceneDef[];
+}
+
+/** 插件补种入口（host-bridge 暴露给插件包形态；源码形态直接调用） */
+export function applyBuiltinSeed(payload: BuiltinSeedPayload): void {
+  const agents = payload.agents || [];
+  for (const a of agents) {
+    if (a && typeof a.id === 'string') runtimeAgentDefs.set(a.id, a);
+  }
+  if (agents.length) upsertAgentDefs(agents);
+  if (payload.agentModes) {
+    for (const [id, mode] of Object.entries(payload.agentModes)) mergeAgentMode(id, mode);
+  }
+  const scenes = payload.scenes || [];
+  if (scenes.length) {
+    // 重复 activate（重启恢复/停用后再启用）不重复登记，避免 reset 序号与 key 集合膨胀
+    for (const sc of scenes) {
+      const i = runtimeSceneDefs.findIndex((x) => x.key === sc.key);
+      if (i >= 0) runtimeSceneDefs[i] = sc; else runtimeSceneDefs.push(sc);
+    }
+    seedSceneDefs(scenes, builtinSceneDefs.length);
+  }
+}
+
+/** 全部内置场景 key（基座 + 已补种插件）——路由层做 key 保留用 */
+export function getBuiltinSceneKeys(): string[] {
+  return [...builtinSceneDefs.map((s) => s.key), ...runtimeSceneDefs.map((s) => s.key)];
+}
+
 export function resetBuiltinAgent(agentId: string): boolean {
-  const seed = seedAgents.find((a) => a.id === agentId);
+  const seed = runtimeAgentDefs.get(agentId) ?? seedAgents.find((a) => a.id === agentId);
   if (!seed) return false;
   const row = db.prepare('SELECT id FROM agent WHERE id = ?').get(agentId);
   if (!row) return false;
@@ -5686,11 +5413,12 @@ export function resetBuiltinSkill(skillId: string): boolean {
 export function resetBuiltinScene(sceneId: string): boolean {
   const m = /^scene_(.+)$/.exec(sceneId);
   if (!m) return false;
-  const def = builtinSceneDefs.find((s) => s.key === m[1]);
+  const allScenes = [...builtinSceneDefs, ...runtimeSceneDefs];
+  const def = allScenes.find((s) => s.key === m[1]);
   if (!def) return false;
   const row = db.prepare('SELECT id FROM scene_config WHERE id = ?').get(sceneId);
   if (!row) return false;
-  const idx = builtinSceneDefs.indexOf(def);
+  const idx = def.sortOrder ?? allScenes.indexOf(def);
   db.prepare(
     `UPDATE scene_config SET key = ?, name = ?, icon = ?, color = ?, description = ?, agent_id = ?, prompt = ?,
        skill_keywords_json = ?, examples_json = ?, is_mode = ?, sort_order = ?, enabled = 1, is_builtin = 1, force_sync = 1, updated_at = ?

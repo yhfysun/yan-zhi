@@ -12,14 +12,17 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
-import { db, resetBuiltinScene } from '../db.js';
+import { db, resetBuiltinScene, getBuiltinSceneKeys } from '../db.js';
 // 内置场景 key 保留表（不 import db 的纯数据模块，路由层只读 key 集合）
-import { builtinSceneDefs } from '../builtin-scene-defs.js';
+
 
 const router = Router();
 router.use(authMiddleware);
 
-const BUILTIN_SCENE_KEYS = new Set(builtinSceneDefs.map((s) => s.key));
+/** 内置 key 保留集合：基座 + 已补种插件（每次调用现算，插件是运行时注册的） */
+function builtinSceneKeys(): Set<string> {
+  return new Set(getBuiltinSceneKeys());
+}
 
 // GET /api/scene-configs —— 全部场景配置（按 sort_order 排序；前端按 is_mode 过滤欢迎卡）
 router.get('/', (_req: Request, res: Response) => {
@@ -38,7 +41,7 @@ router.post('/', (req: Request, res: Response) => {
     return;
   }
   if (!name) { res.status(400).json({ error: '场景名称为必填项' }); return; }
-  if (BUILTIN_SCENE_KEYS.has(key)) {
+  if (builtinSceneKeys().has(key)) {
     res.status(400).json({ error: `「${key}」是内置场景保留键，请换一个 key` });
     return;
   }

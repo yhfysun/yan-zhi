@@ -544,7 +544,7 @@ export const TASK_TYPES: TaskTypeSpec[] = [
   {
     // 店铺运营（父任务类型，2026-10-16）：与 douyin_ops 同一范式 —— 本身不规定流程，
     // 只负责「一个目录管多类店铺任务」：空间绑它，每条任务再选一条子线。
-    // 智能体与所有子线共用 a_builtin_shop_agent（见 apps/server/src/builtin-shop-agents.ts）。
+    // 智能体与所有子线共用 a_builtin_shop_agent（见 apps/server/src/plugins/shop-ops/seed.ts）。
     id: 'shop_ops',
     label: '店铺运营',
     summary: '一个目录管多类店铺任务：选品 / Listing / 广告利润 / 货源 / 中转仓',

@@ -15,9 +15,17 @@
  */
 import { describe, it, expect } from 'vitest';
 import { builtinSceneDefs, type BuiltinSceneDef } from '../src/builtin-scene-defs';
+// P4：模式场景已归位到插件目录，运行时由插件 activate 补种；这里按落库顺序组合出全量视图
+import { shopModeScene } from '../src/plugins/shop-ops/seed';
+import { devModeScene } from '../src/plugins/dev-mode/seed';
+import { opsModeScene } from '../src/plugins/ops-shell/seed';
+import { secModeScene } from '../src/plugins/sec-lab/seed';
+import { wfModeScene } from '../src/plugins/wf-mode/seed';
 import { DOUYIN_AGENT_ID } from '../src/builtin-douyin-agents';
 
 /** 场景卡允许绑定的内置智能体 id（与前端 scenes.test.ts 的 KNOWN_AGENT_IDS 同集合） */
+const ALL: BuiltinSceneDef[] = [...builtinSceneDefs, shopModeScene, devModeScene, opsModeScene, secModeScene, wfModeScene];
+
 const KNOWN_AGENT_IDS = new Set([
   'a_default_assistant',
   'a_builtin_design_agent',
@@ -40,32 +48,33 @@ const EXPECTED_KEYS = [
 
 describe('场景配置种子 · 目录结构', () => {
   it('共 18 条：13 办公岗位 + code/ops/sec/wf/shop 五个模式场景', () => {
-    expect(builtinSceneDefs).toHaveLength(18);
+    expect(builtinSceneDefs).toHaveLength(13); // 办公岗位卡（模式场景在插件里）
+    expect(ALL).toHaveLength(18);
   });
 
   it('键集合与前端 scenes.ts 完全一致（双源不漂移）', () => {
-    expect(builtinSceneDefs.map((s) => s.key)).toEqual(EXPECTED_KEYS);
+    expect(ALL.map((s) => s.key)).toEqual(EXPECTED_KEYS);
   });
 
   it('键唯一（UNIQUE(key) 的代码侧前提）', () => {
-    const keys = builtinSceneDefs.map((s) => s.key);
+    const keys = ALL.map((s) => s.key);
     expect(new Set(keys).size).toBe(keys.length);
   });
 
   it('恰好 5 个模式场景（is_mode=true）：code/ops/sec/wf/shop', () => {
-    const modeKeys = builtinSceneDefs.filter((s) => s.isMode).map((s) => s.key);
+    const modeKeys = ALL.filter((s) => s.isMode).map((s) => s.key);
     expect(modeKeys).toEqual(['shop', 'code', 'ops', 'sec', 'wf']);
   });
 
   it('douyin 是办公岗位场景（进欢迎卡轮播，不是模式场景）', () => {
-    const douyin = builtinSceneDefs.find((s) => s.key === 'douyin')!;
+    const douyin = ALL.find((s) => s.key === 'douyin')!;
     expect(douyin.isMode).toBe(false);
   });
 });
 
 describe('场景配置种子 · 每行结构完整', () => {
   it('name / description / agentId / prompt 非空，examples≥3，skillKeywords 非空', () => {
-    for (const s of builtinSceneDefs) {
+    for (const s of ALL) {
       expect(s.name.length, `${s.key} name`).toBeGreaterThan(0);
       expect(s.description.length, `${s.key} description`).toBeGreaterThan(0);
       expect(s.agentId.length, `${s.key} agentId`).toBeGreaterThan(0);
@@ -77,12 +86,12 @@ describe('场景配置种子 · 每行结构完整', () => {
   });
 
   it('所有 agentId 都指向已知内置智能体（拼错 = 点卡静默不切）', () => {
-    const unknown = builtinSceneDefs.filter((s) => !KNOWN_AGENT_IDS.has(s.agentId)).map((s) => `${s.key}: ${s.agentId}`);
+    const unknown = ALL.filter((s) => !KNOWN_AGENT_IDS.has(s.agentId)).map((s) => `${s.key}: ${s.agentId}`);
     expect(unknown).toEqual([]);
   });
 
   it('三个专属智能体岗位的绑定正确（translate/business/douyin 不复用默认助手）', () => {
-    const byKey = (k: string) => builtinSceneDefs.find((s) => s.key === k)!;
+    const byKey = (k: string) => ALL.find((s) => s.key === k)!;
     expect(byKey('translate').agentId).toBe('a_builtin_translate_agent');
     expect(byKey('business').agentId).toBe('a_builtin_business_agent');
     expect(byKey('douyin').agentId).toBe(DOUYIN_AGENT_ID);
@@ -94,14 +103,14 @@ describe('场景配置种子 · 每行结构完整', () => {
       'Suitcase', 'Monitor', 'Brush', 'Coin', 'TrendCharts', 'Promotion', 'User', 'Sell',
       'ScaleToOriginal', 'DataAnalysis', 'Service', 'Connection', 'Notebook', 'Shop', 'VideoCamera',
     ]);
-    for (const s of builtinSceneDefs) {
+    for (const s of ALL) {
       expect(KNOWN_ICONS.has(s.icon), `${s.key} icon=${s.icon}`).toBe(true);
     }
   });
 });
 
 describe('场景配置种子 · 抖音运营行（2026-10-12 新增）', () => {
-  const douyin = builtinSceneDefs.find((s) => s.key === 'douyin') as BuiltinSceneDef;
+  const douyin = ALL.find((s) => s.key === 'douyin') as BuiltinSceneDef;
 
   it('绑定抖音运营助手，图标 VideoCamera', () => {
     expect(douyin.agentId).toBe(DOUYIN_AGENT_ID);

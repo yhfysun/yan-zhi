@@ -30,6 +30,8 @@ function stripComments(src: string): string {
 const EXECUTOR = read('src/mcp/api-tool-executor.ts');
 const EXECUTOR_CODE = stripComments(EXECUTOR);
 const TASK_MODE_AGENTS = read('src/builtin-task-mode-agents.ts');
+// 共用工具集自 P4 起独立成中立模块（插件种子也要用，避免与基座循环 import）
+const TASK_TOOL_SETS = read('src/builtin-task-tool-sets.ts');
 const DB = stripComments(read('src/db.ts'));
 const MEDIA_TOOL_DEFS = readRepo('packages/core/src/tool/builtin/api-tools/media.ts');
 const TASK_TYPES = readRepo('packages/shared/src/utils/task-types.ts');
@@ -74,7 +76,7 @@ describe('① 下载工具：已实现 + 已注册 + 已挂载', () => {
   });
 
   it('★ 任务模式三个智能体都通过共用常量挂上了（脚本/有声小说/配音）', () => {
-    expect(TASK_MODE_AGENTS).toMatch(/const COMMON_MEDIA_FETCH_TOOLS = \['api_media_fetch', 'api_media_normalize', 'media_install_ytdlp'\];/);
+    expect(TASK_TOOL_SETS).toMatch(/const COMMON_MEDIA_FETCH_TOOLS = \['api_media_fetch', 'api_media_normalize', 'media_install_ytdlp'\];/);
     // 引用方：SCRIPT / AUDIOBOOK / DUBBING 三个（短剧导演在 db.ts 内联定义，单独断言）
     const refs = TASK_MODE_AGENTS.match(/\.\.\.COMMON_MEDIA_FETCH_TOOLS,/g) || [];
     expect(refs.length, `应有 3 处引用，实际 ${refs.length}`).toBeGreaterThanOrEqual(3);
@@ -259,7 +261,7 @@ describe('⑥ 视频网站解析下载（yt-dlp，2026-09-28 用户诉求下半�
     expect(body).toContain("'media_install_ytdlp'");
   });
   it('★ 任务模式智能体共用常量挂了 media_install_ytdlp', () => {
-    expect(TASK_MODE_AGENTS).toMatch(/const COMMON_MEDIA_FETCH_TOOLS = \['api_media_fetch', 'api_media_normalize', 'media_install_ytdlp'\];/);
+    expect(TASK_TOOL_SETS).toMatch(/const COMMON_MEDIA_FETCH_TOOLS = \['api_media_fetch', 'api_media_normalize', 'media_install_ytdlp'\];/);
   });
   it('★ api_media_fetch 描述支持「页面链接自动解析」+ 有 maxBytes 参数', () => {
     expect(MEDIA_TOOL_DEFS).toMatch(/视频网站页面链接/);

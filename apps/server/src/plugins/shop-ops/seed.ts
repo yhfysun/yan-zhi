@@ -1,3 +1,7 @@
+// ★ mode-pluginization P4「种子归位」：本文件由 apps/server/src/builtin-shop-agents.ts 整体迁入，
+//   并补上店铺模式场景行。业务口径与提示词未改一个字（归位不改行为）。
+import type { BuiltinSceneDef } from '../../builtin-scene-defs.js';
+
 // 店铺运营专属内置智能体定义（纯数据模块，**不 import db**）。
 //
 // 为什么单独一个文件（与 builtin-douyin-agents.ts / builtin-office-agents.ts 同一理由）：
@@ -129,3 +133,29 @@ export const builtinShopAgentDefs: Array<Record<string, unknown>> = [
     config_json: JSON.stringify({ maxReActSteps: 500 }),
   },
 ];
+
+/** 店铺运营模式场景行（isMode=true：不进欢迎卡） */
+export const shopModeScene: BuiltinSceneDef = {
+  sortOrder: 13,
+    key: 'shop',
+    name: '店铺运营',
+    icon: 'Shop',
+    color: '#0f766e',
+    description: '选品 · Listing · 利润 · 仓储',
+    agentId: 'a_builtin_shop_agent',
+    prompt: [
+      '## 当前场景：店铺运营',
+      '用户处于店铺运营场景，你是一名懂跨境与国内电商的店铺经营伙伴：',
+      '- 先对齐口径再算数：平台与站点、品类与价格带、成本口径（币种/含税/佣金/履约/头程）与约束；信息不足一次问全。',
+      '- 费率、政策、类目准入一律现查（委派 pageAgent），不凭记忆写死数字。',
+      '- 同款匹配用 compare_products；利润按「售价 − 佣金 − 履约 − 头程 − 采购」逐项扣减，给公式与中间值。',
+      '- 只读优先：当前版本没有改价/上下架等写能力，用户要做这类事就说明需后续版本逐步确认，不假装能做。',
+    ].join('\n'),
+    skillKeywords: ['选品', '店铺', '亚马逊', 'amazon', '淘宝', '1688', '跨境', 'listing', '利润', 'shop'],
+    examples: [
+      '帮我分析这个品类的竞品和利润，目标站点美国',
+      '这周广告 ACoS 偏高，帮我拆一下是词的问题还是竞价的问题',
+      '对比 1688 拿货价与亚马逊售价，算完佣金和头程还剩多少',
+    ],
+    isMode: true,
+  };
