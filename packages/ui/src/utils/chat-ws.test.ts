@@ -103,3 +103,59 @@ describe('chat WS 心跳与半开自愈', () => {
     expect(socket.closeCalls, '超时说明对端可能已半开：必须 close 触发重连').toBeGreaterThan(0);
   });
 });
+
+/**
+ * 断连自动重发的前置条件（2026-10-26）：必须能等到「新连接真的 OPEN」再重发。
+ *
+ * ★ 为什么不能用「立刻重发」兜底：重连是**指数退避**（1s→15s），紧跟着重发几乎必然
+ *   又落在还没连上的窗口里，等于把同一次失败重演一遍。
+ * ★ 为什么等待方**不许自己 connect**：那会和退避定时器各开一条 socket 互相顶替
+ *   （旧 socket 关闭时无条件 `ws = null`，会把新连接一起弄丢）。
+ */
+describe('chat WS 等待连接恢复（自动重发用）', () => {
+  let mod: typeof import('./chat-ws');
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    (globalThis as any).WebSocket = FakeWebSocket;
+    vi.resetModules();
+    mod = await import('./chat-ws');
+  });
+
+  afterEach(() => {
+    mod.closeChatWs();
+    vi.useRealTimers();
+  });
+
+  it('连接已开 → 立即返回 true', async () => {
+    mod.onTaskEvent(() => {});
+    FakeWebSocket.instances[0].fireOpen();
+    await expect(mod.waitForChatWsOpen(1000)).resolves.toBe(true);
+  });
+
+  it('断开后等到退避重连成功才 resolve(true)，且不自己另开连接', async () => {
+    mod.onTaskEvent(() => {});
+    const first = FakeWebSocket.instances[0];
+    first.fireOpen();
+    first.close(); // 断开 → 1s 后重连
+
+    const wait = mod.waitForChatWsOpen(15_000);
+    await vi.advanceTimersByTimeAsync(1000); // 退避到点：新 socket 建立（仍 CONNECTING）
+    expect(FakeWebSocket.instances.length, '连接只由退避重连拉起，等待方不抢跑').toBe(2);
+
+    FakeWebSocket.instances[1].fireOpen();
+    await expect(wait).resolves.toBe(true);
+  });
+
+  it('超时仍未连上 → false（调用方据此回落到「让用户手动重试」）', async () => {
+    mod.onTaskEvent(() => {});
+    const first = FakeWebSocket.instances[0];
+    first.fireOpen();
+    first.close();
+
+    const wait = mod.waitForChatWsOpen(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    await expect(wait).resolves.toBe(false);
+  });
+});

@@ -48,19 +48,27 @@ function bodyOf(s: string, needle: string, what: string): string {
 
 // ────────────────────────────────────────────────────────────
 describe('① 中断归因：dev 热重载必须与真实重启区分（13/16 中断来源）', () => {
-  it('★★ 启动器必须注入热重载标记（与启动方式同源，不臆造判据）', () => {
-    expect(DEV, '★ dev.cjs 未注入 YZ_HOT_RELOAD → 无法区分热重载与真实重启')
-      .toMatch(/YZ_HOT_RELOAD:\s*'1'/);
-    // 必须确实用 watch（这是"每改一次代码就重启"的事实依据）
+  it('★★ 热重载默认关，且标记与 watch 同源绑定（2026-10-26 改判据）', () => {
+    // ★ 为什么默认改成关：watch 下改任意一个 server 源码就重启进程，而重启那一下
+    //   正在发送的消息恰好落在 create_task 往返中间 ⇒「连接已断开，这条消息未发出」
+    //   （用户 2026-10-26 反复遇到）。热重载改为显式 YZ_WATCH=1 才开。
+    expect(DEV, '★ dev.cjs 没有 YZ_WATCH 开关 → 无法默认关闭热重载').toMatch(/YZ_WATCH === '1'/);
+    // 标记必须**长在 watch 三元里**：无条件注入的话，默认路径（不 watch）也会把
+    // 用户的手动重启误判成"可续的暂停"（文案与真实语义相反）。
+    expect(DEV, '★ 标记与启动方式脱钩（不在 watch 三元内）').toMatch(/watch\s*\?\s*\{[^}]*YZ_HOT_RELOAD:\s*'1'/);
+    // watch 分支必须仍在（否则"热重载"这个能力被悄悄删了）
     expect(DEV, '★ 启动方式变化，本判据需复核').toMatch(/tsxCli,\s*'watch'/);
   });
 
-  it('★★ 所有 dev 启动路径都必须注入热重载标记（只注入一处 = 另一条路径静默退化）', () => {
+  it('★★ 所有 dev 启动路径：热重载必须可选、标记必须与 watch 绑定（只覆盖一处 = 另一条路径静默退化）', () => {
     // ★★★ 2026-10-09 真缺口（实测）：标记只在 dev.cjs 注入，而用户跑的是
     //   `bin/dev.mjs desktop` → main.cjs 的 dev 分支 spawn 后端（**没注入**）
     //   → 任务被当"真中断"标 interrupted（DB 实测落「服务重启，任务被中断」），
     //   用户看到「刚发了个继续直接失败」。
     //   ★ 判据：**同一语义的标记必须覆盖所有启动路径** —— 容器是"每个 spawn 后端的地方"。
+    // ★ 2026-10-26 改判据：热重载默认关（`YZ_WATCH=1` 才开），因此每个 spawn 点要求的是
+    //   「启动参数由 watch 三元决定」+「YZ_HOT_RELOAD 也长在同一个 watch 三元里」，
+    //   而不是"无条件注入"。无条件注入会让默认路径把手动重启误判成"可续的暂停"。
     //
     // ★★ 断言粒度：**逐 spawn 点**，不是"文件里有没有"。
     //   变异验证教训（2026-10-09 本测试前两版）：
@@ -77,8 +85,15 @@ describe('① 中断归因：dev 热重载必须与真实重启区分（13/16 �
       expect(starts.length, `★ ${file} 未找到 dev spawn 点，本断言失效`).toBeGreaterThan(0);
       for (let i = 0; i < starts.length; i++) {
         const seg = src.slice(starts[i], i + 1 < starts.length ? starts[i + 1] : src.length);
-        expect(seg, `★ ${file} 第 ${i + 1} 个 dev spawn 点未注入 YZ_HOT_RELOAD（该路径会退化成"真中断"文案）`)
-          .toMatch(/YZ_HOT_RELOAD:\s*'1'/);
+        // 判定点在 needle 中间（`watch ? [...'watch', 'src/index.ts'] : [...'src/index.ts']`）：
+        //   needle 之前是 watch 分支，之后是"不 watch"分支 —— 两半都要验，才证明它是可选项。
+        const head = src.slice(Math.max(0, starts[i] - 160), starts[i]);
+        expect(head, `★ ${file} 第 ${i + 1} 个 spawn 点的热重载不是可选项（默认必须静态运行，改代码不打断发送）`)
+          .toMatch(/watch\s*\?\s*\[/);
+        expect(seg, `★ ${file} 第 ${i + 1} 个 spawn 点缺少"不 watch"的分支（默认路径必须静态运行）`)
+          .toMatch(/:\s*\[[^\]]*'src\/index\.ts'/);
+        expect(seg, `★ ${file} 第 ${i + 1} 个 spawn 点的 YZ_HOT_RELOAD 未与 watch 绑定（该路径会退化成"真中断"文案）`)
+          .toMatch(/watch\s*\?\s*\{[^}]*YZ_HOT_RELOAD:\s*'1'/);
       }
     }
     // 反面断言：生产分支绝不能注入（打包版行为必须完全不变）

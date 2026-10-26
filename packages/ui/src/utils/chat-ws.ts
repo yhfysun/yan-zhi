@@ -40,6 +40,8 @@ const pending = new Map<string, { resolve: (v: any) => void; reject: (e: Error) 
 const taskEventCbs = new Set<TaskEventCb>();
 const convEventCbs = new Set<ConvEventCb>();
 const closeCbs = new Set<() => void>();
+/** 连接建立通知（供「等连接恢复再重发」这类一次性等待使用，见 waitForChatWsOpen） */
+const openCbs = new Set<() => void>();
 
 /** ws:// 地址：API_BASE 形如 http(s)://host[:port]/api，去掉 /api 换 ws 协议再挂 /ws/chat */
 function wsUrl(): string {
@@ -60,6 +62,7 @@ function connect(): void {
   sock.onopen = () => {
     reconnectDelay = 1000;
     lastInboundAt = Date.now();
+    for (const cb of [...openCbs]) { try { cb(); } catch { /* 单个回调异常不影响其余 */ } }
     stopHeartbeat();
     heartbeatTimer = setInterval(() => {
       // 连接已被替换（重连换了新 socket）→ 旧计时器自行退出，不误判新连接
@@ -170,6 +173,30 @@ export function closeChatWs(): void {
 
 export function isChatWsOpen(): boolean {
   return !!ws && ws.readyState === WebSocket.OPEN;
+}
+
+/**
+ * 等连接重新可用（已连上则立即 resolve，否则等到下次 onopen 或超时）。
+ *
+ * ★ 用途（2026-10-26）：发送恰好撞上后端重启时，`create_task` 被拒成 `WS 已断开`，
+ *   而重连是**指数退避**（1s→15s）。立刻重发只会又落在"还没连上"的窗口里 ——
+ *   必须先等新连接真的 OPEN，再由调用方重发。
+ * ★ 这里**只等、不主动 connect**：连接由本模块的退避重连负责拉起，
+ *   否则会和退避定时器各开一条 socket 互相顶替。
+ */
+export function waitForChatWsOpen(timeoutMs: number): Promise<boolean> {
+  if (isChatWsOpen()) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (ok: boolean) => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      openCbs.delete(onOpen);
+      resolve(ok);
+    };
+    const onOpen = () => finish(true);
+    openCbs.add(onOpen);
+    timer = setTimeout(() => finish(false), timeoutMs);
+  });
 }
 
 /**

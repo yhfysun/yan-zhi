@@ -15,6 +15,7 @@ import {
   createTask, subscribe, subscribeConversation, abortTask, pauseTask, resumeTask,
   resolveToolResult, injectUserMessage, findRunningTaskId, validateTaskModel,
 } from './llm-task-manager.js';
+import { findCreatedTask, rememberCreatedTask } from './chat-ws-dedupe.js';
 
 /** 本机单用户身份（与 auth.ts 的 LOCAL_USER 一致；全库 user_id 都是 guest） */
 const USER_ID = 'guest';
@@ -61,13 +62,22 @@ interface ClientMsg {
 }
 
 /** 复用 POST /tasks 的「运行中任务 → 追问注入」语义，避免 WS 与 HTTP 两条建任务路径漂移 */
-function createTaskOrInject(payload: ClientMsg): { taskId: string; reused?: boolean; injected?: boolean; injectedMsgId?: string } {
+function createTaskOrInject(payload: ClientMsg): { taskId: string; reused?: boolean; injected?: boolean; injectedMsgId?: string; duplicate?: boolean } {
   const conversationId = payload.conversationId!;
+  // ★ 重发幂等（2026-10-26）：前端自动重发时沿用同一个 clientMsgId。
+  //   命中说明上一次 create_task 其实已经建好了任务，只是应答在断连中丢了 ——
+  //   此时**绝不能再建/再注入一次**，直接把 taskId 还回去（前端订阅即可重放整个过程）。
+  //   duplicate 让前端知道"这是重发的同一句话"，不必再提示用户。
+  const clientMsgId = typeof payload.clientMsgId === 'string' ? payload.clientMsgId : undefined;
+  const already = findCreatedTask(conversationId, clientMsgId);
+  if (already) return { taskId: already, reused: true, duplicate: true };
   const runningId = findRunningTaskId(conversationId, USER_ID);
   if (runningId) {
     const inj = payload.userContent
-      ? injectUserMessage(conversationId, String(payload.userContent), USER_ID, typeof payload.clientMsgId === 'string' ? payload.clientMsgId : undefined)
+      ? injectUserMessage(conversationId, String(payload.userContent), USER_ID, clientMsgId)
       : { status: 'no-task' as const };
+    // 并入成功也要记账：否则下一次重发会再注一遍（幂等键只有落进记账才生效）
+    if (inj.status === 'injected') rememberCreatedTask(conversationId, clientMsgId, runningId);
     return { taskId: runningId, reused: true, injected: inj.status === 'injected', injectedMsgId: (inj as any).msgId };
   }
   const modelInvalid = validateTaskModel(USER_ID, String(payload.platformId), String(payload.modelId));
@@ -92,6 +102,7 @@ function createTaskOrInject(payload: ClientMsg): { taskId: string; reused?: bool
     workspaceDir: typeof payload.workspaceDir === 'string' ? payload.workspaceDir : undefined,
     pathGuard: (payload.pathGuard === 'strict' || payload.pathGuard === 'off' || payload.pathGuard === 'ask') ? payload.pathGuard : undefined,
   });
+  rememberCreatedTask(conversationId, clientMsgId, taskId);
   return { taskId };
 }
 
@@ -137,7 +148,7 @@ function handleMessage(client: ChatWsClient, data: any): void {
           break;
         }
         const r = createTaskOrInject(msg);
-        reply('ok', { data: { taskId: r.taskId, reused: !!r.reused, injected: !!r.injected, injectedMsgId: r.injectedMsgId } });
+        reply('ok', { data: { taskId: r.taskId, reused: !!r.reused, injected: !!r.injected, injectedMsgId: r.injectedMsgId, duplicate: !!r.duplicate } });
         break;
       }
 

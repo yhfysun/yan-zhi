@@ -36,13 +36,12 @@ export const remoteControlManifest: PluginManifest = {
   description:
     '手机 / 局域网浏览器实时观看并操作本机：WebRTC 低延迟画面（硬编）+ 鼠标键盘注入，放大全屏后隐藏全部界面，如同直接操作电脑。' +
     '配对采用授权码（随机生成、可自定义），新设备首次连接需本机确认，信任设备加入白名单后免确认。' +
-    '护栏：输入限流（触顶降级只读观看）、危险组合键黑名单、本应用窗口点击保护、Ctrl+Alt+Esc 急停一键断流、全量审计；默认关闭，需手动开启',
+    '护栏：危险组合键黑名单、本应用窗口点击保护、Ctrl+Alt+Esc 急停一键断流、全量审计（远控操作不设条数配额）；默认关闭，需手动开启',
   permissions: ['desktop-input'],
   contributes: {},
   config: {
     type: 'object',
     properties: {
-      maxInputs: { type: 'number', description: '10 分钟窗口内最大输入条数（触顶后本会话降级为只读观看）', default: 2000 },
       allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认禁止）', default: false },
       allowExternalSubnet: { type: 'boolean', description: '允许非内网网段发起配对（跨公网控制需开启，配合公网可达的本机端口；默认拒绝）', default: false },
       idleTimeoutMin: { type: 'number', description: '会话空闲自动断开（分钟）', default: 30 },
@@ -367,8 +366,12 @@ interface RcSession {
   token?: string;
   mode: '' | 'webrtc' | 'jpeg';
   controllerWs: PluginWebSocket | null;
-  limiter: SlidingWindowLimiter;
-  readOnlyNotified?: boolean;
+  /** 被控端是否授予输入（false = 被控端把这次会话设为仅观看；控制端不能自行越过） */
+  inputAllowed: boolean;
+  /** 控制端自己开的「仅观看」（UU 观看模式：控制端 [操作]-[仅观看]）。两档是**与**关系 */
+  viewOnly: boolean;
+  /** 只读提示只发一次，避免每条输入都回一条 rejection */
+  readonlyNotified?: boolean;
   /** 隐私屏开启中（会话结束必须自动关闭，host 收 privacy.off 销毁黑屏窗） */
   privacy: boolean;
   /** 音频转发开启中（host 据此启停音频轨道发送） */
@@ -394,10 +397,18 @@ const IDLE_CHECK_MS = 30_000;
 // 通过模块级转发函数衔接（PluginModule.deactivate 与 activate 不共享作用域）。
 let deactivateImpl: (() => Promise<void>) | null = null;
 
+/** 生效的输入权限 = 被控端授予 **且** 控制端没有自己切到仅观看 */
+const inputEffective = (s: RcSession): boolean => s.inputAllowed && !s.viewOnly;
+/** 权限状态统一打包下发，客户端据此决定底栏显示「请求操控」还是「恢复操控」 */
+const inputState = (s: RcSession): Record<string, unknown> => ({
+  allowed: inputEffective(s),
+  granted: s.inputAllowed,
+  viewOnly: s.viewOnly,
+});
+
 export const remoteControlModule: PluginModule = {
   activate: (ctx) => {
     const cfg = (ctx.config || {}) as Record<string, unknown>;
-    const maxInputs = Number(cfg.maxInputs) || 2000;
     const allowSelfWindowClick = !!cfg.allowSelfWindowClick;
     const allowExternalSubnet = !!cfg.allowExternalSubnet;
     const idleTimeoutMs = (Number(cfg.idleTimeoutMin) || 30) * 60_000;
@@ -548,9 +559,20 @@ export const remoteControlModule: PluginModule = {
       if (!agentStarting) {
         agentStarting = (async () => {
           const a = agent ?? new RemoteControlAgent();
-          // 采集线程的失败回执（i=0 事件）：只落日志，不惊扰控制端（JPEG 是回退通道）
+          // 采集线程的失败回执（i=0 事件）：只落日志，不惊扰控制端（JPEG 是回退通道）。
+          // 但「点到本应用自身窗口」必须回传：否则控制端看到的就是「点了没反应」。
           a.onEvent = (e) => {
             if (!e.ok) ctx.log('[remote-control] 代理事件失败:', e.error || 'unknown');
+            if (!e.ok && e.blocked) {
+              for (const s of sessions.values()) {
+                if (s.status === 'granted' && s.controllerWs) {
+                  sendWsJson(s.controllerWs, {
+                    type: 'input.rejected',
+                    reason: `目标点落在本应用自身窗口（${String(e.title || '言智')}），已拒绝；可在插件设置开启「允许操作本应用窗口」`,
+                  });
+                }
+              }
+            }
           };
           a.onFrame = (buf) => {
             // 回退通道：帧只发给当前 granted 会话
@@ -653,8 +675,9 @@ export const remoteControlModule: PluginModule = {
       a.fire({ op: 'stream', fps: p.fps, scale: p.scale, quality: p.quality, changedOnly: true, mon: s.captureMon });
     };
 
-    const grantSession = async (s: RcSession, trust: boolean): Promise<void> => {
+    const grantSession = async (s: RcSession, trust: boolean, inputAllowed = true): Promise<void> => {
       s.status = 'granted';
+      s.inputAllowed = inputAllowed;
       s.token = newDeviceToken();
       s.lastActivityAt = Date.now();
       controllersByToken.set(s.token, s);
@@ -683,6 +706,8 @@ export const remoteControlModule: PluginModule = {
         sessionId: s.id,
         token: s.token,
         mode: s.mode,
+        // 只读会话：控制端据此常驻「只读观看 + 请求操控」，而不是等它自己点一个点不动才发现
+        input: inputState(s),
         // 跨公网：控制端建 PeerConnection 用（jpeg 模式无媒体面，不下发）
         ...(s.mode === 'webrtc' && iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
         ...(deviceToken ? { deviceToken } : {}),
@@ -788,6 +813,19 @@ export const remoteControlModule: PluginModule = {
           }
           break;
         }
+        case 'displays.refresh': {
+          // 控制端主动要清单（清单原本只由被控端推一次，推丢就再也看不到「显示器」入口）
+          if (s.mode === 'webrtc') {
+            // 能真正切采集源的是被控端渲染层：让它重新枚举后回推
+            notifyHost({ type: 'displays.request', sessionId: s.id });
+          } else {
+            try {
+              const a = await ensureAgent();
+              await sendJpegDisplays(s, a);
+            } catch { /* 枚举失败：保留控制端现有清单 */ }
+          }
+          break;
+        }
         case 'display.select': {
           // 控制端切换采集显示器：WebRTC 转被控端渲染层（重新采集+replaceTrack，无需重协商）；
           // JPEG 由服务端直接切代理采集目标并重推几何与清单
@@ -857,30 +895,50 @@ export const remoteControlModule: PluginModule = {
           await audit(type, { sessionId: s.id });
           break;
         }
+        case 'input.request': {
+          // 控制端请求恢复可操作。若只是自己开着「仅观看」，本地就能恢复（不打扰被控端）；
+          // 若被控端没授予，则转给被控端本人在场确认（不自动放行）。
+          if (s.inputAllowed) {
+            sendWsJson(s.controllerWs!, { type: 'session.input', ...inputState(s) });
+            break;
+          }
+          notifyHost({ type: 'input.request', sessionId: s.id, device: s.deviceName });
+          sendWsJson(s.controllerWs!, { type: 'input.requested' });
+          await audit('input-request', { sessionId: s.id, device: s.deviceName });
+          break;
+        }
+        case 'input.set': {
+          // 控制端自己切「仅观看」（UU 观看模式）：纯本地偏好，改完立刻生效，不需要被控端同意
+          s.viewOnly = msg.viewOnly === true;
+          s.readonlyNotified = false;
+          sendWsJson(s.controllerWs!, { type: 'session.input', ...inputState(s) });
+          await audit('input-set', { sessionId: s.id, viewOnly: s.viewOnly, device: s.deviceName });
+          break;
+        }
         case 'input': {
           if (panicActive) {
             sendWsJson(s.controllerWs!, { type: 'input.rejected', reason: '急停已触发，输入已冻结' });
             return;
           }
-          // ★ 鼠标移动不吃限流：拖动/滑动时客户端 30ms 一条 ≈ 33 条/秒，2000/10min 的额度
-          //   一分钟就烧光，之后整个会话被降级成「只读观看」—— 用户体感就是「突然只能看不能操作」。
-          //   移动本身无害且已由客户端节流；限流只统计真正改变系统状态的输入（按下/抬起/点击/
-          //   滚轮/按键/文本）。
-          const action = String((msg as Record<string, unknown>).action || '');
-          const countsTowardLimit = action !== 'move';
-          if (countsTowardLimit && !s.limiter.allow()) {
-            if (!s.readOnlyNotified) {
-              s.readOnlyNotified = true;
+          // ★ 只读会话（被控端仅观看 / 控制端自己开了仅观看）：输入一律不注入。只提示一次，
+          //   其余静默丢弃；控制端的常驻「只读」条来自 session.granted / session.input。
+          if (!inputEffective(s)) {
+            if (!s.readonlyNotified) {
+              s.readonlyNotified = true;
               sendWsJson(s.controllerWs!, {
                 type: 'input.rejected',
-                reason: `输入频率已达上限（${maxInputs} 条/10 分钟），本会话降级为只读观看`,
                 readonly: true,
+                reason: s.inputAllowed ? '已切换到仅观看' : '被控端只授予了观看权限',
               });
-              await audit('input-limit', { sessionId: s.id, device: s.deviceName });
+              await audit('input-readonly', { sessionId: s.id, device: s.deviceName });
             }
             return;
           }
-          if (countsTowardLimit) s.limiter.hit();
+          // ★ 远控输入不设条数配额（2026-10-26 用户拍板「控制插件所有操作都不记录配额」）。
+          //   历史教训：曾按 2000 条/10 分钟限流，鼠标移动与双指滚轮是连续输入（60Hz），
+          //   几十秒就能烧光额度 → 之后整场会话静默丢弃输入，用户体感是「远控坏了、只能看」。
+          //   真正的安全阀是：急停（Ctrl+Alt+Esc 断流）、危险组合键黑名单、本应用窗口点击
+          //   保护、以及全量审计 —— 都不依赖条数限流。
           const v = validateInputMsg(msg);
           if (!v.ok) {
             sendWsJson(s.controllerWs!, { type: 'input.rejected', reason: v.error });
@@ -975,6 +1033,16 @@ export const remoteControlModule: PluginModule = {
           }
           break;
         }
+        case 'input.grant': {
+          // 被控端本人在场确认后升级权限（或明确拒绝）：只影响本条会话，不改插件全局配置
+          const s = [...sessions.values()].find((x) => x.id === msg.sessionId && x.status === 'granted');
+          if (!s) break;
+          s.inputAllowed = msg.allow !== false;
+          s.readonlyNotified = false;
+          if (s.controllerWs) sendWsJson(s.controllerWs, { type: 'session.input', ...inputState(s) });
+          await audit('input-grant', { sessionId: s.id, allow: s.inputAllowed, device: s.deviceName });
+          break;
+        }
         case 'decision': {
           const s = pendingByConfirm.get(String(msg.confirmId || ''));
           if (!s || s.status !== 'pending') return;
@@ -984,7 +1052,7 @@ export const remoteControlModule: PluginModule = {
             if (typeof msg.displayId === 'string' && /^[\w.-]{1,64}$/.test(msg.displayId)) {
               s.captureDisplay = msg.displayId;
             }
-            await grantSession(s, !!msg.trust);
+            await grantSession(s, !!msg.trust, msg.readOnly !== true);
             if (s.controllerWs) sendWsJson(s.controllerWs, { type: 'pair.done' });
             notifyHost({ type: 'session.started', sessionId: s.id, device: s.deviceName, mode: s.mode });
           } else {
@@ -1077,6 +1145,7 @@ export const remoteControlModule: PluginModule = {
             type: 'session.resume',
             sessionId: s.id,
             mode: s.mode,
+            input: inputState(s),
             ...(s.mode === 'webrtc' && iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
           });
         }
@@ -1206,7 +1275,8 @@ export const remoteControlModule: PluginModule = {
             lastActivityAt: Date.now(),
             mode: '',
             controllerWs: null,
-            limiter: new SlidingWindowLimiter(maxInputs),
+            inputAllowed: true,
+            viewOnly: false,
             privacy: false,
             audioOn: false,
             captureDisplay: '',

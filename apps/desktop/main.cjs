@@ -281,6 +281,30 @@ function contextMenuTabInfo(wc) {
   return { ...base, active: false, highlighted: false, selected: false };
 }
 
+/**
+ * 仅**预览空间**（agent 执行面）的 guest。
+ *
+ * ★ 2026-10-26 用户实报：「为啥有任务回去浏览器？不是打开预览页面里面的浏览器？」
+ *   —— `/browser` 独立页（page 空间）是**用户自己的空间**，但编号层/蒙版此前按
+ *   allGuestWebContents() 画：agent 每跑一个浏览器动作，用户自己那个浏览器页也跟着
+ *   满屏橙框，看起来就像"任务跑到了浏览器页去"。⇒ 视觉层只许碰预览空间。
+ */
+function previewGuestWebContents() {
+  const list = [];
+  const seen = new Set();
+  for (const [tabId] of webviewTabs) {
+    if (!isPreviewScope(tabId)) continue;
+    const wc = guestWebContents(tabId);
+    if (wc && !wc.isDestroyed() && !seen.has(wc.id)) { seen.add(wc.id); list.push(wc); }
+  }
+  for (const [tabId, entry] of browserViews) {
+    if (!isPreviewScope(tabId)) continue;
+    const wc = entry && entry.view ? entry.view.webContents : null;
+    if (wc && !wc.isDestroyed() && !seen.has(wc.id)) { seen.add(wc.id); list.push(wc); }
+  }
+  return list;
+}
+
 /** 取当前所有 guest（两种引擎）的 webContents */
 function allGuestWebContents() {
   const list = [];
@@ -937,16 +961,17 @@ function startServer() {
   if (!app.isPackaged) {
     // 开发模式：用 Electron 的 Node.js + tsx 运行 TypeScript 源码
     //
-    // ★★★ 必须注入 YZ_HOT_RELOAD=1（2026-10-09，high）：
-    //   dev 后端是 `tsx watch` → **每改一次源码就重启进程**，正在跑的任务被
+    // ★★★ YZ_HOT_RELOAD=1 的来历（2026-10-09，high）：
+    //   开了热重载（`tsx watch`）时，**每改一次源码就重启进程**，正在跑的任务被
     //   `markOrphanTasksInterrupted()`（llm-task-manager）整批回收。
     //   该函数**已实现**按此标记分流：设了标记 → 标 `resumable` + 文案「热重载暂停，
     //   发『继续』即可」；没设 → 标 `interrupted` + 文案「应用重启，任务已中断」。
+    //   ★ 2026-10-26 起默认**不**开热重载（见下方 watch 开关）⇒ 原则上不再注入；
+    //     只有用户显式 YZ_WATCH=1 时才注入，口径与另外两个启动器一致。
     //   ★ 此前只在 `apps/server/scripts/dev.cjs` 注入，**本文件（桌面 dev 路径）没注入** ——
     //     而用户日常跑的就是这条路径（`bin/dev.mjs desktop` → 本文件的 dev 分支 spawn 后端），
     //     于是本该是「可续的暂停」被当成「真中断」：DB 里实测落的是非热重载分支的
     //     「服务重启，任务被中断」，用户看到「刚发了个继续直接失败」。
-    //   ⇒ 注入后两条 dev 启动路径口径一致（与 dev.cjs 同源，不臆造判据）。
     //   ★ 只加在 dev 分支：生产分支（下方 else）**不设** → 打包版行为完全不变。
     //
     // ★★★ 2026-10-11 删除 dev 分支的 WEB_DIST 注入（根治「dev 前端被旧快照冒充」）：
@@ -959,25 +984,31 @@ function startServer() {
     //     窗口走 Vite (1420) 热更新；resolveWebDist() 也已同步删除"爬目录猜"分支，
     //     dev 默认**不托管**前端。确需局域网访问 dev 前端时才显式给 YZ_SERVE_WEB_DIST。
     const tsxPath = path.join(serverDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+    // ★★★ 默认 **不** 开热重载（2026-10-26 用户决定，与 bin/dev.mjs、apps/server/scripts/dev.cjs 同源）：
+    //   此前一律 `tsx watch` —— 改任意一个 server 源码就重启进程，而重启那一下正在发送的
+    //   消息恰好落在 create_task 往返中间 ⇒ 前端只拿到「连接已断开，这条消息未发出」。
+    //   跑任务时改代码是开发常态，靠人记住"别在跑任务时改文件"不现实 ⇒ 默认静态运行；
+    //   要热重载时显式 `YZ_WATCH=1`（此时才注入 YZ_HOT_RELOAD，见下方）。
+    const watch = process.env.YZ_WATCH === '1';
     if (fs.existsSync(tsxPath)) {
-      console.log('[后端] 用 Electron Node.js + tsx 启动:', tsxPath);
-      serverProcess = spawn(process.execPath, [tsxPath, 'watch', 'src/index.ts'], {
+      console.log('[后端] 用 Electron Node.js + tsx 启动:', tsxPath, watch ? '(热重载开)' : '(热重载关)');
+      serverProcess = spawn(process.execPath, watch ? [tsxPath, 'watch', 'src/index.ts'] : [tsxPath, 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
         // ★ windowsHide：主进程无控制台，不加这个 Windows 会给 node 子进程新开一个
         //   可见终端窗口（之后的 python/ffmpeg 输出全刷在里面，任务停了窗口还在）。
         windowsHide: true,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}), ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
       console.warn('[后端] tsx CLI 未找到，回退到 npx tsx（可能 ABI 不兼容）');
-      serverProcess = spawn('npx', ['tsx', 'watch', 'src/index.ts'], {
+      serverProcess = spawn('npx', watch ? ['tsx', 'watch', 'src/index.ts'] : ['tsx', 'src/index.ts'], {
         cwd: serverDir,
         stdio: 'inherit',
         shell: true,
         windowsHide: true,
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, YZ_HOT_RELOAD: '1', ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}), ...bridgeEnv, ...editionEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -3875,6 +3906,16 @@ const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'chec
 // 常驻元素编号高亮（2026-10-20）：默认关闭，由面板在"agent 开始操作"时打开；
 //   任务结束后面板会关掉它（2026-10-22：否则用户自己操作时满屏编号框消不掉）。
 let highlightEnabled = false;
+// ★ 2026-10-26：区分两种意图 —— 用户手动点「高亮编号」= 明确要看编号（常驻）；
+//   agent 自动开的那一路必须受"停手 4s 自动收起"约束，否则任务转去做别的（浏览器零动作）时
+//   橙框+蒙版会一直糊在页面上，用户已经能自由操作了也散不掉（用户实报）。
+let highlightPersist = false;
+/**
+ * 编号层的「最近一次 agent 浏览器动作」时刻。
+ * ★ 不复用 lastBrowserActionAt：那个只在桥路径（convId 非空）记账，而 SSE 委托执行的 agent 动作
+ *   convId 恒为 null —— 拿它当判据会让 SSE 路径下编号层永远不亮（静默回归）。这里两条路径都记。
+ */
+let lastHighlightActionAt = 0;
 
 /**
  * 此刻该不该往页面上画编号层 —— 所有「重画时机」（dom-ready / 导航完成 / 新开页）都必须问这里。
@@ -3887,8 +3928,10 @@ let highlightEnabled = false;
  * 与 `scheduleHighlightIdleHide` 同源：动作在跑 → 亮；agent 停手超过该窗口 → 任何重画时机都不亮。
  */
 function highlightShouldPaint() {
-  if (!highlightEnabled || highlightIdleHidden) return false;
-  return lastBrowserActionAt > 0 && Date.now() - lastBrowserActionAt < HIGHLIGHT_ACTION_IDLE_MS;
+  if (!highlightEnabled) return false;
+  if (highlightPersist) return true;   // 用户手动开：常驻，不跟动作新鲜度走
+  if (highlightIdleHidden) return false;
+  return lastHighlightActionAt > 0 && Date.now() - lastHighlightActionAt < HIGHLIGHT_ACTION_IDLE_MS;
 }
 
 // ★ 编号层跟随"pageAgent 正在操作"（2026-10-23 用户拍板）：
@@ -3902,13 +3945,14 @@ function scheduleHighlightIdleHide() {
   if (highlightIdleTimer) { clearTimeout(highlightIdleTimer); highlightIdleTimer = null; }
   if (highlightIdleHidden) {
     highlightIdleHidden = false;
-    for (const wc of allGuestWebContents()) { runHighlight(wc, true).catch(() => { /* 纯视觉 */ }); }
+    // ★ 只画预览空间：/browser 独立页是用户自己的空间（见 previewGuestWebContents 头注）
+    for (const wc of previewGuestWebContents()) { runHighlight(wc, true).catch(() => { /* 纯视觉 */ }); }
   }
   highlightIdleTimer = setTimeout(() => {
     highlightIdleTimer = null;
-    if (!highlightEnabled) return;
+    if (!highlightEnabled || highlightPersist) return;
     highlightIdleHidden = true;
-    for (const wc of allGuestWebContents()) { runHighlight(wc, false).catch(() => { /* 纯视觉 */ }); }
+    for (const wc of previewGuestWebContents()) { runHighlight(wc, false).catch(() => { /* 纯视觉 */ }); }
   }, HIGHLIGHT_ACTION_IDLE_MS);
   if (typeof highlightIdleTimer.unref === 'function') highlightIdleTimer.unref();
 }
@@ -4053,6 +4097,7 @@ async function runHighlight(wc, on) {
  */
 async function runHighlightOffAll() {
   highlightEnabled = false;
+  highlightPersist = false;
   if (highlightIdleTimer) { clearTimeout(highlightIdleTimer); highlightIdleTimer = null; }
   highlightIdleHidden = false;
   let tabs = 0;
@@ -4757,6 +4802,12 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     // 用户先最小化/关窗、任务后开始：动作到达时补一次停靠。否则页面停在 hidden，
     // creator.douyin.com 这类微前端根本不挂载，后续动作必然超时。
     if (!dockedOffscreen && isWindowOffView()) enterBackgroundDock();
+  }
+  // ★ 2026-10-26：编号层活性记账对**两条执行路径**都要生效（桥路径 convId 非空；
+  //   SSE 委托路径 convId 为 null 但 agent 工具会带 __workspaceDir）。用户自己点工具栏两者都没有 ⇒ 不记账。
+  if (convId || (typeof args.__workspaceDir === 'string' && args.__workspaceDir.trim())) {
+    lastHighlightActionAt = Date.now();
+    if (highlightEnabled) scheduleHighlightIdleHide();
   }
   // 下载落盘（见 installBrowserDownloadHandler）：只有 agent 路径才接管。
   // 桥路径带 convId；渲染层 SSE 路径 convId=null，但 agent 工具会带 __workspaceDir
@@ -5535,9 +5586,25 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       }
       case 'click': {
         const beforeClickDownloadSeq = downloadSeq;
-        const clickResult = await wc.executeJavaScript(`(function(){
+        const clickResult = await wc.executeJavaScript(`(async function(){
           var a=${JSON.stringify(args)};
           var A=window.__yzAssistant;
+          // ★★★ 2026-10-26（实报「设置权限」反复失败）：辅助脚本未就绪时（页面重载中，或注入被
+          //   1.5s/3s 的超时掐断），下面每一次 A.xxx 都会同步抛 TypeError，Electron 统一包成
+          //   "Script failed to execute"，再被主进程 catch 翻译成「页面正在导航」。
+          //   模型据此判定"点击这条路坏了"，改去 run_script 硬试，连撞 12 次脚本熔断后被硬停。
+          //   这里提前返回结构化状态，让模型拿到可行动的下一步，而不是一个假诊断。
+          if(!A||typeof A.resolveAll!=='function'){
+            return {status:'not_injected',error:'页面辅助脚本未就绪（页面正在重载，或注入超过了等待上限）。',
+              hint:'先用 browser_get_page_content 或 browser_wait_for 确认页面已稳定、能读到目标元素，再重试本动作；不要改用 browser_run_script 模拟点击（这不是选择器问题）。'};
+          }
+          // ★★★ 2026-10-26（实报「browser_click 报 yzSnap is not defined」）：
+          //   yzSnap / yzFinish 是**注入脚本内部的局部函数**，只在 __yzAssistant 的闭包里存在；
+          //   本动作脚本是另一次 executeJavaScript，裸调它们必然 ReferenceError
+          //   （此前点击全被这个错误挡回脚本兜底）。它们已挂在 A 上（snap / finish），
+          //   这里补两个本地别名，脚本内原有调用点一律不改。
+          var yzSnap=function(){return A.snap();};
+          var yzFinish=function(r,b){return A.finish(r,b);};
           // ===OCCLUSION-START=== 遮挡感知 + 自动关闭遮挡层（2026-10-12）；click-occlusion.test.cjs 经此哨兵抽取真实代码
           // ★ 遮挡检测（2026-10-12）：目标中心点若被其它元素盖住，很多悬浮层会给底层按钮
           //   加 pointer-events:none 或在 handler 里判"弹窗开着就忽略"，导致 DOM 点击派发了却不生效。
@@ -5786,7 +5853,11 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             return yzFinish({success:true,via:'real-mouse',x:a.x,y:a.y,tag:tag},beforeXY);
           }
           return{status:'invalid_args',error:'需要 index、selector 或 x/y'};
-        })()`);
+        })().catch(function(e){
+          // ★ 同上：注入脚本内部的任何异常都转成结构化返回，别让它变成笼统的 "Script failed to execute"
+          return {status:'action_error',error:'click 执行异常：'+String((e&&e.message)||e).slice(0,200),
+            hint:'先 browser_get_page_content 确认页面状态与目标元素是否仍在，再重试；不要改用 browser_run_script。'};
+        })`);
         return await attachDownloadToClickResult(clickResult, beforeClickDownloadSeq);
       }
       case 'type': {
@@ -7021,9 +7092,20 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       }
       case 'highlight': {
         // 常驻元素编号高亮开关（2026-10-20）：面板「高亮编号」按钮经 browserView:action 直达这里。
+        // ★ 2026-10-26 根因修复：这条路径此前**直接 runHighlight(true)** —— 既不过
+        //   highlightShouldPaint 闸、也不武装空闲计时。于是 agent 自动开一次之后，
+        //   只要任务还在跑（browserTaskActive 为真）而浏览器长时间零动作（去合成视频/等用户），
+        //   橙框+蒙版就永久糊在页面上 —— 用户已经能自由操作了也散不掉（实报）。
+        //   ⇒ 手动开（persist）常驻；自动开与 dom-ready/导航重画同一判据，且每次开都重新武装计时。
         highlightEnabled = args.on !== false;
-        if (highlightEnabled) highlightIdleHidden = false;
-        return await runHighlight(wc, highlightEnabled);
+        highlightPersist = highlightEnabled && args.persist === true;
+        if (!highlightEnabled) return await runHighlight(wc, false);
+        highlightIdleHidden = false;
+        if (highlightPersist) return await runHighlight(wc, true);
+        scheduleHighlightIdleHide();
+        // 没有"最近动作"就先只记意图（首个真动作到达时由 scheduleHighlightIdleHide 的唤醒分支画）
+        if (!highlightShouldPaint()) return { highlight: true, pending: true };
+        return await runHighlight(wc, true);
       }
       default:
         return { error: '未知操作: ' + action };

@@ -20,6 +20,7 @@
         </select>
       </div>
       <el-checkbox v-model="trustDevice">信任此设备，之后免确认直连</el-checkbox>
+      <el-checkbox v-model="viewOnly">仅观看（不授予操作本机的权限）</el-checkbox>
     </div>
     <template #footer>
       <el-button @click="decide(false)">拒绝</el-button>
@@ -42,7 +43,7 @@
  * 空闲断开，避免每个打开着的窗口都挂着一条常驻连接。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { API_BASE, buildRequestHeaders, wsUrl } from '../api/client';
 
 /** 多显示器：主进程枚举的单屏信息（bounds 为虚拟屏物理像素，与注入坐标同系） */
@@ -76,6 +77,8 @@ const isChildWindow = typeof location !== 'undefined' && /[?&]szwin=1(&|$)/.test
 const promptVisible = ref(false);
 const pendingDevice = ref('');
 const trustDevice = ref(true);
+/** 仅观看：允许看画面但不注入输入（会话级，控制端可再请求升级） */
+const viewOnly = ref(false);
 const pluginEnabled = ref(false);
 const connected = ref(false);
 const displays = ref<RcDisplayInfo[]>([]);
@@ -220,6 +223,7 @@ async function onMessage(msg: Record<string, unknown>): Promise<void> {
       pendingDevice.value = String(msg.device || '未命名设备');
       pendingConfirmId.value = String(msg.confirmId || '');
       trustDevice.value = true;
+      viewOnly.value = false;
       promptVisible.value = true;
       try { void electron()?.rcRaisePrompt?.(true); } catch { /* ignore */ }
       void refreshDisplays(); // 弹窗里的采集显示器下拉框（仅 Electron 宿主有数据）
@@ -264,6 +268,26 @@ async function onMessage(msg: Record<string, unknown>): Promise<void> {
       ElMessage({ message: on ? '隐私屏已开启（本机屏幕已遮黑）' : '隐私屏已关闭', type: 'info', duration: 2000 });
       break;
     }
+    case 'input.request':
+      // 只读会话里对方请求操作权限：必须本人当场确认，绝不做静默放行
+      void (async () => {
+        const sessionId = String(msg.sessionId || '');
+        try {
+          await ElMessageBox.confirm(
+            '对方请求操作本机的权限（当前会话为仅观看）。允许后可移动鼠标、键盘输入。',
+            '远程控制 · 请求操作权限',
+            { confirmButtonText: '允许操作', cancelButtonText: '保持只读', type: 'warning' },
+          );
+          ws?.send(JSON.stringify({ type: 'input.grant', sessionId, allow: true }));
+        } catch {
+          ws?.send(JSON.stringify({ type: 'input.grant', sessionId, allow: false }));
+        }
+      })();
+      break;
+    case 'displays.request':
+      // 控制端主动要清单：重新枚举后回推（原来只在协商完成时推一次，推丢就没了「显示器」入口）
+      void refreshDisplays().then(() => announceDisplays(String(msg.sessionId || '')));
+      break;
     case 'display.select':
       // 控制端切换采集显示器：重新采集并 replaceTrack（无需重协商）
       void switchCaptureDisplay(String(msg.sessionId || ''), String(msg.displayId || ''));
@@ -288,6 +312,7 @@ async function decide(allow: boolean): Promise<void> {
       confirmId,
       action: allow ? 'allow' : 'deny',
       trust: allow && trustDevice.value,
+      readOnly: allow && viewOnly.value,
       ...(allow && captureDisplayId.value ? { displayId: captureDisplayId.value } : {}),
     }));
   } catch { /* ignore */ }

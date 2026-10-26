@@ -10,6 +10,7 @@ import { encrypt, decrypt } from '../utils/crypto.js';
 import { recordBrowserMemoryEvent, readBrowserMemory } from '../services/browser-memory.js';
 import { withTimeout as sharedWithTimeout, KeyedStreak } from '@yan-zhi/shared';
 import { createLogger } from '../services/logger.js';
+import { browserBridgeAvailable, callBrowserBridgeRaw } from '../browser-bridge.js';
 const logger = createLogger('browser');
 
 const router = Router();
@@ -454,43 +455,43 @@ function pickCdpPage(browser: any): any | null {
  * 或打包 file://index.html。
  * @returns 是否成功驱动壳页（不代表 webview 一定出现，调用方需轮询 pickCdpPage）
  */
-async function ensureWebviewViaShell(browser: any, url?: string): Promise<boolean> {
-  let shell: any = null;
-  for (const ctx of browser.contexts()) {
-    for (const p of ctx.pages()) {
-      let u = '';
-      try { u = p.url() || ''; } catch { continue; }
-      if (u.includes('localhost:1420') || u.includes('127.0.0.1:1420') || /index\.html/i.test(u)) { shell = p; break; }
-    }
-    if (shell) break;
-  }
-  if (!shell) return false;
-  const target = url || 'https://kol.fanqieopen.com/';
+/**
+ * CDP 模式下没有可用网页 target 时的兜底（**不再改主窗口路由**）。
+ *
+ * ★★★ 2026-10-26 根因修复（用户实报两次「有任务就跳到浏览器页」「又过去了」）：
+ *   旧实现是"驱动应用壳页自动打开预览面板"—— 具体做法是
+ *     `location.hash = '#/browser'` + 往地址栏 `input.url-input` 里塞 URL + 派发 Enter。
+ *   它**改的是主窗口路由**：用户正在办公页跑任务，配方执行时 CDP 一挑不到 target
+ *   （热重载 / 应用重启 / 实例假死重建都会），整个应用就被切到「浏览器」页，聊天区消失。
+ *   用户侧看到的就是"任务一跑就跑到浏览器页去了"，且完全无法理解为什么。
+ *
+ *   ★ 为什么可以直接去掉：现在的正常链路本就由桌面端自己开面板 —— `browser_*` 工具走桥
+ *     （`apps/server/src/browser-bridge.ts` → main.cjs `runBrowserAction`），主进程建 tab 后
+ *     广播 `tabCreated`，渲染层 `useChat` 的 onTabCreated 会自动展开预览面板
+ *     （`packages/ui/src/composables/chat/useChat.ts`）。所以要面板，让模型先走一次
+ *     `browser_navigate` 就够，不需要也不应该由服务端去劫持用户的界面。
+ *
+ * @returns 恒 false —— 本函数只保留调用点语义（见 createTabPage 的报错指引）
+ */
+async function ensureWebviewViaShell(_browser: any, url?: string, convId?: string | null): Promise<boolean> {
+  // ★ 2026-10-26 第二步：只**请桌面端自己**把预览面板打开，不碰用户界面。
+  //   做法：走桥发一次 browser_navigate（convId 锚定 → 主进程建/复用该会话的预览 tab →
+  //   广播 tabCreated → 渲染层 useChat 展开预览面板）。面板里的 webview 随后就是 CDP target。
+  //   ★ 必须带真实 convId 与 http(s) URL：桥不接受空 convId；`about:blank` 会被
+  //     pickCdpPage 的 isUnsafeCdpPage 过滤掉，等于白开。
+  const target = String(url || lastKnownUrl || '').trim();
+  if (!convId || !target || !/^https?:\/\//i.test(target)) return false;
+  if (!browserBridgeAvailable()) return false;
   try {
-    await shell.evaluate(() => {
-      if (location.hash.indexOf('#/browser') !== 0) location.hash = '#/browser';
-      return true;
-    });
-    await shell.waitForTimeout(800);
-    await shell.evaluate((t: string) => {
-      const el = Array.from(document.querySelectorAll('input.url-input')).find((e: any) => e.offsetParent !== null) as HTMLInputElement | undefined;
-      if (!el) return false;
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      set.call(el, t);
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      const ko = { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 };
-      el.dispatchEvent(new KeyboardEvent('keydown', ko));
-      el.dispatchEvent(new KeyboardEvent('keyup', ko));
-      return true;
-    }, target);
+    await callBrowserBridgeRaw(convId, 'browser_navigate', { url: target }, 20_000);
+    return true;
   } catch {
     return false;
   }
-  return true;
 }
 
 /** 创建一个新的 context + page（多标签页基础单元），可选导航到 url */
-async function createTabPage(url?: string): Promise<any> {
+async function createTabPage(url?: string, convId?: string | null): Promise<any> {
   const browser = await getBrowser();
   let context: any;
   let page: any;
@@ -500,7 +501,7 @@ async function createTabPage(url?: string): Promise<any> {
     if (!page) {
       // 全自动（2026-10-05）：没有可用 target 时驱动应用壳页自动打开预览面板，
       // 而不是报错等用户手动开（旧报错会把全自动任务卡死在浏览器连接层）
-      const opened = await ensureWebviewViaShell(browser, url);
+      const opened = await ensureWebviewViaShell(browser, url, convId);
       if (opened) {
         for (let i = 0; i < 30 && !page; i++) {
           await new Promise((r) => setTimeout(r, 500));
@@ -509,7 +510,12 @@ async function createTabPage(url?: string): Promise<any> {
       }
     }
     if (!page) {
-      throw new Error('CDP 模式下未找到可用的网页 target，且自动打开预览面板失败。请手动在应用预览面板打开任意网页后重试。');
+      // ★ 2026-10-26：兜底不再改用户界面（见 ensureWebviewViaShell 头注），改为给出可执行指引
+      throw new Error(
+        'CDP 模式下没有可用的网页 target（预览面板还没打开任何网页）。'
+        + '请先调用一次 browser_navigate 打开目标页 —— 桌面端会自动展开预览面板并在其中建页；'
+        + '面板就绪后再重试本工具。',
+      );
     }
     context = page.context();
   } else {
@@ -564,7 +570,7 @@ export function shouldRestorePageUrl(hadPage: boolean, lastKnownUrl: string, cur
 }
 
 /** 获取或创建页面（当前活动标签页），含健康检查 */
-async function getPage() {
+async function getPage(convId?: string | null) {
   if (pageInstance && (await isPageAlive(pageInstance))) {
     lastActivityAt = Date.now();
     return pageInstance;
@@ -580,7 +586,7 @@ async function getPage() {
     pageInstance = null;
   }
   // 首次：创建主标签页（tab 0）
-  const page = await createTabPage();
+  const page = await createTabPage(undefined, convId);
   pageInstance = page;
   activeTabId = 0;
   tabs.set(0, page);
@@ -696,7 +702,7 @@ router.post('/navigate', withBrowserLock(async (req: Request, res: Response) => 
       pageInstance = page;
       activeTabId = tid;
     } else {
-      page = await getPage();
+      page = await getPage(convIdOf(req));
     }
     // 同步前端视口大小
     if (viewport && viewport.width && viewport.height) {
@@ -969,7 +975,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
     const { action, text, key, x, y, timeout } = args;
     const selector = args.selector ? String(args.selector).replace(/:contains\(\s*["']([\s\S]*?)["']\s*\)/g, ':has-text("$1")') : args.selector;
     if (!action) { res.status(400).json({ error: 'action 为必填项' }); return; }
-    let page = await withTimeout(getPage(), '获取浏览器页面超时（实例可能已假死，将自动重建，请重试）');
+    let page = await withTimeout(getPage(convIdOf(req)), '获取浏览器页面超时（实例可能已假死，将自动重建，请重试）');
     // tabId 定向：在指定标签页上执行动作（不切换活动页），供"按 tabId 读取/操作"场景
     const reqTabId = args.tabId !== undefined && args.tabId !== null ? Number(args.tabId) : null;
     if (reqTabId !== null && tabs.has(reqTabId) && !tabs.get(reqTabId)?.isClosed?.()) {

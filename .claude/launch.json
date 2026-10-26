@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "desktop-prototype",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".claude/prototype-server.cjs"],
+      "port": 4177
+    },
+    {
+      "name": "remote-prototype",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4199", "--directory", "docs/prototypes"],
+      "port": 4199
+    }
+  ]
+}

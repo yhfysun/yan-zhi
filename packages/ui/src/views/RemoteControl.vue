@@ -15,10 +15,19 @@
           <div class="rc-tabs">
             <button class="rc-tab" :class="{ active: setupTab === 'control' }" @click="setupTab = 'control'">控制电脑</button>
             <button class="rc-tab" :class="{ active: setupTab === 'host' }" @click="openHostTab">被连 · 本机</button>
+            <button class="rc-tab" :class="{ active: setupTab === 'android' }" @click="openAndroidTab">安卓镜像</button>
           </div>
 
           <template v-if="setupTab === 'control'">
             <label class="rc-label">被控端地址</label>
+            <select
+              v-if="peers.length" :value="currentPeerHost" class="rc-input rc-peer-sel"
+              title="已保存的被控端：选一个自动填好地址和授权码"
+              @change="pickPeer"
+            >
+              <option value="">＋ 手动输入新地址</option>
+              <option v-for="p in peers" :key="p.host" :value="p.host">{{ peerLabel(p) }}</option>
+            </select>
             <input v-model="form.host" class="rc-input" placeholder="http://192.168.1.100:3001（同源时无需修改）" spellcheck="false" />
             <label class="rc-label">授权码</label>
             <input
@@ -30,6 +39,25 @@
             <button v-if="isTouch" class="rc-btn" :disabled="pairing" @click="startScan">📷 扫码连接</button>
             <div class="rc-hint">首次连接需要在被控端电脑上点击确认；可勾选「信任此设备」后免确认直连。</div>
             <div class="rc-hint">跨公网：这里填被控端的公网地址（端口需放行或走内网穿透），并在被控端插件设置开启「允许非内网配对」。</div>
+          </template>
+
+          <template v-else-if="setupTab === 'android'">
+            <div v-if="androidLoading" class="rc-hint">正在检测设备…</div>
+            <template v-else-if="androidDevices.length">
+              <label class="rc-label">选择设备（USB / 无线调试）</label>
+              <select v-model="androidPick" class="rc-input rc-peer-sel">
+                <option v-for="d in androidDevices" :key="d.serial" :value="d.serial">
+                  {{ d.model || d.serial }}{{ d.state === 'device' ? '' : '（未授权）' }}
+                </option>
+              </select>
+              <button class="rc-btn rc-btn-primary" :disabled="!androidPick" @click="connectAndroid">开始镜像</button>
+              <button class="rc-btn" :disabled="androidLoading" @click="loadAndroidDevices">刷新设备</button>
+              <div class="rc-hint">画面直接嵌在本页：点按 = 点手机、拖动 = 滑动；返回 / Home / 最近任务在右侧「操作」抽屉里。</div>
+            </template>
+            <template v-else>
+              <div class="rc-hint">没有检测到安卓设备。请用 USB 连接并打开「USB 调试」，或先在终端完成无线调试配对。</div>
+              <button class="rc-btn" @click="loadAndroidDevices">重试</button>
+            </template>
           </template>
 
           <template v-else>
@@ -95,80 +123,195 @@
     <div
       v-show="phase === 'live'" ref="stageRef" class="rc-stage"
       @contextmenu.prevent
-      @pointerdown="onStagePointerDown" @pointermove="onStagePointerMove" @pointerup="onStagePointerUp" @pointercancel="onStagePointerUp"
+      @pointerdown="onStagePointerDown" @pointermove="onStagePointerMove" @pointerup="onStagePointerUp" @pointercancel="onStagePointerCancel"
       @wheel.prevent="onStageWheel"
       @touchstart.passive="markTouch" @touchmove.passive="markTouch" @touchend.passive="markTouch"
       @dragover.prevent="dragOver = true" @dragleave.prevent="dragOver = false" @drop.prevent="onFileDrop"
     >
+      <!-- 安卓镜像：自研 scrcpy 客户端 + WebCodecs 解码，与电脑会话共用同一套会话壳 -->
+      <AndroidMirrorStage
+        v-if="linkKind === 'android' && phase === 'live'"
+        ref="androidStageRef" :serial="androidSerial" :interactive="inputAllowed" @meta="onAndroidMeta"
+      />
+
       <video
-        v-show="mode === 'webrtc'" ref="videoRef" class="rc-video" autoplay playsinline muted
+        v-show="linkKind !== 'android' && mode === 'webrtc'" ref="videoRef" class="rc-video" autoplay playsinline muted
         :style="mediaStyle" @loadedmetadata="syncNativeFromVideo" @resize="syncNativeFromVideo"
       ></video>
-      <canvas v-show="mode === 'jpeg'" ref="canvasRef" class="rc-video" :style="mediaStyle"></canvas>
+      <canvas v-show="linkKind !== 'android' && mode === 'jpeg'" ref="canvasRef" class="rc-video" :style="mediaStyle"></canvas>
 
       <!-- 首帧未到：明确告诉用户在建立画面，而不是留一块纯黑让人以为挂了 -->
-      <div v-if="phase === 'live' && !hasFrame" class="rc-wait-overlay">
+      <div v-if="phase === 'live' && !hasFrame && linkKind !== 'android'" class="rc-wait-overlay">
         <div class="rc-spinner"></div>
         <div class="rc-wait-title">正在建立画面…</div>
         <div class="rc-wait-sub">{{ mode === 'webrtc' ? 'WebRTC 协商中，12 秒未出画面会自动切兼容模式' : '兼容模式正在启动采集，首帧通常需要几秒' }}</div>
       </div>
 
-      <div class="rc-cursor" :style="cursorStyle">
-        <svg width="18" height="24" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#000" stroke-width="1.4"/></svg>
+      <!-- 只读观看：常驻可见 + 一键请求操控（不让用户自己猜「点不动是不是卡了」） -->
+      <div v-if="phase === 'live' && !inputAllowed" class="rc-readonly" @pointerdown.stop>
+        <span class="rc-ro-dot"></span>
+        <div class="rc-ro-text">
+          <b>只读观看</b>
+          <span>{{ inputGranted ? '你已切换到仅观看' : '被控端未授予操作权限' }}</span>
+        </div>
+        <button :disabled="inputRequesting" @click="inputGranted ? toggleViewOnly() : requestInput()">
+          {{ inputRequesting ? '等待确认…' : inputGranted ? '恢复操控' : '请求操控' }}
+        </button>
       </div>
 
-      <!-- 顶部工具条：普通模式可见，全屏沉浸时隐藏 -->
-      <div class="rc-toolbar" :class="{ hidden: immersive && !toolbarPeek }">
-        <button class="rc-tbtn" @click="disconnect">← 断开</button>
-        <!-- 显示器切换放最前面：这是第二常用的控件，不能让它被挤到要横向滑动才看得见 -->
+      <!-- 自绘光标 + 点按反馈：比跟随帧更跟手，单击时给一个明确的光圈 -->
+      <div v-if="linkKind !== 'android'" class="rc-cursor" :class="{ pressed: cursorPressed }" :style="cursorStyle">
+        <svg width="26" height="34" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#111" stroke-width="1.2"/></svg>
+      </div>
+      <div v-if="fx.visible" class="rc-tap-fx" :class="fx.button" :style="fxStyle"></div>
+
+      <!-- 顶部状态胶囊：只留状态与显示器/画质，操作入口统一收到右侧栏 -->
+      <div class="rc-topbar" :class="{ hidden: immersive && !toolbarPeek }" @pointerdown.stop>
+        <button class="rc-topback" title="断开连接" @click="disconnect">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="rc-dot" :class="mode"></span>
+        <span class="rc-status">{{ statusText }}</span>
         <select
           v-if="displays.length > 1" v-model="currentDisplay"
           class="rc-select rc-select-disp" title="采集显示器" @change="selectDisplay(currentDisplay)"
         >
           <option v-for="(d, i) in displays" :key="d.id" :value="d.id">{{ displayShortLabel(d, i) }}</option>
         </select>
-        <span class="rc-status">{{ statusText }}</span>
-        <button v-if="!immersive" class="rc-tbtn" title="键盘输入" @click="openKeyboardPanel">⌨ 键盘</button>
-        <button
-          v-if="!immersive" class="rc-tbtn" :class="{ active: mouseMode }"
-          title="虚拟鼠标：拖动移动指针，点按左键，长按右键" @click="toggleMouseMode"
-        >🖱 {{ mouseMode ? '鼠标开' : '鼠标' }}</button>
-        <button v-if="!immersive && mouseMode" class="rc-tbtn" @click="rightClickHere">右键</button>
-        <select v-if="mode === 'jpeg'" v-model="qualityPreset" class="rc-select" @change="applyQuality">
+        <select v-if="mode === 'jpeg'" v-model="qualityPreset" class="rc-select" title="画质" @change="applyQuality">
           <option value="smooth">流畅</option>
           <option value="balance">均衡</option>
           <option value="sharp">清晰</option>
         </select>
-        <button class="rc-tbtn" @click="toggleZoom">{{ zoomLabel }}</button>
-        <button class="rc-tbtn" @click="toggleFullscreen">{{ immersive ? '退出全屏' : '全屏' }}</button>
       </div>
 
-      <!-- 悬浮球：全屏沉浸时的唯一常驻控件（拖动定位，点按呼出菜单，3s 无操作自动隐藏） -->
-      <div
-        v-show="immersive" ref="ballRef" class="rc-ball" :class="{ hidden: ballHidden }"
-        @pointerdown.stop="onBallPointerDown"
-      >⚙</div>
-      <div v-if="immersive && ballMenuOpen" class="rc-ball-menu" :style="ballMenuStyle" @pointerdown.stop>
-        <button class="rc-mbtn" @click.stop="openKeyboardPanel">⌨ 键盘输入</button>
-        <button class="rc-mbtn" :class="{ active: mouseMode }" @click.stop="toggleMouseMode">
-          {{ mouseMode ? '🖱 鼠标模式：开' : '🖱 鼠标模式：关' }}
+      <!-- 右侧操作栏（UU 式）：高频功能常驻，其余收进「操作」面板 -->
+      <div class="rc-rail" :class="{ hidden: immersive && !toolbarPeek }" @pointerdown.stop>
+        <button class="rc-rail-btn" :class="{ active: actionsOpen }" @click.stop="actionsOpen = !actionsOpen">
+          <svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1.6"/><rect x="14" y="4" width="6" height="6" rx="1.6"/><rect x="4" y="14" width="6" height="6" rx="1.6"/><rect x="14" y="14" width="6" height="6" rx="1.6"/></svg>
+          <span>操作</span>
         </button>
-        <button v-if="mouseMode" class="rc-mbtn" @click.stop="rightClickHere">🖱 右键单击</button>
-        <button class="rc-mbtn" @click.stop="zoomStep(1.25)">🔍 放大</button>
-        <button class="rc-mbtn" @click.stop="zoomStep(0.8)">🔍 缩小</button>
-        <button class="rc-mbtn" @click.stop="openFilePanel">🗂 文件传输</button>
-        <button class="rc-mbtn" @click.stop="openClipboardPanel">📋 剪贴板</button>
-        <button class="rc-mbtn" @click.stop="toggleAudio">{{ audioOn ? '🔊 音频转发：开' : '🔇 音频转发：关' }}</button>
-        <template v-if="displays.length > 1">
-          <div class="rc-menu-label">🖥 采集显示器</div>
+        <button v-if="linkKind !== 'android'" class="rc-rail-btn" :class="{ active: mouseMode }" @click.stop="toggleMouseMode">
+          <svg viewBox="0 0 24 24"><path d="M6 3l11 8.5-5 .8 2.8 5.6-2.3 1.1-2.8-5.6L6 17z"/></svg>
+          <span>触控板</span>
+        </button>
+        <button v-if="linkKind !== 'android'" class="rc-rail-btn" @click.stop="openKeyboardPanel">
+          <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.4"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M7 13.5h10" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span>键盘</span>
+        </button>
+        <button v-if="linkKind !== 'android'" class="rc-rail-btn" @click.stop="rightClickAtLast">
+          <svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 4.5V9h5.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          <span>右键</span>
+        </button>
+        <button class="rc-rail-btn" @click.stop="toggleZoom">
+          <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <span>{{ zoomLabel }}</span>
+        </button>
+        <button class="rc-rail-btn" @click.stop="toggleFullscreen">
+          <svg viewBox="0 0 24 24"><path d="M5 10V5h5M19 14v5h-5M5 14v5h5M19 10V5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <span>{{ immersive ? '退出' : '全屏' }}</span>
+        </button>
+      </div>
+
+      <!-- 操作面板（底部抽屉）：低频功能都在这里 -->
+      <div v-if="actionsOpen" class="rc-sheet" @pointerdown.stop @click.stop>
+        <div class="rc-sheet-head">
+          <span>操作</span>
+          <button class="rc-panel-x" @click="actionsOpen = false">✕</button>
+        </div>
+        <div class="rc-sheet-grid">
+          <button v-if="linkKind !== 'android'" class="rc-act" @click="doAction(rightClickAtLast)">
+            <b>🖱</b><span>右键单击</span>
+          </button>
+          <button class="rc-act" @click="doAction(toggleViewOnly)">
+            <b>👁</b><span>{{ viewOnlySelf ? '退出仅观看' : '仅观看' }}</span>
+          </button>
+          <button class="rc-act" @click="doAction(openClipboardPanel)">
+            <b>📋</b><span>剪贴板</span>
+          </button>
+          <button class="rc-act" @click="doAction(openFilePanel)">
+            <b>🗂</b><span>文件传输</span>
+          </button>
+          <button class="rc-act" @click="doAction(toggleAudio)">
+            <b>{{ audioOn ? '🔊' : '🔇' }}</b><span>声音{{ audioOn ? '开' : '关' }}</span>
+          </button>
+          <button class="rc-act" @click="doAction(toggleMouseMode)">
+            <b>◉</b><span>{{ mouseMode ? '切到触控' : '切到指针' }}</span>
+          </button>
+          <button class="rc-act" @click="doAction(toggleZoom)">
+            <b>⛶</b><span>{{ zoomLabel }}</span>
+          </button>
+          <button class="rc-act" @click="doAction(toggleFullscreen)">
+            <b>🖥</b><span>{{ immersive ? '退出全屏' : '全屏' }}</span>
+          </button>
+          <button class="rc-act danger" @click="doAction(disconnect)">
+            <b>✕</b><span>断开</span>
+          </button>
+        </div>
+        <div v-if="phase === 'live' && linkKind !== 'android'" class="rc-sheet-row">
+          <span class="rc-sheet-label">显示器</span>
           <button
-            v-for="d in displays" :key="d.id" class="rc-mbtn disp"
-            :class="{ active: currentDisplay === d.id }" @click.stop="selectDisplay(d.id)"
-          >{{ displayLabel(d) }}</button>
+            v-for="(d, i) in displays" :key="d.id" class="rc-chip"
+            :class="{ active: currentDisplay === d.id }" @click="selectDisplay(d.id)"
+          >{{ displayShortLabel(d, i) }}</button>
+          <button class="rc-chip" @click="requestDisplays" title="重新枚举被控端显示器">刷新</button>
+        </div>
+        <div v-if="linkKind === 'android'" class="rc-sheet-row">
+          <span class="rc-sheet-label">手机按键</span>
+          <button class="rc-chip" @click="androidKey(4)">返回</button>
+          <button class="rc-chip" @click="androidKey(3)">Home</button>
+          <button class="rc-chip" @click="androidKey(187)">最近任务</button>
+          <button class="rc-chip" @click="androidKey(24)">音量+</button>
+          <button class="rc-chip" @click="androidKey(25)">音量-</button>
+        </div>
+        <div v-if="mode === 'jpeg' && linkKind !== 'android'" class="rc-sheet-row">
+          <span class="rc-sheet-label">画质</span>
+          <button
+            v-for="q in QUALITY_OPTIONS" :key="q.value" class="rc-chip"
+            :class="{ active: qualityPreset === q.value }" @click="qualityPreset = q.value"
+          >{{ q.label }}</button>
+        </div>
+      </div>
+
+      <!-- 大触控板（指针模式）：拖动移动指针，点按左键，长按右键，双指上下滑滚动 -->
+      <div v-if="mouseMode && !immersive && !kbPanelOpen && !clipPanelOpen && !filePanelOpen" class="rc-pad" :class="{ collapsed: padCollapsed }">
+        <div class="rc-pad-head">
+          <span>触控板</span>
+          <button class="rc-pad-mini" @pointerdown.stop @click.stop="padCollapsed = !padCollapsed">
+            {{ padCollapsed ? '展开' : '收起' }}
+          </button>
+        </div>
+        <template v-if="!padCollapsed">
+          <div
+            class="rc-pad-body" :class="{ active: padActive }"
+            @pointerdown.stop="onPadPointerDown" @pointermove.stop="onPadPointerMove"
+            @pointerup.stop="onPadPointerUp" @pointercancel.stop="onPadPointerCancel"
+          >
+            <svg class="rc-pad-glyph" viewBox="0 0 120 120" aria-hidden="true">
+              <rect x="34" y="14" width="52" height="76" rx="26" fill="none" stroke="currentColor" stroke-width="3.2"/>
+              <path d="M60 22v26" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+              <path d="M56 20l4-5 4 5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+              <path d="M56 52l4 5 4-5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity=".55"/>
+              <rect x="46" y="58" width="12" height="18" rx="6" fill="currentColor" opacity=".22"/>
+              <path d="M22 96l8-6M90 96l-8-6M60 82v10" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".45"/>
+            </svg>
+            <div v-if="padActive" class="rc-pad-dot" :style="{ left: `${padTouch.x}px`, top: `${padTouch.y}px` }"></div>
+            <div class="rc-pad-hint">拖动移动指针 · 点按左键 · 双指滚动 · 长按右键</div>
+          </div>
+          <div class="rc-pad-btns">
+            <button class="rc-pad-btn" @pointerdown.stop @click.stop="padClick('left')">左键</button>
+            <div
+              class="rc-pad-scroll" title="上下拖动滚动"
+              @pointerdown.stop.prevent="onScrollStripDown" @pointermove.stop.prevent="onScrollStripMove"
+              @pointerup.stop.prevent="onScrollStripUp" @pointercancel.stop.prevent="onScrollStripUp"
+            >
+              <span class="rc-pad-scroll-up">▲</span>
+              <span class="rc-pad-scroll-bar"></span>
+              <span class="rc-pad-scroll-down">▼</span>
+            </div>
+            <button class="rc-pad-btn" @pointerdown.stop @click.stop="padClick('right')">右键</button>
+          </div>
         </template>
-        <button class="rc-mbtn" @click.stop="toggleZoom">{{ zoomLabel }}</button>
-        <button class="rc-mbtn" @click.stop="toggleFullscreen">{{ immersive ? '⛶ 退出全屏' : '⛶ 全屏' }}</button>
-        <button class="rc-mbtn danger" @click.stop="disconnect">✕ 断开连接</button>
       </div>
 
       <!-- 键盘输入面板（软键盘实时注入：打字即发送，退格/回车/方向键直通） -->
@@ -244,8 +387,14 @@ import { ElMessage } from 'element-plus';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { parseRcScanPayload } from '../utils/rcScan';
+import { RemoteGestureRecognizer, type RemoteGestureEvent } from '../utils/remote-gesture';
 import { parseNetworkIpResponse, sortLanIps, pickDefaultLanIp, isVirtualNic, type LanIp } from '../utils/lanIp';
+import {
+  RC_PEERS_KEY, RC_LAST_HOST_KEY, normalizeRcHost, parseRcPeers, upsertRcPeer, peerLabel, type RcPeer,
+} from '../utils/rcPeers';
 import { api, API_BASE, buildRequestHeaders } from '../api/client';
+import { useSettingsStore } from '../stores/settings';
+import AndroidMirrorStage from '../components/AndroidMirrorStage.vue';
 
 type Phase = 'setup' | 'pending' | 'live' | 'ended';
 interface ScreenRect { x: number; y: number; w: number; h: number }
@@ -266,8 +415,6 @@ const hasFrame = ref(false);
 const screen = ref<ScreenRect>({ x: 0, y: 0, w: 0, h: 0 });
 const immersive = ref(false);
 const toolbarPeek = ref(false);
-const ballHidden = ref(false);
-const ballMenuOpen = ref(false);
 const kbPanelOpen = ref(false);
 const kbText = ref('');
 const kbInputRef = ref<HTMLTextAreaElement>();
@@ -284,6 +431,26 @@ const audioOn = ref(false);
 const dragOver = ref(false);
 const qualityPreset = ref<'smooth' | 'balance' | 'sharp'>('balance');
 const displays = ref<RcDisplayInfo[]>([]);
+/**
+ * 本条会话是否授予输入（false = 只读观看）。
+ *
+ * 来源只有服务端：session.granted / session.resume / session.input。
+ * 客户端不自己猜「点不动是不是卡了」—— 只读时底部常驻一条可恢复的提示，
+ * 点「请求操控」由被控端本人在场确认（照 UU 观看模式的口径，不重连）。
+ */
+/**
+ * 输入权限两档（与 UU 口径一致）：
+ *  - `inputGranted`：被控端是否授予输入（确认弹窗里选「仅观看」时为 false，控制端不能自行越过）；
+ *  - `viewOnlySelf`：控制端自己在 [操作]-[仅观看] 里开的一档（纯本地偏好，随时自己退出）。
+ * 生效权限 = 两者与。只读时底部常驻一条提示，不做成"点不动也没解释"。
+ */
+const inputGranted = ref(true);
+const viewOnlySelf = ref(false);
+const inputAllowed = computed(() => inputGranted.value && !viewOnlySelf.value);
+/** 已发出请求、等被控端确认（按钮置灰，避免连点） */
+const inputRequesting = ref(false);
+
+
 const currentDisplay = ref('');
 const iceServers = ref<RcIceServer[]>([]);
 
@@ -294,33 +461,99 @@ const zoomMode = ref<'fit' | 'fill' | 'free'>('fit');
 /** UU 式虚拟鼠标：拖动移动指针、点按左键、长按右键，滚轮用双指滑动 */
 const mouseMode = ref(false);
 const mousePos = reactive({ x: 0, y: 0 });
-let lastMouseClient: { x: number; y: number } | null = null;
+const actionsOpen = ref(false);
+const padCollapsed = ref(false);
+const padActive = ref(false);
+const padTouch = reactive({ x: 0, y: 0 });
+const cursorPressed = ref(false);
+/** 点按反馈（显示坐标）：单击 / 右键时给一个短暂光圈 */
+const fx = reactive({ visible: false, x: 0, y: 0, button: 'left' as 'left' | 'right' });
+const QUALITY_OPTIONS = [
+  { value: 'smooth' as const, label: '流畅' },
+  { value: 'balance' as const, label: '均衡' },
+  { value: 'sharp' as const, label: '清晰' },
+];
 const zoom = ref(1);
 const pan = reactive({ x: 0, y: 0 });
 
 const statusText = computed(() => {
-  if (mode.value === 'webrtc') return zoomMode.value === 'free' ? `WebRTC · ${Math.round(zoom.value * 100)}%` : 'WebRTC 已连接';
-  if (mode.value === 'jpeg') return zoomMode.value === 'free' ? `兼容模式 · ${Math.round(zoom.value * 100)}%` : '兼容模式已连接';
+  if (linkKind.value === 'android') {
+    const ro = inputAllowed.value ? '' : '只读观看 · ';
+    return `${ro}安卓镜像 · ${androidName.value || '已连接'}`;
+  }
+  const ro = inputAllowed.value ? '' : '只读观看 · ';
+  if (mode.value === 'webrtc') return ro + (zoomMode.value === 'free' ? `WebRTC · ${Math.round(zoom.value * 100)}%` : 'WebRTC 已连接');
+  if (mode.value === 'jpeg') return ro + (zoomMode.value === 'free' ? `兼容模式 · ${Math.round(zoom.value * 100)}%` : '兼容模式已连接');
   return '连接中…';
 });
 const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '铺满' : zoomMode.value === 'fill' ? '1:1' : '适应'));
 
-/** 上次连过的被控端地址：手机 App 里 window.location.origin 是壳的 localhost，毫无意义，
- *  不记住的话每次都要手输一遍 IP */
-const RC_LAST_HOST_KEY = 'rc:lastHost';
+/**
+ * 上次连过的被控端：手机 App 里 window.location.origin 是壳的 localhost，毫无意义，
+ * 不记住的话每次都要手输一遍 IP。
+ *
+ * 2026-10-26 起升级成「已保存的被控端」清单（地址 + 授权码成对）：
+ *   用户要求「授权码也要记录啊，还有多个能下拉选择」—— 只记地址、每次重敲码不够用，
+ *   几台常用机器也切不了。清单口径见 utils/rcPeers.ts，这里只管读写与联动。
+ */
+const peers = ref<RcPeer[]>([]);
 const form = reactive({ host: window.location.origin, code: '' });
+/** 当前地址命中的已保存项（下拉高亮用；手敲别的地址时为 '' ） */
+const currentPeerHost = computed(() => {
+  const key = normalizeRcHost(form.host).toLowerCase();
+  return peers.value.find((p) => normalizeRcHost(p.host).toLowerCase() === key)?.host || '';
+});
+
+function readPeers(): void {
+  try {
+    const raw = JSON.parse(localStorage.getItem(RC_PEERS_KEY) || 'null');
+    peers.value = parseRcPeers(raw, localStorage.getItem(RC_LAST_HOST_KEY) || '');
+  } catch {
+    peers.value = [];
+  }
+}
+function writePeers(): void {
+  try {
+    localStorage.setItem(RC_PEERS_KEY, JSON.stringify(peers.value));
+  } catch { /* 隐私模式忽略 */ }
+}
+/** 记住一次成功的连接：地址 + 授权码成对存，最近用的提到最前 */
+function rememberPeer(host: string): void {
+  peers.value = upsertRcPeer(peers.value, host, form.code, Date.now());
+  writePeers();
+}
+/** 下拉选中：自动填地址和授权码（码值不展示在下拉里，选中的时候才填进来） */
+function pickPeer(e: Event): void {
+  const host = (e.target as HTMLSelectElement).value;
+  const p = peers.value.find((x) => x.host === host);
+  if (!p) return;
+  form.host = p.host;
+  if (p.code) form.code = p.code;
+}
 const route = useRoute();
 const router = useRouter();
-// setup 阶段双页签：控制电脑（控制端表单）/ 被连·本机（二维码+授权码，桌面子窗口一页两用）
-const setupTab = ref<'control' | 'host'>('control');
+// setup 阶段三页签：控制电脑 / 被连·本机（二维码+授权码）/ 安卓镜像（本机直连手机）
+const setupTab = ref<'control' | 'host' | 'android'>('control');
+/**
+ * 会话来源：desktop = 走配对/WebRTC 的电脑会话；android = 本机直连手机的镜像会话。
+ * 两者共用同一套会话壳（顶栏/侧栏/操作抽屉/只读条），只是数据面不同。
+ */
+const linkKind = ref<'desktop' | 'android'>('desktop');
+const androidSerial = ref('');
+const androidName = ref('');
+const androidPick = ref('');
+const androidDevices = ref<Array<{ serial: string; model?: string; state: string }>>([]);
+const androidLoading = ref(false);
+const androidStageRef = ref<{ key: (code: number) => void; text: (value: string) => void }>();
+
 /** 扫码按钮只给触屏设备：桌面 /remote 页上「电脑摄像头扫另一块屏」是伪需求，防误解 */
 const isTouch = (typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 0;
+// 触屏默认指针模式（UU 同款）：手指不挡目标、点按不飘；需要直接点画面时右侧栏一键切回触控
+if (isTouch) mouseMode.value = true;
 const stageRef = ref<HTMLElement>();
 const videoRef = ref<HTMLVideoElement>();
 const canvasRef = ref<HTMLCanvasElement>();
-const ballRef = ref<HTMLElement>();
 const fileInputRef = ref<HTMLInputElement>();
-const ballMenuStyle = ref<Record<string, string>>({ right: '24px', bottom: '96px' });
 
 let ws: WebSocket | null = null;
 let pc: RTCPeerConnection | null = null;
@@ -330,7 +563,6 @@ let sessionId = '';
 let base = window.location.origin;
 let webrtcWatchdog: number | null = null;
 let pingTimer: number | null = null;
-let ballHideTimer: number | null = null;
 let jpegBitmap: ImageBitmap | null = null;
 const cursor = reactive({ x: 0, y: 0, visible: false });
 
@@ -519,6 +751,7 @@ const cursorStyle = computed<CSSProperties>(() => {
   const py = r.y + ((cursor.y - s.y) / s.h) * r.h;
   return { display: 'block', left: `${px}px`, top: `${py}px` };
 });
+const fxStyle = computed<CSSProperties>(() => ({ left: `${fx.x}px`, top: `${fx.y}px` }));
 
 // ---- 配对 ----
 async function pair(): Promise<void> {
@@ -541,6 +774,8 @@ async function pair(): Promise<void> {
     const body = await res.json();
     if (body.error) throw new Error(body.error);
     try { localStorage.setItem(RC_LAST_HOST_KEY, base); } catch { /* 隐私模式忽略 */ }
+    // 被控端认了这次配对（含待确认）才记：地址 + 这次用的授权码，下次下拉直接选
+    rememberPeer(base);
     const d = body.data || {};
     if (d.deviceToken) saveIdentity(base, d.deviceToken);
     if (d.status === 'granted' && d.token) {
@@ -648,20 +883,75 @@ const hostMode = ref('');
 const hostIps = ref<LanIp[]>([]);
 const hostPort = ref(3001);
 const hostQrUrl = ref('');
-/** 用户选的对外 IP（'' = 自动：第一个物理网卡）。二维码/地址/邀请文案全部跟随它 */
-const hostSelectedIp = ref('');
+const settingsStore = useSettingsStore();
+/**
+ * 对外 IP 下拉：绑的是**解析后的地址**，不是"未选"语义。
+ *
+ * ★ 2026-10-26 用户报障「这里优化下默认选中」：此前初值 `''`，而所有 option 都是真实地址，
+ *   没有一项匹配 → 浏览器把 select 渲染成空白，看起来"一个都没选中"，可下面的控制端地址
+ *   已经在用物理网卡了，两个控件自相矛盾。
+ * 读写仍走设置页同一份 `settings.defaultLanIp`（三处同源）：设置页选过的网卡这里直接生效，
+ *   这里换一块也写回去；地址失效（换网/关虚拟网卡）时 pickDefaultLanIp 自动回落物理网卡。
+ */
+const hostSelectedIp = computed({
+  get: () => pickDefaultLanIp(hostIps.value, settingsStore.settings.defaultLanIp),
+  set: (v: string) => { void settingsStore.update({ defaultLanIp: String(v || '') }); },
+});
+const hostPreferredIp = computed(() => hostSelectedIp.value);
+watch(hostPreferredIp, () => void renderHostQr());
 let hostHostKey = '';
-const hostPreferredIp = computed(() => pickDefaultLanIp(hostIps.value, hostSelectedIp.value));
-watch(hostSelectedIp, () => void renderHostQr());
 
 function openHostTab(): void {
   setupTab.value = 'host';
   if (!hostLoaded.value) void loadHostInfo();
 }
 
+// ---- 安卓镜像（真内嵌）：设备列表来自 android-mirror 插件，画面上屏见 AndroidMirrorStage ----
+function openAndroidTab(): void {
+  setupTab.value = 'android';
+  void loadAndroidDevices();
+}
+
+async function loadAndroidDevices(): Promise<void> {
+  androidLoading.value = true;
+  try {
+    const r = await api.get<any>('/plugin/android-mirror/status');
+    const list = (r as { data?: { devices?: Array<{ serial: string; model?: string; state: string }> } })?.data?.devices;
+    androidDevices.value = Array.isArray(list) ? list.filter((d) => d && d.serial) : [];
+    if (!androidPick.value && androidDevices.value.length) androidPick.value = androidDevices.value[0].serial;
+  } catch {
+    androidDevices.value = [];
+  } finally {
+    androidLoading.value = false;
+  }
+}
+
+function connectAndroid(): void {
+  const serial = androidPick.value;
+  if (!serial) return;
+  const dev = androidDevices.value.find((d) => d.serial === serial);
+  linkKind.value = 'android';
+  androidSerial.value = serial;
+  androidName.value = dev?.model || serial;
+  hasFrame.value = false;
+  phase.value = 'live';
+}
+
+function androidKey(code: number): void {
+  androidStageRef.value?.key(code);
+}
+
+function onAndroidMeta(meta: { deviceName: string; width: number; height: number }): void {
+  if (meta.deviceName) androidName.value = meta.deviceName;
+  hasFrame.value = true;
+}
+
 async function loadHostInfo(): Promise<void> {
   hostTabLoading.value = true;
   try {
+    // 设置可能还没从本地读回来（远控页常在新窗口里先于设置加载）：先补一次，
+    // 否则下面排序/默认 IP 读到的都是默认值，用户选过的网卡会被当成没选。
+    if (!settingsStore.loaded) await settingsStore.load();
     const [net, key] = await Promise.allSettled([
       api.get<any>('/network/ip'),
       api.get<any>('/plugin/remote-control/hostkey'),
@@ -669,7 +959,8 @@ async function loadHostInfo(): Promise<void> {
     if (net.status === 'fulfilled') {
       const { ips, port } = parseNetworkIpResponse(net.value);
       if (port) hostPort.value = port;
-      hostIps.value = sortLanIps(ips);
+      // 排序 = 默认 IP 贯通：用户选过的置顶，其后物理网卡，最后虚拟网卡（与设置页同口径）
+      hostIps.value = sortLanIps(ips, settingsStore.settings.defaultLanIp);
     }
     if (key.status === 'fulfilled' && (key.value as any)?.data?.key) {
       hostHostKey = String((key.value as any).data.key);
@@ -791,7 +1082,9 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
       setMode(m);
       if (msg.screen) setScreen(msg.screen as ScreenRect);
+      applyInputState(msg.input);
       if (m === 'webrtc') startWebRtc();
+      askDisplaysIfEmpty();
       break;
     }
     case 'session.resume':
@@ -800,8 +1093,11 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       {
         const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
         setMode(m);
+        // 断线重连后权限跟着服务端恢复，不由客户端自己假设
+        applyInputState(msg.input);
         // 白名单直连/断线重连走 resume：WebRTC 也要补发 offer，否则画面永远起不来
         if (m === 'webrtc' && !videoRef.value?.srcObject) startWebRtc();
+        askDisplaysIfEmpty();
       }
       break;
     case 'session.mode': {
@@ -810,6 +1106,7 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       // 兼容模式会话被升级成 WebRTC（白名单直连场景）：需要重新发起 offer
       if (m === 'webrtc' && !videoRef.value?.srcObject) startWebRtc();
       if (msg.screen) setScreen(msg.screen as ScreenRect);
+      askDisplaysIfEmpty();
       break;
     }
     case 'screen.info':
@@ -819,7 +1116,12 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       // 被控端显示器清单（WebRTC=Electron 枚举；JPEG=代理枚举+整个桌面项）
       const list = Array.isArray(msg.list) ? (msg.list as RcDisplayInfo[]) : [];
       displays.value = list.filter((d) => d && d.id);
-      if (msg.current) currentDisplay.value = String(msg.current);
+      // 同一类缺陷（同「连接 IP 下拉」）：current 缺省时 select 的值是 ''，匹配不到任何 option
+      // → 渲染成空白，看着像"没有显示器可用"。回落到主显示器 / 第一项。
+      const cur = String(msg.current || displays.value.find((d) => d.primary)?.id || displays.value[0]?.id || '');
+      if (cur) currentDisplay.value = cur;
+      // 一条都没拿到：多半是这次推送丢了或被控端渲染层还没好，再主动要一次（有上限，不刷屏）
+      if (!displays.value.length && displaysRequested < 2) window.setTimeout(requestDisplays, 1500);
       break;
     }
     case 'cursor':
@@ -867,6 +1169,15 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
         ElMessage.info('已取到被控端剪贴板（非安全上下文无法自动写入，请在文本框复制）');
       }
       break;
+    case 'session.input': {
+      applyInputState(msg);
+      if (inputAllowed.value) ElMessage.success('已切换为可操控');
+      else ElMessage.info(inputGranted.value ? '已切换为仅观看' : '被控端未授予操作权限');
+      break;
+    }
+    case 'input.requested':
+      ElMessage.info('已通知被控端，等待本人在场确认');
+      break;
     case 'input.rejected':
       ElMessage.warning(String(msg.reason || '输入被拒绝'));
       break;
@@ -884,6 +1195,10 @@ function setScreen(s: ScreenRect): void {
   screen.value = s;
   syncNativeFromScreen();
   syncViewport();
+  if (mouseMode.value) {
+    initMousePos();
+    showCursorAt(mousePos.x, mousePos.y);
+  }
 }
 
 function setMode(m: 'webrtc' | 'jpeg'): void {
@@ -984,15 +1299,29 @@ function applyQuality(): void {
 }
 watch(qualityPreset, applyQuality);
 
-// ================= 输入：指针（触屏=鼠标 / 双指=缩放·平移·滚动）=================
-interface ActivePointer { x: number; y: number }
-const pointers = new Map<number, ActivePointer>();
-let downPos: { x: number; y: number } | null = null;
-let dragging = false;
-let suppressUp = false;
+// ================= 输入：手势（单指直接触控 + 触控板并行）=================
+// 状态机在 utils/remote-gesture.ts（纯逻辑可单测）。UU 的做法是两套输入同时可用：
+//   · 画面：点哪点哪（直接触控）
+//   · 触控板：拖动移动指针、点按在指针处点击、双指滚动
+// 所以这里用两个独立状态机，互不干扰。
+const gesture = new RemoteGestureRecognizer({ mode: 'direct', longPressMs: 450 });
+const padGesture = new RemoteGestureRecognizer({ mode: 'pointer', longPressMs: 450 });
 let longPressTimer: number | null = null;
+let padLongPressTimer: number | null = null;
 let lastMoveSent = 0;
-let pinchPrev: { dist: number; midX: number; midY: number; active: boolean } | null = null;
+let lastDragSent = 0;
+let fxTimer: number | null = null;
+let scrollStripY = 0;
+let scrollStripActive = false;
+
+// 每次进入会话：触屏默认显示触控板，桌面端不显示；画面直接触控始终可用
+watch(phase, (p) => {
+  if (p !== 'live') return;
+  mouseMode.value = isTouch;
+  gesture.reset();
+  padGesture.reset();
+  if (mouseMode.value) initMousePos();
+});
 
 const toScreen = (clientX: number, clientY: number): { x: number; y: number } | null => {
   if (screen.value.w <= 0 || screen.value.h <= 0) return null; // 屏幕几何未知时禁输入
@@ -1026,177 +1355,301 @@ function initMousePos(): void {
   mousePos.y = Math.round(screen.value.y + screen.value.h / 2);
 }
 function toggleMouseMode(): void {
+  // 只控制触控板显隐；画面直接触控始终可用（UU 同款并行）
+  handleGesture(gesture.cancel(), false);
+  handleGesture(padGesture.cancel(), true);
   mouseMode.value = !mouseMode.value;
-  ballMenuOpen.value = false;
+  actionsOpen.value = false;
   if (mouseMode.value) {
     initMousePos();
     showCursorAt(mousePos.x, mousePos.y);
   } else {
     cursor.visible = false;
+    padCollapsed.value = false;
   }
 }
-/** 在虚拟指针当前位置右键（悬浮球菜单/工具栏用） */
+/** 在虚拟指针当前位置右键（操作面板用） */
 function rightClickHere(): void {
   if (!mouseMode.value || !screen.value.w) return;
   input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button: 'right' });
-  ballMenuOpen.value = false;
-}
-/** 悬浮球里的缩放按钮（捏合之外的显式入口） */
-function zoomStep(factor: number): void {
-  setZoom(zoom.value * factor);
-  ballMenuOpen.value = false;
 }
 const input = (msg: Record<string, unknown>): void => {
   if (phase.value !== 'live') return;
-  if (typeof msg.x === 'number' && typeof msg.y === 'number') showCursorAt(msg.x, msg.y);
+  // 安卓镜像的输入走 AndroidMirrorStage 自己的通道，别混进桌面会话的 WS
+  if (linkKind.value !== 'desktop') return;
+  // 只读会话：本地直接不发，省得每条输入都换来一次拒绝（状态由底部常驻条说明）
+  if (!inputAllowed.value) return;
+  // 指针模式才维护自绘光标；屏幕触控模式直接用点按光圈反馈，避免两种模式视觉上同时生效
+  if (mouseMode.value && typeof msg.x === 'number' && typeof msg.y === 'number') showCursorAt(msg.x, msg.y);
   send({ type: 'input', ...msg });
 };
 
-function onStagePointerDown(e: PointerEvent): void {
-  ballMenuOpen.value = false;
-  peekToolbar();
-  wakeBall();
-  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (pointers.size === 2) {
-    // 进入双指模式：撤掉已按下的左键，避免误点
-    if (dragging && !suppressUp && downPos) input({ action: 'up', ...toScreen(downPos.x, downPos.y)!, button: 'left' });
-    dragging = false;
-    suppressUp = false;
-    clearLongPress();
-    downPos = null;
-    const pts = [...pointers.values()];
-    pinchPrev = {
-      dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
-      midX: (pts[0].x + pts[1].x) / 2,
-      midY: (pts[0].y + pts[1].y) / 2,
-      active: true,
-    };
-    return;
+function clearLongPress(): void {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
   }
-  if (pointers.size > 2) return;
-  if (mouseMode.value) {
-    // 鼠标模式：单指拖动 = 移动虚拟指针（不下发按下），点按 = 左键，长按 = 右键
+}
+
+function buzz(ms: number): void {
+  try { navigator.vibrate?.(ms); } catch { /* 桌面端无振动 */ }
+}
+
+/** 点按反馈光圈（client 坐标）：让「这一下点到了」可见 */
+function flashTap(clientX: number, clientY: number, button: 'left' | 'right'): void {
+  fx.x = clientX;
+  fx.y = clientY;
+  fx.button = button;
+  fx.visible = true;
+  if (fxTimer) clearTimeout(fxTimer);
+  fxTimer = window.setTimeout(() => { fx.visible = false; }, 360);
+}
+
+/** 指针模式下指针的显示位置（client 坐标） */
+function cursorClientPoint(): { x: number; y: number } {
+  const r = displayedRect.value;
+  const s = screen.value;
+  if (!r.w || !s.w) return { x: 0, y: 0 };
+  return {
+    x: r.x + ((mousePos.x - s.x) / s.w) * r.w,
+    y: r.y + ((mousePos.y - s.y) / s.h) * r.h,
+  };
+}
+
+function clickAt(clientX: number, clientY: number, button: 'left' | 'right', useCursor: boolean): void {
+  if (useCursor) {
     initMousePos();
-    downPos = { x: e.clientX, y: e.clientY };
-    lastMouseClient = { x: e.clientX, y: e.clientY };
-    dragging = false;
-    suppressUp = false;
-    clearLongPress();
-    longPressTimer = window.setTimeout(() => {
-      suppressUp = true;
-      if (navigator.vibrate) navigator.vibrate(30);
-      input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button: 'right' });
-    }, 550);
+    const at = cursorClientPoint();
+    flashTap(at.x, at.y, button);
+    cursorPressed.value = true;
+    window.setTimeout(() => { cursorPressed.value = false; }, 150);
+    input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button });
     return;
   }
-  const p = toScreen(e.clientX, e.clientY);
+  const p = toScreen(clientX, clientY);
   if (!p) return;
-  downPos = { x: e.clientX, y: e.clientY };
-  suppressUp = false;
-  dragging = false;
-  input({ action: 'down', ...p, button: 'left' });
+  lastTapAt = p;
+  flashTap(clientX, clientY, button);
+  input({ action: 'click', ...p, button });
+}
+
+/** 最近一次点按的远端坐标：右键按钮在「你刚点过的地方」右键，最符合直觉 */
+let lastTapAt: { x: number; y: number } | null = null;
+
+/** 远端坐标 → 画布内 client 坐标（让点按光圈画在正确位置） */
+function screenToClient(p: { x: number; y: number }): { x: number; y: number } | null {
+  const r = displayedRect.value;
+  const s = screen.value;
+  if (!r.w || !s.w) return null;
+  return { x: r.x + ((p.x - s.x) / s.w) * r.w, y: r.y + ((p.y - s.y) / s.h) * r.h };
+}
+
+/**
+ * 显式「右键」入口（2026-10-26 P0）。
+ *
+ * 手机上没有右键键，只有长按与双指轻点这两种「猜得到」的方式；对不熟悉的用户等于没有。
+ * 侧栏给一个常驻按钮：优先在最近一次点过的位置右键，没点过就落屏心；指针模式下
+ * 直接在当前虚拟指针处右键。
+ */
+function rightClickAtLast(): void {
+  if (!inputAllowed.value) {
+    ElMessage.info('当前为只读观看');
+    return;
+  }
+  if (mouseMode.value) {
+    rightClickHere();
+    return;
+  }
+  const at = lastTapAt || {
+    x: screen.value.x + Math.floor(screen.value.w / 2),
+    y: screen.value.y + Math.floor(screen.value.h / 2),
+  };
+  const c = screenToClient(at);
+  if (c) flashTap(c.x, c.y, 'right');
+  input({ action: 'click', x: Math.round(at.x), y: Math.round(at.y), button: 'right' });
+}
+
+function wheelAt(clientX: number, clientY: number, delta: number, useCursor: boolean): void {
+  if (useCursor) {
+    initMousePos();
+    input({ action: 'wheel', x: Math.round(mousePos.x), y: Math.round(mousePos.y), delta });
+    return;
+  }
+  const p = toScreen(clientX, clientY);
+  if (p) input({ action: 'wheel', ...p, delta });
+}
+
+/** 指针模式：按手指位移移动虚拟指针（屏幕比例换算，跟手且与缩放无关） */
+function movePointerBy(dx: number, dy: number): void {
+  const r = displayedRect.value;
+  const s = screen.value;
+  if (!r.w || !r.h || !s.w) return;
+  initMousePos();
+  const k = s.w / r.w;
+  mousePos.x = Math.min(s.x + s.w - 1, Math.max(s.x, mousePos.x + dx * k));
+  mousePos.y = Math.min(s.y + s.h - 1, Math.max(s.y, mousePos.y + dy * k));
+  cursor.x = mousePos.x;
+  cursor.y = mousePos.y;
+  cursor.visible = true;
+  const now = Date.now();
+  if (now - lastMoveSent < 24) return;
+  lastMoveSent = now;
+  input({ action: 'move', x: Math.round(mousePos.x), y: Math.round(mousePos.y) });
+}
+
+/** 手势事件 → 注入消息（点击是原子 click，不再靠 down+up 赌目标应用的行为） */
+function handleGesture(events: RemoteGestureEvent[], useCursor: boolean): void {
+  for (const ev of events) {
+    switch (ev.kind) {
+      case 'tap':
+        clickAt(ev.x, ev.y, 'left', useCursor);
+        break;
+      case 'rightTap':
+        if (ev.fromTwoFinger) buzz(18);
+        clickAt(ev.x, ev.y, 'right', useCursor);
+        break;
+      case 'dragStart': {
+        const p = toScreen(ev.x, ev.y);
+        if (p) input({ action: 'down', ...p, button: 'left' });
+        break;
+      }
+      case 'dragMove': {
+        const now = Date.now();
+        if (now - lastDragSent < 24) break;
+        lastDragSent = now;
+        const p = toScreen(ev.x, ev.y);
+        if (p) input({ action: 'move', ...p });
+        break;
+      }
+      case 'dragEnd': {
+        const p = toScreen(ev.x, ev.y);
+        if (p) input({ action: 'up', ...p, button: 'left' });
+        break;
+      }
+      case 'pointerMove':
+        movePointerBy(ev.dx, ev.dy);
+        break;
+      case 'wheel':
+        wheelAt(ev.x, ev.y, ev.delta, useCursor);
+        break;
+      case 'zoom':
+        setZoom(zoom.value * ev.ratio, ev.anchorX, ev.anchorY);
+        break;
+    }
+  }
+}
+
+function scheduleLongPress(): void {
   clearLongPress();
   longPressTimer = window.setTimeout(() => {
-    // 长按 = 右键：补抬左键 + 右键单击
-    suppressUp = true;
-    if (navigator.vibrate) navigator.vibrate(30);
-    input({ action: 'up', ...p, button: 'left' });
-    input({ action: 'click', ...p, button: 'right' });
-  }, 550);
+    const events = gesture.maybeLongPress(performance.now());
+    if (events.length) buzz(30);
+    handleGesture(events, false);
+  }, 460);
+}
+
+function onStagePointerDown(e: PointerEvent): void {
+  actionsOpen.value = false;
+  peekToolbar();
+  // 鼠标右键直接注入（移动端长按才走手势机）；左键/触摸继续交给状态机
+  if (e.pointerType === 'mouse' && e.button === 2) {
+    const p = toScreen(e.clientX, e.clientY);
+    if (p) input({ action: 'click', ...p, button: 'right' });
+    return;
+  }
+  handleGesture(gesture.down(e.pointerId, e.clientX, e.clientY, performance.now()), false);
+  if (e.pointerType !== 'mouse') scheduleLongPress();
 }
 
 function onStagePointerMove(e: PointerEvent): void {
-  if (!pointers.has(e.pointerId)) return;
-  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (pointers.size >= 2) {
-    const pts = [...pointers.values()];
-    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
-    const midX = (pts[0].x + pts[1].x) / 2;
-    const midY = (pts[0].y + pts[1].y) / 2;
-    if (pinchPrev?.active) {
-      const ratio = dist / Math.max(1, pinchPrev.dist);
-      if (Math.abs(ratio - 1) > 0.02) {
-        // 捏合 → 缩放（以中点为锚）
-        setZoom(zoom.value * ratio, midX, midY);
-        pinchPrev.dist = dist;
-      } else {
-        // 双指平移 = 滚轮（所有缩放档位一致，和 UU 远控同手感）
-        const dy = midY - pinchPrev.midY;
-        if (Math.abs(dy) > 2) {
-          const p = toScreen(midX, midY);
-          if (p) input({ action: 'wheel', ...p, delta: Math.max(-400, Math.min(400, -Math.round(dy * 1.5))) });
-        }
-      }
-    }
-    pinchPrev = { dist, midX, midY, active: true };
-    return;
-  }
-  if (mouseMode.value) {
-    // 鼠标模式：按手指位移相对移动虚拟指针（屏幕像素比例换算，跟手且不受缩放影响）
-    if (!lastMouseClient) { lastMouseClient = { x: e.clientX, y: e.clientY }; return; }
-    const dx = e.clientX - lastMouseClient.x;
-    const dy = e.clientY - lastMouseClient.y;
-    lastMouseClient = { x: e.clientX, y: e.clientY };
-    if (!downPos) return;
-    const total = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
-    if (!dragging && total > 6) {
-      dragging = true;
-      clearLongPress();
-    }
-    if (!dragging) return;
-    const now = Date.now();
-    if (now - lastMoveSent < 30) return;
-    lastMoveSent = now;
-    const r = displayedRect.value;
-    if (!r.w || !r.h || !screen.value.w) return;
-    const k = screen.value.w / r.w;
-    mousePos.x = Math.min(screen.value.x + screen.value.w - 1, Math.max(screen.value.x, mousePos.x + dx * k));
-    mousePos.y = Math.min(screen.value.y + screen.value.h - 1, Math.max(screen.value.y, mousePos.y + dy * k));
-    input({ action: 'move', x: Math.round(mousePos.x), y: Math.round(mousePos.y) });
-    return;
-  }
-  if (!downPos) return;
-  const dist = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
-  if (!dragging && dist > 6) {
-    dragging = true;
-    clearLongPress();
-  }
-  if (dragging) {
-    const now = Date.now();
-    if (now - lastMoveSent < 30) return; // 30ms 节流，注入速率上限 ~33/s
-    lastMoveSent = now;
-    const p = toScreen(e.clientX, e.clientY);
-    if (p) input({ action: 'move', ...p });
-  }
+  handleGesture(gesture.move(e.pointerId, e.clientX, e.clientY), false);
 }
 
 function onStagePointerUp(e: PointerEvent): void {
-  pointers.delete(e.pointerId);
-  if (pointers.size < 2) pinchPrev = null;
   clearLongPress();
-  if (suppressUp) {
-    suppressUp = false;
-    downPos = null;
-    dragging = false;
-    return;
+  handleGesture(gesture.up(e.pointerId, e.clientX, e.clientY, performance.now()), false);
+}
+
+/** pointercancel / 页面隐藏 / 断开：必须补抬左键，否则远端会一直处于按下状态 */
+function onStagePointerCancel(): void {
+  clearLongPress();
+  handleGesture(gesture.cancel(), false);
+}
+
+// ---- 大触控板（与画面直接触控并行）----
+const padPointers = new Set<number>();
+/** 手指在触控板上的位置（板内坐标），用于拖动时的视觉反馈 */
+function trackPadTouch(e: PointerEvent): void {
+  const el = e.currentTarget as HTMLElement | null;
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  padTouch.x = e.clientX - r.left;
+  padTouch.y = e.clientY - r.top;
+}
+function clearPadLongPress(): void {
+  if (padLongPressTimer) {
+    clearTimeout(padLongPressTimer);
+    padLongPressTimer = null;
   }
-  if (mouseMode.value) {
-    lastMouseClient = null;
-    // 没拖动 = 在虚拟指针处左键单击（拖动只移动指针，不点）
-    if (!dragging && downPos) {
-      initMousePos();
-      input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button: 'left' });
-    }
-    downPos = null;
-    dragging = false;
-    return;
-  }
-  if (downPos) {
-    const p = toScreen(e.clientX, e.clientY) || { x: screen.value.x, y: screen.value.y };
-    input({ action: 'up', ...p, button: 'left' });
-  }
-  downPos = null;
-  dragging = false;
+}
+function schedulePadLongPress(): void {
+  clearPadLongPress();
+  padLongPressTimer = window.setTimeout(() => {
+    const events = padGesture.maybeLongPress(performance.now());
+    if (events.length) buzz(30);
+    handleGesture(events, true);
+  }, 460);
+}
+function onPadPointerDown(e: PointerEvent): void {
+  actionsOpen.value = false;
+  padPointers.add(e.pointerId);
+  padActive.value = true;
+  trackPadTouch(e);
+  handleGesture(padGesture.down(e.pointerId, e.clientX, e.clientY, performance.now()), true);
+  schedulePadLongPress();
+}
+function onPadPointerMove(e: PointerEvent): void {
+  trackPadTouch(e);
+  handleGesture(padGesture.move(e.pointerId, e.clientX, e.clientY), true);
+}
+function onPadPointerUp(e: PointerEvent): void {
+  clearPadLongPress();
+  handleGesture(padGesture.up(e.pointerId, e.clientX, e.clientY, performance.now()), true);
+  padPointers.delete(e.pointerId);
+  padActive.value = padPointers.size > 0;
+}
+function onPadPointerCancel(): void {
+  clearPadLongPress();
+  handleGesture(padGesture.cancel(), true);
+  padPointers.clear();
+  padActive.value = false;
+}
+
+function padClick(button: 'left' | 'right'): void {
+  if (!mouseMode.value) return;
+  initMousePos();
+  clickAt(0, 0, button, true);
+}
+function onScrollStripDown(e: PointerEvent): void {
+  scrollStripActive = true;
+  scrollStripY = e.clientY;
+}
+function onScrollStripMove(e: PointerEvent): void {
+  if (!scrollStripActive) return;
+  const dy = e.clientY - scrollStripY;
+  scrollStripY = e.clientY;
+  if (Math.abs(dy) < 2) return;
+  wheelAt(0, 0, Math.max(-400, Math.min(400, -Math.round(dy * 1.6))), true);
+}
+function onScrollStripUp(): void {
+  scrollStripActive = false;
+}
+function toggleActions(): void {
+  actionsOpen.value = !actionsOpen.value;
+}
+function doAction(fn: () => void): void {
+  actionsOpen.value = false;
+  fn();
 }
 
 function onStageWheel(e: WheelEvent): void {
@@ -1218,14 +1671,7 @@ function onStageWheel(e: WheelEvent): void {
   input({ action: 'wheel', ...p, delta });
 }
 
-function clearLongPress(): void {
-  if (longPressTimer) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
-  }
-}
 function markTouch(): void {
-  wakeBall();
   peekToolbar();
 }
 
@@ -1309,7 +1755,6 @@ async function openKeyboardPanel(): Promise<void> {
   kbPanelOpen.value = true;
   clipPanelOpen.value = false;
   filePanelOpen.value = false;
-  ballMenuOpen.value = false;
   await nextTick();
   kbInputRef.value?.focus(); // 手机上聚焦输入框 = 系统键盘弹出
 }
@@ -1317,19 +1762,16 @@ function openClipboardPanel(): void {
   clipPanelOpen.value = true;
   kbPanelOpen.value = false;
   filePanelOpen.value = false;
-  ballMenuOpen.value = false;
 }
 function openFilePanel(): void {
   filePanelOpen.value = true;
   kbPanelOpen.value = false;
   clipPanelOpen.value = false;
-  ballMenuOpen.value = false;
   void refreshFiles();
 }
 function toggleAudio(): void {
   audioOn.value = !audioOn.value;
   send({ type: 'audio.state', on: audioOn.value });
-  ballMenuOpen.value = false;
 }
 
 // ================= 多显示器切换 =================
@@ -1342,11 +1784,56 @@ function displayShortLabel(d: RcDisplayInfo, i: number): string {
   return `${d.primary ? '主屏' : `屏 ${i + 1}`} ${d.w}×${d.h}`;
 }
 function selectDisplay(id: string): void {
-  ballMenuOpen.value = false;
   if (!id || id === currentDisplay.value) return;
   // 乐观更新（host 切换成功后会回发 displays.info 校准），JPEG 模式服务端直接切
   currentDisplay.value = id;
   send({ type: 'display.select', displayId: id });
+}
+
+/**
+ * 主动要一次显示器清单（2026-10-26 报障「显示器下拉改着改着就没了」）。
+ *
+ * 清单原来只由被控端在协商完成后单向推一次：推丢了 / 被控端渲染层没就绪 /
+ * 会话升级成 WebRTC 后重新采集 —— 控制端就永远看不到「显示器」入口。
+ * 改成控制端可以主动要，服务端再转给被控端重新枚举。
+ */
+let displaysRequested = 0;
+function requestDisplays(): void {
+  if (linkKind.value !== 'desktop') return;
+  if (phase.value !== 'live' || !sessionId) return;
+  displaysRequested += 1;
+  send({ type: 'displays.refresh', sessionId });
+}
+/** 进会话后等一会儿：清单还没到就主动要一次（给被控端推送留时间） */
+function askDisplaysIfEmpty(delay = 1200): void {
+  window.setTimeout(() => {
+    if (phase.value === 'live' && !displays.value.length) requestDisplays();
+  }, delay);
+}
+
+/**
+ * 只读会话里请求操作权限：转给被控端本人确认（不自动放行、不重连）。
+ * 被控端同意后服务端会回 session.input {allowed:true}，底部只读条随之消失。
+ */
+function requestInput(): void {
+  if (inputRequesting.value || inputAllowed.value) return;
+  inputRequesting.value = true;
+  send({ type: 'input.request' });
+  ElMessage.info('已请求操作权限，等待被控端确认');
+  window.setTimeout(() => { inputRequesting.value = false; }, 8000);
+}
+/** 控制端自己切「仅观看」（被控端授予情况不变，只影响本端是否发输入） */
+function toggleViewOnly(): void {
+  const next = !viewOnlySelf.value;
+  send({ type: 'input.set', viewOnly: next });
+  ElMessage.info(next ? '已切换为仅观看（不再发送操作）' : '已恢复操控');
+}
+/** 应用服务端下发的权限状态（granted / resume / session.input 共用一套字段） */
+function applyInputState(raw: unknown): void {
+  const st = (raw || {}) as { granted?: boolean; viewOnly?: boolean };
+  inputGranted.value = st.granted !== false;
+  viewOnlySelf.value = st.viewOnly === true;
+  inputRequesting.value = false;
 }
 
 async function sendClipboard(): Promise<void> {
@@ -1506,7 +1993,6 @@ function onFullscreenChange(): void {
   if (immersive.value) applyImmersiveZoom();
   else void lockLandscape(false);
   if (!immersive.value) {
-    ballMenuOpen.value = false;
     kbPanelOpen.value = false;
     clipPanelOpen.value = false;
     filePanelOpen.value = false;
@@ -1520,62 +2006,6 @@ function peekToolbar(): void {
     toolbarPeek.value = false;
   }, 2500);
 }
-function wakeBall(): void {
-  ballHidden.value = false;
-  if (ballHideTimer) clearTimeout(ballHideTimer);
-  ballHideTimer = window.setTimeout(() => {
-    ballHidden.value = true;
-    ballMenuOpen.value = false;
-  }, 3000);
-}
-// 悬浮球拖动（吸附左右边缘）
-let ballDrag: { startX: number; startY: number; left: number; top: number } | null = null;
-function onBallPointerDown(e: PointerEvent): void {
-  const ball = ballRef.value;
-  if (!ball) return;
-  const r = ball.getBoundingClientRect();
-  ballDrag = { startX: e.clientX, startY: e.clientY, left: r.left, top: r.top };
-  ball.setPointerCapture(e.pointerId);
-  const move = (ev: PointerEvent): void => {
-    if (!ballDrag) return;
-    const dx = ev.clientX - ballDrag.startX;
-    const dy = ev.clientY - ballDrag.startY;
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const left = Math.max(8, Math.min(w - 64, ballDrag.left + dx));
-    const top = Math.max(8, Math.min(h - 64, ballDrag.top + dy));
-    ball.style.left = `${left}px`;
-    ball.style.top = `${top}px`;
-    ball.style.right = 'auto';
-    ball.style.bottom = 'auto';
-  };
-  const up = (ev: PointerEvent): void => {
-    window.removeEventListener('pointermove', move);
-    window.removeEventListener('pointerup', up);
-    // 移动量很小才算「点按」
-    if (ballDrag && Math.hypot(ev.clientX - ballDrag.startX, ev.clientY - ballDrag.startY) < 6) {
-      ballMenuOpen.value = !ballMenuOpen.value;
-      positionBallMenu();
-    }
-    ballDrag = null;
-    wakeBall();
-  };
-  window.addEventListener('pointermove', move);
-  window.addEventListener('pointerup', up);
-}
-function positionBallMenu(): void {
-  const ball = ballRef.value;
-  if (!ball) return;
-  const r = ball.getBoundingClientRect();
-  const nearBottom = r.top > window.innerHeight / 2;
-  ballMenuStyle.value = {
-    left: `${Math.max(8, r.left - 90)}px`,
-    [nearBottom ? 'bottom' : 'top']: nearBottom
-      ? `${window.innerHeight - r.bottom + 52}px`
-      : `${r.bottom + 8}px`,
-  };
-}
-
 // ---- 生命周期 ----
 function send(msg: Record<string, unknown>): void {
   if (ws && ws.readyState === 1) {
@@ -1597,6 +2027,9 @@ function cleanupSocket(): void {
   }
 }
 function disconnect(): void {
+  // 先补抬可能按下的左键，再关通道：否则被控端会一直认为鼠标按着
+  handleGesture(gesture.cancel(), false);
+  handleGesture(padGesture.cancel(), true);
   endedReason.value = '已断开连接';
   cleanup();
   phase.value = 'ended';
@@ -1616,6 +2049,12 @@ function cleanup(): void {
   cursor.visible = false;
   displays.value = [];
   currentDisplay.value = '';
+  inputGranted.value = true;
+  viewOnlySelf.value = false;
+  inputRequesting.value = false;
+  linkKind.value = 'desktop';
+  androidSerial.value = '';
+  androidName.value = '';
   iceServers.value = [];
   zoomMode.value = 'fit';
   zoom.value = 1;
@@ -1628,10 +2067,20 @@ function cleanup(): void {
   immersive.value = false;
   setNativeImmersive(false);
   mouseMode.value = false;
-  lastMouseClient = null;
+  gesture.reset();
+  padGesture.reset();
+  actionsOpen.value = false;
+  padCollapsed.value = false;
 }
 function onResize(): void {
   syncViewport();
+}
+/** 切后台/失焦：手指不会再有 up 事件，主动收尾避免远端按键卡住 */
+function onPageLeave(): void {
+  clearLongPress();
+  clearPadLongPress();
+  handleGesture(gesture.cancel(), false);
+  handleGesture(padGesture.cancel(), true);
 }
 
 onMounted(() => {
@@ -1639,17 +2088,25 @@ onMounted(() => {
   window.addEventListener('keydown', onKeyDown, true);
   window.addEventListener('compositionend', onCompositionEnd, true);
   window.addEventListener('resize', onResize);
+  document.addEventListener('visibilitychange', onPageLeave);
+  window.addEventListener('blur', onPageLeave);
   syncViewport();
   syncNativeFromScreen();
-  // 上次连过的地址优先于 location.origin（App 壳里 origin 是 localhost，填了也连不上）
-  try {
-    const last = localStorage.getItem(RC_LAST_HOST_KEY);
-    if (last) form.host = last;
-  } catch { /* ignore */ }
+  // 已保存的被控端优先于 location.origin（App 壳里 origin 是 localhost，填了也连不上）：
+  // 默认取最近用过的那台，地址和授权码一起填好，打开就能直接点「连接」。
+  // 旧版只存了地址的 rc:lastHost 由 parseRcPeers 迁移进来，不会丢。
+  readPeers();
+  const lastPeer = peers.value[0];
+  if (lastPeer) {
+    form.host = lastPeer.host;
+    if (lastPeer.code) form.code = lastPeer.code;
+  }
   // 扫码/邀请链接直达：?code= 授权码 → 预填并直接发起配对（被控端确认弹窗照常把关）。
   // 裸路径引导（router/barePathHash.ts）会把 ?code= 原样带进 hash query。
+  // ★ 必须**先于**记住的授权码生效：扫到的新码是用户此刻的意图，不能被上次的旧码顶掉
+  //   （此前条件里带 `!form.code`，配上"记住授权码"后会让扫码/邀请链接静默不配对）。
   const qc = route?.query?.code;
-  if (typeof qc === 'string' && qc && !form.code && phase.value === 'setup') {
+  if (typeof qc === 'string' && qc && phase.value === 'setup') {
     form.code = qc;
     void pair();
   }
@@ -1661,9 +2118,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown, true);
   window.removeEventListener('compositionend', onCompositionEnd, true);
   window.removeEventListener('resize', onResize);
+  document.removeEventListener('visibilitychange', onPageLeave);
+  window.removeEventListener('blur', onPageLeave);
   stopScan();
   cleanup();
-  if (ballHideTimer) clearTimeout(ballHideTimer);
 });
 </script>
 
@@ -1693,6 +2151,8 @@ onBeforeUnmount(() => {
 .rc-label { font-size: 12px; color: #8a94a3; }
 .rc-input { background: #10151b; border: 1px solid #2a323e; border-radius: 8px; padding: 10px 12px; color: inherit; font-size: 14px; outline: none; }
 .rc-input:focus { border-color: #4c8dff; }
+/* 已保存的被控端下拉：比输入框矮一档，视觉上从属于下面的地址输入 */
+.rc-peer-sel { padding: 8px 10px; font-size: 13px; color: #cfd7e3; }
 .rc-code { letter-spacing: 2px; font-size: 18px; text-align: center; }
 .rc-btn { border: 1px solid #2a323e; background: #1d242e; color: inherit; border-radius: 8px; padding: 10px 14px; font-size: 14px; cursor: pointer; }
 .rc-btn:disabled { opacity: 0.5; cursor: default; }
@@ -1712,30 +2172,76 @@ onBeforeUnmount(() => {
 /* ★ 显示矩形由 JS 自算（mediaStyle 内联定位），这里只留外观——不再用 inset:100% + contain，
    否则 letterbox 黑边会算进坐标映射（点边缘会偏）。 */
 .rc-video { position: absolute; object-fit: fill; touch-action: none; background: #000; }
-.rc-cursor { position: absolute; z-index: 4; pointer-events: none; transform: translate(-2px, -2px); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
-/* 工具栏：手机上横向排不下时整条横向滚动（早期会让「断开」和状态文字竖排折行、
-   显示器切换下拉被挤出屏幕） */
-.rc-toolbar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0)); transition: opacity 0.25s; z-index: 5; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
-.rc-toolbar::-webkit-scrollbar { display: none; }
-.rc-toolbar.hidden { opacity: 0; pointer-events: none; }
-.rc-status { font-size: 12px; color: #b9c2cf; flex: 1 1 auto; min-width: 42px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rc-cursor { position: absolute; z-index: 6; pointer-events: none; transform: translate(-3px, -2px); filter: drop-shadow(0 2px 3px rgba(0,0,0,0.55)); transition: transform 0.12s ease; }
+.rc-cursor.pressed { transform: translate(-3px, -2px) scale(0.84); }
+.rc-tap-fx { position: absolute; z-index: 5; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; pointer-events: none; border: 2px solid rgba(124,178,255,0.95); box-shadow: 0 0 0 8px rgba(47,107,255,0.18); animation: rc-fx 0.36s ease-out forwards; }
+.rc-tap-fx.right { border-color: rgba(255,196,120,0.95); box-shadow: 0 0 0 8px rgba(255,170,60,0.16); }
+@keyframes rc-fx { from { opacity: 1; transform: scale(0.55); } to { opacity: 0; transform: scale(1.35); } }
+
+/* 顶部状态胶囊：只留状态 + 显示器/画质，按钮统一收进右侧操作栏 */
+.rc-topbar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: 10px 14px; padding-right: 86px; background: linear-gradient(to bottom, rgba(5,8,12,0.72), rgba(5,8,12,0)); transition: opacity 0.25s; z-index: 5; pointer-events: none; }
+.rc-topbar > * { pointer-events: auto; }
+/* 只读观看底栏：常驻、可恢复（不重连），与「点不动」区分开 */
+.rc-readonly { position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 26; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; background: rgba(28,21,9,0.94); border: 1px solid rgba(240,163,58,0.45); backdrop-filter: blur(12px); }
+.rc-ro-dot { width: 8px; height: 8px; border-radius: 50%; background: #f0a33a; box-shadow: 0 0 0 4px rgba(240,163,58,0.18); flex-shrink: 0; }
+.rc-ro-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 11.5px; color: #f4d9b0; line-height: 1.4; }
+.rc-ro-text b { color: #ffce85; font-weight: 600; font-size: 12.5px; }
+.rc-readonly button { border: 0; border-radius: 9px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer; background: #f0a33a; color: #1a1200; flex-shrink: 0; }
+.rc-readonly button:disabled { opacity: .6; cursor: default; }
+.rc-topbar.hidden { opacity: 0; pointer-events: none; }
+.rc-topback { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(20,26,34,0.78); border: 1px solid rgba(255,255,255,0.1); color: #e6eaf0; backdrop-filter: blur(10px); cursor: pointer; flex-shrink: 0; }
+.rc-topback:hover { border-color: #4c8dff; color: #bcd2ff; }
+.rc-dot { width: 7px; height: 7px; border-radius: 50%; background: #8a94a3; flex-shrink: 0; box-shadow: 0 0 0 3px rgba(138,148,163,0.16); }
+.rc-dot.webrtc { background: #3ddc84; box-shadow: 0 0 0 3px rgba(61,220,132,0.18); }
+.rc-dot.jpeg { background: #f5b74e; box-shadow: 0 0 0 3px rgba(245,183,78,0.18); }
+.rc-status { font-size: 12px; color: #c7d2e0; flex: 1 1 auto; min-width: 42px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
 .rc-tbtn { background: rgba(23,28,35,0.8); border: 1px solid #2a323e; color: inherit; border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; flex-shrink: 0; white-space: nowrap; }
 .rc-tbtn:hover { border-color: #4c8dff; }
-.rc-tbtn.active { border-color: #4c8dff; color: #9dc0ff; background: rgba(47,107,255,0.22); }
-.rc-select { background: #171c23; color: inherit; border: 1px solid #2a323e; border-radius: 8px; padding: 5px 8px; font-size: 13px; flex-shrink: 0; max-width: 44vw; }
-.rc-select-disp { max-width: 32vw; }
+.rc-select { background: rgba(23,28,35,0.86); color: inherit; border: 1px solid #2a323e; border-radius: 8px; padding: 5px 8px; font-size: 13px; flex-shrink: 0; max-width: 30vw; }
+.rc-select-disp { max-width: 44vw; min-width: 84px; }
+
+/* 右侧操作栏（UU 式玻璃拟态）：高频动作常驻，低频收进「操作」抽屉 */
+.rc-rail { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; z-index: 7; transition: opacity 0.25s; }
+.rc-rail.hidden { opacity: 0; pointer-events: none; }
+.rc-rail-btn { width: 54px; height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border-radius: 16px; background: rgba(18,23,30,0.72); color: #cdd6e2; backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.08); font-size: 11px; cursor: pointer; transition: background 0.18s, border-color 0.18s, transform 0.12s; }
+.rc-rail-btn svg { width: 20px; height: 20px; fill: currentColor; stroke: currentColor; stroke-width: 1.6; }
+.rc-rail-btn svg [fill="none"] { fill: none; }
+.rc-rail-btn:hover { background: rgba(30,38,49,0.9); }
+.rc-rail-btn:active { transform: scale(0.94); }
+.rc-rail-btn.active { background: rgba(47,107,255,0.9); border-color: rgba(120,170,255,0.6); color: #fff; }
+.rc-rail-mouse { font-size: 20px; line-height: 1; }
+
+/* 操作抽屉 */
+.rc-sheet { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); width: min(340px, 80vw); max-height: 82vh; overflow-y: auto; background: rgba(16,21,28,0.94); border: 1px solid rgba(255,255,255,0.1); border-radius: 18px; padding: 12px; z-index: 11; backdrop-filter: blur(18px); box-shadow: 0 18px 48px rgba(0,0,0,0.5); }
+.rc-sheet-head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; margin-bottom: 10px; padding: 0 2px; }
+.rc-sheet-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.rc-act { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 9px 2px; border-radius: 12px; border: none; background: rgba(255,255,255,0.05); color: #dbe3ee; font-size: 11px; cursor: pointer; transition: background 0.16s; }
+.rc-act b { font-size: 18px; font-weight: 400; line-height: 1; }
+.rc-act:hover { background: rgba(255,255,255,0.11); }
+.rc-act.danger { color: #ff9aa8; }
+.rc-sheet-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.07); }
+.rc-sheet-label { font-size: 11px; color: #7f8b9b; }
+.rc-chip { border: 1px solid rgba(255,255,255,0.12); background: transparent; color: #b9c2cf; border-radius: 999px; padding: 4px 10px; font-size: 11.5px; cursor: pointer; }
+.rc-chip.active { background: rgba(47,107,255,0.85); border-color: transparent; color: #fff; }
+
+/* 大触控板：拖动区就是舞台本身（事件冒泡上来），这里只负责视觉与左右键/滚动条 */
+.rc-pad { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); width: min(500px, 88vw); background: rgba(14,19,25,0.78); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; z-index: 6; backdrop-filter: blur(16px); box-shadow: 0 14px 40px rgba(0,0,0,0.45); padding: 8px 10px 10px; touch-action: none; }
+.rc-pad.collapsed { width: auto; }
+.rc-pad-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #93a0b1; padding: 0 4px 4px; }
+.rc-pad-mini { border: none; background: rgba(255,255,255,0.08); color: #cdd6e2; border-radius: 8px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
+.rc-pad-body { position: relative; display: flex; align-items: center; justify-content: center; height: 136px; border-radius: 14px; background: radial-gradient(ellipse at 50% 40%, rgba(64,118,255,0.16), rgba(255,255,255,0.02) 70%); border: 1px solid rgba(255,255,255,0.06); transition: border-color 0.16s, box-shadow 0.16s; }
+.rc-pad-body.active { border-color: rgba(96,150,255,0.55); box-shadow: inset 0 0 0 1px rgba(96,150,255,0.22), 0 0 26px rgba(47,107,255,0.2); }
+.rc-pad-dot { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: rgba(124,178,255,0.35); border: 1px solid rgba(168,206,255,0.9); box-shadow: 0 0 14px rgba(80,140,255,0.55); pointer-events: none; }
+.rc-pad-glyph { width: 116px; height: 116px; color: #9db6de; opacity: 0.9; pointer-events: none; }
+.rc-pad-hint { position: absolute; bottom: 6px; left: 0; right: 0; text-align: center; font-size: 10.5px; color: #77849a; pointer-events: none; }
+.rc-pad-btns { display: flex; align-items: stretch; gap: 8px; margin-top: 8px; height: 46px; }
+.rc-pad-btn { flex: 1; border: none; border-radius: 12px; background: rgba(255,255,255,0.08); color: #dbe3ee; font-size: 13px; cursor: pointer; }
+.rc-pad-btn:active { background: rgba(47,107,255,0.75); }
+.rc-pad-scroll { width: 56px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; border-radius: 12px; background: rgba(255,255,255,0.05); color: #8b98ab; font-size: 9px; padding: 2px 0; cursor: ns-resize; touch-action: none; }
+.rc-pad-scroll-bar { flex: 1; width: 3px; margin: 3px 0; border-radius: 2px; background: linear-gradient(to bottom, rgba(157,182,222,0.15), rgba(157,182,222,0.55), rgba(157,182,222,0.15)); }
 /* 首帧等待层：黑屏时给出明确状态，并吃掉误触（此时画面还没有，点了也点不准） */
 .rc-wait-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; z-index: 3; pointer-events: none; background: #000; text-align: center; padding: 24px; }
 
-.rc-ball { position: absolute; right: 24px; bottom: 96px; width: 44px; height: 44px; border-radius: 50%; background: rgba(47,107,255,0.85); display: flex; align-items: center; justify-content: center; font-size: 18px; cursor: grab; box-shadow: 0 4px 16px rgba(0,0,0,0.45); transition: opacity 0.3s; z-index: 8; user-select: none; touch-action: none; }
-.rc-ball.hidden { opacity: 0.12; }
-.rc-ball-menu { position: absolute; display: flex; flex-direction: column; gap: 6px; background: #171c23; border: 1px solid #2a323e; border-radius: 10px; padding: 8px; z-index: 9; min-width: 170px; max-height: 70vh; overflow-y: auto; }
-.rc-mbtn { background: transparent; border: none; color: inherit; text-align: left; padding: 8px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; }
-.rc-mbtn:hover { background: #232b36; }
-.rc-mbtn.active { color: #7fa8ff; }
-.rc-mbtn.disp { padding: 6px 10px; font-size: 12px; color: #b9c2cf; }
-.rc-menu-label { font-size: 11px; color: #6d7684; padding: 4px 10px 0; border-top: 1px solid #232b36; margin-top: 2px; }
-.rc-mbtn.danger { color: #f0909d; }
 
 .rc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: 24px; width: min(480px, 92%); background: #171c23; border: 1px solid #2a323e; border-radius: 12px; padding: 12px; z-index: 10; }
 .rc-panel-wide { width: min(560px, 94%); }

@@ -662,15 +662,25 @@ async function main() {
     // server 依赖 better-sqlite3 等 native 模块，其预编译 ABI 跟 Electron 内嵌 node 对齐。
     // 用 PATH 上的 node 启动会因 NODE_MODULE_VERSION 不匹配直接 ERR_DLOPEN_FAILED（且
     // 报错容易被终端其它输出冲掉，表现为"莫名退出"）。所以这里与打包版 main.cjs 同源：
-    // 一律用 Electron 内嵌 node（ELECTRON_RUN_AS_NODE=1）+ tsx watch 启动，与 PATH node 版本解耦。
+    // 一律用 Electron 内嵌 node（ELECTRON_RUN_AS_NODE=1）+ tsx 启动，与 PATH node 版本解耦
+    // （默认不加 watch，见下方说明；YZ_WATCH=1 才开热重载）。
     const electronBin = resolveElectronBin();
     const tsxCli = path.join(ROOT, 'apps/server/node_modules/tsx/dist/cli.mjs');
     if (electronBin && fs.existsSync(tsxCli)) {
       log('用 Electron 内嵌 node 启动 server（ABI 与 native 模块对齐，不受 PATH node 版本影响）');
+      // ★★★ 默认 **不** 开热重载（2026-10-26 用户决定）：
+      //   此前一律 `tsx watch` —— 改任意一个 server 源码就重启进程，而重启那一下
+      //   正在发送的消息恰好落在 create_task 往返中间 ⇒ 「连接已断开，这条消息未发出」
+      //   （用户当天反复遇到）。跑任务时改代码是开发常态，靠人记住"别在跑任务时改文件"
+      //   不现实 ⇒ 默认静态运行、改完手动重启；确实要热重载时显式 YZ_WATCH=1。
+      //   ★ YZ_HOT_RELOAD 只在真的 watch 时注入：它是"这次重启是热重载"的分流标记，
+      //     不 watch 还注入，会把用户的手动重启误判成「可续的暂停」（见 llm-task-manager
+      //     的 markOrphanTasksInterrupted）。
+      const watch = process.env.YZ_WATCH === '1';
       start(
         'server',
         electronBin,
-        [tsxCli, 'watch', 'src/index.ts'],
+        watch ? [tsxCli, 'watch', 'src/index.ts'] : [tsxCli, 'src/index.ts'],
         path.join(ROOT, 'apps/server'),
         {
           ELECTRON_RUN_AS_NODE: '1',
@@ -679,14 +689,14 @@ async function main() {
           YANZHI_DEV_INSTANCE: '1',
           YANZHI_API_PORT: String(DEV_API_PORT),
           DATA_DIR: DEV_DATA_DIR,
-          // ★★★ 热重载标记（2026-10-09）：本路径同样是 `tsx watch`（改一次源码重启一次进程），
-          //   必须与 apps/server/scripts/dev.cjs / apps/desktop/main.cjs 的 dev 分支**同源注入** ——
-          //   否则孤儿任务回收会把"可续的暂停"当成"真中断"，用户看到「继续直接失败」。
-          //   （下方 pnpm 分支经 dev.cjs 已注入，此处是直启 Electron 那条路径的补齐。）
-          YZ_HOT_RELOAD: '1',
+          // 热重载标记（2026-10-09）：与 apps/server/scripts/dev.cjs / apps/desktop/main.cjs
+          //   **同源**注入 —— 缺了它，孤儿任务回收会把"可续的暂停"当成"真中断"，
+          //   用户看到「继续直接失败」。这里跟随 watch 开关，两条路径口径一致。
+          ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           ...browserEnv,
         }
       );
+      if (!watch) log('后端未开热重载：改 server 源码后需手动重启（需要热重载请设 YZ_WATCH=1）');
       return;
     }
     if (!electronBin) warn('未找到 Electron 二进制，回退 PATH node 启动 server（native 模块 ABI 不匹配时会 ERR_DLOPEN_FAILED）');

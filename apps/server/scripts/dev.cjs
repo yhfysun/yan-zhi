@@ -101,7 +101,15 @@ function findElectron() {
 const electronBin = findElectron();
 const isElectron = !!electronBin;
 const bin = electronBin || process.execPath;
-const args = [tsxCli, 'watch', 'src/index.ts', ...process.argv.slice(2)];
+// ★★★ 默认 **不** 开热重载（2026-10-26 用户决定）：`tsx watch` 会在改任意一个 server
+//   源码时重启进程，而重启那一下正在发送的消息恰好落在 create_task 往返中间 ⇒
+//   「连接已断开，这条消息未发出」。跑任务时改代码是开发常态 ⇒ 默认静态运行、
+//   改完手动重启；需要热重载时显式 `YZ_WATCH=1`。三处启动器（本文件 / bin/dev.mjs /
+//   apps/desktop/main.cjs 的 dev 分支）口径必须一致。
+const watch = process.env.YZ_WATCH === '1';
+const args = watch
+  ? [tsxCli, 'watch', 'src/index.ts', ...process.argv.slice(2)]
+  : [tsxCli, 'src/index.ts', ...process.argv.slice(2)];
 const devDataDir = resolveDevDataDir();
 fs.mkdirSync(devDataDir, { recursive: true });
 
@@ -109,6 +117,9 @@ console.log('[dev] 版本档: pro（开发模式全量）');
 console.log(isElectron ? '[dev] 运行时: Electron 内置 Node（原生模块 ABI 一致）'
   : '[dev] 运行时: 系统 Node（未找到 Electron；better-sqlite3 需为系统 Node 重编，否则会 ERR_DLOPEN_FAILED）');
 console.log(`[dev] DATA_DIR: ${devDataDir}`);
+console.log(watch
+  ? '[dev] 热重载: 开（YZ_WATCH=1 —— 改源码自动重启，会打断正在运行的发送/任务）'
+  : '[dev] 热重载: 关（改源码需手动重启；需要热重载请设 YZ_WATCH=1）');
 
 const child = spawn(bin, args, {
   cwd: serverDir,
@@ -119,12 +130,13 @@ const child = spawn(bin, args, {
     ...(isElectron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
     YZ_EDITION: 'pro',
     YZ_DEFAULT_EDITION: 'pro',
-    // ★★★ 热重载标记（2026-10-09）：本启动器用 `tsx watch`，**每改一次源码就重启进程**。
+    // ★★★ 热重载标记（2026-10-09）：仅 `tsx watch` 下注入 —— 每改一次源码就重启进程，
     //   不标记的话，下次启动的孤儿任务回收会把上一批 running 任务一律标成
     //   「服务重启，任务被中断」→ 用户体感"任务老跑不起来"（实测 16 次中断里 13 次源于此）。
     //   注入后回收改为标 `resumable` + 提示"计划与进度已保留，可直接继续"（见 llm-task-manager）。
+    //   ★ 2026-10-26 起跟随 watch 开关：默认不 watch ⇒ 不注入（手动重启该按"真中断"处理）。
     //   ★ 只在本启动器注入：生产路径（dist / main.cjs）不设 → 行为完全不变。
-    YZ_HOT_RELOAD: '1',
+    ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
     // ★ 数据目录：不注入的话 db.ts 会退回 apps/server/（源码目录）—— 见文件头注释
     DATA_DIR: devDataDir,
   },

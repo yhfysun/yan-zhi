@@ -79,13 +79,45 @@ describe('编号层重画判据 · 主进程', () => {
     const body = fnSource(MAIN, 'highlightShouldPaint');
     expect(body).toContain('highlightEnabled');
     expect(body).toContain('highlightIdleHidden');
-    expect(body, '★ 必须看动作新鲜度，不能只看开关').toContain('lastBrowserActionAt');
+    expect(body, '★ 必须看动作新鲜度，不能只看开关').toContain('lastHighlightActionAt');
     expect(body).toContain('HIGHLIGHT_ACTION_IDLE_MS');
+  });
+
+  // ★ 2026-10-26 用户实报：「用户可以操作也有蒙版？红框？」——
+  //   面板发来的 highlight on 此前**直接画**（不过闸、不起表），任务转去做别的事后无人再关。
+  it('★ 渲染层发来的 highlight on 也必须过空闲闸，并武装计时', () => {
+    const at = MAIN.indexOf("case 'highlight': {");
+    expect(at, '缺少 highlight 分支').toBeGreaterThanOrEqual(0);
+    const body = MAIN.slice(at, at + 1400);
+    expect(body, '★ 自动开必须重新武装空闲计时').toContain('scheduleHighlightIdleHide()');
+    expect(body, '★ 自动开必须问 highlightShouldPaint').toContain('highlightShouldPaint()');
+    expect(body, '★ 手动开（persist）才常驻').toContain('highlightPersist');
+  });
+
+  it('★ 编号层活性对两条执行路径都记账（桥 convId / SSE __workspaceDir）', () => {
+    const body = fnSource(MAIN, 'runBrowserAction');
+    expect(body, 'SSE 委托路径 convId=null，只认 convId 会让编号层永远不亮').toContain('__workspaceDir');
+    expect(body).toContain('lastHighlightActionAt = Date.now()');
+  });
+
+  it('★ guest 就绪补层不得只看 browserTaskActive（暂停/非操作态会把橙框画回来）', () => {
+    const at = PANEL.indexOf('function onWebviewReady');
+    const body = PANEL.slice(at, at + 2000);
+    expect(body, 'guest 就绪补层必须走 agentOperating 闸').toContain('agentOperating.value');
+  });
+
+  it('★ 编号层/蒙版只画预览空间，不碰 /browser 独立页', () => {
+    const body = fnSource(MAIN, 'scheduleHighlightIdleHide');
+    expect(body, '★ 按 allGuestWebContents 画 ⇒ 用户自己的 /browser 页也满屏橙框，看起来像"任务跑到浏览器页"')
+      .not.toContain('allGuestWebContents');
+    expect(body).toContain('previewGuestWebContents');
+    const helper = fnSource(MAIN, 'previewGuestWebContents');
+    expect(helper, '预览空间判据必须走 isPreviewScope').toContain('isPreviewScope');
   });
 
   it('dom-ready / 导航完成 / 新开页三处重画都问 highlightShouldPaint', () => {
     const uses = (MAIN.match(/highlightShouldPaint\(\)/g) || []).length;
-    expect(uses, '定义 1 处 + 三个重画时机各 1 处').toBeGreaterThanOrEqual(4);
+    expect(uses, '定义 1 处 + 四个判据点各 1 处').toBeGreaterThanOrEqual(4);
     expect(MAIN, '★ 仍按旧判据重画 ⇒ agent 停手后刷新页面又画回满屏橙框')
       .not.toMatch(/if \(highlightEnabled && !highlightIdleHidden/);
   });

@@ -10,6 +10,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ScrcpyMirrorSession } from './scrcpy-mirror';
 
 const ID = 'android-mirror';
 /** ESM 没有 __dirname：按模块自身位置定位，才能在「cwd 不是仓库根」时也找到 tools/scrcpy */
@@ -153,6 +154,89 @@ export const androidMirrorModule: PluginModule = {
       child = null;
       runningSerial = '';
     };
+
+    // ---- 真内嵌镜像通道（2026-10-26）----
+    // 画面不再依赖 scrcpy.exe 的 SDL 窗口（它没有把画面交给别的窗口的能力）：
+    // 自己当 scrcpy 客户端拿 H.264 帧（见 scrcpy-mirror.ts），经这条 WS 推给会话页，
+    // 页内用 WebCodecs 解码；触控/按键也从这条 WS 回传，直接写成 scrcpy 控制包。
+    let mirror: ScrcpyMirrorSession | null = null;
+    let mirrorSerial = '';
+    const stopMirror = (): void => {
+      try { mirror?.stop(); } catch { /* ignore */ }
+      mirror = null;
+      mirrorSerial = '';
+    };
+    ctx.registerWebSocket('/mirror/ws', (ws, req) => {
+      const url = new URL(req.url, 'http://localhost');
+      const serial = String(url.searchParams.get('serial') || '').trim();
+      let closed = false;
+      const fail = (msg: string): void => {
+        try { ws.send(JSON.stringify({ type: 'error', error: msg })); } catch { /* ignore */ }
+        try { ws.close(); } catch { /* ignore */ }
+      };
+      if (!serial) { fail('缺少 serial（先选设备）'); return; }
+      const scrcpy = resolveScrcpy();
+      if (!scrcpy) { fail('未找到 scrcpy（期望 tools/scrcpy/scrcpy.exe）'); return; }
+      const conf = cfg();
+      stopMirror();
+      const session = new ScrcpyMirrorSession({
+        adb: resolveAdb(),
+        jar: path.join(path.dirname(scrcpy), 'scrcpy-server'),
+        serial,
+        maxSize: conf.maxSize,
+        bitRate: conf.bitRate,
+      });
+      mirror = session;
+      mirrorSerial = serial;
+
+      ws.on('message', (data) => {
+        let msg: Record<string, unknown>;
+        try { msg = JSON.parse(String(data)); } catch { return; }
+        const info = session.info;
+        if (!info) return;
+        const type = String(msg.type || '');
+        if (type === 'tap') {
+          session.tap(Number(msg.x) || 0, Number(msg.y) || 0, info.width, info.height);
+        } else if (type === 'swipe') {
+          session.swipe(
+            Number(msg.x1) || 0, Number(msg.y1) || 0,
+            Number(msg.x2) || 0, Number(msg.y2) || 0,
+            info.width, info.height,
+          );
+        } else if (type === 'key') {
+          session.key(Number(msg.keycode) || 0);
+        } else if (type === 'text') {
+          session.text(String(msg.text || ''));
+        }
+      });
+      const teardown = (): void => {
+        closed = true;
+        if (mirrorSerial === serial) stopMirror();
+      };
+      ws.on('close', teardown);
+      ws.on('error', teardown);
+
+      void (async () => {
+        try {
+          const meta = await session.start();
+          if (closed) return;
+          ws.send(JSON.stringify({ type: 'video.meta', ...meta }));
+          ctx.log(`[android-mirror] 镜像已启动 serial=${serial} ${meta.width}x${meta.height} ${meta.codec}`);
+          while (!closed) {
+            const packets = await session.nextPackets();
+            for (const p of packets) {
+              // 12 字节头（pts 保留 CONFIG/KEY 标志位，客户端据此判断关键帧）+ payload
+              const head = Buffer.alloc(12);
+              head.writeBigUInt64BE(p.pts, 0);
+              head.writeUInt32BE(p.payload.length, 8);
+              ws.send(Buffer.concat([head, p.payload]));
+            }
+          }
+        } catch (e) {
+          if (!closed) fail((e as Error)?.message || '镜像启动失败');
+        }
+      })();
+    });
 
     ctx.registerBackendRoute((raw) => {
       const r = raw as {

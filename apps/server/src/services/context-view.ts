@@ -245,7 +245,11 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
           }
         : undefined,
     });
-    compacted = true;
+    // ★★★ 2026-10-26：只有「摘要覆盖段真的增长」才算一次压缩事件。
+    //   compress 被 tool 配对/摘要降级挡回时会**原样返回**（onCompressed 不触发、
+    //   mergedCovered 不变），此时仍置真就会让下面 ③ 的每步归一化把事件补出来 ——
+    //   用户实报的「已压缩历史上下文 · 0 条」每步刷一条就是这么来的。
+    compacted = !persist || forceCompress || mergedCovered.length > covered.length;
   }
 
   // ── ③ 兜底：仍超限则硬降 ───────────────────────────────────────────────
@@ -254,15 +258,15 @@ export async function buildContextView(opts: BuildContextViewOpts): Promise<Cont
   //     此时若不再兜一层，整段历史会直接怼给上游 → 超窗口报 400。
   //     `enforceBudget` 两级降：最长工具输出先替换成占位符，再从最老的成组丢弃。
   //   ★ 触发概率极低（正常情况下摘要已足够），但**正是它把"偶发 400"变成"不 400"**。
+  //   ★★★ 2026-10-26：这两道**每步常态归一化**不再置 `compacted` ——
+  //     它们每轮都会跑（compress 挡回时尤其），置真就等于每步上报一次"已压缩"，
+  //     聊天区被同一行刷屏（用户实报）。`compacted` 的语义收窄为"发生了摘要压缩"。
   const budgetHardCap = hardCap;
   if (cw.tokenCount(payload) > budgetHardCap) {
     payload = enforceBudget(payload, budgetHardCap);
-    compacted = true;
   }
   // 条数闸门（第二道）：token 没超但"条数很多"同样会让中段失效，一并收口
-  const beforeCount = payload.length;
   payload = enforceMessageCount(payload);
-  if (payload.length < beforeCount) compacted = true;
 
   return { messages: payload, compacted, coveredIds: mergedCovered, tokens: cw.tokenCount(payload) };
 }

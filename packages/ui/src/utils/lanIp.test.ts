@@ -281,7 +281,35 @@ describe('Settings.vue 接线契约（源码锚点）', () => {
   });
 });
 
+/**
+ * 远控页「被连 · 本机」的连接 IP 下拉（2026-10-26 用户报障「这里优化下默认选中」）。
+ *
+ * 缺陷：下拉 `v-model` 绑的是一个初值 `''` 的 ref，而所有 option 的 value 都是真实地址
+ *   → 一项都匹配不上，浏览器把 select 渲染成空白；与此同时下面的「控制端地址」已经
+ *   按物理网卡算好了 —— 两个控件说的不是同一件事。
+ * 口径：绑「解析后的地址」（计算属性，读设置页同一份 defaultLanIp），永远有值。
+ */
+describe('RemoteControl.vue 连接 IP 下拉（默认必须真选中）', () => {
+  const REMOTE = readFileSync(resolve(ROOT, 'packages/ui/src/views/RemoteControl.vue'), 'utf8');
+  const REMOTE_CODE = scriptOf(REMOTE);
+
+  it('★ hostSelectedIp 是「解析地址」的计算属性，不再是空串初值的 ref', () => {
+    expect(REMOTE).toMatch(/v-model="hostSelectedIp"/);
+    expect(REMOTE_CODE, '★ 下拉仍用空串初值的 ref（所有 option 都不匹配 ⇒ 渲染成空白）')
+      .not.toMatch(/hostSelectedIp = ref\(''\)/);
+    expect(REMOTE_CODE).toMatch(
+      /const hostSelectedIp = computed\(\{\s*get: \(\) => pickDefaultLanIp\(hostIps\.value, settingsStore\.settings\.defaultLanIp\)/,
+    );
+  });
+
+  it('★ 读写与设置页同源：改动写回 settings.defaultLanIp，清单按它排序', () => {
+    expect(REMOTE_CODE).toMatch(/settingsStore\.update\(\{ defaultLanIp: String\(v \|\| ''\) \}\)/);
+    expect(REMOTE_CODE).toMatch(/sortLanIps\(ips, settingsStore\.settings\.defaultLanIp\)/);
+  });
+});
+
 describe('★ webServed：后端必须暴露"是否托管前端"，前端必须据此提示（2026-10-17）', () => {
+
   it('后端 /api/network/ip 响应带 webServed 字段', () => {
     const SERVER = readFileSync(resolve(ROOT, 'apps/server/src/index.ts'), 'utf8');
     expect(SERVER, '★ /api/network/ip 未返回 webServed').toMatch(

@@ -3,6 +3,7 @@ import { isChatSelectableAgent } from '../../utils/agentSelectable';
 import { DEFAULT_CONTEXT_WINDOW } from '../../utils/context-window';
 import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocalPaths, toWindowsPath } from '../../utils/file-open';
 import { buildToolResultIndex } from '../../utils/tool-result';
+import { waitForChatWsOpen } from '../../utils/chat-ws';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from '../../utils/highlight';
@@ -2990,6 +2991,18 @@ async function healStalePlatform() {
     return base.slice(0, 24) + (base.length > 24 ? '…' : '');
   }
 
+  // ===== 断连自动重发（2026-10-26）=====
+  /** 等连接恢复的上限：必须覆盖 chat-ws 的退避上限（1s→15s），否则刚连上就超时 */
+  const WS_SEND_RETRY_WAIT_MS = 15_000;
+  /** 连接类失败（消息没进服务端），与「模型/平台报错」严格区分 */
+  function isWsConnectionError(e: any): boolean {
+    return /^(WS 请求超时|WS 已断开)/.test(String(e?.message || ''));
+  }
+  /** 一次发送的幂等键：重发沿用同一个，服务端据此去重（见 chat-ws-dedupe） */
+  function newSendClientMsgId(): string {
+    return `send_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   async function send() {
     // ★★★ 任务运行中 → 追加入队（2026-10-11 根因修复）：此判断**必须在重入锁之前**。
     //   原因：下方重入锁覆盖整个 sendInner，而正常路径 sendInner 尾部 `await store.sendMessage`
@@ -3321,14 +3334,39 @@ async function healStalePlatform() {
         quotedUrls.value = [];
       }
 
-      await store.sendMessage(userContent, platform, model, undefined, {
+      // ★ 发送幂等键（2026-10-26）：断连自动重发**沿用同一个 id**，服务端据此判定
+      //   「这条消息是否已经建过任务」—— 命中就直接还回原 taskId，不会再落一条重复的 user 消息。
+      const clientMsgId = newSendClientMsgId();
+      const sendOnce = () => store.sendMessage(userContent, platform, model, undefined, {
         temperature: agent?.temperature,
         maxTokens: agent?.maxTokens,
         topP: agent?.topP,
         frequencyPenalty: agent?.frequencyPenalty,
         presencePenalty: agent?.presencePenalty,
         reasoningEffort: resolveReasoningEffort(agent),
+        clientMsgId,
       }, convId);
+
+      try {
+        await sendOnce();
+      } catch (err: any) {
+        if (!isWsConnectionError(err)) throw err;
+        // ★★★ 断连兜底自动重发（2026-10-26，用户实报「又断了任务」）：
+        //   dev 后端热重载重启（或任何连接中断）恰好落在 create_task 往返中间时，
+        //   这条消息既没落库也没回显。旧行为是直接弹「请重试」把责任丢回用户 ——
+        //   而重连是自动的、退避最多 15s，重发完全可以自己完成。
+        //   ⇒ 等连接真的恢复（waitForChatWsOpen）再用**同一个 clientMsgId** 重发一次；
+        //     服务端幂等记账保证"上一次其实已建任务"时不会重复。仍失败才抛给外层 catch
+        //     走「原文放回输入框 + 提示重试」。
+        const hint = ElMessage({ message: '连接已断开，正在重连并自动重发…', type: 'info', duration: 0 });
+        try {
+          const reopened = await waitForChatWsOpen(WS_SEND_RETRY_WAIT_MS);
+          if (!reopened) throw err;
+          await sendOnce();
+        } finally {
+          hint.close();
+        }
+      }
 
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
@@ -3339,9 +3377,9 @@ async function healStalePlatform() {
       //   WS 半开时 create_task 静默等满 30s（见 utils/chat-ws.ts 的心跳注释），消息
       //   **压根没到服务端**——既没落库也没回显。此时若继续走下面的「调用失败」分支，
       //   连那条提示也要靠 addMessage 写进会话，而它同样走 WS ⇒ 一起失败 ⇒ 聊天区毫无反应。
-      //   ⇒ 单独处理：原文放回输入框 + 明确告知可重试。chat-ws 已在超时时主动重连，
-      //     重试必定走新连接（服务端若其实已建任务，会命中「注入运行中任务」语义，不会双开）。
-      const isConnectionFailure = /^(WS 请求超时|WS 已断开)/.test(reason);
+      //   ⇒ 单独处理：原文放回输入框 + 明确告知可重试。重连与自动重发已在上方试过一轮，
+      //     能走到这里说明重发也没成（或连接一直没恢复）。
+      const isConnectionFailure = isWsConnectionError(e);
       if (isConnectionFailure) {
         if (!input.value.trim()) input.value = content;
         ElMessage.error('连接已断开并自动重连，这条消息未发出，请重试');

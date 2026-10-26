@@ -14,5 +14,7 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
+    // jsdom 用例的前置补丁（matchMedia 等浏览器 API），node 环境自动跳过
+    setupFiles: ['./test-setup.ts'],
   },
 });

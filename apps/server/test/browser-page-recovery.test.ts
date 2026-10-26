@@ -41,21 +41,21 @@ function bodyOf(s: string, needle: string, what: string): string {
 
 describe('① 重建必须恢复 URL', () => {
   it('★★ getPage 重建路径必须导航回 lastKnownUrl', () => {
-    const body = bodyOf(BROWSER, 'async function getPage()', 'getPage');
+    const body = bodyOf(BROWSER, 'async function getPage(', 'getPage');
     expect(body, '★ 重建 page 不恢复 URL → 任务被静默换到别的页面（且不报错）')
       .toMatch(/lastKnownUrl/);
     expect(body, '★ 未真正执行导航（只是读了变量）').toMatch(/page\.goto\(lastKnownUrl/);
   });
 
   it('★★ 导航必须带超时（假死页面上 goto 会永久挂起）', () => {
-    const body = bodyOf(BROWSER, 'async function getPage()', 'getPage');
+    const body = bodyOf(BROWSER, 'async function getPage(', 'getPage');
     expect(body, '★ 恢复导航未包超时（会挂死整个调用）').toMatch(/withTimeout/);
   });
 
   it('★★ 已在目标 URL 时不得重复导航（该判定在纯函数里，见 ②）', () => {
     // 逻辑已抽到 `shouldRestorePageUrl`（② 组真跑验证）；
     // 这里只钉"getPage 确实委托给那个纯函数"，避免有人把判定又内联回来（内联就无法真跑验证）。
-    const body = bodyOf(BROWSER, 'async function getPage()', 'getPage');
+    const body = bodyOf(BROWSER, 'async function getPage(', 'getPage');
     expect(body, '★ 判定被内联回 getPage（无法真跑验证语义）').toMatch(/shouldRestorePageUrl\(/);
   });
 });
@@ -82,7 +82,7 @@ describe('② hadPage 门控（防止新任务跳到旧页面）', () => {
   });
 
   it('★★ 门控必须先于导航（且 getPage 里不得写死条件）', () => {
-    const body = bodyOf(BROWSER, 'async function getPage()', 'getPage');
+    const body = bodyOf(BROWSER, 'async function getPage(', 'getPage');
     expect(body, '★ 未用纯函数门控').toMatch(/shouldRestorePageUrl\(/);
     const gateIdx = body.indexOf('shouldRestorePageUrl(');
     const gotoIdx = body.indexOf('page.goto(lastKnownUrl');
@@ -92,7 +92,7 @@ describe('② hadPage 门控（防止新任务跳到旧页面）', () => {
   });
 
   it('★★ hadPage 必须在清空 pageInstance **之前**取值（否则恒为 false）', () => {
-    const body = bodyOf(BROWSER, 'async function getPage()', 'getPage');
+    const body = bodyOf(BROWSER, 'async function getPage(', 'getPage');
     const hadIdx = body.indexOf('const hadPage');
     // 找"关闭旧 page 并置空"的位置
     const nullIdx = body.indexOf('pageInstance = null');
@@ -110,7 +110,7 @@ describe('② hadPage 门控（防止新任务跳到旧页面）', () => {
 
 describe('③ fail-safe 与 recoverSession 定位', () => {
   it('★★ 恢复失败不得阻塞本次调用', () => {
-    const body = bodyOf(BROWSER, 'async function getPage()', 'getPage');
+    const body = bodyOf(BROWSER, 'async function getPage(', 'getPage');
     // goto 后面必须 .catch 兜住
     expect(body, '★ goto 未兜错（恢复失败会冒泡，把一次普通操作变成失败）')
       .toMatch(/\.catch\(/);
@@ -118,13 +118,33 @@ describe('③ fail-safe 与 recoverSession 定位', () => {
   });
 
   it('★★★ 不得把 recoverSession 整体替换进 getPage（会丢 ensureWebviewViaShell 兜底）', () => {
-    const body = bodyOf(BROWSER, 'async function getPage()', 'getPage');
+    const body = bodyOf(BROWSER, 'async function getPage(', 'getPage');
     expect(body, '★ getPage 改用了 recoverSession —— 它会丢掉"自动驱动应用壳开预览面板"的兜底，是能力倒退')
       .not.toMatch(/recoverSession\(\)/);
     // 反向确认：createTabPage 的自动开面板兜底仍在
     const ctp = bodyOf(BROWSER, 'async function createTabPage', 'createTabPage');
     expect(ctp, '★ ensureWebviewViaShell 兜底消失（全自动任务会卡在浏览器连接层）')
       .toMatch(/ensureWebviewViaShell/);
+  });
+
+  it('★★★ 兜底不得劫持主窗口路由（用户实报「有任务就跳到浏览器页」）', () => {
+    // 旧实现：壳页 location.hash = '#/browser' + 往 input.url-input 打字回车 ——
+    // 运行时表现就是"任务一开跑，整个应用被切到浏览器页，聊天区消失"。
+    expect(BROWSER, '★ 仍在 location.hash 切 #/browser → 应用会被任务顶到浏览器页')
+      .not.toMatch(/#\/browser/);
+    expect(BROWSER, '★ 仍在驱动应用壳的地址栏（input.url-input）')
+      .not.toMatch(/url-input/);
+    const ctp = bodyOf(BROWSER, 'async function createTabPage', 'createTabPage');
+    expect(ctp, '★ 拿不到 target 时必须给出可执行指引（先调 browser_navigate）')
+      .toMatch(/browser_navigate/);
+  });
+
+  it('★ 引导预览面板只能走桥（带 convId），不得改用户界面', () => {
+    const body = bodyOf(BROWSER, 'async function ensureWebviewViaShell', 'ensureWebviewViaShell');
+    expect(body, '★ 引导必须由桌面端建预览页（桥）—— 服务端不得自己动 UI')
+      .toMatch(/callBrowserBridgeRaw/);
+    expect(body, '★ 桥需要真实 convId 才能锚定该会话的预览 tab').toMatch(/convId/);
+    expect(body, '★ about:blank 会被 pickCdpPage 过滤掉，必须要求 http(s)').toMatch(/https\?/);
   });
 
   it('★★ recoverSession 必须被显式标注"已接线/保留原因"（否则后人又当死代码删掉）', () => {

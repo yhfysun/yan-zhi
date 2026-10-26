@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>远控页改版原型 · 参考 UU</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --line: rgba(255, 255, 255, 0.09);
+    --text: #e7edf6;
+    --muted: #8b98ab;
+    --accent: #3b7cff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; background: radial-gradient(1200px 600px at 70% -10%, #152236, #0b0f14 60%);
+    color: var(--text); font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 28px 16px 48px;
+  }
+  header { width: min(1060px, 100%); display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+  h1 { font-size: 18px; margin: 0 8px 0 0; letter-spacing: 0.2px; }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  .seg { display: flex; padding: 4px; border: 1px solid var(--line); background: rgba(255,255,255,.03); border-radius: 12px; }
+  .seg button { border: 0; background: transparent; color: var(--muted); font-size: 13px; padding: 7px 16px; border-radius: 9px; cursor: pointer; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .stage-wrap { width: min(1060px, 100%); display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+  .phone {
+    width: 392px; height: 800px; border-radius: 44px; background: #05070a; padding: 10px;
+    border: 1px solid rgba(255,255,255,.14); box-shadow: 0 40px 90px rgba(0,0,0,.6), inset 0 0 0 1px rgba(0,0,0,.6);
+    position: relative; flex-shrink: 0;
+  }
+  .notch { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: 112px; height: 26px; background: #05070a; border-radius: 0 0 18px 18px; z-index: 40; }
+  .screen { position: relative; width: 100%; height: 100%; border-radius: 36px; overflow: hidden; background: #0c1118; touch-action: none; user-select: none; }
+  .desktop { position: absolute; inset: 0; background: #14181f; }
+  .win { position: absolute; inset: 34px 14px 24px 14px; border-radius: 10px; background: #1d2128; border: 1px solid #2c323c; overflow: hidden; }
+  .win-top { height: 30px; background: #232832; display: flex; align-items: center; gap: 6px; padding: 0 10px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #444c58; }
+  .win-body { display: flex; height: calc(100% - 30px); }
+  .side { width: 92px; background: #1a1e25; border-right: 1px solid #2a303a; padding: 10px 8px; display: flex; flex-direction: column; gap: 8px; }
+  .side i { display: block; height: 7px; border-radius: 4px; background: #2c333e; }
+  .side i:nth-child(1) { width: 70%; background: #3a4350; }
+  .side i:nth-child(3) { width: 86%; }
+  .side i:nth-child(5) { width: 60%; }
+  .code { flex: 1; padding: 12px; font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; line-height: 1.8; color: #8ea0b6; }
+  .code b { color: #6fb1ff; font-weight: 500; }
+  .code em { color: #9ee6a8; font-style: normal; }
+  .code s { color: #d0a0ff; text-decoration: none; }
+  .cursor { position: absolute; z-index: 20; width: 26px; height: 34px; pointer-events: none; transform: translate(-3px, -2px); filter: drop-shadow(0 2px 4px rgba(0,0,0,.7)); transition: transform .1s ease; }
+  .cursor.press { transform: translate(-3px,-2px) scale(.84); }
+  .ripple { position: absolute; z-index: 19; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; border: 2px solid rgba(124,178,255,.95); box-shadow: 0 0 0 8px rgba(59,124,255,.18); animation: fx .4s ease-out forwards; pointer-events: none; }
+  .ripple.right { border-color: rgba(255,196,120,.95); box-shadow: 0 0 0 8px rgba(255,170,60,.16); }
+  @keyframes fx { from { opacity: 1; transform: scale(.5); } to { opacity: 0; transform: scale(1.4); } }
+  .toast { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); z-index: 30; background: rgba(10,14,20,.82); border: 1px solid var(--line); color: #cfd9e6; font-size: 12px; padding: 6px 12px; border-radius: 999px; opacity: 0; transition: opacity .18s; backdrop-filter: blur(10px); }
+  .toast.show { opacity: 1; }
+
+  /* ===== 旧版 ===== */
+  .old-bar { position: absolute; top: 0; left: 0; right: 0; z-index: 10; display: flex; gap: 6px; padding: 10px 8px; background: linear-gradient(#000c, transparent); overflow: hidden; white-space: nowrap; }
+  .old-bar span { font-size: 11px; padding: 5px 8px; border-radius: 6px; background: rgba(23,28,35,.85); border: 1px solid #2a323e; color: #cfd9e6; }
+  .old-bar span.p { background: #2f6bff; border-color: #2f6bff; color: #fff; }
+  .old-cursor { width: 16px; height: 22px; }
+
+  /* ===== 新版 ===== */
+  .topbar { position: absolute; top: 0; left: 0; right: 0; z-index: 10; display: flex; align-items: center; gap: 8px; padding: 12px 14px; padding-right: 82px; background: linear-gradient(#000000aa, transparent); }
+  .back { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: rgba(20,26,34,.8); border: 1px solid rgba(255,255,255,.12); color: #e6eaf0; }
+  .back svg { width: 18px; height: 18px; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #3ddc84; box-shadow: 0 0 0 3px rgba(61,220,132,.18); }
+  .status { font-size: 11.5px; color: #cfd9e6; text-shadow: 0 1px 2px #000; }
+  .pill { margin-left: auto; font-size: 10.5px; color: #b9c6d8; border: 1px solid rgba(255,255,255,.12); background: rgba(20,26,34,.7); padding: 4px 9px; border-radius: 999px; }
+
+  .rail { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); z-index: 15; display: flex; flex-direction: column; gap: 9px; }
+  .rail button { width: 52px; height: 56px; border-radius: 16px; border: 1px solid rgba(255,255,255,.08); background: rgba(18,23,30,.72); color: #cdd6e2; backdrop-filter: blur(14px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 10.5px; }
+  .rail button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+  .rail button.active { background: rgba(47,107,255,.92); border-color: rgba(120,170,255,.6); color: #fff; }
+
+  .pad { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 14; width: 344px; padding: 8px 10px 10px; border-radius: 20px; background: rgba(14,19,25,.8); border: 1px solid rgba(255,255,255,.1); backdrop-filter: blur(16px); box-shadow: 0 14px 40px rgba(0,0,0,.5); }
+  .pad-head { display: flex; align-items: center; justify-content: space-between; font-size: 10.5px; color: #93a0b1; padding: 0 2px 5px; }
+  .pad-head b { font-weight: 500; }
+  .pad-mini { border: 0; background: rgba(255,255,255,.08); color: #cdd6e2; border-radius: 8px; padding: 3px 8px; font-size: 10px; }
+  .pad-body { height: 140px; border-radius: 14px; border: 1px solid rgba(255,255,255,.06); background: radial-gradient(ellipse at 50% 40%, rgba(64,118,255,.17), rgba(255,255,255,.02) 70%); display: grid; place-items: center; position: relative; }
+  .pad-body svg { width: 120px; height: 120px; color: #9db6de; opacity: .92; }
+  .pad-hint { position: absolute; bottom: 6px; font-size: 10px; color: #77849a; }
+  .pad-btns { display: flex; gap: 8px; margin-top: 8px; height: 44px; }
+  .pad-btns button { flex: 1; border: 0; border-radius: 12px; background: rgba(255,255,255,.08); color: #dbe3ee; font-size: 12.5px; }
+  .pad-btns button:active { background: rgba(47,107,255,.8); }
+  .pad-scroll { width: 54px; border-radius: 12px; background: rgba(255,255,255,.05); display: flex; flex-direction: column; align-items: center; justify-content: space-between; color: #8b98ab; font-size: 8px; padding: 2px 0; }
+  .pad-scroll i { flex: 1; width: 3px; border-radius: 2px; margin: 3px 0; background: linear-gradient(rgba(157,182,222,.15), rgba(157,182,222,.55), rgba(157,182,222,.15)); }
+
+  .sheet { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); z-index: 22; width: 290px; border-radius: 18px; background: rgba(16,21,28,.95); border: 1px solid rgba(255,255,255,.1); backdrop-filter: blur(18px); padding: 12px; box-shadow: 0 18px 48px rgba(0,0,0,.55); display: none; }
+  .sheet.show { display: block; }
+  .sheet-head { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+  .sheet-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .sheet-grid button { border: 0; border-radius: 12px; background: rgba(255,255,255,.05); color: #dbe3ee; font-size: 10.5px; padding: 9px 2px; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .sheet-grid button b { font-size: 17px; font-weight: 400; }
+  .sheet-grid button.danger { color: #ff9aa8; }
+
+  .controls { width: min(520px, 100%); display: flex; flex-direction: column; gap: 12px; }
+  .controls h2 { font-size: 13px; margin: 0; color: #cfd9e6; font-weight: 600; }
+  .btns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .btns button { border: 1px solid var(--line); background: rgba(255,255,255,.04); color: var(--text); border-radius: 12px; padding: 11px 12px; font-size: 13px; cursor: pointer; text-align: left; }
+  .btns button:hover { border-color: var(--accent); background: rgba(59,124,255,.12); }
+  .btns button small { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .notes { border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.03); padding: 14px 16px; font-size: 12.5px; line-height: 1.85; color: #b9c6d8; }
+  .notes b { color: #fff; }
+  .notes .bad { color: #ff9aa8; }
+  .notes .good { color: #7ee0a3; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: 11.5px; }
+  .legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; background: var(--accent); vertical-align: middle; margin-right: 5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>远控页 · 参考 UU 改版原型</h1>
+  <span class="sub">点手机屏可直接试手势；下方按钮可模拟单击 / 长按 / 双指滚动</span>
+  <div class="seg" style="margin-left:auto">
+    <button id="btnOld">旧版</button>
+    <button id="btnNew" class="on">新版</button>
+  </div>
+</header>
+
+<div class="stage-wrap">
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="screen" id="screen">
+      <div class="desktop">
+        <div class="win">
+          <div class="win-top"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          <div class="win-body">
+            <div class="side"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="code">
+              <b>export async function</b> run(task) {<br />
+              &nbsp;&nbsp;<b>const</b> plan = <s>await</s> planOf(task);<br />
+              &nbsp;&nbsp;<b>for</b> (<b>const</b> step <b>of</b> plan.steps) {<br />
+              &nbsp;&nbsp;&nbsp;&nbsp;<em>// 执行并回传进度</em><br />
+              &nbsp;&nbsp;&nbsp;&nbsp;<s>await</s> step.run();<br />
+              &nbsp;&nbsp;&nbsp;&nbsp;<b>emit</b>('progress', step.id);<br />
+              &nbsp;&nbsp;}<br />
+              &nbsp;&nbsp;<b>return</b> plan.result;<br />
+              }<br /><br />
+              <em>// 远程控制：画面走 WebRTC，输入走 WS</em><br />
+              <b>const</b> reply = <s>await</s> ask(<em>'继续'</em>);
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 旧版 UI -->
+      <div id="oldUI">
+        <div class="old-bar"><span>← 断开</span><span>WebRTC 已连接</span><span>⌨ 键盘</span><span>🖱 鼠标</span><span>适应</span><span>全屏</span></div>
+      </div>
+
+      <!-- 新版 UI -->
+      <div id="newUI">
+        <div class="topbar">
+          <span class="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></span>
+          <span class="status-dot"></span>
+          <span class="status">WebRTC · 12ms</span>
+          <span class="pill">显示器 1</span>
+        </div>
+        <div class="rail">
+          <button id="railOps"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1.6"/><rect x="14" y="4" width="6" height="6" rx="1.6"/><rect x="4" y="14" width="6" height="6" rx="1.6"/><rect x="14" y="14" width="6" height="6" rx="1.6"/></svg><span>操作</span></button>
+          <button class="active"><svg viewBox="0 0 24 24"><path d="M6 3l11 8.5-5 .8 2.8 5.6-2.3 1.1-2.8-5.6L6 17z" fill="currentColor" stroke="none"/></svg><span>触控板</span></button>
+          <button><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.4"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M7 13.5h10"/></svg><span>键盘</span></button>
+          <button><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5"/></svg><span>适应</span></button>
+          <button><svg viewBox="0 0 24 24"><path d="M5 10V5h5M19 14v5h-5M5 14v5h5M19 10V5h-5"/></svg><span>全屏</span></button>
+        </div>
+        <div class="pad">
+          <div class="pad-head"><b>触控板</b><button class="pad-mini">收起</button></div>
+          <div class="pad-body">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <rect x="34" y="14" width="52" height="76" rx="26" fill="none" stroke="currentColor" stroke-width="3.2"/>
+              <path d="M60 22v26" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+              <path d="M56 20l4-5 4 5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+              <path d="M56 52l4 5 4-5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity=".55"/>
+              <rect x="46" y="58" width="12" height="18" rx="6" fill="currentColor" opacity=".22"/>
+              <path d="M22 96l8-6M90 96l-8-6M60 82v10" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".45"/>
+            </svg>
+            <div class="pad-hint">拖动移动指针 · 双指上下滑滚动 · 长按右键</div>
+          </div>
+          <div class="pad-btns">
+            <button data-click="left">左键</button>
+            <div class="pad-scroll"><span>▲</span><i></i><span>▼</span></div>
+            <button data-click="right">右键</button>
+          </div>
+        </div>
+        <div class="sheet" id="sheet">
+          <div class="sheet-head"><span>操作</span><span style="color:#8b98ab">✕</span></div>
+          <div class="sheet-grid">
+            <button><b>🖱</b>右键</button><button><b>📋</b>剪贴板</button><button><b>🗂</b>文件</button><button><b>🔊</b>声音</button>
+            <button><b>◉</b>切触控</button><button><b>⛶</b>适应</button><button><b>🖥</b>全屏</button><button class="danger"><b>✕</b>断开</button>
+          </div>
+        </div>
+      </div>
+
+      <svg class="cursor" id="cursor" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#111" stroke-width="1.2"/></svg>
+      <div class="toast" id="toast"></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <h2>直接试手势</h2>
+    <div class="btns">
+      <button data-demo="tap">单击<small>手指轻点 = 左键，落点出现光圈</small></button>
+      <button data-demo="long">长按<small>450ms = 右键，带振动反馈</small></button>
+      <button data-demo="scroll">双指滚动<small>上下滑 = 滚轮，不误触点击</small></button>
+      <button data-demo="drag">拖动指针<small>按住拖动 = 移动指针，不点击</small></button>
+      <button data-demo="zoom">捏合<small>双指开合 = 本地缩放</small></button>
+      <button data-demo="right2">双指轻点<small>双指快速点按 = 右键</small></button>
+    </div>
+
+    <div class="notes">
+      <b>这次改的关键点</b><br />
+      <span class="bad">旧问题</span>：双指一碰就先发了 left down，之后只补 up 的条件不成立，远端左键一直按着 → 之后所有单击都变成拖拽，体感「单击没用」。<br />
+      <span class="good">新做法</span>：点按直接发原子 click，不再赌 down+up；进双指/取消/切后台/断开都强制补抬左键。<br />
+      <span class="good">手势优先级</span>：单指位移 &gt; 8px 才算拖动；双指先锁意图（间距变化→缩放，中点位移→滚动），不会一边滚一边放大。<br />
+      <span class="good">双模式并行（UU 同款）</span>：画面直接点按始终可用（点哪点哪），触控板同时可拖动指针/点按左键/双指滚动，不需要切换。<br />
+      <span class="good">触控板</span>：指哪打哪的自绘光标 + 大鼠标图案 + 左右键 + 滚动条；拖动时板面高亮、触点跟随，远端 hover 实时生效。
+    </div>
+    <div class="legend"><span><i></i>可点区域：整块画面</span><span>滚轮事件也可直接试（触控板双指）</span></div>
+  </div>
+</div>
+
+<script>
+const screenEl = document.getElementById('screen');
+const cursorEl = document.getElementById('cursor');
+const oldUI = document.getElementById('oldUI');
+const newUI = document.getElementById('newUI');
+const sheet = document.getElementById('sheet');
+const toastEl = document.getElementById('toast');
+let mode = 'new';
+let cx = 196, cy = 330;
+let toastTimer = 0;
+
+function placeCursor() {
+  cursorEl.style.left = cx + 'px';
+  cursorEl.style.top = cy + 'px';
+  cursorEl.classList.toggle('old-cursor', mode === 'old');
+}
+placeCursor();
+
+function setMode(next) {
+  mode = next;
+  oldUI.style.display = next === 'old' ? '' : 'none';
+  newUI.style.display = next === 'old' ? 'none' : '';
+  document.getElementById('btnOld').classList.toggle('on', next === 'old');
+  document.getElementById('btnNew').classList.toggle('on', next === 'new');
+  if (next === 'old') { cursorEl.style.left = '150px'; cursorEl.style.top = '210px'; }
+  else { cx = 196; cy = 330; placeCursor(); }
+  sheet.classList.remove('show');
+}
+setMode('new');
+document.getElementById('btnOld').onclick = () => setMode('old');
+document.getElementById('btnNew').onclick = () => setMode('new');
+
+function toast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 900);
+}
+
+function ripple(x, y, button) {
+  const el = document.createElement('div');
+  el.className = 'ripple' + (button === 'right' ? ' right' : '');
+  el.style.left = x + 'px';
+  el.style.top = y + 'px';
+  screenEl.appendChild(el);
+  setTimeout(() => el.remove(), 420);
+  cursorEl.classList.add('press');
+  setTimeout(() => cursorEl.classList.remove('press'), 150);
+  ripple.last = { x, y };
+}
+
+function clickAt(x, y, button) {
+  ripple(x, y, button);
+  toast(button === 'right' ? '右键 · 已注入被控端' : '左键单击 · 已注入被控端');
+}
+
+// 点按 / 长按 / 拖动
+let down = null, longTimer = 0, moved = false;
+screenEl.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('.pad-btns, .rail, .topbar, .sheet')) return;
+  down = { x: e.clientX, y: e.clientY };
+  moved = false;
+  clearTimeout(longTimer);
+  longTimer = setTimeout(() => {
+    if (!down || moved) return;
+    down.long = true;
+    if (mode === 'new') clickAt(cx, cy, 'right');
+    else toast('旧版：长按容易误触发，或无响应');
+  }, 450);
+});
+screenEl.addEventListener('pointermove', (e) => {
+  if (!down) return;
+  const dx = e.clientX - down.x;
+  const dy = e.clientY - down.y;
+  if (Math.hypot(dx, dy) > 8) {
+    moved = true;
+    clearTimeout(longTimer);
+  }
+  if (!moved) return;
+  if (mode === 'new') {
+    cx = Math.max(14, Math.min(378, cx + dx * 0.9));
+    cy = Math.max(60, Math.min(700, cy + dy * 0.9));
+    placeCursor();
+  }
+  down.x = e.clientX;
+  down.y = e.clientY;
+});
+screenEl.addEventListener('pointerup', (e) => {
+  if (!down) return;
+  clearTimeout(longTimer);
+  if (!moved && !down.long) {
+    if (mode === 'new') {
+      // 指针模式：点哪里都算左键，但按住是移动指针
+      const r = screenEl.getBoundingClientRect();
+      clickAt(cx, cy, 'left');
+    } else {
+      ripple(e.clientX - screenEl.getBoundingClientRect().left, e.clientY - screenEl.getBoundingClientRect().top, 'left');
+      toast('旧版：单击有时没反应');
+    }
+  }
+  down = null;
+});
+
+// 双指/滚轮
+screenEl.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (mode !== 'new') { toast('旧版：双指滚动会误触缩放'); return; }
+  const dir = e.deltaY > 0 ? '下滑' : '上滑';
+  toast('滚轮' + dir + ' · 已发送');
+  ripple(cx, cy, 'left');
+  setTimeout(() => { const el = screenEl.querySelector('.ripple'); if (el) el.remove(); }, 380);
+}, { passive: false });
+
+// 演示按钮
+document.querySelectorAll('[data-demo]').forEach((btn) => {
+  btn.onclick = () => {
+    const kind = btn.dataset.demo;
+    if (mode === 'old') { toast('切到「新版」再看'); return; }
+    if (kind === 'tap') clickAt(cx, cy, 'left');
+    if (kind === 'long') clickAt(cx, cy, 'right');
+    if (kind === 'scroll') { toast('双指上滑 → 滚轮 -240'); ripple(cx, cy, 'left'); }
+    if (kind === 'drag') {
+      const start = { x: cx, y: cy };
+      let t = 0;
+      const timer = setInterval(() => {
+        t += 1;
+        cx = start.x + t * 5;
+        cy = start.y + Math.sin(t / 3) * 18;
+        placeCursor();
+        if (t > 22) { clearInterval(timer); toast('指针已移动 · 未产生点击'); }
+      }, 28);
+    }
+    if (kind === 'zoom') toast('双指开合 · 本地画面缩放');
+    if (kind === 'right2') clickAt(cx, cy, 'right');
+  };
+});
+
+document.querySelectorAll('[data-click]').forEach((btn) => {
+  btn.onclick = () => clickAt(cx, cy, btn.dataset.click);
+});
+document.getElementById('railOps').onclick = () => sheet.classList.toggle('show');
+</script>
+</body>
+</html>

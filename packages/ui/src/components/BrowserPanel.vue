@@ -976,7 +976,7 @@ const highlightAuto = ref(false);
 const agentOperating = computed(() =>
   isPreviewScope && !chatStore.browserPaused && chatStore.browserTaskActive && convTaskRunning.value,
 );
-async function applyHighlight(on: boolean, silent = false) {
+async function applyHighlight(on: boolean, silent = false, persist = false) {
   if (!on) {
     // 关：先让主进程按自己的 tab 表全量清（含不在本面板 tabs 里的页/已隐藏页）。
     // ★ 2026-10-23：此前只遍历本地 tabs 逐个发 off —— 面板状态一漂移就漏关，
@@ -993,7 +993,9 @@ async function applyHighlight(on: boolean, silent = false) {
   }
   if (!activeTabId.value) { if (!silent) ElMessage.warning('请先打开一个网页'); return; }
   try {
-    const r: any = await (window as any).electronAPI.browserView.action(activeTabId.value, 'highlight', { on });
+    // ★ 2026-10-26：persist 只在「用户手动开」时为真。自动开必须让主进程能按
+    //   「最近 4s 内确有 agent 动作」判定，否则任务去做别的事时橙框会一直糊在页面上。
+    const r: any = await (window as any).electronAPI.browserView.action(activeTabId.value, 'highlight', { on, persist });
     if (r && r.error) { if (!silent) ElMessage.warning(r.error); highlightOn.value = false; return; }
     highlightOn.value = !!(r && r.highlight);
   } catch (e: any) {
@@ -1007,7 +1009,8 @@ async function toggleHighlight() {
   highlightAuto.value = false;   // 手动操作后不再视为"自动开"，避免任务结束时被自动关掉
   // 手动开 → 收尾不自动关；手动关 → 收尾照常清（本就是要它消失）
   chatStore.browserHighlightManual = !highlightOn.value;
-  await applyHighlight(!highlightOn.value);
+  // 手动开 = 明确要看编号 ⇒ persist（主进程不做 4s 空闲收起）；手动关时该值无意义
+  await applyHighlight(!highlightOn.value, false, !highlightOn.value);
 }
 // 切 tab / 面板挂载时：若开着高亮，或 agent 正在操作（且用户没手动关过），给激活页补一层（幂等）。
 watch(activeTabId, (tid) => {
@@ -2445,7 +2448,10 @@ function onWebviewReady(tabId: string) {
       (window as any).electronAPI?.browser?.wvRegister?.(tabId, id, browserScope);
       // ★ 2026-10-22：guest 就绪后再补一次编号层。任务刚开始时 guest 往往还没注册，
       //   那一次 highlight 会以"浏览器未就绪"失败，之后没人重试 → 用户看不到编号。
-      if (tabId === activeTabId.value && !highlightOn.value && !highlightUserOff.value && chatStore.browserTaskActive) {
+      // ★ 2026-10-26：判据从 browserTaskActive 收紧到 agentOperating —— 任务还在跑但
+      //   用户已经接管（暂停）或 agent 正在做别的事时，页面每加载一次就把橙框画回来，
+      //   用户"能操作了还满屏编号"就是这么来的（实报）。
+      if (tabId === activeTabId.value && !highlightOn.value && !highlightUserOff.value && agentOperating.value) {
         // ★ 同上：这条也是自动开，必须记 auto，否则任务收尾关不掉
         highlightAuto.value = true;
         void applyHighlight(true, true);

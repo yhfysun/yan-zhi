@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>言智远控 · 四场景交互矩阵（可切换原型）</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121821; --line: rgba(255,255,255,.09);
+    --text: #e7edf6; --muted: #8b98ab; --accent: #3b7cff; --danger: #f0a33a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100vh; padding: 24px 16px 56px; color: var(--text);
+    background: radial-gradient(1200px 620px at 72% -12%, #152236, #0b0f14 62%);
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+  }
+  header { width: min(1180px, 100%); display: flex; flex-direction: column; gap: 10px; }
+  .title-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; }
+  .seg { display: flex; padding: 4px; gap: 2px; border: 1px solid var(--line); background: rgba(255,255,255,.03); border-radius: 12px; }
+  .seg button { border: 0; background: transparent; color: var(--muted); font-size: 12.5px; padding: 6px 12px; border-radius: 9px; cursor: pointer; white-space: nowrap; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .seg button.warn.on { background: var(--danger); color: #1a1200; }
+  .seg-label { font-size: 11px; color: #6f7d90; align-self: center; padding: 0 2px 0 6px; }
+
+  .stage { width: min(1180px, 100%); display: flex; gap: 26px; align-items: flex-start; flex-wrap: wrap; justify-content: center; }
+
+  /* ===== 手机壳 ===== */
+  .phone { width: 384px; height: 782px; border-radius: 44px; background: #05070a; padding: 10px;
+    border: 1px solid rgba(255,255,255,.14); box-shadow: 0 40px 90px rgba(0,0,0,.6); position: relative; flex-shrink: 0; }
+  .notch { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: 108px; height: 24px;
+    background: #05070a; border-radius: 0 0 16px 16px; z-index: 40; }
+  .screen { position: relative; width: 100%; height: 100%; border-radius: 36px; overflow: hidden;
+    background: #0c1118; touch-action: none; user-select: none; }
+
+  /* ===== 桌面窗口（电脑端控制台） ===== */
+  .desktop { display: none; width: 620px; height: 470px; border-radius: 14px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.14); box-shadow: 0 34px 80px rgba(0,0,0,.6); background: #0c1118; flex-shrink: 0; }
+  .dtitle { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: #151b24; border-bottom: 1px solid var(--line); font-size: 12px; color: #b9c6d8; }
+  .dtitle .dot3 { display: flex; gap: 6px; margin-right: 4px; }
+  .dtitle .dot3 i { width: 9px; height: 9px; border-radius: 50%; background: #3a4350; }
+  .dbody { position: relative; height: calc(100% - 34px); }
+
+  /* ===== 远端画面 ===== */
+  .remote { position: absolute; inset: 0; background: #14181f; overflow: hidden; }
+  .rwin { position: absolute; inset: 40px 16px 30px 16px; border-radius: 10px; background: #1d2128; border: 1px solid #2c323c; overflow: hidden; }
+  .rtop { height: 26px; background: #232832; display: flex; align-items: center; gap: 6px; padding: 0 10px; }
+  .rtop i { width: 8px; height: 8px; border-radius: 50%; background: #444c58; }
+  .rbody { display: flex; height: calc(100% - 26px); }
+  .rside { width: 84px; background: #1a1e25; border-right: 1px solid #2a303a; padding: 10px 8px; display: flex; flex-direction: column; gap: 8px; }
+  .rside i { display: block; height: 6px; border-radius: 4px; background: #2c333e; }
+  .rside i:nth-child(1) { width: 68%; background: #3a4350; }
+  .rside i:nth-child(4) { width: 84%; }
+  .rside i:nth-child(6) { width: 56%; }
+  .rtext { flex: 1; padding: 12px; font-family: ui-monospace, Consolas, monospace; font-size: 10px; line-height: 1.9; color: #8ea0b6; }
+  .rtext b { color: #6fb1ff; font-weight: 500; }
+  .rtext em { color: #9ee6a8; font-style: normal; }
+  .rtext s { color: #d0a0ff; text-decoration: none; }
+
+  /* 手机被控画面（电脑/手机控手机时用） */
+  .phone-remote { position: absolute; inset: 0; background: linear-gradient(160deg, #1b2431, #0e131b); display: none; }
+  .pr-status { height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; font-size: 9px; color: #7f8ea3; }
+  .pr-apps { position: absolute; inset: 44px 16px 96px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-content: start; }
+  .pr-apps i { height: 46px; border-radius: 12px; background: rgba(255,255,255,.07); }
+  .pr-dock { position: absolute; left: 16px; right: 16px; bottom: 22px; height: 58px; border-radius: 18px; background: rgba(255,255,255,.06); display: flex; align-items: center; justify-content: space-around; }
+  .pr-dock i { width: 34px; height: 34px; border-radius: 10px; background: rgba(255,255,255,.1); }
+
+  /* 光标 / 点按反馈 */
+  .cursor { position: absolute; z-index: 20; width: 24px; height: 32px; pointer-events: none; transition: transform .12s ease; filter: drop-shadow(0 2px 4px rgba(0,0,0,.7)); }
+  .cursor.press { transform: scale(.84); }
+  .ripple { position: absolute; z-index: 19; width: 42px; height: 42px; margin: -21px 0 0 -21px; border-radius: 50%;
+    border: 2px solid rgba(124,178,255,.95); box-shadow: 0 0 0 8px rgba(59,124,255,.16); animation: fx .42s ease-out forwards; pointer-events: none; }
+  .ripple.right { border-color: rgba(255,196,120,.95); box-shadow: 0 0 0 8px rgba(255,170,60,.16); }
+  .ripple.blocked { border-color: rgba(240,163,58,.95); box-shadow: 0 0 0 8px rgba(240,163,58,.14); }
+  @keyframes fx { from { opacity: 1; transform: scale(.5); } to { opacity: 0; transform: scale(1.45); } }
+
+  /* 顶栏：返回 / 状态 / 显示器页签 */
+  .topbar { position: absolute; top: 0; left: 0; right: 0; z-index: 12; display: flex; align-items: center; gap: 8px;
+    padding: 12px 14px; background: linear-gradient(rgba(0,0,0,.72), transparent); }
+  .back { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0;
+    background: rgba(20,26,34,.82); border: 1px solid rgba(255,255,255,.12); color: #e6eaf0; }
+  .back svg { width: 17px; height: 17px; }
+  .sd { width: 7px; height: 7px; border-radius: 50%; background: #3ddc84; box-shadow: 0 0 0 3px rgba(61,220,132,.18); flex-shrink: 0; }
+  .sd.warn { background: var(--danger); box-shadow: 0 0 0 3px rgba(240,163,58,.18); }
+  .stat { font-size: 11px; color: #cfd9e6; text-shadow: 0 1px 2px #000; white-space: nowrap; }
+  .disps { margin-left: auto; display: none; gap: 4px; }
+  .disps.show { display: flex; }
+  .disps button { border: 1px solid rgba(255,255,255,.14); background: rgba(18,23,30,.78); color: #c3cfdf;
+    font-size: 10.5px; padding: 4px 9px; border-radius: 999px; cursor: pointer; }
+  .disps button.on { background: rgba(47,107,255,.95); border-color: rgba(120,170,255,.6); color: #fff; }
+
+  /* 侧栏（一级入口，当前模式常显） */
+  .rail { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); z-index: 15; display: flex; flex-direction: column; gap: 8px; }
+  .rail button { width: 50px; height: 54px; border-radius: 15px; border: 1px solid rgba(255,255,255,.08);
+    background: rgba(18,23,30,.74); color: #cdd6e2; backdrop-filter: blur(14px); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 3px; font-size: 10px; cursor: pointer; }
+  .rail button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+  .rail button.on { background: rgba(47,107,255,.92); border-color: rgba(120,170,255,.6); color: #fff; }
+
+  /* 触控板 */
+  .pad { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 14; width: 330px;
+    padding: 8px 10px 10px; border-radius: 18px; background: rgba(14,19,25,.84); border: 1px solid rgba(255,255,255,.1);
+    backdrop-filter: blur(16px); display: none; }
+  .pad.show { display: block; }
+  .pad-head { display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #93a0b1; padding: 0 2px 5px; }
+  .pad-body { height: 128px; border-radius: 12px; border: 1px solid rgba(255,255,255,.06);
+    background: radial-gradient(ellipse at 50% 40%, rgba(64,118,255,.17), rgba(255,255,255,.02) 70%);
+    display: grid; place-items: center; position: relative; }
+  .pad-body svg { width: 104px; height: 104px; color: #9db6de; opacity: .92; }
+  .pad-hint { position: absolute; bottom: 5px; font-size: 9.5px; color: #77849a; }
+  .pad-btns { display: flex; gap: 7px; margin-top: 7px; height: 40px; }
+  .pad-btns button { flex: 1; border: 0; border-radius: 11px; background: rgba(255,255,255,.08); color: #dbe3ee; font-size: 12px; cursor: pointer; }
+  .pad-btns button:active { background: rgba(47,107,255,.8); }
+  .pad-scroll { width: 46px; border-radius: 11px; background: rgba(255,255,255,.05); display: flex; align-items: center; justify-content: center; color: #8b98ab; font-size: 8px; }
+
+  /* 只读态：常驻底栏 + 一键恢复（UU 观看模式同款） */
+  .viewonly { position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 26; display: none;
+    align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px;
+    background: rgba(28,21,9,.94); border: 1px solid rgba(240,163,58,.45); backdrop-filter: blur(12px); }
+  .viewonly.show { display: flex; }
+  .viewonly .txt { flex: 1; font-size: 11.5px; color: #f4d9b0; line-height: 1.5; }
+  .viewonly .txt b { color: #ffce85; font-weight: 600; }
+  .viewonly button { border: 0; border-radius: 9px; padding: 7px 12px; font-size: 11.5px; cursor: pointer;
+    background: #f0a33a; color: #1a1200; font-weight: 600; }
+
+  /* 键盘条 */
+  .kb { position: absolute; left: 0; right: 0; bottom: 0; z-index: 24; display: none; gap: 5px; padding: 9px 10px;
+    background: rgba(10,14,20,.94); border-top: 1px solid rgba(255,255,255,.1); backdrop-filter: blur(12px); }
+  .kb.show { display: flex; }
+  .kb button { border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.06); color: #dbe3ee;
+    border-radius: 8px; font-size: 11px; padding: 6px 9px; cursor: pointer; white-space: nowrap; }
+  .kb button.on { background: rgba(47,107,255,.9); border-color: rgba(120,170,255,.6); color: #fff; }
+  .kb .grow { flex: 1; }
+
+  /* 说明面板 */
+  .notes { width: min(520px, 100%); display: flex; flex-direction: column; gap: 12px; }
+  .card { border: 1px solid var(--line); background: rgba(255,255,255,.028); border-radius: 14px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 8px; font-size: 12.5px; color: #cbd6e5; font-weight: 600; letter-spacing: .2px; }
+  .card p { margin: 0 0 8px; font-size: 12px; line-height: 1.7; color: #9aa7b8; }
+  .card p:last-child { margin-bottom: 0; }
+  .card b { color: #dbe6f4; font-weight: 600; }
+  .card code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #8ec2ff; }
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,.07); color: #9aa7b8; vertical-align: top; }
+  th { color: #c3cfdf; font-weight: 500; }
+  tr:last-child td { border-bottom: 0; }
+  .tag { display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 999px; margin-right: 5px;
+    border: 1px solid rgba(255,255,255,.14); color: #a9b7c9; }
+  .tag.p0 { border-color: rgba(240,163,58,.5); color: #ffce85; }
+  .tag.p1 { border-color: rgba(110,160,255,.45); color: #9dc0ff; }
+  .gap-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.85; color: #9aa7b8; }
+  .gap-list li b { color: #ffce85; font-weight: 500; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title-row">
+    <h1>言智远控 · 四场景交互矩阵</h1>
+    <span class="sub">可切换原型 · 覆盖 手机→电脑 / 电脑→电脑 / 电脑→手机 / 手机→手机 · 输入模式 / 只读态 / 双屏</span>
+  </div>
+  <div class="controls">
+    <div class="seg" id="comboTabs">
+      <button data-combo="m2p" class="on">手机 → 电脑</button>
+      <button data-combo="p2p">电脑 → 电脑</button>
+      <button data-combo="p2m">电脑 → 手机</button>
+      <button data-combo="m2m">手机 → 手机</button>
+    </div>
+    <div class="seg" id="modeTabs">
+      <button data-mode="direct" class="on">直接触控</button>
+      <button data-mode="pad">触控板</button>
+    </div>
+    <div class="seg" id="stateTabs">
+      <button data-state="live" class="on">可操控</button>
+      <button data-state="viewonly" class="warn">只读观看</button>
+    </div>
+    <div class="seg" id="dispTabs">
+      <button data-disp="one" class="on">单屏</button>
+      <button data-disp="two">双屏</button>
+    </div>
+    <div class="seg" id="kbTabs">
+      <button data-kb="off" class="on">键盘条关</button>
+      <button data-kb="on">键盘条开</button>
+    </div>
+  </div>
+</header>
+
+<main class="stage">
+  <!-- 手机控制器 -->
+  <div class="phone" id="phoneShell">
+    <div class="notch"></div>
+    <div class="screen" id="phoneScreen">
+      <div class="remote" id="remoteWin">
+        <div class="rwin">
+          <div class="rtop"><i></i><i></i><i></i></div>
+          <div class="rbody">
+            <div class="rside"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="rtext">
+<span style="color:#5d6b7d">// 被控端：Windows 桌面</span><br>
+<b>function</b> <em>syncOrders</em>(list) {<br>
+&nbsp;&nbsp;<s>const</s> out = list.<b>filter</b>(<em>o</em> =&gt; o.qty &gt; 0);<br>
+&nbsp;&nbsp;<s>return</s> out.<b>map</b>(<em>o</em> =&gt; ({ ...o, ok: <em>true</em> }));<br>
+}<br><br>
+<span style="color:#5d6b7d">// 点画面 = 点到这里；长按 = 右键；双指滑 = 滚轮</span>
+            </div>
+          </div>
+        </div>
+        <div class="phone-remote" id="phoneRemote">
+          <div class="pr-status"><span>9:41</span><span>被控手机 · 已镜像</span></div>
+          <div class="pr-apps">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </div>
+          <div class="pr-dock"><i></i><i></i><i></i><i></i></div>
+        </div>
+
+        <!-- 顶栏 -->
+        <div class="topbar">
+          <div class="back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          <span class="sd" id="sdDot"></span>
+          <span class="stat" id="statText">已连接 · 28ms</span>
+          <div class="disps" id="disps">
+            <button data-screen="0" class="on">显示器 1</button>
+            <button data-screen="1">显示器 2</button>
+          </div>
+        </div>
+
+        <!-- 侧栏 -->
+        <div class="rail" id="rail">
+          <button class="on" data-rail="ops"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1.6"/><rect x="14" y="4" width="6" height="6" rx="1.6"/><rect x="4" y="14" width="6" height="6" rx="1.6"/><rect x="14" y="14" width="6" height="6" rx="1.6"/></svg><span>操作</span></button>
+          <button data-rail="mode"><svg viewBox="0 0 24 24"><path d="M6 3l11 8.5-5 .8 2.8 5.6-2.3 1.1-2.8-5.6L6 17z"/></svg><span id="railMode">触控</span></button>
+          <button data-rail="kb"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.4"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M7 13.5h10" stroke-width="1.8" stroke-linecap="round"/></svg><span>键盘</span></button>
+          <button data-rail="full"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>全屏</span></button>
+        </div>
+
+        <!-- 触控板 -->
+        <div class="pad" id="pad">
+          <div class="pad-head"><span>触控板 · 拖动移动指针</span><span>点按=左键 / 长按=右键</span></div>
+          <div class="pad-body">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <rect x="34" y="14" width="52" height="76" rx="26" fill="none" stroke="currentColor" stroke-width="3.2"/>
+              <path d="M60 22v26" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+              <path d="M56 20l4-5 4 5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+              <rect x="46" y="58" width="12" height="18" rx="6" fill="currentColor" opacity=".22"/>
+            </svg>
+            <div class="pad-hint">拖动移动 · 点按左键 · 双指滚动 · 长按右键</div>
+          </div>
+          <div class="pad-btns"><button>左键</button><div class="pad-scroll">▲<br>▼</div><button>右键</button></div>
+        </div>
+
+        <!-- 只读态 -->
+        <div class="viewonly" id="viewonly">
+          <div class="txt"><b>只读观看中</b><span id="voReason"> · 被控端未授予输入权限</span></div>
+          <button id="voResume">恢复操控</button>
+        </div>
+
+        <!-- 键盘条：修饰键常驻 + 发送系统键开关（照 UU/TV 口径） -->
+        <div class="kb" id="kbBar">
+          <button>Ctrl</button><button>Alt</button><button>Shift</button><button>Win</button>
+          <button class="grow">输入文字…</button>
+          <button>Ctrl+Alt+Del</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 电脑控制器 -->
+  <div class="desktop" id="deskShell">
+    <div class="dtitle">
+      <span class="dot3"><i></i><i></i><i></i></span>
+      <span id="deskTitle">言智 · 远程控制 — 192.168.10.222（Windows 11）</span>
+      <span class="sub" style="margin-left:auto">窗口模式 · 可全屏</span>
+    </div>
+    <div class="dbody">
+      <div class="remote" id="deskRemote">
+        <div class="rwin">
+          <div class="rtop"><i></i><i></i><i></i></div>
+          <div class="rbody">
+            <div class="rside"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="rtext">
+<span style="color:#5d6b7d">// 被控端画面（电脑控电脑 / 电脑控手机）</span><br>
+<b>remote</b>.<em>inject</em>({ x, y, button: <s>'left'</s> });<br>
+<span style="color:#5d6b7d">// 本机快捷键默认不拦截；「发送系统键」开启后再透传</span>
+            </div>
+          </div>
+        </div>
+        <div class="topbar">
+          <div class="back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+          <span class="sd" id="sdDot2"></span>
+          <span class="stat" id="statText2">已连接 · 12ms</span>
+          <div class="disps" id="disps2">
+            <button data-screen="0" class="on">显示器 1</button>
+            <button data-screen="1">显示器 2</button>
+          </div>
+        </div>
+        <div class="viewonly" id="viewonly2">
+          <div class="txt"><b>只读观看中</b><span> · 被控端未授予输入权限</span></div>
+          <button>恢复操控</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 说明 -->
+  <aside class="notes">
+    <div class="card">
+      <h3 id="nTitle">手机 → 电脑</h3>
+      <p id="nLead"></p>
+      <table>
+        <thead><tr><th>手势 / 操作</th><th id="nHeadA">直接触控</th><th id="nHeadB">触控板</th></tr></thead>
+        <tbody id="nGestures"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>这套原型的四条硬规则</h3>
+      <ul class="gap-list">
+        <li><b>模式常显</b>：侧栏第二个按钮永远显示当前是「触控 / 指针」，切换在一级入口，不藏进设置。</li>
+        <li><b>只读不自闭</b>：只读是常驻底栏 + 一键恢复，不需要重连；恢复后自动回到可控。</li>
+        <li><b>双屏可选</b>：顶部页签常驻（>1 屏时），画面上不做手势，避免与系统手势打架。</li>
+        <li><b>点按可见</b>：每次点击都有光圈反馈；只读时点击给橙色「被拦」反馈，而不是毫无反应。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>当前实现的差距（按优先级）</h3>
+      <ul class="gap-list" id="nGaps"></ul>
+    </div>
+  </aside>
+</main>
+
+<script>
+(function () {
+  var state = { combo: 'm2p', mode: 'direct', live: true, disp: 'one', kb: false, screen: 0 };
+  var phoneShell = document.getElementById('phoneShell');
+  var deskShell = document.getElementById('deskShell');
+  var remoteWin = document.getElementById('remoteWin');
+  var phoneRemote = document.getElementById('phoneRemote');
+  var deskRemote = document.getElementById('deskRemote');
+  var pad = document.getElementById('pad');
+  var viewonly = document.getElementById('viewonly');
+  var viewonly2 = document.getElementById('viewonly2');
+  var kbBar = document.getElementById('kbBar');
+  var disps = document.getElementById('disps');
+  var disps2 = document.getElementById('disps2');
+  var sdDot = document.getElementById('sdDot');
+  var sdDot2 = document.getElementById('sdDot2');
+  var statText = document.getElementById('statText');
+  var statText2 = document.getElementById('statText2');
+  var railMode = document.getElementById('railMode');
+  var nTitle = document.getElementById('nTitle');
+  var nLead = document.getElementById('nLead');
+  var nGestures = document.getElementById('nGestures');
+  var nHeadA = document.getElementById('nHeadA');
+  var nHeadB = document.getElementById('nHeadB');
+  var nGaps = document.getElementById('nGaps');
+  var deskTitle = document.getElementById('deskTitle');
+
+  var COPY = {
+    m2p: {
+      title: '手机 → 电脑',
+      lead: '默认<b>直接触控</b>：点哪指哪，适合点按钮、拖窗口；需要精细定位时切<b>触控板</b>（拖动才移动指针，点按在指针原位左键）。这对关系里最容易踩的坑是"没有光标提示"和"右键无处可点"。',
+      gaps: [
+        ['p0', '输入配额已删除（原 2000 条/10 分钟会把会话打成只读）。'],
+        ['p1', '右键入口：目前只有长按与双指轻点，缺一个显式「右键」按钮（UU 也是靠按键映射补）。'],
+        ['p1', '模式名只在侧栏图标上，需常显文字（当前「触控/指针」有，但切到指针后画面没有光标中心点提示）。'],
+        ['p2', '中文输入：现走组字完成后整段注入，需覆盖回退到逐键的机型。']
+      ]
+    },
+    p2p: {
+      title: '电脑 → 电脑',
+      lead: '电脑端不需要触控板：键盘鼠标直通。这一条的关键不是手势，而是<b>本机快捷键 vs 发往被控端</b>的分流，以及多屏是一屏一页签还是拼成超宽。',
+      gaps: [
+        ['p0', '快捷键分流缺失：没有「发送系统键（Ctrl+Alt+Del / Win）」开关，本机会吃掉组合键。'],
+        ['p1', '多屏在窗口模式下只给顶部下拉，缺「一窗一屏」与「超宽拼接」两种布局选择。'],
+        ['p2', '文件拖拽入窗只收落盘，不退化成剪贴板粘贴路径（UU 的 Win↔Win 是双向拖拽）。']
+      ]
+    },
+    p2m: {
+      title: '电脑 → 手机',
+      lead: '手机作为被控端，交互核心是<b>键鼠映射</b>与<b>中文输入</b>：鼠标绝对坐标=手指点按，滚轮=滑动；返回/Home/任务键必须显式暴露。中文只有两条正路：文本直注入或物理 HID 透传。',
+      gaps: [
+        ['p0', '当前走 scrcpy 独立窗口，没接进远控页，导致「被控端是谁、能不能控」两套心智。'],
+        ['p1', '缺返回/Home/最近任务/音量 的显式按钮栏，键盘映射只能靠热键记。'],
+        ['p1', '中文输入未验证：scrcpy sdk 模式仅 ASCII，要走 uhid 或文本注入。'],
+        ['p2', '缺「熄屏保活 / 屏幕常亮 / 音频转发」三个开关的显式入口。']
+      ]
+    },
+    m2m: {
+      title: '手机 → 手机',
+      lead: '两端都是触摸，手势会直接打架：本地返回手势、系统截屏（三指）、多任务滑动都可能被远端吃掉。所以远端画面必须<b>独占</b>手势，并且默认提供「只看/可控」两档权限。',
+      gaps: [
+        ['p0', '手机→手机链路还没有：android-mirror 只登记桌面端（desktopOnly），手机端没有可被控/可控制的通道。'],
+        ['p1', '权限两档（只看 / 可控）未建模；被控手机缺授权提示与撤销入口。'],
+        ['p1', '会话恢复：断线只能重连，缺「重连后回到原操控态」的显式状态机。']
+      ]
+    }
+  };
+
+  var GESTURES = {
+    m2p: {
+      head: ['直接触控', '触控板'],
+      rows: [
+        ['单指点按', '光标跳到落点并左键', '在指针原位左键'],
+        ['长按 450ms', '右键（移动即取消）', '右键'],
+        ['单指拖动', '远端拖拽 / 选中', '移动指针'],
+        ['双指上下滑', '滚轮', '滚轮'],
+        ['双指捏合', '本地放大缩小', '本地放大缩小'],
+        ['双指轻点', '右键（备选）', '右键（备选）']
+      ]
+    },
+    p2p: {
+      head: ['键盘鼠标', '（不需要触控板）'],
+      rows: [
+        ['左键 / 右键', '直接注入', '—'],
+        ['滚轮', '直接注入', '—'],
+        ['键盘', '默认本机；开「发送系统键」后透传', '—'],
+        ['Ctrl+Alt+Del / Win', '显式按钮或开关，绝不默认拦截本机', '—'],
+        ['拖文件进窗', '上传到被控端接收目录', '—']
+      ]
+    },
+    p2m: {
+      head: ['键鼠映射', '（手机目标）'],
+      rows: [
+        ['鼠标左键', '在对应位置点一下（单点触摸）', '—'],
+        ['滚轮', '上下滑动画面', '—'],
+        ['右键', '返回键（可配 Home）', '—'],
+        ['键盘输入', '文本直注入（走手机 IME）', '—'],
+        ['音视频', '音频转发 / 熄屏保活 / 常亮 三个开关', '—']
+      ]
+    },
+    m2m: {
+      head: ['远端直控', '（两端都是触摸）'],
+      rows: [
+        ['单指点按', '远端点击', '—'],
+        ['长按', '远端长按', '—'],
+        ['单指拖动', '远端滑动', '—'],
+        ['双指上下滑', '远端双指手势（不做本地滚动）', '—'],
+        ['双指捏合', '本地缩放画面', '—'],
+        ['本地边缘手势', '远端画面内屏蔽，避免与系统返回打架', '—']
+      ]
+    }
+  };
+
+  function comboIsPhoneController() { return state.combo === 'm2p' || state.combo === 'm2m'; }
+  function targetIsPhone() { return state.combo === 'p2m' || state.combo === 'm2m'; }
+
+  function pill(txt, on) { return '<span class="tag' + (on ? ' p0' : '') + '">' + txt + '</span>'; }
+
+  function render() {
+    var c = COPY[state.combo];
+    nTitle.textContent = c.title;
+    nLead.innerHTML = c.lead;
+    var g = GESTURES[state.combo];
+    nHeadA.textContent = g.head[0];
+    nHeadB.textContent = g.head[1];
+    nGestures.innerHTML = g.rows.map(function (r) {
+      return '<tr><td>' + r[0] + '</td><td>' + r[1] + '</td><td>' + r[2] + '</td></tr>';
+    }).join('');
+    nGaps.innerHTML = c.gaps.map(function (x) {
+      return '<li>' + pill(x[0].toUpperCase(), x[0] === 'p0') + x[1] + '</li>';
+    }).join('');
+
+    var phoneCtl = comboIsPhoneController();
+    phoneShell.style.display = phoneCtl ? 'block' : 'none';
+    deskShell.style.display = phoneCtl ? 'none' : 'block';
+
+    // 目标画面：电脑目标 → 桌面；手机目标 → 手机镜像
+    if (phoneCtl) {
+      remoteWin.style.display = targetIsPhone() ? 'none' : 'block';
+      phoneRemote.style.display = targetIsPhone() ? 'block' : 'none';
+    } else {
+      deskRemote.querySelector('.rwin').style.display = targetIsPhone() ? 'none' : 'block';
+      deskRemote.querySelector('.rwin').style.background = targetIsPhone() ? 'transparent' : '';
+      deskTitle.textContent = state.combo === 'p2m'
+        ? '言智 · 安卓镜像 — Pixel 8（USB）'
+        : '言智 · 远程控制 — 192.168.10.222（Windows 11）';
+    }
+
+    // 触控板只在手机控制器 + 电脑目标时有意义（手机→手机直接触控）
+    var padAvailable = phoneCtl && state.mode === 'pad' && !targetIsPhone();
+    pad.className = 'pad' + (padAvailable && state.live ? ' show' : '');
+    railMode.textContent = state.mode === 'pad' ? '指针' : '触控';
+
+    // 只读态
+    var vo = !state.live;
+    viewonly.className = 'viewonly' + (vo ? ' show' : '');
+    viewonly2.className = 'viewonly' + (vo ? ' show' : '');
+    document.getElementById('voReason').textContent = state.combo === 'm2m'
+      ? ' · 被控手机只授予了「观看」权限'
+      : ' · 被控端未授予输入权限（或已临时暂停）';
+    sdDot.className = 'sd' + (vo ? ' warn' : '');
+    sdDot2.className = 'sd' + (vo ? ' warn' : '');
+    statText.textContent = vo ? '只读观看' : '已连接 · 28ms';
+    statText2.textContent = vo ? '只读观看' : '已连接 · 12ms';
+
+    // 双屏页签
+    var two = state.disp === 'two' && !targetIsPhone();
+    disps.className = 'disps' + (two ? ' show' : '');
+    disps2.className = 'disps' + (two ? ' show' : '');
+    Array.prototype.forEach.call(document.querySelectorAll('.disps button'), function (b) {
+      b.className = String(b.dataset.screen) === String(state.screen) ? 'on' : '';
+    });
+
+    // 键盘条
+    kbBar.className = 'kb' + (state.kb && state.live ? ' show' : '');
+  }
+
+  function bindSeg(id, key, cast) {
+    document.getElementById(id).addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      Array.prototype.forEach.call(this.children, function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      state[key] = cast ? cast(b.dataset[key]) : b.dataset[key];
+      render();
+    });
+  }
+  bindSeg('comboTabs', 'combo');
+  bindSeg('modeTabs', 'mode');
+  bindSeg('stateTabs', 'live', function (v) { return v === 'live'; });
+  bindSeg('dispTabs', 'disp');
+  bindSeg('kbTabs', 'kb', function (v) { return v === 'on'; });
+
+  // 显示器页签
+  document.querySelectorAll('.disps').forEach(function (box) {
+    box.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      state.screen = Number(b.dataset.screen);
+      render();
+    });
+  });
+
+  // 侧栏：模式按钮直接切模式（一级入口）
+  document.getElementById('rail').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.rail === 'mode') {
+      state.mode = state.mode === 'direct' ? 'pad' : 'direct';
+      Array.prototype.forEach.call(document.getElementById('modeTabs').children, function (x) {
+        x.classList.toggle('on', x.dataset.mode === state.mode);
+      });
+      render();
+    }
+    if (b.dataset.rail === 'kb') {
+      state.kb = !state.kb;
+      Array.prototype.forEach.call(document.getElementById('kbTabs').children, function (x) {
+        x.classList.toggle('on', (x.dataset.kb === 'on') === state.kb);
+      });
+      render();
+    }
+  });
+
+  // 只读 → 恢复操控（不需要重连）
+  document.querySelectorAll('.viewonly button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      state.live = true;
+      Array.prototype.forEach.call(document.getElementById('stateTabs').children, function (x) {
+        x.classList.toggle('on', x.dataset.state === 'live');
+      });
+      render();
+    });
+  });
+
+  // 画面点击：直接触控 = 落点光圈；触控板 = 只移动指针；只读 = 橙色被拦
+  function ripple(el, x, y, kind) {
+    var r = document.createElement('div');
+    r.className = 'ripple' + (kind ? ' ' + kind : '');
+    r.style.left = x + 'px'; r.style.top = y + 'px';
+    el.appendChild(r);
+    setTimeout(function () { r.remove(); }, 460);
+  }
+  function onTap(e) {
+    var host = e.currentTarget;
+    var rect = host.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var y = e.clientY - rect.top;
+    if (!state.live) { ripple(host, x, y, 'blocked'); return; }
+    if (state.mode === 'pad' && !targetIsPhone()) {
+      // 触控板模式：点画面不落点，只提示"用触控板"
+      ripple(host, x, y, 'blocked');
+      var tip = document.createElement('div');
+      tip.className = 'ripple';
+      tip.style.cssText += 'border:0;box-shadow:none;width:0;height:0;';
+      return;
+    }
+    ripple(host, x, y, e.button === 2 ? 'right' : '');
+  }
+  [remoteWin, deskRemote].forEach(function (el) { el.addEventListener('pointerdown', onTap); });
+  phoneRemote.addEventListener('pointerdown', onTap);
+
+  render();
+})();
+</script>
+</body>
+</html>

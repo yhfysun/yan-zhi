@@ -3641,6 +3641,11 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       frequencyPenalty?: number;
       presencePenalty?: number;
       reasoningEffort?: string;
+      /**
+       * 本次发送的幂等键（2026-10-26）：断连自动重发时**沿用同一个**，
+       * 服务端据此判定"这条消息是否已经建过任务/注入过"，避免重发多出一条 user 消息。
+       */
+      clientMsgId?: string;
     },
     onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
     convIdOverride?: string,
@@ -3741,6 +3746,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         platformId: platform.id,
         modelId: model.id,
         userContent: options.userContent,
+        // 幂等键（2026-10-26）：断连自动重发沿用同一个 id，服务端据此判定这条消息是否已建过任务
+        clientMsgId: options.clientMsgId,
         agentId: conv?.agentId || agent?.id || null,
         // 智能体本体挂载：随任务下发（智能体编辑存本地库，server 端按此收敛取数范围）
         ontologyIds: agent?.ontologyIds?.length ? agent.ontologyIds : undefined,
@@ -3781,7 +3788,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
 
       // ★ 复用运行中任务（2026-10-07）：后端把新消息注入老任务（落库 + message:added 回显），
       // 这里给出可见反馈 —— 此前是静默吞掉，用户以为「发消息没反应」。
-      if (taskRes.data.reused) {
+      // ★ duplicate（2026-10-26）：断连自动重发命中了服务端幂等记账 —— 这条消息上次其实
+      //   已经送达，不必再提示「已并入」（用户没做追加动作，弹出来只会莫名其妙）。
+      if (taskRes.data.reused && !taskRes.data.duplicate) {
         try {
           const { ElMessage } = await import('element-plus');
           ElMessage.info(taskRes.data.injected ? '已并入运行中的任务，将在下一轮执行时生效' : '已接入当前运行中的任务');
@@ -3812,7 +3821,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     platform: Platform,
     model: Model,
     onChunk?: (chunk: { content?: string; reasoning?: string }) => void,
-    options?: { temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string },
+    options?: { temperature?: number; maxTokens?: number; topP?: number; frequencyPenalty?: number; presencePenalty?: number; reasoningEffort?: string; clientMsgId?: string },
     convIdOverride?: string,
   ): Promise<void> {
     return callLlm(platform, model, { userContent, ...options }, onChunk, convIdOverride);
@@ -3860,6 +3869,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     if (!taskId) return;
     pausedConvIds.value.add(target!);
     browserLockInput.value = false; // 暂停 = 用户接管
+    // ★ 2026-10-26（用户实报「暂停了鼠标还在」）：宿主层那只虚拟鼠标由主进程在**动作收尾**时广播，
+    //   暂停后没有新动作，也就再没人广播 ⇒ 光标停在最后位置不动，看起来像 agent 还在操作。
+    //   用户接管的那一刻就该把它收回；恢复后下一次动作会重新广播。
+    clearAgentCursor();
     sendChatWs('pause', { taskId });
   }
 
