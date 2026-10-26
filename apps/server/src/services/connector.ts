@@ -3,27 +3,27 @@
 // 只读约束：连接器层面尽力强制（PG 会话只读 / SQLite readonly 连接），SQL 文本级护栏在路由层（sql-guard）。
 import fs from 'node:fs';
 import path from 'path';
-import { createRequire } from 'node:module';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { dataDir } from '../db.js';
 import type { DialectType } from './dialect.js';
 
-let BetterDatabase: any | null = null;
-/** 懒加载 better-sqlite3。
- *  ★ 不能静态 import：内嵌后端（nodejs-mobile）没有原生包，模块加载期直接崩，
- *  会把 MySQL/PostgreSQL 数据源一起拖死。只在真正建 SQLite 连接时才 require，
- *  失败抛可读错误。 */
-function getBetterDatabase(): any {
-  if (!BetterDatabase) {
-    try {
-      BetterDatabase = createRequire(import.meta.url)('better-sqlite3');
-    } catch {
-      throw new Error(
-        'SQLite 文件数据源需要原生 better-sqlite3 驱动，当前运行环境（移动端内嵌后端）未内置；MySQL / PostgreSQL 数据源不受影响',
-      );
-    }
+/**
+ * SQLite 文件数据源的驱动探测（connector 专用，与主库 sqlite-driver 同源）：
+ * better-sqlite3 可用 → 原生（readonly 透传驱动层禁写）；
+ * 不可用且只读 → sql.js（WASM）整文件读进内存，**物理不落盘** —— 移动端项目库
+ * （强制 readonly）因此可用，ontology 内置本体得以在手机上生成。
+ * 不可用且需要可写 → 抛错拒绝：sql.js 是内存库，静默回退会假装写成功实则丢数据。
+ */
+async function openSqliteFile(file: string, readonly: boolean): Promise<import('./sqlite-driver.js').YzSqliteDb> {
+  const { openSqlite } = await import('./sqlite-driver.js');
+  const res = await openSqlite(file, { readonly });
+  if (res.driver === 'sql.js' && !readonly) {
+    try { res.db.close(); } catch { /* ignore */ }
+    throw new Error(
+      '可写 SQLite 数据源需要原生 better-sqlite3 驱动，当前运行环境（移动端内嵌后端）未内置；只读数据源不受影响',
+    );
   }
-  return BetterDatabase;
+  return res.db;
 }
 
 export type DataSourceType = DialectType | 'project';
@@ -155,23 +155,43 @@ function withRowCap(sql: string, maxRows: number): string {
 
 class SqliteLikeConnector implements Connector {
   readonly type: DataSourceType;
-  private conn: import('better-sqlite3').Database;
+  /** 惰性连接：better-sqlite3 缺失时 openSqliteFile 走 sql.js（WASM 加载是异步的），
+   *  而 Connector 接口的方法全部 async —— 首次调用时 ensureInit() 一次打开，后续复用。 */
+  private conn: import('./sqlite-driver.js').YzSqliteDb | null = null;
+  private initPromise: Promise<void> | null = null;
+  private disposed = false;
+  private readonly readonly: boolean;
 
   constructor(type: DataSourceType, file: string, allowWrite: boolean) {
     this.type = type;
     // 项目库与未开写权限的 sqlite 一律 readonly 连接，驱动层禁写
-    const readonly = type === 'project' ? true : !allowWrite;
-    if (!fs.existsSync(file)) {
-      const hint = type === 'project' ? `（DATA_DIR=${process.env.DATA_DIR || '(未设置，按 server 源码目录推断)'}）` : '';
-      throw new Error(`SQLite 文件不存在: ${file}${hint}`);
+    this.readonly = type === 'project' ? true : !allowWrite;
+    this.file = file;
+  }
+
+  private file: string;
+
+  private ensureInit(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = (async () => {
+        if (this.disposed) return;
+        if (!fs.existsSync(this.file)) {
+          const hint = this.type === 'project' ? `（DATA_DIR=${process.env.DATA_DIR || '(未设置，按 server 源码目录推断)'}）` : '';
+          throw new Error(`SQLite 文件不存在: ${this.file}${hint}`);
+        }
+        this.conn = await openSqliteFile(this.file, this.readonly);
+      })();
+      // 失败可重试（test 连通性探测要拿到真实错误并允许修好后再试）：清掉 promise，下次重建
+      this.initPromise.catch(() => { this.initPromise = null; });
     }
-    this.conn = getBetterDatabase()(file, { readonly, fileMustExist: true });
+    return this.initPromise;
   }
 
   async test(): Promise<TestResult> {
     const start = Date.now();
     try {
-      const row = this.conn.prepare('SELECT sqlite_version() AS v').get() as { v: string };
+      await this.ensureInit();
+      const row = this.conn!.prepare('SELECT sqlite_version() AS v').get() as { v: string };
       return { ok: true, latencyMs: Date.now() - start, version: `SQLite ${row.v}` };
     } catch (err) {
       return { ok: false, latencyMs: Date.now() - start, error: maskError(err) };
@@ -180,10 +200,14 @@ class SqliteLikeConnector implements Connector {
 
   async query(sql: string, opts?: { maxRows?: number }): Promise<QueryResult> {
     const start = Date.now();
+    await this.ensureInit();
     const maxRows = opts?.maxRows ?? DEFAULT_MAX_ROWS;
-    const stmt = this.conn.prepare(sql);
-    const columns = (stmt.columns() || []).map((c) => c.name);
+    const stmt = this.conn!.prepare(sql);
     const all = stmt.all() as Record<string, unknown>[];
+    // 列名：原生 stmt.columns() 优先；sql.js 回退到首行 keys（空结果集则无列名可给）
+    const columns = typeof stmt.columns === 'function'
+      ? stmt.columns()
+      : all.length ? Object.keys(all[0]) : [];
     const rows = all.slice(0, maxRows);
     return {
       columns,
@@ -197,10 +221,13 @@ class SqliteLikeConnector implements Connector {
   async queryParam(sql: string, params: RunParam[], opts?: { maxRows?: number }): Promise<ParamQueryResult> {
     // better-sqlite3 原生 `?` 占位 + 顺序传参即真绑定；驱动层负责类型与转义，杜绝字符串拼值
     const start = Date.now();
+    await this.ensureInit();
     const maxRows = opts?.maxRows ?? DEFAULT_MAX_ROWS;
-    const stmt = this.conn.prepare(sql);
-    const columns = (stmt.columns() || []).map((c) => c.name);
+    const stmt = this.conn!.prepare(sql);
     const all = stmt.all(...params) as Record<string, unknown>[];
+    const columns = typeof stmt.columns === 'function'
+      ? stmt.columns()
+      : all.length ? Object.keys(all[0]) : [];
     const rows = all.slice(0, maxRows);
     return {
       columns,
@@ -213,7 +240,9 @@ class SqliteLikeConnector implements Connector {
   }
 
   async schemaInfo(): Promise<SchemaTable[]> {
-    const tables = this.conn
+    await this.ensureInit();
+    const conn = this.conn!;
+    const tables = conn
       .prepare(
         `SELECT name, type FROM sqlite_master
          WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'
@@ -222,7 +251,7 @@ class SqliteLikeConnector implements Connector {
       .all() as { name: string; type: string }[];
     const out: SchemaTable[] = [];
     for (const t of tables) {
-      const infos = this.conn.prepare(`PRAGMA table_info("${t.name.replaceAll('"', '""')}")`).all() as {
+      const infos = conn.prepare(`PRAGMA table_info("${t.name.replaceAll('"', '""')}")`).all() as {
         name: string; type: string; pk: number; notnull: number;
       }[];
       out.push({
@@ -240,7 +269,15 @@ class SqliteLikeConnector implements Connector {
   }
 
   close(): void {
-    this.conn.close();
+    this.disposed = true;
+    if (this.conn) {
+      try { this.conn.close(); } catch { /* ignore */ }
+      this.conn = null;
+      this.initPromise = null;
+    } else if (this.initPromise) {
+      // 打开进行中被 close（闲置回收竞态）：等它完成后立即释放
+      this.initPromise.then(() => { if (this.disposed && this.conn) { try { this.conn.close(); } catch { /* ignore */ } this.conn = null; } }).catch(() => {});
+    }
   }
 }
 

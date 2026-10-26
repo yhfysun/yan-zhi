@@ -499,7 +499,14 @@ async function startScan(): Promise<void> {
   scanning.value = true;
   await nextTick();
   try {
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    // advanced.focusMode: 显式请求连续自动对焦 —— 部分设备取景默认不对焦到二维码距离，
+    // 不支持该约束的设备会整条忽略 advanced 项（不会导致取流失败），无副作用
+    scanStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'environment',
+        advanced: [{ focusMode: 'continuous' } as unknown as MediaTrackConstraintSet],
+      },
+    });
   } catch (e) {
     scanError.value = `相机不可用：${(e as Error)?.message || e}。也可以用系统相机扫二维码（会直接打开本页并自动连接）。`;
     return;
