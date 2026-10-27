@@ -4,6 +4,7 @@ import { DEFAULT_CONTEXT_WINDOW } from '../../utils/context-window';
 import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocalPaths, toWindowsPath } from '../../utils/file-open';
 import { buildToolResultIndex } from '../../utils/tool-result';
 import { waitForChatWsOpen } from '../../utils/chat-ws';
+import { downloadStamp } from '../../utils/download-name';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from '../../utils/highlight';
@@ -4188,7 +4189,7 @@ async function healStalePlatform() {
   function copySubAgentRoundMd(round: SubAgentRound) { void copyMdText(buildSubAgentMd(round)); }
   function downloadSubAgentRoundMd(round: SubAgentRound) {
     const name = sanitizeFilename(round.subAgentName || round.subAgentId || 'sub-agent');
-    downloadMdFile(`${name}-执行记录.md`, buildSubAgentMd(round));
+    downloadMdFile(`${name}-执行记录-${downloadStamp()}.md`, buildSubAgentMd(round));
   }
 
   /** 子智能体最终结果卡片：复制 / 下载 .md */
@@ -4197,7 +4198,7 @@ async function healStalePlatform() {
   }
   function downloadSubAgentResultMd(sr: { subAgentName: string; finalContent: string }, idx: number) {
     const name = sanitizeFilename(sr.subAgentName || 'sub-agent');
-    downloadMdFile(`${name}-结果${idx + 1}.md`, sanitizeExportMd(sr.finalContent));
+    downloadMdFile(`${name}-结果${idx + 1}-${downloadStamp()}.md`, sanitizeExportMd(sr.finalContent));
   }
 
   /** 主智能体回复内容（清洗后）：复制 / 下载 .md。
@@ -4216,7 +4217,7 @@ async function healStalePlatform() {
   function downloadAssistantMd(round: MessageRound) {
     const title = sanitizeFilename(currentConv.value?.title || 'assistant');
     const suffix = round.finalAssistant?.id ? '-' + round.finalAssistant.id.slice(0, 6) : '';
-    downloadMdFile(`${title}${suffix}.md`, getAssistantExportMd(round));
+    downloadMdFile(`${title}${suffix}-${downloadStamp()}.md`, getAssistantExportMd(round));
   }
 
   function toggleSubAgentResult(key: string) { collapsedSubAgentResults[key] = !collapsedSubAgentResults[key]; }

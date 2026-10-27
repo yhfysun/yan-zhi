@@ -384,6 +384,7 @@ import { buildOntologyIntent, ontologyRowsToChartData } from './ontology-view';
 import { formatCell, inferColumnMeta, splitColumnRoles } from '../../utils/table-meta';
 import type { DocxBlock } from '../../utils/report-docx';
 import type { XlsxSheet } from '../../utils/report-xlsx';
+import { exportFileName } from '../../utils/download-name';
 
 // ECharts 只在首次打开图表视图时加载（组件异步 chunk，不进首屏）
 const DataChart = defineAsyncComponent(() => import('./DataChart.vue'));
@@ -848,8 +849,8 @@ async function exportPng() {
   const bin = atob(base64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const { saveDeliverableBytes, safeFileName } = await import('../../utils/deliverable-save');
-  await saveDeliverableBytes(bytes, safeFileName(exportTitle.value, 'chart') + '.png', PNG_KIND, { messageId: props.messageId });
+  const { saveDeliverableBytes } = await import('../../utils/deliverable-save');
+  await saveDeliverableBytes(bytes, exportFileName(exportTitle.value, '.png', { fallback: 'chart' }), PNG_KIND, { messageId: props.messageId });
 }
 
 // ===== 导出 Word / Excel =====
@@ -937,12 +938,12 @@ async function exportExcel() {
         rows: agg.value.points.map((p) => [p.key, ...p.values]),
       });
     }
-    const [{ buildWorkbookXlsx }, { saveDeliverableBytes, safeFileName }] = await Promise.all([
+    const [{ buildWorkbookXlsx }, { saveDeliverableBytes }] = await Promise.all([
       import('../../utils/report-xlsx'),
       import('../../utils/deliverable-save'),
     ]);
     const bytes = await buildWorkbookXlsx(sheets);
-    await saveDeliverableBytes(bytes, safeFileName(exportTitle.value, '数据导出') + '.xlsx', XLSX_KIND, { messageId: props.messageId });
+    await saveDeliverableBytes(bytes, exportFileName(exportTitle.value, '.xlsx', { fallback: '数据导出' }), XLSX_KIND, { messageId: props.messageId });
   } catch (e: any) {
     error.value = '导出失败：' + (e?.message || e);
   } finally {
@@ -980,12 +981,12 @@ async function exportWord() {
       caption: truncated ? `表 1  仅含前 ${WORD_DETAIL_LIMIT} 行，完整明细请导出 Excel` : '表 1',
     });
 
-    const [{ buildReportDocx }, { saveDeliverableBytes, safeFileName }] = await Promise.all([
+    const [{ buildReportDocx }, { saveDeliverableBytes }] = await Promise.all([
       import('../../utils/report-docx'),
       import('../../utils/deliverable-save'),
     ]);
     const blob = await buildReportDocx({ title: exportTitle.value, subtitle: sourceLabel.value, blocks });
-    const name = safeFileName(exportTitle.value, '数据导出') + '.docx';
+    const name = exportFileName(exportTitle.value, '.docx', { fallback: '数据导出' });
     await saveDeliverableBytes(new Uint8Array(await blob.arrayBuffer()), name, DOCX_KIND, { messageId: props.messageId });
   } catch (e: any) {
     error.value = '导出失败：' + (e?.message || e);

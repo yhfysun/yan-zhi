@@ -10,8 +10,14 @@
       <el-icon class="doc-icon"><Document /></el-icon>
       <span class="doc-type">{{ typeName }}</span>
       <div v-if="!hideActions" class="doc-actions">
-        <div class="doc-word-wrap" @mouseenter="wordOpen = true" @mouseleave="wordOpen = false">
-          <button class="doc-btn doc-word-btn" :disabled="exporting" @click="exportWord('native')">
+        <div ref="wordWrapRef" class="doc-word-wrap">
+          <button
+            class="doc-btn doc-word-btn"
+            :disabled="exporting"
+            :aria-expanded="wordOpen"
+            title="下载（Word / 源文件，文件名自动带时间戳）"
+            @click.stop="wordOpen = !wordOpen"
+          >
             <el-icon><Download /></el-icon>
             <span>{{ exporting ? '导出中…' : '下载' }}</span>
             <span class="doc-caret" :class="{ open: wordOpen }">▾</span>
@@ -28,7 +34,14 @@
               <span class="doc-word-item-icon success"><el-icon><Picture /></el-icon></span>
               <span class="doc-word-item-text">
                 <span class="doc-word-item-title">图片模式</span>
-                <span class="doc-word-item-hint">渲染为高清 PNG，样式与预览一致</span>
+                <span class="doc-word-item-hint">图表/指标渲染为高清 PNG，样式与预览一致</span>
+              </span>
+            </button>
+            <button class="doc-word-item" :disabled="exporting" @click="exportYdocFile">
+              <span class="doc-word-item-icon muted"><el-icon><Document /></el-icon></span>
+              <span class="doc-word-item-text">
+                <span class="doc-word-item-title">源文件 .ydoc</span>
+                <span class="doc-word-item-hint">结构化 JSON，可再次导入编辑</span>
               </span>
             </button>
           </div>
@@ -289,7 +302,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, reactive, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { Document, Download, EditPen, Picture } from '@element-plus/icons-vue';
 import { api } from '../../api/client';
 import type { ChartData } from './chart-spec';
@@ -299,6 +312,9 @@ import { useDocumentTypeStore } from '../../stores/document-type';
 import { buildReportDocx, type DocxBlock } from '../../utils/report-docx';
 import type { NativeChartData } from '../../utils/docx-native-chart';
 import { sanitizeRichHtml, richHtmlToText, htmlHasMarkup, plainToRichHtml } from '../../utils/rich-text';
+import { exportFileName } from '../../utils/download-name';
+import { metricsToPng } from '../../utils/metrics-image';
+import { toYdoc } from '../../utils/ydoc';
 
 const DataChart = defineAsyncComponent(() => import('./DataChart.vue'));
 const InfographicBlock = defineAsyncComponent(() => import('./InfographicBlock.vue'));
@@ -446,6 +462,12 @@ const effectiveDoc = computed(() => applyDocumentVariables(props.doc, varValues.
 const typeName = computed(() => typeDef.value?.name || props.doc.type);
 const exporting = ref(false);
 const wordOpen = ref(false);
+const wordWrapRef = ref<HTMLElement | null>(null);
+
+/** 点空白处收起下载菜单（按钮与菜单项自己 stop，不触发这里） */
+function closeWordMenuOnOutside(e: MouseEvent) {
+  if (wordWrapRef.value && !wordWrapRef.value.contains(e.target as Node)) wordOpen.value = false;
+}
 
 const chartData = reactive<Record<number, ChartData | null>>({});
 const chartDataOpen = reactive<Record<number, boolean>>({});
@@ -581,8 +603,19 @@ async function srcToDataUrl(src: string): Promise<string> {
   });
 }
 
-function safeName(): string {
-  return (effectiveDoc.value.title || 'document').replace(/[\\/:*?"<>|]/g, '_');
+/** 下载默认名：<标题>-<可编辑|图片>-<时间戳>.docx（两种模式不互相覆盖） */
+function wordFileName(mode: WordExportMode): string {
+  return exportFileName(effectiveDoc.value.title, '.docx', {
+    fallback: 'document',
+    label: mode === 'native' ? '可编辑' : '图片',
+  });
+}
+
+/** 下载结构化源文件（.ydoc），可再导入编辑 */
+function exportYdocFile(): void {
+  wordOpen.value = false;
+  const name = exportFileName(effectiveDoc.value.title, '.ydoc', { fallback: 'document' });
+  downloadBlob(new Blob([toYdoc(effectiveDoc.value)], { type: 'application/json;charset=utf-8' }), name);
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -634,7 +667,13 @@ async function buildDocxBlob(mode: WordExportMode): Promise<Blob> {
       });
       continue;
     }
-    if (s.kind === 'metrics') { blocks.push({ type: 'metrics', items: s.items }); continue; }
+    if (s.kind === 'metrics') {
+      // 图片模式：指标按预览的卡片样式画成 PNG（Word 表格版明显掉档次）
+      const png = mode === 'image' ? metricsToPng(s.items) : '';
+      if (png) { blocks.push({ type: 'image', dataUrl: png }); continue; }
+      blocks.push({ type: 'metrics', items: s.items });
+      continue;
+    }
     if (s.kind === 'pageBreak') { blocks.push({ type: 'pageBreak' }); continue; }
     if (s.kind === 'table') {
       const t = tableOf(i, s);
@@ -695,7 +734,7 @@ async function exportWord(mode: WordExportMode = 'native'): Promise<void> {  if 
       if (mode !== 'native') throw e;
       blob = await buildDocxBlob('image');
     }
-    downloadBlob(blob, `${safeName()}.docx`);
+    downloadBlob(blob, wordFileName(mode));
   } finally {
     exporting.value = false;
   }
@@ -706,10 +745,15 @@ defineExpose({ exportWord });
 
 onMounted(() => {
   void docTypeStore.load();
+  document.addEventListener('click', closeWordMenuOnOutside);
   props.doc.sections.forEach((s, i) => {
     if (s.kind === 'chart') void loadChart(i, s);
     if (s.kind === 'table' && s.contract) void loadTable(i, s);
   });
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closeWordMenuOnOutside);
 });
 </script>
 
@@ -742,6 +786,7 @@ onMounted(() => {
 }
 .doc-word-item-icon.primary { color: var(--el-color-primary); background: color-mix(in srgb, var(--el-color-primary) 10%, transparent); }
 .doc-word-item-icon.success { color: var(--el-color-success); background: color-mix(in srgb, var(--el-color-success) 12%, transparent); }
+.doc-word-item-icon.muted { color: var(--color-text-secondary); background: var(--el-fill-color); }
 .doc-word-item-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .doc-word-item-title { font-size: 12.5px; font-weight: 600; color: var(--color-text); }
 .doc-word-item-hint { font-size: 11px; color: var(--color-text-tertiary); line-height: 1.4; }

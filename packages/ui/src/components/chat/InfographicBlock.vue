@@ -28,6 +28,7 @@
 import { onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue';
 import { Picture } from '@element-plus/icons-vue';
 import { Infographic } from '@antv/infographic';
+import { exportFileName } from '../../utils/download-name';
 
 const props = defineProps<{ syntax: string; title?: string; height?: number }>();
 
@@ -77,7 +78,7 @@ async function exportAs(kind: 'svg' | 'png') {
     if (!url) return;
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${(props.title || 'infographic').replace(/[\\/:*?"<>|]/g, '_')}.${kind}`;
+    a.download = exportFileName(props.title, `.${kind}`, { fallback: 'infographic' });
     document.body.appendChild(a);
     a.click();
     a.remove();

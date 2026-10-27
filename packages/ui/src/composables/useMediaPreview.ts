@@ -13,7 +13,8 @@ import { ElMessage } from 'element-plus';
 import { resolveServerUrl } from '@yan-zhi/shared';
 import { API_BASE } from '../api/client';
 import { toWindowsPath } from '../utils/file-open';
-import { saveDeliverableBytes, safeFileName, bytesToBase64 } from '../utils/deliverable-save';
+import { saveDeliverableBytes, bytesToBase64 } from '../utils/deliverable-save';
+import { exportFileName } from '../utils/download-name';
 
 /** 一个可预览媒体（图片 / 视频 / 音频 / 普通文件）的来源描述 */
 export interface MediaTarget {
@@ -524,7 +525,7 @@ export async function exportMarkdownDocx(markdown: string, title?: string, opts?
   }
   const docTitle = (title || '导出文档').trim() || '导出文档';
   const blob = await buildReportDocx({ title: docTitle, blocks });
-  const name = safeFileName(docTitle, '导出文档') + '.docx';
+  const name = exportFileName(docTitle, '.docx', { fallback: '导出文档' });
   await saveDeliverableBytes(new Uint8Array(await blob.arrayBuffer()), name, DOCX_KIND, opts);
 }
 

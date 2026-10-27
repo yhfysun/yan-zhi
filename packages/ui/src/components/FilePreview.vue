@@ -14,8 +14,8 @@
       <el-button size="small" text bg title="在文件管理器中显示此文件" @click="openContainingFolder">
         <el-icon><FolderOpened /></el-icon>&nbsp;目录
       </el-button>
-      <el-button size="small" text bg title="另存为到其他位置" @click="saveAs">
-        <el-icon><Download /></el-icon>&nbsp;另存为
+      <el-button size="small" text bg title="另存为到其他位置（默认文件名带时间戳）" @click="saveAs">
+        <el-icon><Download /></el-icon>&nbsp;{{ ext === 'ydoc' ? '另存为 .ydoc' : '另存为' }}
       </el-button>
       <!-- Markdown：阅读 / 编辑 / 分屏（左源码右实时预览）三态 -->
       <div v-if="isMdText" class="fp-seg">
@@ -210,6 +210,7 @@ import { ref, watch, computed, onMounted, onBeforeUnmount, defineAsyncComponent 
 import MarkdownIt from 'markdown-it';
 import hljs from '../utils/highlight';
 import { parseYdoc, toYdoc } from '../utils/ydoc';
+import { stampedFileName } from '../utils/download-name';
 import type { DocumentInstance } from '../utils/document-types';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Document, Download, EditPen, FolderOpened } from '@element-plus/icons-vue';
@@ -420,8 +421,9 @@ async function openContainingFolder() {
 async function saveAs() {
   try {
     const api = (window as unknown as { electronAPI?: { dialog?: { saveFile?: (o: any) => Promise<any> } } }).electronAPI;
+    const defaultName = stampedFileName(props.file.name);
     if (api?.dialog?.saveFile) {
-      const r = await api.dialog.saveFile({ defaultName: props.file.name, sourcePath: props.file.path });
+      const r = await api.dialog.saveFile({ defaultName, sourcePath: props.file.path });
       if (r?.ok) ElMessage.success('已保存到 ' + r.path);
       else if (r && !r.cancelled) ElMessage.error('保存失败: ' + (r.error || '未知错误'));
       return;
@@ -433,7 +435,7 @@ async function saveAs() {
     const url = URL.createObjectURL(new Blob([bin]));
     const a = document.createElement('a');
     a.href = url;
-    a.download = props.file.name;
+    a.download = defaultName;
     a.click();
     URL.revokeObjectURL(url);
   } catch (e: any) {

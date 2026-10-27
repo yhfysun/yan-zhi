@@ -109,6 +109,7 @@ import { buildOntologyIntent, ontologyRowsToChartData, type OntologyGrain } from
 import { envelopeToChartData, envelopeToObjects, loadDataFile } from '../../utils/data-file';
 import { useDashboardStore } from '../../stores/dashboard';
 import { useChat } from '../../composables/chat/useChat';
+import { exportFileName } from '../../utils/download-name';
 
 const DataChart = defineAsyncComponent(() => import('./DataChart.vue'));
 const InfographicBlock = defineAsyncComponent(() => import('./InfographicBlock.vue'));
@@ -300,7 +301,7 @@ function exportYdash() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${(props.dash.title || 'dashboard').replace(/[\\/:*?"<>|]/g, '_')}.ydash`;
+  a.download = exportFileName(props.dash.title, '.ydash', { fallback: 'dashboard' });
   document.body.appendChild(a);
   a.click();
   a.remove();

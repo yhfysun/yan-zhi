@@ -61,6 +61,7 @@ import type { ConversationFile } from '@yan-zhi/shared';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { useChatStore } from '../../stores/chat';
 import { toWindowsPath } from '../../utils/file-open';
+import { stampedFileName } from '../../utils/download-name';
 import {
   absoluteMediaSrc,
   openMediaMenu,
@@ -243,7 +244,7 @@ async function download(f: ConversationFile) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = f.name;
+    a.download = stampedFileName(f.name);
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
