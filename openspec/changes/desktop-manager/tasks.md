@@ -12,22 +12,30 @@
 - [ ] C# 助手 `yz-desktop.exe`：`--progman` / `--spawn-workerw` / `--pin` / `--toggle-icons` / `--icons-visible`
 - [ ] 抽出通用 `ensureHelperExe(name, src)`，`ensureGdiCapExe` 改调用它（行为不变）+ 守门测试
 - [ ] 会话级恢复状态机：窗口异常关闭 / deactivate / before-quit / app.exit → 恢复图标；启动自检不接管他人隐藏
-- [ ] 审计：pluginWindow 与图标显隐全部进 `pushPluginAudit`
+- [ ] 审计：pluginWindow / 图标显隐 / llm 调用全部进 `pushPluginAudit`（llm 只记 tokens 与耗时，不记 prompt）
+- [ ] `llm` 桥（通用）：`llm.json({system,user,schema,maxTokens,timeoutMs})`，内部走 `chatViaRow` + `findModelRow`（默认模型）；错误码 `no-model|timeout|bad-json|upstream`
+- [ ] 权限 `llm`：`PluginPermission` 增项；未声明调用直接拒绝
 - [ ] 窗口全屏感知：overlay 模式在前台应用全屏时自动隐藏
-- [ ] 测试：白名单拒绝、placement 分支、恢复状态机、C# 输出解析
+- [ ] 测试：白名单拒绝、placement 分支、恢复状态机、C# 输出解析、llm 错误码映射
 
 ## P0-A 插件骨架 + 打包安装 + 文件整理
 
-- [ ] 插件目录 `apps/server/src/plugins/desktop-manager.ts`（源码开发形态）+ manifest：`engine: ^0.2`、`permissions: [fs, desktop-shell]`、`ownedTables: [desktop_fence, desktop_widget, desktop_oplog]`
+- [ ] 插件目录 `apps/server/src/plugins/desktop-manager.ts`（源码开发形态）+ manifest：`engine: ^0.2`、`permissions: [fs, desktop-shell, llm]`、`ownedTables: [desktop_fence, desktop_widget, desktop_oplog]`
 - [ ] **确认不进打包**：不修改 `build/plugins.catalog.json`；打包产出里无 desktop-manager（守门测试）
 - [ ] `.yzp` 打包：复用插件模板/zip 链路，产出 `desktop-manager-<ver>.yzp`
 - [ ] 安装验证：上传 → 装到 `plugins/installed/desktop-manager/` → **热装载即生效（无需重启）** → 工具可见；重启后仍生效；老宿主（无 `pluginWindow`）安装被 `engine` 拒绝
-- [ ] `desktop_scan`：桌面路径解析（用户 + 公共）、扩展名表、时间簇、名称模式聚类
-- [ ] `desktop_plan`：方案 JSON（组名/成员/目标目录），未定文件交小模型但组名必须合法
+- [ ] **规则引擎（默认，不调模型）**：采集/过滤/判定管线；判定顺序 用户规则(priority) → 项目关键词 → 时间簇 → 内置扩展名表 → 待归类
+- [ ] 规则配置：`rules[]`（glob + group + priority）、`projects[]`、`timeCluster`、`keep[]`、`targetRoot`；设置页表格编辑 + glob 测试框
+- [ ] 规则模式确定性：幂等单测（同输入两次结果逐字段相等）+ 未覆盖清单如实输出
+- [ ] `desktop_scan`：桌面路径解析（用户 + 公共）、文件元数据采集、「规则未覆盖」清单
+- [ ] `desktop_plan({ strategy })`：缺省读设置（默认 `rules`）；规则方案 JSON（组名/成员/目标目录）
+- [ ] **AI 增强**：只把规则未覆盖文件名 + 已有组名交模型；严格 JSON 输出；五道校验（来源集合/组名合法/数量上限/受保护文件/目录越界）
+- [ ] **AI 回落**：`no-model|timeout|bad-json|校验失败` → 回落规则并在方案标注「AI 不可用，已按规则生成」+ 原因；不弹错框
+- [ ] AI 成本护栏：单次 ≤200 文件名、maxTokens 上限、20s 超时、10 分钟结果缓存（文件名集合 hash）
 - [ ] `desktop_apply`：`confirmed` 闸门 → 先写 oplog 再移动 → 冲突改 `name (2).ext` → 逐条回报
 - [ ] `desktop_undo`：oplog 逆序回滚；用户已改动文件跳过并回报
 - [ ] 越界路径拒绝 + 单测；只移不删（清理=移入 `归档/<年月>/`）
-- [ ] 手动验收：真实桌面 50+ 文件 scan→plan→apply→undo 全链路，文件零丢失
+- [ ] 手动验收：真实桌面 50+ 文件 **规则模式与 AI 模式各跑一轮** scan→plan→apply→undo，文件零丢失；断网/无模型时 AI 模式回落正常
 
 ## P0-B 围栏（插件前端 + 基座窗口）
 

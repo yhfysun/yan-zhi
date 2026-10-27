@@ -180,8 +180,18 @@
   }
   @keyframes pop { from { opacity: 0; transform: translateY(10px) scale(.98); } }
   .dialog .dh { padding: 18px 22px 14px; border-bottom: 1px solid rgba(255,255,255,.07); }
-  .dialog .dh h3 { margin: 0 0 6px; font-size: 16px; }
-  .dialog .dh p { margin: 0; font-size: 12.5px; color: #8d99ad; line-height: 1.6; }
+  .dialog .dh-top { display: flex; align-items: center; gap: 12px; }
+  .dialog .dh-top h3 { margin: 0 0 6px; font-size: 16px; flex: 1; }
+  .dialog .dh p { margin: 0; font-size: 12.5px; color: #8d99ad; line-height: 1.65; }
+  .dialog .dh p b { color: #c3d0e8; font-weight: 600; }
+  .seg.sm { padding: 2px; border-radius: 9px; }
+  .seg.sm button { padding: 5px 14px; font-size: 12.5px; border-radius: 7px; }
+  .grp.warn .gc { color: #f0b46c; background: rgba(240,160,60,.14); }
+  .badge {
+    font-size: 10.5px; color: #b9c8ff; background: rgba(90,120,255,.18);
+    border: 1px solid rgba(120,150,255,.35); border-radius: 20px; padding: 1px 7px;
+    white-space: nowrap;
+  }
   .dialog .db { padding: 8px 22px 4px; max-height: 380px; overflow: auto; }
   .grp {
     display: flex; align-items: center; gap: 12px; padding: 11px 0;
@@ -259,8 +269,14 @@
 <div class="mask" id="mask">
   <div class="dialog">
     <div class="dh">
-      <h3>整理方案 · 待确认</h3>
-      <p>扫描到桌面共 31 个文件（含 5 个快捷方式）。建议分为 6 组移动到对应文件夹。<br/>移动前会记录操作日志，随时可整批撤销；不会删除任何文件。</p>
+      <div class="dh-top">
+        <h3>整理方案 · 待确认</h3>
+        <div class="seg sm">
+          <button id="segRules" class="on">规则整理</button>
+          <button id="segAi">AI 整理</button>
+        </div>
+      </div>
+      <p id="planSub"></p>
     </div>
     <div class="db" id="planBody"></div>
     <div class="df">
@@ -288,6 +304,7 @@
     { id: 'work',    label: '工作文档', color: '#5b8cff', x: 40,  y: 40,  w: 400 },
     { id: 'report',  label: '报表数据', color: '#37c98b', x: 40,  y: 326, w: 400 },
     { id: 'setup',   label: '安装包',   color: '#f0a03c', x: 40,  y: 508, w: 400 },
+    { id: 'inbox',   label: '待归类',   color: '#9aa6ba', x: 40,  y: 690, w: 400 },
     { id: 'image',   label: '图片截图', color: '#b07cff', x: 460, y: 40,  w: 400 },
     { id: 'project', label: '项目·星图', color: '#2fc6c6', x: 460, y: 326, w: 400 },
     { id: 'common',  label: '常用',     color: '#8ea3c4', x: 460, y: 612, w: 400 }
@@ -298,8 +315,6 @@
       { n: '需求说明.docx',      e: '📄', t: 'doc' },
       { n: '报价单-final.xlsx',  e: '📊', t: 'sheet' },
       { n: '合同扫描.pdf',       e: '📕', t: 'doc' },
-      { n: '项目周报.docx',      e: '📝', t: 'doc' },
-      { n: '会议纪要.md',        e: '🗒️', t: 'doc' },
       { n: '技术方案.pptx',      e: '📽️', t: 'doc' },
       { n: '接口文档.pdf',       e: '📘', t: 'doc' },
       { n: '预算表.xlsx',        e: '📈', t: 'sheet' }
@@ -307,13 +322,17 @@
     report: [
       { n: '销售-10月.xlsx',   e: '📊', t: 'sheet' },
       { n: '用户增长.xlsx',    e: '📈', t: 'sheet' },
-      { n: '财务报表.xlsx',    e: '🧾', t: 'sheet' },
-      { n: '数据导出.csv',     e: '📋', t: 'sheet' }
+      { n: '财务报表.xlsx',    e: '🧾', t: 'sheet' }
     ],
     setup: [
       { n: 'Node-setup.exe',   e: '⚙️', t: 'exe' },
       { n: '微信安装包.exe',    e: '💬', t: 'exe' },
       { n: 'VSCodeSetup.exe',  e: '🧩', t: 'exe' }
+    ],
+    inbox: [
+      { n: '未命名文档 (3)',    e: '📄', t: 'doc' },
+      { n: 'scan_0031',        e: '📎', t: 'doc' },
+      { n: '新建文件夹 (2)',    e: '📁', t: 'doc' }
     ],
     image: [
       { n: '截图 2026-10-26 151203.png', e: '🖼️', t: 'img' },
@@ -337,6 +356,28 @@
       { n: '便签.lnk',       e: '🗒️', t: 'lnk' },
       { n: '待发-客户A',      e: '📤', t: 'doc' }
     ]
+  };
+
+  // 两种策略下的最终归属（名字唯一，AI 模式把两个无扩展名文件补进工作文档）
+  var GROUPS = {
+    rules: {
+      work: ['需求说明.docx', '报价单-final.xlsx', '合同扫描.pdf', '技术方案.pptx', '接口文档.pdf', '预算表.xlsx'],
+      report: ['销售-10月.xlsx', '用户增长.xlsx', '财务报表.xlsx'],
+      setup: ['Node-setup.exe', '微信安装包.exe', 'VSCodeSetup.exe'],
+      inbox: ['未命名文档 (3)', 'scan_0031', '新建文件夹 (2)'],
+      image: ['截图 2026-10-26 151203.png', '截图 2026-10-25 094412.png', '产品原型-v3.png', '桌面-整理前.png', '设计稿-首页.png', '微信图片_20261024.jpg'],
+      project: ['星图-立项书.docx', '星图-接口约定.md', '星图-里程碑.xlsx', '星图-评审记录.docx', '星图-上线清单.md'],
+      common: ['远程桌面.lnk', '剪映.lnk', 'Chrome.lnk', '便签.lnk', '待发-客户A']
+    },
+    ai: {
+      work: ['需求说明.docx', '报价单-final.xlsx', '合同扫描.pdf', '技术方案.pptx', '接口文档.pdf', '预算表.xlsx', '未命名文档 (3)', 'scan_0031'],
+      report: ['销售-10月.xlsx', '用户增长.xlsx', '财务报表.xlsx'],
+      setup: ['Node-setup.exe', '微信安装包.exe', 'VSCodeSetup.exe'],
+      inbox: ['新建文件夹 (2)'],
+      image: ['截图 2026-10-26 151203.png', '截图 2026-10-25 094412.png', '产品原型-v3.png', '桌面-整理前.png', '设计稿-首页.png', '微信图片_20261024.jpg'],
+      project: ['星图-立项书.docx', '星图-接口约定.md', '星图-里程碑.xlsx', '星图-评审记录.docx', '星图-上线清单.md'],
+      common: ['远程桌面.lnk', '剪映.lnk', 'Chrome.lnk', '便签.lnk', '待发-客户A']
+    }
   };
 
   var WIDGETS = [
@@ -363,13 +404,15 @@
   var widgetLayer = document.getElementById('widgetLayer');
 
   /* ============ 建围栏 ============ */
-  var fenceRects = {};
+  var fenceEls = {};
+  function maxCount(id) {
+    return Math.max(GROUPS.rules[id].length, GROUPS.ai[id].length);
+  }
   FENCES.forEach(function (f) {
-    var n = MEMBERS[f.id].length;
-    var cols = Math.min(CELL_W_COLS, n);
+    var n = maxCount(f.id);
+    var cols = Math.min(CELL_W_COLS, Math.max(1, n));
     var rows = Math.ceil(n / cols);
     var h = HEADER + PAD * 2 + rows * CELL_H;
-    fenceRects[f.id] = { x: f.x, y: f.y, w: f.w, h: h };
 
     var d = el('div', 'fence');
     d.dataset.fid = f.id;
@@ -388,36 +431,51 @@
     fh.appendChild(dot); fh.appendChild(lbl); fh.appendChild(cnt); fh.appendChild(grip);
     d.appendChild(fh);
     fenceLayer.appendChild(d);
+    fenceEls[f.id] = { el: d, cnt: cnt };
   });
 
-  /* ============ 建图标 ============ */
-  var icons = [];
-  var idx = 0;
-  FENCES.forEach(function (f) {
-    var list = MEMBERS[f.id];
-    var cols = Math.min(CELL_W_COLS, list.length);
-    var cellW = (f.w - PAD * 2) / cols;
-    list.forEach(function (m, i) {
-      var col = i % cols, row = Math.floor(i / cols);
-      var afterX = f.x + PAD + col * cellW + (cellW - 84) / 2;
-      var afterY = f.y + HEADER + PAD + row * CELL_H + 6;
+  /* ============ 建图标（名字并集；位置按策略计算） ============ */
+  var byName = {};
+  Object.keys(MEMBERS).forEach(function (k) {
+    MEMBERS[k].forEach(function (m) { byName[m.n] = m; });
+  });
+  var allMembers = [];
+  Object.keys(byName).forEach(function (n) { allMembers.push(byName[n]); });
 
-      // 整理前：带抖动的散落位置（避开左下角回收站）
-      var beforeX = 132 + (idx % 5) * 205 + rnd() * 88 - 28;
-      var beforeY = 26 + Math.floor(idx / 5) * 146 + rnd() * 80 - 22;
-
-      var d = el('div', 'icon');
-      var tile = el('div', 'tile', m.e);
-      var nm = el('div', 'nm', m.n);
-      d.appendChild(tile); d.appendChild(nm);
-      d.style.left = beforeX + 'px';
-      d.style.top = beforeY + 'px';
-      d.style.transitionDelay = (idx % 14) * 14 + 'ms';
-      iconLayer.appendChild(d);
-
-      icons.push({ el: d, before: { x: beforeX, y: beforeY }, after: { x: afterX, y: afterY } });
-      idx++;
+  function computeAfter(strategy) {
+    var map = {};
+    FENCES.forEach(function (f) {
+      var list = GROUPS[strategy][f.id] || [];
+      var cols = Math.min(CELL_W_COLS, Math.max(1, list.length));
+      var cellW = (f.w - PAD * 2) / cols;
+      list.forEach(function (name, i) {
+        var col = i % cols, row = Math.floor(i / cols);
+        map[name] = {
+          x: f.x + PAD + col * cellW + (cellW - 84) / 2,
+          y: f.y + HEADER + PAD + row * CELL_H + 6
+        };
+      });
     });
+    return map;
+  }
+  var afterPos = { rules: computeAfter('rules'), ai: computeAfter('ai') };
+
+  var icons = [];
+  allMembers.forEach(function (m, idx) {
+    // 整理前：带抖动的散落位置（避开左下角回收站）
+    var beforeX = 132 + (idx % 5) * 205 + rnd() * 88 - 28;
+    var beforeY = 26 + Math.floor(idx / 5) * 146 + rnd() * 80 - 22;
+
+    var d = el('div', 'icon');
+    var tile = el('div', 'tile', m.e);
+    var nm = el('div', 'nm', m.n);
+    d.appendChild(tile); d.appendChild(nm);
+    d.style.left = beforeX + 'px';
+    d.style.top = beforeY + 'px';
+    d.style.transitionDelay = (idx % 14) * 14 + 'ms';
+    iconLayer.appendChild(d);
+
+    icons.push({ el: d, name: m.n, before: { x: beforeX, y: beforeY } });
   });
 
   // 回收站：不进围栏，保持原位（示意"并非所有东西都要被管"）
@@ -483,7 +541,7 @@
     } else if (w.id === 'metric') {
       metricEl = el('div', 'big', '31');
       d.appendChild(metricEl);
-      d.appendChild(el('div', 'cap', '个文件已归入 6 个围栏'));
+      d.appendChild(el('div', 'cap', '个文件已归入 7 个围栏'));
       d.appendChild(el('div', 'delta', '桌面图标减少 90% · 0 个文件被删除'));
     }
     widgetLayer.appendChild(d);
@@ -491,6 +549,7 @@
 
   /* ============ 状态切换 ============ */
   var state = 'before';
+  var strategy = 'rules';
   var modePill = document.getElementById('modePill');
   var segBefore = document.getElementById('segBefore');
   var segAfter = document.getElementById('segAfter');
@@ -503,9 +562,13 @@
     modePill.classList.toggle('on', after);
 
     icons.forEach(function (it) {
-      var p = after ? it.after : it.before;
+      var p = after ? (afterPos[strategy][it.name] || it.before) : it.before;
       it.el.style.left = p.x + 'px';
       it.el.style.top = p.y + 'px';
+    });
+    FENCES.forEach(function (f) {
+      var g = fenceEls[f.id];
+      if (g) g.cnt.textContent = String(GROUPS[strategy][f.id].length);
     });
     Array.prototype.forEach.call(fenceLayer.children, function (f) {
       f.classList.toggle('on', after);
@@ -522,26 +585,60 @@
   /* ============ 方案弹窗 ============ */
   var mask = document.getElementById('mask');
   var planBody = document.getElementById('planBody');
+  var planSub = document.getElementById('planSub');
+  var segRules = document.getElementById('segRules');
+  var segAi = document.getElementById('segAi');
+
   var TARGETS = {
     work: '桌面/工作文档/', report: '桌面/报表数据/', setup: '桌面/安装包/',
-    image: '桌面/图片截图/', project: '桌面/项目·星图/', common: '桌面/常用/'
+    inbox: '桌面/待归类/', image: '桌面/图片截图/', project: '桌面/项目·星图/', common: '桌面/常用/'
   };
-  FENCES.forEach(function (f) {
-    var row = el('div', 'grp');
-    row.appendChild(el('span', 'gck', '✓'));
-    row.appendChild(el('span', 'gn', f.label));
-    var gi = el('span', 'gi', '→ ' + TARGETS[f.id] + '   ' + MEMBERS[f.id].map(function (m) { return m.n; }).join('、'));
-    row.appendChild(gi);
-    row.appendChild(el('span', 'gc', MEMBERS[f.id].length + ' 个'));
-    planBody.appendChild(row);
-  });
+  // AI 模式相对规则模式多归入的文件数（仅展示用）
+  var AI_ADDED = { work: 2 };
+
+  var PLAN_TEXT = {
+    rules: '扫描到桌面 31 个文件。纯本地规则分组，<b>不调用大模型</b>、离线可用、同一批文件结果固定；规则判断不了的 3 个文件进入「待归类」。',
+    ai: '规则打底，仅把 3 个无法判断的文件交给模型补充；模型不可用或输出不合格时<b>自动回落规则模式</b>，不产出半截方案。'
+  };
+
+  function renderPlan() {
+    planBody.innerHTML = '';
+    planSub.innerHTML = PLAN_TEXT[strategy];
+    segRules.classList.toggle('on', strategy === 'rules');
+    segAi.classList.toggle('on', strategy === 'ai');
+
+    FENCES.forEach(function (f) {
+      var names = GROUPS[strategy][f.id] || [];
+      if (!names.length) return;
+      var row = el('div', 'grp' + (f.id === 'inbox' ? ' warn' : ''));
+      row.appendChild(el('span', 'gck', '✓'));
+      row.appendChild(el('span', 'gn', f.label));
+      row.appendChild(el('span', 'gi', '→ ' + TARGETS[f.id] + '   ' + names.join('、')));
+      row.appendChild(el('span', 'gc', names.length + ' 个'));
+      if (strategy === 'ai' && AI_ADDED[f.id]) {
+        row.appendChild(el('span', 'badge', 'AI +' + AI_ADDED[f.id]));
+      }
+      planBody.appendChild(row);
+    });
+  }
+  renderPlan();
+
+  function pickStrategy(s) {
+    strategy = s;
+    renderPlan();
+    if (state === 'after') applyState('after');
+  }
+  segRules.addEventListener('click', function () { pickStrategy('rules'); });
+  segAi.addEventListener('click', function () { pickStrategy('ai'); });
 
   document.getElementById('btnAi').addEventListener('click', function () { mask.classList.add('on'); });
   document.getElementById('btnCancel').addEventListener('click', function () { mask.classList.remove('on'); });
   document.getElementById('btnApply').addEventListener('click', function () {
     mask.classList.remove('on');
     applyState('after');
-    showToast('已整理 31 个文件 · 操作已记录，可整批撤销');
+    showToast(strategy === 'ai'
+      ? '已整理 31 个文件（AI 补 2 个，1 个待确认）· 可整批撤销'
+      : '已整理 31 个文件（3 个待归类）· 可整批撤销');
   });
 
   /* ============ 提示条 ============ */
