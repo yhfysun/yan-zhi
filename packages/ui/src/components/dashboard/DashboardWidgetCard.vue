@@ -73,6 +73,7 @@ import { api } from '../../api/client';
 import type { DashboardWidget } from '@yan-zhi/shared';
 import type { ChartData, ChartKind, ChartSpec } from '../chat/chart-spec';
 import { buildOntologyIntent, ontologyRowsToChartData, type OntologyGrain } from '../chat/ontology-view';
+import { envelopeToChartData, envelopeToObjects, loadDataFile } from '../../utils/data-file';
 
 const DataChart = defineAsyncComponent(() => import('../chat/DataChart.vue'));
 // 信息图依赖较重，只有真的出现该 widget 时才加载
@@ -127,6 +128,8 @@ function baseBody(): Record<string, unknown> | null {
 }
 
 const isOntology = computed(() => props.widget.contract?.mode === 'ontology' && !!props.widget.contract?.ontology);
+/** 数据产物契约（智能体出图/看板的落盘文件） */
+const isFileContract = computed(() => props.widget.contract?.mode === 'file' && !!props.widget.contract?.path);
 
 interface OntRunResp {
   columns: string[];
@@ -157,6 +160,21 @@ async function loadOntology(kind: 'chart' | 'table'): Promise<OntRunResp | null>
 
 async function loadChart(): Promise<void> {
   const s = (props.widget.spec || {}) as Record<string, unknown>;
+  if (isFileContract.value) {
+    const env = await loadDataFile(props.widget.contract!.path!);
+    if (!env) { error.value = '数据文件读取失败（可能已被清理）'; return; }
+    const measures = Array.isArray(s.measures) && s.measures.length
+      ? (s.measures as unknown[]).map(String).filter(Boolean)
+      : [String(s.measure || '')].filter(Boolean);
+    chartData.value = envelopeToChartData(env, {
+      xField: String(s.dim || ''),
+      measures,
+      ...(s.series ? { seriesField: String(s.series) } : {}),
+      ...(s.topN ? { topN: Number(s.topN) } : {}),
+      ...(s.percent ? { percent: true } : {}),
+    });
+    return;
+  }
   if (isOntology.value) {
     const data = await loadOntology('chart');
     if (!data) return;
@@ -188,6 +206,12 @@ async function loadChart(): Promise<void> {
 }
 
 async function loadTable(): Promise<void> {
+  if (isFileContract.value) {
+    const env = await loadDataFile(props.widget.contract!.path!);
+    if (!env) { error.value = '数据文件读取失败（可能已被清理）'; return; }
+    tableRows.value = { columns: env.columns, rows: envelopeToObjects(env) };
+    return;
+  }
   if (isOntology.value) {
     const data = await loadOntology('table');
     if (!data) return;

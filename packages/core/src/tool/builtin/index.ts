@@ -27,6 +27,14 @@ export { UdpSendTool } from './udp-send';
 export { DnsLookupTool } from './dns-lookup';
 export { CmdExecTool } from './cmd-exec';
 export { PythonExecTool } from './python-exec';
+export { PySaveExecTool } from './py-save-exec';
+export { DataSaveTool } from './data-save';
+export { BuildChartDslTool } from './build-chart-dsl';
+export { BuildDashboardDslTool, autoLayout } from './build-dashboard-dsl';
+export {
+  readDataEnvelope, writeDataEnvelope, summarizeEnvelope, normalizeRows, artifactPath,
+  type DataEnvelope,
+} from './data-artifact';
 export { JobStatusTool } from './job-status';
 export { DoyzTool } from './doyz';
 export { NovelTuiwenTool } from './novel-tuiwen';
@@ -93,6 +101,10 @@ import { UdpSendTool } from './udp-send';
 import { DnsLookupTool } from './dns-lookup';
 import { CmdExecTool } from './cmd-exec';
 import { PythonExecTool } from './python-exec';
+import { PySaveExecTool } from './py-save-exec';
+import { DataSaveTool } from './data-save';
+import { BuildChartDslTool } from './build-chart-dsl';
+import { BuildDashboardDslTool } from './build-dashboard-dsl';
 import { JobStatusTool } from './job-status';
 import { DoyzTool } from './doyz';
 import { NovelTuiwenTool } from './novel-tuiwen';
@@ -185,6 +197,12 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new AskUserTool());
   // 数据看板内嵌（2026-10-26）：schema 注册；实际执行由前端 chat.ts 拦截
   registry.register(new DataQueryViewTool());
+  // 取数产物 → 图表 → 看板（P1–P3，2026-10-26）：
+  //   data_save / py_save_exec 落盘 {columns,rows,total}；build_chart_dsl 出图；build_dashboard_dsl 组装
+  registry.register(new DataSaveTool());
+  registry.register(new PySaveExecTool());
+  registry.register(new BuildChartDslTool());
+  registry.register(new BuildDashboardDslTool());
   registry.register(new ConfirmUserTool());
   registry.register(new TaskPlanTool());
   registry.register(new TaskStepTool());

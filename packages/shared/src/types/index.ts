@@ -318,10 +318,12 @@ export interface InlineDataView {
   table?: string;
   base?: string;
   filterCols?: string[];
-  /** 取数通道：缺省按 table/base 走自由 SQL；ontology 只按本体字段名取数 */
-  mode?: 'table' | 'base' | 'ontology';
+  /** 取数通道：缺省按 table/base 走自由 SQL；ontology 按本体字段名取数；file 读数据产物文件 */
+  mode?: 'table' | 'base' | 'ontology' | 'file';
   /** mode=ontology 时的本体 code（或 id） */
   ontology?: string;
+  /** mode=file 时的数据产物绝对路径（py_save_exec / data_save 落盘的 json） */
+  path?: string;
 }
 
 /** 看板 widget 的网格位置（12 列；x/y 从 0 起，w 1..12，h 为行数） */

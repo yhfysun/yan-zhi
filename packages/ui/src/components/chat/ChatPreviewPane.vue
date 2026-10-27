@@ -88,7 +88,7 @@
       <button class="right-panel-empty-entry" @click="openConsoleEntry">
         <el-icon><Monitor /></el-icon><span>控制台</span>
       </button>
-      <button class="right-panel-empty-entry" @click="openDashboardEntry">
+      <button v-if="hasCharts" class="right-panel-empty-entry" @click="openDashboardEntry">
         <el-icon><DataBoard /></el-icon><span>看板</span>
       </button>
     </div>
@@ -122,6 +122,7 @@ import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
 import { useSpaceStore } from '../../stores/space';
+import { useDashboardStore } from '../../stores/dashboard';
 import type { PreviewTab } from '../../stores/chat';
 import FilePreview from '../FilePreview.vue';
 import BrowserPanel from '../BrowserPanel.vue';
@@ -137,6 +138,17 @@ const { supportsBrowser } = usePlatform();
 const router = useRouter();
 const settingsStore = useSettingsStore();
 const spaceStore = useSpaceStore();
+const dashStore = useDashboardStore();
+
+/**
+ * 有没有「图」可上板：会话里出现过数据看板（dataView）或智能体出的 .ydash 卡片，
+ * 或者已经有带组件的看板。没有就不给「看板」入口 —— 空看板没有意义。
+ */
+const hasCharts = computed(() => {
+  const msgs = store.currentMessages || [];
+  const inConversation = msgs.some((m) => !!m.dataView || /```ydash\b/.test(String(m.content || '')));
+  return inConversation || dashStore.list.some((d) => (d.widgetCount || 0) > 0);
+});
 const gitPanelRef = ref<InstanceType<typeof ChatGitPanel> | null>(null);
 const hasWorkspaceDir = computed(() => !!settingsStore.settings.workspaceDir);
 
@@ -267,6 +279,10 @@ function onDocMouseDown(e: MouseEvent) {
   if ((e.target as HTMLElement)?.closest('.ctx-menu')) return;
   closeTabCtx();
 }
-onMounted(() => document.addEventListener('mousedown', onDocMouseDown, true));
+onMounted(() => {
+  document.addEventListener('mousedown', onDocMouseDown, true);
+  // 「看板」入口要按已有看板判断显隐：挂载时拉一次列表（失败也不影响面板其它入口）
+  void dashStore.loadList();
+});
 onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown, true));
 </script>

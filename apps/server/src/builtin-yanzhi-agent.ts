@@ -27,6 +27,8 @@ export const YANZHI_AGENT_BUILTIN_TOOLS = [
   // 本体数据链（2026-10-26 用户要求：挂全部本体；list 看列表 → brief 看基本信息 → detail 看口径，再取数）
   'api_datasource_list', 'api_ontology_list', 'api_ontology_search', 'api_ontology_overview', 'api_ontology_brief', 'api_ontology_detail', 'api_ontology_values',
   'api_data_preview', 'api_data_query', 'api_data_paginate', 'data_query_view',
+  // 取数产物 → 图表 → 看板（P1–P3）：数据落盘后按文件出图，看板只消费图表文件
+  'py_save_exec', 'data_save', 'build_chart_dsl', 'build_dashboard_dsl',
   // 设计素材：免费站点清单查询（找配图/图标时用）
   'design_asset_sites',
   // 读资料与交付（演示脚本 / 文案 / 排期）

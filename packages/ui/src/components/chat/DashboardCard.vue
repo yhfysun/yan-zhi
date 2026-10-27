@@ -106,6 +106,7 @@ import type { DocumentDataContract } from '../../utils/document-types';
 import type { YdashFile, YdashWidget } from '../../utils/ydash';
 import { toDashboardWidget, toYdash } from '../../utils/ydash';
 import { buildOntologyIntent, ontologyRowsToChartData, type OntologyGrain } from './ontology-view';
+import { envelopeToChartData, envelopeToObjects, loadDataFile } from '../../utils/data-file';
 import { useDashboardStore } from '../../stores/dashboard';
 import { useChat } from '../../composables/chat/useChat';
 
@@ -187,6 +188,7 @@ function contractBody(contract: DocumentDataContract) {
 }
 
 const isOntology = (c?: DocumentDataContract) => c?.mode === 'ontology' && !!c.ontology;
+const isFileContract = (c?: DocumentDataContract) => c?.mode === 'file' && !!c.path;
 
 /** 本体契约：按业务字段名取数（spec 里是本体字段，不是 SQL 列名） */
 async function loadOntologyRows(w: YdashWidget, kind: 'chart' | 'table') {
@@ -212,6 +214,19 @@ async function loadOntologyRows(w: YdashWidget, kind: 'chart' | 'table') {
 
 async function loadChart(w: YdashWidget) {
   const spec = w.spec!;
+  if (isFileContract(w.contract)) {
+    const env = await loadDataFile(w.contract!.path!);
+    if (!env) { errors[w.id] = '数据文件读取失败'; chartData[w.id] = null; return; }
+    const measures = spec.measures?.length ? spec.measures : [spec.measure];
+    chartData[w.id] = envelopeToChartData(env, {
+      xField: spec.dim,
+      measures,
+      ...(spec.series ? { seriesField: spec.series } : {}),
+      ...(spec.topN ? { topN: spec.topN } : {}),
+      ...(spec.percent ? { percent: true } : {}),
+    });
+    return;
+  }
   if (isOntology(w.contract)) {
     const rows = await loadOntologyRows(w, 'chart');
     if (!rows) { chartData[w.id] = null; return; }
@@ -239,6 +254,12 @@ async function loadChart(w: YdashWidget) {
 }
 
 async function loadTable(w: YdashWidget) {
+  if (isFileContract(w.contract)) {
+    const env = await loadDataFile(w.contract!.path!);
+    if (!env) { errors[w.id] = '数据文件读取失败'; return; }
+    tables[w.id] = { columns: env.columns, rows: envelopeToObjects(env) };
+    return;
+  }
   if (isOntology(w.contract)) {
     const rows = await loadOntologyRows(w, 'table');
     if (rows) tables[w.id] = { columns: rows.columns || [], rows: rows.rows || [] };

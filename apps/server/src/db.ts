@@ -1508,7 +1508,7 @@ const DATA_AGENT_BUILTIN_TOOLS = [
   // 自定义文档类型（出正式文档前查一次，命中就用它的 code）
   'api_document_type_list',
   // 分析与交付（只留统计与写文件：翻源码/列目录/读文件对取数无用，且是跑偏的主要出口）
-  'python_exec', 'file_write',
+  'python_exec', 'py_save_exec', 'data_save', 'build_chart_dsl', 'build_dashboard_dsl', 'file_write',
   // 子智能体委派（探查 / 报告）
   'call_agent', 'list_sub_agents',
   // 任务规划与用户交互
@@ -2109,12 +2109,12 @@ const DATA_AGENT_SYSTEM_PROMPT = `你是「数据查询分析助手」。你通�
    - selections：本体选择列名（一组命名字段展开并入 SELECT）
    - 过滤器的值拿不准 → 先 api_ontology_values 采样真实取值，禁止猜值
    - orderBy / limit：默认 100 行，上限 1000；行数不够用 api_data_paginate 翻页，禁止一次拉全表
-5. 【回答】用 markdown 表格呈现关键列，说明口径：本体 code、过滤器、时间范围、行数。需要统计/建模用 python_exec（仅限已拿到 rows 后）；交付文件用 file_write。需要把结论做成信息图时，直接输出 infographic 围栏块（语法见 skill_infographic，首行 infographic <模板名> + data 块）；需要正式文档（周报/分析报告/纪要）时**先 api_document_type_list 查自定义模板**（命中就用它的 code 与 sections），再输出 document 围栏块（JSON，结构见 skill_document_type）；需要多图拼屏看板时输出 ydash 围栏块（JSON，widget 见 skill_document_type 的 .ydash 段）；要交互图表/看板时调 data_query_view { table 或 base, title }，只要静态图时直接输出 SVG 围栏（三个反引号 + svg）。前端会就地渲染，不要生成 HTML 或只贴图片路径。
+5. 【回答】用 markdown 表格呈现关键列，说明口径：本体 code、过滤器、时间范围、行数。需要统计/建模用 python_exec（仅限已拿到 rows 后）；交付文件用 file_write。需要把结论做成信息图时，直接输出 infographic 围栏块（语法见 skill_infographic，首行 infographic <模板名> + data 块）；需要正式文档（周报/分析报告/纪要）时**先 api_document_type_list 查自定义模板**（命中就用它的 code 与 sections），再输出 document 围栏块（JSON，结构见 skill_document_type）；**要出图/看板走产物链**：取数结果先用 py_save_exec（脚本里调 save_data(...)）或 data_save 落成数据产物拿 data_path → build_chart_dsl { data_path, chart_type, chart_name, x, y } 出图（一次一张）→ 要多图看板再用 build_dashboard_dsl { title, charts:[{ chart_file }] } 组装；**没有图就不要建看板**。需要交互筛选/翻页看明细时调 data_query_view { table 或 base, title }；只贴一张静态图可直接输出 SVG 围栏（三个反引号 + svg）。前端会就地渲染，不要生成 HTML 或只贴图片路径。
 
 ## 硬约束
 - **工具结果即事实**：api_data_query 返回的 rows 是唯一可信数据源。最终答案里的每一个数字都必须能对应到某次 rows 里的值，对不上就不许写。
 - **报数前必须先预览**：未调用 api_data_preview 就直接 api_data_query 取数报数视为流程违规；预览返回的 warnings 必须逐条处理，或在回答里说明为什么可以忽略。预览与取数必须用**同一个 intent/过滤器**，改了条件就重新预览。
-- **图表按需求选形式**：要交互/筛选/切图 → data_query_view { base: <api_data_query 返回的 sql>, title }；只要一张静态图 → 直接输出 SVG 围栏（三个反引号 + svg）或写 PNG 后按图片引用，确保用户能看到图。**禁止把 SVG/HTML 源码裸贴当图表，也禁止只给文件路径不显示。**
+- **图表按需求选形式**：结果行数多/要成图 → py_save_exec（或 data_save）落盘拿 data_path → build_chart_dsl 出图；要交互/筛选/查明细 → data_query_view { base: <api_data_query 返回的 sql>, title }；只要一张静态图 → 直接输出 SVG 围栏（三个反引号 + svg）或写 PNG 后按图片引用，确保用户能看到图。**禁止把 SVG/HTML 源码裸贴当图表，也禁止只给文件路径不显示。**
 - **ontologyCount 不是业务数据**：api_ontology_overview 的 ontologyCount 是「本体（语义视图）的个数」，与任何业务数据的数量无关，严禁当作答案或参与回答。
 - **成功结果必须采信**：工具正常返回后禁止以"再验证一次"为由重复同样的调用；怀疑口径就换 intent（换度量/维度/加过滤器）查证，而不是原样重发。拿到 rows 后立即进入回答，不要继续调用工具。（api_data_preview → api_data_query 是规定顺序，不算重复调用。）
 - **必须真正取数才能回答**：走到 api_data_query 拿到 rows 后再作答。没有取到数 = 没有答案，禁止凭常识、记忆或推测编造数字/列表/表格。
@@ -3098,19 +3098,32 @@ export const builtinSkillDefaults: Array<{ id: string; name: string; category: s
     },
     {
       id: 'skill_data_visualization', name: '数据可视化', category: '办公',
-      description: '数据可视化。要交互用 data_query_view 内嵌可交互看板（折线/柱/饼/散点，可切图/过滤/导出 PNG）；只要静态图可直接输出 SVG 围栏或 PNG，也可用 matplotlib/plotly/echarts 产文件。',
+      description: '数据可视化。取数先落成数据产物（data_path）再出图：build_chart_dsl 产图表文件按图渲染；多图用 build_dashboard_dsl 组装看板（没有图不建看板）；要交互筛选用 data_query_view；单张静态图可输出 SVG 围栏。',
       triggers: ['画图', '生成图表', '图表展示', '可视化数据', '柱状图', '折线图', '饼图', '热力图', '看板'],
       body: `# 数据可视化
 
-## 先看用户要什么
-- **要交互**（筛选、切图、翻页、看板）→ **data_query_view { table 或 base, title }**：前端内嵌看板，明细表 + 折线/柱/饼/散点切换、过滤器、翻页、导出 PNG
-- **只要一张静态图**（截图/贴图/报告配图）→ 直接输出 **SVG 围栏**（三个反引号 + svg，首行 <svg ...>），前端会当图片渲染；或写 PNG 后用图片引用
-- base 直接用 api_data_query 返回的 sql（推荐），或传 table（表名）
-- 数字必须来自 api_data_query 的 rows
+## 主线：取数 → 产物 → 图 → 看板（数据不进上下文）
+
+1. **取数落盘**（拿 data_path）
+   - Python：**py_save_exec { script, name }**，脚本里调已注入的 save_data(columns, rows, total=None)；不要 print 大表
+   - SQL / JS 已有行：**data_save { name, rows, columns?, total? }**（rows 可为对象数组）
+   - 产物统一为 {columns, rows, total}，工具只回路径/条数/列名
+2. **出图**：**build_chart_dsl { data_path, chart_type, chart_name, x, y }**
+   - chart_type：table 明细 / bar 对比 / line 趋势 / pie 占比 / area 面积 / scatter 散点
+   - x 缺省第一列、y 缺省第二列；y 传数组 = 多系列；series/topN/percent 可选
+   - 一次一张图；返回 chart_file（后续组装看板要用）
+3. **组装看板**：**build_dashboard_dsl { title, charts:[{ chart_file, title?, w?, h? }] }**
+   - **没有图就不要建看板**；一屏 4–9 个组件（上限 24），w/h 走 12 列网格
+   - 看板卡片可直接勾选存入右侧「看板」面板
+
+## 其它通道（按需）
+- **要交互**（筛选、切图、翻页）→ **data_query_view { table 或 base, title }**：内嵌可交互明细 + 折线/柱/饼/散点，可导出 PNG
+- **只要一张静态图**（截图/配图）→ 直接输出 **SVG 围栏**（三个反引号 + svg），或写 PNG 后按图片引用
 
 ## 禁止
 - 把 SVG/HTML 源码裸贴成正文（用户看到的是代码，不是图）
 - 只给文件路径、不把图显示出来
+- 没有图却建空看板
 
 ## 图种选型
 比较→柱状 / 趋势→折线 / 占比→饼 / 相关→散点 / 分布→箱线 / 密度→热力
@@ -4564,6 +4577,8 @@ try {
 //   skill_1688_sourcing / skill_overseas_warehouse，2026-10-16 P1 补齐）：同理一并进白名单，
 //   否则老库拿到的是残留旧行、拿不到新 body。
 const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prompt', 'skill_translation_workflow', 'skill_business_ops', 'skill_novel_tuiwen', 'skill_douyin_sell', 'skill_douyin_traffic', 'skill_shop_selection', 'skill_amazon_listing', 'skill_amazon_ads_profit', 'skill_taobao_ops', 'skill_1688_sourcing', 'skill_overseas_warehouse', 'skill_shop_service',
+  // 2026-10-26：数据可视化改走「取数产物 → build_chart_dsl → build_dashboard_dsl」，旧库刷新 body
+  'skill_data_visualization',
   // 四模式岗位 skill（2026-10-17，openspec 5h）：新内置 body 一律进白名单
   'skill_ops_health_check', 'skill_ops_log_analysis', 'skill_ops_docker_ops', 'skill_ops_db_maintain', 'skill_ops_deploy_release', 'skill_ops_incident_response',
   'skill_sec_recon', 'skill_sec_web_probe', 'skill_sec_report', 'skill_sec_audit_review', 'skill_sec_hardening', 'skill_sec_blue_team',

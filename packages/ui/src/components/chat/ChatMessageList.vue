@@ -399,6 +399,12 @@
                         </div>
                         <DataQueryWorkbench :key="vr.round.finalAssistant.id + '-dv'" :contract="roundDataView(vr.round)!" />
                       </div>
+                      <!-- 图表卡片：本轮 build_chart_dsl 生成的图（按 data_path 活取数） -->
+                      <ChartFileCard
+                        v-for="(cf, cfi) in roundCharts(vr.round)"
+                        :key="vr.round.finalAssistant.id + '-cf-' + cfi"
+                        :dsl="cf"
+                      />
                       <!-- 信息图围栏块：模型输出 ```infographic 语法，前端就地渲染为 SVG（可导出） -->
                       <InfographicBlock
                         v-for="(ig, i) in roundInfographics(vr.round)"
@@ -416,6 +422,12 @@
                         <DashboardCard v-if="dash.ok" :dash="dash.dash" />
                         <div v-else class="msg-doc-error">看板结构有误：{{ dash.error }}</div>
                       </template>
+                      <!-- 工具生成的看板：build_dashboard_dsl 结果里的 [ydash] 定义（数据按 data_path 活取） -->
+                      <DashboardCard
+                        v-for="(td, ti) in roundToolDashboards(vr.round)"
+                        :key="vr.round.finalAssistant.id + '-tdash-' + ti"
+                        :dash="td"
+                      />
                       <!-- 静态 SVG 图表：围栏内容直接当图片渲染（img 内不执行脚本） -->
                       <img
                         v-for="(svg, i) in roundSvgs(vr.round)"
@@ -764,9 +776,12 @@ const InfographicBlock = defineAsyncComponent(() => import('./InfographicBlock.v
 const DocumentCard = defineAsyncComponent(() => import('./DocumentCard.vue'));
 // 看板卡片：.ydash 定义渲染（图表/指标/表格/信息图）
 const DashboardCard = defineAsyncComponent(() => import('./DashboardCard.vue'));
+// 图表卡片：build_chart_dsl 产物（读 data_path 渲染，数据不进上下文）
+const ChartFileCard = defineAsyncComponent(() => import('./ChartFileCard.vue'));
+import { collectChartDsls } from '../../utils/chart-file';
 import { extractInfographicBlocks, stripInfographicBlocks } from '../../utils/infographic-blocks';
 import { extractDocumentBlocks, stripDocumentBlocks } from '../../utils/document-blocks';
-import { extractDashboardBlocks, stripDashboardBlocks } from '../../utils/ydash-blocks';
+import { extractDashboardBlocks, stripDashboardBlocks, extractToolDashboardBlocks } from '../../utils/ydash-blocks';
 import { extractSvgBlocks, stripSvgBlocks, svgToDataUrl } from '../../utils/svg-blocks';
 import ChatWelcome from './ChatWelcome.vue';
 import SceneCarousel from './SceneCarousel.vue';
@@ -820,6 +835,34 @@ function roundDocuments(round: MessageRound) {
 function roundDashboards(round: MessageRound) {
   const content = round.finalAssistant?.content || '';
   return content ? extractDashboardBlocks(content) : [];
+}
+/**
+ * 本轮所有工具结果文本。
+ * ★ 结果挂在 step.toolResults[].content（role='tool' 的消息按 toolCallId 归位），
+ *   不在 toolCall.result 上 —— 只读后者会永远解析不到图表/看板标记。
+ */
+function roundToolTexts(round: MessageRound): string[] {
+  const out: string[] = [];
+  for (const step of round.steps) {
+    for (const tr of step.toolResults || []) if (tr.content) out.push(tr.content);
+    for (const tc of step.toolCalls || []) {
+      if (typeof tc.result === 'string') out.push(tc.result);
+      else if (tc.result) out.push(JSON.stringify(tc.result));
+    }
+  }
+  for (const tc of round.allToolCalls || []) {
+    if (typeof tc.result === 'string') out.push(tc.result);
+    else if (tc.result) out.push(JSON.stringify(tc.result));
+  }
+  return out;
+}
+/** build_chart_dsl 的结果里带 [ychart] 定义标记：本轮生成的图直接渲染在正文下方 */
+function roundCharts(round: MessageRound) {
+  return collectChartDsls(roundToolTexts(round));
+}
+/** build_dashboard_dsl 的结果里带 [ydash] 定义：按看板卡片渲染（可勾选存入右侧看板） */
+function roundToolDashboards(round: MessageRound) {
+  return extractToolDashboardBlocks(roundToolTexts(round));
 }
 function roundSvgs(round: MessageRound) {
   const content = round.finalAssistant?.content || '';

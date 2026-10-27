@@ -20,10 +20,12 @@ export interface DocumentDataContract {
   datasourceId?: string;
   table?: string;
   base?: string;
-  /** 取数通道：缺省按 table/base 走自由 SQL；ontology 按本体字段名取数（业务名，无 SQL） */
-  mode?: 'table' | 'base' | 'ontology';
+  /** 取数通道：缺省按 table/base 走自由 SQL；ontology 按本体字段名取数；file 读数据产物文件 */
+  mode?: 'table' | 'base' | 'ontology' | 'file';
   /** mode=ontology 时的本体 code（或 id） */
   ontology?: string;
+  /** mode=file 时的数据产物绝对路径 */
+  path?: string;
   filters?: DocumentFilter[];
 }
 
