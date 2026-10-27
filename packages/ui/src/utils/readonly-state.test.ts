@@ -64,11 +64,16 @@ describe('输入权限两档（被控端授予 ∧ 控制端未切仅观看）',
 });
 
 describe('显式右键入口（手机没有右键键）', () => {
-  it('★ 侧栏常驻「右键」按钮，落点优先最近一次点按', () => {
-    expect(CLIENT, '★ 缺侧栏右键按钮').toMatch(/class="rc-rail-btn" @click\.stop="rightClickAtLast"/);
+  it('★ 仿真鼠标右半键 = 常驻右键（2026-10-27 横屏重构：右侧栏并入悬浮球菜单）', () => {
+    // 右侧栏已删，右键入口换成仿真鼠标右半键（模板锚点）+ 箭头尖落点注入（vmClick → clickAt useCursor）
+    expect(CLIENT, '★ 缺仿真鼠标右半键').toMatch(/class="rc-vm-r" :class="\{ press: vmPress === 'right' \}" @pointerdown\.stop="vmClick\('right'\)"/);
+    expect(CLIENT, '★ 右半键必须把点击落在箭头尖（指针坐标）').toMatch(
+      /function vmClick\(button: 'left' \| 'right'\): void \{[\s\S]{0,200}clickAt\(0, 0, button, true\)/,
+    );
+    expect(CLIENT, '★ 旧 rail 右键按钮必须删干净').not.toMatch(/@click\.stop="rightClickAtLast"/);
     expect(CLIENT).toMatch(/function rightClickAtLast\(\): void \{/);
     expect(CLIENT, '★ 应优先在最近点过的位置右键').toMatch(/const at = lastTapAt \|\|/);
-    expect(CLIENT, '★ 指针模式下应在虚拟指针处右键').toMatch(/if \(mouseMode\.value\) \{\s*\n\s*rightClickHere\(\);/);
+    expect(CLIENT, '★ 指针模式下应在虚拟指针处右键').toMatch(/if \(mouseVisible\.value\) \{\s*\n\s*rightClickHere\(\);/);
   });
 
   it('★ 操作抽屉里也有右键（不再只在 pointer 模式出现）', () => {

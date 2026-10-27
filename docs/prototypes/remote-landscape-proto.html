@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>远控横屏交互原型 · 手机控制电脑</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: #07090d; color: #dbe3ee; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; overflow: auto; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 14px 12px 30px; }
+
+  .proto-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; justify-content: center; }
+  .proto-head h1 { font-size: 15px; font-weight: 600; color: #eef2f8; }
+  .proto-head .sub { font-size: 12px; color: #6d7a90; }
+  .seg { display: flex; background: #12161d; border: 1px solid #232b37; border-radius: 9px; padding: 3px; gap: 2px; }
+  .seg button { border: 0; background: transparent; color: #8a97ab; font-size: 12px; padding: 5px 12px; border-radius: 7px; cursor: pointer; }
+  .seg button.on { background: #2f6bff; color: #fff; }
+
+  /* ================= 手机机身 ================= */
+  .device { position: relative; width: 880px; height: 396px; flex-shrink: 0; border-radius: 34px; padding: 10px;
+            background: linear-gradient(160deg, #2a2f38, #14171d 55%, #20242c); box-shadow: 0 24px 70px rgba(0,0,0,.6); }
+  .stage { position: relative; width: 100%; height: 100%; border-radius: 25px; overflow: hidden; background: #000; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .cutout { position: absolute; top: 12px; left: 14px; width: 14px; height: 14px; border-radius: 50%; background: #05070a; border: 2px solid #10141b; z-index: 40; pointer-events: none; }
+  /* 旧版：右侧系统留白条（刘海未声明占用时的真实表现） */
+  .whitebar { position: absolute; top: 0; right: 0; bottom: 0; width: 26px; background: linear-gradient(#f2f4f7, #e4e8ee); z-index: 39; display: none; pointer-events: none; }
+  body.old .whitebar { display: block; }
+  body.old .cutout { display: none; }
+
+  /* ================= 远端画面（DOM 模拟 PC 桌面） ================= */
+  .scr { position: absolute; border-radius: 2px; overflow: hidden; background: #000; transition: left .25s, top .25s, width .25s, height .25s; }
+  body.animless .scr { transition: none; }
+  .wall { position: absolute; inset: 0; }
+  .wall.p1 { background: radial-gradient(120% 90% at 20% 15%, #2b3f77 0%, #17224a 38%, #0b1030 70%, #060818 100%); }
+  .wall.p1::after { content: ""; position: absolute; inset: 0; background:
+      radial-gradient(40% 30% at 75% 30%, rgba(120,90,220,.35), transparent 70%),
+      radial-gradient(30% 24% at 40% 70%, rgba(40,160,190,.25), transparent 70%); }
+  .wall.p2 { background: radial-gradient(130% 100% at 75% 20%, #3d5a52 0%, #1d332f 45%, #0d1a17 75%, #070f0d 100%); }
+  .wall.p2::after { content: ""; position: absolute; inset: 0; background: radial-gradient(45% 35% at 25% 65%, rgba(220,150,60,.16), transparent 70%); }
+  .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 5.6%; background: rgba(12,15,22,.82); backdrop-filter: blur(6px); display: flex; align-items: center; gap: 2.2%; padding: 0 1.4%; }
+  .tb-ic { width: 2.1%; aspect-ratio: 1; border-radius: 22%; background: rgba(160,190,240,.5); }
+  .tb-ic.a2 { background: rgba(240,170,80,.55); } .tb-ic.a3 { background: rgba(120,220,170,.5); }
+  .tb-clock { margin-left: auto; font-size: 1.35cqh; color: #cdd6e2; font-size: clamp(6px, 1.5vh, 11px); }
+  .win { position: absolute; left: 6%; top: 8%; width: 46%; height: 62%; border-radius: 1.2vh; background: #141922f2; border: 1px solid #2a3342; box-shadow: 0 8px 30px rgba(0,0,0,.5); display: flex; flex-direction: column; overflow: hidden; }
+  .win-t { height: 9%; background: #1b2230; display: flex; align-items: center; padding: 0 3%; gap: 1.2%; font-size: clamp(6px, 1.5vh, 10px); color: #9aa7ba; flex-shrink: 0; }
+  .win-t i { width: .8%; min-width: 5px; aspect-ratio: 1; border-radius: 50%; background: #ff5f57; display: inline-block; }
+  .win-t i + i { background: #febc2e; } .win-t i + i + i { background: #28c840; }
+  .win-body { flex: 1; padding: 4% 4%; display: flex; flex-direction: column; gap: 7%; overflow: hidden; }
+  .ln { height: 6.5%; border-radius: 4px; background: linear-gradient(90deg, #2a3444 0%, #232c3a 80%); }
+  .ln.s { width: 55%; } .ln.m { width: 78%; } .ln.acc { background: linear-gradient(90deg, #2f6bff88, #244dab66); width: 34%; }
+  .win2 { position: absolute; left: 56%; top: 14%; width: 36%; height: 48%; border-radius: 1.2vh; background: #10151df0; border: 1px solid #26303f; box-shadow: 0 8px 30px rgba(0,0,0,.45); }
+  .win2 .term { padding: 4%; height: 100%; display: flex; flex-direction: column; gap: 9%; }
+  .term .ln { background: #1d2733; height: 5.5%; } .term .ln.g { background: #1e3a2a; width: 62%; }
+  .scr-label { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); font-size: 12px; color: rgba(255,255,255,.35); letter-spacing: 2px; pointer-events: none; }
+
+  /* 锁屏（安全桌面）：纯黑 + 时间。真实系统限制：普通采集拿不到该画面 */
+  .lockscr { position: absolute; inset: 0; background: radial-gradient(120% 100% at 50% 0%, #14203a 0%, #05070d 70%); display: none; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+  .lockscr .lk-time { font-size: 34px; font-weight: 200; color: #e8edf5; letter-spacing: 2px; }
+  .lockscr .lk-date { font-size: 12px; color: #77839a; }
+  body.lock .lockscr { display: flex; }
+  body.lock .wall, body.lock .taskbar, body.lock .win, body.lock .win2 { display: none; }
+  .locknote { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 10px; max-width: 78%;
+              background: rgba(30,24,12,.92); border: 1px solid rgba(240,163,58,.4); border-radius: 12px; padding: 9px 12px; backdrop-filter: blur(10px); }
+  .locknote .dot { width: 8px; height: 8px; border-radius: 50%; background: #f0a33a; flex-shrink: 0; box-shadow: 0 0 0 4px rgba(240,163,58,.15); }
+  .locknote p { font-size: 10.5px; line-height: 1.55; color: #f0d9ac; }
+  .locknote b { color: #ffce85; font-size: 11.5px; }
+
+  /* ================= 自绘光标 ================= */
+  .cur { position: absolute; z-index: 30; pointer-events: none; margin: -2px 0 0 -2px; filter: drop-shadow(0 2px 3px rgba(0,0,0,.6)); transition: transform .1s; display: none; }
+  .cur.on { display: block; }
+  .cur.pressed { transform: scale(.86); }
+  .cur svg { display: block; }
+  body.old .cur svg { width: 34px; height: 44px; }
+  .ripple { position: absolute; z-index: 29; width: 40px; height: 40px; margin: -20px 0 0 -20px; border-radius: 50%; pointer-events: none;
+            border: 2px solid rgba(124,178,255,.95); box-shadow: 0 0 0 8px rgba(47,107,255,.16); animation: rip .38s ease-out forwards; }
+  .ripple.r { border-color: rgba(255,196,120,.95); box-shadow: 0 0 0 8px rgba(255,170,60,.16); }
+  @keyframes rip { from { opacity: 1; transform: scale(.5);} to { opacity: 0; transform: scale(1.4);} }
+  .ctxmenu { position: absolute; z-index: 31; min-width: 120px; background: #171d27f2; border: 1px solid #2b3545; border-radius: 9px; padding: 4px; display: none; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,.55); }
+  .ctxmenu.on { display: flex; }
+  .ctxmenu span { font-size: 11px; color: #c3cddb; padding: 6px 10px; border-radius: 6px; }
+  .ctxmenu span:hover { background: #232c3b; }
+
+  /* ================= 顶部状态 ================= */
+  /* ================= 悬浮球（唯一常驻入口） =================
+     全沉浸：平时画面上没有任何 UI，只有一颗小圆球。
+     点球 → 弹出迷你菜单：鼠标 / 键盘 / 操作（顶栏的东西全在这里）。
+     球可拖动换位置；空闲 4 秒自动变暗（不干扰看画面）。 */
+  .fball { position: absolute; right: 14px; bottom: 44px; z-index: 26; width: 38px; height: 38px; border-radius: 50%;
+           background: radial-gradient(circle at 32% 28%, rgba(96,124,178,.95), rgba(28,38,56,.96) 68%);
+           border: 1px solid rgba(255,255,255,.18); box-shadow: 0 6px 18px rgba(0,0,0,.5), inset 0 1px 1px rgba(255,255,255,.12);
+           display: flex; align-items: center; justify-content: center; cursor: pointer; touch-action: none;
+           transition: opacity .4s, transform .12s; }
+  .fball svg { width: 16px; height: 16px; fill: none; stroke: #d9e2f2; stroke-width: 2.4; stroke-linecap: round; }
+  .fball.dim { opacity: .32; }
+  .fball:active { transform: scale(.92); }
+  body.old .fball, body.old .fmenu { display: none !important; }
+  .fmenu { position: absolute; right: 14px; bottom: 92px; z-index: 27; width: 132px; display: none; flex-direction: column; gap: 4px;
+           background: rgba(14,18,26,.96); border: 1px solid rgba(255,255,255,.12); border-radius: 14px; padding: 6px;
+           box-shadow: 0 14px 40px rgba(0,0,0,.55); backdrop-filter: blur(14px); }
+  .fmenu.on { display: flex; }
+  .fmenu button { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; background: transparent; color: #d5dce8;
+                  font-size: 12px; padding: 9px 11px; border-radius: 9px; cursor: pointer; }
+  .fmenu button:hover { background: rgba(255,255,255,.08); }
+  .fmenu button i { width: 14px; height: 14px; border-radius: 50%; border: 1.6px solid #5a6675; flex-shrink: 0; }
+  .fmenu button.on i { border-color: #2f6bff; background: radial-gradient(circle, #2f6bff 42%, transparent 46%); }
+  /* 全沉浸：顶栏/右侧栏平时隐藏，只从悬浮球呼出（锁屏提示卡除外，它自己有显示逻辑） */
+  .hud { transition: opacity .22s; }
+  body.hud-off .hud { opacity: 0; pointer-events: none; }
+  body.old.hud-off .hud, body.old .hud { opacity: 1; pointer-events: auto; }
+  .chrome { transition: opacity .22s; }
+  .stage.hidechrome .chrome { opacity: 0; pointer-events: none; }
+  .topbar { position: absolute; top: 0; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+            background: linear-gradient(to bottom, rgba(4,7,11,.78), rgba(4,7,11,0)); pointer-events: none; }
+  .topbar > * { pointer-events: auto; }
+  .tbtn { height: 30px; min-width: 30px; padding: 0 8px; border-radius: 9px; border: 1px solid rgba(255,255,255,.09); background: rgba(12,16,23,.72);
+          color: #d5dce8; font-size: 11px; display: flex; align-items: center; gap: 6px; cursor: pointer; backdrop-filter: blur(10px); }
+  .tbtn:active { transform: scale(.95); }
+  .tbtn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .status { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 9px; background: rgba(12,16,23,.55); font-size: 11px; color: #b9c4d4; backdrop-filter: blur(10px); }
+  .status i { width: 6px; height: 6px; border-radius: 50%; background: #3ddc84; box-shadow: 0 0 0 3px rgba(61,220,132,.16); }
+  .topbar .sp { flex: 1; }
+  .chip.on { background: rgba(47,107,255,.9); border-color: transparent; color: #fff; }
+  .disp-menu { position: absolute; top: 44px; right: 10px; z-index: 24; width: 190px; background: #141a23f2; border: 1px solid #2a3444; border-radius: 12px; padding: 5px; display: none; flex-direction: column; box-shadow: 0 14px 40px rgba(0,0,0,.55); backdrop-filter: blur(12px); }
+  .disp-menu.on { display: flex; }
+  .disp-menu button { display: flex; align-items: center; justify-content: space-between; border: 0; background: transparent; color: #cdd6e2; font-size: 12px; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+  .disp-menu button:hover { background: #1e2634; }
+  .disp-menu button i { width: 14px; height: 14px; border-radius: 50%; border: 1.6px solid #5a6activation675; border: 1.6px solid #5a6675; }
+  .disp-menu button.on i { border-color: #2f6bff; background: radial-gradient(circle, #2f6bff 42%, transparent 46%); }
+
+  /* ================= 右侧操作栏（新版：极薄贴边） ================= */
+  .rail { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); z-index: 20; display: flex; flex-direction: column; gap: 5px; }
+  .rail button { width: 40px; height: 38px; border-radius: 11px; border: 1px solid rgba(255,255,255,.07); background: rgba(10,14,20,.55); color: #c3cddb;
+                 backdrop-filter: blur(12px); font-size: 9.5px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; cursor: pointer; }
+  .rail button svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .rail button .fillico { fill: currentColor; stroke: none; }
+  .rail button:active { transform: scale(.93); }
+  .rail button.on { background: rgba(47,107,255,.88); color: #fff; border-color: transparent; }
+  body.old .rail { right: 34px; gap: 9px; }
+  body.old .rail button { width: 52px; height: 56px; border-radius: 15px; background: rgba(18,23,30,.8); font-size: 11px; }
+  body.old .rail button svg { width: 19px; height: 19px; }
+
+  /* ================= 仿真鼠标（替代触控板） =================
+     一只"真的鼠标"：左上角带光标箭头，箭头尖 = 指针热点。
+     拖鼠标整体 = 移动指针；左/右半键 = 单击（落点 = 箭头尖）；中间滚轮 = 滚动。
+     鼠标和光标是同一个东西 —— 移动到哪里，点击的就是箭头尖的位置。 */
+  .vmouse { position: absolute; left: 16px; top: 46px; z-index: 22; width: 56px; height: 86px; touch-action: none; filter: drop-shadow(0 6px 16px rgba(0,0,0,.55)); }
+  .vm-arrow { position: absolute; left: -10px; top: -12px; z-index: 6; pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0,0,0,.6)); }
+  .vmouse .vm-body { position: absolute; inset: 0; border-radius: 27px 27px 30px 30px / 21px 21px 34px 34px;
+                     background: linear-gradient(165deg, rgba(56,66,84,.97), rgba(24,30,40,.97)); border: 1px solid rgba(255,255,255,.14); cursor: move; }
+  .vmouse::before { content: ""; position: absolute; left: 50%; top: 3px; bottom: 6px; width: 1px; margin-left: -.5px; background: rgba(255,255,255,.14); z-index: 2; pointer-events: none; }
+  .vm-l, .vm-r { position: absolute; top: 3px; width: 50%; height: 40%; z-index: 3; border-radius: 26px 10px 0 0 / 22px 8px 0 0; }
+  .vm-l { left: 0; cursor: pointer; } .vm-r { right: 0; cursor: pointer; border-radius: 10px 26px 0 0 / 8px 22px 0 0; }
+  .vm-l.press { background: rgba(96,150,255,.5); border-radius: 26px 10px 0 0 / 22px 8px 0 0; }
+  .vm-r.press { background: rgba(255,170,60,.45); border-radius: 10px 26px 0 0 / 8px 22px 0 0; }
+  .vm-wheel { position: absolute; left: 50%; top: 8%; transform: translateX(-50%); width: 11px; height: 26%; z-index: 4;
+              border-radius: 6px; background: rgba(10,14,20,.92); border: 1px solid rgba(255,255,255,.16); cursor: ns-resize; overflow: hidden; }
+  .vm-wheel i { position: absolute; left: 1.5px; right: 1.5px; top: 32%; height: 36%; border-radius: 4px; background: rgba(150,185,240,.75); transition: top .12s; }
+  body.old .vmouse { display: none; }
+
+  /* ================= 直通键盘条（模拟系统输入法被唤出） =================
+     真机上这里就是系统输入法键盘本身；原型里画一条「输入法候选条」示意，
+     打的字逐字飞进电脑画面里当前聚焦的输入框。 */
+  .imebar { position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 24; display: none; align-items: center; gap: 8px;
+            background: rgba(18,22,30,.96); border: 1px solid #2b3545; border-radius: 12px; padding: 9px 10px; backdrop-filter: blur(12px); }
+  .imebar.on { display: flex; }
+  .imebar input { flex: 1; background: transparent; border: 0; outline: none; color: #e6ecf5; font-size: 13px; }
+  .imebar input::placeholder { color: #5f6c83; }
+  .imebar .kb-tip { font-size: 9.5px; color: #6d7a90; white-space: nowrap; }
+  .imebar .kb-x { color: #8a97ab; cursor: pointer; font-size: 13px; padding: 0 4px; }
+  .caret-blink { display: inline-block; width: 1.5px; height: 1em; background: #4c8dff; vertical-align: text-bottom; animation: cblink .9s steps(1) infinite; }
+  @keyframes cblink { 50% { opacity: 0; } }
+
+  /* ================= 触控板（仅旧版对比用） ================= */
+  .pad-old-glyph { display: none; position: absolute; left: 50%; top: 40%; transform: translate(-50%,-50%); color: #9db6de; opacity: .9; pointer-events: none; }
+  .pad { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 21; width: min(470px, 72%);
+         border-radius: 16px; border: 1px solid rgba(255,255,255,.09); background: rgba(8,12,18,.8); backdrop-filter: blur(16px);
+         box-shadow: 0 12px 36px rgba(0,0,0,.5); padding: 5px 7px 7px; display: none; }
+  body.old .pad { display: block; }
+  .pad-head { display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: #7c8aa0; padding: 2px 3px 4px; }
+  .pad-head b { font-weight: 500; }
+  .pad-body { position: relative; height: 100px; border-radius: 11px; background: radial-gradient(90% 90% at 50% 42%, rgba(64,118,255,.1), rgba(255,255,255,.015) 75%); border: 1px solid rgba(255,255,255,.05); }
+  .pad-hint { position: absolute; left: 0; right: 0; bottom: 4px; text-align: center; font-size: 9px; color: #5f6c83; }
+  .pad-btns { display: flex; gap: 6px; margin-top: 6px; height: 32px; }
+  .pad-btns .pb { flex: 1; border: 0; border-radius: 9px; background: rgba(255,255,255,.07); color: #d5dce8; font-size: 11.5px; }
+  .pad-btns .strip { width: 40px; border-radius: 9px; background: rgba(255,255,255,.05); border: 0; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 3px 0; }
+  .pad-btns .strip i { flex: 1; width: 2.5px; border-radius: 2px; background: linear-gradient(rgba(150,185,240,.12), rgba(150,185,240,.5), rgba(150,185,240,.12)); }
+  .pad-btns .strip b { font-size: 7px; color: #76839a; font-weight: 400; }
+
+  /* ================= 抽屉：操作 / 键盘 ================= */
+  .sheet { position: absolute; z-index: 23; right: 6px; top: 46px; width: 250px; border-radius: 14px; border: 1px solid rgba(255,255,255,.1);
+           background: rgba(12,16,23,.95); backdrop-filter: blur(16px); box-shadow: 0 16px 44px rgba(0,0,0,.55); padding: 9px; display: none; }
+  .sheet.on { display: block; }
+  .sheet h4 { font-size: 11.5px; font-weight: 600; color: #dfe6f0; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .sheet h4 u { text-decoration: none; color: #8a97ab; cursor: pointer; font-size: 12px; padding: 0 4px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+  .grid button { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 2px; border-radius: 10px; border: 0;
+                 background: rgba(255,255,255,.05); color: #d5dce8; font-size: 9.5px; cursor: pointer; }
+  .grid button b { font-size: 15px; font-weight: 400; }
+  .grid button:active { background: rgba(47,107,255,.7); }
+  .grid button.danger { color: #ff9aa8; }
+  .sheet .row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.06); }
+  .sheet .row s { text-decoration: none; font-size: 9.5px; color: #7c8aa0; }
+  .sheet .row button { border: 1px solid rgba(255,255,255,.12); background: transparent; color: #b9c4d4; font-size: 10px; padding: 3.5px 9px; border-radius: 999px; cursor: pointer; }
+  .sheet .row button.on { background: #2f6bff; border-color: transparent; color: #fff; }
+  .sheet-kb { right: auto; left: 50%; transform: translateX(-50%); top: 40px; width: min(420px, 76%); }
+  .sheet-kb textarea { width: 100%; height: 52px; background: #0e131a; border: 1px solid #26303f; border-radius: 9px; color: #dfe6f0; font-size: 12px; padding: 8px 9px; resize: none; outline: none; }
+  .sheet-kb .kb-row { display: flex; gap: 6px; margin-top: 7px; align-items: center; }
+  .sheet-kb .kb-row p { flex: 1; font-size: 9.5px; color: #6d7a90; }
+  .sheet-kb .kb-row button { border: 0; border-radius: 8px; background: #2f6bff; color: #fff; font-size: 11px; padding: 6px 12px; cursor: pointer; }
+
+  /* 首帧等待 */
+  .connecting { position: absolute; inset: 0; z-index: 18; background: #000; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+  .connecting.on { display: flex; }
+  .connecting .spin { width: 26px; height: 26px; border-radius: 50%; border: 2.5px solid #242e3d; border-top-color: #4c8dff; animation: sp .85s linear infinite; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .connecting p { font-size: 12px; color: #9aa7ba; } .connecting small { font-size: 10.5px; color: #5f6c83; }
+
+  /* ================= 说明区 ================= */
+  .notes { width: min(880px, 96vw); margin-top: 14px; background: #0d1117; border: 1px solid #1c232e; border-radius: 14px; padding: 14px 16px; }
+  .notes h2 { font-size: 13px; color: #eef2f8; margin-bottom: 9px; }
+  .notes h3 { font-size: 12px; color: #9db0cc; margin: 10px 0 5px; }
+  .notes table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .notes th, .notes td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #161d27; vertical-align: top; line-height: 1.55; }
+  .notes th { color: #8a97ab; font-weight: 500; font-size: 10.5px; }
+  .notes td b { color: #ffce85; font-weight: 600; }
+  .notes .tag { display: inline-block; font-size: 9.5px; padding: 1px 7px; border-radius: 999px; background: #16223a; color: #8fb4ff; margin-right: 5px; }
+  .notes .tag.warn { background: #2a2113; color: #f0c674; }
+  .notes p.tip { font-size: 11px; color: #6d7a90; line-height: 1.7; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="proto-head">
+  <h1>远控横屏交互原型</h1>
+  <span class="sub">手机 → 电脑 · 对标 UU · 直接触控 + 触控板并行</span>
+  <div class="seg">
+    <button id="segNew" class="on">新版（本次设计）</button>
+    <button id="segOld">对比 · 旧版问题</button>
+  </div>
+</div>
+
+<div class="device">
+  <div class="stage" id="stage">
+    <div class="cutout"></div>
+    <div class="whitebar"></div>
+
+    <!-- 远端画面 -->
+    <div class="scr" id="scr">
+      <div class="wall p1" id="wall"></div>
+      <div class="taskbar">
+        <span class="tb-ic"></span><span class="tb-ic a2"></span><span class="tb-ic a3"></span><span class="tb-ic"></span>
+        <span class="tb-clock">10:42</span>
+      </div>
+      <div class="win">
+        <div class="win-t"><i></i><i></i><i></i><span style="margin-left:4px">言智 · 控制台</span></div>
+        <div class="win-body" id="winBody">
+          <div class="ln acc"></div><div class="ln m"></div><div class="ln"></div><div class="ln s"></div><div class="ln m"></div><div class="ln"></div><div class="ln s"></div>
+        </div>
+      </div>
+      <div class="win2"><div class="term"><div class="ln g"></div><div class="ln"></div><div class="ln"></div><div class="ln g"></div><div class="ln"></div></div></div>
+      <div class="lockscr"><div class="lk-time">10:42</div><div class="lk-date">10月27日 星期二</div></div>
+      <div class="scr-label" id="scrLabel"></div>
+    </div>
+
+    <!-- 锁屏说明卡（安全桌面采不到画面时的明确状态，不是干黑屏） -->
+    <div class="locknote chrome" id="locknote" style="display:none">
+      <span class="dot"></span>
+      <p><b>被控端已锁屏</b> · Windows 安全桌面禁止普通采集（UU/ToDesk 同样受限于系统，需装服务级驱动）。当前只能等待本人解锁，或提前在被控端开启「允许锁屏采集」（规划中）。</p>
+    </div>
+
+    <!-- 连接中 -->
+    <div class="connecting" id="connecting"><div class="spin"></div><p>正在建立画面…</p><small>WebRTC 协商中</small></div>
+
+    <!-- 自绘光标已删除：鼠标左上角的箭头就是光标，不再有第二个 -->
+    <div class="ctxmenu" id="ctxmenu"><span>刷新</span><span>粘贴</span><span>显示设置</span></div>
+
+    <!-- 顶部 -->
+    <div class="topbar chrome hud">
+      <button class="tbtn" id="btnBack" title="断开"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <span class="status"><i></i><span id="statusTxt">WebRTC · 已连接</span></span>
+      <span class="sp"></span>
+      <button class="tbtn" id="btnZoom">铺满</button>
+      <button class="tbtn chip" id="btnDisp">主屏 1920×1080 ▾</button>
+      <button class="tbtn" id="btnFull" title="全屏"><svg viewBox="0 0 24 24"><path d="M5 10V5h5M19 14v5h-5M5 14v5h5M19 10V5h-5"/></svg></button>
+    </div>
+    <div class="disp-menu" id="dispMenu">
+      <button data-d="0" class="on">主屏 1920×1080 <i></i></button>
+      <button data-d="1">屏 2 1280×1024 <i></i></button>
+    </div>
+
+    <!-- 右侧栏已删除：入口全部收进悬浮球菜单（操作/键盘/显示器/铺满/断开） -->
+
+    <!-- 仿真鼠标：左上角光标箭头 = 指针热点。拖鼠标 = 移动指针；左/右半键 = 单击（落点=箭头尖）；中滚轮 = 滚动 -->
+    <div class="vmouse chrome" id="vmouse">
+      <svg class="vm-arrow" width="22" height="28" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#111" stroke-width="1.2"/></svg>
+      <div class="vm-body"></div>
+      <div class="vm-l" id="vmLeft"></div>
+      <div class="vm-r" id="vmRight"></div>
+      <div class="vm-wheel" id="vmWheel"><i></i></div>
+    </div>
+
+    <!-- 操作抽屉 -->
+    <div class="sheet" id="sheetActions">
+      <h4>操作<u id="closeActions">✕</u></h4>
+      <div class="grid">
+        <button><b>👁</b><span>仅观看</span></button>
+        <button><b>📋</b><span>剪贴板</span></button>
+        <button><b>🗂</b><span>文件</span></button>
+        <button><b>🔊</b><span>声音</span></button>
+        <button><b>🔒</b><span>锁屏</span></button>
+        <button><b>⌨</b><span>发送</span></button>
+        <button><b>⛶</b><span id="zoomGridTxt">铺满</span></button>
+        <button class="danger" id="btnDemoLock"><b>演示</b><span>锁屏态</span></button>
+      </div>
+      <div class="row"><s>演示</s>
+        <button id="demoConnect">连接中</button>
+        <button id="demoReset" class="on">已连接</button>
+      </div>
+    </div>
+
+    <!-- 悬浮球 + 球菜单：全沉浸唯一入口。点球 → 鼠标 / 键盘 / 显示器 / 铺满 / 全屏 / 操作 -->
+    <div class="fball" id="fball">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.4" fill="#d9e2f2" stroke="none"/><circle cx="12" cy="12" r="8.4" opacity=".4"/></svg>
+    </div>
+    <div class="fmenu" id="fmenu">
+      <button data-act="mouse">🖱 仿真鼠标 <i id="fmMouse" class="on"></i></button>
+      <button data-act="kb">⌨ 键盘</button>
+      <button data-act="disp">🖥 显示器</button>
+      <button data-act="zoom">⛶ <span id="fmZoomTxt">铺满</span></button>
+      <button data-act="actions">☰ 操作</button>
+      <button data-act="back">← 断开</button>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <h2>报障 → 设计修复 → 真实实现落点</h2>
+  <table>
+    <tr><th style="width:130px">报障</th><th>根因</th><th>原型中的对应设计</th><th style="width:210px">真实实现落点</th></tr>
+    <tr>
+      <td><b>最右白条</b>、<b>屏幕显示不全</b></td>
+      <td>横屏时挖孔摄像头（刘海）落在右侧，App 没声明占用 cutout 区域 → 系统把窗口缩开，露出一条系统底色；叠加默认「适应」模式的黑边，观感就是"屏都不满"</td>
+      <td>画面<b>默认铺满（cover）</b>：短边贴满、长边裁切，无边框无黑边；切「适应」才出黑边；白条由原生侧根治</td>
+      <td><span class="tag">原生</span>AndroidManifest <code>layoutInDisplayCutoutMode=shortEdges</code> + 窗口背景纯黑；<span class="tag">UI</span>RemoteControl.vue 默认 zoomMode='fill'</td>
+    </tr>
+    <tr>
+      <td>触控板没法用 / 交互乱</td>
+      <td>旧板无指针捕获 + 大板常驻遮画面 + 巨型鼠标插画误导</td>
+      <td>默认<b>收起成底部胶囊</b>，点开才是板；板面无插画只有聚焦环；指针捕获不漏事件</td>
+      <td><span class="tag">UI</span>pad 默认 collapsed、pointer capture（已修一半）；插画删除</td>
+    </tr>
+    <tr>
+      <td>锁屏黑屏 / 解不了锁</td>
+      <td>Windows 锁屏 = 安全桌面，普通 API（getDisplayMedia / GDI / SendInput）全部拿不到画面、注不进键鼠 —— 系统级限制，UU/ToDesk 靠装服务级驱动解决</td>
+      <td>不装死黑屏：明确「已锁屏」状态卡 + 时间钟面 + 解锁指引；功能上规划服务级采集/注入（V2 专项）</td>
+      <td><span class="tag warn">V2 专项</span>被控端 Windows 服务 + 虚拟显示驱动；近期先做锁屏状态识别与提示</td>
+    </tr>
+    <tr>
+      <td>切副屏后失效</td>
+      <td>电脑窗口被盖 → 渲染器被节流，WebRTC 停帧（已修）；显示器 id 失效静默回主屏（已修）</td>
+      <td>切屏下拉改为右上大按钮 + 弹出单选；切完画面按新分辨率重算铺满</td>
+      <td><span class="tag">已修</span>main.cjs 节流/防息屏/采集回退明示</td>
+    </tr>
+  </table>
+
+  <h3>两个默认值取舍（按 UU 口径拍板）</h3>
+  <table>
+    <tr><th style="width:150px">决策</th><th>好处</th><th>坏处 / 代价</th></tr>
+    <tr><td>默认<b>铺满(cover)</b>而非适应</td><td>边缘到边缘无黑边，沉浸感 = UU；白条即使残留也被画面盖住</td><td>16:9 桌面在长屏手机上下各裁 ~8%，任务栏/顶栏可能被裁掉一点 → 双指捏合或点「适应」可看全貌</td></tr>
+    <tr><td>触控板默认<b>收起成胶囊</b>而非常驻大板</td><td>画面满幅可用；直接触控本来就是主输入（UU 同款）；需要指针/滚轮时一键展开</td><td>高频触控板用户多一步点开；可记忆上一次展开态来缓解</td></tr>
+  </table>
+  <p class="tip">原型可玩：拖触控板移动指针 / 点按=左键 / 长按=右键(出菜单) / 滚动条滚动窗口 / 直接点画面任意处点击 / 右上切主屏·屏2（分辨率变化重算铺满）/ 右栏开抽屉 / 演示锁屏态与连接中态 / 顶部切「对比·旧版」看差异。<b style="color:#8fb4ff">成熟产品对照</b>（2026-09 横测 + 官方文档）：ToDesk 虚拟鼠标 = 底部拖动区移动 + 顶部滚条 + 左/右/中键（本原型触控板同构）；向日葵「锁定显示」= 本原型沉浸模式取舍来源；UU/向日葵横屏功能键集中右侧；Android 官方：横屏挖孔必须声明 <code>shortEdges</code>，否则系统 letterbox 出白条（本次已真机修复）。锁屏穿透（RustDesk 同款）需要 SYSTEM 服务 + 命名管道 IPC，列为 V2 专项。</p>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const stage = $('stage'), scr = $('scr'), ctxmenu = $('ctxmenu');
+  const pad = $('pad'); // 旧版对比模式还画老触控板，保留引用
+
+
+  // ---------- 自适应缩放（桌面浏览器预览用） ----------
+  function fit() {
+    const s = Math.max(0.4, Math.min(1, (innerWidth - 28) / 900, (innerHeight - 340) / 396));
+    document.querySelector('.device').style.transform = `scale(${s})`;
+    document.querySelector('.device').style.transformOrigin = 'top center';
+    document.querySelector('.device').style.marginBottom = `${(s - 1) * 396}px`;
+  }
+  addEventListener('resize', fit); fit();
+
+  // ---------- 几何：铺满/适应/1:1 ----------
+  const DISPLAYS = [
+    { label: '主屏 1920×1080', w: 1920, h: 1080, wall: 'p1' },
+    { label: '屏 2 1280×1024', w: 1280, h: 1024, wall: 'p2' },
+  ];
+  let dispIdx = 0, zoomMode = 'cover'; // cover | fit | free
+  let zoom = 1, panX = 0, panY = 0;
+  const stageRect = () => ({ w: stage.clientWidth, h: stage.clientHeight });
+  let shown = { x: 0, y: 0, w: 1, h: 1 };
+
+  function layoutScreen() {
+    const st = stageRect();
+    const d = DISPLAYS[dispIdx];
+    let w, h;
+    if (zoomMode === 'cover') {
+      const s = Math.max(st.w / d.w, st.h / d.h); w = d.w * s; h = d.h * s;
+    } else if (zoomMode === 'fit') {
+      const s = Math.min(st.w / d.w, st.h / d.h); w = d.w * s; h = d.h * s;
+    } else {
+      const sFit = Math.min(st.w / d.w, st.h / d.h);
+      const s = sFit * zoom; w = d.w * s; h = d.h * s;
+    }
+    const maxX = Math.max(0, st.w - w), maxY = Math.max(0, st.h - h);
+    const x = (st.w - w) / 2 + (maxX ? panX * maxX : 0);
+    const y = (st.h - h) / 2 + (maxY ? panY * maxY : 0);
+    shown = { x, y, w, h };
+    Object.assign(scr.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+  }
+  function setZoomMode(m) {
+    zoomMode = m; zoom = 1; panX = panY = 0;
+    $('btnZoom').textContent = m === 'cover' ? '铺满' : m === 'fit' ? '适应' : `${Math.round(zoom * 100)}%`;
+    $('zoomGridTxt').textContent = $('btnZoom').textContent;
+    layoutScreen();
+  }
+  $('btnZoom').onclick = () => setZoomMode(zoomMode === 'cover' ? 'fit' : zoomMode === 'fit' ? 'free' : 'cover');
+
+  // ---------- 显示器切换 ----------
+  function pickDisplay(i) {
+    dispIdx = i;
+    const d = DISPLAYS[i];
+    $('btnDisp').textContent = d.label + ' ▾';
+    $('wall').className = 'wall ' + d.wall;
+    [...$('dispMenu').children].forEach((b, k) => b.classList.toggle('on', k === i));
+    $('dispMenu').classList.remove('on');
+    layoutScreen();
+    rippleAt(shown.x + shown.w * .5, shown.y + shown.h * .5, 'l');
+  }
+  $('btnDisp').onclick = (e) => { e.stopPropagation(); $('dispMenu').classList.toggle('on'); };
+  [...$('dispMenu').children].forEach((b) => b.onclick = () => pickDisplay(+b.dataset.d));
+  document.addEventListener('click', (e) => {
+    if (!$('dispMenu').contains(e.target) && e.target !== $('btnDisp')) $('dispMenu').classList.remove('on');
+  });
+
+  // ---------- 指针热点 / 反馈 ----------
+  // 光标只有一个：仿真鼠标左上角的箭头。curX/curY 即箭头尖坐标；
+  // placeCur = 把整只鼠标挪过去（箭头尖对准目标点）。
+  let curX = 0, curY = 0;
+  function showCur() { /* 鼠标常显，保留空实现兼容调用点 */ }
+  function placeCur(x, y) {
+    placeVmAt(x, y);
+  }
+  function rippleAt(x, y, kind) {
+    const r = document.createElement('div');
+    r.className = 'ripple' + (kind === 'r' ? ' r' : '');
+    r.style.left = x + 'px'; r.style.top = y + 'px';
+    stage.appendChild(r);
+    r.addEventListener('animationend', () => r.remove());
+  }
+  function clickAt(x, y, right) {
+    rippleAt(x, y, right ? 'r' : 'l');
+    if (right) {
+      ctxmenu.style.left = Math.min(x + 6, stage.clientWidth - 140) + 'px';
+      ctxmenu.style.top = Math.min(y + 6, stage.clientHeight - 110) + 'px';
+      ctxmenu.classList.add('on');
+    } else ctxmenu.classList.remove('on');
+  }
+  stage.addEventListener('pointerdown', () => ctxmenu.classList.remove('on'));
+
+  // ---------- 仿真鼠标：箭头尖 = 指针热点 ----------
+  // 鼠标和光标是同一个东西：拖鼠标 = 移动指针，箭头尖所在位置 = 点击落点。
+  // 左/右半键 = 单击，中间滚轮 = 滚动 —— 就是一只真的鼠标。
+  const vmouse = $('vmouse'), vmLeft = $('vmLeft'), vmRight = $('vmRight'), vmWheel = $('vmWheel');
+  const vmBody = vmouse.querySelector('.vm-body');
+  const ACCEL = 1.6;
+
+  /** 箭头尖（热点）的舞台坐标：vmouse 左上角 + 固定偏移（箭头 SVG 尖端位置） */
+  function vmHotspot() {
+    const r = vmouse.getBoundingClientRect();
+    const s = stage.getBoundingClientRect();
+    return { x: r.left - s.left + 1, y: r.top - s.top + 1 };
+  }
+  function syncCursorFromVm() {
+    const h = vmHotspot();
+    curX = h.x;
+    curY = h.y;
+  }
+  function moveVm(dx, dy) {
+    const st = stageRect();
+    const s = stage.getBoundingClientRect();
+    const r = vmouse.getBoundingClientRect();
+    let nx = r.left - s.left + dx, ny = r.top - s.top + dy;
+    nx = Math.min(st.w - 40, Math.max(-8, nx));
+    ny = Math.min(st.h - 70, Math.max(24, ny));
+    vmouse.style.left = nx + 'px';
+    vmouse.style.top = ny + 'px';
+    syncCursorFromVm();
+  }
+  /** 初始摆放：让箭头尖落在指定点 */
+  function placeVmAt(x, y) {
+    vmouse.style.left = (x - 1) + 'px';
+    vmouse.style.top = (y - 1) + 'px';
+    syncCursorFromVm();
+  }
+
+  // 拖 vm-body = 移动指针（指针捕获防漂出）
+  const vmPtrs = new Map();
+  vmBody.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    vmBody.setPointerCapture(e.pointerId);
+    vmPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  });
+  vmBody.addEventListener('pointermove', (e) => {
+    if (!vmPtrs.has(e.pointerId)) return;
+    e.stopPropagation();
+    const prev = vmPtrs.get(e.pointerId);
+    vmPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    moveVm(e.clientX - prev.x, e.clientY - prev.y);
+  });
+  const vmBodyUp = (e) => { vmPtrs.delete(e.pointerId); };
+  vmBody.addEventListener('pointerup', vmBodyUp);
+  vmBody.addEventListener('pointercancel', vmBodyUp);
+
+  // 左/右半键：press 高亮 + 在箭头尖位置点击（右半键出菜单）
+  function vmClick(btn, right) {
+    btn.classList.add('press');
+    window.setTimeout(() => btn.classList.remove('press'), 160);
+    syncCursorFromVm();
+    clickAt(curX, curY, right);
+  }
+  vmLeft.addEventListener('pointerdown', (e) => { e.stopPropagation(); vmClick(vmLeft, false); });
+  vmRight.addEventListener('pointerdown', (e) => { e.stopPropagation(); vmClick(vmRight, true); });
+
+  // 中滚轮：拖动 = 上下滚；桌面浏览器滚轮悬停也滚
+  let vmWheelY = 0, vmWheelActive = false;
+  const vmWheelDot = vmWheel.querySelector('i');
+  vmWheel.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    vmWheel.setPointerCapture(e.pointerId);
+    vmWheelActive = true;
+    vmWheelY = e.clientY;
+  });
+  vmWheel.addEventListener('wheel', (e) => { e.preventDefault(); scrollBy(e.deltaY > 0 ? 90 : -90); }, { passive: false });
+  vmWheel.addEventListener('pointermove', (e) => {
+    if (!vmWheelActive) return;
+    e.stopPropagation();
+    const dy = e.clientY - vmWheelY;
+    vmWheelY = e.clientY;
+    if (Math.abs(dy) >= 2) {
+      scrollBy(-dy * 1.6);
+      vmWheelDot.style.top = Math.max(4, Math.min(62, 32 + dy * 1.6)) + '%';
+    }
+  });
+  const vmWheelUp = () => {
+    vmWheelActive = false;
+    vmWheelDot.style.top = '32%';
+  };
+  vmWheel.addEventListener('pointerup', vmWheelUp);
+  vmWheel.addEventListener('pointercancel', vmWheelUp);
+
+  function scrollBy(d) {
+    const body = $('winBody');
+    let top = parseFloat(body.dataset.top || '0') + d;
+    top = Math.max(-140, Math.min(0, top));
+    body.dataset.top = top;
+    body.style.transform = `translateY(${top}px)`;
+  }
+
+  // ---------- 键盘 = 直通输入法（真机：点键盘 → 系统输入法弹出 → 打字直进电脑输入框） ----------
+  // 原型仅示意，无自绘输入框。
+
+  // ---------- 悬浮球：唯一常驻入口 ----------
+  // 全沉浸：平时只有一颗小球；点球弹菜单，鼠标/键盘/显示器/全屏/操作全从球里呼出。
+  // 球可拖动换位置；4 秒无操作自动变暗。
+  const fball = $('fball'), fmenu = $('fmenu');
+  let ballMoved = false, ballPtrs = new Map(), dimTimer = 0;
+  function dimSoon() {
+    clearTimeout(dimTimer);
+    dimTimer = window.setTimeout(() => fball.classList.add('dim'), 4000);
+  }
+  fball.addEventListener('pointerdown', (e) => {
+    fball.setPointerCapture(e.pointerId);
+    ballPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    ballMoved = false;
+  });
+  fball.addEventListener('pointermove', (e) => {
+    if (!ballPtrs.has(e.pointerId)) return;
+    const prev = ballPtrs.get(e.pointerId);
+    ballPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) ballMoved = true;
+    if (ballMoved) {
+      const st = stage.getBoundingClientRect();
+      const r = fball.getBoundingClientRect();
+      let nx = r.left - st.left + dx, ny = r.top - st.top + dy;
+      nx = Math.min(st.width - 44, Math.max(6, nx));
+      ny = Math.min(st.height - 44, Math.max(6, ny));
+      fball.style.right = 'auto'; fball.style.bottom = 'auto';
+      fball.style.left = nx + 'px'; fball.style.top = ny + 'px';
+    }
+  });
+  fball.addEventListener('pointerup', (e) => {
+    ballPtrs.delete(e.pointerId);
+    if (ballMoved) return;
+    // 点球：开合菜单；菜单开时球不再变暗
+    const opening = !fmenu.classList.contains('on');
+    fmenu.classList.toggle('on', opening);
+    if (opening) { fball.classList.remove('dim'); clearTimeout(dimTimer); }
+    else dimSoon();
+  });
+  fball.addEventListener('pointercancel', (e) => ballPtrs.delete(e.pointerId));
+  dimSoon();
+
+  // 球菜单动作
+  let mouseVisible = true;
+  fmenu.addEventListener('click', (e) => {
+    const act = e.target.closest('button')?.dataset.act;
+    if (!act) return;
+    fmenu.classList.remove('on');
+    dimSoon();
+    if (act === 'mouse') {
+      mouseVisible = !mouseVisible;
+      vmouse.style.display = mouseVisible ? '' : 'none';
+      $('fmMouse').classList.toggle('on', mouseVisible);
+    } else if (act === 'kb') {
+      // 真机：这里 focus 隐藏 input 唤出系统输入法
+      rippleAt(curX, curY, 'l');
+    } else if (act === 'disp') {
+      $('dispMenu').classList.add('on');
+    } else if (act === 'zoom') {
+      $('btnZoom').click();
+    } else if (act === 'actions') {
+      sheetActions.classList.add('on');
+    } else if (act === 'back') {
+      sheetActions.classList.remove('on');
+    }
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!fmenu.contains(e.target) && !fball.contains(e.target)) fmenu.classList.remove('on');
+  });
+
+  // ---------- 画面直接触控（tap=点击该点 / 拖=平移 / 双指=右击·捏合缩放 / 沉浸互斥） ----------
+  const scrPtrs = new Map();
+  let scrMoved = false, scrDown = null, scrTwoStartDist = 0, scrTwoDownAt = 0, scrTwoMoved = false;
+  stage.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.pad,.rail,.topbar,.sheet,.imebar,.vmouse,.disp-menu,.locknote,.fball,.fmenu')) return;
+    stage.setPointerCapture(e.pointerId);
+    scrPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    scrMoved = false; scrDown = { x: e.clientX, y: e.clientY };
+    if (scrPtrs.size === 2) {
+      const [a, b] = [...scrPtrs.values()];
+      scrTwoStartDist = Math.hypot(a.x - b.x, a.y - b.y);
+      scrTwoDownAt = Date.now(); scrTwoMoved = false;
+    }
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (!scrPtrs.has(e.pointerId)) return;
+    const prev = scrPtrs.get(e.pointerId);
+    scrPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) scrMoved = true;
+    if (scrPtrs.size === 1 && scrMoved) {
+      // 单指拖：放大态下平移画面
+      const pannable = (zoomMode === 'free' && zoom > 1.01) || zoomMode === 'cover';
+      if (pannable) {
+        const st = stageRect();
+        panX = Math.max(-1, Math.min(1, panX - dx / Math.max(1, st.w - shown.w || 1)));
+        panY = Math.max(-1, Math.min(1, panY - dy / Math.max(1, st.h - shown.h || 1)));
+        layoutScreen();
+      }
+    }
+    if (scrPtrs.size === 2) {
+      const [a, b] = [...scrPtrs.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      if (Math.abs(dist - scrTwoStartDist) > 12) scrTwoMoved = true;
+      // 双指捏合 = 本地缩放（放大态）
+      if (zoomMode === 'free' && scrTwoMoved) {
+        zoom = Math.min(8, Math.max(1, zoom * (dist / Math.max(1, scrTwoStartDist))));
+        scrTwoStartDist = dist;
+        layoutScreen();
+      }
+    }
+  });
+  stage.addEventListener('pointerup', (e) => {
+    if (!scrPtrs.has(e.pointerId)) return;
+    scrPtrs.delete(e.pointerId);
+    if (scrPtrs.size === 0 && scrDown) {
+      const inside = e.clientX >= shown.x && e.clientX <= shown.x + shown.w && e.clientY >= shown.y && e.clientY <= shown.y + shown.h;
+      const dt = Date.now() - scrTwoDownAt;
+      if (scrTwoMoved && dt < 300) {
+        // 双指轻点 = 右击（在点击处）
+        showCur(); placeCur(e.clientX, e.clientY); clickAt(e.clientX, e.clientY, true);
+      } else if (!scrMoved && inside) {
+        // 单指轻点 = 左键单击
+        showCur(); placeCur(e.clientX, e.clientY); clickAt(e.clientX, e.clientY, false);
+      }
+      scrDown = null; scrTwoMoved = false;
+    }
+  });
+  stage.addEventListener('pointercancel', (e) => { scrPtrs.delete(e.pointerId); scrTwoMoved = false; });
+  // 桌面浏览器：右键 = 右键
+  stage.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.pad,.rail,.topbar,.sheet,.imebar,.vmouse,.disp-menu,.locknote')) return;
+    e.preventDefault(); showCur(); placeCur(e.clientX, e.clientY); clickAt(e.clientX, e.clientY, true);
+  });
+
+  // ---------- 全沉浸：body.hud-off 藏顶栏/侧栏，唯一入口 = 悬浮球 ----------
+  document.body.classList.add('hud-off');
+  // 球菜单里的「全屏」切 hud；顶栏按钮保留（旧版模式可见）
+  $('btnFull').onclick = () => {
+    document.body.classList.toggle('hud-off');
+  };
+
+  // ---------- 抽屉 ----------
+  const sheetActions = $('sheetActions');
+  $('closeActions').onclick = () => sheetActions.classList.remove('on');
+
+  // ---------- 演示状态 ----------
+  $('btnDemoLock').onclick = () => {
+    document.body.classList.toggle('lock');
+    $('locknote').style.display = document.body.classList.contains('lock') ? 'flex' : 'none';
+  };
+  $('demoConnect').onclick = () => { $('connecting').classList.add('on'); mark(this); };
+  $('demoReset').onclick = () => $('connecting').classList.remove('on');
+  function mark() {
+    $('demoConnect').classList.add('on'); $('demoReset').classList.remove('on');
+    setTimeout(() => { $('connecting').classList.remove('on'); $('demoReset').classList.add('on'); $('demoConnect').classList.remove('on'); }, 1800);
+  }
+
+  // ---------- 新旧对比 ----------
+  $('segNew').onclick = () => {
+    document.body.classList.remove('old');
+    document.body.classList.add('hud-off');
+    $('segNew').classList.add('on'); $('segOld').classList.remove('on');
+    setZoomMode('cover');
+  };
+  $('segOld').onclick = () => {
+    document.body.classList.add('old');
+    document.body.classList.remove('hud-off');
+    $('segOld').classList.add('on'); $('segNew').classList.remove('on');
+    setZoomMode('fit');
+  };
+
+  // ---------- init ----------
+  layoutScreen();
+  placeVmAt(stage.clientWidth * .42, stage.clientHeight * .42);
+})();
+</script>
+</body>
+</html>

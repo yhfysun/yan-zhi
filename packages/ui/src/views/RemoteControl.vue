@@ -125,7 +125,6 @@
       @contextmenu.prevent
       @pointerdown="onStagePointerDown" @pointermove="onStagePointerMove" @pointerup="onStagePointerUp" @pointercancel="onStagePointerCancel"
       @wheel.prevent="onStageWheel"
-      @touchstart.passive="markTouch" @touchmove.passive="markTouch" @touchend.passive="markTouch"
       @dragover.prevent="dragOver = true" @dragleave.prevent="dragOver = false" @drop.prevent="onFileDrop"
     >
       <!-- 安卓镜像：自研 scrcpy 客户端 + WebCodecs 解码，与电脑会话共用同一套会话壳 -->
@@ -159,14 +158,11 @@
         </button>
       </div>
 
-      <!-- 自绘光标 + 点按反馈：比跟随帧更跟手，单击时给一个明确的光圈 -->
-      <div v-if="linkKind !== 'android'" class="rc-cursor" :class="{ pressed: cursorPressed }" :style="cursorStyle">
-        <svg width="22" height="28" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#111" stroke-width="1.2"/></svg>
-      </div>
+      <!-- 自绘光标已删（2026-10-27 横屏重构）：仿真鼠标左上角的箭头就是唯一光标，不再有第二个 -->
       <div v-if="fx.visible" class="rc-tap-fx" :class="fx.button" :style="fxStyle"></div>
 
-      <!-- 顶部状态胶囊：只留状态与显示器/画质，操作入口统一收到右侧栏 -->
-      <div class="rc-topbar" :class="{ hidden: immersive && !toolbarPeek }" @pointerdown.stop>
+      <!-- 顶部状态胶囊（桌面非全屏显示；手机沉浸态藏起，入口全在悬浮球菜单） -->
+      <div class="rc-topbar" :class="{ hidden: hudHidden }" @pointerdown.stop>
         <button class="rc-topback" title="断开连接" @click="disconnect">
           <svg viewBox="0 0 24 24" width="18" height="18"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
@@ -185,33 +181,7 @@
         </select>
       </div>
 
-      <!-- 右侧操作栏（UU 式）：高频功能常驻，其余收进「操作」面板 -->
-      <div class="rc-rail" :class="{ hidden: immersive && !toolbarPeek }" @pointerdown.stop>
-        <button class="rc-rail-btn" :class="{ active: actionsOpen }" @click.stop="actionsOpen = !actionsOpen">
-          <svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1.6"/><rect x="14" y="4" width="6" height="6" rx="1.6"/><rect x="4" y="14" width="6" height="6" rx="1.6"/><rect x="14" y="14" width="6" height="6" rx="1.6"/></svg>
-          <span>操作</span>
-        </button>
-        <button v-if="linkKind !== 'android'" class="rc-rail-btn" :class="{ active: mouseMode }" @click.stop="toggleMouseMode">
-          <svg viewBox="0 0 24 24"><path d="M6 3l11 8.5-5 .8 2.8 5.6-2.3 1.1-2.8-5.6L6 17z"/></svg>
-          <span>触控板</span>
-        </button>
-        <button v-if="linkKind !== 'android'" class="rc-rail-btn" @click.stop="openKeyboardPanel">
-          <svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.4"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M7 13.5h10" stroke-width="1.8" stroke-linecap="round"/></svg>
-          <span>键盘</span>
-        </button>
-        <button v-if="linkKind !== 'android'" class="rc-rail-btn" @click.stop="rightClickAtLast">
-          <svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 4.5V9h5.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
-          <span>右键</span>
-        </button>
-        <button class="rc-rail-btn" @click.stop="toggleZoom">
-          <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 15v5h-5M20 9V4h-5M4 15v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <span>{{ zoomLabel }}</span>
-        </button>
-        <button class="rc-rail-btn" @click.stop="toggleFullscreen">
-          <svg viewBox="0 0 24 24"><path d="M5 10V5h5M19 14v5h-5M5 14v5h5M19 10V5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <span>{{ immersive ? '退出' : '全屏' }}</span>
-        </button>
-      </div>
+      <!-- 右侧栏已删除（2026-10-27 横屏重构）：入口全部收进悬浮球菜单 -->
 
       <!-- 操作面板（底部抽屉）：低频功能都在这里 -->
       <div v-if="actionsOpen" class="rc-sheet" @pointerdown.stop @click.stop>
@@ -234,9 +204,6 @@
           </button>
           <button class="rc-act" @click="doAction(toggleAudio)">
             <b>{{ audioOn ? '🔊' : '🔇' }}</b><span>声音{{ audioOn ? '开' : '关' }}</span>
-          </button>
-          <button class="rc-act" @click="doAction(toggleMouseMode)">
-            <b>◉</b><span>{{ mouseMode ? '切到触控' : '切到指针' }}</span>
           </button>
           <button class="rc-act" @click="doAction(toggleZoom)">
             <b>⛶</b><span>{{ zoomLabel }}</span>
@@ -273,53 +240,61 @@
         </div>
       </div>
 
-      <!-- 大触控板（指针模式）：拖动移动指针，点按左键，长按右键，双指上下滑滚动 -->
-      <div v-if="mouseMode && !immersive && !kbPanelOpen && !clipPanelOpen && !filePanelOpen" class="rc-pad" :class="{ collapsed: padCollapsed }">
-        <div class="rc-pad-head">
-          <span>触控板</span>
-          <button class="rc-pad-mini" @pointerdown.stop @click.stop="padCollapsed = !padCollapsed">
-            {{ padCollapsed ? '展开' : '收起' }}
-          </button>
-        </div>
-        <template v-if="!padCollapsed">
-          <div
-            class="rc-pad-body" :class="{ active: padActive }"
-            @pointerdown.stop="onPadPointerDown" @pointermove.stop="onPadPointerMove"
-            @pointerup.stop="onPadPointerUp" @pointercancel.stop="onPadPointerCancel"
-          >
-            <div class="rc-pad-focus" :class="{ on: padActive }"></div>
-            <div v-if="padActive" class="rc-pad-dot" :style="{ left: `${padTouch.x}px`, top: `${padTouch.y}px` }"></div>
-            <div class="rc-pad-hint">拖动移动指针 · 点按左键 · 双指滚动 · 长按右键</div>
-          </div>
-          <div class="rc-pad-btns">
-            <button class="rc-pad-btn" @pointerdown.stop @click.stop="padClick('left')">左键</button>
-            <div
-              class="rc-pad-scroll" title="上下拖动滚动"
-              @pointerdown.stop.prevent="onScrollStripDown" @pointermove.stop.prevent="onScrollStripMove"
-              @pointerup.stop.prevent="onScrollStripUp" @pointercancel.stop.prevent="onScrollStripUp"
-            >
-              <span class="rc-pad-scroll-up">▲</span>
-              <span class="rc-pad-scroll-bar"></span>
-              <span class="rc-pad-scroll-down">▼</span>
-            </div>
-            <button class="rc-pad-btn" @pointerdown.stop @click.stop="padClick('right')">右键</button>
-          </div>
-        </template>
+      <!-- ===== 仿真鼠标（2026-10-27 横屏重构）：鼠标左上角箭头 = 唯一光标 =====
+           拖鼠标体 = 移动指针（箭头尖坐标 = 注入坐标）；左/右半键 = 单击；中滚轮 = 滚动。
+           鼠标与光标是同一元素 —— 移动到哪里，点击的就是箭头尖的位置。 -->
+      <div
+        v-if="linkKind !== 'android' && mouseVisible" ref="vmouseRef" class="rc-vmouse" :style="vmouseStyle"
+        @pointerdown.stop="onVmousePointerDown" @pointermove.stop="onVmousePointerMove"
+        @pointerup.stop="onVmousePointerUp" @pointercancel.stop="onVmousePointerUp"
+        @contextmenu.prevent
+      >
+        <svg class="rc-vm-arrow" width="22" height="28" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#111" stroke-width="1.2"/></svg>
+        <div class="rc-vm-body"></div>
+        <div class="rc-vm-l" :class="{ press: vmPress === 'left' }" @pointerdown.stop="vmClick('left')"></div>
+        <div class="rc-vm-r" :class="{ press: vmPress === 'right' }" @pointerdown.stop="vmClick('right')"></div>
+        <div
+          class="rc-vm-wheel" :class="{ active: vmWheelActive }" title="上下拖动滚动"
+          @pointerdown.stop="onVmWheelDown" @pointermove.stop="onVmWheelMove"
+          @pointerup.stop="onVmWheelUp" @pointercancel.stop="onVmWheelUp"
+        ><i></i></div>
       </div>
 
-      <!-- 键盘输入面板（软键盘实时注入：打字即发送，退格/回车/方向键直通） -->
-      <div v-if="kbPanelOpen" class="rc-panel rc-panel-kb" @pointerdown.stop @click.stop>
-        <div class="rc-panel-head">键盘输入<button class="rc-panel-x" @click="kbPanelOpen = false">✕</button></div>
-        <textarea
-          ref="kbInputRef" v-model="kbText" class="rc-panel-text" rows="2"
-          placeholder="点这里调出键盘，边打边发到被控端"
-          @input="onKbInput" @keydown="onKbKeydown"
-          @compositionstart="kbComposing = true" @compositionend="kbComposing = false"
-        ></textarea>
-        <div class="rc-panel-actions">
-          <button class="rc-btn rc-btn-primary" @click="sendKbText">发送剩余文字</button>
-        </div>
+      <!-- ===== 悬浮球 + 球菜单：全沉浸唯一常驻入口 =====
+           点球开合菜单（长按同样呼出）；拖动换位置；4s 无操作变暗。
+           菜单：仿真鼠标显隐 / 键盘 / 显示器 / 铺满-适应 / 操作 / 断开。 -->
+      <div
+        v-if="phase === 'live'" ref="fballRef" class="rc-fball" :class="{ dim: ballDimmed }" :style="ballStyle"
+        @pointerdown.stop="onBallPointerDown" @pointermove.stop="onBallPointerMove"
+        @pointerup.stop="onBallPointerUp" @pointercancel.stop="onBallPointerCancel"
+      >
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.4" fill="#d9e2f2" stroke="none"/><circle cx="12" cy="12" r="8.4" opacity=".4"/></svg>
       </div>
+      <div v-if="ballMenuOpen" class="rc-fmenu" @pointerdown.stop @click.stop>
+        <button data-act="mouse" @click="ballAct('mouse')"><span>🖱 仿真鼠标</span><i :class="{ on: mouseVisible }"></i></button>
+        <button v-if="linkKind !== 'android'" data-act="kb" @click="ballAct('kb')"><span>⌨ 键盘</span></button>
+        <button data-act="disp" @click="ballAct('disp')"><span>🖥 显示器</span></button>
+        <button data-act="zoom" @click="ballAct('zoom')"><span>⛶ {{ zoomLabel }}</span></button>
+        <button data-act="actions" @click="ballAct('actions')"><span>☰ 操作</span></button>
+        <button data-act="back" class="danger" @click="ballAct('back')"><span>← 断开</span></button>
+      </div>
+      <!-- 显示器子菜单（从球菜单呼出） -->
+      <div v-if="dispMenuOpen" class="rc-disp-menu" @pointerdown.stop @click.stop>
+        <button
+          v-for="(d, i) in displays" :key="d.id" :class="{ on: currentDisplay === d.id }"
+          @click="selectDisplay(d.id)"
+        >{{ displayShortLabel(d, i) }}<i></i></button>
+        <button class="rc-disp-refresh" @click="requestDisplays">刷新</button>
+      </div>
+
+      <!-- ===== 直通键盘：隐藏 input 唤系统输入法，打字逐字注入电脑光标处 =====
+           无任何自绘输入框/面板；打完字自动失焦收起键盘。 -->
+      <input
+        v-if="kbDirect" ref="kbInputRef" class="rc-kb-input" type="text" autocomplete="off"
+        autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send"
+        @input="onKbInput" @keydown="onKbKeydown" @blur="kbDirect = false"
+        @compositionstart="kbComposing = true" @compositionend="onKbCompositionEnd"
+      />
 
       <!-- 剪贴板面板（纯文本；全屏下 Ctrl+V 直通注入 = 用被控端剪贴板粘贴） -->
       <div v-if="clipPanelOpen" class="rc-panel" @pointerdown.stop @click.stop>
@@ -398,6 +373,8 @@ interface RcDisplayInfo { id: string; label: string; primary: boolean; x: number
 interface RcIceServer { urls: string[]; username?: string; credential?: string }
 
 const RC_FILE_MAX = 500 * 1024 * 1024;
+/** 悬浮球空闲变暗间隔（ms）：与原型一致 4s */
+const BALL_DIM_MS = 4000;
 
 const phase = ref<Phase>('setup');
 const pairing = ref(false);
@@ -407,11 +384,12 @@ const mode = ref<'' | 'webrtc' | 'jpeg'>('');
 const hasFrame = ref(false);
 const screen = ref<ScreenRect>({ x: 0, y: 0, w: 0, h: 0 });
 const immersive = ref(false);
-const toolbarPeek = ref(false);
-const kbPanelOpen = ref(false);
-const kbText = ref('');
-const kbInputRef = ref<HTMLTextAreaElement>();
-/** 中文输入法组字中：拼音阶段不发，组字完成后由随后的 input 事件整串发 */
+const kbInputRef = ref<HTMLInputElement>();
+/**
+ * 直通键盘开启中：隐藏 input 持焦点唤系统输入法，打字逐字注入电脑光标处。
+ */
+const kbDirect = ref(false);
+/** 中文输入法组字中：拼音阶段不发，组字完成后由 compositionend 整串发 */
 const kbComposing = ref(false);
 const clipPanelOpen = ref(false);
 const clipText = ref('');
@@ -450,15 +428,14 @@ const iceServers = ref<RcIceServer[]>([]);
 // ---- 缩放几何 ----
 const viewport = reactive({ w: 0, h: 0 });
 const native = reactive({ w: 0, h: 0 });
-const zoomMode = ref<'fit' | 'fill' | 'free'>('fit');
-/** UU 式虚拟鼠标：拖动移动指针、点按左键、长按右键，滚轮用双指滑动 */
-const mouseMode = ref(false);
+const zoomMode = ref<'fit' | 'fill' | 'free'>('fill');
+/**
+ * 仿真鼠标显隐（旧 mouseMode 语义并入：显示 = 指针模式）。
+ * 触屏默认显示（UU 口径：手指不挡目标）；桌面端默认隐藏。
+ */
+const mouseVisible = ref(false);
 const mousePos = reactive({ x: 0, y: 0 });
 const actionsOpen = ref(false);
-const padCollapsed = ref(false);
-const padActive = ref(false);
-const padTouch = reactive({ x: 0, y: 0 });
-const cursorPressed = ref(false);
 /** 点按反馈（显示坐标）：单击 / 右键时给一个短暂光圈 */
 const fx = reactive({ visible: false, x: 0, y: 0, button: 'left' as 'left' | 'right' });
 const QUALITY_OPTIONS = [
@@ -468,6 +445,21 @@ const QUALITY_OPTIONS = [
 ];
 const zoom = ref(1);
 const pan = reactive({ x: 0, y: 0 });
+
+const vmouseRef = ref<HTMLElement>();
+const fballRef = ref<HTMLElement>();
+/** 半键按压高亮：left / right / 无 */
+const vmPress = ref<'' | 'left' | 'right'>('');
+const vmWheelActive = ref(false);
+let vmWheelLastY = 0;
+const ballDimmed = ref(false);
+const ballMenuOpen = ref(false);
+const dispMenuOpen = ref(false);
+let ballDimTimer: number | null = null;
+let ballLongTimer: number | null = null;
+let ballMoved = false;
+const ballPtrs = new Map<number, { x: number; y: number }>();
+const vmPtrs = new Map<number, { x: number; y: number }>();
 
 const statusText = computed(() => {
   if (linkKind.value === 'android') {
@@ -479,7 +471,10 @@ const statusText = computed(() => {
   if (mode.value === 'jpeg') return ro + (zoomMode.value === 'free' ? `兼容模式 · ${Math.round(zoom.value * 100)}%` : '兼容模式已连接');
   return '连接中…';
 });
-const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '铺满' : zoomMode.value === 'fill' ? '1:1' : '适应'));
+/** 沉浸态藏顶栏（右侧栏已并入悬浮球菜单；球是唯一常驻入口） */
+const hudHidden = computed(() => immersive.value);
+/** 缩放档位文案：按钮显示「切过去会变成什么」（fit→适应、fill→1:1、free→铺满） */
+const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '适应' : zoomMode.value === 'fill' ? '1:1' : '铺满'));
 
 /**
  * 上次连过的被控端：手机 App 里 window.location.origin 是壳的 localhost，毫无意义，
@@ -541,8 +536,8 @@ const androidStageRef = ref<{ key: (code: number) => void; text: (value: string)
 
 /** 扫码按钮只给触屏设备：桌面 /remote 页上「电脑摄像头扫另一块屏」是伪需求，防误解 */
 const isTouch = (typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches) || navigator.maxTouchPoints > 0;
-// 触屏默认指针模式（UU 同款）：手指不挡目标、点按不飘；需要直接点画面时右侧栏一键切回触控
-if (isTouch) mouseMode.value = true;
+// 触屏默认显示仿真鼠标（UU 同款）：手指不挡目标、点按不飘；画面直接触控始终可用
+if (isTouch) mouseVisible.value = true;
 const stageRef = ref<HTMLElement>();
 const videoRef = ref<HTMLVideoElement>();
 const canvasRef = ref<HTMLCanvasElement>();
@@ -557,7 +552,6 @@ let base = window.location.origin;
 let webrtcWatchdog: number | null = null;
 let pingTimer: number | null = null;
 let jpegBitmap: ImageBitmap | null = null;
-const cursor = reactive({ x: 0, y: 0, visible: false });
 
 // ---- 设备身份（每个被控端一套 deviceId/deviceToken，存 localStorage）----
 const identityKey = (b: string) => `rc:identity:${b}`;
@@ -735,15 +729,15 @@ function toggleZoom(): void {
   zoom.value = 1;
 }
 
-// ---- JPEG 远端光标（显示坐标 = 显示矩形反算）----
-const cursorStyle = computed<CSSProperties>(() => {
-  const r = displayedRect.value;
-  const s = screen.value;
-  if (!cursor.visible || !r.w || !s.w) return { display: 'none' };
-  const px = r.x + ((cursor.x - s.x) / s.w) * r.w;
-  const py = r.y + ((cursor.y - s.y) / s.h) * r.h;
-  return { display: 'block', left: `${px}px`, top: `${py}px` };
-});
+// ---- 仿真鼠标 / 悬浮球（显示坐标 = 显示矩形换算，与旧自绘光标同一套几何）----
+/** 仿真鼠标的舞台位置：左上角 = 箭头尖 = 注入坐标 */
+const vmousePos = reactive({ x: 0, y: 0 });
+/** 悬浮球位置：-1 = 未拖过，用 CSS 默认右下角 */
+const ballPos = reactive({ x: -1, y: -1 });
+const vmouseStyle = computed<CSSProperties>(() => ({ left: `${vmousePos.x}px`, top: `${vmousePos.y}px` }));
+const ballStyle = computed<CSSProperties>(() => (ballPos.x < 0
+  ? {}
+  : { left: `${ballPos.x}px`, top: `${ballPos.y}px`, right: 'auto', bottom: 'auto' }));
 const fxStyle = computed<CSSProperties>(() => ({ left: `${fx.x}px`, top: `${fx.y}px` }));
 
 // ---- 配对 ----
@@ -1117,11 +1111,6 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       if (!displays.value.length && displaysRequested < 2) window.setTimeout(requestDisplays, 1500);
       break;
     }
-    case 'cursor':
-      cursor.x = Number(msg.x) || 0;
-      cursor.y = Number(msg.y) || 0;
-      cursor.visible = !!msg.visible;
-      break;
     case 'rtc.answer':
       if (pc) {
         try {
@@ -1188,9 +1177,9 @@ function setScreen(s: ScreenRect): void {
   screen.value = s;
   syncNativeFromScreen();
   syncViewport();
-  if (mouseMode.value) {
+  if (mouseVisible.value) {
     initMousePos();
-    showCursorAt(mousePos.x, mousePos.y);
+    syncVmouseToPointer();
   }
 }
 
@@ -1292,11 +1281,9 @@ function applyQuality(): void {
 }
 watch(qualityPreset, applyQuality);
 
-// ================= 输入：手势（单指直接触控 + 触控板并行）=================
-// 状态机在 utils/remote-gesture.ts（纯逻辑可单测）。UU 的做法是两套输入同时可用：
-//   · 画面：点哪点哪（直接触控）
-//   · 触控板：拖动移动指针、点按在指针处点击、双指滚动
-// 所以这里用两个独立状态机，互不干扰。
+// ================= 输入：手势（单指直接触控 + 仿真鼠标并行）=================
+// 状态机在 utils/remote-gesture.ts（纯逻辑可单测）。直接触控走 direct 模式；
+// 仿真鼠标拖动 = pointer 模式（movePointerBy 换算注入坐标），两套互不干扰。
 const gesture = new RemoteGestureRecognizer({ mode: 'direct', longPressMs: 450 });
 const padGesture = new RemoteGestureRecognizer({ mode: 'pointer', longPressMs: 450 });
 let longPressTimer: number | null = null;
@@ -1304,16 +1291,17 @@ let padLongPressTimer: number | null = null;
 let lastMoveSent = 0;
 let lastDragSent = 0;
 let fxTimer: number | null = null;
-let scrollStripY = 0;
-let scrollStripActive = false;
 
-// 每次进入会话：触屏默认显示触控板，桌面端不显示；画面直接触控始终可用
+// 每次进入会话：触屏默认显示仿真鼠标，桌面端不显示；画面直接触控始终可用
 watch(phase, (p) => {
   if (p !== 'live') return;
-  mouseMode.value = isTouch;
+  mouseVisible.value = isTouch;
   gesture.reset();
   padGesture.reset();
-  if (mouseMode.value) initMousePos();
+  if (mouseVisible.value) {
+    initMousePos();
+    syncVmouseToPointer();
+  }
   // ★ 移动端进会话即沉浸（UU 口径）：App 壳里直接藏系统状态栏/导航栏，
   //   不再要求用户先点「全屏」——此前的表现就是「顶部状态栏一直挂着」。
   //   桌面/浏览器宿主 setNativeImmersive 静默跳过，无副作用。
@@ -1333,18 +1321,13 @@ const toScreen = (clientX: number, clientY: number): { x: number; y: number } | 
     y: Math.round(screen.value.y + ny * screen.value.h),
   };
 };
-/**
- * 本地光标预测：WebRTC 帧里不带指针（Electron 桌面采集不含光标），JPEG 帧到得慢时
- * 也跟不上手 —— 统一由控制端按自己的触点/鼠标位置自绘，点哪指哪、零延迟。
- */
+/** 直接触控时的临时光标反馈：仿真鼠标隐藏时才显示自绘光标 */
 let cursorHideTimer: number | null = null;
 function showCursorAt(x: number, y: number): void {
-  cursor.x = x;
-  cursor.y = y;
-  cursor.visible = true;
-  if (cursorHideTimer) clearTimeout(cursorHideTimer);
-  if (mouseMode.value) return; // 鼠标模式：指针常显，不自动隐藏
-  cursorHideTimer = window.setTimeout(() => { cursor.visible = false; }, 2500);
+  // 仿真鼠标可见时由箭头尖代表指针，直接触控不再需要独立自绘光标
+  if (mouseVisible.value) return;
+  vmousePos.x = x - 1;
+  vmousePos.y = y - 1;
 }
 
 /** 虚拟指针位置初始化到画面中心（屏幕坐标） */
@@ -1354,22 +1337,18 @@ function initMousePos(): void {
   mousePos.y = Math.round(screen.value.y + screen.value.h / 2);
 }
 function toggleMouseMode(): void {
-  // 只控制触控板显隐；画面直接触控始终可用（UU 同款并行）
+  // 仿真鼠标显隐（悬浮球菜单「仿真鼠标」项）；画面直接触控始终可用
   handleGesture(gesture.cancel(), false);
   handleGesture(padGesture.cancel(), true);
-  mouseMode.value = !mouseMode.value;
-  actionsOpen.value = false;
-  if (mouseMode.value) {
+  mouseVisible.value = !mouseVisible.value;
+  if (mouseVisible.value) {
     initMousePos();
-    showCursorAt(mousePos.x, mousePos.y);
-  } else {
-    cursor.visible = false;
-    padCollapsed.value = false;
+    syncVmouseToPointer();
   }
 }
-/** 在虚拟指针当前位置右键（操作面板用） */
+/** 在虚拟指针当前位置右键（操作抽屉与仿真鼠标右半键共用） */
 function rightClickHere(): void {
-  if (!mouseMode.value || !screen.value.w) return;
+  if (!mouseVisible.value || !screen.value.w) return;
   input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button: 'right' });
 }
 const input = (msg: Record<string, unknown>): void => {
@@ -1379,7 +1358,7 @@ const input = (msg: Record<string, unknown>): void => {
   // 只读会话：本地直接不发，省得每条输入都换来一次拒绝（状态由底部常驻条说明）
   if (!inputAllowed.value) return;
   // 指针模式才维护自绘光标；屏幕触控模式直接用点按光圈反馈，避免两种模式视觉上同时生效
-  if (mouseMode.value && typeof msg.x === 'number' && typeof msg.y === 'number') showCursorAt(msg.x, msg.y);
+  if (mouseVisible.value && typeof msg.x === 'number' && typeof msg.y === 'number') showCursorAt(msg.x, msg.y);
   send({ type: 'input', ...msg });
 };
 
@@ -1420,8 +1399,6 @@ function clickAt(clientX: number, clientY: number, button: 'left' | 'right', use
     initMousePos();
     const at = cursorClientPoint();
     flashTap(at.x, at.y, button);
-    cursorPressed.value = true;
-    window.setTimeout(() => { cursorPressed.value = false; }, 150);
     input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button });
     return;
   }
@@ -1455,7 +1432,7 @@ function rightClickAtLast(): void {
     ElMessage.info('当前为只读观看');
     return;
   }
-  if (mouseMode.value) {
+  if (mouseVisible.value) {
     rightClickHere();
     return;
   }
@@ -1487,9 +1464,7 @@ function movePointerBy(dx: number, dy: number): void {
   const k = s.w / r.w;
   mousePos.x = Math.min(s.x + s.w - 1, Math.max(s.x, mousePos.x + dx * k));
   mousePos.y = Math.min(s.y + s.h - 1, Math.max(s.y, mousePos.y + dy * k));
-  cursor.x = mousePos.x;
-  cursor.y = mousePos.y;
-  cursor.visible = true;
+  syncVmouseToPointer();
   const now = Date.now();
   if (now - lastMoveSent < 24) return;
   lastMoveSent = now;
@@ -1549,7 +1524,7 @@ function scheduleLongPress(): void {
 
 function onStagePointerDown(e: PointerEvent): void {
   actionsOpen.value = false;
-  peekToolbar();
+  bumpBallActive();
   // ★ 指针捕获：手指从画面滑到黑边/屏幕边缘时事件仍归舞台，不会中途丢 up
   //   （触摸点起点与后续事件必须归同一元素，否则拖拽路径靠运气补 up）。
   try { stageRef.value?.setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
@@ -1578,85 +1553,127 @@ function onStagePointerCancel(): void {
   handleGesture(gesture.cancel(), false);
 }
 
-// ---- 大触控板（与画面直接触控并行）----
-const padPointers = new Set<number>();
-/** 手指在触控板上的位置（板内坐标），用于拖动时的视觉反馈 */
-function trackPadTouch(e: PointerEvent): void {
-  const el = e.currentTarget as HTMLElement | null;
-  if (!el) return;
-  const r = el.getBoundingClientRect();
-  padTouch.x = e.clientX - r.left;
-  padTouch.y = e.clientY - r.top;
+// ---- 仿真鼠标：拖体移动指针（pointer 模式状态机），左/右半键单击，中滚轮滚动 ----
+/** 鼠标摆放：left/top = 箭头尖 - 1px（箭头尖 = 注入坐标热点，与原型一致） */
+function syncVmouseToPointer(): void {
+  const at = cursorClientPoint();
+  vmousePos.x = at.x - 1;
+  vmousePos.y = at.y - 1;
 }
-function clearPadLongPress(): void {
-  if (padLongPressTimer) {
-    clearTimeout(padLongPressTimer);
-    padLongPressTimer = null;
-  }
-}
-function schedulePadLongPress(): void {
-  clearPadLongPress();
-  padLongPressTimer = window.setTimeout(() => {
-    const events = padGesture.maybeLongPress(performance.now());
-    if (events.length) buzz(30);
-    handleGesture(events, true);
-  }, 460);
-}
-function onPadPointerDown(e: PointerEvent): void {
-  actionsOpen.value = false;
-  // ★ 指针捕获：手指拖出板面边缘（贴屏手机上必然发生）后 move/up 仍归板子收，
-  //   否则事件漏给舞台直触手势机 —— 那根手指在其指针表里永远等不到 up，
-  //   下一次按下就被识别成双指手势，触控板表现为「压根没反应」（2026-10-27 报障根因）。
+function onVmousePointerDown(e: PointerEvent): void {
+  // 指针捕获：手指拖出鼠标体边缘后 move/up 仍归鼠标收（旧触控板幽灵指针同坑）
   try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
-  padPointers.add(e.pointerId);
-  padActive.value = true;
-  trackPadTouch(e);
-  handleGesture(padGesture.down(e.pointerId, e.clientX, e.clientY, performance.now()), true);
-  schedulePadLongPress();
+  vmPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  bumpBallActive();
 }
-function onPadPointerMove(e: PointerEvent): void {
-  trackPadTouch(e);
-  handleGesture(padGesture.move(e.pointerId, e.clientX, e.clientY), true);
+function onVmousePointerMove(e: PointerEvent): void {
+  const prev = vmPtrs.get(e.pointerId);
+  if (!prev) return;
+  vmPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  movePointerBy(e.clientX - prev.x, e.clientY - prev.y);
+  syncVmouseToPointer();
 }
-function onPadPointerUp(e: PointerEvent): void {
-  clearPadLongPress();
-  handleGesture(padGesture.up(e.pointerId, e.clientX, e.clientY, performance.now()), true);
-  padPointers.delete(e.pointerId);
-  padActive.value = padPointers.size > 0;
+function onVmousePointerUp(e: PointerEvent): void {
+  vmPtrs.delete(e.pointerId);
 }
-function onPadPointerCancel(): void {
-  clearPadLongPress();
-  handleGesture(padGesture.cancel(), true);
-  padPointers.clear();
-  padActive.value = false;
-}
-
-function padClick(button: 'left' | 'right'): void {
-  if (!mouseMode.value) return;
-  initMousePos();
+/** 半键按压高亮 + 在箭头尖位置单击（右半键 = 右键） */
+function vmClick(button: 'left' | 'right'): void {
+  vmPress.value = button;
+  window.setTimeout(() => { vmPress.value = ''; }, 160);
   clickAt(0, 0, button, true);
+  buzz(button === 'right' ? 18 : 8);
 }
-function onScrollStripDown(e: PointerEvent): void {
+/** 中滚轮：上下拖动 = 在指针位置注入滚轮 */
+function onVmWheelDown(e: PointerEvent): void {
   try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
-  scrollStripActive = true;
-  scrollStripY = e.clientY;
+  vmWheelActive.value = true;
+  vmWheelLastY = e.clientY;
 }
-function onScrollStripMove(e: PointerEvent): void {
-  if (!scrollStripActive) return;
-  const dy = e.clientY - scrollStripY;
-  scrollStripY = e.clientY;
+function onVmWheelMove(e: PointerEvent): void {
+  if (!vmWheelActive.value) return;
+  const dy = e.clientY - vmWheelLastY;
+  vmWheelLastY = e.clientY;
   if (Math.abs(dy) < 2) return;
   wheelAt(0, 0, Math.max(-400, Math.min(400, -Math.round(dy * 1.6))), true);
 }
-function onScrollStripUp(): void {
-  scrollStripActive = false;
+function onVmWheelUp(): void {
+  vmWheelActive.value = false;
 }
+
 function toggleActions(): void {
   actionsOpen.value = !actionsOpen.value;
 }
 function doAction(fn: () => void): void {
   actionsOpen.value = false;
   fn();
+}
+
+// ---- 悬浮球：点按开合菜单（长按同样呼出）、拖动换位、4s 无操作变暗 ----
+/** 交互发生时：立即点亮球并重置变暗计时（鼠标/菜单操作都会调） */
+function bumpBallActive(): void {
+  ballDimmed.value = false;
+  if (ballDimTimer) clearTimeout(ballDimTimer);
+  ballDimTimer = window.setTimeout(() => { ballDimmed.value = true; }, BALL_DIM_MS);
+}
+function onBallPointerDown(e: PointerEvent): void {
+  try { fballRef.value?.setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
+  ballPtrs.set(e.pointerId, { x: e.pointerId % 2 ? e.clientX : e.clientX, y: e.clientY });
+  ballMoved = false;
+  bumpBallActive();
+  // 长按也呼出菜单（与 UU 口径一致）：450ms 未移动即开菜单
+  if (ballLongTimer) clearTimeout(ballLongTimer);
+  ballLongTimer = window.setTimeout(() => {
+    if (ballMoved) return;
+    ballMenuOpen.value = true;
+    buzz(18);
+  }, 450);
+}
+function onBallPointerMove(e: PointerEvent): void {
+  const prev = ballPtrs.get(e.pointerId);
+  if (!prev) return;
+  ballPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const dx = e.clientX - prev.x;
+  const dy = e.clientY - prev.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) ballMoved = true;
+  if (ballMoved && ballLongTimer) clearTimeout(ballLongTimer);
+  if (!ballMoved) return;
+  const st = stageRef.value?.getBoundingClientRect();
+  if (!st) return;
+  const r = fballRef.value?.getBoundingClientRect();
+  if (!r) return;
+  let nx = r.left - st.left + dx;
+  let ny = r.top - st.top + dy;
+  nx = Math.min(st.width - 46, Math.max(6, nx));
+  ny = Math.min(st.height - 46, Math.max(6, ny));
+  ballPos.x = nx;
+  ballPos.y = ny;
+}
+function onBallPointerUp(e: PointerEvent): void {
+  ballPtrs.delete(e.pointerId);
+  if (ballMoved) return;
+  bumpBallActive();
+  // 点按开合菜单；菜单开时球常亮
+  ballMenuOpen.value = !ballMenuOpen.value;
+  if (ballMenuOpen.value) {
+    if (ballDimTimer) clearTimeout(ballDimTimer);
+  } else {
+    bumpBallActive();
+  }
+}
+function onBallPointerCancel(e: PointerEvent): void {
+  ballPtrs.delete(e.pointerId);
+}
+/** 球菜单动作（菜单点击后即收） */
+function ballAct(act: string): void {
+  ballMenuOpen.value = false;
+  dispMenuOpen.value = false;
+  bumpBallActive();
+  if (act === 'mouse') toggleMouseMode();
+  else if (act === 'kb') openKeyboardPanel();
+  else if (act === 'disp') dispMenuOpen.value = true;
+  else if (act === 'zoom') toggleZoom();
+  else if (act === 'actions') actionsOpen.value = true;
+  else if (act === 'back') disconnect();
 }
 
 function onStageWheel(e: WheelEvent): void {
@@ -1676,10 +1693,6 @@ function onStageWheel(e: WheelEvent): void {
   if (!p) return;
   const delta = Math.max(-400, Math.min(400, -Math.round(e.deltaY)));
   input({ action: 'wheel', ...p, delta });
-}
-
-function markTouch(): void {
-  peekToolbar();
 }
 
 // ================= 输入：键盘（直通 + 整串）=================
@@ -1720,22 +1733,21 @@ function onKeyDown(e: KeyboardEvent): void {
     input({ action: 'type', text: e.key });
   }
 }
-function onCompositionEnd(e: CompositionEvent): void {
+function onKbCompositionEnd(e: CompositionEvent): void {
   if (phase.value !== 'live' || !e.data) return;
   input({ action: 'type', text: e.data });
 }
-/** 软键盘边打边发：每敲一段就注入并清空输入框，输入框只当「键盘入口」用 */
-function flushKb(el: HTMLTextAreaElement | null | undefined): void {
+/** 隐藏 input 边打边发：每敲一段就注入并清空，input 只当「唤出系统键盘的入口」用 */
+function flushKb(el: HTMLInputElement | null | undefined): void {
   if (!el) return;
   const text = el.value;
   if (!text) return;
   el.value = '';
-  kbText.value = '';
   input({ action: 'type', text });
 }
 function onKbInput(e: Event): void {
   if (kbComposing.value) return;
-  flushKb(e.target as HTMLTextAreaElement);
+  flushKb(e.target as HTMLInputElement);
 }
 /** 编辑键直通（退格/回车/方向键必须逐次注入，攒成文本发过去语义就错了） */
 const KB_KEY_MAP: Record<string, string> = {
@@ -1749,30 +1761,20 @@ function onKbKeydown(e: KeyboardEvent): void {
   e.preventDefault();
   input({ action: 'key', keys: [k] });
 }
-function sendKbText(): void {
-  const t = kbText.value;
-  if (!t) return;
-  input({ action: 'type', text: t });
-  kbText.value = '';
-  kbPanelOpen.value = false;
-}
 
-// ================= 面板 =================
+// ================= 直通键盘 =================
+/** 唤出系统键盘：聚焦隐藏 input（blur 自动收） */
 async function openKeyboardPanel(): Promise<void> {
-  kbPanelOpen.value = true;
-  clipPanelOpen.value = false;
-  filePanelOpen.value = false;
+  kbDirect.value = true;
   await nextTick();
-  kbInputRef.value?.focus(); // 手机上聚焦输入框 = 系统键盘弹出
+  kbInputRef.value?.focus(); // 手机上聚焦隐藏 input = 系统键盘弹出
 }
 function openClipboardPanel(): void {
   clipPanelOpen.value = true;
-  kbPanelOpen.value = false;
   filePanelOpen.value = false;
 }
 function openFilePanel(): void {
   filePanelOpen.value = true;
-  kbPanelOpen.value = false;
   clipPanelOpen.value = false;
   void refreshFiles();
 }
@@ -2000,18 +2002,11 @@ function onFullscreenChange(): void {
   if (immersive.value) applyImmersiveZoom();
   else void lockLandscape(false);
   if (!immersive.value) {
-    kbPanelOpen.value = false;
+    kbDirect.value = false;
     clipPanelOpen.value = false;
     filePanelOpen.value = false;
   }
   window.setTimeout(syncViewport, 60);
-}
-function peekToolbar(): void {
-  if (!immersive.value) return;
-  toolbarPeek.value = true;
-  window.setTimeout(() => {
-    toolbarPeek.value = false;
-  }, 2500);
 }
 // ---- 生命周期 ----
 function send(msg: Record<string, unknown>): void {
@@ -2053,7 +2048,10 @@ function cleanup(): void {
   sessionId = '';
   hasFrame.value = false;
   audioOn.value = false;
-  cursor.visible = false;
+  ballPos.x = -1;
+  ballPos.y = -1;
+  vmousePos.x = 0;
+  vmousePos.y = 0;
   displays.value = [];
   currentDisplay.value = '';
   inputGranted.value = true;
@@ -2063,21 +2061,22 @@ function cleanup(): void {
   androidSerial.value = '';
   androidName.value = '';
   iceServers.value = [];
-  zoomMode.value = 'fit';
+  zoomMode.value = 'fill';
   zoom.value = 1;
   pan.x = 0;
   pan.y = 0;
-  kbPanelOpen.value = false;
+  kbDirect.value = false;
   clipPanelOpen.value = false;
   filePanelOpen.value = false;
   if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
   immersive.value = false;
   setNativeImmersive(false);
-  mouseMode.value = false;
+  mouseVisible.value = false;
   gesture.reset();
   padGesture.reset();
   actionsOpen.value = false;
-  padCollapsed.value = false;
+  ballMenuOpen.value = false;
+  dispMenuOpen.value = false;
 }
 function onResize(): void {
   syncViewport();
@@ -2085,7 +2084,9 @@ function onResize(): void {
 /** 切后台/失焦：手指不会再有 up 事件，主动收尾避免远端按键卡住 */
 function onPageLeave(): void {
   clearLongPress();
-  clearPadLongPress();
+  ballMenuOpen.value = false;
+  dispMenuOpen.value = false;
+  kbDirect.value = false;
   handleGesture(gesture.cancel(), false);
   handleGesture(padGesture.cancel(), true);
 }
@@ -2093,7 +2094,7 @@ function onPageLeave(): void {
 onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   window.addEventListener('keydown', onKeyDown, true);
-  window.addEventListener('compositionend', onCompositionEnd, true);
+  window.addEventListener('compositionend', onKbCompositionEnd, true);
   window.addEventListener('resize', onResize);
   document.addEventListener('visibilitychange', onPageLeave);
   window.addEventListener('blur', onPageLeave);
@@ -2123,7 +2124,7 @@ onBeforeUnmount(() => {
   stageRO = null;
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   window.removeEventListener('keydown', onKeyDown, true);
-  window.removeEventListener('compositionend', onCompositionEnd, true);
+  window.removeEventListener('compositionend', onKbCompositionEnd, true);
   window.removeEventListener('resize', onResize);
   document.removeEventListener('visibilitychange', onPageLeave);
   window.removeEventListener('blur', onPageLeave);
@@ -2179,8 +2180,39 @@ onBeforeUnmount(() => {
 /* ★ 显示矩形由 JS 自算（mediaStyle 内联定位），这里只留外观——不再用 inset:100% + contain，
    否则 letterbox 黑边会算进坐标映射（点边缘会偏）。 */
 .rc-video { position: absolute; object-fit: fill; touch-action: none; background: #000; }
-.rc-cursor { position: absolute; z-index: 6; pointer-events: none; transform: translate(-3px, -2px); filter: drop-shadow(0 2px 3px rgba(0,0,0,0.55)); transition: transform 0.12s ease; }
-.rc-cursor.pressed { transform: translate(-3px, -2px) scale(0.84); }
+/* ===== 仿真鼠标（2026-10-27 横屏重构）：箭头尖 = 唯一光标/注入热点 ===== */
+.rc-vmouse { position: absolute; z-index: 22; width: 56px; height: 86px; touch-action: none; filter: drop-shadow(0 6px 16px rgba(0,0,0,0.55)); }
+.rc-vm-arrow { position: absolute; left: -10px; top: -12px; z-index: 6; pointer-events: none; filter: drop-shadow(0 2px 3px rgba(0,0,0,0.6)); }
+.rc-vm-body { position: absolute; inset: 0; border-radius: 27px 27px 30px 30px / 21px 21px 34px 34px; background: linear-gradient(165deg, rgba(56,66,84,0.97), rgba(24,30,40,0.97)); border: 1px solid rgba(255,255,255,0.14); cursor: move; }
+.rc-vmouse::before { content: ""; position: absolute; left: 50%; top: 3px; bottom: 6px; width: 1px; margin-left: -0.5px; background: rgba(255,255,255,0.14); z-index: 2; pointer-events: none; }
+.rc-vm-l, .rc-vm-r { position: absolute; top: 3px; width: 50%; height: 40%; z-index: 3; }
+.rc-vm-l { left: 0; cursor: pointer; border-radius: 26px 10px 0 0 / 22px 8px 0 0; }
+.rc-vm-r { right: 0; cursor: pointer; border-radius: 10px 26px 0 0 / 8px 22px 0 0; }
+.rc-vm-l.press { background: rgba(96,150,255,0.5); }
+.rc-vm-r.press { background: rgba(255,170,60,0.45); }
+.rc-vm-wheel { position: absolute; left: 50%; top: 8%; transform: translateX(-50%); width: 11px; height: 26%; z-index: 4; border-radius: 6px; background: rgba(10,14,20,0.92); border: 1px solid rgba(255,255,255,0.16); cursor: ns-resize; overflow: hidden; touch-action: none; }
+.rc-vm-wheel i { position: absolute; left: 1.5px; right: 1.5px; top: 32%; height: 36%; border-radius: 4px; background: rgba(150,185,240,0.75); transition: top 0.12s; }
+.rc-vm-wheel.active i { background: rgba(190,215,255,0.95); }
+
+/* ===== 悬浮球 + 球菜单：全沉浸唯一常驻入口（4s 无操作变暗） ===== */
+.rc-fball { position: absolute; right: 14px; bottom: 44px; z-index: 26; width: 38px; height: 38px; border-radius: 50%; background: radial-gradient(circle at 32% 28%, rgba(96,124,178,0.95), rgba(28,38,56,0.96) 68%); border: 1px solid rgba(255,255,255,0.18); box-shadow: 0 6px 18px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.12); display: flex; align-items: center; justify-content: center; cursor: pointer; touch-action: none; transition: opacity 0.4s, transform 0.12s; }
+.rc-fball svg { width: 16px; height: 16px; fill: none; stroke: #d9e2f2; stroke-width: 2.4; stroke-linecap: round; }
+.rc-fball.dim { opacity: 0.32; }
+.rc-fball:active { transform: scale(0.92); }
+.rc-fmenu { position: absolute; right: 14px; bottom: 92px; z-index: 27; width: 132px; display: flex; flex-direction: column; gap: 4px; background: rgba(14,18,26,0.96); border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 6px; box-shadow: 0 14px 40px rgba(0,0,0,0.55); backdrop-filter: blur(14px); }
+.rc-fmenu button { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; background: transparent; color: #d5dce8; font-size: 12px; padding: 9px 11px; border-radius: 9px; cursor: pointer; }
+.rc-fmenu button:hover { background: rgba(255,255,255,0.08); }
+.rc-fmenu button.danger { color: #ff9aa8; }
+.rc-fmenu button i { width: 14px; height: 14px; border-radius: 50%; border: 1.6px solid #5a6675; flex-shrink: 0; }
+.rc-fmenu button i.on { border-color: #2f6bff; background: radial-gradient(circle, #2f6bff 42%, transparent 46%); }
+.rc-disp-menu { position: absolute; right: 14px; bottom: 92px; z-index: 27; width: 150px; display: flex; flex-direction: column; gap: 2px; background: rgba(14,18,26,0.96); border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 6px; box-shadow: 0 14px 40px rgba(0,0,0,0.55); backdrop-filter: blur(14px); }
+.rc-disp-menu button { display: flex; align-items: center; justify-content: space-between; border: 0; background: transparent; color: #cdd6e2; font-size: 12px; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+.rc-disp-menu button:hover { background: rgba(255,255,255,0.08); }
+.rc-disp-menu button i { width: 14px; height: 14px; border-radius: 50%; border: 1.6px solid #5a6675; }
+.rc-disp-menu button.on i { border-color: #2f6bff; background: radial-gradient(circle, #2f6bff 42%, transparent 46%); }
+.rc-disp-menu .rc-disp-refresh { justify-content: center; color: #8fb4ff; }
+/* 直通键盘隐藏 input（视觉上不可见，只为唤系统键盘收字符） */
+.rc-kb-input { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; z-index: -1; }
 .rc-tap-fx { position: absolute; z-index: 5; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; pointer-events: none; border: 2px solid rgba(124,178,255,0.95); box-shadow: 0 0 0 8px rgba(47,107,255,0.18); animation: rc-fx 0.36s ease-out forwards; }
 .rc-tap-fx.right { border-color: rgba(255,196,120,0.95); box-shadow: 0 0 0 8px rgba(255,170,60,0.16); }
 @keyframes rc-fx { from { opacity: 1; transform: scale(0.55); } to { opacity: 0; transform: scale(1.35); } }
@@ -2207,17 +2239,6 @@ onBeforeUnmount(() => {
 .rc-select { background: rgba(23,28,35,0.86); color: inherit; border: 1px solid #2a323e; border-radius: 8px; padding: 5px 8px; font-size: 13px; flex-shrink: 0; max-width: 30vw; }
 .rc-select-disp { max-width: 44vw; min-width: 84px; }
 
-/* 右侧操作栏（UU 式玻璃拟态）：高频动作常驻，低频收进「操作」抽屉 */
-.rc-rail { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 7; transition: opacity 0.15s; }
-.rc-rail.hidden { opacity: 0; pointer-events: none; }
-.rc-rail-btn { width: 46px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 12px; background: rgba(14,18,24,0.55); color: #cdd6e2; backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.07); font-size: 10px; cursor: pointer; transition: background 0.18s, border-color 0.18s, transform 0.12s; }
-.rc-rail-btn svg { width: 17px; height: 17px; fill: currentColor; stroke: currentColor; stroke-width: 1.6; }
-.rc-rail-btn svg [fill="none"] { fill: none; }
-.rc-rail-btn:hover { background: rgba(30,38,49,0.85); }
-.rc-rail-btn:active { transform: scale(0.94); }
-.rc-rail-btn.active { background: rgba(47,107,255,0.85); border-color: rgba(120,170,255,0.5); color: #fff; }
-.rc-rail-mouse { font-size: 18px; line-height: 1; }
-
 /* 操作抽屉 */
 .rc-sheet { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); width: min(340px, 80vw); max-height: 82vh; overflow-y: auto; background: rgba(16,21,28,0.94); border: 1px solid rgba(255,255,255,0.1); border-radius: 18px; padding: 12px; z-index: 11; backdrop-filter: blur(18px); box-shadow: 0 18px 48px rgba(0,0,0,0.5); }
 .rc-sheet-head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; margin-bottom: 10px; padding: 0 2px; }
@@ -2231,32 +2252,12 @@ onBeforeUnmount(() => {
 .rc-chip { border: 1px solid rgba(255,255,255,0.12); background: transparent; color: #b9c2cf; border-radius: 999px; padding: 4px 10px; font-size: 11.5px; cursor: pointer; }
 .rc-chip.active { background: rgba(47,107,255,0.85); border-color: transparent; color: #fff; }
 
-/* 大触控板：拖动区就是舞台本身（事件冒泡上来），这里只负责视觉与左右键/滚动条。
-   2026-10-27 重设计：删掉 116px 大鼠标插画（用户点名「鼠标这么大」），换中央聚焦环；
-   板面加深对比、按钮压扁，整体更薄更贴 UU 的克制风格。 */
-.rc-pad { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); width: min(460px, 86vw); background: rgba(10,14,19,0.82); border: 1px solid rgba(255,255,255,0.09); border-radius: 18px; z-index: 6; backdrop-filter: blur(18px); box-shadow: 0 14px 40px rgba(0,0,0,0.5); padding: 6px 8px 8px; touch-action: none; }
-.rc-pad.collapsed { width: auto; }
-.rc-pad-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #93a0b1; padding: 0 4px 4px; }
-.rc-pad-mini { border: none; background: rgba(255,255,255,0.08); color: #cdd6e2; border-radius: 8px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
-.rc-pad-body { position: relative; display: flex; align-items: center; justify-content: center; height: 128px; border-radius: 13px; background: radial-gradient(ellipse at 50% 45%, rgba(64,118,255,0.13), rgba(255,255,255,0.015) 70%); border: 1px solid rgba(255,255,255,0.05); transition: border-color 0.16s, box-shadow 0.16s; }
-.rc-pad-body.active { border-color: rgba(96,150,255,0.5); box-shadow: inset 0 0 0 1px rgba(96,150,255,0.2), 0 0 22px rgba(47,107,255,0.16); }
-.rc-pad-focus { position: absolute; width: 64px; height: 64px; border-radius: 50%; border: 1.5px solid rgba(150,185,240,0.3); pointer-events: none; transition: transform 0.18s ease, border-color 0.18s ease; }
-.rc-pad-focus.on { transform: scale(1.3); border-color: rgba(150,185,240,0.65); }
-.rc-pad-dot { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: rgba(124,178,255,0.32); border: 1px solid rgba(168,206,255,0.85); box-shadow: 0 0 12px rgba(80,140,255,0.5); pointer-events: none; }
-.rc-pad-hint { position: absolute; bottom: 5px; left: 0; right: 0; text-align: center; font-size: 10px; color: #6d7a90; pointer-events: none; }
-.rc-pad-btns { display: flex; align-items: stretch; gap: 8px; margin-top: 7px; height: 38px; }
-.rc-pad-btn { flex: 1; border: none; border-radius: 11px; background: rgba(255,255,255,0.07); color: #dbe3ee; font-size: 12.5px; cursor: pointer; }
-.rc-pad-btn:active { background: rgba(47,107,255,0.75); }
-.rc-pad-scroll { width: 48px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; border-radius: 11px; background: rgba(255,255,255,0.05); color: #8b98ab; font-size: 8px; padding: 2px 0; cursor: ns-resize; touch-action: none; }
-.rc-pad-scroll-bar { flex: 1; width: 3px; margin: 3px 0; border-radius: 2px; background: linear-gradient(to bottom, rgba(157,182,222,0.15), rgba(157,182,222,0.55), rgba(157,182,222,0.15)); }
 /* 首帧等待层：黑屏时给出明确状态，并吃掉误触（此时画面还没有，点了也点不准） */
 .rc-wait-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; z-index: 3; pointer-events: none; background: #000; text-align: center; padding: 24px; }
 
 
 .rc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: 24px; width: min(480px, 92%); background: #171c23; border: 1px solid #2a323e; border-radius: 12px; padding: 12px; z-index: 10; }
 .rc-panel-wide { width: min(560px, 94%); }
-/* 键盘面板固定顶部：系统键盘从底部升起，放底部的输入框会被键盘盖住 */
-.rc-panel-kb { top: 12px; bottom: auto; }
 .rc-panel-head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
 .rc-panel-x { background: transparent; border: none; color: #8a94a3; cursor: pointer; font-size: 14px; }
 .rc-panel-text { width: 100%; background: #10151b; border: 1px solid #2a323e; border-radius: 8px; color: inherit; padding: 8px 10px; font-size: 14px; resize: none; outline: none; box-sizing: border-box; }
