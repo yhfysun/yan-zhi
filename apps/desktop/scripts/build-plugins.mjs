@@ -474,6 +474,13 @@ export async function main(argv = process.argv.slice(2)) {
 
     fs.mkdirSync(args.out, { recursive: true });
     fs.mkdirSync(args.tmp, { recursive: true });
+    // 历史残留：旧版构建器把前端临时入口落在产物根（__frontend-entry-*.mjs），
+    // 会被 extraResources 原样拷进安装包。这里只清根下的这类文件，不动插件目录。
+    for (const ent of fs.readdirSync(args.out, { withFileTypes: true })) {
+      if (ent.isFile() && ent.name.startsWith('__frontend-entry-')) {
+        fs.rmSync(path.join(args.out, ent.name), { force: true });
+      }
+    }
     const results = [];
     for (const id of ids) {
       results.push(await buildOne(catalog, id, args, serverShimPath));

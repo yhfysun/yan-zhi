@@ -114,12 +114,13 @@
 - [x] **模板同步改自动发现**：`scripts/sync-plugin-templates.mjs` 删掉手维护 `ENTRIES`，改按模板文件里的 `generated:<id>` 标记发现，源码路径按 `catalog.backendEntry → plugins/<id>/index.ts → plugins/<id>.ts` 解析，常量名沿用区块内已有名字。**不做全量生成**：`ops-shell`(4280 行)/`shop-ops`(3205 行) 等全抄进来会让模板文件与后端产物 +约 700KB 且把全部内置插件变成源码分发出口（取舍见脚本头注释）。顺带把过期的 computer-use 模板同步成 host-bridge 写法（实测该模板已漂移）。
 - [x] 补充：导出源码**优先读真实源码**（dev 下永远导出当前文件），读不到才回落内嵌快照（打包版唯一来源）；一致性由 `apps/server/test/plugin-templates-sync.test.ts` 钉死（内嵌 === 磁盘，忘同步即红）。
 
-## P7 收尾
+## P7 收尾（2026-10-27 完成主体）
 
-- [ ] 插件目录互导 lint（plugins/<id>/ 之间禁 import）。
-- [ ] 全档打包冒烟 + 安装包内容清单断言。
-- [ ] CHANGELOG + 开发者文档（插件包规范/桥面白名单/构建器用法）。
-- [ ] （可选）skinSeries 并入 skins 插件评估；（可选）web 端 HTTP 装载。
+- [x] **插件目录互导 lint**：`apps/server/test/plugin-isolation.test.ts` —— `plugins/<dir>/**` 禁止跨目录 import，目录只能引用本插件 owner 前缀的根级模块（`sec-lab-tools → sec-lab-*` 合规）；`templates/` 是源码字符串容器不参与扫描。已用探针验证能抓违规。
+- [x] **全档安装包内容清单断言**：`scripts/verify-edition-contents.cjs` —— 逐档核对 builtin 目录集合 ≡ 预设选择集、选中插件 manifest 齐全、skins/assets 非空、**根下不得有文件**。首跑即发现在历史三档产物里各有 3 个 `__frontend-entry-*.mjs` 残留（旧构建器产物；构建器已改为每次构建前清理根下这类文件，本地 builtin 已清）。现网 exe 是修复前构建的，下次打包即清零。
+- [x] **CHANGELOG + 开发者文档**：`CHANGELOG.md` Unreleased Added 条目；`docs/plugin-package-spec.md`（包形态/manifest 字段/桥面白名单/构建与打包/安装规则/守门测试索引）。
+- [ ] （可选）skinSeries 并入 skins 插件评估（本期未动：双皮肤体系并存，评估无结论前不合并）。
+- [ ] （可选）web 端 HTTP 装载（预留 `pluginAssetUrl` HTTP 变体，未接线）。
 
 ---
 
@@ -164,6 +165,7 @@ node apps/desktop/scripts/build-plugins.mjs --all --with-frontend --out=apps/ser
 node apps/desktop/scripts/build-plugins.mjs --plugins=office-core,skins --out=apps/server/plugins/builtin  # 只构建选中（写 build/build-plugins.json）
 node apps/desktop/scripts/stage-plugins.mjs prune|restore|verify --plugins=office-core,skins   # 未选插件目录暂存/恢复/断言
 node scripts/verify-plugin-prune.cjs --plugins=office-core,skins [--dirs=apps/desktop/dist]     # 裁剪泄漏断言
+node scripts/verify-edition-contents.cjs [--editions=lite,basic,pro]                          # 打包后内容清单断言（目录集合/manifest/残留文件）
 node scripts/package.cjs desktop:lite --plugins=office-core,skins --dry-run                     # 先看选择集与排除项
 node scripts/select-modes.cjs --modes=office --plugins=office-core,skins                      # 生成表（未选插件视图也剔除）
 node scripts/package.cjs android --yes                                                # 出安卓 APK
