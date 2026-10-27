@@ -953,14 +953,47 @@ export const useChatStore = defineStore('chat', () => {
   const skipNextRecordVisit = ref(false);
 
 
+  /**
+   * 挂起卡按会话分桶（2026-10-27）。
+   *
+   * 反问 / 确认向导 / 两类授权卡此前都是**全局 ref**：A 会话的卡会原样渲染到当前查看的 B 会话里
+   * （用户看到别的任务的提问，甚至把回答投给错的任务）；并行会话各自提问时后一个还会直接覆盖
+   * 前一个的 Promise ⇒ 前一个任务永久挂住。规则同 plansByConv —— 卡归属发起它的会话，
+   * 只在那个会话的视图里出现，切走不销毁（切回来还能继续答）。
+   *
+   * 直接赋值（`store.pendingConfirmation = x`，老调用点与老测试）仍按「当前会话」写入。
+   */
+  function withPendingAt<T>(map: Record<string, T>, convId: string | undefined, value: T | null): Record<string, T> {
+    const key = convId || '';
+    if (value) return { ...map, [key]: value };
+    if (!(key in map)) return map;
+    const next = { ...map };
+    delete next[key];
+    return next;
+  }
+  function scopedPending<T extends object>() {
+    const byConv = ref<Record<string, T>>({});
+    const current = computed<T | null>({
+      get: () => byConv.value[currentConvId.value || ''] ?? null,
+      set: (v: T | null) => { byConv.value = withPendingAt(byConv.value, currentConvId.value, v); },
+    });
+    const setFor = (convId: string | undefined, v: T | null) => {
+      byConv.value = withPendingAt(byConv.value, convId, v);
+    };
+    return { byConv, current, setFor };
+  }
   // E12: 智能体反问弹窗 —— 等待用户回答的待处理问题（dispatchToolCall 中 await 此 Promise 以暂停 ReAct 循环）
-  const pendingQuestion = ref<PendingQuestion | null>(null);
+  const questionPending = scopedPending<PendingQuestion>();
+  const pendingQuestion = questionPending.current;
   // E12b: 多页用户确认向导 —— confirm_user 工具逐页收集选择/文字/补充说明
-  const pendingConfirmation = ref<PendingConfirmation | null>(null);
+  const confirmationPending = scopedPending<PendingConfirmation>();
+  const pendingConfirmation = confirmationPending.current;
   // 越界访问授权卡 —— 服务端 path-guard 判定越界后下发，用户点同意才放行（2026-10-01）
-  const pendingPathAuth = ref<PendingPathAuth | null>(null);
+  const pathAuthPending = scopedPending<PendingPathAuth>();
+  const pendingPathAuth = pathAuthPending.current;
   // 只读会话工具授权卡 —— 服务端只读权限闸命中写类工具后下发（2026-10-18 授权制）
-  const pendingToolAuth = ref<PendingToolAuth | null>(null);
+  const toolAuthPending = scopedPending<PendingToolAuth>();
+  const pendingToolAuth = toolAuthPending.current;
   // E12c: 模型平台配置弹窗 —— configure_model_platform 工具触发，等待用户填写并保存平台/模型
   const pendingPlatformConfig = ref<PendingPlatformConfig | null>(null);
   /**
@@ -1024,6 +1057,28 @@ export const useChatStore = defineStore('chat', () => {
       pendingQuestion.value = null;
       resolve(answer, supplement?.trim() || undefined);
     }
+  }
+  /**
+   * 任务终态（completed/aborted/error）或确认真实丢失时，收掉该会话的待答卡。
+   *
+   * ★ 为什么必须收（2026-10-27）：卡是「等一个永远不会再来的回答」的阻塞 UI。
+   *   任务被服务端 2 小时看门狗 / 服务重启 / 其它设备中止后，前端只收到终态事件，
+   *   没有任何本地 abort —— 卡会永久留在界面上，用户点了也只是把答案汇入已结束的循环。
+   *   同时，resolve 一次能让挂在该工具上的 ReAct 协程走完 finally，不留下永不 settle 的 Promise。
+   */
+  function dropPendingCards(convId: string, why = '[任务已结束，未作答]') {
+    if (!convId) return;
+    const q = questionPending.byConv.value[convId];
+    if (q) { questionPending.setFor(convId, null); q.resolve(why); }
+    const c = confirmationPending.byConv.value[convId];
+    if (c) {
+      confirmationPending.setFor(convId, null);
+      c.resolve({ cancelled: true, title: c.title, answers: c.answers, summary: '' });
+    }
+    const pa = pathAuthPending.byConv.value[convId];
+    if (pa) { pathAuthPending.setFor(convId, null); pa.resolve('deny'); }
+    const ta = toolAuthPending.byConv.value[convId];
+    if (ta) { toolAuthPending.setFor(convId, null); ta.resolve('deny'); }
   }
   /** 提交当前确认向导页；非最后一页时前进，最后一页汇总全部回答并恢复 ReAct 循环 */
   function submitPendingConfirmation(answer: string, supplement?: string) {
@@ -2190,16 +2245,17 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           }))
         : [];
       if (items.length === 0) return { ok: true, result: JSON.stringify({ decision: 'deny' }) };
-      const authSignal = abortControllers.get(currentConvId.value || '')?.signal;
+      const authConvId = ctx?.convId || currentConvId.value || '';
+      const authSignal = abortControllers.get(authConvId)?.signal;
       return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
         if (authSignal?.aborted) { resolve({ ok: false, msg: '用户已终止' }); return; }
         const onAuthAbort = () => {
           authSignal?.removeEventListener('abort', onAuthAbort);
-          pendingPathAuth.value = null;
+          pathAuthPending.setFor(authConvId, null);
           resolve({ ok: false, msg: '用户已终止' });
         };
         authSignal?.addEventListener('abort', onAuthAbort);
-        pendingPathAuth.value = {
+        pathAuthPending.setFor(authConvId, {
           toolName: String(raw.toolName || ''),
           isCommand: !!raw.isCommand,
           dangerWhy: String(raw.dangerWhy || '') || undefined,
@@ -2208,10 +2264,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           items,
           resolve: (decision) => {
             authSignal?.removeEventListener('abort', onAuthAbort);
-            pendingPathAuth.value = null;
+            pathAuthPending.setFor(authConvId, null);
             resolve({ ok: true, result: JSON.stringify({ decision }) });
           },
-        };
+        });
       });
     }
 
@@ -2221,24 +2277,25 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       const raw = (args || {}) as Record<string, unknown>;
       const toolName = String(raw.toolName || '');
       if (!toolName) return { ok: true, result: JSON.stringify({ decision: 'deny' }) };
-      const authSignal = abortControllers.get(currentConvId.value || '')?.signal;
+      const toolAuthConvId = ctx?.convId || currentConvId.value || '';
+      const authSignal = abortControllers.get(toolAuthConvId)?.signal;
       return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
         if (authSignal?.aborted) { resolve({ ok: false, msg: '用户已终止' }); return; }
         const onAuthAbort = () => {
           authSignal?.removeEventListener('abort', onAuthAbort);
-          pendingToolAuth.value = null;
+          toolAuthPending.setFor(toolAuthConvId, null);
           resolve({ ok: false, msg: '用户已终止' });
         };
         authSignal?.addEventListener('abort', onAuthAbort);
-        pendingToolAuth.value = {
+        toolAuthPending.setFor(toolAuthConvId, {
           toolName,
           argsPreview: String(raw.argsPreview || ''),
           resolve: (decision) => {
             authSignal?.removeEventListener('abort', onAuthAbort);
-            pendingToolAuth.value = null;
+            toolAuthPending.setFor(toolAuthConvId, null);
             resolve({ ok: true, result: JSON.stringify({ decision }) });
           },
-        };
+        });
       });
     }
 
@@ -2564,16 +2621,19 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       if (fullName === 'ask_user') {
         const q = String((args as Record<string, unknown>).question || '');
         if (!q) return { ok: false, msg: 'ask_user 缺少 question 参数' };
-        const askSignal = abortControllers.get(currentConvId.value || '')?.signal;
+        // 卡的归属与中止信号都取**发起该调用的会话**：用户可能已切到别的会话查看，
+        // 此时 currentConvId 不是本任务的会话（旧写法会挂错桶、并监听错会话的 abort）。
+        const askConvId = ctx?.convId || currentConvId.value || '';
+        const askSignal = abortControllers.get(askConvId)?.signal;
         return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
           if (askSignal?.aborted) { resolve({ ok: false, msg: '用户已终止' }); return; }
           const onAskAbort = () => {
             askSignal?.removeEventListener('abort', onAskAbort);
-            pendingQuestion.value = null;
+            questionPending.setFor(askConvId, null);
             resolve({ ok: false, msg: '用户已终止' });
           };
           askSignal?.addEventListener('abort', onAskAbort);
-          pendingQuestion.value = {
+          questionPending.setFor(askConvId, {
             question: q,
             options: Array.isArray((args as Record<string, unknown>).options)
               ? ((args as Record<string, unknown>).options as unknown[]).map(String)
@@ -2582,13 +2642,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             allowSupplement: (args as Record<string, unknown>).allowSupplement !== false,
             resolve: (answer: string, supplement?: string) => {
               askSignal?.removeEventListener('abort', onAskAbort);
-              pendingQuestion.value = null;
+              questionPending.setFor(askConvId, null);
               const result = supplement
                 ? `${answer}\n\n补充说明：${supplement}`
                 : answer;
               resolve({ ok: true, result });
             },
-          };
+          });
         });
       }
       // E12b: confirm_user —— 多页确认向导，逐页收集回答与补充说明
@@ -2611,26 +2671,27 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         if (pages.some((p) => !p.question.trim())) {
           return { ok: false, msg: 'confirm_user 每个 page 都必须包含 question' };
         }
-        const confirmSignal = abortControllers.get(currentConvId.value || '')?.signal;
+        const confirmConvId = ctx?.convId || currentConvId.value || '';
+        const confirmSignal = abortControllers.get(confirmConvId)?.signal;
         return await new Promise<{ ok: boolean; result?: unknown; msg?: string }>((resolve) => {
           if (confirmSignal?.aborted) { resolve({ ok: false, msg: '用户已终止' }); return; }
           const onConfirmAbort = () => {
             confirmSignal?.removeEventListener('abort', onConfirmAbort);
-            pendingConfirmation.value = null;
+            confirmationPending.setFor(confirmConvId, null);
             resolve({ ok: false, msg: '用户已终止' });
           };
           confirmSignal?.addEventListener('abort', onConfirmAbort);
-          pendingConfirmation.value = {
+          confirmationPending.setFor(confirmConvId, {
             title: String(rawArgs.title || '用户确认'),
             pages,
             index: 0,
             answers: [],
             resolve: (result) => {
               confirmSignal?.removeEventListener('abort', onConfirmAbort);
-              pendingConfirmation.value = null;
+              confirmationPending.setFor(confirmConvId, null);
               resolve({ ok: true, result });
             },
-          };
+          });
         });
       }
       // E12: task_plan —— 创建/替换任务计划，渲染进度卡片
@@ -3115,6 +3176,13 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             );
             break;
           }
+          case 'tool:idle': {
+            // 交互卡 30 分钟没人答：服务端已按「用户未作答」放行模型（不拒不杀），
+            // 因此这里只需收掉卡片 —— 模型会按提示把问题与选项写进回复，用户看到后直接输入框回答。
+            const mins = Math.round((Number(event.timeoutMs) || 0) / 60000);
+            dropPendingCards(convId, `[用户 ${mins} 分钟未作答，已把问题交回输入框]`);
+            break;
+          }
           case 'sub_agent:start': {
             if (event.parentToolCallId) runningToolCallIds.value.add(event.parentToolCallId);
             break;
@@ -3210,9 +3278,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           //   留着只是内存垃圾）。放在 markRunEnd 之前 —— 清状态不影响消息列表内容。
           // ★ 任务收尾清理执行面标记：避免残留在下一任务上（与 browserSteps / browserTaskConvs
           //   同族，本文件多处收尾都做同样的清理）。放在**三态共同出口**（completed/aborted/error）。
-          case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
-          case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
-          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw taskFinalError(event.error || '任务执行失败');
+          case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
+          case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
+          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw taskFinalError(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;
           case 'context:compacted': {
@@ -3352,12 +3420,19 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       if (signal.aborted) return;
       // 订阅正常结束 → 判定任务是否仍在运行（终态时 active 查询为空，直接收工）
       let stillRunning = false;
+      let knowGone = false;
       try {
         const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
-        stillRunning = !('error' in r) && Array.isArray(r.data)
-          && r.data.some((t: any) => t.id === taskId && t.status === 'running');
+        const answered = !('error' in r) && Array.isArray(r.data);
+        stillRunning = answered && r.data.some((t: any) => t.id === taskId && t.status === 'running');
+        // 只有「查询成功且明确没有在跑」才算任务真的结束 —— 查询失败时仍按结束退出订阅，
+        // 但不当成终态，否则一次网络抖动就会把还挂着的待答卡误收掉。
+        knowGone = answered && !stillRunning;
       } catch { /* 查询失败按结束了处理，避免无限重连 */ }
-      if (!stillRunning) return;
+      if (!stillRunning) {
+        if (knowGone) dropPendingCards(convId);
+        return;
+      }
       if (attempt >= MAX_RETRY) {
         console.warn(`[Chat] WS 重订超过 ${MAX_RETRY} 次仍未完成，放弃（任务仍在后端运行，可切走再切回恢复）`);
         return;
@@ -3398,6 +3473,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       return;
     }
     if (activeTasks.length === 0) {
+      // 服务端确认该会话没有活动任务 ⇒ 任何还挂着的待答卡都等不到回答了（服务重启/看门狗/别处中止）
+      dropPendingCards(convId);
       if (wasUiRunning) {
         // 服务端已无此会话的活动任务 → 前端运行态是残留，落结束态并清浏览器任务记账
         markRunEnd(convId, 'aborted');
@@ -3976,7 +4053,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,
     previewTabs, activeTabId, activeTab,
     openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,
-    pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion,
+    pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion, dropPendingCards,
     pendingPathAuth, submitPendingPathAuth,
     pendingToolAuth, submitPendingToolAuth,
     pendingPrefill, prefillInput,

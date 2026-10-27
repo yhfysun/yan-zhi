@@ -364,12 +364,32 @@ interface PendingToolCall {
    * 实测 10-14 单日 84 次流断连，重连是常态而非例外。
    */
   graceTimer?: ReturnType<typeof setTimeout>;
+  /** 交互卡的空闲上限（见 INTERACTIVE_IDLE_TIMEOUT_MS）：到点按"用户未作答"放行，不 reject。 */
+  idleTimer?: ReturnType<typeof setTimeout>;
   args?: unknown;
 }
 
-/** 交互类工具：暂停等用户回答，没有"超时"语义 —— 用户隔天回来回答也应该有效。
- *  免 2 分钟创建超时、免 15 秒断连宽限（宽限 reject 会把挂着的问题杀掉）。 */
+/**
+ * 交互类工具：暂停等用户回答。
+ * 免 2 分钟创建超时、免 15 秒断连宽限（宽限 reject 会把挂着的问题杀掉）。
+ *
+ * ★ 2026-10-27：**不再"无限等"** —— 见 INTERACTIVE_IDLE_TIMEOUT_MS。用户离开后任务不能
+ *   永远占着运行态；到点按"用户未作答"放行模型，让它把问题与选项落到回复里。
+ */
 const INTERACTIVE_TOOLS = new Set(['ask_user', 'confirm_user']);
+
+/**
+ * 交互卡（提问 / 多页确认 / 路径授权 / 工具授权）的**空闲上限**：30 分钟。
+ *
+ * 语义（用户 2026-10-27 拍板）：超过 30 分钟没人答 ⇒ 视为"用户此刻没在看"，不再挂住任务：
+ * · ask_user / confirm_user —— 以"用户未作答"结束本次交互，把**原问题与选项**作为工具结果
+ *   回给模型，并明确要求它停下、把问题与选项写进回复。用户看到后用输入框回答即可。
+ * · _path_authorize / _tool_authorize —— fail-closed，视为拒绝。
+ *
+ * 为什么计时放在服务端而不是前端：前端刷新/重连/换设备都会重置计时，只有服务端的挂起
+ * 状态是唯一稳定的时钟（它从 `requestedAt` 起算，重连不清）。
+ */
+export const INTERACTIVE_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * 危险工具：**每次执行前都要用户点确认**（2026-10-21 用户拍板）。
@@ -425,6 +445,7 @@ export function needsDangerConfirm(params: {
 function clearPendingTimers(pending: PendingToolCall): void {
   if (pending.timer) { clearTimeout(pending.timer); pending.timer = undefined; }
   if (pending.graceTimer) { clearTimeout(pending.graceTimer); pending.graceTimer = undefined; }
+  if (pending.idleTimer) { clearTimeout(pending.idleTimer); pending.idleTimer = undefined; }
 }
 
 interface LlmTask {
@@ -6045,6 +6066,81 @@ export async function onFrontendToolTimeout(
   pending.reject(new Error(why));
 }
 
+/**
+ * 交互卡空闲到点：用户 30 分钟没答，就不再让任务挂着。
+ *
+ * ★ 与 `onFrontendToolTimeout` 的区别：这里**不 reject**。用户没答不等于工具出错 ——
+ *   以错误继续会让模型把"超时"当成执行失败去重试或换方案；正确做法是把"用户此刻不在"
+ *   作为一次正常结果回给它，并明确要求它停下、把问题原样交回用户。
+ * ★ 事务顺序：先摘 pending 再 emit —— 前端收到事件会本地收卡并回传一次结果，
+ *   那条回传到达时 pending 已不存在，`resolveToolResult` 会静默忽略（不重复结算）。
+ */
+export async function onInteractiveIdleTimeout(
+  task: LlmTask,
+  toolName: string,
+  callId: string,
+  args: unknown,
+): Promise<void> {
+  const pending = task.pendingToolCalls.get(callId);
+  if (!pending) return; // 已经答过了（用户赶在到点前提交）
+  task.pendingToolCalls.delete(callId);
+  clearPendingTimers(pending);
+  syncPendingToolsJson(task);
+  logger.info(`[llm-task] 交互卡空闲 ${Math.round(INTERACTIVE_IDLE_TIMEOUT_MS / 60000)} 分钟未作答，放行模型 callId=${callId} tool=${toolName} conv=${task.conversationId}`);
+  try {
+    emit(task, {
+      type: 'tool:idle',
+      callId,
+      toolName,
+      conversationId: task.conversationId,
+      timeoutMs: INTERACTIVE_IDLE_TIMEOUT_MS,
+    });
+  } catch { /* 观测事件失败不影响放行 */ }
+  pending.resolve(buildIdleResult(toolName, args));
+}
+
+/** 把交互工具的入参整理成"问题 + 选项"清单（模型回复要原样转述给用户） */
+function describePendingAsk(args: unknown): string {
+  const a = (args || {}) as Record<string, unknown>;
+  const lines: string[] = [];
+  const title = typeof a.title === 'string' ? a.title.trim() : '';
+  if (title) lines.push(`标题：${title}`);
+  const push = (q: unknown, opts: unknown, desc?: unknown) => {
+    const question = String(q || '').trim();
+    if (question) lines.push(`问题：${question}`);
+    if (typeof desc === 'string' && desc.trim()) lines.push(`说明：${desc.trim()}`);
+    if (Array.isArray(opts) && opts.length) lines.push(`选项：${opts.map(String).join(' / ')}`);
+  };
+  if (Array.isArray(a.pages)) {
+    (a.pages as Record<string, unknown>[]).forEach((p, i) => {
+      lines.push(`【第 ${i + 1} 页】`);
+      push(p?.question, p?.options, p?.description);
+    });
+  } else {
+    push(a.question, a.options);
+  }
+  return lines.join('\n');
+}
+
+/** 空闲到点后回给模型的"工具结果"（导出供测试：这段文案直接决定模型会不会老实停下） */
+export function buildIdleResult(toolName: string, args: unknown): string {
+  // 授权卡必须保持机器可解析的形状（服务端 parsePathAuthResult / parseToolAuthResult 读 decision）
+  if (toolName === PATH_AUTH_TOOL || toolName === TOOL_AUTH_TOOL) {
+    return JSON.stringify({ decision: 'deny' });
+  }
+  const mins = Math.round(INTERACTIVE_IDLE_TIMEOUT_MS / 60000);
+  const detail = describePendingAsk(args) || '（问题内容缺失）';
+  return [
+    `[系统] 用户 ${mins} 分钟内未作答，本次交互已自动结束（用户可能暂时离开）。`,
+    '原问题与选项：',
+    detail,
+    '',
+    `现在请**立即停止**：不要再调用 ask_user / confirm_user，也不要自行替用户做选择或继续执行后续步骤。`,
+    '把上面的问题与选项原样写进你这一轮的回复，并说明"等你回答后我再继续"。',
+    '用户看到后会在输入框直接回答，届时按新指令继续即可。',
+  ].join('\n');
+}
+
 async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any, toolCallId: string, depth: number = 0, timeoutMsOverride?: number): Promise<string> {
   // 工具发起前的暂停边界：暂停中不发新工具（正在跑的前一个动作已在各自的 await 里自然跑完）
   await waitIfPaused(task);
@@ -6055,8 +6151,10 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
   return new Promise<string>((resolve, reject) => {
     const callId = 'tc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     const interactive = INTERACTIVE_TOOLS.has(toolName);
-    // 交互类工具不设超时（用户可能在"思考要不要确认"，隔天回来也要能继续答）
+    // 交互类工具不设创建超时（用户可能在"思考要不要确认"）。
     // ★ timeoutMsOverride === 0 → 显式要求不设超时（授权弹窗同性质）。
+    // ★ 2026-10-27：两者都另挂一个 **30 分钟空闲上限**（INTERACTIVE_IDLE_TIMEOUT_MS）——
+    //   到点不杀任务、也不无限挂住，而是按"用户未作答"放行模型（见 onInteractiveIdleTimeout）。
     const noTimeout = timeoutMsOverride === 0;
     // ★ P1（2026-10-09）：分档超时 —— browser_* 按慢/快档解析（含串行排队宽限），
     //   不再一刀切 2 分钟。见 resolveFrontendToolTimeout 注释（慢站/代理下误杀的真实来源）。
@@ -6066,7 +6164,10 @@ async function executeToolViaFrontend(task: LlmTask, toolName: string, args: any
     const timer = (interactive || noTimeout)
       ? undefined
       : setTimeout(() => { void onFrontendToolTimeout(task, toolName, callId, effectiveTimeout); }, effectiveTimeout);
-    task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, args });
+    const idleTimer = (interactive || noTimeout)
+      ? setTimeout(() => { void onInteractiveIdleTimeout(task, toolName, callId, args); }, INTERACTIVE_IDLE_TIMEOUT_MS)
+      : undefined;
+    task.pendingToolCalls.set(callId, { resolve, reject, toolName, callId, requestedAt: Date.now(), timer, idleTimer, args });
     syncPendingToolsJson(task);
     // 通知前端执行工具。
     // conversationId 必须随事件下发：多会话并行时前端要据此把工具路由到「发起它的那个会话」

@@ -69,6 +69,9 @@ import {
   BROWSER_FAST_TIMEOUT_MS,
   BROWSER_QUEUE_GRACE_MS,
   onFrontendToolTimeout,
+  onInteractiveIdleTimeout,
+  buildIdleResult,
+  INTERACTIVE_IDLE_TIMEOUT_MS,
   STREAM_TRUNCATE_MAX_RETRY,
   TRUNCATED_STREAM_NOTICE,
   isStreamUnterminated,
@@ -177,8 +180,81 @@ describe('P1b ★★★ 计划类工具直连化（服务端独占写入 + 前�
 
 });
 
-describe('P0 断流不静默', () => {
-  it('★ 定义了续写重试上限与可见提示文案', () => {
+describe('P1c 交互卡空闲上限（2026-10-27：30 分钟未作答放行模型，不无限挂住任务）', () => {
+  function probeTask(id: string) {
+    const settled: { ok?: string; err?: any } = {};
+    const task: any = { id, conversationId: 'conv-probe', pendingToolCalls: new Map(), events: [], subscribers: new Set(), userId: 'u', status: 'running' };
+    task.settle = settled;
+    return task;
+  }
+  function armPending(task: any, callId: string, toolName: string, args: unknown) {
+    const idleTimer = setTimeout(() => {}, 0);
+    clearTimeout(idleTimer);
+    task.pendingToolCalls.set(callId, {
+      toolName, callId, requestedAt: Date.now(), args, idleTimer,
+      resolve: (v: string) => { task.settle.ok = v; },
+      reject: (e: any) => { task.settle.err = e; },
+    });
+  }
+
+  it('★ 阈值是 30 分钟（过长等于没设，过短会误伤"正在想"的用户）', () => {
+    expect(INTERACTIVE_IDLE_TIMEOUT_MS).toBe(30 * 60 * 1000);
+  });
+
+  it('★★ 【真跑】ask_user 到点：**放行而非 reject**，把问题与选项交回模型并明确要求停下', async () => {
+    const task = probeTask('probe-ask-idle');
+    armPending(task, 'cq', 'ask_user', { question: '你要哪种报告格式？', options: ['HTML', 'Word', 'PDF'] });
+    await onInteractiveIdleTimeout(task, 'ask_user', 'cq', { question: '你要哪种报告格式？', options: ['HTML', 'Word', 'PDF'] });
+
+    expect(task.settle.err, '★ 用户没答不等于工具出错 —— reject 会让模型把超时当失败去重试/换方案').toBeUndefined();
+    expect(task.settle.ok).toBeTruthy();
+    expect(task.settle.ok).toMatch(/未作答/);
+    expect(task.settle.ok, '★ 丢掉原问题 → 用户看不到问的是什么').toMatch(/你要哪种报告格式/);
+    expect(task.settle.ok, '★ 丢掉选项 → 用户还得回头翻上下文才能选').toMatch(/HTML/);
+    expect(task.settle.ok).toMatch(/HTML \/ Word \/ PDF/);
+    expect(task.settle.ok, '★ 没让模型停下 → 它会继续自作主张往下做').toMatch(/立即停止/);
+    expect(task.settle.ok, '★ 没禁止重问 → 模型可能立刻又弹一次同款卡').toMatch(/不要再调用 ask_user/);
+    expect(task.pendingToolCalls.has('cq'), '★ 没摘掉 pending → 表里留幽灵条目').toBe(false);
+  });
+
+  it('★★ confirm_user 多页向导：逐页带上问题与选项', () => {
+    const text = buildIdleResult('confirm_user', {
+      title: '改写确认',
+      pages: [
+        { question: '目标读者？', options: ['男频', '女频'] },
+        { question: '要改几章？', description: '默认 3 章' },
+      ],
+    });
+    expect(text).toMatch(/改写确认/);
+    expect(text).toMatch(/第 1 页/);
+    expect(text).toMatch(/目标读者？/);
+    expect(text).toMatch(/男频 \/ 女频/);
+    expect(text).toMatch(/第 2 页/);
+    expect(text).toMatch(/默认 3 章/);
+  });
+
+  it('★★ 授权卡到点 fail-closed：回 JSON decision=deny（解析器只认这个形状）', () => {
+    expect(JSON.parse(buildIdleResult('_path_authorize', { toolName: 'cmd_exec' }))).toEqual({ decision: 'deny' });
+    expect(JSON.parse(buildIdleResult('_tool_authorize', { toolName: 'file_write' }))).toEqual({ decision: 'deny' });
+  });
+
+  it('★★ 【真跑】已经答过的卡到点不重复结算', async () => {
+    const task = probeTask('probe-ask-answered');
+    await onInteractiveIdleTimeout(task, 'ask_user', 'missing', { question: 'q' });
+    expect(task.settle.ok).toBeUndefined();
+    expect(task.settle.err).toBeUndefined();
+  });
+
+  it('★ 源码层：交互卡与授权卡都要挂空闲定时器，且清理时一并清掉（防回退成"无限等"）', () => {
+    expect(MGR_SRC, '★ 空闲上限定时器未挂').toMatch(/INTERACTIVE_IDLE_TIMEOUT_MS\)/);
+    expect(MGR_SRC, '★ 只给 interactive 挂、漏了授权卡（noTimeout 分支）')
+      .toMatch(/const idleTimer = \(interactive \|\| noTimeout\)/);
+    expect(MGR_SRC, '★ clearPendingTimers 未清 idleTimer → 答完后定时器还在跑，到点误放行')
+      .toMatch(/clearTimeout\(pending\.idleTimer\)/);
+  });
+});
+
+describe('P0 断流不静默', () => {  it('★ 定义了续写重试上限与可见提示文案', () => {
     expect(STREAM_TRUNCATE_MAX_RETRY).toBeGreaterThanOrEqual(1);
     expect(TRUNCATED_STREAM_NOTICE).toMatch(/中断/);
   });
