@@ -34,6 +34,8 @@
  * 状态放 WeakMap（key=task 对象）：任务结束对象被 GC，历史自动清零，无需手动清理。
  */
 
+import { scriptFuseKey } from './script-fuse.js';
+
 export const TOOL_HISTORY_WINDOW = 16;
 export const TOOL_DUP_LIMIT = 2;
 export const TOOL_CONSEC_LIMIT = 8;
@@ -76,6 +78,14 @@ export const FORCE_STOP_MARKER = '[FORCE_STOP]';
  *   阈值 3：正常任务偶发一次失败（瞬断/路径写错）不该被念；连续 3 次同工具失败才是死循环。
  */
 export const TOOL_FAIL_STREAK_LIMIT = 3;
+/**
+ * 连续失败到本阈值 → 返回 FORCE_STOP（2026-10-27 新增）。
+ *
+ * ★ 为什么（conv c79811d2）：抖音编辑页的 run_script 连续失败（含被语义熔断拦下）后，
+ *   模型仍在「换文案/换写法再试一次」。C 线 3 次只给提示，实测压不住；5 次仍未成功
+ *   说明该方法整体不可行，交给调用方终止内层循环、强制收尾。
+ */
+export const TOOL_FAIL_STREAK_HARD_LIMIT = 5;
 
 /** 每任务、每工具的**连续失败次数**（成功即清零） */
 const taskFailStreak = new WeakMap<object, Map<string, number>>();
@@ -102,6 +112,11 @@ export function noteToolOutcome(task: object, toolName: string, ok: boolean): st
   const n = (m.get(toolName) || 0) + 1;
   m.set(toolName, n);
   taskFailStreak.set(task, m);
+  if (n >= TOOL_FAIL_STREAK_HARD_LIMIT) {
+    return `${FORCE_STOP_MARKER} 工具 ${toolName} 已连续失败 ${n} 次（参数不同也算）。` +
+      '这条路整体不通，不是参数问题：立即停止所有工具调用，直接输出结论性汇报' +
+      '（已尝试什么 / 为什么不可行 / 建议下一步），不要再换写法重试。';
+  }
   if (n < TOOL_FAIL_STREAK_LIMIT) return null;
 
   const advice = toolName === 'file_edit' || toolName === 'file_write'
@@ -137,6 +152,16 @@ const taskBlockTotals = new WeakMap<object, Map<string, number>>();
 
 /** 归一化 key：工具名 + 排序后的参数 JSON（截断 600 字符，防超长脚本撑爆内存） */
 export function toolCallKey(toolName: string, args: unknown): string {
+  // ★ 2026-10-27：browser_run_script 用**语义指纹**而非完整脚本 —— 模型每次改一个字符/
+  //   一句 log 就能让"同参重复"永远命中不了（conv c79811d2 跑了 96 次）。只对破坏性脚本
+  //   启用（清空/重写富文本），只读脚本仍走完整 JSON。
+  if (toolName === 'browser_run_script' && args && typeof args === 'object') {
+    const script = (args as Record<string, unknown>).script;
+    if (typeof script === 'string') {
+      const key = scriptFuseKey(script);
+      if (key) return `${toolName}::fuse::${key.coarse}::${key.exact}`;
+    }
+  }
   let s = '';
   try {
     const o = (args && typeof args === 'object') ? args as Record<string, unknown> : { v: args };

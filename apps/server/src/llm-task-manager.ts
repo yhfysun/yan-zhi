@@ -5810,7 +5810,8 @@ async function executeTool(
       const r = await BrowserRunRecipeTool.run(args, api);
       let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
       const nudge = noteToolOutcome(task, toolName, (r as any)?.isError !== true);
-      if (nudge) text = `${text}\n\n${nudge}`;
+      // 连续失败的硬停文案必须放最前面：主循环用 startsWith(FORCE_STOP_MARKER) 判定
+      if (nudge) text = nudge.startsWith(FORCE_STOP_MARKER) ? `${nudge}\n\n${text}` : `${text}\n\n${nudge}`;
       return text;
     }
     if (exec === 'bridge') {
@@ -5946,7 +5947,8 @@ async function executeTool(
     const failedResult = (r as any)?.isError === true
       || /^(Error|工具执行失败)/.test(String(text).trim());
     const failNudge = noteToolOutcome(task, toolName, !failedResult);
-    if (failNudge) text = `${text}\n\n${failNudge}`;
+    // 连续失败的硬停文案必须放最前面：主循环用 startsWith(FORCE_STOP_MARKER) 判定
+    if (failNudge) text = failNudge.startsWith(FORCE_STOP_MARKER) ? `${failNudge}\n\n${text}` : `${text}\n\n${failNudge}`;
     const meta = (r as any)?._meta as {
       path?: string;
       beforeContent?: string | null;

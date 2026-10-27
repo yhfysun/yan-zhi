@@ -11,8 +11,10 @@ import {
   DOUYIN_PUBLISH_RECIPE,
   DOUYIN_POST_COMMENT_RECIPE,
   DOUYIN_SET_COVER_RECIPE,
+  DOUYIN_INSERT_TOPICS_RECIPE,
   getRecipe,
   listRecipes,
+  parseTopicList,
   runRecipe,
   type RecipeApi,
 } from './recipes';
@@ -359,5 +361,83 @@ describe('③ 系列任务首集必先建合集（2026-10-23）', () => {
     expect(res.ok).toBe(true);
     expect(res.submitted).toBe(true);
     expect(res.verified).toBe(true);
+  });
+});
+
+describe('⑤ 话题 chip 配方（2026-10-27，替代反复清空重填）', () => {
+  function makeTopicApi(scriptResult: any) {
+    const calls: Array<{ action: string; args: any }> = [];
+    const api: RecipeApi = {
+      async navigate(url: string) {
+        calls.push({ action: 'navigate', args: { url } });
+        return { ok: true };
+      },
+      async action(action: string, args: Record<string, unknown>) {
+        calls.push({ action, args });
+        if (action === 'get_page_content' || action === 'get_visible_text') {
+          return { text: '', url: 'https://creator.douyin.com/creator-micro/content/post/video?mid=1', title: '', formFields: [] };
+        }
+        if (action === 'run_script') return { result: JSON.stringify(scriptResult) };
+        return {};
+      },
+    };
+    return { api, calls };
+  }
+
+  it('话题列表支持 JSON 数组 / 空格 / 逗号 / 顿号，并去掉 # 前缀与重复', () => {
+    expect(parseTopicList('["周报","#Excel技巧","周报"]')).toEqual(['周报', 'Excel技巧']);
+    expect(parseTopicList('#周报，Excel技巧、职场 打工人')).toEqual(['周报', 'Excel技巧', '职场', '打工人']);
+    expect(parseTopicList('')).toEqual([]);
+  });
+
+  it('配方已注册', () => {
+    expect(listRecipes()).toContain('douyin-insert-topics');
+    expect(getRecipe('douyin-insert-topics')).toBe(DOUYIN_INSERT_TOPICS_RECIPE);
+  });
+
+  it('一次 run_script 完成：脚本里带话题与下拉选择器，不整段清空', async () => {
+    const { api, calls } = makeTopicApi({
+      ok: true, added: ['周报', 'Excel技巧'], skipped: [], failed: [], leftover: [], chipCount: 2, chips: ['#周报', '#Excel技巧'],
+    });
+    const res = await runRecipe(DOUYIN_INSERT_TOPICS_RECIPE, {
+      editUrl: 'https://creator.douyin.com/creator-micro/content/post/video?mid=1&enter_from=edit_item',
+      topics: '["周报","Excel技巧"]',
+    }, api);
+    expect(res.ok).toBe(true);
+    const scripts = calls.filter((c) => c.action === 'run_script');
+    expect(scripts).toHaveLength(1);
+    const script = String((scripts[0].args as any).script);
+    expect(script).toContain('"周报"');
+    expect(script).toContain('mention-suggest');
+    expect(script).toContain('data-mention');
+    // 只替换目标 token（findRange），不做"整段选中再删"
+    expect(script).toContain('findRange');
+    expect(script).not.toContain("selectNodeContents(ed); document.execCommand('delete')");
+    expect(res.steps.some((s) => s.step === 'insertTopic' && s.ok)).toBe(true);
+  });
+
+  it('已有 chip 的话题跳过（幂等提示）', async () => {
+    const { api } = makeTopicApi({
+      ok: true, added: [], skipped: ['周报'], failed: [], leftover: [], chipCount: 1, chips: ['#周报'],
+    });
+    const res = await runRecipe(DOUYIN_INSERT_TOPICS_RECIPE, {
+      editUrl: 'https://creator.douyin.com/creator-micro/content/post/video?mid=1',
+      topics: '周报',
+    }, api);
+    expect(res.ok).toBe(true);
+    expect(JSON.stringify(res.steps)).toContain('跳过 1 个');
+  });
+
+  it('下拉未出现/未生成 chip → 立即失败，并明确禁止保存', async () => {
+    const { api } = makeTopicApi({
+      ok: false, added: [], skipped: [], failed: [{ topic: '周报', reason: '话题联想下拉未出现' }], leftover: [], chipCount: 0, chips: [],
+    });
+    const res = await runRecipe(DOUYIN_INSERT_TOPICS_RECIPE, {
+      editUrl: 'https://creator.douyin.com/creator-micro/content/post/video?mid=1',
+      topics: '周报',
+    }, api);
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('不要点保存');
+    expect(res.error).toContain('话题联想下拉未出现');
   });
 });

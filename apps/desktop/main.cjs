@@ -43,13 +43,16 @@ let mainWindow = null;
  *   窗口移出屏幕但不最小化时：visibility=visible、rAF 62、定时器正常、capturePage 正常。
  */
 let dockedOffscreen = null; // { x, y, width, height, maximized }
-/** 最小化确认弹窗是否已弹出（防连点弹多个；2026-10-23） */
-let minimizePromptOpen = false;
-/** 用户已明确选「仍然最小化」：放行这一次 minimize 事件，别又被自动停靠改回去 */
-let allowRealMinimizeOnce = false;
 /** 最近一次 agent 浏览器动作时间：只在"确实有任务在跑"时启用后台停靠 */
 let lastBrowserActionAt = 0;
-const BACKGROUND_DOCK_IDLE_MS = 10 * 60 * 1000;
+/**
+ * agent 动作的"仍在自动化"宽限（2026-10-27，用户实报「pageAgent 停止了，页面开着没问题，
+ * 但最小化不能还有提醒」）：动作发起后这段时间内仍按"正在操作"算，用于覆盖模型两次动作之间的
+ * 决策间隔。原值为 10 分钟 —— pageAgent 早就收工、主任务只在等模型/跑别的工具，最小化仍弹
+ * 「浏览器任务运行中」，与用户在面板上看到的"输入锁已解开 / 光标已收回"自相矛盾。
+ * ★ 与渲染层 `BROWSER_LIVE_GRACE_MS` 同值：三条 UI 判据同一口径。
+ */
+const BROWSER_ACTION_GRACE_MS = 45 * 1000;
 /** 托盘菜单刷新钩子（createTray 注册；后台停靠/恢复时调用） */
 let refreshTrayMenu = () => {};
 let extensionManager = null;
@@ -353,16 +356,20 @@ function hasLiveBrowserPage() {
   return allGuestWebContents().length > 0;
 }
 
-/** 最近 10 分钟内有 agent 浏览器动作 **且** 仍有页面在渲染 → 认为有任务在跑（决定是否值得后台停靠）
+/** 现在是否**真的在自动化**（决定最小化要不要问、要不要后台停靠）
  *
- * ★ 2026-10-26：此前只按时间窗判定 —— 只要 10 分钟内有过动作，哪怕预览页/浏览器面板
- *   早就关了（零 guest、无页面可暂停），最小化仍弹「浏览器任务运行中」。现在补上
- *   hasLiveBrowserPage()：没页面就照普通最小化走。任务随后才开页的场景由
- *   runBrowserAction 里的「动作到达时补停靠」兜底（见该函数 convId 分支）。
+ * 判据（2026-10-27 收紧）：① 必须有存活页面；② 有动作正在执行（tabActionBusy，最长 8 分钟）
+ *   **或** 动作刚发起（BROWSER_ACTION_GRACE_MS 内）。
+ * ★ 为什么不再用「10 分钟内有过动作」：那是"最近来过浏览器"的代理信号，不是"此刻在自动化"。
+ *   实测（2026-10-27 17:21 会话）：pageAgent 17:21:14 收工后主任务一直等模型，最小化仍弹
+ *   「正在自动化的网页会暂停」—— 用户明确要求这种时候不能有提醒。
+ * ★ 有页面但没人操作 ⇒ 普通最小化；后续动作到达时 `runBrowserAction` 的"动作到达补停靠"
+ *   会把窗口移出屏幕，自动化不受影响。
  */
 function browserWorkInProgress() {
-  if (!(lastBrowserActionAt > 0 && Date.now() - lastBrowserActionAt < BACKGROUND_DOCK_IDLE_MS)) return false;
-  return hasLiveBrowserPage();
+  if (!hasLiveBrowserPage()) return false;
+  if (tabActionBusy.size > 0) return true;
+  return lastBrowserActionAt > 0 && Date.now() - lastBrowserActionAt < BROWSER_ACTION_GRACE_MS;
 }
 
 /**
@@ -1228,8 +1235,6 @@ function createWindow() {
   // 最小化：有浏览器任务时改为"后台停靠"（窗口移出屏幕）——真最小化会让 visibilityState
   // 恒为 hidden，creator.douyin.com 等微前端会停在"加载中"不挂载（实测见 experiments/bg-runtime）。
   mainWindow.on('minimize', () => {
-    // 用户在确认框里明确选了「仍然最小化」→ 尊重这一次，不改成停靠
-    if (allowRealMinimizeOnce) { allowRealMinimizeOnce = false; applyGuestThrottling(); return; }
     // 已停靠时再点任务栏图标 = 想把它叫回来（停靠态窗口本身是"可见但移出屏幕"，任务栏仍有点）
     if (dockedOffscreen) { leaveBackgroundDock(); return; }
     if (browserWorkInProgress() && enterBackgroundDock()) return;
@@ -2015,32 +2020,15 @@ function childUrl(hashRoute) {
 ipcMain.on('window-minimize', (event) => {
   const w = winOf(event);
   if (!w) return;
-  // 没有浏览器任务在跑 → 就是普通最小化（用户预期优先）
+  // 没有 agent 在自动化 → 就是普通最小化（用户预期优先）
   if (w !== mainWindow || !browserWorkInProgress()) { w.minimize(); return; }
-  // 已停靠：按钮不可见，但兜底成「叫回前台」，避免再走一遍确认
+  // 已停靠：按钮不可见，但兜底成「叫回前台」
   if (dockedOffscreen) { leaveBackgroundDock(); return; }
-  if (minimizePromptOpen) return; // 连点不弹第二个窗
-  // ★ 2026-10-23 用户拍板：任务在跑时**先问**，不静默改行为，也不硬拦。
-  //   真最小化会让 visibilityState=hidden，抖音创作者页那类微前端会停在"加载中"。
-  minimizePromptOpen = true;
-  void dialog.showMessageBox(w, {
-    type: 'question',
-    title: '浏览器任务运行中',
-    message: '现在最小化，正在自动化的网页会暂停（页面可能停在"加载中"）。',
-    detail: '「后台运行」：窗口移到屏幕外，任务照常跑，点任务栏图标即可回来。\n「仍然最小化」：正常最小化到任务栏，网页可能停摆。',
-    buttons: ['后台运行', '仍然最小化', '取消'],
-    defaultId: 0,
-    cancelId: 2,
-    noLink: true,
-  }).then(({ response }) => {
-    minimizePromptOpen = false;
-    if (response === 0) enterBackgroundDock();
-    else if (response === 1) {
-      // 用户执意最小化：放行本次 minimize 事件，否则会被自动停靠逻辑改回"移出屏幕"
-      allowRealMinimizeOnce = true;
-      try { w.minimize(); } catch { /* 已销毁 */ }
-    }
-  }).catch(() => { minimizePromptOpen = false; });
+  // ★ 2026-10-27 用户拍板：**最小化不再弹任何确认框**（原先是「后台运行 / 仍然最小化 / 取消」三选一，
+  //   用户实报「pageAgent 都停了最小化还有提醒」「最小化不能有提醒」）。
+  //   有 agent 在自动化 → 直接后台停靠：窗口移出屏幕、页面继续渲染、任务栏按钮保留，点一下即回来；
+  //   真最小化只会让 visibilityState=hidden，抖音创作者页那类微前端会停在"加载中"，所以不真最小化。
+  if (!enterBackgroundDock()) { try { w.minimize(); } catch { /* 已销毁 */ } }
 });
 ipcMain.on('window-maximize', (event) => {
   const w = winOf(event);
@@ -4795,6 +4783,22 @@ const tabActionChains = new Map();
 const tabActionBusy = new Set();
 
 /**
+ * ★ 2026-10-27（用户实报「pageAgent 停止了，页面打开着，最小化还弹浏览器任务运行中」）：
+ * 渲染层面板按**它自己那套 45s 空闲判据**（与输入锁/编号层同源，见 BrowserPanel 的
+ * `browserIdleNow`）认定 pageAgent 已收工后，主动通知这里清掉"最近有动作"的记账。
+ *
+ * 为什么需要这条通道：`browserWorkInProgress()` 只能看到"10 分钟内有过动作"，看不到
+ * "任务还在等模型但浏览器早已收工"——于是最小化仍弹「正在自动化的网页会暂停」。
+ * 清的是什么：只清 `lastBrowserActionAt`（把"最近有动作"归零），不动 tab/页面本身
+ * （页面保留是 2026-10-12 的产品决定：由智能体自己关）。
+ * 兜底：真有动作在途时（tabActionBusy 非空）不清 —— 那一刻确实还在自动化。
+ */
+ipcMain.on('browserView:agentIdle', () => {
+  if (tabActionBusy.size > 0) return;
+  lastBrowserActionAt = 0;
+});
+
+/**
  * 截图前临时点亮非激活 webview。
  * 非激活 tab 默认 visibility:hidden（让 Chromium 判定页面隐藏、停掉 rAF/降频），
  * 但隐藏后没有合成 surface，capturePage 会失败 ⇒ 截图前临时可见，截完恢复。
@@ -4812,6 +4816,105 @@ async function revealWebviewForCapture(tabId) {
     try { mainWindow.webContents.send('browser:wv:captureVisible', tabId, false); } catch { /* ignore */ }
   };
 }
+
+/**
+ * run_script 语义熔断（2026-10-27，P0）：按"编辑目标"而不是完整脚本计数。
+ *
+ * 现场（conv c79811d2，抖音编辑页）：模型为了把纯文本话题变成 chip，反复写
+ * 「清空末行 → insertText #周报 → 回读 chip」的脚本。脚本每次只改一个字符/一句
+ * sleep，tool-loop-guard 的"参数完全一致"永远命中不了；页面 URL 加个 &t=2 就能把
+ * 按 href 计数的 scriptGateCheck 清零 ⇒ 一小时内 96 次 run_script、同一段话题被
+ * 反复擦除重写。
+ *
+ * 判据：只对**破坏性脚本**（清空/整段改写）计数，抽其选择器目标 + 文本载荷做指纹：
+ *   · 同目标 + 同载荷：第 2 次即拒绝（同一件事写两遍，必是没收敛）；
+ *   · 同目标 + 不同载荷：第 5 次拒绝（换着话题继续刷）。
+ * 只读脚本（无 selectNodeContents / delete / textContent 赋值等）完全不参与。
+ * URL 归一化会去掉 t/_t/ts/timestamp/_ 这类缓存参数，&t=2 不再能重置计数。
+ *
+ * ★ 本段用哨兵包裹，测试从 main.cjs 抽取后真跑（见 test/script-semantic-fuse.test.cjs）。
+ */
+// ===YZ-SCRIPT-FUSE-START===
+const YZ_SCRIPT_FUSE_EXACT_LIMIT = 2;
+const YZ_SCRIPT_FUSE_COARSE_LIMIT = 4;
+const YZ_SCRIPT_FUSE_TTL_MS = 30 * 60 * 1000;
+
+function yzFuseNormUrl(href) {
+  try {
+    const u = new URL(String(href || ''));
+    for (const k of ['t', '_t', 'ts', 'timestamp', '_']) u.searchParams.delete(k);
+    u.hash = '';
+    return u.origin + u.pathname + (u.search || '');
+  } catch {
+    return String(href || '').replace(/([?&])(t|_t|ts|timestamp|_)=[^&]*/g, '').replace(/#.*$/, '');
+  }
+}
+
+function yzFuseNormText(s) {
+  return String(s == null ? '' : s).replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function yzScriptFuseKey(script) {
+  const s = String(script || '');
+  // ★ 只把**真正删除/整段赋值**算作破坏性动作：selectNodeContents 本身只是建 Range，
+  //   配方用它定位光标（见 douyin-insert-topics），不能因此被判成"清空"。
+  const destructive = /deleteContents|execCommand\(\s*['"](?:delete|selectAll)|\.textContent\s*=|\.innerHTML\s*=|removeChild\s*\(|\.value\s*=\s*['"]['"]/i.test(s);
+  if (!destructive) return null;
+  const literals = [...s.matchAll(/(['"`])((?:\\.|(?!\1)[^\\\n]){2,160})\1/g)].map((m) => yzFuseNormText(m[2]));
+  // 选择器判定：含中文的字面量是**内容**（如 '#周报'），不是选择器。
+  const isSelector = (t) => {
+    if (!t) return false;
+    if (/[一-龥]/.test(t) && !/contenteditable|data-|aria-/i.test(t)) return false;
+    return /^[.#\[]/.test(t)
+      || /^(div|span|input|textarea|button|form|p|li|ul|section|a)\b/i.test(t)
+      || /contenteditable|data-|aria-|role=/i.test(t);
+  };
+  const targets = [...new Set(literals.filter(isSelector))].sort();
+  // 载荷只收"像被填进去的内容"的短字面量；长日志文案/含符号的表达式不参与，
+  // 否则同一件事每次换个 log 就把指纹冲散了。
+  const isPayload = (t) => !!t && !isSelector(t) && t.length <= 20 && !/[=(){}\[\];<>]/.test(t);
+  const payload = [...new Set(literals.filter(isPayload))].sort();
+  const coarse = targets.join('|');
+  return { coarse, exact: coarse + '::' + payload.join('|') };
+}
+
+/**
+ * @returns {{blocked:boolean, exact?:number, coarse?:number, message?:string}}
+ * state 由调用方持有（Map），测试可注入；命中后仍继续累加，便于错误文案给出真实次数。
+ */
+function yzScriptFuseCheck(script, href, state, now) {
+  const key = yzScriptFuseKey(script);
+  if (!key) return { blocked: false };
+  const page = yzFuseNormUrl(href);
+  const st = state || new Map();
+  const stamp = Number(now) || Date.now();
+  for (const [k, v] of st) if (stamp - v.at > YZ_SCRIPT_FUSE_TTL_MS) st.delete(k);
+  const exactKey = 'e|' + page + '|' + key.exact;
+  const coarseKey = 'c|' + page + '|' + key.coarse;
+  const e = st.get(exactKey) || { n: 0, at: stamp };
+  e.n += 1; e.at = stamp; st.set(exactKey, e);
+  const c = st.get(coarseKey) || { n: 0, at: stamp };
+  c.n += 1; c.at = stamp; st.set(coarseKey, c);
+  if (e.n >= YZ_SCRIPT_FUSE_EXACT_LIMIT) {
+    return {
+      blocked: true, exact: e.n, coarse: c.n,
+      message: `同一编辑目标已用脚本重写 ${e.n} 次（清空/重填同一段内容），判定为不收敛。`
+        + '停止继续改写：改用固定的站点配方（如 browser_run_recipe douyin-insert-topics），'
+        + '或先 browser_get_page_content 读一次现状再汇报。反复清空会让富文本编辑器的内部状态与 DOM 不同步，越写越坏。',
+    };
+  }
+  if (c.n >= YZ_SCRIPT_FUSE_COARSE_LIMIT) {
+    return {
+      blocked: true, exact: e.n, coarse: c.n,
+      message: `同一编辑目标已被脚本改写 ${c.n} 次（同目标换了不同文案）。`
+        + '这说明该路径整体不通，不是文案问题：停止换文案重试，改用配方或直接汇报已核实的事实与下一步。',
+    };
+  }
+  return { blocked: false, exact: e.n, coarse: c.n };
+}
+// ===YZ-SCRIPT-FUSE-END===
+/** 语义熔断计数（进程内，按"页面 + 编辑目标"聚合；随进程重启清空） */
+const yzScriptFuseState = new Map();
 
 /**
  * run_script 熔断计数（2026-10-24，P2）：按页面 URL 累计连续脚本调用次数。
@@ -7018,6 +7121,31 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         return { error: '无法前进' };
       }
       case 'reload': {
+        // ★ 2026-10-27：reload 此前直接 wc.reload()，是「清空已填表单」唯一没有校验的入口
+        //   （navigate 的同 URL + force 已被拦，见 :5726）。判据保持一致：页面上还有未提交的
+        //   已填字段就拒绝，确需放弃必须显式传 force。
+        if (args.force !== true) {
+          const filled = await wc.executeJavaScript(`(function(){
+            var els = document.querySelectorAll('input, textarea, [contenteditable="true"]');
+            var n = 0, sample = [];
+            for (var i = 0; i < els.length; i++) {
+              var el = els[i];
+              if (el.readOnly === true || el.disabled === true) continue;
+              var v = el.isContentEditable ? (el.innerText || '') : (el.value || '');
+              if (!String(v).trim()) continue;
+              n++;
+              if (sample.length < 3) sample.push(String(el.getAttribute('placeholder') || el.tagName).slice(0, 20));
+            }
+            return { n: n, sample: sample };
+          })()`).catch(() => null);
+          if (filled && filled.n > 0) {
+            return {
+              error: `拒绝刷新：当前页面上还有 ${filled.n} 个已填写的字段（${filled.sample.join(' / ')}）。`
+                + '刷新会把它们清空，这正是"填好了又被重填"的成因。先提交或读回确认；'
+                + '确需放弃这些内容时，向用户确认后再传 force:true。',
+            };
+          }
+        }
         wc.reload(); return { success: true };
       }
       case 'get_url': {
@@ -7369,6 +7497,16 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         if (!_wrapped && /\breturn\b/.test(_bare)) {
           script = `(() => { ${script}\n})()`;
           _autoWrapped = true;
+        }
+        // ★ P0 语义熔断（2026-10-27）：同目标反复"清空+重填"时，脚本每次微调也拦得住。
+        //   放在 URL 计数熔断之前 —— 已判定不收敛的脚本不应再消耗/重置次数。
+        const scriptFuse = yzScriptFuseCheck(
+          script,
+          (typeof wc.getURL === 'function' ? wc.getURL() : '') || '',
+          yzScriptFuseState,
+        );
+        if (scriptFuse.blocked) {
+          return { error: scriptFuse.message, code: 'script_semantic_loop' };
         }
         // ★ P2 脚本熔断（2026-10-24，实现见 scriptGateCheck）：8 次警告、12 次拒绝
         const scriptGate = await scriptGateCheck(wc);

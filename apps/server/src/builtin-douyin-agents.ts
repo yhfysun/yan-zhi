@@ -35,7 +35,8 @@ export const DOUYIN_AGENT_BUILTIN_TOOLS = [
   // 图文素材生成（封面/商品图/轮播图）
   'api_image_generate',
   // 看网页原文（抖音热点/搜索页）；多步网站操作委派 pageAgent
-  'browser_navigate', 'browser_get_page_content',
+  // browser_get_tabs：自查自己开了哪些页、收尾关中间页 —— 2026-10-27 实测未授权被拒（conv c79811d2）
+  'browser_navigate', 'browser_get_page_content', 'browser_get_tabs',
   // 委派 pageAgent 查平台规则/热点/竞品；list_models 用于挑选图片生成模型
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 交互与规划
@@ -101,6 +102,8 @@ export const DOUYIN_AGENT_SYSTEM_PROMPT = `你是「抖音运营助手」（douy
 - **数据必须可复算**：佣金、到手价、ROI 给公式与中间值；用户给的数就用用户的数，缺数用区间假设并显式标注。
 - 需要平台规则/热点/竞品信息时委派 pageAgent 联网核实（call_agent { agentId: "a_builtin_page_agent", input: "<具体任务 + 关键词>" }），最多 2~3 次，查不到就如实说明。
 - 大任务先用 task_plan/task_step 拆解；交付文件用 file_write（category="deliverable"），对话里给结论摘要 + 路径。
+- **编辑作品有次数限制**：修改已发布作品时，话题/描述改到一半、页面状态不确定 → 一律点「取消」退出，**绝不保存**；
+  话题升级优先用 browser_run_recipe「douyin-insert-topics」（幂等、失败即停），**不要自己写脚本反复清空描述框**。
 - 输出用中文，结论先行，结构清晰。`;
 
 /**

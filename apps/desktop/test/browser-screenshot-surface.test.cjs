@@ -81,7 +81,10 @@ describe('截图分支：不可见时快速失败 + 两种成因措辞分开', (
   });
 
   test('★ 有"面板不可见 → 直接失败"的前置判断，且在 capturePage 之前', () => {
-    const guardIdx = body.indexOf('!webviewPanelVisible');
+    // ★ 2026-10-27：闸门已从裸 `!webviewPanelVisible` 换成 `panelReallyHidden(wc)`
+    //   （2026-10-26：全局缓存会被别的窗口的 hide() 置假且永不回真 → "面板开着却拒截图"）。
+    //   用例此前没跟上，钉的是旧写法；代码本身没退化。
+    const guardIdx = body.indexOf('panelReallyHidden(wc)');
     const captureIdx = body.indexOf('wc.capturePage()');
     assert.ok(guardIdx > -1, '★ 缺面板可见性前置判断 —— 否则又回到"白等 8s 再抛同一句话"');
     assert.ok(captureIdx > -1, '未找到 capturePage 调用（改名后本测试需同步）');
@@ -89,9 +92,9 @@ describe('截图分支：不可见时快速失败 + 两种成因措辞分开', (
   });
 
   test('★ 面板收起与窗口被遮挡的措辞必须区分（合并成一句就无人能定位）', () => {
-    const guardIdx = body.indexOf('!webviewPanelVisible');
+    const guardIdx = body.indexOf('panelReallyHidden(wc)');
     const guardTail = body.slice(guardIdx, guardIdx + 700);
-    assert.match(guardTail, /面板/, '面板不可见那条要说"面板"收起，而不是笼统说"页面不可见"');
+    assert.match(guardTail, /被收起/, '面板不可见那条要写明"面板/浏览器被收起"，而不是笼统说"页面不可见"');
     const throwIdx = body.indexOf('截图不可用：应用窗口被其他窗口遮挡或最小化');
     assert.ok(throwIdx > -1, '★ 面板可见仍失败时，措辞应写明"窗口被遮挡或最小化"，与面板收起区分开');
   });

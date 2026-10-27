@@ -46,7 +46,26 @@ export type RecipeStep =
   /** 字段清单来自参数里的 JSON（通用填表配方用）：支持备用选择器 + 回读核验 */
   | { kind: 'fillFromJson'; param: string }
   | { kind: 'clickText'; texts: string[]; optional?: boolean; when?: RecipeWhen; failHint?: string }
-  | { kind: 'waitText'; texts: string[]; timeoutMs?: number; optional?: boolean; when?: RecipeWhen; failHint?: string };
+  | { kind: 'waitText'; texts: string[]; timeoutMs?: number; optional?: boolean; when?: RecipeWhen; failHint?: string }
+  /**
+   * 把描述里的纯文本话题升级为真话题 chip（2026-10-27，P1）。
+   *
+   * 现场（conv c79811d2）：抖音编辑页的下拉项只有 onClick、且会被 React 重渲染，
+   * 模型现场编排"清空末行→写 #话题→回读 chip"两小时未收敛。这里把已验证可行的
+   * 动作固化成一条脚本：定位编辑器 → 找纯文本 token（没有就追加到末尾）→ 选中它
+   * → insertText 触发联想 → 下拉项出现后**同一 tick 取坐标派发点击** → 校验 chip。
+   * 幂等：已有 chip 的话题直接跳过；只替换目标 token，不清空整段。
+   */
+  | {
+    kind: 'insertTopic';
+    topicsParam: string;
+    editorSelector: string;
+    editorSelectors?: string[];
+    dropdownSelector?: string;
+    dropdownSelectors?: string[];
+    itemSelector?: string;
+    chipSelector?: string;
+  };
 
 export interface PublishRecipe {
   id: string;
@@ -243,6 +262,151 @@ async function runFill(api: RecipeApi, fields: FillFieldDef[]): Promise<string> 
   throw new Error(`填写失败：备用选择器已用尽（${missing.join('；') || '元素未找到'}）`);
 }
 
+/** 话题列表解析：JSON 数组 / 空格、逗号、顿号、换行分隔；统一去掉 # 前缀 */
+export function parseTopicList(raw: unknown): string[] {
+  let list: unknown = raw;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (s.startsWith('[')) {
+      try { list = JSON.parse(s); } catch { list = null; }
+    }
+    if (!Array.isArray(list)) list = s.split(/[\s,，、]+/);
+  }
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.map((t) => String(t ?? '').trim().replace(/^#+/, '')).filter(Boolean))];
+}
+
+/**
+ * 生成"插入话题 chip"的页面脚本（固定模板，不接受模型现场改写）。
+ * 已验证的交互路径：选中纯文本 token（没有就追加到末尾）→ insertText 触发联想
+ * → 下拉项出现后**同一 tick** 取坐标并派发鼠标事件（React 重渲染前完成）
+ * → 校验 chip 是否生成。只替换目标 token，不清空整段描述。
+ */
+export function buildInsertTopicScript(cfg: {
+  topics: string[];
+  editorSelectors: string[];
+  dropdownSelectors: string[];
+  itemSelector: string;
+  chipSelector: string;
+}): string {
+  const cfgJson = JSON.stringify(cfg);
+  return `(async () => {
+  const cfg = ${cfgJson};
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const find = (sels) => {
+    for (const s of sels) { try { const el = document.querySelector(s); if (el) return el; } catch (e) {} }
+    return null;
+  };
+  let ed = null;
+  for (let i = 0; i < 50; i++) { ed = find(cfg.editorSelectors); if (ed) break; await sleep(200); }
+  if (!ed) return { ok: false, error: '描述编辑器未找到：' + cfg.editorSelectors.join(' | ') };
+  const chipEls = () => Array.from(ed.querySelectorAll(cfg.chipSelector));
+  const chipTexts = () => chipEls().map((el) => String(el.textContent || '').trim());
+  const hasChip = (t) => chipEls().some((el) => String(el.textContent || '').trim().replace(/^#+/, '') === t);
+  const findRange = (needle) => {
+    const tw = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = tw.nextNode())) {
+      if (n.parentElement && n.parentElement.closest(cfg.chipSelector)) continue;
+      const i = String(n.nodeValue || '').indexOf(needle);
+      if (i >= 0) { const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + needle.length); return r; }
+    }
+    return null;
+  };
+  const putCaret = (range) => {
+    ed.focus();
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    if (range) sel.addRange(range);
+    else { const r = document.createRange(); r.selectNodeContents(ed); r.collapse(false); sel.addRange(r); }
+  };
+  const clickByRect = (item) => {
+    const rect = item.getBoundingClientRect();
+    const x = Math.round(rect.left + rect.width / 2);
+    const y = Math.round(rect.top + rect.height / 2);
+    const hit = document.elementFromPoint(x, y) || item;
+    const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 };
+    for (const type of ['mousemove', 'mousedown', 'mouseup', 'click']) {
+      hit.dispatchEvent(new MouseEvent(type, opts));
+    }
+  };
+  const added = [];
+  const skipped = [];
+  const failed = [];
+  const leftover = [];
+  for (const topic of cfg.topics) {
+    if (hasChip(topic)) { skipped.push(topic); continue; }
+    const token = '#' + topic;
+    putCaret(findRange(token));
+    document.execCommand('insertText', false, ' ' + token);
+    let item = null;
+    for (let i = 0; i < 25; i++) {
+      await sleep(120);
+      const dd = find(cfg.dropdownSelectors);
+      if (!dd) continue;
+      const items = Array.from(dd.querySelectorAll(cfg.itemSelector));
+      item = items.find((el) => String(el.textContent || '').includes(topic)) || items[0] || null;
+      if (item) break;
+    }
+    if (!item) { failed.push({ topic: topic, reason: '话题联想下拉未出现' }); continue; }
+    clickByRect(item);
+    let ok = false;
+    for (let i = 0; i < 15; i++) {
+      await sleep(120);
+      if (hasChip(topic)) { ok = true; break; }
+    }
+    if (ok) {
+      added.push(topic);
+      if (findRange(token)) leftover.push(topic);
+    } else {
+      failed.push({ topic: topic, reason: '点击下拉项后未生成 chip' });
+    }
+  }
+  return {
+    ok: failed.length === 0 && leftover.length === 0,
+    added: added, skipped: skipped, failed: failed, leftover: leftover,
+    chipCount: chipEls().length, chips: chipTexts(),
+  };
+})()`;
+}
+
+async function runInsertTopic(
+  api: RecipeApi,
+  step: Extract<RecipeStep, { kind: 'insertTopic' }>,
+  params: Record<string, unknown>,
+): Promise<string> {
+  const topics = parseTopicList(params[step.topicsParam]);
+  if (!topics.length) return `参数 ${step.topicsParam} 里没有可用话题（JSON 数组或空格分隔）`;
+  const res = await api.action('run_script', {
+    script: buildInsertTopicScript({
+      topics,
+      editorSelectors: [step.editorSelector, ...(step.editorSelectors || [])].filter(Boolean),
+      dropdownSelectors: [step.dropdownSelector || '', ...(step.dropdownSelectors || [])].filter(Boolean),
+      itemSelector: step.itemSelector || '[class*="tag-"], li, [role="option"]',
+      chipSelector: step.chipSelector || '[data-mention]',
+    }),
+  });
+  if (res && res.error) throw new Error(`插入话题失败：${String(res.error)}`);
+  let data: any = res ? res.result : null;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { /* 保留原文，下面统一报错 */ }
+  }
+  if (!data || typeof data !== 'object') throw new Error('插入话题失败：脚本未返回结构化结果');
+  if (data.error) throw new Error(`插入话题失败：${String(data.error)}`);
+  if (!data.ok) {
+    const detail = [
+      ...(Array.isArray(data.failed) ? data.failed : []).map((f: any) => `${f?.topic}（${f?.reason}）`),
+      ...(Array.isArray(data.leftover) ? data.leftover : []).map((t: string) => `${t}（chip 已生成但纯文本残留）`),
+    ].join('；');
+    throw new Error(
+      `插入话题未全部成功：${detail || '未知原因'}。页面可能残留半成品，**不要点保存**，`
+      + '先按现场原因处理（如手动选中话题）或向用户报告。',
+    );
+  }
+  return `新增 ${data.added.length} 个话题 chip${data.added.length ? `（${data.added.join('、')}）` : ''}，`
+    + `已是 chip 跳过 ${data.skipped.length} 个，当前 chip ${data.chipCount} 个`;
+}
+
 async function clickText(api: RecipeApi, text: string, optional: boolean, failHint?: string): Promise<string> {
   const bases = ['button', 'div[role=button],a', 'span'];
   let lastErr = '';
@@ -399,6 +563,12 @@ export async function runRecipe(
             .filter((f: FillFieldDef) => f.selector);
           if (!fields.length) throw new Error(`参数 ${step.param} 里没有带 selector 的字段`);
           push('fill', true, await runFill(api, fields));
+          continue;
+        }
+
+        // ★ P1（2026-10-27）：话题 chip 固化路径 —— 不让模型现场写"清空+重填"脚本
+        if (step.kind === 'insertTopic') {
+          push('insertTopic', true, await runInsertTopic(api, step, params));
           continue;
         }
 
@@ -644,10 +814,51 @@ export const FORM_FILL_RECIPE: PublishRecipe = {
   ],
 };
 
+/**
+ * 抖音话题 chip 配方（2026-10-27，P1）
+ *
+ * 为什么要有：编辑页描述里的「#周报」是纯文本（接口 text_extra=[]），吃不到话题流量；
+ * 而升级成 chip 需要"输入 # → 下拉 → 点下拉项"，下拉项只有 onClick 且会被 React 重渲染。
+ * 模型现场编排了两个小时、把同段文字反复擦写。这里把已验证可行的动作固定成一条脚本：
+ * 只替换目标 token、按坐标在同一 tick 派发点击、逐个校验 chip；已有 chip 直接跳过。
+ *
+ * 边界：不点保存（修改作品有次数限制）；失败即停在现场，绝不重跑。
+ */
+export const DOUYIN_INSERT_TOPICS_RECIPE: PublishRecipe = {
+  id: 'douyin-insert-topics',
+  description: '抖音作品编辑页：把描述里的纯文本话题升级为真话题 chip。幂等（已有 chip 跳过），失败即停，绝不点保存',
+  params: {
+    editUrl: {
+      type: 'string',
+      required: true,
+      description: '作品编辑页完整 URL（内容管理 → 编辑作品，形如 .../content/post/video?mid=<aweme_id>&enter_from=edit_item）',
+    },
+    topics: {
+      type: 'string',
+      required: true,
+      description: '要变成 chip 的话题：JSON 数组 ["周报","Excel技巧"]，或空格/逗号分隔；不用带 #',
+    },
+  },
+  steps: [
+    { kind: 'navigate', url: '{{editUrl}}' },
+    {
+      kind: 'insertTopic',
+      topicsParam: 'topics',
+      editorSelector: 'div[data-slate-editor="true"]',
+      editorSelectors: ['.zone-container.editor-kit-container', 'div[contenteditable="true"]'],
+      dropdownSelector: '.mention-suggest-mount-dom',
+      dropdownSelectors: ['[class*="mention-suggest"]'],
+      itemSelector: '[class*="tag-"], li, [role="option"]',
+      chipSelector: '[data-mention]',
+    },
+  ],
+};
+
 export const RECIPES: Record<string, PublishRecipe> = {
   [DOUYIN_PUBLISH_RECIPE.id]: DOUYIN_PUBLISH_RECIPE,
   [DOUYIN_POST_COMMENT_RECIPE.id]: DOUYIN_POST_COMMENT_RECIPE,
   [DOUYIN_SET_COVER_RECIPE.id]: DOUYIN_SET_COVER_RECIPE,
+  [DOUYIN_INSERT_TOPICS_RECIPE.id]: DOUYIN_INSERT_TOPICS_RECIPE,
   [FORM_FILL_RECIPE.id]: FORM_FILL_RECIPE,
 };
 

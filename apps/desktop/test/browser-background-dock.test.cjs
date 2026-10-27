@@ -57,18 +57,16 @@ describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', 
     assert.ok(showAt > -1 && boundsAt > showAt, '位置必须在 show/restore 之后落，否则会被系统还原位置覆盖');
   });
 
-  test('★ 自定义标题栏的最小化按钮：任务在跑先弹确认，没任务就是普通最小化', () => {
+  test('★ 自定义标题栏的最小化按钮：自动化中静默后台停靠，其余普通最小化（不弹任何确认框）', () => {
     const idx = mainSrc.indexOf("ipcMain.on('window-minimize'");
     assert.ok(idx > -1, '未找到 window-minimize handler');
-    const body = mainSrc.slice(idx, idx + 2200);
-    // 没有任务：用户预期优先，直接最小化
-    assert.match(body, /!browserWorkInProgress\(\)\) \{ w\.minimize\(\); return; \}/, '无任务时必须直接最小化');
-    // 有任务：弹确认，两个出口分别是「后台运行」和「仍然最小化」
-    assert.match(body, /dialog\.showMessageBox\(/, '任务在跑时必须先弹确认');
-    assert.match(body, /'后台运行'/, '缺「后台运行」选项');
-    assert.match(body, /'仍然最小化'/, '缺「仍然最小化」选项');
-    assert.match(body, /if \(response === 0\) enterBackgroundDock\(\)/, '选「后台运行」必须走停靠');
-    assert.match(body, /else if \(response === 1\)/, '选「仍然最小化」必须真最小化');
+    const body = mainSrc.slice(idx, idx + 1600);
+    // 没有 agent 在自动化：用户预期优先，直接最小化
+    assert.match(body, /!browserWorkInProgress\(\)\) \{ w\.minimize\(\); return; \}/, '无自动化时必须直接最小化');
+    // 有 agent 在自动化：直接停靠（真最小化会让微前端停在"加载中"）
+    assert.match(body, /if \(!enterBackgroundDock\(\)\)/, '自动化中最小化必须后台停靠');
+    // ★ 2026-10-27 用户拍板：最小化不得再弹确认框（实报「最小化不能有提醒」）
+    assert.ok(!/showMessageBox/.test(body), '★ 最小化不得再弹「浏览器任务运行中」确认框');
   });
 
   test('★ 没有存活网页时不算「任务在跑」（预览页没开不该弹最小化确认）', () => {
@@ -82,6 +80,20 @@ describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', 
     assert.ok(liveStart > -1, '未找到 hasLiveBrowserPage');
     const liveBody = mainSrc.slice(liveStart, mainSrc.indexOf('\n}', liveStart) + 2);
     assert.match(liveBody, /allGuestWebContents\(\)\.length > 0/, '存活网页必须以实际 guest 为准');
+  });
+
+  // ★ 2026-10-27 用户实报：「pageAgent 停止了，页面开着没问题，但最小化不能还有提醒」。
+  //   根因：判据是「10 分钟内有过 agent 动作」—— 那是"最近来过浏览器"，不是"此刻在自动化"。
+  test('★ 只有真的在自动化才算「任务在跑」（收工后最小化不得再弹窗）', () => {
+    const start = mainSrc.indexOf('function browserWorkInProgress()');
+    assert.ok(start > -1, '未找到 browserWorkInProgress');
+    const body = mainSrc.slice(start, mainSrc.indexOf('\n}', start) + 2);
+    assert.match(body, /tabActionBusy\.size > 0/, '★ 缺"动作正在执行"判据 → 长动作期间会被当成空闲');
+    assert.match(body, /BROWSER_ACTION_GRACE_MS/, '★ 必须用动作宽限，而不是 10 分钟时间窗');
+    assert.ok(!/BACKGROUND_DOCK_IDLE_MS/.test(body), '★ 10 分钟"最近来过"判据会让收工后仍弹窗');
+    const constAt = mainSrc.indexOf('const BROWSER_ACTION_GRACE_MS');
+    assert.ok(constAt > -1, '未找到 BROWSER_ACTION_GRACE_MS');
+    assert.match(mainSrc.slice(constAt, constAt + 400), /45 \* 1000/, '宽限必须与渲染层 BROWSER_LIVE_GRACE_MS 同为 45s');
   });
 
   test('★ 点 X 关窗（隐藏到托盘）任务在跑时也必须停靠', () => {

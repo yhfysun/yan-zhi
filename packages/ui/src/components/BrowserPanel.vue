@@ -757,6 +757,14 @@ watch(inputLocked, (now, prev) => {
     ` 超5min兜底=${lockStaleByHardLimit.value}）`,
   );
 });
+// ★ 2026-10-27（用户实报「pageAgent 停止了，页面打开着，最小化还弹『浏览器任务运行中』」）：
+//   主进程的最小化提示按「10 分钟内有过动作」判定 ⇒ pageAgent 收工后仍按"有任务在跑"弹窗。
+//   面板已按 45s 空闲判定收工（与输入锁同源），这里显式告知主进程清掉"最近有动作"的记账；
+//   真有动作在途时主进程用 tabActionBusy 兜住，不会误清。
+watch(browserIdleNow, (idle) => {
+  if (!idle || !isPreviewScope || !chatStore.lastBrowserToolAt) return;
+  try { (window as any).electronAPI?.browserView?.agentIdle?.(); } catch { /* 纯提示清理 */ }
+});
 onUnmounted(() => {
   if (nowTickTimer) { clearTimeout(nowTickTimer); nowTickTimer = null; }
   clearLoadingWatchdog();
@@ -816,8 +824,11 @@ const currentStepNo = computed(() => {
 // Agent 虚拟鼠标：只认当前激活 tab 的坐标（多 tab 隔离），预览空间 + 浏览器实况期才显示。
 // ★ 判据与 liveControlVisible 同源（browserTaskActive）—— 断流后 steps 为空时，
 //   后续工具动作仍会通过主进程广播坐标，若这里依赖 steps 就会"看不见光标"。
+// ★★ 2026-10-27 用户实报「pageAgent 停止了鼠标还在」：光标没有活性判据，pageAgent 收工后
+//   只要主任务还在等模型/跑别的工具就常驻。补 `!browserIdleNow`（45s 没动作 = 已收工），
+//   与输入锁/编号层同源 —— 收工后光标随锁一起收回。
 const agentCursorVisible = computed(() =>
-  isPreviewScope && convTaskRunning.value
+  isPreviewScope && convTaskRunning.value && !browserIdleNow.value && !lockStaleByHardLimit.value
   && (chatStore.browserTaskActive || chatStore.browserSteps.length > 0),
 );
 const cursorPos = computed(() => {
@@ -973,8 +984,13 @@ const highlightAuto = ref(false);
 //   页面加载只负责"重画"，不负责"决定要不要画"。
 //   我们此前的判据散在多个 watcher（各自带半套条件），任务收尾清 paused 标记时被
 //   "恢复执行"分支把编号层画回来、再没人关 —— 用户实报的残留就是这么来的。
+// ★ 2026-10-27（用户实报「pageAgent 停止了鼠标还在」）：判据补上 `!browserIdleNow` ——
+//   此前只看"任务在跑 + 本会话跑过浏览器工具"，pageAgent 收工后主任务继续等模型/跑脚本时
+//   它仍为真 ⇒ 编号层被切 tab 补画回来、光标常驻。输入锁/接管条早就按 45s 空闲判活，
+//   这里与它们同源（同一 `lastBrowserToolAt` + `BROWSER_LIVE_GRACE_MS`）。
 const agentOperating = computed(() =>
-  isPreviewScope && !chatStore.browserPaused && chatStore.browserTaskActive && convTaskRunning.value,
+  isPreviewScope && !chatStore.browserPaused && chatStore.browserTaskActive
+  && convTaskRunning.value && !browserIdleNow.value,
 );
 async function applyHighlight(on: boolean, silent = false, persist = false) {
   if (!on) {

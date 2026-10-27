@@ -25,7 +25,11 @@ const vm = require('node:vm');
 
 const mainSrc = fs.readFileSync(path.resolve(__dirname, '..', 'main.cjs'), 'utf8');
 const caseIdx = mainSrc.indexOf("case 'run_script'");
-const body = caseIdx > -1 ? mainSrc.slice(caseIdx, caseIdx + 4200) : '';
+// ★ 2026-10-27：切片改成"到下一个 case 为止"，不再用定长 4200 字符。
+//   定长窗口是脆的：分支里多一段前置校验/注释就会把末段的取证文案挤出窗口 →
+//   测试假红（代码其实没坏，实测 4200 只差最后 181 字符）。
+const caseEnd = caseIdx > -1 ? mainSrc.indexOf("\n      case '", caseIdx + 10) : -1;
+const body = caseIdx > -1 ? mainSrc.slice(caseIdx, caseEnd > -1 ? caseEnd : caseIdx + 20000) : '';
 
 /** 从源码里取出探测模板字符串（`const probe = `...`;` 的内容），用于真实执行。 */
 function probeTemplate() {

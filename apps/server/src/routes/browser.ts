@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { db } from '../db.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { recordBrowserMemoryEvent, readBrowserMemory } from '../services/browser-memory.js';
+import { scriptFuseCheck } from '../services/script-fuse.js';
 import { withTimeout as sharedWithTimeout, KeyedStreak } from '@yan-zhi/shared';
 import { createLogger } from '../services/logger.js';
 import { browserBridgeAvailable, callBrowserBridgeRaw } from '../browser-bridge.js';
@@ -973,6 +974,8 @@ const CHANGE_ACTIONS = new Set(['click', 'type', 'press', 'select_option', 'chec
 //   两个方向都错且不报错。按 tab 分桶是因为：① 语义上这是页面状态；
 //   ② 服务端 `/action` **拿不到会话标识**（单活动页架构）；③ 两链路都能拿到 tabId。
 const noChangeStreaks = new KeyedStreak({ threshold: 3 });
+/** run_script 语义熔断计数（与桌面端同一判据，见 services/script-fuse.ts） */
+const scriptFuseState = new Map<string, { n: number; at: number }>();
 /** 统一 click/type 结果：补稳定 status，便于模型按同一套字段判断成败 */
 function unifyActionStatus(result: any): any {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
@@ -2266,6 +2269,9 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         let script = String(args.script || '');
         if (!script.trim()) { result = { error: 'script is required' }; break; }
         if (script.length > 64000) { result = { error: 'script too long (max 64000 chars)' }; break; }
+        // ★ 2026-10-27：语义熔断（同目标反复清空/重填）—— 与桌面端同一判据
+        const scriptFuse = scriptFuseCheck(script, page.url(), scriptFuseState);
+        if (scriptFuse.blocked) { result = { error: scriptFuse.message, code: 'script_semantic_loop' }; break; }
         // ★ 顶层 return 容错（2026-10-07，与桌面端 main.cjs 同步）：模型常写裸 return 的脚本，
         //   直接 evaluate 会抛 SyntaxError，模型只看到 "Script failed to execute" 无法自纠。
         //   检测到顶层 return 且未包成函数/IIFE 就自动包一层。

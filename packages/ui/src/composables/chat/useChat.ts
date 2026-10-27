@@ -576,6 +576,10 @@ function createChat() {
     }
     store.pausedConvIds.clear();
     store.clearAgentCursor();
+    // ★ 2026-10-27（用户实报「pageAgent 停止了，最小化还弹浏览器任务运行中」）：
+    //   主进程的最小化提示按「10 分钟内有过动作」判 ⇒ 收尾后马上拉最小化仍会弹。
+    //   收尾即告知主进程"浏览器侧已收工"（面板卸载/空闲 watcher 都不可靠时的兜底）。
+    try { (window as any).electronAPI?.browserView?.agentIdle?.(); } catch { /* 纯提示清理 */ }
     // ★★ agent 开的页面 → **保留**（2026-10-12 用户拍板改向：
     //   「除非智能体自己主动关闭页面才关闭」—— 收尾不再自动关）。
     //   历史：2026-10-08 只弹提示 → 2026-10-09 收尾自动关（closeAgentTabs/closeConvTabs）→

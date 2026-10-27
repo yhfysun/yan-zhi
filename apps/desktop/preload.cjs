@@ -225,6 +225,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     action: (tabId, action, args) => ipcRenderer.invoke('browserView:action', tabId, action, args),
     // ★ 2026-10-23：任务收尾清编号层（主进程按自己的 tab 表逐个关，含已隐藏页面）
     highlightOffAll: () => ipcRenderer.invoke('browserView:highlightOffAll'),
+    // ★ 2026-10-27：面板判定 pageAgent 已收工（45s 无动作）时告知主进程 —— 主进程据此清掉
+    //   "最近有动作"的记账，最小化不再弹「浏览器任务运行中」（真有动作在途由 tabActionBusy 兜住）。
+    agentIdle: () => ipcRenderer.send('browserView:agentIdle'),
     // 截图临时可见：非激活 webview 默认 visibility:hidden（省 CPU），截图前主进程临时点亮
     onCaptureVisible: (callback) => {
       const h = (_e, tabId, visible) => callback(tabId, visible);

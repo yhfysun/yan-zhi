@@ -46,7 +46,7 @@ const KNOWN_TOOL_NAMES = new Set([
   // 口播成片（配音+字幕+BGM）与本地免版权配乐（2026-10-24）
   'novel_tuiwen', 'music_compose',
   // 浏览器
-  'browser_navigate', 'browser_get_page_content',
+  'browser_navigate', 'browser_get_page_content', 'browser_get_tabs',
   // api_* 直查工具（不走 ToolRegistry，但必须并入判定集合）
   'api_tool_ocr',
   // AI 媒体生成（api-tool-executor 的 SUPPORTED_API_TOOLS，短剧导演同款挂载）

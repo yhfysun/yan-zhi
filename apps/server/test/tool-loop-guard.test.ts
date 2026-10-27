@@ -9,7 +9,7 @@ import path from 'node:path';
 import {
   checkToolLoop, toolCallKey, TOOL_CONSEC_LIMIT, TOOL_DUP_LIMIT,
   FORCE_STOP_MARKER, neutralizeForceStopMarker,
-  noteToolOutcome, toolFailStreak, TOOL_FAIL_STREAK_LIMIT,
+  noteToolOutcome, toolFailStreak, TOOL_FAIL_STREAK_LIMIT, TOOL_FAIL_STREAK_HARD_LIMIT,
 } from '../src/services/tool-loop-guard.js';
 
 describe('tool-loop-guard 防失控循环闸门', () => {
@@ -388,5 +388,46 @@ describe('C 线：连续失败提示（noteToolOutcome）', () => {
       expect(noteToolOutcome(task, 'x_tool', false)).toBeNull();
     }
     expect(noteToolOutcome(task, 'x_tool', false)).toContain(`连续失败 ${TOOL_FAIL_STREAK_LIMIT} 次`);
+  });
+});
+
+/**
+ * 2026-10-27（conv c79811d2）：抖音编辑页的破坏性脚本每次只改一个字符/一句 log，
+ * "同参重复"永远命中不了；连续失败也只提示不硬停。
+ */
+describe('run_script 语义 key 与连续失败硬停（2026-10-27）', () => {
+  const script = (log: string) =>
+    "const ed=document.querySelector('div[data-slate-editor=\"true\"]');"
+    + "ed.focus();document.execCommand('delete');"
+    + `document.execCommand('insertText',false,'#周报');log.push('${log}');`;
+
+  it('语义 key：脚本微调但目标/载荷一致 → 同一个 key', () => {
+    expect(toolCallKey('browser_run_script', { script: script('第一版日志文案非常非常长，超过二十个字符就不会进入载荷') }))
+      .toBe(toolCallKey('browser_run_script', { script: script('第二版日志文案换了措辞，同样超过二十个字符不进入载荷') }));
+  });
+
+  it('只读脚本仍按完整脚本区分（不误合并）', () => {
+    const a = toolCallKey('browser_run_script', { script: "return document.querySelector('div').innerText;" });
+    const b = toolCallKey('browser_run_script', { script: "return document.querySelector('span').innerText;" });
+    expect(a).not.toBe(b);
+  });
+
+  it('同目标微调脚本第三次被 A 线拦截', () => {
+    const task = {};
+    expect(checkToolLoop(task, 'browser_run_script', { script: script('日志甲文案非常非常长，长度超过二十个字符就不会进载荷') })).toBeNull();
+    expect(checkToolLoop(task, 'browser_run_script', { script: script('日志乙文案同样非常长，长度超过二十个字符也不会进载荷') })).toBeNull();
+    expect(checkToolLoop(task, 'browser_run_script', { script: script('日志丙文案继续写长，长度一定要超过二十个字符才行') }))
+      .toContain('重复调用拦截');
+  });
+
+  it('连续失败到硬阈值 → 返回 FORCE_STOP（调用方据此兜死）', () => {
+    const task = {};
+    let last: string | null = null;
+    for (let i = 0; i < TOOL_FAIL_STREAK_HARD_LIMIT; i++) {
+      last = noteToolOutcome(task, 'browser_run_script', false);
+    }
+    expect(last).toBeTruthy();
+    expect(last!.startsWith(FORCE_STOP_MARKER)).toBe(true);
+    expect(last).toContain('立即停止所有工具调用');
   });
 });

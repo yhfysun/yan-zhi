@@ -1377,7 +1377,9 @@ export class BrowserRunRecipeTool implements BuiltInTool {
     + `可用配方：${listRecipes().join('、')}。`
     + 'douyin-publish-video 参数：{ videoPath, title, description, collectionName?, submit? }；'
     + 'douyin-set-cover 参数：{ coverPath }（视频已上传后、点发布前调用）；'
-    + 'douyin-post-comment 参数：{ videoTitle, comment }（发布后发引导评论）。'
+    + 'douyin-post-comment 参数：{ videoTitle, comment }（发布后发引导评论）；'
+    + 'douyin-insert-topics 参数：{ editUrl, topics }（作品编辑页把纯文本话题升级成真话题 chip；'
+    + 'topics 为 JSON 数组或空格分隔；幂等、失败即停、不保存 —— 禁止自己写脚本反复清空描述框）。'
     + 'form-fill 参数：{ fields, submit?, submitText? } —— 任意站点的表单都优先用它：'
     + 'fields 为 JSON 数组 [{selector, selectors?, value, label?}]（selector 用 get_page_content 编号元素自带的 selector，selectors 是备用选择器），'
     + '代码会做备用选择器回退与回读核验，一次调用完成填写；submit=true 时还要传 submitText（按钮文本）。'

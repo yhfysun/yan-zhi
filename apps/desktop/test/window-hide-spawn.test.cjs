@@ -22,9 +22,12 @@ test('shell:exec 的 execFile 必须 windowsHide（否则子进程弹黑窗口�
 });
 
 test('后端进程 spawn（dev / npx 回退 / 生产）都必须 windowsHide', () => {
+  // ★ 2026-10-27：产物里多了 `YZ_WATCH` 开关（watch ? [...] : [...]），原来钉死
+  //   `[tsxPath, 'watch', 'src/index.ts']` 的写法已经匹配不到 —— 代码没坏、用例没跟上。
+  //   这里改成只认"哪个 spawn + 传给它的关键路径"，不依赖参数数组的具体形状。
   const blocks = [
-    /spawn\(process\.execPath, \[tsxPath, 'watch', 'src\/index\.ts'\]/,
-    /spawn\('npx', \['tsx', 'watch', 'src\/index\.ts'\]/,
+    /spawn\(process\.execPath,[^\n]*?\[tsxPath/,
+    /spawn\('npx',[^\n]*?\['tsx'/,
     /spawn\(process\.execPath, \[serverPath\]/,
   ];
   for (const re of blocks) {

@@ -16,6 +16,8 @@ import { resolve } from 'node:path';
 const REPO = resolve(__dirname, '../../../..');
 const PANEL = readFileSync(resolve(REPO, 'packages/ui/src/components/BrowserPanel.vue'), 'utf8');
 const MAIN = readFileSync(resolve(REPO, 'apps/desktop/main.cjs'), 'utf8');
+const PRELOAD = readFileSync(resolve(REPO, 'apps/desktop/preload.cjs'), 'utf8');
+const USE_CHAT = readFileSync(resolve(REPO, 'packages/ui/src/composables/chat/useChat.ts'), 'utf8');
 
 /** 按大括号配平截取具名函数源码 */
 function fnSource(src: string, name: string): string {
@@ -71,6 +73,44 @@ describe('加载遮罩看门狗', () => {
     expect(fnSource(PANEL, 'forceFinishLoading')).toContain('activeTab.value.loading = false');
     const at = PANEL.indexOf('onUnmounted(');
     expect(PANEL.slice(at, at + 600)).toContain('clearLoadingWatchdog');
+  });
+});
+
+describe('pageAgent 收工后不残留鼠标 / 最小化提示', () => {
+  // ★ 2026-10-27 用户实报：「pageAgent 停止了鼠标还在」「页面打开着，最小化还弹浏览器任务运行中」。
+  //   根因：光标的可见性少了一条活性判据（输入锁/编号层早就按 45s 空闲判活），
+  //   主进程的最小化提示又按「10 分钟内有过动作」判 —— 两者都看不到"浏览器侧已收工"。
+  it('★ 虚拟鼠标必须有活性判据（否则主任务等模型期间常驻）', () => {
+    const at = PANEL.indexOf('const agentCursorVisible = computed(');
+    expect(at, '缺少 agentCursorVisible').toBeGreaterThanOrEqual(0);
+    const body = PANEL.slice(at, at + 600);
+    expect(body, '★ 光标不判活性 → pageAgent 收工后一直挂在页面上')
+      .toContain('browserIdleNow.value');
+  });
+
+  it('★ agentOperating（编号层/蒙版判据）同样要收工即失效', () => {
+    const at = PANEL.indexOf('const agentOperating = computed(');
+    expect(at, '缺少 agentOperating').toBeGreaterThanOrEqual(0);
+    const body = PANEL.slice(at, at + 500);
+    expect(body, '★ 缺空闲判据 → 收工后切 tab 又把编号层画回来')
+      .toContain('browserIdleNow.value');
+  });
+
+  it('空闲时告知主进程清掉"最近有动作"（最小化提示按它判）', () => {
+    expect(PANEL, '缺少空闲通知').toContain('browserView?.agentIdle?.()');
+    expect(PRELOAD, 'preload 未暴露 agentIdle').toContain("ipcRenderer.send('browserView:agentIdle')");
+    expect(MAIN, '主进程未处理 agentIdle').toMatch(/ipcMain\.on\('browserView:agentIdle'/);
+    const at = MAIN.indexOf("ipcMain.on('browserView:agentIdle'");
+    const body = MAIN.slice(at, at + 700);
+    expect(body, '★ 动作在途时不得清（那一刻确实还在自动化）').toContain('tabActionBusy.size');
+    expect(body).toContain('lastBrowserActionAt = 0');
+  });
+
+  it('任务收尾也补一次通知（面板可能已卸载/还不到空闲宽限）', () => {
+    const at = USE_CHAT.indexOf('store.onTaskFinished(async (convId)');
+    expect(at, '缺少收尾钩子').toBeGreaterThanOrEqual(0);
+    const body = USE_CHAT.slice(at, at + 2200);
+    expect(body, '★ 收尾不清 → 刚结束就最小化仍弹窗').toContain('browserView?.agentIdle?.()');
   });
 });
 
