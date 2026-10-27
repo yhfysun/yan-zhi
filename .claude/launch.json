@@ -12,6 +12,18 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "4199", "--directory", "docs/prototypes"],
       "port": 4199
+    },
+    {
+      "name": "clipboard-prototype",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".claude/clipboard-prototype-server.cjs"],
+      "port": 4201
+    },
+    {
+      "name": "pet-proto",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4213", "--directory", "docs/prototypes"],
+      "port": 4213
     }
   ]
 }

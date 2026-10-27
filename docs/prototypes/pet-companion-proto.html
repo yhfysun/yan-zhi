@@ -1,0 +1,929 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>宠物伴星 · 交互原型（对标 Codex Pets）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { min-height: 100%; background: #07090d; color: #dbe3ee; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 14px 12px 40px; }
+
+  .proto-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; justify-content: center; }
+  .proto-head h1 { font-size: 15px; font-weight: 600; color: #eef2f8; }
+  .proto-head .sub { font-size: 12px; color: #6d7a90; }
+  .seg { display: flex; background: #12161d; border: 1px solid #232b37; border-radius: 9px; padding: 3px; gap: 2px; flex-wrap: wrap; }
+  .seg button { border: 0; background: transparent; color: #8a97ab; font-size: 12px; padding: 5px 11px; border-radius: 7px; cursor: pointer; }
+  .seg button.on { background: #e8734a; color: #fff; }
+  .seg button .k { opacity: .55; font-size: 10px; margin-left: 4px; }
+
+  /* ================= 舞台：模拟桌面 ================= */
+  .stage { position: relative; width: 960px; max-width: 100%; height: 620px; border-radius: 18px; overflow: hidden;
+           background: #0b0e14; border: 1px solid #1c2330; box-shadow: 0 24px 70px rgba(0,0,0,.55); user-select: none; }
+  .wall { position: absolute; inset: 0;
+          background: radial-gradient(120% 90% at 18% 12%, #2b3f77 0%, #17224a 38%, #0b1030 72%, #060818 100%); }
+  .wall::after { content: ""; position: absolute; inset: 0; background:
+          radial-gradient(40% 30% at 76% 28%, rgba(120,90,220,.32), transparent 70%),
+          radial-gradient(30% 24% at 42% 72%, rgba(40,160,190,.22), transparent 70%); }
+  /* 桌面上两个窗口剪影，演示宠物浮在其上 */
+  .desk-win { position: absolute; border-radius: 10px; background: #141922f2; border: 1px solid #2a3342;
+              box-shadow: 0 8px 30px rgba(0,0,0,.5); overflow: hidden; }
+  .desk-win .wt { height: 30px; background: #1b2230; display: flex; align-items: center; gap: 6px; padding: 0 12px; }
+  .desk-win .wt i { width: 9px; height: 9px; border-radius: 50%; background: #ff5f57; display: inline-block; }
+  .desk-win .wt i + i { background: #febc2e; } .desk-win .wt i + i + i { background: #28c840; }
+  .desk-win .wb { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .desk-win .ln { height: 10px; border-radius: 4px; background: linear-gradient(90deg, #2a3444, #232c3a 80%); }
+  .desk-win .ln.s { width: 55%; } .desk-win .ln.m { width: 78%; } .desk-win .ln.acc { background: linear-gradient(90deg, #e8734a88, #b3543a66); width: 34%; }
+  .win-a { left: 4%; top: 9%; width: 42%; height: 60%; }
+  .win-b { left: 52%; top: 16%; width: 30%; height: 42%; }
+  .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; background: rgba(10,13,19,.86);
+             backdrop-filter: blur(6px); border-top: 1px solid #232b37; display: flex; align-items: center; gap: 10px; padding: 0 14px; }
+  .tb-ic { width: 18px; height: 18px; border-radius: 5px; background: rgba(160,190,240,.4); }
+  .tb-ic.a2 { background: rgba(240,170,80,.45); } .tb-ic.a3 { background: rgba(120,220,170,.4); }
+  .tb-clock { margin-left: auto; font-size: 11px; color: #cdd6e2; }
+  .stage-hint { position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%); font-size: 11px; color: rgba(255,255,255,.34);
+                letter-spacing: .5px; pointer-events: none; }
+
+  /* ================= 宠物本体 ================= */
+  .pet { position: absolute; width: 112px; height: 118px; left: 640px; top: 380px; cursor: grab; z-index: 30;
+         touch-action: none; transition: filter .25s; }
+  .pet.dragging { cursor: grabbing; transition: none; }
+  .pet-aura { position: absolute; inset: -7px; border-radius: 50%; pointer-events: none; opacity: 0; transition: opacity .3s; }
+  .pet[data-state="running"]     .pet-aura { opacity: 1; box-shadow: 0 0 0 2px rgba(232,115,74,.35), 0 0 26px 6px rgba(232,115,74,.22); }
+  .pet[data-state="needs-input"] .pet-aura { opacity: 1; box-shadow: 0 0 0 2px rgba(240,180,60,.4), 0 0 30px 8px rgba(240,180,60,.25); }
+  .pet[data-state="ready"]       .pet-aura { opacity: 1; box-shadow: 0 0 0 2px rgba(90,200,130,.35), 0 0 26px 6px rgba(90,200,130,.22); }
+  .pet[data-state="error"]       .pet-aura { opacity: 1; box-shadow: 0 0 0 2px rgba(235,90,80,.4), 0 0 26px 6px rgba(235,90,80,.25); }
+  .pet[data-state="paused"]      .pet-aura { opacity: .8; box-shadow: 0 0 0 2px rgba(140,160,200,.25), 0 0 18px 4px rgba(140,160,200,.14); }
+
+  .pet svg { width: 100%; height: 100%; overflow: visible; }
+  .pet-body-g { transform-origin: 60px 76px; animation: breathe 3.2s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { transform: scaleY(1) scaleX(1); } 50% { transform: scaleY(1.035) scaleX(.985); } }
+  .pet[data-state="running"] .pet-body-g { animation: hop .62s ease-in-out infinite; }
+  @keyframes hop { 0%,100% { transform: translateY(0); } 45% { transform: translateY(-7px); } 60% { transform: translateY(0); } }
+  .pet[data-state="ready"] .pet-body-g { animation: hop .5s ease-in-out 3; }
+  .pet[data-state="error"] .pet-body-g { animation: shake .5s ease-in-out 2; }
+  @keyframes shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-5px) rotate(-2deg); } 75% { transform: translateX(5px) rotate(2deg); } }
+  .pet[data-state="paused"] .pet-body-g { animation: breathe 4.6s ease-in-out infinite; }
+  .tail { transform-origin: 88px 88px; animation: tailwag 2.6s ease-in-out infinite; }
+  @keyframes tailwag { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(9deg); } }
+  .pet[data-state="running"] .tail { animation-duration: .8s; }
+
+  .eye { transform-origin: center; animation: blink 4.4s infinite; }
+  .eye2 { animation-delay: .06s; }
+  @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(.08); } }
+  .pet[data-state="paused"] .eye { animation: none; transform: scaleY(.08); }
+  .pet[data-state="paused"] .eye2 { animation: none; transform: scaleY(.08); }
+  .pet[data-state="running"] .eye { animation: none; transform: scaleY(.72); }
+  .pet[data-state="running"] .eye2 { animation: none; transform: scaleY(.72); }
+  .pet[data-state="ready"] .eye-open, .pet[data-state="error"] .eye-open { opacity: 0; }
+  .pet[data-state="ready"] .eye-happy, .pet[data-state="error"] .eye-x { opacity: 1; }
+
+  /* 头顶状态气泡（问号 / 对勾 / 感叹 / Zzz / 转圈） */
+  .fx { position: absolute; left: 62px; top: -14px; transform: translateX(-50%); display: none; }
+  .pet[data-state="needs-input"] .fx-q, .pet[data-state="ready"] .fx-ok,
+  .pet[data-state="error"] .fx-alert, .pet[data-state="paused"] .fx-zzz,
+  .pet[data-state="running"] .fx-busy { display: block; }
+  .fx .bubble { width: 30px; height: 30px; border-radius: 50% 50% 50% 6px; display: flex; align-items: center; justify-content: center;
+                font-size: 17px; font-weight: 800; box-shadow: 0 4px 14px rgba(0,0,0,.4); animation: bob 1.4s ease-in-out infinite; }
+  .fx-q .bubble { background: #f0b43c; color: #3a2a05; }
+  .fx-ok .bubble { background: #5ac882; color: #06351a; }
+  .fx-alert .bubble { background: #eb5a50; color: #fff; }
+  .fx-zzz .bubble { background: #8ea3c8; color: #10182a; font-size: 13px; }
+  .fx-busy .bubble { background: #1d2432; color: #e8734a; border: 1px solid #35405a; }
+  @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+  .fx-zzz .z1, .fx-zzz .z2 { position: absolute; font-size: 12px; font-weight: 700; color: #8ea3c8; animation: rise 2.2s ease-out infinite; }
+  .fx-zzz .z1 { left: 22px; top: -6px; } .fx-zzz .z2 { left: 34px; top: -14px; animation-delay: 1.1s; font-size: 10px; }
+  @keyframes rise { 0% { opacity: 0; transform: translateY(6px); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(-16px); } }
+  .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid #3a465e; border-top-color: #e8734a; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 未读角标 */
+  .pet-badge { position: absolute; right: 2px; top: 4px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px;
+               background: #f0b43c; color: #3a2a05; font-size: 11px; font-weight: 800; display: none;
+               align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,.45); z-index: 2; }
+  .pet-badge.show { display: flex; }
+  .pet-badge.muted { background: #55617a; color: #c6cfdd; }
+
+  /* 宠物底下的名字牌（hover 或需要处理时出现） */
+  .pet-tag { position: absolute; left: 50%; bottom: -22px; transform: translateX(-50%); font-size: 11px; color: #cdd6e2;
+             background: rgba(16,20,30,.92); border: 1px solid #2a3342; padding: 3px 10px; border-radius: 8px;
+             white-space: nowrap; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .pet:hover .pet-tag, .pet[data-state="needs-input"] .pet-tag, .pet[data-state="error"] .pet-tag { opacity: 1; }
+
+  /* ===== 快问输入条（hover 宠物出现，Enter 直接开工）===== */
+  .ask-pill { position: absolute; top: 122px; left: 50%; transform: translateX(-50%) translateY(5px);
+              display: flex; align-items: center; gap: 5px; width: 236px; padding: 5px 6px;
+              background: rgba(17,21,31,.97); border: 1px solid #2c3648; border-radius: 21px;
+              box-shadow: 0 12px 34px rgba(0,0,0,.5); opacity: 0; pointer-events: none;
+              transition: opacity .18s, transform .18s; z-index: 6; }
+  .pet:hover .ask-pill, .ask-pill.focus { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+  .ask-agent { border: 0; background: #1a2130; color: #e8b49a; font-size: 10px; padding: 4px 8px;
+               border-radius: 12px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+  .ask-agent:hover { background: #223049; }
+  .ask-pill input { flex: 1; min-width: 0; background: transparent; border: 0; outline: none;
+                    color: #dbe3ee; font-size: 11px; }
+  .ask-pill input::placeholder { color: #55617a; }
+  .ask-btn { width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent; color: #8a97ab;
+             font-size: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .ask-btn:hover { background: #223049; color: #fff; }
+  .ask-btn.go { color: #e8734a; }
+  .ask-btn.go:hover { background: rgba(232,115,74,.15); }
+
+  /* ===== 形象切换托盘 ===== */
+  .char-tray { position: absolute; bottom: 128px; left: 50%; transform: translateX(-50%); display: none; gap: 6px;
+               padding: 8px 10px; background: rgba(17,21,31,.97); border: 1px solid #2a3342; border-radius: 14px;
+               box-shadow: 0 12px 34px rgba(0,0,0,.5); z-index: 7; }
+  .char-tray.open { display: flex; }
+  .char-tray .chr { display: flex; flex-direction: column; align-items: center; gap: 1px; width: 56px; padding: 6px 0 4px;
+                    border-radius: 10px; cursor: pointer; border: 1px solid transparent; }
+  .char-tray .chr:hover { background: #1c2434; border-color: #2c3648; }
+  .char-tray .chr.on { border-color: #e8734a; background: rgba(232,115,74,.12); }
+  .char-tray .chr svg { width: 42px; height: 42px; overflow: visible; }
+  .char-tray .chr span { font-size: 10px; color: #8a97ab; }
+  .char-tray .chr.on span { color: #e8b49a; font-weight: 600; }
+
+  /* ===== 四肢（chibi 全身像：手/脚随状态摆动）===== */
+  .arm-l, .arm-r, .leg-l, .leg-r { transform-box: fill-box; }
+  .arm-l, .arm-r { transform-origin: 50% 12%; }
+  .leg-l, .leg-r { transform-origin: 50% 10%; }
+  @keyframes limb-idle { 0%,100% { transform: rotate(-4deg); } 50% { transform: rotate(5deg); } }
+  .pet .arm-l { animation: limb-idle 3.4s ease-in-out infinite; }
+  .pet .arm-r { animation: limb-idle 3.4s ease-in-out infinite reverse; }
+  .pet .leg-l { animation: limb-idle 4.2s ease-in-out infinite; }
+  .pet .leg-r { animation: limb-idle 4.2s ease-in-out infinite reverse; }
+
+  @keyframes limb-run { from { transform: rotate(-38deg); } to { transform: rotate(38deg); } }
+  .pet[data-state="running"] .arm-l { animation: limb-run .32s ease-in-out infinite alternate; }
+  .pet[data-state="running"] .arm-r { animation: limb-run .32s ease-in-out infinite alternate-reverse; }
+  .pet[data-state="running"] .leg-l { animation: limb-run .3s ease-in-out infinite alternate; }
+  .pet[data-state="running"] .leg-r { animation: limb-run .3s ease-in-out infinite alternate-reverse; }
+
+  /* 闲逛踱步（Shimeji 风） */
+  @keyframes waddle { 0%,100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-3px) rotate(2deg); } }
+  .pet[data-state="walking"] .pet-body-g { transform-origin: 60px 76px; animation: waddle .55s ease-in-out infinite; }
+  .pet[data-state="walking"] .arm-l { animation: limb-run .55s ease-in-out infinite alternate-reverse; }
+  .pet[data-state="walking"] .arm-r { animation: limb-run .55s ease-in-out infinite alternate; }
+  .pet[data-state="walking"] .leg-l { animation: limb-run .55s ease-in-out infinite alternate; }
+  .pet[data-state="walking"] .leg-r { animation: limb-run .55s ease-in-out infinite alternate-reverse; }
+  .pet[data-state="walking"] .tail { animation-duration: .5s; }
+
+  /* 被拖拽：吊在光标上四肢乱蹬（置于最后，覆盖 running 等） */
+  @keyframes limb-flail { from { transform: rotate(-30deg); } to { transform: rotate(30deg); } }
+  .pet.dragging .arm-l { animation: limb-flail .26s ease-in-out infinite alternate; }
+  .pet.dragging .arm-r { animation: limb-flail .26s ease-in-out infinite alternate-reverse; }
+  .pet.dragging .leg-l { animation: limb-flail .32s ease-in-out infinite alternate; }
+  .pet.dragging .leg-r { animation: limb-flail .32s ease-in-out infinite alternate-reverse; }
+  .pet.dragging .pet-body-g { transform-origin: 60px 40px; animation: dangle .9s ease-in-out infinite; }
+  @keyframes dangle { 0%,100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+
+  /* ================= 半圆（扇形）快捷菜单 ================= */
+  .radial { position: absolute; z-index: 40; width: 0; height: 0; display: none; }
+  .radial.open { display: block; }
+  .radial .slot { position: absolute; left: -26px; top: -26px; width: 52px; height: 52px; border-radius: 50%;
+                  background: #171d29f2; border: 1px solid #33405a; color: #cdd8ea; display: flex; flex-direction: column;
+                  align-items: center; justify-content: center; cursor: pointer; gap: 1px;
+                  transform: translate(0,0) scale(.2); opacity: 0; transition: transform .22s cubic-bezier(.34,1.5,.5,1), opacity .18s;
+                  box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  .radial.open .slot { opacity: 1; }
+  .radial.open .slot:nth-child(1) { transition-delay: .02s; }
+  .radial.open .slot:nth-child(2) { transition-delay: .06s; }
+  .radial.open .slot:nth-child(3) { transition-delay: .10s; }
+  .radial.open .slot:nth-child(4) { transition-delay: .14s; }
+  .radial.open .slot:nth-child(5) { transition-delay: .18s; }
+  .slot svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .slot .sl { font-size: 9px; color: #7f8ca3; transform: scale(.92); }
+  .slot:hover { background: #223049; border-color: #e8734a; color: #fff; }
+  .slot:hover .sl { color: #e8b49a; }
+  .radial.editing .slot { border-style: dashed; }
+  .radial.editing .slot.picked { border: 2px solid #e8734a; box-shadow: 0 0 0 4px rgba(232,115,74,.2); }
+  .radial .slot .pin-dot { position: absolute; right: 6px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: #e8734a; display: none; }
+  .radial .slot.is-follow .pin-dot { display: block; }
+
+  /* 编辑模式的候选抽屉 */
+  .candidates { position: absolute; z-index: 41; display: none; gap: 8px; padding: 8px; background: #12161dee;
+                border: 1px solid #2a3342; border-radius: 12px; backdrop-filter: blur(8px); flex-wrap: wrap; max-width: 420px; }
+  .candidates.open { display: flex; }
+  .candidates .cand { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 58px; padding: 7px 0;
+                      border-radius: 9px; background: #1a2130; border: 1px solid #2c3648; color: #cdd8ea; cursor: pointer; }
+  .candidates .cand:hover { border-color: #e8734a; background: #223049; }
+  .candidates .cand svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .candidates .cand .cl { font-size: 9px; color: #7f8ca3; }
+  .candidates .cand .cl { font-size: 9px; color: #7f8ca3; }
+
+  /* ================= 任务小面板 ================= */
+  .pet-panel { position: absolute; width: 316px; max-height: 470px; z-index: 35; display: none; flex-direction: column;
+               background: rgba(17,21,31,.97); border: 1px solid #2a3342; border-radius: 14px;
+               box-shadow: 0 18px 50px rgba(0,0,0,.55); overflow: hidden; }
+  .pet-panel.open { display: flex; animation: pp-in .18s cubic-bezier(.2,.9,.3,1); }
+  @keyframes pp-in { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+  .pp-head { display: flex; align-items: center; gap: 8px; padding: 11px 13px 9px; border-bottom: 1px solid #222b3b; }
+  .pp-head b { font-size: 13px; color: #eef2f8; }
+  .pp-count { font-size: 11px; color: #7f8ca3; flex: 1; }
+  .pp-icon-btn { width: 24px; height: 24px; border: 0; border-radius: 7px; background: transparent; color: #8a97ab; cursor: pointer;
+                 display: flex; align-items: center; justify-content: center; }
+  .pp-icon-btn:hover { background: #223049; color: #fff; }
+  .pp-icon-btn.on { color: #e8734a; }
+  .pp-body { overflow-y: auto; padding: 6px 8px 10px; scrollbar-width: none; -ms-overflow-style: none; }
+  .pp-body::-webkit-scrollbar { width: 0; height: 0; display: none; }
+  /* 底部渐隐提示"下面还有"（替代滚动条的存在感） */
+  .pp-body { mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 14px), transparent 100%); }
+  .pp-body:not(:hover) { mask-image: none; }
+  .pp-sec { font-size: 10px; letter-spacing: 1px; color: #66738c; padding: 8px 6px 4px; }
+  .pp-row { display: flex; gap: 9px; padding: 9px 8px; border-radius: 10px; cursor: pointer; align-items: flex-start; }
+  .pp-row:hover { background: #1c2434; }
+  .pp-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+  .is-running .pp-dot { background: #e8734a; animation: pulse 1.2s ease-in-out infinite; }
+  .is-paused .pp-dot { background: #8ea3c8; }
+  .is-needs-input .pp-dot { background: #f0b43c; animation: pulse 1s ease-in-out infinite; }
+  .is-completed .pp-dot { background: #5ac882; }
+  .is-error .pp-dot { background: #eb5a50; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .pp-main { flex: 1; min-width: 0; }
+  .pp-title { font-size: 12px; color: #dbe3ee; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .pp-meta { font-size: 10.5px; color: #66738c; margin-top: 2px; }
+  .pp-plan { height: 3px; border-radius: 2px; background: #242d3f; margin-top: 6px; overflow: hidden; }
+  .pp-plan i { display: block; height: 100%; background: linear-gradient(90deg, #e8734a, #f0a06a); border-radius: 2px; transition: width .4s; }
+  .pp-q { margin-top: 7px; font-size: 11px; color: #f0d49a; background: rgba(240,180,60,.08); border: 1px solid rgba(240,180,60,.25);
+          border-radius: 8px; padding: 6px 8px; line-height: 1.5; }
+  .pp-answer { display: flex; gap: 6px; margin-top: 6px; }
+  .pp-answer input { flex: 1; min-width: 0; background: #10141d; border: 1px solid #2c3648; color: #dbe3ee; font-size: 11px;
+                     border-radius: 7px; padding: 5px 8px; outline: none; }
+  .pp-answer input:focus { border-color: #e8734a; }
+  .pp-answer button { border: 0; background: #e8734a; color: #fff; font-size: 11px; border-radius: 7px; padding: 5px 10px; cursor: pointer; }
+  .pp-acts { display: flex; gap: 4px; flex-shrink: 0; margin-top: 2px; }
+  .pp-act { border: 0; background: #1a2130; color: #8a97ab; font-size: 10px; border-radius: 6px; padding: 4px 7px; cursor: pointer; white-space: nowrap; }
+  .pp-act:hover { background: #223049; color: #fff; }
+  .pp-act.pin.on { color: #e8b49a; background: rgba(232,115,74,.15); }
+  .pp-foot { border-top: 1px solid #222b3b; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; }
+  .pp-foot button { border: 0; background: transparent; color: #8a97ab; font-size: 11px; cursor: pointer; }
+  .pp-foot button:hover { color: #e8734a; }
+  .pp-empty { text-align: center; color: #66738c; font-size: 12px; padding: 26px 0; }
+
+  /* ================= 通知 toast（模拟系统通知） ================= */
+  .toast-zone { position: absolute; right: 14px; top: 14px; z-index: 60; display: flex; flex-direction: column; gap: 8px; }
+  .toast { width: 300px; background: #1a1f2bf5; border: 1px solid #303c54; border-radius: 12px; padding: 11px 13px;
+           display: flex; gap: 10px; box-shadow: 0 14px 40px rgba(0,0,0,.55); animation: toast-in .28s cubic-bezier(.2,.9,.3,1); }
+  @keyframes toast-in { from { opacity: 0; transform: translateX(40px); } }
+  .toast.out { animation: toast-out .25s ease forwards; }
+  @keyframes toast-out { to { opacity: 0; transform: translateX(40px); } }
+  .toast-ic { width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .toast.t-ok .toast-ic { background: rgba(90,200,130,.15); color: #5ac882; }
+  .toast.t-q .toast-ic { background: rgba(240,180,60,.15); color: #f0b43c; }
+  .toast.t-err .toast-ic { background: rgba(235,90,80,.15); color: #eb5a50; }
+  .toast-t { font-size: 12px; font-weight: 600; color: #eef2f8; }
+  .toast-b { font-size: 11px; color: #8a97ab; margin-top: 2px; line-height: 1.45; }
+  .toast-x { margin-left: auto; color: #55617a; cursor: pointer; font-size: 12px; align-self: flex-start; }
+  .toast-x:hover { color: #cdd8ea; }
+
+  /* ================= 演示控制条（原型专用，非产品 UI） ================= */
+  .demo-bar { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: center;
+              background: #12161d; border: 1px dashed #2c3648; border-radius: 12px; padding: 10px 12px; max-width: 960px; }
+  .demo-bar .cap { font-size: 11px; color: #66738c; margin-right: 2px; }
+  .demo-bar button { border: 1px solid #2c3648; background: #1a2130; color: #cdd8ea; font-size: 12px;
+                     border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  .demo-bar button:hover { border-color: #e8734a; color: #fff; }
+  .demo-bar button.warn { border-color: rgba(240,180,60,.4); }
+  .demo-bar button.stop { border-color: rgba(235,90,80,.4); }
+  /* hover 时名字牌下移，避开快问输入条 */
+  .pet:hover .pet-tag { bottom: -48px; }
+  .ask-agent { max-width: 64px; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+
+<header class="proto-head">
+  <h1>宠物伴星 · 交互原型</h1>
+  <span class="sub">对标 Codex / ChatGPT Pets —— 悬浮 · 状态动画 · 右键半圆菜单 · 任务小面板 · 完成通知</span>
+  <div class="seg" id="stateSeg">
+    <button data-st="idle" class="on">跟随任务</button>
+    <button data-st="running">运行中</button>
+    <button data-st="needs-input">需要输入</button>
+    <button data-st="paused">已暂停</button>
+    <button data-st="ready">已完成</button>
+    <button data-st="error">出错</button>
+  </div>
+</header>
+
+<div class="stage" id="stage">
+  <div class="wall"></div>
+  <div class="desk-win win-a"><div class="wt"><i></i><i></i><i></i></div><div class="wb"><div class="ln m"></div><div class="ln"></div><div class="ln s"></div><div class="ln acc"></div><div class="ln"></div></div></div>
+  <div class="desk-win win-b"><div class="wt"><i></i><i></i><i></i></div><div class="wb"><div class="ln s"></div><div class="ln"></div><div class="ln acc"></div></div></div>
+  <div class="taskbar"><span class="tb-ic"></span><span class="tb-ic a2"></span><span class="tb-ic a3"></span><span class="tb-clock">14:32</span></div>
+
+  <!-- 宠物 -->
+  <div class="pet" id="pet" data-state="idle">
+    <div class="pet-aura"></div>
+    <svg viewBox="0 0 120 120" id="petSvgHost"></svg>
+    <!-- 状态气泡 -->
+    <div class="fx fx-q"><div class="bubble">?</div></div>
+    <div class="fx fx-ok"><div class="bubble">✓</div></div>
+    <div class="fx fx-alert"><div class="bubble">!</div></div>
+    <div class="fx fx-zzz"><div class="bubble">💤</div><span class="z1">z</span><span class="z2">z</span></div>
+    <div class="fx fx-busy"><div class="bubble"><div class="spinner"></div></div></div>
+    <div class="pet-badge" id="petBadge">1</div>
+    <div class="pet-tag" id="petTag">言言 · 有 1 个任务需要你</div>
+    <!-- 快问输入条：hover 出现，Enter 直接开工 -->
+    <div class="ask-pill" id="askPill">
+      <button class="ask-agent" id="askAgent" title="切换智能体">办公助手</button>
+      <input id="askInput" placeholder="问点什么 / 派个活…" />
+      <button class="ask-btn" id="askMic" title="语音输入">🎙</button>
+      <button class="ask-btn go" id="askGo" title="发送（Enter）">↑</button>
+    </div>
+    <!-- 形象切换托盘 -->
+    <div class="char-tray" id="charTray"></div>
+  </div>
+
+  <!-- 半圆菜单挂载点 -->
+  <div class="radial" id="radial"></div>
+  <div class="candidates" id="candidates"></div>
+
+  <!-- 任务小面板 -->
+  <aside class="pet-panel" id="panel"></aside>
+
+  <div class="toast-zone" id="toastZone"></div>
+  <div class="stage-hint">左键点宠物 → 任务面板 · 右击 → 半圆菜单 · 拖拽可移动</div>
+</div>
+
+<div class="demo-bar">
+  <span class="cap">演示控制：</span>
+  <button id="btnAdd">＋ 新增模拟任务</button>
+  <button id="btnAsk" class="warn">触发「需要输入」</button>
+  <button id="btnDone">完成一个任务</button>
+  <button id="btnTogglePause">暂停 / 恢复</button>
+  <button id="btnErr" class="stop">让任务出错</button>
+  <button id="btnEdit">编辑常用菜单</button>
+  <button id="btnClear" class="stop">清空任务</button>
+</div>
+
+<script>
+/* ================= 图标（统一线条风格） ================= */
+const ICONS = {
+  newTask:  '<svg viewBox="0 0 24 24"><path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 013 3L8 19l-4 1z"/><path d="M13.5 7.5l3 3"/></svg>',
+  panel:    '<svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+  bell:     '<svg viewBox="0 0 24 24"><path d="M6 16v-5a6 6 0 0112 0v5l1.5 2.5H4.5L6 16z"/><path d="M10 21a2 2 0 004 0"/></svg>',
+  hide:     '<svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>',
+  settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>',
+  shot:     '<svg viewBox="0 0 24 24"><path d="M7 3v3a1 1 0 01-1 1H3M17 3v3a1 1 0 001 1h3M7 21v-3a1 1 0 00-1-1H3M17 21v-3a1 1 0 011-1h3"/></svg>',
+  remote:   '<svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>',
+  agent:    '<svg viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="11" rx="3"/><circle cx="9.5" cy="13" r="1.2"/><circle cx="14.5" cy="13" r="1.2"/><path d="M12 8V4.5M12 4.5a1.5 1.5 0 100-3 1.5 1.5 0 000 3z"/></svg>',
+  pause:    '<svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg>',
+  resume:   '<svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7V5z"/></svg>',
+  stop:     '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
+  pin:      '<svg viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3.5 3H6.5L10 10 9 4z"/><path d="M12 13v7"/></svg>',
+  chat:     '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5z"/></svg>',
+};
+
+/* ---------- 形象系统：四款内置形象，共享六态动画，只换绘制 ---------- */
+const CHARACTERS = {
+  fox:  { name: '言言', body: '#f2926b', body2: '#d95f43', ear: '#ffd9bd' },
+  cat:  { name: '团子', body: '#9db8d8', body2: '#7a95b8', ear: '#e8eef8' },
+  bird: { name: '啾啾', body: '#7ed6a5', body2: '#54b97f', ear: '#d9f4e5' },
+  blob: { name: '布丁', body: '#c9a4f0', body2: '#a885d6', ear: '#efe4fb' },
+};
+let curChar = localStorage.getItem('yz:pet:char') || 'fox';
+if (!CHARACTERS[curChar]) curChar = 'fox';
+
+/* 形象 SVG 生成器：chibi 全身像（带手脚），六态动画 + 四肢摆动 class 全复用 */
+function charSvg(kind) {
+  const c = CHARACTERS[kind] || CHARACTERS.fox;
+  const { body, body2, ear } = c;
+  // 猫「团子」：三角耳、细长尾、小短腿
+  if (kind === 'cat') {
+    return `
+    <g class="pet-body-g">
+      <path class="tail" d="M88 86 Q108 84 106 62" stroke="${body2}" stroke-width="7" fill="none" stroke-linecap="round"/>
+      <path d="M34 50 L30 22 Q32 19 35 21 L54 44 Z" fill="${body}"/>
+      <path d="M86 50 L90 22 Q88 19 85 21 L66 44 Z" fill="${body}"/>
+      <path d="M38 42 L36 30 L45 36 Z" fill="${ear}"/><path d="M82 42 L84 30 L75 36 Z" fill="${ear}"/>
+      <g class="leg-l"><rect x="44" y="99" width="11" height="14" rx="5.5" fill="${body}"/><ellipse cx="49.5" cy="112" rx="8" ry="4" fill="${body2}"/></g>
+      <g class="leg-r"><rect x="65" y="99" width="11" height="14" rx="5.5" fill="${body}"/><ellipse cx="70.5" cy="112" rx="8" ry="4" fill="${body2}"/></g>
+      <ellipse cx="60" cy="76" rx="33" ry="31" fill="${body}"/>
+      <ellipse cx="60" cy="87" rx="18" ry="12" fill="${ear}"/>
+      <g class="arm-l"><path d="M85 72 Q94 81 90 91" stroke="${body2}" stroke-width="8.5" fill="none" stroke-linecap="round"/></g>
+      <g class="arm-r"><path d="M35 72 Q26 81 30 91" stroke="${body2}" stroke-width="8.5" fill="none" stroke-linecap="round"/></g>
+      <g class="eye eye-open"><circle cx="48" cy="66" r="4.4" fill="#1d2432"/><circle cx="49.6" cy="64.4" r="1.4" fill="#fff"/></g>
+      <g class="eye eye2 eye-open"><circle cx="72" cy="66" r="4.4" fill="#1d2432"/><circle cx="73.6" cy="64.4" r="1.4" fill="#fff"/></g>
+      <g class="eye-happy" opacity="0"><path d="M43 67 Q48 61 53 67" stroke="#1d2432" stroke-width="2.8" fill="none" stroke-linecap="round"/><path d="M67 67 Q72 61 77 67" stroke="#1d2432" stroke-width="2.8" fill="none" stroke-linecap="round"/></g>
+      <g class="eye-x" opacity="0"><path d="M44 62 L52 70 M52 62 L44 70" stroke="#1d2432" stroke-width="2.4" stroke-linecap="round"/><path d="M68 62 L76 70 M76 62 L68 70" stroke="#1d2432" stroke-width="2.4" stroke-linecap="round"/></g>
+      <path d="M58 71 L62 71 L60 74 Z" fill="#e8a0b0"/>
+      <path class="mouth" d="M56 78 Q60 81 64 78" stroke="#1d2432" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      <ellipse cx="39" cy="74" rx="4" ry="2.6" fill="#ff8d70" opacity=".4"/><ellipse cx="81" cy="74" rx="4" ry="2.6" fill="#ff8d70" opacity=".4"/>
+    </g>`;
+  }
+  // 雀「啾啾」：圆身、翅膀当手臂、橙色小细腿三趾脚
+  if (kind === 'bird') {
+    return `
+    <g class="pet-body-g">
+      <path class="tail" d="M84 82 L106 72 L98 90 Z" fill="${body2}"/>
+      <path d="M58 46 L51 29 L65 34 Z" fill="${body2}"/>
+      <g class="leg-l"><path d="M52 100 L52 110" stroke="#f0a03c" stroke-width="4" stroke-linecap="round"/><path d="M46 113 L52 109 L58 113" stroke="#f0a03c" stroke-width="3" fill="none" stroke-linecap="round"/></g>
+      <g class="leg-r"><path d="M68 100 L68 110" stroke="#f0a03c" stroke-width="4" stroke-linecap="round"/><path d="M62 113 L68 109 L74 113" stroke="#f0a03c" stroke-width="3" fill="none" stroke-linecap="round"/></g>
+      <ellipse cx="60" cy="74" rx="31" ry="30" fill="${body}"/>
+      <ellipse cx="60" cy="85" rx="17" ry="11" fill="${ear}"/>
+      <g class="arm-l"><path d="M82 68 Q96 74 90 87" stroke="${body2}" stroke-width="8" fill="none" stroke-linecap="round"/></g>
+      <g class="arm-r"><path d="M38 68 Q24 74 30 87" stroke="${body2}" stroke-width="8" fill="none" stroke-linecap="round"/></g>
+      <path d="M75 66 L91 71 L75 76 Z" fill="#f0b43c"/>
+      <g class="eye eye-open"><circle cx="50" cy="62" r="4.2" fill="#12241a"/><circle cx="51.6" cy="60.4" r="1.4" fill="#fff"/></g>
+      <g class="eye eye2 eye-open"><circle cx="67" cy="62" r="4.2" fill="#12241a"/><circle cx="68.6" cy="60.4" r="1.4" fill="#fff"/></g>
+      <g class="eye-happy" opacity="0"><path d="M45 63 Q50 57 55 63" stroke="#12241a" stroke-width="2.8" fill="none" stroke-linecap="round"/><path d="M62 63 Q67 57 72 63" stroke="#12241a" stroke-width="2.8" fill="none" stroke-linecap="round"/></g>
+      <g class="eye-x" opacity="0"><path d="M46 58 L54 66 M54 58 L46 66" stroke="#12241a" stroke-width="2.4" stroke-linecap="round"/><path d="M63 58 L71 66 M71 58 L63 66" stroke="#12241a" stroke-width="2.4" stroke-linecap="round"/></g>
+    </g>`;
+  }
+  // 布丁「团」：果冻团 + 萌系小圆手小圆脚
+  if (kind === 'blob') {
+    return `
+    <g class="pet-body-g">
+      <path d="M57 46 Q53 30 65 32 Q74 34 69 46 Z" fill="${body2}"/>
+      <path d="M28 76 Q28 44 60 44 Q92 44 92 76 Q92 98 60 98 Q28 98 28 76 Z" fill="${body}"/>
+      <ellipse cx="60" cy="87" rx="19" ry="9" fill="${ear}"/>
+      <g class="arm-l"><circle cx="89" cy="76" r="6.5" fill="${body2}"/></g>
+      <g class="arm-r"><circle cx="31" cy="76" r="6.5" fill="${body2}"/></g>
+      <g class="leg-l"><ellipse cx="50" cy="97" rx="7" ry="4.5" fill="${body2}"/></g>
+      <g class="leg-r"><ellipse cx="70" cy="97" rx="7" ry="4.5" fill="${body2}"/></g>
+      <g class="eye eye-open"><circle cx="48" cy="68" r="4.4" fill="#241a32"/><circle cx="49.6" cy="66.4" r="1.4" fill="#fff"/></g>
+      <g class="eye eye2 eye-open"><circle cx="72" cy="68" r="4.4" fill="#241a32"/><circle cx="73.6" cy="66.4" r="1.4" fill="#fff"/></g>
+      <g class="eye-happy" opacity="0"><path d="M43 69 Q48 63 53 69" stroke="#241a32" stroke-width="2.8" fill="none" stroke-linecap="round"/><path d="M67 69 Q72 63 77 69" stroke="#241a32" stroke-width="2.8" fill="none" stroke-linecap="round"/></g>
+      <g class="eye-x" opacity="0"><path d="M44 64 L52 72 M52 64 L44 72" stroke="#241a32" stroke-width="2.4" stroke-linecap="round"/><path d="M68 64 L76 72 M76 64 L68 72" stroke="#241a32" stroke-width="2.4" stroke-linecap="round"/></g>
+      <path class="mouth" d="M56 79 Q60 83 64 79" stroke="#241a32" stroke-width="2" fill="none" stroke-linecap="round"/>
+    </g>`;
+  }
+  // 狐狸「言言」（默认）：蓬松白尖大尾、尖耳、站立小短腿
+  return `
+    <g class="pet-body-g">
+      <g class="tail"><path d="M86 84 Q106 80 102 60" stroke="${body2}" stroke-width="11" fill="none" stroke-linecap="round"/><circle cx="101" cy="62" r="6.5" fill="#ffe9d9"/></g>
+      <path d="M32 46 Q26 18 46 28 Q58 35 55 50 Z" fill="${body}"/>
+      <path d="M88 46 Q94 18 74 28 Q62 35 65 50 Z" fill="${body}"/>
+      <path d="M37 41 Q35 27 44 32 Q50 36 49 43 Z" fill="${ear}"/><path d="M83 41 Q85 27 76 32 Q70 36 71 43 Z" fill="${ear}"/>
+      <g class="leg-l"><rect x="43" y="98" width="12" height="15" rx="6" fill="${body2}"/><ellipse cx="49" cy="112" rx="9" ry="4.5" fill="#c4523a"/></g>
+      <g class="leg-r"><rect x="65" y="98" width="12" height="15" rx="6" fill="${body2}"/><ellipse cx="71" cy="112" rx="9" ry="4.5" fill="#c4523a"/></g>
+      <ellipse cx="60" cy="76" rx="34" ry="31" fill="${body}"/>
+      <ellipse cx="60" cy="86" rx="19" ry="14" fill="${ear}"/>
+      <g class="arm-l"><path d="M87 72 Q96 80 92 91" stroke="${body2}" stroke-width="9" fill="none" stroke-linecap="round"/></g>
+      <g class="arm-r"><path d="M33 72 Q24 80 28 91" stroke="${body2}" stroke-width="9" fill="none" stroke-linecap="round"/></g>
+      <g class="eye eye-open"><circle cx="47" cy="66" r="4.6" fill="#2a1a12"/><circle cx="48.6" cy="64.4" r="1.5" fill="#fff"/></g>
+      <g class="eye eye2 eye-open"><circle cx="73" cy="66" r="4.6" fill="#2a1a12"/><circle cx="74.6" cy="64.4" r="1.5" fill="#fff"/></g>
+      <g class="eye-happy" opacity="0"><path d="M42 67 Q47 61 52 67" stroke="#2a1a12" stroke-width="2.8" fill="none" stroke-linecap="round"/><path d="M68 67 Q73 61 78 67" stroke="#2a1a12" stroke-width="2.8" fill="none" stroke-linecap="round"/></g>
+      <g class="eye-x" opacity="0"><path d="M43 62 L51 70 M51 62 L43 70" stroke="#2a1a12" stroke-width="2.4" stroke-linecap="round"/><path d="M69 62 L77 70 M77 62 L69 70" stroke="#2a1a12" stroke-width="2.4" stroke-linecap="round"/></g>
+      <path class="mouth" d="M56 76 Q60 80 64 76" stroke="#2a1a12" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+      <ellipse cx="39" cy="74" rx="4.5" ry="3" fill="#ff8d70" opacity=".5"/><ellipse cx="81" cy="74" rx="4.5" ry="3" fill="#ff8d70" opacity=".5"/>
+    </g>`;
+}
+/* 命令注册表（实施时对应 app 内既有动作） */
+const COMMANDS = {
+  newTask:  { icon: 'newTask',  label: '新建任务' },
+  panel:    { icon: 'panel',    label: '任务面板' },
+  bell:     { icon: 'bell',     label: '通知' },
+  hide:     { icon: 'hide',     label: '隐藏' },
+  settings: { icon: 'settings', label: '设置' },
+  shot:     { icon: 'shot',     label: '截图' },
+  remote:   { icon: 'remote',   label: '远控' },
+  agent:    { icon: 'agent',    label: '智能体' },
+  pause:    { icon: 'pause',    label: '暂停' },
+  resume:   { icon: 'resume',   label: '恢复' },
+  stop:     { icon: 'stop',     label: '停止' },
+  chat:     { icon: 'chat',     label: '回消息' },
+};
+
+/* 常用菜单槽位（默认 5 个，可编辑；实施时持久化到 settings） */
+let slots = ['newTask', 'panel', 'bell', 'hide', 'settings'];
+
+/* ================= 演示任务数据 ================= */
+let seq = 6;
+let tasks = [
+  { id: 't1', title: '整理三季度销售数据并生成对比报表', status: 'running', plan: { done: 2, total: 5 }, elapsed: 412, agent: '办公助手' },
+  { id: 't2', title: '抓取竞品价格并输出分析', status: 'needs-input', agent: 'pageAgent', elapsed: 1220,
+    question: '找到 3 个数据源（京东/淘宝/1688），全部抓取还是只抓前两个？' },
+  { id: 't3', title: '产品周报草稿润色', status: 'paused', plan: { done: 1, total: 3 }, elapsed: 1204, agent: '办公助手' },
+  { id: 't4', title: '生成新品封面图 3 张', status: 'completed', elapsed: 934, unread: true, agent: '剪辑师' },
+  { id: 't5', title: '同步库存表到 NAS', status: 'error', elapsed: 260, agent: '办公助手', msg: '网络超时，已自动重试 2 次仍失败' },
+];
+let muted = false;
+let pinnedId = null;   // 手动 pin 的任务（null = 自动跟随最高优先级）
+let forcedState = null; // 顶部 seg 强制覆盖（原型预览用）
+let editMode = false, pickedSlot = -1;
+
+/* ================= 状态机与渲染 ================= */
+const PRIO = { 'needs-input': 5, error: 4, ready: 3, paused: 2, running: 1, completed: 0 };
+const stateOf = (t) => t.status === 'completed' && t.unread ? 'ready' : t.status;
+function pickFocus() {
+  if (pinnedId) { const p = tasks.find((t) => t.id === pinnedId); if (p) return p; }
+  return [...tasks].sort((a, b) => PRIO[stateOf(b)] - PRIO[stateOf(a)])[0] || null;
+}
+function petState() {
+  if (forcedState) return forcedState;
+  const f = pickFocus();
+  if (!f) return 'idle';
+  const s = stateOf(f);
+  return s === 'completed' ? 'ready' : s;
+}
+
+const pet = document.getElementById('pet');
+const petTag = document.getElementById('petTag');
+const petBadge = document.getElementById('petBadge');
+const panel = document.getElementById('panel');
+const radial = document.getElementById('radial');
+const candidates = document.getElementById('candidates');
+const stage = document.getElementById('stage');
+
+const STATE_TXT = {
+  idle: '在打盹 · 一切就绪',
+  running: '任务执行中',
+  'needs-input': '有个任务在等你',
+  paused: '任务已暂停',
+  ready: '任务完成了！',
+  error: '任务出错了',
+};
+function fmt(sec) { sec = Math.max(0, sec | 0); const m = (sec / 60) | 0, s = sec % 60; return m > 0 ? `${m} 分 ${s} 秒` : `${s} 秒`; }
+function fmtT(sec) { sec = Math.max(0, sec | 0); return `${String((sec / 60) | 0).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`; }
+
+function renderPet() {
+  const st = petState();
+  pet.dataset.state = st;
+  const need = tasks.filter((t) => t.status === 'needs-input' || (t.status === 'completed' && t.unread) || t.status === 'error');
+  const n = muted ? 0 : need.length;
+  petBadge.classList.toggle('show', n > 0);
+  petBadge.classList.toggle('muted', muted);
+  petBadge.textContent = String(n);
+  const f = pickFocus();
+  petTag.textContent = f ? `${CHARACTERS[curChar].name} · ${STATE_TXT[st]}` : `${CHARACTERS[curChar].name} · 一切就绪`;
+  document.querySelectorAll('#stateSeg button').forEach((b) => b.classList.toggle('on', forcedState ? b.dataset.st === forcedState : b.dataset.st === 'idle' && !f));
+}
+
+/* ---------- 任务小面板 ---------- */
+const SECTIONS = [
+  { key: 'need',  label: '需要处理', match: (t) => t.status === 'needs-input' || t.status === 'error' },
+  { key: 'run',   label: '进行中',   match: (t) => t.status === 'running' || t.status === 'paused' },
+  { key: 'done',  label: '刚完成',   match: (t) => t.status === 'completed' },
+];
+function renderPanel() {
+  const runN = tasks.filter((t) => ['running', 'paused'].includes(t.status)).length;
+  const needN = tasks.filter((t) => SECTIONS[0].match(t)).length;
+  let h = `<div class="pp-head"><b>任务</b><span class="pp-count">${runN} 进行 · ${needN} 待处理</span>
+    <button class="pp-icon-btn ${muted ? 'on' : ''}" id="ppMute" title="静音通知">${ICONS.bell}</button>
+    <button class="pp-icon-btn" id="ppClose" title="关闭">✕</button></div><div class="pp-body">`;
+  if (!tasks.length) h += `<div class="pp-empty">没有任务 —— 点半圆菜单「新建任务」开始</div>`;
+  for (const sec of SECTIONS) {
+    const list = tasks.filter(sec.match);
+    if (!list.length) continue;
+    h += `<div class="pp-sec">${sec.label}</div>`;
+    for (const t of list) {
+      const cls = t.status === 'completed' && t.unread ? 'ready' : t.status;
+      h += `<div class="pp-row is-${cls}" data-id="${t.id}">
+        <span class="pp-dot"></span>
+        <div class="pp-main">
+          <div class="pp-title">${t.title}${pinnedId === t.id ? ' 📌' : ''}</div>
+          <div class="pp-meta">${t.agent || ''} · 已用 ${fmt(t.elapsed)}${t.plan ? ` · 步骤 ${t.plan.done}/${t.plan.total}` : ''}</div>
+          ${t.plan ? `<div class="pp-plan"><i style="width:${Math.round(t.plan.done / t.plan.total * 100)}%"></i></div>` : ''}
+          ${t.status === 'needs-input' ? `<div class="pp-q">${t.question || '智能体在等你补充信息'}
+            <div class="pp-answer"><input placeholder="快答…" data-q="${t.id}"><button data-send="${t.id}">发送</button></div></div>` : ''}
+          ${t.status === 'error' ? `<div class="pp-q" style="color:#f0a09a;background:rgba(235,90,80,.08);border-color:rgba(235,90,80,.25)">${t.msg || '任务执行失败'}</div>` : ''}
+        </div>
+        <div class="pp-acts">
+          ${t.status === 'running' ? `<button class="pp-act" data-act="pause" data-id="${t.id}">暂停</button>` : ''}
+          ${t.status === 'paused' ? `<button class="pp-act" data-act="resume" data-id="${t.id}">恢复</button>` : ''}
+          ${t.status === 'error' ? `<button class="pp-act" data-act="retry" data-id="${t.id}">重试</button>` : ''}
+          ${t.status === 'completed' && t.unread ? `<button class="pp-act" data-act="view" data-id="${t.id}">查看</button>` : ''}
+          <button class="pp-act pin ${pinnedId === t.id ? 'on' : ''}" data-act="pin" data-id="${t.id}" title="让宠物跟随这个任务">📌</button>
+        </div>
+      </div>`;
+    }
+  }
+  h += `</div><div class="pp-foot"><button id="ppAll">打开全部任务 →</button><span style="font-size:10px;color:#55617a">点击行 = 跳转会话</span></div>`;
+  panel.innerHTML = h;
+  panel.querySelector('#ppClose').onclick = () => togglePanel(false);
+  panel.querySelector('#ppMute').onclick = () => { muted = !muted; renderPet(); renderPanel(); toast(muted ? '已静音宠物通知' : '已恢复通知', '', 't-ok'); };
+  panel.querySelector('#ppAll').onclick = () => { toast('演示', '将打开主窗口的任务列表（活动列表页）', 't-ok'); };
+  panel.querySelectorAll('.pp-row').forEach((r) => {
+    r.addEventListener('click', (e) => {
+      if (e.target.closest('button') || e.target.closest('input')) return;
+      toast('演示', `跳转到会话「${tasks.find((t) => t.id === r.dataset.id)?.title.slice(0, 12)}…」（主窗口前置并选中该会话）`, 't-ok');
+    });
+  });
+  panel.querySelectorAll('[data-send]').forEach((b) => b.onclick = () => {
+    const id = b.dataset.send, input = panel.querySelector(`input[data-q="${id}"]`);
+    const t = tasks.find((x) => x.id === id);
+    t.status = 'running'; t.plan = { done: 3, total: 5 };
+    toast('已回答', `「${(input.value || '（默认继续）').slice(0, 14)}」已并入任务，继续执行`, 't-ok');
+    refresh();
+  });
+  panel.querySelectorAll('[data-act]').forEach((b) => b.onclick = (e) => {
+    e.stopPropagation();
+    const t = tasks.find((x) => x.id === b.dataset.id); if (!t) return;
+    if (b.dataset.act === 'pause') { t.status = 'paused'; toast('已暂停', t.title.slice(0, 18) + '…', 't-ok'); }
+    if (b.dataset.act === 'resume') { t.status = 'running'; toast('已恢复', t.title.slice(0, 18) + '…', 't-ok'); }
+    if (b.dataset.act === 'retry') { t.status = 'running'; t.msg = ''; t.elapsed = 0; toast('重试中', t.title.slice(0, 18) + '…', 't-ok'); }
+    if (b.dataset.act === 'view') { t.unread = false; toast('演示', '跳转到该会话查看交付结果', 't-ok'); }
+    if (b.dataset.act === 'pin') { pinnedId = pinnedId === t.id ? null : t.id; toast(pinnedId ? '宠物已跟随该任务' : '已回到自动跟随', '', 't-ok'); }
+    refresh();
+  });
+}
+
+/* ---------- 半圆菜单 ---------- */
+function slotPos(i, n, r) {
+  const start = 168, end = 12; // 上半圆弧（度）
+  const a = (start - (start - end) * (n === 1 ? .5 : i / (n - 1))) * Math.PI / 180;
+  return { x: Math.cos(a) * r, y: -Math.sin(a) * r };
+}
+function renderRadial() {
+  radial.innerHTML = slots.map((k, i) => {
+    const c = COMMANDS[k];
+    return `<div class="slot" data-i="${i}" data-key="${k}">${ICONS[c.icon]}<span class="sl">${c.label}</span><span class="pin-dot"></span></div>`;
+  }).join('');
+  radial.querySelectorAll('.slot').forEach((s) => {
+    const { x, y } = slotPos(+s.dataset.i, slots.length, 96);
+    s.style.setProperty('--tx', `${x}px`); s.style.setProperty('--ty', `${y}px`);
+    s.onclick = () => {
+      if (editMode) { pickedSlot = +s.dataset.i; renderRadial(); renderCandidates(); return; }
+      doCommand(s.dataset.key);
+      closeRadial();
+    };
+  });
+  requestAnimationFrame(() => {
+    radial.querySelectorAll('.slot').forEach((s) => {
+      s.style.transform = `translate(${s.style.getPropertyValue('--tx')},${s.style.getPropertyValue('--ty')}) scale(1)`;
+    });
+  });
+}
+function renderCandidates() {
+  const pool = Object.keys(COMMANDS).filter((k) => !slots.includes(k));
+  candidates.innerHTML = `<span class="cap" style="font-size:10px;color:#66738c;padding:4px 2px">点槽位选中，点候选替换：</span>` +
+    pool.map((k) => `<div class="cand" data-key="${k}">${ICONS[COMMANDS[k].icon]}<span class="cl">${COMMANDS[k].label}</span></div>`).join('');
+  candidates.querySelectorAll('.cand').forEach((c) => c.onclick = () => {
+    if (pickedSlot < 0) return;
+    slots[pickedSlot] = c.dataset.key;
+    pickedSlot = -1; renderRadial(); renderCandidates();
+  });
+}
+function openRadial(px, py) {
+  radial.style.left = px + 'px'; radial.style.top = py + 'px';
+  radial.classList.add('open');
+  radial.classList.toggle('editing', editMode);
+  renderRadial();
+  // 靠近舞台顶部时翻转到下半圆
+  const flip = py < 190;
+  radial.querySelectorAll('.slot').forEach((s, i) => {
+    const { x, y } = slotPos(i, slots.length, 96);
+    s.style.transform = `translate(${x}px,${flip ? -y : y}px) scale(1)`;
+  });
+  if (editMode) {
+    candidates.style.left = Math.max(12, Math.min(px - 210, stage.clientWidth - 440)) + 'px';
+    candidates.style.top = (flip ? py + 60 : py - 60) + 'px';
+    candidates.classList.add('open'); renderCandidates();
+  }
+}
+function closeRadial() { radial.classList.remove('open'); candidates.classList.remove('open'); radial.innerHTML = ''; }
+
+function doCommand(key) {
+  const M = {
+    newTask: () => toast('演示', '打开主窗口并新建任务草稿（聚焦输入框）', 't-ok'),
+    panel: () => togglePanel(true),
+    bell: () => { muted = !muted; renderPet(); toast(muted ? '已静音' : '已恢复通知', '', 't-ok'); },
+    hide: () => toast('演示', '隐藏宠物（托盘/快捷键可再次呼出）', 't-ok'),
+    settings: () => toast('演示', '打开设置 → 宠物', 't-ok'),
+    shot: () => toast('演示', '启动截图（复用现有框选遮罩）', 't-ok'),
+    remote: () => toast('演示', '跳转远控页', 't-ok'),
+    agent: () => toast('演示', '弹出智能体切换列表', 't-ok'),
+    pause: () => { const t = tasks.find((x) => x.status === 'running'); if (t) { t.status = 'paused'; refresh(); } },
+    resume: () => { const t = tasks.find((x) => x.status === 'paused'); if (t) { t.status = 'running'; refresh(); } },
+    stop: () => { const t = pickFocus(); if (t) { tasks = tasks.filter((x) => x !== t); refresh(); } },
+    chat: () => toast('演示', '跳到最近的未读会话', 't-ok'),
+  };
+  (M[key] || (() => {}))();
+}
+
+/* ---------- 通知 toast ---------- */
+function toast(title, body, cls = 't-ok') {
+  if (muted && cls !== 't-q') return;
+  const zone = document.getElementById('toastZone');
+  const el = document.createElement('div');
+  el.className = 'toast ' + cls;
+  const ico = cls === 't-ok' ? '✓' : cls === 't-q' ? '?' : '!';
+  el.innerHTML = `<div class="toast-ic">${ico}</div><div><div class="toast-t">${title}</div><div class="toast-b">${body || ''}</div></div><span class="toast-x">✕</span>`;
+  el.querySelector('.toast-x').onclick = () => el.remove();
+  zone.appendChild(el);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 260); }, 5200);
+  while (zone.children.length > 3) zone.firstChild.remove();
+}
+
+/* ---------- 面板开合 ---------- */
+let panelOpen = false;
+function togglePanel(on) {
+  panelOpen = on ?? !panelOpen;
+  panel.classList.toggle('open', panelOpen);
+  if (panelOpen) {
+    renderPanel();
+    const pr = pet.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+    const left = pr.left - sr.left > sr.width / 2 ? pr.left - sr.left - 328 : pr.left - sr.left + 124;
+    panel.style.left = Math.max(8, Math.min(left, sr.width - 324)) + 'px';
+    panel.style.top = Math.max(8, Math.min(pr.top - sr.top - 10, sr.height - 480)) + 'px';
+  }
+}
+
+/* ---------- 宠物拖拽 / 点击 / 右键 ---------- */
+let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0, downT = 0;
+pet.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  dragging = true; moved = false; walking = false; pet.style.transition = '';
+  sx = e.clientX; sy = e.clientY;
+  ox = pet.offsetLeft; oy = pet.offsetTop;
+  pet.classList.add('dragging');
+  pet.setPointerCapture(e.pointerId);
+});
+pet.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - sx, dy = e.clientY - sy;
+  if (Math.abs(dx) + Math.abs(dy) > 5) moved = true;
+  if (moved) {
+    pet.style.left = Math.max(0, Math.min(ox + dx, stage.clientWidth - 112)) + 'px';
+    pet.style.top = Math.max(0, Math.min(oy + dy, stage.clientHeight - 118)) + 'px';
+    if (panelOpen) togglePanel(true);
+    if (radial.classList.contains('open')) { const r = pet.getBoundingClientRect(), s2 = stage.getBoundingClientRect(); openRadial(r.left - s2.left + 56, r.top - s2.top + 30); }
+  }
+});
+pet.addEventListener('pointerup', (e) => {
+  dragging = false; pet.classList.remove('dragging');
+  if (!moved && Date.now() - downT < 400) togglePanel();
+});
+pet.addEventListener('pointerdown', () => { downT = Date.now(); });
+pet.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const r = pet.getBoundingClientRect(), s = stage.getBoundingClientRect();
+  openRadial(r.left - s.left + 56, r.top - s.top + 34);
+});
+document.addEventListener('pointerdown', (e) => {
+  const el = e.target;
+  if (el && el.closest && typeof el.closest === 'function'
+    && !el.closest('.pet') && !el.closest('.radial') && !el.closest('.candidates')) closeRadial();
+}, true);
+
+/* ---------- 演示控制 ---------- */
+const TEMPLATES = [
+  { title: '把会议纪要整理成待办清单', agent: '办公助手' },
+  { title: '监控 1688 价格变动并汇报', agent: 'pageAgent' },
+  { title: '为新品短视频配音加字幕', agent: '剪辑师' },
+  { title: '核对本月对账单差异', agent: '办公助手' },
+];
+function refresh() { renderPet(); if (panelOpen) renderPanel(); }
+document.getElementById('btnAdd').onclick = () => {
+  const t = TEMPLATES[Math.floor(Math.random() * TEMPLATES.length)];
+  tasks.unshift({ id: 'x' + seq++, ...t, status: 'running', plan: { done: 0, total: 4 }, elapsed: 0 });
+  refresh();
+};
+document.getElementById('btnAsk').onclick = () => {
+  const t = tasks.find((x) => x.status === 'running') || tasks.find((x) => x.status !== 'completed');
+  if (!t) return;
+  t.status = 'needs-input'; t.question = '「交付目录」里有 2 个同名文件，覆盖还是都保留？';
+  refresh();
+  toast('需要你的输入', t.title.slice(0, 20) + '…', 't-q');
+};
+document.getElementById('btnDone').onclick = () => {
+  const t = tasks.find((x) => x.status === 'running') || tasks.find((x) => x.status === 'paused');
+  if (!t) return;
+  t.status = 'completed'; t.unread = true; delete t.question;
+  refresh();
+  toast('任务已完成', t.title.slice(0, 22) + (t.title.length > 22 ? '…' : ''), 't-ok');
+};
+document.getElementById('btnTogglePause').onclick = () => {
+  const t = tasks.find((x) => x.status === 'running');
+  if (t) { t.status = 'paused'; } else { const p = tasks.find((x) => x.status === 'paused'); if (p) p.status = 'running'; }
+  refresh();
+};
+document.getElementById('btnErr').onclick = () => {
+  const t = tasks.find((x) => x.status === 'running') || tasks.find((x) => x.status === 'paused');
+  if (!t) return;
+  t.status = 'error'; t.msg = '目标目录不可写，已停止';
+  refresh();
+  toast('任务出错', t.title.slice(0, 20) + '…', 't-err');
+};
+document.getElementById('btnClear').onclick = () => { tasks = []; pinnedId = null; refresh(); };
+document.getElementById('btnEdit').onclick = () => {
+  editMode = !editMode; pickedSlot = -1;
+  document.getElementById('btnEdit').textContent = editMode ? '退出编辑' : '编辑常用菜单';
+  if (editMode) { const r = pet.getBoundingClientRect(), s = stage.getBoundingClientRect(); openRadial(r.left - s.left + 56, r.top - s.top + 34); }
+  else { closeRadial(); }
+};
+document.getElementById('stateSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  forcedState = forcedState === b.dataset.st ? null : b.dataset.st;
+  document.querySelectorAll('#stateSeg button').forEach((x) => x.classList.toggle('on', forcedState === x.dataset.st));
+  renderPet();
+});
+
+/* 计时 */
+setInterval(() => {
+  let dirty = false;
+  for (const t of tasks) if (t.status === 'running') { t.elapsed++; dirty = true; }
+  if (dirty && panelOpen) renderPanel();
+}, 1000);
+
+/* ============ 快问输入 + 形象系统（接线） ============ */
+function renderPetSvg() {
+  const host = document.getElementById('petSvgHost');
+  if (host) host.innerHTML = charSvg(curChar);
+  document.getElementById('pet').dataset.char = curChar;
+  document.querySelectorAll('#charTray .chr').forEach((el) => el.classList.toggle('on', el.dataset.k === curChar));
+}
+function renderTray() {
+  const tray = document.getElementById('charTray');
+  if (!tray) return;
+  tray.innerHTML = Object.entries(CHARACTERS).map(([k, c]) =>
+    '<div class="chr ' + (k === curChar ? 'on' : '') + '" data-k="' + k + '">' +
+    '<svg viewBox="0 0 120 120">' + charSvg(k) + '</svg><span>' + c.name + '</span></div>').join('');
+}
+let trayOpen = false;
+function toggleTray(on) {
+  trayOpen = (on === undefined) ? !trayOpen : !!on;
+  document.getElementById('charTray').classList.toggle('open', trayOpen);
+  if (trayOpen) renderTray();
+}
+document.getElementById('charTray').addEventListener('click', (e) => {
+  const item = e.target.closest ? e.target.closest('.chr') : null;
+  if (!item) return;
+  curChar = item.dataset.k;
+  try { localStorage.setItem('yz:pet:char', curChar); } catch (err) {}
+  renderPetSvg(); renderTray();
+  toast('已切换形象', CHARACTERS[curChar].name, 't-ok');
+});
+// 半圆菜单运行时注册「换形象」命令
+ICONS.char = '<svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="7"/><path d="M9 4l1.5 2h3L15 4z"/></svg>';
+COMMANDS.char = { icon: 'char', label: '换形象' };
+const _doCommand = doCommand;
+doCommand = function (key) { if (key === 'char') { toggleTray(); return; } _doCommand(key); };
+// 双击宠物 = 形象托盘
+pet.addEventListener('dblclick', () => { togglePanel(false); toggleTray(); });
+
+/* 快问输入：hover 出现，Enter / ↑ 直接派活 */
+const askPill = document.getElementById('askPill');
+const askInput = document.getElementById('askInput');
+const askGo = document.getElementById('askGo');
+const askAgentBtn = document.getElementById('askAgent');
+const askMic = document.getElementById('askMic');
+const AGENT_LIST = ['办公助手', 'pageAgent', '剪辑师', '工作流助手'];
+let askAgentIdx = 0;
+function submitAsk() {
+  const v = askInput.value.trim();
+  if (!v) return;
+  askInput.value = '';
+  tasks.unshift({ id: 'x' + (seq++), title: v, agent: AGENT_LIST[askAgentIdx], status: 'running', plan: { done: 0, total: 4 }, elapsed: 0 });
+  refresh();
+  toast('已派活', '「' + v.slice(0, 18) + '」已交给 ' + AGENT_LIST[askAgentIdx] + ' 执行', 't-ok');
+}
+askInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitAsk(); }
+  if (e.key === 'Escape') askInput.blur();
+});
+askGo.addEventListener('click', submitAsk);
+askAgentBtn.addEventListener('click', () => {
+  askAgentIdx = (askAgentIdx + 1) % AGENT_LIST.length;
+  askAgentBtn.textContent = AGENT_LIST[askAgentIdx];
+});
+askMic.addEventListener('click', () => toast('演示', '语音输入：实施时接系统听写', 't-q'));
+askPill.addEventListener('focusin', () => askPill.classList.add('focus'));
+askPill.addEventListener('focusout', () => askPill.classList.remove('focus'));
+// 快问条/托盘内的指针事件不冒泡成宠物拖拽或开面板
+['pointerdown', 'pointerup', 'contextmenu'].forEach((ev) => {
+  askPill.addEventListener(ev, (e) => e.stopPropagation());
+  document.getElementById('charTray').addEventListener(ev, (e) => e.stopPropagation());
+});
+// 面板打开时藏起快问条（避免重叠）
+const _togglePanel = togglePanel;
+togglePanel = function (on) { _togglePanel(on); askPill.style.display = panelOpen ? 'none' : ''; };
+// 点外部收起形象托盘
+document.addEventListener('pointerdown', (e) => {
+  const el = e.target;
+  if (!(el && el.closest)) return;
+  if (!el.closest('.char-tray') && !el.closest('.pet')) toggleTray(false);
+}, true);
+
+renderPetSvg();
+
+/* 闲逛踱步（Shimeji 风）：idle 且无面板/托盘/拖拽时，偶尔左右走一段 */
+let walking = false;
+function scheduleWander() {
+  setTimeout(() => {
+    if (petState() === 'idle' && !dragging && !panelOpen && !trayOpen && !forcedState) {
+      const cur = parseInt(pet.style.left || '640', 10);
+      const target = Math.max(10, Math.min(stage.clientWidth - 120, cur + (Math.random() * 2 - 1) * 260));
+      if (Math.abs(target - cur) > 40) {
+        walking = true;
+        pet.dataset.state = 'walking';
+        document.getElementById('petSvgHost').style.transform = target < cur ? 'scaleX(-1)' : '';
+        const dur = Math.max(1.2, Math.abs(target - cur) / 110);
+        pet.style.transition = 'left ' + dur.toFixed(2) + 's linear';
+        pet.style.left = target + 'px';
+        setTimeout(() => {
+          pet.style.transition = '';
+          walking = false;
+          renderPet();
+        }, dur * 1000);
+      }
+    }
+    scheduleWander();
+  }, 6000 + Math.random() * 8000);
+}
+scheduleWander();
+
+renderPet(); renderPanel();
+</script>
+</body>
+</html>

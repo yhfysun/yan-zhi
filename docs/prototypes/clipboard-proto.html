@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>言智 · 超级剪贴板 — 交互原型 2026-10-27</title>
+<style>
+/* ============================================================
+   言智 · 超级剪贴板 交互原型
+   对标:鱼皮《剪切助手》(jianqiezhushou.com) 的面板形态与交互
+   配色/字号取自 packages/ui/src/styles/tokens.css(纸墨骨架 + 靛蓝主色)
+   可真实按键:Ctrl+Alt+V 唤起 / Esc 关闭 / 1-9 快速粘贴 / ↑↓ 选择 / Enter 粘贴 / / 搜索
+   ============================================================ */
+:root {
+  --bg: #F7F8FA; --surface: #FFFFFF; --surface-hover: #F0F2F7;
+  --border: #E7EAF0; --border-strong: #D5DAE4;
+  --text: #1A1D24; --text2: #5A6272; --text3: #8B93A3;
+  --primary: #4F46E5; --primary-light: #EEF0FF;
+  --danger: #B91C1C; --success: #2E7D5B;
+  --shadow-panel: 0 24px 64px rgba(15, 18, 30, .22), 0 4px 16px rgba(15, 18, 30, .10);
+  --shadow-pop: 0 12px 32px rgba(15, 18, 30, .16);
+  --wall1: #E3E8F0; --wall2: #CBD3E0;
+  --win-bg: #FFFFFF; --win-bar: #F0F2F7;
+}
+html[data-theme="dark"] {
+  --bg: #14161C; --surface: #1C1F27; --surface-hover: #252A35;
+  --border: #2A2F3A; --border-strong: #3A4150;
+  --text: #E8EAF0; --text2: #9AA3B5; --text3: #6B7385;
+  --primary: #818CF8; --primary-light: rgba(99, 102, 241, .18);
+  --shadow-panel: 0 24px 64px rgba(0, 0, 0, .55), 0 4px 16px rgba(0, 0, 0, .35);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, .5);
+  --wall1: #0D0F14; --wall2: #171B23;
+  --win-bg: #1C1F27; --win-bar: #232733;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+  font-size: 13px; color: var(--text);
+  background: radial-gradient(120% 120% at 20% 0%, var(--wall1), var(--wall2));
+  transition: background .3s;
+}
+button { font-family: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+svg { display: block; }
+
+/* ===== 模拟桌面:背后的文档窗口 ===== */
+.desktop { position: absolute; inset: 0 0 34px 0; display: flex; align-items: center; justify-content: center; padding: 40px; }
+.mock-window {
+  width: min(720px, 76vw); height: min(520px, 70vh);
+  background: var(--win-bg); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow-pop); overflow: hidden;
+  transition: opacity .18s, transform .18s;
+}
+.mock-titlebar {
+  height: 34px; background: var(--win-bar); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 12px; color: var(--text2);
+}
+.mock-dots { display: flex; gap: 6px; }
+.mock-dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--border-strong); }
+.mock-dots i:first-child { background: #E8A0A0; } .mock-dots i:nth-child(2) { background: #E8D6A0; } .mock-dots i:last-child { background: #A0D8B0; }
+.mock-body { padding: 28px 36px; }
+.mock-h { height: 18px; width: 42%; border-radius: 4px; background: var(--border-strong); margin-bottom: 18px; }
+.mock-line { height: 9px; border-radius: 4px; background: var(--border); margin-bottom: 11px; }
+.mock-line.w90 { width: 90%; } .mock-line.w75 { width: 75%; } .mock-line.w60 { width: 60%; } .mock-line.w82 { width: 82%; }
+.dimmed .mock-window { opacity: .28; transform: scale(.985); }
+
+/* ===== 模拟任务栏 ===== */
+.taskbar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 34px;
+  background: var(--surface); border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px; padding: 0 14px;
+}
+.tb-app { width: 22px; height: 22px; border-radius: 5px; background: var(--surface-hover); display: flex; align-items: center; justify-content: center; }
+.tb-yz {
+  width: 22px; height: 22px; border-radius: 5px; color: #fff; font-size: 11px; font-weight: 700;
+  background: linear-gradient(135deg, #4F46E5, #7C5CFC); display: flex; align-items: center; justify-content: center;
+  cursor: pointer; title: "言智托盘图标(点击也可唤起剪贴板)";
+}
+.tb-hint { font-size: 11px; color: var(--text3); margin-left: 6px; }
+
+/* ===== 原型操作指南 ===== */
+.guide {
+  position: absolute; top: 16px; left: 16px; width: 268px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow-pop); padding: 12px 14px; font-size: 12px; color: var(--text2); line-height: 1.9;
+}
+.guide b { color: var(--text); font-size: 13px; display: block; margin-bottom: 4px; }
+.guide kbd {
+  display: inline-block; padding: 1px 6px; border: 1px solid var(--border-strong); border-bottom-width: 2px;
+  border-radius: 4px; background: var(--surface-hover); font-family: inherit; font-size: 11px; color: var(--text); margin: 0 1px;
+}
+.guide .g-row { display: flex; gap: 6px; align-items: baseline; }
+.guide .tag { color: var(--primary); font-weight: 600; }
+
+/* ===== 中央快捷键提示(面板关闭时) ===== */
+.hotkey-hint {
+  position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; padding: 10px 18px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+  box-shadow: var(--shadow-pop); font-size: 13px; color: var(--text2); cursor: pointer;
+  transition: opacity .2s, transform .2s;
+}
+.hotkey-hint kbd {
+  padding: 3px 9px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 6px;
+  background: var(--surface-hover); font-size: 12px; font-weight: 600; color: var(--text);
+}
+.hotkey-hint:hover { border-color: var(--primary); color: var(--text); }
+.hidden { opacity: 0 !important; pointer-events: none !important; transform: translateX(-50%) translateY(8px) !important; }
+
+/* ================= 剪贴板面板 ================= */
+.panel {
+  position: absolute; left: 50%; top: 50%; z-index: 30;
+  width: 432px; height: 600px; max-height: calc(100vh - 80px);
+  transform: translate(-50%, -50%) scale(.96); opacity: 0; pointer-events: none;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: var(--shadow-panel); display: flex; flex-direction: column; overflow: hidden;
+  transition: opacity .16s cubic-bezier(.16,1,.3,1), transform .16s cubic-bezier(.16,1,.3,1);
+}
+.panel.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+
+/* 头部 */
+.p-head { padding: 12px 14px 0; }
+.p-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; cursor: grab; user-select: none; }
+.p-brand:active { cursor: grabbing; }
+.p-brand button { cursor: pointer; }
+.p-logo {
+  width: 22px; height: 22px; border-radius: 6px; color: #fff; font-size: 11px; font-weight: 700;
+  background: linear-gradient(135deg, #4F46E5, #7C5CFC); display: flex; align-items: center; justify-content: center;
+}
+.p-title { font-weight: 700; font-size: 14px; }
+.p-spacer { flex: 1; }
+.p-icon-btn {
+  width: 26px; height: 26px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  color: var(--text3); transition: background .12s, color .12s;
+}
+.p-icon-btn:hover { background: var(--surface-hover); color: var(--text); }
+.p-icon-btn.on { background: var(--primary-light); color: var(--primary); }
+.p-search {
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px;
+  background: var(--surface-hover); border: 1px solid var(--border); border-radius: 8px;
+}
+.p-search:focus-within { border-color: var(--primary); background: var(--surface); box-shadow: 0 0 0 3px var(--primary-light); }
+.p-search svg { color: var(--text3); flex-shrink: 0; }
+.p-search input { flex: 1; border: none; outline: none; background: none; font: inherit; color: var(--text); }
+.p-search input::placeholder { color: var(--text3); }
+.p-search .esc {
+  font-size: 10px; color: var(--text3); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 5px;
+}
+
+/* 类型过滤 Tabs */
+.p-tabs { display: flex; gap: 4px; padding: 10px 0 8px; border-bottom: 1px solid var(--border); }
+.p-tab {
+  padding: 4px 11px; border-radius: 999px; font-size: 12px; color: var(--text2);
+  display: flex; align-items: center; gap: 4px; transition: background .12s, color .12s;
+}
+.p-tab:hover { background: var(--surface-hover); }
+.p-tab.on { background: var(--primary-light); color: var(--primary); font-weight: 600; }
+.p-tab .n { font-size: 10px; opacity: .7; }
+
+/* 列表 */
+.p-list { flex: 1; overflow-y: auto; padding: 8px; }
+.p-list::-webkit-scrollbar { width: 8px; }
+.p-list::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+.p-sec-label { font-size: 11px; color: var(--text3); padding: 6px 8px 4px; display: flex; align-items: center; gap: 5px; }
+
+/* 条目 */
+.item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px;
+  cursor: pointer; position: relative; border: 1px solid transparent; transition: background .1s;
+}
+.item:hover { background: var(--surface-hover); }
+.item.selected { background: var(--primary-light); border-color: var(--primary); }
+.item.dragging { opacity: .45; }
+.item .num {
+  width: 17px; height: 17px; border-radius: 5px; flex-shrink: 0;
+  background: var(--surface-hover); border: 1px solid var(--border); color: var(--text3);
+  font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.item:hover .num, .item.sel-hot .num { background: var(--primary); border-color: var(--primary); color: #fff; }
+.item .kind { width: 38px; height: 38px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+.kind.t-text { background: var(--primary-light); color: var(--primary); font-size: 14px; }
+.kind.t-code { background: #EEF4FF; color: #3B6FD4; font-size: 11px; font-family: "JetBrains Mono", Consolas, monospace; }
+.kind.t-json { background: #E8F6EF; color: var(--success); font-size: 10px; font-family: "JetBrains Mono", Consolas, monospace; }
+.kind.t-link { background: #FFF4E5; color: #C77700; }
+.kind.t-file { background: #F1ECFF; color: #7C5CFC; }
+.kind.t-color { background: none; }
+.kind .swatch { width: 26px; height: 26px; border-radius: 6px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
+.kind.t-image { background: none; overflow: hidden; }
+.kind .thumb {
+  width: 100%; height: 100%; border-radius: 8px;
+  background: linear-gradient(135deg, #6B8CFF 0%, #9F7CFC 55%, #F6C178 100%);
+  position: relative;
+}
+.kind .thumb::after {
+  content: ""; position: absolute; left: 8px; bottom: 7px; width: 14px; height: 8px;
+  background: rgba(255,255,255,.85); clip-path: polygon(0 100%, 45% 20%, 75% 65%, 100% 30%, 100% 100%);
+}
+.item .body { flex: 1; min-width: 0; }
+.item .line1 {
+  font-size: 13px; line-height: 1.45; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  word-break: break-all;
+}
+.item .line1.mono { font-family: "JetBrains Mono", Consolas, monospace; font-size: 11.5px; color: var(--text2); }
+.item .line1 .chip {
+  display: inline-block; font-size: 10px; font-weight: 600; padding: 0 5px; margin-right: 6px;
+  border-radius: 4px; background: var(--surface-hover); color: var(--text2); vertical-align: 1px;
+  border: 1px solid var(--border);
+}
+.item .line1 .chip.c-code { color: #3B6FD4; background: #EEF4FF; border-color: #D6E4FB; }
+.item .line1 .chip.c-json { color: var(--success); background: #E8F6EF; border-color: #CFEAD9; }
+.item .line1 .chip.c-link { color: #C77700; background: #FFF4E5; border-color: #F7E3C4; }
+.item .line1 .chip.c-color { color: #B45309; }
+.item .line2 { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11px; color: var(--text3); }
+.item .line2 .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--text3); opacity: .5; }
+.item .pin-flag { color: #C77700; display: flex; }
+.item .pin-flag svg { width: 11px; height: 11px; }
+.item .check {
+  width: 17px; height: 17px; border-radius: 5px; border: 1.5px solid var(--border-strong); flex-shrink: 0;
+  display: none; align-items: center; justify-content: center; color: transparent;
+}
+.panel.selecting .item .check { display: flex; }
+.item.selected .check { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* 悬停快捷操作 */
+.item .acts {
+  display: none; align-items: center; gap: 2px; flex-shrink: 0;
+}
+.item:hover .acts { display: flex; }
+.act {
+  width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  color: var(--text3); transition: background .1s, color .1s;
+}
+.act:hover { background: var(--border); color: var(--text); }
+.act.ai:hover { background: var(--primary-light); color: var(--primary); }
+.act.pin.on { color: #C77700; }
+
+/* 空态 */
+.p-empty { text-align: center; padding: 60px 20px; color: var(--text3); font-size: 12.5px; line-height: 2; }
+.p-empty svg { margin: 0 auto 10px; color: var(--border-strong); }
+
+/* 底部状态栏 */
+.p-foot {
+  height: 36px; border-top: 1px solid var(--border); display: flex; align-items: center;
+  gap: 8px; padding: 0 14px; font-size: 11px; color: var(--text3); flex-shrink: 0;
+}
+.p-foot .sep { flex: 1; }
+.p-foot button { font-size: 11px; color: var(--text3); padding: 3px 8px; border-radius: 5px; }
+.p-foot button:hover { background: var(--surface-hover); color: var(--text); }
+.p-foot button.danger:hover { color: var(--danger); background: rgba(185, 28, 28, .08); }
+
+/* 多选操作条(替换底部栏) */
+.p-selectbar { display: none; }
+.panel.selecting .p-foot { display: none; }
+.panel.selecting .p-selectbar {
+  display: flex; height: 36px; border-top: 1px solid var(--border); align-items: center; gap: 8px;
+  padding: 0 14px; font-size: 12px; flex-shrink: 0; background: var(--surface);
+}
+.p-selectbar b { color: var(--primary); }
+.p-selectbar .sep { flex: 1; }
+.p-selectbar button {
+  font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+  display: flex; align-items: center; gap: 5px;
+}
+.p-selectbar button:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+.p-selectbar button.cancel { color: var(--text3); }
+.p-selectbar button:disabled { opacity: .45; cursor: default; }
+
+/* ===== 横向布局(剪切助手的横/纵切换) ===== */
+.panel.horiz { width: 720px; height: 440px; }
+.panel.horiz .p-list {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; align-content: start;
+}
+.panel.horiz .p-empty { grid-column: 1 / -1; }
+.panel.horiz .item {
+  flex-direction: column; align-items: stretch; padding: 9px 10px; height: 132px; overflow: hidden;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+}
+.panel.horiz .item:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+.panel.horiz .item.selected { background: var(--primary-light); border-color: var(--primary); }
+.panel.horiz .item .num { position: absolute; top: 7px; left: 7px; z-index: 2; }
+.panel.horiz .item .kind { width: 100%; height: 44px; margin-bottom: 6px; }
+.panel.horiz .item .kind .swatch { width: 22px; height: 22px; }
+.panel.horiz .item .body { flex: 1; overflow: hidden; }
+.panel.horiz .item .line1 { -webkit-line-clamp: 3; font-size: 12px; }
+.panel.horiz .item .line1.mono { font-size: 10.5px; }
+.panel.horiz .item .line2 { white-space: nowrap; overflow: hidden; }
+.panel.horiz .item .acts { position: absolute; top: 7px; right: 7px; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: 1px; box-shadow: var(--shadow-pop); }
+.panel.horiz .item .check { position: absolute; top: 7px; right: 7px; z-index: 2; background: var(--surface); }
+
+/* 深色模式下类型图标的浅色底改为半透明色,避免在深底上过亮 */
+html[data-theme="dark"] .kind.t-text { background: rgba(129, 140, 248, .16); color: #A5B4FC; }
+html[data-theme="dark"] .kind.t-code { background: rgba(96, 165, 250, .16); color: #93C5FD; }
+html[data-theme="dark"] .kind.t-json { background: rgba(52, 211, 153, .16); color: #6EE7B7; }
+html[data-theme="dark"] .kind.t-link { background: rgba(251, 191, 36, .16); color: #FCD34D; }
+html[data-theme="dark"] .kind.t-file { background: rgba(167, 139, 250, .18); color: #C4B5FD; }
+html[data-theme="dark"] .item .line1 .chip.c-code { background: rgba(96, 165, 250, .16); border-color: rgba(96, 165, 250, .3); color: #93C5FD; }
+html[data-theme="dark"] .item .line1 .chip.c-json { background: rgba(52, 211, 153, .16); border-color: rgba(52, 211, 153, .3); color: #6EE7B7; }
+html[data-theme="dark"] .item .line1 .chip.c-link { background: rgba(251, 191, 36, .16); border-color: rgba(251, 191, 36, .3); color: #FCD34D; }
+html[data-theme="dark"] .item .line1 .chip { background: var(--surface-hover); border-color: var(--border); color: var(--text2); }
+
+/* ===== 右键菜单 ===== */
+.ctx {
+  position: fixed; z-index: 60; min-width: 176px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-pop);
+}
+.ctx-title { font-size: 11px; color: var(--text3); padding: 6px 9px 5px; border-bottom: 1px solid var(--border); margin-bottom: 4px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 9px; border-radius: 6px;
+  font-size: 12.5px; color: var(--text); text-align: left;
+}
+.ctx-item:hover { background: var(--surface-hover); }
+.ctx-item .ico { color: var(--text3); display: flex; }
+.ctx-item .key { margin-left: auto; font-size: 10.5px; color: var(--text3); }
+.ctx-item.has-sub .sub-arrow { margin-left: auto; color: var(--text3); }
+.ctx-sep { height: 1px; background: var(--border); margin: 4px 8px; }
+.ctx-item.danger { color: var(--danger); }
+.ctx-item.danger .ico { color: var(--danger); }
+/* AI 子菜单飞出 */
+.ctx-sub {
+  position: absolute; left: 100%; top: 0; min-width: 160px; padding: 5px; margin-left: 3px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-pop);
+}
+.ctx-item.sub-hot { background: var(--primary-light); color: var(--primary); }
+.ctx-item.sub-hot .ico { color: var(--primary); }
+.ctx-badge {
+  font-size: 9px; font-weight: 700; color: #fff; background: linear-gradient(135deg, #4F46E5, #7C5CFC);
+  border-radius: 4px; padding: 1px 4px; margin-left: 4px;
+}
+
+/* ===== 设置抽屉(覆盖在面板上) ===== */
+.p-settings {
+  position: absolute; inset: 0; z-index: 40; background: var(--surface);
+  transform: translateX(102%); transition: transform .2s cubic-bezier(.16,1,.3,1);
+  display: flex; flex-direction: column;
+}
+.p-settings.open { transform: translateX(0); }
+.ps-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
+.ps-head b { font-size: 14px; }
+.ps-body { flex: 1; overflow-y: auto; padding: 8px 16px 16px; }
+.ps-sec { font-size: 11px; color: var(--text3); padding: 14px 0 6px; }
+.ps-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; }
+.ps-row .info { flex: 1; }
+.ps-row .info .t { font-size: 13px; }
+.ps-row .info .d { font-size: 11px; color: var(--text3); margin-top: 2px; line-height: 1.5; }
+/* 开关 */
+.sw { width: 34px; height: 19px; border-radius: 999px; background: var(--border-strong); position: relative; flex-shrink: 0; transition: background .15s; cursor: pointer; }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; transition: left .15s; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+.sw.on { background: var(--primary); }
+.sw.on::after { left: 17px; }
+.ps-select { border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; color: var(--text); background: var(--surface); }
+.ps-tags { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0; }
+.ps-tag { font-size: 11.5px; padding: 3px 9px; border-radius: 999px; background: var(--surface-hover); border: 1px solid var(--border); color: var(--text2); display: flex; align-items: center; gap: 4px; }
+.ps-tag:hover { color: var(--danger); border-color: var(--danger); }
+.ps-tag .x { font-weight: 700; }
+.ps-hk {
+  display: flex; align-items: center; justify-content: space-between; padding: 9px 12px;
+  border: 1px dashed var(--border-strong); border-radius: 8px; margin-top: 4px; font-size: 12.5px;
+}
+.ps-hk kbd { padding: 2px 8px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 5px; background: var(--surface-hover); font-size: 11px; font-weight: 600; }
+.ps-link { color: var(--primary); font-size: 12px; cursor: pointer; }
+
+/* ===== Toast ===== */
+.toast {
+  position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%) translateY(10px);
+  z-index: 80; padding: 9px 18px; border-radius: 999px; font-size: 12.5px; color: #fff;
+  background: rgba(26, 29, 36, .92); box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none;
+  transition: opacity .18s, transform .18s; display: flex; align-items: center; gap: 8px;
+}
+html[data-theme="dark"] .toast { background: rgba(232, 234, 240, .95); color: #14161C; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast svg { color: #7EE2A8; }
+html[data-theme="dark"] .toast svg { color: #1B7A47; }
+</style>
+</head>
+<body>
+
+<!-- 模拟桌面 -->
+<div class="desktop" id="desktop">
+  <div class="mock-window">
+    <div class="mock-titlebar"><div class="mock-dots"><i></i><i></i><i></i></div>产品需求文档-v2.docx — Word</div>
+    <div class="mock-body">
+      <div class="mock-h"></div>
+      <div class="mock-line w90"></div><div class="mock-line w82"></div><div class="mock-line w75"></div>
+      <div class="mock-line w90"></div><div class="mock-line w60"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 模拟任务栏 -->
+<div class="taskbar">
+  <div class="tb-app"></div><div class="tb-app"></div><div class="tb-app"></div>
+  <div class="tb-yz" id="trayIcon" title="言智托盘图标(点击唤起剪贴板)">言</div>
+  <span class="tb-hint">托盘菜单也将新增「打开剪贴板」入口</span>
+</div>
+
+<!-- 原型操作指南 -->
+<div class="guide" id="guide">
+  <b>原型操作指南</b>
+  <div class="g-row"><span><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>V</kbd> 唤起 / 收起面板(真实可按)</span></div>
+  <div class="g-row"><span><kbd>1</kbd>~<kbd>9</kbd> 快速粘贴 · <kbd>↑</kbd><kbd>↓</kbd> 选择 · <kbd>Enter</kbd> 粘贴 · <kbd>/</kbd> 搜索 · <kbd>Esc</kbd> 关闭</span></div>
+  <div class="g-row"><span>悬停条目 → 快捷操作 · <span class="tag">右键</span> → 完整菜单(含 AI 子菜单)</span></div>
+  <div class="g-row"><span>按住<span class="tag">标题栏</span>可拖动面板(双击回中央)· 按住<span class="tag">条目</span>可拖到其他应用</span></div>
+  <div class="g-row"><span>右上角:<span class="tag">横/纵布局</span> · <span class="tag">深色</span> · <span class="tag">设置</span> · <span class="tag">多选</span></span></div>
+</div>
+
+<!-- 中央快捷键提示 -->
+<div class="hotkey-hint" id="hotkeyHint" onclick="togglePanel(true)">
+  <kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>V</kbd><span>唤起超级剪贴板</span>
+</div>
+
+<!-- ================= 剪贴板面板 ================= -->
+<div class="panel" id="panel">
+  <div class="p-head">
+    <div class="p-brand">
+      <div class="p-logo">言</div>
+      <span class="p-title">超级剪贴板</span>
+      <span class="p-spacer"></span>
+      <button class="p-icon-btn" id="btnSelect" title="多选(选中后可交给 AI 合并整理)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8.5 12.5 2.5 2.5 5-5.5"/></svg>
+      </button>
+      <button class="p-icon-btn" id="btnLayout" title="切换横向/纵向布局(剪切助手同款)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      </button>
+      <button class="p-icon-btn" id="btnTheme" title="深色/浅色(跟随应用主题)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
+      </button>
+      <button class="p-icon-btn" id="btnSettings" title="剪贴板设置">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+    <div class="p-search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="searchInput" placeholder="搜索剪贴板内容、来源应用…(按 / 聚焦)" />
+      <span class="esc">Esc</span>
+    </div>
+    <div class="p-tabs" id="tabs"></div>
+  </div>
+
+  <div class="p-list" id="list"></div>
+
+  <div class="p-foot" id="foot">
+    <span id="footStats">共 128 条 · 占用 46.2 MB</span>
+    <span class="sep"></span>
+    <button title="按分组查看(P2)">分组</button>
+    <button id="btnClear" class="danger" title="清空未置顶记录">清空</button>
+  </div>
+
+  <div class="p-selectbar" id="selectbar">
+    <span>已选 <b id="selCount">0</b> 条</span>
+    <span class="sep"></span>
+    <button id="btnAiMerge" title="交给 AI 把多条内容整理成一篇文档/表格">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.9 5.6L19.5 9l-4.6 3.6L16.4 18 12 14.9 7.6 18l1.5-5.4L4.5 9l5.6-1.4z"/></svg>
+      AI 合并整理
+    </button>
+    <button id="btnSendChat" title="作为素材发送到当前 AI 会话">发送到会话</button>
+    <button class="cancel" id="btnCancelSel">取消</button>
+  </div>
+
+  <!-- 设置抽屉 -->
+  <div class="p-settings" id="settings">
+    <div class="ps-head">
+      <b>剪贴板设置</b>
+      <span class="p-spacer"></span>
+      <button class="p-icon-btn" onclick="toggleSettings(false)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="ps-body">
+      <div class="ps-sec">自动采集</div>
+      <div class="ps-row"><div class="info"><div class="t">文本</div><div class="d">纯文本 / 富文本 HTML / 代码</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+      <div class="ps-row"><div class="info"><div class="t">图片</div><div class="d">截图与复制的图片,生成缩略图落盘</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+      <div class="ps-row"><div class="info"><div class="t">文件</div><div class="d">记录文件路径(复制文件本体不计入)</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+      <div class="ps-sec">隐私</div>
+      <div class="ps-row">
+        <div class="info"><div class="t">敏感信息自动跳过</div><div class="d">识别密码、银行卡号、API 密钥(JWT / AK-SK)等,不入历史</div></div>
+        <div class="sw on" onclick="this.classList.toggle('on')"></div>
+      </div>
+      <div class="ps-row" style="align-items:flex-start">
+        <div class="info"><div class="t">排除应用</div><div class="d">这些应用复制的内容不采集(如密码管理器)</div></div>
+      </div>
+      <div class="ps-tags">
+        <span class="ps-tag">1Password <span class="x" onclick="this.parentElement.remove()">×</span></span>
+        <span class="ps-tag">KeePass <span class="x" onclick="this.parentElement.remove()">×</span></span>
+        <span class="ps-tag" style="color:var(--text3);cursor:pointer;border-style:dashed" onclick="toast('原型示意:弹出进程选择器')">+ 添加</span>
+      </div>
+      <div class="ps-sec">存储</div>
+      <div class="ps-row"><div class="info"><div class="t">历史上限</div></div>
+        <select class="ps-select"><option>200 条</option><option selected>500 条</option><option>1000 条</option><option>不限</option></select>
+      </div>
+      <div class="ps-row"><div class="info"><div class="t">保留时长</div><div class="d">超期未置顶的自动清理,占用空间见底部状态栏</div></div>
+        <select class="ps-select"><option>7 天</option><option selected>30 天</option><option>90 天</option><option>永久</option></select>
+      </div>
+      <div class="ps-sec">快捷键</div>
+      <div class="ps-hk">
+        <span>召唤面板(全局,任意应用内可用)</span><kbd>Ctrl + Alt + V</kbd>
+      </div>
+      <div class="ps-row"><div class="info"><div class="d">可在「设置 → 快捷键」分区改键或禁用,与截图 / AI 急停同一套管理;与其它热键冲突时会明确提示。</div></div></div>
+      <div class="ps-row"><span class="ps-link" onclick="toast('原型示意:跳转到主窗口设置页')">在主窗口设置页中管理 →</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================
+   数据模型(演示数据;真实实现见方案文档的数据表设计)
+   kind: text | code | json | link | image | file | color
+   ============================================================ */
+const ITEMS = [
+  { id: 1, kind: 'text', pinned: true, source: '企业微信', time: '昨天 17:42', words: '38 字',
+    content: '您好,这个问题我们已经在处理了,预计今天下午 6 点前给您答复,感谢理解 🙏' },
+  { id: 2, kind: 'code', source: 'VS Code', time: '3 分钟前', words: '12 行',
+    content: 'const debounce = (fn, ms = 300) => {\n  let t;\n  return (...args) => {\n    clearTimeout(t);\n    t = setTimeout(() => fn(...args), ms);\n  };\n};' },
+  { id: 3, kind: 'text', source: '备忘录', time: '刚刚', words: '15 字',
+    content: '明早 10 点例会改到 10:30,会议室不变' },
+  { id: 4, kind: 'link', source: 'Chrome', time: '8 分钟前', domain: 'github.com',
+    content: 'GitHub - anthropics/anthropic-sdk-python: Python 官方 SDK' },
+  { id: 5, kind: 'image', source: '截图工具', time: '26 分钟前', words: '1920×1080 · 356 KB',
+    content: '截图 2026-10-27 142938.png' },
+  { id: 6, kind: 'text', source: '飞书文档', time: '1 小时前', words: '238 字',
+    content: '本季度重点:① 完成移动端远控横屏重构并灰度发布;② 剪贴板与素材库打通,支持手机-电脑互传;③ 数据查询看板导出 Word 的格式还原度提升到可交付水平。风险:移动端 SQLite 迁移尚有一处兼容问题待回归。' },
+  { id: 7, kind: 'color', source: 'Figma', time: '1 小时前', content: '#4F46E5' },
+  { id: 8, kind: 'json', source: 'Chrome', time: '2 小时前', words: '3 行',
+    content: '{\n  "userId": 42,\n  "plan": "pro",\n  "quota": { "used": 1820, "total": 5000 }\n}' },
+  { id: 9, kind: 'file', source: '资源管理器', time: '3 小时前', words: '12.4 MB',
+    content: '产品需求文档-v2.docx' },
+  { id: 10, kind: 'text', source: '微信群', time: '昨天 21:05', words: '52 字',
+    content: '快递单号 SF3128842109327,到货后直接放前台代收即可,不用打电话' },
+  { id: 11, kind: 'link', source: 'Chrome', time: '昨天 20:12', domain: 'bilibili.com',
+    content: '我们做出了"遥遥领先"的剪切板软件!打工人必备效率神器_哔哩哔哩' },
+  { id: 12, kind: 'text', source: 'VS Code', time: '昨天 18:30', words: '9 字',
+    content: 'pnpm --filter @yan-zhi/ui dev' },
+];
+
+const KIND_LABEL = { text: '文本', code: '代码', json: 'JSON', link: '链接', image: '图片', file: '文件', color: '颜色' };
+const KIND_ORDER = ['all', 'text', 'link', 'image', 'file', 'pin'];
+
+const ICONS = {
+  pin: '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M16 3l5 5-1.4 1.4-1.4-.4-3.9 3.9.5 4.2-1.4 1.4-3.6-3.6L5 21l-2-2 5.7-5.8L5.1 9.6l1.4-1.4 4.2.5 3.9-3.9-.4-1.4z"/></svg>',
+  copy: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  ai: '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.9 5.6L19.5 9l-4.6 3.6L16.4 18 12 14.9 7.6 18l1.5-5.4L4.5 9l5.6-1.4z"/></svg>',
+  more: '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
+  box: '<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M8 15h5"/></svg>',
+  check: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="m5 13 4 4L19 7"/></svg>',
+  globe: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18z"/></svg>',
+  file: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+  doc: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+  trash: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
+  folder: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+  plain: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>',
+};
+
+const AI_ACTIONS = [
+  { label: '翻译成英文', key: '翻译' },
+  { label: '总结要点', key: '总结' },
+  { label: '润色改写', key: '润色' },
+  { label: '解释这段代码', key: '解释' },
+  { label: '提取为表格', key: '表格' },
+];
+
+/* ===== 状态 ===== */
+let state = { open: false, tab: 'all', query: '', selecting: false, selected: new Set(), clearArmed: false, selIndex: 0 };
+const $ = (id) => document.getElementById(id);
+const panel = $('panel');
+
+/* ===== 渲染 ===== */
+function visibleItems() {
+  let list = ITEMS.filter(() => true);
+  if (state.tab === 'pin') list = list.filter((i) => i.pinned);
+  else if (state.tab === 'image') list = list.filter((i) => i.kind === 'image');
+  else if (state.tab === 'file') list = list.filter((i) => i.kind === 'file');
+  else if (state.tab === 'link') list = list.filter((i) => i.kind === 'link');
+  else if (state.tab === 'text') list = list.filter((i) => ['text', 'code', 'json', 'color'].includes(i.kind));
+  const q = state.query.trim().toLowerCase();
+  if (q) list = list.filter((i) => (i.content + ' ' + i.source).toLowerCase().includes(q));
+  return list;
+}
+
+function itemPreview(it) {
+  const chip = (cls, label) => `<span class="chip ${cls}">${label}</span>`;
+  if (it.kind === 'code') return `<div class="line1 mono">${chip('c-code', '代码')}${escapeHtml(it.content.split('\n')[0])}</div>`;
+  if (it.kind === 'json') return `<div class="line1 mono">${chip('c-json', 'JSON')}${escapeHtml(it.content.split('\n')[0] + ' ' + (it.content.split('\n')[1] || ''))}</div>`;
+  if (it.kind === 'link') return `<div class="line1">${chip('c-link', '链接')}${escapeHtml(it.content)}</div>`;
+  if (it.kind === 'color') return `<div class="line1">${chip('c-color', '颜色')}<b style="font-family:var(--font-mono)">${it.content}</b></div>`;
+  if (it.kind === 'image') return `<div class="line1">${escapeHtml(it.content)}</div>`;
+  if (it.kind === 'file') return `<div class="line1">${escapeHtml(it.content)}</div>`;
+  return `<div class="line1">${escapeHtml(it.content)}</div>`;
+}
+
+function kindNode(it) {
+  if (it.kind === 'color') return `<span class="kind t-color"><span class="swatch" style="background:${it.content}"></span></span>`;
+  if (it.kind === 'image') return `<span class="kind t-image"><span class="thumb"></span></span>`;
+  if (it.kind === 'link') return `<span class="kind t-link">${ICONS.globe}</span>`;
+  if (it.kind === 'file') return `<span class="kind t-file">${ICONS.file}</span>`;
+  if (it.kind === 'code') return `<span class="kind t-code">&lt;/&gt;</span>`;
+  if (it.kind === 'json') return `<span class="kind t-json">{ }</span>`;
+  return `<span class="kind t-text">文</span>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function render() {
+  renderTabs();
+  const list = visibleItems();
+  const pinned = list.filter((i) => i.pinned);
+  const rest = list.filter((i) => !i.pinned);
+  const sorted = [...pinned, ...rest];
+  let html = '';
+  if (!sorted.length) {
+    html = `<div class="p-empty">${ICONS.box}<div>没有匹配的记录<br>复制点东西试试(Ctrl+C 会自动采集进来)</div></div>`;
+  }
+  let lastWasPinned = null;
+  const isHoriz = panel.classList.contains('horiz');
+  sorted.forEach((it, idx) => {
+    // 横向模式是统一卡片网格:不插分组标题(置顶项仍排最前,卡片角标可辨)
+    if (!isHoriz && state.tab === 'all' && !state.query && lastWasPinned !== (idx < pinned.length)) {
+      html += `<div class="p-sec-label">${idx < pinned.length ? '📌 置顶' : '最近'}</div>`;
+      lastWasPinned = idx < pinned.length;
+    }
+    const num = idx < 9 ? `<span class="num">${idx + 1}</span>` : '<span class="num" style="visibility:hidden">·</span>';
+    const selCls = state.selected.has(it.id) ? ' selected' : '';
+    const check = `<span class="check">${ICONS.check}</span>`;
+    const pinFlag = it.pinned ? `<span class="pin-flag" title="已置顶">${ICONS.pin}</span>` : '';
+    const words = it.words ? `<span>${it.words}</span><span class="dot"></span>` : '';
+    const domain = it.kind === 'link' && it.domain ? `<span>${it.domain}</span><span class="dot"></span>` : '';
+    html += `
+    <div class="item${selCls}" data-id="${it.id}" draggable="true" title="单击粘贴 · 按住可拖到其他应用">`;
+    html += `${num}${check}
+      ${kindNode(it)}
+      <div class="body">
+        ${itemPreview(it)}
+        <div class="line2">
+          ${pinFlag}
+          <span>${escapeHtml(it.source)}</span><span class="dot"></span>
+          <span>${it.time}</span><span class="dot"></span>
+          ${words}${domain}
+          ${pinFlag ? '' : ''}
+        </div>
+      </div>
+      <div class="acts">
+        <button class="act pin${it.pinned ? ' on' : ''}" data-act="pin" title="${it.pinned ? '取消置顶' : '置顶'}">${ICONS.pin}</button>
+        <button class="act" data-act="copy" title="复制(Enter 粘贴)">${ICONS.copy}</button>
+        <button class="act ai" data-act="ai" title="交给 AI 处理">${ICONS.ai}</button>
+        <button class="act" data-act="more" title="更多操作(右键同款)">${ICONS.more}</button>
+      </div>
+    </div>`;
+  });
+  $('list').innerHTML = html;
+  $('selCount').textContent = state.selected.size;
+  $('btnAiMerge').disabled = state.selected.size < 2;
+  $('btnSendChat').disabled = !state.selected.size;
+  const total = 128, size = '46.2 MB';
+  $('footStats').textContent = `共 ${total} 条 · 占用 ${size}`;
+  // 高亮键盘选择项
+  const nodes = $('list').querySelectorAll('.item');
+  nodes.forEach((n, i) => n.classList.toggle('sel-hot', i === state.selIndex));
+}
+
+function renderTabs() {
+  const counts = { all: ITEMS.length };
+  for (const it of ITEMS) counts[it.kind] = (counts[it.kind] || 0) + 1;
+  const defs = [
+    { key: 'all', label: '全部' },
+    { key: 'text', label: '文本' },
+    { key: 'link', label: '链接' },
+    { key: 'image', label: '图片' },
+    { key: 'file', label: '文件' },
+    { key: 'pin', label: '置顶' },
+  ];
+  $('tabs').innerHTML = defs.map((d) =>
+    `<button class="p-tab${state.tab === d.key ? ' on' : ''}" data-tab="${d.key}">${d.label}${d.key === 'pin' ? '' : ` <span class="n">${d.key === 'all' ? ITEMS.length : (counts[d.key] || 0)}</span>`}</button>`
+  ).join('');
+}
+
+/* ===== 面板开关 ===== */
+function togglePanel(forceOpen) {
+  state.open = forceOpen !== undefined ? forceOpen : !state.open;
+  panel.classList.toggle('open', state.open);
+  $('hotkeyHint').classList.toggle('hidden', state.open);
+  $('desktop').parentElement.classList.toggle('dimmed', state.open);
+  if (state.open) {
+    if (!state.selecting) setTimeout(() => $('searchInput').focus(), 120);
+    state.selIndex = 0;
+    render();
+  } else {
+    toggleSettings(false);
+    closeCtx();
+    $('searchInput').blur();
+  }
+}
+function pasteItem(it) {
+  toast(`已复制「${(it.content || '').slice(0, 18)}${(it.content || '').length > 18 ? '…' : ''}」,Ctrl+V 粘贴到目标应用`);
+  togglePanel(false);
+}
+
+/* ===== 事件绑定 ===== */
+$('list').addEventListener('click', (e) => {
+  const actBtn = e.target.closest('[data-act]');
+  const itemEl = e.target.closest('.item');
+  if (actBtn && itemEl) {
+    e.stopPropagation();
+    const it = ITEMS.find((x) => x.id === Number(itemEl.dataset.id));
+    const act = actBtn.dataset.act;
+    if (act === 'pin') { it.pinned = !it.pinned; render(); toast(it.pinned ? '已置顶' : '已取消置顶'); }
+    else if (act === 'copy') pasteItem(it);
+    else if (act === 'ai') openCtx(e.clientX, e.clientY, it, true);
+    else if (act === 'more') openCtx(e.clientX, e.clientY, it, false);
+    return;
+  }
+  if (itemEl) {
+    const it = ITEMS.find((x) => x.id === Number(itemEl.dataset.id));
+    if (state.selecting) {
+      state.selected.has(it.id) ? state.selected.delete(it.id) : state.selected.add(it.id);
+      render();
+    } else {
+      pasteItem(it);
+    }
+  }
+});
+
+$('list').addEventListener('contextmenu', (e) => {
+  const itemEl = e.target.closest('.item');
+  if (!itemEl) return;
+  e.preventDefault();
+  const it = ITEMS.find((x) => x.id === Number(itemEl.dataset.id));
+  openCtx(e.clientX, e.clientY, it, false);
+});
+
+/* ===== 拖动①:按住标题栏拖走面板,双击回屏幕中央 ===== */
+let panelDrag = null;
+const brandEl = document.querySelector('.p-brand');
+brandEl.addEventListener('mousedown', (e) => {
+  if (e.target.closest('button')) return;
+  const r = panel.getBoundingClientRect();
+  // 面板用 translate(-50%,-50%) 居中:style.left = rect.left + 宽/2。
+  // 记录两者,拖动时按指针位移同步推进(不能直接用 rect 坐标当 style 坐标)。
+  panelDrag = { startX: e.clientX, startY: e.clientY, left: r.left + r.width / 2, top: r.top + r.height / 2 };
+  e.preventDefault();
+});
+window.addEventListener('mousemove', (e) => {
+  if (!panelDrag) return;
+  panel.style.left = (panelDrag.left + (e.clientX - panelDrag.startX)) + 'px';
+  panel.style.top = (panelDrag.top + (e.clientY - panelDrag.startY)) + 'px';
+});
+window.addEventListener('mouseup', () => { panelDrag = null; });
+brandEl.addEventListener('dblclick', (e) => {
+  if (e.target.closest('button')) return;
+  panel.style.left = '';
+  panel.style.top = '';
+  toast('面板已回到屏幕中央');
+});
+
+/* ===== 拖动②:按住条目拖到其他应用(Word/聊天框/资源管理器) =====
+   真实实现:text 由 Chromium 原生拖放拖出窗口;图片/文件在 main 进程
+   webContents.startDrag({ file, icon }) 拖出为文件本体;拖拽期间暂停失焦收起。 */
+$('list').addEventListener('dragstart', (e) => {
+  const el = e.target.closest('.item');
+  if (!el) return;
+  const it = ITEMS.find((x) => x.id === Number(el.dataset.id));
+  if (!it) return;
+  el.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'copy';
+  e.dataTransfer.setData('text/plain', it.content);
+  if (it.kind === 'link' && it.domain) e.dataTransfer.setData('text/uri-list', 'https://' + it.domain);
+  e.dataTransfer.setData('application/x-yanzhi-clip', String(it.id));
+});
+$('list').addEventListener('dragend', (e) => {
+  document.querySelectorAll('.item.dragging').forEach((n) => n.classList.remove('dragging'));
+  if (e.dataTransfer && e.dataTransfer.dropEffect === 'none') {
+    toast('已拖出面板——真实应用里会直接落到目标位置(Word/聊天框/资源管理器)');
+  }
+});
+
+$('tabs').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-tab]');
+  if (!t) return;
+  state.tab = t.dataset.tab;
+  state.selIndex = 0;
+  render();
+});
+
+$('searchInput').addEventListener('input', (e) => { state.query = e.target.value; state.selIndex = 0; render(); });
+$('searchInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { if (state.query) { state.query = ''; e.target.value = ''; render(); } else togglePanel(false); }
+  e.stopPropagation();
+});
+
+$('btnSelect').addEventListener('click', () => {
+  state.selecting = !state.selecting;
+  panel.classList.toggle('selecting', state.selecting);
+  $('btnSelect').classList.toggle('on', state.selecting);
+  if (!state.selecting) state.selected.clear();
+  render();
+});
+$('btnCancelSel').addEventListener('click', () => $('btnSelect').click());
+$('btnAiMerge').addEventListener('click', () => {
+  toast(`已把 ${state.selected.size} 条内容交给 AI 合并整理,结果将出现在当前会话`);
+  $('btnSelect').click();
+  togglePanel(false);
+});
+$('btnSendChat').addEventListener('click', () => {
+  toast(`已把 ${state.selected.size} 条内容作为素材发送到当前会话`);
+  $('btnSelect').click();
+  togglePanel(false);
+});
+$('btnLayout').addEventListener('click', () => {
+  panel.classList.toggle('horiz');
+  $('btnLayout').classList.toggle('on', panel.classList.contains('horiz'));
+  render();
+  toast(panel.classList.contains('horiz') ? '横向布局(卡片网格)' : '纵向布局(列表)');
+});
+$('btnTheme').addEventListener('click', () => {
+  const root = document.documentElement;
+  root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+});
+$('btnSettings').addEventListener('click', () => toggleSettings(true));
+$('btnClear').addEventListener('click', () => {
+  if (!state.clearArmed) {
+    state.clearArmed = true;
+    $('btnClear').textContent = '确认清空?';
+    setTimeout(() => { state.clearArmed = false; $('btnClear').textContent = '清空'; }, 2500);
+    return;
+  }
+  const before = ITEMS.length;
+  for (let i = ITEMS.length - 1; i >= 0; i--) if (!ITEMS[i].pinned) ITEMS.splice(i, 1);
+  state.clearArmed = false;
+  $('btnClear').textContent = '清空';
+  render();
+  toast(`已清空 ${before - ITEMS.length} 条未置顶记录`);
+});
+
+function toggleSettings(open) { $('settings').classList.toggle('open', open); }
+
+/* ===== 右键菜单 ===== */
+let ctxEl = null;
+function closeCtx() { if (ctxEl) { ctxEl.remove(); ctxEl = null; } }
+function openCtx(x, y, it, aiOnly) {
+  closeCtx();
+  const w = it.kind === 'image' || it.kind === 'file';
+  const items = aiOnly ? [] : [
+    { icon: ICONS.copy, label: '复制', key: 'Enter', run: () => pasteItem(it) },
+    { icon: ICONS.plain, label: '粘贴为纯文本', run: () => { toast('已复制纯文本(去掉富文本格式)'); togglePanel(false); } },
+    { sep: true },
+    { icon: ICONS.pin, label: it.pinned ? '取消置顶' : '置顶', run: () => { it.pinned = !it.pinned; render(); toast(it.pinned ? '已置顶' : '已取消置顶'); } },
+    { icon: ICONS.folder, label: '在分组中…', run: () => toast('原型示意:选择分组(工作话术 / 代码片段 / 临时)') },
+    ...(w ? [{ icon: ICONS.folder, label: '在文件夹中显示', run: () => toast('原型示意:调用系统文件管理器') }] : []),
+    { sep: true },
+    { icon: ICONS.trash, label: '删除', danger: true, key: 'Del', run: () => {
+      const i = ITEMS.findIndex((x) => x.id === it.id);
+      if (i >= 0) ITEMS.splice(i, 1);
+      render(); toast('已删除');
+    } },
+  ];
+  const aiItem = { label: 'AI 处理', hasSub: true, badge: true };
+  const html = `
+    ${aiOnly ? '' : `<div class="ctx-title">${escapeHtml((it.content || '').slice(0, 24) || KIND_LABEL[it.kind])}</div>`}
+    ${items.map((m, i) => m.sep ? '<div class="ctx-sep"></div>' : `
+      <button class="ctx-item${m.danger ? ' danger' : ''}" data-ctx="${i}">
+        <span class="ico">${m.icon || ''}</span><span>${m.label}</span>
+        ${m.key ? `<span class="key">${m.key}</span>` : ''}
+      </button>`).join('')}
+    <div class="ctx-sep"></div>
+    <button class="ctx-item has-sub" id="ctxAi">
+      <span class="ico" style="color:var(--primary)">${ICONS.ai}</span>
+      <span>AI 处理<span class="ctx-badge">言智</span></span>
+      <span class="sub-arrow">▸</span>
+    </button>
+    <div class="ctx-sub" id="ctxSub" style="display:none">
+      ${AI_ACTIONS.map((a, i) => `<button class="ctx-item" data-ai="${i}">
+        <span class="ico">${ICONS.ai}</span><span>${a.label}</span>
+      </button>`).join('')}
+    </div>`;
+  ctxEl = document.createElement('div');
+  ctxEl.className = 'ctx';
+  ctxEl.innerHTML = html;
+  document.body.appendChild(ctxEl);
+  // 视口边界夹取
+  const r = ctxEl.getBoundingClientRect();
+  ctxEl.style.left = Math.min(x, innerWidth - r.width - 12) + 'px';
+  ctxEl.style.top = Math.min(y, innerHeight - r.height - 12) + 'px';
+  // 绑定
+  ctxEl.querySelectorAll('[data-ctx]').forEach((b) => {
+    b.addEventListener('click', () => { const m = items[Number(b.dataset.ctx)]; closeCtx(); m.run(); });
+  });
+  const aiBtn = ctxEl.querySelector('#ctxAi');
+  const sub = ctxEl.querySelector('#ctxSub');
+  aiBtn.addEventListener('mouseenter', () => {
+    sub.style.display = 'block';
+    const sr = sub.getBoundingClientRect();
+    if (sr.right > innerWidth - 8) sub.style.left = 'auto', sub.style.right = '100%', sub.style.marginLeft = '0', sub.style.marginRight = '3px';
+    if (sr.bottom > innerHeight - 8) sub.style.top = 'auto', sub.style.bottom = '0';
+  });
+  aiBtn.addEventListener('click', () => {
+    sub.style.display = sub.style.display === 'none' ? 'block' : 'none';
+  });
+  sub.querySelectorAll('[data-ai]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const a = AI_ACTIONS[Number(b.dataset.ai)];
+      closeCtx();
+      toast(`已交给 AI:${a.label},结果将出现在当前会话`);
+      togglePanel(false);
+    });
+  });
+}
+document.addEventListener('mousedown', (e) => {
+  if (ctxEl && !ctxEl.contains(e.target)) closeCtx();
+  if (state.open && !panel.contains(e.target) && !e.target.closest('.hotkey-hint') && !e.target.closest('#trayIcon')) togglePanel(false);
+});
+
+/* ===== Toast ===== */
+let toastTimer = null;
+function toast(msg) {
+  const t = $('toast');
+  t.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="m5 13 4 4L19 7"/></svg>${escapeHtml(msg)}`;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+/* ===== 键盘 ===== */
+document.addEventListener('keydown', (e) => {
+  // Ctrl+Alt+V 唤起/收起(对齐全局热键默认值)
+  if (e.ctrlKey && e.altKey && (e.key === 'v' || e.key === 'V')) {
+    e.preventDefault();
+    togglePanel();
+    return;
+  }
+  if (!state.open) return;
+  const inInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+  if (e.key === 'Escape' && !inInput) { togglePanel(false); return; }
+  if (inInput) return;
+  const vis = visibleItems();
+  if (/^[1-9]$/.test(e.key)) {
+    const it = vis[Number(e.key) - 1];
+    if (it) pasteItem(it);
+    return;
+  }
+  if (e.key === 'ArrowDown') { e.preventDefault(); state.selIndex = Math.min(vis.length - 1, state.selIndex + 1); render(); scrollSel(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); state.selIndex = Math.max(0, state.selIndex - 1); render(); scrollSel(); }
+  else if (e.key === 'Enter') { const it = vis[state.selIndex]; if (it) pasteItem(it); }
+  else if (e.key === '/') { e.preventDefault(); $('searchInput').focus(); }
+  else if (e.key === 'Tab') {
+    e.preventDefault();
+    const i = KIND_ORDER.indexOf(state.tab);
+    state.tab = KIND_ORDER[(i + (e.shiftKey ? KIND_ORDER.length - 1 : 1)) % KIND_ORDER.length];
+    render();
+  }
+});
+function scrollSel() {
+  const n = $('list').querySelectorAll('.item')[state.selIndex];
+  if (n) n.scrollIntoView({ block: 'nearest' });
+}
+
+/* ===== 托盘图标 ===== */
+$('trayIcon').addEventListener('click', () => togglePanel(true));
+
+/* 初始渲染(面板内容先备好) */
+render();
+</script>
+</body>
+</html>
