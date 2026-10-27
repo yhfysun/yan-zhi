@@ -9,7 +9,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PLUGIN_TEMPLATES } from '../plugins/templates/index.js';
 import { assertPluginEngine, resolveHostVersion } from '../plugins/host-version.js';
-import { resolveInstalledEntryPath } from '../plugins/install-entry.js';
+import {
+  parsePackageManifest,
+  packageDirsToRemove,
+  resolvePackageEntryPathIn,
+  scanInstalledPackages,
+} from '../plugins/installed-packages.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -47,23 +52,35 @@ function toInfo(p: Plugin) {
   return { manifest: p.manifest, state: p.state, error: p.error, config: p.config, source: p.source };
 }
 
-/** 从 zip buffer 解析 manifest（不落盘） */
-function parseManifestFromZip(buffer: Buffer): PluginManifest {
+/**
+ * 从 zip buffer 解析插件包（不落盘）：单清单 / 多清单（`{ id, multi, manifests }`）都支持。
+ * 逐条 validateManifest + engine 闸 —— 多清单包里任何一条不合格都拒绝整包（不能装半套）。
+ */
+interface ParsedZipPackage {
+  zip: AdmZip;
+  kind: 'single' | 'multi';
+  packageId: string;
+  manifests: PluginManifest[];
+}
+
+function parsePackageFromZip(buffer: Buffer): ParsedZipPackage {
   const zip = new AdmZip(buffer);
   const entry = zip.getEntries().find((e) => e.entryName === 'manifest.json' || e.entryName.endsWith('/manifest.json'));
   if (!entry) throw new ManifestError('.yzp 缺少 manifest.json');
   const raw = zip.readAsText(entry);
   let json: unknown;
   try { json = JSON.parse(raw); } catch { throw new ManifestError('manifest.json 不是合法 JSON'); }
-  // 多清单包（skins 的 { multi, manifests }）：内置装载支持，安装端尚未支持。
-  // 明确拒绝并给出出路，避免落到「缺少 id」这类看不出所以然的报错。
-  if (json && typeof json === 'object' && !Array.isArray(json) && Array.isArray((json as { manifests?: unknown }).manifests)) {
-    throw new ManifestError('多清单插件包暂不支持安装（如 skins 请按单套导出后安装）');
+  const shape = parsePackageManifest(json);
+  if (!shape.packageId) {
+    throw new ManifestError(
+      shape.kind === 'multi'
+        ? '多清单插件包缺少包 id（manifest.json 顶层需有 id 字段；用当前构建器重新打包即可）'
+        : 'manifest.json 缺少 id',
+    );
   }
-  const manifest = validateManifest(json);
-  // P6：宿主版本兼容闸。缺 engine = 兼容（存量 .yzp 不受影响）；不兼容直接拒绝。
-  assertPluginEngine(manifest, HOST_VERSION);
-  return manifest;
+  const manifests = shape.rawManifests.map((m) => validateManifest(m));
+  for (const m of manifests) assertPluginEngine(m, HOST_VERSION);
+  return { zip, kind: shape.kind, packageId: shape.packageId, manifests };
 }
 
 /**
@@ -102,41 +119,65 @@ router.post('/install/preview', (req: Request, res: Response) => {
   try {
     const { base64 } = req.body || {};
     if (typeof base64 !== 'string') { res.status(400).json({ error: '缺少 base64' }); return; }
-    const manifest = parseManifestFromZip(Buffer.from(base64, 'base64'));
-    res.json({ data: manifest });
+    const pkg = parsePackageFromZip(Buffer.from(base64, 'base64'));
+    const base = pkg.manifests[0];
+    if (pkg.kind === 'single') { res.json({ data: base }); return; }
+    // 多清单包：data 给一个用于展示的代表清单，multi 提供包级信息（前端据此显示"含 N 个插件"）
+    res.json({
+      data: { ...base, id: pkg.packageId, name: `${base.name} 等 ${pkg.manifests.length} 个插件` },
+      multi: {
+        packageId: pkg.packageId,
+        count: pkg.manifests.length,
+        ids: pkg.manifests.map((m) => m.id),
+        names: pkg.manifests.map((m) => m.name),
+      },
+    });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
 });
 
-// POST /api/plugins/install —— 安装 .yzp（body: { base64 }）
+// POST /api/plugins/install —— 安装 .yzp（body: { base64 }）；单清单与多清单包都支持
 router.post('/install', async (req: Request, res: Response) => {
   try {
     const { base64 } = req.body || {};
     if (typeof base64 !== 'string') { res.status(400).json({ error: '缺少 base64' }); return; }
-    const buffer = Buffer.from(base64, 'base64');
-    const manifest = parseManifestFromZip(buffer);
+    const pkg = parsePackageFromZip(Buffer.from(base64, 'base64'));
     const mgr = getPluginManager();
-    if (mgr.get(manifest.id)) { res.status(409).json({ error: `插件 ${manifest.id} 已存在，请先卸载` }); return; }
+    const conflicts = pkg.manifests.filter((m) => mgr.get(m.id)).map((m) => m.id);
+    if (conflicts.length) {
+      res.status(409).json({ error: `插件 ${conflicts.join('、')} 已存在，请先卸载` });
+      return;
+    }
 
-    // 解压到 plugins/installed/<id>/
-    const dir = path.join(PLUGINS_DIR, manifest.id);
+    // 解压到 plugins/installed/<包 id>/（多清单包的所有插件共用一个目录）
+    const dir = path.join(PLUGINS_DIR, pkg.packageId);
     await fs.rm(dir, { recursive: true, force: true });
     await fs.mkdir(dir, { recursive: true });
+    const registered: string[] = [];
     try {
-      const zip = new AdmZip(buffer);
-      zip.extractAllTo(dir, true);
+      pkg.zip.extractAllTo(dir, true);
 
       // 入口三态解析（backend/index.js | manifest.main | index.js），见 install-entry.ts
-      const entryPath = resolveInstalledEntryPath(dir, manifest);
+      const entryPath = resolvePackageEntryPathIn(dir, pkg.manifests);
+      if (!entryPath) throw new ManifestError('插件包缺少后端入口（应有 backend/index.js 或 index.js，或在 manifest.main 中声明）');
       const entryUrl = (await import('node:url')).pathToFileURL(entryPath).href;
-      await mgr.registerInstalled(manifest, entryUrl);
+      for (const m of pkg.manifests) {
+        await mgr.registerInstalled(m, entryUrl);
+        registered.push(m.id);
+      }
     } catch (e) {
-      // 失败即回滚：不留下半成品目录（否则 mgr 里没有、磁盘上残留，重装时状态难解释）
+      // 失败即回滚：注销已注册的 id 并删掉半成品目录（不留「DB 里没有、磁盘上有」的残局）
+      for (const id of registered) await mgr.uninstall(id).catch(() => {});
       await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
       throw e;
     }
-    res.json({ data: toInfo(mgr.get(manifest.id)!) });
+    res.json({
+      data: toInfo(mgr.get(pkg.manifests[0].id)!),
+      ...(pkg.kind === 'multi'
+        ? { multi: { packageId: pkg.packageId, count: registered.length, ids: registered } }
+        : {}),
+    });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
@@ -278,9 +319,16 @@ router.delete('/:id', async (req: Request, res: Response) => {
     const mgr = getPluginManager();
     const before = mgr.get(req.params.id);
     await mgr.uninstall(req.params.id);
-    // 已安装插件的目录随之删除（内置插件不碰磁盘：它的目录属于应用包）
+    // 已安装插件的目录随之删除；多清单包共用目录 —— 包里还有别的已注册插件就保留
+    // （内置插件不碰磁盘：它的目录属于应用包）
     if (before?.source === 'installed') {
-      await fs.rm(path.join(PLUGINS_DIR, req.params.id), { recursive: true, force: true });
+      const dirs = packageDirsToRemove(scanInstalledPackages(PLUGINS_DIR), req.params.id, (id) => !!mgr.get(id));
+      if (dirs.length) {
+        for (const d of dirs) await fs.rm(d, { recursive: true, force: true });
+      } else {
+        // 目录布局不认识（清单损坏/已被手工删）时的兜底：按旧约定删同名目录
+        await fs.rm(path.join(PLUGINS_DIR, req.params.id), { recursive: true, force: true });
+      }
     }
     res.json({ data: { ok: true } });
   } catch (e) {

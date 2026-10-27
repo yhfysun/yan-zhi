@@ -12,6 +12,7 @@ import { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from './constants.js';
 import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
 import { scanBuiltinPackages } from './plugins/builtin-packages.js';
+import { installedRebinds, scanInstalledPackages } from './plugins/installed-packages.js';
 import { excludedPluginIds } from './plugins/build-selection.js';
 import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicenseCode, verifyLicenseCached } from './license-guard.js';
 import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
@@ -165,6 +166,11 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3001;
 
 app.use(cors({ origin: true, credentials: true }));
+// 插件包安装/预览的请求体可能很大：skins 整包 .yzp 20.7MB → base64 约 28MB，10MB 全局上限
+// 会直接 413（用户看到的是"安装失败"却查不出原因）。只对这两条路径放宽到 64MB。
+// ★ 必须挂在全局 JSON 中间件**之前**：body-parser 发现 req._body 已解析就跳过，
+//   顺序反了会被 10MB 上限先拒。
+app.use('/api/plugins/install', express.json({ limit: '64mb' }));
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/health', (_req, res) => {
@@ -895,15 +901,12 @@ try {
         logger.warn('[plugin] 内置插件默认开启迁移失败:', e);
       }
     }
-    // 已安装插件重启恢复：loadFromDb 只恢复了状态，入口模块未绑定（enabled 状态下工具/路由未注册），扫描目录补绑
+    // 已安装插件重启恢复：loadFromDb 只恢复了状态，入口模块未绑定（enabled 状态下工具/路由未注册），扫描目录补绑。
+    // ★ 目录名 ≠ 插件 id：多清单包（skins）一个目录含多个插件，按清单逐条补绑；
+    //   入口统一走 resolveInstalledEntryPath（backend/index.js 优先，修掉旧的 index.js 假设）。
     try {
-      for (const d of fs.readdirSync(PLUGINS_DIR, { withFileTypes: true })) {
-        if (!d.isDirectory()) continue;
-        const mfPath = path.join(PLUGINS_DIR, d.name, 'manifest.json');
-        if (!fs.existsSync(mfPath) || !mgr.get(d.name)) continue;
-        const mf = JSON.parse(fs.readFileSync(mfPath, 'utf8')) as { id: string; main?: string };
-        const entry = path.join(PLUGINS_DIR, d.name, mf.main || 'index.js');
-        await mgr.rebindAndReactivate(mf.id, pathToFileURL(entry).href);
+      for (const { id, entryPath } of installedRebinds(scanInstalledPackages(PLUGINS_DIR), (x) => !!mgr.get(x))) {
+        await mgr.rebindAndReactivate(id, pathToFileURL(entryPath).href);
       }
     } catch {
       /* plugins/installed 目录不存在等，忽略 */

@@ -189,10 +189,14 @@ async function extractManifest(absBackendEntry, manifestExport, tmpDir) {
   return mod.default;
 }
 
-/** 写 manifest.json：单清单原样；多清单（skins 的 27 套皮肤）包一层 multi */
+/**
+ * 写 manifest.json：单清单原样；多清单（skins 的 27 套皮肤）包一层 multi。
+ * ★ 多清单包装**必须带 id**：安装端拿它当安装目录名（多清单包没有单一插件 id），
+ *   缺 id 的 .yzp 会被拒绝安装（见 apps/server/src/plugins/installed-packages.ts）。
+ */
 function writeManifest(pkgDir, id, manifestValue) {
   const value = Array.isArray(manifestValue)
-    ? { multi: true, count: manifestValue.length, manifests: manifestValue }
+    ? { id, multi: true, count: manifestValue.length, manifests: manifestValue }
     : manifestValue;
   const file = path.join(pkgDir, 'manifest.json');
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', 'utf8');

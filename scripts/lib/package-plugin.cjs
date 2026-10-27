@@ -76,12 +76,16 @@ function collectPluginFiles(pluginDir, fsImpl) {
 
 /**
  * 解析 manifest.json 并归类形态。
- * @returns {{ kind: 'single'|'multi', manifest: object, manifests: object[], ids: string[], version: string }}
+ * @returns {{ kind: 'single'|'multi', manifest: object, manifests: object[], ids: string[], version: string, packageId: string|null }}
  */
 function inspectManifest(raw, dirId) {
-  if (Array.isArray(raw)) return classifyMulti(raw, dirId, '数组');
+  if (Array.isArray(raw)) return classifyMulti(raw, dirId, '数组', null);
   if (raw && typeof raw === 'object' && Array.isArray(raw.manifests)) {
-    return classifyMulti(raw.manifests, dirId, '包装');
+    const wrapperId = typeof raw.id === 'string' && raw.id ? raw.id : null;
+    if (wrapperId && dirId && wrapperId !== dirId) {
+      throw new PluginPackageError(`多清单包的 id（${wrapperId}）与目录名（${dirId}）不一致`);
+    }
+    return classifyMulti(raw.manifests, dirId, '包装', wrapperId);
   }
   if (!raw || typeof raw !== 'object') {
     throw new PluginPackageError('manifest.json 必须是对象');
@@ -95,10 +99,10 @@ function inspectManifest(raw, dirId) {
   if (typeof raw.version !== 'string' || !raw.version) {
     throw new PluginPackageError('manifest.json 缺少 version（.yzp 文件名需要它）');
   }
-  return { kind: 'single', manifest: raw, manifests: [raw], ids: [raw.id], version: raw.version };
+  return { kind: 'single', manifest: raw, manifests: [raw], ids: [raw.id], version: raw.version, packageId: raw.id };
 }
 
-function classifyMulti(manifests, dirId, form) {
+function classifyMulti(manifests, dirId, form, wrapperId) {
   if (!manifests.length) {
     throw new PluginPackageError(`manifest.json 是${form}形态但没有清单条目`);
   }
@@ -114,6 +118,8 @@ function classifyMulti(manifests, dirId, form) {
     manifests,
     ids: manifests.map((m) => m.id),
     version: typeof first.version === 'string' && first.version ? first.version : '0.0.0',
+    // 安装端用 packageId 当安装目录名；老式数组/无 id 包装为 null（装不回来，CLI 会警告）
+    packageId: wrapperId || null,
   };
 }
 
@@ -150,6 +156,7 @@ function preparePluginPackage({ pluginDir, id, fsImpl }) {
     kind: meta.kind,
     version: meta.version,
     ids: meta.ids,
+    packageId: meta.packageId,
     files,
     totalBytes,
   };

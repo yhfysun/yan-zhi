@@ -207,6 +207,12 @@
             </div>
           </div>
           <div class="install-mdesc">{{ installManifest.description || '无描述' }}</div>
+          <div v-if="installMulti" class="install-multi">
+            <div class="install-perms-title">此包包含 {{ installMulti.count }} 个插件：</div>
+            <div class="install-multi-list">
+              {{ installMulti.names.slice(0, 6).join('、') }}<span v-if="installMulti.names.length > 6"> 等</span>
+            </div>
+          </div>
           <div class="install-mperms">
             <div class="install-perms-title">该插件将获得以下权限：</div>
             <div v-if="(installManifest.permissions || []).length === 0" class="install-no-perm">无额外权限</div>
@@ -258,6 +264,8 @@ const installLoading = ref(false);
 const installDragover = ref(false);
 const installBase64 = ref('');
 const installManifest = ref<PluginManifest | null>(null);
+/** 多清单包（skins 等）：一个 .yzp 含多个插件，确认页要显示整包内容 */
+const installMulti = ref<{ packageId: string; count: number; ids: string[]; names: string[] } | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
 const PERM_LABELS: Record<string, string> = {
@@ -486,6 +494,7 @@ async function onUninstall(p: PluginInfo) {
 function onInstall() {
   installStep.value = 'select';
   installManifest.value = null;
+  installMulti.value = null;
   installBase64.value = '';
   installOpen.value = true;
 }
@@ -516,6 +525,8 @@ async function handleFile(file: File) {
     const res = await api.post<PluginManifest>('/plugins/install/preview', { base64 });
     if ('error' in res) { ElMessage.error(res.error); return; }
     installManifest.value = res.data;
+    // 多清单包：包级信息由服务端随 preview 顶层下发（api 客户端透传 data 之外的字段）
+    installMulti.value = (res as { multi?: typeof installMulti.value }).multi ?? null;
     installStep.value = 'confirm';
   } catch (err) {
     ElMessage.error((err as Error).message || '读取文件失败');
@@ -530,8 +541,13 @@ async function confirmInstall() {
   try {
     const res = await api.post<PluginInfo>('/plugins/install', { base64: installBase64.value });
     if ('error' in res) { ElMessage.error(res.error); return; }
-    ElMessage.success(`已安装 ${installManifest.value.name}`);
+    ElMessage.success(
+      installMulti.value
+        ? `已安装 ${installMulti.value.count} 个插件`
+        : `已安装 ${installManifest.value.name}`,
+    );
     installOpen.value = false;
+    installMulti.value = null;
     await pluginStore.refresh();
   } catch (err) {
     ElMessage.error((err as Error).message || '安装失败');
@@ -864,6 +880,15 @@ onMounted(() => pluginStore.refresh());
   font-size: 13px;
   line-height: 1.5;
   margin: 10px 0;
+}
+.install-multi {
+  margin: 8px 0;
+}
+.install-multi-list {
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .install-mperms {
   margin-top: 8px;

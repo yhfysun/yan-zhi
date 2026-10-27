@@ -107,11 +107,12 @@
 
 - [x] `scripts/package-plugin.cjs --id=X [--out=dist-plugins]` → `dist-plugins/X-<version>.yzp`：直接 zip `apps/server/plugins/builtin/<id>/`（与内置产物同源，无第二条构建路径）；纯逻辑在 `scripts/lib/package-plugin.cjs`（排除 `.yz-tmp` / `__frontend-entry-*` / `.prune-hold` / `node_modules` / 系统垃圾文件）；校验 manifest 存在、JSON 合法、单清单 id === 目录名；输出文件清单 + sha256。守门 `apps/desktop/test/package-plugin.test.cjs`（7 例）。实测 git-explorer（3.4KB/2 文件）、skins（20.7MB/488 文件）产物回读正常。
 - [x] **manifest.engine 语义化校验**（本期关键闸）：宿主版本取应用版本（主进程 `app.getVersion()` 经 `YZ_HOST_VERSION` 注入 → dev 向上找 `apps/desktop/package.json` → server 包版本 → `0.0.0`）；`packages/core/src/plugin/semver.ts` 轻量 range 匹配（`^ ~ >= <= > < = ||`、裸 x.y、预发布规则，不新增依赖）；`/api/plugins/install/preview` 与 `/install` 共用解析即校验，不兼容/非法 range 均 400 并给出含双方版本的文案；**缺 engine = 兼容**（存量 .yzp 不受影响）。守门 `apps/server/test/plugin-install-guard.test.ts`（16 例：兼容/不兼容/缺字段/非法 range/宿主版本解析）。
-- [x] **安装链路修复（挡住端到端的真问题）**：① 入口三态解析 `backend/index.js | manifest.main | index.js`（原实现固定 `main || index.js`，第一方 .yzp 装回来必激活失败）→ `apps/server/src/plugins/install-entry.ts`；② 安装失败回滚半成品目录；③ 卸载 installed 插件时删除安装目录；④ 多清单包（skins）安装端明确拒绝并给出门路。
-- [x] **插件管理端到端**（临时 HTTP 脚本实测，服务端 `tsx` + 独立 DATA_DIR）：预览 → 安装 → 停用 → 启用 → 卸载（目录消失）→ 再装 全通；失败态文案实测：版本不兼容（preview 与 install 均 400）、重名 409、坏 zip 400、缺 manifest 400、缺后端入口 400 且不留目录。另用真实 `git-explorer-1.0.0.yzp` 验证「卸载内置 → 装回分发包」后 `state=enabled / source=installed / error 无`。
+- [x] **安装链路修复（挡住端到端的真问题）**：① 入口三态解析 `backend/index.js | manifest.main | index.js`（原实现固定 `main || index.js`，第一方 .yzp 装回来必激活失败）→ `apps/server/src/plugins/install-entry.ts`；② 安装失败回滚半成品目录（含多清单已注册的 id）；③ 卸载 installed 插件时删除安装目录；④ **多清单包（skins）安装支持**。
+- [x] **多清单 .yzp 安装（2026-10-27）**：`{ id, multi: true, manifests: [...] }` 整包安装 —— 一个安装目录（名 = 包 id）承载多个插件，逐条 `registerInstalled`；重复检查覆盖包内全部 id；逐条 validateManifest + engine 闸（任一条不合格整包拒绝）；卸载某个 id 时**包内还有其它已注册 id 就保留目录**；重启恢复按清单逐条补绑（顺带修掉旧实现的 `index.js` 入口假设 —— 之前重启后已安装插件会变成 state=error）。构建器 `writeManifest` 给多清单包装补 `id` 字段；`scripts/lib/package-plugin.cjs` 校验包装 id 与目录名一致并回传 packageId。纯逻辑 `apps/server/src/plugins/installed-packages.ts` + 守门 `test/plugin-multi-install.test.ts`（10 例：扫描/卸载保留兄弟/最后一条删目录/重启补绑/入口缺失跳过）。**安装请求体上限**：全局 JSON 10MB 挡不住 skins 整包（base64 ≈ 28MB），仅对 `/api/plugins/install*` 放宽到 64MB（挂在全局解析器之前）。
+- [x] **插件管理端到端**（临时 HTTP 脚本实测，服务端 `tsx` + 独立 DATA_DIR）：预览 → 安装 → 停用 → 启用 → 卸载（目录消失）→ 再装 全通；多清单包同流程实测：整包安装两个插件、停用其一不影响另一个、卸载其一目录保留、卸最后一个目录删除；失败态文案实测：版本不兼容（preview 与 install 均 400）、重名 409、坏 zip 400、缺 manifest 400、缺后端入口 400（均不留目录）、多清单缺包 id 400。另用真实 `git-explorer-1.0.0.yzp` 验证「卸载内置 → 装回分发包」后 `state=enabled / source=installed / error 无`；重启服务端后仍 `enabled` 且无激活错误（入口补绑走 backend/index.js）。**真实 skins 整包**（20.7MB/28 套）实测：preview/install 200、28 套全 enabled、卸载一套目录保留且余 27 套正常、卸完最后一套目录删除。
+- 已知缺口（下一期）：`.yzp` 里前端 bundle 的入口字段（`ui.entry`/`mode.entry`）仍由构建器缺省不写，装回来只有后端能力 —— 与 P4「bundle 化收尾」同一件事。
 - [x] **模板同步改自动发现**：`scripts/sync-plugin-templates.mjs` 删掉手维护 `ENTRIES`，改按模板文件里的 `generated:<id>` 标记发现，源码路径按 `catalog.backendEntry → plugins/<id>/index.ts → plugins/<id>.ts` 解析，常量名沿用区块内已有名字。**不做全量生成**：`ops-shell`(4280 行)/`shop-ops`(3205 行) 等全抄进来会让模板文件与后端产物 +约 700KB 且把全部内置插件变成源码分发出口（取舍见脚本头注释）。顺带把过期的 computer-use 模板同步成 host-bridge 写法（实测该模板已漂移）。
 - [x] 补充：导出源码**优先读真实源码**（dev 下永远导出当前文件），读不到才回落内嵌快照（打包版唯一来源）；一致性由 `apps/server/test/plugin-templates-sync.test.ts` 钉死（内嵌 === 磁盘，忘同步即红）。
-- 已知缺口（下一期）：多清单 .yzp（skins 整包）安装端未支持（内置装载支持、安装端明确拒绝）；`.yzp` 里前端 bundle 的入口字段（`ui.entry`/`mode.entry`）仍由构建器缺省不写，装回来只有后端能力 —— 与 P4「bundle 化收尾」同一件事。
 
 ## P7 收尾
 
@@ -152,6 +153,7 @@
 | 单独打包 .yzp（P6） | `scripts/package-plugin.cjs`（CLI）+ `scripts/lib/package-plugin.cjs`（目录/排除/校验纯逻辑） |
 | engine 兼容闸（P6） | `apps/server/src/plugins/host-version.ts`（宿主版本 + 校验文案）+ `packages/core/src/plugin/semver.ts`（轻量 range） |
 | .yzp 安装入口 | `apps/server/src/plugins/install-entry.ts`（backend/index.js → manifest.main → index.js） |
+| 已安装包语义（P6） | `apps/server/src/plugins/installed-packages.ts`（扫描/多清单/卸载删目录/重启补绑） |
 | 源码模板同步 | `scripts/sync-plugin-templates.mjs`（发现 generated 标记）+ `templates/index.ts`；一致性守门 `test/plugin-templates-sync.test.ts` |
 
 ## 常用命令
@@ -183,8 +185,8 @@ node scripts/sync-plugin-templates.mjs                                          
 - extraResources 按选：皮肤资产随 skins ✅（assets 在插件目录内）、**python 运行时随 computer-use ❌ 未做**。
 - 整包冒烟（三档产物内容断言）未跑 —— 需真实 electron-builder（约 3 分钟/档）。
 
-### P6 单独打包 .yzp（用户需求 3）
-- `scripts/package-plugin.cjs --id=X`：zip plugins/builtin/X → dist-plugins/X-<ver>.yzp；插件管理页安装端到端（registerInstalled 链路已有）；engine 语义化版本校验。
+### P6 单独打包 .yzp（2026-10-27 已完成）
+- `scripts/package-plugin.cjs --id=X` ✅；engine 语义化校验 ✅（宿主版本 = 应用版本，缺 engine 放行）；安装端到端 ✅；多清单包安装 ✅；模板同步自动发现 ✅。剩余缺口见上方 P6 章节尾注（.yzp 前端入口字段）。
 
 ### P7 收尾
 - 插件目录互导 lint；全档打包冒烟断言；CHANGELOG；皮肤双体系评估合并。
@@ -202,6 +204,6 @@ node scripts/sync-plugin-templates.mjs                                          
 9. **多档构建的断言边界**：vite 只编一次（前端产物 = 各档并集），所以**文本泄漏断言只在并集选择集上做一次**（build-all）；逐档 electron-build 只做目录断言 —— 逐档扫文本必然误报（lite 包里当然有 pro 的 chunk）。
 10. **build-plugins 的临时目录必须在 `--out` 内**：入口 stub 用 `packages:'external'` 打包，bare import（simple-git 等）要靠目录上溯解析到 server 的 node_modules；放系统 temp 会 `ERR_MODULE_NOT_FOUND`。现放在 `<out>/.yz-tmp/`，finally 整目录删除（此前临时入口落在产物根，会被 extraResources 拷进包）。
 11. **`--modes` 不再只是"裁前端"**（P5 起）：package 按 design §7 映射成插件选择集（模式插件 + 全部非模式插件照旧带上），后端插件目录也随之裁剪；只想裁前端请用 `YZ_SKIP_PLUGIN_PRUNE=1`。
-12. **.yzp 安装端只支持单清单包**（2026-10-26）：内置装载认 `{multi, manifests}`（skins 整包），安装端明确拒绝并提示按单套导出。package-plugin 仍可打出多清单包（分发单元），但装不回来 —— 别把它当成可用产物交付。
+12. **多清单包必须有包 id**（2026-10-27）：`{ id, multi, manifests }` 的顶层 id 就是安装目录名；缺 id 的 .yzp（旧构建产物/数组形态）安装端直接拒绝。一个目录承载多个插件 → 卸载其中一个时目录要保留（`packageDirsToRemove`），重启恢复要按清单逐条补绑（`installedRebinds`）—— 别再按"目录名 === 插件 id"写任何新逻辑。
 13. **源码模板有两份**（内嵌快照 + 真实 .ts）：安装包不带 .ts，导出功能在打包版只能读内嵌快照；dev 下路由优先读磁盘。两份不许漂移 —— `test/plugin-templates-sync.test.ts` 钉着（改插件源码必须重跑 `node scripts/sync-plugin-templates.mjs`，否则测试红）。
 14. **宿主版本从主进程注入**（P6）：打包版 resources 里没有 `apps/desktop/package.json`，`YZ_HOST_VERSION` 由 main.cjs 用 `app.getVersion()` 注入；漏注入时后端回落到 server 包版本或 `0.0.0` —— 后者会让所有带 engine 的 .yzp 被拒（宁可显式失败，也不误装）。

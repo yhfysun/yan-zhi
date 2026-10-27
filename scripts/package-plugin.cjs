@@ -107,7 +107,11 @@ function main() {
 
   console.log(`✓ ${archiveName(pkg.id, pkg.version)}`);
   if (pkg.kind === 'multi') {
-    console.warn('  ⚠ 多清单包：当前宿主安装端仅支持单清单 .yzp（见 tasks.md P6 已知缺口）');
+    if (!pkg.packageId) {
+      console.warn('  ⚠ 多清单包缺少包 id（manifest.json 顶层无 id）：安装端会拒绝，请先用当前构建器重新生成');
+    } else {
+      console.log(`  多清单包: packageId=${pkg.packageId}（安装后共 ${pkg.ids.length} 个插件）`);
+    }
   }
   console.log(`  来源: ${path.relative(ROOT, pluginDir) || pluginDir}（${pkg.kind === 'multi' ? `多清单 ${pkg.ids.length} 条` : `id=${pkg.ids[0]}`}）`);
   console.log(`  输出: ${outFile}`);

@@ -19,6 +19,7 @@ plugins/<builtin|installed>/<id>/
 - **用户安装**：沿用现有 `PLUGINS_DIR`（`resources/server/dist/apps/plugins/installed/<id>/`），零改动。
 
 "打包包含与否" = 打包脚本是否拷贝该目录；未选 = 物理不存在。"单独打包" = 同一目录 zip 成 .yzp（与内置产物同源，杜绝行为漂移）。
+多清单包（如 skins）：一个目录承载多个插件，manifest.json 为 `{ id, multi: true, count, manifests: [...] }`，**顶层 id 即安装目录名**；安装端整包注册每个清单，卸载单个 id 时包内仍有其它已注册插件则保留目录。
 
 ## 2. manifest 扩展（全部向后兼容的新增字段）
 
