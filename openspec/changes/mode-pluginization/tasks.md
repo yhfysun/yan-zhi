@@ -117,6 +117,7 @@
 ## P7 收尾（2026-10-27 完成主体）
 
 - [x] **插件目录互导 lint**：`apps/server/test/plugin-isolation.test.ts` —— `plugins/<dir>/**` 禁止跨目录 import，目录只能引用本插件 owner 前缀的根级模块（`sec-lab-tools → sec-lab-*` 合规）；`templates/` 是源码字符串容器不参与扫描。已用探针验证能抓违规。
+- [x] **全档打包冒烟（2026-10-27 重打）**：`build-all-editions.cjs` 三档全出（lite 10:43 / basic 10:55 / pro 11:07，均 387–392MB），`verify-edition-contents.cjs` 三档全 ✓，`__frontend-entry-*.mjs` 残留清零；产物内模式插件 manifest 带 `ui.entry`、`shared/`（65 个 host shim）随包（basic：dev/wf；pro：dev/clip/wf）。★ pro 目录仍留有一份 2026-10-23 的旧命名产物 `yan-zhi-Setup-0.1.0-x64-pro-office-ops-shop.exe`（历史遗留，非本轮产出）。
 - [x] **全档安装包内容清单断言**：`scripts/verify-edition-contents.cjs` —— 逐档核对 builtin 目录集合 ≡ 预设选择集、选中插件 manifest 齐全、skins/assets 非空、**根下不得有文件**。首跑即发现在历史三档产物里各有 3 个 `__frontend-entry-*.mjs` 残留（旧构建器产物；构建器已改为每次构建前清理根下这类文件，本地 builtin 已清）。现网 exe 是修复前构建的，下次打包即清零。
 - [x] **CHANGELOG + 开发者文档**：`CHANGELOG.md` Unreleased Added 条目；`docs/plugin-package-spec.md`（包形态/manifest 字段/桥面白名单/构建与打包/安装规则/守门测试索引）。
 - [ ] （可选）skinSeries 并入 skins 插件评估（本期未动：双皮肤体系并存，评估无结论前不合并）。
