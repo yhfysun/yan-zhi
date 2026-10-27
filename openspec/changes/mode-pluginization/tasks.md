@@ -120,7 +120,7 @@
 - [x] **全档安装包内容清单断言**：`scripts/verify-edition-contents.cjs` —— 逐档核对 builtin 目录集合 ≡ 预设选择集、选中插件 manifest 齐全、skins/assets 非空、**根下不得有文件**。首跑即发现在历史三档产物里各有 3 个 `__frontend-entry-*.mjs` 残留（旧构建器产物；构建器已改为每次构建前清理根下这类文件，本地 builtin 已清）。现网 exe 是修复前构建的，下次打包即清零。
 - [x] **CHANGELOG + 开发者文档**：`CHANGELOG.md` Unreleased Added 条目；`docs/plugin-package-spec.md`（包形态/manifest 字段/桥面白名单/构建与打包/安装规则/守门测试索引）。
 - [ ] （可选）skinSeries 并入 skins 插件评估（本期未动：双皮肤体系并存，评估无结论前不合并）。
-- [ ] （可选）web 端 HTTP 装载（预留 `pluginAssetUrl` HTTP 变体，未接线）。
+- [x] **Web/移动端 HTTP 装载（2026-10-27）**：前端 shim 改**随包复制**（`<pkg>/shared/`，bundle 用相对路径 `../shared/…`，同一份产物 yz:// 与 HTTP 双通，.yzp 自包含）；`/api/plugin-assets/:id/*` 放开 `frontend/*.mjs|css|json` 与内置包目录（MIME/防穿越/代码不缓存）。实测：内置与已安装插件的 `frontend/index.mjs`、`shared/vue.mjs`、`style.css` 均 200 且 MIME 正确；穿越 400、未知插件 404；`.yzp` 内含 65 个 host shim + 入口分块。**未做**：真实浏览器里切到模式工作台的 UI 实跑（本机预览面板未启用），当前以「端点 + 包内自包含 + 视图 key」三类断言代替。
 
 ---
 
@@ -208,4 +208,5 @@ node scripts/sync-plugin-templates.mjs                                          
 11. **`--modes` 不再只是"裁前端"**（P5 起）：package 按 design §7 映射成插件选择集（模式插件 + 全部非模式插件照旧带上），后端插件目录也随之裁剪；只想裁前端请用 `YZ_SKIP_PLUGIN_PRUNE=1`。
 12. **多清单包必须有包 id**（2026-10-27）：`{ id, multi, manifests }` 的顶层 id 就是安装目录名；缺 id 的 .yzp（旧构建产物/数组形态）安装端直接拒绝。一个目录承载多个插件 → 卸载其中一个时目录要保留（`packageDirsToRemove`），重启恢复要按清单逐条补绑（`installedRebinds`）—— 别再按"目录名 === 插件 id"写任何新逻辑。
 13. **源码模板有两份**（内嵌快照 + 真实 .ts）：安装包不带 .ts，导出功能在打包版只能读内嵌快照；dev 下路由优先读磁盘。两份不许漂移 —— `test/plugin-templates-sync.test.ts` 钉着（改插件源码必须重跑 `node scripts/sync-plugin-templates.mjs`，否则测试红）。
+15. **前端 shim 必须随包、用相对路径**（2026-10-27）：bundle 的外置依赖写成 `../shared/…`，构建时把 `apps/desktop/host-shims/` 复制进 `<pkg>/shared/`。写死 `yz://shared/…` 只有 Electron 能解析，Web/移动端直接失败；另外 `.yzp` 排除规则里 `__frontend-entry-*` 只在**包根**算残留，`frontend/` 内的同名文件是 vite 产物分块（index.mjs 依赖它）。
 14. **宿主版本从主进程注入**（P6）：打包版 resources 里没有 `apps/desktop/package.json`，`YZ_HOST_VERSION` 由 main.cjs 用 `app.getVersion()` 注入；漏注入时后端回落到 server 包版本或 `0.0.0` —— 后者会让所有带 engine 的 .yzp 被拒（宁可显式失败，也不误装）。

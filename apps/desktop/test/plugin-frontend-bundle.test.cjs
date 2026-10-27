@@ -12,7 +12,6 @@ const path = require('node:path');
 
 const REPO = path.join(__dirname, '..', '..', '..');
 const BUILTIN = path.join(REPO, 'apps', 'server', 'plugins', 'builtin');
-const SHIMS = path.join(REPO, 'apps', 'desktop', 'host-shims', 'host');
 const BUNDLED = ['clip-mode', 'dev-mode', 'wf-mode'];
 
 function bundleFiles(dir) {
@@ -34,9 +33,27 @@ for (const id of BUNDLED) {
       assert.ok(text.includes(`"${key}"`), `${id} bundle 缺视图 key ${key}（装载器会取不到组件）`);
     }
 
-    const refs = new Set([...text.matchAll(/yz:\/\/shared\/host\/([^"']+)/g)].map((m) => m[1]));
-    const missing = [...refs].filter((r) => !fs.existsSync(path.join(SHIMS, r)));
-    assert.deepEqual(missing, [], `${id} 引用了未生成的宿主 shim`);
+    // shim 必须随包（P7）：bundle 用相对路径 ../shared/…，同一份产物在 yz:// 与 HTTP 下都能解析
+    const refs = new Set([...text.matchAll(/\.\.\/shared\/host\/([^"']+)/g)].map((m) => m[1]));
+    const missing = [...refs].filter((r) => !fs.existsSync(path.join(BUILTIN, id, 'shared', 'host', r)));
+    assert.deepEqual(missing, [], `${id} 引用了未随包复制的宿主 shim`);
+    assert.ok(
+      fs.existsSync(path.join(BUILTIN, id, 'shared', 'vue.mjs')),
+      `${id} 缺 shared/vue.mjs（Web/移动端 HTTP 装载会 404）`,
+    );
+    assert.ok(!text.includes('yz://shared'), `${id} 仍写死 yz:// 前缀（Web 端无法解析）`);
+
+    // 自包含：bundle 里所有相对 import 都必须能在包内找到文件（相对路径在 yz:// 与 HTTP 下
+    // 语义一致，只要文件在包里就一定能解析；缺一个就是运行期 404/模块找不到）。
+    const pkgRoot = path.join(BUILTIN, id);
+    const relSpecs = new Set(
+      [...text.matchAll(/(?:from|import)\s*\(?\s*"(\.[^"]+)"/g)].map((m) => m[1]),
+    );
+    const unresolved = [...relSpecs].filter((spec) => {
+      const target = path.resolve(path.join(pkgRoot, 'frontend'), spec);
+      return !fs.existsSync(target);
+    });
+    assert.deepEqual(unresolved, [], `${id} bundle 引用了包内不存在的相对模块`);
 
     // ③ 有 bundle 就必须在 manifest 里声明入口 —— 否则加载器不会走 bundle，
     //    「bundle 优先」成了死代码，装回来的 .yzp 也拿不到前端（P7 补齐的字段）。

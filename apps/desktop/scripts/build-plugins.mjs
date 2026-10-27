@@ -281,13 +281,17 @@ async function buildBackend(absBackendEntry, pkgDir, serverShimPath, tmpDir) {
 async function buildFrontend(entry, pkgDir, tempDir) {
   const viteBuild = (await import('vite')).build;
   const vue = (await import('@vitejs/plugin-vue')).default;
-  const { isHostModuleRel, hostModuleKey, generateHostModuleShims } = await import('./lib/host-shims.mjs');
+  const { isHostModuleRel, hostModuleKey, generateHostModuleShims, shimsDir } = await import('./lib/host-shims.mjs');
+  // ★ shim 用**相对路径**（../shared/… = 插件包根的 shared/），不再写死 yz://：
+  //   yz:// 只有 Electron 有；相对路径让同一份 bundle 在 yz://plugin/<id>/frontend/
+  //   与 http(s)://<后端>/api/plugin-assets/<id>/frontend/ 下都能解析（Web/移动端可装载）。
+  //   shim 文件随包复制（P7），.yzp 因此自包含，不依赖宿主导出额外端点。
   const sharedPaths = {
-    vue: 'yz://shared/vue.mjs',
-    'vue-router': 'yz://shared/vueRouter.mjs',
-    pinia: 'yz://shared/pinia.mjs',
-    'element-plus': 'yz://shared/elementPlus.mjs',
-    '@element-plus/icons-vue': 'yz://shared/elementPlusIcons.mjs',
+    vue: '../shared/vue.mjs',
+    'vue-router': '../shared/vueRouter.mjs',
+    pinia: '../shared/pinia.mjs',
+    'element-plus': '../shared/elementPlus.mjs',
+    '@element-plus/icons-vue': '../shared/elementPlusIcons.mjs',
   };
   const externals = Object.keys(sharedPaths);
   const hostModules = new Set();
@@ -320,7 +324,7 @@ async function buildFrontend(entry, pkgDir, tempDir) {
           if (!isHostModuleRel(rel)) return null;
           const key = hostModuleKey(rel);
           hostModules.add(key);
-          return { id: `yz://shared/host/${key}.mjs`, external: true };
+          return { id: `../shared/host/${key}.mjs`, external: true };
         },
       },
     ],
@@ -362,8 +366,16 @@ async function buildFrontend(entry, pkgDir, tempDir) {
   }
   if (modules.length) {
     const { written } = generateHostModuleShims(DESKTOP_DIR, modules);
-    console.log(`[build-plugins]   宿主模块外置 ${written.length} 个 → yz://shared/host/*`);
+    console.log(`[build-plugins]   宿主模块外置 ${written.length} 个 → shared/host/*`);
   }
+
+  // shim 随包复制：bundle 里是 ../shared/…，装进 .yzp 后自包含（Web/移动端也能装载）
+  const srcShims = shimsDir(DESKTOP_DIR);
+  const dstShims = path.join(pkgDir, 'shared');
+  if (!fs.existsSync(path.join(srcShims, 'vue.mjs'))) {
+    throw new Error(`[build-plugins] 宿主 shim 缺失: ${path.join(srcShims, 'vue.mjs')}（先跑 generate-host-shims）`);
+  }
+  fs.cpSync(srcShims, dstShims, { recursive: true });
   return path.join(pkgDir, 'frontend', 'index.mjs');
 }
 

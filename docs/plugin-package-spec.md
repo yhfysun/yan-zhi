@@ -12,6 +12,7 @@ plugins/<builtin|installed>/<id>/
   manifest.json        # 单清单，或多清单包装 { id, multi: true, count, manifests: [...] }
   backend/index.js     # esbuild 打包的后端入口（纯声明式插件可为空实现）
   frontend/index.mjs   # vite lib 构建的前端 bundle（无界面插件可无）
+  shared/…             # 宿主 shim（vue/pinia/element-plus + stores/composables 转发，随包复制）
   assets/…             # 皮肤壁纸等静态资源（skins）
 ```
 
@@ -55,6 +56,10 @@ exec-cmd/git/artifact-dir）：任何导入形态都会被重定向，漏网新�
 插件目录之间**禁止互相 import**（`apps/server/test/plugin-isolation.test.ts`）；
 共享能力走宿主桥或抽中立模块。
 
+前端 bundle 的宿主依赖用**相对路径** `../shared/…` 外置，shim 随包复制：同一份产物在
+Electron 的 `yz://plugin/<id>/…` 与 Web/移动端的 `http(s)://<后端>/api/plugin-assets/<id>/…`
+下都能解析，`.yzp` 自包含。**不要**再写死 `yz://shared/…`（浏览器没有这个 scheme）。
+
 ## 4. 构建与打包
 
 ```bash
@@ -75,7 +80,15 @@ node scripts/package-plugin.cjs --id=git-explorer [--out=dist-plugins]
 
 产物：`dist-plugins/<id>-<version>.yzp`，脚本会打印文件清单与 sha256。
 
-## 5. 安装规则（/api/plugins/install）
+## 5. 前端装载与静态端点
+
+- 入口：manifest `ui.entry` / `contributes.mode.entry`（构建器在前端 bundle 产出后自动写入）。
+- Electron：`yz://plugin/<id>/<entry>`（main.cjs 的协议处理器按插件目录定位，带 CORS 头）。
+- Web / 移动：`/api/plugin-assets/<id>/<entry>`（同源或经 API_BASE），端点限制在插件目录内、
+  逐段校验防穿越、代码/样式 `no-cache`、图片长缓存；候选目录 = 已安装 → 内置包 → 内置 assets。
+- 失败一律回落构建期装载表（`PLUGIN_VIEW_LOADERS`），不黑屏。
+
+## 6. 安装规则（/api/plugins/install）
 
 - 请求体：`{ base64 }`（安装/预览单条路径放宽到 64MB —— skins 整包 base64 ≈ 28MB）。
 - 校验顺序：zip 里找 `manifest.json` → 解析形态 → `validateManifest` 逐条 → `engine` 与宿主版本比对
@@ -85,7 +98,7 @@ node scripts/package-plugin.cjs --id=git-explorer [--out=dist-plugins]
 - 卸载：删除 DB 行；已安装插件连带删目录（多清单包保留仍有兄弟插件的目录）。
 - 重启恢复：扫描 `plugins/installed/*`，按清单逐条补绑入口（不能假设目录名 === 插件 id）。
 
-## 6. 守门测试
+## 7. 守门测试
 
 | 主题 | 文件 |
 |---|---|

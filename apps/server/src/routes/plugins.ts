@@ -8,6 +8,7 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PLUGIN_TEMPLATES } from '../plugins/templates/index.js';
+import { builtinPackageDirs } from '../plugins/builtin-packages.js';
 import { assertPluginEngine, resolveHostVersion } from '../plugins/host-version.js';
 import {
   parsePackageManifest,
@@ -349,6 +350,9 @@ pluginAssetsRouter.use(authMiddleware);
 const MIME: Record<string, string> = {
   '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.svg': 'image/svg+xml', '.avif': 'image/avif', '.ico': 'image/x-icon',
+  // 插件前端 bundle 与宿主 shim（Web/移动端经 HTTP 装载，P7）
+  '.mjs': 'text/javascript', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
+  '.map': 'application/json', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
 };
 
 pluginAssetsRouter.get('/:pluginId/*', (req: Request, res: Response) => {
@@ -359,7 +363,13 @@ pluginAssetsRouter.get('/:pluginId/*', (req: Request, res: Response) => {
     res.status(400).json({ error: '非法资源路径' });
     return;
   }
-  const candidates = [path.join(PLUGINS_DIR, pluginId), path.join(BUILTIN_ASSETS_DIR, pluginId)];
+  // ① 已安装插件目录 ② 内置插件包目录（dev/打包两种布局） ③ 内置静态资源目录（皮肤壁纸）
+  const candidates = [
+    path.join(PLUGINS_DIR, pluginId),
+    ...builtinPackageDirs().map((root) => path.join(root, pluginId)),
+    path.join(BUILTIN_ASSETS_DIR, pluginId),
+  ];
+  const TEXTUAL = new Set(['.mjs', '.js', '.css', '.json', '.map']);
   for (const base of candidates) {
     const file = path.join(base, ...relParts);
     if (!file.startsWith(base)) continue; // 双保险：解析后必须仍落在插件目录内
@@ -367,7 +377,8 @@ pluginAssetsRouter.get('/:pluginId/*', (req: Request, res: Response) => {
     const ext = path.extname(file).toLowerCase();
     if (!MIME[ext]) { res.status(415).json({ error: '不支持的资源类型' }); return; }
     res.setHeader('Content-Type', MIME[ext]);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    // 代码/样式不缓存：插件重装/升级后浏览器必须拿到新 bundle（图片可长缓存）
+    res.setHeader('Cache-Control', TEXTUAL.has(ext) ? 'no-cache' : 'public, max-age=86400');
     res.sendFile(file);
     return;
   }
