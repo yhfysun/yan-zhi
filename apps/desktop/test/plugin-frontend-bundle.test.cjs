@@ -37,5 +37,12 @@ for (const id of BUNDLED) {
     const refs = new Set([...text.matchAll(/yz:\/\/shared\/host\/([^"']+)/g)].map((m) => m[1]));
     const missing = [...refs].filter((r) => !fs.existsSync(path.join(SHIMS, r)));
     assert.deepEqual(missing, [], `${id} 引用了未生成的宿主 shim`);
+
+    // ③ 有 bundle 就必须在 manifest 里声明入口 —— 否则加载器不会走 bundle，
+    //    「bundle 优先」成了死代码，装回来的 .yzp 也拿不到前端（P7 补齐的字段）。
+    assert.equal(manifest.ui?.entry, 'frontend/index.mjs', `${id} manifest.ui.entry 未指向 bundle`);
+    if (manifest.contributes?.mode) {
+      assert.equal(manifest.contributes.mode.entry, 'frontend/index.mjs', `${id} contributes.mode.entry 未指向 bundle`);
+    }
   });
 }

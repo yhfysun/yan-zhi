@@ -368,6 +368,33 @@ async function buildFrontend(entry, pkgDir, tempDir) {
 }
 
 /** 组包单个插件。返回构建摘要。 */
+/**
+ * 前端 bundle 入口写进打包 manifest（P7 补齐）。
+ *
+ * ★ 为什么必须写：加载器只认 manifest 的 `ui.entry` / `contributes.mode.entry`
+ *   （见 packages/ui/src/plugin-runtime.ts 的 resolvePluginFrontendEntry）。
+ *   构建器此前只产出 frontend/index.mjs、不写入口 → 「bundle 优先」那条链路实际是死代码，
+ *   永远回落构建期装载表；用户安装的 .yzp 也因此拿不到前端。
+ * 单清单/数组/多清单包装三种形态都覆盖；mode.entry 已声明时不覆盖。
+ */
+function withFrontendEntry(manifestValue, entryRel) {
+  const inject = (m) => {
+    if (!m || typeof m !== 'object') return m;
+    const legacyUi = typeof m.ui === 'object' && m.ui ? m.ui : {};
+    const next = { ...m, ui: { ...legacyUi, entry: entryRel } };
+    const mode = m.contributes && m.contributes.mode;
+    if (mode && typeof mode === 'object') {
+      next.contributes = { ...m.contributes, mode: { ...mode, entry: mode.entry || entryRel } };
+    }
+    return next;
+  };
+  if (Array.isArray(manifestValue)) return manifestValue.map(inject);
+  if (manifestValue && typeof manifestValue === 'object' && Array.isArray(manifestValue.manifests)) {
+    return { ...manifestValue, manifests: manifestValue.manifests.map(inject) };
+  }
+  return inject(manifestValue);
+}
+
 async function buildOne(catalog, id, opts, serverShimPath) {
   const entry = catalog.plugins[id];
   if (!entry) throw new Error(`plugins.catalog.json 无此插件: ${id}`);
@@ -376,11 +403,11 @@ async function buildOne(catalog, id, opts, serverShimPath) {
   fs.mkdirSync(pkgDir, { recursive: true });
 
   const summary = { id, backend: null, frontend: null, assets: null, manifest: null };
+  let manifestValue = null;
 
   if (entry.backendEntry && entry.manifestExport) {
     const absBackendEntry = path.join(REPO_ROOT, entry.backendEntry);
-    const manifestValue = await extractManifest(absBackendEntry, entry.manifestExport, opts.tmp);
-    summary.manifest = writeManifest(pkgDir, id, manifestValue);
+    manifestValue = await extractManifest(absBackendEntry, entry.manifestExport, opts.tmp);
     if (entry.backendNoop) {
       // 纯声明式插件（skins 等 27 套皮肤）：数据全在 manifest.json，入口只补 activate 空实现
       // —— 打 skins.ts 本体会把 getPluginManager 等宿主链拉进包，没有必要。
@@ -410,6 +437,15 @@ async function buildOne(catalog, id, opts, serverShimPath) {
       fs.cpSync(srcAssets, dst, { recursive: true });
       summary.assets = dst;
     }
+  }
+
+  // manifest 最后写：前端 bundle 成功产出 index.mjs 才把入口字段写进去
+  if (manifestValue) {
+    const frontendEntry = path.join(pkgDir, 'frontend', 'index.mjs');
+    if (summary.frontend && fs.existsSync(frontendEntry)) {
+      manifestValue = withFrontendEntry(manifestValue, 'frontend/index.mjs');
+    }
+    summary.manifest = writeManifest(pkgDir, id, manifestValue);
   }
 
   console.log(

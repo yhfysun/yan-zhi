@@ -36,7 +36,11 @@ function isExcludedPath(relPath) {
     if (EXCLUDED_SEGMENTS.has(seg)) return true;
   }
   const base = segments[segments.length - 1] || '';
-  return EXCLUDED_BASENAMES.has(base) || base.startsWith(TEMP_ENTRY_PREFIX);
+  if (EXCLUDED_BASENAMES.has(base)) return true;
+  // `__frontend-entry-*` 只在**包根**是历史残留（旧版构建器把临时入口落在产物根）。
+  // ★ frontend/ 里的同名文件是 vite lib 产物分块，index.mjs 会 import 它 ——
+  //   按任意层级排除会把插件前端打残（实测 frontend/index.mjs → ./__frontend-entry-*.mjs）。
+  return segments.length === 1 && base.startsWith(TEMP_ENTRY_PREFIX);
 }
 
 /**

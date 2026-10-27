@@ -49,6 +49,8 @@ test('排除规则：构建暂存/裁剪暂存/依赖/垃圾文件', () => {
   const kept = [
     'manifest.json',
     'backend/index.js',
+    // vite lib 产物分块：index.mjs 会 import 它，不能当成构建残留排掉
+    'frontend/__frontend-entry-clip-mode.mjs',
     'frontend/index.mjs',
     'frontend/index.css',
     'assets/wallpaper.webp',
