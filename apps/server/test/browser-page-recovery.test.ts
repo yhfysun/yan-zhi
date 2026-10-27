@@ -169,3 +169,41 @@ describe('④ 浏览器级探活（本来就通，防回归）', () => {
     expect(body, '★ 缺退避重试（一次抖动就杀死长任务）').toMatch(/setTimeout/);
   });
 });
+
+// ★★★ 2026-10-26 实报「browser_run_recipe 全部配方报『CDP 模式下没有可用的网页 target』」：
+//   配方第一步就是 navigate，而 /navigate 只把 convId 传进 getPage —— 冷启动时
+//   lastKnownUrl 为空，ensureWebviewViaShell 拿不到任何 http(s) 目标页 ⇒ 请求根本发不出去，
+//   面板永远开不出来。修法：把本次要去的 URL 一路透传成"开面板的目标页"。
+describe('⑤ 冷启动开面板必须带目标 URL（实报配方全灭的根因）', () => {
+  it('★★★ pickPanelOpenUrl：优先本次 URL，其次 lastKnownUrl，非法值一律丢弃', async () => {
+    const mod = await import('../src/routes/browser.js').catch(() => null);
+    const fn = (mod as any)?.pickPanelOpenUrl;
+    expect(typeof fn, '★ 无法取到 pickPanelOpenUrl（判定未抽成可验证的纯函数）').toBe('function');
+    // ① 冷启动：本次 URL 可用 → 用它（修前这里根本没有 URL，只能返回空）
+    expect(fn('https://creator.douyin.com/x', '')).toBe('https://creator.douyin.com/x');
+    // ② 本次没有 URL（/action 等）→ 退回上一次成功导航的页面
+    expect(fn(undefined, 'https://a.com/p')).toBe('https://a.com/p');
+    // ③ 两者都没有 → 空串（调用方据此放弃，而不是发一个无效请求）
+    expect(fn(undefined, undefined, '')).toBe('');
+    // ④ about:blank 会被 pickCdpPage 过滤，不能当作目标页
+    expect(fn('about:blank', '')).toBe('');
+    // ⑤ 非 http(s) 一律丢弃（file:// / javascript: 等）
+    expect(fn('file:///C:/x.html', 'javascript:alert(1)')).toBe('');
+  });
+
+  it('★★ /navigate 必须把目标 URL 传给 getPage（否则冷启动拿不到目标页）', () => {
+    const i = BROWSER.indexOf("router.post('/navigate'");
+    expect(i, '★ 锚点缺失：/navigate').toBeGreaterThan(-1);
+    const body = BROWSER.slice(i, BROWSER.indexOf('router.post(', i + 10));
+    expect(body, '★ /navigate 调 getPage 时没带上 url → 冷启动开不出面板（本轮实报故障）')
+      .toMatch(/getPage\(convIdOf\(req\),\s*url\)/);
+  });
+
+  it('★★ getPage → createTabPage 必须透传 hintUrl，createTabPage 用它兜底开面板', () => {
+    const gp = bodyOf(BROWSER, 'async function getPage(', 'getPage');
+    expect(gp, '★ getPage 丢了 hintUrl（/navigate 传了也没用）').toMatch(/createTabPage\(undefined,\s*convId,\s*hintUrl\)/);
+    const ctp = bodyOf(BROWSER, 'async function createTabPage', 'createTabPage');
+    expect(ctp, '★ createTabPage 未把目标 URL 交给 ensureWebviewViaShell → 只能靠 lastKnownUrl')
+      .toMatch(/ensureWebviewViaShell\(browser,\s*url \|\| hintUrl,\s*convId\)/);
+  });
+});

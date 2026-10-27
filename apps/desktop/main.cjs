@@ -1,4 +1,4 @@
-const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, Notification, screen: electronScreen, safeStorage, protocol, net } = require('electron');
+const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, session, shell, clipboard, Tray, globalShortcut, desktopCapturer, nativeImage, Notification, screen: electronScreen, safeStorage, protocol, net, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
@@ -1107,6 +1107,27 @@ function createWindow() {
   //   这里挂 `console-message` 把 warn/error（及带 [browser] 前缀的信息）收进主进程日志。
   try { require('./main-log.cjs').attachRendererConsole(mainWindow.webContents, 'renderer'); } catch { /* 不影响启动 */ }
 
+  // ★★★ 主窗口渲染进程崩溃自愈（2026-10-27 用户实报「最小化后应用直接黑屏了」）：
+  //   此前只有 BrowserView / overlay 有 render-process-gone 处理，主窗口渲染进程
+  //   崩溃后窗口只剩 backgroundColor（近黑）= 整个应用永久黑屏，用户只能杀进程。
+  //   渲染层崩溃后自动重载一次 —— SPA 状态由后端与会话级订阅兜底（消息已落库），
+  //   重载比"永久黑屏必须重启应用"好得多。防循环：与 BrowserView 同款计数上限。
+  let mainCrashReloadCount = 0;
+  const MAIN_CRASH_RELOAD_LIMIT = 3;
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.warn('[main] 渲染进程崩溃:', details?.reason, `(第 ${mainCrashReloadCount + 1} 次)`);
+    mainCrashReloadCount++;
+    if (mainCrashReloadCount > MAIN_CRASH_RELOAD_LIMIT) {
+      console.error('[main] 渲染进程反复崩溃，停止自动重载（避免循环）');
+      return;
+    }
+    setTimeout(() => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.reload();
+      } catch (e) { console.warn('[main] 崩溃重载失败:', e && e.message); }
+    }, 500);
+  });
+
   // 页面首屏渲染完成后再显示窗口，配合 show:false 彻底消除黑屏
   mainWindow.once('ready-to-show', () => {
     // dev 下窗口 icon 再补一道运行时设置：构造参数 icon 在部分 Windows/驱动组合下
@@ -1323,6 +1344,20 @@ function createWindow() {
       // 上面的强制重挂会直接跳过它且永远等不到 ResizeObserver（窗口隐藏期间
       // 布局不变），只有渲染层重新上报有效 bounds 才能复活，否则该区域永久黑屏。
       notifyRendererResync();
+      // ★ 主窗口自身的重绘兜底（2026-10-27 用户实报「最小化后应用直接黑屏了」）：
+      //   上面两道网只覆盖 BrowserView（摘挂重挂 + 渲染层重跑 bounds），而 Windows 下
+      //   最小化/停靠恢复后主窗口自己的 GPU 合成层可能被丢弃，窗口持续显示
+      //   backgroundColor(#1D1D1C 近黑) = 用户看到的"整个应用黑屏"。
+      //   invalidate 强制合成器立即重绘一帧（幂等，重复调用无副作用）；
+      //   下一拍再补一次 —— 系统恢复动画/任务栏点击晚一拍落地时首帧仍可能被丢弃。
+      try { mainWindow.webContents.invalidate(); } catch { /* ignore */ }
+      setTimeout(() => {
+        try {
+          if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized()) {
+            mainWindow.webContents.invalidate();
+          }
+        } catch { /* ignore */ }
+      }, 120);
     });
   }
   mainWindow.on('resize', () => scheduleBoundsRefresh(false));
@@ -3839,6 +3874,191 @@ async function injectYzAssistant(wc) {
       return out;
     }
     // ===FUZZY-END===
+    // ===SEMANTIC-LOCATOR-START=== 语义定位（2026-10-27）：按可见文本 / role / label 搜元素
+    //   设计要点：只打分 + 给候选，**歧义绝不自动点**；纯函数、只依赖 document，
+    //   便于用哨兵切片 + new Function 真跑测试（见 test/semantic-locator.test.cjs）。
+    //   ★ 本段位于模板字符串内：注释不得出现反引号，正则反斜杠一律写双份。
+    function semNorm(s){return yzNormText(s);}
+    function semVisible(el){
+      try{
+        if(!el||el.disabled)return false;
+        if(el.offsetParent===null){
+          var st=(typeof getComputedStyle==='function')?getComputedStyle(el):null;
+          if(!st||(st.position!=='fixed'&&st.position!=='sticky'))return false;
+        }
+        var r=el.getBoundingClientRect?el.getBoundingClientRect():null;
+        return !!(r&&r.width>=2&&r.height>=2);
+      }catch(e){return false;}
+    }
+    function semAttr(el,k){try{return el.getAttribute?el.getAttribute(k):null;}catch(e){return null;}}
+    function semRole(el){
+      try{
+        var r=semNorm(semAttr(el,'role')).toLowerCase();if(r)return r;
+        var tag=String(el.tagName||'').toLowerCase();
+        if(tag==='button')return 'button';
+        if(tag==='a')return semAttr(el,'href')!=null?'link':'';
+        if(tag==='select')return 'combobox';
+        if(tag==='textarea')return 'textbox';
+        if(tag==='summary')return 'button';
+        if(tag==='option')return 'option';
+        if(tag==='input'){
+          var t=String(el.type||semAttr(el,'type')||'text').toLowerCase();
+          if(t==='checkbox')return 'checkbox';
+          if(t==='radio')return 'radio';
+          if(t==='submit'||t==='button'||t==='reset'||t==='image')return 'button';
+          return 'textbox';
+        }
+        if(el.isContentEditable)return 'textbox';
+        return '';
+      }catch(e){return '';}
+    }
+    function semLabelText(el){
+      try{
+        var al=semNorm(semAttr(el,'aria-label'));if(al)return al;
+        var lb=semAttr(el,'aria-labelledby');
+        if(lb){
+          var ids=String(lb).split(/\\s+/),parts=[];
+          for(var i=0;i<ids.length;i++){var n=document.getElementById&&document.getElementById(ids[i]);if(n)parts.push(n.textContent||'');}
+          var ls=semNorm(parts.join(' '));if(ls)return ls;
+        }
+        if(el.id){try{var fl=document.querySelector('label[for="'+String(el.id).replace(/"/g,'')+'"]');if(fl&&semNorm(fl.textContent))return semNorm(fl.textContent);}catch(e){}}
+        var cl=el.closest?el.closest('label'):null;if(cl&&semNorm(cl.textContent))return semNorm(cl.textContent);
+        var ph=semNorm(semAttr(el,'placeholder'));if(ph)return ph;
+        var ti=semNorm(semAttr(el,'title'));if(ti)return ti;
+        return '';
+      }catch(e){return '';}
+    }
+    function semAccName(el){
+      var l=semLabelText(el);if(l)return l;
+      try{
+        var t=semNorm(el.innerText!=null?el.innerText:el.textContent);
+        if(t)return t.slice(0,120);
+        var alt=semNorm(semAttr(el,'alt'));if(alt)return alt;
+        if(typeof el.value==='string'&&el.value)return semNorm(el.value);
+      }catch(e){}
+      return '';
+    }
+    function semNear(el,near,maxDepth){
+      var q=semNorm(near);if(!q)return true;
+      var cur=el,d=0,limit=maxDepth||4;
+      while(cur&&d<=limit){
+        try{if(semNorm(cur.innerText!=null?cur.innerText:cur.textContent).indexOf(q)>=0)return true;}catch(e){}
+        cur=cur.parentElement;d++;
+      }
+      try{
+        var sib=el.previousElementSibling,hops=0;
+        while(sib&&hops<3){if(semNorm(sib.innerText!=null?sib.innerText:sib.textContent).indexOf(q)>=0)return true;sib=sib.previousElementSibling;hops++;}
+      }catch(e){}
+      return false;
+    }
+    function semScore(el,q,intent){
+      if(!semVisible(el))return null;
+      q=q||{};
+      var wantText=semNorm(q.text),wantRole=semNorm(q.role).toLowerCase(),wantLabel=semNorm(q.label);
+      if(!wantText&&!wantRole&&!wantLabel)return null;
+      var elRole=semRole(el);
+      if(wantRole&&elRole!==wantRole)return null;
+      var name=semAccName(el),score=0,reasons=[];
+      if(wantText){
+        if(q.exact){
+          if(semNorm(name)!==wantText)return null;
+          score+=40;reasons.push('text-exact');
+        }else{
+          var ts=yzTextScore(name,wantText);
+          if(ts===3){score+=40;reasons.push('text-equal');}
+          else if(ts===2){score+=30;reasons.push('text-contains');}
+          else if(ts===1){score+=15;reasons.push('text-similar');}
+          else return null;
+        }
+      }
+      if(wantLabel){
+        var lt=semLabelText(el);
+        var hit=q.exact?(semNorm(lt)===wantLabel):(yzTextScore(lt,wantLabel)>=2);
+        if(!hit)return null;
+        score+=30;reasons.push('label');
+      }
+      if(q.near){if(!semNear(el,q.near,4))return null;score+=15;reasons.push('near');}
+      if(wantRole){score+=30;reasons.push('role');}
+      try{
+        var tag=String(el.tagName||'').toLowerCase();
+        var ty=String(el.type||'').toLowerCase();
+        if(intent==='click'){
+          if(tag==='a'||tag==='button'||tag==='summary'||/^(button|link|menuitem|tab|option|switch|checkbox|radio)$/.test(elRole)){score+=20;reasons.push('intent-click');}
+        }else if(intent==='type'){
+          if(tag==='input'||tag==='textarea'||el.isContentEditable||/^(textbox|combobox|searchbox)$/.test(elRole)){score+=20;reasons.push('intent-type');}
+          else if(tag==='button'||tag==='a'){score-=20;reasons.push('intent-avoid');}
+        }else if(intent==='select'){
+          if(tag==='select'||elRole==='combobox'){score+=25;reasons.push('intent-select');}
+        }else if(intent==='check'){
+          if(/^(checkbox|radio)$/.test(ty)||/^(checkbox|radio|switch)$/.test(elRole)){score+=25;reasons.push('intent-check');}
+        }else{
+          var clickable=/^(a|button|input|select|textarea|summary)$/.test(tag)||!!semAttr(el,'role')||el.isContentEditable;
+          if(clickable){score+=10;reasons.push('interactive');}
+        }
+        var whole=semNorm(el.textContent);
+        if(wantText&&whole.length>Math.max(60,name.length*3)){score-=10;reasons.push('container');}
+      }catch(e){}
+      return {score:score,reasons:reasons};
+    }
+    function semCandidate(el,score,reasons){
+      var c={index:register(el),tag:String(el.tagName||'').toLowerCase(),
+        text:semNorm(el.textContent).slice(0,40),role:semRole(el),
+        label:semLabelText(el).slice(0,40),selector:genSel(el),score:score};
+      if(reasons&&reasons.length)c.reason=reasons.join(',');
+      return c;
+    }
+    function yzSemanticCandidates(q,intent,limit){
+      limit=limit||10;
+      var pool=[];
+      try{pool=Array.prototype.slice.call(document.querySelectorAll('a,button,input,select,textarea,summary,[role],[contenteditable=""],[contenteditable=true],[onclick],[tabindex]'));}catch(e){pool=[];}
+      if(pool.length>2000)pool=pool.slice(0,2000);
+      function collect(list){
+        var out=[];
+        for(var i=0;i<list.length&&out.length<200;i++){
+          var st=semScore(list[i],q,intent);
+          if(st)out.push({el:list[i],score:st.score,reasons:st.reasons});
+        }
+        return out;
+      }
+      var cands=collect(pool);
+      if(!cands.length&&(semNorm(q.text)||semNorm(q.label))){
+        // 交互池没命中 → 扩到全量（上限 4000）：先用文本预筛，避免对每个节点都算 accessible name
+        var broad=[];try{broad=Array.prototype.slice.call(document.querySelectorAll('body *'));}catch(e){broad=[];}
+        var t0=semNorm(q.text),l0=semNorm(q.label),pre=[];
+        for(var bi=0;bi<broad.length&&pre.length<4000;bi++){
+          var be=broad[bi],bt='';
+          try{bt=semNorm(be.textContent);}catch(e){continue;}
+          if((t0&&(bt.indexOf(t0)>=0||yzTextScore(bt,t0)>=2))||(l0&&bt.indexOf(l0)>=0))pre.push(be);
+        }
+        cands=collect(pre);
+      }
+      cands.sort(function(a,b){if(b.score!==a.score)return b.score-a.score;return semAccName(a.el).length-semAccName(b.el).length;});
+      // 去重：祖先/后代同名（button 与内部 span）只留意图更匹配的那一侧；
+      // 祖先若是已被保留的更高分候选的容器，也直接丢掉（否则页面外壳会混进候选清单）
+      var kept=[];
+      for(var ci=0;ci<cands.length;ci++){
+        var c=cands[ci],dup=false;
+        for(var ki=0;ki<kept.length;ki++){
+          var k=kept[ki];
+          try{
+            if(c.el===k.el)continue;
+            if(c.el.contains(k.el)&&(semAccName(c.el)===semAccName(k.el)||k.score>=c.score)){dup=true;break;}
+            if(k.el.contains(c.el)&&semAccName(c.el)===semAccName(k.el)){dup=true;break;}
+          }catch(e){}
+        }
+        if(!dup)kept.push(c);
+        if(kept.length>=limit)break;
+      }
+      return kept;
+    }
+    function yzResolveSemantic(q,intent){
+      var kept=yzSemanticCandidates(q,intent,10);
+      if(!kept.length)return {status:'not_found',candidates:[]};
+      if(kept.length===1)return {status:'ok',el:kept[0].el,score:kept[0].score,reasons:kept[0].reasons};
+      // 命中多个：一律给候选，不替模型选（误点会重置表单，代价远高于多一轮）
+      return {status:'ambiguous',candidates:kept.map(function(c){return semCandidate(c.el,c.score,c.reasons);})};
+    }
+    // ===SEMANTIC-LOCATOR-END===
     // 统一操作反馈：URL + 可见文本 + 可交互元素数（与服务端 snapshotFn 同口径）
     function yzSnap(){
       try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return{url:location.href,t:'',n:0};}
@@ -3905,11 +4125,12 @@ async function injectYzAssistant(wc) {
     function resolve(sel){var a=resolveAll(sel);return a.length?a[0]:null;}
     window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,register:register,
       resolveFuzzy:yzResolveFuzzy,fuzzyFind:yzFuzzyFind,snap:yzSnap,finish:yzFinish,
+      resolveSemantic:yzResolveSemantic,semName:semAccName,semRole:semRole,semLabelText:semLabelText,
       yzNormText:yzNormText,yzFillCompare:yzFillCompare,yzFillGuard:yzFillGuard,
       /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
          改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
          ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
-      __yzVersion:6};
+      __yzVersion:7};
   })()`);
 }
 
@@ -5815,6 +6036,30 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
               return yzFinish(r,beforeIdx);
             });
           }
+          // ★★ 语义定位（2026-10-27）：模型说得出「点带某文字的按钮」，却猜不出动态 class 选择器。
+          //   命中多个一律返回候选（自动点错会重置表单，代价远高于多一轮）。
+          if(a.index==null&&!a.selector&&a.target&&typeof a.target==='object'&&(a.target.text||a.target.role||a.target.label)){
+            if(typeof A.resolveSemantic!=='function'){
+              return {status:'not_injected',error:'页面辅助脚本未就绪（页面正在重载，或注入版本过旧）。',
+                hint:'先 browser_get_page_content 确认页面已稳定、能读到元素，再重试；不要改用 run_script 模拟点击。'};
+            }
+            var sem=A.resolveSemantic(a.target,'click');
+            if(sem.status==='ambiguous'){
+              return {status:'ambiguous',ambiguous:true,matched:sem.candidates.length,query:a.target,candidates:sem.candidates,
+                hint:'语义定位命中多个元素，未点击。从 candidates 选一个 index 重试，或用 role / label / exact:true / near 收窄。'};
+            }
+            if(sem.status!=='ok'){
+              return {status:'not_found',error:'未找到匹配元素（语义定位）',query:a.target,candidates:sem.candidates||[],
+                hint:'先 browser_get_page_content 看页面上的 text/role/label，再用 target 精确指定；或改用 index。不要用 run_script 穷举 DOM。'};
+            }
+            var cbSem=nativeCheckboxGuard(sem.el,'target '+JSON.stringify(a.target));
+            if(cbSem)return cbSem;
+            var beforeSem=yzSnap();
+            return clickEl(sem.el).then(function(r){
+              r.via='semantic';r.matchedBy=sem.reasons||[];
+              return yzFinish(r,beforeSem);
+            });
+          }
           if(a.selector){
             var els=A.resolveAll(a.selector);
             // ★ 隐藏回退（2026-10-11）：:contains 伪选择器只收可见元素（offsetParent!==null），
@@ -5882,7 +6127,33 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         // ★ 统一反馈：CDP 路径在输入前后各采一次页面快照（与服务端 snapshotFn 同口径）
         const typeSnapJs = `(function(){try{var d=document.body;return{url:location.href,t:(d?d.innerText:'').slice(0,2000),n:document.querySelectorAll('a,button,input,select,textarea').length};}catch(e){return null;}})()`;
         const typeBefore = await wc.executeJavaScript(typeSnapJs).catch(() => null);
-        const cdpRes = await cdpTypeText(wc, { index: args.index, selector: args.selector }, args.text, args.pressEnter === true);
+        // ★★ 语义定位（2026-10-27）：CDP 只认 index/selector（DOM 元素过不了进程边界），
+        //   所以先在页面里把 target 解析成新鲜 index，再交给 CDP 主路径与 JS 回退共用。
+        let typeArgs = args;
+        if (args.index == null && !args.selector && args.target && typeof args.target === 'object' && (args.target.text || args.target.role || args.target.label)) {
+          const sem = await wc.executeJavaScript(`(function(){
+            var a=${JSON.stringify(args)};
+            var A=window.__yzAssistant;
+            if(!A||typeof A.resolveSemantic!=='function')return {status:'not_injected'};
+            var r=A.resolveSemantic(a.target,'type');
+            if(r.status!=='ok')return {status:r.status,candidates:r.candidates||[]};
+            return {status:'ok',index:A.register(r.el),selector:A.genSel(r.el),score:r.score,reasons:r.reasons||[]};
+          })()`).catch(() => null);
+          if (!sem) return { status: 'failed', error: '语义定位执行失败（页面已变化或脚本未注入），请重试或改用 index。' };
+          if (sem.status === 'not_injected') {
+            return { status: 'not_injected', error: '页面辅助脚本未就绪（页面正在重载，或注入超过了等待上限）。', hint: '先确认页面已稳定、能读到目标元素，再重试 browser_type。' };
+          }
+          if (sem.status === 'ambiguous') {
+            return { status: 'ambiguous', ambiguous: true, matched: (sem.candidates || []).length, query: args.target, candidates: sem.candidates || [],
+              hint: '语义定位命中多个元素，未输入。从 candidates 选一个 index 重试，或用 role / label / exact:true / near 收窄。' };
+          }
+          if (sem.status !== 'ok') {
+            return { status: 'not_found', error: '未找到匹配元素（语义定位）', query: args.target, candidates: sem.candidates || [],
+              hint: '先 browser_get_page_content 看页面上的 text/role/label，再用 target 精确指定；或改用 index。不要用 run_script 穷举 DOM。' };
+          }
+          typeArgs = { ...args, index: sem.index, selector: undefined, __semantic: { score: sem.score, reasons: sem.reasons } };
+        }
+        const cdpRes = await cdpTypeText(wc, { index: typeArgs.index, selector: typeArgs.selector }, typeArgs.text, typeArgs.pressEnter === true);
         if (cdpRes && cdpRes.locateError) {
           // 定位失败是真错误（元素不存在/编号过期），原样回报 —— 回落 JS 只会重复同一个失败
           return { status: 'stale_index', error: cdpRes.locateError };
@@ -5894,14 +6165,23 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             && (urlChanged || typeAfter.t !== typeBefore.t || typeAfter.n !== typeBefore.n));
           // ★ P2：聚焦高亮（用户看得到"正在往哪个框填什么"）。CDP 路径解析在 CDP 内部，
           //   这里按 index/selector 同源解析链补画；解析不到静默跳过，不影响回执。
-          if (cdpRes.applied) void runFieldFocusFlash(wc, { index: args.index, selector: args.selector }, args.text);
-          return { ...cdpRes, success: !!cdpRes.applied, status: cdpRes.applied ? 'ok' : 'failed', urlChanged, pageChanged };
+          if (cdpRes.applied) void runFieldFocusFlash(wc, { index: typeArgs.index, selector: typeArgs.selector }, typeArgs.text);
+          return { ...cdpRes, ...(typeArgs.__semantic ? { via: 'semantic', matchedBy: typeArgs.__semantic.reasons } : {}), success: !!cdpRes.applied, status: cdpRes.applied ? 'ok' : 'failed', urlChanged, pageChanged };
         }
         // ↓ CDP 不可用 → 回落 JS 实现（Web 端 / CDP 被占用等）
         return await wc.executeJavaScript(`var __yzFF=function(el,v){${FIELD_FLASH_BODY}};
           (function(){
-          var a=${JSON.stringify(args)};
+          var a=${JSON.stringify(typeArgs)};
           var A=window.__yzAssistant;
+          // ★ 与 click 同样的问题（2026-10-26）：本段是另一次 executeJavaScript，
+          //   yzSnap / yzFinish 只存在于注入脚本的闭包里，裸调必 ReferenceError
+          //   （CDP 输入不可用时 type 全部落到这条回退路径）。这里补本地别名。
+          if(!A||typeof A.snap!=='function'){
+            return {status:'not_injected',error:'页面辅助脚本未就绪（页面正在重载，或注入超过了等待上限）。',
+              hint:'先确认页面已稳定、能读到目标元素，再重试 browser_type。'};
+          }
+          var yzSnap=function(){return A.snap();};
+          var yzFinish=function(r,b){return A.finish(r,b);};
           async function typeEl(el){
             var before=yzSnap();
             el.scrollIntoView({behavior:'smooth',block:'center'});
@@ -5971,8 +6251,23 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       case 'scroll': {
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
-          if(window.__yzAssistant&&a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到: '+a.selector};
-            el.scrollIntoView({block:'center'});return{success:true};}
+          var A=window.__yzAssistant;
+          // ★ 语义定位（2026-10-27）：滚动到「带某文字的区块」用 target，不再手写选择器
+          var el=null,via='';
+          if(a.index==null&&!a.selector&&a.target&&typeof a.target==='object'&&(a.target.text||a.target.role||a.target.label)){
+            if(!A||typeof A.resolveSemantic!=='function')return{status:'not_injected',error:'页面辅助脚本未就绪（页面正在重载）。'};
+            var r=A.resolveSemantic(a.target,'scroll');
+            if(r.status==='ambiguous')return{status:'ambiguous',ambiguous:true,candidates:r.candidates,hint:'语义定位命中多个元素，未滚动。从 candidates 选一个 index 重试，或用 role / exact / near 收窄。'};
+            if(r.status!=='ok')return{status:'not_found',error:'未找到匹配元素（语义定位）',candidates:r.candidates||[]};
+            el=r.el;via='semantic';
+          }else if(a.index!=null){
+            el=(window.__yzElements||[])[a.index];via='index';
+            if(!el||!el.isConnected)return{status:'stale_index',error:'index '+a.index+' 已失效，请重新读取页面编号列表。'};
+          }else if(a.selector){
+            el=A&&A.resolve(a.selector);via='selector';
+            if(!el)return{status:'not_found',error:'元素未找到: '+a.selector};
+          }
+          if(el){el.scrollIntoView({block:'center'});return{success:true,via:via};}
           // 缺省处理：x/y 都没给时默认向下滚 300（避免"调用了但没给 y→0 位移=白滚"）
           var dx=a.x!=null?a.x:(a.dx||0), dy=a.y!=null?a.y:(a.dy!=null?a.dy:300);
           // 找真正承载滚动的容器：大量页面滚动体不是 window 而是某个可滚动 div
@@ -6001,13 +6296,30 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       case 'hover': {
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
-          if(a.selector){var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到: '+a.selector};
+          var A=window.__yzAssistant;
+          var el=null,via='';
+          if(a.index==null&&!a.selector&&a.target&&typeof a.target==='object'&&(a.target.text||a.target.role||a.target.label)){
+            if(!A||typeof A.resolveSemantic!=='function')return{status:'not_injected',error:'页面辅助脚本未就绪（页面正在重载）。'};
+            var r=A.resolveSemantic(a.target,'hover');
+            if(r.status==='ambiguous')return{status:'ambiguous',ambiguous:true,candidates:r.candidates,hint:'语义定位命中多个元素，未悬停。从 candidates 选一个 index 重试。'};
+            if(r.status!=='ok')return{status:'not_found',error:'未找到匹配元素（语义定位）',candidates:r.candidates||[]};
+            el=r.el;via='semantic';
+          }else if(a.index!=null){
+            el=(window.__yzElements||[])[a.index];via='index';
+            if(!el||!el.isConnected)return{status:'stale_index',error:'index '+a.index+' 已失效，请重新读取页面编号列表。'};
+          }else if(a.selector){
+            el=A&&A.resolve(a.selector);via='selector';
+            if(!el)return{status:'not_found',error:'元素未找到: '+a.selector};
+          }
+          if(!el)return{status:'invalid_args',error:'需要 target / selector / index 之一（或用 x/y 坐标）'};
+          if(!A||typeof A.showCursor!=='function')return{status:'not_injected',error:'页面辅助脚本未就绪（页面正在重载）。'};
+          {
             el.scrollIntoView({behavior:'smooth',block:'center'});
-            var rect=el.getBoundingClientRect();window.__yzAssistant.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'悬停');
+            var rect=el.getBoundingClientRect();A.showCursor(rect.x+rect.width/2,rect.y+rect.height/2,'悬停');
             var o={bubbles:true,cancelable:true,clientX:rect.x+rect.width/2,clientY:rect.y+rect.height/2,view:window};
             el.dispatchEvent(new MouseEvent('mousemove',o));el.dispatchEvent(new MouseEvent('mouseover',o));
-            return{success:true};}
-          return{error:'需要 selector'};
+            return{success:true,via:via};
+          }
         })()`);
       }
       case 'screenshot': {
@@ -6238,6 +6550,8 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             try{var al=el.getAttribute('aria-label');if(al)o.ariaLabel=al;}catch(e){}
             try{var rl=el.getAttribute('role');if(rl)o.role=rl;}catch(e){}
             if(el.placeholder)o.placeholder=el.placeholder;
+            // ★ 语义定位配套（2026-10-27）：把 label 来源一并回传，模型可直接复制进 target.label
+            try{var lb=A.semLabelText?A.semLabelText(el):'';if(lb&&lb!==o.text)o.label=lb.slice(0,40);}catch(e){}
             if(el.href)o.href=el.href.slice(0,200);
             out.push(o);
           }
@@ -6557,15 +6871,86 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       }
       case 'select_option': {
         return await wc.executeJavaScript(`(function(){
-          var a=${JSON.stringify(args)};var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到'};
-          el.value=a.value;el.dispatchEvent(new Event('change',{bubbles:true}));return{success:true};
+          var a=${JSON.stringify(args)};
+          var A=window.__yzAssistant;
+          var el=null,via='';
+          if(a.index==null&&!a.selector&&a.target&&typeof a.target==='object'&&(a.target.text||a.target.role||a.target.label)){
+            if(!A||typeof A.resolveSemantic!=='function')return{status:'not_injected',error:'页面辅助脚本未就绪（页面正在重载）。'};
+            var r=A.resolveSemantic(a.target,'select');
+            if(r.status==='ambiguous')return{status:'ambiguous',ambiguous:true,candidates:r.candidates,hint:'语义定位命中多个下拉，未选择。从 candidates 选一个 index 重试。'};
+            if(r.status!=='ok')return{status:'not_found',error:'未找到匹配的下拉控件（语义定位）',candidates:r.candidates||[]};
+            el=r.el;via='semantic';
+          }else if(a.index!=null){
+            el=(window.__yzElements||[])[a.index];via='index';
+            if(!el||!el.isConnected)return{status:'stale_index',error:'index '+a.index+' 已失效，请重新读取页面编号列表。'};
+          }else if(a.selector){
+            el=A&&A.resolve(a.selector);via='selector';
+            if(!el)return{status:'not_found',error:'元素未找到: '+a.selector};
+          }
+          if(!el)return{status:'invalid_args',error:'需要 target / selector / index 之一'};
+          // ★ 2026-10-27：旧实现只写 el.value 并恒返回 success —— 选项不存在也报成功（假绿）。
+          //   改为：按 value / label 找到真实选项 → 设置 selected → input+change → 回读核验。
+          var opts=[];try{opts=Array.prototype.slice.call(el.options||[]);}catch(e){}
+          if(!opts.length){try{opts=Array.prototype.slice.call(el.querySelectorAll('option,[role=option]'));}catch(e){}}
+          var wantV=a.value!=null?String(a.value):null,wantL=a.label!=null?String(a.label).trim():null;
+          var hit=-1,i;
+          for(i=0;i<opts.length;i++){if(wantV!=null&&String(opts[i].value)==wantV){hit=i;break;}}
+          if(hit<0&&wantL)for(i=0;i<opts.length;i++){if(String(opts[i].textContent||'').trim()===wantL){hit=i;break;}}
+          if(hit<0&&wantL)for(i=0;i<opts.length;i++){if(String(opts[i].textContent||'').trim().indexOf(wantL)>=0){hit=i;break;}}
+          if(hit<0){
+            return{status:opts.length?'not_found':'failed',error:'未找到匹配选项',via:via,
+              options:opts.slice(0,30).map(function(o){return{value:String(o.value),label:String(o.textContent||'').trim().slice(0,40),selected:!!o.selected};}),
+              hint:opts.length?'从 options 里挑一个 value/label 重试。':'该控件不是原生 select（自定义下拉）：先用 browser_click 展开，再点 option 候选。'};
+          }
+          var opt=opts[hit];
+          try{if(opt.selected!==undefined)opt.selected=true;if(el.options&&el.options.length)el.selectedIndex=hit;}catch(e){}
+          try{if(opt.value!=null)el.value=opt.value;}catch(e){}
+          try{el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
+          var applied=el.options&&el.options.length?(el.selectedIndex===hit):true;
+          var out={status:applied?'ok':'failed',success:applied,via:via,
+            value:el.options&&el.options.length?(el.options[hit]?String(el.options[hit].value):''):String(opt.value||''),
+            label:String(opt.textContent||'').trim().slice(0,40),applied:applied};
+          if(!applied)out.hint='选项已定位但控件未接受（受控组件）：改用 browser_click 点它并在弹层里选 option；或 browser_fill_form。';
+          return out;
         })()`);
       }
       case 'check':
       case 'uncheck': {
         return await wc.executeJavaScript(`(function(){
-          var a=${JSON.stringify(args)};var el=window.__yzAssistant.resolve(a.selector);if(!el)return{error:'元素未找到'};
-          el.checked=${action === 'check'};el.dispatchEvent(new Event('change',{bubbles:true}));return{success:true};
+          var a=${JSON.stringify(args)};
+          var A=window.__yzAssistant;
+          var el=null,via='';
+          if(a.index==null&&!a.selector&&a.target&&typeof a.target==='object'&&(a.target.text||a.target.role||a.target.label)){
+            if(!A||typeof A.resolveSemantic!=='function')return{status:'not_injected',error:'页面辅助脚本未就绪（页面正在重载）。'};
+            var r=A.resolveSemantic(a.target,'check');
+            if(r.status==='ambiguous')return{status:'ambiguous',ambiguous:true,candidates:r.candidates,hint:'语义定位命中多个勾选项，未操作。从 candidates 选一个 index 重试，或用 near 收窄。'};
+            if(r.status!=='ok')return{status:'not_found',error:'未找到匹配的勾选项（语义定位）',candidates:r.candidates||[]};
+            el=r.el;via='semantic';
+          }else if(a.index!=null){
+            el=(window.__yzElements||[])[a.index];via='index';
+            if(!el||!el.isConnected)return{status:'stale_index',error:'index '+a.index+' 已失效，请重新读取页面编号列表。'};
+          }else if(a.selector){
+            el=A&&A.resolve(a.selector);via='selector';
+            if(!el)return{status:'not_found',error:'元素未找到: '+a.selector};
+          }
+          if(!el)return{status:'invalid_args',error:'需要 target / selector / index 之一'};
+          // ★ 2026-10-27：非原生控件写 el.checked 只会造个假属性 → 页面状态没变却报成功（假绿）。
+          //   自定义 checkbox/switch 交回模型用 click / fill_form。
+          var isNative=String(el.tagName||'').toUpperCase()==='INPUT'&&/^(checkbox|radio)$/i.test(String(el.type||''));
+          if(!isNative){
+            return{status:'failed',via:via,error:'目标不是原生 checkbox/radio（自定义控件）',
+              ariaChecked:el.getAttribute?el.getAttribute('aria-checked'):null,
+              hint:'改用 browser_click 点它（自定义开关按点击切换），或用 browser_fill_form。'};
+          }
+          var want=${action === 'check'};
+          var prev=!!el.checked;
+          try{el.checked=want;}catch(e){}
+          try{el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}catch(e){}
+          var now=!!el.checked;
+          var out={status:now===want?'ok':'failed',success:now===want,via:via,checked:now,wasChecked:prev,
+            ariaChecked:el.getAttribute?el.getAttribute('aria-checked'):null};
+          if(now!==want)out.hint='控件未接受直接写入（受控组件或无原生 checked）：改用 browser_click 点它，或用 browser_fill_form。';
+          return out;
         })()`);
       }
       case 'get_text': {
@@ -8800,6 +9185,13 @@ app.whenReady().then(async () => {
           let picked = null;
           if (rcCaptureDisplayId) {
             picked = sources.find((s) => String(s.display_id) === rcCaptureDisplayId) || null;
+            // ★ 选中的显示器枚举不到（休眠恢复/热插拔后 desktopCapturer 重建 id）：
+            //   不能静默回采主屏 —— 控制端画面会「切到副屏却还是主屏内容」，
+            //   注入坐标按副屏算，表现为点哪都偏、像失效。清空选择回主屏并明示。
+            if (!picked && rcCaptureDisplayId) {
+              console.warn('[remote-control] 选中的显示器不在采集清单里，回退主屏:', rcCaptureDisplayId);
+              rcCaptureDisplayId = '';
+            }
           }
           if (!picked && snipCaptureDisplayId) {
             picked = sources.find((s) => String(s.display_id) === snipCaptureDisplayId) || null;
@@ -8911,10 +9303,30 @@ app.whenReady().then(async () => {
   // 远控托盘状态（隐私屏护栏 13 的「远控中」角标）：有会话时托盘提示与菜单给出
   // 「一键断开」入口。渲染层经 /status 轮询上报（自愈：渲染层重载/会话结束都会校正）。
   let rcRemoteSession = { active: false, device: '' };
+  // ★ 会话期间必须解除主窗口节流并保持屏幕常亮（2026-10-27 报障根因）：
+  //   主窗口被其他应用盖住（如终端全屏）时 Chromium 按「遮挡=不可见」节流渲染器 ——
+  //   renderer 里的 libwebrtc 编码管线停摆，WebRTC 画面定格在最后一帧；控制端切副屏、
+  //   输入反馈全都建立在「画面在动」之上，画面一冻就表现为「移动/点按全失效」。
+  //   注入链路（WS→C# 代理）不经过渲染器，其实一直在生效 —— 用户看到的是冻住的旧画面。
+  //   会话结束恢复节流（浏览器面板的 applyGuestThrottling 只管 webview guest，与此互不影响）。
+  let rcKeepAwakeId = 0;
   ipcMain.handle('rc:session-state', (_e, active, device) => {
     const next = { active: !!active, device: String(device || '').slice(0, 60) };
     if (rcRemoteSession.active === next.active && rcRemoteSession.device === next.device) return { ok: true };
     rcRemoteSession = next;
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.setBackgroundThrottling(!next.active);
+      }
+    } catch { /* ignore */ }
+    try {
+      if (next.active) {
+        if (!rcKeepAwakeId) rcKeepAwakeId = powerSaveBlocker.start('prevent-display-sleep');
+      } else if (rcKeepAwakeId && powerSaveBlocker.isStarted(rcKeepAwakeId)) {
+        powerSaveBlocker.stop(rcKeepAwakeId);
+        rcKeepAwakeId = 0;
+      }
+    } catch { /* ignore */ }
     try {
       const base = IS_DEV_INSTANCE ? `言智（开发实例 · 端口 ${API_PORT}）` : '言智';
       tray?.setToolTip(next.active ? `${base} · 远控中（${next.device || '未知设备'}）` : base);

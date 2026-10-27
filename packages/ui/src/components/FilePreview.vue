@@ -29,8 +29,8 @@
           <el-icon><EditPen /></el-icon>&nbsp;编辑
         </el-button>
         <template v-else>
-          <el-button size="small" :disabled="!canUndo || saving" :title="undoTitle" @click="undoSave">撤回</el-button>
-          <el-button size="small" :disabled="!canRedo || saving" :title="redoTitle" @click="redoSave">重做</el-button>
+          <el-button v-if="!isYdoc" size="small" :disabled="!canUndo || saving" :title="undoTitle" @click="undoSave">撤回</el-button>
+          <el-button v-if="!isYdoc" size="small" :disabled="!canRedo || saving" :title="redoTitle" @click="redoSave">重做</el-button>
           <el-button size="small" :disabled="saving" @click="cancelEdit">取消</el-button>
           <el-button size="small" type="primary" :loading="saving" @click="saveEdit">保存</el-button>
         </template>
@@ -171,8 +171,15 @@
         <div class="fp-text fp-split-preview" @click="onContentClick" v-html="renderedEditMd"></div>
       </div>
       <!-- 编辑模式：纯文本编辑（Ctrl+S 保存） -->
+      <div v-else-if="editing && isYdoc && ydocEdit" class="fp-ydoc">
+        <DocumentCard :doc="ydocEdit" editable hide-actions />
+      </div>
       <div v-else-if="editing" class="fp-edit-wrap">
         <textarea v-model="editContent" class="fp-editor" spellcheck="false" @keydown="onEditorKeydown"></textarea>
+      </div>
+      <!-- .ydoc 文档：富预览（指标/表格/图表），卡片自带「下载」两种 Word 模式 -->
+      <div v-else-if="ydocDoc" class="fp-ydoc">
+        <DocumentCard :doc="ydocDoc" />
       </div>
       <!-- Markdown / 纯文本（代码块带复制按钮） -->
       <div v-else-if="kind === 'text' && isMd" class="fp-text" @click="onContentClick" v-html="renderedMd"></div>
@@ -199,9 +206,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, watch, computed, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue';
 import MarkdownIt from 'markdown-it';
 import hljs from '../utils/highlight';
+import { parseYdoc, toYdoc } from '../utils/ydoc';
+import type { DocumentInstance } from '../utils/document-types';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Document, Download, EditPen, FolderOpened } from '@element-plus/icons-vue';
 import { extractPdfPages, extractDocxHtml } from '@yan-zhi/core';
@@ -448,6 +457,17 @@ const md = new MarkdownIt({
 const ext = computed(() => props.file.name.split('.').pop()?.toLowerCase() || '');
 const isMd = computed(() => ['md', 'markdown', 'txt'].includes(ext.value) || !ext.value);
 
+// .ydoc：文档富预览（与聊天里的 document 卡片同构）；解析失败时退回源码视图
+const DocumentCard = defineAsyncComponent(() => import('./chat/DocumentCard.vue'));
+const ydocDoc = computed<DocumentInstance | null>(() => {
+  if (ext.value !== 'ydoc' || !content.value) return null;
+  const r = parseYdoc(content.value);
+  return r.ok ? r.doc : null;
+});
+const isYdoc = computed(() => ext.value === 'ydoc' && !!ydocDoc.value);
+/** 编辑态的可变副本：改完保存才序列化回 .ydoc */
+const ydocEdit = ref<DocumentInstance | null>(null);
+
 // ===== 编辑模式（仅限未截断的文本类文件）=====
 const editing = ref(false);
 const editContent = ref('');
@@ -473,11 +493,28 @@ async function switchMdMode(m: MdViewMode) {
 }
 
 function startEdit() {
+  // .ydoc 走结构化编辑器（原地改标题/正文/表格/图表字段），不是源码编辑
+  if (isYdoc.value && ydocDoc.value) {
+    ydocEdit.value = JSON.parse(JSON.stringify(ydocDoc.value));
+    editing.value = true;
+    return;
+  }
   editContent.value = content.value;
   editing.value = true;
 }
 
 async function cancelEdit() {
+  if (ydocEdit.value) {
+    const dirty = toYdoc(ydocEdit.value) !== content.value;
+    if (dirty) {
+      try {
+        await ElMessageBox.confirm('有未保存的修改，确定放弃？', '提示', { type: 'warning' });
+      } catch { /* 取消放弃 */ return; }
+    }
+    ydocEdit.value = null;
+    editing.value = false;
+    return;
+  }
   if (editContent.value !== content.value) {
     try {
       await ElMessageBox.confirm('有未保存的修改，确定放弃？', '提示', { type: 'warning' });
@@ -492,10 +529,12 @@ async function saveEdit() {
   saving.value = true;
   try {
     const { getPlatformAdapter } = await import('@yan-zhi/core');
-    await getPlatformAdapter().fs.writeFile(props.file.path, editContent.value);
+    const text = ydocEdit.value ? toYdoc(ydocEdit.value) : editContent.value;
+    await getPlatformAdapter().fs.writeFile(props.file.path, text);
     recordSnapshot();
-    content.value = editContent.value;
-    byteSize.value = new Blob([editContent.value]).size;
+    content.value = text;
+    byteSize.value = new Blob([text]).size;
+    if (ydocEdit.value) ydocEdit.value = null;
     editing.value = false;
     ElMessage.success('已保存');
   } catch (e: any) {
@@ -1478,6 +1517,9 @@ watch(() => props.file?.path, () => {
 :deep(.fp-copy-btn:hover) { color: var(--el-color-primary); border-color: var(--el-color-primary); }
 /* 表格（CSV） */
 .fp-table-wrap { flex: 1; overflow: auto; padding: 12px; }
+/* .ydoc 富预览：卡片居中，宽屏别拉得太散 */
+.fp-ydoc { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px; background: var(--el-fill-color-lighter); }
+.fp-ydoc :deep(.doc-card) { max-width: 1000px; margin: 0 auto; }
 .fp-table { border-collapse: collapse; font-size: 12px; width: 100%; }
 .fp-table th, .fp-table td {
   border: 1px solid var(--el-border-color-lighter); padding: 5px 10px;

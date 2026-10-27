@@ -278,6 +278,8 @@ export interface AggregateReq {
   series?: string;
   /** 度量列 + 聚合 */
   measureCol: string;
+  /** 多度量（可选）：每个度量一条系列；给了就按它跑，measureCol 视作第一个 */
+  measureCols?: string[];
   agg?: AggAgg;
   measureName?: string;
   /** 对 dim 做时间截断（仅日期列有意义） */
@@ -386,7 +388,66 @@ export function shapeAggregateRows(input: {
  * 支持多系列（series）、时间粒度（timeGrain）、TopN、占比。
  * 与明细走同一套：列白名单 + 过滤值参数绑定。
  */
+/** 多度量合并：每个度量一条系列（有系列维度时名称为「度量 · 系列值」），按 X 键对齐 */
+export function mergeAggregates(
+  parts: Array<{ measure: string; series: string[]; points: AggregatePoint[]; total: number }>,
+  percent = false,
+): { series: string[]; points: AggregatePoint[]; total: number } {
+  const seriesNames: string[] = [];
+  const keys: string[] = [];
+  const byKey = new Map<string, Map<string, number>>();
+  for (const p of parts) {
+    const splitBySeries = p.series.length > 1 || (p.series.length === 1 && p.series[0] !== p.measure);
+    const nameOf = (s: string) => (splitBySeries ? `${p.measure} · ${s}` : p.measure);
+    for (const s of p.series) {
+      const name = nameOf(s);
+      if (!seriesNames.includes(name)) seriesNames.push(name);
+    }
+    for (const pt of p.points) {
+      if (!byKey.has(pt.key)) { byKey.set(pt.key, new Map()); keys.push(pt.key); }
+      const bucket = byKey.get(pt.key)!;
+      p.series.forEach((s, i) => {
+        const name = nameOf(s);
+        bucket.set(name, (bucket.get(name) || 0) + (Number(pt.values[i]) || 0));
+      });
+    }
+  }
+  const points: AggregatePoint[] = keys.map((key) => ({
+    key,
+    values: seriesNames.map((s) => byKey.get(key)!.get(s) || 0),
+  }));
+  if (percent) {
+    seriesNames.forEach((_, i) => {
+      const sum = points.reduce((a, p) => a + (p.values[i] || 0), 0);
+      if (sum <= 0) return;
+      for (const p of points) p.values[i] = Math.round(((p.values[i] || 0) / sum) * 10000) / 100;
+    });
+  }
+  const total = parts.reduce((a, p) => Math.max(a, Number(p.total) || 0), 0);
+  return { series: seriesNames, points, total };
+}
+
 export async function runAggregate(userId: string, req: AggregateReq): Promise<AggregateResult> {
+  // 多度量：逐度量复用单度量聚合，再合并成多系列（前端「指标」多选）
+  const measureList = Array.isArray(req.measureCols) ? req.measureCols.map((m) => String(m || '')).filter(Boolean) : [];
+  if (measureList.length > 1) {
+    const parts = [];
+    for (const m of measureList) {
+      const one = await runAggregate(userId, { ...req, measureCols: undefined, measureCol: m, measureName: m, percent: false });
+      parts.push({ measure: m, series: one.series, points: one.points, total: one.total });
+    }
+    const merged = mergeAggregates(parts, Boolean(req.percent));
+    return {
+      ...merged,
+      dim: req.dim,
+      ...(req.series ? { seriesDim: req.series } : {}),
+      agg: (String(req.agg || 'count').toLowerCase() || 'count') as AggAgg,
+      measure: measureList.join(', '),
+      ...(req.timeGrain ? { timeGrain: req.timeGrain } : {}),
+      sql: '(multi-measure)',
+    };
+  }
+
   const loaded = loadDs(userId, req.dataSourceId);
   const { srcSql, cols } = await resolveSource(loaded, req);
 

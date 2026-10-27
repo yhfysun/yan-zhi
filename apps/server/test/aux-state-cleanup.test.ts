@@ -30,13 +30,15 @@ const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\
 const LTM = strip(read('apps/server/src/llm-task-manager.ts'));
 
 describe('① 清理接线', () => {
-  it('★★★ cleanupTasks 两处 tasks.delete 都必须伴清理（否则漏一条路径）', () => {
+  it('★★★ cleanupTasks 三处 tasks.delete 都必须伴清理（否则漏一条路径）', () => {
     const i = LTM.indexOf('export function cleanupTasks');
     expect(i, '★ 锚点缺失').toBeGreaterThan(-1);
     const body = LTM.slice(i, i + 1400);
     const dels = (body.match(/tasks\.delete\(id\)/g) || []).length;
     const cleans = (body.match(/forgetTaskScopedState\(id\)/g) || []).length;
-    expect(dels, '★ cleanupTasks 里的 tasks.delete 数变了（需复核清理是否仍配套）').toBe(2);
+    // ★ 2026-10-27 由 2 → 3：新增「paused 超 24h 自动终止」分支（abort + failed 收尾），
+    //   同样配对 forgetTaskScopedState —— 守门逻辑不变：每个 delete 必须配套清理。
+    expect(dels, '★ cleanupTasks 里的 tasks.delete 数变了（需复核清理是否仍配套）').toBe(3);
     expect(cleans, `★ ${dels} 处 tasks.delete 只配了 ${cleans} 处清理 → 有路径会漏（慢泄漏）`).toBe(dels);
   });
 

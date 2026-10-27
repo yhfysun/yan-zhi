@@ -510,8 +510,9 @@ async function imageToDataUrl(src: string, alt: string): Promise<string | null> 
   return `data:image/${ext};base64,${bytesToBase64(bytes.data)}`;
 }
 
-/** markdown 文本 → 原生 Word（标题层级 / 表格 / 代码块 / 图片，走 report-docx） */
-export async function exportMarkdownDocx(markdown: string, title?: string) {
+/** markdown 文本 → 原生 Word（标题层级 / 表格 / 代码块 / 图片，走 report-docx）
+ *  opts.messageId：从哪条助手消息导出就带上，交付卡片才能精确挂到那一轮。 */
+export async function exportMarkdownDocx(markdown: string, title?: string, opts?: { messageId?: string }) {
   const [{ markdownToDocxBlocks }, { buildReportDocx }] = await Promise.all([
     import('../utils/markdown-docx'),
     import('../utils/report-docx'),
@@ -524,7 +525,7 @@ export async function exportMarkdownDocx(markdown: string, title?: string) {
   const docTitle = (title || '导出文档').trim() || '导出文档';
   const blob = await buildReportDocx({ title: docTitle, blocks });
   const name = safeFileName(docTitle, '导出文档') + '.docx';
-  await saveDeliverableBytes(new Uint8Array(await blob.arrayBuffer()), name, DOCX_KIND);
+  await saveDeliverableBytes(new Uint8Array(await blob.arrayBuffer()), name, DOCX_KIND, opts);
 }
 
 /** 悬浮层固定宽高比：视频通常 16:9，浮层按 16:9 预留高度（object-fit:contain 不会变形）。

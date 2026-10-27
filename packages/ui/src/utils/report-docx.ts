@@ -5,6 +5,7 @@
 
 import {
   AlignmentType,
+  BorderStyle,
   Document,
   HeadingLevel,
   ImageRun,
@@ -19,15 +20,41 @@ import {
   WidthType,
 } from 'docx';
 import type { DocumentMetric } from './document-types';
+import { injectNativeCharts, type NativeChartData } from './docx-native-chart';
+import { richHtmlToRuns, plainToRichHtml } from './rich-text';
 
 export type DocxBlock =
-  | { type: 'heading'; level: 1 | 2 | 3; text: string }
-  | { type: 'paragraph'; text: string }
+  | { type: 'heading'; level: 1 | 2 | 3; text: string; html?: string }
+  | { type: 'paragraph'; text: string; html?: string }
+  | { type: 'list'; ordered: boolean; items: Array<{ text?: string; html?: string }>; caption?: string }
   | { type: 'code'; text: string; lang?: string }
   | { type: 'metrics'; items: DocumentMetric[] }
   | { type: 'table'; columns: string[]; rows: Array<Array<string | number | null>>; caption?: string }
   | { type: 'image'; dataUrl: string; caption?: string }
+  /** 原生可编辑图表：marker 会被替换成 Word 图表对象（可改数据/切图型） */
+  | { type: 'nativeChart'; marker: string; data: NativeChartData; caption?: string }
   | { type: 'pageBreak' };
+
+/** 行内富文本 → TextRun 序列（b/i/u 与换行） */
+function richRuns(
+  text: string,
+  html: string | undefined,
+  opts: { size?: number; bold?: boolean; color?: string } = {},
+): TextRun[] {
+  const src = html && html.trim() ? html : plainToRichHtml(text);
+  const runs = richHtmlToRuns(src);
+  if (!runs.length && text) runs.push({ text });
+  return runs.map((r) => (r.br
+    ? new TextRun({ break: 1 })
+    : new TextRun({
+        text: r.text,
+        ...(opts.size ? { size: opts.size } : {}),
+        ...(opts.bold || r.bold ? { bold: true } : {}),
+        ...(r.italic ? { italics: true } : {}),
+        ...(r.underline ? { underline: {} } : {}),
+        ...(opts.color ? { color: opts.color } : {}),
+      })));
+}
 
 export interface ReportDocxInput {
   title: string;
@@ -74,20 +101,52 @@ function captionParagraph(text?: string): Paragraph | null {
   });
 }
 
+const TABLE_BORDER = { style: BorderStyle.SINGLE, size: 4, color: 'D9E1EC' };
+const TABLE_BORDERS = {
+  top: TABLE_BORDER, bottom: TABLE_BORDER, left: TABLE_BORDER, right: TABLE_BORDER,
+  insideHorizontal: TABLE_BORDER, insideVertical: TABLE_BORDER,
+};
+const CELL_MARGINS = { top: 70, bottom: 70, left: 110, right: 110 };
+
+/** 判断一列是否全是数字（用于右对齐，和界面表格一致） */
+function isNumericColumn(rows: Array<Array<string | number | null>>, index: number): boolean {
+  let seen = 0;
+  for (const r of rows) {
+    const v = r[index];
+    if (v == null || v === '') continue;
+    seen += 1;
+    if (typeof v === 'number') continue;
+    if (!/^-?[\d,]+(\.\d+)?%?$/.test(String(v).trim())) return false;
+  }
+  return seen > 0;
+}
+
 function dataTable(columns: string[], rows: Array<Array<string | number | null>>): Table {
-  const cell = (text: string, header: boolean) => new TableCell({
-    shading: header ? { fill: 'F1F5F9' } : undefined,
+  const numeric = columns.map((_, i) => isNumericColumn(rows, i));
+  const cell = (text: string, opts: { header?: boolean; numeric?: boolean }) => new TableCell({
+    shading: opts.header ? { fill: 'EFF4FA' } : undefined,
+    margins: CELL_MARGINS,
     children: [new Paragraph({
-      spacing: { before: 40, after: 40 },
-      children: [new TextRun({ text, bold: header, size: 20 })],
+      alignment: opts.numeric ? AlignmentType.RIGHT : AlignmentType.LEFT,
+      spacing: { before: 0, after: 0, line: 260 },
+      children: [new TextRun({
+        text,
+        bold: opts.header,
+        size: opts.header ? 19 : 19,
+        color: opts.header ? '334155' : '1F2937',
+      })],
     })],
   });
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: TABLE_BORDERS,
     rows: [
-      new TableRow({ tableHeader: true, children: columns.map((c) => cell(c, true)) }),
+      new TableRow({
+        tableHeader: true,
+        children: columns.map((c, i) => cell(c, { header: true, numeric: numeric[i] })),
+      }),
       ...rows.map((row) => new TableRow({
-        children: columns.map((_, i) => cell(row[i] == null ? '' : String(row[i]), false)),
+        children: columns.map((_, i) => cell(row[i] == null ? '' : String(row[i]), { numeric: numeric[i] })),
       })),
     ],
   });
@@ -96,16 +155,24 @@ function dataTable(columns: string[], rows: Array<Array<string | number | null>>
 function metricsTable(items: DocumentMetric[]): Table {
   return new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: TABLE_BORDERS,
     rows: items.map((m) => new TableRow({
       children: [
         new TableCell({
           shading: { fill: 'F8FAFC' },
-          children: [new Paragraph({ children: [new TextRun({ text: m.label, bold: true, size: 20 })] })],
+          margins: CELL_MARGINS,
+          width: { size: 30, type: WidthType.PERCENTAGE },
+          children: [new Paragraph({
+            spacing: { before: 0, after: 0, line: 260 },
+            children: [new TextRun({ text: m.label, bold: true, size: 19, color: '475569' })],
+          })],
         }),
         new TableCell({
+          margins: CELL_MARGINS,
           children: [new Paragraph({
+            spacing: { before: 0, after: 0, line: 280 },
             children: [
-              new TextRun({ text: m.value, bold: true, size: 22 }),
+              new TextRun({ text: m.value, bold: true, size: 22, color: '1F2937' }),
               ...(m.hint ? [new TextRun({ text: `  ${m.hint}`, size: 18, color: '6B7280' })] : []),
             ],
           })],
@@ -136,6 +203,7 @@ function codeParagraph(text: string): Paragraph {
 
 export async function buildReportDocx(input: ReportDocxInput): Promise<Blob> {
   const children: Array<Paragraph | Table> = [];
+  const nativeCharts: Array<{ marker: string; data: NativeChartData }> = [];
 
   children.push(new Paragraph({
     alignment: AlignmentType.CENTER,
@@ -159,14 +227,29 @@ export async function buildReportDocx(input: ReportDocxInput): Promise<Blob> {
 
   for (const block of input.blocks || []) {
     if (block.type === 'heading') {
-      children.push(new Paragraph({ text: block.text, heading: headingLevel(block.level) }));
+      children.push(new Paragraph({ heading: headingLevel(block.level), children: richRuns(block.text, block.html) }));
       continue;
     }
     if (block.type === 'paragraph') {
       children.push(new Paragraph({
         spacing: { after: 120, line: 320 },
-        children: [new TextRun({ text: block.text, size: 21 })],
+        children: richRuns(block.text, block.html, { size: 21 }),
       }));
+      continue;
+    }
+    if (block.type === 'list') {
+      (block.items || []).forEach((item, idx) => {
+        children.push(new Paragraph({
+          spacing: { before: 40, after: 40, line: 300 },
+          indent: { left: 360 },
+          children: [
+            new TextRun({ text: block.ordered ? `${idx + 1}. ` : '• ', size: 21 }),
+            ...richRuns(item.text || '', item.html, { size: 21 }),
+          ],
+        }));
+      });
+      const cap = captionParagraph(block.caption);
+      if (cap) children.push(cap);
       continue;
     }
     if (block.type === 'code') {
@@ -204,6 +287,18 @@ export async function buildReportDocx(input: ReportDocxInput): Promise<Blob> {
       }
       continue;
     }
+    if (block.type === 'nativeChart') {
+      nativeCharts.push({ marker: block.marker, data: block.data });
+      // 占位段落：打包后会被替换成 <w:drawing> 图表对象（见 docx-native-chart）
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 120, after: 60 },
+        children: [new TextRun({ text: block.marker, size: 2, color: 'FFFFFF' })],
+      }));
+      const cap = captionParagraph(block.caption);
+      if (cap) children.push(cap);
+      continue;
+    }
     if (block.type === 'pageBreak') {
       children.push(new Paragraph({ children: [new PageBreak()] }));
     }
@@ -224,5 +319,9 @@ export async function buildReportDocx(input: ReportDocxInput): Promise<Blob> {
     }],
   });
 
-  return Packer.toBlob(doc);
+  const buf = await Packer.toArrayBuffer(doc);
+  const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (!nativeCharts.length) return new Blob([buf], { type: DOCX_MIME });
+  const withCharts = await injectNativeCharts(buf, nativeCharts);
+  return new Blob([withCharts as unknown as BlobPart], { type: DOCX_MIME });
 }

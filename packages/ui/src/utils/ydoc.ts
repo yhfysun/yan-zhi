@@ -15,7 +15,7 @@ export interface YdocFile extends DocumentInstance {
 }
 
 const SECTION_KINDS = new Set<DocumentSection['kind']>([
-  'heading', 'paragraph', 'metrics', 'table', 'chart', 'infographic', 'image', 'pageBreak',
+  'heading', 'paragraph', 'bullets', 'ordered', 'metrics', 'table', 'chart', 'infographic', 'image', 'pageBreak',
 ]);
 
 export type NormalizeResult =
@@ -42,6 +42,10 @@ export function normalizeDocumentInstance(raw: unknown): NormalizeResult {
     if (kind === 'infographic') {
       const syntax = (s as Record<string, unknown>).syntax;
       if (typeof syntax !== 'string' || !syntax.trim()) return { ok: false, error: `第 ${i + 1} 段 infographic 缺少 syntax` };
+    }
+    if (kind === 'bullets' || kind === 'ordered') {
+      const items = (s as Record<string, unknown>).items;
+      if (!Array.isArray(items) || !items.length) return { ok: false, error: `第 ${i + 1} 段列表缺少 items` };
     }
     if (kind === 'chart') {
       const spec = (s as Record<string, unknown>).spec as Record<string, unknown> | undefined;

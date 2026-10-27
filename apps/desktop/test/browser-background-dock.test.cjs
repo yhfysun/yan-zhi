@@ -107,6 +107,25 @@ describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', 
   });
 });
 
+// ★★★ 主窗口重绘/崩溃兜底（2026-10-27 用户实报「浏览器操作我最小化了，应用直接黑屏了」）
+describe('主窗口恢复重绘 + 渲染进程崩溃自愈', () => {
+  test('恢复可见性时必须 invalidate 主窗口自身 webContents（GPU 合成层丢弃 = 黑屏）', () => {
+    const idx = mainSrc.indexOf("for (const ev of ['restore', 'maximize'");
+    assert.ok(idx > -1, '未找到恢复事件组');
+    const body = mainSrc.slice(idx, idx + 1200);
+    assert.match(body, /mainWindow\.webContents\.invalidate\(\)/, '恢复后必须强制重绘主窗口自身');
+    assert.match(body, /setTimeout/, '必须有下一拍补绘（系统恢复动画晚一拍时首帧仍可能被丢弃）');
+  });
+
+  test('主窗口渲染进程崩溃必须有自动重载兜底（崩溃 = 永久黑屏）', () => {
+    const idx = mainSrc.indexOf("mainWindow.webContents.on('render-process-gone'");
+    assert.ok(idx > -1, '★ 主窗口 render-process-gone 零处理 → 崩溃即永久黑屏');
+    const body = mainSrc.slice(idx, idx + 1500);
+    assert.match(body, /MAIN_CRASH_RELOAD_LIMIT/, '必须有防循环上限');
+    assert.match(body, /webContents\.reload\(\)/, '崩溃后必须自动重载（状态由后端兜底，比重启应用好）');
+  });
+});
+
 describe('节流判定同源：任何新 guest 都按窗口可见性设置', () => {
   test('browser:wv:register 不再无条件 true', () => {
     const idx = mainSrc.indexOf("ipcMain.handle('browser:wv:register'");

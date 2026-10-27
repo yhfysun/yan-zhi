@@ -107,6 +107,7 @@ const chartSpec = computed<ChartSpec>(() => {
     kind: (s.kind || 'bar') as ChartKind,
     dim: String(s.dim || ''),
     measure: String(s.measure || ''),
+    ...(Array.isArray(s.measures) && s.measures.length ? { measures: s.measures.map(String) } : {}),
     ...(s.series ? { series: s.series } : {}),
     ...(s.agg ? { agg: s.agg } : {}),
     ...(s.timeGrain ? { timeGrain: s.timeGrain } : {}),
@@ -193,9 +194,11 @@ async function loadChart(): Promise<void> {
   const body = baseBody();
   if (!body) { error.value = 'chart widget 缺少取数契约'; return; }
   const spec = chartSpec.value;
+  const measures = spec.measures?.length ? spec.measures : [spec.measure];
   body.dim = spec.dim;
-  body.measureCol = spec.measure;
+  body.measureCol = measures[0] || spec.measure;
   body.agg = spec.agg || 'sum';
+  if (measures.length > 1) body.measureCols = measures;
   if (spec.series) body.series = spec.series;
   if (spec.timeGrain) body.timeGrain = spec.timeGrain;
   if (spec.topN) body.topN = spec.topN;

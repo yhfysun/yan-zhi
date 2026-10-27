@@ -146,7 +146,7 @@ const dashStore = useDashboardStore();
  */
 const hasCharts = computed(() => {
   const msgs = store.currentMessages || [];
-  const inConversation = msgs.some((m) => !!m.dataView || /```ydash\b/.test(String(m.content || '')));
+  const inConversation = msgs.some((m) => !!m.dataView || (m.dataViews?.length || 0) > 0 || /```ydash\b/.test(String(m.content || '')));
   return inConversation || dashStore.list.some((d) => (d.widgetCount || 0) > 0);
 });
 const gitPanelRef = ref<InstanceType<typeof ChatGitPanel> | null>(null);

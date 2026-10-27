@@ -35,9 +35,16 @@ export interface DocumentMetric {
   hint?: string;
 }
 
+export interface ChartInlineData {
+  categories: string[];
+  series: Array<{ name: string; values: number[] }>;
+}
+
 export type DocumentSection =
-  | { kind: 'heading'; level: 1 | 2 | 3; text: string }
-  | { kind: 'paragraph'; text: string }
+  | { kind: 'heading'; level: 1 | 2 | 3; text: string; html?: string }
+  | { kind: 'paragraph'; text: string; html?: string }
+  | { kind: 'bullets'; items: string[]; caption?: string }
+  | { kind: 'ordered'; items: string[]; caption?: string }
   | { kind: 'metrics'; items: DocumentMetric[] }
   | {
       kind: 'table';
@@ -49,7 +56,7 @@ export type DocumentSection =
       /** contract 模式取数行数上限（默认 100） */
       limit?: number;
     }
-  | { kind: 'chart'; contract: DocumentDataContract; spec: ChartSpec; caption?: string }
+  | { kind: 'chart'; contract: DocumentDataContract; spec: ChartSpec; caption?: string; data?: ChartInlineData }
   | { kind: 'infographic'; syntax: string; title?: string; caption?: string }
   | { kind: 'image'; src: string; caption?: string }
   | { kind: 'pageBreak' };
@@ -193,6 +200,12 @@ export function applyDocumentVariables(
       case 'heading':
       case 'paragraph':
         s.text = fillVars(s.text, vars);
+        if (s.html) s.html = fillVars(s.html, vars);
+        break;
+      case 'bullets':
+      case 'ordered':
+        s.items = s.items.map((it) => fillVars(it, vars));
+        if (s.caption) s.caption = fillVars(s.caption, vars);
         break;
       case 'metrics':
         s.items = s.items.map((m) => ({

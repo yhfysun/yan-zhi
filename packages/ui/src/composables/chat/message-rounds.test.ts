@@ -323,13 +323,32 @@ describe('数据看板契约提到回合级（2026-10-26）', () => {
     expect(rounds[0].finalAssistant?.content).toBe('看板已内嵌');
   });
 
-  it('两条消息都带 dataView 时取合并结果（后写覆盖）', () => {
+  it('两条消息各带看板 → 回合累计两张，dataView 只作兼容保留最后一张', () => {
     const rounds = build([
       M({ id: 'u1', role: 'user', content: '看板' }),
       M({ id: 'a1', role: 'assistant', dataView: { table: 't1', title: 'A' } }),
       M({ id: 'a2', role: 'assistant', dataView: { table: 't2' } }),
     ]);
+    expect(rounds[0].dataViews).toEqual([
+      { table: 't1', title: 'A' },
+      { table: 't2' },
+    ]);
     expect(rounds[0].dataView?.table).toBe('t2');
-    expect(rounds[0].dataView?.title).toBe('A');
+  });
+
+  it('同一消息带多张卡（dataViews）→ 按顺序累计，不再互相覆盖', () => {
+    const rounds = build([
+      M({ id: 'u1', role: 'user', content: '三个看板' }),
+      M({
+        id: 'a1',
+        role: 'assistant',
+        toolCalls: [{ id: 'c1', function: { name: 'data_query_view' } }],
+        dataViews: [{ base: 'select 1', title: '一' }, { base: 'select 2', title: '二' }, { base: 'select 3', title: '三' }],
+      }),
+      M({ id: 't1', role: 'tool', toolCallId: 'c1', content: 'ok' }),
+      M({ id: 'a2', role: 'assistant', content: '完成' }),
+    ]);
+    expect(rounds[0].dataViews?.map((v) => v.title)).toEqual(['一', '二', '三']);
+    expect(rounds[0].dataView?.title).toBe('三');
   });
 });

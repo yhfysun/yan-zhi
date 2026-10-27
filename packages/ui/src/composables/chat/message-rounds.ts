@@ -33,6 +33,27 @@ export interface SubAgentRound {
   finalContent?: string;
 }
 
+/**
+ * 一轮里所有工具结果的文本。
+ * 图表（[ychart]）/ 看板（[ydash]）标记都只出现在工具结果里 —— 新建看板收集候选时
+ * 需要跨轮扫这些文本，所以抽成公共函数，避免聊天渲染与看板创建各写一份解析口径。
+ */
+export function collectRoundToolTexts(round: MessageRound): string[] {
+  const out: string[] = [];
+  for (const step of round.steps) {
+    for (const tr of step.toolResults || []) if (tr.content) out.push(tr.content);
+    for (const tc of step.toolCalls || []) {
+      if (typeof tc.result === 'string') out.push(tc.result);
+      else if (tc.result) out.push(JSON.stringify(tc.result));
+    }
+  }
+  for (const tc of round.allToolCalls || []) {
+    if (typeof tc.result === 'string') out.push(tc.result);
+    else if (tc.result) out.push(JSON.stringify(tc.result));
+  }
+  return out;
+}
+
 export interface MessageRound {
   user: Message | null;
   steps: AgentStep[];
@@ -45,6 +66,8 @@ export interface MessageRound {
    *   提到回合级后，只要本轮任意消息带 dataView 就能渲染。
    */
   dataView?: InlineDataView;
+  /** 同一轮的多张内嵌看板（按出现顺序）；dataView 保留为最后一张，兼容旧渲染 */
+  dataViews?: InlineDataView[];
   hasAgentProcess?: boolean;
   agentStats?: { stepCount: number; reasoningCount: number; toolCallCount: number };
   /** 子智能体最终结果（已从 call_agent 工具结果提上来，直接在主内容区展示） */
@@ -74,9 +97,20 @@ export function buildMessageRounds(
 
   for (const msg of msgs) {
     // 数据看板契约：挂到本轮（工具调用那一步与最终正文常常不是同一条消息）
-    if ((msg as { dataView?: InlineDataView }).dataView) {
+    const msgViews = (msg as { dataViews?: InlineDataView[] }).dataViews?.length
+      ? (msg as { dataViews: InlineDataView[] }).dataViews
+      : ((msg as { dataView?: InlineDataView }).dataView ? [(msg as { dataView: InlineDataView }).dataView] : []);
+    if (msgViews.length) {
       if (!currentRound) currentRound = { user: null, steps: [], allToolCalls: [], finalAssistant: null };
-      currentRound.dataView = { ...(currentRound.dataView || {}), ...(msg as { dataView?: InlineDataView }).dataView };
+      const list = [...(currentRound.dataViews || [])];
+      const keyOf = (v: InlineDataView) => `${v.title || ''}|${v.base || ''}|${v.table || ''}|${v.ontology || ''}`;
+      for (const view of msgViews) {
+        const dup = list.findIndex((v) => keyOf(v) === keyOf(view));
+        if (dup >= 0) list[dup] = view;
+        else list.push(view);
+      }
+      currentRound.dataViews = list;
+      currentRound.dataView = list[list.length - 1];
     }
     // 压缩标记（role='system' + compactMarker）：附到当前轮，不参与正文分轮逻辑
     if ((msg as any).compactMarker) {

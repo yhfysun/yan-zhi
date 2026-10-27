@@ -28,7 +28,7 @@
 
     <section class="dash-main">
       <div v-if="!store.current" class="dash-empty">
-        <div>选择左侧看板，或从数据工作台点「钉到看板」把当前图表/明细钉进来。</div>
+        <div>选择左侧看板，或新建看板：从本任务的图表里勾选后自动排版生成。</div>
         <el-button type="primary" size="small" @click="createNew">新建看板</el-button>
       </div>
       <template v-else>
@@ -38,7 +38,7 @@
           <el-button size="small" text @click="renameCurrent">重命名</el-button>
         </div>
         <div v-if="!widgets.length" class="dash-empty">
-          <div>看板由「已有的图」组装：在会话里生成图表后点「钉到看板」，或让数据智能体按分析结果直接出看板。</div>
+          <div>看板由「已有的图」组装：新建时勾选本任务的图表，或在数据工作台点「钉到看板」补充单张图。</div>
         </div>
         <div v-else class="dash-grid">
           <div
@@ -61,6 +61,8 @@
         </div>
       </template>
     </section>
+
+    <DashboardCreateDialog v-model="createOpen" @created="onDashCreated" />
   </div>
 </template>
 
@@ -70,10 +72,12 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import type { DashboardWidget } from '@yan-zhi/shared';
 import { useDashboardStore } from '../../stores/dashboard';
 import DashboardWidgetCard from './DashboardWidgetCard.vue';
+import DashboardCreateDialog from './DashboardCreateDialog.vue';
 
 const MAX_WIDGETS = 40;
 const store = useDashboardStore();
 const dragId = ref('');
+const createOpen = ref(false);
 
 const widgets = computed<DashboardWidget[]>(() => store.current?.widgets || []);
 
@@ -94,16 +98,13 @@ async function openDash(id: string): Promise<void> {
 }
 
 async function createNew(): Promise<void> {
-  let title = '';
-  try {
-    const r = await ElMessageBox.prompt('看板名称', '新建看板', {
-      inputValue: '我的看板',
-      inputValidator: (v) => (!!String(v || '').trim() || '名称不能为空'),
-    });
-    title = String(r.value || '').trim();
-  } catch { return; }
-  if (!title) return;
-  await store.create(title);
+  createOpen.value = true;
+}
+
+/** 新建看板成功后：刷新列表并打开新看板 */
+async function onDashCreated(id: string): Promise<void> {
+  await store.loadList();
+  await store.open(id);
 }
 
 async function renameCurrent(): Promise<void> {

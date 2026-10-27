@@ -34,11 +34,14 @@ function downloadBytes(bytes: Uint8Array, name: string, mimeType: string): void 
   URL.revokeObjectURL(url);
 }
 
-/** 保存交付物；返回是否成功（失败时已提示用户） */
+/** 保存交付物；返回是否成功（失败时已提示用户）
+ *  ★ messageId：导出入口若知道"是哪条助手消息导出的"就带上（2026-10-27）——
+ *    交付卡片按 messageId 精确挂到对应轮次；不带只能按创建时间归轮。 */
 export async function saveDeliverableBytes(
   bytes: Uint8Array,
   name: string,
   kind: DeliverableKind,
+  opts?: { messageId?: string },
 ): Promise<boolean> {
   const { getPlatformAdapter } = await import('@yan-zhi/core');
   const adapter = getPlatformAdapter();
@@ -88,6 +91,7 @@ export async function saveDeliverableBytes(
         mimeType: kind.mimeType,
         size: bytes.length,
         source: 'agent',
+        messageId: opts?.messageId,
       });
     } catch { /* 登记失败不影响导出结果 */ }
   }

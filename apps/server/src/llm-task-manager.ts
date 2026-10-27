@@ -639,11 +639,14 @@ function emit(task: LlmTask, event: SSEEvent) {
   //   ⇒ 终态事件**多推一份到会话级总线**（`subscribeConversation`）：前端只需挂一条**长活的
   //     会话级订阅**（与任务无关、任务结束后仍在），就能**实时**收到"任务结束了"，
   //     不必再轮询。总线在无人在线时静默（`emitConversation` 已处理），零额外成本。
-  //   ★ 只双发**终态**（completed/aborted/error）—— 中间事件（chunk/tool:*）量极大且
-  //     前端只在订阅期间需要，双发会造成无谓的重复开销。
+  //   ★ 只双发**终态**（completed/aborted/error）与**暂停态**（paused/resumed，2026-10-27）——
+  //     中间事件（chunk/tool:*）量极大且前端只在订阅期间需要，双发会造成无谓的重复开销。
+  //     paused/resumed 是低频控制事件：双发让"任务级订阅断掉但会话级订阅活着"的前端
+  //     也能实时感知暂停/恢复（否则恢复按钮要等巡检/切会话才校准回来）。
   //   ★ 幂等：前端对重复终态已做去重（`dropStreamState` / `markRunEnd` 幂等），
-  //     正常订阅期间会收到两份，不会出错。
-  if (event.type === 'task:completed' || event.type === 'task:aborted' || event.type === 'task:error') {
+  //     paused/resumed 的 add/delete 本身幂等，正常订阅期间收到两份，不会出错。
+  if (event.type === 'task:completed' || event.type === 'task:aborted' || event.type === 'task:error'
+    || event.type === 'task:paused' || event.type === 'task:resumed') {
     emitConversation(task.conversationId, { ...event });
     // ★ 会话标题自动生成（2026-10-11）：只在 completed（aborted/error 的首轮内容没营养）、
     //   只在 title_source='auto' 的会话生效（判据在 generateTitleFor 内），fire-and-forget
@@ -1745,10 +1748,12 @@ export interface InjectResult {
   duplicate?: boolean;
 }
 
-/** 该会话是否有运行中任务（有则返回 taskId）—— 供路由层在创建前做「注入复用」判定 */
+/** 该会话是否有运行中任务（有则返回 taskId）—— 供路由层在创建前做「注入复用」判定
+ *  ★ 暂停任务也算（2026-10-27）：否则用户暂停后发消息会绕过同会话互斥、另起一个新任务，
+ *    而旧任务的挂起循环还活着（waitIfPaused waiter 上）→ 两条执行流同时操作同一会话。 */
 export function findRunningTaskId(conversationId: string, userId?: string): string | null {
   for (const t of tasks.values()) {
-    if (t.conversationId === conversationId && t.status === 'running' && (!userId || t.userId === userId)) return t.id;
+    if (t.conversationId === conversationId && (t.status === 'running' || t.status === 'paused') && (!userId || t.userId === userId)) return t.id;
   }
   return null;
 }
@@ -1772,7 +1777,9 @@ export function injectUserMessage(conversationId: string, content: string, userI
   let target: LlmTask | undefined;
   for (const t of tasks.values()) {
     // 只注入到「本用户的、该会话的、运行中」任务：既防越权，也保证 pendingInjects 生效
-    if (t.conversationId === conversationId && t.status === 'running' && t.userId === userId) { target = t; break; }
+    // ★ 暂停任务也算（2026-10-27）：与 findRunningTaskId 同口径 —— 暂停中发消息也要
+    //   落库并进 pendingInjects（resume 后下一轮被模型读到），不能静默 no-task 另起新任务。
+    if (t.conversationId === conversationId && (t.status === 'running' || t.status === 'paused') && t.userId === userId) { target = t; break; }
   }
   if (!target) return { status: 'no-task' };
   const key = String(clientMsgId || '').trim();
@@ -2988,7 +2995,13 @@ export function getActiveTasks(userId: string, conversationId?: string): any[] {
   const result: any[] = [];
   for (const task of tasks.values()) {
     if (task.userId !== userId) continue;
-    if (task.status !== 'running') continue;
+    // ★★★ 暂停任务也算活动任务（2026-10-27 用户实报「暂停后时间一长恢复按钮不见了」）：
+    //   pauseTask 会把 status 置 'paused'，此处若只认 running，前端的残留巡检
+    //   （sweepStaleBrowserTakeover，60s 一跳）查到空列表就会把暂停任务误判为
+    //   「假运行态残留」清掉 —— runningConvIds/taskIds 被删 → 接管条连同「恢复」按钮
+    //   整体消失，而后端任务其实还挂着（用户再也无法从 UI 恢复）。
+    //   TaskRunWindow 的 STATUS_LABELS 本就备有 paused:'已暂停' 文案 —— 设计意图就是活动任务。
+    if (task.status !== 'running' && task.status !== 'paused') continue;
     if (conversationId && task.conversationId !== conversationId) continue;
     result.push({
       id: task.id,
@@ -3046,10 +3059,25 @@ setTitleChangeNotifier((conversationId, title) => {
 export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
   const now = Date.now();
   const maxRunMs = 2 * 60 * 60 * 1000; // running 任务最大运行时长 2 小时
+  const maxPausedMs = 24 * 60 * 60 * 1000; // ★ paused 任务最大挂起时长 24h（2026-10-27）
   for (const [id, task] of tasks) {
-    if (task.status !== 'running' && now - task.createdAt > maxAgeMs) {
+    if (task.status !== 'running' && task.status !== 'paused' && now - task.createdAt > maxAgeMs) {
       tasks.delete(id);
       forgetTaskScopedState(id); // ★ A5：一并清任务级 Map（此前**永不清理** → 无界增长）
+    }
+    // ★ 暂停是用户主动挂起（任务循环还停在 waitIfPaused 的 waiter 上），**不是终态**：
+    //   旧代码把 paused 落进 `status !== 'running'` 分支，30 分钟后被从 Map 里删掉 ——
+    //   但挂起的异步循环还活着，醒来后无法从 tasks 查到任务 ⇒ 永久无法恢复 + 内存泄漏
+    //   （用户实报「暂停后时间一长，恢复按钮不见了。会话一直保持」）。
+    //   现按独立的 24h 上限处理：超时视为用户放弃，abort 后按 failed 收尾。
+    if (task.status === 'paused' && now - task.createdAt > maxPausedMs) {
+      try { task.abortController.abort(); } catch {}
+      task.status = 'failed';
+      task.error = '任务挂起超过 24 小时，已自动终止';
+      emit(task, { type: 'task:error', error: task.error });
+      tasks.delete(id);
+      forgetTaskScopedState(id);
+      continue;
     }
     // running 任务超 2 小时强制中止并清理（防内存泄漏）
     if (task.status === 'running' && now - task.createdAt > maxRunMs) {

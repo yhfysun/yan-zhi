@@ -1,6 +1,29 @@
 // 表格列元信息单测。
 import { describe, it, expect } from 'vitest';
-import { formatCell, inferColumnMeta } from './table-meta';
+import { formatCell, inferColumnMeta, splitColumnRoles } from './table-meta';
+
+describe('splitColumnRoles（图表只能拿数值列当指标）', () => {
+  it('数值列进指标，文本/日期进维度', () => {
+    const roles = splitColumnRoles(
+      ['智能体', '类型', '调用次数', '成本元', '日期'],
+      [
+        { 智能体: '小说推文助手', 类型: 'harness', 调用次数: 6016, 成本元: 117.55, 日期: '2026-10-26' },
+        { 智能体: '抖音运营助手', 类型: 'agent', 调用次数: 339, 成本元: 2.1, 日期: '2026-10-25' },
+      ],
+    );
+    expect(roles.measures).toEqual(['调用次数', '成本元']);
+    expect(roles.dims).toEqual(['智能体', '类型', '日期']);
+  });
+
+  it('数字字符串也算指标；整列空值两边都不进', () => {
+    const roles = splitColumnRoles(
+      ['v', 'empty', 'name'],
+      [{ v: '12', empty: null, name: 'a' }, { v: '3', empty: '', name: 'b' }],
+    );
+    expect(roles.measures).toEqual(['v']);
+    expect(roles.dims).toEqual(['name']);
+  });
+});
 
 describe('inferColumnMeta', () => {
   it('数字右对齐，ID 给更宽，长文本给足宽度', () => {
@@ -50,5 +73,13 @@ describe('formatCell', () => {
     expect(formatCell(false)).toBe('否');
     expect(formatCell({ a: 1 })).toBe('{"a":1}');
     expect(formatCell('文本')).toBe('文本');
+  });
+
+  it('数字加千分位，数字字符串保持原样', () => {
+    expect(formatCell(4567864)).toBe('4,567,864');
+    expect(formatCell(22.06)).toBe('22.06');
+    expect(formatCell(0)).toBe('0');
+    // 数字字符串可能是编码/年份，不能被当数值改写
+    expect(formatCell('20261019')).toBe('20261019');
   });
 });

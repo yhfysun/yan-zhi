@@ -2867,14 +2867,22 @@ async function healStalePlatform() {
     //   点开一个属于空间 A 的会话时，把「选中空间 + 工作目录」对齐到 A ——
     //   否则用户先点了空间 B（workspaceDir 已被切到 B 的目录）再点回 A 会话继续干活，
     //   输入区显示的当前目录还是 B 的，agent 的工具执行面/资源面板也指到 B（错位观感）。
-    //   只在会话真实归属某空间时同步；未归类会话不动用户当前的空间选择。
+    //   未归类会话不动用户当前的空间选择。
     //   注意：这里**不是**把会话改挂空间（send 侧已根治），只是把"操作上下文"对齐到会话。
+    // ★ 2026-10-27 补全（用户实报「点开没有工作目录的任务，顶栏还显示上一个任务的目录」）：
+    //   只处理"有空间"的一半，未归类会话会残留上一份全局目录 —— 顶栏、+ 菜单、工具执行面
+    //   全挂在上一个任务的路径上。现在方向反过来：**目录跟随会话** ——
+    //   有空间取空间目录（空间没绑目录时 sync 过去就是空 = 未设置），没空间一律回到「未设置」。
+    //   空间列表里查不到（如空间还没加载完）时不动，避免把已绑目录的会话误清空；
+    //   店铺模式本就不继承全局目录，别在逛店铺任务时把办公的目录清掉。
     if (conv?.spaceId) {
       const sp = spaceStore.spaces.find((s) => s.id === conv.spaceId);
       if (sp) {
         spaceStore.selectSpace(sp.id);
-        if (sp.dirPath) await syncWorkspaceDirToSpace(sp.id);
+        await syncWorkspaceDirToSpace(sp.id);
       }
+    } else if (conv && activeMode.value !== 'shop') {
+      await syncWorkspaceDirToSpace(null);
     }
     if (conv?.modelId && conv?.platformId) {
       const resolved = platformStore.resolveModel(conv.modelId, conv.platformId);

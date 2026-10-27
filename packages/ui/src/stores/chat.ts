@@ -1,7 +1,7 @@
 // 聊天 store
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick, watch } from 'vue';
-import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView } from '@yan-zhi/shared';
+import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView, InlineDataViewChart } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
@@ -230,18 +230,23 @@ function rowToConv(r: any): Conversation {
   };
 }
 
-/** message.data_view_json → Message.dataView（坏 JSON 当作没有，不让一条脏数据影响整页） */
-function parseDataView(raw: unknown): Message['dataView'] {
-  if (!raw || typeof raw !== 'string') return undefined;
+/**
+ * message.data_view_json → 内嵌看板列表。
+ * 兼容三种形态：单个契约（旧）、数组、`{views:[...]}`（新写入形态）。
+ */
+function parseDataViews(raw: unknown): InlineDataView[] {
+  if (!raw || typeof raw !== 'string') return [];
   try {
     const v = JSON.parse(raw);
-    return v && typeof v === 'object' ? v : undefined;
+    const list = Array.isArray(v) ? v : (v && typeof v === 'object' && Array.isArray((v as { views?: unknown }).views) ? (v as { views: unknown[] }).views : [v]);
+    return list.filter((x): x is InlineDataView => !!x && typeof x === 'object');
   } catch {
-    return undefined;
+    return [];
   }
 }
 
 function rowToMsg(r: any): Message {
+  const views = parseDataViews(r.data_view_json);
   return {
     id: r.id,
     conversationId: r.conversation_id,
@@ -257,7 +262,8 @@ function rowToMsg(r: any): Message {
     subAgentId: r.sub_agent_id,
     subAgentName: r.sub_agent_name,
     subAgentDepth: r.sub_agent_depth,
-    dataView: parseDataView(r.data_view_json),
+    // 单卡字段保留给旧渲染路径；多卡走 dataViews
+    ...(views.length ? { dataView: views[views.length - 1], dataViews: views } : {}),
   };
 }
 
@@ -2173,12 +2179,75 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     }
     // 若没有 assistant，仍给用户消息后的首个空 slot 兜底——正常至少有一条 assistant
     if (!target) return false;
-    // 复用已有 dataView（一个消息同源多列合约少见，直接覆盖为最新）
-    target.dataView = { ...target.dataView, ...view };
+    // ★ 一轮可以有多张卡：多次 data_query_view 依次追加，不能互相覆盖（此前 {...old,...new}
+    //   让同轮三张看板只剩最后一张）。同一张图（标题+取数源相同）视为复用，原位替换。
+    const views = [...(target.dataViews || (target.dataView ? [target.dataView] : []))];
+    const keyOf = (v: InlineDataView) => `${v.title || ''}|${v.base || ''}|${v.table || ''}|${v.ontology || ''}`;
+    const dup = views.findIndex((v) => keyOf(v) === keyOf(view));
+    if (dup >= 0) views[dup] = view;
+    else views.push(view);
+    target.dataViews = views;
+    target.dataView = views[views.length - 1];
     // 持久化：本地兜底 + 服务端落库（跨设备/重装后仍在；失败不阻断聊天）
-    saveInlineDataView(convId, target.id, target.dataView);
-    void api.patch(`/messages/${target.id}`, { dataView: target.dataView }).catch(() => {});
+    saveInlineDataView(convId, target.id, view);
+    void api.patch(`/messages/${target.id}`, { dataView: { views } }).catch(() => {});
     return true;
+  }
+
+  /**
+   * 把用户在工作台里配好的图表写回契约（message.data_view_json）。
+   * 这样刷新/换设备后仍按图表打开，新建看板也能直接从契约里还原图表 widget。
+   * 契约匹配口径与 nestDataViewIntoChat 一致（标题 + 取数源），同一张图原位更新。
+   */
+  function persistDataViewChart(view: InlineDataView, chart: InlineDataViewChart | null): void {
+    const convId = currentConvId.value;
+    const msgs = convId ? messagesByConv.value[convId] : undefined;
+    if (!msgs?.length) return;
+    const keyOf = (v: InlineDataView) =>
+      `${v.title || ''}|${v.base || ''}|${v.table || ''}|${v.ontology || ''}|${v.path || ''}|${v.datasourceId || ''}`;
+    const wanted = keyOf(view);
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      const list = m.dataViews?.length ? m.dataViews : (m.dataView ? [m.dataView] : []);
+      const hit = list.find((v) => v === view || keyOf(v) === wanted);
+      if (!hit) continue;
+      if (chart) hit.chart = chart;
+      else delete hit.chart;
+      saveInlineDataView(convId, m.id, hit);
+      void api.patch(`/messages/${m.id}`, { dataView: { views: list } }).catch(() => {});
+      return;
+    }
+  }
+
+  /**
+   * 回合收尾：把本轮的内嵌看板迁到「最终回复」那条消息上。
+   * ★ 历史消息只加载 user + 最终 assistant（工具步骤不落前端），契约挂在中途步骤消息上，
+   *   刷新后整条消息都不存在 → 看板消失（用户实报「刷新后图表没了」）。
+   */
+  function promoteDataViewsToFinal(convId: string): void {
+    const msgs = messagesByConv.value[convId] || [];
+    if (!msgs.length) return;
+    let last: Message | null = null;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === 'assistant' && !(m.toolCalls?.length) && (m.content || '').trim()) { last = m; break; }
+    }
+    if (!last) return;
+    const keyOf = (v: InlineDataView) => `${v.title || ''}|${v.base || ''}|${v.table || ''}|${v.ontology || ''}`;
+    const views: InlineDataView[] = [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === 'user') break;
+      if (m.id === last.id) continue;
+      const list = m.dataViews?.length ? m.dataViews : (m.dataView ? [m.dataView] : []);
+      for (const v of list) if (!views.some((x) => keyOf(x) === keyOf(v))) views.push(v);
+    }
+    if (!views.length) return;
+    views.reverse(); // 上面按倒序扫，恢复出现顺序
+    last.dataViews = views;
+    last.dataView = views[views.length - 1];
+    saveInlineDataView(convId, last.id, views[views.length - 1]);
+    void api.patch(`/messages/${last.id}`, { dataView: { views } }).catch(() => {});
   }
 
   /** data_query_view：把模型产出的数据浏览契约【内嵌到当前聊天流程的助手消息】出动态看板。
@@ -3278,9 +3347,9 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           //   留着只是内存垃圾）。放在 markRunEnd 之前 —— 清状态不影响消息列表内容。
           // ★ 任务收尾清理执行面标记：避免残留在下一任务上（与 browserSteps / browserTaskConvs
           //   同族，本文件多处收尾都做同样的清理）。放在**三态共同出口**（completed/aborted/error）。
-          case 'task:completed': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'completed'); emitTaskFinished(convId); return false;
-          case 'task:aborted': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'aborted'); emitTaskFinished(convId); return false;
-          case 'task:error': flushNow(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'error'); emitTaskFinished(convId); throw taskFinalError(event.error || '任务执行失败');
+          case 'task:completed': flushNow(convId); promoteDataViewsToFinal(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'completed'); pausedConvIds.value.delete(convId); emitTaskFinished(convId); return false;
+          case 'task:aborted': flushNow(convId); promoteDataViewsToFinal(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'aborted'); pausedConvIds.value.delete(convId); emitTaskFinished(convId); return false;
+          case 'task:error': flushNow(convId); promoteDataViewsToFinal(convId); dropStreamState(taskId); taskEventCounts.delete(taskId); clearBrowserExecution(convId); dropPendingCards(convId); markRunEnd(convId, 'error'); pausedConvIds.value.delete(convId); emitTaskFinished(convId); throw taskFinalError(event.error || '任务执行失败');
           case 'task:paused': pausedConvIds.value.add(convId); browserLockInput.value = false; break;
           case 'task:resumed': pausedConvIds.value.delete(convId); break;
           case 'context:compacted': {
@@ -3490,6 +3559,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     const taskId = task.id;
     taskIds.set(convId, taskId);
     runningConvIds.value.add(convId);
+    // ★ 恢复暂停态标记（2026-10-27 用户实报「暂停后恢复按钮不见了」）：服务端任务 paused 时，
+    //   切回/重载后必须恢复「已暂停」横幅与恢复按钮（恢复执行时由 task:resumed 事件删除）。
+    if (task.status === 'paused') pausedConvIds.value.add(convId);
+    else pausedConvIds.value.delete(convId);
     // 重连恢复：真实起点未知，用后端任务的 createdAt 兜底（缺省退化为当前时间）
     runStatsByConv.value[convId] = { status: 'running', startedAt: Number(task.createdAt) || Date.now() };
     const abortController = new AbortController();
@@ -3553,6 +3626,12 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         // ★ 单会话查询失败**只跳过本会话**（此前是 return，一个失败会让其余会话的自愈整轮失效）
         if ('error' in (r as any) || !(r as any).data) continue;
         const act = (r as any).data as any[];
+        // ★ 暂停防御（2026-10-27 用户实报「暂停后恢复按钮不见了」）：本地记着"已暂停"却查到
+        //   空活动列表 —— 最可能是服务端未升级（旧版 getActiveTasks 不认 paused）。此时**跳过**，
+        //   绝不能清运行态：清了会把「已暂停 · 恢复按钮」连同接管条一起抹掉（用户将无法恢复）。
+        //   误清的代价远大于暂不清残留：残留态另有 5min 硬上限兜底（不依赖网络）。
+        //   新服务端已把 paused 算进活动列表，正常不会命中此分支。
+        if (act.length === 0 && pausedConvIds.value.has(convId)) continue;
         if (act.length === 0) {
           // 服务端已无活动任务 → 前端运行态是残留，落结束态并清记账（与切会话自愈同口径）
           markRunEnd(convId, 'aborted');
@@ -3641,6 +3720,14 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
         if (conv && conv.title !== event.title) conv.title = event.title;
         return;
       }
+      // ★ 会话总线双发的暂停态校准（2026-10-27 用户实报「暂停后恢复按钮不见了」）：
+      //   任务级订阅断掉时，恢复/暂停按钮也要能实时跟着切（否则要等巡检/切会话才校准）。
+      //   add/delete 幂等，任务级 + 会话级双发不会出错。
+      if (event.type === 'task:paused' || event.type === 'task:resumed') {
+        if (event.type === 'task:paused') pausedConvIds.value.add(convId);
+        else pausedConvIds.value.delete(convId);
+        return;
+      }
       // ★ 处理**终态**（服务端在任务结束时任一双通道都会送达）。
       //   收到即意味着"该会话的任务已结束" → 清残留运行态与浏览器记账。
       //   ★ 幂等：正常订阅期间任务流也会送达同一事件；此处的清理操作全是幂等的
@@ -3653,6 +3740,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           abortControllers.delete(convId);
           taskIds.delete(convId);
           clearBrowserTaskActive(convId);
+          pausedConvIds.value.delete(convId); // ★ 终态顺带清暂停标记（幂等）
           emitTaskFinished(convId);
           // ★ 可观测（排障命门）：这条是"禁用标志凭什么解除"的**唯一现场证据**。
           //   此前该路径零日志 → 「没有任务但输入框还锁着」只能靠读代码猜。
@@ -3754,7 +3842,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       try {
         const r = await api.get<any[]>(`/llm/tasks/active?conversationId=${convId}`);
         if (!('error' in r) && Array.isArray(r.data)) {
-          activeTaskId = r.data.find((t: any) => t.status === 'running')?.id ?? null;
+          // ★ 暂停任务也算"真在跑"（2026-10-27）：paused 是用户主动挂起，任务还活着。
+          //   只认 running 会把暂停任务判成"假残留" → 清掉运行态另起新任务，
+          //   而旧任务的挂起循环还在服务端等着 resume → 两条执行流同时操作同一会话。
+          activeTaskId = r.data.find((t: any) => t.status === 'running' || t.status === 'paused')?.id ?? null;
         } else {
           activeTaskId = runningId ?? null; // 查询返回异常：退回本地记账（有记账即视为在跑）
         }
@@ -4070,6 +4161,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     loadConversationsByScope,
     loadMoreHistory, historyPagingByConv, HISTORY_PAGE_SIZE,
     fetchToolResult,
+    persistDataViewChart,
     // 执行详情按需加载（2026-10-24）：首屏只有显示消息，展开某一轮/某个 call_agent 时再拉
     roundMetaByConv, roundMetaOf, loadRoundDetails, loadSubAgentDetails, isRoundDetailsLoaded,
     /** 当前会话消息驻留裁剪的开关：UI 滚到底部时置 true，向上翻历史时置 false */

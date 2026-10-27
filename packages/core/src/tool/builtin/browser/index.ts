@@ -63,6 +63,50 @@ export function getBrowserToolWorkspaceDir(): string {
   return currentWorkspaceDir;
 }
 
+/**
+ * 语义定位参数（2026-10-27）：模型说得出「点带某文字的按钮」，却猜不出动态 class 选择器。
+ *
+ * ★ 为什么是嵌套对象而不是扁平 text/role：`browser_type` 的 `text` 已是「要输入的内容」、
+ *   `browser_select_option` 的 `label` 已是「选项文本」—— 扁平新增会撞名，
+ *   于是所有动作统一用 `target:{...}`，跨工具参数一致。
+ * ★ 与 index/selector 的关系：同时给出时 index/selector 优先（显式路径不该被覆盖）。
+ */
+function semanticTargetSchema() {
+  return {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: '可见文本 / accessible name（默认允许包含与近似；exact:true 时须完全相等）。' },
+      role: { type: 'string', description: '语义角色，如 button / link / textbox / checkbox / combobox / menuitem / tab。' },
+      label: { type: 'string', description: '关联标签文本（aria-label / aria-labelledby / label[for] / 就近 label / placeholder）。' },
+      exact: { type: 'boolean', description: 'text/label 是否要求完全相等（默认 false）。' },
+      near: { type: 'string', description: '邻近约束：候选项自身或附近（≤4 层祖先 / 前序兄弟）须含这段文字，用于同名按钮消歧。' },
+    },
+    description: '语义定位（text / role / label 至少一项）。同时给 index 或 selector 时以它们为先（target 只在没给显式定位时生效）。命中多个元素时不执行，返回 candidates —— 选一个 index 重试或加 exact/role/near 收窄。当前仅桌面应用可用。',
+  };
+}
+
+/** 本次调用是否用了语义定位 */
+function usesSemanticTarget(args: Record<string, unknown>): boolean {
+  const t = args?.target as Record<string, unknown> | undefined;
+  return !!t && typeof t === 'object' && !!(t.text || t.role || t.label);
+}
+
+/**
+ * 语义定位只在桌面端（Electron 直连 / 桌面桥）实现；服务端 Playwright 链路的规则对齐是下一步。
+ * 这里提前给明确错误，避免模型收到服务端的 not_found 后误判「页面上真没这个元素」。
+ */
+function semanticGuard(args: Record<string, unknown>): McpCallResult | null {
+  if (!usesSemanticTarget(args)) return null;
+  const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
+  if (isElectron) return null;
+  return toolError('语义定位（target）当前仅在桌面应用可用；请改用 index 或 selector（动态页面可先用 browser_get_page_content 拿编号）。');
+}
+
+/** 绑定语义参数到 action payload（未提供时保持原样，确保旧调用零变化） */
+function withTarget<T extends Record<string, unknown>>(payload: T, args: Record<string, unknown>): T {
+  return (usesSemanticTarget(args) ? { ...payload, target: args.target } : payload) as T;
+}
+
 /** 调用浏览器 API 端点 */
 async function callBrowserApi(path: string, method: 'GET' | 'POST' = 'POST', body?: unknown): Promise<unknown> {
   // 桌面端：将 /navigate 和 /action 转发到 IPC 直接操作可见的 BrowserView（含虚拟鼠标光标）
@@ -188,7 +232,7 @@ async function emptyTargetHint(): Promise<McpCallResult> {
     }).join('\n');
     if (elems) list = `\n当前页面可交互元素（前 25 个，用 index 参数重试）：\n${elems}`;
   } catch { /* 页面不可用时忽略 */ }
-  return err(`未提供定位参数（index / selector / x+y）${list}\n请从上方编号列表中选择目标元素，以 { "index": <编号> } 形式重新调用。`);
+  return err(`未提供定位参数（index / selector / target / x+y）${list}\n请从上方编号列表中选择目标元素，以 { "index": <编号> } 形式重新调用；或用 target:{text:"元素上的文字"} 语义定位。`);
 }
 
 // ========== 导航 ==========
@@ -263,23 +307,26 @@ export class BrowserOpenExternalTool implements BuiltInTool {
 // ========== 点击 ==========
 export class BrowserClickTool implements BuiltInTool {
   name = 'browser_click';
-  description = 'Click an element in the browser. 三种定位方式任选其一：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；坐标仅在前两者都拿不到时使用。Uses real mouse movement. 返回统一结构：status（ok / ambiguous / not_found / stale_index / invalid_args / rejected / failed）、pageChanged、urlChanged；歧义时附 candidates，失败时附 hint。★ 点击原生 checkbox 会被拒绝（status=rejected，附整页 checkbox 候选清单）：改用 browser_fill_form 一次勾选，不要逐个点；同一目标被拒 2 次后放行，自定义控件不受限。选择器文本漂移时会自动按「同标签 + 相似文本」重定位（autoRelocated=fuzzy-text），index 失效时先按 selector 快照、再按文本模糊降级。★ 原生表单控件（checkbox / radio / select）不要用它逐个点：原生控件一律用 browser_fill_form —— 可一次填多个、有回读核验与幂等保护，逐个点既多花步数又容易漏勾。本工具用于：自定义下拉/组件库伪控件展开、联想输入选建议项、普通按钮与链接、以及 fill_form 不适用时的兜底。★ 点击「导出 / 下载 / 生成报表」类按钮时，文件会自动落盘（不弹系统保存框），保存路径写在本回执的 downloaded 字段里 —— 直接用文件工具按该路径读取，不要重复点击导出。';
+  description = 'Click an element in the browser. 四种定位方式：index（元素编号，来自 browser_get_page_content / browser_get_page_info 返回的列表）、selector（CSS 选择器）、target（语义定位：按可见文本/role/label 找元素）、x+y（页面坐标）。index 对动态 hash class、iframe 内元素最稳；选择器猜不到时**优先用 target**（例 target:{text:"发布",role:"button"}），不要用 run_script 穷举 DOM；坐标仅在前三者都拿不到时使用。Uses real mouse movement. 返回统一结构：status（ok / ambiguous / not_found / stale_index / invalid_args / rejected / failed）、pageChanged、urlChanged；歧义时附 candidates（可直接选 index 重试），失败时附 hint。★ 点击原生 checkbox 会被拒绝（status=rejected，附整页 checkbox 候选清单）：改用 browser_fill_form 一次勾选，不要逐个点；同一目标被拒 2 次后放行，自定义控件不受限。选择器文本漂移时会自动按「同标签 + 相似文本」重定位（autoRelocated=fuzzy-text），index 失效时先按 selector 快照、再按文本模糊降级。★ 原生表单控件（checkbox / radio / select）不要用它逐个点：原生控件一律用 browser_fill_form —— 可一次填多个、有回读核验与幂等保护，逐个点既多花步数又容易漏勾。本工具用于：自定义下拉/组件库伪控件展开、联想输入选建议项、普通按钮与链接、以及 fill_form 不适用时的兜底。★ 点击「导出 / 下载 / 生成报表」类按钮时，文件会自动落盘（不弹系统保存框），保存路径写在本回执的 downloaded 字段里 —— 直接用文件工具按该路径读取，不要重复点击导出。';
   inputSchema = {
     type: 'object',
     properties: {
       index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_content / browser_get_page_info / browser_get_dom. 比 selector 更稳（不受动态 class、iframe 影响）。失效时重新读取页面刷新列表。' },
       selector: { type: 'string', description: 'CSS selector of the element to click. Supports :contains("text") pseudo-selector to match elements by visible text, e.g. button:contains("登录"). If multiple elements match, an ambiguous candidate list with indexes is returned.' },
-      x: { type: 'number', description: 'X coordinate (last resort, if no index/selector).' },
-      y: { type: 'number', description: 'Y coordinate (last resort, if no index/selector).' },
+      target: semanticTargetSchema(),
+      x: { type: 'number', description: 'X coordinate (last resort, if no index/selector/target).' },
+      y: { type: 'number', description: 'Y coordinate (last resort, if no index/selector/target).' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
+      const blocked = semanticGuard(args);
+      if (blocked) return blocked;
       // 空参兜底：自动返回页面编号元素清单，引导模型用 index 重试
-      if (args.index === undefined && !args.selector && args.x === undefined && args.y === undefined) {
+      if (args.index === undefined && !args.selector && !usesSemanticTarget(args) && args.x === undefined && args.y === undefined) {
         return await emptyTargetHint();
       }
-      const data = await callBrowserApi('/action', 'POST', { action: 'click', index: args.index, selector: args.selector, x: args.x, y: args.y }) as any;
+      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'click', index: args.index, selector: args.selector, x: args.x, y: args.y }, args)) as any;
       const text = JSON.stringify(data);
       if (data?.downloaded?.savedPath) {
         return ok(`${text}\n\n已自动下载：${data.downloaded.savedPath}（文件已落盘，后续直接用文件工具按此路径读取，不要重复点击导出）`);
@@ -292,7 +339,7 @@ export class BrowserClickTool implements BuiltInTool {
 // ========== 输入文本 ==========
 export class BrowserTypeTool implements BuiltInTool {
   name = 'browser_type';
-  description = 'Type text into an element. 定位方式：index（元素编号，来自 browser_get_page_content / browser_get_page_info）、selector（CSS 选择器），或省略两者直接输入到当前焦点元素。输入框目标不明确时先用 browser_get_page_content 找到 textarea/input 的 index。要提交表单/搜索时传 pressEnter:true（等价于输入后按 Enter，不要用 text:"" 来表示回车）。\n'
+  description = 'Type text into an element. 定位方式：index（元素编号，来自 browser_get_page_content / browser_get_page_info）、selector（CSS 选择器）、target（语义定位：按可见文本/role/label 找输入框）、或省略三者直接输入到当前焦点元素。选择器猜不到时优先用 target（例 target:{label:"标题"}），不要用 run_script 穷举 DOM；命中多个时返回 candidates 而不输入。输入框目标不明确时先用 browser_get_page_content 找到 textarea/input 的 index。要提交表单/搜索时传 pressEnter:true（等价于输入后按 Enter，不要用 text:"" 来表示回车）。\n'
     + '★ 走**真实键盘输入**（桌面端经 CDP `Input.insertText`，会派发 beforeinput/input 等编辑事件）：'
     + '对受控组件（React/Vue）、富文本编辑器（ProseMirror/Slate/Draft.js）、中文输入法场景都有效 —— '
     + '评论框、发帖框、搜索框这类"看着填了、提交却是空的"问题由它解决。\n'
@@ -307,23 +354,26 @@ export class BrowserTypeTool implements BuiltInTool {
       text: { type: 'string', description: 'The text to type. 替换语义（先清空再输入）。省略且 pressEnter:true 时只按回车不输入文本。' },
       index: { type: 'number', description: 'Element index from the numbered interactive-element list returned by browser_get_page_content / browser_get_page_info / browser_get_dom. 比 selector 更稳（不受动态 class、iframe 影响）。省略时输入到当前焦点元素。' },
       selector: { type: 'string', description: 'CSS selector to focus before typing (optional). Supports :contains("text") pseudo-selector. If multiple elements match, an ambiguous candidate list with indexes is returned.' },
+      target: semanticTargetSchema(),
       pressEnter: { type: 'boolean', description: '输入完成后按一次 Enter（提交搜索/表单）。text 与 pressEnter 至少给一个。真实的 Enter 按键事件，不是 JS 合成的。' },
     },
     required: [],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
+      const blocked = semanticGuard(args);
+      if (blocked) return blocked;
       const text = args.text as string | undefined;
       const pressEnter = args.pressEnter === true;
       if (!text && !pressEnter) {
         return err('text is required（或传 pressEnter:true 仅回车提交）。要按回车请传 pressEnter:true，不要传 text:""');
       }
-      // 注意：无 index/selector 时合法——输入到当前聚焦元素（先 click 聚焦再 type）
-      const data = await callBrowserApi('/action', 'POST', { action: 'type', index: args.index, selector: args.selector, text: text || '', pressEnter }) as any;
+      // 注意：无 index/selector/target 时合法——输入到当前聚焦元素（先 click 聚焦再 type）
+      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'type', index: args.index, selector: args.selector, text: text || '', pressEnter }, args)) as any;
       if (data?.error === '无聚焦元素') {
         // 无聚焦目标时给出引导，而非裸报错
         const hint = await emptyTargetHint();
-        return err(`无聚焦元素（需先用 browser_click 聚焦输入框，或直接传 index/selector）${(hint.content?.[0]?.text || '').replace(/^未提供定位参数（index \/ selector \/ x\+y）/, '')}`);
+        return err(`无聚焦元素（需先用 browser_click 聚焦输入框，或直接传 index/selector/target）${(hint.content?.[0]?.text || '').replace(/^未提供定位参数（[^）]*）/, '')}`);
       }
       return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '输入失败'); }
@@ -352,19 +402,27 @@ export class BrowserPressKeyTool implements BuiltInTool {
 // ========== 滚动 ==========
 export class BrowserScrollTool implements BuiltInTool {
   name = 'browser_scroll';
-  description = 'Scroll the browser page or a specific element into view.';
+  description = 'Scroll the browser page or a specific element into view. 指定元素用 selector / index / target（语义定位）三者之一；都不给则按 x/y 滚动页面。';
   inputSchema = {
     type: 'object',
     properties: {
       selector: { type: 'string', description: 'CSS selector to scroll into view (optional).' },
+      index: { type: 'number', description: '元素编号（来自 browser_get_page_content），滚到该元素。' },
+      target: semanticTargetSchema(),
       x: { type: 'number', description: 'Horizontal scroll delta (default 0).' },
       y: { type: 'number', description: 'Vertical scroll delta (default 300).' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      await callBrowserApi('/action', 'POST', { action: 'scroll', selector: args.selector, x: args.x, y: args.y });
-      return ok(`Scrolled ${args.selector ? 'to ' + args.selector : `by (${args.x || 0}, ${args.y || 300})`}`);
+      const blocked = semanticGuard(args);
+      if (blocked) return blocked;
+      await callBrowserApi('/action', 'POST', withTarget({ action: 'scroll', selector: args.selector, index: args.index, x: args.x, y: args.y }, args));
+      const where = args.selector ? `to ${args.selector}`
+        : args.index != null ? `to index ${args.index}`
+          : usesSemanticTarget(args) ? `to target ${JSON.stringify(args.target)}`
+            : `by (${args.x || 0}, ${args.y || 300})`;
+      return ok(`Scrolled ${where}`);
     } catch (e: any) { return err(e?.message || '滚动失败'); }
   }
 }
@@ -372,19 +430,27 @@ export class BrowserScrollTool implements BuiltInTool {
 // ========== 悬停 ==========
 export class BrowserHoverTool implements BuiltInTool {
   name = 'browser_hover';
-  description = 'Hover over an element by selector or coordinates. Uses real mouse movement.';
+  description = 'Hover over an element by selector / index / target（语义定位）or coordinates. Uses real mouse movement.';
   inputSchema = {
     type: 'object',
     properties: {
       selector: { type: 'string', description: 'CSS selector of the element to hover. Supports :contains("text") pseudo-selector.' },
-      x: { type: 'number', description: 'X coordinate (if no selector).' },
-      y: { type: 'number', description: 'Y coordinate (if no selector).' },
+      index: { type: 'number', description: '元素编号（来自 browser_get_page_content）。' },
+      target: semanticTargetSchema(),
+      x: { type: 'number', description: 'X coordinate (if no element given).' },
+      y: { type: 'number', description: 'Y coordinate (if no element given).' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      await callBrowserApi('/action', 'POST', { action: 'hover', selector: args.selector, x: args.x, y: args.y });
-      return ok(`Hovered ${args.selector || `(${args.x}, ${args.y})`}`);
+      const blocked = semanticGuard(args);
+      if (blocked) return blocked;
+      await callBrowserApi('/action', 'POST', withTarget({ action: 'hover', selector: args.selector, index: args.index, x: args.x, y: args.y }, args));
+      const where = args.selector ? args.selector
+        : args.index != null ? `index ${args.index}`
+          : usesSemanticTarget(args) ? `target ${JSON.stringify(args.target)}`
+            : `(${args.x}, ${args.y})`;
+      return ok(`Hovered ${where}`);
     } catch (e: any) { return err(e?.message || '悬停失败'); }
   }
 }
@@ -805,20 +871,27 @@ export class BrowserGetPageContentTool implements BuiltInTool {
 // ========== 下拉选择 ==========
 export class BrowserSelectOptionTool implements BuiltInTool {
   name = 'browser_select_option';
-  description = 'Select an option in a <select> dropdown by value or label.';
+  description = 'Select an option in a native <select> dropdown by value or label. 控件定位用 selector / index / target（语义定位）三者之一。自定义下拉（role=combobox 弹层）不适用：先用 browser_click 展开，再点 option。';
   inputSchema = {
     type: 'object',
     properties: {
       selector: { type: 'string', description: 'CSS selector of the <select> element.' },
+      index: { type: 'number', description: '元素编号（来自 browser_get_page_content）。' },
+      target: semanticTargetSchema(),
       value: { type: 'string', description: 'Option value to select.' },
       label: { type: 'string', description: 'Option label (visible text) to select.' },
     },
-    required: ['selector'],
+    required: [],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      await callBrowserApi('/action', 'POST', { action: 'select_option', selector: args.selector, value: args.value, label: args.label });
-      return ok(`Selected option in ${args.selector}`);
+      const blocked = semanticGuard(args);
+      if (blocked) return blocked;
+      if (!args.selector && args.index == null && !usesSemanticTarget(args)) {
+        return err('需要 selector / index / target 三者之一来指定下拉控件。');
+      }
+      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'select_option', selector: args.selector, index: args.index, value: args.value, label: args.label }, args)) as any;
+      return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '选择失败'); }
   }
 }
@@ -826,23 +899,47 @@ export class BrowserSelectOptionTool implements BuiltInTool {
 // ========== 勾选/取消 ==========
 export class BrowserCheckTool implements BuiltInTool {
   name = 'browser_check';
-  description = 'Check a checkbox or radio button.';
-  inputSchema = { type: 'object', properties: { selector: { type: 'string', description: 'CSS selector of the checkbox/radio.' } }, required: ['selector'] };
+  description = 'Check a checkbox or radio button. 定位用 selector / index / target（语义定位）三者之一；自定义控件未生效时改用 browser_click。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      selector: { type: 'string', description: 'CSS selector of the checkbox/radio.' },
+      index: { type: 'number', description: '元素编号（来自 browser_get_page_content）。' },
+      target: semanticTargetSchema(),
+    },
+  };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      await callBrowserApi('/action', 'POST', { action: 'check', selector: args.selector });
-      return ok(`Checked ${args.selector}`);
+      const blocked = semanticGuard(args);
+      if (blocked) return blocked;
+      if (!args.selector && args.index == null && !usesSemanticTarget(args)) {
+        return err('需要 selector / index / target 三者之一来指定勾选项。');
+      }
+      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'check', selector: args.selector, index: args.index }, args)) as any;
+      return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '勾选失败'); }
   }
 }
 export class BrowserUncheckTool implements BuiltInTool {
   name = 'browser_uncheck';
-  description = 'Uncheck a checkbox.';
-  inputSchema = { type: 'object', properties: { selector: { type: 'string', description: 'CSS selector of the checkbox.' } }, required: ['selector'] };
+  description = 'Uncheck a checkbox. 定位用 selector / index / target（语义定位）三者之一；自定义控件未生效时改用 browser_click。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      selector: { type: 'string', description: 'CSS selector of the checkbox.' },
+      index: { type: 'number', description: '元素编号（来自 browser_get_page_content）。' },
+      target: semanticTargetSchema(),
+    },
+  };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      await callBrowserApi('/action', 'POST', { action: 'uncheck', selector: args.selector });
-      return ok(`Unchecked ${args.selector}`);
+      const blocked = semanticGuard(args);
+      if (blocked) return blocked;
+      if (!args.selector && args.index == null && !usesSemanticTarget(args)) {
+        return err('需要 selector / index / target 三者之一来指定勾选项。');
+      }
+      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'uncheck', selector: args.selector, index: args.index }, args)) as any;
+      return ok(JSON.stringify(data));
     } catch (e: any) { return err(e?.message || '取消勾选失败'); }
   }
 }

@@ -387,17 +387,17 @@
                         class="msg-config-card"
                         @saved="onConfigSaved"
                       />
-                      <!-- 动态看板（数据浏览）：模型 data_query_view 产契约后内嵌到当前助手消息，嵌套在聊天流程里 -->
+                      <!-- 数据图表/明细（data_query_view 契约）：内嵌在当前助手消息里；看板是多个图表组件的集合，不在这里 -->
                       <div
-                        v-if="roundDataView(vr.round)"
+                        v-for="(dv, dvi) in roundDataViews(vr.round)"
+                        :key="vr.round.finalAssistant.id + '-dv-' + dvi"
                         class="msg-inline-dataview"
                       >
                         <div class="dataview-title">
                           <el-icon><Grid /></el-icon>
-                          <span>{{ roundDataView(vr.round)!.title || '数据明细' }}</span>
-                          <span class="dataview-tag">可交互数据看板</span>
+                          <span>{{ dv.title || '数据明细' }}</span>
                         </div>
-                        <DataQueryWorkbench :key="vr.round.finalAssistant.id + '-dv'" :contract="roundDataView(vr.round)!" />
+                        <DataQueryWorkbench :key="vr.round.finalAssistant.id + '-dv-wb-' + dvi" :contract="dv" embedded :message-id="vr.round.finalAssistant.id" />
                       </div>
                       <!-- 图表卡片：本轮 build_chart_dsl 生成的图（按 data_path 活取数） -->
                       <ChartFileCard
@@ -468,8 +468,8 @@
                      生图/生视频由服务端直接落交付目录并登记，这里按消息 id 命中展示。
                      放在整轮末尾（而非原「任务结果」卡片正文内）——正文为空时也要能看到交付物。 -->
                 <DeliverableFileCard
-                  v-if="getRoundDeliverableFiles(vr.round).length"
-                  :files="getRoundDeliverableFiles(vr.round)"
+                  v-if="deliverablesByRound[vr.ri]?.length"
+                  :files="deliverablesByRound[vr.ri]"
                   class="msg-deliverable-card"
                 />
               </div>
@@ -759,7 +759,8 @@ import { useChat } from '../../composables/chat/useChat';
 import { useMobileShell } from '../../composables/useMobileShell';
 import { bindLongPress } from '../../composables/useLongPress';
 import type { MessageRound, SubAgentRound } from '../../composables/chat/useChat';
-import { stepRenderRange, ROUND_STEP_RENDER_LIMIT, findLiveSubAgentRound } from '../../composables/chat/message-rounds';
+import type { ConversationFile } from '@yan-zhi/shared';
+import { stepRenderRange, ROUND_STEP_RENDER_LIMIT, findLiveSubAgentRound, collectRoundToolTexts } from '../../composables/chat/message-rounds';
 import { fmtDuration, planElapsedMs, planStepElapsedMs, roundElapsedMs, slowestPlanSteps } from '../../composables/chat/round-timing';
 import PlanStepDetailDialog from './PlanStepDetailDialog.vue';
 import AgentAvatar from '../AgentAvatar.vue';
@@ -783,6 +784,7 @@ import { extractInfographicBlocks, stripInfographicBlocks } from '../../utils/in
 import { extractDocumentBlocks, stripDocumentBlocks } from '../../utils/document-blocks';
 import { extractDashboardBlocks, stripDashboardBlocks, extractToolDashboardBlocks } from '../../utils/ydash-blocks';
 import { extractSvgBlocks, stripSvgBlocks, svgToDataUrl } from '../../utils/svg-blocks';
+import { groupDeliverablesByRound } from '../../utils/deliverable-rounds';
 import ChatWelcome from './ChatWelcome.vue';
 import SceneCarousel from './SceneCarousel.vue';
 import { DEV_TPLS } from '../../config/devTpls';
@@ -828,6 +830,12 @@ function roundInfographics(round: MessageRound) {
 function roundDataView(round: MessageRound) {
   return round.dataView || round.finalAssistant?.dataView || null;
 }
+/** 本轮所有内嵌看板（新数据走 dataViews，旧数据回退单张） */
+function roundDataViews(round: MessageRound) {
+  if (round.dataViews?.length) return round.dataViews;
+  const one = roundDataView(round);
+  return one ? [one] : [];
+}
 function roundDocuments(round: MessageRound) {
   const content = round.finalAssistant?.content || '';
   return content ? extractDocumentBlocks(content) : [];
@@ -841,28 +849,13 @@ function roundDashboards(round: MessageRound) {
  * ★ 结果挂在 step.toolResults[].content（role='tool' 的消息按 toolCallId 归位），
  *   不在 toolCall.result 上 —— 只读后者会永远解析不到图表/看板标记。
  */
-function roundToolTexts(round: MessageRound): string[] {
-  const out: string[] = [];
-  for (const step of round.steps) {
-    for (const tr of step.toolResults || []) if (tr.content) out.push(tr.content);
-    for (const tc of step.toolCalls || []) {
-      if (typeof tc.result === 'string') out.push(tc.result);
-      else if (tc.result) out.push(JSON.stringify(tc.result));
-    }
-  }
-  for (const tc of round.allToolCalls || []) {
-    if (typeof tc.result === 'string') out.push(tc.result);
-    else if (tc.result) out.push(JSON.stringify(tc.result));
-  }
-  return out;
-}
 /** build_chart_dsl 的结果里带 [ychart] 定义标记：本轮生成的图直接渲染在正文下方 */
 function roundCharts(round: MessageRound) {
-  return collectChartDsls(roundToolTexts(round));
+  return collectChartDsls(collectRoundToolTexts(round));
 }
 /** build_dashboard_dsl 的结果里带 [ydash] 定义：按看板卡片渲染（可勾选存入右侧看板） */
 function roundToolDashboards(round: MessageRound) {
-  return extractToolDashboardBlocks(roundToolTexts(round));
+  return extractToolDashboardBlocks(collectRoundToolTexts(round));
 }
 function roundSvgs(round: MessageRound) {
   const content = round.finalAssistant?.content || '';
@@ -1233,17 +1226,12 @@ function fileChangePathOf(tool: string, result: unknown): string | null {
 //   这段预处理**不受缓存保护** ⇒ 流式每帧对 15.8KB 正文重跑正则，是卡顿第二主因。
 //   语义完全一致（逻辑已整体搬进 useChat），4 处模板调用点不变。
 
-/** 取整轮所有 assistant 消息产出的交付文件（按真实消息 id 集合过滤）
- *  交付文件在 chat.ts 中以产生 file_write 工具调用的那条助手消息真实 id 注册，
- *  该消息通常带 toolCalls 属于中间步骤，故需收集整轮 steps 的 messageId 命中过滤，
- *  而非仅用合成的 finalAssistant.id（永远匹配不到真实 messageId）。
- */
-function getRoundDeliverableFiles(round: MessageRound) {
-  const ids = new Set<string>();
-  round.steps.forEach((s) => { if (s.messageId) ids.add(s.messageId); });
-  if (round.finalAssistant?.id) ids.add(round.finalAssistant.id);
-  return fileStore.filesByCategory.deliverable.filter((f) => f.messageId && ids.has(f.messageId));
-}
+/** 取整轮所有 assistant 消息产出的交付文件（按下标 = 全局轮次号）
+ *  归组口径见 utils/deliverable-rounds.ts（messageId 精确命中 → 时间窗兜底；
+ *  没有 messageId 的导出文件也按时间归轮，2026-10-27「三个交付文件只显示一个」）。 */
+const deliverablesByRound = computed<ConversationFile[][]>(() =>
+  groupDeliverablesByRound(messageRounds.value, fileStore.filesByCategory.deliverable),
+);
 
 /** 智能体思考过程是否展开：
  *  - 用户手动点过 → 听用户的
@@ -1421,7 +1409,8 @@ async function exportAssistantDocx(round: MessageRound) {
     return;
   }
   const title = (round.user?.content || '任务结果').replace(/\s+/g, ' ').trim().slice(0, 40) || '任务结果';
-  await exportMarkdownDocx(md, title);
+  // 带上本轮助手消息 id：导出的 docx 在交付卡片里挂到这一轮（否则只能按时间归轮）
+  await exportMarkdownDocx(md, title, { messageId: round.finalAssistant?.id });
 }
 
 /** 该轮是否仍在流式进行（仅最后一轮 + 当前会话在跑），决定截图是否展示；任务结束即随响应式移除 */
@@ -2128,6 +2117,9 @@ watch(activeNavRound, () => {
   display: flex;
   flex-direction: column;
 }
+/* 图表模式要更高的画布：字段条常驻在图下方，高度不够会把 x 轴标签压掉（用户实报「看不完整」）。
+   按图表容器判断而不是 canvas：加载/空态时高度也不跳。 */
+.msg-inline-dataview:has(.dqw-chart-area) { height: 530px; }
 .dataview-title {
   flex: 0 0 auto;
   display: flex;
@@ -2139,15 +2131,6 @@ watch(activeNavRound, () => {
   color: #334155;
   border-bottom: 1px solid var(--el-border-color-lighter, #e2e8f0);
   background: var(--glass-bg);
-}
-.dataview-tag {
-  font-weight: 400;
-  color: #64748b;
-  font-size: 11px;
-  background: var(--glass-bg-hover);
-  color: #4f46e5;
-  border-radius: 4px;
-  padding: 0 6px;
 }
 .msg-inline-dataview :deep(.dqw-root) {
   flex: 1 1 auto;

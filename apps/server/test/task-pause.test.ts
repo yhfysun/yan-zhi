@@ -151,6 +151,39 @@ describe('暂停实现存在性与语义完整性（防漂移静态断言）', (
     expect(mgrSrc).toMatch(/task\.status === 'running' && !task\.paused/);
   });
 
+  it('★ paused 算活动任务：getActiveTasks 必须包含 paused（2026-10-27 用户实报「暂停后恢复按钮消失」）', () => {
+    const fn = extractFunction(mgrSrc, 'export function getActiveTasks');
+    // 旧形态（只认 running）必须消失：暂停任务不在活动列表 → 前端 60s 巡检查到空列表
+    // 误清 runningConvIds → 接管条连恢复按钮整体消失（用户无法再恢复）。
+    expect(fn, 'getActiveTasks 必须认 paused 为活动任务（前端巡检以它为准）')
+      .toMatch(/task\.status !== 'running' && task\.status !== 'paused'/);
+    expect(fn, '必须输出 status 字段，前端 reconnectActiveTask 据此恢复「已暂停」横幅')
+      .toContain('status: task.status');
+  });
+
+  it('★ cleanupTasks 不得删 paused 任务（挂起循环还活着，删了永久无法恢复 + 内存泄漏）', () => {
+    const fn = extractFunction(mgrSrc, 'export function cleanupTasks');
+    // 旧形态：`status !== 'running'` 一刀切 → paused 落进 30min 清理分支。
+    // 新形态：paused 排除在通用清理外，按独立的 24h 上限 abort 后收尾。
+    expect(fn, 'paused 必须排除在 30min 通用清理分支外')
+      .toMatch(/task\.status !== 'running' && task\.status !== 'paused'/);
+    expect(fn, 'paused 必须有独立的 24h 上限分支（abort + failed 收尾）')
+      .toMatch(/task\.status === 'paused' && now - task\.createdAt > maxPausedMs/);
+  });
+
+  it('★ findRunningTaskId / injectUserMessage 与暂停任务同口径（暂停中发消息走注入，不另起新任务）', () => {
+    const findFn = extractFunction(mgrSrc, 'export function findRunningTaskId');
+    const injectFn = extractFunction(mgrSrc, 'export function injectUserMessage');
+    expect(findFn, 'findRunningTaskId 必须认 paused（否则暂停中发消息绕过互斥另起新任务）')
+      .toMatch(/t\.status === 'running' \|\| t\.status === 'paused'/);
+    expect(injectFn, 'injectUserMessage 必须认 paused（消息落库进 pendingInjects）')
+      .toMatch(/t\.status === 'running' \|\| t\.status === 'paused'/);
+  });
+
+  it('★ 终态与 paused/resumed 双发到会话总线（前端实时校准暂停态）', () => {
+    expect(mgrSrc).toMatch(/event\.type === 'task:paused' \|\| event\.type === 'task:resumed'/);
+  });
+
   it('路由：/pause 与 /resume 已注册且校验状态', () => {
     expect(routesSrc).toContain("router.post('/tasks/:id/pause'");
     expect(routesSrc).toContain("router.post('/tasks/:id/resume'");

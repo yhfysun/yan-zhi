@@ -6,27 +6,35 @@
 -->
 <template>
   <div class="dqw-root">
-    <!-- 顶部：来源信息 + 视图切换 -->
+    <!-- 顶部单行工具条：视图切换（hover 展开）/ 来源 / 条数 / 更多操作（hover 下拉） -->
     <div class="dqw-toolbar">
-      <div class="dqw-head">
-        <span class="dqw-source">
-          {{ sourceLabel }}
-        </span>
-        <div class="dqw-dialect-tag" v-if="result?.truncated" title="结果集过大，仅展示当前页">
-          已截断
+      <div class="dqw-viewswitch" @mouseenter="viewOpen = true" @mouseleave="viewOpen = false">
+        <button type="button" class="dqw-trigger" :class="{ open: viewOpen }" @click="viewOpen = !viewOpen">
+          <el-icon class="dqw-trigger-icon"><component :is="currentView.icon" /></el-icon>
+          <span>{{ currentView.label }}</span>
+          <span class="dqw-caret" :class="{ open: viewOpen }">▾</span>
+        </button>
+        <div v-show="viewOpen" class="dqw-pop dqw-view-menu">
+          <button
+            v-for="v in viewOptions"
+            :key="v.key"
+            type="button"
+            class="dqw-pop-item"
+            :class="{ on: viewKind === v.key }"
+            @click="pickView(v.key)"
+          >
+            <el-icon><component :is="v.icon" /></el-icon>
+            <span>{{ v.label }}</span>
+            <span v-if="viewKind === v.key" class="dqw-pop-check">✓</span>
+          </button>
         </div>
-        <span v-if="result" class="dqw-count">
-          共 {{ result.total >= 0 ? result.total : '-' }} 条
-        </span>
       </div>
-      <div class="dqw-viewbar">
-        <button
-          v-for="v in modeOptions"
-          :key="v.key"
-          class="dqw-view-btn"
-          :class="{ on: mode === v.key }"
-          @click="setMode(v.key)"
-        >{{ v.label }}</button>
+
+      <span v-if="!embedded" class="dqw-source" :title="sourceLabel">{{ sourceLabel }}</span>
+      <span v-if="result?.truncated" class="dqw-dialect-tag" title="结果集过大，仅展示当前页">已截断</span>
+      <span v-if="result" class="dqw-count">共 {{ result.total >= 0 ? result.total : '-' }} 条</span>
+
+      <div class="dqw-toolbar-right">
         <el-select
           v-if="mode === 'table' && columnOptions.length > 4"
           v-model="visibleCols"
@@ -39,10 +47,48 @@
         >
           <el-option v-for="c in columnOptions" :key="c" :label="c" :value="c" />
         </el-select>
-        <div class="dqw-export">
-          <el-button size="small" @click="openPin">钉到看板</el-button>
-          <el-button size="small" :loading="exporting === 'word'" @click="exportWord">导出 Word</el-button>
-          <el-button size="small" :loading="exporting === 'excel'" @click="exportExcel">导出 Excel</el-button>
+        <div class="dqw-menu-wrap" @mouseenter="actionsOpen = true" @mouseleave="actionsOpen = false">
+          <div class="dqw-split">
+            <button
+              type="button"
+              class="dqw-trigger dqw-split-main"
+              :class="{ open: actionsOpen }"
+              :disabled="!!exporting"
+              title="导出 Excel"
+              @click="runAction(exportExcel)"
+            >
+              <el-icon><Tickets /></el-icon>
+              <span>{{ exporting === 'excel' ? '导出中…' : '导出 Excel' }}</span>
+            </button>
+            <button
+              type="button"
+              class="dqw-trigger dqw-split-caret"
+              :class="{ open: actionsOpen }"
+              aria-label="其它导出方式 / 钉到看板"
+              title="其它导出方式 / 钉到看板"
+              @click="actionsOpen = !actionsOpen"
+            >
+              <span class="dqw-caret" :class="{ open: actionsOpen }">▾</span>
+            </button>
+          </div>
+          <div v-show="actionsOpen" class="dqw-pop dqw-actions-menu">
+            <button type="button" class="dqw-pop-item" :disabled="!!exporting" @click="runAction(exportWord)">
+              <el-icon><Document /></el-icon>
+              <span>{{ exporting === 'word' ? '导出中…' : '导出 Word' }}</span>
+            </button>
+            <button
+              v-if="mode === 'chart'"
+              type="button"
+              class="dqw-pop-item"
+              :disabled="!agg || !agg.points.length"
+              @click="runAction(exportPng)"
+            >
+              <el-icon><Download /></el-icon><span>导出 PNG</span>
+            </button>
+            <button type="button" class="dqw-pop-item dqw-pop-sep" @click="runAction(openPin)">
+              <el-icon><Star /></el-icon><span>钉到看板</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -117,22 +163,27 @@
       <span v-if="menu?.description" class="dqw-ont-desc" :title="menu.description">{{ menu.description }}</span>
     </div>
 
-    <!-- 过滤器条（可加列）  固定顶部 -->
-    <div v-if="mode === 'table' && !isOntologyMode" class="dqw-filters">
-      <div class="dqw-filter-label">过滤器</div>
+    <!-- 过滤器条  固定顶部 -->
+    <div v-if="mode === 'table' && !isOntologyMode && activeFilterCols.length" class="dqw-filters">
+      <span class="dqw-filter-label">
+        <el-icon><Filter /></el-icon>
+        过滤器
+      </span>
       <div class="dqw-filter-controls">
         <template v-for="active in activeFilterCols" :key="active">
-          <div class="dqw-filter-item">
+          <div class="dqw-filter-item" :class="{ active: !!filterVals[active] }">
             <span class="dqw-filter-name">{{ displayName(active) }}</span>
-            <select
+            <el-select
               v-if="hasEnum(active)"
               class="dqw-input"
-              :value="filterVals[active] ?? ''"
-              @change="onEnumChange(active, ($event.target as HTMLSelectElement).value)"
+              size="small"
+              clearable
+              placeholder="全部"
+              :model-value="filterVals[active] ?? ''"
+              @change="(v: any) => onEnumChange(active, v ?? '')"
             >
-              <option value="">(全部)</option>
-              <option v-for="o in enumOptions(active)" :key="o.label" :value="String(o.raw)">{{ o.label }}</option>
-            </select>
+              <el-option v-for="o in enumOptions(active)" :key="String(o.raw)" :label="o.label" :value="String(o.raw)" />
+            </el-select>
             <el-input
               v-else
               class="dqw-input"
@@ -142,22 +193,9 @@
               :model-value="filterVals[active] ?? ''"
               @change="(v: any) => applyTextFilter(active, v)"
             />
-            <el-button size="small" text circle @click="removeFilter(active)" title="移除该过滤">
-              <el-icon><Close /></el-icon>
-            </el-button>
           </div>
         </template>
-        <el-select
-          class="dqw-input dqw-add"
-          size="small"
-          placeholder="+ 加过滤器"
-          clearable
-          :model-value="''"
-          @change="applyAddColumn"
-        >
-          <el-option v-for="c in addableCols" :key="c" :label="c" :value="c" />
-        </el-select>
-        <el-button v-if="activeFilterCols.length" size="small" @click="clearFilters">清除</el-button>
+        <el-button size="small" text class="dqw-filter-clear" @click="clearFilters">清除</el-button>
       </div>
     </div>
 
@@ -173,7 +211,6 @@
           :data="result!.rows"
           height="100%"
           size="small"
-          stripe
           highlight-current-row
           @sort-change="onSort"
         >
@@ -182,7 +219,7 @@
             :key="col"
             :prop="col"
             :label="col"
-            :width="columnMeta[col]?.width"
+            :min-width="columnMeta[col]?.width"
             :align="columnMeta[col]?.align || 'left'"
             sortable="custom"
             show-overflow-tooltip
@@ -205,101 +242,106 @@
       </template>
 
       <!-- 图表视图 -->
-      <template v-else>
-        <div class="dqw-chart-cfg">
-          <div class="dqw-cfg-line">
-            <span class="dqw-cfg-label">图种</span>
-            <el-select v-model="chartKind" size="small" style="width: 96px">
-              <el-option label="折线" value="line" />
-              <el-option label="面积" value="area" />
-              <el-option label="柱状" value="bar" />
-              <el-option label="饼图" value="pie" />
-              <el-option label="散点" value="scatter" />
-            </el-select>
-            <span class="dqw-cfg-label">分组(X)</span>
-            <el-select
-              v-if="isOntologyMode"
-              v-model="chartOntX"
-              size="small"
-              filterable
-              placeholder="维度"
-              style="width: 150px"
-            >
-              <el-option-group v-if="menu?.timeDimensions.length" label="时间维度">
-                <el-option v-for="t in menu.timeDimensions" :key="t.name" :label="t.name" :value="t.name" />
-              </el-option-group>
-              <el-option v-for="d in menu?.dimensions || []" :key="d.name" :label="d.name" :value="d.name" />
-            </el-select>
-            <el-select v-else v-model="chartDim" size="small" filterable placeholder="维度列" style="width: 150px">
-              <el-option v-for="c in result?.columns || []" :key="c" :label="c" :value="c" />
-            </el-select>
-            <template v-if="!isOntologyMode">
-              <span class="dqw-cfg-label">系列</span>
-              <el-select v-model="chartSeries" size="small" filterable clearable placeholder="不分组" style="width: 130px">
-                <el-option v-for="c in seriesCols" :key="c" :label="c" :value="c" />
-              </el-select>
-            </template>
-            <span class="dqw-cfg-label">度量(Y)</span>
-            <el-select
-              v-if="isOntologyMode"
-              v-model="chartOntMeasures"
-              multiple
-              collapse-tags
-              collapse-tags-tooltip
-              filterable
-              size="small"
-              placeholder="度量"
-              style="width: 190px"
-            >
-              <el-option v-for="m in menu?.measures || []" :key="m.name" :label="m.name" :value="m.name" />
-            </el-select>
-            <el-select v-else v-model="chartMeasure" size="small" filterable placeholder="度量列" style="width: 150px">
-              <el-option v-for="c in result?.columns || []" :key="c" :label="c" :value="c" />
-            </el-select>
+      <div v-else class="dqw-chart-area">
+        <div class="dqw-chart-stage">
+          <div v-if="aggLoading" class="dqw-empty">聚合中…</div>
+          <div v-else-if="chartHint" class="dqw-empty">{{ chartHint }}</div>
+          <div v-else-if="!agg || !agg.points.length" class="dqw-empty">选一个「维度 + 指标」即可出图</div>
+          <div v-else class="dqw-canvas">
+            <DataChart ref="chartRef" :spec="chartSpec" :data="agg" />
           </div>
-          <div class="dqw-cfg-line">
-            <template v-if="!isOntologyMode">
-              <span class="dqw-cfg-label">聚合</span>
-              <el-select v-model="chartAgg" size="small" style="width: 92px">
-                <el-option label="计数" value="count" />
-                <el-option label="求和" value="sum" />
-                <el-option label="平均" value="avg" />
-                <el-option label="最小" value="min" />
-                <el-option label="最大" value="max" />
-              </el-select>
-            </template>
+        </div>
+        <!-- 图表下方常驻字段条：直接点标签切换（维度多选、指标多选），不再用下拉 -->
+        <div class="dqw-chart-fields">
+          <div class="dqw-field-row">
+            <span class="dqw-field-label">维度</span>
+            <div class="dqw-field-list">
+              <template v-if="isOntologyMode">
+                <button
+                  v-for="t in menu?.timeDimensions || []"
+                  :key="'t-' + t.name"
+                  type="button"
+                  class="dqw-pill"
+                  :class="{ on: chartOntX === t.name }"
+                  @click="pickOntX(t.name)"
+                >
+                  <span class="dqw-pill-box radio" />
+                  <span>{{ t.name }}</span>
+                </button>
+                <button
+                  v-for="d in menu?.dimensions || []"
+                  :key="'d-' + d.name"
+                  type="button"
+                  class="dqw-pill"
+                  :class="{ on: chartOntX === d.name }"
+                  @click="pickOntX(d.name)"
+                >
+                  <span class="dqw-pill-box radio" />
+                  <span>{{ d.name }}</span>
+                </button>
+                <span v-if="!menu?.timeDimensions.length && !menu?.dimensions.length" class="dqw-field-empty">无可用字段</span>
+              </template>
+              <template v-else>
+                <button
+                  v-for="c in chartDimOptions"
+                  :key="c"
+                  type="button"
+                  class="dqw-pill"
+                  :class="{ on: chartDimPick.includes(c) }"
+                  @click="toggleDim(c)"
+                >
+                  <span class="dqw-pill-box" :class="{ radio: chartCaps.dims === 'single' }">{{ chartDimPick.includes(c) && chartCaps.dims !== 'single' ? '✓' : '' }}</span>
+                  <span>{{ c }}</span>
+                </button>
+                <span v-if="!chartDimOptions.length" class="dqw-field-empty">无可用字段</span>
+              </template>
+            </div>
             <template v-if="isOntologyMode ? isOntTimeX : canGrain">
-              <span class="dqw-cfg-label">粒度</span>
-              <el-select v-if="isOntologyMode" v-model="chartOntGrain" size="small" style="width: 92px">
-                <el-option label="日" value="day" />
-                <el-option label="周" value="week" />
-                <el-option label="月" value="month" />
-                <el-option label="季" value="quarter" />
-                <el-option label="年" value="year" />
-              </el-select>
-              <el-select v-else v-model="chartGrain" size="small" clearable placeholder="原始" style="width: 92px">
-                <el-option label="日" value="day" />
-                <el-option label="周" value="week" />
-                <el-option label="月" value="month" />
-                <el-option label="季" value="quarter" />
-                <el-option label="年" value="year" />
-              </el-select>
+              <span class="dqw-field-label">粒度</span>
+              <div class="dqw-field-list dqw-field-list-tight">
+                <button
+                  v-if="!isOntologyMode"
+                  type="button"
+                  class="dqw-pill"
+                  :class="{ on: !chartGrain }"
+                  @click="chartGrain = ''"
+                >
+                  <span class="dqw-pill-box radio" />
+                  <span>原始</span>
+                </button>
+                <button
+                  v-for="g in grainOptions"
+                  :key="g.value"
+                  type="button"
+                  class="dqw-pill"
+                  :class="{ on: (isOntologyMode ? chartOntGrain : chartGrain) === g.value }"
+                  @click="pickGrain(g.value)"
+                >
+                  <span class="dqw-pill-box radio" />
+                  <span>{{ g.label }}</span>
+                </button>
+              </div>
             </template>
-            <span class="dqw-cfg-label">TopN</span>
-            <el-select v-model="chartTopN" size="small" clearable placeholder="不限" style="width: 84px">
-              <el-option v-for="n in [5, 10, 20, 50]" :key="n" :label="`前 ${n}`" :value="n" />
-            </el-select>
-            <el-checkbox v-model="chartPercent" size="small">占比</el-checkbox>
-            <el-button size="small" type="primary" :loading="aggLoading" @click="loadAgg">生成</el-button>
-            <el-button size="small" :disabled="!agg || !agg.points.length" @click="exportPng">导出 PNG</el-button>
+          </div>
+          <div class="dqw-field-row">
+            <span class="dqw-field-label">指标</span>
+            <div class="dqw-field-list">
+              <button
+                v-for="c in chartMeasureOptions"
+                :key="c"
+                type="button"
+                class="dqw-pill"
+                :class="{ on: isMeasurePicked(c) }"
+                @click="toggleMeasure(c)"
+              >
+                <span class="dqw-pill-box" :class="{ radio: chartCaps.measures === 'single' }">{{ isMeasurePicked(c) && chartCaps.measures !== 'single' ? '✓' : '' }}</span>
+                <span>{{ c }}</span>
+              </button>
+              <span v-if="!chartMeasureOptions.length" class="dqw-field-empty">无可用字段</span>
+            </div>
           </div>
         </div>
-        <div v-if="aggLoading" class="dqw-empty">聚合中…</div>
-        <div v-else-if="!agg || !agg.points.length" class="dqw-empty">请设 X/Y 后点「生成」，在当前过滤下展示分组聚合</div>
-        <div v-else class="dqw-canvas">
-          <DataChart ref="chartRef" :spec="chartSpec" :data="agg" />
-        </div>
-      </template>
+      </div>
     </div>
     <!-- 钉到看板 -->
     <el-dialog v-model="pinOpen" title="钉到看板" width="380px" append-to-body>
@@ -330,16 +372,16 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue';
-import { Close } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
+import { Aim, DataLine, Document, Download, Filter, Grid, Histogram, PieChart, Star, Tickets, TrendCharts } from '@element-plus/icons-vue';
 import { api } from '../../api/client';
 import type { DataTabContract } from '../../stores/chat';
 import { useDashboardStore } from '../../stores/dashboard';
 import { useChat } from '../../composables/chat/useChat';
-import type { DashboardWidget } from '@yan-zhi/shared';
+import type { DashboardWidget, InlineDataViewChart } from '@yan-zhi/shared';
 import type { ChartData, ChartKind, ChartSpec } from './chart-spec';
 import { buildOntologyIntent, ontologyRowsToChartData } from './ontology-view';
-import { formatCell, inferColumnMeta } from '../../utils/table-meta';
+import { formatCell, inferColumnMeta, splitColumnRoles } from '../../utils/table-meta';
 import type { DocxBlock } from '../../utils/report-docx';
 import type { XlsxSheet } from '../../utils/report-xlsx';
 
@@ -353,13 +395,21 @@ interface RunResp {
 }
 interface FilterSampleMap { [col: string]: { kind: string; values?: Array<{ label: string; raw: unknown }> } }
 
-const props = defineProps<{ contract: DataTabContract }>();
+/** embedded = 被聊天卡片（含外层标题条）包裹时，不再重复渲染标题
+ *  messageId = 所在的助手消息（内嵌在某一轮消息里时传入）：导出的 PNG/Excel/Word
+ *  登记交付文件时带上，交付卡片才能精确挂到那一轮（2026-10-27「三个交付文件只显示一个」）。 */
+const props = withDefaults(defineProps<{ contract: DataTabContract; embedded?: boolean; messageId?: string }>(), { embedded: false });
 
-const viewModes = [
-  { key: 'table', label: '表格' },
-  { key: 'chart', label: '图表' },
+/** 视图 = 表格 / 各类图表：hover 下拉统一切换（图种与视图不再分两处） */
+const viewOptions = [
+  { key: 'table', label: '表格', icon: Grid },
+  { key: 'line', label: '折线图', icon: TrendCharts },
+  { key: 'bar', label: '柱状图', icon: Histogram },
+  { key: 'pie', label: '饼图', icon: PieChart },
+  { key: 'area', label: '面积图', icon: DataLine },
+  { key: 'scatter', label: '散点图', icon: Aim },
 ] as const;
-type Mode = typeof viewModes[number]['key'];
+type Mode = 'table' | 'chart';
 
 const mode = ref<Mode>('table');
 const result = ref<RunResp | null>(null);
@@ -373,15 +423,15 @@ const sort = ref<{ col: string; dir: 'asc' | 'desc' } | null>(null);
 const samples = ref<FilterSampleMap>({});
 const filterVals = ref<Record<string, string>>({});
 const activeFilterCols = ref<string[]>([]);
-// 可加过滤的列 = 全部列，逐个点击时才去采样控制类型与候选
-function addableCols() { return result.value?.columns || []; }
+// 可加过滤的列 = 全部列（过滤器由契约声明，不在这里增删）
 
 const sourceLabel = computed(() =>
   props.contract.mode === 'ontology'
     ? (menu.value?.name || props.contract.ontology || '本体')
     : props.contract.table
       ? `表 ${props.contract.table}`
-      : (props.contract.base ? (props.contract.base as string).replace(/\s+/g, ' ').slice(0, 40) : '项目库'));
+      // ★ 不再把 base SQL 贴到标题栏：那是一串英文 SQL，用户既看不懂也没必要看
+      : (props.contract.title || '查询结果'));
 const initialFilterCols = computed(() => props.contract.filterCols || []);
 
 // ===== 本体模式（mode=ontology）：按业务字段名取数，不暴露自由 SQL）=====
@@ -399,8 +449,6 @@ interface OntMenu {
 }
 
 const isOntologyMode = computed(() => props.contract.mode === 'ontology');
-// 本体模式同样支持表格/图表：图表直接用本体取数结果（已按维度聚合）搭 ChartData
-const modeOptions = viewModes;
 
 const ontologies = ref<Array<{ code: string; name: string; description?: string }>>([]);
 const ontologyRef = ref(props.contract.ontology || '');
@@ -520,29 +568,9 @@ function displayName(col: string) { return col; }
 function hasEnum(col: string) { return !!(samples.value[col] && (samples.value[col].values || []).length); }
 function enumOptions(col: string) { return (samples.value[col]?.values || []); }
 
-/** 从候选列里挑选想加为过滤器的列 */
-async function applyAddColumn(col: string) {
-  if (!col || activeFilterCols.value.includes(col)) return;
-  activeFilterCols.value.push(col);
-  filterVals.value[col] = '';
-  // 针对新列只采一次样（其余沿用本轮 result），再分页触发一次
-  loading.value = true; error.value = '';
-  const body = queryBody();
-  if (!body) { error.value = '契约缺少 table 或 base'; loading.value = false; return; }
-  body.page = 1; body.pageSize = pageSize.value;
-  body.sampleFilters = [col];
-  const resp = await api.post<RunResp>('/query-contract/run', body);
-  loading.value = false;
-  if ('error' in resp) { error.value = String(resp.error); return; }
-  if (resp.data.filterSamples) for (const s of resp.data.filterSamples) samples.value[s.col] = { kind: s.kind, values: s.values };
-}
-function removeFilter(col: string) {
-  activeFilterCols.value = activeFilterCols.value.filter((c) => c !== col);
-  delete filterVals.value[col];
-  void runQuery({ page: 1 });
-}
+/** 清空已选值（过滤器本身是契约声明，不可移除） */
 function clearFilters() {
-  activeFilterCols.value = []; filterVals.value = {};
+  for (const k of Object.keys(filterVals.value)) filterVals.value[k] = '';
   void runQuery({ page: 1 });
 }
 function onEnumChange(col: string, val: string) {
@@ -559,9 +587,13 @@ type Grain = 'day' | 'week' | 'month' | 'quarter' | 'year';
 
 const chartRef = ref<InstanceType<typeof DataChart> | null>(null);
 const chartKind = ref<ChartKind>('line');
-const chartDim = ref('');
-const chartSeries = ref('');
-const chartMeasure = ref('');
+/** 维度可多选：第 1 个作 X，第 2 个作系列（更多维度暂不使用） */
+const chartDimPick = ref<string[]>([]);
+/** 指标可多选：每个指标一条系列 */
+const chartMeasurePick = ref<string[]>([]);
+const chartDim = computed(() => chartDimPick.value[0] || '');
+const chartSeries = computed(() => chartDimPick.value[1] || '');
+const chartMeasure = computed(() => chartMeasurePick.value[0] || '');
 const chartAgg = ref<'count' | 'sum' | 'avg' | 'min' | 'max'>('sum');
 const chartGrain = ref<'' | Grain>('');
 const chartTopN = ref<number | ''>('');
@@ -574,6 +606,75 @@ const chartOntX = ref('');
 const chartOntMeasures = ref<string[]>([]);
 const chartOntGrain = ref<Grain>('day');
 const isOntTimeX = computed(() => !!menu.value?.timeDimensions.some((t) => t.name === chartOntX.value));
+
+// ===== 图表下方常驻字段条：点标签直接切换（维度/指标多选，粒度为单选） =====
+/** 图型能力：饼图只能一个维度 + 一个指标；折线/柱状/面积/散点支持多指标、两个维度（第 2 个拆系列） */
+interface ChartCaps { measures: 'single' | 'multi'; dims: 'single' | 'two' }
+const CHART_CAPS: Record<ChartKind, ChartCaps> = {
+  line: { measures: 'multi', dims: 'two' },
+  area: { measures: 'multi', dims: 'two' },
+  bar: { measures: 'multi', dims: 'two' },
+  scatter: { measures: 'multi', dims: 'two' },
+  pie: { measures: 'single', dims: 'single' },
+};
+const chartCaps = computed<ChartCaps>(() => CHART_CAPS[chartKind.value] ?? { measures: 'multi', dims: 'two' });
+
+/** 切换图型后把超出的选择收回去（切到饼图时多选的指标/维度要收敛成单选，否则选了不生效） */
+function clampChartSelection(): void {
+  const caps = chartCaps.value;
+  if (caps.measures === 'single') {
+    if (chartMeasurePick.value.length > 1) chartMeasurePick.value = [chartMeasurePick.value[0]];
+    if (chartOntMeasures.value.length > 1) chartOntMeasures.value = [chartOntMeasures.value[0]];
+  }
+  if (caps.dims === 'single' && chartDimPick.value.length > 1) {
+    chartDimPick.value = [chartDimPick.value[0]];
+  }
+}
+
+const grainOptions: Array<{ value: Grain; label: string }> = [
+  { value: 'day', label: '日' },
+  { value: 'week', label: '周' },
+  { value: 'month', label: '月' },
+  { value: 'quarter', label: '季' },
+  { value: 'year', label: '年' },
+];
+
+/** 非本体维度最多两个：第 1 个作 X，第 2 个作系列；选第三个时替换系列位。单选图型直接替换 */
+function toggleDim(col: string): void {
+  const cur = chartDimPick.value;
+  if (chartCaps.value.dims === 'single') {
+    chartDimPick.value = cur[0] === col ? [] : [col];
+    return;
+  }
+  if (cur.includes(col)) {
+    chartDimPick.value = cur.filter((x) => x !== col);
+    return;
+  }
+  chartDimPick.value = cur.length < 2 ? [...cur, col] : [cur[0], col];
+}
+
+function isMeasurePicked(col: string): boolean {
+  return (isOntologyMode.value ? chartOntMeasures.value : chartMeasurePick.value).includes(col);
+}
+
+function toggleMeasure(col: string): void {
+  const cur = isOntologyMode.value ? chartOntMeasures.value : chartMeasurePick.value;
+  // 单指标图型（饼图）：再点已选项取消，点其它项替换
+  const next = chartCaps.value.measures === 'single'
+    ? (cur[0] === col ? [] : [col])
+    : (cur.includes(col) ? cur.filter((x) => x !== col) : [...cur, col]);
+  if (isOntologyMode.value) chartOntMeasures.value = next;
+  else chartMeasurePick.value = next;
+}
+
+function pickOntX(name: string): void {
+  chartOntX.value = name;
+}
+
+function pickGrain(g: Grain): void {
+  if (isOntologyMode.value) chartOntGrain.value = g;
+  else chartGrain.value = chartGrain.value === g ? '' : g;
+}
 // 切到本体模式时，把栏里已选的时间/维度/度量带进图表配置，少点两下
 watch(isOntologyMode, (on) => {
   if (!on) return;
@@ -581,7 +682,40 @@ watch(isOntologyMode, (on) => {
   if (!chartOntMeasures.value.length) chartOntMeasures.value = [...ontMeasures.value];
 }, { immediate: true });
 
-const seriesCols = computed(() => (result.value?.columns || []).filter((c) => c !== chartDim.value));
+/**
+ * 列角色：数值列 = 度量，文本/日期/ID/布尔 = 维度（空列两边都不要）。
+ * ★ 图表必须按「指标 × 维度」画：此前把任意列塞进 Y（截图里 Y=类型 文本列 → 全画成 1）。
+ */
+const columnRoles = computed(() => splitColumnRoles(result.value?.columns || [], result.value?.rows || []));
+const chartDimOptions = computed(() => (isOntologyMode.value
+  ? [...(menu.value?.timeDimensions || []), ...(menu.value?.dimensions || [])].map((x) => x.name)
+  : columnRoles.value.dims));
+const chartMeasureOptions = computed(() => (isOntologyMode.value
+  ? (menu.value?.measures || []).map((m) => m.name)
+  : columnRoles.value.measures));
+/** 图表缺数值指标时的说明：别让用户拿文本列当 Y 画出一排 1 */
+const chartHint = computed(() => {
+  if (isOntologyMode.value) return '';
+  if (result.value?.columns.length && !columnRoles.value.measures.length) {
+    return '当前结果没有数值列（指标）：先用聚合（COUNT/SUM 等）取到数值列，再切图表';
+  }
+  return '';
+});
+
+/** 图表配置的默认值只在「没选或选了非法列」时收敛，不覆盖用户手选 */
+function seedChartDefaults(): void {
+  if (isOntologyMode.value) {
+    if (!chartOntX.value) chartOntX.value = ontTime.value || ontDims.value[0] || '';
+    if (!chartOntMeasures.value.length) chartOntMeasures.value = [...ontMeasures.value];
+    return;
+  }
+  const { dims, measures } = columnRoles.value;
+  const pickedDims = chartDimPick.value.filter((c) => dims.includes(c)).slice(0, 2);
+  chartDimPick.value = pickedDims.length ? pickedDims : (dims[0] ? [dims[0]] : []);
+  const pickedMeasures = chartMeasurePick.value.filter((c) => measures.includes(c));
+  chartMeasurePick.value = pickedMeasures.length ? pickedMeasures : (measures[0] ? [measures[0]] : []);
+}
+watch([() => result.value, mode], () => { if (mode.value === 'chart') seedChartDefaults(); });
 
 /** 只有看起来像日期的列才给时间粒度，避免对普通字符串做 dateTrunc 全变空 */
 const DATE_DIM_RE = /(_at$|_date$|date|time|day|month|year|created|updated)/i;
@@ -592,9 +726,68 @@ const chartSpec = computed<ChartSpec>(() => ({
   kind: chartKind.value,
   dim: isOntologyMode.value ? chartOntX.value : chartDim.value,
   measure: isOntologyMode.value ? (chartOntMeasures.value[0] || '') : chartMeasure.value,
+  measures: isOntologyMode.value ? [...chartOntMeasures.value] : [...chartMeasurePick.value],
   ...(isOntologyMode.value || !chartSeries.value ? {} : { series: chartSeries.value }),
+  ...(isOntologyMode.value ? {} : { agg: chartAgg.value }),
+  ...(chartTopN.value ? { topN: Number(chartTopN.value) } : {}),
+  ...(isOntologyMode.value
+    ? (isOntTimeX.value ? { timeGrain: chartOntGrain.value } : {})
+    : (chartGrain.value ? { timeGrain: chartGrain.value } : {})),
   percent: chartPercent.value,
 }));
+
+/** 落到契约里的图表配置（刷新 / 换设备 / 新建看板共用这一份口径） */
+function chartOfSpec(s: ChartSpec): InlineDataViewChart {
+  return {
+    kind: s.kind,
+    dim: s.dim,
+    ...(s.measure ? { measure: s.measure } : {}),
+    ...(s.measures?.length ? { measures: [...s.measures] } : {}),
+    ...(s.series ? { series: s.series } : {}),
+    ...(s.timeGrain ? { timeGrain: s.timeGrain } : {}),
+    ...(s.agg ? { agg: s.agg } : {}),
+    ...(s.topN ? { topN: s.topN } : {}),
+    ...(s.percent ? { percent: true } : {}),
+  };
+}
+
+/**
+ * 图表配置变化 → 写回契约消息（防抖 400ms）。
+ * 与契约里已有的配置相同就不重复请求（恢复视图时也会走到这里）。
+ */
+let chartPersistTimer: ReturnType<typeof setTimeout> | null = null;
+watch(chartSpec, (s) => {
+  if (mode.value !== 'chart') return;
+  if (!s.dim || !(s.measures?.length || s.measure)) return;
+  const chart = chartOfSpec(s);
+  if (props.contract.chart && JSON.stringify(props.contract.chart) === JSON.stringify(chart)) return;
+  if (chartPersistTimer) clearTimeout(chartPersistTimer);
+  chartPersistTimer = setTimeout(() => {
+    chartPersistTimer = null;
+    chatStore.persistDataViewChart(props.contract, chart);
+  }, 400);
+});
+
+/** 契约里已保存过图表：直接按图表打开（刷新后保持用户上次的选择） */
+function applyContractChart(): void {
+  const c = props.contract.chart;
+  if (!c || !c.dim) return;
+  chartKind.value = (c.kind as ChartKind) || 'line';
+  const measures = c.measures?.length ? [...c.measures] : (c.measure ? [c.measure] : []);
+  if (isOntologyMode.value) {
+    chartOntX.value = c.dim;
+    chartOntMeasures.value = measures;
+    if (c.timeGrain) chartOntGrain.value = c.timeGrain as Grain;
+  } else {
+    chartDimPick.value = [c.dim, ...(c.series ? [c.series] : [])];
+    chartMeasurePick.value = measures;
+    chartGrain.value = (c.timeGrain as Grain) || '';
+    chartTopN.value = c.topN || '';
+    chartPercent.value = c.percent === true;
+  }
+  mode.value = 'chart';
+  clampChartSelection();
+}
 
 async function loadOntologyAgg(): Promise<void> {
   if (!ontologyRef.value) { error.value = '请选择本体'; return; }
@@ -633,6 +826,7 @@ async function loadAgg() {
   body.page = 1; body.pageSize = 0;
   body.dim = chartDim.value;
   body.measureCol = chartMeasure.value;
+  if (chartMeasurePick.value.length > 1) body.measureCols = [...chartMeasurePick.value];
   body.agg = chartAgg.value;
   if (chartSeries.value) body.series = chartSeries.value;
   if (chartGrain.value) body.timeGrain = chartGrain.value;
@@ -644,15 +838,18 @@ async function loadAgg() {
   agg.value = resp.data;
 }
 
-function exportPng() {
+const PNG_KIND = { mimeType: 'image/png', label: 'PNG' };
+
+/** PNG 与 Word/Excel 走同一条交付通道：桌面端落「交付文件」目录并登记，Web 端下载 */
+async function exportPng() {
   const url = chartPng();
-  if (!url) { error.value = '图表尚未就绪，先点「生成」'; return; }
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${props.contract.title || props.contract.table || 'chart'}.png`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  if (!url) { error.value = '图表尚未就绪'; return; }
+  const base64 = url.slice(url.indexOf(',') + 1);
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const { saveDeliverableBytes, safeFileName } = await import('../../utils/deliverable-save');
+  await saveDeliverableBytes(bytes, safeFileName(exportTitle.value, 'chart') + '.png', PNG_KIND, { messageId: props.messageId });
 }
 
 // ===== 导出 Word / Excel =====
@@ -745,7 +942,7 @@ async function exportExcel() {
       import('../../utils/deliverable-save'),
     ]);
     const bytes = await buildWorkbookXlsx(sheets);
-    await saveDeliverableBytes(bytes, safeFileName(exportTitle.value, '数据导出') + '.xlsx', XLSX_KIND);
+    await saveDeliverableBytes(bytes, safeFileName(exportTitle.value, '数据导出') + '.xlsx', XLSX_KIND, { messageId: props.messageId });
   } catch (e: any) {
     error.value = '导出失败：' + (e?.message || e);
   } finally {
@@ -764,10 +961,12 @@ async function exportWord() {
 
     const png = agg.value?.points.length ? chartPng() : '';
     if (png) {
+      const dimName = isOntologyMode.value ? chartOntX.value : chartDim.value;
+      const metricNames = (isOntologyMode.value ? chartOntMeasures.value : chartMeasurePick.value).join(' / ');
       blocks.push({
         type: 'image',
         dataUrl: png,
-        caption: `图 1  ${chartDim.value} × ${chartMeasure.value}（${chartKindLabel()}）`,
+        caption: `图 1  ${dimName} × ${metricNames || chartMeasure.value}（${chartKindLabel()}）`,
       });
     }
 
@@ -787,7 +986,7 @@ async function exportWord() {
     ]);
     const blob = await buildReportDocx({ title: exportTitle.value, subtitle: sourceLabel.value, blocks });
     const name = safeFileName(exportTitle.value, '数据导出') + '.docx';
-    await saveDeliverableBytes(new Uint8Array(await blob.arrayBuffer()), name, DOCX_KIND);
+    await saveDeliverableBytes(new Uint8Array(await blob.arrayBuffer()), name, DOCX_KIND, { messageId: props.messageId });
   } catch (e: any) {
     error.value = '导出失败：' + (e?.message || e);
   } finally {
@@ -827,7 +1026,7 @@ function pinnedWidget(): DashboardWidget {
     ? `dw_${crypto.randomUUID()}`
     : `dw_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const dim = isOntologyMode.value ? chartOntX.value : chartDim.value;
-  const measures = isOntologyMode.value ? [...chartOntMeasures.value] : (chartMeasure.value ? [chartMeasure.value] : []);
+  const measures = isOntologyMode.value ? [...chartOntMeasures.value] : [...chartMeasurePick.value];
   return {
     id,
     kind: hasChart ? 'chart' : 'table',
@@ -865,18 +1064,60 @@ async function doPin() {
   ElMessage.success('已钉入看板');
 }
 
-function setMode(m: Mode) {
-  mode.value = m;
-  if (m !== 'chart') return;
-  const cols = result.value?.columns || [];
-  if (!chartDim.value) chartDim.value = cols.find((c) => !/^(id|_id)$/i.test(c)) || cols[0] || '';
-  if (!chartMeasure.value) {
-    chartMeasure.value = cols.find((c) => c !== chartDim.value && !/^created|updated|_at$/i.test(c))
-      || cols.find((c) => c !== chartDim.value)
-      || '';
-  }
-  if (chartDim.value && chartMeasure.value && !agg.value && !aggLoading.value) void loadAgg();
+/** 视图下拉：表格 ↔ 各图表类型；切到图表即按当前维度/指标自动出图 */
+const viewKind = computed<string>({
+  get: () => (mode.value === 'table' ? 'table' : chartKind.value),
+  set: (v) => {
+    if (v === 'table') { mode.value = 'table'; return; }
+    chartKind.value = v as ChartKind;
+    mode.value = 'chart';
+    clampChartSelection();
+    seedChartDefaults();
+  },
+});
+
+/** hover 菜单：视图切换 / 更多操作（钉看板 + 导出），点一下也保持展开（触屏可用） */
+const viewOpen = ref(false);
+const actionsOpen = ref(false);
+const currentView = computed(() => viewOptions.find((v) => v.key === viewKind.value) || viewOptions[0]);
+function pickView(key: string): void {
+  viewKind.value = key;
+  viewOpen.value = false;
 }
+function runAction(fn: () => unknown): void {
+  actionsOpen.value = false;
+  void fn();
+}
+
+let aggTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleAgg(): void {
+  if (mode.value !== 'chart') return;
+  const ready = isOntologyMode.value
+    ? !!chartOntX.value && chartOntMeasures.value.length > 0
+    : !!chartDim.value && !!chartMeasure.value;
+  // 全部取消勾选时把旧图清掉，否则会停在上一次的结果上（看起来像选择没生效）
+  if (!ready) { agg.value = null; return; }
+  if (aggTimer) clearTimeout(aggTimer);
+  aggTimer = setTimeout(() => { void loadAgg(); }, 250);
+}
+// ★ 必须监听「多选数组」本身：只监听 chartDim/chartMeasure（第一项）时，
+//   加第二个指标/维度不会触发重查 ⇒ 永远停在单系列（用户实报「多个指标就一条线」）。
+watch(
+  () => [
+    chartDimPick.value.join('\u0001'),
+    chartMeasurePick.value.join('\u0001'),
+    chartKind.value,
+    chartGrain.value,
+    chartAgg.value,
+    chartTopN.value,
+    chartPercent.value,
+    mode.value,
+    // 恢复出的图表配置可能早于首屏明细返回：结果到了要补一次聚合，否则图上空白
+    result.value,
+  ],
+  scheduleAgg,
+);
+watch([chartOntX, chartOntMeasures, chartOntGrain], scheduleAgg);
 
 watch(() => props.contract, () => { resetAll(); }, { deep: true });
 function resetAll() {
@@ -884,8 +1125,9 @@ function resetAll() {
   filterVals.value = {}; activeFilterCols.value = initialFilterCols.value.slice();
   page.value = 1; sort.value = null; error.value = '';
   agg.value = null; aggLoading.value = false;
-  chartKind.value = 'line'; chartDim.value = ''; chartSeries.value = ''; chartMeasure.value = '';
+  chartKind.value = 'line'; chartDimPick.value = []; chartMeasurePick.value = [];
   chartAgg.value = 'sum'; chartGrain.value = ''; chartTopN.value = ''; chartPercent.value = false;
+  applyContractChart();
   loading.value = false;
   if (isOntologyMode.value) { void loadOntologies(); return; }
   // 有声明过滤器 → 采样 + 带首页数据；无 → 直接首页
@@ -911,53 +1153,155 @@ onMounted(() => { resetAll(); });
 
 <style scoped>
 .dqw-root { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.dqw-toolbar { flex: 0 0 auto; padding: 10px 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
-.dqw-head { display: flex; align-items: center; gap: 10px; }
+.dqw-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 6px 12px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .dqw-source { font-weight: 600; color: var(--color-text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dqw-dialect-tag { font-size: 11px; color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 12%, transparent); padding: 1px 6px; border-radius: 4px; }
-.dqw-count { font-size: 12px; color: var(--color-text-secondary); }
-.dqw-viewbar { display: flex; gap: 6px; margin-top: 8px; }
-.dqw-view-btn { border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--color-text-secondary); padding: 3px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s; }
-.dqw-view-btn:hover { background: var(--btn-bg-hover); color: var(--color-text); }
-.dqw-view-btn.on { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }
-.dqw-colsel { width: 180px; margin-left: auto; }
-.dqw-export { display: flex; gap: 6px; margin-left: auto; }
-.dqw-export :deep(.el-button + .el-button) { margin-left: 0; }
+.dqw-count { font-size: 12px; color: var(--color-text-tertiary); flex: none; }
+.dqw-dialect-tag { font-size: 11px; color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 12%, transparent); padding: 1px 6px; border-radius: 4px; flex: none; }
+.dqw-toolbar-right { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: none; }
+.dqw-colsel { width: 170px; }
+
+/* hover 下拉：视图切换 / 更多操作（对齐 harness 的轻量触发按钮） */
+.dqw-viewswitch, .dqw-menu-wrap { position: relative; flex: none; }
+.dqw-trigger { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border: 1px solid var(--el-border-color); border-radius: 7px; background: var(--el-fill-color-blank); color: var(--color-text-secondary); font-size: 12px; cursor: pointer; transition: background .15s, border-color .15s, color .15s; white-space: nowrap; }
+.dqw-trigger:hover, .dqw-trigger.open { background: color-mix(in srgb, var(--el-color-primary) 8%, transparent); border-color: color-mix(in srgb, var(--el-color-primary) 45%, transparent); color: var(--el-color-primary); }
+.dqw-trigger-icon { font-size: 14px; }
+/* 拆分按钮：左半直接导出 Excel，右半展开其它导出方式 */
+.dqw-split { display: inline-flex; align-items: stretch; }
+.dqw-split-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.dqw-split-caret { border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; padding: 0 5px; }
+.dqw-split-main:disabled { color: var(--color-text-tertiary); cursor: default; }
+.dqw-caret { font-size: 10px; line-height: 1; color: var(--color-text-tertiary); transition: transform .15s; }
+.dqw-caret.open { transform: rotate(180deg); }
+.dqw-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 132px; padding: 4px; border-radius: 8px; border: 1px solid var(--el-border-color-lighter); background: var(--el-bg-color-overlay); box-shadow: 0 10px 24px rgba(15, 23, 42, .12), 0 2px 6px rgba(15, 23, 42, .06); }
+/* hover 菜单与触发按钮之间有 4px 间隙：补一条透明桥，鼠标穿过去不会误关 */
+.dqw-pop::before { content: ''; position: absolute; left: 0; right: 0; top: -6px; height: 6px; }
+.dqw-actions-menu { left: auto; right: 0; min-width: 148px; }
+.dqw-pop-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-secondary); font-size: 12px; line-height: 1.5; text-align: left; cursor: pointer; white-space: nowrap; }
+.dqw-pop-item:hover:not(:disabled) { background: var(--el-fill-color-light); color: var(--color-text); }
+.dqw-pop-item.on { color: var(--el-color-primary); font-weight: 600; background: color-mix(in srgb, var(--el-color-primary) 8%, transparent); }
+.dqw-pop-item:disabled { color: var(--color-text-disabled, #c0c4cc); cursor: default; }
+.dqw-pop-check { margin-left: auto; font-size: 11px; color: var(--el-color-primary); }
+.dqw-pop-sep { margin-top: 4px; border-top: 1px solid var(--el-border-color-lighter); border-radius: 0 0 6px 6px; padding-top: 7px; }
 .dqw-pin { display: flex; flex-direction: column; gap: 8px; }
 .dqw-pin-new { display: flex; gap: 6px; align-items: center; }
 .dqw-pin-tip { font-size: 11px; color: var(--color-text-tertiary); line-height: 1.5; }
 .dqw-ont { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 14px; border-bottom: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-lighter); }
 .dqw-ont-desc { font-size: 11px; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+/* 表格：去掉斑马纹与竖线，只留浅横线 + hover 高亮；数字等宽便于纵向比对 */
 .dqw-table :deep(.el-table__header-wrapper th.el-table__cell) {
-  background: var(--el-fill-color-lighter);
+  background: var(--el-fill-color-light);
   font-weight: 600;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  height: 36px;
+  padding: 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.dqw-table :deep(.el-table__cell) { padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter); transition: background .12s ease; }
+.dqw-table :deep(.cell) {
+  font-size: 12.5px;
+  line-height: 1.5;
   color: var(--color-text);
+  padding: 0 14px;
+  font-variant-numeric: tabular-nums;
 }
-.dqw-table :deep(.el-table__cell) { padding: 4px 0; }
-.dqw-table :deep(.cell) { font-size: 12px; line-height: 1.5; }
 .dqw-table :deep(.el-table__row:hover > td.el-table__cell) {
-  background: color-mix(in srgb, var(--el-color-primary) 6%, transparent);
+  background: color-mix(in srgb, var(--el-color-primary) 5%, transparent);
 }
-.dqw-table :deep(.el-table__row--striped td.el-table__cell) {
-  background: var(--el-fill-color-lighter);
+.dqw-table :deep(.el-table__row.current-row > td.el-table__cell) {
+  background: color-mix(in srgb, var(--el-color-primary) 8%, transparent);
 }
-.dqw-filters { flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--el-border-color-lighter); align-items: flex-start; flex-wrap: wrap; background: var(--el-fill-color-lighter); }
-.dqw-filter-label { font-size: 12px; color: var(--color-text-secondary); padding-top: 5px; }
-.dqw-filter-controls { display: flex; flex-wrap: wrap; gap: 8px; }
-.dqw-filter-item { display: flex; align-items: center; gap: 4px; border: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-blank); border-radius: 6px; padding: 1px 2px 1px 6px; }
-.dqw-filter-name { font-size: 12px; color: var(--color-text); font-weight: 600; }
-.dqw-input :deep(.el-input__wrapper), .dqw-input { font-size: 12px; }
-.dqw-input { width: 150px; }
-.dqw-add { width: 130px; }
+/* Element Plus 默认在表格底部画一条 1px 线，这里已有边框，去掉避免双线 */
+.dqw-table :deep(.el-table__inner-wrapper::before) { display: none; }
+.dqw-table :deep(.caret-wrapper) { opacity: .4; }
+.dqw-table :deep(th.el-table__cell:hover .caret-wrapper) { opacity: 1; }
+
+/* 过滤器：一行轻量 chip，不再用裸 select 撑一个大方框 */
+.dqw-filters { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-lighter); flex-wrap: wrap; }
+.dqw-filter-label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-text-tertiary); flex: none; }
+.dqw-filter-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.dqw-filter-item { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 2px 0 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 7px; background: var(--el-bg-color); transition: border-color .15s, background .15s; }
+.dqw-filter-item:hover { border-color: var(--el-border-color); }
+.dqw-filter-item.active { border-color: color-mix(in srgb, var(--el-color-primary) 35%, transparent); background: color-mix(in srgb, var(--el-color-primary) 4%, transparent); }
+.dqw-filter-name { font-size: 12px; color: var(--color-text-secondary); font-weight: 600; white-space: nowrap; }
+.dqw-filter-clear { color: var(--color-text-tertiary); padding: 0 2px; }
+.dqw-input { width: 132px; }
+.dqw-input :deep(.el-input__wrapper),
+.dqw-input :deep(.el-select__wrapper) { box-shadow: none !important; background: transparent; padding: 0 4px; }
+.dqw-input :deep(.el-input__inner),
+.dqw-input :deep(.el-select__selected-item) { font-size: 12px; }
+.dqw-input :deep(.el-select__wrapper) { min-height: 24px; }
 .dqw-body { flex: 1 1 auto; min-height: 0; position: relative; }
 .dqw-body.scrolling { overflow: hidden; }
 .dqw-table { height: 100%; }
 .dqw-pagebar { flex: 0 0 auto; padding: 6px 0; border-top: 1px solid var(--el-border-color-lighter); display: flex; justify-content: flex-end; }
 .dqw-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--color-text-tertiary); font-size: 13px; padding: 24px; }
 .dqw-error { flex: 0 0 auto; color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 8%, transparent); border-left: 3px solid var(--color-danger); padding: 6px 10px; font-size: 12px; white-space: pre-wrap; }
-.dqw-chart-cfg { padding: 8px 14px; border-bottom: 1px solid var(--el-border-color-lighter); }
-.dqw-cfg-line { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.dqw-chart-area { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+/* 图表下方常驻字段条：直接点标签切换，不占画布空间也不藏在下拉里 */
+.dqw-chart-fields {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px 8px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  background: var(--el-bg-color);
+}
+.dqw-field-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dqw-field-label { flex: none; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); white-space: nowrap; }
+.dqw-field-list { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; overflow-x: auto; padding: 3px 0; scrollbar-width: thin; }
+.dqw-field-list-tight { flex: 0 0 auto; overflow: visible; padding-left: 4px; }
+.dqw-field-empty { font-size: 12px; color: var(--color-text-tertiary); }
+.dqw-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 3px 9px 3px 7px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, color .16s ease;
+}
+.dqw-pill:hover { background: var(--el-fill-color-light); color: var(--color-text); }
+.dqw-pill.on {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--el-color-primary) 38%, transparent);
+  background: color-mix(in srgb, var(--el-color-primary) 8%, transparent);
+  color: var(--el-color-primary);
+  font-weight: 600;
+}
+.dqw-pill-box {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--el-border-color);
+  border-radius: 3px;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--el-color-primary);
+  transition: border-color .16s ease;
+}
+.dqw-pill-box.radio { border-radius: 50%; }
+.dqw-pill.on .dqw-pill-box { border-color: var(--el-color-primary); }
+.dqw-pill.on .dqw-pill-box.radio::after {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--el-color-primary);
+}
+.dqw-chart-stage { flex: 1 1 auto; min-height: 0; position: relative; }
 .dqw-cfg-label { font-size: 12px; color: var(--color-text-secondary); flex: 0 0 auto; }
-.dqw-canvas { height: 100%; display: flex; align-items: stretch; justify-content: center; padding: 10px 12px 6px; box-sizing: border-box; min-height: 260px; }
-.dqw-canvas > * { flex: 1 1 auto; min-height: 240px; }
+.dqw-canvas { height: 100%; display: flex; align-items: stretch; justify-content: center; padding: 6px 12px 2px; box-sizing: border-box; min-height: 200px; }
+.dqw-canvas > * { flex: 1 1 auto; min-height: 180px; }
 </style>

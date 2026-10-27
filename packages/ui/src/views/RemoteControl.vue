@@ -161,7 +161,7 @@
 
       <!-- 自绘光标 + 点按反馈：比跟随帧更跟手，单击时给一个明确的光圈 -->
       <div v-if="linkKind !== 'android'" class="rc-cursor" :class="{ pressed: cursorPressed }" :style="cursorStyle">
-        <svg width="26" height="34" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#111" stroke-width="1.2"/></svg>
+        <svg width="22" height="28" viewBox="0 0 18 24"><path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L16 13 Z" fill="#fff" stroke="#111" stroke-width="1.2"/></svg>
       </div>
       <div v-if="fx.visible" class="rc-tap-fx" :class="fx.button" :style="fxStyle"></div>
 
@@ -287,14 +287,7 @@
             @pointerdown.stop="onPadPointerDown" @pointermove.stop="onPadPointerMove"
             @pointerup.stop="onPadPointerUp" @pointercancel.stop="onPadPointerCancel"
           >
-            <svg class="rc-pad-glyph" viewBox="0 0 120 120" aria-hidden="true">
-              <rect x="34" y="14" width="52" height="76" rx="26" fill="none" stroke="currentColor" stroke-width="3.2"/>
-              <path d="M60 22v26" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
-              <path d="M56 20l4-5 4 5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
-              <path d="M56 52l4 5 4-5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity=".55"/>
-              <rect x="46" y="58" width="12" height="18" rx="6" fill="currentColor" opacity=".22"/>
-              <path d="M22 96l8-6M90 96l-8-6M60 82v10" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".45"/>
-            </svg>
+            <div class="rc-pad-focus" :class="{ on: padActive }"></div>
             <div v-if="padActive" class="rc-pad-dot" :style="{ left: `${padTouch.x}px`, top: `${padTouch.y}px` }"></div>
             <div class="rc-pad-hint">拖动移动指针 · 点按左键 · 双指滚动 · 长按右键</div>
           </div>
@@ -1321,6 +1314,12 @@ watch(phase, (p) => {
   gesture.reset();
   padGesture.reset();
   if (mouseMode.value) initMousePos();
+  // ★ 移动端进会话即沉浸（UU 口径）：App 壳里直接藏系统状态栏/导航栏，
+  //   不再要求用户先点「全屏」——此前的表现就是「顶部状态栏一直挂着」。
+  //   桌面/浏览器宿主 setNativeImmersive 静默跳过，无副作用。
+  if (isTouch) {
+    setNativeImmersive(true);
+  }
 });
 
 const toScreen = (clientX: number, clientY: number): { x: number; y: number } | null => {
@@ -1551,6 +1550,9 @@ function scheduleLongPress(): void {
 function onStagePointerDown(e: PointerEvent): void {
   actionsOpen.value = false;
   peekToolbar();
+  // ★ 指针捕获：手指从画面滑到黑边/屏幕边缘时事件仍归舞台，不会中途丢 up
+  //   （触摸点起点与后续事件必须归同一元素，否则拖拽路径靠运气补 up）。
+  try { stageRef.value?.setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
   // 鼠标右键直接注入（移动端长按才走手势机）；左键/触摸继续交给状态机
   if (e.pointerType === 'mouse' && e.button === 2) {
     const p = toScreen(e.clientX, e.clientY);
@@ -1602,6 +1604,10 @@ function schedulePadLongPress(): void {
 }
 function onPadPointerDown(e: PointerEvent): void {
   actionsOpen.value = false;
+  // ★ 指针捕获：手指拖出板面边缘（贴屏手机上必然发生）后 move/up 仍归板子收，
+  //   否则事件漏给舞台直触手势机 —— 那根手指在其指针表里永远等不到 up，
+  //   下一次按下就被识别成双指手势，触控板表现为「压根没反应」（2026-10-27 报障根因）。
+  try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
   padPointers.add(e.pointerId);
   padActive.value = true;
   trackPadTouch(e);
@@ -1631,6 +1637,7 @@ function padClick(button: 'left' | 'right'): void {
   clickAt(0, 0, button, true);
 }
 function onScrollStripDown(e: PointerEvent): void {
+  try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
   scrollStripActive = true;
   scrollStripY = e.clientY;
 }
@@ -2179,7 +2186,7 @@ onBeforeUnmount(() => {
 @keyframes rc-fx { from { opacity: 1; transform: scale(0.55); } to { opacity: 0; transform: scale(1.35); } }
 
 /* 顶部状态胶囊：只留状态 + 显示器/画质，按钮统一收进右侧操作栏 */
-.rc-topbar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: 10px 14px; padding-right: 86px; background: linear-gradient(to bottom, rgba(5,8,12,0.72), rgba(5,8,12,0)); transition: opacity 0.25s; z-index: 5; pointer-events: none; }
+.rc-topbar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px; padding: 10px 14px; padding-right: 60px; background: linear-gradient(to bottom, rgba(5,8,12,0.72), rgba(5,8,12,0)); transition: opacity 0.25s; z-index: 5; pointer-events: none; }
 .rc-topbar > * { pointer-events: auto; }
 /* 只读观看底栏：常驻、可恢复（不重连），与「点不动」区分开 */
 .rc-readonly { position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 26; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; background: rgba(28,21,9,0.94); border: 1px solid rgba(240,163,58,0.45); backdrop-filter: blur(12px); }
@@ -2201,15 +2208,15 @@ onBeforeUnmount(() => {
 .rc-select-disp { max-width: 44vw; min-width: 84px; }
 
 /* 右侧操作栏（UU 式玻璃拟态）：高频动作常驻，低频收进「操作」抽屉 */
-.rc-rail { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 10px; z-index: 7; transition: opacity 0.25s; }
+.rc-rail { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 7; transition: opacity 0.15s; }
 .rc-rail.hidden { opacity: 0; pointer-events: none; }
-.rc-rail-btn { width: 54px; height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border-radius: 16px; background: rgba(18,23,30,0.72); color: #cdd6e2; backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.08); font-size: 11px; cursor: pointer; transition: background 0.18s, border-color 0.18s, transform 0.12s; }
-.rc-rail-btn svg { width: 20px; height: 20px; fill: currentColor; stroke: currentColor; stroke-width: 1.6; }
+.rc-rail-btn { width: 46px; height: 44px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 12px; background: rgba(14,18,24,0.55); color: #cdd6e2; backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.07); font-size: 10px; cursor: pointer; transition: background 0.18s, border-color 0.18s, transform 0.12s; }
+.rc-rail-btn svg { width: 17px; height: 17px; fill: currentColor; stroke: currentColor; stroke-width: 1.6; }
 .rc-rail-btn svg [fill="none"] { fill: none; }
-.rc-rail-btn:hover { background: rgba(30,38,49,0.9); }
+.rc-rail-btn:hover { background: rgba(30,38,49,0.85); }
 .rc-rail-btn:active { transform: scale(0.94); }
-.rc-rail-btn.active { background: rgba(47,107,255,0.9); border-color: rgba(120,170,255,0.6); color: #fff; }
-.rc-rail-mouse { font-size: 20px; line-height: 1; }
+.rc-rail-btn.active { background: rgba(47,107,255,0.85); border-color: rgba(120,170,255,0.5); color: #fff; }
+.rc-rail-mouse { font-size: 18px; line-height: 1; }
 
 /* 操作抽屉 */
 .rc-sheet { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); width: min(340px, 80vw); max-height: 82vh; overflow-y: auto; background: rgba(16,21,28,0.94); border: 1px solid rgba(255,255,255,0.1); border-radius: 18px; padding: 12px; z-index: 11; backdrop-filter: blur(18px); box-shadow: 0 18px 48px rgba(0,0,0,0.5); }
@@ -2224,20 +2231,23 @@ onBeforeUnmount(() => {
 .rc-chip { border: 1px solid rgba(255,255,255,0.12); background: transparent; color: #b9c2cf; border-radius: 999px; padding: 4px 10px; font-size: 11.5px; cursor: pointer; }
 .rc-chip.active { background: rgba(47,107,255,0.85); border-color: transparent; color: #fff; }
 
-/* 大触控板：拖动区就是舞台本身（事件冒泡上来），这里只负责视觉与左右键/滚动条 */
-.rc-pad { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); width: min(500px, 88vw); background: rgba(14,19,25,0.78); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; z-index: 6; backdrop-filter: blur(16px); box-shadow: 0 14px 40px rgba(0,0,0,0.45); padding: 8px 10px 10px; touch-action: none; }
+/* 大触控板：拖动区就是舞台本身（事件冒泡上来），这里只负责视觉与左右键/滚动条。
+   2026-10-27 重设计：删掉 116px 大鼠标插画（用户点名「鼠标这么大」），换中央聚焦环；
+   板面加深对比、按钮压扁，整体更薄更贴 UU 的克制风格。 */
+.rc-pad { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); width: min(460px, 86vw); background: rgba(10,14,19,0.82); border: 1px solid rgba(255,255,255,0.09); border-radius: 18px; z-index: 6; backdrop-filter: blur(18px); box-shadow: 0 14px 40px rgba(0,0,0,0.5); padding: 6px 8px 8px; touch-action: none; }
 .rc-pad.collapsed { width: auto; }
 .rc-pad-head { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #93a0b1; padding: 0 4px 4px; }
 .rc-pad-mini { border: none; background: rgba(255,255,255,0.08); color: #cdd6e2; border-radius: 8px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
-.rc-pad-body { position: relative; display: flex; align-items: center; justify-content: center; height: 136px; border-radius: 14px; background: radial-gradient(ellipse at 50% 40%, rgba(64,118,255,0.16), rgba(255,255,255,0.02) 70%); border: 1px solid rgba(255,255,255,0.06); transition: border-color 0.16s, box-shadow 0.16s; }
-.rc-pad-body.active { border-color: rgba(96,150,255,0.55); box-shadow: inset 0 0 0 1px rgba(96,150,255,0.22), 0 0 26px rgba(47,107,255,0.2); }
-.rc-pad-dot { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; background: rgba(124,178,255,0.35); border: 1px solid rgba(168,206,255,0.9); box-shadow: 0 0 14px rgba(80,140,255,0.55); pointer-events: none; }
-.rc-pad-glyph { width: 116px; height: 116px; color: #9db6de; opacity: 0.9; pointer-events: none; }
-.rc-pad-hint { position: absolute; bottom: 6px; left: 0; right: 0; text-align: center; font-size: 10.5px; color: #77849a; pointer-events: none; }
-.rc-pad-btns { display: flex; align-items: stretch; gap: 8px; margin-top: 8px; height: 46px; }
-.rc-pad-btn { flex: 1; border: none; border-radius: 12px; background: rgba(255,255,255,0.08); color: #dbe3ee; font-size: 13px; cursor: pointer; }
+.rc-pad-body { position: relative; display: flex; align-items: center; justify-content: center; height: 128px; border-radius: 13px; background: radial-gradient(ellipse at 50% 45%, rgba(64,118,255,0.13), rgba(255,255,255,0.015) 70%); border: 1px solid rgba(255,255,255,0.05); transition: border-color 0.16s, box-shadow 0.16s; }
+.rc-pad-body.active { border-color: rgba(96,150,255,0.5); box-shadow: inset 0 0 0 1px rgba(96,150,255,0.2), 0 0 22px rgba(47,107,255,0.16); }
+.rc-pad-focus { position: absolute; width: 64px; height: 64px; border-radius: 50%; border: 1.5px solid rgba(150,185,240,0.3); pointer-events: none; transition: transform 0.18s ease, border-color 0.18s ease; }
+.rc-pad-focus.on { transform: scale(1.3); border-color: rgba(150,185,240,0.65); }
+.rc-pad-dot { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: rgba(124,178,255,0.32); border: 1px solid rgba(168,206,255,0.85); box-shadow: 0 0 12px rgba(80,140,255,0.5); pointer-events: none; }
+.rc-pad-hint { position: absolute; bottom: 5px; left: 0; right: 0; text-align: center; font-size: 10px; color: #6d7a90; pointer-events: none; }
+.rc-pad-btns { display: flex; align-items: stretch; gap: 8px; margin-top: 7px; height: 38px; }
+.rc-pad-btn { flex: 1; border: none; border-radius: 11px; background: rgba(255,255,255,0.07); color: #dbe3ee; font-size: 12.5px; cursor: pointer; }
 .rc-pad-btn:active { background: rgba(47,107,255,0.75); }
-.rc-pad-scroll { width: 56px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; border-radius: 12px; background: rgba(255,255,255,0.05); color: #8b98ab; font-size: 9px; padding: 2px 0; cursor: ns-resize; touch-action: none; }
+.rc-pad-scroll { width: 48px; display: flex; flex-direction: column; align-items: center; justify-content: space-between; border-radius: 11px; background: rgba(255,255,255,0.05); color: #8b98ab; font-size: 8px; padding: 2px 0; cursor: ns-resize; touch-action: none; }
 .rc-pad-scroll-bar { flex: 1; width: 3px; margin: 3px 0; border-radius: 2px; background: linear-gradient(to bottom, rgba(157,182,222,0.15), rgba(157,182,222,0.55), rgba(157,182,222,0.15)); }
 /* 首帧等待层：黑屏时给出明确状态，并吃掉误触（此时画面还没有，点了也点不准） */
 .rc-wait-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; z-index: 3; pointer-events: none; background: #000; text-align: center; padding: 24px; }

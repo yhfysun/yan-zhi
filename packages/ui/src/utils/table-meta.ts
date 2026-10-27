@@ -52,10 +52,14 @@ export function inferColumnMeta(columns: string[], rows: Array<Record<string, un
   return meta;
 }
 
-/** 单元格展示：空 / 空数组对象统一显示「—」，布尔转中文，对象转 JSON */
+/** 表格数值展示：千分位，最多 4 位小数（4567864 → 4,567,864） */
+const NUMBER_FORMAT = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 });
+
+/** 单元格展示：空 / 空数组对象统一显示「—」，布尔转中文，数字千分位，对象转 JSON */
 export function formatCell(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'boolean') return value ? '是' : '否';
+  if (typeof value === 'number') return Number.isFinite(value) ? NUMBER_FORMAT.format(value) : String(value);
   if (typeof value === 'object') {
     try {
       const s = JSON.stringify(value);
@@ -65,4 +69,20 @@ export function formatCell(value: unknown): string {
     }
   }
   return String(value);
+}
+
+/**
+ * 列角色拆分（图表按「指标 × 维度」配置）：数值列 = 指标，文本/日期/ID/布尔 = 维度，空列两边都不要。
+ * ★ 之前图表直接把任意列塞进 Y，文本列也能当度量 → 画出一排 1。
+ */
+export function splitColumnRoles(columns: string[], rows: Array<Record<string, unknown>>): { dims: string[]; measures: string[] } {
+  const meta = inferColumnMeta(columns, rows);
+  const dims: string[] = [];
+  const measures: string[] = [];
+  for (const c of columns) {
+    const kind = meta[c]?.kind;
+    if (kind === 'number') measures.push(c);
+    else if (kind && kind !== 'empty') dims.push(c);
+  }
+  return { dims, measures };
 }

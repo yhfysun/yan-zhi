@@ -129,8 +129,8 @@ import { useDocumentTypeStore } from '../stores/document-type';
 import type { DocumentType, DocumentTypeSectionSpec, DocumentVariableSpec } from '../utils/document-types';
 
 const KIND_LABELS: Record<DocumentTypeSectionSpec['kind'], string> = {
-  heading: '标题', paragraph: '段落', metrics: '指标', table: '表格',
-  chart: '图表', infographic: '信息图', image: '图片', pageBreak: '分页',
+  heading: '标题', paragraph: '段落', bullets: '无序列表', ordered: '有序列表',
+  metrics: '指标', table: '表格', chart: '图表', infographic: '信息图', image: '图片', pageBreak: '分页',
 };
 
 const store = useDocumentTypeStore();

@@ -52,6 +52,18 @@ describe('① 工作目录必须跟随空间（单一出口）', () => {
     const seg = CODE_CHAT.slice(i, i + 4000);
     expect(seg).toMatch(/syncWorkspaceDirToSpace\(sp\.id\)/);
   });
+
+  it('★★★ 点开没有工作目录的会话（未归类空间）时目录回到「未设置」', () => {
+    const i = CODE_CHAT.indexOf('async function selectConv(');
+    const seg = CODE_CHAT.slice(i, i + 4000);
+    // 2026-10-27 用户实报：点开没有工作目录的任务，顶栏还显示上一个任务的目录 ——
+    //   根因是 selectConv 只同步了"会话归属空间"的一半，未归类会话直接留了旧全局目录。
+    expect(seg, '★ 未归类会话没清目录 → 顶栏继续挂着上一个任务的目录')
+      .toMatch(/else if \(conv && activeMode\.value !== 'shop'\)\s*\{\s*await syncWorkspaceDirToSpace\(null\);/);
+    // 空间没绑目录时也要 sync（sync 内部取 sp.dirPath || ''，等价于清空），不能只在 dirPath 存在时才调
+    expect(seg, '★ 空间没绑目录时又跳过同步 → 目录残留')
+      .not.toMatch(/if \(sp\.dirPath\) await syncWorkspaceDirToSpace/);
+  });
 });
 
 describe('② 浏览器已收工就解除输入锁（否则 pageAgent 走了还禁用）', () => {

@@ -448,14 +448,6 @@ function pickCdpPage(browser: any): any | null {
 }
 
 /**
- * CDP 模式下没有可用网页 target 时，驱动**应用壳页**自动打开预览面板（2026-10-05）。
- * 全自动链路要求 agent 能自己把面板开起来，而不是报错等用户手动开。
- * 做法（实测有效）：壳页切到 #/browser 路由 → 地址栏 input.url-input 用原生 setter
- * 写入目标 URL → 派发 Enter（keydown+keyup，Vue 需 keyup）。壳页 = dev localhost:1420
- * 或打包 file://index.html。
- * @returns 是否成功驱动壳页（不代表 webview 一定出现，调用方需轮询 pickCdpPage）
- */
-/**
  * CDP 模式下没有可用网页 target 时的兜底（**不再改主窗口路由**）。
  *
  * ★★★ 2026-10-26 根因修复（用户实报两次「有任务就跳到浏览器页」「又过去了」）：
@@ -473,13 +465,29 @@ function pickCdpPage(browser: any): any | null {
  *
  * @returns 恒 false —— 本函数只保留调用点语义（见 createTabPage 的报错指引）
  */
+/**
+ * 挑「请桌面端打开面板」时的目标 URL（纯函数，便于真跑验证）。
+ *
+ * ★ 为什么必须带一个目标页：`about:blank` 会被 pickCdpPage 的 isUnsafeCdpPage 过滤掉，
+ *   空串则请求根本发不出去 —— 面板开了也没有 webview target，任务照样卡在连接层。
+ * ★ 顺序：本次调用方给的 URL 优先，其次上一次成功导航的 URL（陈旧但好过没有）。
+ *   两者都不合法 → 返回空串，调用方据此放弃自动开面板（别再假装成功）。
+ */
+export function pickPanelOpenUrl(...candidates: (string | undefined | null)[]): string {
+  for (const c of candidates) {
+    const s = String(c || '').trim();
+    if (/^https?:\/\//i.test(s)) return s;
+  }
+  return '';
+}
+
 async function ensureWebviewViaShell(_browser: any, url?: string, convId?: string | null): Promise<boolean> {
   // ★ 2026-10-26 第二步：只**请桌面端自己**把预览面板打开，不碰用户界面。
   //   做法：走桥发一次 browser_navigate（convId 锚定 → 主进程建/复用该会话的预览 tab →
   //   广播 tabCreated → 渲染层 useChat 展开预览面板）。面板里的 webview 随后就是 CDP target。
   //   ★ 必须带真实 convId 与 http(s) URL：桥不接受空 convId；`about:blank` 会被
   //     pickCdpPage 的 isUnsafeCdpPage 过滤掉，等于白开。
-  const target = String(url || lastKnownUrl || '').trim();
+  const target = pickPanelOpenUrl(url, lastKnownUrl);
   if (!convId || !target || !/^https?:\/\//i.test(target)) return false;
   if (!browserBridgeAvailable()) return false;
   try {
@@ -490,8 +498,13 @@ async function ensureWebviewViaShell(_browser: any, url?: string, convId?: strin
   }
 }
 
-/** 创建一个新的 context + page（多标签页基础单元），可选导航到 url */
-async function createTabPage(url?: string, convId?: string | null): Promise<any> {
+/** 创建一个新的 context + page（多标签页基础单元），可选导航到 url
+ *
+ * @param hintUrl 仅用于 CDP 模式"没 target 时请桌面端开面板"——面板必须带一个 http(s) 目标页
+ *   才能建出真实 webview target。调用方（如 /navigate）手里有目标 URL 时必须传，否则冷启动
+ *   （lastKnownUrl 为空）时 ensureWebviewViaShell 无从开口，只能报「没有可用的网页 target」。
+ */
+async function createTabPage(url?: string, convId?: string | null, hintUrl?: string): Promise<any> {
   const browser = await getBrowser();
   let context: any;
   let page: any;
@@ -501,7 +514,7 @@ async function createTabPage(url?: string, convId?: string | null): Promise<any>
     if (!page) {
       // 全自动（2026-10-05）：没有可用 target 时驱动应用壳页自动打开预览面板，
       // 而不是报错等用户手动开（旧报错会把全自动任务卡死在浏览器连接层）
-      const opened = await ensureWebviewViaShell(browser, url, convId);
+      const opened = await ensureWebviewViaShell(browser, url || hintUrl, convId);
       if (opened) {
         for (let i = 0; i < 30 && !page; i++) {
           await new Promise((r) => setTimeout(r, 500));
@@ -569,8 +582,12 @@ export function shouldRestorePageUrl(hadPage: boolean, lastKnownUrl: string, cur
   return currentUrl !== lastKnownUrl;      // 已在目标 URL → 不必重载
 }
 
-/** 获取或创建页面（当前活动标签页），含健康检查 */
-async function getPage(convId?: string | null) {
+/** 获取或创建页面（当前活动标签页），含健康检查
+ *
+ * @param hintUrl 目标 URL（仅 /navigate 这类"已知要去哪"的调用方传）：CDP 模式冷启动时
+ *   用它让桌面端把预览面板开到该页；传空则只能靠 lastKnownUrl，首次会话必然无 target。
+ */
+async function getPage(convId?: string | null, hintUrl?: string) {
   if (pageInstance && (await isPageAlive(pageInstance))) {
     lastActivityAt = Date.now();
     return pageInstance;
@@ -586,7 +603,7 @@ async function getPage(convId?: string | null) {
     pageInstance = null;
   }
   // 首次：创建主标签页（tab 0）
-  const page = await createTabPage(undefined, convId);
+  const page = await createTabPage(undefined, convId, hintUrl);
   pageInstance = page;
   activeTabId = 0;
   tabs.set(0, page);
@@ -702,7 +719,7 @@ router.post('/navigate', withBrowserLock(async (req: Request, res: Response) => 
       pageInstance = page;
       activeTabId = tid;
     } else {
-      page = await getPage(convIdOf(req));
+      page = await getPage(convIdOf(req), url);
     }
     // 同步前端视口大小
     if (viewport && viewport.width && viewport.height) {
@@ -860,6 +877,10 @@ function ensureYzReg() {
   w.__yzMeta = w.__yzMeta || {};
   const esc = (s: string) => String(s).replace(/"/g, '\\"');
   // 文本模糊匹配：:has-text / :contains 文本漂移时的二级降级（与桌面端同口径）
+  // [semantic-desktop-only] 2026-10-27：桌面端已上线语义定位 target（main.cjs 的
+  //   ===SEMANTIC-LOCATOR-START/END===，含 role/label/near 与候选排序）。本服务端链路
+  //   **尚未对齐** —— 工具层遇到 target 且非 Electron 环境会直接报错，不会落到这里的
+  //   textScore/fuzzyFind 上。下一步把同一套打分/候选规则搬到本文件，保持两条执行面一致。
   const textNorm = (s: unknown) => String(s ?? '').replace(/\s+/g, '').trim();
   const textScore = (a: unknown, b: unknown): number => {
     const x = textNorm(a); const y = textNorm(b);

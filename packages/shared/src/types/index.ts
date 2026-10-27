@@ -290,6 +290,11 @@ export interface Message {
   /** 内嵌于聊天消息里的动态看板（数据浏览）契约；随消息落库（message.data_view_json）并跨端同步 */
   dataView?: InlineDataView;
   /**
+   * 同一轮里的多个内嵌看板（多次 data_query_view 各占一张卡）。
+   * ★ 旧数据只有单个 dataView；读取端两者都要认，写入端统一写 dataViews。
+   */
+  dataViews?: InlineDataView[];
+  /**
    * ★★★ 仅**发送期**存在的图片附件（C1，2026-10-09）——**不落库**。
    *
    * ★ 为什么用"另加字段 + 注入期展开"而不是把 `content` 改成 `ContentBlock[]`：
@@ -311,6 +316,22 @@ export interface Message {
   imagePartsTried?: boolean;
 }
 
+/** 内嵌数据视图上记住的图表配置（用户在工作台里选过的视图，随契约一起落库） */
+export interface InlineDataViewChart {
+  /** line / area / bar / pie / scatter */
+  kind: string;
+  /** 分组维度；本体模式为本体字段名 */
+  dim: string;
+  measure?: string;
+  measures?: string[];
+  /** 第二个维度：拆系列 */
+  series?: string;
+  timeGrain?: string;
+  agg?: string;
+  topN?: number;
+  percent?: boolean;
+}
+
 /** 聊天内嵌「数据浏览/动态看板」契约：只声明取数源 + 想要当过滤器的列；取数由面板 /run 参数化完成，不喂 LLM */
 export interface InlineDataView {
   title?: string;
@@ -324,6 +345,8 @@ export interface InlineDataView {
   ontology?: string;
   /** mode=file 时的数据产物绝对路径（py_save_exec / data_save 落盘的 json） */
   path?: string;
+  /** 用户在这个视图上配置过的图表（刷新/换设备后仍按图表打开；缺省是表格） */
+  chart?: InlineDataViewChart;
 }
 
 /** 看板 widget 的网格位置（12 列；x/y 从 0 起，w 1..12，h 为行数） */

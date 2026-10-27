@@ -12,11 +12,12 @@ export interface DataFileEnvelope {
   message?: string;
 }
 
-/** 读数据产物 JSON（走 workspace-files 流式端点；失败返回 null，不抛） */
+/** 读数据产物 JSON（走 workspace 流式端点；失败返回 null，不抛） */
 export async function loadDataFile(path: string): Promise<DataFileEnvelope | null> {
   const p = String(path || '').trim();
   if (!p) return null;
-  const r = await apiFetch<DataFileEnvelope>(`/workspace-files/file-stream?path=${encodeURIComponent(p)}`);
+  // ★ 端点是 /api/workspace/file-stream（不是 workspace-files）——写错会 404，图表永远空白
+  const r = await apiFetch<DataFileEnvelope>(`/workspace/file-stream?path=${encodeURIComponent(p)}`);
   if ('error' in r) return null;
   const d = r.data as DataFileEnvelope | undefined;
   if (!d || !Array.isArray(d.columns) || !Array.isArray(d.rows)) return null;
