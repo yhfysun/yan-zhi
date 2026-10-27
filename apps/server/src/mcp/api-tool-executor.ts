@@ -181,9 +181,8 @@ import { copyFile } from 'node:fs/promises';
 //   不复用未导出的 WRITE_TOOLS 集合 —— 那个是内部实现，classifyToolAction 才是公开语义。
 import { classifyToolAction } from '../tool-permission.js';
 import { createLogger } from '../services/logger.js';
+import { runOcr } from '../services/ocr.js';
 
-// ★ 文件内另有 tesseract.js 选项属性 { logger: () => {} }（第三方 API 名，不可改名）；
-//   对象属性名不与导入的 logger 绑定冲突，可安全共存（P4b 遗留手工迁移）。
 const logger = createLogger('api-tool');
 
 export interface MpcToolExecutionResult {
@@ -4737,14 +4736,9 @@ export async function executeApiTool(
         if (image) buffer = Buffer.from(image, 'base64');
         else if (imgPath) buffer = await (await import('node:fs/promises')).readFile(imgPath);
         if (!buffer) return fail('需提供 image(base64) 或 path 参数');
-        const { createWorker } = await import('tesseract.js');
-        const worker = await createWorker(str(args, 'lang') || 'chi_sim+eng', 1, { logger: () => {} });
-        try {
-          const { data } = await worker.recognize(buffer);
-          return ok({ text: data.text || '', confidence: data.confidence });
-        } finally {
-          await worker.terminate();
-        }
+        // provider：本地 RapidOCR 优先，失败静默降级 tesseract（见 services/ocr.ts）
+        const ocr = await runOcr(buffer, { lang: str(args, 'lang') || undefined });
+        return ok({ text: ocr.text, confidence: ocr.confidence, provider: ocr.provider });
       }
       case 'api_tool_install': {
         const uid = requireUser(userId);

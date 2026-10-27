@@ -187,6 +187,9 @@ const DEPS = [
   'xlrd==2.0.1',
   // novel_tuiwen（有声小说推文视频）TTS 依赖
   'edge-tts==7.0.0',
+  // 本地 OCR（services/ocr.ts → python-scripts/ocr_rapid.py）：
+  // PP-OCRv4 mobile + ONNX，16MB 模型随包、离线可用，中文远好于 tesseract 的 fast 包
+  'rapidocr-onnxruntime==1.4.4',
 ];
 
 async function main() {

@@ -171,6 +171,13 @@ app.use(cors({ origin: true, credentials: true }));
 // ★ 必须挂在全局 JSON 中间件**之前**：body-parser 发现 req._body 已解析就跳过，
 //   顺序反了会被 10MB 上限先拒。
 app.use('/api/plugins/install', express.json({ limit: '64mb' }));
+// ★ 图片 OCR 也放宽到 64MB（2026-10-27）：手机端/远程时可走 base64 传图，相机原图 base64
+//   轻松超 10MB。桌面端更推荐传 `path`（服务端与文件同机，原图直读、完全不吃请求体上限）。
+app.use('/api/tools/ocr', express.json({ limit: '64mb' }));
+// ★ 预览渲染也放宽（2026-10-27 用户要求）：这两条收的是**文件字节 base64**，相机/扫描件
+//   动辄几十 MB，10MB 上限会把"预览"变成"打不开"。160MB ≈ 原始 100MB 文件 base64 后的体积。
+app.use('/api/preview/pdf', express.json({ limit: '160mb' }));
+app.use('/api/preview/xls-styled', express.json({ limit: '160mb' }));
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/health', (_req, res) => {

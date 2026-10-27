@@ -5,9 +5,8 @@ import { db } from '../db.js';
 import { getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
 import { createLogger } from '../services/logger.js';
 import { normalizePermissionMode, checkToolPermission } from '../tool-permission.js';
+import { runOcr } from '../services/ocr.js';
 
-// ★ 文件内另有 tesseract.js 选项属性 { logger: () => {} }（第三方 API 名，不可改名）；
-//   对象属性名不与导入的 logger 绑定冲突，可安全共存（P4b 遗留手工迁移）。
 const logger = createLogger('tools');
 
 const router = Router();
@@ -231,7 +230,8 @@ router.post('/install', (req: Request, res: Response) => {
 
 // POST /api/tools/ocr — 图片 OCR 文字识别（image_analyze 工具的降级路径）
 // body: { image?: string(base64), path?: string, lang?: string }
-// 优先 image base64，其次 path 读文件；lang 默认 chi_sim+eng（中英文）
+// 优先 image base64，其次 path 读文件；lang 只对 tesseract 兜底生效（RapidOCR 用内置中英模型）
+// provider：本地 RapidOCR 优先，失败静默降级 tesseract（见 services/ocr.ts）
 router.post('/ocr', async (req: Request, res: Response) => {
   try {
     const { image, path: imgPath, lang } = req.body || {};
@@ -246,14 +246,8 @@ router.post('/ocr', async (req: Request, res: Response) => {
       res.status(400).json({ error: '需提供 image(base64) 或 path 参数' });
       return;
     }
-    const { createWorker } = await import('tesseract.js');
-    const worker = await createWorker(lang || 'chi_sim+eng', 1, { logger: () => {} });
-    try {
-      const { data } = await worker.recognize(buffer);
-      res.json({ data: { text: data.text || '', confidence: data.confidence } });
-    } finally {
-      await worker.terminate();
-    }
+    const r = await runOcr(buffer, { lang });
+    res.json({ data: { text: r.text, confidence: r.confidence, provider: r.provider, rows: r.rows } });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'OCR 识别失败' });
   }

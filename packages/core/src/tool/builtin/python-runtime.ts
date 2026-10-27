@@ -152,6 +152,33 @@ let cachedShellPython: string | null = null;
 const PY_PROBE_TIMEOUT_MS = 15000;
 
 /**
+ * 从可执行文件 / 工作目录推导随包解释器。
+ * ★ 只有 `process.resourcesPath` 取不到时才走到这里（见 findPython 的补漏注释）：
+ *   ① 正式版：<安装目录>/<主程序>.exe → <安装目录>/resources/python/python.exe
+ *   ② dev：从 cwd 向上找仓库内 apps/desktop/resources/python
+ */
+function deriveBundledPython(): string | null {
+  try {
+    const rel = process.platform === 'win32'
+      ? path.join('python', 'python.exe')
+      : path.join('python', 'bin', 'python3');
+    const nearExe = path.join(path.dirname(process.execPath), 'resources', rel);
+    if (fs.existsSync(nearExe)) return nearExe;
+    let dir = process.cwd();
+    for (let i = 0; i < 6; i++) {
+      const inRepo = path.join(dir, 'apps', 'desktop', 'resources', rel);
+      if (fs.existsSync(inRepo)) return inRepo;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    /* 推导失败按未命中处理 */
+  }
+  return null;
+}
+
+/**
  * 定位 Python 解释器：打包优先，系统回退
  *
  * ★★★ 2026-10-14 实报（medium）：`python_exec` **间歇**回报「未找到 Python」，而同一会话里
@@ -173,6 +200,12 @@ export async function findPython(): Promise<string> {
   }
   const bundled = getBundledPythonPath();
   if (bundled) return bundled;
+  // ★★★ 随包解释器的**补漏**（2026-10-27）：`getBundledPythonPath()` 只看
+  //   `process.resourcesPath`，而正式版的 server 是 `ELECTRON_RUN_AS_NODE` 子进程，
+  //   这个字段是 undefined ⇒ 一律落到 PATH 探测，命中**用户系统 Python**（预烤依赖全没有：
+  //   实测 PDF 预览报"缺少 PyMuPDF"、OCR 只能降级 tesseract）。这里补两条推导路径。
+  const derived = deriveBundledPython();
+  if (derived) return derived;
   if (cachedShellPython) return cachedShellPython;
   const shell = getPlatformAdapter().shell;
   if (!shell) throw new Error('python 执行需要桌面端或服务端环境（shell）。Web 浏览器端不支持。');
@@ -430,11 +463,20 @@ export function listRecentJobs(workspaceDir: string | undefined, limit = 20): Jo
 export async function runPythonScript(
   scriptPath: string,
   scriptArgs: string[] = [],
-  opts: { timeout?: number; cwd?: string; env?: Record<string, string>; signal?: AbortSignal } = {},
+  opts: {
+    timeout?: number;
+    cwd?: string;
+    env?: Record<string, string>;
+    signal?: AbortSignal;
+    /** 指定解释器，跳过 findPython() 探测。
+     *  ★ 为什么需要（2026-10-27）：OCR 要用**随包** python（里面有 rapidocr），而 findPython()
+     *    在 server 子进程里拿不到 resourcesPath、只会探到用户系统 Python —— 不指定就永远跑错解释器。 */
+    pythonPath?: string;
+  } = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const shell = getPlatformAdapter().shell;
   if (!shell) throw new Error('python 执行需要桌面端或服务端环境（shell）。Web 浏览器端不支持。');
-  const py = await findPython();
+  const py = opts.pythonPath || (await findPython());
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === 'string') env[k] = v;

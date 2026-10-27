@@ -2786,7 +2786,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
   }
 
   /** image_analyze 实际执行：优先 vision 模型，降级服务端 OCR */
-  async function runImageAnalyze(args: { path?: string; prompt?: string; platformId?: string; modelId?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
+  async function runImageAnalyze(args: { path?: string; prompt?: string; platformId?: string; modelId?: string; engine?: string }): Promise<{ ok: boolean; result?: unknown; msg?: string }> {
     // ★★ 必填校验看**原始入参**，再解析路径（2026-09-30）
     const rawPath = typeof args.path === 'string' ? args.path.trim() : '';
     if (!rawPath) return { ok: false, msg: 'path 为必填项' };
@@ -2819,6 +2819,46 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     const mimeMap: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp' };
     const mime = mimeMap[ext];
     if (!mime) return { ok: false, msg: `不支持的图片格式 .${ext}（支持 png/jpg/jpeg/gif/webp/bmp）` };
+
+    // ★ engine=ocr（2026-10-27 用户要求「只用 OCR、不用模型」）：直接走本地 OCR，跳过全部
+    //   vision 候选。必须在**读文件/压缩之前**返回 —— 相机大图动辄几十上百 MB，先读进渲染进程
+    //   再 canvas 压缩纯属浪费；OCR 用路径直传原图，反而更准。
+    const engine = typeof args.engine === 'string' ? args.engine.trim().toLowerCase() : '';
+    if (engine === 'ocr') return await ocrFallback(imgPath);
+
+    /** 本地 OCR（直用或 vision 全挂后兜底）：优先按**路径**直传原图，失败再退回 base64。
+     *  ★ 为什么先路径（2026-10-27）：桌面端 server 与文件同机，路径直传既不吃请求体上限、
+     *    也不经过「长边 1568」压缩 —— 相机大图的密集小字只有原图认得准。手机端 server 在
+     *    另一台机器时路径不存在，自动退回压缩后的 base64。 */
+    async function ocrFallback(pathArg: string, imgBase64?: string) {
+      const label = (p?: string) => (p === 'rapidocr' ? '本地 OCR（RapidOCR）' : '备用 OCR（tesseract）');
+      const bodies: Array<Record<string, unknown>> = [{ path: pathArg, lang: 'chi_sim+eng' }];
+      if (imgBase64) bodies.push({ image: imgBase64, lang: 'chi_sim+eng' });
+      let lastErr = '';
+      let sawEmpty = false;
+      let lastProvider: string | undefined;
+      for (const body of bodies) {
+        try {
+          const r = await api.post<any>('/tools/ocr', body);
+          if ('error' in r) {
+            lastErr = r.error;
+            continue;
+          }
+          lastProvider = r.data?.provider;
+          const text = String(r.data?.text || '');
+          if (!text.trim()) {
+            sawEmpty = true;
+            continue;
+          }
+          const note = `\n\n[注: 本次为 ${label(lastProvider)}，只提取文字，不含版面、表格与语义理解]`;
+          return { ok: true, result: text + note };
+        } catch (e: any) {
+          lastErr = e?.message || String(e);
+        }
+      }
+      if (sawEmpty) return { ok: true, result: `(OCR 未识别到文字)\n\n[注: 本次为 ${label(lastProvider)}]` };
+      return { ok: false, msg: '图片识别失败（OCR 不可用）: ' + (lastErr || '未知错误') };
+    }
 
     let base64: string;
     try {
@@ -2976,16 +3016,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       }
     }
 
-    // 3) 全部 vision 候选失败/不存在 → OCR 降级
-    try {
-      const r = await api.post<any>('/tools/ocr', { image: base64, lang: 'chi_sim+eng' });
-      if ('error' in r) return { ok: false, msg: r.error };
-      const text = r.data?.text || '';
-      const note = '\n\n[注: 所有 vision 候选均不可用或看图失败，本次为 OCR 降级，仅提取文字。中文界面/高分辨率截图下 OCR 乱码率高，结果仅供参考]';
-      return { ok: true, result: (text || '(OCR 未识别到文字)') + note };
-    } catch (e: any) {
-      return { ok: false, msg: '图片识别失败（vision 与 OCR 均不可用）: ' + (e?.message || e) };
-    }
+    // 3) 全部 vision 候选失败/不存在 → OCR 降级（先路径直传原图，再退回 base64）
+    return await ocrFallback(imgPath, base64);
   }
 
   function getMaxReActSteps(): number {

@@ -11,7 +11,7 @@ import type { McpCallResult } from '../../mcp/client';
 
 export class ImageAnalyzeTool implements BuiltInTool {
   name = 'image_analyze';
-  description = '分析图像文件。支持常见格式（png/jpg/jpeg/gif/webp/bmp）。优先用当前会话模型直接看图（多模态模型无需额外配置）；当前模型看不了或失败时依次尝试其它启用的 vision 模型，最后才回退服务端 Tesseract OCR（只做文字抽取，中文界面乱码率高）。可传 prompt 对图像提出具体问题。';
+  description = '分析图像文件。支持常见格式（png/jpg/jpeg/gif/webp/bmp）。优先用当前会话模型直接看图（多模态模型无需额外配置）；当前模型看不了或失败时依次尝试其它启用的 vision 模型，最后才回退本地 OCR（RapidOCR，只抽取文字）。只要图中文字、不需要理解画面时，直接传 engine=ocr 跳过模型（快且省 token）。可传 prompt 对图像提出具体问题。';
 
   inputSchema = {
     type: 'object',
@@ -31,6 +31,11 @@ export class ImageAnalyzeTool implements BuiltInTool {
       modelId: {
         type: 'string',
         description: 'Optional: specify a model id (with vision capability) to use. Must belong to the given platformId (or auto-resolved platform).',
+      },
+      engine: {
+        type: 'string',
+        enum: ['auto', 'ocr'],
+        description: 'auto（默认）= 先用视觉模型看图，全部失败才降级 OCR；ocr = 跳过模型，直接用本地 OCR 提取文字（快、省 token，适合只想要图片里的文字、或当前模型看不了图时）。',
       },
     },
     required: ['path'],
