@@ -585,6 +585,25 @@
               <el-radio-button label="3d">3D 模型</el-radio-button>
             </el-radio-group>
           </SettingRow>
+          <SettingRow
+            v-if="petStore.settings.renderer === '3d'"
+            label="3D 形象"
+            tip="内置一份 CC0 模型（VRoid 早期样例 Sendagaya Shino）；也可载入自己的 .vrm（VRoid Studio 导出即可），文件只在本机读取、不上传"
+          >
+            <div class="pet-slots">
+              <el-radio-group :model-value="petStore.settings.vrmMode" @change="setPet({ vrmMode: $event })">
+                <el-radio-button label="builtin">内置样例</el-radio-button>
+                <el-radio-button label="custom">自定义文件</el-radio-button>
+                <el-radio-button label="off">程序化素模</el-radio-button>
+              </el-radio-group>
+              <template v-if="petStore.settings.vrmMode === 'custom'">
+                <el-button size="small" @click="pickPetVrm">{{ petVrmName || '选择 .vrm' }}</el-button>
+                <el-button v-if="petStore.settings.vrmPath" size="small" text @click="setPet({ vrmPath: '' })">
+                  清除
+                </el-button>
+              </template>
+            </div>
+          </SettingRow>
           <SettingRow v-if="petStore.settings.renderer === '2d'" label="宠物形象">
             <el-select :model-value="petStore.settings.pack" style="width: 160px" @change="setPet({ pack: $event })">
               <el-option label="Boba（水獭）" value="boba" />
@@ -728,6 +747,22 @@ function setPetSlotAt(i: number, key: string) {
 }
 function resetPetSlots() {
   setPet({ slots: [...PET_SLOT_DEFAULTS] });
+}
+
+/** 3D 形象：弹系统文件选择框，只把路径存进设置（字节由主进程读给宠物窗） */
+const petVrmName = computed(() => {
+  const p = petStore.settings.vrmPath || '';
+  return p ? p.split(/[\/]/).pop() || p : '';
+});
+async function pickPetVrm() {
+  const api = (window as any).electronAPI?.pet;
+  if (!api?.pickVrm) {
+    ElMessage.warning('仅桌面端支持选择本地模型');
+    return;
+  }
+  const r = await api.pickVrm();
+  if (r?.ok && r.path) setPet({ vrmMode: 'custom', vrmPath: r.path });
+  else if (r && !r.canceled) ElMessage.error(r.msg || '选择失败');
 }
 import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';

@@ -60,6 +60,8 @@
 
       <div
         class="body"
+        :class="{ 'body-3d': settings.renderer === '3d' }"
+        :style="bodyStyle"
         data-hit
         title="左键拖动 · 右键菜单"
         @pointerdown="onDown"
@@ -85,6 +87,7 @@
           :flip="facingLeft"
           :active="renderActive"
           :visible="renderVisible"
+          :vrm-buffer="vrmBuffer"
         />
       </div>
 
@@ -145,9 +148,11 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import Pet2D from '../components/pet/Pet2D.vue'
 import Pet3D from '../components/pet/Pet3D.vue'
-import { usePetStore, PET_DEFAULTS, PET_SLOT_DEFS, type PetActivity, type PetSettings, type PetState } from '../stores/pet'
+import { usePetStore, PET_DEFAULTS, PET_SLOT_DEFS, BUILTIN_VRM_FILE, type PetActivity, type PetSettings, type PetState } from '../stores/pet'
 
 const store = usePetStore()
+// 同源 localStorage：别等主窗的 IPC 推送 —— 宠物窗可能比它先起来（真机实测会停在默认 2D）
+store.init()
 const settings = ref<PetSettings>({ ...PET_DEFAULTS, ...store.settings })
 const state = ref<PetState>('idle')
 /** 正在做的事（主窗派生后推过来），驱动活动气泡 */
@@ -162,11 +167,84 @@ const renderVisible = computed(() => winVisible.value)
 const renderActive = computed(() => winVisible.value && winFocused.value)
 /** 只在走的时候镜像：停下要正面朝人，不能一直背对 */
 const facingLeft = computed(() => walking.value && walkDir.value < 0)
+/** 3D 形象：VRM 字节（null = 用程序化素模）。内置模型 dev 走 vite、打包走主进程读 */
+const vrmBuffer = ref<ArrayBuffer | null>(null)
+const vrmError = ref('')
+let vrmSeq = 0
+
+function toArrayBuffer(data: any): ArrayBuffer | null {
+  if (!data) return null
+  if (data instanceof ArrayBuffer) return data
+  if (ArrayBuffer.isView(data)) {
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+  }
+  return null
+}
+
+async function loadBuiltinVrm(): Promise<ArrayBuffer | null> {
+  if (import.meta.env.DEV) {
+    try {
+      const r = await fetch('/' + BUILTIN_VRM_FILE)
+      if (r.ok) return await r.arrayBuffer()
+    } catch {
+      /* dev 下拿不到就退回主进程读（打包版路径） */
+    }
+  }
+  const r = await api()?.readBuiltinVrm?.()
+  return r && r.ok ? toArrayBuffer(r.data) : null
+}
+
+/** 换形象 / 切 3D / 打开宠物窗时重新取一次模型字节 */
+async function refreshVrm() {
+  const seq = ++vrmSeq
+  vrmError.value = ''
+  if (settings.value.renderer !== '3d' || settings.value.vrmMode === 'off') {
+    vrmBuffer.value = null
+    return
+  }
+  try {
+    let buf: ArrayBuffer | null = null
+    if (settings.value.vrmMode === 'custom') {
+      if (!settings.value.vrmPath) {
+        vrmError.value = '未选择模型文件'
+      } else {
+        const r = await api()?.readVrm?.(settings.value.vrmPath)
+        if (!r || !r.ok) vrmError.value = (r && r.msg) || '读取模型失败'
+        else buf = toArrayBuffer(r.data)
+      }
+    } else {
+      buf = await loadBuiltinVrm()
+      if (!buf) vrmError.value = '内置模型不可用'
+    }
+    if (seq === vrmSeq) vrmBuffer.value = buf
+  } catch (err) {
+    if (seq === vrmSeq) {
+      vrmBuffer.value = null
+      vrmError.value = String(err)
+    }
+  }
+}
+
+// 切 2D/3D、换内置/自定义、换文件 → 重新取模型
+watch(
+  () => [settings.value.renderer, settings.value.vrmMode, settings.value.vrmPath],
+  () => refreshVrm()
+)
 const bubble = computed(() =>
   settings.value.bubble && state.value === 'running' && !showAsk.value ? activity.value : null
 )
-/** 气泡贴着宠物头顶：宠物脚在窗底（6px padding），精灵高 118 * scale */
-const bubbleBottom = computed(() => `${Math.round(6 + 118 * settings.value.scale + 10)}px`)
+/** 气泡贴着宠物头顶：宠物脚在窗底（6px padding）。2D 精灵 118 高，3D 取景框 280 高 */
+const bubbleBottom = computed(() => {
+  const s = settings.value.scale || 1
+  const h = settings.value.renderer === '3d' ? 280 : 118
+  return `${Math.round(6 + h * s + 10)}px`
+})
+/** 3D 要一个明确的取景框：canvas 默认 300×150，不给尺寸的话人形会被压成一小只 */
+const bodyStyle = computed(() => {
+  if (settings.value.renderer !== '3d') return {}
+  const s = settings.value.scale || 1
+  return { width: Math.round(190 * s) + 'px', height: Math.round(280 * s) + 'px' }
+})
 const action = ref<string | null>(null)
 const barOpen = ref(false)
 const panelOpen = ref(false)
@@ -587,6 +665,7 @@ onMounted(() => {
     winFocused.value = p.focused !== false
   })
   scheduleStroll()
+  refreshVrm()
 
   // 主动要一次当前状态：主窗只在变化时推，本窗重载后智能体/任务列表会是空的
   api()?.requestSync?.()
@@ -602,6 +681,7 @@ onBeforeUnmount(() => {
   offSettings?.()
   offWalk?.()
   offWin?.()
+  vrmSeq++ // 作废在途的模型加载
   window.clearTimeout(actionTimer)
   window.clearTimeout(strollTimer)
   document.documentElement.classList.remove('pet-window-mode')

@@ -39,6 +39,10 @@ export interface PetSettings {
   notifyMode: 'all' | 'input' | 'off'
   /** 跟随的任务（空 = 自动跟最高优先级） */
   pinnedConvId: string
+  /** 3D 形象来源：内置 CC0 样例 / 自定义 .vrm 文件 / 程序化素模 */
+  vrmMode: 'builtin' | 'custom' | 'off'
+  /** 自定义 VRM 的绝对路径（vrmMode==='custom' 时有效） */
+  vrmPath: string
   /** 待机时沿屏幕底边踱步 */
   walk: boolean
   /** 活动气泡（正在做什么 + 文件名） */
@@ -112,6 +116,9 @@ export function plainPetSettings(s: PetSettings): PetSettings {
   return { ...s, slots: Array.isArray(s?.slots) ? [...s.slots] : [] }
 }
 
+/** 内置 VRM（VRoid 早期样例 Sendagaya Shino，CC0）在打包版里的相对路径 */
+export const BUILTIN_VRM_FILE = 'vrm/sendagaya_shino.vrm'
+
 /**
  * 把第 index 个槽位改成 key。key 已在别的槽位时两个槽位**互换**，
  * 而不是让菜单里出现两个同名项（用户想把「设置」从第 6 位换到第 1 位，
@@ -135,6 +142,8 @@ export const PET_DEFAULTS: PetSettings = {
   slots: [...PET_SLOT_DEFAULTS],
   notifyMode: 'all',
   pinnedConvId: '',
+  vrmMode: 'builtin',
+  vrmPath: '',
   walk: true,
   bubble: true,
 }

@@ -1,5 +1,5 @@
 <template>
-  <div ref="host" class="pet3d">
+  <div ref="host" class="pet3d" :data-vrm="vrmState">
     <canvas ref="cv" class="cv" />
   </div>
 </template>
@@ -8,6 +8,8 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import type { PetState } from '../../stores/pet'
+import { loadVrmFromBuffer, type LoadedVrm } from './vrmLoader'
+import { poseFor } from './vrmPose'
 
 const props = withDefaults(
   defineProps<{
@@ -22,8 +24,10 @@ const props = withDefaults(
     active?: boolean
     /** 窗口可见：false 时整帧停止（隐藏即停渲染） */
     visible?: boolean
+    /** VRM 模型字节；为空时退回程序化素模 */
+    vrmBuffer?: ArrayBuffer | null
   }>(),
-  { action: null, scale: 1, walking: false, flip: false, active: true, visible: true }
+  { action: null, scale: 1, walking: false, flip: false, active: true, visible: true, vrmBuffer: null }
 )
 
 const host = ref<HTMLElement | null>(null)
@@ -47,6 +51,130 @@ interface Rig {
   tail: THREE.Mesh
 }
 let rig: Rig | null = null
+
+/** 真 VRM 模型（加载成功后压过程序化素模） */
+let loaded: LoadedVrm | null = null
+/** 给外部（真机验证/排障）一个可读的状态标记：none / loading / ready / error */
+const vrmState = ref<'none' | 'loading' | 'ready' | 'error'>('none')
+let vrmExpr = ''
+/** 换模型/卸载时作废旧的一次异步加载 */
+let loadSeq = 0
+
+function disposeVrm() {
+  if (!loaded) return
+  try {
+    scene?.remove(loaded.holder)
+    loaded.holder.traverse((o: any) => {
+      o.geometry?.dispose?.()
+      const m = o.material
+      if (Array.isArray(m)) m.forEach((x: any) => x?.dispose?.())
+      else m?.dispose?.()
+    })
+    ;(loaded.vrm as any).dispose?.()
+  } catch {
+    /* 释放失败不影响换下一个模型 */
+  }
+  loaded = null
+  vrmExpr = ''
+  vrmState.value = 'none'
+  if (rig) rig.root.visible = true
+  frameDefault()
+}
+
+async function loadVrm(buffer: ArrayBuffer | null) {
+  const seq = ++loadSeq
+  disposeVrm()
+  if (!buffer || !scene) return
+  vrmState.value = 'loading'
+  try {
+    const next = await loadVrmFromBuffer(buffer)
+    if (seq !== loadSeq || !scene) { // 已被更新的一次加载取代
+      next.holder.traverse((o: any) => { o.geometry?.dispose?.() })
+      return
+    }
+    next.holder.scale.setScalar(props.scale)
+    scene.add(next.holder)
+    loaded = next
+    vrmState.value = 'ready'
+    if (rig) rig.root.visible = false
+    frameVrm(next.height)
+  } catch (err) {
+    vrmState.value = 'error'
+    console.warn('[pet] VRM 加载失败，退回程序化素模:', err && (err as Error).message)
+  }
+}
+
+/** 素模的默认取景 */
+function frameDefault() {
+  if (!camera) return
+  camera.position.set(0, 3.1, 11)
+  camera.lookAt(0, 1.85, 0)
+  camera.updateProjectionMatrix()
+}
+
+/**
+ * VRM 取景：让脚正好落在取景框底边、模型占满约 86% 高度。
+ * 单纯沿用素模相机的话，人形会「悬在半空 + 只占屏幕一小块」（真机实测）。
+ */
+function frameVrm(height: number) {
+  if (!camera) return
+  const visible = height / 0.86
+  const d = visible / 2 / Math.tan((camera.fov * Math.PI) / 360)
+  camera.position.set(0, visible / 2, d)
+  camera.lookAt(0, visible / 2, 0)
+  camera.updateProjectionMatrix()
+}
+
+/** 把 poseFor 的数值贴到 VRM 的 normalized 骨骼上 */
+function applyVrmPose(dt: number) {
+  if (!loaded) return
+  const { vrm, holder } = loaded
+  const pose = poseFor({
+    state: props.state,
+    action: props.action,
+    t,
+    actionT,
+    cursor,
+    walking: props.walking,
+  })
+  holder.position.y = pose.rootY
+  holder.rotation.y = pose.rootRotY + (props.walking ? (props.flip ? -0.55 : 0.55) : 0)
+
+  const bone = (name: string) => {
+    try {
+      return vrm.humanoid?.getNormalizedBoneNode(name as never) || null
+    } catch {
+      return null
+    }
+  }
+  const setR = (name: string, x: number, y: number, z: number) => {
+    const n = bone(name)
+    if (n) n.rotation.set(x, y, z)
+  }
+  setR('spine', pose.spineX, pose.spineY, pose.spineZ)
+  setR('chest', pose.chestX, 0, 0)
+  setR('head', pose.headX, pose.headY, pose.headZ)
+  setR('leftUpperArm', pose.armLX, 0, pose.armLZ)
+  setR('rightUpperArm', pose.armRX, 0, pose.armRZ)
+  setR('leftLowerArm', pose.foreArmLX, 0, 0)
+  setR('rightLowerArm', pose.foreArmRX, 0, 0)
+  setR('leftUpperLeg', pose.legLX, 0, 0)
+  setR('rightUpperLeg', pose.legRX, 0, 0)
+  setR('leftLowerLeg', pose.kneeLX, 0, 0)
+  setR('rightLowerLeg', pose.kneeRX, 0, 0)
+
+  const em: any = (vrm as any).expressionManager
+  if (em?.setValue) {
+    if (vrmExpr && vrmExpr !== pose.expression) {
+      try { em.setValue(vrmExpr, 0) } catch { /* 模型没有这个表情 */ }
+    }
+    vrmExpr = pose.expression
+    if (pose.expression) {
+      try { em.setValue(pose.expression, pose.expressionWeight) } catch { /* 同上 */ }
+    }
+  }
+  vrm.update(dt)
+}
 
 let t = 0
 let lastFrame = 0
@@ -265,9 +393,14 @@ function loop(now: number) {
   const dt = Math.min(0.05, (now - lastFrame) / 1000)
   lastFrame = now
   t += dt
-  resetPose()
-  applyState(dt)
-  applyAction(dt)
+  if (loaded) {
+    if (props.action) actionT += dt // 程序化那条自己累加，别重复计
+    applyVrmPose(dt)
+  } else {
+    resetPose()
+    applyState(dt)
+    applyAction(dt)
+  }
   renderer.render(scene, camera)
 }
 
@@ -304,6 +437,8 @@ onMounted(() => {
   rig.root.scale.setScalar(props.scale)
   scene.add(rig.root)
 
+  if (props.vrmBuffer) loadVrm(props.vrmBuffer)
+
   ro = new ResizeObserver(resize)
   ro.observe(host.value)
   resize()
@@ -326,13 +461,22 @@ watch(
 )
 watch(
   () => props.scale,
-  (s) => rig?.root.scale.setScalar(s)
+  (s) => {
+    rig?.root.scale.setScalar(s)
+    loaded?.holder.scale.setScalar(s)
+  }
+)
+watch(
+  () => props.vrmBuffer,
+  (b) => loadVrm(b ?? null)
 )
 
 onBeforeUnmount(() => {
+  loadSeq++
   cancelAnimationFrame(raf)
   ro?.disconnect()
   window.removeEventListener('pointermove', onMove)
+  disposeVrm()
   renderer?.dispose()
   renderer = null
 })

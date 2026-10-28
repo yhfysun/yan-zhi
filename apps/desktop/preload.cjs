@@ -102,6 +102,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Number(dx) || 0, Number(dy) || 0),
     // 沿屏幕底边踱步：{ on: true } 起走 / { on: false } 停下（位移由主进程算）
     walk: (payload) => ipcRenderer.send('pet:walk', payload || {}),
+    // 3D 形象：选择 / 读取自定义 VRM；内置模型也从主进程读（打包版 file:// 不能 fetch）
+    pickVrm: () => ipcRenderer.invoke('pet:pick-vrm'),
+    readVrm: (filePath) => ipcRenderer.invoke('pet:read-vrm', filePath),
+    readBuiltinVrm: () => ipcRenderer.invoke('pet:read-builtin-vrm'),
     onWalkState: (cb) => {
       const h = (_e, p) => cb(p);
       ipcRenderer.on('pet:walk-state', h);

@@ -9645,6 +9645,51 @@ ipcMain.on('pet:walk', (_e, payload) => {
     else petWalkStop();
   } catch {}
 });
+
+// ---- 3D 形象（VRM）----
+// 打包后窗口是 file:// 加载的，渲染层 fetch 本地文件会被 CORS 拦掉，
+// 所以模型字节一律由主进程读、经 IPC 交给渲染层解析。
+const PET_VRM_MAX_BYTES = 128 * 1024 * 1024;
+
+async function readVrmBytes(file) {
+  const st = await fs.promises.stat(file);
+  if (st.size > PET_VRM_MAX_BYTES) throw new Error('模型超过 128MB');
+  const buf = await fs.promises.readFile(file);
+  // 只认 glTF 二进制头：避免把任意文件丢给解析器（也不会误读成 JSON glTF）
+  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'glTF') throw new Error('不是 VRM/GLB 文件');
+  return buf;
+}
+
+ipcMain.handle('pet:pick-vrm', async () => {
+  try {
+    const r = await dialog.showOpenDialog({
+      title: '选择 VRM 模型',
+      filters: [{ name: 'VRM / glTF', extensions: ['vrm', 'glb'] }],
+      properties: ['openFile'],
+    });
+    const file = r && !r.canceled ? r.filePaths && r.filePaths[0] : '';
+    if (!file) return { ok: false, canceled: true };
+    return { ok: true, path: file, name: path.basename(file) };
+  } catch (err) {
+    return { ok: false, msg: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle('pet:read-vrm', async (_e, file) => {
+  try {
+    if (!file || typeof file !== 'string') return { ok: false, msg: '无效路径' };
+    return { ok: true, data: await readVrmBytes(file) };
+  } catch (err) {
+    return { ok: false, msg: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle('pet:read-builtin-vrm', async () => {
+  try {
+    // 内置模型放 public/vrm/，构建时原样拷到 dist/vrm/（文件名不加 hash，便于这里直接定位）
+    return { ok: true, data: await readVrmBytes(path.join(__dirname, 'dist', 'vrm', 'sendagaya_shino.vrm')) };
+  } catch (err) {
+    return { ok: false, msg: String((err && err.message) || err) };
+  }
+});
 ipcMain.on('pet:action', (_e, action) => {
   try {
     if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -10761,7 +10806,9 @@ app.whenReady().then(async () => {
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      `connect-src 'self' ws://localhost:1420 wss://localhost:1420 ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
+      // ★ blob: 给 three-vrm 用：GLB 内嵌贴图被解成 blob URL，再由 ImageBitmapLoader
+      //   以 fetch(blob:) 读回；connect-src 不放行就会 "Couldn't load texture"（整只模型变白）。
+      `connect-src 'self' blob: ws://localhost:1420 wss://localhost:1420 ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
       // ★ HTML 产物预览用 iframe 加载 `/api/workspace/file-stream?path=…`（见下方 artifact CSP）——
       //   `default-src 'self'` 会把它当外部框架直接拦掉（iframe 里只有一片空白，且报 CSP 违规），
       //   所以显式放行本机 API 源。
@@ -10772,7 +10819,7 @@ app.whenReady().then(async () => {
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      `connect-src 'self' ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
+      `connect-src 'self' blob: ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
       `frame-src 'self' ${API_ORIGIN} http://localhost:${API_PORT};`;
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
