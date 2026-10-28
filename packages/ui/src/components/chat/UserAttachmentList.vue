@@ -35,9 +35,10 @@
       </div>
     </div>
 
-    <!-- 收起态：只留一行概览文字（图片/文件全部不渲染） -->
+    <!-- 收起态：只留一行概览文字（图片/文件全部不渲染）
+         ★ 只有批注、没有附件/链接时整块不渲染 —— 否则会剩一个孤零零的「收起」箭头（实测）。 -->
     <button
-      v-if="!expanded"
+      v-if="!expanded && hasFilesOrLinks"
       type="button"
       class="ual-summary"
       title="展开附件"
@@ -48,7 +49,7 @@
     </button>
 
     <!-- 展开态：只显示图/文件本身，不再挂概览文字；收起按钮固定在最右，不随横向滚动跑掉 -->
-    <template v-else>
+    <template v-else-if="hasFilesOrLinks">
       <div class="ual-chips">
         <!-- 文件 / 图片附件：挂在用户气泡下方（气泡里只留正文） -->
         <div
@@ -150,6 +151,8 @@ const props = defineProps<{
 
 const links = computed(() => props.links || []);
 const annotations = computed(() => props.annotations || []);
+/** 是否真有附件/链接 —— 只有批注时不渲染收起/展开那套控件 */
+const hasFilesOrLinks = computed(() => props.attachments.length > 0 || links.value.length > 0);
 /** 截图取不到时（老消息指向 userData 路径 → file-stream 403）退回胶囊按钮 */
 const shotBroken = ref(false);
 const shotSrc = computed(() =>
