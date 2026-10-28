@@ -1327,6 +1327,9 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   //   text/select/checkbox/radio/label 全支持，失败字段逐条上报），此前漏挂载导致
   //   pageAgent 只能逐个 browser_type 填表 —— 典型"能力在、入口断"。已在 WRITE_TOOLS。
   'browser_fill_form', 'browser_submit_form',
+  // 任务 1（2026-10-28）：网络 JSON 响应直采 —— 页面自然发生的 XHR/fetch JSON 存入缓冲，
+  //   按 URL 模式直取结构化数据，替代"读 DOM 猜结构 / 手写 fetch 脚本"。
+  'browser_get_api_data',
   // ★ 站点配方（2026-10-24，P2-2）：form-fill 配方 = 通用批量填表（备用选择器回退 + 回读核验在代码里跑），
   //   字段多 / 类名带 hash / 要"填完点保存并确认"的表单用它，比反复调 fill_form 少很多轮。
   'browser_run_recipe',
@@ -1408,6 +1411,7 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_get_page_info: 元素坐标——与 get_page_content 同样的编号元素，但额外给 x/y/w/h。需要按坐标点击、判断元素是否在视口内/被遮挡/需滚动、或配合 browser_screenshot(annotate=true) 时用它
 - browser_get_dom: 父子层级树——需要看清元素归属、弹窗/portal 挂在哪个容器下时用；只要操作目标时不必调它
 - browser_get_visible_text: 纯正文——只读内容、抽取长文时用，输出最小
+- browser_get_api_data: 接口直采——页面自然发生的 XHR/fetch JSON 响应按 URL 模式直取（urlPattern 传 "/api/..." 子串）。列表/搜索/分页取数首选它，比读 DOM 省 token 且拿到的是结构化数据；刚打开的新页先等加载或滚动触发请求后再取，取不到回退 browser_get_page_content
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】（翻页收集列表、批量提取、触发懒加载）；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）。★ 单点交互（找按钮点击、往输入框填字）禁止写脚本穷举选择器——脚本没有防循环计数与元素重定位保护，选择器失效直接抛错；用 browser_click/browser_type，找不到目标先 browser_get_page_content 重新读页定位
 - browser_upload: 上传本地文件——在页面上设置 input[type=file] 的文件（如上传视频/图片到后台）。传选择器（可选）与本地文件路径
@@ -1483,6 +1487,7 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - 开工先看提示词里的「领域经验」段：若已有本站（sites/<域名>）的验证过的操作序列/选择器/规避，**直接按经验执行**，不要重新摸索整页结构；需要更完整内容用 api_experience_read 查（topic 如 sites/mp.weixin.qq.com）。
 - 任务过程中一旦验证出「好路径/关键选择器/坑的规避」（例如：正文在某容器、某按钮需先滚动才出现、该站 iframe 嵌套需先切 frame），**当场**调 api_experience_write 记一条（kind=pit/step/fact，topic= sites/<当前域名>），不要等任务结束——长任务中途可能丢上下文。
 - 任务成功后自查一遍：本次有新验证出的路径而经验里没有 → 补一条；经验里已有 → 不重复写。禁止写空泛条目（"注意页面结构"这类无价值内容禁止入库）。
+- **多步固定流程沉淀成配方**（2026-10-28）：同一站点验证出「多步固定操作序列」（如登录后三连点进后台、每日签到的固定路径）且预计会重复使用时，用 file_write 把它写成配方 JSON 落到 <工作目录>/recipes/<id>.json（id 用小写连字符、与文件名一致；字段：id/description/params/steps/hosts；steps 的 kind 只允许 navigate/upload/fill/fillFromJson/clickText/waitText，≤30 步，选择器支持 {{参数名}} 插值）。之后同站任务用 browser_run_recipe { recipe: <id>, params: {...} } 一步执行，不用重新摸索。单点的选择器/坑仍走经验库（配方只收"流程"，不收"知识点"）。
 
 【防循环硬约束】
 - 同一工具 + 相同参数连续调用 2 次结果不变 → 立即停止重试，换其他工具或向父智能体返回已有结果。
@@ -1491,6 +1496,7 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - 任务要求提取搜索结果/链接列表时，只用 browser_get_page_content 的输出提取（配合 browser_scroll 翻看视口外内容），不要反复换参数重试。
 - 读页工具分工（按"你需要什么"选，不要为同一页重复调用多个）：
   · browser_get_page_content —— 内容 + 操作目标：标题/正文 + 带编号的可交互元素（含 index、selector、type、name）。找"点哪里、往哪输入"用它，操作后重新观察结果也用它。
+  · browser_get_api_data —— 接口直采：页面自然发生的 XHR/fetch JSON 响应按 URL 模式直取（urlPattern 传 "/api/..." 子串）。列表/搜索/分页取数**首选它**，比读 DOM 省 token 且拿到的是结构化数据；刚打开的新页先等加载或滚动触发请求后再取，取不到回退 get_page_content。
   · browser_get_page_info —— 元素坐标：同样的编号元素，但额外给 x/y/w/h。需要按坐标点击、判断元素是否在视口内/被遮挡/需滚动、配合 browser_screenshot(annotate=true) 叠加编号框时才用它。
   · browser_get_dom —— 父子层级树：需要看清元素归属、弹窗/portal 挂在哪个容器下时用；只要操作目标时不必调它。
   · browser_get_visible_text —— 纯正文：只读内容、抽取长文时用，输出最小。

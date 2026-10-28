@@ -70,6 +70,14 @@ export type RecipeStep =
 export interface PublishRecipe {
   id: string;
   description: string;
+  /**
+   * 适用站点 host 列表（2026-10-28）：导航回执据此附「本站有配方」提示。
+   * ★ 为什么：配方清单只写在 browser_run_recipe 的工具描述里，模型经常忘了先查配方
+   *   就开始手工试错（抖音发布页反复填表 2 小时即此）——把「先试配方」从软约束
+   *   变成每次导航的强提醒，一行字符串，几乎零成本。
+   * host 精确匹配或以其为后缀的子域命中；不填 = 任意站点（如 form-fill 通用配方不填）。
+   */
+  hosts?: string[];
   params: Record<string, RecipeParamDef>;
   steps: RecipeStep[];
 }
@@ -659,6 +667,7 @@ export async function runRecipe(
  */
 export const DOUYIN_PUBLISH_RECIPE: PublishRecipe = {
   id: 'douyin-publish-video',
+  hosts: ['creator.douyin.com'],
   description: '抖音创作者中心发布一条视频：上传→填标题/描述→合集（系列任务首集必选）→（submit=true 时）点发布并验证',
   params: {
     videoPath: { type: 'string', required: true, description: '本地成片 mp4 的绝对路径' },
@@ -716,6 +725,7 @@ export const DOUYIN_PUBLISH_RECIPE: PublishRecipe = {
  */
 export const DOUYIN_POST_COMMENT_RECIPE: PublishRecipe = {
   id: 'douyin-post-comment',
+  hosts: ['creator.douyin.com'],
   description: '抖音创作者后台发一条引导评论：打开互动评论页→选中作品→真实键入→发送→回读核验',
   params: {
     videoTitle: { type: 'string', required: true, description: '目标作品标题（评论区左侧作品列表里可见的标题片段）' },
@@ -759,6 +769,7 @@ export const DOUYIN_POST_COMMENT_RECIPE: PublishRecipe = {
  */
 export const DOUYIN_SET_COVER_RECIPE: PublishRecipe = {
   id: 'douyin-set-cover',
+  hosts: ['creator.douyin.com'],
   description: '抖音发布页设置自定义封面（视频已上传后调用）：打开封面弹窗→上传图片→确定',
   params: {
     coverPath: { type: 'string', required: true, description: '本地封面绝对路径（4:3 成片用 1080×1440，9:16 用 1080×1920；JPG/PNG）' },
@@ -793,6 +804,7 @@ export const DOUYIN_SET_COVER_RECIPE: PublishRecipe = {
  */
 export const FORM_FILL_RECIPE: PublishRecipe = {
   id: 'form-fill',
+  hosts: [],
   description: '任意页面批量填表：按字段清单一次填完并回读核验（选择器未命中自动用备用选择器重试），可选填完后点提交按钮。',
   params: {
     fields: {
@@ -826,6 +838,7 @@ export const FORM_FILL_RECIPE: PublishRecipe = {
  */
 export const DOUYIN_INSERT_TOPICS_RECIPE: PublishRecipe = {
   id: 'douyin-insert-topics',
+  hosts: ['creator.douyin.com'],
   description: '抖音作品编辑页：把描述里的纯文本话题升级为真话题 chip。幂等（已有 chip 跳过），失败即停，绝不点保存',
   params: {
     editUrl: {
@@ -862,10 +875,168 @@ export const RECIPES: Record<string, PublishRecipe> = {
   [FORM_FILL_RECIPE.id]: FORM_FILL_RECIPE,
 };
 
+export function listRecipes(): string[] {
+  return allRecipes().map((r) => r.id);
+}
+
 export function getRecipe(id: string): PublishRecipe | undefined {
   return RECIPES[id];
 }
 
-export function listRecipes(): string[] {
-  return Object.keys(RECIPES);
+// ============================================================
+// 配方数据文件注册表（2026-10-28，任务 2）
+//
+// ★ 为什么：内置配方写死在 RECIPES 常量里，新站配方必须改代码才能沉淀；而 pageAgent
+//   在任务中验证出的任意站点的好路径只能进经验库（散文），变不成可复用命令 ——
+//   OpenCLI 式「沉淀网站能力」缺了最后一环。本模块把配方升级为**数据**：
+//   · 模型用 file_write 把验证过的多步流程写成 JSON 落盘 <工作目录>/recipes/<id>.json；
+//   · browser_run_recipe 执行时扫描合并（**内置优先**：文件不能覆盖内置 —— 内置配方带
+//     验证码续跑（blockedByVerification/resumeStep）等安全语义，不允许被同名文件悄悄改掉行为）；
+//   · 校验器封闭校验（kind 白名单 + 必填字段 + 大小限制），坏文件不阻断、错误汇总上报。
+// ============================================================
+import { getPlatformAdapter } from '../../../platform/types';
+import { joinPath } from '../fs-walk';
+
+/** 文件配方单个文件大小上限（防一次读入超大 JSON） */
+const RECIPE_FILE_MAX = 64 * 1024;
+
+/** 文件配方总数上限（防目录被塞爆） */
+const RECIPE_FILE_MAX_COUNT = 50;
+
+/** 可执行步骤 kind 白名单（封闭集合：与 runRecipe 的分支一一对应） */
+const FILE_STEP_KINDS = ['navigate', 'upload', 'fill', 'fillFromJson', 'clickText', 'waitText'] as const;
+
+/**
+ * 按 host 找适用配方（2026-10-28）：导航回执据此附「本站有配方」提示。
+ * host 精确匹配或以其为后缀（子域）；hosts 为空/缺省 = 任意站点适用
+ * （form-fill 通用配方对任何站点都值得提示）。
+ */
+export function findRecipesForHost(url: string): PublishRecipe[] {
+  let host = '';
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return []; }
+  if (!host) return [];
+  return allRecipes().filter((r) => (r.hosts || []).some((h) => host === h || host.endsWith('.' + h)));
+}
+
+/**
+ * 配方注册表快照（2026-10-28）：任务 2（配方数据文件注册表）的前置接口。
+ * 返回浅拷贝数组避免外部直接改注册表。
+ */
+export function allRecipes(): PublishRecipe[] {
+  return Object.values(RECIPES);
+}
+
+/**
+ * 校验一个未知来源的 recipe JSON（封闭校验，三道闸：kind 白名单 + 必填字段/类型 + 尺寸上限）。
+ *
+ * ★ 为什么必须封闭：配方执行是**逐字执行**（导航到 URL、按 selector 点击），
+ *   坏数据会在页面上乱点/乱导。insertTopic 依赖抖音编辑页 DOM，不开放给文件配方。
+ */
+export function validateRecipeData(data: unknown): { ok: true; recipe: PublishRecipe } | { ok: false; error: string } {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, error: '配方必须是 JSON 对象' };
+  const r = data as Record<string, unknown>;
+  const id = String(r.id || '').trim();
+  // id 既是文件名也是工具参数值：只认 kebab-case（防路径穿越/特殊字符）
+  if (!id || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) {
+    return { ok: false, error: 'id 必填且只允许小写字母/数字/连字符（≤64 字符）' };
+  }
+  if (typeof r.description !== 'string' || !r.description.trim()) return { ok: false, error: 'description 必填' };
+  if (!Array.isArray(r.steps) || !r.steps.length) return { ok: false, error: 'steps 必须是非空数组' };
+  if (r.steps.length > 30) return { ok: false, error: 'steps 超过 30 步上限' };
+  if (r.hosts !== undefined) {
+    if (!Array.isArray(r.hosts) || (r.hosts as unknown[]).some((h) => typeof h !== 'string' || !String(h).trim())) {
+      return { ok: false, error: 'hosts 必须是字符串数组' };
+    }
+  }
+  // params 只认 string/boolean 两类定义（与 RecipeParamDef 同构）
+  if (r.params !== undefined) {
+    if (!r.params || typeof r.params !== 'object' || Array.isArray(r.params)) return { ok: false, error: 'params 必须是对象' };
+    for (const [k, v] of Object.entries(r.params as Record<string, unknown>)) {
+      const def = v as Record<string, unknown>;
+      if (!def || typeof def !== 'object') return { ok: false, error: `params.${k} 必须是对象` };
+      if (def.type !== 'string' && def.type !== 'boolean') return { ok: false, error: `params.${k}.type 只允许 \"string\" | \"boolean\"` };
+      if (def.description !== undefined && typeof def.description !== 'string') return { ok: false, error: `params.${k}.description 必须是字符串` };
+      if (def.required !== undefined && typeof def.required !== 'boolean') return { ok: false, error: `params.${k}.required 必须是布尔` };
+    }
+  }
+  for (const s of r.steps as unknown[]) {
+    if (!s || typeof s !== 'object') return { ok: false, error: 'steps 里出现非对象项' };
+    const st = s as Record<string, unknown>;
+    const kind = String(st.kind || '');
+    if (!(FILE_STEP_KINDS as readonly string[]).includes(kind)) {
+      return { ok: false, error: `未知步骤 kind: ${kind}（允许：${FILE_STEP_KINDS.join('、')}）` };
+    }
+    switch (kind) {
+      case 'navigate':
+        if (typeof st.url !== 'string' || !st.url.trim()) return { ok: false, error: 'navigate 步骤必填 url' };
+        break;
+      case 'upload':
+        if (typeof st.filePath !== 'string' || !st.filePath.trim()) return { ok: false, error: 'upload 步骤必填 filePath（支持 {{param}} 插值）' };
+        if (!Array.isArray(st.clickSelectors) || !st.clickSelectors.length) return { ok: false, error: 'upload 步骤必填 clickSelectors 数组' };
+        if (!Array.isArray(st.successTexts) || !st.successTexts.length) return { ok: false, error: 'upload 步骤必填 successTexts 数组' };
+        break;
+      case 'fill':
+        if (!Array.isArray(st.fields) || !st.fields.length) return { ok: false, error: 'fill 步骤必填 fields 数组' };
+        for (const f of st.fields as unknown[]) {
+          const fd = f as Record<string, unknown>;
+          if (!fd || typeof fd !== 'object') return { ok: false, error: 'fill.fields 里出现非对象项' };
+          if (typeof fd.selector !== 'string' || !fd.selector.trim()) return { ok: false, error: 'fill.fields[].selector 必填' };
+          if (typeof fd.value !== 'string') return { ok: false, error: 'fill.fields[].value 必填（支持 {{param}} 插值）' };
+        }
+        break;
+      case 'fillFromJson':
+        if (typeof st.param !== 'string' || !st.param.trim()) return { ok: false, error: 'fillFromJson 步骤必填 param（参数名）' };
+        break;
+      case 'clickText':
+        if (!Array.isArray(st.texts) || !st.texts.length) return { ok: false, error: 'clickText 步骤必填 texts 数组' };
+        break;
+      case 'waitText':
+        if (!Array.isArray(st.texts) || !st.texts.length) return { ok: false, error: 'waitText 步骤必填 texts 数组' };
+        if (st.timeoutMs !== undefined && !Number.isFinite(Number(st.timeoutMs))) return { ok: false, error: 'waitText.timeoutMs 必须是数字' };
+        break;
+    }
+  }
+  return { ok: true, recipe: data as unknown as PublishRecipe };
+}
+
+/**
+ * 扫描 <工作目录>/recipes/*.json 并加载（坏文件不阻断、错误汇总）。
+ * ★ 内置优先：同名文件配方被内置配方屏蔽 —— 内置带验证码续跑（resumeStep）等安全语义，
+ *   不允许被同名文件悄悄改写行为。
+ */
+export async function loadFileRecipes(workspaceDir: string): Promise<{ recipes: Map<string, PublishRecipe>; errors: string[] }> {
+  const recipes = new Map<string, PublishRecipe>();
+  const errors: string[] = [];
+  if (!workspaceDir) return { recipes, errors };
+  const { fs } = getPlatformAdapter();
+  const dir = joinPath(workspaceDir, 'recipes');
+  try {
+    if (!(await fs.exists(dir))) return { recipes, errors };
+  } catch { return { recipes, errors }; }
+  let names: string[] = [];
+  try {
+    names = await fs.readDir(dir);
+  } catch { return { recipes, errors }; }
+  const jsonFiles = names.filter((n) => n.toLowerCase().endsWith('.json'));
+  for (const name of jsonFiles.slice(0, RECIPE_FILE_MAX_COUNT)) {
+    if (recipes.size >= RECIPE_FILE_MAX_COUNT) break;
+    const p = joinPath(dir, name);
+    try {
+      const content = await fs.readFile(p);
+      if (content.length > RECIPE_FILE_MAX) { errors.push(`${name}: 文件超过 64KB 上限`); continue; }
+      // 坏 JSON 不阻断其他文件
+      let data: unknown = null;
+      try { data = JSON.parse(content); } catch (e) { errors.push(`${name}: JSON 解析失败（${(e as Error).message.slice(0, 80)}）`); continue; }
+      const v = validateRecipeData(data);
+      if (!v.ok) { errors.push(`${name}: ${v.error}`); continue; }
+      // id 必须与文件名一致（防 id/文件名不一致造成覆盖混乱）
+      if (v.recipe.id !== name.replace(/\.json$/i, '')) { errors.push(`${name}: id 必须与文件名一致（<id>.json）`); continue; }
+      // 内置优先：文件不能覆盖内置配方（内置带验证码续跑等安全语义）
+      if (RECIPES[v.recipe.id]) { errors.push(`${name}: 与内置配方同名已忽略（内置优先）`); continue; }
+      recipes.set(v.recipe.id, v.recipe);
+    } catch (e) {
+      errors.push(`${name}: 读取失败（${(e as Error).message.slice(0, 80)}）`);
+    }
+  }
+  return { recipes, errors };
 }

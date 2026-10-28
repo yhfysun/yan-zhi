@@ -8,7 +8,7 @@ import { toolError } from '../../result';
 //   该原则：core 被前端/bundle 引用时静态解析失败。
 import { getPlatformAdapter } from '../../../platform/types';
 import { joinPath } from '../fs-walk';
-import { getRecipe, listRecipes, runRecipe, type RecipeApi } from './recipes';
+import { getRecipe, listRecipes, runRecipe, findRecipesForHost, allRecipes, loadFileRecipes, type RecipeApi } from './recipes';
 
 /** 获取 auth token（浏览器/web/桌面端均可访问 localStorage） */
 function getAuthToken(): string | null {
@@ -89,6 +89,29 @@ function semanticTargetSchema() {
 function usesSemanticTarget(args: Record<string, unknown>): boolean {
   const t = args?.target as Record<string, unknown> | undefined;
   return !!t && typeof t === 'object' && !!(t.text || t.role || t.label);
+}
+
+/**
+ * 导航回执的「本站可用配方」提示（2026-10-28，任务 4）。
+ *
+ * ★ 为什么：配方清单只写在 browser_run_recipe 的工具描述里，模型经常忘了先查配方就
+ *   开始手工试错（抖音发布页反复填表 2 小时的根因之一）。把「先试配方」从软约束变成
+ *   每次导航的强提醒 —— host 匹配到配方就列出来，任何站点都补一句 form-fill 通用配方。
+ *   提示是增强能力：匹配失败静默返回空串，绝不影响导航本身。
+ */
+function buildRecipeHint(url: string): string {
+  try {
+    const matched = findRecipesForHost(url);
+    const lines = matched.map((r) => `- ${r.id}：${r.description}（参数：${Object.keys(r.params).join('、') || '无'}）`);
+    // form-fill 是通用配方（hosts 为空 = 任意站点），单独补上表单提醒
+    const formFill = allRecipes().find((r) => r.id === 'form-fill');
+    if (formFill && !matched.some((r) => r.id === 'form-fill')) {
+      lines.push(`- form-fill：${formFill.description}（参数：fields、submit?、submitText?）—— 字段 ≥2 的任何表单都先考虑它`);
+    }
+    if (!lines.length) return '';
+    return `\n【本站可用配方】操作前优先调用 browser_run_recipe：\n${lines.join('\n')}`
+      + `\n（配方在代码里确定性执行"填表/核验/提交"全流程，失败会返回失败步骤与页面现场，比手工试错快得多）`;
+  } catch { return ''; }
 }
 
 /**
@@ -268,9 +291,9 @@ export class BrowserNavigateTool implements BuiltInTool {
       const force = args.force === true ? true : undefined;
       const data = await callBrowserApi('/navigate', 'POST', { url, tabId, force }) as any;
       if (data && data.alreadyOpen) {
-        return ok(`当前页面已经就是该 URL，未重复导航（alreadyOpen —— 重复导航会重置页面/清空已填表单）。\nURL: ${data.url}\nTitle: ${data.title || ''}\n${data.note || ''}`);
+        return ok(`当前页面已经就是该 URL，未重复导航（alreadyOpen —— 重复导航会重置页面/清空已填表单）。\nURL: ${data.url}\nTitle: ${data.title || ''}\n${data.note || ''}${buildRecipeHint(data?.url || url)}`);
       }
-      return ok(`Navigated to ${data.url}\nTitle: ${data.title}`);
+      return ok(`Navigated to ${data.url}\nTitle: ${data.title}${buildRecipeHint(data?.url || url)}`);
     } catch (e: any) { return err(e?.message || '导航失败'); }
   }
 }
@@ -1150,7 +1173,7 @@ export class BrowserExtractListTool implements BuiltInTool {
   name = 'browser_extract_list';
   // 读**页面当前快照**（列表项随页面/懒加载变化）
   readsExternalState = true;
-  description = 'Extract a list of structured data from the page as JSON array. 按模板从页面批量提取列表数据。selector 指定列表项容器，fields 描述每项要提取的字段（字段名→{selector,attr}）。attr 为 "text" 取文本，"html" 取 innerHTML，其他值取对应属性（如 href/src）。若不传 fields，自动识别常见列表项（商品卡片：标题/价格/链接）。';
+  description = 'Extract a list of structured data from the page as JSON array. 按模板从页面批量提取列表数据，支持一次调用翻多页（翻页循环在代码里确定性执行，替代"extract→next_page→extract"的 2N 次调用）。selector 指定列表项容器，fields 描述每项要提取的字段（字段名→{selector,attr}）。attr 为 "text" 取文本，"html" 取 innerHTML，其他值取对应属性（如 href/src）。若不传 fields，自动识别常见列表项（商品卡片：标题/价格/链接）。★ 多页采集：pages 传要采集的总页数（默认 1 只取当前页）；nextSelector 传翻页控件的 CSS 选择器（默认自动找「下一页/Next/›」）；untilText 传停止文本（页面出现即提前停，如「没有更多了」）。每页之间自动等待内容刷新，采集失败返回已拿到的部分 + 失败页码，不要整批重试。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -1160,15 +1183,55 @@ export class BrowserExtractListTool implements BuiltInTool {
         type: 'object',
         description: 'Map of field name → { selector, attr }. attr: "text"=textContent, "html"=innerHTML, other=getAttribute(attr). e.g. { title: { selector: ".title", attr: "text" }, price: { selector: ".price", attr: "text" }, link: { selector: "a", attr: "href" } }.',
       },
-      limit: { type: 'number', description: 'Max number of items to extract (default 20).' },
+      limit: { type: 'number', description: 'Max items per page (default 20). 单页条数；多页采集时总量 = limit × pages。' },
+      pages: { type: 'number', description: '要连续采集的页数（默认 1 = 只取当前页）。翻页循环在工具内确定性执行，一次调用拿全。' },
+      nextSelector: { type: 'string', description: '翻页控件的 CSS 选择器（可选，默认自动识别「下一页/Next/›/»」按钮或链接）。' },
+      untilText: { type: 'string', description: '提前停止的页面文本（可选）：出现即停止翻页（如「没有更多」「到底了」）。' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
-      const data = await callBrowserApi('/action', 'POST', { action: 'extract_list', tabId: args.tabId, selector: args.selector, fields: args.fields, limit: args.limit }) as any;
+      const data = await callBrowserApi('/action', 'POST', {
+        action: 'extract_list', tabId: args.tabId, selector: args.selector, fields: args.fields, limit: args.limit,
+        pages: args.pages, nextSelector: args.nextSelector, untilText: args.untilText,
+      }) as any;
       if (data?.error) return err(data.error);
-      return ok(`提取到 ${data.count} 条数据：\n${JSON.stringify(data.items, null, 2)}`);
+      // ★ 多页回执内联（2026-10-28）：采集了多少页、停在哪儿、有没有提前停 —— 模型据此
+      //   决定续采还是收工，不必再读一次页面核对。
+      const pageMeta = data?.pagesCollected > 1
+        ? `\n已连续采集 ${data.pagesCollected} 页${data.stoppedByUntil ? `（第 ${data.stoppedPage} 页出现「${args.untilText}」提前停止）` : ''}${data.failedPage ? `；第 ${data.failedPage} 页翻页失败，以上为已采集部分，续采请传 pages 继续或换 nextSelector` : ''}`
+        : '';
+      return ok(`提取到 ${data.count} 条数据（${data.pagesCollected || 1} 页）：\n${JSON.stringify(data.items, null, 2)}${pageMeta}`);
     } catch (e: any) { return err(e?.message || '结构化提取失败'); }
+  }
+}
+
+// ========== 任务 1（2026-10-28）网络 JSON 响应直采 ==========
+export class BrowserGetApiDataTool implements BuiltInTool {
+  name = 'browser_get_api_data';
+  // 读**累计的接口响应缓冲**：页面继续浏览会有新条目进缓冲
+  readsExternalState = true;
+  description = 'Get captured JSON API responses from the page\'s own network traffic, by URL pattern. 直接读取页面自然发生的 XHR/fetch JSON 响应体（结构化数据），替代"读 DOM 猜结构"或"手写 fetch 脚本"——列表页、搜索页、分页数据的取数首选。urlPattern 为 URL 子串或正则（如 "/api/search" 或 "list\\?page="）；缺省返回最新一条匹配，all:true 返回最多 5 条。★ 响应必须在页面自然发生时被捕获（页面打开后浏览器自己发过的请求）：刚打开的新页先等加载、或 browser_scroll 触发懒加载后再取；不确定有哪些接口时先用 browser_get_network_log 看请求 URL 列表。取不到时回退 browser_extract_list（DOM 提取）或 browser_get_page_content，不要反复换 urlPattern 空试。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页（桌面端多标签页时缓冲按页面各自累积）。' },
+      urlPattern: { type: 'string', description: 'URL substring or regex to match (e.g. "/api/list" or "search\\?keyword="). URL 子串或正则。' },
+      all: { type: 'boolean', description: 'true = 返回最多 5 条匹配（默认只回最新 1 条）。需要对比多次响应（如逐页 JSON）时开。' },
+    },
+    required: ['urlPattern'],
+  };
+  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+    try {
+      const urlPattern = args.urlPattern as string;
+      if (!urlPattern) return err('urlPattern 为必填项');
+      const data = await callBrowserApi('/action', 'POST', { action: 'get_api_data', tabId: args.tabId, urlPattern, all: args.all === true }) as any;
+      if (data?.error) return err(`${data.error}${data.hint ? `\n提示：${data.hint}` : ''}`);
+      let text = '';
+      try { text = JSON.stringify(data.entries, null, 2); } catch { text = String(data.entries); }
+      if (text.length > 8000) text = text.slice(0, 8000) + `…(截断，原长 ${text.length}；响应体过大时建议传更精确的 urlPattern 或分页取)`;
+      return ok(`捕获到 ${data.count} 条匹配的 JSON 响应（返回 ${data.returned} 条）：\n${text}`);
+    } catch (e: any) { return err(e?.message || '读取接口数据失败'); }
   }
 }
 
@@ -1385,7 +1448,11 @@ export class BrowserRunRecipeTool implements BuiltInTool {
     + '代码会做备用选择器回退与回读核验，一次调用完成填写；submit=true 时还要传 submitText（按钮文本）。'
     + '★ 发布/封面/评论这三个环节一律先试配方，不要自己逐页点：配方失败返回的现场比手工试错快得多。'
     + '★ submit 默认 false，只做前置步骤；仅当用户明确要求发布时传 submit:true。'
-    + '★ 被验证码/滑块拦住时返回 blockedByVerification 与 resumeStep：先 ask_user 请用户完成验证，'
+    + '★ 文件配方（2026-10-28 任务 2）：除内置配方外，本工具还会加载 <工作目录>/recipes/*.json 里的文件配方'
+    + '（id=文件名；kind 白名单 navigate/upload/fill/fillFromJson/clickText/waitText，≤30 步；内置优先，同名文件被忽略）。'
+    + '★ 沉淀闭环：任务中验证出的多步固定流程（某站签到路径、后台三连点等）建议用 file_write 写成配方 JSON 落盘，'
+    + '下次同站任务直接 browser_run_recipe 一步执行；JSON 字段与内置配方同构（id/description/params/steps/hosts）。'
+    + '★ 被验证码/滑块拦住时返回 blockedByVerification + resumeStep：先 ask_user 请用户完成验证，'
     + '用户确认后带同一个 resumeStep 再调用本工具续跑（不要重跑全流程、不要重新上传）。'
     + '★ 配方失败会返回失败步骤与页面现场，**不要重复运行同一配方**，先按原因处理或向用户报告。';
   inputSchema = {
@@ -1400,12 +1467,12 @@ export class BrowserRunRecipeTool implements BuiltInTool {
     },
     required: ['recipe'],
   };
-  async execute(args: Record<string, unknown>): Promise<McpCallResult> {
+  async execute(args: Record<string, unknown>, ctx?: import('../../types').ToolContext): Promise<McpCallResult> {
     return BrowserRunRecipeTool.run(args, {
       navigate: (url: string) => callBrowserApi('/navigate', 'POST', { url }),
       action: (action: string, actionArgs: Record<string, unknown>) =>
         callBrowserApi('/action', 'POST', { action, ...actionArgs }),
-    });
+    }, { workspaceDir: ctx?.workspaceDir });
   }
 
   /**
@@ -1418,11 +1485,19 @@ export class BrowserRunRecipeTool implements BuiltInTool {
    *   ⇒ 执行器（llm-task-manager）在直连档把「每个子动作走桥」的 api 注进来，
    *     编排留在服务端、动作仍在主进程，单一执行面不变。
    */
-  static async run(args: Record<string, unknown>, api: RecipeApi): Promise<McpCallResult> {
+  static async run(args: Record<string, unknown>, api: RecipeApi, ctx?: { workspaceDir?: string }): Promise<McpCallResult> {
     try {
       const recipeId = String(args.recipe || '').trim();
-      const recipe = getRecipe(recipeId);
-      if (!recipe) return err(`未知配方「${recipeId}」。可用：${listRecipes().join('、')}`);
+      // ★ 任务 2（2026-10-28）：内置查不到 → 扫 <工作目录>/recipes/*.json 合并文件配方。
+      //   内置优先由 loadFileRecipes 保证（同名文件配方被屏蔽——内置带验证码续跑等安全语义）。
+      let recipe = getRecipe(recipeId);
+      let fileRecipeErrors: string[] = [];
+      if (!recipe && ctx?.workspaceDir) {
+        const loaded = await loadFileRecipes(ctx.workspaceDir);
+        fileRecipeErrors = loaded.errors;
+        recipe = loaded.recipes.get(recipeId);
+      }
+      if (!recipe) return err(`未知配方「${recipeId}」。可用：${listRecipes().join('、')}${fileRecipeErrors.length ? `\n（注：${fileRecipeErrors.length} 个文件配方加载失败：${fileRecipeErrors.slice(0, 3).join('；')}）` : ''}`);
       const params = (args.params && typeof args.params === 'object')
         ? args.params as Record<string, unknown>
         : {};
@@ -1512,6 +1587,8 @@ export const BrowserToolClasses = [
   BrowserGetNetworkLogTool,
   // C6 结构化数据提取
   BrowserExtractListTool,
+  // 任务 1（2026-10-28）网络 JSON 直采
+  BrowserGetApiDataTool,
   // C9 视觉定位闭环
   BrowserVisualLocateTool,
   // C11 文件上传/下载
@@ -1544,6 +1621,8 @@ export const BROWSER_TOOL_NAMES = [
   'browser_wait_for_request', 'browser_get_network_log',
   // C6 结构化数据提取
   'browser_extract_list',
+  // 任务 1（2026-10-28）网络 JSON 直采
+  'browser_get_api_data',
   // C9 视觉定位闭环
   'browser_visual_locate',
   // C11 文件上传/下载

@@ -4111,6 +4111,56 @@ async function injectYzAssistant(wc) {
       try{return Array.prototype.slice.call(document.querySelectorAll(sel));}catch(e){return[];}
     }
     function resolve(sel){var a=resolveAll(sel);return a.length?a[0]:null;}
+    /* ===== 任务 1（2026-10-28）网络 JSON 响应捕获 =====
+       与服务端 captureJsonResponse 同口径：页面自然发生的 XHR/fetch JSON 响应存进
+       window.__yzApiDataLog（环形 60 条、单条 256KB 上限），主进程经 executeJavaScript
+       读取后返回给 browser_get_api_data。只存响应体，不碰请求头/Cookie。 */
+    if(!window.__yzApiDataLog){
+      window.__yzApiDataLog=[];
+      var __yzApiPush=function(entry){
+        try{
+          window.__yzApiDataLog.unshift(entry);
+          if(window.__yzApiDataLog.length>60)window.__yzApiDataLog.pop();
+        }catch(e){}
+      };
+      var __yzOrigFetch=window.fetch;
+      if(__yzOrigFetch){
+        window.fetch=function(){
+          var u=(arguments[0]&&arguments[0].url)||String(arguments[0]||'');
+          var m=(arguments[0]&&arguments[0].method)||'GET';
+          var p=__yzOrigFetch.apply(this,arguments);
+          p.then(function(resp){
+            try{
+              var ct=resp.headers.get('content-type')||'';
+              if(!/json/i.test(ct))return;
+              resp.clone().text().then(function(body){
+                if(!body||body.length>262144)return;
+                try{JSON.parse(body);}catch(e){return;}
+                __yzApiPush({url:String(u),method:String(m),status:resp.status,time:Date.now(),contentType:ct,body:body.slice(0,65536),size:body.length});
+              }).catch(function(){});
+            }catch(e){}
+          }).catch(function(){});
+          return p;
+        };
+      }
+      var __yzOrigOpen=XMLHttpRequest.prototype.open;
+      var __yzOrigSend=XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open=function(m,u){this.__yzM=String(m||'GET');this.__yzU=String(u||'');return __yzOrigOpen.apply(this,arguments);};
+      XMLHttpRequest.prototype.send=function(){
+        var self=this;
+        this.addEventListener('load',function(){
+          try{
+            var ct=self.getResponseHeader('content-type')||'';
+            if(!/json/i.test(ct))return;
+            var body=String(self.responseText||'');
+            if(!body||body.length>262144)return;
+            try{JSON.parse(body);}catch(e){return;}
+            __yzApiPush({url:self.__yzU,method:self.__yzM,status:self.status,time:Date.now(),contentType:ct,body:body.slice(0,65536),size:body.length});
+          }catch(e){}
+        });
+        return __yzOrigSend.apply(this,arguments);
+      };
+    }
     window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,register:register,
       resolveFuzzy:yzResolveFuzzy,fuzzyFind:yzFuzzyFind,snap:yzSnap,finish:yzFinish,
       resolveSemantic:yzResolveSemantic,semName:semAccName,semRole:semRole,semLabelText:semLabelText,
@@ -4118,7 +4168,7 @@ async function injectYzAssistant(wc) {
       /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
          改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
          ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
-      __yzVersion:7};
+      __yzVersion:8};
   })()`);
 }
 
@@ -4672,6 +4722,7 @@ const DESKTOP_BROWSER_ACTIONS = [
   'search', 'next_page', 'prev_page', 'wait_for', 'select_option', 'check', 'uncheck',
   'get_text', 'get_dom', 'wait', 'back', 'forward', 'reload', 'get_url',
   'new_tab', 'switch_tab', 'close_tab', 'get_tabs', 'wait_for_request', 'get_network_log',
+  'get_api_data',
   'extract_list', 'visual_locate', 'download', 'downloads', 'scroll_into_view', 'is_visible', 'drag',
   'run_script', 'highlight', 'takeover',
 ];
@@ -7850,10 +7901,50 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         if (pat) list = list.filter(function(e) { return e.url.indexOf(pat) >= 0; });
         return { entries: list.slice(-n).reverse() };
       }
+      // ========== 任务 1（2026-10-28）网络 JSON 响应直采 ==========
+      case 'get_api_data': {
+        const pat = String(args.urlPattern || '').trim();
+        if (!pat) return { error: 'urlPattern 为必填项（URL 子串，如 "/api/list"）' };
+        let regex = null;
+        try { regex = new RegExp(pat); } catch { regex = new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); }
+        const all = await wc.executeJavaScript(`(function(){
+          return (window.__yzApiDataLog||[]).map(function(e){
+            return {url:e.url,method:e.method,status:e.status,time:e.time,size:e.size,body:e.body};
+          });
+        })()`).catch(() => []);
+        const matches = (all || []).filter(function(e) { return e.url.indexOf(pat) >= 0 || (regex && regex.test(e.url)); });
+        if (!matches.length) {
+          return {
+            error: '缓冲里没有匹配的 JSON 响应。',
+            hint: '响应须在页面自然发生时被捕获（本页打开后发过的 XHR/fetch）。可先 browser_navigate 或 browser_scroll 触发加载/懒加载，再回来取；也可用 browser_get_network_log 先看有哪些请求 URL。',
+          };
+        }
+        const pick = args.all === true ? matches.slice(0, 5) : matches.slice(0, 1);
+        return {
+          count: matches.length,
+          returned: pick.length,
+          entries: pick.map(function(e) {
+            let body = e.body;
+            try { body = JSON.parse(e.body); } catch (err) { /* 保持字符串 */ }
+            return { url: e.url, method: e.method, status: e.status, time: e.time, size: e.size, body };
+          }),
+        };
+      }
       // ========== C6 结构化数据提取 ==========
+      // ★ 多页采集（2026-10-28，任务 3）：pages>1 时在本 case 外（主进程侧）做确定性翻页循环，
+      //   逻辑与服务端对齐；页面内只跑单页提取脚本（与旧实现同一份）。
       case 'extract_list': {
-        return await wc.executeJavaScript(`(function(){
-          var a=${JSON.stringify(args)};
+        const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+        const totalPages = Math.max(1, Math.min(Number(args.pages) || 1, 20));
+        const untilText = String(args.untilText || '').trim();
+        const pageLimit = Number(args.limit) || 20;
+        const allItems = [];
+        let pagesCollected = 0;
+        let stoppedByUntil = false;
+        let stoppedPage = 0;
+        let failedPage = 0;
+        let lastError = '';
+        const EXTRACT_ONE_PAGE_SRC = `(function(a){
           var limit=a.limit||20; var fields=a.fields||null;
           var containerSel=a.selector;
           if(!containerSel){
@@ -7866,14 +7957,72 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           var autoFields=fields||{title:{selector:'.title, h3, h2, .name',attr:'text'},price:{selector:'.price, .cost',attr:'text'},link:{selector:'a',attr:'href'}};
           var items=[];
           for(var ci=0;ci<containers.length;ci++){if(items.length>=limit)break;var c=containers[ci];var item={};
-            for(var fname in autoFields){var fdef=autoFields[fname];var sel=fdef.selector;var attr=fdef.attr||'text';var el=c.querySelector(sel);
+            for(var ci2=0;ci2<Object.keys(autoFields).length;ci2++){var fname=Object.keys(autoFields)[ci2];var fdef=autoFields[fname];var sel=fdef.selector;var attr=fdef.attr||'text';var el=c.querySelector(sel);
               if(!el){item[fname]=null;continue;}
               if(attr==='text')item[fname]=(el.textContent||'').trim();
               else if(attr==='html')item[fname]=el.innerHTML;
               else item[fname]=el.getAttribute(attr);}
             items.push(item);}
           return{count:items.length,items:items};
-        })()`);
+        })`;
+        for (let p = 1; p <= totalPages; p++) {
+          const onePage = await wc.executeJavaScript(`${EXTRACT_ONE_PAGE_SRC}(${JSON.stringify(args)})`).catch((e) => ({ error: String(e?.message || e) }));
+          if (onePage?.error) { lastError = String(onePage.error); break; }
+          allItems.push(...(onePage.items || []));
+          pagesCollected = p;
+          // 限流：总量 = limit × pages（limit 是单页条数，与单页模式同语义）
+          if (allItems.length >= totalPages * pageLimit) { allItems.length = totalPages * pageLimit; break; }
+          if (!(onePage.items || []).length) break;
+          if (p >= totalPages) break;
+          // untilText：页面出现停止文本即提前收工
+          if (untilText) {
+            const bodyText = await wc.executeJavaScript(`(document.body&&document.body.innerText)||''`).catch(() => '');
+            if (String(bodyText).includes(untilText)) { stoppedByUntil = true; stoppedPage = p; break; }
+          }
+          // 记住本页首项文本，翻页后等它变化（SPA 翻页常不触发导航事件）
+          const pageSel = String(args.selector || '');
+          const firstOfPrev = await wc.executeJavaScript(`(function(){var c=${pageSel ? `document.querySelector(${JSON.stringify(pageSel)})` : 'null'};return c?(c.textContent||'').trim().slice(0,80):null;})()`).catch(() => null);
+          // 翻页控件：nextSelector 优先，缺省按文本找「下一页/Next/›/»」（与服务端 next_page 同款模式）
+          const nextSel = args.nextSelector ? String(args.nextSelector) : null;
+          try {
+            const clicked = await wc.executeJavaScript(`(function(){
+              var sel=${nextSel ? JSON.stringify(nextSel) : 'null'};
+              var el=null;
+              if(sel){el=document.querySelector(sel);}
+              if(!el){
+                var pats=['下一页','下页','Next','›','>>','»'];
+                var links=Array.from(document.querySelectorAll('a,button,[role=button]'));
+                for(var i=0;i<pats.length;i++){var p=pats[i];
+                  el=links.find(function(l){return(l.textContent||'').trim()===p||(l.getAttribute('aria-label')||'')===p;});
+                  if(el)break;}}
+              if(!el)return{clicked:false,end:true};
+              el.scrollIntoView({block:'center'});
+              var rect=el.getBoundingClientRect();window.__yzAssistant.clickAt(rect.x+rect.width/2,rect.y+rect.height/2);
+              return{clicked:true,end:false};
+            })()`).catch((e) => ({ error: String(e?.message || e) }));
+            if (clicked?.error) { failedPage = p + 1; lastError = String(clicked.error); break; }
+            if (clicked?.end) break; // 没有下一页控件 = 末页，正常收工
+            await sleepMs(600);
+            // 等首项文本变化（最多 ~5s）
+            for (let w = 0; w < 8; w++) {
+              const firstNow = await wc.executeJavaScript(`(function(){var c=${pageSel ? `document.querySelector(${JSON.stringify(pageSel)})` : 'null'};return c?(c.textContent||'').trim().slice(0,80):null;})()`).catch(() => null);
+              if (firstNow == null || firstOfPrev == null || firstNow !== firstOfPrev) break;
+              await sleepMs(700);
+              void firstNow;
+            }
+          } catch (e) {
+            failedPage = p + 1;
+            lastError = String(e?.message || e);
+            break;
+          }
+        }
+        return {
+          count: allItems.length,
+          items: allItems,
+          pagesCollected,
+          ...(stoppedByUntil ? { stoppedByUntil, stoppedPage } : {}),
+          ...(failedPage ? { failedPage, error: lastError } : {}),
+        };
       }
       // ========== C9 视觉定位闭环（桌面端截图保存到临时文件） ==========
       case 'visual_locate': {
