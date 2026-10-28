@@ -86,6 +86,47 @@ const STORAGE_KEY = 'yz:pet:settings'
 /** 默认 6 槽：逗一下 / 新建任务 / 任务面板 / 换形象 / 隐藏 / 设置 */
 export const PET_SLOT_DEFAULTS = ['play', 'newTask', 'panel', 'pack', 'hide', 'settings']
 
+/**
+ * 半圆菜单槽位注册表：唯一定义在 store 里 —— 设置页的槽位编辑器与宠物窗的菜单
+ * 读同一份，避免两边各写一套导致"设置里能选、菜单上不认"。
+ */
+export const PET_SLOT_DEFS: Record<string, string> = {
+  play: '逗一下',
+  walk: '散个步',
+  newTask: '新建任务',
+  panel: '任务面板',
+  pack: '换形象',
+  renderer: '切 2D/3D',
+  zoom: '放大',
+  hide: '隐藏',
+  settings: '设置',
+}
+
+/**
+ * 宠物设置要跨进程发给宠物窗：**必须**转成普通对象。
+ * Vue 的 reactive 是 Proxy，IPC 的结构化克隆会抛 "An object could not be cloned"；
+ * 浅拷贝只解开顶层，`slots` 仍是响应式数组 —— 所以数组也得复制一份
+ * （2026-10-28 实测：改 scale 能同步、改槽位不同步，就是漏了数组这一层）。
+ */
+export function plainPetSettings(s: PetSettings): PetSettings {
+  return { ...s, slots: Array.isArray(s?.slots) ? [...s.slots] : [] }
+}
+
+/**
+ * 把第 index 个槽位改成 key。key 已在别的槽位时两个槽位**互换**，
+ * 而不是让菜单里出现两个同名项（用户想把「设置」从第 6 位换到第 1 位，
+ * 原第 1 位应顶到第 6 位，而不是凭空多出一个）。
+ */
+export function setPetSlot(slots: string[], index: number, key: string): string[] {
+  const next = Array.isArray(slots) ? [...slots] : [...PET_SLOT_DEFAULTS]
+  if (index < 0 || index >= next.length || !key) return next
+  const at = next.indexOf(key)
+  if (at === index) return next
+  if (at >= 0) next[at] = next[index]
+  next[index] = key
+  return next
+}
+
 export const PET_DEFAULTS: PetSettings = {
   enabled: false,
   renderer: '2d',
@@ -212,7 +253,7 @@ export const usePetStore = defineStore('pet', () => {
     }
     // 通知主进程转发给宠物窗（宠物窗是独立渲染进程，读不到本窗口的内存状态）
     try {
-      (window as any).electronAPI?.pet?.settings?.(settings.value)
+      ;(window as any).electronAPI?.pet?.settings?.(plainPetSettings(settings.value))
     } catch {
       /* 非桌面端忽略 */
     }

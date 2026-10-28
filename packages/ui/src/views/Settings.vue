@@ -605,6 +605,21 @@
               @change="setPet({ scale: $event })"
             />
           </SettingRow>
+          <SettingRow label="半圆菜单" tip="右键宠物弹出的 6 个槽位，从左到右排列；把某个功能换到已占用的位置时两者互换，不会出现重复项" >
+            <div class="pet-slots">
+              <el-select
+                v-for="(k, i) in petSlots"
+                :key="i"
+                :model-value="k"
+                size="small"
+                style="width: 124px"
+                @change="setPetSlotAt(i, $event)"
+              >
+                <el-option v-for="o in petSlotOptions" :key="o.key" :label="o.label" :value="o.key" />
+              </el-select>
+              <el-button size="small" @click="resetPetSlots">恢复默认</el-button>
+            </div>
+          </SettingRow>
           <SettingRow label="待机踱步" tip="待机 9~20 秒后沿屏幕底边随便走一段，撞到屏幕边会折返；鼠标靠近、开菜单、有任务时立刻停下" tip-after>
             <el-switch :model-value="petStore.settings.walk" @change="setPet({ walk: !!$event })" />
           </SettingRow>
@@ -701,12 +716,25 @@ async function setPetEnabled(on: boolean) {
     /* 非桌面端或窗口已关：忽略 */
   }
 }
+
+/** 半圆菜单槽位：设置页与宠物窗读同一份注册表（store 里的 PET_SLOT_DEFS） */
+const petSlotOptions = Object.entries(PET_SLOT_DEFS).map(([key, label]) => ({ key, label }));
+const petSlots = computed(() => {
+  const s = petStore.settings.slots;
+  return Array.isArray(s) && s.length ? s : PET_SLOT_DEFAULTS;
+});
+function setPetSlotAt(i: number, key: string) {
+  setPet({ slots: setPetSlot(petSlots.value, i, key) });
+}
+function resetPetSlots() {
+  setPet({ slots: [...PET_SLOT_DEFAULTS] });
+}
 import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
 import { useSettingsStore, usePlatformStore, useModelPoolStore, useCostStore } from '../stores';
-import { usePetStore } from '../stores/pet';
+import { usePetStore, PET_SLOT_DEFS, PET_SLOT_DEFAULTS, setPetSlot } from '../stores/pet';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import { useVerificationStore } from '../stores/verification';
@@ -1982,6 +2010,14 @@ onMounted(async () => {
 }
 .logs-tab-embed :deep(.stats-table-wrap) {
   max-height: 320px;
+}
+
+/* 半圆菜单槽位：6 个下拉 + 恢复默认，窄屏自动换行 */
+.pet-slots {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 </style>

@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { classifyTool, collectWaitingIds, derivePetActivity, derivePetState, shortTarget, toolTarget } from './pet'
+import { reactive } from 'vue'
+import {
+  PET_DEFAULTS,
+  PET_SLOT_DEFAULTS,
+  classifyTool,
+  collectWaitingIds,
+  derivePetActivity,
+  derivePetState,
+  plainPetSettings,
+  setPetSlot,
+  shortTarget,
+  toolTarget,
+} from './pet'
 
 const base = { running: 0, paused: 0, waiting: 0 }
 
@@ -104,5 +116,50 @@ describe('derivePetActivity（此刻在干什么）', () => {
   it('空消息 / 脏数据不抛错', () => {
     expect(derivePetActivity(undefined)).toBeNull()
     expect(derivePetActivity([null, {}, { role: 'assistant' }])).toBeNull()
+  })
+})
+
+describe('setPetSlot（半圆菜单槽位编辑）', () => {
+  it('换到没人用的槽位：直接替换，其余不动', () => {
+    const next = setPetSlot([...PET_SLOT_DEFAULTS], 0, 'renderer');
+    expect(next[0]).toBe('renderer');
+    expect(next.slice(1)).toEqual(PET_SLOT_DEFAULTS.slice(1));
+  })
+
+  it('换到已被占用的槽位：两者互换，不出重复项', () => {
+    const next = setPetSlot([...PET_SLOT_DEFAULTS], 0, 'settings');
+    expect(next[0]).toBe('settings');
+    expect(next[5]).toBe('play'); // 原第 1 位顶到第 6 位
+    expect(new Set(next).size).toBe(next.length);
+  })
+
+  it('换成本来的值 / 越界 / 空 key：一律原样返回', () => {
+    const base = [...PET_SLOT_DEFAULTS];
+    expect(setPetSlot(base, 2, 'panel')).toEqual(base);
+    expect(setPetSlot(base, 9, 'play')).toEqual(base);
+    expect(setPetSlot(base, 0, '')).toEqual(base);
+  })
+
+  it('入参坏了（非数组）回落默认 6 槽', () => {
+    expect(setPetSlot(undefined as never, 0, 'walk')).toEqual(['walk', ...PET_SLOT_DEFAULTS.slice(1)]);
+  })
+})
+
+describe('plainPetSettings（设置要跨进程发给宠物窗）', () => {
+  it('Vue 响应式对象过不了结构化克隆，转普通对象后可以', () => {
+    const live = reactive({ ...PET_DEFAULTS, slots: ['walk', 'settings'] })
+    expect(() => structuredClone(live)).toThrow() // 这就是原 bug：异常被 catch 吞掉，宠物窗静默不更新
+    expect(() => structuredClone(plainPetSettings(live))).not.toThrow()
+  })
+
+  it('slots 复制成新数组（浅拷贝只解顶层，数组那层仍是 Proxy）', () => {
+    const live = reactive({ ...PET_DEFAULTS, slots: ['walk'] })
+    const out = plainPetSettings(live)
+    expect(out.slots).not.toBe(live.slots)
+    expect(out.slots).toEqual(['walk'])
+  })
+
+  it('slots 坏数据回落空数组', () => {
+    expect(plainPetSettings({ ...PET_DEFAULTS, slots: undefined as never }).slots).toEqual([])
   })
 })

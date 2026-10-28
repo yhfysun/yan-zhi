@@ -1,6 +1,6 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
-import { collectWaitingIds, derivePetActivity, derivePetState, usePetStore } from '../stores/pet'
+import { collectWaitingIds, derivePetActivity, derivePetState, plainPetSettings, usePetStore } from '../stores/pet'
 import { useAgentStore } from '../stores/agent'
 import { useSpaceStore } from '../stores/space'
 
@@ -255,18 +255,19 @@ export function usePetBridge() {
       const v = snapshot()
       pet.lastSync = v
       api()?.sync?.(v)
-      api()?.settings?.(pet.settings)
+      api()?.settings?.(plainPetSettings(pet.settings))
     } catch {
       /* ignore */
     }
   })
 
   // 设置改动同步给宠物窗（update() 里已发一次，这里覆盖"没走 update 直接改字段"的情况）
+  // ★ 必须用 plainPetSettings 转普通对象：reactive/Proxy 过 IPC 会被结构化克隆拒绝
   watch(
-    () => ({ ...pet.settings }),
+    () => ({ ...pet.settings, slots: [...(pet.settings.slots || [])] }),
     (v) => {
       try {
-        api()?.settings?.(v)
+        api()?.settings?.(plainPetSettings(v))
       } catch {
         /* ignore */
       }

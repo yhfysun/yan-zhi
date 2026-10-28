@@ -145,7 +145,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import Pet2D from '../components/pet/Pet2D.vue'
 import Pet3D from '../components/pet/Pet3D.vue'
-import { usePetStore, PET_DEFAULTS, type PetActivity, type PetSettings, type PetState } from '../stores/pet'
+import { usePetStore, PET_DEFAULTS, PET_SLOT_DEFS, type PetActivity, type PetSettings, type PetState } from '../stores/pet'
 
 const store = usePetStore()
 const settings = ref<PetSettings>({ ...PET_DEFAULTS, ...store.settings })
@@ -261,21 +261,10 @@ const ACTIONS = [
   { key: 'hop', g: '⤴', label: '跳一跳', dur: 900 },
 ]
 
-/* 槽位注册表：用户可把任意一个换进半圆菜单（槽位配置存 settings.slots） */
-const SLOT_DEFS: Record<string, { label: string }> = {
-  play: { label: '逗一下' },
-  walk: { label: '散个步' },
-  newTask: { label: '新建任务' },
-  panel: { label: '任务面板' },
-  pack: { label: '换形象' },
-  renderer: { label: '切 2D/3D' },
-  zoom: { label: '放大' },
-  hide: { label: '隐藏' },
-  settings: { label: '设置' },
-}
+/* 槽位注册表在 store 里（设置页的编辑器读同一份），这里只补图标 */
 const slotKeys = computed(() => (Array.isArray(settings.value.slots) ? settings.value.slots : []))
-const defOf = (k: string) => ({ label: SLOT_DEFS[k]?.label || '—', icon: ICONS[k] || '' })
-const labelOf = (k: string) => SLOT_DEFS[k]?.label || '—'
+const defOf = (k: string) => ({ label: PET_SLOT_DEFS[k] || '—', icon: ICONS[k] || '' })
+const labelOf = (k: string) => PET_SLOT_DEFS[k] || '—'
 
 const ICONS: Record<string, string> = {
   play: '<svg viewBox="0 0 24 24"><path d="M11 3l1.5 4.2L16.7 8.7l-4.2 1.5L11 14.4 9.5 10.2 5.3 8.7l4.2-1.5z"/><path d="M17.5 14l.8 2.3 2.2.8-2.2.8-.8 2.3-.8-2.3-2.2-.8 2.2-.8z"/></svg>',
