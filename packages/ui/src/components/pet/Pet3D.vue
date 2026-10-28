@@ -172,6 +172,8 @@ function applyVrmPose(dt: number) {
     if (pose.expression) {
       try { em.setValue(pose.expression, pose.expressionWeight) } catch { /* 同上 */ }
     }
+    // 眨眼是叠加通道（VRM 允许多个表情同时生效），不吃上面那条独占
+    try { em.setValue('blink', pose.blink) } catch { /* 模型没有 blink */ }
   }
   vrm.update(dt)
 }

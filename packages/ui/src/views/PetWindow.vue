@@ -99,7 +99,7 @@
       </div>
 
       <!-- 快问输入条：hover 宠物浮现，Enter 把话交给主窗（预填 + 切回对话页） -->
-      <div class="ask" v-if="showAsk" data-hit>
+      <div class="ask" v-if="showAsk" :style="{ bottom: askBottom }" data-hit>
         <div class="ask-agent-wrap">
           <button class="ask-agent" :title="agentName" @click.stop="toggleAgents">{{ agentName }}</button>
           <div v-if="agentOpen" class="agent-pop" data-hit>
@@ -233,12 +233,17 @@ watch(
 const bubble = computed(() =>
   settings.value.bubble && state.value === 'running' && !showAsk.value ? activity.value : null
 )
-/** 气泡贴着宠物头顶：宠物脚在窗底（6px padding）。2D 精灵 118 高，3D 取景框 280 高 */
-const bubbleBottom = computed(() => {
+/** 宠物头顶在窗内的位置：2D 精灵 118 高 / 3D 取景框 280 高，脚都在窗底 6px 处 */
+const petTop = computed(() => {
   const s = settings.value.scale || 1
   const h = settings.value.renderer === '3d' ? 280 : 118
-  return `${Math.round(6 + h * s + 10)}px`
+  return Math.round(6 + h * s)
 })
+const bubbleBottom = computed(() => `${petTop.value + 10}px`)
+/** 快问条：3D 必须贴着模型头顶，否则 280 高的模型会被压在条后面；2D 沿用原来的 188 */
+const askBottom = computed(() =>
+  settings.value.renderer === '3d' ? `${petTop.value + 10}px` : '188px'
+)
 /** 3D 要一个明确的取景框：canvas 默认 300×150，不给尺寸的话人形会被压成一小只 */
 const bodyStyle = computed(() => {
   if (settings.value.renderer !== '3d') return {}

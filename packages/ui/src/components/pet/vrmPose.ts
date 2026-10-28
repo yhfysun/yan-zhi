@@ -35,14 +35,16 @@ export interface VrmPose {
   /** VRM1 表情 preset 名（happy/sad/relaxed/surprised/angry/blink/…） */
   expression: string
   expressionWeight: number
+  /** 眨眼权重（0..1）：与其他表情并行叠加，不走 expression 那条独占通道 */
+  blink: number
   /** 眨眼兜底：模型没有 blink 表情时用眼睑？保持 0，仅记录意图 */
   cursorX: number
   cursorY: number
 }
 
 /** 手臂静止姿态：A-pose（比 T-pose 自然，也不会穿模） */
-const ARM_DOWN_L = 1.12
-const ARM_DOWN_R = -1.12
+const ARM_DOWN_L = 1.26
+const ARM_DOWN_R = -1.26
 /** 膝盖只在腿往后摆时弯，避免"直腿拖地" */
 const KNEE_BEND = 0.55
 
@@ -63,14 +65,15 @@ export function basePose(): VrmPose {
     armLZ: ARM_DOWN_L,
     armRX: 0,
     armRZ: ARM_DOWN_R,
-    foreArmLX: -0.18,
-    foreArmRX: -0.18,
+    foreArmLX: -0.14,
+    foreArmRX: -0.14,
     legLX: 0,
     legRX: 0,
     kneeLX: 0,
     kneeRX: 0,
     expression: 'neutral',
     expressionWeight: 0,
+    blink: 0,
     cursorX: 0,
     cursorY: 0,
   }
@@ -121,14 +124,25 @@ export function poseFor(input: PoseInput): VrmPose {
   }
 
   switch (input.state) {
-    case 'idle':
+    case 'idle': {
+      // 站姿要"活"：呼吸带一点点手臂前后摆、躯干重心轻晃，别像根木桩
       p.chestX = breath * 0.02
       p.spineX = breath * 0.01
+      p.spineZ = Math.sin(t * 0.5) * 0.02
+      const sway = Math.sin(t * 1.1) * 0.03
+      p.armLZ = ARM_DOWN_L - Math.abs(sway) * 0.35
+      p.armRZ = ARM_DOWN_R + Math.abs(sway) * 0.35
+      p.armLX = 0.05 + sway
+      p.armRX = 0.05 - sway
+      p.foreArmLX = -0.16 - Math.abs(sway) * 0.5
+      p.foreArmRX = -0.16 - Math.abs(sway) * 0.5
       lookAt()
       p.headY += Math.sin(t * 0.6) * 0.05
+      p.headX += breath * 0.01
       p.expression = 'relaxed'
       p.expressionWeight = 0.2
       break
+    }
     case 'running': {
       const fx = Math.sin(t * 9)
       p.legLX = fx * 0.62
@@ -182,6 +196,11 @@ export function poseFor(input: PoseInput): VrmPose {
     }
   }
 
+  // 眨眼（与表情并行）：4.5s 一轮，闭眼 100ms、半闭 80ms
+  const blinkPh = t % 4.5
+  if (blinkPh < 0.1) p.blink = 1
+  else if (blinkPh < 0.18) p.blink = 0.45
+
   // 动作叠加（动作时状态姿态仍保留呼吸，但不再抢头/手）
   const act = input.action
   if (!act) return p
@@ -207,8 +226,7 @@ export function poseFor(input: PoseInput): VrmPose {
     case 'nap':
       p.headX = 0.36 * Math.min(1, p01 * 3)
       p.spineX = 0.16 * Math.min(1, p01 * 3)
-      p.expression = 'blink'
-      p.expressionWeight = 1
+      p.blink = 1
       break
     case 'spin':
       p.rootRotY = (p01 < 0.5 ? 2 * p01 * p01 : 1 - Math.pow(-2 * p01 + 2, 2) / 2) * Math.PI * 2

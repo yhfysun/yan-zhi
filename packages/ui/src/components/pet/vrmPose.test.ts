@@ -63,10 +63,9 @@ describe('vrmPose · 动作叠加', () => {
     expect(wave.expression).toBe('happy')
   })
 
-  it('打盹：闭眼（blink 权重拉满）+ 低头', () => {
+  it('打盹：闭眼走 blink 通道 + 低头', () => {
     const nap = poseFor({ state: 'idle', action: 'nap', t: 1, actionT: 0.6 })
-    expect(nap.expression).toBe('blink')
-    expect(nap.expressionWeight).toBe(1)
+    expect(nap.blink).toBe(1)
     expect(nap.headX).toBeGreaterThan(0.1)
   })
 
@@ -86,5 +85,27 @@ describe('vrmPose · 动作叠加', () => {
   it('踱步时动作不生效（走路优先）', () => {
     const p = poseFor({ state: 'idle', action: 'wave', t: 1, actionT: 0.5, walking: true })
     expect(p.expression).toBe('relaxed')
+  })
+})
+
+describe('vrmPose · 待机的"活"观感', () => {
+  it('眨眼按 4.5s 周期开合（闭眼只占前 100ms）', () => {
+    expect(poseFor({ state: 'idle', t: 0.05 }).blink).toBe(1)
+    expect(poseFor({ state: 'idle', t: 0.14 }).blink).toBeCloseTo(0.45, 2)
+    expect(poseFor({ state: 'idle', t: 2 }).blink).toBe(0)
+  })
+
+  it('待机时手臂与躯干在动，不是一根木桩', () => {
+    const a = poseFor({ state: 'idle', t: 0 })
+    const b = poseFor({ state: 'idle', t: 1.4 })
+    expect(a.armLX).not.toBe(b.armLX)
+    expect(a.spineZ).not.toBe(b.spineZ)
+    expect(a.foreArmLX).not.toBe(b.foreArmLX)
+  })
+
+  it('静止站姿手臂贴近身体（≥ 1.2rad，不是张开的 A-pose）', () => {
+    // 1.38 会插进裙子（真机实测），1.26 是「自然垂手」的落点
+    expect(basePose().armLZ).toBeGreaterThanOrEqual(1.2)
+    expect(basePose().armRZ).toBeLessThanOrEqual(-1.2)
   })
 })
