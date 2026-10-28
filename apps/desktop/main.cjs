@@ -4080,6 +4080,24 @@ async function injectYzAssistant(wc) {
       }
       return path.length?path.join(' > '):el.tagName.toLowerCase();
     }
+    /**
+     * 回显版 selector（2026-10-28 快照瘦身）：只回**高质量选择器**（id / testid /
+     * aria-label / name / placeholder 命中），hash class 与路径式不回显（返回空串）。
+     * ★ 为什么：元素行回显完整 selector 是几千 token 的死重（模型定位主力是 index）；
+     *   autoRelocate 走页面内部快照 __yzSelMap（register 时已存全量 genSel），不靠回显；
+     *   需要长期复用的 selector（配方/form-fill fields）只有高质量选择器有复用价值。
+     */
+    function genSelEcho(el){
+      function esc(s){return String(s).replace(/"/g,'\\\\"');}
+      if(el.id&&/^[A-Za-z][\\w-]*$/.test(el.id)){try{if(document.querySelectorAll('#'+el.id).length===1)return '#'+el.id;}catch(e){}}
+      var tid=el.getAttribute('data-testid');if(tid)return '[data-testid="'+esc(tid)+'"]';
+      var t=el.getAttribute('data-test');if(t)return '[data-test="'+esc(t)+'"]';
+      var al=el.getAttribute('aria-label');if(al){var s=el.tagName.toLowerCase()+'[aria-label="'+esc(al)+'"]';try{if(document.querySelectorAll(s).length===1)return s;}catch(e){}}
+      var nm=el.getAttribute('name');if(nm){var s3=el.tagName.toLowerCase()+'[name="'+esc(nm)+'"]';try{if(document.querySelectorAll(s3).length===1)return s3;}catch(e){}}
+      var ph=el.getAttribute('placeholder');if(ph){var s4=el.tagName.toLowerCase()+'[placeholder="'+esc(ph)+'"]';try{if(document.querySelectorAll(s4).length===1)return s4;}catch(e){}}
+      // class / 路径式：不回显（hash 漂移 / 超长），内部快照照旧
+      return '';
+    }
     // 元素注册表：可交互元素编号（index），供 click/type 直接按编号定位
     if(!window.__yzElements)window.__yzElements=[];
     if(!window.__yzSelMap)window.__yzSelMap={};
@@ -4161,14 +4179,14 @@ async function injectYzAssistant(wc) {
         return __yzOrigSend.apply(this,arguments);
       };
     }
-    window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,register:register,
+    window.__yzAssistant={showCursor:showCursor,hideCursor:hideCursor,clickAt:clickAt,typeIn:typeIn,resolve:resolve,resolveAll:resolveAll,genSel:genSel,genSelEcho:genSelEcho,register:register,
       resolveFuzzy:yzResolveFuzzy,fuzzyFind:yzFuzzyFind,snap:yzSnap,finish:yzFinish,
       resolveSemantic:yzResolveSemantic,semName:semAccName,semRole:semRole,semLabelText:semLabelText,
       yzNormText:yzNormText,yzFillCompare:yzFillCompare,yzFillGuard:yzFillGuard,
       /* 注入版本标记（2026-10-11）：injectYzAssistant 的"已注入"探测靠它（见该函数入口）。
          改了上面的脚本内容时要同时递增这里的值（否则新脚本在旧页面里不会被重注入）。
          ★ 注意：本段位于模板字符串内，注释只能用块注释、且不得出现反引号。 */
-      __yzVersion:8};
+      __yzVersion:9};
   })()`);
 }
 
@@ -7117,7 +7135,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           var out=[];
           for(var k=0;k<els.length&&out.length<300;k++){var el=els[k];
             var idx=A.register(el);
-            var o={index:idx,tag:el.tagName.toLowerCase(),selector:A.genSel(el),text:(el.textContent||'').trim().slice(0,60)};
+            var o={index:idx,tag:el.tagName.toLowerCase(),selector:A.genSelEcho(el),text:(el.textContent||'').trim().slice(0,60)};
             if(el.ownerDocument!==document){o.iframe=true;}
             else{var rect=el.getBoundingClientRect();o.x=Math.round(rect.x);o.y=Math.round(rect.y);o.w=Math.round(rect.width);o.h=Math.round(rect.height);}
             if(el.id)o.id=el.id;
@@ -7195,7 +7213,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             //   ⇒ 用同一 A.genSel（与 get_page_info / chat.ts:2614 同源），零新增逻辑。
             //   ★ 注意：本段位于 executeJavaScript 的**模板字符串内部**，注释里
             //     **绝不能出现反引号**（会提前闭合模板串，报 "missing ) after argument list"）。
-            var o={index:idx,tag:el.tagName.toLowerCase(),selector:A.genSel(el),text:(el.textContent||'').trim().slice(0,60)};
+            var o={index:idx,tag:el.tagName.toLowerCase(),selector:A.genSelEcho(el),text:(el.textContent||'').trim().slice(0,60)};
             // P1-7 a11y 语义（2026-10-07）：优先 computedRole（Chromium 132+），引擎不支持时
             // 按「标签 + type」推断隐式角色；'generic'/null 无信息量跳过，两路都拿不到就不出字段。
             try{var cr=el.computedRole;if(cr&&cr!=='generic')o.axRole=cr;}catch(e){}
@@ -7267,7 +7285,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           for(var fi=0;fi<fel.length&&formFields.length<40;fi++){
             var fe=fel[fi];var fv=fieldValue(fe);
             var ml=0;try{ml=(fe.maxLength&&fe.maxLength>0)?fe.maxLength:0;}catch(e){}
-            var o2={index:A.register(fe),selector:A.genSel(fe),label:fieldLabel(fe),
+            var o2={index:A.register(fe),selector:A.genSelEcho(fe),label:fieldLabel(fe),
               kind:fe.isContentEditable?'richtext':(fe.tagName==='SELECT'?'select':(fe.type||'text')),
               value:fv.slice(0,80),valueLen:fv.length,required:false};
             try{o2.required=!!(fe.required||(fe.getAttribute&&fe.getAttribute('aria-required')==='true'));}catch(e){}

@@ -220,6 +220,44 @@ interface NetworkLogEntry { url: string; method: string; status: number; respons
 const networkLog: NetworkLogEntry[] = [];
 const NETWORK_LOG_MAX = 100;
 
+/**
+ * JSON 响应体环形缓冲（2026-10-28，任务 1：网络响应直采）。
+ *
+ * ★ 为什么：列表/搜索页取数此前只有两条路 —— 读 DOM（5000 字正文 + 几十个元素清单）
+ *   或让模型手写 run_script + fetch 去猜接口（main.cjs 导航提示就在这么教）。
+ *   前者 token 贵、后者无保护且靠猜。把页面上自然发生的 JSON 响应直接存下来，
+ *   模型按 URL 模式取结构化数据，token 少一个量级且结果确定。
+ *
+ * ★ 边界：只存 JSON 且 ≤256KB 的响应（response.json() 失败即丢弃）；单条截断到 64KB
+ *   返回给模型；缓冲 60 条、随页面关闭一起生命周期（服务端进程级，与 networkLog 同口径）。
+ *   不存任何请求头/Cookie —— 只有响应体，不含凭证。
+ */
+interface ApiDataEntry { url: string; method: string; status: number; time: number; contentType: string; body: string; size: number; }
+const apiDataLog: ApiDataEntry[] = [];
+const API_DATA_MAX = 60;
+const API_DATA_BODY_MAX = 256 * 1024;
+const API_DATA_RETURN_MAX = 64 * 1024;
+
+async function captureJsonResponse(resp: any): Promise<void> {
+  try {
+    const ct = String(resp.headers()?.['content-type'] || '');
+    if (!/json/i.test(ct)) return;
+    const size = Number(resp.headers()?.['content-length'] || 0);
+    if (size > API_DATA_BODY_MAX) return;
+    const body = await resp.text().catch(() => '');
+    if (!body || body.length > API_DATA_BODY_MAX) return;
+    // 只收 JSON 可解析的体（防 content-type 标错）
+    JSON.parse(body);
+    apiDataLog.unshift({
+      url: resp.url(), method: resp.request()?.method?.() || 'GET',
+      status: resp.status(), time: Date.now(), contentType: ct,
+      body: body.length > API_DATA_RETURN_MAX ? body.slice(0, API_DATA_RETURN_MAX) : body,
+      size: body.length,
+    });
+    if (apiDataLog.length > API_DATA_MAX) apiDataLog.pop();
+  } catch { /* 非法 JSON / 读取失败：静默丢弃，不影响页面加载 */ }
+}
+
 /** 懒加载 playwright 模块 */
 async function loadChromium() {
   if (chromiumModule) return chromiumModule;
@@ -419,6 +457,8 @@ function attachPageListeners(page: any) {
       };
       networkLog.unshift(entry);
       if (networkLog.length > NETWORK_LOG_MAX) networkLog.pop();
+      // 任务 1（2026-10-28）：JSON 响应体直采 —— 存进 apiDataLog 供 browser_get_api_data 读取
+      if (resp) void captureJsonResponse(resp);
     } catch {}
   });
 }
@@ -939,6 +979,31 @@ function ensureYzReg() {
     }
     return path.length ? path.join(' > ') : tag;
   };
+  /**
+   * 回显版 selector（2026-10-28 快照瘦身）：只回**高质量选择器**。
+   *
+   * ★ 为什么：get_page_content / get_page_info 每个元素行都回显完整 selector，
+   *   hash class（如 input-xrB84C）动辄 40+ 字符、路径式 `div > div:nth-of-type(2) > …`
+   *   更长 —— 50 个元素就是几千 token 的死重，而模型定位主力是 index，
+   *   selector 的实际消费者是 autoRelocate（走页面内部快照 __yzSelMap，不靠回显）
+   *   与「配方/form-fill 的 fields 参数」——后者只对高质量选择器有复用价值
+   *   （hash class 下一页就漂移，存下来没有意义）。
+   * ★ 语义：id / testid / aria-label / name / placeholder 命中 ⇒ 回显；
+   *   只剩 class hash 或路径式 ⇒ 回显空串（模型一眼知道"该用 index"）。
+   *   genSel（全量）继续供 __yzSelMap 快照与 ambiguous/candidates 诊断输出使用。
+   */
+  const genSelEcho = (el: any): string => {
+    const tag = el.tagName.toLowerCase();
+    if (el.id && /^[A-Za-z][\w-]*$/.test(el.id)) { try { if (document.querySelectorAll('#' + el.id).length === 1) return '#' + el.id; } catch {} }
+    const tid = el.getAttribute('data-testid'); if (tid) return `[data-testid="${esc(tid)}"]`;
+    const t = el.getAttribute('data-test'); if (t) return `[data-test="${esc(t)}"]`;
+    const al = el.getAttribute('aria-label');
+    if (al) { const s = `${tag}[aria-label="${esc(al)}"]`; try { if (document.querySelectorAll(s).length === 1) return s; } catch {} }
+    const nm = el.getAttribute('name'); if (nm) { const s = `${tag}[name="${esc(nm)}"]`; try { if (document.querySelectorAll(s).length === 1) return s; } catch {} }
+    const ph = el.getAttribute('placeholder'); if (ph) { const s = `${tag}[placeholder="${esc(ph)}"]`; try { if (document.querySelectorAll(s).length === 1) return s; } catch {} }
+    // class / 路径式：不回显（hash 漂移 / 超长），内部快照照旧
+    return '';
+  };
   w.__yzReg = {
     register(el: any) {
       if (el && el.__yzIndex != null && w.__yzElements[el.__yzIndex] === el) return el.__yzIndex;
@@ -963,6 +1028,7 @@ function ensureYzReg() {
     fuzzyFind,
     resolveFuzzy,
     genSel,
+    genSelEcho,
   };
   return w.__yzReg;
 }
@@ -1668,7 +1734,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
             const el = els[k] as any;
             const idx = R.register(el);
             const ref = Refs ? Refs.register(el) : String(idx);
-            const o: any = { index: idx, ref, tag: el.tagName.toLowerCase(), selector: R.genSel(el), text: (el.textContent || '').trim().slice(0, 60) };
+            const o: any = { index: idx, ref, tag: el.tagName.toLowerCase(), selector: R.genSelEcho(el), text: (el.textContent || '').trim().slice(0, 60) };
             if (el.ownerDocument !== document) { o.iframe = true; }
             else { const rect = el.getBoundingClientRect(); o.x = Math.round(rect.x); o.y = Math.round(rect.y); o.w = Math.round(rect.width); o.h = Math.round(rect.height); }
             if (el.id) o.id = el.id;
@@ -1818,7 +1884,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
           for (let k = 0; k < els.length && out.length < a.maxInteractive; k++) {
             const el = els[k] as any;
             const idx = R.register(el);
-            const o: any = { index: idx, ref: Refs ? Refs.register(el) : '', tag: el.tagName.toLowerCase(), selector: R.genSel(el), text: (el.textContent || '').trim().slice(0, 60) };
+            const o: any = { index: idx, ref: Refs ? Refs.register(el) : '', tag: el.tagName.toLowerCase(), selector: R.genSelEcho(el), text: (el.textContent || '').trim().slice(0, 60) };
             // P1-7 a11y 语义（2026-10-07）：优先 computedRole（浏览器计算的 ARIA 角色，Chromium 132+）；
             // 引擎不支持时按「标签 + type」推断隐式角色（ARIA in HTML 的常用子集）。
             // 'generic'/null 无信息量跳过。两路都拿不到就不出 axRole 字段。
@@ -1901,7 +1967,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
             const fv = fieldValue(fe);
             const ml = (fe.maxLength && fe.maxLength > 0) ? fe.maxLength : 0;
             const o2: any = {
-              index: R.register(fe), selector: R.genSel(fe), label: fieldLabel(fe),
+              index: R.register(fe), selector: R.genSelEcho(fe), label: fieldLabel(fe),
               kind: fe.isContentEditable ? 'richtext' : (fe.tagName === 'SELECT' ? 'select' : (fe.type || 'text')),
               value: fv.slice(0, 80), valueLen: fv.length,
               required: !!(fe.required || (fe.getAttribute && fe.getAttribute('aria-required') === 'true')),
@@ -2015,45 +2081,135 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
         result = { entries };
         break;
       }
+      // ========== 任务 1（2026-10-28）网络 JSON 响应直采 ==========
+      case 'get_api_data': {
+        const pat = String(args.urlPattern || '').trim();
+        if (!pat) { result = { error: 'urlPattern 为必填项（URL 子串，如 "/api/list"）' }; break; }
+        let regex: RegExp;
+        try { regex = new RegExp(pat); } catch { regex = new RegExp(pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); }
+        const matches = apiDataLog.filter((e) => e.url.includes(pat) || regex.test(e.url));
+        if (!matches.length) {
+          result = {
+            error: '缓冲里没有匹配的 JSON 响应。',
+            hint: '响应须在页面自然发生时被捕获（本页打开后发过的 XHR/fetch）。可先 browser_navigate 或 browser_scroll 触发加载/懒加载，再回来取；也可用 browser_get_network_log 先看有哪些请求 URL。',
+          };
+          break;
+        }
+        // 缺省只回第一条（最新），verbose 时全给（每条体截断在 64KB，多条全给会很大）
+        const pick = args.all === true ? matches.slice(0, 5) : matches.slice(0, 1);
+        result = {
+          count: matches.length,
+          returned: pick.length,
+          entries: pick.map((e) => ({
+            url: e.url, method: e.method, status: e.status, time: e.time, size: e.size,
+            body: (() => { try { return JSON.parse(e.body); } catch { return e.body; } })(),
+          })),
+        };
+        break;
+      }
       // ========== C6 结构化数据提取 ==========
       case 'extract_list': {
-        result = await page.evaluate((a: any) => {
-          const limit = a.limit || 20;
-          const fields = a.fields || null;
-          // 自动识别常见列表项选择器
-          let containerSel = a.selector;
-          if (!containerSel) {
-            const candidates = ['.goods-item', '.product-item', '.item', '.card', 'li', 'article', '[role="listitem"]'];
-            for (const c of candidates) {
-              const els = document.querySelectorAll(c);
-              if (els.length >= 2) { containerSel = c; break; }
+        // ★ 多页采集（2026-10-28，任务 3）：pages>1 时由本端确定性翻页 + 逐页提取，
+        //   替代"extract→next_page→extract"的 2N 次调用搭配模型推理循环 —— 采集调用从 2N 降到 1。
+        //   失败即停：返回已采集部分 + 失败页码，模型续采或换 nextSelector，不整批重试。
+        const totalPages = Math.max(1, Math.min(Number(args.pages) || 1, 20));
+        const untilText = String(args.untilText || '').trim();
+        const allItems: any[] = [];
+        let pagesCollected = 0;
+        let stoppedByUntil = false;
+        let stoppedPage = 0;
+        let failedPage = 0;
+        let lastError = '';
+        for (let p = 1; p <= totalPages; p++) {
+          const onePage = await page.evaluate((a: any) => {
+            const limit = a.limit || 20;
+            const fields = a.fields || null;
+            // 自动识别常见列表项选择器
+            let containerSel = a.selector;
+            if (!containerSel) {
+              const candidates = ['.goods-item', '.product-item', '.item', '.card', 'li', 'article', '[role="listitem"]'];
+              for (const c of candidates) {
+                const els = document.querySelectorAll(c);
+                if (els.length >= 2) { containerSel = c; break; }
+              }
             }
-          }
-          if (!containerSel) return { error: '未指定 selector 且无法自动识别列表项容器，请传 selector' };
-          const containers = Array.from(document.querySelectorAll(containerSel));
-          if (!containers.length) return { error: `未匹配到列表项: ${containerSel}` };
-          const autoFields = fields || {
-            title: { selector: '.title, h3, h2, .name', attr: 'text' },
-            price: { selector: '.price, .cost', attr: 'text' },
-            link: { selector: 'a', attr: 'href' },
-          };
-          const items: any[] = [];
-          for (const c of containers) {
-            if (items.length >= limit) break;
-            const item: any = {};
-            for (const [fname, fdef] of Object.entries(autoFields)) {
-              const sel = (fdef as any).selector;
-              const attr = (fdef as any).attr || 'text';
-              const el = c.querySelector(sel);
-              if (!el) { item[fname] = null; continue; }
-              if (attr === 'text') item[fname] = (el.textContent || '').trim();
-              else if (attr === 'html') item[fname] = (el as any).innerHTML;
-              else item[fname] = el.getAttribute(attr);
+            if (!containerSel) return { error: '未指定 selector 且无法自动识别列表项容器，请传 selector' };
+            const containers = Array.from(document.querySelectorAll(containerSel));
+            if (!containers.length) return { error: `未匹配到列表项: ${containerSel}` };
+            const autoFields = fields || {
+              title: { selector: '.title, h3, h2, .name', attr: 'text' },
+              price: { selector: '.price, .cost', attr: 'text' },
+              link: { selector: 'a', attr: 'href' },
+            };
+            const items: any[] = [];
+            for (const c of containers) {
+              if (items.length >= limit) break;
+              const item: any = {};
+              for (const [fname, fdef] of Object.entries(autoFields)) {
+                const sel = (fdef as any).selector;
+                const attr = (fdef as any).attr || 'text';
+                const el = c.querySelector(sel);
+                if (!el) { item[fname] = null; continue; }
+                if (attr === 'text') item[fname] = (el.textContent || '').trim();
+                else if (attr === 'html') item[fname] = (el as any).innerHTML;
+                else item[fname] = el.getAttribute(attr);
+              }
+              items.push(item);
             }
-            items.push(item);
+            return { count: items.length, items };
+          }, args);
+          if ((onePage as any)?.error) { lastError = String((onePage as any).error); break; }
+          allItems.push(...((onePage as any).items || []));
+          pagesCollected = p;
+          // 限流：总量 = limit × pages（limit 是单页条数，保持与单页模式同语义，不因翻页缩水）
+          if (allItems.length >= totalPages * (Number(args.limit) || 20)) { allItems.length = totalPages * (Number(args.limit) || 20); break; }
+          // 本页空 = 已到末页（或选择器在本页失效），不再翻
+          if (!((onePage as any).items || []).length) break;
+          if (p >= totalPages) break;
+          // untilText：页面出现停止文本即提前收工（如「没有更多」）
+          if (untilText) {
+            const bodyText = await page.evaluate(() => (document.body?.innerText || '')).catch(() => '');
+            if (bodyText.includes(untilText)) { stoppedByUntil = true; stoppedPage = p; break; }
           }
-          return { count: items.length, items };
-        }, args);
+          // 记住本页首项文本，翻页后等它变化（列表类 SPA 翻页常不触发 domcontentloaded）
+          const pageSel = String(args.selector || '');
+          const firstOfPrev = await page.evaluate((sel: string) => {
+            const c = sel ? document.querySelector(sel) : null;
+            return c ? (c.textContent || '').trim().slice(0, 80) : null;
+          }, pageSel).catch(() => null);
+          // 翻页（nextSelector 优先，缺省复用 next_page 的默认识别模式）
+          const nextSel = args.nextSelector
+            ? String(args.nextSelector)
+            : 'a:has-text("下一页"), a:has-text("下页"), a:has-text("›"), a:has-text("»"), a:has-text("Next"), button:has-text("下一页"), button:has-text("Next"), a[rel="next"]';
+          const nextBtn = page.locator(nextSel).first();
+          try {
+            if (!(await nextBtn.count())) { break; } // 没有下一页控件 = 已是末页，正常收工
+            await nextBtn.click({ timeout: 5000 });
+            await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+            // ★ 翻页后等内容刷新：等首项文本与翻页前不同（SPA 翻页常整页重渲染但 URL 不变），
+            //   最多再等 6s；等不到也继续下一页提取（宁可重复也不要漏页）。
+            await page.waitForTimeout(600);
+            for (let w = 0; w < 8; w++) {
+              const firstNow = await page.evaluate((sel: string) => {
+                const c = sel ? document.querySelector(sel) : null;
+                return c ? (c.textContent || '').trim().slice(0, 80) : null;
+              }, pageSel).catch(() => null);
+              if (firstNow == null || firstOfPrev == null || firstNow !== firstOfPrev) break;
+              await page.waitForTimeout(700);
+            }
+          } catch (e: any) {
+            failedPage = p + 1;
+            lastError = e?.message || String(e);
+            break;
+          }
+        }
+        result = {
+          count: allItems.length,
+          items: allItems,
+          pagesCollected,
+          ...(stoppedByUntil ? { stoppedByUntil, stoppedPage } : {}),
+          ...(failedPage ? { failedPage, error: lastError } : {}),
+        };
         break;
       }
       // ========== C9 视觉定位闭环 ==========

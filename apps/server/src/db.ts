@@ -1417,7 +1417,7 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_upload: 上传本地文件——在页面上设置 input[type=file] 的文件（如上传视频/图片到后台）。传选择器（可选）与本地文件路径
 - browser_fill_form: 批量填表——一次调用填写多个表单字段。fields 数组每项 {selector, value, type?}，type 为 text/select/checkbox/radio；select 用 label（显示文本）或 value；checkbox/radio 用 true/false。普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror）都支持：富文本字段直接传 selector 指向该 div。**多字段表单必须用它一次填完，禁止逐个 browser_type**；返回 state 数组 = 各字段填写后的当前值（回读核验），逐条核对 state 判断是否全部生效，**不要凭感觉重复填写**；failed 列表逐条列出未填成功的字段与原因，按提示换 selector 只重试失败的字段
 - browser_submit_form: 提交表单——填写完成后用它提交（也可改用 browser_click 点提交按钮）；返回里带页面判定（成功提示 / 校验提示 / 是否还有表单），据此判断，不要立刻再读一遍页面
-- browser_run_recipe: 站点配方——其中 form-fill 是"通用批量填表"：参数 fields 传字段 JSON 数组（每项 selector 用 get_page_content 里的 selector，selectors 可给备用选择器，下拉优先 label），可选 submit + submitText 一并提交。备用选择器回退与回读核验都在代码里完成，一次调用闭环。
+- browser_run_recipe: 站点配方——其中 form-fill 是"通用批量填表"：参数 fields 传字段 JSON 数组（每项 selector 优先用 get_page_content 回显的高质量选择器（id/testid/aria/name/placeholder）；元素行没带 <selector> 段的用 index——hash class 下一次读取就漂移，不要凭印象猜），selectors 可给备用选择器，下拉优先 label。可选 submit + submitText 一并提交。备用选择器回退与回读核验都在代码里完成，一次调用闭环。
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
 - file_read: 读本地文件（工作目录内）——需要复用父任务落盘的成品文案/章节/经验档，或核对文件内容时用它。★ 不要用 browser_navigate 打开 file:// 去读文件：那会把本地路径当页面开进预览面板，且加载必然失败；读文件一律用本工具。

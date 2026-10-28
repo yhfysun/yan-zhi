@@ -788,7 +788,7 @@ export class BrowserGetPageContentTool implements BuiltInTool {
   // ★ 本工具就是 2026-10-14 实报的当事人：模型带 maxTextLength 连调 3 次读的是页面
   //   三个不同时刻的状态 —— "相同输入不会产生新结果"对它不成立（见 ToolDefinition 该字段注释）
   readsExternalState = true;
-  description = 'Get the current page content in one call: url + title + visible text body + numbered interactive elements + form state. 一次拿齐"内容 + 操作目标 + 表单状态"：页面标题/URL、可见正文、带编号的可交互元素清单（每个元素含 index、tag、selector、type、name、placeholder、aria-label、value；输入框标注 ←可输入），以及【表单状态】段（页面上每个输入框/文本域/富文本/下拉的字段名、类型、是否必填、**当前值**）与【自上次读取的变化】段（哪些字段从什么变成了什么）。用途：既要看页面说了什么、又要知道点哪里/往哪输入时用它；click/type/fill_form 之后想确认结果也用它 —— **填完表单请以【表单状态】的值为准判断是否生效，不要重复填写**；【自上次读取的变化】为"无"说明上一步动作没改变任何字段，应换定位方式而不是重复同一动作。元素编号 index 可直接作为 browser_click / browser_type 的 index 参数，selector 也可直接作为 selector 参数。只看纯文本用 browser_get_visible_text；只要元素坐标用 browser_get_page_info；要看父子层级结构用 browser_get_dom。可传 tabId 读取指定标签页（来自 browser_new_tab / browser_get_tabs），用于多页并行场景，不必先切换标签页。';
+  description = 'Get the current page content in one call: url + title + visible text body + numbered interactive elements + form state. 一次拿齐"内容 + 操作目标 + 表单状态"：页面标题/URL、可见正文、带编号的可交互元素清单（每个元素含 index、tag、selector（仅高质量选择器：id/testid/aria/name/placeholder；hash class/路径式省略——定位用 index）、type、name、placeholder、aria-label、value；输入框标注 ←可输入），以及【表单状态】段（页面上每个输入框/文本域/富文本/下拉的字段名、类型、是否必填、**当前值**）与【自上次读取的变化】段（哪些字段从什么变成了什么）。用途：既要看页面说了什么、又要知道点哪里/往哪输入时用它；click/type/fill_form 之后想确认结果也用它 —— **填完表单请以【表单状态】的值为准判断是否生效，不要重复填写**；【自上次读取的变化】为"无"说明上一步动作没改变任何字段，应换定位方式而不是重复同一动作。元素编号 index 可直接作为 browser_click / browser_type 的 index 参数，selector 也可直接作为 selector 参数。只看纯文本用 browser_get_visible_text；只要元素坐标用 browser_get_page_info；要看父子层级结构用 browser_get_dom。可传 tabId 读取指定标签页（来自 browser_new_tab / browser_get_tabs），用于多页并行场景，不必先切换标签页。';
   inputSchema = {
     type: 'object',
     properties: {
@@ -831,6 +831,8 @@ export class BrowserGetPageContentTool implements BuiltInTool {
       const elems = (data.interactive || []).map((e: any) => {
         let s = `[${e.index}] ${e.tag}`;
         if (e.type) s += `[type=${e.type}]`;
+        // 快照瘦身（2026-10-28）：selector 只回显高质量选择器（id/testid/aria/name/placeholder），
+        // hash class/路径式为空串——展示行随之省略该段；定位主力是 index，不受影响
         if (e.selector) s += ` <${e.selector}>`;
         if (e.name) s += ` [name:${e.name}]`;
         if (e.role) s += ` [role:${e.role}]`;
@@ -880,12 +882,12 @@ export class BrowserGetPageContentTool implements BuiltInTool {
         // ★ 必须回传 _meta.path：否则服务端通用钩子接不到该路径 → 落盘文件不登记
         //   conversation_file / 不进工件清单（等于白落盘）。category=intermediate（原始抓取）。
         return okWithMeta(
-          `${header}${preview}${more}${formSection}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`,
+          `${header}${preview}${more}${formSection}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数（瘦身：只有高质量选择器（id/testid/aria/name/placeholder）才回显，hash class/路径式省略 —— 该类元素请用 index 定位）)\n${elems}`,
           { path: savedPath, name: savedPath.split(/[/\\]/).pop() || 'page.txt', category: 'intermediate', bytes: bodyText.length },
         );
       }
       return ok(
-        `${header}${bodyText}${formSection}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数)\n${elems}`
+        `${header}${bodyText}${formSection}\n\n【可交互元素】(${data.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数；也可直接用 <selector> 作为 selector 参数（瘦身：只有高质量选择器（id/testid/aria/name/placeholder）才回显，hash class/路径式省略 —— 该类元素请用 index 定位）)\n${elems}`
       );
     } catch (e: any) { return err(e?.message || '获取页面内容失败'); }
   }
@@ -972,7 +974,7 @@ export class BrowserGetPageInfoTool implements BuiltInTool {
   name = 'browser_get_page_info';
   // 读**页面当前快照**（元素坐标/编号随页面布局变化）
   readsExternalState = true;
-  description = 'Get current page url, title, and a numbered list of interactive elements with their on-screen coordinates (x/y/w/h), penetrating same-origin iframes and Shadow DOM, up to 300. 与 browser_get_page_content 的区别：本工具不返回正文文本，但每个元素额外带屏幕坐标和 bbox 尺寸。用途：需要坐标时用——按 x+y 点击、判断元素在视口内还是被遮挡/需滚动、配合 browser_screenshot 的 annotate=true 做截图编号框叠加、按位置筛选（如"右上角的按钮"）。元素属性同样齐全（index、selector、tag、text、type、name、placeholder、value、ariaLabel、role、select 的 options、checkbox 的 checked）。可传 tabId 读取指定标签页，不必先切换标签页。';
+  description = 'Get current page url, title, and a numbered list of interactive elements with their on-screen coordinates (x/y/w/h), penetrating same-origin iframes and Shadow DOM, up to 300. 与 browser_get_page_content 的区别：本工具不返回正文文本，但每个元素额外带屏幕坐标和 bbox 尺寸。用途：需要坐标时用——按 x+y 点击、判断元素在视口内还是被遮挡/需滚动、配合 browser_screenshot 的 annotate=true 做截图编号框叠加、按位置筛选（如"右上角的按钮"）。元素属性同样齐全（index、selector（仅高质量选择器回显，hash/路径式省略——定位用 index）、tag、text、type、name、placeholder、value、ariaLabel、role、select 的 options、checkbox 的 checked）。可传 tabId 读取指定标签页，不必先切换标签页。';
   inputSchema = {
     type: 'object',
     properties: { tabId: { type: 'number', description: '可选：目标标签页 id（来自 browser_new_tab / browser_get_tabs），缺省为当前活动标签页。' } },
@@ -990,7 +992,8 @@ export class BrowserGetPageInfoTool implements BuiltInTool {
         if (e.ariaLabel) s += ` [aria:${e.ariaLabel}]`;
         if (e.options) s += ` [opts:${e.options.length}]`;
         if (e.checked !== undefined) s += ` [checked:${e.checked}]`;
-        s += ` <${e.selector}>`;
+        // 快照瘦身：selector 为空串（hash/路径式）时省略该段，只展示高质量选择器
+        if (e.selector) s += ` <${e.selector}>`;
         return s;
       }).join('\n');
       return ok(`URL: ${data.url}\nTitle: ${data.title}\nInteractive elements (${data.interactiveCount}, numbered — use index in browser_click/browser_type):\n${elems}${(data.interactive || []).length > 120 ? '\n(only first 120 shown)' : ''}`);
