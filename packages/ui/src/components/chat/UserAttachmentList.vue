@@ -8,7 +8,7 @@
           <span class="ual-anno-idx">{{ a.index }}</span>
           <span class="ual-anno-label">{{ a.label }}</span>
           <button
-            v-if="annotationShot && a.index === 1"
+            v-if="annotationShot && a.index === 1 && shotBroken"
             type="button"
             class="ual-anno-shot"
             title="查看批注时的页面截图"
@@ -21,6 +21,17 @@
         <div v-if="a.componentFile" class="ual-anno-comp">{{ a.componentFile }}</div>
         <div v-if="a.selector" class="ual-anno-sel">{{ a.selector }}</div>
         <div v-if="a.comment" class="ual-anno-comment">{{ a.comment }}</div>
+        <!-- 截图：能取到就直出缩略图（点开大图），取不到才退回一个「截图」小胶囊 -->
+        <img
+          v-if="annotationShot && a.index === 1 && !shotBroken"
+          class="ual-anno-thumb"
+          :src="shotSrc"
+          alt="批注截图"
+          loading="lazy"
+          draggable="false"
+          @error="shotBroken = true"
+          @click="openAnnotationShot"
+        />
       </div>
     </div>
 
@@ -139,6 +150,13 @@ const props = defineProps<{
 
 const links = computed(() => props.links || []);
 const annotations = computed(() => props.annotations || []);
+/** 截图取不到时（老消息指向 userData 路径 → file-stream 403）退回胶囊按钮 */
+const shotBroken = ref(false);
+const shotSrc = computed(() =>
+  props.annotationShot
+    ? srcOf({ name: '批注截图.png', path: props.annotationShot, kind: 'image' })
+    : '',
+);
 
 /** 点开批注截图：复用附件打开逻辑（图片走媒体查看器） */
 function openAnnotationShot() {
@@ -338,6 +356,17 @@ onBeforeUnmount(() => closeMediaHover());
   line-height: 1.6;
   color: var(--el-text-color-regular);
   white-space: pre-wrap;
+}
+.ual-anno-thumb {
+  display: block;
+  margin-top: 8px;
+  max-width: 100%;
+  max-height: 190px;
+  border-radius: 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-lighter);
+  object-fit: contain;
+  cursor: zoom-in;
 }
 /* 附件多了不换行撑高：一行横向滚动（收起按钮在滚动区外，不会被滚走） */
 .ual-chips {

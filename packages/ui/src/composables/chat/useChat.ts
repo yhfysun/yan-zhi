@@ -3209,7 +3209,23 @@ async function healStalePlatform() {
       if (!items.length) return '';
       const tabId = stashed ? stashed.tabId : (annoStore.activeTabId || '');
       const shot = await captureAnnotationScreenshot(tabId);
-      const block = formatAnnotationBlock(items, shot.path);
+      // ★ 截图先复制进**会话产物目录**再用它的路径：主进程存的是 userData/screenshots，
+      //   而前端取图只有 /api/workspace/file-stream（只认工作区内的路径）—— 实测该接口对
+      //   userData 路径返回 403，卡片上点「截图」什么也看不到。复制失败就退回原路径，
+      //   模型仍读得到图，只是前端出不了缩略图。
+      let shotPath = shot.path;
+      if (shotPath) {
+        try {
+          const { getPlatformAdapter } = await import('@yan-zhi/core');
+          const adapter = getPlatformAdapter();
+          const dir = await resolveArtifactDirFor('upload');
+          try { await adapter.fs.mkdir(dir); } catch { /* 已存在 */ }
+          const dest = `${dir}/annotation-${Date.now()}.png`;
+          await adapter.fs.writeFileBase64(dest, await adapter.fs.readFileBase64(shotPath));
+          shotPath = dest;
+        } catch { /* 保持原路径 */ }
+      }
+      const block = formatAnnotationBlock(items, shotPath);
       if (!stashed) annoStore.annotations = [];
       if (shot.error) ElMessage.warning('批注截图不可用（' + shot.error + '），本次只发送了批注文字');
       return block;
