@@ -10276,14 +10276,19 @@ app.whenReady().then(async () => {
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      `connect-src 'self' ws://localhost:1420 wss://localhost:1420 ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;`
+      `connect-src 'self' ws://localhost:1420 wss://localhost:1420 ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
+      // ★ HTML 产物预览用 iframe 加载 `/api/workspace/file-stream?path=…`（见下方 artifact CSP）——
+      //   `default-src 'self'` 会把它当外部框架直接拦掉（iframe 里只有一片空白，且报 CSP 违规），
+      //   所以显式放行本机 API 源。
+      `frame-src 'self' ${API_ORIGIN} http://localhost:${API_PORT};`
     : "default-src 'self'; " +
       "script-src 'self'; " +
       "style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      `connect-src 'self' ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;`;
+      `connect-src 'self' ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
+      `frame-src 'self' ${API_ORIGIN} http://localhost:${API_PORT};`;
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
@@ -10486,3 +10491,36 @@ app.on('before-quit', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
+    // ★ capture.html 豁免 CSP：其内联自愈脚本（模块加载失败 4s 重载）被 script-src 'self'
+    //   拦截（2026-10-28 日志实锤 capture.html:22 CSP ERROR）。采集窗口是纯内部页，
+    //   不加载第三方内容，豁免不引入安全面。
+    if (/[\\/]capture\.html/.test(details.url)) {
+      callback({});
+      return;
+    }
+    // ★★★ 2026-10-28：HTML **产物**走单独的受限 CSP（不沿用应用 CSP）。
+    //   背景：产物预览此前用 iframe srcdoc，而 srcdoc 文档**继承父窗口 CSP** ——
+    //   `script-src 'self'` 把产物里的内联脚本全拦掉，带 JS 的原型（切换按钮、图表）
+    //   在预览里点不动、局部空白（实测：srcdoc 内联脚本 BLOCKED）。改成用 URL 加载后，
+    //   这份 document 有自己的 CSP，可以按产物需要放宽，同时**收紧**到够用为止：
+    //   只放开脚本/样式与图片，禁掉 frame/form/base，连接只允许 http(s)（无 file:）。
+    //   ★ 仍然跑在 sandbox="allow-scripts"（无 allow-same-origin）的 iframe 里 ——
+    //     产物脚本拿不到应用上下文与存储。
+    if (/\/file-stream\?/i.test(details.url) && /\.html?(?:&|$)/i.test(details.url)) {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [
+            "default-src 'none'; "
+            + "script-src 'unsafe-inline' 'unsafe-eval' https:; "
+            + "style-src 'unsafe-inline' https:; "
+            + 'img-src data: blob: https: http:; '
+            + 'media-src data: blob: https: http:; '
+            + 'font-src data: https:; '
+            + 'connect-src https: http:; '
+            + "base-uri 'none'; form-action 'none'; frame-src 'none';",
+          ],
+        },
+      });
+      return;
+    }

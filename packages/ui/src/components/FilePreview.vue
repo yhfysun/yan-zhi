@@ -11,11 +11,23 @@
         title="已按该编码正确解码；保存时会写为 UTF-8"
       >{{ encodingLabel(detectedEncoding) }}</span>
       <span class="fp-meta-size">{{ humanSize }}<template v-if="truncated"> · 文件过大，已截断</template></span>
-      <el-button size="small" text bg title="在文件管理器中显示此文件" @click="openContainingFolder">
+      <el-button class="fp-wide-only" size="small" text bg title="在文件管理器中显示此文件" @click="openContainingFolder">
         <el-icon><FolderOpened /></el-icon>&nbsp;目录
       </el-button>
-      <el-button size="small" text bg title="另存为到其他位置（默认文件名带时间戳）" @click="saveAs">
+      <el-button class="fp-wide-only" size="small" text bg title="另存为到其他位置（默认文件名带时间戳）" @click="saveAs">
         <el-icon><Download /></el-icon>&nbsp;{{ ext === 'ydoc' ? '另存为 .ydoc' : '另存为' }}
+      </el-button>
+      <!-- 文本类文件：把这份文件引用到对话输入框（按路径带上，补充指令后发送） -->
+      <el-button
+        v-if="kind === 'text'"
+        class="fp-wide-only"
+        size="small"
+        text
+        bg
+        title="引用到对话：挂进输入框的文件引用，补充指令后发送"
+        @click="referenceCurrentFile"
+      >
+        <el-icon><Link /></el-icon>&nbsp;引用
       </el-button>
       <!-- Markdown：阅读 / 编辑 / 分屏（左源码右实时预览）三态 -->
       <div v-if="isMdText" class="fp-seg">
@@ -25,20 +37,50 @@
       </div>
       <!-- 非文本类之外的纯文本：直接切换编辑 -->
       <template v-else-if="canEdit">
-        <el-button v-if="!editing" size="small" text bg @click="startEdit">
+        <el-button v-if="!editing" class="fp-wide-only" size="small" text bg @click="startEdit">
           <el-icon><EditPen /></el-icon>&nbsp;编辑
         </el-button>
         <template v-else>
-          <el-button v-if="!isYdoc" size="small" :disabled="!canUndo || saving" :title="undoTitle" @click="undoSave">撤回</el-button>
-          <el-button v-if="!isYdoc" size="small" :disabled="!canRedo || saving" :title="redoTitle" @click="redoSave">重做</el-button>
+          <el-button v-if="!isYdoc" class="fp-wide-only" size="small" :disabled="!canUndo || saving" :title="undoTitle" @click="undoSave">撤回</el-button>
+          <el-button v-if="!isYdoc" class="fp-wide-only" size="small" :disabled="!canRedo || saving" :title="redoTitle" @click="redoSave">重做</el-button>
           <el-button size="small" :disabled="saving" @click="cancelEdit">取消</el-button>
           <el-button size="small" type="primary" :loading="saving" @click="saveEdit">保存</el-button>
         </template>
       </template>
+      <!-- HTML：预览 / 源码两态（默认直接渲染，观感和浏览器一致） -->
+      <div v-if="isHtmlText" class="fp-seg">
+        <button :class="{ on: htmlMode === 'preview' }" @click="htmlMode = 'preview'">预览</button>
+        <button :class="{ on: htmlMode === 'source' }" @click="htmlMode = 'source'">源码</button>
+      </div>
+      <!-- 面板内渲染受主窗口 CSP 限制（内联脚本/外链样式不外放）⇒ 完整效果走应用内浏览器标签 -->
+      <el-button
+        v-if="isHtmlText"
+        class="fp-wide-only"
+        size="small"
+        text
+        bg
+        title="在应用内浏览器打开该页面（脚本、外链资源完整生效）"
+        @click="openHtmlInBrowser"
+      >
+        <el-icon><Monitor /></el-icon>&nbsp;浏览器预览
+      </el-button>
+      <!-- 窄面板「更多」：与上面按钮同一批动作，保证工具条永远一行、入口不丢 -->
+      <el-dropdown class="fp-more" trigger="click" @command="onMoreCommand">
+        <button class="fp-more-btn" title="更多文件操作">⋯</button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="folder">在文件管理器中显示</el-dropdown-item>
+            <el-dropdown-item command="saveas">另存为（文件名带时间戳）</el-dropdown-item>
+            <el-dropdown-item v-if="kind === 'text'" command="reference">引用到对话</el-dropdown-item>
+            <el-dropdown-item v-if="isHtmlText" command="browser">浏览器预览</el-dropdown-item>
+            <el-dropdown-item v-if="canEdit && !editing" command="edit" divided>编辑</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <!-- MD 编辑/分屏态的操作按钮 -->
       <template v-if="isMdText && mdMode !== 'read'">
-        <el-button size="small" :disabled="!canUndo || saving" :title="undoTitle" @click="undoSave">撤回</el-button>
-        <el-button size="small" :disabled="!canRedo || saving" :title="redoTitle" @click="redoSave">重做</el-button>
+        <el-button class="fp-wide-only" size="small" :disabled="!canUndo || saving" :title="undoTitle" @click="undoSave">撤回</el-button>
+        <el-button class="fp-wide-only" size="small" :disabled="!canRedo || saving" :title="redoTitle" @click="redoSave">重做</el-button>
         <el-button size="small" :disabled="saving" @click="cancelEdit">取消</el-button>
         <el-button size="small" type="primary" :loading="saving" @click="saveEdit">保存</el-button>
       </template>
@@ -181,6 +223,16 @@
       <div v-else-if="ydocDoc" class="fp-ydoc">
         <DocumentCard :doc="ydocDoc" />
       </div>
+      <!-- HTML 渲染预览：sandbox 不给 allow-same-origin ⇒ 脚本可跑但拿不到应用上下文/存储 -->
+      <div v-else-if="kind === 'text' && isHtmlText && htmlMode === 'preview'" class="fp-html-wrap">
+        <iframe
+          class="fp-html-frame"
+          :src="htmlSrc || undefined"
+          :srcdoc="htmlSrc ? undefined : content"
+          sandbox="allow-scripts allow-forms allow-modals"
+          :title="file.name"
+        ></iframe>
+      </div>
       <!-- Markdown / 纯文本（代码块带复制按钮） -->
       <div v-else-if="kind === 'text' && isMd" class="fp-text" @click="onContentClick" v-html="renderedMd"></div>
       <!-- 代码 / JSON：行号列 + 高亮 -->
@@ -213,13 +265,15 @@ import { parseYdoc, toYdoc } from '../utils/ydoc';
 import { stampedFileName } from '../utils/download-name';
 import type { DocumentInstance } from '../utils/document-types';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Document, Download, EditPen, FolderOpened } from '@element-plus/icons-vue';
+import { Document, Download, EditPen, FolderOpened, Link, Monitor } from '@element-plus/icons-vue';
 import { extractPdfPages, extractDocxHtml } from '@yan-zhi/core';
 import { decodeTextBytes, base64ToBytes, looksBinaryBytes, encodingLabel, type TextEncoding } from '@yan-zhi/shared';
 import { renderPdfToImages } from '../utils/pdf-render';
 import { toWindowsPath } from '../utils/file-open';
 import { parseExcelStyled, type ExcelStyledSheet } from '../utils/excel-styled';
 import AudioPlayer from './media/AudioPlayer.vue';
+import { useChat } from '../composables/chat/useChat';
+import { API_BASE, getLicenseCode } from '../api/client';
 
 const props = defineProps<{
   file: {
@@ -238,6 +292,14 @@ const loading = ref(true);
 const error = ref('');
 const content = ref('');
 const truncated = ref(false);
+/**
+ * HTML 预览走 URL 而不是 srcdoc（2026-10-28）。
+ * ★ srcdoc 文档**继承主窗口 CSP**（`script-src 'self'`），产物里的内联脚本全被拦 ——
+ *   带 JS 的原型（切换按钮、图表）在预览里点不动、局部空白。改成 URL 加载后这份
+ *   document 有自己的 CSP（主进程对 file-stream 的 .html 响应单独下发受限 CSP）。
+ * ★ 空串时模板退回 srcdoc：路径不在允许根（预览工作区外的本地文件）或非本机路径时仍能用。
+ */
+const htmlSrc = ref('');
 const imageSrc = ref('');
 const videoSrc = ref('');
 const audioSrc = ref('');
@@ -417,6 +479,42 @@ async function openContainingFolder() {
   }
 }
 
+/**
+ * 引用到对话（2026-10-28）：把当前文件挂进聊天输入框的文件引用 chip。
+ * ★ 引用的内容以**磁盘上的版本**为准 —— 编辑中有未保存改动时先确认，避免"引用了 A、看到的是 B"。
+ */
+async function referenceCurrentFile() {
+  const dirty = (editing.value || (isMdText.value && mdMode.value !== 'read')) && editContent.value !== content.value;
+  if (dirty) {
+    try {
+      await ElMessageBox.confirm('有未保存的修改，引用的将是磁盘上的版本。继续？', '提示', { type: 'warning' });
+    } catch { return; }
+  }
+  useChat().referenceFile(props.file.path, props.file.name);
+}
+
+/**
+ * HTML「浏览器预览」：内置浏览器标签（BrowserView 独立 partition，不受主窗口 CSP）打开文件字节流。
+ * 面板内 iframe 继承主窗口 CSP —— 内联脚本与外链样式会被拦，带 JS 的页面只有这里能完整跑。
+ */
+function openHtmlInBrowser() {
+  const code = getLicenseCode();
+  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const url = `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(props.file.path)}${qs}`;
+  void useChat().store.openBrowserUrl(url, props.file.name).then((ok: boolean) => {
+    if (!ok) window.open(url, '_blank', 'noopener,noreferrer');
+  });
+}
+
+/** 窄面板「更多」菜单：与工具条按钮走同一批函数，窄屏下入口不丢 */
+function onMoreCommand(cmd: string) {
+  if (cmd === 'folder') openContainingFolder();
+  else if (cmd === 'saveas') void saveAs();
+  else if (cmd === 'reference') referenceCurrentFile();
+  else if (cmd === 'browser') openHtmlInBrowser();
+  else if (cmd === 'edit') startEdit();
+}
+
 /** 另存为：桌面端走系统保存框（按源文件路径复制，不读字节）；Web 端用 blob 触发下载 */
 async function saveAs() {
   try {
@@ -479,6 +577,35 @@ const canEdit = computed(() => kind.value === 'text' && !isMd.value && !truncate
 type MdViewMode = 'read' | 'edit' | 'split';
 const mdMode = ref<MdViewMode>('read');
 const isMdText = computed(() => kind.value === 'text' && isMd.value && !truncated.value);
+/** HTML：默认渲染成页面（沙箱 iframe），可切源码；超长截断的文件只给源码 */
+const isHtmlText = computed(() => (
+  kind.value === 'text' && (ext.value === 'html' || ext.value === 'htm') && !truncated.value
+));
+const htmlMode = ref<'preview' | 'source'>('preview');
+
+/**
+ * HTML 预览源：先 HEAD 探一下服务端能否直出该路径，能就用 URL 加载（产物脚本才有自己的
+ * CSP 可跑），否则留空退回 srcdoc（工作区外的本地文件 / Web 端虚拟路径）。
+ * 见 htmlSrc 声明处的根因说明。
+ */
+watch(
+  [() => props.file?.path, isHtmlText, () => htmlMode.value],
+  async () => {
+    htmlSrc.value = '';
+    if (!isHtmlText.value || htmlMode.value !== 'preview') return;
+    const p = String(props.file?.path || '').trim();
+    if (!p) return;
+    if (!(/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('/') || p.startsWith('\\'))) return;
+    const code = getLicenseCode();
+    const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+    const url = `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(p)}${qs}`;
+    try {
+      const r = await fetch(url, { method: 'HEAD' });
+      if (r.ok) htmlSrc.value = url;
+    } catch { /* 退回 srcdoc */ }
+  },
+  { immediate: true },
+);
 /** 分屏/编辑态的实时渲染：直接渲染编辑内容，边写边看 */
 const renderedEditMd = computed(() => md.render(editContent.value || ''));
 
@@ -1410,18 +1537,37 @@ watch(() => props.file?.path, () => {
   revokeAudioSrc();
   videoNoAudio.value = false;
   videoError.value = '';
+  htmlMode.value = 'preview';   // 换文件回到渲染态，别把上一个文件的「源码」选择带过去
   if (props.file?.path) loadFile();
 }, { immediate: true });
 </script>
 
 <style scoped>
-.file-preview { height: 100%; overflow: auto; padding: 0; background: var(--el-bg-color); display: flex; flex-direction: column; }
+.file-preview { width: 100%; height: 100%; overflow: auto; padding: 0; background: var(--el-bg-color); display: flex; flex-direction: column;
+  /* 工具条按【预览面板自身宽度】收放（右侧栏 ~430px，窗口宽度看不出问题），见 @container fp。
+     ★ container-type 会带来内联轴尺寸包含（宽度不再由内容撑开）⇒ 必须显式 width:100%，否则塌成 0。 */
+  container-type: inline-size; container-name: fp; }
 /* 元信息条 */
 .fp-meta {
   display: flex; align-items: center; gap: 8px;
+  /* 右侧预览面板只有 ~430px：放不下时先收按钮（见 @container fp），
+     wrap 只作为极窄时的最后兜底，避免「预览」按钮被裁到点不到。 */
+  flex-wrap: wrap; row-gap: 6px;
   padding: 8px 12px; flex-shrink: 0;
   border-bottom: 1px solid var(--el-border-color-lighter);
   font-size: 12px; color: var(--el-text-color-secondary);
+}
+/* 窄面板：次要动作收进「⋯ 更多」，工具条保持一行 */
+.fp-more { display: none; }
+.fp-more-btn {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 4px;
+  color: var(--el-text-color-regular);
+}
+.fp-more-btn:hover { background: var(--el-fill-color); }
+@container fp (max-width: 620px) {
+  .fp-meta .fp-wide-only { display: none; }
+  .fp-more { display: inline-flex; }
 }
 .fp-meta-name { font-weight: 600; color: var(--el-text-color-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
 .fp-meta-badge {
@@ -1505,6 +1651,9 @@ watch(() => props.file?.path, () => {
 .fp-seg button.on { background: var(--el-color-primary); color: #fff; }
 /* MD 分屏：左源码右实时预览 */
 .fp-split { flex: 1; min-height: 0; display: flex; }
+/* HTML 渲染预览：铺满剩余高度，白底与浏览器一致 */
+.fp-html-wrap { flex: 1; min-height: 0; display: flex; background: #fff; }
+.fp-html-frame { flex: 1; width: 100%; min-width: 0; border: none; background: #fff; }
 .fp-split .fp-editor { flex: 1 1 50%; min-width: 0; border-right: 1px solid var(--el-border-color-lighter); }
 .fp-split-preview { flex: 1 1 50%; min-width: 0; overflow: auto; }
 /* 代码块复制按钮 */
