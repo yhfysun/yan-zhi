@@ -55,7 +55,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useZIndex } from 'element-plus';
 import {
-  Setting, MagicStick, Cpu, Files, Suitcase, FolderOpened, SetUp,
+  Setting, MagicStick, Present, Cpu, Files, Suitcase, FolderOpened, SetUp,
   Shop, Monitor, Message, Memo, Microphone, Document, InfoFilled, Close,
   Key, Connection, Box,
 } from '@element-plus/icons-vue';
@@ -78,6 +78,7 @@ const categories: SettingsCategory[] = [
   { key: 'general', label: '通用', icon: Setting, pane: 'general' },
   { key: 'shortcuts', label: '快捷键', icon: Key, pane: 'shortcuts' },
   { key: 'skin', label: '外观皮肤', icon: MagicStick, pane: 'skin' },
+  { key: 'pet', label: '宠物', icon: Present, pane: 'pet' },
   { key: 'models', label: '模型服务', icon: Cpu, comp: 'models' },
   { key: 'skills', label: '技能', icon: Files, comp: 'skills' },
   { key: 'tools', label: '工具与连接', icon: Suitcase, comp: 'tools' },

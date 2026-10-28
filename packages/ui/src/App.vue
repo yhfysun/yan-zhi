@@ -169,6 +169,7 @@ import { isModeWindow, isConvWindow, convIdOfWindow, modeKeyOfRoute } from './ut
 import * as modeModule from './stores/mode';
 import { pluginModeMeta } from './stores/mode';
 import { useChat } from './composables/chat/useChat';
+import { usePetBridge } from './composables/usePetBridge';
 import { useChatStore } from './stores/chat';
 import { useAgentStore } from './stores/agent';
 import { useCodeStore } from './stores/code';
@@ -236,6 +237,9 @@ const localIdentityInitial = computed(() => '本');
  * 若再套一层 SideNav / 顶栏就会出现「窗口里还有一整套应用导航」的错位。
  */
 const isBareRoute = computed(() => route.meta?.bare === true);
+
+// 宠物伴星：把任务状态推给独立宠物窗（宠物窗自己加载 App.vue，内部会跳过）
+usePetBridge();
 
 /**
  * 冷启动就绪位（2026-10-25）：路由首次导航完成前，路由守卫在 license.init 里等内嵌

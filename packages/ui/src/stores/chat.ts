@@ -118,7 +118,7 @@ function clearAgentOpenedTabs(convId?: string): void {
   agentOpenedTabs.delete(convId);
 }
 
-async function resolvePreviewTabId(convId?: string): Promise<string> {
+async function resolvePreviewTabId(convId?: string, waitMs = 4000): Promise<string> {
   const electron = (window as any).electronAPI;
   // ★ 2026-10-15：浏览器是**应用级**资源（三级归属：浏览器=整个应用一份；
   //   Git/文件=工作空间级；控制台=会话级）⇒ 执行面固定为裸 'preview'，
@@ -139,8 +139,10 @@ async function resolvePreviewTabId(convId?: string): Promise<string> {
     bs.activeTabId && bs.tabs.some((t: any) => t.id === bs.activeTabId) ? bs.activeTabId : '';
   const tid = current();
   if (tid) return tid;
-  // 预览面板刚被 openTab 挂载：等它 onMounted 自建首个 tab（最多 ~4s）
-  for (let i = 0; i < 40; i++) {
+  // 预览面板刚被 openTab 挂载：等它 onMounted 自建首个 tab（默认最多 ~4s；
+  // 冷启动首次打开界面实测要更久，调用方可传更长等待）
+  const iterations = Math.max(1, Math.floor(waitMs / 100));
+  for (let i = 0; i < iterations; i++) {
     await new Promise((r) => setTimeout(r, 100));
     const t = current();
     if (t) return t;
@@ -893,6 +895,45 @@ export const useChatStore = defineStore('chat', () => {
     rightPanelOpen.value = true;
     return id;
   }
+  /**
+   * 打开一个网页到**应用内浏览器**（2026-10-28，引用 chip 的「打开页面」用它）。
+   * ★ 只 openTab 不够：那只是把浏览器壳挂上预览窗，页面并不会跳过去（用户实报
+   *   「打开了寂寞，url 不自动访问」）。真要跳转得走与 browser_navigate 工具**同一条 IPC**：
+   *   resolvePreviewTabId → browserView.action(tabId, 'navigate')。
+   * 返回 false = 当前环境没有内置浏览器（Web/移动端），调用方可回落系统浏览器。
+   */
+  /**
+   * 打开一个网页到**应用内浏览器**（引用 chip 的「打开页面」）。
+   *
+   * ★ 只 openTab 不够：那只是把浏览器壳挂到预览窗，页面不会跳过去（用户实报「打开了寂寞」）。
+   * ★ 也不能再 new_tab：openTab 已让面板自带一个标签，会开出两个（用户实报「一下打开两个」）。
+   * ⇒ 正确做法是「等面板把 tab 建出来 → 在它上面 navigate」，可 panel 首次挂载在冷启动下
+   *   可能要好几秒（实测首次打开会停在起始页，之后都正常），所以这里等到 15s 并重试导航。
+   */
+  async function openBrowserUrl(rawUrl: string, name?: string): Promise<boolean> {
+    const target = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+    let host = name || target;
+    try { if (!name) host = new URL(target).hostname; } catch { /* 非标准 URL：用原名 */ }
+    const bv = (window as any).electronAPI?.browserView;
+    // ① 先把预览窗挂出来（**不带 url**：带 url 会让面板自己再开一个同址标签 → 两个标签）
+    openTab({ kind: 'browser', name: host, url: '' });
+    if (!bv?.action) return false;
+    // ② 统一交给主进程建一个**带 url** 的新标签：面板收到 tabCreated 广播会补壳并显示
+    //    （实测这条路径在冷启动/热启动都可靠；直接改写 store 里的 tab.url 面板不认，
+    //      表现为"点了没反应、停在起始页"）。
+    // ③ 每次打开都新开标签 —— 两个不同 url 不会互相覆盖（用户明确要的行为）。
+    try {
+      const nt: any = await bv.action(null, 'new_tab', { url: target });
+      if (nt && nt.tabId !== undefined) return true;
+    } catch { /* 落回就地导航 */ }
+    const tabId = await resolvePreviewTabId(currentConvId.value, 8000);
+    if (!tabId) return true;
+    try {
+      const r = await bv.action(tabId, 'navigate', { url: target });
+      return !r?.error;
+    } catch { return true; }
+  }
+
   /** 激活指定 tab（id 不存在时 no-op） */
   function activatePreviewTab(id: string) {
     if (previewTabs.value.some((t) => t.id === id)) {
@@ -1011,6 +1052,8 @@ export const useChatStore = defineStore('chat', () => {
    */
   const pendingPrefill = ref('');
   function prefillInput(text: string) { pendingPrefill.value = String(text || ''); }
+  /** 宠物快问：预填后是否立刻发送（由 useChat 的 prefill watcher 消费） */
+  const petAutoSend = ref(false);
   // E12: 任务规划进度 —— task_plan / task_step 工具写入，UI 渲染 todo 卡片。
   // **必须按会话分桶**：计划是「某一次任务的执行清单」，归属产生它的那个会话。
   // 早先用 planTitle / planSteps 两个全局 ref，A 会话登记的计划会原样出现在 B 会话里（串台）。
@@ -4156,6 +4199,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
 
   return {
     conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
+    // messagesByConv 只读暴露：宠物窗的活动气泡要跨会话读"正在执行哪个工具"（不新起订阅）
+    messagesByConv,
     runningConvIds, isConvStreaming, runStatsByConv,
     browserExpanded, browserUserDismissed, browserLockInput, browserPaused, pausedConvIds,
     browserTaskActive, markBrowserTaskActive, clearBrowserTaskActive, browserHighlightManual,
@@ -4176,11 +4221,16 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     permissionMode, setPermissionMode,
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,
     previewTabs, activeTabId, activeTab,
-    openTab, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,
+    openTab, openBrowserUrl, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,
     pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion, dropPendingCards,
+    // 2026-10-28：宠物面板要跨会话看「等你输入」，需要按会话分桶的只读入口（不改内部逻辑）
+    questionPendingByConv: questionPending.byConv,
+    confirmationPendingByConv: confirmationPending.byConv,
+    pathAuthPendingByConv: pathAuthPending.byConv,
+    toolAuthPendingByConv: toolAuthPending.byConv,
     pendingPathAuth, submitPendingPathAuth,
     pendingToolAuth, submitPendingToolAuth,
-    pendingPrefill, prefillInput,
+    pendingPrefill, prefillInput, petAutoSend,
     submitPendingConfirmation, skipPendingConfirmation, prevPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
     planSteps, planTitle, planCreatedAt, planFinishedAt, clearPlan, clearPlanDisplayOnly,

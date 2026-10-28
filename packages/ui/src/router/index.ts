@@ -55,6 +55,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务执行', bare: true, guest: true },
   },
   {
+    // 宠物伴星（2026-10-28）：独立透明置顶窗只挂这一页，不套应用外壳。
+    path: '/pet-window',
+    name: 'pet-window',
+    component: () => import('../views/PetWindow.vue'),
+    meta: { title: '宠物', bare: true, guest: true },
+  },
+  {
     path: '/home',
     name: 'home',
     component: () => import('../views/Home.vue'),

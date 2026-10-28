@@ -9341,6 +9341,324 @@ function finishSnip(result) {
   try { s.resolve(result); } catch {}
 }
 
+// ============================================================
+// 宠物伴星（2026-10-28）：透明置顶宠物窗
+// 形态与框选窗一致（transparent + alwaysOnTop + skipTaskbar），额外默认
+// setIgnoreMouseEvents(true,{forward:true})：不抢焦点、不吃点击，但渲染层仍能收到
+// mousemove —— 指针进入宠物/动作条矩形时再关穿透（forward 是 Windows 上做悬停的前提）。
+// 状态由主窗口派生后经 IPC 推送（pet:sync），宠物窗不自己连 WS，避免双订阅。
+// ============================================================
+let petWindow = null;
+let petLastSync = null;
+let petLastSettings = null;
+
+const PET_W = 460;
+const PET_H = 420;
+/** 踱步速度：约 70px/s，看得见在走但不催人 */
+const PET_WALK_SPEED = 70;
+
+function petPosFile() {
+  return path.join(app.getPath('userData'), 'pet-window.json');
+}
+function readPetPos() {
+  try { return JSON.parse(fs.readFileSync(petPosFile(), 'utf8')); } catch { return null; }
+}
+
+/**
+ * 多显示器钳位：按窗口当前覆盖到的那块屏算工作区（不是 primary），
+ * 显示器拔掉/改分辨率后也用它把窗口收回可视区。
+ */
+function clampPetToDisplay(x, y, w, h) {
+  let area;
+  try {
+    area = electronScreen.getDisplayMatching({ x, y, width: w, height: h }).workArea;
+  } catch {
+    return { x, y, area: null };
+  }
+  const clampedX = Math.max(area.x, Math.min(area.x + area.width - w, x));
+  const clampedY = Math.max(area.y, Math.min(area.y + area.height - h, y));
+  return { x: clampedX, y: clampedY, area };
+}
+
+let petSaveTimer = null;
+function writePetPosNow() {
+  try {
+    if (!petWindow || petWindow.isDestroyed()) return;
+    const [x, y] = petWindow.getPosition();
+    fs.writeFileSync(petPosFile(), JSON.stringify({ x, y }));
+  } catch { /* 落盘失败不影响使用 */ }
+}
+/** 踱步时每秒动几十次，不能每次都落盘：走路期间不写，停下后节流写一次 */
+function savePetPos() {
+  if (petWalk.on) return;
+  if (petSaveTimer) clearTimeout(petSaveTimer);
+  petSaveTimer = setTimeout(() => { petSaveTimer = null; writePetPosNow(); }, 400);
+}
+
+// ===== 沿屏幕底边踱步：窗口位移由主进程负责，渲染层只管动画与朝向 =====
+const petWalk = { on: false, dir: 1, targetX: 0, timer: null, last: 0 };
+
+function sendPetWalkState() {
+  try {
+    if (!petWindow || petWindow.isDestroyed()) return;
+    petWindow.webContents.send('pet:walk-state', { walking: petWalk.on, dir: petWalk.dir });
+  } catch {}
+}
+
+function petWalkStop() {
+  const was = petWalk.on;
+  petWalk.on = false;
+  if (petWalk.timer) { clearInterval(petWalk.timer); petWalk.timer = null; }
+  if (was) { sendPetWalkState(); writePetPosNow(); }
+}
+
+function petWalkTick() {
+  if (!petWindow || petWindow.isDestroyed() || !petWalk.on) { petWalkStop(); return; }
+  const now = Date.now();
+  const dt = Math.min(0.1, (now - petWalk.last) / 1000);
+  petWalk.last = now;
+  const b = petWindow.getBounds();
+  const area = clampPetToDisplay(b.x, b.y, b.width, b.height).area;
+  if (!area) { petWalkStop(); return; }
+  const minX = area.x;
+  const maxX = area.x + area.width - b.width;
+  const step = PET_WALK_SPEED * dt;
+  const remain = petWalk.targetX - b.x;
+  if (Math.abs(remain) <= step) {
+    petWindow.setPosition(Math.round(petWalk.targetX), b.y);
+    petWalkStop();
+    return;
+  }
+  const nx = Math.max(minX, Math.min(maxX, b.x + Math.sign(remain) * step));
+  petWindow.setPosition(Math.round(nx), b.y);
+}
+
+/** 起走：先贴到当前屏底边，再沿底边随机走 120~420px；贴边时改向 */
+function petWalkStart() {
+  if (!petWindow || petWindow.isDestroyed()) return;
+  if (petWalk.on) return;
+  const b = petWindow.getBounds();
+  const { x: curX, area } = clampPetToDisplay(b.x, b.y, b.width, b.height);
+  if (!area) return;
+  const minX = area.x;
+  const maxX = area.x + area.width - b.width;
+  if (maxX <= minX) return; // 屏比窗还窄：原地待着，别把宠物挤出屏
+  const bottomY = area.y + area.height - b.height;
+  // 方向随机，贴边时由边界纠正：不让它永远在同一头之间来回
+  let dir = Math.random() < 0.5 ? -1 : 1;
+  if (curX <= minX + 1) dir = 1;
+  else if (curX >= maxX - 1) dir = -1;
+  let targetX = curX + dir * (120 + Math.random() * 300);
+  if (targetX > maxX) { targetX = maxX; dir = 1; }
+  else if (targetX < minX) { targetX = minX; dir = -1; }
+  petWindow.setPosition(Math.round(curX), Math.round(bottomY));
+  petWalk.on = true;
+  petWalk.dir = dir;
+  petWalk.targetX = Math.round(targetX);
+  petWalk.last = Date.now();
+  sendPetWalkState();
+  petWalk.timer = setInterval(petWalkTick, 33);
+}
+
+/** 可见 / 前台：宠物窗本身几乎永不获得焦点（showInactive），所以"前台"看整个应用 */
+function sendPetWinState() {
+  try {
+    if (!petWindow || petWindow.isDestroyed() || petWindow.webContents.isDestroyed()) return;
+    const focused = !!(petWindow.isFocused() || (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()));
+    petWindow.webContents.send('pet:win-state', { visible: petWindow.isVisible(), focused });
+  } catch {}
+}
+
+function createPetWindow() {
+  if (petWindow && !petWindow.isDestroyed()) { try { petWindow.showInactive(); } catch {} return petWindow; }
+  const W = PET_W, H = PET_H;
+  const saved = readPetPos();
+  // 上次位置在哪块屏就落回哪块屏；没有记录才用主屏右下角
+  const work = electronScreen.getDisplayMatching(
+    saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)
+      ? { x: saved.x, y: saved.y, width: W, height: H }
+      : electronScreen.getPrimaryDisplay().bounds
+  ).workArea;
+  const wantX = (saved && Number.isFinite(saved.x)) ? saved.x : work.x + work.width - W - 24;
+  const wantY = (saved && Number.isFinite(saved.y)) ? saved.y : work.y + work.height - H - 24;
+  const { x, y } = clampPetToDisplay(wantX, wantY, W, H);
+  petWindow = new BrowserWindow({
+    x, y, width: W, height: H, frame: false, transparent: true, backgroundColor: '#00000000',
+    resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false,
+    skipTaskbar: true, hasShadow: false, alwaysOnTop: true, show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false, contextIsolation: true, backgroundThrottling: false,
+    },
+  });
+  petWindow.setAlwaysOnTop(true, 'floating');
+  petWindow.setIgnoreMouseEvents(true, { forward: true });
+  try { petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
+
+  const devMode = process.argv.includes('--dev') && !app.isPackaged;
+  if (devMode) {
+    // 复用主窗口的实际基址：dev 端口 / 实例配置变了也不会把宠物窗打到 404 空白
+    let base = 'http://localhost:1420/';
+    try { if (mainWindow && !mainWindow.isDestroyed()) base = mainWindow.webContents.getURL().split('#')[0] || base; } catch {}
+    if (!base.endsWith('/')) base += '/';
+    petWindow.loadURL(base + '#/pet-window');
+  } else petWindow.loadFile(path.join(__dirname, 'dist', 'index.html'), { hash: '/pet-window' });
+
+  petWindow.once('ready-to-show', () => { try { petWindow.showInactive(); } catch {} });
+  petWindow.on('moved', savePetPos);
+  // 可见 / 前台变化 → 渲染层失焦降帧、隐藏即停渲染
+  ['show', 'hide', 'minimize', 'restore', 'focus', 'blur'].forEach((ev) => petWindow.on(ev, sendPetWinState));
+  petWindow.on('hide', () => petWalkStop());
+  petWindow.on('closed', () => {
+    petWalkStop();
+    petWindow = null;
+    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pet:closed'); } catch {}
+  });
+  petWindow.webContents.on('did-finish-load', () => {
+    if (petLastSync) petWindow.webContents.send('pet:state', petLastSync);
+    if (petLastSettings) petWindow.webContents.send('pet:settings', petLastSettings);
+    sendPetWalkState();
+    sendPetWinState();
+  });
+  return petWindow;
+}
+
+function togglePetWindow() {
+  const open = !!(petWindow && !petWindow.isDestroyed());
+  if (open) { try { petWindow.close(); } catch {} return false; }
+  createPetWindow();
+  return true;
+}
+
+// 全局快捷键：Alt+P 显示/隐藏宠物。只在用户开启宠物时注册（不白占系统热键），
+// 与截图/急停等热键共用 globalShortcut；被占用则静默降级为托盘入口。
+let petHotkeyRegistered = false;
+function syncPetHotkey(enabled) {
+  try {
+    if (enabled && !petHotkeyRegistered) {
+      petHotkeyRegistered = globalShortcut.register('Alt+P', () => {
+        togglePetWindow();
+        try { updateTrayMenu(); } catch {}
+      });
+      if (!petHotkeyRegistered) console.warn('[pet] Alt+P 已被占用，改用托盘开关宠物');
+    } else if (!enabled && petHotkeyRegistered) {
+      globalShortcut.unregister('Alt+P');
+      petHotkeyRegistered = false;
+    }
+  } catch (err) {
+    console.warn('[pet] 注册宠物快捷键失败:', err && err.message);
+  }
+}
+
+// Alt+P 常驻：宠物关着时也必须能叫出来，所以不按 enabled 门控
+app.whenReady().then(() => {
+  syncPetHotkey(true);
+
+  // 换/拔显示器、改分辨率：把宠物收回最近一块屏的可视区（多显示器钳位的实测入口）
+  const reclampPet = () => {
+    try {
+      if (!petWindow || petWindow.isDestroyed()) return;
+      petWalkStop();
+      const b = petWindow.getBounds();
+      const c = clampPetToDisplay(b.x, b.y, b.width, b.height);
+      if (Math.round(c.x) !== b.x || Math.round(c.y) !== b.y) {
+        petWindow.setPosition(Math.round(c.x), Math.round(c.y));
+      }
+    } catch {}
+  };
+  try {
+    electronScreen.on('display-added', reclampPet);
+    electronScreen.on('display-removed', reclampPet);
+    electronScreen.on('display-metrics-changed', reclampPet);
+  } catch {}
+
+  // 任何窗口的前台切换都影响"应用是否在前台"：宠物窗自己几乎永不获得焦点
+  try {
+    app.on('browser-window-focus', sendPetWinState);
+    app.on('browser-window-blur', sendPetWinState);
+  } catch {}
+});
+
+ipcMain.handle('pet:open', () => { createPetWindow(); return { ok: true }; });
+ipcMain.handle('pet:close', () => {
+  try { if (petWindow && !petWindow.isDestroyed()) petWindow.close(); } catch {}
+  return { ok: true };
+});
+ipcMain.handle('pet:toggle', () => ({ open: togglePetWindow() }));
+ipcMain.handle('pet:is-open', () => !!(petWindow && !petWindow.isDestroyed()));
+ipcMain.on('pet:sync', (_e, payload) => {
+  petLastSync = payload;
+  try { if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:state', payload); } catch {}
+});
+ipcMain.on('pet:settings', (_e, payload) => {
+  petLastSettings = payload;
+  try { if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:settings', payload); } catch {}
+});
+ipcMain.on('pet:notify', (_e, payload) => {
+  try {
+    if (!Notification.isSupported()) return;
+    const title = String(payload && payload.title || '宠物伴星');
+    const body = String(payload && payload.body || '');
+    const convId = payload && payload.convId ? String(payload.convId) : '';
+    const n = new Notification({ title, body, silent: false });
+    n.on('click', () => {
+      try {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+        if (convId) mainWindow.webContents.send('pet:action', { type: 'open-conv', convId });
+      } catch {}
+    });
+    n.show();
+  } catch (err) {
+    console.warn('[pet] 通知失败:', err && err.message);
+  }
+});
+ipcMain.on('pet:request-sync', () => {
+  // 宠物窗重载后主动要数据：转给主窗，由渲染层的桥重新算一份快照推回来
+  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pet:need-sync'); } catch {}
+});
+ipcMain.on('pet:set-interactive', (_e, on) => {
+  try { if (petWindow && !petWindow.isDestroyed()) petWindow.setIgnoreMouseEvents(!on, { forward: true }); } catch {}
+});
+ipcMain.on('pet:move-by', (_e, dx, dy) => {
+  try {
+    if (!petWindow || petWindow.isDestroyed()) return;
+    // 拖动期间窗位置归用户：先停踱步，免得两边抢位置
+    petWalkStop();
+    const [px, py] = petWindow.getPosition();
+    const [w, h] = petWindow.getSize();
+    const next = clampPetToDisplay(
+      Math.round(px + Number(dx || 0)),
+      Math.round(py + Number(dy || 0)),
+      w,
+      h
+    );
+    petWindow.setPosition(Math.round(next.x), Math.round(next.y));
+  } catch {}
+});
+// 沿屏幕底边踱步：渲染层只发"开始/停下"，位移由主进程算
+ipcMain.on('pet:walk', (_e, payload) => {
+  try {
+    if (payload && payload.on) petWalkStart();
+    else petWalkStop();
+  } catch {}
+});
+ipcMain.on('pet:action', (_e, action) => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // 快问派活不抢焦点：宠物主打"不打断当前工作流"，只在后台把任务发出去
+    const silent = action && action.type === 'ask';
+    if (!silent) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    mainWindow.webContents.send('pet:action', action);
+  } catch {}
+});
+
 /** 常驻框选窗：首次创建后复用。返回已加载完页面的隐藏窗口 */
 async function getOverlayWindow() {
   if (gSnipOverlay && !gSnipOverlay.isDestroyed()) return gSnipOverlay;
@@ -10605,6 +10923,14 @@ app.whenReady().then(async () => {
           click: () => { try { mainWindow?.webContents?.send('rc:disconnect-all'); } catch { /* ignore */ } },
         }] : []),
         { type: 'separator' },
+        {
+          // 宠物伴星（2026-10-28）：托盘是隐藏宠物后的兜底出口
+          label: (petWindow && !petWindow.isDestroyed()) ? '隐藏宠物' : '显示宠物',
+          click: () => {
+            togglePetWindow();
+            try { updateTrayMenu(); } catch {}
+          },
+        },
         {
           label: '退出',
           click: () => { isQuitting = true; app.quit(); },

@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>宠物伴星 · 3D 占位原型（three.js 链路验证）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { min-height: 100%; background: #07090d; color: #dbe3ee; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 14px 12px 30px; }
+
+  .proto-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; justify-content: center; }
+  .proto-head h1 { font-size: 15px; font-weight: 600; color: #eef2f8; }
+  .proto-head .sub { font-size: 12px; color: #6d7a90; }
+  .seg { display: flex; background: #12161d; border: 1px solid #232b37; border-radius: 9px; padding: 3px; gap: 2px; flex-wrap: wrap; }
+  .seg button { border: 0; background: transparent; color: #8a97ab; font-size: 12px; padding: 5px 11px; border-radius: 7px; cursor: pointer; }
+  .seg button.on { background: #e8734a; color: #fff; }
+
+  /* ================= 舞台：模拟透明置顶窗（这里用桌面壁纸做底） ================= */
+  .stage { position: relative; width: 960px; max-width: 100%; height: 620px; border-radius: 18px; overflow: hidden;
+           background: #0b0e14; border: 1px solid #1c2330; box-shadow: 0 24px 70px rgba(0,0,0,.55); user-select: none; }
+  .wall { position: absolute; inset: 0;
+          background: radial-gradient(120% 90% at 18% 12%, #2b3f77 0%, #17224a 38%, #0b1030 72%, #060818 100%); }
+  .wall::after { content: ""; position: absolute; inset: 0; background:
+          radial-gradient(40% 30% at 76% 28%, rgba(120,90,220,.32), transparent 70%),
+          radial-gradient(30% 24% at 42% 72%, rgba(40,160,190,.22), transparent 70%); }
+  .desk-win { position: absolute; border-radius: 10px; background: #141922f2; border: 1px solid #2a3342;
+              box-shadow: 0 8px 30px rgba(0,0,0,.5); overflow: hidden; }
+  .desk-win .wt { height: 30px; background: #1b2230; display: flex; align-items: center; gap: 6px; padding: 0 12px; }
+  .desk-win .wt i { width: 9px; height: 9px; border-radius: 50%; background: #ff5f57; display: inline-block; }
+  .desk-win .wt i + i { background: #febc2e; } .desk-win .wt i + i + i { background: #28c840; }
+  .desk-win .wb { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .desk-win .ln { height: 10px; border-radius: 4px; background: linear-gradient(90deg, #2a3444, #232c3a 80%); }
+  .desk-win .ln.s { width: 55%; } .desk-win .ln.m { width: 78%; } .desk-win .ln.acc { background: linear-gradient(90deg, #e8734a88, #b3543a66); width: 34%; }
+  .win-a { left: 4%; top: 9%; width: 42%; height: 60%; }
+  .win-b { left: 52%; top: 16%; width: 30%; height: 42%; }
+  .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 34px; background: rgba(10,13,19,.86);
+             border-top: 1px solid #232b37; display: flex; align-items: center; gap: 10px; padding: 0 14px; }
+  .tb-ic { width: 18px; height: 18px; border-radius: 5px; background: rgba(160,190,240,.4); }
+  .tb-ic.a2 { background: rgba(240,170,80,.45); } .tb-ic.a3 { background: rgba(120,220,170,.4); }
+  .tb-clock { margin-left: auto; font-size: 11px; color: #cdd6e2; }
+
+  /* 3D 画布：铺满舞台，透明底（真实置顶窗里就是 alpha 画布） */
+  #view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  #view.dragging { cursor: grabbing; }
+
+  /* ===== 跟随模型的 DOM 叠层（动作条 / 名字牌 / 粒子）===== */
+  .overlay { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 20; pointer-events: none; }
+  .overlay > * { pointer-events: auto; }
+
+  .tag { position: absolute; transform: translate(-50%, 0); white-space: nowrap; font-size: 11px; color: #cdd6e2;
+         background: rgba(16,20,30,.92); border: 1px solid #2a3342; padding: 3px 10px; border-radius: 8px;
+         opacity: 0; transition: opacity .2s; pointer-events: none !important; }
+  .tag.on { opacity: 1; }
+
+  .play-bar { position: absolute; transform: translate(-50%, -100%); display: none; gap: 4px; padding: 6px;
+              background: rgba(17,21,31,.97); border: 1px solid #2a3342; border-radius: 15px;
+              box-shadow: 0 12px 34px rgba(0,0,0,.5); white-space: nowrap; }
+  .play-bar.open { display: flex; }
+  .play-bar .act { display: flex; align-items: center; gap: 4px; border: 1px solid transparent; background: #1a2130;
+                   color: #cdd8ea; font-size: 10.5px; padding: 5px 9px; border-radius: 11px; cursor: pointer; }
+  .play-bar .act:hover { background: #223049; border-color: #3a4a66; color: #fff; }
+  .play-bar .act.on { border-color: #e8734a; background: rgba(232,115,74,.14); color: #e8b49a; }
+
+  .emote { position: absolute; font-size: 13px; font-weight: 700; color: var(--ec,#f0b43c); pointer-events: none !important;
+           text-shadow: 0 1px 3px rgba(0,0,0,.45); animation: emote-rise 1.15s cubic-bezier(.22,.9,.36,1) forwards; }
+  @keyframes emote-rise {
+    0% { opacity: 0; transform: translate(-50%,0) scale(.5); }
+    18% { opacity: 1; transform: translate(calc(-50% + var(--jx,0px)*.3), -14px) scale(1); }
+    100% { opacity: 0; transform: translate(calc(-50% + var(--jx,0px)), -74px) scale(var(--js,1)); }
+  }
+
+  /* HUD：证明功耗/性能这条链路可观测 */
+  .hud { position: absolute; left: 12px; bottom: 44px; font-size: 10.5px; color: #7f8ca3; line-height: 1.7;
+         background: rgba(10,13,19,.72); border: 1px solid #232b37; border-radius: 9px; padding: 7px 10px;
+         font-family: ui-monospace, Consolas, monospace; z-index: 25; }
+  .hud b { color: #cdd8ea; font-weight: 600; }
+  .hud label { display: flex; align-items: center; gap: 5px; cursor: pointer; color: #8a97ab; }
+  .hud input { accent-color: #e8734a; }
+
+  .stage-hint { position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%); font-size: 11px;
+                color: rgba(255,255,255,.34); letter-spacing: .5px; pointer-events: none; z-index: 5; }
+
+  .demo-bar { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: center;
+              background: #12161d; border: 1px dashed #2c3648; border-radius: 12px; padding: 10px 12px; max-width: 960px; }
+  .demo-bar .cap { font-size: 11px; color: #66738c; margin-right: 2px; }
+  .demo-bar button { border: 1px solid #2c3648; background: #1a2130; color: #cdd8ea; font-size: 12px;
+                     border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  .demo-bar button:hover { border-color: #e8734a; color: #fff; }
+  .demo-bar button.warn { border-color: rgba(240,180,60,.4); }
+</style>
+</head>
+<body>
+
+<header class="proto-head">
+  <h1>宠物伴星 · 3D 占位原型</h1>
+  <span class="sub">three.js 程序化几何体 —— 验证 3D 渲染 / 拖拽 / 六态 / 真·转圈 / DOM 叠层跟随 / 限帧功耗</span>
+  <div class="seg" id="stateSeg">
+    <button data-st="idle" class="on">待机</button>
+    <button data-st="running">运行中</button>
+    <button data-st="needs-input">等待</button>
+    <button data-st="paused">暂停</button>
+    <button data-st="ready">完成</button>
+    <button data-st="error">出错</button>
+  </div>
+</header>
+
+<div class="stage" id="stage">
+  <div class="wall"></div>
+  <div class="desk-win win-a"><div class="wt"><i></i><i></i><i></i></div><div class="wb"><div class="ln m"></div><div class="ln"></div><div class="ln s"></div><div class="ln acc"></div><div class="ln"></div></div></div>
+  <div class="desk-win win-b"><div class="wt"><i></i><i></i><i></i></div><div class="wb"><div class="ln s"></div><div class="ln"></div><div class="ln acc"></div></div></div>
+  <div class="taskbar"><span class="tb-ic"></span><span class="tb-ic a2"></span><span class="tb-ic a3"></span><span class="tb-clock">14:32</span></div>
+
+  <canvas id="view"></canvas>
+
+  <div class="overlay" id="overlay">
+    <div class="play-bar" id="playBar"></div>
+    <div class="tag" id="tag">占位宠物 · 待机</div>
+  </div>
+
+  <div class="hud" id="hud">
+    <div>fps <b id="hFps">–</b> · 三角面 <b id="hTri">–</b> · draw calls <b id="hCall">–</b></div>
+    <label><input type="checkbox" id="cap30" checked> 限制 30fps（省电）</label>
+  </div>
+
+  <div class="stage-hint">拖拽宠物可移动 · 点「逗一下」试真·三维转圈</div>
+</div>
+
+<div class="demo-bar">
+  <span class="cap">演示控制：</span>
+  <button id="btnPlay" class="warn">逗一下</button>
+  <button id="btnAsk">触发「等待输入」</button>
+  <button id="btnDone">完成任务</button>
+  <button id="btnErr">让任务出错</button>
+  <button id="btnIdle">回到待机</button>
+  <button id="btnVrm">载入 VRM 模型</button>
+  <span class="cap" id="vrmNote">占位几何体 · 点右侧可切真 VRM</span>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.5/lib/three-vrm.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';   // 走 import map；版本与 packages/ui 的依赖一致
+
+const stage = document.getElementById('stage');
+const canvas = document.getElementById('view');
+const overlay = document.getElementById('overlay');
+
+/* ================= 渲染器 / 场景 / 相机 ================= */
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'low-power' });
+renderer.setClearAlpha(0);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
+camera.position.set(0, 3.1, 11);
+camera.lookAt(0, 1.85, 0);
+
+scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x241b2e, 1.15));
+const key = new THREE.DirectionalLight(0xffe0bf, 2.0); key.position.set(4, 7, 6); scene.add(key);
+const rim = new THREE.DirectionalLight(0x8db4ff, 1.0); rim.position.set(-5, 3, -6); scene.add(rim);
+
+/* ================= 占位宠物（程序化几何体，后续换 glTF/VRM 只替换 buildPet） ================= */
+const M = (c, r = .85) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: 0 });
+const C = {
+  fur:   M(0xc98a55),
+  belly: M(0xf1dcc0),
+  dark:  M(0x3a2a20, .6),
+  inner: M(0xe8a2a0),
+};
+
+function makeBlobShadow(w = 2.4, h = 1.5) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createRadialGradient(64, 64, 4, 64, 64, 62);
+  g.addColorStop(0, 'rgba(0,0,0,.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 128, 128);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv), transparent: true, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2;
+  return m;
+}
+
+function buildPet() {
+  const root = new THREE.Group();
+
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.62, 0.5, 6, 20), C.fur);
+  body.position.y = 1.0;
+  root.add(body);
+
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.44, 18, 14), C.belly);
+  belly.scale.set(1, 1.15, 0.55);
+  belly.position.set(0, 0.98, 0.44);
+  root.add(belly);
+
+  const head = new THREE.Group();
+  head.position.y = 1.95;
+  root.add(head);
+  const skull = new THREE.Mesh(new THREE.SphereGeometry(0.62, 24, 18), C.fur);
+  head.add(skull);
+
+  const muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.27, 16, 12), C.belly);
+  muzzle.scale.set(1.15, .82, .72);
+  muzzle.position.set(0, -0.16, 0.5);
+  head.add(muzzle);
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.072, 12, 10), C.dark);
+  nose.position.set(0, -0.08, 0.72);
+  head.add(nose);
+
+  const eyes = [-1, 1].map((s) => {
+    const e = new THREE.Mesh(new THREE.SphereGeometry(0.105, 14, 12), C.dark);
+    e.position.set(0.23 * s, 0.12, 0.53);
+    head.add(e);
+    return e;
+  });
+
+  const ears = [-1, 1].map((s) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(0.42 * s, 0.42, 0.02);
+    const e = new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 12), C.fur);
+    e.scale.set(1, 1, .6);
+    e.position.set(0.05 * s, 0.08, 0);
+    pivot.add(e);
+    head.add(pivot);
+    return pivot;
+  });
+
+  const arms = [-1, 1].map((s) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(0.7 * s, 1.5, 0.04);
+    const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.3, 5, 12), C.fur);
+    arm.position.y = -0.22;
+    arm.rotation.z = -0.16 * s;
+    pivot.add(arm);
+    root.add(pivot);
+    return pivot;
+  });
+
+  const legs = [-1, 1].map((s) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(0.27 * s, 0.5, 0.02);
+    const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.155, 0.3, 5, 12), C.fur);
+    leg.position.y = -0.24;
+    pivot.add(leg);
+    root.add(pivot);
+    return pivot;
+  });
+
+  const tail = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.5, 5, 12), C.fur);
+  tail.position.set(0, 0.72, -0.62);
+  tail.rotation.x = 0.9;
+  root.add(tail);
+
+  // 假阴影：透明窗不能开真实阴影贴图，用一张径向渐变贴片
+  const shadow = makeBlobShadow();
+  shadow.position.y = 0.012;
+  root.add(shadow);
+
+  return { root, body, head, eyes, ears, arms, legs, tail, shadow };
+}
+
+const P = buildPet();
+scene.add(P.root);
+
+/* 当前生效的宠物根节点：占位几何体 → 载入 VRM 后切成 VRM 根，其余逻辑不变 */
+let petGroup = P.root;
+
+/* ================= 状态与动作（语义与 2D 原型一致） ================= */
+const S = {
+  state: 'idle',
+  t: 0,
+  blinkAt: 2.4,
+  blinkT: 0,
+  action: null,        // { key, t, dur }
+  hopAt: 0,            // ready/error 的一次性结算
+  shakeT: 0,
+};
+
+const ACTIONS = [
+  { key: 'pet',  g: '♥',  label: '摸摸',   dur: 1.0 },
+  { key: 'wave', g: '👋', label: '招手',   dur: 1.2 },
+  { key: 'look', g: '👀', label: '张望',   dur: 1.6 },
+  { key: 'nap',  g: '💤', label: '打盹',   dur: 2.6 },
+  { key: 'spin', g: '↻',  label: '转圈',   dur: 0.9 },
+  { key: 'hop',  g: '⤴',  label: '跳一跳', dur: 0.75 },
+];
+
+/* ================= 每帧姿态：先复位，再按状态叠加，最后叠动作 ================= */
+function resetPose() {
+  const { root, body, head, eyes, ears, arms, legs, tail } = P;
+  body.scale.set(1, 1, 1);
+  body.rotation.set(0, 0, 0);
+  head.position.set(0, 1.95, 0);
+  head.rotation.set(0, 0, 0);
+  root.position.y = 0;
+  root.rotation.y = 0;
+  eyes.forEach((e) => { e.scale.set(1, 1, 1); });
+  ears.forEach((e) => { e.rotation.set(0, 0, 0); });
+  arms.forEach((a) => { a.rotation.set(0, 0, 0); });
+  legs.forEach((l) => { l.rotation.set(0, 0, 0); });
+  tail.rotation.set(0.9, 0, 0);
+}
+
+const EASE = {
+  outCubic: (x) => 1 - Math.pow(1 - x, 3),
+  inOut: (x) => x < .5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2,
+};
+
+function applyState(dt) {
+  const t = S.t;
+  const { root, body, head, eyes, ears, arms, legs, tail } = P;
+  const breath = Math.sin(t * 1.7) * 0.018;
+
+  // 眨眼（所有状态共用，除闭眼态）
+  S.blinkAt -= dt;
+  if (S.blinkAt <= 0) { S.blinkT = 0.12; S.blinkAt = 2.6 + Math.random() * 3; }
+  if (S.blinkT > 0) { S.blinkT -= dt; eyes.forEach((e) => e.scale.set(1, 0.12, 1)); }
+
+  switch (S.state) {
+    case 'idle':
+      body.scale.y = 1 + breath;
+      head.position.y = 1.95 + Math.sin(t * 1.7 + .6) * .02;
+      tail.rotation.z = Math.sin(t * 1.2) * .22;
+      ears.forEach((e, i) => { e.rotation.z = Math.sin(t * 1.1 + i) * .05; });
+      break;
+
+    case 'running': {
+      const fx = Math.sin(t * 9);
+      root.position.y = Math.abs(Math.sin(t * 9)) * .16;
+      body.rotation.x = .12;
+      body.scale.y = 1 + breath * .5;
+      legs.forEach((l, i) => { l.rotation.x = fx * (i ? .75 : -.75); });
+      arms.forEach((a, i) => { a.rotation.x = fx * (i ? -.9 : .9); });
+      head.position.y = 1.95;
+      tail.rotation.set(.7, 0, Math.sin(t * 9) * .2);
+      break;
+    }
+
+    case 'needs-input': {
+      body.scale.y = 1 + breath * 1.4;
+      head.rotation.z = .1;
+      head.rotation.y = Math.sin(t * 2.2) * .12;
+      root.position.y = Math.max(0, Math.sin(t * 3.2)) * .05;   // 轻轻踮脚
+      ears.forEach((e, i) => { e.rotation.z = (i ? -1 : 1) * .14; });  // 竖耳
+      tail.rotation.z = Math.sin(t * 2.6) * .3;
+      break;
+    }
+
+    case 'paused':
+      root.position.y = -.16;
+      body.scale.y = .93;
+      body.scale.z = 1.04;
+      eyes.forEach((e) => e.scale.set(1, .1, 1));
+      head.position.y = 1.88;
+      head.rotation.x = .1;
+      body.scale.y *= 1 + breath * .6;
+      tail.rotation.set(1.15, 0, .1);
+      break;
+
+    case 'ready':
+      // 进入后连跳三下（一次性），常态保持开心眼
+      eyes.forEach((e) => e.scale.set(1, .42, 1));
+      root.position.y = Math.max(0, Math.sin(Math.min(t - S.hopAt, 1.0) * Math.PI * 3)) * .18;
+      body.scale.y = 1 - Math.max(0, Math.sin((t - S.hopAt) * Math.PI * 3)) * .06;
+      tail.rotation.z = Math.sin(t * 7) * .35;
+      break;
+
+    case 'error': {
+      const k = Math.max(0, 1 - (t - S.shakeT) / .8);
+      root.position.x += Math.sin(t * 40) * .06 * k;
+      eyes.forEach((e) => e.scale.set(1, .1, 1));
+      head.rotation.z = -.08;
+      ears.forEach((e, i) => { e.rotation.z = (i ? -1 : 1) * -.2; });
+      break;
+    }
+  }
+}
+
+function applyAction(dt) {
+  const a = S.action;
+  if (!a) return;
+  a.t += dt;
+  const p = Math.min(1, a.t / a.dur);
+  const { root, body, head, arms, legs } = P;
+
+  switch (a.key) {
+    case 'pet': {                       // 缩身害羞 + 心形粒子
+      const k = Math.sin(p * Math.PI);
+      body.scale.set(1 + k * .05, 1 - k * .06, 1 + k * .04);
+      head.rotation.z = -k * .16;
+      head.position.y = 1.95 - k * .06;
+      if (!a.fx) { a.fx = 1; burst('heart'); }
+      break;
+    }
+    case 'wave': {                      // 抬右臂挥动
+      const k = Math.min(1, p / .18) * (p > .85 ? (1 - p) / .15 : 1);
+      arms[1].rotation.z = -k * 2.1;
+      arms[1].rotation.x = Math.sin(a.t * 16) * .35 * k;
+      head.rotation.z = -k * .05;
+      break;
+    }
+    case 'look': {                      // 左右张望
+      const k = Math.sin(p * Math.PI * 2) * (1 - p) + Math.sin(p * Math.PI) * 1.2;
+      head.rotation.y = k * .55;
+      head.position.y = 1.95 + Math.abs(k) * .02;
+      break;
+    }
+    case 'nap': {                       // 坐伏 + z 粒子
+      root.position.y = -.26 * EASE.outCubic(Math.min(1, p * 3));
+      body.scale.y = .9; body.scale.z = 1.06;
+      head.rotation.x = .32;
+      head.position.y = 1.86;
+      P.eyes.forEach((e) => e.scale.set(1, .1, 1));
+      if (!a.fx) { a.fx = 1; burst('zzz'); }
+      break;
+    }
+    case 'spin': {                      // 真三维转圈：绕竖轴一整圈
+      const e = EASE.inOut(p);
+      root.rotation.y = e * Math.PI * 2;
+      root.position.y = Math.sin(p * Math.PI) * .06;
+      body.scale.set(1 + Math.sin(p * Math.PI * 2) * .03, 1, 1);
+      break;
+    }
+    case 'hop': {                       // squash & stretch 跳跃
+      const y = Math.sin(Math.min(1, p / .8) * Math.PI);
+      root.position.y = y * .55;
+      if (p < .16) body.scale.set(1.08, .9, 1.08);
+      else if (p < .42) body.scale.set(.94, 1.1, .94);
+      else body.scale.set(1.05, .93, 1.05);
+      legs.forEach((l) => { l.rotation.x = p < .5 ? -.35 : .1; });
+      arms.forEach((ar) => { ar.rotation.z = (ar === arms[0] ? 1 : -1) * (p < .5 ? -1.1 : -.2); });
+      break;
+    }
+  }
+
+  if (a.t >= a.dur) closeAction();
+}
+
+function closeAction() {
+  S.action = null;
+  document.querySelectorAll('#playBar .act').forEach((b) => b.classList.remove('on'));
+}
+
+/* ================= DOM 叠层跟随 3D（动作条/名字牌/粒子） ================= */
+const _v = new THREE.Vector3();
+function toScreen(x, y, z) {
+  _v.set(x, y, z).project(camera);
+  const r = canvas.getBoundingClientRect();
+  return { x: (_v.x * .5 + .5) * r.width, y: (-_v.y * .5 + .5) * r.height };
+}
+
+function layoutOverlay() {
+  const tagP = toScreen(petGroup.position.x, petGroup.position.y + 2.75, 0);
+  const tag = document.getElementById('tag');
+  tag.style.left = tagP.x + 'px';
+  tag.style.top = tagP.y + 'px';
+
+  const bar = document.getElementById('playBar');
+  if (bar.classList.contains('open')) {
+    const p = toScreen(petGroup.position.x, petGroup.position.y + 3.15, 0);
+    bar.style.left = p.x + 'px';
+    bar.style.top = p.y + 'px';
+  }
+}
+
+function burst(kind) {
+  const p = toScreen(petGroup.position.x, petGroup.position.y + 2.55, 0);
+  const n = kind === 'heart' ? 4 : 3;
+  for (let i = 0; i < n; i++) {
+    const el = document.createElement('span');
+    el.className = 'emote';
+    el.textContent = kind === 'heart' ? '♥' : 'z';
+    el.style.left = (p.x + (Math.random() * 30 - 15)) + 'px';
+    el.style.top = p.y + 'px';
+    el.style.setProperty('--jx', (Math.random() * 30 - 15).toFixed(0) + 'px');
+    el.style.setProperty('--js', (0.8 + Math.random() * .4).toFixed(2));
+    el.style.setProperty('--ec', kind === 'heart' ? (i % 2 ? '#f0708f' : '#ff96ae') : '#93a9c9');
+    el.style.animationDelay = (i * (kind === 'heart' ? 110 : 340)) + 'ms';
+    if (kind === 'zzz') { el.style.fontSize = '11px'; el.style.animationDuration = '1.9s'; }
+    overlay.appendChild(el);
+    setTimeout(() => el.remove(), 2800);
+  }
+}
+
+/* ================= 状态切换 ================= */
+const STATE_TXT = { idle: '待机', running: '任务执行中', 'needs-input': '等你输入', paused: '已暂停', ready: '任务完成', error: '出错了' };
+
+function setState(st) {
+  if (S.state === st) return;
+  S.state = st;
+  S.t = 0;
+  if (st === 'ready') S.hopAt = 0;
+  if (st === 'error') S.shakeT = 0;
+  if (st === 'ready') burst('heart');
+  document.querySelectorAll('#stateSeg button').forEach((b) => b.classList.toggle('on', b.dataset.st === st));
+  document.getElementById('tag').textContent = '占位宠物 · ' + STATE_TXT[st];
+}
+
+/* ================= 交互：拖拽（射线打平面） ================= */
+const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const hit = new THREE.Vector3();
+let dragging = false, grabOffset = new THREE.Vector3(), hoverTag = false;
+const cursor = { x: 0, y: 0 };          // NDC，用于 VRM 视线跟随
+
+function setNDC(e) {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  setNDC(e);
+  ray.setFromCamera(ndc, camera);
+  // 命中判定用宠物外壳球（真实实现里用包围盒或骨骼碰撞体）
+  const box = new THREE.Box3().setFromObject(petGroup);
+  const p = new THREE.Vector3();
+  if (!ray.ray.intersectPlane(dragPlane, p)) return;
+  if (!box.containsPoint(p)) return;
+  dragging = true;
+  canvas.classList.add('dragging');
+  grabOffset.copy(petGroup.position).sub(p);
+  canvas.setPointerCapture(e.pointerId);
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  setNDC(e);
+  cursor.x = ndc.x; cursor.y = ndc.y;
+  ray.setFromCamera(ndc, camera);
+  const p = new THREE.Vector3();
+  const onPlane = ray.ray.intersectPlane(dragPlane, p);
+
+  if (!dragging) {
+    const box = new THREE.Box3().setFromObject(petGroup);
+    hoverTag = !!onPlane && box.containsPoint(p);
+    document.getElementById('tag').classList.toggle('on', hoverTag || ['needs-input', 'error'].includes(S.state));
+    return;
+  }
+
+  const x = p.x + grabOffset.x;
+  const y = p.y + grabOffset.y;
+  const halfW = 4.1;
+  petGroup.position.x = Math.max(-halfW, Math.min(halfW, x));
+  petGroup.position.y = Math.max(0, Math.min(2.4, y));
+  if (vrmShadow) vrmShadow.position.x = petGroup.position.x;   // 影子留在地面
+  else P.shadow.position.y = 0.012 - petGroup.position.y;
+});
+
+function endDrag(e) {
+  if (!dragging) return;
+  dragging = false;
+  canvas.classList.remove('dragging');
+  if (e) canvas.releasePointerCapture?.(e.pointerId);
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
+/* ================= 动作条 ================= */
+const playBar = document.getElementById('playBar');
+let playBarOpen = false;
+
+function renderPlayBar() {
+  playBar.innerHTML = ACTIONS.map((a) =>
+    `<button class="act" data-act="${a.key}"><span>${a.g}</span>${a.label}</button>`).join('');
+  playBar.querySelectorAll('.act').forEach((b) => {
+    b.onclick = (e) => { e.stopPropagation(); playAction(b.dataset.act); };
+  });
+}
+function openPlayBar() {
+  playBarOpen = true;
+  playBar.classList.add('open');
+  renderPlayBar();
+  layoutOverlay();
+}
+function closePlayBar() {
+  playBarOpen = false;
+  playBar.classList.remove('open');
+  playBar.innerHTML = '';
+}
+function playAction(key) {
+  const a = ACTIONS.find((x) => x.key === key);
+  if (!a) return;
+  S.action = { key, t: 0, dur: a.dur, fx: 0 };
+  if (key === 'pet') burst('heart');
+  if (key === 'nap') burst('zzz');
+  playBar.querySelectorAll('.act').forEach((b) => b.classList.toggle('on', b.dataset.act === key));
+}
+document.getElementById('btnPlay').onclick = () => (playBarOpen ? closePlayBar() : openPlayBar());
+document.addEventListener('pointerdown', (e) => {
+  const el = e.target;
+  if (!el || !el.closest) return;
+  if (!el.closest('#playBar') && !el.closest('#view')) closePlayBar();
+}, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePlayBar(); });
+
+/* ================= 演示按钮 ================= */
+document.getElementById('btnAsk').onclick = () => setState('needs-input');
+document.getElementById('btnDone').onclick = () => setState('ready');
+document.getElementById('btnErr').onclick = () => setState('error');
+document.getElementById('btnIdle').onclick = () => setState('idle');
+document.getElementById('btnVrm').onclick = loadVRM;
+document.getElementById('stateSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b) setState(b.dataset.st);
+});
+
+/* ================= 真模型：VRM 加载 + 驱动（换模型只换这一层） ================= */
+const VRM_URL = 'https://cdn.jsdelivr.net/gh/pixiv/three-vrm@dev/packages/three-vrm/examples/models/VRM1_Constraint_Twist_Sample.vrm';
+let vrm = null, vrmRoot = null, vrmShadow = null, vrmBody = null;
+let wanderTarget = null, wanderNext = performance.now() + 9000;
+const BONES = {};
+const BONE_NAMES = ['head', 'neck', 'spine', 'hips', 'leftUpperArm', 'rightUpperArm',
+                    'leftLowerArm', 'rightLowerArm', 'leftUpperLeg', 'rightUpperLeg'];
+
+function setBlink(v) {
+  if (!vrm || !vrm.expressionManager) return;
+  try { vrm.expressionManager.setValue('blink', v); } catch (e) { /* 模型没有 blink 就跳过 */ }
+}
+
+async function loadVRM() {
+  const btn = document.getElementById('btnVrm');
+  const note = document.getElementById('vrmNote');
+  btn.disabled = true; btn.textContent = '载入中…'; note.textContent = '拉取模型…';
+  try {
+    const [{ GLTFLoader }, V] = await Promise.all([
+      import('three/addons/loaders/GLTFLoader.js'),
+      import('@pixiv/three-vrm'),
+    ]);
+    const loader = new GLTFLoader();
+    loader.register((parser) => new V.VRMLoaderPlugin(parser));
+    const gltf = await loader.loadAsync(VRM_URL);
+    const model = gltf.userData.vrm;
+    V.VRMUtils.removeUnnecessaryVertices(gltf.scene);
+    V.VRMUtils.combineSkeletons(gltf.scene);
+
+    model.scene.rotation.y = 0;                  // 该样本模型原生朝 +Z，正对镜头
+    model.scene.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
+
+    // 量身高 → 缩到 2.4 单位，脚落在 y=0
+    const box = new THREE.Box3().setFromObject(model.scene);
+    const sc = 2.4 / Math.max(0.001, box.max.y - box.min.y);
+    const inner = new THREE.Group();
+    inner.add(model.scene);
+    inner.scale.setScalar(sc);
+    inner.position.y = -box.min.y * sc;
+
+    const root = new THREE.Group();
+    root.add(inner);
+    scene.add(root);
+
+    vrmShadow = makeBlobShadow(1.6, 1.0);
+    vrmShadow.position.y = 0.012;
+    scene.add(vrmShadow);
+
+    vrm = model; vrmRoot = root; vrmBody = model.scene;
+    BONE_NAMES.forEach((n) => { BONES[n] = (model.humanoid && model.humanoid.getNormalizedBoneNode(n)) || null; });
+
+    P.root.visible = false;
+    petGroup = root;
+    layoutOverlay();
+
+    btn.textContent = 'VRM 已载入';
+    note.textContent = 'VRM 1.0 · 骨骼 + 表情驱动 · 转圈为真三维';
+  } catch (err) {
+    btn.disabled = false; btn.textContent = '载入 VRM 模型';
+    note.textContent = '载入失败：' + String((err && err.message) || err).slice(0, 90);
+  }
+}
+
+function driveVRM(dt) {
+  const t = S.t;
+  BONE_NAMES.forEach((n) => { const b = BONES[n]; if (b) b.rotation.set(0, 0, 0); });
+  vrmBody.position.set(0, 0, 0);
+  vrmBody.scale.set(1, 1, 1);
+  vrmRoot.rotation.set(0, 0, 0);
+  setBlink(0);
+  if (S.state !== 'idle') wanderTarget = null;   // 离开待机就取消踱步
+
+  const H = BONES.head, LA = BONES.leftUpperArm, RA = BONES.rightUpperArm;
+  const LL = BONES.leftUpperLeg, RL = BONES.rightUpperLeg;
+  const T = (o, x, y, z) => { if (o) o.rotation.set(x, y, z); };
+  // 基础姿态：T-pose 的手臂放到身侧（后续状态/动作在这上面叠加）
+  const ARM_DOWN = 1.2;
+  if (LA) LA.rotation.z = -ARM_DOWN;
+  if (RA) RA.rotation.z = ARM_DOWN;
+
+  switch (S.state) {
+    case 'idle': {
+      vrmBody.position.y = Math.sin(t * 1.7) * 0.008;
+      T(H, 0, Math.sin(t * 0.7) * 0.05, Math.sin(t * 1.1) * 0.015);
+      // 沿底边踱步（Coopanion 同款）：空闲时偶尔走到另一个位置
+      const now = performance.now();
+      if (!dragging && !S.action && now > wanderNext) {
+        wanderTarget = Math.max(-3.4, Math.min(3.4, petGroup.position.x + (Math.random() * 2 - 1) * 2.4));
+        wanderNext = now + 11000 + Math.random() * 9000;
+      }
+      if (wanderTarget !== null && !dragging) {
+        const dx = wanderTarget - petGroup.position.x;
+        if (Math.abs(dx) < 0.06) wanderTarget = null;
+        else {
+          const step = Math.sign(dx) * 0.85 * dt;
+          petGroup.position.x += Math.abs(step) > Math.abs(dx) ? dx : step;
+          const w = Math.sin(now / 95);
+          T(LL, w * 0.5, 0, 0); T(RL, -w * 0.5, 0, 0);
+          if (LA) LA.rotation.x = -w * 0.35;
+          if (RA) RA.rotation.x = w * 0.35;
+          vrmRoot.rotation.y = dx > 0 ? Math.PI / 2 : -Math.PI / 2;   // 面朝行进方向
+        }
+      }
+      break;
+    }
+    case 'running': {
+      const fx = Math.sin(t * 9);
+      vrmBody.position.y = Math.abs(fx) * 0.05;
+      T(LL, fx * 0.7, 0, 0); T(RL, -fx * 0.7, 0, 0);
+      if (LA) LA.rotation.x = -fx * 0.5;
+      if (RA) RA.rotation.x = fx * 0.5;
+      T(H, 0.05, 0, 0);
+      break;
+    }
+    case 'needs-input':
+      T(H, 0, Math.sin(t * 1.8) * 0.18, 0.1);
+      vrmBody.position.y = Math.max(0, Math.sin(t * 3)) * 0.02;
+      if (LA) LA.rotation.z = -ARM_DOWN - 0.18;
+      if (RA) RA.rotation.z = ARM_DOWN + 0.18;
+      break;
+    case 'paused':
+      setBlink(1);
+      T(H, 0.25, 0, 0.05);
+      if (LA) LA.rotation.x = 0.12;
+      if (RA) RA.rotation.x = 0.12;
+      vrmBody.position.y = -0.03;
+      break;
+    case 'ready': {
+      const k = Math.max(0, Math.sin(Math.min(t, 1) * Math.PI * 2));
+      vrmBody.position.y = k * 0.14;
+      if (LA) LA.rotation.z = -ARM_DOWN - 1.0;
+      if (RA) RA.rotation.z = ARM_DOWN + 1.0;
+      break;
+    }
+    case 'error': {
+      const k = Math.max(0, 1 - t / 0.8);
+      vrmBody.position.x = Math.sin(t * 40) * 0.05 * k;
+      T(H, 0.3, 0, -0.08);
+      setBlink(1);
+      break;
+    }
+  }
+
+  const a = S.action;
+  if (a) {
+    a.t += dt;
+    const p = Math.min(1, a.t / a.dur);
+    const k = Math.sin(p * Math.PI);
+    switch (a.key) {
+      case 'pet':
+        vrmBody.scale.set(1 + k * 0.03, 1 - k * 0.04, 1 + k * 0.03);
+        T(H, 0, 0, -k * 0.18);
+        break;
+      case 'wave':
+        if (RA) RA.rotation.z = ARM_DOWN + 1.5 * Math.min(1, p / 0.2);
+        if (BONES.rightLowerArm) BONES.rightLowerArm.rotation.z = Math.sin(a.t * 16) * 0.4;
+        break;
+      case 'look':
+        T(H, 0, Math.sin(p * Math.PI * 2) * 0.5, 0);
+        break;
+      case 'nap':
+        setBlink(1);
+        T(H, 0.38, 0, 0);
+        vrmBody.position.y = -0.02;
+        break;
+      case 'spin':
+        vrmRoot.rotation.y = EASE.inOut(p) * Math.PI * 2;
+        break;
+      case 'hop': {
+        const y = Math.sin(Math.min(1, p / 0.8) * Math.PI);
+        vrmBody.position.y = y * 0.5;
+        T(LL, -0.3 * (1 - y), 0, 0); T(RL, -0.3 * (1 - y), 0, 0);
+        vrmBody.scale.set(1 + (1 - y) * 0.05, 1 - (1 - y) * 0.04, 1 + (1 - y) * 0.05);
+        break;
+      }
+    }
+    if (a.t >= a.dur) closeAction();
+  }
+
+  // 视线跟随光标：只加在头/颈上、幅度受限（这是"余光产品"最关键的一点）
+  if (H) {
+    H.rotation.y += THREE.MathUtils.clamp(cursor.x * 0.42, -0.5, 0.5);
+    H.rotation.x += THREE.MathUtils.clamp(-cursor.y * 0.26, -0.26, 0.26);
+  }
+  if (BONES.neck) {
+    BONES.neck.rotation.y += THREE.MathUtils.clamp(cursor.x * 0.18, -0.2, 0.2);
+  }
+  if (vrmShadow) vrmShadow.position.x = petGroup.position.x;
+
+  vrm.update(dt);
+}
+
+/* ================= 尺寸 / 限帧 / 主循环 ================= */
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  layoutOverlay();
+}
+new ResizeObserver(resize).observe(stage);
+resize();
+
+const cap30 = document.getElementById('cap30');
+let last = performance.now(), acc = 0, frames = 0, fpsAt = last, lastRender = 0;
+
+function loop(now) {
+  requestAnimationFrame(loop);
+  const interval = cap30.checked ? 1000 / 30 : 0;
+  if (now - lastRender < interval - 1) return;      // 限帧：多出来的帧直接不渲染
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now; lastRender = now;
+
+  S.t += dt;
+  if (vrmRoot) driveVRM(dt);
+  else { resetPose(); applyState(dt); applyAction(dt); }
+  layoutOverlay();
+  renderer.render(scene, camera);
+
+  frames++;
+  if (now - fpsAt >= 500) {
+    document.getElementById('hFps').textContent = Math.round(frames * 1000 / (now - fpsAt));
+    document.getElementById('hTri').textContent = renderer.info.render.triangles;
+    document.getElementById('hCall').textContent = renderer.info.render.calls;
+    frames = 0; fpsAt = now;
+  }
+}
+requestAnimationFrame(loop);
+
+/* 调试出口（自动化验证用；真实实现里不会存在） */
+window.__pet = {
+  THREE, renderer, camera, scene, P, S, setState, playAction, ACTIONS, toScreen, loadVRM,
+  get vrmRoot() { return vrmRoot; },
+  step(dt) {
+    S.t += dt;
+    if (vrmRoot) driveVRM(dt); else { resetPose(); applyState(dt); applyAction(dt); }
+    layoutOverlay(); renderer.render(scene, camera);
+  },
+};
+</script>
+</body>
+</html>

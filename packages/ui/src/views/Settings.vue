@@ -573,6 +573,56 @@
       <el-tab-pane label="语音包" name="voicepack" lazy>
         <VoicePackPanel />
       </el-tab-pane>
+      <!-- 宠物伴星（2026-10-28）：桌面悬浮宠物。2D 精灵图包 / 3D 模型二选一 -->
+      <el-tab-pane label="宠物" name="pet" lazy>
+        <div class="settings-form">
+          <SettingRow label="显示桌面宠物" tip="在桌面浮一个任务伴星，实时反映任务状态；桌面上可拖动。快捷键 Alt+P 开关，托盘菜单也可" tip-after>
+            <el-switch :model-value="petStore.settings.enabled" @change="setPetEnabled" />
+          </SettingRow>
+          <SettingRow label="渲染方式" tip="2D 用开源精灵图宠物包；3D 用 three.js 实时渲染" tip-after>
+            <el-radio-group :model-value="petStore.settings.renderer" @change="setPet({ renderer: $event })">
+              <el-radio-button label="2d">2D 精灵图</el-radio-button>
+              <el-radio-button label="3d">3D 模型</el-radio-button>
+            </el-radio-group>
+          </SettingRow>
+          <SettingRow v-if="petStore.settings.renderer === '2d'" label="宠物形象">
+            <el-select :model-value="petStore.settings.pack" style="width: 160px" @change="setPet({ pack: $event })">
+              <el-option label="Boba（水獭）" value="boba" />
+              <el-option label="Tiko（机器人）" value="tiko" />
+              <el-option label="旺财（布偶猫）" value="wangcai" />
+              <el-option label="噜噜（水豚）" value="lulu" />
+              <el-option label="Noir（侦探蛛）" value="noir" />
+              <el-option label="Mallow（小怪）" value="mallow" />
+            </el-select>
+          </SettingRow>
+          <SettingRow label="大小" tip="拖动调整宠物整体尺寸" tip-after>
+            <el-slider
+              :model-value="petStore.settings.scale"
+              :min="0.8"
+              :max="1.6"
+              :step="0.1"
+              style="width: 180px"
+              @change="setPet({ scale: $event })"
+            />
+          </SettingRow>
+          <SettingRow label="待机踱步" tip="待机 9~20 秒后沿屏幕底边随便走一段，撞到屏幕边会折返；鼠标靠近、开菜单、有任务时立刻停下" tip-after>
+            <el-switch :model-value="petStore.settings.walk" @change="setPet({ walk: !!$event })" />
+          </SettingRow>
+          <SettingRow label="活动气泡" tip="任务执行时在头顶显示「在干什么 + 文件名 / 网址」；气泡不吃鼠标，点击可穿透" tip-after>
+            <el-switch :model-value="petStore.settings.bubble" @change="setPet({ bubble: !!$event })" />
+          </SettingRow>
+          <SettingRow label="系统通知" tip="任务完成 / 出错 / 等你输入时弹系统通知，点通知直达会话；同一会话 5 秒内只弹一条" tip-after>
+            <el-select :model-value="petStore.settings.notifyMode" style="width: 170px" @change="setPet({ notifyMode: $event })">
+              <el-option label="全部通知" value="all" />
+              <el-option label="只留「等你输入」" value="input" />
+              <el-option label="关闭" value="off" />
+            </el-select>
+          </SettingRow>
+          <p class="lan-tip" style="margin: 4px 0 0">
+            右键宠物可「逗一下」（摸摸/招手/张望/打盹/转圈/跳一跳）；待机会自己沿屏幕底边踱步，鼠标靠近即停。任务在跑、等你输入、出错时宠物会自动切状态。
+          </p>
+        </div>
+      </el-tab-pane>
       <!-- 本地模型：统一安装入口（ffmpeg / yt-dlp / whisper / DiffSinger / ACE-Step / 语音包）
            ★ 2026-10-22：与 AI 的 install_resource 工具共用同一个安装实现 -->
       <el-tab-pane label="本地模型" name="localmodel" lazy>
@@ -633,11 +683,30 @@ const embedded = computed(() => props.embedded);
  * /settings 路由页与 SettingsDrawer 的 embedded 用法不受影响（pane 为空）。
  */
 const isPaneMode = computed(() => !!props.pane);
+
+// 宠物伴星设置（2026-10-28）：配置存 localStorage（yz:pet:settings），主窗口改动经 IPC 推给宠物窗
+const petStore = usePetStore();
+petStore.init();
+function setPet(patch: Record<string, unknown>) {
+  petStore.update(patch as never);
+}
+async function setPetEnabled(on: boolean) {
+  petStore.update({ enabled: on });
+  const api = (window as any).electronAPI?.pet;
+  if (!api) return;
+  try {
+    if (on) await api.open();
+    else await api.close();
+  } catch {
+    /* 非桌面端或窗口已关：忽略 */
+  }
+}
 import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
 import { useSettingsStore, usePlatformStore, useModelPoolStore, useCostStore } from '../stores';
+import { usePetStore } from '../stores/pet';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import { useVerificationStore } from '../stores/verification';

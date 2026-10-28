@@ -76,6 +76,73 @@ contextBridge.exposeInMainWorld('electronAPI', {
     takePayload: (key) => ipcRenderer.invoke('child-window:take-payload', key),
   },
 
+  // 宠物伴星（2026-10-28）：透明置顶宠物窗的生命周期、状态同步与穿透控制
+  pet: {
+    open: () => ipcRenderer.invoke('pet:open'),
+    close: () => ipcRenderer.invoke('pet:close'),
+    toggle: () => ipcRenderer.invoke('pet:toggle'),
+    isOpen: () => ipcRenderer.invoke('pet:is-open'),
+    // 主窗口 → 主进程 → 宠物窗：轻量任务视图（状态 / 标题 / 计数）
+    sync: (payload) => ipcRenderer.send('pet:sync', payload || {}),
+    // 设置变更（渲染器 / 形象 / 缩放）即时下发给宠物窗
+    settings: (payload) => ipcRenderer.send('pet:settings', payload || {}),
+    // 系统通知（完成 / 出错 / 等你输入）：主进程弹原生通知，点击前置主窗并跳会话
+    notify: (payload) => ipcRenderer.send('pet:notify', payload || {}),
+    // 宠物窗刚加载完：主动要一次当前状态（主窗只在变化时推，重载后拿不到旧值）
+    requestSync: () => ipcRenderer.send('pet:request-sync'),
+    // 主窗侧订阅：宠物窗要数据时，把当前快照推一次
+    onNeedSync: (cb) => {
+      const h = () => cb();
+      ipcRenderer.on('pet:need-sync', h);
+      return () => ipcRenderer.removeListener('pet:need-sync', h);
+    },
+    // 宠物窗：指针命中宠物矩形时关穿透，离开时开穿透
+    setInteractive: (on) => ipcRenderer.send('pet:set-interactive', !!on),
+    // 宠物窗拖拽 = 移动窗口（渲染层只知道相对位移）
+    moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Number(dx) || 0, Number(dy) || 0),
+    // 沿屏幕底边踱步：{ on: true } 起走 / { on: false } 停下（位移由主进程算）
+    walk: (payload) => ipcRenderer.send('pet:walk', payload || {}),
+    onWalkState: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('pet:walk-state', h);
+      return () => ipcRenderer.removeListener('pet:walk-state', h);
+    },
+    // 窗口可见 / 应用在前台：渲染层据此失焦降帧、隐藏即停渲染
+    onWinState: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('pet:win-state', h);
+      return () => ipcRenderer.removeListener('pet:win-state', h);
+    },
+    // 宠物窗动作回传（点行跳会话等；P0 先留通道）
+    action: (action) => ipcRenderer.send('pet:action', action || {}),
+    onState: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('pet:state', h);
+      return () => ipcRenderer.removeListener('pet:state', h);
+    },
+    onSettings: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('pet:settings', h);
+      return () => ipcRenderer.removeListener('pet:settings', h);
+    },
+    // 主进程侧开关（托盘 / Alt+P）也要让设置页的开关跟着变
+    onOpened: (cb) => {
+      const h = () => cb();
+      ipcRenderer.on('pet:opened', h);
+      return () => ipcRenderer.removeListener('pet:opened', h);
+    },
+    onClosed: (cb) => {
+      const h = () => cb();
+      ipcRenderer.on('pet:closed', h);
+      return () => ipcRenderer.removeListener('pet:closed', h);
+    },
+    onAction: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('pet:action', h);
+      return () => ipcRenderer.removeListener('pet:action', h);
+    },
+  },
+
   // 桌面录屏（screen_record 工具执行端）：主进程 capturePage 定帧采样 + ffmpeg 编码 mp4
   screenRecord: {
     // opts: { outPath, target?('task:<convId>'|''=主窗口), fps? } → { ok, recordId, outPath } | { ok:false, error }
