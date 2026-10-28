@@ -68,7 +68,7 @@
 
       <span class="toolbar-sep"></span>
 
-      <button class="nav-btn" @click="openExternal" :disabled="!urlInput" title="用系统浏览器打开">
+      <button class="nav-btn external-btn" @click="openExternal" :disabled="!urlInput" title="用系统浏览器打开">
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM19 19H5V5h7V3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7h-2v7z" fill="currentColor"/></svg>
       </button>
 
@@ -116,7 +116,7 @@
       </button>
 
       <!-- 收藏按钮 -->
-      <button class="nav-btn" :class="{ active: isBookmarked }" @click="openBookmarkEditor" :title="isBookmarked ? '编辑收藏' : '收藏此页'">
+      <button class="nav-btn bookmark-btn" :class="{ active: isBookmarked }" @click="openBookmarkEditor" :title="isBookmarked ? '编辑收藏' : '收藏此页'">
         <svg viewBox="0 0 24 24" width="18" height="18"><path :fill="isBookmarked ? 'currentColor' : 'none'" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
       </button>
 
@@ -126,8 +126,26 @@
       </button>
 
       <!-- 高亮编号（2026-10-20）：页面叠加常驻「可点击元素描边 + 编号」层，实时看到 agent 操作目标 -->
-      <button v-if="isElectron" class="nav-btn" :class="{ active: highlightOn }" @click="toggleHighlight" :title="highlightOn ? '关闭元素编号高亮' : '高亮可点击元素并编号'">
+      <button v-if="isElectron" class="nav-btn highlight-btn" :class="{ active: highlightOn }" @click="toggleHighlight" :title="highlightOn ? '关闭元素编号高亮' : '高亮可点击元素并编号'">
         <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+
+      <!-- 页面批注（P0，2026-10-28）：点选元素 / 框选区域 + 写评论 → 连同组件路径与截图发给模型。
+           ★ 与编号层、agent 占用互斥（全屏覆盖层叠在一起会变成两套编号）。 -->
+      <button
+        v-if="isElectron"
+        class="nav-btn annotation-btn"
+        :class="{ active: annotationActive }"
+        :disabled="annotationBlocked"
+        @click="toggleAnnotation"
+        :title="annotationBlocked
+          ? 'agent 正在操作浏览器，等它做完再批注'
+          : (annotationActive ? '关闭批注模式' : '批注：点选元素或框选区域')"
+      >
+        <svg viewBox="0 0 24 24" width="18" height="18">
+          <path d="M12 20h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+        </svg>
       </button>
 
       <!-- 🤖 AI 菜单（页面内对话方案 §4.5）：
@@ -158,7 +176,7 @@
       </el-dropdown>
 
       <!-- 全屏实况开关：原地放大（DOM 不动，避免 webview 重载） -->
-      <button class="nav-btn" :class="{ active: browserExpanded }" @click="toggleExpanded" :title="browserExpanded ? '收起全屏 (Esc)' : '全屏实况'">
+      <button class="nav-btn expand-btn" :class="{ active: browserExpanded }" @click="toggleExpanded" :title="browserExpanded ? '收起全屏 (Esc)' : '全屏实况'">
         <svg v-if="!browserExpanded" viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
         <svg v-else viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
       </button>
@@ -186,6 +204,12 @@
           <el-dropdown-menu>
             <el-dropdown-item command="capture">截图当前页</el-dropdown-item>
             <el-dropdown-item command="record">{{ screenRecorder.isRecording ? '停止录屏' : '录屏（选区）' }}</el-dropdown-item>
+            <!-- 窄面板工具栏放不下的入口收进这里（见 @container browser-panel ≤560）：等价行为、不漏功能 -->
+            <el-dropdown-item command="fullscreen" divided>{{ browserExpanded ? '退出全屏' : '全屏实况' }}</el-dropdown-item>
+            <el-dropdown-item command="bookmark">{{ isBookmarked ? '编辑收藏' : '收藏此页' }}</el-dropdown-item>
+            <el-dropdown-item v-if="isElectron" command="highlight" divided>{{ highlightOn ? '关闭元素编号高亮' : '高亮可点击元素并编号' }}</el-dropdown-item>
+            <el-dropdown-item v-if="isElectron" command="annotation" :disabled="annotationBlocked">{{ annotationActive ? '关闭批注模式' : '批注：点选元素或框选区域' }}</el-dropdown-item>
+            <el-dropdown-item command="external" :disabled="!urlInput" divided>用系统浏览器打开</el-dropdown-item>
             <el-dropdown-item command="history">浏览历史 ({{ recentList.length }})</el-dropdown-item>
             <el-dropdown-item command="passwords">密码管理 ({{ savedPasswords.length }})</el-dropdown-item>
             <el-dropdown-item command="settings">浏览器设置</el-dropdown-item>
@@ -379,6 +403,20 @@
         <p>正在加载...</p>
       </div>
 
+      <!-- 批注队列（P0，2026-10-28）：标了几条 / 清空 / 发送。
+           空队列时退化成一行模式提示，避免用户开了批注却不知道下一步做什么。 -->
+      <div v-if="annotationActive || annotationCount > 0" class="anno-dock">
+        <template v-if="annotationCount > 0">
+          <span class="anno-dock-n">{{ annotationCount }}</span>
+          <span class="anno-dock-txt">条批注待发送</span>
+        </template>
+        <span v-else class="anno-dock-txt">批注模式 · 点选元素或拖拽框选</span>
+        <span class="anno-dock-grow"></span>
+        <button v-if="annotationCount > 0" class="anno-dock-ghost" @click="clearAnnotations">全部清除</button>
+        <button v-if="annotationCount > 0" class="anno-dock-send" @click="sendAnnotations">发送到对话</button>
+        <button v-else class="anno-dock-ghost" @click="toggleAnnotation">退出</button>
+      </div>
+
       <!-- Agent 虚拟鼠标（宿主层常驻）：webview 引擎下 guest 内光标被 shield 盖住且瞬闪看不见，
            主进程动作完成后广播坐标，这里画在 webview/shield 之上。仅预览空间 + 有步骤日志时显示。 -->
       <div
@@ -562,6 +600,8 @@ import { ZoomIn, ZoomOut, CircleCheck, CircleClose, Loading, List } from '@eleme
 import { usePlatformStore } from '../stores/platform';
 import { useChatStore } from '../stores/chat';
 import { useBrowserStore, claimPopup, type BrowserTab } from '../stores/browser';
+import { useBrowserAnnotation } from '../composables/useBrowserAnnotation';
+import { stashAnnotations } from '../utils/browser-annotation-message';
 import { usePageChatStore } from '../stores/page-chat';
 import { usePageCommandsStore } from '../stores/page-commands';
 import { useSettingsStore } from '../stores/settings';
@@ -1095,7 +1135,73 @@ const {
   showMount, showSkills, platformConfigDialogVisible, snapshotDialog,
   showAgentEdit, showWorkspaceDir, showSpaceEdit,
   addQuotedUrl,
+  send: sendChatMessage,
 } = useChat();
+
+// ============================================================
+// 页面批注（P0，2026-10-28）
+//
+// 交互契约见 docs/浏览器批注方案-2026-10-28.md：
+//   工具栏「批注」→ 页面内点选/框选 + 写评论 → 底部队列 → 发送到对话。
+// 注入层在主进程（main.cjs 的 yzAnnotationBootstrap），这里只管开关、队列与发送。
+//
+// ★ 三方互斥：批注模式 / agent 占用浏览器 / agent 编号框。
+//   前两者靠按钮 disabled + 主进程 annotation_begin 的 agent_busy 拒绝，
+//   批注与编号框在主进程侧互斥（begin 会先撤编号层）。
+// ============================================================
+const annotation = useBrowserAnnotation(browserScope, (text) => ElMessage.info(text));
+const annotationActive = annotation.active;
+const annotationCount = computed(() => annotation.annotations.value.length);
+/** agent 正在驱动页面（实况锁定 / 编号层自动开启的同一判据）时不许开批注 */
+const annotationBlocked = computed(() => inputLocked.value || agentOperating.value);
+
+async function toggleAnnotation() {
+  if (annotationBlocked.value) {
+    ElMessage.warning('agent 正在操作浏览器，等它做完再批注');
+    return;
+  }
+  const tabId = activeTabId.value;
+  if (!tabId) {
+    ElMessage.warning('请先打开一个网页');
+    return;
+  }
+  if (annotationActive.value) {
+    await annotation.stop();
+    return;
+  }
+  // 和编号层互斥：两套全屏覆盖层叠在一起会变成两套编号
+  if (highlightOn.value) await applyHighlight(false, true);
+  const r = await annotation.start(tabId);
+  if (!r.ok) ElMessage.warning(r.error || '批注模式开启失败');
+}
+
+function clearAnnotations() {
+  annotation.clear();
+}
+
+// 发送：把批注交给聊天链路（useChat.sendInner 会拼成消息块 + 自动带截图）。
+// ★ 不在这里拼消息 —— 拼装与截图在 useChat 里，两处各写一份必然漂移。
+async function sendAnnotations() {
+  if (!annotationCount.value) return;
+  // 先关批注模式：stop() 会把未 drain 的残留合并进队列，之后读到的才是完整的
+  if (annotationActive.value) await annotation.stop();
+  const items = [...annotation.annotations.value];
+  const tabId = activeTabId.value || '';
+  // ★ /browser 独立页用的是 page scope，而发消息的 useChat 只认 preview 那份队列 ——
+  //   不交接到一次性槽里，点「发送到对话」会静默什么都不发（实测踩到过）。
+  if (!isPreviewScope) {
+    stashAnnotations({ items, tabId });
+    annotation.clear();
+  }
+  await sendChatMessage();
+}
+
+// 切 tab 就收掉批注层：注入层只存在于它被注入的那一页，
+// 跟着切页会让光标停在旧页、用户以为自己还在批注。
+watch(activeTabId, () => {
+  if (annotationActive.value) void annotation.stop();
+});
+
 
 
 interface ExtensionAction {
@@ -2882,6 +2988,12 @@ function onMenuCommand(cmd: string) {
   else if (cmd === 'extensions') openSettingsDrawer('extensions');
   else if (cmd === 'bookmarks') showBookmarks.value = true;
   else if (cmd === 'toggleBookmarksBar') toggleBookmarksBar();
+  // 窄面板时工具栏上被收起的入口（@container ≤560 隐藏），行为与工具栏按钮完全一致
+  else if (cmd === 'fullscreen') toggleExpanded();
+  else if (cmd === 'bookmark') openBookmarkEditor();
+  else if (cmd === 'highlight') toggleHighlight();
+  else if (cmd === 'annotation') toggleAnnotation();
+  else if (cmd === 'external') openExternal();
 }
 
 onMounted(async () => {
@@ -3246,7 +3358,11 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.browser-shell { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--el-bg-color, #fff); min-height: 0; }
+.browser-shell { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--el-bg-color, #fff); min-height: 0;
+  /* ★ 工具栏按【面板自身宽度】响应，而不是窗口宽度：面板只是右侧窄栏（~400px），
+     窗口却是 1200+px —— 用 @media(max-width) 永远不触发，一排固定宽控件会被裁掉右缘。
+     见下方 @container browser-panel。 */
+  container-type: inline-size; container-name: browser-panel; }
 
 /* ── 全屏实况（原地放大）：纯样式切换，DOM 节点不动。
    ⚠️ 禁用 Teleport：<webview>（iframe 同理）DOM 被搬动 → guest 重挂载 → 页面重载、
@@ -3501,6 +3617,9 @@ onUnmounted(() => {
 /* Chrome 风格工具栏 */
 .browser-toolbar {
   display: flex; align-items: center; gap: 4px;
+  /* ★ 窄面板（右侧栏 ~400px）放不下时**换行**，而不是被 overflow:hidden 裁掉右缘：
+     控件合计宽度远超面板时，用户会看不到「全屏 / 更多」等右侧入口。 */
+  flex-wrap: wrap; row-gap: 4px;
   padding: 8px 12px;
   background: var(--el-bg-color, #f1f3f4);
   border-bottom: 1px solid var(--el-border-color-lighter, #e0e0e0);
@@ -3550,7 +3669,9 @@ onUnmounted(() => {
 [data-theme="dark"] .url-bar { background: var(--el-fill-color); }
 .url-bar.focused { border-color: var(--el-color-primary); box-shadow: 0 1px 6px color-mix(in srgb, var(--el-color-primary) 15%, transparent); }
 .url-lock { color: var(--el-text-color-secondary, #80868b); flex-shrink: 0; }
-.url-input { flex: 1; border: none; outline: none; background: transparent; font-size: 14px; color: var(--el-text-color-primary, #202124); font-family: inherit; }
+/* min-width:0 必写：<input> 的固有最小宽度（size 默认 20 字符）不会被 flex 压缩，
+   窄面板下会把文字顶出胶囊、把清空按钮挤出右缘（2026-10-28 用户实报 URL 溢出）。 */
+.url-input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font-size: 14px; color: var(--el-text-color-primary, #202124); font-family: inherit; text-overflow: ellipsis; }
 .url-input::placeholder { color: var(--el-text-color-placeholder, #9aa0a6); }
 .url-clear { border: none; background: transparent; cursor: pointer; font-size: 18px; color: var(--el-text-color-secondary); line-height: 1; }
 .url-clear:hover { color: var(--el-text-color-primary); }
@@ -3631,15 +3752,15 @@ onUnmounted(() => {
 .home-search-btn { border: none; background: var(--el-color-primary); color: #fff; height: 36px; padding: 0 20px; border-radius: 18px; cursor: pointer; font-size: 14px; flex-shrink: 0; }
 .home-search-btn:hover { filter: brightness(1.05); }
 
-/* ===== 窄屏适配 =====
-   工具栏一行固定放了 5 个导航钮 + 引用 + 地址栏 + 缩放组(≈130px) + 收藏 + 密码 + 全屏 + 更多
-   ≈ 14 个控件、总固定宽约 560px，且**没有任何一项可收缩**（都写了 flex-shrink:0）。
-   实测 640px 起地址栏被挤没、缩放组被推出右缘（zoom-group@537）；400px 更严重
-   （url-bar@417 / zoom-group@537）。
-   处置：≤900px 收起次要控件（缩放组、密码管理、浏览历史——「更多」菜单里都有等价入口），
-   保证「导航按钮 + 地址栏」这条主链路完整，「交给 AI」缩为图标 pill；≤560px 再收起「用系统浏览器打开」
-   （内部打开已可用，外部打开非必需）。地址栏本身加 min-width 兜底，绝不被压成 0。 */
-@media (max-width: 900px) {
+/* ===== 窄面板适配（容器查询，按面板自身宽度而非窗口宽度）=====
+   工具栏一行放了导航组 + 引用 + 地址栏 + 缩放组(≈130px) + 收藏/历史/密码 + 高亮/批注
+   + 交给 AI + 全屏 + 更多，固定宽约 620px。面板常驻右侧栏只有 ~400px，
+   窗口却有 1200+px —— 用 @media 会永远不触发（2026-10-28 用户实报右侧入口看不见）。
+   处置：≤900px 收起次要控件（缩放组、密码、历史），≤560px 再把「收藏 / 高亮 / 批注 /
+   全屏 / 系统浏览器打开」收进「更多」菜单（onMenuCommand 有等价命令）。
+   主链路「导航按钮 + 地址栏 + AI + 更多」始终完整；地址栏留 min-width 兜底，
+   .browser-toolbar 还带 flex-wrap 作为极窄时的最后兜底（宁可换行也不裁掉入口）。 */
+@container browser-panel (max-width: 900px) {
   .browser-toolbar { padding: 6px 8px; gap: 2px; }
   .nav-btn { width: 30px; height: 30px; }
   .url-bar { min-width: 120px; padding: 0 10px; }
@@ -3654,14 +3775,19 @@ onUnmounted(() => {
   .takeover-progress { max-width: 140px; }
 }
 
-@media (max-width: 560px) {
+@container browser-panel (max-width: 560px) {
   .browser-toolbar { gap: 1px; }
   .nav-btn { width: 28px; height: 28px; }
   .nav-btn > svg { width: 16px; height: 16px; }
   .url-bar { min-width: 90px; }
   .url-input { font-size: 13px; }
-  /* 「用系统浏览器打开」在窄屏收起：面板内已能正常浏览 */
-  .browser-toolbar > .nav-btn[title="用系统浏览器打开"] { display: none; }
+  /* 次要入口收进「更多」菜单（等价命令，见 onMenuCommand）：
+     ~400px 面板里换成两行只会孤零零多出一格，比收起更难看。 */
+  .browser-toolbar > .external-btn,
+  .browser-toolbar > .bookmark-btn,
+  .browser-toolbar > .highlight-btn,
+  .browser-toolbar > .annotation-btn,
+  .browser-toolbar > .expand-btn { display: none; }
   /* 接管条：窄屏只留状态文字 + 控制按钮（步骤清单仍在视口内叠加） */
   .takeover-progress { display: none; }
   .takeover-btn-text { display: none; }
@@ -3812,5 +3938,60 @@ onUnmounted(() => {
 }
 .browser-unsupported .bu-title { font-size: 16px; font-weight: 600; color: var(--el-text-color-primary); margin: 0; }
 .browser-unsupported .bu-sub { font-size: 13px; color: var(--el-text-color-secondary); margin: 0; max-width: 320px; line-height: 1.6; }
+
+/* ===== 页面批注底部队列（P0，2026-10-28） ===== */
+.anno-dock {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(16, 22, 31, 0.92);
+  border: 1px solid rgba(249, 115, 22, 0.35);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  color: #cfd9e6;
+  pointer-events: auto;
+}
+.anno-dock-n {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #f97316;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.anno-dock-txt { color: #b9c6d8; }
+.anno-dock-grow { flex: 1; }
+.anno-dock-ghost {
+  border: 0;
+  background: none;
+  color: #8b98ab;
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 3px 8px;
+}
+.anno-dock-ghost:hover { color: #cfd9e6; }
+.anno-dock-send {
+  border: 0;
+  border-radius: 7px;
+  background: #3b7cff;
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 5px 13px;
+  cursor: pointer;
+}
+.anno-dock-send:hover { background: #2f6bff; }
 
 </style>

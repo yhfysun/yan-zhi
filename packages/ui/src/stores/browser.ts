@@ -6,6 +6,7 @@
 // 互不串扰。底层主进程 BrowserView 仍共享同一个 LRU 预算（MAX_TABS=8）。
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
+import type { BrowserAnnotation } from '@yan-zhi/shared';
 
 export interface BrowserTab {
   id: string;
@@ -55,7 +56,19 @@ function browserStoreSetup() {
   const electronCanBack = ref(false);
   const electronCanForward = ref(false);
   const loading = ref(false);
-  return { tabs, activeTabId, urlInput, history, histIndex, pageZoom, electronCanBack, electronCanForward, loading };
+  /**
+   * 浏览器批注队列（P0，2026-10-28）。
+   * ★ 为什么放在 store 而不是 BrowserPanel 组件内：发消息时 `useChat.send()` 要读它
+   *   拼批注消息块，而两者不是父子关系 —— 只能靠共享状态传。
+   * ★ 按 scope 隔离（preview / page 各一份），与 tabs 同一套空间语义。
+   */
+  const annotations = ref<BrowserAnnotation[]>([]);
+  /** 批注模式是否开启（决定工具栏按钮态与底部队列是否显示） */
+  const annotationActive = ref(false);
+  return {
+    tabs, activeTabId, urlInput, history, histIndex, pageZoom,
+    electronCanBack, electronCanForward, loading, annotations, annotationActive,
+  };
 }
 
 // 历史固定 scope：保留 'preview' / 'page' 两个独立 store，TypeScript 推导完整、调用方无改动。

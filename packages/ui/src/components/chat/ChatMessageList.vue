@@ -43,19 +43,27 @@
             <span v-if="vr.round.user.createdAt" class="msg-time">{{ formatTime(vr.round.user.createdAt) }}</span>
           </div>
           <div
-            v-if="vr.round.user.content"
+            v-if="userText(vr.round.user)"
             class="msg-block"
             :class="{ 'msg-collapsed': collapsedMessages[vr.round.user.id] }"
             @click="collapsedMessages[vr.round.user.id] ? toggleMsgCollapse(vr.round.user.id) : null"
           >
             <div v-show="!collapsedMessages[vr.round.user.id]">
-              <div v-if="vr.round.user.content" class="msg-content" v-html="renderMarkdown(vr.round.user.content)" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
+              <div v-if="userText(vr.round.user)" class="msg-content" v-html="renderMarkdown(userText(vr.round.user))" @click="handleContentClick" @dblclick="handleContentDblClick" @contextmenu="handleContentContextMenu"></div>
             </div>
             <div v-show="collapsedMessages[vr.round.user.id]" class="msg-collapsed-placeholder">
-              <span class="collapsed-line">{{ (vr.round.user.content || '').replace(/\n/g, ' ').slice(0, 120) }}</span>
+              <span class="collapsed-line">{{ userText(vr.round.user).replace(/\n/g, ' ').slice(0, 120) }}</span>
               <span class="collapsed-hint">点击展开</span>
             </div>
           </div>
+          <!-- 附件 / 网页引用 / 浏览器批注挂在气泡下方（正文里的注入块已被 userText 剥掉） -->
+          <UserAttachmentList
+            v-if="userAttachments(vr.round.user).length || userLinks(vr.round.user).length || userAnnotations(vr.round.user).length"
+            :attachments="userAttachments(vr.round.user)"
+            :links="userLinks(vr.round.user)"
+            :annotations="userAnnotations(vr.round.user)"
+            :annotation-shot="userAnnotationShot(vr.round.user)"
+          />
           <div class="msg-actions" :class="{ 'is-open': actionsShown(vr.round.user.id) }">
             <el-tooltip content="复制" placement="top"><el-button text size="small" circle @click="copyMsg(vr.round.user)"><el-icon><CopyDocument /></el-icon></el-button></el-tooltip>
             <el-tooltip content="引用" placement="top"><el-button text size="small" circle @click="quoteMsg(vr.round.user)"><el-icon><Link /></el-icon></el-button></el-tooltip>
@@ -142,6 +150,7 @@
                   >
                     <b class="asc-rank">{{ ci + 1 }}</b>
                     <span class="asc-name" :title="c.title">{{ c.title }}</span>
+                    <span v-if="c.waitMs" class="asc-wait">等待 {{ fmtDuration(c.waitMs) }}</span>
                     <span class="asc-dur">{{ fmtDuration(c.ms) }}</span>
                   </button>
                 </div>
@@ -165,6 +174,7 @@
                     <span class="ap-index">{{ i + 1 }}</span>
                     <span class="ap-title">{{ s.title }}</span>
                     <span v-if="planTopIndexSet.has(i + 1)" class="ap-top">Top</span>
+                    <span v-if="planStepWaitText(s)" class="ap-wait">{{ planStepWaitText(s) }}</span>
                     <span class="ap-dur">{{ planStepDurText(s) }}</span>
                   </li>
                 </ul>
@@ -761,7 +771,7 @@ import { bindLongPress } from '../../composables/useLongPress';
 import type { MessageRound, SubAgentRound } from '../../composables/chat/useChat';
 import type { ConversationFile } from '@yan-zhi/shared';
 import { stepRenderRange, ROUND_STEP_RENDER_LIMIT, findLiveSubAgentRound, collectRoundToolTexts } from '../../composables/chat/message-rounds';
-import { fmtDuration, planElapsedMs, planStepElapsedMs, roundElapsedMs, slowestPlanSteps } from '../../composables/chat/round-timing';
+import { fmtDuration, planElapsedMs, planStepBusyMs, roundElapsedMs, slowestPlanSteps } from '../../composables/chat/round-timing';
 import PlanStepDetailDialog from './PlanStepDetailDialog.vue';
 import AgentAvatar from '../AgentAvatar.vue';
 import SkeletonList from '../common/SkeletonList.vue';
@@ -796,6 +806,8 @@ import ChatFileChangeCard from './ChatFileChangeCard.vue';
 import DeepThinkBadge from './DeepThinkBadge.vue';
 import { roundReasoningChars, roundReasoningText } from '../../composables/chat/reasoning-summary';
 import ChatTaskChangeSummary from './ChatTaskChangeSummary.vue';
+import UserAttachmentList from './UserAttachmentList.vue';
+import { splitUserContent, type UserAttachment, type UserQuotedLink } from '../../utils/user-attachments';
 import { exportMarkdownDocx, absoluteMediaSrc, mediaOfTool, type MediaTarget } from '../../composables/useMediaPreview';
 
 const {
@@ -865,6 +877,37 @@ function renderRoundContent(content: string): string {
   return renderAssistantMarkdown(
     stripInfographicBlocks(stripSvgBlocks(stripDashboardBlocks(stripDocumentBlocks(content)))),
   );
+}
+
+// ===== 用户消息里的附件注入块（2026-10-28）=====
+// 发送时上传文件 / @ 引用 / 网页引用都以**纯文本块**拼在正文尾部（智能体要读路径），
+// 气泡里不该把这段路径原样露出来。解析规则见 utils/user-attachments。
+// ★ 按 content 缓存：模板里一轮会调用多次，且窗口化重渲染频繁，重复解析没必要。
+const USER_CONTENT_CACHE_MAX = 300;
+const userContentCache = new Map<string, ReturnType<typeof splitUserContent>>();
+function parsedUserContent(msg: { content?: string }) {
+  const raw = msg.content || '';
+  const hit = userContentCache.get(raw);
+  if (hit) return hit;
+  const parsed = splitUserContent(raw);
+  if (userContentCache.size >= USER_CONTENT_CACHE_MAX) userContentCache.clear();
+  userContentCache.set(raw, parsed);
+  return parsed;
+}
+function userText(msg: { content?: string }): string {
+  return parsedUserContent(msg).text;
+}
+function userAttachments(msg: { content?: string }): UserAttachment[] {
+  return parsedUserContent(msg).attachments;
+}
+function userLinks(msg: { content?: string }): UserQuotedLink[] {
+  return parsedUserContent(msg).links;
+}
+function userAnnotations(msg: { content?: string }) {
+  return parsedUserContent(msg).annotations;
+}
+function userAnnotationShot(msg: { content?: string }): string | undefined {
+  return parsedUserContent(msg).annotationShot;
 }
 
 // 长工具结果默认限高，点「展开全部结果」看全；此前靠 mask 渐变收尾，短结果也会被吃掉最后几行。
@@ -1432,9 +1475,15 @@ function showPlanTimingForRound(round: MessageRound, ri: number): boolean {
   // 只挂在「最后一轮且有执行过程」的摘要下：纯问答轮不背上一份计划的 Top3（刷新后计划会恢复）
   return round.hasAgentProcess === true && ri === messageRounds.value.length - 1 && !isRoundLive(round, ri);
 }
-function planStepDurText(step: { startedAt?: number; finishedAt?: number; activeMs?: number }): string {
-  const ms = planStepElapsedMs(step);
+function planStepDurText(step: { startedAt?: number; finishedAt?: number; activeMs?: number; waitMs?: number }): string {
+  const ms = planStepBusyMs(step);
   return ms > 0 ? fmtDuration(ms) : '—';
+}
+
+/** 等待时长标注：把「这一步挂了多久没人管」和「真干了多久」分开（2026-10-27 C） */
+function planStepWaitText(step: { waitMs?: number }): string {
+  const wait = Number(step?.waitMs) || 0;
+  return wait > 0 ? `含等待 ${fmtDuration(wait)}` : '';
 }
 function openPlanStep(index: number) {
   planDetailRef.value?.open(index);
@@ -2028,6 +2077,7 @@ watch(activeNavRound, () => {
 }
 .asc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asc-dur { flex: none; font-variant-numeric: tabular-nums; color: var(--el-text-color-secondary, #909399); }
+.asc-wait { flex: none; margin-left: 6px; font-size: 11px; color: var(--el-color-warning, #e6a23c); opacity: .85; }
 
 /* 全部计划步骤（可折叠）：每步尾部该步时长，Top3 橙标 */
 .agent-plan-steps { margin: -2px 0 10px; }
@@ -2067,6 +2117,7 @@ watch(activeNavRound, () => {
   background: var(--el-color-warning, #e6a23c); color: #fff; font-size: 10px; line-height: 14px;
 }
 .ap-dur { flex: none; font-variant-numeric: tabular-nums; color: var(--el-text-color-secondary, #909399); }
+.ap-wait { flex: none; margin-right: 6px; font-size: 11px; color: var(--el-color-warning, #e6a23c); opacity: .85; }
 .agent-process-summary-icon {
   flex: 0 0 auto;
 }

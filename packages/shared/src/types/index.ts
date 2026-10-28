@@ -734,3 +734,34 @@ export interface ChatChunk {
    */
   terminated?: boolean;
 }
+
+/**
+ * 浏览器批注（P0，2026-10-28）—— 用户在渲染好的页面上点选/框选 + 写的一句话。
+ *
+ * ★ 为什么不是"自由涂鸦"：模型要能**定位到代码**。所以每条批注要么带 CSS 选择器，
+ *   要么带组件路径（dev 构建下从 `el.__vueParentComponent.type.__file` 反查）。
+ *   `rect` 只是给多模态截图做方位参考，不是定位依据。
+ * ★ `componentFile` / `componentName` 在**生产构建里拿不到**（Vue 的 `__file`
+ *   仅 dev 注入）——它们是可选字段，拼消息时缺就省略该行，不要填空串。
+ */
+export interface BrowserAnnotation {
+  id: string;
+  /** element = 点选具体元素；region = 拖拽框选一块区域（拿不到 DOM 时的兜底） */
+  type: 'element' | 'region';
+  /** 人读标签，如 `button「卡片 CTA · Growth」` */
+  label: string;
+  /** CSS 选择器（仅 element） */
+  selector?: string;
+  /** 组件文件路径，如 `packages/ui/src/components/PricingCard.vue`（仅 dev 构建可得） */
+  componentFile?: string;
+  /** 组件名，如 `PricingCard` */
+  componentName?: string;
+  /** 屏幕坐标（批注保存那一刻的视口坐标），给截图做方位参考 */
+  rect: { x: number; y: number; w: number; h: number };
+  /** 用户写的评论 */
+  comment: string;
+  /** 批注时的页面地址 */
+  pageUrl: string;
+  createdAt: number;
+}
+

@@ -5118,6 +5118,504 @@ async function attachDownloadToClickResult(clickResult, beforeSeq) {
 }
 // ===DOWNLOAD-AUTOSAVE-END===
 
+// ============================================================
+// 浏览器批注（P0，2026-10-28）
+//
+// 用户在渲染好的页面上点选元素 / 拖拽框选，写一句话，连同**组件路径**与截图发给模型。
+//
+// ★ 为什么整层注入到 guest 页内，而不是在 Vue 侧盖一层透明 div：
+//   命中测试必须在**页面坐标系**里本地做。盖透明层的做法每次 mousemove 都要
+//   IPC + executeJavaScript 往返问 "(x,y) 是什么元素" —— hover 高亮会明显掉帧。
+//
+// ★ 为什么结果靠 executeJavaScript 轮询取回，而不是 guest preload + sendToHost：
+//   `will-attach-webview` 里 `delete webPreferences.preload` 是**刻意的安全硬化**
+//   （见该处注释）。为一个批注功能恢复 guest preload，等于给所有被浏览的页面
+//   开一条通往主进程的路 —— 不划算。轮询的 120ms 延迟只影响底部队列计数，
+//   评论框与编号框在页面内即时渲染，用户感知不到。
+//
+// ★ 与 agent 编号层**互斥**：两者都是全屏覆盖层，叠在一起会变成两套编号
+//   （2026-10-23 用户实测撞过，见 screenshot 分支 finally 里的清理注释）。
+//
+// ★ 本函数的源码会被 `toString()` 后注入页面执行 —— **不得引用任何主进程作用域**
+//   （fs / path / app / 上面的常量都不行），必须是完全自包含的。
+// ============================================================
+const ANNOTATION_HOST_ID = '__yz_annotation_host';
+/** 哪些 webContents 上正开着批注层 —— 供 agent 抢到页面时静默撤层（WeakSet：wc 回收即失效） */
+const annotationWebContents = new WeakSet();
+
+function yzAnnotationBootstrap() {
+  var HOST_ID = '__yz_annotation_host';
+
+  var prev = document.getElementById(HOST_ID);
+  if (prev) {
+    try { if (prev.__yzTeardown) prev.__yzTeardown(); } catch (e) { /* ignore */ }
+    prev.remove();
+  }
+
+  var items = [];   // { rec, el, docX, docY, w, h, sent }
+  var pending = null;
+  var drag = null;
+  var modeActive = true;
+  var raf = 0;
+  var prevCursor = '';
+
+  /* ---------- DOM 骨架（Shadow DOM 隔离，避免被站点样式污染） ---------- */
+  var host = document.createElement('div');
+  host.id = HOST_ID;
+  host.style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;'
+    + 'width:0!important;height:0!important;z-index:2147483646!important;pointer-events:none!important;';
+  var shadow = host.attachShadow({ mode: 'open' });
+  shadow.innerHTML = ''
+    + '<style>'
+    + ':host{all:initial}'
+    + '.marks,.marks *,.hoverbox,.label,.selrect,.cmp,.cmp *{box-sizing:border-box;'
+    + 'font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}'
+    + '.marks .box{position:fixed;border:2px solid #f97316;border-radius:3px;background:rgba(249,115,22,.07);'
+    + 'pointer-events:none}'
+    + '.marks .box.region{border-style:dashed}'
+    + '.marks .num{position:fixed;background:#f97316;color:#fff;font:700 10px/16px ui-monospace,Consolas,monospace;'
+    + 'padding:0 4px;border-radius:3px 3px 3px 0;pointer-events:none;min-width:16px;text-align:center}'
+    + '.hoverbox{position:fixed;display:none;border:2px solid #f97316;border-radius:3px;'
+    + 'background:rgba(249,115,22,.07);pointer-events:none}'
+    + '.label{position:fixed;display:none;background:#f97316;color:#fff;'
+    + 'font:600 10px/1.4 ui-monospace,Consolas,monospace;padding:2px 6px;border-radius:4px;'
+    + 'white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.3)}'
+    + '.selrect{position:fixed;display:none;border:1.5px dashed #2f6bff;background:rgba(47,107,255,.12);'
+    + 'border-radius:3px;pointer-events:none}'
+    + '.cmp{position:fixed;display:none;width:300px;background:#10161f;color:#e7edf6;'
+    + 'border:1px solid rgba(249,115,22,.45);border-radius:12px;padding:11px;'
+    + 'box-shadow:0 18px 44px rgba(0,0,0,.6);pointer-events:auto;z-index:2147483647}'
+    + '.cmp.on{display:block}'
+    + '.cmp .tgt{font:500 10.5px/1.5 ui-monospace,Consolas,monospace;color:#ffb27a;'
+    + 'background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.24);'
+    + 'padding:5px 8px;border-radius:7px;margin-bottom:8px;word-break:break-all}'
+    + '.cmp textarea{width:100%;height:62px;resize:none;border-radius:8px;background:rgba(0,0,0,.35);'
+    + 'border:1px solid rgba(255,255,255,.09);color:#e7edf6;font-family:inherit;font-size:12px;'
+    + 'line-height:1.55;padding:7px 9px;outline:none}'
+    + '.cmp textarea:focus{border-color:rgba(249,115,22,.5)}'
+    + '.cmp .foot{display:flex;align-items:center;gap:6px;margin-top:8px}'
+    + '.cmp .hint{font-size:10px;color:#6b7a8e}'
+    + '.cmp .grow{flex:1}'
+    + '.cmp .btn{font-size:11px;padding:5px 12px;border-radius:7px;cursor:pointer;'
+    + 'background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);color:#cfd9e6}'
+    + '.cmp .btn.primary{background:#f97316;border-color:#f97316;color:#fff;font-weight:600}'
+    + '</style>'
+    + '<div class="marks"></div>'
+    + '<div class="hoverbox"></div>'
+    + '<div class="label"></div>'
+    + '<div class="selrect"></div>'
+    + '<div class="cmp">'
+    + '  <div class="tgt"></div>'
+    + '  <textarea spellcheck="false" placeholder="描述问题和想要的结果……"></textarea>'
+    + '  <div class="foot"><span class="hint">Enter 保存 · Esc 取消</span>'
+    + '    <span class="grow"></span>'
+    + '    <button class="btn" data-act="cancel">取消</button>'
+    + '    <button class="btn primary" data-act="save">保存</button>'
+    + '  </div>'
+    + '</div>';
+
+  var marksEl = shadow.querySelector('.marks');
+  var hoverEl = shadow.querySelector('.hoverbox');
+  var labelEl = shadow.querySelector('.label');
+  var selEl = shadow.querySelector('.selrect');
+  var cmpEl = shadow.querySelector('.cmp');
+  var tgtEl = shadow.querySelector('.tgt');
+  var taEl = shadow.querySelector('textarea');
+
+  /* ---------- 工具 ---------- */
+  function inComposer(e) {
+    var path = (e.composedPath && e.composedPath()) || [];
+    return path.indexOf(cmpEl) !== -1;
+  }
+
+  // 命中测试：跳过我们自己的 shadow 层
+  function hitAt(x, y) {
+    var els;
+    try { els = document.elementsFromPoint(x, y); } catch (e) { return null; }
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (el === host) continue;
+      if (el.getRootNode && el.getRootNode() === shadow) continue;
+      return el;
+    }
+    return null;
+  }
+
+  // 组件反查：dev 构建下 Vue 会给元素挂 __vueParentComponent / __vnode.ctx
+  function shortPath(p) {
+    if (!p) return '';
+    var s = String(p).replace(/\\/g, '/');
+    var m = s.match(/(?:^|\/)(packages\/.+)$/);
+    if (m) return m[1];
+    m = s.match(/(?:^|\/)(apps\/.+)$/);
+    if (m) return m[1];
+    m = s.match(/(?:^|\/)src\/(.+)$/);
+    if (m) return 'src/' + m[1];
+    return s;
+  }
+
+  function compOf(node) {
+    var cur = node;
+    var depth = 0;
+    var inst = null;
+    while (cur && cur.nodeType === 1 && depth < 24) {
+      inst = cur.__vueParentComponent || (cur.__vnode && cur.__vnode.ctx) || null;
+      if (inst) break;
+      cur = cur.parentElement;
+      depth++;
+    }
+    if (!inst) return { file: '', name: '' };
+    // ★ 沿组件链往上找第一个带 __file 的实例。
+    //   为什么必须往上走：真实 UI 里点击落点的最近组件往往是**第三方包装层**
+    //   （实测点标题栏按钮得到 Element Plus 的 ElOnlyChild，它没有 __file），
+    //   只看最近一层就永远拿不到我们自己的 .vue 路径。
+    var first = inst;
+    var hops = 0;
+    while (inst && hops < 8) {
+      var t = inst.type || {};
+      if (t.__file) {
+        return { file: shortPath(t.__file), name: String(t.__name || t.name || '') };
+      }
+      inst = inst.parent || null;
+      hops++;
+    }
+    // 整条链都没有 __file（生产构建 / 纯库组件）：退回最近一层的组件名
+    var ft = first.type || {};
+    return { file: '', name: String(ft.__name || ft.name || '') };
+  }
+
+  function selectorOf(el) {
+    var parts = [];
+    var cur = el;
+    var depth = 0;
+    while (cur && cur.nodeType === 1 && cur !== document.body
+      && cur !== document.documentElement && depth < 5) {
+      var id = cur.id;
+      if (id && /^[A-Za-z][\w-]*$/.test(id)) {
+        try {
+          if (document.querySelectorAll('#' + id).length === 1) { parts.unshift('#' + id); break; }
+        } catch (e) { /* 非法 id */ }
+      }
+      var seg = cur.tagName.toLowerCase();
+      var cls = (typeof cur.className === 'string' ? cur.className : '').trim().split(/\s+/)[0] || '';
+      if (cls && /^[A-Za-z_][\w-]*$/.test(cls)) seg += '.' + cls;
+      var parent = cur.parentElement;
+      if (parent) {
+        var same = 0;
+        var idx = 0;
+        for (var i = 0; i < parent.children.length; i++) {
+          var c = parent.children[i];
+          if (c.tagName === cur.tagName) { same++; if (c === cur) idx = same; }
+        }
+        if (same > 1) seg += ':nth-of-type(' + idx + ')';
+      }
+      parts.unshift(seg);
+      cur = parent;
+      depth++;
+    }
+    return parts.join(' > ');
+  }
+
+  function labelOf(el) {
+    var tag = el.tagName.toLowerCase();
+    var name = el.getAttribute('data-name') || el.getAttribute('aria-label') || '';
+    var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    var key = name || text.slice(0, 20);
+    return key ? tag + '「' + key + '」' : tag;
+  }
+
+  function rectOf(el) {
+    var b = el.getBoundingClientRect();
+    return { x: b.left, y: b.top, w: b.width, h: b.height };
+  }
+
+  /* ---------- 绘制 ---------- */
+  function clearHover() {
+    hoverEl.style.display = 'none';
+    labelEl.style.display = 'none';
+  }
+
+  function showHover(el) {
+    var r = rectOf(el);
+    if (r.w < 2 || r.h < 2) { clearHover(); return; }
+    hoverEl.style.display = 'block';
+    hoverEl.style.left = r.x + 'px';
+    hoverEl.style.top = r.y + 'px';
+    hoverEl.style.width = r.w + 'px';
+    hoverEl.style.height = r.h + 'px';
+    var c = compOf(el);
+    labelEl.textContent = (c.file || el.tagName.toLowerCase()) + '  ·  ' + Math.round(r.w) + '×' + Math.round(r.h);
+    labelEl.style.display = 'block';
+    labelEl.style.left = Math.max(0, r.x) + 'px';
+    labelEl.style.top = (r.y - 19 < 0 ? r.y + 2 : r.y - 19) + 'px';
+  }
+
+  function paint() {
+    marksEl.textContent = '';
+    var sx = window.scrollX;
+    var sy = window.scrollY;
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var r = (it.el && it.el.isConnected)
+        ? rectOf(it.el)
+        : { x: it.docX - sx, y: it.docY - sy, w: it.w, h: it.h };
+      if (r.w < 1 || r.h < 1) continue;
+      if (r.y + r.h < -40 || r.y > window.innerHeight + 40) continue;
+      var box = document.createElement('div');
+      box.className = 'box' + (it.rec.type === 'region' ? ' region' : '');
+      box.style.left = r.x + 'px';
+      box.style.top = r.y + 'px';
+      box.style.width = r.w + 'px';
+      box.style.height = r.h + 'px';
+      var num = document.createElement('div');
+      num.className = 'num';
+      num.textContent = String(i + 1);
+      num.style.left = Math.max(0, r.x) + 'px';
+      num.style.top = Math.max(0, r.y - 16) + 'px';
+      marksEl.appendChild(box);
+      marksEl.appendChild(num);
+    }
+  }
+
+  /* ---------- 评论框 ---------- */
+  function openComposer(sel) {
+    pending = sel;
+    cmpEl.classList.add('on');
+    if (sel.type === 'element') {
+      tgtEl.textContent = sel.componentFile
+        ? sel.componentFile + ' — ' + sel.label
+        : sel.label;
+    } else {
+      tgtEl.textContent = '区域 ' + Math.round(sel.rect.w) + '×' + Math.round(sel.rect.h)
+        + ' @ (' + Math.round(sel.rect.x) + ', ' + Math.round(sel.rect.y) + ')';
+    }
+    var cx = Math.min(Math.max(8, sel.rect.x), Math.max(8, window.innerWidth - 312));
+    var cy = sel.rect.y + sel.rect.h + 8;
+    if (cy + 170 > window.innerHeight) cy = Math.max(8, sel.rect.y - 170);
+    cmpEl.style.left = cx + 'px';
+    cmpEl.style.top = cy + 'px';
+    taEl.value = '';
+    clearHover();
+    setTimeout(function () { try { taEl.focus(); } catch (e) { /* ignore */ } }, 0);
+  }
+
+  function closeComposer() {
+    cmpEl.classList.remove('on');
+    pending = null;
+  }
+
+  function saveComposer() {
+    if (!pending) return;
+    var text = taEl.value.trim();
+    if (!text) { try { taEl.focus(); } catch (e) { /* ignore */ } return; }
+    var s = pending;
+    var rec = {
+      type: s.type,
+      label: s.label,
+      selector: s.selector || '',
+      componentFile: s.componentFile || '',
+      componentName: s.componentName || '',
+      rect: s.rect,
+      comment: text,
+      pageUrl: location.href,
+      createdAt: Date.now(),
+    };
+    items.push({
+      rec: rec,
+      el: s.type === 'element' ? (s.el || null) : null,
+      docX: s.rect.x + window.scrollX,
+      docY: s.rect.y + window.scrollY,
+      w: s.rect.w,
+      h: s.rect.h,
+      sent: false,
+    });
+    closeComposer();
+    paint();
+  }
+
+  /* ---------- 事件 ---------- */
+  function onMouseMove(e) {
+    if (!modeActive || inComposer(e)) return;
+    if (drag) {
+      var dw = Math.abs(e.clientX - drag.sx);
+      var dh = Math.abs(e.clientY - drag.sy);
+      if (dw > 6 || dh > 6) drag.moved = true;
+      if (drag.moved) {
+        selEl.style.display = 'block';
+        selEl.style.left = Math.min(drag.sx, e.clientX) + 'px';
+        selEl.style.top = Math.min(drag.sy, e.clientY) + 'px';
+        selEl.style.width = dw + 'px';
+        selEl.style.height = dh + 'px';
+        clearHover();
+      }
+      return;
+    }
+    if (pending) return;
+    var el = hitAt(e.clientX, e.clientY);
+    if (!el) { clearHover(); return; }
+    showHover(el);
+  }
+
+  function onMouseDown(e) {
+    if (!modeActive || inComposer(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (pending) return;
+    drag = { sx: e.clientX, sy: e.clientY, moved: false };
+  }
+
+  function onMouseUp(e) {
+    if (!modeActive || inComposer(e)) return;
+    if (!drag) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var d = drag;
+    drag = null;
+    selEl.style.display = 'none';
+
+    if (d.moved) {
+      var x = Math.min(d.sx, e.clientX);
+      var y = Math.min(d.sy, e.clientY);
+      var w = Math.abs(e.clientX - d.sx);
+      var h = Math.abs(e.clientY - d.sy);
+      if (w >= 12 && h >= 12) {
+        openComposer({ type: 'region', label: '区域框选', rect: { x: x, y: y, w: w, h: h } });
+      }
+      return;
+    }
+
+    var el = hitAt(d.sx, d.sy);
+    if (!el) return;
+    var target = el;
+    try {
+      // 点到按钮里的 span/图标时，用户的本意是那个按钮 —— 贴到最近的可点击祖先。
+      // 页面自己声明了 data-comp 分组则优先用分组（我们自己的预览页会这么标）。
+      var groupEl = el.closest ? el.closest('[data-comp]') : null;
+      var actEl = el.closest ? el.closest('button,a[href],[role=button],[role=link],input,select,textarea') : null;
+      target = groupEl || actEl || el;
+    } catch (e2) { target = el; }
+    var c = compOf(target);
+    openComposer({
+      type: 'element',
+      el: target,
+      label: labelOf(target),
+      selector: selectorOf(target),
+      componentFile: c.file,
+      componentName: c.name,
+      rect: rectOf(target),
+    });
+  }
+
+  function onClick(e) {
+    if (!modeActive || inComposer(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function onSelectStart(e) {
+    if (inComposer(e)) return;
+    e.preventDefault();
+  }
+
+  function onScroll() {
+    if (!modeActive || raf) return;
+    raf = requestAnimationFrame(function () { raf = 0; paint(); });
+  }
+
+  function onKeyDown(e) {
+    if (!pending) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeComposer(); }
+  }
+
+  taEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      saveComposer();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeComposer();
+    }
+  });
+
+  cmpEl.addEventListener('click', function (e) {
+    var node = e.target;
+    var act = node && node.getAttribute ? node.getAttribute('data-act') : null;
+    e.stopPropagation();
+    if (act === 'save') saveComposer();
+    else if (act === 'cancel') closeComposer();
+  });
+
+  /* ---------- 收集器（主进程轮询 drain） ---------- */
+  function take() {
+    var out = [];
+    var sx = window.scrollX;
+    var sy = window.scrollY;
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it.sent) continue;
+      it.sent = true;
+      var r = (it.el && it.el.isConnected)
+        ? rectOf(it.el)
+        : { x: it.docX - sx, y: it.docY - sy, w: it.w, h: it.h };
+      var copy = {};
+      for (var k in it.rec) { if (Object.prototype.hasOwnProperty.call(it.rec, k)) copy[k] = it.rec[k]; }
+      copy.rect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) };
+      out.push(copy);
+    }
+    return out;
+  }
+
+  function clear() {
+    items = [];
+    paint();
+  }
+
+  function teardown() {
+    modeActive = false;
+    document.removeEventListener('mousemove', onMouseMove, true);
+    document.removeEventListener('mousedown', onMouseDown, true);
+    document.removeEventListener('mouseup', onMouseUp, true);
+    document.removeEventListener('click', onClick, true);
+    document.removeEventListener('selectstart', onSelectStart, true);
+    document.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('scroll', onScroll, true);
+    try { document.documentElement.style.cursor = prevCursor; } catch (e) { /* ignore */ }
+  }
+
+  try { prevCursor = document.documentElement.style.cursor; } catch (e) { prevCursor = ''; }
+  document.addEventListener('mousemove', onMouseMove, true);
+  document.addEventListener('mousedown', onMouseDown, true);
+  document.addEventListener('mouseup', onMouseUp, true);
+  document.addEventListener('click', onClick, true);
+  document.addEventListener('selectstart', onSelectStart, true);
+  document.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('scroll', onScroll, true);
+  try { document.documentElement.style.cursor = 'crosshair'; } catch (e) { /* ignore */ }
+
+  host.__yzTeardown = teardown;
+  document.documentElement.appendChild(host);
+
+  window.__yzAnnotation = { active: true, take: take, clear: clear, teardown: teardown };
+  return { ok: true, version: 1 };
+}
+
+/** 静默撤掉某个 webContents 上的批注层（agent 抢到页面时用；不返回批注内容，已 drain 的不会丢） */
+async function endAnnotationOn(wc) {
+  if (!wc || !annotationWebContents.has(wc)) return false;
+  annotationWebContents.delete(wc);
+  try {
+    await wc.executeJavaScript(`(function(){
+      var h = document.getElementById('${ANNOTATION_HOST_ID}');
+      if (!h) return 0;
+      try { if (h.__yzTeardown) h.__yzTeardown(); } catch (e) {}
+      h.remove();
+      try { window.__yzAnnotation = null; } catch (e) {}
+      return 1;
+    })()`);
+  } catch { /* 页面已销毁 */ }
+  return true;
+}
+
 async function runBrowserAction(convId, tabId, action, args, flow) {
   args = args || {};
   // ★★★ 2026-10-15：本执行流的**流键** = `${convId}::${flow}`（判定本体在 browser-target.cjs 的 flowKeyOf）。
@@ -5166,8 +5664,12 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     const _a = { ...args };
     if (typeof _a.base64 === 'string') _a.base64 = `<${_a.base64.length} chars>`;
     if (typeof _a.script === 'string' && _a.script.length > 200) _a.script = _a.script.slice(0, 200) + '…';
-    // ★ 带 flow：多流并行后"这条动作属于哪条流"是定位互踩的第一线索（缺省流打 shared）
-    console.log(`[browser-action] ${action} conv=${convId || '-'} flow=${flow || 'shared'} tabId=${tabId || '-'} args=${JSON.stringify(_a).slice(0, 300)}`);
+    // ★ annotation_drain 是渲染层 120ms 一次的轮询 —— 记它会以 8 条/秒刷屏，
+    //   把真正有价值的动作日志淹掉。只记 begin/end。
+    if (action !== 'annotation_drain') {
+      // ★ 带 flow：多流并行后"这条动作属于哪条流"是定位互踩的第一线索（缺省流打 shared）
+      console.log(`[browser-action] ${action} conv=${convId || '-'} flow=${flow || 'shared'} tabId=${tabId || '-'} args=${JSON.stringify(_a).slice(0, 300)}`);
+    }
   } catch { /* 日志失败绝不影响动作 */ }
   // ★★★ 2026-10-11：`browser_navigate(openInNewTab:true)` → **直接委派给 `new_tab`**。
   //
@@ -5413,6 +5915,12 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     //      NO_SETTLE_ACTIONS）—— close_tab 为别人的 tab 白等 8s 纯属浪费。
     if (action !== 'navigate' && wc && typeof wc.isLoading === 'function') {
       const NO_SETTLE_ACTIONS = new Set(['new_tab', 'switch_tab', 'close_tab', 'get_tabs']);
+      // ★ 批注三动作必须免等：它们由渲染层**每 120ms 轮询**触发（annotation_drain），
+      //   若进闸，页面加载期间每次 drain 都白等最多 8s → 轮询任务堆积、面板看起来卡死。
+      //   而且它们只碰注入层/收集器，不依赖页面文档就绪。
+      NO_SETTLE_ACTIONS.add('annotation_begin');
+      NO_SETTLE_ACTIONS.add('annotation_end');
+      NO_SETTLE_ACTIONS.add('annotation_drain');
       if (!NO_SETTLE_ACTIONS.has(action)) {
         const SETTLE_MS = 8000;
         const PROBE_MS = 400;
@@ -5463,6 +5971,13 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     }
 
     const doAction = async () => {
+    // ★ agent 抢到页面：先静默撤掉用户的批注层（两者互斥，见 yzAnnotationBootstrap 头注）。
+    //   · 只对 agent 路径（convId 非空）生效 —— 用户自己点工具栏（convId=null）不该撤自己的层；
+    //   · `annotationWebContents` 为空时这一步零开销（WeakSet.has，不发 executeJavaScript）；
+    //   · 已 drain 过的批注在渲染层手里，撤层不会丢。
+    if (convId && wc && annotationWebContents.has(wc)) {
+      await endAnnotationOn(wc);
+    }
     switch (action) {
       case 'upload': {
         // 桌面端文件上传（2026-10-07，v2 真 filechooser 拦截）：用 CDP 的 DOM.setFileInputFiles 注入本地文件。
@@ -7644,6 +8159,58 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         if (!highlightShouldPaint()) return { highlight: true, pending: true };
         return await runHighlight(wc, true);
       }
+      // ============================================================
+      // 浏览器批注（P0，2026-10-28）—— 见 yzAnnotationBootstrap 头注
+      //
+      // ★ 这三条**刻意不加入 DESKTOP_BROWSER_ACTIONS**：那份清单是给 agent 的
+      //   动作白名单（桥的 allowedActions / 渲染层的映射真相源）。批注是**人**
+      //   的操作，不该出现在模型的工具面上。
+      //   渲染层走 `browserView:action` IPC 直调 runBrowserAction，不经白名单。
+      // ============================================================
+      case 'annotation_begin': {
+        if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+        // agent 正在这个 tab 上跑动作 → 拒绝（两边抢同一页面必然互相打断，
+        // Codex 的同款坑见 openai/codex#49935）。UI 侧也会禁用按钮，这里是第二道闸。
+        const busyKey = String(tabId || activeTabId || '');
+        if (busyKey && tabActionBusy.has(busyKey)) {
+          return { error: 'agent 正在操作这个页面，等它做完再批注', code: 'agent_busy' };
+        }
+        // 与编号层互斥：两套全屏覆盖层叠在一起会变成两套编号（2026-10-23 实测事故）
+        if (highlightEnabled) {
+          highlightEnabled = false;
+          highlightPersist = false;
+          try { await runHighlight(wc, false); } catch { /* 清不掉不影响批注 */ }
+        }
+        const injected = await wc.executeJavaScript(`(${yzAnnotationBootstrap.toString()})()`);
+        annotationWebContents.add(wc);
+        return injected || { ok: true };
+      }
+      case 'annotation_end': {
+        if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+        annotationWebContents.delete(wc);
+        // 先取走未 drain 的批注再撤层 —— 反过来的话用户刚写的就没保存的会丢
+        const left = await wc.executeJavaScript(`(function(){
+          var out = (window.__yzAnnotation && window.__yzAnnotation.take) ? window.__yzAnnotation.take() : [];
+          var h = document.getElementById('${ANNOTATION_HOST_ID}');
+          if (h) {
+            try { if (h.__yzTeardown) h.__yzTeardown(); } catch (e) {}
+            h.remove();
+          }
+          try { window.__yzAnnotation = null; } catch (e) {}
+          return out;
+        })()`).catch(() => []);
+        return { ok: true, items: Array.isArray(left) ? left : [] };
+      }
+      case 'annotation_drain': {
+        if (!wc) return { error: '浏览器未就绪（无 webContents）' };
+        // 页面导航后 __yzAnnotation 会消失 —— 返回 active:false 让 UI 知道要退出批注模式
+        const r = await wc.executeJavaScript(`(function(){
+          if (!window.__yzAnnotation || !window.__yzAnnotation.take) return { active: false, items: [] };
+          return { active: true, items: window.__yzAnnotation.take() };
+        })()`).catch(() => ({ active: false, items: [] }));
+        if (r && !r.active) annotationWebContents.delete(wc);
+        return r || { active: false, items: [] };
+      }
       default:
         return { error: '未知操作: ' + action };
     }
@@ -7789,8 +8356,12 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       else if (upd.mode === 'touch') markFlowTabTouched(flowKey, upd.tabId);
     }
     // ★ 动作结果日志（与入口日志配对）—— 失败时打印 error，便于一眼看出"卡在哪一步"
+    //   annotation_drain 是 120ms 一次的轮询，成功时打日志会以 8 条/秒刷屏（实测终端被它占满）；
+    //   失败仍要打 —— 那正是需要看见的信号。
     try {
-      console.log(`[browser-action] ${action} → ${result && result.error ? 'ERROR: ' + result.error : 'ok'}`);
+      if (action !== 'annotation_drain' || (result && result.error)) {
+        console.log(`[browser-action] ${action} → ${result && result.error ? 'ERROR: ' + result.error : 'ok'}`);
+      }
     } catch { /* ignore */ }
     return result;
   } catch (e) {

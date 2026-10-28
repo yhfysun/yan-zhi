@@ -5,6 +5,7 @@ import { hasLocalPath, isLocalPath, normalizePath, resolveOpenTarget, splitLocal
 import { buildToolResultIndex } from '../../utils/tool-result';
 import { waitForChatWsOpen } from '../../utils/chat-ws';
 import { downloadStamp } from '../../utils/download-name';
+import { splitUserContent } from '../../utils/user-attachments';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import MarkdownIt from 'markdown-it';
 import hljs from '../../utils/highlight';
@@ -27,13 +28,15 @@ import { SKIP_PAGE_SUPPLEMENT } from '../../stores/chat';
 import { useSceneConfigStore } from '../../stores/sceneConfig';
 import { useTaskTypeStore } from '../../stores/taskType';
 import { isCodeModeActive, useCodeStore } from '../../stores/code';
+import { useBrowserStore } from '../../stores/browser';
+import { formatAnnotationBlock, captureAnnotationScreenshot, hasStashedAnnotations, takeStashedAnnotations } from '../../utils/browser-annotation-message';
 import { activeMode } from '../../stores/mode';
 import { useIsMobile } from '../useIsMobile';
 import { usePlatform } from '../usePlatform';
 import { useRouter } from 'vue-router';
 import { api } from '../../api/client';
 import { waitForBackend } from '../../api/backend-ready';
-import type { Agent, Message, Conversation, Platform, Model } from '@yan-zhi/shared';
+import type { Agent, Message, Conversation, Platform, Model, BrowserAnnotation } from '@yan-zhi/shared';
 import { estimateTokens, CHAT_MODEL_TYPES, buildArtifactRelDir, joinArtifactPath, TASK_TYPES, getTaskType, isParentTaskType, getChildTaskTypes, effectiveContextLimit, contextUsagePercent } from '@yan-zhi/shared';
 import { computeCost, normalizePricing, formatCny } from '@yan-zhi/shared';
 import {
@@ -60,8 +63,34 @@ interface ParsedConfigCard {
   platformId?: string;
 }
 
-function createChat() {
-  const router = useRouter();
+/** 引用块里的属性值转义（名称/路径可能出现 `"` `&` `<`） */
+function xmlAttr(v: string): string {
+  return String(v || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** 引用块预览转义：把 markdown 压成可读的几行纯文本（围栏标记 / 表格分隔线 / 空行都去掉）
+ *  ★ 2026-10-28 用户实报：直接逐行加 `> ` 会把 ``` 围栏和 `| 项目 | 结果 |` 表格原样搬进输入框，
+ *    看着像乱码。引用要的是「能认出是哪段话」，不是把整段 markdown 搬过去。 */
+function quotePreview(text: string, maxLines = 6): string {
+  const lines = String(text || '')
+    .replace(/^```[^\n]*$/gm, '')                  // 代码围栏标记（内容保留）
+    .replace(/^\s*\|?[\s:|-]{3,}\|?\s*$/gm, '')    // 表格分隔行 |---|---|
+    .replace(/^\s*#{1,6}\s*/gm, '')                // 标题井号
+    .replace(/^\s*[-*+]\s+/gm, '· ')               // 列表符号统一成 ·
+    .replace(/^\s*>\s?/gm, '')                     // 嵌套引用标记
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const kept = lines.slice(0, maxLines).map((l) => l.length > 160 ? l.slice(0, 160) + '…' : l);
+  return kept.map((l) => '> ' + l).join('\n') + (lines.length > maxLines ? '\n> …' : '');
+}
+
+function createChat() {  const router = useRouter();
   const store = useChatStore();
   const platformStore = usePlatformStore();
   const mcpStore = useMcpStore();
@@ -83,7 +112,7 @@ function createChat() {
   const distillMessages = ref<Array<{ role: string; content: string }>>([]);
 
   function distillUserMsg(msg: Message) {
-    distillMessages.value = [{ role: 'user', content: msg.content || '' }];
+    distillMessages.value = [{ role: 'user', content: userPlainContent(msg) }];
     showDistill.value = true;
   }
 
@@ -646,6 +675,9 @@ function createChat() {
   const fileSearch = ref('');
   const workspaceFiles = ref<Array<{ name: string; path: string; size: number; isDir: boolean }>>([]);
   const selectedFilePaths = ref<Set<string>>(new Set());
+  /** ★ 固定引用（2026-10-28）：挂住不放 —— 每次发送都带上，直到取消固定或切会话；
+   *  不在其中的普通引用是「这一次任务带上」，发送后就失效。 */
+  const pinnedFilePaths = ref<Set<string>>(new Set());
   const filePanelUploadRef = ref<HTMLInputElement>();
   const search = ref('');
   const messagesRef = ref<HTMLElement>();
@@ -1733,7 +1765,13 @@ function createChat() {
    *   而是"换个去向送"。加这个条件会导致"任务跑着就发不出追加消息"，与设计意图直接冲突。
    *   真正的防重入由 `sending` 锁 + 「取走内容即清空 input」两道防线保证，不需要在 enable 判据里表达。
    */
-  const canSend = computed(() => (!!input.value.trim() || uploadedFiles.value.length > 0) && !!selectedModelId.value);
+  const canSend = computed(() => (
+    !!input.value.trim()
+    || uploadedFiles.value.length > 0
+    || selectedFilePaths.value.size > 0
+    || pinnedFilePaths.value.size > 0
+    || quotedMessages.value.length > 0
+  ) && !!selectedModelId.value);
 
   const userRoundIndices = computed<number[]>(() =>
     messageRounds.value
@@ -2775,7 +2813,10 @@ async function healStalePlatform() {
     input.value = '';
     uploadedFiles.value = [];
     selectedFilePaths.value = new Set();
+    pinnedFilePaths.value = new Set();
     quotedUrls.value = [];
+    pinnedQuotedUrls.value = [];
+    quotedMessages.value = [];
   }
 
   /* ===== 输入草稿池（2026-10-22 用户诉求：切任务后输入框里的文字/图片不该丢）=====
@@ -2790,6 +2831,9 @@ async function healStalePlatform() {
     uploadedFiles: Array<{ name: string; size: number; type: string; dataUrl: string }>;
     selectedFilePaths: Set<string>;
     quotedUrls: Array<{ url: string; name: string }>;
+    pinnedFilePaths: Set<string>;
+    pinnedQuotedUrls: Array<{ url: string; name: string }>;
+    quotedMessages: Array<{ id: string; role: string; preview: string; text: string; pinned: boolean }>;
   }
   const DRAFT_KEY = '__draft__';
   const draftPool = new Map<string, DraftSnapshot>();
@@ -2806,23 +2850,74 @@ async function healStalePlatform() {
       uploadedFiles: [...uploadedFiles.value],
       selectedFilePaths: new Set(selectedFilePaths.value),
       quotedUrls: [...quotedUrls.value],
+      pinnedFilePaths: new Set(pinnedFilePaths.value),
+      pinnedQuotedUrls: [...pinnedQuotedUrls.value],
+      quotedMessages: [...quotedMessages.value],
     };
     const isEmpty = !snap.input.trim()
       && snap.uploadedFiles.length === 0
       && snap.selectedFilePaths.size === 0
-      && snap.quotedUrls.length === 0;
+      && snap.quotedUrls.length === 0
+      && snap.pinnedFilePaths.size === 0
+      && snap.pinnedQuotedUrls.length === 0
+      && snap.quotedMessages.length === 0;
     if (isEmpty) draftPool.delete(key);
     else draftPool.set(key, snap);
   }
 
-  /** 切回时恢复该会话的草稿；没有草稿就归零 */
+  /**
+   * 引用的落盘（2026-10-28 用户报「引用切换会话/刷新就没了」）：
+   * ★ 只存**文本**（路径 / URL / 引用摘要），不存文件字节 —— 体积很小，可以进 localStorage。
+   * ★ 按会话分键（草稿态用 '__draft__'），与内存草稿同一口径：发送后一次性引用即被清掉。
+   */
+  const REFS_LS_PREFIX = 'yz.chat.refs.';
+  function saveRefsToStorage() {
+    try {
+      const key = REFS_LS_PREFIX + draftKeyOf(store.currentConvId);
+      const payload = {
+        files: [...selectedFilePaths.value],
+        pinnedFiles: [...pinnedFilePaths.value],
+        urls: [...quotedUrls.value],
+        pinnedUrls: [...pinnedQuotedUrls.value],
+        msgs: [...quotedMessages.value],
+      };
+      const empty = !payload.files.length && !payload.pinnedFiles.length
+        && !payload.urls.length && !payload.pinnedUrls.length && !payload.msgs.length;
+      if (empty) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify(payload));
+    } catch { /* 隐私模式 / 配额满：引用丢失不影响发送 */ }
+  }
+  function loadRefsFromStorage(convId: string): boolean {
+    try {
+      const raw = localStorage.getItem(REFS_LS_PREFIX + draftKeyOf(convId));
+      if (!raw) return false;
+      const p = JSON.parse(raw) as {
+        files?: string[]; pinnedFiles?: string[]; urls?: Array<{ url: string; name: string }>;
+        pinnedUrls?: Array<{ url: string; name: string }>;
+        msgs?: Array<{ id: string; role: string; preview: string; text: string; pinned: boolean }>;
+      };
+      selectedFilePaths.value = new Set(p.files || []);
+      pinnedFilePaths.value = new Set(p.pinnedFiles || []);
+      quotedUrls.value = [...(p.urls || [])];
+      pinnedQuotedUrls.value = [...(p.pinnedUrls || [])];
+      quotedMessages.value = [...(p.msgs || [])];
+      return true;
+    } catch { return false; }
+  }
+  /** 切回时恢复该会话的草稿；没有草稿就归零（引用另有 localStorage 兜底，刷新也在） */
   function restoreDraft(convId: string) {
     const snap = draftPool.get(draftKeyOf(convId));
-    if (!snap) { resetDraftState(); return; }
-    input.value = snap.input;
-    uploadedFiles.value = [...snap.uploadedFiles];
-    selectedFilePaths.value = new Set(snap.selectedFilePaths);
-    quotedUrls.value = [...snap.quotedUrls];
+    if (!snap) resetDraftState();
+    else {
+      input.value = snap.input;
+      uploadedFiles.value = [...snap.uploadedFiles];
+      selectedFilePaths.value = new Set(snap.selectedFilePaths);
+      quotedUrls.value = [...snap.quotedUrls];
+      pinnedFilePaths.value = new Set(snap.pinnedFilePaths);
+      pinnedQuotedUrls.value = [...snap.pinnedQuotedUrls];
+      quotedMessages.value = [...snap.quotedMessages];
+    }
+    loadRefsFromStorage(convId);
   }
 
   /** 发送出去即清掉，避免切回来把已发送的文字/图片又填回输入框 */
@@ -2984,18 +3079,59 @@ async function healStalePlatform() {
   // ===== URL 引用（浏览器 → 对话） =====
   /** 输入超过该字符数，发送时全文自动落盘为附件 */
   const LONG_INPUT_THRESHOLD = 5000;
+  /** 消息引用（2026-10-28）：以 chip 形式挂在输入区，不再把整段文字灌进 textarea */
+  const quotedMessages = ref<Array<{ id: string; role: string; preview: string; text: string; pinned: boolean }>>([]);
   const quotedUrls = ref<Array<{ url: string; name: string }>>([]);
+  /** 固定的网页引用（2026-10-28）：与文件引用同一套语义 —— 固定后每轮都带，否则只带一次 */
+  const pinnedQuotedUrls = ref<Array<{ url: string; name: string }>>([]);
+  /** 一次性 + 固定的合并视图（chips 展示与注入都以它为准，避免两处各算一遍） */
+  const allQuotedUrls = computed(() => {
+    const pinnedSet = new Set(pinnedQuotedUrls.value.map((q) => q.url));
+    const seen = new Set<string>();
+    const out: Array<{ url: string; name: string; pinned: boolean }> = [];
+    for (const q of [...pinnedQuotedUrls.value, ...quotedUrls.value]) {
+      if (seen.has(q.url)) continue;
+      seen.add(q.url);
+      out.push({ url: q.url, name: q.name, pinned: pinnedSet.has(q.url) });
+    }
+    return out;
+  });
+  // 任一引用变化就落盘（都是小对象，不需要防抖）
+  watch(
+    [selectedFilePaths, pinnedFilePaths, quotedUrls, pinnedQuotedUrls, quotedMessages],
+    saveRefsToStorage,
+    { deep: true },
+  );
+
+  function hostOf(u: string): string {
+    try { return new URL(u).host; } catch { return u; }
+  }
   function addQuotedUrl(url: string) {
     const u = (url || '').trim();
     if (!u) return;
-    if (quotedUrls.value.some((q) => q.url === u)) { ElMessage.info('该链接已在引用中'); return; }
-    let host = u;
-    try { host = new URL(u).host; } catch { /* 非 URL 原样展示 */ }
-    quotedUrls.value = [...quotedUrls.value, { url: u, name: host }];
+    if (allQuotedUrls.value.some((q) => q.url === u)) { ElMessage.info('该链接已在引用中'); return; }
+    quotedUrls.value = [...quotedUrls.value, { url: u, name: hostOf(u) }];
     ElMessage.success('已引用到任务');
+  }
+  /** 固定 / 取消固定网页引用（取消后回落为一次性，不直接消失） */
+  function toggleUrlPin(url: string) {
+    const u = String(url || '').trim();
+    if (!u) return;
+    if (pinnedQuotedUrls.value.some((q) => q.url === u)) {
+      pinnedQuotedUrls.value = pinnedQuotedUrls.value.filter((q) => q.url !== u);
+      if (!quotedUrls.value.some((q) => q.url === u)) {
+        quotedUrls.value = [...quotedUrls.value, { url: u, name: hostOf(u) }];
+      }
+      ElMessage.success('已取消固定：只带这一次');
+      return;
+    }
+    const one = allQuotedUrls.value.find((q) => q.url === u) || { url: u, name: hostOf(u) };
+    pinnedQuotedUrls.value = [...pinnedQuotedUrls.value, { url: one.url, name: one.name }];
+    ElMessage.success('已固定引用：之后每轮都会带上');
   }
   function removeQuotedUrl(url: string) {
     quotedUrls.value = quotedUrls.value.filter((q) => q.url !== url);
+    pinnedQuotedUrls.value = pinnedQuotedUrls.value.filter((q) => q.url !== url);
   }
 
   // 会话标题取首个非引用行，避免 `> ` 引用块污染标题
@@ -3056,16 +3192,50 @@ async function healStalePlatform() {
     }
   }
 
+  /**
+   * 取走预览面板里的批注并拼成消息块（P0，2026-10-28）。
+   * ★ 必须在 sendInner 的**分叉之前**调用：未配置模型的分支也要把批注带进消息
+   *   （实测过：只在正常分支拼，没配模型时点「发送到对话」会静默什么都不发）。
+   * ★ 截图失败是常态（面板收起时没有合成画面），降级成纯文字批注，不阻断发送。
+   */
+  async function takeBrowserAnnotationBlock(): Promise<string> {
+    try {
+      // 独立浏览器页（/browser）的批注走一次性交接槽；对话页右栏预览走 preview store
+      const stashed = takeStashedAnnotations();
+      // 动态/静态 store 的类型都暴露为 Ref（见 stores/browser 的 BrowserStore 定义），
+      // 运行时实例上取到的是解包后的值 —— 按 any 读，避免为一行访问拉一套类型体操。
+      const annoStore = useBrowserStore('preview') as any;
+      const items: BrowserAnnotation[] = stashed ? stashed.items : (annoStore.annotations || []);
+      if (!items.length) return '';
+      const tabId = stashed ? stashed.tabId : (annoStore.activeTabId || '');
+      const shot = await captureAnnotationScreenshot(tabId);
+      const block = formatAnnotationBlock(items, shot.path);
+      if (!stashed) annoStore.annotations = [];
+      if (shot.error) ElMessage.warning('批注截图不可用（' + shot.error + '），本次只发送了批注文字');
+      return block;
+    } catch (e: any) {
+      console.warn('[browser-annotation] 拼装批注失败', e);
+      return '';
+    }
+  }
+
   async function sendInner() {
-    if (!input.value.trim() && uploadedFiles.value.length === 0 && quotedUrls.value.length === 0) return;
+    // ★ 批注本身可以**单独**作为一条消息发出（在预览面板里标几处直接点「发送到对话」），
+    //   所以它也是"有内容可发"的判据之一 —— 漏掉这条，空输入 + 有批注会被静默 return。
+    const annoCountForGuard = (useBrowserStore('preview') as any).annotations.length;
+    if (!input.value.trim() && uploadedFiles.value.length === 0 && allQuotedUrls.value.length === 0 && quotedMessages.value.length === 0
+      && annoCountForGuard === 0 && !hasStashedAnnotations()) return;
     // 内容已确定要发出：清掉该会话草稿，避免切走再切回把已发送的内容又填回输入框
     dropDraft(store.currentConvId);
+
+    // 批注在**分叉之前**取走：下面「未配置平台/模型」的分支同样要把它带进消息
+    const annotationBlock = await takeBrowserAnnotationBlock();
 
     const hasPlatform = platformStore.platforms.length > 0;
     const hasModel = !!selectedModelId.value && !!platformStore.models.find((m) => m.id === selectedModelId.value);
     if (!hasPlatform || !hasModel) {
-      const userContent = input.value.trim();
-      if (!userContent && uploadedFiles.value.length === 0 && quotedUrls.value.length === 0) return;
+      const userContent = [input.value.trim(), annotationBlock].filter(Boolean).join('\n\n');
+      if (!userContent && uploadedFiles.value.length === 0 && allQuotedUrls.value.length === 0 && quotedMessages.value.length === 0) return;
       input.value = '';
       uploadedFiles.value = [];
       quotedUrls.value = [];
@@ -3158,11 +3328,13 @@ async function healStalePlatform() {
     let userContent = content;
     if (files.length > 0) {
       userContent = content || '请分析以下文件';
-    } else if (!content.trim() && quotedUrls.value.length > 0) {
+    } else if (!content.trim() && (allQuotedUrls.value.length > 0 || quotedMessages.value.length > 0)) {
       userContent = '请参考以下网页';
     }
 
-    if (!userContent.trim()) { ElMessage.warning('请输入消息'); return; }
+    // ★ 只有批注、没打字：批注块本身就是消息内容（下面按 正文 → 引用 → 批注 的顺序追加）。
+    //   这里不能因为输入框空就判「请输入消息」—— 实测点「发送到对话」正是被这道闸拦下的。
+    if (!userContent.trim() && !annotationBlock) { ElMessage.warning('请输入消息'); return; }
 
     // 全程锁定目标会话：下面有多个 await（建空间/建会话/落盘附件），期间用户若切换会话，
     // 消息与任务仍须归属「点发送那一刻」的会话，否则多会话并行时会串台。
@@ -3284,9 +3456,12 @@ async function healStalePlatform() {
       // input.value 已在取内容那一刻清空（见上方「取走内容即清空输入框」）——
       // 这里不再重复清，避免"清空时机"这一语义出现两处（本项目既有教训：同一语义两处各写一份必漂移）。
 
-      if (selectedFilePaths.value.size > 0) {
+      // 引用块累积器：文件引用与网页引用最后合并成**一块** <references> 注入
+      const refXml: string[] = [];
+      if (selectedFilePaths.value.size > 0 || pinnedFilePaths.value.size > 0) {
         const fileRefs: Array<Record<string, unknown>> = [];
-        for (const filePath of selectedFilePaths.value) {
+        // 本次引用（一次性）+ 固定引用（每轮都带），去重后一起注入
+        for (const filePath of new Set([...selectedFilePaths.value, ...pinnedFilePaths.value])) {
           const f = workspaceFiles.value.find(wf => wf.path === filePath);
           // 目录引用（@folder，2026-10-03 P1）：目录不在文件索引里 —— 若路径不是任何已索引
           // 文件、但有已索引文件位于其下，即判定为目录。不读内容，注入目录引用说明。
@@ -3299,6 +3474,16 @@ async function healStalePlatform() {
                 type: 'folder',
                 size: 0,
                 preview: `(目录引用：该目录下约 ${under.length} 个已索引文件。请用 file_list / code_search / code_outline / code_semantic_search 自行探索，不要假设目录内容)`,
+              });
+            } else {
+              // ★ 不在索引里的真实文件（交付物 / 上传件 / 最近才落盘的文件）：仍按路径引用。
+              //   此前这里直接 continue → 「引用」按钮点了像没生效（没有报错，也没有任何注入）。
+              fileRefs.push({
+                fileName: filePath.split(/[\\/]/).pop() || filePath,
+                path: filePath,
+                type: (filePath.split('.').pop() || '').toLowerCase() || 'unknown',
+                size: 0,
+                preview: '(未在文件索引中，需要内容请用 file_read 读取)',
               });
             }
             continue;
@@ -3336,15 +3521,43 @@ async function healStalePlatform() {
           } catch { /* skip */ }
         }
         if (fileRefs.length > 0) {
-          userContent = userContent + '\n\n[Files]\n' + JSON.stringify(fileRefs, null, 2);
+          // ★ 统一引用块（2026-10-28，参照 AgentScope 的 content-block 思路）：
+          //   引用不再以无结构文本拼进正文，而是收敛成**一块** <references>，
+          //   每个条目一个 <reference type="file|page" …>，文件预览作为条目正文。
+          //   ① 模型能分清"用户打的字"和"随消息带上的资料"；② 展示侧按同一契约切回 chip。
+          for (const r of fileRefs) {
+            const name = xmlAttr(String(r.fileName ?? ''));
+            const reqPath = xmlAttr(String(r.path ?? ''));
+            const mime = xmlAttr(String(r.type ?? ''));
+            const size = typeof r.size === 'number' && r.size > 0 ? ` size="${xmlAttr(formatSize(r.size))}"` : '';
+            const preview = String(r.preview || '').replace(/\r/g, '').trim();
+            refXml.push(preview
+              ? `<reference type="file" name="${name}" path="${reqPath}" mime="${mime}"${size}>\n${preview}\n</reference>`
+              : `<reference type="file" name="${name}" path="${reqPath}" mime="${mime}"${size}/>`);
+          }
         }
       }
 
-      // F1 浏览器 URL 引用：注入 [网页引用]，智能体用 browser_* 工具访问
-      if (quotedUrls.value.length > 0) {
-        const urlParts = quotedUrls.value.map((q) => `- ${q.name} ${q.url}`).join('\n');
-        userContent = userContent + '\n\n[网页引用]\n' + urlParts;
+      // F1 浏览器 URL 引用：同一块里以 type="page" 出现，智能体用 browser_* 工具访问
+      for (const q of quotedMessages.value) {
+        refXml.push(`<reference type="quote" role="${xmlAttr(q.role)}" preview="${xmlAttr(q.preview)}">
+${q.text}
+</reference>`);
+      }
+      if (allQuotedUrls.value.length > 0) {
+        for (const q of allQuotedUrls.value) {
+          refXml.push(`<reference type="page" name="${xmlAttr(q.name)}" url="${xmlAttr(q.url)}"/>`);
+        }
+        // 只清一次性；固定的留在 pinnedQuotedUrls 里，下一轮继续带
         quotedUrls.value = [];
+      }
+      if (refXml.length) {
+        userContent = userContent + '\n\n<references>\n' + refXml.join('\n') + '\n</references>';
+      }
+
+      // 浏览器批注（P0，2026-10-28）：块已在分叉前拼好（含截图与清队列），这里只追加。
+      if (annotationBlock) {
+        userContent = userContent ? userContent + '\n\n' + annotationBlock : annotationBlock;
       }
 
       // ★ 发送幂等键（2026-10-26）：断连自动重发**沿用同一个 id**，服务端据此判定
@@ -3380,6 +3593,12 @@ async function healStalePlatform() {
           hint.close();
         }
       }
+
+      // ★ 引用块只注入这一次（2026-10-28）：发送成功后清掉一次性引用；
+      //   「固定引用」的不清，下一轮继续带（用户在 chip 菜单里取消固定才停）。
+      if (selectedFilePaths.value.size) selectedFilePaths.value = new Set();
+      // 消息引用同理：一次性的清掉，固定的留到取消固定/切会话
+      if (quotedMessages.value.some((q) => !q.pinned)) quotedMessages.value = quotedMessages.value.filter((q) => q.pinned);
 
     } catch (e: any) {
       if (e?.name === 'AbortError') return;
@@ -3663,6 +3882,50 @@ async function healStalePlatform() {
     const next = new Set(selectedFilePaths.value);
     if (next.has(path)) next.delete(path); else next.add(path);
     selectedFilePaths.value = next;
+  }
+
+  /**
+   * 引用一个本机文件到输入框（2026-10-28：文件预览面板 / 聊天附件卡的「引用」按钮）。
+   * ★ 与 @ 引用共用同一个状态（selectedFilePaths）而非另起一套 —— 发送时统一走 <references> 引用块注入，
+   *   两套会有"@ 能带、按钮带不进去"的漂移。已在其中则不重复添加（幂等）。
+   * ★ 不要求文件在 workspaceFiles 索引里：交付物 / 上传件不在索引中，发送侧另有路径兜底。
+   */
+  function referenceFile(path: string, name?: string) {
+    const p = normalizePath(path);
+    if (!p) { ElMessage.info('该文件没有本机路径，无法引用'); return; }
+    if (selectedFilePaths.value.has(p)) { ElMessage.info('已经引用过了'); return; }
+    const next = new Set(selectedFilePaths.value);
+    next.add(p);
+    selectedFilePaths.value = next;
+    ElMessage.success(`已引用${name ? ' ' + name : ''}，补充指令后发送`);
+    // ★ 引用的"证据"是输入框上方的 chip，不在视野里就等于点了没反应 ——
+    //   顺带把输入框滚进视野并聚焦（用户本来就是要去补指令）。
+    nextTick(() => {
+      const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement | null;
+      if (!ta) return;
+      ta.scrollIntoView({ block: 'nearest' });
+      ta.focus();
+    });
+  }
+
+  /**
+   * 固定 / 取消固定一个引用（2026-10-28）。
+   * 固定的引用块**每一轮都会注入**，不固定的只对当次发送有效（下一条消息里模型看不到）。
+   */
+  function toggleFilePin(path: string) {
+    const p = normalizePath(path);
+    if (!p) return;
+    const next = new Set(pinnedFilePaths.value);
+    const nowPinned = !next.has(p);
+    if (nowPinned) next.add(p); else next.delete(p);
+    pinnedFilePaths.value = next;
+    // 取消固定后仍作为「本次引用」保留，否则 chip 会瞬间消失（用户会以为是被删了）
+    if (!nowPinned && !selectedFilePaths.value.has(p)) {
+      const s = new Set(selectedFilePaths.value);
+      s.add(p);
+      selectedFilePaths.value = s;
+    }
+    ElMessage.success(nowPinned ? '已固定引用：之后每轮都会带上' : '已取消固定：只带这一次');
   }
 
   function triggerFilePanelUpload() { filePanelUploadRef.value?.click(); }
@@ -4103,8 +4366,18 @@ async function healStalePlatform() {
     }
   }
 
+  /**
+   * 「用户真正打的字」：剥掉发送时注入的附件 / 引用块（2026-10-28）。
+   * 复制、引用、编辑、蒸馏四处必须与气泡展示同一口径 —— 否则用户点「编辑」会
+   * 把一大段 `[文件: … 路径: …]` 灌回输入框，再次发送时还会被当成手打内容带上。
+   */
+  function userPlainContent(msg: { role?: string; content?: string }): string {
+    const raw = msg.content || '';
+    return msg.role === 'user' ? splitUserContent(raw).text : raw;
+  }
+
   async function copyMsg(msg: Message) {
-    try { await navigator.clipboard.writeText((msg.content || '').replace(/\n+$/, '')); ElMessage.success('已复制'); }
+    try { await navigator.clipboard.writeText(userPlainContent(msg).replace(/\n+$/, '')); ElMessage.success('已复制'); }
     catch { ElMessage.error('复制失败'); }
   }
 
@@ -4224,27 +4497,50 @@ async function healStalePlatform() {
   function toggleMainResult(key: string) { collapsedMainResults[key] = !collapsedMainResults[key]; }
 
   async function editMsg(msg: Message) {
-    input.value = msg.content || '';
+    input.value = userPlainContent(msg);
     await nextTick();
     const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement;
     if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   }
 
-  // F2 消息引用：以 `> ` 引用块插入输入框，最多 20 行，超出省略
+  // F2 消息引用：以**引用 chip** 挂在输入区，不再把整段文字塞进 textarea
   async function quoteMsg(msg: Message) {
-    const raw = (msg.content || '')
+    const raw = userPlainContent(msg)
       .replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]/g, '')
       .replace(/@@REASON@@[\s\S]*$/, '')
-      .replace(/\n+$/, '');
+      .trim();
     if (!raw) return;
-    const lines = raw.split('\n');
-    const quoted = lines.slice(0, 20).map((l) => '> ' + l).join('\n') + (lines.length > 20 ? '\n> …' : '');
-    const block = quoted + '\n\n';
-    input.value = input.value ? input.value.replace(/\s*$/, '') + '\n' + block : block;
+    if (quotedMessages.value.some((q) => q.id === msg.id)) { ElMessage.info('这条已经引用过了'); return; }
+    const preview = (quotePreview(raw).replace(/^>\s?/gm, '').split('\n')[0] || '').slice(0, 80);
+    quotedMessages.value = [...quotedMessages.value, {
+      id: msg.id,
+      role: msg.role,
+      preview: preview || raw.slice(0, 80),
+      text: raw.slice(0, 4000),
+      pinned: false,
+    }];
+    ElMessage.success('已引用这条消息，补充指令后发送');
     await nextTick();
     const ta = document.querySelector('.input-textarea textarea') as HTMLTextAreaElement;
-    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    if (ta) ta.focus();
   }
+
+  /** 移除一条消息引用 */
+  function removeQuotedMessage(id: string) {
+    quotedMessages.value = quotedMessages.value.filter((q) => q.id !== id);
+  }
+
+  /** 固定 / 取消固定一条消息引用（固定后每轮都注入，否则只带这一次） */
+  function toggleQuotePin(id: string) {
+    let nowPinned = false;
+    quotedMessages.value = quotedMessages.value.map((q) => {
+      if (q.id !== id) return q;
+      nowPinned = !q.pinned;
+      return { ...q, pinned: nowPinned };
+    });
+    ElMessage.success(nowPinned ? '已固定引用：之后每轮都会带上' : '已取消固定：只带这一次');
+  }
+
 
   async function delMsg(msg: Message) { await store.deleteMessage(msg.id); }
 
@@ -4547,7 +4843,7 @@ async function healStalePlatform() {
     startNewChat, continueTaskAsNew, selectConv, triggerFileUpload, addFiles, handleFileChange, removeFile, formatSize, send, sending, stopChat, regenerateMsg, shouldShowMessage, collectToolCalls,
     // 费用账单（2026-10-17）：会话头金额 / 提醒条 / 「新开会话继续」
     costStore, startContinuedConversation,
-    filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
+    filteredFiles, loadWorkspaceFiles, previewFile, toggleFileSelect, toggleFilePin, referenceFile, pinnedFilePaths, triggerFilePanelUpload, handleFilePanelUpload, deleteFileItem,
     resolveArtifactDirFor,
     openConvDir,
     openTaskWindow,
@@ -4568,7 +4864,8 @@ async function healStalePlatform() {
     collapsedSubAgentResults, toggleSubAgentResult, collapsedMainResults, toggleMainResult,
     copySubAgentRoundMd, downloadSubAgentRoundMd, copySubAgentResultMd, downloadSubAgentResultMd,
     copyAssistantMd, downloadAssistantMd,
-    quotedUrls, addQuotedUrl, removeQuotedUrl, LONG_INPUT_THRESHOLD,
+    quotedUrls, pinnedQuotedUrls, allQuotedUrls, addQuotedUrl, removeQuotedUrl, toggleUrlPin,
+    quotedMessages, removeQuotedMessage, toggleQuotePin, LONG_INPUT_THRESHOLD,
     sceneMode, currentScene, sceneSkillCount, setScene, clearScene,
     saveMountToDb, saveMount, saveSkills,
   };
