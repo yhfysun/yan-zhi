@@ -55,6 +55,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务执行', bare: true, guest: true },
   },
   {
+    // 宠物弹层（方案 B，2026-10-29）：菜单/任务面板/输入条/气泡各自独立小窗。
+    path: '/pet-popup/:kind',
+    name: 'pet-popup',
+    component: () => import('../views/PetPopup.vue'),
+    meta: { title: '宠物弹层', bare: true, guest: true },
+  },
+  {
     // 宠物伴星（2026-10-28）：独立透明置顶窗只挂这一页，不套应用外壳。
     path: '/pet-window',
     name: 'pet-window',

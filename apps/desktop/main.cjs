@@ -9371,56 +9371,51 @@ let petLastSync = null;
 let petLastSettings = null;
 
 /** 窗口最小宽度：任务面板 316px + 两侧留白（半圆菜单 96 半径、输入条 292 也放得下） */
-const PET_MIN_W = 340;
 /**
- * 按当前形象算宠物窗尺寸（2026-10-29：原来固定 460×420，宠物只占 109×118，
- * 四周空出一大片，拖到屏幕边时宠物离边还有一百多像素）。
- * 只保留菜单/气泡/输入条实际需要的余量。
+ * 宠物窗 = 宠物本体（方案 B，2026-10-29）
+ * 菜单 / 任务面板 / 输入条 / 活动气泡各自是独立透明小窗，宠物窗不再预留空白，
+ * 因此宠物既能贴住屏幕边，也能骑在两块屏的接缝上。
  */
+const PET_BODY_PAD = 4; // .body 的 padding（2*2）
+
 function petWindowSize(settings) {
   const s = settings || {};
   const scale = Math.min(2, Math.max(0.5, Number(s.scale) || 1));
   const is3d = s.renderer === '3d';
-  const petW = is3d ? 190 : 109;
-  const petH = is3d ? 280 : 118;
   return {
-    W: Math.max(PET_MIN_W, Math.round(petW * scale + 120)),
-    H: Math.round(petH * scale + (is3d ? 170 : 150)),
+    W: Math.round((is3d ? 190 : 109) * scale) + PET_BODY_PAD,
+    H: Math.round((is3d ? 280 : 118) * scale) + PET_BODY_PAD,
   };
 }
 
-/** 宠物本体在窗内的尺寸与占位（底部居中）；钳位与踱步都按它算，别按整窗 */
-function petBox(settings) {
-  const s = settings || {};
-  const scale = Math.min(2, Math.max(0.5, Number(s.scale) || 1));
-  const is3d = s.renderer === '3d';
-  const { W, H } = petWindowSize(s);
-  const petW = Math.round((is3d ? 190 : 109) * scale);
-  const petH = Math.round((is3d ? 280 : 118) * scale);
-  return { W, H, petW, petH, left: Math.round((W - petW) / 2), top: H - petH };
-}
-
-/** 按"宠物本体"钳位：允许窗框的空白部分跑到屏外，这样宠物才能贴到屏幕边 */
-function clampPetBoxToDisplay(x, y, settings) {
-  const { W, H, petW, petH, left, top } = petBox(settings);
-  let area;
+/**
+ * 虚拟桌面并集：允许宠物跨屏（单屏钳位会把它推回某一块屏里）。
+ * includeTaskbar=true 时用显示器整块 bounds —— 用户要求宠物能压到任务栏上。
+ */
+function virtualDesktopRect(includeTaskbar = false) {
   try {
-    area = electronScreen.getDisplayMatching({ x, y, width: W, height: H }).workArea;
+    const areas = electronScreen.getAllDisplays().map((d) => (includeTaskbar ? d.bounds : d.workArea));
+    if (!areas.length) return electronScreen.getPrimaryDisplay().workArea;
+    const minX = Math.min(...areas.map((a) => a.x));
+    const minY = Math.min(...areas.map((a) => a.y));
+    const maxX = Math.max(...areas.map((a) => a.x + a.width));
+    const maxY = Math.max(...areas.map((a) => a.y + a.height));
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   } catch {
-    return { x, y, area: null };
+    return electronScreen.getPrimaryDisplay().workArea;
   }
-  const minX = area.x - left;
-  const maxX = area.x + area.width - left - petW;
-  const maxY = area.y + area.height - H; // 宠物脚在窗底：窗底贴住工作区底即可
+}
+
+function clampPetToDesktop(x, y, w, h) {
+  // 宠物可以压到任务栏上（用整屏 bounds），退出时再靠工作区钳位
+  const a = virtualDesktopRect(true);
   return {
-    x: Math.max(minX, Math.min(maxX, x)),
-    // 垂直方向保持"窗底 = 宠物脚"，只允许贴着工作区底/顶
-    y: Math.max(area.y, Math.min(maxY, y)),
-    area,
+    x: Math.max(a.x, Math.min(a.x + a.width - w, x)),
+    y: Math.max(a.y, Math.min(a.y + a.height - h, y)),
   };
 }
 
-/** 换形象/改缩放后重算窗口大小，并保持"宠物底部中心"不跳 */
+/** 换形象/改缩放后重算窗口大小，保持"底部中心"不跳 */
 function applyPetSize(settings) {
   try {
     if (!petWindow || petWindow.isDestroyed()) return;
@@ -9431,12 +9426,129 @@ function applyPetSize(settings) {
     const nx = Math.round(x + (ow - W) / 2);
     const ny = Math.round(y + (oh - H));
     petWindow.setBounds({ x: nx, y: ny, width: W, height: H });
-    const c = clampPetToDisplay(nx, ny, W, H);
-    if (Math.round(c.x) !== nx || Math.round(c.y) !== ny) {
-      petWindow.setPosition(Math.round(c.x), Math.round(c.y));
-    }
+    const c = clampPetToDesktop(nx, ny, W, H);
+    if (Math.round(c.x) !== nx || Math.round(c.y) !== ny) petWindow.setPosition(Math.round(c.x), Math.round(c.y));
   } catch { /* 尺寸调整失败不影响使用 */ }
 }
+
+/* ===== 宠物弹层窗口（独立小窗） ===== */
+const PET_POPUP_SIZE = {
+  radial: [268, 268],
+  panel: [360, 320],
+  play: [400, 64],
+  ask: [380, 84],
+  bubble: [340, 44],
+};
+const petPopups = new Map();
+
+function petViewBaseUrl() {
+  const devMode = process.argv.includes('--dev') && !app.isPackaged;
+  if (!devMode) return { devMode, base: '' };
+  let base = 'http://localhost:1420/';
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) base = mainWindow.webContents.getURL().split('#')[0] || base;
+  } catch { /* 用默认基址 */ }
+  if (!base.endsWith('/')) base += '/';
+  return { devMode, base };
+}
+
+/** 广播给宠物窗与所有弹层（弹层也要 tasks/agents/设置） */
+function broadcastPet(channel, payload) {
+  try {
+    if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send(channel, payload);
+    for (const w of petPopups.values()) {
+      if (w && !w.isDestroyed() && !w.webContents.isDestroyed()) w.webContents.send(channel, payload);
+    }
+  } catch { /* 窗口刚关时忽略 */ }
+}
+
+function positionPetPopup(kind, win) {
+  const size = PET_POPUP_SIZE[kind];
+  if (!size || !petWindow || petWindow.isDestroyed()) return;
+  const [W, H] = size;
+  const b = petWindow.getBounds();
+  const cx = b.x + Math.round(b.width / 2);
+  let x;
+  let y;
+  if (kind === 'radial') {
+    x = cx - Math.round(W / 2);
+    y = b.y + Math.round(b.height / 2) - Math.round(H / 2);
+  } else {
+    // 面板/动作条/输入条/气泡都贴在宠物上方
+    x = cx - Math.round(W / 2);
+    y = b.y - H + 6;
+  }
+  const a = virtualDesktopRect();
+  x = Math.max(a.x, Math.min(a.x + a.width - W, x));
+  y = Math.max(a.y, Math.min(a.y + a.height - H, y));
+  try { win.setBounds({ x: Math.round(x), y: Math.round(y), width: W, height: H }); } catch {}
+}
+
+function createPetPopup(kind) {
+  const size = PET_POPUP_SIZE[kind];
+  if (!size) return null;
+  const opened = petPopups.get(kind);
+  if (opened && !opened.isDestroyed()) {
+    positionPetPopup(kind, opened);
+    try { opened.showInactive(); } catch {}
+    return opened;
+  }
+  if (!petWindow || petWindow.isDestroyed()) return null;
+  const [W, H] = size;
+  const win = new BrowserWindow({
+    width: W, height: H, frame: false, transparent: true, backgroundColor: '#00000000',
+    resizable: false, movable: false, minimizable: false, maximizable: false,
+    fullscreenable: false, skipTaskbar: true, hasShadow: false, alwaysOnTop: true, show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false, contextIsolation: true, backgroundThrottling: false,
+    },
+  });
+  win.setAlwaysOnTop(true, 'floating');
+  if (kind === 'bubble') {
+    // 气泡只是展示：整窗穿透，别挡住下面的点击
+    try { win.setIgnoreMouseEvents(true, { forward: true }); } catch {}
+  }
+  const { devMode, base } = petViewBaseUrl();
+  if (devMode) win.loadURL(base + '#/pet-popup/' + kind);
+  else win.loadFile(path.join(__dirname, 'dist', 'index.html'), { hash: '/pet-popup/' + kind });
+
+  positionPetPopup(kind, win);
+  if (petLastSync) win.webContents.on('did-finish-load', () => {
+    try { win.webContents.send('pet:state', petLastSync); } catch {}
+    if (petLastSettings) win.webContents.send('pet:settings', petLastSettings);
+  });
+  // 失焦即收（输入条除外：用户可能要去主窗口粘贴）
+  if (kind !== 'ask') win.on('blur', () => { try { win.close(); } catch {} });
+  win.on('closed', () => { petPopups.delete(kind); });
+  petPopups.set(kind, win);
+  win.once('ready-to-show', () => {
+    try {
+      // 气泡只展示、必须不抢焦点；其余弹层要能按 Esc、能打字，必须真聚焦
+      if (kind === 'bubble') win.showInactive();
+      else { win.show(); win.focus(); }
+    } catch {}
+  });
+  return win;
+}
+
+function closePetPopup(kind) {
+  const w = petPopups.get(kind);
+  if (!w || w.isDestroyed()) return;
+  try { w.close(); } catch {}
+  petPopups.delete(kind);
+}
+
+function closeAllPetPopups() {
+  for (const kind of [...petPopups.keys()]) closePetPopup(kind);
+}
+
+function repositionPetPopups() {
+  for (const [kind, w] of petPopups) {
+    if (w && !w.isDestroyed()) positionPetPopup(kind, w);
+  }
+}
+
 /** 踱步速度：约 70px/s，看得见在走但不催人 */
 const PET_WALK_SPEED = 70;
 
@@ -9521,11 +9633,15 @@ function petWalkStart() {
   if (!petWindow || petWindow.isDestroyed()) return;
   if (petWalk.on) return;
   const b = petWindow.getBounds();
-  const box = petBox(petLastSettings);
-  const { x: curX, area } = clampPetBoxToDisplay(b.x, b.y, petLastSettings);
-  if (!area) return;
-  const minX = area.x - box.left;
-  const maxX = area.x + area.width - box.left - box.petW;
+  let area;
+  try {
+    area = electronScreen.getDisplayMatching(b).workArea;
+  } catch {
+    area = virtualDesktopRect();
+  }
+  const curX = b.x;
+  const minX = area.x;
+  const maxX = area.x + area.width - b.width;
   if (maxX <= minX) return; // 屏比窗还窄：原地待着，别把宠物挤出屏
   const bottomY = area.y + area.height - b.height;
   // 方向随机，贴边时由边界纠正：不让它永远在同一头之间来回
@@ -9566,7 +9682,7 @@ function createPetWindow() {
   ).workArea;
   const wantX = (saved && Number.isFinite(saved.x)) ? saved.x : work.x + work.width - W - 24;
   const wantY = (saved && Number.isFinite(saved.y)) ? saved.y : work.y + work.height - H - 24;
-  const { x, y } = clampPetToDisplay(wantX, wantY, W, H);
+  const { x, y } = clampPetToDesktop(wantX, wantY, W, H);
   petWindow = new BrowserWindow({
     x, y, width: W, height: H, frame: false, transparent: true, backgroundColor: '#00000000',
     resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false,
@@ -9590,12 +9706,13 @@ function createPetWindow() {
   } else petWindow.loadFile(path.join(__dirname, 'dist', 'index.html'), { hash: '/pet-window' });
 
   petWindow.once('ready-to-show', () => { try { petWindow.showInactive(); } catch {} });
-  petWindow.on('moved', savePetPos);
+  petWindow.on('moved', () => { savePetPos(); repositionPetPopups(); });
   // 可见 / 前台变化 → 渲染层失焦降帧、隐藏即停渲染
   ['show', 'hide', 'minimize', 'restore', 'focus', 'blur'].forEach((ev) => petWindow.on(ev, sendPetWinState));
-  petWindow.on('hide', () => petWalkStop());
+  petWindow.on('hide', () => { petWalkStop(); closeAllPetPopups(); });
   petWindow.on('closed', () => {
     petWalkStop();
+    closeAllPetPopups();
     petWindow = null;
     try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pet:closed'); } catch {}
   });
@@ -9676,6 +9793,16 @@ ipcMain.handle('pet:close', () => {
 });
 ipcMain.handle('pet:toggle', () => ({ open: togglePetWindow() }));
 ipcMain.handle('pet:is-open', () => !!(petWindow && !petWindow.isDestroyed()));
+ipcMain.on('pet:popup-open', (_e, kind) => {
+  try { createPetPopup(String(kind || '')); } catch (err) { console.warn('[pet] 弹层打开失败:', err && err.message); }
+});
+ipcMain.on('pet:popup-close', (_e, kind) => {
+  try { closePetPopup(String(kind || '')); } catch {}
+});
+ipcMain.on('pet:command', (_e, cmd) => {
+  // 弹层只发命令，动作统一在宠物窗里执行（它持有渲染器）
+  try { if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:cmd', cmd); } catch {}
+});
 ipcMain.handle('pet:ensure-inside', () => {
   // 宠物可以贴着屏幕边（窗框空白在屏外）；一开弹层就得把整窗挪回可视区
   try {
@@ -9692,12 +9819,13 @@ ipcMain.handle('pet:ensure-inside', () => {
 });
 ipcMain.on('pet:sync', (_e, payload) => {
   petLastSync = payload;
-  try { if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:state', payload); } catch {}
+  broadcastPet('pet:state', payload);
 });
 ipcMain.on('pet:settings', (_e, payload) => {
   petLastSettings = payload;
-  try { if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:settings', payload); } catch {}
-  applyPetSize(payload); // 2D/3D 与缩放不同，窗大小跟着变（否则四周空一大片）
+  broadcastPet('pet:settings', payload);
+  applyPetSize(payload);
+  repositionPetPopups();
 });
 ipcMain.on('pet:notify', (_e, payload) => {
   try {
@@ -9733,10 +9861,12 @@ ipcMain.on('pet:move-by', (_e, dx, dy) => {
     // 拖动期间窗位置归用户：先停踱步，免得两边抢位置
     petWalkStop();
     const [px, py] = petWindow.getPosition();
-    const next = clampPetBoxToDisplay(
+    const [w, h] = petWindow.getSize();
+    const next = clampPetToDesktop(
       Math.round(px + Number(dx || 0)),
       Math.round(py + Number(dy || 0)),
-      petLastSettings
+      w,
+      h
     );
     petWindow.setPosition(Math.round(next.x), Math.round(next.y));
   } catch {}

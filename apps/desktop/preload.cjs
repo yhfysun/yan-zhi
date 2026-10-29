@@ -82,6 +82,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     close: () => ipcRenderer.invoke('pet:close'),
     toggle: () => ipcRenderer.invoke('pet:toggle'),
     isOpen: () => ipcRenderer.invoke('pet:is-open'),
+    // 宠物可以贴屏幕边（窗框空白在屏外）；开弹层前把整窗挪回可视区
+    ensureInside: () => ipcRenderer.invoke('pet:ensure-inside'),
+    // 方案 B：菜单/面板/输入条/气泡是独立小窗，由主进程按宠物位置摆放
+    openPopup: (kind) => ipcRenderer.send('pet:popup-open', String(kind || '')),
+    closePopup: (kind) => ipcRenderer.send('pet:popup-close', String(kind || '')),
+    // 弹层 → 宠物窗的动作命令（播放动作、换形象、缩放…）
+    command: (cmd) => ipcRenderer.send('pet:command', cmd || {}),
+    onCommand: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('pet:cmd', h);
+      return () => ipcRenderer.removeListener('pet:cmd', h);
+    },
     ensureInside: () => ipcRenderer.invoke('pet:ensure-inside'),
     // 主窗口 → 主进程 → 宠物窗：轻量任务视图（状态 / 标题 / 计数）
     sync: (payload) => ipcRenderer.send('pet:sync', payload || {}),

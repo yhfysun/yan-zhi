@@ -32,6 +32,10 @@ function installPetApi() {
     settings: vi.fn(),
     requestSync: vi.fn(),
     walk: vi.fn(),
+    openPopup: vi.fn(),
+    closePopup: vi.fn(),
+    command: vi.fn(),
+    onCommand: on('cmd'),
     moveBy: vi.fn(),
     setInteractive: vi.fn(),
     action: vi.fn(),
@@ -72,39 +76,30 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('PetWindow · 活动气泡', () => {
-  it('运行中推来 activity → 气泡显示动作 + 文件名', async () => {
+describe('PetWindow · 唤起弹层（方案 B：弹层是独立小窗）', () => {
+  it('右键宠物 → 打开半圆菜单弹层', async () => {
     const el = mountPet()
-    expect(el.querySelector('.bubble')).toBeNull()
-
-    emit('state', { state: 'running', activity: { kind: 'write', label: '写作', target: 'main.ts' } })
+    el.querySelector('.body')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
     await nextTick()
-
-    const bubble = el.querySelector('.bubble')
-    expect(bubble).toBeTruthy()
-    expect(bubble!.textContent).toContain('写作')
-    expect(bubble!.textContent).toContain('main.ts')
-    // 类别决定小圆点配色 class
-    expect(bubble!.querySelector('.b-dot')!.className).toContain('k-write')
+    expect(api.openPopup).toHaveBeenCalledWith('radial')
   })
 
-  it('没有 activity（思考中由主窗回落）或非运行态 → 不显示气泡', async () => {
+  it('双击宠物 → 打开输入条弹层', async () => {
     const el = mountPet()
-    emit('state', { state: 'running', activity: null })
+    el.querySelector('.body')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
     await nextTick()
-    expect(el.querySelector('.bubble')).toBeNull()
-
-    emit('state', { state: 'idle', activity: { kind: 'read', label: '阅读', target: 'a.ts' } })
-    await nextTick()
-    expect(el.querySelector('.bubble')).toBeNull()
+    expect(api.openPopup).toHaveBeenCalledWith('ask')
   })
 
-  it('关掉气泡开关（设置下发）→ 即使有 activity 也不显示', async () => {
-    const el = mountPet()
-    emit('settings', { ...PET_DEFAULTS, bubble: false })
-    emit('state', { state: 'running', activity: { kind: 'act', label: '操作电脑', target: 'github.com' } })
+  it('运行中带活动 → 开气泡弹层；回到 idle → 关气泡', async () => {
+    mountPet()
+    emit('state', { state: 'running', activity: { kind: 'write', label: '写作', target: 'a.ts' } })
     await nextTick()
-    expect(el.querySelector('.bubble')).toBeNull()
+    expect(api.openPopup).toHaveBeenCalledWith('bubble')
+
+    emit('state', { state: 'idle', activity: null })
+    await nextTick()
+    expect(api.closePopup).toHaveBeenCalledWith('bubble')
   })
 })
 
