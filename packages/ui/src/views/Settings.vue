@@ -574,12 +574,12 @@
         <VoicePackPanel />
       </el-tab-pane>
       <!-- 宠物伴星（2026-10-28）：桌面悬浮宠物。2D 精灵图包 / 3D 模型二选一 -->
-      <el-tab-pane label="宠物" name="pet" lazy>
+      <el-tab-pane v-if="HAS_PET_ASSETS" label="宠物" name="pet" lazy>
         <div class="settings-form">
           <SettingRow label="显示桌面宠物" tip="在桌面浮一个任务伴星，实时反映任务状态；桌面上可拖动。快捷键 Alt+P 开关，托盘菜单也可" tip-after>
             <el-switch :model-value="petStore.settings.enabled" @change="setPetEnabled" />
           </SettingRow>
-          <SettingRow label="渲染方式" tip="2D 用开源精灵图宠物包；3D 用 three.js 实时渲染" tip-after>
+          <SettingRow v-if="petHas2d && petHas3d" label="渲染方式" tip="2D 用开源精灵图宠物包；3D 用 three.js 实时渲染" tip-after>
             <el-radio-group :model-value="petStore.settings.renderer" @change="setPet({ renderer: $event })">
               <el-radio-button label="2d">2D 精灵图</el-radio-button>
               <el-radio-button label="3d">3D 模型</el-radio-button>
@@ -613,15 +613,30 @@
               </template>
             </div>
           </SettingRow>
-          <SettingRow v-if="petStore.settings.renderer === '2d'" label="宠物形象">
-            <el-select :model-value="petStore.settings.pack" style="width: 160px" @change="setPet({ pack: $event })">
-              <el-option label="Boba（水獭）" value="boba" />
-              <el-option label="Tiko（机器人）" value="tiko" />
-              <el-option label="旺财（布偶猫）" value="wangcai" />
-              <el-option label="噜噜（水豚）" value="lulu" />
-              <el-option label="Noir（侦探蛛）" value="noir" />
-              <el-option label="Mallow（小怪）" value="mallow" />
-            </el-select>
+          <SettingRow
+            v-if="petHas2d && petStore.settings.renderer === '2d'"
+            label="宠物形象"
+            tip="可导入自己的 GIF / PNG / WebP（v1：整段动画作为单行循环，待机/跑动等状态共用这一段）"
+          >
+            <div class="pet-slots">
+              <el-select :model-value="petStore.settings.pack" style="width: 160px" @change="setPet({ pack: $event })">
+                <el-option-group label="内置">
+                  <el-option v-for="p in PET_PACKS" :key="p.id" :label="p.label" :value="p.id" />
+                </el-option-group>
+                <el-option-group v-if="userPackOptions.length" label="我的导入">
+                  <el-option v-for="p in userPackOptions" :key="p.id" :label="p.label" :value="p.id" />
+                </el-option-group>
+              </el-select>
+              <el-button size="small" @click="pickPetImage">导入 GIF/图片</el-button>
+              <el-button v-if="isSelectedUserPack" size="small" text @click="removeSelectedPack">删除</el-button>
+              <input
+                ref="packFileEl"
+                type="file"
+                accept="image/gif,image/png,image/webp,image/jpeg"
+                style="display: none"
+                @change="onPackFile"
+              />
+            </div>
           </SettingRow>
           <SettingRow label="大小" tip="拖动调整宠物整体尺寸" tip-after>
             <el-slider
@@ -730,6 +745,39 @@ const isPaneMode = computed(() => !!props.pane);
 // 宠物伴星设置（2026-10-28）：配置存 localStorage（yz:pet:settings），主窗口改动经 IPC 推给宠物窗
 const petStore = usePetStore();
 petStore.init();
+/** 本包随带的宠物资源（--pets 裁剪后可能为空 / 只有 2D / 只有 3D） */
+const userPackOptions = computed(() =>
+  Object.values(userPacks).map((e) => ({ id: e.manifest.id, label: e.manifest.label }))
+);
+const petPackOptions = computed(() => [...PET_PACKS, ...userPackOptions.value]);
+const isSelectedUserPack = computed(() => !!userPacks[petStore.settings.pack]);
+const packFileEl = ref<HTMLInputElement | null>(null);
+function pickPetImage() {
+  packFileEl.value?.click();
+}
+async function onPackFile(ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    const id = await importUserPack(await file.arrayBuffer(), file.name.replace(/\.[^.]+$/, ''));
+    setPet({ pack: id, renderer: '2d' });
+    ElMessage.success('形象已导入');
+  } catch (e: any) {
+    ElMessage.error(e?.message || '导入失败');
+  } finally {
+    input.value = '';
+  }
+}
+async function removeSelectedPack() {
+  await deleteUserPack(petStore.settings.pack);
+  const first = PET_PACKS[0]?.id;
+  if (first) setPet({ pack: first });
+}
+// 设置页打开时同步一次用户形象（幂等）
+void loadUserPacks();
+const petHas3d = PET_VRM_MODELS.length > 0;
+const petHas2d = PET_PACKS.length > 0;
 function setPet(patch: Record<string, unknown>) {
   petStore.update(patch as never);
 }
@@ -746,7 +794,7 @@ async function setPetEnabled(on: boolean) {
 }
 
 /** 3D 内置形象清单（都是 CC0 的 VRoid 早期样例） */
-const petBuiltinVrms = PET_BUILTIN_VRMS;
+const petBuiltinVrms = PET_VRM_MODELS.map((v) => ({ id: v.id, name: v.label }));
 
 /** 半圆菜单槽位：设置页与宠物窗读同一份注册表（store 里的 PET_SLOT_DEFS） */
 const petSlotOptions = Object.entries(PET_SLOT_DEFS).map(([key, label]) => ({ key, label }));
@@ -781,7 +829,9 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
 import { useSettingsStore, usePlatformStore, useModelPoolStore, useCostStore } from '../stores';
-import { usePetStore, PET_SLOT_DEFS, PET_SLOT_DEFAULTS, PET_BUILTIN_VRMS, setPetSlot } from '../stores/pet';
+import { usePetStore, PET_SLOT_DEFS, PET_SLOT_DEFAULTS, setPetSlot } from '../stores/pet';
+import { userPacks, loadUserPacks, importUserPack, deleteUserPack } from '../components/pet/user-packs';
+import { PET_PACKS, PET_VRM_MODELS, HAS_PET_ASSETS } from '../components/pet/pet-assets';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import { useVerificationStore } from '../stores/verification';

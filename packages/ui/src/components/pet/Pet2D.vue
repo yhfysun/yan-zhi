@@ -1,5 +1,5 @@
 <template>
-  <div class="pet2d" :class="{ flip }" :style="{ width: box.w + 'px', height: box.h + 'px' }">
+  <div v-if="packCfg" class="pet2d" :class="{ flip }" :style="{ width: box.w + 'px', height: box.h + 'px' }">
     <span class="shadow" :style="{ width: box.w * 0.66 + 'px' }" />
     <span
       class="sprite"
@@ -12,13 +12,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { PetState } from '../../stores/pet'
-
-import bobaImg from '../../assets/pet-packs/boba-spritesheet.webp'
-import tikoImg from '../../assets/pet-packs/tiko-spritesheet.webp'
-import wangcaiImg from '../../assets/pet-packs/wangcai-spritesheet.webp'
-import luluImg from '../../assets/pet-packs/lulu-spritesheet.webp'
-import noirImg from '../../assets/pet-packs/noir-spritesheet.webp'
-import mallowImg from '../../assets/pet-packs/mallow-spritesheet.webp'
+import { PET_PACK_URLS } from './pet-assets'
+import { userPackConfig } from './user-packs'
 
 const props = withDefaults(
   defineProps<{
@@ -59,22 +54,29 @@ const STD: Record<string, RowCfg> = {
   paused: { r: 6, n: 6, fps: 2.5 },
 }
 
-const PACKS: Record<string, PackCfg> = {
+/** 各宠物包的帧参数（不含图片 URL —— URL 由 pet-assets 按打包选择集给出） */
+const PACK_CFG: Record<string, Omit<PackCfg, 'img'>> = {
   boba: {
     name: 'Boba',
-    img: bobaImg,
     fw: 192,
     fh: 208,
     cols: 8,
     rows: 11,
     states: { ...STD, idle: { r: 0, n: 7, fps: 5 } },
   },
-  tiko: { name: 'Tiko', img: tikoImg, fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
-  wangcai: { name: '旺财', img: wangcaiImg, fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
-  lulu: { name: '噜噜', img: luluImg, fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
-  noir: { name: 'Noir', img: noirImg, fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
-  mallow: { name: 'Mallow', img: mallowImg, fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  tiko: { name: 'Tiko', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  wangcai: { name: '旺财', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  lulu: { name: '噜噜', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  noir: { name: 'Noir', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  mallow: { name: 'Mallow', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
 }
+
+/** 只保留本包真的带了素材的形象（--pets 裁剪后未选的 id 不在 PET_PACK_URLS 里） */
+const PACKS: Record<string, PackCfg> = Object.fromEntries(
+  Object.entries(PACK_CFG)
+    .filter(([id]) => !!PET_PACK_URLS[id])
+    .map(([id, cfg]) => [id, { ...cfg, img: PET_PACK_URLS[id] }])
+)
 
 /** 逗一下：动作 → 精灵行（社区标准行序） */
 const ACTION_ROWS: Record<string, RowCfg & { dur: number }> = {
@@ -86,7 +88,13 @@ const ACTION_ROWS: Record<string, RowCfg & { dur: number }> = {
   hop: { r: 0, n: 6, fps: 6, dur: 900 },
 }
 
-const packCfg = computed(() => PACKS[props.pack] || PACKS.boba)
+// 没有任何 2D 素材（--pets=none 或未选任何包）→ packCfg 为 null，组件不渲染也不跑定时器
+const packCfg = computed<PackCfg | null>(() => {
+  // 用户导入的形象优先（形象工坊）
+  const user = userPackConfig(props.pack)
+  if (user) return user as PackCfg
+  return PACKS[props.pack] || PACKS[Object.keys(PACKS)[0]] || null
+})
 const box = computed(() => ({ w: 109 * props.scale, h: 118 * props.scale }))
 
 const frame = ref(0)
@@ -97,6 +105,7 @@ let overrideUntil = 0
 
 const spriteStyle = computed(() => {
   const p = packCfg.value
+  if (!p) return {}
   const s = (118 * props.scale) / p.fh
   return {
     backgroundImage: `url(${p.img})`,
@@ -113,11 +122,13 @@ let loopMs = 0
 function tick() {
   const now = performance.now()
   if (overrideUntil && now >= overrideUntil) overrideUntil = 0
+  const pack = packCfg.value
+  if (!pack) return
   const cfg = overrideUntil
     ? ACTION_ROWS[props.action as string]
     : props.walking
-      ? packCfg.value.states.walking
-      : packCfg.value.states[props.state] || packCfg.value.states.idle
+      ? pack.states.walking
+      : pack.states[props.state] || pack.states.idle
   if (!cfg) return
   row.value = cfg.r
   frames.value = cfg.n
@@ -130,7 +141,7 @@ function tick() {
 
 /** 隐藏即停、失焦降帧：仍是 setInterval，只是间隔变了（rAF 在遮挡时会被系统节流） */
 function applyTimer() {
-  const want = props.visible ? (props.active ? 60 : 200) : 0
+  const want = !packCfg.value || !props.visible ? 0 : props.active ? 60 : 200
   if (want === loopMs && (timer || !want)) return
   window.clearInterval(timer)
   timer = 0

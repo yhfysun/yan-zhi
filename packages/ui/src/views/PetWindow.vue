@@ -50,6 +50,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Pet2D from '../components/pet/Pet2D.vue'
+import { loadUserPacks } from '../components/pet/user-packs'
 import Pet3D from '../components/pet/Pet3D.vue'
 import {
   usePetStore,
@@ -317,6 +318,7 @@ onMounted(() => {
   })
 
   api()?.requestSync?.()
+  void loadUserPacks() // 形象工坊：用户导入的形象也要在宠物窗里可用
   refreshVrm()
   scheduleStroll()
 })
