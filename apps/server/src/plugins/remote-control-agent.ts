@@ -153,7 +153,9 @@ public class RcAgent
   static object capLock = new object();
   static Stream so;
   static bool allowSelf = false;
-  static HashSet<string> selfNames = new HashSet<string>(new string[] { "yan-zhi", "yanzhi", "electron", "node" });
+  // 本应用主进程 pid：窗口归属优先按 pid 判，进程名只作兜底
+  static int selfPid = 0;
+  static HashSet<string> selfNames = new HashSet<string>(new string[] { "yan-zhi", "yanzhi" });
   // 回退采集线程参数（跨线程读写：int 与 bool 赋值原子，volatile 保证可见性）
   static volatile bool streaming = false;
   static volatile int frameScalePct = 100;
@@ -239,6 +241,7 @@ public class RcAgent
   static void ApplyConfig(Dictionary<string, object> m)
   {
     if (m.ContainsKey("allowSelf")) allowSelf = GetBool(m, "allowSelf");
+    if (m.ContainsKey("selfPid")) selfPid = GetInt(m, "selfPid", 0);
     if (m.ContainsKey("selfNames") && m["selfNames"] is ArrayList)
     {
       selfNames = new HashSet<string>();
@@ -294,6 +297,8 @@ public class RcAgent
     GetWindowText(h, sb, 512);
     string title = sb.ToString();
     uint pid; GetWindowThreadProcessId(h, out pid);
+    // 精确命中本应用主进程：不再依赖进程名白名单
+    if (selfPid > 0 && (int)pid == selfPid) return title;
     string pname = "";
     try { pname = Process.GetProcessById((int)pid).ProcessName.ToLower(); } catch {}
     if (selfNames.Contains(pname)) return title;
@@ -325,14 +330,16 @@ public class RcAgent
       }
     }
     SetCursorPos(x, y);
-    Thread.Sleep(30);
+    // 12ms 只为让光标落位 / down-up 有非零按住时长；旧值 30/30/40 每次点击固定烧 100ms，
+    // 再叠加网络与画面延迟，体感就是「点了半天没反应」。
+    Thread.Sleep(12);
     int clicks = dbl ? 2 : 1;
     for (int i = 0; i < clicks; i++)
     {
       PressAt(x, y, button, true);
-      Thread.Sleep(30);
+      Thread.Sleep(12);
       PressAt(x, y, button, false);
-      Thread.Sleep(40);
+      if (i + 1 < clicks) Thread.Sleep(12);
     }
     EmitEvent(Ok(id));
   }
@@ -342,7 +349,8 @@ public class RcAgent
     int x = GetInt(m, "x"), y = GetInt(m, "y");
     int delta = (int)GetDouble(m, "delta", -120);
     SetCursorPos(x, y);
-    Thread.Sleep(20);
+    // 滚动是 40Hz 高频指令：这里每一条都 Sleep 会把队列越堆越长，
+    // 表现是「越滑越迟、松手还在滚」。SetCursorPos 本身足够快，不再等待。
     mouse_event(MOUSE_WHEEL, 0, 0, (uint)delta, UIntPtr.Zero);
     EmitEvent(Ok(id));
   }
@@ -645,6 +653,8 @@ Add-Type -TypeDefinition $cs -ReferencedAssemblies @('System.Drawing','System.We
 
 export interface AgentStartConfig {
   selfNames: string[];
+  /** 本应用主进程 pid：窗口归属按 pid 精确命中，避免「进程名含 node/electron」误伤别的应用 */
+  selfPid?: number;
   allowSelf: boolean;
 }
 
@@ -718,7 +728,7 @@ export class RemoteControlAgent {
       }
     });
     // config 必须第一帧就发：selfNames / allowSelf 决定点击护栏行为
-    const cfg = await this.call({ op: 'config', selfNames: config.selfNames, allowSelf: config.allowSelf }, 20000);
+    const cfg = await this.call({ op: 'config', selfNames: config.selfNames, allowSelf: config.allowSelf, selfPid: config.selfPid ?? process.pid }, 20000);
     if (!cfg.ok) throw new Error(cfg.error || '代理进程启动失败');
   }
 
@@ -813,9 +823,12 @@ export class RemoteControlAgent {
 
 /** 本应用自身进程名（传给代理做自窗点击拦截） */
 export function selfProcNames(): string[] {
-  const names = new Set<string>(['yan-zhi', 'yanzhi', 'electron', 'node']);
+  const names = new Set<string>(['yan-zhi', 'yanzhi']);
   try {
-    names.add(path.basename(process.execPath, '.exe').toLowerCase());
+    const base = path.basename(process.execPath, '.exe').toLowerCase();
+    // dev 下 execPath 就是 electron.exe / node.exe：放进白名单会误伤所有 Electron 应用
+    // （在 VSCode、Slack 窗口上点击都会被拒绝）。精确判据是 pid。
+    if (base && base !== 'electron' && base !== 'node') names.add(base);
   } catch {
     /* ignore */
   }

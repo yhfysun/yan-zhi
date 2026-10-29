@@ -126,7 +126,8 @@
 
     <!-- 远程控制被控端伴生（remote-control 插件）：配对确认弹窗 + WebRTC 采集应答。
          bare 路由（控制端页 /remote 本身、独立子窗口）不挂载。 -->
-    <RemoteControlHost v-if="!isBareRoute" />
+    <!-- 远控外壳随 remote-control 插件进包（选择集驱动）；未选该插件时这个节点根本不存在 -->
+    <component :is="RcShellHost" v-if="!isBareRoute && RcShellHost" />
 
     <!-- 移动端冷启动等待层（2026-10-25）：内嵌 Node 后端就绪前路由守卫挂起（license.init
          里的 waitForBackend 最多 30s），首屏此前是**纯白**——用户会以为应用坏了
@@ -143,7 +144,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Avatar, SwitchButton, Moon, Sunny, Setting, Collection, Menu } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
@@ -153,7 +154,7 @@ import SideNav from './components/SideNav.vue';
 import SettingsDrawer from './components/SettingsDrawer.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
 import MobileNavDrawer from './components/MobileNavDrawer.vue';
-import RemoteControlHost from './components/RemoteControlHost.vue';
+import { SHELL_VIEW_LOADERS } from './generated/build-modes';
 import { syncPluginRoutes } from './router';
 import { resolvePluginComponent } from './plugin-component-registry';
 import { MODE_VIEW_LOADERS } from './generated/build-modes';
@@ -237,6 +238,16 @@ const localIdentityInitial = computed(() => '本');
  * 若再套一层 SideNav / 顶栏就会出现「窗口里还有一整套应用导航」的错位。
  */
 const isBareRoute = computed(() => route.meta?.bare === true);
+
+/**
+ * 远程控制外壳组件（被控端悬浮/接管层）。
+ * 来源是**打包期生成表**：未选 remote-control 插件的包，这一段是 undefined ——
+ * 既不渲染、也不会把 RemoteControlHost 的 chunk 带进产物（verify-plugin-prune 断言）。
+ */
+const RcShellHost =
+  SHELL_VIEW_LOADERS['remote-control']
+    ? defineAsyncComponent(SHELL_VIEW_LOADERS['remote-control'].host as () => Promise<never>)
+    : null;
 
 // 宠物伴星：把任务状态推给独立宠物窗（宠物窗自己加载 App.vue，内部会跳过）
 usePetBridge();
@@ -440,6 +451,19 @@ onMounted(async () => {
 async function bootPluginLayer() {
   try {
     await pluginStore.refresh();
+    // ★ 模式插件运行时装载：enabled 插件贡献的 contributes.mode 并入模式表 ——
+    //   内置模式以构建期表为准，**新 key**（随包/后装 .yzp 带来的模式）由此进入下拉与路由。
+    modeModule.setRuntimeModeDefs(
+      pluginStore.modeDefs.map((d) => ({
+        key: d.key,
+        label: d.label,
+        icon: d.icon || 'Connection',
+        desc: d.desc || '',
+        route: d.route,
+        pluginId: d.pluginId,
+        desktopOnly: d.desktopOnly,
+      })),
+    );
     await syncPluginRoutes();
     resolvePluginLayout();
     // 皮肤主题的壁纸与主色都来自插件清单：插件就绪后按当前设置重应用。
@@ -504,6 +528,22 @@ watch(() => [settingsStore.settings.layout, pluginStore.layouts], resolvePluginL
 // 插件运行中启用/禁用（如插件管理页开启 ops-shell）→ 即时同步动态路由，
 // 否则 sidebar 已出现菜单入口但路由未注册，点击就是空白页
 watch(() => pluginStore.routes, () => {
+  void syncPluginRoutes();
+}, { deep: true });
+
+// 插件启停会改变「运行时插件模式」：模式下拉/路由必须跟着变（停用即消失）
+watch(() => pluginStore.modeDefs, (defs) => {
+  modeModule.setRuntimeModeDefs(
+    (defs || []).map((d) => ({
+      key: d.key,
+      label: d.label,
+      icon: d.icon || 'Connection',
+      desc: d.desc || '',
+      route: d.route,
+      pluginId: d.pluginId,
+      desktopOnly: d.desktopOnly,
+    })),
+  );
   void syncPluginRoutes();
 }, { deep: true });
 

@@ -146,6 +146,28 @@
         <div class="rc-wait-sub">{{ mode === 'webrtc' ? 'WebRTC 协商中，12 秒未出画面会自动切兼容模式' : '兼容模式正在启动采集，首帧通常需要几秒' }}</div>
       </div>
 
+      <!-- 流到了但 video 被自动播放策略暂停：WebView 会给暂停的视频画一个系统播放图标
+           盖在画面上（2026-10-28 实报：状态栏显示已连接、解码有首帧，画面被巨大播放图标
+           覆盖）。手势触发的 play 必然放行 —— 这是保底出口，一键可解。 -->
+      <div
+        v-if="phase === 'live' && mode === 'webrtc' && hasFrame && !isPlaying && linkKind !== 'android'"
+        class="rc-play-overlay"
+        @pointerdown.stop.prevent="manualPlay"
+      >
+        <div class="rc-play-btn">▶</div>
+        <div class="rc-wait-sub">点一下开始播放画面</div>
+      </div>
+
+      <!-- 坐标未就绪：画面能看但点不动。必须明说，否则用户只会以为远控坏了 -->
+      <div
+        v-if="phase === 'live' && hasFrame && screen.w <= 0 && linkKind !== 'android'"
+        class="rc-geo-overlay"
+      >
+        <div class="rc-spinner"></div>
+        <span>正在同步屏幕坐标…</span>
+        <span class="rc-geo-sub">此时点击不会生效，已自动重试</span>
+      </div>
+
       <!-- 只读观看：常驻可见 + 一键请求操控（不让用户自己猜「点不动是不是卡了」） -->
       <div v-if="phase === 'live' && !inputAllowed" class="rc-readonly" @pointerdown.stop>
         <span class="rc-ro-dot"></span>
@@ -210,6 +232,9 @@
           </button>
           <button class="rc-act" @click="doAction(toggleFullscreen)">
             <b>🖥</b><span>{{ immersive ? '退出全屏' : '全屏' }}</span>
+          </button>
+          <button class="rc-act" @click="doAction(openDiag)">
+            <b>🩺</b><span>诊断</span>
           </button>
           <button class="rc-act danger" @click="doAction(disconnect)">
             <b>✕</b><span>断开</span>
@@ -328,6 +353,24 @@
         <div v-if="fileBusy" class="rc-hint">传输中，请稍候…</div>
       </div>
 
+      <!-- 输入链路诊断：坐标/尺寸/权限一眼看全，坏了能自己判断断在哪一段 -->
+      <div v-if="diagOpen" class="rc-panel rc-panel-wide" @pointerdown.stop @click.stop>
+        <div class="rc-panel-head">输入链路诊断<button class="rc-panel-x" @click="diagOpen = false">✕</button></div>
+        <div class="rc-diag">
+          <div class="rc-diag-row"><span>连接 / 模式</span><b>{{ linkKind }} · {{ mode }}</b></div>
+          <div class="rc-diag-row"><span>远端屏幕</span><b>{{ screen.w }}×{{ screen.h }} @ {{ screen.x }},{{ screen.y }}</b></div>
+          <div class="rc-diag-row"><span>几何来源</span><b>{{ screenSource || '未拿到' }}</b></div>
+          <div class="rc-diag-row"><span>显示矩形</span><b>{{ Math.round(displayedRect.w) }}×{{ Math.round(displayedRect.h) }} @ {{ Math.round(displayedRect.x) }},{{ Math.round(displayedRect.y) }}</b></div>
+          <div class="rc-diag-row"><span>视口</span><b>{{ viewport.w }}×{{ viewport.h }}</b></div>
+          <div class="rc-diag-row"><span>可操控</span><b>{{ inputAllowed ? '是' : (inputGranted ? '否 · 本地仅观看' : '否 · 被控端未授权') }}</b></div>
+          <div class="rc-diag-row"><span>最后输入</span><b>{{ lastInput || '—' }}</b></div>
+          <div class="rc-diag-row"><span>最后回执</span><b>{{ lastInputError || '正常' }}</b></div>
+        </div>
+        <div class="rc-panel-actions">
+          <button class="rc-btn rc-btn-primary" @click="send({ type: 'screen.request' })">重新同步坐标</button>
+        </div>
+      </div>
+
       <!-- 拖拽投递遮罩 -->
       <div v-if="dragOver" class="rc-drop-hint">松开发送到被控端「言智远控」目录</div>
     </div>
@@ -436,6 +479,10 @@ const zoomMode = ref<'fit' | 'fill' | 'free'>('fill');
 const mouseVisible = ref(false);
 const mousePos = reactive({ x: 0, y: 0 });
 const actionsOpen = ref(false);
+/** 诊断面板：几何 / 权限 / 最后一条输入与回执 */
+const diagOpen = ref(false);
+const lastInput = ref('');
+const lastInputError = ref('');
 /** 点按反馈（显示坐标）：单击 / 右键时给一个短暂光圈 */
 const fx = reactive({ visible: false, x: 0, y: 0, button: 'left' as 'left' | 'right' });
 const QUALITY_OPTIONS = [
@@ -474,7 +521,11 @@ const statusText = computed(() => {
 /** 沉浸态藏顶栏（右侧栏已并入悬浮球菜单；球是唯一常驻入口） */
 const hudHidden = computed(() => immersive.value);
 /** 缩放档位文案：按钮显示「切过去会变成什么」（fit→适应、fill→1:1、free→铺满） */
-const zoomLabel = computed(() => (zoomMode.value === 'fit' ? '适应' : zoomMode.value === 'fill' ? '1:1' : '铺满'));
+const zoomLabel = computed(() => {
+  if (zoomMode.value === 'fit') return '适应';
+  if (zoomMode.value === 'fill') return '铺满';
+  return `${Math.round(zoom.value * 100)}%`;
+});
 
 /**
  * 上次连过的被控端：手机 App 里 window.location.origin 是壳的 localhost，毫无意义，
@@ -546,6 +597,21 @@ const fileInputRef = ref<HTMLInputElement>();
 let ws: WebSocket | null = null;
 let pc: RTCPeerConnection | null = null;
 let remoteStream: MediaStream | null = null;
+/** 接收侧统计回传定时器（teardown 必须清，否则断开后仍在空转发消息） */
+let recvStatsTimer: number | null = null;
+/** video 是否真的在播：paused 时 WebView 会画系统播放图标盖住画面 */
+const isPlaying = ref(false);
+/** 自动播放重试定时器（teardown 必须清） */
+const retryTimers: number[] = [];
+/** 手势兜底：点按钮 → play()（带手势的 play 必然放行） */
+function manualPlay(): void {
+  isPlaying.value = true;
+  videoRef.value?.play().then(() => {
+    isPlaying.value = true;
+  }).catch(() => {
+    isPlaying.value = false;
+  });
+}
 let sessionToken = '';
 let sessionId = '';
 let base = window.location.origin;
@@ -626,6 +692,21 @@ function syncNativeFromScreen(): void {
     native.h = screen.value.h;
   }
 }
+/**
+ * 指针推到画面边缘时保留的安全边距（px）。
+ * 用于 edge-pan：指针进到这个范围内就带动画面平移。
+ */
+const STAGE_EDGE_PAD = 28;
+
+/**
+ * 铺满（fill）时的额外放大比例。
+ *
+ * 目的：画面视觉上铺满屏幕（不留固定黑边），但四周各留出约 4% 的溢出量，
+ * 让指针推到边界后还能继续平移，从而点到远端桌面的最底/最右元素（任务栏、右侧按钮）。
+ * 不加这一项时，cover 恰好吃满，纵向没有任何可平移余量。
+ */
+const FILL_OVERSCAN = 1.08;
+
 /** contain 适配盒（未缩放） */
 function fitBox(): { w: number; h: number; x: number; y: number } {
   if (!native.w || !native.h || !viewport.w || !viewport.h) return { w: 0, h: 0, x: 0, y: 0 };
@@ -637,10 +718,10 @@ function fitBox(): { w: number; h: number; x: number; y: number } {
   }
   return { w, h, x: (viewport.w - w) / 2, y: (viewport.h - h) / 2 };
 }
-/** cover 铺满盒：短边贴满视口，长边溢出（多余部分靠平移看）—— 手机竖屏全屏不再有黑边 */
+/** cover 铺满盒：短边贴满视口后再放大 FILL_OVERSCAN，四周留出可平移的溢出量 */
 function coverBox(): { w: number; h: number; x: number; y: number } {
   if (!native.w || !native.h || !viewport.w || !viewport.h) return { w: 0, h: 0, x: 0, y: 0 };
-  const s = Math.max(viewport.w / native.w, viewport.h / native.h);
+  const s = Math.max(viewport.w / native.w, viewport.h / native.h) * FILL_OVERSCAN;
   const w = native.w * s;
   const h = native.h * s;
   return { w, h, x: (viewport.w - w) / 2, y: (viewport.h - h) / 2 };
@@ -693,7 +774,7 @@ function setZoom(z: number, anchorX?: number, anchorY?: number): void {
   zoomMode.value = 'free';
   zoom.value = Math.min(8, Math.max(1, z));
   if (zoom.value <= 1.01) {
-    zoomMode.value = 'fit';
+    zoomMode.value = 'fill';
     zoom.value = 1;
     pan.x = 0;
     pan.y = 0;
@@ -712,20 +793,10 @@ function setZoom(z: number, anchorX?: number, anchorY?: number): void {
 function toggleZoom(): void {
   pan.x = 0;
   pan.y = 0;
-  // 三档循环：适应窗口 → 铺满（无黑边） → 1:1 → 适应窗口
-  if (zoomMode.value === 'fit') {
-    zoomMode.value = 'fill';
-    zoom.value = 1;
-    return;
-  }
-  if (zoomMode.value === 'fill') {
-    zoomMode.value = 'fit';
-    zoom.value = 1;
-    const b = fitBox();
-    if (b.w > 0 && native.w > 0) setZoom(Math.min(8, native.w / b.w));
-    return;
-  }
-  zoomMode.value = 'fit';
+  // 两档循环：铺满 ↔ 适应。
+  // ★ 不再提供「1:1」档：它在手机上等于把画面放大 2~3 倍，误触一次就只剩桌面中间
+  //   一小块，看起来像远控坏了、且很难自己退出来。需要精细放大时用双指捏合。
+  zoomMode.value = zoomMode.value === 'fill' ? 'fit' : 'fill';
   zoom.value = 1;
 }
 
@@ -1068,9 +1139,11 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       if (Array.isArray(msg.iceServers)) iceServers.value = msg.iceServers as RcIceServer[];
       const m = String(msg.mode || '') as 'webrtc' | 'jpeg';
       setMode(m);
-      if (msg.screen) setScreen(msg.screen as ScreenRect);
+      if (msg.screen) setScreen(msg.screen as ScreenRect, String(msg.screenSource || ''));
       applyInputState(msg.input);
       if (m === 'webrtc') startWebRtc();
+      // 几何没到手：自己退避要，别让用户面对「画面正常但点哪都没反应」
+      if (screen.value.w <= 0) requestScreenSoon();
       askDisplaysIfEmpty();
       break;
     }
@@ -1082,8 +1155,11 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
         setMode(m);
         // 断线重连后权限跟着服务端恢复，不由客户端自己假设
         applyInputState(msg.input);
+        // 服务端会带上次已知几何；没有就自己退避要
+        if (msg.screen) setScreen(msg.screen as ScreenRect, String(msg.screenSource || ''));
         // 白名单直连/断线重连走 resume：WebRTC 也要补发 offer，否则画面永远起不来
         if (m === 'webrtc' && !videoRef.value?.srcObject) startWebRtc();
+        if (screen.value.w <= 0) requestScreenSoon();
         askDisplaysIfEmpty();
       }
       break;
@@ -1092,12 +1168,12 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       setMode(m);
       // 兼容模式会话被升级成 WebRTC（白名单直连场景）：需要重新发起 offer
       if (m === 'webrtc' && !videoRef.value?.srcObject) startWebRtc();
-      if (msg.screen) setScreen(msg.screen as ScreenRect);
+      if (msg.screen) setScreen(msg.screen as ScreenRect, String(msg.screenSource || ''));
       askDisplaysIfEmpty();
       break;
     }
     case 'screen.info':
-      setScreen(msg.screen as ScreenRect);
+      setScreen(msg.screen as ScreenRect, String(msg.screenSource || ''));
       break;
     case 'displays.info': {
       // 被控端显示器清单（WebRTC=Electron 枚举；JPEG=代理枚举+整个桌面项）
@@ -1125,6 +1201,21 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       ElMessage.warning(`WebRTC 不可用，已切到兼容模式：${String(msg.reason || '采集失败')}`);
       send({ type: 'use.jpeg' });
       break;
+    case 'rtc.restart': {
+      // 切屏重协商：被控端已按新显示器重新采集，本端重建 PC 走全新 offer/answer
+      if (mode.value === 'webrtc') {
+        startWebRtc();
+        // 12s 内没画面自动落兼容模式（与 setMode 同口径）
+        if (webrtcWatchdog) clearTimeout(webrtcWatchdog);
+        webrtcWatchdog = window.setTimeout(() => {
+          if (mode.value === 'webrtc' && !videoRef.value?.srcObject) {
+            ElMessage.warning('切屏重协商未出画面，已切到兼容模式');
+            send({ type: 'use.jpeg' });
+          }
+        }, 12_000);
+      }
+      break;
+    }
     case 'rtc.ice':
       if (pc && msg.candidate) {
         try {
@@ -1161,7 +1252,8 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       ElMessage.info('已通知被控端，等待本人在场确认');
       break;
     case 'input.rejected':
-      ElMessage.warning(String(msg.reason || '输入被拒绝'));
+      lastInputError.value = String(msg.reason || '输入被拒绝');
+      ElMessage.warning(lastInputError.value);
       break;
     case 'session.ended':
       endedReason.value = String(msg.reason || '会话已结束');
@@ -1173,7 +1265,22 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
   }
 }
 
-function setScreen(s: ScreenRect): void {
+/** 几何来源：capture=实际采集端（权威），agent=代理兜底，''=未知 */
+const screenSource = ref<'capture' | 'agent' | ''>('');
+let screenReqTimer: number | null = null;
+let screenReqAttempts = 0;
+
+/**
+ * 应用远端屏幕几何。
+ *
+ * agent 来源只做兜底：已经有 capture（实际采集端）时不能被服务端的兜底值覆盖，
+ * 否则切了副屏也会被「主屏几何」拉回去，点击坐标全偏。
+ */
+function setScreen(s: ScreenRect, source?: string): void {
+  const src = source === 'capture' || source === 'agent' ? source : '';
+  if (!s || !(Number(s.w) > 0) || !(Number(s.h) > 0)) return;
+  if (src === 'agent' && screenSource.value === 'capture') return;
+  if (src) screenSource.value = src;
   screen.value = s;
   syncNativeFromScreen();
   syncViewport();
@@ -1181,6 +1288,38 @@ function setScreen(s: ScreenRect): void {
     initMousePos();
     syncVmouseToPointer();
   }
+  // 拿到权威几何才停自愈轮询；代理兜底值不算数（可能是主屏，切副屏后就错了）
+  if (screenSource.value === 'capture') {
+    screenReqAttempts = 0;
+    if (screenReqTimer) {
+      clearTimeout(screenReqTimer);
+      screenReqTimer = null;
+    }
+  }
+}
+
+/**
+ * 几何自愈：进会话后仍未拿到 screen 就退避重问（1s/2s/4s…，最多 5 次）。
+ *
+ * 画面几何原本靠被控端在 answer 之后单发一次 rtc.screen，丢一次就是整场
+ * 「画面正常但点哪都没反应」；控制端必须能自己把这条信息要回来。
+ */
+function requestScreenSoon(): void {
+  if (screenReqTimer) {
+    clearTimeout(screenReqTimer);
+    screenReqTimer = null;
+  }
+  if (phase.value !== 'live' || linkKind.value !== 'desktop') return;
+  if ((screen.value.w > 0 && screenSource.value === 'capture') || screenReqAttempts >= 5) return;
+  const delay = Math.min(4000, 1000 * 2 ** screenReqAttempts);
+  screenReqAttempts += 1;
+  screenReqTimer = window.setTimeout(() => {
+    screenReqTimer = null;
+    if (phase.value !== 'live') return;
+    if (screen.value.w > 0 && screenSource.value === 'capture') return;
+    send({ type: 'screen.request' });
+    requestScreenSoon();
+  }, delay);
 }
 
 function setMode(m: 'webrtc' | 'jpeg'): void {
@@ -1207,11 +1346,77 @@ function startWebRtc(): void {
   const conn = new RTCPeerConnection(iceServers.value.length ? { iceServers: iceServers.value } : {});
   pc = conn;
   conn.ontrack = (e) => {
-    remoteStream = e.streams[0] || new MediaStream([e.track]);
+    // ★ 音频事件会带 e.streams[0]（纯音频流）后到，直接赋值会把视频流覆盖成
+    //   「只有音频的流」→ video 播着一条没有画面的流，永远黑屏（2026-10-28 实锤：
+    //   手机 CDP 探测 trackStates = "audio:live:unmuted"、videoTrackCount=0）。
+    //   音频当前默认不发送（被控端 enabled=false），这里只接管视频轨。
+    if (e.track.kind !== 'video') return;
+    const incoming = e.streams[0];
+    remoteStream = incoming && incoming.getVideoTracks().length ? incoming : new MediaStream([e.track]);
     hasFrame.value = true;
     if (videoRef.value) {
       videoRef.value.srcObject = remoteStream;
-      void videoRef.value.play().catch(() => undefined);
+      // ★ 自动播放被 WebView 策略拒绝时（无手势的远程加载页最常见），这里必须留痕
+      //   —— 吞掉的话表现就是「流在收、画面纯黑」，与网络故障无法区分。
+      videoRef.value.play().then(() => {
+        isPlaying.value = true;
+      }).catch((err) => {
+        isPlaying.value = false;
+        console.warn('[rc] video.play() 被拒绝:', err?.name || err);
+        // 周期重试（部分 WebView 首帧渲染后才放行自动播放）+ 首次手势再试
+        const retry = window.setInterval(() => {
+          videoRef.value?.play().then(() => {
+            isPlaying.value = true;
+            window.clearInterval(retry);
+          }).catch(() => undefined);
+        }, 1500);
+        retryTimers.push(retry);
+        const retry2 = () => {
+          videoRef.value?.play().then(() => {
+            isPlaying.value = true;
+          }).catch(() => undefined);
+        };
+        document.addEventListener('pointerdown', retry2, { once: true });
+      });
+    }
+    // 接收侧统计周期回传：发送端日志证明「在编码在发送」时，这里证明「对端在收」
+    if (recvStatsTimer) clearInterval(recvStatsTimer);
+    recvStatsTimer = window.setInterval(async () => {
+      try {
+        const stats = await conn.getStats();
+        let recv: Record<string, unknown> | null = null;
+        stats.forEach((r: Record<string, unknown>) => {
+          if (r.type === 'inbound-rtp' && r.kind === 'video') {
+            recv = {
+              framesDecoded: r.framesDecoded,
+              framesDropped: r.framesDropped,
+              bytesReceived: r.bytesReceived,
+              packetsLost: r.packetsLost,
+              jitter: r.jitter,
+              frameW: r.frameWidth,
+              frameH: r.frameHeight,
+            };
+          }
+        });
+        console.log('[rc-recv]', JSON.stringify(recv || { none: true }));
+        send({ type: 'rtc.recv-stats', stats: recv || { none: true } });
+      } catch { /* ignore */ }
+    }, 5000);
+    // ★ 连接初期主动要 keyframe：桌面静止时 libvpx 只在内容变化时编码，第一帧
+    //   keyframe 迟迟不来 → 手机黑屏干等几分钟（2026-10-28 20:20 实测 90s 只出 2 帧）。
+    //   连上后 12s 内每 2s 要一次，出画面速度从「分钟级」压到「2 秒级」。
+    const kfRecv = e.receiver as RTCRtpReceiver & { generateKeyFrame?: () => Promise<void> };
+    if (typeof kfRecv?.generateKeyFrame === 'function') {
+      let kfCount = 0;
+      const kfTimer = window.setInterval(() => {
+        kfCount += 1;
+        if (kfCount > 6 || !pc) {
+          window.clearInterval(kfTimer);
+          return;
+        }
+        try { void kfRecv.generateKeyFrame?.().catch(() => undefined); } catch { /* ignore */ }
+      }, 2000);
+      retryTimers.push(kfTimer);
     }
     // 局域网直连：把抖动缓冲/播放延迟压到最低（默认缓冲是给公网丢包留余量，LAN 上纯增延迟）
     try {
@@ -1240,11 +1445,19 @@ function teardownWebRtc(): void {
     clearTimeout(webrtcWatchdog);
     webrtcWatchdog = null;
   }
+  if (recvStatsTimer) {
+    clearInterval(recvStatsTimer);
+    recvStatsTimer = null;
+  }
+  for (const t of retryTimers.splice(0)) {
+    clearInterval(t);
+  }
   try {
     pc?.close();
   } catch { /* ignore */ }
   pc = null;
   remoteStream = null;
+  isPlaying.value = false;
 }
 
 // ---- JPEG 回退通道 ----
@@ -1286,6 +1499,10 @@ watch(qualityPreset, applyQuality);
 // 仿真鼠标拖动 = pointer 模式（movePointerBy 换算注入坐标），两套互不干扰。
 const gesture = new RemoteGestureRecognizer({ mode: 'direct', longPressMs: 450 });
 const padGesture = new RemoteGestureRecognizer({ mode: 'pointer', longPressMs: 450 });
+/** 画面能否平移（放大或铺满）：决定双指拖动与指针边缘推挤是否触发平移 */
+const canPanViewport = computed(
+  () => zoomMode.value === 'fill' || (zoomMode.value === 'free' && zoom.value > 1.01),
+);
 let longPressTimer: number | null = null;
 let padLongPressTimer: number | null = null;
 let lastMoveSent = 0;
@@ -1298,6 +1515,12 @@ watch(phase, (p) => {
   mouseVisible.value = isTouch;
   gesture.reset();
   padGesture.reset();
+  // ★ 每次进入会话重置视图：上一轮的放大/平移状态若残留，新会话会一直停在「只剩中间一小块」，
+  //   用户体感就是「远控坏了」，而重连（session.resume）不会走 cleanup。
+  zoomMode.value = 'fill';
+  zoom.value = 1;
+  pan.x = 0;
+  pan.y = 0;
   if (mouseVisible.value) {
     initMousePos();
     syncVmouseToPointer();
@@ -1351,14 +1574,43 @@ function rightClickHere(): void {
   if (!mouseVisible.value || !screen.value.w) return;
   input({ action: 'click', x: Math.round(mousePos.x), y: Math.round(mousePos.y), button: 'right' });
 }
+/** 诊断用：把一条输入描述成人能看的一行（动作/按键/坐标/增量） */
+function describeInput(msg: Record<string, unknown>): string {
+  const action = String(msg.action || '?');
+  const button = msg.button ? ` ${String(msg.button)}` : '';
+  const pos = typeof msg.x === 'number' && typeof msg.y === 'number'
+    ? ` @${Math.round(msg.x)},${Math.round(msg.y)}`
+    : '';
+  const delta = msg.delta !== undefined ? ` Δ${String(msg.delta)}` : '';
+  return `${action}${button}${pos}${delta} · ${new Date().toLocaleTimeString()}`;
+}
+
 const input = (msg: Record<string, unknown>): void => {
-  if (phase.value !== 'live') return;
+  // 先记下来：即使后面被拦，诊断面板也能看到「最后一条输入」停在谁身上。
+  // move 是 40Hz 高频事件，记录它会让整个面板每帧重渲染，反而拖慢手感 —— 只记离散动作。
+  if (msg.action !== 'move') {
+    lastInput.value = describeInput(msg);
+    lastInputError.value = '';
+  }
+  if (phase.value !== 'live') {
+    lastInputError.value = '会话未就绪';
+    return;
+  }
   // 安卓镜像的输入走 AndroidMirrorStage 自己的通道，别混进桌面会话的 WS
   if (linkKind.value !== 'desktop') return;
   // 只读会话：本地直接不发，省得每条输入都换来一次拒绝（状态由底部常驻条说明）
-  if (!inputAllowed.value) return;
+  if (!inputAllowed.value) {
+    lastInputError.value = inputGranted.value ? '本地已切到仅观看' : '被控端未授予操作权限';
+    return;
+  }
+  // 坐标类输入在几何未就绪时必然换算失败：明确记下来，而不是静默丢弃
+  const needsCoords = typeof msg.x === 'number' && typeof msg.y === 'number';
+  if (needsCoords && screen.value.w <= 0) {
+    lastInputError.value = '屏幕坐标未同步（screen 为 0）';
+    return;
+  }
   // 指针模式才维护自绘光标；屏幕触控模式直接用点按光圈反馈，避免两种模式视觉上同时生效
-  if (mouseVisible.value && typeof msg.x === 'number' && typeof msg.y === 'number') showCursorAt(msg.x, msg.y);
+  if (mouseVisible.value && needsCoords) showCursorAt(msg.x as number, msg.y as number);
   send({ type: 'input', ...msg });
 };
 
@@ -1464,6 +1716,21 @@ function movePointerBy(dx: number, dy: number): void {
   const k = s.w / r.w;
   mousePos.x = Math.min(s.x + s.w - 1, Math.max(s.x, mousePos.x + dx * k));
   mousePos.y = Math.min(s.y + s.h - 1, Math.max(s.y, mousePos.y + dy * k));
+
+  // ★ 边缘平移（对标 UU）：指针被推到视口边缘后继续拖，画面跟着走。
+  //   没有这一步，放大/铺满时指针会跑出可视区，用户只能看到「拖到头就不动了」。
+  if (canPanViewport.value) {
+    const c = cursorClientPoint();
+    const margin = STAGE_EDGE_PAD;
+    let px = 0;
+    let py = 0;
+    if (c.x < margin) px = margin - c.x;
+    else if (c.x > viewport.w - margin) px = viewport.w - margin - c.x;
+    if (c.y < margin) py = margin - c.y;
+    else if (c.y > viewport.h - margin) py = viewport.h - margin - c.y;
+    if (px !== 0 || py !== 0) panBy(px, py);
+  }
+
   syncVmouseToPointer();
   const now = Date.now();
   if (now - lastMoveSent < 24) return;
@@ -1506,6 +1773,10 @@ function handleGesture(events: RemoteGestureEvent[], useCursor: boolean): void {
       case 'wheel':
         wheelAt(ev.x, ev.y, ev.delta, useCursor);
         break;
+      case 'pan':
+        // 放大/铺满时双指拖动 = 平移本地画面（不再注入滚动）
+        panBy(ev.dx, ev.dy);
+        break;
       case 'zoom':
         setZoom(zoom.value * ev.ratio, ev.anchorX, ev.anchorY);
         break;
@@ -1523,11 +1794,20 @@ function scheduleLongPress(): void {
 }
 
 function onStagePointerDown(e: PointerEvent): void {
+  // 点画面 = 关掉所有浮层（球菜单/显示器子菜单/操作面板/剪贴板）。
+  // 只关 actionsOpen 时，显示器子菜单开着点画面会「既不消失、又注入了一次远程点击」。
   actionsOpen.value = false;
+  ballMenuOpen.value = false;
+  dispMenuOpen.value = false;
+  clipPanelOpen.value = false;
   bumpBallActive();
-  // ★ 指针捕获：手指从画面滑到黑边/屏幕边缘时事件仍归舞台，不会中途丢 up
-  //   （触摸点起点与后续事件必须归同一元素，否则拖拽路径靠运气补 up）。
-  try { stageRef.value?.setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
+  // ★ 指针捕获：只在第一根手指上设。一个元素同一时刻只能捕获一个指针——每指都设
+  //   会让第三指把前两指的捕获抢走，前两指的 move/up 从此不派发给舞台，三指手势
+  //   永远建不起来（2026-10-28 实报「三指平移没用」）。touch-action:none + 舞台
+  //   铺满全屏已保证后续手指的 pointerdown 落在舞台内，不需要逐指捕获。
+  if (gesture.isIdle) {
+    try { stageRef.value?.setPointerCapture(e.pointerId); } catch { /* 已释放 */ }
+  }
   // 鼠标右键直接注入（移动端长按才走手势机）；左键/触摸继续交给状态机
   if (e.pointerType === 'mouse' && e.button === 2) {
     const p = toScreen(e.clientX, e.clientY);
@@ -1666,13 +1946,12 @@ function onBallPointerCancel(e: PointerEvent): void {
 /** 球菜单动作（菜单点击后即收） */
 function ballAct(act: string): void {
   ballMenuOpen.value = false;
-  dispMenuOpen.value = false;
   bumpBallActive();
   if (act === 'mouse') toggleMouseMode();
   else if (act === 'kb') openKeyboardPanel();
-  else if (act === 'disp') dispMenuOpen.value = true;
+  else if (act === 'disp') dispMenuOpen.value = !dispMenuOpen.value;
   else if (act === 'zoom') toggleZoom();
-  else if (act === 'actions') actionsOpen.value = true;
+  else if (act === 'actions') actionsOpen.value = !actionsOpen.value;
   else if (act === 'back') disconnect();
 }
 
@@ -1778,6 +2057,12 @@ function openFilePanel(): void {
   clipPanelOpen.value = false;
   void refreshFiles();
 }
+/** 诊断：互斥打开其它面板，避免叠在一起 */
+function openDiag(): void {
+  diagOpen.value = true;
+  clipPanelOpen.value = false;
+  filePanelOpen.value = false;
+}
 function toggleAudio(): void {
   audioOn.value = !audioOn.value;
   send({ type: 'audio.state', on: audioOn.value });
@@ -1797,6 +2082,8 @@ function selectDisplay(id: string): void {
   // 乐观更新（host 切换成功后会回发 displays.info 校准），JPEG 模式服务端直接切
   currentDisplay.value = id;
   send({ type: 'display.select', displayId: id });
+  // 选完即收起子菜单（之前选完还挂在屏上）
+  dispMenuOpen.value = false;
 }
 
 /**
@@ -2047,6 +2334,13 @@ function cleanup(): void {
   sessionToken = '';
   sessionId = '';
   hasFrame.value = false;
+  // 几何自愈状态随会话清零，避免下一次连接带着上次的来源/次数
+  screenSource.value = '';
+  screenReqAttempts = 0;
+  if (screenReqTimer) {
+    clearTimeout(screenReqTimer);
+    screenReqTimer = null;
+  }
   audioOn.value = false;
   ballPos.x = -1;
   ballPos.y = -1;
@@ -2254,6 +2548,15 @@ onBeforeUnmount(() => {
 
 /* 首帧等待层：黑屏时给出明确状态，并吃掉误触（此时画面还没有，点了也点不准） */
 .rc-wait-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; z-index: 3; pointer-events: none; background: #000; text-align: center; padding: 24px; }
+/* 播放兜底层：video 被自动播放策略暂停时显示（底层首帧作封面可见），点按手势 play */
+.rc-play-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; z-index: 6; background: rgba(0,0,0,0.35); }
+.rc-play-btn { width: 96px; height: 96px; border-radius: 50%; background: rgba(23,28,35,0.9); border: 2px solid #4c8dff; color: #e6eaf0; font-size: 40px; display: flex; align-items: center; justify-content: center; line-height: 1; padding-left: 8px; }
+.rc-geo-overlay { position: absolute; left: 50%; bottom: 84px; transform: translateX(-50%); display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 10px; max-width: 92%; padding: 10px 16px; border-radius: 10px; background: rgba(16,20,24,0.94); border: 1px solid #2a323e; color: #e6eaf0; font-size: 13px; z-index: 6; pointer-events: none; text-align: center; }
+.rc-geo-sub { color: #8a94a3; font-size: 12px; }
+.rc-diag { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.rc-diag-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.rc-diag-row span { color: #8a94a3; white-space: nowrap; }
+.rc-diag-row b { color: #e6eaf0; font-weight: 500; text-align: right; word-break: break-all; }
 
 
 .rc-panel { position: absolute; left: 50%; transform: translateX(-50%); bottom: 24px; width: min(480px, 92%); background: #171c23; border: 1px solid #2a323e; border-radius: 12px; padding: 12px; z-index: 10; }

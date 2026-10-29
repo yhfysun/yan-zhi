@@ -21,6 +21,8 @@ export interface PlanStep {
   finishedAt?: number;
   /** 返工时已累计的活跃时长（毫秒） */
   activeMs?: number;
+  /** 结算时统计的等待时长（毫秒）：时间窗内无活动的长间隙（等用户/等外部） */
+  waitMs?: number;
 }
 
 export interface Plan {
@@ -152,7 +154,7 @@ export function syncPlan(
     finishedAt?: number;
     steps?: Array<{
       id?: string; title?: string; status?: string; note?: string;
-      startedAt?: number; finishedAt?: number; activeMs?: number;
+      startedAt?: number; finishedAt?: number; activeMs?: number; waitMs?: number;
     }>;
   },
 ): PlanMap {
@@ -170,6 +172,7 @@ export function syncPlan(
       ...(Number(s.startedAt) ? { startedAt: Number(s.startedAt) } : {}),
       ...(Number(s.finishedAt) ? { finishedAt: Number(s.finishedAt) } : {}),
       ...(Number(s.activeMs) ? { activeMs: Number(s.activeMs) } : {}),
+      ...(Number(s.waitMs) ? { waitMs: Number(s.waitMs) } : {}),
     }));
   return {
     ...map,

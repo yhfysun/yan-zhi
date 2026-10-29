@@ -693,6 +693,8 @@ async function main() {
           //   **同源**注入 —— 缺了它，孤儿任务回收会把"可续的暂停"当成"真中断"，
           //   用户看到「继续直接失败」。这里跟随 watch 开关，两条路径口径一致。
           ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
+          // dev 专属：把已拷入 plugins/installed 的可选插件自动注册并启用（默认 desktop-manager）
+          YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
           ...browserEnv,
         }
       );

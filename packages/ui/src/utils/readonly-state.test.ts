@@ -14,7 +14,12 @@ import { resolve } from 'node:path';
 
 const ROOT = resolve(__dirname, '../../../..');
 const SERVER = readFileSync(resolve(ROOT, 'apps/server/src/plugins/remote-control.ts'), 'utf8');
-const HOST = readFileSync(resolve(ROOT, 'packages/ui/src/components/RemoteControlHost.vue'), 'utf8');
+// 阶段 1 第 1 步：被控端信令/采集已抽到 composable，弹窗仍留在组件里。
+// 守门用例按「UI + 逻辑」合并检查，避免重构后断言落空。
+const HOST = [
+  readFileSync(resolve(ROOT, 'packages/ui/src/components/RemoteControlHost.vue'), 'utf8'),
+  readFileSync(resolve(ROOT, 'packages/ui/src/composables/useRcHostSignaling.ts'), 'utf8'),
+].join('\n');
 const CLIENT = readFileSync(resolve(ROOT, 'packages/ui/src/views/RemoteControl.vue'), 'utf8');
 
 describe('输入权限两档（被控端授予 ∧ 控制端未切仅观看）', () => {
@@ -53,7 +58,10 @@ describe('输入权限两档（被控端授予 ∧ 控制端未切仅观看）',
 
   it('★ 客户端：只读本地不发输入，底栏按来源给「请求操控 / 恢复操控」', () => {
     expect(CLIENT).toMatch(/const inputAllowed = computed\(\(\) => inputGranted\.value && !viewOnlySelf\.value\)/);
-    expect(CLIENT, '★ input() 未按只读态拦截').toMatch(/if \(!inputAllowed\.value\) return;/);
+    // 只读时不发输入，并记下原因（诊断面板靠它区分「权限」还是「链路」）
+    expect(CLIENT, '★ input() 未按只读态拦截').toMatch(
+      /if \(!inputAllowed\.value\) \{\s*\n\s*lastInputError\.value[\s\S]{0,120}return;/,
+    );
     expect(CLIENT, '★ 缺只读底栏').toMatch(/v-if="phase === 'live' && !inputAllowed" class="rc-readonly"/);
     expect(CLIENT, '★ 两种来源要能区分（被控端未授予 vs 自己切了仅观看）').toMatch(
       /inputGranted \? toggleViewOnly\(\) : requestInput\(\)/,

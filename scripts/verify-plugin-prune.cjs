@@ -29,6 +29,7 @@ const DESKTOP_SCRIPTS = path.join(ROOT, 'apps', 'desktop', 'scripts');
 const {
   CATALOG_PATH,
   loadCatalog,
+  allPluginIds,
   resolveSelection,
   selectionFromEnv,
   readJson,
@@ -80,7 +81,7 @@ function resolveOrAll(opts, catalog) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const catalog = loadCatalog();
-  const allIds = Object.keys(catalog.plugins);
+  const allIds = allPluginIds(catalog);
   const selection = resolveOrAll(opts, catalog);
 
   const staged = stage.verifyStaged({ root: opts.root, allIds, selected: selection.ids });

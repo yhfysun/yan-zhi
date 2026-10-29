@@ -76,6 +76,8 @@ export interface TimedPlanStep {
   startedAt?: number;
   finishedAt?: number;
   activeMs?: number;
+  /** 服务端结算时写入的等待时长（时间窗内无活动的长间隙） */
+  waitMs?: number;
 }
 
 export interface PlanLike {
@@ -87,6 +89,8 @@ export interface PlanStepDuration {
   index: number;
   title: string;
   ms: number;
+  /** 其中等待（等用户/等外部）的时长；>0 时界面标注「含等待」 */
+  waitMs?: number;
 }
 
 /**
@@ -102,12 +106,36 @@ export function planStepElapsedMs(step: TimedPlanStep | null | undefined, now = 
   return active + (started && end > started ? end - started : 0);
 }
 
-/** 所有有计时的计划步骤（无时间戳的存量步骤自然为 0 → 不进入 Top3） */
+/**
+ * 单步「干活时长」= 墙钟耗时 − 等待时长。
+ * ★ 2026-10-27（C）：Top3 排序用这个口径。谁最拖时间要回答的是"哪一步真的费劲"，
+ *   而不是"哪一步挂着没人管"—— 后者靠服务端 waitMs（无活动的长间隙）单独标注。
+ */
+export function planStepBusyMs(step: TimedPlanStep | null | undefined, now = 0): number {
+  return Math.max(0, planStepElapsedMs(step, now) - (Number(step?.waitMs) || 0));
+}
+
+/**
+ * 所有**已结算**且干活时长 > 0 的计划步骤。
+ * ★ 未结算的步骤（finishedAt 为空）不参与 Top3：否则运行中的步骤会永远排第一，
+ *   数字还会随秒增长，把真正已完成的耗时挤下去。
+ */
 export function planStepDurations(plan: PlanLike | null | undefined): PlanStepDuration[] {
   const steps = Array.isArray(plan?.steps) ? plan!.steps! : [];
-  return steps
-    .map((s, i) => ({ index: i + 1, title: String(s?.title || `步骤 ${i + 1}`), ms: planStepElapsedMs(s) }))
-    .filter((d) => d.ms > 0);
+  const out: PlanStepDuration[] = [];
+  steps.forEach((s, i) => {
+    if (!(Number(s?.finishedAt) > 0)) return;
+    const ms = planStepBusyMs(s);
+    if (ms <= 0) return;
+    const waitMs = Number(s?.waitMs) || 0;
+    out.push({
+      index: i + 1,
+      title: String(s?.title || `步骤 ${i + 1}`),
+      ms,
+      ...(waitMs > 0 ? { waitMs } : {}),
+    });
+  });
+  return out;
 }
 
 /** 最耗时的 N 个计划步骤（降序）；无计划或全部无计时 → 空数组 */

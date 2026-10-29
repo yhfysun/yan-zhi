@@ -74,11 +74,13 @@ describe('横屏重构：直通键盘 + 默认铺满', () => {
     expect(CLIENT, '★ 缺组字结束整串注入').toMatch(/function onKbCompositionEnd/);
   });
 
-  it('★ 画面默认铺满（cover），不是适应窗口', () => {
+  it('★ 画面默认铺满（cover）+ 四周留出平移余量', () => {
+    // 2026-10-27 用户口径：画面铺满屏幕（不要固定黑边），但四周必须留出可平移的溢出量
+    // —— 指针推到边缘后画面还能继续走，才能点到远端桌面的最底/最右元素。
     expect(CLIENT, '★ 默认 zoomMode 必须是 fill（铺满）').toMatch(
       /const zoomMode = ref<'fit' \| 'fill' \| 'free'>\('fill'\)/,
     );
-    // 断开清理也要回到铺满，下次进会话默认一致
+    expect(CLIENT, '★ 铺满必须带 overscan，否则纵向没有平移余量').toMatch(/FILL_OVERSCAN = 1\.0[0-9]/);
     expect(CLIENT, '★ cleanup 要重置回 fill').toMatch(/zoomMode\.value = 'fill';/);
   });
 });

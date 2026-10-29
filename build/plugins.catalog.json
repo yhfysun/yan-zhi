@@ -168,7 +168,8 @@
       "extraResources": [
         "resources/python",
         "resources/python-tools"
-      ]
+      ],
+      "notes": "extraResources 由打包链按选择集执行：未选本插件时 build-all/electron-build 把 resources/python 与 python-tools 的内容移到 resources/.prune-hold/（留空壳，避免 electron-builder 因缺 from 报错），打完自动移回；运行时按文件存在与否判定，空目录 = 未随包（回退系统 python）。"
     },
     "remote-control": {
       "kind": "feature",
@@ -182,7 +183,7 @@
         "components/RemoteControlHost.vue"
       ],
       "defaultEnabled": false,
-      "notes": "preload rc:* 专用通道留基座（主进程能力，不随插件裁剪）"
+      "notes": "preload rc:* 专用通道留基座（主进程能力，不随插件裁剪）。前端两处是基座外壳（App.vue 的 RemoteControlHost 与 router 的 /remote 控制端免授权页），改由 select-modes 生成的 SHELL_VIEW_LOADERS 按选择集裁剪：未选本插件时两者的 import 表达式在源码层就不存在（Rollup 不产出 chunk），verify-plugin-prune 的组件名扫描因此成立。"
     },
     "skins": {
       "kind": "resource",

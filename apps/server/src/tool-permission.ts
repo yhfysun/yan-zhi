@@ -33,6 +33,7 @@ const WRITE_TOOLS = new Set([
   'browser_run_recipe',
   // —— Git 写操作（pull/fetch 会改动本地工作区，同样算写）——
   'api_git_add', 'api_git_commit', 'api_git_push', 'api_git_pull', 'api_git_fetch',
+  'api_git_stage_hunks',
   'api_git_checkout', 'api_git_restore', 'api_git_stash_save', 'api_git_stash_pop',
   'api_git_tag_create', 'api_git_tag_delete', 'api_git_revert', 'api_git_reset',
   'api_git_cherry_pick', 'api_git_rebase', 'api_git_merge',

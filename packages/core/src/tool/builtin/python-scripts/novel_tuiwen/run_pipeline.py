@@ -58,7 +58,8 @@ def main():
     ap.add_argument("--workdir", default=None, help="中间产物目录, 默认 <outdir>/<章节名>_work")
     ap.add_argument("--outdir", default=os.path.join(HERE, "..", "output"), help="成片输出目录")
     ap.add_argument("--title", default="小说推文")
-    ap.add_argument("--voice", default="zh-CN-YunxiNeural")
+    ap.add_argument("--voice", default="zh-CN-YunjianNeural",
+                    help="配音音色（默认云健；备选 zh-CN-YunxiNeural / zh-CN-YunxiaNeural / zh-CN-XiaoyiNeural）")
     ap.add_argument("--bgm", default="auto", help="背景音乐：auto（素材优先+自动合成兜底）/ none / 音频文件")
     ap.add_argument("--ambience", default="auto", help="环境音: auto/none/pad_soft/room/wind/rain/hum/space/fire")
     ap.add_argument("--ambience-level", type=float, default=0.12, help="环境音音量（旁白会把它闪避压下去）")
@@ -66,8 +67,18 @@ def main():
     ap.add_argument("--sfx-level", type=float, default=0.5, help="点缀音效音量")
     ap.add_argument("--bg-video", default="", help="背景视频(修驴蹄/骑单车等), 逗号分隔多段")
     ap.add_argument("--images", default="", help="视觉素材图片, 逗号分隔(按顺序), 图片轮播: 每张覆盖若干句，边界来自真实配音时长")
-    ap.add_argument("--rate", default=os.environ.get("YZ_TTS_RATE", "+10%"),
-                    help="配音语速: +10%%(默认) / 0 / 1.1 / 10 均可；YZ_TTS_RATE 可覆盖默认")
+    ap.add_argument("--storyboard", default="",
+                    help="分镜 JSON 路径：走动态排版引擎（元素入场 + 转场 + 打字机字幕），"
+                         "画面不再是一张张硬切")
+    ap.add_argument("--visual", default="auto", choices=["auto", "kinetic", "images", "bg_video"],
+                    help="画面模式：auto（有分镜/无素材→kinetic）/ kinetic / images / bg_video")
+    ap.add_argument("--bgm-level", type=float, default=0.20, help="背景音乐音量（0~1，默认 0.20）")
+    ap.add_argument("--bg-images", default="",
+                    help="动态排版的素材底图：逗号分隔图片路径，或 auto（扫描 00-source/images 等）")
+    ap.add_argument("--subtitle-style", default="typewriter", choices=["typewriter", "ticker"],
+                    help="字幕样式：typewriter=逐句打字机（默认）/ ticker=整句从右往左平移")
+    ap.add_argument("--rate", default=os.environ.get("YZ_TTS_RATE", "+15%"),
+                    help="配音语速: +15%%(默认) / 0 / 1.15 / 15 均可；YZ_TTS_RATE 可覆盖默认")
     ap.add_argument("--aspect", default="4:3", help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--ending", default="", help="结尾引导文案（发抖音传：搜索别名XX看后续）")
     ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）")
@@ -111,6 +122,10 @@ def main():
          "--script", script_json, "--outdir", out_dir]
         + (["--bg-video", a.bg_video] if a.bg_video else [])
         + (["--images", a.images] if a.images else [])
+        + (["--storyboard", a.storyboard] if a.storyboard else [])
+        + ["--visual", a.visual, "--bgm-level", str(a.bgm_level),
+           "--subtitle-style", a.subtitle_style]
+        + (["--bg-images", a.bg_images] if a.bg_images else [])
         + (["--bgm", a.bgm] if a.bgm else [])
         + ["--ambience", a.ambience, "--ambience-level", str(a.ambience_level)]
         + ["--sfx", a.sfx, "--sfx-level", str(a.sfx_level)]

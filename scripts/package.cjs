@@ -17,6 +17,8 @@
  *
  * 用法：
  *   node scripts/package.cjs                     # 交互式：空格多选要打的包（↑↓ 移动 / a 全选）
+ *                                                #   随后依次弹出：插件（按功能分组，默认只留基座）
+ *                                                #   → 模式（仅在插件保持预设时问）→ 宠物（默认全带）。
  *   node scripts/package.cjs desktop             # 桌面三档全出
  *   node scripts/package.cjs desktop:pro         # 只出高级版
  *   node scripts/package.cjs desktop:lite,pro    # 出两档
@@ -32,7 +34,12 @@
  *                                  # 暂存移出、前端视图不产出 chunk，打完自动恢复。
  *                                  # 分组关键字 all/mode/feature/resource/skins；
  *                                  # office-core 恒在，requires 自动勾选；与 --modes 同时给出时以本项为准。
- *   node scripts/package.cjs --list-plugins   # 列出可选插件与三档预设
+ *                                  # --plugins=none = 只留基座 office-core，其余全裁。
+ *                                  # 可选插件（plugins/optional/*）点名才带，如 desktop-manager。
+ *   node scripts/package.cjs desktop --plugins=office-core --pets=none
+ *                                  # 宠物资源独立维度：all / none / 具体 id（2D 包 + 3D 模型）；
+ *                                  # none = 包内无精灵图与 VRM，宠物入口降级隐藏。
+ *   node scripts/package.cjs --list-plugins   # 列出可选插件（catalog/builtin/optional 三源合并）、宠物与三档预设
  *   node scripts/package.cjs desktop:pro --name=办公测试
  *                                  # 安装包名带上该名称：
  *                                  #   yan-zhi-Setup-<版本>-x64-办公测试.exe
@@ -173,9 +180,12 @@ if (MODES_FLAG !== null) {
 const {
   loadCatalog: loadPluginCatalog,
   loadModesCatalog: loadPluginModesCatalog,
+  loadOptionalPlugins,
   resolveSelection: resolvePluginSelection,
   modeKeysForSelection,
+  OFFICE_ID,
 } = require(path.join(__dirname, '..', 'apps', 'desktop', 'scripts', 'lib', 'plugin-build-selection.cjs'));
+const { loadPetCatalog, resolvePetSelection } = require('./lib/pet-selection.cjs');
 
 const PLUGINS_FLAG = (() => {
   const hit = argv.find((a) => a.startsWith('--plugins='));
@@ -220,6 +230,36 @@ if (PLUGINS_FLAG !== null) {
   }
 }
 
+// ── 宠物多选（--pets=all|none|<packId,...>）──
+// 与插件维度正交：宠物不是插件（2D 精灵图随前端构建、3D VRM 走 publicDir），
+// 故单独一条选择集，构建前端时按它排除未选资源（apps/desktop/vite.config.ts）。
+const PETS_FLAG = (() => {
+  const hit = argv.find((a) => a.startsWith('--pets='));
+  if (hit) return hit.slice('--pets='.length);
+  const i = argv.indexOf('--pets');
+  return i >= 0 ? argv[i + 1] : null;
+})();
+let PET_SELECTION = null;
+if (PETS_FLAG !== null) {
+  try {
+    PET_SELECTION = resolvePetSelection({ catalog: loadPetCatalog(), pets: PETS_FLAG });
+  } catch (e) {
+    console.error(`\x1b[31m[ERROR]\x1b[0m --pets 非法: ${e.message}`);
+    process.exit(1);
+  }
+}
+/** 下发给下游的 YZ_BUILD_PETS；空选择集必须写 `none`（空串会被当成"未设置 = 全量"）。 */
+function petsEnvValue() {
+  if (!PET_SELECTION) return null;
+  return PET_SELECTION.ids.length ? PET_SELECTION.ids.join(',') : 'none';
+}
+
+/** --plugins=none 的显式提醒：它只是"除了办公基座什么都不带"，不是"连办公也不带"。 */
+const PLUGINS_NONE = PLUGINS_FLAG !== null && /^\s*none\s*$/i.test(PLUGINS_FLAG);
+if (PLUGINS_NONE) {
+  console.log('\x1b[33m[提示]\x1b[0m --plugins=none：只保留基座 office-core，其余插件全部裁剪（基座不可裁，没有"连办公也不带"的版本）');
+}
+
 // ── 产物名（--name=v2 / --name 办公版）──
 // 每个命名各占一个产物目录、各出一个安装包名 —— 换模式/换用途重打包不会覆盖上一份。
 const NAME_FLAG = (() => {
@@ -251,25 +291,45 @@ if (flags.has('--list-modes')) {
   process.exit(0);
 }
 
-// --list-plugins：列出可选插件（分组关键字）与三档预设，--plugins 的参数自解释。
+// --list-plugins：三源合并列出可选插件与三档预设，--plugins 的参数自解释。
+// 来源标注：catalog=清单意图 · builtin=现有构建产物 · optional=可后装插件。
 if (flags.has('--list-plugins')) {
-  const cat = loadPluginCatalog();
-  console.log('\n可选插件（--plugins=... 逗号分隔；分组关键字：all / mode / feature / resource / skins）:');
-  for (const [id, e] of Object.entries(cat.plugins)) {
-    const extra = [
-      e.modeKey ? `mode=${e.modeKey}` : null,
-      e.requires ? `requires=${e.requires.join('+')}` : null,
-      e.core ? 'core(恒在)' : null,
-    ].filter(Boolean).join('  ');
-    console.log(`  ${id.padEnd(16)} ${String(e.kind).padEnd(9)} ${e.label}${extra ? '  ' + extra : ''}`);
+  const { collectInventory } = require('./lib/plugin-inventory.cjs');
+  const verbose = flags.has('--verbose') || flags.has('-v');
+  const inv = collectInventory();
+  const pad = (s, n) => String(s).padEnd(n);
+  console.log('\n可选插件（--plugins=... 逗号分隔；分组关键字：all / mode / feature / resource / skins / none）:');
+  console.log(`  ${pad('插件ID', 18)}${pad('类型', 10)}${pad('来源', 20)}${pad('预设', 16)}名称`);
+  for (const p of inv.plugins) {
+    const mark = p.core ? '  [core 恒在]' : p.multi ? `  （${p.multi.count} 套）` : '';
+    console.log(
+      `  ${pad(p.id, 18)}${pad(p.kind, 10)}${pad(p.sources.join('+'), 20)}${pad(p.presets.length ? p.presets.join('/') : '—', 16)}${p.label}${mark}`,
+    );
+    if (verbose && p.requires) console.log(`    requires: ${p.requires.join(', ')}`);
+    if (verbose && p.desc) console.log(`    ${p.desc}`);
+    if (verbose && p.multi) {
+      for (const it of p.multi.items) console.log(`    · ${pad(it.id, 22)}${it.name}${it.version ? `  v${it.version}` : ''}`);
+    }
   }
+  console.log('\n宠物（--pets=all|none|<id,...>；与 --plugins 正交，独立裁剪）:');
+  for (const p of inv.pets.packs) {
+    console.log(`  ${pad('2d', 4)}${pad(p.id, 12)}${pad(p.label, 24)}${p.present ? '✓ 素材在' : '✗ 素材缺失'}`);
+  }
+  for (const v of inv.pets.vrms) {
+    console.log(`  ${pad('3d', 4)}${pad(v.id, 12)}${pad(v.label, 24)}${v.present ? '✓ 素材在' : '✗ 素材缺失'}`);
+  }
+  console.log('\n来源：catalog=build/plugins.catalog.json · builtin=apps/server/plugins/builtin（构建产物） · optional=plugins/optional（可后装，点名才进包）');
   console.log('\n档位预设（不传 --plugins 时按所选档位自动决定）:');
-  for (const [edition, list] of Object.entries(cat.editionPresets || {})) {
-    console.log(`  ${edition.padEnd(8)} ${list.join(', ')}`);
+  for (const [edition, list] of Object.entries(inv.presets || {})) {
+    console.log(`  ${pad(edition, 8)} ${list.join(', ')}`);
   }
   console.log('\n示例:');
   console.log('  node scripts/package.cjs desktop:lite --plugins=office-core,skins');
-  console.log('  node scripts/package.cjs desktop --plugins=mode        # 全部模式插件（office 恒在 + requires 闭包）\n');
+  console.log('  node scripts/package.cjs desktop --plugins=mode        # 全部模式插件（office 恒在 + requires 闭包）');
+  console.log('  node scripts/package.cjs desktop --plugins=none        # 只留基座 office-core');
+  console.log('  node scripts/package.cjs desktop --plugins=office-core,desktop-manager');
+  console.log('  node scripts/package.cjs desktop --plugins=office-core --pets=none   # 一个宠物资源都不带');
+  console.log('  node scripts/package.cjs --list-plugins --verbose      # 展开皮肤等多清单包\n');
   process.exit(0);
 }
 
@@ -290,12 +350,15 @@ if (flags.has('--help') || flags.has('-h')) {
   --modes=<m,csv>    按模式裁剪前端入口/页面/插件视图
   --plugins=<p,csv>  按插件裁剪（含后端插件包）：分组 all/mode/feature/resource/skins，
                      office-core 恒在，requires 自动勾选；模式由选中插件推导
+                     none = 只留基座 office-core（其余全裁）
+                     可选插件（plugins/optional/*）点名才带，如 desktop-manager
+  --pets=<p,csv>     宠物资源（与插件正交）：all / none / 具体 id（2D 包与 3D 模型）
 
-其它:
+其他:
   --name=<名>        安装包名附加名称
-  --list-modes / --list-plugins   列出可选模式 / 插件
+  --list-modes / --list-plugins   列出可选模式 / 插件（--list-plugins --verbose 展开多清单包）
   --dry-run          只打印计划（含选择集与排除项），不做任何改动
-  --yes              非交互（按档位预设）
+  --yes              非交互（按档位预设 / 宠物全带），跳过插件·模式·宠物三个勾选菜单
 `);
   process.exit(0);
 }
@@ -675,9 +738,13 @@ function preflight(targets) {
   }
 
   // 内置 Python 运行时（2026-09-30 起：缺失会在桌面构建里**自动生成**，不再静默降级）
+  // ★ 随插件裁剪：它归 computer-use 插件（catalog.extraResources）；未选该插件时不生成、不随包。
   const pyDir = path.join(ROOT, 'apps', 'desktop', 'resources', 'python');
   if (targets.desktop.length) {
-    if (fs.existsSync(pyDir)) {
+    const keepPython = !PLUGIN_SELECTION || PLUGIN_SELECTION.ids.includes('computer-use');
+    if (!keepPython) {
+      info(c.dim('内置 Python 运行时：未选 computer-use → 不随包（python 类工具回退系统 python）'));
+    } else if (fs.existsSync(pyDir)) {
       info(c.dim('内置 Python 运行时已就绪（resources/python）'));
     } else if (process.env.YZ_SKIP_PYTHON_RUNTIME === '1') {
       warn('已显式跳过内置 Python 运行时（YZ_SKIP_PYTHON_RUNTIME=1）→ 成品将回退系统 python');
@@ -718,19 +785,34 @@ function preflight(targets) {
  *
  * @param {object} opts
  * @param {string} opts.title 顶部提示语
- * @param {Array<{id:string,label:string,checked?:boolean}>} opts.items
+ * @param {Array<{id?:string,label:string,checked?:boolean,locked?:boolean,header?:boolean}>} opts.items
+ *        header:true = 分组标题行（不可选中/不可勾选）
  * @param {boolean} [opts.emptySelectsAll] 一个都没勾时按回车：true=全选并留在界面；false=返回 null
  * @param {boolean} [opts.escapeReturnsNull] Esc/Ctrl+C：true=返回 null；false=直接退出进程
+ * @param {(items:object[], index:number)=>void} [opts.onToggle] 空格切换后的钩子（互斥项用）
  * @returns {Promise<string[]|null>} 选中的 id；取消/未选返回 null
  */
-async function multiPick({ title, items, emptySelectsAll = false, escapeReturnsNull = false }) {
-  let cursor = 0;
+async function multiPick({ title, items, emptySelectsAll = false, escapeReturnsNull = false, onToggle = null }) {
+  const selectable = (i) => !!items[i] && !items[i].header;
+  const move = (from, dir) => {
+    for (let n = 1; n <= items.length; n++) {
+      const i = (from + dir * n + items.length * 2) % items.length;
+      if (selectable(i)) return i;
+    }
+    return from;
+  };
+  let cursor = items.findIndex((_, i) => selectable(i));
+  if (cursor < 0) cursor = 0;
   const render = () => {
     // 光标回退到列表首行重绘（比整屏 clear 干净，历史里只留最终态）
     process.stdout.write(`\x1b[${items.length + 1}A\x1b[J`);
     console.log(c.bold(title));
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
+      if (it.header) {
+        console.log(c.dim(`  ── ${it.label} ──`));
+        continue;
+      }
       const pointer = i === cursor ? c.cyan('❯') : ' ';
       const box = it.checked ? c.green('[x]') : '[ ]';
       console.log(`  ${pointer} ${box} ${it.label}`);
@@ -746,24 +828,27 @@ async function multiPick({ title, items, emptySelectsAll = false, escapeReturnsN
   const result = await new Promise((resolve) => {
     const onKey = (str, key) => {
       if (key.name === 'up' || (key.ctrl && key.name === 'p')) {
-        cursor = (cursor - 1 + items.length) % items.length;
+        cursor = move(cursor, -1);
       } else if (key.name === 'down' || (key.ctrl && key.name === 'n')) {
-        cursor = (cursor + 1) % items.length;
+        cursor = move(cursor, 1);
       } else if (key.name === 'space') {
+        if (!selectable(cursor) || items[cursor].locked) return; // 基座项不可取消
         items[cursor].checked = !items[cursor].checked;
+        if (onToggle) onToggle(items, cursor);
       } else if (str === 'a' || str === 'A') {
-        const allOn = items.every((it) => it.checked);
-        for (const it of items) it.checked = !allOn;
+        const free = items.filter((it) => !it.header && !it.locked);
+        const allOn = free.every((it) => it.checked);
+        for (const it of free) it.checked = !allOn;
       } else if (key.name === 'return' || key.name === 'enter') {
-        if (!items.some((it) => it.checked)) {
+        if (!items.some((it) => !it.header && it.checked)) {
           if (!emptySelectsAll) {
             process.stdin.removeListener('keypress', onKey);
             return resolve(null);
           }
-          for (const it of items) it.checked = true;
+          for (const it of items) if (!it.header && !it.locked) it.checked = true;
         } else {
           process.stdin.removeListener('keypress', onKey);
-          return resolve(items.filter((it) => it.checked).map((it) => it.id));
+          return resolve(items.filter((it) => !it.header && it.checked).map((it) => it.id));
         }
       } else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) {
         process.stdin.removeListener('keypress', onKey);
@@ -841,6 +926,118 @@ async function askModes() {
     return null;
   }
   return resolveBuildModes({ catalog, modes: picked, edition: null });
+}
+
+/** 交互选择：显示在 package.cjs，**判定**在 scripts/lib/interactive-selection.cjs（可单测）。 */
+const {
+  NONE_ROW_ID,
+  exclusiveWithNone,
+  decidePlugins,
+  decidePets,
+} = require('./lib/interactive-selection.cjs');
+
+/**
+ * 交互式插件多选：**按功能分组**（基座 / 模式 / 功能 / 资源 / 可后装），
+ * 默认一个都不勾 —— 即"所有插件都不内置，包里只带你勾的"。
+ * 每行标注所属档位预设，方便按档位快速挑；`a` 一键全带。
+ *
+ * @returns {Promise<{ids:string[],excluded:string[],source:string}|null>} null = Esc/不改（按档位预设）
+ */
+async function askPlugins(editions) {
+  if (!process.stdin.isTTY || flags.has('--yes') || flags.has('-y') || !editions.length) return null;
+  const catalog = loadPluginCatalog();
+  const optional = loadOptionalPlugins();
+
+  const presetsOf = (id) =>
+    Object.entries(catalog.editionPresets || {})
+      .filter(([, list]) => list.includes(id))
+      .map(([e]) => e);
+  const entry = ([id, e]) => {
+    const preset = presetsOf(id);
+    const tag = preset.length ? `预设在 ${preset.join('/')}` : '默认不带';
+    return {
+      id,
+      label: `${e.label}  [${e.kind}${e.modeKey ? ` · ${e.modeKey}` : ''} · ${tag}]`,
+      checked: false,
+    };
+  };
+
+  const items = [];
+  const pushGroup = (title, rows) => {
+    if (!rows.length) return;
+    items.push({ header: true, label: title }, ...rows);
+  };
+  const byKind = (kind) =>
+    Object.entries(catalog.plugins).filter(([id, e]) => e.kind === kind && id !== OFFICE_ID).map(entry);
+
+  items.push(
+    { header: true, label: '基座（恒在，不可取消）' },
+    {
+      id: OFFICE_ID,
+      label: `${catalog.plugins[OFFICE_ID]?.label || '办公模式'}（应用基座，永不裁剪）`,
+      checked: true,
+      locked: true,
+    },
+  );
+  pushGroup('模式插件', byKind('mode'));
+  pushGroup('功能插件', byKind('feature'));
+  pushGroup('资源插件（皮肤等）', byKind('resource'));
+  pushGroup(
+    '可后装插件（默认不随包，随包也不自动启用）',
+    optional.map((o) => ({ id: o.id, label: `${o.label}  [optional · 点名才进包]`, checked: false })),
+  );
+
+  const picked = await multiPick({
+    title: '  请选择要打进包的插件（默认只留基座；空格勾选，回车确认，a 全选）：',
+    items,
+    emptySelectsAll: false,
+    escapeReturnsNull: true,
+    onToggle: exclusiveWithNone,
+  });
+  const decision = decidePlugins({ catalog, picked });
+  if (decision.kind === 'preset') {
+    info(c.dim('插件：按档位预设'));
+    return null;
+  }
+  if (decision.kind === 'none') {
+    console.log('\x1b[33m[提示]\x1b[0m 只保留基座 office-core，其余插件全部裁剪（基座不可裁）');
+    return resolvePluginSelection({ catalog, plugins: 'none' });
+  }
+  return resolvePluginSelection({ catalog, plugins: decision.ids.join(',') });
+}
+
+/**
+ * 交互式宠物多选（2D 精灵图 + 3D 模型，独立于插件）。
+ * 默认全勾 = 不裁剪；勾「不带」⇒ 等价 --pets=none（包内无宠物资源，入口隐藏）。
+ *
+ * @returns {Promise<object|null>} null = 全带（不裁剪）
+ */
+async function askPets() {
+  if (!process.stdin.isTTY || flags.has('--yes') || flags.has('-y')) return null;
+  const catalog = loadPetCatalog();
+  const items = [
+    { id: NONE_ROW_ID, label: '不带任何宠物资源（包内无精灵图/VRM，宠物入口隐藏）', checked: false },
+    ...(catalog.packs || []).map((p) => ({ id: p.id, label: `2D · ${p.label}`, checked: true })),
+    ...(catalog.vrms || []).map((v) => ({ id: v.id, label: `3D · ${v.label}`, checked: true })),
+  ];
+
+  const picked = await multiPick({
+    title: '  请选择要随包的宠物资源（空格勾选，回车确认；默认全带）：',
+    items,
+    emptySelectsAll: false,
+    escapeReturnsNull: true,
+    onToggle: exclusiveWithNone,
+  });
+  const decision = decidePets({ catalog, picked });
+  if (decision.kind === 'all') {
+    info(c.dim('宠物：全带'));
+    return null;
+  }
+  if (decision.kind === 'none') {
+    console.log('\x1b[33m[提示]\x1b[0m 本次包不含宠物资源（宠物入口降级隐藏）');
+    return resolvePetSelection({ catalog, pets: 'none' });
+  }
+  return resolvePetSelection({ catalog, pets: decision.ids.join(',') });
 }
 
 // ─────────────────────── 目标解析 ───────────────────────
@@ -966,6 +1163,11 @@ function buildDesktop(editions) {
   info(`将依次：真编译 server → vite build → 逐档 electron-builder（约 3.5 分钟）`);
   if (BUILD_MODES) info(`代码裁剪：只打入 ${BUILD_MODES.join(', ')}（未选模式的入口与页面不会进包）`);
   if (PLUGIN_SELECTION) info(`插件裁剪：只打入 ${PLUGIN_SELECTION.ids.length} 个内置插件（其余目录打包时暂存移出，自动恢复）`);
+  if (PET_SELECTION) {
+    info(
+      `宠物资源：${PET_SELECTION.ids.length ? PET_SELECTION.ids.join(', ') : '(无 —— 未选资源不进包，宠物入口降级隐藏)'}`,
+    );
+  }
   // build-all-editions.cjs 内部含真编译 + 逐档重写 edition.json + 清 appOutDir；
   // 每档独立输出到 dist-release/desktop/<档>/<版本>/（无需 --separate，那已是默认行为）。
   run(process.execPath, [
@@ -975,6 +1177,7 @@ function buildDesktop(editions) {
     env: {
       ...(BUILD_MODES ? { YZ_BUILD_MODES: BUILD_MODES.join(',') } : {}),
       ...(PLUGIN_SELECTION ? { YZ_BUILD_PLUGINS: PLUGIN_SELECTION.ids.join(',') } : {}),
+      ...(petsEnvValue() ? { YZ_BUILD_PETS: petsEnvValue() } : {}),
       ...(NAME_FLAG ? { YZ_ARTIFACT_NAME: NAME_FLAG } : {}),
     },
   });
@@ -1335,10 +1538,26 @@ function cleanFreshRoot() {
     process.exit(1);
   }
 
+  // 交互式插件多选：显式 --plugins 优先；否则交互终端里**默认弹出**，且先于模式 ——
+  // 插件选择集会反向推导模式（与 --plugins 完全同源），保证"插件在包、入口也在"。
+  // 保持预设（不动勾选）时返回 null，后面照旧弹模式选择，行为与改动前一致。
+  if (!PLUGIN_SELECTION && targets.desktop.length && process.stdin.isTTY && !flags.has('--yes')) {
+    PLUGIN_SELECTION = await askPlugins(targets.desktop);
+    if (PLUGIN_SELECTION) {
+      BUILD_MODES = modeKeysForSelection(loadPluginCatalog(), PLUGIN_SELECTION.ids, loadPluginModesCatalog());
+    }
+  }
+
   // 交互式模式多选：显式 --modes 优先；否则在交互式终端里**默认弹出**（选完包接着选模式）。
   // 非 TTY / --yes 自动跳过，沿用档位预设 —— 不改变 CI 与非交互脚本的行为。
   if (!BUILD_MODES && process.stdin.isTTY && !flags.has('--yes')) {
     BUILD_MODES = await askModes();
+  }
+
+  // 交互式宠物多选（独立维度）：显式 --pets 优先，否则交互终端里默认弹出。
+  // 默认全勾 = 不裁剪；一个都不带 = 包里无宠物资源、入口降级隐藏。
+  if (!PET_SELECTION && targets.desktop.length && process.stdin.isTTY && !flags.has('--yes')) {
+    PET_SELECTION = await askPets();
   }
 
   console.log(c.bold(`\n言智打包 —— 目标：${
@@ -1349,6 +1568,12 @@ function cleanFreshRoot() {
   if (PLUGIN_SELECTION) {
     info(`内置插件：${PLUGIN_SELECTION.ids.join(', ')}（${PLUGIN_SELECTION.source}）`);
     info(`排除插件：${PLUGIN_SELECTION.excluded.length ? PLUGIN_SELECTION.excluded.join(', ') : '(无)'}`);
+  }
+  if (PET_SELECTION) {
+    info(
+      `宠物资源：${PET_SELECTION.ids.length ? PET_SELECTION.ids.join(', ') : '(无)'}` +
+        (PET_SELECTION.excluded.length ? `　排除 ${PET_SELECTION.excluded.join(', ')}` : ''),
+    );
   }
   if (NAME_FLAG && targets.desktop.length) {
     info(`产物命名：${NAME_FLAG}${targets.desktop.length > 1 ? '（每档追加档位名）' : ''}`);
@@ -1376,6 +1601,12 @@ function cleanFreshRoot() {
     info(`内置插件: ${PLUGIN_SELECTION ? `${PLUGIN_SELECTION.ids.join(', ')}（${PLUGIN_SELECTION.source}）` : '按档位预设（可用 --plugins=office-core,skins 指定）'}`);
     if (PLUGIN_SELECTION) {
       info(`排除插件: ${PLUGIN_SELECTION.excluded.length ? PLUGIN_SELECTION.excluded.join(', ') : '(无)'}`);
+    }
+    if (PET_SELECTION) {
+      info(
+        `宠物资源: ${PET_SELECTION.ids.length ? PET_SELECTION.ids.join(', ') : '(无 —— 入口降级隐藏)'}` +
+          (PET_SELECTION.excluded.length ? `　排除 ${PET_SELECTION.excluded.join(', ')}` : ''),
+      );
     }
     console.log('');
     step('将移走的目录');

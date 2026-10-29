@@ -42,6 +42,7 @@ const CATALOG_PATH = path.join(REPO_ROOT, 'build', 'plugins.catalog.json');
 const SELECTION_PATH = path.join(REPO_ROOT, 'build', 'build-plugins.json');
 const UI_SRC = path.join(REPO_ROOT, 'packages', 'ui', 'src');
 const { resolvePluginSelection } = require(path.join(REPO_ROOT, 'scripts', 'lib', 'plugin-selection.cjs'));
+const { loadOptionalPlugins } = require(path.join(REPO_ROOT, 'scripts', 'lib', 'optional-plugins.cjs'));
 
 /** 解析 ui 源码里的相对 import（无扩展名 / index）/ 返回绝对文件或 null */
 function resolveUiModule(absBase) {
@@ -479,8 +480,10 @@ function resolveBuildIds(catalog, args) {
     if (args.plugins && args.modes) {
       console.warn('[build-plugins] --plugins 与 --modes 同时给出：按约定以 --plugins 为准');
     }
-    const selection = resolvePluginSelection({ catalog, plugins: args.plugins, modes: args.modes });
-    return { ids: selection.ids, selection };
+    const selection = resolvePluginSelection({ catalog, optional: loadOptionalPlugins(), plugins: args.plugins, modes: args.modes });
+    // ★ 可后装插件（plugins/optional/*）没有构建步骤：它们由打包链原样拷进 builtin，
+    //   这里只把它们记进选择集，不参与 esbuild 构建。
+    return { ids: selection.ids.filter((id) => !!catalog.plugins[id]), selection };
   }
   if (args.ids.length && !args.all) return { ids: args.ids, selection: null };
   const all = Object.keys(catalog.plugins);

@@ -150,7 +150,35 @@ function jsString(v) {
  * 只包含选中模式的动态 import —— 未选模式的 import 表达式**根本不存在**，
  * Rollup 因此不会为它们产出 chunk（这是物理裁剪的关键，不是运行时判断）。
  */
-function renderGenerated({ catalog, modes, pluginViews }) {
+/** 基座外壳里"属于插件、但不在 contributes.routes 里"的视图。
+ *
+ * ★ 为什么单独一张表：App.vue 的 RemoteControlHost 与 router 的 /remote 页是**无条件静态 import**
+ *   （被控端外壳/免授权控制页），既不是模式入口也不是 manifest 路由，`--plugins` 的视图表裁不到它们。
+ *   未选 remote-control 的包会把它们整块打进主包 —— 名字说精简、内容却带着远控界面。
+ *   这里改成选择集驱动的生成表：未选 → 整段 `null`，import 表达式在源码层就不存在（Rollup 不产出 chunk）。
+ */
+const SHELL_VIEWS = {
+  'remote-control': {
+    host: 'components/RemoteControlHost.vue',
+    page: 'views/RemoteControl.vue',
+  },
+};
+
+/** 按选择集渲染外壳视图表；pluginSelectionIds = null 表示全量（restore/未裁剪）。 */
+function renderShellLoaders(pluginSelectionIds) {
+  const selected = pluginSelectionIds === null ? null : new Set(pluginSelectionIds);
+  const entries = Object.entries(SHELL_VIEWS)
+    .filter(([id]) => selected === null || selected.has(id))
+    .map(([id, views]) => {
+      const loaders = Object.entries(views)
+        .map(([slot, rel]) => `    ${slot}: () => import('../${rel}'),`)
+        .join('\n');
+      return `  ${jsString(id)}: {\n${loaders}\n  },`;
+    });
+  return `{\n${entries.join('\n')}\n}`;
+}
+
+function renderGenerated({ catalog, modes, pluginViews, pluginSelectionIds = null }) {
   const defs = modes.map((key) => {
     const d = catalog.modes[key];
     const parts = [
@@ -190,6 +218,9 @@ ${modeLoaderLines.join('\n')}
 export const PLUGIN_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
 ${pluginLoaderLines.join('\n')}
 };
+
+/** 插件归属的"外壳视图"（App.vue / router 直接用）；未选的插件在生成表里就没有这一段。 */
+export const SHELL_VIEW_LOADERS: Record<string, Record<string, () => Promise<unknown>>> = ${renderShellLoaders(pluginSelectionIds)};
 `;
 }
 
@@ -217,9 +248,9 @@ function buildManifest({ catalog, modes, edition, now }) {
   };
 }
 
-function writeGenerated({ catalog, modes, excludedPluginViews = [], fs = fsDefault, uiSrc = UI_SRC, outPath = GENERATED_PATH }) {
+function writeGenerated({ catalog, modes, excludedPluginViews = [], pluginSelectionIds = null, fs = fsDefault, uiSrc = UI_SRC, outPath = GENERATED_PATH }) {
   const pluginViews = collectPluginViewFiles(fs, uiSrc, { catalog, modes, excludedPluginViews });
-  const content = renderGenerated({ catalog, modes, pluginViews });
+  const content = renderGenerated({ catalog, modes, pluginViews, pluginSelectionIds });
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, content, 'utf8');
   return { content, pluginViews };
@@ -246,6 +277,8 @@ module.exports = {
   resolveModes,
   matchViewPattern,
   isExcludedView,
+  SHELL_VIEWS,
+  renderShellLoaders,
   collectPluginViewFiles,
   renderGenerated,
   buildManifest,

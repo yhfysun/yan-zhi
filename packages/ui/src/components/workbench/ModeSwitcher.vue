@@ -59,7 +59,7 @@ import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Check, Lock, ChatDotRound, Monitor, Platform, Connection, VideoCamera, Shop, CopyDocument } from '@element-plus/icons-vue';
 import {
-  activeMode, MODE_DEFS, setMode, modeRoute, visibleModeDefs,
+  activeMode, allModeDefs, setMode, modeRoute, visibleModeDefs,
   type AppMode, type ModeDef,
 } from '../../stores/mode';
 import { isModeWindow } from '../../utils/modeWindow';
@@ -94,7 +94,7 @@ function suppress() {
 // ★ 从「可见模式」里找而不是 MODE_DEFS 全量：低档码下当前模式若不在可见集合里
 //   （理论上 store 已回落 office，这里再兜一层），也不会渲染出一个已失权的标签。
 const currentDef = computed<ModeDef>(
-  () => visibleModeDefs.value.find((d) => d.key === activeMode.value) || visibleModeDefs.value[0] || MODE_DEFS[0],
+  () => visibleModeDefs.value.find((d) => d.key === activeMode.value) || visibleModeDefs.value[0] || allModeDefs.value[0],
 );
 const currentIcon = computed(() => iconOf(currentDef.value.icon));
 
@@ -173,7 +173,7 @@ const menuItems = computed<HoverMenuItem[]>(() =>
 function onPick(item: HoverMenuItem) {
   const key = item.key as AppMode;
   // 不可用项：HoverMenu 已置灰且不派发 select，此处仅防御
-  const def = MODE_DEFS.find((d) => d.key === key);
+  const def = allModeDefs.value.find((d) => d.key === key);
   if (def?.pluginId && (item.disabled || !isModeAvailable(key))) {
     // 插件未启用：引导去插件管理页自行决定（决策 15：不自动启用高危插件）
     suppress();
@@ -189,7 +189,7 @@ function onPick(item: HoverMenuItem) {
 }
 
 function isModeAvailable(key: AppMode): boolean {
-  const def = MODE_DEFS.find((d) => d.key === key);
+  const def = allModeDefs.value.find((d) => d.key === key);
   if (!def?.pluginId) return true;
   if (def.desktopOnly && isCapacitor) return false;
   return pluginStore.plugins.some((p) => p.manifest.id === def.pluginId && p.state === 'enabled');

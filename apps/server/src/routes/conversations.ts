@@ -14,6 +14,7 @@ import { buildPlanStepDetail } from '../services/plan-step-detail.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode, compressConversationNow } from '../llm-task-manager.js';
 import { estimateTokens } from '@yan-zhi/shared';
+import { isRuntimeMode } from '../plugins/runtime-modes.js';
 // 会话来源标记：白名单与规范化只有 core 一处实现（写入与过滤共用，免得上游各自写字面量）
 import { normalizeConversationSource, normalizeSourceMeta, sourceFilterClause, excludeSourceClause, CONV_SOURCE_BROWSER_PAGE } from '@yan-zhi/core';
 
@@ -49,6 +50,11 @@ router.use(authMiddleware);
 //   否则批量删除、导出、计数这些「扫全量」的逻辑会连带处理用户认为已经被收起来的会话。
 const VALID_MODES = new Set(['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop']);
 
+/** 合法工作模式 = 内置白名单 ∪ 运行时插件贡献（后装插件的新模式，见 plugins/runtime-modes.ts）。 */
+function isValidMode(mode: string): boolean {
+  return VALID_MODES.has(mode) || isRuntimeMode(mode);
+}
+
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const mode = typeof req.query.mode === 'string' ? req.query.mode : '';
@@ -58,7 +64,7 @@ router.get('/', (req: Request, res: Response) => {
   const conds: string[] = ['user_id = ?', life];
   const params: unknown[] = [userId];
   // 非法 mode 视为「不过滤」而不是「查不到」：前端传错值时不该让用户看到空列表
-  if (mode && VALID_MODES.has(mode)) {
+  if (mode && isValidMode(mode)) {
     conds.push(`COALESCE(NULLIF(mode, ''), 'office') = ?`);
     params.push(mode);
   }
@@ -166,7 +172,7 @@ router.post('/', (req: Request, res: Response) => {
     'INSERT INTO conversation (id, user_id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, permission_mode, mode, task_type, title_source, source, source_meta_json, ops_connection_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run(id, userId, title, resolvedAgentId, platformId || null, modelId || null, spaceId || null, '[]', '[]', 0, normalizePermissionMode(permissionMode),
     // 归属模式：前端建会话时带上当前模式；缺省 office（与存量迁移口径一致）
-    VALID_MODES.has(String(mode)) ? String(mode) : 'office',
+    isValidMode(String(mode)) ? String(mode) : 'office',
     // 任务级任务类型（2026-10-14「父任务」层）：多任务目录里本条任务选中的子线；
     // 空 = 跟随目录（space.task_type）。父类型也允许落在会话上（选线前的占位由注入侧兜）。
     taskType ? String(taskType) : null,

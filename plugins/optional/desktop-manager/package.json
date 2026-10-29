@@ -1,0 +1,6 @@
+{
+  "name": "desktop-manager-plugin",
+  "private": true,
+  "type": "module",
+  "description": "可后装插件：不随安装包分发，安装后由服务端插件管理器装载"
+}

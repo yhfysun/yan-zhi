@@ -50,7 +50,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Pet2D from '../components/pet/Pet2D.vue'
-import { loadUserPacks } from '../components/pet/user-packs'
+import { loadUserPacks, userPacks } from '../components/pet/user-packs'
 import Pet3D from '../components/pet/Pet3D.vue'
 import {
   usePetStore,
@@ -302,6 +302,8 @@ onMounted(() => {
   })
   offSettings = api()?.onSettings?.((payload: any) => {
     if (payload && payload.renderer) settings.value = { ...PET_DEFAULTS, ...payload }
+    // 新导入的形象在主窗落盘、本窗注册表里还没有：补一次同步
+    if (payload?.pack && !userPacks[payload.pack]) void loadUserPacks()
   })
   offCmd = api()?.onCommand?.(onCommand)
   offWalk = api()?.onWalkState?.((p: any) => {

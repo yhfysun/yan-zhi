@@ -1,9 +1,11 @@
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getPlatformAdapter } from '@yan-zhi/core';
 import { isWithinRoot } from './path-guard.js';
 import { parseRemoteVerbose, assertRemoteName, assertRemoteUrl, type GitRemote } from './git-remote.js';
+import { parseUnifiedDiff, selectHunks, buildPatch, describeNoHunks } from './git-hunks.js';
 
 /** 面板缓存：仓库内的隐藏目录（应用独有，随仓库走，不进版本库） */
 const CACHE_DIR = '.yan-zhi';
@@ -239,6 +241,73 @@ export class GitService {
     if (message) args.push('-m', message);
     else args.push('--no-edit');
     await this.open(repo).raw(args);
+  }
+
+  /**
+   * 列出某文件**未暂存**改动里的 hunk（按 hunk 暂存的第一步）。
+   *
+   * ★ 只列工作区 vs 暂存区的差异：`git diff -- <file>`。文件若已有部分暂存，
+   *   这里看到的是"还没进去的那部分"，编号也按这部分重算 —— 与 stageHunks 同一口径。
+   */
+  async listHunks(repo: string, file: string): Promise<{
+    file: string;
+    hunks: Array<{ id: number; summary: string; added: number; removed: number; header: string }>;
+  }> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const g = this.open(repo);
+    await this.assertTracked(g, file);
+    const parsed = parseUnifiedDiff(await this.readWorktreeDiff(g, file));
+    if (!parsed.hunks.length) throw new Error(describeNoHunks(parsed));
+    return {
+      file,
+      hunks: parsed.hunks.map((h) => ({
+        id: h.id,
+        summary: h.summary,
+        added: h.added,
+        removed: h.removed,
+        header: h.header,
+      })),
+    };
+  }
+
+  /**
+   * 只把指定编号的 hunk 放进暂存区（按 hunk 暂存的第二步）。
+   *
+   * ★ 拼补丁 → 临时文件 → `git apply --cached`：补丁不落工作区，其余 hunk
+   *   原样留在工作区，随后 `git commit` 不带 files 即可只提交选中的部分。
+   */
+  async stageHunks(repo: string, file: string, ids: number[]): Promise<{ file: string; staged: number[] }> {
+    const ws = await this.getWorkspaceDir();
+    this.assertWithinWorkspace(repo, ws);
+    const g = this.open(repo);
+    await this.assertTracked(g, file);
+    const parsed = parseUnifiedDiff(await this.readWorktreeDiff(g, file));
+    if (!parsed.hunks.length) throw new Error(describeNoHunks(parsed));
+    const picked = selectHunks(parsed, ids);
+
+    const dir = await fs.mkdtemp(path.join(tmpdir(), 'yz-hunk-'));
+    const patchFile = path.join(dir, 'selected.patch');
+    try {
+      await fs.writeFile(patchFile, buildPatch(parsed, picked), 'utf8');
+      await g.raw(['apply', '--cached', '--whitespace=nowarn', patchFile]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+    return { file, staged: picked.map((h) => h.id) };
+  }
+
+  private async readWorktreeDiff(g: SimpleGit, file: string): Promise<string> {
+    return g.raw(['diff', '--no-color', '--no-ext-diff', '-U3', '--', file]);
+  }
+
+  /** 未跟踪文件没有 diff，只能整文件暂存；提前给出可执行的提示而不是空列表 */
+  private async assertTracked(g: SimpleGit, file: string): Promise<void> {
+    try {
+      await g.raw(['ls-files', '--error-unmatch', '--', file]);
+    } catch {
+      throw new Error(`${file} 未被 Git 跟踪（新文件），请用 api_git_add 整文件暂存`);
+    }
   }
 
   async pull(repo: string, branch?: string): Promise<void> {

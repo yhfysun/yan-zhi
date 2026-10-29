@@ -32,12 +32,19 @@
           <label>返工累计</label>
           <b>{{ fmtDuration(detail.activeMs) }}</b>
         </div>
+        <div v-if="detail.waitMs > 0" class="psd-metric">
+          <label>其中等待</label>
+          <b>{{ fmtDuration(detail.waitMs) }}</b>
+        </div>
       </div>
 
       <div v-if="!detail.timingAvailable" class="psd-hint">
         该步骤没有计时数据（存量计划），无法按时间窗聚合运行详情。
       </div>
-      <div v-if="detail.containsWait" class="psd-hint warn">
+      <div v-if="detail.waitMs > 0" class="psd-hint warn">
+        这段等待来自时间窗内长时间没有任何活动（等用户确认 / 等外部响应 / 页面卡住），已从 Top3 的耗时里扣除。
+      </div>
+      <div v-else-if="detail.containsWait" class="psd-hint warn">
         该步骤耗时超过 10 分钟且期间没有工具调用，可能包含等待（等用户确认 / 等外部响应）。
       </div>
 
@@ -91,6 +98,8 @@ interface PlanStepDetail {
   finishedAt: number | null;
   durationMs: number;
   activeMs: number;
+  /** 时间窗内无活动的长间隙之和（等用户/等外部） */
+  waitMs: number;
   timingAvailable: boolean;
   containsWait: boolean;
   toolCallCount: number;

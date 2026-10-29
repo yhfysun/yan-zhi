@@ -14,7 +14,7 @@ export class ManifestError extends Error {
 //   所有插件（含无关的 ops-shell / sec-lab）的后端路由全部不挂载 → 全量 404。
 //   2026-10-16 实测踩过（shop-write 未登记，运维/安全/店铺三条线的接口一起 404），
 //   故 test/shop-write-gate.test.ts 里加了一条「清单必须能通过真实 validateManifest」的守门。
-const VALID_PERMS: PluginPermission[] = ['fs', 'shell', 'git', 'db', 'network', 'clipboard', 'desktop-input', 'remote-shell', 'shop-write'];
+const VALID_PERMS: PluginPermission[] = ['fs', 'shell', 'git', 'db', 'network', 'clipboard', 'desktop-input', 'desktop-shell', 'llm', 'data-contracts', 'remote-shell', 'shop-write'];
 
 /** 校验清单对象，返回类型安全的 manifest */
 export function validateManifest(m: unknown): PluginManifest {

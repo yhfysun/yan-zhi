@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { db, loadEffectiveTaskTypes } from '../db.js';
 import { softDeleteRow, lifecycleClause } from '../services/conversation-lifecycle.js';
+import { runtimePluginModes } from '../plugins/runtime-modes.js';
 import { DEFAULT_CONTEXT_WINDOW } from '../constants.js';
 import { AGENS_API_URL, inferCapabilitiesFromModelId } from '../agens-platform/service.js';
 import { resolvePool } from '../services/model-pools.js';
@@ -404,6 +405,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_ollama_list', 'api_ollama_pull', 'api_ollama_pull_status', 'api_ollama_delete', 'api_ollama_test',
   // Git
   'api_git_status', 'api_git_diff', 'api_git_log', 'api_git_branches', 'api_git_add', 'api_git_commit',
+  // 按 hunk 暂存（2026-10-29）：多会话共用一个工作区时，只把自己那几段推进去
+  'api_git_hunks', 'api_git_stage_hunks',
   'api_git_push', 'api_git_pull', 'api_git_checkout', 'api_git_restore', 'api_git_read_file', 'api_git_show',
   // 插件
   'api_plugin_list', 'api_plugin_get', 'api_plugin_enable', 'api_plugin_disable', 'api_plugin_set_config', 'api_plugin_uninstall',
@@ -3378,10 +3381,10 @@ export async function executeApiTool(
 
         // ── 工作模式（office / dev / ops / sec / wf / clip / shop）──
         if (args.mode !== undefined) {
-          // ★ 与 routes/conversations.ts 的 VALID_MODES 必须同集：漏一个（如 clip/shop）
+          // ★ 与 routes/conversations.ts 的白名单必须同集：漏一个（如 clip/shop）
           //   会让模型"切模式"被拒，而用户侧表现为「说了切到剪辑模式但没生效」。
-          //   douyin 已于 2026-10-16 下线（与 office 同形态的重复模式），故不再可选。
-          const MODES = ['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop'];
+          //   运行时插件贡献的模式（后装 .yzp）动态并入，停用即消失。
+          const MODES = ['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop', ...runtimePluginModes()];
           const m = str(args, 'mode');
           if (!MODES.includes(m)) {
             return fail(`未知的工作模式「${m}」。可选值：${MODES.join('、')}（wf = 工作流模式、clip = 剪辑模式、shop = 店铺运营模式）`);
@@ -4347,6 +4350,19 @@ export async function executeApiTool(
         if (!message) return fail('提交信息不能为空');
         await gitService.commit(str(args, 'repo'), message, args.files === undefined ? undefined : (arr(args, 'files') as string[]));
         return ok({ ok: true });
+      }
+      case 'api_git_hunks':
+        await requireGitSupport();
+        return ok(await gitService.listHunks(str(args, 'repo'), str(args, 'file')));
+      case 'api_git_stage_hunks': {
+        await requireGitSupport();
+        const file = str(args, 'file');
+        if (!file) return fail('file 为必填项');
+        const ids = (arr(args, 'ids') as unknown[]).map(Number);
+        if (!ids.length || ids.some((n) => !Number.isInteger(n) || n <= 0)) {
+          return fail('ids 必须是非空的正整数编号列表（来自 api_git_hunks）');
+        }
+        return ok(await gitService.stageHunks(str(args, 'repo'), file, ids));
       }
       case 'api_git_push':
         await requireGitSupport();

@@ -54,3 +54,11 @@ export const PLUGIN_VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
   "views/plugin/shop/tabs/ShopShipments.vue": () => import('../views/plugin/shop/tabs/ShopShipments.vue'),
   "views/plugin/shop/tabs/ShopWinitOutbound.vue": () => import('../views/plugin/shop/tabs/ShopWinitOutbound.vue'),
 };
+
+/** 插件归属的"外壳视图"（App.vue / router 直接用）；未选的插件在生成表里就没有这一段。 */
+export const SHELL_VIEW_LOADERS: Record<string, Record<string, () => Promise<unknown>>> = {
+  "remote-control": {
+    host: () => import('../components/RemoteControlHost.vue'),
+    page: () => import('../views/RemoteControl.vue'),
+  },
+};

@@ -36,6 +36,29 @@ W, H = ASPECT_SIZES["4:3"]
 FPS = 25
 FONTS_DIR = r"C:\Windows\Fonts"
 
+# ── 段间停顿（2026-10-27，用户实报「断句有问题、听着生硬」）──────────────────
+# 根因：TTS 是**逐段独立合成**再用 concat 硬拼，段与段之间原本 0ms —— 上一句尾音和
+# 下一句首字顶在一起，每段又各自重新起调，听起来像一句话被切成几块。
+# 这里按上一段末尾标点补静音（句号/问号长、逗号短），并让字幕/画面时间轴同步往后挪，
+# 三轨仍然同源（cues 用同一份 pause），不会产生新的口型/字幕错位。
+PAUSE_MS = {
+    "。": 260, "！": 340, "!": 340, "？": 360, "?": 360, "…": 420,
+    "，": 130, ",": 130, "；": 200, ";": 200, "：": 180, ":": 180, "、": 90,
+}
+DEFAULT_PAUSE_MS = 260
+MAX_PAUSE_MS = 500
+_TRAILING_QUOTES = "\"'」』”’)）】》"
+
+
+def pause_after_sec(text: str) -> float:
+    """上一段末尾该补多少静音（秒）。无标点按句末处理；引号收尾时看引号内最后一个标点。"""
+    s = (text or "").rstrip()
+    while s and s[-1] in _TRAILING_QUOTES:
+        s = s[:-1].rstrip()
+    if not s:
+        return 0.0
+    return min(PAUSE_MS.get(s[-1], DEFAULT_PAUSE_MS), MAX_PAUSE_MS) / 1000.0
+
 
 def find_ffmpeg():
     # ★ 2026-10-09：原只找 C:\APP\EVCapture\ffmpeg.exe（本机不存在）→ 补多候选 + PATH 兜底
@@ -359,6 +382,7 @@ def pick_ambience(script_text, explicit):
 # 一直存在却没被工具面暴露。现在 auto = 先找 <工作目录>/00-source/bgm/ 下的音频，
 # 找不到就本地合成一段免版权器乐（完全离线，不依赖外部音乐模型）。
 BGM_EXTS = ('.mp3', '.m4a', '.wav', '.flac', '.aac', '.ogg')
+IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 BGM_CHORDS = {
     'warm': [('C4', 'E4', 'G4'), ('G3', 'B3', 'D4'), ('A3', 'C4', 'E4'), ('F3', 'A3', 'C4')],
     'suspense': [('A3', 'C4', 'E4'), ('F3', 'A3', 'C4'), ('C4', 'E4', 'G4'), ('G3', 'B3', 'D4')],
@@ -388,28 +412,171 @@ def pick_bgm_mood(script_text):
     return 'warm'
 
 
+def extract_bg_frames(ffmpeg, bg_clips, tmp, w, h, max_frames=16):
+    """从背景视频里抽静帧当动态排版的底图（本地素材库通常是视频，不是图片）。
+
+    每段视频按其时长均匀抽 2~3 帧，总量不超过 max_frames；抽出来的帧交给 kinetic
+    做 Ken Burns 推拉。这样「有素材视频但没素材图」也能出有真实画面的片子。
+    """
+    out_dir = os.path.join(tmp, "bgframes")
+    os.makedirs(out_dir, exist_ok=True)
+    frames, idx = [], 0
+    for p in bg_clips:
+        if not os.path.exists(p):
+            continue
+        dur = probe_duration(ffmpeg, p)
+        if dur < 1.0:
+            continue
+        n = 3 if dur >= 12 else 2 if dur >= 5 else 1
+        for k in range(n):
+            if len(frames) >= max_frames:
+                break
+            at = dur * (k + 1) / (n + 1)
+            out = os.path.join(out_dir, f"bgf_{idx:02d}.jpg")
+            r = subprocess.run(
+                [ffmpeg, "-y", "-v", "error", "-ss", f"{at:.2f}", "-i", p,
+                 "-frames:v", "1", "-vf",
+                 f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
+                 "-q:v", "2", out], capture_output=True)
+            if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0:
+                frames.append(out)
+                idx += 1
+    print(f"[visual] 从背景视频抽了 {len(frames)} 帧做底图", file=sys.stderr)
+    return frames
+
+
+def resolve_bg_images(arg, outdir):
+    """动态排版的素材底图：显式列表，或 auto 自动扫描工作目录的图片库。
+
+    扫描顺序 = 本地库存优先（00-source/images > 02-work/images > 00-source 根目录），
+    这样「自己找素材」第一步先吃已有素材，不重复抓取/生成。
+    """
+    if not arg or arg == 'none':
+        return []
+    if arg != 'auto':
+        found = [p.strip() for p in arg.split(',') if p.strip()]
+        missing = [p for p in found if not os.path.exists(p)]
+        if missing:
+            print(f"[visual] 警告：素材底图不存在，已跳过：{missing[:3]}", file=sys.stderr)
+        return [p for p in found if os.path.exists(p)]
+    roots = []
+    for r in (os.getcwd(), os.path.dirname(os.path.abspath(outdir))):
+        if r and r not in roots:
+            roots.append(r)
+    for root in roots:
+        # ★ 只扫**图片库目录**，不扫 00-source 根目录：那里混着背景视频/封面/杂物，
+        #   盲扫等于「随便挑个素材挂上」，就是用户实报的「背景视频瞎用」。
+        for sub in ('00-source/images', '00-source/图片', '02-work/images', '02-work/图片'):
+            d = os.path.join(root, sub)
+            if not os.path.isdir(d):
+                continue
+            cands = sorted(f for f in os.listdir(d) if f.lower().endswith(IMAGE_EXTS))
+            if cands:
+                print(f"[visual] 素材底图 {len(cands)} 张 ← {d}", file=sys.stderr)
+                return [os.path.join(d, f) for f in cands]
+    print("[visual] 未找到素材底图，使用纯色渐变背景", file=sys.stderr)
+    return []
+
+
 def render_bgm(ffmpeg, tmp, mood, out_path):
-    """本地合成 4 和弦循环垫（免版权）。失败抛异常，由调用方回落环境音。"""
+    """本地合成 8s 器乐循环（免版权）。失败抛异常，由调用方回落环境音。
+
+    ★ 2026-10-28 重写：旧版是 4 个正弦三和弦叠加 + 低通，音色极薄，0.12 音量下
+      在旁白里基本听不见（用户实报「没有背景音乐」）。新版按情绪编曲——
+      四拍底鼓 + 贝斯根音 + 8 分琶音 + 铺底 pad，峰值归一化后直接进混音。
+      epic / suspense / warm 三套节奏型与配器密度不同。
+    """
+    import math
+    import random
+    import struct
+    import wave
+
+    RATE = 44100
+    seg = 2.0                      # 每个和弦 2s（120BPM 的 4 拍）
+    n = int(RATE * seg)
     chords = BGM_CHORDS.get(mood, BGM_CHORDS['warm'])
-    parts = []
+    total = n * len(chords)
+    buf = [0.0] * total
+
+    def add(idx, v):
+        if 0 <= idx < total:
+            buf[idx] += v
+
+    def env_ad(t, atk, dec):
+        if t < 0 or t > atk + dec:
+            return 0.0
+        return (t / atk) if t < atk else (1.0 - (t - atk) / dec) ** 1.8
+
+    rnd = random.Random(20261028)
+    # 节奏型：底鼓落点 / 琶音密度
+    if mood == 'epic':
+        kicks, bass_at, arp_step, pad_amp = [0.0, 0.5, 1.0, 1.5], [0.0, 1.0], 0.25, 0.075
+    elif mood == 'suspense':
+        kicks, bass_at, arp_step, pad_amp = [0.0, 1.5], [0.0], 0.5, 0.085
+    else:
+        kicks, bass_at, arp_step, pad_amp = [0.0, 1.0], [0.0], 0.25, 0.070
+
     for ci, chord in enumerate(chords):
-        expr = '+'.join(
-            f"{(0.075 if k == 0 else 0.055):.3f}*sin(2*PI*{_note_freq(n):.2f}*t)"
-            for k, n in enumerate(chord)
-        )
-        p = os.path.join(tmp, f"bgm_chord_{ci}.wav")
-        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi",
-                        "-i", f"aevalsrc={expr}:d=4:s=44100",
-                        "-af", "afade=t=in:st=0:d=1.1,afade=t=out:st=2.9:d=1.1,"
-                               "lowpass=f=1400,tremolo=f=0.25:d=0.12",
-                        "-ar", "44100", "-ac", "1", p], check=True)
-        parts.append(p)
-    cmd = [ffmpeg, "-y", "-v", "error"]
-    for p in parts:
-        cmd += ["-i", p]
-    fc = "".join(f"[{i}:a]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[a]"
-    cmd += ["-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "96k", out_path]
-    subprocess.run(cmd, check=True)
+        base = ci * n
+        freqs = [_note_freq(x) for x in chord]
+        root = freqs[0] / 2.0
+
+        # 铺底 pad：三个和弦音 + 轻微失谐，慢起慢收
+        for f in freqs:
+            for det in (1.0, 1.0035):
+                w = 2 * math.pi * f * det
+                for i in range(n):
+                    t = i / RATE
+                    e = min(1.0, t / 0.35) * min(1.0, (seg - t) / 0.5)
+                    add(base + i, pad_amp * e * math.sin(w * t) / len(freqs))
+
+        # 贝斯：根音下行八度，指数衰减
+        for at in bass_at:
+            s = base + int(at * RATE)
+            dur = min(0.9, seg - at)
+            for i in range(int(dur * RATE)):
+                t = i / RATE
+                add(s + i, 0.17 * math.exp(-2.4 * t) * math.sin(2 * math.pi * root * t))
+
+        # 底鼓：130→45Hz 扫频 + 快速衰减
+        for at in kicks:
+            s = base + int(at * RATE)
+            for i in range(int(0.16 * RATE)):
+                t = i / RATE
+                f = 45 + 85 * math.exp(-32 * t)
+                add(s + i, 0.30 * math.exp(-22 * t) * math.sin(2 * math.pi * f * t))
+
+        # 琶音：和弦音上行 8 分音符，短促
+        step_i = 0
+        t0 = 0.0
+        while t0 < seg - 0.02:
+            f = freqs[step_i % len(freqs)] * 2
+            s = base + int(t0 * RATE)
+            for i in range(int(0.20 * RATE)):
+                t = i / RATE
+                add(s + i, 0.055 * math.exp(-11 * t) * math.sin(2 * math.pi * f * t))
+            step_i += 1
+            t0 += arp_step
+
+        # 踩镲：反拍白噪，极轻
+        if mood != 'suspense':
+            for at in [x + arp_step for x in kicks]:
+                s = base + int(at * RATE)
+                for i in range(int(0.035 * RATE)):
+                    add(s + i, 0.020 * math.exp(-60 * (i / RATE)) * (rnd.random() * 2 - 1))
+
+    peak = max(1e-6, max(abs(v) for v in buf))
+    k = 0.55 / peak
+    wav_path = os.path.join(tmp, f"bgm_{mood}.wav")
+    w = wave.open(wav_path, "wb")
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(RATE)
+    w.writeframes(b"".join(
+        struct.pack("<h", max(-32768, min(32767, int(v * k * 32767)))) for v in buf))
+    w.close()
+    subprocess.run([ffmpeg, "-y", "-v", "error", "-i", wav_path,
+                    "-c:a", "aac", "-b:a", "128k", out_path], check=True)
     return out_path
 
 
@@ -449,18 +616,24 @@ def resolve_bgm(ffmpeg, bgm, outdir, tmp, script_text):
 
 
 def plan_accents(cues, enabled, level):
-    """只在开头 + 高能句点缀，最多 5 个，间隔 ≥6s。返回 [(t, id, gain)]。"""
+    """只在高能句点缀，最多 4 个，间隔 ≥6s。返回 [(t, id, gain)]。
+
+    ★ 2026-10-28 去掉「开头必放 riser」：riser 是 1.2s 粉噪扫频，紧贴第一句人声
+      出现，听感就是「开头一串沙沙的杂音」（用户实报）。点缀只在剧情高能处出现，
+      片头保持干净。
+    """
     if not enabled:
         return []
-    plan = [(0.15, 'riser', level)]
+    plan = []
     last = 0.0
     for start, _end, text in cues:
-        if len(plan) >= 5:
+        if len(plan) >= 4:
             break
-        if start - last < 6.0:
+        if start - last < 6.0 or start < 2.0:   # 前 2 秒不铺音效，避免糊住开场
             continue
         if any(w in (text or '') for w in SPIKE_WORDS):
-            plan.append((max(0.0, start - 0.05), 'impact' if len(plan) % 2 else 'heartbeat', level))
+            plan.append((max(0.0, start - 0.05),
+                         'impact' if len(plan) % 2 == 0 else 'heartbeat', level))
             last = start
     return plan
 
@@ -499,7 +672,15 @@ def build_audio_bed(ffmpeg, tmp, audio_items, bgm, ambience, amb_level, accents,
         cmd += ["-i", f]
         acc_entries.append((next_idx + len(acc_entries), at, gain))
 
-    fc = "".join(f"[{i}:a]" for i in range(n)) + f"concat=n={n}:v=0:a=1[nar]"
+    # 段间静音（2026-10-27）：每段尾部 apad 一段与标点匹配的静音（最后一段不补），
+    # 与 cues 里的 pause_after_sec 同源 —— 断句自然，字幕/画面时间轴自动对齐。
+    pad_parts = []
+    for i, (txt, _p) in enumerate(audio_items):
+        pad = pause_after_sec(txt) if i < n - 1 else 0.0
+        pad_parts.append(
+            f"[{i}:a]apad=pad_dur={pad:.3f}[p{i}]" if pad > 0.01 else f"[{i}:a]anull[p{i}]"
+        )
+    fc = ";".join(pad_parts) + ";" + "".join(f"[p{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[nar]"
     # ★ 老版 ffmpeg(2019, EVCapture 自带) 没有 amix 的 normalize 选项，
     #   默认会按输入路数衰减。这里先给每路乘 N，再 amix，等价于 normalize=0。
     n_mix = 1 + len(beds) + len(acc_entries)
@@ -521,11 +702,13 @@ def build_audio_bed(ffmpeg, tmp, audio_items, bgm, ambience, amb_level, accents,
         mix_ins.append(f"[acc{idx}]")
     # ★ 2026-10-21：混音后加 alimiter —— amix 按路数放大再衰减，瞬态（点缀音效 + 旁白峰值）
     #   叠加会越过 0dBFS（实测 +4.5~+7.4dB），AAC 编码即硬削波 → 统一过限幅器（-1dBFS）。
+    # ★ 片头 60ms 淡入：杀掉首样本突变/编码器起点的「咔」声
+    FADE_IN = ",afade=t=in:st=0:d=0.06"
     if len(mix_ins) == 1:
-        fc += ";[narx]alimiter=limit=0.89:level=0[a]"
+        fc += ";[narx]alimiter=limit=0.89:level=0" + FADE_IN + "[a]"
     else:
         fc += (f";{''.join(mix_ins)}amix=inputs={len(mix_ins)}:duration=first,"
-               "alimiter=limit=0.89:level=0[a]")
+               "alimiter=limit=0.89:level=0" + FADE_IN + "[a]")
     out = os.path.join(tmp, "narration.m4a")
     cmd += ["-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "160k", out]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -735,12 +918,24 @@ def main():
                     help="逗号分隔图片（按顺序）：图片轮播模式，每张覆盖若干整句，切图边界=字幕/配音边界")
     ap.add_argument("--title-size", type=int, default=64)
     ap.add_argument("--bgm", default="", help="背景音乐：auto（默认素材优先+自动合成兜底）/ none / 音频文件")
+    ap.add_argument("--bgm-level", type=float, default=0.20,
+                    help="BGM 音量（0~1，默认 0.20；旧值 0.12 在旁白下几乎听不见）")
+    ap.add_argument("--storyboard", default="",
+                    help="分镜 JSON（文件路径或 JSON 字符串）：走**动态排版引擎**——元素随旁白节奏入场、"
+                         "场景交叉淡化、底部打字机字幕。省略则按旁白自动生成分镜")
+    ap.add_argument("--visual", default="auto", choices=["auto", "kinetic", "images", "bg_video"],
+                    help="画面模式：auto（有 storyboard 或无背景素材→kinetic）/ kinetic / images / bg_video")
+    ap.add_argument("--bg-images", default="",
+                    help="动态排版的素材底图：逗号分隔图片路径，或 auto（自动扫描 00-source/images、"
+                         "02-work/images、00-source；按顺序轮转做 Ken Burns 推拉）")
+    ap.add_argument("--subtitle-style", default="typewriter", choices=["typewriter", "ticker"],
+                    help="字幕样式：typewriter=逐句打字机（默认，平台主流）/ ticker=整句从右往左平移")
     ap.add_argument("--out-name", default="", help="成片文件名（不含路径；缺省按别名+集数或标题命名）")
     ap.add_argument("--ambience", default="auto",
                     help="环境音：auto（按文案情绪选）/ none / pad_soft / room / wind / rain / hum / space / fire")
     ap.add_argument("--ambience-level", type=float, default=0.12, help="环境音音量（0~1，默认 0.12，会被旁白闪避压下去）")
     ap.add_argument("--sfx", default="auto", help="高能点缀音效：auto（开头+高能句）/ none（关闭）")
-    ap.add_argument("--sfx-level", type=float, default=0.5, help="点缀音效音量（0~1，默认 0.5）")
+    ap.add_argument("--sfx-level", type=float, default=0.35, help="点缀音效音量（0~1，默认 0.35）")
     ap.add_argument("--aspect", default="4:3", choices=list(ASPECT_SIZES.keys()), help="画幅: 4:3(默认) / 9:16(抖音竖屏) / 16:9(横屏)")
     ap.add_argument("--banner", default="", help="顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名")
     ap.add_argument("--alias", default="", help="别名：顶部常驻「搜「别名」看全文｜番茄小说」（集数走 --ep 大字）")
@@ -774,10 +969,12 @@ def main():
         raise SystemExit("script.json 中无音频, 先跑 tts_gen.py")
 
     cues, t = [], 0.0
-    for text, p in audio_items:
+    for i, (text, p) in enumerate(audio_items):
         d = probe_duration(ffmpeg, p)
         cues.append((t, t + d, text))
         t += d
+        if i < len(audio_items) - 1:
+            t += pause_after_sec(text)   # 段间停顿与 build_audio_bed 的 apad 同源
 
     # ★ 字幕效果（2026-10-11 重做）：改走 ASS 直接生成——
     #   ① 无底框：白字加粗+黑描边(3px)+轻投影（黑底 box 用户反馈太丑，已撤）；
@@ -811,6 +1008,7 @@ def main():
     audio_out = build_audio_bed(
         ffmpeg, tmp, audio_items, bgm_path, ambience,
         max(0.0, min(1.0, a.ambience_level)), accents, t,
+        bgm_level=max(0.0, min(1.0, a.bgm_level)),
     )
     print(f"[audio] bgm={os.path.basename(bgm_path) if bgm_path else 'none'} "
           f"ambience={ambience} level={a.ambience_level} accents={[x[1] for x in accents]}")
@@ -881,7 +1079,50 @@ def main():
 
     bg_clips = [p.strip() for p in a.bg_video.split(",") if p.strip()] if a.bg_video else []
     images = [p.strip() for p in a.images.split(",") if p.strip()] if a.images else []
-    if bg_clips:
+
+    # ---- 3b) 动态排版画面轨（kinetic）----
+    # 动因（2026-10-28 用户：「图片一张张切换、字幕和图里的字重复、没有音乐特效」）：
+    #   整图轮播的天花板就是硬切——图是死的，怎么调参都动不起来。kinetic 逐帧绘制，
+    #   元素按旁白节奏入场、场景交叉淡化、字幕逐字打出，且卡片只放关键词不与字幕重复。
+    # auto 策略：给了 storyboard 就用；没背景素材也没图片时也用它（比深色占位帧好看得多）。
+    use_kinetic = (a.visual == "kinetic") or (
+        a.visual == "auto" and (bool(a.storyboard) or (not bg_clips and not images)))
+    if use_kinetic:
+        try:
+            import kinetic as kinetic_mod
+        except Exception as e:
+            raise SystemExit(f"动态排版引擎不可用（缺 Pillow？pip install pillow）：{e}")
+        raw_sb = None
+        if a.storyboard:
+            if os.path.exists(a.storyboard):
+                raw_sb = kinetic_mod.load_storyboard(a.storyboard)
+            else:
+                try:
+                    raw_sb = json.loads(a.storyboard)
+                except Exception:
+                    raise SystemExit("--storyboard 既不是存在的文件，也不是合法 JSON")
+        if raw_sb:
+            scenes = kinetic_mod.normalize_storyboard(raw_sb, len(cues))
+        else:
+            print("[compose] 未传 --storyboard，按旁白自动生成分镜", file=sys.stderr)
+            scenes = [kinetic_mod.auto_scene(txt, i) for i, (_s, _e, txt) in enumerate(cues)]
+        timeline = kinetic_mod.build_timeline(scenes, cues, total)
+        video_only = os.path.join(tmp, "kinetic.mp4")
+        badge = f"第{a.chapter}集" if a.chapter else ""
+        bg_imgs = resolve_bg_images(a.bg_images, a.outdir)
+        if not bg_imgs and bg_clips:
+            # 只给了背景视频：抽帧做底图（视频本身不进 kinetic 轨，避免与文字抢注意力）
+            bg_imgs = extract_bg_frames(ffmpeg, bg_clips, tmp, W, H)
+        kinetic_mod.render_video(ffmpeg, video_only, timeline, total, W, H,
+                                 top_text=top_text, badge_text=badge, fps=FPS,
+                                 bg_images=bg_imgs,
+                                 theme=str((raw_sb or {}).get("theme") or "dark"),
+                                 subtitle_style=a.subtitle_style)
+        # 视频轨不再叠 drawtext/ASS：顶部条、角标、字幕全部由渲染器画进帧里
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-i", video_only, "-i", audio_out,
+                        "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+                        "-t", f"{total:.2f}", "-shortest", final], check=True)
+    elif bg_clips:
         # ★ 2026-10-09 重写：原「多输入 -stream_loop -1 + concat 滤镜」在项目自带 2019 版 ffmpeg 上
         #   实测失效——输出被最短的一条输入轨截断（第1/2章成片都只有 108.2s，而口播 448s）。
         #   新方案：① 每段背景先归一化（scale/crop/fps/setsar + 去音轨）成 clip_i.mp4；

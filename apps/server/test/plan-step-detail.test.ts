@@ -135,15 +135,16 @@ describe('buildPlanStepDetail', () => {
     expect(r.detail.toolCallCount).toBe(2);
   });
 
-  it('≥10 分钟且没有工具调用 → containsWait', () => {
+  it('≥10 分钟且没有工具调用 → containsWait；waitMs 原样透出', () => {
     hoisted.conversations.c1.task_plan_json = JSON.stringify({
       title: '计划',
-      steps: [{ title: '等用户确认', status: 'done', startedAt: T0, finishedAt: T0 + 11 * 60_000 }],
+      steps: [{ title: '等用户确认', status: 'done', startedAt: T0, finishedAt: T0 + 11 * 60_000, waitMs: 9 * 60_000 }],
     });
     const r = buildPlanStepDetail('c1', 1);
     if (!r.ok) throw new Error('unexpected');
     expect(r.detail.toolCallCount).toBe(0);
     expect(r.detail.containsWait).toBe(true);
+    expect(r.detail.waitMs).toBe(9 * 60_000);
   });
 
   it('运行中的步骤以当前时间作为窗口末尾（不臆造 finishedAt）', () => {

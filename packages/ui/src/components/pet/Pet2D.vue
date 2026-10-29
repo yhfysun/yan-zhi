@@ -34,6 +34,7 @@ const props = withDefaults(
 )
 
 interface RowCfg { r: number; n: number; fps: number }
+interface ActionCfg extends RowCfg { dur: number }
 interface PackCfg {
   name: string
   img: string
@@ -42,6 +43,8 @@ interface PackCfg {
   cols: number
   rows: number
   states: Record<string, RowCfg>
+  /** 导入的形象可自带动作行；内置包没有，用下面的 ACTION_ROWS */
+  actions?: Record<string, ActionCfg>
 }
 
 const STD: Record<string, RowCfg> = {
@@ -78,14 +81,19 @@ const PACKS: Record<string, PackCfg> = Object.fromEntries(
     .map(([id, cfg]) => [id, { ...cfg, img: PET_PACK_URLS[id] }])
 )
 
-/** 逗一下：动作 → 精灵行（社区标准行序） */
-const ACTION_ROWS: Record<string, RowCfg & { dur: number }> = {
+/** 逗一下：动作 → 精灵行（社区标准行序）；用户图集若有自己的动作行则优先 */
+const ACTION_ROWS: Record<string, ActionCfg> = {
   pet: { r: 0, n: 6, fps: 6, dur: 2300 },
   wave: { r: 3, n: 4, fps: 8, dur: 2400 },
   look: { r: 7, n: 6, fps: 8, dur: 2600 },
   nap: { r: 6, n: 6, fps: 3, dur: 3000 },
   spin: { r: 0, n: 6, fps: 6, dur: 1100 },
   hop: { r: 0, n: 6, fps: 6, dur: 900 },
+}
+
+function actionCfgOf(pack: PackCfg | null, name: string | null): ActionCfg | null {
+  if (!name) return null
+  return pack?.actions?.[name] || ACTION_ROWS[name] || null
 }
 
 // 没有任何 2D 素材（--pets=none 或未选任何包）→ packCfg 为 null，组件不渲染也不跑定时器
@@ -95,7 +103,12 @@ const packCfg = computed<PackCfg | null>(() => {
   if (user) return user as PackCfg
   return PACKS[props.pack] || PACKS[Object.keys(PACKS)[0]] || null
 })
-const box = computed(() => ({ w: 109 * props.scale, h: 118 * props.scale }))
+/** 盒子按帧宽高比走：图集帧可能不是 192×208，硬套会裁掉边缘 */
+const box = computed(() => {
+  const h = 118 * props.scale
+  const ratio = packCfg.value ? packCfg.value.fw / packCfg.value.fh : 192 / 208
+  return { w: Math.max(36, Math.min(280, h * ratio)), h }
+})
 
 const frame = ref(0)
 const row = ref(0)
@@ -106,13 +119,14 @@ let overrideUntil = 0
 const spriteStyle = computed(() => {
   const p = packCfg.value
   if (!p) return {}
-  const s = (118 * props.scale) / p.fh
+  // contain：按盒子与帧尺寸取小值，任何宽高比的图集都不会被裁
+  const s = Math.min(box.value.w / p.fw, box.value.h / p.fh)
   return {
     backgroundImage: `url(${p.img})`,
     backgroundSize: `${(p.fw * p.cols * s).toFixed(1)}px ${(p.fh * p.rows * s).toFixed(1)}px`,
     backgroundPosition: `${(-frame.value * p.fw * s).toFixed(1)}px ${(-row.value * p.fh * s).toFixed(1)}px`,
-    width: box.value.w + 'px',
-    height: box.value.h + 'px',
+    width: p.fw * s + 'px',
+    height: p.fh * s + 'px',
   }
 })
 
@@ -125,7 +139,7 @@ function tick() {
   const pack = packCfg.value
   if (!pack) return
   const cfg = overrideUntil
-    ? ACTION_ROWS[props.action as string]
+    ? actionCfgOf(pack, props.action as string)
     : props.walking
       ? pack.states.walking
       : pack.states[props.state] || pack.states.idle
@@ -152,7 +166,7 @@ function applyTimer() {
 watch(
   () => [props.state, props.action, props.walking],
   ([, act]) => {
-    const a = act ? ACTION_ROWS[act as string] : null
+    const a = actionCfgOf(packCfg.value, act as string | null)
     overrideUntil = a ? performance.now() + a.dur : 0
     frame.value = 0
     lastTick = 0

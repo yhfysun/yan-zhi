@@ -141,10 +141,12 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   api_git_remote_branches: 'git-read',
   api_git_stash_list: 'git-read',
   api_git_tag_list: 'git-read',
+  api_git_hunks: 'git-read',
 
   // ═══ Git · 写 ═══
   api_git_add: 'git-write',
   api_git_commit: 'git-write',
+  api_git_stage_hunks: 'git-write',
   api_git_push: 'git-write',
   api_git_pull: 'git-write',
   api_git_fetch: 'git-write',

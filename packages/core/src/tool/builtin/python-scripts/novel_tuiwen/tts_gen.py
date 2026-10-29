@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 novel-tuiwen TTS 配音生成器 (Edge-TTS, 免费)
-用法: python tts_gen.py --script script.json --outdir audio/ [--voice zh-CN-YunxiNeural]
+用法: python tts_gen.py --script script.json --outdir audio/ [--voice zh-CN-YunjianNeural]
 逐段合成 mp3, 并用 ffprobe 读取真实时长写回 script.json 的 segments[].duration (秒)。
 """
 import argparse
@@ -25,7 +25,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-DEFAULT_VOICE = "zh-CN-YunxiNeural"  # 年轻男声, 推文常用; 备选 zh-CN-XiaoyiNeural
+DEFAULT_VOICE = "zh-CN-YunjianNeural"  # 云健：厚实沧桑、讲故事感强（2026-10-27 用户指定）；
+# 备选：zh-CN-YunxiNeural（年轻男声，偏平）/ zh-CN-YunxiaNeural（更年轻）/ zh-CN-XiaoyiNeural（女声）
 
 
 def normalize_rate(rate: str) -> str:
@@ -115,6 +116,10 @@ def _frac_to_cn(m: "re.Match") -> str:
 
 
 def normalize_for_tts(text: str) -> str:
+    # 0) markdown 残留（2026-10-27）：`**` / 反引号 / `#` 会被读成停顿或怪音，
+    #    `[文字](链接)` 只读文字——LLM 生成的文案常带这些，是"断句怪"的来源之一。
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[*`#]+", "", text)
     # 1) 时间（先于分数，避免 23:59 被当分数）
     text = re.sub(r"\d{1,2}[：:]\d{1,2}(?:[：:]\d{1,2})?", _time_to_cn, text)
     # 2) 进度/分数（半角斜杠、反斜杠、全半角竖线；容忍 markdown 转义如 1\|4 的双分隔符）
@@ -241,9 +246,12 @@ def main():
 
     # ★ 语速变了 → 旧分段音频全部作废（2026-10-24）：分段缓存靠文件名命中，
     #   换语速后若沿用旧文件，画面/字幕时长会按**旧语速**排，和新配音错位。
+    #   ★ 音色同理（2026-10-27）：换默认音色时必须一起作废，否则会"以为换了声音、
+    #     实际还在念旧音色"——文件名只看段号，不看用的是谁。
     #   只删本管线自己生成的 seg_*.mp3，不动用户素材。
     prev_rate = str(script.get("tts_rate") or "")
-    if prev_rate != rate:
+    prev_voice = str(script.get("tts_voice") or "")
+    if prev_rate != rate or prev_voice != a.voice:
         stale = 0
         try:
             for fn in os.listdir(a.outdir):
@@ -253,9 +261,14 @@ def main():
         except OSError:
             pass
         if stale:
-            print(f"[tts] 语速 {prev_rate or '原速'} → {rate or '原速'}：已清理 {stale} 段旧配音",
-                  file=sys.stderr)
+            why = []
+            if prev_rate != rate:
+                why.append(f"语速 {prev_rate or '原速'} → {rate or '原速'}")
+            if prev_voice != a.voice:
+                why.append(f"音色 {prev_voice or '未记录'} → {a.voice}")
+            print(f"[tts] {'，'.join(why)}：已清理 {stale} 段旧配音", file=sys.stderr)
     script["tts_rate"] = rate
+    script["tts_voice"] = a.voice
 
     lines = [script.get("hook", "")] + [s["text"] for s in script["segments"]] + [script.get("ending", "")]
     jobs = [(i, text) for i, text in enumerate(lines) if text.strip()]
@@ -264,9 +277,14 @@ def main():
 
     async def run_one(i: int, text: str):
         p = os.path.join(a.outdir, f"seg_{i:03d}.mp3")
+        # ★ 2026-10-27：段尾没有标点时 Edge-TTS 会"戛然而止"（语调收不回来），
+        #   补一个句号让每段都有完整降调；字幕仍显示原文，不受影响。
+        tts_text = normalize_for_tts(text)
+        if tts_text and tts_text[-1] not in "。！？!?…，,；;：:":
+            tts_text += "。"
         # 已存在的分段跳过（重跑时不必重新合成，网络抖动恢复后续跑即可）
         if not (os.path.exists(p) and os.path.getsize(p) > 0):
-            await synth_with_retry(normalize_for_tts(text), p, a.voice, sem, rate=rate)
+            await synth_with_retry(tts_text, p, a.voice, sem, rate=rate)
         d = audio_duration(p)
         print(f"[tts] seg_{i:03d} {d:.2f}s  {text[:18]}...")
         return i, p, d

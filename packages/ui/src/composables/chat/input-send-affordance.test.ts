@@ -33,7 +33,9 @@ describe('发送按钮禁用条件（症状①②）', () => {
     const body = INPUT.slice(i, i + 700);
     expect(body).toMatch(/input\.value\.trim\(\)/);
     expect(body).toMatch(/uploadedFiles\.value\.length\s*>\s*0/);
-    expect(body).toMatch(/quotedUrls\.value\.length\s*>\s*0/);
+    // 引用（一次性 + 固定合并视图，含网页引用）也算内容
+    expect(body).toMatch(/selectedWorkFiles\.value\.length\s*>\s*0/);
+    expect(body).toMatch(/allQuotedUrls\.value\.length\s*>\s*0/);
     expect(body).toMatch(/!!selectedModelId\.value/);
     // 不得含 sending / streaming 语义
     expect(body, '★ canSubmit 混入了 sending').not.toMatch(/\bsending\b/);
@@ -43,12 +45,15 @@ describe('发送按钮禁用条件（症状①②）', () => {
   it('★ canSend（useChat 侧）与 canSubmit 同口径 —— 不得再用 !isConvStreaming 拦发送', () => {
     const i = CHAT.indexOf('const canSend = computed');
     expect(i, '★ 找不到 canSend').toBeGreaterThan(-1);
-    // 取该行（computed 是单行）
-    const line = CHAT.slice(i, CHAT.indexOf('\n', i));
-    expect(line, '★ canSend 仍在用 !isConvStreaming 拦发送（与"追加队列"设计冲突）')
+    // ★ computed 体可能跨多行（引用 / 固定引用也算「有内容」），取一段窗口
+    const body = CHAT.slice(i, i + 400);
+    expect(body, '★ canSend 仍在用 !isConvStreaming 拦发送（与"追加队列"设计冲突）')
       .not.toMatch(/isConvStreaming/);
-    expect(line).toMatch(/input\.value\.trim\(\)/);
-    expect(line).toMatch(/!!selectedModelId\.value/);
+    expect(body).toMatch(/input\.value\.trim\(\)/);
+    expect(body).toMatch(/!!selectedModelId\.value/);
+    // 只挂了引用没打字时也要能发：一次性引用与固定引用都算内容
+    expect(body).toMatch(/selectedFilePaths\.value\.size/);
+    expect(body).toMatch(/pinnedFilePaths\.value\.size/);
   });
 
   it('行为语义：入队分支自身无 await（点追加即入队，不被网络/落盘拖住）', () => {

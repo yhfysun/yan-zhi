@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>百度热搜 · 列表 → 卡片 改版预览</title>
+<style>
+  :root{ --line:#e3eaf4; --ink:#1b2430; --muted:#7c8ba1; --accent:#2f6bff; --hot:#f5533d; }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; padding:24px; min-height:100vh; color:var(--ink);
+    font:14px/1.55 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:#f4f7fc;
+  }
+  .wrap{ max-width:1080px; margin:0 auto; }
+  h1{ font-size:18px; margin:0 0 4px; }
+  .sub{ color:var(--muted); font-size:12.5px; margin:0 0 16px; }
+  .bar{ display:flex; gap:10px; align-items:center; margin-bottom:18px; flex-wrap:wrap; }
+  .bar button{
+    font:600 13px/1 inherit; padding:9px 16px; border-radius:9px; cursor:pointer;
+    border:1px solid var(--line); background:#fff; color:#33415a;
+  }
+  .bar button.on{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  .bar .note{ font-size:12px; color:var(--muted); margin-left:auto; }
+
+  .cols{ display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start; }
+  @media (max-width:860px){ .cols{ grid-template-columns:1fr; } }
+
+  .panel{ background:#fff; border:1px solid var(--line); border-radius:14px; padding:16px 16px 18px; }
+  .panel > h2{ font-size:13px; margin:0 0 12px; color:#5b6b80; font-weight:600;
+    display:flex; align-items:center; gap:8px; }
+  .panel > h2 .tag{ font-size:10.5px; font-weight:500; color:#fff; background:var(--muted);
+    padding:1px 7px; border-radius:999px; }
+  .panel.after > h2 .tag{ background:var(--accent); }
+
+  /* ===== 百度热搜 · 原始列表形态 ===== */
+  #s-hotsearch-wrapper{ width:100%; }
+  .hs-head{ display:flex; align-items:center; gap:6px; margin-bottom:10px; }
+  .hs-head b{ font-size:15px; color:#222; }
+  .hs-head b i{ font-style:normal; color:var(--hot); }
+  .hs-head a{ font-size:12px; color:var(--muted); margin-left:auto; cursor:pointer; text-decoration:none; }
+  #s-hotsearch-wrapper ul{ list-style:none; margin:0; padding:0; }
+  #s-hotsearch-wrapper ul > li{
+    display:flex; align-items:center; gap:9px;
+    padding:7px 0; font-size:13.5px; min-width:0;
+  }
+  #s-hotsearch-wrapper ul > li .idx{
+    width:16px; flex-shrink:0; text-align:center; font-weight:700; font-size:12.5px; color:var(--muted);
+  }
+  #s-hotsearch-wrapper ul > li .idx.top{ color:var(--hot); }
+  #s-hotsearch-wrapper ul > li .t{
+    flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#222;
+  }
+  #s-hotsearch-wrapper ul > li .t:hover{ color:var(--accent); text-decoration:underline; cursor:pointer; }
+  #s-hotsearch-wrapper ul > li .flag{
+    flex-shrink:0; font-size:10.5px; padding:0 4px; border-radius:3px; line-height:16px;
+  }
+  .flag.hot{ color:#fff; background:var(--hot); }
+  .flag.new{ color:#fff; background:#f7a13b; }
+
+  /* ===== 卡片化改造（与下方可粘贴 CSS 完全一致） ===== */
+  .panel.after #s-hotsearch-wrapper ul{
+    display:grid !important; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px !important;
+  }
+  .panel.after #s-hotsearch-wrapper ul > li{
+    background:#fff !important; border:1px solid #e6ecf4 !important; border-radius:10px !important;
+    padding:8px 10px !important; min-width:0 !important;
+    box-shadow:0 2px 8px rgba(47,107,255,.06) !important;
+    overflow:hidden !important; white-space:nowrap !important; text-overflow:ellipsis !important;
+  }
+  .panel.after #s-hotsearch-wrapper ul > li a{
+    display:block !important; overflow:hidden !important; text-overflow:ellipsis !important;
+  }
+  /* 卡片模式下：让「序号 + 标题」紧凑成一行，去掉列表的纵向留白 */
+  .panel.after #s-hotsearch-wrapper ul > li{ padding:8px 10px !important; }
+  .panel.after #s-hotsearch-wrapper ul > li .idx{ font-size:12px; }
+  .panel.after #s-hotsearch-wrapper ul > li .t{ font-size:13px; }
+
+  .cssbox{ margin-top:20px; background:#0f1620; border-radius:12px; padding:14px 16px; }
+  .cssbox h3{ margin:0 0 8px; font-size:12px; color:#8b98ab; font-weight:600; letter-spacing:.3px; }
+  .cssbox pre{
+    margin:0; color:#a8b8cc; font:11.5px/1.7 ui-monospace,Consolas,monospace;
+    white-space:pre-wrap; word-break:break-word;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>百度热搜 · 列表 → 卡片 改版预览</h1>
+  <p class="sub">左：百度首页现网列表形态　右：应用卡片化 CSS 后的效果（数据为百度首页当前 10 条热搜，2026-10-28 快照）</p>
+
+  <div class="bar">
+    <button class="on" data-v="both">并排对比</button>
+    <button data-v="before">只看改造前</button>
+    <button data-v="after">只看改造后</button>
+    <span class="note">线上百度页面本身无法修改，此预览用于确认视觉方案</span>
+  </div>
+
+  <div class="cols" id="cols">
+    <div class="panel before">
+      <h2>改造前 <span class="tag">现网列表</span></h2>
+      <div id="s-hotsearch-wrapper">
+        <div class="hs-head"><b>百度<i>热搜</i></b><a>换一换</a></div>
+        <ul>
+          <li><span class="idx">↑</span><span class="t">把反腐败斗争进行到底</span></li>
+          <li><span class="idx top">1</span><span class="t">刘延东逝世</span></li>
+          <li><span class="idx top">2</span><span class="t">皇马官方就姆巴佩言论致歉</span><span class="flag hot">热</span></li>
+          <li><span class="idx top">3</span><span class="t">坚持用严明的纪律管全党治全党</span></li>
+          <li><span class="idx">4</span><span class="t">中方重视姆巴佩作出的道歉</span><span class="flag hot">热</span></li>
+          <li><span class="idx">5</span><span class="t">西班牙高铁列车相撞致至少46人死亡</span><span class="flag new">新</span></li>
+          <li><span class="idx">6</span><span class="t">姆巴佩球衣遭抛售 最多降价九成</span></li>
+          <li><span class="idx">7</span><span class="t">婚礼不是舞台 妊娠纹更非“通告”</span></li>
+          <li><span class="idx">8</span><span class="t">中国发现三颗“本不该存在”的行星</span><span class="flag new">新</span></li>
+          <li><span class="idx">9</span><span class="t">这些“红军树”见证长征精神</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="panel after">
+      <h2>改造后 <span class="tag">卡片化</span></h2>
+      <div id="s-hotsearch-wrapper2"></div>
+    </div>
+  </div>
+
+  <div class="cssbox">
+    <h3>可粘贴到 DevTools 的覆盖 CSS（粘贴后百度热搜立即变卡片，刷新即还原）</h3>
+<pre>#s-hotsearch-wrapper ul { display:grid !important; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px !important; }
+#s-hotsearch-wrapper ul &gt; li {
+  background:#fff !important; border:1px solid #e6ecf4 !important; border-radius:10px !important;
+  padding:8px 10px !important; min-width:0 !important;
+  box-shadow:0 2px 8px rgba(47,107,255,.06) !important;
+  overflow:hidden !important; white-space:nowrap !important; text-overflow:ellipsis !important;
+}
+#s-hotsearch-wrapper ul &gt; li a { display:block !important; overflow:hidden !important; text-overflow:ellipsis !important; }</pre>
+  </div>
+</div>
+
+<script>
+  // 右侧「改造后」面板复用同一份 DOM 结构（去掉重复 id 冲突）
+  (function(){
+    var src = document.querySelector('.panel.before #s-hotsearch-wrapper');
+    var dst = document.getElementById('s-hotsearch-wrapper2');
+    dst.innerHTML = src.innerHTML;
+    dst.id = 's-hotsearch-wrapper';
+    dst.className = '';
+  })();
+
+  var panels = document.querySelectorAll('.panel');
+  document.querySelectorAll('.bar button').forEach(function(b){
+    b.onclick = function(){
+      document.querySelectorAll('.bar button').forEach(function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      var v = b.dataset.v;
+      panels[0].style.display = (v === 'after')  ? 'none' : '';
+      panels[1].style.display = (v === 'before') ? 'none' : '';
+      document.getElementById('cols').style.gridTemplateColumns =
+        (v === 'both') ? '' : 'minmax(0, 1fr)';
+    };
+  });
+</script>
+</body>
+</html>

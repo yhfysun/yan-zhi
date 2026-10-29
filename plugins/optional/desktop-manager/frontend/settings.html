@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>桌面管理 · 设置</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #141a26; color: #e6ecf8;
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    font-size: 13px; display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    flex: 0 0 44px; display: flex; align-items: center; gap: 10px;
+    padding: 0 14px; -webkit-app-region: drag;
+    border-bottom: 1px solid rgba(255,255,255,.08);
+  }
+  header .t { font-size: 13px; font-weight: 600; }
+  header .sp { flex: 1; }
+  header button { -webkit-app-region: no-drag; }
+  button {
+    border: 0; cursor: pointer; font-family: inherit; font-size: 12.5px;
+    padding: 6px 12px; border-radius: 8px; color: #cfd8e8; background: rgba(255,255,255,.09);
+  }
+  button:hover { background: rgba(255,255,255,.16); }
+  button.primary { background: linear-gradient(135deg,#4f6bff,#7a4dff); color: #fff; }
+  button.danger { background: rgba(255,90,90,.16); color: #ff9b9b; }
+
+  main { flex: 1; overflow: auto; padding: 14px 16px 24px; }
+  section { margin-bottom: 18px; }
+  section > h3 { margin: 0 0 10px; font-size: 12.5px; color: #9aa6ba; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .row label { width: 110px; color: #b9c5d8; flex: none; }
+  input[type=text], input[type=number], select, textarea {
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+    color: #e6ecf8; border-radius: 8px; padding: 7px 10px; font-family: inherit; font-size: 12.5px;
+    outline: none; width: 100%;
+  }
+  input:focus, select:focus, textarea:focus { border-color: rgba(110,140,255,.6); }
+  textarea { min-height: 74px; resize: vertical; line-height: 1.5; }
+  .hint { font-size: 11.5px; color: #7d889c; line-height: 1.6; }
+  .list { border: 1px solid rgba(255,255,255,.08); border-radius: 10px; overflow: hidden; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,.06); }
+  .item:last-child { border-bottom: 0; }
+  .item .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .item .n { flex: 1; }
+  .item .c { font-size: 11.5px; color: #8d99ad; }
+  .bar { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  .status { font-size: 12px; color: #7ef0b0; }
+  .status.err { color: #ff9b9b; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="t">桌面管理 · 设置</span>
+    <span class="sp"></span>
+    <button id="btnClose">关闭</button>
+  </header>
+  <main>
+    <section>
+      <h3>整理</h3>
+      <div class="row">
+        <label>默认策略</label>
+        <select id="strategy">
+          <option value="rules">规则整理（不调用大模型）</option>
+          <option value="ai">AI 整理（规则打底 + 模型补充）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>目标目录前缀</label>
+        <input id="targetRoot" type="text" placeholder="留空 = 直接放桌面下，如 文档/ 图片/" />
+      </div>
+      <div class="row">
+        <label>时间簇</label>
+        <label style="width:auto;display:flex;gap:6px;align-items:center;">
+          <input id="tcEnabled" type="checkbox" style="width:auto" /> 按最近
+        </label>
+        <input id="tcDays" type="number" min="1" max="60" style="width:80px" />
+        <span class="hint">天分组（仅图片/视频）</span>
+      </div>
+    </section>
+
+    <section>
+      <h3>规则</h3>
+      <div class="row" style="align-items:flex-start">
+        <label>自定义规则</label>
+        <textarea id="rules" placeholder="每行一条：*.pdf => 文档&#10;星图* => 项目·星图&#10;（越靠前优先级越高）"></textarea>
+      </div>
+      <div class="row" style="align-items:flex-start">
+        <label>项目关键词</label>
+        <textarea id="projects" placeholder="文件名包含即归入同名围栏，如：星图, 青岚"></textarea>
+      </div>
+      <div class="row" style="align-items:flex-start">
+        <label>保留名单</label>
+        <textarea id="keep" placeholder="每行一条 glob，如：*.lnk"></textarea>
+      </div>
+      <div class="bar">
+        <button class="primary" id="btnSave">保存</button>
+        <span class="status" id="status"></span>
+      </div>
+    </section>
+
+    <section>
+      <h3>围栏</h3>
+      <div class="list" id="fenceList"></div>
+      <div class="bar">
+        <button id="btnNewFence">+ 新建围栏</button>
+        <button id="btnOpenFence">打开围栏（桌面层）</button>
+      </div>
+      <div class="bar">
+        <button id="btnOpenWidgets">打开组件（桌面层）</button>
+        <button id="btnOpenWidgetsOverlay">打开组件（悬浮层）</button>
+      </div>
+      <p class="hint" style="margin-top:10px">
+        围栏会隐藏系统桌面图标并自绘；关闭窗口或退出应用时基座会自动恢复图标。
+        开机自启围栏需要宿主提供启动任务能力（暂未实现）。
+      </p>
+    </section>
+  </main>
+  <script type="module" src="./settings.mjs"></script>
+</body>
+</html>

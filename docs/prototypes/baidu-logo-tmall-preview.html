@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>百度首页 Logo → 天猫 · 替换预览（#s_lg_img）</title>
+<style>
+  :root{ --line:#e6ecf4; --ink:#1b2430; --muted:#7c8ba1; --accent:#2f6bff; --tmall:#FF0036; }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; padding:24px; min-height:100vh; color:var(--ink); background:#f4f7fc;
+    font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  .wrap{ max-width:1040px; margin:0 auto; }
+  h1{ font-size:18px; margin:0 0 4px; }
+  .sub{ color:var(--muted); font-size:12.5px; margin:0 0 16px; }
+  code{ font:12px ui-monospace,Consolas,monospace; background:#eef3fb; padding:1px 5px; border-radius:4px; color:#2f6bff; }
+
+  .bar{ display:flex; gap:10px; align-items:center; margin-bottom:18px; flex-wrap:wrap; }
+  .bar button{ font:600 13px/1 inherit; padding:9px 16px; border-radius:9px; cursor:pointer;
+    border:1px solid var(--line); background:#fff; color:#33415a; }
+  .bar button.on{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  .bar .note{ font-size:12px; color:var(--muted); margin-left:auto; }
+
+  .cols{ display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start; }
+  @media (max-width:860px){ .cols{ grid-template-columns:1fr; } }
+
+  .panel{ background:#fff; border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  .panel > h2{ font-size:13px; margin:0; padding:12px 16px; color:#5b6b80; font-weight:600;
+    display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--line); background:#fbfdff; }
+  .panel > h2 .tag{ font-size:10.5px; font-weight:500; color:#fff; background:var(--muted);
+    padding:1px 7px; border-radius:999px; }
+  .panel.after > h2 .tag{ background:var(--tmall); }
+
+  /* ===== 模拟百度首页头部（含 logo 位） ===== */
+  .mock{ padding:0; background:#fff; }
+  .mnav{ display:flex; gap:18px; padding:12px 18px; font-size:11.5px; color:#5b6b80; border-bottom:1px solid #f0f4fa; }
+  .mnav span{ cursor:default; }
+  .mlogo{ display:flex; align-items:center; justify-content:center; padding:26px 18px 20px; }
+  #s_lg_img{ width:270px; height:129px; display:block; }
+  .msearch{ margin:0 18px 16px; display:flex; gap:8px; }
+  .msearch .box{ flex:1; border:2px solid #c4d0e2; border-radius:10px 0 0 10px; padding:10px 14px;
+    font-size:12.5px; color:#98a5b8; background:#fff; }
+  .msearch .btn{ background:#2932E1; color:#fff; font-size:13px; font-weight:600;
+    padding:10px 24px; border-radius:0 10px 10px 0; display:grid; place-items:center; }
+  .mhot{ padding:0 18px 18px; font-size:12px; color:#64748b; }
+  .mhot b{ color:#222; font-size:12.5px; }
+
+  .hintline{ padding:10px 16px 14px; font-size:11.5px; color:var(--muted); border-top:1px dashed var(--line); }
+
+  .cssbox{ margin-top:20px; background:#0f1620; border-radius:12px; padding:14px 16px; }
+  .cssbox h3{ margin:0 0 8px; font-size:12px; color:#8b98ab; font-weight:600; letter-spacing:.3px; }
+  .cssbox pre{ margin:0; color:#a8b8cc; font:11.5px/1.7 ui-monospace,Consolas,monospace;
+    white-space:pre-wrap; word-break:break-word; max-height:420px; overflow:auto; }
+  .cssbox .warn{ margin-top:10px; font-size:11.5px; color:#ffcf9e; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>百度首页 Logo → 天猫 · 替换预览</h1>
+  <p class="sub">批注元素 <code>#s_lg_img</code>（百度首页 logo 图）　·　左：原状　右：换成天猫后的效果　·　两侧图形均为<strong>近似重绘</strong>（非官方素材，仅用于确认替换位置与视觉比例）</p>
+
+  <div class="bar">
+    <button class="on" data-v="both">并排对比</button>
+    <button data-v="before">只看改造前</button>
+    <button data-v="after">只看改造后</button>
+    <span class="note">线上 baidu.com 无法改动，此处用于确认方案</span>
+  </div>
+
+  <div class="cols" id="cols">
+    <!-- ============ 改造前 ============ -->
+    <div class="panel before">
+      <h2>改造前 <span class="tag">百度 Logo</span></h2>
+      <div class="mock">
+        <div class="mnav"><span>新闻</span><span>hao123</span><span>地图</span><span>贴吧</span><span>视频</span><span>更多</span></div>
+        <div class="mlogo">
+          <!-- 近似重绘的百度 logo，仅占位表达尺寸与位置 -->
+          <svg id="s_lg_img" viewBox="0 0 270 129" xmlns="http://www.w3.org/2000/svg">
+            <g fill="#2932E1">
+              <text x="4" y="86" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="62" letter-spacing="-2">Bai</text>
+              <!-- 熊掌 -->
+              <g transform="translate(150,22)">
+                <circle cx="14" cy="20" r="8.5"/>
+                <circle cx="38" cy="10" r="9"/>
+                <circle cx="62" cy="16" r="9"/>
+                <circle cx="80" cy="34" r="8.5"/>
+                <path d="M46 34c14 0 26 10 26 22 0 11-11 17-26 17S20 67 20 56c0-12 12-22 26-22z"/>
+              </g>
+              <text x="60" y="118" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-weight="700" font-size="40" letter-spacing="6">百度</text>
+            </g>
+          </svg>
+        </div>
+        <div class="msearch"><div class="box">国务院原副总理刘延东逝世</div><div class="btn">百度一下</div></div>
+        <div class="mhot"><b>百度热搜</b>　换一换<br>把反腐败斗争进行到底 / 刘延东逝世 / 皇马官方就姆巴佩言论致歉 …</div>
+      </div>
+      <div class="hintline">logo 元素：<code>&lt;img id="s_lg_img"&gt;</code>，渲染尺寸约 270×129；鼠标悬停时百度会切换到另一张「换脸」图。</div>
+    </div>
+
+    <!-- ============ 改造后 ============ -->
+    <div class="panel after">
+      <h2>改造后 <span class="tag">天猫 Logo</span></h2>
+      <div class="mock">
+        <div class="mnav"><span>新闻</span><span>hao123</span><span>地图</span><span>贴吧</span><span>视频</span><span>更多</span></div>
+        <div class="mlogo">
+          <svg id="tm_logo" viewBox="0 0 270 129" xmlns="http://www.w3.org/2000/svg">
+            <!-- 天猫：黑猫头 + 品牌红字，近似重绘 -->
+            <g>
+              <!-- 猫头轮廓 -->
+              <g transform="translate(6,10)">
+                <path d="M6 30 L6 6 L30 20 H70 L94 6 V30 c10 8 16 20 16 33 0 24-25 43-55 43S6 87 6 63c0-13 6-25 16-33z"
+                      fill="#111" stroke="#111" stroke-width="2" stroke-linejoin="round" transform="translate(-6,0) scale(1.05)"/>
+                <!-- 眼睛 -->
+                <ellipse cx="30" cy="58" rx="8" ry="9.5" fill="#fff"/>
+                <ellipse cx="66" cy="58" rx="8" ry="9.5" fill="#fff"/>
+                <ellipse cx="31" cy="60" rx="3.4" ry="4.6" fill="#111"/>
+                <ellipse cx="67" cy="60" rx="3.4" ry="4.6" fill="#111"/>
+                <!-- 鼻子 -->
+                <path d="M44 74 l7 5 -7 5 -7 -5z" fill="#FF0036"/>
+              </g>
+              <text x="112" y="80" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-weight="800" font-size="62" fill="#FF0036" letter-spacing="2">天猫</text>
+              <text x="116" y="104" font-family="Arial, sans-serif" font-weight="700" font-size="15" fill="#111" letter-spacing="5">TMALL</text>
+            </g>
+          </svg>
+        </div>
+        <div class="msearch"><div class="box">国务院原副总理刘延东逝世</div><div class="btn">百度一下</div></div>
+        <div class="mhot"><b>百度热搜</b>　换一换<br>把反腐败斗争进行到底 / 刘延东逝世 / 皇马官方就姆巴佩言论致歉 …</div>
+      </div>
+      <div class="hintline">替换只改 <code>#s_lg_img</code> 的图源，版式与搜索框位置不变；建议同时关掉 hover 换脸，否则鼠标移上会变回百度。</div>
+    </div>
+  </div>
+
+  <div class="cssbox">
+    <h3>可粘贴到百度首页 DevTools Console 的替换脚本（刷新即还原）</h3>
+<pre>(function () {
+  var img = document.getElementById('s_lg_img');
+  if (!img) { console.warn('#s_lg_img 未找到，页面结构可能已变'); return; }
+
+  // 天猫 logo（内联 SVG，自包含、不依赖外链、可离线）
+  var svg = '&lt;svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 270 129"&gt;'
+    + '&lt;g&gt;'
+    + '&lt;g transform="translate(6,10)"&gt;'
+    + '&lt;path d="M6 30 L6 6 L30 20 H70 L94 6 V30 c10 8 16 20 16 33 0 24-25 43-55 43S6 87 6 63c0-13 6-25 16-33z" fill="#111"/&gt;'
+    + '&lt;ellipse cx="30" cy="58" rx="8" ry="9.5" fill="#fff"/&gt;&lt;ellipse cx="66" cy="58" rx="8" ry="9.5" fill="#fff"/&gt;'
+    + '&lt;ellipse cx="31" cy="60" rx="3.4" ry="4.6" fill="#111"/&gt;&lt;ellipse cx="67" cy="60" rx="3.4" ry="4.6" fill="#111"/&gt;'
+    + '&lt;path d="M44 74 l7 5 -7 5 -7 -5z" fill="#FF0036"/&gt;'
+    + '&lt;/g&gt;'
+    + '&lt;text x="112" y="80" font-family="PingFang SC,Microsoft YaHei,sans-serif" font-weight="800" font-size="62" fill="#FF0036"&gt;天猫&lt;/text&gt;'
+    + '&lt;text x="116" y="104" font-family="Arial,sans-serif" font-weight="700" font-size="15" fill="#111" letter-spacing="5"&gt;TMALL&lt;/text&gt;'
+    + '&lt;/g&gt;&lt;/svg&gt;';
+
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  img.style.width = '270px';
+  img.style.height = '129px';
+
+  // 关掉 hover 换脸（百度 logo 悬停会切另一张）
+  var lg = document.getElementById('lg') || img.parentElement;
+  if (lg) { lg.style.backgroundImage = 'none'; }
+  img.onmouseenter = null; img.onmouseover = null;
+
+  console.log('✅ #s_lg_img 已换成天猫 logo（刷新页面即还原）');
+})();</pre>
+    <div class="warn">想换成官方天猫图，只要把上面 img.src 换成你手上的天猫 logo 图片地址即可（要求 270×129 比例，透明底更好）。</div>
+  </div>
+</div>
+
+<script>
+  var panels = document.querySelectorAll('.panel');
+  document.querySelectorAll('.bar button').forEach(function(b){
+    b.onclick = function(){
+      document.querySelectorAll('.bar button').forEach(function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      var v = b.dataset.v;
+      panels[0].style.display = (v === 'after')  ? 'none' : '';
+      panels[1].style.display = (v === 'before') ? 'none' : '';
+      document.getElementById('cols').style.gridTemplateColumns = (v === 'both') ? '' : 'minmax(0, 1fr)';
+    };
+  });
+</script>
+</body>
+</html>

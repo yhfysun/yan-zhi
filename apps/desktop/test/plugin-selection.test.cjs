@@ -66,3 +66,33 @@ test('office 永远在（即使用户只选一个功能插件）', () => {
   const r = resolvePluginSelection({ catalog, plugins: 'git-explorer' });
   assert.ok(ids(r).includes('office-core'));
 });
+
+test('--plugins=none 只留基座 office-core', () => {
+  const r = resolvePluginSelection({ catalog, plugins: 'none' });
+  assert.deepEqual(ids(r), ['office-core']);
+  assert.equal(r.source, 'plugins');
+  assert.ok(r.excluded.includes('skins'));
+  assert.ok(!r.excluded.includes('office-core'));
+});
+
+test('none 不能与其他选择并列（自相矛盾）', () => {
+  assert.throws(() => resolvePluginSelection({ catalog, plugins: 'none,skins' }), /none 不能与其他插件同时使用/);
+});
+
+test('可选插件：点名才带，默认 / all / 档位预设都不含它', () => {
+  const optional = [{ id: 'desktop-manager', label: '桌面管理', kind: 'optional' }];
+
+  const picked = resolvePluginSelection({ catalog, optional, plugins: 'desktop-manager' });
+  assert.ok(picked.ids.includes('office-core'));
+  assert.equal(picked.ids[picked.ids.length - 1], 'desktop-manager'); // catalog 顺序在前，可选插件在后
+
+  assert.ok(!ids(resolvePluginSelection({ catalog, optional, plugins: 'all' })).includes('desktop-manager'));
+  assert.ok(!ids(resolvePluginSelection({ catalog, optional })).includes('desktop-manager'));
+  assert.ok(!ids(resolvePluginSelection({ catalog, optional, editions: ['lite'] })).includes('desktop-manager'));
+  assert.ok(!ids(resolvePluginSelection({ catalog, optional, modes: ['office'] })).includes('desktop-manager'));
+
+  // 未选的可选插件要进 excluded —— 否则 builtin 里的旧副本永远不会被 prune 掉
+  assert.ok(resolvePluginSelection({ catalog, optional, plugins: 'office-core' }).excluded.includes('desktop-manager'));
+  // 可选插件不参与分组关键字，写错名字必须报错而不是静默忽略
+  assert.throws(() => resolvePluginSelection({ catalog, optional, plugins: 'desktop' }), /未知插件/);
+});

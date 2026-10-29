@@ -35,6 +35,8 @@ export interface PlanStepDetail {
   finishedAt: number | null;
   durationMs: number;
   activeMs: number;
+  /** 时间窗内无活动的长间隙之和（等用户/等外部；结算时由 task-plan-file 写入） */
+  waitMs: number;
   timingAvailable: boolean;
   /** 该步耗时 ≥10 分钟且期间没有任何工具调用 → 大概率在等用户/等外部 */
   containsWait: boolean;
@@ -150,6 +152,7 @@ export function buildPlanStepDetail(conversationId: string, index: number): Plan
         finishedAt: null,
         durationMs: 0,
         activeMs,
+        waitMs: Number(step.waitMs) || 0,
         timingAvailable: false,
         containsWait: false,
         toolCallCount: 0,
@@ -185,6 +188,7 @@ export function buildPlanStepDetail(conversationId: string, index: number): Plan
       finishedAt: finishedAt || null,
       durationMs,
       activeMs,
+      waitMs: Number(step.waitMs) || 0,
       timingAvailable: true,
       containsWait: durationMs >= WAIT_THRESHOLD_MS && toolCalls.length === 0,
       toolCallCount: toolCalls.length,

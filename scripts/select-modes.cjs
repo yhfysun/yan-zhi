@@ -63,16 +63,23 @@ function printHelp() {
 }
 
 /**
- * 未选插件的视图（相对 packages/ui/src）——从生成表里剔除，让它们的 chunk 不进主包。
+ * 本次插件选择集（null = 未裁剪/全量）。
  * 选择集文法（分组关键字 / requires 闭包 / office 锁定）统一走 plugin-selection。
- * 未传 --plugins 且无 YZ_BUILD_PLUGINS = 全量，返回空数组（行为与 P5 之前一致）。
+ * 未传 --plugins 且无 YZ_BUILD_PLUGINS = 全量（行为与 P5 之前一致）。
  */
-function pluginViewExclusions(pluginsRaw) {
+function resolvePluginIds(pluginsRaw) {
   const raw = pluginsRaw ?? process.env.YZ_BUILD_PLUGINS;
-  if (raw === undefined || raw === null || String(raw).trim() === '') return [];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
   const { loadCatalog: loadPluginCatalog, resolveSelection } = require(path.join(ROOT, 'apps', 'desktop', 'scripts', 'lib', 'plugin-build-selection.cjs'));
+  return resolveSelection({ catalog: loadPluginCatalog(), plugins: raw }).ids;
+}
+
+/** 未选插件的视图（相对 packages/ui/src）——从生成表里剔除，让它们的 chunk 不进主包。 */
+function pluginViewExclusions(pluginIds) {
+  if (!pluginIds) return [];
+  const { loadCatalog: loadPluginCatalog } = require(path.join(ROOT, 'apps', 'desktop', 'scripts', 'lib', 'plugin-build-selection.cjs'));
   const pluginCatalog = loadPluginCatalog();
-  const selected = new Set(resolveSelection({ catalog: pluginCatalog, plugins: raw }).ids);
+  const selected = new Set(pluginIds);
   return Object.entries(pluginCatalog.plugins)
     .filter(([id]) => !selected.has(id))
     .flatMap(([, entry]) => entry.frontendViews || []);
@@ -92,9 +99,11 @@ function main() {
     return;
   }
 
-  // 未选插件的视图不进生成表（P5：插件裁剪与模式裁剪同源）
-  const excludedPluginViews = opts.restore ? [] : pluginViewExclusions(opts.plugins);
-  const { pluginViews } = writeGenerated({ catalog, modes, excludedPluginViews });
+  // 未选插件的视图不进生成表（P5：插件裁剪与模式裁剪同源）；外壳视图（RemoteControlHost / /remote）
+  // 也从同一份选择集生成 —— 未选 remote-control 时它们在源码层就不存在。
+  const pluginIds = opts.restore ? null : resolvePluginIds(opts.plugins);
+  const excludedPluginViews = pluginViewExclusions(pluginIds);
+  const { pluginViews } = writeGenerated({ catalog, modes, excludedPluginViews, pluginSelectionIds: pluginIds });
   const manifest = buildManifest({ catalog, modes, edition: opts.edition });
   writeManifest(manifest);
 

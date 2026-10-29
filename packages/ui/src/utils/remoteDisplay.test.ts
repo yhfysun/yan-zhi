@@ -14,7 +14,12 @@ import { resolve } from 'node:path';
 
 const ROOT = resolve(__dirname, '../../../..');
 const SERVER = readFileSync(resolve(ROOT, 'apps/server/src/plugins/remote-control.ts'), 'utf8');
-const HOST = readFileSync(resolve(ROOT, 'packages/ui/src/components/RemoteControlHost.vue'), 'utf8');
+// 阶段 1 第 1 步：被控端信令/采集已抽到 composable，弹窗仍留在组件里。
+// 守门用例按「UI + 逻辑」合并检查，避免重构后断言落空。
+const HOST = [
+  readFileSync(resolve(ROOT, 'packages/ui/src/components/RemoteControlHost.vue'), 'utf8'),
+  readFileSync(resolve(ROOT, 'packages/ui/src/composables/useRcHostSignaling.ts'), 'utf8'),
+].join('\n');
 const CLIENT = readFileSync(resolve(ROOT, 'packages/ui/src/views/RemoteControl.vue'), 'utf8');
 
 describe('显示器清单：控制端可主动刷新', () => {

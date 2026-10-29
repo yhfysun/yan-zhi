@@ -28,6 +28,7 @@ const DESKTOP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..');
 const {
   loadCatalog,
+  allPluginIds,
   resolveSelection,
   selectionFromEnv,
 } = require(path.join(DESKTOP_DIR, 'scripts', 'lib', 'plugin-build-selection.cjs'));
@@ -72,7 +73,7 @@ function main() {
     return args.help ? 0 : 1;
   }
   const catalog = loadCatalog();
-  const allIds = Object.keys(catalog.plugins);
+  const allIds = allPluginIds(catalog);
   const log = (m) => console.log(`[stage-plugins] ${m}`);
 
   if (args.action === 'restore') {

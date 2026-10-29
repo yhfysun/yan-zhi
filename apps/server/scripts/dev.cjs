@@ -137,6 +137,10 @@ const child = spawn(bin, args, {
     //   ★ 2026-10-26 起跟随 watch 开关：默认不 watch ⇒ 不注入（手动重启该按"真中断"处理）。
     //   ★ 只在本启动器注入：生产路径（dist / main.cjs）不设 → 行为完全不变。
     ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
+    // ★ 开发便利（2026-10-29）：把已拷入 plugins/installed 的可选插件自动注册并启用。
+    //   默认只列 desktop-manager；目录不存在时服务端只打一行「跳过」，无副作用。
+    //   安装版不经过本脚本，生产行为不变；要停用设为空字符串。
+    YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
     // ★ 数据目录：不注入的话 db.ts 会退回 apps/server/（源码目录）—— 见文件头注释
     DATA_DIR: devDataDir,
   },

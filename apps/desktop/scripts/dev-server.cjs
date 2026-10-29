@@ -34,6 +34,8 @@ const child = spawn(electronExe, watch ? [tsxPath, 'watch', 'src/index.ts'] : [t
     // 热重载标记：只在真 watch 时注入 —— 它是"这次重启是热重载"的分流标记，
     // 不 watch 还注入会把用户的手动重启误判成「可续的暂停」。
     ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
+    // dev 专属：可选插件自动装载（本文件只在 dev 下被调用）
+    YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
   },
 });
 child.on('exit', (code) => process.exit(code ?? 0));

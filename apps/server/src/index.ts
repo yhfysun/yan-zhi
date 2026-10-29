@@ -13,7 +13,9 @@ import authRoutes from './auth.js';
 import licenseRoutes from './license.js';
 import { scanBuiltinPackages } from './plugins/builtin-packages.js';
 import { installedRebinds, scanInstalledPackages } from './plugins/installed-packages.js';
+import { resolveInstalledEntryPath } from './plugins/install-entry.js';
 import { excludedPluginIds } from './plugins/build-selection.js';
+import { refreshRuntimeModes } from './plugins/runtime-modes.js';
 import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicenseCode, verifyLicenseCached } from './license-guard.js';
 import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
 import { handleChatUpgrade } from './chat-ws.js';
@@ -69,6 +71,8 @@ import ttsPackRoutes from './routes/tts-packs.js';
 // 与 install_resource 工具共用同一套 install()
 import installRoutes from './routes/install.js';
 import pluginRoutes, { pluginAssetsRouter, PLUGINS_DIR } from './routes/plugins.js';
+import pluginDraftsRouter from './routes/plugin-drafts.js';
+import { createDraft } from './services/plugin-drafts.js';
 import gitRoutes from './routes/git.js';
 import datasourceRoutes from './routes/datasources.js';
 import sqlConsoleRoutes from './routes/sql-console.js';
@@ -265,6 +269,7 @@ app.use('/api/tts-packs', ttsPackRoutes);
 // 本地资源安装（ffmpeg / yt-dlp / whisper / DiffSinger / 语音包 / ACE-Step）
 app.use('/api/install', installRoutes);
 app.use('/api/plugins', pluginRoutes);
+app.use('/api/plugin-drafts', express.json({ limit: '2mb' }), pluginDraftsRouter);
 // 插件静态资源（皮肤壁纸/预览图）：/api/plugin-assets/:pluginId 下的子路径
 app.use('/api/plugin-assets', pluginAssetsRouter);
 
@@ -887,6 +892,19 @@ try {
     // 店铺运营（亚马逊/淘宝/1688/跨境中转仓）：P0 只读 + 店铺连接管理；移动端跳过（同 ops/sec）
     await registerPkgOrSource('shop-ops', () => mgr.registerBuiltin(shopOpsManifest, shopOpsModule, true));
     }
+    // ★ 随包的可后装插件（--plugins=<optional id> 时打包脚本把它们拷进 builtin）：
+    //   注册为**未启用**（registerBuiltin 默认 enabled=false），插件管理里可见、可手动开启。
+    //   可后装插件的语义就是"装了不等于要用"—— 自动启用会让每个装包用户凭空多出一堆工具与权限。
+    for (const [id, pkg] of builtinPkgs.byId) {
+      if (excludedPlugins.has(id) || mgr.get(id)) continue;
+      await mgr.registerBuiltin(pkg.manifest, pkg.entryPath);
+      logger.info(`[plugin] 可后装插件已登记（未启用）: ${id}`);
+    }
+    // ★ 运行时插件模式登记（模式插件运行时装载）：授权放行 / 会话校验 / 模型切模式
+    //   都以这份集合为准。后装 .yzp 声明的 contributes.mode 不可能出现在构建期模式表里，
+    //   漏登记的表现是「插件启用、入口在，但模式一用就落回 office / 码不放行」。
+    const runtimeModes = refreshRuntimeModes(mgr);
+    if (runtimeModes.length) logger.info(`[plugin] 运行时插件模式: ${runtimeModes.join(', ')}`);
     // 旧库一次性迁移：本版本起内置高危插件默认开启（新装库在 registerBuiltin 首次注册即启用；
     // 旧库已存在 disabled 行不会被动到），按标记只执行一次，之后用户停用状态永久尊重
     if (!process.env.MOBILE_MODE) {
@@ -931,6 +949,50 @@ try {
         }
       }
     };
+    // P2 草稿工具：模型只能创建隔离草稿，**没有** approve 能力（通过按钮在插件管理页）
+    try {
+      toolReg.register({
+        name: 'create_plugin_draft',
+        description:
+          '生成插件草稿（写入隔离目录 plugins/drafts，不会运行、不会启用）。用于扩展本应用能力；'
+          + '用户需在「插件管理」页人工审核代码与权限后点通过，草稿才会移动到已安装目录并启用。',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            manifest: { type: 'object', description: '插件清单（id/name/version/main/permissions/contributes）' },
+            files: { type: 'object', description: '相对路径 → 文件内容（必须包含 manifest.main 指向的入口）' },
+            source: { type: 'string', description: '来源说明（可选）' },
+          },
+          required: ['manifest', 'files'],
+        },
+        execute: async (args: Record<string, unknown>) => {
+          try {
+            const meta = await createDraft({
+              manifest: args.manifest,
+              files: args.files as Record<string, string>,
+              source: String(args.source || 'agent'),
+            });
+            return {
+              content: [{
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  draftId: meta.id,
+                  files: meta.files,
+                  note: '草稿已生成，等待用户在「插件管理」审核启用（模型无法自行启用）',
+                }, null, 2),
+              }],
+            };
+          } catch (e) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: (e as Error).message }) }],
+            };
+          }
+        },
+      });
+    } catch {
+      /* 重名跳过 */
+    }
     const mountedRoutes = new Set<string>();
     const mountPluginRoutes = (pluginId: string) => {
       if (mountedRoutes.has(pluginId)) return;
@@ -947,6 +1009,33 @@ try {
       mountPluginRoutes(id);
     });
     mgr.on('disabled', () => syncPluginTools());
+
+    // 开发便利（默认关闭，仅 dev 启动器注入）：把 plugins/installed 里**已拷入但未注册**的
+    // 插件注册并启用。默认整条链只「重绑已存在插件」，手拷目录不会生效 —— 见 dev-install 脚本。
+    // ★ 安装版不设该变量；打包产物里也没有这些可选插件，行为完全不变。
+    const autoloadIds = String(process.env.YZ_DEV_AUTOLOAD_PLUGINS || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    if (autoloadIds.length) {
+      try {
+        const pkgs = scanInstalledPackages(PLUGINS_DIR);
+        for (const id of autoloadIds) {
+          if (mgr.get(id)) continue;
+          const pkg = pkgs.find((p) => p.manifests.some((m) => m.id === id));
+          if (!pkg) {
+            logger.info(`[plugin] dev autoload 跳过（未安装）：${id}`);
+            continue;
+          }
+          const manifest = pkg.manifests.find((m) => m.id === id);
+          if (!manifest) continue;
+          const entryPath = resolveInstalledEntryPath(pkg.dir, manifest);
+          await mgr.registerInstalled(manifest, pathToFileURL(entryPath).href);
+          await mgr.enable(id);
+          logger.info(`[plugin] dev autoload 已启用：${id}`);
+        }
+      } catch (e) {
+        logger.warn('[plugin] dev autoload 失败:', e);
+      }
+    }
     syncPluginTools();
     // 挂载启动时已启用插件的后端路由
     for (const { pluginId } of mgr.registry.backendRoutes) {

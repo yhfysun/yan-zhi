@@ -14,20 +14,36 @@
  * 用法：
  *   node scripts/verify-edition-contents.cjs
  *   node scripts/verify-edition-contents.cjs --root=dist-release/desktop --editions=lite,basic
+ *   node scripts/verify-edition-contents.cjs --plugins=office-core,desktop-manager
+ *                                  # 按显式选择集断言（--plugins / --modes 优先，其次 YZ_BUILD_PLUGINS）
  *   node scripts/verify-edition-contents.cjs --json
  */
 const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
-const { resolvePluginSelection } = require('./lib/plugin-selection.cjs');
+const {
+  loadCatalog,
+  loadOptionalPlugins,
+  resolveSelection,
+  selectionFromEnv,
+} = require(path.join(ROOT, 'apps', 'desktop', 'scripts', 'lib', 'plugin-build-selection.cjs'));
 
 function parseArgs(argv) {
-  const opts = { root: path.join(ROOT, 'dist-release', 'desktop'), editions: null, json: false, source: path.join(ROOT, 'apps/server/plugins/builtin') };
+  const opts = {
+    root: path.join(ROOT, 'dist-release', 'desktop'),
+    editions: null,
+    plugins: null,
+    modes: null,
+    json: false,
+    source: path.join(ROOT, 'apps/server/plugins/builtin'),
+  };
   for (const a of argv) {
     if (a === '--json') opts.json = true;
     else if (a.startsWith('--root=')) opts.root = path.resolve(ROOT, a.slice('--root='.length));
     else if (a.startsWith('--editions=')) opts.editions = a.slice('--editions='.length).split(',').map((s) => s.trim()).filter(Boolean);
+    else if (a.startsWith('--plugins=')) opts.plugins = a.slice('--plugins='.length);
+    else if (a.startsWith('--modes=')) opts.modes = a.slice('--modes='.length);
     else if (a.startsWith('--source=')) opts.source = path.resolve(ROOT, a.slice('--source='.length));
     else {
       console.error(`未知参数: ${a}`);
@@ -42,8 +58,20 @@ function parseArgs(argv) {
   return opts;
 }
 
-/** 找到某档的 win-unpacked/resources/server/dist/plugins/builtin（多版本时取最新目录） */
-function findBuiltinDir(root, edition) {
+/** 本次断言用的选择集：显式 --plugins/--modes > YZ_BUILD_PLUGINS/YZ_BUILD_MODES > 该档预设。 */
+function selectionFor({ opts, catalog, optional, edition }) {
+  if (opts.plugins !== null || opts.modes !== null) {
+    return resolveSelection({ catalog, optional, plugins: opts.plugins, modes: opts.modes });
+  }
+  const env = selectionFromEnv();
+  if (env.plugins || env.modes) {
+    return resolveSelection({ catalog, optional, plugins: env.plugins, modes: env.modes });
+  }
+  return resolveSelection({ catalog, optional, editions: [edition] });
+}
+
+/** 找到某档的 win-unpacked 目录（多版本时取最新目录）。 */
+function findUnpackedDir(root, edition) {
   const edDir = path.join(root, edition);
   if (!fs.existsSync(edDir)) return null;
   const versions = fs
@@ -52,24 +80,33 @@ function findBuiltinDir(root, edition) {
     .map((d) => d.name)
     .sort();
   if (!versions.length) return null;
-  const dir = path.join(edDir, versions[versions.length - 1], 'win-unpacked', 'resources', 'server', 'dist', 'plugins', 'builtin');
-  return fs.existsSync(dir) ? dir : null;
+  return path.join(edDir, versions[versions.length - 1], 'win-unpacked');
 }
 
-function checkEdition({ catalog, edition, root, source }) {
+function checkEdition({ catalog, optional, opts, edition }) {
   const problems = [];
-  const builtinDir = findBuiltinDir(root, edition);
-  if (!builtinDir) {
+  const root = opts.root;
+  const source = opts.source;
+  const unpacked = findUnpackedDir(root, edition);
+  if (!unpacked) {
     return { edition, problems: [`找不到产物目录（${path.relative(ROOT, path.join(root, edition))}/<版本>/win-unpacked/…）`], expected: [], actual: [] };
   }
+  // ★ builtin 目录可能整个不存在：只选基座（office-core 无独立包）时，electron-builder
+  //   不拷贝空目录 —— 这不是缺件，按「0 个插件目录」处理，期望清单非空时才报错。
+  const builtinDir = path.join(unpacked, 'resources', 'server', 'dist', 'plugins', 'builtin');
+  const hasBuiltin = fs.existsSync(builtinDir);
 
-  const selection = resolvePluginSelection({ catalog, editions: [edition] });
+  const selection = selectionFor({ opts, catalog, optional, edition });
   const selected = new Set(selection.ids);
+  const optionalIds = new Set(optional.map((p) => p.id));
 
-  // 应当被打进这一档的插件：在本地 builtin 里真实有 manifest.json 的选中项
-  const expected = [...selected].filter((id) => fs.existsSync(path.join(source, id, 'manifest.json')));
+  // 应当被打进这一档的插件：选中项里「本地有构建产物」的，加上点名选中的可选插件
+  // （可选插件源码在 plugins/optional/，builtin 里按设计没有它的常驻目录）。
+  const expected = [...selected].filter(
+    (id) => optionalIds.has(id) || fs.existsSync(path.join(source, id, 'manifest.json')),
+  );
 
-  const entries = fs.readdirSync(builtinDir, { withFileTypes: true });
+  const entries = hasBuiltin ? fs.readdirSync(builtinDir, { withFileTypes: true }) : [];
   const actualDirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
   const strayFiles = entries.filter((e) => !e.isDirectory()).map((e) => e.name);
 
@@ -92,12 +129,13 @@ function checkEdition({ catalog, edition, root, source }) {
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const catalog = JSON.parse(fs.readFileSync(path.join(ROOT, 'build', 'plugins.catalog.json'), 'utf8'));
+  const catalog = loadCatalog();
+  const optional = loadOptionalPlugins();
   if (!opts.editions.length) {
     console.error('没有可校验的档位（--root 下无产物目录）');
     return 2;
   }
-  const results = opts.editions.map((edition) => checkEdition({ catalog, edition, root: opts.root, source: opts.source }));
+  const results = opts.editions.map((edition) => checkEdition({ catalog, optional, opts, edition }));
   if (opts.json) {
     console.log(JSON.stringify(results, null, 2));
   } else {

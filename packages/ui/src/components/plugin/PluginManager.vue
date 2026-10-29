@@ -119,6 +119,40 @@
           </div>
         </div>
       </section>
+
+      <!-- P2：待审核草稿（隔离目录，不会运行） -->
+      <section v-if="drafts.length" class="pm-group">
+        <div class="pm-group-head">
+          <span class="pm-group-title">待审核草稿</span>
+          <span class="pm-group-count">{{ drafts.length }}</span>
+        </div>
+        <div class="pm-list">
+          <div v-for="d in drafts" :key="d.meta.id" class="pm-card">
+            <div class="pm-card-head">
+              <div class="pm-title">
+                <span class="pm-name">{{ d.meta.name }}</span>
+                <span class="pm-ver">v{{ d.meta.version }}</span>
+                <span class="pm-source-tag is-danger">草稿</span>
+              </div>
+            </div>
+            <div class="pm-desc">
+              {{ d.meta.id }} · 来源 {{ d.meta.source }} ·
+              {{ new Date(d.meta.createdAt).toLocaleString('zh-CN') }} · {{ d.meta.files.length }} 个文件
+            </div>
+            <div class="pm-perms">
+              <span v-for="perm in d.meta.permissions" :key="perm" class="pm-perm-tag">
+                {{ PERM_LABELS[perm] || perm }}
+              </span>
+              <span v-if="!d.meta.permissions.length" class="pm-perm-tag">无特殊权限</span>
+            </div>
+            <div class="pm-actions">
+              <el-button size="small" text bg @click="reviewDraft(d)">查看代码</el-button>
+              <el-button size="small" text bg type="primary" @click="approveDraft(d)">通过并启用</el-button>
+              <el-button size="small" text bg type="danger" @click="removeDraft(d)">删除</el-button>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
 
     <el-dialog v-model="configOpen" title="插件配置" width="520" :close-on-click-modal="false">
@@ -131,6 +165,10 @@
 
     <el-dialog v-model="detailOpen" title="插件详情" width="520">
       <pre class="pm-detail pm-code">{{ detailContent }}</pre>
+    </el-dialog>
+
+    <el-dialog v-model="draftOpen" :title="draftTitle" width="760">
+      <pre class="pm-detail pm-code">{{ draftContent }}</pre>
     </el-dialog>
 
     <!-- 插件开发模板 -->
@@ -276,7 +314,66 @@ const PERM_LABELS: Record<string, string> = {
   network: '网络请求',
   clipboard: '剪贴板',
   'desktop-input': '控制鼠标键盘（电脑使用）',
+  'desktop-shell': '桌面窗口与系统图标',
+  llm: '调用大模型',
+  'data-contracts': '只读数据契约',
+  'remote-shell': '远程命令执行',
+  'shop-write': '店铺数据写入',
 };
+
+/* ---------------- P2：草稿审核 ---------------- */
+interface DraftRow {
+  meta: {
+    id: string; name: string; version: string; createdAt: string;
+    source: string; permissions: string[]; files: string[];
+  };
+  manifest: unknown;
+}
+const drafts = ref<DraftRow[]>([]);
+const draftOpen = ref(false);
+const draftTitle = ref('');
+const draftContent = ref('');
+
+async function loadDrafts(): Promise<void> {
+  const res = await api.get('/plugin-drafts');
+  if ('error' in res) return;
+  drafts.value = ((res as { data?: DraftRow[] }).data || []);
+}
+
+async function reviewDraft(d: DraftRow): Promise<void> {
+  const res = await api.get(`/plugin-drafts/${d.meta.id}`);
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  const data = (res as { data?: { files?: Record<string, string> } }).data || {};
+  draftTitle.value = `${d.meta.name} · 代码预览`;
+  draftContent.value = Object.entries(data.files || {})
+    .map(([rel, code]) => `// ---- ${rel} ----\n${code}`)
+    .join('\n\n');
+  draftOpen.value = true;
+}
+
+async function approveDraft(d: DraftRow): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `通过后将把草稿「${d.meta.name}」移动到已安装目录并立即启用。请确认已阅读代码与权限清单。`,
+      '审核通过',
+      { type: 'warning', confirmButtonText: '通过并启用', cancelButtonText: '取消' },
+    );
+  } catch { return; }
+  const res = await api.post(`/plugin-drafts/${d.meta.id}/approve`, { confirmation: `approve ${d.meta.id}` });
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  ElMessage.success('已通过并启用');
+  await pluginStore.refresh();
+  await loadDrafts();
+}
+
+async function removeDraft(d: DraftRow): Promise<void> {
+  try {
+    await ElMessageBox.confirm(`删除草稿「${d.meta.name}」？该操作不可恢复。`, '删除草稿', { type: 'warning' });
+  } catch { return; }
+  const res = await api.delete(`/plugin-drafts/${d.meta.id}`);
+  if ('error' in res) { ElMessage.error(res.error); return; }
+  await loadDrafts();
+}
 
 // 开发模板
 const templateOpen = ref(false);
@@ -568,7 +665,10 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-onMounted(() => pluginStore.refresh());
+onMounted(() => {
+  pluginStore.refresh();
+  loadDrafts();
+});
 </script>
 
 <style scoped>

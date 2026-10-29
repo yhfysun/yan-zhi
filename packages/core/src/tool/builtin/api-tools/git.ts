@@ -63,15 +63,40 @@ export function registerGitTools(m: Map<ApiModuleName, ToolDefinition[]>) {
     },
     {
       name: 'api_git_commit',
-      description: '提交 Git 改动。可选 files 指定只提交部分文件（会先暂存这些文件）',
+      description: '提交 Git 改动。可选 files 指定只提交部分文件（会先暂存这些文件）；若已用 api_git_stage_hunks 挑好 hunk，不要传 files，直接提交暂存区',
       inputSchema: {
         type: 'object',
         properties: {
           repo: REPO,
           message: { type: 'string', description: '提交信息' },
-          files: { type: 'array', items: { type: 'string' }, description: '可选，只提交这些文件' },
+          files: { type: 'array', items: { type: 'string' }, description: '可选，只提交这些文件（整文件暂存）' },
         },
         required: ['repo', 'message'],
+      },
+    },
+    {
+      name: 'api_git_hunks',
+      description: '列出某个文件未暂存改动拆出的 hunk（代码段），返回编号、摘要与增删行数。用于一个文件里混了多条改动线时，只挑自己那几段提交',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          file: { type: 'string', description: '文件路径（相对仓库根目录或工作目录）' },
+        },
+        required: ['repo', 'file'],
+      },
+    },
+    {
+      name: 'api_git_stage_hunks',
+      description: '只把指定编号的 hunk 放进暂存区（其余改动留在工作区）。编号来自 api_git_hunks，且以最近一次结果为准（暂存后剩余改动会重新编号）；之后调用 api_git_commit 时不要传 files',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          repo: REPO,
+          file: { type: 'string', description: '文件路径' },
+          ids: { type: 'array', items: { type: 'number' }, description: '要暂存的 hunk 编号列表（来自 api_git_hunks）' },
+        },
+        required: ['repo', 'file', 'ids'],
       },
     },
     {

@@ -182,10 +182,24 @@ node scripts/sync-plugin-templates.mjs                                          
 2. **运行时化第二层**（用户核心诉求"装了就有"）：前端 mode store 按 modeDefs 动态合并**新模式 key**（AppMode 联合放宽为 string）；router 对插件模式 `addRoute`（走现有 syncPluginRoutes 机制，component 需先落 P4b 前端 bundle 化经 yz:// 装载）；conversations.ts VALID_MODES 改"基座+已注册插件模式"动态集合（**SQL 一字不动**，conversation-mode.test.ts 钉着）。
 3. modes.catalog.json 退役（模式字段并入 plugins.catalog.json；select-modes/verify-mode-prune 适配）。
 
+> ✅ **2026-10-29 运行时化第二层已落地**：前端 `stores/mode.ts` 增 `setRuntimeModeDefs/allModeDefs`
+> （构建期表优先、新 key 并入；App.vue 在插件快照与启停时写入），`isModeBuilt/isModeAvailable/
+> visibleModeDefs/modeRoute/chatPlacementOf/modeKeyOfRoute` 全部识别运行时模式；
+> 服务端新增 `plugins/runtime-modes.ts`（enabled 插件 contributes.mode 注册表，启停/装卸时 refresh），
+> `license.ts allowedModes` 并入、`routes/conversations.ts` 与 `api-tool-executor` 的切模式白名单放宽、
+> 前端 `stores/chat.ts` 不再按静态白名单把插件模式的会话改判 office；
+> 路由仍由 `syncPluginRoutes` 从 manifest.contributes.routes + `frontend/index.mjs` 运行时装载
+> （build-plugins 写入 ui.entry，plugin-frontend-bundle 测试钉着 bundle 契约）。
+> 测试：`apps/server/test/runtime-modes.test.ts`、`packages/ui/src/stores/mode-runtime.test.ts`。
+
 ### P5 打包可选（2026-10-26 主体完成，剩 extraResources 按选 + 整包冒烟）
 - package.cjs `--plugins=` ✅（分组 / requires 闭包 / office 锁定；`--modes` 兼容映射）。
 - 插件目录 prune/restore/verify ✅、verify-plugin-prune ✅（已接进 build-all 的 electron-builder 之前）。
-- extraResources 按选：皮肤资产随 skins ✅（assets 在插件目录内）、**python 运行时随 computer-use ❌ 未做**。
+- extraResources 按选：皮肤资产随 skins ✅（assets 在插件目录内）、**python 运行时随 computer-use ✅（2026-10-29）**
+  —— `apps/desktop/scripts/lib/python-runtime-stage.cjs`：未选时把 resources/python 与 python-tools 内容移到
+  `resources/.prune-hold/`（留空壳，避免 electron-builder 因缺 from 报错），build-all 循环前统一 stage、结束 restore，
+  单档链路由 electron-build 自己做（父进程管辖时下发 YZ_SKIP_PYTHON_STAGE=1）；运行时 `getPythonToolsDir()`
+  把空目录按"未随包"处理 → 回退系统 python。
 - 整包冒烟（三档产物内容断言）未跑 —— 需真实 electron-builder（约 3 分钟/档）。
 
 ### P6 单独打包 .yzp（2026-10-27 已完成）

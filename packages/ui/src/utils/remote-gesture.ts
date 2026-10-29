@@ -39,6 +39,7 @@ export type RemoteGestureEvent =
   | { kind: 'dragEnd'; x: number; y: number }
   | { kind: 'pointerMove'; dx: number; dy: number }
   | { kind: 'wheel'; x: number; y: number; delta: number }
+  | { kind: 'pan'; dx: number; dy: number }
   | { kind: 'zoom'; ratio: number; anchorX: number; anchorY: number };
 
 interface PointerEntry { x: number; y: number }
@@ -47,11 +48,14 @@ interface TwoFingerState {
   startDist: number;
   lastDist: number;
   startMidY: number;
+  startMidX: number;
   lastMidY: number;
   lastMidX: number;
-  intent: 'none' | 'scroll' | 'pinch';
+  intent: 'none' | 'scroll' | 'pinch' | 'pan';
   moved: boolean;
   downAt: number;
+  /** 滚轮余量：像素位移换算后不足 1 个单位的部分留到下一次，避免慢滑丢事件 */
+  wheelAcc: number;
 }
 
 const DEFAULTS = {
@@ -59,8 +63,11 @@ const DEFAULTS = {
   longPressMs: 450,
   scrollStartPx: 10,
   pinchStartPx: 24,
-  wheelStep: 1.5,
-  twoFingerTapMs: 260,
+  // 手指 1px 换算的滚轮单位：Windows 一格是 120，滑 80px ≈ 3 格，跟手；
+  // 旧值 1.5 时滑 80px 只有 120（1 格），体感就是「双指下滑没反应」。
+  wheelStep: 5,
+  // 双指同落同起的真实耗时很少低于 300ms；旧值 260ms 让双指右键几乎打不出来。
+  twoFingerTapMs: 420,
 };
 
 function distance(a: PointerEntry, b: PointerEntry): number {
@@ -79,6 +86,8 @@ export class RemoteGestureRecognizer {
   private moved = false;
   private dragging = false;
   private two: TwoFingerState | null = null;
+  /** 三指平移状态（双指保留给滚动，平移移到三指） */
+  private three: { lastX: number; lastY: number } | null = null;
   /** 双指手势结束后，剩下那根手指不许退化成单指拖动（否则滚完一抬手就误拖） */
   private suppressSingle = false;
 
@@ -98,6 +107,11 @@ export class RemoteGestureRecognizer {
     return this.dragging;
   }
 
+  /** 无任何手势进行中（用于决定是否给新手指设指针捕获，见 RemoteControl 舞台按下处理） */
+  get isIdle(): boolean {
+    return this.pointers.size === 0;
+  }
+
   reset(): void {
     this.pointers.clear();
     this.primary = null;
@@ -109,6 +123,7 @@ export class RemoteGestureRecognizer {
     this.moved = false;
     this.dragging = false;
     this.two = null;
+    this.three = null;
     this.suppressSingle = false;
   }
 
@@ -140,16 +155,28 @@ export class RemoteGestureRecognizer {
         startDist: d,
         lastDist: d,
         startMidY: (pts[0].y + pts[1].y) / 2,
+        startMidX: (pts[0].x + pts[1].x) / 2,
         lastMidY: (pts[0].y + pts[1].y) / 2,
         lastMidX: (pts[0].x + pts[1].x) / 2,
         intent: 'none',
         moved: false,
         downAt: now,
+        wheelAcc: 0,
       };
       return events;
     }
-    // 第三指：只标记「不是双指轻点」，不改变当前手势
-    if (this.two) this.two.moved = true;
+    // 第三指落下：接管为「三指平移」——双指保留给滚动（高频小动作，两指易误触成
+    // 捏合/拖拽；三指语义清晰）。已有双指手势立即取消。
+    if (this.pointers.size >= 3 && !this.three) {
+      const p3 = [...this.pointers.values()];
+      this.three = {
+        lastX: p3.reduce((s, p) => s + p.x, 0) / p3.length,
+        lastY: p3.reduce((s, p) => s + p.y, 0) / p3.length,
+      };
+      this.two = null;
+      this.suppressSingle = true;
+      return [];
+    }
     return [];
   }
 
@@ -158,6 +185,23 @@ export class RemoteGestureRecognizer {
     if (!p) return [];
     p.x = x;
     p.y = y;
+
+    // 三指平移优先：三指重心移动 = pan 事件（本地画面平移）
+    if (this.three) {
+      if (this.pointers.size < 3) {
+        this.three = null;
+        return [];
+      }
+      const p3 = [...this.pointers.values()];
+      const cx = p3.reduce((s, q) => s + q.x, 0) / p3.length;
+      const cy = p3.reduce((s, q) => s + q.y, 0) / p3.length;
+      const dx = cx - this.three.lastX;
+      const dy = cy - this.three.lastY;
+      this.three.lastX = cx;
+      this.three.lastY = cy;
+      if (dx === 0 && dy === 0) return [];
+      return [{ kind: 'pan', dx, dy }];
+    }
 
     if (this.two) {
       const pts = [...this.pointers.values()];
@@ -168,7 +212,10 @@ export class RemoteGestureRecognizer {
       const t = this.two;
       if (t.intent === 'none') {
         if (Math.abs(d - t.startDist) >= this.opt.pinchStartPx) t.intent = 'pinch';
-        else if (Math.abs(midY - t.startMidY) >= this.opt.scrollStartPx) t.intent = 'scroll';
+        // 双指拖动永远滚动远端：平移已移给三指（fill 模式下双指拖动此前被 pan 吃掉，
+        // 用户体感「双指滚动变成移动」）。
+        else if (Math.abs(midY - t.startMidY) >= this.opt.scrollStartPx
+          || Math.abs(midX - t.startMidX) >= this.opt.scrollStartPx) t.intent = 'scroll';
         else return [];
       }
       t.moved = true;
@@ -180,12 +227,26 @@ export class RemoteGestureRecognizer {
         if (Math.abs(ratio - 1) < 0.01) return [];
         return [{ kind: 'zoom', ratio, anchorX: midX, anchorY: midY }];
       }
+      if (t.intent === 'pan') {
+        // 放大/铺满时：双指拖动平移本地画面，而不是把滚动注入远端
+        const dx = midX - t.lastMidX;
+        const dy = midY - t.lastMidY;
+        t.lastMidX = midX;
+        t.lastMidY = midY;
+        if (dx === 0 && dy === 0) return [];
+        return [{ kind: 'pan', dx, dy }];
+      }
       const dy = midY - t.lastMidY;
       t.lastMidY = midY;
       t.lastMidX = midX;
-      if (Math.abs(dy) < 1) return [];
-      const delta = Math.max(-400, Math.min(400, -Math.round(dy * this.opt.wheelStep)));
-      return delta === 0 ? [] : [{ kind: 'wheel', x: midX, y: midY, delta }];
+      if (dy === 0) return [];
+      // 像素累积：慢速小幅滑动不会被取整抹成 0（旧实现滑得慢就等于完全没反应）
+      t.wheelAcc += -dy * this.opt.wheelStep;
+      const raw = Math.trunc(t.wheelAcc);
+      if (raw === 0) return [];
+      t.wheelAcc -= raw;
+      const delta = Math.max(-400, Math.min(400, raw));
+      return [{ kind: 'wheel', x: midX, y: midY, delta }];
     }
 
     if (this.primary !== id) return [];
@@ -221,6 +282,19 @@ export class RemoteGestureRecognizer {
     p.x = x;
     p.y = y;
     this.pointers.delete(id);
+
+    // 三指任一抬起：结束三指平移，剩余手指不退化为单指拖动（防误触）
+    if (this.three) {
+      if (this.pointers.size < 3) {
+        this.three = null;
+        this.pointers.clear();
+        this.primary = null;
+        this.dragging = false;
+        this.longPending = false;
+        this.suppressSingle = false;
+      }
+      return [];
+    }
 
     if (this.two) {
       const t = this.two;

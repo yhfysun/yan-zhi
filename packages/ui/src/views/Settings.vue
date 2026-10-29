@@ -616,27 +616,14 @@
           <SettingRow
             v-if="petHas2d && petStore.settings.renderer === '2d'"
             label="宠物形象"
-            tip="可导入自己的 GIF / PNG / WebP（v1：整段动画作为单行循环，待机/跑动等状态共用这一段）"
+            tip="点缩略图切换；「＋ 导入」支持 GIF（逐帧循环）、单张图片，或带动作行的精灵图集（PNG/WebP）。文件只存本机。"
           >
-            <div class="pet-slots">
-              <el-select :model-value="petStore.settings.pack" style="width: 160px" @change="setPet({ pack: $event })">
-                <el-option-group label="内置">
-                  <el-option v-for="p in PET_PACKS" :key="p.id" :label="p.label" :value="p.id" />
-                </el-option-group>
-                <el-option-group v-if="userPackOptions.length" label="我的导入">
-                  <el-option v-for="p in userPackOptions" :key="p.id" :label="p.label" :value="p.id" />
-                </el-option-group>
-              </el-select>
-              <el-button size="small" @click="pickPetImage">导入 GIF/图片</el-button>
-              <el-button v-if="isSelectedUserPack" size="small" text @click="removeSelectedPack">删除</el-button>
-              <input
-                ref="packFileEl"
-                type="file"
-                accept="image/gif,image/png,image/webp,image/jpeg"
-                style="display: none"
-                @change="onPackFile"
-              />
-            </div>
+            <PetPackPicker
+              :model-value="petStore.settings.pack"
+              @select="selectPack"
+              @import="importOpen = true"
+              @removed="onPackRemoved"
+            />
           </SettingRow>
           <SettingRow label="大小" tip="拖动调整宠物整体尺寸" tip-after>
             <el-slider
@@ -680,6 +667,7 @@
             右键宠物可「逗一下」（摸摸/招手/张望/打盹/转圈/跳一跳）；待机会自己沿屏幕底边踱步，鼠标靠近即停。任务在跑、等你输入、出错时宠物会自动切状态。
           </p>
         </div>
+        <PetImportDialog v-model="importOpen" @imported="onPetImported" />
       </el-tab-pane>
       <!-- 本地模型：统一安装入口（ffmpeg / yt-dlp / whisper / DiffSinger / ACE-Step / 语音包）
            ★ 2026-10-22：与 AI 的 install_resource 工具共用同一个安装实现 -->
@@ -746,33 +734,18 @@ const isPaneMode = computed(() => !!props.pane);
 const petStore = usePetStore();
 petStore.init();
 /** 本包随带的宠物资源（--pets 裁剪后可能为空 / 只有 2D / 只有 3D） */
-const userPackOptions = computed(() =>
-  Object.values(userPacks).map((e) => ({ id: e.manifest.id, label: e.manifest.label }))
-);
-const petPackOptions = computed(() => [...PET_PACKS, ...userPackOptions.value]);
-const isSelectedUserPack = computed(() => !!userPacks[petStore.settings.pack]);
-const packFileEl = ref<HTMLInputElement | null>(null);
-function pickPetImage() {
-  packFileEl.value?.click();
+const importOpen = ref(false);
+/** 换形象时把帧宽高比一并写进设置：主进程按它算宠物窗宽度（图集帧各不相同） */
+function selectPack(id: string) {
+  setPet({ pack: id, packAspect: packAspectOf(id) });
 }
-async function onPackFile(ev: Event) {
-  const input = ev.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
-  try {
-    const id = await importUserPack(await file.arrayBuffer(), file.name.replace(/\.[^.]+$/, ''));
-    setPet({ pack: id, renderer: '2d' });
-    ElMessage.success('形象已导入');
-  } catch (e: any) {
-    ElMessage.error(e?.message || '导入失败');
-  } finally {
-    input.value = '';
-  }
+function onPetImported(id: string) {
+  setPet({ pack: id, packAspect: packAspectOf(id), renderer: '2d' });
 }
-async function removeSelectedPack() {
-  await deleteUserPack(petStore.settings.pack);
+function onPackRemoved(id: string) {
+  if (petStore.settings.pack !== id) return;
   const first = PET_PACKS[0]?.id;
-  if (first) setPet({ pack: first });
+  if (first) setPet({ pack: first, packAspect: 192 / 208 });
 }
 // 设置页打开时同步一次用户形象（幂等）
 void loadUserPacks();
@@ -830,7 +803,9 @@ import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../ut
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
 import { useSettingsStore, usePlatformStore, useModelPoolStore, useCostStore } from '../stores';
 import { usePetStore, PET_SLOT_DEFS, PET_SLOT_DEFAULTS, setPetSlot } from '../stores/pet';
-import { userPacks, loadUserPacks, importUserPack, deleteUserPack } from '../components/pet/user-packs';
+import { loadUserPacks, packAspectOf } from '../components/pet/user-packs';
+import PetPackPicker from '../components/pet/PetPackPicker.vue';
+import PetImportDialog from '../components/pet/PetImportDialog.vue';
 import { PET_PACKS, PET_VRM_MODELS, HAS_PET_ASSETS } from '../components/pet/pet-assets';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';

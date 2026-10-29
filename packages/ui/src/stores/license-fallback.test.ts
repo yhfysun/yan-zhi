@@ -42,10 +42,19 @@ function fnSource(src: string, name: string): string {
 }
 
 describe('看门狗：只在真卡死时重载', () => {
-  it('心跳陈旧阈值 ≥ 45s（长会话首屏渲染实测 35s）', () => {
-    const m = MAIN.match(/RENDERER_HEARTBEAT_STALE_MS\s*=\s*(\d+)/);
-    expect(m, '未找到 RENDERER_HEARTBEAT_STALE_MS').toBeTruthy();
+  it('连续无响应阈值 ≥ 45s（长会话首屏渲染实测 35s，忙 ≠ 死）', () => {
+    const m = MAIN.match(/RENDERER_DEAD_AFTER_MS\s*=\s*(\d+)/);
+    expect(m, '未找到 RENDERER_DEAD_AFTER_MS').toBeTruthy();
     expect(Number(m![1])).toBeGreaterThanOrEqual(45000);
+  });
+
+  it('判活用不可被节流的信号：主动探活，不再依赖渲染层心跳定时器', () => {
+    // 2026-10-27 实报：心跳是 setInterval，窗口被遮挡/切后台时被 Chromium 节流到 1 分钟，
+    // 于是"定时器停"被误判成"主线程卡死" → 两次 46~47s 误重载（自己和自己打架）。
+    // 钉死：心跳通道移除，判活只看 executeJavaScript 回包。
+    expect(MAIN).not.toContain('yz:renderer-heartbeat');
+    expect(MAIN).toMatch(/function probeRendererAlive\(wc\)/);
+    expect(MAIN).toMatch(/executeJavaScript\('1'/);
   });
 
   it('重载冷却 ≥ 60s，避免 30s 一轮的重载循环', () => {

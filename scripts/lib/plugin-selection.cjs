@@ -10,9 +10,17 @@
  *   1) office-core 恒在 —— 办公是应用基座，任何选择集都不允许裁掉（与 catalog 契约一致）；
  *   2) requires 自动闭包 —— 选 ops-shell 会自动带上 cicd-pipeline / java-suite；
  *   3) 未知 id / 未知分组一律抛错 —— 静默忽略会打出「名字是精简、内容是全量/缺件」的包。
+ *
+ * ★ 两种特殊输入：
+ *   · `none`：只保留 office-core（"一个插件都不带"的唯一合法形态 —— 办公基座不可裁）；
+ *   · 可选插件（plugins/optional/*，可后装）：由调用方以 `optional` 传入。它们是**点名才带**，
+ *     不参加 all / 默认全量 / 档位预设 —— 否则每个包都会莫名其妙多出可后装插件。
  */
+const NONE_TOKEN = 'none';
+
 const GROUP_KEYWORDS = {
-  all: () => true,
+  // all = 清单里的内置插件；可选插件（可后装）不在其内，必须点名
+  all: (id, e) => !e.optional,
   mode: (id, e) => e.kind === 'mode',
   feature: (id, e) => e.kind === 'feature',
   resource: (id, e) => e.kind === 'resource',
@@ -31,14 +39,34 @@ function parseList(raw) {
   return list.length ? [...new Set(list)] : null;
 }
 
+/** 可选插件入参归一：接受数组或 {id: entry} 映射。 */
+function normalizeOptional(optional) {
+  if (!optional) return [];
+  const list = Array.isArray(optional) ? optional : Object.entries(optional).map(([id, e]) => ({ id, ...e }));
+  return list.filter((e) => e && typeof e.id === 'string' && e.id);
+}
+
 /**
  * 解析选择集。
+ * @param {object} opts
+ * @param {object} opts.catalog     plugins.catalog.json（内置插件真相源）
+ * @param {Array|object} [opts.optional] 可选插件（plugins/optional/*），点名才带
  * @returns {{ ids: string[], excluded: string[], source: 'plugins'|'modes'|'editions'|'all' }}
  */
-function resolvePluginSelection({ catalog, plugins, modes, editions } = {}) {
-  const entries = (catalog && catalog.plugins) || {};
-  const allIds = Object.keys(entries);
-  if (!allIds.length) throw new Error('catalog.plugins 为空');
+function resolvePluginSelection({ catalog, optional, plugins, modes, editions } = {}) {
+  const catalogEntries = (catalog && catalog.plugins) || {};
+  const catalogIds = Object.keys(catalogEntries);
+  if (!catalogIds.length) throw new Error('catalog.plugins 为空');
+
+  // 合并可选插件：catalog 已声明的 id 以 catalog 为准（不重复、不覆盖）
+  const entries = { ...catalogEntries };
+  const optionalIds = [];
+  for (const opt of normalizeOptional(optional)) {
+    if (entries[opt.id]) continue;
+    entries[opt.id] = { ...opt, kind: opt.kind || 'optional', optional: true };
+    optionalIds.push(opt.id);
+  }
+  const allIds = [...catalogIds, ...optionalIds];
 
   const picked = new Set();
   const add = (id, via) => {
@@ -54,15 +82,23 @@ function resolvePluginSelection({ catalog, plugins, modes, editions } = {}) {
 
   if (pluginTokens) {
     source = 'plugins';
-    for (const token of pluginTokens) {
-      const group = GROUP_KEYWORDS[token.toLowerCase()];
-      if (group) {
-        const hit = allIds.filter((id) => group(id, entries[id]));
-        if (!hit.length) throw new Error(`分组 ${token} 未匹配到任何插件`);
-        for (const id of hit) add(id, `分组 ${token}`);
-        continue;
+    const noneTokens = pluginTokens.filter((t) => t.toLowerCase() === NONE_TOKEN);
+    if (noneTokens.length) {
+      // none 表达的是"只留基座"，与任何具体插件并列都是自相矛盾的输入
+      if (pluginTokens.length > 1) {
+        throw new Error('--plugins=none 不能与其他插件同时使用（它表示只保留 office-core）');
       }
-      add(token, '--plugins');
+    } else {
+      for (const token of pluginTokens) {
+        const group = GROUP_KEYWORDS[token.toLowerCase()];
+        if (group) {
+          const hit = allIds.filter((id) => group(id, entries[id]));
+          if (!hit.length) throw new Error(`分组 ${token} 未匹配到任何插件`);
+          for (const id of hit) add(id, `分组 ${token}`);
+          continue;
+        }
+        add(token, '--plugins');
+      }
     }
   } else if (modeTokens) {
     source = 'modes';
@@ -88,7 +124,8 @@ function resolvePluginSelection({ catalog, plugins, modes, editions } = {}) {
     }
   } else {
     source = 'all';
-    for (const id of allIds) add(id, '默认全量');
+    // 默认全量 = catalog 全部内置插件；可选插件（可后装）不随默认包分发
+    for (const id of catalogIds) add(id, '默认全量');
   }
 
   // 规则 1：办公基座锁定
@@ -99,4 +136,4 @@ function resolvePluginSelection({ catalog, plugins, modes, editions } = {}) {
   return { ids, excluded, source };
 }
 
-module.exports = { resolvePluginSelection, parseList, GROUP_KEYWORDS, OFFICE_ID };
+module.exports = { resolvePluginSelection, parseList, GROUP_KEYWORDS, NONE_TOKEN, OFFICE_ID };

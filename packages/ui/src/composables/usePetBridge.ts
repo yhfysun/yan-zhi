@@ -123,6 +123,11 @@ export function usePetBridge() {
       // 工作目录（工作空间）：宠物派活落在哪个目录
       spaces: (spaces.spaces || []).map((x: any) => ({ id: x.id, name: x.name })),
       spaceId: spaces.currentSpaceId || '',
+      // 每个空间下最近的会话：宠物菜单「工作目录 → 会话」二级列表用
+      spaceConvs: ((chat as any).conversations || [])
+        .filter((c: any) => c && c.spaceId && !c.archivedAt)
+        .slice(0, 80)
+        .map((c: any) => ({ id: c.id, title: c.title || '未命名会话', spaceId: c.spaceId, updatedAt: c.updatedAt || 0 })),
       agentId: agents.selectedId || '',
     }
   }
@@ -283,10 +288,27 @@ export function usePetBridge() {
       if (a.type === 'pause') { try { chat.pauseTask?.(a.convId) } catch { /* 会话可能已结束 */ } return }
       if (a.type === 'resume') { try { chat.resumeTask?.(a.convId) } catch { /* ignore */ } return }
       if (a.type === 'space' && a.spaceId) {
-        try { spaces.selectSpace?.(String(a.spaceId)) } catch { /* 空间可能已删 */ }
+        // 切空间要连带把工作目录同步过去，否则新会话仍落在旧目录
+        try {
+          if (typeof (chat as any).selectSpaceAndSyncDir === 'function') (chat as any).selectSpaceAndSyncDir(String(a.spaceId))
+          else spaces.selectSpace?.(String(a.spaceId))
+        } catch {
+          /* 空间可能已删 */
+        }
         return
       }
       if (a.type === 'pin') { pet.update({ pinnedConvId: pet.settings.pinnedConvId === a.convId ? '' : a.convId }); return }
+      if (a.type === 'set-pack' && a.packId) {
+        // 形象托盘选中：宽高比一起写，主进程按它重算宠物窗宽度
+        pet.update({ pack: String(a.packId), packAspect: Number(a.aspect) || 192 / 208, renderer: '2d' })
+        return
+      }
+      if (a.type === 'open-conv' && a.convId) {
+        // 宠物「工作目录 → 会话」选中：打开该会话，用户可直接在里面追问
+        try { chat.selectConv?.(String(a.convId)) } catch { /* 会话可能已删 */ }
+        try { if (window.location.hash !== '#/chat') window.location.hash = '#/chat' } catch { /* ignore */ }
+        return
+      }
       if (a.type === 'open-settings') { window.location.hash = '#/settings?pane=pet'; return }
       if (a.type === 'ask' && a.text) {
         if (a.agentId) { try { agents.selectAgent?.(String(a.agentId)) } catch { /* 智能体可能已删 */ } }
@@ -295,9 +317,13 @@ export function usePetBridge() {
         // （send 内部处理"运行中追加入队 / 重入锁 / 没配模型时提示"）
         try { chat.prefillInput?.(text) } catch { /* ignore */ }
         try { if (window.location.hash !== '#/chat') window.location.hash = '#/chat' } catch { /* ignore */ }
-        // 宠物派活 = 新任务：先把当前会话置空，sendInner 会走"新建会话"分支，
-        // 而不是把内容追加进你正在看的那个会话（更不能入队到正在跑的任务里）
-        try { chat.currentConvId = '' } catch { /* ignore */ }
+        // 宠物派活：选了「工作目录 → 会话」就追加到那个会话里追问；
+        // 没选才走"新建会话"分支（避免把内容塞进你正在看的会话）。
+        if (a.convId) {
+          try { chat.selectConv?.(String(a.convId)) } catch { /* 会话可能已删 */ }
+        } else {
+          try { chat.currentConvId = '' } catch { /* ignore */ }
+        }
         // 由 useChat 的 prefill watcher 消费：预填落地后直接 send()（避免桥里再造一个 useChat 实例）
         try { chat.petAutoSend = true } catch { /* ignore */ }
         try { chat.prefillInput?.(text) } catch { /* ignore */ }

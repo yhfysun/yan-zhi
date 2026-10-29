@@ -143,9 +143,22 @@ export const usePluginStore = defineStore('plugin', () => {
     return undefined;
   }
 
+  /** 插件被禁用/卸载时收掉它的桌面/悬浮窗口（Web 端无 electronAPI，静默跳过） */
+  function closePluginWindows(id: string): void {
+    try {
+      const el = (window as unknown as {
+        electronAPI?: { pluginWindow?: { closeAll?: (pluginId: string) => Promise<unknown> } };
+      }).electronAPI;
+      void el?.pluginWindow?.closeAll?.(id);
+    } catch {
+      /* 忽略：浏览器环境 */
+    }
+  }
+
   async function disable(id: string): Promise<string | undefined> {
     const res = await api.post(`/plugins/${id}/disable`);
     if ('error' in res) return res.error;
+    closePluginWindows(id);
     await refresh();
     return undefined;
   }
@@ -160,6 +173,7 @@ export const usePluginStore = defineStore('plugin', () => {
   async function uninstall(id: string): Promise<string | undefined> {
     const res = await api.delete(`/plugins/${id}`);
     if ('error' in res) return res.error;
+    closePluginWindows(id);
     await refresh();
     return undefined;
   }

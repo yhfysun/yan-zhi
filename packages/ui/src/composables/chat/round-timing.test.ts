@@ -5,6 +5,7 @@ import {
   roundElapsedMs,
   planElapsedMs,
   planStepElapsedMs,
+  planStepBusyMs,
   planStepDurations,
   slowestPlanSteps,
 } from './round-timing';
@@ -115,5 +116,42 @@ describe('planStepDurations / slowestPlanSteps', () => {
 
   it('取不满 3 个就返回实际数量', () => {
     expect(slowestPlanSteps(plan, 2).map((d) => d.index)).toEqual([3, 2]);
+  });
+});
+
+describe('干活时长口径（2026-10-27 C）', () => {
+  const T0 = 1_000_000;
+
+  it('planStepBusyMs = 墙钟 − 等待', () => {
+    expect(planStepBusyMs({ startedAt: T0, finishedAt: T0 + 600_000, waitMs: 240_000 })).toBe(360_000);
+    expect(planStepBusyMs({ startedAt: T0, finishedAt: T0 + 600_000 })).toBe(600_000);
+    expect(planStepBusyMs({ startedAt: T0, finishedAt: T0 + 60_000, waitMs: 90_000 })).toBe(0);
+  });
+
+  it('未结算的步骤不进入 Top3（运行中的步骤不会永远排第一）', () => {
+    const top = slowestPlanSteps({
+      steps: [
+        { title: '已完成', startedAt: T0, finishedAt: T0 + 10_000 },
+        { title: '进行中', startedAt: T0 + 10_000 },
+      ],
+    }, 3);
+    expect(top.map((d) => d.title)).toEqual(['已完成']);
+  });
+
+  it('Top3 带出等待时长供界面标注', () => {
+    const top = slowestPlanSteps({
+      steps: [{ title: '等用户确认', startedAt: T0, finishedAt: T0 + 600_000, waitMs: 540_000 }],
+    }, 3);
+    expect(top[0]).toEqual({ index: 1, title: '等用户确认', ms: 60_000, waitMs: 540_000 });
+  });
+
+  it('排除了等待的步骤按干活时长重新排序', () => {
+    const top = slowestPlanSteps({
+      steps: [
+        { title: '挂着等人', startedAt: T0, finishedAt: T0 + 900_000, waitMs: 880_000 },
+        { title: '真干活', startedAt: T0, finishedAt: T0 + 300_000 },
+      ],
+    }, 3);
+    expect(top.map((d) => d.title)).toEqual(['真干活', '挂着等人']);
   });
 });

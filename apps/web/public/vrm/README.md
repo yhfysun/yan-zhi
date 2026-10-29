@@ -13,6 +13,9 @@
 - 用途：宠物伴星的默认 3D 形象；用户在「设置 → 宠物 → 3D 形象」里切换，
   也可以载入自己的 `.vrm`（只在本机读取，不上传）。
 
-替换/新增：把同格式文件放进本目录，并同步
-`packages/ui/src/stores/pet.ts` 的 `PET_BUILTIN_VRMS` 与 `apps/desktop/main.cjs`
-的 `PET_BUILTIN_VRM_FILES` 白名单（两边 id 必须一致）。
+替换/新增：把同格式文件放进本目录，并登记到
+`packages/ui/src/assets/pet-packs/catalog.json` 的 `vrms`（打包 `--pets` 选择集、`--list-plugins`
+与设置页选项都读这份清单），同时同步 `apps/desktop/main.cjs` 的 `PET_BUILTIN_VRM_FILES`
+白名单（id 必须一致）。`packages/ui/src/stores/pet.ts` 的 `PET_BUILTIN_VRMS` 已由清单派生，无需手改。
+
+按 `--pets=none` 打包时，`apps/desktop/vite.config.ts` 会在构建结束删除 `dist/vrm/` 下的全部模型。

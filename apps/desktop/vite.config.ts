@@ -1,9 +1,95 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { resolve } from 'path';
+import { existsSync, readFileSync, readdirSync, rmSync } from 'fs';
+
+/**
+ * 宠物资源裁剪（--pets → YZ_BUILD_PETS）。
+ *
+ * 宠物素材是**静态 import**（webp 走 Rollup、VRM 走 publicDir），运行时过滤不解决问题：
+ * 资源只要被引用就一定会 emit 进 dist。所以：
+ *   1) 2D：把 packages/ui 的 pet-assets.ts 整个替换成"只 import 选中精灵图"的生成模块
+ *      —— 未选的 webp 没有任何 import，Rollup 自然不会产出；
+ *   2) 3D：publicDir 是整目录拷贝，构建结束（closeBundle）后删掉 dist/vrm 下未选的模型。
+ *
+ * YZ_BUILD_PETS 未设置 = 全量，返回 null 走原模块（行为与改动前完全一致）。
+ */
+const PET_ASSETS_MODULE = resolve(__dirname, '../../packages/ui/src/components/pet/pet-assets.ts');
+const PET_CATALOG_FILE = resolve(__dirname, '../../packages/ui/src/assets/pet-packs/catalog.json');
+const PET_PACKS_DIR = resolve(__dirname, '../../packages/ui/src/assets/pet-packs');
+const PET_VRM_DIR = resolve(__dirname, '../web/public/vrm');
+const DESKTOP_DIST = resolve(__dirname, 'dist');
+
+interface PetEntry {
+  id: string;
+  file: string;
+}
+
+function resolvePetSelection(): { packs: PetEntry[]; vrms: PetEntry[] } | null {
+  const raw = process.env.YZ_BUILD_PETS;
+  if (raw === undefined) return null;
+  const catalog = JSON.parse(readFileSync(PET_CATALOG_FILE, 'utf8')) as { packs?: PetEntry[]; vrms?: PetEntry[] };
+  const packs = catalog.packs || [];
+  const vrms = catalog.vrms || [];
+  const tokens = String(raw).split(/[,\s]+/).filter(Boolean);
+  if (!tokens.length) return null;
+  if (tokens.includes('none')) return { packs: [], vrms: [] };
+
+  const allIds = [...packs.map((p) => p.id), ...vrms.map((v) => v.id)];
+  const unknown = tokens.filter((t) => !allIds.includes(t));
+  if (unknown.length) throw new Error(`YZ_BUILD_PETS 含未知宠物: ${unknown.join(', ')}（可选: ${allIds.join(' / ')}）`);
+  return { packs: packs.filter((p) => tokens.includes(p.id)), vrms: vrms.filter((v) => tokens.includes(v.id)) };
+}
+
+function petSelectionPlugin(): Plugin | null {
+  const selection = resolvePetSelection();
+  if (!selection) return null;
+  const selectedVrmIds = selection.vrms.map((v) => v.id);
+
+  return {
+    name: 'yz-pet-selection',
+    enforce: 'pre',
+    load(id) {
+      const clean = id.split('?')[0].replace(/\\/g, '/');
+      if (!clean.endsWith('/packages/ui/src/components/pet/pet-assets.ts')) return null;
+      const imports = selection.packs
+        .map((p, i) => `import __p${i} from ${JSON.stringify(resolve(PET_PACKS_DIR, p.file).replace(/\\/g, '/'))};`)
+        .join('\n');
+      const urls = selection.packs.map((p, i) => `${JSON.stringify(p.id)}: __p${i}`).join(', ');
+      return [
+        imports,
+        `import __catalog from ${JSON.stringify(PET_CATALOG_FILE.replace(/\\/g, '/'))};`,
+        `export const PET_PACK_URLS = { ${urls} };`,
+        'export const PET_PACKS = __catalog.packs.filter((p) => Object.prototype.hasOwnProperty.call(PET_PACK_URLS, p.id));',
+        `export const PET_VRM_MODELS = __catalog.vrms.filter((v) => ${JSON.stringify(selectedVrmIds)}.includes(v.id));`,
+        'export const HAS_PET_ASSETS = PET_PACKS.length > 0 || PET_VRM_MODELS.length > 0;',
+      ].join('\n');
+    },
+    closeBundle() {
+      // publicDir 是整目录拷贝，Rollup 管不到 —— 构建结束后删掉未选的 VRM。
+      if (!existsSync(PET_VRM_DIR) || !existsSync(DESKTOP_DIST)) return;
+      const keep = new Set(selection.vrms.map((v) => v.file));
+      let removed = 0;
+      for (const name of readdirSync(PET_VRM_DIR)) {
+        if (keep.has(name)) continue;
+        const target = resolve(DESKTOP_DIST, 'vrm', name);
+        if (!existsSync(target)) continue;
+        rmSync(target, { recursive: true, force: true });
+        removed += 1;
+      }
+      // 一个 3D 模型都没选：整个 dist/vrm 目录也不该留下（空目录容易被误读成"资源还在"）
+      if (!keep.size) rmSync(resolve(DESKTOP_DIST, 'vrm'), { recursive: true, force: true });
+      if (removed) console.log(`[pet-selection] 已从 dist/vrm 移除 ${removed} 个未选 VRM`);
+    },
+  };
+}
+
+const petPlugin = petSelectionPlugin();
 
 export default defineConfig({
   plugins: [
+    // ★ 必须在 vue 插件之前（enforce: 'pre'）：pet-assets.ts 要被整体替换，不能先被别的插件读过。
+    ...(petPlugin ? [petPlugin] : []),
     // 关键：<webview> 是 Electron 提供的自定义元素（custom element），
     // 不在 HTML 标准标签集里，Vue 默认会尝试当组件解析 → "Failed to resolve component: webview"。
     // 注册到 isCustomElement 后编译器跳过它、走原生 createElement，渲染层才能拿到 Electron 提供的 webview 实例。
@@ -82,5 +168,13 @@ export default defineConfig({
     // ★ 构建清单：scripts/verify-mode-prune.cjs 用它断言「未选模式的源模块没有产出 chunk」。
     //   清单本身就是产物的一部分（.vite/manifest.json，几 KB），不影响运行。
     manifest: true,
+    // 多入口：capture.html 是远控采集窗口（阶段 1，与主窗口解耦）。
+    // dev 由 vite 直接按文件路径服务；打包后输出 dist/capture.html，主进程 loadFile 加载。
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        capture: resolve(__dirname, 'capture.html'),
+      },
+    },
   },
 });

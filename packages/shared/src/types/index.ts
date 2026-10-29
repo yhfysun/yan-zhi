@@ -163,6 +163,8 @@ export interface Conversation {
       finishedAt?: number;
       /** 返工时已累计的活跃时长（毫秒） */
       activeMs?: number;
+      /** 结算时统计的等待时长（毫秒）：时间窗内无活动的长间隙 */
+      waitMs?: number;
     }>;
   } | null;
   /**

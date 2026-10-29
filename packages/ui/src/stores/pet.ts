@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import petCatalog from '../assets/pet-packs/catalog.json'
 
 export type PetRenderer = '2d' | '3d'
 export type PetState = 'idle' | 'running' | 'needs-input' | 'paused' | 'ready' | 'error'
@@ -31,6 +32,8 @@ export interface PetSettings {
   renderer: PetRenderer
   /** 2D 宠物包 id */
   pack: string
+  /** 当前 2D 形象的帧宽高比（设置形象时同步，主进程按它算宠物窗宽度） */
+  packAspect: number
   /** 整体缩放 */
   scale: number
   /** 半圆菜单槽位（可编辑，存命令 key） */
@@ -88,9 +91,11 @@ export function collectWaitingIds(byConvList: unknown[]): string[] {
 }
 
 const STORAGE_KEY = 'yz:pet:settings'
+/** 一次性迁移标记：老设置补「工作目录」槽位用 */
+const SPACE_SLOT_MIGRATED_KEY = 'yz:pet:space-slot'
 
 /** 默认 6 槽：逗一下 / 新建任务 / 任务面板 / 换形象 / 隐藏 / 设置 */
-export const PET_SLOT_DEFAULTS = ['play', 'newTask', 'panel', 'pack', 'hide', 'settings']
+export const PET_SLOT_DEFAULTS = ['play', 'newTask', 'panel', 'space', 'pack', 'hide', 'settings']
 
 /**
  * 半圆菜单槽位注册表：唯一定义在 store 里 —— 设置页的槽位编辑器与宠物窗的菜单
@@ -102,6 +107,7 @@ export const PET_SLOT_DEFS: Record<string, string> = {
   newTask: '新建任务',
   panel: '任务面板',
   pack: '换形象',
+  space: '工作目录',
   renderer: '切 2D/3D',
   zoom: '放大',
   hide: '隐藏',
@@ -118,17 +124,16 @@ export function plainPetSettings(s: PetSettings): PetSettings {
   return { ...s, slots: Array.isArray(s?.slots) ? [...s.slots] : [] }
 }
 
-/** 内置 VRM 清单（都是 VRoid 早期样例，CC0，可自由再分发） */
-export const PET_BUILTIN_VRMS: Array<{ id: string; file: string; name: string }> = [
-  { id: 'shino', file: 'sendagaya_shino.vrm', name: 'Sendagaya Shino' },
-  { id: 'sakurada', file: 'sakurada_fumiriya.vrm', name: 'Sakurada Fumiriya' },
-]
+/** 内置 VRM 清单（都是 VRoid 早期样例，CC0，可自由再分发；清单在 pet-packs/catalog.json） */
+export const PET_BUILTIN_VRMS: Array<{ id: string; file: string; name: string }> = (
+  (petCatalog as { vrms?: Array<{ id: string; label: string; file: string }> }).vrms || []
+).map((v) => ({ id: v.id, file: v.file, name: v.label }))
 
-/** 内置 VRM 在 public/ 下的相对路径（老代码兼容：默认第一只） */
-export const BUILTIN_VRM_FILE = 'vrm/' + PET_BUILTIN_VRMS[0].file
+/** 内置 VRM 在 public/ 下的相对路径（老代码兼容：默认第一只；空清单时为 ''） */
+export const BUILTIN_VRM_FILE = PET_BUILTIN_VRMS.length ? 'vrm/' + PET_BUILTIN_VRMS[0].file : ''
 
 export function builtinVrmOf(id: string | undefined | null) {
-  return PET_BUILTIN_VRMS.find((x) => x.id === id) || PET_BUILTIN_VRMS[0]
+  return PET_BUILTIN_VRMS.find((x) => x.id === id) || PET_BUILTIN_VRMS[0] || null
 }
 
 /**
@@ -150,6 +155,7 @@ export const PET_DEFAULTS: PetSettings = {
   enabled: false,
   renderer: '2d',
   pack: 'boba',
+  packAspect: 192 / 208,
   scale: 1,
   slots: [...PET_SLOT_DEFAULTS],
   notifyMode: 'all',
@@ -259,8 +265,12 @@ export const usePetStore = defineStore('pet', () => {
         // 槽位容错：空数组/非数组一律回落默认，避免菜单变成空的
         if (!Array.isArray(settings.value.slots) || !settings.value.slots.length) {
           settings.value.slots = [...PET_SLOT_DEFAULTS]
+        } else if (!settings.value.slots.includes('space') && !localStorage.getItem(SPACE_SLOT_MIGRATED_KEY)) {
+          // 2026-10-29 新增「工作目录」槽位：老设置补一次，之后用户可自行移除
+          settings.value.slots = [...settings.value.slots, 'space']
         }
       }
+      try { localStorage.setItem(SPACE_SLOT_MIGRATED_KEY, '1') } catch { /* 忽略 */ }
     } catch {
       /* 坏数据回落默认值 */
     }

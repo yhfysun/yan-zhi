@@ -167,7 +167,9 @@ console.log(`[electron-build] 启动方式: ${eb.via}`);
 //     不 prune 就会把旧目录一起拷进"精简包"。打完（含失败/中断）在 finally 里移回来。
 const repoRoot = path.resolve(desktopDir, '..', '..');
 const BUILTIN_PLUGINS_DIR = path.join(repoRoot, 'apps', 'server', 'plugins', 'builtin');
-const { loadCatalog } = require('./lib/plugin-build-selection.cjs');
+const { loadCatalog, loadOptionalPlugins } = require('./lib/plugin-build-selection.cjs');
+const { stageOptionalPlugins, removeStagedOptional } = require('./lib/optional-plugin-stage.cjs');
+const { stagePythonRuntime, restorePythonRuntime } = require('./lib/python-runtime-stage.cjs');
 
 /** 本次打包的插件选择集（逗号分隔 id）；null = 全量（不裁剪）。
  *
@@ -207,6 +209,26 @@ if (!process.env.YZ_SKIP_PLUGIN_BUILD) {
   }
 }
 
+// ★ Python 运行时随 computer-use 插件裁剪（~400MB）：未选它时把 resources/python 与
+//   python-tools 的内容移到 resources/.prune-hold/（留空壳给 extraResources），退出时移回。
+//   build-all 已在循环前统一 stage/restore → 它下发 YZ_SKIP_PYTHON_STAGE=1 表示"父进程管"，这里不重复动。
+const PYTHON_STAGE_MANAGED_BY_PARENT = process.env.YZ_SKIP_PYTHON_STAGE === '1';
+if (!PYTHON_STAGE_MANAGED_BY_PARENT) {
+  const keepPython = !PLUGINS_CSV || PLUGINS_CSV.split(',').includes('computer-use');
+  stagePythonRuntime({
+    resourcesDir: path.join(desktopDir, 'resources'),
+    keep: keepPython,
+    log: (m) => console.log(`[electron-build] ${m}`),
+  });
+  process.on('exit', () => {
+    try {
+      restorePythonRuntime({ resourcesDir: path.join(desktopDir, 'resources') });
+    } catch (e) {
+      console.error(`[electron-build] ✗ 恢复 Python 运行时失败（${e.message}），见 resources/.prune-hold/`);
+    }
+  });
+}
+
 /** 暂存状态：prune 成功后置 true，退出前必须 restore（崩溃/中断也走 process.on('exit')）。 */
 let pluginsStaged = false;
 function restorePlugins() {
@@ -218,6 +240,38 @@ function restorePlugins() {
   }
 }
 process.on('exit', restorePlugins);
+
+/** 可选插件（plugins/optional/*）临时副本：打包前拷进 builtin，退出前删掉。 */
+let optionalStagedIds = [];
+function cleanupOptionalPlugins() {
+  if (!optionalStagedIds.length) return;
+  const ids = optionalStagedIds;
+  optionalStagedIds = [];
+  try {
+    removeStagedOptional({ root: BUILTIN_PLUGINS_DIR, ids, log: (m) => console.log(`[electron-build] ${m}`) });
+  } catch (e) {
+    console.error(`[electron-build] ✗ 清理可选插件临时副本失败（${e.message}）：${ids.join(', ')}`);
+  }
+}
+process.on('exit', cleanupOptionalPlugins);
+
+/** 把选中的可选插件原样拷进 builtin（全量构建不碰：那边根本没有可选插件 id）。 */
+function stageOptionalForBuild() {
+  if (!PLUGINS_CSV) return;
+  const optional = loadOptionalPlugins();
+  if (!optional.length) return;
+  const r = stageOptionalPlugins({
+    root: BUILTIN_PLUGINS_DIR,
+    optional,
+    selected: PLUGINS_CSV.split(','),
+    log: (m) => console.log(`[electron-build] ${m}`),
+  });
+  optionalStagedIds = r.copied;
+}
+
+// ★ 可选插件先就位再 prune：它们不在 catalog 里，build-plugins 不会构建它们；
+//   只有先拷进 builtin，prune/verify 才会把它们当"选中"保留，extraResources 才会拷进包。
+stageOptionalForBuild();
 
 if (!process.env.YZ_SKIP_PLUGIN_PRUNE) {
   if (!runPluginStage('prune')) {

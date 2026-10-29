@@ -8,6 +8,85 @@
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
   >
+    <!-- 引用区（2026-10-28）：消息引用 / 文件引用 / 网页引用统一放在输入框**上方**，
+         与下方「本次上传的附件」分成两行；三组共用一条横向滚动条，引再多也只占一行。
+         ★ 右键 chip 出菜单（固定引用 / 打开 / 删除）—— 不再挂一个要额外点开的小箭头。 -->
+    <div
+      v-if="selectedWorkFiles.length > 0 || quotedMessages.length > 0 || allQuotedUrls.length > 0"
+      class="file-chips ref-chips-bar"
+    >
+      <div
+        v-for="f in selectedWorkFiles"
+        :key="'f-' + f.path"
+        class="file-chip ref-chip"
+        :class="{ 'is-pinned': f.pinned }"
+        :title="f.pinned ? `${f.path}
+固定引用：之后每轮都会带上（右键可取消）` : `${f.path}
+引用：只带这一次（右键可固定）`"
+        @contextmenu.prevent="openRefMenu($event, { kind: 'file', key: f.path, name: f.name, path: f.path, pinned: f.pinned })"
+      >
+        <el-icon class="file-chip-icon" :style="{ color: refIconMeta(f).color }">
+          <component :is="refIconMeta(f).icon" />
+        </el-icon>
+        <span class="file-chip-name">{{ f.name }}</span>
+        <el-icon v-if="f.pinned" class="ref-pin-mark" :size="12"><Star /></el-icon>
+      </div>
+
+      <div
+        v-for="q in quotedMessages"
+        :key="'q-' + q.id"
+        class="file-chip ref-chip quote-chip"
+        :class="{ 'is-pinned': q.pinned }"
+        :title="q.pinned ? `${q.preview}
+固定引用：之后每轮都会带上（右键可取消）` : `${q.preview}
+引用：只带这一次（右键可固定）`"
+        @contextmenu.prevent="openRefMenu($event, { kind: 'quote', key: q.id, name: q.preview, pinned: q.pinned })"
+      >
+        <el-icon class="file-chip-icon quote-chip-icon"><ChatDotRound /></el-icon>
+        <span class="file-chip-name">引用：{{ q.preview }}</span>
+        <el-icon v-if="q.pinned" class="ref-pin-mark" :size="12"><Star /></el-icon>
+      </div>
+
+      <div
+        v-for="q in allQuotedUrls"
+        :key="'u-' + q.url"
+        class="file-chip ref-chip url-chip"
+        :class="{ 'is-pinned': q.pinned }"
+        :title="q.pinned ? `${q.url}
+固定引用：之后每轮都会带上（右键可取消）` : `${q.url}
+引用：只带这一次（右键可固定）`"
+        @contextmenu.prevent="openRefMenu($event, { kind: 'url', key: q.url, name: q.name, url: q.url, pinned: q.pinned })"
+      >
+        <el-icon class="file-chip-icon url-chip-icon"><Link /></el-icon>
+        <span class="file-chip-name">{{ q.name }}</span>
+        <el-icon v-if="q.pinned" class="ref-pin-mark" :size="12"><Star /></el-icon>
+      </div>
+    </div>
+
+    <!-- 引用 chip 的右键菜单（2026-10-28） -->
+    <Teleport to="body">
+      <div
+        v-if="refMenu.visible"
+        class="ref-menu"
+        :style="{ left: refMenu.x + 'px', top: refMenu.y + 'px' }"
+        @click.stop
+        @mousedown.stop
+        @contextmenu.prevent
+      >
+        <button type="button" class="ref-menu-item" @click="onRefMenuCommand('pin')">
+          <el-icon :size="13"><Star /></el-icon>
+          <span>{{ refMenu.pinned ? '取消固定引用' : '固定引用' }}</span>
+        </button>
+        <button v-if="refMenu.kind !== 'quote'" type="button" class="ref-menu-item" @click="onRefMenuCommand('open')">
+          <el-icon :size="13"><View /></el-icon>
+          <span>{{ refMenu.kind === 'url' ? '打开页面' : '打开预览' }}</span>
+        </button>
+        <button type="button" class="ref-menu-item is-danger" @click="onRefMenuCommand('remove')">
+          <el-icon :size="13"><Delete /></el-icon>
+          <span>删除引用</span>
+        </button>
+      </div>
+    </Teleport>
     <div class="input-box" :class="{ focused: inputFocused, 'is-dragover': dragOver }">
 
       <div class="input-agent-bar">
@@ -769,31 +848,6 @@
       </el-popover>
     </div>
 
-    <div v-if="selectedWorkFiles.length > 0" class="file-chips ref-chips">
-      <div v-for="f in selectedWorkFiles" :key="f.path" class="file-chip ref-chip">
-        <el-icon class="file-chip-icon" :style="{ color: refIconMeta(f).color }">
-          <component :is="refIconMeta(f).icon" />
-        </el-icon>
-        <span class="file-chip-name">{{ f.name }}</span>
-        <el-button size="small" link class="file-chip-remove" @click="toggleFileSelect(f.path)">
-          <el-icon><Close /></el-icon>
-        </el-button>
-      </div>
-    </div>
-
-    <div v-if="quotedUrls.length > 0" class="file-chips url-chips">
-      <div v-for="q in quotedUrls" :key="q.url" class="file-chip ref-chip url-chip">
-        <el-icon class="file-chip-icon url-chip-icon"><Link /></el-icon>
-        <span class="file-chip-name">{{ q.name }}</span>
-        <el-tooltip :content="q.url" placement="top">
-          <span class="url-chip-host">{{ q.url }}</span>
-        </el-tooltip>
-        <el-button size="small" link class="file-chip-remove" @click="removeQuotedUrl(q.url)">
-          <el-icon><Close /></el-icon>
-        </el-button>
-      </div>
-    </div>
-
     <div v-if="inputTooLong" class="long-input-hint">内容较长（{{ input.length }} 字），发送时将自动转为附件</div>
 
     <input ref="fileInputRef" type="file" multiple accept="image/*,.pdf,.txt,.md,.json,.csv,.py,.js,.ts,.vue,.html,.css,.xml,.yaml,.yml,.log,.doc,.docx,.xlsx,.pptx,.zip" style="display:none" @change="handleFileChange" />
@@ -820,7 +874,7 @@ import {
 import {
   FolderOpened, ArrowDown, ArrowRight, Connection, Files, UploadFilled, User, EditPen, Cpu, Setting, Plus, Camera,
   Promotion, Close, Lock, Check, Picture, Document, Tickets, Box, VideoCamera, Headset, Memo, ChatDotRound,
-  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight, Odometer,
+  Operation, Search, Link, Delete, Clock, Tools, Coin, DocumentAdd, Aim, FolderAdd, CopyDocument, DocumentCopy, Loading, CaretRight, Odometer, Star, View,
 } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
 // ★ 移动端长按（触屏专属，内部只认 pointerType==='touch'，桌面端零影响）
@@ -829,7 +883,7 @@ import AttachmentPreview from './AttachmentPreview.vue';
 import ModelContextPanel from './ModelContextPanel.vue';
 import ContextUsagePill from './ContextUsagePill.vue';
 import PlanStepDetailDialog from './PlanStepDetailDialog.vue';
-import { fmtDuration, planStepElapsedMs, slowestPlanSteps } from '../../composables/chat/round-timing';
+import { fmtDuration, planStepBusyMs, slowestPlanSteps } from '../../composables/chat/round-timing';
 import { useCodeStore } from '../../stores/code';
 import { useSettingsStore, usePlatformStore } from '../../stores';
 import { useScreenRecorderStore } from '../../stores/screen-recorder';
@@ -847,8 +901,9 @@ const {
   selectedModelId, onModelChange, openPlatformConfig, startNewChat, uploadedFiles, stopChat,
   queuedList, sendQueuedNow, editQueued, removeQueued,
   formatSize, removeFile, fileInputRef, handleFileChange, addFiles,
-  workspaceFiles, selectedFilePaths, toggleFileSelect,
-  quotedUrls, removeQuotedUrl, LONG_INPUT_THRESHOLD,
+  workspaceFiles, selectedFilePaths, pinnedFilePaths, toggleFileSelect, toggleFilePin, previewFile,
+  quotedUrls, allQuotedUrls, removeQuotedUrl, toggleUrlPin,
+  quotedMessages, removeQuotedMessage, toggleQuotePin, LONG_INPUT_THRESHOLD,
   // 上下文用量（2026-10-02）：这几项此前已由 useChat 算好却无人消费 → 这里接上 UI。
   // ★ contextLimit 是**有效可用窗口**（有效比例折算），declaredContextWindow 才是模型标称值 ——
   //   两者都展示，否则用户按标称算会误以为"还有很大空间"。
@@ -887,8 +942,8 @@ const planTopIndexes = computed(
 );
 // 运行中的步骤要实时走秒：借 runElapsedSec 的每秒 tick 重新求值（不新增计时器）
 const planNow = computed(() => { void runElapsedSec.value; return Date.now(); });
-function planStepDurText(step: { startedAt?: number; finishedAt?: number; activeMs?: number }): string {
-  const ms = planStepElapsedMs(step, planNow.value);
+function planStepDurText(step: { startedAt?: number; finishedAt?: number; activeMs?: number; waitMs?: number }): string {
+  const ms = planStepBusyMs(step, planNow.value);
   return ms > 0 ? fmtDuration(ms) : '—';
 }
 const planStepDialogRef = ref<{ open: (index: number) => void } | null>(null);
@@ -1010,9 +1065,11 @@ try {
 const mobileExpanded = ref(false);
 // 注：inputFocused 由 useChat 提供（上方已解构），这里复用同一个 ref，不另建。
 
+// ★ 2026-10-28：上限从 12 行收到 6 行（用户实报"输入框能长到半个屏幕"）。
+//   长内容走"自动转附件"（LONG_INPUT_THRESHOLD），不需要靠输入框硬撑高度。
 const inputAutosize = computed(() => {
-  if (!isMobileShell.value) return { minRows: 3, maxRows: 12 };   // 桌面端：完全不变
-  return mobileExpanded.value ? { minRows: 3, maxRows: 12 } : { minRows: 1, maxRows: 1 };
+  if (!isMobileShell.value) return { minRows: 3, maxRows: 6 };
+  return mobileExpanded.value ? { minRows: 3, maxRows: 6 } : { minRows: 1, maxRows: 1 };
 });
 
 /**
@@ -1104,9 +1161,15 @@ const hasInputText = computed(() => !!String(input.value || ''));
  *   - 任务运行中的追加走 `enqueueMessage`（useChat 2438），本就该允许点击。
  *   - 唯一保留的额外条件是 `selectedModelId`：没选模型时发出去也没有执行面。
  */
-const canSubmit = computed(() =>
-  (!!input.value.trim() || uploadedFiles.value.length > 0 || quotedUrls.value.length > 0) && !!selectedModelId.value,
-);
+// 有内容（文字 / 上传文件 / 文件引用 / 网页引用任一）+ 选了模型即可发送。
+// ★ 引用按「一次性 + 固定」的合并视图算（selectedWorkFiles / allQuotedUrls），
+//   否则"只固定了一个引用、没打字"时发送按钮是灰的。
+const canSubmit = computed(() => (
+  !!input.value.trim()
+  || uploadedFiles.value.length > 0
+  || selectedWorkFiles.value.length > 0
+  || allQuotedUrls.value.length > 0
+) && !!selectedModelId.value);
 
 function openInputMenu(x: number, y: number) {
   // 贴边收口：菜单宽约 132、高约 180（4 项 + 分隔线）
@@ -1365,6 +1428,11 @@ function pickEffort(v: string | null) {
 
 // ===== 模型候选池下拉瘦身（model-candidate-pools P2）=====
 const platformStore = usePlatformStore();
+
+// 仅开发模式：把「打开页面」暴露到 window，便于用 CDP 直接验证（生产构建不生效）
+if (import.meta.env.DEV) {
+  onMounted(() => { (window as any).__yzOpenBrowser = store.openBrowserUrl; });
+}
 // 命令中枢（2026-10-16）：`/` 菜单的清单来自这里（内置命令 + 插件 contributes.commands）
 const commandsStore = useCommandsStore();
 // 数据源：GET /api/model-pools 的 effective 字段（llm + vision 合并展示）——
@@ -1990,16 +2058,96 @@ function pickAtSymbol(d: AtSymbol) {
 
 const selectedWorkFiles = computed(() => {
   const folderPaths = new Set(workspaceFolders.value.map((d) => d.path));
-  return [...selectedFilePaths.value]
+  // 一次性引用 + 固定引用合起来显示；固定项在 chip 上带 📌 标记
+  const pinned = pinnedFilePaths.value;
+  return [...new Set([...selectedFilePaths.value, ...pinned])]
     .map((p) => {
       const f = workspaceFiles.value.find((w) => w.path === p);
-      if (f) return { name: f.name, path: f.path, size: f.size, isDir: false, isFolder: false };
+      const isPinned = pinned.has(p);
+      if (f) return { name: f.name, path: f.path, size: f.size, isDir: false, isFolder: false, pinned: isPinned };
       // 目录引用：不在文件索引里，按路径归属识别
-      if (folderPaths.has(p)) return { name: `${(p.split(/[\\/]/).pop() || p)}/`, path: p, size: 0, isDir: true, isFolder: true };
-      return null;
+      if (folderPaths.has(p)) return { name: `${(p.split(/[\\/]/).pop() || p)}/`, path: p, size: 0, isDir: true, isFolder: true, pinned: isPinned };
+      // ★ 不在索引里的真实文件（交付物 / 上传件，经预览面板「引用」加进来的）：
+      //   仍然显示成 chip —— 发送侧按路径兜底注入，这里不显示会让人以为按钮没生效。
+      const base = p.split(/[\\/]/).pop() || p;
+      return { name: base, path: p, size: 0, isDir: false, isFolder: false, pinned: isPinned };
     })
-    .filter((f): f is { name: string; path: string; size: number; isDir: boolean; isFolder: boolean } => !!f);
+    .filter((f): f is { name: string; path: string; size: number; isDir: boolean; isFolder: boolean; pinned: boolean } => !!f);
 });
+
+/** 引用 chip 右键菜单（2026-10-28）：固定/取消固定 · 打开 · 删除。
+ *  ★ 不再用"点小箭头弹 dropdown"——用户明确要右键；文件/网页/消息三处同一套。 */
+type RefMenuTarget = {
+  kind: 'file' | 'url' | 'quote';
+  key: string;
+  name: string;
+  path?: string;
+  url?: string;
+  pinned: boolean;
+};
+const REF_MENU_W = 172;
+const REF_MENU_H = 124;
+const refMenu = reactive<RefMenuTarget & { visible: boolean; x: number; y: number }>({
+  visible: false, x: 0, y: 0, kind: 'file', key: '', name: '', pinned: false,
+});
+
+function openRefMenu(e: MouseEvent, t: RefMenuTarget) {
+  Object.assign(refMenu, t, {
+    x: Math.min(e.clientX, window.innerWidth - REF_MENU_W - 8),
+    y: Math.min(e.clientY, window.innerHeight - REF_MENU_H - 8),
+    visible: true,
+  });
+  // ★ 延后一帧再挂关闭监听：当前这次 contextmenu 还在冒泡，立刻挂会被自己关掉
+  setTimeout(() => {
+    document.addEventListener('mousedown', onDocMouseDown);
+    document.addEventListener('contextmenu', closeRefMenu);
+  }, 0);
+}
+/** ★ 点菜单内部不算"点外面"：早先 mousedown 就关菜单，按钮的 click 根本收不到 →
+ *  表现为"右键菜单里的项点了没反应"（打开页面 / 固定 / 删除全中）。 */
+function onDocMouseDown(e: MouseEvent) {
+  const el = e.target as HTMLElement | null;
+  if (el && el.closest('.ref-menu')) return;
+  closeRefMenu();
+}
+function closeRefMenu() {
+  refMenu.visible = false;
+  document.removeEventListener('mousedown', onDocMouseDown);
+  document.removeEventListener('contextmenu', closeRefMenu);
+}
+function onRefMenuCommand(cmd: string) {
+  const t = { ...refMenu };
+  closeRefMenu();
+  if (cmd === 'pin') {
+    if (t.kind === 'file') toggleFilePin(t.key);
+    else if (t.kind === 'url') toggleUrlPin(t.key);
+    else toggleQuotePin(t.key);
+    return;
+  }
+  if (cmd === 'remove') {
+    if (t.kind === 'file') removeFileRef(t.key);
+    else if (t.kind === 'url') removeQuotedUrl(t.key);
+    else removeQuotedMessage(t.key);
+    return;
+  }
+  if (cmd === 'open') {
+    if (t.kind === 'url' && t.url) {
+      // ★ 站内浏览器**并真导航过去**（只 openTab 只会挂一个空白浏览器壳）。
+      //   没有内置浏览器（Web/移动端）才回落系统浏览器。
+      void store.openBrowserUrl(t.url, t.name).then((ok) => {
+        if (!ok) window.open(t.url as string, '_blank', 'noopener,noreferrer');
+      });
+    } else if (t.kind === 'file' && t.path) {
+      previewFile({ name: t.name, path: t.path, isDir: false });
+    }
+  }
+}
+
+/** 删除引用：一次性与固定一起撤（只撤一个会出现"删了还在"的迷惑） */
+function removeFileRef(path: string) {
+  const s = new Set(selectedFilePaths.value); s.delete(path); selectedFilePaths.value = s;
+  const p = new Set(pinnedFilePaths.value); p.delete(path); pinnedFilePaths.value = p;
+}
 
 /** 引用图标：目录 FolderOpened / 符号按 kind 着色 / 文件按扩展名 */
 function refIconMeta(f: { name: string; isFolder?: boolean; isSymbol?: boolean; kind?: string }) {

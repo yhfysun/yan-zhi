@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>言智 · 远控采集</title>
+<style>
+  /* 隐藏窗口，不面向用户：这里只用来确认加载/就绪状态（dev 可临时 show 出来排查） */
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: #8a94a3;
+    font: 12px/1.6 system-ui, -apple-system, 'Microsoft YaHei', sans-serif;
+  }
+  #state { padding: 10px 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="state">采集窗口启动中…</div>
+<script type="module" src="/src/capture-main.ts"></script>
+<script>
+  // 模块加载自愈：dev server 瞬时不可用会让 type="module" 静默失败，而这是个隐藏窗口，
+  // 没有任何 UI 提示 —— 表现就是远控「毫无反应」。4s 后仍未挂载就重载，最多 3 次。
+  (function () {
+    var key = 'rc-capture-reload';
+    var tries = Number(sessionStorage.getItem(key) || '0');
+    setTimeout(function () {
+      if (window.__rcHost) { sessionStorage.removeItem(key); return; }
+      if (tries >= 3) { return; }
+      sessionStorage.setItem(key, String(tries + 1));
+      location.reload();
+    }, 4000);
+  })();
+</script>
+</body>
+</html>

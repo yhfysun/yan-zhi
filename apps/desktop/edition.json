@@ -1,18 +1,14 @@
 {
-  "edition": "pro",
-  "defaultEdition": "basic",
-  "label": "高级版",
+  "edition": "lite",
+  "defaultEdition": "lite",
+  "label": "阉割版",
   "modes": [
-    "office",
-    "dev",
-    "ops",
-    "sec",
-    "wf",
-    "clip",
-    "shop"
+    "office"
   ],
   "plugins": [
-    "office-core",
+    "office-core"
+  ],
+  "pluginsExcluded": [
     "dev-mode",
     "wf-mode",
     "clip-mode",
@@ -24,8 +20,9 @@
     "git-explorer",
     "computer-use",
     "remote-control",
-    "skins"
+    "skins",
+    "desktop-manager"
   ],
-  "pluginsExcluded": [],
-  "artifactSuffix": "-pro"
+  "pets": [],
+  "artifactSuffix": "-lite-office"
 }

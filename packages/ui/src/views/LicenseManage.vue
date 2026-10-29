@@ -90,7 +90,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useLicenseStore, EDITION_LABELS } from '../stores/license';
-import { MODE_DEFS } from '../stores/mode';
+import { allModeDefs } from '../stores/mode';
 
 const licenseStore = useLicenseStore();
 
@@ -98,10 +98,11 @@ const newCode = ref('');
 const swapping = ref(false);
 const error = ref('');
 
-/** 模式 key → 中文名（复用 MODE_DEFS，不另写一份清单）。 */
-const MODE_LABELS: Record<string, string> = Object.fromEntries(
-  MODE_DEFS.map((d) => [d.key, d.label.replace(/模式$/, '')]),
-);
+/** 模式 key → 中文名（复用模式定义，含运行时插件模式；找不到就原样显示 key）。 */
+function modeLabelOf(key: string): string {
+  const d = allModeDefs.value.find((x) => x.key === key);
+  return d ? d.label.replace(/模式$/, '') : key;
+}
 
 const editionText = computed(() => {
   const ed = licenseStore.edition || licenseStore.buildEdition;
@@ -115,7 +116,7 @@ const editionText = computed(() => {
 });
 
 const modeLabels = computed(() =>
-  (licenseStore.info?.modes || []).map((m) => MODE_LABELS[m] || m),
+  (licenseStore.info?.modes || []).map(modeLabelOf),
 );
 
 const expireText = computed(() => {

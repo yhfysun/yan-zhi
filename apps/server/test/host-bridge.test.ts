@@ -28,6 +28,7 @@ const EXPECTED_EXPORTS = [
   'collectPathArgs', 'commandExecutionScope', 'createLogger', 'dataDir', 'db', 'decrypt',
   'encrypt', 'getAuthorizedDirs', 'getLatestMessageSummary', 'gitService', 'hasSqliteVec',
   'insertMessageSummary', 'isCommandAuthorized', 'isDangerToolAuthorized', 'isWithinRoot',
+  'llmJson', 'extractJson', 'listReadContracts', 'runReadContract',
   'loadEffectiveTaskTypes', 'lookupOnPath', 'MESSAGE_LIST_COLS', 'normalizeForCompare',
   'pushPluginAudit', 'resetAllAuthorizations', 'runCmd', 'serverState', 'summarizeCommandArgs',
 ].sort();

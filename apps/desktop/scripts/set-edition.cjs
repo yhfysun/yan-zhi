@@ -26,6 +26,7 @@ const {
   resolveSelection,
   modeKeysForSelection,
 } = require('./lib/plugin-build-selection.cjs');
+const { loadPetCatalog, resolvePetSelection } = require('../../../scripts/lib/pet-selection.cjs');
 
 const EDITIONS = ['lite', 'basic', 'pro'];
 
@@ -105,6 +106,20 @@ const customSuffix = artifactSuffixFor({
   override: process.env.YZ_ARTIFACT_SUFFIX,
 });
 
+// ★ 宠物资源选择集（--pets，与插件维度正交）：YZ_BUILD_PETS（package.cjs / build-all 下发）
+//   原样留痕；不传 = 全量（与历史包一致）。main.cjs 读 edition.json.pets 决定宠物入口是否可用，
+//   前端构建也会按同一选择集排除未选精灵图/VRM（apps/desktop/vite.config.ts）。
+let petSelection;
+try {
+  petSelection = resolvePetSelection({
+    catalog: loadPetCatalog(),
+    pets: process.env.YZ_BUILD_PETS ?? null,
+  });
+} catch (e) {
+  console.error(`[set-edition] --pets 非法: ${e.message}`);
+  process.exit(1);
+}
+
 const outPath = path.join(__dirname, '..', 'edition.json');
 const payload = {
   edition,
@@ -116,6 +131,8 @@ const payload = {
   /** 本次构建物理包含的插件（P5）；pluginsExcluded 供后端跳过注册（未装即不存在）。 */
   plugins: pluginSelection.ids,
   pluginsExcluded: pluginSelection.excluded,
+  /** 本次构建随包的宠物资源（2D 包 id + 3D 模型 id）；空数组 = 宠物入口降级隐藏。 */
+  pets: petSelection.ids,
   /** 产物名后缀，与 electron-builder.full.yml 的 artifactName 对应。 */
   artifactSuffix: customSuffix,
 };
@@ -127,6 +144,10 @@ console.log(`[set-edition] 构建档: ${edition}（${LABEL[edition]}）→ 模�
 console.log(
   `[set-edition] 插件: ${pluginSelection.ids.length} 个（${pluginSelection.source}）` +
     (pluginSelection.excluded.length ? `，排除 ${pluginSelection.excluded.join(', ')}` : ''),
+);
+console.log(
+  `[set-edition] 宠物: ${petSelection.ids.length ? petSelection.ids.join(', ') : '(无 —— 入口降级隐藏)'}` +
+    (petSelection.excluded.length ? `，排除 ${petSelection.excluded.join(', ')}` : ''),
 );
 console.log(`[set-edition] 预置码档: ${DEFAULT_EDITION[edition]}`);
 console.log(`[set-edition] 产物后缀: ${customSuffix}`);

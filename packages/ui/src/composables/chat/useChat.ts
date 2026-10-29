@@ -503,6 +503,11 @@ function createChat() {  const router = useRouter();
       if (!text) return;
       input.value = text;
       store.pendingPrefill = '';
+      // 宠物快问的「回车即发」：预填落地后走和用户按回车完全相同的 send()
+      if (store.petAutoSend) {
+        store.petAutoSend = false;
+        Promise.resolve().then(() => { void send(); });
+      }
     },
     { immediate: true },
   );

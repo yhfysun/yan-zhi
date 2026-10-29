@@ -1,0 +1,13 @@
+{
+  "id": "desktop-manager",
+  "name": "桌面管理",
+  "version": "0.1.0",
+  "category": "功能",
+  "description": "智能体整理桌面文件：规则（不调模型）与 AI 增强两种策略，执行前确认、可整批回滚",
+  "engine": "^0.1",
+  "main": "backend/index.js",
+  "permissions": ["fs", "desktop-shell", "llm", "data-contracts"],
+  "contributes": {
+    "tools": ["desktop_scan", "desktop_plan", "desktop_apply", "desktop_undo"]
+  }
+}

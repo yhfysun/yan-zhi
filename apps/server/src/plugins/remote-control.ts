@@ -382,6 +382,10 @@ interface RcSession {
   captureMon: number;
   /** JPEG 回退最近一次画质档（切换显示器时沿用，不回落默认） */
   jpegStream?: { fps: number; scale: number; quality: number };
+  /** 最近一次已知的画面几何（像素，虚拟屏绝对坐标）。断线重连时补发，避免重连后坐标归零 */
+  screen?: { x: number; y: number; w: number; h: number };
+  /** 几何来源：capture=实际采集端（权威），agent=代理兜底（仅在还没有 capture 时采用） */
+  screenSource?: 'capture' | 'agent';
 }
 
 interface HostConn {
@@ -572,6 +576,14 @@ export const remoteControlModule: PluginModule = {
                   });
                 }
               }
+            } else if (!e.ok && e.i > 0) {
+              // 注入执行一般失败（非自窗拦截）：透传给控制端，别只躺在服务端日志里。
+              // i>0 只对应一条具体指令；采集线程用 i=0，避免按帧刷屏。
+              for (const s of sessions.values()) {
+                if (s.status === 'granted' && s.controllerWs) {
+                  sendWsJson(s.controllerWs, { type: 'input.rejected', reason: `注入失败: ${e.error || 'unknown'}` });
+                }
+              }
             }
           };
           a.onFrame = (buf) => {
@@ -727,9 +739,12 @@ export const remoteControlModule: PluginModule = {
             } catch { /* 枚举失败就沿用整个桌面 */ }
           }
           const info = await a.call({ op: 'screensize', mon: s.captureMon }, 10000);
+          s.screen = { x: Number(info.x) || 0, y: Number(info.y) || 0, w: Number(info.w) || 0, h: Number(info.h) || 0 };
+          s.screenSource = 'capture';
           s.controllerWs && sendWsJson(s.controllerWs, {
             ...grantedMsg,
-            screen: { x: info.x ?? 0, y: info.y ?? 0, w: info.w ?? 0, h: info.h ?? 0 },
+            screen: s.screen,
+            screenSource: 'capture',
           });
           await sendJpegDisplays(s, a);
           startJpegStream(s, a);
@@ -740,9 +755,29 @@ export const remoteControlModule: PluginModule = {
           return;
         }
       } else {
-        s.controllerWs && sendWsJson(s.controllerWs, grantedMsg);
+        // 重连/白名单直连：把上次已知几何一起带上，避免客户端坐标归零
+        s.controllerWs && sendWsJson(s.controllerWs, {
+          ...grantedMsg,
+          ...(s.screen ? { screen: s.screen, screenSource: s.screenSource } : {}),
+        });
         // 被控端采集层建 PeerConnection 需要同一份 ICE 配置（rtc.start 恒先于 rtc.offer 到达）
         notifyHost({ type: 'rtc.start', sessionId: s.id, ...(iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}) });
+        // ★ 几何兜底：WebRTC 的画面几何原本只靠渲染层在 answer 后单发一次 rtc.screen，
+        //   丢一次就是「画面正常但点哪都没反应」。代理可用就先补一份（标记 agent，客户端
+        //   收到真正的 capture 几何后会覆盖）；代理起不来也不影响会话。
+        void (async () => {
+          try {
+            const a = await ensureAgent();
+            const mon = s.captureMon >= 0 ? s.captureMon : 0;
+            const info = await a.call({ op: 'screensize', mon }, 8000);
+            const w = Number(info.w) || 0;
+            if (w <= 0 || s.screenSource === 'capture') return;
+            const screen = { x: Number(info.x) || 0, y: Number(info.y) || 0, w, h: Number(info.h) || 0 };
+            s.screen = screen;
+            s.screenSource = 'agent';
+            sendWsJson(s.controllerWs!, { type: 'screen.info', screen, screenSource: 'agent' });
+          } catch { /* 代理不可用：渲染层 rtc.screen 是唯一来源 */ }
+        })();
       }
       await audit('session-grant', {
         sessionId: s.id,
@@ -775,6 +810,31 @@ export const remoteControlModule: PluginModule = {
         case 'rtc.ice':
           if (s.mode === 'webrtc') notifyHost({ type: 'rtc.ice', sessionId: s.id, candidate: msg.candidate });
           break;
+        case 'rtc.recv-stats': {
+          // 手机端接收统计回传（framesDecoded/bytesReceived）：发送端日志证明
+          // 「在编码在发送」，这里证明「对端在收在解码」——黑屏定位只差这一环
+          ctx.log(`[remote-control] 接收侧 ${s.id.slice(0, 8)} ${JSON.stringify(msg.stats || {})}`);
+          break;
+        }
+        case 'screen.request': {
+          // 控制端发现几何缺失/失配时主动要一次（自愈入口，不再赌单次 rtc.screen 不丢）
+          if (s.mode === 'jpeg') {
+            try {
+              const a = await ensureAgent();
+              const info = await a.call({ op: 'screensize', mon: s.captureMon }, 8000);
+              const screen = { x: Number(info.x) || 0, y: Number(info.y) || 0, w: Number(info.w) || 0, h: Number(info.h) || 0 };
+              if (screen.w > 0) {
+                s.screen = screen;
+                s.screenSource = 'capture';
+                sendWsJson(s.controllerWs!, { type: 'screen.info', screen, screenSource: 'capture' });
+              }
+            } catch { /* 代理不可用：等下次 */ }
+          } else {
+            // WebRTC：真正的采集端在被控端渲染层，让它重推几何与显示器清单
+            notifyHost({ type: 'screen.request', sessionId: s.id });
+          }
+          break;
+        }
         case 'use.jpeg': {
           // WebRTC 起不来时的降级请求
           s.mode = 'jpeg';
@@ -1001,6 +1061,12 @@ export const remoteControlModule: PluginModule = {
           }
           break;
         }
+        case 'rtc.restart': {
+          // 切屏重协商：被控端渲染层通知控制端重建 PC（重新走 offer/answer 全流程）
+          const rs = [...sessions.values()].find((x) => x.id === msg.sessionId && x.status === 'granted');
+          if (rs?.controllerWs) sendWsJson(rs.controllerWs, { type: 'rtc.restart' });
+          break;
+        }
         case 'rtc.failed': {
           // 被控端采集/WebRTC 建立失败：把原因转给控制端，让它立即走兼容模式而不是干等
           const sf = [...sessions.values()].find((x) => x.id === msg.sessionId && x.status === 'granted');
@@ -1012,16 +1078,17 @@ export const remoteControlModule: PluginModule = {
         case 'rtc.screen': {
           // 被控端渲染层告知采集画面对应的屏幕几何（像素），控制端据此做坐标换算
           const ss = [...sessions.values()].find((x) => x.id === msg.sessionId && x.status === 'granted');
-          if (ss?.controllerWs) {
-            sendWsJson(ss.controllerWs, {
-              type: 'screen.info',
-              screen: {
-                x: Number(msg.x) || 0,
-                y: Number(msg.y) || 0,
-                w: Number(msg.w) || 0,
-                h: Number(msg.h) || 0,
-              },
-            });
+          const screen = {
+            x: Number(msg.x) || 0,
+            y: Number(msg.y) || 0,
+            w: Number(msg.w) || 0,
+            h: Number(msg.h) || 0,
+          };
+          // 0×0 不覆盖已知值：渲染层在显示器清单未就绪时会发空几何
+          if (ss && screen.w > 0) {
+            ss.screen = screen;
+            ss.screenSource = 'capture';
+            if (ss.controllerWs) sendWsJson(ss.controllerWs, { type: 'screen.info', screen, screenSource: 'capture' });
           }
           break;
         }
@@ -1119,9 +1186,11 @@ export const remoteControlModule: PluginModule = {
         });
         ws.on('close', () => {
           if (hostConn?.ws === ws) hostConn = null;
-          // WebRTC 会话失去采集端：结束（控制端可重新配对走 JPEG）
+          // 被控端渲染层断线（dev 重启 / 采集窗口崩溃 / 应用退出）：
+          // 结束**所有**已授会话，而不是只结束 WebRTC —— JPEG 会话若留着，控制端会
+          // 停在最后一帧（画面看起来「永远不动」），用户根本不知道对端已经没了。
           for (const s of [...sessions.values()]) {
-            if (s.status === 'granted' && s.mode === 'webrtc') void endSession(s, '被控端画面源中断');
+            if (s.status === 'granted') void endSession(s, '被控端断线');
           }
         });
         ws.on('error', () => {
@@ -1146,6 +1215,8 @@ export const remoteControlModule: PluginModule = {
             sessionId: s.id,
             mode: s.mode,
             input: inputState(s),
+            // 重连后几何不能归零：带上次已知值，客户端拿到前仍可正常换算
+            ...(s.screen ? { screen: s.screen, screenSource: s.screenSource } : {}),
             ...(s.mode === 'webrtc' && iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
           });
         }

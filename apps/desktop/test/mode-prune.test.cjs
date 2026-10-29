@@ -86,6 +86,24 @@ test('P5：未选插件的视图不进生成表（插件选择集裁剪，chunk 
   assert.match(out, /CodeWorkbench\.vue/); // 选中模式的入口视图照旧
 });
 
+test('外壳视图（RemoteControlHost / /remote）随插件选择集裁剪', () => {
+  // 全量/未裁剪：外壳段存在（App.vue 与 router 从这里取组件）
+  const all = renderGenerated({ catalog, modes: ['office'], pluginViews: [], pluginSelectionIds: null });
+  assert.match(all, /"remote-control": \{/);
+  assert.match(all, /RemoteControlHost\.vue/);
+  assert.match(all, /views\/RemoteControl\.vue/);
+
+  // 未选 remote-control：整段为空，源码里不存在任何 RemoteControl 引用 → Rollup 不产出 chunk
+  const trim = renderGenerated({
+    catalog,
+    modes: ['office'],
+    pluginViews: [],
+    pluginSelectionIds: ['office-core'],
+  });
+  assert.doesNotMatch(trim, /RemoteControl/);
+  assert.match(trim, /SHELL_VIEW_LOADERS/);
+});
+
 test('构建清单记录排除项与标记串', () => {
   const manifest = buildManifest({ catalog, modes: ['office', 'dev'], edition: 'basic', now: new Date('2026-10-23T03:00:00Z') });
   assert.deepEqual(manifest.modes, ['office', 'dev']);

@@ -160,6 +160,29 @@ router.post('/commit', async (req: Request, res: Response) => {
   }
 });
 
+// 按 hunk 暂存：先列（/hunks），再按编号进暂存区（/stageHunks），最后 /commit 不带 files
+router.post('/hunks', async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await gitService.listHunks(String(req.body.repo || ''), String(req.body.file || '')) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+router.post('/stageHunks', async (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: await gitService.stageHunks(
+        String(req.body.repo || ''),
+        String(req.body.file || ''),
+        Array.isArray(req.body.ids) ? req.body.ids : [],
+      ),
+    });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
 router.post('/commitAmend', async (req: Request, res: Response) => {
   try {
     await gitService.commitAmend(req.body.repo, req.body.message);

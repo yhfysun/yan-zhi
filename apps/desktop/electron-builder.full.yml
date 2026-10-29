@@ -73,6 +73,8 @@ files:
   # ★★★ 插件前端包装载协议（mode-pluginization P0）：main.cjs require('./plugin-protocol.cjs')。
   #   漏登记 = 打包版启动即崩（Cannot find module './plugin-protocol.cjs'）——同 instance.cjs 类坑。
   - plugin-protocol.cjs
+  # P0-0（desktop-manager）：插件桌面窗口 + 桌面外壳纯逻辑模块（main.cjs require 本文件）。
+  - desktop-shell.cjs
   # 共享依赖 shim（scripts/generate-host-shims.mjs 生成，随包分发）：yz://shared/*.mjs 由
   # protocol.handle 从 app.asar 内本目录读取。漏登记 = 插件前端装载全部 404。
   - host-shims/**/*

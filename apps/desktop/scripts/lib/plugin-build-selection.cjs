@@ -8,6 +8,8 @@
  *   3) 档位预设（catalog.editionPresets[edition]）—— 多档构建传 editions 数组取并集。
  *
  * 规则本体在 scripts/lib/plugin-selection.cjs（office 锁定 / requires 闭包 / 非法报错）。
+ * 可选插件（plugins/optional/*，可后装）在这里自动并入选择集：**点名才带**，
+ * 不参加 all / 默认全量 / 档位预设（否则每个包都会莫名多出可后装插件）。
  */
 const fsDefault = require('fs');
 const path = require('path');
@@ -16,7 +18,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const CATALOG_PATH = path.join(REPO_ROOT, 'build', 'plugins.catalog.json');
 const MODES_CATALOG_PATH = path.join(REPO_ROOT, 'build', 'modes.catalog.json');
 
-const { resolvePluginSelection, parseList } = require(path.join(REPO_ROOT, 'scripts', 'lib', 'plugin-selection.cjs'));
+const { resolvePluginSelection, parseList, OFFICE_ID, NONE_TOKEN } = require(path.join(REPO_ROOT, 'scripts', 'lib', 'plugin-selection.cjs'));
+const { loadOptionalPlugins } = require(path.join(REPO_ROOT, 'scripts', 'lib', 'optional-plugins.cjs'));
 
 function readJson(file, fs = fsDefault) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -45,10 +48,27 @@ function selectionFromEnv(env = process.env) {
  * @param {string|string[]|null} [opts.plugins]
  * @param {string|string[]|null} [opts.modes]
  * @param {string[]|null} [opts.editions]  多档 = 并集；单档 = [edition]
+ * @param {Array|null} [opts.optional]    可选插件（默认读 plugins/optional/*）
  * @returns {{ids: string[], excluded: string[], source: string}}
  */
-function resolveSelection({ catalog, plugins = null, modes = null, editions = null }) {
-  return resolvePluginSelection({ catalog, plugins, modes, editions });
+function resolveSelection({ catalog, plugins = null, modes = null, editions = null, optional = null }) {
+  return resolvePluginSelection({
+    catalog,
+    plugins,
+    modes,
+    editions,
+    optional: optional === null ? loadOptionalPlugins() : optional,
+  });
+}
+
+/** 本次可选插件的 id（供 prune 全量 id 集合使用）。 */
+function optionalPluginIds(optional = loadOptionalPlugins()) {
+  return optional.map((p) => p.id);
+}
+
+/** catalog + 可选插件的全部 id（裁剪断言/暂存都要用完整集合，否则残留可选目录永远没人清）。 */
+function allPluginIds(catalog, optional = loadOptionalPlugins()) {
+  return [...Object.keys(catalog.plugins || {}), ...optionalPluginIds(optional)];
 }
 
 /** 选择集里各插件贡献的模式 key（按 modes.catalog.json 的顺序，保证产物可复现）。 */
@@ -77,11 +97,16 @@ module.exports = {
   REPO_ROOT,
   CATALOG_PATH,
   MODES_CATALOG_PATH,
+  OFFICE_ID,
+  NONE_TOKEN,
   loadCatalog,
   loadModesCatalog,
+  loadOptionalPlugins,
   readJson,
   selectionFromEnv,
   resolveSelection,
+  optionalPluginIds,
+  allPluginIds,
   modeKeysForSelection,
   unionPresets,
 };

@@ -9,12 +9,17 @@ import { resolveWorkspacePythonScript, runPythonScriptHealing } from './python-r
 import { capToolOutput } from './output-cap';
 import { resolveToolPath, isAbsolutePath, joinPath } from './fs-walk';
 import * as path from 'path';
+import * as fs from 'fs';
 import { toolError } from '../result';
 
 export class NovelTuiwenTool implements BuiltInTool {
   name = 'novel_tuiwen';
   description =
-    '有声小说推文视频生成：把小说章节文本自动改编成口播脚本，Edge-TTS 配音，与背景视频（**风景 / 海洋 / 动物世界 / 延时自然**等舒缓、无人声、可循环的素材）或**图片轮播**（images：图文成品做口播视频）合成为 4:3 (1080x1440) mp4，含顶部标题与逐句字幕。chapter 必填（工作目录内的 .txt），bg_video / images 可选（逗号分隔多个，按顺序）。画面切换、字幕、配音三条时间轴同源（都按真实配音时长），不会不同步。产出最终视频（deliverable）。';
+    '有声小说推文视频生成：把小说章节文本自动改编成口播脚本，Edge-TTS 配音，' +
+    '**动态排版画面**（元素随旁白节奏入场 + 场景交叉淡化 + 底部打字机字幕 + 本地 BGM）合成为 mp4，含顶部标题与集数角标。' +
+    'chapter 必填（工作目录内的 .txt）。**优先传 storyboard（分镜 JSON）**——卡片只写关键词、不抄旁白原文；' +
+    '不传则按旁白自动生成分镜。也可用 bg_video（风景/海洋等舒缓素材循环铺底）或 images（整图轮播，' +
+    '图内已有文字时会与字幕重复）。画面切换、字幕、配音三条时间轴同源（都按真实配音时长），不会不同步。产出最终视频（deliverable）。';
 
   inputSchema = {
     type: 'object',
@@ -22,7 +27,51 @@ export class NovelTuiwenTool implements BuiltInTool {
       chapter: { type: 'string', description: '小说章节文本文件路径（.txt，相对工作目录或绝对路径）。必填。' },
       title: { type: 'string', description: '视频标题（顶部展示 + 文件名），默认取「小说推文」。' },
       bg_video: { type: 'string', description: '背景视频路径，多个用逗号分隔（按顺序轮播，循环铺满全片）。**题材建议：风景 / 海洋 / 动物世界 / 延时自然等舒缓、无人声、可循环的素材**（与口播不抢注意力，也更符合平台调性）；尽量选与故事氛围匹配的（悬疑配暗色/夜景、治愈配明亮自然）。省略则用深色文字占位画面。' },
-      images: { type: 'string', description: '图片路径，多个用逗号分隔（按顺序）。**图片轮播模式：图文成品 / 轮播图文做口播视频时用它**——每张图覆盖若干整句，切图边界与字幕、配音同源（都来自真实配音时长），不会出现画面/字幕/配音不同步。传了 images 就不要再传 bg_video（bg_video 优先）。图片按等比缩放居中补底，不裁剪图内文字。' },
+      images: { type: 'string', description: '图片路径，多个用逗号分隔（按顺序）。**图片轮播模式：图文成品 / 轮播图文做口播视频时用它**——每张图覆盖若干整句，切图边界与字幕、配音同源（都来自真实配音时长），不会出现画面/字幕/配音不同步。传了 images 就不要再传 bg_video（bg_video 优先）。图片按等比缩放居中补底，不裁剪图内文字。**注意：图文卡片里已经写了口播原文时会与底部字幕重复，这种素材应改用 storyboard。**' },
+      storyboard: {
+        type: 'string',
+        description:
+          '分镜 JSON（字符串）：走**动态排版引擎**——元素随旁白节奏逐条入场、场景间交叉淡化、底部打字机字幕、进度条。' +
+          '这是默认的新画面模式，画质和节奏远好于图片轮播。结构：{"scenes":[' +
+          '{"type":"hook","seg":0,"kicker":"期数或别名","title":"第一行\\n第二行","highlight":"强调行","sub":"补充说明"},' +
+          '{"type":"statement","seg":1,"title":"...","highlight":"...","note":"..."},' +
+          '{"type":"points","seg":2,"title":"...","points":["① ...","② ...","③ ..."]},' +
+          '{"type":"steps","seg":3,"title":"就三步","items":["给资料","出大纲","写文案"]},' +
+          '{"type":"stat","seg":5,"value":"3","label":"行，是每页的天花板","sub":"..."},' +
+          '{"type":"quote","seg":1,"text":"最耗时的\\n其实不是排版","by":"—"},' +
+          '{"type":"compare","seg":6,"title":"踩过的都翻过车","left":{"head":"坑","items":["..."]},"right":{"head":"做法","items":["..."]}},' +
+          '{"type":"warning","seg":6,"title":"三个坑","points":["..."]},' +
+          '{"type":"code","seg":5,"title":"...","code":"=SUMIFS(...)","note":"..."},' +
+          '{"type":"table","seg":4,"title":"...","columns":["区域","金额"],"rows":[["华东","45600"]]},' +
+          '{"type":"cta","seg":7,"title":"...","button":"评论区说说","note":"..."}]}。' +
+          'seg=第几段旁白（0 起，对应 segments 下标；hook 也是第 0 段）；一段旁白可拆成多个场景，时长按 w 比例分。' +
+          '**卡片只写关键词/短句，不要抄旁白原文**（字幕另行逐字打出，抄原文会变成同一句话看两遍）。' +
+          '文案里用 [方括号] 标出要染成强调色的词。顶层可加 "theme":"dark|light"。' +
+          '省略则按旁白自动生成分镜。',
+      },
+      visual: {
+        type: 'string',
+        enum: ['auto', 'kinetic', 'images', 'bg_video'],
+        description: '画面模式：auto（默认；有 storyboard 或没有背景素材时走 kinetic，否则沿用 bg_video/images）/ kinetic / images / bg_video。',
+      },
+      bg_images: {
+        type: 'string',
+        description:
+          '动态排版的**素材底图层**（可省略；默认不加底图）。省略/不传 = 纯版式背景（渐变+网格），' +
+          '图文、知识口播、数据讲解类内容用这个最清楚，**不要为了「有画面」硬挂风景视频**。' +
+          '传逗号分隔的图片路径，或 auto（只扫 <工作目录>/00-source/images、02-work/images 这两个图片库目录）。' +
+          '★ 只有素材和选题**明确同题**时才传（例如悬疑小说配暗色雾林、治愈故事配海边）；' +
+          '不确定就不传，素材不搭配比没有素材更扣分。',
+      },
+      bgm_level: { type: 'number', description: '背景音乐音量（0~1，默认 0.20）。觉得音乐太抢就调到 0.12。' },
+      subtitle_style: {
+        type: 'string',
+        enum: ['typewriter', 'ticker'],
+        description:
+          '字幕样式：typewriter（默认）=逐句打字机，按标点+虚词断句、定点阅读；' +
+          'ticker=整句单行从右往左平移，永不断句但需要跟着字移动视线。' +
+          '长句多、断句总不理想时用 ticker；追求平台主流观感用 typewriter。',
+      },
       aspect: { type: 'string', enum: ['4:3', '9:16', '16:9'], description: '画幅：9:16=抖音竖屏 1080x1920（抖音发布用这个）；4:3=1080x1440（默认）；16:9=横屏 1920x1080。' },
       ending: { type: 'string', description: '结尾引导口播。发抖音必传：搜索别名XX看后续（XX=生效中的别名关键词）。禁止出现原书名。' },
       banner: { type: 'string', description: '视频顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名，传别名。' },
@@ -30,8 +79,8 @@ export class NovelTuiwenTool implements BuiltInTool {
       chapter_num: { type: 'string', description: '第几集（如 3）。画面中部「第N集」大字仅前3秒显示，并决定成片文件名（别名_第N集.mp4）与发布文案；缺省从文件名 chNN 推断。' },
       tags: { type: 'string', description: '发布内容自定义话题标签，缺省 "#小说 #推文 <别名>"。' },
       no_publish_copy: { type: 'boolean', description: '跳过生成 publish.txt 发布文案（默认生成到 <outdir>/.work/publish.txt）。' },
-      voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunxiNeural（年轻男声）；女声可用 zh-CN-XiaoyiNeural。' },
-      rate: { type: 'string', description: '配音语速：默认 "+10%"（短视频口播偏快，完播率更好）；传 "0" 回原速，也可传 1.1（倍率）或 10（百分比）。语速变了会自动作废旧分段配音重合成。' },
+      voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunjianNeural（云健，厚实讲故事感）；女声可用 zh-CN-XiaoyiNeural，年轻男声可用 zh-CN-YunxiaNeural。换音色会自动作废旧分段配音重合成。' },
+      rate: { type: 'string', description: '配音语速：默认 "+15%"（短视频口播偏快，完播率更好）；传 "0" 回原速，也可传 1.15（倍率）或 15（百分比）。语速变了会自动作废旧分段配音重合成。' },
       out: { type: 'string', description: '输出目录，默认 <工作目录>/output/。' },
       use_llm: { type: 'boolean', description: '用 LLM 做钩子化改编（需环境变量 OPENAI_BASE_URL/OPENAI_API_KEY）。默认规则切分。' },
       ambience: { type: 'string', description: '环境音：auto（默认，按剧情情绪自动选）/ none / pad_soft / room / wind / rain / hum / space / fire。音量很低且会被旁白自动闪避，不会盖过配音。' },
@@ -78,12 +127,47 @@ export class NovelTuiwenTool implements BuiltInTool {
       ? resolveToolPath(args.out.trim(), ws)
       : (ws ? joinPath(ws, 'output') : path.join(process.env.TEMP || '.', 'novel-tuiwen-output'));
 
+    // 分镜（动态排版画面）：模型传 JSON → 落盘到工作目录再传路径，避免超长命令行把参数截断
+    let storyboardPath = '';
+    if (typeof args.storyboard === 'string' && args.storyboard.trim()) {
+      try {
+        const sb = JSON.parse(args.storyboard);
+        const sbDir = path.join(outDirRaw, '.work');
+        fs.mkdirSync(sbDir, { recursive: true });
+        storyboardPath = path.join(sbDir, 'storyboard.json');
+        fs.writeFileSync(storyboardPath, JSON.stringify(sb, null, 1), 'utf-8');
+      } catch (e) {
+        return toolError(`Error: storyboard 不是合法 JSON（${(e as Error).message}）`);
+      }
+    }
+
     const argv: string[] = ['--input', chapter];
     argv.push('--workdir', path.join(outDirRaw, '.work'));
     if (args.title) argv.push('--title', String(args.title));
     if (args.voice) argv.push('--voice', String(args.voice));
     if (bgVideo) argv.push('--bg-video', bgVideo);
     if (images) argv.push('--images', images);
+    if (storyboardPath) argv.push('--storyboard', storyboardPath);
+    if (typeof args.visual === 'string'
+      && ['auto', 'kinetic', 'images', 'bg_video'].includes(args.visual)) {
+      argv.push('--visual', args.visual);
+    }
+    if (typeof args.bgm_level === 'number' && Number.isFinite(args.bgm_level)) {
+      argv.push('--bgm-level', String(Math.max(0, Math.min(1, args.bgm_level))));
+    }
+    // 素材底图：auto/none 原样传；显式路径按工作目录解析
+    if (typeof args.subtitle_style === 'string'
+      && ['typewriter', 'ticker'].includes(args.subtitle_style)) {
+      argv.push('--subtitle-style', args.subtitle_style);
+    }
+    if (typeof args.bg_images === 'string' && args.bg_images.trim()) {
+      const raw = args.bg_images.trim();
+      const resolved = (raw === 'auto' || raw === 'none')
+        ? raw
+        : raw.split(',').map((s) => s.trim()).filter(Boolean)
+          .map((p) => (isAbsolutePath(p) ? p : resolveToolPath(p, ws))).join(',');
+      argv.push('--bg-images', resolved);
+    }
     if (typeof args.rate === 'string' && args.rate.trim()) argv.push('--rate', args.rate.trim());
     if (args.use_llm) argv.push('--use-llm');
     if (args.verbatim === true) argv.push('--verbatim');

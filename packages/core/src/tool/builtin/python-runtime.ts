@@ -32,6 +32,15 @@ export function getBundledPythonPath(): string | null {
   }
 }
 
+/** 目录是否真的非空（裁剪后的空壳目录 vs 真实资源）。 */
+function hasEntries(dir: string): boolean {
+  try {
+    return fs.readdirSync(dir).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** 取随包分发的 python 脚本目录（doyz / security / pdf_preview / excel_preview 等）。
  *  prod: process.resourcesPath/python-tools（electron-builder 拷入）
  *  dev: 编译产物同级（dist/tool/builtin/python-scripts），仓库源码未拷贝时回退 src 同级目录 */
@@ -40,7 +49,10 @@ export function getPythonToolsDir(): string | null {
     const res = (process as unknown as { resourcesPath?: string }).resourcesPath;
     if (res) {
       const prod = path.join(res, 'python-tools');
-      if (fs.existsSync(prod)) return prod;
+      // ★ 空目录 = 本次包按插件选择集裁掉了 python 运行时（resources 里留空壳让
+      //   extraResources 有源可拷），按"缺失"处理：回退开发目录或系统 python，
+      //   而不是把一个空目录当成可用脚本目录（后续 readFile 会报难懂的 ENOENT）。
+      if (fs.existsSync(prod) && hasEntries(prod)) return prod;
     }
     // ESM 下无 __dirname，用 import.meta.url 定位；CJS 产物回退 __dirname。
     // 注意：此处不得静态 import 'node:url'，否则渲染进程 bundle 被 Vite 外部化直接抛错黑屏。

@@ -8,6 +8,12 @@
       "port": 4177
     },
     {
+      "name": "desktop-fence-demo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".claude/prototype-server.cjs", "--root", "plugins/optional/desktop-manager", "--port", "4178"],
+      "port": 4178
+    },
+    {
       "name": "remote-prototype",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "4199", "--directory", "docs/prototypes"],
@@ -24,6 +30,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "4213", "--directory", "docs/prototypes"],
       "port": 4213
+    },
+    {
+      "name": "desktop-ui",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@yan-zhi/desktop", "exec", "vite", "--port", "1421", "--strictPort"],
+      "port": 1421
     }
   ]
 }

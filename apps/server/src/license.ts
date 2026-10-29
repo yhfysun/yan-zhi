@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from './services/logger.js';
+import { runtimePluginModes } from './plugins/runtime-modes.js';
 const logger = createLogger('license');
 
 // 本模块所在目录（ESM 无 __dirname；构建时现签的预置码文件按它定位开发期候选路径）
@@ -93,14 +94,23 @@ export function resolveBuildModes(
   return build ? [...EDITION_MODES[build]] : [];
 }
 
-/** 构建档（物理内容）∩ 授权档 → 实际放行的模式。任一维度不放行，该模式就不出现。 */
+/**
+ * 构建档（物理内容）∩ 授权档 → 实际放行的模式。任一维度不放行，该模式就不出现。
+ *
+ * ★ 运行时插件模式（后装 .yzp / 随包插件贡献的 contributes.mode）额外并入：
+ *   构建期模式表不可能预知它们，档位表也不该为未知模式背书 —— 放行依据是
+ *   **插件本身已安装且已启用**（停用即从集合消失，见 plugins/runtime-modes.ts）。
+ *   内置模式仍严格走「构建档 ∩ 授权档」，语义不变。
+ */
 export function allowedModes(
   build: Edition,
   licensed: Edition,
   buildModes: string[] = resolveBuildModes(undefined, build),
 ): string[] {
   const buildSet = new Set(buildModes);
-  return EDITION_MODES[licensed].filter((m) => buildSet.has(m));
+  const base = EDITION_MODES[licensed].filter((m) => buildSet.has(m));
+  const extra = runtimePluginModes().filter((m) => !base.includes(m));
+  return [...base, ...extra];
 }
 
 /** 预置试用授权码：按档位各一份，打包进 exe，首次运行自动填充激活。

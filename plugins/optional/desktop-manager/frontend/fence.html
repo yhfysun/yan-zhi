@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>桌面围栏</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; color: #eef3ff; }
+  /* 演示模式：模拟桌面壁纸，避免白底看不到白字 */
+  body.demo {
+    background:
+      radial-gradient(900px 520px at 18% 12%, rgba(64,130,255,.30), transparent 60%),
+      radial-gradient(760px 520px at 82% 24%, rgba(150,84,255,.24), transparent 62%),
+      radial-gradient(900px 600px at 62% 92%, rgba(24,180,190,.18), transparent 60%),
+      linear-gradient(135deg, #0a1628 0%, #102a4e 46%, #16324f 100%);
+  }
+
+  .topbar {
+    position: fixed; left: 16px; top: 12px; z-index: 30;
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 10px; border-radius: 12px;
+    background: rgba(14,20,32,.72); border: 1px solid rgba(255,255,255,.14);
+    backdrop-filter: blur(14px); box-shadow: 0 8px 26px rgba(0,0,0,.35);
+    font-size: 12px; color: #cfd8e8;
+  }
+  .topbar .dot { width: 7px; height: 7px; border-radius: 50%; background: #7ef0b0; box-shadow: 0 0 8px #7ef0b0; }
+  .topbar button {
+    border: 0; cursor: pointer; font-family: inherit; font-size: 12px;
+    padding: 4px 10px; border-radius: 8px; color: #cfd8e8; background: rgba(255,255,255,.10);
+  }
+  .topbar button:hover { background: rgba(255,255,255,.18); }
+  .topbar button.primary { background: linear-gradient(135deg,#4f6bff,#7a4dff); color: #fff; }
+
+  .fence {
+    position: absolute; z-index: 10; border-radius: 18px;
+    background: rgba(255,255,255,.055);
+    border: 1px solid rgba(255,255,255,.16);
+    box-shadow: 0 10px 40px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.10);
+    backdrop-filter: blur(10px);
+  }
+  .fence.drop { border-color: rgba(120,170,255,.7); background: rgba(90,120,255,.14); }
+  .fh {
+    position: absolute; left: 12px; right: 12px; top: 8px; height: 26px;
+    display: flex; align-items: center; gap: 8px; cursor: grab; user-select: none;
+  }
+  .fh .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 10px currentColor; }
+  .fh .lbl { font-size: 14px; font-weight: 600; text-shadow: 0 1px 3px rgba(0,0,0,.45); }
+  .fh .cnt { font-size: 11px; color: rgba(255,255,255,.6); background: rgba(255,255,255,.10); border-radius: 20px; padding: 1px 8px; }
+  .fh .fx {
+    margin-left: auto; border: 0; background: transparent; color: rgba(255,255,255,.45);
+    cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 6px;
+  }
+  .fh .fx:hover { background: rgba(255,255,255,.14); color: #fff; }
+  .rs {
+    position: absolute; right: 4px; bottom: 4px; width: 16px; height: 16px;
+    cursor: nwse-resize; border-right: 2px solid rgba(255,255,255,.28);
+    border-bottom: 2px solid rgba(255,255,255,.28); border-radius: 0 0 8px 0;
+  }
+
+  .icon {
+    position: absolute; width: 84px; text-align: center; cursor: default;
+    user-select: none; -webkit-user-drag: element;
+  }
+  .icon .tile {
+    width: 46px; height: 46px; margin: 0 auto 5px; border-radius: 11px;
+    display: flex; align-items: center; justify-content: center; font-size: 26px;
+    background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.14);
+    box-shadow: 0 3px 10px rgba(0,0,0,.28); overflow: hidden;
+  }
+  .icon .tile img { width: 34px; height: 34px; object-fit: contain; }
+  .icon .nm {
+    font-size: 11px; line-height: 1.35; text-shadow: 0 1px 3px rgba(0,0,0,.7);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    word-break: normal; overflow-wrap: break-word;
+  }
+  .icon.sel .tile { background: rgba(90,130,255,.35); border-color: rgba(140,170,255,.7); }
+
+  .empty { position: absolute; inset: 40px 14px 14px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: rgba(255,255,255,.35); }
+
+  .menu {
+    position: fixed; z-index: 60; min-width: 170px; padding: 6px; border-radius: 10px;
+    background: rgba(18,24,36,.96); border: 1px solid rgba(255,255,255,.12);
+    box-shadow: 0 14px 40px rgba(0,0,0,.5); font-size: 12.5px; display: none;
+  }
+  .menu.on { display: block; }
+  .menu .it { padding: 7px 10px; border-radius: 7px; cursor: pointer; color: #dfe6f5; display: flex; gap: 8px; }
+  .menu .it:hover { background: rgba(255,255,255,.10); }
+  .menu .hd { padding: 6px 10px 4px; font-size: 11px; color: #7d889c; }
+  .menu .sep { height: 1px; margin: 4px 6px; background: rgba(255,255,255,.08); }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%);
+    z-index: 70; padding: 8px 14px; border-radius: 10px; font-size: 12.5px;
+    background: rgba(18,24,36,.94); border: 1px solid rgba(255,255,255,.12);
+    opacity: 0; transition: opacity .25s; pointer-events: none;
+  }
+  .toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+  <div class="topbar" id="topbar">
+    <span class="dot"></span>
+    <span id="hint">围栏模式 · 双击打开 · 拖拽图标可改归属</span>
+    <button id="btnNew">+ 新建围栏</button>
+    <button id="btnSettings">设置</button>
+    <button id="btnExit" class="primary">退出围栏</button>
+  </div>
+  <div id="layer"></div>
+  <div class="menu" id="menu"></div>
+  <div class="toast" id="toast"></div>
+  <script type="module" src="./fence.mjs"></script>
+</body>
+</html>

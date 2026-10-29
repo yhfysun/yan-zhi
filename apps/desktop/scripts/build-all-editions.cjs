@@ -82,10 +82,29 @@ const {
 const {
   loadCatalog: loadPluginCatalog,
   loadModesCatalog,
+  loadOptionalPlugins,
   selectionFromEnv,
   unionPresets,
   modeKeysForSelection,
 } = require(path.join(desktopDir, 'scripts', 'lib', 'plugin-build-selection.cjs'));
+const { stageOptionalPlugins, removeStagedOptional } = require(path.join(desktopDir, 'scripts', 'lib', 'optional-plugin-stage.cjs'));
+const { stagePythonRuntime, restorePythonRuntime } = require(path.join(desktopDir, 'scripts', 'lib', 'python-runtime-stage.cjs'));
+// ★ 宠物资源选择集（--pets）：与插件/模式正交，环境变量原样透传给 vite（apps/desktop/vite.config.ts
+//   按它替换 pet-assets 模块并删 dist/vrm 未选项）。这里只做**早失败**校验 + 打印。
+const { loadPetCatalog, resolvePetSelection } = require(path.join(repoRoot, 'scripts', 'lib', 'pet-selection.cjs'));
+const PET_SELECTION = (() => {
+  try {
+    return resolvePetSelection({ catalog: loadPetCatalog(), pets: process.env.YZ_BUILD_PETS ?? null });
+  } catch (e) {
+    console.error(`[build-all] --pets 非法: ${e.message}`);
+    process.exit(1);
+  }
+})();
+if (process.env.YZ_BUILD_PETS !== undefined) {
+  console.log(
+    `[build-all] 宠物资源: ${PET_SELECTION.ids.length ? PET_SELECTION.ids.join(', ') : '(无 —— 入口降级隐藏)'}`,
+  );
+}
 
 const CONFIG = EDITION_CONFIG;
 const LABEL = EDITION_LABEL;
@@ -171,7 +190,16 @@ function dirHash(dir) {
   return h.digest('hex');
 }
 
-function preflight() {
+/**
+ * @param {boolean} [keepPython] 本次选择集是否带 computer-use（它的 extraResources 拥有 python 运行时）。
+ *   false 时**不生成也不要求**这两个目录：打包前会把内容裁到暂存区（留空壳给 extraResources），
+ *   成品里的 python 类工具回退系统 python —— 这是选择集语义，不是静默降级。
+ */
+function preflight(keepPython = true) {
+  if (!keepPython) {
+    console.log('');
+    console.log('  内置 Python 运行时：本次未选 computer-use → **不随包**（工具回退系统 python）');
+  }
   const pyDir = path.join(desktopDir, 'resources', 'python');
   const toolsDir = path.join(desktopDir, 'resources', 'python-tools');
   const hasPython = fs.existsSync(pyDir);
@@ -187,7 +215,7 @@ function preflight() {
     && dirHash(srcScriptsDir) !== dirHash(toolsDir);
   const hasTools = fs.existsSync(toolsDir) && !toolsStale;
 
-  if (!hasPython || !hasTools) {
+  if (keepPython && (!hasPython || !hasTools)) {
     const skip = process.env.YZ_SKIP_PYTHON_RUNTIME === '1';
     if (skip) {
       console.warn('');
@@ -286,8 +314,11 @@ for (const edition of editions) {
  */
 const PLUGIN_CATALOG = loadPluginCatalog();
 const MODES_CATALOG = loadModesCatalog();
+const OPTIONAL_PLUGINS = loadOptionalPlugins();
 const EXPLICIT_PLUGINS = selectionFromEnv().plugins;
 const BUILD_PLUGINS_UNION = EXPLICIT_PLUGINS || unionPresets(PLUGIN_CATALOG, editions);
+/** Python 运行时（~400MB）归 computer-use 插件所有：未选它就不生成、不随包。 */
+const KEEP_PYTHON = BUILD_PLUGINS_UNION.includes('computer-use');
 
 function resolveBuildModesCsv() {
   const explicit = parseModesArg(process.env.YZ_BUILD_MODES);
@@ -329,6 +360,30 @@ function restoreStagedPlugins() {
 }
 process.on('exit', restoreStagedPlugins);
 
+/** 本次拷进 builtin 的可选插件 id（打完必须删 —— 它们是拷贝出来的构建输入，不是产物）。 */
+let optionalStagedIds = [];
+function restoreOptionalPlugins() {
+  if (!optionalStagedIds.length) return;
+  const ids = optionalStagedIds;
+  optionalStagedIds = [];
+  try {
+    removeStagedOptional({ root: BUILTIN_PLUGINS_DIR, ids, log: (m) => console.log(`[build-all] ${m}`) });
+  } catch (e) {
+    console.warn(`[build-all] 警告：清理可选插件临时副本失败（${e.message}），请手动删除 apps/server/plugins/builtin 下的 ${ids.join(', ')}`);
+  }
+}
+process.on('exit', restoreOptionalPlugins);
+
+/** Python 运行时裁剪的恢复（未选 computer-use 时内容在 resources/.prune-hold/）。 */
+function restorePython() {
+  try {
+    restorePythonRuntime({ resourcesDir: path.join(desktopDir, 'resources'), log: (m) => console.log(`[build-all] ${m}`) });
+  } catch (e) {
+    console.warn(`[build-all] 警告：恢复 Python 运行时失败（${e.message}），请手动执行 restore（resources/.prune-hold/）`);
+  }
+}
+process.on('exit', restorePython);
+
 /** 打包结束（含异常退出）恢复全量生成表，避免把裁剪后的表留在工作区。 */
 let modeTableRestored = false;
 function restoreModeTable() {
@@ -350,8 +405,12 @@ process.on('exit', restoreModeTable);
 //    electron-builder 仍需**逐档各跑一次**（edition.json 打进 asar，档位是编译期固化的）。
 console.log('\n=== [2/3] 编译后端与前端（源码产物共用，只跑一次）===');
 console.log(`[build-all] 编译模式: ${BUILD_MODES_CSV}`);
-console.log(`[build-all] 内置插件: ${BUILD_PLUGINS_UNION.join(', ')}（未选 ${Object.keys(PLUGIN_CATALOG.plugins).length - BUILD_PLUGINS_UNION.length} 个）`);
-preflight();
+console.log(`[build-all] 内置插件: ${BUILD_PLUGINS_UNION.join(', ')}（未选 ${Object.keys(PLUGIN_CATALOG.plugins).length - BUILD_PLUGINS_UNION.filter((id) => PLUGIN_CATALOG.plugins[id]).length} 个）`);
+if (OPTIONAL_PLUGINS.length) {
+  const picked = OPTIONAL_PLUGINS.filter((p) => BUILD_PLUGINS_UNION.includes(p.id)).map((p) => `${p.id}（${p.label}）`);
+  console.log(`[build-all] 可后装插件: ${picked.length ? picked.join(', ') : '未选'}`);
+}
+preflight(KEEP_PYTHON);
 // ★ 先写前端生成表：路由/插件视图表只包含选中模式与选中插件，vite 才不会产出未选部分的 chunk。
 run(process.execPath, [
   path.join(repoRoot, 'scripts', 'select-modes.cjs'),
@@ -376,6 +435,15 @@ run(process.execPath, [
   '--with-frontend',
   '--out=' + BUILTIN_PLUGINS_DIR,
 ]);
+// ★ 可选插件（plugins/optional/*，点名才带）：打包前原样拷进 builtin，与内置插件同一条裁剪/拷贝链路。
+//   未选的旧副本在这里被清掉；本次拷进去的 id 记下来，打完（含崩溃）删掉。
+const optionalStage = stageOptionalPlugins({
+  root: BUILTIN_PLUGINS_DIR,
+  optional: OPTIONAL_PLUGINS,
+  selected: BUILD_PLUGINS_UNION,
+  log: (m) => console.log(`[build-all] ${m}`),
+});
+optionalStagedIds = optionalStage.copied;
 // ★ 裁剪泄漏断言必须在 electron-builder 之前、且用**本次构建的并集选择集**：
 //   前端产物一份服务所有档，逐档扫描会误报（低档包里当然有高档的 chunk）。
 stagePlugins('prune');
@@ -388,6 +456,18 @@ stagePlugins('restore');
 pluginsStaged = false;
 run(process.execPath, ['./scripts/prepare-server-runtime.cjs']);
 run(process.execPath, ['./scripts/clean-broken-symlinks.cjs']);
+
+// ★ Python 运行时随 computer-use 插件裁剪：未选它时把内容移到 resources/.prune-hold/，
+//   留空壳目录给 extraResources（缺失 from 会让 electron-builder 报错）。打完恢复。
+//   keep=true 时这一步只负责恢复上次崩溃残留，是 no-op。
+const pythonStage = stagePythonRuntime({
+  resourcesDir: path.join(desktopDir, 'resources'),
+  keep: KEEP_PYTHON,
+  log: (m) => console.log(`[build-all] ${m}`),
+});
+if (!pythonStage.skipped) {
+  console.log(`[build-all] Python 运行时：未选 computer-use → 不随包（裁剪 ${pythonStage.moved.join(', ') || '无'}）`);
+}
 
 // ② 逐档打包：每档先重写 edition.json、清掉复用的 appOutDir，再交给 electron-builder
 console.log(`\n=== [3/3] 逐档打包：${editions.join(' → ')} ===`);
@@ -410,13 +490,20 @@ for (const edition of editions) {
   //   · 后缀与目录名同源，避免读不到时回落到 -basic（档位与文件名不一致）。
   // YZ_BUILD_PLUGINS：electron-build 据此只暂存该档选中的插件（打完自动 restore）。
   // YZ_SKIP_PLUGIN_BUILD：并集插件包上面已经构建过（每档都是并集的子集），不再逐档重建。
+  // YZ_SKIP_PYTHON_STAGE：Python 运行时由本脚本在循环前统一 stage、结束统一 restore。
   run(process.execPath, ['./scripts/electron-build.cjs', CONFIG[edition]], {
     YZ_OUTPUT_DIR: outDir,
     YZ_ARTIFACT_SUFFIX: suffix,
     YZ_BUILD_PLUGINS: pluginsCsv,
     YZ_SKIP_PLUGIN_BUILD: '1',
+    YZ_SKIP_PYTHON_STAGE: '1',
   });
 }
+
+// 可选插件副本用完即清（build-all 在循环前拷入，逐档 electron-build 还会各自 stage/清理一次）
+restoreOptionalPlugins();
+// Python 运行时内容从暂存区移回（未选 computer-use 时才有实际动作）
+restorePython();
 
 console.log(`\n=== 完成：已产出 ${editions.length} 个包 ===`);
 for (const e of editions) {

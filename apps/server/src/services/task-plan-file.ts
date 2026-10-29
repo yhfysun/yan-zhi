@@ -40,6 +40,8 @@ export interface TaskPlanStep {
   finishedAt?: number;
   /** 返工时已累计的活跃时长（毫秒） */
   activeMs?: number;
+  /** 结算时统计的「等待时长」（毫秒）：该步时间窗内没有任何活动的长间隙之和（等用户/等外部） */
+  waitMs?: number;
 }
 
 export interface TaskPlan {
@@ -61,6 +63,7 @@ export interface PreservedStepTiming {
   startedAt?: number;
   finishedAt?: number;
   activeMs?: number;
+  waitMs?: number;
 }
 
 /** 步骤耗时：返工前的累计活跃时长 + 本轮时间窗 */
@@ -71,6 +74,50 @@ export function stepElapsedMs(step: TaskPlanStep | null | undefined): number {
   const finished = Number(step.finishedAt) || 0;
   const current = started && finished > started ? finished - started : 0;
   return active + current;
+}
+
+/** 步骤的「干活时长」= 墙钟耗时 − 等待时长（Top3 排序口径，见 2026-10-27 C） */
+export function stepBusyMs(step: TaskPlanStep | null | undefined): number {
+  return Math.max(0, stepElapsedMs(step) - (Number(step?.waitMs) || 0));
+}
+
+/**
+ * 单次「没有任何活动」超过这么久才记为等待。
+ * 依据：浏览器动作硬超时 ≤60s、一次模型推理通常也在分钟级 —— 3 分钟以上没动静，
+ * 基本就是等用户确认 / 等外部系统 / 页面卡死，不是这一步在干活。
+ */
+const WAIT_GAP_MS = 3 * 60 * 1000;
+const WAIT_SCAN_LIMIT = 5000;
+
+/** 读时间窗内的活动时间点（assistant / tool 消息即一次活动）；失败返回空数组 */
+function activityTimestamps(conversationId: string, from: number, to: number): number[] {
+  try {
+    const rows = db
+      .prepare(
+        `SELECT created_at FROM message
+          WHERE conversation_id = ? AND created_at >= ? AND created_at <= ?
+            AND role IN ('assistant', 'tool')
+          ORDER BY created_at ASC LIMIT ?`,
+      )
+      .all(conversationId, from, to, WAIT_SCAN_LIMIT) as Array<{ created_at?: number }>;
+    return rows.map((r) => Number(r.created_at) || 0).filter((n) => n > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** 步骤时间窗内的等待时长：首尾与相邻活动之间的长间隙之和 */
+function computeWaitMs(conversationId: string, from: number, to: number): number {
+  if (!(to > from)) return 0;
+  const points = activityTimestamps(conversationId, from, to);
+  let wait = 0;
+  let cursor = from;
+  for (const at of points) {
+    if (at - cursor > WAIT_GAP_MS) wait += at - cursor;
+    if (at > cursor) cursor = at;
+  }
+  if (to - cursor > WAIT_GAP_MS) wait += to - cursor;
+  return wait;
 }
 
 /** 由步骤时间戳推导计划级时间（steps 是唯一真相源） */
@@ -243,9 +290,76 @@ function fallbackStepStart(plan: TaskPlan, index: number, now: number): number {
   return created > 0 ? Math.min(created, now) : now;
 }
 
+/** 标题归一化：只用于把「重规划前后的同一步」认出来（忽略空白差异） */
+function normalizeStepTitle(t: unknown): string {
+  return String(t ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/** 计划是否已全部终态（done/failed） */
+function isPlanTerminal(plan: TaskPlan): boolean {
+  return plan.steps.length > 0 && plan.steps.every((s) => s.status === 'done' || s.status === 'failed');
+}
+
+/** 最近一条用户消息时间（毫秒）；查不到/表不存在返回 0 */
+function lastUserMessageAt(conversationId: string): number {
+  try {
+    const row = db
+      .prepare("SELECT created_at FROM message WHERE conversation_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1")
+      .get(conversationId) as { created_at?: number } | undefined;
+    return Number(row?.created_at) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 模型再次 task_plan 时，判断这是「同一轮内重规划/继续」还是「用户提了新任务」。
+ *
+ * ★ 2026-10-27 实报（conv c79811d2）：18:52 建 4 步计划 → 干了 3 分钟 → 18:55 又建 5 步计划，
+ *   旧实现直接把 createdAt 重置成"现在"，前 3 分钟耗时凭空消失，且旧计划里已完成步骤的
+ *   计时全部作废（界面总耗时对不上实际，Top3 也跟着失真）。
+ *   判据只认**用户是否在本计划之后又说过话**：没说过 ⇒ 还是同一轮任务，沿用旧计划计时；
+ *   说过 ⇒ 新任务，按新计划重新起算（跨任务的耗时不该累加）。
+ *   计划已终态但用户没再说话同样算"继续"——模型只是把后续阶段补进计划。
+ */
+function isSameTaskTurn(previous: TaskPlan, conversationId: string): boolean {
+  const anchor = Number(previous.finishedAt) || Number(previous.createdAt) || 0;
+  if (!anchor) return true;
+  return lastUserMessageAt(conversationId) <= anchor;
+}
+
+/** 重规划时按标题把已完成步骤的状态与计时搬到新计划（同一步改了序号也能认出来） */
+function carriedStepTimings(previous: TaskPlan, steps: TaskPlanStep[]): PreservedStepTiming[] {
+  const used = new Set<number>();
+  const out: PreservedStepTiming[] = [];
+  steps.forEach((step, i) => {
+    const title = normalizeStepTitle(step.title);
+    if (!title) return;
+    const found = previous.steps.findIndex((p, pi) => {
+      if (used.has(pi)) return false;
+      if (p.status !== 'done' && p.status !== 'failed') return false;
+      return normalizeStepTitle(p.title) === title;
+    });
+    if (found < 0) return;
+    used.add(found);
+    const p = previous.steps[found];
+    out.push({
+      index: i + 1,
+      status: p.status as 'done' | 'failed',
+      ...(Number(p.startedAt) ? { startedAt: Number(p.startedAt) } : {}),
+      ...(Number(p.finishedAt) ? { finishedAt: Number(p.finishedAt) } : {}),
+      ...(Number(p.activeMs) ? { activeMs: Number(p.activeMs) } : {}),
+      ...(Number(p.waitMs) ? { waitMs: Number(p.waitMs) } : {}),
+    });
+  });
+  return out;
+}
+
 /** 无人值守 task_plan：创建/整体替换计划。返回给模型的回执文本。
  *  ★ preserved 仅供服务端内部（重规划）使用：把已完成步骤的状态与计时原样搬进新计划，
- *    避免「重规划把已完成步骤的耗时抹成 0」。模型入参永远不会走到这里。 */
+ *    避免「重规划把已完成步骤的耗时抹成 0」。模型入参永远不会走到这里。
+ *  ★ 模型自己二次调用时（preserved 未传）：同一轮内同样按重规划处理（见 isSameTaskTurn），
+ *    否则旧计划已完成步骤的计时与 createdAt 会被一并清空（2026-10-27 实报）。 */
 export async function backendTaskPlan(
   conversationId: string,
   args: Record<string, unknown>,
@@ -260,18 +374,24 @@ export async function backendTaskPlan(
       status: 'pending',
     }));
   if (!steps.length) return 'task_plan 失败：steps 里没有有效步骤（每项需要 title）';
-  for (const p of preserved || []) {
+  // ★ 2026-10-27：模型二次 task_plan 不再清空计时。同一轮内（用户没再说话）视为重规划/继续：
+  //   沿用旧计划的 createdAt，并按标题把已完成步骤的状态与耗时搬过来；用户发过新消息才是新任务。
+  const existing = loadPlanJson(conversationId);
+  const replan = preserved === undefined && existing !== null && isSameTaskTurn(existing, conversationId);
+  const effectivePreserved = replan ? carriedStepTimings(existing!, steps) : preserved;
+  for (const p of effectivePreserved || []) {
     const step = steps[p.index - 1];
     if (!step) continue;
     step.status = p.status;
     if (p.startedAt) step.startedAt = p.startedAt;
     if (p.finishedAt) step.finishedAt = p.finishedAt;
     if (p.activeMs) step.activeMs = p.activeMs;
+    if (p.waitMs) step.waitMs = p.waitMs;
   }
   // 重规划（传了 preserved，可能为空数组）沿用原计划的创建时间；
   // 新任务的新计划才以此刻为起点 —— 否则兜底起点会被重置成"现在"，新步骤耗时又归零。
-  const carriedCreatedAt = preserved !== undefined
-    ? Number(loadPlanJson(conversationId)?.createdAt) || undefined
+  const carriedCreatedAt = effectivePreserved !== undefined
+    ? Number(existing?.createdAt) || undefined
     : undefined;
   const plan: TaskPlan = { title: String(args?.title || '任务计划'), steps, createdAt: carriedCreatedAt ?? Date.now() };
   derivePlanTiming(plan);
@@ -284,7 +404,11 @@ export async function backendTaskPlan(
   const canPersist = getTaskPlanPath(conversationId) !== null;
   const ok = await writeTaskPlanFile(conversationId, plan);
   const warn = canPersist && !ok ? '（工作目录计划文件写入失败，跨会话接力可能不可用）' : '';
-  return `已创建任务计划「${plan.title}」，共 ${steps.length} 步${warn}`;
+  const kept = replan ? (effectivePreserved?.length || 0) : 0;
+  const replanNote = replan
+    ? `（同一轮内重规划，沿用原计划计时${kept ? `，已保留 ${kept} 个已完成步骤的耗时` : ''}）`
+    : '';
+  return `已创建任务计划「${plan.title}」，共 ${steps.length} 步${replanNote}${warn}`;
 }
 
 /**
@@ -309,6 +433,19 @@ export async function backendTaskStep(conversationId: string, args: Record<strin
   }
   const step = steps[idx - 1];
   const now = Date.now();
+  // ★ 2026-10-27 推进守卫（B）：只拦两类会把耗时记歪的明确错误，其余一律放行（兼容小模型）。
+  //   ① 同一时刻只允许一个步骤 running。别的步骤还开着时不许动另一个步骤；
+  //      目标步骤自己正 running 时放行 —— 关掉它是合法动作，也避免历史多 running 的脏数据把计划锁死。
+  //   ② 已结算（done/failed）的步骤重新打开 = 返工，必须带 note 说明原因。
+  //      实报 conv c79811d2：18:56 全标 done 后**无 note** 重开第 4 步，之后 14 分钟没人再动它，
+  //      空窗全记在第 4 步头上（界面显示「保存合集并等成功提示 14 分 52 秒」）。
+  const otherRunning = steps.findIndex((s, i) => i !== idx - 1 && s.status === 'running');
+  if (step.status !== 'running' && otherRunning >= 0) {
+    return `第 ${otherRunning + 1} 步仍在进行中：同一时刻只允许一个步骤 running。请先把它 task_step 成 done/failed，再推进第 ${idx} 步。`;
+  }
+  if (status === 'running' && (step.status === 'done' || step.status === 'failed') && !String(args?.note ?? '').trim()) {
+    return `第 ${idx} 步已完成，重新打开视为返工：请在 note 里写明返工原因（例如「公开页验证发现顺序不对」）后再标 running。`;
+  }
   if (status === 'running') {
     if (step.finishedAt) {
       // 返工：上一轮已结算 → 累计活跃时长，重新起算本轮
@@ -322,7 +459,13 @@ export async function backendTaskStep(conversationId: string, args: Record<strin
     // 模型没标 running（常见于小模型）：起点回退到上一个已结算步骤的结束点，
     // 保证完成的步骤仍有耗时记录，而不是 startedAt===finishedAt 的 0 秒。
     if (!step.startedAt) step.startedAt = fallbackStepStart(plan, idx, now);
-    if (!step.finishedAt) step.finishedAt = now;
+    if (!step.finishedAt) {
+      step.finishedAt = now;
+      // ★ 2026-10-27（C）：结算时把「时间窗里没有任何活动」的长间隙记为等待，
+      //   界面用它把「这步干了多久」和「其中等了多久」分开（Top3 按干活时长排序）。
+      const waited = computeWaitMs(conversationId, Number(step.startedAt) || 0, now);
+      if (waited > 0) step.waitMs = (Number(step.waitMs) || 0) + waited;
+    }
   }
   step.status = status;
   if (args?.note != null) step.note = String(args.note);

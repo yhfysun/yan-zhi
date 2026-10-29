@@ -4,6 +4,7 @@ import { useLicenseStore } from '../stores/license';
 import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { loadPluginView } from '../plugin-runtime';
+import { SHELL_VIEW_LOADERS } from '../generated/build-modes';
 import { isElectron, isCapacitor } from '../api/client';
 import { activeMode, modeRoute, visibleModeDefs, isModeAvailable, setMode, type AppMode } from '../stores/mode';
 import { barePathHashTarget } from './barePathHash';
@@ -204,17 +205,20 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/PluginsPage.vue'),
     meta: { title: '插件管理' },
   },
-  {
-    // 远程控制「控制端」页（remote-control 插件）：手机/局域网浏览器访问被控端托管的
-    // 本页完成配对（授权码）并全屏操控被控端电脑。
-    // bare = 不套应用外壳（沉浸模式就是"隐藏所有按钮"的全屏画面）；
-    // guest = 免 license 门禁 —— 控制端鉴权是插件层的授权码/设备令牌（见
-    // server/plugins/remote-control.ts 头注释与 license-guard.ts 豁免清单）。
-    path: '/remote',
-    name: 'remote',
-    component: () => import('../views/RemoteControl.vue'),
-    meta: { title: '远程控制', bare: true, guest: true },
-  },
+  // 远程控制「控制端」页（remote-control 插件）：手机/局域网浏览器访问被控端托管的
+  // 本页完成配对（授权码）并全屏操控被控端电脑。
+  // bare = 不套应用外壳；guest = 免 license 门禁（控制端鉴权是插件层授权码/设备令牌）。
+  //
+  // ★ 插件选择集驱动：未选 remote-control 的包，SHELL_VIEW_LOADERS 里没有这一段 →
+  //   路由与 chunk 都不产出（此前是静态 import，任何 --plugins 组合都裁不掉它）。
+  ...(SHELL_VIEW_LOADERS['remote-control']
+    ? [{
+        path: '/remote',
+        name: 'remote',
+        component: SHELL_VIEW_LOADERS['remote-control'].page,
+        meta: { title: '远程控制', bare: true, guest: true },
+      } as RouteRecordRaw]
+    : []),
   {
     path: '/data-sources',
     name: 'data-sources',

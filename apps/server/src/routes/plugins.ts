@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { PLUGIN_TEMPLATES } from '../plugins/templates/index.js';
 import { builtinPackageDirs } from '../plugins/builtin-packages.js';
 import { assertPluginEngine, resolveHostVersion } from '../plugins/host-version.js';
+import { refreshRuntimeModes } from '../plugins/runtime-modes.js';
 import {
   parsePackageManifest,
   packageDirsToRemove,
@@ -167,6 +168,8 @@ router.post('/install', async (req: Request, res: Response) => {
         await mgr.registerInstalled(m, entryUrl);
         registered.push(m.id);
       }
+      // 新装插件默认未启用；这里刷新一次，保证启用后模式集合立刻生效（幂等、开销可忽略）
+      refreshRuntimeModes(mgr);
     } catch (e) {
       // 失败即回滚：注销已注册的 id 并删掉半成品目录（不留「DB 里没有、磁盘上有」的残局）
       for (const id of registered) await mgr.uninstall(id).catch(() => {});
@@ -288,6 +291,8 @@ router.get('/:id', (req: Request, res: Response) => {
 router.post('/:id/enable', async (req: Request, res: Response) => {
   try {
     await getPluginManager().enable(req.params.id);
+    // 启停会改变「运行时插件模式」集合（授权放行/会话校验都读它）
+    refreshRuntimeModes(getPluginManager());
     res.json({ data: { ok: true } });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
@@ -298,6 +303,7 @@ router.post('/:id/enable', async (req: Request, res: Response) => {
 router.post('/:id/disable', async (req: Request, res: Response) => {
   try {
     await getPluginManager().disable(req.params.id);
+    refreshRuntimeModes(getPluginManager());
     res.json({ data: { ok: true } });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
@@ -331,6 +337,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
         await fs.rm(path.join(PLUGINS_DIR, req.params.id), { recursive: true, force: true });
       }
     }
+    refreshRuntimeModes(mgr);
     res.json({ data: { ok: true } });
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
