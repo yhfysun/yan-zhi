@@ -74,14 +74,16 @@ export function relaxHands(vrm: VRM) {
     }
   }
   for (const side of ['left', 'right'] as const) {
+    // 绕 Y 才是"往掌心收"的方向，且左右镜像（真机量角度确认：左正右负）
+    const curl = side === 'left' ? 1 : -1
     for (const f of ['Index', 'Middle', 'Ring', 'Little'] as const) {
-      set(`${side}${f}Proximal`, 1.0)
-      set(`${side}${f}Intermediate`, 1.3)
-      set(`${side}${f}Distal`, 0.7)
+      set(`${side}${f}Proximal`, 0, 0.85 * curl, 0)
+      set(`${side}${f}Intermediate`, 0, 1.15 * curl, 0)
+      set(`${side}${f}Distal`, 0, 0.5 * curl, 0)
     }
     // 拇指往掌心收，别横着翘
-    set(`${side}ThumbMetacarpal`, 0.2, 0, side === 'left' ? -0.35 : 0.35)
-    set(`${side}ThumbProximal`, 0.35, 0, 0)
+    set(`${side}ThumbMetacarpal`, 0, 0.25 * curl, side === 'left' ? -0.3 : 0.3)
+    set(`${side}ThumbProximal`, 0, 0.4 * curl, 0)
   }
 }
 

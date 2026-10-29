@@ -100,7 +100,7 @@ describe('vrmPose · 待机的"活"观感', () => {
     const b = poseFor({ state: 'idle', t: 1.4 })
     expect(a.armLX).not.toBe(b.armLX)
     expect(a.spineZ).not.toBe(b.spineZ)
-    expect(a.foreArmLX).not.toBe(b.foreArmLX)
+    expect(a.foreArmLY).not.toBe(b.foreArmLY)
   })
 
   it('静止站姿手臂贴近身体（≥ 1.2rad，不是张开的 A-pose）', () => {

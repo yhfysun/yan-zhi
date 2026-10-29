@@ -26,8 +26,9 @@ export interface VrmPose {
   armLZ: number
   armRX: number
   armRZ: number
-  foreArmLX: number
-  foreArmRX: number
+  /** 肘：绕 Y（左负右正 = 小臂往前抬，真机量过） */
+  foreArmLY: number
+  foreArmRY: number
   /** 肩：把整条手臂往身体收一点，是"自然垂手"和"A-pose"的关键差别 */
   shoulderLZ: number
   shoulderRZ: number
@@ -73,8 +74,8 @@ export function basePose(): VrmPose {
     armLZ: ARM_DOWN_L,
     armRX: 0,
     armRZ: ARM_DOWN_R,
-    foreArmLX: -0.1,
-    foreArmRX: -0.1,
+    foreArmLY: -0.5,
+    foreArmRY: 0.5,
     shoulderLZ: 0.05,
     shoulderRZ: -0.05,
     handLY: 0,
@@ -148,8 +149,8 @@ export function poseFor(input: PoseInput): VrmPose {
       p.armRZ = ARM_DOWN_R + Math.abs(sway) * 0.35
       p.armLX = 0.05 + sway
       p.armRX = 0.05 - sway
-      p.foreArmLX = -0.16 - Math.abs(sway) * 0.5
-      p.foreArmRX = -0.16 - Math.abs(sway) * 0.5
+      p.foreArmLY = -0.5 - Math.abs(sway) * 0.4
+      p.foreArmRY = 0.5 + Math.abs(sway) * 0.4
       lookAt()
       p.headY += Math.sin(t * 0.6) * 0.05
       p.headX += breath * 0.01
@@ -230,7 +231,7 @@ export function poseFor(input: PoseInput): VrmPose {
       break
     case 'wave':
       p.armRZ = ARM_DOWN_R + 1.9 * Math.min(1, p01 / 0.25)
-      p.foreArmRX = -0.5 + Math.sin(at * 14) * 0.45
+      p.foreArmRY = 0.9 + Math.sin(at * 14) * 0.35
       p.expression = 'happy'
       p.expressionWeight = 0.5
       break
