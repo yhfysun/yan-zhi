@@ -28,6 +28,14 @@ export interface VrmPose {
   armRZ: number
   foreArmLX: number
   foreArmRX: number
+  /** 肩：把整条手臂往身体收一点，是"自然垂手"和"A-pose"的关键差别 */
+  shoulderLZ: number
+  shoulderRZ: number
+  /** 腕：绕手臂轴转手掌，否则手会保持 T-pose 的"掌心朝后、手指外翘" */
+  handLY: number
+  handRY: number
+  handLX: number
+  handRX: number
   legLX: number
   legRX: number
   kneeLX: number
@@ -43,8 +51,8 @@ export interface VrmPose {
 }
 
 /** 手臂静止姿态：A-pose（比 T-pose 自然，也不会穿模） */
-const ARM_DOWN_L = 1.26
-const ARM_DOWN_R = -1.26
+const ARM_DOWN_L = 1.22
+const ARM_DOWN_R = -1.22
 /** 膝盖只在腿往后摆时弯，避免"直腿拖地" */
 const KNEE_BEND = 0.55
 
@@ -67,6 +75,12 @@ export function basePose(): VrmPose {
     armRZ: ARM_DOWN_R,
     foreArmLX: -0.14,
     foreArmRX: -0.14,
+    shoulderLZ: 0.05,
+    shoulderRZ: -0.05,
+    handLY: -0.5,
+    handRY: 0.5,
+    handLX: 0.1,
+    handRX: 0.1,
     legLX: 0,
     legRX: 0,
     kneeLX: 0,

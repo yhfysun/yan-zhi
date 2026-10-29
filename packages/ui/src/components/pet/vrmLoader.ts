@@ -59,6 +59,32 @@ export async function loadVrmFromBuffer(buffer: ArrayBuffer, targetHeight = TARG
   return { vrm, holder, height: targetHeight }
 }
 
+/**
+ * 把 T-pose 张开的手收成自然半握（2026-10-29 真机：手指全部外翘像假人）。
+ * 只做一次（加载后），不参与每帧姿态；手指骨骼在 normalized 空间里
+ * 绕 X 正转就是"握"，Proximal 小、Intermediate 大，避免折成钩子。
+ */
+export function relaxHands(vrm: VRM) {
+  const set = (name: string, x: number, y = 0, z = 0) => {
+    try {
+      const n = vrm.humanoid?.getNormalizedBoneNode(name as never)
+      if (n) n.rotation.set(x, y, z)
+    } catch {
+      /* 模型缺这根手指骨：跳过 */
+    }
+  }
+  for (const side of ['left', 'right'] as const) {
+    for (const f of ['Index', 'Middle', 'Ring', 'Little'] as const) {
+      set(`${side}${f}Proximal`, 0.3)
+      set(`${side}${f}Intermediate`, 0.45)
+      set(`${side}${f}Distal`, 0.18)
+    }
+    // 拇指往掌心收，别横着翘
+    set(`${side}ThumbMetacarpal`, 0.12, 0, side === 'left' ? -0.25 : 0.25)
+    set(`${side}ThumbProximal`, 0.25, 0, 0)
+  }
+}
+
 /** 表情名兼容：VRM0 模型里 joy/sorrow 等会被 three-vrm 映射到 VRM1 名，取第一个存在的 */
 export function pickExpression(vrm: VRM, ...names: string[]): string {
   const mgr: any = (vrm as any).expressionManager

@@ -8,7 +8,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import type { PetState } from '../../stores/pet'
-import { loadVrmFromBuffer, type LoadedVrm } from './vrmLoader'
+import { loadVrmFromBuffer, relaxHands, type LoadedVrm } from './vrmLoader'
 import { poseFor } from './vrmPose'
 
 const props = withDefaults(
@@ -88,6 +88,7 @@ async function loadVrm(buffer: ArrayBuffer | null) {
   vrmState.value = 'loading'
   try {
     const next = await loadVrmFromBuffer(buffer)
+    relaxHands(next.vrm)
     if (seq !== loadSeq || !scene) { // 已被更新的一次加载取代
       next.holder.traverse((o: any) => { o.geometry?.dispose?.() })
       return
@@ -154,6 +155,10 @@ function applyVrmPose(dt: number) {
   setR('spine', pose.spineX, pose.spineY, pose.spineZ)
   setR('chest', pose.chestX, 0, 0)
   setR('head', pose.headX, pose.headY, pose.headZ)
+  setR('leftShoulder', 0, 0, pose.shoulderLZ)
+  setR('rightShoulder', 0, 0, pose.shoulderRZ)
+  setR('leftHand', pose.handLX, pose.handLY, 0)
+  setR('rightHand', pose.handRX, pose.handRY, 0)
   setR('leftUpperArm', pose.armLX, 0, pose.armLZ)
   setR('rightUpperArm', pose.armRX, 0, pose.armRZ)
   setR('leftLowerArm', pose.foreArmLX, 0, 0)
