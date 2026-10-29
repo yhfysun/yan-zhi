@@ -5807,7 +5807,9 @@ async function executeTool(
           return raw;
         },
       };
-      const r = await BrowserRunRecipeTool.run(args, api);
+      // ★ 2026-10-28：必须带 workspaceDir —— 文件配方（工作目录 recipes 目录下的 JSON）
+      //   只有拿到它才能加载；漏传时直连档只认内置配方，工作区里沉淀的配方全部报「未知配方」。
+      const r = await BrowserRunRecipeTool.run(args, api, { workspaceDir: task.workspaceDir });
       let text = typeof r === 'string' ? r : (r.content?.map((c: any) => c.text || '').join('') || JSON.stringify(r));
       const nudge = noteToolOutcome(task, toolName, (r as any)?.isError !== true);
       // 连续失败的硬停文案必须放最前面：主循环用 startsWith(FORCE_STOP_MARKER) 判定

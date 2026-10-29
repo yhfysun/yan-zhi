@@ -1495,12 +1495,17 @@ export class BrowserRunRecipeTool implements BuiltInTool {
       //   内置优先由 loadFileRecipes 保证（同名文件配方被屏蔽——内置带验证码续跑等安全语义）。
       let recipe = getRecipe(recipeId);
       let fileRecipeErrors: string[] = [];
+      let fileRecipeIds: string[] = [];
       if (!recipe && ctx?.workspaceDir) {
         const loaded = await loadFileRecipes(ctx.workspaceDir);
         fileRecipeErrors = loaded.errors;
+        fileRecipeIds = Array.from(loaded.recipes.keys());
         recipe = loaded.recipes.get(recipeId);
       }
-      if (!recipe) return err(`未知配方「${recipeId}」。可用：${listRecipes().join('、')}${fileRecipeErrors.length ? `\n（注：${fileRecipeErrors.length} 个文件配方加载失败：${fileRecipeErrors.slice(0, 3).join('；')}）` : ''}`);
+      if (!recipe) {
+        const available = [...listRecipes(), ...fileRecipeIds].join('、');
+        return err(`未知配方「${recipeId}」。可用：${available}${fileRecipeErrors.length ? `\n（注：${fileRecipeErrors.length} 个文件配方加载失败：${fileRecipeErrors.slice(0, 3).join('；')}）` : ''}`);
+      }
       const params = (args.params && typeof args.params === 'object')
         ? args.params as Record<string, unknown>
         : {};
@@ -1515,11 +1520,10 @@ export class BrowserRunRecipeTool implements BuiltInTool {
           '应使用上一次 blockedByVerification 返回的 resumeStep；普通执行不要传该参数。');
       }
 
-      const result = await runRecipe(recipe, params, {
-        navigate: (url: string) => callBrowserApi('/navigate', 'POST', { url }),
-        action: (action: string, actionArgs: Record<string, unknown>) =>
-          callBrowserApi('/action', 'POST', { action, ...actionArgs }),
-      }, { resumeStep });
+      // ★ 必须用注入的 api：桌面直连档由 llm-task-manager 注入「子动作逐个走桥」的实现，
+      //   直接调 callBrowserApi 会在 Node 里走服务端 Playwright（第二条执行面），
+      //   表现为桌面面板里什么都不动、配方却"执行成功"。
+      const result = await runRecipe(recipe, params, api, { resumeStep });
       const lines = result.steps
         .map((s, i) => `${i + 1}. ${s.ok ? '✅' : '⛔'} ${s.step}: ${s.detail}`)
         .join('\n');

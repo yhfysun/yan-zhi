@@ -11,6 +11,7 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { validateRecipeData, loadFileRecipes } from './recipes';
+import { BrowserRunRecipeTool } from './index';
 import { getPlatformAdapter, setPlatformAdapter } from '../../../platform/types';
 
 /** 空环境下 getPlatformAdapter 会抛错 —— 包一层返回 undefined */
@@ -135,5 +136,42 @@ describe('B. loadFileRecipes 扫描合并', () => {
     expect(errors).toEqual([]);
     const empty = await loadFileRecipes('');
     expect(empty.recipes.size).toBe(0);
+  });
+});
+
+describe('C. 未知配方报错要把已加载的文件配方 id 也列出来', () => {
+  const api = {
+    navigate: async () => ({ error: null }),
+    action: async () => ({ error: null }),
+  } as any;
+
+  it('文件配方 id 拼进「可用」列表（否则模型不知道文件夹里有什么）', async () => {
+    const files = { 'example-checkin.json': JSON.stringify(VALID) };
+    const res = await withFakeFs('virtual-workspace/recipes', files, () =>
+      BrowserRunRecipeTool.run({ recipe: 'no-such-recipe' }, api, { workspaceDir: 'virtual-workspace' }));
+    const text = res.content.map((c: any) => c.text).join('\n');
+    expect(text).toContain('example-checkin');
+  });
+
+  it('没有工作目录时只列内置配方（不因缺 ctx 抛错）', async () => {
+    const res = await BrowserRunRecipeTool.run({ recipe: 'no-such-recipe' }, api);
+    const text = res.content.map((c: any) => c.text).join('\n');
+    expect(text).toContain('douyin-publish-video');
+    expect(text).not.toContain('example-checkin');
+  });
+
+  it('配方执行必须走注入的 api（桌面直连档子动作逐个走桥）', async () => {
+    const files = { 'example-checkin.json': JSON.stringify(VALID) };
+    const calls: string[] = [];
+    const recordingApi = {
+      navigate: async (url: string) => { calls.push(`navigate:${url}`); return {}; },
+      action: async (name: string) => { calls.push(`action:${name}`); return {}; },
+    } as any;
+    const res = await withFakeFs('virtual-workspace/recipes', files, () =>
+      BrowserRunRecipeTool.run({ recipe: 'example-checkin' }, recordingApi, { workspaceDir: 'virtual-workspace' }));
+    const text = res.content.map((c: any) => c.text).join('\n');
+    expect(text).toContain('执行完成');
+    expect(calls[0]).toBe('navigate:https://example.com/admin');
+    expect(calls).toContain('action:click');
   });
 });

@@ -4743,6 +4743,8 @@ const DESKTOP_BROWSER_ACTIONS = [
   'get_api_data',
   'extract_list', 'visual_locate', 'download', 'downloads', 'scroll_into_view', 'is_visible', 'drag',
   'run_script', 'highlight', 'takeover',
+  // 批注三动作（面板直连 IPC 调用，不派生 browser_* 工具名；2026-10-28 补进清单修复 parity 守门）
+  'annotation_begin', 'annotation_end', 'annotation_drain',
 ];
 
 /** 渲染层可查询桌面端支持哪些 action（避免两份硬编码清单漂移） */

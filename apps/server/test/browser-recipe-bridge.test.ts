@@ -78,6 +78,15 @@ describe('browser_run_recipe 直连档路由', () => {
   });
 
   it('★★ 编排器用的是工具自身的执行体（唯一实现，不另写一份步骤逻辑）', () => {
-    expect(LTM).toMatch(/BrowserRunRecipeTool\.run\(args, api\)/);
+    // 必带 ctx.workspaceDir：文件配方（<工作目录>/recipes/*.json）只有拿到工作目录才能加载
+    expect(LTM).toMatch(/BrowserRunRecipeTool\.run\(args, api, \{ workspaceDir: task\.workspaceDir \}\)/);
+  });
+
+  it('★★★ run() 必须用注入的 api —— 直接调 callBrowserApi 会绕回服务端 Playwright', () => {
+    const INDEX = readFileSync(
+      resolve(REPO, 'packages/core/src/tool/builtin/browser/index.ts'), 'utf8');
+    expect(INDEX, '★ 执行体没用注入的 api → 桌面直连档配方操作的是另一条执行面').toMatch(
+      /runRecipe\(recipe, params, api,/,
+    );
   });
 });
