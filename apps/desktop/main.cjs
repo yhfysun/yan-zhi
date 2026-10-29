@@ -9504,7 +9504,7 @@ function createPetPopup(kind) {
       nodeIntegration: false, contextIsolation: true, backgroundThrottling: false,
     },
   });
-  win.setAlwaysOnTop(true, 'floating');
+  win.setAlwaysOnTop(true, 'screen-saver');
   if (kind === 'bubble') {
     // 气泡只是展示：整窗穿透，别挡住下面的点击
     try { win.setIgnoreMouseEvents(true, { forward: true }); } catch {}
@@ -9692,7 +9692,8 @@ function createPetWindow() {
       nodeIntegration: false, contextIsolation: true, backgroundThrottling: false,
     },
   });
-  petWindow.setAlwaysOnTop(true, 'floating');
+  // 任务栏是更高层的置顶窗：要能压住它必须用 screen-saver 级（真机实测 floating 会被任务栏盖住）
+  petWindow.setAlwaysOnTop(true, 'screen-saver');
   petWindow.setIgnoreMouseEvents(true, { forward: true });
   try { petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
 
@@ -10718,9 +10719,261 @@ app.whenReady().then(async () => {
   ipcMain.handle('rc:set-capture-display', (_e, id) => {
     // 非法值不生效（保持原选择）；''=恢复主显示器
     const v = String(id == null ? '' : id);
-    if (v !== '' && !/^[\w.\-]{1,64}$/.test(v)) return { ok: false, error: 'displayId 非法' };
-    rcCaptureDisplayId = v;
+    // sourceId 形如 screen:0:0（含冒号），裸 displayId 为数字字符串
+    if (v !== '' && !/^(screen:\d+:\d+|[\w.\-]{1,64})$/.test(v)) return { ok: false, error: 'displayId 非法' };
+    rcCaptureSource = v;
     return { ok: true };
+  });
+  // 实际采集到的显示器：渲染层在 getDisplayMedia 之后读它回正下拉框，
+  // 避免「用户选副屏、主进程回退主屏」时几何与画面错位。
+  ipcMain.handle('rc:captured-display', () => ({
+    ok: true,
+    displayId: rcCapturedDisplayId,
+    sourceId: rcCapturedSourceId,
+  }));
+
+  // ---- 远控采集窗口（阶段 1：采集与 UI 解耦）----
+  // 为什么单独一个隐藏窗口：采集与 WebRTC 编码原先跑在主窗口渲染进程里，主窗口被其它应用
+  // 全屏遮挡时 Chromium 会节流渲染器 → 采集与编码同时停摆，控制端画面定格在最后一帧
+  // （2026-10-27 实报「完全控制不了」）。本窗口 show:false + backgroundThrottling:false，
+  // 与主窗口的可见性无关。
+  // 第 2 步只验证「能起、能上报 ready」；第 3 步起由它接管 host WS 与 getDisplayMedia。
+  let rcCaptureWindow = null;
+  let rcCaptureReadyAt = 0;
+  let rcCaptureProbeTimer = null;
+  // ★ 2026-10-28 崩溃自愈：采集窗口是 WebRTC 唯一的发送端。JPEG 回退走 C# 常驻进程
+  //   （apps/server/src/plugins/remote-control-agent.ts），与这个窗口无关 —— 所以
+  //   「JPEG 正常、WebRTC 黑屏」只可能出在这条链上。旧实现在崩溃时仅把引用置 null
+  //   且不重建（下面的创建逻辑只在启动后跑一次），效应就是崩一次 = WebRTC 永久
+  //   黑屏直到重启应用。这里退避重建，并对「每次采集都崩」的循环做上限保护。
+  const RC_CAPTURE_REBUILD_DELAYS = [1000, 3000, 8000];
+  const RC_CAPTURE_STABLE_MS = 60_000;   // 存活超过这么久视为已稳定，连续崩溃计数清零
+  const RC_CAPTURE_MAX_CRASHES = 3;
+  let rcCaptureCrashTimes = [];
+  let rcCaptureRebuildTimer = null;
+  let rcCaptureLastReadyAt = 0;
+  let rcCaptureDegraded = false;
+
+  function rcCaptureStatus() {
+    return {
+      alive: !!(rcCaptureWindow && !rcCaptureWindow.isDestroyed()),
+      readyAt: rcCaptureLastReadyAt || rcCaptureReadyAt,
+      crashCount: rcCaptureCrashTimes.length,
+      degraded: rcCaptureDegraded,
+      rebuilding: !!rcCaptureRebuildTimer,
+    };
+  }
+
+  function scheduleRcCaptureRebuild(crashedAt) {
+    if (rcCaptureDegraded || rcCaptureRebuildTimer) return;
+    // 上一轮崩溃距最近一次 ready 间隔够长 → 那是历史崩溃，不并入本次连续计数
+    if (rcCaptureLastReadyAt && crashedAt - rcCaptureLastReadyAt > RC_CAPTURE_STABLE_MS) {
+      rcCaptureCrashTimes = [];
+    }
+    rcCaptureCrashTimes.push(crashedAt);
+    if (rcCaptureCrashTimes.length > RC_CAPTURE_MAX_CRASHES) {
+      // 一直在崩说明重建救不回来（多半是采集本身触发的）：停手并明确告知，
+      // 让远控稳定落在 JPEG 兼容模式，而不是无限重启拖垮主进程。
+      rcCaptureDegraded = true;
+      console.warn(
+        `[rc-capture] 连续 ${rcCaptureCrashTimes.length} 次崩溃，停止自动重建；` +
+        '远控将只用 JPEG 兼容模式（手动「重新连接远控」可再试）',
+      );
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('rc:capture-degraded'); } catch { /* ignore */ }
+      return;
+    }
+    const idx = rcCaptureCrashTimes.length - 1;
+    const delay = RC_CAPTURE_REBUILD_DELAYS[Math.min(idx, RC_CAPTURE_REBUILD_DELAYS.length - 1)];
+    console.warn(`[rc-capture] ${delay}ms 后重建采集窗口（第 ${rcCaptureCrashTimes.length}/${RC_CAPTURE_MAX_CRASHES} 次）`);
+    rcCaptureRebuildTimer = setTimeout(() => {
+      rcCaptureRebuildTimer = null;
+      if (rcCaptureWindow && !rcCaptureWindow.isDestroyed()) return;
+      try {
+        createRcCaptureWindow();
+      } catch (e) {
+        console.warn('[rc-capture] 重建失败:', e && e.message);
+        scheduleRcCaptureRebuild(Date.now());
+      }
+    }, delay);
+  }
+
+  function createRcCaptureWindow() {
+    if (rcCaptureWindow && !rcCaptureWindow.isDestroyed()) return rcCaptureWindow;
+    rcCaptureReadyAt = 0;
+    const win = new BrowserWindow({
+      show: false,
+      skipTaskbar: true,
+      focusable: false,
+      width: 320,
+      height: 200,
+      backgroundColor: '#000000',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.cjs'),
+        nodeIntegration: false,
+        contextIsolation: true,
+        // ★ 必须为 false：窗口不可见也不能让渲染器降速，否则等于换了个位置继续冻
+        backgroundThrottling: false,
+        // 与主窗口同口径下发 API 端口（preload 从 process.argv 读取）
+        additionalArguments: ['--yz-api-port=' + API_PORT, ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])],
+      },
+    });
+    rcCaptureWindow = win;
+    // ★ 这个窗口的 console 默认不进主进程 stdout —— 采集/编码的所有线索（帧数、
+    //   ICE 状态、轨道 readyState）都在渲染进程里，不转发就等于全黑箱。
+    //   2026-10-28 排查黑屏时踩过：`[rc-webrtc]` 一行都没打出来，才会反复猜。
+    try { require('./main-log.cjs').attachRendererConsole(win.webContents, 'rc-capture'); } catch { /* 不影响启动 */ }
+    win.on('closed', () => {
+      if (rcCaptureWindow === win) rcCaptureWindow = null;
+    });
+    win.webContents.on('render-process-gone', (_e, details) => {
+      if (rcCaptureWindow !== win) return;
+      rcCaptureWindow = null;
+      const reason = (details && details.reason) || 'unknown';
+      console.warn('[rc-capture] 渲染进程崩溃:', reason, '→ 该窗口是 WebRTC 唯一发送端，画面会黑屏');
+      // 先销毁残留窗口对象，再重建：崩溃后的 webContents 已不可复用
+      try { if (!win.isDestroyed()) win.destroy(); } catch { /* ignore */ }
+      scheduleRcCaptureRebuild(Date.now());
+    });
+    // 正常关闭（主动 destroy 不算崩溃，不应触发重建）
+    win.webContents.on('did-fail-load', (_e, code, desc) => {
+      if (rcCaptureWindow !== win) return;
+      console.warn(`[rc-capture] 页面加载失败 code=${code} ${desc}`);
+    });
+    if (app.isPackaged) {
+      void win.loadFile(path.join(__dirname, 'dist', 'capture.html'))
+        .catch((e) => console.warn('[rc-capture] 加载失败:', e && e.message));
+    } else {
+      void win.loadURL('http://localhost:1420/capture.html')
+        .catch((e) => console.warn('[rc-capture] 加载失败:', e && e.message));
+    }
+    return win;
+  }
+
+  function destroyRcCaptureWindow(reason) {
+    if (rcCaptureProbeTimer) {
+      clearTimeout(rcCaptureProbeTimer);
+      rcCaptureProbeTimer = null;
+    }
+    if (typeof stopRcCaptureStatsProbe === 'function') stopRcCaptureStatsProbe();
+    // 主动停止：取消挂起的重建，否则「停止」后窗口又自己冒出来
+    if (rcCaptureRebuildTimer) {
+      clearTimeout(rcCaptureRebuildTimer);
+      rcCaptureRebuildTimer = null;
+    }
+    const win = rcCaptureWindow;
+    rcCaptureWindow = null;
+    if (win && !win.isDestroyed()) {
+      try { win.destroy(); } catch { /* ignore */ }
+    }
+    if (reason) console.log('[rc-capture] 已销毁:', reason);
+  }
+
+  ipcMain.handle('rc:capture-ensure', () => {
+    // 手动「重新连接远控」= 用户明确要求再试一次：清掉降级标记与连续崩溃计数
+    rcCaptureDegraded = false;
+    rcCaptureCrashTimes = [];
+    const win = createRcCaptureWindow();
+    return { ok: true, windowId: win.id, status: rcCaptureStatus() };
+  });
+  ipcMain.handle('rc:capture-stop', () => {
+    destroyRcCaptureWindow('调用方请求');
+    return { ok: true };
+  });
+  ipcMain.handle('rc:capture-status', () => rcCaptureStatus());
+  // 主进程侧直接读采集窗口的出帧统计：不依赖渲染进程 console 转发是否生效。
+  // 控制端黑屏时这行日志是唯一可靠判据（framesEncoded 是否在涨）。
+  let rcCaptureStatsTimer = null;
+  function stopRcCaptureStatsProbe() {
+    if (rcCaptureStatsTimer) {
+      clearInterval(rcCaptureStatsTimer);
+      rcCaptureStatsTimer = null;
+    }
+  }
+  function startRcCaptureStatsProbe(win) {
+    stopRcCaptureStatsProbe();
+    rcCaptureStatsTimer = setInterval(() => {
+      if (!win || win.isDestroyed()) { stopRcCaptureStatsProbe(); return; }
+      win.webContents.executeJavaScript(
+        'window.__rcHost && window.__rcHost.getActiveStats ? window.__rcHost.getActiveStats() : null',
+        true,
+      ).then((s) => {
+        if (s) console.log('[rc-capture] 发送侧', JSON.stringify(s));
+      }).catch(() => { /* 页面重载中：下一轮再试 */ });
+    }, 5000);
+  }
+  ipcMain.handle('rc:capture-ready', (e, info) => {
+    rcCaptureReadyAt = Date.now();
+    rcCaptureLastReadyAt = rcCaptureReadyAt;
+    if (rcCaptureProbeTimer) {
+      clearTimeout(rcCaptureProbeTimer);
+      rcCaptureProbeTimer = null;
+    }
+    if (rcCaptureWindow && !rcCaptureWindow.isDestroyed()) startRcCaptureStatsProbe(rcCaptureWindow);
+    // 重建后成功 ready 即视为这一轮已恢复（连续计数在下次崩溃时按稳定性判定）
+    console.log('[rc-capture] 采集窗口就绪', JSON.stringify(info || {}), 'wcId=' + e.sender.id);
+    return { ok: true, readyAt: rcCaptureReadyAt };
+  });
+
+  // 确认弹窗桥接（阶段 1 第 3 步）：
+  // 采集窗口是不可见的，配对/授权确认必须由主窗口呈现。采集窗口 await 这里，
+  // 主窗口答完再 resolve；超时按拒绝处理，避免会话永远挂着。
+  let rcConfirmSeq = 0;
+  const rcPendingConfirms = new Map();
+  ipcMain.handle('rc:need-confirm', (_e, req) => {
+    const id = ++rcConfirmSeq;
+    return new Promise((resolve) => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        resolve({ allow: false, reason: 'no-ui' });
+        return;
+      }
+      const timer = setTimeout(() => {
+        rcPendingConfirms.delete(id);
+        resolve({ allow: false, reason: 'timeout' });
+      }, 120_000);
+      rcPendingConfirms.set(id, { resolve, timer });
+      // 明示原则：必须让用户看见请求（主窗口可能被最小化或被其它应用盖住）
+      try {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.setAlwaysOnTop(true, 'screen-saver');
+        mainWindow.focus();
+        setTimeout(() => {
+          try {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
+          } catch { /* ignore */ }
+        }, 30000);
+      } catch { /* ignore */ }
+      mainWindow.webContents.send('rc:need-confirm', { id, req: req || {} });
+    });
+  });
+  ipcMain.handle('rc:confirm-result', (_e, id, result) => {
+    const key = Number(id);
+    const p = rcPendingConfirms.get(key);
+    if (!p) return { ok: false, error: '确认请求不存在或已超时' };
+    clearTimeout(p.timer);
+    rcPendingConfirms.delete(key);
+    p.resolve(result && typeof result === 'object' ? result : { allow: false });
+    return { ok: true };
+  });
+
+  // 采集窗口常驻（阶段 1 第 3 步起由它持有信令与采集）：
+  // 它自己轮询 /status、按需连 host WS，主窗口只负责 UI 与确认弹窗。
+  // 空闲销毁留到第 6 步，先保证行为可验证。
+  void app.whenReady().then(() => {
+    setTimeout(() => {
+      if (rcCaptureWindow && !rcCaptureWindow.isDestroyed()) return;
+      try {
+        createRcCaptureWindow();
+        rcCaptureProbeTimer = setTimeout(() => {
+          rcCaptureProbeTimer = null;
+          if (!rcCaptureReadyAt) {
+            console.warn('[rc-capture] 采集窗口 15s 未上报 ready');
+          }
+        }, 15000);
+      } catch (e) {
+        console.warn('[rc-capture] 采集窗口创建失败:', e && e.message);
+      }
+    }, 3000);
   });
 
   // 远控明示原则（护栏 10）：会话开始弹系统通知，不静默。渲染层伴生组件在
