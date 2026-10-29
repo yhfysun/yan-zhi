@@ -75,9 +75,9 @@ export function relaxHands(vrm: VRM) {
   }
   for (const side of ['left', 'right'] as const) {
     for (const f of ['Index', 'Middle', 'Ring', 'Little'] as const) {
-      set(`${side}${f}Proximal`, 0.7)
-      set(`${side}${f}Intermediate`, 0.95)
-      set(`${side}${f}Distal`, 0.4)
+      set(`${side}${f}Proximal`, 1.0)
+      set(`${side}${f}Intermediate`, 1.3)
+      set(`${side}${f}Distal`, 0.7)
     }
     // 拇指往掌心收，别横着翘
     set(`${side}ThumbMetacarpal`, 0.2, 0, side === 'left' ? -0.35 : 0.35)
