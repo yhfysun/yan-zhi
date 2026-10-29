@@ -9794,6 +9794,70 @@ ipcMain.handle('pet:close', () => {
 });
 ipcMain.handle('pet:toggle', () => ({ open: togglePetWindow() }));
 ipcMain.handle('pet:is-open', () => !!(petWindow && !petWindow.isDestroyed()));
+// ---- 形象工坊：用户导入的 2D 形象（GIF / 图集）----
+// 存在 userData/pet-packs/<id>/{sheet.webp,manifest.json}，不随包分发，卸载也不删。
+function userPacksRoot() {
+  return path.join(app.getPath('userData'), 'pet-packs');
+}
+function safePackId(raw) {
+  return String(raw || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
+}
+ipcMain.handle('pet:list-packs', async () => {
+  try {
+    const root = userPacksRoot();
+    if (!fs.existsSync(root)) return { ok: true, packs: [] };
+    const packs = [];
+    for (const dir of fs.readdirSync(root)) {
+      const file = path.join(root, dir, 'manifest.json');
+      if (!fs.existsSync(file)) continue;
+      try {
+        packs.push(JSON.parse(fs.readFileSync(file, 'utf8')));
+      } catch { /* 坏 manifest 跳过 */ }
+    }
+    return { ok: true, packs };
+  } catch (err) {
+    return { ok: false, msg: String((err && err.message) || err), packs: [] };
+  }
+});
+ipcMain.handle('pet:import-pack', async (_e, payload) => {
+  try {
+    const id = safePackId(payload && payload.id);
+    const data = payload && payload.data;
+    const manifest = payload && payload.manifest;
+    if (!id || !data || !manifest) return { ok: false, msg: '参数不完整' };
+    const dir = path.join(userPacksRoot(), id);
+    fs.mkdirSync(dir, { recursive: true });
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    if (buf.length > 24 * 1024 * 1024) return { ok: false, msg: '图片过大（上限 24MB）' };
+    fs.writeFileSync(path.join(dir, 'sheet.webp'), buf);
+    const out = { ...manifest, id, file: 'sheet.webp', createdAt: Date.now() };
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(out, null, 2));
+    return { ok: true, pack: out };
+  } catch (err) {
+    return { ok: false, msg: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle('pet:read-pack-asset', async (_e, id) => {
+  try {
+    const dir = path.join(userPacksRoot(), safePackId(id));
+    const file = path.join(dir, 'sheet.webp');
+    if (!fs.existsSync(file)) return { ok: false, msg: '形象文件不存在' };
+    return { ok: true, data: fs.readFileSync(file) };
+  } catch (err) {
+    return { ok: false, msg: String((err && err.message) || err) };
+  }
+});
+ipcMain.handle('pet:delete-pack', async (_e, id) => {
+  try {
+    const dir = path.join(userPacksRoot(), safePackId(id));
+    if (!dir.startsWith(userPacksRoot())) return { ok: false, msg: '非法路径' };
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, msg: String((err && err.message) || err) };
+  }
+});
+
 ipcMain.on('pet:popup-open', (_e, kind) => {
   try { createPetPopup(String(kind || '')); } catch (err) { console.warn('[pet] 弹层打开失败:', err && err.message); }
 });

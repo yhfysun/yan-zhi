@@ -87,6 +87,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 方案 B：菜单/面板/输入条/气泡是独立小窗，由主进程按宠物位置摆放
     openPopup: (kind) => ipcRenderer.send('pet:popup-open', String(kind || '')),
     closePopup: (kind) => ipcRenderer.send('pet:popup-close', String(kind || '')),
+    // 形象工坊：用户导入的 2D 形象（存在 userData/pet-packs，不随包分发）
+    listPacks: () => ipcRenderer.invoke('pet:list-packs'),
+    importPack: (payload) => ipcRenderer.invoke('pet:import-pack', payload || {}),
+    readPackAsset: (id) => ipcRenderer.invoke('pet:read-pack-asset', String(id || '')),
+    deletePack: (id) => ipcRenderer.invoke('pet:delete-pack', String(id || '')),
     // 弹层 → 宠物窗的动作命令（播放动作、换形象、缩放…）
     command: (cmd) => ipcRenderer.send('pet:command', cmd || {}),
     onCommand: (cb) => {

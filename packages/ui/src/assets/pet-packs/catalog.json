@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "_comment": "宠物素材清单（唯一真相源）：打包选择集 --pets、--list-plugins、设置页选项与 2D/3D 可用性都读这里。2D 资源在 packages/ui/src/assets/pet-packs/，3D 模型在 apps/web/public/vrm/（publicDir 原样拷进 dist/vrm）。新增宠物：加文件 + 这里登记（id 必须与文件名契约一致），3D 还要同步 apps/desktop/main.cjs 的 PET_BUILTIN_VRM_FILES 白名单。",
+  "packs": [
+    { "id": "boba", "label": "Boba（水獭）", "file": "boba-spritesheet.webp" },
+    { "id": "tiko", "label": "Tiko（机器人）", "file": "tiko-spritesheet.webp" },
+    { "id": "wangcai", "label": "旺财（布偶猫）", "file": "wangcai-spritesheet.webp" },
+    { "id": "lulu", "label": "噜噜（水豚）", "file": "lulu-spritesheet.webp" },
+    { "id": "noir", "label": "Noir（侦探蛛）", "file": "noir-spritesheet.webp" },
+    { "id": "mallow", "label": "Mallow（小怪）", "file": "mallow-spritesheet.webp" }
+  ],
+  "vrms": [
+    { "id": "shino", "label": "Sendagaya Shino", "file": "sendagaya_shino.vrm", "license": "CC0 1.0" },
+    { "id": "sakurada", "label": "Sakurada Fumiriya", "file": "sakurada_fumiriya.vrm", "license": "CC0 1.0" }
+  ]
+}
