@@ -43,6 +43,8 @@ export interface PetSettings {
   vrmMode: 'builtin' | 'custom' | 'off'
   /** 自定义 VRM 的绝对路径（vrmMode==='custom' 时有效） */
   vrmPath: string
+  /** 内置模型 id（vrmMode==='builtin' 时有效） */
+  vrmBuiltin: string
   /** 待机时沿屏幕底边踱步 */
   walk: boolean
   /** 活动气泡（正在做什么 + 文件名） */
@@ -116,8 +118,18 @@ export function plainPetSettings(s: PetSettings): PetSettings {
   return { ...s, slots: Array.isArray(s?.slots) ? [...s.slots] : [] }
 }
 
-/** 内置 VRM（VRoid 早期样例 Sendagaya Shino，CC0）在打包版里的相对路径 */
-export const BUILTIN_VRM_FILE = 'vrm/sendagaya_shino.vrm'
+/** 内置 VRM 清单（都是 VRoid 早期样例，CC0，可自由再分发） */
+export const PET_BUILTIN_VRMS: Array<{ id: string; file: string; name: string }> = [
+  { id: 'shino', file: 'sendagaya_shino.vrm', name: 'Sendagaya Shino' },
+  { id: 'sakurada', file: 'sakurada_fumiriya.vrm', name: 'Sakurada Fumiriya' },
+]
+
+/** 内置 VRM 在 public/ 下的相对路径（老代码兼容：默认第一只） */
+export const BUILTIN_VRM_FILE = 'vrm/' + PET_BUILTIN_VRMS[0].file
+
+export function builtinVrmOf(id: string | undefined | null) {
+  return PET_BUILTIN_VRMS.find((x) => x.id === id) || PET_BUILTIN_VRMS[0]
+}
 
 /**
  * 把第 index 个槽位改成 key。key 已在别的槽位时两个槽位**互换**，
@@ -144,6 +156,7 @@ export const PET_DEFAULTS: PetSettings = {
   pinnedConvId: '',
   vrmMode: 'builtin',
   vrmPath: '',
+  vrmBuiltin: 'shino',
   walk: true,
   bubble: true,
 }

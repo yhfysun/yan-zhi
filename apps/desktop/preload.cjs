@@ -105,7 +105,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 3D 形象：选择 / 读取自定义 VRM；内置模型也从主进程读（打包版 file:// 不能 fetch）
     pickVrm: () => ipcRenderer.invoke('pet:pick-vrm'),
     readVrm: (filePath) => ipcRenderer.invoke('pet:read-vrm', filePath),
-    readBuiltinVrm: () => ipcRenderer.invoke('pet:read-builtin-vrm'),
+    readBuiltinVrm: (id) => ipcRenderer.invoke('pet:read-builtin-vrm', id || 'shino'),
     onWalkState: (cb) => {
       const h = (_e, p) => cb(p);
       ipcRenderer.on('pet:walk-state', h);

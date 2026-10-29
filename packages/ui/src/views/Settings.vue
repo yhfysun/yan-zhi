@@ -596,6 +596,15 @@
                 <el-radio-button label="custom">自定义文件</el-radio-button>
                 <el-radio-button label="off">程序化素模</el-radio-button>
               </el-radio-group>
+              <el-select
+                v-if="petStore.settings.vrmMode === 'builtin'"
+                :model-value="petStore.settings.vrmBuiltin"
+                size="small"
+                style="width: 168px"
+                @change="setPet({ vrmBuiltin: $event })"
+              >
+                <el-option v-for="b in petBuiltinVrms" :key="b.id" :label="b.name" :value="b.id" />
+              </el-select>
               <template v-if="petStore.settings.vrmMode === 'custom'">
                 <el-button size="small" @click="pickPetVrm">{{ petVrmName || '选择 .vrm' }}</el-button>
                 <el-button v-if="petStore.settings.vrmPath" size="small" text @click="setPet({ vrmPath: '' })">
@@ -736,6 +745,9 @@ async function setPetEnabled(on: boolean) {
   }
 }
 
+/** 3D 内置形象清单（都是 CC0 的 VRoid 早期样例） */
+const petBuiltinVrms = PET_BUILTIN_VRMS;
+
 /** 半圆菜单槽位：设置页与宠物窗读同一份注册表（store 里的 PET_SLOT_DEFS） */
 const petSlotOptions = Object.entries(PET_SLOT_DEFS).map(([key, label]) => ({ key, label }));
 const petSlots = computed(() => {
@@ -769,7 +781,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
 import { useSettingsStore, usePlatformStore, useModelPoolStore, useCostStore } from '../stores';
-import { usePetStore, PET_SLOT_DEFS, PET_SLOT_DEFAULTS, setPetSlot } from '../stores/pet';
+import { usePetStore, PET_SLOT_DEFS, PET_SLOT_DEFAULTS, PET_BUILTIN_VRMS, setPetSlot } from '../stores/pet';
 import { usePluginStore } from '../stores/plugin';
 import { useToolsStore } from '../stores/tools';
 import { useVerificationStore } from '../stores/verification';

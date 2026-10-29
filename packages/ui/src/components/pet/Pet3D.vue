@@ -29,6 +29,8 @@ const props = withDefaults(
   }>(),
   { action: null, scale: 1, walking: false, flip: false, active: true, visible: true, vrmBuffer: null }
 )
+/** VRM 状态外泄：父组件在加载中/失败时用 2D 精灵顶替（否则会闪出一只"素模熊"） */
+const emit = defineEmits<{ (e: 'vrm-state', state: 'none' | 'loading' | 'ready' | 'error'): void }>()
 
 const host = ref<HTMLElement | null>(null)
 const cv = ref<HTMLCanvasElement | null>(null)
@@ -97,6 +99,8 @@ async function loadVrm(buffer: ArrayBuffer | null) {
     scene.add(next.holder)
     loaded = next
     vrmState.value = 'ready'
+    // 仅 dev：把 VRM 句柄挂到 window，方便用 CDP 调姿势（生产构建里这段会被摇树掉）
+    if (import.meta.env.DEV) (window as any).__petVrm = next
     if (rig) rig.root.visible = false
     frameVrm(next.height)
   } catch (err) {
@@ -477,6 +481,7 @@ watch(
   () => props.vrmBuffer,
   (b) => loadVrm(b ?? null)
 )
+watch(vrmState, (st) => emit('vrm-state', st), { immediate: true })
 
 onBeforeUnmount(() => {
   loadSeq++

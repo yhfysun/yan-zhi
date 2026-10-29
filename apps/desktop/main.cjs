@@ -9684,10 +9684,13 @@ ipcMain.handle('pet:read-vrm', async (_e, file) => {
     return { ok: false, msg: String((err && err.message) || err) };
   }
 });
-ipcMain.handle('pet:read-builtin-vrm', async () => {
+// 内置模型白名单：只认这几个 id，避免渲染层借参数读任意文件
+const PET_BUILTIN_VRM_FILES = { shino: 'sendagaya_shino.vrm', sakurada: 'sakurada_fumiriya.vrm' };
+ipcMain.handle('pet:read-builtin-vrm', async (_e, id) => {
   try {
     // 内置模型放 public/vrm/，构建时原样拷到 dist/vrm/（文件名不加 hash，便于这里直接定位）
-    return { ok: true, data: await readVrmBytes(path.join(__dirname, 'dist', 'vrm', 'sendagaya_shino.vrm')) };
+    const file = PET_BUILTIN_VRM_FILES[String(id || 'shino')] || PET_BUILTIN_VRM_FILES.shino;
+    return { ok: true, data: await readVrmBytes(path.join(__dirname, 'dist', 'vrm', file)) };
   } catch (err) {
     return { ok: false, msg: String((err && err.message) || err) };
   }

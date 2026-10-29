@@ -72,12 +72,14 @@
         :class="{ 'body-3d': settings.renderer === '3d' }"
         :style="bodyStyle"
         data-hit
-        title="左键拖动 · 右键菜单"
+        title="左键拖动 · 双击说话 · 右键菜单"
         @pointerdown="onDown"
+        @dblclick.stop="openAsk"
         @contextmenu.prevent="openRadial"
       >
         <Pet2D
-          v-if="settings.renderer === '2d'"
+          v-if="show2d"
+          class="pet-overlay"
           :state="state"
           :action="action"
           :pack="settings.pack"
@@ -88,7 +90,7 @@
           :visible="renderVisible"
         />
         <Pet3D
-          v-else
+          v-if="useVrm3d"
           :state="state"
           :action="action"
           :scale="settings.scale"
@@ -97,6 +99,7 @@
           :active="renderActive"
           :visible="renderVisible"
           :vrm-buffer="vrmBuffer"
+          @vrm-state="onVrmState"
         />
       </div>
 
@@ -135,17 +138,6 @@
           @blur="askFocused = false"
         />
         <button class="ask-go" title="交给主窗口" @click.stop="submitAsk">↑</button>
-
-        <!-- 绑定的工作目录：派活落在哪个目录 -->
-        <button class="ask-space" :title="'工作目录：' + spaceName" @click.stop="toggleSpaces">
-          <span class="ico">📁</span>{{ spaceName }}
-        </button>
-        <div v-if="spaceOpen" class="space-pop" data-hit>
-          <div v-for="w in workspaces" :key="w.id" class="space-item" :class="{ on: w.id === spaceId }" @click.stop="pickSpace(w.id)">
-            {{ w.name }}
-          </div>
-          <div v-if="!workspaces.length" class="space-empty">没有工作目录</div>
-        </div>
       </div>
 
       <div class="tag" v-if="tagOn">{{ tagText }}</div>
@@ -157,7 +149,15 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import Pet2D from '../components/pet/Pet2D.vue'
 import Pet3D from '../components/pet/Pet3D.vue'
-import { usePetStore, PET_DEFAULTS, PET_SLOT_DEFS, BUILTIN_VRM_FILE, type PetActivity, type PetSettings, type PetState } from '../stores/pet'
+import {
+  usePetStore,
+  PET_DEFAULTS,
+  PET_SLOT_DEFS,
+  builtinVrmOf,
+  type PetActivity,
+  type PetSettings,
+  type PetState,
+} from '../stores/pet'
 
 const store = usePetStore()
 // 同源 localStorage：别等主窗的 IPC 推送 —— 宠物窗可能比它先起来（真机实测会停在默认 2D）
@@ -179,6 +179,21 @@ const facingLeft = computed(() => walking.value && walkDir.value < 0)
 /** 3D 形象：VRM 字节（null = 用程序化素模）。内置模型 dev 走 vite、打包走主进程读 */
 const vrmBuffer = ref<ArrayBuffer | null>(null)
 const vrmError = ref('')
+/** Pet3D 回报的加载状态：加载中/失败时用 2D 精灵顶替，避免闪出程序化素模 */
+const vrmLoadState = ref<'none' | 'loading' | 'ready' | 'error'>('none')
+const onVrmState = (st: 'none' | 'loading' | 'ready' | 'error') => {
+  vrmLoadState.value = st
+}
+/** 用 VRM 的 3D 渲染（失败后卸载 Pet3D，省掉 WebGL 空转） */
+const useVrm3d = computed(
+  () => settings.value.renderer === '3d' && settings.value.vrmMode !== 'off' && vrmLoadState.value !== 'error'
+)
+/** 2D 精灵：本来就是 2D；或者 3D 但模型还没就绪/加载失败 */
+const show2d = computed(
+  () =>
+    settings.value.renderer === '2d' ||
+    (settings.value.renderer === '3d' && settings.value.vrmMode !== 'off' && vrmLoadState.value !== 'ready')
+)
 let vrmSeq = 0
 
 function toArrayBuffer(data: any): ArrayBuffer | null {
@@ -191,15 +206,16 @@ function toArrayBuffer(data: any): ArrayBuffer | null {
 }
 
 async function loadBuiltinVrm(): Promise<ArrayBuffer | null> {
+  const one = builtinVrmOf(settings.value.vrmBuiltin)
   if (import.meta.env.DEV) {
     try {
-      const r = await fetch('/' + BUILTIN_VRM_FILE)
+      const r = await fetch('/vrm/' + one.file)
       if (r.ok) return await r.arrayBuffer()
     } catch {
       /* dev 下拿不到就退回主进程读（打包版路径） */
     }
   }
-  const r = await api()?.readBuiltinVrm?.()
+  const r = await api()?.readBuiltinVrm?.(one.id)
   return r && r.ok ? toArrayBuffer(r.data) : null
 }
 
@@ -207,6 +223,7 @@ async function loadBuiltinVrm(): Promise<ArrayBuffer | null> {
 async function refreshVrm() {
   const seq = ++vrmSeq
   vrmError.value = ''
+  vrmLoadState.value = 'none'
   if (settings.value.renderer !== '3d' || settings.value.vrmMode === 'off') {
     vrmBuffer.value = null
     return
@@ -225,18 +242,22 @@ async function refreshVrm() {
       buf = await loadBuiltinVrm()
       if (!buf) vrmError.value = '内置模型不可用'
     }
-    if (seq === vrmSeq) vrmBuffer.value = buf
+    if (seq !== vrmSeq) return
+    vrmBuffer.value = buf
+    // 连模型字节都拿不到（路径失效/文件坏）：直接判失败，让 Pet3D 卸载、2D 顶上
+    if (!buf) vrmLoadState.value = 'error'
   } catch (err) {
     if (seq === vrmSeq) {
       vrmBuffer.value = null
       vrmError.value = String(err)
+      vrmLoadState.value = 'error'
     }
   }
 }
 
 // 切 2D/3D、换内置/自定义、换文件 → 重新取模型
 watch(
-  () => [settings.value.renderer, settings.value.vrmMode, settings.value.vrmPath],
+  () => [settings.value.renderer, settings.value.vrmMode, settings.value.vrmPath, settings.value.vrmBuiltin],
   () => refreshVrm()
 )
 const bubble = computed(() =>
@@ -272,32 +293,18 @@ const agents = ref<Array<{ id: string; name: string }>>([])
 const agentId = ref('')
 const askText = ref('')
 const agentOpen = ref(false)
-const workspaces = ref<Array<{ id: string; name: string }>>([])
-const spaceId = ref('')
-const spaceOpen = ref(false)
 const agentQuery = ref('')
 const showAsk = ref(false)
 const askFocused = ref(false)
 const askInputEl = ref<HTMLInputElement | null>(null)
 const hoverBody = ref(false)
-let askHideTimer = 0
 
-function syncAsk() {
-  window.clearTimeout(askHideTimer)
-  if (hoverBody.value || askFocused.value) {
-    if (!barOpen.value && !panelOpen.value && !radialOpen.value) showAsk.value = true
-    return
-  }
-  // 输入框里有字 / 刚提交过，都别收：用户可能只是想挪一下鼠标
-  if (askText.value.trim()) {
-    showAsk.value = true
-    return
-  }
-  // 宠物到输入条之间有空隙，留 450ms 让指针走过去
-  askHideTimer = window.setTimeout(() => {
-    if (askFocused.value || askText.value.trim() || hoverBody.value) return
-    showAsk.value = false
-  }, 450)
+/** 双击宠物才唤出输入条（hover 就弹出来太吵，用户明确要求改掉） */
+function openAsk() {
+  if (barOpen.value || panelOpen.value || radialOpen.value) return
+  showAsk.value = true
+  setInteractive(true)
+  requestAnimationFrame(() => askInputEl.value?.focus())
 }
 
 const agentName = computed(() => {
@@ -311,19 +318,6 @@ const filteredAgents = computed(() => {
 function toggleAgents() {
   agentOpen.value = !agentOpen.value
   agentQuery.value = ''
-}
-const spaceName = computed(() => {
-  const w = workspaces.value.find((x) => x.id === spaceId.value)
-  return w ? w.name : '未选择目录'
-})
-function toggleSpaces() {
-  spaceOpen.value = !spaceOpen.value
-  if (spaceOpen.value) agentOpen.value = false
-}
-function pickSpace(id: string) {
-  spaceId.value = id
-  spaceOpen.value = false
-  api()?.action?.({ type: 'space', spaceId: id })
 }
 
 function pickAgent(id: string) {
@@ -526,7 +520,6 @@ function onMove(e: PointerEvent) {
   // 用户伸手过来就别走了：跟真人宠物一样，被搭话就停下
   if (hoverBody.value && walking.value) stopWalk()
   tagOn.value = overBody || state.value === 'needs-input' || state.value === 'error'
-  syncAsk()
 }
 
 /* ===== 沿屏幕底边踱步：待机 9~20s 后随机走一段，位置由主进程动窗 ===== */
@@ -619,11 +612,12 @@ function onPointerDownAnywhere(e: PointerEvent) {
     !el?.closest?.('.bar') &&
     !el?.closest?.('.panel') &&
     !el?.closest?.('.agent-pop') &&
-    !el?.closest?.('.space-pop') &&
+
     !el?.closest?.('.ask')
   ) {
     closeRadial()
     barOpen.value = false
+    if (!askText.value.trim()) showAsk.value = false // 有草稿就别收，避免误点丢内容
   }
 }
 
@@ -668,10 +662,6 @@ onMounted(() => {
     activity.value = payload.activity ?? null
     if (Array.isArray(payload.tasks)) tasks.value = payload.tasks
     if (payload.memory) memory.value = { ...memory.value, ...payload.memory }
-    if (Array.isArray(payload.spaces)) {
-      workspaces.value = payload.spaces
-      if (payload.spaceId) spaceId.value = payload.spaceId
-    }
     if (Array.isArray(payload.agents)) {
       agents.value = payload.agents
       if (!agents.value.some((a) => a.id === agentId.value)) agentId.value = payload.agentId || agents.value[0]?.id || ''
@@ -741,6 +731,7 @@ onBeforeUnmount(() => {
   padding-bottom: 6px;
 }
 .body {
+  position: relative;
   cursor: grab;
   touch-action: none;
   padding: 4px;
@@ -748,6 +739,13 @@ onBeforeUnmount(() => {
 }
 .body:active {
   cursor: grabbing;
+}
+
+.pet-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
 }
 
 /* ===== 半圆菜单 ===== */
@@ -1027,68 +1025,7 @@ html:not(.dark) .agent-item:hover { background: rgba(24, 30, 42, 0.06); }
 html:not(.dark) .agent-item.on { color: #c4532e; background: rgba(232, 115, 74, 0.12); }
 
 /* 绑定的工作目录：胶囊正下方的小 chip */
-.ask-space {
-  position: absolute;
-  left: 4px;
-  top: 38px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 190px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border: 1px solid rgba(120, 140, 170, 0.35);
-  border-radius: 10px;
-  background: rgba(120, 140, 170, 0.12);
-  color: #9aa8bd;
-  font-size: 9.5px;
-  line-height: 1;
-  padding: 4px 7px;
-  cursor: pointer;
-}
-.ask-space:hover { border-color: rgba(232, 115, 74, 0.45); color: #e8b49a; }
-.ask-space .ico { font-size: 9px; }
-.space-pop {
-  position: absolute;
-  left: 4px;
-  top: 60px;
-  width: 190px;
-  padding: 5px;
-  background: #11151f;
-  border: 1px solid #2f3a4d;
-  border-radius: 12px;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
-  z-index: 12;
-}
-.space-item {
-  color: #cdd8ea;
-  font-size: 11px;
-  padding: 6px 7px;
-  border-radius: 7px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.space-item:hover { background: #223049; }
-.space-item.on { color: #e8b49a; background: rgba(232, 115, 74, 0.14); }
-.space-empty { color: #66738c; font-size: 10.5px; text-align: center; padding: 10px 0; }
-html:not(.dark) .ask-space {
-  background: rgba(24, 30, 42, 0.05);
-  border-color: rgba(20, 25, 35, 0.12);
-  color: #6b778a;
-}
-html:not(.dark) .ask-space:hover { border-color: rgba(232, 115, 74, 0.45); color: #c4532e; }
-html:not(.dark) .space-pop {
-  background: #fff;
-  border-color: rgba(20, 25, 35, 0.12);
-  box-shadow: 0 12px 30px rgba(15, 20, 30, 0.18);
-}
-html:not(.dark) .space-item { color: #2b3444; }
-html:not(.dark) .space-item:hover { background: rgba(24, 30, 42, 0.06); }
-html:not(.dark) .space-item.on { color: #c4532e; background: rgba(232, 115, 74, 0.12); }
-html:not(.dark) .ask .ask-agent {
+html:not(.dark) html:not(.dark) .ask .ask-agent {
   background: rgba(232, 115, 74, 0.1);
   border-color: rgba(232, 115, 74, 0.28);
   color: #c4532e;
