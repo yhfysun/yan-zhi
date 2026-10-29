@@ -52,8 +52,8 @@ export interface VrmPose {
 }
 
 /** 手臂静止姿态：A-pose（比 T-pose 自然，也不会穿模） */
-const ARM_DOWN_L = 1.45
-const ARM_DOWN_R = -1.45
+const ARM_DOWN_L = 1.32
+const ARM_DOWN_R = -1.32
 /** 膝盖只在腿往后摆时弯，避免"直腿拖地" */
 const KNEE_BEND = 0.55
 
@@ -74,8 +74,8 @@ export function basePose(): VrmPose {
     armLZ: ARM_DOWN_L,
     armRX: 0,
     armRZ: ARM_DOWN_R,
-    foreArmLY: -0.5,
-    foreArmRY: 0.5,
+    foreArmLY: -0.25,
+    foreArmRY: 0.25,
     shoulderLZ: 0.05,
     shoulderRZ: -0.05,
     handLY: 0,
@@ -149,8 +149,8 @@ export function poseFor(input: PoseInput): VrmPose {
       p.armRZ = ARM_DOWN_R + Math.abs(sway) * 0.35
       p.armLX = 0.05 + sway
       p.armRX = 0.05 - sway
-      p.foreArmLY = -0.5 - Math.abs(sway) * 0.4
-      p.foreArmRY = 0.5 + Math.abs(sway) * 0.4
+      p.foreArmLY = -0.25 - Math.abs(sway) * 0.3
+      p.foreArmRY = 0.25 + Math.abs(sway) * 0.3
       lookAt()
       p.headY += Math.sin(t * 0.6) * 0.05
       p.headX += breath * 0.01
