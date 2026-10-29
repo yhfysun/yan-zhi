@@ -140,7 +140,6 @@
         <button class="ask-go" title="交给主窗口" @click.stop="submitAsk">↑</button>
       </div>
 
-      <div class="tag" v-if="tagOn">{{ tagText }}</div>
     </div>
   </div>
 </template>
@@ -149,6 +148,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import Pet2D from '../components/pet/Pet2D.vue'
 import Pet3D from '../components/pet/Pet3D.vue'
+import { PET_PACKS } from '../components/pet/pet-assets'
 import {
   usePetStore,
   PET_DEFAULTS,
@@ -207,6 +207,8 @@ function toArrayBuffer(data: any): ArrayBuffer | null {
 
 async function loadBuiltinVrm(): Promise<ArrayBuffer | null> {
   const one = builtinVrmOf(settings.value.vrmBuiltin)
+  // 未随包任何 3D 模型（--pets 未选 3D）→ 没得读，交给上层报"内置模型不可用"并回退 2D
+  if (!one) return null
   if (import.meta.env.DEV) {
     try {
       const r = await fetch('/vrm/' + one.file)
@@ -285,7 +287,6 @@ const barOpen = ref(false)
 const panelOpen = ref(false)
 const radialOpen = ref(false)
 const radial = reactive({ cx: 0, cy: 0, flip: false })
-const tagOn = ref(false)
 const tasks = ref<Array<{ id: string; title: string; status: string }>>([])
 /** 宠物记忆：好感与互动次数（主窗派生后推过来） */
 const memory = ref({ affinity: 0, pet: 0, wave: 0, follow: 0, lastAt: 0 })
@@ -381,14 +382,6 @@ function slotStyle(i: number, n = slotKeys.value.length) {
   }
 }
 
-const STATE_TEXT: Record<PetState, string> = {
-  idle: '待机',
-  running: '任务执行中',
-  'needs-input': '等你输入',
-  paused: '已暂停',
-  ready: '任务完成',
-  error: '出错了',
-}
 const STATUS_SHORT: Record<string, string> = {
   running: '执行中',
   paused: '已暂停',
@@ -396,13 +389,8 @@ const STATUS_SHORT: Record<string, string> = {
   ready: '完成',
   error: '出错',
 }
-const PACK_ORDER = ['boba', 'tiko', 'wangcai', 'lulu', 'noir', 'mallow']
-const PACK_NAMES: Record<string, string> = { boba: 'Boba', tiko: 'Tiko', wangcai: '旺财', lulu: '噜噜', noir: 'Noir', mallow: 'Mallow' }
+const PACK_ORDER = PET_PACKS.map((p) => p.id)
 
-const stateText = computed(() => STATE_TEXT[state.value])
-const tagText = computed(
-  () => `${settings.value.renderer === '3d' ? '3D 宠物' : PACK_NAMES[settings.value.pack] || '宠物'} · ${STATE_TEXT[state.value]}`
-)
 
 const api = () => (window as any).electronAPI?.pet
 
@@ -493,6 +481,7 @@ function openConv(id: string) {
 }
 
 function cyclePack() {
+  if (!PACK_ORDER.length) return
   const next = PACK_ORDER[(PACK_ORDER.indexOf(settings.value.pack) + 1) % PACK_ORDER.length]
   const patch = { pack: next, renderer: '2d' as const }
   settings.value = { ...settings.value, ...patch }
@@ -519,7 +508,6 @@ function onMove(e: PointerEvent) {
   hoverBody.value = overBody || overAsk
   // 用户伸手过来就别走了：跟真人宠物一样，被搭话就停下
   if (hoverBody.value && walking.value) stopWalk()
-  tagOn.value = overBody || state.value === 'needs-input' || state.value === 'error'
 }
 
 /* ===== 沿屏幕底边踱步：待机 9~20s 后随机走一段，位置由主进程动窗 ===== */
@@ -1120,20 +1108,6 @@ html:not(.dark) html:not(.dark) .ask .ask-agent {
 .p-dot.s-error { background: #e05c5c; }
 .p-dot.s-completed { background: #5cc48a; }
 
-.tag {
-  position: absolute;
-  left: 50%;
-  bottom: 2px;
-  transform: translateX(-50%);
-  font-size: 11px;
-  color: #cdd6e2;
-  background: rgba(16, 20, 30, 0.92);
-  border: 1px solid #2a3342;
-  padding: 3px 10px;
-  border-radius: 8px;
-  white-space: nowrap;
-  pointer-events: none;
-}
 
 /* ===== 浅色主题：浮层全部换浅底 + 轻投影，别在浅色桌面上糊黑板 ===== */
 html:not(.dark) .bar,
@@ -1187,9 +1161,4 @@ html:not(.dark) .panel .p-st { color: #7a8699; }
 html:not(.dark) .panel .p-title { color: #2b3444; }
 html:not(.dark) .panel .p-row:hover { background: rgba(24, 30, 42, 0.06); }
 html:not(.dark) .panel .p-x { color: #7a8699; }
-html:not(.dark) .tag {
-  color: #2b3444;
-  background: rgba(255, 255, 255, 0.96);
-  border-color: rgba(20, 25, 35, 0.12);
-}
-</style>
+html:not(.dark) </style>
