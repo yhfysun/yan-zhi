@@ -77,6 +77,37 @@ export function derivePetState(s: {
 }
 
 /**
+ * 含「代玩中」的六态派生（**不新增第 7 态**）。
+ * 代玩期间即使聊天任务列表为空，宠物也该显示 running（气泡「代玩中」）；
+ * 优先级仍是 needs-input > error > ready > 代玩 paused/running > running > paused > idle。
+ */
+export function derivePetStateWithGame(s: {
+  running: number
+  paused: number
+  waiting: number
+  terminal?: PetTerminal
+  gameActive?: boolean
+  gamePaused?: boolean
+}): PetState {
+  if (s.gameActive && s.waiting === 0 && s.terminal !== 'error' && s.terminal !== 'ready') {
+    return s.gamePaused ? 'paused' : 'running'
+  }
+  return derivePetState(s)
+}
+
+/**
+ * 代玩结束该演哪个动作（纯函数，便于单测）：
+ *   error → nap（趴一下表示失败）；aborted/cancelled → 不打扰；
+ *   其余（完成 / 用户收回）→ hop，1s 后再 spin。
+ */
+export function petOutcome(status?: string | null): { key: string; follow?: string } {
+  const s = String(status || '')
+  if (s === 'error' || s === 'failed') return { key: 'nap' }
+  if (s === 'aborted' || s === 'cancelled') return { key: '' }
+  return { key: 'hop', follow: 'spin' }
+}
+
+/**
  * 四类「等你输入」按会话求并集（纯函数，便于单测）。
  * 入参既接受 ref 也接受已解包的 Record，兼容调用方两种写法。
  */

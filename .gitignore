@@ -264,3 +264,6 @@ apps/server/plugins/builtin/
 /tools/scrcpy/
 # 真机验证截图（一次性证据，不进库）
 /phone-*.png
+
+# 运维终端会话录制（运行时产物，含本机操作记录，不入库）
+apps/server/ops-recordings/

@@ -375,6 +375,12 @@ export interface AppSettings {
    */
   screenshotAccelerator: string;
   /**
+   * 插件窗口全局快捷键的用户覆盖：`插件id/窗口id` → accelerator 串。
+   * 清单 contributes.windows[].accelerator 是默认值；这里只在用户改过/禁用过时才有键，
+   * 值是空串表示「用户主动禁用」。真正注册在主进程（plugin-window:set-hotkeys）。
+   */
+  pluginHotkeys: Record<string, string>;
+  /**
    * 截图时是否隐藏本应用窗口（对齐微信截图默认隐藏）。
    * 想截自己界面里的内容时关掉它；仅桌面端生效。
    */
@@ -581,6 +587,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   layout: 'default',
   screenshotAccelerator: 'Control+Alt+A',
   screenshotHideApp: true,
+  pluginHotkeys: {},
   panicAccelerator: 'Control+Alt+Escape',
   sendKeyMode: 'enter',
   defaultLanIp: '',

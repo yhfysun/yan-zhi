@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>直播场景原型 · 虚拟人 / 宠物 / 实录 / 游戏</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#141821; --line:#232a36; --txt:#e6e9ef; --dim:#8b93a3;
+    --accent:#6ea8fe; --accent2:#7ee787; --warn:#f0b429; --danger:#ff6b6b;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:radial-gradient(1200px 700px at 20% -10%,#1a2233 0%,var(--bg) 55%);
+    color:var(--txt);font:14px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex;overflow:hidden;
+  }
+
+  /* ---------- 控制面板 ---------- */
+  .controls{
+    width:250px;flex:0 0 250px;height:100vh;overflow:auto;
+    border-right:1px solid var(--line);background:rgba(16,20,27,.75);
+    padding:18px 16px;display:flex;flex-direction:column;gap:18px;
+  }
+  .controls h1{font-size:14px;margin:0 0 2px;letter-spacing:.3px}
+  .controls .sub{font-size:11px;color:var(--dim);margin:0}
+  .group{display:flex;flex-direction:column;gap:8px}
+  .group-label{font-size:11px;color:var(--dim);letter-spacing:.6px;text-transform:uppercase}
+  .btn{
+    appearance:none;border:1px solid var(--line);background:#1a2029;color:var(--txt);
+    padding:8px 10px;border-radius:10px;cursor:pointer;text-align:left;font-size:13px;
+    transition:.15s;display:flex;align-items:center;gap:8px;
+  }
+  .btn:hover{background:#202836;border-color:#2f3a4b}
+  .btn.active{background:linear-gradient(180deg,#2b3d5c,#22304a);border-color:#3d5b8c;color:#eaf1ff}
+  .btn .dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex:0 0 6px}
+  .btn.active .dot{background:var(--accent)}
+  .row{display:flex;gap:8px}
+  .row .btn{flex:1;justify-content:center;text-align:center}
+  .hint{font-size:11px;color:var(--dim);line-height:1.6;border-top:1px solid var(--line);padding-top:12px;margin-top:auto}
+  .badge-live{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#ffd7d7}
+  .badge-live i{width:6px;height:6px;border-radius:50%;background:var(--danger);box-shadow:0 0 0 0 rgba(255,107,107,.7);animation:pulse 1.6s infinite}
+
+  /* ---------- 舞台容器 ---------- */
+  .stage-wrap{
+    flex:1;min-width:0;display:flex;align-items:center;justify-content:center;padding:24px;position:relative;
+  }
+  .stage{
+    position:relative;height:calc(100vh - 48px);aspect-ratio:9/16;max-width:100%;
+    background:#05070a;border-radius:18px;overflow:hidden;
+    box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px var(--line);
+    transition:aspect-ratio .25s ease;
+  }
+  .stage.landscape{aspect-ratio:16/9;width:calc(100vw - 298px);height:auto;max-height:calc(100vh - 48px)}
+  .stage.portrait{height:calc(100vh - 48px);width:auto}
+
+  /* ---------- 背景 ---------- */
+  .bg{position:absolute;inset:0;transition:.4s}
+  .stage[data-scene="avatar-full"] .bg{background:radial-gradient(80% 60% at 50% 30%,#243b63 0%,#101725 55%,#080b11 100%)}
+  .stage[data-scene="pet-full"] .bg{background:radial-gradient(70% 55% at 50% 42%,#2a2440 0%,#171327 55%,#0a0810 100%)}
+  .stage[data-scene="task-live"] .bg{background:#0a0d12}
+  .stage[data-scene="game-pip"] .bg{background:#0a0d12}
+  .stage[data-scene="duo"] .bg{background:radial-gradient(80% 60% at 30% 30%,#2b3350 0%,#131a29 55%,#080b11 100%)}
+
+  /* ---------- 各层显隐 ---------- */
+  .el{position:absolute;opacity:0;pointer-events:none;transition:opacity .3s ease;z-index:3}
+  .el-capture,.el-game{z-index:1}
+  .stage[data-scene="avatar-full"] .el-avatar,
+  .stage[data-scene="duo"] .el-avatar{opacity:1}
+  .stage[data-scene="pet-full"] .el-pet,
+  .stage[data-scene="duo"] .el-pet{opacity:1}
+  .stage[data-scene="task-live"] .el-capture{opacity:1}
+  .stage[data-scene="task-live"] .el-avatar,
+  .stage[data-scene="game-pip"] .el-avatar{opacity:1}
+  .stage[data-scene="game-pip"] .el-game{opacity:1}
+
+  /* ---------- 虚拟人 ---------- */
+  .el-avatar{
+    left:50%;bottom:8%;transform:translateX(-50%);width:42%;max-width:360px;height:64%;
+    display:flex;align-items:flex-end;justify-content:center;
+  }
+  .stage[data-scene="task-live"] .el-avatar,
+  .stage[data-scene="game-pip"] .el-avatar{
+    left:auto;right:3.5%;bottom:21%;transform:translateX(0);width:20%;height:26%;max-width:none;
+  }
+  .stage[data-scene="duo"] .el-avatar{left:8%;transform:translateX(0);width:34%;height:56%;bottom:12%}
+
+  .avatar-rig{position:relative;width:100%;height:100%;display:flex;align-items:flex-end;justify-content:center}
+  .avatar-body{
+    position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:76%;height:50%;
+    background:linear-gradient(180deg,#3b4f7a,#26344f);
+    border-radius:44% 44% 16% 16%/60% 60% 12% 12%;
+    box-shadow:inset 0 8px 24px rgba(255,255,255,.07);
+  }
+  .avatar-head-wrap{
+    position:absolute;bottom:34%;left:50%;transform:translateX(-50%);
+    width:64%;aspect-ratio:1/1.06;z-index:2;
+    animation:breathe 4.4s ease-in-out infinite;
+  }
+  .avatar-head{
+    position:absolute;inset:0;
+    background:linear-gradient(180deg,#f7d9c4,#e8bfa4);
+    border-radius:50% 50% 46% 46%/54% 54% 46% 46%;
+    box-shadow:0 10px 30px rgba(0,0,0,.35);
+    overflow:hidden;
+  }
+  .avatar-hair{
+    position:absolute;left:-4%;top:-12%;width:108%;height:52%;
+    background:linear-gradient(180deg,#2f3b57,#1d2637);
+    border-radius:52% 52% 46% 46%/82% 82% 18% 18%;
+    box-shadow:0 6px 16px rgba(0,0,0,.35);
+    z-index:3;
+  }
+  .avatar-fringe{
+    position:absolute;left:-4%;top:26%;width:108%;height:16%;
+    background:linear-gradient(180deg,#1d2637,rgba(29,38,55,0));
+    border-radius:0 0 50% 50%/0 0 100% 100%;
+    z-index:3;opacity:.95;
+  }
+  .avatar-eye{
+    position:absolute;top:52%;width:9%;aspect-ratio:1/1.25;background:#232a38;border-radius:50%;
+    animation:blink 5.2s infinite;z-index:4;
+  }
+  .avatar-eye.l{left:25%}
+  .avatar-eye.r{right:25%}
+  .avatar-brow{position:absolute;top:44%;width:13%;height:2.4%;background:#6d4a3a;border-radius:3px;opacity:.55;z-index:4}
+  .avatar-brow.l{left:22%}
+  .avatar-brow.r{right:22%}
+  .avatar-mouth{
+    position:absolute;top:71%;left:50%;transform:translateX(-50%) scaleY(.28);
+    width:15%;height:8%;background:#8c3f46;border-radius:0 0 999px 999px;
+    transform-origin:50% 0;transition:transform .04s linear;z-index:4;
+  }
+  .avatar-shadow{
+    position:absolute;bottom:-2%;left:50%;transform:translateX(-50%);
+    width:70%;height:5%;background:radial-gradient(50% 50% at 50% 50%,rgba(0,0,0,.55),transparent 70%);
+    filter:blur(4px);
+  }
+  .avatar-rig[data-expr="thinking"] .avatar-brow{transform:translateY(-2px) rotate(-8deg)}
+  .avatar-rig[data-expr="thinking"] .avatar-brow.r{transform:translateY(-2px) rotate(8deg)}
+  .avatar-rig[data-expr="happy"] .avatar-mouth{width:19%;border-radius:0 0 999px 999px}
+  .avatar-rig[data-expr="happy"] .avatar-eye{animation:none;transform:scaleY(.35)}
+  .avatar-rig[data-expr="confused"] .avatar-brow.l{transform:rotate(14deg)}
+  .avatar-rig[data-expr="thinking"]{animation:tilt 2.6s ease-in-out infinite}
+
+  /* ---------- 宠物 ---------- */
+  .el-pet{
+    left:50%;bottom:22%;transform:translateX(-50%);width:30%;aspect-ratio:1/1;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .stage[data-scene="duo"] .el-pet{left:auto;right:10%;transform:translateX(0);width:26%;bottom:18%}
+  .pet-rig{position:relative;width:100%;height:100%;animation:bob 2.8s ease-in-out infinite}
+  .pet-body{
+    position:absolute;left:50%;bottom:6%;transform:translateX(-50%);
+    width:80%;height:70%;background:linear-gradient(180deg,#f2b880,#d9915a);
+    border-radius:46% 46% 42% 42%/52% 52% 48% 48%;
+    box-shadow:inset 0 -10px 24px rgba(0,0,0,.16),0 16px 30px rgba(0,0,0,.35);
+  }
+  .pet-ear{position:absolute;top:6%;width:22%;height:30%;background:#e8a86c;border-radius:50% 50% 10% 10%}
+  .pet-ear.l{left:14%;transform:rotate(-18deg)}
+  .pet-ear.r{right:14%;transform:rotate(18deg)}
+  .pet-eye{position:absolute;top:40%;width:10%;aspect-ratio:1/1.2;background:#241a12;border-radius:50%;animation:blink 4.6s infinite}
+  .pet-eye.l{left:30%}
+  .pet-eye.r{right:30%}
+  .pet-mouth{position:absolute;top:56%;left:50%;transform:translateX(-50%);width:10%;height:5%;background:#8a4b34;border-radius:0 0 999px 999px}
+  .pet-cheek{position:absolute;top:52%;width:11%;aspect-ratio:1/1;background:rgba(233,120,120,.35);border-radius:50%}
+  .pet-cheek.l{left:20%}
+  .pet-cheek.r{right:20%}
+  .pet-rig[data-activity="tool"]{animation:tilt 1.2s ease-in-out infinite}
+  .pet-rig[data-activity="think"] .pet-eye{transform:translateY(-2px)}
+
+  /* ---------- 任务实录（模拟应用窗口） ---------- */
+  .el-capture{inset:0;opacity:1}
+  .stage:not([data-scene="task-live"]) .el-capture{opacity:0}
+  .win{
+    position:absolute;inset:3% 3% 20% 3%;background:#11151c;border:1px solid #2a3240;
+    border-radius:12px;overflow:hidden;display:flex;flex-direction:column;
+    box-shadow:0 20px 50px rgba(0,0,0,.6);
+  }
+  .win-bar{height:7%;min-height:26px;background:#171d26;border-bottom:1px solid #232b37;display:flex;align-items:center;gap:6px;padding:0 10px}
+  .win-bar i{width:8px;height:8px;border-radius:50%;background:#39424f;display:block}
+  .win-bar span{margin-left:8px;font-size:11px;color:#7d8798}
+  .win-body{flex:1;display:flex;min-height:0}
+  .win-side{width:22%;background:#0f131a;border-right:1px solid #1e252f;padding:8px;display:flex;flex-direction:column;gap:6px}
+  .win-side .blur-bar{height:9px;border-radius:5px;background:#242c38;filter:blur(1.5px);opacity:.6}
+  .win-side .mask-note{margin-top:auto;font-size:9px;color:#5d6675;text-align:center;line-height:1.4}
+  .win-main{flex:1;position:relative;background:linear-gradient(180deg,#141a24,#0f141c);overflow:hidden}
+  .browser-bar{height:12%;min-height:22px;background:#182029;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid #1f2833}
+  .browser-bar .addr{flex:1;height:12px;border-radius:6px;background:#10161d}
+  .page{position:absolute;inset:12% 0 0 0;padding:10px;display:flex;flex-direction:column;gap:8px}
+  .page .blk{background:#1b2430;border-radius:6px;height:14px}
+  .page .blk.w60{width:60%}.page .blk.w40{width:40%}.page .blk.w80{width:80%}
+  .page .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px}
+  .page .card{height:46px;background:#1d2836;border-radius:8px;border:1px solid #263243}
+  .click-ripple{
+    position:absolute;width:14px;height:14px;border-radius:50%;border:2px solid var(--accent);
+    opacity:0;pointer-events:none;
+  }
+  .click-ripple.go{animation:ripple .8s ease-out}
+  .cursor{position:absolute;width:12px;height:12px;opacity:0;transition:left .5s ease,top .5s ease,opacity .2s}
+  .cursor.show{opacity:1}
+  .cursor:before{content:"";position:absolute;width:0;height:0;border-left:9px solid #e8eefc;border-bottom:12px solid transparent;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
+
+  /* ---------- 游戏画面 ---------- */
+  .el-game{inset:0;opacity:0}
+  .stage[data-scene="game-pip"] .el-game{opacity:1}
+  .game-shell{position:absolute;inset:0;background:#06121c;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  canvas.game{width:100%;height:100%;display:block;object-fit:cover}
+
+  /* ---------- 字幕 / 弹幕 / 角标 ---------- */
+  .subtitle{
+    position:absolute;left:6%;right:6%;bottom:4%;z-index:6;
+    background:rgba(8,11,16,.72);backdrop-filter:blur(10px);
+    border:1px solid rgba(255,255,255,.09);border-radius:12px;
+    padding:10px 14px;font-size:clamp(12px,1.5vh,18px);line-height:1.5;
+    min-height:44px;display:flex;align-items:center;gap:8px;
+  }
+  .subtitle .speaker{color:var(--accent);font-size:11px;flex:0 0 auto;letter-spacing:.5px}
+  .subtitle .caret{display:inline-block;width:2px;height:1em;background:var(--accent);animation:caret 1s steps(1) infinite;vertical-align:-2px}
+  .stage[data-scene="game-pip"] .subtitle{bottom:3%}
+
+  .danmaku{position:absolute;inset:0;pointer-events:none;z-index:5;overflow:hidden}
+  .dm{
+    position:absolute;white-space:nowrap;font-size:clamp(10px,1.2vh,15px);
+    color:#dfe7f5;background:rgba(10,14,20,.55);padding:3px 9px;border-radius:999px;
+    animation:dm-move linear forwards;
+  }
+  .badges{position:absolute;top:3.5%;left:4%;right:4%;display:flex;justify-content:space-between;align-items:flex-start;z-index:7;pointer-events:none}
+  .tag{
+    font-size:clamp(9px,1.05vh,12px);padding:4px 9px;border-radius:999px;
+    background:rgba(10,14,20,.6);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(6px);
+    display:inline-flex;align-items:center;gap:6px;
+  }
+  .tag.live{color:#ffd7d7;border-color:rgba(255,107,107,.4)}
+  .tag.live i{width:6px;height:6px;border-radius:50%;background:var(--danger);animation:pulse 1.6s infinite}
+  .tag.aigc{color:#c8d4ea}
+  .tag.right{color:#b9c6dd}
+
+  .status-chip{
+    position:absolute;top:4.5%;left:50%;transform:translateX(-50%);z-index:7;
+    font-size:clamp(9px,1vh,12px);color:#cfe0ff;background:rgba(24,40,70,.7);
+    border:1px solid rgba(110,168,254,.35);border-radius:999px;padding:4px 12px;
+    opacity:0;transition:.25s;
+  }
+  .status-chip.show{opacity:1}
+
+  /* ---------- 动画 ---------- */
+  @keyframes breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.2%)}}
+  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-4%)}}
+  @keyframes blink{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.12)}}
+  @keyframes tilt{0%,100%{transform:rotate(-1.6deg)}50%{transform:rotate(1.6deg)}}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,107,107,.7)}70%{box-shadow:0 0 0 7px rgba(255,107,107,0)}100%{box-shadow:0 0 0 0 rgba(255,107,107,0)}}
+  @keyframes caret{0%,50%{opacity:1}51%,100%{opacity:0}}
+  @keyframes dm-move{from{transform:translateX(0)}to{transform:translateX(-140%)}}
+  @keyframes ripple{0%{opacity:.9;transform:scale(.4)}100%{opacity:0;transform:scale(3.2)}}
+</style>
+</head>
+<body>
+
+<aside class="controls">
+  <div>
+    <h1>直播场景原型</h1>
+    <p class="sub">一 条 管 线 · 五 种 场 景</p>
+  </div>
+
+  <div class="group">
+    <div class="group-label">场景模板</div>
+    <button class="btn active" data-scene="avatar-full"><span class="dot"></span>虚拟人单口</button>
+    <button class="btn" data-scene="pet-full"><span class="dot"></span>宠物主播</button>
+    <button class="btn" data-scene="task-live"><span class="dot"></span>任务实录</button>
+    <button class="btn" data-scene="game-pip"><span class="dot"></span>游戏解说</button>
+    <button class="btn" data-scene="duo"><span class="dot"></span>虚拟人 + 宠物</button>
+  </div>
+
+  <div class="group">
+    <div class="group-label">画幅</div>
+    <div class="row">
+      <button class="btn active" data-orient="portrait">竖屏 9:16</button>
+      <button class="btn" data-orient="landscape">横屏 16:9</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-label">状态</div>
+    <div class="row">
+      <button class="btn" id="btn-speak"><span class="dot"></span>说话</button>
+      <button class="btn" id="btn-think"><span class="dot"></span>思考</button>
+    </div>
+    <button class="btn" id="btn-tool"><span class="dot"></span>执行工具</button>
+    <button class="btn" id="btn-danmaku"><span class="dot"></span>来一条弹幕</button>
+  </div>
+
+  <div class="group">
+    <div class="group-label">演示</div>
+    <button class="btn" id="btn-auto">自动演示（循环）</button>
+  </div>
+
+  <p class="hint">
+    原型只模拟画面与状态，不代表真实渲染质量。<br>
+    「任务实录」展示窗口捕获时的隐私遮罩与画中画讲解。<br>
+    <span class="badge-live"><i></i>直播中</span> + AIGC 标识为必需角标。
+  </p>
+</aside>
+
+<main class="stage-wrap">
+  <div class="stage portrait" id="stage" data-scene="avatar-full">
+
+    <div class="bg"></div>
+
+    <!-- 虚拟人 -->
+    <div class="el el-avatar">
+      <div class="avatar-rig" id="avatarRig" data-expr="neutral">
+        <div class="avatar-shadow"></div>
+        <div class="avatar-body"></div>
+        <div class="avatar-head-wrap">
+          <div class="avatar-head">
+            <div class="avatar-brow l"></div>
+            <div class="avatar-brow r"></div>
+            <div class="avatar-eye l"></div>
+            <div class="avatar-eye r"></div>
+            <div class="avatar-mouth" id="avatarMouth"></div>
+          </div>
+          <div class="avatar-hair"></div>
+          <div class="avatar-fringe"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 宠物 -->
+    <div class="el el-pet">
+      <div class="pet-rig" id="petRig" data-activity="idle">
+        <div class="pet-ear l"></div>
+        <div class="pet-ear r"></div>
+        <div class="pet-body">
+          <div class="pet-eye l"></div>
+          <div class="pet-eye r"></div>
+          <div class="pet-cheek l"></div>
+          <div class="pet-cheek r"></div>
+          <div class="pet-mouth"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 任务实录：模拟应用窗口 -->
+    <div class="el el-capture">
+      <div class="win">
+        <div class="win-bar"><i></i><i></i><i></i><span>言智 · 直播工作区</span></div>
+        <div class="win-body">
+          <div class="win-side">
+            <div class="blur-bar" style="width:78%"></div>
+            <div class="blur-bar" style="width:62%"></div>
+            <div class="blur-bar" style="width:70%"></div>
+            <div class="blur-bar" style="width:48%"></div>
+            <div class="mask-note">会话列表已隐藏<br>（直播遮罩）</div>
+          </div>
+          <div class="win-main" id="winMain">
+            <div class="browser-bar"><div class="addr"></div></div>
+            <div class="page">
+              <div class="blk w60"></div>
+              <div class="blk w80"></div>
+              <div class="blk w40"></div>
+              <div class="grid">
+                <div class="card"></div><div class="card"></div><div class="card"></div>
+                <div class="card"></div><div class="card"></div><div class="card"></div>
+              </div>
+            </div>
+            <div class="cursor" id="cursor"></div>
+            <div class="click-ripple" id="ripple"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 游戏画面 -->
+    <div class="el el-game">
+      <div class="game-shell"><canvas class="game" id="gameCanvas" width="480" height="270"></canvas></div>
+    </div>
+
+    <div class="danmaku" id="danmaku"></div>
+
+    <div class="badges">
+      <div style="display:flex;gap:6px">
+        <span class="tag live"><i></i>直播中</span>
+        <span class="tag aigc">AI 生成</span>
+      </div>
+      <span class="tag right" id="tagScene">虚拟人单口</span>
+    </div>
+
+    <div class="status-chip" id="statusChip">正在打开页面…</div>
+
+    <div class="subtitle">
+      <span class="speaker" id="speaker">言智</span>
+      <span id="subText">大家好，我是言智。今天给你演示一下直播场景。</span><span class="caret"></span>
+    </div>
+  </div>
+</main>
+
+<script>
+(function(){
+  const stage = document.getElementById('stage');
+  const tagScene = document.getElementById('tagScene');
+  const subText = document.getElementById('subText');
+  const speaker = document.getElementById('speaker');
+  const statusChip = document.getElementById('statusChip');
+  const avatarRig = document.getElementById('avatarRig');
+  const petRig = document.getElementById('petRig');
+  const mouth = document.getElementById('avatarMouth');
+  const danmaku = document.getElementById('danmaku');
+  const cursor = document.getElementById('cursor');
+  const ripple = document.getElementById('ripple');
+
+  const SCENE_NAMES = {
+    'avatar-full':'虚拟人单口',
+    'pet-full':'宠物主播',
+    'task-live':'任务实录',
+    'game-pip':'游戏解说',
+    'duo':'虚拟人 + 宠物'
+  };
+
+  let speaking = false;
+  let rafId = 0;
+  let mouthPhase = 0;
+
+  /* ---- 口型：用正弦 + 噪声模拟音量包络 ---- */
+  function lipLoop(){
+    if(speaking){
+      mouthPhase += 0.36;
+      const env = 0.42 + 0.38 * Math.abs(Math.sin(mouthPhase)) + 0.18 * Math.random();
+      const open = Math.min(1, env);
+      mouth.style.transform = 'translateX(-50%) scaleY(' + (0.25 + open * 1.15).toFixed(2) + ')';
+      mouth.style.borderRadius = open > 0.72 ? '999px' : '0 0 999px 999px';
+    } else {
+      mouth.style.transform = 'translateX(-50%) scaleY(.28)';
+    }
+    rafId = requestAnimationFrame(lipLoop);
+  }
+  lipLoop();
+
+  /* ---- 说话 / 表情 ---- */
+  function setSpeaking(on, text){
+    speaking = on;
+    document.getElementById('btn-speak').classList.toggle('active', on);
+    avatarRig.dataset.expr = on ? 'neutral' : avatarRig.dataset.expr;
+    if(on){
+      petRig.dataset.activity = 'talking';
+      if(text) typeText(text);
+    } else {
+      petRig.dataset.activity = 'idle';
+    }
+  }
+
+  function setThinking(){
+    avatarRig.dataset.expr = 'thinking';
+    petRig.dataset.activity = 'think';
+    say('我先看一下这个页面在做什么。');
+    setTimeout(()=>{ if(!speaking) avatarRig.dataset.expr = 'neutral'; }, 2600);
+  }
+
+  /* ---- 打字机字幕 ---- */
+  let typeTimer = 0;
+  function typeText(text){
+    clearInterval(typeTimer);
+    let i = 0;
+    subText.textContent = '';
+    typeTimer = setInterval(()=>{
+      subText.textContent = text.slice(0, ++i);
+      if(i >= text.length) clearInterval(typeTimer);
+    }, 38);
+  }
+  function say(text){ typeText(text); speaking = true; document.getElementById('btn-speak').classList.add('active'); }
+
+  /* ---- 工具执行：实录场景里演示鼠标点击与状态 ---- */
+  const TOOL_LINES = [
+    '我打开页面看一下。',
+    '找到搜索框了，输入关键词。',
+    '结果出来了，我筛一下前三条。',
+    '这一步没成功，我换个方式。'
+  ];
+  let toolIdx = 0;
+  function runTool(){
+    setSpeaking(true);
+    avatarRig.dataset.expr = 'thinking';
+    petRig.dataset.activity = 'tool';
+    const line = TOOL_LINES[toolIdx++ % TOOL_LINES.length];
+    say(line);
+    statusChip.textContent = line.replace(/。$/, '');
+    statusChip.classList.add('show');
+
+    if(stage.dataset.scene === 'task-live'){
+      const r = document.getElementById('winMain').getBoundingClientRect();
+      const x = r.left + r.width * (0.25 + Math.random()*0.5);
+      const y = r.top + r.height * (0.25 + Math.random()*0.5);
+      const p = stage.getBoundingClientRect();
+      cursor.style.left = (x - p.left - 4) + 'px';
+      cursor.style.top  = (y - p.top - 4) + 'px';
+      cursor.classList.add('show');
+      ripple.style.left = (x - p.left - 7) + 'px';
+      ripple.style.top  = (y - p.top - 7) + 'px';
+      ripple.classList.remove('go'); void ripple.offsetWidth; ripple.classList.add('go');
+    }
+
+    setTimeout(()=>{
+      statusChip.classList.remove('show');
+      avatarRig.dataset.expr = 'neutral';
+      petRig.dataset.activity = 'idle';
+    }, 2400);
+  }
+
+  /* ---- 弹幕 ---- */
+  const DM_POOL = [
+    '主播好','这个能干嘛','帮我查一下天气','能玩游戏吗',
+    '左边那个按钮点一下','好快啊','666','声音好听',
+    '能不能唱歌','任务做到哪了'
+  ];
+  const LANES = [0.16,0.25,0.34,0.43,0.52];
+  let dmLane = 0;
+  function sendDanmaku(text){
+    const el = document.createElement('div');
+    el.className = 'dm';
+    el.textContent = text || DM_POOL[Math.floor(Math.random()*DM_POOL.length)];
+    el.style.top = (LANES[dmLane++ % LANES.length] * 100) + '%';
+    el.style.left = '100%';
+    const dur = 7 + Math.random()*3;
+    el.style.animationDuration = dur + 's';
+    danmaku.appendChild(el);
+    setTimeout(()=>el.remove(), dur*1000 + 200);
+  }
+
+  /* ---- 场景切换 ---- */
+  function setScene(name){
+    stage.dataset.scene = name;
+    tagScene.textContent = SCENE_NAMES[name] || name;
+    document.querySelectorAll('[data-scene]').forEach(b => {
+      b.classList.toggle('active', b.dataset.scene === name);
+    });
+    const intro = {
+      'avatar-full':'大家好，我是言智。今天给你演示一下直播场景。',
+      'pet-full':'你好，我是小柚。有事随时叫我。',
+      'task-live':'现在你看到的是任务实录——我操作应用的过程，左侧会话已打码。',
+      'game-pip':'这局我来玩，弹幕说往哪走就往哪走。',
+      'duo':'我在这，小柚也在。想听谁说就点谁。'
+    }[name] || '';
+    speaker.textContent = name === 'pet-full' ? '小柚' : '言智';
+    typeText(intro);
+  }
+
+  document.querySelectorAll('[data-scene]').forEach(btn=>{
+    btn.addEventListener('click', ()=> setScene(btn.dataset.scene));
+  });
+
+  /* ---- 画幅 ---- */
+  document.querySelectorAll('[data-orient]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const o = btn.dataset.orient;
+      stage.classList.toggle('portrait', o === 'portrait');
+      stage.classList.toggle('landscape', o === 'landscape');
+      document.querySelectorAll('[data-orient]').forEach(b=>b.classList.toggle('active', b.dataset.orient === o));
+      resizeGame();
+    });
+  });
+
+  /* ---- 按钮 ---- */
+  document.getElementById('btn-speak').addEventListener('click', ()=>{
+    const next = !speaking;
+    setSpeaking(next, next ? '这是一段模拟语音，口型由音量包络驱动。' : null);
+    if(!next) document.getElementById('btn-speak').classList.remove('active');
+  });
+  document.getElementById('btn-think').addEventListener('click', setThinking);
+  document.getElementById('btn-tool').addEventListener('click', runTool);
+  document.getElementById('btn-danmaku').addEventListener('click', ()=> sendDanmaku());
+
+  /* ---- 自动演示 ---- */
+  let autoTimer = 0, autoOn = false;
+  const AUTO_SCENES = ['avatar-full','pet-full','task-live','game-pip','duo'];
+  document.getElementById('btn-auto').addEventListener('click', function(){
+    autoOn = !autoOn;
+    this.classList.toggle('active', autoOn);
+    clearInterval(autoTimer);
+    if(autoOn){
+      let i = AUTO_SCENES.indexOf(stage.dataset.scene);
+      autoTimer = setInterval(()=>{
+        i = (i + 1) % AUTO_SCENES.length;
+        setScene(AUTO_SCENES[i]);
+        setTimeout(runTool, 500);
+      }, 4200);
+    }
+  });
+
+  /* ---- 游戏画面 ---- */
+  const cv = document.getElementById('gameCanvas');
+  const ctx = cv.getContext('2d');
+  let gx = 40, gdir = 1, gy = 0, t = 0, coins = [];
+  function resizeGame(){
+    cv.width = 480; cv.height = 270;
+  }
+  function drawGame(){
+    t += 0.016;
+    gx += gdir * 1.4;
+    if(gx > 400){ gdir = -1 } if(gx < 30){ gdir = 1 }
+    gy = Math.abs(Math.sin(t * 3)) * 10;
+
+    // 背景
+    const grad = ctx.createLinearGradient(0,0,0,270);
+    grad.addColorStop(0,'#0d2233'); grad.addColorStop(1,'#071019');
+    ctx.fillStyle = grad; ctx.fillRect(0,0,480,270);
+
+    // 远景山
+    ctx.fillStyle = '#12304a';
+    ctx.beginPath(); ctx.moveTo(0,200); ctx.lineTo(90,140); ctx.lineTo(180,200);
+    ctx.lineTo(290,130); ctx.lineTo(390,200); ctx.lineTo(480,160); ctx.lineTo(480,270); ctx.lineTo(0,270); ctx.fill();
+
+    // 地面
+    ctx.fillStyle = '#1d3f33'; ctx.fillRect(0,225,480,45);
+    ctx.fillStyle = 'rgba(255,255,255,.06)';
+    for(let i=0;i<480;i+=32) ctx.fillRect(i,225,16,3);
+
+    // 金币
+    if(coins.length < 6){
+      coins.push({ x: 480 + Math.random()*120, y: 100 + Math.random()*80 });
+    }
+    coins.forEach(c => c.x -= 2.2);
+    coins = coins.filter(c => c.x > -20);
+    ctx.fillStyle = '#f0c04a';
+    coins.forEach(c => { ctx.beginPath(); ctx.arc(c.x, c.y, 6, 0, Math.PI*2); ctx.fill() });
+
+    // 玩家
+    ctx.fillStyle = '#7ee787';
+    ctx.fillRect(gx, 205 - gy, 22, 22);
+    ctx.fillStyle = '#0b1a12';
+    ctx.fillRect(gx + 14, 210 - gy, 4, 4);
+
+    // 障碍
+    ctx.fillStyle = '#c96b6b';
+    const ox = 480 - (t * 60 % 520);
+    ctx.fillRect(ox, 205, 16, 20);
+
+    // 暂停按钮暗示
+    ctx.fillStyle = 'rgba(255,255,255,.5)';
+    ctx.font = '10px sans-serif';
+    ctx.fillText('AI 代玩 · 30Hz 输入', 12, 18);
+
+    requestAnimationFrame(drawGame);
+  }
+  drawGame();
+
+  /* ---- 初始化 ---- */
+  setScene('avatar-full');
+  setTimeout(()=> sendDanmaku('主播好'), 1200);
+  setTimeout(()=> sendDanmaku('这个能干嘛'), 2600);
+  setTimeout(()=> sendDanmaku('好快啊'), 4200);
+})();
+</script>
+</body>
+</html>

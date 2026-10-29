@@ -235,6 +235,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     selectDisplay: (displayId) => ipcRenderer.invoke('screen-record:select-display', displayId),
     // ★ 直播录屏（2026-10-29）：下一次 getDisplayMedia 抓「本应用窗口」而不是整屏
     selectLiveWindow: () => ipcRenderer.invoke('screen-record:select-live-window'),
+    // ★ 任务实录：下一次 getDisplayMedia 抓指定的窗口/屏幕源
+    selectSource: (sourceId) => ipcRenderer.invoke('screen-record:select-source', sourceId),
     // 渲染层 MediaRecorder 产出的 webm 字节 → 落盘（能转 mp4 就转）：{ ok, file, ext } | { ok:false, error }
     saveBlob: (data, mime) => ipcRenderer.invoke('screen-record:save-blob', { data, mime }),
   },
@@ -248,6 +250,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const h = (_e, p) => cb(p);
       ipcRenderer.on('live-stream:status', h);
       return () => ipcRenderer.removeListener('live-stream:status', h);
+    },
+  },
+
+  // 直播工作区（2026-10-29）：可采集窗口/屏幕清单（主进程已排除本窗口）
+  liveSources: {
+    list: () => ipcRenderer.invoke('live:list-capture-sources'),
+  },
+
+  // 直播游戏画面（2026-10-29）：应用内浏览器当前页的 CDP 帧流（base64 JPEG）
+  liveGame: {
+    start: (opts) => ipcRenderer.invoke('live:game-start', opts),
+    stop: () => ipcRenderer.invoke('live:game-stop'),
+    onFrame: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('live:game-frame', h);
+      return () => ipcRenderer.removeListener('live:game-frame', h);
+    },
+    onStatus: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('live:game-status', h);
+      return () => ipcRenderer.removeListener('live:game-status', h);
     },
   },
 
@@ -344,6 +367,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     paste: (id) => ipcRenderer.invoke('clipboard:panel-paste', String(id || '')),
     // 只写纯文本（去掉富文本格式）
     plain: (id) => ipcRenderer.invoke('clipboard:panel-plain', String(id || '')),
+    // 分组（2026-10-29）：分组定义与 item.groupId 同存 clipboard-history.json，删分组只解绑条目
+    groupCreate: (name) => ipcRenderer.invoke('clipboard:panel-group-create', String(name || '')),
+    groupRename: (id, name) => ipcRenderer.invoke('clipboard:panel-group-rename', String(id || ''), String(name || '')),
+    groupRemove: (id) => ipcRenderer.invoke('clipboard:panel-group-remove', String(id || '')),
+    setGroup: (id, groupId) => ipcRenderer.invoke('clipboard:panel-set-group', String(id || ''), String(groupId || '')),
+    // 标签：主进程负责归一化（去 #、大小写不敏感去重、限 8 个 / 20 字）
+    setTags: (id, tags) => ipcRenderer.invoke('clipboard:panel-set-tags', String(id || ''), Array.isArray(tags) ? tags.map(String) : []),
+    // 单条快捷键：一键写回剪贴板并粘贴；冲突原因由主进程回传（与召唤键/截图/急停/其它条目）
+    setHotkey: (id, accel) => ipcRenderer.invoke('clipboard:panel-set-hotkey', String(id || ''), String(accel || '')),
     // AI 处理：把条目内容 + 预设指令交给当前会话（主窗口切到 /chat 后由聊天输入区消费）
     aiAction: (id, action) => ipcRenderer.invoke('clipboard:panel-ai', String(id || ''), String(action || '')),
     // 多选合并：多条内容 → AI 合并整理（直接发送）/ 发送到会话（只填进输入框）

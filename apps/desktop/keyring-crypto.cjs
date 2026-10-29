@@ -22,7 +22,8 @@ const KEYRING_ENC_PREFIX = 'enc:v1:';
  *   - platform:<id>:apikey：上游 API Key（真正的秘密）
  */
 function isSensitiveKeyringKey(key) {
-  return key === 'license_code' || /^platform:.+:apikey$/.test(key);
+  // live:rtmp:url 里带推流码，等同直播间的写入凭证 —— 按密钥对待
+  return key === 'license_code' || /^platform:.+:apikey$/.test(key) || /^live:rtmp:/.test(key);
 }
 
 /**

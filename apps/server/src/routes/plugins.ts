@@ -360,6 +360,9 @@ const MIME: Record<string, string> = {
   // 插件前端 bundle 与宿主 shim（Web/移动端经 HTTP 装载，P7）
   '.mjs': 'text/javascript', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.map': 'application/json', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
+  // ★ 插件自带页面：桌面窗口直接用 http 打开（与 API 同源）。漏了 html 会 415，
+  //   表现为「插件窗口一片空白 / 打不开」。
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
 };
 
 pluginAssetsRouter.get('/:pluginId/*', (req: Request, res: Response) => {
@@ -376,7 +379,7 @@ pluginAssetsRouter.get('/:pluginId/*', (req: Request, res: Response) => {
     ...builtinPackageDirs().map((root) => path.join(root, pluginId)),
     path.join(BUILTIN_ASSETS_DIR, pluginId),
   ];
-  const TEXTUAL = new Set(['.mjs', '.js', '.css', '.json', '.map']);
+  const TEXTUAL = new Set(['.mjs', '.js', '.css', '.json', '.map', '.html', '.htm']);
   for (const base of candidates) {
     const file = path.join(base, ...relParts);
     if (!file.startsWith(base)) continue; // 双保险：解析后必须仍落在插件目录内

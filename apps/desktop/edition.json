@@ -6,12 +6,18 @@
     "office",
     "dev",
     "ops",
+    "sec",
+    "wf",
+    "clip",
     "shop"
   ],
   "plugins": [
     "office-core",
     "dev-mode",
+    "wf-mode",
+    "clip-mode",
     "ops-shell",
+    "sec-lab",
     "shop-ops",
     "cicd-pipeline",
     "java-suite",
@@ -21,11 +27,7 @@
     "skins",
     "desktop-manager"
   ],
-  "pluginsExcluded": [
-    "wf-mode",
-    "clip-mode",
-    "sec-lab"
-  ],
+  "pluginsExcluded": [],
   "pets": [
     "boba",
     "tiko",
@@ -33,8 +35,13 @@
     "lulu",
     "noir",
     "mallow",
+    "mochi",
+    "calico",
+    "chonk",
+    "tuanzi",
+    "feiyu",
     "shino",
     "sakurada"
   ],
-  "artifactSuffix": "-pro-office-dev-ops-shop"
+  "artifactSuffix": "-pro-office-dev-ops-sec-wf-clip-shop"
 }

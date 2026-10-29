@@ -72,6 +72,12 @@ const PACK_CFG: Record<string, Omit<PackCfg, 'img'>> = {
   lulu: { name: '噜噜', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
   noir: { name: 'Noir', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
   mallow: { name: 'Mallow', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  // 猫系三只（2026-10-29，petdex 社区包，均为 1536×1872 = 8 列 × 9 行）
+  mochi: { name: 'Mochi', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  calico: { name: 'Calico', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  chonk: { name: 'Chonk', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  // 原创团子（2026-10-29，scripts/gen-pet-blob.mjs 程序化生成，红蓝圆滚滚）
+  tuanzi: { name: 'Tuanzi', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
   // 原创大肥鱼（2026-10-29，scripts/gen-pet-whale.mjs 程序化生成，蓝色胖鲸鱼 + 头顶喷水）
   feiyu: { name: 'Feiyu', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
 }

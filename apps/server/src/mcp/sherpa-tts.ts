@@ -198,7 +198,12 @@ export async function installSherpaEngine(
       const dest = path.join(tmp, pkg);
       await fsp.mkdir(dest, { recursive: true });
       // npm 包是 tar.gz，tar 能直接解（Windows 自带 bsdtar 亦支持）
-      const r = await run('tar', ['-xzf', archive, '-C', dest], 300000);
+      // ★ 2026-10-29 实测踩坑：Git Bash 的 GNU tar 把 `C:\Users\...\x.tgz` 当成远程主机
+      //   （host:path 语法）→ "Cannot connect to C: resolve failed"。
+      //   同盘时改成相对路径（没有冒号就不触发远程解析），跨盘才退回绝对路径。
+      const rel = path.relative(process.cwd(), archive);
+      const archiveArg = process.platform === 'win32' && rel && !path.isAbsolute(rel) ? rel : archive;
+      const r = await run('tar', ['-xzf', archiveArg, '-C', dest], 300000);
       if (!r.ok) throw new Error(`${pkg} 解压失败：${r.out.slice(-200)}`);
 
       // tar 内统一是 package/ 前缀 → 搬到 node_modules/<pkg>

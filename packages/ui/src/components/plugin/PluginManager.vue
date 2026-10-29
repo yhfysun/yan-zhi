@@ -99,6 +99,15 @@
             </div>
             <div v-if="p.error" class="pm-error">{{ p.error }}</div>
             <div class="pm-actions">
+              <el-button
+                v-for="w in windowsOf(p)"
+                :key="w.id"
+                size="small"
+                text
+                bg
+                type="primary"
+                @click="openPluginWindow(p, w)"
+              >{{ w.label }}</el-button>
               <el-button size="small" text bg @click="openConfig(p)">配置</el-button>
               <el-button size="small" text bg @click="openDetail(p)">详情</el-button>
               <el-button size="small" text bg @click="onExport(p)">导出</el-button>
@@ -283,8 +292,9 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Document, Upload, Box, Collection, UploadFilled, Share, Mouse } from '@element-plus/icons-vue';
 import { usePluginStore, type PluginInfo } from '../../stores/plugin';
+import { plainRect } from '../../composables/pluginWindowHotkeys';
 import { api } from '../../api/client';
-import type { PluginManifest } from '@yan-zhi/core';
+import type { PluginManifest, PluginWindowContribution } from '@yan-zhi/core';
 
 const pluginStore = usePluginStore();
 const router = useRouter();
@@ -501,6 +511,67 @@ async function toggle(p: PluginInfo) {
       : await pluginStore.enable(p.manifest.id);
   if (err) ElMessage.error(err);
   else ElMessage.success(p.state === 'enabled' ? '已禁用' : '已启用');
+}
+
+/* ---------------- 插件桌面窗口（manifest contributes.windows） ----------------
+ * 宿主只认清单声明：插件自带 HTML 页，基座负责开窗。桌面整理的业务一行都不在这里。 */
+
+/** 宿主是否具备插件窗口能力（web / 移动端没有 electronAPI） */
+const canOpenPluginWindow = computed(
+  () => !!(window as { electronAPI?: { pluginWindow?: unknown } }).electronAPI?.pluginWindow,
+);
+
+/** 本页开过的窗口：`插件id/窗口id` → windowId（同一入口不叠第二个窗口） */
+const openedWindows = new Map<string, string>();
+let windowEventsBound = false;
+
+function bindWindowEvents(): void {
+  if (windowEventsBound) return;
+  const api = (window as { electronAPI?: { pluginWindow?: { on?: (e: string, cb: (p: { windowId: string }) => void) => void } } })
+    .electronAPI?.pluginWindow;
+  if (!api?.on) return;
+  windowEventsBound = true;
+  api.on('closed', ({ windowId }) => {
+    for (const [key, id] of openedWindows) if (id === windowId) openedWindows.delete(key);
+  });
+}
+
+/** 已启用的插件才给按钮：停用的插件被唤起会开出一堆无后端的空壳 */
+function windowsOf(p: PluginInfo): PluginWindowContribution[] {
+  if (p.state !== 'enabled' || !canOpenPluginWindow.value) return [];
+  const list = p.manifest.contributes?.windows;
+  return Array.isArray(list) ? list : [];
+}
+
+async function openPluginWindow(p: PluginInfo, w: PluginWindowContribution): Promise<void> {
+  const api = (window as {
+    electronAPI?: {
+      pluginWindow?: {
+        open: (o: unknown) => Promise<{ ok?: boolean; windowId?: string; error?: string }>;
+        update: (id: string, patch: unknown) => Promise<{ ok?: boolean }>;
+      };
+    };
+  }).electronAPI?.pluginWindow;
+  if (!api) return;
+  bindWindowEvents();
+  const key = `${p.manifest.id}/${w.id}`;
+  const alive = openedWindows.get(key);
+  if (alive) {
+    // 窗口已存在就只叫回来：重复开围栏会各自隐藏/恢复系统图标，两个窗口互相打架
+    const r = await api.update(alive, { visible: true });
+    if (r?.ok !== false) return;
+    openedWindows.delete(key);
+  }
+  const rect = plainRect(w.rect);
+  const r = await api.open({
+    pluginId: p.manifest.id,
+    entry: w.entry,
+    placement: w.placement || 'normal',
+    ...(rect ? { rect } : {}),
+    ...(w.resizable ? { resizable: true } : {}),
+  });
+  if (r?.ok && r.windowId) openedWindows.set(key, r.windowId);
+  else ElMessage.error(`打开「${w.label}」失败：${r?.error || '未知错误'}`);
 }
 
 function downloadBase64(base64: string, filename: string) {

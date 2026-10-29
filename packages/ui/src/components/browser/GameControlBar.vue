@@ -16,6 +16,8 @@
     <span class="state">{{ stateText }}</span>
 
     <button class="gb-btn" :disabled="busy" @click="readState">读状态</button>
+    <button class="gb-btn" :disabled="busy" title="关掉挡住画面的礼包/公告/充值弹窗（开跑前也会自动关）"
+            @click="dismissPopups">关弹窗</button>
     <span class="readout" :title="readout">{{ readout }}</span>
 
     <span class="spacer"></span>
@@ -29,13 +31,23 @@
 
     <button class="gb-btn" :disabled="!cw || busy" :title="pinned ? '取消置顶，别挡住其它应用' : '置顶，切到别的应用也不被遮住'"
             @click="togglePin">{{ pinned ? '取消置顶' : '置顶' }}</button>
+    <!-- 显式移交（仅游戏窗）：把这一页交给智能体代玩，agent 才操作得到它 -->
+    <button v-if="isGame" class="gb-btn gb-btn--handoff" :class="{ on: handoffOn }"
+            :disabled="busy || handoffBusy"
+            :title="handoffOn ? '结束代玩，agent 不再操作这一页（页面不会被关闭）' : '把当前这一页交给主窗口的智能体代玩'"
+            @click="toggleHandoff">{{ handoffOn ? '收回代玩' : '交给智能体代玩' }}</button>
     <button class="gb-stop" :disabled="busy" @click="panic">急停 Esc</button>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { parseKeySequence } from '../../utils/gamePlan';
+
+/** 游戏窗传 'game'，主窗口 /browser 传 'page' —— 两边 tab 空间不能串 */
+const props = withDefaults(defineProps<{ scope?: string }>(), { scope: 'page' });
+const isGame = computed(() => props.scope === 'game');
+const wantScope = computed(() => (props.scope === 'game' ? 'game' : 'page'));
 
 interface ObserveResult {
   engines?: string[];
@@ -65,12 +77,17 @@ const hasError = ref(false);
 /** 按键序列（语法见 title 与 parseKeySequence） */
 const seq = ref('Down,Left');
 const rounds = ref(10);
+/** 显式移交状态（主进程是唯一真相源，广播驱动） */
+const handoffOn = ref(false);
+const handoffBusy = ref(false);
+const handoffTabId = ref('');
+let offHandoff: (() => void) | undefined;
 
 const dotClass = computed(() => (busy.value ? 'busy' : hasError.value ? 'err' : 'ok'));
 
 async function activeTabId(): Promise<string | number | null> {
   try {
-    const r = await api.ensureActiveTab('page');
+    const r = await api.ensureActiveTab(wantScope.value);
     // ★ 主进程的 ensureActiveTab 可能直接返回 tabId 字符串（'tab-1'），也可能返回对象 ——
     //   只认 r.tabId 会让这里恒为 null（实测：执行条一直显示"还没有打开页面"）。
     if (typeof r === 'string' || typeof r === 'number') return r;
@@ -103,6 +120,25 @@ async function readState() {
 }
 
 /**
+ * 关弹窗：礼包/公告/充值弹窗会挡住画面、吞掉按键。
+ * 主进程只点「关闭/知道了/跳过/稍后/取消/×」这类小按钮，不会点领取/购买。
+ */
+async function dismissPopups(): Promise<number> {
+  if (!api) return 0;
+  try {
+    const id = await activeTabId();
+    if (id == null) return 0;
+    const r = await api.action(id, 'dismiss_overlays', {});
+    const n = Number(r && r.closed) || 0;
+    readout.value = n ? `已关闭 ${n} 个弹窗：${(r.closed_labels || []).join(' / ')}` : '没有找到可关闭的弹窗';
+    return n;
+  } catch (e: any) {
+    readout.value = String(e?.message || e).slice(0, 120);
+    return 0;
+  }
+}
+
+/**
  * 一键开跑：把「按键序列 + 轮数」变成一次 run_loop 调用。
  * 一次调用跑完整段是硬要求 —— 逐步调用每步都有 IPC 往返与页面稳定等待，
  * 而 run_script 同页 22 次就熔断，一局游戏撑不过十几步。
@@ -122,6 +158,10 @@ async function runPlan() {
   try {
     const id = await activeTabId();
     if (id == null) { stateText.value = '还没有打开页面'; readout.value = '先在上方地址栏输入网址'; hasError.value = true; return; }
+    // 开跑前先关弹窗（主进程 run_loop 也会做一次；这里显式调一次是为了在 UI 上给回执）
+    let closed = 0;
+    try { const d = await api.action(id, 'dismiss_overlays', {}); closed = Number(d && d.closed) || 0; } catch { /* 不阻断开跑 */ }
+    if (closed) readout.value = `已关 ${closed} 个弹窗 · ${parsed.steps.length} 个动作/轮`;
     const r: LoopResult = await api.action(id, 'run_loop', {
       steps: parsed.steps,
       rounds: n,
@@ -169,7 +209,67 @@ async function panic() {
 onMounted(async () => {
   if (!api) { stateText.value = '仅桌面端可用'; hasError.value = true; return; }
   try { pinned.value = !!(await cw?.isAlwaysOnTop?.()); } catch { /* 老版本主进程无此接口 */ }
+  // 移交状态：先拉一次（可能在本组件挂载前就开始代玩了），再订阅广播
+  try {
+    const st = await api.getHandoff?.();
+    if (st && st.on) { handoffOn.value = true; handoffTabId.value = String(st.tabId || ''); }
+  } catch { /* 老版本主进程无此接口 */ }
+  try {
+    offHandoff = api.onHandoff?.((p: any) => {
+      handoffOn.value = !!(p && p.on);
+      handoffTabId.value = String((p && p.tabId) || '');
+    });
+  } catch { /* ignore */ }
 });
+
+onBeforeUnmount(() => { try { offHandoff?.(); } catch { /* ignore */ } });
+
+/**
+ * 显式移交：把游戏窗当前这一页交给主窗口的智能体。
+ * ★ 必须由用户点这个按钮 —— 游戏窗的页不在 agent 的 preview 执行面里，
+ *   不显式移交的话 agent 会另开一页（看的那页 ≠ 操作的那页）。
+ */
+async function toggleHandoff() {
+  if (!api) return;
+  handoffBusy.value = true;
+  hasError.value = false;
+  try {
+    if (handoffOn.value) {
+      const r = await api.handoffRelease?.({ tabId: handoffTabId.value || undefined, reason: 'user' });
+      if (r && r.ok === false) {
+        stateText.value = '收回失败';
+        readout.value = String(r.error || '').slice(0, 120);
+        hasError.value = true;
+      } else {
+        stateText.value = '已收回代玩';
+        readout.value = '智能体不再操作这一页；页面保持打开';
+      }
+    } else {
+      const id = await activeTabId();
+      if (id == null) {
+        stateText.value = '还没有打开页面';
+        readout.value = '先在上方地址栏输入网址，再点「交给智能体代玩」';
+        hasError.value = true;
+        return;
+      }
+      const r = await api.handoff?.({ tabId: id });
+      if (!r || r.ok === false) {
+        stateText.value = '移交失败';
+        readout.value = String((r && r.error) || '未知原因').slice(0, 120);
+        hasError.value = true;
+      } else {
+        stateText.value = '已交给智能体';
+        readout.value = '回到主窗口发指令即可代玩；结束后点「收回代玩」';
+      }
+    }
+  } catch (e: any) {
+    stateText.value = '移交异常';
+    readout.value = String(e?.message || e).slice(0, 120);
+    hasError.value = true;
+  } finally {
+    handoffBusy.value = false;
+  }
+}
 
 /** 置顶开关：默认关——切到别的应用时不该一直挡在前面 */
 async function togglePin() {
@@ -217,6 +317,9 @@ async function togglePin() {
 .gb-btn:disabled, .gb-stop:disabled { opacity: .5; cursor: default; }
 .gb-btn--go { border-color: #2f6e55; background: #0e1b17; color: #7fd4a8; }
 .gb-btn--go:hover:not(:disabled) { background: #12241e; }
+.gb-btn--handoff { border-color: #3a4a66; background: #101826; color: #9db7e0; }
+.gb-btn--handoff:hover:not(:disabled) { background: #152133; }
+.gb-btn--handoff.on { border-color: #7a5a2a; background: #2a2012; color: #e8c07a; }
 .gb-stop { border-color: #5c2b2b; background: #2a1618; color: #ff8d80; }
 .gb-stop:hover:not(:disabled) { background: #3a1c1e; }
 </style>

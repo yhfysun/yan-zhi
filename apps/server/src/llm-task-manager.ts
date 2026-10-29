@@ -10,6 +10,7 @@ import { db, MESSAGE_LIST_COLS, getLatestMessageSummary, loadEffectiveTaskTypes 
 import { resolvePool, resolveFailoverChain, resolveFirstModel, selectSubAgentModelIdPriority, SLOTS, type Slot } from './services/model-pools.js';
 import { shouldRetryStatus, TOKEN_DEAD_PLATFORM_IDS_SQL } from './services/token-pool.js';
 import { normalizePermissionMode, checkToolPermission, filterToolsByPermission, permissionModePrompt, checkWorkflowPermission, parseToolAuthResult, type PermissionMode } from './tool-permission.js';
+import { checkLiveTool, isLiveMode } from './live-mode.js';
 // ★ 安装类资源强制确认（2026-10-22）：任何权限模式都要问，与只读授权闸分离
 import { getInstaller } from './services/installer-registry.js';
 import { humanBytes } from '@yan-zhi/shared';
@@ -5154,6 +5155,16 @@ async function executeTool(
   if (toolName === 'install_resource') {
     const confirmed = await confirmResourceInstall(task, args);
     if (!confirmed.ok) return confirmed.message;
+  }
+
+  // ★ 直播模式（2026-10-29）：观众输入不可信 → 白名单外的工具硬拒绝，**不走授权弹卡**。
+  //   必须放在权限闸之前：readonly 的语义是"可以申请授权"，直播时等于把同意按钮递给了不可信输入。
+  if (isLiveMode()) {
+    const live = checkLiveTool(toolName);
+    if (!live.allowed) {
+      logger.warn(`[live] 直播模式拦截: conv=${task.conversationId} tool=${toolName}`);
+      return live.reason;
+    }
   }
 
   const perm = checkToolPermission(task.permissionMode || 'readonly', toolName);

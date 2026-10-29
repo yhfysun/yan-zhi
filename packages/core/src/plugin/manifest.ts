@@ -78,4 +78,56 @@ function validateOptionalFields(o: Record<string, unknown>): void {
       throw new ManifestError("contributes.mode.chatPlacement 只允许 'center' | 'side'");
     }
   }
+  validateWindows(contributes?.windows);
+}
+
+const WINDOW_PLACEMENTS = ['desktop', 'overlay', 'normal'];
+
+/**
+ * contributes.windows：插件桌面窗口声明。
+ * 入口一律按插件包内相对路径处理（绝对路径、`..`、非 html 一律拒绝）——
+ * 宿主会把 entry 交给 pluginWindow 解析，这里先挡住明显越界，安装期就报错。
+ */
+function validateWindows(windows: unknown): void {
+  if (windows === undefined) return;
+  if (!Array.isArray(windows)) throw new ManifestError('contributes.windows 必须为数组');
+  const seen = new Set<string>();
+  for (const w of windows) {
+    if (!w || typeof w !== 'object') throw new ManifestError('contributes.windows[] 必须为对象');
+    const o = w as Record<string, unknown>;
+    if (typeof o.id !== 'string' || !/^[a-z][a-z0-9-]*$/.test(o.id)) {
+      throw new ManifestError(`窗口 id 必须为 kebab-case，收到: ${String(o.id)}`);
+    }
+    if (seen.has(o.id)) throw new ManifestError(`窗口 id 重复: ${o.id}`);
+    seen.add(o.id);
+    if (typeof o.label !== 'string' || !o.label) throw new ManifestError(`窗口 ${o.id} 缺 label`);
+    const entry = typeof o.entry === 'string' ? o.entry : '';
+    if (!entry || entry.startsWith('/') || entry.includes('..') || !/\.html?$/i.test(entry)) {
+      throw new ManifestError(`窗口 ${o.id} 的 entry 必须是插件包内相对 html 路径，收到: ${String(o.entry)}`);
+    }
+    if (o.placement !== undefined && !WINDOW_PLACEMENTS.includes(String(o.placement))) {
+      throw new ManifestError(`窗口 ${o.id} 的 placement 只允许 ${WINDOW_PLACEMENTS.join(' | ')}`);
+    }
+    if (o.accelerator !== undefined && (typeof o.accelerator !== 'string' || !o.accelerator.trim())) {
+      throw new ManifestError(`窗口 ${o.id} 的 accelerator 必须为非空字符串`);
+    }
+    if (o.resizable !== undefined && typeof o.resizable !== 'boolean') {
+      throw new ManifestError(`窗口 ${o.id} 的 resizable 必须为布尔值`);
+    }
+    if (o.menu !== undefined && typeof o.menu !== 'boolean') {
+      throw new ManifestError(`窗口 ${o.id} 的 menu 必须为布尔值`);
+    }
+    if (o.icon !== undefined && (typeof o.icon !== 'string' || !o.icon)) {
+      throw new ManifestError(`窗口 ${o.id} 的 icon 必须为非空字符串`);
+    }
+    if (o.rect !== undefined) {
+      if (!o.rect || typeof o.rect !== 'object' || Array.isArray(o.rect)) {
+        throw new ManifestError(`窗口 ${o.id} 的 rect 必须为对象`);
+      }
+      for (const [k, v] of Object.entries(o.rect as Record<string, unknown>)) {
+        if (!['x', 'y', 'w', 'h'].includes(k)) throw new ManifestError(`窗口 ${o.id} 的 rect 只支持 x/y/w/h，收到: ${k}`);
+        if (v !== undefined && !Number.isFinite(Number(v))) throw new ManifestError(`窗口 ${o.id} 的 rect.${k} 必须为数字`);
+      }
+    }
+  }
 }

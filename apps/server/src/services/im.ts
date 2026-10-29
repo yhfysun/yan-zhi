@@ -654,7 +654,7 @@ export function parseFeishuInbound(body: any): ParsedFeishuInbound {
 }
 
 /** 取用户默认模型（is_default=1 优先，否则最早启用的模型），返回 platformId + modelId */
-function getDefaultModel(userId: string): { platformId: string; modelId: string } | null {
+export function getDefaultModel(userId: string): { platformId: string; modelId: string } | null {
   let row = db.prepare(
     'SELECT id, platform_id FROM model WHERE user_id = ? AND enabled = 1 AND is_default = 1 ORDER BY created_at ASC LIMIT 1',
   ).get(userId) as any;

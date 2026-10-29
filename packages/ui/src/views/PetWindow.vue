@@ -17,7 +17,7 @@
           :state="state"
           :action="action"
           :pack="settings.pack"
-          :scale="settings.scale"
+          :scale="effectiveScale"
           :walking="walking"
           :flip="facingLeft"
           :active="renderActive"
@@ -27,7 +27,7 @@
           v-if="useVrm3d"
           :state="state"
           :action="action"
-          :scale="settings.scale"
+          :scale="effectiveScale"
           :walking="walking"
           :flip="facingLeft"
           :active="renderActive"
@@ -51,6 +51,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Pet2D from '../components/pet/Pet2D.vue'
 import { loadUserPacks, userPacks } from '../components/pet/user-packs'
+import { PET_PACKS } from '../components/pet/pet-assets'
 import Pet3D from '../components/pet/Pet3D.vue'
 import {
   usePetStore,
@@ -76,6 +77,15 @@ const renderVisible = computed(() => winVisible.value)
 const renderActive = computed(() => winVisible.value && winFocused.value)
 const facingLeft = computed(() => walking.value && walkDir.value < 0)
 
+/**
+ * 代玩避让（2026-10-29）：智能体代玩游戏时主进程把窗缩到 0.7 并挪到右下角。
+ * ★ 只缩窗口不改渲染 scale 会把形象裁切 —— 所以渲染层也要按 dockScale 画。
+ *   docked 时不写 settings/localStorage：退出后原缩放原样恢复。
+ */
+const docked = ref(false)
+const dockScale = ref(0.7)
+const effectiveScale = computed(() => (docked.value ? dockScale.value : settings.value.scale))
+
 /** 3D 形象：VRM 字节（null = 程序化素模） */
 const vrmBuffer = ref<ArrayBuffer | null>(null)
 const vrmError = ref('')
@@ -94,7 +104,7 @@ const show2d = computed(
 /** 3D 要一个明确取景框；窗口本身就是宠物大小，这里给 canvas 尺寸 */
 const bodyStyle = computed(() => {
   if (settings.value.renderer !== '3d') return {}
-  const s = settings.value.scale || 1
+  const s = effectiveScale.value || 1
   return { width: Math.round(190 * s) + 'px', height: Math.round(280 * s) + 'px' }
 })
 
@@ -179,8 +189,8 @@ function onCommand(cmd: any) {
   if (!cmd || !cmd.type) return
   if (cmd.type === 'play' && cmd.key) return play(String(cmd.key))
   if (cmd.type === 'cycle-pack') {
-    // 换形象：设置里改，主窗与宠物窗通过 IPC 同步
-    const packs = ['boba', 'tiko', 'wangcai', 'lulu', 'noir', 'mallow']
+    // 换形象：从随包清单派生（此前硬编码 6 个 id，新增形象不会进循环 —— 典型漂移）
+    const packs = PET_PACKS.length ? PET_PACKS.map((p) => p.id) : ['boba']
     const next = packs[(packs.indexOf(settings.value.pack) + 1) % packs.length]
     store.update({ pack: next, renderer: '2d' })
     return
@@ -243,11 +253,11 @@ const IDLE_WALK_MIN = 9000
 const IDLE_WALK_MAX = 20000
 let strollTimer = 0
 function canStroll() {
-  return settings.value.walk && state.value === 'idle' && !action.value && !walking.value && !dragging
+  return settings.value.walk && state.value === 'idle' && !action.value && !walking.value && !dragging && !docked.value
 }
 function scheduleStroll() {
   window.clearTimeout(strollTimer)
-  if (!settings.value.walk) return
+  if (!settings.value.walk || docked.value) return
   const delay = IDLE_WALK_MIN + Math.random() * (IDLE_WALK_MAX - IDLE_WALK_MIN)
   strollTimer = window.setTimeout(() => {
     if (!canStroll()) return scheduleStroll()
@@ -259,7 +269,7 @@ function stopWalk() {
   walking.value = false
 }
 watch(
-  () => [state.value, action.value, settings.value.walk],
+  () => [state.value, action.value, settings.value.walk, docked.value],
   () => {
     if (!canStroll()) stopWalk()
     scheduleStroll()
@@ -306,6 +316,11 @@ onMounted(() => {
     if (payload?.pack && !userPacks[payload.pack]) void loadUserPacks()
   })
   offCmd = api()?.onCommand?.(onCommand)
+  // 代玩避让：主进程缩窗/挪位后同步渲染缩放（只改窗口不改渲染会裁切形象）
+  offDock = api()?.onDockState?.((p: any) => {
+    docked.value = !!(p && p.on)
+    if (p && p.scale) dockScale.value = Number(p.scale) || 0.7
+  })
   offWalk = api()?.onWalkState?.((p: any) => {
     const wasWalking = walking.value
     walking.value = !!(p && p.walking)
@@ -327,6 +342,7 @@ onMounted(() => {
 
 let offWalk: (() => void) | undefined
 let offWin: (() => void) | undefined
+let offDock: (() => void) | undefined
 onBeforeUnmount(() => {
   window.removeEventListener('pointermove', onHover, true)
   window.removeEventListener('pointermove', onDragMove, true)
@@ -336,6 +352,7 @@ onBeforeUnmount(() => {
   offCmd?.()
   offWalk?.()
   offWin?.()
+  offDock?.()
   vrmSeq++
   window.clearTimeout(actionTimer)
   window.clearTimeout(strollTimer)

@@ -21,6 +21,10 @@ const YZ_SCHEME_PRIVILEGES = {
 };
 
 const MIME = {
+  // ★ .html 必须在表里：缺了就回落 application/octet-stream，Chromium 把插件窗口页
+  //   当"下载"处理，loadURL 直接 ERR_FAILED(-2)（2026-10-29 插件桌面窗口实测）。
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
   '.mjs': 'text/javascript',
   '.js': 'text/javascript',
   '.css': 'text/css',

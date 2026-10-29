@@ -572,6 +572,10 @@ const pluginWindowEvents = (window as {
 }).electronAPI?.pluginWindow;
 const offWindowOpened = pluginWindowEvents?.on?.('opened', (p) => {
   if (!p?.hotkey) return;
+  if (p.fallback) {
+    ElMessage.warning('桌面层不可用，已用普通窗口打开围栏');
+    return;
+  }
   ElMessage.success(p.placement === 'desktop'
     ? '桌面围栏已打开：最小化本应用就能看到桌面'
     : '已打开');

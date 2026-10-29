@@ -40,6 +40,42 @@
   input:focus, select:focus, textarea:focus { border-color: rgba(110,140,255,.6); }
   textarea { min-height: 74px; resize: vertical; line-height: 1.5; }
   .hint { font-size: 11.5px; color: #7d889c; line-height: 1.6; }
+
+  /* 自绘下拉（默认策略）：暗色主题下不用原生 select 的弹层 */
+  .sel { position: relative; flex: 1; min-width: 0; }
+  .sel-btn {
+    width: 100%; display: flex; align-items: center; gap: 10px; text-align: left;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 8px; padding: 7px 10px; color: #e6ecf8;
+  }
+  .sel-btn:hover { background: rgba(255,255,255,.1); }
+  .sel.open .sel-btn { border-color: rgba(110,140,255,.65); background: rgba(255,255,255,.09); }
+  .sel-name { font-size: 12.5px; font-weight: 600; color: #eef3ff; flex: none; }
+  .sel-desc { flex: 1; min-width: 0; font-size: 11.5px; color: #8d99ad; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sel-caret {
+    width: 7px; height: 7px; flex: none; margin-right: 3px;
+    border-right: 1.5px solid #9aa6ba; border-bottom: 1.5px solid #9aa6ba;
+    transform: rotate(45deg) translate(-2px,-2px); transition: transform .15s ease;
+  }
+  .sel.open .sel-caret { transform: rotate(-135deg) translate(-1px,-1px); }
+  .sel-menu {
+    position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 20;
+    display: none; padding: 5px; border-radius: 10px;
+    background: #1b2230; border: 1px solid rgba(255,255,255,.12);
+    box-shadow: 0 14px 34px rgba(0,0,0,.45);
+  }
+  .sel.open .sel-menu { display: block; }
+  .sel-opt {
+    display: flex; align-items: baseline; gap: 9px; padding: 8px 10px;
+    border-radius: 7px; cursor: pointer;
+  }
+  .sel-opt:hover { background: rgba(122,150,255,.16); }
+  .sel-opt .t { font-size: 12.5px; color: #e6ecf8; flex: none; }
+  .sel-opt .d { font-size: 11.5px; color: #8d99ad; }
+  .sel-opt .tick { margin-left: auto; font-size: 12px; color: #7ea0ff; opacity: 0; }
+  .sel-opt[aria-selected="true"] { background: rgba(122,150,255,.2); }
+  .sel-opt[aria-selected="true"] .t { color: #fff; }
+  .sel-opt[aria-selected="true"] .tick { opacity: 1; }
   .list { border: 1px solid rgba(255,255,255,.08); border-radius: 10px; overflow: hidden; }
   .item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,.06); }
   .item:last-child { border-bottom: 0; }
@@ -62,10 +98,19 @@
       <h3>整理</h3>
       <div class="row">
         <label>默认策略</label>
-        <select id="strategy">
-          <option value="rules">规则整理（不调用大模型）</option>
-          <option value="ai">AI 整理（规则打底 + 模型补充）</option>
-        </select>
+        <!-- 自绘下拉：原生 <select> 的弹出层跟系统主题走，暗色页面上会出现白底浅字看不清 -->
+        <div class="sel" id="strategySel">
+          <button type="button" class="sel-btn" id="strategyBtn" aria-haspopup="listbox" aria-expanded="false">
+            <span class="sel-name" id="strategyName">规则整理</span>
+            <span class="sel-desc" id="strategyDesc">纯本地规则，不调用大模型</span>
+            <span class="sel-caret"></span>
+          </button>
+          <div class="sel-menu" id="strategyMenu" role="listbox" aria-label="默认策略"></div>
+        </div>
+      </div>
+      <div class="row">
+        <label></label>
+        <p class="hint" style="margin:0">AI 整理需要平台里已配置可用的模型；不可用时自动回落规则模式，不会产出半截方案。</p>
       </div>
       <div class="row">
         <label>目标目录前缀</label>

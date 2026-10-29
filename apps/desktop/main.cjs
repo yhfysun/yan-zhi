@@ -11718,20 +11718,27 @@ ipcMain.handle('shortcut:setPanic', (_e, accel) => setPanicHotkey(accel));
 // ============================================================
 const cryptoMod = require('crypto');
 const { pathToFileURL } = require('url');
+// 纯数据变换(分组名/标签归一化、超期清理):单独成模块才能被 node --test 覆盖。
+const clipStore = require('./clipboard-store.cjs');
 const CLIP_DEFAULT_ACCEL = 'Control+Alt+V';
 const CLIP_MAX_TEXT = 100 * 1024;      // 单条文本上限(字符):更大的内容只留前 100KB,避免 JSON 膨胀
 const CLIP_MAX_HTML = 256 * 1024;     // 富文本上限:超了只存纯文本
 const CLIP_POLL_MS = 600;
+const CLIP_CLEANUP_MS = 60 * 60 * 1000; // 超期清理:每小时跑一次(启动时也先跑一次)
 const clipHotkey = { current: null };
 let clipPanelWindow = null;
 let clipDragSuspended = false;
 let clipWatcherTimer = null;
+let clipCleanupTimer = null;
 let clipLastHash = '';
 /** 面板把历史写回剪贴板后的静默期:采集器在这段时间内跳过,
  *  否则"粘贴旧条目 → 被当成新复制"会反复刷新顺序 / 图片重新编码后还会产生重复条目。 */
 let clipSuppressUntil = 0;
 let clipConfigCache = null;
-let clipItemsCache = null;
+/** 历史文件缓存:{ groups, items } —— 分组定义与条目同文件(clipboard-history.json v2) */
+let clipHistoryCache = null;
+/** 单条快捷键:id → { accel, holder }。holder 是 setGlobalHotkey 需要的 { current } 载体 */
+const clipItemHotkeys = new Map();
 let clipPersistTimer = null;
 let clipPosTimer = null;
 
@@ -11765,6 +11772,12 @@ function loadClipConfig() {
     capture: { text: cap.text !== false, image: cap.image !== false, file: cap.file !== false },
     skipSensitive: saved.skipSensitive !== false,
     maxItems: Number(saved.maxItems) > 0 ? Math.min(5000, Number(saved.maxItems)) : 500,
+    // 保留天数:0 = 永久(默认)。★ 默认不清理 —— 自动删用户历史必须是显式选择,
+    //   否则老用户升级后第一次启动就会丢数据。
+    retentionDays: (() => {
+      const n = Number(saved.retentionDays);
+      return Number.isFinite(n) && n > 0 ? Math.min(3650, Math.floor(n)) : 0;
+    })(),
     pos: saved.pos && Number.isFinite(saved.pos.x) && Number.isFinite(saved.pos.y) ? { x: saved.pos.x, y: saved.pos.y } : null,
   };
   return clipConfigCache;
@@ -11773,19 +11786,33 @@ function persistClipConfig() {
   if (clipConfigCache) clipWriteJson(clipConfigPath(), clipConfigCache);
 }
 
-function loadClipItems() {
-  if (clipItemsCache) return clipItemsCache;
+/**
+ * 历史文件(v2):{ version, groups, items }。
+ * 分组定义与条目放同一个文件 —— 用户视角是"把东西收进自己建的分组",
+ * 拆成两个文件只会让"删分组/清空历史"出现两处不一致。
+ * 兼容 v1(只有 items):缺 groups 就当空数组。
+ */
+function loadClipHistory() {
+  if (clipHistoryCache) return clipHistoryCache;
   const saved = clipReadJson(clipHistoryPath(), {}) || {};
   const list = Array.isArray(saved.items) ? saved.items : [];
-  // 只留结构完整的条目(字段缺失的脏数据直接丢弃,不让面板拿半条数据炸渲染)
-  clipItemsCache = list.filter((it) => it && typeof it.id === 'string' && typeof it.kind === 'string');
-  return clipItemsCache;
+  const groups = Array.isArray(saved.groups) ? saved.groups : [];
+  clipHistoryCache = {
+    // 只留结构完整的条目(字段缺失的脏数据直接丢弃,不让面板拿半条数据炸渲染)
+    items: list.filter((it) => it && typeof it.id === 'string' && typeof it.kind === 'string'),
+    groups: groups
+      .filter((g) => g && typeof g.id === 'string' && typeof g.name === 'string' && g.name)
+      .map((g) => ({ id: g.id, name: String(g.name), createdAt: Number(g.createdAt) || Date.now() })),
+  };
+  return clipHistoryCache;
 }
+function loadClipItems() { return loadClipHistory().items; }
+function loadClipGroups() { return loadClipHistory().groups; }
 function scheduleClipPersist() {
   if (clipPersistTimer) clearTimeout(clipPersistTimer);
   clipPersistTimer = setTimeout(() => {
     clipPersistTimer = null;
-    clipWriteJson(clipHistoryPath(), { version: 1, items: loadClipItems() });
+    clipWriteJson(clipHistoryPath(), { version: 2, groups: loadClipGroups(), items: loadClipItems() });
   }, 300);
 }
 function clipNotifyPanel() {
@@ -11827,6 +11854,13 @@ function clipHash(parts) {
   return h.digest('hex');
 }
 
+/** 丢弃条目带来的副作用:删图片资产 + 注销该条目的全局快捷键 */
+function discardClipItem(it) {
+  if (!it) return;
+  if (it.imageFile) { try { fs.unlinkSync(it.imageFile); } catch { /* 已被手动删除 */ } }
+  if (it.id) unregisterClipItemHotkey(it.id);
+}
+
 /** 上限淘汰:只淘汰非置顶的最旧条目,并清理图片资产 */
 function pruneClipItems(items) {
   const max = loadClipConfig().maxItems;
@@ -11834,8 +11868,166 @@ function pruneClipItems(items) {
   for (let i = items.length - 1; i >= 0 && items.length > max; i--) {
     if (items[i].pinned) continue;
     const [gone] = items.splice(i, 1);
-    if (gone && gone.imageFile) { try { fs.unlinkSync(gone.imageFile); } catch { /* 已被手动删除 */ } }
+    discardClipItem(gone);
   }
+}
+
+/**
+ * 保留时长清理(2026-10-29):只清非置顶条目,置顶永久保留。
+ * 纯判定在 clipboard-store.pruneByAge;这里负责副作用(删图片、注销快捷键、落盘、通知面板)。
+ */
+function cleanupClipByAge() {
+  const days = loadClipConfig().retentionDays;
+  if (!(days > 0)) return 0;
+  const { kept, removed } = clipStore.pruneByAge(loadClipItems(), days, Date.now());
+  if (!removed.length) return 0;
+  for (const it of removed) discardClipItem(it);
+  const items = loadClipItems();
+  items.length = 0;
+  items.push(...kept);
+  scheduleClipPersist();
+  clipNotifyPanel();
+  console.log('[clipboard] 超期清理', removed.length, '条（保留', days, '天，置顶不动）');
+  return removed.length;
+}
+function startClipCleanup() {
+  if (clipCleanupTimer) return;
+  try { cleanupClipByAge(); } catch (e) { console.warn('[clipboard] 启动清理失败:', e && e.message); }
+  clipCleanupTimer = setInterval(() => {
+    try { cleanupClipByAge(); } catch (e) { console.warn('[clipboard] 定期清理失败:', e && e.message); }
+  }, CLIP_CLEANUP_MS);
+}
+
+/* ===== 分组与标签(2026-10-29,P2) ===== */
+function clipNewId(prefix) {
+  return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+/** 分组列表 + 每组条数 + 未分组条数(面板筛选与右键菜单都读这一份) */
+function clipGroupPayload() {
+  const groups = loadClipGroups().map((g) => ({ ...g, count: 0 }));
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  let ungrouped = 0;
+  for (const it of loadClipItems()) {
+    const g = it.groupId ? byId.get(it.groupId) : null;
+    if (g) g.count++; else ungrouped++;
+  }
+  return { groups, ungrouped };
+}
+function clipGroupNameTaken(name, exceptId) {
+  const low = name.toLowerCase();
+  return loadClipGroups().some((g) => g.id !== exceptId && g.name.toLowerCase() === low);
+}
+
+/* ===== 单条快捷键(2026-10-29,P2) ===== */
+/** 条目在人话里的短标识(冲突提示要能认出是哪一条) */
+function clipItemPreview(it) {
+  if (!it) return '';
+  if (it.kind === 'image') return '剪贴板图片';
+  if (it.kind === 'file' && Array.isArray(it.files) && it.files.length) {
+    return String(it.files[0]).split(/[\\/]/).pop() || '文件';
+  }
+  const t = String(it.text || '').replace(/\s+/g, ' ').trim();
+  return t.length > 12 ? t.slice(0, 12) + '…' : t;
+}
+
+/** 与其它全局键的冲突判定:截图 / AI 急停 / 面板召唤 / 其它条目 */
+function clipHotkeyConflict(accel, selfId) {
+  const low = accel.toLowerCase();
+  const reserved = [
+    { name: '截图', accel: shotHotkey.current },
+    { name: 'AI 急停', accel: panicHotkey.current },
+    { name: '剪贴板召唤', accel: clipHotkey.current },
+  ];
+  for (const o of reserved) {
+    if (o.accel && o.accel.toLowerCase() === low) return `与「${o.name}」快捷键相同，请换一个组合`;
+  }
+  for (const [id, entry] of clipItemHotkeys) {
+    if (id === selfId) continue;
+    if (entry.accel && entry.accel.toLowerCase() === low) {
+      const it = loadClipItems().find((x) => x.id === id);
+      return `已被「${clipItemPreview(it) || '其它条目'}」使用`;
+    }
+  }
+  return '';
+}
+
+function unregisterClipItemHotkey(id) {
+  const entry = clipItemHotkeys.get(id);
+  if (!entry) return;
+  try { if (entry.holder.current) globalShortcut.unregister(entry.holder.current); } catch { /* 已注销 */ }
+  clipItemHotkeys.delete(id);
+}
+
+/**
+ * 注册/替换一条的快捷键(accel 为空串 = 取消该条快捷键)。
+ * ★ 仍走 setGlobalHotkey:与截图/急停/召唤键同一套"注册失败回传原因"的语义;
+ *   每个条目一个独立 holder,互不覆盖。注册失败时把旧键恢复回来 ——
+ *   否则用户改坏一次,这条就永远没有快捷键了。
+ */
+function registerClipItemHotkey(id, accel) {
+  const target = String(accel || '').trim();
+  if (target) {
+    const conflict = clipHotkeyConflict(target, id);
+    if (conflict) return { ok: false, accelerator: target, error: conflict };
+  }
+  const prev = clipItemHotkeys.get(id);
+  if (prev) {
+    try { if (prev.holder.current) globalShortcut.unregister(prev.holder.current); } catch { /* ignore */ }
+    clipItemHotkeys.delete(id);
+  }
+  if (!target) return { ok: true, accelerator: '' };
+  const holder = { current: null };
+  const res = setGlobalHotkey(holder, target, () => { void pasteClipItemByHotkey(id); }, '条目');
+  if (!res.ok) {
+    if (prev && prev.accel) {
+      const back = { current: null };
+      const r2 = setGlobalHotkey(back, prev.accel, () => { void pasteClipItemByHotkey(id); }, '条目');
+      if (r2.ok) clipItemHotkeys.set(id, { accel: prev.accel, holder: back });
+    }
+    return res;
+  }
+  clipItemHotkeys.set(id, { accel: target, holder });
+  return { ok: true, accelerator: target };
+}
+
+/** 启动时把历史里存着的单条快捷键全部重新注册(重启后仍然生效) */
+function syncClipItemHotkeys() {
+  for (const it of loadClipItems()) {
+    if (!it || !it.hotkey) continue;
+    const r = registerClipItemHotkey(it.id, it.hotkey);
+    if (!r.ok) console.warn('[clipboard] 条目快捷键注册失败:', it.id, r.error);
+  }
+}
+
+/**
+ * 单条快捷键触发:写回剪贴板 → 向当前前台应用发一次 Ctrl+V。
+ * 没有原生按键注入依赖,Windows 用 PowerShell SendKeys、macOS 用 osascript;
+ * 模拟失败也不影响结果 —— 内容已经在剪贴板里,用户手动 Ctrl+V 照样能贴。
+ */
+function simulatePaste() {
+  try {
+    if (process.platform === 'win32') {
+      const script = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')";
+      spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script], { windowsHide: true, stdio: 'ignore' })
+        .on('error', (e) => console.warn('[clipboard] 模拟粘贴失败(可手动 Ctrl+V):', e && e.message));
+    } else if (process.platform === 'darwin') {
+      spawn('osascript', ['-e', 'tell application "System Events" to keystroke "v" using command down'], { stdio: 'ignore' })
+        .on('error', (e) => console.warn('[clipboard] 模拟粘贴失败(可手动 Cmd+V):', e && e.message));
+    }
+  } catch (e) { console.warn('[clipboard] 模拟粘贴异常:', e && e.message); }
+}
+
+async function pasteClipItemByHotkey(id) {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) { unregisterClipItemHotkey(id); return; }
+  // 面板开着时先收起:不让 Ctrl+V 落进面板自己的搜索框
+  if (clipPanelWindow && !clipPanelWindow.isDestroyed() && clipPanelWindow.isVisible()) {
+    hideClipPanel();
+    await new Promise((r) => setTimeout(r, 160));
+  }
+  const ok = await writeClipItemToClipboard(it);
+  if (!ok) { console.warn('[clipboard] 单条快捷键写回失败:', id); return; }
+  setTimeout(simulatePaste, 80);
 }
 
 /**
@@ -12076,7 +12268,9 @@ function createClipPanelWindow() {
   });
   win.on('closed', () => { clipPanelWindow = null; });
   win.webContents.setWindowOpenHandler(({ url: u }) => {
-    try { if (/^https?:/i.test(u)) shell.openExternal(u); } catch { /* ignore */ }
+    // ★ 白名单走 url-guard.cjs（唯一的协议判据）—— 别在这里写裸正则：
+    //   裸判断会绕过 trim/未知类型的硬化，且与另外 3 处出口形成第二份判据。
+    try { if (isSafeExternalUrl(u)) shell.openExternal(u); } catch { /* ignore */ }
     return { action: 'deny' };
   });
   void win.loadURL(url);
@@ -12122,7 +12316,17 @@ function toggleClipPanel() {
 
 /** 热键:允许禁用 / 换键(与截图键同一套管理;与其它热键冲突时 register 会失败并回传原因) */
 function setClipHotkey(accel) {
-  return setGlobalHotkey(clipHotkey, accel, () => {
+  const target = String(accel || '').trim();
+  // 先挡「与单条快捷键相同」:那种情况下 globalShortcut 注册会失败,但报错信息看不出是谁占的
+  if (target) {
+    for (const [id, entry] of clipItemHotkeys) {
+      if (entry.accel && entry.accel.toLowerCase() === target.toLowerCase()) {
+        const it = loadClipItems().find((x) => x.id === id);
+        return { ok: false, accelerator: target, error: `与条目「${clipItemPreview(it) || '其它条目'}」的快捷键相同` };
+      }
+    }
+  }
+  return setGlobalHotkey(clipHotkey, target, () => {
     try { toggleClipPanel(); } catch (e) { console.warn('[clipboard] 热键唤起失败:', e && e.message); }
   }, '剪贴板');
 }
@@ -12177,7 +12381,8 @@ ipcMain.handle('clipboard:panel-list', () => {
   const items = loadClipItems();
   let bytes = 0;
   for (const it of items) bytes += Number(it.size) || 0;
-  return { ok: true, items, stats: { count: items.length, bytes } };
+  // 分组与条目一起返回:面板一次拉取即可渲染筛选与右键菜单,少一次 IPC 往返
+  return { ok: true, items, stats: { count: items.length, bytes }, ...clipGroupPayload() };
 });
 
 ipcMain.handle('clipboard:panel-pin', (_e, id) => {
@@ -12194,7 +12399,7 @@ ipcMain.handle('clipboard:panel-remove', (_e, id) => {
   const idx = items.findIndex((x) => x.id === id);
   if (idx < 0) return { ok: false, error: '条目不存在' };
   const [gone] = items.splice(idx, 1);
-  if (gone.imageFile) { try { fs.unlinkSync(gone.imageFile); } catch { /* 已删除 */ } }
+  discardClipItem(gone);
   scheduleClipPersist();
   clipNotifyPanel();
   return { ok: true };
@@ -12206,7 +12411,7 @@ ipcMain.handle('clipboard:panel-clear', () => {
   for (let i = items.length - 1; i >= 0; i--) {
     if (items[i].pinned) continue;
     const [gone] = items.splice(i, 1);
-    if (gone.imageFile) { try { fs.unlinkSync(gone.imageFile); } catch { /* ignore */ } }
+    discardClipItem(gone);
     removed++;
   }
   scheduleClipPersist();
@@ -12227,6 +12432,73 @@ ipcMain.handle('clipboard:panel-plain', async (_e, id) => {
   if (!it) return { ok: false, error: '条目不存在' };
   try { await clipboard.writeText(String(it.text || '')); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
   return { ok: true };
+});
+
+/* ===== 分组 / 标签 / 单条快捷键(2026-10-29,P2) ===== */
+ipcMain.handle('clipboard:panel-group-create', (_e, name) => {
+  const clean = clipStore.normalizeGroupName(name);
+  if (!clean) return { ok: false, error: '分组名不能为空' };
+  if (clipGroupNameTaken(clean)) return { ok: false, error: '同名分组已存在' };
+  const group = { id: clipNewId('g_'), name: clean, createdAt: Date.now() };
+  loadClipGroups().push(group);
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, group, ...clipGroupPayload() };
+});
+
+ipcMain.handle('clipboard:panel-group-rename', (_e, id, name) => {
+  const g = loadClipGroups().find((x) => x.id === id);
+  if (!g) return { ok: false, error: '分组不存在' };
+  const clean = clipStore.normalizeGroupName(name);
+  if (!clean) return { ok: false, error: '分组名不能为空' };
+  if (clipGroupNameTaken(clean, id)) return { ok: false, error: '同名分组已存在' };
+  g.name = clean;
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, ...clipGroupPayload() };
+});
+
+ipcMain.handle('clipboard:panel-group-remove', (_e, id) => {
+  const groups = loadClipGroups();
+  const idx = groups.findIndex((x) => x.id === id);
+  if (idx < 0) return { ok: false, error: '分组不存在' };
+  groups.splice(idx, 1);
+  // 删分组只解绑条目,不删内容 —— 用户要的是"取消归档",不是"删掉剪贴板"
+  for (const it of loadClipItems()) if (it.groupId === id) it.groupId = '';
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, ...clipGroupPayload() };
+});
+
+ipcMain.handle('clipboard:panel-set-group', (_e, id, groupId) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  const gid = String(groupId || '');
+  if (gid && !loadClipGroups().some((g) => g.id === gid)) return { ok: false, error: '分组不存在' };
+  it.groupId = gid;
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, groupId: gid, ...clipGroupPayload() };
+});
+
+ipcMain.handle('clipboard:panel-set-tags', (_e, id, tags) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  it.tags = clipStore.normalizeTags(tags);
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, tags: it.tags };
+});
+
+ipcMain.handle('clipboard:panel-set-hotkey', (_e, id, accel) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  const res = registerClipItemHotkey(id, accel);
+  if (!res.ok) return res;
+  it.hotkey = res.accelerator || '';
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, accelerator: it.hotkey };
 });
 
 /**
@@ -12425,6 +12697,11 @@ ipcMain.handle('clipboard:panel-set-config', (_e, patch = {}) => {
   }
   if (patch.skipSensitive !== undefined) cfg.skipSensitive = !!patch.skipSensitive;
   if (patch.maxItems !== undefined) cfg.maxItems = Math.min(5000, Math.max(50, Number(patch.maxItems) || 500));
+  if (patch.retentionDays !== undefined) {
+    const n = Number(patch.retentionDays);
+    // 0 = 永久;上限 10 年,防手滑输入一个巨大数字后行为不可预期
+    cfg.retentionDays = Number.isFinite(n) && n > 0 ? Math.min(3650, Math.floor(n)) : 0;
+  }
   let hotkeyResult = null;
   if (patch.accelerator !== undefined) {
     const accel = String(patch.accelerator || '').trim();
@@ -12434,6 +12711,8 @@ ipcMain.handle('clipboard:panel-set-config', (_e, patch = {}) => {
     else if (hotkeyResult && hotkeyResult.ok === false) setClipHotkey(cfg.accelerator || '');
   }
   pruneClipItems(loadClipItems());
+  // 改完保留天数立刻生效:用户选「7 天」就应当当场看到旧条目消失,而不是等下一轮定时器
+  try { cleanupClipByAge(); } catch (e) { console.warn('[clipboard] 清理失败:', e && e.message); }
   persistClipConfig();
   scheduleClipPersist();
   clipNotifyPanel();
@@ -12443,6 +12722,8 @@ ipcMain.handle('clipboard:panel-set-config', (_e, patch = {}) => {
 // 采集器随应用启动(即便用户从没打开过面板,历史也要积累)
 app.whenReady().then(() => {
   try { startClipWatcher(); } catch (e) { console.warn('[clipboard] 监听启动失败:', e && e.message); }
+  try { startClipCleanup(); } catch (e) { console.warn('[clipboard] 清理任务启动失败:', e && e.message); }
+  try { syncClipItemHotkeys(); } catch (e) { console.warn('[clipboard] 条目快捷键恢复失败:', e && e.message); }
 });
 
 
@@ -12739,6 +13020,123 @@ app.whenReady().then(async () => {
       return { ok: false, error: String((err && err.message) || err) };
     }
   });
+  // ★ 任务实录（2026-10-29）：可采集的窗口/屏幕清单。
+  //   必须排除调用方自己的窗口 —— 直播页采自己会递归成像（画面里还有画面）。
+  ipcMain.handle('live:list-capture-sources', async (e) => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['window', 'screen'],
+        thumbnailSize: { width: 0, height: 0 },
+        fetchWindowIcons: false,
+      });
+      let selfId = '';
+      try {
+        const win = BrowserWindow.fromWebContents(e.sender);
+        selfId = win ? win.getMediaSourceId() : '';
+      } catch { /* 取不到就不过滤 */ }
+      // ★ 直播工作区（2026-10-29）：给「不含侧边栏/会话列表」的窗口打安全标。
+      //   只有任务执行窗与游戏窗算安全；主窗口虽然也能采，但会把会话列表一起播出去。
+      const safeIds = new Set();
+      try {
+        for (const [key, win] of childWindows) {
+          if (!win || win.isDestroyed()) continue;
+          if (key.startsWith('task-run-') || key.startsWith('live-task') || key === 'browser-game') {
+            try { safeIds.add(win.getMediaSourceId()); } catch { /* ignore */ }
+          }
+        }
+      } catch { /* 子窗口表不可用时全部按未知处理 */ }
+      return {
+        ok: true,
+        sources: sources
+          .filter((s) => s.id !== selfId)
+          .map((s) => ({
+            id: s.id,
+            name: s.name || s.id,
+            kind: String(s.id).startsWith('screen:') ? 'screen' : 'window',
+            safe: safeIds.has(s.id),
+          })),
+      };
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+  });
+
+  // 指定下一次 getDisplayMedia 采哪个源（任意窗口或屏幕），同样一次性消费
+  ipcMain.handle('screen-record:select-source', (_e, sourceId) => {
+    liveCaptureSourceId = String(sourceId || '');
+    if (liveCaptureTimer) { clearTimeout(liveCaptureTimer); liveCaptureTimer = null; }
+    if (liveCaptureSourceId) {
+      liveCaptureTimer = setTimeout(() => {
+        liveCaptureSourceId = '';
+        liveCaptureTimer = null;
+      }, 10000);
+    }
+    return { ok: true };
+  });
+
+  // ============================================================
+  // 直播游戏画面：CDP 帧流（2026-10-29）
+  // 采的是**应用内浏览器当前页**，和智能体操作的是同一个 webContents ——
+  // 观众看到的就是它正在操作的那一页；窗口被遮挡/最小化也不影响画面。
+  // 帧以 base64 JPEG 推给渲染层，渲染层画到 canvas 上（再由窗口采集进推流）。
+  // ============================================================
+  let liveGameCast = null; // { wc, sender, onMessage }
+  function stopLiveGameCast() {
+    const s = liveGameCast;
+    liveGameCast = null;
+    if (!s) return;
+    try { s.wc.debugger.removeListener('message', s.onMessage); } catch { /* ignore */ }
+    try {
+      if (s.wc.debugger.isAttached()) {
+        s.wc.debugger.sendCommand('Page.stopScreencast').catch(() => {});
+        s.wc.debugger.detach();
+      }
+    } catch { /* ignore */ }
+  }
+
+  ipcMain.handle('live:game-start', (e, opts = {}) => {
+    stopLiveGameCast();
+    const wc = activeGuestWebContents();
+    if (!wc) return { ok: false, error: '没有打开的浏览器页面（先在浏览器页打开游戏）' };
+    const sender = e.sender;
+    const fps = Math.min(Math.max(Number(opts.fps) || 15, 1), 30);
+    const quality = Math.min(Math.max(Number(opts.quality) || 70, 20), 90);
+    try {
+      if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    } catch (err) {
+      return { ok: false, error: `CDP 附加失败：${String((err && err.message) || err)}` };
+    }
+    const onMessage = (_ev, method, params) => {
+      if (method !== 'Page.screencastFrame') return;
+      try {
+        if (!sender.isDestroyed()) sender.send('live:game-frame', { data: params.data, meta: params.metadata });
+      } catch { /* 渲染层已关 */ }
+      try { wc.debugger.sendCommand('Page.screencastFrameAck', { sessionId: params.sessionId }); } catch { /* ignore */ }
+    };
+    wc.debugger.on('message', onMessage);
+    liveGameCast = { wc, sender, onMessage };
+    wc.debugger.sendCommand('Page.enable').catch(() => {});
+    wc.debugger
+      .sendCommand('Page.startScreencast', {
+        format: 'jpeg',
+        quality,
+        maxWidth: 1280,
+        maxHeight: 720,
+        everyNthFrame: Math.max(1, Math.round(30 / fps)),
+      })
+      .catch((err) => {
+        try {
+          if (!sender.isDestroyed()) sender.send('live:game-status', { ok: false, error: String((err && err.message) || err) });
+        } catch { /* ignore */ }
+      });
+    return { ok: true };
+  });
+
+  ipcMain.handle('live:game-stop', () => {
+    stopLiveGameCast();
+    return { ok: true };
+  });
+
   (function installDisplayMediaHandler() {
     try {
       session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
@@ -13451,6 +13849,14 @@ app.whenReady().then(async () => {
       callback({});
       return;
     }
+    // ★ 插件页（yz://plugin/…）豁免应用 CSP：CSP 的 'self' 对自定义协议不成立，
+    //   套上去的后果是**页面能打开、但脚本与请求全部被拦**（模块加载报 Failed to fetch，
+    //   围栏页因此只剩静态工具栏、按钮全死、图标也不画）。插件页是随包/已安装的本地页面，
+    //   与 capture.html 同一类内部页，不加载第三方内容，豁免不引入安全面。
+    if (details.url.startsWith('yz://')) {
+      callback({});
+      return;
+    }
     // ★★★ 2026-10-28：HTML **产物**走单独的受限 CSP（不沿用应用 CSP）。
     //   背景：产物预览此前用 iframe srcdoc，而 srcdoc 文档**继承父窗口 CSP** ——
     //   `script-src 'self'` 把产物里的内联脚本全拦掉，带 JS 的原型（切换按钮、图表）
@@ -13723,16 +14129,36 @@ const pluginWindows = new Map();
 const pluginWindowHotkeys = new Map();
 const iconSession = createIconSession();
 let desktopHelperPath = null;
-let desktopHelperTried = false;
+let desktopHelperPromise = null;
 
-async function ensureDesktopHelper() {
-  if (desktopHelperPath || desktopHelperTried) return desktopHelperPath;
-  desktopHelperTried = true;
+/**
+ * 助手 exe 的编译/取用。
+ * ★ 并发：桌面层一打开就会同时要 20+ 个图标，必须共享同一个编译 Promise。
+ *   旧实现用一个 tried 布尔量：只有第一个调用去编译，其余立刻拿到 null →
+ *   一半图标回落 48px 且被页面缓存住，看起来就是"有的清、有的糊"。
+ */
+function ensureDesktopHelper() {
+  if (desktopHelperPath) return Promise.resolve(desktopHelperPath);
+  if (desktopHelperPromise) return desktopHelperPromise;
+  desktopHelperPromise = compileDesktopHelper();
+  return desktopHelperPromise;
+}
+
+async function compileDesktopHelper() {
   if (process.platform !== 'win32') return null;
   try {
     const dir = path.join(app.getPath('userData'), 'bin');
     // v2：新增 --foreground（悬浮层全屏自动隐藏）。改名让老 exe 自动重编。
-    const exe = path.join(dir, 'yz-desktop-v2.exe');
+    // v3：--pin 增加 DefView 父窗口兜底（Win11 无独立 WorkerW 层时不再直接失败）。
+    // v4：FindWorkerW 认「Progman 的子窗口 WorkerW」——Win11 实测就是这个结构，
+    //     旧实现只找顶部同级 WorkerW，导致永远 workerW=0、桌面层钉不上。
+    // v5：--pin 先把 WS_POPUP 改成 WS_CHILD 再 SetParent —— Electron 无边框窗口是 popup，
+    //     不转样式 SetParent 静默失败（GetParent 仍为 0），这是钉不上的最后一环。
+    // v6：新增 --icon（SHGetImageList jumbo 256px → PNG）—— app.getFileIcon 最大只有 48px，
+    //     高 DPI 下桌面图标发虚；改名让老 exe 自动重编（现在还要链 System.Drawing）。
+    // v7：--icon 先按 alpha 裁掉 jumbo 画布上的空白再输出 —— 只有 32/48px 图标的程序
+    //     在 256 画布里是左上角一个小点，不裁切会显示成芝麻。
+    const exe = path.join(dir, 'yz-desktop-v7.exe');
     if (fs.existsSync(exe)) { desktopHelperPath = exe; return exe; }
     const csc = [
       'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
@@ -13740,10 +14166,10 @@ async function ensureDesktopHelper() {
     ].find((p) => fs.existsSync(p));
     if (!csc) { console.warn('[desktop-shell] 未找到 csc.exe，桌面外壳能力不可用'); return null; }
     fs.mkdirSync(dir, { recursive: true });
-    const srcPath = path.join(dir, 'yz-desktop-v2.cs');
+    const srcPath = path.join(dir, 'yz-desktop-v7.cs');
     fs.writeFileSync(srcPath, DESKTOP_HELPER_CS, 'utf8');
     await new Promise((resolve, reject) => {
-      execFile(csc, ['/nologo', '/out:' + exe, srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {
+      execFile(csc, ['/nologo', '/out:' + exe, '/r:System.Drawing.dll', srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {
         if (err) reject(new Error((se || err.message || '').trim()));
         else resolve(true);
       });
@@ -13760,7 +14186,8 @@ function runDesktopHelper(args) {
     if (process.platform !== 'win32') { resolve({ ok: false, error: 'unsupported-platform' }); return; }
     ensureDesktopHelper().then((exe) => {
       if (!exe) { resolve({ ok: false, error: 'helper-unavailable' }); return; }
-      execFile(exe, args, { timeout: 8000, windowsHide: true }, (err, stdout) => {
+      // 首次调用要先 csc 编译（3~5 秒），8s 的老超时会把"第一次开桌面层"卡成失败
+      execFile(exe, args, { timeout: 15000, windowsHide: true }, (err, stdout) => {
         const data = parseHelperLine(stdout);
         resolve({
           ok: !err && !!data,
@@ -13826,7 +14253,7 @@ async function openPluginWindow(opts = {}) {
       resourcesPath: process.resourcesPath,
       isPackaged: app.isPackaged,
     });
-    const v = resolvePluginWindowRequest(dirs, opts);
+    const v = resolvePluginWindowRequest(dirs, { ...opts, apiOrigin: API_ORIGIN });
     if (!v.ok) return v;
 
     // 同一插件的同一入口只留一个窗口：重复开围栏会各自隐藏/恢复系统图标，
@@ -13843,11 +14270,11 @@ async function openPluginWindow(opts = {}) {
       return { ok: true, windowId, placement: rec.placement, existing: true };
     }
 
+    // 桌面层：先让助手尝试生成 WorkerW 层，但**不因取不到而失败** ——
+    // Win11 上不少机器没有这一层，--pin 会退到 DefView 父窗口；再不行就按普通窗口开出来。
+    // 宁可露出一个能用的窗口，也不要"点了/按了没反应"。
     if (v.placement === 'desktop') {
-      const spawned = await runDesktopHelper(['--spawn-workerw']);
-      if (!spawned.data || !spawned.data.workerW) {
-        return { ok: false, error: 'worker-w-not-found' };
-      }
+      await runDesktopHelper(['--spawn-workerw']);
     }
 
     const rect = pluginWindowRect(opts);
@@ -13888,6 +14315,7 @@ async function openPluginWindow(opts = {}) {
 
     await win.loadURL(v.url);
 
+    let fallback = null;
     if (v.placement === 'desktop') {
       const handle = win.getNativeWindowHandle();
       const hwnd = handle.length >= 8
@@ -13895,8 +14323,10 @@ async function openPluginWindow(opts = {}) {
         : String(handle.readUInt32LE(0));
       const pin = await runDesktopHelper(['--pin', hwnd]);
       if (!pin.data || !pin.data.ok) {
-        try { win.destroy(); } catch { /* ignore */ }
-        return { ok: false, error: 'pin-failed', detail: pin.data || pin.error || null };
+        // 钉不上就留作普通无边框窗口；placement 记录仍是 desktop，
+        // 关窗/退出时的图标恢复逻辑才不会漏（否则桌面会一直空着）。
+        fallback = (pin.data && pin.data.error) || pin.error || 'pin-failed';
+        console.warn('[plugin-window] 钉桌面层失败，回落普通窗口:', fallback);
       }
     }
 
@@ -13906,7 +14336,7 @@ async function openPluginWindow(opts = {}) {
     pluginWindows.set(windowId, { win, pluginId: v.pluginId, placement: v.placement, entry: v.entry });
     if (v.placement === 'overlay') ensureOverlayWatch();
     win.showInactive();
-    return { ok: true, windowId, placement: v.placement, url: v.url };
+    return { ok: true, windowId, placement: v.placement, url: v.url, fallback };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
@@ -13940,7 +14370,7 @@ function applyPluginWindowHotkeys(list) {
       if (!live) return;
       void openPluginWindow(live.spec).then((res) => {
         // 快捷键开窗必须有回执：围栏钉在桌面层，应用窗口盖着时"成功"也像"没反应"
-        if (res && res.ok) notifyMainWindow('opened', { hotkey: true, placement: res.placement, title: live.spec.title });
+        if (res && res.ok) notifyMainWindow('opened', { hotkey: true, placement: res.placement, fallback: res.fallback || null, title: live.spec.title });
         else notifyMainWindow('failed', { hotkey: true, error: (res && res.error) || 'unknown', title: live.spec.title });
       });
     }, '插件窗口·' + (spec.title || key));
@@ -14033,30 +14463,85 @@ ipcMain.handle('desktop-shell:icons-visible', async () => {
   return { ok: true, visible: !!r.data.visible };
 });
 
-ipcMain.handle('desktop-shell:set-icons-visible', async (_e, visible) => {
+ipcMain.handle('desktop-shell:set-icons-visible', async (e, visible) => {
   const want = visible !== false;
+  // 请求来自桌面层窗口 = 这一层在接管桌面，图标归属由我们负责
+  const fromDesktopLayer = [...pluginWindows.values()].some(
+    (r) => r.placement === 'desktop' && r.win && !r.win.isDestroyed() && r.win.webContents === e.sender,
+  );
   const cur = await runDesktopHelper(['--icons-visible']);
   if (!cur.data) return { ok: false, error: cur.error || 'helper-unavailable' };
   const now = !!cur.data.visible;
   if (now === want) {
     if (want) iconSession.markRestored();
+    // 已经是隐藏态也要认领，否则退出时不会恢复（桌面会停在无图标状态）
+    else if (fromDesktopLayer) iconSession.claimHidden();
     return { ok: true, changed: false, visible: now };
   }
   const r = await runDesktopHelper(['--toggle-icons', want ? '1' : '0']);
   if (!r.data) return { ok: false, error: r.error || 'toggle-failed' };
   if (want) iconSession.onShowRequested(false);
   else iconSession.onHideRequested(true);
+  console.log('[desktop-shell] 系统桌面图标 →', want ? '显示' : '隐藏', fromDesktopLayer ? '(桌面层)' : '');
   return { ok: true, changed: true, visible: !!r.data.visible };
 });
 
-ipcMain.handle('desktop-shell:file-icon', async (_e, filePath, size) => {
+/**
+ * 桌面文件图标：Win32 助手的 SHGetImageList jumbo 档（资源管理器自己那张图，原生的
+ * 256px 或图标自身分辨率）。取一张要起一个 exe 进程，所以按
+ * 「路径 + 修改时间 + 大小 + 缓存版本」缓存在 userData/icon-cache。
+ */
+const ICON_CACHE_VERSION = 'v2';   // 改图标产出方式就加一档，避免旧图一直命中
+const ICON_CACHE_MAX = 800;
+/** 取图串行执行：一次开 20+ 个 exe 进程没必要，串起来 26 个图标也只要 1~2 秒 */
+let iconHelperQueue = Promise.resolve();
+
+function runIconHelper(args) {
+  const next = iconHelperQueue.then(() => runDesktopHelper(args));
+  iconHelperQueue = next.catch(() => {});
+  return next;
+}
+
+function pruneIconCache(dir) {
+  try {
+    const names = fs.readdirSync(dir).filter((n) => n.endsWith('.png'));
+    if (names.length <= ICON_CACHE_MAX) return;
+    const byTime = names
+      .map((n) => ({ n, t: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => a.t - b.t);
+    for (const { n } of byTime.slice(0, names.length - ICON_CACHE_MAX / 2)) {
+      try { fs.unlinkSync(path.join(dir, n)); } catch { /* 占用中的跳过 */ }
+    }
+  } catch { /* 清理失败不影响取图 */ }
+}
+
+async function jumboIconDataUrl(p) {
+  const st = fs.statSync(p);
+  const key = crypto.createHash('sha1')
+    .update(`${ICON_CACHE_VERSION}|${p}|${st.mtimeMs}|${st.size}|${st.isDirectory()}`)
+    .digest('hex');
+  const dir = path.join(app.getPath('userData'), 'icon-cache');
+  const png = path.join(dir, key + '.png');
+  if (!fs.existsSync(png)) {
+    fs.mkdirSync(dir, { recursive: true });
+    const r = await runIconHelper(['--icon', p, png, '256']);
+    if (!r.data || !r.data.ok || !fs.existsSync(png)) return null;
+    pruneIconCache(dir);
+  }
+  return 'data:image/png;base64,' + fs.readFileSync(png).toString('base64');
+}
+
+ipcMain.handle('desktop-shell:file-icon', async (_e, filePath) => {
   const p = String(filePath || '');
   if (!isDesktopPath(p)) return { ok: false, error: 'path-outside-desktop' };
   if (!fs.existsSync(p)) return { ok: false, error: 'not-found' };
-  const sz = size === 'small' || size === 'large' ? size : 'normal';
   try {
-    const img = await app.getFileIcon(p, { size: sz });
-    return { ok: true, dataUrl: img.toDataURL() };
+    const dataUrl = await jumboIconDataUrl(p);
+    if (dataUrl) return { ok: true, dataUrl, size: 256 };
+  } catch { /* 助手不可用（非 Windows / 编译失败）→ 回落 Electron */ }
+  try {
+    const img = await app.getFileIcon(p, { size: 'large' });
+    return { ok: true, dataUrl: img.toDataURL(), size: 48 };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }

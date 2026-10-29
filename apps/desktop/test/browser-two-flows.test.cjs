@@ -135,9 +135,9 @@ test('★★★ 后台流的存在**不影响**前台流的"回落当前页"闸�
 
 test('判据必须与 main.cjs 逐字同形（防止本测试自己漂成"另一个实现"）', () => {
   const MAIN = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
-  // ① 后台流不回落
-  assert.match(MAIN, /activeTabId:\s*bgFlow\s*\?\s*null\s*:\s*activeTabId/,
-    '★ main.cjs 未按后台流屏蔽回落 —— 本测试的 opts() 已不是同形');
+  // ① 后台流不回落；游戏窗的页也不能当回落目标（见 main.cjs 的 gameActiveTabId 注释）
+  assert.match(MAIN, /activeTabId:\s*bgFlow\s*\?\s*null\s*:\s*\(?scopeOfTab\(activeTabId\)\s*===\s*'game'/,
+    '★ main.cjs 未按后台流/游戏窗屏蔽回落 —— 本测试的 opts() 已不是同形');
   // ② 归属口径 = flowKey
   assert.match(MAIN, /isMine:\s*\(t\)\s*=>\s*agentTouchedTabs\.get\(t\)\s*===\s*flowKey/);
   assert.match(MAIN, /!!owner\s*&&\s*owner\s*!==\s*flowKey/);

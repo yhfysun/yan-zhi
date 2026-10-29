@@ -295,6 +295,60 @@ function decideAnchorUpdate(action, hadExplicitTab, resolvedTabId, resultTabId, 
   return { mode: 'anchor', tabId: t };
 }
 
+/**
+ * 「显式移交」（2026-10-29）：用户把游戏窗里的一页交给智能体代玩。
+ *
+ * ★ 为什么需要单独一张表：游戏窗（独立 BrowserWindow）的 tab 属于 scope='game'，
+ *   不在 agent 的 preview 执行面里。`agentTouchedTabs` 是「动作执行成功后才登记」的记账，
+ *   而移交必须**先在动作之前**把这一页标记为「本流可以操作」，否则第一次动作就会被
+ *   越权闸门拒绝（或退化成另开 preview 页 —— 看的那页 ≠ 操作的那页）。
+ *
+ * ★ 与 flowPins 的分工：flowPins 管「这期间别换页」，本表管「这一页是本流自己的」。
+ *   两表都登记后：显式 tabId 走 isMine 放行；无 tabId 走锁定页/锚；new_tab 被锁拒绝。
+ *
+ * 与 createFlowPinRegistry 同形态（工厂 + 注入 isAlive），便于 vitest 真跑。
+ */
+function createHandoffRegistry(opts) {
+  const isAlive = (opts && opts.isAlive) || (() => true);
+  const owners = new Map(); // tabId → flowKey
+  const MAX_HANDOFFS = 50;
+  function register(tabId, flowKey) {
+    if (!tabId || !flowKey) return;
+    owners.set(String(tabId), String(flowKey));
+    while (owners.size > MAX_HANDOFFS) {
+      const oldest = owners.keys().next().value;
+      if (oldest === undefined) break;
+      owners.delete(oldest);
+    }
+  }
+  function release(tabId) {
+    if (tabId) owners.delete(String(tabId));
+  }
+  /** 释放某条流登记的全部移交页，返回被释放的 tabId 列表 */
+  function releaseForFlow(flowKey) {
+    const k = String(flowKey == null ? '' : flowKey);
+    if (!k) return [];
+    const out = [];
+    for (const [tab, owner] of owners) if (owner === k) { owners.delete(tab); out.push(tab); }
+    return out;
+  }
+  function ownerOf(tabId) {
+    if (!tabId) return null;
+    const tid = String(tabId);
+    const owner = owners.get(tid);
+    if (!owner) return null;
+    if (!isAlive(tid)) { owners.delete(tid); return null; }
+    return owner;
+  }
+  /** 不做存活检查的原始归属（tab 刚被删时广播路径要用，见 broadcastTabClosed） */
+  function ownerRaw(tabId) {
+    return tabId ? (owners.get(String(tabId)) || null) : null;
+  }
+  function isHandoffTab(tabId) { return !!ownerOf(tabId); }
+  function entries() { return [...owners.entries()]; }
+  return { register, release, releaseForFlow, ownerOf, ownerRaw, isHandoffTab, entries, size: () => owners.size };
+}
+
 module.exports = {
   SHARED_FLOW,
   ANCHOR_ESTABLISHING_ACTIONS,
@@ -304,6 +358,7 @@ module.exports = {
   flowKeyOf,
   isBackgroundFlow,
   createFlowPinRegistry,
+  createHandoffRegistry,
   resolveTarget,
   decideAnchorUpdate,
 };

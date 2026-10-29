@@ -337,6 +337,7 @@ const pluginMoreItems = computed(() =>
     .filter((item) => item.moreGroup && item.moreGroup !== 'nav')
     .filter((item) => !routeBlockedByLicense(item.route)),
 );
+
 /** 内置条目按授权过滤：读 visibleModeDefs 是响应式的，换码后左栏会即时收敛（无需重启）。
  *  ★ 独立模式窗口（?window=mode）里隐藏所有**模式切换**类条目（builtinNavItems 里带 mode 的）——
  *    窗口锁定单模式（用户拍板 2026-10-18）；任务/浏览器/消息等非模式条目保留。 */

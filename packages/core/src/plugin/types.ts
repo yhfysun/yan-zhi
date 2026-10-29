@@ -435,6 +435,35 @@ export interface PluginContributes {
   playbooks?: PlaybookDef[];
   /** 模式贡献：模式插件声明应用模式（运行时合并进模式清单与路由） */
   mode?: ModeContribution;
+  /** 桌面窗口：插件自带 HTML 页面，由宿主开成独立窗口（插件管理卡片上出现对应按钮） */
+  windows?: PluginWindowContribution[];
+}
+
+/**
+ * 插件桌面窗口声明（pluginWindow 通用能力）。
+ *
+ * 只声明「插件包内的 HTML 页 + 放哪一层」，业务全在插件自己的 bundle 里 ——
+ * 宿主据此渲染插件卡片上的打开按钮，并按 accelerator 注册全局快捷键。
+ */
+export interface PluginWindowContribution {
+  /** 插件内唯一 id（kebab-case），用于去重/复用窗口 */
+  id: string;
+  /** 按钮文案 */
+  label: string;
+  /** 插件包内 HTML 入口（相对路径，如 'frontend/settings.html'） */
+  entry: string;
+  /** 放置层级：desktop=钉桌面层，overlay=置顶悬浮，normal=普通窗口（缺省） */
+  placement?: 'desktop' | 'overlay' | 'normal';
+  /** 默认窗口位置/尺寸（缺省=铺满所在显示器）；坐标为显示器内坐标 */
+  rect?: { x?: number; y?: number; w?: number; h?: number };
+  /** 是否允许用户拖拽缩放（缺省 false：面板类窗口固定尺寸更稳） */
+  resizable?: boolean;
+  /** 是否在宿主侧栏「插件」分组里出现一个入口（点了直接开这个窗口） */
+  menu?: boolean;
+  /** 菜单元图标名（element-plus 图标名，如 'Monitor'）；缺省用拼图图标 */
+  icon?: string;
+  /** 全局快捷键（Electron accelerator 语法，如 'Control+Alt+D'）；缺省不注册 */
+  accelerator?: string;
 }
 
 /** 插件清单 */

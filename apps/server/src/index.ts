@@ -67,6 +67,7 @@ import pageCommandRoutes from './routes/page-commands.js';
 import userHookRoutes from './routes/user-hooks.js';
 import ollamaMarketRoutes from './routes/ollama-market.js';
 import ttsPackRoutes from './routes/tts-packs.js';
+import liveModeRoutes from './routes/live-mode.js';
 // 本地资源安装（2026-10-22）：通道 A（用户点击）的统一入口，
 // 与 install_resource 工具共用同一套 install()
 import installRoutes from './routes/install.js';
@@ -266,6 +267,7 @@ app.use('/api/system', systemRoutes);
 app.use('/api/user-hooks', userHookRoutes);
 app.use('/api/ollama-market', ollamaMarketRoutes);
 app.use('/api/tts-packs', ttsPackRoutes);
+app.use('/api/live', liveModeRoutes);
 // 本地资源安装（ffmpeg / yt-dlp / whisper / DiffSinger / 语音包 / ACE-Step）
 app.use('/api/install', installRoutes);
 app.use('/api/plugins', pluginRoutes);

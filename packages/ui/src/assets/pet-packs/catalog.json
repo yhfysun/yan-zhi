@@ -8,6 +8,10 @@
     { "id": "lulu", "label": "噜噜（水豚）", "file": "lulu-spritesheet.webp" },
     { "id": "noir", "label": "Noir（侦探蛛）", "file": "noir-spritesheet.webp" },
     { "id": "mallow", "label": "Mallow（小怪）", "file": "mallow-spritesheet.webp" },
+    { "id": "mochi", "label": "Mochi（奶白猫）", "file": "mochi-spritesheet.webp" },
+    { "id": "calico", "label": "Calico（三花猫）", "file": "calico-spritesheet.webp" },
+    { "id": "chonk", "label": "Chonk（黑猫）", "file": "chonk-spritesheet.webp" },
+    { "id": "tuanzi", "label": "Tuanzi（团子·原创）", "file": "tuanzi-spritesheet.webp" },
     { "id": "feiyu", "label": "Feiyu（大肥鱼·原创）", "file": "feiyu-spritesheet.webp" }
   ],
   "vrms": [

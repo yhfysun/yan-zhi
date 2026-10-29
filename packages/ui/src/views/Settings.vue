@@ -259,39 +259,70 @@
             </el-radio-group>
           </SettingRow>
 
-          <!-- 超级剪贴板（2026-10-29）：召唤键走同一套录制 + 冲突提示；
-               采集开关 / 敏感跳过 / 上限直接写主进程配置（clipboard-config.json），
-               面板小窗与采集器读的是同一份，不经过 settings store 二次同步。 -->
-          <SettingRow v-if="canClipboard" label="剪贴板快捷键">
-            <el-input
-              :model-value="clipAccelDisplay"
-              readonly
-              placeholder="点此框后按下组合键"
-              style="width: 210px"
-              @keydown.capture.prevent="onClipAccelKeyDown"
-            />
-            <div style="display: inline-flex; gap: 8px">
-              <el-button size="small" @click="resetClipAccel">恢复默认</el-button>
-              <el-button size="small" :disabled="!clipAccel" @click="clearClipAccel">禁用</el-button>
+          <!-- 超级剪贴板（2026-10-29）：独立卡片 + 分组，别和上面的全局快捷键挤成一条长清单；
+               采集开关 / 敏感跳过 / 上限 / 保留时长直接写主进程配置（clipboard-config.json），
+               面板小窗与采集器读同一份，不经过 settings store 二次同步。 -->
+          <template v-if="canClipboard">
+            <div class="settings-subhead clip-subhead">剪贴板</div>
+            <div class="clip-section">
+              <SettingRow label="召唤快捷键" tip="全局生效，任意应用内可唤出面板；与截图 / AI 急停冲突时会提示" tip-after>
+                <el-input
+                  :model-value="clipAccelDisplay"
+                  readonly
+                  placeholder="点此框后按下组合键"
+                  style="width: 210px"
+                  @keydown.capture.prevent="onClipAccelKeyDown"
+                />
+                <div class="clip-btn-row">
+                  <el-button size="small" @click="resetClipAccel">恢复默认</el-button>
+                  <el-button size="small" :disabled="!clipAccel" @click="clearClipAccel">禁用</el-button>
+                </div>
+              </SettingRow>
+
+              <SettingRow label="采集内容" tip="关掉的类型不再进入历史；已经记录下来的条目不受影响">
+                <div class="clip-chipgroup">
+                  <span class="clip-chip" :class="{ on: clipCapture.text }" @click="toggleClipCapture('text', $event)">
+                    <el-switch v-model="clipCapture.text" size="small" @change="saveClipCapture" />
+                    <span>文本</span>
+                  </span>
+                  <span class="clip-chip" :class="{ on: clipCapture.image }" @click="toggleClipCapture('image', $event)">
+                    <el-switch v-model="clipCapture.image" size="small" @change="saveClipCapture" />
+                    <span>图片</span>
+                  </span>
+                  <span class="clip-chip" :class="{ on: clipCapture.file }" @click="toggleClipCapture('file', $event)">
+                    <el-switch v-model="clipCapture.file" size="small" @change="saveClipCapture" />
+                    <span>文件</span>
+                  </span>
+                </div>
+              </SettingRow>
+              <SettingRow label="跳过敏感内容" tip="密码、私钥、AWS AK、API Key、JWT 等识别到时不写入历史" tip-after>
+                <el-switch v-model="clipSkipSensitive" @change="saveClipSkip" />
+              </SettingRow>
+
+              <div class="clip-divider" aria-hidden="true"></div>
+
+              <SettingRow label="历史上限" tip="超出后淘汰最旧的非置顶条目，置顶永久保留" tip-after>
+                <el-select v-model="clipMaxItems" style="width: 120px" @change="saveClipMax">
+                  <el-option :value="200" label="200 条" />
+                  <el-option :value="500" label="500 条" />
+                  <el-option :value="1000" label="1000 条" />
+                </el-select>
+              </SettingRow>
+              <SettingRow label="保留时长" tip="超期未置顶的条目会被清理（启动时 + 每小时一次），置顶永久保留；默认「永久」= 不自动删任何记录" tip-after>
+                <el-select v-model="clipRetentionDays" style="width: 120px" @change="saveClipRetention">
+                  <el-option :value="0" label="永久" />
+                  <el-option :value="7" label="7 天" />
+                  <el-option :value="30" label="30 天" />
+                  <el-option :value="90" label="90 天" />
+                </el-select>
+              </SettingRow>
+
+              <div class="clip-actions">
+                <el-button size="small" type="primary" plain @click="openClipPanel">打开剪贴板面板</el-button>
+                <span class="clip-hint">单条快捷键：面板里右键条目 →「单条快捷键…」</span>
+              </div>
             </div>
-          </SettingRow>
-          <SettingRow v-if="canClipboard" label="剪贴板采集" tip="关掉的类型不再进入历史；面板当前已记录的条目不受影响" tip-after>
-            <div style="display: inline-flex; align-items: center; gap: 16px">
-              <span style="display: inline-flex; align-items: center; gap: 6px"><el-switch v-model="clipCapture.text" size="small" @change="saveClipCapture" />文本</span>
-              <span style="display: inline-flex; align-items: center; gap: 6px"><el-switch v-model="clipCapture.image" size="small" @change="saveClipCapture" />图片</span>
-              <span style="display: inline-flex; align-items: center; gap: 6px"><el-switch v-model="clipCapture.file" size="small" @change="saveClipCapture" />文件</span>
-            </div>
-          </SettingRow>
-          <SettingRow v-if="canClipboard" label="跳过敏感内容" tip="密码、私钥、AWS AK、API Key、JWT 等识别到时不写入历史" tip-after>
-            <el-switch v-model="clipSkipSensitive" @change="saveClipSkip" />
-          </SettingRow>
-          <SettingRow v-if="canClipboard" label="剪贴板历史上限" tip="超出后淘汰最旧的非置顶条目，置顶永久保留" tip-after>
-            <el-select v-model="clipMaxItems" style="width: 120px" @change="saveClipMax">
-              <el-option :value="200" label="200 条" />
-              <el-option :value="500" label="500 条" />
-              <el-option :value="1000" label="1000 条" />
-            </el-select>
-          </SettingRow>
+          </template>
         </div>
       </el-tab-pane>
       <el-tab-pane label="皮肤" name="skin" lazy>
@@ -1267,6 +1298,8 @@ const clipAccelDisplay = computed(() =>
 const clipCapture = ref({ text: true, image: true, file: true });
 const clipSkipSensitive = ref(true);
 const clipMaxItems = ref(500);
+// 保留天数：0 = 永久（默认）。自动删历史必须是显式选择，不能升级后默认清理。
+const clipRetentionDays = ref(0);
 
 async function loadClipConfig() {
   const api = (window as any).electronAPI?.clipboardPanel;
@@ -1279,6 +1312,7 @@ async function loadClipConfig() {
   clipCapture.value = { text: cap.text !== false, image: cap.image !== false, file: cap.file !== false };
   clipSkipSensitive.value = cfg.skipSensitive !== false;
   clipMaxItems.value = Number(cfg.maxItems) || 500;
+  clipRetentionDays.value = Number(cfg.retentionDays) > 0 ? Number(cfg.retentionDays) : 0;
 }
 if (canClipboard) void loadClipConfig();
 
@@ -1309,6 +1343,12 @@ function onClipAccelKeyDown(e: KeyboardEvent) {
 }
 function resetClipAccel() { void applyClipAccel(DEFAULT_CLIP_ACCEL); }
 function clearClipAccel() { void applyClipAccel(''); }
+/** 改完配置想马上试:直接唤起面板,不必去记召唤键 */
+function openClipPanel() {
+  const api = (window as any).electronAPI?.clipboardPanel;
+  if (!api) return;
+  void api.toggle?.();
+}
 
 async function patchClipConfig(patch: Record<string, unknown>) {
   const api = (window as any).electronAPI?.clipboardPanel;
@@ -1317,8 +1357,19 @@ async function patchClipConfig(patch: Record<string, unknown>) {
   if (r && r.ok === false) ElMessage.error('剪贴板设置保存失败');
 }
 function saveClipCapture() { void patchClipConfig({ capture: { ...clipCapture.value } }); }
+/** 点胶囊任意位置都能切换；点在开关本体上时要跳过，否则开关自己切一次、这里再切一次 = 没反应 */
+function toggleClipCapture(key: 'text' | 'image' | 'file', e: MouseEvent) {
+  if ((e.target as HTMLElement | null)?.closest?.('.el-switch')) return;
+  clipCapture.value[key] = !clipCapture.value[key];
+  saveClipCapture();
+}
 function saveClipSkip() { void patchClipConfig({ skipSensitive: clipSkipSensitive.value }); }
 function saveClipMax() { void patchClipConfig({ maxItems: Number(clipMaxItems.value) }); }
+async function saveClipRetention() {
+  const days = Number(clipRetentionDays.value) || 0;
+  await patchClipConfig({ retentionDays: days });
+  ElMessage.success(days > 0 ? `超过 ${days} 天的非置顶记录会被清理` : '已设为永久保留，不再自动清理');
+}
 
 
 // ===== 聊天发送键三态互换（'enter' 默认与历史行为一致；'ctrlEnter' = Ctrl+Enter 发送 / Enter 换行）=====
@@ -2160,6 +2211,51 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--el-text-color-secondary, #909399);
 }
+
+/* ===== 剪贴板分区（2026-10-29）：卡片式，与面板视觉统一 ===== */
+.clip-subhead { margin-top: 22px; }
+.clip-section {
+  max-width: 100%;
+  padding: 16px 16px 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-surface-hover) 30%, var(--color-surface));
+}
+.clip-section :deep(.setting-row) { margin-bottom: 16px; }
+.clip-section :deep(.setting-row-label) { font-size: 13.5px; color: var(--color-text-secondary); }
+.clip-btn-row { display: inline-flex; gap: 8px; }
+.clip-chipgroup { display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.clip-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.14s, background 0.14s, color 0.14s;
+}
+.clip-chip:hover { border-color: var(--color-border-strong); }
+.clip-chip.on {
+  border-color: color-mix(in srgb, var(--color-primary) 35%, transparent);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.clip-divider { height: 1px; margin: 2px 0 16px; background: var(--color-border); }
+.clip-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px calc(var(--setting-row-label-width, 160px));
+}
+.clip-hint { font-size: 12px; color: var(--el-text-color-secondary, #909399); }
 .lan-section { max-width: 600px; }
 .lan-tip { color: var(--color-text-secondary); font-size: 13px; margin-bottom: 16px; }
 .lan-empty { color: var(--color-text-secondary); font-size: 13px; padding: 16px 0; }

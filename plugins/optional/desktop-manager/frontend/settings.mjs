@@ -22,6 +22,92 @@ function status(msg, isErr) {
   status._t = setTimeout(() => { el.textContent = ''; }, 3000);
 }
 
+/* ---------------- 自绘下拉（默认策略） ---------------- */
+
+const STRATEGIES = [
+  { value: 'rules', name: '规则整理', desc: '纯本地规则，不调用大模型' },
+  { value: 'ai', name: 'AI 整理', desc: '规则打底，判断不了的交给模型' },
+];
+
+function createStrategySelect(initial) {
+  const root = $('strategySel');
+  const btn = $('strategyBtn');
+  const menu = $('strategyMenu');
+  const nameEl = $('strategyName');
+  const descEl = $('strategyDesc');
+  let value = initial || 'rules';
+
+  menu.textContent = '';
+  for (const s of STRATEGIES) {
+    const opt = document.createElement('div');
+    opt.className = 'sel-opt';
+    opt.dataset.value = s.value;
+    opt.setAttribute('role', 'option');
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = s.name;
+    const d = document.createElement('span');
+    d.className = 'd';
+    d.textContent = s.desc;
+    const tick = document.createElement('span');
+    tick.className = 'tick';
+    tick.textContent = '✓';
+    opt.append(t, d, tick);
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      set(s.value);
+      closeMenu();
+    });
+    menu.appendChild(opt);
+  }
+
+  function render() {
+    const cur = STRATEGIES.find((x) => x.value === value) || STRATEGIES[0];
+    nameEl.textContent = cur.name;
+    descEl.textContent = cur.desc;
+    for (const o of menu.children) {
+      o.setAttribute('aria-selected', o.dataset.value === value ? 'true' : 'false');
+    }
+  }
+  function openMenu() {
+    root.classList.add('open');
+    btn.setAttribute('aria-expanded', 'true');
+  }
+  function closeMenu() {
+    root.classList.remove('open');
+    btn.setAttribute('aria-expanded', 'false');
+  }
+  function set(v) {
+    value = STRATEGIES.some((x) => x.value === v) ? v : 'rules';
+    render();
+  }
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (root.classList.contains('open')) closeMenu();
+    else openMenu();
+  });
+  btn.addEventListener('keydown', (e) => {
+    const i = STRATEGIES.findIndex((x) => x.value === value);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = e.key === 'ArrowDown' ? i + 1 : i - 1;
+      set(STRATEGIES[(n + STRATEGIES.length) % STRATEGIES.length].value);
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (root.classList.contains('open')) closeMenu();
+      else openMenu();
+    }
+  });
+  document.addEventListener('click', closeMenu);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+
+  render();
+  return { get value() { return value; }, set };
+}
+
+const strategySelect = createStrategySelect('rules');
+
 function parseRules(text) {
   const out = [];
   String(text || '').split(/\r?\n/).forEach((line, i) => {
@@ -76,7 +162,7 @@ async function loadFences() {
 
 async function load() {
   const cfg = await request('/config');
-  $('strategy').value = cfg.strategy === 'ai' ? 'ai' : 'rules';
+  strategySelect.set(cfg.strategy === 'ai' ? 'ai' : 'rules');
   $('targetRoot').value = cfg.targetRoot || '';
   $('tcEnabled').checked = cfg.timeCluster.enabled !== false;
   $('tcDays').value = cfg.timeCluster.windowDays || 7;
@@ -88,7 +174,7 @@ async function load() {
 
 async function save() {
   const body = {
-    strategy: $('strategy').value,
+    strategy: strategySelect.value,
     targetRoot: $('targetRoot').value.trim(),
     timeCluster: { enabled: $('tcEnabled').checked, windowDays: Number($('tcDays').value) || 7 },
     rules: parseRules($('rules').value),
@@ -106,7 +192,7 @@ async function save() {
 $('btnSave').addEventListener('click', save);
 
 $('btnNewFence').addEventListener('click', async () => {
-  const label = window.prompt('围栏名称（也是对应文件夹名）');
+  const label = window.prompt('围栏名称（只改显示位置，不移动文件）');
   if (!label) return;
   try {
     await request('/fences', { method: 'POST', body: JSON.stringify({ label }) });

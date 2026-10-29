@@ -69,6 +69,20 @@ test('resolveYzTarget: plugin 内置优先 → 已安装兜底 → 双双缺失 
   assert.strictEqual(resolveYzTarget('yz://plugin/ghost/frontend/index.mjs', ctx).status, 404);
 });
 
+test('★ 插件页 .html 必须按 text/html 服务（否则窗口 loadURL 直接 ERR_FAILED）', () => {
+  const mainDir = mkTmp();
+  const builtin = path.join(mainDir, 'plugins', 'builtin');
+  const installed = path.join(mainDir, 'plugins', 'installed');
+  fs.mkdirSync(path.join(installed, 'demo', 'frontend'), { recursive: true });
+  fs.writeFileSync(path.join(installed, 'demo', 'frontend', 'settings.html'), '<!doctype html>');
+  const ctx = { mainDir, isPackaged: false, shimsDir: mkTmp(), pluginRoots: { builtin, installed } };
+
+  const hit = resolveYzTarget('yz://plugin/demo/frontend/settings.html', ctx);
+  assert.ok(hit.ok, '插件页必须能解析到磁盘文件');
+  // 回落 application/octet-stream 时 Chromium 会把页面当下载 → 窗口白页 + ERR_FAILED(-2)
+  assert.match(hit.mime, /^text\/html/);
+});
+
 test('resolveYzTarget: 非法 id / 非法协议 / 编码穿越 → 400', () => {
   const ctx = { mainDir: mkTmp(), isPackaged: false, shimsDir: mkTmp() };
   // WHATWG URL 会把 %2e%2e 当 ".." 段规范化掉（消化成空 rest → 404）；

@@ -2,113 +2,161 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<title>桌面围栏</title>
+<title>桌面整理</title>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
-  body { font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; color: #eef3ff; }
-  /* 演示模式：模拟桌面壁纸，避免白底看不到白字 */
-  body.demo {
-    background:
-      radial-gradient(900px 520px at 18% 12%, rgba(64,130,255,.30), transparent 60%),
-      radial-gradient(760px 520px at 82% 24%, rgba(150,84,255,.24), transparent 62%),
-      radial-gradient(900px 600px at 62% 92%, rgba(24,180,190,.18), transparent 60%),
-      linear-gradient(135deg, #0a1628 0%, #102a4e 46%, #16324f 100%);
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    color: #fff; user-select: none;
   }
 
-  .topbar {
-    position: fixed; left: 16px; top: 12px; z-index: 30;
-    display: flex; align-items: center; gap: 10px;
-    padding: 6px 10px; border-radius: 12px;
-    background: rgba(14,20,32,.72); border: 1px solid rgba(255,255,255,.14);
-    backdrop-filter: blur(14px); box-shadow: 0 8px 26px rgba(0,0,0,.35);
-    font-size: 12px; color: #cfd8e8;
-  }
-  .topbar .dot { width: 7px; height: 7px; border-radius: 50%; background: #7ef0b0; box-shadow: 0 0 8px #7ef0b0; }
-  .topbar button {
-    border: 0; cursor: pointer; font-family: inherit; font-size: 12px;
-    padding: 4px 10px; border-radius: 8px; color: #cfd8e8; background: rgba(255,255,255,.10);
-  }
-  .topbar button:hover { background: rgba(255,255,255,.18); }
-  .topbar button.primary { background: linear-gradient(135deg,#4f6bff,#7a4dff); color: #fff; }
-
-  .fence {
-    position: absolute; z-index: 10; border-radius: 18px;
-    background: rgba(255,255,255,.055);
-    border: 1px solid rgba(255,255,255,.16);
-    box-shadow: 0 10px 40px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.10);
+  /* 顶部悬浮工具条：一条细胶囊，不占桌面 */
+  .bar {
+    position: fixed; left: 18px; top: 14px; z-index: 30;
+    display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px;
+    background: rgba(18,23,34,.62); border-radius: 999px;
+    box-shadow: 0 6px 22px rgba(0,0,0,.28);
     backdrop-filter: blur(10px);
   }
-  .fence.drop { border-color: rgba(120,170,255,.7); background: rgba(90,120,255,.14); }
-  .fh {
-    position: absolute; left: 12px; right: 12px; top: 8px; height: 26px;
-    display: flex; align-items: center; gap: 8px; cursor: grab; user-select: none;
+  .bar .t { font-size: 12px; color: #dfe8ff; opacity: .9; margin-right: 4px; }
+  .bar .stat { font-size: 11.5px; color: #9fb0c9; margin-right: 6px; }
+  .bar button {
+    border: 0; cursor: pointer; font-family: inherit; font-size: 12px;
+    padding: 5px 11px; border-radius: 999px; color: #cfd8e8; background: rgba(255,255,255,.1);
   }
-  .fh .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 10px currentColor; }
-  .fh .lbl { font-size: 14px; font-weight: 600; text-shadow: 0 1px 3px rgba(0,0,0,.45); }
-  .fh .cnt { font-size: 11px; color: rgba(255,255,255,.6); background: rgba(255,255,255,.10); border-radius: 20px; padding: 1px 8px; }
-  .fh .fx {
-    margin-left: auto; border: 0; background: transparent; color: rgba(255,255,255,.45);
-    cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 6px;
+  .bar button:hover { background: rgba(255,255,255,.2); }
+  .bar button.primary { background: linear-gradient(135deg,#4f6bff,#7a4dff); color: #fff; }
+  .bar button.ghost { background: transparent; }
+  .bar button.ghost:hover { background: rgba(255,255,255,.12); }
+
+  /* 桌面区域：分组自动流式排布，壁纸透出来 */
+  #board {
+    position: fixed; inset: 58px 18px 18px; z-index: 10;
+    display: flex; flex-wrap: wrap; align-content: flex-start; gap: 18px;
+    overflow: auto;
   }
-  .fh .fx:hover { background: rgba(255,255,255,.14); color: #fff; }
-  .rs {
-    position: absolute; right: 4px; bottom: 4px; width: 16px; height: 16px;
-    cursor: nwse-resize; border-right: 2px solid rgba(255,255,255,.28);
-    border-bottom: 2px solid rgba(255,255,255,.28); border-radius: 0 0 8px 0;
+  .grp {
+    padding: 10px 12px 12px; border-radius: 14px;
+    background: rgba(18,23,34,.34);
+    box-shadow: 0 8px 26px rgba(0,0,0,.18);
+    min-width: 220px;
+  }
+  .grp.hot { background: rgba(96,124,255,.3); box-shadow: 0 0 0 2px rgba(122,77,255,.65); }
+  .grp-head {
+    display: flex; align-items: center; gap: 7px; padding: 0 2px 8px;
+  }
+  .grp-head .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .grp-head .n {
+    font-size: 12px; color: rgba(255,255,255,.92); font-weight: 600;
+    text-shadow: 0 1px 3px rgba(0,0,0,.5);
+  }
+  .grp-head .c { font-size: 11px; color: rgba(255,255,255,.55); }
+  .grp-head .sp { flex: 1; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, 84px); gap: 2px; }
+  .ic {
+    width: 84px; padding: 7px 2px 6px; border-radius: 9px; cursor: default;
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+  }
+  .ic:hover { background: rgba(255,255,255,.14); }
+  .ic.sel { background: rgba(122,77,255,.4); }
+  .ic .ico {
+    width: 48px; height: 48px; display: grid; place-items: center; font-size: 26px;
+  }
+  .ic .ico img { width: 48px; height: 48px; object-fit: contain; image-rendering: auto; }
+  .ic .nm {
+    font-size: 11.5px; line-height: 1.3; text-align: center; color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,.65);
+    max-width: 80px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; word-break: break-all;
+  }
+  .empty {
+    color: rgba(255,255,255,.7); text-shadow: 0 1px 3px rgba(0,0,0,.6);
+    padding: 60px 20px; font-size: 13px;
   }
 
-  .icon {
-    position: absolute; width: 84px; text-align: center; cursor: default;
-    user-select: none; -webkit-user-drag: element;
+  .bulk {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(80px);
+    display: flex; align-items: center; gap: 8px; padding: 8px 14px; z-index: 30;
+    background: rgba(18,23,34,.85); border-radius: 999px; box-shadow: 0 8px 26px rgba(0,0,0,.35);
+    opacity: 0; transition: all .18s ease;
   }
-  .icon .tile {
-    width: 46px; height: 46px; margin: 0 auto 5px; border-radius: 11px;
-    display: flex; align-items: center; justify-content: center; font-size: 26px;
-    background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.14);
-    box-shadow: 0 3px 10px rgba(0,0,0,.28); overflow: hidden;
+  .bulk.show { transform: translateX(-50%); opacity: 1; }
+  .bulk .n { font-size: 12px; color: #cfd8e8; }
+  .bulk select {
+    background: rgba(255,255,255,.1); color: #e6ecf8; border: 0; border-radius: 999px;
+    padding: 6px 10px; font-family: inherit; font-size: 12px; outline: none;
   }
-  .icon .tile img { width: 34px; height: 34px; object-fit: contain; }
-  .icon .nm {
-    font-size: 11px; line-height: 1.35; text-shadow: 0 1px 3px rgba(0,0,0,.7);
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-    word-break: normal; overflow-wrap: break-word;
+  .bulk button {
+    border: 0; cursor: pointer; font-family: inherit; font-size: 12px; padding: 6px 12px;
+    border-radius: 999px; color: #cfd8e8; background: rgba(255,255,255,.12);
   }
-  .icon.sel .tile { background: rgba(90,130,255,.35); border-color: rgba(140,170,255,.7); }
+  .bulk button.ghost { background: transparent; }
 
-  .empty { position: absolute; inset: 40px 14px 14px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: rgba(255,255,255,.35); }
-
-  .menu {
-    position: fixed; z-index: 60; min-width: 170px; padding: 6px; border-radius: 10px;
-    background: rgba(18,24,36,.96); border: 1px solid rgba(255,255,255,.12);
-    box-shadow: 0 14px 40px rgba(0,0,0,.5); font-size: 12.5px; display: none;
+  .mask { position: fixed; inset: 0; background: rgba(6,9,14,.5); display: none; place-items: center; z-index: 40; }
+  .mask.show { display: grid; }
+  .dialog {
+    width: 360px; background: #171e2b; border-radius: 14px; padding: 18px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5); color: #e6ecf8;
   }
-  .menu.on { display: block; }
-  .menu .it { padding: 7px 10px; border-radius: 7px; cursor: pointer; color: #dfe6f5; display: flex; gap: 8px; }
-  .menu .it:hover { background: rgba(255,255,255,.10); }
-  .menu .hd { padding: 6px 10px 4px; font-size: 11px; color: #7d889c; }
-  .menu .sep { height: 1px; margin: 4px 6px; background: rgba(255,255,255,.08); }
+  .dialog h4 { margin: 0 0 6px; font-size: 14px; }
+  .dialog .sub { color: #8d99ad; font-size: 12px; margin-bottom: 12px; }
+  .dialog ul { margin: 0 0 14px; padding: 0; list-style: none; max-height: 230px; overflow: auto; }
+  .dialog li {
+    display: flex; justify-content: space-between; padding: 8px 10px;
+    background: rgba(255,255,255,.05); border-radius: 8px; margin-bottom: 6px; font-size: 12.5px;
+  }
+  .dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .dialog button {
+    border: 0; cursor: pointer; font-family: inherit; font-size: 12.5px; padding: 7px 14px;
+    border-radius: 8px; color: #cfd8e8; background: rgba(255,255,255,.1);
+  }
+  .dialog button.primary { background: linear-gradient(135deg,#4f6bff,#7a4dff); color: #fff; }
 
   .toast {
-    position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%);
-    z-index: 70; padding: 8px 14px; border-radius: 10px; font-size: 12.5px;
-    background: rgba(18,24,36,.94); border: 1px solid rgba(255,255,255,.12);
-    opacity: 0; transition: opacity .25s; pointer-events: none;
+    position: fixed; left: 50%; bottom: 88px; transform: translateX(-50%) translateY(16px);
+    background: rgba(18,23,34,.9); color: #cfe0ff; font-size: 12.5px;
+    padding: 9px 16px; border-radius: 10px; opacity: 0; transition: all .2s; pointer-events: none;
+    max-width: 70vw;
   }
-  .toast.on { opacity: 1; }
+  .toast.show { opacity: 1; transform: translateX(-50%); }
+  .toast.err { color: #ff9b9b; }
 </style>
 </head>
 <body>
-  <div class="topbar" id="topbar">
-    <span class="dot"></span>
-    <span id="hint">围栏模式 · 双击打开 · 拖拽图标可改归属</span>
-    <button id="btnNew">+ 新建围栏</button>
-    <button id="btnSettings">设置</button>
-    <button id="btnExit" class="primary">退出围栏</button>
+  <div class="bar" id="bar">
+    <span class="t">桌面整理</span>
+    <span class="stat" id="stat">加载中…</span>
+    <button class="primary" id="btnOrganize">一键整理</button>
+    <button id="btnNew">+ 分组</button>
+    <button class="ghost" id="btnSettings">设置</button>
+    <button class="ghost" id="btnExit">退出</button>
   </div>
-  <div id="layer"></div>
-  <div class="menu" id="menu"></div>
+
+  <div id="board"></div>
+
+  <div class="bulk" id="bulk">
+    <span class="n" id="bulkN">已选 0 项</span>
+    <select id="moveSel"></select>
+    <button id="btnMove">移入</button>
+    <button class="ghost" id="btnClear">取消</button>
+  </div>
+
+  <div class="mask" id="mask">
+    <div class="dialog">
+      <h4>确认整理</h4>
+      <div class="sub" id="dlgSub">只移动、不删除；执行后可整批撤销。</div>
+      <ul id="dlgList"></ul>
+      <div class="row">
+        <button id="dlgCancel">取消</button>
+        <button class="primary" id="dlgOk">开始整理</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
-  <script type="module" src="./fence.mjs"></script>
+
+<script type="module" src="./fence.mjs"></script>
 </body>
 </html>

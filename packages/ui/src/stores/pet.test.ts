@@ -7,6 +7,8 @@ import {
   collectWaitingIds,
   derivePetActivity,
   derivePetState,
+  derivePetStateWithGame,
+  petOutcome,
   affinityOf,
   bumpPetStats,
   emptyPetStats,
@@ -217,5 +219,38 @@ describe('宠物记忆（统计与好感）', () => {
     expect(petStatsFromRows([{ metadata_json: '{"petStats":{"pet":2}}' }])).toMatchObject({ pet: 2 })
     expect(petStatsFromRows([{ metadata: {} }])).toBeNull()
     expect(petStatsFromRows('nope')).toBeNull()
+  })
+})
+
+describe('代玩切片 → 六态映射（不新增第 7 态）', () => {
+  it('代玩中显示 running，暂停显示 paused', () => {
+    expect(derivePetStateWithGame({ ...base, gameActive: true })).toBe('running')
+    expect(derivePetStateWithGame({ ...base, gameActive: true, gamePaused: true })).toBe('paused')
+    // 聊天任务列表为空也照样 running（代玩本身就是活动）
+    expect(derivePetStateWithGame({ ...base, gameActive: true, running: 0 })).toBe('running')
+  })
+
+  it('等待输入 / 终态优先级高于代玩', () => {
+    expect(derivePetStateWithGame({ ...base, gameActive: true, waiting: 1 })).toBe('needs-input')
+    expect(derivePetStateWithGame({ ...base, gameActive: true, terminal: 'error' })).toBe('error')
+    expect(derivePetStateWithGame({ ...base, gameActive: true, terminal: 'ready' })).toBe('ready')
+  })
+
+  it('没有代玩时与 derivePetState 完全一致', () => {
+    const cases = [
+      { ...base },
+      { ...base, running: 2 },
+      { ...base, paused: 1 },
+      { ...base, waiting: 1 },
+      { ...base, terminal: 'ready' as const },
+    ]
+    for (const c of cases) expect(derivePetStateWithGame(c)).toBe(derivePetState(c))
+  })
+
+  it('代玩结束演出：失败趴下 / 完成 hop+spin / 主动中止不打扰', () => {
+    expect(petOutcome('error')).toEqual({ key: 'nap' })
+    expect(petOutcome('completed')).toEqual({ key: 'hop', follow: 'spin' })
+    expect(petOutcome('aborted')).toEqual({ key: '' })
+    expect(petOutcome('')).toEqual({ key: 'hop', follow: 'spin' })
   })
 })

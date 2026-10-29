@@ -35,6 +35,19 @@ test('合法请求：返回 yz:// 地址与绝对路径', () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('★ 传了 apiOrigin 就用本地 HTTP 开页（yz:// 文档加载子资源会被 Chromium 拒绝）', () => {
+  const { dirs, root } = mkPlugin();
+  const r = resolvePluginWindowRequest(dirs, {
+    pluginId: 'desktop-manager',
+    entry: 'frontend/fence.html',
+    placement: 'desktop',
+    apiOrigin: 'http://127.0.0.1:3001/',
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.url, 'http://127.0.0.1:3001/api/plugin-assets/desktop-manager/frontend/fence.html');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('清单未声明 desktop-shell 权限 → 拒绝', () => {
   const { dirs, root } = mkPlugin(['fs']);
   const r = resolvePluginWindowRequest(dirs, { pluginId: 'desktop-manager', entry: 'frontend/fence.html' });
@@ -73,6 +86,17 @@ test('图标会话：启动即隐藏不认领，退出不恢复', () => {
   assert.equal(s.shouldRestore(), false);
 });
 
+test('图标会话：桌面层要求隐藏但当前已是隐藏 → 显式认领，退出要恢复', () => {
+  const s = createIconSession();
+  s.noteStartup(false);            // 启动时就是隐藏（可能是上次没收尾）
+  assert.equal(s.shouldRestore(), false);
+  s.claimHidden();                 // 桌面层窗口说要隐藏 → 归属转到我们
+  assert.equal(s.shouldRestore(), true);
+  assert.equal(s.hiddenAtStartup, false);
+  s.markRestored();
+  assert.equal(s.shouldRestore(), false);
+});
+
 test('图标会话：本会话隐藏 → 需要恢复；恢复后清空', () => {
   const s = createIconSession();
   s.noteStartup(true);
@@ -92,7 +116,7 @@ test('图标会话：显式显示清除所有权', () => {
 });
 
 test('助手源码包含全部命令', () => {
-  for (const cmd of ['--progman', '--spawn-workerw', '--pin', '--unpin', '--icons-visible', '--toggle-icons', '--foreground']) {
+  for (const cmd of ['--progman', '--spawn-workerw', '--pin', '--unpin', '--icons-visible', '--toggle-icons', '--foreground', '--icon']) {
     assert.ok(HELPER_CS.includes(cmd), '缺少命令 ' + cmd);
   }
 });

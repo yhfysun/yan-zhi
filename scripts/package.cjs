@@ -1452,16 +1452,22 @@ function listArtifacts(targets) {
   return list.length;
 }
 
-/** 清理临时备份 */
+/**
+ * 清理临时备份
+ * ★ 不用 PowerShell 的 [System.IO.Directory]::Delete —— 备份里有 python 运行时的
+ *   onnxruntime __pycache__，绝对路径超过 260 字符（MAX_PATH），.NET 会抛
+ *   "Could not find a part of the path"；而该异常只写 stderr、PowerShell 退出码仍为 0，
+ *   于是脚本打 [OK] 但目录其实没删掉。fs.rmSync 由 libuv 自动加 \\?\ 长路径前缀。
+ */
 function cleanupTmp() {
   if (KEEP_TMP || DRY || !tmpBackupDir) return;
   step('清理临时备份');
-  const ps = `$p='${tmpBackupDir.replace(/'/g, "''")}'; if(Test-Path -LiteralPath $p){ [System.IO.Directory]::Delete($p,$true) }`;
   try {
-    runPowerShell(ps);
+    fs.rmSync(tmpBackupDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 });
+    if (fs.existsSync(tmpBackupDir)) throw new Error('目录仍存在（可能被句柄占用）');
     ok('已清理临时备份');
-  } catch {
-    warn(`清理失败，可手动删除: ${path.relative(ROOT, tmpBackupDir)}`);
+  } catch (e) {
+    warn(`清理失败（${e.message}），可手动删除: ${path.relative(ROOT, tmpBackupDir)}`);
   }
 }
 

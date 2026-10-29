@@ -34,8 +34,15 @@ const CSP_BLOCK = MAIN.slice(
 );
 /** wsOrigins 常量所在行。 */
 const WS_CONST_LINE = MAIN.split('\n').find((l) => l.includes('const wsOrigins')) || '';
-/** 每一支 connect-src 指令（模板串整段）。 */
-const CONNECT_DIRECTIVES = CSP_BLOCK.match(/connect-src[^`]*`/g) || [];
+/**
+ * 每一支 connect-src 指令（模板串整段）。
+ * ★ 2026-10-29：必须锚 `connect-src 'self'`，不能只锚 `connect-src` ——
+ *   CSP 块里有一句注释 `// connect-src 不放行就会 "Couldn't load texture"`，
+ *   只锚指令名会把注释当第三支指令 ⇒ 数量 3≠2、且该"指令"不含 ${wsOrigins}（假红）。
+ *   真实指令一律以 `'self'` 开头（改策略时若真去掉 'self'，这条同时会喊出来，不放水）。
+ *   ★ 不要改成"按行剥注释"：块里是模板串，`http://…` 的 `//` 会被误剥。
+ */
+const CONNECT_DIRECTIVES = CSP_BLOCK.match(/connect-src 'self'[^`]*`/g) || [];
 
 describe('CSP · WebSocket 源', () => {
   test('① ws 源跟随 API_PORT，不写死端口', () => {

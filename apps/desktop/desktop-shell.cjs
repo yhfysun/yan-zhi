@@ -56,13 +56,20 @@ function resolvePluginWindowRequest(dirs, opts) {
     if (!absPath) return { ok: false, error: 'entry-outside-plugin' };
     if (!fs.existsSync(absPath)) return { ok: false, error: 'entry-not-found' };
 
+    const rel = entry.replace(/^\/+/, '');
+    // ★ 页面默认走本地 HTTP（与 API 同源）：yz:// 文档里加载自己的子资源会被 Chromium
+    //   一律拒绝（模块 import / fetch 全报 Failed to fetch），围栏页因此只剩静态壳。
+    //   传了 apiOrigin 就用 http；没传（纯逻辑测试）保持 yz:// 形态。
+    const origin = String(o.apiOrigin || '').replace(/\/+$/, '');
     return {
       ok: true,
       pluginId,
       entry,
       placement,
       absPath,
-      url: 'yz://plugin/' + pluginId + '/' + entry.replace(/^\/+/, ''),
+      url: origin
+        ? origin + '/api/plugin-assets/' + pluginId + '/' + rel
+        : 'yz://plugin/' + pluginId + '/' + rel,
       manifest,
     };
   }
@@ -111,6 +118,16 @@ function createIconSession() {
       }
       return false;
     },
+    /**
+     * 直接认领隐藏态：桌面层窗口要求隐藏、但当前已是隐藏时用。
+     * ★ 不认领会漏掉恢复 —— 页面在 load 时隐藏图标，如果那一刻读到的已是隐藏
+     *   （例如上一次崩溃没收尾、或两次隐藏请求交叠），退出时 shouldRestore() 为 false，
+     *   用户桌面就停在"没有图标"的状态（2026-10-29 实测踩到）。
+     */
+    claimHidden() {
+      this.hiddenByUs = true;
+      this.hiddenAtStartup = false;
+    },
     /** 申请显示：当前隐藏才需要切换 */
     onShowRequested(currentVisible) {
       if (currentVisible) return false;
@@ -131,6 +148,8 @@ function createIconSession() {
 /** yz-desktop.exe 源码（csc 运行时编译，输出 JSON 行） */
 const HELPER_CS = String.raw`
 using System;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
@@ -140,6 +159,15 @@ class YzDesktop {
   [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
   [DllImport("user32.dll")] static extern IntPtr SetParent(IntPtr child, IntPtr parent);
+  // ★ 钉桌面层必须先把 WS_POPUP 改成 WS_CHILD：Electron 无边框窗口是 popup，
+  //   直接 SetParent 会失败（GetParent 仍为 0），实测就是"钉不上、Win+D 空白"的根因。
+  [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr h, int idx);
+  [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] static extern IntPtr SetWindowLongPtr(IntPtr h, int idx, IntPtr val);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  const int GWL_STYLE = -16;
+  const long WS_CHILD = 0x40000000L;
+  const long WS_POPUP = 0x80000000L;
+  const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_FRAMECHANGED = 0x0020;
   [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
@@ -147,6 +175,103 @@ class YzDesktop {
   [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
   [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr m, ref MONITORINFO mi);
   delegate bool EnumProc(IntPtr h, IntPtr l);
+
+  /* ---- 文件图标：SHGetImageList 的 256px 巨图标 ----
+     app.getFileIcon 在 Windows 上最大 48px，高 DPI 下按 CSS 像素放大就发虚。
+     这里走系统 image list 的 jumbo 档（256px），拿的就是资源管理器自己那张图。 */
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct SHFILEINFO {
+    public IntPtr hIcon;
+    public int iIcon;
+    public uint dwAttributes;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName;
+  }
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+  static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+  [DllImport("shell32.dll", EntryPoint = "#727")]
+  static extern int SHGetImageList(int iImageList, ref Guid riid, out IImageList ppv);
+  [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr hIcon);
+  const uint SHGFI_ICON = 0x100;
+  const uint SHGFI_SYSICONINDEX = 0x4000;
+  const int SHIL_JUMBO = 4;
+  const int ILD_TRANSPARENT = 1;
+  static readonly Guid IID_IImageList = new Guid("46EB5926-582E-4017-9FDF-E8998DAA0950");
+
+  static IntPtr JumboIcon(string file) {
+    SHFILEINFO sfi = new SHFILEINFO();
+    IntPtr ok = SHGetFileInfo(file, 0, ref sfi, (uint)Marshal.SizeOf(typeof(SHFILEINFO)), SHGFI_SYSICONINDEX);
+    if (ok == IntPtr.Zero) return IntPtr.Zero;
+    IntPtr hIcon = IntPtr.Zero;
+    Guid iid = IID_IImageList;
+    IImageList list = null;
+    try {
+      if (SHGetImageList(SHIL_JUMBO, ref iid, out list) == 0 && list != null) {
+        list.GetIcon(sfi.iIcon, ILD_TRANSPARENT, ref hIcon);
+      }
+    } catch { hIcon = IntPtr.Zero; }
+    finally { if (list != null) Marshal.ReleaseComObject(list); }
+    if (hIcon != IntPtr.Zero) return hIcon;
+    // 兜底：没有 jumbo 资源的文件类型，取系统大图标（48px，仍是原生图）
+    SHFILEINFO sfi2 = new SHFILEINFO();
+    SHGetFileInfo(file, 0, ref sfi2, (uint)Marshal.SizeOf(typeof(SHFILEINFO)), SHGFI_ICON);
+    return sfi2.hIcon;
+  }
+
+  /** 非透明像素的包围盒（抗锯齿边缘用 alpha>8 判据；全透明则退回整图） */
+  static Rectangle ContentBounds(Bitmap bmp) {
+    int w = bmp.Width, h = bmp.Height;
+    int minX = w, minY = h, maxX = -1, maxY = -1;
+    BitmapData bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+    try {
+      byte[] buf = new byte[bd.Stride * h];
+      Marshal.Copy(bd.Scan0, buf, 0, buf.Length);
+      for (int y = 0; y < h; y++) {
+        int row = y * bd.Stride;
+        for (int x = 0; x < w; x++) {
+          if (buf[row + x * 4 + 3] > 8) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+    } finally { bmp.UnlockBits(bd); }
+    if (maxX < 0) return new Rectangle(0, 0, w, h);
+    return new Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1);
+  }
+
+  /** 取图标并落成 PNG；返回是否成功。输出为正方形、按内容裁切后的原生分辨率（超过 size 才缩）。 */
+  static bool SaveFileIcon(string file, string outPath, int size) {
+    IntPtr hIcon = JumboIcon(file);
+    if (hIcon == IntPtr.Zero) return false;
+    try {
+      using (Icon ico = Icon.FromHandle(hIcon)) {
+        // ★ jumbo 列表对只有 32/48px 图标的程序返回「256 画布 + 左上角小图」，
+        //   直接存就是一个角上的小点。先按 alpha 内容裁切；再放进正方形画布居中
+        //   （不放大：小图标保持原始像素，显示 48px 时 1:1 最清晰；大图标才缩到 size）。
+        using (Bitmap src = ico.ToBitmap())
+        using (Bitmap cut = src.Clone(ContentBounds(src), PixelFormat.Format32bppArgb)) {
+          int longSide = Math.Max(cut.Width, cut.Height);
+          int side = Math.Min(size, longSide);
+          float k = (float)side / longSide;
+          int w2 = Math.Max(1, (int)Math.Round(cut.Width * k));
+          int h2 = Math.Max(1, (int)Math.Round(cut.Height * k));
+          using (Bitmap bmp = new Bitmap(side, side, PixelFormat.Format32bppArgb)) {
+            using (Graphics g = Graphics.FromImage(bmp)) {
+              g.Clear(Color.Transparent);
+              g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+              g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+              g.DrawImage(cut, new Rectangle((side - w2) / 2, (side - h2) / 2, w2, h2));
+            }
+            bmp.Save(outPath, ImageFormat.Png);
+          }
+        }
+      }
+    } finally { DestroyIcon(hIcon); }
+    return true;
+  }
 
   [StructLayout(LayoutKind.Sequential)]
   struct RECT { public int L; public int T; public int R; public int B; }
@@ -199,6 +324,15 @@ class YzDesktop {
   }
 
   static IntPtr FindWorkerW() {
+    // ★ Win11（实测 2026-10-29）：发 0x052C 之后出现的是 **Progman 的子窗口 WorkerW**
+    //   （壁纸层），没有经典的"顶部同级 WorkerW + SHELLDLL_DefView"结构。
+    //   旧实现只认后者 → 永远 workerW=0 → 桌面层钉不上、Win+D 后空白。
+    IntPtr progman = Progman();
+    if (progman != IntPtr.Zero) {
+      IntPtr child = FindWindowEx(progman, IntPtr.Zero, "WorkerW", null);
+      if (child != IntPtr.Zero) return child;
+    }
+    // 经典布局兜底：DefView 宿主窗口之后的同级 WorkerW
     IntPtr result = IntPtr.Zero;
     EnumWindows(delegate(IntPtr h, IntPtr l) {
       IntPtr v = FindWindowEx(h, IntPtr.Zero, "SHELLDLL_DefView", null);
@@ -216,7 +350,8 @@ class YzDesktop {
     if (p == IntPtr.Zero) return;
     IntPtr dummy;
     SendMessageTimeout(p, MSG_SPAWN_WORKERW, IntPtr.Zero, IntPtr.Zero, 0, 1500, out dummy);
-    System.Threading.Thread.Sleep(120);
+    // 0x052C 之后壁纸 WorkerW 是异步创建的，等久一点再找（120ms 实测不够稳）
+    System.Threading.Thread.Sleep(300);
   }
 
   static bool IconsHidden() {
@@ -240,6 +375,7 @@ class YzDesktop {
   static void Emit(string s) { Console.Out.WriteLine(s); }
   static long H(IntPtr p) { return p.ToInt64(); }
 
+  [STAThread]
   static int Main(string[] args) {
     string cmd = args.Length > 0 ? args[0] : "";
     switch (cmd) {
@@ -262,10 +398,21 @@ class YzDesktop {
         if (!IsWindow(hwnd)) { Emit("{\"ok\":false,\"error\":\"not-a-window\"}"); return 2; }
         IntPtr w = FindWorkerW();
         if (w == IntPtr.Zero) { SpawnWorkerW(); w = FindWorkerW(); }
+        // ★ Win11 兜底：很多机器没有独立 WorkerW 层，桌面 DefView 直接挂在 Progman
+        //   （或别的宿主窗口）下面 —— 钉到 DefView 的父窗口，仍在壁纸层之上、应用之下。
+        string target = "workerw";
+        if (w == IntPtr.Zero) {
+          IntPtr dv = DefView();
+          IntPtr host = dv != IntPtr.Zero ? GetParent(dv) : IntPtr.Zero;
+          if (host != IntPtr.Zero) { w = host; target = "defview-parent"; }
+        }
         if (w == IntPtr.Zero) { Emit("{\"ok\":false,\"error\":\"worker-w-not-found\"}"); return 3; }
+        long style = GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64();
+        SetWindowLongPtr(hwnd, GWL_STYLE, new IntPtr((style & ~WS_POPUP) | WS_CHILD));
         SetParent(hwnd, w);
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         bool ok = GetParent(hwnd) == w;
-        Emit("{\"ok\":" + (ok ? "true" : "false") + ",\"workerW\":" + H(w) + "}");
+        Emit("{\"ok\":" + (ok ? "true" : "false") + ",\"workerW\":" + H(w) + ",\"target\":\"" + target + "\"}");
         return ok ? 0 : 4;
       }
 
@@ -273,7 +420,11 @@ class YzDesktop {
         if (args.Length < 2) { Emit("{\"ok\":false,\"error\":\"missing-hwnd\"}"); return 2; }
         long raw2;
         if (!Int64.TryParse(args[1], out raw2)) { Emit("{\"ok\":false,\"error\":\"bad-hwnd\"}"); return 2; }
-        SetParent(new IntPtr(raw2), IntPtr.Zero);
+        IntPtr u = new IntPtr(raw2);
+        SetParent(u, IntPtr.Zero);
+        // 还原成普通顶层窗口（否则窗口留在子窗口状态，无法正常显示/交互）
+        long st = GetWindowLongPtr(u, GWL_STYLE).ToInt64();
+        SetWindowLongPtr(u, GWL_STYLE, new IntPtr((st & ~WS_CHILD) | WS_POPUP));
         Emit("{\"ok\":true}");
         return 0;
       }
@@ -285,6 +436,21 @@ class YzDesktop {
       case "--foreground":
         Emit("{\"hwnd\":" + H(GetForegroundWindow()) + ",\"fullscreen\":" + (ForegroundFullscreen() ? "true" : "false") + "}");
         return 0;
+
+      // --icon <源路径> <输出 png> [边长]
+      case "--icon": {
+        if (args.Length < 3) { Emit("{\"ok\":false,\"error\":\"missing-args\"}"); return 2; }
+        int size = 256;
+        if (args.Length > 3) {
+          int parsed;
+          if (Int32.TryParse(args[3], out parsed) && parsed >= 16 && parsed <= 256) size = parsed;
+        }
+        bool okIcon = false;
+        try { okIcon = SaveFileIcon(args[1], args[2], size); }
+        catch (Exception ex) { Emit("{\"ok\":false,\"error\":\"" + ex.GetType().Name + "\"}"); return 5; }
+        Emit("{\"ok\":" + (okIcon ? "true" : "false") + ",\"size\":" + size + ",\"png\":\"" + args[2].Replace("\\", "\\\\") + "\"}");
+        return okIcon ? 0 : 5;
+      }
 
       case "--toggle-icons": {
         bool want = args.Length > 1 && args[1] == "1";
@@ -300,6 +466,20 @@ class YzDesktop {
         return 2;
     }
   }
+}
+
+// IImageList：只声明到 GetIcon，**前面每个方法的顺序必须与 shell32 的 vtable 完全一致**
+// （少声明尾部方法没关系，多/错顺序会直接访问到别的槽位）。
+[ComImport, Guid("46EB5926-582E-4017-9FDF-E8998DAA0950"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IImageList {
+  [PreserveSig] int Add(IntPtr hbmImage, IntPtr hbmMask, out int pi);
+  [PreserveSig] int ReplaceIcon(int i, IntPtr hicon, out int pi);
+  [PreserveSig] int SetOverlayImage(int iImage, int iOverlay);
+  [PreserveSig] int Replace(int i, IntPtr hbmImage, IntPtr hbmMask);
+  [PreserveSig] int AddMasked(IntPtr hbmImage, int crMask, out int pi);
+  [PreserveSig] int Draw(IntPtr pimldp);
+  [PreserveSig] int Remove(int i);
+  [PreserveSig] int GetIcon(int i, int flags, ref IntPtr picon);
 }
 `;
 

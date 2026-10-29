@@ -6,9 +6,11 @@ import {
   collectWaitingIds,
   derivePetActivity,
   derivePetState,
+  derivePetStateWithGame,
   emptyPetStats,
   lastUserText,
   petMemoryContent,
+  petOutcome,
   petStatsFromRows,
   plainPetSettings,
   usePetStore,
@@ -45,6 +47,17 @@ export function usePetBridge() {
   const mem = useMemoryStore() as any
   pet.init()
 
+  // 主窗口当前会话上报（2026-10-29）：游戏窗点「交给智能体代玩」时，
+  // 主进程缺省把这一页挂到用户在主窗正在看的会话上（游戏窗自己的 store 未必同步）。
+  // 主进程只认主窗口的发送者，子窗口发来会被忽略。
+  watch(
+    () => chat.currentConvId,
+    (id: string) => {
+      try { (window as any).electronAPI?.chatSession?.currentConv?.(String(id || '')) } catch { /* 非桌面端忽略 */ }
+    },
+    { immediate: true }
+  )
+
   /** 最近一次任务终态 */
   const terminal = ref<'ready' | 'error' | null>(null)
   let terminalTimer = 0
@@ -53,6 +66,18 @@ export function usePetBridge() {
   let offPetClosed: (() => void) | undefined
   let offPetAction: (() => void) | undefined
   let offNeedSync: (() => void) | undefined
+  let offHandoff: (() => void) | undefined
+
+  /**
+   * 显式移交状态（2026-10-29）：用户在独立游戏窗点「交给智能体代玩」后，
+   * 主进程广播 {on:true,...}。宠物据此显示「代玩中」气泡，并在结束时演动作。
+   */
+  const gameHandoff = ref<{ on: boolean; tabId: string; convId: string; title: string; url: string }>({
+    on: false, tabId: '', convId: '', title: '', url: '',
+  })
+  /** 结束演出用：广播的 on:false 可能不带 convId（关 tab / 关窗口），留最后一份 */
+  let lastGameConvId = ''
+  let outcomeTimer = 0
 
   function pushTerminal(kind: 'ready' | 'error') {
     terminal.value = kind
@@ -82,14 +107,26 @@ export function usePetBridge() {
       else if (isPaused) pinnedState = 'paused'
     }
     const state = pinnedState || derivePetState({ running, paused, waiting, terminal: terminal.value })
+    // ── 代玩切片（2026-10-29）：来源全部是既有字段 + 主进程的移交广播，不新起订阅 ──
+    const g = gameHandoff.value
+    const gameActive = !!g.on
+    const gamePaused = !!(g.convId && chat.pausedConvIds?.has?.(g.convId))
+    const steps = (chat.browserSteps || []) as Array<{ action?: string; label?: string }>
+    const lastStep = steps.length ? steps[steps.length - 1] : null
+    const stepLabel = String((lastStep && (lastStep.label || lastStep.action)) || '')
+    const finalState = pinnedState || derivePetStateWithGame({
+      running, paused, waiting, terminal: terminal.value, gameActive, gamePaused,
+    })
     // 活动气泡：跟"用户正在看/跟着的任务"，没有就取第一个在跑的任务。
     // 只读 messagesByConv 的既有结构，不新起订阅；流式期间每帧重算也只是一次反向扫。
     const followId =
       pinned || String(chat.currentConvId || '') || [...(chat.runningConvIds ?? [])][0] || ''
     const followMsgs = followId ? chat.messagesByConv?.[followId] : null
     const activity =
-      state === 'running'
-        ? derivePetActivity(followMsgs) || { kind: 'think' as const, label: '思考中', target: '' }
+      finalState === 'running'
+        ? (gameActive
+            ? { kind: 'act' as const, label: '代玩中', target: stepLabel || g.title || '' }
+            : derivePetActivity(followMsgs) || { kind: 'think' as const, label: '思考中', target: '' })
         : null
     // 任务小面板用的轻量列表（≤5 行）：带分区、进度条、行内快答要的字段
     const titleOf = new Map<string, string>()
@@ -136,10 +173,18 @@ export function usePetBridge() {
       tasks.push(rowOf(id, String((r as any).status)))
     }
     return {
-      state,
+      state: finalState,
       running,
       waiting,
       activity,
+      game: {
+        active: gameActive,
+        paused: gamePaused,
+        lastAt: Number(chat.lastBrowserToolAt) || 0,
+        stepLabel,
+        title: g.title || '',
+        url: g.url || '',
+      },
       memory: { affinity: affinityOf(petStats.value), ...petStats.value },
       title: String(chat.currentConversation?.title || ''),
       tasks: tasks.slice(0, 5),
@@ -252,6 +297,11 @@ export function usePetBridge() {
       v.activity?.kind,
       v.activity?.label,
       v.activity?.target,
+      // 代玩切片：状态/步骤变化要能推给宠物窗（气泡文案「代玩中：<动作>」）
+      v.game?.active,
+      v.game?.paused,
+      v.game?.stepLabel,
+      v.game?.title,
       (v.tasks || [])
         .map((t: any) => [t.id, t.status, t.agent, t.startedAt, t.planDone, t.planTotal, t.question].join('~'))
         .join(','),
@@ -293,6 +343,36 @@ export function usePetBridge() {
     }
   )
 
+  /**
+   * 代玩结束演出（2026-10-29）：用**已有动作**（hop/spin/nap），不新做动画。
+   *   · 失败（最近 15s 内该会话 error）→ nap
+   *   · 完成 / 用户收回 → hop，1s 后 spin
+   *   · 用户主动中止 → 不打扰
+   */
+  watch(
+    () => gameHandoff.value.on,
+    (on, prev) => {
+      const info = gameHandoff.value
+      if (on) {
+        lastGameConvId = info.convId || lastGameConvId
+        return
+      }
+      if (!prev) return
+      const convId = info.convId || lastGameConvId || String(chat.currentConvId || '')
+      const rec = (chat.runStatsByConv || {})[convId]
+      const recentlyEnded = !!rec && Date.now() - (Number(rec.endedAt) || 0) < 15_000
+      const out = petOutcome(recentlyEnded ? String(rec.status) : '')
+      if (!out.key) return
+      window.clearTimeout(outcomeTimer)
+      try { api()?.command?.({ type: 'play', key: out.key }) } catch { /* 非桌面端忽略 */ }
+      if (out.follow) {
+        outcomeTimer = window.setTimeout(() => {
+          try { api()?.command?.({ type: 'play', key: out.follow }) } catch { /* ignore */ }
+        }, 1000)
+      }
+    }
+  )
+
   onMounted(() => {
     // 智能体是异步从后端拉的：不主动触发的话，宠物窗的智能体下拉会一直是空的
     try { agents.ensureAgents?.() } catch { /* 后端未就绪时下次渲染再来 */ }
@@ -310,6 +390,30 @@ export function usePetBridge() {
       }
       // aborted（用户主动停止）不打扰
     })
+
+    // 显式移交状态：先拉一次（可能在本窗挂载前游戏窗就开始代玩了），再订阅广播
+    const bv = (window as any).electronAPI?.browserView
+    try {
+      bv?.getHandoff?.().then((st: any) => {
+        if (!st || !st.on) return
+        gameHandoff.value = {
+          on: true, tabId: String(st.tabId || ''), convId: String(st.convId || ''),
+          title: String(st.title || ''), url: String(st.url || ''),
+        }
+        lastGameConvId = String(st.convId || '')
+      }).catch(() => { /* 非桌面端 / 老版本忽略 */ })
+    } catch { /* ignore */ }
+    try {
+      offHandoff = bv?.onHandoff?.((p: any) => {
+        gameHandoff.value = {
+          on: !!(p && p.on),
+          tabId: String((p && p.tabId) || ''),
+          convId: String((p && p.convId) || ''),
+          title: String((p && p.title) || ''),
+          url: String((p && p.url) || ''),
+        }
+      })
+    } catch { /* ignore */ }
 
     // 宠物窗的动作回传
     const offPetAction = api()?.onAction?.((a: any) => {
@@ -461,10 +565,12 @@ export function usePetBridge() {
 
   onBeforeUnmount(() => {
     window.clearTimeout(terminalTimer)
+    window.clearTimeout(outcomeTimer)
     offTaskFinished?.()
     offPetOpened?.()
     offPetClosed?.()
     offPetAction?.()
     offNeedSync?.()
+    offHandoff?.()
   })
 }

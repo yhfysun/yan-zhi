@@ -46,13 +46,15 @@ async function setup() {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'yz-fence-'));
   const prev = process.env.YZ_DESKTOP_DIR;
   process.env.YZ_DESKTOP_DIR = dir;
-  const { ctx, getMount } = makeCtx();
+  const { ctx, getMount, store } = makeCtx();
   desktopManagerModule.activate(ctx);
   const { app, routes } = makeApp();
   getMount()(app);
   return {
     dir,
     routes,
+    ctx,
+    store,
     cleanup: async () => {
       if (prev === undefined) delete process.env.YZ_DESKTOP_DIR;
       else process.env.YZ_DESKTOP_DIR = prev;
@@ -61,7 +63,7 @@ async function setup() {
   };
 }
 
-test('GET /state：默认围栏 = 待归类 + 桌面顶层文件夹，文件夹内容归属该围栏', async () => {
+test('GET /state：默认围栏 = 文件夹 + 按扩展名五栏 + 待归类；桌面只列顶层（文件夹不展开）', async () => {
   const { dir, routes, cleanup } = await setup();
   try {
     await fsp.mkdir(path.join(dir, '文档'), { recursive: true });
@@ -72,17 +74,74 @@ test('GET /state：默认围栏 = 待归类 + 桌面顶层文件夹，文件夹�
     await routes['GET /state']({}, r);
     assert.equal(r.code, 200);
     const { fences, items } = r.body.data;
-    const labels = fences.map((f) => f.label);
-    assert.ok(labels.includes('待归类'));
-    assert.ok(labels.includes('文档'));
+    assert.deepEqual(
+      fences.map((f) => f.label),
+      ['文件夹', '文档', '表格', '图片', '安装包', '压缩包', '待归类'],
+      '桌面有目录时：文件夹栏在最前，扩展名五栏随后，待归类压尾',
+    );
+    const fenceOf = (label) => fences.find((f) => f.label === label).id;
 
-    const docFence = fences.find((f) => f.label === '文档');
-    const a = items.find((i) => i.name === 'a.docx');
-    const b = items.find((i) => i.name === 'b.png');
-    assert.equal(a.fenceId, docFence.id);
-    assert.equal(b.fenceId, 'inbox');
-    // 同名文件夹本身不再作为图标重复出现
-    assert.ok(!items.some((i) => i.name === '文档'));
+    // ★ 2026-10-29：桌面只列顶层 —— 文件夹算一个图标，内容不展开
+    assert.deepEqual(items.map((i) => i.name).sort(), ['b.png', '文档']);
+    assert.equal(items.find((i) => i.name === '文档').fenceId, fenceOf('文件夹'));
+    assert.equal(items.find((i) => i.name === 'b.png').fenceId, fenceOf('图片'), 'png 默认进「图片」栏');
+    assert.ok(!items.some((i) => i.name === 'a.docx'), '文件夹里的文件不应出现在桌面列表里');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('GET /state：扩展名分栏覆盖文档/表格/图片/安装包/压缩包，未知扩展名与快捷方式进待归类', async () => {
+  const { dir, routes, cleanup } = await setup();
+  try {
+    for (const n of ['a.docx', 'b.xlsx', 'c.png', 'd.exe', 'e.zip', 'f.lnk', 'noext', 'g.weird']) {
+      await fsp.writeFile(path.join(dir, n), 'x');
+    }
+    const r = res();
+    await routes['GET /state']({}, r);
+    const { fences, items } = r.body.data;
+    const labelOf = (id) => (fences.find((f) => f.id === id) || {}).label;
+    const byName = Object.fromEntries(items.map((i) => [i.name, labelOf(i.fenceId)]));
+    assert.deepEqual(byName, {
+      'a.docx': '文档',
+      'b.xlsx': '表格',
+      'c.png': '图片',
+      'd.exe': '安装包',
+      'e.zip': '压缩包',
+      'f.lnk': '待归类',
+      noext: '待归类',
+      'g.weird': '待归类',
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test('迁移：旧的「按文件夹名建栏」配置被一次性重建，旧指派不残留', async () => {
+  const { dir, routes, store, cleanup } = await setup();
+  try {
+    await fsp.writeFile(path.join(dir, 'b.png'), 'x');
+    // 旧数据：没有 schema 标记 + 按桌面文件夹名建的栏
+    store.set('fences', [
+      { id: 'inbox', label: '待归类', color: '#9aa6ba', sort: 'name', rect: { x: 40, y: 40, w: 400, h: 300 } },
+      { id: 'f-old', label: '压缩包', color: '#5b8cff', sort: 'name', rect: { x: 456, y: 40, w: 400, h: 320 } },
+    ]);
+    store.set('assign', { 'b.png': 'f-old' });
+
+    const r = res();
+    await routes['GET /state']({}, r);
+    const { fences, items } = r.body.data;
+    assert.equal(store.get('fencesSchema'), 2);
+    assert.ok(fences.some((f) => f.kind === 'ext' && f.label === '图片'));
+    // 旧指派指向的 'f-old' 已被新栏替换 → b.png 回到按扩展名归的「图片」
+    assert.equal(items.find((i) => i.name === 'b.png').fenceId, 'f-image');
+    assert.deepEqual(store.get('assign'), {});
+
+    // 迁移只发生一次：用户后来改的栏不会被下一次 /state 覆盖
+    store.set('fences', [{ id: 'inbox', label: '待归类', kind: 'inbox', sort: 'name', rect: { x: 40, y: 40, w: 400, h: 300 } }]);
+    const r2 = res();
+    await routes['GET /state']({}, r2);
+    assert.deepEqual(r2.body.data.fences.map((f) => f.label), ['待归类']);
   } finally {
     await cleanup();
   }

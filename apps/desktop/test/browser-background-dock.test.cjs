@@ -143,7 +143,7 @@ describe('节流判定同源：任何新 guest 都按窗口可见性设置', () 
     const idx = mainSrc.indexOf("ipcMain.handle('browser:wv:register'");
     assert.ok(idx > -1, '未找到 register handler');
     const body = mainSrc.slice(idx, idx + 1800);
-    assert.match(body, /setBackgroundThrottling\(!isWindowOffView\(\)\)/, '★ 注册时写死 true 会让最小化后导航一次就重新节流');
+    assert.match(body, /setBackgroundThrottling\(!keepAliveOfTab\(tabId\) && !isWindowOffView\(\)\)/, '★ 注册时写死 true 会让最小化后导航一次就重新节流（保活页还要求不节流）');
   });
 
   test('will-attach-webview 同样按窗口可见性设置', () => {

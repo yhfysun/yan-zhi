@@ -58,6 +58,83 @@
 - 开机自启围栏：需宿主提供「启动任务」能力（设置页已如实说明，不假装支持）
 - 双屏各自围栏（当前按主屏坐标）
 
+### 桌面层真机打通（2026-10-29 晚）
+
+用户要求：「win+d 就是我们的桌面」「正常图标 + 几个分类面板」。之前判定「钉不上桌面层」是**检测写错 + 缺一步样式转换**，两处都修好了：
+
+- [x] **WorkerW 结构**：Win11 发 `0x052C` 后，壁纸 `WorkerW` 是 **Progman 的子窗口**，
+      不是「顶部同级 WorkerW + SHELLDLL_DefView」。旧实现只认后者 → 永远 `workerW=0`。
+      现在先找 Progman 的 WorkerW 子窗口，再回落经典同级结构（助手 v4）
+- [x] **钉不上桌面层的真因**：Electron 无边框窗口是 `WS_POPUP`，直接 `SetParent` **静默失败**
+      （`GetParent` 仍为 0，返回 ok=false）。必须先 `SetWindowLong(GWL_STYLE)` 去掉 `WS_POPUP`、
+      加上 `WS_CHILD`，再 `SetParent` + `SetWindowPos(FRAMECHANGED)`（助手 v5）
+- [x] 真机验证：`pluginWindow.open({placement:'desktop'})` 返回 `fallback: null`（钉上了），
+      围栏页 DOM `groups=8 / icons=110` —— 这一层在 Win+D 后仍然存在
+- [x] 界面改回「桌面形态」：壁纸透出、分组是半透明圆角区域、图标直接铺在桌面上（`fence.html` 重写）
+- [x] 旧「分类平铺窗口」（organize.html/mjs）已删除：用户否决了"另一个窗口"的方案
+
+**仍未做**
+- 分组位置目前按流式自动排布（不记忆每个分组的坐标）；要手动摆放需再接 rect 持久化
+- 图标排布/排序（按名称/时间/类型）沿用的是分组内的固定顺序
+
+### 界面改版（2026-10-29，用户拍板 A 方案）
+
+用户反馈：「样子不行 / win+d 后桌面空白 / 参考电脑管家，不要每个都是一个面板」。
+
+- [x] **主界面换成单窗口「分类平铺」**（`frontend/organize.html`）：左侧分类轨道 + 右侧按分类平铺，
+      分组只用「色点 + 标题 + 分隔线」，不再是满地浮动面板框
+- [x] **不再隐藏系统图标**：实测 `desktopShell.iconsVisible()` 恒为 `true`，Win+D 后桌面不再空白；
+      关掉窗口桌面也照旧完整（原设计的「隐藏系统图标 + 自绘围栏」在 Win+D 场景必然空白，这是设计缺陷）
+- [x] 桌面围栏（fence.html）从清单摘除，保留文件但不提供入口（钉桌面层在本机实测不可用：`workerW=0`）
+- [x] 窗口入口：`contributes.windows` 的 `organize`（normal，960×660，菜单项 + `Control+Alt+D`）
+- [x] 一键整理按钮接到新后端 `/plan` + `/apply`；支持多选移入分类、拖拽到左侧分类、新建分类
+- [x] 真机验证：窗口打开后 DOM `groups=8 / items=109 / cats=10`，`/plan` 返回 200
+
+### 入口与快捷键（2026-10-29）
+
+用户实报：「桌面整理插件我要怎么用？都没有按钮？」—— 插件做完了但没有宿主入口，
+唯一开法是 DevTools 手敲 `pluginWindow.open`。补齐为**基座通用能力**（业务零侵入）：
+
+- [x] 清单扩展点 `contributes.windows[]`（id / label / entry / placement / rect? / resizable? / accelerator?），
+      校验落在 `packages/core/src/plugin/manifest.ts`：kebab id、包内相对 html 入口（挡绝对路径与 `..`）、
+      三档 placement、rect 只认 x/y/w/h、accelerator 非空
+- [x] 插件管理卡片按声明渲染「打开」按钮（启用 + Electron 宿主才给），走既有 `pluginWindow.open`
+- [x] 同入口重复点击只 `update({visible:true})` 叫回窗口，不叠第二个（两个围栏会互抢系统图标）
+- [x] desktop-manager manifest 声明 `设置`（normal，640×720，可缩放）与 `围栏`（desktop，accelerator `Control+Alt+D`）
+- [x] 测试：`PluginManager.windows.mount.test.ts` 7 例（按钮显隐 4 + 传参 2 + 去重 1）、
+      `manifest.windows.test.ts` 7 例；`packages/ui` vue-tsc 与 `packages/core` tsc 均绿
+- [x] **全局快捷键**：`Control+Alt+D` 打开桌面围栏（清单声明 `accelerator`）
+      —— `apps/desktop/plugin-hotkeys.cjs` 纯逻辑（规范化 + 差量，9 例单测）+
+      主进程 `plugin-window:set-hotkeys` 差量注册（全部走 `setGlobalHotkey`）+
+      `App.vue` 监听「启用插件 × 用户覆盖」整份同步 + 设置 → 快捷键新增可改/可禁用/恢复默认的行
+- [x] 主进程 `plugin-window:open` 判重：同 pluginId + entry 已存在时叫回原窗口（`normal` 聚焦、其余 `showInactive`），
+      把上面的「两个设置窗口」边界也一并堵住
+- [x] 顺手修正：宠物 `Alt+P` 之前直连 `globalShortcut.register`，绕开了统一注销与守卫
+      （`shortcut-governance` 自 ac114b9 起就红），改为走 `setGlobalHotkey`
+- [x] **侧栏菜单入口**：清单 `contributes.windows[].menu: true` 的窗口在侧栏「插件」分组出现一项
+      （`kind:'window'`，点了直接开窗，失败要弹原因）。面板窗口已开启，用户不必再进插件管理页找卡片
+- [x] **实测踩坑：清单是 pinia 响应式对象，Proxy 过不了 IPC** ——
+      `api.open({ rect: w.rect })` 与 `setHotkeys([...rect])` 都抛
+      `An object could not be cloned`，表现分别是「点菜单没反应」和「按快捷键没反应」。
+      修法：`plainRect()` 拷成普通对象再传（三处调用点统一），并加一条 `isProxy + structuredClone` 守门用例
+- [x] **实测踩坑②：yz:// 协议的 MIME 表没有 .html** —— 回落 `application/octet-stream`，
+      Chromium 把插件窗口页当下载处理，`loadURL` 直接 `ERR_FAILED (-2)`。
+      补 `.html/.htm → text/html; charset=utf-8`，并加一条协议单测（这条对**任何**插件窗口都成立）
+- [x] **实测踩坑③：yz:// 文档里加载自己的子资源一律被拒**（模块 import / fetch 全报
+      `Failed to fetch`，围栏页只剩静态工具栏、按钮全死、图标也不画）。
+      改为插件窗口页走本地 HTTP：`/api/plugin-assets/<id>/<entry>`（与 API 同源），
+      该路由补 `.html/.htm` MIME。真机验证：围栏页 9 个围栏 / 120 个图标正常渲染
+- [x] **一键整理**（用户诉求「直接一键整理好桌面，别让我自己拖」）：
+      插件后端新增 `POST /plan`（只算不动）+ `POST /apply`（必须 confirmed:true），
+      与智能体工具同一条 plan→apply 链路；围栏工具栏新增「一键整理」按钮，
+      列分组计数 → 确认 → 执行 → 自动刷新围栏。真机 `/plan` 返回 13 个待归位文件
+- [x] 三份 electron-builder yml 登记 `plugin-hotkeys.cjs`（`packaged-entry-modules` 守门测试）
+
+**入口已知边界**
+- 窗口判重按「pluginId + entry」在主进程做，插件自己从围栏里再开设置面板也会落到同一个窗口；
+  代价是同名 entry 只能有一个实例（目前没有插件需要多开同一页）
+- 未做「开机自启围栏」（同 P0-C 的边界）
+
 ### P1（2026-10-29 完成）
 
 - [x] `shared/widgets.js`：六种类型（clock/list/metric/status/text/link）白名单、契约白名单、位置钳制、config schema 校验、整组整体替换语义 + 7 例单测

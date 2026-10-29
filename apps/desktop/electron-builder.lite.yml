@@ -49,6 +49,14 @@ files:
   #   多页语义（显式 tabId / new_tab 是否改写当前操作页）的**唯一判定**。
   #   漏登记 = 打包版**启动即崩**（Cannot find module './browser-target.cjs'）——同 browser-bridge.cjs。
   - browser-target.cjs
+  # ★★★ 游戏页保活判据（2026-10-29）：main.cjs 顶层 require('./tab-keepalive.cjs')。
+  - tab-keepalive.cjs
+  # ★★★ 宠物代玩避让定位（2026-10-29）：main.cjs 顶层 require('./pet-dock.cjs')。
+  - pet-dock.cjs
+  # ★★★ 游戏弹窗关闭键识别（2026-10-29）：main.cjs 顶层 require('./popup-dismiss.cjs')。
+  - popup-dismiss.cjs
+  # ★★★ 剪贴板纯逻辑（2026-10-29，P2）：main.cjs require('./clipboard-store.cjs')。
+  - clipboard-store.cjs
   # ★★★ 浏览器扩展管理器（P1，2026-10-19）：main.cjs 顶层 require('./browser-extensions.cjs')。
   #   漏登记 = 打包版**启动即崩**（Cannot find module './browser-extensions.cjs'）——同 browser-bridge.cjs。
   #   由 packaged-entry-modules.test.cjs 守门。
@@ -77,6 +85,8 @@ files:
   - plugin-protocol.cjs
   # P0-0（desktop-manager）：插件桌面窗口 + 桌面外壳纯逻辑模块（main.cjs require 本文件）。
   - desktop-shell.cjs
+  # 插件窗口全局快捷键（main.cjs require 本文件）：漏登记 = 打包版启动即崩
+  - plugin-hotkeys.cjs
   # 共享依赖 shim（scripts/generate-host-shims.mjs 生成，随包分发）：yz://shared/*.mjs 由
   # protocol.handle 从 app.asar 内本目录读取。漏登记 = 插件前端装载全部 404。
   - host-shims/**/*

@@ -1,0 +1,513 @@
+/* 直播页样式（作用域统一挂在 .live-page 下，避免污染全局） */
+
+.live-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.live-page .live-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #8b93a3);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--el-border-color, #2a3240);
+}
+
+.live-page .live-status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.live-page .live-status--on {
+  color: #ff6b6b;
+  border-color: rgba(255, 107, 107, 0.45);
+}
+
+.live-page .live-status--on i {
+  opacity: 1;
+  animation: live-pulse 1.6s infinite;
+}
+
+.live-layout {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  min-height: 0;
+}
+
+/* ---------- 舞台 ---------- */
+.live-stage-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.live-stage {
+  position: relative;
+  height: min(72vh, 660px);
+  aspect-ratio: 9 / 16;
+  border-radius: 18px;
+  overflow: hidden;
+  background: #080b11;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+
+.live-bg {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(70% 55% at 50% 42%, #2a2440 0%, #171327 55%, #0a0810 100%);
+}
+
+.live-badges {
+  position: absolute;
+  top: 3.5%;
+  left: 4%;
+  right: 4%;
+  display: flex;
+  gap: 6px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.live-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #c8d4ea;
+  background: rgba(10, 14, 20, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 4px 9px;
+  backdrop-filter: blur(6px);
+}
+
+.live-tag--on {
+  color: #ffd7d7;
+  border-color: rgba(255, 107, 107, 0.4);
+}
+
+.live-tag--on i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff6b6b;
+  animation: live-pulse 1.6s infinite;
+}
+
+.live-tag--rec {
+  color: #ffd7d7;
+  border-color: rgba(255, 107, 107, 0.45);
+}
+
+.live-tag--rec i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff6b6b;
+  animation: live-blink 1s steps(1) infinite;
+}
+
+.live-performer-slot {
+  position: absolute;
+  left: 50%;
+  bottom: 14%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 3;
+}
+
+/* 虚拟人是画布尺寸驱动的：pet 自己算出像素大小，avatar 需要宿主给尺寸 */
+.live-slot--avatar {
+  width: 74%;
+  height: 66%;
+  bottom: 12%;
+}
+
+/* 双人同框：虚拟人左、宠物右，各自缩小让位 */
+.live-stage[data-scene='duo'] .live-slot--avatar {
+  left: 6%;
+  transform: none;
+  width: 46%;
+  height: 58%;
+  bottom: 12%;
+}
+
+.live-stage[data-scene='duo'] .live-slot--pet {
+  left: auto;
+  right: 12%;
+  transform: none;
+  bottom: 16%;
+}
+
+/* ---------- 任务实录：窗口画面层 ---------- */
+.live-capture {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #05070a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.live-capture__video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+
+.live-capture__empty {
+  position: absolute;
+  font-size: 12px;
+  color: #8b93a3;
+  letter-spacing: 0.5px;
+}
+
+/* 隐私遮罩：盖住画面左侧（会话列表/路径常见位置），边缘渐隐不显生硬 */
+.live-mask {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 22%;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(90deg, #05070a 0%, #05070a 88%, rgba(5, 7, 10, 0) 100%);
+}
+
+/* 实录时虚拟人缩成画中画，别挡住被播内容 */
+.live-stage[data-scene='task-live'] .live-slot--avatar {
+  left: auto;
+  right: 4%;
+  bottom: 16%;
+  transform: none;
+  width: 26%;
+  height: 34%;
+}
+
+/* 游戏解说：画面铺满（游戏不该留黑边），宠物缩成右下角画中画 */
+.live-stage[data-scene='game-pip'] .live-capture__video {
+  object-fit: cover;
+}
+
+.live-stage[data-scene='game-pip'] .live-slot--pet {
+  left: auto;
+  right: 4%;
+  bottom: 22%;
+  transform: scale(0.62);
+  transform-origin: bottom right;
+  z-index: 4;
+}
+
+/* ---------- 场景选择 ---------- */
+.live-scenes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.live-scene-btn {
+  appearance: none;
+  border: 1px solid var(--el-border-color, #2a3240);
+  background: transparent;
+  color: var(--el-text-color-regular, #c8d0de);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+
+.live-scene-btn:hover:not(:disabled) {
+  border-color: var(--el-color-primary, #6ea8fe);
+  color: var(--el-color-primary, #6ea8fe);
+}
+
+.live-scene-btn.active {
+  border-color: var(--el-color-primary, #6ea8fe);
+  background: rgba(110, 168, 254, 0.16);
+  color: var(--el-color-primary, #6ea8fe);
+}
+
+.live-scene-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* 未开播：压一层暗罩，别让预览看起来像已经在播 */
+.live-offline {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(6, 9, 14, 0.72);
+  backdrop-filter: blur(2px);
+  color: #cfd7e6;
+}
+
+.live-offline__title {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.live-offline__sub {
+  font-size: 12px;
+  color: #8b93a3;
+}
+
+.live-stage-meta {
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #8b93a3);
+}
+
+/* ---------- 弹幕 ---------- */
+.live-danmaku {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.live-dm {
+  position: absolute;
+  left: 100%;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #e6ecf7;
+  background: rgba(10, 14, 20, 0.55);
+  border-radius: 999px;
+  padding: 3px 10px;
+  animation: live-dm-fly 9s linear forwards;
+}
+
+/* ---------- 字幕 ---------- */
+.live-caption {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: 4%;
+  z-index: 6;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: rgba(8, 11, 16, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  padding: 10px 14px;
+  backdrop-filter: blur(10px);
+  color: #edf2fb;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.live-caption__who {
+  flex: 0 0 auto;
+  color: #6ea8fe;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+}
+
+.live-caption__text {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.live-caption-fade-enter-active,
+.live-caption-fade-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.live-caption-fade-enter-from,
+.live-caption-fade-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* ---------- 控制台 ---------- */
+.live-panel {
+  flex: 1 1 320px;
+  max-width: 380px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.live-card {
+  border: 1px solid var(--el-border-color, #2a3240);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--el-fill-color-blank, #11151c);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.live-card--note {
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #8b93a3);
+  line-height: 1.6;
+}
+
+.live-card__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary, #8b93a3);
+  letter-spacing: 0.6px;
+}
+
+.live-kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.live-kv span {
+  color: var(--el-text-color-secondary, #8b93a3);
+}
+
+.live-kv b {
+  font-weight: 600;
+}
+
+.live-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.live-actions .el-button {
+  margin-left: 0;
+}
+
+.live-select {
+  width: 100%;
+}
+
+.live-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #8b93a3);
+}
+
+.live-slider .el-slider {
+  flex: 1;
+}
+
+.live-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary, #8b93a3);
+  line-height: 1.5;
+}
+
+.live-hint--err {
+  color: #ff6b6b;
+}
+
+.live-hint--warn {
+  color: #f0b429;
+}
+
+.live-voice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-voice-state {
+  margin-left: auto;
+  font-size: 11px;
+  color: #7ee787;
+}
+
+.live-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.live-dialog__label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #8b93a3);
+}
+
+.live-dialog__err {
+  font-size: 12px;
+  color: #ff6b6b;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* ---------- 动画 ---------- */
+@keyframes live-dm-fly {
+  from {
+    left: 100%;
+  }
+  to {
+    left: -45%;
+  }
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.65);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(255, 107, 107, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 107, 107, 0);
+  }
+}
+
+@keyframes live-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0.2;
+  }
+}
+
+@media (max-width: 900px) {
+  .live-layout {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .live-stage {
+    height: min(62vh, 560px);
+  }
+
+  .live-panel {
+    max-width: none;
+    flex: 1 1 auto;
+  }
+}

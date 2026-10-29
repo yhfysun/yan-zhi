@@ -3242,6 +3242,8 @@ onMounted(async () => {
     // ★ 内存回收（2026-10-19）：主进程不再关 tab，只广播休眠。这里保留 tab 壳、销毁 <webview>；
     //   切回该 tab 时由 switchTab 清标记并重载 url；agent 动作则由 tabResume 在后台重建。
     trackIpc(api.browserView.onTabSuspended?.(aliveGuard((tid: string, url: string) => {
+      // ★ 游戏窗的页一律保活，主进程不该发休眠；收到说明是旧消息/竞态，忽略以免误标休眠
+      if (browserScope === 'game') return;
       const tab = tabs.value.find(t => t.id === tid);
       if (!tab || !isWebviewEngine.value) return;
       if (url) { tab.url = url; tab.srcUrl = url; }

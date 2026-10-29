@@ -8,6 +8,25 @@
   "main": "backend/index.js",
   "permissions": ["fs", "desktop-shell", "llm", "data-contracts"],
   "contributes": {
-    "tools": ["desktop_scan", "desktop_plan", "desktop_apply", "desktop_undo"]
+    "tools": ["desktop_scan", "desktop_plan", "desktop_apply", "desktop_undo"],
+    "windows": [
+      {
+        "id": "organize",
+        "label": "整理",
+        "entry": "frontend/fence.html",
+        "placement": "desktop",
+        "menu": true,
+        "icon": "Monitor",
+        "accelerator": "Control+Alt+D"
+      },
+      {
+        "id": "panel",
+        "label": "设置",
+        "entry": "frontend/settings.html",
+        "placement": "normal",
+        "rect": { "x": 200, "y": 100, "w": 640, "h": 720 },
+        "resizable": true
+      }
+    ]
   }
 }
