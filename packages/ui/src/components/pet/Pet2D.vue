@@ -72,6 +72,8 @@ const PACK_CFG: Record<string, Omit<PackCfg, 'img'>> = {
   lulu: { name: '噜噜', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
   noir: { name: 'Noir', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
   mallow: { name: 'Mallow', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
+  // 原创大肥鱼（2026-10-29，scripts/gen-pet-whale.mjs 程序化生成，蓝色胖鲸鱼 + 头顶喷水）
+  feiyu: { name: 'Feiyu', fw: 192, fh: 208, cols: 8, rows: 9, states: STD },
 }
 
 /** 只保留本包真的带了素材的形象（--pets 裁剪后未选的 id 不在 PET_PACK_URLS 里） */

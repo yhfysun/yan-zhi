@@ -7,7 +7,8 @@
     { "id": "wangcai", "label": "旺财（布偶猫）", "file": "wangcai-spritesheet.webp" },
     { "id": "lulu", "label": "噜噜（水豚）", "file": "lulu-spritesheet.webp" },
     { "id": "noir", "label": "Noir（侦探蛛）", "file": "noir-spritesheet.webp" },
-    { "id": "mallow", "label": "Mallow（小怪）", "file": "mallow-spritesheet.webp" }
+    { "id": "mallow", "label": "Mallow（小怪）", "file": "mallow-spritesheet.webp" },
+    { "id": "feiyu", "label": "Feiyu（大肥鱼·原创）", "file": "feiyu-spritesheet.webp" }
   ],
   "vrms": [
     { "id": "shino", "label": "Sendagaya Shino", "file": "sendagaya_shino.vrm", "license": "CC0 1.0" },
