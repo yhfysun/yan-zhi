@@ -144,7 +144,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
+import { ElMessage } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 import { Avatar, SwitchButton, Moon, Sunny, Setting, Collection, Menu } from '@element-plus/icons-vue';
 import { useAuthStore } from './stores/auth';
@@ -165,6 +166,7 @@ import { waitForBackend } from './api/backend-ready';
 import { useMobileShell } from './composables/useMobileShell';
 import { usePlatform } from './composables/usePlatform';
 import { useSidebarState } from './composables/useSidebarState';
+import { syncPluginWindowHotkeys } from './composables/pluginWindowHotkeys';
 import { installSelectAllScope } from './utils/selectAllScope';
 import { isModeWindow, isConvWindow, convIdOfWindow, modeKeyOfRoute } from './utils/modeWindow';
 import * as modeModule from './stores/mode';
@@ -251,6 +253,27 @@ const RcShellHost =
 
 // 宠物伴星：把任务状态推给独立宠物窗（宠物窗自己加载 App.vue，内部会跳过）
 usePetBridge();
+
+// 剪贴板 / 截图 OCR 交给 AI（2026-10-29）：主进程把请求发给主窗口，这里先收下并切到会话页，
+// 由 ChatInputArea 消费（window.__yzClipAi + yz:clip-ai 事件，见其 consumeClipAiRequest）。
+// 面板小窗也用 App.vue，但主进程只发给主窗口，不会重复消费。
+if (typeof window !== 'undefined') {
+  const clipApi = (window as any).electronAPI?.clipboardPanel;
+  if (clipApi?.onAiRequest) {
+    clipApi.onAiRequest((payload: any) => {
+      if (!payload || !payload.prompt) return;
+      const req = {
+        action: String(payload.action || 'ai'),
+        label: String(payload.label || 'AI 处理'),
+        prompt: String(payload.prompt),
+        autosend: payload.autosend !== false,
+      };
+      (window as any).__yzClipAi = req;
+      window.dispatchEvent(new Event('yz:clip-ai'));
+      if (!route.path.startsWith('/chat')) void useRouter().push('/chat');
+    });
+  }
+}
 
 /**
  * 冷启动就绪位（2026-10-25）：路由首次导航完成前，路由守卫在 license.init 里等内嵌
@@ -530,6 +553,37 @@ watch(() => [settingsStore.settings.layout, pluginStore.layouts], resolvePluginL
 watch(() => pluginStore.routes, () => {
   void syncPluginRoutes();
 }, { deep: true });
+
+// 插件窗口全局快捷键（清单 contributes.windows[].accelerator）：启用/停用插件、
+// 用户在设置里改组合，都整份同步给主进程；主进程差量注册/注销，停用即失效。
+// 放在 App 层而不是插件页：快捷键在任何页面都得有效。
+watch(
+  () => [pluginStore.enabledPlugins, settingsStore.settings.pluginHotkeys],
+  () => {
+    void syncPluginWindowHotkeys(pluginStore.enabledPlugins, settingsStore.settings.pluginHotkeys);
+  },
+  { deep: true, immediate: true },
+);
+
+// 快捷键开窗的回执：围栏钉在桌面层，应用最大化时根本看不见 ——
+// 成功要说"去哪看"，失败要说原因，否则用户看到的永远是"按了没反应"。
+const pluginWindowEvents = (window as {
+  electronAPI?: { pluginWindow?: { on?: (e: string, cb: (p: Record<string, unknown>) => void) => () => void } };
+}).electronAPI?.pluginWindow;
+const offWindowOpened = pluginWindowEvents?.on?.('opened', (p) => {
+  if (!p?.hotkey) return;
+  ElMessage.success(p.placement === 'desktop'
+    ? '桌面围栏已打开：最小化本应用就能看到桌面'
+    : '已打开');
+});
+const offWindowFailed = pluginWindowEvents?.on?.('failed', (p) => {
+  if (!p?.hotkey) return;
+  ElMessage.error(`打开失败：${String(p?.error || '未知原因')}`);
+});
+onUnmounted(() => {
+  offWindowOpened?.();
+  offWindowFailed?.();
+});
 
 // 插件启停会改变「运行时插件模式」：模式下拉/路由必须跟着变（停用即消失）
 watch(() => pluginStore.modeDefs, (defs) => {

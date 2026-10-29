@@ -42,7 +42,10 @@
     undo:   '<path d="M3.5 7.5h6.5a3.25 3.25 0 1 1 0 6.5H6.5 M3.5 7.5l2.8-2.8 M3.5 7.5l2.8 2.8"/>',
     save:   '<path d="M8 2.5v7 M5.2 6.8L8 9.5l2.8-2.7 M3 10.5v2.5h10v-2.5"/>',
     ok:     '<path d="M3 8.5 L6.5 12 L13 4.5"/>',
-    cancel: '<path d="M4 4 L12 12 M12 4 L4 12"/>'
+    cancel: '<path d="M4 4 L12 12 M12 4 L4 12"/>',
+    // OCR：扫描四角 + 文本行；翻译：A 文互转
+    ocr:      '<path d="M3 6V3h3M13 3h-3M13 10v3h-3M6 13H3v-3"/><path d="M5.5 7h5M8 7v4"/>',
+    ocrTrans: '<path d="M2.5 4h6M5.5 4v7M4 8h3"/><path d="M10.5 8.5h3M11 8.5c0 2 1 3.5 2.5 4.2M12 10.5c.5 1 1.3 1.7 2.2 2.1"/>'
   };
 
   // 物理像素 / 逻辑像素 比例：透明窗无冻结图，canvas 与屏幕物理分辨率对齐
@@ -186,6 +189,10 @@
       toolbar.appendChild(b);
     });
     toolbar.appendChild(sep());
+    // OCR（2026-10-29）：识别文字 / 识别并翻译（结果进会话）
+    toolbar.appendChild(btn('ocr', '识别文字 (OCR)'));
+    toolbar.appendChild(btn('ocrTrans', '识别并翻译'));
+    toolbar.appendChild(sep());
     toolbar.appendChild(btn('save', '保存到本地'));
     toolbar.appendChild(btn('ok', '确认 (Enter)'));
     toolbar.appendChild(btn('cancel', '取消 (Esc)'));
@@ -209,6 +216,8 @@
         else if (ops.length) { ops.pop(); redraw(); }
       } else if (t.dataset.cmd === 'save') {
         save();
+      } else if (t.dataset.cmd === 'ocr' || t.dataset.cmd === 'ocrTrans') {
+        runOcr(t.dataset.cmd === 'ocrTrans');
       } else if (t.dataset.cmd === 'ok') {
         confirm();
       } else if (t.dataset.cmd === 'cancel') {
@@ -316,6 +325,54 @@
       width: sel.offsetWidth, height: sel.offsetHeight
     });
   }
+  /** 选中区域（逻辑像素）—— 确认/保存/OCR 共用 */
+  function selRect() {
+    return { x: sel.offsetLeft, y: sel.offsetTop, width: sel.offsetWidth, height: sel.offsetHeight };
+  }
+
+  /** OCR：识别文字 / 识别并翻译（翻译结果进当前会话） */
+  function runOcr(translate) {
+    if (editing) commitTextEdit();
+    if (!valid()) return;
+    if (!window.snipAPI.ocr) { showTip('当前版本不支持 OCR', 2400); return; }
+    hideHover();
+    showTip(translate ? '正在识别并翻译…' : '正在识别文字…', 60000);
+    window.snipAPI.ocr(selRect(), !!translate);
+    // 看门狗：主进程侧会话已结束/异常时也要给用户结尾，不能一直停在"正在识别…"
+    if (runOcr._t) clearTimeout(runOcr._t);
+    runOcr._t = setTimeout(function () {
+      var tip = document.getElementById('saveTip');
+      if (tip && tip.style.display !== 'none' && /正在识别/.test(tip.textContent || '')) {
+        showTip('OCR 超时或截图会话已结束，请重新截图', 3200);
+      }
+    }, 20000);
+  }
+
+  /** 识别结果面板：可编辑、复制、直接翻译 */
+  function showOcrPanel(text) {
+    var old = document.getElementById('ocrPanel');
+    if (old) old.remove();
+    var p = document.createElement('div');
+    p.id = 'ocrPanel';
+    var head = document.createElement('div'); head.className = 'ocr-head';
+    var title = document.createElement('span'); title.textContent = '识别结果';
+    var close = document.createElement('button'); close.className = 'ocr-x'; close.textContent = '×'; close.title = '关闭';
+    close.onclick = function () { p.remove(); };
+    head.appendChild(title); head.appendChild(close);
+    var ta = document.createElement('textarea'); ta.value = text; ta.spellcheck = false;
+    var bar = document.createElement('div'); bar.className = 'ocr-bar';
+    function mk(label, fn) { var b = document.createElement('button'); b.className = 'ocr-btn'; b.textContent = label; b.onclick = fn; return b; }
+    bar.appendChild(mk('复制文字', function () { window.snipAPI.copyText(ta.value); showTip('已复制识别文字', 1800); }));
+    bar.appendChild(mk('翻译', function () { window.snipAPI.translateText(ta.value); }));
+    bar.appendChild(mk('关闭', function () { p.remove(); }));
+    p.appendChild(head); p.appendChild(ta); p.appendChild(bar);
+    document.body.appendChild(p);
+    var w = 420;
+    p.style.width = w + 'px';
+    p.style.left = Math.max(8, Math.min(sel.offsetLeft, window.innerWidth - w - 8)) + 'px';
+    p.style.top = Math.min(Math.max(8, sel.offsetTop + sel.offsetHeight + 8), window.innerHeight - 320) + 'px';
+  }
+
   /** 工具条上方的轻提示，duration 毫秒后自动消失 */
   function showTip(text, duration) {
     var t = document.getElementById('saveTip');
@@ -654,5 +711,18 @@
     if (r && r.ok) showTip('已保存：' + r.path, 3200);
     else if (r && r.cancelled) showTip('', 1);
     else showTip('保存失败：' + ((r && r.error) || '未知错误'), 3200);
+  });
+
+  // OCR 结果（识别失败/无文字都给明确提示，不静默）
+  window.snipAPI.onOcrResult(function (r) {
+    var tip = document.getElementById('saveTip');
+    if (tip) tip.style.display = 'none';
+    if (!r || r.ok === false) {
+      showTip('OCR 失败：' + ((r && r.error) || '未知错误'), 3200);
+      return;
+    }
+    var text = String(r.text || '').trim();
+    if (!text) { showTip('没有识别到文字', 2400); return; }
+    showOcrPanel(text);
   });
 })();

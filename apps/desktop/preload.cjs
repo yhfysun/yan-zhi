@@ -99,6 +99,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 关掉某插件的全部窗口（插件被禁用/卸载时由宿主 UI 调用）
     closeAll: (pluginId) => ipcRenderer.invoke('plugin-window:close-all', String(pluginId || '')),
     list: () => ipcRenderer.invoke('plugin-window:list'),
+    // 清单 contributes.windows[].accelerator 的注册通道：渲染层整份同步，
+    // 主进程差量注册/注销（停用/卸载插件后自动失效）
+    setHotkeys: (list) => ipcRenderer.invoke('plugin-window:set-hotkeys', list),
+    getHotkeys: () => ipcRenderer.invoke('plugin-window:get-hotkeys'),
     // 事件：'moved' | 'closed'（返回取消订阅函数）
     on: (event, cb) => {
       const ch = 'plugin-window:' + String(event);
@@ -164,6 +168,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     moveBy: (dx, dy) => ipcRenderer.send('pet:move-by', Number(dx) || 0, Number(dy) || 0),
     // 沿屏幕底边踱步：{ on: true } 起走 / { on: false } 停下（位移由主进程算）
     walk: (payload) => ipcRenderer.send('pet:walk', payload || {}),
+    // 代玩避让（2026-10-29）：进入/退出「缩到右下角」形态，渲染层据此缩放形象本体
+    onDockState: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('pet:dock-state', h);
+      return () => ipcRenderer.removeListener('pet:dock-state', h);
+    },
     // 3D 形象：选择 / 读取自定义 VRM；内置模型也从主进程读（打包版 file:// 不能 fetch）
     pickVrm: () => ipcRenderer.invoke('pet:pick-vrm'),
     readVrm: (filePath) => ipcRenderer.invoke('pet:read-vrm', filePath),
@@ -210,6 +220,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // 桌面录屏（screen_record 工具执行端）：主进程 capturePage 定帧采样 + ffmpeg 编码 mp4
+  // 主窗口当前会话上报（2026-10-29）：游戏窗点「交给智能体代玩」时，
+  // 主进程缺省落到用户在主窗正在看的会话（游戏窗自己的 store 未必同步）。
+  chatSession: {
+    currentConv: (convId) => ipcRenderer.send('chat:current-conv', String(convId || '')),
+  },
+
   screenRecord: {
     // opts: { outPath, target?('task:<convId>'|''=主窗口), fps? } → { ok, recordId, outPath } | { ok:false, error }
     start: (opts) => ipcRenderer.invoke('screen-record:start', opts),
@@ -217,8 +233,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     stop: (opts) => ipcRenderer.invoke('screen-record:stop', opts),
     // ★ 选区录屏（2026-10-26）：先指定选区所在显示器，下一次 getDisplayMedia 就抓这一块屏
     selectDisplay: (displayId) => ipcRenderer.invoke('screen-record:select-display', displayId),
+    // ★ 直播录屏（2026-10-29）：下一次 getDisplayMedia 抓「本应用窗口」而不是整屏
+    selectLiveWindow: () => ipcRenderer.invoke('screen-record:select-live-window'),
     // 渲染层 MediaRecorder 产出的 webm 字节 → 落盘（能转 mp4 就转）：{ ok, file, ext } | { ok:false, error }
     saveBlob: (data, mime) => ipcRenderer.invoke('screen-record:save-blob', { data, mime }),
+  },
+
+  // 直播推流（2026-10-29）：webm 分片 → 主进程 ffmpeg → RTMP
+  liveStream: {
+    start: (opts) => ipcRenderer.invoke('live-stream:start', opts),
+    chunk: (data) => ipcRenderer.send('live-stream:chunk', data),
+    stop: () => ipcRenderer.invoke('live-stream:stop'),
+    onStatus: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('live-stream:status', h);
+      return () => ipcRenderer.removeListener('live-stream:status', h);
+    },
   },
 
   // 数据库
@@ -303,6 +333,51 @@ contextBridge.exposeInMainWorld('electronAPI', {
     set: (accel) => ipcRenderer.invoke('shortcut:setPanic', accel),
   },
 
+  // 超级剪贴板（2026-10-29）：面板小窗 + 设置页共用。
+  // 数据全在主进程（JSON + 图片资产），这里只做薄桥接，渲染层不碰文件系统。
+  clipboardPanel: {
+    list: () => ipcRenderer.invoke('clipboard:panel-list'),
+    pin: (id) => ipcRenderer.invoke('clipboard:panel-pin', String(id || '')),
+    remove: (id) => ipcRenderer.invoke('clipboard:panel-remove', String(id || '')),
+    clear: () => ipcRenderer.invoke('clipboard:panel-clear'),
+    // 写回系统剪贴板并收起面板（含富文本 HTML；图片/文件走各自格式）
+    paste: (id) => ipcRenderer.invoke('clipboard:panel-paste', String(id || '')),
+    // 只写纯文本（去掉富文本格式）
+    plain: (id) => ipcRenderer.invoke('clipboard:panel-plain', String(id || '')),
+    // AI 处理：把条目内容 + 预设指令交给当前会话（主窗口切到 /chat 后由聊天输入区消费）
+    aiAction: (id, action) => ipcRenderer.invoke('clipboard:panel-ai', String(id || ''), String(action || '')),
+    // 多选合并：多条内容 → AI 合并整理（直接发送）/ 发送到会话（只填进输入框）
+    aiMerge: (ids) => ipcRenderer.invoke('clipboard:panel-ai-merge', Array.isArray(ids) ? ids.map(String) : []),
+    sendBatch: (ids) => ipcRenderer.invoke('clipboard:panel-send-batch', Array.isArray(ids) ? ids.map(String) : []),
+    // 主窗口侧监听：收到 AI 请求 → 注入聊天输入区并发送
+    onAiRequest: (callback) => {
+      const h = (_e, payload) => callback(payload || {});
+      ipcRenderer.on('clipboard:ai-request', h);
+      return () => ipcRenderer.removeListener('clipboard:ai-request', h);
+    },
+    reveal: (id) => ipcRenderer.invoke('clipboard:panel-reveal', String(id || '')),
+    // 图片/文件拖出：startDrag 必须在 dragstart 的同一用户手势里调用
+    dragOut: (id) => ipcRenderer.invoke('clipboard:panel-drag-out', String(id || '')),
+    // 拖拽期间暂停失焦收起（dragstart=true / dragend=false）
+    suspendBlur: (on) => ipcRenderer.invoke('clipboard:panel-suspend-blur', !!on),
+    hide: () => ipcRenderer.invoke('clipboard:panel-hide'),
+    toggle: () => ipcRenderer.invoke('clipboard:panel-toggle'),
+    getConfig: () => ipcRenderer.invoke('clipboard:panel-config'),
+    // patch: { accelerator, capture:{text,image,file}, skipSensitive, maxItems }
+    setConfig: (patch) => ipcRenderer.invoke('clipboard:panel-set-config', patch || {}),
+    // 面板每次被召唤 + 历史变化时主动推送（面板隐藏时不刷新，省渲染）
+    onShown: (callback) => {
+      const h = () => callback();
+      ipcRenderer.on('clipboard:shown', h);
+      return () => ipcRenderer.removeListener('clipboard:shown', h);
+    },
+    onChanged: (callback) => {
+      const h = () => callback();
+      ipcRenderer.on('clipboard:changed', h);
+      return () => ipcRenderer.removeListener('clipboard:changed', h);
+    },
+  },
+
   // Shell
   shell: {
     exec: (command, args, options) => ipcRenderer.invoke('shell:exec', command, args, options),
@@ -339,6 +414,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     //   这里只转发（幂等，任务异常结束时多调一次 unpin 也不会误伤别人）。
     pinTarget: (convId, flow, tabId) => ipcRenderer.invoke('browserView:pinTarget', convId, flow, tabId),
     unpinTarget: (convId, flow) => ipcRenderer.invoke('browserView:unpinTarget', convId, flow),
+    // 显式移交（2026-10-29）：把游戏窗里这一页交给智能体代玩（见 main.cjs 的 browserView:handoff）
+    handoff: (payload) => ipcRenderer.invoke('browserView:handoff', payload || {}),
+    handoffRelease: (payload) => ipcRenderer.invoke('browserView:handoffRelease', payload || {}),
+    getHandoff: () => ipcRenderer.invoke('browserView:getHandoff'),
+    // 移交状态广播（on:true 开始 / on:false 收回或收尾），主窗宠物与游戏窗执行条共用
+    onHandoff: (callback) => {
+      const h = (_e, payload) => callback(payload);
+      ipcRenderer.on('browserView:handoff', h);
+      return () => ipcRenderer.removeListener('browserView:handoff', h);
+    },
     activateTab: (tabId) => ipcRenderer.invoke('browserView:activateTab', tabId),
     // 截图当前页（用户从「更多」菜单触发）：落盘到图片目录，返回 { file }
     captureTab: (tabId) => ipcRenderer.invoke('browserView:captureTab', tabId),

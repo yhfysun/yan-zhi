@@ -91,6 +91,11 @@
            再摆一个会和头像挤在一起（2026-10-04 用户红框反馈）。
            ★ 模式窗口同样隐藏（与主导航同一口径：不做任何能切走路由的入口）。 -->
       <div v-if="!modeLocked" class="title-quick">
+        <!-- 超级剪贴板入口（2026-10-29）：桌面端才有独立面板窗；召唤键见设置 → 快捷键 -->
+        <button v-if="clipboardAvailable" class="title-nav-item title-nav-item--icon" type="button"
+                title="超级剪贴板（全局快捷键召唤）" @click="onOpenClipboard">
+          <el-icon :size="15"><CopyDocument /></el-icon>
+        </button>
         <!-- 游戏窗（P2）：独立置顶窗跑 /browser，用于网页游戏/盯盘这类不该被主窗口遮住的场景 -->
         <button v-if="gameWindowSupported" class="title-nav-item title-nav-item--icon" type="button"
                 title="游戏窗（独立置顶）" @click="onOpenGameWindow">
@@ -198,10 +203,12 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search,
+  Search, VideoCamera,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
 import { isElectron } from '../api/client';
+import { ElMessage } from 'element-plus';
+import { plainRect } from '../composables/pluginWindowHotkeys';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
 import HoverMenu from './HoverMenu.vue';
 import type { HoverMenuItem } from './HoverMenu.vue';
@@ -214,6 +221,12 @@ import { isStandaloneWindow } from '../utils/modeWindow';
 // 独立窗口锁定（模式窗口 / 会话窗口）：整个生命周期内上下文不变（窗口打开时即带
 // window= 标记），用常量而非 computed —— 避免模板里每个分支都走 hash 解析。
 const modeLocked = isStandaloneWindow();
+
+// 超级剪贴板（2026-10-29）：只有桌面端主进程提供了面板能力才显示入口
+const clipboardAvailable = typeof window !== 'undefined' && !!(window as any).electronAPI?.clipboardPanel;
+function onOpenClipboard() {
+  try { (window as any).electronAPI?.clipboardPanel?.toggle?.(); } catch { /* 主进程未就绪 */ }
+}
 
 // Electron 渲染进程通过 contextBridge 注入的 API（web 端为 undefined，全部走可选链）
 const api = (window as any).electronAPI;
@@ -346,6 +359,54 @@ function mergeIntoGroup(base: HoverMenuItem, groupKey: string): HoverMenuItem {
   };
 }
 
+/**
+ * 插件桌面窗口入口：清单 `contributes.windows[].menu` 为 true 的窗口在「更多」里出现一项。
+ * 点了直接开窗（围栏/面板这类不在应用路由里的界面），所以只做桌面端。
+ * ★ 业务零侵入：宿主只认清单声明，不认具体插件 id。
+ */
+const pluginWindowMenus = computed<HoverMenuItem[]>(() => {
+  if (!isElectron) return [];
+  const out: HoverMenuItem[] = [];
+  for (const p of pluginStore.enabledPlugins) {
+    for (const w of p.manifest.contributes?.windows || []) {
+      if (!w.menu) continue;
+      out.push({
+        key: `plugin-window:${p.manifest.id}/${w.id}`,
+        label: `${p.manifest.name} · ${w.label}`,
+        icon: resolvePluginIcon(w.icon || '') as HoverMenuItem['icon'],
+        desc: w.placement === 'desktop' ? '钉在桌面层（最小化本应用可见）' : undefined,
+      });
+    }
+  }
+  return out;
+});
+
+/** 开插件窗口：失败必须说出来，静默等于「点了没反应」。 */
+async function openPluginWindowEntry(composite: string): Promise<void> {
+  const [pluginId, windowId] = composite.split('/');
+  const plugin = pluginStore.enabledPlugins.find((x) => x.manifest.id === pluginId);
+  const w = plugin?.manifest.contributes?.windows?.find((x) => x.id === windowId);
+  const api = (window as { electronAPI?: { pluginWindow?: { open: (o: unknown) => Promise<{ ok?: boolean; error?: string }> } } })
+    .electronAPI?.pluginWindow;
+  if (!w || !api) {
+    ElMessage.error('打不开：当前环境没有桌面窗口能力');
+    return;
+  }
+  try {
+    const rect = plainRect(w.rect);
+    const r = await api.open({
+      pluginId,
+      entry: w.entry,
+      placement: w.placement || 'normal',
+      ...(rect ? { rect } : {}),
+      ...(w.resizable ? { resizable: true } : {}),
+    });
+    if (r?.ok === false) ElMessage.error(`打开「${w.label}」失败：${r.error || '未知错误'}`);
+  } catch (e) {
+    ElMessage.error(`打开「${w.label}」失败：${(e as Error).message}`);
+  }
+}
+
 // 「更多」下拉：按「能力 / 数据 / 连接」三组 hover 二级展开 + 底部独立项（记忆/插件/设置/插件注入）
 // MCP 不再单列：已并入 /tools 工具页「MCP 服务」tab
 const moreItems = computed<HoverMenuItem[]>(() => [
@@ -406,8 +467,10 @@ const moreItems = computed<HoverMenuItem[]>(() => [
     ? [{ key: 'remote-control', label: '远程控制', icon: Monitor, path: '/remote', desc: '手机 / 浏览器观看并操作本机' }]
     : []),
   { key: 'divider-memory', label: '', divider: true },
+  { key: 'live', label: '直播', icon: VideoCamera, path: '/live', desc: '宠物主播预演' },
   { key: 'memory', label: '记忆管理', icon: Memo, path: '/memory' },
   { key: 'plugins', label: '插件管理', icon: Box, path: '/plugins' },
+  ...pluginWindowMenus.value,
   { key: 'license-manage', label: '授权管理', icon: Key, path: '/license-manage' },
   { key: 'divider-settings', label: '', divider: true },
   { key: 'settings', label: '设置', icon: Setting, path: '/settings' },
@@ -463,6 +526,11 @@ function onMoreSelect(item: HoverMenuItem) {
       void w.electronAPI.childWindow.open({ key: 'remote-control', route: '/remote', width: 1100, height: 760 });
       return;
     }
+  }
+  const winKey = String(item.key || '');
+  if (winKey.startsWith('plugin-window:')) {
+    void openPluginWindowEntry(winKey.slice('plugin-window:'.length));
+    return;
   }
   if (item.path) router.push(item.path);
 }

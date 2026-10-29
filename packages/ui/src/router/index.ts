@@ -56,6 +56,14 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '任务执行', bare: true, guest: true },
   },
   {
+    // 超级剪贴板面板（2026-10-29）：独立透明置顶小窗，主进程用 childUrl('/clip-panel') 加载。
+    // bare = 不套应用外壳（整窗自己画面板）；guest = 面板不该被授权门禁拦（历史是本地数据）。
+    path: '/clip-panel',
+    name: 'clip-panel',
+    component: () => import('../views/ClipPanel.vue'),
+    meta: { title: '剪贴板', bare: true, guest: true },
+  },
+  {
     // 宠物弹层（方案 B，2026-10-29）：菜单/任务面板/输入条/气泡各自独立小窗。
     path: '/pet-popup/:kind',
     name: 'pet-popup',
@@ -68,6 +76,13 @@ const routes: RouteRecordRaw[] = [
     name: 'pet-window',
     component: () => import('../views/PetWindow.vue'),
     meta: { title: '宠物', bare: true, guest: true },
+  },
+  {
+    // 直播页（2026-10-29）：宠物主播预演。推流/窗口录制尚未接入，先做画面与播报调度。
+    path: '/live',
+    name: 'live',
+    component: () => import('../views/Live.vue'),
+    meta: { title: '直播' },
   },
   {
     path: '/home',

@@ -231,6 +231,25 @@
               <el-button size="small" @click="resetPanicAccel">恢复默认</el-button>
             </div>
           </SettingRow>
+          <!-- 插件窗口快捷键：默认组合由插件清单声明（contributes.windows[].accelerator），
+               这里只改用户覆盖值；真正注册在主进程，改完立即重注册。 -->
+          <SettingRow
+            v-for="row in pluginHotkeyRows"
+            :key="row.key"
+            :label="row.label + '快捷键'"
+          >
+            <el-input
+              :model-value="pluginAccelDisplay(row.accelerator)"
+              readonly
+              placeholder="点此框后按下组合键"
+              style="width: 210px"
+              @keydown.capture.prevent="(e: KeyboardEvent) => onPluginAccelKeyDown(row, e)"
+            />
+            <div style="display: inline-flex; gap: 8px">
+              <el-button size="small" @click="resetPluginAccel(row)">恢复默认</el-button>
+              <el-button size="small" :disabled="!row.accelerator" @click="disablePluginAccel(row)">禁用</el-button>
+            </div>
+          </SettingRow>
           <!-- 聊天发送键三态互换（用户拍板 2026-10-17）：Enter 发送 ⇄ Ctrl+Enter 发送。
                Shift+Enter 恒为换行不占坑；默认 'enter' 与历史行为逐字节一致。 -->
           <SettingRow label="聊天发送键">
@@ -238,6 +257,40 @@
               <el-radio value="enter">Enter 发送（Shift+Enter 换行）</el-radio>
               <el-radio value="ctrlEnter">Ctrl+Enter 发送（Enter 换行）</el-radio>
             </el-radio-group>
+          </SettingRow>
+
+          <!-- 超级剪贴板（2026-10-29）：召唤键走同一套录制 + 冲突提示；
+               采集开关 / 敏感跳过 / 上限直接写主进程配置（clipboard-config.json），
+               面板小窗与采集器读的是同一份，不经过 settings store 二次同步。 -->
+          <SettingRow v-if="canClipboard" label="剪贴板快捷键">
+            <el-input
+              :model-value="clipAccelDisplay"
+              readonly
+              placeholder="点此框后按下组合键"
+              style="width: 210px"
+              @keydown.capture.prevent="onClipAccelKeyDown"
+            />
+            <div style="display: inline-flex; gap: 8px">
+              <el-button size="small" @click="resetClipAccel">恢复默认</el-button>
+              <el-button size="small" :disabled="!clipAccel" @click="clearClipAccel">禁用</el-button>
+            </div>
+          </SettingRow>
+          <SettingRow v-if="canClipboard" label="剪贴板采集" tip="关掉的类型不再进入历史；面板当前已记录的条目不受影响" tip-after>
+            <div style="display: inline-flex; align-items: center; gap: 16px">
+              <span style="display: inline-flex; align-items: center; gap: 6px"><el-switch v-model="clipCapture.text" size="small" @change="saveClipCapture" />文本</span>
+              <span style="display: inline-flex; align-items: center; gap: 6px"><el-switch v-model="clipCapture.image" size="small" @change="saveClipCapture" />图片</span>
+              <span style="display: inline-flex; align-items: center; gap: 6px"><el-switch v-model="clipCapture.file" size="small" @change="saveClipCapture" />文件</span>
+            </div>
+          </SettingRow>
+          <SettingRow v-if="canClipboard" label="跳过敏感内容" tip="密码、私钥、AWS AK、API Key、JWT 等识别到时不写入历史" tip-after>
+            <el-switch v-model="clipSkipSensitive" @change="saveClipSkip" />
+          </SettingRow>
+          <SettingRow v-if="canClipboard" label="剪贴板历史上限" tip="超出后淘汰最旧的非置顶条目，置顶永久保留" tip-after>
+            <el-select v-model="clipMaxItems" style="width: 120px" @change="saveClipMax">
+              <el-option :value="200" label="200 条" />
+              <el-option :value="500" label="500 条" />
+              <el-option :value="1000" label="1000 条" />
+            </el-select>
           </SettingRow>
         </div>
       </el-tab-pane>
@@ -813,6 +866,7 @@ import { useVerificationStore } from '../stores/verification';
 import MobilePageShell from '../components/common/MobilePageShell.vue';
 import SettingRow from '../components/common/SettingRow.vue';
 import { useMobileShell } from '../composables/useMobileShell';
+import { pluginWindowHotkeyRows, syncPluginWindowHotkeys, type PluginWindowHotkeyRow } from '../composables/pluginWindowHotkeys';
 
 /** 四段式骨架头仅在「移动外壳 + /settings 独立路由页」渲染：
  *  抽屉内嵌（embedded）与设置弹窗 pane 用法保持原布局，桌面端完全不变 */
@@ -1158,6 +1212,114 @@ function onPanicAccelKeyDown(e: KeyboardEvent) {
   void applyPanicAccel(accel);
 }
 function resetPanicAccel() { void applyPanicAccel(DEFAULT_PANIC_ACCEL); }
+
+// ===== 插件窗口快捷键（清单 contributes.windows[].accelerator）=====
+// 默认值来自插件清单，用户改过/禁用过的存在 settings.pluginHotkeys 覆盖表里。
+// 注册在主进程（plugin-window:set-hotkeys 整份差量），这里只管"用户想要的值"。
+const canPluginHotkeys = typeof window !== 'undefined'
+  && !!(window as any).electronAPI?.pluginWindow?.setHotkeys;
+const pluginHotkeyRows = computed(() => (
+  canPluginHotkeys
+    ? pluginWindowHotkeyRows(pluginStore.enabledPlugins, settingsStore.settings.pluginHotkeys)
+    : []
+));
+const pluginAccelDisplay = (accel: string) =>
+  accel ? accel.replace(/Control/g, 'Ctrl').replace(/\+/g, ' + ') : '未启用';
+
+async function applyPluginAccel(row: PluginWindowHotkeyRow, accel: string) {
+  // 与默认值相同就不留覆盖（跟着插件走）；空串 = 用户主动禁用，要留
+  const next = { ...(settingsStore.settings.pluginHotkeys || {}) };
+  if (accel === row.defaultAccelerator) delete next[row.key];
+  else next[row.key] = accel;
+  await settingsStore.update({ pluginHotkeys: next });
+  const results = await syncPluginWindowHotkeys(pluginStore.enabledPlugins, next);
+  const mine = results.find((r) => r.key === row.key);
+  if (mine && mine.ok === false) {
+    ElMessage.error(mine.error || '快捷键注册失败（可能被其它软件占用）');
+    return;
+  }
+  ElMessage.success(accel ? `已设为 ${pluginAccelDisplay(accel)}` : '已禁用该快捷键');
+}
+function onPluginAccelKeyDown(row: PluginWindowHotkeyRow, e: KeyboardEvent) {
+  const accel = accelFromEvent(e);
+  if (!accel) {
+    ElMessage.warning('请按住 Ctrl / Alt / Shift 再按一个键');
+    return;
+  }
+  if (accel === shotAccel.value || accel === panicAccel.value) {
+    ElMessage.error('该组合已被截图或急停快捷键占用，请换一个');
+    return;
+  }
+  void applyPluginAccel(row, accel);
+}
+function resetPluginAccel(row: PluginWindowHotkeyRow) { void applyPluginAccel(row, row.defaultAccelerator); }
+function disablePluginAccel(row: PluginWindowHotkeyRow) { void applyPluginAccel(row, ''); }
+
+// ===== 超级剪贴板（2026-10-29）：召唤键 + 采集/隐私/上限 =====
+// 配置只在主进程（clipboard-config.json），这里通过 clipboardPanel.getConfig/setConfig 读写；
+// 召唤键复用 accelFromEvent 与冲突自检，风格与截图/急停两行一致。
+const canClipboard = typeof window !== 'undefined' && !!(window as any).electronAPI?.clipboardPanel;
+const DEFAULT_CLIP_ACCEL = 'Control+Alt+V';
+const clipAccel = ref('');
+const clipAccelDisplay = computed(() =>
+  clipAccel.value ? clipAccel.value.replace(/Control/g, 'Ctrl').replace(/\+/g, ' + ') : '未启用',
+);
+const clipCapture = ref({ text: true, image: true, file: true });
+const clipSkipSensitive = ref(true);
+const clipMaxItems = ref(500);
+
+async function loadClipConfig() {
+  const api = (window as any).electronAPI?.clipboardPanel;
+  if (!api) return;
+  const r = await api.getConfig().catch(() => null);
+  const cfg = r?.config;
+  if (!cfg) return;
+  clipAccel.value = String(cfg.accelerator || '');
+  const cap = cfg.capture || {};
+  clipCapture.value = { text: cap.text !== false, image: cap.image !== false, file: cap.file !== false };
+  clipSkipSensitive.value = cfg.skipSensitive !== false;
+  clipMaxItems.value = Number(cfg.maxItems) || 500;
+}
+if (canClipboard) void loadClipConfig();
+
+async function applyClipAccel(accel: string) {
+  const api = (window as any).electronAPI?.clipboardPanel;
+  if (!api) return;
+  const r = await api.setConfig({ accelerator: accel }).catch(() => null);
+  // 主进程返回 hotkey 注册结果：被占用时 hotkey.ok=false（原因直接给用户看）
+  const hk = r?.hotkey;
+  if (hk && hk.ok === false) {
+    ElMessage.error(hk.error || '快捷键设置失败');
+    return;
+  }
+  clipAccel.value = String(hk?.accelerator ?? accel);
+  ElMessage.success(accel ? `剪贴板快捷键已设为 ${clipAccelDisplay.value}` : '剪贴板快捷键已禁用');
+}
+function onClipAccelKeyDown(e: KeyboardEvent) {
+  const accel = accelFromEvent(e);
+  if (!accel) {
+    ElMessage.warning('请按住 Ctrl / Alt / Shift 再按一个键');
+    return;
+  }
+  if (accel === shotAccel.value || accel === panicAccel.value) {
+    ElMessage.error('与截图 / 急停快捷键相同，请换一个组合');
+    return;
+  }
+  void applyClipAccel(accel);
+}
+function resetClipAccel() { void applyClipAccel(DEFAULT_CLIP_ACCEL); }
+function clearClipAccel() { void applyClipAccel(''); }
+
+async function patchClipConfig(patch: Record<string, unknown>) {
+  const api = (window as any).electronAPI?.clipboardPanel;
+  if (!api) return;
+  const r = await api.setConfig(patch).catch(() => null);
+  if (r && r.ok === false) ElMessage.error('剪贴板设置保存失败');
+}
+function saveClipCapture() { void patchClipConfig({ capture: { ...clipCapture.value } }); }
+function saveClipSkip() { void patchClipConfig({ skipSensitive: clipSkipSensitive.value }); }
+function saveClipMax() { void patchClipConfig({ maxItems: Number(clipMaxItems.value) }); }
+
 
 // ===== 聊天发送键三态互换（'enter' 默认与历史行为一致；'ctrlEnter' = Ctrl+Enter 发送 / Enter 换行）=====
 const sendKeyMode = ref<'enter' | 'ctrlEnter'>(settingsStore.settings.sendKeyMode ?? 'enter');

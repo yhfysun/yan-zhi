@@ -24,4 +24,11 @@ contextBridge.exposeInMainWorld('snipAPI', {
   composed: (payload) => ipcRenderer.send('snip:composed', payload),
   // 保存结果（保存对话框关闭后回发；框选窗已恢复显示）
   onSaveResult: (callback) => { ipcRenderer.on('snip:save-result', (_e, r) => callback(r)); },
+  // OCR（2026-10-29）：识别选区文字 / 识别并翻译。与 confirm 共用合成管线
+  // （主进程取"带标注的选区图"），结果经 snip:ocr-result 回发。
+  ocr: (rect, translate) => ipcRenderer.send('snip:ocr-request', { rect, translate: !!translate }),
+  onOcrResult: (callback) => { ipcRenderer.on('snip:ocr-result', (_e, r) => callback(r || {})); },
+  // 识别结果面板上的两个动作：复制文字 / 交给 AI 翻译（结果在会话里）
+  copyText: (text) => ipcRenderer.send('snip:copy-text', String(text || '')),
+  translateText: (text) => ipcRenderer.send('snip:translate-text', String(text || '')),
 });

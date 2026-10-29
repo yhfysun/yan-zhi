@@ -14,6 +14,10 @@ const inst = require('./instance.cjs');
 //   ③ 任意 webContents 的 will-navigate + will-frame-navigate（guardNavigation，子帧靠它）
 //   ④ guest 的 popup 重定向。判据见 url-guard.cjs 顶部注释。
 const { isSafeExternalUrl, isAllowedGuestNavigation, guardNavigation } = require('./url-guard.cjs');
+// 「一重载就废」页面的保活判据（纯函数模块，有单测）：游戏页不能被休眠/LRU/空闲回收碰到。
+const { isProtectedGameUrl, keepAliveOf } = require('./tab-keepalive.cjs');
+// 宠物窗「代玩避让」定位（纯函数模块，有单测）：缩到 0.7 并贴目标屏右下角。
+const { dockRect } = require('./pet-dock.cjs');
 // 浏览器扩展管理器（P1，免费路径）：只用 Electron 内置 ses.extensions.*，不依赖 GPL 库。
 const { createExtensionManager, readManifest, manifestInfo } = require('./browser-extensions.cjs');
 const { createContextMenuShim, registerExtensionPreload } = require('./extension-context-menus.cjs');
@@ -36,6 +40,8 @@ const {
   createIconSession,
   HELPER_CS: DESKTOP_HELPER_CS,
 } = require('./desktop-shell.cjs');
+// 插件窗口全局快捷键：清单规范化和差量（纯函数，有单测）；注册仍走本文件 setGlobalHotkey
+const { normalizePluginHotkeys } = require('./plugin-hotkeys.cjs');
 // ★ privileged scheme 注册必须在 app ready 之前（模块顶层即执行）。
 protocol.registerSchemesAsPrivileged([YZ_SCHEME_PRIVILEGES]);
 
@@ -237,6 +243,13 @@ let isQuitting = false;
 // 或用 setBounds(0,0,0,0) 冒充隐藏（Windows GPU 加速下会残留图层吞点击）。
 const browserViews = new Map();
 let activeTabId = null;
+/**
+ * 游戏窗（scope='game'）自己的激活位。
+ * ★ 为什么不让它写全局 `activeTabId`：那是"主窗口用户正在看哪一页"，被 `resolveTarget`
+ *   的 isCurrentView 回落、LRU 保护、光标签广播等处使用。游戏窗激活一页就改写它，
+ *   会让主窗 agent 的首次导航落到游戏页上（跨窗口抢页）。
+ */
+let gameActiveTabId = null;
 // 最近一次有效矩形（由 browserView:resize 写入），首次导航/强制重挂时作为兜底，
 // 取代写死的 480px，避免首次导航因 bounds 未同步而被判为不可见。
 let lastGoodBounds = null;
@@ -352,9 +365,21 @@ function isWindowOffView() {
 function applyGuestThrottling() {
   const offView = isWindowOffView();
   const active = activeGuestWebContents();
+  // ★ 保活页（游戏类）永不节流：被降到后台节流会掉帧，游戏体验直接坏掉
+  const keepAliveWcIds = new Set();
+  for (const [tabId] of webviewTabs) {
+    if (!keepAliveOfTab(tabId)) continue;
+    const wc = guestWebContents(tabId);
+    if (wc && !wc.isDestroyed()) keepAliveWcIds.add(wc.id);
+  }
+  for (const [tabId, entry] of browserViews) {
+    if (!keepAliveOfTab(tabId)) continue;
+    const wc = entry && entry.view ? entry.view.webContents : null;
+    if (wc && !wc.isDestroyed()) keepAliveWcIds.add(wc.id);
+  }
   for (const wc of allGuestWebContents()) {
     // 活动页永远不节流；窗口不可见时所有 guest 都不节流（agent 仍要全速跑）
-    const allowThrottle = !offView && wc !== active;
+    const allowThrottle = !offView && wc !== active && !keepAliveWcIds.has(wc.id);
     try { wc.setBackgroundThrottling(allowThrottle); } catch { /* ignore */ }
   }
 }
@@ -556,7 +581,7 @@ async function ensureGuest(tabId, timeoutMs = 5000) {
   if (t && t.suspended) {
     t.suspended = false;
     try {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('browserView:tabResume', tid);
+      sendToTabOwner(tid, 'browserView:tabResume', tid);
     } catch { /* ignore */ }
   }
   return waitForGuest(tid, timeoutMs);
@@ -627,6 +652,90 @@ function isPreviewScope(tabId) {
 }
 
 /**
+ * 该 tab 当前真实 URL：优先活 guest（webview 里页面自己跳转后只有 guest 知道），
+ * 回落挂起时记住的 url（`webviewTabs[].url` 平时为空，只在 suspendWebviewTab 写入），
+ * 再回落最近一次广播/导航记录。
+ */
+function urlOfTab(tabId) {
+  if (!tabId) return '';
+  try {
+    const wc = guestWebContents(tabId);
+    if (wc && !wc.isDestroyed()) {
+      const u = wc.getURL();
+      if (u) return u;
+    }
+  } catch { /* guest 销毁瞬间忽略 */ }
+  const meta = isWebviewEngine() ? webviewTabs.get(tabId) : browserViews.get(tabId);
+  return (meta && meta.url) || broadcastTabUrl.get(String(tabId)) || '';
+}
+
+/**
+ * 该 tab 是否保活（`scope==='game'` 或命中「一重载就废」URL 规则，见 tab-keepalive.cjs）。
+ * 命中者**不参与**：休眠、LRU 逐出、空闲回收、后台降帧与缓存清理。
+ * ★ 显式刷新（browserView:reload）不走这些路径，仍然允许强制重载。
+ */
+function keepAliveOfTab(tabId) {
+  if (!tabId) return false;
+  return keepAliveOf({ scope: scopeOfTab(tabId), url: urlOfTab(tabId) });
+}
+
+/** 某 scope 的「激活位」（game 与主窗口分开，见 gameActiveTabId 注释） */
+function activeTabForScope(scope) {
+  return String(scope || '') === 'game' ? gameActiveTabId : activeTabId;
+}
+function setActiveTabForScope(scope, tabId) {
+  if (String(scope || '') === 'game') gameActiveTabId = tabId;
+  else activeTabId = tabId;
+}
+
+/** 按 webContents id 找窗口（主窗口或子窗口） */
+function windowById(winId) {
+  if (!winId) return null;
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.id === winId) return mainWindow;
+  for (const w of childWindows.values()) {
+    if (w && !w.isDestroyed() && w.webContents.id === winId) return w;
+  }
+  return null;
+}
+
+/** 按 webContents id 发送；找不到回落主窗口 */
+function sendToWindow(winId, channel, ...args) {
+  const w = windowById(winId) || mainWindow;
+  if (!w || w.isDestroyed()) return;
+  try { w.webContents.send(channel, ...args); } catch { /* 窗口销毁瞬间忽略 */ }
+}
+
+/** tab 的归属窗口（由创建者登记 ownerWinId）；找不到就回落主窗口 */
+function ownerWindowForTab(tabId) {
+  try {
+    const meta = isWebviewEngine() ? webviewTabs.get(String(tabId)) : browserViews.get(String(tabId));
+    const w = windowById(meta && meta.ownerWinId);
+    if (w) return w;
+  } catch { /* 窗口销毁瞬间忽略 */ }
+  return mainWindow;
+}
+
+/**
+ * 把 tab 事件发给它的归属窗口。
+ * ★ 子窗口（游戏窗/差异窗）是独立渲染进程，主进程此前一律 `mainWindow.webContents.send`，
+ *   于是子窗口里的 BrowserPanel 永远收不到自己 tab 的建壳/休眠/激活广播。
+ */
+function sendToTabOwner(tabId, channel, ...args) {
+  const w = ownerWindowForTab(tabId);
+  if (!w || w.isDestroyed()) return;
+  try { w.webContents.send(channel, ...args); } catch { /* 窗口销毁瞬间忽略 */ }
+}
+
+/** 广播给主窗口 + 所有子窗口（移交状态这类"所有窗都要知道"的事件用） */
+function broadcastToAllWindows(channel, ...args) {
+  const wins = [mainWindow, ...childWindows.values()];
+  for (const w of wins) {
+    if (!w || w.isDestroyed()) continue;
+    try { w.webContents.send(channel, ...args); } catch { /* ignore */ }
+  }
+}
+
+/**
  * 登记"本流操作过某个 tab"（**不**改当前锚）。
  *
  * ★ 为什么与"设锚"拆开：一个动作可能**不改写操作目标**，但**确实用了**那个页 ——
@@ -640,7 +749,11 @@ function isPreviewScope(tabId) {
 function markFlowTabTouched(flowKey, tabId) {
   if (!flowKey || !tabId) return;
   const tid = String(tabId);
-  if (isPreviewScope(tid)) agentTouchedTabs.set(tid, String(flowKey));
+  // ★ 显式移交（2026-10-29）：游戏窗的页不属于 preview，但用户把这一页交给本流代玩后
+  //   必须能被登记 —— 否则第一次动作就会被越权闸门拒掉。**只放行本流自己登记过的移交页**，
+  //   不能放宽成"非 preview 都行"（那会破掉 /browser 用户空间的隔离）。
+  const allowed = isPreviewScope(tid) || gameHandoff.ownerOf(tid) === String(flowKey);
+  if (allowed) agentTouchedTabs.set(tid, String(flowKey));
 }
 
 /** 记录"该流当前的操作目标 tab"（**会**改锚）+ 登记操作过它。tab 关闭时必须失效。 */
@@ -701,6 +814,7 @@ const {
   flowKeyOf,
   isBackgroundFlow,
   createFlowPinRegistry,
+  createHandoffRegistry,
 } = require('./browser-target.cjs');
 
 /**
@@ -719,6 +833,21 @@ const {
 const flowPins = createFlowPinRegistry({
   isAlive: (t) => (isWebviewEngine() ? webviewTabs.has(t) : browserViews.has(t)),
 });
+
+/**
+ * 显式移交登记表（2026-10-29）：`tabId → flowKey`。
+ * 用户把独立游戏窗里的页面交给智能体代玩时登记；见 browser-target.cjs 的工厂注释。
+ */
+const gameHandoff = createHandoffRegistry({
+  isAlive: (t) => (isWebviewEngine() ? webviewTabs.has(t) : browserViews.has(t)),
+});
+
+/**
+ * 主窗口最近选中的会话 id。
+ * ★ 为什么需要：游戏窗是独立渲染进程，它自己 store 里的 currentConvId 不一定与主窗同步；
+ *   移交缺省落回"用户在主窗正在看的会话"，而不是游戏窗里那个可能为空的会话。
+ */
+let lastMainConvId = '';
 
 /** 取某流的锁定页（tab 已不存在时工厂内部会自清并返回 null） */
 function resolveFlowPinForFlow(flowKey) {
@@ -1568,7 +1697,7 @@ function createBrowserViewFor(tabId, entry) {
         try { ne?.view?.webContents?.loadURL?.(url).catch(() => {}); } catch { /* ignore */ }
         // 广播给渲染层补建 tab 壳（与 ensureActiveTab 兜底自建同一协议），预览面板即时可见
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('browserView:tabCreated', newTabId, url, entry.scope || 'preview');
+          sendToTabOwner(newTabId, 'browserView:tabCreated', newTabId, url, entry.scope || 'preview');
         }
       }
     } catch { /* ignore */ }
@@ -1622,6 +1751,11 @@ function ensureBrowserView(tabId) {
 /** 挂起指定 tab：摘除 + 销毁 webContents（挂起目标本就应是非激活 tab，摘除是保险） */
 function suspendBrowserViewEntry(tabId, entry) {
   if (!entry || entry.suspended || !entry.view) return;
+  // ★ 保活页（游戏类）一被销毁，唤醒即重载 = 报废；显式刷新不走这里，不受影响。
+  if (keepAliveOfTab(tabId)) {
+    console.log('[browserView] 保活跳过休眠:', tabId, entry.url || '');
+    return;
+  }
   entry.visible = false;
   applyVisibility(entry);
   try { entry.view.webContents?.destroy?.(); } catch { /* ignore */ }
@@ -1647,6 +1781,7 @@ function evictLruTabIfNeeded() {
       if (e.suspended || !e.view) continue;
       if (id === activeTabId) continue;
       if (tabActionBusy.has(id)) continue;        // ★ 正在跑动作：不逐（见 tabActionBusy 注释）
+      if (keepAliveOfTab(id)) continue;           // ★ 保活页（游戏类）：逐出=重载=报废
       const t = e.lastActiveAt || 0;
       if (t < lruAt) { lruAt = t; lruId = id; }
     }
@@ -1673,6 +1808,12 @@ function evictLruTabIfNeeded() {
 function suspendWebviewTab(tabId, reason) {
   const t = webviewTabs.get(tabId);
   if (!t || t.suspended) return false;
+  // ★ 保活页（游戏类）不得休眠：唤醒会重建 webview → 重载 → 游戏报废。
+  //   显式刷新走 browserView:reload，不经过本函数。
+  if (keepAliveOfTab(tabId)) {
+    console.log(`[browserView] 保活跳过休眠(${reason}): ${tabId}`);
+    return false;
+  }
   let url = t.url || '';
   try {
     const wc = t.wcId ? webContents.fromId(t.wcId) : null;
@@ -1686,7 +1827,7 @@ function suspendWebviewTab(tabId, reason) {
   t.suspended = true;
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('browserView:tabSuspended', tabId, url);
+      sendToTabOwner(tabId, 'browserView:tabSuspended', tabId, url);
     }
   } catch { /* ignore */ }
   console.log(`[browserView] webview 休眠(${reason}): ${tabId} ${url}`);
@@ -1711,6 +1852,7 @@ function evictLruWebviewTabIfNeeded() {
       if (id === activeTabId) continue;                       // 当前激活：永不逐
       if (t.suspended) continue;                              // 已休眠：不在预算内
       if (pinned.has(id)) continue;                           // 正被某会话锚定：永不逐
+      if (keepAliveOfTab(id)) continue;                       // ★ 保活页（游戏类）
       if (tabActionBusy.has(id)) continue;                    // ★ 正在跑动作：永不逐（见 tabActionBusy 注释）
       const at = t.lastActiveAt || 0;
       if (at < lruAt) { lruAt = at; lruId = id; }
@@ -1718,6 +1860,10 @@ function evictLruWebviewTabIfNeeded() {
     if (!lruId) break; // 只剩受保护的 tab，无处可逐
     console.log(`[browserView] LRU 休眠 webview tab: ${lruId}（当前存活 ${countLiveWebviewTabs()} 个）`);
     suspendWebviewTab(lruId, 'LRU');
+  }
+  // ★ 保活页（游戏）可能把预算占满且无法腾位：如实记一条，不静默
+  if (countLiveWebviewTabs() > MAX_TABS) {
+    console.warn(`[browserView] 存活 webview tab 超过上限（${countLiveWebviewTabs()}/${MAX_TABS}）：保活页过多，无法逐出`);
   }
 }
 
@@ -1748,6 +1894,7 @@ function scheduleTabIdleCheck() {
         if (t.suspended) continue;                  // 已休眠：不重复处理
         if (id === activeTabId) continue;           // 当前激活：不回收
         if (pinned.has(id)) continue;               // 某会话锚定（agent 正在操作）：不回收
+        if (keepAliveOfTab(id)) continue;           // ★ 保活页（游戏类）：休眠=重载=报废
         if (tabActionBusy.has(id)) continue;        // ★ 正在跑动作：不回收（见 tabActionBusy 注释）
         if ((t.lastActiveAt || 0) > now - TAB_IDLE_UNLOAD_MS) continue;
         console.log('[browserView] webview 空闲休眠:', id, '（空闲超过', TAB_IDLE_UNLOAD_MS / 60000, '分钟）');
@@ -1767,14 +1914,16 @@ function scheduleTabIdleCheck() {
           if (!g || g.isDestroyed()) continue;
           const isActive = id === activeTabId;
           const isPinned = pinned2.has(id);
-          const target = (isActive || isPinned) ? 60 : 1;
+          // ★ 保活页按"被钉住"处理：不能降到 1fps（游戏会掉帧），也不清缓存（重下可能卡加载）
+          const isKeepAlive = keepAliveOfTab(id);
+          const target = (isActive || isPinned || isKeepAlive) ? 60 : 1;
           if (typeof g.setFrameRate === 'function' && g.getFrameRate && g.getFrameRate() !== target) {
             g.setFrameRate(target);
           }
           // ★ 顺带清 HTTP 磁盘/内存缓存（B3，内存治理）：空闲即非工作集，cache 可随时重下，
           //   cookie/localStorage/登录态不受影响。空闲超过 10 分钟的 tab 通常累积了
           //   几十~上百 MB 图片缓存。每次巡检只对"上次清理距今 >5 分钟"的执行，避免反复清。
-          if (!isActive && !isPinned && (now - (t.lastActiveAt || 0) > TAB_IDLE_UNLOAD_MS)) {
+          if (!isActive && !isPinned && !isKeepAlive && (now - (t.lastActiveAt || 0) > TAB_IDLE_UNLOAD_MS)) {
             if (!(t.__lastCacheClear) || now - t.__lastCacheClear > 5 * 60 * 1000) {
               t.__lastCacheClear = now;
               g.session.clearCache().catch(() => { /* 清理失败不影响 */ });
@@ -2093,6 +2242,39 @@ function normalizeGameWindowOptions(opts) {
 }
 // ===GAMEWIN-END===
 
+/**
+ * 游戏窗关闭后的收口（2026-10-29）：
+ *   ① 释放该窗口的全部显式移交（否则主窗宠物一直显示"代玩中"、锚指向幽灵页）；
+ *   ② 关闭该窗口建立的全部 game scope tab（渲染层已消失，留着就是占 MAX_TABS 的幽灵）。
+ * 用 ownerWinId 过滤：只清这个窗口自己的页，不误伤别的窗口。
+ */
+function cleanupGameWindowTabs(winId) {
+  const owners = new Set();
+  for (const [tid] of gameHandoff.entries()) {
+    const meta = isWebviewEngine() ? webviewTabs.get(tid) : browserViews.get(tid);
+    if (winId && meta && meta.ownerWinId && meta.ownerWinId !== winId) continue;
+    owners.add(tid);
+  }
+  for (const tid of owners) {
+    gameHandoff.release(tid);
+    broadcastToAllWindows('browserView:handoff', { on: false, tabId: tid, reason: 'window-closed' });
+  }
+  if (!gameHandoff.size()) petDockExit();
+  const ids = [];
+  const source = isWebviewEngine() ? webviewTabs : browserViews;
+  for (const [id, t] of source) {
+    if ((t.scope || '') !== 'game') continue;
+    if (winId && t.ownerWinId && t.ownerWinId !== winId) continue;
+    ids.push(id);
+  }
+  for (const id of ids) {
+    try { closeTabById(id, true); } catch { /* ignore */ }
+  }
+  if (owners.size || ids.length) {
+    console.log(`[browser-handoff] 游戏窗关闭：释放移交 ${owners.size} 个、关闭 game tab ${ids.length} 个`);
+  }
+}
+
 ipcMain.handle('child-window:open', (event, opts = {}) => {
   const g = normalizeGameWindowOptions(opts);
   const key = String(opts.key || 'default');
@@ -2138,6 +2320,10 @@ ipcMain.handle('child-window:open', (event, opts = {}) => {
   win.on('closed', () => {
     childWindows.delete(key);
     closeRecordingsOfWindow(win);
+    // 游戏窗：释放移交 + 关闭它建立的 game scope tab（见 cleanupGameWindowTabs）
+    if (key === 'browser-game') {
+      try { cleanupGameWindowTabs(win.webContents.id); } catch { /* ignore */ }
+    }
   });
   win.webContents.setWindowOpenHandler(({ url: u }) => {
     if (isSafeExternalUrl(u)) shell.openExternal(u);
@@ -2210,7 +2396,19 @@ const activeRecordings = new Map(); // recordId → { timer, proc, outPath, star
 const RECORD_MAX_MS = 10 * 60 * 1000; // 单段上限 10 分钟（防忘停写爆磁盘）
 
 function resolveFfmpegPath() {
-  const candidates = [process.env.FFMPEG, 'C:\\APP\\EVCapture\\ffmpeg.exe'].filter(Boolean);
+  // ★ 2026-10-29：优先用**应用自己下载的 ffmpeg**（与 server 侧 ffmpeg-runtime 的落盘位一致）。
+  //   此前只看环境变量与一个硬编码路径，导致「用户已通过应用装过 ffmpeg，推流却报启动失败」。
+  let selfManaged = '';
+  try {
+    const root = app.getPath('userData');
+    selfManaged = [
+      path.join(root, 'ffmpeg', 'ffmpeg.exe'),
+      path.join(root, 'server-data', 'ffmpeg', 'ffmpeg.exe'),
+    ].find((p) => {
+      try { return fsRec.existsSync(p); } catch { return false; }
+    }) || '';
+  } catch { /* app 未就绪时忽略 */ }
+  const candidates = [selfManaged, process.env.FFMPEG, 'C:\\APP\\EVCapture\\ffmpeg.exe'].filter(Boolean);
   for (const c of candidates) {
     try { if (fsRec.existsSync(c)) return c; } catch { /* ignore */ }
   }
@@ -2358,6 +2556,109 @@ ipcMain.handle('screen-record:save-blob', async (_e, opts = {}) => {
     return { ok: false, error: String(e?.message || e) };
   }
 });
+// ============================================================
+// 直播推流（2026-10-29）：渲染层 MediaRecorder 的 webm 分片 → ffmpeg → RTMP
+// ------------------------------------------------------------
+// 为什么采集在渲染层、主进程只负责转推：
+//   · 画面本来就在渲染层（窗口采集 + 舞台裁剪），主进程再抓一遍等于录两遍；
+//   · ffmpeg 只做转封装/转码，它崩了不会带走采集端（渲染层能收到 status 事件）；
+//   · 将来的音频轨也从同一条管走进来，编码参数只维护一份。
+// 输入 pipe:0 是**直播 webm 流**（无时长头），输出 flv；分片间隔 1s，端到端延迟约 1~2s。
+// ============================================================
+let liveStream = null; // { proc, sender, url, startedAt }
+
+function sendLiveStatus(sender, payload) {
+  try {
+    if (sender && !sender.isDestroyed()) sender.send('live-stream:status', payload);
+  } catch { /* 渲染层已关：状态事件丢了也无妨，进程会被 stop/退出收走 */ }
+}
+
+function stopLiveStreamProc(s, waitMs = 5000) {
+  return new Promise((resolve) => {
+    if (!s || !s.proc) { resolve(); return; }
+    try { s.proc.stdin.end(); } catch { /* 已断开 */ }
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    s.proc.once('exit', finish);
+    setTimeout(() => {
+      try { s.proc.kill(); } catch { /* 已经退出 */ }
+      finish();
+    }, waitMs);
+  });
+}
+
+ipcMain.handle('live-stream:start', (e, opts = {}) => {
+  if (liveStream) return { ok: false, error: '已经在推流中' };
+  const url = String(opts.url || '').trim();
+  if (!/^rtmps?:\/\//i.test(url)) return { ok: false, error: '推流地址必须以 rtmp:// 或 rtmps:// 开头' };
+  const bitrate = Math.min(Math.max(Number(opts.bitrateKbps) || 2500, 500), 8000);
+  const ff = resolveFfmpegPath();
+  const args = [
+    '-hide_banner', '-loglevel', 'warning',
+    '-fflags', '+genpts',
+    '-f', 'webm', '-i', 'pipe:0',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
+    '-pix_fmt', 'yuv420p',
+    '-g', '40', '-keyint_min', '40',
+    '-b:v', `${bitrate}k`, '-maxrate', `${bitrate}k`, '-bufsize', `${bitrate * 2}k`,
+    // 音频：webm 里是 Opus，flv 只认 AAC，必须转
+    '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
+    '-f', 'flv', url,
+  ];
+  let proc;
+  try {
+    proc = spawnRec(ff, args, { stdio: ['pipe', 'ignore', 'pipe'] });
+  } catch (err) {
+    return { ok: false, error: `ffmpeg 启动失败：${String((err && err.message) || err)}` };
+  }
+  const sender = e.sender;
+  const session = { proc, sender, url, startedAt: Date.now() };
+  liveStream = session;
+  let tail = '';
+  proc.stderr.on('data', (d) => { tail = (tail + String(d)).slice(-4000); });
+  proc.on('error', (err) => {
+    if (liveStream === session) liveStream = null;
+    sendLiveStatus(sender, { state: 'error', message: `ffmpeg 启动失败：${String((err && err.message) || err)}` });
+  });
+  proc.on('exit', (code, signal) => {
+    if (liveStream === session) liveStream = null;
+    sendLiveStatus(sender, {
+      state: 'stopped',
+      code: code === null ? -1 : code,
+      signal: signal || '',
+      message: code === 0 ? '' : (tail.trim() || `ffmpeg 退出码 ${code}`),
+    });
+  });
+  return { ok: true };
+});
+
+ipcMain.on('live-stream:chunk', (_e, data) => {
+  const s = liveStream;
+  if (!s || !s.proc.stdin || s.proc.stdin.destroyed) return;
+  try {
+    s.proc.stdin.write(Buffer.from(data));
+  } catch {
+    // 管道已断：让 exit/error 事件走正常收尾，这里不重复报错
+  }
+});
+
+ipcMain.handle('live-stream:stop', async () => {
+  const s = liveStream;
+  if (!s) return { ok: true, durationMs: 0 };
+  liveStream = null;
+  await stopLiveStreamProc(s);
+  return { ok: true, durationMs: Date.now() - s.startedAt };
+});
+
+// 退出应用时别把 ffmpeg 留在后台继续推流
+app.on('before-quit', () => {
+  if (!liveStream) return;
+  const s = liveStream;
+  liveStream = null;
+  try { s.proc.stdin.end(); } catch { /* ignore */ }
+  try { s.proc.kill(); } catch { /* ignore */ }
+});
+
 // 录屏的窗口被关闭 → 立即收尾落盘（不然 ffmpeg 等不到输入结束，文件不可用）
 function closeRecordingsOfWindow(win) {
   for (const rec of [...activeRecordings.values()]) {
@@ -2413,13 +2714,14 @@ function broadcastOpenTab(url, scope) {
         if (!wc || wc.isDestroyed()) continue;
         if (norm(wc.getURL()) === target) {
           console.log('[bridge] popup 同站复用: 已有 tab', tid, '在', wc.getURL(), '→ 原地导航，不新建');
-          mainWindow.webContents.send('browser:wv:forceOpen', url, scope || currentTabScope(), tid);
+          // 发给所有窗口：scope 由渲染层过滤（游戏窗的弹窗不该只发主窗口）
+          broadcastToAllWindows('browser:wv:forceOpen', url, scope || currentTabScope(), tid);
           return;
         }
       }
     }
   } catch { /* 探测失败按原路径广播 */ }
-  mainWindow.webContents.send('browser:wv:openTab', url, scope || currentTabScope());
+  broadcastToAllWindows('browser:wv:openTab', url, scope || currentTabScope());
 }
 
 // webview 引擎的 popup 重定向：给 guest 自身的 webContents 设 windowOpenHandler。
@@ -2472,11 +2774,13 @@ app.on('web-contents-created', (_e, contents) => {
   setupGuestPopupRedirect(contents);
 });
 
-ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
+ipcMain.handle('browser:wv:register', (e, tabId, wcId, scope) => {
   const t = webviewTabs.get(tabId) || { scope: scope || 'preview', lastActiveAt: Date.now(), wcId: null };
   t.wcId = wcId;
   t.suspended = false;
   if (scope) t.scope = scope;
+  // 归属窗口：子窗口（游戏窗）建的 tab 事件要回发给它自己，而不是主窗口
+  if (!t.ownerWinId && e && e.sender) t.ownerWinId = e.sender.id;
   t.lastActiveAt = Date.now();
   webviewTabs.set(tabId, t);
   if (!activeTabId) activeTabId = tabId;
@@ -2496,7 +2800,7 @@ ipcMain.handle('browser:wv:register', (_e, tabId, wcId, scope) => {
   // 给这个 guest 宿主 wc 挂弹窗重定向（window.open/target=_blank → 应用内新标签页）
   try {
     const wc = webContents.fromId(wcId);
-    if (wc) { try { wc.setBackgroundThrottling(!isWindowOffView()); } catch { /* ignore */ } }
+    if (wc) { try { wc.setBackgroundThrottling(!keepAliveOfTab(tabId) && !isWindowOffView()); } catch { /* ignore */ } }
     setupGuestPopupRedirect(wc, t.scope);
     // 扩展右键菜单（P3）：webview 引擎的 guest 挂 contextMenus 弹出点
     if (wc && extensionContextMenus) extensionContextMenus.attachToWebContents(wc);
@@ -2753,8 +3057,9 @@ let tabSeq = 0;
  * "会话首次导航时自建 guest" 两条路径共用（防两处实现漂移）。
  * @returns 新 tabId
  */
-function createBrowserTab(scope) {
+function createBrowserTab(scope, ownerWinId) {
   const newTabId = 'tab-' + (++tabSeq);
+  const sc = scope || 'preview';
   if (isWebviewEngine()) {
     // ★ webview 引擎同样要启动空闲回收/降帧巡检（2026-10-13）：
     //   此前 scheduleTabIdleCheck 只在旧引擎 ensureBrowserView 里调 —— webview 模式下
@@ -2771,8 +3076,12 @@ function createBrowserTab(scope) {
     //     webview 分支是个**无保护缺口** —— 这里补上。
     evictLruWebviewTabIfNeeded();
     // webview 模式：只分配 tabId 与空间归属，guest 由渲染层 <webview> 元素创建后注册
-    webviewTabs.set(newTabId, { scope: scope || 'preview', lastActiveAt: Date.now(), wcId: null, agentOpened: false });
-    if (!activeTabId) activeTabId = newTabId;
+    webviewTabs.set(newTabId, {
+      scope: sc, lastActiveAt: Date.now(), wcId: null, agentOpened: false,
+      ownerWinId: Number(ownerWinId) || 0,
+    });
+    // game scope 的激活位独立，不能改写主窗口的 activeTabId（见 gameActiveTabId 注释）
+    if (!activeTabForScope(sc)) setActiveTabForScope(sc, newTabId);
     return newTabId;
   }
   // R4：超限先按 LRU 挂起最久未激活的 tab（壳保留、激活复活），再新建，
@@ -2783,11 +3092,15 @@ function createBrowserTab(scope) {
   evictLruTabIfNeeded();
   ensureBrowserView(newTabId);
   const entry = browserViews.get(newTabId);
-  if (entry) { entry.scope = scope || 'preview'; entry.agentOpened = false; }
+  if (entry) {
+    entry.scope = sc;
+    entry.agentOpened = false;
+    entry.ownerWinId = Number(ownerWinId) || 0;
+  }
   return newTabId;
 }
 
-ipcMain.handle('browserView:createTab', (_e, scope) => createBrowserTab(scope));
+ipcMain.handle('browserView:createTab', (e, scope) => createBrowserTab(scope, e && e.sender ? e.sender.id : 0));
 
 // 关闭标签页，销毁对应 BrowserView
 // fromUi=true 表示 UI 路径（渲染层会自行顶替相邻 tab，主进程不顶替不广播，避免双顶替抖动）；
@@ -2802,12 +3115,13 @@ function closeTabById(tabId, fromUi) {
   if (isWebviewEngine()) {
     const meta = webviewTabs.get(tabId);
     const closedScope = meta?.scope || 'preview';
+    const closedOwnerWinId = meta?.ownerWinId || 0;
     webviewTabs.delete(tabId);
     clearFormSnapshot(tabId);
     // ★ 广播 tab 关闭（2026-10-09）：渲染层据此摘除 tab 壳（webview 引擎下 agent 的
     //   close_tab / 收尾自动收拾此前只删主进程 meta，渲染层残留幽灵壳）。
     //   渲染层对不认识的 tabId 幂等忽略，UI 路径重复收到也无害。
-    broadcastTabClosed(tabId);
+    broadcastTabClosed(tabId, closedOwnerWinId);
     if (activeTabId === tabId) {
       activeTabId = null;
       // 非 UI 路径（pageAgent / window.close）：主进程顶替同空间内最近激活的 tab 并广播
@@ -2820,9 +3134,22 @@ function closeTabById(tabId, fromUi) {
         if (next) {
           activeTabId = next;
           webviewTabs.get(next).lastActiveAt = Date.now();
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('browserView:tabActivated', next);
-          }
+          sendToTabOwner(next, 'browserView:tabActivated', next);
+        }
+      }
+    }
+    // ★ game scope 的激活位独立：关掉游戏页时清它，并按需顶替（同样只通知归属窗口）
+    if (gameActiveTabId === tabId) {
+      gameActiveTabId = null;
+      if (!fromUi) {
+        let next = null, newest = -1;
+        for (const [id, t] of webviewTabs) {
+          if ((t.scope || 'preview') !== 'game') continue;
+          if ((t.lastActiveAt || 0) >= newest) { newest = t.lastActiveAt || 0; next = id; }
+        }
+        if (next) {
+          gameActiveTabId = next;
+          sendToTabOwner(next, 'browserView:tabActivated', next);
         }
       }
     }
@@ -2831,6 +3158,7 @@ function closeTabById(tabId, fromUi) {
   const entry = browserViews.get(tabId);
   // 记住被关 tab 的归属空间：R5 顶替只在同空间内找，避免把另一空间的 tab 顶进激活位
   const closedScope = entry?.scope || 'preview';
+  const closedOwnerWinId = entry?.ownerWinId || 0;
   if (entry) {
     // 统一走收敛函数摘除（无论当前是否挂载），再销毁 webContents
     entry.visible = false;
@@ -2839,7 +3167,7 @@ function closeTabById(tabId, fromUi) {
     try { entry.view?.webContents?.destroy?.(); } catch { /* ignore */ }
     browserViews.delete(tabId);
   }
-  broadcastTabClosed(tabId);
+  broadcastTabClosed(tabId, closedOwnerWinId);
   if (activeTabId === tabId) {
     activeTabId = null;
     // R5：非 UI 路径关掉当前 tab 时主进程自行顶替同空间内最近激活的剩余 tab 并广播。
@@ -2853,9 +3181,7 @@ function closeTabById(tabId, fromUi) {
       }
       if (next) {
         activateTab(next);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('browserView:tabActivated', next);
-        }
+        sendToTabOwner(next, 'browserView:tabActivated', next);
       }
     }
   }
@@ -2866,17 +3192,23 @@ ipcMain.handle('browserView:closeTab', (_e, tabId, fromUi) => {
 });
 
 /** tab 关闭广播：渲染层（BrowserPanel）据此摘除 tab 壳，幂等 */
-function broadcastTabClosed(tabId) {
+function broadcastTabClosed(tabId, ownerWinId) {
   // ★ 收口：**所有**关闭路径都会经过这里（closeTabById 两处 + `case 'close_tab'`），
   //   把"指向该 tab 的**流锚**"一并失效 —— 逐条路径各清一次必然漏（`case 'close_tab'`
   //   此前就没走 closeTabById，正是活证）。放在广播处是唯一不漏的位置。
+  const wasHandoff = !!gameHandoff.ownerRaw(tabId);
   clearFlowAnchorsForTab(tabId);
   broadcastTabUrl.delete(String(tabId));   // 同步清 URL 记账（防陈旧复用）
-  try {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('browserView:tabClosed', tabId);
-    }
-  } catch { /* ignore */ }
+  // ★ 移交页被关掉：释放登记并告知所有窗口（主窗宠物据此停止"代玩中"）
+  if (wasHandoff) {
+    gameHandoff.release(tabId);
+    broadcastToAllWindows('browserView:handoff', { on: false, tabId, reason: 'tab-closed' });
+    if (!gameHandoff.size()) petDockExit();
+  }
+  // ★ 用关闭前记下的 ownerWinId：meta 已被删，靠 sendToTabOwner 会回落主窗口，
+  //   子窗口（游戏窗）收不到就会留着幽灵 tab 壳。
+  if (ownerWinId) sendToWindow(ownerWinId, 'browserView:tabClosed', tabId);
+  else sendToTabOwner(tabId, 'browserView:tabClosed', tabId);
 }
 
 // ★ 收尾自动收拾（2026-10-09）：关闭全部 agent 打开的 tab（agentOpened===true）。
@@ -2924,7 +3256,7 @@ ipcMain.handle('browserView:closeAllTabs', (_e, scope, fromUi) => {
 // ★ 幂等：未知 convId / 已关闭的 tab 直接忽略。
 ipcMain.handle('browserView:closeConvTabs', (_e, convId) => {
   const cid = convId != null ? String(convId) : '';
-  if (!cid) return { closed: 0 };
+  if (!cid) return { closed: 0, released: 0 };
   // ★ 记账值现在是 **flowKey**（`${convId}::${flow}`）⇒ 按"会话前缀"匹配，把本会话的**所有流**
   //   操作过的页一并收掉（收尾语义仍以会话为单位；`owner === cid` 兼容任何纯 convId 的历史值）。
   const convPrefix = cid + '::';
@@ -2933,9 +3265,25 @@ ipcMain.handle('browserView:closeConvTabs', (_e, convId) => {
     const o = String(owner);
     if (o === cid || o.startsWith(convPrefix)) ids.push(tid);
   }
+  const released = [];
   for (const tid of ids) {
+    // ★ 显式移交的游戏页是**用户自己的页面**：任务收尾只释放移交，不关闭。
+    //   关了等于把用户开着的游戏页收走（而且再开就重载 → 报废）。
+    const owner = gameHandoff.ownerRaw(tid);
+    if (owner && (owner === cid || owner.startsWith(convPrefix))) {
+      gameHandoff.release(tid);
+      agentTouchedTabs.delete(String(tid));
+      released.push(tid);
+      continue;
+    }
     // fromUi=true：这是一次"离开/收尾"清理，主进程不再做 R5 顶替（与 closeAllTabs 同口径）
     try { closeTabById(tid, true); } catch { /* ignore */ }
+  }
+  if (released.length) {
+    for (const tid of released) {
+      broadcastToAllWindows('browserView:handoff', { on: false, tabId: tid, convId: cid, reason: 'task-finished' });
+    }
+    if (!gameHandoff.size()) petDockExit();
   }
   // 锚一并失效（closeTabById 内部经 broadcastTabClosed 已清，这里再清一次防漏）
   for (const key of [...convAnchors.keys()]) {
@@ -2947,7 +3295,7 @@ ipcMain.handle('browserView:closeConvTabs', (_e, convId) => {
     const k = String(key);
     if (k === cid || k.startsWith(convPrefix)) flowPins.clear(key);
   }
-  return { closed: ids.length };
+  return { closed: ids.length - released.length, released: released.length };
 });
 
 /**
@@ -2975,17 +3323,128 @@ ipcMain.handle('browserView:unpinTarget', (_e, convId, flow) => {
   return { ok: true, flowKey: key };
 });
 
+// ============================================================
+// 显式移交（2026-10-29）：把独立游戏窗里用户正在玩的那一页交给智能体代玩。
+//
+// ★ 为什么必须"显式"：游戏窗（scope='game'）不在 agent 的 preview 执行面里；
+//   若让 agent 自己去找页，它会另开一个 preview tab —— 用户看的是 Game，agent 玩的是 Login，
+//   这正是「看的那页 ≠ 操作的那页」。移交把**用户指的这一页**登记成本会话的执行目标：
+//   flowPin（禁换页）+ 锚 + 归属，三条一起才让显式 tabId 与无 tabId 两条路都落在这里。
+// ★ 收尾不关页（closeConvTabs 只释放），因为这是用户自己的页面。
+// ============================================================
+
+function tabTitleOf(tabId) {
+  try {
+    const wc = guestWebContents(tabId);
+    if (wc && !wc.isDestroyed()) return wc.getTitle() || '';
+  } catch { /* ignore */ }
+  return '';
+}
+
+function handoffInfoOf(tabId, convId, flowKey, on, reason) {
+  return {
+    on: !!on,
+    tabId: tabId ? String(tabId) : '',
+    convId: convId || '',
+    flowKey: flowKey || '',
+    scope: tabId ? scopeOfTab(tabId) : '',
+    url: tabId ? urlOfTab(tabId) : '',
+    title: tabId ? tabTitleOf(tabId) : '',
+    reason: reason || '',
+  };
+}
+
+ipcMain.handle('browserView:handoff', (_e, payload) => {
+  const p = payload || {};
+  const tabId = String(p.tabId || '');
+  // 缺省用**主窗口最近会话**：游戏窗自己的 currentConvId 未必与主窗同步
+  const convId = String(p.convId || lastMainConvId || '');
+  if (!tabId) return { ok: false, error: '没有可移交的页面' };
+  const meta = isWebviewEngine() ? webviewTabs.get(tabId) : browserViews.get(tabId);
+  if (!meta) return { ok: false, error: '页面已关闭' };
+  const sc = meta.scope || 'preview';
+  if (sc !== 'game' && !isProtectedGameUrl(urlOfTab(tabId))) {
+    return { ok: false, error: '只能移交游戏页' };
+  }
+  if (!convId) return { ok: false, error: '请先在主窗口打开一个会话' };
+  const flowKey = flowKeyOf(convId, p.flow);
+  const pinned = flowPins.resolve(flowKey);
+  if (pinned && pinned !== tabId) {
+    return { ok: false, error: '该会话正在页面对话任务中，请先结束那个任务再移交' };
+  }
+  // ① 先钉住：移交期间禁 new_tab/switch_tab，防"另开一页作答"的漂移
+  flowPins.set(flowKey, tabId);
+  // ② 再登记归属（必须在 setFlowAnchor 之前：markFlowTabTouched 要能认这个移交页）
+  gameHandoff.register(tabId, flowKey);
+  setFlowAnchor(flowKey, tabId);
+  agentTouchedTabs.set(tabId, String(flowKey));
+  const info = handoffInfoOf(tabId, convId, flowKey, true);
+  broadcastToAllWindows('browserView:handoff', info);
+  petDockEnter();
+  console.log(`[browser-handoff] 移交 tab=${tabId} → conv=${convId} flow=${flowKey} url=${info.url}`);
+  return { ok: true, ...info };
+});
+
+ipcMain.handle('browserView:handoffRelease', (_e, payload) => {
+  const p = payload || {};
+  const tabId = String(p.tabId || '');
+  let flowKey = String(p.flowKey || '');
+  let convId = String(p.convId || '');
+  if (tabId && !flowKey) flowKey = gameHandoff.ownerRaw(tabId) || '';
+  if (!flowKey && convId) flowKey = flowKeyOf(convId, p.flow) || '';
+  if (!convId && flowKey) convId = String(flowKey).split('::')[0];
+  if (!flowKey) return { ok: false, error: '没有进行中的移交' };
+  const released = tabId ? [tabId] : gameHandoff.releaseForFlow(flowKey);
+  for (const tid of released) {
+    gameHandoff.release(tid);
+    agentTouchedTabs.delete(String(tid));
+    if (convAnchors.get(String(flowKey)) === String(tid)) convAnchors.delete(String(flowKey));
+  }
+  flowPins.clear(flowKey);
+  const info = handoffInfoOf(tabId || released[0] || '', convId, flowKey, false, String(p.reason || 'released'));
+  broadcastToAllWindows('browserView:handoff', info);
+  if (!gameHandoff.size()) petDockExit();
+  console.log(`[browser-handoff] 收回移交 flow=${flowKey} tabs=${released.join(',') || '-'}`);
+  return { ok: true, released, flowKey, convId };
+});
+
+/** 当前移交状态（游戏窗/主窗挂载时拉一次，避免错过广播） */
+ipcMain.handle('browserView:getHandoff', () => {
+  const entry = gameHandoff.entries()[0];
+  if (!entry) return { on: false };
+  const [tabId, flowKey] = entry;
+  return handoffInfoOf(tabId, String(flowKey).split('::')[0], flowKey, true);
+});
+
+/**
+ * 主窗口当前会话上报（移交缺省会话用）。
+ * ★ 只认主窗口：子窗口（游戏窗）自己也会选会话，但它不是"用户在主窗看的任务"。
+ */
+ipcMain.on('chat:current-conv', (e, convId) => {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed() || e.sender !== mainWindow.webContents) return;
+    lastMainConvId = String(convId || '');
+  } catch { /* ignore */ }
+});
+
 // 激活标签页：显示其 BrowserView，隐藏其他
 ipcMain.handle('browserView:activateTab', (_e, tabId) => {
   if (isWebviewEngine()) {
-    activeTabId = tabId;
     const t = webviewTabs.get(tabId);
+    // ★ 按 scope 落到各自的激活位：game scope 不覆盖主窗口的 activeTabId
+    setActiveTabForScope((t && t.scope) || 'page', tabId);
     if (t) { t.lastActiveAt = Date.now(); t.suspended = false; }
     return;
   }
   const entry = browserViews.get(tabId);
   if (!entry) return;
+  const isGame = (entry.scope || '') === 'game';
+  const prevGlobal = activeTabId;
   activateTab(tabId);
+  if (isGame) {
+    gameActiveTabId = tabId;
+    activeTabId = prevGlobal;   // 旧引擎 activateTab 会写全局，这里还原（game 不该占主窗激活位）
+  }
 });
 
 // 确保 main.cjs 有一个属于指定空间的激活 browser tab，返回 tabId。
@@ -2994,67 +3453,67 @@ ipcMain.handle('browserView:activateTab', (_e, tabId) => {
 // agent 误把 page 空间的 tab 当作预览执行面（两边 tab 已隔离）。
 // 逻辑：激活 tab 属于目标 scope 直接返回；否则在同空间内找最近激活的 tab；都没有则轮询等待
 // BrowserPanel onMounted 创建（最多 3s）；超时自建（带 scope 标记并广播）。
-ipcMain.handle('browserView:ensureActiveTab', async (_e, scope) => {
+ipcMain.handle('browserView:ensureActiveTab', async (e, scope) => {
   const wantScope = scope || 'preview';
+  const ownerWinId = e && e.sender ? e.sender.id : 0;
   if (isWebviewEngine()) {
     const scopeOfWv = (t) => (t && t.scope) || 'preview';
-    const activeMeta = activeTabId ? webviewTabs.get(activeTabId) : null;
-    if (activeMeta && scopeOfWv(activeMeta) === wantScope) return activeTabId;
+    // ★ game scope 用自己的激活位（不碰主窗口 activeTabId，见 gameActiveTabId 注释）
+    const activeId = activeTabForScope(wantScope);
+    const activeMeta = activeId ? webviewTabs.get(activeId) : null;
+    if (activeMeta && scopeOfWv(activeMeta) === wantScope) return activeId;
     for (let i = 0; i < 30; i++) {
       await sleepMs(100);
-      const am = activeTabId ? webviewTabs.get(activeTabId) : null;
-      if (am && scopeOfWv(am) === wantScope) return activeTabId;
+      const cur = activeTabForScope(wantScope);
+      const am = cur ? webviewTabs.get(cur) : null;
+      if (am && scopeOfWv(am) === wantScope) return cur;
       let best = null, newest = -1;
       for (const [id, t] of webviewTabs) {
         if (scopeOfWv(t) !== wantScope) continue;
         if ((t.lastActiveAt || 0) >= newest) { newest = t.lastActiveAt || 0; best = id; }
       }
-      if (best) { activeTabId = best; webviewTabs.get(best).lastActiveAt = Date.now(); return best; }
+      if (best) { setActiveTabForScope(wantScope, best); webviewTabs.get(best).lastActiveAt = Date.now(); return best; }
     }
     // ★★★ 2026-10-11：改走 `createBrowserTab()`（此前自己 `tabSeq++` + `webviewTabs.set`）。
     //   ★ 为什么：`createBrowserTab` 是 tab 创建的**唯一收口**（内含 `MAX_TABS` + LRU 逐出）。
     //     本分支是"3s 等不到面板建 tab → 主进程兜底自建"，**agent 会真实走到**
     //     （实测日志 `ensureActiveTab 超时自建`）⇒ 绕过收口 ⇒ 又是无上限堆积的缺口。
     //   ★ 这是"平行实现漂移"的第 N 例：同一个"建 tab"语义散在 4 处，改一处必须全改。
-    const tabId = createBrowserTab(wantScope);
-    activeTabId = tabId;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('browserView:tabCreated', tabId, null, wantScope);
-    }
+    const tabId = createBrowserTab(wantScope, ownerWinId);
+    setActiveTabForScope(wantScope, tabId);
+    // ★ 发给**发起请求的那个窗口**：游戏窗是独立渲染进程，只发主窗口它永远收不到建壳广播
+    sendToTabOwner(tabId, 'browserView:tabCreated', tabId, null, wantScope);
     return tabId;
   }
-  const scopeOf = (e) => (e && e.scope) || 'preview';
+  const scopeOf = (e2) => (e2 && e2.scope) || 'preview';
   const findInScope = () => {
     let best = null, newest = -1;
-    for (const [id, e] of browserViews) {
-      if (scopeOf(e) !== wantScope) continue;
-      const t = e.lastActiveAt || 0;
+    for (const [id, e2] of browserViews) {
+      if (scopeOf(e2) !== wantScope) continue;
+      const t = e2.lastActiveAt || 0;
       if (t >= newest) { newest = t; best = id; }
     }
     return best;
   };
-  const activeEntry = activeTabId ? browserViews.get(activeTabId) : null;
+  const curActive = activeTabForScope(wantScope);
+  const activeEntry = curActive ? browserViews.get(curActive) : null;
   if (activeEntry && scopeOf(activeEntry) === wantScope) {
-    return activeTabId;
+    return curActive;
   }
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 100));
-    const ae = activeTabId ? browserViews.get(activeTabId) : null;
-    if (ae && scopeOf(ae) === wantScope) return activeTabId;
+    const c = activeTabForScope(wantScope);
+    const ae = c ? browserViews.get(c) : null;
+    if (ae && scopeOf(ae) === wantScope) return c;
     const inScope = findInScope();
-    if (inScope) { activateTab(inScope); return inScope; }
+    if (inScope) { activateTab(inScope); setActiveTabForScope(wantScope, inScope); return inScope; }
   }
-  evictLruTabIfNeeded();
-  const tabId = 'tab-' + (++tabSeq);
-  ensureBrowserView(tabId);
-  const entry = browserViews.get(tabId);
-  if (entry) entry.scope = wantScope;
+  const tabId = createBrowserTab(wantScope, ownerWinId);
   activateTab(tabId);
+  setActiveTabForScope(wantScope, tabId);
   // 兜底自建的 tab 广播给渲染层补建 tab 壳，否则渲染层无壳即忽略 → 导航黑洞
   // （pageAgent 在预览面板看不到任何变化，但导航真实发生了）。广播带 scope，渲染层按空间过滤。
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('browserView:tabCreated', tabId, null, wantScope);
-  }
+  sendToTabOwner(tabId, 'browserView:tabCreated', tabId, null, wantScope);
   return tabId;
 });
 
@@ -5752,6 +6211,40 @@ async function endAnnotationOn(wc) {
   return true;
 }
 
+/**
+ * 页面上找"能关掉弹窗"的按钮并点掉（2026-10-29）。
+ *
+ * ★ 为什么必须有：游戏页（支付宝小游戏、页游）一进来就是礼包/公告/充值弹窗，
+ *   它们会挡住画面并吞掉按键 —— 代玩直接开跑等于空跑。用户实报：「这些游戏都会有很多弹窗」。
+ * ★ 判据保守：只点「关闭/知道了/跳过/稍后/取消/×」这类**小**按钮，
+ *   显式排除「领取/购买/充值/去看看/开始游戏」等会花钱或改变游戏状态的文案。
+ * ★ 用真实鼠标事件而不是 el.click()：多数游戏监听的是 pointer/mouse 事件，
+ *   JS 的 click() 不一定触发它们的处理器。
+ * ★ 失败不阻塞：最多 3 轮，点不到就返回 closed:0（调用方照常开跑）。
+ */
+const { SCAN_JS: DISMISS_SCAN_JS } = require('./popup-dismiss.cjs');
+
+async function dismissOverlays(wc, opts) {
+  if (!wc || wc.isDestroyed()) return { closed: 0, closed_labels: [] };
+  const max = Math.min(5, Math.max(1, Number(opts && opts.max) || 3));
+  let closed = 0;
+  const labels = [];
+  for (let i = 0; i < max; i++) {
+    let found = null;
+    try { found = await wc.executeJavaScript(DISMISS_SCAN_JS, true); } catch { break; }
+    if (!found || !Number.isFinite(found.x)) break;
+    labels.push(found.text || '(' + found.x + ',' + found.y + ')');
+    try {
+      wc.sendInputEvent({ type: 'mouseMove', x: found.x, y: found.y });
+      wc.sendInputEvent({ type: 'mouseDown', x: found.x, y: found.y, button: 'left', clickCount: 1 });
+      wc.sendInputEvent({ type: 'mouseUp', x: found.x, y: found.y, button: 'left', clickCount: 1 });
+    } catch { break; }
+    closed++;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  return { closed, closed_labels: labels };
+}
+
 async function runBrowserAction(convId, tabId, action, args, flow) {
   args = args || {};
   // ★★★ 2026-10-15：本执行流的**流键** = `${convId}::${flow}`（判定本体在 browser-target.cjs 的 flowKeyOf）。
@@ -5849,7 +6342,11 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       //   首次 navigate 必须能从"当前活动页"出发，否则锚永不建立 → 读类动作全被拒 → 模型疯狂重试。
       // ★★★ 但**后台流不给回落**（传 null）：否则它的首次 navigate 会直接导航走用户正在看的那页
       //   —— 后台流的第一页必须是**它自己新建的**（tabId 保持 null → 走自建分支）。
-      activeTabId: bgFlow ? null : activeTabId,
+      // ★ 游戏窗有独立激活位后，全局 activeTabId 不会再指向 game 页；这里再兜一道：
+      //   万一残留（旧版本/竞态），也不让 agent 的首次导航落到用户正在玩的游戏页上。
+      activeTabId: bgFlow
+        ? null
+        : (scopeOfTab(activeTabId) === 'game' && !gameHandoff.ownerOf(activeTabId) ? null : activeTabId),
       isMine: (t) => agentTouchedTabs.get(t) === flowKey,
       // ★★★ 2026-10-10 四次根因修复：仅靠 `isMine` **挡不住**首次 navigate。
       //   因为 `agentTouchedTabs` 只在动作**成功执行后**登记 ⇒ 首次 navigate 时该 tab 未登记
@@ -5963,7 +6460,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       //   **周期性重发**广播：挂载完成后的下一次广播即可建壳（渲染层对已有壳幂等）。
       for (let attempt = 1; attempt <= 6; attempt++) {
         try {
-          mainWindow.webContents.send('browserView:tabCreated', tabId || null, cleanUrl, scope, bgFlow);
+          sendToTabOwner(tabId || null, 'browserView:tabCreated', tabId || null, cleanUrl, scope, bgFlow);
           console.log(`[browser-action] 已广播 tabCreated: url=${cleanUrl} scope=${scope} tab=${tabId || '-'} attempt=${attempt}`);
         } catch { /* ignore */ }
         wc = await waitForGuest(waitedTab, 5000);
@@ -7129,9 +7626,21 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         await wc.sendInputEvent({ type: 'keyUp', keyCode: args.key });
         return { success: true };
       }
+      case 'dismiss_overlays': {
+        if (!wc || wc.isDestroyed()) return { error: '浏览器未就绪（无 webContents）' };
+        return await dismissOverlays(wc, args);
+      }
       case 'run_loop': {
         // P1：一次调用里连续执行一串真实输入。Esc 立即中止（before-input-event 捕获）。
         if (!wc || wc.isDestroyed()) return { error: '浏览器未就绪（无 webContents）' };
+        // ★ 开跑前先关弹窗（2026-10-29，用户实报「这些游戏都会有很多弹窗」）：
+        //   礼包/公告/充值弹窗会挡住画面、吞掉按键，不清掉"开跑"等于空跑。
+        //   不可用参数关闭：args.dismissPopups === false。
+        let dismissed = 0;
+        if (args.dismissPopups !== false) {
+          try { dismissed = (await dismissOverlays(wc)).closed || 0; } catch { /* 弹窗清理失败不阻断开跑 */ }
+          if (dismissed) console.log(`[run_loop] 开跑前关闭弹窗 ${dismissed} 个`);
+        }
         let panic = false;
         const onInput = (_e, input) => { try { if (input && input.key === 'Escape') panic = true; } catch (e) { /* ignore */ } };
         try { wc.on('before-input-event', onInput); } catch (e) { /* ignore */ }
@@ -8136,7 +8645,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           // 是否切换过去由第 4 个参数（background）决定，渲染层据此决定要不要改 activeTabId。
           if (mainWindow && !mainWindow.isDestroyed()) {
             if (target) broadcastTabUrl.set(String(tabId), target);   // 同 URL 复用判据（2026-10-12）
-            mainWindow.webContents.send('browserView:tabCreated', tabId, target || null, scope, wantBackground);
+            sendToTabOwner(tabId, 'browserView:tabCreated', tabId, target || null, scope, wantBackground);
           }
           // 等 guest spawn + 注册(渲染层 :src 后 dom-ready) → 返回新 tab 元信息
           let wc2 = await waitForGuest(tabId, 6000);
@@ -8169,7 +8678,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
             //   用户实报「模型没有切换激活 tab 的工具」，真相是切了但界面不跟随。
             //   渲染层 `onTabActivated` 是幂等实现（activeTabId 已一致则忽略），重复广播无副作用。
             if (mainWindow && !mainWindow.isDestroyed()) {
-              try { mainWindow.webContents.send('browserView:tabActivated', tid); } catch { /* ignore */ }
+              try { sendToTabOwner(tid, 'browserView:tabActivated', tid); } catch { /* ignore */ }
             }
             return { activeTabId: tid };
           }
@@ -8848,7 +9357,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         try { zoom = await Promise.race([wc.getZoomFactor(), new Promise((r) => setTimeout(() => r(1), 300))]); } catch { /* ignore */ }
         const zx = (typeof cur.cx === 'number') ? cur.cx * zoom : cur.cx;
         const zy = (typeof cur.cy === 'number') ? cur.cy * zoom : cur.cy;
-        try { mainWindow.webContents.send('browserView:cursor', tabIdForCursor, zx, zy, cur.label || '', cur.kind || ''); } catch { /* ignore */ }
+        try { sendToTabOwner(tabIdForCursor, 'browserView:cursor', tabIdForCursor, zx, zy, cur.label || '', cur.kind || ''); } catch { /* ignore */ }
       }
     }
 
@@ -8877,7 +9386,7 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
           const m = isWebviewEngine() ? webviewTabs.get(String(upd.tabId)) : null;
           if (m) m.lastActiveAt = Date.now();   // 刚被 agent 用过，别让空闲回收把它卸了
           if (mainWindow && !mainWindow.isDestroyed()) {
-            try { mainWindow.webContents.send('browserView:tabActivated', String(upd.tabId)); } catch { /* ignore */ }
+            try { sendToTabOwner(upd.tabId, 'browserView:tabActivated', String(upd.tabId)); } catch { /* ignore */ }
           }
         }
       }
@@ -9078,19 +9587,22 @@ ipcMain.handle('keyring:delete', async (e, key) => {
 // ============================================================
 // IPC：Clipboard
 // ============================================================
+// ★ Electron 44 起 clipboard 换成 W3C 异步 API（read()/write(ClipboardItem[])、readText()/writeText() 均返回 Promise），
+//   旧的 readImage/readHTML/readBuffer/writeImage/writeBuffer 已从 API 删除 —— 写多格式必须走 ClipboardItem。
+const ElectronClipboardItem = require('electron').ClipboardItem;
 ipcMain.handle('clipboard:readText', () => clipboard.readText());
 ipcMain.handle('clipboard:writeText', (_e, text) => clipboard.writeText(String(text ?? '')));
 
-// 写入图片到系统剪贴板（渲染层传 dataURL）。图片右键「复制」走这里，
-// 比 navigator.clipboard.write 可靠——后者在 Electron 里对 image/png blob 支持不稳。
-ipcMain.handle('clipboard:writeImage', (_e, dataUrl) => {
+// 写入图片到系统剪贴板（渲染层传 dataURL）。图片右键「复制」走这里。
+ipcMain.handle('clipboard:writeImage', async (_e, dataUrl) => {
   try {
     const img = nativeImage.createFromDataURL(String(dataUrl || ''));
     if (img.isEmpty()) return { ok: false, error: '图片数据为空' };
-    clipboard.writeImage(img);
+    const png = img.toPNG();
+    await clipboard.write([new ElectronClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })]);
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: e?.message || String(e) };
+    return { ok: false, error: (e && e.message) || String(e) };
   }
 });
 
@@ -9844,11 +10356,83 @@ function clampPetToDesktop(x, y, w, h) {
   };
 }
 
+/* ===== 代玩避让（2026-10-29）=====
+ * 智能体代玩游戏时，置顶宠物窗会盖住画面 ⇒ 缩到 0.7 并挪到游戏窗所在屏的右下角，
+ * 结束后恢复原位原尺寸。状态只在内存里（不写 pet-window.json），应用重启即失效。
+ */
+const PET_DOCK_SCALE = 0.7;
+const PET_DOCK_MARGIN = 12;
+const PET_DOCK_AVOID_BOTTOM = 44;   // 执行条高度：别让宠物压住「急停」
+const petDock = { on: false, saved: null };
+
+/** 取游戏窗所在显示器的工作区；没有游戏窗就用宠物当前所在屏 */
+function petDockArea() {
+  try {
+    const gameWin = childWindows.get('browser-game');
+    const ref = gameWin && !gameWin.isDestroyed()
+      ? gameWin.getBounds()
+      : (petWindow && !petWindow.isDestroyed() ? petWindow.getBounds() : null);
+    if (ref) return electronScreen.getDisplayMatching(ref).workArea;
+  } catch { /* 显示器切换瞬间忽略 */ }
+  return virtualDesktopRect();
+}
+
+function petDockEnter() {
+  try {
+    if (petDock.on) return true;
+    // ★ 先置状态：宠物窗可能此刻没开，用户中途打开时应直接以避让形态出现
+    //   （createPetWindow 的 did-finish-load 会按 petDock.on 补一次 dock 定位）
+    petDock.on = true;
+    if (!petWindow || petWindow.isDestroyed()) return true;
+    petWalkStop();
+    const b = petWindow.getBounds();
+    petDock.saved = { x: b.x, y: b.y, width: b.width, height: b.height };
+    const { W, H } = petWindowSize({ ...(petLastSettings || {}), scale: PET_DOCK_SCALE });
+    const r = dockRect(petDockArea(), { w: W, h: H }, { margin: PET_DOCK_MARGIN, avoidBottom: PET_DOCK_AVOID_BOTTOM });
+    petWindow.setBounds(r);
+    // 游戏窗可能置顶（screen-saver 级）：宠物也抬到同层，否则看不到
+    try { petWindow.moveTop?.(); } catch { /* ignore */ }
+    if (petPopups.size) repositionPetPopups();
+    try { petWindow.webContents.send('pet:dock-state', { on: true, scale: PET_DOCK_SCALE }); } catch { /* ignore */ }
+    console.log(`[pet-dock] 进入代玩避让: ${JSON.stringify(r)}`);
+    return true;
+  } catch { return false; }
+}
+
+function petDockExit() {
+  try {
+    if (!petDock.on) return false;
+    petDock.on = false;
+    const saved = petDock.saved;
+    petDock.saved = null;
+    if (petWindow && !petWindow.isDestroyed()) {
+      try { petWindow.webContents.send('pet:dock-state', { on: false, scale: 1 }); } catch { /* ignore */ }
+      if (saved) {
+        const c = clampPetToDesktop(saved.x, saved.y, saved.width, saved.height);
+        petWindow.setBounds({ x: c.x, y: c.y, width: saved.width, height: saved.height });
+      }
+      applyPetSize(petLastSettings);
+      if (petPopups.size) repositionPetPopups();
+      savePetPos();
+    }
+    console.log('[pet-dock] 退出代玩避让，恢复原位');
+    return true;
+  } catch { return false; }
+}
+
 /** 换形象/改缩放后重算窗口大小，保持"底部中心"不跳 */
 function applyPetSize(settings) {
   try {
     if (!petWindow || petWindow.isDestroyed()) return;
-    const { W, H } = petWindowSize(settings);
+    // 代玩避让期间：尺寸按 0.7 重算，并把右下角锚点保持住
+    const eff = petDock.on ? { ...(settings || {}), scale: PET_DOCK_SCALE } : settings;
+    const { W, H } = petWindowSize(eff);
+    if (petDock.on) {
+      const r = dockRect(petDockArea(), { w: W, h: H }, { margin: PET_DOCK_MARGIN, avoidBottom: PET_DOCK_AVOID_BOTTOM });
+      petWindow.setBounds(r);
+      if (petPopups.size) repositionPetPopups();
+      return;
+    }
     const [x, y] = petWindow.getPosition();
     const [ow, oh] = petWindow.getSize();
     if (ow === W && oh === H) return;
@@ -10095,14 +10679,14 @@ function clampPetToDisplay(x, y, w, h) {
 let petSaveTimer = null;
 function writePetPosNow() {
   try {
-    if (!petWindow || petWindow.isDestroyed()) return;
+    if (!petWindow || petWindow.isDestroyed() || petDock.on) return;   // 避让期间的临时位置不落盘
     const [x, y] = petWindow.getPosition();
     fs.writeFileSync(petPosFile(), JSON.stringify({ x, y }));
   } catch { /* 落盘失败不影响使用 */ }
 }
 /** 踱步时每秒动几十次，不能每次都落盘：走路期间不写，停下后节流写一次 */
 function savePetPos() {
-  if (petWalk.on) return;
+  if (petWalk.on || petDock.on) return;
   if (petSaveTimer) clearTimeout(petSaveTimer);
   petSaveTimer = setTimeout(() => { petSaveTimer = null; writePetPosNow(); }, 400);
 }
@@ -10151,6 +10735,7 @@ function petWalkTick() {
 /** 起走：先贴到当前屏底边，再沿底边随机走 120~420px；贴边时改向 */
 function petWalkStart() {
   if (!petWindow || petWindow.isDestroyed()) return;
+  if (petDock.on) return;      // 代玩避让期间不踱步（别从右下角跑出去挡游戏）
   if (petWalk.on) return;
   const b = petWindow.getBounds();
   let area;
@@ -10243,6 +10828,8 @@ function createPetWindow() {
   petWindow.webContents.on('did-finish-load', () => {
     if (petLastSync) petWindow.webContents.send('pet:state', petLastSync);
     if (petLastSettings) petWindow.webContents.send('pet:settings', petLastSettings);
+    // 代玩避让中重开宠物窗：把缩放状态补一次（否则形象按原尺寸画进小窗会被裁切）
+    try { petWindow.webContents.send('pet:dock-state', { on: petDock.on, scale: petDock.on ? PET_DOCK_SCALE : 1 }); } catch {}
     sendPetWalkState();
     sendPetWinState();
     applyPetSize(petLastSettings);
@@ -10258,24 +10845,21 @@ function togglePetWindow() {
   return true;
 }
 
-// 全局快捷键：Alt+P 显示/隐藏宠物。只在用户开启宠物时注册（不白占系统热键），
-// 与截图/急停等热键共用 globalShortcut；被占用则静默降级为托盘入口。
-let petHotkeyRegistered = false;
+// 全局快捷键：Alt+P 显示/隐藏宠物。只在用户开启宠物时注册（不白占系统热键）。
+// ★ 必须走 setGlobalHotkey（本进程唯一的 globalShortcut.register 出口）：
+//   直连 register 会绕开统一注销/冲突回报，shortcut-governance 守门测试也盯着这条。
+const petHotkeyHolder = { current: null };
 function syncPetHotkey(enabled) {
-  try {
-    if (enabled && !petHotkeyRegistered) {
-      petHotkeyRegistered = globalShortcut.register('Alt+P', () => {
-        togglePetWindow();
-        try { updateTrayMenu(); } catch {}
-      });
-      if (!petHotkeyRegistered) console.warn('[pet] Alt+P 已被占用，改用托盘开关宠物');
-    } else if (!enabled && petHotkeyRegistered) {
-      globalShortcut.unregister('Alt+P');
-      petHotkeyRegistered = false;
-    }
-  } catch (err) {
-    console.warn('[pet] 注册宠物快捷键失败:', err && err.message);
-  }
+  const r = setGlobalHotkey(
+    petHotkeyHolder,
+    enabled ? 'Alt+P' : '',
+    () => {
+      togglePetWindow();
+      try { updateTrayMenu(); } catch {}
+    },
+    '宠物',
+  );
+  if (enabled && r && r.ok === false) console.warn('[pet] Alt+P 已被占用，改用托盘开关宠物');
 }
 
 // Alt+P 常驻：宠物关着时也必须能叫出来，所以不按 enabled 门控
@@ -10815,7 +11399,11 @@ function requestCompose(s, action, rect) {
       if (!cap) {
         const msg = '屏幕画面捕获异常（全黑）。已把样本存到 logs/snip-black.png，请联系开发者排查';
         if (action === 'confirm') finishSnip({ ok: false, error: msg });
-        else { s.busy = false; try { s.overlay.webContents.send('snip:save-result', { ok: false, error: msg }); } catch {} }
+        else if (action === 'ocr') {
+          s.busy = false;
+          try { s.overlay.show(); s.overlay.focus(); } catch {}
+          try { s.overlay.webContents.send('snip:ocr-result', { ok: false, error: msg }); } catch {}
+        } else { s.busy = false; try { s.overlay.webContents.send('snip:save-result', { ok: false, error: msg }); } catch {} }
         return;
       }
       let framePath = s.basePath || '';
@@ -10850,16 +11438,48 @@ function requestCompose(s, action, rect) {
     } catch (err) {
       const msg = '截图失败: ' + (err?.message || err);
       if (action === 'confirm') finishSnip({ ok: false, error: msg });
-      else { s.busy = false; try { s.overlay.webContents.send('snip:save-result', { ok: false, error: msg }); } catch {} }
+      else if (action === 'ocr') {
+        s.busy = false;
+        try { s.overlay.show(); s.overlay.focus(); } catch {}
+        try { s.overlay.webContents.send('snip:ocr-result', { ok: false, error: msg }); } catch {}
+      } else { s.busy = false; try { s.overlay.webContents.send('snip:save-result', { ok: false, error: msg }); } catch {} }
     }
   }, 90); // hide 后等 DWM 把窗口从合成树摘掉
 }
 
-/** 成品图就绪：confirm 结算会话；save 弹保存框后恢复框选窗继续编辑 */
+/** 成品图就绪：confirm 结算会话；save 弹保存框后恢复框选窗继续编辑；ocr 识别文字 */
 function onComposed(s, action, dataUrl) {
   try { if (s.composeTimer) { clearTimeout(s.composeTimer); s.composeTimer = null; } } catch {}
   if (action === 'confirm') {
     finishSnip({ ok: true, dataUrl, width: s.cropRect.w, height: s.cropRect.h });
+    return;
+  }
+  if (action === 'ocr') {
+    const translate = !!s.ocrTranslate;
+    s.ocrTranslate = false;
+    void (async () => {
+      const r = await ocrImageDataUrl(dataUrl);
+      if (!r.ok) {
+        s.busy = false;
+        try { s.overlay.show(); s.overlay.focus(); } catch {}
+        try { s.overlay.webContents.send('snip:ocr-result', { ok: false, error: r.error || 'OCR 失败' }); } catch {}
+        return;
+      }
+      if (translate) {
+        const text = String(r.text || '').trim();
+        if (text) {
+          const isZh = /[一-龥]/.test(text);
+          const label = isZh ? '翻译成英文' : '翻译成中文';
+          sendAiRequestToChat(`${label}，只输出译文：\n\n${text}`, label);
+        }
+        // 翻译结果在会话里看:关掉框选窗(不写剪贴板,避免把图片盖掉用户原有内容)
+        finishSnip({ ok: true, mode: 'ocr' });
+        return;
+      }
+      s.busy = false;
+      try { s.overlay.show(); s.overlay.focus(); } catch {}
+      try { s.overlay.webContents.send('snip:ocr-result', { ok: true, text: r.text, provider: r.provider }); } catch {}
+    })();
     return;
   }
   (async () => {
@@ -10929,6 +11549,41 @@ ipcMain.on('snip:save-request', (e, rect) => {
     ? rect
     : { x: 0, y: 0, width: s.display.size.width, height: s.display.size.height };
   requestCompose(s, 'save', r);
+});
+
+// 截图 OCR（2026-10-29）：识别文字 / 识别并翻译。
+// 与 confirm/save 共用合成管线（拿到"带标注的选区图"），再做 OCR：
+//   · 只识别 → 结果回框选窗展示（可复制/翻译）
+//   · 识别并翻译 → 直接把译文请求交给当前会话
+ipcMain.on('snip:ocr-request', (e, payload) => {
+  const s = snipSession;
+  if (!s || !s.overlay || e.sender !== s.overlay.webContents) {
+    // ★ 会话可能已被 blur 取消(用户切了窗口 / 截图窗失焦)。此时不能静默返回 ——
+    //   渲染层会一直停在"正在识别…"。直接给发起方回执,让界面提示重来。
+    try { e.sender.send('snip:ocr-result', { ok: false, error: '截图会话已结束，请重新截图后再识别' }); } catch { /* 窗口已销毁 */ }
+    return;
+  }
+  if (s.regionOnly) return;
+  const p = payload || {};
+  const r = p.rect && p.rect.width > 0 && p.rect.height > 0
+    ? p.rect
+    : { x: 0, y: 0, width: s.display.size.width, height: s.display.size.height };
+  s.ocrTranslate = !!p.translate;
+  snipLog('ocr request rect=' + Math.round(r.width) + 'x' + Math.round(r.height) + ' translate=' + s.ocrTranslate);
+  requestCompose(s, 'ocr', r);
+});
+
+// OCR 结果 → 复制文字 / 翻译文字（框选窗里"识别结果"面板的两个按钮）
+ipcMain.on('snip:copy-text', async (_e, text) => {
+  try { await clipboard.writeText(String(text || '')); } catch (e) { console.warn('[snip] 复制 OCR 文字失败:', e && e.message); }
+});
+ipcMain.on('snip:translate-text', (_e, text) => {
+  const t = String(text || '').trim();
+  if (!t) return;
+  const isZh = /[一-龥]/.test(t);
+  const label = isZh ? '翻译成英文' : '翻译成中文';
+  sendAiRequestToChat(`${label}，只输出译文：\n\n${t}`, label);
+  finishSnip({ ok: true, mode: 'ocr' });
 });
 
 // 页面合成完成回传
@@ -11049,6 +11704,744 @@ ipcMain.handle('shortcut:getScreenshot', () => ({ accelerator: shotHotkey.curren
 ipcMain.handle('shortcut:setScreenshot', (_e, accel) => setScreenshotHotkey(accel));
 ipcMain.handle('shortcut:getPanic', () => ({ accelerator: panicHotkey.current || DEFAULT_PANIC_ACCEL }));
 ipcMain.handle('shortcut:setPanic', (_e, accel) => setPanicHotkey(accel));
+
+// ============================================================
+// 超级剪贴板(2026-10-29,P0)
+// ------------------------------------------------------------
+// 形态:独立置顶小窗(方案 A,对标鱼皮《剪切助手》),全局热键召唤,失焦自动收起。
+// 存储:主进程自持 JSON(userData/clipboard-history.json + clipboard-assets/),
+//   不依赖服务端 —— 采集发生在 main,后端未起时也要能记;P3 跨设备同步再迁到服务端。
+// 采集:600ms 轮询,hash 去重(重复复制只提到最前),敏感内容默认跳过,
+//   上限默认 500 条(置顶不参与淘汰)。
+// ============================================================
+const cryptoMod = require('crypto');
+const { pathToFileURL } = require('url');
+const CLIP_DEFAULT_ACCEL = 'Control+Alt+V';
+const CLIP_MAX_TEXT = 100 * 1024;      // 单条文本上限(字符):更大的内容只留前 100KB,避免 JSON 膨胀
+const CLIP_MAX_HTML = 256 * 1024;     // 富文本上限:超了只存纯文本
+const CLIP_POLL_MS = 600;
+const clipHotkey = { current: null };
+let clipPanelWindow = null;
+let clipDragSuspended = false;
+let clipWatcherTimer = null;
+let clipLastHash = '';
+/** 面板把历史写回剪贴板后的静默期:采集器在这段时间内跳过,
+ *  否则"粘贴旧条目 → 被当成新复制"会反复刷新顺序 / 图片重新编码后还会产生重复条目。 */
+let clipSuppressUntil = 0;
+let clipConfigCache = null;
+let clipItemsCache = null;
+let clipPersistTimer = null;
+let clipPosTimer = null;
+
+const clipConfigPath = () => path.join(app.getPath('userData'), 'clipboard-config.json');
+const clipHistoryPath = () => path.join(app.getPath('userData'), 'clipboard-history.json');
+function clipAssetsDir() {
+  const d = path.join(app.getPath('userData'), 'clipboard-assets');
+  try { fs.mkdirSync(d, { recursive: true }); } catch { /* 目录已存在或权限问题:落盘失败会在下面暴露 */ }
+  return d;
+}
+function clipReadJson(p, fallback) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fallback; }
+}
+/** 原子写(tmp→rename),避免进程退出时留下半截 JSON */
+function clipWriteJson(p, data) {
+  try {
+    const tmp = p + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data), 'utf8');
+    fs.renameSync(tmp, p);
+  } catch (e) {
+    console.warn('[clipboard] 落盘失败:', e && e.message);
+  }
+}
+
+function loadClipConfig() {
+  if (clipConfigCache) return clipConfigCache;
+  const saved = clipReadJson(clipConfigPath(), {}) || {};
+  const cap = saved.capture || {};
+  clipConfigCache = {
+    accelerator: typeof saved.accelerator === 'string' ? saved.accelerator : CLIP_DEFAULT_ACCEL,
+    capture: { text: cap.text !== false, image: cap.image !== false, file: cap.file !== false },
+    skipSensitive: saved.skipSensitive !== false,
+    maxItems: Number(saved.maxItems) > 0 ? Math.min(5000, Number(saved.maxItems)) : 500,
+    pos: saved.pos && Number.isFinite(saved.pos.x) && Number.isFinite(saved.pos.y) ? { x: saved.pos.x, y: saved.pos.y } : null,
+  };
+  return clipConfigCache;
+}
+function persistClipConfig() {
+  if (clipConfigCache) clipWriteJson(clipConfigPath(), clipConfigCache);
+}
+
+function loadClipItems() {
+  if (clipItemsCache) return clipItemsCache;
+  const saved = clipReadJson(clipHistoryPath(), {}) || {};
+  const list = Array.isArray(saved.items) ? saved.items : [];
+  // 只留结构完整的条目(字段缺失的脏数据直接丢弃,不让面板拿半条数据炸渲染)
+  clipItemsCache = list.filter((it) => it && typeof it.id === 'string' && typeof it.kind === 'string');
+  return clipItemsCache;
+}
+function scheduleClipPersist() {
+  if (clipPersistTimer) clearTimeout(clipPersistTimer);
+  clipPersistTimer = setTimeout(() => {
+    clipPersistTimer = null;
+    clipWriteJson(clipHistoryPath(), { version: 1, items: loadClipItems() });
+  }, 300);
+}
+function clipNotifyPanel() {
+  const win = clipPanelWindow;
+  if (!win || win.isDestroyed()) return;
+  try { win.webContents.send('clipboard:changed'); } catch { /* 面板正在关闭 */ }
+}
+
+/** 敏感内容识别(仅当设置开启时跳过):私钥 / AWS AK / OpenAI 风格 key / JWT */
+const CLIP_SENSITIVE_RULES = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\bsk-[A-Za-z0-9_-]{20,}\b/,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
+];
+function looksSensitive(text) {
+  return CLIP_SENSITIVE_RULES.some((re) => re.test(text));
+}
+
+/** 类型识别:链接 / 颜色 / JSON / 代码 / 纯文本(与原型一致,面板按 kind 出图标与 chip) */
+function classifyClipText(text) {
+  const t = String(text || '').trim();
+  if (!t) return 'text';
+  if (/^https?:\/\/\S+$/i.test(t)) return 'link';
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(t)) return 'color';
+  if ((t.startsWith('{') || t.startsWith('[')) && t.length < 20000) {
+    try { JSON.parse(t); return 'json'; } catch { /* 不是合法 JSON,继续往下判 */ }
+  }
+  const codeHints = /\b(const|let|var|function|class|import|export|return|def|public|private|SELECT|INSERT)\b|=>|<\/?[a-z][\w-]*>|;\s*$/m;
+  if (t.includes('\n') && codeHints.test(t)) return 'code';
+  return 'text';
+}
+
+function clipHash(parts) {
+  const h = cryptoMod.createHash('sha1');
+  h.update(String(parts[0] || ''));
+  h.update('\u0000');
+  h.update(parts[1] || '');
+  return h.digest('hex');
+}
+
+/** 上限淘汰:只淘汰非置顶的最旧条目,并清理图片资产 */
+function pruneClipItems(items) {
+  const max = loadClipConfig().maxItems;
+  if (items.length <= max) return;
+  for (let i = items.length - 1; i >= 0 && items.length > max; i--) {
+    if (items[i].pinned) continue;
+    const [gone] = items.splice(i, 1);
+    if (gone && gone.imageFile) { try { fs.unlinkSync(gone.imageFile); } catch { /* 已被手动删除 */ } }
+  }
+}
+
+/**
+ * 入历史:同 hash 只提到最前(刷新时间),不重复占坑;
+ * 新条目插到最前;置顶状态与 id 保留(重复复制不丢置顶)。
+ */
+function pushClipItem(item) {
+  const items = loadClipItems();
+  const idx = items.findIndex((x) => x.hash === item.hash);
+  if (idx >= 0) {
+    const [old] = items.splice(idx, 1);
+    old.createdAt = Date.now();
+    items.unshift(old);
+    // 同一条内容被再次复制:不产生新条目,只刷新顺序与时间
+    pruneClipItems(items);
+    clipLastHash = old.hash;
+    scheduleClipPersist();
+    clipNotifyPanel();
+    return;
+  }
+  items.unshift(item);
+  pruneClipItems(items);
+  clipLastHash = item.hash;
+  scheduleClipPersist();
+  clipNotifyPanel();
+}
+
+/**
+ * 读一次剪贴板快照。
+ * ★ Electron 44 起 clipboard 换成 W3C 异步 API:`read()` 返回 ClipboardItem[],
+ *   每项要先看 `types` 再用 `getType(mime)` 取 Blob —— 旧的 readImage/readHTML/readBuffer 已删除。
+ * 兼容处理:没有 ClipboardItem 时退回 readText()(至少文本能力不丢)。
+ */
+async function clipReadSnapshot() {
+  const out = { text: '', html: '', files: [], imageBuf: null, types: [] };
+  let item = null;
+  try {
+    const list = await clipboard.read();
+    item = Array.isArray(list) ? list[0] : null;
+  } catch { /* 读失败:下面还有 readText 兜底 */ }
+  if (item) {
+    out.types = Array.isArray(item.types) ? item.types : [];
+    const blobText = async (t) => {
+      try {
+        const b = await item.getType(t);
+        if (!b) return '';
+        if (typeof b === 'string') return b;
+        if (typeof b.text === 'function') return await b.text();
+        return '';
+      } catch { return ''; }
+    };
+    const typeOf = (prefix) => out.types.find((t) => String(t).toLowerCase().startsWith(prefix));
+    const tp = typeOf('text/plain');
+    if (tp) out.text = await blobText(tp);
+    const th = typeOf('text/html');
+    if (th) out.html = await blobText(th);
+    const tu = typeOf('text/uri-list');
+    if (tu) out.files = clipUrisToPaths(await blobText(tu));
+    const ti = typeOf('image/');
+    if (ti) {
+      try {
+        const b = await item.getType(ti);
+        const ab = await b.arrayBuffer();
+        out.imageBuf = Buffer.from(ab);
+      } catch { /* 某些平台图片类型不可取,跳过 */ }
+    }
+  }
+  if (!out.text) {
+    try { out.text = String((await clipboard.readText()) ?? ''); } catch { /* ignore */ }
+  }
+  return out;
+}
+
+/** text/uri-list → 本地绝对路径(Windows 盘符路径去掉前导斜杠;UNC 还原 \\server\share) */
+function clipUrisToPaths(raw) {
+  return String(raw || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s && !s.startsWith('#') && /^file:/i.test(s))
+    .map((u) => {
+      try {
+        const url = new URL(u);
+        if (url.hostname) return '\\\\' + url.hostname + decodeURIComponent(url.pathname);
+        return decodeURIComponent(url.pathname).replace(/^\/([A-Za-z]:)/, '$1').replace(/\//g, '\\');
+      } catch { return ''; }
+    })
+    .filter(Boolean);
+}
+
+/** 一次采集:文件 > 图片 > 文本(与系统剪贴板里同时存在多形态时的优先级一致) */
+async function captureClipboardOnce() {
+  if (Date.now() < clipSuppressUntil) return;
+  const cfg = loadClipConfig();
+  if (!cfg.capture.text && !cfg.capture.image && !cfg.capture.file) return;
+  const snap = await clipReadSnapshot();
+
+  // ① 复制的文件(资源管理器:Windows 下以 text/uri-list 暴露)
+  if (cfg.capture.file && snap.files.length) {
+    const hash = clipHash(['file', snap.files.join('|')]);
+    if (hash !== clipLastHash) {
+      let size = 0;
+      for (const f of snap.files) { try { size += fs.statSync(f).size; } catch { /* 源文件已不可访问 */ } }
+      pushClipItem({
+        id: 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+        kind: 'file', hash, text: '', files: snap.files, size,
+        createdAt: Date.now(), pinned: false,
+      });
+    }
+    return;
+  }
+
+  // ② 图片:剪贴板里是位图(截图工具/浏览器复制图片)
+  if (cfg.capture.image && snap.imageBuf && snap.imageBuf.length) {
+    const img = nativeImage.createFromBuffer(snap.imageBuf);
+    if (!img.isEmpty()) {
+      const png = img.toPNG();
+      if (png && png.length) {
+        const hash = clipHash(['image', cryptoMod.createHash('sha1').update(png).digest('hex')]);
+        if (hash !== clipLastHash) {
+          const id = 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+          const file = path.join(clipAssetsDir(), id + '.png');
+          let saved = false;
+          try { fs.writeFileSync(file, png); saved = true; } catch (e) { console.warn('[clipboard] 图片落盘失败:', e && e.message); }
+          const size = img.getSize();
+          let thumb = '';
+          try {
+            // 缩略图用 JPEG(base64):PNG dataURL 每张可能上百 KB,几百条会撑爆 JSON
+            const small = img.resize({ width: Math.min(240, size.width || 240) });
+            thumb = 'data:image/jpeg;base64,' + small.toJPEG(70).toString('base64');
+          } catch { /* 缩略图失败不影响主体 */ }
+          pushClipItem({
+            id, kind: 'image', hash, text: '', html: '',
+            imageFile: saved ? file : '', thumb, width: size.width, height: size.height, size: png.length,
+            createdAt: Date.now(), pinned: false,
+          });
+        }
+      }
+    }
+    return;
+  }
+
+  // ③ 文本 / 富文本
+  if (!cfg.capture.text) return;
+  const text = String(snap.text || '');
+  if (!text.trim()) return;
+  if (cfg.skipSensitive && looksSensitive(text)) return;
+  const trimmed = text.length > CLIP_MAX_TEXT ? text.slice(0, CLIP_MAX_TEXT) : text;
+  const hash = clipHash(['text', trimmed]);
+  if (hash === clipLastHash) return;
+  const html = String(snap.html || '');
+  pushClipItem({
+    id: 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    kind: classifyClipText(trimmed), hash, text: trimmed,
+    html: html && html.length < CLIP_MAX_HTML ? html : '',
+    size: trimmed.length, createdAt: Date.now(), pinned: false,
+  });
+}
+
+/** 快照的 hash(与 captureClipboardOnce 优先级一致),用于启动基线 */
+function clipSnapshotHash(snap) {
+  if (snap.files && snap.files.length) return clipHash(['file', snap.files.join('|')]);
+  if (snap.imageBuf && snap.imageBuf.length) return clipHash(['image', cryptoMod.createHash('sha1').update(snap.imageBuf).digest('hex')]);
+  return clipHash(['text', String(snap.text || '')]);
+}
+
+function startClipWatcher() {
+  if (clipWatcherTimer) return;
+  // 记下启动瞬间的剪贴板内容作为基线,避免把"上一次开应用前复制的旧内容"当成新记录
+  void (async () => {
+    try { clipLastHash = clipSnapshotHash(await clipReadSnapshot()); } catch { /* 读失败不阻塞监听 */ }
+  })();
+  clipWatcherTimer = setInterval(() => {
+    captureClipboardOnce().catch((e) => { /* 采集失败不能拖垮主进程 */ console.warn('[clipboard] 采集异常:', e && e.message, e && e.stack); });
+  }, CLIP_POLL_MS);
+  console.log('[clipboard] 监听已启动');
+}
+
+/** 面板位置:优先记忆位置(且仍在某块屏幕内),否则落在鼠标所在屏幕中央 */
+function clipPanelPosition() {
+  const cfg = loadClipConfig();
+  const width = 456, height = 624;   // 含 12px 内边距:圆角与投影画在窗口内部(透明窗裁切)
+  if (cfg.pos) {
+    const inside = electronScreen.getAllDisplays().some((d) => {
+      const b = d.workArea;
+      return cfg.pos.x >= b.x - width && cfg.pos.x <= b.x + b.width && cfg.pos.y >= b.y - height && cfg.pos.y <= b.y + b.height;
+    });
+    if (inside) return { x: cfg.pos.x, y: cfg.pos.y };
+  }
+  const d = electronScreen.getDisplayNearestPoint(electronScreen.getCursorScreenPoint());
+  const b = d.workArea;
+  return { x: Math.round(b.x + (b.width - width) / 2), y: Math.round(b.y + (b.height - height) / 2) };
+}
+
+function createClipPanelWindow() {
+  const url = childUrl('/clip-panel');
+  if (!url) return null;
+  const pos = clipPanelPosition();
+  const win = new BrowserWindow({
+    width: 456, height: 624, x: pos.x, y: pos.y,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: true,
+    show: false,
+    roundedCorners: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      webviewTag: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      spellcheck: false,
+      backgroundThrottling: false,
+    },
+  });
+  try { win.setAlwaysOnTop(true, 'screen-saver'); } catch { /* 部分平台不支持层级参数 */ }
+  // 失焦自动收起:用户点了别的应用/别处 = 不要这个面板了。
+  // ★ 拖拽条目拖出面板时例外(见 clipboard:panel-suspend-blur),否则拖到一半面板消失。
+  win.on('blur', () => { if (!clipDragSuspended) hideClipPanel(); });
+  // 拖动位置记忆(标题栏 -webkit-app-region: drag 由系统移动窗口)
+  win.on('moved', () => {
+    if (clipPosTimer) clearTimeout(clipPosTimer);
+    clipPosTimer = setTimeout(() => {
+      clipPosTimer = null;
+      try {
+        const [x, y] = win.getPosition();
+        const cfg = loadClipConfig();
+        cfg.pos = { x, y };
+        persistClipConfig();
+      } catch { /* 窗口已销毁 */ }
+    }, 400);
+  });
+  win.on('closed', () => { clipPanelWindow = null; });
+  win.webContents.setWindowOpenHandler(({ url: u }) => {
+    try { if (/^https?:/i.test(u)) shell.openExternal(u); } catch { /* ignore */ }
+    return { action: 'deny' };
+  });
+  void win.loadURL(url);
+  return win;
+}
+
+function ensureClipPanelWindow() {
+  if (clipPanelWindow && !clipPanelWindow.isDestroyed()) return clipPanelWindow;
+  clipPanelWindow = createClipPanelWindow();
+  return clipPanelWindow;
+}
+
+function showClipPanel() {
+  const win = ensureClipPanelWindow();
+  if (!win) return { ok: false, error: '主窗口未就绪' };
+  const pos = clipPanelPosition();
+  try { win.setPosition(pos.x, pos.y); } catch { /* 窗口还没显示时也能设,失败不致命 */ }
+  const reveal = () => {
+    try {
+      win.setAlwaysOnTop(true, 'screen-saver');
+      win.show();
+      win.focus();
+      win.webContents.send('clipboard:shown');
+    } catch { /* 窗口刚被销毁 */ }
+  };
+  if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal);
+  else reveal();
+  return { ok: true };
+}
+
+function hideClipPanel() {
+  const win = clipPanelWindow;
+  if (!win || win.isDestroyed()) return { ok: true };
+  try { win.hide(); } catch { /* ignore */ }
+  return { ok: true };
+}
+
+function toggleClipPanel() {
+  const win = clipPanelWindow;
+  if (win && !win.isDestroyed() && win.isVisible()) return hideClipPanel();
+  return showClipPanel();
+}
+
+/** 热键:允许禁用 / 换键(与截图键同一套管理;与其它热键冲突时 register 会失败并回传原因) */
+function setClipHotkey(accel) {
+  return setGlobalHotkey(clipHotkey, accel, () => {
+    try { toggleClipPanel(); } catch (e) { console.warn('[clipboard] 热键唤起失败:', e && e.message); }
+  }, '剪贴板');
+}
+
+/** 写回后立刻回读一次,把"回读快照"当基线。
+ *  ★ Windows 对图片会重新编码,回读字节与原始 PNG 不同 —— 只靠 item.hash 去重,
+ *    静默期一过就会多出一条重复记录。文件/文本同理(格式会被系统规范化)。 */
+async function clipBaselineAfterWrite() {
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    clipLastHash = clipSnapshotHash(await clipReadSnapshot());
+  } catch { /* 回读失败时保留原基线,静默期仍能挡住短时间内的回响 */ }
+}
+
+/** 把一条历史写回系统剪贴板(面板点选后调用;不模拟 Ctrl+V,由用户自行粘贴) */
+async function writeClipItemToClipboard(item) {
+  if (!item) return false;
+  // 写回后 1.5s 内不再采集(见 clipSuppressUntil 注释)
+  clipSuppressUntil = Date.now() + 1500;
+  clipLastHash = item.hash || clipLastHash;
+  if (!ElectronClipboardItem) {
+    try { await clipboard.writeText(String(item.text || '')); await clipBaselineAfterWrite(); return true; } catch { return false; }
+  }
+  try {
+    if (item.kind === 'file' && Array.isArray(item.files) && item.files.length) {
+      // 文件:写 text/uri-list(资源管理器/聊天软件按文件粘贴)+ text/plain 路径兜底
+      const uris = item.files.map((f) => { try { return pathToFileURL(f).href; } catch { return ''; } }).filter(Boolean).join('\r\n');
+      await clipboard.write([new ElectronClipboardItem({ 'text/uri-list': uris, 'text/plain': item.files.join('\r\n') })]);
+    } else if (item.kind === 'image' && item.imageFile) {
+      const buf = fs.readFileSync(item.imageFile);
+      await clipboard.write([new ElectronClipboardItem({ 'image/png': new Blob([buf], { type: 'image/png' }) })]);
+    } else {
+      const data = { 'text/plain': String(item.text || '') };
+      if (item.html) data['text/html'] = String(item.html);
+      await clipboard.write([new ElectronClipboardItem(data)]);
+    }
+    await clipBaselineAfterWrite();
+    return true;
+  } catch (e) { console.warn('[clipboard] 写回失败:', e && e.message); return false; }
+}
+
+/** startDrag 的 icon 必须有值;空图会让拖拽直接失败 */
+function natIconSafe(file) {
+  try {
+    const img = nativeImage.createFromPath(file);
+    if (!img.isEmpty()) return img;
+  } catch { /* fallthrough */ }
+  return nativeImage.createEmpty();
+}
+
+ipcMain.handle('clipboard:panel-list', () => {
+  const items = loadClipItems();
+  let bytes = 0;
+  for (const it of items) bytes += Number(it.size) || 0;
+  return { ok: true, items, stats: { count: items.length, bytes } };
+});
+
+ipcMain.handle('clipboard:panel-pin', (_e, id) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  it.pinned = !it.pinned;
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, pinned: it.pinned };
+});
+
+ipcMain.handle('clipboard:panel-remove', (_e, id) => {
+  const items = loadClipItems();
+  const idx = items.findIndex((x) => x.id === id);
+  if (idx < 0) return { ok: false, error: '条目不存在' };
+  const [gone] = items.splice(idx, 1);
+  if (gone.imageFile) { try { fs.unlinkSync(gone.imageFile); } catch { /* 已删除 */ } }
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true };
+});
+
+ipcMain.handle('clipboard:panel-clear', () => {
+  const items = loadClipItems();
+  let removed = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].pinned) continue;
+    const [gone] = items.splice(i, 1);
+    if (gone.imageFile) { try { fs.unlinkSync(gone.imageFile); } catch { /* ignore */ } }
+    removed++;
+  }
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, removed };
+});
+
+ipcMain.handle('clipboard:panel-paste', async (_e, id) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  const ok = await writeClipItemToClipboard(it);
+  // 不在这里隐藏面板:渲染层先给一句「已复制」反馈,再由自己调 panel-hide(视觉上更连贯)
+  return { ok, kind: it.kind };
+});
+
+ipcMain.handle('clipboard:panel-plain', async (_e, id) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  try { await clipboard.writeText(String(it.text || '')); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  return { ok: true };
+});
+
+/**
+ * 剪贴板 AI 处理(2026-10-29 P1):把内容 + 预设指令交给当前 AI 会话。
+ * 不在这里直接调模型 —— 复用主窗口现有的聊天链路(会话上下文、模型选择、流式渲染都现成),
+ * 结果自然出现在会话里,用户可以接着追问。
+ */
+/** 主进程 → 后端的小型 JSON POST(OCR 等) */
+function httpPostJson(url, body, timeoutMs) {
+  return new Promise((resolve) => {
+    try {
+      const payload = JSON.stringify(body || {});
+      const req = http.request(url, {
+        method: 'POST',
+        timeout: timeoutMs || 30000,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      }, (res) => {
+        let buf = '';
+        res.on('data', (d) => { buf += d; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(buf)); } catch { resolve({ error: '响应解析失败' }); }
+        });
+      });
+      req.on('error', (e) => resolve({ error: String((e && e.message) || e) }));
+      req.on('timeout', () => { try { req.destroy(); } catch {} resolve({ error: '请求超时' }); });
+      req.write(payload);
+      req.end();
+    } catch (e) {
+      resolve({ error: String((e && e.message) || e) });
+    }
+  });
+}
+
+/** 图片 dataURL → 后端 OCR(POST /api/tools/ocr) */
+async function ocrImageDataUrl(dataUrl) {
+  const base64 = String(dataUrl || '').split(',')[1] || '';
+  if (!base64) return { ok: false, error: '图片数据为空' };
+  // ★ 大图先缩到 1600 宽再识别:整屏 1080p 截图直接丢给 OCR 极慢(几十秒),
+  //   而识别精度对屏幕文字几乎没有差别。体积也从数 MB 降到几百 KB。
+  let buf = Buffer.from(base64, 'base64');
+  try {
+    const img = nativeImage.createFromBuffer(buf);
+    if (img && !img.isEmpty()) {
+      const s = img.getSize();
+      if (s.width > 1600) buf = img.resize({ width: 1600 }).toPNG();
+    }
+  } catch { /* 缩放失败就用原图 */ }
+  const payloadBase64 = buf.toString('base64');
+  console.log('[clipboard][ocr] 开始识别，图片', Math.round(buf.length / 1024), 'KB');
+  const j = await httpPostJson(API_ORIGIN + '/api/tools/ocr', { image: payloadBase64 }, 45000);
+  if (!j || j.error) {
+    console.warn('[clipboard][ocr] 失败:', (j && j.error) || 'unknown');
+    return { ok: false, error: (j && j.error) || 'OCR 失败' };
+  }
+  const d = j.data || {};
+  console.log('[clipboard][ocr] 完成，provider=', d.provider || '-', 'chars=', String(d.text || '').length);
+  return { ok: true, text: String(d.text || ''), provider: d.provider || '' };
+}
+
+/** 把一句 AI 请求交给主窗口聊天(切到会话由渲染层负责):面板 AI 与截图翻译共用。
+ *  opts.autosend === false → 只填进输入框(用户可编辑后再发),默认直接发送。 */
+function sendAiRequestToChat(prompt, label, opts) {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  if (!win) return { ok: false, error: '主窗口未就绪' };
+  try {
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.focus();
+    win.webContents.send('clipboard:ai-request', {
+      action: 'ai',
+      label,
+      prompt,
+      autosend: !(opts && opts.autosend === false),
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+const CLIP_AI_ACTIONS = {
+  translate_en: { label: '翻译成英文', build: (t) => `把下面的内容翻译成英文，只输出译文：\n\n${t}` },
+  translate_zh: { label: '翻译成中文', build: (t) => `把下面的内容翻译成中文，只输出译文：\n\n${t}` },
+  summarize: { label: '总结要点', build: (t) => `总结下面内容的要点（3 条以内，简洁）：\n\n${t}` },
+  polish: { label: '润色改写', build: (t) => `润色改写下面的内容，保持原意、更通顺：\n\n${t}` },
+  explain: { label: '解释这段代码', build: (t) => `解释下面这段代码的作用与关键实现：\n\n${t}` },
+  table: { label: '提取为表格', build: (t) => `把下面的内容整理成 Markdown 表格：\n\n${t}` },
+};
+const CLIP_AI_MAX_TEXT = 6000;
+
+ipcMain.handle('clipboard:panel-ai', (_e, id, action) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  const text = String(it.text || '');
+  if (!text.trim()) return { ok: false, error: '该条目没有可处理的文本' };
+  const def = CLIP_AI_ACTIONS[action];
+  if (!def) return { ok: false, error: '未知的 AI 操作' };
+  const clipped = text.length > CLIP_AI_MAX_TEXT ? text.slice(0, CLIP_AI_MAX_TEXT) + '\n…（内容过长，已截断）' : text;
+  const sent = sendAiRequestToChat(def.build(clipped), def.label);
+  if (!sent.ok) return sent;
+  hideClipPanel();
+  return { ok: true, label: def.label };
+});
+
+/** 批量取文本(多选合并用):图片/文件没有文本,直接跳过并计数 */
+function collectClipBatch(ids, perItemLimit) {
+  const items = loadClipItems();
+  const parts = [];
+  let skipped = 0;
+  for (const id of Array.isArray(ids) ? ids : []) {
+    const it = items.find((x) => x.id === id);
+    if (!it) continue;
+    const text = String(it.text || '').trim();
+    if (!text) { skipped++; continue; }
+    parts.push(text.length > perItemLimit ? text.slice(0, perItemLimit) + '…' : text);
+  }
+  return { parts, skipped };
+}
+
+// 多选 → AI 合并整理(2026-10-29)
+ipcMain.handle('clipboard:panel-ai-merge', (_e, ids) => {
+  const { parts } = collectClipBatch(ids, 3000);
+  if (parts.length < 2) return { ok: false, error: '至少选择两条文本内容' };
+  let body = parts.map((t, i) => `【${i + 1}】\n${t}`).join('\n\n');
+  if (body.length > 12000) body = body.slice(0, 12000) + '\n…（内容过长，已截断）';
+  const prompt = `下面是从剪贴板选出的 ${parts.length} 段内容，请合并整理成一篇结构清晰的文档（去重、按主题归类，必要时用 Markdown 表格）：\n\n${body}`;
+  const sent = sendAiRequestToChat(prompt, '合并整理', { autosend: true });
+  if (!sent.ok) return sent;
+  hideClipPanel();
+  return { ok: true, count: parts.length };
+});
+
+// 多选 → 发送到会话(只放进输入框,不直接发送,用户可补充问题再发)
+ipcMain.handle('clipboard:panel-send-batch', (_e, ids) => {
+  const { parts } = collectClipBatch(ids, 4000);
+  if (!parts.length) return { ok: false, error: '没有可发送的文本内容' };
+  const body = parts.map((t, i) => `【${i + 1}】\n${t}`).join('\n\n');
+  const sent = sendAiRequestToChat(body, '发送到会话', { autosend: false });
+  if (!sent.ok) return sent;
+  hideClipPanel();
+  return { ok: true, count: parts.length };
+});
+
+ipcMain.handle('clipboard:panel-reveal', (_e, id) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  const target = it.imageFile || (Array.isArray(it.files) && it.files[0]);
+  if (!target) return { ok: false, error: '文本条目没有对应文件' };
+  try { shell.showItemInFolder(target); return { ok: true }; } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+
+/**
+ * 拖出到其它应用(图片/文件)。文本拖出走渲染层原生 HTML5 drag,
+ * 这里只处理"必须落成文件"的两类 —— 与桌面软件一致。
+ */
+ipcMain.handle('clipboard:panel-drag-out', (event, id) => {
+  const it = loadClipItems().find((x) => x.id === id);
+  if (!it) return { ok: false, error: '条目不存在' };
+  const file = it.imageFile || (Array.isArray(it.files) && it.files[0]);
+  if (!file) return { ok: false, error: '该条目不能作为文件拖出' };
+  try {
+    // 拖出期间一定不能因失焦而收面板;startDrag 在 Windows 上是阻塞到 drop 的,
+    // 但不同平台行为不一,给一个超时兜底(渲染层另有 5s 兜底)。
+    clipDragSuspended = true;
+    event.sender.startDrag({ file, icon: natIconSafe(file) });
+    setTimeout(() => { clipDragSuspended = false; }, 800);
+    return { ok: true };
+  } catch (e) {
+    clipDragSuspended = false;
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+
+/** 拖拽期间暂停失焦收起(渲染层 dragstart/dragend 调用) */
+ipcMain.handle('clipboard:panel-suspend-blur', (_e, on) => {
+  clipDragSuspended = !!on;
+  return { ok: true, suspended: clipDragSuspended };
+});
+
+ipcMain.handle('clipboard:panel-hide', () => hideClipPanel());
+ipcMain.handle('clipboard:panel-toggle', () => toggleClipPanel());
+
+ipcMain.handle('clipboard:panel-config', () => {
+  const cfg = loadClipConfig();
+  return { ok: true, config: { ...cfg, hotkey: clipHotkey.current || '' } };
+});
+
+ipcMain.handle('clipboard:panel-set-config', (_e, patch = {}) => {
+  const cfg = loadClipConfig();
+  if (patch.capture && typeof patch.capture === 'object') {
+    cfg.capture = {
+      text: patch.capture.text !== undefined ? !!patch.capture.text : cfg.capture.text,
+      image: patch.capture.image !== undefined ? !!patch.capture.image : cfg.capture.image,
+      file: patch.capture.file !== undefined ? !!patch.capture.file : cfg.capture.file,
+    };
+  }
+  if (patch.skipSensitive !== undefined) cfg.skipSensitive = !!patch.skipSensitive;
+  if (patch.maxItems !== undefined) cfg.maxItems = Math.min(5000, Math.max(50, Number(patch.maxItems) || 500));
+  let hotkeyResult = null;
+  if (patch.accelerator !== undefined) {
+    const accel = String(patch.accelerator || '').trim();
+    hotkeyResult = setClipHotkey(accel);
+    if (hotkeyResult && hotkeyResult.ok) cfg.accelerator = accel;
+    // 换键失败(被占用)时旧键已经被 unregister,必须把它恢复回来 —— 否则用户改坏一次就再没有召唤键了
+    else if (hotkeyResult && hotkeyResult.ok === false) setClipHotkey(cfg.accelerator || '');
+  }
+  pruneClipItems(loadClipItems());
+  persistClipConfig();
+  scheduleClipPersist();
+  clipNotifyPanel();
+  return { ok: true, config: { ...cfg, hotkey: clipHotkey.current || '' }, hotkey: hotkeyResult };
+});
+
+// 采集器随应用启动(即便用户从没打开过面板,历史也要积累)
+app.whenReady().then(() => {
+  try { startClipWatcher(); } catch (e) { console.warn('[clipboard] 监听启动失败:', e && e.message); }
+});
 
 
 // ============================================================
@@ -11322,13 +12715,47 @@ app.whenReady().then(async () => {
     snipCaptureDisplayId = String(displayId || '');
     return { ok: true };
   });
+  // ★ 直播页录屏（2026-10-29）：把「本应用窗口」作为采集源。
+  //   与屏幕采集的差别：拿到的是窗口内容（不含标题栏），裁剪按 content 尺寸换算，
+  //   窗口外的桌面不会入镜；渲染层再用元素矩形裁到主播舞台上。
+  //   一次性消费：下一次 getDisplayMedia 用它，之后清空，避免影响远控/选区录屏。
+  let liveCaptureSourceId = '';
+  let liveCaptureTimer = null;
+  ipcMain.handle('screen-record:select-live-window', (e) => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender);
+      if (!win) return { ok: false, error: '找不到调用窗口' };
+      liveCaptureSourceId = win.getMediaSourceId();
+      // 10s 内没被消费就作废：避免渲染层拿流失败后，这个一次性选择误导后续远控采集
+      if (liveCaptureTimer) clearTimeout(liveCaptureTimer);
+      liveCaptureTimer = setTimeout(() => {
+        liveCaptureSourceId = '';
+        liveCaptureTimer = null;
+      }, 10000);
+      return { ok: true, sourceId: liveCaptureSourceId };
+    } catch (err) {
+      return { ok: false, error: String((err && err.message) || err) };
+    }
+  });
   (function installDisplayMediaHandler() {
     try {
       session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-        desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
+        const types = liveCaptureSourceId ? ['screen', 'window'] : ['screen'];
+        desktopCapturer.getSources({ types, thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
           if (!sources || !sources.length) {
             callback({});
             return;
+          }
+          // 直播录制优先：按 window 的 media source id 精确命中
+          if (liveCaptureSourceId) {
+            const winSource = sources.find((s) => s.id === liveCaptureSourceId) || null;
+            liveCaptureSourceId = '';
+            if (liveCaptureTimer) { clearTimeout(liveCaptureTimer); liveCaptureTimer = null; }
+            if (winSource) {
+              callback({ video: winSource });
+              return;
+            }
+            console.warn('[live-record] 未找到目标窗口采集源，回退屏幕采集');
           }
           let picked = null;
           if (rcCaptureSource) {
@@ -12082,6 +13509,17 @@ app.whenReady().then(async () => {
   // （默认组合被占用时静默降级为"未注册"，由设置页显示冲突让用户改）
   setScreenshotHotkey(DEFAULT_SHOT_ACCEL);
 
+  // 剪贴板召唤键：读主进程自持配置（clipboard-config.json）里的保存值，
+  // 没存过就用默认 Control+Alt+V；被占用时 register 失败只记日志，设置页可见并可换键。
+  try {
+    const clipCfg = loadClipConfig();
+    // ★ 存的是空串 = 用户显式禁用,不能回退默认键(否则"禁用"重启后自己又活过来)
+    const reg = setClipHotkey(clipCfg.accelerator);
+    if (reg && reg.ok === false) console.warn('[clipboard] 召唤键注册失败（可能被占用）:', reg.error);
+  } catch (e) {
+    console.warn('[clipboard] 召唤键初始化失败:', e && e.message);
+  }
+
   // 健康检查：轮询后端 /api/health，就绪后创建窗口（替代固定 1.5s 延迟）。
   // ★★★ 2026-10-12 改造：启动即显示 splash 加载壳；
   //   ① 超时**不再强制 createWindow**（旧逻辑把必然白屏/拒连的窗口丢给用户），
@@ -12196,6 +13634,14 @@ app.whenReady().then(async () => {
           click: () => { try { mainWindow?.webContents?.send('rc:disconnect-all'); } catch { /* ignore */ } },
         }] : []),
         { type: 'separator' },
+        // 超级剪贴板（2026-10-29）：托盘是与主窗口无关的第二个入口，
+        // 窗口关掉只剩托盘时也能召唤面板。
+        {
+          label: '打开剪贴板',
+          click: () => {
+            try { showClipPanel(); } catch (e) { console.warn('[clipboard] 托盘唤起失败:', e && e.message); }
+          },
+        },
         // 宠物伴星（2026-10-28）：托盘是隐藏宠物后的兜底出口。
         // 本包未随带宠物资源（--pets 未选）时整项隐藏，不留一个点了没反应的入口。
         ...(PET_ASSETS_AVAILABLE ? [{
@@ -12270,6 +13716,9 @@ app.on('activate', () => {
 //  · 图标显隐是全局态 → 会话状态机 + 退出/窗口关闭兜底恢复（不依赖插件自觉）
 // ============================================================
 const pluginWindows = new Map();
+// 插件窗口全局快捷键：'pluginId/windowId' → { holder:{current}, spec }
+// holder 每次注册各持一份，交给 setGlobalHotkey 统一注销/重注册（避免互相踩）
+const pluginWindowHotkeys = new Map();
 const iconSession = createIconSession();
 let desktopHelperPath = null;
 let desktopHelperTried = false;
@@ -12368,7 +13817,7 @@ function isDesktopPath(p) {
   });
 }
 
-ipcMain.handle('plugin-window:open', async (_e, opts = {}) => {
+async function openPluginWindow(opts = {}) {
   try {
     const dirs = resolveDirsFor({
       mainDir: __dirname,
@@ -12377,6 +13826,20 @@ ipcMain.handle('plugin-window:open', async (_e, opts = {}) => {
     });
     const v = resolvePluginWindowRequest(dirs, opts);
     if (!v.ok) return v;
+
+    // 同一插件的同一入口只留一个窗口：重复开围栏会各自隐藏/恢复系统图标，
+    // 两个窗口互相打架；快捷键连按也不该叠出第二层。
+    const dup = [...pluginWindows.entries()].find(
+      ([, r]) => r.pluginId === v.pluginId && r.entry === v.entry && !r.win.isDestroyed(),
+    );
+    if (dup) {
+      const [windowId, rec] = dup;
+      try {
+        if (rec.placement === 'normal') { rec.win.show(); rec.win.focus(); }
+        else rec.win.showInactive();
+      } catch { /* 窗口可能正在销毁 */ }
+      return { ok: true, windowId, placement: rec.placement, existing: true };
+    }
 
     if (v.placement === 'desktop') {
       const spawned = await runDesktopHelper(['--spawn-workerw']);
@@ -12438,14 +13901,58 @@ ipcMain.handle('plugin-window:open', async (_e, opts = {}) => {
     if (opts.clickThrough === true) {
       win.setIgnoreMouseEvents(true, { forward: true });
     }
-    pluginWindows.set(windowId, { win, pluginId: v.pluginId, placement: v.placement });
+    pluginWindows.set(windowId, { win, pluginId: v.pluginId, placement: v.placement, entry: v.entry });
     if (v.placement === 'overlay') ensureOverlayWatch();
     win.showInactive();
     return { ok: true, windowId, placement: v.placement, url: v.url };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
-});
+}
+
+ipcMain.handle('plugin-window:open', async (_e, opts = {}) => openPluginWindow(opts));
+
+/**
+ * 插件窗口全局快捷键：渲染层整份同步「已启用插件声明的窗口 + 用户改过的组合」。
+ * 差量注册/注销，全部走 setGlobalHotkey（本进程唯一的 globalShortcut.register 出口）。
+ * 停用/卸载插件 = 清单里不再有它 = 这里自动注销，不需要插件自己清。
+ */
+function applyPluginWindowHotkeys(list) {
+  const next = normalizePluginHotkeys(list);
+  const results = [];
+  for (const [key, rec] of [...pluginWindowHotkeys.entries()]) {
+    if (next.has(key)) continue;
+    setGlobalHotkey(rec.holder, '', null, '插件窗口');
+    pluginWindowHotkeys.delete(key);
+  }
+  for (const [key, spec] of next) {
+    const cur = pluginWindowHotkeys.get(key);
+    if (cur && cur.holder.current === spec.accelerator) {
+      cur.spec = spec; // 组合没变：只更新目标（清单可能改了 entry / rect）
+      results.push({ key, ok: true, accelerator: spec.accelerator });
+      continue;
+    }
+    const holder = cur ? cur.holder : { current: null };
+    const r = setGlobalHotkey(holder, spec.accelerator, () => {
+      const live = pluginWindowHotkeys.get(key);
+      if (!live) return;
+      void openPluginWindow(live.spec).then((res) => {
+        // 快捷键开窗必须有回执：围栏钉在桌面层，应用窗口盖着时"成功"也像"没反应"
+        if (res && res.ok) notifyMainWindow('opened', { hotkey: true, placement: res.placement, title: live.spec.title });
+        else notifyMainWindow('failed', { hotkey: true, error: (res && res.error) || 'unknown', title: live.spec.title });
+      });
+    }, '插件窗口·' + (spec.title || key));
+    if (r.ok) pluginWindowHotkeys.set(key, { holder, spec });
+    else pluginWindowHotkeys.delete(key);
+    results.push({ key, accelerator: spec.accelerator, ...r });
+  }
+  return { ok: true, registered: results };
+}
+ipcMain.handle('plugin-window:set-hotkeys', (_e, list) => applyPluginWindowHotkeys(list));
+ipcMain.handle('plugin-window:get-hotkeys', () =>
+  [...pluginWindowHotkeys.entries()].map(([key, r]) => ({
+    key, accelerator: r.holder.current, title: r.spec.title,
+  })));
 
 ipcMain.handle('plugin-window:update', (_e, windowId, patch = {}) => {
   const rec = pluginWindows.get(String(windowId));
@@ -12513,6 +14020,7 @@ ipcMain.handle('plugin-window:list', () => [...pluginWindows.entries()].map(([wi
   windowId,
   pluginId: r.pluginId,
   placement: r.placement,
+  entry: r.entry,
   rect: (() => { try { return r.win.getBounds(); } catch { return null; } })(),
 })));
 

@@ -2332,6 +2332,9 @@ function onWindowDragEnd() {
 onMounted(() => {
   window.addEventListener('dragend', onWindowDragEnd);
   window.addEventListener('drop', onWindowDragEnd);
+  // 剪贴板 / OCR 交给 AI：监听事件 + 挂载时消费一次（请求可能先于输入区挂载到达）
+  window.addEventListener('yz:clip-ai', consumeClipAiRequest);
+  window.setTimeout(consumeClipAiRequest, 0);
   // ★ 常驻记录「最近一次 pointerdown 落在哪」——供失焦收起判定使用。
   //   必须常驻 + 捕获阶段：事件顺序是 pointerdown → blur，在 blur 里才注册监听会永远错过。
   document.addEventListener('pointerdown', onDocPointerdownTrack, true);
@@ -2355,6 +2358,20 @@ onMounted(() => {
     }
   }
 });
+
+// 剪贴板 / 截图 OCR 交给 AI（2026-10-29）：App.vue 收到主进程请求后写 window.__yzClipAi
+// 并派发 yz:clip-ai 事件；这里取走，填进输入框后走现有 send()。
+// ★ 用 window 桥而不是跨文件 ref：这个巨型 SFC 在 HMR 下曾出现 ESM 绑定丢失
+//   （ReferenceError: pendingClipAi is not defined → 整个输入区不渲染），window 桥不依赖模块绑定。
+function consumeClipAiRequest() {
+  const req = (window as any).__yzClipAi;
+  if (!req || !req.prompt) return;
+  (window as any).__yzClipAi = null;
+  input.value = req.prompt;
+  // autosend === false：只填进输入框（多选"发送到会话"走这条，用户可补充问题再发）
+  if (req.autosend === false) { void nextTick(() => inputRef.value?.focus?.()); return; }
+  void nextTick(() => send());
+}
 
 // 把本地保存的快捷键同步给主进程：主进程启动时只注册了内置默认值，用户改过的组合
 // 必须在这里补注册。先读再比对，避免每次挂载都 unregister/register 造成抖动。
@@ -2389,6 +2406,7 @@ async function syncPanicHotkey() {
 onBeforeUnmount(() => {
   window.removeEventListener('dragend', onWindowDragEnd);
   window.removeEventListener('drop', onWindowDragEnd);
+  window.removeEventListener('yz:clip-ai', consumeClipAiRequest);
   document.removeEventListener('pointerdown', onDocPointerdownTrack, true);
   closeInputMenu();
 });

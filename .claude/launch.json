@@ -32,6 +32,12 @@
       "port": 4213
     },
     {
+      "name": "live-proto",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".claude/prototype-server.cjs", "--root", "docs/prototypes", "--port", "4215"],
+      "port": 4215
+    },
+    {
       "name": "desktop-ui",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@yan-zhi/desktop", "exec", "vite", "--port", "1421", "--strictPort"],
