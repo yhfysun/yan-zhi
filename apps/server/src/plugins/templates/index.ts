@@ -284,7 +284,7 @@ export const computerUseManifest: PluginManifest = {
     type: 'object',
     properties: {
       maxOps: { type: 'number', description: '10 分钟窗口内最大输入操作次数', default: 200 },
-      allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认禁止）', default: false },
+      allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认允许：网页游戏/内嵌浏览器需要在本应用窗口内点击）', default: true },
     },
   },
 };
@@ -293,7 +293,7 @@ export const computerUseManifest: PluginManifest = {
 let opCount = 0;
 let lastOpAt = 0;
 let maxOps = 200;
-let allowSelfWindowClick = false;
+let allowSelfWindowClick = true;
 /** 急停标志：Ctrl+Alt+Esc（桌面端 globalShortcut → POST /panic）触发后置位并禁用插件 */
 let panicActive = false;
 
@@ -2193,7 +2193,7 @@ export const PLUGIN_TEMPLATES: Record<string, PluginTemplate> = {
         type: 'object',
         properties: {
           maxOps: { type: 'number', description: '10 分钟窗口内最大输入操作次数', default: 200 },
-          allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认禁止）', default: false },
+          allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认允许：网页游戏/内嵌浏览器需要在本应用窗口内点击）', default: true },
         },
       },
     },
