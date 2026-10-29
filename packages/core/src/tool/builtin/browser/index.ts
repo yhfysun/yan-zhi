@@ -339,6 +339,7 @@ export class BrowserClickTool implements BuiltInTool {
       target: semanticTargetSchema(),
       x: { type: 'number', description: 'X coordinate (last resort, if no index/selector/target).' },
       y: { type: 'number', description: 'Y coordinate (last resort, if no index/selector/target).' },
+      fast: { type: 'boolean', description: '仅实时/游戏场景传 true：跳过动作前的页面就绪等待与动作后的 250ms 稳定等待，坐标点击改用真实输入事件（isTrusted=true，canvas 游戏才认）。普通网页操作不要传 —— 会失去 pageChanged 判定。' },
     },
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
@@ -349,7 +350,7 @@ export class BrowserClickTool implements BuiltInTool {
       if (args.index === undefined && !args.selector && !usesSemanticTarget(args) && args.x === undefined && args.y === undefined) {
         return await emptyTargetHint();
       }
-      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'click', index: args.index, selector: args.selector, x: args.x, y: args.y }, args)) as any;
+      const data = await callBrowserApi('/action', 'POST', withTarget({ action: 'click', index: args.index, selector: args.selector, x: args.x, y: args.y, ...(args.fast === true ? { fast: true } : {}) }, args)) as any;
       const text = JSON.stringify(data);
       if (data?.downloaded?.savedPath) {
         return ok(`${text}\n\n已自动下载：${data.downloaded.savedPath}（文件已落盘，后续直接用文件工具按此路径读取，不要重复点击导出）`);
@@ -409,14 +410,17 @@ export class BrowserPressKeyTool implements BuiltInTool {
   description = 'Press a keyboard key (e.g. Enter, Tab, Escape). Uses real keyboard input.';
   inputSchema = {
     type: 'object',
-    properties: { key: { type: 'string', description: 'Key name: Enter, Tab, Escape, ArrowDown, etc.' } },
+    properties: {
+      key: { type: 'string', description: 'Key name: Enter, Tab, Escape, ArrowDown, etc.' },
+      fast: { type: 'boolean', description: '仅实时/游戏场景传 true：跳过动作前的页面就绪等待（按键本身已是真实输入）。普通网页操作不要传。' },
+    },
     required: ['key'],
   };
   async execute(args: Record<string, unknown>): Promise<McpCallResult> {
     try {
       const key = args.key as string;
       if (!key) return err('key is required');
-      await callBrowserApi('/action', 'POST', { action: 'press', key });
+      await callBrowserApi('/action', 'POST', { action: 'press', key, ...(args.fast === true ? { fast: true } : {}) });
       return ok(`Pressed key: ${key}`);
     } catch (e: any) { return err(e?.message || '按键失败'); }
   }
@@ -559,29 +563,136 @@ export class BrowserScreenshotTool implements BuiltInTool {
     try {
       const data = await callBrowserApi('/action', 'POST', { action: 'screenshot', tabId: args.tabId, annotate: args.annotate, fullPage: args.fullPage }) as any;
       const b64 = String(data.base64 || '');
-      const detail = data.annotated
-        ? '（已叠加元素编号框，编号对应 browser_click/browser_type 的 index 参数）'
-        : (data.fullPage ? '（整页长图）' : '');
-      // 落一份到临时区：让用户能在会话里看到这一张图（模型依旧通过 image_analyze 识别）
+      // 落一份到临时区：让用户能在会话里看到这一张图（模型通过附带的 file 直接看图）
       const saved = await saveShotToTemp(b64);
+      // ★ P0（2026-10-29）：桌面端主进程**已经**把截图存档并回传了绝对路径（data.file），
+      //   但此前这里只认 saveShotToTemp 的结果（Electron 渲染层没有 node:fs，恒为 null）
+      //   ⇒ 回执里没有 file 字段 ⇒ 服务端 extractImagePaths 提取不到路径 ⇒
+      //   模型**从来没真正收到过截图**，只能靠二次调用 image_analyze。
+      //   带上这个路径后，发请求前它会被挂成 imageParts，模型一步就能看图。
+      const archivedFile = saved?.file || (typeof data.file === 'string' ? data.file : '');
       const shotUrl = saved?.screenshotUrl || (b64 ? `data:image/png;base64,${b64}` : '');
-      const payload: Record<string, unknown> = {
-        captured: true,
+      const { payload, meta } = buildScreenshotReceipt({
         bytes: b64.length,
-        ...detail ? { detail } : {},
-        ...(saved?.file ? { file: saved.file } : {}),
-        ...(shotUrl ? { screenshotUrl: shotUrl } : {}),
-        note: '截图已保存，screenshotUrl 供界面展示；你本身看不到画面，需要理解页面内容或定位元素时，请继续调用 image_analyze 工具分析这张图',
-        ...(saved?.file ? { nextStep: `你看不到画面，需要识别页面内容时调用 image_analyze(path="${saved.file}", prompt="描述页面内容并给出目标元素的位置")` } : {}),
-      };
-      // 保持返回结果是可被界面解析的 JSON：ChatMessageList 会读 screenshotUrl 把图显示在工具卡片下
-      // ★ _meta（2026-10-09）：落盘成功时回传 path → artifact-hooks 统一登记 conversation_file
-      //   （离线 Playwright 路径此前只落临时区不登记，文件管理/工件清单看不到）
-      const meta = saved?.file
-        ? { path: saved.file, name: saved.file.split(/[/\\]/).pop() || 'screenshot.png', category: 'intermediate', bytes: saved.size }
-        : undefined;
+        file: archivedFile,
+        screenshotUrl: shotUrl,
+        annotated: !!data.annotated,
+        fullPage: !!data.fullPage,
+        savedSize: saved?.size,
+      });
       return meta ? okWithMeta(JSON.stringify(payload), meta) : ok(JSON.stringify(payload));
     } catch (e: any) { return err(e?.message || '截图失败'); }
+  }
+}
+
+/**
+ * 截图回执的纯构造函数（抽出来是为了能脱离 IPC 真跑测试）。
+ *
+ * 两个契约必须钉住：
+ *   ① `file` 是模型能否**看到**画面的唯一开关 —— 服务端 llm-task-manager 的
+ *      `extractImagePaths` 认 JSON 的 `file` 字段，据此把图挂进 imageParts；
+ *   ② 有 file 时 `note` 不得再说"你看不到画面"，否则模型会白调一次 image_analyze
+ *      （一次往返 = 代玩游戏单步延迟翻倍）。
+ */
+export function buildScreenshotReceipt(opts: {
+  bytes: number;
+  file?: string;
+  screenshotUrl?: string;
+  annotated?: boolean;
+  fullPage?: boolean;
+  savedSize?: number;
+}): { payload: Record<string, unknown>; meta?: { path: string; name: string; category: string; bytes: number } } {
+  const { bytes, file, screenshotUrl, annotated, fullPage, savedSize } = opts;
+  const detail = annotated
+    ? '（已叠加元素编号框，编号对应 browser_click/browser_type 的 index 参数）'
+    : (fullPage ? '（整页长图）' : '');
+  const payload: Record<string, unknown> = {
+    captured: true,
+    bytes,
+    ...detail ? { detail } : {},
+    ...(file ? { file } : {}),
+    ...(screenshotUrl ? { screenshotUrl } : {}),
+    note: file
+      ? '截图已随本条结果附上（可直接看图）。只有需要图片里的精确文字（OCR）或当前模型不支持视觉时，才调用 image_analyze。'
+      : '截图未能落盘（当前环境不支持存档），你无法直接看到画面；需要识别页面内容时调用 image_analyze。',
+  };
+  // 保持返回结果是可被界面解析的 JSON：ChatMessageList 会读 screenshotUrl 把图显示在工具卡片下
+  // ★ _meta（2026-10-09）：落盘成功时回传 path → artifact-hooks 统一登记 conversation_file
+  //   （离线 Playwright 路径此前只落临时区不登记，文件管理/工件清单看不到）
+  const meta = file
+    ? { path: file, name: file.split(/[/\\]/).pop() || 'screenshot.png', category: 'intermediate', bytes: savedSize || bytes }
+    : undefined;
+  return { payload, meta };
+}
+
+// ========== 文本观测（读状态不读画面）==========
+/**
+ * `browser_observe` —— 游戏/实时场景的**文本状态**观测（2026-10-29）。
+ *
+ * 为什么需要它：截图 + 视觉模型每步要走一次图像推理（慢、贵，且单步至少一次模型往返）；
+ * 网页游戏的状态大多能用**结构化文本**表达：引擎是什么、画布多大、画布分区颜色。
+ * 走这条路时模型不看图，直接从文本决策 ⇒ 单步成本与延迟都降一个量级。
+ * 需要认字/认图标时才退回 browser_screenshot。
+ */
+export class BrowserObserveTool implements BuiltInTool {
+  name = 'browser_observe';
+  readsExternalState = true;
+  description = '读页面/游戏的**状态摘要**（不返回图片、不花图像 token）：探测游戏引擎、同源 iframe、canvas 尺寸；Cocos 可读时返回**场景名 + 可交互节点清单**（节点名/文字/屏幕坐标 x,y，可直接喂给 browser_click）；另附画布 12x8 网格中心色（WebGL 画布可能全黑，属正常）。网页游戏/实时操作优先用它判断状态，只有需要识别图标细节时才用 browser_screenshot。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
+    },
+  };
+  async execute(args: Record<string, unknown> = {}): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'observe', tabId: args.tabId }) as any;
+      return ok(JSON.stringify(data));
+    } catch (e: any) { return err(e?.message || '状态观测失败'); }
+  }
+}
+
+// ========== 确定性输入循环（P1）==========
+/**
+ * `browser_run_loop` —— 一次调用连续执行一串真实输入（2026-10-29）。
+ *
+ * 为什么必须"一次调用"：逐步调用每步都有 IPC 往返 + 页面稳定等待，而且 `run_script`
+ * 同页 22 次就熔断 —— 一局游戏撑不过十几步。把一串动作塞进一个调用，才能连续玩。
+ *
+ * 步类型：
+ *   key    {key, holdMs?}          按键；holdMs>0 时按住 N 毫秒（长按跳/蓄力）
+ *   hold   {keys:[...], ms}        多键同时按住 N 毫秒 —— 斜向移动 = 两个方向键一起按
+ *   click  {x,y, holdMs?}          真实鼠标点击（holdMs 用于长按/蓄力）
+ *   move   {x,y}                   移动鼠标
+ *   drag   {fromX,fromY,toX,toY}   拖拽
+ *   wait   {ms}                    等待
+ *   script {script, keep?}         在页面里执行 JS（网页游戏的"直接调接口"）
+ *   http   {url, method?, body?, keep?} 调**本地**游戏桥（127.0.0.1 / localhost，如 Minecraft mod / Mineflayer）
+ */
+export class BrowserRunLoopTool implements BuiltInTool {
+  name = 'browser_run_loop';
+  description = '在一次调用里连续执行一串真实键鼠动作**并在同一循环里读状态**，用于网页游戏/重复操作。steps 每项 type：key（可带 holdMs 长按）、hold（keys 数组多键同按做斜向移动）、click（x/y，可 holdMs）、move、drag、wait、script（页面内执行 JS 读状态或调游戏自己的接口，传 as:"名字" 会把返回值放进 results）、http（只允许本地 127.0.0.1 游戏桥）、**if**（script 返回真值走 then、否则走 else，可嵌套一层以上）。另有 rounds 轮数、**until**（每轮结束后执行该脚本，为真即正常停止）、maxSeconds/maxSteps 上限；Esc 立即中止。回执含 results（你读到的状态）与 aborted 原因。';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      steps: {
+        type: 'array',
+        description: '动作序列（最多 80 项）。',
+        items: { type: 'object' },
+      },
+      rounds: { type: 'number', description: '整串步骤重复轮数（默认 1，上限 200）。' },
+      until: { type: 'string', description: '每轮结束后执行的 JS 表达式；返回真值即停止（aborted="until"，属正常结束而非错误）。例：读取分数 > 500 时停。' },
+      maxSeconds: { type: 'number', description: '总时长上限，默认 30 秒（上限 300）。' },
+      maxSteps: { type: 'number', description: '总步数上限，默认 200（上限 2000）。' },
+      tabId: { type: 'number', description: '可选：目标标签页 id，缺省为当前活动标签页。' },
+    },
+    required: ['steps'],
+  };
+  async execute(args: Record<string, unknown> = {}): Promise<McpCallResult> {
+    try {
+      const data = await callBrowserApi('/action', 'POST', { action: 'run_loop', ...args }) as any;
+      return ok(JSON.stringify(data));
+    } catch (e: any) { return err(e?.message || '输入循环执行失败'); }
   }
 }
 
@@ -1610,6 +1721,10 @@ export const BrowserToolClasses = [
   BrowserRunScriptTool,
   // P1 站点配方（2026-10-19）
   BrowserRunRecipeTool,
+  // 读状态不读画面（2026-10-29）
+  BrowserObserveTool,
+  // 确定性输入循环（2026-10-29，P1）
+  BrowserRunLoopTool,
 ];
 
 /** 所有浏览器工具的暴露名（裸名） */
@@ -1642,4 +1757,8 @@ export const BROWSER_TOOL_NAMES = [
   'browser_run_script',
   // P1 站点配方（2026-10-19）
   'browser_run_recipe',
+  // 读状态不读画面（2026-10-29）
+  'browser_observe',
+  // 确定性输入循环（2026-10-29，P1）
+  'browser_run_loop',
 ];

@@ -224,6 +224,7 @@ const PAGE_AGENT_DATA = {
 4. 页面变化后 index 会失效，工具会自动尝试用内部 selector 重定位一次（返回 autoRelocated）；仍未命中才需重新 browser_get_page_content 刷新编号列表。
 5. 视觉兜底：DOM 拿不到弹窗/portal 结构、或 index 反复失效时，用 browser_screenshot(annotate=true) 截图叠加元素编号框，结合编号定位；截图里看不清再用 browser_visual_locate + image_analyze 识别目标坐标。
 6. 每次 click/type 的返回包含 pageChanged / urlChanged / noChangeStreak：noChangeStreak ≥ 3 时会收到 warning，必须停止重复同类操作，改换定位方式（重新 get_page_content 分析）或 ask_user 请求人工介入。
+7. 实时操作（网页游戏/连续快速点击）：先用 browser_observe 读状态（引擎、canvas 尺寸、12x8 网格颜色），能靠文本判断就不截图；确实需要认图标/文字时才 browser_screenshot。canvas 游戏没有 DOM 可点，用浏览器坐标 + browser_click 的 x/y 并传 fast:true（跳过页面就绪等待与 250ms 稳定等待，改用真实输入事件）；按键同理传 fast:true。fast 只在实时场景用，普通网页操作传它会丢失 pageChanged 判定。
 
 【登录与人工干预】
 - 检测到需要登录/扫码/验证码等人工干预场景时，用 ask_user 让用户在浏览器面板中完成，等用户确认后用 browser_get_page_content 复核状态，再继续任务；不要把"需要登录"当结论直接返回给父智能体。

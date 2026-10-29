@@ -6057,7 +6057,11 @@ async function archiveDelegatedScreenshot(
     const dest = nodePath.join(dir, nodePath.basename(src));
     if (dest !== src) await fsp.copyFile(src, dest);
     if (metaOut) metaOut.value = { path: dest, name: nodePath.basename(dest), category: 'intermediate', bytes: size };
-    return `截图已捕获并归档: ${dest}\n你看不到画面；需要理解页面内容或定位元素时，调用 image_analyze(path="${dest}", prompt="描述页面内容并给出目标元素的位置")`;
+    // ★ P0（2026-10-29）：归档后**必须把 `已存档:` 标记留下** —— 它被这里的旧文案
+    //   （"截图已捕获并归档: <dest>"）丢掉了，导致 attachImagesToMessages 的
+    //   extractImagePaths 提取不到路径 ⇒ 图片从来没被挂进 imageParts ⇒
+    //   模型只能每步再调一次 image_analyze（代玩游戏单步翻倍的真因）。
+    return `截图已捕获，图片已附在本条结果上（可直接看图，无需再调 image_analyze）。已存档: ${dest}\n只有需要图片里的精确文字（OCR）或当前模型不支持视觉时，才调用 image_analyze(path="${dest}", prompt="描述页面内容并给出目标元素的位置")`;
   } catch (e: any) {
     logger.warn('[llm-task] 截图归档失败（不影响截图本身）:', e?.message || e);
     return result;

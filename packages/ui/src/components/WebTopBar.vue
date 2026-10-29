@@ -91,6 +91,11 @@
            再摆一个会和头像挤在一起（2026-10-04 用户红框反馈）。
            ★ 模式窗口同样隐藏（与主导航同一口径：不做任何能切走路由的入口）。 -->
       <div v-if="!modeLocked" class="title-quick">
+        <!-- 游戏窗（P2）：独立置顶窗跑 /browser，用于网页游戏/盯盘这类不该被主窗口遮住的场景 -->
+        <button v-if="gameWindowSupported" class="title-nav-item title-nav-item--icon" type="button"
+                title="游戏窗（独立置顶）" @click="onOpenGameWindow">
+          <el-icon :size="15"><Monitor /></el-icon>
+        </button>
         <button class="title-nav-item title-nav-item--icon" type="button" title="全局搜索（Ctrl/⌘ K）" @click="onGlobalSearch">
           <el-icon :size="15"><Search /></el-icon>
         </button>
@@ -212,6 +217,30 @@ const modeLocked = isStandaloneWindow();
 
 // Electron 渲染进程通过 contextBridge 注入的 API（web 端为 undefined，全部走可选链）
 const api = (window as any).electronAPI;
+
+/** 游戏窗能力：只有桌面端能开独立置顶窗（Web 端没有 childWindow） */
+const gameWindowSupported = computed(() => !!(api && api.childWindow && api.childWindow.open));
+
+/**
+ * 独立置顶游戏窗（P2）：跑 /browser，置顶 + 可缩放。
+ * 为什么需要：网页游戏/盯盘时主窗口一挡就看不见画面；且截图要求窗口可见，
+ * 被遮挡或最小化都会让 capturePage 失败。key 固定，重复点击聚焦已有窗口。
+ */
+function onOpenGameWindow() {
+  try {
+    void api.childWindow.open({
+      key: 'browser-game',
+      // window=game：让这个窗口进入"独立窗"形态（隐藏全局导航），否则会带着
+      // 首页/对话/浏览器那排导航，看着就是主窗口换了个皮。
+      route: '/browser?window=game&szwin=1',
+      width: 1024,
+      height: 760,
+      // ★ 默认**不置顶**：置顶会让它在切到别的应用时一直挡在前面（用户实报）。
+      //   需要时在执行条上点「置顶」自己开。
+      alwaysOnTop: false,
+    });
+  } catch { /* 子窗口不可用时静默降级：主窗口内 /browser 仍可正常使用 */ }
+}
 const settingsStore = useSettingsStore();
 const authStore = useAuthStore();
 const route = useRoute();

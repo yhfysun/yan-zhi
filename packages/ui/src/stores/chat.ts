@@ -201,11 +201,12 @@ function rowToConv(r: any): Conversation {
     })(),
     // 归属模式。空值按 office 兜底（与后端迁移口径一致），
     // 否则老数据会在所有模式下都"隐身"——列表按 mode 过滤，NULL 匹配不上任何模式。
-    // ★ 白名单必须与后端 routes/conversations.ts 的 VALID_MODES 同集：
-    //   漏一个模式会让后端已正确落库的会话在前端被**静默改判成 office**（列表里看不到）。
-    //   douyin 已于 2026-10-16 下线；库里存量 mode='douyin' 的行由 db.ts 的迁移改判 office，
-    //   迁移先于本白名单生效，故这里少一项不会造成遗漏。
-    mode: (['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop'].includes(r.mode) ? r.mode : 'office') as Conversation['mode'],
+    // ★ 白名单口径：内置模式串 + 运行时插件模式（后装 .yzp 带来的新 key）。
+    //   前端不维护第二份清单（否则插件模式会被**静默改判成 office**、列表里看不到）；
+    //   合法性以服务端落库为准，这里只挡明显的脏值。
+    mode: (typeof r.mode === 'string' && /^[a-z][a-z0-9-]{1,31}$/.test(r.mode) && r.mode !== 'douyin'
+      ? r.mode
+      : 'office') as Conversation['mode'],
     // 运维会话 → 服务器连接（2026-10-21，会话跟着服务器走）；发布项目绑定（7b）
     // ★ 两种写法都认：server 库回蛇形，部分 IPC 通道直接回对象
     opsConnectionId: r.ops_connection_id ?? r.opsConnectionId ?? null,
@@ -2559,6 +2560,10 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           'browser_extract_list': 'extract_list',
           // P1-5 代码模式（2026-10-07）：页面上下文执行受限 JS
           'browser_run_script': 'run_script',
+          // 读状态不读画面（2026-10-29）：游戏/实时场景的文本观测
+          'browser_observe': 'observe',
+          // 确定性输入循环（2026-10-29，P1）
+          'browser_run_loop': 'run_loop',
           // 文件上传（2026-10-07）：桌面端走 CDP DOM.setFileInputFiles 注入本地文件
           'browser_upload': 'upload',
           // ★★★ B5（2026-10-10）：补齐 11 个**主进程早已实现**但这里漏映射的 action。
@@ -2606,7 +2611,11 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             // ★ 2026-10-08：upload/screenshot 放宽竞速窗口到 65s —— 主进程对这两个 action 的总闸
             //   已提到 60s（视频投递后等页面处理）。若这里仍是 20s，会在主进程返回前先判超时，
             //   用户看到"上传不顺"。其它 action 维持 20s（主进程 18s 总闸留 2s 余量）。
-            const ipcTimeout = (action === 'upload' || action === 'screenshot') ? 65000 : 20000;
+            // run_loop 自带 maxSeconds：渲染层窗口必须比它长，否则循环还在跑、这里先判超时
+            const loopBudget = action === 'run_loop'
+              ? Math.min(Math.max(Number((args as any)?.maxSeconds) || 30, 1), 300) * 1000 + 5000
+              : 0;
+            const ipcTimeout = loopBudget || ((action === 'upload' || action === 'screenshot') ? 65000 : 20000);
             // ★ 工作目录随动作下发（2026-10-26）：主进程把「导出/下载」触发的文件落到
             //   <工作目录>/downloads/ 并把路径回传，模型才能真正拿到文件。
             //   与服务端 bridge 路径同一口径（见 llm-task-manager 的 argsWithWs）。
@@ -2630,7 +2639,12 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
               } else if (action === 'screenshot') {
                 // 2026-10-09：main.cjs 截图时已落盘存档，把路径带回 —— 服务端据此
                 // 复制进会话产物目录并登记 conversation_file（关键节点归档留证）。
-                text = result.file ? `截图已捕获（已存档: ${result.file}）` : '截图已捕获';
+                // ★ P0（2026-10-29）：`已存档: <path>` 这个前缀是服务端 attachImagesToMessages
+                //   认出截图并挂成 imageParts 的唯一依据，措辞不能改；同时明确告诉模型
+                //   "图已附上"，否则它会按老习惯再调一次 image_analyze（单步多一次往返）。
+                text = result.file
+                  ? `截图已捕获，图片已附在本条结果上（可直接看图，无需再调 image_analyze；已存档: ${result.file}）`
+                  : '截图已捕获，但未能存档 —— 你看不到画面，需要识别页面内容时调用 image_analyze';
               } else if (action === 'get_dom') {
                 // 桌面端不把完整 DOM 回传模型（体积大且无必要）。若只回 "DOM 节点数"，
                 // 模型会因拿不到链接/文本内容而无限换参重试。给出可行动提示引导改用四件套。

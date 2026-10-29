@@ -25,13 +25,8 @@ function resolveApiPort() {
 }
 const API_PORT = resolveApiPort();
 
-// ★ 渲染层心跳（2026-10-19）：主线程被长任务/大列表占死时，页面里的定时器也会停。
-//   主进程看门狗据此判定"界面已卡死"并自动重载窗口 —— 用户不再需要点任何东西。
-try {
-  setInterval(() => {
-    try { ipcRenderer.send('yz:renderer-heartbeat'); } catch { /* 窗口正在销毁 */ }
-  }, 2000);
-} catch { /* preload 顶层异常不应阻断 API 暴露 */ }
+// ★ 渲染层心跳已删除（2026-10-27）：定时器会被 Chromium 节流（窗口被遮挡/切后台），
+//   拿它当"主线程卡死"的判据会自己和自己打架。现在由主进程主动 executeJavaScript 探活。
 
 // 通过 contextBridge 安全地暴露 API 到渲染进程
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -53,6 +48,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 远控多显示器：枚举本机显示器（物理像素 bounds + 桌面采集源名）与选择采集目标
   rcDisplays: () => ipcRenderer.invoke('rc:displays'),
   rcSetCaptureDisplay: (id) => ipcRenderer.invoke('rc:set-capture-display', String(id == null ? '' : id)),
+  // 实际采集到的显示器（选屏可能被回退）：渲染层据此回正下拉框与坐标几何
+  rcCapturedDisplay: () => ipcRenderer.invoke('rc:captured-display'),
+  // 远控采集窗口（阶段 1）：隐藏窗口加载完成后上报就绪
+  rcCaptureReady: (info) => ipcRenderer.invoke('rc:capture-ready', info || {}),
+  // 采集窗口存活/崩溃次数/是否已降级到 JPEG（诊断与 UI 提示用）
+  rcCaptureStatus: () => ipcRenderer.invoke('rc:capture-status'),
+  // 阶段 1 第 3 步：采集窗口持有信令，确认弹窗在主窗口 —— 两次跨进程往返
+  rcNeedConfirm: (req) => ipcRenderer.invoke('rc:need-confirm', req || {}),
+  rcConfirmResult: (id, result) => ipcRenderer.invoke('rc:confirm-result', id, result || {}),
+  // 主窗口侧订阅（返回取消函数，组件卸载时调用）
+  onRcNeedConfirm: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('rc:need-confirm', h);
+    return () => ipcRenderer.removeListener('rc:need-confirm', h);
+  },
   // 远控明示原则：会话开始弹系统通知（渲染层轮询发现新会话时调用）
   rcNotify: (title, body) => ipcRenderer.invoke('rc:notify', String(title || ''), String(body || '')),
   // 远控托盘状态：上报「远控中」会话（托盘提示/菜单随之更新）
@@ -71,9 +81,40 @@ contextBridge.exposeInMainWorld('electronAPI', {
     open: (opts) => ipcRenderer.invoke('child-window:open', opts),
     isMaximized: () => ipcRenderer.invoke('child-window:is-maximized'),
     focusMain: () => ipcRenderer.invoke('child-window:focus-main'),
+    // 置顶开关（P2，2026-10-29）：游戏窗默认**不**置顶 —— 用户实报"点别的应用它一直在前面"。
+    setAlwaysOnTop: (on) => ipcRenderer.invoke('child-window:set-always-on-top', !!on),
+    isAlwaysOnTop: () => ipcRenderer.invoke('child-window:is-always-on-top'),
     // 开窗前投递初始载荷（diff 文本 / 冲突路径等），子窗口就绪后取走
     putPayload: (key, payload) => ipcRenderer.invoke('child-window:put-payload', key, payload),
     takePayload: (key) => ipcRenderer.invoke('child-window:take-payload', key),
+  },
+
+  // 插件桌面窗口（openspec/changes/desktop-manager P0-0）：通用能力，任何声明了
+  // desktop-shell 权限的插件都能开「贴桌面层 / 置顶悬浮 / 普通」窗口。
+  pluginWindow: {
+    // opts: { pluginId, entry, placement: 'desktop'|'overlay'|'normal', rect?, displayId?, clickThrough?, focusable? }
+    open: (opts) => ipcRenderer.invoke('plugin-window:open', opts),
+    update: (windowId, patch) => ipcRenderer.invoke('plugin-window:update', String(windowId), patch),
+    close: (windowId) => ipcRenderer.invoke('plugin-window:close', String(windowId)),
+    // 关掉某插件的全部窗口（插件被禁用/卸载时由宿主 UI 调用）
+    closeAll: (pluginId) => ipcRenderer.invoke('plugin-window:close-all', String(pluginId || '')),
+    list: () => ipcRenderer.invoke('plugin-window:list'),
+    // 事件：'moved' | 'closed'（返回取消订阅函数）
+    on: (event, cb) => {
+      const ch = 'plugin-window:' + String(event);
+      const handler = (_e, payload) => { try { cb(payload); } catch { /* ignore */ } };
+      ipcRenderer.on(ch, handler);
+      return () => ipcRenderer.removeListener(ch, handler);
+    },
+  },
+
+  // 桌面外壳（通用）：系统图标显隐 / 文件图标 / 打开路径
+  desktopShell: {
+    iconsVisible: () => ipcRenderer.invoke('desktop-shell:icons-visible'),
+    setIconsVisible: (visible) => ipcRenderer.invoke('desktop-shell:set-icons-visible', visible !== false),
+    fileIcon: (filePath, size) => ipcRenderer.invoke('desktop-shell:file-icon', String(filePath), size || 'normal'),
+    openPath: (filePath) => ipcRenderer.invoke('desktop-shell:open-path', String(filePath)),
+    query: () => ipcRenderer.invoke('desktop-shell:query'),
   },
 
   // 宠物伴星（2026-10-28）：透明置顶宠物窗的生命周期、状态同步与穿透控制
@@ -87,6 +128,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // 方案 B：菜单/面板/输入条/气泡是独立小窗，由主进程按宠物位置摆放
     openPopup: (kind) => ipcRenderer.send('pet:popup-open', String(kind || '')),
     closePopup: (kind) => ipcRenderer.send('pet:popup-close', String(kind || '')),
+    // 弹层渲染完第一帧再让主进程显示，避免先闪一个空白窗
+    popupReady: (kind) => ipcRenderer.send('pet:popup-ready', String(kind || '')),
+    // 弹层内部展开下拉（如输入条的智能体列表）时向上长高，底部锚点不动
+    resizePopup: (kind, w, h) => ipcRenderer.send('pet:popup-resize', String(kind || ''), Number(w) || 0, Number(h) || 0),
     // 形象工坊：用户导入的 2D 形象（存在 userData/pet-packs，不随包分发）
     listPacks: () => ipcRenderer.invoke('pet:list-packs'),
     importPack: (payload) => ipcRenderer.invoke('pet:import-pack', payload || {}),
@@ -99,7 +144,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('pet:cmd', h);
       return () => ipcRenderer.removeListener('pet:cmd', h);
     },
-    ensureInside: () => ipcRenderer.invoke('pet:ensure-inside'),
     // 主窗口 → 主进程 → 宠物窗：轻量任务视图（状态 / 标题 / 计数）
     sync: (payload) => ipcRenderer.send('pet:sync', payload || {}),
     // 设置变更（渲染器 / 形象 / 缩放）即时下发给宠物窗

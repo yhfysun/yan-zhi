@@ -2,7 +2,7 @@ const { app, BrowserWindow, BrowserView, webContents, dialog, ipcMain, Menu, ses
 const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const http = require('http');
 // 实例配置单一真相源：端口 / userData / 共享目录一律从这里取，禁止在本文件再硬编码。
@@ -28,6 +28,14 @@ const { discoverChromeBookmarks } = require('./bookmarks-import.cjs');
 // 插件前端包装载协议（mode-pluginization P0）：yz://shared/**（共享依赖 shim）与
 // yz://plugin/<id>/**（插件前端 bundle）。纯函数解析器有单测（test/plugin-protocol.test.cjs）。
 const { YZ_SCHEME_PRIVILEGES, pluginDirCandidates, resolveYzTarget } = require('./plugin-protocol.cjs');
+// P0-0（desktop-manager）：插件桌面窗口 + 桌面外壳的纯逻辑与 Win32 助手源码
+const {
+  resolvePluginWindowRequest,
+  resolveDirsFor,
+  parseHelperLine,
+  createIconSession,
+  HELPER_CS: DESKTOP_HELPER_CS,
+} = require('./desktop-shell.cjs');
 // ★ privileged scheme 注册必须在 app ready 之前（模块顶层即执行）。
 protocol.registerSchemesAsPrivileged([YZ_SCHEME_PRIVILEGES]);
 
@@ -1019,7 +1027,10 @@ function startServer() {
         // ★ windowsHide：主进程无控制台，不加这个 Windows 会给 node 子进程新开一个
         //   可见终端窗口（之后的 python/ffmpeg 输出全刷在里面，任务停了窗口还在）。
         windowsHide: true,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}), ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
+          // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
+          YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
+          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     } else {
       // 回退：npx tsx（可能 ABI 不兼容，但至少能启动）
@@ -1029,7 +1040,10 @@ function startServer() {
         stdio: 'inherit',
         shell: true,
         windowsHide: true,
-        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}), ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
+        env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
+          // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
+          YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
+          ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
@@ -2057,7 +2071,30 @@ ipcMain.on('window-reload', (event) => winOf(event)?.webContents.reloadIgnoringC
 //   · 加载同一应用的专用 hash 路由，不需要另建打包入口。
 //   · 非模态：不设 parent，可自由拖到另一块屏幕 / 与主窗口并排（IDE 的 separate window 语义）。
 // ============================================================
+// ===GAMEWIN-START=== 独立游戏窗参数归一（P2，2026-10-29）
+//   游戏窗 = 置顶 + 可选跳过任务栏 + 可缩放；与普通子窗口（差异/会话/远控）分开，
+//   **置顶是显式 opt-in**（alwaysOnTop:true），否则会把所有子窗口都带上置顶。
+function normalizeGameWindowOptions(opts) {
+  const o = opts || {};
+  const num = (v, d, min, max) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return d;
+    return Math.min(Math.max(Math.round(n), min), max);
+  };
+  return {
+    key: String(o.key || 'browser-game'),
+    route: String(o.route || '/browser'),
+    width: num(o.width, 1024, 480, 4096),
+    height: num(o.height, 720, 360, 4096),
+    alwaysOnTop: o.alwaysOnTop === true,
+    skipTaskbar: o.skipTaskbar === true,
+    resizable: o.resizable !== false,
+  };
+}
+// ===GAMEWIN-END===
+
 ipcMain.handle('child-window:open', (event, opts = {}) => {
+  const g = normalizeGameWindowOptions(opts);
   const key = String(opts.key || 'default');
   const route = String(opts.route || '/diff-window');
   const existing = childWindows.get(key);
@@ -2071,14 +2108,17 @@ ipcMain.handle('child-window:open', (event, opts = {}) => {
 
   const win = new BrowserWindow({
     icon: getAppIconPath(),
-    width: Number(opts.width) || 1280,
-    height: Number(opts.height) || 860,
-    minWidth: 640,
-    minHeight: 420,
+    width: Number(opts.width) || g.width,
+    height: Number(opts.height) || g.height,
+    minWidth: 480,
+    minHeight: 360,
     frame: false,              // 与主窗口一致：无边框 + 自定义标题栏
     titleBarStyle: 'hidden',
     backgroundColor: '#1D1D1C',
     show: false,
+    resizable: g.resizable,
+    alwaysOnTop: g.alwaysOnTop,
+    skipTaskbar: g.skipTaskbar,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       webviewTag: true,
@@ -2089,7 +2129,11 @@ ipcMain.handle('child-window:open', (event, opts = {}) => {
     },
   });
 
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    // 游戏窗：Windows 上构造参数之外再显式抬一次层级，避免被其它置顶窗压住
+    if (g.alwaysOnTop) { try { win.setAlwaysOnTop(true, 'screen-saver'); } catch { /* ignore */ } }
+    win.show();
+  });
   // 关窗即清理登记，避免 key 被已销毁窗口占住；正在录该窗口的录屏立即收尾落盘
   win.on('closed', () => {
     childWindows.delete(key);
@@ -2107,6 +2151,27 @@ ipcMain.handle('child-window:open', (event, opts = {}) => {
 
 /** 子窗口是否处于最大化（渲染层据此切换按钮图标） */
 ipcMain.handle('child-window:is-maximized', (event) => winOf(event)?.isMaximized() || false);
+
+/**
+ * 置顶开关（P2，2026-10-29）。
+ * ★ 默认不置顶：用户实报"点别的应用它一直在前面"——置顶应该是显式选择，
+ *   不该是开窗的默认状态。执行条上给一个可切换的按钮。
+ */
+ipcMain.handle('child-window:set-always-on-top', (event, on) => {
+  const win = winOf(event);
+  if (!win || win.isDestroyed()) return { ok: false, error: 'window not found' };
+  try {
+    if (on) win.setAlwaysOnTop(true, 'screen-saver');
+    else win.setAlwaysOnTop(false);
+    return { ok: true, on: win.isAlwaysOnTop() };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+ipcMain.handle('child-window:is-always-on-top', (event) => {
+  const win = winOf(event);
+  try { return !!(win && !win.isDestroyed() && win.isAlwaysOnTop()); } catch { return false; }
+});
 
 /** 聚焦主窗口（子窗口里「回到主窗口」用） */
 ipcMain.handle('child-window:focus-main', () => {
@@ -5992,7 +6057,9 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
       NO_SETTLE_ACTIONS.add('annotation_begin');
       NO_SETTLE_ACTIONS.add('annotation_end');
       NO_SETTLE_ACTIONS.add('annotation_drain');
-      if (!NO_SETTLE_ACTIONS.has(action)) {
+      // ★ P0（2026-10-29）：fast 动作（实时/游戏场景）不进闸 —— 闸最多白等 8s，
+      //   而游戏每一步都要毫秒级；节奏由调用方（循环）自己掌握。
+      if (!NO_SETTLE_ACTIONS.has(action) && !args?.fast) {
         const SETTLE_MS = 8000;
         const PROBE_MS = 400;
         const startedAt = Date.now();
@@ -6040,6 +6107,118 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         }
       }
     }
+
+    // ===RUNLOOP-START=== 确定性输入循环执行器（P1，2026-10-29）
+    // 纯函数式：所有副作用通过 io 注入（key/mouse/sleep/script/http），便于单测。
+    // ★ 读状态也在循环里完成（2026-10-29 追加）：script 步读状态并可用 as 命名，
+    //   if 步按脚本返回值走 then / else，until 脚本每轮结束后判断为真即正常停止。
+    //   这样"读状态 → 决策 → 动作"整段闭环在一次调用里跑完，既不撞脚本熔断，
+    //   也不用每步问一次模型。
+    async function executeRunLoop(plan, io) {
+      const steps = Array.isArray(plan && plan.steps) ? plan.steps.slice(0, 80) : [];
+      const rounds = Math.max(1, Math.min(Number(plan && plan.rounds) || 1, 200));
+      const maxSteps = Math.max(1, Math.min(Number(plan && plan.maxSteps) || 200, 2000));
+      const maxMs = Math.max(50, Math.min(Number(plan && plan.maxSeconds) || 30, 300)) * 1000;
+      const until = plan && typeof plan.until === 'string' ? plan.until : '';
+      const t0 = Date.now();
+      const held = new Set();
+      const results = {};
+      let done = 0;
+      let aborted = null;
+
+      const releaseAll = async () => {
+        for (const k of Array.from(held)) { try { io.keyUp(k); } catch (e) { /* ignore */ } }
+        held.clear();
+      };
+      const guard = async () => {
+        if (done >= maxSteps) { aborted = 'maxSteps'; return true; }
+        if (io.isAborted && io.isAborted()) { aborted = 'aborted'; return true; }
+        if (Date.now() - t0 > maxMs) { aborted = 'timeout'; return true; }
+        return false;
+      };
+
+      async function runList(list, depth) {
+        for (let i = 0; i < list.length; i++) {
+          if (await guard()) return;
+          const s = list[i] || {};
+          const type = String(s.type || '');
+          const tag = s.as || ('r' + done);
+
+          if (type === 'if') {
+            // 条件分支：script 的返回值按真值判断（页面里 return 布尔值即可）
+            if (depth >= 3) { aborted = 'ifTooDeep'; return; }
+            const cond = await io.runScript(String(s.script || ''));
+            const branch = cond ? s.then : s.else;
+            if (Array.isArray(branch) && branch.length) await runList(branch, depth + 1);
+            done++;
+            if (aborted) return;
+            const gapIf = Math.min(Math.max(0, Number(s.gapMs) || 0), 5000);
+            if (gapIf) await io.sleep(gapIf);
+            continue;
+          }
+
+          if (type === 'wait') {
+            await io.sleep(Math.min(Math.max(0, Number(s.ms) || 100), 10000));
+          } else if (type === 'key') {
+            const hold = Math.min(Math.max(0, Number(s.holdMs) || 0), 10000);
+            io.keyDown(s.key);
+            if (hold > 0) { await io.sleep(hold); io.keyUp(s.key); }
+            else { await io.sleep(30); io.keyUp(s.key); }
+          } else if (type === 'hold') {
+            // 长按方向：keys 可多个（如 ArrowRight+ArrowUp = 右上斜走）
+            const keys = (Array.isArray(s.keys) ? s.keys : [s.key]).filter(Boolean).slice(0, 4);
+            const ms = Math.min(Math.max(1, Number(s.ms) || 500), 10000);
+            for (const k of keys) { if (held.has(k)) continue; io.keyDown(k); held.add(k); }
+            await io.sleep(ms);
+            for (const k of keys) { io.keyUp(k); held.delete(k); }
+          } else if (type === 'click') {
+            io.mouseDown(s.x, s.y);
+            await io.sleep(Math.min(Math.max(0, Number(s.holdMs) || 30), 5000));
+            io.mouseUp(s.x, s.y);
+          } else if (type === 'move') {
+            io.mouseMove(s.x, s.y);
+          } else if (type === 'drag') {
+            io.mouseDown(s.fromX, s.fromY);
+            await io.sleep(60);
+            io.mouseMove(s.toX, s.toY);
+            await io.sleep(60);
+            io.mouseUp(s.toX, s.toY);
+          } else if (type === 'script') {
+            const out = await io.runScript(String(s.script || ''));
+            if (s.as || s.keep === true) results[tag] = out;
+          } else if (type === 'http') {
+            // 本地游戏桥（Minecraft 的 mod / Mineflayer 之类）：只允许回环地址
+            const out = await io.http({ url: String(s.url || ''), method: String(s.method || 'POST'), body: s.body });
+            if (s.as || s.keep === true) results[tag] = out;
+          } else {
+            aborted = 'unknownStepType:' + type;
+            return;
+          }
+
+          done++;
+          if (aborted) return;
+          const gap = Math.min(Math.max(0, Number(s.gapMs) || 0), 5000);
+          if (gap) await io.sleep(gap);
+        }
+      }
+
+      try {
+        for (let r = 0; r < rounds; r++) {
+          await runList(steps, 0);
+          if (aborted) break;
+          if (until) {
+            const hit = await io.runScript(until);
+            if (hit) { aborted = 'until'; break; }
+          }
+        }
+      } catch (e) {
+        aborted = 'error:' + String((e && e.message) || e).slice(0, 120);
+      } finally {
+        await releaseAll();
+      }
+      return { steps: done, rounds, elapsedMs: Date.now() - t0, aborted, results };
+    }
+    // ===RUNLOOP-END===
 
     const doAction = async () => {
     // ★ agent 抢到页面：先静默撤掉用户的批注层（两者互斥，见 yzAnnotationBootstrap 头注）。
@@ -6509,6 +6688,19 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         return result;
       }
       case 'click': {
+        // ===FASTCLICK-START=== 实时/游戏模式：坐标点击走**真实输入事件**，不做 DOM 注入、
+        // 不做遮挡检测、不做 250ms 稳定等待。
+        //   为什么必须真实输入：canvas 游戏普遍只听 pointer/mouse 事件，DOM 派发的
+        //   synthetic MouseEvent（isTrusted=false）会被部分引擎忽略；sendInputEvent 走
+        //   浏览器输入管线，与真人点击同源。代价是拿不到 pageChanged 判定 —— 游戏不需要。
+        if (args.fast === true && args.x != null && args.y != null) {
+          const fx = Number(args.x);
+          const fy = Number(args.y);
+          wc.sendInputEvent({ type: 'mouseDown', x: fx, y: fy, button: 'left', clickCount: 1 });
+          wc.sendInputEvent({ type: 'mouseUp', x: fx, y: fy, button: 'left', clickCount: 1 });
+          return { success: true, via: 'real-mouse', fast: true, x: fx, y: fy };
+        }
+        // ===FASTCLICK-END===
         const beforeClickDownloadSeq = downloadSeq;
         const clickResult = await wc.executeJavaScript(`(async function(){
           var a=${JSON.stringify(args)};
@@ -6937,6 +7129,41 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         await wc.sendInputEvent({ type: 'keyUp', keyCode: args.key });
         return { success: true };
       }
+      case 'run_loop': {
+        // P1：一次调用里连续执行一串真实输入。Esc 立即中止（before-input-event 捕获）。
+        if (!wc || wc.isDestroyed()) return { error: '浏览器未就绪（无 webContents）' };
+        let panic = false;
+        const onInput = (_e, input) => { try { if (input && input.key === 'Escape') panic = true; } catch (e) { /* ignore */ } };
+        try { wc.on('before-input-event', onInput); } catch (e) { /* ignore */ }
+        const io = {
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          keyDown: (k) => wc.sendInputEvent({ type: 'keyDown', keyCode: String(k) }),
+          keyUp: (k) => wc.sendInputEvent({ type: 'keyUp', keyCode: String(k) }),
+          mouseDown: (x, y) => wc.sendInputEvent({ type: 'mouseDown', x: Number(x), y: Number(y), button: 'left', clickCount: 1 }),
+          mouseUp: (x, y) => wc.sendInputEvent({ type: 'mouseUp', x: Number(x), y: Number(y), button: 'left', clickCount: 1 }),
+          mouseMove: (x, y) => wc.sendInputEvent({ type: 'mouseMove', x: Number(x), y: Number(y) }),
+          runScript: (script) => Promise.race([
+            wc.executeJavaScript(script),
+            new Promise((_resolve, reject) => setTimeout(() => reject(new Error('脚本执行超时（3s）')), 3000)),
+          ]),
+          http: async ({ url, method, body }) => {
+            const u = String(url || '');
+            if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//i.test(u)) {
+              throw new Error('http 步只允许 http://127.0.0.1 或 localhost（本地游戏桥，如 Minecraft mod / Mineflayer）');
+            }
+            const res = await fetch(u, {
+              method: String(method || 'POST').toUpperCase(),
+              headers: { 'Content-Type': 'application/json' },
+              body: body === undefined ? undefined : JSON.stringify(body),
+            });
+            const text = await res.text();
+            return { status: res.status, body: text.slice(0, 2000) };
+          },
+          isAborted: () => panic || !wc || wc.isDestroyed(),
+        };
+        try { return await executeRunLoop(args, io); }
+        finally { try { wc.removeListener('before-input-event', onInput); } catch (e) { /* ignore */ } }
+      }
       case 'scroll': {
         return await wc.executeJavaScript(`(function(){
           var a=${JSON.stringify(args)};
@@ -7108,6 +7335,132 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
         } finally {
           restoreCaptureVisibility();
         }
+      }
+      case 'observe': {
+        // ★ 读状态不读画面（2026-10-29）：游戏/实时场景的**文本观测**。
+        //   返回引擎探测 + 同源 iframe + canvas 尺寸 + 场景顶层节点 + 画布 12x8 网格中心色，
+        //   全部是文本 ⇒ 不花图像 token、不需要视觉模型，一步就能拿到状态。
+        //   截图保留给"需要认字/认图标"的场合。
+        return await wc.executeJavaScript(`(function(){
+          var out={frames:[],canvases:[],engines:[],nodes:null,grid:null,notes:[]};
+          function vis(el){try{var r=el.getBoundingClientRect();return r.width>=32&&r.height>=32&&r.bottom>0&&r.top<window.innerHeight;}catch(e){return false;}}
+          function hex(v){return ('0'+v.toString(16)).slice(-2);}
+          var KNOWN=[['cocos','cc'],['laya','Laya'],['phaser','Phaser'],['egret','egret'],['pixi','PIXI'],['createjs','createjs'],['unity','unityInstance']];
+          function probeWin(w,path){
+            if(!w)return;
+            for(var i=0;i<KNOWN.length;i++){
+              try{ if(w[KNOWN[i][1]]) out.engines.push(KNOWN[i][0]+'@'+path); }catch(e){}
+            }
+          }
+          probeWin(window,'top');
+          var ifs=document.querySelectorAll('iframe');
+          for(var i=0;i<ifs.length;i++){
+            var f=ifs[i],rec={i:i,same:false,src:''};
+            try{ rec.src=String(f.src||'').slice(0,120); }catch(e){}
+            try{ var d=f.contentDocument; if(d&&d.documentElement){ rec.same=true; probeWin(f.contentWindow,'iframe'+i); } }catch(e){}
+            out.frames.push(rec);
+          }
+          var cs=[];
+          function scanDoc(win,doc,path){
+            if(!doc)return;
+            var list=[].slice.call(doc.querySelectorAll('canvas'));
+            for(var i=0;i<list.length;i++){
+              var c=list[i]; if(!visIn(win,c).ok)continue;
+              var rec={p:path+'#canvas'+i,w:c.width,h:c.height,css:Math.round(visIn(win,c).w)+'x'+Math.round(visIn(win,c).h)};
+              cs.push({win:win,doc:doc,el:c,rec:rec});
+            }
+            try{
+              if(win.cc&&win.cc.director&&win.cc.director.getScene){
+                var sc=win.cc.director.getScene();
+                var cvEl=list.length?list[0]:null;
+                var r0=cvEl?cvEl.getBoundingClientRect():null;
+                var fr0=f?f.getBoundingClientRect():{left:0,top:0};
+                var cr=r0?{left:r0.left+fr0.left,top:r0.top+fr0.top,w:r0.width,h:r0.height}:null;
+                var view=win.cc.view,vr=null,sx=1,sy=1;
+                try{ vr=view.getViewportRect(); sx=view.getScaleX(); sy=view.getScaleY(); }catch(e){}
+                var items=[],seen=0;
+                function toPage(n){
+                  try{
+                    var p=n.convertToWorldSpaceAR(win.cc.v2(0,0));
+                    if(!vr||!cr)return {x:null,y:null};
+                    return {x:Math.round(cr.left+vr.x+p.x*sx), y:Math.round(cr.top+(cr.h-(vr.y+p.y*sy)))};
+                  }catch(e){ return {x:null,y:null}; }
+                }
+                function compsOf(n){ return (n&&(n._components||n.components))||[]; }
+                function labelOf(n){
+                  var cs=compsOf(n);
+                  for(var i=0;i<cs.length;i++){var c=cs[i];if(c&&typeof c.string==='string'&&c.string)return c.string;}
+                  return '';
+                }
+                function hasButton(n){
+                  var cs=compsOf(n);
+                  for(var i=0;i<cs.length;i++){
+                    var c=cs[i],nm=String((c&&(c.__classname__||(c.constructor&&c.constructor.name)))||'');
+                    if(nm.indexOf('Button')>=0)return true;
+                  }
+                  return false;
+                }
+                function walk(n,d){
+                  if(!n||d>8||items.length>=120)return;
+                  seen++;
+                  var lb=labelOf(n);
+                  var isBtn=hasButton(n)||/btn|button|login|start|close|ok|cancel|确定|登录|开始|关闭/i.test(String(n.name||''));
+                  if(lb||isBtn){
+                    var pos=toPage(n);
+                    items.push({d:d,name:String(n.name||''),label:String(lb).slice(0,24),btn:isBtn?1:0,
+                      act:n.active===false?0:1,x:pos.x,y:pos.y,
+                      w:n.width?Math.round(n.width):null,h:n.height?Math.round(n.height):null});
+                  }
+                  var ch2=n.children||[];
+                  for(var i=0;i<ch2.length;i++)walk(ch2[i],d+1);
+                }
+                walk(sc,0);
+                out.nodes={engine:'cocos@'+path,scene:sc&&sc.name,visited:seen,interactives:items,
+                  canvasRect:cr,viewport:vr,scale:{x:sx,y:sy}};
+              }else if(win.Laya&&win.Laya.stage){
+                var st=win.Laya.stage;
+                out.nodes={engine:'laya@'+path,count:st.numChildren,
+                  tops:(st._childs||[]).slice(0,10).map(function(n){return (n.name||'?')+'@'+Math.round(n.x)+','+Math.round(n.y);})};
+              }
+            }catch(e){ out.notes.push('场景摘要失败@'+path+':'+String((e&&e.message)||e).slice(0,60)); }
+          }
+          function visIn(win,el){
+            try{var r=el.getBoundingClientRect();
+              var ok=r.width>=32&&r.height>=32&&r.bottom>0&&r.top<(win.innerHeight||1080);
+              return {ok:ok,w:r.width,h:r.height};}catch(e){return {ok:false,w:0,h:0};}
+          }
+          scanDoc(window,document,'top');
+          for(var i=0;i<ifs.length;i++){
+            try{ var d2=ifs[i].contentDocument;
+              if(d2&&d2.documentElement) scanDoc(ifs[i].contentWindow,d2,'iframe'+i);
+            }catch(e){}
+          }
+          out.canvases=cs.map(function(x){return x.rec;});
+          // 网格采样：drawImage 缩到 12x8 再取色 —— WebGL canvas 也能取（getImageData 直读会因
+          // 上下文不是 2d 而返回 null），且比逐点 getImageData 便宜得多。
+          var primary=cs.filter(function(x){return x.rec.w>200&&x.rec.h>200;})[0]||cs[0];
+          if(primary){
+            try{
+              var COLS=12,ROWS=8;
+              var off=primary.doc.createElement('canvas'); off.width=COLS; off.height=ROWS;
+              var g=off.getContext('2d');
+              g.drawImage(primary.el,0,0,COLS,ROWS);
+              var rows=[];
+              for(var r=0;r<ROWS;r++){
+                var line='';
+                for(var c2=0;c2<COLS;c2++){
+                  var d=g.getImageData(c2,r,1,1).data;
+                  line+='#'+hex(d[0])+hex(d[1])+hex(d[2]);
+                  if(c2<COLS-1)line+=' ';
+                }
+                rows.push(line);
+              }
+              out.grid=rows;
+              out.gridFrom=primary.rec.p;
+            }catch(e){ out.notes.push('画布采样失败:'+String((e&&e.message)||e).slice(0,60)); }
+          }
+          return out;
+        })()`);
       }
       case 'get_page_info': {
         // 穿透 iframe / Shadow DOM 收集可交互元素并编号注册（含 iframe 内弹窗元素）
@@ -8417,7 +8770,13 @@ async function runBrowserAction(convId, tabId, action, args, flow) {
     //   ★ 超时**不会中断**已发出的 doAction（Promise.race 只是提前交还控制权），
     //     所以压窗口不会破坏操作本身，只让模型早十几秒知道"这页很慢"。
     const NAV_ACTIONS = new Set(['navigate']);
-    const actionTimeout = SLOW_ACTIONS.has(action) ? 60000 : (NAV_ACTIONS.has(action) ? 30000 : 15000);
+    // ★ run_loop（2026-10-29）：它自己带 maxSeconds，窗口必须比它长 ——
+    //   否则循环还在跑、上层先判 15s 超时，模型会以为失败并重试（重试 = 再跑一局）。
+    const runLoopTimeout = action === 'run_loop'
+      ? Math.min(Math.max(Number(args && args.maxSeconds) || 30, 1), 300) * 1000 + 5000
+      : 0;
+    const actionTimeout = runLoopTimeout
+      || (SLOW_ACTIONS.has(action) ? 60000 : (NAV_ACTIONS.has(action) ? 30000 : 15000));
     // ★★★ 桥路径串行执行（2026-10-14，见 chainBridgeAction 头注）：同 tab 上同一时刻只跑一个动作，
     //   消除"超时后 doAction 仍在跑、模型又发下一个"造成的并发打架。
     //   ★ 只对桥路径（convId 非空）加锁：渲染层路径已有 chainBrowserOp，且不该让用户点工具栏排队。
@@ -9345,9 +9704,8 @@ function finishSnip(result) {
 
 // ============================================================
 // 宠物伴星（2026-10-28）：透明置顶宠物窗
-// 形态与框选窗一致（transparent + alwaysOnTop + skipTaskbar），额外默认
-// setIgnoreMouseEvents(true,{forward:true})：不抢焦点、不吃点击，但渲染层仍能收到
-// mousemove —— 指针进入宠物/动作条矩形时再关穿透（forward 是 Windows 上做悬停的前提）。
+// 形态与框选窗一致（transparent + alwaysOnTop + skipTaskbar），默认穿透，靠主进程
+// 光标探针在宠物矩形内临时关掉（forward 转发在 Windows 上可能静默失效，不能只靠它）。
 // 状态由主窗口派生后经 IPC 推送（pet:sync），宠物窗不自己连 WS，避免双订阅。
 // ============================================================
 // ★ 宠物资源选择集（--pets）：打包时 set-edition 写进 edition.json.pets。
@@ -9370,6 +9728,75 @@ let petWindow = null;
 let petLastSync = null;
 let petLastSettings = null;
 
+/* 点击穿透 + 悬停（2026-10-29，参考 OpenPets / Coopanion 的做法）
+ * 默认 setIgnoreMouseEvents(true,{forward:true})：桌面点击穿透，只有宠物矩形可点。
+ * 但 forward 在 Windows 上会静默失效（快速重载 / 全屏切换后），渲染层再也收不到
+ * mousemove → 永久卡在穿透，右键/双击全部落到下层窗口。
+ * 因此穿透决策归主进程：光标探针每 100ms 用 screen.getCursorScreenPoint() 判断，
+ * 进入宠物矩形就关穿透，离开就重新 setIgnoreMouseEvents(true,{forward:true}) 重新武装。
+ * 渲染层只允许请求「可交互」（拖动时），不再能把窗口切回穿透，避免两边互相打架。 */
+const PET_HOVER_POLL_MS = 100;
+const PET_DRAG_GRACE_MS = 500;
+const PET_REARM_MS = 1000;
+let petHoverTimer = null;
+let petHoverInside = false;
+let petLastDragAt = 0;
+let petReArmAt = 0;
+/** dev 下把探针看到的「光标 vs 宠物窗矩形」写进 userData/pet-hover.log，便于真机排障 */
+const PET_HOVER_DEBUG = process.argv.includes('--dev') && !app.isPackaged;
+let petHoverLogPath = '';
+let petHoverLastLog = 0;
+function petHoverLog(line) {
+  if (!PET_HOVER_DEBUG) return;
+  try {
+    if (!petHoverLogPath) {
+      petHoverLogPath = path.join(app.getPath('userData'), 'pet-hover.log');
+      fs.writeFileSync(petHoverLogPath, '');
+    }
+    fs.appendFileSync(petHoverLogPath, line + '\n');
+  } catch {
+    /* 日志失败不影响功能 */
+  }
+}
+
+function stopPetHoverWatch() {
+  if (petHoverTimer) clearInterval(petHoverTimer);
+  petHoverTimer = null;
+  petHoverInside = false;
+}
+
+function startPetHoverWatch() {
+  stopPetHoverWatch();
+  petHoverLog(`# start scaleFactor=${(() => { try { return electronScreen.getPrimaryDisplay().scaleFactor; } catch { return '?'; } })()}`);
+  petHoverTimer = setInterval(() => {
+    if (!petWindow || petWindow.isDestroyed() || !petWindow.isVisible()) return;
+    try {
+      const p = electronScreen.getCursorScreenPoint();
+      const b = petWindow.getBounds();
+      const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+      // 拖动时光标可能瞬时出界：最近有过 move-by 就保持可交互，别把 pointerup 丢在外面
+      const want = inside || Date.now() - petLastDragAt < PET_DRAG_GRACE_MS;
+      const now = Date.now();
+      if (want !== petHoverInside) {
+        petHoverInside = want;
+        petWindow.setIgnoreMouseEvents(!want, { forward: true });
+        petReArmAt = now;
+        petHoverLog(`${new Date().toISOString()} toggle want=${want} cursor=${p.x},${p.y} bounds=${b.x},${b.y},${b.width},${b.height}`);
+      } else if (!want && now - petReArmAt > PET_REARM_MS) {
+        // 转发可能已静默失效：周期性重新武装，否则下次悬停收不到 move
+        petWindow.setIgnoreMouseEvents(true, { forward: true });
+        petReArmAt = now;
+      }
+      if (now - petHoverLastLog > 1000) {
+        petHoverLastLog = now;
+        petHoverLog(`${new Date().toISOString()} cursor=${p.x},${p.y} bounds=${b.x},${b.y},${b.width},${b.height} inside=${inside} want=${want}`);
+      }
+    } catch {
+      /* 显示器切换 / 窗口销毁瞬间忽略 */
+    }
+  }, PET_HOVER_POLL_MS);
+}
+
 /** 窗口最小宽度：任务面板 316px + 两侧留白（半圆菜单 96 半径、输入条 292 也放得下） */
 /**
  * 宠物窗 = 宠物本体（方案 B，2026-10-29）
@@ -9382,8 +9809,10 @@ function petWindowSize(settings) {
   const s = settings || {};
   const scale = Math.min(2, Math.max(0.5, Number(s.scale) || 1));
   const is3d = s.renderer === '3d';
+  // 2D 按帧宽高比算宽度：导入的图集可能不是 192×208，硬套 109px 会裁掉边缘
+  const aspect = Math.min(3, Math.max(0.2, Number(s.packAspect) || 192 / 208));
   return {
-    W: Math.round((is3d ? 190 : 109) * scale) + PET_BODY_PAD,
+    W: Math.round((is3d ? 190 : 118 * aspect) * scale) + PET_BODY_PAD,
     H: Math.round((is3d ? 280 : 118) * scale) + PET_BODY_PAD,
   };
 }
@@ -9435,11 +9864,30 @@ function applyPetSize(settings) {
 const PET_POPUP_SIZE = {
   radial: [268, 268],
   panel: [360, 320],
-  play: [400, 64],
+  play: [448, 64],
   ask: [380, 84],
   bubble: [340, 44],
+  // 形象托盘：一行 7 格（6 内置 + 导入），多了换行，最多两行
+  char: [430, 150],
+  // 工作目录（空间）列表
+  space: [300, 320],
 };
 const petPopups = new Map();
+/** 等渲染层画完首帧（pet:popup-ready）再显示，避免先闪一个空白窗 */
+function showPetPopup(kind) {
+  const win = petPopups.get(kind);
+  if (!win || win.isDestroyed() || win.isVisible()) return;
+  try {
+    // 气泡只展示、必须不抢焦点；其余弹层要能按 Esc、能打字，必须真聚焦
+    if (kind === 'bubble') win.showInactive();
+    else {
+      win.show();
+      win.focus();
+    }
+  } catch {
+    /* 显示失败下次点击再来 */
+  }
+}
 
 function petViewBaseUrl() {
   const devMode = process.argv.includes('--dev') && !app.isPackaged;
@@ -9486,14 +9934,18 @@ function positionPetPopup(kind, win) {
 
 function createPetPopup(kind) {
   const size = PET_POPUP_SIZE[kind];
+  petHoverLog(`popup-create kind=${kind} size=${!!size} petWin=${!!petWindow && !petWindow.isDestroyed()}`);
   if (!size) return null;
   const opened = petPopups.get(kind);
   if (opened && !opened.isDestroyed()) {
-    positionPetPopup(kind, opened);
-    try { opened.showInactive(); } catch {}
-    return opened;
+    // 再点一次同一个入口 = 收起（右键菜单/双击输入条都按开关处理）
+    petHoverLog(`popup-toggle-close ${kind}`);
+    closePetPopup(kind);
+    return null;
   }
   if (!petWindow || petWindow.isDestroyed()) return null;
+  // 弹层打开就让宠物停下，否则菜单跟着走、用户永远够不着
+  petWalkStop();
   const [W, H] = size;
   const win = new BrowserWindow({
     width: W, height: H, frame: false, transparent: true, backgroundColor: '#00000000',
@@ -9518,16 +9970,30 @@ function createPetPopup(kind) {
     try { win.webContents.send('pet:state', petLastSync); } catch {}
     if (petLastSettings) win.webContents.send('pet:settings', petLastSettings);
   });
-  // 失焦即收（输入条除外：用户可能要去主窗口粘贴）
-  if (kind !== 'ask') win.on('blur', () => { try { win.close(); } catch {} });
-  win.on('closed', () => { petPopups.delete(kind); });
+  // 点击外部才收：失焦时如果光标还停在弹层自身上，当作焦点抖动不关；
+  // 光标在别处（真点了别的地方，包括宠物本体）就关。输入条例外：用户要去主窗口粘贴。
+  // 点击外部才收：失焦时如果光标还停在弹层自身上，当作焦点抖动不关；
+  // 光标在别处（真点了别的地方）就关。输入条也一样收（用户要求：点别处应消失）。
+  {
+    win.on('blur', () => {
+      try {
+        const p = electronScreen.getCursorScreenPoint();
+        const b = win.getBounds();
+        const overPopup = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+        if (overPopup) return;
+        petHoverLog(`popup-outside-click ${kind}`);
+        win.close();
+      } catch {
+        /* 关不掉就算了，下一次点击再收 */
+      }
+    });
+  }
+  win.on('closed', () => { petHoverLog(`popup-closed ${kind}`); petPopups.delete(kind); });
   petPopups.set(kind, win);
   win.once('ready-to-show', () => {
-    try {
-      // 气泡只展示、必须不抢焦点；其余弹层要能按 Esc、能打字，必须真聚焦
-      if (kind === 'bubble') win.showInactive();
-      else { win.show(); win.focus(); }
-    } catch {}
+    petHoverLog(`popup-ready ${kind}`);
+    // 等渲染层画完第一帧再显示（它会发 pet:popup-ready）；这里只做兜底
+    setTimeout(() => showPetPopup(kind), 800);
   });
   return win;
 }
@@ -9535,6 +10001,9 @@ function createPetPopup(kind) {
 function closePetPopup(kind) {
   const w = petPopups.get(kind);
   if (!w || w.isDestroyed()) return;
+  // 关掉「正在聚焦」的弹层时，Windows 会把下一个窗口（主窗）顶到前台，
+  // 表现为「点一下动作，主页面冒出来」。先把焦点还给宠物窗再关。
+  try { if (petWindow && !petWindow.isDestroyed()) petWindow.focus(); } catch {}
   try { w.close(); } catch {}
   petPopups.delete(kind);
 }
@@ -9621,11 +10090,14 @@ function petWalkTick() {
   const remain = petWalk.targetX - b.x;
   if (Math.abs(remain) <= step) {
     petWindow.setPosition(Math.round(petWalk.targetX), b.y);
+    repositionPetPopups();
     petWalkStop();
     return;
   }
   const nx = Math.max(minX, Math.min(maxX, b.x + Math.sign(remain) * step));
   petWindow.setPosition(Math.round(nx), b.y);
+  // 程序化移动不会触发 'moved'，弹层要手动跟一步，否则会甩在宠物后面
+  if (petPopups.size) repositionPetPopups();
 }
 
 /** 起走：先贴到当前屏底边，再沿底边随机走 120~420px；贴边时改向 */
@@ -9694,7 +10166,9 @@ function createPetWindow() {
   });
   // 任务栏是更高层的置顶窗：要能压住它必须用 screen-saver 级（真机实测 floating 会被任务栏盖住）
   petWindow.setAlwaysOnTop(true, 'screen-saver');
+  // 默认穿透，由光标探针在宠物矩形内临时关掉（见上方说明）
   petWindow.setIgnoreMouseEvents(true, { forward: true });
+  startPetHoverWatch();
   try { petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
 
   const devMode = process.argv.includes('--dev') && !app.isPackaged;
@@ -9712,6 +10186,7 @@ function createPetWindow() {
   ['show', 'hide', 'minimize', 'restore', 'focus', 'blur'].forEach((ev) => petWindow.on(ev, sendPetWinState));
   petWindow.on('hide', () => { petWalkStop(); closeAllPetPopups(); });
   petWindow.on('closed', () => {
+    stopPetHoverWatch();
     petWalkStop();
     closeAllPetPopups();
     petWindow = null;
@@ -9730,6 +10205,7 @@ function createPetWindow() {
 function togglePetWindow() {
   const open = !!(petWindow && !petWindow.isDestroyed());
   if (open) { try { petWindow.close(); } catch {} return false; }
+  if (!PET_ASSETS_AVAILABLE) return false; // 本包未随带宠物资源：入口降级隐藏
   createPetWindow();
   return true;
 }
@@ -9756,7 +10232,7 @@ function syncPetHotkey(enabled) {
 
 // Alt+P 常驻：宠物关着时也必须能叫出来，所以不按 enabled 门控
 app.whenReady().then(() => {
-  syncPetHotkey(true);
+  syncPetHotkey(PET_ASSETS_AVAILABLE);
 
   // 换/拔显示器、改分辨率：把宠物收回最近一块屏的可视区（多显示器钳位的实测入口）
   const reclampPet = () => {
@@ -9825,12 +10301,15 @@ ipcMain.handle('pet:import-pack', async (_e, payload) => {
     const data = payload && payload.data;
     const manifest = payload && payload.manifest;
     if (!id || !data || !manifest) return { ok: false, msg: '参数不完整' };
+    // 图集是原样存盘（png/jpg/webp），GIF/单图已由渲染层拍平成单行 webp
+    const ext = ['webp', 'png', 'jpg', 'gif'].includes(String(payload.ext || '')) ? String(payload.ext) : 'webp';
     const dir = path.join(userPacksRoot(), id);
     fs.mkdirSync(dir, { recursive: true });
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     if (buf.length > 24 * 1024 * 1024) return { ok: false, msg: '图片过大（上限 24MB）' };
-    fs.writeFileSync(path.join(dir, 'sheet.webp'), buf);
-    const out = { ...manifest, id, file: 'sheet.webp', createdAt: Date.now() };
+    const file = 'sheet.' + ext;
+    fs.writeFileSync(path.join(dir, file), buf);
+    const out = { ...manifest, id, file, createdAt: Date.now() };
     fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(out, null, 2));
     return { ok: true, pack: out };
   } catch (err) {
@@ -9840,9 +10319,16 @@ ipcMain.handle('pet:import-pack', async (_e, payload) => {
 ipcMain.handle('pet:read-pack-asset', async (_e, id) => {
   try {
     const dir = path.join(userPacksRoot(), safePackId(id));
-    const file = path.join(dir, 'sheet.webp');
-    if (!fs.existsSync(file)) return { ok: false, msg: '形象文件不存在' };
-    return { ok: true, data: fs.readFileSync(file) };
+    // manifest.file 是真相源（老包没有 file 字段时按 sheet.webp 兼容）
+    let file = '';
+    try {
+      const m = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+      if (m && typeof m.file === 'string' && /^sheet\.(webp|png|jpg|gif)$/.test(m.file)) file = m.file;
+    } catch { /* 缺 manifest 走兼容路径 */ }
+    if (!file) file = 'sheet.webp';
+    const full = path.join(dir, file);
+    if (!fs.existsSync(full)) return { ok: false, msg: '形象文件不存在' };
+    return { ok: true, data: fs.readFileSync(full), file };
   } catch (err) {
     return { ok: false, msg: String((err && err.message) || err) };
   }
@@ -9859,7 +10345,26 @@ ipcMain.handle('pet:delete-pack', async (_e, id) => {
 });
 
 ipcMain.on('pet:popup-open', (_e, kind) => {
+  petHoverLog(`popup-ipc kind=${kind}`);
   try { createPetPopup(String(kind || '')); } catch (err) { console.warn('[pet] 弹层打开失败:', err && err.message); }
+});
+ipcMain.on('pet:popup-ready', (_e, kind) => {
+  // 渲染层画完首帧：现在才显示窗口，避免先闪一个空白窗
+  showPetPopup(String(kind || ''));
+});
+ipcMain.on('pet:popup-resize', (_e, kind, w, h) => {
+  const win = petPopups.get(String(kind || ''));
+  if (!win || win.isDestroyed()) return;
+  const W = Math.max(160, Math.min(800, Number(w) || 0));
+  const H = Math.max(44, Math.min(600, Number(h) || 0));
+  try {
+    const b = win.getBounds();
+    if (b.width === W && b.height === H) return;
+    // 底部锚点不动：向上长高
+    win.setBounds({ x: b.x, y: b.y + (b.height - H), width: W, height: H });
+  } catch {
+    /* 尺寸调整失败不影响使用 */
+  }
 });
 ipcMain.on('pet:popup-close', (_e, kind) => {
   try { closePetPopup(String(kind || '')); } catch {}
@@ -9918,10 +10423,15 @@ ipcMain.on('pet:request-sync', () => {
   try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pet:need-sync'); } catch {}
 });
 ipcMain.on('pet:set-interactive', (_e, on) => {
-  try { if (petWindow && !petWindow.isDestroyed()) petWindow.setIgnoreMouseEvents(!on, { forward: true }); } catch {}
+  // 只接受「我要可交互」（拖动时）；切回穿透由主进程光标探针决定，
+  // 否则渲染层在转发失效时会把窗口永久留在穿透态。
+  try {
+    if (on && petWindow && !petWindow.isDestroyed()) petWindow.setIgnoreMouseEvents(false);
+  } catch {}
 });
 ipcMain.on('pet:move-by', (_e, dx, dy) => {
   try {
+    petLastDragAt = Date.now();
     if (!petWindow || petWindow.isDestroyed()) return;
     // 拖动期间窗位置归用户：先停踱步，免得两边抢位置
     petWalkStop();
@@ -9934,6 +10444,8 @@ ipcMain.on('pet:move-by', (_e, dx, dy) => {
       h
     );
     petWindow.setPosition(Math.round(next.x), Math.round(next.y));
+    // 拖拽同理会绕过 'moved'：弹层跟着走
+    if (petPopups.size) repositionPetPopups();
   } catch {}
 });
 // 沿屏幕底边踱步：渲染层只发"开始/停下"，位移由主进程算
@@ -10539,6 +11051,14 @@ const DISABLE_FEATURES = ['WebRtcHideLocalIpsWithMdns'];
 if (process.platform === 'win32') DISABLE_FEATURES.push('CalculateNativeWinOcclusion');
 // ★ 只调一次 appendSwitch：同一个 key 再调会覆盖前一次的值（早期两处分开写会把对方抹掉）
 app.commandLine.appendSwitch('disable-features', DISABLE_FEATURES.join(','));
+// ★ 远控画面定格（2026-10-27 复盘）：被控端窗口被其它应用全屏盖住时，Chromium 会把
+//   遮挡窗口的渲染器降级/暂停 —— 主窗口里的 getDisplayMedia 采集与 WebRTC 编码同时停摆，
+//   控制端画面就定格在最后一帧（用户体感是「完全控制不了」，实际注入仍在真实桌面生效）。
+//   CalculateNativeWinOcclusion 在新版 Chromium 已不是可靠开关，这里补三条通用启动参数，
+//   保证被遮挡时仍全速渲染、定时器照跑（远控期间主窗口必然可能被盖住）。
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
 // 单实例锁：确保**同一实例**同一时间只有一个进程，避免安装新版本后旧进程残留导致数据冲突。
 //
@@ -10615,41 +11135,71 @@ app.whenReady().then(async () => {
     } catch { /* 纯日志 */ }
   }
 
-  // ── 渲染进程心跳看门狗（2026-10-19，阈值 2026-10-24 调整）──────────────
-  //   实测：长任务/长会话会把渲染进程主线程占死，界面点击完全无响应（CDP 都进不去）。
-  //   渲染层每 2s 发一次心跳；收不到就自动重载窗口。后端任务不受影响，
-  //   重载后前端会重连 SSE；比永久冻结、只能杀进程好。
+  // ── 渲染进程存活看门狗（2026-10-19；2026-10-27 改为「主动探活」）──────────────
+  //   旧设计（已废弃）：渲染层 setInterval 每 2s 发心跳，主进程收不到就判定卡死并 reload。
+  //   ✗ 自己和自己打架：定时器**本身**会被 Chromium 节流（窗口被遮挡/切后台 5 分钟后
+  //     clamped 到 1 分钟），于是"定时器停了"被当成"主线程卡死"——
+  //     2026-10-27 日志里两次 46~47s 误重载（同期主进程、guest、消息量全部正常）就是它。
+  //   ⇒ 判活信号必须是**不可被节流**的：主进程定期 executeJavaScript('1')，它排在渲染
+  //     主线程任务队列上（不是定时器），能跑就说明线程活着；真卡死才会超时。
   //
-  // ★ 15s → 45s（2026-10-24）：两千多条消息的会话首屏渲染要 16~35s（日志里 18 次
-  //   「心跳停止 15xxx~35209ms」全是这种情况），15s 阈值把「只是在忙」误判成「已卡死」，
-  //   于是重载 → 又从头渲染 → 再被判定卡死，自己把自己锁进 30s 一轮的重载循环。
-  //   45s 只拦真卡死（实测真卡死会一直不恢复），正常渲染能自己走完。
-  //   冷却同步放到 60s，避免极端情况下仍出现连续重载。
-  const RENDERER_HEARTBEAT_STALE_MS = 45000;
+  //   判据：连续探活失败 ≥45s 才 reload —— 保住 2026-10-24 的原结论「长渲染 16~35s
+  //   只是忙、不是死」（单次探测超时只说明这 5s 在忙，重置条件是有一次成功返回）。
+  //   冷却 60s，避免极端情况下连续重载。
+  const RENDERER_PROBE_EVERY_MS = 10000;
+  const RENDERER_PROBE_TIMEOUT_MS = 5000;
+  const RENDERER_DEAD_AFTER_MS = 45000;
   const RENDERER_RELOAD_COOLDOWN_MS = 60000;
-  const rendererLastBeat = new Map();
+  const rendererProbing = new Set();
+  const rendererDeadSince = new Map();
   let lastRendererReloadAt = 0;
-  ipcMain.on('yz:renderer-heartbeat', (e) => {
-    try { rendererLastBeat.set(e.sender.id, Date.now()); } catch { /* ignore */ }
-  });
+
+  /** 渲染主线程是否还活着：executeJavaScript 走主线程任务队列，不受定时器节流影响 */
+  function probeRendererAlive(wc) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (alive) => { if (!done) { done = true; resolve(alive); } };
+      const timer = setTimeout(() => finish(false), RENDERER_PROBE_TIMEOUT_MS);
+      try {
+        wc.executeJavaScript('1', true)
+          .then(() => { clearTimeout(timer); finish(true); })
+          .catch(() => { clearTimeout(timer); finish(false); });
+      } catch {
+        clearTimeout(timer);
+        finish(false);
+      }
+    });
+  }
+
   setInterval(() => {
-    const now = Date.now();
     for (const win of BrowserWindow.getAllWindows()) {
-      if (win === splashWindow) continue;                       // splash 没有心跳，不参与
+      if (win === splashWindow) continue;                       // splash 不参与
       if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-      if (win.isMinimized() || !win.isVisible()) continue;      // 后台节流不是卡死
+      if (win.isMinimized() || !win.isVisible()) continue;      // 用户没在看，不折腾
       const wc = win.webContents;
-      if (!wc.getURL() || wc.isLoading()) continue;             // 启动/加载中不算卡死
-      const last = rendererLastBeat.get(wc.id);
-      if (!last) { rendererLastBeat.set(wc.id, now); continue; }
-      if (now - last <= RENDERER_HEARTBEAT_STALE_MS) continue;
-      if (now - lastRendererReloadAt < RENDERER_RELOAD_COOLDOWN_MS) continue;
-      lastRendererReloadAt = now;
-      rendererLastBeat.set(wc.id, now);
-      console.warn(`[watchdog] 渲染进程 ${wc.id} 心跳停止 ${now - last}ms → 自动重载窗口`);
-      try { wc.reload(); } catch (err) { console.warn('[watchdog] reload 失败:', err && err.message); }
+      if (!wc.getURL() || wc.isLoading()) continue;             // 启动/加载中不判定
+      if (rendererProbing.has(wc.id)) continue;                 // 上一次探测还没回来
+      rendererProbing.add(wc.id);
+      void probeRendererAlive(wc).then((alive) => {
+        rendererProbing.delete(wc.id);
+        try {
+          if (wc.isDestroyed()) return;
+          if (alive) { rendererDeadSince.delete(wc.id); return; } // 活着：清空连续失败计时
+          const since = rendererDeadSince.get(wc.id) || Date.now();
+          rendererDeadSince.set(wc.id, since);
+          const deadFor = Date.now() - since;
+          if (deadFor < RENDERER_DEAD_AFTER_MS) return;         // 还在"可能只是忙"的窗口内
+          if (Date.now() - lastRendererReloadAt < RENDERER_RELOAD_COOLDOWN_MS) return;
+          lastRendererReloadAt = Date.now();
+          rendererDeadSince.delete(wc.id);
+          console.warn(`[watchdog] 渲染进程 ${wc.id} 连续 ${deadFor}ms 无响应 → 自动重载窗口`);
+          wc.reload();
+        } catch (err) {
+          console.warn('[watchdog] reload 失败:', err && err.message);
+        }
+      });
     }
-  }, 3000).unref?.();
+  }, RENDERER_PROBE_EVERY_MS).unref?.();
   if (process.platform === 'win32') {
     // ★ Windows 任务栏图标（2026-10-05 定案）：任务栏按钮图标 = **窗口 icon**（WM_SETICON）。
     //   千万不要给 dev 设自定义 AUMID —— 自定义 AUMID 没有开始菜单快捷方式时，Explorer
@@ -10701,11 +11251,13 @@ app.whenReady().then(async () => {
 
   // 远程控制（remote-control 插件）：被控端画面采集授权。
   // 渲染层（Web UI）走 getDisplayMedia 触发本 handler，由主进程挑「选中的显示器整屏」源
-  // （rcCaptureDisplayId 为空 = 主显示器；多显示器选择来自被控端确认弹窗/控制端会话中切换），
+  // （rcCaptureSource 为空 = 主显示器；多显示器选择来自被控端确认弹窗/控制端会话中切换），
   // Windows 上附带系统声音回采（audio:'loopback'，不含麦克风）——远控音频转发即由
   // 同一条 WebRTC 连接的音频轨道承载。控制端权限由插件配对/白名单把守，本 handler
   // 只在渲染层真的发起 getDisplayMedia 时触发（正常浏览不受影响）。
-  let rcCaptureDisplayId = '';
+  let rcCaptureSource = '';       // 渲染层选择的采集目标：sourceId("screen:0:0") 优先，兼容裸 displayId
+  let rcCapturedDisplayId = '';   // 最近一次实际采集到的 displayId（回推渲染层，保证几何与画面一致）
+  let rcCapturedSourceId = '';
   // ★ 2026-10-26：选区录屏（用户从浏览器面板「更多」菜单发起）—— 框选完成时记录选区所在的显示器，
   //   渲染层随后 getDisplayMedia，本 handler 优先给这一块屏（否则多屏时会录错屏）。
   //   只消费一次，避免影响远控链路后续的选屏。
@@ -10716,21 +11268,24 @@ app.whenReady().then(async () => {
   });
   (function installDisplayMediaHandler() {
     try {
-      session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+      session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
         desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
           if (!sources || !sources.length) {
             callback({});
             return;
           }
           let picked = null;
-          if (rcCaptureDisplayId) {
-            picked = sources.find((s) => String(s.display_id) === rcCaptureDisplayId) || null;
+          if (rcCaptureSource) {
+            // sourceId 精确命中优先；再退回 display_id（兼容只传裸 id 的旧调用）
+            picked = sources.find((s) => s.id === rcCaptureSource)
+              || sources.find((s) => String(s.display_id) === rcCaptureSource)
+              || null;
             // ★ 选中的显示器枚举不到（休眠恢复/热插拔后 desktopCapturer 重建 id）：
-            //   不能静默回采主屏 —— 控制端画面会「切到副屏却还是主屏内容」，
-            //   注入坐标按副屏算，表现为点哪都偏、像失效。清空选择回主屏并明示。
-            if (!picked && rcCaptureDisplayId) {
-              console.warn('[remote-control] 选中的显示器不在采集清单里，回退主屏:', rcCaptureDisplayId);
-              rcCaptureDisplayId = '';
+            //   不能静默回采主屏 —— 控制端会「下拉显示副屏、画面还是主屏」，注入坐标按
+            //   副屏算，表现为点哪都偏。这里清空选择，渲染层读 rc:captured-display 回正并提示。
+            if (!picked) {
+              console.warn('[remote-control] 选中的显示器不在采集清单里，回退主屏:', rcCaptureSource);
+              rcCaptureSource = '';
             }
           }
           if (!picked && snipCaptureDisplayId) {
@@ -10744,8 +11299,16 @@ app.whenReady().then(async () => {
             } catch { /* ignore */ }
           }
           const video = picked || sources[0];
+          // 实际采集目标：渲染层据此回正下拉框，并作为 rtc.screen 的几何来源
+          rcCapturedSourceId = video ? video.id : '';
+          rcCapturedDisplayId = video ? String(video.display_id || '') : '';
           const isWin = process.platform === 'win32';
-          callback(isWin ? { video, audio: 'loopback' } : { video });
+          // ★ 只在请求方真要音频时才附带 loopback。
+          //   实测（2026-10-28，Chromium 152）：一旦同时提供系统声音，Chromium 会忽略我们
+          //   选中的显示器、统一回主屏 —— 切副屏永远只看到主屏。控制端现在把音视频分开取，
+          //   视频那次不带音频，这里自然也不能给。
+          const wantAudio = request.audioRequested !== false;
+          callback(isWin && wantAudio ? { video, audio: 'loopback' } : { video });
         }).catch(() => callback({}));
       });
       console.log('[remote-control] display media handler 已注册');
@@ -10762,12 +11325,26 @@ app.whenReady().then(async () => {
       const displays = electronScreen.getAllDisplays();
       const primary = electronScreen.getPrimaryDisplay();
       const names = {};
+      // display_id → desktopCapturer 的 source id（"screen:0:0"）。
+      // ★ 部分 Windows/高 DPI 环境下 source.display_id 为空串，只按 display_id 匹配会
+      //   永远落空 → 切副屏时静默回采主屏（控制端下拉显示副屏、画面还是主屏）。
+      //   渲染层拿 sourceId 回传，采集 handler 直接按 source.id 命中，绕开这个坑。
+      const sourceByDisplay = {};
+      let sourcesOrdered = [];
       try {
         const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
-        for (const s of sources) names[String(s.display_id)] = s.name;
+        sourcesOrdered = sources || [];
+        for (const s of sources) {
+          const did = String(s.display_id || '');
+          if (did) {
+            names[did] = s.name;
+            sourceByDisplay[did] = s.id;
+          }
+        }
       } catch { /* 名字拿不到就用「显示器 N」兜底 */ }
       const list = displays.map((d, i) => ({
         id: String(d.id),
+        sourceId: sourceByDisplay[String(d.id)] || '',
         label: names[String(d.id)] || '显示器 ' + (i + 1),
         primary: d.id === primary.id,
         x: Math.round(d.bounds.x * d.scaleFactor),
@@ -10775,6 +11352,12 @@ app.whenReady().then(async () => {
         w: Math.round(d.bounds.width * d.scaleFactor),
         h: Math.round(d.bounds.height * d.scaleFactor),
       }));
+      // ★ display_id 为空的环境（部分 Windows / 高 DPI）按枚举顺序补齐：
+      //   getSources 与 getAllDisplays 通常同序。缺这个兜底时 sourceId 全空，
+      //   渲染层据此判定「拿不到采集源」→ WebRTC 直接不建（2026-10-28 实报黑屏）。
+      list.forEach((item, i) => {
+        if (!item.sourceId && sourcesOrdered[i]) item.sourceId = sourcesOrdered[i].id;
+      });
       return { ok: true, displays: list };
     } catch (e) {
       return { ok: false, error: e && e.message };
@@ -11126,10 +11709,11 @@ app.whenReady().then(async () => {
     refreshTrayMenu();
     return { ok: true };
   });
-  // 托盘「一键断开」→ 渲染层（host WS 在那里）→ 插件 session.stop {all:true}
+  // 托盘「一键断开」→ 持有 host WS 的窗口（阶段 1 起是采集窗口，不再固定主窗口）
   ipcMain.on('rc:disconnect-all', () => {
+    const target = (rcCaptureWindow && !rcCaptureWindow.isDestroyed()) ? rcCaptureWindow : mainWindow;
     try {
-      mainWindow?.webContents?.send('rc:disconnect-all');
+      target?.webContents?.send('rc:disconnect-all');
     } catch { /* ignore */ }
   });
 
@@ -11375,6 +11959,39 @@ app.whenReady().then(async () => {
       `connect-src 'self' blob: ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
       `frame-src 'self' ${API_ORIGIN} http://localhost:${API_PORT};`;
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    // ★ capture.html 豁免 CSP：其内联自愈脚本（模块加载失败 4s 重载）被 script-src 'self'
+    //   拦截（2026-10-28 日志实锤 capture.html:22 CSP ERROR）。采集窗口是纯内部页，
+    //   不加载第三方内容，豁免不引入安全面。
+    if (/[\\/]capture\.html/.test(details.url)) {
+      callback({});
+      return;
+    }
+    // ★★★ 2026-10-28：HTML **产物**走单独的受限 CSP（不沿用应用 CSP）。
+    //   背景：产物预览此前用 iframe srcdoc，而 srcdoc 文档**继承父窗口 CSP** ——
+    //   `script-src 'self'` 把产物里的内联脚本全拦掉，带 JS 的原型（切换按钮、图表）
+    //   在预览里点不动、局部空白（实测：srcdoc 内联脚本 BLOCKED）。改成用 URL 加载后，
+    //   这份 document 有自己的 CSP，可以按产物需要放宽，同时**收紧**到够用为止：
+    //   只放开脚本/样式与图片，禁掉 frame/form/base，连接只允许 http(s)（无 file:）。
+    //   ★ 仍然跑在 sandbox="allow-scripts"（无 allow-same-origin）的 iframe 里 ——
+    //     产物脚本拿不到应用上下文与存储。
+    if (/\/file-stream\?/i.test(details.url) && /\.html?(?:&|$)/i.test(details.url)) {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [
+            "default-src 'none'; "
+            + "script-src 'unsafe-inline' 'unsafe-eval' https:; "
+            + "style-src 'unsafe-inline' https:; "
+            + 'img-src data: blob: https: http:; '
+            + 'media-src data: blob: https: http:; '
+            + 'font-src data: https:; '
+            + 'connect-src https: http:; '
+            + "base-uri 'none'; form-action 'none'; frame-src 'none';",
+          ],
+        },
+      });
+      return;
+    }
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -11523,14 +12140,15 @@ app.whenReady().then(async () => {
           click: () => { try { mainWindow?.webContents?.send('rc:disconnect-all'); } catch { /* ignore */ } },
         }] : []),
         { type: 'separator' },
-        {
-          // 宠物伴星（2026-10-28）：托盘是隐藏宠物后的兜底出口
+        // 宠物伴星（2026-10-28）：托盘是隐藏宠物后的兜底出口。
+        // 本包未随带宠物资源（--pets 未选）时整项隐藏，不留一个点了没反应的入口。
+        ...(PET_ASSETS_AVAILABLE ? [{
           label: (petWindow && !petWindow.isDestroyed()) ? '隐藏宠物' : '显示宠物',
           click: () => {
             togglePetWindow();
             try { updateTrayMenu(); } catch {}
           },
-        },
+        }] : []),
         {
           label: '退出',
           click: () => { isQuitting = true; app.quit(); },
@@ -11584,36 +12202,333 @@ app.on('before-quit', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
-    // ★ capture.html 豁免 CSP：其内联自愈脚本（模块加载失败 4s 重载）被 script-src 'self'
-    //   拦截（2026-10-28 日志实锤 capture.html:22 CSP ERROR）。采集窗口是纯内部页，
-    //   不加载第三方内容，豁免不引入安全面。
-    if (/[\\/]capture\.html/.test(details.url)) {
-      callback({});
-      return;
-    }
-    // ★★★ 2026-10-28：HTML **产物**走单独的受限 CSP（不沿用应用 CSP）。
-    //   背景：产物预览此前用 iframe srcdoc，而 srcdoc 文档**继承父窗口 CSP** ——
-    //   `script-src 'self'` 把产物里的内联脚本全拦掉，带 JS 的原型（切换按钮、图表）
-    //   在预览里点不动、局部空白（实测：srcdoc 内联脚本 BLOCKED）。改成用 URL 加载后，
-    //   这份 document 有自己的 CSP，可以按产物需要放宽，同时**收紧**到够用为止：
-    //   只放开脚本/样式与图片，禁掉 frame/form/base，连接只允许 http(s)（无 file:）。
-    //   ★ 仍然跑在 sandbox="allow-scripts"（无 allow-same-origin）的 iframe 里 ——
-    //     产物脚本拿不到应用上下文与存储。
-    if (/\/file-stream\?/i.test(details.url) && /\.html?(?:&|$)/i.test(details.url)) {
-      callback({
-        responseHeaders: {
-          ...details.responseHeaders,
-          'Content-Security-Policy': [
-            "default-src 'none'; "
-            + "script-src 'unsafe-inline' 'unsafe-eval' https:; "
-            + "style-src 'unsafe-inline' https:; "
-            + 'img-src data: blob: https: http:; '
-            + 'media-src data: blob: https: http:; '
-            + 'font-src data: https:; '
-            + 'connect-src https: http:; '
-            + "base-uri 'none'; form-action 'none'; frame-src 'none';",
-          ],
-        },
+
+// ============================================================
+// 插件桌面窗口 + 桌面外壳（openspec/changes/desktop-manager P0-0）
+//
+// 通用能力，不含桌面整理业务。插件本体（.yzp）通过 preload 暴露的
+// electronAPI.pluginWindow / electronAPI.desktopShell 使用。
+// 安全边界：
+//  · 入口只允许调用方插件自己的 yz://plugin/<id>/ 包内 .html（resolvePluginWindowRequest）
+//  · 清单必须声明 desktop-shell 权限
+//  · 图标显隐是全局态 → 会话状态机 + 退出/窗口关闭兜底恢复（不依赖插件自觉）
+// ============================================================
+const pluginWindows = new Map();
+const iconSession = createIconSession();
+let desktopHelperPath = null;
+let desktopHelperTried = false;
+
+async function ensureDesktopHelper() {
+  if (desktopHelperPath || desktopHelperTried) return desktopHelperPath;
+  desktopHelperTried = true;
+  if (process.platform !== 'win32') return null;
+  try {
+    const dir = path.join(app.getPath('userData'), 'bin');
+    // v2：新增 --foreground（悬浮层全屏自动隐藏）。改名让老 exe 自动重编。
+    const exe = path.join(dir, 'yz-desktop-v2.exe');
+    if (fs.existsSync(exe)) { desktopHelperPath = exe; return exe; }
+    const csc = [
+      'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
+      'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe',
+    ].find((p) => fs.existsSync(p));
+    if (!csc) { console.warn('[desktop-shell] 未找到 csc.exe，桌面外壳能力不可用'); return null; }
+    fs.mkdirSync(dir, { recursive: true });
+    const srcPath = path.join(dir, 'yz-desktop-v2.cs');
+    fs.writeFileSync(srcPath, DESKTOP_HELPER_CS, 'utf8');
+    await new Promise((resolve, reject) => {
+      execFile(csc, ['/nologo', '/out:' + exe, srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {
+        if (err) reject(new Error((se || err.message || '').trim()));
+        else resolve(true);
       });
-      return;
+    });
+    desktopHelperPath = exe;
+  } catch (e) {
+    console.warn('[desktop-shell] Win32 助手编译失败:', e && e.message ? e.message : e);
+  }
+  return desktopHelperPath;
+}
+
+function runDesktopHelper(args) {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') { resolve({ ok: false, error: 'unsupported-platform' }); return; }
+    ensureDesktopHelper().then((exe) => {
+      if (!exe) { resolve({ ok: false, error: 'helper-unavailable' }); return; }
+      execFile(exe, args, { timeout: 8000, windowsHide: true }, (err, stdout) => {
+        const data = parseHelperLine(stdout);
+        resolve({
+          ok: !err && !!data,
+          data,
+          error: err ? String(err.message || err) : undefined,
+        });
+      });
+    }).catch((e) => resolve({ ok: false, error: String(e && e.message ? e.message : e) }));
+  });
+}
+
+/** 目标显示器矩形 + 入参矩形钳制（不越出该显示器） */
+function pluginWindowRect(opts) {
+  const displays = electronScreen.getAllDisplays();
+  const wanted = opts && opts.displayId != null ? String(opts.displayId) : null;
+  const display = (wanted && displays.find((d) => String(d.id) === wanted)) || electronScreen.getPrimaryDisplay();
+  const b = display.bounds;
+  const r = opts && opts.rect && typeof opts.rect === 'object' ? opts.rect : {};
+  const pick = (v, min, max, dflt) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return dflt;
+    return Math.min(max, Math.max(min, Math.round(n)));
+  };
+  const w = pick(r.w != null ? r.w : r.width, 64, b.width, b.width);
+  const h = pick(r.h != null ? r.h : r.height, 64, b.height, b.height);
+  return {
+    x: pick(r.x, b.x, b.x + b.width - w, b.x),
+    y: pick(r.y, b.y, b.y + b.height - h, b.y),
+    width: w,
+    height: h,
+  };
+}
+
+function notifyMainWindow(event, payload) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('plugin-window:' + event, payload);
     }
+  } catch { /* 主窗口可能正在销毁 */ }
+}
+
+function desktopRoots() {
+  const roots = [];
+  try { roots.push(app.getPath('desktop')); } catch { /* ignore */ }
+  if (process.platform === 'win32' && process.env.PUBLIC) {
+    roots.push(path.join(process.env.PUBLIC, 'Desktop'));
+  }
+  return roots;
+}
+
+function isDesktopPath(p) {
+  const q = path.resolve(String(p || ''));
+  return desktopRoots().some((root) => {
+    const b = path.resolve(root);
+    return q === b || q.startsWith(b + path.sep);
+  });
+}
+
+ipcMain.handle('plugin-window:open', async (_e, opts = {}) => {
+  try {
+    const dirs = resolveDirsFor({
+      mainDir: __dirname,
+      resourcesPath: process.resourcesPath,
+      isPackaged: app.isPackaged,
+    });
+    const v = resolvePluginWindowRequest(dirs, opts);
+    if (!v.ok) return v;
+
+    if (v.placement === 'desktop') {
+      const spawned = await runDesktopHelper(['--spawn-workerw']);
+      if (!spawned.data || !spawned.data.workerW) {
+        return { ok: false, error: 'worker-w-not-found' };
+      }
+    }
+
+    const rect = pluginWindowRect(opts);
+    const transparent = opts.transparent !== false && v.placement !== 'normal';
+    const win = new BrowserWindow({
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      frame: false,
+      transparent,
+      backgroundColor: transparent ? '#00000000' : '#1D1D1C',
+      show: false,
+      skipTaskbar: true,
+      resizable: opts.resizable === true,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      hasShadow: false,
+      focusable: opts.focusable !== false && v.placement !== 'overlay',
+      alwaysOnTop: v.placement === 'overlay',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.cjs'),
+        nodeIntegration: false,
+        contextIsolation: true,
+        backgroundThrottling: false,
+      },
+    });
+
+    const windowId = 'pw-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+    win.on('closed', () => {
+      pluginWindows.delete(windowId);
+      notifyMainWindow('closed', { windowId });
+      const hasDesktop = [...pluginWindows.values()].some((r) => r.placement === 'desktop');
+      if (!hasDesktop) void restoreIcons('last-desktop-window-closed');
+    });
+
+    await win.loadURL(v.url);
+
+    if (v.placement === 'desktop') {
+      const handle = win.getNativeWindowHandle();
+      const hwnd = handle.length >= 8
+        ? handle.readBigUInt64LE(0).toString()
+        : String(handle.readUInt32LE(0));
+      const pin = await runDesktopHelper(['--pin', hwnd]);
+      if (!pin.data || !pin.data.ok) {
+        try { win.destroy(); } catch { /* ignore */ }
+        return { ok: false, error: 'pin-failed', detail: pin.data || pin.error || null };
+      }
+    }
+
+    if (opts.clickThrough === true) {
+      win.setIgnoreMouseEvents(true, { forward: true });
+    }
+    pluginWindows.set(windowId, { win, pluginId: v.pluginId, placement: v.placement });
+    if (v.placement === 'overlay') ensureOverlayWatch();
+    win.showInactive();
+    return { ok: true, windowId, placement: v.placement, url: v.url };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+ipcMain.handle('plugin-window:update', (_e, windowId, patch = {}) => {
+  const rec = pluginWindows.get(String(windowId));
+  if (!rec) return { ok: false, error: 'not-found' };
+  const { win } = rec;
+  try {
+    if (patch.clickThrough !== undefined) {
+      win.setIgnoreMouseEvents(!!patch.clickThrough, { forward: true });
+    }
+    if (patch.visible !== undefined) {
+      if (patch.visible) win.showInactive(); else win.hide();
+    }
+    if (patch.rect || patch.displayId != null) {
+      win.setBounds(pluginWindowRect({ rect: patch.rect, displayId: patch.displayId }));
+      notifyMainWindow('moved', { windowId: String(windowId), rect: win.getBounds() });
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+ipcMain.handle('plugin-window:close', (_e, windowId) => {
+  const rec = pluginWindows.get(String(windowId));
+  if (!rec) return { ok: false, error: 'not-found' };
+  try { rec.win.destroy(); } catch { /* ignore */ }
+  return { ok: true };
+});
+
+// 插件被禁用/卸载时收掉它的全部窗口（含桌面层），最后一个桌面窗口关掉后恢复系统图标。
+// 不依赖插件自己清理——遗留一个隐藏图标的僵尸窗口，用户桌面就空了。
+ipcMain.handle('plugin-window:close-all', (_e, pluginId) => {
+  const id = String(pluginId || '');
+  if (!id) return { ok: false, error: 'missing-plugin-id' };
+  let closed = 0;
+  for (const [windowId, rec] of [...pluginWindows.entries()]) {
+    if (rec.pluginId !== id) continue;
+    try { rec.win.destroy(); closed += 1; } catch { /* ignore */ }
+    pluginWindows.delete(windowId);
+  }
+  const hasDesktop = [...pluginWindows.values()].some((r) => r.placement === 'desktop');
+  if (!hasDesktop) void restoreIcons('close-all:' + id);
+  return { ok: true, closed };
+});
+
+// 悬浮层组件：前台应用全屏时自动隐藏（每 2s 问一次前台窗口是否铺满显示器）
+let overlayWatchTimer = null;
+function ensureOverlayWatch() {
+  if (overlayWatchTimer) return;
+  overlayWatchTimer = setInterval(async () => {
+    const overlays = [...pluginWindows.values()].filter((r) => r.placement === 'overlay' && !r.win.isDestroyed());
+    if (!overlays.length) { clearInterval(overlayWatchTimer); overlayWatchTimer = null; return; }
+    const r = await runDesktopHelper(['--foreground']);
+    if (!r.data) return;
+    const fullscreen = !!r.data.fullscreen;
+    for (const rec of overlays) {
+      if (rec.suppressed === fullscreen) continue;
+      rec.suppressed = fullscreen;
+      try { if (fullscreen) rec.win.hide(); else rec.win.showInactive(); } catch { /* ignore */ }
+    }
+  }, 2000);
+}
+
+ipcMain.handle('plugin-window:list', () => [...pluginWindows.entries()].map(([windowId, r]) => ({
+  windowId,
+  pluginId: r.pluginId,
+  placement: r.placement,
+  rect: (() => { try { return r.win.getBounds(); } catch { return null; } })(),
+})));
+
+ipcMain.handle('desktop-shell:icons-visible', async () => {
+  const r = await runDesktopHelper(['--icons-visible']);
+  if (!r.data) return { ok: false, error: r.error || 'helper-unavailable' };
+  iconSession.noteStartup(!!r.data.visible);
+  return { ok: true, visible: !!r.data.visible };
+});
+
+ipcMain.handle('desktop-shell:set-icons-visible', async (_e, visible) => {
+  const want = visible !== false;
+  const cur = await runDesktopHelper(['--icons-visible']);
+  if (!cur.data) return { ok: false, error: cur.error || 'helper-unavailable' };
+  const now = !!cur.data.visible;
+  if (now === want) {
+    if (want) iconSession.markRestored();
+    return { ok: true, changed: false, visible: now };
+  }
+  const r = await runDesktopHelper(['--toggle-icons', want ? '1' : '0']);
+  if (!r.data) return { ok: false, error: r.error || 'toggle-failed' };
+  if (want) iconSession.onShowRequested(false);
+  else iconSession.onHideRequested(true);
+  return { ok: true, changed: true, visible: !!r.data.visible };
+});
+
+ipcMain.handle('desktop-shell:file-icon', async (_e, filePath, size) => {
+  const p = String(filePath || '');
+  if (!isDesktopPath(p)) return { ok: false, error: 'path-outside-desktop' };
+  if (!fs.existsSync(p)) return { ok: false, error: 'not-found' };
+  const sz = size === 'small' || size === 'large' ? size : 'normal';
+  try {
+    const img = await app.getFileIcon(p, { size: sz });
+    return { ok: true, dataUrl: img.toDataURL() };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+ipcMain.handle('desktop-shell:open-path', async (_e, filePath) => {
+  const p = String(filePath || '');
+  if (!isDesktopPath(p)) return { ok: false, error: 'path-outside-desktop' };
+  const err = await shell.openPath(p);
+  return err ? { ok: false, error: err } : { ok: true };
+});
+
+ipcMain.handle('desktop-shell:query', async () => {
+  const r = await runDesktopHelper(['--progman']);
+  if (!r.data) return { ok: false, error: r.error || 'helper-unavailable' };
+  return { ok: true, ...r.data };
+});
+
+async function restoreIcons(reason) {
+  if (!iconSession.shouldRestore()) return { ok: true, skipped: true };
+  const r = await runDesktopHelper(['--toggle-icons', '1']);
+  iconSession.markRestored();
+  console.log('[desktop-shell] 已恢复系统桌面图标:', reason);
+  return { ok: !!r.data, reason };
+}
+
+/** 同步恢复：退出路径必须同步完成，不能等 Promise */
+function restoreIconsSync(reason) {
+  if (!iconSession.shouldRestore()) return;
+  try {
+    if (desktopHelperPath && fs.existsSync(desktopHelperPath)) {
+      execFileSync(desktopHelperPath, ['--toggle-icons', '1'], { timeout: 4000, windowsHide: true });
+    }
+  } catch { /* 尽力而为 */ }
+  iconSession.markRestored();
+  console.log('[desktop-shell] 退出前恢复系统桌面图标:', reason);
+}
+
+app.on('before-quit', () => restoreIconsSync('before-quit'));
+app.on('will-quit', () => restoreIconsSync('will-quit'));
+

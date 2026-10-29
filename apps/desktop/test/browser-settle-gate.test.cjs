@@ -56,4 +56,9 @@ describe('页面就绪闸（前置等待）', () => {
     assert.match(body, /PROBE_MS/, '探针要有单次上限，不能无限等');
     assert.match(body, /deadline/, '探测循环必须受总时限约束，不能靠探针自己收敛');
   });
+
+  test('★ fast 动作（实时/游戏）不得进闸（否则每步白等最多 8s）', () => {
+    assert.match(body, /!args\?\.fast/,
+      '★ 闸必须认 args.fast —— 代玩/实时循环每一步都要求毫秒级，8s 的就绪等待会直接把游戏卡死');
+  });
 });
