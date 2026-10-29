@@ -55,7 +55,14 @@ function activeTypeCase(): string {
   const viewIdx = mainSrc.indexOf("ipcMain.handle('browserView:action'");
   const from = mainSrc.indexOf("case 'type': {", viewIdx);
   expect(from, '未找到 browserView:action 的 type 分支').toBeGreaterThan(-1);
-  return mainSrc.slice(from, from + 2500);
+  // ★ 2026-10-29：固定窗口 2500 已失效 —— 50697d2（语义定位）把该分支撑到 ~8000 字符，
+  //   `via:'js-fallback'` 落在 +4813、`cdpTypeText(wc` 落在 +2497（紧贴边界，切出残词
+  //   `cdp` 让 indexOf 返回 -1）⇒ 假红。改为按 switch 结构切：取到**下一个 `case '`
+  //   之前**（同一 switch 的兄弟分支，缩进稳定，不受函数体增长影响）。
+  const next = /\n\s*case '/g;
+  next.lastIndex = from + 1;
+  const m = next.exec(mainSrc);
+  return mainSrc.slice(from, m ? m.index : from + 12000);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -312,9 +312,19 @@ describe('⑧ ★★ 桥必须在 startServer 之前启动（否则 env 注入�
 
   it('退出时关闭桥', () => {
     const m = stripComments(MAIN);
-    const i = m.indexOf("app.on('before-quit'");
-    const seg = m.slice(i, i + 600);
-    expect(seg, '★ 退出未关桥').toMatch(/browserBridge\.close\(\)/);
+    // ★ 锚点更新（2026-10-29）：main.cjs 现在有**多个** `app.on('before-quit')`
+    //   （推流收尾 / 恢复桌面图标 / 主收尾），旧写法 `indexOf` 命中的是**第一个**
+    //   （推流那个），桥的 `close()` 在第二个 ⇒ 窗口里找不到 = 假红。
+    //   ⇒ 逐处理器扫描：只要**有**一个 before-quit 处理器关桥即可 —— 语义不变
+    //   （清理随处理器拆分搬家不应让这条守卫失效），但也不允许"一个都没有"。
+    const starts = [...m.matchAll(/app\.on\('before-quit'/g)].map((x) => x.index!);
+    expect(starts.length, '★ 锚点缺失：before-quit 处理器').toBeGreaterThan(0);
+    const closes = starts.filter((i) => {
+      const end = m.indexOf('\n});', i);
+      return /browserBridge\.close\(\)/.test(m.slice(i, end > 0 ? end : undefined));
+    });
+    expect(closes.length, '★ 退出未关桥（任一 before-quit 处理器里都没有 browserBridge.close()）')
+      .toBeGreaterThan(0);
   });
 });
 
@@ -383,8 +393,19 @@ describe('⑪ ★★★ 可见性契约：桥档下"看不见/收不干净"两�
     const m = stripComments(MAIN);
     // ★★ 断言**带守卫的调用点**（`if (isPreviewScope(tid)) agentTouchedTabs.set`），
     //    不是"isPreviewScope 这个名字存在" —— 变异实测：把守卫去掉后名字仍在（定义处）→ 漏抓。
-    expect(m, '★ 缺 preview 空间守卫 → 会误关用户的 /browser 独立页')
-      .toMatch(/if\s*\(\s*isPreviewScope\(tid\)\s*\)\s*agentTouchedTabs\.set\(/);
+    // ★★★ 契约变更（2026-10-29，显式移交）：守卫放宽为
+    //    `isPreviewScope(tid) || gameHandoff.ownerOf(tid) === String(flowKey)` ——
+    //    用户把**游戏窗**的页交给本流代玩后必须能登记，否则第一次动作就被越权闸门拒掉
+    //    （看的那页 ≠ 操作的那页）。⇒ 断言随之改为钉**完整判定式**，并额外钉住
+    //    移交入口**只放 game 页** —— 否则这次放宽会退化成"任何页都能登记"，
+    //    用户 /browser 独立页照样被 agent 收尾误关（本条守卫的原始用途就废了）。
+    expect(m, '★ preview 空间守卫被整体拿掉 → 会误关用户的 /browser 独立页')
+      .toMatch(/const allowed = isPreviewScope\(tid\) \|\| gameHandoff\.ownerOf\(tid\) === String\(flowKey\);/);
+    expect(m, '★ 登记未受 allowed 控制（守卫被短路）').toMatch(/if \(allowed\) agentTouchedTabs\.set\(/);
+    expect(m, '★ 移交入口未限定 game 页 → 用户 /browser 页也能被登记成 agent 的')
+      .toMatch(/if \(sc !== 'game' && !isProtectedGameUrl\(urlOfTab\(tabId\)\)\)/);
+    expect(m, '★ 移交未登记归属（放宽条件里的 ownerOf 会恒为 null → 死代码）')
+      .toMatch(/gameHandoff\.register\(tabId, flowKey\)/);
   });
 
   it('★★★ 自建 tab 统一走 tabCreated 通道（与 new_tab 同口径），且渲染层兼容裸 preview', () => {
@@ -397,7 +418,11 @@ describe('⑪ ★★★ 可见性契约：桥档下"看不见/收不干净"两�
     expect(iSelf, '★ 自建分支锚点缺失').toBeGreaterThan(-1);
     const selfSeg = m.slice(iSelf, iSelf + 3000);
     expect(selfSeg, '★ 自建分支未广播 tabCreated → 渲染层不建壳，waitForGuest 必超时')
-      .toMatch(/send\('browserView:tabCreated'/);
+      // ★ 锚点更新（2026-10-29）：多窗口归属路由后广播出口从 `send('browserView:tabCreated', …)`
+      //   改成 `sendToTabOwner(tabId, 'browserView:tabCreated', …)`（按 tab 的归属窗口投递，
+      //   ownerWindowForTab 无归属时回落 mainWindow，行为不变）。断言仍要求**确实广播了
+      //   tabCreated 这个通道**，只是允许这两个出口。
+      .toMatch(/(?:send|sendToTabOwner)\([^)]*'browserView:tabCreated'/);
     // scope 必须是**裸 'preview'**（渲染层 browserScope 是 preview:<convId>，靠放宽匹配命中）
     expect(selfSeg, '★ 自建分支 scope 不是裸 preview → 与 new_tab 口径不一致')
       .toMatch(/const scope = 'preview'/);
@@ -468,11 +493,14 @@ describe('⑫ ★★★ 多页语义：显式 tabId / new_tab 不得改写"当�
     expect(seg, '★ 自建 tab 未登记本流（后续带 tabId 会被误拒）').toMatch(/markFlowTabTouched\(flowKey,\s*tabId\)/);
     expect(seg, '★ 自建 tab 未经过建 tab 唯一实现').toMatch(/tabId = createBrowserTab\(/);
     // 建 tab 只能有一处实现（IPC handler 必须委托，不得自带一份 set/ensure 逻辑）
-    expect(m, '★ 缺 createBrowserTab').toMatch(/function createBrowserTab\(scope\)/);
+    // ★ 锚点更新（2026-10-29）：签名加了窗口归属参数 `createBrowserTab(scope, ownerWinId)`
+    //   （子窗口里的页要发给自己的渲染进程建壳）—— 唯一实现的语义不变，只同步签名。
+    expect(m, '★ 缺 createBrowserTab').toMatch(/function createBrowserTab\(scope,\s*ownerWinId\)/);
     expect((m.match(/function createBrowserTab\(/g) || []).length, '★ createBrowserTab 有多处实现').toBe(1);
     const iIpc = m.indexOf("ipcMain.handle('browserView:createTab'");
+    expect(iIpc, '★ 锚点缺失：browserView:createTab handler').toBeGreaterThan(-1);
     const line = m.slice(iIpc, m.indexOf('\n', iIpc));
-    expect(line, '★ IPC handler 未委托给唯一实现').toMatch(/createBrowserTab\(scope\)/);
+    expect(line, '★ IPC handler 未委托给唯一实现').toMatch(/=>\s*createBrowserTab\(scope,/);
   });
 
   it('★★ main.cjs 从 browser-target.cjs 引入的符号必须**都被使用**（防死导入）', () => {
@@ -706,8 +734,10 @@ describe('⑬ ★★★ 锚定建立 + webview tab 上限（防"跑起来就卡�
     expect(m, '★ 缺 evictLruWebviewTabIfNeeded → webview tab 无上限堆积 → 应用卡死')
       .toMatch(/function evictLruWebviewTabIfNeeded\(/);
     // ② 建 tab 的 webview 分支必须调用它（不能只保护 browserview 分支）
-    const iFn = m.indexOf('function createBrowserTab(scope)');
-    const seg = m.slice(iFn, iFn + 900);
+    //   ★ 2026-10-29：签名加了 `ownerWinId`，锚点同步；窗口放宽到 1200 字符（调用点距函数头 894）
+    const iFn = m.indexOf('function createBrowserTab(scope, ownerWinId)');
+    expect(iFn, '★ 锚点缺失：createBrowserTab').toBeGreaterThan(-1);
+    const seg = m.slice(iFn, iFn + 1200);
     expect(seg, '★ webview 分支未收口 → 建 tab 无上限').toMatch(/evictLruWebviewTabIfNeeded\(\)/);
     // ③ 逐出必须让渲染层销毁 <webview> 元素（guest 进程才释放）。
     //   ★ 2026-10-19「回收≠关闭」重构：逐出改为**休眠**（suspendWebviewTab → 广播
@@ -719,7 +749,8 @@ describe('⑬ ★★★ 锚定建立 + webview tab 上限（防"跑起来就卡�
     const iSu = m.indexOf('function suspendWebviewTab(');
     const suSeg = m.slice(iSu, iSu + 1200);
     expect(suSeg, '★ 休眠未广播 tabSuspended → 渲染层 <webview> 元素不销毁，进程不释放')
-      .toMatch(/send\('browserView:tabSuspended'/);
+      // ★ 2026-10-29：同 tabCreated，出口改为按归属窗口投递的 `sendToTabOwner`
+      .toMatch(/(?:send|sendToTabOwner)\([^)]*'browserView:tabSuspended'/);
     // ④ 真关闭路径必须清锚（否则留下幽灵 tabId）——收口在 broadcastTabClosed
     //   （休眠不清锚是有意语义：锚定的 tab 本就被逐出保护，壳也还在）
     const iBc = m.indexOf('function broadcastTabClosed(');
@@ -871,7 +902,9 @@ describe('⑮ ★★★ openInNewTab 委派 new_tab（开新页不抢锚）', ()
 
   it('★★ createBrowserTab 内部必须有上限收口（防止被绕过的那条路径再出现）', () => {
     const btSrc = read('apps/desktop/main.cjs');
-    const i = btSrc.indexOf('function createBrowserTab(scope)');
+    // ★ 2026-10-29：签名加了 `ownerWinId`（窗口归属路由），锚点同步
+    const i = btSrc.indexOf('function createBrowserTab(scope, ownerWinId)');
+    expect(i, '★ 锚点缺失：createBrowserTab').toBeGreaterThan(-1);
     const seg = btSrc.slice(i, i + 1500);
     expect(seg, '★ createBrowserTab 缺 evictLruWebviewTabIfNeeded').toMatch(/evictLruWebviewTabIfNeeded\(\)/);
   });
@@ -943,8 +976,10 @@ describe('⑭ ★★★ 流键 flowKeyOf【真跑】（2026-10-15，后台标签
   it('★★★ 三处"不抢用户视野"的保护必须都在 main.cjs（缺一条就抢焦点）', () => {
     const m = stripComments(MAIN);
     // ① 后台流**不回落**用户当前页（否则它首次 navigate 直接把用户那页导航走）
+    //   ★ 2026-10-29：回落目标现在还要过滤"游戏页残留"（多行三元），断言只钉
+    //     「bgFlow 为真 ⇒ 回落 null」这一半 —— 仍能抓住"后台流又开始回落用户页"。
     expect(m, '★ 未按后台流屏蔽回落 → 后台流的首次导航会导航走用户正在看的页')
-      .toMatch(/activeTabId:\s*bgFlow\s*\?\s*null\s*:\s*activeTabId/);
+      .toMatch(/activeTabId:\s*bgFlow\s*\?\s*null\s*:/);
     // ② new_tab 不激活 —— 判据从「仅后台流」放宽为「后台流 **或** 模型显式 background:true」
     //    （2026-10-16 用户拍板「让模型自己选」：中间页不该抢用户视野）。
     //    仍必须**先算判据再决定激活**：直接写 `if (!bgFlow) activeTabId = tabId` 会忽略 background。
@@ -959,8 +994,10 @@ describe('⑭ ★★★ 流键 flowKeyOf【真跑】（2026-10-15，后台标签
 
   it('★★ 广播必须带 background 标记，且 preload 必须转发（丢一环渲染层就无从判断）', () => {
     // 广播的第 4 参数已从 `bgFlow` 换成统一的判据 `wantBackground`（= bgFlow || 模型显式 background:true）
+    // ★ 2026-10-29：出口改为按归属窗口投递的 `sendToTabOwner(tabId, 'browserView:tabCreated', …)`
+    //   （无归属窗口时回落 mainWindow），标记仍是最后一个实参。
     expect(stripComments(MAIN), '★ tabCreated 广播未带 background 标记')
-      .toMatch(/send\('browserView:tabCreated',[^)]*wantBackground\)/);
+      .toMatch(/sendToTabOwner\([^)]*'browserView:tabCreated'[^)]*wantBackground\)/);
     expect(read('apps/desktop/preload.cjs'), '★ preload 未转发第 4 个参数 → 渲染层收不到 background')
       .toMatch(/\(_e,\s*tabId,\s*url,\s*scope,\s*background\)\s*=>\s*callback\(tabId,\s*url,\s*scope,\s*background\)/);
   });
