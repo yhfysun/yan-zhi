@@ -367,7 +367,7 @@
       ></div>
       <!-- Electron + webview 引擎：DOM 内嵌 <webview>，浮层可覆盖（替代原生 BrowserView 图层） -->
       <template v-if="isWebviewEngine">
-        <template v-for="t in tabs" :key="t.id">
+        <template v-for="t in tabs" :key="t.id + ':' + (webviewGen[t.id] || 0)">
           <webview
             v-if="!t.suspended"
             :ref="bindWebviewRef(t.id)"
@@ -2518,6 +2518,51 @@ function setWebviewRef(tabId: string, el: any) {
 }
 
 /**
+ * 每个 tab 的 `<webview>` **代次** —— 递增即让模板 key 变化，强制销毁并重建该 tab 的
+ * `<webview>` 元素（等价于给这个 tab 换一个全新的 guest）。
+ * ★ 2026-10-29 为什么需要：guest 会死（渲染进程崩溃 / 被主进程休眠 / 被重载拖到无响应），
+ *   而 tab **壳**还在。此前没有任何"换掉这个元素"的入口 —— 壳在就永远复用同一个死元素。
+ */
+const webviewGen = ref<Record<string, number>>({});
+
+/** 该 tab 的 guest 是否真的活着（元素在 + 未休眠 + webContentsId 有效）
+ *
+ * ★ 判据必须查 `getWebContentsId()`：元素可能存在但 guest 已销毁（此时返回 0），
+ *   只看 `webviewEls.has()` 会把死壳当活页 —— 正是 `waitForGuest` 30s 超时的来源。
+ */
+function isGuestAlive(tabId: string): boolean {
+  const tab = tabs.value.find(t => t.id === tabId);
+  if (!tab || tab.suspended) return false;
+  const el = webviewEls.get(tabId);
+  if (!el) return false;
+  try {
+    const id = typeof el.getWebContentsId === 'function' ? el.getWebContentsId() : 0;
+    return !!id;
+  } catch { return false; }
+}
+
+/** 强制重建该 tab 的 `<webview>`（新 guest），并让它重新加载当前 URL。
+ *
+ * ★ 用于"壳在、guest 已死"：主进程每次 navigate 都会重播 `tabCreated` 直到 guest 注册成功，
+ *   渲染层据此重建即可，不需要新建 tab（新建会丢 url/历史/会话锚定）。
+ */
+async function reviveGuest(tabId: string, url?: string) {
+  const tab = tabs.value.find(t => t.id === tabId);
+  if (!tab) return;
+  const target = url || tab.url || tab.srcUrl || '';
+  if (target) { tab.url = target; tab.urlInput = target; tab.srcUrl = target; }
+  tab.suspended = false;
+  tab.loading = !!target;
+  // 摘掉旧元素的登记与去重键：代次变了，这些引用全部作废
+  webviewEls.delete(tabId);
+  webviewRefCache.delete(tabId);
+  for (const k of [...wvRegDedupe.keys()]) if (k.startsWith(tabId + ':')) wvRegDedupe.delete(k);
+  webviewGen.value = { ...webviewGen.value, [tabId]: (webviewGen.value[tabId] || 0) + 1 };
+  await nextTick();
+  console.log(`[BrowserPanel] 强制重建 webview: tab=${tabId} gen=${webviewGen.value[tabId]} url=${target}`);
+}
+
+/**
  * 等 <webview> 元素出现（v-if 主页切走后元素是新建的，比导航早一帧）。
  * 拿到元素就交给 :src 驱动；拿不到则返回 null，由调用方退化为主进程 load（waitForGuest 兜底）。
  */
@@ -3155,7 +3200,17 @@ onMounted(async () => {
       const belong = scope || 'preview';
       const sameScope = belong === browserScope || isSamePreviewFamily(belong, browserScope);
       if (!sameScope) { console.log(`[BrowserPanel] onTabCreated 被 scope 挡：belong=${belong} myScope=${browserScope}`); return; }
-      if (tabs.value.some(t => t.id === tid)) { console.log(`[BrowserPanel] onTabCreated 已存在，跳过：${tid}`); return; }
+      // ★★★ 2026-10-29：**壳存在 ≠ guest 活着**。此前一律"已存在就跳过"，于是 guest 死掉
+      //   （渲染进程崩溃 / 休眠 / 被重载拖到无响应）的 tab 永远拿不回 webview：
+      //   主进程每次 navigate 都会重播 tabCreated（attempt 1..6），六次全被跳过 →
+      //   `自建后等待 guest: wc=NULL(30s 超时)` → navigate 失败、页面停在加载态。
+      //   ⇒ 按 guest 存活判定：活着才跳过；死了就换一个全新 webview（保 tab 壳、保 url/历史）。
+      if (tabs.value.some(t => t.id === tid)) {
+        if (isGuestAlive(tid)) { console.log(`[BrowserPanel] onTabCreated 已存在且 guest 存活，跳过：${tid}`); return; }
+        console.log(`[BrowserPanel] onTabCreated 壳在但 guest 已死，重建 webview：${tid}`);
+        void reviveGuest(tid, url || undefined);
+        return;
+      }
       tabs.value.push({
         id: tid, url: url || '', srcUrl: url || '', title: '', loading: false, urlInput: url || '',
         history: url ? [url] : [], histIndex: url ? 0 : -1, pageZoom: 1, canBack: false, canForward: false,
