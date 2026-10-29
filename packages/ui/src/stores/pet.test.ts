@@ -135,7 +135,8 @@ describe('setPetSlot（半圆菜单槽位编辑）', () => {
   it('换到已被占用的槽位：两者互换，不出重复项', () => {
     const next = setPetSlot([...PET_SLOT_DEFAULTS], 0, 'settings');
     expect(next[0]).toBe('settings');
-    expect(next[5]).toBe('play'); // 原第 1 位顶到第 6 位
+    // 原第 1 位顶到 settings 原来的位置（默认槽位数会随菜单项增加，别钉死下标）
+    expect(next[PET_SLOT_DEFAULTS.indexOf('settings')]).toBe('play');
     expect(new Set(next).size).toBe(next.length);
   })
 

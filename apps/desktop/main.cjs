@@ -9863,9 +9863,12 @@ function applyPetSize(settings) {
 /* ===== 宠物弹层窗口（独立小窗） ===== */
 const PET_POPUP_SIZE = {
   radial: [268, 268],
-  panel: [360, 320],
+  // 任务面板：分区 + 进度条 + 行内快答，面板本体最高 400，窗口再多留影子/边距
+  panel: [360, 440],
   play: [448, 64],
-  ask: [380, 84],
+  // 快问条：输入条贴窗口底部，上方 256px 留给目录/智能体下拉。
+  // 不用"开下拉时放大窗口"那套：放大会把菜单顶到窗口外、还依赖 IPC 时序。
+  ask: [380, 340],
   bubble: [340, 44],
   // 形象托盘：一行 7 格（6 内置 + 导入），多了换行，最多两行
   char: [430, 150],
@@ -9966,6 +9969,8 @@ function createPetPopup(kind) {
   else win.loadFile(path.join(__dirname, 'dist', 'index.html'), { hash: '/pet-popup/' + kind });
 
   positionPetPopup(kind, win);
+  // 快问条上半截是透明区：靠探针开关穿透，别让它挡住背后的窗口
+  if (kind === 'ask') startPetAskProbe(win);
   if (petLastSync) win.webContents.on('did-finish-load', () => {
     try { win.webContents.send('pet:state', petLastSync); } catch {}
     if (petLastSettings) win.webContents.send('pet:settings', petLastSettings);
@@ -9978,7 +9983,8 @@ function createPetPopup(kind) {
     win.on('blur', () => {
       try {
         const p = electronScreen.getCursorScreenPoint();
-        const b = win.getBounds();
+        // 快问条：透明区透传，光标落在透明区不算"在弹层上"（否则点桌面关不掉）
+        const b = kind === 'ask' ? petAskContentRect(win) : win.getBounds();
         const overPopup = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
         if (overPopup) return;
         petHoverLog(`popup-outside-click ${kind}`);
@@ -9988,7 +9994,7 @@ function createPetPopup(kind) {
       }
     });
   }
-  win.on('closed', () => { petHoverLog(`popup-closed ${kind}`); petPopups.delete(kind); });
+  win.on('closed', () => { petHoverLog(`popup-closed ${kind}`); petPopups.delete(kind); if (kind === 'ask') stopPetAskProbe(); });
   petPopups.set(kind, win);
   win.once('ready-to-show', () => {
     petHoverLog(`popup-ready ${kind}`);
@@ -9998,9 +10004,51 @@ function createPetPopup(kind) {
   return win;
 }
 
+/**
+ * 快问条窗口固定 380×340：输入条与目录行贴在窗口底部，上方是纯透明区。
+ * 透明区不能吃点击（会挡住背后的桌面/主窗），所以按光标位置开关穿透 ——
+ * 与宠物窗同一套做法，区别只是这里的判定源是窗口内的"内容矩形"。
+ */
+const petAskState = { expanded: false, timer: null, wasInside: null };
+/** 下拉收起时只有底部那条算内容；展开时整窗都算（菜单就画在上半截） */
+function petAskContentRect(win) {
+  const b = win.getBounds();
+  if (petAskState.expanded) return b;
+  const h = Math.min(b.height, 88);
+  return { x: b.x, y: b.y + b.height - h, width: b.width, height: h };
+}
+function syncPetAskInteractive(win) {
+  try {
+    if (!win || win.isDestroyed() || !win.isVisible()) return;
+    const p = electronScreen.getCursorScreenPoint();
+    const r = petAskContentRect(win);
+    const inside = p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
+    if (inside === petAskState.wasInside) return;
+    petAskState.wasInside = inside;
+    win.setIgnoreMouseEvents(!inside, { forward: true });
+  } catch {
+    /* 探针失败就当窗口可交互，至少不会点不动 */
+  }
+}
+function startPetAskProbe(win) {
+  stopPetAskProbe();
+  petAskState.expanded = false;
+  // 初始保持可交互，等首次判定再改：宁可多挡 100ms，也不要一开窗就点不到
+  petAskState.wasInside = true;
+  try { win.setIgnoreMouseEvents(false); } catch {}
+  petAskState.timer = setInterval(() => syncPetAskInteractive(win), 100);
+}
+function stopPetAskProbe() {
+  if (petAskState.timer) clearInterval(petAskState.timer);
+  petAskState.timer = null;
+  petAskState.wasInside = null;
+  petAskState.expanded = false;
+}
+
 function closePetPopup(kind) {
   const w = petPopups.get(kind);
   if (!w || w.isDestroyed()) return;
+  if (kind === 'ask') stopPetAskProbe();
   // 关掉「正在聚焦」的弹层时，Windows 会把下一个窗口（主窗）顶到前台，
   // 表现为「点一下动作，主页面冒出来」。先把焦点还给宠物窗再关。
   try { if (petWindow && !petWindow.isDestroyed()) petWindow.focus(); } catch {}
@@ -10355,6 +10403,14 @@ ipcMain.on('pet:popup-ready', (_e, kind) => {
 ipcMain.on('pet:popup-resize', (_e, kind, w, h) => {
   const win = petPopups.get(String(kind || ''));
   if (!win || win.isDestroyed()) return;
+  // 快问条窗口尺寸是固定的：这里的 h 只当「下拉展开了」的语义用 —— 展开时整窗可点，
+  // 收起时只有底部输入条可点。这样菜单永远有地方画，不依赖 setBounds 的时序。
+  if (String(kind || '') === 'ask') {
+    petHoverLog(`popup-expand ask h=${Number(h) || 0}`);
+    petAskState.expanded = Number(h) > 100;
+    petAskState.wasInside = null;
+    return;
+  }
   const W = Math.max(160, Math.min(800, Number(w) || 0));
   const H = Math.max(44, Math.min(600, Number(h) || 0));
   try {

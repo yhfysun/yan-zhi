@@ -139,13 +139,17 @@
   color: #e8b49a;
 }
 
-/* ===== 任务小面板 ===== */
+/* ===== 任务小面板（对齐原型 .pet-panel） ===== */
 .panel {
   position: absolute;
   left: 50%;
   bottom: 140px;
   transform: translateX(-50%);
-  width: 300px;
+  /* 弹窗宽 360：留出两侧各 22px 的透明边，影子不会贴边被裁 */
+  width: 316px;
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
   background: #11151f;
   border: 1px solid #2f3a4d;
   border-radius: 14px;
@@ -159,29 +163,102 @@
   gap: 8px;
   padding: 9px 11px 8px;
   border-bottom: 1px solid #232c3b;
+  flex: 0 0 auto;
 }
 .p-head b { font-size: 12px; color: #eef2f8; }
 .p-count { flex: 1; font-size: 10.5px; color: #7f8ca3; }
-.p-x { border: 0; background: transparent; color: #8a97ab; cursor: pointer; font-size: 11px; }
-.p-body { max-height: 168px; overflow-y: auto; padding: 4px; scrollbar-width: none; }
+.p-icon-btn {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #8a97ab;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+}
+.p-icon-btn:hover { background: #223049; color: #fff; }
+.p-icon-btn.on { color: #e8734a; }
+.p-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 8px 10px; scrollbar-width: none; }
+/* 底部渐隐替代滚动条（原型同款）：提示"下面还有行"；鼠标移到面板上就恢复原样 */
+.p-body { mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 14px), transparent 100%); }
+.p-body:hover { mask-image: none; }
 .p-body::-webkit-scrollbar { display: none; }
-.p-row { display: flex; align-items: center; gap: 7px; padding: 7px 8px; border-radius: 9px; cursor: pointer; }
+.p-sec { font-size: 10px; letter-spacing: 1px; color: #66738c; padding: 8px 6px 4px; }
+.p-row { display: flex; align-items: flex-start; gap: 9px; padding: 9px 8px; border-radius: 10px; cursor: pointer; }
 .p-row:hover { background: #1c2434; }
-.p-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: #8ea3c8; }
+.p-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; background: #8ea3c8; }
 .p-dot.s-running { background: #e8734a; }
 .p-dot.s-needs-input { background: #f0b43c; }
 .p-dot.s-paused { background: #8ea3c8; }
+.p-main { flex: 1; min-width: 0; }
 .p-title {
-  flex: 1;
-  min-width: 0;
-  font-size: 11.5px;
+  font-size: 12px;
   color: #dbe3ee;
+  line-height: 1.4;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.p-pin { margin-left: 4px; }
+.p-meta {
+  font-size: 10.5px;
+  color: #66738c;
+  margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.p-st { font-size: 10px; color: #66738c; flex: 0 0 auto; }
-.p-acts { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
+.p-plan { height: 3px; border-radius: 2px; background: #242d3f; margin-top: 6px; overflow: hidden; }
+.p-plan i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #e8734a, #f0a06a);
+  transition: width 0.4s;
+}
+.p-q {
+  margin-top: 7px;
+  font-size: 11px;
+  color: #f0d49a;
+  background: rgba(240, 180, 60, 0.08);
+  border: 1px solid rgba(240, 180, 60, 0.25);
+  border-radius: 8px;
+  padding: 6px 8px;
+  line-height: 1.5;
+}
+.p-q-err { color: #f0a09a; background: rgba(235, 90, 80, 0.08); border-color: rgba(235, 90, 80, 0.25); }
+.p-q-txt { display: block; word-break: break-word; }
+.p-answer { display: flex; gap: 6px; margin-top: 6px; }
+.p-answer input {
+  flex: 1;
+  min-width: 0;
+  background: #10141d;
+  border: 1px solid #2c3648;
+  color: #dbe3ee;
+  font-size: 11px;
+  border-radius: 7px;
+  padding: 5px 8px;
+  outline: none;
+}
+.p-answer input:focus { border-color: #e8734a; }
+.p-answer input::placeholder { color: #66738c; }
+.p-answer button {
+  border: 0;
+  background: #e8734a;
+  color: #fff;
+  font-size: 11px;
+  border-radius: 7px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.p-acts { display: flex; align-items: flex-start; gap: 3px; flex: 0 0 auto; margin-top: 2px; }
 .p-act {
   border: 1px solid transparent;
   background: rgba(255, 255, 255, 0.06);
@@ -191,13 +268,25 @@
   padding: 4px 6px;
   border-radius: 7px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .p-act:hover { background: rgba(232, 115, 74, 0.18); color: #e8b49a; }
 .p-act.pin.on { background: rgba(232, 115, 74, 0.2); color: #e8b49a; }
 html:not(.dark) .p-act { background: rgba(24, 30, 42, 0.06); color: #6b778a; }
 html:not(.dark) .p-act:hover { background: rgba(232, 115, 74, 0.14); color: #c4532e; }
 html:not(.dark) .p-act.pin.on { background: rgba(232, 115, 74, 0.16); color: #c4532e; }
-.p-empty { text-align: center; color: #66738c; font-size: 11.5px; padding: 18px 0; }
+.p-foot {
+  flex: 0 0 auto;
+  border-top: 1px solid #222b3b;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.p-foot button { border: 0; background: transparent; color: #8a97ab; font-size: 11px; cursor: pointer; padding: 0; }
+.p-foot button:hover { color: #e8734a; }
+.p-hint { font-size: 10px; color: #55617a; }
+.p-empty { text-align: center; color: #66738c; font-size: 11.5px; padding: 26px 0; }
 
 /* ===== 快问输入条 ===== */
 .ask {
@@ -272,7 +361,8 @@ html:not(.dark) .p-act.pin.on { background: rgba(232, 115, 74, 0.16); color: #c4
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
   z-index: 12;
 }
-.agent-search {
+/* 注意选择器带上 .ask：通用的 .ask input 规则会盖掉这里的底色/描边 */
+.ask .agent-search {
   width: 100%;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid #2c3648;
@@ -303,26 +393,9 @@ html:not(.dark) .p-act.pin.on { background: rgba(232, 115, 74, 0.16); color: #c4
 .agent-item:hover { background: #223049; }
 .agent-item.on { color: #e8b49a; background: rgba(232, 115, 74, 0.14); }
 .agent-empty { color: #66738c; font-size: 10.5px; text-align: center; padding: 10px 0; }
-html:not(.dark) .agent-pop {
-  background: #fff;
-  border-color: rgba(20, 25, 35, 0.12);
-  box-shadow: 0 12px 30px rgba(15, 20, 30, 0.18);
-}
-html:not(.dark) .agent-search {
-  background: rgba(24, 30, 42, 0.05);
-  border-color: rgba(20, 25, 35, 0.12);
-  color: #2b3444;
-}
-html:not(.dark) .agent-item { color: #2b3444; }
-html:not(.dark) .agent-item:hover { background: rgba(24, 30, 42, 0.06); }
-html:not(.dark) .agent-item.on { color: #c4532e; background: rgba(232, 115, 74, 0.12); }
+/* 智能体下拉也走深色玻璃：早期这里有一套 html:not(.dark) 的白色覆盖，
+ * 结果同一排的两个下拉一个黑一个白（2026-10-29 用户反馈）。弹层不跟随应用浅色主题。 */
 
-/* 绑定的工作目录：胶囊正下方的小 chip */
-html:not(.dark) html:not(.dark) .ask .ask-agent {
-  background: rgba(232, 115, 74, 0.1);
-  border-color: rgba(232, 115, 74, 0.28);
-  color: #c4532e;
-}
 .ask .ask-go {
   flex: 0 0 auto;
   width: 24px;
@@ -702,28 +775,31 @@ html:not(.dark) .char-tray .chr.on .chr-name { color: #e8b49a; }
 .ask-dir-row {
   position: absolute;
   left: 50%;
-  bottom: 6px;
+  /* 紧贴输入条下沿：两者之间不留一大截空白 */
+  bottom: 2px;
   transform: translateX(-50%);
+  /* 与输入条同宽并左对齐：左边线与输入框外沿齐平 */
+  width: 292px;
+  padding-left: 0;
+  box-sizing: border-box;
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .ask-dir-wrap {
   position: relative;
-}
-.ask-dir-caret {
-  font-size: 9px;
-  opacity: 0.7;
 }
 .ask-dir {
   display: flex;
   align-items: center;
   gap: 4px;
-  max-width: 108px;
-  padding: 5px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
-  color: #cdd8ea;
+  /* 「目录 › 会话」比只显示目录更长，留到 190 再省略 */
+  max-width: 190px;
+  padding: 4px 8px;
+  /* 跟输入条同一套深色玻璃：浅色桌面上不能是白底胶囊 */
+  border: 1px solid #2c3648;
+  border-radius: 10px;
+  background: #11151f;
+  color: #9fb0c8;
   font-size: 10px;
   line-height: 1;
   cursor: pointer;
@@ -754,8 +830,9 @@ html:not(.dark) .char-tray .chr.on .chr-name { color: #e8b49a; }
 .dir-pop {
   position: absolute;
   left: 0;
-  bottom: 100%;
-  margin-bottom: 8px;
+  /* 菜单挂在【输入条上方】：目录行在输入条下面，直接 bottom:100% 会把输入条整个盖住。
+     37px = 目录行顶到输入条顶的距离（34px 条高 + 1px 间距）+ 2px 留白 */
+  bottom: calc(100% + 37px);
   width: 220px;
   max-height: 224px;
   display: flex;
@@ -816,6 +893,14 @@ html:not(.dark) .char-tray .chr.on .chr-name { color: #e8b49a; }
   background: rgba(232, 115, 74, 0.16);
   color: #ffe3d6;
 }
+/* 未绑定任何目录时按钮压暗，和「已选目录」区分开 */
+.ask-dir.unbound { color: #9aa8bd; }
+/* 两行选项：「不绑定目录 / 在该目录下新建会话」这类 */
+.dir-item-2l { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.dir-item-main { font-size: 11.5px; }
+.dir-item-sub { font-size: 10px; color: #7f8ca3; }
+.dir-item.on .dir-item-sub { color: #e8b49a; }
+.dir-sub { margin-left: auto; font-size: 10px; color: #66738c; }
 .dir-empty {
   padding: 14px;
   font-size: 11px;

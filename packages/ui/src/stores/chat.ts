@@ -1080,6 +1080,15 @@ export const useChatStore = defineStore('chat', () => {
   const planTitle = computed(() => readPlan(plansByConv.value, planKeyOf())?.title || '');
   /** 当前查看会话的计划步骤（其他会话的计划不会出现在这里） */
   const planSteps = computed<PlanStepT[]>(() => readPlan(plansByConv.value, planKeyOf())?.steps || []);
+  /**
+   * 指定会话的计划进度（宠物任务面板要**跨会话**显示「步骤 2/5」）。
+   * planSteps 只对当前查看的会话有效，而面板列的是全部会话，所以按 convId 现取。
+   */
+  function planOf(convId: string): { done: number; total: number } | null {
+    const p = readPlan(plansByConv.value, String(convId || ''));
+    if (!p || !Array.isArray(p.steps) || !p.steps.length) return null;
+    return { done: p.steps.filter((s) => s.status === 'done').length, total: p.steps.length };
+  }
   /** 计划落盘的任务起止时间（服务端唯一写入）—— 耗时直接读记录，不再每次拿消息时间戳算 */
   const planCreatedAt = computed(() => readPlan(plansByConv.value, planKeyOf())?.createdAt || 0);
   const planFinishedAt = computed(() => readPlan(plansByConv.value, planKeyOf())?.finishedAt || 0);
@@ -1107,6 +1116,18 @@ export const useChatStore = defineStore('chat', () => {
       pendingQuestion.value = null;
       resolve(answer, supplement?.trim() || undefined);
     }
+  }
+  /**
+   * 指定会话的待答卡：宠物任务面板跨会话快答用（面板是独立窗口，拿到的是 convId 不是「当前会话」）。
+   * 没有待答卡时返回 false，调用方不用假装答过了。
+   */
+  function submitPendingQuestionFor(convId: string, answer: string, supplement?: string): boolean {
+    const key = String(convId || '');
+    const q = questionPending.byConv.value[key];
+    if (!q) return false;
+    questionPending.setFor(key, null);
+    q.resolve(answer, supplement?.trim() || undefined);
+    return true;
   }
   /**
    * 任务终态（completed/aborted/error）或确认真实丢失时，收掉该会话的待答卡。
@@ -4236,7 +4257,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     showFilePopup, previewingFile, rightPanelTab, currentBrowserUrl, skipNextRecordVisit,
     previewTabs, activeTabId, activeTab,
     openTab, openBrowserUrl, activatePreviewTab, closePreviewTab, closeAllPreviewTabs, closePreviewTabsLeft, closePreviewTabsRight,
-    pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion, dropPendingCards,
+    pendingQuestion, pendingConfirmation, pendingPlatformConfig, submitPendingQuestion, submitPendingQuestionFor, dropPendingCards,
     // 2026-10-28：宠物面板要跨会话看「等你输入」，需要按会话分桶的只读入口（不改内部逻辑）
     questionPendingByConv: questionPending.byConv,
     confirmationPendingByConv: confirmationPending.byConv,
@@ -4247,7 +4268,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     pendingPrefill, prefillInput, petAutoSend,
     submitPendingConfirmation, skipPendingConfirmation, prevPendingConfirmation, cancelPendingConfirmation,
     submitPlatformConfig, cancelPlatformConfig,
-    planSteps, planTitle, planCreatedAt, planFinishedAt, clearPlan, clearPlanDisplayOnly,
+    planSteps, planTitle, planOf, planCreatedAt, planFinishedAt, clearPlan, clearPlanDisplayOnly,
     activeAgent, activeAgentId,
     loadConversations, loadMessages, createConversation, updateConversation, deleteConversation, deleteConversations,
     // 会话生命周期（2026-10-16 归档 + 回收站）

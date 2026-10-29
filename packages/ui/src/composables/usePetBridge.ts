@@ -91,22 +91,49 @@ export function usePetBridge() {
       state === 'running'
         ? derivePetActivity(followMsgs) || { kind: 'think' as const, label: '思考中', target: '' }
         : null
-    // 任务小面板用的轻量列表（≤5 行）：只带 id/标题/状态，宠物窗按行点击回传 open-conv
+    // 任务小面板用的轻量列表（≤5 行）：带分区、进度条、行内快答要的字段
     const titleOf = new Map<string, string>()
-    for (const c of chat.conversations || []) titleOf.set(c.id, c.title || '未命名任务')
-    const tasks: Array<{ id: string; title: string; status: string }> = []
-    for (const id of waitIds) tasks.push({ id, title: titleOf.get(id) || '任务', status: 'needs-input' })
-    for (const id of chat.runningConvIds ?? []) tasks.push({ id, title: titleOf.get(id) || '任务', status: 'running' })
-    for (const id of chat.pausedConvIds ?? []) tasks.push({ id, title: titleOf.get(id) || '任务', status: 'paused' })
+    const agentOf = new Map<string, string>()
+    const agentNameById = new Map<string, string>()
+    for (const a of ((agents.agents as any[]) || [])) agentNameById.set(String(a.id), String(a.name || ''))
+    for (const c of chat.conversations || []) {
+      titleOf.set(c.id, c.title || '未命名任务')
+      const an = c.agentId ? agentNameById.get(String(c.agentId)) : ''
+      if (an) agentOf.set(c.id, an)
+    }
+    const stats = (chat.runStatsByConv || {}) as Record<
+      string,
+      { status: string; startedAt?: number; endedAt?: number }
+    >
+    /** 面板一行：状态之外的 agent / 起止时间 / 计划进度 / 待答问题都由这里补齐 */
+    const rowOf = (id: string, status: string) => {
+      const plan = chat.planOf?.(id) || null
+      const st = stats[id]
+      return {
+        id,
+        title: titleOf.get(id) || '任务',
+        status,
+        agent: agentOf.get(id) || '',
+        startedAt: Number(st?.startedAt) || 0,
+        endedAt: Number(st?.endedAt) || 0,
+        planDone: Number(plan?.done) || 0,
+        planTotal: Number(plan?.total) || 0,
+        question:
+          status === 'needs-input' ? String((chat.questionPendingByConv as any)?.[id]?.question || '') : '',
+      }
+    }
+    const tasks: Array<ReturnType<typeof rowOf>> = []
+    for (const id of waitIds) tasks.push(rowOf(id, 'needs-input'))
+    for (const id of chat.runningConvIds ?? []) tasks.push(rowOf(id, 'running'))
+    for (const id of chat.pausedConvIds ?? []) tasks.push(rowOf(id, 'paused'))
     // 已结束的任务也列出来（按结束时间倒序）：出错的行上要能点「重试」
-    const stats = (chat.runStatsByConv || {}) as Record<string, { status: string; endedAt?: number }>
     const finished = Object.entries(stats)
       .filter(([id, r]) => (r.status === 'error' || r.status === 'completed') && !tasks.some((t) => t.id === id))
       .sort((a, b) => (Number(b[1].endedAt) || 0) - (Number(a[1].endedAt) || 0))
       .slice(0, 3)
     for (const [id, r] of finished) {
       if (tasks.some((t) => t.id === id)) continue
-      tasks.push({ id, title: titleOf.get(id) || '任务', status: String((r as any).status) })
+      tasks.push(rowOf(id, String((r as any).status)))
     }
     return {
       state,
@@ -225,7 +252,9 @@ export function usePetBridge() {
       v.activity?.kind,
       v.activity?.label,
       v.activity?.target,
-      (v.tasks || []).map((t: any) => t.id + t.status).join(','),
+      (v.tasks || [])
+        .map((t: any) => [t.id, t.status, t.agent, t.startedAt, t.planDone, t.planTotal, t.question].join('~'))
+        .join(','),
       (v.agents || []).map((a: any) => a.id).join(','),
       (v.spaces || []).map((s: any) => s.id).join(','),
       v.spaceId,
@@ -287,6 +316,20 @@ export function usePetBridge() {
       if (!a || !a.type) return
       if (a.type === 'pause') { try { chat.pauseTask?.(a.convId) } catch { /* 会话可能已结束 */ } return }
       if (a.type === 'resume') { try { chat.resumeTask?.(a.convId) } catch { /* ignore */ } return }
+      if (a.type === 'answer' && a.convId) {
+        // 面板行内快答：等价于在聊天页回答该会话的反问卡（面板是独立窗口，只知道 convId）
+        const text = String(a.text || '')
+        if (text.trim()) try { chat.submitPendingQuestionFor?.(String(a.convId), text) } catch { /* 卡已收回 */ }
+        return
+      }
+      if (a.type === 'toggle-mute') {
+        pet.update({ notifyMode: pet.settings.notifyMode === 'off' ? 'all' : 'off' })
+        return
+      }
+      if (a.type === 'open-all-tasks') {
+        try { if (window.location.hash !== '#/chat') window.location.hash = '#/chat' } catch { /* ignore */ }
+        return
+      }
       if (a.type === 'space' && a.spaceId) {
         // 切空间要连带把工作目录同步过去，否则新会话仍落在旧目录
         try {
@@ -317,11 +360,19 @@ export function usePetBridge() {
         // （send 内部处理"运行中追加入队 / 重入锁 / 没配模型时提示"）
         try { chat.prefillInput?.(text) } catch { /* ignore */ }
         try { if (window.location.hash !== '#/chat') window.location.hash = '#/chat' } catch { /* ignore */ }
-        // 宠物派活：选了「工作目录 → 会话」就追加到那个会话里追问；
-        // 没选才走"新建会话"分支（避免把内容塞进你正在看的会话）。
+        // 宠物派活三态：
+        //   绑了会话 → 追加到那个会话里追问；
+        //   只绑目录 → 先切主窗目录，再新建会话（任务落在该目录）；
+        //   都不绑   → 不动主窗现状，直接新建会话。
         if (a.convId) {
           try { chat.selectConv?.(String(a.convId)) } catch { /* 会话可能已删 */ }
         } else {
+          if (a.spaceId) {
+            try {
+              if (typeof (chat as any).selectSpaceAndSyncDir === 'function') (chat as any).selectSpaceAndSyncDir(String(a.spaceId))
+              else spaces.selectSpace?.(String(a.spaceId))
+            } catch { /* 目录可能已删 */ }
+          }
           try { chat.currentConvId = '' } catch { /* ignore */ }
         }
         // 由 useChat 的 prefill watcher 消费：预填落地后直接 send()（避免桥里再造一个 useChat 实例）
