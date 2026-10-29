@@ -5269,6 +5269,8 @@ const DESKTOP_BROWSER_ACTIONS = [
   'run_script', 'highlight', 'takeover',
   // 批注三动作（面板直连 IPC 调用，不派生 browser_* 工具名；2026-10-28 补进清单修复 parity 守门）
   'annotation_begin', 'annotation_end', 'annotation_drain',
+  // 代玩网页游戏三动作（游戏窗直连调用，不派生 browser_* 工具名；2026-10-29 补进清单修复 parity 守门）
+  'dismiss_overlays', 'observe', 'run_loop',
 ];
 
 /** 渲染层可查询桌面端支持哪些 action（避免两份硬编码清单漂移） */

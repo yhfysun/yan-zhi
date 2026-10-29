@@ -119,10 +119,9 @@ function buildRecipeHint(url: string): string {
  * 这里提前给明确错误，避免模型收到服务端的 not_found 后误判「页面上真没这个元素」。
  */
 function semanticGuard(args: Record<string, unknown>): McpCallResult | null {
-  if (!usesSemanticTarget(args)) return null;
-  const isElectron = typeof window !== 'undefined' && !!(window as any).electronAPI?.isElectron;
-  if (isElectron) return null;
-  return toolError('语义定位（target）当前仅在桌面应用可用；请改用 index 或 selector（动态页面可先用 browser_get_page_content 拿编号）。');
+  // 2026-10-29：服务端 Playwright 长路（browser.ts ensureYzReg 语义函数段 + /action 预解析）已对齐，
+  // 桌面（CDP→主进程）与 Web/服务端两条执行面都支持 target —— 守卫整体放行，保留函数便于回退。
+  return null;
 }
 
 /** 绑定语义参数到 action payload（未提供时保持原样，确保旧调用零变化） */

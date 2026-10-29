@@ -913,15 +913,6 @@ async function flashFieldOnPage(page: any, locate: { ref?: string | null; index?
 
 function ensureYzReg() {
   const w = window as any;
-  if (w.__yzReg) return w.__yzReg;
-  w.__yzElements = w.__yzElements || [];
-  w.__yzMeta = w.__yzMeta || {};
-  const esc = (s: string) => String(s).replace(/"/g, '\\"');
-  // 文本模糊匹配：:has-text / :contains 文本漂移时的二级降级（与桌面端同口径）
-  // [semantic-desktop-only] 2026-10-27：桌面端已上线语义定位 target（main.cjs 的
-  //   ===SEMANTIC-LOCATOR-START/END===，含 role/label/near 与候选排序）。本服务端链路
-  //   **尚未对齐** —— 工具层遇到 target 且非 Electron 环境会直接报错，不会落到这里的
-  //   textScore/fuzzyFind 上。下一步把同一套打分/候选规则搬到本文件，保持两条执行面一致。
   const textNorm = (s: unknown) => String(s ?? '').replace(/\s+/g, '').trim();
   const textScore = (a: unknown, b: unknown): number => {
     const x = textNorm(a); const y = textNorm(b);
@@ -932,6 +923,136 @@ function ensureYzReg() {
     let hit = 0;
     for (const ch of y) if (seen.has(ch)) hit++;
     return hit / Math.max(x.length, y.length) >= 0.7 ? 1 : 0;
+  };
+  if (w.__yzReg) return w.__yzReg;
+  w.__yzElements = w.__yzElements || [];
+  w.__yzMeta = w.__yzMeta || {};
+  const esc = (s: string) => String(s).replace(/"/g, '\\"');
+  // 文本模糊匹配：:has-text / :contains 文本漂移时的二级降级（与桌面端同口径）
+  // ★ 语义定位已对齐服务端（2026-10-29）：下方 semVisible/semRole/…/yzResolveSemantic
+  //   与桌面端 main.cjs 的 ===SEMANTIC-LOCATOR=== 同构移植（打分/候选/去重口径逐条一致，
+  //   文本分用本文件 textScore，与桌面 yzTextScore 同源）。工具层 semanticGuard 相应放行。
+  const semNorm = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim();
+  const semVisible = (el: any): boolean => {
+    try {
+      if (!el || el.disabled) return false;
+      if (el.offsetParent === null) {
+        const st = (typeof getComputedStyle === 'function') ? getComputedStyle(el) : null;
+        if (!st || (st.position !== 'fixed' && st.position !== 'sticky')) return false;
+      }
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      return !!(r && r.width >= 2 && r.height >= 2);
+    } catch { return false; }
+  };
+  const semAttr = (el: any, k: string): string | null => { try { return el.getAttribute ? el.getAttribute(k) : null; } catch { return null; } };
+  const semRole = (el: any): string => {
+    try {
+      const r = semNorm(semAttr(el, 'role')).toLowerCase(); if (r) return r;
+      const tag = String(el.tagName || '').toLowerCase();
+      if (tag === 'button') return 'button';
+      if (tag === 'a') return semAttr(el, 'href') != null ? 'link' : '';
+      if (tag === 'select') return 'combobox';
+      if (tag === 'textarea') return 'textbox';
+      if (tag === 'summary') return 'button';
+      if (tag === 'option') return 'option';
+      if (tag === 'input') {
+        const t = String(el.type || semAttr(el, 'type') || 'text').toLowerCase();
+        if (t === 'checkbox') return 'checkbox';
+        if (t === 'radio') return 'radio';
+        if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image') return 'button';
+        return 'textbox';
+      }
+      if (el.isContentEditable) return 'textbox';
+      return '';
+    } catch { return ''; }
+  };
+  const semLabelText = (el: any): string => {
+    try {
+      const al = semNorm(semAttr(el, 'aria-label')); if (al) return al;
+      const lb = semAttr(el, 'aria-labelledby');
+      if (lb) {
+        const ids = String(lb).split(/\s+/), parts: string[] = [];
+        for (const id of ids) { const n = document.getElementById ? document.getElementById(id) : null; if (n) parts.push(n.textContent || ''); }
+        const ls = semNorm(parts.join(' ')); if (ls) return ls;
+      }
+      if (el.id) { try { const fl = document.querySelector('label[for="' + String(el.id).replace(/"/g, '') + '"]'); if (fl && semNorm(fl.textContent)) return semNorm(fl.textContent); } catch { /* ignore */ } }
+      const cl = el.closest ? el.closest('label') : null; if (cl && semNorm(cl.textContent)) return semNorm(cl.textContent);
+      const ph = semNorm(semAttr(el, 'placeholder')); if (ph) return ph;
+      const ti = semNorm(semAttr(el, 'title')); if (ti) return ti;
+      return '';
+    } catch { return ''; }
+  };
+  const semAccName = (el: any): string => {
+    const l = semLabelText(el); if (l) return l;
+    try {
+      const t = semNorm(el.innerText != null ? el.innerText : el.textContent);
+      if (t) return t.slice(0, 120);
+      const alt = semNorm(semAttr(el, 'alt')); if (alt) return alt;
+      if (typeof el.value === 'string' && el.value) return semNorm(el.value);
+    } catch { /* ignore */ }
+    return '';
+  };
+  const semNear = (el: any, near: string, maxDepth?: number): boolean => {
+    const q = semNorm(near); if (!q) return true;
+    let cur: any = el, d = 0; const limit = maxDepth || 4;
+    while (cur && d <= limit) {
+      try { if (semNorm(cur.innerText != null ? cur.innerText : cur.textContent).indexOf(q) >= 0) return true; } catch { /* ignore */ }
+      cur = cur.parentElement; d++;
+    }
+    try {
+      let sib = el.previousElementSibling, hops = 0;
+      while (sib && hops < 3) { if (semNorm(sib.innerText != null ? sib.innerText : sib.textContent).indexOf(q) >= 0) return true; sib = sib.previousElementSibling; hops++; }
+    } catch { /* ignore */ }
+    return false;
+  };
+  const semScore = (el: any, q: any, intent: string): { score: number; reasons: string[] } | null => {
+    if (!semVisible(el)) return null;
+    q = q || {};
+    const wantText = semNorm(q.text), wantRole = semNorm(q.role).toLowerCase(), wantLabel = semNorm(q.label);
+    if (!wantText && !wantRole && !wantLabel) return null;
+    const elRole = semRole(el);
+    if (wantRole && elRole !== wantRole) return null;
+    const name = semAccName(el); let score = 0; const reasons: string[] = [];
+    if (wantText) {
+      if (q.exact) {
+        if (semNorm(name) !== wantText) return null;
+        score += 40; reasons.push('text-exact');
+      } else {
+        const ts = textScore(name, wantText);
+        if (ts === 3) { score += 40; reasons.push('text-equal'); }
+        else if (ts === 2) { score += 30; reasons.push('text-contains'); }
+        else if (ts === 1) { score += 15; reasons.push('text-similar'); }
+        else return null;
+      }
+    }
+    if (wantLabel) {
+      const lt = semLabelText(el);
+      const hit = q.exact ? (semNorm(lt) === wantLabel) : (textScore(lt, wantLabel) >= 2);
+      if (!hit) return null;
+      score += 30; reasons.push('label');
+    }
+    if (q.near) { if (!semNear(el, q.near, 4)) return null; score += 15; reasons.push('near'); }
+    if (wantRole) { score += 30; reasons.push('role'); }
+    try {
+      const tag = String(el.tagName || '').toLowerCase();
+      const ty = String(el.type || '').toLowerCase();
+      if (intent === 'click') {
+        if (tag === 'a' || tag === 'button' || tag === 'summary' || /^(button|link|menuitem|tab|option|switch|checkbox|radio)$/.test(elRole)) { score += 20; reasons.push('intent-click'); }
+      } else if (intent === 'type') {
+        if (tag === 'input' || tag === 'textarea' || el.isContentEditable || /^(textbox|searchbox)$/.test(elRole)) { score += 20; reasons.push('intent-type'); }
+        else if (tag === 'button' || tag === 'a') { score -= 20; reasons.push('intent-avoid'); }
+      } else if (intent === 'select') {
+        if (tag === 'select' || elRole === 'combobox') { score += 25; reasons.push('intent-select'); }
+      } else if (intent === 'check') {
+        if (/^(checkbox|radio)$/.test(ty) || /^(checkbox|radio|switch)$/.test(elRole)) { score += 25; reasons.push('intent-check'); }
+      } else {
+        const clickable = /^(a|button|input|select|textarea|summary)$/.test(tag) || !!semAttr(el, 'role') || el.isContentEditable;
+        if (clickable) { score += 10; reasons.push('interactive'); }
+      }
+      const whole = semNorm(el.textContent);
+      if (wantText && whole.length > Math.max(60, name.length * 3)) { score -= 10; reasons.push('container'); }
+    } catch { /* ignore */ }
+    return { score, reasons };
   };
   const fuzzyFind = (meta: any): Element | null => {
     if (!meta) return null;
@@ -1030,6 +1151,62 @@ function ensureYzReg() {
     genSel,
     genSelEcho,
   };
+  const semCandidate = (el: any, score: number, reasons: string[]) => {
+    const c: any = { index: w.__yzReg.register(el), tag: String(el.tagName || '').toLowerCase(),
+      text: semNorm(el.textContent).slice(0, 40), role: semRole(el),
+      label: semLabelText(el).slice(0, 40), selector: w.__yzReg.genSel(el), score };
+    if (reasons && reasons.length) c.reason = reasons.join(',');
+    return c;
+  };
+  const yzSemanticCandidates = (q: any, intent: string, limit?: number) => {
+    limit = limit || 10;
+    let pool: any[] = [];
+    try { pool = Array.prototype.slice.call(document.querySelectorAll('a,button,input,select,textarea,summary,[role],[contenteditable=""],[contenteditable=true],[onclick],[tabindex]')); } catch { pool = []; }
+    if (pool.length > 2000) pool = pool.slice(0, 2000);
+    const collect = (list: any[]) => {
+      const out: any[] = [];
+      for (const el of list) {
+        if (out.length >= 200) break;
+        const st = semScore(el, q, intent);
+        if (st) out.push({ el, score: st.score, reasons: st.reasons });
+      }
+      return out;
+    };
+    let cands = collect(pool);
+    if (!cands.length && (semNorm(q.text) || semNorm(q.label))) {
+      const broad: any[] = []; try { broad.push(...Array.from(document.querySelectorAll('body *'))); } catch { /* ignore */ }
+      const t0 = semNorm(q.text), l0 = semNorm(q.label); const pre: any[] = [];
+      for (const be of broad) {
+        if (pre.length >= 4000) break;
+        let bt = ''; try { bt = semNorm(be.textContent); } catch { continue; }
+        if ((t0 && (bt.indexOf(t0) >= 0 || textScore(bt, t0) >= 2)) || (l0 && bt.indexOf(l0) >= 0)) pre.push(be);
+      }
+      cands = collect(pre);
+    }
+    cands.sort((a: any, b: any) => (b.score - a.score) || (semAccName(a.el).length - semAccName(b.el).length));
+    const kept: any[] = [];
+    for (const c of cands) {
+      let dup = false;
+      for (const k of kept) {
+        try {
+          if (c.el === k.el) continue;
+          if (c.el.contains(k.el) && (semAccName(c.el) === semAccName(k.el) || k.score >= c.score)) { dup = true; break; }
+          if (k.el.contains(c.el) && semAccName(c.el) === semAccName(k.el)) { dup = true; break; }
+        } catch { /* ignore */ }
+      }
+      if (!dup) kept.push(c);
+      if (kept.length >= limit) break;
+    }
+    return kept;
+  };
+  const yzResolveSemantic = (q: any, intent: string) => {
+    const kept = yzSemanticCandidates(q, intent, 10);
+    if (!kept.length) return { status: 'not_found', candidates: [] };
+    if (kept.length === 1) return { status: 'ok', el: kept[0].el, score: kept[0].score, reasons: kept[0].reasons };
+    // 命中多个：一律给候选，不替模型选（误点会重置表单，代价远高于多一轮）
+    return { status: 'ambiguous', candidates: kept.map((c: any) => semCandidate(c.el, c.score, c.reasons)) };
+  };
+  w.__yzReg.resolveSemantic = yzResolveSemantic;
   return w.__yzReg;
 }
 
@@ -1077,6 +1254,51 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
     //   在每次动作入口记一份，供「导出/下载」触发时决定落盘目录（工作目录/downloads）。
     if (typeof args.__workspaceDir === 'string' && args.__workspaceDir.trim()) {
       lastAgentWorkspaceDir = args.__workspaceDir.trim();
+    }
+
+    // ★ 语义定位 target 预解析（2026-10-29，与桌面端 ===SEMANTIC-LOCATOR=== 对齐）：
+    //   index/selector 都没给而 target:{text,role,label,exact,near} 给了 → 在页面里跑
+    //   yzResolveSemantic 打分选元素；ok → register 成 index 注入 args（后续 case 原路径
+    //   照跑，零重复实现）；ambiguous/not_found → 直接返回与桌面端同款回执。
+    //   命中多个一律给候选不替模型选（误点会重置表单，代价远高于多一轮）。
+    const semActions = new Set(['click', 'type', 'select_option', 'check', 'uncheck', 'hover', 'scroll', 'press']);
+    const tg = args?.target;
+    const hasTarget = tg && typeof tg === 'object' && (tg.text || tg.role || tg.label);
+    if (hasTarget && args.index == null && !args.selector && semActions.has(String(action))) {
+      await page.evaluate(ensureYzReg);
+      const sem = await page.evaluate((p: { q: any; intentArg: string }) => {
+        const R = (window as any).__yzReg;
+        const res = R.resolveSemantic(p.q, p.intentArg);
+        if (res.status !== 'ok') {
+          return { status: res.status, candidates: res.candidates || [] };
+        }
+        return { status: 'ok', index: R.register(res.el), reasons: res.reasons || [] };
+      }, { q: tg, intentArg: String(action) }).catch((e: any) => ({ status: 'error', error: String(e?.message || e) }));
+      if (sem.status === 'ambiguous' || sem.status === 'not_found') {
+        const intent = String(action) === 'type' ? '输入' : '操作';
+        const isAmbiguous = sem.status === 'ambiguous';
+        res.json({
+          data: {
+            status: isAmbiguous ? 'ambiguous' : 'not_found',
+            ambiguous: isAmbiguous,
+            matched: isAmbiguous ? sem.candidates.length : 0,
+            query: tg,
+            candidates: sem.candidates,
+            hint: isAmbiguous
+              ? '语义定位命中多个元素，未' + (String(action) === 'type' ? '输入' : '点击') + '。从 candidates 选一个 index 重试，或用 role / label / exact:true / near 收窄。'
+              : '未找到匹配元素（语义定位）。先 browser_get_page_content 看页面上的 text/role/label，再用 target 定位；或改用 index。不要用 run_script 穷举 DOM。',
+          },
+        });
+        return;
+      }
+      if (sem.status === 'error') {
+        res.json({ data: { status: 'failed', error: sem.error, hint: '语义定位脚本执行失败；改用 index 或 selector 定位后重试。' } });
+        return;
+      }
+      if (sem.status === 'ok') {
+        args.index = sem.index;   // 注入解析结果，后续 case 原路径执行（带 via=semantic 标记由 case 内补）
+        (args as any).__semanticMatched = sem.reasons;
+      }
     }
 
     // 变化检测：操作前采集页面快照
@@ -1178,7 +1400,7 @@ router.post('/action', withBrowserLock(async (req: Request, res: Response) => {
             result = pos;
           } else if ((pos as any)?.x !== undefined) {
             await page.mouse.click((pos as any).x, (pos as any).y);
-            result = { success: true, index: args.index, via: 'real-mouse', autoRelocated: !!(pos as any).degraded };
+            result = { success: true, index: args.index, via: (args as any).__semanticMatched ? 'semantic' : 'real-mouse', matchedBy: (args as any).__semanticMatched || undefined, autoRelocated: !!(pos as any).degraded };
           } else {
             result = { success: true, index: args.index, via: 'dom-events', iframe: true, autoRelocated: !!(pos as any).degraded };
           }
