@@ -1,6 +1,21 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '../stores/chat'
-import { collectWaitingIds, derivePetActivity, derivePetState, plainPetSettings, usePetStore } from '../stores/pet'
+import {
+  affinityOf,
+  bumpPetStats,
+  collectWaitingIds,
+  derivePetActivity,
+  derivePetState,
+  emptyPetStats,
+  lastUserText,
+  petMemoryContent,
+  petStatsFromRows,
+  plainPetSettings,
+  usePetStore,
+  type PetInteraction,
+  type PetStats,
+} from '../stores/pet'
+import { useMemoryStore } from '../stores/memory'
 import { useAgentStore } from '../stores/agent'
 import { useSpaceStore } from '../stores/space'
 
@@ -27,6 +42,7 @@ export function usePetBridge() {
   const agents = useAgentStore() as any
   const spaces = useSpaceStore() as any
   const pet = usePetStore()
+  const mem = useMemoryStore() as any
   pet.init()
 
   /** 最近一次任务终态 */
@@ -82,11 +98,22 @@ export function usePetBridge() {
     for (const id of waitIds) tasks.push({ id, title: titleOf.get(id) || '任务', status: 'needs-input' })
     for (const id of chat.runningConvIds ?? []) tasks.push({ id, title: titleOf.get(id) || '任务', status: 'running' })
     for (const id of chat.pausedConvIds ?? []) tasks.push({ id, title: titleOf.get(id) || '任务', status: 'paused' })
+    // 已结束的任务也列出来（按结束时间倒序）：出错的行上要能点「重试」
+    const stats = (chat.runStatsByConv || {}) as Record<string, { status: string; endedAt?: number }>
+    const finished = Object.entries(stats)
+      .filter(([id, r]) => (r.status === 'error' || r.status === 'completed') && !tasks.some((t) => t.id === id))
+      .sort((a, b) => (Number(b[1].endedAt) || 0) - (Number(a[1].endedAt) || 0))
+      .slice(0, 3)
+    for (const [id, r] of finished) {
+      if (tasks.some((t) => t.id === id)) continue
+      tasks.push({ id, title: titleOf.get(id) || '任务', status: String((r as any).status) })
+    }
     return {
       state,
       running,
       waiting,
       activity,
+      memory: { affinity: affinityOf(petStats.value), ...petStats.value },
       title: String(chat.currentConversation?.title || ''),
       tasks: tasks.slice(0, 5),
       // 快问条左侧的智能体下拉：优先「可用于对话」的清单，没有就退回全部
@@ -101,6 +128,69 @@ export function usePetBridge() {
   }
 
   const api = () => (window as any).electronAPI?.pet
+
+  /* ===== 宠物记忆（memory 维度 pet）=====
+   * 统计只存"相处次数"，不存对话内容。写盘双保险：
+   *   ① 后端 memory 表（记忆管理页可见，需登录）
+   *   ② localStorage 兜底（未登录 / 后端不可用时也记得住）
+   */
+  const PET_STATS_KEY = 'yz:pet:memory'
+  const petStats = ref<PetStats>(emptyPetStats())
+  let petMemoryId = ''
+
+  function readLocalStats(): PetStats | null {
+    try {
+      const raw = localStorage.getItem(PET_STATS_KEY)
+      if (!raw) return null
+      return petStatsFromRows([{ metadata: JSON.parse(raw) }])
+    } catch {
+      return null
+    }
+  }
+  function writeLocalStats(stats: PetStats) {
+    try {
+      localStorage.setItem(PET_STATS_KEY, JSON.stringify({ petStats: stats }))
+    } catch {
+      /* 存储不可用：只影响下次启动的恢复 */
+    }
+  }
+  let persistTimer = 0
+  function persistPetStats() {
+    writeLocalStats(petStats.value)
+    window.clearTimeout(persistTimer)
+    persistTimer = window.setTimeout(async () => {
+      const body = petMemoryContent(petStats.value)
+      const metadata = { petStats: petStats.value }
+      try {
+        if (petMemoryId) await mem.updateMemory?.(petMemoryId, { content: body, metadata })
+        else {
+          const row = await mem.createMemory?.({ content: body, type: 'pet', tags: ['pet'], metadata })
+          if (row?.id) petMemoryId = String(row.id)
+        }
+      } catch {
+        /* 未登录 / 后端不可用：localStorage 已经记住，不打扰用户 */
+      }
+    }, 2500)
+  }
+  async function loadPetMemory() {
+    petStats.value = readLocalStats() || emptyPetStats()
+    try {
+      const r = await mem.loadMemories?.({ dimension: 'pet', page: 1, pageSize: 5 })
+      const rows = Array.isArray(r?.rows) ? r.rows : []
+      const fromServer = petStatsFromRows(rows)
+      if (fromServer) {
+        petStats.value = fromServer
+        petMemoryId = String(rows.find((x: any) => x?.id)?.id || '')
+        writeLocalStats(fromServer)
+      }
+    } catch {
+      /* 未登录时静默：用本地统计 */
+    }
+  }
+  function recordPetInteraction(kind: PetInteraction) {
+    petStats.value = bumpPetStats(petStats.value, kind)
+    persistPetStats()
+  }
 
   /** 同一会话 5 秒内只弹一条，防刷屏 */
   const lastNotifyAt = new Map<string, number>()
@@ -172,6 +262,7 @@ export function usePetBridge() {
   onMounted(() => {
     // 智能体是异步从后端拉的：不主动触发的话，宠物窗的智能体下拉会一直是空的
     try { agents.ensureAgents?.() } catch { /* 后端未就绪时下次渲染再来 */ }
+    void loadPetMemory()
     // 任务终态：钩子在 markRunEnd 之后 30ms 派发，此时 runStatsByConv 已落定
     offTaskFinished = chat.onTaskFinished?.((convId: string) => {
       const rec = chat.runStatsByConv?.[convId]
@@ -210,6 +301,22 @@ export function usePetBridge() {
         // 由 useChat 的 prefill watcher 消费：预填落地后直接 send()（避免桥里再造一个 useChat 实例）
         try { chat.petAutoSend = true } catch { /* ignore */ }
         try { chat.prefillInput?.(text) } catch { /* ignore */ }
+        return
+      }
+      if (a.type === 'pet-interaction' && a.kind) {
+        recordPetInteraction(String(a.kind) as PetInteraction)
+        return
+      }
+      if (a.type === 'retry' && a.convId) {
+        // 重试 = 拿该会话最后一条用户消息，在原会话里再发一次（sendInner 会走"追加到当前会话"分支）
+        const convId = String(a.convId)
+        const text = lastUserText(chat.messagesByConv?.[convId])
+        if (!text) return
+        try { chat.selectConv?.(convId) } catch { /* 会话可能已删 */ }
+        try { chat.currentConvId = convId } catch { /* ignore */ }
+        try { chat.prefillInput?.(text) } catch { /* ignore */ }
+        try { chat.petAutoSend = true } catch { /* ignore */ }
+        try { if (window.location.hash !== '#/chat/' + convId) window.location.hash = '#/chat/' + convId } catch { /* ignore */ }
         return
       }
       if (a.type === 'open-conv' && a.convId) {

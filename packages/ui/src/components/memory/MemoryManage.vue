@@ -7,6 +7,7 @@
         <el-radio-button value="daily"><el-icon class="dim-icon"><Calendar /></el-icon> 每日记忆</el-radio-button>
         <el-radio-button value="session"><el-icon class="dim-icon"><ChatDotRound /></el-icon> 会话记忆</el-radio-button>
         <el-radio-button value="agent"><el-icon class="dim-icon"><Avatar /></el-icon> 智能体记忆</el-radio-button>
+        <el-radio-button value="pet"><el-icon class="dim-icon"><Present /></el-icon> 宠物记忆</el-radio-button>
       </el-radio-group>
 
       <div class="toolbar-right">
@@ -245,7 +246,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { Plus, Search, MagicStick, Clock, User, Calendar, ChatDotRound, Avatar } from '@element-plus/icons-vue';
+import { Plus, Search, MagicStick, Clock, User, Calendar, ChatDotRound, Avatar, Present } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useMemoryStore, useAgentStore } from '../../stores';
 import type { MemoryDimension, MemoryRow } from '../../stores/memory';
@@ -287,6 +288,7 @@ const dimensionHint = computed(() => {
     case 'agent': return '将绑定到所选智能体，仅该智能体可见';
     case 'session': return '会话级记忆，跨会话不保留上下文';
     case 'daily': return '每日记忆，按日期沉淀';
+    case 'pet': return '宠物伴星的相处记录（摸头/招手/跟随次数与好感），由宠物自动写入';
     default: return '';
   }
 });
@@ -401,6 +403,9 @@ function buildCreateBody(): { content: string; type: string; agentId?: string; t
   }
   if (dimension.value === 'session') {
     return { content, type: 'session', tags: tags.length ? tags : undefined };
+  }
+  if (dimension.value === 'pet') {
+    return { content, type: 'pet', tags: tags.length ? tags : undefined };
   }
   return { content, type: 'daily', tags: tags.length ? tags : undefined };
 }

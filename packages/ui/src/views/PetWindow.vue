@@ -7,6 +7,9 @@
         <div class="p-head">
           <b>任务</b>
           <span class="p-count">{{ tasks.length }} 个</span>
+          <span v-if="memory.affinity" class="p-affinity" :title="'摸头 ' + memory.pet + ' · 招手 ' + memory.wave + ' · 跟随 ' + memory.follow">
+            好感 {{ memory.affinity }}
+          </span>
           <button class="p-x" @click.stop="panelOpen = false">✕</button>
         </div>
         <div class="p-body">
@@ -18,6 +21,12 @@
               <button v-if="t.status === 'running'" class="p-act" title="暂停" @click.stop="rowAction('pause', t.id)">暂停</button>
               <button v-else-if="t.status === 'paused'" class="p-act" title="恢复" @click.stop="rowAction('resume', t.id)">恢复</button>
               <button v-else-if="t.status === 'needs-input'" class="p-act" title="去回答" @click.stop="openConv(t.id)">回答</button>
+              <button
+                v-else-if="t.status === 'error' || t.status === 'completed'"
+                class="p-act"
+                title="用同样的内容再跑一次"
+                @click.stop="rowAction('retry', t.id)"
+              >重试</button>
               <button
                 class="p-act pin"
                 :class="{ on: settings.pinnedConvId === t.id }"
@@ -257,6 +266,8 @@ const radialOpen = ref(false)
 const radial = reactive({ cx: 0, cy: 0, flip: false })
 const tagOn = ref(false)
 const tasks = ref<Array<{ id: string; title: string; status: string }>>([])
+/** 宠物记忆：好感与互动次数（主窗派生后推过来） */
+const memory = ref({ affinity: 0, pet: 0, wave: 0, follow: 0, lastAt: 0 })
 const agents = ref<Array<{ id: string; name: string }>>([])
 const agentId = ref('')
 const askText = ref('')
@@ -404,6 +415,8 @@ const api = () => (window as any).electronAPI?.pet
 function play(key: string) {
   const a = ACTIONS.find((x) => x.key === key)
   if (!a) return
+  // 互动计入宠物记忆（好感）：只报这两种，其余动作不算
+  if (key === 'pet' || key === 'wave') api()?.action?.({ type: 'pet-interaction', kind: key })
   action.value = null
   requestAnimationFrame(() => (action.value = key)) // 连点同一动作也能重播
   window.clearTimeout(actionTimer)
@@ -470,11 +483,12 @@ function runSlot(key: string) {
   api()?.action?.({ type })
 }
 
-function rowAction(type: 'pause' | 'resume' | 'pin', id: string) {
+function rowAction(type: 'pause' | 'resume' | 'pin' | 'retry', id: string) {
   if (type === 'pin') {
     const next = settings.value.pinnedConvId === id ? '' : id
     settings.value = { ...settings.value, pinnedConvId: next }
     store.update({ pinnedConvId: next })   // 立刻落盘，不等 IPC 往返
+    if (next) api()?.action?.({ type: 'pet-interaction', kind: 'follow' })
   }
   api()?.action?.({ type, convId: id })
 }
@@ -519,6 +533,17 @@ function onMove(e: PointerEvent) {
 const IDLE_WALK_MIN = 9000
 const IDLE_WALK_MAX = 20000
 let strollTimer = 0
+
+/* ===== 好感带来的小动作：好感 ≥ 30 时，待机偶尔自己蹦一下 ===== */
+let joyTimer = 0
+function scheduleJoy() {
+  window.clearTimeout(joyTimer)
+  const delay = 60000 + Math.random() * 90000
+  joyTimer = window.setTimeout(() => {
+    if (canStroll() && memory.value.affinity >= 30) play('hop')
+    scheduleJoy()
+  }, delay)
+}
 
 /** 当前是否处于"可以自己走"的状态：待机、没动作、没开菜单、没悬停 */
 function canStroll() {
@@ -642,6 +667,7 @@ onMounted(() => {
     if (payload.state) state.value = payload.state as PetState
     activity.value = payload.activity ?? null
     if (Array.isArray(payload.tasks)) tasks.value = payload.tasks
+    if (payload.memory) memory.value = { ...memory.value, ...payload.memory }
     if (Array.isArray(payload.spaces)) {
       workspaces.value = payload.spaces
       if (payload.spaceId) spaceId.value = payload.spaceId
@@ -671,6 +697,7 @@ onMounted(() => {
   })
   scheduleStroll()
   refreshVrm()
+  scheduleJoy()
 
   // 主动要一次当前状态：主窗只在变化时推，本窗重载后智能体/任务列表会是空的
   api()?.requestSync?.()
@@ -686,6 +713,7 @@ onBeforeUnmount(() => {
   offSettings?.()
   offWalk?.()
   offWin?.()
+  window.clearTimeout(joyTimer)
   vrmSeq++ // 作废在途的模型加载
   window.clearTimeout(actionTimer)
   window.clearTimeout(strollTimer)
@@ -1145,6 +1173,15 @@ html:not(.dark) .ask .ask-agent {
   from { opacity: 0; transform: translateX(-50%) translateY(4px) scale(0.9); }
   to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
+
+.p-affinity {
+  margin-left: auto;
+  margin-right: 6px;
+  color: #e8b49a;
+  font-size: 10.5px;
+}
+.p-dot.s-error { background: #e05c5c; }
+.p-dot.s-completed { background: #5cc48a; }
 
 .tag {
   position: absolute;

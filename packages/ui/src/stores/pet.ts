@@ -270,3 +270,87 @@ export const usePetStore = defineStore('pet', () => {
 
   return { settings, lastSync, init, update }
 })
+
+/* ===== 重试：面板行内「重试」要拿回上一次的请求内容 ===== */
+
+/** 会话里最后一条有正文的用户消息（重试 = 用同样的内容再问一次） */
+export function lastUserText(messages: unknown): string {
+  if (!Array.isArray(messages)) return ''
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as any
+    if (!m || m.role !== 'user') continue
+    const text = typeof m.content === 'string' ? m.content.trim() : ''
+    if (text) return text
+  }
+  return ''
+}
+
+/* ===== 宠物记忆（memory 维度 pet）=====
+ * 只存"和用户相处的统计"，不存对话内容：太少没意义，太多是隐私。
+ * 统计口径：摸头 / 招手 / 跟随任务 各计一次，好感由加权和封顶 100。
+ */
+
+export type PetInteraction = 'pet' | 'wave' | 'follow'
+
+export interface PetStats {
+  pet: number
+  wave: number
+  follow: number
+  /** 最近一次互动时间（ms） */
+  lastAt: number
+}
+
+export function emptyPetStats(): PetStats {
+  return { pet: 0, wave: 0, follow: 0, lastAt: 0 }
+}
+
+export function bumpPetStats(stats: PetStats | null | undefined, kind: PetInteraction, now = Date.now()): PetStats {
+  const base = stats && typeof stats === 'object' ? stats : emptyPetStats()
+  const next: PetStats = {
+    pet: Number(base.pet) || 0,
+    wave: Number(base.wave) || 0,
+    follow: Number(base.follow) || 0,
+    lastAt: now,
+  }
+  if (kind === 'pet') next.pet += 1
+  else if (kind === 'wave') next.wave += 1
+  else if (kind === 'follow') next.follow += 1
+  return next
+}
+
+/** 好感 0..100：摸头最亲，招手次之，跟随任务算陪伴 */
+export function affinityOf(stats: PetStats | null | undefined): number {
+  if (!stats) return 0
+  const raw = (Number(stats.pet) || 0) * 2 + (Number(stats.wave) || 0) * 1 + (Number(stats.follow) || 0)
+  return Math.max(0, Math.min(100, raw))
+}
+
+/** 人类可读的记忆正文（写进 memory 表，记忆管理页也能看到） */
+export function petMemoryContent(stats: PetStats): string {
+  return `宠物伴星相处记录：摸头 ${stats.pet} 次、招手 ${stats.wave} 次、跟随任务 ${stats.follow} 次（好感 ${affinityOf(stats)}/100）`
+}
+
+/** 从 memory 行里恢复统计（坏数据一律当空） */
+export function petStatsFromRows(rows: unknown): PetStats | null {
+  if (!Array.isArray(rows) || !rows.length) return null
+  for (const row of rows as any[]) {
+    let meta: any = row?.metadata ?? row?.metadata_json
+    if (typeof meta === 'string') {
+      try {
+        meta = JSON.parse(meta)
+      } catch {
+        meta = null
+      }
+    }
+    const s = meta && meta.petStats
+    if (s && typeof s === 'object') {
+      return {
+        pet: Number(s.pet) || 0,
+        wave: Number(s.wave) || 0,
+        follow: Number(s.follow) || 0,
+        lastAt: Number(s.lastAt) || 0,
+      }
+    }
+  }
+  return null
+}

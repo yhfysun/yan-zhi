@@ -7,6 +7,12 @@ import {
   collectWaitingIds,
   derivePetActivity,
   derivePetState,
+  affinityOf,
+  bumpPetStats,
+  emptyPetStats,
+  lastUserText,
+  petMemoryContent,
+  petStatsFromRows,
   plainPetSettings,
   setPetSlot,
   shortTarget,
@@ -161,5 +167,54 @@ describe('plainPetSettings（设置要跨进程发给宠物窗）', () => {
 
   it('slots 坏数据回落空数组', () => {
     expect(plainPetSettings({ ...PET_DEFAULTS, slots: undefined as never }).slots).toEqual([])
+  })
+})
+
+describe('lastUserText（重试用上一次的请求内容）', () => {
+  it('取最后一条有正文的用户消息，跳过空消息与助手消息', () => {
+    const msgs = [
+      { role: 'user', content: '第一问' },
+      { role: 'assistant', content: '答' },
+      { role: 'user', content: '   ' },
+      { role: 'user', content: '第二问' },
+      { role: 'assistant', content: '答2' },
+    ]
+    expect(lastUserText(msgs)).toBe('第二问')
+  })
+
+  it('没有用户消息 / 坏入参 → 空串（调用方据此不发请求）', () => {
+    expect(lastUserText([{ role: 'assistant', content: 'x' }])).toBe('')
+    expect(lastUserText(undefined)).toBe('')
+    expect(lastUserText([null, {}])).toBe('')
+  })
+})
+
+describe('宠物记忆（统计与好感）', () => {
+  it('按种类累加，空入参当全新统计', () => {
+    const a = bumpPetStats(emptyPetStats(), 'pet', 1000)
+    const b = bumpPetStats(a, 'wave', 2000)
+    const c = bumpPetStats(b, 'follow', 3000)
+    expect(c).toMatchObject({ pet: 1, wave: 1, follow: 1, lastAt: 3000 })
+    expect(bumpPetStats(null, 'pet').pet).toBe(1)
+  })
+
+  it('好感加权并封顶 100', () => {
+    expect(affinityOf(emptyPetStats())).toBe(0)
+    expect(affinityOf({ pet: 3, wave: 2, follow: 1, lastAt: 0 })).toBe(9) // 3*2+2+1
+    expect(affinityOf({ pet: 100, wave: 100, follow: 100, lastAt: 0 })).toBe(100)
+  })
+
+  it('正文可读、含次数与好感', () => {
+    const text = petMemoryContent({ pet: 2, wave: 1, follow: 0, lastAt: 0 })
+    expect(text).toContain('摸头 2 次')
+    expect(text).toContain('好感 5/100')
+  })
+
+  it('从 memory 行恢复统计（metadata 可能是对象或 JSON 串），坏数据回落 null', () => {
+    expect(petStatsFromRows([{ metadata: { petStats: { pet: 4, wave: 2, follow: 1, lastAt: 9 } } }]))
+      .toMatchObject({ pet: 4, wave: 2, follow: 1 })
+    expect(petStatsFromRows([{ metadata_json: '{"petStats":{"pet":2}}' }])).toMatchObject({ pet: 2 })
+    expect(petStatsFromRows([{ metadata: {} }])).toBeNull()
+    expect(petStatsFromRows('nope')).toBeNull()
   })
 })

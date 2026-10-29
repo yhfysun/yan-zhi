@@ -12,7 +12,7 @@ import { runDreamingForUser, getDreamingConfig, setDreamingConfig } from '../ser
 const router = Router();
 router.use(authMiddleware);
 
-const VALID_TYPES = new Set(['daily', 'session', 'agent']);
+const VALID_TYPES = new Set(['daily', 'session', 'agent', 'pet']);
 
 function normType(t: unknown): string {
   const v = String(t || 'agent');
@@ -136,7 +136,7 @@ router.post('/upsert-daily', async (_req, res) => {
 //   session  → type = 'session'
 //   agent    → type = 'agent' AND agent_id IS NOT NULL（智能体记忆）
 //   profile  → type = 'agent' AND agent_id IS NULL（用户个人画像）
-const VALID_DIMENSIONS = new Set(['profile', 'agent', 'session', 'daily']);
+const VALID_DIMENSIONS = new Set(['profile', 'agent', 'session', 'daily', 'pet']);
 
 // GET /api/memory/list?dimension=&agentId=&keyword=&page=&pageSize= —— 分页查询记忆（按维度/关键词过滤）
 router.get('/list', (_req, res) => {
@@ -145,7 +145,7 @@ router.get('/list', (_req, res) => {
     if (!userId) { res.status(401).json({ error: '未登录' }); return; }
     const dimension = String(_req.query.dimension || '').trim();
     if (!VALID_DIMENSIONS.has(dimension)) {
-      res.status(400).json({ error: 'dimension 取值必须为 profile|agent|session|daily' });
+      res.status(400).json({ error: 'dimension 取值必须为 profile|agent|session|daily|pet' });
       return;
     }
     const agentId = String(_req.query.agentId || '').trim();
@@ -163,6 +163,8 @@ router.get('/list', (_req, res) => {
       whereClause += ` AND type = 'session'`;
     } else if (dimension === 'agent') {
       whereClause += ` AND type = 'agent' AND agent_id IS NOT NULL`;
+    } else if (dimension === 'pet') {
+      whereClause += ` AND type = 'pet'`;
     } else {
       whereClause += ` AND type = 'agent' AND agent_id IS NULL`;
     }

@@ -14,7 +14,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api, API_BASE, buildRequestHeaders } from '../api/client';
 
-export type MemoryDimension = 'profile' | 'agent' | 'session' | 'daily';
+export type MemoryDimension = 'profile' | 'agent' | 'session' | 'daily' | 'pet';
 
 export interface MemoryRow {
   id: string;
