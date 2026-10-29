@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>智能体代玩游戏 · 游戏模式原型（回合制 vs 实时循环）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { min-height: 100%; background: #07090d; color: #dbe3ee; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 16px 14px 34px; gap: 14px; }
+
+  .proto-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  .proto-head h1 { font-size: 15px; font-weight: 600; color: #eef2f8; }
+  .proto-head .sub { font-size: 12px; color: #6d7a90; }
+  .seg { display: flex; background: #12161d; border: 1px solid #232b37; border-radius: 9px; padding: 3px; gap: 2px; }
+  .seg button { border: 0; background: transparent; color: #8a97ab; font-size: 12px; padding: 6px 13px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+  .seg button.on { background: #e8734a; color: #fff; }
+  .seg button[data-mode="turn"].on { background: #c9873a; }
+  .seg button[data-mode="rt"].on { background: #2f9e6e; }
+
+  .wrap { display: flex; gap: 14px; align-items: stretch; width: 1180px; max-width: 100%; flex-wrap: wrap; justify-content: center; }
+
+  /* ================= 左：模拟浏览器窗 + 游戏 ================= */
+  .win { width: 760px; max-width: 100%; border-radius: 14px; overflow: hidden; background: #0e131b;
+         border: 1px solid #232b37; box-shadow: 0 20px 60px rgba(0,0,0,.5); display: flex; flex-direction: column; }
+  .win-title { height: 36px; background: #151c26; border-bottom: 1px solid #202936; display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+  .win-title i { width: 9px; height: 9px; border-radius: 50%; background: #ff5f57; display: inline-block; }
+  .win-title i + i { background: #febc2e; } .win-title i + i + i { background: #28c840; }
+  .win-title .url { margin-left: 8px; flex: 1; height: 22px; border-radius: 6px; background: #0d1218; border: 1px solid #202936;
+                    display: flex; align-items: center; padding: 0 10px; font-size: 11px; color: #7f8ca3; }
+  .win-body { position: relative; background: #0b1017; }
+  canvas { display: block; width: 100%; height: 440px; cursor: crosshair; }
+
+  /* 游戏模式执行条（贴窗口下沿，不挡游戏主体） */
+  .gamebar { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: #0f151e; border-top: 1px solid #202936; flex-wrap: wrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #4a5666; flex: none; }
+  .dot.on-turn { background: #e8a33a; box-shadow: 0 0 0 3px rgba(232,163,58,.16); animation: pulse 1.2s infinite; }
+  .dot.on-rt { background: #35c98a; box-shadow: 0 0 0 3px rgba(53,201,138,.16); animation: pulse .7s infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  .gb-state { font-size: 11.5px; color: #cdd6e2; }
+  .gb-goal { flex: 1; min-width: 180px; height: 27px; border-radius: 7px; background: #0b1017; border: 1px solid #232b37;
+             color: #cdd6e2; font-size: 11.5px; padding: 0 9px; font-family: inherit; }
+  .gb-goal:focus { outline: none; border-color: #3a4a66; }
+  .gb-chip { font-size: 10.5px; color: #8a97ab; background: #12161d; border: 1px solid #232b37; border-radius: 6px; padding: 4px 8px;
+             font-family: ui-monospace, Consolas, monospace; }
+  .gb-chip b { color: #cdd8ea; font-weight: 600; }
+  .stop { border: 1px solid #5c2b2b; background: #2a1618; color: #ff8d80; font-size: 11.5px; padding: 5px 11px;
+          border-radius: 7px; cursor: pointer; font-family: inherit; }
+  .stop:hover { background: #3a1c1e; }
+  .stop:active { transform: translateY(1px); }
+
+  /* 急停蒙层 */
+  .halt { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column;
+          gap: 10px; background: rgba(8,6,8,.82); backdrop-filter: blur(2px); z-index: 30; }
+  .halt.on { display: flex; }
+  .halt .t { font-size: 17px; font-weight: 700; color: #ff9a8c; }
+  .halt .s { font-size: 12px; color: #a89ea6; }
+  .halt button { margin-top: 4px; border: 1px solid #3a4a66; background: #182030; color: #dbe3ee; font-size: 12px;
+                 padding: 7px 16px; border-radius: 8px; cursor: pointer; font-family: inherit; }
+
+  /* ================= 右：管道 + 统计 + 日志 ================= */
+  .side { width: 392px; max-width: 100%; display: flex; flex-direction: column; gap: 12px; }
+  .card { background: #0e131b; border: 1px solid #232b37; border-radius: 12px; padding: 12px 13px; }
+  .card h2 { font-size: 11px; font-weight: 600; color: #7f8ca3; letter-spacing: .04em; margin-bottom: 9px; text-transform: uppercase; }
+
+  .pipe { display: flex; flex-direction: column; gap: 6px; }
+  .lane { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 9px; border: 1px solid #1c2330;
+          background: #0b1017; transition: border-color .18s, background .18s; }
+  .lane .no { width: 17px; height: 17px; border-radius: 5px; background: #1b2230; color: #7f8ca3; font-size: 10px;
+              display: flex; align-items: center; justify-content: center; flex: none; font-family: ui-monospace, monospace; }
+  .lane .nm { font-size: 12px; color: #cdd6e2; }
+  .lane .ds { font-size: 10.5px; color: #6d7a90; margin-top: 1px; }
+  .lane .badge { margin-left: auto; font-size: 10px; color: #6d7a90; font-family: ui-monospace, monospace; flex: none; }
+  .lane.hot { border-color: #3a4a66; background: #121a26; }
+  .lane.hot .no { background: #e8734a; color: #fff; }
+  .lane.hot .badge { color: #e8b49a; }
+  .lane.rt.hot { border-color: #2f6e55; background: #0e1b17; }
+  .lane.rt.hot .no { background: #35c98a; color: #04231a; }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .st { background: #0b1017; border: 1px solid #1c2330; border-radius: 9px; padding: 8px 10px; }
+  .st .k { font-size: 10px; color: #6d7a90; }
+  .st .v { font-size: 15px; color: #eef2f8; font-weight: 600; margin-top: 2px; font-family: ui-monospace, Consolas, monospace; }
+  .st .v small { font-size: 10px; color: #7f8ca3; font-weight: 400; margin-left: 2px; }
+
+  .log { height: 176px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; }
+  .log::-webkit-scrollbar { width: 6px; } .log::-webkit-scrollbar-thumb { background: #232b37; border-radius: 3px; }
+  .ln { display: flex; gap: 7px; line-height: 1.5; }
+  .ln .t { color: #4d5868; flex: none; }
+  .ln .m { color: #8a97ab; }
+  .ln.think .m { color: #e8a33a; }
+  .ln.act .m { color: #6fb3e0; }
+  .ln.sample .m { color: #35c98a; }
+  .ln.haltline .m { color: #ff8d80; }
+
+  .note { font-size: 11px; color: #6d7a90; line-height: 1.7; }
+  .note b { color: #cdd6e2; font-weight: 600; }
+
+  /* ================= 底部对比 ================= */
+  table.cmp { width: 1180px; max-width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  table.cmp th, table.cmp td { border: 1px solid #1c2330; padding: 8px 10px; text-align: left; vertical-align: top; }
+  table.cmp th { background: #12161d; color: #8a97ab; font-weight: 600; font-size: 11px; }
+  table.cmp td { color: #b8c2d2; }
+  table.cmp td.g { color: #7fd4a8; }
+  table.cmp td.r { color: #e8a08c; }
+</style>
+</head>
+<body>
+
+<div class="proto-head">
+  <h1>智能体代玩游戏 · 游戏模式</h1>
+  <span class="sub">同一个游戏，两种驱动方式，实时对比</span>
+  <div class="seg" id="modeSeg">
+    <button data-mode="off" class="on">关闭（自己玩）</button>
+    <button data-mode="turn">回合制 · LLM 慢通道</button>
+    <button data-mode="rt">实时 · 主进程循环</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <!-- ============ 游戏 ============ -->
+  <div class="win">
+    <div class="win-title">
+      <i></i><i></i><i></i>
+      <span class="url">https://game.example.com/coin-rain</span>
+    </div>
+    <div class="win-body">
+      <canvas id="game"></canvas>
+      <div class="halt" id="halt">
+        <div class="t">已急停</div>
+        <div class="s" id="haltWhy">Esc / 时长上限 / 步数上限 任一触发即冻结输入</div>
+        <button id="resume">恢复运行</button>
+      </div>
+    </div>
+    <div class="gamebar">
+      <span class="dot" id="dot"></span>
+      <span class="gb-state" id="gbState">未接管 · 你可以直接点金币</span>
+      <input class="gb-goal" id="goal" value="把所有掉下来的金币都点到，别漏" spellcheck="false" />
+      <span class="gb-chip" id="chipSampled">采样 <b>—</b></span>
+      <button class="stop" id="stopBtn">急停 Esc</button>
+    </div>
+  </div>
+
+  <!-- ============ 侧栏 ============ -->
+  <div class="side">
+    <div class="card">
+      <h2>三层管道 · 谁在这个环节干活</h2>
+      <div class="pipe">
+        <div class="lane" id="lane0">
+          <span class="no">1</span>
+          <span><span class="nm">感知</span><div class="ds">截屏 / canvas 像素采样</div></span>
+          <span class="badge" id="b0">按需</span>
+        </div>
+        <div class="lane" id="lane1">
+          <span class="no">2</span>
+          <span><span class="nm">决策</span><div class="ds">LLM 理解画面并选目标</div></span>
+          <span class="badge" id="b1">未启用</span>
+        </div>
+        <div class="lane" id="lane2">
+          <span class="no">3</span>
+          <span><span class="nm">执行</span><div class="ds">sendInputEvent 真实鼠标/按键</div></span>
+          <span class="badge" id="b2">未启用</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>实时口径</h2>
+      <div class="stats">
+        <div class="st"><div class="k">有效操作/秒</div><div class="v" id="sRate">—</div></div>
+        <div class="st"><div class="k">平均单步延迟</div><div class="v" id="sLat">—</div></div>
+        <div class="st"><div class="k">已执行步数</div><div class="v" id="sSteps">0</div></div>
+        <div class="st"><div class="k">得分（实际点到）</div><div class="v" id="sScore">0</div></div>
+        <div class="st"><div class="k">LLM 调用次数</div><div class="v" id="sLlm">0</div></div>
+        <div class="st"><div class="k">估算 token</div><div class="v" id="sTok">0</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>决策日志</h2>
+      <div class="log" id="log"></div>
+    </div>
+
+    <div class="card">
+      <h2>急停三件套</h2>
+      <div class="note">
+        <b>Esc 热键</b> 立即冻结输入 · <b>时长上限</b> 默认 5 分钟 · <b>步数上限</b> 默认 300 步。<br>
+        实时模式下每次循环都校验这三个闸门，任一触发即停并保留现场（截图 + 最后 N 步日志）供复查。
+      </div>
+    </div>
+  </div>
+</div>
+
+<table class="cmp">
+  <tr>
+    <th style="width:130px">维度</th>
+    <th>回合制 · LLM 慢通道</th>
+    <th>实时 · 主进程循环</th>
+  </tr>
+  <tr>
+    <td>决策者</td>
+    <td>每一帧都由 LLM 决策（截图进模型 → 模型给出动作）</td>
+    <td class="g">开局一次策略，之后主进程按 30Hz 执行；只在"卡住"时回问 LLM</td>
+  </tr>
+  <tr>
+    <td>单步延迟</td>
+    <td class="r">约 1000–2000ms（一次 LLM 往返）</td>
+    <td class="g">约 33ms（一次 sendInputEvent）</td>
+  </tr>
+  <tr>
+    <td>适用游戏</td>
+    <td>回合制、放置挂机、棋类、每日签到</td>
+    <td class="g">动作、弹幕、跑酷等需要毫秒级反应的</td>
+  </tr>
+  <tr>
+    <td>token 成本</td>
+    <td class="r">随步数线性增长（每步一张图）</td>
+    <td class="g">基本恒定（只开局一次）</td>
+  </tr>
+  <tr>
+    <td>状态判断</td>
+    <td>模型读整张截图，泛化好、但慢且贵</td>
+    <td class="g">canvas 像素采样（血条颜色 / 目标区域），毫秒级且免费</td>
+  </tr>
+  <tr>
+    <td>失败形态</td>
+    <td>点空、点错目标——可回读截图自查</td>
+    <td class="r">像素条件写错会"空转"——靠日志与步数上限兜底</td>
+  </tr>
+</table>
+
+<script>
+(() => {
+  // ============ 画布 ============
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  let W = 0, H = 0;
+  function resize() {
+    const r = cv.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    W = r.width; H = r.height;
+  }
+  new ResizeObserver(resize).observe(cv);
+
+  // ============ 游戏状态 ============
+  const coins = [];
+  let score = 0, missed = 0, spawnTimer = 0;
+  const GOLD = '#f0b43c', GOLD_DIM = '#8a6520';
+
+  function spawn() {
+    const r = 11 + Math.random() * 5;
+    coins.push({
+      x: 26 + Math.random() * Math.max(1, W - 52),
+      y: -r,
+      r,
+      vy: 52 + Math.random() * 46,
+      t: Math.random() * 6,
+    });
+  }
+
+  function reset() { coins.length = 0; score = 0; missed = 0; }
+
+  // ============ 模式与统计 ============
+  let mode = 'off';
+  let halted = false, haltReason = '';
+  let stepCount = 0, llmCalls = 0, tokenEst = 0;
+  let stepsWindow = [];         // 最近 2 秒内的步时间戳 → 实测频率
+  let lastStepAt = 0, latSum = 0, latN = 0;
+  let hotLane = -1, hotUntil = 0;
+
+  const $ = (id) => document.getElementById(id);
+  const logEl = $('log');
+
+  function logLine(kind, text) {
+    const d = new Date();
+    const t = String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0') +
+              '.' + String(d.getMilliseconds()).padStart(3, '0');
+    const row = document.createElement('div');
+    row.className = 'ln ' + kind;
+    row.innerHTML = '<span class="t">' + t + '</span><span class="m"></span>';
+    row.querySelector('.m').textContent = text;
+    logEl.appendChild(row);
+    while (logEl.children.length > 120) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function markLane(i, ms) {
+    hotLane = i; hotUntil = performance.now() + (ms || 220);
+    if (mode === 'rt') $('lane' + i).classList.add('rt');
+  }
+
+  function refreshLanes(now) {
+    for (let i = 0; i < 3; i++) {
+      const on = hotLane === i && now < hotUntil;
+      $('lane' + i).classList.toggle('hot', on);
+    }
+    if (now >= hotUntil) {
+      for (let i = 0; i < 3; i++) $('lane' + i).classList.remove('rt');
+    }
+    $('b0').textContent = mode === 'rt' ? '30Hz 采样' : (mode === 'turn' ? '整屏截图' : '按需');
+    $('b1').textContent = mode === 'rt' ? '开局 1 次' : (mode === 'turn' ? '每步 1 次' : '未启用');
+    $('b2').textContent = mode === 'off' ? '未启用' : 'sendInputEvent';
+  }
+
+  function refreshStats() {
+    const now = performance.now();
+    stepsWindow = stepsWindow.filter(t => now - t < 2000);
+    const rate = stepsWindow.length / 2;
+    $('sRate').textContent = mode === 'off' ? '—' : (rate ? rate.toFixed(rate >= 10 ? 0 : 1) : '0') + ' 步/秒';
+    $('sLat').textContent = latN ? Math.round(latSum / latN) + ' ms' : '—';
+    $('sSteps').textContent = String(stepCount);
+    $('sScore').textContent = String(score);
+    $('sLlm').textContent = String(llmCalls);
+    $('sTok').textContent = tokenEst ? (tokenEst >= 1000 ? (tokenEst / 1000).toFixed(1) + 'k' : String(tokenEst)) : '0';
+  }
+
+  // ============ 像素采样：真的读画布像素 ============
+  function sampleAt(x, y) {
+    const dpr = cv.width / Math.max(1, cv.getBoundingClientRect().width);
+    const px = Math.max(0, Math.min(cv.width - 1, Math.round(x * dpr)));
+    const py = Math.max(0, Math.min(cv.height - 1, Math.round(y * dpr)));
+    const d = ctx.getImageData(px, py, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2], hex: '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join('') };
+  }
+
+  function isGoldish(c) { return c.r > 130 && c.g > 80 && c.b < 110 && c.r > c.b + 60; }
+
+  // ============ 执行层 ============
+  function doClick(x, y, src) {
+    if (halted) return false;
+    let hit = null;
+    for (const c of coins) {
+      if (Math.hypot(c.x - x, c.y - y) <= c.r + 8) { hit = c; break; }
+    }
+    stepCount++;
+    stepsWindow.push(performance.now());
+    if (mode === 'turn') { llmCalls++; tokenEst += 480; }
+    markLane(2, 200);
+    if (hit) {
+      score++;
+      const i = coins.indexOf(hit);
+      if (i >= 0) coins.splice(i, 1);
+      if (src === 'llm' || (mode === 'rt' && stepCount % 12 === 0)) {
+        logLine('act', '点击 (' + Math.round(x) + ',' + Math.round(y) + ') 命中金币 +1');
+      }
+      return true;
+    }
+    if (src === 'llm') logLine('act', '点击 (' + Math.round(x) + ',' + Math.round(y) + ') 落空（目标已下落）');
+    return false;
+  }
+
+  // ---- 回合制：每个周期 = 截图 + LLM 决策 + 点击 ----
+  let turnNextAt = 0, turnPending = null;
+  const TURN_THINK_MS = 700;   // 模拟一次 LLM 往返（真实环境 1000–2000ms）
+  const TURN_CYCLE_MS = 1100;
+
+  function turnTick(now) {
+    if (halted) return;
+    if (!turnPending && now >= turnNextAt) {
+      // 感知 + 决策：模型看到的是"这一刻"的截图，所以瞄准点要在决策时就预测好
+      markLane(0, 700); markLane(1, 700);
+      const alive = coins.filter(c => c.y > 0);
+      const target = alive.sort((a, b) => b.y - a.y)[0];   // 最靠近底部的先救
+      tokenEst += 1200;                                    // 一次截图 + 指令
+      logLine('think', 'LLM 读截图 → 目标：' + (target ? '最下方金币 y=' + Math.round(target.y) : '暂无金币'));
+      turnPending = target
+        ? {
+            aimX: target.x,
+            aimY: target.y + target.vy * (TURN_THINK_MS / 1000),   // 截图时刻的预测落点
+            clickAt: now + TURN_THINK_MS,
+          }
+        : { clickAt: now + TURN_THINK_MS };
+      turnNextAt = now + TURN_CYCLE_MS;
+    }
+    if (turnPending && now >= turnPending.clickAt) {
+      const p = turnPending;
+      turnPending = null;
+      if (!p.aimX) return;
+      const t0 = performance.now();
+      doClick(p.aimX, p.aimY, 'llm');
+      latSum += performance.now() - t0 + TURN_THINK_MS; latN++;
+    }
+  }
+
+  // ---- 实时：30Hz 循环，像素采样判定 ----
+  let rtAcc = 0;
+  function rtTick(dt) {
+    if (halted) return;
+    rtAcc += dt * 1000;
+    if (rtAcc < 33) return;
+    rtAcc = 0;
+    // 采样：只看已经进入视野的候选（游戏状态判断靠像素，不靠模型）
+    const cands = coins.filter(c => c.y > c.r && c.y < H - c.r);
+    if (!cands.length) return;
+    const t = cands.sort((a, b) => b.y - a.y)[0];
+    const t0 = performance.now();
+    const px = sampleAt(t.x, t.y);                        // 采样金币中心
+    markLane(0, 120);
+    if (isGoldish(px)) {
+      doClick(t.x, t.y, 'loop');
+      latSum += performance.now() - t0; latN++;
+      $('chipSampled').innerHTML = '采样 <b>' + px.hex + '</b> → 命中';
+    } else {
+      $('chipSampled').innerHTML = '采样 <b>' + px.hex + '</b> → 目标不在，跳过';
+    }
+  }
+
+  // ============ 主循环 ============
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+
+    // 游戏本身
+    if (!halted) {
+      spawnTimer += dt;
+      if (spawnTimer > 0.62) { spawnTimer = 0; spawn(); }
+      for (let i = coins.length - 1; i >= 0; i--) {
+        const c = coins[i];
+        c.y += c.vy * dt;
+        c.t += dt;
+        if (c.y - c.r > H) { coins.splice(i, 1); missed++; }
+      }
+    }
+
+    // 驱动
+    if (mode === 'turn') turnTick(now);
+    if (mode === 'rt') rtTick(dt);
+
+    // 绘制
+    ctx.clearRect(0, 0, W, H);
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0d1522'); bg.addColorStop(1, '#081019');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    // 地平线
+    ctx.strokeStyle = 'rgba(90,120,170,.15)'; ctx.beginPath();
+    ctx.moveTo(0, H * 0.62); ctx.lineTo(W, H * 0.62); ctx.stroke();
+
+    for (const c of coins) {
+      const g = ctx.createRadialGradient(c.x - c.r * .3, c.y - c.r * .3, 1, c.x, c.y, c.r);
+      g.addColorStop(0, '#ffe08a'); g.addColorStop(.55, GOLD); g.addColorStop(1, GOLD_DIM);
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,225,150,.55)'; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(c.x, c.y, c.r * .62, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    // 实时模式：给采样点画框（真的读这个像素）
+    if (mode === 'rt' && !halted) {
+      const c = coins.filter(q => q.y > q.r).sort((a, b) => b.y - a.y)[0];
+      if (c) {
+        ctx.strokeStyle = 'rgba(53,201,138,.9)'; ctx.lineWidth = 1;
+        ctx.strokeRect(c.x - 5, c.y - 5, 10, 10);
+        ctx.fillStyle = 'rgba(53,201,138,.9)'; ctx.font = '10px ui-monospace, monospace';
+        ctx.fillText('采样', c.x + 9, c.y + 3);
+      }
+    }
+    // 回合制：给"模型预测的落点"画十字
+    if (mode === 'turn' && turnPending && turnPending.aimX) {
+      const ax = turnPending.aimX, ay = turnPending.aimY;
+      ctx.strokeStyle = 'rgba(232,163,58,.9)'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(ax - 16, ay); ctx.lineTo(ax + 16, ay);
+      ctx.moveTo(ax, ay - 16); ctx.lineTo(ax, ay + 16);
+      ctx.stroke();
+    }
+
+    // 计分板
+    ctx.fillStyle = 'rgba(200,214,232,.9)'; ctx.font = '600 13px ui-monospace, monospace';
+    ctx.fillText('得分 ' + score + '   漏掉 ' + missed, 14, 24);
+
+    refreshLanes(now);
+    frame._stat = (frame._stat || 0) + dt;
+    if (frame._stat > 0.2) { frame._stat = 0; refreshStats(); }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ============ 交互 ============
+  cv.addEventListener('pointerdown', (e) => {
+    if (mode !== 'off') return;
+    const r = cv.getBoundingClientRect();
+    doClick(e.clientX - r.left, e.clientY - r.top, 'user');
+  });
+
+  const modeText = {
+    off: '未接管 · 你可以直接点金币',
+    turn: '回合制：每 1.1 秒一次「截图→决策→点击」，单步约 1.1 秒',
+    rt: '实时：主进程 30Hz 循环，像素采样命中即点，单步约 33 毫秒',
+  };
+
+  function setMode(m) {
+    mode = m;
+    if (m !== 'off') { halted = false; $('halt').classList.remove('on'); }
+    if (m === 'turn') {
+      llmCalls += 1; tokenEst += 1800;
+      logLine('think', '开局：读取目标「' + $('goal').value + '」→ 开始回合制决策');
+    }
+    if (m === 'rt') {
+      llmCalls += 1; tokenEst += 2200;
+      logLine('think', '开局：读取目标「' + $('goal').value + '」→ 生成像素条件 + 循环脚本');
+      logLine('sample', '条件就绪：金币上沿颜色 ≈ #f0b43c → 命中就点击');
+    }
+    if (m === 'off') logLine('haltline', '已交还控制权，你可以直接点金币');
+    $('dot').className = 'dot' + (m === 'turn' ? ' on-turn' : m === 'rt' ? ' on-rt' : '');
+    $('gbState').textContent = modeText[m];
+    document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+    if (m === 'off') { turnPending = null; turnNextAt = 0; }
+  }
+
+  document.getElementById('modeSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b) setMode(b.dataset.mode);
+  });
+
+  function halt(why) {
+    halted = true;
+    haltReason = why;
+    turnPending = null;
+    $('haltWhy').textContent = why;
+    $('halt').classList.add('on');
+    $('dot').className = 'dot';
+    $('gbState').textContent = '已急停 · 输入冻结';
+    logLine('haltline', '急停触发（' + why + '）→ 输入冻结，保留现场');
+  }
+
+  $('stopBtn').addEventListener('click', () => halt('手动点击急停按钮'));
+  $('resume').addEventListener('click', () => {
+    halted = false; $('halt').classList.remove('on');
+    $('dot').className = 'dot' + (mode === 'turn' ? ' on-turn' : mode === 'rt' ? ' on-rt' : '');
+    $('gbState').textContent = modeText[mode];
+    logLine('haltline', '恢复运行');
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') halt('Esc 热键');
+  });
+
+  // 调试钩子：面板在后台时 rAF 不跑，靠它能手动驱动循环做验证
+  window.__gp = {
+    mode: () => mode,
+    setMode,
+    halt: (why) => halt(why || '调试急停'),
+    resume: () => $('resume').click(),
+    state: () => ({ mode, halted, score, missed, steps: stepCount, llmCalls, coins: coins.length }),
+    drive: (ms) => {
+      const n = Math.max(1, Math.round(ms / 33));
+      let t = performance.now();
+      for (let i = 0; i < n; i++) { t += 33; frame(t); }
+      return window.__gp.state();
+    },
+  };
+
+  // 启动
+  resize();
+  logLine('haltline', '就绪：默认不接管，你可以先自己点几下感受难度');
+  requestAnimationFrame((t) => { last = t; frame(t); });
+})();
+</script>
+</body>
+</html>
