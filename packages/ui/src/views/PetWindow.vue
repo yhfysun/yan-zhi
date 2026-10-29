@@ -303,6 +303,7 @@ const hoverBody = ref(false)
 /** 双击宠物才唤出输入条（hover 就弹出来太吵，用户明确要求改掉） */
 function openAsk() {
   if (barOpen.value || panelOpen.value || radialOpen.value) return
+  api()?.ensureInside?.()
   showAsk.value = true
   setInteractive(true)
   requestAnimationFrame(() => askInputEl.value?.focus())
@@ -406,6 +407,7 @@ function play(key: string) {
 }
 
 function openRadial() {
+  api()?.ensureInside?.()   // 贴着屏幕边时先把窗挪回屏内，否则菜单会被切掉
   const el = document.querySelector('.body') as HTMLElement | null
   if (!el) return
   const r = el.getBoundingClientRect()
@@ -435,6 +437,7 @@ function runSlot(key: string) {
     return
   }
   if (key === 'panel') {
+    api()?.ensureInside?.()
     panelOpen.value = !panelOpen.value
     setInteractive(true)
     return

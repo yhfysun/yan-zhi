@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     close: () => ipcRenderer.invoke('pet:close'),
     toggle: () => ipcRenderer.invoke('pet:toggle'),
     isOpen: () => ipcRenderer.invoke('pet:is-open'),
+    ensureInside: () => ipcRenderer.invoke('pet:ensure-inside'),
     // 主窗口 → 主进程 → 宠物窗：轻量任务视图（状态 / 标题 / 计数）
     sync: (payload) => ipcRenderer.send('pet:sync', payload || {}),
     // 设置变更（渲染器 / 形象 / 缩放）即时下发给宠物窗

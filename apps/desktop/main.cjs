@@ -9350,12 +9350,93 @@ function finishSnip(result) {
 // mousemove —— 指针进入宠物/动作条矩形时再关穿透（forward 是 Windows 上做悬停的前提）。
 // 状态由主窗口派生后经 IPC 推送（pet:sync），宠物窗不自己连 WS，避免双订阅。
 // ============================================================
+// ★ 宠物资源选择集（--pets）：打包时 set-edition 写进 edition.json.pets。
+//   空数组 = 本次构建一个宠物资源都没带（2D 精灵图与 3D VRM 都裁掉），
+//   此时宠物窗/快捷键/托盘入口全部降级隐藏 —— 否则用户会点开一个必然空白的窗口。
+//   缺省字段（开发态 / 存量包）= 视为可用，行为与改动前一致。
+function buildHasPetAssets() {
+  if (!app.isPackaged) return true;
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, 'edition.json'), 'utf8'));
+    if (Array.isArray(cfg.pets)) return cfg.pets.length > 0;
+  } catch {
+    /* 读不到 = 存量包，按可用处理 */
+  }
+  return true;
+}
+const PET_ASSETS_AVAILABLE = buildHasPetAssets();
+
 let petWindow = null;
 let petLastSync = null;
 let petLastSettings = null;
 
-const PET_W = 460;
-const PET_H = 420;
+/** 窗口最小宽度：任务面板 316px + 两侧留白（半圆菜单 96 半径、输入条 292 也放得下） */
+const PET_MIN_W = 340;
+/**
+ * 按当前形象算宠物窗尺寸（2026-10-29：原来固定 460×420，宠物只占 109×118，
+ * 四周空出一大片，拖到屏幕边时宠物离边还有一百多像素）。
+ * 只保留菜单/气泡/输入条实际需要的余量。
+ */
+function petWindowSize(settings) {
+  const s = settings || {};
+  const scale = Math.min(2, Math.max(0.5, Number(s.scale) || 1));
+  const is3d = s.renderer === '3d';
+  const petW = is3d ? 190 : 109;
+  const petH = is3d ? 280 : 118;
+  return {
+    W: Math.max(PET_MIN_W, Math.round(petW * scale + 120)),
+    H: Math.round(petH * scale + (is3d ? 170 : 150)),
+  };
+}
+
+/** 宠物本体在窗内的尺寸与占位（底部居中）；钳位与踱步都按它算，别按整窗 */
+function petBox(settings) {
+  const s = settings || {};
+  const scale = Math.min(2, Math.max(0.5, Number(s.scale) || 1));
+  const is3d = s.renderer === '3d';
+  const { W, H } = petWindowSize(s);
+  const petW = Math.round((is3d ? 190 : 109) * scale);
+  const petH = Math.round((is3d ? 280 : 118) * scale);
+  return { W, H, petW, petH, left: Math.round((W - petW) / 2), top: H - petH };
+}
+
+/** 按"宠物本体"钳位：允许窗框的空白部分跑到屏外，这样宠物才能贴到屏幕边 */
+function clampPetBoxToDisplay(x, y, settings) {
+  const { W, H, petW, petH, left, top } = petBox(settings);
+  let area;
+  try {
+    area = electronScreen.getDisplayMatching({ x, y, width: W, height: H }).workArea;
+  } catch {
+    return { x, y, area: null };
+  }
+  const minX = area.x - left;
+  const maxX = area.x + area.width - left - petW;
+  const maxY = area.y + area.height - H; // 宠物脚在窗底：窗底贴住工作区底即可
+  return {
+    x: Math.max(minX, Math.min(maxX, x)),
+    // 垂直方向保持"窗底 = 宠物脚"，只允许贴着工作区底/顶
+    y: Math.max(area.y, Math.min(maxY, y)),
+    area,
+  };
+}
+
+/** 换形象/改缩放后重算窗口大小，并保持"宠物底部中心"不跳 */
+function applyPetSize(settings) {
+  try {
+    if (!petWindow || petWindow.isDestroyed()) return;
+    const { W, H } = petWindowSize(settings);
+    const [x, y] = petWindow.getPosition();
+    const [ow, oh] = petWindow.getSize();
+    if (ow === W && oh === H) return;
+    const nx = Math.round(x + (ow - W) / 2);
+    const ny = Math.round(y + (oh - H));
+    petWindow.setBounds({ x: nx, y: ny, width: W, height: H });
+    const c = clampPetToDisplay(nx, ny, W, H);
+    if (Math.round(c.x) !== nx || Math.round(c.y) !== ny) {
+      petWindow.setPosition(Math.round(c.x), Math.round(c.y));
+    }
+  } catch { /* 尺寸调整失败不影响使用 */ }
+}
 /** 踱步速度：约 70px/s，看得见在走但不催人 */
 const PET_WALK_SPEED = 70;
 
@@ -9440,10 +9521,11 @@ function petWalkStart() {
   if (!petWindow || petWindow.isDestroyed()) return;
   if (petWalk.on) return;
   const b = petWindow.getBounds();
-  const { x: curX, area } = clampPetToDisplay(b.x, b.y, b.width, b.height);
+  const box = petBox(petLastSettings);
+  const { x: curX, area } = clampPetBoxToDisplay(b.x, b.y, petLastSettings);
   if (!area) return;
-  const minX = area.x;
-  const maxX = area.x + area.width - b.width;
+  const minX = area.x - box.left;
+  const maxX = area.x + area.width - box.left - box.petW;
   if (maxX <= minX) return; // 屏比窗还窄：原地待着，别把宠物挤出屏
   const bottomY = area.y + area.height - b.height;
   // 方向随机，贴边时由边界纠正：不让它永远在同一头之间来回
@@ -9472,8 +9554,9 @@ function sendPetWinState() {
 }
 
 function createPetWindow() {
+  if (!PET_ASSETS_AVAILABLE) return null;
   if (petWindow && !petWindow.isDestroyed()) { try { petWindow.showInactive(); } catch {} return petWindow; }
-  const W = PET_W, H = PET_H;
+  const { W, H } = petWindowSize(petLastSettings);
   const saved = readPetPos();
   // 上次位置在哪块屏就落回哪块屏；没有记录才用主屏右下角
   const work = electronScreen.getDisplayMatching(
@@ -9521,6 +9604,7 @@ function createPetWindow() {
     if (petLastSettings) petWindow.webContents.send('pet:settings', petLastSettings);
     sendPetWalkState();
     sendPetWinState();
+    applyPetSize(petLastSettings);
   });
   return petWindow;
 }
@@ -9581,13 +9665,31 @@ app.whenReady().then(() => {
   } catch {}
 });
 
-ipcMain.handle('pet:open', () => { createPetWindow(); return { ok: true }; });
+ipcMain.handle('pet:open', () => {
+  if (!PET_ASSETS_AVAILABLE) return { ok: false, reason: 'no-pets' };
+  createPetWindow();
+  return { ok: true };
+});
 ipcMain.handle('pet:close', () => {
   try { if (petWindow && !petWindow.isDestroyed()) petWindow.close(); } catch {}
   return { ok: true };
 });
 ipcMain.handle('pet:toggle', () => ({ open: togglePetWindow() }));
 ipcMain.handle('pet:is-open', () => !!(petWindow && !petWindow.isDestroyed()));
+ipcMain.handle('pet:ensure-inside', () => {
+  // 宠物可以贴着屏幕边（窗框空白在屏外）；一开弹层就得把整窗挪回可视区
+  try {
+    if (!petWindow || petWindow.isDestroyed()) return { ok: false };
+    const b = petWindow.getBounds();
+    const c = clampPetToDisplay(b.x, b.y, b.width, b.height);
+    if (Math.round(c.x) !== b.x || Math.round(c.y) !== b.y) {
+      petWindow.setPosition(Math.round(c.x), Math.round(c.y));
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
 ipcMain.on('pet:sync', (_e, payload) => {
   petLastSync = payload;
   try { if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:state', payload); } catch {}
@@ -9595,6 +9697,7 @@ ipcMain.on('pet:sync', (_e, payload) => {
 ipcMain.on('pet:settings', (_e, payload) => {
   petLastSettings = payload;
   try { if (petWindow && !petWindow.isDestroyed()) petWindow.webContents.send('pet:settings', payload); } catch {}
+  applyPetSize(payload); // 2D/3D 与缩放不同，窗大小跟着变（否则四周空一大片）
 });
 ipcMain.on('pet:notify', (_e, payload) => {
   try {
@@ -9630,12 +9733,10 @@ ipcMain.on('pet:move-by', (_e, dx, dy) => {
     // 拖动期间窗位置归用户：先停踱步，免得两边抢位置
     petWalkStop();
     const [px, py] = petWindow.getPosition();
-    const [w, h] = petWindow.getSize();
-    const next = clampPetToDisplay(
+    const next = clampPetBoxToDisplay(
       Math.round(px + Number(dx || 0)),
       Math.round(py + Number(dy || 0)),
-      w,
-      h
+      petLastSettings
     );
     petWindow.setPosition(Math.round(next.x), Math.round(next.y));
   } catch {}
