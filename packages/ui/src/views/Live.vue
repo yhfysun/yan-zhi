@@ -60,12 +60,20 @@
           </div>
           <div v-if="showAvatar" class="live-performer-slot live-slot--avatar">
             <AvatarPerformer
+              :vrm-id="avatarId"
               :expression="avatarExpression"
               :speaking="ttsSpeaking"
               :active="visible"
               :visible="visible"
             />
           </div>
+
+          <DanmakuGame
+            v-if="liveStore.scene === 'danmaku-game'"
+            ref="gameRef"
+            :active="visible"
+            @say="onGameSay"
+          />
 
           <div class="live-danmaku">
             <span
@@ -93,14 +101,6 @@
 
       <aside class="live-panel">
         <div class="live-card">
-          <div class="live-card__title">状态</div>
-          <div class="live-kv"><span>直播</span><b>{{ statusText }}</b></div>
-          <div class="live-kv"><span>推流</span><b>{{ streamText }}</b></div>
-          <div class="live-kv"><span>阶段</span><b>{{ phaseText }}</b></div>
-          <div class="live-kv"><span>字幕来源</span><b>{{ sourceText }}</b></div>
-        </div>
-
-        <div class="live-card">
           <div class="live-card__title">场景</div>
           <div class="live-scenes">
             <button
@@ -115,6 +115,34 @@
             >{{ s.label }}</button>
           </div>
           <div v-if="pendingScenesHint" class="live-hint">{{ pendingScenesHint }}</div>
+        </div>
+
+        <div class="live-card">
+          <div class="live-card__title">状态</div>
+          <div class="live-kv"><span>直播</span><b>{{ statusText }}</b></div>
+          <div class="live-kv"><span>推流</span><b>{{ streamText }}</b></div>
+          <div class="live-kv"><span>阶段</span><b>{{ phaseText }}</b></div>
+          <div class="live-kv"><span>字幕来源</span><b>{{ sourceText }}</b></div>
+        </div>
+
+        <div v-if="liveStore.scene === 'danmaku-game'" class="live-card">
+          <div class="live-card__title">弹幕游戏 · 赤壁</div>
+          <div class="live-actions">
+            <el-button size="small" @click="gameGift('fairy')">仙女棒 +2</el-button>
+            <el-button size="small" @click="gameGift('donut')">甜甜圈 +8</el-button>
+            <el-button size="small" @click="gameGift('battery')">能量电池 +12</el-button>
+          </div>
+          <div class="live-actions">
+            <el-button size="small" type="primary" @click="gameGift('super')">超级空投 +24</el-button>
+            <el-button size="small" @click="gameReset">重开一局</el-button>
+          </div>
+          <div class="live-actions">
+            <el-switch v-model="sourceOn" size="small" active-text="模拟弹幕流" @change="toggleSource" />
+          </div>
+          <div class="live-hint">
+            改写度到 60% 就掀翻史实结局。打开「模拟弹幕流」会从服务端按节奏投递演示弹幕，
+            整条链路和真实弹幕一致：源 → /api/live/danmaku → 游戏
+          </div>
         </div>
 
         <div v-if="isCaptureScene" class="live-card">
@@ -162,24 +190,35 @@
 
         <div class="live-card">
           <div class="live-card__title">形象</div>
-          <el-radio-group v-if="showPet" v-model="renderer" size="small">
-            <el-radio-button value="2d">2D 精灵</el-radio-button>
-            <el-radio-button value="3d">3D 模型</el-radio-button>
-          </el-radio-group>
-          <el-select
-            v-if="showPet && renderer === '2d'"
-            v-model="pack"
-            size="small"
-            class="live-select"
-            placeholder="选择形象"
-          >
-            <el-option v-for="p in PET_PACKS" :key="p.id" :label="p.label" :value="p.id" />
-          </el-select>
-          <div v-if="showPet" class="live-slider">
-            <span>大小</span>
-            <el-slider v-model="scale" :min="1.2" :max="2.6" :step="0.1" size="small" />
+
+          <div v-if="showAvatar" class="live-field">
+            <span class="live-field__label">虚拟人</span>
+            <el-select v-model="avatarId" size="small" class="live-select" placeholder="选择模型">
+              <el-option v-for="v in PET_BUILTIN_VRMS" :key="v.id" :label="v.name" :value="v.id" />
+            </el-select>
           </div>
-          <div v-else class="live-hint">程序化 3D 角色，口型由播报音量驱动；不需要模型文件</div>
+
+          <template v-if="showPet">
+            <div class="live-field">
+              <span class="live-field__label">宠物</span>
+              <el-radio-group v-model="renderer" size="small" class="live-field__control">
+                <el-radio-button value="2d">2D 精灵</el-radio-button>
+                <el-radio-button value="3d">3D 模型</el-radio-button>
+              </el-radio-group>
+            </div>
+            <div v-if="renderer === '2d'" class="live-field">
+              <span class="live-field__label" />
+              <el-select v-model="pack" size="small" class="live-select" placeholder="选择精灵">
+                <el-option v-for="p in PET_PACKS" :key="p.id" :label="p.label" :value="p.id" />
+              </el-select>
+            </div>
+            <div class="live-slider">
+              <span>大小</span>
+              <el-slider v-model="scale" :min="1.2" :max="2.6" :step="0.1" size="small" />
+            </div>
+          </template>
+
+          <div v-if="!showAvatar && !showPet" class="live-hint">该场景不显示主播形象</div>
         </div>
 
         <div class="live-card">
@@ -198,10 +237,13 @@
           >
             <el-option v-for="p in voicePacks" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
-          <div v-else class="live-hint">还没有本地语音包，去「设置 → 语音」装一个</div>
+          <div v-else class="live-hint">没有本地语音包，播报会走 Edge 在线合成（需联网）</div>
+          <div v-if="ttsEngine" class="live-hint">当前引擎：{{ TTS_ENGINE_LABEL[ttsEngine] || '本地语音包' }}</div>
           <div v-if="ttsError" class="live-hint live-hint--err">{{ ttsError }}</div>
         </div>
+      </aside>
 
+      <aside class="live-panel live-panel--interact">
         <div class="live-card">
           <div class="live-card__title">动作</div>
           <div class="live-actions">
@@ -237,8 +279,8 @@
         </div>
 
         <div class="live-card live-card--note">
-          录制会把当前舞台画面存成视频（能转 mp4 就转），落在系统的视频目录。
-          推流尚未接入。
+          录制会把当前舞台画面存成视频（能转 mp4 就转），落在系统的视频目录；
+          推流实时推到平台，断流会自动重连（最多 5 次）。
         </div>
       </aside>
     </div>
@@ -279,6 +321,7 @@ import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
 import PetPerformer from '../components/live/PetPerformer.vue'
 import AvatarPerformer from '../components/live/AvatarPerformer.vue'
+import DanmakuGame from '../components/live/DanmakuGame.vue'
 import { PET_PACKS } from '../components/pet/pet-assets'
 import { startStageRecording } from '../composables/live-recorder'
 import { isRtmpUrl, maskRtmpUrl, startLiveStream, type LiveStreamHandle } from '../composables/live-stream'
@@ -289,7 +332,7 @@ import { useWindowCapture } from '../composables/useWindowCapture'
 import { useGameFrames } from '../composables/useGameFrames'
 import { narrateActivity, sameActivity } from '../composables/live-narrator'
 import type { RegionRecorderHandle } from '../composables/region-recorder'
-import { derivePetActivity, usePetStore, type PetActivity } from '../stores/pet'
+import { derivePetActivity, usePetStore, PET_BUILTIN_VRMS, type PetActivity } from '../stores/pet'
 import { useChatStore } from '../stores/chat'
 import {
   LIVE_SCENES,
@@ -303,6 +346,20 @@ const liveStore = useLiveStore()
 const petStore = usePetStore()
 petStore.init()
 const chat = useChatStore()
+
+const gameRef = ref<InstanceType<typeof DanmakuGame> | null>(null)
+const sourceOn = ref(false)
+function gameGift(id: string) { gameRef.value?.gift(id) }
+function gameReset() { gameRef.value?.reset() }
+function onGameSay(text: string) { liveStore.say(text, 'danmaku') }
+async function toggleSource(v: boolean | string | number) {
+  try {
+    await api.post('/live/source', { kind: v ? 'replay' : 'off' })
+  } catch {
+    sourceOn.value = false
+    ElMessage.error('弹幕源切换失败')
+  }
+}
 
 const visible = ref(true)
 const live = computed(() => liveStore.status === 'live')
@@ -332,6 +389,31 @@ function pickScene(key: LiveScene): void {
   liveStore.setScene(key)
 }
 const pack = ref(petStore.settings.pack || 'boba')
+
+/**
+ * 直播用的 VRM 形象。刻意**不复用** petStore.settings.vrmBuiltin：
+ * 那是宠物窗 3D 形象的偏好，两边同时改会互相打架；这里单独存一份。
+ */
+/** 播报引擎的展示名。写成映射表而不是模板三元：引擎值加了新枚举时这里只补一行 */
+const TTS_ENGINE_LABEL: Record<string, string> = {
+  edge: 'Edge 在线',
+  system: '系统语音（离线）',
+  local: '本地语音包',
+}
+
+const AVATAR_STORAGE_KEY = 'yz.live.avatar'
+const avatarId = ref(
+  (() => {
+    try {
+      const saved = localStorage.getItem(AVATAR_STORAGE_KEY)
+      if (saved && PET_BUILTIN_VRMS.some((v) => v.id === saved)) return saved
+    } catch { /* 存储不可用时用默认 */ }
+    return PET_BUILTIN_VRMS[0]?.id || 'shino'
+  })()
+)
+watch(avatarId, (id) => {
+  try { localStorage.setItem(AVATAR_STORAGE_KEY, id) } catch { /* 仅本窗口生效 */ }
+})
 const scale = ref(2.2)
 const action = ref<string | null>(null)
 let actionTimer = 0
@@ -405,6 +487,7 @@ const {
   enabled: ttsEnabled,
   speaking: ttsSpeaking,
   error: ttsError,
+  engine: ttsEngine,
   refresh: refreshVoices,
   speak: speakVoice,
   stop: stopVoice,
@@ -512,6 +595,8 @@ const { start: startDanmaku, stop: stopDanmaku } = useLiveDanmaku({ onItem: hand
 
 function handleDanmaku(item: IncomingDanmaku) {
   liveStore.pushDanmaku(item.text)
+  // 弹幕游戏场景下，同一条弹幕直接驱动战局（1/2 选边，其余推进本方）
+  if (liveStore.scene === 'danmaku-game') gameRef.value?.comment(item.text, item.from)
   // 只有白名单动作词会驱动宠物；注入类（kind=ignore）只展示
   if (item.kind === 'action' && item.action) {
     playAction(item.action)
@@ -634,7 +719,10 @@ function onSay() {
 }
 
 function onDanmaku() {
-  if (liveStore.pushDanmaku(dmText.value)) dmText.value = ''
+  const text = dmText.value
+  if (!liveStore.pushDanmaku(text)) return
+  if (liveStore.scene === 'danmaku-game') gameRef.value?.comment(text, '手动观众')
+  dmText.value = ''
 }
 
 function onReplyDanmaku() {

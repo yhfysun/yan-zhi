@@ -6,6 +6,8 @@ import { Router, type Request, type Response } from 'express';
 import { isLiveMode, liveAllowRules, setLiveMode } from '../live-mode.js';
 import { ingestDanmaku, pullDanmaku } from '../live-danmaku.js';
 import { askLiveQuestion } from '../live-ask.js';
+import { synthesizeLiveSpeech } from '../live-tts.js';
+import { liveSourceState, startReplaySource, stopLiveSource } from '../live-source.js';
 
 const router = Router();
 
@@ -18,7 +20,30 @@ router.get('/', (_req: Request, res: Response) => {
 router.post('/', (req: Request, res: Response) => {
   const on = Boolean(req.body?.on);
   setLiveMode(on);
+  // 下播顺带停源：不让定时器在离线状态空转
+  if (!on) stopLiveSource();
   res.json({ ok: true, on: isLiveMode() });
+});
+
+// GET /api/live/source —— 当前弹幕源状态
+router.get('/source', (_req: Request, res: Response) => {
+  res.json({ ok: true, ...liveSourceState() });
+});
+
+// POST /api/live/source —— { kind: 'off' | 'replay' } 切换弹幕源
+// 真实抓取适配器落地前，replay 用来喂演示流；抓取器接进来时在这里加一个 kind 即可。
+router.post('/source', (req: Request, res: Response) => {
+  const kind = String(req.body?.kind || 'off');
+  if (kind === 'replay') {
+    if (!isLiveMode()) {
+      res.status(409).json({ ok: false, error: '未开播' });
+      return;
+    }
+    res.json({ ok: true, ...startReplaySource() });
+    return;
+  }
+  stopLiveSource();
+  res.json({ ok: true, ...liveSourceState() });
 });
 
 // POST /api/live/danmaku —— 投递一条弹幕（未开播直接拒绝，避免空闲期被灌数据）
@@ -51,6 +76,20 @@ router.post('/ask', (req: Request, res: Response) => {
     return;
   }
   res.json({ ok: true, taskId: r.taskId });
+});
+
+// POST /api/live/tts —— 播报合成：本地语音包优先，没有就用 Edge 在线兜底
+router.post('/tts', async (req: Request, res: Response) => {
+  const r = await synthesizeLiveSpeech({
+    text: req.body?.text,
+    packId: req.body?.packId,
+    voice: req.body?.voice,
+  });
+  if (!r.ok) {
+    res.status(400).json({ ok: false, error: r.error });
+    return;
+  }
+  res.json(r);
 });
 
 export default router;

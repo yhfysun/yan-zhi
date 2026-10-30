@@ -20,19 +20,27 @@ export interface LoadedVrm {
   holder: THREE.Group
 }
 
-export async function loadVrmFromBuffer(buffer: ArrayBuffer, targetHeight = TARGET_HEIGHT): Promise<LoadedVrm> {
+export async function loadVrmFromBuffer(
+  buffer: ArrayBuffer,
+  targetHeight = TARGET_HEIGHT,
+  opts: { optimize?: boolean } = {}
+): Promise<LoadedVrm> {
   const loader = new GLTFLoader()
   loader.register((parser) => new VRMLoaderPlugin(parser))
   const gltf = await loader.parseAsync(buffer, '')
   const vrm: VRM | undefined = (gltf as any).userData?.vrm
   if (!vrm) throw new Error('不是 VRM 文件（缺少 VRM 扩展）')
 
-  // 顶点/骨骼合并：不合并的话常驻置顶窗里每帧都要多画一堆网格
-  try {
-    VRMUtils.removeUnnecessaryVertices(gltf.scene)
-    VRMUtils.combineSkeletons(gltf.scene)
-  } catch {
-    /* 老版本模型结构异常时跳过优化，能显示优先 */
+  // 顶点/骨骼合并：不合并的话常驻置顶窗里每帧都要多画一堆网格。
+  // ⚠️ 近距离特写（直播虚拟人）时会放大合骨的副作用 —— 头发蒙皮错乱成一团尖刺，
+  // 那条链路传 optimize:false 关掉，小尺寸的宠物窗保持默认开。
+  if (opts.optimize !== false) {
+    try {
+      VRMUtils.removeUnnecessaryVertices(gltf.scene)
+      VRMUtils.combineSkeletons(gltf.scene)
+    } catch {
+      /* 老版本模型结构异常时跳过优化，能显示优先 */
+    }
   }
   // VRM 0.x 资产朝 -Z：统一转到面向相机
   try {

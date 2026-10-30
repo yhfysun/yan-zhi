@@ -7,7 +7,7 @@ import { ref } from 'vue'
 
 export type LiveStatus = 'offline' | 'starting' | 'live' | 'wrapping' | 'ended'
 export type LivePhase = 'idle' | 'talking' | 'playing' | 'replying'
-export type LiveScene = 'pet-full' | 'avatar-full' | 'task-live' | 'game-pip' | 'duo'
+export type LiveScene = 'pet-full' | 'avatar-full' | 'task-live' | 'game-pip' | 'danmaku-game' | 'duo'
 
 /** 字幕来源：正文回答 > 弹幕回复 > 任务旁白 > 垫场 */
 export type CueSource = 'reply' | 'danmaku' | 'narration' | 'filler'
@@ -37,6 +37,7 @@ export const LIVE_SCENES: Array<{ key: LiveScene; label: string }> = [
   { key: 'avatar-full', label: '虚拟人单口' },
   { key: 'task-live', label: '任务实录' },
   { key: 'game-pip', label: '游戏解说' },
+  { key: 'danmaku-game', label: '弹幕游戏' },
   { key: 'duo', label: '虚拟人 + 宠物' },
 ]
 

@@ -5,6 +5,8 @@
   flex-direction: column;
   gap: 16px;
   min-height: 0;
+  /* 卡片增删会让内容高度跳变；关掉滚动锚定，避免整页被拽着往下漂 */
+  overflow-anchor: none;
 }
 
 .live-page .live-status {
@@ -37,6 +39,8 @@
 }
 
 .live-layout {
+  /* 舞台和两侧控制列共用同一个高度基准，三栏才能顶部对齐、各自滚动 */
+  --live-stage-h: min(72vh, 660px);
   display: flex;
   gap: 18px;
   align-items: flex-start;
@@ -45,6 +49,8 @@
 
 /* ---------- 舞台 ---------- */
 .live-stage-wrap {
+  position: sticky;
+  top: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -54,7 +60,7 @@
 
 .live-stage {
   position: relative;
-  height: min(72vh, 660px);
+  height: var(--live-stage-h);
   aspect-ratio: 9 / 16;
   border-radius: 18px;
   overflow: hidden;
@@ -346,13 +352,19 @@
 }
 
 /* ---------- 控制台 ---------- */
+/* 控制 / 互动两列各自滚动，页面本身不再被卡片撑长 */
 .live-panel {
-  flex: 1 1 320px;
-  max-width: 380px;
-  min-width: 280px;
+  flex: 1 1 0;
+  min-width: 220px;
+  max-height: var(--live-stage-h);
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+  overflow-anchor: none;
 }
 
 .live-card {
@@ -405,6 +417,25 @@
 
 .live-select {
   width: 100%;
+}
+
+/* 带标签的一行：「虚拟人 / 宠物」这种字段，标签定宽、控件吃满剩余宽度 */
+.live-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-field__label {
+  flex: 0 0 44px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #8b93a3);
+}
+
+.live-field .live-select,
+.live-field__control {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .live-slider {
@@ -502,12 +533,20 @@
     align-items: stretch;
   }
 
+  .live-stage-wrap {
+    position: static;
+    align-self: center;
+  }
+
   .live-stage {
     height: min(62vh, 560px);
   }
 
   .live-panel {
-    max-width: none;
-    flex: 1 1 auto;
+    flex: 0 0 auto;
+    min-width: 0;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 }

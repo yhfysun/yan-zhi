@@ -36,6 +36,8 @@ export function useLiveTts() {
   const speaking = ref(false)
   const loading = ref(false)
   const error = ref('')
+  /** 实际用的引擎：local（本地语音包）/ edge（在线兜底） */
+  const engine = ref<'local' | 'edge' | ''>('')
 
   let el: HTMLAudioElement | null = null
   let onEnd: (() => void) | null = null
@@ -82,7 +84,8 @@ export function useLiveTts() {
 
   /** 合成并播放一句；失败只记错误，不抛（直播不该因为一句没念出来就中断） */
   async function speak(text: string, opts: { onEnd?: () => void } = {}): Promise<void> {
-    if (!enabled.value || !packId.value) return
+    // 没有本地语音包也照常播：服务端会退到 Edge 在线合成
+    if (!enabled.value) return
     const t = String(text || '').trim()
     if (!t) return
 
@@ -91,10 +94,12 @@ export function useLiveTts() {
     loading.value = true
     error.value = ''
     try {
-      const r = await api.post<any>(`/tts-packs/${encodeURIComponent(packId.value)}/preview`, { text: t })
+      const r = await api.post<any>('/live/tts', { text: t, packId: packId.value || undefined })
       if (r && typeof r === 'object' && 'error' in r) throw new Error((r as any).error)
-      const url = (r as any)?.data?.url || (r as any)?.url
+      const d = (r as any)?.data ?? r
+      const url = d?.url
       if (!url) throw new Error('接口未返回音频地址')
+      if (d?.engine) engine.value = d.engine
 
       const audio = ensureAudio()
       // 接进音频图：一路扬声器、一路给推流（见 live-audio.ts）
@@ -120,5 +125,5 @@ export function useLiveTts() {
     }
   }
 
-  return { packs, packId, enabled, speaking, loading, error, refresh, speak, stop, dispose }
+  return { packs, packId, enabled, speaking, loading, error, engine, refresh, speak, stop, dispose }
 }
