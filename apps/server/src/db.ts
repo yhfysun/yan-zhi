@@ -3503,63 +3503,51 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
     },
     {
       id: 'skill_video_editing', name: '视频剪辑', category: '媒体制作',
-      description: '剪辑模式 SOP：用 clip_project 工程化剪辑（多段裁剪排序 + 字幕轨含 8 种动画 + BGM + 配音 + 导出规格），media_edit 做单素材加工（抽帧封面/变速/转场/水印/响度），渲染前先出预览档，工程按会话保存可反复编辑。',
-      triggers: ['剪辑', '剪视频', '视频剪辑', '加字幕', '字幕动画', '做字幕', '拼接视频', '成片', '加背景音乐', '配 BGM', '片头片尾', '转场', '调色', '剪一条'],
+      description: '剪辑模式 SOP：clip_project 工程化剪辑（多段裁剪排序 + 调色/特效/蒙版/转场 + 关键帧运镜 + 字幕动画 + 配音 + BGM + 画中画 + 导出），media_edit 做单素材加工，渲染前先出预览档；含 8 个成品配方与"做不到什么"的边界清单。',
+      triggers: ['剪辑', '剪视频', '视频剪辑', '加字幕', '字幕动画', '做字幕', '拼接视频', '成片', '加背景音乐', '配 BGM', '片头片尾', '转场', '调色', '蒙版', '关键帧', '画中画', '卡点', '混剪', '剪一条'],
       body: `# 视频剪辑（剪辑模式）
 
-把素材剪成能直接发的成片。**唯一入口是 clip_project 工程**——多段拼接、字幕轨、BGM、导出规格都在同一份工程里；工程按会话保存，用户与你在同一份工程上反复改。
+把素材剪成能直接发的成片。**唯一入口是 clip_project 工程**；工程按会话保存，与你在同一份上反复改，**不要清空重建**。
 
-## 工具分工（用错会做两遍功）
-| 需求 | 用哪个 | 说明 |
-|---|---|---|
-| 多段拼接 / 字幕轨 / BGM / 导出成片 | **clip_project** | 要成片都走它 |
-| 单素材加工：抽帧封面 / 变速 / 转场 / 水印 / 响度归一 | **media_edit** | 工程之外的补刀 |
-| 旁白配音、查音色 | **api_tts_speak / api_tts_voices** | 先查音色再问用户 |
-| 缺空镜/转场画面 | **api_image_generate / api_video_generate** | 生成补位 |
-| 网上下载素材 / 统一规格 | **api_media_fetch / api_media_normalize** | 多段拼接前先统一规格 |
+## 工具分工
+- **clip_project**：多段拼接 / 画面 / 字幕 / BGM / 画中画 / 导出 —— 要成片都走它
+- **media_edit**：只对单素材做一次加工（抽帧封面 / 变速 / 水印 / 响度）
+- 字幕识别 **media_asr_transcribe**；配音 **api_tts_speak**；BGM **music_compose**；缺画面 **api_image_generate**
 
-## 标准流程
-1. **摸底**：file_list 看素材；clip_project op=get 看是否已有工程。
-   ⚠️ **有工程就在它之上继续改**（那是用户上一次的成果），不要清空重建。
-2. **建骨架**：op=create 建工程 → op=add_clip 按播放顺序排段（先用 trimStart/trimEnd 粗剪）→ op=get 复核时间轴。
-   输出规格：竖屏 short 视频 1080x1920，横屏 1920x1080。改规格用 op=set_output。
-3. **精修**（每步 op=get 复核）：
-   - 节奏：update_clip 的 speed（<1 放慢强调，>1 加快过场）；trimStart/trimEnd 裁赘余；
-   - 呼吸感：fadeIn/fadeOut（段落间淡入淡出）；
-   - 色调统一：colorPreset（warm/cool/bw/vintage/vivid/film/fade）；
-   - 画面不足：add_clip 传给图片素材 kenburns 做推拉镜头，或 api_image_generate 生成空镜。
-4. **字幕**：op=add_text，start/end 相对**成片**时间轴（用 op=get 的 timelineStart/End 推算，别瞎猜）。
-   动画选择（用户要"字幕动效"时按语义挑，**全片最多混用 2 种**）：
-   | 场景 | 动画 |
-   |---|---|
-   | 通用/最稳妥 | fade |
-   | 悬念旁白、解说 | typewriter |
-   | 强调关键词、卡点 | pop / flicker |
-   | 跟读歌词、口播 | karaoke |
-   | 片头标题、活泼 | zoom / flychar |
-   抖音/快手/视频号的字幕传 safeArea=true（避开底部进度条遮挡）；位置 bottom（默认）/center/top。
-5. **声音**：
-   - 分段配音 → add_clip 的 audioFile 挂到对应段（默认**替换原声**；要保留现场声传 keepOriginalAudio:true）；
-   - 全片 BGM → op=set_bgm（有旁白时 duck=true，说话自动压低）；调音量只传 volume 即可。
-6. **渲染**：op=render { preview:true } 先出快速预览档 → 用户确认 → op=render 出正式成片。
-   | 现象 | 原因 | 处置 |
-   |---|---|---|
-   | 渲染失败在"加工第 N 段" | 素材损坏/格式怪 | 先 media_edit op=trim 试单段，或 api_media_normalize 转码 |
-   | 拼接后时长不符 | 各段规格不一致 | api_media_normalize 统一规格后重建工程 |
-   | 字幕不出现 | start/end 相对素材而非成片 | 用 op=get 的 timeline 重新给时间 |
-   | 字幕太小/太大 | 字号按 1920 高基准 | fontSizePx 调 60~130 |
+## 流程
+1. **摸底**：file_list 看素材；clip_project op=get 看有没有工程。有工程就在它之上改。
+2. **骨架**：op=create → op=add_clip 按播放顺序排段（先 trimStart/trimEnd 粗剪）→ op=get 复核。竖屏 1080x1920，横屏 1920x1080。
+3. **画面**：speed 调节奏；fadeIn/fadeOut 做呼吸；transition 转场（挂**后一段**）；colorPreset 统一色调；fx 结构特效；crop 裁黑边；mask 取景/抠像；图片给 kenburns；视频用 keyframes 运镜（ease 默认 inout 更自然，需给起点锚）。
+4. **字幕**：op=add_text，start/end 相对**成片**（用 op=get 的 timelineStart/End 推算）。动画全片**最多 2 种**：fade / typewriter / pop·flicker / karaoke / zoom·flychar。抖音快手传 safeArea=true。
+5. **声音**：分段配音用 audioFile（默认替换原声，保留现场声传 keepOriginalAudio:true）；set_bgm（有旁白传 duck:true）；set_audio_fx 降噪/响度（最多 4 个）。
+6. **渲染**：op=render {preview:true} 出预览档 → 确认 → op=render 出正式成片（自动带封面）。
 
-## 交付
-给：成片路径与时长、段数与顺序、字幕条数与动画、BGM 与音量、还需补什么。
-**不要把工程 json 贴回对话。**
+## 五条必记语义
+1. 两种时间：trim/speed/keyframes.t 相对**素材或段**；字幕/画中画/BGM 相对**成片**。
+2. 主视频轨**首尾相接**，段间没有空隙；要叠加只能用语画中画或字幕层。
+3. 有转场时成片变短：**成片时长 = Σ段长 − Σ转场时长**，加完转场要重新 get 再排字幕。
+4. 未知 fx 在 add_clip 里被**静默丢弃**，update_clip 才报错 → 加特效优先用 update_clip。
+5. 字幕样式取**基准条**（第一条带动画的）全片统一，逐条改字号无效。
 
-## 硬约束
-- 素材一律**本机绝对路径**（前序工具返回的 file 字段）。
-- **不擅自加效果**：用户没要求调色/动画/BGM 就不加，先交付干净的成片。
-- 缺 ffmpeg 先 confirm_user 告知体积（约 100MB）并征得同意，再 media_install_ffmpeg。
-- 素材缺失如实告知，**不要自己造素材充数**。
+## 配方速记
+卡点：转场 0.15~0.25s + BGM 0.9 + loudnorm + 段缩放关键帧
+口播：denoise→loudnorm + typewriter + BGM 0.12 duck
+产品：图片 kenburns + bright + 居中 pop 大字 + 白闪进末段
+Vlog：统一 film 调色 + fade 0.6 转场 + slide 地点字幕 + BGM 0.3 duck
+图文：每图一段 kenburns + typewriter + TTS 旁白逐句对齐
+对比：split_left/split_right 两段分屏 + 反向调色
+悬念：night + oldfilm + 居中 typewriter
+混剪：批量 add_clip 10~20 段 + 奇偶段变速 + 每 3~4 段一个转场
 
-详见 .claude/skills/video-editing/SKILL.md`,
+## 失败速查
+"加工第 N 段"失败→素材坏，media_edit 试单段或 api_media_normalize；时长不符→规格不一致；字幕偏早偏晚→漏算转场；效果没反应→id 拼错被丢弃；转场黑屏→时长超过段长一半。
+
+## 做不到（照实说，别承诺）
+智能抠像 / 美颜 / AI 补帧超分 / 曲线变速 / 混合模式与多视频轨 / 自由钢笔蒙版 / 多机位 / 独立音效轨 / 多段 BGM / 逐条字幕不同字号 / 实时播放预览。
+
+## 交付与硬约束
+给：成片路径与时长、段序、字幕条数与动画、BGM 与音量、还需补什么。**不要贴工程 json**，中文输出。
+素材一律本机绝对路径；**不擅自加效果**；缺 ffmpeg 先告知体积再装；素材缺失如实说，不要造素材充数。`,
     },
     {
       // 跨境选品分析（2026-10-16，P0）：与「店铺运营助手」a_builtin_shop_agent 成对维护。
@@ -4369,6 +4357,97 @@ file_write 生成 Markdown/PDF，对话给摘要与路径。`,
 - 仅在**授权范围内**取证与处置；不做破坏性删除；所有命令留审计；涉及生产先确认。`,
     },
     {
+      id: 'skill_sec_source_audit', name: '源码安全审计', category: '安全',
+      description: '源码审计方法论：读懂规则包的结论、区分规则命中与真实漏洞、核对依赖漏洞、维护基线；输出可执行的修复清单。',
+      triggers: ['源码审计', '代码审计', '静态扫描', '规则扫描', '依赖漏洞', '误报'],
+      body: `# 源码安全审计
+## 先看结论，再看规则
+- 扫描结果分三层：规则命中（可能误报）→ 上下文确认（是否用户可控）→ 可复现（能否触发）。
+- 不要把所有命中直接写进报告；只有确认为真或高度可疑的才标严重度。
+## 逐类判读
+- 硬编码凭据 / 高熵字符串：确认是不是占位符、示例值、公钥；真凭据要轮换而不是只删代码。
+- 注入类（SQL/命令/模板）：看数据是否来自请求；参数化或参数数组即安全。
+- XSS：innerHTML / v-html / dangerouslySetInnerHTML 要看内容来源与是否经过净化。
+- 路径遍历：确认结果是否被限制在允许根目录内。
+- Electron 配置：nodeIntegration=true 或 contextIsolation=false 时，任何可注入的页面脚本都等于本机代码执行，优先级最高。
+- 依赖漏洞：扫描用的是离线快照，只覆盖影响面大的条目；报告里要写清快照范围，不能当成完整 SCA。
+## 基线与日常化
+- 首次扫描后接受基线；之后只看新增，避免同一个问题反复出现在报告里。
+- 人工确认过的误报标 fp；确认的真实问题标 verified，再进正式报告。
+## 纪律
+- 只读审计，不修改被测代码；需要修复时给补丁建议，由用户决定是否应用。`,
+    },
+    {
+      id: 'skill_sec_package_audit', name: '安装包安全审计', category: '安全',
+      description: '安装包静态审计：Android 清单属性、DEX 字符串线索、签名与明文流量；Electron asar；能力边界与降级说明。',
+      triggers: ['安装包', 'APK', '反编译', 'DEX', '签名', 'asar', '上线体检'],
+      body: `# 安装包安全审计
+## 先确认分析深度
+- 零依赖模式：ZIP 结构 + 清单（需本机 aapt2）+ DEX 字符串池 + 签名块。能发现密钥、端点、危险 API 名。
+- 增强模式：检测到 apktool / jadx 才做反编译；没有就如实说明"本次为静态字符串分析"。
+- 不做动态分析：不安装、不运行、不联网。
+## Android 清单要点
+- debuggable=true：发布包可被调试器附加，高危。
+- usesCleartextTraffic=true 或缺少 network-security-config：明文流量可被劫持。
+- 导出组件（exported=true）：没有 signature 级权限保护的 Activity/Service/Receiver/Provider 可被任意应用拉起。
+- allowBackup=true：可经 adb backup 导出私有数据。
+## DEX 线索判读
+- 云厂商密钥前缀、私钥块：确认是否真凭据；真的一律按高危处理并建议轮换。
+- 明文 http 端点：看是否内网白名单；公网明文一律要改。
+- addJavascriptInterface：WebView 桥暴露面，需确认加载的页面是否可信。
+- ECB 模式：确认是否用于敏感数据。
+## 签名
+- debug 证书等于公开密钥，任何人可签同包名更新包；发布包必须用正式证书并保留 v2/v3 签名。
+- apksigner 不可用时只能确认签名块存在，不能校验有效性——报告要写明。
+## 输出
+按「清单 / 组件 / 凭据 / 网络 / 签名」分组，每条给位置（清单属性或 DEX 文件）与修复动作。`,
+    },
+    {
+      id: 'skill_sec_self_app_audit', name: '言智自有资产审计', category: '安全',
+      description: '言智自身的安全基线：Electron 渲染进程配置、preload 与 IPC 面、本地服务鉴权、插件权限边界、构建产物泄露。',
+      triggers: ['言智体检', '自有资产', 'Electron 安全', 'IPC', '本地服务', '插件权限'],
+      body: `# 言智自有资产审计
+## 资产范围
+- 源码仓库：apps/desktop（Electron 主进程与 preload）、apps/server（本地 HTTP 服务）、packages/ui（渲染层）、packages/core（插件宿主）。
+- 构建产物：dist、release、android 构建输出、app.asar。
+- 本机运行时：server 默认 3001、Vite dev 端口。
+## Electron 检查清单
+- BrowserWindow：nodeIntegration 必须 false，contextIsolation 必须 true，webSecurity 必须 true。
+- preload：只经 contextBridge 暴露最小 API；不要把 ipcRenderer 整个透传。
+- IPC：主进程处理函数要校验参数来源与取值，不能把渲染层传入的路径/命令直接执行。
+- 权限：setPermissionRequestHandler 应按需拒绝摄像头/麦克风/通知。
+- CSP：渲染页面应有 Content-Security-Policy，禁止 unsafe-eval 与任意源脚本。
+## 本地服务检查清单
+- 本机 HTTP 接口是否校验调用方（token 或仅主进程可达的 IPC）。
+- 文件读写接口是否限制在允许目录内；路径参数是否可穿越。
+- CORS 是否只允许本应用来源。
+## 插件与工具边界
+- 插件声明的工具能力是否受宿主白名单约束；插件能否调用未挂载的工具。
+- 自定义工具的参数是否被当作命令或路径直接使用。
+## 输出
+按「渲染进程 / 主进程 IPC / 本地服务 / 插件」分组，给文件与行号，附最小修复建议。`,
+    },
+    {
+      id: 'skill_sec_api_scan', name: '接口安全扫描', category: '安全',
+      description: '接口扫描与鉴权矩阵：端点枚举、未授权访问判定、IDOR 嫌疑识别、只读优先原则与证据记录。',
+      triggers: ['接口扫描', 'API 安全', '鉴权', '越权', 'IDOR', 'OpenAPI'],
+      body: `# 接口安全扫描
+## 端点来源
+- OpenAPI / Swagger 文档、HAR、代理抓包记录、页面 JS 里抽出的接口路径。
+- 没有文档时按同源前缀聚类，不要盲目全站爆破。
+## 鉴权矩阵
+- 对每个端点记录：匿名访问 / 普通用户 / 管理员 三档的响应状态与数据范围。
+- 去掉 Cookie 或 Authorization 头重放：返回同等数据即未授权访问。
+- 同族端点横向对比（/api/user/1 与 /api/user/2）：不同用户数据可互读即 IDOR 嫌疑。
+## 只读优先
+- 默认只做 GET/HEAD；写操作（POST/PUT/DELETE）可能改变业务数据，必须单独确认后执行。
+- 注入类验证只在授权与交战模式开启时进行。
+## 证据
+- 每结论附请求方法、路径、关键头、响应状态与数据摘要；敏感字段脱敏。
+## 输出
+鉴权矩阵表 + 问题清单（未授权 / 越权 / 信息泄露 / 配置错误），每条给复现步骤与修复建议。`,
+    },
+    {
       id: 'skill_office_finance', name: '财务分析', category: '办公',
       description: '财务数据整理与分析：报表核对、成本费用拆解、现金流与预算差异、经营指标趋势；输出表格与结论。仅供参考，不构成审计/税务意见。',
       triggers: ['财务分析', '报表', '成本', '预算', '现金流', '利润分析'],
@@ -4606,9 +4685,14 @@ const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prom
   // 四模式岗位 skill（2026-10-17，openspec 5h）：新内置 body 一律进白名单
   'skill_ops_health_check', 'skill_ops_log_analysis', 'skill_ops_docker_ops', 'skill_ops_db_maintain', 'skill_ops_deploy_release', 'skill_ops_incident_response',
   'skill_sec_recon', 'skill_sec_web_probe', 'skill_sec_report', 'skill_sec_audit_review', 'skill_sec_hardening', 'skill_sec_blue_team',
+  // 2026-10-30：漏洞扫描 + 言智安全官配套 skill（不进白名单老库拿不到 body）
+  'skill_sec_source_audit', 'skill_sec_package_audit', 'skill_sec_self_app_audit', 'skill_sec_api_scan',
   'skill_office_finance', 'skill_office_hr', 'skill_office_operation', 'skill_office_legal', 'skill_office_data_report', 'skill_office_service',
   // 2026-10-26：图表展示改走 data_query_view；新增信息图/文档类型 skill，旧库一并刷新
-  'skill_data_visualization', 'skill_infographic', 'skill_document_type'];
+  'skill_data_visualization', 'skill_infographic', 'skill_document_type',
+  // 2026-10-30：视频剪辑 skill 正文重建（补齐蒙版/关键帧/转场/画中画/音效链真实能力面 + 8 配方 + 边界），
+  //   ★ 不进白名单的话老库永远停在旧 body —— 与上面几条同一个坑。
+  'skill_video_editing'];
 try {
   const getBody = db.prepare('SELECT body, files_json FROM skill WHERE id = ?');
   const setDef = db.prepare('UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ? WHERE id = ?');
