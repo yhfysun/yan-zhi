@@ -9,6 +9,7 @@
   "permissions": ["fs", "desktop-shell", "llm", "data-contracts"],
   "contributes": {
     "tools": ["desktop_scan", "desktop_plan", "desktop_apply", "desktop_undo"],
+    "reminders": { "path": "reminders/drain" },
     "windows": [
       {
         "id": "organize",

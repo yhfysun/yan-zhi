@@ -63,3 +63,33 @@ test('目录：类型/层级/契约清单齐备', () => {
   assert.deepEqual(c.contracts, CONTRACTS);
   assert.ok(c.configSchema.clock);
 });
+
+test('天气 / 待办组件：必须声明契约，配置有默认值', () => {
+  const noSrc = validateWidget({ id: 'w-weather', type: 'weather', pos: { x: 10, y: 10, w: 300, h: 220 } }, B);
+  assert.equal(noSrc.ok, false, 'weather 必须带 source.contract');
+  assert.match(String(noSrc.error), /source\.contract/);
+
+  const w = validateWidget({
+    id: 'w-weather', type: 'weather', layer: 'desktop',
+    pos: { x: 10, y: 10, w: 300, h: 220 },
+    source: { contract: 'weather.current' },
+    config: { city: '成都' },
+  }, B);
+  assert.equal(w.ok, true);
+  assert.equal(w.widget.config.city, '成都');
+  assert.equal(w.widget.config.title, '天气', '未填标题用默认');
+  assert.equal(w.widget.config.days, 2);
+
+  const t = validateWidget({
+    id: 'w-todos', type: 'todos', pos: { x: 10, y: 10, w: 300, h: 240 },
+    source: { contract: 'todos.list' }, config: {},
+  }, B);
+  assert.equal(t.ok, true);
+  assert.equal(t.widget.config.max, 6);
+
+  const unknownCity = validateWidget({
+    id: 'w-weather2', type: 'weather', pos: { x: 0, y: 0, w: 300, h: 200 },
+    source: { contract: 'nope.contract' }, config: {},
+  }, B);
+  assert.equal(unknownCity.ok, false);
+});

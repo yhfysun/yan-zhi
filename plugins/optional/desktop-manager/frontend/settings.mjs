@@ -1,4 +1,6 @@
-// 设置页（P0-C）：整理配置 + 围栏管理 + 打开围栏窗口
+// 设置页（P0-C）：整理配置 + 围栏管理 + 组件管理 + 打开窗口
+import { openWidgetMenu, removeWidget, WIDGET_PRESETS } from './widget-create.mjs';
+
 const api = window.electronAPI || null;
 const API_BASE = (api && api.apiBase) || (location.origin + '/api');
 const PLUGIN = '/plugin/desktop-manager';
@@ -148,7 +150,11 @@ async function loadFences() {
       del.className = 'danger';
       del.textContent = '移除';
       del.addEventListener('click', async () => {
-        if (!window.confirm('移除围栏「' + f.label + '」？只移除围栏，不删除文件。')) return;
+        const okay = await askConfirm({
+          title: '移除围栏「' + f.label + '」？',
+          sub: '只移除这个分组，不删除任何文件。',
+        });
+        if (!okay) return;
         try {
           await request('/fences/' + f.id, { method: 'DELETE' });
           await loadFences();
@@ -160,16 +166,132 @@ async function loadFences() {
   }
 }
 
+/* ---------------- 输入对话框（Electron 不支持 window.prompt） ---------------- */
+
+function askText({ title, sub, placeholder, value }) {
+  return new Promise((resolve) => {
+    const mask = $('askMask');
+    const ok = $('askOk');
+    const cancel = $('askCancel');
+    const input = $('askInput');
+    $('askTitle').textContent = title || '';
+    $('askSub').textContent = sub || '';
+    input.value = value || '';
+    input.placeholder = placeholder || '';
+    mask.classList.add('show');
+    setTimeout(() => input.focus(), 30);
+
+    const finish = (v) => {
+      mask.classList.remove('show');
+      ok.onclick = null;
+      cancel.onclick = null;
+      input.removeEventListener('keydown', onKey);
+      resolve(v);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(input.value.trim()); }
+      if (e.key === 'Escape') finish('');
+    };
+    ok.onclick = () => finish(input.value.trim());
+    cancel.onclick = () => finish('');
+    input.addEventListener('keydown', onKey);
+  });
+}
+
+/** 确认框（同样不用 window.confirm）：返回 true/false */
+function askConfirm({ title, sub }) {
+  return new Promise((resolve) => {
+    const mask = $('askMask');
+    const ok = $('askOk');
+    const cancel = $('askCancel');
+    const input = $('askInput');
+    $('askTitle').textContent = title || '确认';
+    $('askSub').textContent = sub || '';
+    input.style.display = 'none';
+    mask.classList.add('show');
+    const finish = (v) => {
+      mask.classList.remove('show');
+      input.style.display = '';
+      ok.onclick = null;
+      cancel.onclick = null;
+      resolve(v);
+    };
+    ok.onclick = () => finish(true);
+    cancel.onclick = () => finish(false);
+  });
+}
+
+/* ---------------- 组件管理 ---------------- */
+
+function typeLabel(type) {
+  const p = WIDGET_PRESETS.find((x) => x.type === type);
+  return p ? p.label : type;
+}
+
+async function loadWidgets() {
+  const data = await request('/widgets');
+  const list = $('widgetList');
+  list.textContent = '';
+  const widgets = (data && data.widgets) || [];
+  if (!widgets.length) {
+    const empty = document.createElement('div');
+    empty.className = 'item';
+    empty.style.color = '#7d889c';
+    empty.textContent = '还没有组件 —— 点下面「新建组件」，或在桌面层工具条上右键';
+    list.appendChild(empty);
+    return;
+  }
+  for (const w of widgets) {
+    const row = document.createElement('div');
+    row.className = 'item';
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = (w.config && w.config.title) || typeLabel(w.type);
+    const k = document.createElement('span');
+    k.className = 'k';
+    k.textContent = `${w.type} · ${w.layer === 'overlay' ? '悬浮层' : '桌面层'}`;
+    const c = document.createElement('span');
+    c.className = 'c';
+    c.textContent = `${Math.round(w.pos.x)},${Math.round(w.pos.y)}`;
+    const del = document.createElement('button');
+    del.className = 'danger';
+    del.textContent = '移除';
+    del.addEventListener('click', async () => {
+      try {
+        await removeWidget(request, w.id);
+        await loadWidgets();
+        status('已移除组件');
+      } catch (e) { status('移除失败：' + e.message, true); }
+    });
+    row.append(n, k, c, del);
+    list.appendChild(row);
+  }
+}
+
+$('btnAddWidget').addEventListener('click', (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  openWidgetMenu({
+    request,
+    x: r.left,
+    y: r.bottom + 6,
+    onDone: () => { void loadWidgets(); status('已新建组件'); },
+    onError: (err) => status('新建失败：' + (err && err.message ? err.message : err), true),
+  });
+});
+
 async function load() {
   const cfg = await request('/config');
   strategySelect.set(cfg.strategy === 'ai' ? 'ai' : 'rules');
   $('targetRoot').value = cfg.targetRoot || '';
   $('tcEnabled').checked = cfg.timeCluster.enabled !== false;
   $('tcDays').value = cfg.timeCluster.windowDays || 7;
+  $('city').value = cfg.city || '';
+  $('workEnd').value = cfg.workEnd || '18:00';
   $('rules').value = rulesToText(cfg.rules);
   $('projects').value = (cfg.projects || []).join(', ');
   $('keep').value = (cfg.keep || []).join('\n');
   await loadFences();
+  await loadWidgets();
 }
 
 async function save() {
@@ -177,6 +299,8 @@ async function save() {
     strategy: strategySelect.value,
     targetRoot: $('targetRoot').value.trim(),
     timeCluster: { enabled: $('tcEnabled').checked, windowDays: Number($('tcDays').value) || 7 },
+    city: $('city').value.trim(),
+    workEnd: $('workEnd').value.trim(),
     rules: parseRules($('rules').value),
     projects: $('projects').value.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean),
     keep: $('keep').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean),
@@ -192,7 +316,11 @@ async function save() {
 $('btnSave').addEventListener('click', save);
 
 $('btnNewFence').addEventListener('click', async () => {
-  const label = window.prompt('围栏名称（只改显示位置，不移动文件）');
+  const label = await askText({
+    title: '新建围栏',
+    sub: '只改显示位置，不移动任何文件。',
+    placeholder: '围栏名称，如：工作 / 截图',
+  });
   if (!label) return;
   try {
     await request('/fences', { method: 'POST', body: JSON.stringify({ label }) });

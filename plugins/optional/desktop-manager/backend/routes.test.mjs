@@ -296,6 +296,73 @@ test('宿主只读契约：组件取数走 runReadContract，插件自己不碰�
   }
 });
 
+test('待办：增删改查；到期提醒走 /reminders/due 且不重复', async () => {
+  const { routes, cleanup } = await setup();
+  try {
+    const bad = res();
+    await routes['POST /todos']({ body: { text: '   ' } }, bad);
+    assert.equal(bad.code, 400, '空文本拒绝');
+
+    const add = res();
+    await routes['POST /todos']({ body: { text: '写周报' } }, add);
+    assert.equal(add.code, 200);
+    const id = add.body.data.id;
+    assert.equal(add.body.data.startAt, 0, '没给时间 → 0（走汇总提醒）');
+
+    const addTimed = res();
+    await routes['POST /todos']({ body: { text: '开会', startAt: Date.now() - 1000 } }, addTimed);
+    assert.ok(addTimed.body.data.startAt > 0);
+
+    const list = res();
+    await routes['GET /todos']({}, list);
+    assert.equal(list.body.data.items.length, 2);
+
+    const scan = res();
+    await routes['POST /reminders/scan']({ body: {} }, scan);
+    assert.equal(scan.code, 200);
+    assert.ok(scan.body.data.queued >= 1, '刚过开始时间的待办应入队');
+
+    const drain = res();
+    await routes['POST /reminders/drain']({ body: {} }, drain);
+    const hit = drain.body.data.items.find((d) => d.kind === 'start');
+    assert.ok(hit, '队列里应有到点提醒');
+    assert.match(hit.text, /该开始了/);
+
+    const drain2 = res();
+    await routes['POST /reminders/drain']({ body: {} }, drain2);
+    assert.deepEqual(drain2.body.data.items, [], '取走即清空，不会重复送达');
+
+    const scan2 = res();
+    await routes['POST /reminders/scan']({ body: {} }, scan2);
+    assert.equal(scan2.body.data.queued, 0, '同一天不重复提醒');
+
+    const done = res();
+    await routes['PATCH /todos/:id']({ params: { id }, body: { done: true } }, done);
+    assert.equal(done.body.data.done, true);
+
+    const del = res();
+    await routes['DELETE /todos/:id']({ params: { id } }, del);
+    assert.equal(del.code, 200);
+    const missing = res();
+    await routes['DELETE /todos/:id']({ params: { id } }, missing);
+    assert.equal(missing.code, 404);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('天气契约：没配城市时明确报错（不让组件白屏）', async () => {
+  const { routes, cleanup } = await setup();
+  try {
+    const r = res();
+    await routes['GET /widgets/data']({ query: { contract: 'weather.current' } }, r);
+    assert.equal(r.code, 500);
+    assert.match(String(r.body.error), /城市/);
+  } finally {
+    await cleanup();
+  }
+});
+
 test('非法标签与非法文件名被拒', async () => {
   const { routes, cleanup } = await setup();
   try {
@@ -310,6 +377,59 @@ test('非法标签与非法文件名被拒', async () => {
     const bad3 = res();
     await routes['POST /assign']({ body: { name: 'ok.txt', fenceId: 'nope' } }, bad3);
     assert.equal(bad3.code, 404);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('备忘录：按 id 存取，保存不 bump rev（组件页便签不丢焦点）', async () => {
+  const { routes, cleanup } = await setup();
+  try {
+    const empty = res();
+    await routes['GET /memo/:id']({ params: { id: 'memo-1' } }, empty);
+    assert.equal(empty.body.data.text, '');
+
+    const put = res();
+    await routes['PUT /memo/:id']({ params: { id: 'memo-1' }, body: { text: '周五前交方案' } }, put);
+    assert.equal(put.body.data.text, '周五前交方案');
+
+    const rev = res();
+    await routes['GET /rev']({}, rev);
+    const before = rev.body.data.rev;
+    await routes['PUT /memo/:id']({ params: { id: 'memo-1' }, body: { text: '改一下' } }, res());
+    const rev2 = res();
+    await routes['GET /rev']({}, rev2);
+    assert.equal(rev2.body.data.rev, before, '保存便签不该 bump rev');
+
+    const again = res();
+    await routes['GET /memo/:id']({ params: { id: 'memo-1' } }, again);
+    assert.equal(again.body.data.text, '改一下');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('文件夹块：只读列桌面里的某个文件夹，越界被拒', async () => {
+  const { dir, routes, cleanup } = await setup();
+  try {
+    await fsp.mkdir(path.join(dir, '文档', '子目录'), { recursive: true });
+    await fsp.writeFile(path.join(dir, '文档', 'a.docx'), 'x');
+
+    const r = res();
+    await routes['GET /widgets/data']({ query: { contract: 'folder.items', rel: '文档' } }, r);
+    assert.equal(r.code, 200);
+    assert.deepEqual(r.body.data.items.map((i) => i.name), ['子目录', 'a.docx'], '目录排在文件前面');
+    assert.equal(r.body.data.total, 2);
+
+    const bad = res();
+    await routes['GET /widgets/data']({ query: { contract: 'folder.items', rel: '../..' } }, bad);
+    assert.equal(bad.code, 500);
+    assert.match(String(bad.body.error), /越界/);
+
+    const missing = res();
+    await routes['GET /widgets/data']({ query: { contract: 'folder.items' } }, missing);
+    assert.equal(missing.code, 500);
+    assert.match(String(missing.body.error), /未指定文件夹/);
   } finally {
     await cleanup();
   }

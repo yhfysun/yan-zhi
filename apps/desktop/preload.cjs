@@ -154,6 +154,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     settings: (payload) => ipcRenderer.send('pet:settings', payload || {}),
     // 系统通知（完成 / 出错 / 等你输入）：主进程弹原生通知，点击前置主窗并跳会话
     notify: (payload) => ipcRenderer.send('pet:notify', payload || {}),
+    // 通用「宠物说一句话」：插件（如桌面管理的待办提醒）让宠物弹气泡 + 响一声。
+    // 宠物窗没开时返回 { ok:false, error:'pet-closed' }，调用方自行降级成本地提示。
+    say: (payload) => ipcRenderer.invoke('pet:say', payload || {}),
+    onSay: (cb) => {
+      const h = (_e, p) => cb(p);
+      ipcRenderer.on('pet:say', h);
+      return () => ipcRenderer.removeListener('pet:say', h);
+    },
     // 宠物窗刚加载完：主动要一次当前状态（主窗只在变化时推，重载后拿不到旧值）
     requestSync: () => ipcRenderer.send('pet:request-sync'),
     // 主窗侧订阅：宠物窗要数据时，把当前快照推一次

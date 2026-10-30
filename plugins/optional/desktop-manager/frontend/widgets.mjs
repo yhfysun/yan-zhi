@@ -10,11 +10,14 @@ const qs = new URLSearchParams(location.search);
 const LAYER = qs.get('layer') === 'overlay' ? 'overlay' : 'desktop';
 const DEMO = qs.has('demo');
 
-const S = { widgets: [], data: {}, rev: -1, windowId: null, clickThrough: false };
+const S = { widgets: [], data: {}, rev: -1, windowId: null, clickThrough: null };
 const COLORS = ['#5b8cff', '#37c98b', '#f0a03c', '#b07cff', '#2fc6c6', '#8ea3c4'];
 
-async function request(path) {
-  const r = await fetch(API_BASE + PLUGIN + path, { headers: { 'Content-Type': 'application/json' } });
+async function request(path, opts) {
+  const r = await fetch(API_BASE + PLUGIN + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...(opts || {}),
+  });
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
   return j.data;
@@ -71,11 +74,39 @@ async function loadWidgets() {
   render();
 }
 
+/** 数据键：同一契约可能带参数（天气按城市 / 便签按 id / 文件夹按路径），键里要带参数 */
+function sourceKey(w) {
+  if (!w || !w.source) return '';
+  const c = w.source.contract;
+  if (c === 'weather.current') return c + '|' + String((w.config && w.config.city) || '');
+  if (c === 'memo.text') return c + '|' + w.id;
+  if (c === 'folder.items') return c + '|' + String((w.config && w.config.rel) || '');
+  return c;
+}
+
+/** 契约的查询参数（渲染页按组件配置拼） */
+function sourceQuery(w) {
+  const c = w.source && w.source.contract;
+  if (c === 'weather.current' && w.config && w.config.city) return '&city=' + encodeURIComponent(w.config.city);
+  if (c === 'memo.text') return '&id=' + encodeURIComponent(w.id);
+  if (c === 'folder.items' && w.config && w.config.rel) return '&rel=' + encodeURIComponent(w.config.rel);
+  return '';
+}
+
+function dataOf(w) {
+  const k = sourceKey(w);
+  return k ? S.data[k] : null;
+}
+
 async function loadData() {
-  const contracts = [...new Set(S.widgets.filter((w) => w.source).map((w) => w.source.contract))];
-  for (const c of contracts) {
+  const seen = new Set();
+  for (const w of S.widgets) {
+    const key = sourceKey(w);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const url = '/widgets/data?contract=' + encodeURIComponent(w.source.contract) + sourceQuery(w);
     try {
-      S.data[c] = await request('/widgets/data?contract=' + encodeURIComponent(c));
+      S.data[key] = await request(url);
     } catch { /* 单个契约失败不影响其它组件 */ }
   }
 }
@@ -124,7 +155,7 @@ function render() {
   layer.textContent = '';
   for (const w of S.widgets) {
     const el = document.createElement('div');
-    el.className = 'widget ' + w.type;
+    el.className = 'widget ' + w.type + (['todos', 'memo', 'folder'].includes(w.type) ? ' interactive' : '');
     el.dataset.id = w.id;
     el.style.left = w.pos.x + 'px';
     el.style.top = w.pos.y + 'px';
@@ -146,8 +177,13 @@ function render() {
 }
 
 function buildBody(w) {
-  const data = w.source ? S.data[w.source.contract] : null;
+  const data = dataOf(w);
   const box = document.createElement('div');
+
+  if (w.type === 'weather') return weatherBody(box, w, data);
+  if (w.type === 'todos') return todosBody(box, w, data);
+  if (w.type === 'memo') return memoBody(box, w, data);
+  if (w.type === 'folder') return folderBody(box, w, data);
 
   if (w.type === 'clock') {
     const hm = document.createElement('div');
@@ -265,7 +301,265 @@ function buildBody(w) {
   return box;
 }
 
+/* ---------------- 天气 / 待办 ---------------- */
+
+function weatherBody(box, w, data) {
+  const title = document.createElement('div');
+  title.className = 'wt';
+  title.textContent = w.config.title || '天气';
+  box.appendChild(title);
+
+  if (!data || data.temp === null || data.temp === undefined) {
+    const err = document.createElement('div');
+    err.className = 'wx-err';
+    err.textContent = '天气取不到：设置页填个城市（Open-Meteo，无需 key）后稍等重试';
+    box.appendChild(err);
+    return box;
+  }
+
+  const top = document.createElement('div');
+  top.className = 'wx-top';
+  const ic = document.createElement('span');
+  ic.className = 'wx-ic';
+  ic.textContent = data.icon || '🌡';
+  const temp = document.createElement('div');
+  temp.className = 'wx-temp';
+  temp.textContent = data.temp === null ? '--' : String(data.temp);
+  const unit = document.createElement('small');
+  unit.textContent = '°C';
+  temp.appendChild(unit);
+  const desc = document.createElement('div');
+  desc.className = 'wx-desc';
+  desc.textContent = `${data.text || ''}`;
+  const city = document.createElement('div');
+  city.textContent = data.city || '';
+  desc.appendChild(city);
+  top.append(ic, temp, desc);
+
+  const meta = document.createElement('div');
+  meta.className = 'wx-meta';
+  meta.textContent = [
+    data.feels !== null ? `体感 ${data.feels}°` : '',
+    data.humidity ? `湿度 ${data.humidity}%` : '',
+    data.wind !== null ? `风 ${data.wind}km/h` : '',
+  ].filter(Boolean).join(' · ');
+
+  box.append(top, meta);
+
+  const days = (data.days || []).slice(0, Math.max(1, w.config.days || 2));
+  if (days.length) {
+    const wrap = document.createElement('div');
+    wrap.className = 'wx-days';
+    for (const d of days) {
+      const cell = document.createElement('div');
+      cell.className = 'wx-day';
+      const lbl = document.createElement('div');
+      lbl.className = 'd';
+      lbl.textContent = d.label || d.date;
+      const di = document.createElement('div');
+      di.className = 'i';
+      di.textContent = d.icon || '';
+      const t = document.createElement('div');
+      t.className = 't';
+      t.textContent = `${Math.round(d.max)}° / ${Math.round(d.min)}°`;
+      cell.append(lbl, di, t);
+      wrap.appendChild(cell);
+    }
+    box.appendChild(wrap);
+  }
+  return box;
+}
+
+function hhmm(ms) {
+  const d = new Date(Number(ms) || 0);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+/** 快速添加里支持「写周报 17:30」这种尾巴时间；今天已经过了就顺延到明天 */
+function parseQuickAdd(raw) {
+  const text = String(raw || '').trim();
+  const m = /^(.*?)[\s　]+(\d{1,2})\s*[:：]\s*(\d{2})$/.exec(text);
+  if (!m) return { text, startAt: 0 };
+  const h = Number(m[2]);
+  const min = Number(m[3]);
+  if (h > 23 || min > 59) return { text, startAt: 0 };
+  const d = new Date();
+  d.setHours(h, min, 0, 0);
+  if (d.getTime() < Date.now()) d.setDate(d.getDate() + 1);
+  return { text: m[1].trim() || text, startAt: d.getTime() };
+}
+
+function todosBody(box, w, data) {
+  const title = document.createElement('div');
+  title.className = 'wt';
+  const items = ((data && data.items) || []);
+  const undone = items.filter((t) => !t.done).length;
+  title.textContent = (w.config.title || '待办') + (undone ? ` · ${undone}` : '');
+  box.appendChild(title);
+
+  const list = document.createElement('div');
+  list.className = 'todos';
+  const shown = items.slice(0, Math.max(1, w.config.max || 6));
+
+  for (const t of shown) {
+    const row = document.createElement('div');
+    row.className = 'td' + (t.done ? ' done' : '');
+    const cb = document.createElement('span');
+    cb.className = 'cb';
+    cb.textContent = t.done ? '✓' : '';
+    const tx = document.createElement('span');
+    tx.className = 'tx';
+    tx.textContent = t.text;
+    tx.title = t.text;
+    const tm = document.createElement('span');
+    tm.className = 'tm';
+    tm.textContent = t.startAt ? hhmm(t.startAt) : '';
+    cb.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await request('/todos/' + encodeURIComponent(t.id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ done: !t.done }),
+        });
+        await loadData();
+        render();
+      } catch { /* 勾选失败保持原样 */ }
+    });
+    row.append(cb, tx, tm);
+    list.appendChild(row);
+  }
+  if (!shown.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = '今天没有待办';
+    list.appendChild(e);
+  }
+
+  const add = document.createElement('div');
+  add.className = 'add';
+  const input = document.createElement('input');
+  input.placeholder = '加一条，如：写周报 17:30';
+  input.maxLength = 120;
+  const btn = document.createElement('button');
+  btn.textContent = '添加';
+  const submit = async () => {
+    const { text, startAt } = parseQuickAdd(input.value);
+    if (!text) return;
+    input.value = '';
+    try {
+      await request('/todos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, startAt }),
+      });
+      await loadData();
+      render();
+    } catch { /* 失败保留输入 */ input.value = text; }
+  };
+  btn.addEventListener('click', (e) => { e.stopPropagation(); void submit(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); void submit(); }
+  });
+  add.append(input, btn);
+  list.appendChild(add);
+  box.appendChild(list);
+  return box;
+}
+
+/* ---------------- 备忘录 / 文件夹块 ---------------- */
+
+function memoBody(box, w, data) {
+  const title = document.createElement('div');
+  title.className = 'wt';
+  title.textContent = w.config.title || '备忘录';
+  box.appendChild(title);
+
+  const ta = document.createElement('textarea');
+  ta.className = 'memo-ta ' + (w.config.size || 'm');
+  ta.value = (data && data.text) || '';
+  ta.placeholder = '写点什么…（失焦自动保存）';
+  let timer = 0;
+  const save = async () => {
+    clearTimeout(timer);
+    try {
+      await request('/memo/' + encodeURIComponent(w.id), {
+        method: 'PUT',
+        body: JSON.stringify({ text: ta.value }),
+      });
+      if (data) data.text = ta.value;
+    } catch { /* 保存失败保留内容：下次失真再试 */ }
+  };
+  ta.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(save, 800);
+  });
+  ta.addEventListener('blur', () => { void save(); });
+  ta.addEventListener('mousedown', (e) => e.stopPropagation());
+  box.appendChild(ta);
+  return box;
+}
+
+function folderBody(box, w, data) {
+  const title = document.createElement('div');
+  title.className = 'wt';
+  title.textContent = w.config.title || (data && data.rel) || '文件夹';
+  box.appendChild(title);
+
+  if (!data) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = '没绑定文件夹：把组件配置 rel 填成桌面上的文件夹名（如 文档）';
+    box.appendChild(e);
+    return box;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'fold';
+  const items = (data.items || []).slice(0, Math.max(1, w.config.max || 8));
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'fr';
+    const ic = document.createElement('span');
+    ic.className = 'ic';
+    ic.textContent = it.isDir ? '📁' : '📄';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = it.name;
+    nm.title = it.name;
+    row.append(ic, nm);
+    row.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (api && api.desktopShell && api.desktopShell.openPath) {
+        api.desktopShell.openPath(it.path).catch(() => {});
+      }
+    });
+    list.appendChild(row);
+  }
+  if (!items.length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = '文件夹是空的';
+    list.appendChild(e);
+  }
+  box.appendChild(list);
+
+  const foot = document.createElement('div');
+  foot.className = 'cap';
+  foot.textContent = `共 ${data.total || 0} 项` + ((data.total || 0) > items.length ? ' · 只显示前几项' : '');
+  box.appendChild(foot);
+  return box;
+}
+
 /* ---------------- 穿透 / 生命周期 ---------------- */
+
+// 默认整窗穿透，只有可交互组件（链接/可编辑块）吃鼠标。
+// ★ 与围栏页同一套自愈：指针位置重算 + 定时复核 + 启动先同步一次，
+//   否则一旦停在"整窗穿透"就再也收不到 mousemove（点哪都没反应）。
+function wantThrough(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return !(el && el.closest('.link, .interactive'));
+}
 
 function setClickThrough(v) {
   if (v === S.clickThrough) return;
@@ -275,9 +569,19 @@ function setClickThrough(v) {
   }
 }
 
+let lastX = 0;
+let lastY = 0;
+let hasPointer = false;
 document.addEventListener('mousemove', (e) => {
-  setClickThrough(!e.target.closest('.link'));
-});
+  lastX = e.clientX;
+  lastY = e.clientY;
+  hasPointer = true;
+  setClickThrough(wantThrough(lastX, lastY));
+}, true);
+setInterval(() => {
+  if (!hasPointer) return;
+  setClickThrough(wantThrough(lastX, lastY));
+}, 1200);
 
 async function boot() {
   if (DEMO) {
@@ -291,7 +595,9 @@ async function boot() {
       const mine = list.find((w) => w.placement === LAYER);
       if (mine) S.windowId = mine.windowId;
     } catch { /* ignore */ }
-    setClickThrough(true);
+    // ★ 不在启动时直接整窗穿透：一旦穿透且拿不到 mousemove，就永远回不来（点啥都没反应）。
+    //   穿透与否交给上面的指针位置判定，第一帧默认「可交互」，移动鼠标后立刻按位置收敛。
+    setClickThrough(false);
   }
   await loadWidgets().catch(() => {});
   // 组件定义变了（rev）→ 重载；契约数据 30s 刷一次

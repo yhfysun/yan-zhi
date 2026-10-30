@@ -120,3 +120,23 @@ test('助手源码包含全部命令', () => {
     assert.ok(HELPER_CS.includes(cmd), '缺少命令 ' + cmd);
   }
 });
+
+test('入口允许带查询串（?layer=desktop），路径部分照常校验', () => {
+  const { dirs, root } = mkPlugin();
+  fs.writeFileSync(path.join(dirs.installed, 'desktop-manager', 'frontend', 'widgets.html'), '<!doctype html>');
+  const r = resolvePluginWindowRequest(dirs, {
+    pluginId: 'desktop-manager',
+    entry: 'frontend/widgets.html?layer=desktop',
+    placement: 'desktop',
+    apiOrigin: 'http://127.0.0.1:3001',
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.url, 'http://127.0.0.1:3001/api/plugin-assets/desktop-manager/frontend/widgets.html?layer=desktop');
+  assert.ok(r.absPath.endsWith('widgets.html'));
+
+  const notHtml = resolvePluginWindowRequest(dirs, { pluginId: 'desktop-manager', entry: 'frontend/x.txt?layer=1', placement: 'normal' });
+  assert.equal(notHtml.ok, false);
+  const trav = resolvePluginWindowRequest(dirs, { pluginId: 'desktop-manager', entry: '../evil.html?x=1', placement: 'normal' });
+  assert.equal(trav.ok, false, '查询串不能拿来绕过越界检查');
+  fs.rmSync(root, { recursive: true, force: true });
+});

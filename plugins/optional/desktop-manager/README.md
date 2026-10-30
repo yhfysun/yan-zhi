@@ -113,3 +113,14 @@ node scripts/pack-desktop-manager.mjs
 ```
 
 环境变量 `YZ_DESKTOP_DIR` 可覆盖桌面目录（多个用 `;` 分隔），仅用于测试/便携场景。
+
+## 桌面组件与提醒（2026-10-30）
+
+- 组件类型：`clock / list / metric / status / text / link / weather / todos / memo / folder`
+- 新建入口三处：设置页「组件 → 新建组件」、围栏工具条「＋组件」、在工具条/分组上**右击**
+- 天气：Open-Meteo（免费、无需 key）；设置页填「天气城市」；数据缓存 10 分钟
+- 待办提醒（**常驻后台，不依赖围栏页/组件页是否打开**）：
+  - 后端 `activate()` 里起 30s 定时扫描 → 到期提醒进 `pendingSay` 队列
+  - 主进程每 15s `POST /reminders/drain` 取走 → 宠物气泡 + 提示音；宠物没开退系统通知
+  - 有开始时间 → 到点提醒（同一天一次；超过 3 小时不补）；没开始时间 → 下班前 1.5 小时汇总（默认 16:30）
+  - 端点由 `manifest.contributes.reminders` 声明，主进程侧是内置表（`PLUGIN_REMINDER_ENDPOINTS`），加新插件补一行

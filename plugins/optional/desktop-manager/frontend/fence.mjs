@@ -6,6 +6,7 @@
 //  • 分组是半透明圆角区域，壁纸透出来；图标直接铺在桌面上，不是一个个带边框的面板
 //  • 一键整理 = /plan（只算不动）→ 确认 → /apply（只移不删、可撤销）
 const api = window.electronAPI || null;
+import { openWidgetMenu } from './widget-create.mjs';
 const API_BASE = (api && api.apiBase) || (location.origin + '/api');
 const PLUGIN = '/plugin/desktop-manager';
 const INBOX = 'inbox';
@@ -18,7 +19,7 @@ const EMOJI = {
 };
 const extOf = (name) => String(name || '').split('.').pop().toLowerCase();
 
-const S = { fences: [], items: [], sel: new Set(), rev: -1, windowId: null, clickThrough: true, busy: false };
+const S = { fences: [], items: [], sel: new Set(), rev: -1, windowId: null, clickThrough: null, busy: false };
 const iconCache = new Map();
 
 async function request(path, opts) {
@@ -169,6 +170,14 @@ async function assign(names, fenceId) {
 /* ---------------- 桌面交互 ---------------- */
 
 // 空白处穿透（壁纸/桌面右键交给系统），只有分组与工具条吃鼠标
+// ★ 自愈：忽略鼠标状态只有本页知道，窗口重建 / 外部 update / 事件丢失都会让两边不同步，
+//   一旦停在"整窗穿透"就再也收不到 mousemove（点哪都没反应）。所以：
+//   ① 每次 mousemove 按指针位置重算；② 每 1.2s 用最后坐标复核一次；③ 启动先无条件同步一次。
+function wantThrough(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return !(el && el.closest('.grp, .bar, .bulk, .mask'));
+}
+
 function setClickThrough(v) {
   if (v === S.clickThrough) return;
   S.clickThrough = v;
@@ -176,9 +185,20 @@ function setClickThrough(v) {
     api.pluginWindow.update(S.windowId, { clickThrough: v }).catch(() => {});
   }
 }
+
+let lastX = 0;
+let lastY = 0;
+let hasPointer = false;
 document.addEventListener('mousemove', (e) => {
-  setClickThrough(!e.target.closest('.grp, .bar, .bulk, .mask'));
-});
+  lastX = e.clientX;
+  lastY = e.clientY;
+  hasPointer = true;
+  setClickThrough(wantThrough(lastX, lastY));
+}, true);
+setInterval(() => {
+  if (!hasPointer) return;
+  setClickThrough(wantThrough(lastX, lastY));
+}, 1200);
 
 function bindDrops() {
   const board = document.getElementById('board');
@@ -249,6 +269,40 @@ async function applyPending() {
 
 /* ---------------- 启动 ---------------- */
 
+/* ---------------- 输入对话框（Electron 不支持 window.prompt） ---------------- */
+
+function askText({ title, sub, placeholder, value }) {
+  return new Promise((resolve) => {
+    const mask = document.getElementById('askMask');
+    const ok = document.getElementById('askOk');
+    const cancel = document.getElementById('askCancel');
+    const input = document.getElementById('askInput');
+    document.getElementById('askTitle').textContent = title || '';
+    document.getElementById('askSub').textContent = sub || '';
+    input.value = value || '';
+    input.placeholder = placeholder || '';
+    mask.classList.add('show');
+    setTimeout(() => input.focus(), 30);
+
+    const finish = (v) => {
+      mask.classList.remove('show');
+      ok.onclick = null;
+      cancel.onclick = null;
+      input.removeEventListener('keydown', onKey);
+      resolve(v);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(input.value.trim()); }
+      if (e.key === 'Escape') finish('');
+    };
+    ok.onclick = () => finish(input.value.trim());
+    cancel.onclick = () => finish('');
+    input.addEventListener('keydown', onKey);
+  });
+}
+
+/* ---------------- 启动 ---------------- */
+
 document.getElementById('btnOrganize').addEventListener('click', organize);
 document.getElementById('dlgCancel').addEventListener('click', () => {
   pendingPlan = null;
@@ -256,13 +310,42 @@ document.getElementById('dlgCancel').addEventListener('click', () => {
 });
 document.getElementById('dlgOk').addEventListener('click', applyPending);
 document.getElementById('btnNew').addEventListener('click', async () => {
-  const label = window.prompt('新分组名称（不删任何文件）');
+  const label = await askText({
+    title: '新建分组',
+    sub: '只改显示分组，不移动任何文件。',
+    placeholder: '分组名称，如：工作',
+  });
   if (!label) return;
   try {
     await request('/fences', { method: 'POST', body: JSON.stringify({ label }) });
     await refresh(true);
     toast(`已新建「${label}」`);
   } catch (e) { toast('新建失败：' + e.message, true); }
+});
+
+/* ---------------- 新建组件 ---------------- */
+
+function addWidgetMenu(x, y) {
+  openWidgetMenu({
+    request,
+    x,
+    y,
+    onDone: () => toast('已新建组件（组件窗口会自动刷新）'),
+    onError: (e) => toast('新建失败：' + (e && e.message ? e.message : e), true),
+  });
+}
+
+document.getElementById('btnAddWidget').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const r = e.currentTarget.getBoundingClientRect();
+  addWidgetMenu(r.left, r.bottom + 6);
+});
+
+// 右击工具条/分组 → 新建组件菜单；空白处仍交给系统桌面
+document.addEventListener('contextmenu', (e) => {
+  if (!e.target.closest('.bar, .grp')) return;
+  e.preventDefault();
+  addWidgetMenu(e.clientX, e.clientY);
 });
 document.getElementById('btnSettings').addEventListener('click', async () => {
   if (!api || !api.pluginWindow) return;
@@ -289,6 +372,8 @@ document.getElementById('btnMove').addEventListener('click', async () => {
 });
 
 bindDrops();
+
+// 待办提醒由后端常驻调度 + 主进程送达（不依赖本页是否打开）
 (async () => {
   if (api && api.pluginWindow) {
     try {

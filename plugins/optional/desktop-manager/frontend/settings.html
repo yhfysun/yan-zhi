@@ -85,6 +85,14 @@
   .bar { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
   .status { font-size: 12px; color: #7ef0b0; }
   .status.err { color: #ff9b9b; }
+  .mask { position: fixed; inset: 0; background: rgba(6,9,14,.55); display: none; place-items: center; z-index: 50; }
+  .mask.show { display: grid; }
+  .dialog { width: 340px; background: #171e2b; border-radius: 14px; padding: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .dialog h4 { margin: 0 0 6px; font-size: 14px; }
+  .dialog .sub { color: #8d99ad; font-size: 12px; margin-bottom: 12px; }
+  .dialog input { width: 100%; padding: 8px 10px; border-radius: 8px; outline: none; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14); color: #e6ecf8; font-family: inherit; font-size: 12.5px; }
+  .dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  .item .k { font-size: 11px; color: #7d889c; margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -124,6 +132,15 @@
         <input id="tcDays" type="number" min="1" max="60" style="width:80px" />
         <span class="hint">天分组（仅图片/视频）</span>
       </div>
+      <div class="row">
+        <label>天气城市</label>
+        <input id="city" type="text" placeholder="如：成都（Open-Meteo 按城市名查，无需 key）" />
+      </div>
+      <div class="row">
+        <label>下班时间</label>
+        <input id="workEnd" type="text" style="width:96px" placeholder="18:00" />
+        <span class="hint">没排开始时间的待办，按「下班前 1.5 小时」汇总提醒</span>
+      </div>
     </section>
 
     <section>
@@ -162,7 +179,27 @@
         开机自启围栏需要宿主提供启动任务能力（暂未实现）。
       </p>
     </section>
+    <section>
+      <h3>组件</h3>
+      <div class="list" id="widgetList"></div>
+      <div class="bar">
+        <button id="btnAddWidget">+ 新建组件</button>
+        <span class="hint">右击桌面层工具条/分组也能新建</span>
+      </div>
+    </section>
   </main>
+  <div class="mask" id="askMask">
+    <div class="dialog">
+      <h4 id="askTitle">新建围栏</h4>
+      <div class="sub" id="askSub">只改显示分组，不移动任何文件。</div>
+      <input id="askInput" type="text" maxlength="24" />
+      <div class="row">
+        <button id="askCancel">取消</button>
+        <button class="primary" id="askOk">确定</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="./settings.mjs"></script>
 </body>
 </html>

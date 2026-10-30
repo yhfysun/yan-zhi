@@ -11039,6 +11039,119 @@ ipcMain.on('pet:settings', (_e, payload) => {
   applyPetSize(payload);
   repositionPetPopups();
 });
+/**
+ * 通用「宠物说一句话」（2026-10-30）：插件（桌面管理的待办提醒等）借宠物弹气泡 + 响一声。
+ * 宠物窗没开就明确回 ok:false —— 调用方据此降级成自己的本地提示，不要静默吞掉提醒。
+ */
+/**
+ * 说话时临时把宠物窗撑大（宠物窗本身很小，气泡会被挤成竖排），说完还原。
+ * 以「底边中点」为锚点扩，宠物本体位置基本不动。
+ */
+let petSayRestore = null;
+function expandPetForSay(ttl) {
+  if (!petWindow || petWindow.isDestroyed()) return;
+  const b = petWindow.getBounds();
+  const width = Math.max(b.width, 300);
+  const height = Math.max(b.height, 200);
+  if (!petSayRestore) petSayRestore = { bounds: b, timer: 0 };
+  const nb = {
+    x: Math.round(b.x - (width - b.width) / 2),
+    y: Math.round(b.y - (height - b.height)),
+    width,
+    height,
+  };
+  try {
+    const area = electronScreen.getDisplayMatching(b).workArea;
+    nb.x = Math.min(Math.max(nb.x, area.x), area.x + area.width - nb.width);
+    nb.y = Math.min(Math.max(nb.y, area.y), area.y + area.height - nb.height);
+  } catch { /* 屏幕信息取不到就按原坐标 */ }
+  try { petWindow.setBounds(nb); } catch { /* ignore */ }
+  clearTimeout(petSayRestore.timer);
+  petSayRestore.timer = setTimeout(() => {
+    const prev = petSayRestore;
+    petSayRestore = null;
+    if (!prev) return;
+    try {
+      if (petWindow && !petWindow.isDestroyed()) petWindow.setBounds(prev.bounds);
+    } catch { /* 窗口已关 */ }
+  }, Math.max(3000, Number(ttl) || 9000) + 500);
+}
+
+ipcMain.handle('pet:say', (_e, payload = {}) => {
+  const text = String((payload && payload.text) || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!text) return { ok: false, error: 'empty-text' };
+  if (!petWindow || petWindow.isDestroyed()) return { ok: false, error: 'pet-closed' };
+  const ttl = Math.min(60000, Math.max(3000, Number(payload.ttl) || 9000));
+  try {
+    expandPetForSay(ttl);
+    petWindow.webContents.send('pet:say', { text, ttl, sound: payload.sound !== false });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+});
+/* ---------------- 插件提醒常驻（不依赖插件页面是否打开） ---------------- */
+//
+// 约定：插件后端常驻定时扫描，把要送的提醒放进队列；主进程定期来「drain」（取走即清空），
+// 交给宠物说一句 + 提示音；宠物没开就退成系统通知。这样提醒不再依赖围栏页/组件页。
+//
+// ★ 端点表为什么写死而不从 /api/plugins 的 manifest 发现：那份 manifest 是安装时的快照，
+//   contributes 里新增的键不会立刻反映（实测 contributes.reminders 读不到）。
+//   以后加新插件只需在这里补一行。
+const PLUGIN_REMINDER_ENDPOINTS = [{ id: 'desktop-manager', path: 'reminders/drain' }];
+const REMINDER_POLL_MS = 15000;
+let reminderPolling = false;
+
+function reminderTargets() {
+  return PLUGIN_REMINDER_ENDPOINTS.map((e) => ({
+    id: e.id,
+    url: API_ORIGIN + '/api/plugin/' + encodeURIComponent(e.id) + '/' + e.path.replace(/^\/+/, ''),
+  }));
+}
+
+function deliverPluginReminder(item) {
+  const text = String((item && item.text) || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!text) return;
+  if (petWindow && !petWindow.isDestroyed()) {
+    try {
+      expandPetForSay(9000);
+      petWindow.webContents.send('pet:say', { text, ttl: 9000, sound: true });
+      return;
+    } catch { /* 落到系统通知 */ }
+  }
+  try {
+    if (Notification.isSupported()) new Notification({ title: '待办提醒', body: text }).show();
+  } catch { /* 尽力而为 */ }
+}
+
+async function pollPluginReminders() {
+  if (reminderPolling) return;
+  reminderPolling = true;
+  try {
+    for (const t of reminderTargets()) {
+      let items = [];
+      try {
+        const r = await fetch(t.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        if (!r.ok) continue; // 插件没装/未启用：静默跳过
+        const j = await r.json();
+        items = (j && j.data && j.data.items) || [];
+      } catch { continue; }
+      for (const it of items) deliverPluginReminder(it);
+    }
+  } finally {
+    reminderPolling = false;
+  }
+}
+
+app.whenReady().then(() => {
+  setTimeout(() => { void pollPluginReminders(); }, 6000);
+  setInterval(() => { void pollPluginReminders(); }, REMINDER_POLL_MS);
+});
+
 ipcMain.on('pet:notify', (_e, payload) => {
   try {
     if (!Notification.isSupported()) return;
@@ -14158,7 +14271,9 @@ async function compileDesktopHelper() {
     //     高 DPI 下桌面图标发虚；改名让老 exe 自动重编（现在还要链 System.Drawing）。
     // v7：--icon 先按 alpha 裁掉 jumbo 画布上的空白再输出 —— 只有 32/48px 图标的程序
     //     在 256 画布里是左上角一个小点，不裁切会显示成芝麻。
-    const exe = path.join(dir, 'yz-desktop-v7.exe');
+    // v8：--pin 改钉 Progman + 提到兄弟序最前 —— 钉 WorkerW 时 DefView（桌面图标列表）
+    //     压在它上面，整屏鼠标被吃掉，表现是"桌面层看得见、按钮和图标全点不动"。
+    const exe = path.join(dir, 'yz-desktop-v8.exe');
     if (fs.existsSync(exe)) { desktopHelperPath = exe; return exe; }
     const csc = [
       'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
@@ -14166,7 +14281,7 @@ async function compileDesktopHelper() {
     ].find((p) => fs.existsSync(p));
     if (!csc) { console.warn('[desktop-shell] 未找到 csc.exe，桌面外壳能力不可用'); return null; }
     fs.mkdirSync(dir, { recursive: true });
-    const srcPath = path.join(dir, 'yz-desktop-v7.cs');
+    const srcPath = path.join(dir, 'yz-desktop-v8.cs');
     fs.writeFileSync(srcPath, DESKTOP_HELPER_CS, 'utf8');
     await new Promise((resolve, reject) => {
       execFile(csc, ['/nologo', '/out:' + exe, '/r:System.Drawing.dll', srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {

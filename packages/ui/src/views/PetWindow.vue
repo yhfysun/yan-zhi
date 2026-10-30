@@ -37,6 +37,10 @@
         />
       </div>
     </div>
+    <!-- 通用「宠物说一句话」（插件提醒等）：贴在宠物上方的小气泡，到时自动消失 -->
+    <transition name="say">
+      <div v-if="sayText" class="say">{{ sayText }}</div>
+    </transition>
   </div>
 </template>
 
@@ -285,6 +289,41 @@ watch(
   }
 )
 
+/* ===== 说话气泡（插件提醒通道 pet:say） ===== */
+const sayText = ref('')
+let sayTimer = 0
+let offSay: (() => void) | undefined
+
+/** 短促提示音（WebAudio，无音频资源依赖）；浏览器不给播就静音降级 */
+function sayBeep() {
+  try {
+    const AC = (window as any).AudioContext || (window as any).webkitAudioContext
+    if (!AC) return
+    const ctx = new AC()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = 880
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.45)
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.5)
+    window.setTimeout(() => { void ctx.close?.() }, 900)
+  } catch { /* 静音降级 */ }
+}
+
+function onSay(payload: any) {
+  const text = String((payload && payload.text) || '').trim()
+  if (!text) return
+  sayText.value = text
+  clearTimeout(sayTimer)
+  sayTimer = window.setTimeout(() => { sayText.value = '' }, Number(payload.ttl) || 9000)
+  if (payload.sound !== false) sayBeep()
+}
+
 /* ===== 生命周期 ===== */
 let offState: (() => void) | undefined
 let offSettings: (() => void) | undefined
@@ -316,6 +355,7 @@ onMounted(() => {
     if (payload?.pack && !userPacks[payload.pack]) void loadUserPacks()
   })
   offCmd = api()?.onCommand?.(onCommand)
+  offSay = api()?.onSay?.(onSay)
   // 代玩避让：主进程缩窗/挪位后同步渲染缩放（只改窗口不改渲染会裁切形象）
   offDock = api()?.onDockState?.((p: any) => {
     docked.value = !!(p && p.on)
@@ -350,6 +390,8 @@ onBeforeUnmount(() => {
   offState?.()
   offSettings?.()
   offCmd?.()
+  offSay?.()
+  clearTimeout(sayTimer)
   offWalk?.()
   offWin?.()
   offDock?.()
@@ -390,5 +432,34 @@ onBeforeUnmount(() => {
 }
 .pet-overlay {
   display: block;
+}
+/* 说话气泡：贴在宠物头顶，点到即消失（不挡拖拽/双击） */
+.say {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  transform: translateX(-50%);
+  max-width: calc(100% - 10px);
+  max-height: 88px;
+  overflow: hidden;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: rgba(18, 23, 34, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color: #e8eeff;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+}
+.say-enter-active,
+.say-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.say-enter-from,
+.say-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-6px);
 }
 </style>

@@ -108,6 +108,11 @@
     background: rgba(255,255,255,.05); border-radius: 8px; margin-bottom: 6px; font-size: 12.5px;
   }
   .dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+  .dialog input {
+    width: 100%; padding: 8px 10px; border-radius: 8px; outline: none;
+    background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14);
+    color: #e6ecf8; font-family: inherit; font-size: 12.5px;
+  }
   .dialog button {
     border: 0; cursor: pointer; font-family: inherit; font-size: 12.5px; padding: 7px 14px;
     border-radius: 8px; color: #cfd8e8; background: rgba(255,255,255,.1);
@@ -130,6 +135,7 @@
     <span class="stat" id="stat">加载中…</span>
     <button class="primary" id="btnOrganize">一键整理</button>
     <button id="btnNew">+ 分组</button>
+    <button id="btnAddWidget">＋组件</button>
     <button class="ghost" id="btnSettings">设置</button>
     <button class="ghost" id="btnExit">退出</button>
   </div>
@@ -151,6 +157,18 @@
       <div class="row">
         <button id="dlgCancel">取消</button>
         <button class="primary" id="dlgOk">开始整理</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="mask" id="askMask">
+    <div class="dialog" style="width:320px">
+      <h4 id="askTitle">新建分组</h4>
+      <div class="sub" id="askSub">只改显示分组，不移动任何文件。</div>
+      <input id="askInput" type="text" maxlength="24" />
+      <div class="row" style="margin-top:12px">
+        <button id="askCancel">取消</button>
+        <button class="primary" id="askOk">确定</button>
       </div>
     </div>
   </div>

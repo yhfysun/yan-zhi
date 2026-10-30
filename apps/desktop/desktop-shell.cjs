@@ -28,8 +28,14 @@ const REQUIRED_PERM = 'desktop-shell';
 function resolvePluginWindowRequest(dirs, opts) {
   const o = opts && typeof opts === 'object' ? opts : {};
   const pluginId = String(o.pluginId || '');
-  const entry = String(o.entry || '');
+  const rawEntry = String(o.entry || '');
   const placement = String(o.placement || 'normal');
+
+  // 入口允许带查询串（如 frontend/widgets.html?layer=desktop）：路径部分照常校验/越界检查，
+  // 查询串只拼到最终 URL 上 —— 否则「打开组件」这类带参数的入口会一律 invalid-entry。
+  const qi = rawEntry.indexOf('?');
+  const entry = qi >= 0 ? rawEntry.slice(0, qi) : rawEntry;
+  const query = qi >= 0 ? rawEntry.slice(qi) : '';
 
   if (!PLUGIN_ID_RE.test(pluginId)) return { ok: false, error: 'invalid-plugin-id' };
   if (!PLACEMENTS.has(placement)) return { ok: false, error: 'invalid-placement' };
@@ -64,12 +70,12 @@ function resolvePluginWindowRequest(dirs, opts) {
     return {
       ok: true,
       pluginId,
-      entry,
+      entry: rawEntry,
       placement,
       absPath,
       url: origin
-        ? origin + '/api/plugin-assets/' + pluginId + '/' + rel
-        : 'yz://plugin/' + pluginId + '/' + rel,
+        ? origin + '/api/plugin-assets/' + pluginId + '/' + rel + query
+        : 'yz://plugin/' + pluginId + '/' + rel + query,
       manifest,
     };
   }
@@ -396,23 +402,32 @@ class YzDesktop {
         if (!Int64.TryParse(args[1], out raw)) { Emit("{\"ok\":false,\"error\":\"bad-hwnd\"}"); return 2; }
         IntPtr hwnd = new IntPtr(raw);
         if (!IsWindow(hwnd)) { Emit("{\"ok\":false,\"error\":\"not-a-window\"}"); return 2; }
-        IntPtr w = FindWorkerW();
-        if (w == IntPtr.Zero) { SpawnWorkerW(); w = FindWorkerW(); }
-        // ★ Win11 兜底：很多机器没有独立 WorkerW 层，桌面 DefView 直接挂在 Progman
-        //   （或别的宿主窗口）下面 —— 钉到 DefView 的父窗口，仍在壁纸层之上、应用之下。
-        string target = "workerw";
-        if (w == IntPtr.Zero) {
+        // ★ 钉 Progman 而不是 WorkerW（2026-10-29 真机）：Progman 下 DefView（桌面图标列表）
+        //   与 WorkerW 是兄弟窗口，且 DefView **压在 WorkerW 之上**。钉在 WorkerW 里虽然
+        //   看得见（图标隐藏后它透明），但整屏鼠标都被 DefView 吃掉 —— 表现就是
+        //   "桌面层画出来了，按钮/图标全都点不动"。钉到 Progman 再提到兄弟序最前才收得到点击。
+        string target = "progman";
+        IntPtr host = Progman();
+        if (host == IntPtr.Zero) {
+          // 兜底：没有 Progman（极少数外壳）→ DefView 父窗口，再不行 → WorkerW
           IntPtr dv = DefView();
-          IntPtr host = dv != IntPtr.Zero ? GetParent(dv) : IntPtr.Zero;
-          if (host != IntPtr.Zero) { w = host; target = "defview-parent"; }
+          host = dv != IntPtr.Zero ? GetParent(dv) : IntPtr.Zero;
+          target = "defview-parent";
         }
-        if (w == IntPtr.Zero) { Emit("{\"ok\":false,\"error\":\"worker-w-not-found\"}"); return 3; }
+        if (host == IntPtr.Zero) {
+          IntPtr w = FindWorkerW();
+          if (w == IntPtr.Zero) { SpawnWorkerW(); w = FindWorkerW(); }
+          if (w != IntPtr.Zero) { host = w; target = "workerw"; }
+        }
+        if (host == IntPtr.Zero) { Emit("{\"ok\":false,\"error\":\"worker-w-not-found\"}"); return 3; }
         long style = GetWindowLongPtr(hwnd, GWL_STYLE).ToInt64();
         SetWindowLongPtr(hwnd, GWL_STYLE, new IntPtr((style & ~WS_POPUP) | WS_CHILD));
-        SetParent(hwnd, w);
-        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        bool ok = GetParent(hwnd) == w;
-        Emit("{\"ok\":" + (ok ? "true" : "false") + ",\"workerW\":" + H(w) + ",\"target\":\"" + target + "\"}");
+        SetParent(hwnd, host);
+        // 这里**不能**带 SWP_NOZORDER：必须把自己提到兄弟序最前（HWND_TOP），
+        // 否则仍被 DefView 盖住，鼠标事件一个都到不了。
+        SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        bool ok = GetParent(hwnd) == host;
+        Emit("{\"ok\":" + (ok ? "true" : "false") + ",\"workerW\":" + H(host) + ",\"target\":\"" + target + "\"}");
         return ok ? 0 : 4;
       }
 
