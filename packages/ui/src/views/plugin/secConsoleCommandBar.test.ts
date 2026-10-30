@@ -138,3 +138,39 @@ describe('★ 收敛边界：Tab 数下降，但功能与人工闸门一个都�
     expect(SRC, '交战模式开关').toContain('engagementMode');
   });
 });
+
+describe('★ 扫描入口卡（2026-10-30）：只拼命令，不另起执行链', () => {
+  it('四张卡由 SCAN_ENTRIES 渲染（元数据在 utils/scanEntries，可单测）', () => {
+    expect(SRC).toContain('SCAN_ENTRIES');
+    expect(SRC).toContain('sec-scan-card');
+    expect(SRC).toContain('pickScanCard');
+    expect(SRC).toContain('activeScan');
+  });
+
+  it('★ 点击后拼命令并交给 submitCommand —— 与命令行同一条链', () => {
+    expect(SRC).toContain('buildScanCommand');
+    const fn = /async function runScanCard\(\)[\s\S]*?\n}/.exec(SRC)?.[0] || '';
+    expect(fn, 'runScanCard 必须存在').toBeTruthy();
+    expect(fn, '必须调用 submitCommand（否则绕过剧本展开/确认/结果落卡）').toContain('submitCommand()');
+    expect(fn, '卡片里不能直接发请求').not.toMatch(/\bfetch\s*\(|api\.(post|get)\s*\(/);
+  });
+
+  it('卡片区在终端页、且位于运行卡之前（结果仍落运行卡）', () => {
+    const scanIdx = SRC.indexOf('sec-scan-cards');
+    const runCardIdx = SRC.indexOf('sec-frame-out sec-runcard');
+    expect(scanIdx).toBeGreaterThan(-1);
+    expect(runCardIdx).toBeGreaterThan(scanIdx);
+  });
+
+  it('本地路径用系统对话框选，空目标禁用「开始扫描」', () => {
+    expect(SRC, '浏览按钮').toContain('browseScanTarget');
+    expect(SRC, '目录选择走桌面端对话框').toContain('showOpenDir');
+    expect(SRC, '空目标禁用').toContain('scanTargetMissing');
+  });
+
+  it('结果页可导出 Markdown 报告（交给智能体逐项修复）', () => {
+    expect(SRC).toContain('exportFindingsReport');
+    expect(SRC).toContain('/export/report');
+    expect(SRC, '桌面端落盘走系统保存框').toContain('saveFile');
+  });
+});

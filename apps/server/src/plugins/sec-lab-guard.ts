@@ -79,6 +79,16 @@ export const TOOL_RISK: Record<string, RiskLevel> = {
   // 提议 / 查看都是本地数据操作；真正改变行为的是"审批"，而审批工具是 HUMAN_ONLY。
   sec_experience: 'passive',
   experience_review: 'passive',
+  // —— P1 扫描编排（2026-10-30）——
+  // 源码 / 制品是本地只读；URL 与自有资产体检会发起网络请求 → active。
+  scan_source: 'passive',
+  scan_package: 'passive',
+  scan_self: 'active',
+  scan_url: 'active',
+  scan_status: 'passive',
+  scan_report: 'passive',
+  scan_baseline: 'passive',
+  self_assets: 'passive',
 };
 
 /** 动作分级：passive 被动观测 / active 主动探测 / intrusive 侵入 / simulate 攻击行为模拟 */
@@ -390,6 +400,10 @@ export function guard(i: GuardInput): GuardResult {
     'sec_skill', 'warstory', 'cheatsheet', 'sast',
     // P5：经验库提议/查看 / 人工审批（审批本身由 HUMAN_ONLY 拦截，见下方通用判定）
     'sec_experience', 'experience_review',
+    // P1 扫描编排（2026-10-30）：本地路径 / 自有资产 / 作业查询没有「外部授权目标」概念。
+    // ★ scan_url 刻意**不**在这里 —— 它必须走授权范围校验。
+    'scan_source', 'scan_package', 'scan_self', 'self_assets',
+    'scan_status', 'scan_report', 'scan_baseline',
   ];
   const needsTarget = !NO_TARGET_TOOLS.includes(i.tool);
 

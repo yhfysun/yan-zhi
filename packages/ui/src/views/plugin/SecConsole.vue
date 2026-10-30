@@ -1,5 +1,5 @@
 <template>
-  <div class="page sec-console">
+  <div class="page sec-console" :class="{ 'sec-console-full': isFullscreen }">
     <!-- =========================================================
          ▍ 01 · BRAND BAR  顶行：分区编号 + 模块名 + 元数据 + 主开关
          ========================================================= -->
@@ -29,6 +29,9 @@
         </span>
       </div>
       <div class="sec-toggle">
+        <button type="button" class="sec-fullbtn" @click="toggleFullscreen">
+          {{ isFullscreen ? '退出全屏' : '全屏' }}
+        </button>
         <label class="sec-switch" :class="{ on: cfg.engagementMode }">
           <input v-model="cfg.engagementMode" type="checkbox" @change="saveConfig" />
           <span class="sec-switch-grip" />
@@ -159,6 +162,50 @@
 
         <!-- ========= Tab 1：终端（命令行 + 运行卡 + 高级表单） ========= -->
         <div v-show="tab === 'run'" class="sec-pane">
+          <!-- 扫描入口卡（2026-10-30）：四类输入一键开局。
+               ★ 卡片只负责**拼命令行**，执行仍走 submitCommand → POST /plugin/sec-lab/run
+                 → withGuard → 审计；这里没有第二条执行链。 -->
+          <section class="sec-scan">
+            <header class="sec-frame-head sec-frame-head-sm">
+              <span class="sec-frame-title">scan</span>
+              <span class="sec-frame-hint">扫描入口 · 结果落下方运行卡</span>
+            </header>
+            <div class="sec-scan-cards">
+              <button
+                v-for="s in SCAN_ENTRIES" :key="s.key" type="button"
+                :class="['sec-scan-card', { active: scanKind === s.key }]"
+                @click="pickScanCard(s.key)"
+              >
+                <span class="sec-scan-icon">{{ s.icon }}</span>
+                <span class="sec-scan-body"><b>{{ s.label }}</b><span>{{ s.sub }}</span></span>
+              </button>
+            </div>
+            <div v-if="activeScan" class="sec-scan-form">
+              <label class="sec-field sec-field-grow">
+                <span class="sec-field-k">target</span>
+                <el-input
+                  v-model="scanTarget" size="small" class="sec-input"
+                  :placeholder="activeScan.placeholder" @keydown.enter="runScanCard"
+                />
+              </label>
+              <el-button
+                v-if="activeScan.key !== 'url'" class="sec-cta" size="small"
+                :disabled="!isElectron" @click="browseScanTarget"
+              >浏览</el-button>
+              <label class="sec-field">
+                <span class="sec-field-k">profile</span>
+                <el-select v-model="scanProfile" size="small" class="sec-input">
+                  <el-option v-for="p in activeScan.profiles" :key="p" :label="p" :value="p" />
+                </el-select>
+              </label>
+              <el-button
+                class="sec-cta" size="small" type="primary"
+                :loading="running" :disabled="scanTargetMissing" @click="runScanCard"
+              >▶ 开始扫描</el-button>
+              <span class="sec-scan-note">{{ scanTargetMissing ? '先选目录 / 文件，或粘贴绝对路径' : activeScan.note }}</span>
+            </div>
+          </section>
+
           <!-- 运行卡：命令行与各高级表单**共用的唯一输出区**（命令行的结果也落这里） -->
           <article class="sec-frame sec-frame-out sec-runcard">
             <header class="sec-frame-head sec-frame-head-sm">
@@ -381,13 +428,27 @@
           </article>
         </details>
 
-        <!-- ========= Tab 2：结果（发现项 + 审计，两个只读列表合一） ========= -->
-        <div v-show="tab === 'review'" class="sec-pane">
+        <!-- ========= Tab 2：结果（子标签：发现项 / 审计 / 经验库 / 执行审批） =========
+             ★ 2026-10-30：原先是四个平级 .sec-pane，各 flex:1 ⇒ 每个只分到约 1/4 高度，
+               发现项一屏只看得到一条。改成子标签，一次只显示一个、占满整屏。 -->
+        <div v-show="tab === 'review'" class="sec-review-tabs">
+          <button
+            v-for="r in REVIEW_TABS" :key="r.key" type="button"
+            :class="['sec-review-tab', { active: reviewTab === r.key }]"
+            @click="reviewTab = r.key"
+          >
+            {{ r.label }}<span v-if="r.count" class="sec-review-count">{{ r.count }}</span>
+          </button>
+        </div>
+
+        <div v-show="tab === 'review' && reviewTab === 'findings'" class="sec-pane">
           <article class="sec-frame sec-frame-list">
             <header class="sec-frame-head">
               <span class="sec-num">05</span>
               <span class="sec-frame-title">FINDINGS</span>
               <span class="sec-frame-hint">分严重度色块</span>
+              <span class="sec-spacer" />
+              <el-button size="small" :loading="exportingReport" @click="exportFindingsReport">导出报告 MD</el-button>
             </header>
             <div class="sec-finding-list">
               <div v-for="f in findings" :key="f.id" class="sec-finding" :data-sev="f.severity">
@@ -417,7 +478,7 @@
         </div>
 
         <!-- ===== 审计（并进「结果」Tab）===== -->
-        <div v-show="tab === 'review'" class="sec-pane">
+        <div v-show="tab === 'review' && reviewTab === 'audit'" class="sec-pane">
           <article class="sec-frame sec-frame-list">
             <header class="sec-frame-head">
               <span class="sec-num">06</span>
@@ -438,7 +499,7 @@
         </div>
 
         <!-- ===== 经验库（自学习，P5）：待审 → 人工审批 → 才注入提示词 ===== -->
-        <div v-show="tab === 'review'" class="sec-pane">
+        <div v-show="tab === 'review' && reviewTab === 'experience'" class="sec-pane">
           <article class="sec-frame sec-frame-list">
             <header class="sec-frame-head">
               <span class="sec-num">07</span>
@@ -516,7 +577,7 @@
         </div>
 
         <!-- ===== 执行审批（ExecutionGate）：高危动作逐条批准 ===== -->
-        <div v-show="tab === 'review'" class="sec-pane">
+        <div v-show="tab === 'review' && reviewTab === 'gate'" class="sec-pane">
           <article class="sec-frame sec-frame-list">
             <header class="sec-frame-head">
               <span class="sec-num">08</span>
@@ -574,7 +635,7 @@
         </div>
 
         <!-- ========= Tab 3：环境 / 靶场（宿主机 Docker + Android，仅本机） ========= -->
-        <div v-show="tab === 'env'" class="sec-pane">
+        <div v-show="tab === 'env'" class="sec-pane sec-pane-scroll">
           <div class="sec-pane-head">
             <span class="sec-pane-tag sec-pane-tag-info">host_env · range · android　仅本机基础设施，不向任何外部目标发起流量</span>
           </div>
@@ -675,7 +736,11 @@
         </div>
 
         <!-- ===== 能力边界（明确不实现 + 规划中）· 并进「环境」Tab ===== -->
-        <div v-show="tab === 'env'" class="sec-pane">
+        <div v-show="tab === 'env'" class="sec-pane sec-pane-scroll">
+          <!-- 2026-10-30：旧的「能力边界 / 规划」清单默认折叠 —— 它是方案文档的早期快照，
+               其中不少条目（/命令扩展、剧本召唤、外部工具 adapter）早已落地，展开会误导。 -->
+          <details class="sec-adv sec-boundary-fold">
+            <summary class="sec-adv-sum">能力边界与旧版规划（仅供查阅）<span class="sec-adv-hint">合规红线 + 早期 roadmap，部分已落地</span></summary>
           <article class="sec-frame sec-frame-note sec-frame-note-lock">
             <header class="sec-frame-head sec-frame-head-sm">
               <span class="sec-frame-title">not-implemented</span>
@@ -709,6 +774,7 @@
               </div>
             </div>
           </article>
+          </details>
         </div>
         </div><!-- /.sec-ws 命令模式 -->
 
@@ -911,7 +977,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ChatDotRound, Close, QuestionFilled, Setting, User } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { api, API_BASE } from '../../api/client';
+import { api, API_BASE, isElectron } from '../../api/client';
 import { consumeSseStream } from '../../utils/sse';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
@@ -924,6 +990,7 @@ import { useChat } from '../../composables/chat/useChat';
 import type { CommandDef } from '@yan-zhi/core';
 import { useCommandsStore } from '../../stores/commands';
 import { formatHelp, planCommandInput, planPlaybookSummon, type ParsedCommand } from '../../utils/commandParser';
+import { SCAN_ENTRIES, buildScanCommand, findScanEntry } from '../../utils/scanEntries';
 import MarkdownIt from 'markdown-it';
 import hljs from '../../utils/highlight';
 
@@ -1303,6 +1370,30 @@ interface ScopeRow {
 
 // ---------- 主状态 ----------
 const tab = ref('run');
+// 结果页子标签：四个只读面板平铺时各 flex:1，每块只分到约 1/4 高度（发现项一屏只看一条）
+type ReviewTabKey = 'findings' | 'audit' | 'experience' | 'gate';
+const reviewTab = ref<ReviewTabKey>('findings');
+// 整页全屏：命令模式内容多，小窗口下看不全
+const isFullscreen = ref(false);
+
+/** 原生全屏优先：只加 CSS 铺满会被外层布局的层叠上下文挡住（实测盖不住顶栏） */
+async function toggleFullscreen(): Promise<void> {
+  if (document.fullscreenElement) {
+    try { await document.exitFullscreen(); } catch { /* ignore */ }
+    isFullscreen.value = false;
+    return;
+  }
+  const el = (document.querySelector('.sec-console') as HTMLElement | null) || document.documentElement;
+  try {
+    await el.requestFullscreen();
+    isFullscreen.value = true;
+  } catch {
+    isFullscreen.value = true; // 浏览器拒绝时退回 CSS 铺满
+  }
+}
+const onFullscreenChange = (): void => { isFullscreen.value = !!document.fullscreenElement; };
+onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange));
+onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenChange));
 const scopes = ref<ScopeRow[]>([]);
 const findings = ref<Array<{ id: string; title: string; severity: string; detail: string; target: string; tool?: string; at?: number; remediation?: string }>>([]);
 const audit = ref<Array<{ at: number; tool: string; target?: string; ok: boolean; message: string }>>([]);
@@ -1370,6 +1461,100 @@ const cmdPlaceholder = computed(() => {
   const t = String(target.value || '').trim();
   return t ? `例：/portscan ${t}` : '输入 /命令，例：/scopes 或 /recon example.com';
 });
+
+// ── 扫描入口卡（2026-10-30）────────────────────────────────────────────────
+// ★ 元数据与拼串在 utils/scanEntries（可单测）；这里只做状态与提交。
+//   不要在卡片里直接 fetch —— 那会绕过 submitCommand 里的剧本展开、确认与结果落卡。
+const scanKind = ref('');
+const scanTarget = ref('');
+const scanProfile = ref('quick');
+const activeScan = computed(() => findScanEntry(scanKind.value));
+
+function pickScanCard(key: string): void {
+  scanKind.value = scanKind.value === key ? '' : key;
+  scanProfile.value = 'quick';
+  scanTarget.value = '';
+  // URL 扫描多半就是「终端」页正在处理的目标，省一次粘贴
+  if (key === 'url') scanTarget.value = String(target.value || '').trim();
+}
+
+/** 拼命令 → 走命令行同一条执行链 */
+async function runScanCard(): Promise<void> {
+  const s = activeScan.value;
+  if (!s) return;
+  let line: string;
+  try {
+    line = buildScanCommand(s, scanTarget.value, scanProfile.value);
+  } catch (e) {
+    ElMessage.warning((e as Error).message);
+    return;
+  }
+  cmdInput.value = line;
+  await submitCommand();
+  scanKind.value = '';
+}
+
+// 本地路径用系统对话框选，避免手打绝对路径 / 反斜杠转义出错
+const scanElectron = typeof window !== 'undefined' ? (window as any).electronAPI : null;
+const scanTargetMissing = computed(() =>
+  !!activeScan.value && activeScan.value.key !== 'self' && !scanTarget.value.trim(),
+);
+
+async function browseScanTarget(): Promise<void> {
+  const s = activeScan.value;
+  if (!s) return;
+  if (!isElectron || !scanElectron?.dialog) { ElMessage.warning('仅桌面端支持浏览本地路径'); return; }
+  try {
+    if (s.key === 'package') {
+      const files: string[] = (await scanElectron.dialog.showOpenFiles?.()) || [];
+      if (files[0]) scanTarget.value = files[0];
+    } else {
+      const dir = await scanElectron.dialog.showOpenDir?.({
+        title: s.key === 'source' ? '选择要扫描的源码目录' : '选择言智仓库目录',
+      });
+      if (dir) scanTarget.value = String(dir);
+    }
+  } catch (e) {
+    ElMessage.warning('打开选择器失败：' + ((e as Error).message || e));
+  }
+}
+
+// ── 导出报告（2026-10-30）：生成 Markdown 交给智能体逐项修复 ──────────────
+const exportingReport = ref(false);
+
+/** UTF-8 → base64（saveFile 只接受 dataUrl） */
+function base64Utf8(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+async function exportFindingsReport(): Promise<void> {
+  if (exportingReport.value) return;
+  exportingReport.value = true;
+  try {
+    const d = await unwrap<{ text: string; filename: string; count: number }>(
+      api.post(`${BASE}/export/report`, {}),
+    );
+    if (!d) return;
+    if (isElectron && scanElectron?.dialog?.saveFile) {
+      const r = await scanElectron.dialog.saveFile({
+        defaultName: d.filename,
+        dataUrl: 'data:text/markdown;base64,' + base64Utf8(d.text),
+      });
+      if (r?.ok) ElMessage.success(`已导出 ${d.count} 条发现项：${r.path}`);
+      else if (!r?.cancelled) ElMessage.error('导出失败：' + (r?.error || '未知错误'));
+    } else {
+      await navigator.clipboard.writeText(d.text);
+      ElMessage.success('报告已复制到剪贴板（网页端不支持直接落盘）');
+    }
+  } catch (e) {
+    ElMessage.error('导出失败：' + ((e as Error).message || e));
+  } finally {
+    exportingReport.value = false;
+  }
+}
 
 /** 输入时给候选（只认以 `/` 开头的输入；空关键词给前几条） */
 function updateCmdHints() {
@@ -1775,6 +1960,14 @@ interface ApprovalRow {
 const approvals = ref<ApprovalRow[]>([]);
 const decidedApprovals = ref<ApprovalRow[]>([]);
 const approvalBusy = ref('');
+
+// 结果页子标签（计数随数据实时变化）
+const REVIEW_TABS = computed<Array<{ key: ReviewTabKey; label: string; count: number }>>(() => [
+  { key: 'findings', label: '发现项', count: findings.value.length },
+  { key: 'audit', label: '审计', count: audit.value.length },
+  { key: 'experience', label: '经验库', count: expPending.value.length + expApproved.value.length },
+  { key: 'gate', label: '执行审批', count: approvals.value.length },
+]);
 let approvalTimer: ReturnType<typeof setInterval> | null = null;
 
 async function loadApprovals() {
@@ -2174,6 +2367,42 @@ onUnmounted(() => {
 .sec-cmdbar-tip { font-family: var(--sc-mono); font-size: 10px; color: var(--sc-fg-3); white-space: nowrap; }
 .sec-cmdbar-tip b { color: var(--sc-primary); }
 
+/* ---------- 扫描入口卡（2026-10-30）----------
+   卡片是命令行的快捷方式，不是第二套执行面：点击后拼出 /scan-* 再走 submitCommand。 */
+.sec-scan {
+  margin-bottom: 10px; border: 1px solid var(--sc-line); border-radius: 4px;
+  background: var(--sc-bg);
+}
+.sec-scan-cards {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px; padding: 10px;
+}
+.sec-scan-card {
+  display: flex; gap: 10px; align-items: flex-start; text-align: left;
+  padding: 10px; border: 1px solid var(--sc-line); border-radius: 4px;
+  background: var(--sc-bg-2); color: inherit; font: inherit; cursor: pointer;
+  transition: border-color 120ms, transform 120ms;
+}
+.sec-scan-card:hover { border-color: var(--sc-line-2); transform: translateY(-1px); }
+.sec-scan-card.active { border-color: var(--sc-primary); box-shadow: inset 0 0 0 1px var(--sc-primary); }
+.sec-scan-icon {
+  width: 24px; height: 24px; flex: none; display: grid; place-items: center;
+  border-radius: 4px; background: var(--sc-bg); border: 1px solid var(--sc-line-2);
+  font-family: var(--sc-mono); font-size: 11px; color: var(--sc-primary);
+}
+.sec-scan-card.active .sec-scan-icon { border-color: var(--sc-primary); }
+.sec-scan-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sec-scan-body b { font-size: 12px; font-weight: 600; color: var(--sc-fg); }
+.sec-scan-body span { font-size: 10.5px; color: var(--sc-fg-3); line-height: 1.4; }
+.sec-scan-form {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+  padding: 0 10px 10px;
+}
+.sec-scan-note { font-family: var(--sc-mono); font-size: 10px; color: var(--sc-fg-3); }
+@media (max-width: 1180px) {
+  .sec-scan-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 /* ── 高级表单（2026-10-16 收敛：原 8 Tab 的四个动作面折叠进「终端」）──
    收敛只改**信息架构**，不改执行链：展开后的表单和命令行走的是同一套命令通道。 */
 .sec-adv {
@@ -2249,6 +2478,57 @@ onUnmounted(() => {
 
 /* ---------- 面板通用 ---------- */
 .sec-pane { padding: 14px; display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
+
+/* 环境页：按内容自然高度排、整页滚动。
+   原先多个面板同在一个 flex 列里平分高度，每块只剩一两行，还会叠在一起。 */
+.sec-pane-scroll { flex: 0 0 auto; overflow: visible; }
+.sec-pane-scroll > .sec-frame,
+.sec-pane-scroll .sec-frame-list { flex: 0 0 auto; }
+.sec-ws { overflow-y: auto; }
+
+/* ---------- 结果页子标签（2026-10-30）----------
+   原先四个只读面板是平级 flex:1，各分到约 1/4 高度；改成一次只显示一个。 */
+.sec-review-tabs { display: flex; gap: 6px; padding: 10px 14px 0; flex: none; flex-wrap: wrap; }
+.sec-review-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; cursor: pointer;
+  background: var(--sc-bg-2); color: var(--sc-fg-3);
+  border: 1px solid var(--sc-line); border-bottom-color: transparent;
+  border-radius: 4px 4px 0 0;
+  font-family: var(--sc-mono); font-size: 11.5px; letter-spacing: .04em;
+  transition: color 120ms, border-color 120ms;
+}
+.sec-review-tab:hover { color: var(--sc-fg); }
+.sec-review-tab.active {
+  color: var(--sc-fg); background: var(--sc-bg);
+  border-color: var(--sc-line-2);
+  box-shadow: inset 0 2px 0 var(--sc-primary);
+}
+.sec-review-count {
+  min-width: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--sc-bg-2); color: var(--sc-fg-2);
+  font-size: 10px; text-align: center;
+}
+
+/* ---------- 全屏（2026-10-30）：小窗口下命令模式内容多，整页铺满更好读 ---------- */
+.sec-console-full {
+  position: fixed; inset: 0; z-index: 3000;
+  background: var(--sc-bg); overflow: auto;
+}
+/* 原生全屏时元素本身就是视口，补底色与滚动即可 */
+.sec-console:fullscreen {
+  background: var(--sc-bg); overflow: auto; height: 100vh; width: 100vw;
+}
+.sec-fullbtn {
+  border: 1px solid var(--sc-line-2); background: transparent;
+  color: var(--sc-fg-2); font-family: var(--sc-mono);
+  font-size: 11px; padding: 4px 10px; border-radius: 3px; cursor: pointer;
+}
+.sec-fullbtn:hover { color: var(--sc-fg); border-color: var(--sc-primary); }
+
+/* 旧版能力边界清单默认折叠，少占地方 */
+.sec-boundary-fold { flex: none; }
+.sec-boundary-fold[open] { display: flex; flex-direction: column; gap: 10px; }
 .sec-pane-head { display: flex; align-items: center; min-height: 18px; }
 .sec-pane-tag {
   font-family: var(--sc-mono); font-size: 11px;

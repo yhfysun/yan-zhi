@@ -47,18 +47,27 @@ describe('种子定义住在插件目录', () => {
     expect(String(opsModeAgentDefs[0].builtin_tool_ids)).toContain('plugin_ops-shell__ssh_exec');
   });
 
-  it('sec 场景 + 安全主助手与三个子体定义在 plugins/sec-lab/seed.ts', () => {
+  it('sec 场景 + 安全助手 / 言智安全官及其子体定义在 plugins/sec-lab/seed.ts', () => {
     expect(secModeScene.key).toBe('sec');
     expect(secModeAgentDefs.map((a) => a.id)).toEqual([
       'a_builtin_sec_agent',
       'a_builtin_sec_recon_agent',
       'a_builtin_sec_web_agent',
       'a_builtin_sec_report_agent',
+      // 2026-10-30：言智安全官（自有资产）+ 三个子体
+      'a_builtin_sec_officer',
+      'a_builtin_sec_source_agent',
+      'a_builtin_sec_runtime_agent',
+      'a_builtin_sec_artifact_agent',
     ]);
     const main = secModeAgentDefs[0];
     // 主助手必须声明三个子体，否则 list_sub_agents 为空、call_agent 白名单挡掉合法委派
     const subs = String(main.sub_agent_ids);
     for (const id of ['recon', 'web', 'report']) expect(subs).toContain(`a_builtin_sec_${id}_agent`);
+    // 安全官同样必须声明自己的三个子体
+    const officer = secModeAgentDefs.find((a) => a.id === 'a_builtin_sec_officer')!;
+    const officerSubs = String(officer.sub_agent_ids);
+    for (const id of ['source', 'runtime', 'artifact']) expect(officerSubs).toContain(`a_builtin_sec_${id}_agent`);
   });
 
   it('shop 场景 + 店铺运营助手定义在 plugins/shop-ops/seed.ts（原 builtin-shop-agents.ts 已删除）', () => {

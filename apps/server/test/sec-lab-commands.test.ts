@@ -11,7 +11,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { BuiltInTool } from '@yan-zhi/core';
-import { secLabManifest, secLabModule } from '../src/plugins/sec-lab.js';
+import { secLabManifest, secLabModule, SEC_TOOL_FACTORIES } from '../src/plugins/sec-lab.js';
 import { HUMAN_ONLY_TOOLS, TOOL_RISK } from '../src/plugins/sec-lab-guard.js';
 
 const tools: BuiltInTool[] = [];
@@ -35,18 +35,20 @@ function expectedDanger(tool: string): string {
   return ({ passive: 'P', active: 'A', intrusive: 'I' } as Record<string, string>)[risk];
 }
 
-describe('★ sec-lab 的 56 条命令与工具一一对应（P0 18 + P1 16 + P2 9 + P3 6 + P3.1 1 + P4 4 + P5 2）', () => {
-  it('工具注册数量与本测试的预期一致（先钉住"56"这个前提）', () => {
-    expect(tools.length).toBe(56);
+describe('★ sec-lab 的 64 条命令与工具一一对应（P0 18 + P1 16 + P2 9 + P3 6 + P3.1 1 + P4 4 + P5 2 + P1 扫描 8）', () => {
+  it('工具注册数量与本测试的预期一致（先钉住"64"这个前提）', () => {
+    expect(tools.length).toBe(64);
   });
 
   it('每个注册的工具恰好有一条命令，且命令里的 tool 名真实存在（防拼错）', () => {
     const names = tools.map((t) => t.name).sort();
     const cmds = COMMANDS();
-    expect(cmds.length).toBe(56);
+    expect(cmds.length).toBe(64);
     expect(cmds.map((c) => c.tool).sort()).toEqual(names);
     // 声明式清单（contributes.tools）是第三条口径，同样不能漂
     expect([...(secLabManifest.contributes as any).tools].sort()).toEqual(names);
+    // ★ 第四条口径：/run 路由的工厂表。2026-10-30 曾因它漏加 scan_* 而报「未知工具」。
+    expect(Object.keys(SEC_TOOL_FACTORIES).sort(), '/run 工厂表漏了工具').toEqual(names);
   });
 
   it('每条命令都有面板需要的字段：kind=tool / pluginId / group / mode / danger / desc / usage', () => {

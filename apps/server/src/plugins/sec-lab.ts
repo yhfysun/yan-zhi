@@ -51,6 +51,15 @@ import { runBrute } from './sec-lab-tools/brute.js';
 import { runAttackMap } from './sec-lab-tools/attackmap.js';
 import { runSkill, runWarstory, runCheatsheet } from './sec-lab-tools/knowledge.js';
 import { runSast } from './sec-lab-tools/sast.js';
+// 密钥脱敏（2026-10-30）：历史发现项里可能存着修复前入库的凭据原文，读的时候必须再脱一次
+import { maskSecrets } from './sec-lab-tools/scan/redact.js';
+// —— P1：扫描编排（2026-10-30）——
+import { runScan, acceptBaseline, type ScanStore, type ScanBaseline } from './sec-lab-tools/scan/orchestrator.js';
+import { createSourceScanner } from './sec-lab-tools/scan/source/engine.js';
+import { createUrlScanner } from './sec-lab-tools/scan/url/engine.js';
+import { createPackageScanner } from './sec-lab-tools/scan/package/engine.js';
+import { jobToOutput, SEVERITY_ORDER, type ScanJob, type ScanKind } from './sec-lab-tools/scan/types.js';
+import { discoverSelfAssets, matchSelfAsset } from './sec-lab-tools/scan/self/assets.js';
 // —— P5：经验库（自学习，2026-10-17）——
 import {
   addExperience, approvedEntries, decideExperience, experienceCounts, oneLine, sanitizeText,
@@ -101,6 +110,9 @@ export const secLabManifest: PluginManifest = {
       'sec_skill', 'warstory', 'cheatsheet', 'sast',
       // —— P5（2026-10-17）——
       'sec_experience', 'experience_review',
+      // —— P1 扫描编排（2026-10-30）——
+      'scan_source', 'scan_url', 'scan_package', 'scan_self',
+      'scan_status', 'scan_report', 'scan_baseline', 'self_assets',
     ],
     // ★ 2026-10-16 去掉 sidebar 贡献：与顶栏**模式下拉**的「安全」是同一个入口（都进 /sec），
     //   属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
@@ -193,7 +205,17 @@ export const secLabManifest: PluginManifest = {
       { name: 'warstory', desc: '战例库：真实缺陷的排查路径与教训', usage: '/warstory [关键词]', group: 'KB', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'warstory', params: ['topic'] },
       { name: 'cheatsheet', desc: '速查表：nmap / curl / jwt / sqlmap / ffuf', usage: '/cheatsheet [关键词]', group: 'KB', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'cheatsheet', params: ['topic'] },
       { name: 'code-scan', aliases: ['codescan'], desc: '本地源码安全扫描（L1 正则 + L2 结构式，10 条规则；只读不改文件）', usage: '/code-scan <目录> [--maxFiles=800]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'sast', params: ['root'] },
-
+      // —— P1：统一扫描（2026-10-30）——
+      // ★ 四个入口按输入类型拆开：源码/制品是本地只读（passive），URL 必须已授权（active），
+      //   自有资产由服务端判定（不接受 self 声明）。风险标签与 guard 的 TOOL_RISK 保持同口径。
+      { name: 'scan-source', aliases: ['srcscan'], desc: '源码扫描作业：规则包 + 依赖快照 + Electron 配置，支持基线抑制', usage: '/scan-source <目录> [--profile=quick|standard|deep]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_source', params: ['target'] },
+      { name: 'scan-url', aliases: ['urlscan'], desc: 'URL 扫描作业：画像 + 安全头 + TLS + 基线 + 模板 POC（按剖面编排）', usage: '/scan-url <url> [--profile=quick|standard|deep|api]', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_url', params: ['target'] },
+      { name: 'scan-package', aliases: ['apkscan'], desc: '安装包扫描：APK/AAB 清单 · DEX 字符串 · 签名；asar / ZIP', usage: '/scan-package <文件> [--profile=quick|standard|deep]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_package', params: ['target'] },
+      { name: 'scan-self', aliases: ['yzcheck'], desc: '言智自有资产体检（仓库 / 构建产物 / 本机服务）', usage: '/scan-self [--profile=quick|standard|deep] [--target=路径]', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_self' },
+      { name: 'scan-status', aliases: ['sjobs'], desc: '扫描作业列表 / 单个作业进度', usage: '/scan-status [jobId]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_status', params: ['jobId'] },
+      { name: 'scan-report', aliases: ['sreport'], desc: '取扫描作业报告（默认最近一次完成）', usage: '/scan-report [jobId]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_report', params: ['jobId'] },
+      { name: 'scan-baseline', aliases: ['sbaseline'], desc: '把某次扫描的指纹存为基线，之后只报新增', usage: '/scan-baseline [jobId]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_baseline', params: ['jobId'] },
+      { name: 'self-assets', aliases: ['selfassets'], desc: '列出自有资产（仓库 / 构建产物 / 本机服务）', usage: '/self-assets', group: 'SYS', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'self_assets' },
       // ── P5：经验库（自学习，2026-10-17）────────────────────────────────────
       // ★ 模型只能 propose，审批走 `/exp-review`（HUMAN_ONLY，服务端硬拦）；
       //   只有 approved 条目会被 buildSystemPromptForBackend 注入提示词。
@@ -256,6 +278,9 @@ const K_PLAYBOOKS = 'playbooks';
 const K_EXPERIENCE = 'experience';
 // ExecutionGate：高危动作逐条审批票（一次性、内容哈希、10 分钟过期）
 const K_APPROVALS = 'approvals';
+// P1 扫描作业与基线（2026-10-30）
+const K_SCAN_JOBS = 'scan_jobs';
+const K_SCAN_BASELINES = 'scan_baselines';
 const AUDIT_MAX = 500;
 
 let store: PluginStorage | null = null;
@@ -296,6 +321,16 @@ const loadApprovals = () => loadList<ExecutionApproval>(K_APPROVALS);
 async function saveApprovals(list: ExecutionApproval[]): Promise<void> {
   if (store) await store.set(K_APPROVALS, list);
 }
+
+// ── 扫描作业存储（P1，2026-10-30）───────────────────────────────────────────
+// 编排层只认 ScanStore 接口，不直接依赖 plugin_storage；这里做适配。
+const scanStore: ScanStore = {
+  loadJobs: () => loadList<ScanJob>(K_SCAN_JOBS),
+  saveJobs: async (jobs) => { if (store) await store.set(K_SCAN_JOBS, jobs); },
+  loadBaselines: () => loadList<ScanBaseline>(K_SCAN_BASELINES),
+  saveBaselines: async (list) => { if (store) await store.set(K_SCAN_BASELINES, list); },
+};
+const SCAN_SCANNERS = [createSourceScanner(), createUrlScanner(), createPackageScanner()];
 /** 用户剧本上限：够用又不至于把面板撑爆；超出直接拒绝并说明，不静默丢弃 */
 const USER_PLAYBOOK_MAX = 50;
 const USER_PLAYBOOK_STEPS_MAX = 20;
@@ -314,10 +349,99 @@ async function pushAudit(e: AuditEntry): Promise<void> {
 async function pushFindings(target: string, tool: string, findings: Finding[]): Promise<void> {
   if (!store || !findings.length) return;
   const list = await loadFindings();
+  // ★ 同一问题只留一条：重复扫描不再把同一发现追加成 5 条（用户看到的是 495 条里的噪音）。
+  const incoming = new Map<string, StoredFinding>();
   for (const f of findings) {
-    list.push({ ...f, id: randomUUID(), at: Date.now(), target, tool });
+    const item: StoredFinding = {
+      ...f,
+      id: randomUUID(), at: Date.now(), target, tool,
+      // 落库前脱敏：凭据不进 SQLite 历史
+      detail: maskSecrets(f.detail),
+      evidence: f.evidence ? maskSecrets(f.evidence) : f.evidence,
+    };
+    incoming.set(findingKey(item), item); // 同批内重复也只留最后一条
   }
-  await store.set(K_FINDINGS, list.slice(-2000));
+  const kept = list.filter((x) => !incoming.has(findingKey(x)));
+  await store.set(K_FINDINGS, [...kept, ...incoming.values()].slice(-2000));
+}
+
+/** 发现项去重键：同一目标 + 同一工具 + 同一标题 + 同一详情（含定位）视为同一个问题 */
+function findingKey(f: { title?: string; target?: string; tool?: string; detail?: string }): string {
+  const detail = String(f.detail || '').replace(/\s+/g, ' ').trim();
+  return `${f.title || ''}|${f.target || ''}|${f.tool || ''}|${detail}`;
+}
+
+/** 启动时归一：脱敏 + 去重（同一问题只留最新一条）。旧库是"每次扫描都追加"，会堆出几百条重复。 */
+async function normalizeStoredFindings(): Promise<void> {
+  if (!store) return;
+  const list = await loadFindings();
+  const masked = list.map((f) => ({
+    ...f,
+    detail: maskSecrets(f.detail || ''),
+    evidence: f.evidence ? maskSecrets(f.evidence) : f.evidence,
+  }));
+  const lastIndex = new Map<string, number>();
+  masked.forEach((f, i) => lastIndex.set(findingKey(f), i));
+  const next = masked.filter((f, i) => lastIndex.get(findingKey(f)) === i);
+  const changed = next.length !== list.length ||
+    masked.some((f, i) => f.detail !== list[i].detail || f.evidence !== list[i].evidence);
+  if (changed) await store.set(K_FINDINGS, next);
+}
+
+// ---------- 报告生成（导出的 Markdown 直接给智能体读） ----------
+const REPORT_SEV_LABEL: Record<string, string> = {
+  critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息',
+};
+
+function buildReportMarkdown(
+  items: Array<Finding & { target?: string; tool?: string; at?: number }>,
+  opts: { job?: ScanJob },
+): string {
+  const sorted = sortFindings(items);
+  const counts: Record<string, number> = {};
+  for (const f of sorted) counts[f.severity] = (counts[f.severity] || 0) + 1;
+  const sevLine = Object.entries(counts)
+    .sort((a, b) => (SEVERITY_ORDER as unknown as Record<string, number>)[b[0]] - (SEVERITY_ORDER as unknown as Record<string, number>)[a[0]])
+    .map(([k, v]) => `${REPORT_SEV_LABEL[k] || k} ${v}`).join(' / ');
+
+  const L: string[] = [];
+  L.push(`# 安全扫描报告${opts.job ? ` — ${opts.job.kind} / ${opts.job.profile}` : ''}`);
+  L.push('');
+  L.push(`- 生成时间：${new Date().toLocaleString('zh-CN')}`);
+  if (opts.job) {
+    L.push(`- 作业：${opts.job.id}（${opts.job.status}）`);
+    L.push(`- 目标：${opts.job.target}`);
+    L.push(`- 发起方：${opts.job.createdBy === 'human' ? '人工' : '智能体'}`);
+  }
+  L.push(`- 发现项：${sorted.length}${sevLine ? `（${sevLine}）` : ''}`);
+  L.push('');
+  L.push('## 修复清单（供智能体逐项处理）');
+  L.push('');
+
+  sorted.forEach((f, i) => {
+    const sev = REPORT_SEV_LABEL[f.severity] || f.severity;
+    L.push(`- [ ] ${i + 1}. **[${sev}] ${maskSecrets(f.title)}**`);
+    const loc = /定位：(.+)/.exec(f.detail || '')?.[1]?.trim();
+    if (loc) L.push(`  - 位置：${loc}`);
+    if (f.target) L.push(`  - 目标：${f.target}`);
+    if (f.tool) L.push(`  - 来源：${f.tool}`);
+    const ev = maskSecrets((f.evidence || '').replace(/\s+/g, ' ').trim()).slice(0, 300);
+    if (ev) L.push(`  - 证据：${ev}`);
+    const why = maskSecrets(f.detail || '').split('\n')[0]?.trim();
+    if (why && why !== ev) L.push(`  - 说明：${why.slice(0, 240)}`);
+    if (f.remediation) L.push(`  - 修复：${f.remediation}`);
+    L.push('');
+  });
+
+  L.push('## 给智能体的执行说明');
+  L.push('');
+  L.push('1. 只处理本文件「修复清单」里的条目，不要顺手改清单之外的文件。');
+  L.push('2. 每条按「位置 → 证据 → 修复」顺序处理；证据里的凭据已脱敏，实际值请到对应文件确认后再轮换。');
+  L.push('3. 规则扫描可能误报：无法复现或确认为误报的条目，标注「误报」并说明理由，不要强行修改。');
+  L.push('4. 完成一条就把 `[ ]` 改成 `[x]`，并在提交信息里带上条目编号。');
+  L.push('5. 密钥类问题：改代码只是止血，必须提醒用户到对应控制台吊销并轮换。');
+  L.push('');
+  return L.join('\n');
 }
 
 // ---------- 结果渲染 ----------
@@ -1610,6 +1734,204 @@ function sastTool(): BuiltInTool {
   };
 }
 
+// ---------- P1：统一扫描（2026-10-30） ----------
+//
+// 四类输入各一个工具（而不是一个带 kind 参数的大工具）：
+//   ① guard 的 TOOL_RISK 是**按工具名**查的，拆开才能让「源码/制品=passive、URL=active」各归各位；
+//   ② NO_TARGET_TOOLS 同理——本地路径不该被要求登记 scope，而 URL 必须；
+//   ③ 命令层 positionals → 字段名的映射天然是「一命令一工具」，不用给 CommandDef 加固定参数。
+
+const SCAN_TARGET_PROP = { type: 'string', description: '扫描目标（目录 / URL / 安装包路径）' } as const;
+const SCAN_PROFILE_PROP = { type: 'string', description: '剖面：quick / standard / deep（URL 另有 api）' } as const;
+
+/** 四类扫描共用的执行体：跑作业 → 结果转 ToolOutput（审计与历史发现项由 withGuard 统一写） */
+async function executeScanJob(
+  tool: string,
+  kind: ScanKind,
+  target: string,
+  args: Record<string, unknown>,
+): Promise<ToolOutput> {
+  const job = await runScan({
+    kind,
+    target,
+    profile: args.profile ? String(args.profile) : undefined,
+    scanners: SCAN_SCANNERS,
+    store: scanStore,
+    createdBy: isTrustedHumanCall(args) ? 'human' : 'agent',
+    limits: {
+      maxFiles: typeof args.maxFiles === 'number' ? args.maxFiles : undefined,
+      maxDurationMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
+    },
+  });
+  if (job.status === 'failed') throw new Error(job.error || `${tool} 扫描失败`);
+  return jobToOutput(job);
+}
+
+function scanSourceTool(): BuiltInTool {
+  return plainTool(
+    'scan_source',
+    '本地源码安全扫描（passive）：规则包（硬编码凭据 / 高熵密钥 / 注入 / XSS / 路径遍历 / 弱加密 / Electron 安全配置 / 调试路由 / 默认口令）+ standard 及以上追加依赖快照核对。只读，不执行被测代码。结果为统一扫描作业，支持 /scan-baseline 建立基线后只报新增。',
+    {
+      target: SCAN_TARGET_PROP,
+      profile: SCAN_PROFILE_PROP,
+      maxFiles: { type: 'number', description: '最多扫描文件数（quick 800 / standard 2000 / deep 4000）' },
+      timeoutMs: { type: 'number', description: '超时毫秒数，默认 120000' },
+    },
+    ['target'],
+    (args) => executeScanJob('scan_source', 'source', String(args.target), args),
+  );
+}
+
+function scanUrlTool(): BuiltInTool {
+  return plainTool(
+    'scan_url',
+    'URL / Web 应用扫描（active）：按剖面编排既有探测能力——目标画像、安全响应头、TLS、配置基线，standard 起追加爬虫与目录探测，最后跑模板化 POC。不会自动执行注入验证或爆破（那些需要交战模式与逐条审批）。目标必须先登记授权范围。',
+    {
+      target: SCAN_TARGET_PROP,
+      profile: SCAN_PROFILE_PROP,
+      timeoutMs: { type: 'number', description: '单步超时毫秒数，默认受作业上限约束' },
+    },
+    ['target'],
+    (args) => executeScanJob('scan_url', 'url', String(args.target), args),
+  );
+}
+
+function scanPackageTool(): BuiltInTool {
+  return plainTool(
+    'scan_package',
+    '安装包 / 制品扫描（passive）：支持 APK/AAB（清单属性、DEX 字符串、资源明文、签名）、asar、通用 ZIP。解包到临时目录后只读分析，不安装、不执行、不联网；未安装 apktool 时自动走零依赖模式并在结果里标注。',
+    {
+      target: SCAN_TARGET_PROP,
+      profile: SCAN_PROFILE_PROP,
+    },
+    ['target'],
+    (args) => executeScanJob('scan_package', 'package', String(args.target), args),
+  );
+}
+
+function scanSelfTool(): BuiltInTool {
+  return {
+    name: 'scan_self',
+    description:
+      '言智自有资产体检（active）：自动识别仓库 / 构建产物 / 本机服务，按资产类型选择扫描引擎。**只接受服务端判定为自有资产的目标**，外部 URL 与任意外部路径一律拒绝。不传 target 时默认扫仓库源码。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: '可省略；只接受自有资产路径或本机固定端口 URL' },
+        profile: SCAN_PROFILE_PROP,
+      },
+      required: [],
+    },
+    async execute(args) {
+      return withGuard('scan_self', { ...args, target: '' }, async () => {
+        const assets = await discoverSelfAssets();
+        const raw = String(args.target || '').trim();
+        const asset = raw
+          ? matchSelfAsset(raw, assets)
+          : assets.find((a) => a.kind === 'repo') || null;
+        if (!asset) {
+          throw new Error(
+            raw
+              ? `「${raw}」不属于言智自有资产。自有资产：${assets.map((a) => a.label).join('、')}。外部目标请用安全助手并先登记授权范围。`
+              : '未发现言智仓库根目录；请显式传一个自有资产路径。',
+          );
+        }
+        const kind: ScanKind = asset.kind === 'runtime' ? 'url' : 'source';
+        const out = await executeScanJob('scan_self', kind, asset.value, args);
+        return {
+          ...out,
+          summary: `言智体检：资产「${asset.label}」（${asset.value}）→ ${kind} 引擎\n${out.summary}`,
+        };
+      });
+    },
+  };
+}
+
+async function loadScanJobs(): Promise<ScanJob[]> {
+  return (await loadList<ScanJob>(K_SCAN_JOBS)).filter((j) => !!j && typeof j.id === 'string');
+}
+
+function scanStatusTool(): BuiltInTool {
+  return plainTool(
+    'scan_status',
+    '查看扫描作业：不传 jobId 时列出最近 10 个作业（状态 / 类型 / 剖面 / 发现数 / 目标）；传 jobId 返回该作业的阶段进度与摘要。',
+    { jobId: { type: 'string', description: '作业 id（sj_ 开头）' } },
+    [],
+    async (args) => {
+      const jobs = await loadScanJobs();
+      const id = String(args.jobId || '');
+      const job = id ? jobs.find((j) => j.id === id) : jobs[jobs.length - 1];
+      if (!job) {
+        return {
+          tool: 'scan_status', target: '', risk: 'passive',
+          summary: id ? `未找到作业 ${id}` : '还没有扫描作业。用 /scan-source、/scan-url、/scan-package 或 /scan-self 发起。',
+          findings: [],
+        };
+      }
+      return jobToOutput(job);
+    },
+  );
+}
+
+function scanReportTool(): BuiltInTool {
+  return plainTool(
+    'scan_report',
+    '取扫描作业报告：不传 jobId 时取最近完成的作业。输出按严重度分级的发现项与证据；需要 Markdown/HTML/SARIF 文件导出时用 sec_report（扫描结果已写入发现项历史）。',
+    { jobId: { type: 'string', description: '作业 id；省略=最近一次' } },
+    [],
+    async (args) => {
+      const jobs = await loadScanJobs();
+      const id = String(args.jobId || '');
+      const job = id ? jobs.find((j) => j.id === id) : [...jobs].reverse().find((j) => j.status === 'done');
+      if (!job) throw new Error(id ? `未找到作业 ${id}` : '还没有已完成的扫描作业');
+      const out = jobToOutput(job);
+      const stages = job.stages.map((s) => `${s.name}=${s.status}${s.note ? `(${s.note})` : ''}`).join(' → ');
+      return { ...out, summary: `${out.summary}\n阶段：${stages}\n作业 ${job.id}（${job.kind}/${job.profile}，${job.createdBy === 'human' ? '人工' : '智能体'}发起）` };
+    },
+  );
+}
+
+function scanBaselineTool(): BuiltInTool {
+  return plainTool(
+    'scan_baseline',
+    '把某个扫描作业的发现项指纹存为基线：之后同一目标的扫描只报**新增**问题（被抑制的仍保留在作业里）。用于让扫描能进日常流程。',
+    { jobId: { type: 'string', description: '作业 id（sj_ 开头）；省略=最近一次已完成作业' } },
+    [],
+    async (args) => {
+      const jobs = await loadScanJobs();
+      const id = String(args.jobId || '');
+      const job = id ? jobs.find((j) => j.id === id) : [...jobs].reverse().find((j) => j.status === 'done');
+      if (!job) throw new Error(id ? `未找到作业 ${id}` : '还没有已完成的作业可建基线');
+      const baseline = await acceptBaseline(scanStore, job);
+      return {
+        tool: 'scan_baseline', target: job.target, risk: 'passive',
+        summary: `已为 ${job.kind} 目标「${job.target}」建立基线 ${baseline.id}（${baseline.fingerprints.length} 条指纹）。之后同目标扫描只报新增。`,
+        findings: [],
+        raw: { baselineId: baseline.id, jobId: job.id, count: baseline.fingerprints.length },
+      };
+    },
+  );
+}
+
+function selfAssetsTool(): BuiltInTool {
+  return plainTool(
+    'self_assets',
+    '列出自有资产（服务端自动识别）：仓库目录、构建产物目录、本机固定端口服务。安全官据此决定扫什么；外部目标不在其中。',
+    {},
+    [],
+    async () => {
+      const assets = await discoverSelfAssets();
+      const lines = assets.map((a) => `- [${a.kind}] ${a.label}：${a.value}`);
+      return {
+        tool: 'self_assets', target: '', risk: 'passive',
+        summary: assets.length ? `自有资产共 ${assets.length} 项：\n${lines.join('\n')}` : '未发现自有资产（不在言智仓库内运行时属正常）。',
+        findings: [],
+        raw: assets,
+      };
+    },
+  );
+}
+
 function experienceTool(): BuiltInTool {
   return plainTool(
     'sec_experience',
@@ -1763,71 +2085,7 @@ function registerRoutes(ctx: PluginContext) {
     r.post('/run', async (req: unknown, res: unknown) => {
       const body = bodyOf(req);
       const tool = String(body.tool || '');
-      const map: Record<string, () => BuiltInTool> = {
-        recon: reconTool,
-        portscan: portscanTool,
-        webprobe: webprobeTool,
-        toolchain: toolchainTool,
-        sec_report: secReportTool,
-        scope_list: scopeListTool,
-        scope_add: scopeAddTool,
-        scope_remove: scopeRemoveTool,
-        attack_sim: attackSimTool,
-        sim_report: simReportTool,
-        detect_rules: detectRulesTool,
-        log_hunt: logHuntTool,
-        asset_monitor: assetMonitorTool,
-        host_env: hostEnvTool,
-        range_deploy: rangeDeployTool,
-        range_list: rangeListTool,
-        range_stop: rangeStopTool,
-        android_launch: androidLaunchTool,
-        // —— P1（2026-10-17）——
-        whois: whoisTool,
-        ctlog: ctlogTool,
-        osint: osintTool,
-        subdomain: subdomainTool,
-        crawl: crawlTool,
-        js_endpoint: jsEndpointTool,
-        dirsearch: dirsearchTool,
-        waf_detect: wafTool,
-        service_scan: serviceScanTool,
-        udp_scan: udpScanTool,
-        crypto_encode: encodeTool,
-        crypto_decode: decodeTool,
-        jwt_inspect: jwtTool,
-        hash_id: hashidTool,
-        target_state: targetStateTool,
-        proxy: proxyTool,
-        // —— P2（2026-10-17）——
-        poc_scan: pocScanTool,
-        poc_templates: pocTemplatesTool,
-        cve_intel: cveTool,
-        exploit_search: exploitTool,
-        oast: oastTool,
-        verify_sqli: verifySqliTool,
-        verify_xss: verifyXssTool,
-        verify_ssrf: verifySsrfTool,
-        finding_status: findingStatusTool,
-        // —— P3（2026-10-17）——
-        baseline_scan: baselineTool,
-        host_baseline: hostBaselineTool,
-        tls_audit: tlsAuditTool,
-        headers_audit: headersAuditTool,
-        watch: watchTool,
-        brute: bruteTool,
-        attack_map: attackMapTool,
-        // —— P4（2026-10-17）——
-        sec_skill: skillTool,
-        warstory: warstoryTool,
-        cheatsheet: cheatsheetTool,
-        sast: sastTool,
-        // —— P5（2026-10-17）——
-        // ★ 审批必须人工：/run 路由会写入进程内 Symbol 人工标记，
-        //   命令行走的是人工入口（与 attack_sim 同一条闸门）。
-        sec_experience: experienceTool,
-        experience_review: experienceReviewTool,
-      };
+      const map = SEC_TOOL_FACTORIES;
       const factory = map[tool];
       if (!factory) return fail(res, 400, `未知工具 ${tool}`);
       const userArgs = (body.args as Record<string, unknown>) || {};
@@ -1847,7 +2105,38 @@ function registerRoutes(ctx: PluginContext) {
     r.get('/findings', async (_req: unknown, res: unknown) => {
       const cfg = await loadConfig();
       const list = sortFindings(await loadFindings());
-      json(res, { data: cfg.redactReport ? list.map((f) => ({ ...f, detail: redact(f.detail, true) })) : list });
+      // ★ 无论是否开启报告脱敏，凭据类内容一律打码：这是扫描结果的展示面，
+      //   不是用户可以"选择不看"的选项（历史数据里也可能存着旧版写入的原文）。
+      json(res, {
+        data: list.map((f) => ({
+          ...f,
+          detail: maskSecrets(cfg.redactReport ? redact(f.detail, true) : f.detail),
+          evidence: f.evidence ? maskSecrets(f.evidence) : f.evidence,
+        })),
+      });
+    });
+
+    // ── 导出报告（2026-10-30）──────────────────────────────────────────────
+    // 目的：把发现项变成**可交付给智能体修复**的 Markdown（清单 + 定位 + 修复建议）。
+    // 只生成文本，落盘由前端选择保存位置（桌面端走系统保存框）。
+    r.post('/export/report', async (req: unknown, res: unknown) => {
+      const body = bodyOf(req);
+      const jobId = String(body.jobId || '');
+      let items: Array<Finding & { target?: string; tool?: string; at?: number }>;
+      let job: ScanJob | undefined;
+      if (jobId) {
+        const jobs = await loadList<ScanJob>(K_SCAN_JOBS);
+        job = jobs.find((j) => j.id === jobId);
+        if (!job) return fail(res, 404, `未找到作业 ${jobId}`);
+        items = job.findings
+          .filter((f) => !f.suppressed)
+          .map((f) => ({ ...f, target: job!.target, tool: 'scan', at: job!.finishedAt || job!.createdAt }));
+      } else {
+        items = await loadFindings();
+      }
+      const text = buildReportMarkdown(items, { job });
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      json(res, { data: { text, filename: `security-report-${stamp}.md`, count: items.length } });
     });
 
     r.get('/audit', async (_req: unknown, res: unknown) => {
@@ -2034,36 +2323,97 @@ function registerRoutes(ctx: PluginContext) {
   });
 }
 
+// ---------- 工具工厂（唯一真相源） ----------
+//
+// ★ 2026-10-30 合并：此前 activate 的注册数组与 /run 路由里的工厂表是**两份清单**，
+//   新增工具只改一处 ⇒ 面板列出命令、点下去却回「未知工具」。现在两边都从这里取，
+//   再配合 sec-lab-commands.test.ts 的「一份清单」断言，不会再漂。
+export const SEC_TOOL_FACTORIES: Record<string, () => BuiltInTool> = {
+  recon: reconTool,
+  portscan: portscanTool,
+  webprobe: webprobeTool,
+  toolchain: toolchainTool,
+  sec_report: secReportTool,
+  scope_list: scopeListTool,
+  scope_add: scopeAddTool,
+  scope_remove: scopeRemoveTool,
+  attack_sim: attackSimTool,
+  sim_report: simReportTool,
+  detect_rules: detectRulesTool,
+  log_hunt: logHuntTool,
+  asset_monitor: assetMonitorTool,
+  host_env: hostEnvTool,
+  range_deploy: rangeDeployTool,
+  range_list: rangeListTool,
+  range_stop: rangeStopTool,
+  android_launch: androidLaunchTool,
+  // —— P1（2026-10-17）——
+  whois: whoisTool,
+  ctlog: ctlogTool,
+  osint: osintTool,
+  subdomain: subdomainTool,
+  crawl: crawlTool,
+  js_endpoint: jsEndpointTool,
+  dirsearch: dirsearchTool,
+  waf_detect: wafTool,
+  service_scan: serviceScanTool,
+  udp_scan: udpScanTool,
+  crypto_encode: encodeTool,
+  crypto_decode: decodeTool,
+  jwt_inspect: jwtTool,
+  hash_id: hashidTool,
+  target_state: targetStateTool,
+  proxy: proxyTool,
+  // —— P2（2026-10-17）——
+  poc_scan: pocScanTool,
+  poc_templates: pocTemplatesTool,
+  cve_intel: cveTool,
+  exploit_search: exploitTool,
+  oast: oastTool,
+  verify_sqli: verifySqliTool,
+  verify_xss: verifyXssTool,
+  verify_ssrf: verifySsrfTool,
+  finding_status: findingStatusTool,
+  // —— P3（2026-10-17）——
+  baseline_scan: baselineTool,
+  host_baseline: hostBaselineTool,
+  tls_audit: tlsAuditTool,
+  headers_audit: headersAuditTool,
+  watch: watchTool,
+  brute: bruteTool,
+  attack_map: attackMapTool,
+  // —— P4（2026-10-17）——
+  sec_skill: skillTool,
+  warstory: warstoryTool,
+  cheatsheet: cheatsheetTool,
+  sast: sastTool,
+  // —— P5（2026-10-17）——
+  // ★ 审批必须人工：/run 路由会写入进程内 Symbol 人工标记，
+  //   命令行走的是人工入口（与 attack_sim 同一条闸门）。
+  sec_experience: experienceTool,
+  experience_review: experienceReviewTool,
+  // —— P1 扫描编排（2026-10-30）——
+  scan_source: scanSourceTool,
+  scan_url: scanUrlTool,
+  scan_package: scanPackageTool,
+  scan_self: scanSelfTool,
+  scan_status: scanStatusTool,
+  scan_report: scanReportTool,
+  scan_baseline: scanBaselineTool,
+  self_assets: selfAssetsTool,
+};
+
 // ---------- 插件入口 ----------
 
 export const secLabModule: PluginModule = {
   async activate(ctx: PluginContext) {
     applyBuiltinSeed({ agents: secModeAgentDefs, scenes: [secModeScene] });
     store = ctx.storage;
-    for (const t of [
-      scopeListTool(), scopeAddTool(), scopeRemoveTool(),
-      reconTool(), portscanTool(), webprobeTool(), toolchainTool(), secReportTool(),
-      attackSimTool(), simReportTool(), detectRulesTool(), logHuntTool(), assetMonitorTool(),
-      hostEnvTool(), rangeDeployTool(), rangeListTool(), rangeStopTool(), androidLaunchTool(),
-      // —— P1（2026-10-17）——
-      whoisTool(), ctlogTool(), osintTool(), subdomainTool(),
-      crawlTool(), jsEndpointTool(), dirsearchTool(), wafTool(),
-      serviceScanTool(), udpScanTool(),
-      encodeTool(), decodeTool(), jwtTool(), hashidTool(),
-      targetStateTool(), proxyTool(),
-      // —— P2（2026-10-17）——
-      pocScanTool(), pocTemplatesTool(), cveTool(), exploitTool(), oastTool(),
-      verifySqliTool(), verifyXssTool(), verifySsrfTool(), findingStatusTool(),
-      // —— P3（2026-10-17）——
-      baselineTool(), tlsAuditTool(), headersAuditTool(), watchTool(), bruteTool(), attackMapTool(),
-      // —— P3.1 主机侧基线（2026-10-18）——
-      hostBaselineTool(),
-      // —— P4（2026-10-17）——
-      skillTool(), warstoryTool(), cheatsheetTool(), sastTool(),
-      // —— P5（2026-10-17）——
-      experienceTool(), experienceReviewTool(),
-    ]) {
-      ctx.registerTool(t);
+    // 旧库归一：历史发现项里可能存着脱敏修复前写入的凭据原文，且每次扫描都追加导致大量重复
+    void normalizeStoredFindings().catch(() => { /* 清理失败不阻断启动 */ });
+    // 工具注册与 /run 路由共用同一份工厂表（见 SEC_TOOL_FACTORIES）
+    for (const factory of Object.values(SEC_TOOL_FACTORIES)) {
+      ctx.registerTool(factory());
     }
     registerRoutes(ctx);
     ctx.log('[sec-lab] 已启用：仅限自有资产或已授权目标，所有动作受授权范围与黑名单约束');

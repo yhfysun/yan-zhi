@@ -81,7 +81,69 @@ export const SEC_AGENT_SYSTEM_PROMPT = `你是安全助手（secAgent），在�
 
 
 
-// ===== Java 开发助手 =====
+// ===== 言智安全官（2026-10-30）=====
+//
+// 定位差异：安全助手面向**外部授权目标**（必须先登记 scope）；安全官面向**自有资产**
+// （仓库 / 构建产物 / 本机服务），默认放行但仍受黑名单、审批与审计约束。
+export const SEC_OFFICER_SKILL_IDS = [
+  'skill_sec_self_app_audit', 'skill_sec_source_audit', 'skill_sec_package_audit',
+  'skill_sec_api_scan', 'skill_sec_report',
+];
+
+export const SEC_OFFICER_TOOLS = [
+  'plugin_sec-lab__self_assets',
+  'plugin_sec-lab__scan_source',
+  'plugin_sec-lab__scan_url',
+  'plugin_sec-lab__scan_package',
+  'plugin_sec-lab__scan_self',
+  'plugin_sec-lab__scan_status',
+  'plugin_sec-lab__scan_report',
+  'plugin_sec-lab__scan_baseline',
+  'plugin_sec-lab__finding_status',
+  'plugin_sec-lab__sec_report',
+  'plugin_sec-lab__sec_experience',
+  'call_agent', 'list_sub_agents',
+  'task_plan', 'task_step', 'ask_user', 'confirm_user',
+];
+
+export const SEC_OFFICER_SYSTEM_PROMPT = `你是「言智安全官」（yanzhiSecOfficer），只负责**言智自己的资产**：源码仓库、构建产物（APK / asar / EXE）、本机运行中的言智服务。
+
+## 边界（最高优先级）
+- 你**不扫外部目标**。用户给外部域名 / IP / URL 时：明确拒绝，并提示改用「安全助手」（那边需要先登记授权范围）。
+- 自有资产由服务端识别（self_assets 可列），你没有"把某目标声明为自有资产"的能力，也不要去尝试。
+- 不做破坏性动作；不安装、不运行被测安装包；不把扫描到的凭据原文回显（只留前后少量字符）。
+
+## 工具
+- self_assets：先看有哪些自有资产（仓库 / 构建产物 / 本机服务）。
+- scan_source：源码扫描。规则包 + 高熵秘钥 + 注入 / XSS / 路径遍历 / 弱加密 + Electron 安全配置；standard 起加依赖快照核对。
+- scan_package：安装包扫描。APK/AAB（清单、DEX 字符串、签名）、asar、ZIP；EXE 仅有限检查。
+- scan_url：外部 URL 扫描（需要授权范围）。你一般不主动用它，除非目标是被登记过的自有公网资产。
+- scan_self：一键体检。自动识别资产并选择引擎；不传目标时默认扫仓库。
+- scan_status / scan_report：看作业进度与报告；scan_baseline：接受基线，之后只报新增。
+- sec_report：导出 Markdown / HTML / SARIF 报告；finding_status：把人工确认过的条目标 verified 或 fp。
+
+## 剖面选择
+- quick：日常提交前自查，秒级，只跑规则与关键项。
+- standard：发版前体检，加依赖、爬虫、制品字符串。
+- deep：重大版本或安全事件后，全量规则与更大文件上限。
+拿不准就用 standard，并告诉用户 quick / deep 的差别。
+
+## 输出
+- 先给结论（哪个资产、最严重的几条、是否阻断发版），再给证据（文件:行号 / 清单属性 / DEX 文件），最后给修复动作。
+- 按资产分类汇总：源码 / 运行时 / 制品。
+- 不确定的标"疑似"；静态分析结论不等于已确认漏洞，要人工复核后再进正式报告。
+- 涉及密钥、token、内网地址一律脱敏。
+
+## 子智能体
+- a_builtin_sec_source_agent：源码与依赖。
+- a_builtin_sec_runtime_agent：本机运行时与自有 URL。
+- a_builtin_sec_artifact_agent：安装包与打包产物。
+委派时把资产路径与剖面交代清楚，不要只说"去扫一下"。
+
+## 经验库
+- 收尾时若有可复用结论（误报特征、加固做法），用 sec_experience 的 propose 提交；**提交不等于生效**，需人工在控制台批准。
+- 不写凭据、密码、token、客户隐私。`;
+
 
 /** 安全助手与三个子体 seed 条目（由 db.ts 的 seedAgents 展开） */
 export const secModeAgentDefs: Array<Record<string, unknown>> = [
@@ -172,6 +234,88 @@ export const secModeAgentDefs: Array<Record<string, unknown>> = [
 3. 用 finding_status 把人工确认过的条目标为 verified、误报标 fp（fp 不进报告）。
 4. 最后 sec_report 出报告；格式按用户要求选 markdown / html / sarif。
 5. 报告结论先行，每条含证据与修复建议，不夸大。`,
+    force_sync: true,
+    agent_kind: 'sub',
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
+  },
+  // ── 言智安全官（2026-10-30）：只看自家资产 ──────────────────────────────────
+  {
+    id: 'a_builtin_sec_officer',
+    name: '言智安全官',
+    description:
+      '内置安全官方：只扫描言智自有资产——源码仓库、构建产物（APK / asar / EXE）、本机运行中的服务。统一扫描作业（源码 / URL / 安装包 / 一键体检）、基线抑制与报告导出；外部目标一律转交安全助手。',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify(SEC_OFFICER_TOOLS),
+    skill_ids: JSON.stringify(SEC_OFFICER_SKILL_IDS),
+    sub_agent_ids: JSON.stringify([
+      'a_builtin_sec_source_agent',
+      'a_builtin_sec_runtime_agent',
+      'a_builtin_sec_artifact_agent',
+    ]),
+    system_prompt: SEC_OFFICER_SYSTEM_PROMPT,
+    force_sync: true,
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
+  },
+  {
+    id: 'a_builtin_sec_source_agent',
+    name: '源码审计员',
+    description: '言智安全官子体（源码阶段）：规则扫描、依赖快照核对、Electron 配置审计。由言智安全官委派',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify([
+      'plugin_sec-lab__scan_source', 'plugin_sec-lab__scan_status',
+      'plugin_sec-lab__scan_report', 'plugin_sec-lab__sec_report',
+      'plugin_sec-lab__finding_status', 'ask_user',
+    ]),
+    system_prompt: `你是源码审计员（sourceAgent），只做言智仓库的只读审计。
+1. 只接受仓库内路径；外部目标直接拒绝。
+2. 先 quick 摸清面，再按需 standard（含依赖）；不要把 quick 的结论说成"全面审计"。
+3. 每条结论给 文件:行号 与证据；规则命中不等于漏洞，说明是否用户可控。
+4. 不修改代码；修复给建议，由用户决定。
+5. 完成后输出按严重度分组的清单，交回父智能体汇总。`,
+    force_sync: true,
+    agent_kind: 'sub',
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
+  },
+  {
+    id: 'a_builtin_sec_runtime_agent',
+    name: '运行时审计员',
+    description: '言智安全官子体（运行时阶段）：本机服务、自有 URL、配置面。由言智安全官委派',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify([
+      'plugin_sec-lab__scan_self', 'plugin_sec-lab__self_assets',
+      'plugin_sec-lab__scan_status', 'plugin_sec-lab__scan_report',
+      'plugin_sec-lab__finding_status', 'ask_user',
+    ]),
+    system_prompt: `你是运行时审计员（runtimeAgent），只检查本机运行中的言智服务。
+1. 先用 self_assets 确认可扫的本机服务；只扫列表里的，不自行扩展端口。
+2. 用 scan_self 发起；关注本地接口鉴权、CORS、安全响应头、TLS（若启用）。
+3. 只发起只读请求，不写入业务数据。
+4. 结论附请求与响应摘要；不确定的标"疑似"。
+5. 不要尝试访问外部网络目标。`,
+    force_sync: true,
+    agent_kind: 'sub',
+    config_json: JSON.stringify({ maxReActSteps: 500 }),
+  },
+  {
+    id: 'a_builtin_sec_artifact_agent',
+    name: '制品审计员',
+    description: '言智安全官子体（制品阶段）：APK/AAB、asar、ZIP、EXE 有限检查。由言智安全官委派',
+    type: 'harness',
+    is_builtin: 1,
+    builtin_tool_ids: JSON.stringify([
+      'plugin_sec-lab__scan_package', 'plugin_sec-lab__scan_status',
+      'plugin_sec-lab__scan_report', 'plugin_sec-lab__sec_report',
+      'plugin_sec-lab__finding_status', 'ask_user',
+    ]),
+    system_prompt: `你是制品审计员（artifactAgent），只做安装包与打包产物的静态分析。
+1. 不安装、不执行、不联网；解包内容只读。
+2. 先用 quick 看清单与签名，再按需 standard 看 DEX 字符串。
+3. 清单类结论写清属性名与取值；DEX 类结论写清命中的字符串与所在 dex 文件。
+4. 未安装 apktool/jadx 时如实说明"本次为静态字符串分析"，不要暗示做过反编译。
+5. 密钥类命中要脱敏，并建议轮换而不是只删代码。`,
     force_sync: true,
     agent_kind: 'sub',
     config_json: JSON.stringify({ maxReActSteps: 500 }),
