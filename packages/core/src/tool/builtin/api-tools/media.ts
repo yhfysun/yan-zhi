@@ -1,6 +1,6 @@
 import type { ToolDefinition } from '../../types';
 import type { ApiModuleName } from './index';
-import { COLOR_EFFECTS, FX_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectIds, effectCatalogText, TEXT_ANIMATIONS } from '@yan-zhi/shared';
+import { COLOR_EFFECTS, FX_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, effectIds, effectCatalogText, fxParamCatalogText, TEXT_ANIMATIONS } from '@yan-zhi/shared';
 
 /**
  * 效果清单从 @yan-zhi/shared 的效果库**自动生成**（单一真相源）。
@@ -16,6 +16,8 @@ const COLOR_IDS = effectIds(COLOR_EFFECTS);
 const FX_IDS = effectIds(FX_EFFECTS);
 const TRANSITION_IDS = effectIds(TRANSITIONS);
 const AUDIO_FX_IDS = effectIds(AUDIO_EFFECTS);
+const MASK_SHAPE_IDS = effectIds(MASK_SHAPES);
+const MASK_KEY_IDS = effectIds(MASK_KEYS);
 const TEXT_ANIM_IDS = effectIds(TEXT_ANIMATIONS);
 
 /**
@@ -523,16 +525,17 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '只对**单个素材**做一次加工（抽帧/变速/转场/水印）仍用 media_edit。' +
         '工程按会话保存（.clipproj.json），UI 时间轴与你可反复编辑同一份，不必每次从头重建。' +
         'op 一览：' +
-        '**create** 建工程/改元信息 { name, size, fps }；' +
+        '**create** 建工程/改元信息 { name, size, fps, quality }；' +
         '**get** 读工程（默认返回紧凑摘要：各段 index/id/时间轴起止/时长 + 字幕；summaryOnly=true 时只给摘要）；' +
         '**set_output** 改导出规格 { size:"1080x1920", fps }；' +
-        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, fx?, fadeIn?, fadeOut?, kenburns?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）；' +
+        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, colorStrength?, adjust?, fx?, fxParams?, fadeIn?, fadeOut?, kenburns?, mask?, transition?, crop?, keyframes?, rotate?, flip?, reverse?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）——★ 每段支持画面裁剪 crop、蒙版 mask（形状/色键）、转场 transition、关键帧运镜 keyframes、方向 rotate/flip/reverse、调色强度与手动调节；' +
         '**update_clip** 改某段 { id 或 index, patch:{...同 add_clip 字段} }；**remove_clip** { id|index }；**move_clip** { id|index, to }；**clear_clips**；' +
-        '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, position?, safeArea? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
+        '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, position?, safeArea? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
         '**update_text** { id|index, patch }；**remove_text** { id|index }；**clear_texts**；' +
         '**set_bgm** { file, volume, duck }（duck=true 说话时自动压低，适合带旁白的成片）/ **clear_bgm**；' +
+        '**set_audio_fx** 整片音效链 { fx:[...] }（按顺序串联，最多 4 个；空数组=清除。如 ["denoise","loudnorm"]）；' +
         '**add_overlay** 画中画 { file, start, end, pos?, scale? }（start/end 相对成片；pos 可选 topleft/top/topright/left/center/right/bottomleft/bottom/bottomright，scale 相对素材尺寸 0.05~1 默认 0.35）；**update_overlay** { id|index, patch }；**remove_overlay** { id|index }；' +
-        '**render** 渲染成片 { output?, preview? }（preview=true 出快速预览档，确认后再正式渲染）。' +
+        '**render** 渲染成片 { output?, preview?, quality? }（preview=true 出快速预览档，确认后再正式渲染；非预览档会自动顺带导出一张封面 jpg）。' +
         '★ subtitleAnimation 可选：' + effectCatalogText(TEXT_ANIMATIONS) + '（用户要「字幕动效」时选贴合语义的一个）。' +
         '输入一律为本机绝对路径（前序工具返回的 file 字段）。渲染返回 {type:"video", file, url}。',
       inputSchema: {
@@ -544,13 +547,15 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               'create', 'get', 'set_output',
               'add_clip', 'update_clip', 'remove_clip', 'move_clip', 'clear_clips',
               'add_text', 'update_text', 'remove_text', 'clear_texts',
-              'set_bgm', 'clear_bgm', 'add_overlay', 'update_overlay', 'remove_overlay', 'render',
+              'set_bgm', 'clear_bgm', 'set_audio_fx',
+              'add_overlay', 'update_overlay', 'remove_overlay', 'render',
             ],
             description: '工程操作',
           },
           name: { type: 'string', description: 'create：工程名' },
           size: { type: 'string', description: 'create/set_output：导出规格，形如 "1080x1920"（默认竖屏）/ "1920x1080"（横屏）' },
           fps: { type: 'number', description: 'create/set_output：帧率，默认 30' },
+          quality: { type: 'string', enum: ['low', 'std', 'high'], description: '导出质量档：low=省流（crf28，音轨128k）/ std=推荐（crf21，192k）/ high=高清（crf18，256k）。create/set_output 设工程默认档，render 传则只覆盖本次' },
           clips: {
             type: 'array',
             description: 'add_clip：素材数组，按数组顺序首尾相接',
@@ -561,17 +566,96 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 label: { type: 'string', description: '时间轴显示名（默认取文件名）' },
                 trimStart: { type: 'number', description: '裁剪起点（秒，相对该素材）；不传=从 0 开始' },
                 trimEnd: { type: 'number', description: '裁剪终点（秒）；不传=到素材结尾' },
-                speed: { type: 'number', description: '变速倍数 0.25~4（>1 加快，<1 放慢）；不传=不变' },
+                speed: { type: 'number', description: '变速倍数 0.25~4（>1 加快，<1 放慢）；不传=不变。与 speedCurve 互斥' },
+                speedCurve: {
+                  type: 'array',
+                  description: '曲线变速：按**源时间比例**给倍速，渲染时量化成 8 个恒定倍速切片再拼接（音画同一套边界）。'
+                    + '例：慢动作爆点 [{t:0,speed:1},{t:0.5,speed:0.4},{t:1,speed:1}]；快进过场 [{t:0,speed:3},{t:1,speed:3}] 等价于恒定倍速、不必用曲线。'
+                    + '★ 与 speed 互斥（有曲线时忽略 speed）；总时长会变，加完要重新 op=get 再排字幕',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      t: { type: 'number', description: '源时间比例 0~1' },
+                      speed: { type: 'number', description: '该处倍速 0.25~4' },
+                    },
+                    required: ['t', 'speed'],
+                  },
+                },
                 colorPreset: { type: 'string', enum: COLOR_IDS, description: `调色/滤镜预设（可选：${effectCatalogText(COLOR_EFFECTS, ['none'])}）` },
+                colorStrength: { type: 'number', description: '调色预设强度 0~1（缺省 1 = 全量）。0.3~0.5 适合"轻微色调"、不想一眼看出滤镜时' },
+                adjust: {
+                  type: 'object',
+                  description: '手动调节（在预设之上叠加，全部缺省 = 不变）。适合"预设套不出想要的亮度/冷暖"时微调',
+                  properties: {
+                    brightness: { type: 'number', description: '亮度 -0.5~0.5（0=不变）' },
+                    contrast: { type: 'number', description: '对比度 0.5~1.8（1=不变）' },
+                    saturation: { type: 'number', description: '饱和度 0~2.5（1=不变，0=黑白）' },
+                    temperature: { type: 'number', description: '色温 -1~1（正=偏暖，负=偏冷；0=不变）' },
+                    sharpness: { type: 'number', description: '锐化 0~1（0=不锐化）' },
+                    vignette: { type: 'number', description: '暗角 0~1（0=无暗角）' },
+                  },
+                },
                 fx: { type: 'string', enum: FX_IDS, description: `动态特效（可选：${effectCatalogText(FX_EFFECTS)}）。与 colorPreset 可叠加：先调色、再上结构类特效` },
+                fxParams: {
+                  type: 'object',
+                  description: `动态特效参数（只传你想改的键，缺省用默认值）。可调键：${fxParamCatalogText()}`,
+                },
                 fadeIn: { type: 'number', description: '该段画面淡入秒数' },
                 fadeOut: { type: 'number', description: '该段画面淡出秒数' },
                 kenburns: { type: 'object', description: '图片素材运镜：{ direction:"in"|"out", duration }' },
+                mask: {
+                  type: 'object',
+                  description: '蒙版：只显示画面的一部分。{ shape?, scale? 0.05~1, offsetX?/offsetY? -0.5~0.5, feather? 0~200, key? }。shape=' + effectCatalogText(MASK_SHAPES, ['none']) + '；key=' + effectCatalogText(MASK_KEYS) + '。★ shape 与 key 互斥，同时给时 key 优先',
+                  properties: {
+                    shape: { type: 'string', enum: MASK_SHAPE_IDS, description: '形状蒙版（与 key 二选一）' },
+                    key: { type: 'string', enum: MASK_KEY_IDS, description: '色键抠像（与 shape 二选一，优先）' },
+                    scale: { type: 'number', description: '形状内缩比例 0.05~1（1=铺满画面，越小蒙版越小）' },
+                    offsetX: { type: 'number', description: '蒙版中心水平偏移 -0.5~0.5' },
+                    offsetY: { type: 'number', description: '蒙版中心垂直偏移 -0.5~0.5' },
+                    feather: { type: 'number', description: '边缘羽化像素 0~200（0=硬边）' },
+                  },
+                },
+                transition: {
+                  type: 'object',
+                  description: '与**前一段**之间的转场（挂在后一段上，语义="我进来时怎么出现"；第 1 段无效）。type=' + effectCatalogText(TRANSITIONS) + '。★ 时长不能超过任一段时长的一半，否则黑屏/报错',
+                  properties: {
+                    type: { type: 'string', enum: TRANSITION_IDS },
+                    duration: { type: 'number', description: '转场时长（秒）0.1~5，默认 0.8' },
+                  },
+                  required: ['type'],
+                },
                 audioFile: { type: 'string', description: '该段配音音频绝对路径（替换原声；keepOriginalAudio=true 则与原声混音）' },
                 keepOriginalAudio: { type: 'boolean', description: 'true=配音与原声混音，false/缺省=配音替换原声' },
                 volume: { type: 'number', description: '该段音量倍数（1=不变）' },
+                rotate: { type: 'number', enum: [90, 180, 270], description: '顺时针旋转角度。★ 旋转在规格化之前做，转 90/270 后画面会被按工程画幅大幅裁切（多半要同时改 set_output）' },
+                flip: { type: 'string', enum: ['h', 'v', 'both'], description: '镜像翻转：h=左右　v=上下　both=两者' },
+                reverse: { type: 'boolean', description: '倒放该段（画面与音轨一起倒）。★ 单段最长 10 秒：ffmpeg 的 reverse 会把整段帧读进内存，超长会拒绝渲染' },
                 crop: { type: 'object', description: '画面裁剪（裁子区域后回填画幅不变形）：{ x, y, w, h } 均为比例 0~1（如裁掉左侧 10% 黑边 { x:0.1, w:0.9 }）' },
-                keyframes: { type: 'array', description: '关键帧动画（点之间线性过渡）：[{ t, scale?, offsetX?, offsetY?, opacity? }]；t 为段内位置 0~1；scale 缩放 1~3；offsetX/Y 位移 -0.5~0.5（需配合 scale>1）；opacity 透明度 0~1（垫黑底）' },
+                keyframes: {
+                  type: 'array',
+                  description: '关键帧运镜/透明度：t 为段内位置 0~1（不是秒）；点之间按 ease 过渡。★ 要给起点锚（如 {t:0,scale:1}）才有"从原尺寸推近"的效果，只给一个点等于全程常量',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      t: { type: 'number', description: '段内位置 0~1' },
+                      scale: { type: 'number', description: '画面缩放 1~3（1=原尺寸）' },
+                      offsetX: { type: 'number', description: '水平位移 -0.5~0.5（需配合 scale>1 才有余量）' },
+                      offsetY: { type: 'number', description: '垂直位移 -0.5~0.5' },
+                      opacity: { type: 'number', description: '透明度 0~1（垫黑底合成；要做淡出请同时给起点 opacity:1）' },
+                      ease: {
+                        type: 'string',
+                        enum: ['linear', 'in', 'out', 'inout', 'bezier'],
+                        description: '到**下一个关键帧**的缓动：linear=匀速（机械感）；in=缓慢起步；out=缓慢收住；inout=两头都缓（推荐，运镜最自然）；bezier=自定义',
+                      },
+                      bezier: {
+                        type: 'array',
+                        items: { type: 'number' },
+                        description: 'ease=bezier 的控制点 [x1,y1,x2,y2]，与 CSS cubic-bezier 同义',
+                      },
+                    },
+                    required: ['t'],
+                  },
+                },
               },
               required: ['file'],
             },
@@ -590,6 +674,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 fontSizePx: { type: 'number', description: '字号（像素，1920 高基准），默认 88' },
                 color: { type: 'string', description: '字幕颜色 #RRGGBB，默认白色' },
                 outlineColor: { type: 'string', description: '描边色 #RRGGBB，默认黑色' },
+                outlinePx: { type: 'number', description: '描边宽度（像素，1920 高基准）0~60，默认 12；0=无描边' },
+                backColor: { type: 'string', description: '背景底板色 #RRGGBBAA（A=不透明度，如 "#000000B3"）；不填=无底板' },
                 position: { type: 'string', enum: ['bottom', 'center', 'top'], description: '字幕位置，默认 bottom' },
                 safeArea: { type: 'boolean', description: 'true=竖屏安全区（字幕上抬，避开抖音/快手底部进度条）' },
               },
@@ -598,7 +684,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           },
           id: { type: 'string', description: 'update/remove/move：目标片段或字幕 id（与 index 二选一）' },
           index: { type: 'number', description: 'update/remove/move：目标序号（从 1 开始，与 id 二选一）' },
-          patch: { type: 'object', description: 'update_clip/update_text：要修改的字段（其余保持不变）' },
+          patch: { type: 'object', description: 'update_clip/update_text：要修改的字段（其余保持不变）。update_clip 接受 clips[] 项的全部字段（含 crop / mask / transition / keyframes）；传 mask:null 或 transition:null 表示清除' },
           to: { type: 'number', description: 'move_clip：目标位置（1 基）' },
           file: { type: 'string', description: 'set_bgm：BGM 音频绝对路径（首次必填，之后可只调音量）；add_overlay：画中画素材绝对路径' },
           overlays: {
@@ -618,6 +704,11 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           },
           volume: { type: 'number', description: 'set_bgm：BGM 音量 0~1，默认 0.25' },
           duck: { type: 'boolean', description: 'set_bgm：true=说话时自动压低 BGM（侧链压缩），适合带旁白的成片' },
+          fx: {
+            type: 'array',
+            items: { type: 'string', enum: AUDIO_FX_IDS.filter((id) => id !== 'none') },
+            description: `set_audio_fx：整片音效链（按数组顺序串联，最多 4 个；传空数组=清除）。可选：${effectCatalogText(AUDIO_EFFECTS, ['none'])}。口播常用 ["denoise","loudnorm"]；多段拼接后音量不齐用 ["loudnorm"]`,
+          },
           summaryOnly: { type: 'boolean', description: 'get：true 只返回紧凑摘要（默认即摘要）' },
           output: { type: 'string', description: 'render：输出文件名（如 final.mp4）；不传自动命名' },
           preview: { type: 'boolean', description: 'render：true=快速预览档（低码率，用于快速确认），确认后再正式渲染' },
