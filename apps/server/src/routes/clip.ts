@@ -17,9 +17,9 @@ import {
   authMiddleware, db, hardDeleteRow, ensureArtifactDirFor, runCmd,
 } from '../host-bridge.js';
 import { readClipProject, writeClipProject, clipProjectPath as clipProjectPathOf } from '../services/clip-store.js';
-import { summarizeProject } from '../services/clip-project.js';
+import { summarizeProject, type ClipProject } from '../services/clip-project.js';
 import { parseProbeJson, probeArgs } from '../services/clip-render.js';
-import { renderPreviewFrame } from '../services/clip-preview.js';
+import { renderPreviewFrame, locateTimeline } from '../services/clip-preview.js';
 import { ensureEffectPreview } from '../services/clip-effect-preview.js';
 import { analyzeBeats } from '../services/clip-beats.js';
 import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
@@ -57,6 +57,29 @@ function probeMediaAsync(ffprobe: string, file: string): Promise<{ duration: num
 
 const router = Router();
 router.use(authMiddleware);
+
+/**
+ * 探工程里每个素材的真实时长：键**同时挂 clip.id 与 file**。
+ * ★ 单一实现：/frame 定位播放头、/freeze 抽定格帧都要用，各写一份必然漂移
+ *   （症状是"预览定位到的段与定格抽到的段不是同一段"）。
+ * ★ 并发 4：素材多时串行探测会让拖动播放头明显卡顿。
+ */
+async function probeProjectDurations(ffprobe: string, project: ClipProject): Promise<Record<string, number>> {
+  const durations: Record<string, number> = {};
+  const uniq: string[] = [];
+  for (const c of project.clips) if (!uniq.includes(c.file)) uniq.push(c.file);
+  const CONC = 4;
+  for (let i = 0; i < uniq.length; i += CONC) {
+    const batch = uniq.slice(i, i + CONC);
+    const rs = await Promise.all(batch.map((p) => probeMediaAsync(ffprobe, p)));
+    rs.forEach((r, k) => {
+      durations[batch[k]] = r.duration;
+      const seg = project.clips.find((c) => c.file === batch[k]);
+      if (seg) durations[seg.id] = r.duration;
+    });
+  }
+  return durations;
+}
 
 function conversationExists(id: string): boolean {
   if (!id) return false;
@@ -341,20 +364,7 @@ router.get('/frame', async (req: Request, res: Response) => {
   if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（媒体功能需要它）' });
 
   // 每段真实时长（并发探测，供时间轴定位）
-  const durations: Record<string, number> = {};
-  const uniq: string[] = [];
-  for (const c of project.clips) if (!uniq.includes(c.file)) uniq.push(c.file);
-  const CONC = 4;
-  for (let i = 0; i < uniq.length; i += CONC) {
-    const batch = uniq.slice(i, i + CONC);
-    const rs = await Promise.all(batch.map((p) => probeMediaAsync(ff.ffprobe, p)));
-    rs.forEach((r, k) => {
-      durations[batch[k]] = r.duration;
-      // 同时按段 id 存一份，便于 locateTimeline 两种键都能查到
-      const seg = project.clips.find((c) => c.file === batch[k]);
-      if (seg) durations[seg.id] = r.duration;
-    });
-  }
+  const durations = await probeProjectDurations(ff.ffprobe, project);
 
   const out = await renderPreviewFrame({ project, timeSec: t, durations, ffmpeg: ff.ffmpeg });
   if (!out.ok || !out.png) return res.status(500).json({ error: out.error || '取帧失败' });
@@ -369,6 +379,63 @@ router.get('/frame', async (req: Request, res: Response) => {
   res.setHeader('X-Segment-Index', String(out.segmentIndex || 0));
   res.setHeader('X-Frame-Cached', out.cached ? '1' : '0');
   return res.end(out.png);
+});
+
+// POST /api/plugin/clip-mode/freeze  body: { conversationId, timeSec }
+//
+// **定格抽帧**：把成片时间轴上某一时刻的画面抽成 PNG，落到会话素材目录并登记素材库，
+// 返回绝对路径 —— 前端拿它插入一个图片段（图片段 + kenburns.direction="none" 就是"静止 N 秒"）。
+//
+// ★ 为什么落盘而不是直接回图：定格要变成**时间轴上的一个可编辑片段**（能改时长、能前移后移），
+//   内存里的字节没法被工程文件引用；落盘 + 登记 conversation_file 后它同时出现在素材库里。
+// ★ 抽的是**素材原始帧**，不是套过滤镜后的画面：新片段继承源段的调色/特效/裁剪/mask，
+//   成片观感与定格前一致，而同一张 PNG 还能复用到别处。
+router.post('/freeze', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const t = Number(req.body?.timeSec);
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!Number.isFinite(t) || t < 0) return res.status(400).json({ error: 'timeSec 必须是非负数字（秒）' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const project = readClipProject(conversationId);
+  if (!project) return res.status(404).json({ error: '工程不存在' });
+  if (!project.clips.length) return res.status(409).json({ error: '工程还没有片段' });
+
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（媒体功能需要它）' });
+
+  const durations = await probeProjectDurations(ff.ffprobe, project);
+  const loc = locateTimeline(project, t, durations);
+  if (!loc) return res.status(409).json({ error: '该时间点不在成片范围内' });
+  const seg = project.clips[loc.segIndex];
+  if (seg.kenburns) return res.status(409).json({ error: '这一刻时间轴上是静态图片，不需要定格' });
+  const raw = durations[seg.id] ?? durations[seg.file] ?? 0;
+  if (raw <= 0) return res.status(409).json({ error: '该段素材时长未知（文件可能已被移动）' });
+
+  // 段内输出偏移 → 素材内时间（变速后时长 = 素材时长 ÷ speed）
+  const inSource = Math.max(0, Math.min(raw, (seg.trimStart ?? 0) + loc.offsetInSeg * loc.speed));
+
+  const dirInfo = ensureArtifactDirFor({ conversationId, category: 'upload' });
+  const fileName = `freeze-${Date.now().toString(36)}.png`;
+  const outFile = path.join(dirInfo.dir, fileName);
+  const r = await runFfmpeg(ff.ffmpeg, ['-y', '-v', 'error', '-ss', inSource.toFixed(3), '-i', seg.file, '-frames:v', '1', outFile], 60000);
+  if (!r.ok) return res.status(500).json({ error: `抽帧失败：${r.stderr.slice(-300)}` });
+  let bytes = 0;
+  try { bytes = fs.statSync(outFile).size; } catch { bytes = 0; }
+  if (!bytes) return res.status(500).json({ error: '抽帧产物为空' });
+
+  const fileId = `cf_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  db.prepare(
+    'INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(fileId, conversationId, String(req.user?.userId || 'guest'), null, fileName, outFile, 'upload', 'image/png', bytes, 'user', null, Date.now());
+
+  return res.json({
+    ok: true,
+    name: fileName,
+    path: outFile,
+    bytes,
+    // 源段信息：前端据此把调色/特效/裁剪/mask 继承到新片段，观感才接得上
+    from: { clipId: seg.id, offsetInSeg: Number(loc.offsetInSeg.toFixed(3)), sourceSec: Number(inSource.toFixed(3)) },
+  });
 });
 
 // GET /api/plugin/clip-mode/effect-preview?conversationId=xxx&kind=color&id=warm&w=320&h=180

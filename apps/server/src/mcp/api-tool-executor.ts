@@ -1918,14 +1918,20 @@ async function clipProjectTool(
       else bgmNote = `（BGM 文件不可用已跳过：${c.error}）`;
     }
 
+    // 导出质量档：只在本次导出生效（工程里也可设默认档）
+    const qArg = String(args.quality ?? '').trim().toLowerCase();
+    if (qArg && !['low', 'std', 'high'].includes(qArg)) {
+      return fail(`quality 只能是 low / std / high：${qArg}`);
+    }
     const planned = buildRenderPlan({
       project: cur, durations, hasAudio, workDir, outFile,
       ...(bgmFile ? { bgmFile } : {}),
       imageFiles: images,
       fast: args.preview === true,
+      ...(qArg ? { quality: qArg as 'low' | 'std' | 'high' } : {}),
     });
     if (!planned.ok) return fail(planned.error);
-    const { steps, assets, totalDuration } = planned.plan;
+    const { steps, assets, totalDuration, cover } = planned.plan;
 
     try {
       // 落中间文本（concat 清单 / SRT / ASS）—— 纯函数层不写磁盘
@@ -1937,6 +1943,14 @@ async function clipProjectTool(
       if (!ran.ok) {
         return fail(`渲染失败（${ran.failedLabel}）：\n${ran.stderr}\n提示：素材时长/规格异常时先用 api_media_normalize 统一规格。`);
       }
+      // 封面：独立一条命令。★ 失败不算导出失败（成片已经好了），但要如实写进 note
+      let coverFile: string | undefined;
+      let coverNote = '';
+      if (cover) {
+        const cr = await runCmd(ff.ffmpeg, cover.args, { timeoutMs: 60000, maxBuffer: 4 * 1024 * 1024 });
+        if (cr.ok) coverFile = cover.out;
+        else coverNote = `（封面导出失败：${(cr.stderr || cr.error || '').slice(-200)}）`;
+      }
       const st = await stat(outFile);
       // 落工程（渲染成功与否，编辑都已保存）
       await saveClipProject(conversationId, cur);
@@ -1946,7 +1960,8 @@ async function clipProjectTool(
         duration: totalDuration,
         clips: cur.clips.length, texts: cur.texts.length,
         steps: steps.length,
-        note: `成片已生成（${cur.clips.length} 段 / ${cur.texts.length} 条字幕 / ${totalDuration}s）${bgmNote}`,
+        ...(coverFile ? { cover: coverFile } : {}),
+        note: `成片已生成（${cur.clips.length} 段 / ${cur.texts.length} 条字幕 / ${totalDuration}s）${coverFile ? '，封面已导出' : ''}${coverNote}${bgmNote}`,
       }));
     } catch (e: unknown) {
       return fail(`渲染异常：${e instanceof Error ? e.message : String(e)}`);

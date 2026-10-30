@@ -28,6 +28,27 @@ const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*<!-
 const CODE = strip(SRC);
 
 /**
+ * 取一个函数的**完整体**（按大括号配对）。
+ * ★ 不要用 `slice(i, i + 1800)` 这种固定窗口：函数一变长就"假红"，
+ *   而假红通常被当成"测试坏了"直接把数字改大 —— 锚点从此失效（本项目踩过）。
+ */
+function fnBody(name: string): string {
+  const i = CODE.search(new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`));
+  if (i < 0) return '';
+  const open = CODE.indexOf('{', i);
+  if (open < 0) return '';
+  let depth = 0;
+  for (let j = open; j < CODE.length; j++) {
+    if (CODE[j] === '{') depth++;
+    else if (CODE[j] === '}') {
+      depth--;
+      if (depth === 0) return CODE.slice(i, j + 1);
+    }
+  }
+  return CODE.slice(i);
+}
+
+/**
  * ★ 只解析 `<style scoped>` 块内部。
  *   直接在整文件上跑「选择器比较」会失败：第一个规则的捕获串里混着
  *   `<style scoped>` 之前的模板/脚本残留（`...</script> <style scoped> .clip-page`），
@@ -273,8 +294,7 @@ describe('ClipWorkbench · 蒙版与字幕样式（对标商用软件的"能建�
   });
 
   it('★ 蒙版要能写进工程（applyClipPatch 里处理 mask 字段）', () => {
-    const i = CODE.indexOf('async function applyClipPatch');
-    const body = CODE.slice(i, i + 1800);
+    const body = fnBody('applyClipPatch');
     expect(body).toContain('c.mask');
     expect(body).toContain('delete c.mask');   // 清空时要真删，不留空对象
   });
@@ -421,9 +441,7 @@ describe('ClipWorkbench · 转场 / 音效 / 音效库（对标商用软件的�
   it('★★ 第一段不该有转场选项（没有"前一段"，接了也是无效配置）', () => {
     expect(CODE).toContain('selectedClipIndex === 0');
     // 落盘时要挡掉第一段
-    const i = CODE.indexOf('async function applyClipPatch');
-    const body = CODE.slice(i, i + 2000);
-    expect(body).toMatch(/clipPatch\.transitionType && i > 0/);
+    expect(fnBody('applyClipPatch')).toMatch(/clipPatch\.transitionType && i > 0/);
   });
 
   it('★★ 必须有音效链入口（整片音频效果）', () => {

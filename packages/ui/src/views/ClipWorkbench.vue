@@ -26,6 +26,15 @@
       <input v-model="projectName" class="cp-name-input" :placeholder="'未命名剪辑'" @change="save" />
       <span class="cp-meta">{{ clipCount }} 段 · {{ textCount }} 字幕 · {{ totalDurationLabel }}</span>
       <span class="cp-tag" :title="'输出规格在建项目时确定，改规格请新建项目'">{{ outSize }}@{{ outFps }}</span>
+      <select
+        v-model="outputQuality"
+        class="cp-quality"
+        title="导出质量档：省流（体积小）/ 推荐（均衡）/ 高清（体积大）"
+      >
+        <option value="low">省流</option>
+        <option value="std">推荐</option>
+        <option value="high">高清</option>
+      </select>
       <span class="cp-dir-tag" :title="projectDirTitle" @click="spaceDirPicker = true">
         <el-icon :size="12"><FolderOpened /></el-icon>
         {{ currentSpaceDir ? shortPath(currentSpaceDir) : '默认目录' }}
@@ -385,6 +394,9 @@
             <div class="cp-ins-head">
               <span class="cp-ins-title">片段 {{ selectedClipIndex + 1 }}</span>
               <span class="cp-ins-sub">{{ baseName(selectedClip.file) }}</span>
+              <button class="cp-mini" title="在播放头定格一帧，插入为静止画面（3 秒，可改时长）" @click="freezeAtPlayhead">
+                <el-icon :size="12"><VideoPlay /></el-icon>
+              </button>
             </div>
             <div class="cp-field">
               <label>起点 / 终点（秒）</label>
@@ -394,13 +406,57 @@
                 <input v-model.number="clipPatch.trimEnd" class="cp-num wide" type="number" step="0.1" min="0" placeholder="末尾" />
               </div>
             </div>
-            <div class="cp-field">
+            <div v-if="!selectedIsImage" class="cp-field">
               <label>变速 <span class="cp-val">{{ (clipPatch.speed ?? 1).toFixed(1) }}×</span></label>
-              <input v-model.number="clipPatch.speed" class="cp-range" type="range" min="0.25" max="4" step="0.05" />
+              <input v-model.number="clipPatch.speed" class="cp-range" type="range" min="0.25" max="4" step="0.05" :disabled="clipPatch.speedCurveOn" />
+              <label class="cp-check">
+                <input v-model="clipPatch.speedCurveOn" type="checkbox" />
+                曲线变速（起 / 中 / 止三段）
+              </label>
+              <template v-if="clipPatch.speedCurveOn">
+                <div class="cp-field-row">
+                  <input v-model.number="clipPatch.spStart" class="cp-num wide" type="number" min="0.25" max="4" step="0.05" title="起点倍速" />
+                  <input v-model.number="clipPatch.spMid" class="cp-num wide" type="number" min="0.25" max="4" step="0.05" title="中点倍速" />
+                  <input v-model.number="clipPatch.spEnd" class="cp-num wide" type="number" min="0.25" max="4" step="0.05" title="终点倍速" />
+                </div>
+                <span class="cp-ins-hint">0.25~4 倍。中间 0.4 + 两端 1 = 慢动作爆点；两端 3 = 加速过场。时长会变，字幕时间要重排</span>
+              </template>
+            </div>
+            <div v-if="selectedIsImage" class="cp-field">
+              <label>静止/运镜</label>
+              <div class="cp-field-row">
+                <select v-model="clipPatch.kenburnsDir" class="cp-num wide" title="图片运镜方式">
+                  <option value="none">静止（定格）</option>
+                  <option value="in">缓慢推近</option>
+                  <option value="out">缓慢拉远</option>
+                </select>
+                <input v-model.number="clipPatch.kenburnsDuration" class="cp-num wide" type="number" min="0.5" max="60" step="0.5" title="这一张图持续几秒" />
+              </div>
             </div>
             <div class="cp-field">
               <label>音量 <span class="cp-val">{{ (clipPatch.volume ?? 1).toFixed(2) }}</span></label>
               <input v-model.number="clipPatch.volume" class="cp-range" type="range" min="0" max="2" step="0.05" />
+            </div>
+            <div class="cp-field">
+              <label>方向（先转正再按画幅补边裁切）</label>
+              <div class="cp-field-row">
+                <select v-model.number="clipPatch.rotate" class="cp-num wide" title="旋转角度">
+                  <option :value="0">不旋转</option>
+                  <option :value="90">顺时针 90°</option>
+                  <option :value="180">180°</option>
+                  <option :value="270">逆时针 90°</option>
+                </select>
+                <select v-model="clipPatch.flip" class="cp-num wide" title="镜像翻转">
+                  <option value="">不镜像</option>
+                  <option value="h">左右镜像</option>
+                  <option value="v">上下镜像</option>
+                  <option value="both">两者都翻</option>
+                </select>
+              </div>
+              <label class="cp-check">
+                <input v-model="clipPatch.reverse" type="checkbox" />
+                倒放（画面+音轨一起倒；单段 ≤ 10 秒）
+              </label>
             </div>
             <!-- 调色：缩略图卡片（预览帧用**当前工程画面**渲染，看到的就是成片效果） -->
             <div class="cp-field">
@@ -425,6 +481,49 @@
             </div>
 
             <!-- 特效：结构类效果（震动/扫描线/残影/柔光/马赛克…）—— 与调色分工 -->
+            <div v-if="clipPatch.colorPreset && clipPatch.colorPreset !== 'none'" class="cp-field">
+              <label>滤镜强度 <span class="cp-val">{{ Math.round((clipPatch.colorStrength ?? 1) * 100) }}%</span></label>
+              <input v-model.number="clipPatch.colorStrength" class="cp-range" type="range" min="0" max="1" step="0.05" />
+            </div>
+
+            <!-- 手动调节：预设之上微调明暗/冷暖/锐化/暗角 -->
+            <div class="cp-grp">
+              <div class="cp-grp-head" @click="adjOpen = !adjOpen">
+                <el-icon :size="11"><component :is="adjOpen ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+                <span>手动调节</span>
+                <span v-if="clipPatch.adjBrightness || clipPatch.adjTemperature || clipPatch.adjVignette" class="cp-grp-badge">已调</span>
+                <span class="cp-spacer"></span>
+                <button class="cp-mini" title="全部复位" @click.stop="resetAdjust"><el-icon :size="11"><Refresh /></el-icon></button>
+              </div>
+              <div v-show="adjOpen" class="cp-grp-body">
+                <div class="cp-field">
+                  <label>亮度 <span class="cp-val">{{ clipPatch.adjBrightness.toFixed(2) }}</span></label>
+                  <input v-model.number="clipPatch.adjBrightness" class="cp-range" type="range" min="-0.5" max="0.5" step="0.01" />
+                </div>
+                <div class="cp-field">
+                  <label>对比度 <span class="cp-val">{{ clipPatch.adjContrast.toFixed(2) }}</span></label>
+                  <input v-model.number="clipPatch.adjContrast" class="cp-range" type="range" min="0.5" max="1.8" step="0.01" />
+                </div>
+                <div class="cp-field">
+                  <label>饱和度 <span class="cp-val">{{ clipPatch.adjSaturation.toFixed(2) }}</span></label>
+                  <input v-model.number="clipPatch.adjSaturation" class="cp-range" type="range" min="0" max="2.5" step="0.01" />
+                </div>
+                <div class="cp-field">
+                  <label>色温 <span class="cp-val">{{ clipPatch.adjTemperature > 0 ? '暖' : clipPatch.adjTemperature < 0 ? '冷' : '中性' }} {{ clipPatch.adjTemperature.toFixed(2) }}</span></label>
+                  <input v-model.number="clipPatch.adjTemperature" class="cp-range" type="range" min="-1" max="1" step="0.02" />
+                </div>
+                <div class="cp-field">
+                  <label>锐化 <span class="cp-val">{{ clipPatch.adjSharpness.toFixed(2) }}</span></label>
+                  <input v-model.number="clipPatch.adjSharpness" class="cp-range" type="range" min="0" max="1" step="0.02" />
+                </div>
+                <div class="cp-field">
+                  <label>暗角 <span class="cp-val">{{ clipPatch.adjVignette.toFixed(2) }}</span></label>
+                  <input v-model.number="clipPatch.adjVignette" class="cp-range" type="range" min="0" max="1" step="0.02" />
+                </div>
+              </div>
+            </div>
+
+            <!-- 特效：结构类效果（震动/扫描线/残影/柔光/马赛克…）—— 与调色分工 -->
             <div class="cp-field">
               <label>特效 <span v-if="clipPatch.fx" class="cp-val">{{ fxLabelOf(clipPatch.fx) }}</span></label>
               <EffectCardGrid
@@ -436,6 +535,17 @@
                 :height="135"
                 @pick="clipPatch.fx = clipPatch.fx === $event ? '' : $event"
               />
+              <div v-for="p in fxParamDefs" :key="p.key" class="cp-field">
+                <label>{{ p.label }} <span class="cp-val">{{ clipPatch.fxParams[p.key] ?? p.default }}</span></label>
+                <input
+                  v-model.number="clipPatch.fxParams[p.key]"
+                  class="cp-range"
+                  type="range"
+                  :min="p.min"
+                  :max="p.max"
+                  :step="p.step || 0.01"
+                />
+              </div>
               <button v-if="clipPatch.fx" class="cp-btn full" @click="clipPatch.fx = ''">移除特效</button>
             </div>
 
@@ -573,15 +683,37 @@
                 </button>
               </div>
               <div v-show="kfOpen" class="cp-grp-body">
-                <div class="cp-ins-hint">t=段内位置（0 开头 1 结尾）；缩放>1 才有位移余量；透明度垫黑底过渡</div>
-                <div v-for="(k, ki) in selectedClip?.keyframes || []" :key="ki" class="cp-kf-row">
-                  <input v-model.number="k.t" class="cp-num" type="number" step="0.05" min="0" max="1" title="段内位置 0~1" />
-                  <input v-model.number="k.scale" class="cp-num" type="number" step="0.05" min="1" max="3" title="缩放" />
-                  <input v-model.number="k.offsetX" class="cp-num" type="number" step="0.05" min="-0.5" max="0.5" title="水平位移" />
-                  <input v-model.number="k.offsetY" class="cp-num" type="number" step="0.05" min="-0.5" max="0.5" title="垂直位移" />
-                  <input v-model.number="k.opacity" class="cp-num" type="number" step="0.05" min="0" max="1" title="透明度" />
-                  <button class="cp-mini danger" title="删除此关键帧" @click="removeKeyframe(ki)"><el-icon :size="11"><Close /></el-icon></button>
+                <div class="cp-ins-hint">t=段内位置（0 开头 1 结尾）；缩放>1 才有位移余量；透明度垫黑底过渡；缓动作用到**下一个点**</div>
+                <div v-if="selectedClip?.keyframes?.length" class="cp-kf-head">
+                  <span>t</span><span>缩放</span><span>水平</span><span>垂直</span><span>透明</span><span></span>
                 </div>
+                <div v-for="(k, ki) in selectedClip?.keyframes || []" :key="ki" class="cp-kf-item">
+                  <div class="cp-kf-row">
+                    <input v-model.number="k.t" class="cp-num" type="number" step="0.05" min="0" max="1" title="段内位置 0~1" />
+                    <input v-model.number="k.scale" class="cp-num" type="number" step="0.05" min="1" max="3" title="缩放" />
+                    <input v-model.number="k.offsetX" class="cp-num" type="number" step="0.05" min="-0.5" max="0.5" title="水平位移" />
+                    <input v-model.number="k.offsetY" class="cp-num" type="number" step="0.05" min="-0.5" max="0.5" title="垂直位移" />
+                    <input v-model.number="k.opacity" class="cp-num" type="number" step="0.05" min="0" max="1" title="透明度" />
+                    <button class="cp-mini danger" title="删除此关键帧" @click="removeKeyframe(ki)"><el-icon :size="11"><Close /></el-icon></button>
+                  </div>
+                  <div class="cp-kf-ease">
+                    <span class="cp-kf-ease-label">→ 下一点</span>
+                    <select v-model="k.ease" class="cp-kf-ease-sel" :title="'到下一个关键帧的过渡曲线' + (ki === (selectedClip?.keyframes?.length || 0) - 1 ? '（最后一点没有下一点，此项无效）' : '')">
+                      <option value="">线性（匀速）</option>
+                      <option value="in">缓入（慢起）</option>
+                      <option value="out">缓出（慢收）</option>
+                      <option value="inout">缓入缓出（推荐）</option>
+                      <option value="bezier">自定义贝塞尔</option>
+                    </select>
+                    <span v-if="k.ease === 'bezier'" class="cp-kf-ease-label">用 API 传 bezier:[x1,y1,x2,y2]</span>
+                  </div>
+                </div>
+                <button
+                  v-if="(selectedClip?.keyframes?.length || 0) > 1"
+                  class="cp-btn full"
+                  title="把所有点之间的过渡都设成缓入缓出（运镜最自然）"
+                  @click="applyEaseToAll('inout')"
+                >全部设为缓入缓出</button>
                 <button class="cp-btn full" @click="applyKeyframes">应用关键帧改动</button>
               </div>
             </div>
@@ -919,7 +1051,7 @@ import { api, API_BASE, getLicenseCode } from '../api/client';
 import { clampMenuPos } from '../utils/menuPosition';
 import {
   COLOR_EFFECTS, FX_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
-  TRANSITIONS, OVERLAY_POSITIONS, groupEffects, effectIds, type TextStylePreset,
+  TRANSITIONS, OVERLAY_POSITIONS, groupEffects, effectIds, fxParamsOf, type TextStylePreset,
 } from '@yan-zhi/shared';
 
 /**
@@ -951,9 +1083,20 @@ const SPEC_PRESETS = [
 interface ClipSegment {
   id: string; file: string; label?: string;
   trimStart?: number; trimEnd?: number; speed?: number; colorPreset?: string;
+  /** 曲线变速（与 speed 互斥）：[{t,speed}]，t 为源时间比例 */
+  speedCurve?: Array<{ t: number; speed: number }>;
+  /** 调色预设强度 0~1（1=全量）与手动调节（叠在预设之上） */
+  colorStrength?: number;
+  adjust?: { brightness?: number; contrast?: number; saturation?: number; temperature?: number; sharpness?: number; vignette?: number };
   /** 动态特效 id（见 shared 的 FX_EFFECTS） */
   fx?: string;
-  fadeIn?: number; fadeOut?: number; kenburns?: { direction: 'in' | 'out'; duration: number };
+  /** 动态特效参数（键见注册表的 params 声明） */
+  fxParams?: Record<string, number>;
+  fadeIn?: number; fadeOut?: number; kenburns?: { direction: 'in' | 'out' | 'none'; duration: number };
+  /** 方向：旋转角 / 镜像 / 倒放（与后端 clip-project 的 ClipSegment 一致） */
+  rotate?: 90 | 180 | 270;
+  flip?: 'h' | 'v' | 'both';
+  reverse?: boolean;
   /** 蒙版：形状取景（shape）或色键抠像（key）；字段与后端 clip-project 的 ClipSegment.mask 一致 */
   mask?: {
     shape?: string; key?: string;
@@ -965,7 +1108,8 @@ interface ClipSegment {
   /** 画面裁剪（比例 0~1，裁子区域后回填画幅；与后端 clip-project 同构） */
   crop?: { x?: number; y?: number; w?: number; h?: number };
   /** 关键帧动画：t 为段内时间比例 0~1（与后端 clip-project 同构） */
-  keyframes?: Array<{ t: number; scale?: number; offsetX?: number; offsetY?: number; opacity?: number }>;
+  keyframes?: Array<{ t: number; scale?: number; offsetX?: number; offsetY?: number; opacity?: number;
+    ease?: 'linear' | 'in' | 'out' | 'inout' | 'bezier'; bezier?: [number, number, number, number] }>;
 }
 interface ClipText {
   id: string; text: string; start: number; end: number;
@@ -978,7 +1122,7 @@ interface ClipText {
 }
 interface ClipProject {
   version: 1; name: string; updatedAt: number;
-  output: { size: string; fps: number };
+  output: { size: string; fps: number; quality?: 'low' | 'std' | 'high' };
   clips: ClipSegment[]; texts: ClipText[];
   /** 音效链（整片，按顺序串联；见效果库 AUDIO_EFFECTS） */
   audioFx?: string[];
@@ -1020,6 +1164,17 @@ const selectedClipId = ref('');
 const selectedTextId = ref('');
 const outSize = ref('1080x1920');
 const outFps = ref(30);
+/** 导出质量档：写进工程 output.quality（改了就落盘，下次导出沿用） */
+const outputQuality = computed({
+  get: (): 'low' | 'std' | 'high' => project.value?.output?.quality || 'std',
+  set: (v: 'low' | 'std' | 'high') => {
+    const p = project.value;
+    if (!p) return;
+    p.output = { ...p.output, quality: v };
+    dirty.value = true;
+    void save();
+  },
+});
 const previewUrl = ref('');
 /**
  * 监视模式：
@@ -1048,18 +1203,31 @@ const videoEl = ref<HTMLVideoElement | null>(null);
 const clipPatch = reactive({
   trimStart: undefined as number | undefined, trimEnd: undefined as number | undefined,
   speed: 1, volume: 1, fadeIn: undefined as number | undefined,
+  // 曲线变速：起/中/止三段倍速（勾选后生效，与恒定变速互斥）
+  speedCurveOn: false, spStart: 1, spMid: 1, spEnd: 1,
   fadeOut: undefined as number | undefined, colorPreset: '', fx: '',
+  /** 特效参数（键来自注册表；改特效时由 watch 重建） */
+  fxParams: {} as Record<string, number>,
   // 蒙版（形状与抠像互斥，色键优先）
   maskShape: '', maskKey: '', maskScale: 0.9, maskOffsetX: 0, maskOffsetY: 0, maskFeather: 0,
   // 转场（与前一段之间）
   transitionType: '', transitionDuration: 0.8,
   // 画面裁剪（比例 0~1；w/h=1 且 x/y=0 = 未裁剪）
   cropX: 0, cropY: 0, cropW: 1, cropH: 1,
+  // 方向：旋转角（0/90/180/270）、镜像（''|h|v|both）、倒放
+  rotate: 0, flip: '' as '' | 'h' | 'v' | 'both', reverse: false,
+  // 图片段：运镜方向（none=静止）与持续时长
+  kenburnsDir: 'in' as 'in' | 'out' | 'none', kenburnsDuration: 6,
+  // 调色：预设强度 + 手动调节（默认值 = 不变）
+  colorStrength: 1,
+  adjBrightness: 0, adjContrast: 1, adjSaturation: 1,
+  adjTemperature: 0, adjSharpness: 0, adjVignette: 0,
 });
 const maskOpen = ref(false);
 const transOpen = ref(false);
 const cropOpen = ref(false);
 const kfOpen = ref(false);
+const adjOpen = ref(false);
 const pipOpen = ref(false);
 const selectedOverlayId = ref('');
 const textPatch = reactive({
@@ -1243,6 +1411,26 @@ const stageStyle = computed(() => {
 });
 
 const selectedClip = computed(() => clips.value.find((c) => c.id === selectedClipId.value) || null);
+/** 选中的是图片素材（含定格帧）→ 属性面板显示"运镜 + 时长"而不是变速 */
+const selectedIsImage = computed(() => {
+  const c = selectedClip.value;
+  return !!c && (!!c.kenburns || /\.(png|jpe?g|webp|gif|bmp)$/i.test(c.file));
+});
+/** 当前特效的可调参数声明（来自效果注册表，UI 不另写第二份清单） */
+const fxParamDefs = computed(() => fxParamsOf(clipPatch.fx || ''));
+
+// 换特效时重建参数表：同 id 的既有值保留，新特效的键回落到默认
+watch(
+  () => clipPatch.fx,
+  (id) => {
+    const next: Record<string, number> = {};
+    for (const d of fxParamsOf(id || '')) {
+      const prev = clipPatch.fxParams?.[d.key];
+      next[d.key] = typeof prev === 'number' && Number.isFinite(prev) ? prev : d.default;
+    }
+    clipPatch.fxParams = next;
+  },
+);
 const selectedClipIndex = computed(() => clips.value.findIndex((c) => c.id === selectedClipId.value));
 const selectedText = computed(() => texts.value.find((t) => t.id === selectedTextId.value) || null);
 const selectedTextIndex = computed(() => texts.value.findIndex((t) => t.id === selectedTextId.value));
@@ -2145,8 +2333,48 @@ async function appendClip(file: string) {
   note('已加入时间轴');
 }
 
-async function setBgm(file: string) {
+/**
+ * 在播放头处定格：抽一帧 → 作为静止图片段插到该段之后。
+ * ★ 继承源段的调色/特效/裁剪/蒙版：抽的是素材原始帧，不继承的话定格帧颜色会"跳一下"。
+ * ★ 走接口落盘（/freeze），产物同时进素材库，可复用。
+ */
+async function freezeAtPlayhead() {
   await ensureConversation();
+  if (!convId.value) { note('先建一个剪辑项目'); return; }
+  pendingLabel.value = '定格';
+  try {
+    // ★ apiFetch 返回 `{ data: <接口 body> } | ApiError`（见 api/client.ts），要解一层
+    const res = await api.post<{ ok?: boolean; path?: string; from?: { clipId?: string } }>(
+      '/plugin/clip-mode/freeze',
+      { conversationId: convId.value, timeSec: playhead.value },
+    );
+    const r = (res as { data?: { ok?: boolean; path?: string; from?: { clipId?: string } } }).data;
+    if (!r?.path) { note('定格失败（没有拿到图片）'); return; }
+    const p = ensureProject();
+    const src = p.clips.find((c) => c.id === r.from?.clipId);
+    const seg: ClipSegment = {
+      id: nextClipId(),
+      file: r.path,
+      label: '定格',
+      kenburns: { direction: 'none', duration: 3 },
+      ...(src?.colorPreset ? { colorPreset: src.colorPreset } : {}),
+      ...(src?.fx ? { fx: src.fx } : {}),
+      ...(src?.crop ? { crop: { ...src.crop } } : {}),
+      ...(src?.mask ? { mask: { ...src.mask } } : {}),
+    };
+    const at = p.clips.findIndex((c) => c.id === r.from?.clipId);
+    p.clips.splice(at < 0 ? p.clips.length : at + 1, 0, seg);
+    dirty.value = true;
+    await save();
+    await loadMediaMeta();
+    selectClip(seg.id);
+    note('已定格 3 秒（右侧可改时长/运镜）');
+  } catch (e) {
+    note(`定格失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function setBgm(file: string) {  await ensureConversation();
   const p = ensureProject();
   p.bgm = { file, volume: bgmVolume.value, duck: bgmDuck.value };
   dirty.value = true;
@@ -2247,12 +2475,23 @@ function selectClip(id: string) {
   Object.assign(clipPatch, {
     trimStart: c.trimStart, trimEnd: c.trimEnd,
     speed: c.speed ?? 1, volume: c.volume ?? 1,
+    speedCurveOn: !!c.speedCurve?.length,
+    spStart: c.speedCurve?.[0]?.speed ?? 1,
+    spMid: c.speedCurve?.find((p) => Math.abs(p.t - 0.5) < 0.05)?.speed ?? 1,
+    spEnd: c.speedCurve?.[c.speedCurve.length - 1]?.speed ?? 1,
     fadeIn: c.fadeIn, fadeOut: c.fadeOut, colorPreset: c.colorPreset || '', fx: c.fx || '',
+    fxParams: { ...(c.fxParams || {}) },
     maskShape: c.mask?.shape || '', maskKey: c.mask?.key || '',
     maskScale: c.mask?.scale ?? 0.9, maskOffsetX: c.mask?.offsetX ?? 0,
     maskOffsetY: c.mask?.offsetY ?? 0, maskFeather: c.mask?.feather ?? 0,
     transitionType: c.transition?.type || '', transitionDuration: c.transition?.duration ?? 0.8,
     cropX: c.crop?.x ?? 0, cropY: c.crop?.y ?? 0, cropW: c.crop?.w ?? 1, cropH: c.crop?.h ?? 1,
+    rotate: c.rotate ?? 0, flip: c.flip ?? '', reverse: c.reverse === true,
+    kenburnsDir: c.kenburns?.direction ?? 'in', kenburnsDuration: c.kenburns?.duration ?? 6,
+    colorStrength: c.colorStrength ?? 1,
+    adjBrightness: c.adjust?.brightness ?? 0, adjContrast: c.adjust?.contrast ?? 1,
+    adjSaturation: c.adjust?.saturation ?? 1, adjTemperature: c.adjust?.temperature ?? 0,
+    adjSharpness: c.adjust?.sharpness ?? 0, adjVignette: c.adjust?.vignette ?? 0,
   });
   if (c.mask?.shape || c.mask?.key) maskOpen.value = true;
   if (c.transition?.type) transOpen.value = true;
@@ -2479,6 +2718,16 @@ function applyTextStyleById(id: string) {
   if (s) applyTextStyle(s);
 }
 
+/** 手动调节一键复位（只改面板值，点"应用片段参数"才落盘）。 */
+function resetAdjust() {
+  clipPatch.adjBrightness = 0;
+  clipPatch.adjContrast = 1;
+  clipPatch.adjSaturation = 1;
+  clipPatch.adjTemperature = 0;
+  clipPatch.adjSharpness = 0;
+  clipPatch.adjVignette = 0;
+}
+
 async function applyClipPatch() {
   pendingLabel.value = '修改片段参数';
   const c = selectedClip.value;
@@ -2488,13 +2737,62 @@ async function applyClipPatch() {
   c.trimStart = clean(clipPatch.trimStart);
   c.trimEnd = clean(clipPatch.trimEnd);
   const sp = Number(clipPatch.speed);
-  if (Number.isFinite(sp) && Math.abs(sp - 1) > 0.001) c.speed = sp; else delete c.speed;
+  // 曲线变速与恒定倍速互斥：勾了曲线就不写 speed（服务端也是这个口径）
+  if (clipPatch.speedCurveOn) {
+    delete c.speed;
+    const clampSp = (v: number) => Number(Math.max(0.25, Math.min(4, Number(v) || 1)).toFixed(3));
+    c.speedCurve = [
+      { t: 0, speed: clampSp(clipPatch.spStart) },
+      { t: 0.5, speed: clampSp(clipPatch.spMid) },
+      { t: 1, speed: clampSp(clipPatch.spEnd) },
+    ];
+  } else {
+    delete c.speedCurve;
+    if (Number.isFinite(sp) && Math.abs(sp - 1) > 0.001) c.speed = sp; else delete c.speed;
+  }
   const vol = Number(clipPatch.volume);
   if (Number.isFinite(vol) && Math.abs(vol - 1) > 0.001) c.volume = vol; else delete c.volume;
   c.fadeIn = clean(clipPatch.fadeIn);
   c.fadeOut = clean(clipPatch.fadeOut);
   if (clipPatch.colorPreset) c.colorPreset = clipPatch.colorPreset; else delete c.colorPreset;
+  // 预设强度：1 = 全量 → 不写字段
+  const cs = Number(clipPatch.colorStrength);
+  if (Number.isFinite(cs) && Math.abs(cs - 1) > 0.001) c.colorStrength = Math.max(0, Math.min(1, cs));
+  else delete c.colorStrength;
+  // 手动调节：只写偏离默认值的项（工程文件要能一眼看出调了什么）
+  const adj = {
+    ...(Math.abs(clipPatch.adjBrightness) > 0.001 ? { brightness: clipPatch.adjBrightness } : {}),
+    ...(Math.abs(clipPatch.adjContrast - 1) > 0.001 ? { contrast: clipPatch.adjContrast } : {}),
+    ...(Math.abs(clipPatch.adjSaturation - 1) > 0.001 ? { saturation: clipPatch.adjSaturation } : {}),
+    ...(Math.abs(clipPatch.adjTemperature) > 0.001 ? { temperature: clipPatch.adjTemperature } : {}),
+    ...(clipPatch.adjSharpness > 0.001 ? { sharpness: clipPatch.adjSharpness } : {}),
+    ...(clipPatch.adjVignette > 0.001 ? { vignette: clipPatch.adjVignette } : {}),
+  };
+  if (Object.keys(adj).length) c.adjust = adj; else delete c.adjust;
   if (clipPatch.fx) c.fx = clipPatch.fx; else delete c.fx;
+  // 特效参数：只写偏离默认值的键（键与范围以注册表为准，UI 不自己兜底）
+  if (clipPatch.fx) {
+    const fp: Record<string, number> = {};
+    for (const d of fxParamsOf(clipPatch.fx)) {
+      const v = Number(clipPatch.fxParams?.[d.key]);
+      if (!Number.isFinite(v)) continue;
+      const clamped = Math.max(d.min, Math.min(d.max, v));
+      if (Math.abs(clamped - d.default) > 1e-6) fp[d.key] = Number(clamped.toFixed(4));
+    }
+    if (Object.keys(fp).length) c.fxParams = fp; else delete c.fxParams;
+  } else delete c.fxParams;
+  // 方向：0/'' 都是"不处理"，不写字段（避免工程里堆无意义配置）
+  const rot = Number(clipPatch.rotate);
+  if (rot === 90 || rot === 180 || rot === 270) c.rotate = rot; else delete c.rotate;
+  if (clipPatch.flip) c.flip = clipPatch.flip; else delete c.flip;
+  if (clipPatch.reverse) c.reverse = true; else delete c.reverse;
+  // 图片段：运镜与持续时长。★ 视频段不写 kenburns —— 写了会被渲染当成"图片"走 zoompan
+  if (c.kenburns || /\.(png|jpe?g|webp|gif|bmp)$/i.test(c.file)) {
+    c.kenburns = {
+      direction: clipPatch.kenburnsDir,
+      duration: Math.max(0.5, Math.min(60, Number(clipPatch.kenburnsDuration) || 6)),
+    };
+  }
   // 蒙版：形状与抠像至少给一个才写；都要清空时删字段
   const shape = String(clipPatch.maskShape || '').trim();
   const key = String(clipPatch.maskKey || '').trim();
@@ -2593,10 +2891,31 @@ async function applyKeyframes() {
   if (c.keyframes) {
     c.keyframes = c.keyframes
       .map((k) => ({ ...k, t: Math.max(0, Math.min(1, k.t || 0)) }))
-      .sort((a, b) => a.t - b.t);
+      .sort((a, b) => a.t - b.t)
+      .map((k, i, arr) => {
+        const next: NonNullable<typeof c.keyframes>[number] = { ...k };
+        // 空串（下拉的"线性"）不落盘；最后一点没有"下一点"，缓动无意义
+        if (!next.ease) delete next.ease;
+        if (i === arr.length - 1) delete next.ease;
+        if (next.ease !== 'bezier') delete next.bezier;
+        return next;
+      });
   }
   dirty.value = true; await save();
   note('关键帧已应用');
+}
+
+/** 一键把所有关键帧之间的过渡设成同一种缓动（最后一点跳过）。 */
+async function applyEaseToAll(ease: 'linear' | 'in' | 'out' | 'inout') {
+  const c = selectedClip.value;
+  if (!c?.keyframes?.length) return;
+  pendingLabel.value = '套用缓动';
+  c.keyframes.forEach((k, i) => {
+    if (i < c.keyframes!.length - 1) k.ease = ease;
+  });
+  dirty.value = true; await save();
+  const label = { linear: '匀速', in: '缓入', out: '缓出', inout: '缓入缓出' }[ease];
+  note(`已把 ${Math.max(0, c.keyframes.length - 1)} 段过渡设为${label}`);
 }
 
 async function applyTextPatch() {
@@ -3034,6 +3353,7 @@ onMounted(async () => {
 .cp-tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--el-fill-color); color: var(--el-text-color-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* 项目目录标签（可点击更换）：与只读规格标签区分开 —— 它是可操作的 */
 .cp-dir-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 7px; border-radius: 3px; border: 1px solid var(--el-border-color-lighter); color: var(--el-text-color-regular); cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-quality { font-size: 11px; padding: 2px 4px; border-radius: 3px; border: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-blank); color: var(--el-text-color-regular); cursor: pointer; }
 .cp-dir-tag:hover { border-color: var(--el-color-primary); color: var(--el-color-primary); }
 .cp-select { flex: 1; min-width: 0; padding: 3px 6px; font-size: 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); }
 .cp-spec-fps { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--el-text-color-secondary); }
@@ -3156,6 +3476,15 @@ onMounted(async () => {
 /* 关键帧行：t / scale / x / y / opacity 五个数字 + 删除 */
 .cp-kf-row { display: flex; align-items: center; gap: 3px; }
 .cp-kf-row .cp-num { flex: 1; min-width: 0; padding: 2px 3px; }
+.cp-kf-head { display: flex; gap: 3px; font-size: 10px; color: var(--el-text-color-placeholder); }
+.cp-kf-head span { flex: 1; min-width: 0; text-align: center; }
+.cp-kf-head span:last-child { flex: 0 0 18px; }
+.cp-kf-item { display: flex; flex-direction: column; gap: 3px; padding: 5px 0; border-bottom: 1px dashed var(--el-border-color-lighter); }
+.cp-kf-ease { display: flex; align-items: center; gap: 4px; }
+.cp-kf-ease-label { font-size: 10px; color: var(--el-text-color-placeholder); white-space: nowrap; }
+.cp-kf-ease-sel { flex: 1; min-width: 0; padding: 2px 4px; font-size: 11px; border: 1px solid var(--el-border-color); border-radius: 4px;
+  background: var(--el-fill-color-blank); color: var(--el-text-color-regular); }
+.cp-check { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--el-text-color-regular); cursor: pointer; }
 
 /* 播放头 */
 .cp-playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #ff4d4f; pointer-events: none; z-index: 5; }

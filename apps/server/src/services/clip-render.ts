@@ -16,9 +16,9 @@
 import path from 'node:path';
 import { runCmd } from './exec-cmd.js';
 import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-style.js';
-import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, overlayAnchorOf } from '@yan-zhi/shared';
+import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
 import { buildMaskFilter } from './clip-mask.js';
-import type { ClipProject, ClipSegment } from './clip-project.js';
+import type { ClipProject, ClipSegment, ExportQuality } from './clip-project.js';
 
 export interface RenderProbeResult {
   hasAudio: boolean;
@@ -79,6 +79,9 @@ export interface RenderPlan {
   /** 跑 steps 之前必须先写好的文本文件（concat 清单 / SRT / ASS） */
   assets: RenderAsset[];
   totalDuration: number;
+  /** 封面图（导出时顺带抽的一帧）；preview 档不生成。
+   *  ★ 单独一条、不塞进 steps：steps 的不变式是「末步产物 = 成片」，混进截图会打破它。 */
+  cover?: { out: string; args: string[] };
 }
 
 export interface BuildPlanInput {
@@ -97,6 +100,10 @@ export interface BuildPlanInput {
   imageFiles?: string[];
   /** 预览档：更快的 preset 与更高 crf */
   fast?: boolean;
+  /** 本次导出的质量档（覆盖工程设置）；缺省用 project.output.quality，再缺省 std */
+  quality?: ExportQuality;
+  /** 是否顺带导出封面（缺省：非预览档就导） */
+  cover?: boolean;
 }
 
 /**
@@ -107,14 +114,46 @@ export interface BuildPlanInput {
  *   ② 以 segDur 推算的 `fade=t=out:st=` 会落在成片之后 → 淡出静默不生效
  *      （ffmpeg 不报错，只是看不到效果）。探测失败（rawDuration=0）时不能夹，否则时长归零。
  */
-export function segmentDuration(seg: ClipSegment, rawDuration: number): number {
+/** 段被裁后的**源**时长（秒，未变速）。切片变速与时长换算都从这里出发。 */
+export function trimmedSourceLength(seg: ClipSegment, rawDuration: number): number {
   const ts = seg.trimStart ?? 0;
   let te = seg.trimEnd ?? (rawDuration > 0 ? rawDuration : ts);
   if (rawDuration > 0) te = Math.min(te, rawDuration);
-  const trimmed = Math.max(0, te - ts);
+  return Math.max(0, te - ts);
+}
+
+export function segmentDuration(seg: ClipSegment, rawDuration: number): number {
+  const trimmed = trimmedSourceLength(seg, rawDuration);
+  // ★ 曲线变速的时长必须与渲染用同一份切片数学（speedCurveDuration），否则
+  //   时间轴长度 / 字幕时间 / 成片长度三者对不上，且完全不报错。
+  if (seg.speedCurve?.length) return speedCurveDuration(seg.speedCurve, trimmed);
   const sp = seg.speed && seg.speed > 0 ? seg.speed : 1;
   return trimmed / sp;
 }
+
+/**
+ * 单段倒放的长度上限（秒）。
+ *
+ * ★ 为什么必须有：ffmpeg 的 `reverse` 滤镜会把**整段的所有帧**读进内存再倒序输出。
+ *   1080x1920 的 yuv420p 一帧约 3MB，30fps 下 10 秒 ≈ 900MB —— 再长就有把桌面端
+ *   子进程拖到 OOM 的风险，而 OOM 的表现是"进程消失"，完全看不出是倒放引起的。
+ *   短视频里的倒放基本都在 1~3 秒，落在上限内；超长的让用户先裁短。
+ */
+export const REVERSE_MAX_SEC = 10;
+
+/** 导出质量档（crf 越小越清晰、体积越大；audioK 为音轨码率）。 */
+export interface QualityPreset {
+  label: string;
+  crf: number;
+  preset: string;
+  audioK: number;
+}
+
+export const QUALITY_PRESETS: Record<ExportQuality, QualityPreset> = {
+  low: { label: '省流（体积小）', crf: 28, preset: 'veryfast', audioK: 128 },
+  std: { label: '推荐（均衡）', crf: 21, preset: 'medium', audioK: 192 },
+  high: { label: '高清（体积大）', crf: 18, preset: 'medium', audioK: 256 },
+};
 
 /** 目录名安全化（避免中文/空格进 ffmpeg 路径引发转义分支）。 */
 function safeStem(s: string): string {
@@ -149,6 +188,32 @@ export function escFilterPath(p: string): string {
  * ★ 透明度关键帧**不在这里**：它需要垫黑底合成（yuv420p 无 alpha，直接改 alpha 会被
  *   丢掉——实测踩过），必须拆成 filter_complex（见 assembleSegmentChain）。
  */
+/**
+ * 手动调色 → ffmpeg 滤镜串（亮度/对比/饱和/色温/锐化/暗角）。
+ *
+ * ★ 全默认时返回空数组（不往链路里塞无效滤镜 —— 每多一个滤镜都要重新解码一遍）。
+ * ★ 顺序：eq（整体明暗）→ colorbalance（色温）→ unsharp（锐化）→ vignette（暗角）。
+ *   vignette 必须最后：它是按"画面边缘"算的，先压暗再做锐化会把暗角糊开。
+ */
+export function buildAdjustFilters(adj: ClipSegment['adjust']): string[] {
+  if (!adj) return [];
+  const out: string[] = [];
+  const b = adj.brightness ?? 0, c = adj.contrast ?? 1, s = adj.saturation ?? 1;
+  if (Math.abs(b) > 0.001 || Math.abs(c - 1) > 0.001 || Math.abs(s - 1) > 0.001) {
+    out.push(`eq=brightness=${b.toFixed(3)}:contrast=${c.toFixed(3)}:saturation=${s.toFixed(3)}`);
+  }
+  const t = adj.temperature ?? 0;
+  if (Math.abs(t) > 0.001) {
+    // 暖：抬红压蓝；冷：反过来。系数 0.15 是"能看出冷暖但不脏"的实测值
+    out.push(`colorbalance=rs=${(t * 0.15).toFixed(3)}:bs=${(-t * 0.15).toFixed(3)}`);
+  }
+  const sh = adj.sharpness ?? 0;
+  if (sh > 0.001) out.push(`unsharp=5:5:${(sh * 1.5).toFixed(3)}:5:5:0`);
+  const vg = adj.vignette ?? 0;
+  if (vg > 0.001) out.push(`vignette=angle=PI/${(5 - 3 * vg).toFixed(2)}`);
+  return out;
+}
+
 export function buildSegmentFilters(opts: {
   seg: ClipSegment;
   /** 段内有效时长（秒，已含变速） */
@@ -158,9 +223,24 @@ export function buildSegmentFilters(opts: {
   H: number;
   fps: number;
   keyFilterOf?: (id: string) => string | null;
+  /** 强制覆盖该段的恒定倍速（曲线变速的第一阶段要用 1 倍先出整段） */
+  speedOverride?: number;
 }): string[] {
   const { seg, segDur, isImage, W, H, fps } = opts;
+  const speedEff = opts.speedOverride ?? seg.speed ?? 1;
   const filters: string[] = [];
+
+  // ★★ 旋转/镜像必须排在**规格化之前**：转 90° 后宽高互换，若先归一化到 W×H 再旋转，
+  //   输出会变成 H×W → concat 时规格不一致（拼接失败或被迫重编码），
+  //   而且失败点在"拼接"这一步，报错完全指不到这里。
+  //   放在最前面则"先转正、再按工程画幅补边裁切"，语义与用户直觉一致。
+  const rot = seg.rotate ?? 0;
+  if (rot === 90) filters.push('transpose=1');
+  else if (rot === 180) filters.push('transpose=1', 'transpose=1');
+  else if (rot === 270) filters.push('transpose=2');
+  if (seg.flip === 'h') filters.push('hflip');
+  else if (seg.flip === 'v') filters.push('vflip');
+  else if (seg.flip === 'both') filters.push('hflip', 'vflip');
 
   const kf = seg.keyframes;
   // 运镜关键帧（缩放/位移）对图片素材跳过：kenburns 本身就是运镜，两个 zoompan 串联会复合叠加
@@ -169,11 +249,14 @@ export function buildSegmentFilters(opts: {
   if (isImage) {
     // 图片运镜：先放大 4 倍再 zoompan（直接 zoom 会因亚像素抖动明显）
     const frames = Math.max(2, Math.round(segDur * fps));
-    const dir = seg.kenburns?.direction === 'out' ? 'out' : 'in';
+    const dir = seg.kenburns?.direction === 'out' ? 'out' : seg.kenburns?.direction === 'none' ? 'none' : 'in';
     const stepZ = (0.25 / frames).toFixed(6);
-    const zExpr = dir === 'out'
-      ? `if(eq(on,1),1.25,max(zoom-${stepZ},1.0))`
-      : `min(zoom+${stepZ},1.25)`;
+    // ★ direction='none' → 恒 1 倍：定格帧/纯静图要的是不动，不是慢推
+    const zExpr = dir === 'none'
+      ? '1'
+      : dir === 'out'
+        ? `if(eq(on,1),1.25,max(zoom-${stepZ},1.0))`
+        : `min(zoom+${stepZ},1.25)`;
     filters.push(`scale=${W * 4}:-2`, `zoompan=z='${zExpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=${fps}`);
     filters.push('setsar=1');
   } else {
@@ -194,11 +277,16 @@ export function buildSegmentFilters(opts: {
   if (hasZoomPan && kf) {
     const tVar = `(ot/${segDur.toFixed(6)})`;
     const hasOffset = kf.some((k) => (k.offsetX != null && k.offsetX !== 0) || (k.offsetY != null && k.offsetY !== 0));
-    let zExpr = buildPiecewiseExpr(kf.filter((k) => k.scale != null).map((k) => ({ t: k.t, v: k.scale! })), tVar);
+    // ★ 逐属性取点 → 走 easePointList 把缓动采样成更多线性点（线性段不插点，长度不变）
+    const curve = (pick: (k: NonNullable<typeof kf>[number]) => number | undefined) =>
+      easePointList(
+        kf.filter((k) => pick(k) != null).map((k) => ({ t: k.t, v: pick(k)!, ease: k.ease, bezier: k.bezier })),
+      );
+    let zExpr = buildPiecewiseExpr(curve((k) => k.scale), tVar);
     // ★ 只有位移没有缩放时 zoom=1 没有画面外的内容可移 → 兜底放大 1.2 倍留出位移余量
     if (hasOffset) zExpr = `max(${zExpr},1.2)`;
-    const xExpr = `${kf.some((k) => k.offsetX) ? `(${buildPiecewiseExpr(kf.filter((k) => k.offsetX != null).map((k) => ({ t: k.t, v: k.offsetX! })), tVar)})*iw/zoom+` : ''}iw/2-(iw/zoom/2)`;
-    const yExpr = `${kf.some((k) => k.offsetY) ? `(${buildPiecewiseExpr(kf.filter((k) => k.offsetY != null).map((k) => ({ t: k.t, v: k.offsetY! })), tVar)})*ih/zoom+` : ''}ih/2-(ih/zoom/2)`;
+    const xExpr = `${kf.some((k) => k.offsetX) ? `(${buildPiecewiseExpr(curve((k) => k.offsetX), tVar)})*iw/zoom+` : ''}iw/2-(iw/zoom/2)`;
+    const yExpr = `${kf.some((k) => k.offsetY) ? `(${buildPiecewiseExpr(curve((k) => k.offsetY), tVar)})*ih/zoom+` : ''}ih/2-(ih/zoom/2)`;
     filters.push(`scale=${W * 4}:-2`);
     filters.push(`zoompan=z='${zExpr}':x='${xExpr}':y='${yExpr}':d=1:s=${W}x${H}:fps=${fps}`, 'setsar=1');
   }
@@ -213,22 +301,40 @@ export function buildSegmentFilters(opts: {
   //   用户只觉得"选什么都一个样"却查不出原因。注册表才是唯一真相源，缺项应当没有效果而不是错效果。
   if (seg.colorPreset && seg.colorPreset !== 'none') {
     const cf = effectFilter(seg.colorPreset, COLOR_EFFECTS);
-    if (cf) filters.push(cf);
+    if (cf) {
+      const st = seg.colorStrength ?? 1;
+      if (st >= 0.999) filters.push(cf);
+      else if (st > 0.001) {
+        // ★ 预设强度：原片与"上过滤镜的画面"按比例混合。
+        //   为什么用 blend 而不是逐个参数插值：预设里有 noise/vignette 这类**无法线性插值**
+        //   的效果（半个噪点没有意义），只有对画面混合才通用。
+        filters.push(
+          `format=yuv420p,split[csA][csB];[csB]${cf}[csF];[csA][csF]blend=all_mode=normal:all_opacity=${st.toFixed(3)}`,
+        );
+      }
+      // st ≈ 0 → 什么都不加（等价原片）
+    }
   }
+  // 手动调节叠在预设**之上**：用户是想先在风格上调，再微调明暗
+  filters.push(...buildAdjustFilters(seg.adjust));
 
   // ★ 动态特效（FX）排在调色之后、淡入淡出之前：
   //   先定色调再上结构类效果（扫描线/马赛克/残影），否则"调色"会把特效的纹理一起洗掉；
   //   而 fade 必须最后 —— 它是整段黑场过渡，被特效再处理一遍就不均匀了。
   if (seg.fx && seg.fx !== 'none') {
-    const fx = fxFilter(seg.fx, W, H);
+    const fx = fxFilter(seg.fx, W, H, seg.fxParams);
     if (fx) filters.push(fx);
   }
   // 变速：对已统一的帧率做 setpts（必须在 scale 之后）
-  const speed = isImage ? 1 : (seg.speed ?? 1);
+  const speed = isImage ? 1 : speedEff;
   if (Math.abs(speed - 1) > 0.001) {
     const ptIdx = filters.findIndex((f) => f.startsWith('scale='));
     filters.splice(ptIdx + 1, 0, `setpts=PTS/${speed.toFixed(6)}`);
   }
+  // ★ 倒放排在淡入淡出**之前**：reverse 只是把帧序列倒过来，淡入淡出仍按"成片时间"生效，
+  //   否则倒放后原本的淡出会跑到开头（用户看到的与设置不符，且不报错）。
+  //   ★ reverse 会把整段帧读进内存 → 段长上限由 buildRenderPlan 把关（REVERSE_MAX_SEC）。
+  if (seg.reverse && !isImage) filters.push('reverse');
   if (seg.fadeIn) filters.push(`fade=t=in:st=0:d=${seg.fadeIn}`);
   if (seg.fadeOut) filters.push(`fade=t=out:st=${Math.max(0, segDur - seg.fadeOut).toFixed(3)}:d=${seg.fadeOut}`);
   filters.push('format=yuv420p');
@@ -243,10 +349,14 @@ export function buildSegmentFilters(opts: {
 export function opacityKfExpr(seg: ClipSegment, segDur: number): string | null {
   const kf = seg.keyframes;
   if (!kf?.length) return null;
-  const pts = kf.filter((k) => k.opacity != null && k.opacity < 0.999).map((k) => ({ t: k.t, v: k.opacity! }));
-  // 只有下降到 <1 的点才需要合成；没有 → null（保持原链路，不付 geq 的性能代价）
-  if (!pts.length) return null;
-  // 全程为 0 会生成全黑段（合法但怪）——照常生成，由用户自己改
+  const withOpacity = kf.filter((k) => k.opacity != null);
+  // 没有任何一点把透明度压到 1 以下 → 不需要垫黑底合成（不付 geq 的性能代价）
+  if (!withOpacity.some((k) => k.opacity! < 0.999)) return null;
+  // ★★★ 必须带上**所有**给了 opacity 的点（含 =1 的起点锚）。
+  //   此前只取 <0.999 的点：`[{t:0,opacity:1},{t:1,opacity:0}]` 会只剩一个点，
+  //   buildPiecewiseExpr 对单点返回常量 → 表达式恒为 0 → **整段画面全黑**，
+  //   而且 ffmpeg 不报错。缓动更依赖端点锚，这里一并修掉。
+  const pts = easePointList(withOpacity.map((k) => ({ t: k.t, v: k.opacity!, ease: k.ease, bezier: k.bezier })));
   return buildPiecewiseExpr(pts, `(T/${segDur.toFixed(6)})`);
 }
 
@@ -296,9 +406,11 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
   if (!(W > 0 && H > 0)) return { ok: false, error: `导出规格非法：${project.output.size}` };
   const fps = project.output.fps || 30;
   const imgSet = new Set((input.imageFiles || []).map((f) => f.toLowerCase()));
+  const q = QUALITY_PRESETS[(input.quality ?? project.output.quality ?? 'std') as ExportQuality] ?? QUALITY_PRESETS.std;
   const x264 = input.fast
     ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-pix_fmt', 'yuv420p']
-    : ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p'];
+    : ['-c:v', 'libx264', '-preset', q.preset, '-crf', String(q.crf), '-pix_fmt', 'yuv420p'];
+  const ab = `${q.audioK}k`;
   // 统一规格：较短边放大到覆盖目标框后居中裁切（横竖屏都填满不变形）
   const normVf = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=${fps}`;
 
@@ -318,15 +430,31 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
       ? (seg.kenburns?.duration ?? Math.max(3, rawDur || 3))
       : segmentDuration(seg, rawDur);
     totalDuration += segDur;
+    if (seg.reverse && !isImage && segDur > REVERSE_MAX_SEC) {
+      return {
+        ok: false,
+        error: `第 ${i + 1} 段开了倒放，但时长 ${segDur.toFixed(1)}s 超过单段上限 ${REVERSE_MAX_SEC}s：`
+          + 'ffmpeg 的 reverse 会把整段帧读进内存，长段会把进程拖垮。先把这一段裁短再倒放。',
+      };
+    }
 
     const segOut = path.join(workDir, `seg-${String(i + 1).padStart(3, '0')}-${safeStem(seg.id)}.mp4`);
+    // ★ 曲线变速：先按 1 倍出整段（视觉处理与淡入淡出都在**源时间**里生效，随画面一起被时移，
+    //   语义一致），再按曲线切成 N 片各自 setpts + atempo，最后拼回 —— 音画共用同一套切片边界。
+    const isRamp = !isImage && !!seg.speedCurve?.length;
+    const srcLen = isImage ? segDur : trimmedSourceLength(seg, rawDur);
+    const stage1Out = isRamp ? path.join(workDir, `seg-${String(i + 1).padStart(3, '0')}-src.mp4`) : segOut;
+    const chainDur = isRamp ? srcLen : segDur;
     // ★ 段滤镜链走**共享装配层**（与实时预览同一份定义）—— 各写一套必然漂移
-    const chain = assembleSegmentChain({ seg, segDur, isImage, W, H, fps, keyFilterOf });
+    const chain = assembleSegmentChain({
+      seg, segDur: chainDur, isImage, W, H, fps, keyFilterOf,
+      ...(isRamp ? { speedOverride: 1 } : {}),
+    });
 
     const args: string[] = ['-y'];
-    const speed = isImage ? 1 : (seg.speed ?? 1);
+    const speed = isImage ? 1 : (isRamp ? 1 : (seg.speed ?? 1));
     // 从源读多少秒：变速前的原始长度（setpts 之后自然变成 segDur）
-    const readDur = isImage ? segDur : segDur * speed;
+    const readDur = isImage ? segDur : (isRamp ? srcLen : segDur * speed);
     if (isImage) {
       args.push('-loop', '1', '-i', seg.file, '-t', String(segDur));
     } else {
@@ -340,6 +468,8 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
 
     const hasAudioIn = Boolean(input.hasAudio[seg.id] ?? input.hasAudio[seg.file]);
     const audioFile = seg.audioFile;
+    // 倒放时音轨同步倒放（补的静音源不用处理：倒过来还是静音）
+    const revAudio = Boolean(seg.reverse) && !isImage;
     // ★ 透明度关键帧存在时视频必须走 filter_complex（垫黑底），音频也要并进同一条 fc
     const useKfFc = chain.fcHead != null;
     const vLabel = `[${chain.vLabel}]`;
@@ -347,7 +477,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
     if (audioFile) {
       args.push('-i', audioFile);
       const vol = seg.volume ?? 1;
-      const aChain = [`volume=${vol.toFixed(3)}`];
+      const aChain = [...(revAudio ? ['areverse'] : []), `volume=${vol.toFixed(3)}`];
       // ★★ 用 filter_complex 时**不能**再前置裸 `-map 0:v:0` ——
       //   那样会同时映射「原始未加工视频流」与滤镜链产物 `[v]`，产出**两条视频流**，
       //   而 ffmpeg 把未加工的那条放在前面 → 成片分辨率/裁剪/调色全部静默失效
@@ -360,9 +490,10 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
           : `[0:v]${chain.vf}[v];[1:a]${aChain.join(',')}[a]`;
         args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
       } else if (hasAudioIn) {
-        // 保留原声并与配音混音
+        // 保留原声并与配音混音（倒放时两路都倒，保持同步）
+        const rev = revAudio ? 'areverse,' : '';
         const fc = (useKfFc ? `${chain.fcHead};` : `[0:v]${chain.vf}[v];`) +
-          `[0:a]volume=${vol.toFixed(3)}[o];[1:a]volume=${vol.toFixed(3)}[d];[o][d]amix=inputs=2:duration=first:dropout_transition=2[a]`;
+          `[0:a]${rev}volume=${vol.toFixed(3)}[o];[1:a]${rev}volume=${vol.toFixed(3)}[d];[o][d]amix=inputs=2:duration=first:dropout_transition=2[a]`;
         args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
       } else {
         const fc = useKfFc
@@ -370,27 +501,67 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
           : `[0:v]${chain.vf}[v];[1:a]${aChain.join(',')}[a]`;
         args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
       }
-      args.push(...x264, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', segOut);
+      args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
     } else {
       // 无配音：用原音轨；无音轨则补等长静音（anullsrc 必须显式 -t）
       const vol = seg.volume;
       if (useKfFc) {
         // 透明度关键帧：视频+音频全走 filter_complex
         if (hasAudioIn) {
-          const volPart = vol != null && Math.abs(vol - 1) > 0.001 ? `[0:a]volume=${vol.toFixed(3)}[a]` : `[0:a]anull[a]`;
+          const volPart = `[0:a]${revAudio ? 'areverse,' : ''}${vol != null && Math.abs(vol - 1) > 0.001 ? `volume=${vol.toFixed(3)}` : 'anull'}[a]`;
           args.push('-filter_complex', `${chain.fcHead};${volPart}`, '-map', vLabel, '-map', '[a]');
+          // ★★ 这里原本**漏了输出路径**：透明度关键帧 + 有原声时 args 到 "-map [a]" 就结束了，
+          //   ffmpeg 会报 "At least one output file must be specified"。纯函数测试只看字符串，
+          //   所以一直没暴露 —— 属于"只有真跑才炸"的那类。
+          args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
         } else {
-          args.push('-f', 'lavfi', '-t', String(segDur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
+          args.push('-f', 'lavfi', '-t', String(chainDur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
           args.push('-filter_complex', chain.fcHead!, '-map', vLabel, '-map', '1:a:0');
+          // ★ 同上：这段原本也没有输出路径（透明度关键帧 + 无音轨），一并补上
+          args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-shortest', '-movflags', '+faststart', stage1Out);
         }
       } else if (hasAudioIn) {
-        const vArgs = vol != null && Math.abs(vol - 1) > 0.001 ? ['-af', `volume=${vol.toFixed(3)}`] : [];
-        args.push('-map', '0:v:0', '-map', '0:a:0', '-vf', chain.vf!, ...vArgs, ...x264, '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', segOut);
+        const afParts: string[] = [];
+        if (revAudio) afParts.push('areverse');
+        if (vol != null && Math.abs(vol - 1) > 0.001) afParts.push(`volume=${vol.toFixed(3)}`);
+        const vArgs = afParts.length ? ['-af', afParts.join(',')] : [];
+        args.push('-map', '0:v:0', '-map', '0:a:0', '-vf', chain.vf!, ...vArgs, ...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
       } else {
-        args.push('-f', 'lavfi', '-t', String(segDur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-map', '0:v:0', '-map', '1:a:0', '-vf', chain.vf!, ...x264, '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', segOut);
+        args.push('-f', 'lavfi', '-t', String(chainDur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-map', '0:v:0', '-map', '1:a:0', '-vf', chain.vf!, ...x264, '-c:a', 'aac', '-b:a', ab, '-shortest', '-movflags', '+faststart', stage1Out);
       }
     }
-    steps.push({ label: `加工第 ${i + 1} 段（${seg.label || path.basename(seg.file)}，${segDur.toFixed(2)}s）`, args, out: segOut });
+    steps.push({ label: `加工第 ${i + 1} 段（${seg.label || path.basename(seg.file)}，${chainDur.toFixed(2)}s）`, args, out: stage1Out });
+
+    if (isRamp) {
+      // ★ 切片变速：每片恒定倍速（视频 setpts、音轨 atempo），切点来自共享的 speedSlices ——
+      //   时长计算/预览定位用的是同一份切片数学，三处不会漂移。
+      const slices = speedSlices(seg.speedCurve!, SPEED_SLICES);
+      const sliceFiles: string[] = [];
+      for (let k = 0; k < slices.length; k++) {
+        const s = slices[k];
+        const startSec = srcLen * s.t0;
+        const takeSec = srcLen * (s.t1 - s.t0);
+        if (!(takeSec > 0.001)) continue;
+        const outK = path.join(workDir, `seg-${String(i + 1).padStart(3, '0')}-ramp-${String(k + 1).padStart(2, '0')}.mp4`);
+        const a: string[] = ['-y', '-ss', startSec.toFixed(3), '-t', takeSec.toFixed(3), '-i', stage1Out];
+        if (Math.abs(s.speed - 1) > 0.001) {
+          a.push('-vf', `setpts=PTS/${s.speed.toFixed(6)}`, '-af', atempoChain(s.speed));
+        }
+        a.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', outK);
+        steps.push({ label: `变速片 ${k + 1}/${slices.length}（${s.speed.toFixed(2)}×）`, args: a, out: outK });
+        sliceFiles.push(outK);
+      }
+      const listFile = path.join(workDir, `ramp-${i + 1}.txt`);
+      assets.push({
+        file: listFile,
+        content: sliceFiles.map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'),
+      });
+      steps.push({
+        label: `拼接变速片（${sliceFiles.length} 段）`,
+        args: ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', segOut],
+        out: segOut,
+      });
+    }
     segFiles.push(segOut);
   }
 
@@ -453,7 +624,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
       steps.push({
         label: `转场 ${tr.type}（第 ${i} → ${i + 1} 段，${d.toFixed(2)}s）`,
         args: ['-y', '-i', acc, '-i', segFiles[i], '-filter_complex', fc, '-map', '[v]', '-map', '[a]',
-          ...x264, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outFile],
+          ...x264, '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', outFile],
         out: outFile,
       });
       acc = outFile;
@@ -485,7 +656,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
         fc.push(`[${prev}][ov${k}]overlay=x='${anchor.x}':y='${anchor.y}':enable='between(t,${st.toFixed(3)},${et.toFixed(3)})'[v${k}]`);
         prev = `v${k}`;
       }
-      args.push('-filter_complex', fc.join(';'), '-map', `[${prev}]`, '-map', '0:a?', ...x264, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', piped);
+      args.push('-filter_complex', fc.join(';'), '-map', `[${prev}]`, '-map', '0:a?', ...x264, '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', piped);
       steps.push({
         label: `画中画合成（${ovs.length} 层）`,
         args,
@@ -538,7 +709,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
       // 音效链串成一条 -af（音效都是 A->A 滤镜，可逗号串联）
       steps.push({
         label: `音效链（${project.audioFx.join(' → ')}）`,
-        args: ['-y', '-i', cursorFile, '-af', inputs.join(','), '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', work],
+        args: ['-y', '-i', cursorFile, '-af', inputs.join(','), '-c:v', 'copy', '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', work],
         out: work,
       });
       cursorFile = work;
@@ -556,7 +727,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
       : `[1:a]${bgChain.join(',')}[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]`;
     steps.push({
       label: `混入 BGM（音量 ${bgm.volume}${bgm.duck ? '，说话自动压低' : ''}）`,
-      args: ['-y', '-i', cursorFile, '-i', input.bgmFile, '-filter_complex', fc, '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', mixed],
+      args: ['-y', '-i', cursorFile, '-i', input.bgmFile, '-filter_complex', fc, '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', ab, '-shortest', '-movflags', '+faststart', mixed],
       out: mixed,
     });
     cursorFile = mixed;
@@ -578,7 +749,31 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
     }
   }
 
-  return { ok: true, plan: { steps, assets, totalDuration: Number(totalDuration.toFixed(3)) } };
+  // ⑥ 封面帧：从**成片**里抽一帧（不是从素材抽，否则封面与成片观感可能不一致）
+  //
+  // ★ 单独返回、不推进 steps：steps 的不变式是「末步产物 = 成片」（执行器与验收脚本都靠它），
+  //   把一张 jpg 混进去会让"末步"变成封面，属于隐性破坏。
+  // ★ 抽帧位置取 min(1s, 成片一半)：很短的片子落在中点，避免抽到片头黑场。
+  let cover: RenderPlan['cover'];
+  const wantCover = input.cover ?? !input.fast;
+  if (wantCover && totalDuration > 0.05) {
+    const out = `${outFile.replace(/\.[^./\\]+$/, '')}-cover.jpg`;
+    const at = Math.min(1, totalDuration / 2);
+    cover = {
+      out,
+      args: ['-y', '-v', 'error', '-ss', at.toFixed(3), '-i', outFile, '-frames:v', '1', '-q:v', '3', out],
+    };
+  }
+
+  return {
+    ok: true,
+    plan: {
+      steps,
+      assets,
+      totalDuration: Number(totalDuration.toFixed(3)),
+      ...(cover ? { cover } : {}),
+    },
+  };
 }
 
 function atempoChain(factor: number): string {

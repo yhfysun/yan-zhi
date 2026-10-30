@@ -11,6 +11,16 @@
 // ★ 判据：新增一个效果 = 只改这里一处。若发现还要去别处改 enum，说明又漂移了。
 // ★ 每个预设的 ffmpeg 参数**必须实测**（编译通过 ≠ 滤镜有效），见 tools/verify-effects.cjs。
 
+/** 效果可调参数的声明（UI 滑杆、工具描述、渲染取值同源）。 */
+export interface EffectParam {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  default: number;
+  step?: number;
+}
+
 export interface EffectPreset {
   /** 对外 id（工具参数值 / UI 选项值） */
   id: string;
@@ -18,11 +28,12 @@ export interface EffectPreset {
   label: string;
   /** 一句话说明它长什么样（给模型选效果用，也作 UI tooltip） */
   desc: string;
-  /** ffmpeg 滤镜串（不含首尾逗号）；空串表示"不变" */
+  /** ffmpeg 滤镜串（不含首尾逗号）；空串表示"不变"。`{W}/{H}` 是画幅占位符，`{key}` 是参数占位符 */
   filter: string;
-  /** 分类（UI 分组用）。★ 值域必须覆盖全部表用到的分组 —— 漏一个就是编译期报错（好事，
-   *  比 runtime 静默归类错误强）。 */
+  /** 分类（UI 分组用） */
   group: EffectGroup;
+  /** 可调参数；缺省 = 该效果没有参数 */
+  params?: EffectParam[];
 }
 
 /** 效果分组（滤镜 / 转场 / 文字 / 音效 四张表共用；UI 按这个顺序渲染分组）。 */
@@ -285,71 +296,143 @@ export const FX_EFFECTS: EffectPreset[] = [
   {
     id: 'shake', label: '镜头震动', group: '动效',
     desc: '手持晃动感，动作/爆点镜头用',
-    filter: `scale={W}*1.08:-2,crop={W}:{H}:x='(iw-{W})/2+iw*0.006*sin(t*23)':y='(ih-{H})/2+ih*0.006*cos(t*19)',setsar=1`,
+    filter: `scale={W}*1.08:-2,crop={W}:{H}:x='(iw-{W})/2+iw*{amplitude}*sin(t*{freq})':y='(ih-{H})/2+ih*{amplitude}*cos(t*{freq})',setsar=1`,
+    params: [
+      { key: 'amplitude', label: '幅度', min: 0.002, max: 0.03, default: 0.006, step: 0.001 },
+      { key: 'freq', label: '频率', min: 8, max: 40, default: 23, step: 1 },
+    ],
   },
   {
     id: 'drift', label: '呼吸漂浮', group: '动效',
     desc: '缓慢上下浮动，静态照片也能"活"起来',
-    filter: `scale={W}*1.06:-2,crop={W}:{H}:x='(iw-{W})/2':y='(ih-{H})/2+ih*0.01*sin(t*1.6)',setsar=1`,
+    filter: `scale={W}*1.06:-2,crop={W}:{H}:x='(iw-{W})/2':y='(ih-{H})/2+ih*{amplitude}*sin(t*{speed})',setsar=1`,
+    params: [
+      { key: 'amplitude', label: '幅度', min: 0.004, max: 0.03, default: 0.01, step: 0.001 },
+      { key: 'speed', label: '速度', min: 0.5, max: 4, default: 1.6, step: 0.1 },
+    ],
   },
   {
     id: 'ghost', label: '残影拖尾', group: '动效',
     desc: '前几帧叠影，运动镜头有速度感',
-    filter: `tmix=frames=6:weights='1 1 1 1 1 1'`,
+    filter: `tmix=frames={frames}`,
+    params: [{ key: 'frames', label: '叠加帧数', min: 2, max: 12, default: 6, step: 1 }],
   },
 
   // ── 故障 ──
   {
     id: 'scanline', label: '扫描线', group: '故障',
     desc: '老显示器横向扫描纹，赛博/复古科技感',
-    filter: `geq=lum='lum(X,Y)*if(mod(Y,3),1,0.82)':cb='cb(X,Y)':cr='cr(X,Y)'`,
+    filter: `geq=lum='lum(X,Y)*if(mod(Y,3),1,{dim})':cb='cb(X,Y)':cr='cr(X,Y)'`,
+    params: [{ key: 'dim', label: '暗线深度', min: 0.6, max: 0.95, default: 0.82, step: 0.01 }],
   },
   {
     id: 'vhs', label: '录像带', group: '故障',
     desc: '色偏+噪点，九十年代家用录像',
-    filter: `chromashift=cbh=3:crh=-3,eq=saturation=1.25:contrast=1.05,noise=alls=10:allf=t`,
+    filter: `chromashift=cbh={shift}:crh=-{shift},eq=saturation={saturation}:contrast=1.05,noise=alls={noise}:allf=t`,
+    params: [
+      { key: 'shift', label: '色偏移', min: 1, max: 8, default: 3, step: 1 },
+      { key: 'saturation', label: '饱和度', min: 1, max: 1.5, default: 1.25, step: 0.05 },
+      { key: 'noise', label: '噪点', min: 2, max: 24, default: 10, step: 1 },
+    ],
   },
   {
     id: 'glitch', label: '色差故障', group: '故障',
     desc: '红蓝通道错位，电子故障感',
-    filter: `chromashift=cbh=6:crh=-6,noise=alls=6:allf=t`,
+    filter: `chromashift=cbh={shift}:crh=-{shift},noise=alls={noise}:allf=t`,
+    params: [
+      { key: 'shift', label: '错位', min: 2, max: 16, default: 6, step: 1 },
+      { key: 'noise', label: '噪点', min: 0, max: 20, default: 6, step: 1 },
+    ],
   },
 
   // ── 氛围 ──
   {
     id: 'bloom', label: '柔光', group: '氛围',
     desc: '高光溢出的柔焦，人像/回忆镜头',
-    filter: `split[a][b];[b]gblur=sigma=14[g];[a][g]blend=all_mode=screen:all_opacity=0.35`,
+    filter: `split[a][b];[b]gblur=sigma={sigma}[g];[a][g]blend=all_mode=screen:all_opacity={opacity}`,
+    params: [
+      { key: 'sigma', label: '柔化半径', min: 4, max: 30, default: 14, step: 1 },
+      { key: 'opacity', label: '强度', min: 0.1, max: 0.8, default: 0.35, step: 0.05 },
+    ],
   },
   {
     id: 'oldfilm', label: '老电影', group: '氛围',
     desc: '颗粒+暗角+褪色，年代感',
-    filter: `noise=alls=14:allf=t,curves=vintage,vignette=PI/4`,
+    filter: `noise=alls={noise}:allf=t,curves=vintage,vignette=PI/{vignette}`,
+    params: [
+      { key: 'noise', label: '颗粒', min: 2, max: 24, default: 14, step: 1 },
+      { key: 'vignette', label: '暗角强度', min: 3, max: 8, default: 4, step: 0.5 },
+    ],
   },
   {
     id: 'dream', label: '梦境叠影', group: '氛围',
     desc: '柔化叠回原片，朦胧幻想感',
-    filter: `split[a][b];[b]gblur=sigma=8[g];[a][g]blend=all_mode=overlay:all_opacity=0.4`,
+    filter: `split[a][b];[b]gblur=sigma={sigma}[g];[a][g]blend=all_mode=overlay:all_opacity={opacity}`,
+    params: [
+      { key: 'sigma', label: '柔化半径', min: 3, max: 24, default: 8, step: 1 },
+      { key: 'opacity', label: '强度', min: 0.1, max: 0.8, default: 0.4, step: 0.05 },
+    ],
   },
 
   // ── 扭曲 ──
-  { id: 'fisheye', label: '鱼眼', group: '扭曲', desc: '广角畸变，夸张/搞笑镜头', filter: `lenscorrection=k1=0.4:k2=0.2` },
+  {
+    id: 'fisheye', label: '鱼眼', group: '扭曲', desc: '广角畸变，夸张/搞笑镜头',
+    filter: `lenscorrection=k1={k1}:k2={k2}`,
+    params: [
+      { key: 'k1', label: '畸变强度', min: 0.1, max: 0.8, default: 0.4, step: 0.05 },
+      { key: 'k2', label: '边缘校正', min: 0.05, max: 0.4, default: 0.2, step: 0.05 },
+    ],
+  },
   { id: 'mirror', label: '镜像', group: '扭曲', desc: '水平翻转，制造对称构图', filter: `hflip` },
-  { id: 'tilt', label: '倾斜', group: '扭曲', desc: '轻微旋转，动感/不安定', filter: `rotate=0.06:ow=iw:oh=ih:fillcolor=black` },
+  {
+    id: 'tilt', label: '倾斜', group: '扭曲', desc: '轻微旋转，动感/不安定',
+    filter: `rotate={angle}:ow=iw:oh=ih:fillcolor=black`,
+    params: [{ key: 'angle', label: '角度', min: 0.01, max: 0.2, default: 0.06, step: 0.01 }],
+  },
 
   // ── 像素 ──
-  { id: 'pixelate', label: '马赛克', group: '像素', desc: '像素块化，遮挡/风格化', filter: `scale=iw/12:ih/12,scale={W}:{H}:flags=neighbor` },
+  {
+    id: 'pixelate', label: '马赛克', group: '像素', desc: '像素块化，遮挡/风格化',
+    filter: `scale=iw/{blocks}:ih/{blocks},scale={W}:{H}:flags=neighbor`,
+    params: [{ key: 'blocks', label: '块数（越少越糊）', min: 4, max: 48, default: 12, step: 1 }],
+  },
 ];
 
+/** 取某效果的可调参数声明（UI 渲染滑杆、工具描述共用同一份）。 */
+export function fxParamsOf(id: string): EffectParam[] {
+  return FX_EFFECTS.find((e) => e.id === id)?.params || [];
+}
+
 /**
- * 取 FX 滤镜串（把 {W}/{H} 换成真实画幅）。
+ * 生成「效果 id → 参数：键 范围 默认」的紧凑清单（塞进工具描述，让模型知道能传哪些键）。
+ * ★ 必须从注册表生成：手写第二份清单必然与实现漂移（本项目反复踩过）。
+ */
+export function fxParamCatalogText(): string {
+  return FX_EFFECTS
+    .filter((e) => e.params?.length)
+    .map((e) => `${e.id}（${e.params!.map((p) => `${p.key} ${p.min}~${p.max} 默认${p.default}`).join('、')}）`)
+    .join('；');
+}
+
+/**
+ * 取 FX 滤镜串（把 {W}/{H} 换成画幅、{key} 换成参数值）。
  * ★ 找不到返回 null —— 调用方应"什么都不加"，绝不回退到别的特效：
  *   让模型/用户传错 id 时静默变成另一种观感，比不生效更难查。
+ * ★ 参数越界/缺失一律回落到注册表里的默认值：脏值进 ffmpeg 表达式只会得到
+ *   一条"看起来正常但画面不对"的滤镜，排查成本极高。
  */
-export function fxFilter(id: string, W: number, H: number): string | null {
+export function fxFilter(id: string, W: number, H: number, params?: Record<string, number>): string | null {
   const hit = FX_EFFECTS.find((e) => e.id === id);
   if (!hit || !hit.filter) return null;
-  return hit.filter.replace(/\{W\}/g, String(Math.round(W))).replace(/\{H\}/g, String(Math.round(H)));
+  let out = hit.filter.replace(/\{W\}/g, String(Math.round(W))).replace(/\{H\}/g, String(Math.round(H)));
+  for (const p of hit.params || []) {
+    const raw = params?.[p.key];
+    const v = typeof raw === 'number' && Number.isFinite(raw)
+      ? Math.max(p.min, Math.min(p.max, raw))
+      : p.default;
+    out = out.replace(new RegExp(`\\{${p.key}\\}`, 'g'), String(Number(v.toFixed(4))));
+  }
+  return out;
 }
 
 /** 按 id 取滤镜串（找不到返回 null，调用方决定报错还是回落）。 */
@@ -440,6 +523,218 @@ export function buildPiecewiseExpr(points: KfPoint[], varName: string): string {
 
 function fmtNum(n: number): string {
   return Number(n.toFixed(6)).toString();
+}
+
+// ===== 关键帧缓动（easing）=====
+//
+// ★★★ 为什么需要（2026-10-30）：此前所有关键帧都是**分段线性**插值 ——
+//   运镜一律"匀速起、匀速停"，这正是"模板味"的最大来源。商用剪辑软件之所以
+//   看起来顺滑，靠的就是 ease-in-out 这类缓动曲线。
+//
+// 做法：**在生成表达式之前把缓动采样成更多线性点**。
+//   · 渲染侧零改动（还是 buildPiecewiseExpr，只是点变多）；
+//   · 线性段不插点（表达式长度不变，老工程出片逐字节一致）；
+//   · 采样密度可调（默认 16 点/段，肉眼已分辨不出折线）。
+
+/** 缓动类型。语义：**本点 → 下一点**之间的过渡方式。 */
+export type EaseType = 'linear' | 'in' | 'out' | 'inout' | 'bezier';
+
+/** 带缓动的关键帧点（KfPoint + 过渡到下一段的缓动）。 */
+export interface EasePoint extends KfPoint {
+  ease?: EaseType;
+  /** ease=bezier 时的四个控制点参数 [x1,y1,x2,y2]（与 CSS cubic-bezier 同义） */
+  bezier?: [number, number, number, number];
+}
+
+const EASE_BEZIER: Record<Exclude<EaseType, 'linear' | 'bezier'>, [number, number, number, number]> = {
+  // 与 CSS 同名曲线一致，观感可预期：
+  in: [0.42, 0, 1, 1],
+  out: [0, 0, 0.58, 1],
+  inout: [0.42, 0, 0.58, 1],
+};
+
+/**
+ * 三次贝塞尔缓动求值：给定线性进度 x∈[0,1]，返回缓动后的 y。
+ *
+ * 端点固定为 (0,0) 与 (1,1)，控制点为 (x1,y1)/(x2,y2) —— 与 CSS cubic-bezier 同义。
+ * x(t) 在 [0,1] 上单调（控制点 x 钳在 0~1 时），用牛顿迭代反解 t，失败退回二分。
+ * 这些数值细节必须正确：错了不会报错，只会让运镜"看起来有点怪"。
+ */
+export function cubicBezierEase(x: number, x1: number, y1: number, x2: number, y2: number): number {
+  const cx = Math.max(0, Math.min(1, x));
+  if (cx <= 0) return 0;
+  if (cx >= 1) return 1;
+  const ax = 1 - 3 * x2 + 3 * x1, bx = 3 * x2 - 6 * x1, cxx = 3 * x1;
+  const ay = 1 - 3 * y2 + 3 * y1, by = 3 * y2 - 6 * y1, cyy = 3 * y1;
+  const sampleX = (t: number) => ((ax * t + bx) * t + cxx) * t;
+  const sampleY = (t: number) => ((ay * t + by) * t + cyy) * t;
+  const slopeX = (t: number) => (3 * ax * t + 2 * bx) * t + cxx;
+
+  // 牛顿迭代（初值取 x，通常 3~4 步即收敛）
+  let t = cx;
+  for (let i = 0; i < 8; i++) {
+    const d = sampleX(t) - cx;
+    if (Math.abs(d) < 1e-6) return sampleY(t);
+    const s = slopeX(t);
+    if (Math.abs(s) < 1e-6) break;
+    t -= d / s;
+  }
+  // 退化/越界 → 二分兜底（x(t) 单调）
+  let lo = 0, hi = 1;
+  t = cx;
+  for (let i = 0; i < 32; i++) {
+    const v = sampleX(t);
+    if (Math.abs(v - cx) < 1e-6) break;
+    if (v < cx) lo = t; else hi = t;
+    t = (lo + hi) / 2;
+  }
+  return sampleY(t);
+}
+
+/** 按类型求缓动值（linear/缺省 = 原样返回）。 */
+export function easeValue(x: number, ease?: EaseType, bezier?: [number, number, number, number]): number {
+  const p = Math.max(0, Math.min(1, x));
+  if (!ease || ease === 'linear') return p;
+  if (ease === 'bezier') {
+    const b = bezier && bezier.length === 4 ? bezier : EASE_BEZIER.inout;
+    return cubicBezierEase(p, b[0], b[1], b[2], b[3]);
+  }
+  const b = EASE_BEZIER[ease];
+  return cubicBezierEase(p, b[0], b[1], b[2], b[3]);
+}
+
+/** 单段最多插多少个点（防止表达式膨胀：4 个关键帧 × 16 ≈ 64 点已是上限量级）。 */
+export const EASE_SAMPLES = 16;
+/** 表达式总点数硬上限（超出后自动降低采样密度）。 */
+const EASE_MAX_POINTS = 96;
+
+/**
+ * 把带缓动的关键帧点列**重采样**成纯线性点列（供 buildPiecewiseExpr 用）。
+ *
+ * 规则：
+ *   · 只有「本点 ease 非 linear」的段才插点 —— 全线性输入原样返回（零性能/零行为变化）；
+ *   · 每段插 samples 个中间点（不含两端重复点）；
+ *   · 首尾值严格保留（避免缓动求值的浮点误差改变端点）；
+ *   · 输入不要求有序（内部排序）；
+ *   · 点数超过 EASE_MAX_POINTS 时自动降采样，保证 ffmpeg 表达式不至于过长。
+ */
+export function easePointList(pts: EasePoint[], samples: number = EASE_SAMPLES): KfPoint[] {
+  const sorted = pts
+    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v))
+    .map((p) => ({ ...p, t: Math.max(0, Math.min(1, p.t)) }))
+    .sort((a, b) => a.t - b.t);
+  if (sorted.length < 2) return sorted.map((p) => ({ t: p.t, v: p.v }));
+  const needsEase = sorted.some((p, i) => i < sorted.length - 1 && p.ease && p.ease !== 'linear');
+  if (!needsEase) return sorted.map((p) => ({ t: p.t, v: p.v }));
+
+  // 采样密度：保证总点数不炸
+  const segCount = sorted.length - 1;
+  const n = Math.max(2, Math.min(samples, Math.floor((EASE_MAX_POINTS - sorted.length) / Math.max(1, segCount))));
+
+  const out: KfPoint[] = [];
+  for (let i = 0; i < segCount; i++) {
+    const a = sorted[i], b = sorted[i + 1];
+    const span = b.t - a.t;
+    out.push({ t: a.t, v: a.v });
+    if (span > 1e-9 && a.ease && a.ease !== 'linear') {
+      for (let k = 1; k < n; k++) {
+        const x = k / n;
+        const e = easeValue(x, a.ease, a.bezier);
+        out.push({ t: a.t + span * x, v: a.v + (b.v - a.v) * e });
+      }
+    }
+  }
+  const last = sorted[sorted.length - 1];
+  out.push({ t: last.t, v: last.v });
+  return out;
+}
+
+
+// ===== 曲线变速（speed ramp）=====
+//
+// ★★★ 为什么必须"切片"而不是一条表达式（2026-10-30 定案）：
+//   ffmpeg 没有内置变速曲线。理论上可以用一条分段 setpts 表达式表达
+//   （输出时间 = 速度的积分，分段线性速度→分段二次），但**音轨做不到**：
+//   atempo 只接受常量，rubberband 也不支持时变。视频动了音频不动 = 音画分离。
+//   所以走"按源时间切成 N 段、每段恒定倍速、再拼起来"，音画同一套切片边界。
+//
+// ★ 时间语义（务必分清）：
+//   · points 的 t 是**源时间**比例 0~1（这段素材被裁后的区间），speed 是该处倍速；
+//   · 输出时长 = Σ(每片源长 ÷ 该片倍速) —— 比源时长更短或更长取决于倍速。
+
+export interface SpeedPoint { t: number; speed: number }
+export const SPEED_MIN = 0.25;
+export const SPEED_MAX = 4;
+/** 切片数：8 段已能做出顺滑的"慢入快出"，再高只是多付编码次数。 */
+export const SPEED_SLICES = 8;
+
+/** 在 points 上线性插值取 t 处的倍速（首尾之外 clamp）。 */
+export function speedAt(points: SpeedPoint[], t: number): number {
+  if (!points.length) return 1;
+  const x = Math.max(0, Math.min(1, t));
+  if (x <= points[0].t) return points[0].speed;
+  const last = points[points.length - 1];
+  if (x >= last.t) return last.speed;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    if (x <= b.t) {
+      const span = b.t - a.t;
+      return span <= 1e-9 ? b.speed : a.speed + (b.speed - a.speed) * ((x - a.t) / span);
+    }
+  }
+  return last.speed;
+}
+
+/**
+ * 把曲线量化成 N 个恒定倍速的切片（每片取中点倍速）。
+ * ★ 渲染、时长计算、预览定位**必须**都用这一份切片结果，否则三处口径漂移
+ *   （典型症状：时间轴长度与成片对不上，字幕整体偏移且无人报错）。
+ */
+export function speedSlices(points: SpeedPoint[], n: number = SPEED_SLICES): Array<{ t0: number; t1: number; speed: number }> {
+  const count = Math.max(2, Math.round(n));
+  const out: Array<{ t0: number; t1: number; speed: number }> = [];
+  for (let i = 0; i < count; i++) {
+    const t0 = i / count;
+    const t1 = (i + 1) / count;
+    const speed = Math.max(SPEED_MIN, Math.min(SPEED_MAX, speedAt(points, (t0 + t1) / 2)));
+    out.push({ t0, t1, speed });
+  }
+  return out;
+}
+
+/** 曲线是否真的有变化（整体差 < 2% 视作恒定，不必切片）。 */
+export function speedCurveIsFlat(points: SpeedPoint[]): boolean {
+  if (points.length < 2) return true;
+  const speeds = points.map((p) => p.speed);
+  return Math.max(...speeds) - Math.min(...speeds) < 0.02;
+}
+
+/** 曲线下的**输出**总时长（srcLen = 被裁后的源时长，秒）。 */
+export function speedCurveDuration(points: SpeedPoint[], srcLen: number, n: number = SPEED_SLICES): number {
+  if (!(srcLen > 0)) return 0;
+  let total = 0;
+  for (const s of speedSlices(points, n)) total += (srcLen * (s.t1 - s.t0)) / s.speed;
+  return total;
+}
+
+/**
+ * 输出时间偏移 → 源时间偏移（预览定位 / 抽帧用）。
+ * 逐片累加输出时长，找到落在哪一片，再按该片倍速换算。
+ */
+export function speedCurveOutToSrc(points: SpeedPoint[], outOffset: number, srcLen: number, n: number = SPEED_SLICES): number {
+  if (!(srcLen > 0)) return 0;
+  const slices = speedSlices(points, n);
+  let cursorOut = 0;
+  for (let i = 0; i < slices.length; i++) {
+    const s = slices[i];
+    const srcSpan = srcLen * (s.t1 - s.t0);
+    const outSpan = srcSpan / s.speed;
+    if (outOffset < cursorOut + outSpan || i === slices.length - 1) {
+      return srcLen * s.t0 + Math.max(0, outOffset - cursorOut) * s.speed;
+    }
+    cursorOut += outSpan;
+  }
+  return srcLen;
 }
 
 /**

@@ -12,7 +12,7 @@
 //   · 片段内时间（trimStart/trimEnd/speed）→ **相对该段原始素材**；
 //   · 字幕/BGM 时间 → **相对成片（拼接后）**，由调用方按各段时长累计推算。
 
-import { FX_EFFECTS } from '@yan-zhi/shared';
+import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX } from '@yan-zhi/shared';
 
 export interface ClipSegment {
   id: string;
@@ -26,16 +26,49 @@ export interface ClipSegment {
   trimEnd?: number;
   /** 变速倍数：>1 加快 <1 放慢（1/缺省=不变） */
   speed?: number;
+  /**
+   * 曲线变速：按源时间比例给倍速，渲染时量化成若干恒定倍速的切片再拼接。
+   * ★ 与 `speed` **互斥**（有曲线时以曲线为准）；与 fadeIn/fadeOut 可共存
+   *   （淡入淡出在"源时间"里生效，随画面一起被时移，语义一致）。
+   */
+  speedCurve?: Array<{ t: number; speed: number }>;
   /** 调色预设（见 shared 的 COLOR_EFFECTS，32 项） */
   colorPreset?: string;
+  /**
+   * 预设强度 0~1（缺省 1 = 全量）。
+   * ★ 实现是「原片与滤镜结果按比例混合」，所以对**任意**预设都成立（含噪点/暗角这类无法线性插值的）。
+   */
+  colorStrength?: number;
+  /**
+   * 手动调节（在预设之上叠加）：亮度/对比/饱和/色温/锐化/暗角。
+   * ★ 缺省值 = 不变（brightness 0、contrast 1、saturation 1、temperature 0、sharpness 0、vignette 0）。
+   */
+  adjust?: {
+    brightness?: number;
+    contrast?: number;
+    saturation?: number;
+    temperature?: number;
+    sharpness?: number;
+    vignette?: number;
+  };
   /** 动态特效 id（见 shared 的 FX_EFFECTS：震动/扫描线/残影/柔光/马赛克…） */
   fx?: string;
+  /**
+   * 动态特效参数（键见效果注册表 FX_EFFECTS[].params）。
+   * ★ 只存**偏离默认值**的键：工程文件要能一眼看出调了什么。
+   * ★ 未知键/越界值在归一化时丢弃或钳制 —— 脏值只会得到"看着正常但画面不对"的滤镜。
+   */
+  fxParams?: Record<string, number>;
   /** 画面淡入秒（相对该段起点） */
   fadeIn?: number;
   /** 画面淡出秒（相对该段终点） */
   fadeOut?: number;
-  /** 静态图片运镜（图片素材专属） */
-  kenburns?: { direction: 'in' | 'out'; duration: number };
+  /**
+   * 静态图片运镜（图片素材专属）。
+   * ★ direction='none' = 静止画面，只借用 duration 表达"这一张图持续几秒"
+   *   （定格帧用它：既要不动的画面，又要能改时长）。
+   */
+  kenburns?: { direction: 'in' | 'out' | 'none'; duration: number };
   /**
    * 蒙版：只显示素材的某一部分。
    * ★ shape 走 geq 的 alpha 表达式（圆形/矩形/心形/分屏…）；
@@ -72,6 +105,15 @@ export interface ClipSegment {
   /** 该段整体音量倍数（1/缺省=不变） */
   volume?: number;
   /**
+   * 倒放该段（画面与音轨一起倒）。
+   * ★ 单段有时长上限（render 层 REVERSE_MAX_SEC）：ffmpeg 的 reverse 要把整段帧读进内存。
+   */
+  reverse?: boolean;
+  /** 顺时针旋转角度：**先转正再按工程画幅补边裁切**（90/270 会大裁，多半要同时改输出规格） */
+  rotate?: 90 | 180 | 270;
+  /** 镜像翻转：h=水平（左右镜像）　v=垂直（上下）　both=两者 */
+  flip?: 'h' | 'v' | 'both';
+  /**
    * 画面裁剪：只保留素材的一个子区域（比例 0~1，相对素材画面）。
    * ★ 裁剪后回填到工程画幅（fill，不变形）—— 与"裁掉黑边/杂物"的手动剪辑语义一致。
    */
@@ -98,6 +140,13 @@ export interface ClipSegment {
     offsetY?: number;
     /** 透明度 0~1（垫黑底合成；0 = 全黑） */
     opacity?: number;
+    /**
+     * 到**下一个关键帧**之间的缓动（缺省 linear）。
+     * ★ 缓动只影响"这一段的过渡曲线"，不改变端点值；linear 段不插点，表达式长度不变。
+     */
+    ease?: 'linear' | 'in' | 'out' | 'inout' | 'bezier';
+    /** ease=bezier 的控制点 [x1,y1,x2,y2]（CSS cubic-bezier 同义） */
+    bezier?: [number, number, number, number];
   }>;
 }
 
@@ -146,7 +195,7 @@ export interface ClipProject {
   version: 1;
   name: string;
   updatedAt: number;
-  output: { size: string; fps: number };
+  output: { size: string; fps: number; quality?: ExportQuality };
   /** 视频轨：按数组顺序首尾相接 */
   clips: ClipSegment[];
   /** 字幕轨：时间相对成片 */
@@ -165,6 +214,17 @@ export interface ClipProject {
 }
 
 const DEFAULT_OUTPUT = { size: '1080x1920', fps: 30 };
+
+/** 导出质量档：直接对应渲染的 crf/preset/音轨码率（见 clip-render 的 QUALITY_PRESETS）。 */
+export type ExportQuality = 'low' | 'std' | 'high';
+const QUALITY_IDS = new Set(['low', 'std', 'high']);
+
+/** 解析 quality 参数（三档之外一律报错，不静默回落 —— 用户以为"高清"导出了个糊的更难查）。 */
+function parseQuality(v: unknown): ExportQuality | null {
+  if (v == null) return null;
+  const q = String(v).trim().toLowerCase();
+  return QUALITY_IDS.has(q) ? (q as ExportQuality) : null;
+}
 
 export function createEmptyProject(name = '未命名剪辑'): ClipProject {
   return {
@@ -245,14 +305,32 @@ function normalizeCrop(v: unknown): ClipSegment['crop'] | null {
 
 /**
  * 归一化关键帧数组。返回 undefined = 无有效关键帧。
- * ★ 每个点必须有 t（0~1）且至少带一个属性；scale=1 且无其它属性的点视为无意义，丢弃。
+ *
+ * ★ 2026-10-30 改了「有意义」的判据（关键帧缓动一起做的）：
+ *   旧规则是**逐点**判断"偏离恒等值才算有意义"，于是 `{ t:0, scale:1 }` 这种
+ *   "从原尺寸开始"的锚点会被丢掉 —— 剩下 `{ t:1, scale:1.5 }` 变成全程 1.5，
+ *   用户以为在推镜、其实画面是静的。缓动更依赖端点锚：没有起点就到不了 1.0。
+ *   新规则：**只要给了属性就保留该点**，最后再看整条曲线是否恒定（恒定才整体丢弃）。
+ * ★ 同 t 去重保留后者：t 越界钳到 0/1 后常与端点撞在一起，不去重会让表达式出现
+ *   两段同 t 的区间（buildPiecewiseExpr 里除零兜底，但语义不明确）。
  */
+const EASE_TYPES = new Set(['linear', 'in', 'out', 'inout', 'bezier']);
+
+function normalizeBezier(v: unknown): [number, number, number, number] | undefined {
+  if (!Array.isArray(v) || v.length !== 4) return undefined;
+  const n = v.map((x) => Number(x));
+  if (!n.every(Number.isFinite)) return undefined;
+  // x 必须在 0~1（保证 x(t) 单调可反解）；y 放宽到 -1~2 以支持过冲回弹
+  const cl = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
+  return [cl(n[0], 0, 1), cl(n[1], -1, 2), cl(n[2], 0, 1), cl(n[3], -1, 2)];
+}
+
 function normalizeKeyframes(v: unknown): ClipSegment['keyframes'] {
   if (!Array.isArray(v)) return undefined;
-  const out: NonNullable<ClipSegment['keyframes']> = [];
-  for (const raw of v) {
-    if (!raw || typeof raw !== 'object') continue;
-    const m = raw as Record<string, unknown>;
+  const raw: NonNullable<ClipSegment['keyframes']> = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') continue;
+    const m = item as Record<string, unknown>;
     const rawT = numOr(m.t, NaN);
     if (!Number.isFinite(rawT)) continue;
     // t 越界钳到 0~1（用户/模型说 3s 超段时落端点，不整点丢弃）
@@ -261,13 +339,133 @@ function normalizeKeyframes(v: unknown): ClipSegment['keyframes'] {
     const offsetX = m.offsetX == null ? undefined : Math.max(-0.5, Math.min(0.5, numOr(m.offsetX, 0)));
     const offsetY = m.offsetY == null ? undefined : Math.max(-0.5, Math.min(0.5, numOr(m.offsetY, 0)));
     const opacity = m.opacity == null ? undefined : Math.max(0, Math.min(1, numOr(m.opacity, 1)));
-    const meaningful = (scale != null && Math.abs(scale - 1) > 0.001) ||
-      (offsetX != null && Math.abs(offsetX) > 0.001) || (offsetY != null && Math.abs(offsetY) > 0.001) ||
-      (opacity != null && opacity < 0.999);
-    if (!meaningful) continue;
-    out.push({ t: Number(t.toFixed(4)), ...(scale != null ? { scale } : {}), ...(offsetX != null ? { offsetX } : {}), ...(offsetY != null ? { offsetY } : {}), ...(opacity != null ? { opacity } : {}) });
+    // 一个属性都没给的点没有意义（真正的"空点"）
+    if (scale == null && offsetX == null && offsetY == null && opacity == null) continue;
+    const easeRaw = String(m.ease ?? '').trim().toLowerCase();
+    const ease = EASE_TYPES.has(easeRaw) ? (easeRaw as NonNullable<NonNullable<ClipSegment['keyframes']>[number]['ease']>) : undefined;
+    const bezier = ease === 'bezier' ? normalizeBezier(m.bezier) : undefined;
+    raw.push({
+      t: Number(t.toFixed(4)),
+      ...(scale != null ? { scale } : {}),
+      ...(offsetX != null ? { offsetX } : {}),
+      ...(offsetY != null ? { offsetY } : {}),
+      ...(opacity != null ? { opacity } : {}),
+      ...(ease ? { ease } : {}),
+      ...(bezier ? { bezier } : {}),
+    });
   }
-  return out.length ? out.sort((a, b) => a.t - b.t) : undefined;
+  if (!raw.length) return undefined;
+
+  // 同 t 去重（保留后者：稳定排序下即输入顺序靠后的那个）
+  raw.sort((a, b) => a.t - b.t);
+  const dedup: NonNullable<ClipSegment['keyframes']> = [];
+  for (const p of raw) {
+    const last = dedup[dedup.length - 1];
+    if (last && Math.abs(last.t - p.t) < 1e-6) dedup[dedup.length - 1] = p;
+    else dedup.push(p);
+  }
+
+  // 整条曲线恒定（缩放恒 1、无位移、透明度恒 1）→ 这些点不会产生任何画面变化
+  const animates =
+    dedup.some((p) => p.scale != null && Math.abs(p.scale - 1) > 0.001) ||
+    dedup.some((p) => (p.offsetX != null && Math.abs(p.offsetX) > 0.001) || (p.offsetY != null && Math.abs(p.offsetY) > 0.001)) ||
+    dedup.some((p) => p.opacity != null && p.opacity < 0.999);
+  return animates ? dedup : undefined;
+}
+
+/**
+ * 归一化速度曲线。返回 null = 不启用（点太少 / 曲线基本平直 —— 平直时切片只是白付编码）。
+ * ★ 极值必须按注册表常量钳制：0 倍速会让输出时长无穷大，4 倍以上音轨已经没有可懂度。
+ */
+function normalizeSpeedCurve(v: unknown): ClipSegment['speedCurve'] | null {
+  if (!Array.isArray(v)) return null;
+  const pts: Array<{ t: number; speed: number }> = [];
+  for (const raw of v) {
+    if (!raw || typeof raw !== 'object') continue;
+    const m = raw as Record<string, unknown>;
+    const t = numOr(m.t, NaN);
+    const sp = numOr(m.speed, NaN);
+    if (!Number.isFinite(t) || !Number.isFinite(sp)) continue;
+    pts.push({ t: Math.max(0, Math.min(1, t)), speed: Math.max(SPEED_MIN, Math.min(SPEED_MAX, sp)) });
+  }
+  if (pts.length < 2) return null;
+  pts.sort((a, b) => a.t - b.t);
+  const dedup: Array<{ t: number; speed: number }> = [];
+  for (const p of pts) {
+    const last = dedup[dedup.length - 1];
+    if (last && Math.abs(last.t - p.t) < 1e-6) dedup[dedup.length - 1] = p;
+    else dedup.push(p);
+  }
+  if (dedup.length < 2 || speedCurveIsFlat(dedup)) return null;
+  return dedup.map((p) => ({ t: Number(p.t.toFixed(4)), speed: Number(p.speed.toFixed(3)) }));
+}
+
+/**
+ * 归一化特效参数。返回 null = 无需写字段（无参数 / 全部等于默认值）。
+ * ★ 键必须来自效果注册表：拼错的键进不了表达式，却会让用户以为"我调了但没反应"。
+ */
+function normalizeFxParams(fxId: string, v: unknown): ClipSegment['fxParams'] | null {
+  if (!fxId || !v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const defs = fxParamsOf(fxId);
+  if (!defs.length) return null;
+  const m = v as Record<string, unknown>;
+  const out: Record<string, number> = {};
+  for (const d of defs) {
+    const raw = m[d.key];
+    if (raw == null) continue;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) continue;
+    const clamped = Number(Math.max(d.min, Math.min(d.max, n)).toFixed(4));
+    if (Math.abs(clamped - d.default) > 1e-6) out[d.key] = clamped;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * 归一化手动调节。返回 null = 全默认（不写字段）。
+ * ★ 值域按 ffmpeg 滤镜的安全区间收窄：越界值不会报错，只会让画面糊掉或爆掉（比报错更难查）。
+ */
+function normalizeAdjust(v: unknown): ClipSegment['adjust'] | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const m = v as Record<string, unknown>;
+  const pick = (key: string, lo: number, hi: number): number | undefined => {
+    const raw = m[key];
+    if (raw == null) return undefined;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return undefined;
+    return Number(Math.max(lo, Math.min(hi, n)).toFixed(3));
+  };
+  const brightness = pick('brightness', -0.5, 0.5);
+  const contrast = pick('contrast', 0.5, 1.8);
+  const saturation = pick('saturation', 0, 2.5);
+  const temperature = pick('temperature', -1, 1);
+  const sharpness = pick('sharpness', 0, 1);
+  const vignette = pick('vignette', 0, 1);
+  // 与默认值等价的项不写：工程文件要能一眼看出"用户到底调了什么"
+  const out = {
+    ...(brightness != null && Math.abs(brightness) > 0.001 ? { brightness } : {}),
+    ...(contrast != null && Math.abs(contrast - 1) > 0.001 ? { contrast } : {}),
+    ...(saturation != null && Math.abs(saturation - 1) > 0.001 ? { saturation } : {}),
+    ...(temperature != null && Math.abs(temperature) > 0.001 ? { temperature } : {}),
+    ...(sharpness != null && sharpness > 0.001 ? { sharpness } : {}),
+    ...(vignette != null && vignette > 0.001 ? { vignette } : {}),
+  };
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * 旋转角度归一化：只接受 90/180/270。
+ * ★ 0/缺省 = 不旋转 → 不写字段（工程文件里不该出现无意义的 rotate:0）。
+ */
+function normalizeRotate(v: unknown): ClipSegment['rotate'] | undefined {
+  const n = Number(v);
+  return n === 90 || n === 180 || n === 270 ? n : undefined;
+}
+
+/** 镜像归一化：h/v/both；其它值视为"无"。 */
+function normalizeFlip(v: unknown): ClipSegment['flip'] | undefined {
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === 'h' || s === 'v' || s === 'both' ? s : undefined;
 }
 
 /** 归一化画中画条目（时间钳制到 0~总长，由调用方给 total；这里先做结构与值域）。 */
@@ -421,6 +619,11 @@ export function applyClipOp(
         project.output.size = size;
       }
       if (args.fps != null) project.output.fps = Math.min(Math.max(Math.round(numOr(args.fps, 30)), 1), 120);
+      if (args.quality != null) {
+        const q = parseQuality(args.quality);
+        if (!q) return { ok: false, error: `quality 只能是 low / std / high：${String(args.quality)}` };
+        project.output.quality = q;
+      }
       touch();
       return { ok: true, project, note: `工程「${project.name}」${base ? '已更新元信息' : '已创建'}（${project.output.size}@${project.output.fps}）` };
     }
@@ -435,6 +638,11 @@ export function applyClipOp(
         project.output.size = size;
       }
       if (args.fps != null) project.output.fps = Math.min(Math.max(Math.round(numOr(args.fps, 30)), 1), 120);
+      if (args.quality != null) {
+        const q = parseQuality(args.quality);
+        if (!q) return { ok: false, error: `quality 只能是 low / std / high：${String(args.quality)}` };
+        project.output.quality = q;
+      }
       touch();
       return { ok: true, project, note: `导出规格改为 ${project.output.size}@${project.output.fps}` };
     }
@@ -453,6 +661,7 @@ export function applyClipOp(
           return { ok: false, error: `clips[${i}] 裁剪区间无效：${trimStart}s → ${trimEnd}s` };
         }
         const speed = c.speed == null ? undefined : Math.min(Math.max(numOr(c.speed, 1), 0.25), 4);
+        const speedCurve = normalizeSpeedCurve(c.speedCurve);
         const kb = c.kenburns as Record<string, unknown> | undefined;
         const mask = normalizeMask(c.mask);
         const transition = normalizeTransition(c.transition);
@@ -463,21 +672,31 @@ export function applyClipOp(
         // 特效 id 必须真实存在：写进一个拼错的 id 会让渲染"什么都没发生"却不报错
         const fxRaw = String(c.fx ?? '').trim().toLowerCase();
         const fx = FX_EFFECTS.some((e) => e.id === fxRaw) ? fxRaw : '';
+        const fxParams = fx ? normalizeFxParams(fx, c.fxParams) : null;
         const audioFile = String(c.audioFile ?? '').trim();
         const crop = normalizeCrop(c.crop);
         const keyframes = normalizeKeyframes(c.keyframes);
+        const rotate = normalizeRotate(c.rotate);
+        const flip = normalizeFlip(c.flip);
+        const adjust = normalizeAdjust(c.adjust);
+        const csRaw = c.colorStrength == null ? NaN : Number(c.colorStrength);
+        const colorStrength = Number.isFinite(csRaw) ? Math.max(0, Math.min(1, csRaw)) : undefined;
         const seg: ClipSegment = {
           id: nextId('c', project.clips),
           file,
           ...(label ? { label } : {}),
           ...(trimStart != null ? { trimStart } : {}),
           ...(trimEnd != null ? { trimEnd } : {}),
-          ...(speed != null && Math.abs(speed - 1) > 0.001 ? { speed } : {}),
+          ...(speed != null && !speedCurve && Math.abs(speed - 1) > 0.001 ? { speed } : {}),
+          ...(speedCurve ? { speedCurve } : {}),
           ...(colorPreset ? { colorPreset: colorPreset.toLowerCase() } : {}),
+          ...(colorStrength != null && Math.abs(colorStrength - 1) > 0.001 ? { colorStrength } : {}),
+          ...(adjust ? { adjust } : {}),
           ...(fx ? { fx } : {}),
+          ...(fxParams ? { fxParams } : {}),
           ...(fadeIn != null ? { fadeIn } : {}),
           ...(fadeOut != null ? { fadeOut } : {}),
-          ...(kb ? { kenburns: { direction: kb.direction === 'out' ? 'out' : 'in', duration: Math.max(1, numOr(kb.duration, 6)) } } : {}),
+          ...(kb ? { kenburns: { direction: kb.direction === 'out' ? 'out' : kb.direction === 'none' ? 'none' : 'in', duration: Math.max(1, numOr(kb.duration, 6)) } } : {}),
           ...(mask ? { mask } : {}),
           ...(transition ? { transition } : {}),
           ...(audioFile ? { audioFile } : {}),
@@ -485,6 +704,9 @@ export function applyClipOp(
           ...(c.volume != null ? { volume: Math.max(0, numOr(c.volume, 1)) } : {}),
           ...(crop ? { crop } : {}),
           ...(keyframes ? { keyframes } : {}),
+          ...(c.reverse === true ? { reverse: true } : {}),
+          ...(rotate ? { rotate } : {}),
+          ...(flip ? { flip } : {}),
         };
         project.clips.push(seg);
         added.push(seg.id);
@@ -499,7 +721,7 @@ export function applyClipOp(
       const cur = project.clips[loc.idx];
       const patch = (args.patch && typeof args.patch === 'object' ? args.patch : args) as Record<string, unknown>;
       // 允许 1 基序号定位后不传参数？不允许 —— 静默无变更等于骗人。
-      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'fx', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'crop', 'keyframes'];
+      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'colorStrength', 'adjust', 'fx', 'fxParams', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'crop', 'keyframes', 'reverse', 'rotate', 'flip'];
       if (!KEYS.some((k) => patch[k] !== undefined)) {
         return { ok: false, error: `update_clip 至少要改一个字段：${KEYS.join(' / ')}` };
       }
@@ -518,10 +740,25 @@ export function applyClipOp(
       if (patch.speed !== undefined) {
         const sp = Math.min(Math.max(numOr(patch.speed, 1), 0.25), 4);
         if (Math.abs(sp - 1) < 0.001) delete next.speed; else next.speed = sp;
+        // 恒定倍速与曲线互斥：设了倍速就清掉曲线
+        if (patch.speedCurve === undefined) delete next.speedCurve;
+      }
+      if (patch.speedCurve !== undefined) {
+        const sc = normalizeSpeedCurve(patch.speedCurve);
+        if (sc) { next.speedCurve = sc; delete next.speed; } else delete next.speedCurve;
       }
       if (patch.colorPreset !== undefined) {
         const cp = String(patch.colorPreset).trim().toLowerCase();
         if (cp) next.colorPreset = cp; else delete next.colorPreset;
+      }
+      if (patch.colorStrength !== undefined) {
+        const n = Number(patch.colorStrength);
+        if (Number.isFinite(n) && Math.abs(n - 1) > 0.001) next.colorStrength = Math.max(0, Math.min(1, n));
+        else delete next.colorStrength;
+      }
+      if (patch.adjust !== undefined) {
+        const a = normalizeAdjust(patch.adjust);
+        if (a) next.adjust = a; else delete next.adjust;
       }
       if (patch.fx !== undefined) {
         const fx = String(patch.fx).trim().toLowerCase();
@@ -532,11 +769,16 @@ export function applyClipOp(
           return { ok: false, error: `未知特效：${fx}（可选：${FX_EFFECTS.map((e) => e.id).join(' / ')}）` };
         } else next.fx = fx;
       }
+      // 特效参数：换了特效要重算（旧参数属于旧特效）；只改参数时按新 id 归一化
+      if (patch.fx !== undefined || patch.fxParams !== undefined) {
+        const p = normalizeFxParams(next.fx || '', patch.fxParams !== undefined ? patch.fxParams : next.fxParams);
+        if (p) next.fxParams = p; else delete next.fxParams;
+      }
       if (patch.fadeIn !== undefined) { const v = optionalPositive(patch.fadeIn); if (v == null) delete next.fadeIn; else next.fadeIn = v; }
       if (patch.fadeOut !== undefined) { const v = optionalPositive(patch.fadeOut); if (v == null) delete next.fadeOut; else next.fadeOut = v; }
       if (patch.kenburns !== undefined) {
         const kb = patch.kenburns as Record<string, unknown> | null;
-        if (kb && typeof kb === 'object') next.kenburns = { direction: kb.direction === 'out' ? 'out' : 'in', duration: Math.max(1, numOr(kb.duration, 6)) };
+        if (kb && typeof kb === 'object') next.kenburns = { direction: kb.direction === 'out' ? 'out' : kb.direction === 'none' ? 'none' : 'in', duration: Math.max(1, numOr(kb.duration, 6)) };
         else delete next.kenburns;
       }
       if (patch.mask !== undefined) {
@@ -565,6 +807,17 @@ export function applyClipOp(
       if (patch.keyframes !== undefined) {
         const kf = normalizeKeyframes(patch.keyframes);
         if (kf) next.keyframes = kf; else delete next.keyframes;
+      }
+      if (patch.reverse !== undefined) {
+        if (patch.reverse === true) next.reverse = true; else delete next.reverse;
+      }
+      if (patch.rotate !== undefined) {
+        const r = normalizeRotate(patch.rotate);
+        if (r) next.rotate = r; else delete next.rotate;
+      }
+      if (patch.flip !== undefined) {
+        const f = normalizeFlip(patch.flip);
+        if (f) next.flip = f; else delete next.flip;
       }
       project.clips[loc.idx] = next;
       touch();
@@ -750,8 +1003,12 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
       ...(c.trimStart != null ? { trimStart: c.trimStart } : {}),
       ...(c.trimEnd != null ? { trimEnd: c.trimEnd } : {}),
       ...(c.speed ? { speed: c.speed } : {}),
+      ...(c.speedCurve ? { speedCurve: c.speedCurve } : {}),
       ...(c.colorPreset ? { colorPreset: c.colorPreset } : {}),
+      ...(c.colorStrength != null ? { colorStrength: c.colorStrength } : {}),
+      ...(c.adjust ? { adjust: c.adjust } : {}),
       ...(c.fx ? { fx: c.fx } : {}),
+      ...(c.fxParams ? { fxParams: c.fxParams } : {}),
       ...(c.fadeIn ? { fadeIn: c.fadeIn } : {}),
       ...(c.fadeOut ? { fadeOut: c.fadeOut } : {}),
       ...(c.kenburns ? { kenburns: c.kenburns } : {}),
@@ -760,6 +1017,9 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
       ...(c.volume != null ? { volume: c.volume } : {}),
       ...(c.crop ? { crop: c.crop } : {}),
       ...(c.keyframes ? { keyframes: c.keyframes } : {}),
+      ...(c.reverse ? { reverse: true } : {}),
+      ...(c.rotate ? { rotate: c.rotate } : {}),
+      ...(c.flip ? { flip: c.flip } : {}),
     };
   });
   return {

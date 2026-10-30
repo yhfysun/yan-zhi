@@ -20,8 +20,8 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdir, rm, readFile } from 'node:fs/promises';
 import { runCmd } from './exec-cmd.js';
-import { MASK_KEYS, overlayAnchorOf } from '@yan-zhi/shared';
-import { assembleSegmentChain, segmentDuration } from './clip-render.js';
+import { MASK_KEYS, overlayAnchorOf, speedCurveOutToSrc } from '@yan-zhi/shared';
+import { assembleSegmentChain, segmentDuration, trimmedSourceLength } from './clip-render.js';
 import type { ClipProject } from './clip-project.js';
 
 interface FrameCacheEntry {
@@ -60,7 +60,7 @@ export interface PreviewFrameResult {
 function projectFingerprint(p: ClipProject): string {
   return JSON.stringify({
     o: p.output,
-    c: p.clips.map((c) => [c.id, c.file, c.trimStart, c.trimEnd, c.speed, c.colorPreset, c.fx, c.fadeIn, c.fadeOut, c.kenburns, c.mask, c.crop, c.keyframes]),
+    c: p.clips.map((c) => [c.id, c.file, c.trimStart, c.trimEnd, c.speed, c.speedCurve, c.colorPreset, c.colorStrength, c.adjust, c.fx, c.fxParams, c.fadeIn, c.fadeOut, c.kenburns, c.mask, c.crop, c.keyframes, c.reverse, c.rotate, c.flip]),
     // 画中画影响合成画面，必须进指纹（改了画中画不换帧 = 预览骗人）
     ov: (p.overlays || []).map((o) => [o.id, o.file, o.start, o.end, o.pos, o.scale]),
   });
@@ -71,7 +71,7 @@ function projectFingerprint(p: ClipProject): string {
  * 返回 null = t 超出成片范围（前端应夹住，不请求）。
  */
 export function locateTimeline(project: ClipProject, t: number, durations: Record<string, number>):
-  { segIndex: number; offsetInSeg: number; speed: number; trimStart: number } | null {
+  { segIndex: number; offsetInSeg: number; speed: number; trimStart: number; srcOffset: number } | null {
   let cursor = 0;
   for (let i = 0; i < project.clips.length; i++) {
     const seg = project.clips[i];
@@ -80,11 +80,21 @@ export function locateTimeline(project: ClipProject, t: number, durations: Recor
     const dur = isImg ? (seg.kenburns!.duration) : segmentDuration(seg, raw);
     if (dur <= 0) continue;
     if (t < cursor + dur || i === project.clips.length - 1) {
+      const offsetInSeg = Math.max(0, Math.min(dur, t - cursor));
+      const ts = seg.trimStart ?? 0;
+      // ★ 曲线变速下"输出偏移 → 源偏移"是非线性的：必须走共享的 speedCurveOutToSrc，
+      //   否则预览抽到的帧与成片同一时刻的画面不是同一帧（而且完全不报错）。
+      const srcOffset = isImg
+        ? 0
+        : seg.speedCurve?.length
+          ? ts + speedCurveOutToSrc(seg.speedCurve, offsetInSeg, trimmedSourceLength(seg, raw))
+          : ts + offsetInSeg * (seg.speed ?? 1);
       return {
         segIndex: i,
-        offsetInSeg: Math.max(0, Math.min(dur, t - cursor)),
-        speed: isImg ? 1 : (seg.speed ?? 1),
-        trimStart: seg.trimStart ?? 0,
+        offsetInSeg,
+        speed: isImg ? 1 : (seg.speedCurve?.length ? 1 : (seg.speed ?? 1)),
+        trimStart: ts,
+        srcOffset,
       };
     }
     cursor += dur;
@@ -130,9 +140,8 @@ export async function renderPreviewFrame(input: PreviewFrameInput): Promise<Prev
   try {
     await mkdir(workDir, { recursive: true });
 
-    // 段内时间 → 素材内的真实时间：变速后时长 = 素材时长/speed，
-    // 所以素材内偏移 = 段内偏移 × speed（trimStart 之前的平移单独加）
-    const inSource = loc.trimStart + loc.offsetInSeg * loc.speed;
+    // 段内时间 → 素材内的真实时间：曲线变速走非线性映射，恒定倍速走线性
+    const inSource = loc.srcOffset;
 
     const args: string[] = ['-y', '-v', 'error'];
     if (isImage) {

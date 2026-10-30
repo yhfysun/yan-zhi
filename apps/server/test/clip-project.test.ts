@@ -11,7 +11,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { applyClipOp, createEmptyProject, summarizeProject, type ClipProject } from '../src/services/clip-project';
-import { buildRenderPlan, segmentDuration, buildSrtFromTexts, buildSubtitleAssets } from '../src/services/clip-render';
+import { buildRenderPlan, segmentDuration, buildSrtFromTexts, buildSubtitleAssets, REVERSE_MAX_SEC } from '../src/services/clip-render';
+import { locateTimeline } from '../src/services/clip-preview';
 
 /** 连续应用多步 op，任一步失败即抛（测试里出错要立刻爆，不要静默） */
 function run(base: ClipProject | null, ops: Array<[string, Record<string, unknown>]>): ClipProject {
@@ -535,5 +536,390 @@ describe('buildRenderPlan · 裁剪/关键帧/画中画', () => {
     const r = buildRenderPlan({ project: proj, durations: { 'C:/a.mp4': 4 }, hasAudio: { 'C:/a.mp4': true }, workDir: 'C:/w', outFile: 'C:/w/o.mp4' });
     if (!r.ok) throw new Error(r.error);
     expect(JSON.stringify(r.plan.steps[0].args)).not.toContain('geq');
+  });
+});
+
+describe('关键帧缓动（ease）与端点锚', () => {
+  it('起点锚 {t:0,scale:1} 不再被丢弃（否则"从原尺寸推近"会变成全程常量）', () => {
+    const p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', keyframes: [
+      { t: 0, scale: 1 }, { t: 1, scale: 1.4 },
+    ] }] }]]);
+    const kf = p.clips[0].keyframes!;
+    expect(kf.map((k) => k.t)).toEqual([0, 1]);
+    expect(kf[0].scale).toBe(1);
+  });
+
+  it('整条曲线恒定（缩放恒 1）仍然整体丢弃 —— 不产生无效关键帧', () => {
+    const p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', keyframes: [
+      { t: 0, scale: 1 }, { t: 1, scale: 1 },
+    ] }] }]]);
+    expect(p.clips[0].keyframes).toBeUndefined();
+  });
+
+  it('ease 归一化：合法值保留、非法值丢弃；bezier 控制点钳制', () => {
+    const p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', keyframes: [
+      { t: 0, scale: 1, ease: 'inout' },
+      { t: 0.5, scale: 1.5, ease: 'nope' },
+      { t: 1, scale: 1, ease: 'bezier', bezier: [-1, 5, 2, 0.3] },
+    ] }] }]]);
+    const kf = p.clips[0].keyframes!;
+    expect(kf[0].ease).toBe('inout');
+    expect(kf[1].ease).toBeUndefined();
+    expect(kf[2].ease).toBe('bezier');
+    // x 钳到 0~1，y 放宽到 -1~2
+    expect(kf[2].bezier).toEqual([0, 2, 1, 0.3]);
+  });
+
+  it('缓动会让缩放表达式变长（插入采样点），线性则保持 1 段', () => {
+    const exprOf = (ease?: string) => {
+      const proj = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', keyframes: [
+        { t: 0, scale: 1, ...(ease ? { ease } : {}) }, { t: 1, scale: 1.4 },
+      ] }] }]]);
+      const r = buildRenderPlan({ project: proj, durations: { 'C:/a.mp4': 4 }, hasAudio: { 'C:/a.mp4': true }, workDir: 'C:/w', outFile: 'C:/w/o.mp4' });
+      if (!r.ok) throw new Error(r.error);
+      return JSON.stringify(r.plan.steps[0].args);
+    };
+    const countIf = (s: string) => (s.match(/if\(lt\(/g) || []).length;
+    expect(countIf(exprOf())).toBe(1);
+    expect(countIf(exprOf('inout'))).toBeGreaterThan(1);
+  });
+
+  it('透明度淡出：[{t:0,opacity:1},{t:1,opacity:0}] 不能退化成"整段全黑"', () => {
+    const proj = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', keyframes: [
+      { t: 0, opacity: 1 }, { t: 1, opacity: 0 },
+    ] }] }]]);
+    const r = buildRenderPlan({ project: proj, durations: { 'C:/a.mp4': 4 }, hasAudio: { 'C:/a.mp4': true }, workDir: 'C:/w', outFile: 'C:/w/o.mp4' });
+    if (!r.ok) throw new Error(r.error);
+    const s = JSON.stringify(r.plan.steps[0].args);
+    expect(s).toContain('geq=');
+    // 表达式必须随 T 变化（含 T），不能是常量 0
+    expect(s).toMatch(/a='255\*clip\([^']*T[^']*,0,1\)'/);
+    expect(s).not.toContain("a='255*clip(0,0,1)'");
+  });
+});
+
+describe('图片段 kenburns 方向（含定格用的 none）', () => {
+  it("direction='none' 保留：定格帧要的是「静止但可改时长」", () => {
+    const p = run(null, [['add_clip', { clips: [{ file: 'C:/a.png', kenburns: { direction: 'none', duration: 3 } }] }]]);
+    expect(p.clips[0].kenburns).toEqual({ direction: 'none', duration: 3 });
+  });
+
+  it('未知方向回落到 in；时长下限 1 秒', () => {
+    const p = run(null, [['add_clip', { clips: [{ file: 'C:/a.png', kenburns: { direction: 'weird', duration: 0.2 } }] }]]);
+    expect(p.clips[0].kenburns).toEqual({ direction: 'in', duration: 1 });
+  });
+
+  it("direction='none' 渲染成恒定缩放（z='1'），成片时长取 duration", () => {
+    const proj = run(null, [['add_clip', { clips: [{ file: 'C:/a.png', kenburns: { direction: 'none', duration: 3 } }] }]]);
+    const r = buildRenderPlan({
+      project: proj,
+      durations: { 'C:/a.png': 0 },
+      hasAudio: {},
+      imageFiles: ['C:/a.png'],
+      workDir: 'C:/w',
+      outFile: 'C:/w/o.mp4',
+    });
+    if (!r.ok) throw new Error(r.error);
+    expect(JSON.stringify(r.plan.steps[0].args)).toContain("zoompan=z='1'");
+    expect(r.plan.totalDuration).toBe(3);
+  });
+});
+
+describe('曲线变速（speedCurve）', () => {
+  it('归一化：排序 + 钳制；平直曲线与单点直接丢弃', () => {
+    const p = run(null, [['add_clip', { clips: [
+      { file: 'C:/a.mp4', speedCurve: [{ t: 1, speed: 9 }, { t: 0, speed: 0 }] },
+      { file: 'C:/b.mp4', speedCurve: [{ t: 0, speed: 1 }, { t: 1, speed: 1.01 }] },
+      { file: 'C:/c.mp4', speedCurve: [{ t: 0, speed: 1 }] },
+    ] }]]);
+    expect(p.clips[0].speedCurve).toEqual([{ t: 0, speed: 0.25 }, { t: 1, speed: 4 }]);
+    expect(p.clips[1].speedCurve).toBeUndefined();
+    expect(p.clips[2].speedCurve).toBeUndefined();
+  });
+
+  it('与恒定倍速互斥：设曲线清 speed，设 speed 清曲线', () => {
+    let p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', speed: 2, speedCurve: [{ t: 0, speed: 1 }, { t: 1, speed: 2 }] }] }]]);
+    expect(p.clips[0].speed).toBeUndefined();
+    expect(p.clips[0].speedCurve).toBeTruthy();
+    p = run(p, [['update_clip', { id: 'c1', patch: { speed: 1.5 } }]]);
+    expect(p.clips[0].speed).toBe(1.5);
+    expect(p.clips[0].speedCurve).toBeUndefined();
+  });
+
+  it('段时长按曲线算（快慢交替 ≠ 源长）', () => {
+    const p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', speedCurve: [{ t: 0, speed: 2 }, { t: 0.5, speed: 1 }, { t: 1, speed: 2 }] }] }]]);
+    const d = segmentDuration(p.clips[0], 10);
+    expect(d).toBeLessThan(10);
+    expect(d).toBeGreaterThan(4);
+  });
+
+  it('渲染：整段 → 8 片 → 拼接；片里带 setpts 与 atempo；总时长用曲线口径', () => {
+    const proj = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', speedCurve: [{ t: 0, speed: 1 }, { t: 1, speed: 2 }] }] }]]);
+    const r = buildRenderPlan({
+      project: proj, durations: { 'C:/a.mp4': 10 }, hasAudio: { 'C:/a.mp4': true },
+      workDir: 'C:/w', outFile: 'C:/w/o.mp4',
+    });
+    if (!r.ok) throw new Error(r.error);
+    const labels = r.plan.steps.map((s) => s.label);
+    expect(labels[0]).toContain('加工第 1 段');
+    expect(labels.filter((l) => l.startsWith('变速片')).length).toBe(8);
+    expect(labels.some((l) => l.includes('拼接变速片'))).toBe(true);
+    const all = JSON.stringify(r.plan.steps);
+    expect(all).toContain('setpts=PTS/');
+    expect(all).toContain('atempo=');
+    expect(r.plan.totalDuration).toBeLessThan(10);
+  });
+
+  it('预览定位：减速曲线下，输出中点对应的源时间 > 一半（非线性映射生效）', () => {
+    const proj = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', speedCurve: [{ t: 0, speed: 1 }, { t: 1, speed: 0.5 }] }] }]]);
+    const dur = segmentDuration(proj.clips[0], 10);
+    const loc = locateTimeline(proj, dur * 0.5, { 'C:/a.mp4': 10 });
+    expect(loc).toBeTruthy();
+    expect(loc!.srcOffset).toBeGreaterThan(5.3);
+    expect(loc!.srcOffset).toBeLessThan(6.5);
+  });
+});
+
+describe('导出质量档与封面帧', () => {
+  const planOf = (quality: string | undefined, fast = false) => {
+    const proj = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4' }] }]]);
+    if (quality) proj.output.quality = quality as 'low' | 'std' | 'high';
+    const r = buildRenderPlan({
+      project: proj,
+      durations: { 'C:/a.mp4': 4 },
+      hasAudio: { 'C:/a.mp4': true },
+      workDir: 'C:/w',
+      outFile: 'C:/w/o.mp4',
+      fast,
+    });
+    if (!r.ok) throw new Error(r.error);
+    return r.plan;
+  };
+
+  it('create / set_output 接受 quality，非法值报错（不静默回落）', () => {
+    const p = run(null, [['create', { quality: 'high' }]]);
+    expect(p.output.quality).toBe('high');
+    const r = applyClipOp(p, 'set_output', { quality: 'ultra' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('quality');
+  });
+
+  it('三档对应不同 crf 与音轨码率', () => {
+    expect(JSON.stringify(planOf('low').steps[0].args)).toContain('"-crf","28"');
+    expect(JSON.stringify(planOf('low').steps[0].args)).toContain('128k');
+    expect(JSON.stringify(planOf('high').steps[0].args)).toContain('"-crf","18"');
+    expect(JSON.stringify(planOf('high').steps[0].args)).toContain('256k');
+    // 未设档 → std
+    expect(JSON.stringify(planOf(undefined).steps[0].args)).toContain('"-crf","21"');
+    expect(JSON.stringify(planOf(undefined).steps[0].args)).toContain('192k');
+  });
+
+  it('预览档：固定 crf 30，且不出封面', () => {
+    const plan = planOf(undefined, true);
+    expect(JSON.stringify(plan.steps[0].args)).toContain('"-crf","30"');
+    expect(plan.cover).toBeUndefined();
+    expect(plan.steps.some((s) => s.label === '导出封面')).toBe(false);
+  });
+
+  it('正式导出附带封面任务：产物与成片同目录、从成片抽帧，且不污染 steps', () => {
+    const plan = planOf(undefined);
+    expect(plan.cover?.out).toBe('C:/w/o-cover.jpg');
+    expect(plan.cover?.args.join(' ')).toContain('C:/w/o.mp4');
+    // steps 的不变式是「末步产物 = 成片」，封面不能混进去
+    expect(plan.steps.some((s) => s.out.endsWith('.jpg'))).toBe(false);
+  });
+});
+
+describe('特效参数（fxParams）', () => {
+  const renderArgs = (seg: Record<string, unknown>) => {
+    const proj = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', ...seg }] }]]);
+    const r = buildRenderPlan({
+      project: proj,
+      durations: { 'C:/a.mp4': 4 },
+      hasAudio: { 'C:/a.mp4': true },
+      workDir: 'C:/w',
+      outFile: 'C:/w/o.mp4',
+    });
+    if (!r.ok) throw new Error(r.error);
+    return JSON.stringify(r.plan.steps[0].args);
+  };
+
+  it('只收注册表声明的键；越界钳制；等于默认值不落盘', () => {
+    const p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', fx: 'shake', fxParams: {
+      amplitude: 0.02, freq: 999, nope: 5,
+    } }] }]]);
+    // freq 钳到上限 40；nope 不是声明过的键 → 丢弃
+    expect(p.clips[0].fxParams).toEqual({ amplitude: 0.02, freq: 40 });
+  });
+
+  it('全部等于默认值 / 无参数特效 → 不写 fxParams', () => {
+    const p = run(null, [['add_clip', { clips: [
+      { file: 'C:/a.mp4', fx: 'shake', fxParams: { amplitude: 0.006 } },
+      { file: 'C:/b.mp4', fx: 'mirror', fxParams: { amplitude: 0.02 } },
+    ] }]]);
+    expect(p.clips[0].fxParams).toBeUndefined();
+    expect(p.clips[1].fxParams).toBeUndefined();
+  });
+
+  it('换特效会丢掉旧特效的参数；清空特效一并清参数', () => {
+    let p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', fx: 'shake', fxParams: { amplitude: 0.02 } }] }]]);
+    p = run(p, [['update_clip', { id: 'c1', patch: { fx: 'pixelate' } }]]);
+    expect(p.clips[0].fx).toBe('pixelate');
+    expect(p.clips[0].fxParams).toBeUndefined();
+    p = run(p, [['update_clip', { id: 'c1', patch: { fxParams: { blocks: 20 } } }]]);
+    expect(p.clips[0].fxParams).toEqual({ blocks: 20 });
+    p = run(p, [['update_clip', { id: 'c1', patch: { fx: '' } }]]);
+    expect(p.clips[0].fxParams).toBeUndefined();
+  });
+
+  it('渲染串带上参数值（马赛克块数）', () => {
+    expect(renderArgs({ fx: 'pixelate', fxParams: { blocks: 20 } })).toContain('iw/20');
+  });
+
+  it('默认参数渲染串里不留占位符', () => {
+    const s = renderArgs({ fx: 'bloom' });
+    expect(s).toContain('gblur=sigma=14');
+    expect(s).not.toContain('{sigma}');
+  });
+});
+
+describe('手动调色（adjust）与滤镜强度', () => {
+  const renderArgs = (seg: Record<string, unknown>) => {
+    const proj = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', ...seg }] }]]);
+    const r = buildRenderPlan({
+      project: proj,
+      durations: { 'C:/a.mp4': 4 },
+      hasAudio: { 'C:/a.mp4': true },
+      workDir: 'C:/w',
+      outFile: 'C:/w/o.mp4',
+    });
+    if (!r.ok) throw new Error(r.error);
+    return JSON.stringify(r.plan.steps[0].args);
+  };
+
+  it('归一化：越界钳制，等于默认值的项不落盘', () => {
+    const p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', adjust: {
+      brightness: 9, contrast: 1, saturation: 0.5, temperature: -9, sharpness: -1, vignette: 0,
+    } }] }]]);
+    // brightness 钳到 0.5、temperature 钳到 -1；contrast/sharpness/vignette 是默认值 → 丢弃
+    expect(p.clips[0].adjust).toEqual({ brightness: 0.5, saturation: 0.5, temperature: -1 });
+  });
+
+  it('全默认的 adjust 不写字段；update_clip 传 null 可清除', () => {
+    let p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', adjust: { brightness: 0, contrast: 1 } }] }]]);
+    expect(p.clips[0].adjust).toBeUndefined();
+    p = run(p, [['update_clip', { id: 'c1', patch: { adjust: { vignette: 0.6 } } }]]);
+    expect(p.clips[0].adjust).toEqual({ vignette: 0.6 });
+    p = run(p, [['update_clip', { id: 'c1', patch: { adjust: null } }]]);
+    expect(p.clips[0].adjust).toBeUndefined();
+  });
+
+  it('滤镜强度 1 = 直接串联；<1 走 split+blend 按比例混合', () => {
+    const full = renderArgs({ colorPreset: 'cinema' });
+    expect(full).toContain('colorbalance');   // cinema 预设的滤镜串
+    expect(full).not.toContain('all_opacity');
+
+    const half = renderArgs({ colorPreset: 'cinema', colorStrength: 0.5 });
+    expect(half).toContain('split[csA][csB]');
+    expect(half).toContain('all_opacity=0.500');
+  });
+
+  it('强度越界钳到 0~1；钳完等于 1 就不落字段', () => {
+    const p = run(null, [['add_clip', { clips: [
+      { file: 'C:/a.mp4', colorPreset: 'warm', colorStrength: 5 },
+      { file: 'C:/b.mp4', colorPreset: 'warm', colorStrength: 1 },
+      { file: 'C:/c.mp4', colorPreset: 'warm', colorStrength: 0.3 },
+    ] }]]);
+    expect(p.clips[0].colorStrength).toBeUndefined();   // 5 → 钳到 1 → 与默认同
+    expect(p.clips[1].colorStrength).toBeUndefined();
+    expect(p.clips[2].colorStrength).toBe(0.3);
+  });
+
+  it('手动调节顺序：eq → colorbalance → unsharp → vignette（暗角必须最后）', () => {
+    const s = renderArgs({ adjust: { brightness: 0.1, temperature: 0.5, sharpness: 0.6, vignette: 0.4 } });
+    expect(s).toContain('eq=brightness=0.100');
+    expect(s).toContain('colorbalance=rs=0.075');
+    expect(s).toContain('unsharp=5:5:0.900');
+    expect(s).toContain('vignette=angle=PI/3.80');
+    expect(s.indexOf('unsharp')).toBeLessThan(s.indexOf('vignette'));
+  });
+
+  it('预设 + 手动调节可叠加（预设在前）', () => {
+    const s = renderArgs({ colorPreset: 'cinema', adjust: { brightness: 0.08 } });
+    const iPreset = s.indexOf('colorbalance=rs=-.06');
+    const iAdjust = s.indexOf('eq=brightness=0.080');
+    expect(iPreset).toBeGreaterThan(-1);
+    expect(iAdjust).toBeGreaterThan(iPreset);
+  });
+});
+
+describe('片段方向：旋转 / 镜像 / 倒放', () => {
+  const oneClip = (seg: Record<string, unknown>) =>
+    run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', ...seg }] }]]);
+
+  const renderArgs = (proj: ClipProject, dur = 4) => {
+    const r = buildRenderPlan({
+      project: proj,
+      durations: { 'C:/a.mp4': dur },
+      hasAudio: { 'C:/a.mp4': true },
+      workDir: 'C:/w',
+      outFile: 'C:/w/o.mp4',
+    });
+    if (!r.ok) throw new Error(r.error);
+    return JSON.stringify(r.plan.steps[0].args);
+  };
+
+  it('归一化：rotate 只认 90/180/270、flip 只认 h/v/both、reverse 只认 true', () => {
+    const p = oneClip({ rotate: 90, flip: 'h', reverse: true });
+    expect(p.clips[0].rotate).toBe(90);
+    expect(p.clips[0].flip).toBe('h');
+    expect(p.clips[0].reverse).toBe(true);
+
+    const bad = oneClip({ rotate: 45, flip: 'diag', reverse: 'yes' });
+    expect(bad.clips[0].rotate).toBeUndefined();
+    expect(bad.clips[0].flip).toBeUndefined();
+    expect(bad.clips[0].reverse).toBeUndefined();
+  });
+
+  it('update_clip 能改也能清（rotate:0 / flip:"" / reverse:false）', () => {
+    let p = oneClip({ rotate: 180, flip: 'v', reverse: true });
+    expect(p.clips[0].rotate).toBe(180);
+    p = run(p, [['update_clip', { id: 'c1', patch: { rotate: 0, flip: '', reverse: false } }]]);
+    expect(p.clips[0].rotate).toBeUndefined();
+    expect(p.clips[0].flip).toBeUndefined();
+    expect(p.clips[0].reverse).toBeUndefined();
+  });
+
+  it('旋转必须在规格化之前（转 90° 后宽高互换，先归一化会破坏 concat 规格）', () => {
+    const s = renderArgs(oneClip({ rotate: 90 }));
+    expect(s).toContain('transpose=1');
+    expect(s.indexOf('transpose=1')).toBeLessThan(s.indexOf('scale='));
+  });
+
+  it('镜像写 hflip / vflip', () => {
+    expect(renderArgs(oneClip({ flip: 'h' }))).toContain('hflip');
+    expect(renderArgs(oneClip({ flip: 'v' }))).toContain('vflip');
+    expect(renderArgs(oneClip({ flip: 'both' }))).toContain('hflip,vflip');
+  });
+
+  it('倒放：视频 reverse 排在淡入之前，音轨同步 areverse', () => {
+    const s = renderArgs(oneClip({ reverse: true, fadeIn: 1 }));
+    expect(s).toContain(',reverse,fade=t=in');
+    expect(s).toContain('areverse');
+  });
+
+  it(`倒放超长（> ${REVERSE_MAX_SEC}s）直接拒绝，并说清是内存原因`, () => {
+    const proj = oneClip({ reverse: true });
+    const r = buildRenderPlan({
+      project: proj,
+      durations: { 'C:/a.mp4': REVERSE_MAX_SEC + 5 },
+      hasAudio: { 'C:/a.mp4': true },
+      workDir: 'C:/w',
+      outFile: 'C:/w/o.mp4',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('上限');
+    expect(r.error).toContain('reverse');
   });
 });
