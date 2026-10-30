@@ -1,6 +1,6 @@
 // 远控扫码载荷解析守门：二维码 = 带码 URL；系统相机/手滑也可能给出纯码文本。
 import { describe, expect, it } from 'vitest';
-import { parseRcScanPayload } from './rcScan';
+import { parseRcScanPayload, normalizeHostInput } from './rcScan';
 
 describe('parseRcScanPayload', () => {
   it('标准载荷：?code= 的裸路径 URL → origin + 授权码', () => {
@@ -37,5 +37,37 @@ describe('parseRcScanPayload', () => {
       host: 'http://10.0.0.5:3001',
       code: 'a b',
     });
+  });
+});
+
+describe('normalizeHostInput', () => {
+  it('粘整条邀请链接 → 拆成 origin + 授权码（不用再手填码）', () => {
+    expect(normalizeHostInput('http://192.168.10.63:3001/remote?code=hc9c-hfba')).toEqual({
+      host: 'http://192.168.10.63:3001',
+      code: 'hc9c-hfba',
+    });
+  });
+
+  it('带 hash 的最终 URL（?code= 在 query 与 hash 各一份）也拆得开', () => {
+    expect(normalizeHostInput('http://192.168.10.63:3001/remote?code=hc9c-hfba#/remote?code=hc9c-hfba')).toEqual({
+      host: 'http://192.168.10.63:3001',
+      code: 'hc9c-hfba',
+    });
+  });
+
+  it('裸 ip[:port] 补 http://；末尾斜杠去掉', () => {
+    expect(normalizeHostInput('192.168.10.63:3001')).toEqual({ host: 'http://192.168.10.63:3001' });
+    expect(normalizeHostInput('nas:3001/')).toEqual({ host: 'http://nas:3001' });
+    expect(normalizeHostInput('rc.example.com')).toEqual({ host: 'http://rc.example.com' });
+  });
+
+  it('只带主机不带 code 的链接 → 只给地址', () => {
+    expect(normalizeHostInput('http://10.0.0.5:3001/remote')).toEqual({ host: 'http://10.0.0.5:3001' });
+  });
+
+  it('纯授权码/无关文本不当地址，返回空（输入框保持原样）', () => {
+    expect(normalizeHostInput('hc9c-hfba')).toEqual({});
+    expect(normalizeHostInput('随便写的')).toEqual({});
+    expect(normalizeHostInput('')).toEqual({});
   });
 });

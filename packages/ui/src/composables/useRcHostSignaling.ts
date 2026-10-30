@@ -94,6 +94,8 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
 
   let hostKey = '';
   let ws: WebSocket | null = null;
+  /** 当前这条 host WS 是否真的连上过：区分「auth 失败」与「连上后断开」 */
+  let wsOpened = false;
   let pollTimer: number | null = null;
   let pingTimer: number | null = null;
   /** 进行中的 WebRTC 连接：sessionId → RTCPeerConnection */
@@ -111,8 +113,14 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
 
   function askConfirm(req: RcConfirmRequest): Promise<RcConfirmResult> {
     if (options.requestConfirm) {
-      return options.requestConfirm(req).catch(() => ({ allow: false, reason: 'confirm-failed' }));
+      return options.requestConfirm(req).catch((e: unknown) => {
+        console.warn('[rc-host] 确认请求失败：', e);
+        return { allow: false, reason: 'confirm-failed' };
+      });
     }
+    // 没有确认面 = 只能拒绝，但必须留痕：否则被控端「静默拒绝」，
+    // 控制端只看到会话被结束，两边都查不出原因
+    console.warn('[rc-host] 未提供 requestConfirm，配对请求被自动拒绝');
     return Promise.resolve({ allow: false, reason: 'no-confirm-handler' });
   }
 
@@ -212,12 +220,18 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
       void onMessage(msg);
     };
     sock.onclose = () => {
+      const opened = wsOpened;
+      wsOpened = false;
       connected.value = false;
       if (pingTimer) {
         clearInterval(pingTimer);
         pingTimer = null;
       }
       ws = null;
+      // 没连上就断了 = 多半 host key 已失效（被控端/插件重启后 key 会换）：
+      // 丢掉缓存，下一轮 6s 轮询重新取一次再连，否则会拿着旧 key 永远连不上，
+      // 控制端的确认请求也就永远送不到确认弹窗（实报「请求了对方没反应」）。
+      if (!opened) hostKey = '';
       teardownPcs();
       rtcIceServers.value = [];
       // 会话随 host WS 断开全部结束（服务端同口径）→ 托盘状态立即校正
@@ -240,6 +254,8 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
     const type = String(msg.type || '');
     switch (type) {
       case 'host.hello':
+        // 鉴权通过的唯一确证：服务端先校验 host key 才会回 hello
+        wsOpened = true;
         // 待确认会话随后逐条以 session.pending 下发，这里无需处理
         break;
       case 'session.pending':
@@ -324,17 +340,23 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
   async function handlePending(msg: Record<string, unknown>): Promise<void> {
     const device = String(msg.device || '未命名设备');
     const confirmId = String(msg.confirmId || '');
+    notify('info', `收到配对请求：${device}`);
     await refreshDisplays();
     const res = await askConfirm({
       kind: 'pair',
       device,
       confirmId,
-      displays: displays.value,
-      defaultDisplayId: captureDisplayId.value,
+      // ★ 必须是纯对象：displays 是 ref 的响应式代理，直接过 IPC 会
+      //   「An object could not be cloned」→ requestConfirm 立刻 reject →
+      //   被控端静默拒绝、确认弹窗永远不出现（实报「请求了对方没反应」）。
+      displays: displays.value.map((d) => ({ ...d })),
+      defaultDisplayId: String(captureDisplayId.value || ''),
     });
     if (res.displayId && displays.value.some((d) => d.id === res.displayId)) {
       captureDisplayId.value = res.displayId;
     }
+    // 静默拒绝是排查黑洞：把结果和原因落一行，控制端/被控端两边都能对上
+    notify('info', `配对确认：${res.allow ? '允许' : `拒绝${res.reason ? `（${res.reason}）` : ''}`} · ${device}`);
     if (res.allow) await applyCaptureDisplay(); // 弹窗选的采集源先对主进程生效，随后 handler 按此挑源
     if (!ws || ws.readyState !== 1) return;
     try {

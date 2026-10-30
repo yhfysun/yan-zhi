@@ -27,3 +27,23 @@ export function parseRcScanPayload(text: string): RcScanTarget {
     return { code: t.replace(/\s+/g, '') };
   }
 }
+
+/** 裸主机：带点（192.168.1.100 / host.local）或带端口（nas:3001）。
+ *  纯授权码形如 `hc9c-hfba` 两点都不占，因此不会被误当成地址。 */
+const BARE_HOST = /^(?:[\w-]+(?:\.[\w-]+)+(?::\d+)?|[\w-]+:\d+)(?:\/|$)/;
+
+/**
+ * 「被控端地址」输入框规范化（粘贴邀请链接的入口）。
+ *
+ * 用户常把整条邀请链接 `http://ip:port/remote?code=授权码` 直接粘进地址框：
+ * 解析成 origin + 授权码，避免再手填授权码；裸 ip[:port] 补 http://（fetch 要绝对 URL）。
+ * 认不出来（纯授权码等）返回空对象，调用方保持输入框原样。
+ */
+export function normalizeHostInput(text: string): RcScanTarget {
+  const t = String(text || '').trim();
+  if (!t) return {};
+  const parsed = parseRcScanPayload(t);
+  if (parsed.host) return parsed;
+  if (BARE_HOST.test(t)) return { host: `http://${t.replace(/\/+$/, '')}` };
+  return {};
+}

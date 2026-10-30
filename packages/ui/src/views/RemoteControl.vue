@@ -28,7 +28,10 @@
               <option value="">＋ 手动输入新地址</option>
               <option v-for="p in peers" :key="p.host" :value="p.host">{{ peerLabel(p) }}</option>
             </select>
-            <input v-model="form.host" class="rc-input" placeholder="http://192.168.1.100:3001（同源时无需修改）" spellcheck="false" />
+            <input
+              v-model="form.host" class="rc-input" placeholder="http://192.168.1.100:3001（也可粘贴被控端邀请链接）"
+              spellcheck="false" @paste="onHostPaste" @change="adoptHostInput"
+            />
             <label class="rc-label">授权码</label>
             <input
               v-model="form.code" class="rc-input rc-code" placeholder="被控端「设置 → 局域网」或插件页查看"
@@ -78,6 +81,11 @@
               </div>
               <div class="rc-host-line"><span class="rc-k2">控制端地址</span><code class="rc-host-addr">{{ hostPreferredIp ? `http://${hostPreferredIp}:${hostPort}/remote` : '—' }}</code></div>
               <div class="rc-host-line"><span class="rc-k2">通道</span><span class="rc-host-mode">{{ hostMode === 'webrtc-capable' ? 'WebRTC 低延迟（本机界面已就绪）' : '待会话评估（连入时优先 WebRTC）' }}</span></div>
+              <div v-if="hostPortRule !== null" class="rc-host-line">
+                <span class="rc-k2">防火墙</span>
+                <span class="rc-host-mode">{{ hostPortRule ? `已放行 TCP ${hostPort}` : `未放行 TCP ${hostPort}（其它设备连不进来）` }}</span>
+                <button v-if="!hostPortRule" class="rc-btn" :disabled="hostPortBusy" @click="openLanPort">{{ hostPortBusy ? '处理中…' : '开放端口' }}</button>
+              </div>
               <div class="rc-host-actions">
                 <button class="rc-btn" @click="rotateHostCode">换一个码</button>
                 <button class="rc-btn" @click="copyHostInvite">复制邀请</button>
@@ -103,6 +111,7 @@
             <div class="rc-spinner"></div>
             <div class="rc-wait-title">正在等待被控端确认…</div>
             <div class="rc-wait-sub">请在电脑上查看「远程控制」确认弹窗，点击允许</div>
+            <div v-if="confirmLeft > 0" class="rc-wait-sub">还有 {{ confirmLeft }} 秒未确认将自动取消</div>
           </div>
           <button class="rc-btn" @click="abortPair">取消</button>
         </template>
@@ -397,7 +406,8 @@ import type { CSSProperties } from 'vue';
 import { ElMessage } from 'element-plus';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
-import { parseRcScanPayload } from '../utils/rcScan';
+import { parseRcScanPayload, normalizeHostInput } from '../utils/rcScan';
+import { describeConnectError } from '../utils/rcError';
 import { RemoteGestureRecognizer, type RemoteGestureEvent } from '../utils/remote-gesture';
 import { parseNetworkIpResponse, sortLanIps, pickDefaultLanIp, isVirtualNic, type LanIp } from '../utils/lanIp';
 import {
@@ -416,6 +426,11 @@ interface RcDisplayInfo { id: string; label: string; primary: boolean; x: number
 interface RcIceServer { urls: string[]; username?: string; credential?: string }
 
 const RC_FILE_MAX = 500 * 1024 * 1024;
+/** 配对请求超时：地址不通时 fetch 会挂到系统 TCP 超时（几分钟），必须自己掐断 */
+const PAIR_TIMEOUT_MS = 10_000;
+/** 等待被控端点确认的上限：控制端不陪着无限转圈（服务端 pending 留 120s，
+ *  晚到的「允许」不会白等 —— 它会因为没有控制端通道被服务端自动释放） */
+const CONFIRM_TIMEOUT_MS = 30_000;
 /** 悬浮球空闲变暗间隔（ms）：与原型一致 4s */
 const BALL_DIM_MS = 4000;
 
@@ -618,6 +633,16 @@ let base = window.location.origin;
 let webrtcWatchdog: number | null = null;
 let pingTimer: number | null = null;
 let jpegBitmap: ImageBitmap | null = null;
+/** 待确认倒计时（秒）：pending 面板展示，0 = 未在等待 */
+const confirmLeft = ref(0);
+let confirmTimer = 0;
+let confirmDeadline = 0;
+/** 本轮待确认的 confirmId：通道没建起来时凭它重连，服务端据此补发 pending/granted */
+let pendingConfirmId = '';
+/** 正在为 pending 重建通道：这段时间的 onclose 不当成「连接失败」报错 */
+let pendingRecovering = false;
+/** 本次 WebSocket 是否真的连上过：区分「连不上」与「连上后断了」 */
+let wsOpened = false;
 
 // ---- 设备身份（每个被控端一套 deviceId/deviceToken，存 localStorage）----
 const identityKey = (b: string) => `rc:identity:${b}`;
@@ -812,48 +837,144 @@ const ballStyle = computed<CSSProperties>(() => (ballPos.x < 0
 const fxStyle = computed<CSSProperties>(() => ({ left: `${fx.x}px`, top: `${fx.y}px` }));
 
 // ---- 配对 ----
+/** 地址框里粘的是整条邀请链接（http://ip:port/remote?code=xxx）时，拆成 origin + 授权码；
+ *  裸 ip[:port] 补 http://。认不出来就原样保留（纯授权码别乱改）。 */
+function adoptHostInput(): void {
+  const t = form.host.trim();
+  if (!t) return;
+  const parsed = normalizeHostInput(t);
+  if (!parsed.host) return;
+  form.host = parsed.host;
+  // 链接里的码是显式意图，覆盖「上次记住的码」与手输残留
+  if (parsed.code) form.code = parsed.code;
+}
+/** 粘贴时 v-model 还没落值，等一拍再解析 */
+function onHostPaste(): void {
+  setTimeout(adoptHostInput, 0);
+}
+
 async function pair(): Promise<void> {
+  adoptHostInput();
   const code = form.code.trim();
   if (!code) return;
   pairing.value = true;
   base = normBase(form.host);
   const id = loadIdentity(base);
+  const ac = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    ac.abort();
+  }, PAIR_TIMEOUT_MS);
+  const fail = (err: unknown): void => {
+    const e = timedOut ? Object.assign(new Error('timeout'), { name: 'TimeoutError' }) : err;
+    ElMessage.error({ message: describeConnectError(e, { host: base, timeoutMs: PAIR_TIMEOUT_MS }).message, duration: 6000 });
+  };
   try {
-    const res = await fetch(apiOf(base, '/pair'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        code,
-        deviceId: id.deviceId,
-        deviceToken: id.deviceToken,
-        deviceName: deviceName(),
-      }),
-    });
-    const body = await res.json();
-    if (body.error) throw new Error(body.error);
+    let res: Response;
+    try {
+      res = await fetch(apiOf(base, '/pair'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          deviceId: id.deviceId,
+          deviceToken: id.deviceToken,
+          deviceName: deviceName(),
+        }),
+        signal: ac.signal,
+      });
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    let body: { error?: string; data?: { deviceToken?: string; status?: string; token?: string; confirmId?: string } };
+    try {
+      body = await res.json();
+    } catch (e) {
+      fail(e); // 不是 JSON：多半地址指向了别的网站
+      return;
+    }
+    if (body.error) {
+      ElMessage.error({ message: `配对失败：${body.error}`, duration: 6000 });
+      return;
+    }
+    if (!res.ok) {
+      ElMessage.error({ message: `配对失败：被控端返回 HTTP ${res.status}`, duration: 6000 });
+      return;
+    }
     try { localStorage.setItem(RC_LAST_HOST_KEY, base); } catch { /* 隐私模式忽略 */ }
     // 被控端认了这次配对（含待确认）才记：地址 + 这次用的授权码，下次下拉直接选
     rememberPeer(base);
     const d = body.data || {};
     if (d.deviceToken) saveIdentity(base, d.deviceToken);
     if (d.status === 'granted' && d.token) {
+      stopConfirmWatch();
       sessionToken = d.token;
       openWs(`token=${encodeURIComponent(sessionToken)}`);
     } else if (d.status === 'pending' && d.confirmId) {
       phase.value = 'pending';
-      openWs(`confirmId=${encodeURIComponent(d.confirmId)}`);
+      pendingConfirmId = d.confirmId;
+      startConfirmWatch();
+      // 首连也走心跳那条路：连不上就每个心跳重试，而不是直接判配对失败
+      pendingHeartbeat();
     } else {
-      throw new Error('配对响应异常');
+      ElMessage.error({ message: '配对失败：被控端返回的数据不完整（没有授权令牌也没有待确认凭据）', duration: 6000 });
     }
-  } catch (e) {
-    ElMessage.error((e as Error)?.message || '配对失败');
   } finally {
+    window.clearTimeout(timer);
     pairing.value = false;
   }
 }
 function abortPair(): void {
-  cleanup();
+  stopConfirmWatch();
+  // 先退到 setup 再关通道：否则 onclose 会再弹一次「连接已断开」
   phase.value = 'setup';
+  cleanup();
+}
+
+/** 等待被控端确认的倒计时：超时按「未确认」收尾，不让用户对着转圈等下去 */
+function startConfirmWatch(): void {
+  stopConfirmWatch();
+  const secs = Math.round(CONFIRM_TIMEOUT_MS / 1000);
+  confirmDeadline = Date.now() + CONFIRM_TIMEOUT_MS;
+  confirmLeft.value = secs;
+  confirmTimer = window.setInterval(() => {
+    const left = Math.max(0, Math.ceil((confirmDeadline - Date.now()) / 1000));
+    confirmLeft.value = left;
+    if (left > 0) {
+      // 每 3 秒敲一次服务端：通道活着就 pair.wait（丢了 granted 也能补发），
+      // 通道没建起来就重连 —— 否则被控端点「允许」时本端没通道，只能干等 30 秒
+      if (left % 3 === 0) void pendingHeartbeat();
+      return;
+    }
+    stopConfirmWatch();
+    phase.value = 'setup';
+    cleanup();
+    ElMessage.error({
+      message: `等待确认超时：被控端 ${secs} 秒内没有确认（可能没人在那台电脑前，或确认弹窗被忽略了），请重试`,
+      duration: 8000,
+    });
+  }, 1000);
+}
+/** pending 心跳：通道通就 pair.wait，通道不通就凭 confirmId 重连（服务端会补发状态） */
+function pendingHeartbeat(): void {
+  if (phase.value !== 'pending' || !pendingConfirmId) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    send({ type: 'pair.wait' });
+    return;
+  }
+  if (ws && ws.readyState === WebSocket.CONNECTING) return;
+  pendingRecovering = true;
+  openWs(`confirmId=${encodeURIComponent(pendingConfirmId)}`);
+  window.setTimeout(() => { pendingRecovering = false; }, 3000);
+}
+function stopConfirmWatch(): void {
+  if (confirmTimer) {
+    clearInterval(confirmTimer);
+    confirmTimer = 0;
+  }
+  confirmLeft.value = 0;
 }
 
 // ---- 扫码连接（jsQR 摄像头解码；载荷解析见 utils/rcScan.ts）----
@@ -938,6 +1059,9 @@ const hostLoaded = ref(false);
 const hostPluginEnabled = ref(false);
 const hostCode = ref('');
 const hostMode = ref('');
+/** 防火墙入站放行状态：null=未检测（纯 Web 宿主 / 非 Windows），false=未开放 */
+const hostPortRule = ref<boolean | null>(null);
+const hostPortBusy = ref(false);
 const hostIps = ref<LanIp[]>([]);
 const hostPort = ref(3001);
 const hostQrUrl = ref('');
@@ -1037,10 +1161,56 @@ async function loadHostInfo(): Promise<void> {
     hostLoaded.value = true;
   }
   await renderHostQr();
+  void refreshPortState();
 }
 
-async function renderHostQr(): Promise<void> {
-  const ip = hostPreferredIp.value;
+/**
+ * 局域网入站端口：Windows 防火墙默认拦入站，其它设备连不进来时表现为
+ * 「地址能拼出来但控制端一直等待/连不上」。桌面端可检测 + 一键授权开放。
+ */
+type RcPortBridge = {
+  rcPortStatus?: () => Promise<{ ok?: boolean; port?: number; listening?: boolean; ruleExists?: boolean }>;
+  rcPortOpen?: () => Promise<{ ok?: boolean; already?: boolean; error?: string }>;
+};
+const rcPortBridge = (): RcPortBridge | null => (window as unknown as { electronAPI?: RcPortBridge }).electronAPI || null;
+
+async function refreshPortState(): Promise<void> {
+  const bridge = rcPortBridge();
+  if (!bridge?.rcPortStatus) {
+    hostPortRule.value = null; // 纯 Web 宿主：没有本机防火墙可管
+    return;
+  }
+  try {
+    const r = await bridge.rcPortStatus();
+    hostPortRule.value = r?.ok ? !!r.ruleExists : null;
+  } catch {
+    hostPortRule.value = null;
+  }
+}
+
+async function openLanPort(): Promise<void> {
+  const bridge = rcPortBridge();
+  if (!bridge?.rcPortOpen) {
+    ElMessage.info(`请在系统防火墙里手动放行本机 TCP ${hostPort.value}`);
+    return;
+  }
+  hostPortBusy.value = true;
+  try {
+    const r = await bridge.rcPortOpen();
+    if (r?.ok) {
+      ElMessage.success(r.already ? '防火墙已放行该端口' : '已开放端口（若弹出系统授权窗口请在弹窗里点「是」）');
+    } else {
+      ElMessage.error(r?.error || '开放端口失败');
+    }
+  } catch (e) {
+    ElMessage.error((e as Error)?.message || '开放端口失败');
+  } finally {
+    hostPortBusy.value = false;
+    await refreshPortState();
+  }
+}
+
+async function renderHostQr(): Promise<void> {  const ip = hostPreferredIp.value;
   if (!ip || !hostCode.value) { hostQrUrl.value = ''; return; }
   try {
     hostQrUrl.value = await QRCode.toDataURL(`http://${ip}:${hostPort.value}/remote?code=${encodeURIComponent(hostCode.value)}`, { width: 220, margin: 1 });
@@ -1085,17 +1255,19 @@ function resetToSetup(): void {
 // ---- WS ----
 function openWs(qs: string): void {
   cleanupSocket();
+  wsOpened = false;
   let sock: WebSocket;
   try {
     sock = new WebSocket(wsOf(base, `/session/ws?${qs}`));
-  } catch (e) {
-    ElMessage.error((e as Error)?.message || '连接失败');
+  } catch {
     phase.value = 'setup';
+    ElMessage.error({ message: `连接失败：远控地址格式不对（${base}），检查被控端地址`, duration: 6000 });
     return;
   }
   sock.binaryType = 'arraybuffer';
   ws = sock;
   sock.onopen = () => {
+    wsOpened = true;
     if (phase.value === 'setup' && sessionToken) phase.value = 'live';
     pingTimer = window.setInterval(() => send({ type: 'ping', t: Date.now() }), 10_000);
   };
@@ -1117,10 +1289,24 @@ function openWs(qs: string): void {
       clearInterval(pingTimer);
       pingTimer = null;
     }
-    if (phase.value !== 'ended' && phase.value !== 'setup') {
-      phase.value = 'setup';
-      ElMessage.error('连接已断开');
+    const wasOpen = wsOpened;
+    wsOpened = false;
+    // 等待确认期间的重连尝试：失败不报错、不退出 pending（下一拍还会再试，
+    // 首连就失败时也不该直接打断用户已经排队的配对请求）
+    if (pendingRecovering && phase.value === 'pending') {
+      ws = null;
+      return;
     }
+    if (phase.value === 'ended' || phase.value === 'setup') return;
+    stopConfirmWatch();
+    phase.value = 'setup';
+    cleanup();
+    ElMessage.error({
+      message: wasOpen
+        ? '连接已断开：与被控端的实时通道中断（网络波动，或被控端关闭了远控）'
+        : `连接不上被控端（${base}）：配对已受理，但实时通道没建起来（端口/防火墙，或被控端刚关掉远控）`,
+      duration: 8000,
+    });
   };
   sock.onerror = () => { /* onclose 统一收尾 */ };
 }
@@ -1129,9 +1315,15 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
   const type = String(msg.type || '');
   switch (type) {
     case 'pair.pending':
-      phase.value = 'pending';
+      // 心跳会反复收到同一状态：已在等待就不要重置倒计时（否则永远等不到超时）
+      if (msg.confirmId) pendingConfirmId = String(msg.confirmId);
+      if (phase.value !== 'pending') {
+        phase.value = 'pending';
+        startConfirmWatch();
+      }
       break;
     case 'session.granted': {
+      stopConfirmWatch();
       phase.value = 'live';
       sessionId = String(msg.sessionId || '');
       if (!sessionToken) sessionToken = String(msg.token || '');
@@ -1256,6 +1448,7 @@ async function onWsMessage(msg: Record<string, unknown>): Promise<void> {
       ElMessage.warning(lastInputError.value);
       break;
     case 'session.ended':
+      stopConfirmWatch();
       endedReason.value = String(msg.reason || '会话已结束');
       cleanup();
       phase.value = 'ended';
@@ -2324,6 +2517,9 @@ function disconnect(): void {
   phase.value = 'ended';
 }
 function cleanup(): void {
+  stopConfirmWatch();
+  pendingConfirmId = '';
+  pendingRecovering = false;
   cleanupSocket();
   teardownWebRtc();
   if (videoRef.value) videoRef.value.srcObject = null;

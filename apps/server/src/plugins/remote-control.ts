@@ -386,6 +386,8 @@ interface RcSession {
   screen?: { x: number; y: number; w: number; h: number };
   /** 几何来源：capture=实际采集端（权威），agent=代理兜底（仅在还没有 capture 时采用） */
   screenSource?: 'capture' | 'agent';
+  /** granted 但控制端通道还没建起来时的回收定时器（见 ORPHAN_GRACE_MS） */
+  orphanTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface HostConn {
@@ -396,6 +398,14 @@ interface HostConn {
 }
 
 const IDLE_CHECK_MS = 30_000;
+
+/** 待确认会话的存活时长：必须**大于**控制端自己的等待上限（30s），
+ *  否则「被控端晚点才点允许」会授予一个控制端已经离开的会话（僵尸独占锁）。 */
+const PENDING_TTL_MS = 120_000;
+
+/** granted 之后等控制端建通道的宽限：超时仍没有通道就把会话释放掉，
+ *  不能让一个没人用的会话把「独占」锁死到空闲超时（实报 30 分钟连不上）。 */
+const ORPHAN_GRACE_MS = 15_000;
 
 // deactivate 钩子需要拿到 activate 闭包里的会话表/代理进程/定时器，
 // 通过模块级转发函数衔接（PluginModule.deactivate 与 activate 不共享作用域）。
@@ -441,6 +451,8 @@ export const remoteControlModule: PluginModule = {
     // ---- 会话 / 连接 ----
     const sessions = new Map<string, RcSession>(); // sessionId → session
     const pendingByConfirm = new Map<string, RcSession>(); // confirmId → pending session
+    /** confirmId → 已授予会话：控制端凭 confirmId 重连时补发 granted（消息丢了也能自愈） */
+    const grantedByConfirm = new Map<string, RcSession>();
     const controllersByToken = new Map<string, RcSession>(); // session token → granted session
     let hostConn: HostConn | null = null;
     const pairLimiter = new SlidingWindowLimiter(10, 60_000); // 10 次/分钟（防授权码爆破）
@@ -638,6 +650,11 @@ export const remoteControlModule: PluginModule = {
       s.status = 'ended';
       sessions.delete(s.id);
       if (pendingByConfirm.get(s.confirmId) === s) pendingByConfirm.delete(s.confirmId);
+      if (grantedByConfirm.get(s.confirmId) === s) grantedByConfirm.delete(s.confirmId);
+      if (s.orphanTimer) {
+        clearTimeout(s.orphanTimer);
+        s.orphanTimer = undefined;
+      }
       if (s.token && controllersByToken.get(s.token) === s) controllersByToken.delete(s.token);
       if (s.controllerWs) {
         sendWsJson(s.controllerWs, { type: 'session.ended', reason });
@@ -687,6 +704,40 @@ export const remoteControlModule: PluginModule = {
       a.fire({ op: 'stream', fps: p.fps, scale: p.scale, quality: p.quality, changedOnly: true, mon: s.captureMon });
     };
 
+    /**
+     * granted 消息体（授予时首发 / 控制端事后凭 confirmId 重连时补发，必须是同一份）。
+     * screen 有就带上：断线重连后坐标不能归零。
+     */
+    const grantedPayload = (s: RcSession, deviceToken?: string): Record<string, unknown> => ({
+      type: 'session.granted',
+      sessionId: s.id,
+      token: s.token,
+      mode: s.mode,
+      // 只读会话：控制端据此常驻「只读观看 + 请求操控」，而不是等它自己点一个点不动才发现
+      input: inputState(s),
+      // 跨公网：控制端建 PeerConnection 用（jpeg 模式无媒体面，不下发）
+      ...(s.mode === 'webrtc' && iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
+      ...(deviceToken ? { deviceToken } : {}),
+      ...(s.screen ? { screen: s.screen, screenSource: s.screenSource || '' } : {}),
+    });
+
+    /**
+     * 授予后控制端通道迟迟不建起来的兜底回收。
+     * 真机实测（2026-10-30）：被控端点「允许」时控制端 WS 还没连上/已丢包，granted 只发
+     * 一次就永久丢失 —— 控制端停在「等待确认」，这个会话却把独占锁占死 30 分钟。
+     */
+    const armOrphanGuard = (s: RcSession): void => {
+      if (s.controllerWs) return;
+      if (s.orphanTimer) clearTimeout(s.orphanTimer);
+      s.orphanTimer = setTimeout(() => {
+        s.orphanTimer = undefined;
+        if (s.status !== 'granted' || s.controllerWs) return;
+        ctx.log(`[remote-control] 会话 ${s.id.slice(0, 8)} 授予后仍无控制端通道，自动释放（否则独占锁死）`);
+        void endSession(s, '控制端未建立通道，会话已自动释放（请重新配对）');
+      }, ORPHAN_GRACE_MS);
+      if (typeof s.orphanTimer.unref === 'function') s.orphanTimer.unref();
+    };
+
     const grantSession = async (s: RcSession, trust: boolean, inputAllowed = true): Promise<void> => {
       s.status = 'granted';
       s.inputAllowed = inputAllowed;
@@ -694,6 +745,7 @@ export const remoteControlModule: PluginModule = {
       s.lastActivityAt = Date.now();
       controllersByToken.set(s.token, s);
       pendingByConfirm.delete(s.confirmId);
+      grantedByConfirm.set(s.confirmId, s);
       // 信任 → 写白名单（已有条目则刷新 lastUsedAt；新条目签发长期设备令牌）
       let deviceToken: string | undefined;
       const existing = whitelisted.get(s.deviceId);
@@ -713,17 +765,7 @@ export const remoteControlModule: PluginModule = {
       }
       // WebRTC 有被控端渲染层在场就走主通道；否则回退 JPEG
       s.mode = hostConn?.canCapture ? 'webrtc' : 'jpeg';
-      const grantedMsg: Record<string, unknown> = {
-        type: 'session.granted',
-        sessionId: s.id,
-        token: s.token,
-        mode: s.mode,
-        // 只读会话：控制端据此常驻「只读观看 + 请求操控」，而不是等它自己点一个点不动才发现
-        input: inputState(s),
-        // 跨公网：控制端建 PeerConnection 用（jpeg 模式无媒体面，不下发）
-        ...(s.mode === 'webrtc' && iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
-        ...(deviceToken ? { deviceToken } : {}),
-      };
+      const grantedMsg = grantedPayload(s, deviceToken);
       if (s.mode === 'jpeg') {
         try {
           const a = await ensureAgent();
@@ -741,11 +783,7 @@ export const remoteControlModule: PluginModule = {
           const info = await a.call({ op: 'screensize', mon: s.captureMon }, 10000);
           s.screen = { x: Number(info.x) || 0, y: Number(info.y) || 0, w: Number(info.w) || 0, h: Number(info.h) || 0 };
           s.screenSource = 'capture';
-          s.controllerWs && sendWsJson(s.controllerWs, {
-            ...grantedMsg,
-            screen: s.screen,
-            screenSource: 'capture',
-          });
+          s.controllerWs && sendWsJson(s.controllerWs, grantedPayload(s, deviceToken));
           await sendJpegDisplays(s, a);
           startJpegStream(s, a);
           ensureCursorLoop();
@@ -756,10 +794,7 @@ export const remoteControlModule: PluginModule = {
         }
       } else {
         // 重连/白名单直连：把上次已知几何一起带上，避免客户端坐标归零
-        s.controllerWs && sendWsJson(s.controllerWs, {
-          ...grantedMsg,
-          ...(s.screen ? { screen: s.screen, screenSource: s.screenSource } : {}),
-        });
+        s.controllerWs && sendWsJson(s.controllerWs, grantedMsg);
         // 被控端采集层建 PeerConnection 需要同一份 ICE 配置（rtc.start 恒先于 rtc.offer 到达）
         notifyHost({ type: 'rtc.start', sessionId: s.id, ...(iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}) });
         // ★ 几何兜底：WebRTC 的画面几何原本只靠渲染层在 answer 后单发一次 rtc.screen，
@@ -787,6 +822,8 @@ export const remoteControlModule: PluginModule = {
         trustSaved: !!deviceToken,
         ...(s.mode === 'webrtc' && s.captureDisplay ? { captureDisplay: s.captureDisplay } : {}),
       });
+      // 授予时控制端通道还没建起来：给它一个宽限期补上，过期就释放（别锁死独占）
+      armOrphanGuard(s);
     };
 
     const handleControllerMessage = async (s: RcSession, raw: string | Buffer, isBinary: boolean): Promise<void> => {
@@ -804,6 +841,10 @@ export const remoteControlModule: PluginModule = {
         return;
       }
       switch (type) {
+        case 'pair.wait':
+          // 控制端在「等待确认」里定期问一次：已经授予就直接补发 granted（首发消息丢了也能救）
+          if (s.controllerWs) sendWsJson(s.controllerWs, grantedPayload(s));
+          break;
         case 'rtc.offer':
           if (s.mode === 'webrtc') notifyHost({ type: 'rtc.offer', sessionId: s.id, sdp: String(msg.sdp || '') });
           break;
@@ -1181,11 +1222,20 @@ export const remoteControlModule: PluginModule = {
         for (const s of pendingByConfirm.values()) {
           sendWsJson(ws, { type: 'session.pending', confirmId: s.confirmId, device: s.deviceName });
         }
+        // 采集层刚（重）连上：进行中的 WebRTC 会话要重新走一遍启动 + 协商，
+        // 否则断线期间丢掉的 rtc.start/rtc.offer 永远补不回来（控制端黑屏但通道是通的）
+        for (const s of sessions.values()) {
+          if (s.status !== 'granted' || s.mode !== 'webrtc') continue;
+          sendWsJson(ws, { type: 'rtc.start', sessionId: s.id, ...(iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}) });
+          if (s.controllerWs) sendWsJson(s.controllerWs, { type: 'rtc.restart', sessionId: s.id });
+        }
         ws.on('message', (data: Buffer, isBinary: boolean) => {
           void handleHostMessage(data, isBinary);
         });
         ws.on('close', () => {
-          if (hostConn?.ws === ws) hostConn = null;
+          // 被新连接取代的旧 socket 关闭不算断线：否则采集窗口一重连就把所有会话杀掉
+          if (hostConn?.ws !== ws) return;
+          hostConn = null;
           // 被控端渲染层断线（dev 重启 / 采集窗口崩溃 / 应用退出）：
           // 结束**所有**已授会话，而不是只结束 WebRTC —— JPEG 会话若留着，控制端会
           // 停在最后一帧（画面看起来「永远不动」），用户根本不知道对端已经没了。
@@ -1203,12 +1253,17 @@ export const remoteControlModule: PluginModule = {
         return;
       }
       // --- 控制端 ---
-      const attach = (s: RcSession, kind: 'granted' | 'pending'): void => {
+      const attach = (s: RcSession, kind: 'granted' | 'pending', silent = false): void => {
         if (kind === 'granted' && s.token) controllersByToken.set(s.token, s);
         s.controllerWs = ws;
+        // 通道建起来了：撤销孤立会话的回收定时器
+        if (s.orphanTimer) {
+          clearTimeout(s.orphanTimer);
+          s.orphanTimer = undefined;
+        }
         if (kind === 'pending') {
           sendWsJson(ws, { type: 'pair.pending', confirmId: s.confirmId });
-        } else if (s.token) {
+        } else if (s.token && !silent) {
           // 断线重连/页面刷新走 resume：iceServers 一并重发（控制端可能已丢失会话内存态）
           sendWsJson(ws, {
             type: 'session.resume',
@@ -1224,7 +1279,9 @@ export const remoteControlModule: PluginModule = {
           void handleControllerMessage(s, data, isBinary);
         });
         ws.on('close', () => {
-          if (s.controllerWs === ws) s.controllerWs = null;
+          // 已被新通道取代的旧 socket 关闭不算断线（否则重连一次就把会话杀掉）
+          if (s.controllerWs !== ws) return;
+          s.controllerWs = null;
           if (s.status === 'granted') void endSession(s, '控制端断开');
         });
         ws.on('error', () => {
@@ -1241,9 +1298,21 @@ export const remoteControlModule: PluginModule = {
         attach(controllersByToken.get(token)!, 'granted');
         return;
       }
-      if (confirmId && pendingByConfirm.has(confirmId)) {
-        attach(pendingByConfirm.get(confirmId)!, 'pending');
-        return;
+      if (confirmId) {
+        const pend = pendingByConfirm.get(confirmId);
+        if (pend) {
+          attach(pend, 'pending');
+          return;
+        }
+        // ★ 已授予但控制端没收到 granted（被控端确认时它还没连上，或消息在通道里丢了）：
+        //   凭 confirmId 补发一次完整 granted —— 否则控制端只能干等，重连反而报「独占」。
+        const granted = grantedByConfirm.get(confirmId);
+        if (granted && granted.status === 'granted' && granted.token) {
+          attach(granted, 'granted', true);
+          sendWsJson(ws, grantedPayload(granted));
+          ctx.log(`[remote-control] 控制端凭 confirmId 恢复已授予会话 ${granted.id.slice(0, 8)}`);
+          return;
+        }
       }
       sendWsJson(ws, { type: 'session.ended', reason: '会话不存在或已结束，请重新配对' });
       try {
@@ -1316,6 +1385,13 @@ export const remoteControlModule: PluginModule = {
           }
           const body = await readBody(req);
           const deviceId = String(body.deviceId || '').trim();
+          // 独占判定前先清掉「授了但控制端始终没连上」的会话，别让死会话挡住重连
+          const nowPair = Date.now();
+          for (const x of [...sessions.values()]) {
+            if (x.status === 'granted' && !x.controllerWs && nowPair - x.lastActivityAt > ORPHAN_GRACE_MS) {
+              await endSession(x, '控制端未建立通道（自动释放独占）');
+            }
+          }
           const verdict = evaluatePair({
             code: String(body.code || ''),
             deviceId,
@@ -1616,7 +1692,7 @@ export const remoteControlModule: PluginModule = {
       for (const s of [...sessions.values()]) {
         if (s.status === 'granted' && now - s.lastActivityAt > idleTimeoutMs) {
           void endSession(s, '会话空闲超时，已自动断开');
-        } else if (s.status === 'pending' && now - s.createdAt > 30_000) {
+        } else if (s.status === 'pending' && now - s.createdAt > PENDING_TTL_MS) {
           void endSession(s, '被控端确认超时');
         }
       }
