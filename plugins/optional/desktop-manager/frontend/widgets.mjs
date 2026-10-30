@@ -1,16 +1,25 @@
 // 悬浮组件渲染页（P1）
 //
-// 运行环境：pluginWindow.open({ entry:'frontend/widgets.html?layer=desktop|overlay', placement })
+// 运行环境：
+//   frontend/widgets.html?id=<组件id>&layer=desktop  → 单个组件一个窗口（桌面层由工具条拉起）
+//   frontend/widgets.html?layer=overlay              → 悬浮层：整层一窗，窗口缩到内容包围盒
 // 数据面：/widgets（声明式实例）+ /widgets/data?contract=（只读契约）
-// 交互：默认整窗穿透，仅 link 组件可点（避免挡住桌面与应用）
+// 交互：窗口只覆盖自己的内容，不做整窗穿透（钉在桌面层的子窗口收不到转发的 mousemove）
 const api = window.electronAPI || null;
 const API_BASE = (api && api.apiBase) || (location.origin + '/api');
 const PLUGIN = '/plugin/desktop-manager';
 const qs = new URLSearchParams(location.search);
 const LAYER = qs.get('layer') === 'overlay' ? 'overlay' : 'desktop';
+const WIDGET_ID = String(qs.get('id') || '');
+const SINGLE = !!WIDGET_ID;
+const SELF_ENTRY = SINGLE
+  ? 'frontend/widgets.html?id=' + encodeURIComponent(WIDGET_ID) + '&layer=desktop'
+  : 'frontend/widgets.html?layer=' + LAYER;
 const DEMO = qs.has('demo');
 
-const S = { widgets: [], data: {}, rev: -1, windowId: null, clickThrough: null };
+const S = { widgets: [], data: {}, rev: -1, windowId: null, rect: null, dragging: false };
+const SNAP = 8;
+const snap8 = (v) => Math.round(Number(v) / SNAP) * SNAP;
 const COLORS = ['#5b8cff', '#37c98b', '#f0a03c', '#b07cff', '#2fc6c6', '#8ea3c4'];
 
 async function request(path, opts) {
@@ -61,7 +70,7 @@ function demoSample() {
 async function loadWidgets() {
   if (DEMO) {
     const d = demoSample();
-    S.widgets = d.widgets.filter((w) => w.layer === LAYER);
+    S.widgets = d.widgets.filter((w) => w.layer === LAYER && (!SINGLE || w.id === WIDGET_ID));
     S.data = d.data;
     S.rev = 1;
     render();
@@ -69,7 +78,7 @@ async function loadWidgets() {
   }
   const data = await request('/widgets');
   S.rev = Number(data.rev) || 0;
-  S.widgets = (data.widgets || []).filter((w) => w.layer === LAYER);
+  S.widgets = (data.widgets || []).filter((w) => w.layer === LAYER && (!SINGLE || w.id === WIDGET_ID));
   await loadData();
   render();
 }
@@ -150,30 +159,148 @@ function metricFor(contract, data) {
   return { value: '-', cap: '' };
 }
 
+/** 把窗口挪到 rect（只覆盖内容，绝不整屏遮挡） */
+function fitWindow(rect) {
+  if (!api || !api.pluginWindow || !S.windowId) return;
+  const cur = S.rect;
+  if (cur && Math.abs(cur.x - rect.x) <= 2 && Math.abs(cur.y - rect.y) <= 2
+    && Math.abs(cur.w - rect.w) <= 2 && Math.abs(cur.h - rect.h) <= 2) return;
+  S.rect = { ...rect };
+  api.pluginWindow.update(S.windowId, { rect }).catch(() => {});
+}
+
+function buildWidgetEl(w, left, top) {
+  const el = document.createElement('div');
+  el.className = 'widget ' + w.type + (['todos', 'memo', 'folder'].includes(w.type) ? ' interactive' : '');
+  el.dataset.id = w.id;
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
+  el.style.width = w.pos.w + 'px';
+  el.style.height = w.pos.h + 'px';
+  el.appendChild(buildBody(w));
+  if (SINGLE) bindDrag(el, w);
+  return el;
+}
+
+/* ---------------- 拖动组件 = 移动它自己的窗口 ---------------- */
+
+// 交互控件（勾选/输入/按钮/链接/文件夹行）不参与拖动，按在卡片其余位置即可拖。
+const INTERACTIVE = 'input, textarea, button, select, a, .link, .fr, .cb';
+
+function bindDrag(el, w) {
+  let drag = null;
+  let raf = null;
+  let pending = null;
+
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest && e.target.closest(INTERACTIVE)) return;
+    raiseSelf();
+    const win = S.rect || { x: w.pos.x, y: w.pos.y, w: w.pos.w, h: w.pos.h };
+    drag = {
+      id: e.pointerId, sx: e.screenX, sy: e.screenY,
+      x: win.x, y: win.y, w: win.w, h: win.h, moved: false, nx: win.x, ny: win.y,
+    };
+    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    e.preventDefault();
+  });
+
+  el.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.screenX - drag.sx;
+    const dy = e.screenY - drag.sy;
+    if (!drag.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+    drag.moved = true;
+    S.dragging = true;
+    drag.nx = snap8(drag.x + dx);
+    drag.ny = snap8(drag.y + dy);
+    pending = { x: drag.nx, y: drag.ny, w: drag.w, h: drag.h };
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = null;
+      const r = pending;
+      pending = null;
+      if (!r || !api || !api.pluginWindow || !S.windowId) return;
+      S.rect = { ...r };
+      api.pluginWindow.update(S.windowId, { rect: r }).catch(() => {});
+    });
+  });
+
+  const end = async (e) => {
+    if (!drag || (e && e.pointerId !== drag.id)) return;
+    const d = drag;
+    drag = null;
+    S.dragging = false;
+    try { el.releasePointerCapture(d.id); } catch { /* ignore */ }
+    if (!d.moved) return;
+    S.rect = { x: d.nx, y: d.ny, w: d.w, h: d.h };
+    await saveWidgetPos(w.id, d.nx, d.ny);
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+}
+
+/** 把新位置写回 /widgets（整体替换语义：先取最新再改自己那一条） */
+async function saveWidgetPos(id, x, y) {
+  try {
+    const data = await request('/widgets');
+    const list = (data.widgets || []).map((it) => (
+      it.id === id ? { ...it, pos: { ...it.pos, x, y } } : it
+    ));
+    await request('/widgets', {
+      method: 'PUT',
+      body: JSON.stringify({ widgets: list, bounds: { w: window.screen.width, h: window.screen.height } }),
+    });
+  } catch (err) {
+    flashToast('位置没保存：' + (err && err.message ? err.message : err));
+  }
+}
+
+function flashToast(msg) {
+  const el = document.createElement('div');
+  el.className = 'flash';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2600);
+}
+
 function render() {
+  // 拖动中重建 DOM 会丢 pointer capture（卡片会「脱手」），先跳过；松手后下一次 render 补齐
+  if (S.dragging) return;
   const layer = document.getElementById('layer');
   layer.textContent = '';
-  for (const w of S.widgets) {
-    const el = document.createElement('div');
-    el.className = 'widget ' + w.type + (['todos', 'memo', 'folder'].includes(w.type) ? ' interactive' : '');
-    el.dataset.id = w.id;
-    el.style.left = w.pos.x + 'px';
-    el.style.top = w.pos.y + 'px';
-    el.style.width = w.pos.w + 'px';
-    el.style.height = w.pos.h + 'px';
-    el.appendChild(buildBody(w));
-    layer.appendChild(el);
-  }
+
   if (!S.widgets.length) {
     const hint = document.createElement('div');
     hint.className = 'widget empty';
-    hint.style.left = '40px';
-    hint.style.top = '40px';
-    hint.style.width = '280px';
+    hint.style.left = '0px';
+    hint.style.top = '0px';
+    hint.style.width = '300px';
     hint.style.height = '80px';
-    hint.textContent = LAYER === 'overlay' ? '暂无悬浮层组件' : '暂无桌面层组件·可用智能体生成';
+    hint.textContent = LAYER === 'overlay' ? '暂无悬浮层组件' : '暂无桌面层组件·可用智能体或工具条生成';
     layer.appendChild(hint);
+    fitWindow({ x: 40, y: 40, w: 320, h: 110 });
+    return;
   }
+
+  // 单组件窗口：窗口 = 组件的 pos，卡片铺满窗口
+  if (SINGLE) {
+    const w = S.widgets[0];
+    layer.appendChild(buildWidgetEl(w, 0, 0));
+    fitWindow({ x: w.pos.x, y: w.pos.y, w: w.pos.w, h: w.pos.h });
+    return;
+  }
+
+  // 整层一窗（悬浮层）：缩到组件包围盒，坐标整体平移 —— 否则透明窗口照样吃掉整屏点击
+  let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+  for (const w of S.widgets) {
+    minX = Math.min(minX, w.pos.x);
+    minY = Math.min(minY, w.pos.y);
+    maxX = Math.max(maxX, w.pos.x + w.pos.w);
+    maxY = Math.max(maxY, w.pos.y + w.pos.h);
+  }
+  for (const w of S.widgets) layer.appendChild(buildWidgetEl(w, w.pos.x - minX, w.pos.y - minY));
+  fitWindow({ x: minX, y: minY, w: Math.max(80, maxX - minX), h: Math.max(60, maxY - minY) });
 }
 
 function buildBody(w) {
@@ -551,37 +678,18 @@ function folderBody(box, w, data) {
   return box;
 }
 
-/* ---------------- 穿透 / 生命周期 ---------------- */
+/* ---------------- 生命周期 ---------------- */
 
-// 默认整窗穿透，只有可交互组件（链接/可编辑块）吃鼠标。
-// ★ 与围栏页同一套自愈：指针位置重算 + 定时复核 + 启动先同步一次，
-//   否则一旦停在"整窗穿透"就再也收不到 mousemove（点哪都没反应）。
-function wantThrough(x, y) {
-  const el = document.elementFromPoint(x, y);
-  return !(el && el.closest('.link, .interactive'));
+let lastRaise = 0;
+function raiseSelf() {
+  if (!api || !api.pluginWindow || !S.windowId) return;
+  if (typeof api.pluginWindow.raise !== 'function') return;
+  // 每次点击都重钉一次太贵（要起一次 Win32 助手），600ms 内只提一次
+  const now = Date.now();
+  if (now - lastRaise < 600) return;
+  lastRaise = now;
+  api.pluginWindow.raise(S.windowId).catch(() => {});
 }
-
-function setClickThrough(v) {
-  if (v === S.clickThrough) return;
-  S.clickThrough = v;
-  if (api && api.pluginWindow && S.windowId) {
-    api.pluginWindow.update(S.windowId, { clickThrough: v }).catch(() => {});
-  }
-}
-
-let lastX = 0;
-let lastY = 0;
-let hasPointer = false;
-document.addEventListener('mousemove', (e) => {
-  lastX = e.clientX;
-  lastY = e.clientY;
-  hasPointer = true;
-  setClickThrough(wantThrough(lastX, lastY));
-}, true);
-setInterval(() => {
-  if (!hasPointer) return;
-  setClickThrough(wantThrough(lastX, lastY));
-}, 1200);
 
 async function boot() {
   if (DEMO) {
@@ -592,13 +700,14 @@ async function boot() {
   if (api && api.pluginWindow) {
     try {
       const list = await api.pluginWindow.list();
-      const mine = list.find((w) => w.placement === LAYER);
-      if (mine) S.windowId = mine.windowId;
+      // 只认自己这个入口：一个组件一个窗口，退回「随便挑一个桌面窗口」会把别人挪走
+      const mine = list.find((w) => w.pluginId === 'desktop-manager' && w.entry === SELF_ENTRY);
+      if (mine) { S.windowId = mine.windowId; S.rect = mine.rect || null; }
     } catch { /* ignore */ }
-    // ★ 不在启动时直接整窗穿透：一旦穿透且拿不到 mousemove，就永远回不来（点啥都没反应）。
-    //   穿透与否交给上面的指针位置判定，第一帧默认「可交互」，移动鼠标后立刻按位置收敛。
-    setClickThrough(false);
   }
+  // 覆盖到的组件窗口被点一下就先提到最前（独立窗口之间没有父子层级，靠置顶解决遮挡）
+  document.addEventListener('pointerdown', raiseSelf, true);
+
   await loadWidgets().catch(() => {});
   // 组件定义变了（rev）→ 重载；契约数据 30s 刷一次
   setInterval(async () => {

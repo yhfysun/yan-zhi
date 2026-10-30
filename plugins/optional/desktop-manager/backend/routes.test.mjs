@@ -56,6 +56,8 @@ async function setup() {
     ctx,
     store,
     cleanup: async () => {
+      // 插件生命周期收尾：停掉看门狗/文件监听，否则测试进程会被句柄挂住
+      try { desktopManagerModule.deactivate(); } catch { /* ignore */ }
       if (prev === undefined) delete process.env.YZ_DESKTOP_DIR;
       else process.env.YZ_DESKTOP_DIR = prev;
       await fsp.rm(dir, { recursive: true, force: true });
@@ -187,6 +189,12 @@ test('围栏 CRUD：新建 / 改尺寸 / 删除（inbox 不可删）', async () 
     const patched = res();
     await routes['PATCH /fences/:id']({ params: { id: fence.id }, body: { rect: { x: 10, y: 20, w: 300, h: 200 } } }, patched);
     assert.equal(patched.body.data.rect.w, 300);
+
+    // 折叠只记状态，不动 rect.h（展开时按原高度复原）
+    const folded = res();
+    await routes['PATCH /fences/:id']({ params: { id: fence.id }, body: { collapsed: true } }, folded);
+    assert.equal(folded.body.data.collapsed, true);
+    assert.equal(folded.body.data.rect.h, 200);
 
     const dup = res();
     await routes['POST /fences']({ body: { label: '临时' } }, dup);
@@ -430,6 +438,211 @@ test('文件夹块：只读列桌面里的某个文件夹，越界被拒', async
     await routes['GET /widgets/data']({ query: { contract: 'folder.items' } }, missing);
     assert.equal(missing.code, 500);
     assert.match(String(missing.body.error), /未指定文件夹/);
+  } finally {
+    await cleanup();
+  }
+});
+
+/* ---------------- 一键整理：内容 + 布局 ---------------- */
+
+test('POST /organize/plan：一次给出文件计划与布局计划（板正模式等宽）', async () => {
+  const { dir, routes, cleanup } = await setup();
+  try {
+    await fsp.writeFile(path.join(dir, 'a.docx'), 'x');
+    await fsp.writeFile(path.join(dir, 'b.png'), 'x');
+
+    const r = res();
+    await routes['POST /organize/plan']({ body: { width: 1440, height: 900 } }, r);
+    assert.equal(r.code, 200);
+    const d = r.body.data;
+
+    assert.ok(d.planId, '应返回方案 id');
+    assert.ok(d.layout.changes.length > 0, '应有布局变更');
+    assert.ok(d.layout.after.bottom <= d.layout.before.bottom, '整理后占用高度不应变大');
+    assert.equal(new Set(d.layout.changes.map((c) => c.to.w)).size, 1, '板正模式所有卡片等宽');
+    assert.ok(d.files && d.files.planId, '应同时带文件计划');
+    assert.ok(d.files.total >= 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('POST /organize/plan：只整理布局时不生成文件计划', async () => {
+  const { dir, routes, cleanup } = await setup();
+  try {
+    await fsp.writeFile(path.join(dir, 'a.docx'), 'x');
+    const r = res();
+    await routes['POST /organize/plan']({ body: { width: 1440, height: 900, modes: { files: false, layout: true } } }, r);
+    assert.equal(r.code, 200);
+    assert.equal(r.body.data.files, null);
+    assert.ok(r.body.data.layout.changes.length > 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('POST /organize/plan：neat=false 保留各自宽度，neat=true 收成整数列', async () => {
+  const { dir, routes, cleanup } = await setup();
+  try {
+    const st = res();
+    await routes['GET /state']({}, st);
+    const beforeW = new Map(st.body.data.fences.map((f) => [f.id, f.rect.w]));
+
+    const compact = res();
+    await routes['POST /organize/plan']({ body: { width: 1440, height: 900, modes: { files: false, layout: true, neat: false } } }, compact);
+    assert.equal(compact.code, 200);
+    for (const c of compact.body.data.layout.changes) {
+      assert.equal(c.to.w, beforeW.get(c.id), '紧凑模式宽度应原样保留');
+    }
+
+    const neat = res();
+    await routes['POST /organize/plan']({ body: { width: 1440, height: 900, modes: { files: false, layout: true, neat: true } } }, neat);
+    assert.equal(neat.code, 200);
+    const neatWs = new Set(neat.body.data.layout.changes.map((c) => c.to.w));
+    assert.equal(neatWs.size, 1, '板正模式应统一宽度');
+    // 统一后的宽度是整数个图标列：(w - 24 + 2) / 86 应为整数
+    const w = [...neatWs][0];
+    assert.ok(Math.abs((w - 24 + 2) / 86 - Math.round((w - 24 + 2) / 86)) < 1e-9);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('POST /organize/apply：布局落库，写进 oplog，方案只能用一次', async () => {
+  const { dir, routes, store, cleanup } = await setup();
+  try {
+    await fsp.writeFile(path.join(dir, 'a.docx'), 'x');
+
+    const p = res();
+    await routes['POST /organize/plan']({ body: { width: 1440, height: 900 } }, p);
+    const plan = p.body.data;
+
+    const a = res();
+    await routes['POST /organize/apply']({ body: { planId: plan.planId, confirmed: true } }, a);
+    assert.equal(a.code, 200);
+    assert.ok(a.body.data.opId, '应返回可撤销的 opId');
+
+    const st = res();
+    await routes['GET /state']({}, st);
+    const changed = plan.layout.changes[0];
+    assert.deepEqual(
+      st.body.data.fences.find((f) => f.id === changed.id).rect,
+      changed.to,
+      '围栏 rect 应更新为计划里的位置',
+    );
+
+    const log = store.get('oplog') || [];
+    const layoutOps = log.flatMap((e) => e.ops || []).filter((o) => o.type === 'layout');
+    assert.ok(layoutOps.length > 0, '布局变更应写进 oplog（可整批撤销）');
+    assert.ok(layoutOps.every((o) => o.prevRect && o.fenceId));
+
+    const again = res();
+    await routes['POST /organize/apply']({ body: { planId: plan.planId, confirmed: true } }, again);
+    assert.equal(again.code, 400, '同一个方案不能执行两次');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('POST /organize/apply：没有 confirmed 直接拒绝', async () => {
+  const { routes, cleanup } = await setup();
+  try {
+    const r = res();
+    await routes['POST /organize/apply']({ body: { planId: 'org-x' } }, r);
+    assert.equal(r.code, 400);
+    assert.match(String(r.body.error), /confirmed/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('GET /events：SSE 长连接，先推一次当前 rev，断开后清理订阅', async () => {
+  const { routes, cleanup } = await setup();
+  try {
+    const chunks = [];
+    const handlers = {};
+    const r = {
+      code: 0,
+      headers: null,
+      writeHead(code, headers) { r.code = code; r.headers = headers; return r; },
+      write(s) { chunks.push(String(s)); return true; },
+      status() { return r; },
+      json() { return r; },
+      end() {},
+    };
+    const req = { on: (ev, fn) => { handlers[ev] = fn; } };
+
+    await routes['GET /events'](req, r);
+    assert.equal(r.code, 200);
+    assert.match(String(r.headers['Content-Type']), /text\/event-stream/);
+
+    const text = chunks.join('');
+    assert.match(text, /event: rev/);
+    assert.match(text, /data: \d+/);
+    assert.match(text, /retry: \d+/);
+
+    // 断开：清心跳，避免测试进程被定时器挂住
+    assert.equal(typeof handlers.close, 'function');
+    handlers.close();
+  } finally {
+    await cleanup();
+  }
+});
+
+/* ---------------- 文件夹传送门 ---------------- */
+
+test('POST /fences 带 portal：镜像真实目录，行项归属该分组且路径在目录内', async () => {
+  const { dir, routes, cleanup } = await setup();
+  try {
+    const shots = path.join(dir, 'Shots');
+    await fsp.mkdir(shots, { recursive: true });
+    await fsp.writeFile(path.join(shots, 'a.png'), 'x');
+    await fsp.writeFile(path.join(shots, 'b.txt'), 'y');
+
+    const c = res();
+    await routes['POST /fences']({ body: { label: '截图', portal: shots } }, c);
+    assert.equal(c.code, 200);
+    assert.equal(c.body.data.portal, shots);
+    assert.equal(c.body.data.kind, 'portal');
+
+    const st = res();
+    await routes['GET /state']({}, st);
+    const fence = st.body.data.fences.find((x) => x.portal === shots);
+    assert.ok(fence, '分组应登记在案');
+    const items = st.body.data.items.filter((i) => i.fenceId === fence.id);
+    assert.deepEqual(items.map((i) => i.name).sort(), ['a.png', 'b.txt']);
+    assert.ok(items.every((i) => i.path.startsWith(shots)), '条目路径应指向真实目录');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('POST /fences 带 portal：目录不存在直接拒绝', async () => {
+  const { dir, routes, cleanup } = await setup();
+  try {
+    const r = res();
+    await routes['POST /fences']({ body: { label: '不存在', portal: path.join(dir, 'nope') } }, r);
+    assert.equal(r.code, 400);
+    assert.match(String(r.body.error), /portal/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('POST /fences：新分组不会压住已有卡片', async () => {
+  const { routes, cleanup } = await setup();
+  try {
+    const a = res();
+    await routes['POST /fences']({ body: { label: '高卡片' } }, a);
+    const tall = { x: 40, y: 40, w: 620, h: 900 };
+    const patch = res();
+    await routes['PATCH /fences/:id']({ params: { id: a.body.data.id }, body: { rect: tall } }, patch);
+
+    const b = res();
+    await routes['POST /fences']({ body: { label: '新卡片' } }, b);
+    const r = b.body.data.rect;
+    const overlap = r.x < tall.x + tall.w && tall.x < r.x + r.w && r.y < tall.y + tall.h && tall.y < r.y + r.h;
+    assert.equal(overlap, false, '新分组不该压在高卡片上：' + JSON.stringify(r));
   } finally {
     await cleanup();
   }

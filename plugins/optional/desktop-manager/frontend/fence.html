@@ -11,9 +11,9 @@
     color: #fff; user-select: none;
   }
 
-  /* 顶部悬浮工具条：一条细胶囊，不占桌面 */
+  /* ---------------- 工具条角色（frontend/fence.html） ---------------- */
   .bar {
-    position: fixed; left: 18px; top: 14px; z-index: 30;
+    position: fixed; left: 8px; top: 6px; z-index: 30;
     display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px;
     background: rgba(18,23,34,.62); border-radius: 999px;
     box-shadow: 0 6px 22px rgba(0,0,0,.28);
@@ -30,31 +30,52 @@
   .bar button.ghost { background: transparent; }
   .bar button.ghost:hover { background: rgba(255,255,255,.12); }
 
-  /* 桌面区域：分组自动流式排布，壁纸透出来 */
-  #board {
-    position: fixed; inset: 58px 18px 18px; z-index: 10;
-    display: flex; flex-wrap: wrap; align-content: flex-start; gap: 18px;
-    overflow: auto;
-  }
-  .grp {
+  /* ---------------- 分组窗口角色（frontend/fence.html?fence=<id>） ----------------
+     一个分组一个窗口：窗口边界就是命中边界，组本身铺满窗口。 */
+  body.mode-toolbar #grp { display: none; }
+  body.mode-toolbar #bulk { display: none; }
+  body.mode-fence #bar { display: none; }
+
+  /* 窗口边界 = 卡片边界（不多留透明边距，免得那圈吃掉点击） */
+  #grp {
+    position: absolute; inset: 0; z-index: 10;
+    display: flex; flex-direction: column;
     padding: 10px 12px 12px; border-radius: 14px;
     background: rgba(18,23,34,.34);
     box-shadow: 0 8px 26px rgba(0,0,0,.18);
-    min-width: 220px;
+    overflow: hidden;
   }
-  .grp.hot { background: rgba(96,124,255,.3); box-shadow: 0 0 0 2px rgba(122,77,255,.65); }
+  #grp.hot { background: rgba(96,124,255,.3); box-shadow: 0 0 0 2px rgba(122,77,255,.65); }
   .grp-head {
     display: flex; align-items: center; gap: 7px; padding: 0 2px 8px;
+    cursor: move; touch-action: none;
   }
-  .grp-head .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .grp-head .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
   .grp-head .n {
     font-size: 12px; color: rgba(255,255,255,.92); font-weight: 600;
     text-shadow: 0 1px 3px rgba(0,0,0,.5);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .grp-head .c { font-size: 11px; color: rgba(255,255,255,.55); }
+  .grp-head .c { font-size: 11px; color: rgba(255,255,255,.55); flex: none; }
   .grp-head .sp { flex: 1; }
+  .grp-head .chev {
+    border: 0; cursor: pointer; flex: none; width: 20px; height: 20px; padding: 0;
+    border-radius: 6px; background: rgba(255,255,255,.1); color: #cfd8e8;
+    font-family: inherit; font-size: 12px; line-height: 18px;
+  }
+  .grp-head .chev:hover { background: rgba(255,255,255,.22); }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, 84px); gap: 2px; }
+  .grid {
+    flex: 1; min-height: 0; overflow: auto; align-content: flex-start;
+    display: grid; grid-template-columns: repeat(auto-fill, 84px); gap: 2px;
+  }
+  /* 滚动条平时隐形，鼠标进分组才淡淡浮出来 */
+  .grid::-webkit-scrollbar { width: 6px; height: 6px; }
+  .grid::-webkit-scrollbar-track, .grid::-webkit-scrollbar-corner { background: transparent; }
+  .grid::-webkit-scrollbar-thumb { background: transparent; border-radius: 999px; }
+  #grp:hover .grid::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); }
+  #grp:hover .grid::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.34); }
+  #grp.collapsed .grid { display: none; }
   .ic {
     width: 84px; padding: 7px 2px 6px; border-radius: 9px; cursor: default;
     display: flex; flex-direction: column; align-items: center; gap: 5px;
@@ -71,18 +92,15 @@
     max-width: 80px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
     -webkit-box-orient: vertical; word-break: break-all;
   }
-  .empty {
-    color: rgba(255,255,255,.7); text-shadow: 0 1px 3px rgba(0,0,0,.6);
-    padding: 60px 20px; font-size: 13px;
-  }
 
+  /* ---------------- 选中后批量移入 ---------------- */
   .bulk {
     position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(80px);
     display: flex; align-items: center; gap: 8px; padding: 8px 14px; z-index: 30;
     background: rgba(18,23,34,.85); border-radius: 999px; box-shadow: 0 8px 26px rgba(0,0,0,.35);
-    opacity: 0; transition: all .18s ease;
+    opacity: 0; transition: all .18s ease; pointer-events: none;
   }
-  .bulk.show { transform: translateX(-50%); opacity: 1; }
+  .bulk.show { transform: translateX(-50%); opacity: 1; pointer-events: auto; }
   .bulk .n { font-size: 12px; color: #cfd8e8; }
   .bulk select {
     background: rgba(255,255,255,.1); color: #e6ecf8; border: 0; border-radius: 999px;
@@ -94,6 +112,7 @@
   }
   .bulk button.ghost { background: transparent; }
 
+  /* ---------------- 弹层（工具条窗口会临时放大） ---------------- */
   .mask { position: fixed; inset: 0; background: rgba(6,9,14,.5); display: none; place-items: center; z-index: 40; }
   .mask.show { display: grid; }
   .dialog {
@@ -119,11 +138,25 @@
   }
   .dialog button.primary { background: linear-gradient(135deg,#4f6bff,#7a4dff); color: #fff; }
 
+  /* ---------------- 右键菜单（文件 / 空白处） ---------------- */
+  .menu {
+    position: fixed; z-index: 60; min-width: 168px; max-height: 70vh; overflow: auto;
+    padding: 6px; background: #1b2230; border: 1px solid rgba(255,255,255,.14);
+    border-radius: 10px; box-shadow: 0 16px 40px rgba(0,0,0,.45);
+  }
+  .menu .mi {
+    padding: 6px 10px; border-radius: 7px; font-size: 12.5px; color: #e6ecf8; cursor: pointer;
+    white-space: nowrap;
+  }
+  .menu .mi:hover { background: rgba(122,150,255,.18); }
+  .menu .sep { height: 1px; margin: 5px 4px; background: rgba(255,255,255,.12); }
+  .menu .hd { padding: 5px 10px 6px; font-size: 11px; color: #8d99ad; }
+
   .toast {
     position: fixed; left: 50%; bottom: 88px; transform: translateX(-50%) translateY(16px);
     background: rgba(18,23,34,.9); color: #cfe0ff; font-size: 12.5px;
     padding: 9px 16px; border-radius: 10px; opacity: 0; transition: all .2s; pointer-events: none;
-    max-width: 70vw;
+    max-width: 70vw; z-index: 70;
   }
   .toast.show { opacity: 1; transform: translateX(-50%); }
   .toast.err { color: #ff9b9b; }
@@ -140,7 +173,16 @@
     <button class="ghost" id="btnExit">退出</button>
   </div>
 
-  <div id="board"></div>
+  <div id="grp">
+    <div class="grp-head" id="grpHead">
+      <span class="dot" id="grpDot"></span>
+      <span class="n" id="grpName"></span>
+      <span class="c" id="grpCount"></span>
+      <span class="sp"></span>
+      <button class="chev" id="btnCollapse" title="折叠 / 展开">–</button>
+    </div>
+    <div class="grid" id="grpGrid"></div>
+  </div>
 
   <div class="bulk" id="bulk">
     <span class="n" id="bulkN">已选 0 项</span>

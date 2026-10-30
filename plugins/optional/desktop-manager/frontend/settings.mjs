@@ -342,7 +342,12 @@ async function openWindow(entry, placement, rect) {
 }
 
 $('btnOpenFence').addEventListener('click', () => openWindow('frontend/fence.html', 'desktop'));
-$('btnOpenWidgets').addEventListener('click', () => openWindow('frontend/widgets.html?layer=desktop', 'desktop'));
+// 桌面组件现在是「一个组件一个窗口」，由桌面层宿主（工具条）统一拉起；
+// 再单独开一个整层组件窗口会和这些窗口重复渲染同一批组件。
+$('btnOpenWidgets').addEventListener('click', () => {
+  status('桌面组件跟随桌面层自动显示：正在打开工具条');
+  openWindow('frontend/fence.html', 'desktop');
+});
 $('btnOpenWidgetsOverlay').addEventListener('click', () => openWindow('frontend/widgets.html?layer=overlay', 'overlay'));
 
 $('btnClose').addEventListener('click', () => window.close());

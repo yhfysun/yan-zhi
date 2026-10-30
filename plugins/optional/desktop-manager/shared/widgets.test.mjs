@@ -1,7 +1,7 @@
 // 悬浮组件校验器单测
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateWidget, validateWidgets, widgetCatalog, CONTRACTS } from './widgets.js';
+import { validateWidget, validateWidgets, widgetCatalog, CONTRACTS, dedupeWidgets } from './widgets.js';
 
 const B = { w: 1280, h: 800 };
 
@@ -92,4 +92,46 @@ test('天气 / 待办组件：必须声明契约，配置有默认值', () => {
     source: { contract: 'nope.contract' }, config: {},
   }, B);
   assert.equal(unknownCity.ok, false);
+});
+
+test('唯一性：时钟/待办/同城天气全局只能一个，备忘录与文件夹不设限', () => {
+  const mk = (id, type, config = {}, contract) => ({
+    id, type, pos: { x: 0, y: 0, w: 300, h: 200 },
+    source: contract ? { contract } : null, config,
+  });
+  const two = validateWidgets([
+    mk('clock-a', 'clock'),
+    mk('clock-b', 'clock'),
+  ], B);
+  assert.equal(two.ok, false);
+  assert.match(two.error, /时钟/);
+
+  const twoTodos = validateWidgets([
+    mk('todos-a', 'todos', { max: 6 }, 'todos.list'),
+    mk('todos-b', 'todos', { max: 6 }, 'todos.list'),
+  ], B);
+  assert.equal(twoTodos.ok, false);
+
+  // 不同城市可以并存，同城不行
+  const cities = validateWidgets([
+    mk('wx-bj', 'weather', { city: '北京' }, 'weather.current'),
+    mk('wx-sh', 'weather', { city: '上海' }, 'weather.current'),
+  ], B);
+  assert.equal(cities.ok, true);
+  const sameCity = validateWidgets([
+    mk('wx-1', 'weather', { city: '北京' }, 'weather.current'),
+    mk('wx-2', 'weather', { city: '北京' }, 'weather.current'),
+  ], B);
+  assert.equal(sameCity.ok, false);
+
+  // 备忘录按 id、文件夹按路径，本来就允许并存
+  const memos = validateWidgets([
+    mk('memo-a', 'memo', {}, 'memo.text'),
+    mk('memo-b', 'memo', {}, 'memo.text'),
+  ], B);
+  assert.equal(memos.ok, true);
+
+  // 老数据去重：保留先出现的
+  const deduped = dedupeWidgets([mk('c1', 'clock'), mk('c2', 'clock'), mk('t1', 'todos', {}, 'todos.list')]);
+  assert.deepEqual(deduped.map((w) => w.id), ['c1', 't1']);
 });

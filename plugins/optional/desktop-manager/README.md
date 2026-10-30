@@ -20,9 +20,25 @@ backend/index.js       # 4 个工具 + 围栏后端路由
 backend/rules.js       # 规则引擎（纯函数：无 IO、无模型）
 backend/*.test.mjs     # node --test：规则、端到端、围栏路由
 shared/fences.js       # 归属/网格纯函数（前后端共用）+ 单测
-frontend/fence.html    # 围栏渲染页（被 pluginWindow 以 desktop 层打开）
+shared/desktop-windows.js # 桌面层窗口规划（哪个分组/组件该开哪个窗口）+ 单测
+frontend/fence.html    # 双角色：工具条（宿主）/ 单个分组窗口（?fence=<id>）
 frontend/fence.mjs
 ```
+
+## 桌面层架构：一个分组一个窗口
+
+钉到 Progman 子层的窗口**收不到转发的 mousemove**，「整屏透明窗口 + 局部穿透」实现不了
+（要么吞点击、要么点不到按钮）。所以桌面层改成 OpenFences 同款结构：
+
+| 窗口 | 入口 | 谁拉起 |
+|------|------|--------|
+| 工具条（宿主） | `frontend/fence.html` | 清单 `contributes.windows` / 快捷键 `Control+Alt+D` |
+| 单个分组 | `frontend/fence.html?fence=<id>` | 工具条按 `/state` 拉起/收掉 |
+| 单个桌面组件 | `frontend/widgets.html?id=<id>&layer=desktop` | 工具条按 `/widgets` 拉起/收掉 |
+| 悬浮层 | `frontend/widgets.html?layer=overlay` | 设置页（整层一窗，缩到组件包围盒） |
+
+窗口尺寸 = 数据里的 rect/pos，空白桌面不归我们管 —— 系统右击菜单、桌面图标都照常。
+`pluginWindow` 的去重键是 `pluginId + entry`（entry 含 query），所以多个分组窗口可以并存。
 
 ## 打开围栏窗口（P0-B）
 
@@ -30,8 +46,8 @@ frontend/fence.mjs
 宿主通用渲染，插件不需要任何 UI 代码）。
 
 - 「设置」= 控制面板（策略/规则/围栏列表/打开组件），普通窗口，按清单里的 `rect` 开 640×720
-- 「围栏」= 直接钉到桌面层的围栏窗口（会隐藏系统图标，退出/关窗自动恢复）
-- 同一入口再点一次只会把已有窗口叫回来，不会叠第二个
+- 「围栏」= 桌面层：工具条 + 每个分组一个窗口（会隐藏系统图标，退出/关窗自动恢复）
+- 同一入口再点一次只会把已有窗口叫回来；带不同 `?fence=` 的是不同窗口，各自独立
 
 快捷键 **`Control+Alt+D`** 直接打开围栏（清单 `accelerator` 声明，宿主注册）。
 可在「设置 → 快捷键 → 桌面管理 · 围栏快捷键」里改键 / 恢复默认 / 禁用。
@@ -60,18 +76,22 @@ http://localhost:4178/frontend/fence.html?demo=1
   旧版本「按桌面文件夹名建栏」的配置会在升级后一次性重建（`fencesSchema=2`），之后用户改动不再被覆盖
 - 图标：系统原生图标（主进程 Win32 助手 `SHGetImageList` jumbo，按内容裁切、按路径+mtime 缓存；
   助手不可用时回落 Electron `app.getFileIcon` 48px），失败才回落 emoji
-- 归属：显式拖拽 > 目录归「文件夹」栏 > 扩展名栏 > 待归类（拖回「待归类」不会被扩展名规则再带走）
-- 双击打开；右键菜单可移入围栏 / 移出；拖图标到另一围栏即改归属
-- 拖标题移动围栏、右下角缩放，松手即持久化
-- 空白区点击穿透；退出按钮会恢复系统桌面图标（窗口被关闭时基座也会兜底恢复）
-- 刷新：前端 1.2s 轮询 `/rev`（后端任何变更都会 bump），变了才拉 `/state`
+- 归属：显式指派 > 目录归「文件夹」栏 > 扩展名栏 > 待归类（拖回「待归类」不会被扩展名规则再带走）
+- 双击打开；右键菜单可「移入某分组」（两个独立窗口之间传不了 HTML5 drag，所以跨分组走右键）
+- 拖标题栏移动窗口（8px 网格吸附，拖动中移动窗口、松手 PATCH `/fences/:id` 持久化）
+- 双击标题栏折叠/展开（`collapsed` 落库，不覆盖 rect.h）；折叠后窗口只有标题栏高
+- 空白分组不占桌面；「待归类」和用户手动建的分组（`pinned`）始终显示
+- 点哪个窗口就把它提到同层最前（`pluginWindow.raise` → 重新 `--pin`）
+- 退出按钮会恢复系统桌面图标（窗口被关闭时基座也会兜底恢复）
+- 刷新：工具条 1.5s 轮询 `/state` + `/widgets`（窗口增删在这里收敛）；分组窗口 1.5s 跟 `/state` 对齐 rect
 
 ## 悬浮组件（P1）
 
-打开方式（设置页有按钮）：
+打开方式：桌面组件由工具条自动拉起（每个组件一个窗口）；悬浮层在设置页手动打开。
 
 ```js
-await electronAPI.pluginWindow.open({ pluginId: 'desktop-manager', entry: 'frontend/widgets.html?layer=desktop', placement: 'desktop' });
+// 单个桌面组件（工具条自动做，手动调也行）
+await electronAPI.pluginWindow.open({ pluginId: 'desktop-manager', entry: 'frontend/widgets.html?id=<id>&layer=desktop', placement: 'desktop' });
 await electronAPI.pluginWindow.open({ pluginId: 'desktop-manager', entry: 'frontend/widgets.html?layer=overlay', placement: 'overlay' });
 ```
 
@@ -80,7 +100,9 @@ await electronAPI.pluginWindow.open({ pluginId: 'desktop-manager', entry: 'front
   宿主只读契约 `tasks.today`、`agents.running`、`conversations.recent`（需 `data-contracts` 权限，
   插件不直接读主库，走宿主 `runReadContract`）
 - 智能体工具：`desktop_widget_list`（拿类型/契约/config schema）→ `desktop_widget_set`（整体替换，校验不过整份拒绝）
-- 默认整窗穿透，只有 `link` 可点；`overlay` 层在前台应用全屏时自动隐藏
+- 桌面层组件同样一个组件一个窗口（窗口 = pos），不再用整屏透明窗口 —— 透明区域照样会吃掉点击；
+  悬浮层是整层一窗，但窗口会缩到组件包围盒
+- `overlay` 层在前台应用全屏时自动隐藏
 - 浏览器看版式：`http://localhost:4178/frontend/widgets.html?demo=1&layer=desktop`
 
 

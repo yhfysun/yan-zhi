@@ -14,7 +14,7 @@
       {
         "id": "organize",
         "label": "整理",
-        "entry": "frontend/fence.html",
+        "entry": "frontend/layer.html",
         "placement": "desktop",
         "menu": true,
         "icon": "Monitor",

@@ -2281,9 +2281,18 @@ ipcMain.handle('child-window:open', (event, opts = {}) => {
   const route = String(opts.route || '/diff-window');
   const existing = childWindows.get(key);
   if (existing && !existing.isDestroyed()) {
-    if (existing.isMinimized()) existing.restore();
-    existing.focus();
-    return { ok: true, reused: true };
+    // 渲染进程崩过的窗口只剩一个白壳：当作不存在重新建，
+    // 否则每次点入口都只是 focus 那个白窗（表现为「点了没反应」）
+    let crashed = false;
+    try { crashed = existing.webContents.isCrashed(); } catch { crashed = true; }
+    if (crashed) {
+      try { existing.destroy(); } catch { /* ignore */ }
+      childWindows.delete(key);
+    } else {
+      if (existing.isMinimized()) existing.restore();
+      existing.focus();
+      return { ok: true, reused: true };
+    }
   }
   const url = childUrl(route);
   if (!url) return { ok: false, error: 'main window not ready' };
@@ -2324,6 +2333,12 @@ ipcMain.handle('child-window:open', (event, opts = {}) => {
     if (key === 'browser-game') {
       try { cleanupGameWindowTabs(win.webContents.id); } catch { /* ignore */ }
     }
+  });
+  // 渲染进程崩溃 → 窗口只剩白壳，直接销毁（登记由上面的 closed 清理），
+  // 下一次打开会重建，而不是 focus 一个永远空白的窗
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.warn(`[child-window] 渲染进程崩溃(${key})：${details && details.reason}`);
+    try { if (!win.isDestroyed()) win.destroy(); } catch { /* ignore */ }
   });
   win.webContents.setWindowOpenHandler(({ url: u }) => {
     if (isSafeExternalUrl(u)) shell.openExternal(u);
@@ -2532,26 +2547,35 @@ ipcMain.handle('screen-record:save-blob', async (_e, opts = {}) => {
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const webm = path.join(dir, `录屏_${ts}.webm`);
     fsRec.writeFileSync(webm, buf);
+    const mp4 = path.join(dir, `录屏_${ts}.mp4`);
+    let convErr = '';
     try {
       const ff = resolveFfmpegPath();
-      const mp4 = path.join(dir, `录屏_${ts}.mp4`);
       await new Promise((resolve, reject) => {
-        const p = spawnRec(ff, ['-y', '-i', webm, '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', mp4], { stdio: ['ignore', 'ignore', 'pipe'] });
+        const p = spawnRec(ff, [
+          '-y', '-i', webm,
+          // ★ 录的是屏幕上抠出来的矩形，宽高经常是奇数（实测 308×547），
+          //   而 libx264 只接受偶数尺寸 → 不缩放就必然失败，还留下一个 0 字节的 mp4。
+          '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+          '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', mp4,
+        ], { stdio: ['ignore', 'ignore', 'pipe'] });
         let tail = '';
         p.stderr.on('data', (d) => { tail = (tail + String(d)).slice(-2000); });
         p.on('error', reject);
         p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('ffmpeg ' + code + ': ' + tail))));
       });
-      try {
-        if (fsRec.existsSync(mp4) && fsRec.statSync(mp4).size > 0) {
-          try { fsRec.unlinkSync(webm); } catch { /* 留着也无妨 */ }
-          return { ok: true, file: mp4, ext: 'mp4' };
-        }
-      } catch { /* 落到 webm */ }
-      return { ok: true, file: webm, ext: 'webm', warning: 'mp4 转换失败，已保留 webm' };
-    } catch {
-      return { ok: true, file: webm, ext: 'webm', warning: '缺少可用 ffmpeg，已保留 webm' };
+      if (fsRec.existsSync(mp4) && fsRec.statSync(mp4).size > 0) {
+        try { fsRec.unlinkSync(webm); } catch { /* 留着也无妨 */ }
+        return { ok: true, file: mp4, ext: 'mp4' };
+      }
+      convErr = 'mp4 输出为空';
+    } catch (e) {
+      // 之前这里一律报「缺少可用 ffmpeg」，把真正的转码错误藏了起来（奇数宽高就是这么被掩盖的）
+      convErr = String(e?.message || e);
     }
+    // 转码失败：清掉半成品 mp4，保留 webm，素材绝不丢
+    try { if (fsRec.existsSync(mp4)) fsRec.unlinkSync(mp4); } catch { /* 清不掉也不影响 */ }
+    return { ok: true, file: webm, ext: 'webm', warning: `mp4 转换失败（已保留 webm）：${convErr.slice(0, 160)}` };
   } catch (e) {
     return { ok: false, error: String(e?.message || e) };
   }
@@ -2616,6 +2640,17 @@ ipcMain.handle('live-stream:start', (e, opts = {}) => {
   liveStream = session;
   let tail = '';
   proc.stderr.on('data', (d) => { tail = (tail + String(d)).slice(-4000); });
+  // ★ stdin 的 EPIPE 必须显式接住：Writable.write() 失败是**异步 emit 'error'**，
+  //   try/catch 根本拦不住；没有监听器时这个异常会带走整个主进程
+  //   （实测：把推流的接收端关掉，主进程立刻弹 "write EPIPE" 崩溃框，断流重连完全没机会跑）。
+  proc.stdin.on('error', (err) => {
+    if (liveStream === session) liveStream = null;
+    try { proc.kill(); } catch { /* 进程可能已退出 */ }
+    sendLiveStatus(sender, {
+      state: 'error',
+      message: `推流连接已断开：${String((err && err.message) || err)}`,
+    });
+  });
   proc.on('error', (err) => {
     if (liveStream === session) liveStream = null;
     sendLiveStatus(sender, { state: 'error', message: `ffmpeg 启动失败：${String((err && err.message) || err)}` });
@@ -13671,6 +13706,54 @@ app.whenReady().then(async () => {
     }
   });
 
+  // ---- 局域网入站端口（远控/手机连本机必须能进来）----
+  // Windows 防火墙默认拦入站：控制端连不上、配对请求送不到、通道建不起来，
+  // 除应用层问题外最常见的就是这一层。这里给「检查 + 一键授权开放」，用户点一下即可。
+  const rcFirewallRuleName = `YanZhi RemoteControl TCP ${API_PORT}`;
+  const rcRunNetsh = (args) => new Promise((resolve) => {
+    execFile('netsh', args, { windowsHide: true, timeout: 8000 }, (err, stdout, stderr) => {
+      resolve({ ok: !err, code: err ? (err.code ?? 1) : 0, out: String(stdout || '') + String(stderr || '') });
+    });
+  });
+  const rcFirewallRuleExists = async () => (await rcRunNetsh(['advfirewall', 'firewall', 'show', 'rule', `name=${rcFirewallRuleName}`, 'dir=in'])).ok;
+  ipcMain.handle('rc:port-status', async () => {
+    let listening = false;
+    try {
+      const res = await fetch(`http://127.0.0.1:${API_PORT}/health`, { signal: AbortSignal.timeout(1500) });
+      listening = res.ok;
+    } catch { /* 后端还没起 */ }
+    let ruleExists = false;
+    try { ruleExists = await rcFirewallRuleExists(); } catch { /* netsh 不可用 */ }
+    return { ok: true, port: API_PORT, listening, ruleExists, ruleName: rcFirewallRuleName };
+  });
+  ipcMain.handle('rc:port-open', async () => {
+    if (process.platform !== 'win32') return { ok: false, error: '仅 Windows 需要单独放行入站端口' };
+    const ruleArgs = [
+      'advfirewall', 'firewall', 'add', 'rule', `name=${rcFirewallRuleName}`,
+      'dir=in', 'action=allow', 'protocol=TCP', `localport=${API_PORT}`, 'profile=private,domain',
+    ];
+    if (await rcFirewallRuleExists().catch(() => false)) return { ok: true, already: true, ruleName: rcFirewallRuleName };
+    // 先直接试（应用以管理员身份运行时 netsh 本身就有权限）
+    const direct = await rcRunNetsh(ruleArgs);
+    if (direct.ok) return { ok: true, elevated: false, ruleName: rcFirewallRuleName };
+    // 没有管理员权限：弹系统授权窗（UAC）后再写规则 —— 用户点「是」才真正开放
+    const argList = ruleArgs.map((a) => `'${a}'`).join(',');
+    const ps = `Start-Process -FilePath netsh.exe -ArgumentList ${argList} -Verb RunAs -Wait`;
+    return await new Promise((resolve) => {
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 120000 }, (err, _o, se) => {
+        if (err) {
+          resolve({ ok: false, error: String(se || err.message || '提权失败').slice(0, 300) });
+          return;
+        }
+        void rcFirewallRuleExists().then((exists) => resolve(
+          exists
+            ? { ok: true, elevated: true, ruleName: rcFirewallRuleName }
+            : { ok: false, error: '授权窗口被取消，或防火墙规则未生效' },
+        ));
+      });
+    });
+  });
+
   // 远控托盘状态（隐私屏护栏 13 的「远控中」角标）：有会话时托盘提示与菜单给出
   // 「一键断开」入口。渲染层经 /status 轮询上报（自愈：渲染层重载/会话结束都会校正）。
   let rcRemoteSession = { active: false, device: '' };
@@ -14336,6 +14419,12 @@ function pluginWindowRect(opts) {
   };
 }
 
+/** 窗口原生句柄（Win32 助手 --pin/--raise 用） */
+function pluginWindowHwnd(win) {
+  const handle = win.getNativeWindowHandle();
+  return handle.length >= 8 ? handle.readBigUInt64LE(0).toString() : String(handle.readUInt32LE(0));
+}
+
 function notifyMainWindow(event, payload) {
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -14388,7 +14477,10 @@ async function openPluginWindow(opts = {}) {
     // 桌面层：先让助手尝试生成 WorkerW 层，但**不因取不到而失败** ——
     // Win11 上不少机器没有这一层，--pin 会退到 DefView 父窗口；再不行就按普通窗口开出来。
     // 宁可露出一个能用的窗口，也不要"点了/按了没反应"。
-    if (v.placement === 'desktop') {
+    // ★ 只在「还没有任何桌面层窗口」时催生 WorkerW：每开一个分组窗口都发一次 0x052C
+    //   会不停生成新的壁纸层，桌面迟早乱掉。
+    if (v.placement === 'desktop'
+      && ![...pluginWindows.values()].some((r) => r.placement === 'desktop')) {
       await runDesktopHelper(['--spawn-workerw']);
     }
 
@@ -14421,21 +14513,29 @@ async function openPluginWindow(opts = {}) {
     });
 
     const windowId = 'pw-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+    // ★ 必须在 loadURL 之前登记：页面脚本 boot 时会 pluginWindow.list() 认领自己
+    //   （一个分组一个窗口后，靠 entry 精确匹配；登记晚了页面就找不到自己，
+    //   只能退化成「随便挑一个桌面层窗口」→ 把别人的窗口挪走）。
+    pluginWindows.set(windowId, { win, pluginId: v.pluginId, placement: v.placement, entry: v.entry });
     win.on('closed', () => {
       pluginWindows.delete(windowId);
+      stopHitTestService(windowId);
       notifyMainWindow('closed', { windowId });
       const hasDesktop = [...pluginWindows.values()].some((r) => r.placement === 'desktop');
       if (!hasDesktop) void restoreIcons('last-desktop-window-closed');
     });
 
-    await win.loadURL(v.url);
+    try {
+      await win.loadURL(v.url);
+    } catch (e) {
+      pluginWindows.delete(windowId);
+      try { win.destroy(); } catch { /* ignore */ }
+      throw e;
+    }
 
     let fallback = null;
     if (v.placement === 'desktop') {
-      const handle = win.getNativeWindowHandle();
-      const hwnd = handle.length >= 8
-        ? handle.readBigUInt64LE(0).toString()
-        : String(handle.readUInt32LE(0));
+      const hwnd = pluginWindowHwnd(win);
       const pin = await runDesktopHelper(['--pin', hwnd]);
       if (!pin.data || !pin.data.ok) {
         // 钉不上就留作普通无边框窗口；placement 记录仍是 desktop，
@@ -14448,8 +14548,12 @@ async function openPluginWindow(opts = {}) {
     if (opts.clickThrough === true) {
       win.setIgnoreMouseEvents(true, { forward: true });
     }
-    pluginWindows.set(windowId, { win, pluginId: v.pluginId, placement: v.placement, entry: v.entry });
+    // 单窗口桌面层：空白处穿透、热区内可点（见 startHitTestService）
+    // 入口是 layer.html 就默认开启命中测试，省得每个开窗调用点都要透传新字段
+    const wantHitTest = v.hitTest === true || /(^|\/)layer\.html(\?|$)/.test(String(v.entry || ''));
+    if (wantHitTest) startHitTestService(windowId, pluginWindows.get(windowId));
     if (v.placement === 'overlay') ensureOverlayWatch();
+    if (v.placement === 'desktop') ensureIconWatchdog();
     win.showInactive();
     return { ok: true, windowId, placement: v.placement, url: v.url, fallback };
   } catch (e) {
@@ -14525,8 +14629,107 @@ ipcMain.handle('plugin-window:update', (_e, windowId, patch = {}) => {
 ipcMain.handle('plugin-window:close', (_e, windowId) => {
   const rec = pluginWindows.get(String(windowId));
   if (!rec) return { ok: false, error: 'not-found' };
+  stopHitTestService(windowId);
   try { rec.win.destroy(); } catch { /* ignore */ }
   return { ok: true };
+});
+
+/* ---------- 单窗口桌面层：命中测试 ----------
+ * 全屏透明窗口钉在 Progman 子层时收不到转发的 mousemove，所以不让页面自己判断，
+ * 改由主进程按光标位置切 WS_EX_TRANSPARENT：
+ *   · 光标落在页面报上来的热区里 → 取消穿透（能点）
+ *   · 落在空白桌面 → 保持穿透（点击直接落到真正的桌面，系统右键菜单照常）
+ * 热区用「窗口内坐标」上报，主进程加上窗口原点后与 getCursorScreenPoint() 比较。
+ * 拖动窗口/滚动这类「光标会离开热区但仍需捕获」的时段，页面调用 suspend 冻结切换。
+ */
+const hitTestStates = new Map();
+const HIT_TEST_INTERVAL_MS = 12;
+
+function startHitTestService(windowId, rec) {
+  const id = String(windowId);
+  if (hitTestStates.has(id)) return;
+  const state = { hotspots: [], suspended: false, lastIgnore: null, timer: null };
+  state.timer = setInterval(() => {
+    const w = rec && rec.win;
+    if (!w || w.isDestroyed()) {
+      clearInterval(state.timer);
+      hitTestStates.delete(id);
+      return;
+    }
+    if (state.suspended) return;
+    let p;
+    try { p = electronScreen.getCursorScreenPoint(); } catch { return; }
+    let b;
+    try { b = w.getBounds(); } catch { return; }
+    const x = p.x - b.x;
+    const y = p.y - b.y;
+    let inside = false;
+    for (const r of state.hotspots) {
+      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { inside = true; break; }
+    }
+    const ignore = !inside;
+    if (ignore === state.lastIgnore) return;
+    state.lastIgnore = ignore;
+    try { w.setIgnoreMouseEvents(ignore); } catch { /* 窗口正在销毁 */ }
+  }, HIT_TEST_INTERVAL_MS);
+  hitTestStates.set(id, state);
+}
+
+function stopHitTestService(windowId) {
+  const id = String(windowId);
+  const st = hitTestStates.get(id);
+  if (!st) return;
+  clearInterval(st.timer);
+  hitTestStates.delete(id);
+}
+
+ipcMain.handle('plugin-window:set-hotspots', (_e, windowId, rects) => {
+  const st = hitTestStates.get(String(windowId));
+  if (!st) return { ok: false, error: 'not-found' };
+  st.hotspots = Array.isArray(rects)
+    ? rects
+      .map((r) => ({
+        x: Number(r && r.x) || 0,
+        y: Number(r && r.y) || 0,
+        w: Math.max(0, Number(r && r.w) || 0),
+        h: Math.max(0, Number(r && r.h) || 0),
+      }))
+      .filter((r) => r.w > 0 && r.h > 0)
+    : [];
+  return { ok: true, count: st.hotspots.length };
+});
+
+ipcMain.handle('plugin-window:hit-test-suspend', (_e, windowId, on) => {
+  const st = hitTestStates.get(String(windowId));
+  if (!st) return { ok: false, error: 'not-found' };
+  st.suspended = !!on;
+  if (on) {
+    // 拖动期间光标可能移出热区，必须先确保窗口可交互
+    st.lastIgnore = false;
+    const rec = pluginWindows.get(String(windowId));
+    try { if (rec && rec.win && !rec.win.isDestroyed()) rec.win.setIgnoreMouseEvents(false); } catch { /* ignore */ }
+  } else {
+    st.lastIgnore = null; // 恢复后强制重新判定一次
+  }
+  return { ok: true, suspended: st.suspended };
+});
+
+// 把插件窗口提到同层最前。桌面层窗口是 Progman 的**兄弟子窗口**，
+// 彼此重叠时只有重新 --pin（SetParent + HWND_TOP）能可靠抬到最前；
+// 一个分组一个窗口之后，用户点哪一块就该把那块放最上面。
+ipcMain.handle('plugin-window:raise', async (_e, windowId) => {
+  const rec = pluginWindows.get(String(windowId));
+  if (!rec || !rec.win || rec.win.isDestroyed()) return { ok: false, error: 'not-found' };
+  try {
+    if (rec.placement === 'desktop') {
+      const r = await runDesktopHelper(['--pin', pluginWindowHwnd(rec.win)]);
+      return { ok: !!(r.data && r.data.ok) };
+    }
+    rec.win.moveTop();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
 });
 
 // 插件被禁用/卸载时收掉它的全部窗口（含桌面层），最后一个桌面窗口关掉后恢复系统图标。
@@ -14662,6 +14865,55 @@ ipcMain.handle('desktop-shell:file-icon', async (_e, filePath) => {
   }
 });
 
+/**
+ * 桌面层删除：走系统回收站（可还原），绝不做永久删除。
+ * 一次最多 200 个，逐个尝试，失败的单独回报（不留「部分成功但界面说全成功」）。
+ */
+ipcMain.handle('desktop-shell:trash', async (_e, paths) => {
+  const list = Array.isArray(paths) ? paths.map(String).filter(Boolean).slice(0, 200) : [];
+  if (!list.length) return { ok: false, trashed: 0, failed: [], error: 'empty' };
+  let trashed = 0;
+  const failed = [];
+  for (const p of list) {
+    try { await shell.trashItem(p); trashed += 1; }
+    catch (e) { failed.push({ path: p, error: String(e && e.message ? e.message : e) }); }
+  }
+  return { ok: failed.length === 0, trashed, failed };
+});
+
+/** 缩略图：图片/视频/PDF 走系统缩略图缓存；失败由调用方回落到文件图标 */
+ipcMain.handle('desktop-shell:thumb', async (_e, filePath, size) => {
+  const p = String(filePath || '');
+  if (!p) return { ok: false, error: 'missing-path' };
+  const px = Math.max(32, Math.min(256, Number(size) || 96));
+  try {
+    const img = await nativeImage.createThumbnailFromPath(p, { width: px, height: px });
+    if (!img || img.isEmpty()) return { ok: false, error: 'empty' };
+    return { ok: true, dataUrl: img.toDataURL() };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+/** 选目录（新建文件夹传送门用） */
+ipcMain.handle('desktop-shell:pick-folder', async (e) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender) || mainWindowRef || undefined;
+    const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+    if (!r || r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    return { ok: true, path: r.filePaths[0] };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+});
+
+/** 桌面层窗口拿键盘焦点（它是 Progman 的子窗口，点进来不一定会被激活） */
+ipcMain.handle('plugin-window:focus', (_e, windowId) => {
+  const rec = pluginWindows.get(String(windowId));
+  if (!rec || !rec.win || rec.win.isDestroyed()) return { ok: false, error: 'not-found' };
+  try { rec.win.focus(); return { ok: true }; } catch (e) { return { ok: false, error: String(e) }; }
+});
+
 ipcMain.handle('desktop-shell:open-path', async (_e, filePath) => {
   const p = String(filePath || '');
   if (!isDesktopPath(p)) return { ok: false, error: 'path-outside-desktop' };
@@ -14681,6 +14933,27 @@ async function restoreIcons(reason) {
   iconSession.markRestored();
   console.log('[desktop-shell] 已恢复系统桌面图标:', reason);
   return { ok: !!r.data, reason };
+}
+
+/**
+ * 看门狗：只要「我们藏过图标」而此刻已经没有存活的桌面层窗口，就恢复图标。
+ * 覆盖三种漏网：渲染进程崩溃、窗口被外部关掉、closed 事件没来得及跑完。
+ * （用户踩过：桌面层关掉后整张桌面空着，什么图标都没有。）
+ */
+const ICON_WATCHDOG_MS = 4000;
+let iconWatchdog = null;
+function ensureIconWatchdog() {
+  if (iconWatchdog) return;
+  iconWatchdog = setInterval(() => {
+    try {
+      if (!iconSession.shouldRestore()) return;
+      const alive = [...pluginWindows.values()].some(
+        (r) => r.placement === 'desktop' && r.win && !r.win.isDestroyed(),
+      );
+      if (!alive) void restoreIcons('watchdog:no-desktop-window');
+    } catch { /* 尽力而为 */ }
+  }, ICON_WATCHDOG_MS);
+  if (typeof iconWatchdog.unref === 'function') iconWatchdog.unref();
 }
 
 /** 同步恢复：退出路径必须同步完成，不能等 Promise */

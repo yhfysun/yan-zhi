@@ -69,6 +69,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   rcSessionState: (active, device) => ipcRenderer.invoke('rc:session-state', !!active, String(device || '')),
   // 远控确认弹窗抬升：确认弹窗在主窗口，远控/二维码页是独立子窗口会压在它上面
   rcRaisePrompt: (on) => ipcRenderer.invoke('rc:raise', !!on),
+  // 局域网入站端口：检查本机端口是否已在 Windows 防火墙放行 + 一键授权开放（UAC）
+  rcPortStatus: () => ipcRenderer.invoke('rc:port-status'),
+  rcPortOpen: () => ipcRenderer.invoke('rc:port-open'),
   // 托盘「一键断开」回调：主进程菜单点击 → 渲染层在 host WS 上发 session.stop {all:true}
   onRcDisconnectAll: (cb) => ipcRenderer.on('rc:disconnect-all', () => { try { cb(); } catch { /* ignore */ } }),
   // 平台标识
@@ -96,9 +99,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     open: (opts) => ipcRenderer.invoke('plugin-window:open', opts),
     update: (windowId, patch) => ipcRenderer.invoke('plugin-window:update', String(windowId), patch),
     close: (windowId) => ipcRenderer.invoke('plugin-window:close', String(windowId)),
+    // 提到同层最前（桌面层窗口互相重叠时靠它决定谁在上）
+    raise: (windowId) => ipcRenderer.invoke('plugin-window:raise', String(windowId)),
     // 关掉某插件的全部窗口（插件被禁用/卸载时由宿主 UI 调用）
     closeAll: (pluginId) => ipcRenderer.invoke('plugin-window:close-all', String(pluginId || '')),
     list: () => ipcRenderer.invoke('plugin-window:list'),
+    // 单窗口桌面层的命中测试：把「可交互区域」按窗口内坐标报给主进程，
+    // 主进程按光标位置切穿透 —— 空白桌面点击直接落到系统，右键菜单照常。
+    setHotspots: (windowId, rects) => ipcRenderer.invoke('plugin-window:set-hotspots', String(windowId), rects),
+    // 拖动/滚动时冻结命中测试（否则光标移出热区会把窗口变穿透，打断鼠标捕获）
+    suspendHitTest: (windowId, on) => ipcRenderer.invoke('plugin-window:hit-test-suspend', String(windowId), !!on),
+    // 桌面层是 Progman 的子窗口，点进来不一定被激活 —— 需要键盘操作前主动要一次焦点
+    focus: (windowId) => ipcRenderer.invoke('plugin-window:focus', String(windowId)),
     // 清单 contributes.windows[].accelerator 的注册通道：渲染层整份同步，
     // 主进程差量注册/注销（停用/卸载插件后自动失效）
     setHotkeys: (list) => ipcRenderer.invoke('plugin-window:set-hotkeys', list),
@@ -118,6 +130,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setIconsVisible: (visible) => ipcRenderer.invoke('desktop-shell:set-icons-visible', visible !== false),
     fileIcon: (filePath, size) => ipcRenderer.invoke('desktop-shell:file-icon', String(filePath), size || 'normal'),
     openPath: (filePath) => ipcRenderer.invoke('desktop-shell:open-path', String(filePath)),
+    // 删除 = 移到系统回收站（可还原），不做永久删除
+    trash: (paths) => ipcRenderer.invoke('desktop-shell:trash', Array.isArray(paths) ? paths.map(String) : []),
+    thumb: (filePath, size) => ipcRenderer.invoke('desktop-shell:thumb', String(filePath), size || 96),
+    pickFolder: () => ipcRenderer.invoke('desktop-shell:pick-folder'),
     query: () => ipcRenderer.invoke('desktop-shell:query'),
   },
 

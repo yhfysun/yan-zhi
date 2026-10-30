@@ -2,6 +2,8 @@
 //
 // 组件的权威定义在 /widgets（整体替换语义），所以"新建"= GET 现有 → 追加 → PUT 回去。
 // 这里只负责：类型预设、找空位、把菜单画出来（菜单样式写死在本模块，页面上不必各自加 CSS）。
+import { uniqueKeyOf } from '../shared/widgets.js';
+
 export const WIDGET_PRESETS = [
   { type: 'weather', label: '天气', hint: '当前天气 + 未来两天', size: { w: 330, h: 250 }, source: { contract: 'weather.current' }, config: {} },
   { type: 'todos', label: '待办', hint: '勾选 / 快速添加 · 到点让宠物提醒', size: { w: 330, h: 260 }, source: { contract: 'todos.list' }, config: { max: 6 } },
@@ -40,6 +42,12 @@ export async function createWidget(request, type, extra = {}) {
   const data = await request('/widgets');
   const list = (data && data.widgets) || [];
   if (list.length >= 12) throw new Error('组件最多 12 个，先删掉几个');
+  const config = { ...preset.config, ...(extra && extra.config ? extra.config : {}) };
+  // 时钟/待办/同城天气全局只能有一个：与其再建一份重复渲染，不如直接说清楚
+  const ukey = uniqueKeyOf({ type: preset.type, config });
+  if (ukey && list.some((w) => uniqueKeyOf(w) === ukey)) {
+    throw new Error(preset.label + ' 全局只能有一个（桌面上已经有了）');
+  }
   const bounds = { w: window.screen.width, h: window.screen.height };
   const id = type + '-' + Date.now().toString(36).slice(-5);
   const widget = {
@@ -48,7 +56,7 @@ export async function createWidget(request, type, extra = {}) {
     layer: 'desktop',
     pos: nextSpot(list, preset.size, bounds),
     source: preset.source,
-    config: { ...preset.config, ...(extra && extra.config ? extra.config : {}) },
+    config,
   };
   const out = await request('/widgets', {
     method: 'PUT',

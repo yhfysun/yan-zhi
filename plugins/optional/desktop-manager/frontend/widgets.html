@@ -19,7 +19,18 @@
     background: rgba(16,22,36,.58); border: 1px solid rgba(255,255,255,.13);
     box-shadow: 0 14px 40px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.08);
     backdrop-filter: blur(16px); overflow: hidden;
+    cursor: move;                 /* 卡片空白处可拖，窗口跟着走 */
   }
+  .widget input, .widget textarea, .widget button, .widget select,
+  .widget a, .widget .link, .widget .fr, .widget .cb { cursor: auto; }
+  .widget .link, .widget .fr, .widget .cb, .widget button { cursor: pointer; }
+
+  /* 滚动条平时隐形，鼠标进卡片才淡淡浮出来（桌面卡片上挂一根白条太丑） */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: transparent; border-radius: 999px; }
+  .widget:hover ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); }
+  .widget:hover ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.36); }
   .widget .wt { font-size: 12px; color: rgba(255,255,255,.55); margin-bottom: 8px; letter-spacing: .4px; }
 
   .clock .hm { font-size: 40px; font-weight: 300; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
