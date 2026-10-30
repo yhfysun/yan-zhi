@@ -4,15 +4,23 @@
 // Edge 在线虽音色多但要联网。本地神经语音模型（sherpa-onnx VITS）能在**完全离线**下提供上百种音色。
 //
 // 设计取舍：
-//  - **按需下载，不随包**（用户明确要求）：安装包不涨；代价是首次使用需联网下载约 120MB。
-//  - 模型落在 `<dataDir>/tts-models/<id>`，解压后即用，无需重启。
-//  - 下载复用 `services/media-fetch` 的统一入口（直连优先 → 本机代理隧道），
-//    大文件走代理是常态，且那里的重定向跟随/字节保留修复对本链路同样必要。
+//  - **按需下载，不随包**（用户明确要求）：安装包不涨；代价是首次使用需联网下载约 30~170MB。
+//  - 模型落在 `<dataDir>/tts-models/<id>`，下完即用，无需重启。
+//  - ★ 下载源按**实测可达性**排序，不按"官方与否"排（同 whisper-runtime 的结论）：
+//      1) ModelScope 上有人把这三个包逐个文件镜像好了 → 国内直连约 3.7MB/s，**首选**。
+//         好处是拿到的是解压后的单文件，不必下 tar 也不必依赖系统 tar。
+//      2) GitHub release tar.bz2 → ghfast.top / gh-proxy.com / ghproxy.net / gh.llkk.cc 等加速镜像
+//         实测**大部分时间不可达**（同一次会话里 gh-proxy.com 偶尔能通、49s 下完 120MB），
+//         只留作兜底（每源短超时，避免"点了没反应"）。
+//    实测（2026-10-30，本机无代理）：modelscope.cn 200 / ModelScope 下行 3.7~8MB/s。
+//  - Gitee 未接入：没有能确认的镜像仓库，硬编码猜地址只会得到 404 的"假兜底"。
 import { promises as fsp } from 'node:fs';
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import https from 'node:https';
 import { downloadMediaBinary } from './media-fetch.js';
+import { tarPathArg } from './exec-cmd.js';
 
 export interface TtsPackFile {
   /** 相对模型根目录的路径 */
@@ -54,7 +62,7 @@ export interface DownloadState {
 }
 
 /**
- * 可下载的语音包清单。URL 用 GitHub Releases（走 release-assets 重定向，1 次跟随）。
+ * 可下载的语音包清单。下载源见 MS_REPOS（ModelScope，首选）与 RELEASE_FILE（GitHub 兜底）。
  *
  * ⚠️ `sizeMb` 是**实测值**（解压后的核心文件），不是网上流传的数字：
  * aishell3 的 tar.bz2 仅 30.1MB，解压后核心文件约 33MB —— 网上说「120MB」是含 rule.far(172MB)
@@ -133,12 +141,118 @@ export function packUrl(id: string): string | null {
   return f ? `${RELEASE_BASE}/${f}` : null;
 }
 
+// ─────────────────────────── 国内源（首选） ───────────────────────────
+
+const MS_BASE = 'https://www.modelscope.cn';
+
+/**
+ * 包名 → ModelScope 镜像仓库（按尝试顺序，同一包多仓库做冗余）。
+ * 这些是社区把官方 release 解开后逐个文件上传的副本：文件清单与官方包一致，
+ * 但**拿到的就是解压后的最终文件**，省掉 tar 这一步。
+ */
+export const MS_REPOS: Record<string, string[]> = {
+  'vits-zh-aishell3': [
+    'jianbing181/tts-vits-icefall-zh-aishell3',
+    'liaowenbin/vits-icefall-zh-aishell3',
+  ],
+  'vits-zh-hf-theresa': ['jianbing181/tts-vits-zh-hf-theresa'],
+  'vits-melo-tts-zh_en': [
+    'jianbing181/tts-vits-melo-tts-zh-en',
+    'liaowenbin/vits-melo-tts-zh_en',
+  ],
+};
+
+export interface PackFile {
+  /** 远端路径（ModelScope 仓库内 / release 包内同名） */
+  remote: string;
+  /** 落盘后的本地名。★ 官方包里的模型文件不叫 model.onnx，见 localNameFor */
+  local: string;
+  /** 体积下限（字节）。小文件用来识别「下到了错误页」这种情况 */
+  minBytes: number;
+  /** 缺失是否致命：fst/词典类只是正则化增强，缺了仍能合成 */
+  required?: boolean;
+}
+
+const MB = 1048576;
+
+/**
+ * 每个包只取推理必需文件（与 release 白名单同口径，**不含 rule.far**）。
+ * 体积下限按 ModelScope 实测文件大小给一个宽松下界，够挡住空响应/HTML 错误页。
+ *
+ * ⚠️ 下限别设高：theresa 的 tokens.txt 只有 268 字节（词表极小的单音色模型），
+ * 一度按 1KB 卡它，结果「文件其实下对了」却整包判失败、白白退到 GitHub 兜底。
+ */
+export const PACK_FILES: Record<string, PackFile[]> = {
+  'vits-zh-aishell3': [
+    { remote: 'model.onnx', local: 'model.onnx', minBytes: 20 * MB, required: true },
+    { remote: 'tokens.txt', local: 'tokens.txt', minBytes: 32, required: true },
+    { remote: 'lexicon.txt', local: 'lexicon.txt', minBytes: 512 * 1024, required: true },
+    { remote: 'speakers.txt', local: 'speakers.txt', minBytes: 64 },
+    { remote: 'date.fst', local: 'date.fst', minBytes: 4096 },
+    { remote: 'number.fst', local: 'number.fst', minBytes: 4096 },
+    { remote: 'phone.fst', local: 'phone.fst', minBytes: 4096 },
+    { remote: 'new_heteronym.fst', local: 'new_heteronym.fst', minBytes: 512 },
+  ],
+  'vits-zh-hf-theresa': [
+    // ★ 该仓库里模型文件叫 theresa.onnx，落到本地统一成 model.onnx
+    { remote: 'theresa.onnx', local: 'model.onnx', minBytes: 80 * MB, required: true },
+    { remote: 'tokens.txt', local: 'tokens.txt', minBytes: 32, required: true },
+    { remote: 'lexicon.txt', local: 'lexicon.txt', minBytes: 512 * 1024, required: true },
+    { remote: 'date.fst', local: 'date.fst', minBytes: 4096 },
+    { remote: 'number.fst', local: 'number.fst', minBytes: 4096 },
+    { remote: 'phone.fst', local: 'phone.fst', minBytes: 4096 },
+    { remote: 'new_heteronym.fst', local: 'new_heteronym.fst', minBytes: 512 },
+  ],
+  'vits-melo-tts-zh_en': [
+    { remote: 'model.onnx', local: 'model.onnx', minBytes: 100 * MB, required: true },
+    { remote: 'tokens.txt', local: 'tokens.txt', minBytes: 32, required: true },
+    { remote: 'lexicon.txt', local: 'lexicon.txt', minBytes: 512 * 1024, required: true },
+    { remote: 'date.fst', local: 'date.fst', minBytes: 4096 },
+    { remote: 'number.fst', local: 'number.fst', minBytes: 4096 },
+    { remote: 'phone.fst', local: 'phone.fst', minBytes: 4096 },
+    { remote: 'new_heteronym.fst', local: 'new_heteronym.fst', minBytes: 512 },
+    { remote: 'LICENSE', local: 'LICENSE', minBytes: 64 },
+  ],
+};
+
+/**
+ * 纯函数：某仓库里一个文件的下载地址。
+ * ModelScope 对 `resolve` 形态回 302 到国内 CDN（cdn-lfs-cn-1.modelscope.cn），
+ * 实测 3.7MB/s，不需要走代理。
+ */
+export function msFileUrl(repo: string, remotePath: string): string {
+  const p = remotePath.split('/').map(encodeURIComponent).join('/');
+  return `${MS_BASE}/models/${repo}/resolve/master/${p}`;
+}
+
+/** 纯函数：某包在所有 ModelScope 仓库上的候选地址（按尝试顺序，便于单测钉住）。 */
+export function msFileUrls(id: string, remotePath: string): string[] {
+  return (MS_REPOS[id] ?? []).map((repo) => msFileUrl(repo, remotePath));
+}
+
+/**
+ * 纯函数：官方 release 里的文件名 → 本地落盘名。
+ *
+ * ★ 实测踩坑：`vits-icefall-zh-aishell3.tar.bz2` 里的模型文件叫 **vits-aishell3.onnx**，
+ * theresa 叫 theresa.onnx，而推理层（sherpa-tts.resolveModelPaths）只认 model.onnx /
+ * model.fp16.onnx。旧白名单恰好把它排除在外，于是「下载和解压都成功，却报缺 model.onnx」。
+ * 这里统一改名，两条安装路径都走它。
+ */
+export function localNameFor(fileName: string): string {
+  if (fileName === 'model.onnx' || fileName === 'model.fp16.onnx') return fileName;
+  return fileName.toLowerCase().endsWith('.onnx') ? 'model.onnx' : fileName;
+}
+
 /**
  * 纯函数：给定 release 直链，产出多源候选（按尝试顺序）。
  *
  * 为什么需要：GitHub Releases 在国内网络下**时通时不通**（实测有整段时间直连超时、
  * 代理 TLS 也失败）。单源必然失败，多源 + 重试才能显著提高成功率。
  * 顺序：国内加速镜像优先（若有可用），其次官方直链，最后由 media-fetch 自动走代理隧道。
+ *
+ * ⚠️ 2026-10-30 实测这几个 gh 代理域名在无代理环境下**大部分时间不可达**
+ * （同一会话里 gh-proxy.com 偶尔通、ghfast.top 全挂），
+ * 所以本函数现在只是「ModelScope 之后」的兜底（见 installTtsPack 的调用顺序）。
  */
 export function mirrorUrls(fileName: string): string[] {
   const official = `${RELEASE_BASE}/${fileName}`;
@@ -221,8 +335,9 @@ export async function listTtsPacks(): Promise<TtsPackStatus[]> {
 
 /** 解压命令。tar.bz2 用系统 tar（Win10+ 自带 bsdtar 支持 bz2）。 */
 export function buildExtractCommand(archivePath: string, destDir: string): { cmd: string; args: string[] } {
-  // Windows 自带 bsdtar 与 Linux/mac 的 tar 都支持 -xjf
-  return { cmd: 'tar', args: ['-xjf', archivePath, '-C', destDir] };
+  // Windows 自带 bsdtar 与 Linux/mac 的 tar 都支持 -xjf；
+  // 路径过 tarPathArg（Git Bash 的 GNU tar 会把 `C:\...` 当远程主机，见 exec-cmd 注释）
+  return { cmd: 'tar', args: ['-xjf', tarPathArg(archivePath), '-C', tarPathArg(destDir)] };
 }
 
 /** 纯函数：把解压后的单层目录「拉平」（release 包常多包一层同名目录）。 */
@@ -231,8 +346,101 @@ export function flattenTarget(dir: string, id: string): string {
 }
 
 /**
+ * 流式下载到文件（跟随 3xx，写盘而不是攒内存）。
+ *
+ * 为什么不复用 `downloadMediaBinary`：那个接口把整个响应攒成 Buffer，且直连有 20s **总超时**。
+ * 语音包单文件最大 163MB，攒内存峰值太高，20s 总超时在国内慢速时也必然误杀。
+ * 这里改成「流式落盘 + 空闲超时」（空闲＝这么久没有新字节才算超时），大文件慢速下载不会被打断。
+ */
+function downloadToFile(
+  url: string,
+  dest: string,
+  opts: { idleTimeoutMs: number; onProgress?: (got: number, total: number) => void },
+  redirectsLeft = 4,
+): Promise<{ bytes: number }> {
+  return new Promise((resolve, reject) => {
+    let target: URL;
+    try { target = new URL(url); } catch { reject(new Error(`非法下载地址：${url}`)); return; }
+    if (target.protocol !== 'https:') { reject(new Error(`仅支持 https 下载地址：${url}`)); return; }
+
+    const req = https.get(
+      {
+        host: target.hostname,
+        port: Number(target.port) || 443,
+        path: target.pathname + target.search,
+        headers: { 'User-Agent': 'yan-zhi-tts/1.0', Accept: '*/*' },
+        agent: false,
+      },
+      (res) => {
+        const code = res.statusCode || 0;
+        if (code >= 300 && code < 400) {
+          const loc = res.headers.location;
+          res.resume();
+          if (!loc) { reject(new Error(`收到 ${code} 但无 Location`)); return; }
+          if (redirectsLeft <= 0) { reject(new Error('重定向次数过多')); return; }
+          let next: string;
+          try { next = new URL(loc, url).toString(); } catch { reject(new Error(`重定向地址非法：${loc}`)); return; }
+          downloadToFile(next, dest, opts, redirectsLeft - 1).then(resolve, reject);
+          return;
+        }
+        if (code !== 200) { res.resume(); reject(new Error(`HTTP ${code}`)); return; }
+
+        const total = Number(res.headers['content-length'] || 0);
+        let got = 0;
+        const ws = createWriteStream(dest);
+        // 写完再 resolve：'finish' 只表示写流收尾，文件句柄已关闭，后续 stat 才准
+        ws.on('finish', () => resolve({ bytes: got }));
+        ws.on('error', reject);
+        res.on('data', (c: Buffer) => { got += c.length; opts.onProgress?.(got, total); });
+        res.on('aborted', () => { ws.destroy(); reject(new Error('连接被中断')); });
+        res.on('error', (e) => { ws.destroy(); reject(e); });
+        res.pipe(ws);
+      },
+    );
+    req.on('error', reject);
+    // 注意：Node 的 request timeout 是**空闲**语义，正好是这里想要的
+    req.setTimeout(opts.idleTimeoutMs, () => req.destroy(new Error('下载超时（长时间没有新数据）')));
+  });
+}
+
+/**
+ * 从单个 ModelScope 仓库下载整套文件到 destDir。
+ * 必需文件失败 → 抛错（上层换下一个仓库）；可选文件失败 → 跳过（缺 fst 只是不做数字规范化）。
+ */
+async function fetchPackFromRepo(
+  id: string,
+  repo: string,
+  destDir: string,
+  onFile: (index: number, count: number, file: PackFile, got: number, total: number) => void,
+): Promise<void> {
+  const files = PACK_FILES[id] ?? [];
+  if (!files.length) throw new Error(`语音包 ${id} 未配置文件清单`);
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    try {
+      const r = await downloadToFile(msFileUrl(repo, f.remote), path.join(destDir, f.local), {
+        idleTimeoutMs: 60000,
+        onProgress: (got, total) => onFile(i, files.length, f, got, total),
+      });
+      if (r.bytes < f.minBytes) {
+        throw new Error(`${f.local} 体积异常（${r.bytes} 字节，预期 ≥ ${f.minBytes}）`);
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (f.required) throw new Error(`${f.remote}: ${msg}`);
+      // 可选文件（fst / speakers / LICENSE）缺失不影响合成
+      onFile(i + 1, files.length, f, 1, 1);
+    }
+  }
+}
+
+/**
  * 下载并安装语音包。幂等：已装则直接返回。
  * 返回后需由调用方（或下次推理时）加载模型。
+ *
+ * 源顺序：ModelScope 各仓库（国内直连）→ GitHub release 多镜像兜底。
+ * 每条路都下到临时目录，**校验通过才整体搬进目标目录**，
+ * 避免半成品（比如只有 tokens.txt 没有 onnx）留在正式目录里让状态显示成"已装"。
  */
 export async function installTtsPack(
   id: string,
@@ -242,71 +450,94 @@ export async function installTtsPack(
   if (!pack) return { ok: false, message: `未知语音包：${id}` };
   if (await isInstalled(id)) return { ok: true, message: `${pack.name} 已安装`, dir: packDir(id) };
 
-  const url = packUrl(id);
-  if (!url) return { ok: false, message: `语音包 ${id} 暂无下载源` };
-  const fileName = RELEASE_FILE[id];
-
   const dir = packDir(id);
   const tmp = path.join(ttsRoot(), `.tmp-${id}`);
   await fsp.mkdir(dir, { recursive: true });
-  await fsp.mkdir(tmp, { recursive: true });
+  const resetTmp = async () => {
+    try { await fsp.rm(tmp, { recursive: true, force: true }); } catch { /* 清理失败无碍，下次覆盖 */ }
+    await fsp.mkdir(tmp, { recursive: true });
+  };
 
-  downloads.set(id, { state: 'downloading', progress: 0, message: '开始下载…' });
+  downloads.set(id, { state: 'downloading', progress: 0, message: '准备下载…' });
+  const errs: string[] = [];
   try {
-    // 多源重试：GitHub 在国内网络时通时不通，单源失败概率高。
-    // ⚠️ 每个源必须**独立短超时**：曾用统一 30 分钟超时 × 5 个源 → 网络差时用户要等 2.5 小时，
-    // 表现为「点了下载就卡死」。大文件传输本身可能很久，故给单个源 10 分钟（够 31MB 慢速下完），
-    // 且**直连失败会快速转下一个源**（media-fetch 内部直连只有 20s 超时）。
-    const urls = mirrorUrls(fileName);
-    let buf: Buffer | null = null;
-    const errs: string[] = [];
-    const PER_SOURCE_TIMEOUT = 10 * 60 * 1000;
-    for (let i = 0; i < urls.length; i++) {
-      const host = safeHost(urls[i]);
+    // ── 一、ModelScope（国内直连，实测可用）──
+    const repos = MS_REPOS[id] ?? [];
+    for (let r = 0; r < repos.length; r++) {
+      const repo = repos[r];
       try {
-        onProgress?.(`下载中（源 ${i + 1}/${urls.length}：${host}）…`);
-        downloads.set(id, { state: 'downloading', progress: 5 + i * 4, message: `下载中（${host}）…` });
-        const got = await downloadMediaBinary(urls[i], PER_SOURCE_TIMEOUT);
-        if (got && got.length > 1048576) { buf = got; break; }
-        errs.push(`${host}: 内容过小（${got?.length ?? 0} 字节）`);
+        await resetTmp();
+        onProgress?.(`ModelScope 下载中（${repo}）…`);
+        await fetchPackFromRepo(id, repo, tmp, (index, count, file, got, total) => {
+          const ratio = total > 0 ? Math.min(1, got / total) : 0;
+          const progress = Math.round(((index + ratio) / count) * 90) + 2;
+          const size = total > 0 ? `${(got / MB).toFixed(1)}/${(total / MB).toFixed(1)}MB` : `${(got / MB).toFixed(1)}MB`;
+          downloads.set(id, {
+            state: 'downloading', progress, bytes: got, totalBytes: total || undefined,
+            message: `下载 ${file.local}（${index + 1}/${count}，${size}）`,
+          });
+        });
+        if (!existsSync(path.join(tmp, 'model.onnx'))) throw new Error('下载完成但缺少 model.onnx');
+
+        downloads.set(id, { state: 'downloading', progress: 95, message: '校验中…' });
+        await fsp.cp(tmp, dir, { recursive: true, force: true });
+        if (!(await isInstalled(id))) throw new Error('落盘后未找到 model.onnx');
+
+        downloads.set(id, { state: 'done', progress: 100, message: '安装完成' });
+        return { ok: true, message: `${pack.name} 安装完成（ModelScope：${repo}）`, dir };
       } catch (e: unknown) {
-        errs.push(`${host}: ${e instanceof Error ? e.message : String(e)}`);
+        const msg = e instanceof Error ? e.message : String(e);
+        errs.push(`ModelScope ${repo}: ${msg}`);
+        onProgress?.(`ModelScope（${repo}）失败：${msg}，换下一个源…`);
       }
-      downloads.set(id, {
-        state: 'downloading', progress: 5 + i * 4,
-        message: `源 ${i + 1}/${urls.length}（${host}）失败，换下一个…`,
-      });
     }
-    if (!buf) {
-      throw new Error(
-        `所有下载源均失败（${errs.join(' | ')}）。` +
-        `可手动下载后放入：${manualDir(id)}（解压后确保该目录下有 model.onnx）`,
-      );
+
+    // ── 二、GitHub release（gh 代理多镜像 → 官方直链）兜底 ──
+    const url = packUrl(id);
+    const fileName = RELEASE_FILE[id];
+    if (url && fileName) {
+      // 每个源必须**独立短超时**：曾用统一 30 分钟超时 × 5 个源 → 网络差时用户要等 2.5 小时，
+      // 表现为「点了下载就卡死」。大文件传输本身可能很久，故给单个源 5 分钟，
+      // 且**直连失败会快速转下一个源**（media-fetch 内部直连只有 20s 超时）。
+      const urls = mirrorUrls(fileName);
+      const PER_SOURCE_TIMEOUT = 5 * 60 * 1000;
+      for (let i = 0; i < urls.length; i++) {
+        const host = safeHost(urls[i]);
+        try {
+          await resetTmp();
+          onProgress?.(`GitHub 兜底下载中（源 ${i + 1}/${urls.length}：${host}）…`);
+          downloads.set(id, { state: 'downloading', progress: 5, message: `GitHub 兜底（${host}）…` });
+          const got = await downloadMediaBinary(urls[i], PER_SOURCE_TIMEOUT);
+          if (!got || got.length <= MB) { errs.push(`${host}: 内容过小（${got?.length ?? 0} 字节）`); continue; }
+
+          const archive = path.join(tmp, 'pack.tar.bz2');
+          await fsp.writeFile(archive, got);
+          downloads.set(id, { state: 'downloading', progress: 70, message: '解压中…' });
+          const { cmd, args } = buildExtractCommand(archive, tmp);
+          const r = await run(cmd, args, 600000);
+          if (!r.ok) throw new Error(`解压失败：${r.out.slice(-300)}`);
+
+          // 把解压出来的必需文件搬进目标目录（release 通常包一层同名目录）
+          const dirs = (await fsp.readdir(tmp, { withFileTypes: true })).filter((e) => e.isDirectory());
+          const src = dirs.length === 1 ? path.join(tmp, dirs[0].name) : tmp;
+          const copied = await copyRequired(src, dir);
+          if (copied === 0) throw new Error('解压后未找到任何必需文件，包结构可能已变更');
+
+          downloads.set(id, { state: 'downloading', progress: 95, message: '校验中…' });
+          if (!(await isInstalled(id))) throw new Error('解压后未找到 model.onnx，包结构可能已变更');
+
+          downloads.set(id, { state: 'done', progress: 100, message: '安装完成' });
+          return { ok: true, message: `${pack.name} 安装完成（GitHub 兜底：${host}）`, dir };
+        } catch (e: unknown) {
+          errs.push(`${host}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
     }
-    if (buf.length < pack.sizeMb * 1048576 * 0.5) {
-      throw new Error(`下载不完整（${(buf.length / 1048576).toFixed(1)}MB，预期约 ${pack.sizeMb}MB）`);
-    }
-    downloads.set(id, { state: 'downloading', progress: 60, message: '解压中…', bytes: buf.length, totalBytes: buf.length });
 
-    const archive = path.join(tmp, 'pack.tar.bz2');
-    await fsp.writeFile(archive, buf);
-    onProgress?.('解压中…');
-    const { cmd, args } = buildExtractCommand(archive, tmp);
-    const r = await run(cmd, args, 600000);
-    if (!r.ok) throw new Error(`解压失败：${r.out.slice(-300)}`);
-
-    // 把解压出来的必需文件搬进目标目录（release 通常包一层同名目录）
-    const entries = await fsp.readdir(tmp, { withFileTypes: true });
-    const dirs = entries.filter((e) => e.isDirectory());
-    const src = dirs.length === 1 ? path.join(tmp, dirs[0].name) : tmp;
-    const copied = await copyRequired(src, dir);
-    if (copied === 0) throw new Error('解压后未找到任何必需文件，包结构可能已变更');
-
-    downloads.set(id, { state: 'downloading', progress: 95, message: '校验中…' });
-    if (!(await isInstalled(id))) throw new Error('解压后未找到 model.onnx，包结构可能已变更');
-
-    downloads.set(id, { state: 'done', progress: 100, message: '安装完成' });
-    return { ok: true, message: `${pack.name} 安装完成`, dir };
+    throw new Error(
+      `所有下载源均失败（${errs.join(' | ')}）。` +
+      `可手动下载后放入：${manualDir(id)}（解压后确保该目录下有 model.onnx）`,
+    );
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     downloads.set(id, { state: 'error', progress: 0, message: `安装失败：${msg}` });
@@ -328,9 +559,9 @@ const REQUIRED_FILES = [
   'speakers.txt', 'README.md', 'LICENSE',
 ];
 
-/** 复制时纳入的文件判定（纯函数，便于单测）。 */
+/** 复制时纳入的文件判定（纯函数，便于单测）。任意 `.onnx` 都算必需（名字各包不同）。 */
 export function isRequiredFile(name: string): boolean {
-  return REQUIRED_FILES.includes(name);
+  return REQUIRED_FILES.includes(name) || name.toLowerCase().endsWith('.onnx');
 }
 
 async function copyRequired(src: string, dest: string): Promise<number> {
@@ -339,7 +570,8 @@ async function copyRequired(src: string, dest: string): Promise<number> {
   for (const e of await fsp.readdir(src, { withFileTypes: true })) {
     if (e.isDirectory()) { copied += await copyRequired(path.join(src, e.name), path.join(dest, e.name)); continue; }
     if (!isRequiredFile(e.name)) continue;
-    await fsp.copyFile(path.join(src, e.name), path.join(dest, e.name));
+    // 落盘名统一（vits-aishell3.onnx → model.onnx），否则推理层认不出来
+    await fsp.copyFile(path.join(src, e.name), path.join(dest, localNameFor(e.name)));
     copied++;
   }
   return copied;

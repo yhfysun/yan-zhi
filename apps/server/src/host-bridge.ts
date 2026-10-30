@@ -28,7 +28,7 @@ import { gitService } from './services/git.js';
 // ★ path-guard 整面转发（2026-10-25 P3）：插件的命令/路径授权全走它，逐个登记会一直漏 ——
 //   一次收编全部导出，桥面快照测试钉住清单。
 import * as pathGuard from './services/path-guard.js';
-import { runCmd, lookupOnPath } from './services/exec-cmd.js';
+import { runCmd, lookupOnPath, tarPathArg } from './services/exec-cmd.js';
 import { serverState } from './state.js';
 // P5 前置（P4 实装）：插件运行时补种（场景/智能体）走宿主种子写入器
 import { applyBuiltinSeed } from './db.js';
@@ -120,7 +120,7 @@ export {
   getLatestMessageSummary, insertMessageSummary,
   loadEffectiveTaskTypes, MESSAGE_LIST_COLS,
   createLogger, pushPluginAudit, encrypt, decrypt, gitService,
-  runCmd, lookupOnPath, serverState,
+  runCmd, lookupOnPath, tarPathArg, serverState,
   authMiddleware, hardDeleteRow, resolveArtifactDirFor, ensureArtifactDirFor, applyBuiltinSeed,
   listReadContracts, runReadContract,
 };
@@ -144,7 +144,7 @@ export function injectServerHostBridge(): void {
     getLatestMessageSummary, insertMessageSummary,
     loadEffectiveTaskTypes, MESSAGE_LIST_COLS,
     createLogger, pushPluginAudit, encrypt, decrypt, gitService,
-    runCmd, lookupOnPath, serverState,
+    runCmd, lookupOnPath, tarPathArg, serverState,
     authMiddleware, hardDeleteRow, resolveArtifactDirFor, ensureArtifactDirFor, applyBuiltinSeed,
     llmJson, extractJson,
     listReadContracts, runReadContract,

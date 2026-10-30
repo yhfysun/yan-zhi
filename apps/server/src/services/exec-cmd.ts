@@ -13,6 +13,8 @@
 //   只 SIGTERM 直接子进程，`shell:true` 下的孙进程（ffmpeg/yt-dlp 的辅助进程）会成孤儿。
 //   Windows 用 `taskkill /T /F`，POSIX 用 SIGKILL；timedOut=true 语义不变。
 
+import path from 'node:path';
+
 export interface RunCmdOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -111,4 +113,23 @@ export async function lookupOnPath(file: string): Promise<string | null> {
   // 延迟 import 保持本模块零静态重依赖
   const { existsSync } = await import('node:fs');
   return first && existsSync(first) ? first : null;
+}
+
+/**
+ * 传给外部 `tar` 的路径参数（解压时用）。
+ *
+ * ★ 实测踩坑（2026-10-30）：从 Git Bash 启动的服务里 `tar` 解析到 MSYS 的 **GNU tar**，
+ *   它把 `C:\Users\...` 当成 `host:path` 形式的**远程地址** →
+ *   `tar: C\:\\Users\\...: Cannot open: No such file or directory`；
+ *   而 Windows 自带的 bsdtar 完全正常。于是同一个「安装语音引擎」操作，
+ *   从终端起就失败、从桌面图标起就成功，极易被当成玄学。
+ * 规避：一律给正斜杠；能取到相对路径时优先相对路径（没有冒号就不会触发远程解析）。
+ *   ★ `..` 开头的相对路径同样可用，别当成「不可用」跳回绝对路径 —— 数据目录常在仓库外。
+ */
+export function tarPathArg(p: string): string {
+  if (process.platform !== 'win32') return p;
+  const rel = path.relative(process.cwd(), p);
+  // 跨盘时 path.relative 会返回绝对路径（此时无处可躲，只能原样传）
+  const usable = !!rel && !path.isAbsolute(rel);
+  return (usable ? rel : p).replace(/\\/g, '/');
 }

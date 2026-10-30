@@ -96,7 +96,7 @@ plugins/<builtin|installed>/<id>/
 - 工具：apiFetch、pluginAssetUrl、ElMessage/ElNotification 透传
 - 公共组件：ConsoleShell、TaskListSection、HoverMenu
 - Electron：`window.electronAPI` 整体透传（主进程能力，含 remote-control 的 rc:* 通道）
-后端白名单（host-bridge 导出面）：db（受 ownedTables/沙箱约束）、createLogger、crypto（encrypt/decrypt）、pushPluginAudit、PLUGINS_DIR/resolveBuiltinAssetsDir 等路径工具；P3 增 path-guard 整面 + exec-cmd（runCmd/lookupOnPath）；P4（clip-mode）增 authMiddleware、hardDeleteRow（会话硬删唯一出口）、resolveArtifactDirFor/ensureArtifactDirFor（产物目录，**必须**走桥——模块内的 hereDir 若被复制进插件包会算错根目录）；P5 前置增 applyBuiltinSeed（插件 activate 运行时补种）。
+后端白名单（host-bridge 导出面）：db（受 ownedTables/沙箱约束）、createLogger、crypto（encrypt/decrypt）、pushPluginAudit、PLUGINS_DIR/resolveBuiltinAssetsDir 等路径工具；P3 增 path-guard 整面 + exec-cmd（runCmd/lookupOnPath/tarPathArg）；P4（clip-mode）增 authMiddleware、hardDeleteRow（会话硬删唯一出口）、resolveArtifactDirFor/ensureArtifactDirFor（产物目录，**必须**走桥——模块内的 hereDir 若被复制进插件包会算错根目录）；P5 前置增 applyBuiltinSeed（插件 activate 运行时补种）。
 - 构建器宿主闸只拦**有状态的宿主单例**（db/state/plugin-audit/logger/crypto/path-guard/exec-cmd/git/artifact-dir）；auth 与 conversation-lifecycle 是无模块级状态的纯代码，复制无害，**不进闸**（进了会逼着桥面无限扩）。现有 38 导出。
 
 ## 7. 打包改造（P5）
