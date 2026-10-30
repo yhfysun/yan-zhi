@@ -1,0 +1,2079 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>文化主题弹幕游戏原型 · 赤壁 / 观星台</title>
+<style>
+  :root{
+    --bg:#07080c; --panel:#11141b; --line:#242a36;
+    --txt:#e8ecf3; --dim:#8b93a3; --red:#ff5b63; --blue:#3fa9ff;
+    --gold:#ffc857; --jade:#5fe0b0; --purple:#9b7bff;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;min-height:100vh;background:radial-gradient(1100px 640px at 12% -12%,#1a2030 0%,var(--bg) 62%);
+    color:var(--txt);font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex;align-items:flex-start;justify-content:center;padding:24px 20px 40px;
+  }
+  .wrap{display:flex;gap:22px;align-items:flex-start}
+
+  /* ---------- 直播舞台 ---------- */
+  .phone{
+    position:relative;width:360px;height:640px;flex:none;border-radius:22px;overflow:hidden;
+    background:#05060a;border:1px solid #2a3140;box-shadow:0 24px 60px rgba(0,0,0,.55),0 0 0 6px #0d1017;
+  }
+  #stage{position:absolute;inset:0;width:360px;height:640px;display:block}
+  .ov{position:absolute;inset:0;pointer-events:none}
+
+  .topbar{position:absolute;left:0;right:0;top:0;padding:8px 12px 6px;
+    background:linear-gradient(180deg,rgba(3,5,9,.88) 0%,rgba(3,5,9,0) 100%);
+    display:flex;align-items:center;gap:7px;z-index:5}
+  .live-dot{width:6px;height:6px;border-radius:50%;background:#ff3b52;box-shadow:0 0 8px #ff3b52;animation:pulse 1.4s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .tb-tag{font-size:10px;color:#ffb0b6;border:1px solid rgba(255,90,99,.45);border-radius:4px;padding:0 5px;line-height:15px}
+  .tb-sp{flex:1}
+  .tb-stat{font-size:11px;color:var(--dim)}
+  .tb-stat b{color:#fff;font-weight:600}
+
+  /* 时间轴 */
+  .timeline{position:absolute;left:12px;right:12px;top:32px;z-index:5}
+  .tl-track{position:relative;height:2px;background:rgba(255,255,255,.14);border-radius:2px;margin:0 6px}
+  .tl-fill{position:absolute;left:0;top:0;height:2px;background:linear-gradient(90deg,#5f7cff,#9b7bff);border-radius:2px;width:0%}
+  .tl-dots{display:flex;justify-content:space-between;margin-top:-4px}
+  .tl-dot{width:8px;height:8px;border-radius:50%;background:#2b3342;border:1px solid #3d4759}
+  .tl-dot.on{background:#8fa6ff;border-color:#c3d0ff;box-shadow:0 0 8px #6d86ff}
+  .tl-labels{display:flex;justify-content:space-between;margin-top:3px}
+  .tl-labels span{font-size:8.5px;color:#6b7484;width:16.6%;text-align:center;line-height:1.2}
+  .tl-labels span.on{color:#c3d0ff}
+
+  /* 改写得 / 天命 拉锯条 */
+  .pull{position:absolute;left:12px;right:12px;top:76px;z-index:5}
+  .pull-head{display:flex;justify-content:space-between;font-size:9.5px;margin-bottom:3px}
+  .pull-head .l{color:#ffb0b6}
+  .pull-head .r{color:#a9d4ff}
+  .pull-bar{height:9px;border-radius:5px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.10);overflow:hidden;position:relative}
+  .pull-bar i{position:absolute;top:0;bottom:0;left:0;width:50%;transition:width .25s ease;
+    background:linear-gradient(90deg,#ff5b63,#ff8a6b)}
+  .pull-bar u{position:absolute;top:-1px;bottom:-1px;left:60%;width:2px;background:rgba(255,255,255,.55)}
+  .pull-mid{position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:rgba(255,255,255,.25)}
+
+  /* 榜单 */
+  .boards{position:absolute;right:9px;top:100px;display:flex;flex-direction:column;gap:6px;width:116px;z-index:6}
+  .board{background:rgba(8,11,17,.80);border:1px solid rgba(255,255,255,.09);border-radius:8px;padding:4px 6px}
+  .board h5{margin:0 0 2px;font-size:8.5px;font-weight:600;letter-spacing:.5px;color:#aeb6c6;display:flex;justify-content:space-between}
+  .board h5 em{font-style:normal;color:#6f7888;font-weight:400}
+  .board ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px}
+  .board li{display:flex;gap:4px;align-items:center;font-size:9.5px;color:#d7dce6;min-height:12px}
+  .board li .rk{width:9px;color:#7a8496}
+  .board li .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .board li .vl{color:var(--gold);font-variant-numeric:tabular-nums}
+  .board.rewrite li .vl{color:#ff9aa0}
+  .board.guard li .vl{color:#7fd8a8}
+
+  .dm-layer{position:absolute;left:0;right:0;top:160px;height:120px;overflow:hidden;pointer-events:none;z-index:3}
+  .dm{position:absolute;left:360px;white-space:nowrap;font-size:11.5px;color:#eef2f8;
+      text-shadow:0 1px 3px rgba(0,0,0,.95);animation:dash linear forwards}
+  .dm .who{color:#8f9bb0;margin-right:4px}
+  @keyframes dash{to{transform:translateX(calc(-100% - 380px))}}
+
+  .pip{position:absolute;right:9px;bottom:76px;width:100px;height:106px;z-index:6}
+  .pip .ring{position:absolute;inset:0;border-radius:13px;background:radial-gradient(60% 60% at 50% 45%,rgba(90,140,255,.20),rgba(5,8,13,.75) 76%);border:1px solid rgba(120,170,255,.26)}
+  #pet{position:absolute;left:7px;top:1px;width:86px;height:92px;display:block}
+  .pip .tag{position:absolute;left:0;right:0;bottom:3px;text-align:center;font-size:8.5px;color:#cfe0ff}
+  .pip .tag i{font-style:normal;color:#6ea8ff}
+
+  .caption{position:absolute;left:9px;right:112px;bottom:12px;min-height:42px;border-radius:10px;padding:6px 9px;
+    background:linear-gradient(180deg,rgba(6,9,14,0),rgba(6,9,14,.86) 34%);display:flex;gap:6px;
+    opacity:0;transition:opacity .18s ease;z-index:6}
+  .caption.on{opacity:1}
+  .caption b{color:#8fc4ff;font-weight:600;flex:none;font-size:10.5px;padding-top:1px}
+  .caption span{font-size:11.5px;line-height:1.45;color:#f2f5fa}
+
+  .banner{position:absolute;left:0;right:0;top:196px;display:flex;flex-direction:column;align-items:center;gap:2px;
+    opacity:0;transition:opacity .18s,transform .18s;transform:scale(.94);z-index:7}
+  .banner.on{opacity:1;transform:scale(1)}
+  .banner .b1{font-size:18px;font-weight:800;letter-spacing:1px;text-shadow:0 0 18px currentColor}
+  .banner .b2{font-size:10.5px;color:#dbe4f2;background:rgba(0,0,0,.42);padding:2px 8px;border-radius:999px}
+
+  .hint{position:absolute;left:50%;bottom:196px;transform:translateX(-50%);font-size:10.5px;color:#c9d3e4;
+    background:rgba(10,14,21,.80);border:1px solid rgba(255,255,255,.10);padding:4px 10px;border-radius:999px;
+    transition:opacity .3s;white-space:nowrap;z-index:6}
+  .hint.off{opacity:0}
+
+  .over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:7px;
+    background:rgba(3,5,9,.76);backdrop-filter:blur(5px);z-index:8;text-align:center;padding:0 24px}
+  .over.on{display:flex}
+  .over .k{font-size:10px;color:#8b93a3;letter-spacing:3px}
+  .over .t{font-size:23px;font-weight:800;letter-spacing:2px}
+  .over .s{font-size:11px;color:#9aa3b4;line-height:1.6}
+  .report{margin-top:10px;text-align:left;width:100%;max-width:300px;max-height:250px;overflow:auto;
+    background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:9px 11px}
+  .rep-h{font-size:9.5px;letter-spacing:1px;color:#7b8496;margin:8px 0 3px}
+  .rep-h:first-child{margin-top:0}
+  .rep-l{font-size:10.5px;line-height:1.55;color:#d3dae6}
+  .rep-l b{color:#fff}
+  .rep-l.dim{color:#8b93a3}
+  .rep-l.ok{color:#8fe0b6}
+  .rep-l.no{color:#ff9ea4}
+
+  /* ---------- 面板 ---------- */
+  .panel{width:400px;flex:none;display:flex;flex-direction:column;gap:12px;max-height:640px;overflow:auto;padding-right:4px}
+  .panel::-webkit-scrollbar{width:6px}
+  .panel::-webkit-scrollbar-thumb{background:#2a3140;border-radius:3px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 13px}
+  .card h3{margin:0 0 2px;font-size:12px;letter-spacing:.5px;color:#cfd7e6;display:flex;align-items:center;gap:6px}
+  .card h3 .dot{width:5px;height:5px;border-radius:50%;background:#4f7cff}
+  .card p.sub{margin:0 0 10px;font-size:11px;color:#6f7888}
+  .row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+  .row + .row{margin-top:8px}
+
+  .modes{display:flex;gap:6px}
+  .modes button{flex:1;padding:8px 6px;font-size:12px;border-radius:9px;border:1px solid #2b3342;background:#0f131a;color:#b9c2d1;text-align:left;line-height:1.3}
+  .modes button.act{border-color:#4f6fd0;background:#1a2338;color:#fff}
+  .modes b{display:block;font-size:12.5px;margin-bottom:1px}
+  .modes em{font-style:normal;font-size:10px;color:#75808f}
+
+  input[type=text]{flex:1;min-width:0;background:#0c0f15;border:1px solid #262d3a;color:var(--txt);border-radius:8px;padding:7px 9px;font-size:12px;outline:none;font-family:inherit}
+  input[type=text]:focus{border-color:#3d5ea8}
+  button{font-family:inherit;font-size:12px;cursor:pointer;border-radius:8px;border:1px solid #2b3342;background:#1a1f2a;color:#dfe5f0;padding:7px 11px;transition:.14s;white-space:nowrap}
+  button:hover{background:#232a37;border-color:#3a4457}
+  button:active{transform:translateY(1px)}
+  .btn-red{border-color:rgba(255,91,99,.45);background:rgba(255,91,99,.13);color:#ffb9bd}
+  .btn-blue{border-color:rgba(63,169,255,.45);background:rgba(63,169,255,.13);color:#b3d9ff}
+  .btn-ghost{background:transparent}
+  .on{box-shadow:inset 0 0 0 1px rgba(255,255,255,.22)}
+  .seg{display:flex;border:1px solid #2b3342;border-radius:8px;overflow:hidden}
+  .seg button{border:0;border-radius:0;padding:6px 11px;background:transparent}
+  .seg button.act{background:#26304a;color:#fff}
+
+  .gifts{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+  .gift{position:relative;text-align:left;padding:8px 8px 7px;border-radius:9px;background:#0f131a;border:1px solid #242b38;line-height:1.25}
+  .gift:hover{border-color:#3c4a68;background:#151a24}
+  .gift .gn{font-size:11.5px;font-weight:600;color:#e9eef7}
+  .gift .gc{font-size:9.5px;color:var(--gold);margin-top:1px}
+  .gift .ge{font-size:10px;color:#8f99ab;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gift::after{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;border-radius:9px 0 0 9px;background:#3a4356}
+  .gift[data-tier="1"]::after{background:#6f7b90}
+  .gift[data-tier="2"]::after{background:#4aa8ff}
+  .gift[data-tier="3"]::after{background:#9b7bff}
+  .gift[data-tier="4"]::after{background:#ffc857}
+  .gift[data-tier="5"]::after{background:#ff5b63}
+
+  .quick{display:flex;gap:6px;flex-wrap:wrap}
+  .quick button{padding:6px 9px;font-size:11.5px}
+
+  .log{max-height:150px;overflow:auto;display:flex;flex-direction:column;gap:3px;font-size:11px}
+  .log::-webkit-scrollbar{width:5px}
+  .log::-webkit-scrollbar-thumb{background:#2a3140;border-radius:3px}
+  .log div{display:flex;gap:6px;align-items:baseline;line-height:1.4}
+  .log time{color:#5d6676;font-size:9.5px;flex:none;font-variant-numeric:tabular-nums}
+  .log .g{color:var(--gold);font-weight:600}
+
+  details{border-top:1px solid #212836;padding-top:9px;margin-top:9px}
+  summary{cursor:pointer;font-size:11px;color:#8b93a3;list-style:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:'▸ ';color:#5a6374}
+  details[open] summary::before{content:'▾ '}
+  table{width:100%;border-collapse:collapse;margin-top:7px;font-size:10.5px}
+  th,td{text-align:left;padding:4px 5px;border-bottom:1px solid #1c2230;color:#b9c2d1;vertical-align:top}
+  th{color:#6f7888;font-weight:500}
+  td.c{color:var(--gold);white-space:nowrap}
+
+  .note{font-size:10.5px;color:#8b93a3;line-height:1.6;margin:8px 0 0}
+  .note b{color:#c9d3e2;font-weight:600}
+  .foot{font-size:10.5px;color:#5c6575;text-align:center;padding-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ 舞台 ============ -->
+  <div class="phone">
+    <canvas id="stage"></canvas>
+    <div class="ov">
+      <div class="topbar">
+        <span class="live-dot"></span>
+        <span class="tb-tag">直播中</span>
+        <span class="tb-sp"></span>
+        <span class="tb-stat" id="stageStat">在线 <b>1</b> · 本局流水 <b>0</b> 抖</span>
+      </div>
+
+      <div class="timeline">
+        <div class="tl-track"><div class="tl-fill" id="tlFill"></div></div>
+        <div class="tl-dots" id="tlDots"></div>
+        <div class="tl-labels" id="tlLabels"></div>
+      </div>
+
+      <div class="pull">
+        <div class="pull-head">
+          <span class="l" id="pullLeft">改写 0%</span>
+          <span class="r" id="pullRight">守常 100%</span>
+        </div>
+        <div class="pull-bar"><i id="pullFill" style="width:0%"></i><span class="pull-mid"></span><u id="pullGate"></u></div>
+      </div>
+
+      <div class="boards">
+        <div class="board rewrite"><h5>改写榜 <em>本局</em></h5><ul id="lbRewrite"></ul></div>
+        <div class="board guard"><h5>守常榜 <em>本局</em></h5><ul id="lbGuard"></ul></div>
+      </div>
+
+      <div class="dm-layer" id="dmLayer"></div>
+      <div class="banner" id="banner"><div class="b1" id="bn1"></div><div class="b2" id="bn2"></div></div>
+
+      <div class="pip">
+        <span class="ring"></span>
+        <canvas id="pet"></canvas>
+        <span class="tag">Boba <i>· 主播</i></span>
+      </div>
+
+      <div class="caption" id="caption"><b id="capWho">Boba</b><span id="capText"></span></div>
+      <div class="hint" id="hint">发「1」加入改写方，「2」加入守常方</div>
+
+      <div class="over" id="over">
+        <div class="k" id="ovK">结局</div>
+        <div class="t" id="ovT">史实复现</div>
+        <div class="s" id="ovS"></div>
+        <div class="report" id="ovReport"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 面板 ============ -->
+  <div class="panel">
+
+    <div class="card">
+      <h3><span class="dot"></span>玩法切换</h3>
+      <p class="sub">同一套内核，换皮不换骨：基线剧情 + 观众干预 + 结局判定</p>
+      <div class="modes" id="modes">
+        <button data-mode="chibi" class="act"><b>赤壁之战</b><em>史实 vs 改写</em></button>
+        <button data-mode="stars"><b>观星台</b><em>天命 vs 人力</em></button>
+        <button data-mode="debate"><b>甜咸之争</b><em>投票对吵</em></button>
+        <button data-mode="surname"><b>姓氏大作战</b><em>百家姓抢城</em></button>
+        <button data-mode="mbti"><b>MBTI 矩阵</b><em>十六型抢榜</em></button>
+      </div>
+      <p class="note" id="modeNote"></p>
+    </div>
+
+    <div class="card">
+      <h3><span class="dot" style="background:var(--gold)"></span>观众操作台</h3>
+      <p class="sub">改名后所有弹幕与打赏都记在这个名字下</p>
+      <div class="row">
+        <input type="text" id="nick" value="路过的观众" maxlength="12" />
+        <div class="seg" id="sideSeg">
+          <button data-side="rewrite" class="act">改写方</button>
+          <button data-side="guard">守常方</button>
+        </div>
+      </div>
+      <div class="row">
+        <input type="text" id="dmInput" placeholder="输入弹幕，回车发送…" maxlength="30" />
+        <button id="dmSend">发送</button>
+      </div>
+      <div class="row quick" id="quickRow"></div>
+    </div>
+
+    <div class="card">
+      <h3><span class="dot" style="background:var(--gold)"></span>打赏 · 每档都有动作</h3>
+      <p class="sub" id="giftSub">礼物送给 <b id="giftSideName">改写方</b>；同一档礼物在两种玩法里是不同的动作</p>
+      <div class="gifts" id="gifts"></div>
+    </div>
+
+    <div class="card">
+      <h3><span class="dot" style="background:var(--jade)"></span>事件流</h3>
+      <p class="sub">游戏内核算完 → 渲染与主播反应拿同一份事件</p>
+      <div class="log" id="log"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="autoBtn" class="on">自动演示：开</button>
+        <button id="resetBtn" class="btn-ghost">重开一局</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3><span class="dot" style="background:var(--purple)"></span>规则与边界</h3>
+      <details open>
+        <summary>礼物 → 动作（当前玩法）</summary>
+        <table>
+          <thead><tr><th>抖币</th><th>礼物</th><th>动作 / 改写值</th></tr></thead>
+          <tbody id="ruleGift"></tbody>
+        </table>
+      </details>
+      <details>
+        <summary>免费层：不花钱也能玩</summary>
+        <table>
+          <tbody id="ruleFree"></tbody>
+        </table>
+      </details>
+      <details>
+        <summary>四条设计红线</summary>
+        <ol class="note" style="padding-left:16px">
+          <li>有人打赏才偏离基线，没人打赏严格复现结局</li>
+          <li>逆着基线改越远越难（门槛 60%，越晚越贵）</li>
+          <li>每档动作三件套：画面 + 语音 + 字幕/榜单</li>
+          <li>免费玩家始终有可见存在，打赏买展示位不买必胜</li>
+        </ol>
+      </details>
+    </div>
+
+    <div class="foot">静态原型 · 模拟数据 · 与直播管线同一套 Cue 契约</div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   0. 基础
+   ========================================================= */
+const W = 360, H = 640;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const cv = document.getElementById('stage');
+const g = cv.getContext('2d');
+cv.width = W * DPR; cv.height = H * DPR;
+cv.style.width = W + 'px'; cv.style.height = H + 'px';
+g.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+const petCv = document.getElementById('pet');
+const PW = 86, PH = 92;
+const pg = petCv.getContext('2d');
+petCv.width = PW * DPR; petCv.height = PH * DPR;
+petCv.style.width = PW + 'px'; petCv.style.height = PH + 'px';
+pg.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const ROUND_MS = 80_000;
+const GATE = 60;           // 改写门槛：达到 60% 才能扭转结局
+
+/* =========================================================
+   1. 礼物表（平台固定档位；动作按玩法 + 阵营变化）
+   ========================================================= */
+const GIFTS = [
+  { id:'fairy',   name:'仙女棒',   coins:1,    tier:1, push:3,
+    chibi:{ rewrite:'擂鼓助威', guard:'擂鼓助威' },
+    stars:{ rewrite:'点亮一星', guard:'点亮一星' },
+    debate:{ rewrite:'甜派加票', guard:'咸派加票' } },
+  { id:'pill',    name:'能力药丸', coins:10,   tier:2, push:6,
+    chibi:{ rewrite:'箭雨压制', guard:'箭雨压制' },
+    stars:{ rewrite:'续明三刻', guard:'续明三刻' },
+    debate:{ rewrite:'甜派十票', guard:'咸派十票' } },
+  { id:'mirror',  name:'魔法镜',   coins:19,   tier:2, push:8,
+    chibi:{ rewrite:'疑兵之计', guard:'疑兵之计' },
+    stars:{ rewrite:'分光成影', guard:'分光成影' },
+    debate:{ rewrite:'甜派助威', guard:'咸派助威' } },
+  { id:'donut',   name:'甜甜圈',   coins:52,   tier:3, push:14,
+    chibi:{ rewrite:'解开铁索', guard:'增派火船' },
+    stars:{ rewrite:'点亮主星', guard:'点亮主星' },
+    debate:{ rewrite:'甜派拉票', guard:'咸派拉票' } },
+  { id:'battery', name:'能量电池', coins:99,   tier:3, push:20,
+    chibi:{ rewrite:'逆转风向', guard:'东风助火' },
+    stars:{ rewrite:'聚星成座', guard:'聚星成座' },
+    debate:{ rewrite:'甜派金句', guard:'咸派金句' } },
+  { id:'bomb',    name:'恶魔炸弹', coins:199,  tier:4, push:26,
+    chibi:{ rewrite:'识破诈降', guard:'截断退路' },
+    stars:{ rewrite:'驱散凶兆', guard:'驱散凶兆' },
+    debate:{ rewrite:'甜派拆台', guard:'咸派拆台' } },
+  { id:'airdrop', name:'神秘空投', coins:520,  tier:4, push:14,
+    chibi:{ rewrite:'北方援军', guard:'江夏援军' },
+    stars:{ rewrite:'流星入怀', guard:'流星入怀' },
+    debate:{ rewrite:'甜派援军', guard:'咸派援军' } },
+  { id:'super',   name:'超级空投', coins:888,  tier:5, push:32,
+    chibi:{ rewrite:'改判战局', guard:'火势更烈' },
+    stars:{ rewrite:'移星改轨', guard:'星轨如常' },
+    debate:{ rewrite:'甜派翻盘', guard:'咸派翻盘' } },
+  { id:'jet',     name:'超能喷射', coins:1200, tier:5, push:46,
+    chibi:{ rewrite:'锁定结局', guard:'锁定史实' },
+    stars:{ rewrite:'天命改写', guard:'天命不改' },
+    debate:{ rewrite:'甜派定论', guard:'咸派定论' } },
+];
+const GIFT_BY_ID = Object.fromEntries(GIFTS.map(x => [x.id, x]));
+
+/* =========================================================
+   2. 玩法定义
+   ========================================================= */
+const MODES = {
+  chibi: {
+    key:'chibi',
+    name:'赤壁之战',
+    note:'建安十三年（208）冬，曹操二十余万水军连船列阵于乌林，孙刘联军五万拒于赤壁。史载：黄盖诈降、火船突袭、东南风起，曹军大败。',
+    sideA:'曹军（改写方）',
+    sideB:'孙刘联军（守常方）',
+    shortA:'曹军', shortB:'联军',
+    free:['加入曹军','加入联军','擂鼓','放箭','固守'],
+    phases:[
+      { t:0,  label:'两军对峙' },
+      { t:18, label:'黄盖诈降' },
+      { t:35, label:'火船出发' },
+      { t:50, label:'火攻判定' },
+      { t:65, label:'曹军溃败' },
+      { t:80, label:'史实结算' },
+    ],
+    quicks:[['1','加入曹军'],['2','加入联军'],['擂鼓','擂鼓'],['放箭','放箭'],['固守','固守']],
+  },
+  stars: {
+    key:'stars',
+    name:'观星台 · 天命',
+    note:'古人以星象断吉凶：客星犯垣、荧惑守心，皆主兵灾。本局既定星轨预示灾异，观星者可以人力挪动星位——天命能否被改写，就看这一夜。',
+    sideA:'人力（改写方）',
+    sideB:'天命（守常方）',
+    shortA:'人力', shortB:'天命',
+    free:['加入人力','加入天命','点灯','观星','守心'],
+    phases:[
+      { t:0,  label:'夜观星象' },
+      { t:18, label:'客星入垣' },
+      { t:35, label:'荧惑守心' },
+      { t:50, label:'天命判定' },
+      { t:65, label:'星轨偏移' },
+      { t:80, label:'天命结算' },
+    ],
+    quicks:[['1','加入人力'],['2','加入天命'],['点灯','点灯'],['观星','观星'],['守心','守心']],
+  },
+  debate: {
+    key:'debate',
+    name:'甜咸之争',
+    note:'纯吵架局：每局换一个争议话题，弹幕投票、打赏加票，主播挑最有说服力的发言念。不涉及历史与立场，只图一个热闹。',
+    sideA:'甜派', sideB:'咸派',
+    shortA:'甜派', shortB:'咸派',
+    free:['投甜','投咸','说理','抬杠','喊口号'],
+    phases:[
+      { t:0,  label:'开题' },
+      { t:15, label:'第一轮' },
+      { t:30, label:'白热化' },
+      { t:50, label:'拉票冲刺' },
+      { t:65, label:'封票' },
+      { t:80, label:'结算' },
+    ],
+    quicks:[['甜','投甜'],['咸','投咸'],['说理','说理'],['抬杠','抬杠'],['喊口号','喊口号']],
+    topics:[
+      { a:'甜粽', b:'咸粽', q:'粽子到底该甜还是该咸？' },
+      { a:'甜豆花', b:'咸豆花', q:'豆腐脑放糖还是浇卤？' },
+      { a:'加香菜', b:'不加香菜', q:'香菜是不是人类之敌？' },
+      { a:'五仁月饼', b:'非五仁', q:'五仁月饼该不该保留？' },
+      { a:'番茄炒蛋放糖', b:'不放糖', q:'番茄炒蛋要不要放糖？' },
+      { a:'汤圆有馅', b:'汤圆无馅', q:'汤圆到底算不算点心？' },
+    ],
+  },
+  surname: {
+    key:'surname',
+    name:'姓氏大作战',
+    note:'百家姓抢城：发自己的姓就加入本族，全族合力把旗插上城楼。不用讲道理，人多就是硬道理。',
+    sideA:'领先一族', sideB:'追赶者',
+    shortA:'领先', shortB:'追赶',
+    free:['报名','冲锋','助威'],
+    phases:[
+      { t:0,  label:'列阵' },
+      { t:15, label:'冲锋' },
+      { t:35, label:'攻城' },
+      { t:55, label:'白热' },
+      { t:68, label:'封城' },
+      { t:80, label:'论姓' },
+    ],
+    quicks:[['王','加入王姓'],['李','加入李姓'],['冲锋','冲锋'],['助威','助威'],['报名','报名']],
+    clans:['王','李','张','刘','陈','杨','赵','黄'],
+    palette:['#ff6b6b','#ffb347','#ffe066','#7fd8a8','#5fd0e0','#6ea8ff','#a98bff','#ff8ac0'],
+  },
+  mbti: {
+    key:'mbti',
+    name:'MBTI 人格矩阵',
+    note:'十六型人格各自为战：发自己的四字母就亮灯，全型合力点亮本格。最后一格最亮的人格占领矩阵。',
+    sideA:'最亮人格', sideB:'追赶者',
+    shortA:'领先', shortB:'追赶',
+    free:['亮灯','报名','拉人'],
+    phases:[
+      { t:0,  label:'自报型号' },
+      { t:18, label:'点亮' },
+      { t:38, label:'连线' },
+      { t:56, label:'白热' },
+      { t:68, label:'定格' },
+      { t:80, label:'结算' },
+    ],
+    quicks:[['INTJ','我是 INTJ'],['ENFP','我是 ENFP'],['亮灯','亮灯'],['拉人','拉人'],['报名','报名']],
+    types:['INTJ','INTP','ENTJ','ENTP','INFJ','INFP','ENFJ','ENFP','ISTJ','ISFJ','ESTJ','ESFJ','ISTP','ISFP','ESTP','ESFP'],
+    palette:['#7c9cff','#6ee7ff','#9b7bff','#ff8ac0','#ffb347','#7fd8a8','#ff6b6b','#ffe066'],
+  },
+};
+
+/* =========================================================
+   3. 共享状态
+   ========================================================= */
+let mode = 'chibi';
+let rewrite = 0;          // 0..100
+let userSide = 'rewrite';
+let autoOn = true;
+let running = true;
+let coinsThisRound = 0;
+let roundStart = 0;
+let resolved = false;
+let outcome = null;       // 'base' | 'altered'
+let resetTimer = 0;
+let lastSpeak = 0;
+
+const users = new Map();  // name -> { paid, free, side }
+let contrib = [];         // 本局支援记录（谁、做了什么、花了多少）
+
+/* =========================================================
+   4. 赤壁：状态与模拟
+   ========================================================= */
+const MT = 150, MB = 548;
+const contactY = (f) => MT + (1 - f) * (MB - MT);
+
+const CH = { lanes: [], front: 0.85, boats: [], fireships: [], flames: [], arrows: [], smoke: [], hits: [], cao: 100, allyHp: 100, chains: true, windMul: 1 };
+
+function initChibi() {
+  CH.lanes = [
+    { key: 'left',  x: 84,  label: '陆路' },
+    { key: 'mid',   x: 180, label: '水路' },
+    { key: 'right', x: 276, label: '芦荡' },
+  ];
+  CH.front = 0.85;
+  CH.boats = [];
+  for (let i = 0; i < 5; i++) CH.boats.push({ col: i, x: 128 + i * 26, burn: 0 });
+  CH.fireships = []; CH.flames = []; CH.arrows = []; CH.smoke = []; CH.hits = [];
+  CH.cao = 100; CH.allyHp = 100; CH.chains = true; CH.windMul = 1;
+}
+
+function chibiTick(dt, t) {
+  // 战线由改写度决定：改写越高，曹军把战线往南压
+  const target = 0.85 - rewrite / 100 * 0.7;
+  CH.front += (target - CH.front) * Math.min(1, dt * 2.2);
+  const cy = contactY(CH.front);
+
+  // 火船沿中路顺流北上
+  if (t >= 35000 && t < 52000) {
+    if (CH.fireships.length < 10 && Math.random() < dt * 3) {
+      CH.fireships.push({ x: CH.lanes[1].x + rand(-30, 30), y: MB - 40, vy: -rand(55, 80), alive: true });
+    }
+  }
+  for (const f of CH.fireships) {
+    if (!f.alive) continue;
+    f.y += f.vy * dt;
+    if (Math.random() < dt * 12) {
+      CH.flames.push({ x: f.x + rand(-4, 4), y: f.y - 6, vy: -rand(10, 26), life: 1 });
+    }
+    // 抵达战线：判定前只记录撞击点，判定后才点火
+    if (Math.abs(f.y - cy) < 14) {
+      f.alive = false;
+      if (resolved) ignite(CH.boats.find(b => b.burn <= 0));
+      else CH.hits.push({ x: f.x });
+    }
+    if (f.y < MT) f.alive = false;
+  }
+  CH.fireships = CH.fireships.filter(f => f.alive);
+
+  // 火势沿连环船蔓延
+  if (resolved && outcome === 'base') {
+    for (const b of CH.boats) {
+      if (b.burn <= 0) continue;
+      if (CH.chains && Math.random() < dt * 1.2) {
+        const nb = CH.boats.find(n => Math.abs(n.col - b.col) === 1 && n.burn <= 0);
+        if (nb) ignite(nb);
+      }
+      if (Math.random() < dt * 20) {
+        const sp = caoShipPos(b.col);
+        CH.flames.push({ x: sp.x + rand(-6, 6), y: sp.y - 4, vy: -rand(20, 44), life: 1 });
+        CH.smoke.push({ x: sp.x + rand(-5, 5), y: sp.y - 12, r: rand(4, 9), life: 1 });
+      }
+    }
+  }
+
+  // 兵力结算
+  if (resolved) {
+    if (outcome === 'base') {
+      const burning = CH.boats.filter(b => b.burn > 0).length;
+      CH.cao = Math.max(0, CH.cao - dt * (2 + burning * 2.2));
+      CH.allyHp = Math.min(100, CH.allyHp + dt * 0.6);
+    } else {
+      CH.allyHp = Math.max(0, CH.allyHp - dt * 1.1);
+      CH.cao = Math.min(100, CH.cao + dt * 0.5);
+    }
+  }
+
+  for (const f of CH.flames) { f.y += f.vy * dt; f.life -= dt * 1.5; }
+  for (const f of CH.smoke) { f.y -= dt * 18; f.r += dt * 8; f.life -= dt * 0.7; f.x += rand(-6, 6) * dt; }
+  CH.flames = CH.flames.filter(f => f.life > 0);
+  CH.smoke = CH.smoke.filter(f => f.life > 0);
+}
+
+function ignite(b) {
+  if (!b || b.burn > 0) return;
+  b.burn = 1;
+  const sp = caoShipPos(b.col || 0);
+  for (let i = 0; i < 8; i++) {
+    CH.flames.push({ x: sp.x + rand(-8, 8), y: sp.y - rand(0, 6), vy: -rand(20, 46), life: 1 });
+  }
+}
+
+/* =========================================================
+   5. 观星：状态与模拟
+   ========================================================= */
+const ST = { stars: [], comet: null, tail: [], ripples: [], field: [] };
+
+function initStars() {
+  ST.field = Array.from({ length: 90 }, () => ({ x: rand(0, W), y: rand(0, H), r: rand(0.5, 1.4), p: rand(0, 6.28) }));
+  const names = ['紫微', '天机', '太阳', '武曲', '天同', '廉贞', '天府', '破军'];
+  ST.stars = names.map((n, i) => {
+    const a = -Math.PI / 2 + (i / names.length) * Math.PI * 2;
+    return { name: n, x: 180 + Math.cos(a) * 108, y: 316 + Math.sin(a) * 108, a, lit: 0.35 };
+  });
+  ST.comet = { a: -2.5, r: 150, alive: true };
+  ST.tail = [];
+  ST.ripples = [];
+}
+
+function starsTick(dt, t) {
+  // 客星沿轨道移动
+  if (ST.comet.alive) {
+    ST.comet.a += dt * 0.42;
+    const cx = 180 + Math.cos(ST.comet.a) * ST.comet.r;
+    const cy = 316 + Math.sin(ST.comet.a) * ST.comet.r;
+    ST.tail.push({ x: cx, y: cy, life: 1 });
+  }
+  for (const p of ST.tail) p.life -= dt * 1.1;
+  ST.tail = ST.tail.filter(p => p.life > 0);
+  if (ST.tail.length > 60) ST.tail.splice(0, ST.tail.length - 60);
+
+  // 主星亮度：改写值越高，人力一侧越亮
+  for (const s of ST.stars) {
+    const target = 0.25 + rewrite / 100 * 0.75;
+    s.lit += (target - s.lit) * dt * 1.6;
+  }
+
+  // 凶兆涟漪
+  if (!resolved && t > 30000 && Math.random() < dt * 1.4) {
+    ST.ripples.push({ x: rand(60, 300), y: rand(180, 460), r: 2, life: 1 });
+  }
+  for (const r of ST.ripples) { r.r += dt * 70; r.life -= dt * 0.8; }
+  ST.ripples = ST.ripples.filter(r => r.life > 0);
+}
+
+/* =========================================================
+   5b. 甜咸之争：状态与模拟
+   ========================================================= */
+const DB = { topic: null, chips: [], pop: [] };
+
+function initDebate() {
+  const list = MODES.debate.topics;
+  DB.topic = list[Math.floor(Math.random() * list.length)];
+  DB.chips = [];
+  DB.pop = [];
+}
+
+function debateTick(dt, t) {
+  for (const c of DB.chips) {
+    c.x += c.vx * dt;
+    c.y += c.vy * dt;
+    c.vy += 40 * dt;
+    c.life -= dt * 0.55;
+  }
+  DB.chips = DB.chips.filter(c => c.life > 0);
+  for (const p of DB.pop) { p.t += dt * 1000; p.y -= dt * 22; }
+  DB.pop = DB.pop.filter(p => p.t < 900);
+
+  // 背景零星投票，制造热闹
+  if (Math.random() < dt * 3.2) {
+    spawnChip(Math.random() < rewrite / 100 ? 'a' : 'b', '');
+  }
+}
+
+function spawnChip(side, text) {
+  const toLeft = side === 'a';
+  DB.chips.push({
+    x: W / 2 + rand(-30, 30),
+    y: H * 0.62 + rand(-20, 20),
+    vx: (toLeft ? -1 : 1) * rand(30, 75),
+    vy: -rand(30, 80),
+    life: 1,
+    side,
+    text: String(text || '').slice(0, 6),
+  });
+}
+
+/* =========================================================
+   6. 判定（两种玩法共用的"铰链时刻"）
+   ========================================================= */
+function judge(t) {
+  if (resolved) return;
+  resolved = true;
+  const altered = rewrite >= GATE;
+  outcome = altered ? 'altered' : 'base';
+
+  if (mode === 'chibi') {
+    if (altered) {
+      CH.chains = false;
+      // 火船被拦下
+      CH.fireships.forEach(f => { f.alive = false; });
+      CH.fireships = [];
+      showBanner('铁索已解 · 东风未起', '火船被拦在江心', '#9b7bff');
+      petDo('spin');
+      say('风向变了！火船靠不上来，曹军的船阵散了——历史要改写了！', 7000, true);
+      pushLog('judge', '火攻失效 · 改写度 ' + Math.round(rewrite) + '%');
+    } else {
+      showBanner('火攻奏效', '东南风助火，连环船起火', '#ff8a4c');
+      petDo('hop');
+      say('东南风起了！火船撞进船阵，连环船一烧就是一片！', 7000, true);
+      const spots = CH.hits.length ? CH.hits : [{ x: 180 }];
+      for (const b of CH.boats) {
+        if (spots.some(s => Math.abs(s.x - b.x) < 70)) ignite(b);
+      }
+      if (!CH.boats.some(b => b.burn > 0)) CH.boats.forEach(ignite);
+      pushLog('judge', '火攻奏效 · 改写度 ' + Math.round(rewrite) + '%');
+    }
+  } else {
+    if (altered) {
+      showBanner('天命可违 · 星轨偏移', '客星被推离心宿', '#9b7bff');
+      petDo('spin');
+      say('星轨偏了！这一夜，人力压过了天命。', 7000, true);
+      pushLog('judge', '天命可违 · 改写度 ' + Math.round(rewrite) + '%');
+    } else {
+      showBanner('天命难违 · 荧惑守心', '客星如期犯心宿', '#ff8a4c');
+      petDo('hop');
+      say('客星还是落进了心宿……天命没有改。', 7000, true);
+      pushLog('judge', '天命难违 · 改写度 ' + Math.round(rewrite) + '%');
+    }
+  }
+}
+
+function buildReport() {
+  const paid = [...users.entries()].filter(([, v]) => v.paid > 0)
+    .sort((a, b) => b[1].paid - a[1].paid).slice(0, 3)
+    .map(([n, v]) => `<b>${esc(n)}</b> ${v.paid} 抖`);
+  const acts = contrib.slice(-3).reverse().map(c => `${esc(c.name)} 的「${esc(c.action)}」`);
+
+  let live, dead;
+  if (isTeamMode()) {
+    const lead = teamLeader();
+    live = [`${lead.name} 拿到下一场的开局鼓点`, '其余阵营下一局大概率会更拼'];
+    dead = ['其他阵营本场再无翻盘机会'];
+  } else if (mode === 'debate') {
+    const tp = DB.topic || { a: '甜', b: '咸' };
+    const aWin = rewrite >= 50;
+    live = [`${aWin ? tp.a : tp.b} 这一派今晚说话最大声`, '下一局换个话题，阵营会重新洗牌'];
+    dead = [`${aWin ? tp.b : tp.a} 想在本场翻案已经不可能`];
+  } else if (mode === 'chibi') {
+    const alt = outcome === 'altered';
+    live = alt
+      ? ['曹军保全水军，退回江北整顿', '孙刘联军守住江防，却没能扩大战果', '曹操仍握着南下通道，统一只是延后']
+      : ['曹操烧船北撤，荆州落入孙刘之手', '刘备借荆州站稳，三分天下开始成形'];
+    dead = alt
+      ? ['三国鼎立不会出现', '刘备不会再有借荆州的机会', '孙权不会因大胜坐稳江东']
+      : ['曹军一鼓作气吞并江东'];
+  } else {
+    const alt = outcome === 'altered';
+    live = alt
+      ? ['凶兆未应，朝野对旧星占的信任松动', '观星者从此多了一分话语权']
+      : ['朝野按旧例备战，兵灾如期而至', '星占之说继续被奉为圭臬'];
+    dead = alt
+      ? ['兵灾不会如期发生', '旧有的星占权威不会原封不动']
+      : ['人力改天的说法不会流传'];
+  }
+
+  return `
+    <div class="rep-h">谁改写了这一局</div>
+    <div class="rep-l">${paid.length ? paid.join(' · ') : '无人打赏，纯观战'}</div>
+    ${acts.length ? `<div class="rep-l dim">关键一手：${acts.join('，')}</div>` : ''}
+    <div class="rep-h">接下来会发生什么</div>
+    <div class="rep-l ok">${live.map(x => '· ' + x).join('<br>')}</div>
+    <div class="rep-h">什么不会发生了</div>
+    <div class="rep-l no">${dead.map(x => '· ' + x).join('<br>')}</div>
+  `;
+}
+
+function endRound(t) {
+  if (!running) return;
+  running = false;
+  const ov = document.getElementById('over');
+  const ovK = document.getElementById('ovK');
+  const ovT = document.getElementById('ovT');
+  const ovS = document.getElementById('ovS');
+
+  if (isTeamMode()) {
+    const lead = teamLeader();
+    ovK.textContent = MODES[mode].name;
+    ovT.textContent = lead.name + ' 夺榜';
+    ovT.style.color = lead.color;
+    ovS.innerHTML = `共 ${teamTotal()} 票 · 领先 <b style="color:${lead.color}">${lead.score}</b> 票`;
+    petDo('wave');
+    say(`本局 ${lead.name} 拿下第一！`, 6000, true);
+    pushLog('end', `夺榜结果 · ${lead.name} ${lead.score} 票`);
+  } else if (mode === 'debate') {
+    const tp = DB.topic || { a: '甜派', b: '咸派', q: '' };
+    const aWin = rewrite >= 50;
+    const pctA = Math.round(rewrite), pctB = 100 - pctA;
+    ovK.textContent = tp.q;
+    ovT.textContent = aWin ? `${tp.a} 赢了` : `${tp.b} 赢了`;
+    ovT.style.color = aWin ? '#ffa9c0' : '#ffd479';
+    ovS.innerHTML = `${tp.a} <b style="color:#ffa9c0">${pctA}%</b> · ${tp.b} <b style="color:#ffd479">${pctB}%</b>`;
+    petDo(aWin ? 'wave' : 'hop');
+    say(`本局 ${aWin ? tp.a : tp.b} 以 ${aWin ? pctA : pctB}% 拿下！`, 6000, true);
+    pushLog('end', `投票结果 · ${tp.a} ${pctA}% : ${tp.b} ${pctB}%`);
+  } else {
+    const altered = outcome === 'altered';
+    ovK.textContent = mode === 'chibi' ? '建安十三年 · 赤壁' : '观星台 · 今夜';
+    ovT.textContent = altered
+      ? (mode === 'chibi' ? '历史被改写' : '天命被改写')
+      : (mode === 'chibi' ? '史实复现' : '天命应验');
+    ovT.style.color = altered ? '#c3a6ff' : '#8fa6ff';
+    ovS.innerHTML = altered
+      ? `改写度 <b style="color:#c3a6ff">${Math.round(rewrite)}%</b> · 本局由直播间观众改写结局`
+      : `改写度 <b style="color:#8fa6ff">${Math.round(rewrite)}%</b> · 未能越过 ${GATE}% 门槛，按原定走向收场`;
+    petDo(altered ? 'spin' : 'shy');
+    say(altered ? '我们真的把结局改掉了！' : '这一局，还是按原来的走向收场了。', 6000, true);
+    pushLog('end', (altered ? '结局改写' : '结局守常') + ' · 改写度 ' + Math.round(rewrite) + '%');
+  }
+
+  document.getElementById('ovReport').innerHTML = buildReport();
+
+  ov.classList.add('on');
+  resetTimer = setTimeout(() => { ov.classList.remove('on'); resetAll(); }, 7000);
+}
+
+/* =========================================================
+   7. 渲染：赤壁
+   ========================================================= */
+function drawWater(now) {
+  const grd = g.createLinearGradient(0, 80, 0, 560);
+  grd.addColorStop(0, '#0b1a26');
+  grd.addColorStop(0.5, '#0a1622');
+  grd.addColorStop(1, '#0d1c2a');
+  g.fillStyle = grd; g.fillRect(0, 80, W, 480);
+
+  g.strokeStyle = 'rgba(120,180,230,.10)';
+  g.lineWidth = 1;
+  for (let i = 0; i < 9; i++) {
+    const y = 130 + i * 48;
+    g.beginPath();
+    for (let x = 0; x <= W; x += 12) {
+      const yy = y + Math.sin((x / 46) + now / 900 + i) * 2.2;
+      x === 0 ? g.moveTo(x, yy) : g.lineTo(x, yy);
+    }
+    g.stroke();
+  }
+}
+
+function drawBank(top) {
+  const y = top ? 0 : 560, h = 84;
+  const grd = g.createLinearGradient(0, y, 0, y + h);
+  grd.addColorStop(top ? 0 : 1, '#141c22');
+  grd.addColorStop(top ? 1 : 0, '#0b1218');
+  g.fillStyle = grd; g.fillRect(0, y, W, h);
+  g.fillStyle = 'rgba(60,80,70,.35)';
+  for (let i = 0; i < 8; i++) {
+    const bx = 20 + i * 42 + (top ? 0 : 14);
+    const by = top ? 22 : 582;
+    g.beginPath();
+    g.moveTo(bx, by); g.lineTo(bx + 9, by + 12); g.lineTo(bx - 9, by + 12);
+    g.closePath(); g.fill();
+  }
+  g.fillStyle = 'rgba(120,150,140,.18)';
+  g.fillRect(0, top ? 80 : 560, W, 1.5);
+}
+
+function drawBoat(x, y, w, h, color, edge, burning, small) {
+  g.save();
+  g.beginPath();
+  g.moveTo(x - w / 2, y - h / 2);
+  g.lineTo(x + w / 2, y - h / 2);
+  g.lineTo(x + w / 2 - 4, y + h / 2);
+  g.lineTo(x - w / 2 + 4, y + h / 2);
+  g.closePath();
+  g.fillStyle = burning ? '#4a1f18' : color;
+  g.fill();
+  g.strokeStyle = burning ? '#ff8a4c' : edge;
+  g.lineWidth = 1.2;
+  g.stroke();
+  if (!small) {
+    // 桅杆
+    g.beginPath(); g.moveTo(x, y - h / 2); g.lineTo(x, y - h / 2 - 9); g.strokeStyle = 'rgba(200,220,235,.35)'; g.stroke();
+    // 小兵
+    g.fillStyle = 'rgba(235,240,250,.75)';
+    for (let i = 0; i < 3; i++) {
+      g.beginPath(); g.arc(x - 7 + i * 7, y + 1, 1.5, 0, 6.28); g.fill();
+    }
+  }
+  g.restore();
+}
+
+function drawMountain(x, y, w, h) {
+  g.beginPath();
+  g.moveTo(x - w / 2, y + h / 2); g.lineTo(x, y - h / 2); g.lineTo(x + w / 2, y + h / 2);
+  g.closePath(); g.fillStyle = 'rgba(34,44,38,.95)'; g.fill();
+  g.beginPath();
+  g.moveTo(x, y - h / 2); g.lineTo(x + w / 2, y + h / 2); g.lineTo(x + w * 0.12, y + h / 2);
+  g.closePath(); g.fillStyle = 'rgba(50,64,52,.95)'; g.fill();
+  g.beginPath();
+  g.moveTo(x - w * 0.1, y - h * 0.12); g.lineTo(x, y - h / 2); g.lineTo(x + w * 0.1, y - h * 0.12);
+  g.closePath(); g.fillStyle = 'rgba(212,222,226,.32)'; g.fill();
+}
+
+function camp(x, y, color) {
+  g.fillStyle = color;
+  g.beginPath(); g.moveTo(x, y - 7); g.lineTo(x + 7, y + 5); g.lineTo(x - 7, y + 5);
+  g.closePath(); g.fill();
+}
+
+function ridge(yBase, h, color, seed) {
+  g.beginPath();
+  g.moveTo(-12, yBase + 40);
+  let x = -12, i = 0;
+  while (x < W + 12) {
+    const step = 24 + (i % 3) * 9;
+    const peak = yBase - h * (0.5 + 0.5 * Math.abs(Math.sin(i * 1.7 + seed)));
+    g.lineTo(x + step * 0.5, peak);
+    g.lineTo(x + step, yBase);
+    x += step; i++;
+  }
+  g.lineTo(W + 12, yBase + 40);
+  g.closePath();
+  g.fillStyle = color;
+  g.fill();
+}
+
+function tower(x, y) {
+  g.fillStyle = '#242c28';
+  g.fillRect(x - 11, y - 20, 22, 20);
+  g.fillStyle = '#313c37';
+  g.beginPath(); g.moveTo(x - 16, y - 20); g.lineTo(x, y - 33); g.lineTo(x + 16, y - 20);
+  g.closePath(); g.fill();
+  g.fillStyle = 'rgba(255,220,150,.55)';
+  g.fillRect(x - 3, y - 14, 6, 7);
+}
+
+function drawTerrain(now) {
+  // 南岸 / 北岸底色
+  g.fillStyle = '#141a15'; g.fillRect(0, MT, W, 92);
+  g.fillStyle = '#131a16'; g.fillRect(0, MB - 92, W, 92);
+
+  // 山脊（近→远三层）
+  ridge(MT + 74, 46, '#151c17', 1.2);
+  ridge(MT + 62, 62, '#1c2520', 0.4);
+  ridge(MT + 50, 52, '#232e26', 2.1);
+  ridge(MB - 96, 52, '#232e26', 1.7);
+  ridge(MB - 84, 62, '#1c2520', 0.9);
+  ridge(MB - 72, 44, '#151c17', 2.6);
+
+  // 江面
+  const wg = g.createLinearGradient(0, MT + 92, 0, MB - 92);
+  wg.addColorStop(0, '#123047');
+  wg.addColorStop(0.28, '#0d2234');
+  wg.addColorStop(0.62, '#0b1d2d');
+  wg.addColorStop(1, '#123047');
+  g.fillStyle = wg; g.fillRect(0, MT + 92, W, MB - MT - 184);
+
+  // 岸线
+  g.strokeStyle = 'rgba(180,210,235,.18)';
+  g.lineWidth = 1.4;
+  g.beginPath();
+  for (let x = 0; x <= W; x += 10) {
+    const y = MT + 92 + Math.sin(x / 60) * 2;
+    x === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.stroke();
+  g.beginPath();
+  for (let x = 0; x <= W; x += 10) {
+    const y = MB - 92 + Math.sin(x / 55 + 1.4) * 2;
+    x === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.stroke();
+
+  // 水流
+  g.strokeStyle = 'rgba(130,190,240,.11)';
+  g.lineWidth = 1;
+  for (let i = 0; i < 7; i++) {
+    const y = MT + 104 + i * 38;
+    g.beginPath();
+    for (let x = 0; x <= W; x += 12) {
+      const yy = y + Math.sin(x / 40 + now / 800 + i * 1.3) * 2.6;
+      x === 0 ? g.moveTo(x, yy) : g.lineTo(x, yy);
+    }
+    g.stroke();
+  }
+  // 江面反光
+  g.strokeStyle = 'rgba(200,230,255,.06)';
+  for (let i = 0; i < 4; i++) {
+    const y = MT + 150 + i * 56;
+    g.beginPath(); g.moveTo(40 + i * 30, y); g.lineTo(160 + i * 22, y - 3); g.stroke();
+  }
+
+  // 江心洲
+  g.beginPath(); g.ellipse(178, (MT + MB) / 2, 26, 13, 0, 0, 6.28);
+  g.fillStyle = '#243026'; g.fill();
+  g.beginPath(); g.ellipse(178, (MT + MB) / 2 - 2, 22, 9, 0, 0, 6.28);
+  g.fillStyle = '#2c3a2e'; g.fill();
+
+  // 林地
+  for (let i = 0; i < 26; i++) {
+    const x = 16 + (i * 37) % (W - 32);
+    const y = (i % 2 === 0) ? MT + 78 + (i % 5) * 3 : MB - 86 - (i % 5) * 3;
+    g.beginPath(); g.moveTo(x, y - 9); g.lineTo(x + 4, y + 2); g.lineTo(x - 4, y + 2);
+    g.closePath(); g.fillStyle = i % 2 ? 'rgba(38,54,42,.85)' : 'rgba(44,62,48,.85)'; g.fill();
+  }
+
+  // 芦苇荡（右路）
+  g.strokeStyle = 'rgba(160,178,120,.35)';
+  g.lineWidth = 1;
+  for (let i = 0; i < 26; i++) {
+    const x = 250 + (i % 6) * 8;
+    const y = MB - 104 + Math.floor(i / 6) * 8;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + 2, y - 7); g.stroke();
+  }
+
+  // 曹军水寨（北岸码头）
+  g.strokeStyle = 'rgba(180,160,140,.30)';
+  g.lineWidth = 2;
+  for (let i = 0; i < 4; i++) {
+    const x = 40 + i * 78;
+    g.beginPath(); g.moveTo(x, MT + 92); g.lineTo(x, MT + 108); g.stroke();
+  }
+  // 联军城楼（南岸）
+  tower(180, MB - 74);
+
+  camp(66, MT + 66, 'rgba(255,110,110,.7)');
+  camp(104, MT + 70, 'rgba(255,110,110,.55)');
+  camp(262, MT + 66, 'rgba(255,110,110,.7)');
+  camp(84, MB - 70, 'rgba(110,190,255,.7)');
+  camp(272, MB - 70, 'rgba(110,190,255,.7)');
+  camp(308, MB - 66, 'rgba(110,190,255,.55)');
+}
+
+function drawSquad(x, y, side, phase) {
+  const warm = side === 'red';
+  const col = warm ? '#ff7a72' : '#6db6ff';
+  const dark = warm ? '#8e3238' : '#2b5f8f';
+  g.beginPath(); g.ellipse(x + 2, y + 8, 13, 4.5, 0, 0, 6.28);
+  g.fillStyle = 'rgba(0,0,0,.30)'; g.fill();
+  const fx = x + 11 + Math.sin(phase) * 0.8;
+  g.strokeStyle = 'rgba(215,220,225,.45)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(fx, y + 2); g.lineTo(fx, y - 17); g.stroke();
+  g.fillStyle = col;
+  g.beginPath(); g.moveTo(fx, y - 17); g.lineTo(fx + 10, y - 14); g.lineTo(fx, y - 9);
+  g.closePath(); g.fill();
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < 3; c++) {
+      const sx = x - 7 + c * 7 + Math.sin(phase + c * 0.6) * 0.5;
+      const sy = y - 1 + r * 6;
+      g.beginPath(); g.arc(sx, sy, 2.2, 0, 6.28);
+      g.fillStyle = r === 0 ? col : dark;
+      g.fill();
+    }
+  }
+}
+
+function drawLaneSquads(L, cy, now) {
+  const n = 4, top = MT + 30, bot = MB - 26;
+  for (let i = 0; i < n; i++) {
+    const py = top + Math.max(0, cy - top - 14) * (i / (n - 1));
+    drawSquad(L.x + Math.sin(now / 900 + i * 1.7 + L.x) * 4, py, 'red', now / 380 + i);
+  }
+  for (let i = 0; i < n; i++) {
+    const py = bot - Math.max(0, bot - cy - 14) * (i / (n - 1));
+    drawSquad(L.x + Math.cos(now / 960 + i * 1.5 + L.x) * 4, py, 'blue', now / 420 + i + 2);
+  }
+}
+
+/* ===== 等距战场 ===== */
+const isoP = (gx, gy) => ({ x: 180 + (gx - gy) * 31, y: 56 + (gx + gy) * 31 });
+const caoShipPos = (i) => isoP(0.9 + i * 1.3, 3.0 + (1 - CH.front) * 0.9);
+const allyShipPos = (i) => isoP(1.4 + i * 1.35, 4.3 - (CH.front - 0.5) * 1.3);
+
+function isoCell(gx, gy, color) {
+  const a = isoP(gx, gy), b = isoP(gx + 1, gy), c = isoP(gx + 1, gy + 1), d = isoP(gx, gy + 1);
+  g.beginPath();
+  g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.lineTo(c.x, c.y); g.lineTo(d.x, d.y);
+  g.closePath();
+  g.fillStyle = color;
+  g.fill();
+}
+
+function isoShip(x, y, s, hull, sail, burning) {
+  const w = 15 * s, h = 6 * s;
+  g.beginPath(); g.ellipse(x, y + h, w * 1.08, h * 0.62, 0, 0, 6.28);
+  g.fillStyle = 'rgba(0,0,0,.38)'; g.fill();
+
+  g.beginPath();
+  g.moveTo(x - w, y);
+  g.lineTo(x - w * 0.5, y + h * 0.95);
+  g.lineTo(x + w * 0.5, y + h * 0.95);
+  g.lineTo(x + w, y);
+  g.closePath();
+  g.fillStyle = burning ? '#4a1c14' : hull;
+  g.fill();
+  g.globalAlpha = 0.45; g.fillStyle = '#000'; g.fill(); g.globalAlpha = 1;
+
+  g.beginPath();
+  g.moveTo(x - w, y);
+  g.lineTo(x - w * 0.55, y - h);
+  g.lineTo(x + w * 0.55, y - h);
+  g.lineTo(x + w, y);
+  g.closePath();
+  g.fillStyle = burning ? '#7a3320' : hull;
+  g.fill();
+  g.strokeStyle = burning ? '#ff8a4c' : 'rgba(255,255,255,.18)';
+  g.lineWidth = 1; g.stroke();
+
+  g.strokeStyle = 'rgba(0,0,0,.20)'; g.lineWidth = 0.8;
+  for (let i = -1; i <= 1; i++) {
+    g.beginPath();
+    g.moveTo(x + i * w * 0.42, y - h * 0.88);
+    g.lineTo(x + i * w * 0.5, y - h * 0.08);
+    g.stroke();
+  }
+
+  g.strokeStyle = burning ? 'rgba(255,176,102,.6)' : 'rgba(226,232,240,.45)';
+  g.lineWidth = 1;
+  for (let i = -1; i <= 1; i++) {
+    g.beginPath();
+    g.moveTo(x + i * w * 0.5, y - h * 0.05);
+    g.lineTo(x + i * w * 0.62, y + h * 0.9);
+    g.stroke();
+  }
+
+  const top = y - h * 1.55;
+  g.strokeStyle = 'rgba(232,228,216,.6)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x, top); g.lineTo(x, top - 16 * s); g.stroke();
+
+  g.fillStyle = sail;
+  g.beginPath();
+  g.moveTo(x, top - 15 * s);
+  g.lineTo(x + 10 * s, top - 7 * s);
+  g.lineTo(x, top - 1 * s);
+  g.closePath(); g.fill();
+  g.strokeStyle = 'rgba(0,0,0,.28)'; g.lineWidth = 0.8; g.stroke();
+
+  g.fillStyle = burning ? '#ffb066' : sail;
+  g.beginPath();
+  g.moveTo(x, top - 17 * s);
+  g.lineTo(x + 5 * s, top - 15 * s);
+  g.lineTo(x, top - 13 * s);
+  g.closePath(); g.fill();
+}
+
+function isoSquadIso(x, y, color, flagColor) {
+  g.strokeStyle = 'rgba(220,225,230,.42)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x + 9, y + 1); g.lineTo(x + 9, y - 16); g.stroke();
+  g.fillStyle = flagColor;
+  g.beginPath(); g.moveTo(x + 9, y - 16); g.lineTo(x + 19, y - 13); g.lineTo(x + 9, y - 8);
+  g.closePath(); g.fill();
+  for (let i = 0; i < 3; i++) {
+    const sx = x - 6 + i * 6;
+    g.beginPath(); g.ellipse(sx, y + 4, 3.4, 1.5, 0, 0, 6.28);
+    g.fillStyle = 'rgba(0,0,0,.30)'; g.fill();
+    g.beginPath(); g.arc(sx, y, 2, 0, 6.28);
+    g.fillStyle = color; g.fill();
+  }
+}
+
+function drawChibi(now, dt) {
+  const sky = g.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#0a1018');
+  sky.addColorStop(0.45, '#0b1320');
+  sky.addColorStop(1, '#06090d');
+  g.fillStyle = sky; g.fillRect(0, 0, W, H);
+  ridge(148, 76, '#0d141c', 1.1);
+  ridge(161, 56, '#121a24', 2.3);
+
+  // 地块
+  const LAND = ['#2b3526', '#303c2a', '#273120', '#35422e'];
+  const WATER = ['#17445f', '#123a56'];
+  const EDGE = '#151b14';
+  for (let s = 0; s <= 16; s++) {
+    for (let gx = 0; gx <= 8; gx++) {
+      const gy = s - gx;
+      if (gy < 0 || gy > 8) continue;
+      const n = (gx * 3 + gy * 5) % 4;
+      const col = (gy === 8 || gx === 8) ? EDGE
+        : gy === 3 ? WATER[n % 2]
+        : gy === 4 ? WATER[(n + 1) % 2]
+        : LAND[n];
+      isoCell(gx, gy, col);
+    }
+  }
+
+  // 草地细节
+  g.strokeStyle = 'rgba(150,180,120,.35)';
+  g.lineWidth = 1;
+  for (let s = 0; s <= 14; s++) {
+    for (let gx = 0; gx < 8; gx++) {
+      const gy = s - gx;
+      if (gy < 0 || gy > 7 || gy === 3 || gy === 4) continue;
+      const p = isoP(gx + 0.5, gy + 0.5);
+      for (let k = 0; k < 3; k++) {
+        const ox = ((gx * 7 + k * 5) % 17) - 8;
+        const oy = ((gy * 11 + k * 7) % 13) - 6;
+        g.beginPath(); g.moveTo(p.x + ox, p.y + oy); g.lineTo(p.x + ox + 1.5, p.y + oy - 4); g.stroke();
+      }
+    }
+  }
+
+  // 岸线泡沫
+  g.strokeStyle = 'rgba(168,214,240,.28)'; g.lineWidth = 1.4;
+  for (let gx = 0; gx < 8; gx++) {
+    const a = isoP(gx, 3), b = isoP(gx + 1, 3);
+    g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+    const c = isoP(gx, 5), d = isoP(gx + 1, 5);
+    g.beginPath(); g.moveTo(c.x, c.y); g.lineTo(d.x, d.y); g.stroke();
+  }
+
+  // 水面高光
+  g.strokeStyle = 'rgba(150,205,240,.16)'; g.lineWidth = 1;
+  const drift = ((now / 26) % 200) / 200;
+  for (let i = 0; i < 7; i++) {
+    const gxx = 0.6 + ((drift + i * 0.14) % 1) * 6;
+    const a = isoP(gxx, 3.55), b = isoP(gxx + 0.55, 3.55);
+    g.beginPath(); g.moveTo(a.x, a.y + (i % 3)); g.lineTo(b.x, b.y + (i % 3)); g.stroke();
+  }
+
+  // 实体：按 y 深度排序
+  const ents = [];
+  for (let i = 0; i < 5; i++) {
+    const p = caoShipPos(i);
+    ents.push({ y: p.y, draw: () => isoShip(p.x, p.y, 1.7, '#7a3a32', '#e06a5f', CH.boats[i].burn > 0) });
+  }
+  for (let i = 0; i < 4; i++) {
+    const p = allyShipPos(i);
+    ents.push({ y: p.y, draw: () => isoShip(p.x, p.y, 1.5, '#2b5a74', '#5aa8e0', false) });
+  }
+  for (let i = 0; i < 5; i++) {
+    const p = isoP(0.45, 0.5 + i * 0.8);
+    ents.push({ y: p.y, draw: () => isoSquadIso(p.x, p.y, '#ff7a72', 'rgba(255,110,110,.65)') });
+  }
+  for (let i = 0; i < 5; i++) {
+    const p = isoP(7.15, 3.5 + i * 0.8);
+    ents.push({ y: p.y, draw: () => isoSquadIso(p.x, p.y, '#6db6ff', 'rgba(110,190,255,.65)') });
+  }
+  ents.sort((a, b) => a.y - b.y);
+  ents.forEach(e => e.draw());
+
+  // 火船
+  for (const f of CH.fireships) {
+    isoShip(f.x, f.y, 0.55, '#7a3a12', 'rgba(255,196,120,.95)', false);
+  }
+
+  // 烟 / 火
+  for (const s of CH.smoke) {
+    g.beginPath(); g.arc(s.x, s.y, s.r, 0, 6.28);
+    g.fillStyle = `rgba(58,58,64,${0.22 * s.life})`; g.fill();
+  }
+  for (const f of CH.flames) {
+    const a = clamp(f.life, 0, 1);
+    g.beginPath(); g.arc(f.x, f.y, 2.8 * a + 1, 0, 6.28);
+    g.fillStyle = `rgba(255,${Math.round(120 + 90 * a)},60,${0.8 * a})`; g.fill();
+  }
+
+  // 暗角
+  const vig = g.createRadialGradient(W / 2, H * 0.56, 130, W / 2, H * 0.56, 400);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,.55)');
+  g.fillStyle = vig;
+  g.fillRect(0, 0, W, H);
+}
+
+/* =========================================================
+   8. 渲染：观星
+   ========================================================= */
+function drawStars(now, dt) {
+  const grd = g.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, '#070a18');
+  grd.addColorStop(0.55, '#0a0d1c');
+  grd.addColorStop(1, '#05060f');
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+
+  // 星野
+  for (const s of ST.field) {
+    const tw = 0.45 + 0.55 * Math.abs(Math.sin(now / 1400 + s.p));
+    g.beginPath(); g.arc(s.x, s.y, s.r, 0, 6.28);
+    g.fillStyle = `rgba(210,225,255,${0.55 * tw})`; g.fill();
+  }
+
+  // 星盘
+  g.strokeStyle = 'rgba(140,170,255,.13)';
+  g.lineWidth = 1;
+  [70, 108, 146].forEach(r => { g.beginPath(); g.arc(180, 316, r, 0, 6.28); g.stroke(); });
+  for (let i = 0; i < 28; i++) {
+    const a = (i / 28) * Math.PI * 2 - Math.PI / 2;
+    const r0 = 146, r1 = i % 7 === 0 ? 156 : 151;
+    g.beginPath();
+    g.moveTo(180 + Math.cos(a) * r0, 316 + Math.sin(a) * r0);
+    g.lineTo(180 + Math.cos(a) * r1, 316 + Math.sin(a) * r1);
+    g.strokeStyle = i % 7 === 0 ? 'rgba(180,200,255,.30)' : 'rgba(140,170,255,.14)';
+    g.stroke();
+  }
+
+  // 凶兆涟漪
+  for (const r of ST.ripples) {
+    g.beginPath(); g.arc(r.x, r.y, r.r, 0, 6.28);
+    g.strokeStyle = `rgba(255,120,120,${0.22 * r.life})`;
+    g.lineWidth = 1;
+    g.stroke();
+  }
+
+  // 星座连线
+  const lit = ST.stars.filter(s => s.lit > 0.55);
+  g.strokeStyle = 'rgba(150,190,255,.34)';
+  g.lineWidth = 1;
+  for (let i = 0; i < lit.length - 1; i++) {
+    g.beginPath();
+    g.moveTo(lit[i].x, lit[i].y);
+    g.lineTo(lit[i + 1].x, lit[i + 1].y);
+    g.stroke();
+  }
+
+  // 主星
+  for (const s of ST.stars) {
+    const r = 2.2 + s.lit * 3.4;
+    const gr = g.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 4);
+    gr.addColorStop(0, `rgba(190,215,255,${0.5 * s.lit})`);
+    gr.addColorStop(1, 'rgba(190,215,255,0)');
+    g.beginPath(); g.arc(s.x, s.y, r * 4, 0, 6.28); g.fillStyle = gr; g.fill();
+    g.beginPath(); g.arc(s.x, s.y, r, 0, 6.28);
+    g.fillStyle = `rgba(235,242,255,${0.55 + 0.45 * s.lit})`; g.fill();
+    g.fillStyle = `rgba(180,196,225,${0.35 + 0.4 * s.lit})`;
+    g.font = '8px -apple-system,"PingFang SC",sans-serif';
+    g.textAlign = 'center';
+    g.fillText(s.name, s.x, s.y - r - 6);
+  }
+
+  // 客星尾巴
+  for (const p of ST.tail) {
+    g.beginPath(); g.arc(p.x, p.y, 1.4 * p.life + 0.4, 0, 6.28);
+    g.fillStyle = `rgba(255,200,150,${0.5 * p.life})`; g.fill();
+  }
+  // 客星
+  if (ST.comet.alive) {
+    const cx = 180 + Math.cos(ST.comet.a) * ST.comet.r;
+    const cy = 316 + Math.sin(ST.comet.a) * ST.comet.r;
+    const gr = g.createRadialGradient(cx, cy, 0, cx, cy, 16);
+    gr.addColorStop(0, 'rgba(255,220,170,.85)');
+    gr.addColorStop(1, 'rgba(255,180,120,0)');
+    g.beginPath(); g.arc(cx, cy, 16, 0, 6.28); g.fillStyle = gr; g.fill();
+    g.beginPath(); g.arc(cx, cy, 2.6, 0, 6.28); g.fillStyle = '#fff1d0'; g.fill();
+  }
+}
+
+/* =========================================================
+   8b. 渲染：甜咸之争
+   ========================================================= */
+function drawDebate(now, dt) {
+  g.fillStyle = '#120f16'; g.fillRect(0, 0, W, H);
+
+  const bx = W * clamp(rewrite, 3, 97) / 100;
+  // 两派底色
+  g.fillStyle = 'rgba(255,110,150,.16)'; g.fillRect(0, 0, bx, H);
+  g.fillStyle = 'rgba(255,190,90,.16)'; g.fillRect(bx, 0, W - bx, H);
+
+  // 分界波浪
+  g.beginPath();
+  for (let y = 0; y <= H; y += 8) {
+    const x = bx + Math.sin(y / 42 + now / 760) * 6;
+    y === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.strokeStyle = 'rgba(255,255,255,.55)';
+  g.lineWidth = 2;
+  g.stroke();
+
+  const tp = DB.topic || { a: '甜', b: '咸', q: '' };
+
+  // 两派大字
+  g.textAlign = 'center';
+  g.font = '800 26px -apple-system,"PingFang SC",sans-serif';
+  g.fillStyle = 'rgba(255,140,170,.92)';
+  g.fillText(tp.a, W * 0.24, H * 0.47);
+  g.fillStyle = 'rgba(255,200,110,.92)';
+  g.fillText(tp.b, W * 0.76, H * 0.47);
+
+  // 占比
+  g.font = '700 22px -apple-system,"PingFang SC",sans-serif';
+  g.fillStyle = '#ffd7e1';
+  g.fillText(Math.round(rewrite) + '%', W * 0.24, H * 0.47 + 30);
+  g.fillStyle = '#ffe6b0';
+  g.fillText(Math.round(100 - rewrite) + '%', W * 0.76, H * 0.47 + 30);
+
+  // 话题卡
+  const cardW = 300, cardH = 62, cx0 = (W - cardW) / 2, cy0 = 132;
+  g.fillStyle = 'rgba(8,10,16,.72)';
+  g.strokeStyle = 'rgba(255,255,255,.14)';
+  g.lineWidth = 1;
+  g.beginPath();
+  g.roundRect ? g.roundRect(cx0, cy0, cardW, cardH, 12) : g.rect(cx0, cy0, cardW, cardH);
+  g.fill(); g.stroke();
+  g.fillStyle = '#8b93a3';
+  g.font = '9px -apple-system,"PingFang SC",sans-serif';
+  g.fillText('本局话题', W / 2, cy0 + 16);
+  g.fillStyle = '#eef2f8';
+  g.font = '600 14px -apple-system,"PingFang SC",sans-serif';
+  g.fillText(tp.q || '甜还是咸？', W / 2, cy0 + 40);
+
+  // 投票碎片
+  for (const c of DB.chips) {
+    const a = clamp(c.life, 0, 1);
+    const col = c.side === 'a' ? `rgba(255,140,175,${0.85 * a})` : `rgba(255,200,110,${0.85 * a})`;
+    g.beginPath();
+    g.arc(c.x, c.y, 3.4 * a + 1.2, 0, 6.28);
+    g.fillStyle = col; g.fill();
+    if (c.text) {
+      g.fillStyle = `rgba(255,255,255,${0.55 * a})`;
+      g.font = '8px -apple-system,"PingFang SC",sans-serif';
+      g.fillText(c.text, c.x, c.y - 7);
+    }
+  }
+
+  // 底部提示条
+  g.fillStyle = 'rgba(255,255,255,.06)';
+  g.fillRect(0, H - 96, W, 34);
+}
+
+/* =========================================================
+   8c. 姓氏 / MBTI：多阵营抢榜
+   ========================================================= */
+const TM = { teams: [], pops: [] };
+const isTeamMode = () => mode === 'surname' || mode === 'mbti';
+
+function initTeams() {
+  const M = MODES[mode];
+  const names = mode === 'surname' ? M.clans : M.types;
+  TM.teams = names.map((n, i) => ({
+    id: n, name: n,
+    score: mode === 'surname' ? 2 : 1,
+    color: M.palette[i % M.palette.length],
+  }));
+  TM.pops = [];
+}
+
+const teamTotal = () => TM.teams.reduce((s, t) => s + t.score, 0) || 1;
+const teamLeader = () => TM.teams.reduce((a, b) => (b.score > a.score ? b : a), TM.teams[0]);
+const teamOf = (id) => TM.teams.find(t => t.id === id);
+
+function syncTeams() { setRewrite(teamLeader().score / teamTotal() * 100); }
+
+function teamReward(id, n) {
+  const t = teamOf(id);
+  if (!t) return;
+  t.score += n;
+  TM.pops.push({ x: rand(50, 310), y: 320, t: 0, txt: '+' + n, color: t.color });
+  syncTeams();
+}
+
+function teamTick(dt) {
+  if (!running) return;
+  if (Math.random() < dt * 2.4) {
+    TM.teams[Math.floor(Math.random() * TM.teams.length)].score += 1;
+    syncTeams();
+  }
+  for (const p of TM.pops) { p.t += dt; p.y -= dt * 34; }
+  TM.pops = TM.pops.filter(p => p.t < 1.1);
+}
+
+function teamFlag(x, y, color) {
+  g.strokeStyle = 'rgba(220,225,230,.5)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - 16); g.stroke();
+  g.fillStyle = color;
+  g.beginPath(); g.moveTo(x, y - 16); g.lineTo(x + 11, y - 13); g.lineTo(x, y - 8);
+  g.closePath(); g.fill();
+}
+
+function drawClanRace(now) {
+  g.fillStyle = '#0f1216'; g.fillRect(0, 0, W, H);
+  const total = teamTotal();
+  const rowH = 46, y0 = 150;
+  const lead = teamLeader();
+
+  g.textAlign = 'center';
+  g.fillStyle = '#6f7888';
+  g.font = '10px -apple-system,"PingFang SC",sans-serif';
+  g.fillText('百家姓 · 抢城楼', W / 2, 132);
+
+  TM.teams.forEach((t, i) => {
+    const y = y0 + i * rowH;
+    const pct = Math.min(1, t.score / total * 2.4);
+    g.fillStyle = 'rgba(255,255,255,.035)';
+    g.fillRect(30, y, W - 60, 22);
+    g.fillStyle = t.color;
+    g.globalAlpha = 0.72;
+    g.fillRect(30, y, (W - 60) * pct, 22);
+    g.globalAlpha = 1;
+    g.fillStyle = '#fff';
+    g.font = '700 13px -apple-system,"PingFang SC",sans-serif';
+    g.textAlign = 'left';
+    g.fillText(t.name, 36, y + 16);
+    g.textAlign = 'right';
+    g.font = '600 10px -apple-system,"PingFang SC",sans-serif';
+    g.fillStyle = 'rgba(255,255,255,.72)';
+    g.fillText(t.score, W - 36, y + 16);
+    if (t === lead) teamFlag(30 + (W - 60) * pct, y + 26, t.color);
+  });
+
+  for (const p of TM.pops) {
+    g.globalAlpha = Math.max(0, 1 - p.t);
+    g.fillStyle = p.color;
+    g.font = '700 12px -apple-system,"PingFang SC",sans-serif';
+    g.textAlign = 'center';
+    g.fillText(p.txt, p.x, p.y);
+    g.globalAlpha = 1;
+  }
+}
+
+function drawMbtiGrid(now) {
+  g.fillStyle = '#0b0c14'; g.fillRect(0, 0, W, H);
+  const total = teamTotal();
+  const cols = 4, cw = 76, ch = 80, gap = 6;
+  const x0 = (W - (cols * cw + (cols - 1) * gap)) / 2;
+  const y0 = 150;
+  const lead = teamLeader();
+
+  g.textAlign = 'center';
+  g.fillStyle = '#6f7888';
+  g.font = '10px -apple-system,"PingFang SC",sans-serif';
+  g.fillText('人格矩阵 · 谁最亮', W / 2, 132);
+
+  TM.teams.forEach((t, i) => {
+    const cx = x0 + (i % cols) * (cw + gap);
+    const cy = y0 + Math.floor(i / cols) * (ch + gap);
+    const share = t.score / total;
+    const fill = Math.min(1, share * 3);
+    g.fillStyle = 'rgba(255,255,255,.045)';
+    g.fillRect(cx, cy, cw, ch);
+    g.fillStyle = t.color;
+    g.globalAlpha = 0.10 + share * 2.4;
+    g.fillRect(cx, cy + ch * (1 - fill), cw, ch * fill);
+    g.globalAlpha = 1;
+    g.strokeStyle = t === lead ? t.color : 'rgba(255,255,255,.10)';
+    g.lineWidth = t === lead ? 2 : 1;
+    g.strokeRect(cx + 0.5, cy + 0.5, cw - 1, ch - 1);
+    g.fillStyle = '#e8ecf3';
+    g.font = '700 13px -apple-system,"PingFang SC",sans-serif';
+    g.fillText(t.name, cx + cw / 2, cy + 24);
+    g.fillStyle = 'rgba(255,255,255,.6)';
+    g.font = '600 10px -apple-system,"PingFang SC",sans-serif';
+    g.fillText(t.score + ' 票', cx + cw / 2, cy + 40);
+  });
+
+  for (const p of TM.pops) {
+    g.globalAlpha = Math.max(0, 1 - p.t);
+    g.fillStyle = p.color;
+    g.font = '700 12px -apple-system,"PingFang SC",sans-serif';
+    g.fillText(p.txt, p.x, p.y);
+    g.globalAlpha = 1;
+  }
+}
+
+function drawTeams(now, dt) {
+  if (mode === 'mbti') drawMbtiGrid(now);
+  else drawClanRace(now);
+}
+
+/* =========================================================
+   9. 宠物
+   ========================================================= */
+const PET = { img: new Image(), fw: 192, fh: 208, scale: 0.45 };
+PET.img.src = 'assets/boba-spritesheet.webp';
+const PET_ACTIONS = {
+  idle: { row: 0, n: 7, fps: 5, dur: 1e9 },
+  hop:  { row: 0, n: 7, fps: 14, dur: 800 },
+  wave: { row: 3, n: 4, fps: 8, dur: 1400 },
+  look: { row: 7, n: 6, fps: 8, dur: 1200 },
+  spin: { row: 0, n: 7, fps: 18, dur: 1000 },
+  shy:  { row: 6, n: 6, fps: 4, dur: 1600 },
+};
+let petAnim = { key: 'idle', start: 0 };
+function petDo(k) { if (PET_ACTIONS[k]) petAnim = { key: k, start: performance.now() }; }
+
+function drawPet(now) {
+  const cfg = PET_ACTIONS[petAnim.key] || PET_ACTIONS.idle;
+  if (now - petAnim.start > cfg.dur && petAnim.key !== 'idle') petAnim = { key: 'idle', start: now };
+  const cur = PET_ACTIONS[petAnim.key];
+  const frame = Math.floor((now - petAnim.start) / 1000 * cur.fps) % cur.n;
+  const w = PET.fw * PET.scale, h = PET.fh * PET.scale;
+  const x = (PW - w) / 2;
+  let y = (PH - h) / 2 + 3;
+  if (petAnim.key === 'hop') y -= Math.abs(Math.sin((now - petAnim.start) / 800 * Math.PI * 2)) * 12;
+  pg.clearRect(0, 0, PW, PH);
+  if (!PET.img.complete || !PET.img.naturalWidth) return;
+  pg.save();
+  if (petAnim.key === 'spin') {
+    const p = (now - petAnim.start) / 1000;
+    const ratio = 0.45 + 0.55 * Math.abs(Math.cos(p * Math.PI));
+    pg.translate(PW / 2, PH / 2); pg.scale(Math.max(0.18, ratio), 1); pg.translate(-PW / 2, -PH / 2);
+  }
+  pg.drawImage(PET.img, frame * PET.fw, cur.row * PET.fh, PET.fw, PET.fh, x, y, w, h);
+  pg.restore();
+}
+
+/* =========================================================
+   10. UI
+   ========================================================= */
+const capEl = document.getElementById('caption');
+const capText = document.getElementById('capText');
+let capTimer = 0;
+
+function say(text, dur = 4200, force = false) {
+  const now = performance.now();
+  if (!force && now - lastSpeak < 1200) return;
+  lastSpeak = now;
+  capText.textContent = text;
+  capEl.classList.add('on');
+  clearTimeout(capTimer);
+  capTimer = setTimeout(() => capEl.classList.remove('on'), dur);
+}
+
+const dmLayer = document.getElementById('dmLayer');
+let dmLane = 0;
+function pushDanmaku(text, who) {
+  const el = document.createElement('div');
+  el.className = 'dm';
+  el.innerHTML = `<span class="who">${esc(who)}:</span>${esc(text)}`;
+  el.style.top = (dmLane++ % 4) * 26 + 'px';
+  el.style.animationDuration = (5.5 + Math.random() * 2.5) + 's';
+  dmLayer.appendChild(el);
+  el.addEventListener('animationend', () => el.remove());
+  setTimeout(() => el.remove(), 9000);
+}
+
+const bannerEl = document.getElementById('banner');
+const bn1 = document.getElementById('bn1'), bn2 = document.getElementById('bn2');
+let bannerTimer = 0;
+function showBanner(t1, t2, color) {
+  bn1.textContent = t1; bn1.style.color = color || '#fff';
+  bn2.textContent = t2 || '';
+  bannerEl.classList.add('on');
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => bannerEl.classList.remove('on'), 2200);
+}
+
+const logEl = document.getElementById('log');
+function pushLog(kind, text, giftName) {
+  const d = document.createElement('div');
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2, '0');
+  const mm = String(t.getMinutes()).padStart(2, '0');
+  const ss = String(t.getSeconds()).padStart(2, '0');
+  d.innerHTML = `<time>${hh}:${mm}:${ss}</time><span>${giftName ? `<span class="g">${esc(giftName)}</span> · ` : ''}${esc(text)}</span>`;
+  logEl.appendChild(d);
+  while (logEl.children.length > 40) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function userOf(name) {
+  if (!users.has(name)) users.set(name, { paid: 0, free: 0, side: userSide });
+  return users.get(name);
+}
+
+function syncBoards() {
+  const all = [...users.entries()].map(([n, v]) => ({ n, ...v }));
+  const rw = all.filter(u => u.side === 'rewrite' && (u.paid || u.free)).sort((a, b) => b.paid - a.paid || b.free - a.free).slice(0, 3);
+  const gd = all.filter(u => u.side === 'guard' && (u.paid || u.free)).sort((a, b) => b.paid - a.paid || b.free - a.free).slice(0, 3);
+  document.getElementById('lbRewrite').innerHTML = rw.length
+    ? rw.map((u, i) => `<li><span class="rk">${i + 1}</span><span class="nm">${esc(u.n)}</span><span class="vl">${u.paid || u.free}</span></li>`).join('')
+    : '<li><span class="nm" style="color:#5d6676">还没有人站这边</span></li>';
+  document.getElementById('lbGuard').innerHTML = gd.length
+    ? gd.map((u, i) => `<li><span class="rk">${i + 1}</span><span class="nm">${esc(u.n)}</span><span class="vl">${u.paid || u.free}</span></li>`).join('')
+    : '<li><span class="nm" style="color:#5d6676">还没有人站这边</span></li>';
+}
+
+function setRewrite(v) {
+  rewrite = clamp(v, 0, 100);
+  document.getElementById('pullFill').style.width = rewrite + '%';
+  document.getElementById('pullLeft').textContent = '改写 ' + Math.round(rewrite) + '%';
+  document.getElementById('pullRight').textContent = '守常 ' + Math.round(100 - rewrite) + '%';
+}
+
+/* =========================================================
+   11. 礼物与弹幕
+   ========================================================= */
+function giftLabel(gf) {
+  return gf[mode][userSide === 'rewrite' ? 'rewrite' : 'guard'];
+}
+
+function applyGift(gf, name, sideKey) {
+  const label = gf[mode][sideKey];
+  contrib.push({ name, action: label, coins: gf.coins });
+  const dir = sideKey === 'rewrite' ? 1 : -1;
+  setRewrite(rewrite + gf.push * dir);
+  const t = performance.now() - roundStart;
+
+  if (mode === 'chibi') {
+    const cy = contactY(CH.front);
+    if (gf.id === 'donut' && sideKey === 'rewrite') { CH.chains = false; showBanner('铁索断开', '连环船散成一片', '#9b7bff'); }
+    if (gf.id === 'battery' && sideKey === 'rewrite') { CH.windMul = 0.4; showBanner('风向逆转', '西北风起，火船难行', '#9b7bff'); }
+    if (gf.id === 'battery' && sideKey === 'guard') { CH.windMul = 1.8; showBanner('东风更烈', '火势助长', '#ffb347'); }
+    if (gf.id === 'bomb') {
+      for (const b of CH.boats) if (b.burn <= 0 && Math.random() < 0.4) ignite(b);
+      showBanner(sideKey === 'rewrite' ? '识破诈降' : '截断退路', label, '#ffc857');
+    }
+    if (gf.id === 'airdrop') {
+      CH.front = clamp(CH.front + (sideKey === 'rewrite' ? -0.12 : 0.12), 0.05, 0.95);
+      showBanner(label, '援军抵达，战线前推', '#7fd8a8');
+    }
+    if (gf.id === 'fairy' || gf.id === 'pill') {
+      for (let i = 0; i < 6; i++) CH.flames.push({ x: rand(40, 320), y: cy + rand(-20, 20), vy: -rand(10, 20), life: 1 });
+    }
+  } else if (mode === 'stars') {
+    if (gf.id === 'donut') {
+      ST.stars.forEach(s => { s.lit = Math.min(1, s.lit + 0.25); });
+      showBanner(label, '主星增辉', '#ffc857');
+    }
+    if (gf.id === 'battery') {
+      ST.stars.forEach(s => { s.lit = Math.min(1, s.lit + 0.35); });
+      showBanner(label, '星光连成一线', '#9b7bff');
+    }
+    if (gf.id === 'bomb') {
+      ST.ripples.forEach(r => r.life = 0);
+      ST.ripples = [];
+      showBanner(label, '凶兆消散', '#7fd8a8');
+    }
+    if (gf.id === 'airdrop') {
+      ST.tail.push({ x: rand(60, 300), y: rand(120, 220), life: 1 });
+      showBanner(label, '流星划过', '#ffd479');
+    }
+    if (gf.id === 'super' || gf.id === 'jet') {
+      ST.comet.r += 10;
+      showBanner(label, '客星被推离轨道', '#c3a6ff');
+      petDo('spin');
+    }
+  } else {
+    const tone = sideKey === 'rewrite' ? '#ffa9c0' : '#ffd479';
+    for (let i = 0; i < 3; i++) spawnChip(sideKey === 'rewrite' ? 'a' : 'b', i === 0 ? name.slice(0, 5) : '');
+    if (gf.id === 'bomb') showBanner(label, '对面哑火三秒', tone);
+    else if (gf.id === 'airdrop') showBanner(label, '援军入场投票', '#7fd8a8');
+    else if (gf.id === 'super' || gf.id === 'jet') { showBanner(label, '局势逆转', '#c3a6ff'); petDo('spin'); }
+    else if (gf.coins >= 52) showBanner(label, MODES.debate.name, tone);
+  }
+
+  if (gf.id !== 'super' && gf.id !== 'jet' && gf.id !== 'airdrop') petDo('hop');
+  else if (gf.coins >= 520) petDo('spin');
+
+  const line = `${label}！`;
+  say(sideKey === 'rewrite'
+    ? `${name} 出手了，${line}`
+    : `守常一方 ${name} 稳住局面，${line}`, 5200, gf.coins >= 99);
+  pushDanmaku(label, name);
+  pushLog('gift', `${name} → ${gf.name} · ${label} · 改写${dir > 0 ? '+' : ''}${gf.push * dir}`, gf.name);
+}
+
+function handleComment(name, text) {
+  const tm = performance.now() - roundStart;
+  pushDanmaku(text, name);
+  const u = userOf(name);
+
+  if (text === '1') {
+    u.side = 'rewrite';
+    pushLog('comment', `${name} 加入${MODES[mode].sideA}`);
+    return;
+  }
+  if (text === '2') {
+    u.side = 'guard';
+    pushLog('comment', `${name} 加入${MODES[mode].sideB}`);
+    return;
+  }
+
+  if (isTeamMode()) {
+    u.free += 1;
+    const t = teamOf(text) || teamOf(text.toUpperCase());
+    if (t) {
+      u.team = t.id;
+      teamReward(t.id, 1);
+      pushLog('comment', `${name} 加入${t.name}`);
+    } else if (running) {
+      const mine = teamOf(u.team) || teamLeader();
+      teamReward(mine.id, 1);
+    }
+    syncBoards();
+    return;
+  }
+
+  if (mode === 'debate') {
+    const tp = DB.topic || { a: '甜', b: '咸' };
+    const voteA = text === tp.a || text === '甜' || text === '投甜';
+    const voteB = text === tp.b || text === '咸' || text === '投咸';
+    u.free += 1;
+    if (voteA || voteB) {
+      u.side = voteA ? 'rewrite' : 'guard';
+      setRewrite(rewrite + (voteA ? 1.2 : -1.2));
+      spawnChip(voteA ? 'a' : 'b', name);
+      DB.pop.push({ x: voteA ? W * 0.2 : W * 0.8, y: H * 0.46, t: 0, txt: '+1' });
+    } else if (running) {
+      const dir = u.side === 'rewrite' ? 1 : -1;
+      setRewrite(rewrite + dir * 0.8);
+      spawnChip(dir > 0 ? 'a' : 'b', text.slice(0, 4));
+    }
+    syncBoards();
+    return;
+  }
+
+  u.free += 1;
+  if (!running) return;
+  // 免费层：小幅推动改写值（有冷却，且不越过门槛本身）
+  const dir = u.side === 'rewrite' ? 1 : -1;
+  setRewrite(rewrite + dir * 1.5);
+  if (text === '擂鼓' || text === '点灯') {
+    if (mode === 'stars') ST.stars.forEach(s => { s.lit = Math.min(1, s.lit + 0.05); });
+    else for (let i = 0; i < 3; i++) CH.flames.push({ x: rand(40, 320), y: rand(140, 200), vy: -18, life: 1 });
+  }
+  if (text === '放箭') {
+    CH.arrows.push({ x: rand(40, 320), y: 480, vy: -220, life: 1 });
+  }
+  if (text === '观星') {
+    ST.field.forEach(s => { s.r = Math.min(2, s.r + 0.02); });
+  }
+  syncBoards();
+}
+
+/* =========================================================
+   12. 面板
+   ========================================================= */
+function renderGifts() {
+  const m = MODES[mode];
+  document.getElementById('gifts').innerHTML = GIFTS.map(gf => {
+    const label = (gf[mode] && gf[mode][userSide]) || '加票';
+    return `<button class="gift" data-id="${gf.id}" data-tier="${gf.tier}">
+      <div class="gn">${gf.name}</div>
+      <div class="gc">${gf.coins} 抖 · 改写${userSide === 'rewrite' ? '+' : '−'}${gf.push}</div>
+      <div class="ge">${label}</div>
+    </button>`;
+  }).join('');
+  document.getElementById('giftSideName').textContent = userSide === 'rewrite' ? m.sideA : m.sideB;
+  document.getElementById('giftSideName').style.color = userSide === 'rewrite' ? '#ffb9bd' : '#b3d9ff';
+
+  document.getElementById('ruleGift').innerHTML = GIFTS.map(gf => {
+    const a = (gf[mode] && gf[mode].rewrite) || '加票';
+    const b = (gf[mode] && gf[mode].guard) || '加票';
+    return `<tr><td class="c">${gf.coins}</td><td>${gf.name}</td><td>${a === b ? a : `改写方「${a}」/ 守常方「${b}」`} · ±${gf.push}</td></tr>`;
+  }).join('');
+
+  document.getElementById('ruleFree').innerHTML = [
+    ['任意弹幕', '站队后每发言一次，小幅推动 ±1.5'],
+    ['1 / 2', '加入改写方 / 守常方'],
+    [m.free[2], '本方小幅增益'],
+    [m.free[3], '持续参与，攒存在感'],
+    [m.free[4], '低强度抵抗，防一边倒'],
+  ].map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join('');
+}
+
+function renderTimeline() {
+  const m = MODES[mode];
+  document.getElementById('tlDots').innerHTML = m.phases.map(() => '<span class="tl-dot"></span>').join('');
+  document.getElementById('tlLabels').innerHTML = m.phases.map(p => `<span>${p.label}</span>`).join('');
+}
+
+function renderQuicks() {
+  const q = MODES[mode].quicks;
+  document.getElementById('quickRow').innerHTML = q.map(([v, label], i) =>
+    `<button data-dm="${esc(v)}" class="${i === 0 ? 'btn-red' : i === 1 ? 'btn-blue' : ''}">${esc(label)}</button>`
+  ).join('');
+}
+
+function renderModeNote() {
+  const m = MODES[mode];
+  document.getElementById('modeNote').textContent = m.note;
+  document.getElementById('hint').textContent = isTeamMode()
+    ? (mode === 'surname' ? '发自己的姓，全族一起抢城楼' : '发自己的四字母，点亮本型')
+    : `发「1」加入${m.sideA}，「2」加入${m.sideB}`;
+}
+
+function syncSideUI() {
+  const m = MODES[mode];
+  document.getElementById('sideSeg').style.display = isTeamMode() ? 'none' : 'flex';
+  [...document.getElementById('sideSeg').children].forEach(b => {
+    b.classList.toggle('act', b.dataset.side === userSide);
+    b.textContent = b.dataset.side === 'rewrite' ? (m.shortA || m.sideA) : (m.shortB || m.sideB);
+  });
+  renderGifts();
+}
+
+/* =========================================================
+   13. 主循环
+   ========================================================= */
+const PHASE_MS = { chibi: 80_000, stars: 80_000, debate: 80_000, surname: 80_000, mbti: 80_000 };
+
+function syncHud(now) {
+  const t = now - roundStart;
+  const m = MODES[mode];
+  const pct = clamp(t / PHASE_MS[mode] * 100, 0, 100);
+  document.getElementById('tlFill').style.width = pct + '%';
+  const dots = document.querySelectorAll('.tl-dot');
+  const labels = document.querySelectorAll('.tl-labels span');
+  m.phases.forEach((p, i) => {
+    const on = t >= p.t * 1000;
+    if (dots[i]) dots[i].classList.toggle('on', on);
+    if (labels[i]) labels[i].classList.toggle('on', on);
+  });
+  document.getElementById('stageStat').innerHTML =
+    `在线 <b>${online}</b> · 本局流水 <b>${coinsThisRound}</b> 抖`;
+}
+
+function loop(ts) {
+  const now = ts || performance.now();
+  const dt = Math.min(0.05, (now - (loop.last || now)) / 1000 || 0.016);
+  loop.last = now;
+  const t = now - roundStart;
+
+  if (running && mode !== 'debate' && !isTeamMode() && t >= 50_000) judge(t);
+  if (running && t >= PHASE_MS[mode]) endRound(t);
+
+  if (mode === 'chibi') { chibiTick(dt, t); drawChibi(now, dt); }
+  else if (mode === 'stars') { starsTick(dt, t); drawStars(now, dt); }
+  else if (mode === 'debate') { debateTick(dt, t); drawDebate(now, dt); }
+  else { teamTick(dt); drawTeams(now, dt); }
+
+  drawPet(now);
+  syncHud(now);
+  requestAnimationFrame(loop);
+}
+
+/* =========================================================
+   14. 启动 / 切换
+   ========================================================= */
+let online = 1;
+
+function resetAll() {
+  roundStart = performance.now();
+  rewrite = 0;
+  resolved = false;
+  outcome = null;
+  running = true;
+  coinsThisRound = 0;
+  contrib = [];
+  if (mode === 'chibi') initChibi();
+  else if (mode === 'stars') initStars();
+  else if (mode === 'debate') initDebate();
+  else initTeams();
+  if (isTeamMode()) syncTeams();
+  else setRewrite(mode === 'debate' ? 50 : 0);
+  pushLog('round', '新一局开始 · ' + MODES[mode].name);
+  syncBoards();
+}
+
+function switchMode(next) {
+  mode = next;
+  document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('act', b.dataset.mode === mode));
+  renderTimeline(); renderQuicks(); renderModeNote(); syncSideUI();
+  clearTimeout(resetTimer);
+  document.getElementById('over').classList.remove('on');
+  resetAll();
+  say(MODES[mode].name + '，开局。', 4000, true);
+}
+
+document.getElementById('modes').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b) switchMode(b.dataset.mode);
+});
+
+document.getElementById('sideSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  userSide = b.dataset.side;
+  syncSideUI();
+  const u = userOf(document.getElementById('nick').value.trim() || '匿名观众');
+  u.side = userSide;
+});
+
+document.getElementById('gifts').addEventListener('click', (e) => {
+  const b = e.target.closest('.gift');
+  if (!b) return;
+  const gf = GIFT_BY_ID[b.dataset.id];
+  const name = document.getElementById('nick').value.trim() || '匿名观众';
+  const u = userOf(name);
+  u.side = userSide;
+  u.paid += gf.coins;
+  coinsThisRound += gf.coins;
+
+  if (isTeamMode()) {
+    const t = teamOf(u.team) || teamLeader();
+    teamReward(t.id, gf.push);
+    contrib.push({ name, action: t.name + '+票', coins: gf.coins });
+    showBanner(t.name + ' · ' + gf.name, '+' + gf.push + ' 票', t.color);
+    pushLog('gift', `${name} → ${gf.name} · ${t.name} +${gf.push} 票`, gf.name);
+    say(`${name} 给 ${t.name} 加了 ${gf.push} 票！`, 5000, gf.coins >= 99);
+    petDo('hop');
+    syncBoards();
+    return;
+  }
+
+  applyGift(gf, name, userSide);
+  syncBoards();
+});
+
+function sendDm(text) {
+  const name = document.getElementById('nick').value.trim() || '匿名观众';
+  const u = userOf(name);
+  if (!u.side) u.side = userSide;
+  handleComment(name, String(text).trim());
+  syncBoards();
+}
+
+document.getElementById('dmSend').addEventListener('click', () => {
+  const inp = document.getElementById('dmInput');
+  if (!inp.value.trim()) return;
+  sendDm(inp.value); inp.value = '';
+});
+document.getElementById('dmInput').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const inp = e.currentTarget;
+  if (!inp.value.trim()) return;
+  sendDm(inp.value); inp.value = '';
+});
+document.getElementById('quickRow').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  const v = b.dataset.dm;
+  if (v === '1') { userSide = 'rewrite'; syncSideUI(); }
+  if (v === '2') { userSide = 'guard'; syncSideUI(); }
+  sendDm(v);
+});
+document.getElementById('autoBtn').addEventListener('click', (e) => {
+  autoOn = !autoOn;
+  e.currentTarget.textContent = '自动演示：' + (autoOn ? '开' : '关');
+  e.currentTarget.classList.toggle('on', autoOn);
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  clearTimeout(resetTimer);
+  document.getElementById('over').classList.remove('on');
+  resetAll();
+});
+
+/* 自动演示 */
+const NAMES = ['路过的观众','小满','阿飞','橘子汽水','夜航船','十九','白桃乌龙','石斑鱼','momo','不吃香菜','大橘为重','晚风','南栀','阿柴','云朵','咸鱼翻身','半糖去冰','西瓜太郎'];
+setInterval(() => {
+  if (!autoOn || !running) return;
+  const name = pick(NAMES);
+  const u = userOf(name);
+  if (!u.side) u.side = Math.random() < 0.45 ? 'rewrite' : 'guard';
+  const roll = Math.random();
+  if (roll < 0.72) {
+    handleComment(name, pick(MODES[mode].free.slice(2)));
+  } else if (roll < 0.93) {
+    const gf = GIFT_BY_ID[pick(['fairy','fairy','pill','mirror','donut'])];
+    u.paid += gf.coins; coinsThisRound += gf.coins;
+    applyGift(gf, name, u.side);
+  } else {
+    const gf = GIFT_BY_ID[pick(['battery','bomb','airdrop','super','jet'])];
+    u.paid += gf.coins; coinsThisRound += gf.coins;
+    applyGift(gf, name, u.side);
+  }
+  syncBoards();
+}, 1400);
+
+setInterval(() => {
+  online = clamp(online + Math.round(rand(-2, 5)), 1, 9999);
+}, 2000);
+
+/* 垫场 */
+setInterval(() => {
+  if (!running || resolved) return;
+  if (Math.random() < 0.5) {
+    say(rewrite >= 50
+      ? `改写度 ${Math.round(rewrite)}% 了，再过 ${GATE}% 就真的改写了！`
+      : `改写度 ${Math.round(rewrite)}%，还差 ${GATE - Math.round(rewrite)}% 才能改掉结局。`);
+  }
+}, 9000);
+
+/* 初始化 */
+renderTimeline();
+renderQuicks();
+renderModeNote();
+syncSideUI();
+resetAll();
+setTimeout(() => say('欢迎来到直播间。这一局，结局本来已经写好了——想改吗？', 6000, true), 800);
+setTimeout(() => document.getElementById('hint').classList.add('off'), 15000);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

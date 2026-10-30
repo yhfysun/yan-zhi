@@ -2,6 +2,18 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "layer-demo",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".claude/prototype-server.cjs", "--root", "plugins/optional/desktop-manager", "--port", "4218"],
+      "port": 4218
+    },
+    {
+      "name": "organizer-proto",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4217", "--directory", "docs/prototypes"],
+      "port": 4217
+    },
+    {
       "name": "desktop-prototype",
       "runtimeExecutable": "node",
       "runtimeArgs": [".claude/prototype-server.cjs"],
@@ -36,6 +48,17 @@
       "runtimeExecutable": "node",
       "runtimeArgs": [".claude/prototype-server.cjs", "--root", "docs/prototypes", "--port", "4215"],
       "port": 4215
+    },
+    {
+      "name": "live-workspace-proto",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4321", "--directory", "docs/prototypes"],
+      "port": 4321
+    },
+    {
+      "name": "attach-desktop-ui",
+      "url": "http://localhost:1421",
+      "port": 1421
     },
     {
       "name": "desktop-ui",

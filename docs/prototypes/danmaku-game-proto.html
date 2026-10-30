@@ -1,0 +1,1175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>弹幕游戏原型 · 阵营对推 + 宠物主播</title>
+<style>
+  :root{
+    --bg:#08090d; --panel:#11141b; --panel2:#171b24; --line:#242a36;
+    --txt:#e8ecf3; --dim:#8b93a3; --red:#ff5b63; --blue:#3fa9ff;
+    --gold:#ffc857;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:radial-gradient(1000px 600px at 15% -10%,#1a2030 0%,var(--bg) 60%);
+    color:var(--txt);font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+    display:flex;align-items:flex-start;justify-content:center;padding:24px 20px 40px;
+  }
+  .wrap{display:flex;gap:22px;align-items:flex-start}
+
+  /* ---------- 直播舞台 ---------- */
+  .phone{
+    position:relative;width:360px;height:640px;flex:none;border-radius:22px;overflow:hidden;
+    background:#05060a;border:1px solid #2a3140;
+    box-shadow:0 24px 60px rgba(0,0,0,.55), 0 0 0 6px #0d1017;
+  }
+  #game{position:absolute;inset:0;width:360px;height:640px;display:block}
+
+  .ov{position:absolute;inset:0;pointer-events:none}
+
+  .topbar{
+    position:absolute;left:0;right:0;top:0;padding:10px 12px 8px;
+    background:linear-gradient(180deg,rgba(4,6,10,.85) 0%,rgba(4,6,10,0) 100%);
+    display:flex;align-items:center;gap:8px;
+  }
+  .live-dot{width:6px;height:6px;border-radius:50%;background:#ff3b52;box-shadow:0 0 8px #ff3b52;animation:pulse 1.4s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .tb-tag{font-size:10px;letter-spacing:.5px;color:#ffb0b6;border:1px solid rgba(255,90,99,.45);border-radius:4px;padding:0 5px;line-height:16px}
+  .tb-sp{flex:1}
+  .tb-stat{font-size:11px;color:var(--dim)}
+  .tb-stat b{color:#fff;font-weight:600}
+
+  .hpwrap{position:absolute;left:12px;right:12px;top:40px;display:flex;flex-direction:column;gap:5px}
+  .hprow{display:flex;align-items:center;gap:7px;font-size:10px;color:var(--dim)}
+  .hprow .nm{width:26px;text-align:center;font-weight:700}
+  .hpbar{flex:1;height:7px;border-radius:4px;background:rgba(255,255,255,.10);overflow:hidden;border:1px solid rgba(255,255,255,.08)}
+  .hpbar i{display:block;height:100%;width:100%;transition:width .18s ease}
+  .hprow.red .nm{color:var(--red)} .hprow.red .hpbar i{background:linear-gradient(90deg,#ff5b63,#ff9a6a)}
+  .hprow.blue .nm{color:var(--blue)} .hprow.blue .hpbar i{background:linear-gradient(90deg,#3fa9ff,#6ee7ff)}
+  .timer{margin-left:6px;font-variant-numeric:tabular-nums;color:#cfd5e0}
+
+  /* 榜单 */
+  .boards{position:absolute;right:10px;top:80px;display:flex;flex-direction:column;gap:6px;width:120px;z-index:4}
+  .board{background:rgba(8,11,17,.80);border:1px solid rgba(255,255,255,.09);border-radius:8px;padding:5px 7px;backdrop-filter:blur(6px)}
+  .board h5{margin:0 0 3px;font-size:9px;font-weight:600;letter-spacing:.6px;color:#aeb6c6;display:flex;justify-content:space-between}
+  .board h5 em{font-style:normal;color:#6f7888;font-weight:400}
+  .board ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+  .board li{display:flex;gap:4px;align-items:center;font-size:10px;color:#d7dce6;min-height:13px}
+  .board li .rk{width:11px;color:#7a8496;font-variant-numeric:tabular-nums}
+  .board li .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .board li .vl{color:var(--gold);font-variant-numeric:tabular-nums}
+  .board.free li .vl{color:#7fd8a8}
+  .board li.red .nm{color:#ffb3b8}
+  .board li.blue .nm{color:#a9d4ff}
+
+  /* 弹幕层 */
+  .dm-layer{position:absolute;left:0;right:0;top:112px;height:150px;overflow:hidden;pointer-events:none;z-index:2}
+  .dm{position:absolute;left:360px;white-space:nowrap;font-size:12px;color:#eef2f8;
+      text-shadow:0 1px 3px rgba(0,0,0,.9),0 0 8px rgba(0,0,0,.6);animation:dash linear forwards}
+  .dm .who{color:#8f9bb0;margin-right:4px}
+  .dm.red .who{color:#ff9ea4}
+  .dm.blue .who{color:#9ccdff}
+  @keyframes dash{to{transform:translateX(calc(-100% - 380px))}}
+
+  /* 宠物画中画 */
+  .pip{position:absolute;right:10px;bottom:78px;width:104px;height:112px;pointer-events:none}
+  .pip .ring{position:absolute;inset:0;border-radius:14px;background:radial-gradient(60% 60% at 50% 45%,rgba(80,140,255,.20),rgba(6,9,14,.72) 75%);border:1px solid rgba(120,170,255,.28)}
+  #pet{position:absolute;left:8px;top:2px;width:88px;height:96px;display:block}
+  .pip .tag{position:absolute;left:0;right:0;bottom:4px;text-align:center;font-size:9px;color:#cfe0ff;letter-spacing:.4px}
+  .pip .tag i{font-style:normal;color:#6ea8ff}
+
+  /* 字幕 */
+  .caption{
+    position:absolute;left:10px;right:118px;bottom:14px;min-height:44px;
+    background:linear-gradient(180deg,rgba(8,11,17,.0),rgba(8,11,17,.82) 30%);
+    border-radius:10px;padding:7px 10px;display:flex;gap:6px;align-items:flex-start;
+    opacity:0;transition:opacity .18s ease;
+  }
+  .caption.on{opacity:1}
+  .caption b{color:#8fc4ff;font-weight:600;flex:none;font-size:11px;padding-top:1px}
+  .caption span{font-size:12px;line-height:1.45;color:#f2f5fa}
+
+  .hint{
+    position:absolute;left:50%;bottom:200px;transform:translateX(-50%);
+    font-size:11px;color:#c9d3e4;background:rgba(10,14,21,.78);border:1px solid rgba(255,255,255,.10);
+    padding:5px 10px;border-radius:999px;transition:opacity .3s;white-space:nowrap;
+  }
+  .hint.off{opacity:0}
+
+  .round-over{
+    position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+    background:rgba(4,6,10,.72);backdrop-filter:blur(4px);
+  }
+  .round-over.on{display:flex}
+  .round-over .t{font-size:24px;font-weight:800;letter-spacing:2px}
+  .round-over .s{font-size:11px;color:var(--dim)}
+
+  .banner{
+    position:absolute;left:0;right:0;top:190px;display:flex;flex-direction:column;align-items:center;gap:3px;
+    opacity:0;transition:opacity .18s, transform .18s;transform:scale(.94);
+  }
+  .banner.on{opacity:1;transform:scale(1)}
+  .banner .b1{font-size:19px;font-weight:800;letter-spacing:1px;text-shadow:0 0 18px currentColor}
+  .banner .b2{font-size:11px;color:#dbe4f2;background:rgba(0,0,0,.35);padding:2px 8px;border-radius:999px}
+
+  /* ---------- 右侧面板 ---------- */
+  .panel{width:392px;flex:none;display:flex;flex-direction:column;gap:12px;max-height:640px;overflow:auto;padding-right:4px}
+  .panel::-webkit-scrollbar{width:6px}
+  .panel::-webkit-scrollbar-thumb{background:#2a3140;border-radius:3px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 13px}
+  .card h3{margin:0 0 2px;font-size:12px;letter-spacing:.6px;color:#cfd7e6;display:flex;align-items:center;gap:6px}
+  .card h3 .dot{width:5px;height:5px;border-radius:50%;background:#4f7cff}
+  .card p.sub{margin:0 0 10px;font-size:11px;color:#6f7888}
+
+  .row{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+  .row + .row{margin-top:8px}
+
+  input[type=text]{
+    flex:1;min-width:0;background:#0c0f15;border:1px solid #262d3a;color:var(--txt);
+    border-radius:8px;padding:7px 9px;font-size:12px;outline:none;font-family:inherit;
+  }
+  input[type=text]:focus{border-color:#3d5ea8}
+
+  button{
+    font-family:inherit;font-size:12px;cursor:pointer;border-radius:8px;
+    border:1px solid #2b3342;background:#1a1f2a;color:#dfe5f0;padding:7px 11px;
+    transition:.14s;white-space:nowrap;
+  }
+  button:hover{background:#232a37;border-color:#3a4457}
+  button:active{transform:translateY(1px)}
+  .btn-red{border-color:rgba(255,91,99,.45);background:rgba(255,91,99,.13);color:#ffb9bd}
+  .btn-red:hover{background:rgba(255,91,99,.22)}
+  .btn-blue{border-color:rgba(63,169,255,.45);background:rgba(63,169,255,.13);color:#b3d9ff}
+  .btn-blue:hover{background:rgba(63,169,255,.22)}
+  .btn-ghost{background:transparent}
+  .on{box-shadow:inset 0 0 0 1px rgba(255,255,255,.22)}
+
+  .seg{display:flex;border:1px solid #2b3342;border-radius:8px;overflow:hidden}
+  .seg button{border:0;border-radius:0;padding:6px 12px;background:transparent}
+  .seg button.act{background:#26304a;color:#fff}
+
+  .gifts{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+  .gift{
+    position:relative;text-align:left;padding:8px 8px 7px;line-height:1.25;border-radius:9px;
+    background:#0f131a;border:1px solid #242b38;
+  }
+  .gift:hover{border-color:#3c4a68;background:#151a24}
+  .gift .gn{font-size:12px;font-weight:600;color:#e9eef7}
+  .gift .gc{font-size:10px;color:var(--gold);margin-top:1px}
+  .gift .ge{font-size:10px;color:#7b8496;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gift::after{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;border-radius:9px 0 0 9px;background:#3a4356}
+  .gift[data-tier="1"]::after{background:#6f7b90}
+  .gift[data-tier="2"]::after{background:#4aa8ff}
+  .gift[data-tier="3"]::after{background:#9b7bff}
+  .gift[data-tier="4"]::after{background:#ffc857}
+  .gift[data-tier="5"]::after{background:#ff5b63}
+
+  .quick{display:flex;gap:6px;flex-wrap:wrap}
+  .quick button{padding:6px 10px;font-size:12px}
+
+  .log{max-height:168px;overflow:auto;display:flex;flex-direction:column;gap:4px;font-size:11px}
+  .log::-webkit-scrollbar{width:5px}
+  .log::-webkit-scrollbar-thumb{background:#2a3140;border-radius:3px}
+  .log div{display:flex;gap:6px;align-items:baseline;line-height:1.4}
+  .log time{color:#5d6676;font-variant-numeric:tabular-nums;flex:none;font-size:10px}
+  .log .lb{color:#c8d0de}
+  .log .giftline .g{color:var(--gold);font-weight:600}
+
+  details{border-top:1px solid #212836;padding-top:9px;margin-top:9px}
+  summary{cursor:pointer;font-size:11px;color:#8b93a3;list-style:none;user-select:none}
+  summary::-webkit-details-marker{display:none}
+  summary::before{content:'▸ ';color:#5a6374}
+  details[open] summary::before{content:'▾ '}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:10.5px}
+  th,td{text-align:left;padding:4px 5px;border-bottom:1px solid #1c2230;color:#b9c2d1;vertical-align:top}
+  th{color:#6f7888;font-weight:500}
+  td.c{color:var(--gold);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .principles{margin:8px 0 0;padding-left:16px;font-size:10.5px;color:#8b93a3}
+  .principles li{margin-bottom:3px}
+
+  .foot{font-size:10.5px;color:#5c6575;text-align:center;padding-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ 直播舞台 ============ -->
+  <div class="phone">
+    <canvas id="game"></canvas>
+    <div class="ov">
+      <div class="topbar">
+        <span class="live-dot"></span>
+        <span class="tb-tag">直播中</span>
+        <span class="tb-sp"></span>
+        <span class="tb-stat">在线 <b id="online">1</b> · 本局流水 <b id="coins">0</b> 抖</span>
+      </div>
+
+      <div class="hpwrap">
+        <div class="hprow blue">
+          <span class="nm">蓝</span>
+          <span class="hpbar"><i id="hpBlue" style="width:100%"></i></span>
+          <span class="timer" id="timer">01:30</span>
+        </div>
+        <div class="hprow red">
+          <span class="nm">红</span>
+          <span class="hpbar"><i id="hpRed" style="width:100%"></i></span>
+          <span class="timer" id="kills">0 : 0</span>
+        </div>
+      </div>
+
+      <div class="boards">
+        <div class="board">
+          <h5>打赏榜 <em>本局</em></h5>
+          <ul id="lbPay"></ul>
+        </div>
+        <div class="board free">
+          <h5>免费贡献 <em>TOP3</em></h5>
+          <ul id="lbFree"></ul>
+        </div>
+      </div>
+
+      <div class="dm-layer" id="dmLayer"></div>
+
+      <div class="banner" id="banner"><div class="b1" id="bn1"></div><div class="b2" id="bn2"></div></div>
+
+      <div class="pip">
+        <span class="ring"></span>
+        <canvas id="pet"></canvas>
+        <span class="tag">Boba <i>· 主播</i></span>
+      </div>
+
+      <div class="caption" id="caption"><b id="capWho">Boba</b><span id="capText"></span></div>
+
+      <div class="hint" id="hint">发「1」或「2」加入阵营</div>
+
+      <div class="round-over" id="roundOver">
+        <div class="t" id="roTitle">红方获胜</div>
+        <div class="s" id="roSub">6 秒后自动开下一局</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 控制面板 ============ -->
+  <div class="panel">
+
+    <div class="card">
+      <h3><span class="dot"></span>观众操作台</h3>
+      <p class="sub">模拟直播间：发弹幕加入阵营，点礼物看对应动作</p>
+
+      <div class="row">
+        <input type="text" id="nick" value="路过的猫" maxlength="12" />
+        <div class="seg" id="sideSeg">
+          <button data-side="red" class="act">红方</button>
+          <button data-side="blue">蓝方</button>
+        </div>
+      </div>
+
+      <div class="row">
+        <input type="text" id="dmInput" placeholder="输入弹幕，回车发送…" maxlength="30" />
+        <button id="dmSend">发送</button>
+      </div>
+
+      <div class="row quick">
+        <button data-dm="1" class="btn-red">1 加入红方</button>
+        <button data-dm="2" class="btn-blue">2 加入蓝方</button>
+        <button data-dm="冲">冲</button>
+        <button data-dm="打">打</button>
+        <button data-dm="加油">加油</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3><span class="dot" style="background:var(--gold)"></span>打赏 · 每档都有动作</h3>
+      <p class="sub">点任意礼物 → 画面特效 + 宠物动作 + 语音播报 + 榜单。礼物送给 <b id="giftSideName" style="color:#ffb9bd">红方</b></p>
+      <div class="gifts" id="gifts"></div>
+    </div>
+
+    <div class="card">
+      <h3><span class="dot" style="background:#7fd8a8"></span>事件流</h3>
+      <p class="sub">游戏内核 → 渲染 / 主播反应 的同一份事件</p>
+      <div class="log" id="log"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="autoBtn" class="on">自动演示：开</button>
+        <button id="resetBtn" class="btn-ghost">重开一局</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3><span class="dot" style="background:#9b7bff"></span>动作绑定表</h3>
+      <p class="sub">同一份规则表驱动弹幕与打赏，改表即改玩法</p>
+
+      <details open>
+        <summary>礼物 → 动作（9 档）</summary>
+        <table>
+          <thead><tr><th>抖币</th><th>礼物</th><th>游戏动作</th><th>主播反应</th></tr></thead>
+          <tbody id="ruleGift"></tbody>
+        </table>
+      </details>
+
+      <details>
+        <summary>弹幕 → 动作（免费层）</summary>
+        <table>
+          <tbody>
+            <tr><td>任意弹幕</td><td>加入 / 头像进画面</td></tr>
+            <tr><td><b>1</b> / 红 / 左边</td><td>加入红方</td></tr>
+            <tr><td><b>2</b> / 蓝 / 右边</td><td>加入蓝方</td></tr>
+            <tr><td>冲 / 打 / 上</td><td>全队冲刺 2 秒（1s 冷却）</td></tr>
+            <tr><td>加油</td><td>漂浮字 + 连击数</td></tr>
+            <tr><td>点赞</td><td>每 50 赞触发一次全队小增益</td></tr>
+          </tbody>
+        </table>
+      </details>
+
+      <details>
+        <summary>六条红线</summary>
+        <ol class="principles">
+          <li>打赏买的是确定性与展示位，不是胜负</li>
+          <li>每档动作三件套：画面 + 语音 + 字幕/榜单</li>
+          <li>同一用户连刷合并成 ×N，不叠加 N 次</li>
+          <li>单用户冷却 + 单局上限，防一人单机</li>
+          <li>礼物特效 ≤1.5 秒，不切镜头、不挡战况中心</li>
+          <li>免费玩家永远有可见存在（榜单 / 头像 / 连击）</li>
+        </ol>
+      </details>
+    </div>
+
+    <div class="foot">静态原型 · 模拟数据 · 与直播管线同一套 Cue 契约</div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   0. 基础
+   ========================================================= */
+const W = 360, H = 640;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const gameCv = document.getElementById('game');
+const g = gameCv.getContext('2d');
+gameCv.width = W * DPR; gameCv.height = H * DPR;
+gameCv.style.width = W + 'px'; gameCv.style.height = H + 'px';
+g.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+const petCv = document.getElementById('pet');
+const PET_W = 88, PET_H = 96;
+const pg = petCv.getContext('2d');
+petCv.width = PET_W * DPR; petCv.height = PET_H * DPR;
+petCv.style.width = PET_W + 'px'; petCv.style.height = PET_H + 'px';
+pg.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+const RED  = { key: 'red',  label: '红方', color: '#ff5b63', glow: '#ff9ea4', baseY: 626, spawnY: 592, dir: -1 };
+const BLUE = { key: 'blue', label: '蓝方', color: '#3fa9ff', glow: '#a9d4ff', baseY: 14,  spawnY: 48,  dir: 1  };
+const SIDE = { red: RED, blue: BLUE };
+const otherSide = (s) => (s === 'red' ? 'blue' : 'red');
+
+const KIND = {
+  normal:  { hp: 55,  dmg: 6,  speed: 24, r: 7,    label: '小兵' },
+  clone:   { hp: 30,  dmg: 9,  speed: 29, r: 6.5,  label: '分身' },
+  chariot: { hp: 110, dmg: 16, speed: 31, r: 9.5,  label: '战车' },
+  hero:    { hp: 650, dmg: 34, speed: 17, r: 17,   label: '英雄' },
+};
+
+const BASE_HP = 600;
+const ROUND_MS = 90_000;
+const MAX_UNITS = 260;
+/** 车道制：双方在同一列正面对推，避免不同列的单位互相穿过 */
+const LANES = 6;
+const LANE_W = W / LANES;
+const laneX = (i) => LANE_W * i + LANE_W / 2;
+
+/* =========================================================
+   1. 礼物 → 动作（唯一真相源，面板与规则表都从这里渲染）
+   ========================================================= */
+const GIFTS = [
+  { id:'fairy',   name:'仙女棒',   coins:1,    tier:1, effect:'加速 5 秒',     action:'haste',
+    line:'谢谢 {u} 的仙女棒，冲快点！' },
+  { id:'pill',    name:'能力药丸', coins:10,   tier:2, effect:'前排回血',       action:'heal',
+    line:'{u} 送来了能力药丸，前排回血！' },
+  { id:'mirror',  name:'魔法镜',   coins:19,   tier:2, effect:'镜像分身 ×3',    action:'clone',
+    line:'{u} 的魔法镜，给我分身！' },
+  { id:'donut',   name:'甜甜圈',   coins:52,   tier:3, effect:'召唤战车 ×5',    action:'chariot',
+    line:'{u} 的甜甜圈，五辆战车出战！' },
+  { id:'battery', name:'能量电池', coins:99,   tier:3, effect:'全军攻击 ×2',    action:'buff',
+    line:'{u} 的电池充满了，全军攻击翻倍！' },
+  { id:'bomb',    name:'恶魔炸弹', coins:199,  tier:4, effect:'敌方范围伤害',   action:'aoe',
+    line:'{u} 扔下恶魔炸弹，对面炸开花！' },
+  { id:'airdrop', name:'神秘空投', coins:520,  tier:4, effect:'召唤英雄单位',   action:'hero',
+    line:'{u} 召唤英雄！大家跟着英雄冲！' },
+  { id:'super',   name:'超级空投', coins:888,  tier:5, effect:'清空敌方单位',   action:'clear',
+    line:'感谢 {u} 的超级空投，全场清空！' },
+  { id:'jet',     name:'超能喷射', coins:1200, tier:5, effect:'下局开局增益',   action:'next',
+    line:'本局赞助人 {u}！下一局开局加成！' },
+];
+const GIFT_BY_ID = Object.fromEntries(GIFTS.map(x => [x.id, x]));
+
+const COMMENT_RULES = [
+  { match:['1','红','红方','左边'], action:'join', side:'red' },
+  { match:['2','蓝','蓝方','右边'], action:'join', side:'blue' },
+  { match:['冲','打','上','攻击'],  action:'rush' },
+  { match:['加油','牛','厉害'],     action:'cheer' },
+];
+const JOIN_WORDS = ['1','2','红','蓝','红方','蓝方','左边','右边'];
+
+/* =========================================================
+   2. 状态
+   ========================================================= */
+let units = [];
+let fx = [];
+let base = { red: BASE_HP, blue: BASE_HP };
+let roundEndsAt = 0;
+let running = true;
+let coinsThisRound = 0;
+let kills = { red: 0, blue: 0 };
+let seq = 0;
+let mul = { red: newBuff(), blue: newBuff() };
+let pendingBonus = { red: 1, blue: 1 };
+let bonus = { red: 1, blue: 1 };
+let shake = 0;
+let lastTs = 0;
+let autoOn = true;
+let mySide = 'red';
+let joined = false;
+let rushCd = { red: 0, blue: 0 };
+let roundResetTimer = 0;
+
+function newBuff(){ return { dmg:1, speed:1, dmgUntil:0, speedUntil:0 }; }
+
+const users = new Map();     // name -> { coins, free, side, lastGiftAt, combo }
+
+/* =========================================================
+   3. 渲染辅助
+   ========================================================= */
+const rand = (a,b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+
+const NAMES = ['路过的猫','小满','阿飞','橘子汽水','夜航船','十九','肥波','白桃乌龙','石斑鱼','momo',
+  '不吃香菜','半糖去冰','大橘为重','晚风','南栀','阿柴','西瓜太郎','一只鹅','云朵','咸鱼翻身'];
+
+/* =========================================================
+   4. 游戏内核（纯逻辑：不碰 DOM）
+   ========================================================= */
+function spawn(sideKey, opts = {}) {
+  const S = SIDE[sideKey];
+  const kind = opts.kind || 'normal';
+  const k = KIND[kind];
+  const maxHp = Math.round(k.hp * (opts.hpMul || 1));
+  const lane = opts.lane != null ? opts.lane : Math.floor(Math.random() * LANES);
+  const u = {
+    id: ++seq,
+    side: sideKey,
+    kind,
+    lane,
+    x: laneX(lane) + rand(-8, 8),
+    y: opts.y != null ? opts.y : S.spawnY + rand(-8, 8),
+    hp: maxHp, maxHp,
+    dmg: k.dmg,
+    speed: k.speed * rand(0.9, 1.12),
+    r: k.r,
+    name: opts.name || '',
+    born: performance.now(),
+    engaged: false,
+  };
+  units.push(u);
+  if (units.length > MAX_UNITS) {
+    const idx = units.findIndex(x => x.kind === 'normal');
+    if (idx >= 0) units.splice(idx, 1);
+  }
+  return u;
+}
+
+function damageUnit(u, amount) {
+  u.hp -= amount;
+  if (u.hp <= 0 && !u.dead) {
+    u.dead = true;
+    addFx({ type:'burst', x:u.x, y:u.y, color: SIDE[u.side].glow, t:0, dur:420, r0:2, r1:u.r*2.6 });
+  }
+}
+
+function step(dt, now) {
+  if (!running) return;
+  const msLeft = roundEndsAt - now;
+  if (msLeft <= 0) { endRound('time'); return; }
+
+  for (const key of ['red','blue']) {
+    const b = mul[key];
+    if (b.dmgUntil && now > b.dmgUntil) { b.dmg = 1; b.dmgUntil = 0; }
+    if (b.speedUntil && now > b.speedUntil) { b.speed = 1; b.speedUntil = 0; }
+  }
+
+  for (const u of units) {
+    if (u.dead) continue;
+
+    // 1) 同车道最近敌人 → 交战
+    let target = null, best = Infinity;
+    for (const e of units) {
+      if (e.dead || e.side === u.side) continue;
+      if (Math.abs(e.x - u.x) > LANE_W * 0.5) continue;
+      const dx = e.x - u.x, dy = e.y - u.y;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < best) { best = d2; target = e; }
+    }
+    const reach = u.r + (target ? target.r : 0) + 3;
+    u.engaged = false;
+
+    if (target && best <= reach * reach) {
+      u.engaged = true;
+      damageUnit(target, u.dmg * mul[u.side].dmg * bonus[u.side] * dt);
+      continue;
+    }
+
+    // 2) 前方友军挡路 → 排队，形成阵型而不是叠在一起
+    let blocked = false;
+    for (const f of units) {
+      if (f === u || f.dead || f.side !== u.side) continue;
+      if (Math.abs(f.x - u.x) > LANE_W * 0.4) continue;
+      const ahead = SIDE[u.side].dir < 0 ? f.y < u.y : f.y > u.y;
+      if (ahead && Math.abs(f.y - u.y) < u.r + f.r + 1) { blocked = true; break; }
+    }
+    if (blocked) { u.engaged = true; continue; }
+
+    // 3) 推进
+    u.y += SIDE[u.side].dir * u.speed * mul[u.side].speed * dt;
+    if ((u.side === 'red' && u.y <= BLUE.baseY + 10) || (u.side === 'blue' && u.y >= RED.baseY - 10)) {
+      const enemy = otherSide(u.side);
+      base[enemy] = Math.max(0, base[enemy] - u.dmg * 4.2);
+      kills[u.side] += 1;
+      addFx({ type:'burst', x:u.x, y:u.side === 'red' ? BLUE.baseY + 12 : RED.baseY - 12,
+              color: SIDE[u.side].glow, t:0, dur:500, r0:3, r1:26 });
+      u.dead = true;
+      if (base[enemy] <= 0) { endRound('base', u.side); return; }
+    }
+  }
+
+  units = units.filter(u => !u.dead);
+}
+
+function endRound(reason, winner) {
+  if (!running) return;
+  running = false;
+  let w = winner;
+  if (!w) {
+    if (base.red === base.blue) w = 'draw';
+    else w = base.red > base.blue ? 'red' : 'blue';
+  }
+  const el = document.getElementById('roundOver');
+  document.getElementById('roTitle').textContent =
+    w === 'draw' ? '平局' : (w === 'red' ? '红方获胜' : '蓝方获胜');
+  document.getElementById('roSub').textContent = '6 秒后自动开下一局';
+  el.classList.add('on');
+  petDo(w === 'red' ? 'spin' : 'shy');
+  say(w === 'draw' ? '打平了，再来一局！' : (w === 'red' ? '红方赢啦！' : '蓝方赢了，我们再来！'), 5000);
+  pushLog('round', `本局结束 · 红 ${base.red} : 蓝 ${base.blue}`);
+  roundResetTimer = setTimeout(() => { el.classList.remove('on'); resetRound(); }, 6000);
+}
+
+function resetRound() {
+  units = [];
+  fx = [];
+  base = { red: BASE_HP, blue: BASE_HP };
+  kills = { red: 0, blue: 0 };
+  coinsThisRound = 0;
+  bonus = { ...pendingBonus };
+  pendingBonus = { red: 1, blue: 1 };
+  mul = { red: newBuff(), blue: newBuff() };
+  roundEndsAt = performance.now() + ROUND_MS;
+  running = true;
+  // 开局就在中场铺开，第一眼就能看到战况，不用等 20 秒行军
+  for (let i = 0; i < 18; i++) {
+    spawn('red', { lane: i % LANES, y: rand(300, 480) });
+    spawn('blue', { lane: (i + 3) % LANES, y: rand(160, 340) });
+  }
+  pushLog('round', '新一局开始');
+  syncBoards();
+}
+
+/* =========================================================
+   5. 礼物效果
+   ========================================================= */
+function frontUnits(sideKey, n) {
+  const arr = units.filter(u => u.side === sideKey && !u.dead);
+  arr.sort((a,b) => SIDE[sideKey].dir < 0 ? a.y - b.y : b.y - a.y);
+  return arr.slice(0, n);
+}
+
+function applyGift(gift, user, sideKey) {
+  const S = SIDE[sideKey];
+  const E = SIDE[otherSide(sideKey)];
+
+  switch (gift.action) {
+    case 'haste': {
+      const b = mul[sideKey];
+      b.speed = 1.9; b.speedUntil = performance.now() + 5000;
+      frontUnits(sideKey, 10).forEach(u => addFx({ type:'trail', unit:u, t:0, dur:5000, color:S.glow }));
+      break;
+    }
+    case 'heal': {
+      frontUnits(sideKey, 8).forEach(u => {
+        u.hp = Math.min(u.maxHp, u.hp + u.maxHp * 0.7);
+        addFx({ type:'ring', x:u.x, y:u.y, color:'#5ef0a8', t:0, dur:520, r0:4, r1:22 });
+      });
+      break;
+    }
+    case 'clone': {
+      const src = frontUnits(sideKey, 1)[0];
+      const baseLane = src ? src.lane : Math.floor(LANES / 2);
+      for (let i = 0; i < 3; i++) {
+        spawn(sideKey, { kind:'clone', name:user, lane: clamp(baseLane + i - 1, 0, LANES - 1) });
+      }
+      break;
+    }
+    case 'chariot': {
+      for (let i = 0; i < 5; i++) spawn(sideKey, { kind:'chariot', name:user, lane: i % LANES });
+      break;
+    }
+    case 'buff': {
+      const b = mul[sideKey];
+      b.dmg = 2; b.dmgUntil = performance.now() + 10_000;
+      addFx({ type:'flash', color:'rgba(120,180,255,.20)', t:0, dur:600 });
+      break;
+    }
+    case 'aoe': {
+      const targets = units.filter(u => u.side !== sideKey && !u.dead);
+      if (!targets.length) { addFx({ type:'flash', color:'rgba(255,179,71,.25)', t:0, dur:500 }); break; }
+      const cy = sideKey === 'red'
+        ? Math.min(...targets.map(t => t.y), 300)
+        : Math.max(...targets.map(t => t.y), 340);
+      const cx = W / 2;
+      addFx({ type:'ring', x:cx, y:cy, color:'#ffb347', t:0, dur:700, r0:10, r1:150, thick:10 });
+      targets.forEach(t => { if (Math.hypot(t.x-cx, t.y-cy) < 150) damageUnit(t, 70); });
+      shake = Math.max(shake, 10);
+      break;
+    }
+    case 'hero': {
+      spawn(sideKey, { kind:'hero', name:user, lane: Math.floor(LANES / 2) });
+      showBanner(user + ' 召唤了英雄', gift.name + ' · ' + gift.coins + ' 抖', '#ffc857');
+      break;
+    }
+    case 'clear': {
+      const targets = units.filter(u => u.side !== sideKey && !u.dead);
+      targets.forEach(t => {
+        addFx({ type:'burst', x:t.x, y:t.y, color:'#fff2b0', t:0, dur:520, r0:2, r1:24 });
+        t.dead = true;
+      });
+      addFx({ type:'flash', color:'rgba(255,245,200,.55)', t:0, dur:420 });
+      shake = Math.max(shake, 14);
+      showBanner('全场清空', user + ' · ' + gift.name, '#ffe9a3');
+      break;
+    }
+    case 'next': {
+      pendingBonus[sideKey] = 1.3;
+      showBanner('本局赞助人 · ' + user, '下一局开局攻击 ×1.3', '#ffc857');
+      break;
+    }
+  }
+}
+
+/* =========================================================
+   6. 特效
+   ========================================================= */
+function addFx(f){ fx.push(f); }
+
+function drawFx(dt) {
+  for (const f of fx) {
+    f.t += dt * 1000;
+    const p = clamp(f.t / f.dur, 0, 1);
+    if (f.type === 'ring' || f.type === 'burst') {
+      g.beginPath();
+      g.arc(f.x, f.y, f.r0 + (f.r1 - f.r0) * p, 0, Math.PI * 2);
+      g.strokeStyle = f.color;
+      g.globalAlpha = 1 - p;
+      g.lineWidth = f.thick || 3;
+      g.stroke();
+      g.globalAlpha = 1;
+    } else if (f.type === 'flash') {
+      g.globalAlpha = (1 - p) * 0.9;
+      g.fillStyle = f.color;
+      g.fillRect(0, 0, W, H);
+      g.globalAlpha = 1;
+    }
+  }
+  fx = fx.filter(f => f.t < f.dur);
+}
+
+/* =========================================================
+   7. 绘制
+   ========================================================= */
+function drawBg() {
+  const grd = g.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, '#0b1524');
+  grd.addColorStop(0.5, '#0a0d15');
+  grd.addColorStop(1, '#1a0d12');
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+
+  g.strokeStyle = 'rgba(255,255,255,.045)';
+  g.setLineDash([6, 10]);
+  g.beginPath(); g.moveTo(0, H/2); g.lineTo(W, H/2); g.stroke();
+  g.setLineDash([]);
+
+  // 基地
+  const rg = g.createLinearGradient(0, H-70, 0, H);
+  rg.addColorStop(0, 'rgba(255,91,99,0)'); rg.addColorStop(1, 'rgba(255,91,99,.20)');
+  g.fillStyle = rg; g.fillRect(0, H-70, W, 70);
+  const bg = g.createLinearGradient(0, 0, 0, 70);
+  bg.addColorStop(0, 'rgba(63,169,255,.20)'); bg.addColorStop(1, 'rgba(63,169,255,0)');
+  g.fillStyle = bg; g.fillRect(0, 0, W, 70);
+
+  g.fillStyle = 'rgba(255,91,99,.55)';
+  g.fillRect(0, H-6, W, 6);
+  g.fillStyle = 'rgba(63,169,255,.55)';
+  g.fillRect(0, 0, W, 6);
+}
+
+function drawUnits(now, dt) {
+  const showNames = units.length <= 150;
+  for (const u of units) {
+    const S = SIDE[u.side];
+    const pulse = u.kind === 'hero' ? 1 + Math.sin(now / 180) * 0.07 : 1;
+    const r = u.r * pulse;
+
+    if (u.kind === 'hero') {
+      g.beginPath(); g.arc(u.x, u.y, r + 6, 0, Math.PI*2);
+      g.strokeStyle = 'rgba(255,200,87,.75)'; g.lineWidth = 2; g.stroke();
+    }
+    g.beginPath();
+    g.arc(u.x, u.y, r, 0, Math.PI * 2);
+    g.fillStyle = u.kind === 'hero' ? '#ffd479' : (u.kind === 'chariot' ? S.color : S.color);
+    g.globalAlpha = u.kind === 'normal' ? 0.92 : 1;
+    g.fill();
+    g.globalAlpha = 1;
+    g.lineWidth = 1.4;
+    g.strokeStyle = u.kind === 'hero' ? '#fff2c9' : S.glow;
+    g.stroke();
+
+    // 血条
+    if (u.hp < u.maxHp) {
+      const w = r * 2;
+      g.fillStyle = 'rgba(0,0,0,.55)';
+      g.fillRect(u.x - w/2, u.y - r - 4.5, w, 2.4);
+      g.fillStyle = u.side === 'red' ? '#ff7a80' : '#63bdff';
+      g.fillRect(u.x - w/2, u.y - r - 4.5, w * (u.hp/u.maxHp), 2.4);
+    }
+
+    // 头像首字
+    if (u.name && (u.kind !== 'normal' || showNames)) {
+      g.fillStyle = '#0a0d13';
+      g.font = `${u.kind === 'hero' ? 11 : 7.5}px -apple-system,"PingFang SC",sans-serif`;
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(u.name.slice(0, 1), u.x, u.y + 0.5);
+    }
+  }
+}
+
+function render(now, dt) {
+  g.clearRect(0, 0, W, H);
+  g.save();
+  if (shake > 0) {
+    g.translate(rand(-shake, shake), rand(-shake, shake));
+    shake *= 0.86;
+    if (shake < 0.4) shake = 0;
+  }
+  drawBg();
+  drawUnits(now, dt);
+  drawFx(dt);
+  g.restore();
+}
+
+/* =========================================================
+   8. 宠物（精灵图）
+   ========================================================= */
+const PET = { img: new Image(), fw: 192, fh: 208, scale: 0.46 };
+PET.img.src = 'assets/boba-spritesheet.webp';
+
+const PET_ACTIONS = {
+  idle: { row: 0, n: 7, fps: 5,   dur: 1e9 },
+  hop:  { row: 0, n: 7, fps: 14,  dur: 800 },
+  wave: { row: 3, n: 4, fps: 8,   dur: 1400 },
+  look: { row: 7, n: 6, fps: 8,   dur: 1200 },
+  spin: { row: 0, n: 7, fps: 18,  dur: 1000 },
+  shy:  { row: 6, n: 6, fps: 4,   dur: 1600 },
+};
+let petAnim = { key: 'idle', start: 0 };
+
+function petDo(key) {
+  if (!PET_ACTIONS[key]) return;
+  petAnim = { key, start: performance.now() };
+}
+
+function drawPet(now) {
+  const cfg = PET_ACTIONS[petAnim.key] || PET_ACTIONS.idle;
+  const elapsed = now - petAnim.start;
+  if (elapsed > cfg.dur && petAnim.key !== 'idle') { petAnim = { key: 'idle', start: now }; }
+  const cur = PET_ACTIONS[petAnim.key];
+  const frame = Math.floor((now - petAnim.start) / 1000 * cur.fps) % cur.n;
+
+  const w = PET.fw * PET.scale, h = PET.fh * PET.scale;
+  const x = (PET_W - w) / 2;
+  let y = (PET_H - h) / 2 + 4;
+
+  if (petAnim.key === 'hop') y -= Math.abs(Math.sin((now - petAnim.start) / 800 * Math.PI * 2)) * 14;
+  if (petAnim.key === 'shy') y += 3;
+
+  pg.clearRect(0, 0, PET_W, PET_H);
+  if (!PET.img.complete || !PET.img.naturalWidth) return;
+
+  const img = PET.img;
+  const cols = 8;
+  const sx = (frame % cur.n) * PET.fw;
+  const sy = cur.row * PET.fh;
+
+  pg.save();
+  if (petAnim.key === 'spin') {
+    const p = (now - petAnim.start) / 1000;
+    const ratio = 0.45 + 0.55 * Math.abs(Math.cos(p * Math.PI));
+    pg.translate(PET_W/2, PET_H/2);
+    pg.scale(Math.max(0.18, ratio), 1);
+    pg.translate(-PET_W/2, -PET_H/2);
+  }
+  pg.drawImage(img, sx, sy, PET.fw, PET.fh, x, y, w, h);
+  pg.restore();
+}
+
+/* =========================================================
+   9. UI：字幕 / 弹幕 / 榜单 / 日志
+   ========================================================= */
+const capEl = document.getElementById('caption');
+const capText = document.getElementById('capText');
+let capTimer = 0;
+let lastSpeakAt = 0;
+
+function say(text, dur = 4200, force = false) {
+  const now = performance.now();
+  // 主播频率闸：1.2 秒内不重复上屏，避免 TTS 排队；大额打赏可抢占
+  if (!force && now - lastSpeakAt < 1200) return;
+  lastSpeakAt = now;
+  capText.textContent = text;
+  capEl.classList.add('on');
+  clearTimeout(capTimer);
+  capTimer = setTimeout(() => capEl.classList.remove('on'), dur);
+}
+
+const dmLayer = document.getElementById('dmLayer');
+let dmLane = 0;
+function pushDanmaku(text, who, side) {
+  const el = document.createElement('div');
+  el.className = 'dm ' + (side || '');
+  el.innerHTML = `<span class="who">${escapeHtml(who)}:</span>${escapeHtml(text)}`;
+  el.style.top = (dmLane % 5) * 26 + 'px';
+  dmLane++;
+  el.style.animationDuration = (5.2 + Math.random() * 2.4) + 's';
+  dmLayer.appendChild(el);
+  el.addEventListener('animationend', () => el.remove());
+  setTimeout(() => el.remove(), 9000);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+const lbPayEl = document.getElementById('lbPay');
+const lbFreeEl = document.getElementById('lbFree');
+
+function syncBoards() {
+  const rows = [...users.entries()]
+    .map(([name, v]) => ({ name, ...v }))
+    .filter(u => u.coins > 0 || u.free > 0);
+
+  const pay = rows.filter(u => u.coins > 0).sort((a,b) => b.coins - a.coins).slice(0, 4);
+  const free = rows.filter(u => u.free > 0).sort((a,b) => b.free - a.free).slice(0, 3);
+
+  lbPayEl.innerHTML = pay.length
+    ? pay.map((u,i) => `<li class="${u.side}"><span class="rk">${i+1}</span><span class="nm">${escapeHtml(u.name)}</span><span class="vl">${u.coins}</span></li>`).join('')
+    : '<li><span class="nm" style="color:#5d6676">还没有人打赏</span></li>';
+
+  lbFreeEl.innerHTML = free.length
+    ? free.map((u,i) => `<li class="${u.side}"><span class="rk">${i+1}</span><span class="nm">${escapeHtml(u.name)}</span><span class="vl">${u.free}</span></li>`).join('')
+    : '<li><span class="nm" style="color:#5d6676">发弹幕就算贡献</span></li>';
+}
+
+function userOf(name) {
+  if (!users.has(name)) users.set(name, { coins:0, free:0, side:null, lastGiftAt:0, combo:0 });
+  return users.get(name);
+}
+
+const logEl = document.getElementById('log');
+function pushLog(kind, text, giftName) {
+  const d = document.createElement('div');
+  if (kind === 'gift') d.className = 'giftline';
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2,'0');
+  const mm = String(t.getMinutes()).padStart(2,'0');
+  const ss = String(t.getSeconds()).padStart(2,'0');
+  d.innerHTML = `<time>${hh}:${mm}:${ss}</time><span class="lb">${giftName ? `<span class="g">${escapeHtml(giftName)}</span> · ` : ''}${escapeHtml(text)}</span>`;
+  logEl.appendChild(d);
+  while (logEl.children.length > 40) logEl.removeChild(logEl.firstChild);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+const bannerEl = document.getElementById('banner');
+const bn1 = document.getElementById('bn1');
+const bn2 = document.getElementById('bn2');
+let bannerTimer = 0;
+function showBanner(title, sub, color) {
+  bn1.textContent = title; bn1.style.color = color || '#fff';
+  bn2.textContent = sub || '';
+  bannerEl.classList.add('on');
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => bannerEl.classList.remove('on'), 1600);
+}
+
+/* =========================================================
+   10. 输入处理：弹幕 / 礼物
+   ========================================================= */
+function handleComment(name, text) {
+  const t = String(text).trim();
+  if (!t) return;
+  const u = userOf(name);
+  const side = u.side || mySide;
+  pushDanmaku(t, name, side);
+
+  const rule = COMMENT_RULES.find(r => r.match.includes(t));
+  let action = 'none';
+  if (rule) action = rule.action;
+
+  if (action === 'join') {
+    u.side = rule.side;
+    u.free += 1;
+    spawn(rule.side, { name, kind:'normal' });
+    pushLog('comment', `${name} 加入${SIDE[rule.side].label}`, '弹幕');
+    if (!joined && name === myName()) { joined = true; document.getElementById('hint').classList.add('off'); }
+    return;
+  }
+
+  if (action === 'rush') {
+    const now = performance.now();
+    if (now - (rushCd[side] || 0) < 1000) return;  // 全局限流
+    rushCd[side] = now;
+    u.free += 1;
+    frontUnits(side, 12).forEach(x => {
+      x.y += SIDE[side].dir * 18;
+      addFx({ type:'burst', x:x.x, y:x.y, color: SIDE[side].glow, t:0, dur:260, r0:1, r1:9 });
+    });
+    return;
+  }
+
+  if (action === 'cheer') {
+    u.free += 1;
+    u.combo = (u.combo || 0) + 1;
+    if (u.combo >= 3) showBanner(name + ' 连击 ' + u.combo, '加油', '#7fd8a8');
+    return;
+  }
+
+  // 未命中规则：首次发言自动加入当前阵营（"任意弹幕都能参与"）
+  if (!u.side) {
+    u.side = mySide;
+    u.free += 1;
+    spawn(mySide, { name });
+    pushLog('comment', `${name} 发了弹幕，自动加入${SIDE[mySide].label}`, '弹幕');
+  } else {
+    u.free += 1;
+  }
+  syncBoards();
+}
+
+function handleGift(name, giftId, sideKey) {
+  const gift = GIFT_BY_ID[giftId];
+  if (!gift) return;
+  const u = userOf(name);
+  const now = performance.now();
+
+  // 连刷合并：2.5 秒内同礼物合并成 ×N
+  const combo = now - u.lastGiftAt < 2500 && u.lastGiftId === giftId ? (u.combo || 1) + 1 : 1;
+  u.lastGiftAt = now; u.lastGiftId = giftId; u.combo = combo;
+
+  u.coins += gift.coins * combo;
+  u.side = sideKey;
+  coinsThisRound += gift.coins * combo;
+
+  applyGift(gift, name, sideKey);
+
+  const line = gift.line.replace('{u}', name);
+  say(combo > 1 ? `${line}（×${combo}）` : line, 5200, gift.coins >= 99);
+
+  // 主播动作映射
+  if (gift.coins >= 520) petDo('spin');
+  else if (gift.coins >= 99) petDo('wave');
+  else petDo('hop');
+
+  if (gift.coins >= 199) {
+    showBanner(name + ' · ' + gift.name, '×' + combo + ' · ' + (gift.coins * combo) + ' 抖', '#ffc857');
+  } else {
+    pushDanmaku(gift.name + ' ×' + combo, name, sideKey);
+  }
+
+  pushLog('gift', `${name} → ${gift.name} ×${combo} · ${gift.effect}`, gift.name);
+  syncBoards();
+}
+
+function myName() { return document.getElementById('nick').value.trim() || '匿名观众'; }
+
+/* =========================================================
+   11. 面板绑定
+   ========================================================= */
+const giftsEl = document.getElementById('gifts');
+giftsEl.innerHTML = GIFTS.map(gt => `
+  <button class="gift" data-id="${gt.id}" data-tier="${gt.tier}">
+    <div class="gn">${gt.name}</div>
+    <div class="gc">${gt.coins} 抖</div>
+    <div class="ge">${gt.effect}</div>
+  </button>
+`).join('');
+
+giftsEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('.gift');
+  if (!btn) return;
+  handleGift(myName(), btn.dataset.id, mySide);
+});
+
+document.getElementById('ruleGift').innerHTML = GIFTS.map(gt => `
+  <tr><td class="c">${gt.coins}</td><td>${gt.name}</td><td>${gt.effect}</td><td>${gt.line.replace('{u}','X')}</td></tr>
+`).join('');
+
+const sideSeg = document.getElementById('sideSeg');
+sideSeg.addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  mySide = b.dataset.side;
+  [...sideSeg.children].forEach(x => x.classList.toggle('act', x === b));
+  const nm = document.getElementById('giftSideName');
+  nm.textContent = SIDE[mySide].label;
+  nm.style.color = SIDE[mySide].glow;
+  const u = userOf(myName());
+  u.side = mySide;
+});
+
+function sendDm(text) {
+  const name = myName();
+  const u = userOf(name);
+  if (!u.side) u.side = mySide;
+  handleComment(name, text);
+  syncBoards();
+}
+
+document.getElementById('dmSend').addEventListener('click', () => {
+  const inp = document.getElementById('dmInput');
+  if (!inp.value.trim()) return;
+  sendDm(inp.value);
+  inp.value = '';
+});
+document.getElementById('dmInput').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const inp = e.currentTarget;
+  if (!inp.value.trim()) return;
+  sendDm(inp.value);
+  inp.value = '';
+});
+document.querySelectorAll('.quick button').forEach(b => {
+  b.addEventListener('click', () => {
+    if (b.dataset.dm === '1') { mySide = 'red'; document.querySelector('[data-side="red"]').click(); }
+    if (b.dataset.dm === '2') { mySide = 'blue'; document.querySelector('[data-side="blue"]').click(); }
+    sendDm(b.dataset.dm);
+  });
+});
+
+document.getElementById('autoBtn').addEventListener('click', (e) => {
+  autoOn = !autoOn;
+  e.currentTarget.textContent = '自动演示：' + (autoOn ? '开' : '关');
+  e.currentTarget.classList.toggle('on', autoOn);
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  document.getElementById('roundOver').classList.remove('on');
+  clearTimeout(roundResetTimer);
+  resetRound();
+});
+
+/* =========================================================
+   12. 自动演示（模拟直播间人气）
+   ========================================================= */
+let onlineCount = 1;
+setInterval(() => {
+  if (!autoOn || !running) return;
+  const name = pick(NAMES);
+  const roll = Math.random();
+  if (roll < 0.68) {
+    const wantSide = Math.random() < 0.5 ? 'red' : 'blue';
+    const txt = wantSide === 'red' ? pick(['1','红','红方']) : pick(['2','蓝','蓝方']);
+    const u = userOf(name);
+    if (u.side) handleComment(name, pick(['冲','打','加油','加油','冲']));
+    else handleComment(name, txt);
+  } else if (roll < 0.9) {
+    const cheap = pick(['fairy','fairy','pill','mirror','donut']);
+    handleGift(name, cheap, Math.random() < 0.5 ? 'red' : 'blue');
+  } else {
+    handleGift(name, pick(['battery','bomb','airdrop','super','jet']), Math.random() < 0.5 ? 'red' : 'blue');
+  }
+  syncBoards();
+}, 1250);
+
+setInterval(() => {
+  onlineCount = clamp(onlineCount + Math.round(rand(-3, 6)), 1, 9999);
+  document.getElementById('online').textContent = onlineCount;
+}, 1800);
+
+/* 战况播报（主播空闲垫场） */
+setInterval(() => {
+  if (!running) return;
+  const lead = base.red === base.blue ? 'draw' : (base.red > base.blue ? 'red' : 'blue');
+  if (Math.random() < 0.55) {
+    if (lead === 'draw') say('两边势均力敌，谁再来一发？');
+    else say(`${SIDE[lead].label}领先了！${SIDE[otherSide(lead)].label}快顶住！`);
+  }
+}, 7000);
+
+/* =========================================================
+   13. 主循环
+   ========================================================= */
+function fmtTime(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return String(Math.floor(s / 60)).padStart(2,'0') + ':' + String(s % 60).padStart(2,'0');
+}
+
+function syncHud(now) {
+  document.getElementById('hpRed').style.width = (base.red / BASE_HP * 100) + '%';
+  document.getElementById('hpBlue').style.width = (base.blue / BASE_HP * 100) + '%';
+  document.getElementById('timer').textContent = running ? fmtTime(roundEndsAt - now) : '--:--';
+  document.getElementById('kills').textContent = kills.red + ' : ' + kills.blue;
+  document.getElementById('coins').textContent = coinsThisRound;
+}
+
+function loop(ts) {
+  const now = ts || performance.now();
+  const dt = Math.min(0.05, (now - lastTs) / 1000 || 0.016);
+  lastTs = now;
+
+  step(dt, now);
+  render(now, dt);
+  drawPet(now);
+  syncHud(now);
+
+  requestAnimationFrame(loop);
+}
+
+/* =========================================================
+   14. 启动
+   ========================================================= */
+function boot() {
+  resetRound();
+  // 开局先塞一点人气，第一眼不空
+  ['路过的猫','小满','阿飞','橘子汽水'].forEach((n, i) => {
+    const s = i % 2 ? 'blue' : 'red';
+    const u = userOf(n); u.side = s; u.free = 3 + i;
+    spawn(s, { name:n });
+  });
+  syncBoards();
+  document.getElementById('hint').classList.remove('off');
+  setTimeout(() => document.getElementById('hint').classList.add('off'), 14000);
+  setTimeout(() => say('欢迎大家！发 1 加红方，发 2 加蓝方，礼物有惊喜～', 6000), 900);
+  requestAnimationFrame(loop);
+}
+
+PET.img.addEventListener('load', () => { drawPet(performance.now()); });
+boot();
+</script>
+</body>
+</html>
