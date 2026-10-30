@@ -24,18 +24,6 @@ importers:
 
   apps/desktop:
     dependencies:
-      '@element-plus/icons-vue':
-        specifier: ^2.3.0
-        version: 2.3.2(vue@3.5.40(typescript@5.9.3))
-      '@yan-zhi/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@yan-zhi/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
-      '@yan-zhi/ui':
-        specifier: workspace:*
-        version: link:../../packages/ui
       adm-zip:
         specifier: ^0.5.16
         version: 0.5.18
@@ -45,21 +33,9 @@ importers:
       electron-chrome-web-store:
         specifier: 0.13.0
         version: 0.13.0(supports-color@8.1.1)
-      element-plus:
-        specifier: ^2.8.0
-        version: 2.14.3(vue@3.5.40(typescript@5.9.3))
-      pinia:
-        specifier: ^2.2.0
-        version: 2.3.1(typescript@5.9.3)(vue@3.5.40(typescript@5.9.3))
       sqlite-vec:
         specifier: ^0.1.9
         version: 0.1.9
-      vue:
-        specifier: ^3.5.0
-        version: 3.5.40(typescript@5.9.3)
-      vue-router:
-        specifier: ^4.4.0
-        version: 4.6.4(vue@3.5.40(typescript@5.9.3))
     devDependencies:
       '@electron/fuses':
         specifier: '1'
@@ -67,12 +43,24 @@ importers:
       '@electron/rebuild':
         specifier: ^4.2.0
         version: 4.2.0(supports-color@8.1.1)
+      '@element-plus/icons-vue':
+        specifier: ^2.3.0
+        version: 2.3.2(vue@3.5.40(typescript@5.9.3))
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
       '@vitejs/plugin-vue':
         specifier: ^5.1.0
         version: 5.2.4(vite@5.4.21(@types/node@24.19.2))(vue@3.5.40(typescript@5.9.3))
+      '@yan-zhi/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@yan-zhi/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@yan-zhi/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4
@@ -82,15 +70,27 @@ importers:
       electron-builder:
         specifier: ^25.0.0
         version: 25.1.8(bluebird@3.7.2)(electron-builder-squirrel-windows@25.1.8)(supports-color@8.1.1)
+      element-plus:
+        specifier: ^2.8.0
+        version: 2.14.3(vue@3.5.40(typescript@5.9.3))
       esbuild:
         specifier: ^0.25.12
         version: 0.25.12
+      pinia:
+        specifier: ^2.2.0
+        version: 2.3.1(typescript@5.9.3)(vue@3.5.40(typescript@5.9.3))
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
       vite:
         specifier: ^5.4.0
         version: 5.4.21(@types/node@24.19.2)
+      vue:
+        specifier: ^3.5.0
+        version: 3.5.40(typescript@5.9.3)
+      vue-router:
+        specifier: ^4.4.0
+        version: 4.6.4(vue@3.5.40(typescript@5.9.3))
       vue-tsc:
         specifier: ^2.1.0
         version: 2.2.12(typescript@5.9.3)
@@ -7058,7 +7058,7 @@ snapshots:
 
   archiver-utils@2.1.0:
     dependencies:
-      glob: 7.2.3
+      glob: 7.2.0
       graceful-fs: 4.2.11
       lazystream: 1.0.1
       lodash.defaults: 4.2.0

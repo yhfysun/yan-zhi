@@ -10,6 +10,12 @@ npmRebuild: false
 asar: true
 # 打包后、出安装包前：清理后端 sourcemap/.d.ts，并写入安全 fuses。
 afterPack: ./electron-builder.after-pack.cjs
+# ★★ node_modules 进不进 asar，由 apps/desktop/package.json 的 **dependencies** 决定
+#   （electron-builder 只收 dependencies，devDependencies 一律不进包）。
+#   渲染层依赖（vue / element-plus / @yan-zhi/ui …）已被 Vite 打进 dist/**，必须放 devDependencies
+#   —— 否则整棵依赖树会进 asar（实测 292MB 冗余，直接拖长安装解压时间）。
+#   边界由 test/asar-runtime-deps.test.cjs 双向守门，打包后用
+#   `node scripts/verify-package-artifacts.cjs asar-deps <app.asar>` 验产物。
 files:
   - dist/**/*
   - main.cjs

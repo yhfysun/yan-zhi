@@ -175,11 +175,94 @@ function verifyAsar(asarPath, NEEDLES) {
   return allOk;
 }
 
+// ─────────────── asar-deps（主进程运行时依赖冒烟）───────────────
+/**
+ * 校验打出的 app.asar 里**主进程真要用到的包一个不少**。
+ *
+ * ★★ 为什么需要：`apps/desktop/package.json` 的 dependencies 决定哪些包进 asar。
+ *   2026-10-30 把渲染层依赖（vue / element-plus / @yan-zhi/ui …）挪进 devDependencies 后，
+ *   asar 从 334MB 降到 78MB —— 但这类裁剪一旦漏掉主进程真 require 的包，
+ *   **开发与构建都不会报错，只有装上才崩**（Cannot find module）。
+ *   所以打包后必须直接对产物验一次，而不是相信配置。
+ *
+ * 判据：随包 .cjs 里的每个裸包名 require，都能在 asar 的 node_modules/ 或
+ *      app.asar.unpacked/node_modules/ 里找到。
+ */
+function verifyAsarDeps(asarPath) {
+  const { builtinModules } = require('node:module');
+  const builtins = new Set([...builtinModules, ...builtinModules.map((m) => 'node:' + m), 'electron']);
+  const desktopDir = path.join(__dirname, '..', 'apps', 'desktop');
+
+  // 随包模块 = yml files: 段里登记的 .cjs（三份 yml 取并集）
+  const ymls = ['electron-builder.full.yml', 'electron-builder.lite.yml', 'electron-builder.mac.yml'];
+  const modules = new Set();
+  for (const yml of ymls) {
+    const lines = fs.readFileSync(path.join(desktopDir, yml), 'utf8').split(/\r?\n/);
+    const start = lines.findIndex((l) => /^files:\s*$/.test(l));
+    if (start < 0) continue;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^[A-Za-z_]/.test(lines[i])) break;
+      const m = lines[i].match(/^\s*-\s+(.+?)\s*$/);
+      if (!m || m[1].startsWith('#') || m[1].includes('*')) continue;
+      let v = m[1];
+      if (v.length >= 2 && ((v[0] === "'" && v.at(-1) === "'") || (v[0] === '"' && v.at(-1) === '"'))) v = v.slice(1, -1);
+      if (v.endsWith('.cjs')) modules.add(v);
+    }
+  }
+
+  // 整行注释先剔掉（main.cjs 里有 `// … require('@yan-zhi/shared')` 这种说明性文字）
+  const required = new Map(); // 包名 -> 首次出现它的文件
+  for (const f of modules) {
+    const p = path.join(desktopDir, f);
+    if (!fs.existsSync(p)) continue;
+    const src = fs
+      .readFileSync(p, 'utf8')
+      .split(/\r?\n/)
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join('\n');
+    for (const m of src.matchAll(/require\(\s*['"]([^'".][^'"]*)['"]\s*\)/g)) {
+      const name = m[1].startsWith('@') ? m[1].split('/').slice(0, 2).join('/') : m[1].split('/')[0];
+      if (builtins.has(name)) continue;
+      if (!required.has(name)) required.set(name, f);
+    }
+  }
+
+  const fd = fs.openSync(asarPath, 'r');
+  const head = Buffer.alloc(16);
+  fs.readSync(fd, head, 0, 16, 0);
+  const jsonSize = head.readUInt32LE(12);
+  const jbuf = Buffer.alloc(jsonSize);
+  fs.readSync(fd, jbuf, 0, jsonSize, 16);
+  const idx = JSON.parse(jbuf.toString('utf8'));
+  fs.closeSync(fd);
+
+  const nm = (idx.files.node_modules && idx.files.node_modules.files) || {};
+  const packed = new Set(Object.keys(nm));
+  const hasNode = (name) => {
+    const scope = nm[name.split('/')[0]];
+    return !!(scope && scope.files && scope.files[name.split('/')[1]]);
+  };
+  const present = (name) => packed.has(name) || hasNode(name);
+  const unpackedDir = path.join(path.dirname(asarPath), 'app.asar.unpacked', 'node_modules');
+  const presentUnpacked = (name) => fs.existsSync(path.join(unpackedDir, name));
+
+  console.log(`[verify] asar-deps: ${asarPath}`);
+  console.log(`[verify] 随包 .cjs 模块: ${modules.size}，主进程外部依赖: ${required.size}`);
+  console.log(`[verify] asar 体积: ${(fs.statSync(asarPath).size / 1024 / 1024).toFixed(1)} MB`);
+  let ok = true;
+  for (const [name, from] of [...required].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const found = present(name) || presentUnpacked(name);
+    if (!found) ok = false;
+    console.log(`  ${found ? '✓' : '✗'} ${name}  (${from})`);
+  }
+  return ok;
+}
+
 const argv = process.argv.slice(2);
 const mode = argv[0];
 const target = argv.find((a, i) => i > 0 && !a.startsWith('--'));
 if (!mode || !target) {
-  console.error('用法: node scripts/verify-package-artifacts.cjs <apk|asar> <path> [--needles "串1,串2"]');
+  console.error('用法: node scripts/verify-package-artifacts.cjs <apk|asar|asar-deps> <path> [--needles "串1,串2"]');
   process.exit(2);
 }
 // --needles 替换默认特征串（本轮改动独有文案）
@@ -193,6 +276,9 @@ if (!fs.existsSync(target)) {
   console.error(`[verify] 文件不存在: ${target}`);
   process.exit(2);
 }
-const ok = mode === 'apk' ? verifyApk(target, needles) : verifyAsar(target, needles);
+const ok =
+  mode === 'apk' ? verifyApk(target, needles)
+  : mode === 'asar-deps' ? verifyAsarDeps(target)
+  : verifyAsar(target, needles);
 console.log(ok ? '\n[verify] 结论: PASS' : '\n[verify] 结论: FAIL');
 process.exit(ok ? 0 : 1);
