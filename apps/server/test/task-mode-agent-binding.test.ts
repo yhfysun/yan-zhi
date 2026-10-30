@@ -169,10 +169,12 @@ describe('② 任务类型 → skill：必须真实存在，且挂到了智能�
     const start = DB.indexOf("id: 'skill_novel_rewrite'");
     const end = DB.indexOf('// 批量 upsert 内置 skill');
     const seg = DB.slice(start, end);
-    const bodies = seg.match(/body: `([\s\S]*?)`,\n\s*\},/g) || [];
+    // ★ body 后面可能跟一行 filesJson（正文下沉 references 的 skill），切分时要一并吃掉：
+    //   不匹配的话会把下一条 body 的起始反引号圈进 inner，误报「body 含反引号」。
+    const bodies = seg.match(/body: `([\s\S]*?)`,\n(?:\s*filesJson:[^\n]*\n)?\s*\},/g) || [];
     expect(bodies.length, '★ 没抓到 skill body（切分逻辑要复核）').toBeGreaterThanOrEqual(4);
     for (const b of bodies) {
-      const inner = b.replace(/^body: `/, '').replace(/`,\n\s*\},$/, '');
+      const inner = b.replace(/^body: `/, '').replace(/`,\n(?:\s*filesJson:[^\n]*\n)?\s*\},$/, '');
       expect(inner.includes('`'), '★★ body 内含反引号（模板串会被截断成语法错误）').toBe(false);
     }
   });
