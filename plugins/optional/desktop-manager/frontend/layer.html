@@ -111,6 +111,10 @@
   #corner button:hover { background: rgba(255,255,255,.13); }
   #corner .primary { background: linear-gradient(135deg,#3f6dff,#7a4dff); color: #fff; }
 
+  /* Peek：同一份页面以浮层窗口打开，压暗背景浮到其他应用之上 */
+  body.peek { background: rgba(6,9,14,.55); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  body.peek #corner { display: none; }
+
   /* 全桌面搜索 */
   #search { position: fixed; inset: 0; z-index: 998; display: none; background: rgba(6,9,14,.5); -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px); }
   #search.on { display: block; }
@@ -161,6 +165,7 @@
 <div id="corner">
   <button class="primary" data-act="organize">一键整理</button>
   <button data-act="portal">＋传送门</button>
+  <button data-act="peek" title="浮到其他应用之上（Ctrl+Alt+Space）">Peek</button>
   <button data-act="close" title="收起桌面层（Esc）">✕</button>
 </div>
 

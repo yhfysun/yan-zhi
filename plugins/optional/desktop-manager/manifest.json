@@ -21,6 +21,14 @@
         "accelerator": "Control+Alt+D"
       },
       {
+        "id": "peek",
+        "label": "Peek",
+        "entry": "frontend/peek.html",
+        "placement": "overlay",
+        "menu": false,
+        "accelerator": "Control+Alt+Space"
+      },
+      {
         "id": "panel",
         "label": "设置",
         "entry": "frontend/settings.html",

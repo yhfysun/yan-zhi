@@ -14946,11 +14946,18 @@ function ensureIconWatchdog() {
   if (iconWatchdog) return;
   iconWatchdog = setInterval(() => {
     try {
-      if (!iconSession.shouldRestore()) return;
       const alive = [...pluginWindows.values()].some(
         (r) => r.placement === 'desktop' && r.win && !r.win.isDestroyed(),
       );
-      if (!alive) void restoreIcons('watchdog:no-desktop-window');
+      if (alive) return;                 // 有桌面层在，图标归它管，不动
+      // 没有桌面层：以系统真实状态为准（内部标记可能已经和现实不同步），藏了就先恢复
+      runDesktopHelper(['--icons-visible']).then((cur) => {
+        if (!cur.data || cur.data.visible !== false) return;
+        return runDesktopHelper(['--toggle-icons', '1']).then(() => {
+          iconSession.markRestored();
+          console.log('[desktop-shell] 看门狗恢复系统桌面图标（无桌面层窗口）');
+        });
+      }).catch(() => { /* 下次再试 */ });
     } catch { /* 尽力而为 */ }
   }, ICON_WATCHDOG_MS);
   if (typeof iconWatchdog.unref === 'function') iconWatchdog.unref();

@@ -13,7 +13,9 @@ const api = window.electronAPI || null;
 
 const qs = new URLSearchParams(location.search);
 const DEMO = qs.get('demo') === '1';
-const SELF_ENTRY = 'frontend/layer.html';
+/** Peek：同一份页面以 alwaysOnTop 浮层打开（不改钉层，避免反复 SetParent 出幺蛾子） */
+const PEEK = qs.get('peek') === '1';
+const SELF_ENTRY = PEEK ? 'frontend/peek.html' : 'frontend/layer.html';
 
 const S = {
   windowId: null,
@@ -781,10 +783,21 @@ $('#corner').addEventListener('click', (e) => {
   if (!b) return;
   if (b.dataset.act === 'organize') openOrganize();
   if (b.dataset.act === 'portal') createPortal();
+  if (b.dataset.act === 'peek') openPeek();
   if (b.dataset.act === 'close') {
     if (S.windowId && api && api.pluginWindow) api.pluginWindow.close(S.windowId).catch(() => {});
   }
 });
+
+/** Peek：开一个 alwaysOnTop 浮层窗口，同一份内容浮到其他应用之上 */
+function openPeek() {
+  if (!api || !api.pluginWindow) return;
+  api.pluginWindow.open({
+    pluginId: 'desktop-manager',
+    entry: 'frontend/peek.html',
+    placement: 'overlay',
+  }).catch(() => {});
+}
 
 /** 新建文件夹传送门：选一个真实目录，镜像到桌面（文件仍在原处） */
 async function createPortal() {
@@ -1029,7 +1042,8 @@ async function identifyWindow() {
 
 async function boot() {
   await identifyWindow();
-  if (!DEMO && api && api.desktopShell) {
+  if (PEEK) document.body.classList.add('peek');
+  if (!PEEK && !DEMO && api && api.desktopShell) {
     try { await api.desktopShell.setIconsVisible(false); } catch { /* 基座兜底 */ }
   }
   await refresh(true).catch((e) => toast('加载失败：' + e.message));
