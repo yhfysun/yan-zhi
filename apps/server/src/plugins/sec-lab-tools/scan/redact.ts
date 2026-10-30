@@ -25,3 +25,29 @@ export function maskSecrets(text: string): string {
     (_m, k: string, sep: string, v: string) => `${k}${sep}${maskLiteral(v)}`);
   return out;
 }
+
+const SENSITIVE_KEY = /^(auth|adminauth|authorization|cookie|set-cookie|token|access[_-]?token|password|passwd|pwd|secret|api[_-]?key|apikey|session|credential|credentials)$/i;
+
+/**
+ * 工具参数的按键脱敏（审计 argsSummary 用）。
+ *
+ * ★ 为什么不能只靠 maskSecrets：那是**值模式**匹配，`{"auth":"Bearer abc"}` 这种
+ *   带空格的值匹配不上；而鉴权矩阵的凭证恰恰就长这样。
+ * ★ 只做浅层递归（depth ≤ 2）：参数是模型/前端给的一层 JSON，不需要也不该遍历任意深度。
+ */
+export function maskSensitiveArgs(args: Record<string, unknown>, depth = 0): Record<string, unknown> {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (SENSITIVE_KEY.test(k)) {
+      out[k] = v ? '***' : v;
+      continue;
+    }
+    if (v && typeof v === 'object' && !Array.isArray(v) && depth < 2) {
+      out[k] = maskSensitiveArgs(v as Record<string, unknown>, depth + 1);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}

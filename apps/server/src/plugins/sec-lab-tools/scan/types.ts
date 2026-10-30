@@ -76,6 +76,8 @@ export interface ScanContext {
   profile: string;
   limits: ScanLimits;
   startedAt: number;
+  /** 引擎专属参数（如 api 剖面的 auth / adminAuth / input）；不进作业落库 */
+  extra?: Record<string, unknown>;
   /** 标记某阶段开始（阶段名必须在 Scanner.stages 里） */
   beginStage(name: string): void;
   /** 标记某阶段结束 */

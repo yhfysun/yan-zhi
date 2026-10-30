@@ -38,6 +38,8 @@ export interface RunScanOptions {
   store?: ScanStore;
   limits?: Partial<ScanLimits>;
   createdBy?: 'human' | 'agent';
+  /** 引擎专属参数（凭证等）：只在内存里传给 scanner，不写作业 */
+  extra?: Record<string, unknown>;
 }
 
 function pickScanner(scanners: Scanner[], kind: ScanKind): Scanner | undefined {
@@ -132,6 +134,7 @@ export async function runScan(o: RunScanOptions): Promise<ScanJob> {
     profile,
     limits,
     startedAt,
+    extra: o.extra,
     beginStage(name) {
       const s = job.stages.find((x) => x.name === name);
       if (!s) return;

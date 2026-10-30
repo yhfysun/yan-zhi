@@ -173,4 +173,12 @@ describe('★ 扫描入口卡（2026-10-30）：只拼命令，不另起执行�
     expect(SRC).toContain('/export/report');
     expect(SRC, '桌面端落盘走系统保存框').toContain('saveFile');
   });
+
+  it('★「导出本次扫描」把当前 jobId 传给导出接口（不是导全量）', () => {
+    expect(SRC, 'jobId 来自 /run 响应，需要本地记住').toContain('lastJobId');
+    expect(SRC, 'runTool 返回后要记录 jobId').toContain('r.jobId');
+    expect(SRC, '导出调用必须带 jobId 参数').toMatch(/exportFindingsReport\(lastJobId\)/);
+    expect(SRC, '没有 jobId 时按钮禁用').toMatch(/:disabled="!lastJobId"/);
+    expect(SRC, '带 jobId 走同一导出端点').toMatch(/jobId\s*\?\s*\{\s*jobId\s*\}\s*:\s*\{\s*\}/);
+  });
 });

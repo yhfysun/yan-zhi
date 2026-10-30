@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { isAuthorized, type ScopeEntry } from '../sec-lab-guard.js';
 import type { ToolOutput } from '../sec-lab-types.js';
 
-interface Capture {
+export interface Capture {
   id: string;
   at: number;
   method: string;
@@ -34,6 +34,11 @@ let activeScopes: ScopeEntry[] = [];
 
 export function proxyStatus(): { running: boolean; port: number; captures: number } {
   return { running: !!server, port: listenPort, captures: captures.length };
+}
+
+/** 只读快照：api 剖面把抓包记录当端点来源（不把可变数组本身暴露出去） */
+export function listProxyCaptures(): Capture[] {
+  return captures.map((c) => ({ ...c }));
 }
 
 function record(c: Omit<Capture, 'id' | 'at'>): void {

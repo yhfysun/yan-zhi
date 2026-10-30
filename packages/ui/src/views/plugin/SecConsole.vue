@@ -448,7 +448,11 @@
               <span class="sec-frame-title">FINDINGS</span>
               <span class="sec-frame-hint">分严重度色块</span>
               <span class="sec-spacer" />
-              <el-button size="small" :loading="exportingReport" @click="exportFindingsReport">导出报告 MD</el-button>
+              <el-button
+                size="small" :loading="exportingReport" :disabled="!lastJobId"
+                @click="exportFindingsReport(lastJobId)"
+              >导出本次扫描</el-button>
+              <el-button size="small" :loading="exportingReport" @click="exportFindingsReport()">导出报告 MD</el-button>
             </header>
             <div class="sec-finding-list">
               <div v-for="f in findings" :key="f.id" class="sec-finding" :data-sev="f.severity">
@@ -1521,6 +1525,8 @@ async function browseScanTarget(): Promise<void> {
 
 // ── 导出报告（2026-10-30）：生成 Markdown 交给智能体逐项修复 ──────────────
 const exportingReport = ref(false);
+/** 最近一次扫描作业 id（服务端 /run 从 ToolOutput.raw 透出）：用于「导出本次扫描」 */
+const lastJobId = ref('');
 
 /** UTF-8 → base64（saveFile 只接受 dataUrl） */
 function base64Utf8(text: string): string {
@@ -1530,12 +1536,13 @@ function base64Utf8(text: string): string {
   return btoa(bin);
 }
 
-async function exportFindingsReport(): Promise<void> {
+async function exportFindingsReport(jobId?: string): Promise<void> {
   if (exportingReport.value) return;
   exportingReport.value = true;
   try {
     const d = await unwrap<{ text: string; filename: string; count: number }>(
-      api.post(`${BASE}/export/report`, {}),
+      // ★ 带 jobId 就按作业导出（只含该作业、排除基线抑制项）；不带则导全量发现项
+      api.post(`${BASE}/export/report`, jobId ? { jobId } : {}),
     );
     if (!d) return;
     if (isElectron && scanElectron?.dialog?.saveFile) {
@@ -1690,6 +1697,8 @@ async function runToolCommand(def: CommandDef, parsed: ParsedCommand, forceConfi
   try {
     const r = await commandsStore.runTool(def, parsed);
     result.value = r.text;
+    // 扫描工具才会带 jobId；普通工具不清空上一次（用户可能刚跑完扫描在等导出）
+    if (r.jobId) lastJobId.value = r.jobId;
     lastRunMs.value = Date.now() - t0;
     if (!r.ok) ElMessage.warning('工具返回错误，见输出结果');
     await loadAll();     // findings / audit / pulse 跟着刷新（与 postRun 同口径）

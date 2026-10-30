@@ -159,7 +159,7 @@ export const useCommandsStore = defineStore('commands', () => {
    * ★ 也**不**走 `/api/tools/builtin/execute`：那个端点不过 permissionMode、也没有 sec 的护栏，
    *    拿它跑安全工具等于把护栏绕过去（这正是"命令层不新增绕过路径"要防的事）。
    */
-  async function runTool(def: CommandDef, parsed: ParsedCommand): Promise<{ ok: boolean; text: string }> {
+  async function runTool(def: CommandDef, parsed: ParsedCommand): Promise<{ ok: boolean; text: string; jobId?: string }> {
     // ★ 通用内置工具走**另一条端点**（`/api/tools/builtin/execute`）——
     //   它与插件工具的 `/plugin/<id>/run` 是两套：那个端点没有 sec 护栏，
     //   所以**绝不能**拿它跑 sec-lab 的工具（`secConsoleCommandBar.test.ts` 有守门），
@@ -180,8 +180,11 @@ export const useCommandsStore = defineStore('commands', () => {
     const args = buildToolArgs(def, parsed);
     const r: any = await api.post(`/plugin/${def.pluginId}/run`, { tool: def.tool, args });
     if (r && 'error' in r) return { ok: false, text: String(r.error) };
-    const d = r?.data as { ok?: boolean; text?: string } | undefined;
-    return { ok: d?.ok !== false, text: String(d?.text || '(无输出)') };
+    const d = r?.data as { ok?: boolean; text?: string; jobId?: string } | undefined;
+    // ★ jobId 只有扫描工具会给（服务端从 ToolOutput.raw 透出）：控制台据此导出"本次扫描"。
+    //   缺省时不写这个键 —— 既有调用方的精确断言与形状保持不变。
+    const jobId = typeof d?.jobId === 'string' && d.jobId ? d.jobId : undefined;
+    return { ok: d?.ok !== false, text: String(d?.text || '(无输出)'), ...(jobId ? { jobId } : {}) };
   }
 
   // 首次实例化时拉一次「只读内置工具」清单：失败静默降级（拿不到就是少几条命令，

@@ -52,12 +52,14 @@ import { runAttackMap } from './sec-lab-tools/attackmap.js';
 import { runSkill, runWarstory, runCheatsheet } from './sec-lab-tools/knowledge.js';
 import { runSast } from './sec-lab-tools/sast.js';
 // 密钥脱敏（2026-10-30）：历史发现项里可能存着修复前入库的凭据原文，读的时候必须再脱一次
-import { maskSecrets } from './sec-lab-tools/scan/redact.js';
+// ★ maskSensitiveArgs：审计里的工具参数也要按键打码（api 剖面的 auth/adminAuth 会进 argsSummary）
+import { maskSecrets, maskSensitiveArgs } from './sec-lab-tools/scan/redact.js';
 // —— P1：扫描编排（2026-10-30）——
 import { runScan, acceptBaseline, type ScanStore, type ScanBaseline } from './sec-lab-tools/scan/orchestrator.js';
 import { createSourceScanner } from './sec-lab-tools/scan/source/engine.js';
 import { createUrlScanner } from './sec-lab-tools/scan/url/engine.js';
 import { createPackageScanner } from './sec-lab-tools/scan/package/engine.js';
+import { createSelfScanner } from './sec-lab-tools/scan/self/engine.js';
 import { jobToOutput, SEVERITY_ORDER, type ScanJob, type ScanKind } from './sec-lab-tools/scan/types.js';
 import { discoverSelfAssets, matchSelfAsset } from './sec-lab-tools/scan/self/assets.js';
 // —— P5：经验库（自学习，2026-10-17）——
@@ -209,7 +211,7 @@ export const secLabManifest: PluginManifest = {
       // ★ 四个入口按输入类型拆开：源码/制品是本地只读（passive），URL 必须已授权（active），
       //   自有资产由服务端判定（不接受 self 声明）。风险标签与 guard 的 TOOL_RISK 保持同口径。
       { name: 'scan-source', aliases: ['srcscan'], desc: '源码扫描作业：规则包 + 依赖快照 + Electron 配置，支持基线抑制', usage: '/scan-source <目录> [--profile=quick|standard|deep]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_source', params: ['target'] },
-      { name: 'scan-url', aliases: ['urlscan'], desc: 'URL 扫描作业：画像 + 安全头 + TLS + 基线 + 模板 POC（按剖面编排）', usage: '/scan-url <url> [--profile=quick|standard|deep|api]', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_url', params: ['target'] },
+      { name: 'scan-url', aliases: ['urlscan'], desc: 'URL 扫描作业：画像 + 安全头 + TLS + 基线 + 模板 POC；api 剖面枚举接口并出鉴权矩阵（只读）', usage: '/scan-url <url> [--profile=quick|standard|deep|api] [--input=har|openapi.json] [--auth=] [--adminAuth=]', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_url', params: ['target'] },
       { name: 'scan-package', aliases: ['apkscan'], desc: '安装包扫描：APK/AAB 清单 · DEX 字符串 · 签名；asar / ZIP', usage: '/scan-package <文件> [--profile=quick|standard|deep]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_package', params: ['target'] },
       { name: 'scan-self', aliases: ['yzcheck'], desc: '言智自有资产体检（仓库 / 构建产物 / 本机服务）', usage: '/scan-self [--profile=quick|standard|deep] [--target=路径]', group: 'SCAN', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_self' },
       { name: 'scan-status', aliases: ['sjobs'], desc: '扫描作业列表 / 单个作业进度', usage: '/scan-status [jobId]', group: 'SCAN', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'scan_status', params: ['jobId'] },
@@ -330,7 +332,7 @@ const scanStore: ScanStore = {
   loadBaselines: () => loadList<ScanBaseline>(K_SCAN_BASELINES),
   saveBaselines: async (list) => { if (store) await store.set(K_SCAN_BASELINES, list); },
 };
-const SCAN_SCANNERS = [createSourceScanner(), createUrlScanner(), createPackageScanner()];
+const SCAN_SCANNERS = [createSourceScanner(), createUrlScanner(), createPackageScanner(), createSelfScanner()];
 /** 用户剧本上限：够用又不至于把面板撑爆；超出直接拒绝并说明，不静默丢弃 */
 const USER_PLAYBOOK_MAX = 50;
 const USER_PLAYBOOK_STEPS_MAX = 20;
@@ -444,10 +446,42 @@ function buildReportMarkdown(
   return L.join('\n');
 }
 
+export interface ReportExportInput {
+  jobId?: string;
+  jobs: ScanJob[];
+  findings: Array<Finding & { target?: string; tool?: string; at?: number }>;
+}
+
+/**
+ * 导出选材：指定 jobId 只导该作业（排除基线抑制项），否则导全量发现项。
+ * 抽成纯函数是为了能直接单测「按作业导出 / 未知 id / 抑制项排除」。
+ */
+export function buildReportExport(input: ReportExportInput): { text: string; count: number; job?: ScanJob } {
+  const jobId = String(input.jobId || '');
+  if (jobId) {
+    const job = input.jobs.find((j) => j.id === jobId);
+    if (!job) throw new Error(`未找到作业 ${jobId}`);
+    const items = job.findings
+      .filter((f) => !f.suppressed)
+      .map((f) => ({ ...f, target: job.target, tool: 'scan', at: job.finishedAt || job.createdAt }));
+    return { text: buildReportMarkdown(items, { job }), count: items.length, job };
+  }
+  const items = input.findings;
+  return { text: buildReportMarkdown(items, {}), count: items.length };
+}
+
 // ---------- 结果渲染 ----------
 
-function okResult(o: ToolOutput): McpCallResult {
-  return { content: [{ type: 'text', text: renderOutput(o) }] };
+/** 带 raw 的结果：控制台靠 raw.jobId 实现「导出本次扫描」 */
+export type SecCallResult = McpCallResult & { raw?: unknown };
+
+function okResult(o: ToolOutput): SecCallResult {
+  return { content: [{ type: 'text', text: renderOutput(o) }], raw: o.raw };
+}
+
+function jobIdOf(out: McpCallResult): string | undefined {
+  const raw = (out as SecCallResult).raw as { jobId?: unknown } | undefined;
+  return typeof raw?.jobId === 'string' ? raw.jobId : undefined;
 }
 
 function errResult(msg: string): McpCallResult {
@@ -644,7 +678,7 @@ async function withGuard<T extends { target?: string }>(
     await pushAudit({
       at: Date.now(), tool, target: out.target, risk: out.risk, ok: true,
       message: approvalNote ? `${out.summary}\n（${approvalNote}）` : out.summary,
-      argsSummary: JSON.stringify(args).slice(0, 300),
+      argsSummary: JSON.stringify(maskSensitiveArgs(args)).slice(0, 300),
     });
     return okResult(out);
   } catch (e) {
@@ -1762,6 +1796,12 @@ async function executeScanJob(
       maxFiles: typeof args.maxFiles === 'number' ? args.maxFiles : undefined,
       maxDurationMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined,
     },
+    // 引擎专属参数：只在内存里传给 scanner（凭证不写作业，审计侧另有按键打码）
+    extra: {
+      auth: args.auth ? String(args.auth) : undefined,
+      adminAuth: args.adminAuth ? String(args.adminAuth) : undefined,
+      input: args.input ? String(args.input) : undefined,
+    },
   });
   if (job.status === 'failed') throw new Error(job.error || `${tool} 扫描失败`);
   return jobToOutput(job);
@@ -1785,11 +1825,14 @@ function scanSourceTool(): BuiltInTool {
 function scanUrlTool(): BuiltInTool {
   return plainTool(
     'scan_url',
-    'URL / Web 应用扫描（active）：按剖面编排既有探测能力——目标画像、安全响应头、TLS、配置基线，standard 起追加爬虫与目录探测，最后跑模板化 POC。不会自动执行注入验证或爆破（那些需要交战模式与逐条审批）。目标必须先登记授权范围。',
+    'URL / Web 应用扫描（active）：按剖面编排既有探测能力——目标画像、安全响应头、TLS、配置基线，standard 起追加爬虫与目录探测，最后跑模板化 POC。api 剖面改为接口枚举（OpenAPI / HAR / 代理抓包）→ 匿名/普通/管理员鉴权矩阵 → IDOR 疑似判定，**只发 GET/HEAD，写操作只枚举不探测**。不会自动执行注入验证或爆破（那些需要交战模式与逐条审批）。目标必须先登记授权范围。',
     {
       target: SCAN_TARGET_PROP,
       profile: SCAN_PROFILE_PROP,
       timeoutMs: { type: 'number', description: '单步超时毫秒数，默认受作业上限约束' },
+      input: { type: 'string', description: 'api 剖面：OpenAPI / HAR 文件路径（不填则读代理抓包 + 探测目标上的 OpenAPI 文档）' },
+      auth: { type: 'string', description: 'api 剖面：普通用户凭证（Bearer xxx / a=b; c=d 形式的 Cookie / Name: value）；只用于发请求，不落盘不回显' },
+      adminAuth: { type: 'string', description: 'api 剖面：管理员凭证（格式同 auth）' },
     },
     ['target'],
     (args) => executeScanJob('scan_url', 'url', String(args.target), args),
@@ -1813,7 +1856,7 @@ function scanSelfTool(): BuiltInTool {
   return {
     name: 'scan_self',
     description:
-      '言智自有资产体检（active）：自动识别仓库 / 构建产物 / 本机服务，按资产类型选择扫描引擎。**只接受服务端判定为自有资产的目标**，外部 URL 与任意外部路径一律拒绝。不传 target 时默认扫仓库源码。',
+      '言智自有资产体检（active）：一次覆盖源码与运行时——源码规则 + 依赖快照 + Electron 结构审计（webPreferences / CSP / 权限处理器），并对本机在听的服务做只读运行时探测（CORS 回源、本地接口匿名可读）。**只接受服务端判定为自有资产的目标**，外部 URL 与任意外部路径一律拒绝。不传 target 时默认扫仓库。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1836,11 +1879,10 @@ function scanSelfTool(): BuiltInTool {
               : '未发现言智仓库根目录；请显式传一个自有资产路径。',
           );
         }
-        const kind: ScanKind = asset.kind === 'runtime' ? 'url' : 'source';
-        const out = await executeScanJob('scan_self', kind, asset.value, args);
+        const out = await executeScanJob('scan_self', 'self', asset.value, args);
         return {
           ...out,
-          summary: `言智体检：资产「${asset.label}」（${asset.value}）→ ${kind} 引擎\n${out.summary}`,
+          summary: `言智体检：资产「${asset.label}」（${asset.value}）\n${out.summary}`,
         };
       });
     },
@@ -2095,7 +2137,9 @@ function registerRoutes(ctx: PluginContext) {
       const args: Record<string, unknown> = { ...userArgs };
       markTrustedHumanCall(args);
       const out = await factory().execute(args);
-      json(res, { ok: !out.isError, text: out.content?.[0]?.text || '' });
+      // ★ jobId 只在扫描工具里出现：控制台用它把「导出本次扫描」钉到刚跑完的作业
+      const jobId = jobIdOf(out);
+      json(res, { ok: !out.isError, text: out.content?.[0]?.text || '', ...(jobId ? { jobId } : {}) });
     });
 
     r.get('/toolchain', async (_req: unknown, res: unknown) => {
@@ -2122,21 +2166,18 @@ function registerRoutes(ctx: PluginContext) {
     r.post('/export/report', async (req: unknown, res: unknown) => {
       const body = bodyOf(req);
       const jobId = String(body.jobId || '');
-      let items: Array<Finding & { target?: string; tool?: string; at?: number }>;
-      let job: ScanJob | undefined;
-      if (jobId) {
-        const jobs = await loadList<ScanJob>(K_SCAN_JOBS);
-        job = jobs.find((j) => j.id === jobId);
-        if (!job) return fail(res, 404, `未找到作业 ${jobId}`);
-        items = job.findings
-          .filter((f) => !f.suppressed)
-          .map((f) => ({ ...f, target: job!.target, tool: 'scan', at: job!.finishedAt || job!.createdAt }));
-      } else {
-        items = await loadFindings();
+      let result: ReturnType<typeof buildReportExport>;
+      try {
+        result = buildReportExport({
+          jobId,
+          jobs: jobId ? await loadList<ScanJob>(K_SCAN_JOBS) : [],
+          findings: jobId ? [] : await loadFindings(),
+        });
+      } catch (e) {
+        return fail(res, 404, e instanceof Error ? e.message : String(e));
       }
-      const text = buildReportMarkdown(items, { job });
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-      json(res, { data: { text, filename: `security-report-${stamp}.md`, count: items.length } });
+      json(res, { data: { text: result.text, filename: `security-report-${stamp}.md`, count: result.count } });
     });
 
     r.get('/audit', async (_req: unknown, res: unknown) => {
