@@ -32,7 +32,7 @@ function clipTool() {
 }
 
 /** 只在工具执行器层实现的 op（需要 ffprobe/ffmpeg，不适合放进纯函数 applyClipOp）。 */
-const EXECUTOR_ONLY_OPS = ['render', 'beat_cut'];
+const EXECUTOR_ONLY_OPS = ['render', 'beat_cut', 'add_tts', 'list_recipes', 'apply_recipe', 'save_recipe', 'delete_recipe'];
 
 describe('clip_project 工具面与 applyClipOp 对齐', () => {
   it('op enum 覆盖 applyClipOp 的每一个 case（外加执行器独有 op）', () => {
@@ -60,6 +60,13 @@ describe('clip_project 工具面与 applyClipOp 对齐', () => {
     const t = (clipTool().inputSchema as any).properties.texts.items.properties;
     for (const k of ['outlinePx', 'backColor', 'outlineColor', 'safeArea', 'position']) {
       expect(t[k], `add_text 缺字段 ${k}`).toBeTruthy();
+    }
+  });
+
+  it('add_tts 声明了 text / start / subtitle（配音的能力模型要看得见）', () => {
+    const props = (clipTool().inputSchema as any).properties;
+    for (const k of ['text', 'start', 'subtitle', 'voice', 'character', 'rate']) {
+      expect(props[k], `add_tts 缺参数 ${k}`).toBeTruthy();
     }
   });
 

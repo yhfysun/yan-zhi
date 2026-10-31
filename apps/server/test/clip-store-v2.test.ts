@@ -84,15 +84,28 @@ describe('readClipProject / writeClipProject · v2 序列化边界', () => {
     expect(again2.overlays).toEqual(again.overlays);
   });
 
-  it('★ layers 里 v1 视图外的图层（sticker）落盘保留、再读不丢', () => {
+  it('★ layers 里 v1 视图外的图层（effect 等未知 kind）落盘保留、再读不丢', () => {
     const p = readClipProject(CONV)!;
-    const withSticker: ClipProject = {
+    const withEffect: ClipProject = {
       ...p,
-      layers: [...p.layers, { id: 's1', kind: 'sticker', file: 'C:/s.webp', start: 0, end: 1, track: 2, transform: {} }],
+      layers: [...p.layers, { id: 'e1', kind: 'effect', file: 'C:/fx.mov', start: 0, end: 1, track: 3, transform: {} }],
     };
-    writeClipProject(CONV, withSticker);
+    writeClipProject(CONV, withEffect);
     const again = readClipProject(CONV)!;
-    expect(again.layers.some((l) => l.id === 's1' && l.kind === 'sticker')).toBe(true);
+    expect(again.layers.some((l) => l.id === 'e1' && l.kind === 'effect')).toBe(true);
+  });
+
+  it('★ 贴纸（P1-1）落盘进 layers[kind=sticker]，读回 stickers 视图一致', () => {
+    const p = readClipProject(CONV)!;
+    writeClipProject(CONV, {
+      ...p,
+      stickers: [{ id: 's1', file: 'C:/s.png', start: 1, end: 2, scale: 0.4, x: 0.1 }],
+    });
+    const again = readClipProject(CONV)!;
+    expect(again.stickers).toEqual([{ id: 's1', file: 'C:/s.png', start: 1, end: 2, scale: 0.4, x: 0.1 }]);
+    const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV).file, 'utf8'));
+    expect(raw.stickers).toBeUndefined();                 // 视图字段不落盘
+    expect(raw.layers.some((l: any) => l.kind === 'sticker')).toBe(true);
   });
 
   it('★ 损坏 json 返回 null（按"还没有工程"处理，不抛错）', () => {

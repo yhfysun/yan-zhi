@@ -18,6 +18,7 @@ import {
 } from '../host-bridge.js';
 import { readClipProject, writeClipProject, clipProjectPath as clipProjectPathOf } from '../services/clip-store.js';
 import { summarizeProject, type ClipProject } from '../services/clip-project.js';
+import { listAllRecipes } from '../services/clip-recipe-store.js';
 import { parseProbeJson, probeArgs } from '../services/clip-render.js';
 import { renderPreviewFrame, locateTimeline } from '../services/clip-preview.js';
 import { ensureSegmentProxy } from '../services/clip-proxy.js';
@@ -26,7 +27,9 @@ import { analyzeBeats } from '../services/clip-beats.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
 import { TRANSITIONS } from '@yan-zhi/shared';
 import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
+import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-library.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
+import { executeApiTool } from '../mcp/api-tool-executor.js';
 import {
   resolveWhisper, ensureWav16k, runWhisperToSrt,
   WHISPER_MODELS, DEFAULT_WHISPER_MODEL,
@@ -313,6 +316,68 @@ router.get('/library/sfx-preview', async (req: Request, res: Response) => {
   return res.sendFile(file);
 });
 
+// GET /api/plugin/clip-mode/library/stickers —— 内置贴纸库（程序化生成 PNG，免版权）
+router.get('/library/stickers', (_req: Request, res: Response) => {
+  res.json({
+    stickers: STICKER_LIBRARY.map((s) => ({ id: s.id, label: s.label, desc: s.desc, group: s.group })),
+    note: '贴纸由 ffmpeg 实时合成（透明 PNG，免版权）。插画级贴纸请用「设为贴纸」导入本地图片。',
+  });
+});
+
+// GET /api/plugin/clip-mode/library/sticker-preview?id=check —— 缩略图（不落素材库）
+const STICKER_CACHE_VERSION = 'v1';
+router.get('/library/sticker-preview', async (req: Request, res: Response) => {
+  const id = String(req.query.id || '').trim();
+  const item = stickerById(id);
+  if (!item) return res.status(404).json({ error: `贴纸不存在：${id}` });
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用' });
+  const dir = path.join(tmpdir(), `yz-sticker-preview-${STICKER_CACHE_VERSION}`);
+  const file = path.join(dir, `${id}.png`);
+  if (!fs.existsSync(file)) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const r = await runFfmpeg(ff.ffmpeg, stickerArgs(item, file), 60000);
+      if (!r.ok) return res.status(500).json({ error: `贴纸生成失败：${r.stderr.slice(-300)}` });
+    } catch (e: unknown) {
+      return res.status(500).json({ error: `贴纸生成异常：${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return res.sendFile(file);
+});
+
+// POST /api/plugin/clip-mode/library/sticker  body: { conversationId, id }
+// 生成一张贴纸并登记到会话素材库（用户随后可"设为贴纸"或让智能体 add_sticker）。
+router.post('/library/sticker', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const id = String(req.body?.id || '').trim();
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  const item = stickerById(id);
+  if (!item) return res.status(404).json({ error: `贴纸不存在：${id}` });
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ?').get(conversationId) as { id?: string } | undefined;
+  if (!conv) return res.status(404).json({ error: '会话不存在' });
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（贴纸生成需要它）' });
+
+  const dirInfo = ensureArtifactDirFor({ conversationId, category: 'upload' });
+  const fileName = `sticker-${item.id}-${Date.now()}.png`;
+  const outFile = path.join(dirInfo.dir, fileName);
+  try {
+    const r = await runFfmpeg(ff.ffmpeg, stickerArgs(item, outFile), 60000);
+    if (!r.ok) return res.status(500).json({ error: `生成失败：${r.stderr.slice(-300)}` });
+  } catch (e: unknown) {
+    return res.status(500).json({ error: `生成异常：${e instanceof Error ? e.message : String(e)}` });
+  }
+  const size = fs.existsSync(outFile) ? fs.statSync(outFile).size : 0;
+  const fileId = `cf_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  db.prepare(
+    'INSERT INTO conversation_file (id, conversation_id, user_id, space_id, name, path, category, mime_type, size, source, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(fileId, conversationId, String(req.user?.userId || 'guest'), null, fileName, outFile, 'upload', 'image/png', size, 'user', null, Date.now());
+  return res.json({ ok: true, name: fileName, path: outFile, bytes: size, label: item.label });
+});
+
 // POST /api/plugin/clip-mode/asr —— 语音转字幕（本地 whisper.cpp）
 //
 // ★★★ 为什么要有这条（2026-10-08）：ASR 能力此前只能从**对话**触发
@@ -379,6 +444,71 @@ router.post('/asr', async (req: Request, res: Response) => {
   } finally {
     // 临时音频清理失败不该让请求失败
     try { fs.rmSync(path.dirname(wav.wav), { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+// POST /api/plugin/clip-mode/tts —— 字幕转配音（文本 → 定时音频层）
+//
+// ★ 与 /asr 对称：ASR 是「语音 → 字幕」，这里是「字幕 → 语音」。
+//   实现直接调 clip_project 的 add_tts —— 那个 op 在执行器层（合成要起 TTS、量时长要 ffprobe，
+//   都是 IO，不进纯函数 applyClipOp）；这里只做 HTTP 薄壳，避免前端为配一句音绕去对话。
+router.post('/tts', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const text = String(req.body?.text || '').trim();
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!text) return res.status(400).json({ error: 'text 必填（要读出来的台词）' });
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ?').get(conversationId) as { id?: string } | undefined;
+  if (!conv) return res.status(404).json({ error: '会话不存在' });
+
+  const r = await executeApiTool('clip_project', {
+    op: 'add_tts',
+    text,
+    ...(req.body?.start == null ? {} : { start: Number(req.body.start) }),
+    ...(req.body?.voice ? { voice: String(req.body.voice) } : {}),
+    ...(req.body?.character ? { character: String(req.body.character) } : {}),
+    ...(req.body?.rate == null ? {} : { rate: Number(req.body.rate) }),
+    ...(req.body?.volume == null ? {} : { volume: Number(req.body.volume) }),
+    ...(req.body?.subtitle === true ? { subtitle: true } : {}),
+  }, undefined, undefined, undefined, conversationId);
+  if (r.isError) return res.status(500).json({ error: r.content?.[0]?.text || '配音失败' });
+  try {
+    return res.json(JSON.parse(r.content?.[0]?.text || '{}'));
+  } catch {
+    return res.json({ ok: true, raw: r.content?.[0]?.text || '' });
+  }
+});
+
+// GET /api/plugin/clip-mode/recipes —— 配方清单（内置 + 自建）
+//
+// ★ 与对话里的 op=list_recipes 同源（services/clip-recipe-store），UI 与智能体看到的是同一份。
+router.get('/recipes', (_req: Request, res: Response) => {
+  const { recipes, errors } = listAllRecipes();
+  return res.json({
+    ok: true,
+    recipes: recipes.map((r) => ({
+      id: r.id, name: r.name, desc: r.desc, builtin: !!r.builtin,
+      steps: r.steps.length, params: r.params || [],
+    })),
+    ...(errors.length ? { warnings: errors } : {}),
+  });
+});
+
+// POST /api/plugin/clip-mode/recipe/apply  body: { conversationId, recipe, params? }
+router.post('/recipe/apply', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const recipe = String(req.body?.recipe || '').trim();
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!recipe) return res.status(400).json({ error: 'recipe 必填（配方 id）' });
+  const conv = db.prepare('SELECT id FROM conversation WHERE id = ?').get(conversationId) as { id?: string } | undefined;
+  if (!conv) return res.status(404).json({ error: '会话不存在' });
+
+  const params = (req.body?.params && typeof req.body.params === 'object') ? req.body.params : {};
+  const r = await executeApiTool('clip_project', { op: 'apply_recipe', recipe, params }, undefined, undefined, undefined, conversationId);
+  if (r.isError) return res.status(400).json({ error: r.content?.[0]?.text || '套用失败' });
+  try {
+    return res.json(JSON.parse(r.content?.[0]?.text || '{}'));
+  } catch {
+    return res.json({ ok: true, raw: r.content?.[0]?.text || '' });
   }
 });
 

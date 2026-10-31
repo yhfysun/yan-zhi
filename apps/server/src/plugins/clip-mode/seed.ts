@@ -111,6 +111,7 @@ export const CLIP_AGENT_SYSTEM_PROMPT = `你是「剪辑师」（clipAgent），
 5. **声音**：有配音就用 add_clip 的 audioFile 挂到对应段（默认替换原声；要保留现场声传 keepOriginalAudio:true）；
    全片 BGM 用 op=set_bgm（有旁白时传 duck=true，说话时自动压低）；
    转场音效/第二段 BGM 用 op=add_audio { file, start, end, volume?, fadeIn?, fadeOut? }（音效 0.5~1 秒）。
+   没有现成配音就用 op=add_tts { text, start?, subtitle? } 现场合成（时长自动对齐，start 缺省接上一句之后）。
    ★ 用户要"配一段音乐/BGM"而没现成素材时，用 **music_compose** 本地生成：
    你写 style（gentle/ballad/lofi/pop/epic/edm/rock/folk/cn）、和弦进行（2~4 个循环，如 ["Am","F","C","G"]）、
    bars = 目标秒数 × bpm ÷ 60 ÷ 每小节拍数，需要旋律就写 melody（音名 + 拍数）。
@@ -120,6 +121,7 @@ export const CLIP_AGENT_SYSTEM_PROMPT = `你是「剪辑师」（clipAgent），
    ★ 必须如实说明：音色取决于模型/声库，不是真人演唱、不是真实乐器采样。
 6. **渲染**：先 op=render { preview:true } 出快速预览 → 让用户确认 → 再用 op=render 出正式成片。
    交付时给：成片路径、时长、段数、字幕条数与用到的动画。
+   ★ 同一风格做多集：把反复用的那串 op 用 **save_recipe** 存成配方（步骤里写 "{{参数}}"），下一集 **apply_recipe** 一键套用；op=list_recipes 看现有配方。
 
 ## 剪映剪辑（第二种模式，用户要自己剪时）
 用户说「用剪映剪 / 在剪映里剪 / 导出到剪映」时，**不要**用 clip_project op=render：

@@ -9,7 +9,7 @@
  *   写错了不会报错 —— 表现为"音效出现了但位置整体偏了几秒"或"全片人声被压掉一半"。
  */
 import { describe, it, expect } from 'vitest';
-import { applyClipOp, layersFromV1Fields, v1FieldsFromLayers, type ClipProject } from '../src/services/clip-project';
+import { applyClipOp, layersFromV1Fields, v1FieldsFromLayers, nextAudioSlot, type ClipProject } from '../src/services/clip-project';
 import { buildRenderPlan } from '../src/services/clip-render';
 
 function run(base: ClipProject | null, ops: Array<[string, Record<string, unknown>]>): ClipProject {
@@ -89,6 +89,18 @@ describe('P0-7 · add_audio / update_audio / remove_audio', () => {
   it('老工程（无 audios）投影后读回仍是空数组', () => {
     const L = layersFromV1Fields([{ id: 't1', text: 'a', start: 0, end: 1 }], []);
     expect(v1FieldsFromLayers(L).audios).toEqual([]);
+  });
+});
+
+describe('P1-8 · 配音落点（add_tts 的默认 start）', () => {
+  it('nextAudioSlot：接在最后一条音频层之后；没有音频层从 0 开始', () => {
+    const empty = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4' }] }]]);
+    expect(nextAudioSlot(empty)).toBe(0);
+    const p = run(empty, [['add_audio', { audios: [
+      { file: 'C:/a.wav', start: 1, end: 2.5 },
+      { file: 'C:/b.wav', start: 2.5, end: 4 },
+    ] }]]);
+    expect(nextAudioSlot(p)).toBe(4);
   });
 });
 

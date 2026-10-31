@@ -547,6 +547,15 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**add_audio** 定时音频层 { audios:[{ file, start, end, volume?, fadeIn?, fadeOut?, trimStart? }] }' +
         '（start/end 相对成片 —— 转场"唰"声就放一条 0.5~1 秒的；**两段 BGM 无缝接**就放两条首尾相接的；' +
         '与 set_bgm 的区别：bgm 是整片铺底、音频层是定时的）；**update_audio** { id|index, patch }；**remove_audio** { id|index }；**clear_audios**；' +
+        '**add_tts** 文字转配音 { text, start?, voice?, character?, rate?, volume?, subtitle?, fadeIn?, fadeOut? }' +
+        '（本地 TTS 合成后作为**定时音频层**放进时间轴，时长按实测自动对齐；start 缺省接在上一段配音之后；subtitle=true 同时加一条等长字幕）；' +
+        '**配方**（把一组 op 存成模板）：**list_recipes** 看清单（内置 + 自建，带参数说明）；' +
+        '**apply_recipe** { recipe, params? } 一键套用（任一步失败即停并指出第几步）；' +
+        '**save_recipe** { recipe, name, description?, params?, steps:[{op,args}] } 存成自建配方（步骤里可用 "{{参数名}}" 占位）；' +
+        '**delete_recipe** { recipe }；' +
+        '**贴纸**：**add_sticker** { stickers:[{ sticker?, file?, start, end, scale?, x?, y?, rotation?, opacity?, keyframes? }] }' +
+        '（`sticker` 用内置贴纸库 id（new/hot/重点/箭头/对勾/星星），`file` 用用户导入的 PNG/WebP；两者二选一，给了 sticker 会自动生成 PNG；' +
+        'scale 是宽度占画面宽度比例，缺省 0.3）；**update_sticker** { id|index, patch }；**remove_sticker**；**clear_stickers**；' +
         '**render** 渲染成片 { output?, preview?, quality? }（preview=true 出快速预览档，确认后再正式渲染；非预览档会自动顺带导出一张封面 jpg）。' +
         '★ subtitleAnimation 可选：' + effectCatalogText(TEXT_ANIMATIONS) + '（用户要「字幕动效」时选贴合语义的一个）。' +
         '输入一律为本机绝对路径（前序工具返回的 file 字段）。渲染返回 {type:"video", file, url}。',
@@ -561,11 +570,44 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               'add_text', 'update_text', 'remove_text', 'clear_texts',
               'set_bgm', 'clear_bgm', 'set_audio_fx', 'beat_cut',
               'add_overlay', 'update_overlay', 'remove_overlay', 'render',
-              'add_audio', 'update_audio', 'remove_audio', 'clear_audios',
+              'add_audio', 'update_audio', 'remove_audio', 'clear_audios', 'add_tts',
+              'list_recipes', 'apply_recipe', 'save_recipe', 'delete_recipe',
+              'add_sticker', 'update_sticker', 'remove_sticker', 'clear_stickers',
             ],
             description: '工程操作',
           },
-          name: { type: 'string', description: 'create：工程名' },
+          name: { type: 'string', description: 'create：工程名；save_recipe：配方显示名' },
+          recipe: { type: 'string', description: 'apply_recipe/save_recipe/delete_recipe：配方 id（小写字母/数字/连字符，如 "punch-in"；先用 list_recipes 看内置清单）' },
+          description: { type: 'string', description: 'save_recipe：配方说明（给人看的一句话）' },
+          steps: {
+            type: 'array',
+            description: 'save_recipe：配方步骤，按顺序执行。每步 { op, args }，args 里可用 "{{参数名}}" 占位（引用下方 params 定义）；op 只能是剪辑工程编辑类（add_clip/update_clip/add_text/add_audio/set_bgm 等）',
+            items: {
+              type: 'object',
+              properties: {
+                op: { type: 'string', description: '工程 op（如 add_text / update_clip / add_audio / set_bgm）' },
+                args: { type: 'object', description: '该 op 的参数（与直接调用时一致；可含 "{{参数名}}" 占位）' },
+              },
+              required: ['op'],
+            },
+          },
+          params: { type: 'object', description: 'apply_recipe：参数取值 { 参数名: 值 }；不传则全用默认值（必填项没给会报错并说明缺哪个）' },
+          paramDefs: {
+            type: 'array',
+            description: 'save_recipe：参数定义（配方需要调用方传什么）。key 与 steps 里的 "{{key}}" 对应',
+            items: {
+              type: 'object',
+              properties: {
+                key: { type: 'string', description: '参数名（字母/数字/下划线）' },
+                label: { type: 'string', description: '给人看的标签' },
+                type: { type: 'string', enum: ['string', 'number', 'boolean'], description: '参数类型' },
+                required: { type: 'boolean', description: 'true=套用时不传就报错' },
+                default: { description: '默认值（string/number/boolean）' },
+                desc: { type: 'string', description: '补充说明' },
+              },
+              required: ['key'],
+            },
+          },
           size: { type: 'string', description: 'create/set_output：导出规格，形如 "1080x1920"（默认竖屏）/ "1920x1080"（横屏）' },
           fps: { type: 'number', description: 'create/set_output：帧率，默认 30' },
           quality: { type: 'string', enum: ['low', 'std', 'high'], description: '导出质量档：low=省流（crf28，音轨128k）/ std=推荐（crf21，192k）/ high=高清（crf18，256k）。create/set_output 设工程默认档，render 传则只覆盖本次' },
@@ -783,7 +825,46 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               required: ['file', 'start', 'end'],
             },
           },
-          volume: { type: 'number', description: 'set_bgm：BGM 音量 0~1，默认 0.25' },
+          text: { type: 'string', description: 'add_tts：要读出来的台词/旁白（与 texts 数组里的 text 是两回事）' },
+          start: { type: 'number', description: 'add_tts：配音放到成片的第几秒；**不传=接在最后一条音频层之后**（多句连续调用自然首尾相接）' },
+          voice: { type: 'string', description: 'add_tts：显式音色（Edge 形如 zh-CN-YunxiNeural，用 api_tts_voices 查；留空按 character 自动分配）' },
+          character: { type: 'string', description: 'add_tts：角色名（如"旁白"/"男主"），同角色锁定同一音色' },
+          rate: { type: 'number', description: 'add_tts：语速 -10~10，0 为正常' },
+          subtitle: { type: 'boolean', description: 'add_tts：true=同时加一条**与配音等长**的字幕（省掉先配音再猜时间轴）' },
+          stickers: {
+            type: 'array',
+            description: 'add_sticker：贴纸数组。sticker=内置贴纸库 id（badge-new / badge-hot / badge-focus / arrow-right / check / star），file=用户导入的本地 PNG/WebP；两者二选一（给 sticker 会自动生成 PNG 文件）',
+            items: {
+              type: 'object',
+              properties: {
+                sticker: { type: 'string', enum: ['badge-new', 'badge-hot', 'badge-focus', 'arrow-right', 'check', 'star'], description: '内置贴纸 id（免版权，程序化生成）' },
+                file: { type: 'string', description: '用户导入的贴纸文件绝对路径（PNG/WebP，需带透明）' },
+                start: { type: 'number', description: '起始秒（相对成片）' },
+                end: { type: 'number', description: '结束秒（必须 > start）' },
+                scale: { type: 'number', description: '宽度占画面宽度的比例 0.02~1，默认 0.3' },
+                x: { type: 'number', description: '水平中心偏移 -0.5~0.5（0=居中）' },
+                y: { type: 'number', description: '垂直中心偏移 -0.5~0.5（0=居中）' },
+                rotation: { type: 'number', description: '旋转角度（度，正=顺时针）' },
+                opacity: { type: 'number', description: '不透明度 0~1' },
+                keyframes: {
+                  type: 'array',
+                  description: '贴纸变换关键帧（t 为层内 0~1）：[{t:0,scale:0.2},{t:1,scale:0.5,ease:"out"}] 这类"弹出/放大"',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      t: { type: 'number', description: '层内时间比例 0~1' },
+                      x: { type: 'number' }, y: { type: 'number' },
+                      scale: { type: 'number' }, rotation: { type: 'number' }, opacity: { type: 'number' },
+                      ease: { type: 'string', enum: ['linear', 'in', 'out', 'inout', 'bezier'] },
+                    },
+                    required: ['t'],
+                  },
+                },
+              },
+              required: ['start', 'end'],
+            },
+          },
+          volume: { type: 'number', description: 'set_bgm：BGM 音量 0~1，默认 0.25；add_tts/add_audio 也接受 volume（音频层音量 0~2）' },
           duck: { type: 'boolean', description: 'set_bgm：true=说话时自动压低 BGM（侧链压缩），适合带旁白的成片' },
           everyNth: { type: 'number', description: 'beat_cut：每 N 个拍点切一次（1=每拍，2=隔一拍）。默认 1' },
           beatTransition: { type: 'string', enum: TRANSITION_IDS, description: `beat_cut：切点处给后一段挂的转场（不给=硬切）。卡点常用 fade / fadeblack / whiteflash 这类短转场` },

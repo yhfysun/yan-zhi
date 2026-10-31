@@ -18,7 +18,7 @@ import { runCmd } from './exec-cmd.js';
 import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-style.js';
 import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
 import { buildMaskFilter } from './clip-mask.js';
-import type { ClipProject, ClipSegment, ClipText, ExportQuality } from './clip-project.js';
+import type { ClipProject, ClipSegment, ClipText, ClipOverlay, ExportQuality } from './clip-project.js';
 
 export interface RenderProbeResult {
   hasAudio: boolean;
@@ -686,9 +686,28 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
   //
   // ★ 放在拼接之后、字幕之前：字幕永远在最上层（压在画中画上）；
   //   BGM 混音在最前（画中画不带音频——口播/配乐由主轨与 BGM 负责，小窗出声反而吵）。
-  if (project.overlays?.length) {
+  // ★ 贴纸（P1-1）与画中画走**同一条** overlay 链路：默认居中、宽度占画面 30%，
+  //   变换/关键帧/时间窗口语义完全一致 —— 不为贴纸再写一套叠加实现（必然漂移）。
+  //   没有贴纸的工程这条合并结果与 project.overlays 完全相同 → 渲染计划逐字节不变。
+  const pipLayers: ClipOverlay[] = [
+    ...(project.overlays || []),
+    ...(project.stickers || []).map((s) => ({
+      id: s.id,
+      file: s.file,
+      start: s.start,
+      end: s.end,
+      pos: 'center',
+      scale: s.scale ?? 0.3,
+      ...(s.x != null ? { x: s.x } : {}),
+      ...(s.y != null ? { y: s.y } : {}),
+      ...(s.rotation != null ? { rotation: s.rotation } : {}),
+      ...(s.opacity != null ? { opacity: s.opacity } : {}),
+      ...(s.keyframes?.length ? { keyframes: s.keyframes } : {}),
+    })),
+  ];
+  if (pipLayers.length) {
     const piped = path.join(workDir, 'piped.mp4');
-    const ovs = project.overlays.filter((o) => o.end > o.start && o.start < totalDuration);
+    const ovs = pipLayers.filter((o) => o.end > o.start && o.start < totalDuration);
     if (ovs.length) {
       const args: string[] = ['-y', '-i', cursorFile];
       const fc: string[] = [];
@@ -698,8 +717,13 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
         const st = Math.max(0, ov.start);
         const et = Math.min(totalDuration, ov.end);
         const dur = Math.max(0.04, et - st);
-        // ★ -t 紧跟 -ss 且在本输入 -i 之前（与段加工同一条铁律：归属到本输入）
-        args.push('-ss', st.toFixed(3), '-t', dur.toFixed(3), '-i', ov.file);
+        // ★ 图片（贴纸/logo）必须用 `-loop 1` 输入，不能 `-ss`：
+        //   image2 只有**一帧**，`-ss 1` 会把这一帧 seek 掉 → 输入为空、叠层永远不出现
+        //   （实测：黑底 + 贴纸的出片里贴纸整段缺席，且 ffmpeg 不报错）。
+        //   视频仍走 `-ss/-t` 取窗口；铁律照旧：`-t` 紧跟本输入、在 `-i` 之前。
+        const ovIsImg = /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(ov.file);
+        if (ovIsImg) args.push('-loop', '1', '-framerate', String(fps), '-t', dur.toFixed(3), '-i', ov.file);
+        else args.push('-ss', st.toFixed(3), '-t', dur.toFixed(3), '-i', ov.file);
         const ovW = Math.max(16, Math.round(W * (ov.scale ?? 0.35)));
 
         // ── 图层变换/关键帧（P0-2）──

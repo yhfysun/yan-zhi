@@ -45,10 +45,18 @@ import { composeMusic } from '../services/music-render.js';
 import { listDocumentTypes } from '../services/document-type.js';
 import { generateSong } from '../services/music-generate.js';
 import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
+import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-library.js';
 import { singingStatus, installSingingRuntime, importModelZip } from '../services/music-sing-install.js';
-import { applyClipOp, summarizeProject, type ClipProject } from '../services/clip-project.js';
+import { applyClipOp, summarizeProject, nextAudioSlot, type ClipProject } from '../services/clip-project.js';
 import { buildRenderPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
 import { readClipProject, writeClipProject } from '../services/clip-store.js';
+import { applyRecipe } from '../services/clip-recipes.js';
+import { deleteCustomRecipe, findRecipe, listAllRecipes, saveCustomRecipe } from '../services/clip-recipe-store.js';
+import {
+  detectJianying, exportClipProjectToJianyingDraft, listJianyingDrafts, openJianying,
+  findRecentJianyingExports,
+  type JianyingMediaInfo,
+} from '../services/clip-jianying.js';
 import { COLOR_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectCatalogText, effectFilter } from '@yan-zhi/shared';
 import { analyzeBeats } from '../services/clip-beats.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
@@ -451,6 +459,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'media_edit',
   // 剪辑工程：多段 + 字幕(含动画) + BGM 的工程化剪辑与渲染（剪辑模式的唯一出口）
   'clip_project',
+  // 剪映剪辑（第二种剪辑模式）：工程 → 剪映草稿 / 检测安装 / 启动剪映
+  'clip_jianying',
   // 网络素材获取：公开视频/图片直链下载（标准化见 media_compose 的 normalize 操作）
   'api_media_fetch', 'api_media_normalize',
 ]);
@@ -1876,6 +1886,7 @@ async function probeClipSegments(
 async function clipProjectTool(
   args: Record<string, unknown>,
   conversationId?: string,
+  userId?: string | null,
 ): Promise<MpcToolExecutionResult> {
   const op = str(args, 'op').trim().toLowerCase();
   const snapshotOnly = args.summaryOnly === true;
@@ -2017,6 +2028,164 @@ async function clipProjectTool(
     }));
   }
 
+  // —— 配方（P1-11）：把一组 op 存成模板，一键套用 ——
+  //
+  // ★ 为什么在执行器层而不是 applyClipOp：配方存储是文件 IO。
+  //   套用本身是纯函数（services/clip-recipes.ts 的 applyRecipe），这里只负责读文件、落工程。
+  if (op === 'list_recipes') {
+    const { recipes, errors } = listAllRecipes();
+    return ok(JSON.stringify({
+      ok: true,
+      recipes: recipes.map((r) => ({
+        id: r.id,
+        name: r.name,
+        desc: r.desc,
+        builtin: !!r.builtin,
+        steps: r.steps.length,
+        params: (r.params || []).map((p) => ({
+          key: p.key, label: p.label, type: p.type,
+          ...(p.required ? { required: true } : {}),
+          ...(p.default !== undefined ? { default: p.default } : {}),
+          ...(p.desc ? { desc: p.desc } : {}),
+        })),
+      })),
+      ...(errors.length ? { warnings: errors } : {}),
+      note: `共 ${recipes.length} 个配方（内置 ${recipes.filter((r) => r.builtin).length} / 自建 ${recipes.filter((r) => !r.builtin).length}）`,
+    }));
+  }
+
+  if (op === 'apply_recipe') {
+    const id = String(args.recipe ?? '').trim();
+    if (!id) return fail('apply_recipe 需要 recipe（配方 id，先用 op=list_recipes 看清单）');
+    if (!cur) return fail('当前会话还没有剪辑工程（先 op=create + add_clip）');
+    const recipe = findRecipe(id);
+    if (!recipe) return fail(`找不到配方：${id}（用 op=list_recipes 查看可用 id）`);
+    const params = (args.params && typeof args.params === 'object' ? args.params : {}) as Record<string, unknown>;
+    const applied = applyRecipe(cur, recipe, params);
+    if (!applied.ok) return fail(applied.error);
+    await saveClipProject(conversationId, applied.project);
+    return ok(JSON.stringify({
+      ok: true,
+      recipe: recipe.id,
+      note: `已套用「${recipe.name}」：${applied.notes.join('；')}`,
+      project: summarizeProject(applied.project),
+    }));
+  }
+
+  if (op === 'save_recipe') {
+    const r = saveCustomRecipe({
+      id: args.recipe ?? args.id,
+      name: args.name,
+      desc: args.description ?? args.desc,
+      params: args.paramDefs,
+      steps: args.steps,
+    });
+    if (!r.ok) return fail(r.error);
+    return ok(JSON.stringify({
+      ok: true,
+      recipe: r.recipe,
+      note: `配方「${r.recipe.name}」已保存（之后 op=apply_recipe recipe=${r.recipe.id} 一键套用）`,
+    }));
+  }
+
+  if (op === 'delete_recipe') {
+    const id = String(args.recipe ?? args.id ?? '').trim();
+    if (!id) return fail('delete_recipe 需要 recipe（配方 id）');
+    const r = deleteCustomRecipe(id);
+    if (!r.ok) return fail(r.error);
+    return ok(JSON.stringify({ ok: true, note: `配方 ${id} 已删除` }));
+  }
+
+  // —— 文字转配音（P1-8）：合成 → 量时长 → 作为**定时音频层**落进工程 ——
+  //
+  // ★ 为什么不走 applyClipOp：合成要起 TTS 进程、量时长要 ffprobe，都是 IO；
+  //   op 层保持纯函数。这里合成完再把结果当 add_audio 喂给纯函数层，落盘形态与手工加音频完全一致。
+  // ★ "自动对齐时长"的两层意思：音频层 end = start + **实测时长**（不是字数估算）；
+  //   start 缺省接在最后一条音频层之后，多句旁白连续调用自然首尾相接。
+  if (op === 'add_tts') {
+    const text = String(args.text ?? '').trim();
+    if (!text) return fail('add_tts 需要 text（要读出来的台词/旁白）');
+    if (!cur) return fail('当前会话还没有剪辑工程（先 op=create + add_clip）');
+    const spoken = await mediaSpeak({ ...args, text }, userId, conversationId);
+    if (spoken.isError) return spoken;
+    let file = '';
+    try {
+      const payload = JSON.parse(spoken.content?.[0]?.text || '{}') as { file?: string };
+      file = String(payload.file || '').trim();
+    } catch { /* 下面统一报错 */ }
+    if (!file) return fail('配音合成没有返回音频文件（可先用 api_tts_speak 单独试一次看具体报错）');
+
+    const ff = await resolveFfmpeg();
+    if (!ff.ok) return fail(ffmpegMissingHint(ff));
+    const info = await probeMedia(ff.ffprobe, file);
+    if (!(info.durationSec > 0.05)) return fail(`配音时长为 0（${file}），无法放进时间轴`);
+
+    const start = args.start == null ? nextAudioSlot(cur) : Math.max(0, Number(args.start) || 0);
+    const end = start + info.durationSec;
+    const added = applyClipOp(cur, 'add_audio', {
+      audios: [{
+        file,
+        start: Number(start.toFixed(3)),
+        end: Number(end.toFixed(3)),
+        ...(args.volume == null ? {} : { volume: Number(args.volume) }),
+        ...(args.fadeIn == null ? {} : { fadeIn: Number(args.fadeIn) }),
+        ...(args.fadeOut == null ? {} : { fadeOut: Number(args.fadeOut) }),
+      }],
+    });
+    if (!added.ok) return fail(added.error);
+
+    // 可选：同时打一条**与配音等长**的字幕（省掉"先配音再猜时间轴"的来回）
+    let next = added.project;
+    if (args.subtitle === true) {
+      const t = applyClipOp(next, 'add_text', {
+        texts: [{
+          text,
+          start: Number(start.toFixed(3)),
+          end: Number(end.toFixed(3)),
+          ...(typeof args.position === 'string' ? { position: args.position } : {}),
+        }],
+      });
+      if (t.ok) next = t.project;
+    }
+    await saveClipProject(conversationId, next);
+    return ok(JSON.stringify({
+      ok: true,
+      file,
+      start: Number(start.toFixed(3)),
+      end: Number(end.toFixed(3)),
+      duration: Number(info.durationSec.toFixed(2)),
+      note: `配音已放进时间轴 ${start.toFixed(2)}s~${end.toFixed(2)}s（时长 ${info.durationSec.toFixed(2)}s）`
+        + (args.subtitle === true ? '，并加了一条同长字幕' : ''),
+      project: summarizeProject(next),
+    }));
+  }
+
+  // —— 贴纸库（P1-1）：条目里带 sticker 库 id 的先合成 PNG，再作为普通贴纸层落进工程 ——
+  // ★ 只做"库 id → 本地 PNG"的解析；落层逻辑仍是纯函数 add_sticker（含用户导入的 file）。
+  if (op === 'add_sticker') {
+    const raw = (Array.isArray(args.stickers) ? args.stickers : [args]) as Array<Record<string, unknown>>;
+    if (raw.some((x) => x && typeof x === 'object' && x.sticker)) {
+      if (!cur) return fail('当前会话还没有剪辑工程（先 op=create 建工程）');
+      const ff = await resolveFfmpeg();
+      if (!ff.ok) return fail(ffmpegMissingHint(ff));
+      const target = mediaTarget({ conversationId, kind: 'images' });
+      await mkdir(target.dir, { recursive: true });
+      const resolved: Array<Record<string, unknown>> = [];
+      for (let i = 0; i < raw.length; i++) {
+        const item = raw[i] || {};
+        const sid = String(item.sticker ?? '').trim();
+        if (!sid) { resolved.push(item); continue; }
+        const def = stickerById(sid);
+        if (!def) return fail(`未知贴纸：${sid}（可选：${STICKER_LIBRARY.map((s) => s.id).join(' / ')}）`);
+        const out = path.join(target.dir, `sticker-${def.id}-${Date.now()}-${i}.png`);
+        const r = await runCmd(ff.ffmpeg, stickerArgs(def, out), { timeoutMs: 60000, maxBuffer: 4 * 1024 * 1024 });
+        if (!r.ok) return fail(`贴纸生成失败（${sid}）：${(r.stderr || r.error || '').slice(-500)}`);
+        resolved.push({ ...item, file: out });
+      }
+      args = { ...args, stickers: resolved };
+    }
+  }
+
   // 编辑层：一律走纯函数 applyClipOp
   const applied = applyClipOp(cur, op, args);
   if (!applied.ok) return fail(applied.error);
@@ -2028,6 +2197,163 @@ async function clipProjectTool(
     project: summarizeProject(applied.project),
     all: applied.project,
   }));
+}
+
+// ===== 剪映剪辑（clip_jianying）：工程 → 剪映草稿 / 检测 / 打开 =====
+// 与应用内剪辑并列的第二种模式：不在本应用渲染，而是把工程交给剪映继续剪。
+// 只做「新建草稿」方向 —— 新版剪映保存的草稿可能是加密/非明文，读取/改写用户已有草稿不可靠。
+
+/** 一次探齐 clips / overlays / 配音 / BGM 的时长与尺寸（草稿时间轴要微秒级）。失败按未知降级。 */
+async function probeJianyingMedia(ffprobe: string, project: ClipProject): Promise<Record<string, JianyingMediaInfo>> {
+  const files = new Set<string>();
+  for (const c of project.clips) {
+    files.add(c.file);
+    if (c.audioFile) files.add(c.audioFile);
+  }
+  for (const o of project.overlays || []) files.add(o.file);
+  if (project.bgm?.file) files.add(project.bgm.file);
+
+  const out: Record<string, JianyingMediaInfo> = {};
+  const filesArr = [...files];
+  // 4 路并发：大工程几十段素材时，串行 ffprobe 会把导出拖到几十秒
+  const CONC = 4;
+  for (let i = 0; i < filesArr.length; i += CONC) {
+    const batch = filesArr.slice(i, i + CONC);
+    await Promise.all(batch.map(async (file) => {
+      const check = requireLocalFile(file, '素材');
+      if (!check.ok) { out[file] = {}; return; }
+      try {
+        const info = await probeMedia(ffprobe, check.file);
+        out[file] = {
+          ...(info.durationSec > 0 ? { durationSec: info.durationSec } : {}),
+          ...(info.width > 0 ? { width: info.width } : {}),
+          ...(info.height > 0 ? { height: info.height } : {}),
+          hasAudio: info.hasAudio,
+        };
+      } catch {
+        out[file] = {};
+      }
+    }));
+  }
+  return out;
+}
+
+async function clipJianyingTool(
+  args: Record<string, unknown>,
+  conversationId?: string,
+): Promise<MpcToolExecutionResult> {
+  const op = (str(args, 'op').trim().toLowerCase() || 'detect');
+
+  if (op === 'detect') {
+    const info = await detectJianying();
+    const drafts = info.draftRoot ? listJianyingDrafts(info.draftRoot, 10) : [];
+    return ok(JSON.stringify({ ok: true, ...info, draftCount: drafts.length, drafts }));
+  }
+
+  if (op === 'list') {
+    const info = await detectJianying();
+    const root = str(args, 'draftRoot').trim() || info.draftRoot || '';
+    if (!root) return fail(`没有草稿目录：${info.note} 也可以用 draftRoot 显式指定。`);
+    const limit = Math.max(1, Math.min(100, Number(args.limit) || 20));
+    const drafts = listJianyingDrafts(root, limit);
+    return ok(JSON.stringify({
+      ok: true, draftRoot: root, count: drafts.length, drafts,
+      note: drafts.length ? '' : '该目录下还没有剪映草稿',
+    }));
+  }
+
+  if (op === 'open') {
+    // ★ 安全边界：只允许启动自己检测到的剪映，不接受模型传入的可执行文件路径
+    //   （否则 `open` 会变成一条绕过 exec 审批的任意进程启动通道）。
+    if (str(args, 'exe').trim()) {
+      return fail('open 不接受自定义 exe：只启动本机检测到的剪映。没检测到就请用户手动打开剪映。');
+    }
+    const info = await detectJianying();
+    if (!info.installed || !info.exe) return fail(`没有找到剪映可执行文件。${info.note}`);
+    const r = await openJianying(info.exe);
+    return r.ok
+      ? ok(JSON.stringify({
+        ok: true, exe: info.exe,
+        note: '剪映已启动。它不会自动打开某一份草稿 —— 请在草稿列表点刚生成的那一条（按修改时间排在最前）。',
+      }))
+      : fail(`启动剪映失败：${r.error}`);
+  }
+
+  if (op === 'find_export') {
+    const sinceMinutes = Math.max(1, Math.min(24 * 60, Number(args.sinceMinutes) || 120));
+    const hint = str(args, 'nameHint').trim();
+    const all = findRecentJianyingExports({
+      sinceMinutes,
+      limit: Math.max(1, Math.min(100, Number(args.limit) || 20)),
+    });
+    const matched = hint ? all.filter((f) => f.name.includes(hint) || path.dirname(f.file).includes(hint)) : all;
+    const files = matched.length ? matched : all;
+    return ok(JSON.stringify({
+      ok: true,
+      count: files.length,
+      files,
+      ...(hint ? { matchedByHint: matched.length > 0 } : {}),
+      note: files.length
+        ? (hint && !matched.length
+          ? `没有文件名匹配「${hint}」的新文件，下面是最近的导出候选（剪映可能改了文件名）。`
+          : '找到最近的导出文件，可直接交给发布链路。')
+        : '没有找到最近的导出文件：确认剪映里已完成导出，或调大 sinceMinutes。',
+    }));
+  }
+
+  if (op !== 'export') return fail(`未知 op：${op}（detect / export / find_export / list / open）`);
+
+  const project = await loadClipProject(conversationId);
+  if (!project) return fail('当前会话还没有剪辑工程（先 clip_project op=create + add_clip；只看剪映用 op=detect）');
+  if (!project.clips.length) return fail('工程里没有片段，无法导出剪映草稿（先 clip_project op=add_clip）');
+
+  const info = await detectJianying();
+  const draftRoot = str(args, 'draftRoot').trim() || info.draftRoot || '';
+  if (!draftRoot) return fail(`找不到剪映草稿目录：${info.note} 也可以用 draftRoot 显式指定。`);
+
+  // 草稿需要每段素材的真实时长；探测口径与应用内渲染一致（resolveFfmpeg + probeMedia）
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return fail(ffmpegMissingHint(ff));
+  const media = await probeJianyingMedia(ff.ffprobe, project);
+
+  try {
+    const name = str(args, 'name').trim();
+    const exported = await exportClipProjectToJianyingDraft({
+      project,
+      draftRoot,
+      ...(name ? { name } : {}),
+      media,
+    });
+    let opened = false;
+    let openNote = '';
+    if (args.open === true) {
+      if (!info.installed || !info.exe) {
+        openNote = '（本机没检测到剪映，草稿已生成但未启动）';
+      } else {
+        const r = await openJianying(info.exe);
+        opened = r.ok;
+        openNote = r.ok ? '，剪映已启动' : `（启动剪映失败：${r.error}）`;
+      }
+    }
+    return ok(JSON.stringify({
+      ok: true,
+      mode: 'jianying',
+      draftDir: exported.draftDir,
+      draftName: exported.draftName,
+      draftRoot,
+      files: { content: exported.contentFile, meta: exported.metaFile },
+      stats: exported.stats,
+      warnings: exported.warnings,
+      opened,
+      note: `剪映草稿已生成：${exported.draftName}（${exported.stats.durationSec.toFixed(1)}s / `
+        + `${exported.stats.clips} 段视频 + ${exported.stats.images} 张图片 / ${exported.stats.texts} 条字幕 / `
+        + `${exported.stats.audios} 条音频）${openNote}。`
+        + `打开剪映 → 草稿箱点「${exported.draftName}」继续剪；导出的成片不影响应用内工程。`
+        + (exported.warnings.length ? ` 未迁移项：${exported.warnings.join('；')}` : ''),
+    }));
+  } catch (e) {
+    return fail(`导出剪映草稿失败：${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 async function mediaSrtGenerate(
@@ -4873,7 +5199,9 @@ export async function executeApiTool(
       case 'media_edit':
         return await mediaEdit(args, conversationId);
       case 'clip_project':
-        return await clipProjectTool(args, conversationId);
+        return await clipProjectTool(args, conversationId, userId);
+      case 'clip_jianying':
+        return await clipJianyingTool(args, conversationId);
       case 'media_install_ffmpeg':
         return await mediaInstallFfmpeg();
       case 'media_asr_transcribe':

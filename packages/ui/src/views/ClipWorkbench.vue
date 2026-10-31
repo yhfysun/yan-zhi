@@ -278,6 +278,33 @@
             >
               <el-icon :size="13" :class="{ 'cp-spin': asrRunning }"><Microphone /></el-icon>
             </button>
+            <!-- 字幕转配音（P1-8）：把选中字幕读成配音，按字幕时间落进音频轨 -->
+            <button
+              class="cp-mini"
+              :title="ttsRunning ? '正在合成配音…' : '字幕转配音：把选中的字幕读成配音，按字幕起点放进音频轨（时长自动对齐）'"
+              :disabled="ttsRunning || !selectedTextId"
+              @click="ttsSelectedText"
+            >
+              <el-icon :size="13" :class="{ 'cp-spin': ttsRunning }"><Microphone /></el-icon>
+            </button>
+            <!-- 剪辑配方（P1-11）：一组已验证的 op，填参数一键套用 -->
+            <button
+              class="cp-mini"
+              title="剪辑配方：把一组已验证的操作（调色/运镜/音效/标题…）填参数一键套用"
+              :disabled="!clipCount"
+              @click="openRecipes"
+            >
+              <el-icon :size="13"><MagicStick /></el-icon>
+            </button>
+            <!-- 贴纸库（P1-1）：免版权贴纸，点一下放到播放头 -->
+            <button
+              class="cp-mini"
+              title="贴纸库：免版权贴纸，点一下放到播放头；插画级贴纸请右键图片素材「设为贴纸」"
+              :disabled="!clipCount"
+              @click="openStickerLib"
+            >
+              <el-icon :size="13"><Picture /></el-icon>
+            </button>
             <button
               class="cp-mini"
               :title="beatRunning ? '正在分析节拍…' : '智能踩点：分析 BGM（或选中片段）的节拍，按节拍自动切分片段'"
@@ -419,6 +446,24 @@
                     <span class="cp-clip-name">{{ baseName(o.file) }}</span>
                   </div>
                   <div v-if="!overlays.length" class="cp-track-empty">右键素材 → 设为画中画</div>
+                </div>
+
+                <!-- 贴纸轨（P1-1）：右键图片 → 设为贴纸；或点工具栏「贴纸」从库添加 -->
+                <div class="cp-track">
+                  <div
+                    v-for="(s, i) in stickers"
+                    :key="s.id"
+                    class="cp-pip cp-sticker"
+                    :class="{ active: s.id === selectedStickerId }"
+                    :style="{ left: (s.start * pxPerSec) + 'px', width: Math.max(24, (s.end - s.start) * pxPerSec) + 'px' }"
+                    :title="`贴纸${i + 1} ${baseName(s.file)}\n${s.start.toFixed(1)}s ~ ${s.end.toFixed(1)}s\n宽度 ${((s.scale ?? 0.3) * 100).toFixed(0)}%`"
+                    @click="selectSticker(s.id)"
+                    @contextmenu.prevent.stop="onStickerMenu($event, s)"
+                  >
+                    <el-icon :size="11"><MagicStick /></el-icon>
+                    <span class="cp-clip-name">{{ baseName(s.file) }}</span>
+                  </div>
+                  <div v-if="!stickers.length" class="cp-track-empty">右键图片 → 设为贴纸，或点工具栏「贴纸」从库添加</div>
                 </div>
 
                 <!-- 播放头 -->
@@ -1033,6 +1078,45 @@
             <button class="cp-btn danger full" @click="removeAudio(selectedAudio.id)">删除音频</button>
           </template>
 
+          <!-- 贴纸属性（P1-1） -->
+          <template v-else-if="selectedSticker">
+            <div class="cp-ins-head">
+              <span class="cp-ins-title">贴纸</span>
+              <span class="cp-ins-sub">{{ baseName(selectedSticker.file) }}</span>
+            </div>
+            <div class="cp-field">
+              <label>时间（秒，相对成片）</label>
+              <div class="cp-field-row">
+                <input v-model.number="selectedSticker.start" class="cp-num wide" type="number" step="0.1" min="0" />
+                <span class="cp-tilde">~</span>
+                <input v-model.number="selectedSticker.end" class="cp-num wide" type="number" step="0.1" min="0" />
+              </div>
+            </div>
+            <div class="cp-field">
+              <label>大小 <span class="cp-val">{{ (skScale * 100).toFixed(0) }}% 画面宽</span></label>
+              <input v-model.number="skScale" class="cp-range" type="range" min="0.02" max="1" step="0.01" />
+            </div>
+            <div class="cp-field">
+              <label>水平位置 <span class="cp-val">{{ (skX * 100).toFixed(0) }}%</span></label>
+              <input v-model.number="skX" class="cp-range" type="range" min="-0.5" max="0.5" step="0.01" />
+            </div>
+            <div class="cp-field">
+              <label>垂直位置 <span class="cp-val">{{ (skY * 100).toFixed(0) }}%</span></label>
+              <input v-model.number="skY" class="cp-range" type="range" min="-0.5" max="0.5" step="0.01" />
+            </div>
+            <div class="cp-field">
+              <label>旋转 <span class="cp-val">{{ skRotation.toFixed(0) }}°</span></label>
+              <input v-model.number="skRotation" class="cp-range" type="range" min="-180" max="180" step="1" />
+            </div>
+            <div class="cp-field">
+              <label>不透明度 <span class="cp-val">{{ (skOpacity * 100).toFixed(0) }}%</span></label>
+              <input v-model.number="skOpacity" class="cp-range" type="range" min="0" max="1" step="0.01" />
+            </div>
+            <div class="cp-ins-hint">贴纸默认居中、宽度 30%。需要"弹出/放大"这类动画，可在对话里让剪辑师给贴纸打关键帧</div>
+            <button class="cp-btn primary full" @click="applyStickerPatch">应用贴纸参数</button>
+            <button class="cp-btn danger full" @click="removeSticker(selectedSticker.id)">删除贴纸</button>
+          </template>
+
           <div v-else class="cp-empty">
             <template v-if="!clipCount">还没有片段。<br />把左侧素材拖入时间轴开始剪辑，或直接在对话里让剪辑师剪。</template>
             <template v-else>在时间轴上选中一个片段或字幕后<br />在这里调整参数。</template>
@@ -1161,6 +1245,67 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- 剪辑配方（P1-11）：内置 + 自建，填参数一键套用 -->
+    <el-dialog v-model="recipeOpen" title="剪辑配方" width="560px" :append-to-body="true">
+      <div class="cp-rp">
+        <div class="cp-rp-note">
+          配方 = 一组已验证的工程操作（调色/运镜/音效/标题…）。选一个、改参数、一键套用。
+          <br />保存/删除自建配方请在对话里让剪辑师用 save_recipe / delete_recipe。
+        </div>
+        <div v-if="!recipeList.length" class="cp-rp-empty">还没有可用配方</div>
+        <div v-for="r in recipeList" :key="r.id" class="cp-rp-item">
+          <div class="cp-rp-head">
+            <b>{{ r.name }}</b>
+            <span v-if="r.builtin" class="cp-rp-badge">内置</span>
+            <span class="cp-rp-id">{{ r.id }} · {{ r.steps }} 步</span>
+          </div>
+          <div class="cp-rp-desc">{{ r.desc }}</div>
+          <div v-for="p in r.params" :key="p.key" class="cp-rp-param">
+            <label>{{ p.label }}<em v-if="p.required"> *</em></label>
+            <select v-if="p.type === 'boolean'" v-model="recipeParams[r.id][p.key]" class="cp-select">
+              <option :value="true">是</option>
+              <option :value="false">否</option>
+            </select>
+            <input
+              v-else-if="p.type === 'number'"
+              v-model.number="recipeParams[r.id][p.key]"
+              class="cp-num wide" type="number" step="0.1"
+            />
+            <input v-else v-model="recipeParams[r.id][p.key]" class="cp-input" :placeholder="p.desc || p.label" />
+          </div>
+          <button
+            class="cp-btn primary full"
+            :disabled="recipeApplying === r.id || !clipCount"
+            @click="applyRecipeUi(r)"
+          >{{ recipeApplying === r.id ? '套用中…' : '套用这个配方' }}</button>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- 贴纸库（P1-1）：ffmpeg 合成的透明 PNG，点一下放到播放头 -->
+    <el-dialog v-model="stickerLibOpen" title="贴纸库" width="560px" :append-to-body="true">
+      <div class="cp-sl">
+        <div class="cp-sl-note">
+          贴纸由 ffmpeg 实时合成（<b>透明 PNG、免版权</b>），点一下即放到播放头。
+          <br />插画级贴纸请右键图片素材 →「设为贴纸」（任意带透明的 PNG/WebP）。
+        </div>
+        <div class="cp-sl-items">
+          <button
+            v-for="it in stickerLibItems"
+            :key="it.id"
+            class="cp-sl-item"
+            :title="it.desc"
+            :disabled="stickerBusy === it.id"
+            @click="pickSticker(it.id)"
+          >
+            <img class="cp-sl-thumb" :src="stickerPreviewUrl(it.id)" :alt="it.label" loading="lazy" />
+            <span class="cp-sl-label">{{ it.label }}</span>
+            <span class="cp-sl-desc">{{ it.desc }}</span>
+          </button>
         </div>
       </div>
     </el-dialog>
@@ -1357,6 +1502,12 @@ interface ClipProject {
     id: string; file: string; start: number; end: number;
     volume?: number; fadeIn?: number; fadeOut?: number; trimStart?: number;
   }>;
+  /** P1-1：贴纸层（库生成或用户导入的透明 PNG；与画中画同一套变换语义） */
+  stickers?: Array<{
+    id: string; file: string; start: number; end: number;
+    scale?: number; x?: number; y?: number; rotation?: number; opacity?: number;
+    keyframes?: Array<{ t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: string }>;
+  }>;
 }
 interface ConvFile { id?: string; name: string; path: string; type?: string }
 interface ProjectListItem {
@@ -1487,6 +1638,8 @@ const pipOpen = ref(false);
 const selectedOverlayId = ref('');
 /** 选中的定时音频层（P0-7，与片段/字幕/画中画互斥） */
 const selectedAudioId = ref('');
+/** 选中的贴纸层（P1-1） */
+const selectedStickerId = ref('');
 const textPatch = reactive({
   text: '', start: 0, end: 0, fontSizePx: 88, outlinePx: 12, backColor: '', animation: '',
   slideDirection: 'right', position: 'bottom', color: '#FFFFFF', outlineColor: '#000000', safeArea: false,
@@ -1793,6 +1946,8 @@ const textCount = computed(() => texts.value.length);
 const bgm = computed(() => project.value?.bgm || null);
 const audios = computed(() => project.value?.audios || []);
 const selectedAudio = computed(() => audios.value.find((a) => a.id === selectedAudioId.value) || null);
+const stickers = computed(() => project.value?.stickers || []);
+const selectedSticker = computed(() => stickers.value.find((s) => s.id === selectedStickerId.value) || null);
 
 /** 音频字段滑杆（缺省值不写字段；淡入淡出不超过本段时长，与后端 normalizeAudio 同口径）。 */
 function setAudioField(key: 'volume' | 'fadeIn' | 'fadeOut', v: number, def: number, lo: number, hi: number) {
@@ -2086,9 +2241,11 @@ function refreshSelectionAfterHistory() {
   if (selectedClipId.value && !clips.value.some((c) => c.id === selectedClipId.value)) selectedClipId.value = '';
   if (selectedTextId.value && !texts.value.some((t) => t.id === selectedTextId.value)) selectedTextId.value = '';
   if (selectedAudioId.value && !audios.value.some((a) => a.id === selectedAudioId.value)) selectedAudioId.value = '';
+  if (selectedStickerId.value && !stickers.value.some((s) => s.id === selectedStickerId.value)) selectedStickerId.value = '';
   if (selectedClipId.value) selectClip(selectedClipId.value);
   else if (selectedTextId.value) selectText(selectedTextId.value);
   else if (selectedAudioId.value) selectAudio(selectedAudioId.value);
+  else if (selectedStickerId.value) selectSticker(selectedStickerId.value);
   scheduleFrameFetch(200);
 }
 
@@ -2372,6 +2529,9 @@ function onMediaMenu(e: MouseEvent, f: ConvFile) {
     ...(isVideo(f) || isImage(f)
       ? [{ label: '设为画中画', icon: 'Picture', disabled: !clipCount.value, action: () => addOverlay(f) }]
       : []),
+    ...(isImage(f)
+      ? [{ label: '设为贴纸（放在播放头）', icon: 'MagicStick', disabled: !clipCount.value, action: () => addStickerAtPlayhead({ file: f.path }) }]
+      : []),
     ...(isVideo(f) || isImage(f)
       ? [{ label: '设为背景音乐', icon: 'Headset', disabled: !/mp3|m4a|wav|aac|flac/i.test(f.path || f.name),
           action: () => setBgm(f.path) }]
@@ -2596,8 +2756,8 @@ const SHORTCUTS: Array<{ key: string; ctrl?: boolean; label: string; run: () => 
   { key: 'y', ctrl: true, label: '重做', run: () => void redo() },
   { key: 's', label: '分割', run: () => void splitAtPlayhead() },
   { key: 'd', ctrl: true, label: '复制片段', run: () => void duplicateClip() },
-  { key: 'Delete', label: '删除选中', run: () => void (selectedAudioId.value ? removeAudio(selectedAudioId.value) : selectedTextId.value ? removeText() : removeClip()) },
-  { key: 'Backspace', label: '删除选中', run: () => void (selectedAudioId.value ? removeAudio(selectedAudioId.value) : selectedTextId.value ? removeText() : removeClip()) },
+  { key: 'Delete', label: '删除选中', run: () => void (selectedStickerId.value ? removeSticker(selectedStickerId.value) : selectedAudioId.value ? removeAudio(selectedAudioId.value) : selectedTextId.value ? removeText() : removeClip()) },
+  { key: 'Backspace', label: '删除选中', run: () => void (selectedStickerId.value ? removeSticker(selectedStickerId.value) : selectedAudioId.value ? removeAudio(selectedAudioId.value) : selectedTextId.value ? removeText() : removeClip()) },
   { key: 'ArrowLeft', label: '播放头左移', run: () => seek(playhead.value - (shiftHeld ? 1 : 0.1)) },
   { key: 'ArrowRight', label: '播放头右移', run: () => seek(playhead.value + (shiftHeld ? 1 : 0.1)) },
   { key: ',', label: '上一帧', run: () => stepFrame(-1) },
@@ -3030,6 +3190,136 @@ function onAudioMenu(e: MouseEvent, a: { id: string; file: string }) {
   ], `audio:${a.id}`);
 }
 
+// ===== 贴纸（P1-1：库生成 + 用户导入）=====
+interface StickerLibItem { id: string; label: string; desc: string; group: string }
+const stickerLibOpen = ref(false);
+const stickerLibItems = ref<StickerLibItem[]>([]);
+const stickerBusy = ref('');
+
+function nextStickerId(): string {
+  let max = 0;
+  for (const s of project.value?.stickers || []) {
+    const m = /^s(\d+)$/.exec(s.id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `s${max + 1}`;
+}
+
+/** 在播放头加一个贴纸：file=用户导入；sticker=内置库 id（服务端生成透明 PNG 并登记素材库）。 */
+async function addStickerAtPlayhead(opts: { sticker?: string; file?: string }) {
+  if (!convId.value) { note('还没有会话'); return; }
+  const p = ensureProject();
+  pendingLabel.value = '加贴纸';
+  try {
+    let file = String(opts.file || '').trim();
+    if (!file && opts.sticker) {
+      type StickerGenResp = { ok?: boolean; path?: string; error?: string };
+      const r = await api.post<StickerGenResp>('/plugin/clip-mode/library/sticker', {
+        conversationId: convId.value, id: opts.sticker,
+      }) as { data?: StickerGenResp; error?: string };
+      if ('error' in r || !r.data?.ok || !r.data?.path) {
+        note(`贴纸生成失败：${('error' in r && r.error) || r.data?.error || '未知错误'}`);
+        return;
+      }
+      file = String(r.data.path);
+    }
+    if (!file) { note('没有可用的贴纸文件'); return; }
+    const start = Math.max(0, Number(playhead.value.toFixed(2)));
+    const dur = 2.5;
+    if (!p.stickers) p.stickers = [];
+    const item = { id: nextStickerId(), file, start, end: Number((start + dur).toFixed(2)), scale: 0.3 };
+    p.stickers.push(item);
+    dirty.value = true;
+    await save();
+    selectSticker(item.id);
+    note(`贴纸已放在播放头（${start.toFixed(1)}s 起 2.5 秒；右侧可调大小/位置）`);
+  } catch (e) {
+    note(`加贴纸失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function applyStickerPatch() {
+  const s = selectedSticker.value;
+  if (!s || !project.value) return;
+  pendingLabel.value = '改贴纸';
+  s.start = Math.max(0, Number(s.start) || 0);
+  s.end = Math.max(s.start + 0.1, Number(s.end) || 0);
+  if (s.scale != null) s.scale = Math.max(0.02, Math.min(1, Number(s.scale) || 0.3));
+  if (s.rotation != null) s.rotation = Math.max(-180, Math.min(180, Number(s.rotation) || 0));
+  if (s.opacity != null) s.opacity = Math.max(0, Math.min(1, Number(s.opacity)));
+  dirty.value = true;
+  await save();
+  note('贴纸已更新');
+}
+
+async function removeSticker(id: string) {
+  const p = project.value;
+  if (!p?.stickers) return;
+  pendingLabel.value = '删贴纸';
+  p.stickers = p.stickers.filter((s) => s.id !== id);
+  if (!p.stickers.length) delete p.stickers;
+  if (selectedStickerId.value === id) selectedStickerId.value = '';
+  dirty.value = true;
+  await save();
+}
+
+function onStickerMenu(e: MouseEvent, s: { id: string; file: string }) {
+  openCtxMenu(e, `贴纸 ${baseName(s.file)}`, [
+    { label: '起点对齐播放头', icon: 'Clock', action: async () => {
+        const cur = project.value?.stickers?.find((x) => x.id === s.id);
+        if (!cur) return;
+        pendingLabel.value = '贴纸对齐';
+        const dur = cur.end - cur.start;
+        cur.start = Number(Math.max(0, Math.min(playhead.value, estTotal.value - 0.1)).toFixed(3));
+        cur.end = Number(Math.min(estTotal.value, cur.start + dur).toFixed(3));
+        dirty.value = true;
+        await save();
+      } },
+    { label: '删除贴纸', icon: 'Delete', danger: true, action: () => removeSticker(s.id) },
+  ], `sticker:${s.id}`);
+}
+
+async function openStickerLib() {
+  if (!convId.value) { note('还没有会话'); return; }
+  if (!stickerLibItems.value.length) {
+    const r = await api.get<{ stickers: StickerLibItem[] }>('/plugin/clip-mode/library/stickers');
+    if ('error' in r) { note(`读取贴纸库失败：${String(r.error)}`); return; }
+    stickerLibItems.value = r.data.stickers || [];
+  }
+  stickerLibOpen.value = true;
+}
+
+function stickerPreviewUrl(id: string): string {
+  const code = getLicenseCode();
+  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  return `${API_BASE}/plugin/clip-mode/library/sticker-preview?id=${encodeURIComponent(id)}${qs}`;
+}
+
+async function pickSticker(id: string) {
+  stickerBusy.value = id;
+  try {
+    await addStickerAtPlayhead({ sticker: id });
+  } finally {
+    stickerBusy.value = '';
+    stickerLibOpen.value = false;
+  }
+}
+
+/** 贴纸变换字段（缺省值不写字段；缩放始终写，因为它是贴纸的基准尺寸）。 */
+function setStickerField(key: 'scale' | 'x' | 'y' | 'rotation' | 'opacity', v: number, def: number, lo: number, hi: number) {
+  const s = selectedSticker.value;
+  if (!s) return;
+  const n = Math.max(lo, Math.min(hi, Number(v) || 0));
+  const bag = s as Record<string, unknown>;
+  if (key !== 'scale' && Math.abs(n - def) < 0.001) delete bag[key];
+  else bag[key] = Number(n.toFixed(3));
+}
+const skScale = computed<number>({ get: () => selectedSticker.value?.scale ?? 0.3, set: (v) => setStickerField('scale', v, 0.3, 0.02, 1) });
+const skX = computed<number>({ get: () => selectedSticker.value?.x ?? 0, set: (v) => setStickerField('x', v, 0, -0.5, 0.5) });
+const skY = computed<number>({ get: () => selectedSticker.value?.y ?? 0, set: (v) => setStickerField('y', v, 0, -0.5, 0.5) });
+const skRotation = computed<number>({ get: () => selectedSticker.value?.rotation ?? 0, set: (v) => setStickerField('rotation', v, 0, -180, 180) });
+const skOpacity = computed<number>({ get: () => selectedSticker.value?.opacity ?? 1, set: (v) => setStickerField('opacity', v, 1, 0, 1) });
+
 // ===== 画中画（叠加轨）=====
 /** 音频波形图 URL（服务端 showwavespic；仅限本会话工程引用/登记过的文件）。 */
 function waveUrl(p: string, w = 600, h = 56): string {
@@ -3061,6 +3351,7 @@ function selectOverlay(id: string) {
   selectedClipId.value = '';
   selectedTextId.value = '';
   selectedAudioId.value = '';
+  selectedStickerId.value = '';
   rightTab.value = 'inspector';
 }
 
@@ -3069,6 +3360,16 @@ function selectAudio(id: string) {
   selectedClipId.value = '';
   selectedTextId.value = '';
   selectedOverlayId.value = '';
+  selectedStickerId.value = '';
+  rightTab.value = 'inspector';
+}
+
+function selectSticker(id: string) {
+  selectedStickerId.value = id;
+  selectedClipId.value = '';
+  selectedTextId.value = '';
+  selectedOverlayId.value = '';
+  selectedAudioId.value = '';
   rightTab.value = 'inspector';
 }
 
@@ -3230,6 +3531,7 @@ function selectClip(id: string) {
   selectedClipId.value = id;
   selectedTextId.value = '';
   selectedAudioId.value = '';
+  selectedStickerId.value = '';
   rightTab.value = 'inspector';
   const c = clips.value.find((x) => x.id === id);
   if (!c) return;
@@ -3264,6 +3566,7 @@ function selectText(id: string) {
   selectedTextId.value = id;
   selectedClipId.value = '';
   selectedAudioId.value = '';
+  selectedStickerId.value = '';
   rightTab.value = 'inspector';
   const t = texts.value.find((x) => x.id === id);
   if (!t) return;
@@ -3917,6 +4220,85 @@ async function addTextAtPlayhead() {
 //   服务端比前端清楚"到底缺二进制还是模型、该放哪个目录"。
 const asrRunning = ref(false);
 const asrModel = ref('small');   // base 快 / small 准（默认）/ medium 最准但慢
+/** 字幕转配音（P1-8）：TTS 合成中 */
+const ttsRunning = ref(false);
+
+/**
+ * 字幕转配音：把**选中的字幕**读成配音，按字幕起点放进音频轨，时长以合成结果为准。
+ * ★ 与 ASR 对称：ASR 是"语音→字幕"，这里是"字幕→语音"；
+ *   服务端走 clip_project 的 add_tts（合成+量时长是 IO，属于执行器独有 op）。
+ */
+async function ttsSelectedText() {
+  const t = selectedText.value;
+  if (!t) { note('先选中一条字幕（要读出来的那句）'); return; }
+  if (!convId.value) { note('还没有会话'); return; }
+  ttsRunning.value = true;
+  pendingLabel.value = '字幕转配音';
+  try {
+    type TtsResp = { ok?: boolean; note?: string; error?: string };
+    // ★ 解包口径与 ASR 一致：成功时 r.data 就是接口返回体本身；失败时是 { error }
+    const r = await api.post<TtsResp>('/plugin/clip-mode/tts', {
+      conversationId: convId.value, text: t.text, start: t.start,
+    }) as { data?: TtsResp; error?: string };
+    if ('error' in r && r.error) { note(`配音失败：${String(r.error)}`); return; }
+    const d = r.data;
+    if (!d?.ok) { note(`配音失败：${d?.error || '未知错误'}`); return; }
+    await reloadAll();
+    note(d.note || '配音已放进音频轨');
+  } catch (e) {
+    note(`配音失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    ttsRunning.value = false;
+  }
+}
+
+// ===== 剪辑配方（P1-11）=====
+interface RecipeParamDef {
+  key: string; label: string; type: 'string' | 'number' | 'boolean';
+  required?: boolean; default?: string | number | boolean; desc?: string;
+}
+interface RecipeItem { id: string; name: string; desc: string; builtin?: boolean; steps: number; params: RecipeParamDef[] }
+
+const recipeOpen = ref(false);
+const recipeList = ref<RecipeItem[]>([]);
+const recipeParams = reactive<Record<string, Record<string, unknown>>>({});
+const recipeApplying = ref('');
+
+/** 打开配方抽屉：拉清单并把每个参数填上默认值（必填项没默认值就留空，套用时服务端会报缺哪个）。 */
+async function openRecipes() {
+  if (!convId.value) { note('还没有会话'); return; }
+  const r = await api.get<{ recipes: RecipeItem[]; warnings?: string[] }>('/plugin/clip-mode/recipes');
+  if ('error' in r) { note(`读取配方失败：${String(r.error)}`); return; }
+  const list: RecipeItem[] = Array.isArray(r.data?.recipes) ? r.data.recipes : [];
+  recipeList.value = list;
+  for (const it of list) {
+    const bag: Record<string, unknown> = {};
+    for (const p of it.params || []) {
+      bag[p.key] = p.default !== undefined ? p.default : (p.type === 'boolean' ? false : p.type === 'number' ? 0 : '');
+    }
+    recipeParams[it.id] = bag;
+  }
+  recipeOpen.value = true;
+}
+
+async function applyRecipeUi(rec: RecipeItem) {
+  recipeApplying.value = rec.id;
+  pendingLabel.value = `套用配方 ${rec.name}`;
+  try {
+    const r = await api.post<{ ok?: boolean; note?: string; error?: string }>('/plugin/clip-mode/recipe/apply', {
+      conversationId: convId.value, recipe: rec.id, params: recipeParams[rec.id] || {},
+    }) as { data?: { ok?: boolean; note?: string; error?: string }; error?: string };
+    if ('error' in r && r.error) { note(`套用失败：${String(r.error)}`); return; }
+    if (!r.data?.ok) { note(`套用失败：${r.data?.error || '未知错误'}`); return; }
+    recipeOpen.value = false;
+    await reloadAll();
+    note(r.data.note || '配方已套用');
+  } catch (e) {
+    note(`套用失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    recipeApplying.value = '';
+  }
+}
 
 async function runAsrOnSelected() {
   const clip = selectedClip.value;
@@ -4231,6 +4613,18 @@ onMounted(async () => {
 /* 音效库弹窗 */
 .cp-sfxl { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; }
 .cp-sfxl-note { font-size: 11px; line-height: 1.7; color: var(--el-text-color-secondary); padding: 6px 8px; background: var(--el-fill-color-light); border-radius: 4px; }
+/* 配方弹窗（P1-11） */
+.cp-rp { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; }
+.cp-rp-note { font-size: 11px; line-height: 1.7; color: var(--el-text-color-secondary); padding: 6px 8px; background: var(--el-fill-color-light); border-radius: 4px; }
+.cp-rp-item { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; }
+.cp-rp-head { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.cp-rp-badge { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--el-color-primary-light-8); color: var(--el-color-primary); }
+.cp-rp-id { font-size: 10px; color: var(--el-text-color-placeholder); margin-left: auto; }
+.cp-rp-desc { font-size: 11px; line-height: 1.6; color: var(--el-text-color-secondary); }
+.cp-rp-param { display: flex; align-items: center; gap: 8px; }
+.cp-rp-param > label { flex: 0 0 130px; font-size: 11px; color: var(--el-text-color-regular); }
+.cp-rp-param > label em { color: var(--el-color-danger); font-style: normal; }
+.cp-rp-empty { font-size: 12px; color: var(--el-text-color-placeholder); text-align: center; padding: 12px; }
 .cp-sfxl-group { display: flex; flex-direction: column; gap: 5px; }
 .cp-sfxl-gtitle { font-size: 12px; font-weight: 600; color: var(--el-text-color-regular); }
 .cp-sfxl-items { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -4291,6 +4685,16 @@ onMounted(async () => {
 /* 画中画块（紫色系区分视频/音频轨） */
 .cp-pip { position: absolute; top: 5px; bottom: 5px; display: flex; align-items: center; padding: 0 6px; border-radius: 5px; background: linear-gradient(180deg, #c9b6f5, #a68ade); border: 1px solid #7d5cc9; color: #fff; font-size: 11px; cursor: pointer; overflow: hidden; }
 .cp-pip.active { outline: 2px solid #fff; }
+/* 贴纸块（黄色系与画中画区分） */
+.cp-sticker { background: linear-gradient(180deg, #ffe08a, #f5c542); border-color: #c99a1e; color: #4a3500; }
+/* 贴纸库弹窗 */
+.cp-sl { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; }
+.cp-sl-note { font-size: 11px; line-height: 1.7; color: var(--el-text-color-secondary); padding: 6px 8px; background: var(--el-fill-color-light); border-radius: 4px; }
+.cp-sl-items { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.cp-sl-item { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-blank); cursor: pointer; }
+.cp-sl-thumb { width: 72px; height: 72px; object-fit: contain; }
+.cp-sl-label { font-size: 12px; font-weight: 600; }
+.cp-sl-desc { font-size: 10px; color: var(--el-text-color-secondary); text-align: center; line-height: 1.4; }
 /* 关键帧行：t / scale / x / y / opacity 五个数字 + 删除 */
 .cp-kf-row { display: flex; align-items: center; gap: 3px; }
 .cp-kf-row .cp-num { flex: 1; min-width: 0; padding: 2px 3px; }

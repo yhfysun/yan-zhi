@@ -178,6 +178,31 @@ export interface ClipAudio {
   trimStart?: number;
 }
 
+/**
+ * 贴纸层（P1-1）：一张带透明的图（库生成或用户导入）叠在画面上，可随时间出现/消失。
+ * ★ 与画中画的区别：贴纸按**画面宽度比例**缩放（scale，缺省 0.3）、默认居中、没有音轨与混合模式；
+ *   渲染走同一套 overlay 链路，变换与关键帧语义完全一致。
+ */
+export interface ClipSticker {
+  id: string;
+  /** PNG/WebP（带透明）本机绝对路径 */
+  file: string;
+  /** 相对成片的起始/结束秒 */
+  start: number;
+  end: number;
+  /** 宽度占画面宽度的比例 0.02~1，缺省 0.3 */
+  scale?: number;
+  /** 中心偏移（-0.5~0.5，0=居中） */
+  x?: number;
+  y?: number;
+  /** 旋转角度（度，正=顺时针） */
+  rotation?: number;
+  /** 不透明度 0~1 */
+  opacity?: number;
+  /** 变换关键帧（t 为层内 0~1，语义同画中画） */
+  keyframes?: LayerKfPoint[];
+}
+
 /** 画中画（叠加轨）：在成片的某段时间里把一个小画面叠在主画面上。 */
 export interface ClipOverlay {
   id: string;
@@ -285,6 +310,8 @@ export interface ClipProject {
    * ★ 与 bgm 并存：bgm 是整片铺底（无时长），这里是定时音频（音效/多段 BGM）。
    */
   audios?: ClipAudio[];
+  /** 贴纸视图字段（仅内存，由 kind=sticker 的 layers 派生；落盘时剥离） */
+  stickers?: ClipSticker[];
   /**
    * 音效链（整片，按数组顺序串联）。
    * ★ 放"整片"而不是每段：降噪/响度归一这类是**工程级标准化**（多段素材音量忽大忽小，
@@ -402,7 +429,7 @@ function textTransformOf(t: Layer['transform'] | undefined): LayerTransform | un
  * v1 字段（texts/overlays）→ layers（正向投影；迁移与落盘共用）。
  * ★ 纯函数、确定性：同一输入永远得到同一 layers（id 保留原值，不重排）。
  */
-export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], audios: ClipAudio[] = []): Layer[] {
+export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], audios: ClipAudio[] = [], stickers: ClipSticker[] = []): Layer[] {
   const layers: Layer[] = [];
   for (const t of texts) {
     // ★ 变换/关键帧存在**图层**上（Layer.transform/keyframes），不塞进 l.text ——
@@ -459,6 +486,25 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], a
       },
     });
   }
+  // 贴纸层（P1-1）：track=2（在字幕之下；音频层不参与视觉叠放）
+  for (const s of stickers) {
+    layers.push({
+      id: s.id,
+      kind: 'sticker',
+      file: s.file,
+      start: s.start,
+      end: s.end,
+      track: 2,
+      transform: {
+        ...(s.x != null ? { x: s.x } : {}),
+        ...(s.y != null ? { y: s.y } : {}),
+        scale: s.scale ?? 0.3,
+        ...(s.rotation != null && Math.abs(s.rotation) > 0.001 ? { rotation: s.rotation } : {}),
+        ...(s.opacity != null && s.opacity < 0.999 ? { opacity: s.opacity } : {}),
+      },
+      ...(s.keyframes?.length ? { keyframes: s.keyframes.map((k) => ({ ...k })) } : {}),
+    });
+  }
   return layers;
 }
 
@@ -468,10 +514,11 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], a
  *   sticker/effect…）留在 layers 里，v1 视图看不到（也不会被反向投影丢掉 ——
  *   正向投影落盘时以**内存 texts/overlays + 原 layers 中的新 kind** 合并重建）。
  */
-export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overlays: ClipOverlay[]; audios: ClipAudio[] } {
+export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overlays: ClipOverlay[]; audios: ClipAudio[]; stickers: ClipSticker[] } {
   const texts: ClipText[] = [];
   const overlays: ClipOverlay[] = [];
   const audios: ClipAudio[] = [];
+  const stickers: ClipSticker[] = [];
   for (const l of layers) {
     if (l.kind === 'text' && l.text) {
       const tf = textTransformOf(l.transform);
@@ -518,9 +565,23 @@ export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overla
         ...(a.fadeOut != null && a.fadeOut > 0 ? { fadeOut: a.fadeOut } : {}),
         ...(a.trimStart != null && a.trimStart > 0 ? { trimStart: a.trimStart } : {}),
       });
+    } else if (l.kind === 'sticker' && l.file) {
+      const t = l.transform || {};
+      stickers.push({
+        id: l.id,
+        file: l.file,
+        start: l.start,
+        end: l.end,
+        scale: t.scale ?? 0.3,
+        ...(t.x != null ? { x: t.x } : {}),
+        ...(t.y != null ? { y: t.y } : {}),
+        ...(t.rotation != null && Math.abs(t.rotation) > 0.001 ? { rotation: t.rotation } : {}),
+        ...(t.opacity != null && t.opacity < 0.999 ? { opacity: t.opacity } : {}),
+        ...(l.keyframes?.length ? { keyframes: l.keyframes.map((k) => ({ ...k })) } : {}),
+      });
     }
   }
-  return { texts, overlays, audios };
+  return { texts, overlays, audios, stickers };
 }
 
 /**
@@ -568,8 +629,8 @@ export function createEmptyProject(name = '未命名剪辑'): ClipProject {
   };
 }
 
-/** 生成可读且确定性的 id：c1/c2… t1/t2… o1/o2… a1/a2…（从现有最大序号 +1，删了中间项也不会撞号）。 */
-function nextId(prefix: 'c' | 't' | 'o' | 'a', existing: Array<{ id: string }>): string {
+/** 生成可读且确定性的 id：c1/c2… t1/t2… o1/o2… a1/a2… s1/s2…（从现有最大序号 +1）。 */
+function nextId(prefix: 'c' | 't' | 'o' | 'a' | 's', existing: Array<{ id: string }>): string {
   let max = 0;
   for (const it of existing) {
     const m = String(it.id || '').match(new RegExp(`^${prefix}(\\d+)$`));
@@ -938,6 +999,39 @@ function normalizeAudio(v: unknown, id: string): ClipAudio | null {
   };
 }
 
+/** 归一化贴纸层（P1-1）：值域与画中画一致，只是没有音轨/混合模式，缩放按画面宽度比例。 */
+function normalizeSticker(v: unknown, id: string): ClipSticker | null {
+  if (!v || typeof v !== 'object') return null;
+  const m = v as Record<string, unknown>;
+  const file = String(m.file ?? '').trim();
+  const start = Math.max(0, numOr(m.start, 0));
+  const end = numOr(m.end, 0);
+  if (!file || !(end > start)) return null;
+  const clampNum = (val: unknown, lo: number, hi: number): number | undefined => {
+    if (val == null) return undefined;
+    const n = Number(val);
+    if (!Number.isFinite(n)) return undefined;
+    return Number(Math.max(lo, Math.min(hi, n)).toFixed(4));
+  };
+  const scale = Number(Math.max(0.02, Math.min(1, numOr(m.scale, 0.3))).toFixed(4));
+  const x = clampNum(m.x, -0.5, 0.5);
+  const y = clampNum(m.y, -0.5, 0.5);
+  const rotation = clampNum(m.rotation, -180, 180);
+  const opacity = clampNum(m.opacity, 0, 1);
+  const keyframes = normalizeLayerKeyframes(m.keyframes);
+  return {
+    id, file,
+    start: Number(start.toFixed(3)),
+    end: Number(end.toFixed(3)),
+    scale,
+    ...(x != null ? { x } : {}),
+    ...(y != null ? { y } : {}),
+    ...(rotation != null && Math.abs(rotation) > 0.001 ? { rotation } : {}),
+    ...(opacity != null && opacity < 0.999 ? { opacity } : {}),
+    ...(keyframes ? { keyframes } : {}),
+  };
+}
+
 /**
  * 归一化转场配置。返回 null = 无转场（第一段不需要转场，也没有"前一段"可接）。
  * ★ 只做范围钳制与字段白名单；type 的合法性由效果库校验（api-tool-executor），
@@ -1011,6 +1105,17 @@ function locateAudio(project: ClipProject, args: Record<string, unknown>): numbe
   if (!Number.isFinite(raw)) return -1;
   const idx = Math.round(raw) - 1;
   return idx >= 0 && idx < audios.length ? idx : -1;
+}
+
+/** 定位贴纸层：按 id 优先，其次 1 基序号；返回 -1 = 没找到。 */
+function locateSticker(project: ClipProject, args: Record<string, unknown>): number {
+  const list = project.stickers || [];
+  const id = String(args.id ?? '').trim();
+  if (id) return list.findIndex((s) => s.id === id);
+  const raw = Number(args.index);
+  if (!Number.isFinite(raw)) return -1;
+  const idx = Math.round(raw) - 1;
+  return idx >= 0 && idx < list.length ? idx : -1;
 }
 
 /** 字幕条目校验：时间必须成对且 end > start；文本非空。 */
@@ -1094,6 +1199,7 @@ export function applyClipOp(
         output: { ...base.output },
         ...(base.overlays ? { overlays: [...base.overlays] } : {}),
         ...(base.audios ? { audios: [...base.audios] } : {}),
+        ...(base.stickers ? { stickers: [...base.stickers] } : {}),
       }
     : createEmptyProject();
   const touch = () => { project.updatedAt = Date.now(); };
@@ -1495,6 +1601,48 @@ export function applyClipOp(
       touch();
       return { ok: true, project, note: '音频层已清空' };
 
+    case 'add_sticker': {
+      const raw = Array.isArray(args.stickers) ? args.stickers : [args];
+      const added: string[] = [];
+      for (let i = 0; i < raw.length; i++) {
+        if (!project.stickers) project.stickers = [];
+        const item = normalizeSticker(raw[i], '');
+        if (!item) return { ok: false, error: `stickers[${i}] 非法：需要 file（PNG/WebP）+ end > start` };
+        item.id = nextId('s', project.stickers);
+        project.stickers.push(item);
+        added.push(item.id);
+      }
+      touch();
+      return { ok: true, project, note: `已加 ${added.length} 个贴纸（${added.join(', ')}）` };
+    }
+
+    case 'update_sticker': {
+      if (!project.stickers?.length) return { ok: false, error: '工程里还没有贴纸' };
+      const idx = locateSticker(project, args);
+      if (idx < 0) return { ok: false, error: `找不到贴纸（现有：${project.stickers.map((s) => s.id).join(', ')}）` };
+      const patch = (args.patch && typeof args.patch === 'object' ? args.patch : args) as Record<string, unknown>;
+      const merged = normalizeSticker({ ...project.stickers[idx], ...patch }, project.stickers[idx].id);
+      if (!merged) return { ok: false, error: 'update_sticker 结果非法（file 不能清空；end 必须大于 start）' };
+      project.stickers[idx] = merged;
+      touch();
+      return { ok: true, project, note: `贴纸 ${merged.id} 已更新` };
+    }
+
+    case 'remove_sticker': {
+      if (!project.stickers?.length) return { ok: false, error: '工程里还没有贴纸' };
+      const idx = locateSticker(project, args);
+      if (idx < 0) return { ok: false, error: `找不到贴纸（现有：${project.stickers.map((s) => s.id).join(', ')}）` };
+      const [gone] = project.stickers.splice(idx, 1);
+      if (!project.stickers.length) delete project.stickers;
+      touch();
+      return { ok: true, project, note: `已删除贴纸 ${gone.id}` };
+    }
+
+    case 'clear_stickers':
+      delete project.stickers;
+      touch();
+      return { ok: true, project, note: '贴纸层已清空' };
+
     case 'clear_bgm':
       delete project.bgm;
       touch();
@@ -1506,13 +1654,23 @@ export function applyClipOp(
         error:
           `未知 op：${op}。可选：create / get / set_output / add_clip / update_clip / remove_clip / ` +
           `move_clip / clear_clips / add_text / update_text / remove_text / clear_texts / set_bgm / clear_bgm / ` +
-          `add_overlay / update_overlay / remove_overlay / add_audio / update_audio / remove_audio / clear_audios`,
+          `add_overlay / update_overlay / remove_overlay / add_audio / update_audio / remove_audio / clear_audios / ` +
+          `add_sticker / update_sticker / remove_sticker / clear_stickers`,
       };
   }
 }
 
 /**
- * 工程摘要（给模型看的紧凑视图，别把整份 json 塞进上下文）。
+ * 下一段音频的默认落点（秒）：接在**最后一条音频层**之后；没有音频层就从 0 开始。
+ * ★ 用途是 P1-8 的 add_tts：多句旁白连续调用时自然首尾相接，调用方不必自己累加时长
+ *   （模型手算时长必错，而且错了不报错，只是"配音压在前面一句上"）。
+ */
+export function nextAudioSlot(project: ClipProject): number {
+  return (project.audios || []).reduce((m, a) => Math.max(m, a.end), 0);
+}
+
+/**
+ * 摘要工程（给模型看的紧凑视图，别把整份 json 塞进上下文）。
  * 时间轴用「累计起止」表示，模型据此推算字幕时间，不必自己累加各段时长。
  */
 export function summarizeProject(p: ClipProject, durations: Record<string, number> = {}): Record<string, unknown> {
@@ -1565,5 +1723,6 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
     ...(p.bgm ? { bgm: p.bgm } : {}),
     ...(p.overlays?.length ? { overlays: p.overlays.map((o, i) => ({ index: i + 1, ...o })) } : {}),
     ...(p.audios?.length ? { audios: p.audios.map((a, i) => ({ index: i + 1, ...a })) } : {}),
+    ...(p.stickers?.length ? { stickers: p.stickers.map((s, i) => ({ index: i + 1, ...s })) } : {}),
   };
 }
