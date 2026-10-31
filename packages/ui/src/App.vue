@@ -115,6 +115,10 @@
       </template>
     </div>
 
+    <!-- 底部状态栏（2026-10-31）：桌面/web 常驻；移动端由 TabBar 占位，bare 子窗口不挂。
+         开发模式工作台自带状态栏（Git 状态 / 就绪 / 光标），这里不再叠第二条。 -->
+    <AppStatusBar v-if="showStatusBar" />
+
     <!-- 独立子窗口：无应用抽屉（设置浮层属于主窗口的导航体验） -->
     <SettingsDrawer v-if="!isBareRoute" />
 
@@ -148,6 +152,8 @@ import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, shallowRef
 import { ElMessage } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 import { Avatar, SwitchButton, Moon, Sunny, Setting, Collection, Menu } from '@element-plus/icons-vue';
+import AppStatusBar from './components/AppStatusBar.vue';
+import { activeMode } from './stores/mode';
 import { useAuthStore } from './stores/auth';
 import { useSettingsStore } from './stores/settings';
 import { usePluginStore } from './stores/plugin';
@@ -240,6 +246,10 @@ const localIdentityInitial = computed(() => '本');
  * 若再套一层 SideNav / 顶栏就会出现「窗口里还有一整套应用导航」的错位。
  */
 const isBareRoute = computed(() => route.meta?.bare === true);
+/** 全局状态栏显隐：开发模式工作台自带状态栏，避免两条叠在一起 */
+const showStatusBar = computed(() =>
+  !isBareRoute.value && !isMobilePlatform && activeMode.value !== 'dev' && route.path !== '/code',
+);
 
 /**
  * 远程控制外壳组件（被控端悬浮/接管层）。

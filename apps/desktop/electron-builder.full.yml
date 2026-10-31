@@ -6,8 +6,18 @@ directories:
   output: ${env.YZ_OUTPUT_DIR}
 # 同 lite：原生模块 ABI 由 fix-sqlite-binding.cjs（postinstall）处理，跳过 node-gyp 重编译
 npmRebuild: false
-# 安全加固：只从 app.asar 加载（配合 afterPack 写入的 OnlyLoadAppFromAsar fuse）。
+# 安全加固：只从 app.asar 只读挂载（配合 afterPack 写入的 OnlyLoadAppFromAsar fuse）。
 asar: true
+# ★★ sqlite-vec 的 vec0.dll 是「SQLite 可加载扩展」（.dll/.dylib/.so），不是 Node addon（.node）：
+#   electron-builder 的 smart-unpack 只认 .node 后缀 → vec0.dll 被压进 asar，
+#   运行时 loadExtension 无法从 asar 读 → 报 no such module: vec0，向量检索静默降级
+#   （2026-10-30 .63 真机实锤）。显式 unpack 平台包，DLL 落 app.asar.unpacked 可读。
+asarUnpack:
+  - node_modules/sqlite-vec-windows-x64/**
+  - node_modules/sqlite-vec-darwin-x64/**
+  - node_modules/sqlite-vec-darwin-arm64/**
+  - node_modules/sqlite-vec-linux-x64/**
+  - node_modules/sqlite-vec-linux-arm64/**
 # 打包后、出安装包前：清理后端 sourcemap/.d.ts，并写入安全 fuses。
 afterPack: ./electron-builder.after-pack.cjs
 # ★★ node_modules 进不进 asar，由 apps/desktop/package.json 的 **dependencies** 决定

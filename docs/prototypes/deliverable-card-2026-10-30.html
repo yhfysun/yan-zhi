@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>交付物卡片 · 文档类卡优化对比</title>
+<style>
+  :root {
+    --color-bg: #F7F8FA;
+    --color-surface: #FFFFFF;
+    --color-text: #1A1D24;
+    --color-text-secondary: #5A6272;
+    --glass-bg: #FFFFFF;
+    --glass-bg-hover: #F0F2F7;
+    --glass-border: #E7EAF0;
+    --color-primary: #4F46E5;
+    --color-accent: #7C5CFC;
+    --color-success: #2E7D5B;
+    --color-warning: #B45309;
+    --color-danger: #B91C1C;
+  }
+  body.dark {
+    --color-bg: #141518;
+    --color-surface: #1d1e22;
+    --color-text: #E8EAF0;
+    --color-text-secondary: #B8BBC4;
+    --glass-bg: #1d1e22;
+    --glass-bg-hover: #26282e;
+    --glass-border: rgba(255, 255, 255, 0.13);
+    --color-primary: #818CF8;
+    --color-accent: #A78BFA;
+    --color-success: #4ADE80;
+    --color-warning: #FBBF24;
+    --color-danger: #F87171;
+  }
+  body {
+    margin: 0;
+    padding: 28px 32px;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    transition: background .2s, color .2s;
+  }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .sub { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 20px; }
+  .bar { display: flex; gap: 8px; margin-bottom: 20px; }
+  button {
+    font: inherit; font-size: 12px; padding: 5px 12px; cursor: pointer;
+    border: 1px solid var(--glass-border); border-radius: 8px;
+    background: var(--color-surface); color: var(--color-text);
+  }
+  button:hover { border-color: var(--color-primary); color: var(--color-primary); }
+  .cols { display: flex; gap: 40px; flex-wrap: wrap; }
+  .panel-title { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); margin-bottom: 10px; }
+  .panel-title.bad::after { content: " · 空白卡像坏图"; color: var(--color-danger); font-weight: 400; }
+  .panel-title.good::after { content: " · 类型块补齐"; color: var(--color-success); font-weight: 400; }
+
+  /* ===== 与 DeliverableFileCard.vue 一致的卡片样式 ===== */
+  .deliverable-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100px, 100%), 140px));
+    gap: 6px;
+    justify-content: start;
+  }
+  .deliverable-file-card {
+    display: flex; flex-direction: column; gap: 3px;
+    padding: 5px 7px;
+    border: 1px solid var(--glass-border); border-radius: 8px;
+    background: var(--glass-bg); cursor: pointer;
+    transition: border-color .15s, box-shadow .15s, background .15s;
+  }
+  .deliverable-file-card:hover {
+    border-color: var(--color-primary);
+    background: var(--glass-bg-hover);
+    box-shadow: 0 1px 6px color-mix(in srgb, var(--color-primary) 20%, transparent);
+  }
+  .deliverable-thumb {
+    width: 100%; height: 72px; object-fit: cover; border-radius: 6px;
+    background: rgba(0, 0, 0, 0.35); display: block; user-select: none;
+  }
+  .deliverable-file-name {
+    font-size: 11.5px; font-weight: 500; color: var(--color-text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .deliverable-file-bottom {
+    display: flex; align-items: center; justify-content: space-between; gap: 4px;
+    margin-top: auto;
+  }
+  .deliverable-file-meta { font-size: 10.5px; color: var(--color-text-secondary); white-space: nowrap; }
+  .deliverable-file-actions { display: flex; align-items: center; gap: 1px; opacity: .55; }
+  .deliverable-file-card:hover .deliverable-file-actions { opacity: 1; }
+  .act { width: 15px; height: 15px; display: grid; place-items: center; font-size: 10px; color: var(--color-text-secondary); }
+
+  /* 优化后：文档类类型块 */
+  .file-thumb {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; box-sizing: border-box;
+    background: color-mix(in srgb, var(--ft-color, var(--color-text-secondary)) 11%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ft-color, var(--color-text-secondary)) 20%, transparent);
+    color: var(--ft-color, var(--color-text-secondary));
+  }
+  .file-thumb-icon { font-size: 24px; line-height: 1; }
+  .file-thumb-ext { font-size: 9.5px; font-weight: 600; letter-spacing: .6px; line-height: 1; opacity: .8; }
+  .ft-doc { --ft-color: var(--color-primary); }
+  .ft-pdf { --ft-color: var(--color-danger); }
+  .ft-sheet { --ft-color: var(--color-success); }
+  .ft-slide { --ft-color: var(--color-warning); }
+  .ft-audio { --ft-color: var(--color-accent); }
+  .ft-archive { --ft-color: var(--color-text-secondary); }
+  .ft-code { --ft-color: var(--color-primary); }
+</style>
+</head>
+<body>
+  <h1>交付物卡片 · 文档类卡优化对比</h1>
+  <div class="sub">左边是当前线上表现：没有缩略图的卡被网格拉到与视频卡同高，中间一片空白。右边是改后：按扩展名给「类型图标 + 扩展名」块，填充同一 72px 区域。</div>
+  <div class="bar">
+    <button id="themeBtn" type="button">切换深色 / 浅色</button>
+  </div>
+
+  <div class="cols">
+    <section>
+      <div class="panel-title bad">优化前</div>
+      <div class="deliverable-grid">
+        <div class="deliverable-file-card">
+          <div class="deliverable-thumb" style="display:grid;place-items:center;color:rgba(255,255,255,.6);font-size:10px;">视频首帧</div>
+          <span class="deliverable-file-name">AI干活第05期_1小时会…</span>
+          <div class="deliverable-file-bottom">
+            <span class="deliverable-file-meta">10-30 15:28</span>
+            <div class="deliverable-file-actions"><span class="act">⤓</span><span class="act">📂</span></div>
+          </div>
+        </div>
+        <div class="deliverable-file-card">
+          <span class="deliverable-file-name">AI干活第05期_发布…</span>
+          <div class="deliverable-file-bottom">
+            <span class="deliverable-file-meta">10-30 15:30</span>
+            <div class="deliverable-file-actions"><span class="act">⤓</span><span class="act">📂</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="panel-title good">优化后</div>
+      <div class="deliverable-grid">
+        <div class="deliverable-file-card">
+          <div class="deliverable-thumb" style="display:grid;place-items:center;color:rgba(255,255,255,.6);font-size:10px;">视频首帧</div>
+          <span class="deliverable-file-name">AI干活第05期_1小时会…</span>
+          <div class="deliverable-file-bottom">
+            <span class="deliverable-file-meta">10-30 15:28</span>
+            <div class="deliverable-file-actions"><span class="act">⤓</span><span class="act">📂</span></div>
+          </div>
+        </div>
+        <div class="deliverable-file-card">
+          <div class="deliverable-thumb file-thumb ft-doc">
+            <span class="file-thumb-icon">📄</span>
+            <span class="file-thumb-ext">DOCX</span>
+          </div>
+          <span class="deliverable-file-name">AI干活第05期_发布…</span>
+          <div class="deliverable-file-bottom">
+            <span class="deliverable-file-meta">10-30 15:30</span>
+            <div class="deliverable-file-actions"><span class="act">⤓</span><span class="act">📂</span></div>
+          </div>
+        </div>
+        <div class="deliverable-file-card">
+          <div class="deliverable-thumb file-thumb ft-sheet">
+            <span class="file-thumb-icon">📊</span>
+            <span class="file-thumb-ext">XLSX</span>
+          </div>
+          <span class="deliverable-file-name">第05期_投放数据.xlsx</span>
+          <div class="deliverable-file-bottom">
+            <span class="deliverable-file-meta">10-30 15:31</span>
+            <div class="deliverable-file-actions"><span class="act">⤓</span><span class="act">📂</span></div>
+          </div>
+        </div>
+        <div class="deliverable-file-card">
+          <div class="deliverable-thumb file-thumb ft-archive">
+            <span class="file-thumb-icon">🗜</span>
+            <span class="file-thumb-ext">ZIP</span>
+          </div>
+          <span class="deliverable-file-name">第05期_成片素材.zip</span>
+          <div class="deliverable-file-bottom">
+            <span class="deliverable-file-meta">10-30 15:32</span>
+            <div class="deliverable-file-actions"><span class="act">⤓</span><span class="act">📂</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    document.getElementById('themeBtn').addEventListener('click', () => {
+      document.body.classList.toggle('dark');
+    });
+  </script>
+</body>
+</html>

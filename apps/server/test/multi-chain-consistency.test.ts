@@ -71,17 +71,22 @@ describe('① 桌面 get_page_content 必须含 selector', () => {
     //   `selector:A.genSel(el)`（说明"要补什么"）—— 不剥注释的话，把真实代码行删掉
     //   （变异验证做过）断言仍被**注释**满足 → 假绿。本项目多次踩"注释满足断言"。
     const body = stripComments(caseBody(MAIN, 'get_page_content'));
+    // 2026-10-31 同步：页面内快照回显已统一为 A.genSelEcho(el)（genSel 的同一份，
+    //   走页面内 __yzSelMap），不再直调 A.genSel。
     expect(body, '★ 桌面 get_page_content 的元素对象仍无 selector → 与同族 get_page_info 及服务端不一致')
-      .toMatch(/selector:\s*A\.genSel\(el\)/);
+      .toMatch(/selector:\s*A\.genSel(?:Echo)?\(el\)/);
   });
 
   it('★★★ 必须与 get_page_info 用**同一个**生成器（不另造）', () => {
-    // ★ 用 caseBodyContaining —— `case 'get_page_info'` 在 main.cjs 里有**两份**，
-    //   含 genSel 的是 :2775 那份（`caseBody` 只取第一个会锚错，本次真踩）。
+    // ★ 用 caseBodyContaining —— `case 'get_page_info'` 在 main.cjs 里曾有两份，
+    //   按内容定位避免锚错。
     const info = stripComments(caseBodyContaining(MAIN, 'get_page_info', 'genSel'));
     const content = stripComments(caseBody(MAIN, 'get_page_content'));
-    expect(info, '★ get_page_info 的 selector 生成器变了').toMatch(/A\.genSel\(el\)/);
-    expect(content, '★ get_page_content 用了另一个生成器（两处会漂移）').toMatch(/A\.genSel\(el\)/);
+    const SEL = /selector:\s*(A\.genSel(?:Echo)?\(el\))/;
+    const infoSel = info.match(SEL)?.[1];
+    const contentSel = content.match(SEL)?.[1];
+    expect(infoSel, '★ get_page_info 的 selector 生成器变了').toBeTruthy();
+    expect(contentSel, '★ get_page_content 用了另一个生成器（两处会漂移）').toBe(infoSel);
     // 两处都不得自己实现一个 genSel 变体
     expect(content, '★ get_page_content 内联了自己写选择器的逻辑').not.toMatch(/querySelector.*:nth-child/);
   });

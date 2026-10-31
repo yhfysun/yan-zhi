@@ -46,7 +46,9 @@ describe('存量运维会话归位', () => {
 
 describe('新建会话的模式由调用方显式声明', () => {
   it("后端默认值：不传 mode 落 'office'（前端必须自己传）", () => {
-    expect(routeSrc).toMatch(/VALID_MODES\.has\(String\(mode\)\)\s*\?\s*String\(mode\)\s*:\s*'office'/);
+    // 2026-10-31 同步：合法判定收敛到 isValidMode()（内置白名单 ∪ 运行时插件模式），
+    //   默认回落仍是 'office'。
+    expect(routeSrc).toMatch(/isValidMode\(String\(mode\)\)\s*\?\s*String\(mode\)\s*:\s*'office'/);
   });
 
   it("'ops' 在合法 mode 白名单里（否则传了也会被降级成 office）", () => {

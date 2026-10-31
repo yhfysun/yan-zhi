@@ -13,7 +13,7 @@
           <el-icon><Collection /></el-icon>
           <span>知识库</span>
         </div>
-        <el-empty v-if="mountedKnowledge.length === 0" description="暂无已挂载知识库" :image-size="46" />
+        <div v-if="mountedKnowledge.length === 0" class="context-empty">暂无已挂载知识库</div>
         <div v-else class="context-item-list">
           <div v-for="item in mountedKnowledge" :key="item.id" class="context-item">
             <el-icon><Collection /></el-icon>
@@ -27,7 +27,7 @@
           <el-icon><Files /></el-icon>
           <span>已挂载 Skill</span>
         </div>
-        <el-empty v-if="mountedSkills.length === 0" description="暂无已挂载 Skill" :image-size="46" />
+        <div v-if="mountedSkills.length === 0" class="context-empty">暂无已挂载 Skill</div>
         <div v-else class="context-item-list">
           <div v-for="skill in mountedSkills" :key="skill.id" class="context-item">
             <el-icon><Files /></el-icon>
@@ -44,7 +44,7 @@
           <el-icon><Connection /></el-icon>
           <span>已挂载工具</span>
         </div>
-        <el-empty v-if="mountedTools.length === 0" description="暂无已挂载 MCP 工具" :image-size="46" />
+        <div v-if="mountedTools.length === 0" class="context-empty">暂无已挂载 MCP 工具</div>
         <div v-else class="context-item-list">
           <div v-for="tool in mountedTools" :key="tool.serverId + ':' + tool.name" class="context-item">
             <el-icon><Connection /></el-icon>
@@ -73,7 +73,7 @@
         <div class="ctx-compact-hint">
           自动压缩只在接近窗口上限时触发；此处可**主动**压一次（摘要会记入下方历史，可回退）。
         </div>
-        <el-empty v-if="summaries.length === 0" description="暂无压缩记录" :image-size="40" />
+        <div v-if="summaries.length === 0" class="context-empty">暂无压缩记录</div>
         <div v-else class="context-item-list">
           <div v-for="s in summaries" :key="s.id" class="context-item">
             <div class="context-item-copy">

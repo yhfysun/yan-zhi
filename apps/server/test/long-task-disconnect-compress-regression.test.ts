@@ -151,7 +151,9 @@ describe('环四：手动重连必须走续传版本', () => {
 
   it('reconnectActiveTask 必须调用 subscribeTaskWsWithReconnect', () => {
     // ★ 2026-10-20 SSE→WS 迁移（87f53688）改名跟随
-    const fn = sliceFrom(chatSrc, 'async function reconnectActiveTask(', 2500);
+    // ★ 2026-10-31：原固定窗口 2500 已不够（函数内注释变长，调用点在 +2528 处）→ 假红。
+    //   改用 sliceFrom 无参模式（切到下一个顶层声明为止），随代码增长不再失效。
+    const fn = sliceFrom(chatSrc, 'async function reconnectActiveTask(');
     expect(fn).toContain('subscribeTaskWsWithReconnect');
     // 不能再自己拼 since 后直调裸版本
     expect(fn).not.toMatch(/const\s+since\s*=\s*taskEventCounts\.get\(taskId\)[\s\S]{0,200}?await\s+subscribeTaskWs\(/);

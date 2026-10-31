@@ -72,10 +72,12 @@ describe('输入权限两档（被控端授予 ∧ 控制端未切仅观看）',
 });
 
 describe('显式右键入口（手机没有右键键）', () => {
-  it('★ 仿真鼠标右半键 = 常驻右键（2026-10-27 横屏重构：右侧栏并入悬浮球菜单）', () => {
-    // 右侧栏已删，右键入口换成仿真鼠标右半键（模板锚点）+ 箭头尖落点注入（vmClick → clickAt useCursor）
-    expect(CLIENT, '★ 缺仿真鼠标右半键').toMatch(/class="rc-vm-r" :class="\{ press: vmPress === 'right' \}" @pointerdown\.stop="vmClick\('right'\)"/);
-    expect(CLIENT, '★ 右半键必须把点击落在箭头尖（指针坐标）').toMatch(
+  it('★ 仿真鼠标控制器长按 = 常驻右键（2026-10-31 对标 UU：控制器只剩拖/点/长按）', () => {
+    // 控制器改成独立悬浮后没有左/右半键了：长按 = 右键，落点仍是指针当前位置（vmClick → clickAt useCursor）
+    expect(CLIENT, '★ 缺长按右键入口').toMatch(
+      /function onCtrlPointerDown[\s\S]{0,760}vmClick\('right'\)/,
+    );
+    expect(CLIENT, '★ 长按必须把点击落在指针位置').toMatch(
       /function vmClick\(button: 'left' \| 'right'\): void \{[\s\S]{0,200}clickAt\(0, 0, button, true\)/,
     );
     expect(CLIENT, '★ 旧 rail 右键按钮必须删干净').not.toMatch(/@click\.stop="rightClickAtLast"/);

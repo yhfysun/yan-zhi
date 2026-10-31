@@ -176,6 +176,14 @@ class YzDesktop {
   const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_FRAMECHANGED = 0x0020;
   [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
   [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr procId);
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint attachFrom, uint attachTo, bool attach);
+  [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetFocus();
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  const uint GA_ROOT = 2;
   [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
@@ -381,6 +389,49 @@ class YzDesktop {
   static void Emit(string s) { Console.Out.WriteLine(s); }
   static long H(IntPtr p) { return p.ToInt64(); }
 
+  /** 抢焦点并保持 attach（详见 Main 里 --focus 的说明）。先输出一行结果，再驻留。 */
+  static int FocusAndHold(IntPtr target) {
+    if (!IsWindow(target)) { Emit("{\"ok\":false,\"error\":\"not-a-window\"}"); return 2; }
+    IntPtr root = GetAncestor(target, GA_ROOT);
+    uint mine = GetCurrentThreadId();
+    uint winThread = GetWindowThreadProcessId(target, IntPtr.Zero);
+    IntPtr fgWin = GetForegroundWindow();
+    uint fgThread = fgWin == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fgWin, IntPtr.Zero);
+    bool atWin = false;
+    bool atFg = false;
+    // ★ 顺序不能反：先 attach「前台线程」，再 attach「窗口所属线程」。
+    //   反过来（先窗口后前台）attach 也返回成功、GetFocus 也当场是我们，但 200ms 内
+    //   焦点就被系统还给前台应用 —— 实测按键全落进别的应用。按这个顺序才稳。
+    if (fgThread != 0 && fgThread != mine && fgThread != winThread) atFg = AttachThreadInput(mine, fgThread, true);
+    if (winThread != 0 && winThread != mine) atWin = AttachThreadInput(mine, winThread, true);
+    // ★ 必须先把这个窗口的顶层（桌面层就是 Progman）提成前台窗口：键盘只投给
+    //   前台窗口所在队列的焦点窗口。只 SetFocus 的话焦点立刻被系统收回（实测：
+    //   GetFocus 先是我们，几百毫秒后又是前台应用，按键全落到前台应用里）。
+    //   效果等同于"点了一下桌面"——当前应用失活，这是桌面层本来该有的行为。
+    bool fgOk = SetForegroundWindow(root);
+    SetFocus(target);
+    bool ok = GetFocus() == target;
+    Emit("{\"ok\":" + (ok ? "true" : "false") + ",\"fgOk\":" + (fgOk ? "true" : "false")
+      + ",\"attachedWin\":" + (atWin ? "true" : "false") + ",\"attachedFg\":" + (atFg ? "true" : "false")
+      + (ok ? "" : ",\"error\":\"focus-not-taken\"") + "}");
+    if (!ok) {
+      if (atFg) AttachThreadInput(mine, fgThread, false);
+      if (atWin) AttachThreadInput(mine, winThread, false);
+      return 4;
+    }
+    // 焦点或前台被别的窗口拿走（用户点了别的应用）就收工；最长挂 8 小时兜底
+    DateTime deadline = DateTime.UtcNow.AddHours(8);
+    while (DateTime.UtcNow < deadline) {
+      System.Threading.Thread.Sleep(200);
+      if (!IsWindow(target)) break;
+      if (GetFocus() != target) break;
+      if (GetForegroundWindow() != root) break;
+    }
+    if (atFg) AttachThreadInput(mine, fgThread, false);
+    if (atWin) AttachThreadInput(mine, winThread, false);
+    return 0;
+  }
+
   [STAThread]
   static int Main(string[] args) {
     string cmd = args.Length > 0 ? args[0] : "";
@@ -451,6 +502,21 @@ class YzDesktop {
       case "--foreground":
         Emit("{\"hwnd\":" + H(GetForegroundWindow()) + ",\"fullscreen\":" + (ForegroundFullscreen() ? "true" : "false") + "}");
         return 0;
+
+      /* 给桌面层窗口抢键盘焦点。
+         桌面层是 Progman（explorer 线程）的 WS_CHILD 子窗口：鼠标点击照常到达，
+         但子窗口永远不会成为「活动窗口」，Electron 的 win.focus()（SetForegroundWindow）
+         对子窗口是空操作 —— 表现就是 Delete / F2 / Esc 这些键一个都不响应。
+         Windows 的规则是「键盘消息只发给前台线程队列里的焦点窗口」，所以这里把本线程
+         同时 attach 到窗口所属线程和前台线程，再 SetFocus，键盘才会落到这条队列上。
+         attach 必须一直保持（一 detach 焦点就回 explorer 队列），因此这个进程是个
+         「焦点看守」：先报一行结果，然后挂着，直到焦点被别的窗口拿走（或超时）才退出。 */
+      case "--focus": {
+        if (args.Length < 2) { Emit("{\"ok\":false,\"error\":\"missing-hwnd\"}"); return 2; }
+        long rawFocus;
+        if (!Int64.TryParse(args[1], out rawFocus)) { Emit("{\"ok\":false,\"error\":\"bad-hwnd\"}"); return 2; }
+        return FocusAndHold(new IntPtr(rawFocus));
+      }
 
       // --icon <源路径> <输出 png> [边长]
       case "--icon": {

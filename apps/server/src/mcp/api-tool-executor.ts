@@ -49,6 +49,7 @@ import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-l
 import { singingStatus, installSingingRuntime, importModelZip } from '../services/music-sing-install.js';
 import { applyClipOp, summarizeProject, nextAudioSlot, type ClipProject } from '../services/clip-project.js';
 import { buildRenderPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
+import { detectHwEncoder } from '../services/clip-hw-encode.js';
 import { readClipProject, writeClipProject } from '../services/clip-store.js';
 import { applyRecipe } from '../services/clip-recipes.js';
 import { deleteCustomRecipe, findRecipe, listAllRecipes, saveCustomRecipe } from '../services/clip-recipe-store.js';
@@ -1883,7 +1884,7 @@ async function probeClipSegments(
   return { durations, hasAudio, images };
 }
 
-async function clipProjectTool(
+export async function clipProjectTool(
   args: Record<string, unknown>,
   conversationId?: string,
   userId?: string | null,
@@ -1936,15 +1937,20 @@ async function clipProjectTool(
     if (qArg && !['low', 'std', 'high'].includes(qArg)) {
       return fail(`quality 只能是 low / std / high：${qArg}`);
     }
-    const planned = buildRenderPlan({
+    // P1-9 硬件编码：工程开了 auto 才探测（结果按 ffmpeg 路径缓存）；默认 CPU 不变
+    const hw = cur.output.encoder === 'auto' ? await detectHwEncoder(ff.ffmpeg) : null;
+    const planInput = {
       project: cur, durations, hasAudio, workDir, outFile,
       ...(bgmFile ? { bgmFile } : {}),
       imageFiles: images,
       fast: args.preview === true,
       ...(qArg ? { quality: qArg as 'low' | 'std' | 'high' } : {}),
-    });
+      hwEncoder: hw,
+    };
+    let planned = buildRenderPlan(planInput);
     if (!planned.ok) return fail(planned.error);
-    const { steps, assets, totalDuration, cover } = planned.plan;
+    let { steps, assets, totalDuration, cover } = planned.plan;
+    let hwUsed = hw;
 
     try {
       // 落中间文本（concat 清单 / SRT / ASS）—— 纯函数层不写磁盘
@@ -1952,7 +1958,22 @@ async function clipProjectTool(
         await mkdir(path.dirname(a.file), { recursive: true });
         await writeFile(a.file, a.content, 'utf8');
       }
-      const ran = await runRenderPlan(ff.ffmpeg, steps);
+      let ran = await runRenderPlan(ff.ffmpeg, steps);
+      // ★ 硬件编码失败（驱动/显存/不支持该像素格式）→ 自动回退 CPU 重跑一次。
+      //   不这样做的话，用户开了"硬件加速"反而可能整条导出失败，体验比不开更差。
+      if (!ran.ok && hw) {
+        const retry = buildRenderPlan({ ...planInput, hwEncoder: null });
+        if (retry.ok) {
+          planned = retry;
+          ({ steps, assets, totalDuration, cover } = retry.plan);
+          for (const a of assets) {
+            await mkdir(path.dirname(a.file), { recursive: true });
+            await writeFile(a.file, a.content, 'utf8');
+          }
+          ran = await runRenderPlan(ff.ffmpeg, steps);
+          hwUsed = null;
+        }
+      }
       if (!ran.ok) {
         return fail(`渲染失败（${ran.failedLabel}）：\n${ran.stderr}\n提示：素材时长/规格异常时先用 api_media_normalize 统一规格。`);
       }
@@ -1974,7 +1995,7 @@ async function clipProjectTool(
         clips: cur.clips.length, texts: cur.texts.length,
         steps: steps.length,
         ...(coverFile ? { cover: coverFile } : {}),
-        note: `成片已生成（${cur.clips.length} 段 / ${cur.texts.length} 条字幕 / ${totalDuration}s）${coverFile ? '，封面已导出' : ''}${coverNote}${bgmNote}`,
+        note: `成片已生成（${cur.clips.length} 段 / ${cur.texts.length} 条字幕 / ${totalDuration}s）${hwUsed ? `，硬件编码 ${hwUsed}` : ''}${coverFile ? '，封面已导出' : ''}${coverNote}${bgmNote}`,
       }));
     } catch (e: unknown) {
       return fail(`渲染异常：${e instanceof Error ? e.message : String(e)}`);
@@ -2158,6 +2179,24 @@ async function clipProjectTool(
         + (args.subtitle === true ? '，并加了一条同长字幕' : ''),
       project: summarizeProject(next),
     }));
+  }
+
+  // —— 3D LUT（P1-5）：文件必须在、且是 .cube ——
+  // ★ 放到 op 之前校验：渲染时才炸的话，报错点离用户操作很远（"导出失败"里翻栈才能看到）。
+  if (op === 'add_clip' || op === 'update_clip') {
+    const lutFiles: string[] = [];
+    if (Array.isArray(args.clips)) {
+      for (const c of args.clips as Array<Record<string, unknown>>) {
+        const lf = (c?.lut as Record<string, unknown> | undefined)?.file;
+        if (lf) lutFiles.push(String(lf));
+      }
+    }
+    const patchLut = (args.patch as Record<string, unknown> | undefined)?.lut as Record<string, unknown> | undefined;
+    if (patchLut?.file) lutFiles.push(String(patchLut.file));
+    for (const f of lutFiles) {
+      if (!/\.cube$/i.test(f)) return fail(`LUT 必须是 .cube 文件：${f}`);
+      if (!existsSync(f)) return fail(`LUT 文件不存在：${f}（先确认路径，或让用户重新选择）`);
+    }
   }
 
   // —— 贴纸库（P1-1）：条目里带 sticker 库 id 的先合成 PNG，再作为普通贴纸层落进工程 ——

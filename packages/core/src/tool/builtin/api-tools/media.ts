@@ -1,6 +1,6 @@
 import type { ToolDefinition } from '../../types';
 import type { ApiModuleName } from './index';
-import { COLOR_EFFECTS, FX_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, effectIds, effectCatalogText, fxParamCatalogText, TEXT_ANIMATIONS, blendModeIds, blendCatalogText } from '@yan-zhi/shared';
+import { COLOR_EFFECTS, FX_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, effectIds, effectCatalogText, fxParamCatalogText, TEXT_ANIMATIONS, blendModeIds, blendCatalogText, effectLayerIds, effectLayerCatalogText, fontFamilyIds, fontFamilyCatalogText, hslBandIds } from '@yan-zhi/shared';
 
 /**
  * 效果清单从 @yan-zhi/shared 的效果库**自动生成**（单一真相源）。
@@ -20,6 +20,9 @@ const MASK_SHAPE_IDS = effectIds(MASK_SHAPES);
 const MASK_KEY_IDS = effectIds(MASK_KEYS);
 const TEXT_ANIM_IDS = effectIds(TEXT_ANIMATIONS);
 const BLEND_IDS = blendModeIds();
+const EFFECT_LAYER_IDS = effectLayerIds();
+const FONT_FAMILY_IDS = fontFamilyIds();
+const HSL_BAND_IDS = hslBandIds();
 
 /**
  * AI 媒体生成工具（文生图 / 图生图 / 文生视频 / 图生视频）—— agnes 平台媒体模型的直接调用通道。
@@ -531,7 +534,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**set_output** 改导出规格 { size:"1080x1920", fps }；' +
         '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, colorStrength?, adjust?, fx?, fxParams?, fadeIn?, fadeOut?, kenburns?, mask?, transition?, crop?, keyframes?, rotate?, flip?, reverse?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）——★ 每段支持画面裁剪 crop、蒙版 mask（形状/色键）、转场 transition、关键帧运镜 keyframes、方向 rotate/flip/reverse、调色强度与手动调节；' +
         '**update_clip** 改某段 { id 或 index, patch:{...同 add_clip 字段} }；**remove_clip** { id|index }；**move_clip** { id|index, to }；**clear_clips**；' +
-        '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, position?, safeArea?, transform?, keyframes? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
+        '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, fontFamily?, letterSpacingPx?, lineSpacingPx?, bold?, italic?, plateColor?, platePaddingPx?, position?, safeArea?, transform?, keyframes? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
+        '★ 排版：fontFamily 选字体（' + fontFamilyCatalogText() + '）；letterSpacingPx 字距；lineSpacingPx 行距（多行且无动画/无变换时生效）；bold/italic 加粗斜体；plateColor 给「花字/气泡」圆角底板（综艺字幕那种色块）' +
         '★ 文字要**运动**（滑入/放大/旋转/边飘边淡入）用 transform（静态）或 keyframes（t 为层内 0~1，如 [{t:0,x:0.35,scale:0.6},{t:1,x:0,scale:1.1,ease:"out"}]）；有变换时不再套 animation 预设；' +
         '**update_text** { id|index, patch }；**remove_text** { id|index }；**clear_texts**；' +
         '**set_bgm** { file, volume, duck }（duck=true 说话时自动压低，适合带旁白的成片）/ **clear_bgm**；' +
@@ -556,6 +560,9 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**贴纸**：**add_sticker** { stickers:[{ sticker?, file?, start, end, scale?, x?, y?, rotation?, opacity?, keyframes? }] }' +
         '（`sticker` 用内置贴纸库 id（new/hot/重点/箭头/对勾/星星），`file` 用用户导入的 PNG/WebP；两者二选一，给了 sticker 会自动生成 PNG；' +
         'scale 是宽度占画面宽度比例，缺省 0.3）；**update_sticker** { id|index, patch }；**remove_sticker**；**clear_stickers**；' +
+        '**特效层**（有时长、可叠）：**add_effect** { effects:[{ fx, start, end, intensity? }] }' +
+        `（fx 可选：${effectLayerCatalogText()}；start/end 相对成片，可多条叠加；intensity 0~1 缺省按特效自己的默认值）；` +
+        '**update_effect** { id|index, patch }；**remove_effect**；**clear_effects**；' +
         '**render** 渲染成片 { output?, preview?, quality? }（preview=true 出快速预览档，确认后再正式渲染；非预览档会自动顺带导出一张封面 jpg）。' +
         '★ subtitleAnimation 可选：' + effectCatalogText(TEXT_ANIMATIONS) + '（用户要「字幕动效」时选贴合语义的一个）。' +
         '输入一律为本机绝对路径（前序工具返回的 file 字段）。渲染返回 {type:"video", file, url}。',
@@ -573,6 +580,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               'add_audio', 'update_audio', 'remove_audio', 'clear_audios', 'add_tts',
               'list_recipes', 'apply_recipe', 'save_recipe', 'delete_recipe',
               'add_sticker', 'update_sticker', 'remove_sticker', 'clear_stickers',
+              'add_effect', 'update_effect', 'remove_effect', 'clear_effects',
             ],
             description: '工程操作',
           },
@@ -611,6 +619,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           size: { type: 'string', description: 'create/set_output：导出规格，形如 "1080x1920"（默认竖屏）/ "1920x1080"（横屏）' },
           fps: { type: 'number', description: 'create/set_output：帧率，默认 30' },
           quality: { type: 'string', enum: ['low', 'std', 'high'], description: '导出质量档：low=省流（crf28，音轨128k）/ std=推荐（crf21，192k）/ high=高清（crf18，256k）。create/set_output 设工程默认档，render 传则只覆盖本次' },
+          encoder: { type: 'string', enum: ['cpu', 'auto'], description: '编码方式（P1-9）：cpu=软件编码（默认，兼容性最好）/ auto=自动用可用的硬件编码器（nvenc/qsv/amf，没有则回退 CPU）。create/set_output 设工程默认，跟随保存' },
           clips: {
             type: 'array',
             description: 'add_clip：素材数组，按数组顺序首尾相接',
@@ -650,6 +659,36 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                     vignette: { type: 'number', description: '暗角 0~1（0=无暗角）' },
                   },
                 },
+                lut: {
+                  type: 'object',
+                  description: '3D LUT 调色（P1-5）：{ file, strength? }。file 必须是本机 .cube 文件（用户在网上下载的 LUT 都可以用）；strength 0~1（默认 1，越小越接近原片）。与 colorPreset/adjust 可叠加：LUT 建立风格、adjust 再微调',
+                  properties: {
+                    file: { type: 'string', description: 'LUT 文件绝对路径（.cube）' },
+                    strength: { type: 'number', description: '强度 0~1（默认 1）' },
+                  },
+                  required: ['file'],
+                },
+                hsl: {
+                  type: 'object',
+                  description: 'HSL 分色（P1-6）：按色带调色相/饱和度/明度。color 用 red/orange/yellow/green/cyan/blue/purple/magenta；hue -180~180（度）、saturation/lightness -100~100（百分比，-100 饱和=完全去色）。★ 与 lut 可叠加：先 HSL 修正、再套 LUT 风格',
+                  properties: {
+                    bands: {
+                      type: 'array',
+                      description: '色带调整数组（只写要改的色带）',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          color: { type: 'string', enum: HSL_BAND_IDS, description: '色带' },
+                          hue: { type: 'number', description: '色相偏移（度）-180~180' },
+                          saturation: { type: 'number', description: '饱和度 -100~100（负=降饱和）' },
+                          lightness: { type: 'number', description: '明度 -100~100' },
+                        },
+                        required: ['color'],
+                      },
+                    },
+                  },
+                  required: ['bands'],
+                },
                 fx: { type: 'string', enum: FX_IDS, description: `动态特效（可选：${effectCatalogText(FX_EFFECTS)}）。与 colorPreset 可叠加：先调色、再上结构类特效` },
                 fxParams: {
                   type: 'object',
@@ -660,7 +699,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 kenburns: { type: 'object', description: '图片素材运镜：{ direction:"in"|"out", duration }' },
                 mask: {
                   type: 'object',
-                  description: '蒙版：只显示画面的一部分。{ shape?, scale? 0.05~1, offsetX?/offsetY? -0.5~0.5, feather? 0~200, key? }。shape=' + effectCatalogText(MASK_SHAPES, ['none']) + '；key=' + effectCatalogText(MASK_KEYS) + '。★ shape 与 key 互斥，同时给时 key 优先',
+                  description: '蒙版：只显示画面的一部分。{ shape?, scale? 0.05~1, offsetX?/offsetY? -0.5~0.5, feather? 0~200, key?, angle?, position?, keyframes?, path? }。shape=' + effectCatalogText(MASK_SHAPES, ['none']) + '；key=' + effectCatalogText(MASK_KEYS) + '。★ shape 与 key 互斥，同时给时 key 优先。P1-4：shape="linear" 是线性渐变擦除（配合 angle 0~360 / position 0~1）；keyframes 做蒙版运动（t 为段内 0~1，可动 scale/offsetX/offsetY/angle/position）；path 是钢笔路径（归一化锚点，smooth=true 自动平滑成贝塞尔曲线）',
                   properties: {
                     shape: { type: 'string', enum: MASK_SHAPE_IDS, description: '形状蒙版（与 key 二选一）' },
                     key: { type: 'string', enum: MASK_KEY_IDS, description: '色键抠像（与 shape 二选一，优先）' },
@@ -668,6 +707,38 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                     offsetX: { type: 'number', description: '蒙版中心水平偏移 -0.5~0.5' },
                     offsetY: { type: 'number', description: '蒙版中心垂直偏移 -0.5~0.5' },
                     feather: { type: 'number', description: '边缘羽化像素 0~200（0=硬边）' },
+                    angle: { type: 'number', description: '线性蒙版角度（度，0=从左到右，90=从上到下；仅 shape=linear 生效）' },
+                    position: { type: 'number', description: '线性蒙版位置 0~1（0=几乎全遮，1=几乎全显，0.5=居中）' },
+                    keyframes: {
+                      type: 'array',
+                      description: '蒙版关键帧（蒙版随时间移动/缩放）：t 为段内 0~1，可给 scale / offsetX / offsetY / angle / position',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          t: { type: 'number', description: '段内时间比例 0~1' },
+                          scale: { type: 'number' }, offsetX: { type: 'number' }, offsetY: { type: 'number' },
+                          angle: { type: 'number' }, position: { type: 'number' },
+                        },
+                        required: ['t'],
+                      },
+                    },
+                    path: {
+                      type: 'object',
+                      description: '钢笔路径蒙版：points 为归一化锚点（x/y 0~1，按顺序闭合）；smooth=true 用平滑曲线（自动贝塞尔），false=折线。★ 路径蒙版不支持关键帧，边缘为硬边',
+                      properties: {
+                        smooth: { type: 'boolean', description: 'true=平滑曲线（推荐）' },
+                        points: {
+                          type: 'array',
+                          description: '锚点（3~64 个）：[{x:0.2,y:0.2},{x:0.8,y:0.2},{x:0.5,y:0.8}]',
+                          items: {
+                            type: 'object',
+                            properties: { x: { type: 'number' }, y: { type: 'number' } },
+                            required: ['x', 'y'],
+                          },
+                        },
+                      },
+                      required: ['points'],
+                    },
                   },
                 },
                 transition: {
@@ -682,6 +753,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 audioFile: { type: 'string', description: '该段配音音频绝对路径（替换原声；keepOriginalAudio=true 则与原声混音）' },
                 keepOriginalAudio: { type: 'boolean', description: 'true=配音与原声混音，false/缺省=配音替换原声' },
                 volume: { type: 'number', description: '该段音量倍数（1=不变）' },
+                pitch: { type: 'number', description: '升降调（半音，-12~12，正=升高负=降低；只改音高不改时长，rubberband）。0/不传=不变' },
                 rotate: { type: 'number', enum: [90, 180, 270], description: '顺时针旋转角度。★ 旋转在规格化之前做，转 90/270 后画面会被按工程画幅大幅裁切（多半要同时改 set_output）' },
                 flip: { type: 'string', enum: ['h', 'v', 'both'], description: '镜像翻转：h=左右　v=上下　both=两者' },
                 reverse: { type: 'boolean', description: '倒放该段（画面与音轨一起倒）。★ 单段最长 10 秒：ffmpeg 的 reverse 会把整段帧读进内存，超长会拒绝渲染' },
@@ -731,6 +803,13 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 outlineColor: { type: 'string', description: '描边色 #RRGGBB，默认黑色' },
                 outlinePx: { type: 'number', description: '描边宽度（像素，1920 高基准）0~60，默认 12；0=无描边' },
                 backColor: { type: 'string', description: '背景底板色 #RRGGBBAA（A=不透明度，如 "#000000B3"）；不填=无底板' },
+                fontFamily: { type: 'string', enum: FONT_FAMILY_IDS, description: `字体：${fontFamilyCatalogText()}（不传=微软雅黑）` },
+                letterSpacingPx: { type: 'number', description: '字距（像素，1920 高基准）0~100；0/不传=默认' },
+                lineSpacingPx: { type: 'number', description: '行距（额外行间隙，像素，1920 高基准）0~200；只对多行文本、且无动画/无变换时生效' },
+                bold: { type: 'boolean', description: 'true=加粗' },
+                italic: { type: 'boolean', description: 'true=斜体' },
+                plateColor: { type: 'string', description: '花字/气泡底板色 #RRGGBB[AA]：用大描边把文字撑成圆角底板（综艺花字/气泡字幕）' },
+                platePaddingPx: { type: 'number', description: '底板厚度（像素，1920 高基准）4~80，默认 18；只有给了 plateColor 才生效' },
                 position: { type: 'string', enum: ['bottom', 'center', 'top'], description: '字幕位置，默认 bottom' },
                 safeArea: { type: 'boolean', description: 'true=竖屏安全区（字幕上抬，避开抖音/快手底部进度条）' },
                 transform: {
@@ -862,6 +941,20 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 },
               },
               required: ['start', 'end'],
+            },
+          },
+          effects: {
+            type: 'array',
+            description: 'add_effect：特效层数组（每条有自己的起止时间，可叠加，例如 flash 0.8~1.2 秒 + grain 全程）',
+            items: {
+              type: 'object',
+              properties: {
+                fx: { type: 'string', enum: EFFECT_LAYER_IDS, description: `特效 id：${effectLayerCatalogText()}` },
+                start: { type: 'number', description: '起始秒（相对成片）' },
+                end: { type: 'number', description: '结束秒（必须 > start）' },
+                intensity: { type: 'number', description: '强度 0~1；不传按特效默认值（闪光 0.55 / 漏光 0.7 / 星点 0.7 / 颗粒 0.4）' },
+              },
+              required: ['fx', 'start', 'end'],
             },
           },
           volume: { type: 'number', description: 'set_bgm：BGM 音量 0~1，默认 0.25；add_tts/add_audio 也接受 volume（音频层音量 0~2）' },

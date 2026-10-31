@@ -18,10 +18,12 @@
 
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdir, rm, readFile } from 'node:fs/promises';
+import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { runCmd } from './exec-cmd.js';
 import { MASK_KEYS, overlayAnchorOf, speedCurveOutToSrc, sampleLayerKfs, type LayerKfPoint } from '@yan-zhi/shared';
 import { assembleSegmentChain, overlayLayerChain, segmentDuration, trimmedSourceLength } from './clip-render.js';
+import { flattenMaskPath, polygonAlphaExpr } from './clip-mask.js';
+import { hslCube } from './clip-hsl.js';
 import type { ClipProject } from './clip-project.js';
 
 interface FrameCacheEntry {
@@ -60,7 +62,7 @@ export interface PreviewFrameResult {
 function projectFingerprint(p: ClipProject): string {
   return JSON.stringify({
     o: p.output,
-    c: p.clips.map((c) => [c.id, c.file, c.trimStart, c.trimEnd, c.speed, c.speedCurve, c.colorPreset, c.colorStrength, c.adjust, c.fx, c.fxParams, c.fadeIn, c.fadeOut, c.kenburns, c.mask, c.crop, c.keyframes, c.reverse, c.rotate, c.flip]),
+    c: p.clips.map((c) => [c.id, c.file, c.trimStart, c.trimEnd, c.speed, c.speedCurve, c.colorPreset, c.colorStrength, c.adjust, c.lut, c.hsl, c.fx, c.fxParams, c.fadeIn, c.fadeOut, c.kenburns, c.mask, c.crop, c.keyframes, c.reverse, c.rotate, c.flip]),
     // 画中画影响合成画面，必须进指纹（改了画中画不换帧 = 预览骗人）
     ov: (p.overlays || []).map((o) => [o.id, o.file, o.start, o.end, o.pos, o.scale, o.x, o.y, o.rotation, o.opacity, o.blend, o.keyframes]),
   });
@@ -130,12 +132,30 @@ export async function renderPreviewFrame(input: PreviewFrameInput): Promise<Prev
   const segDur = isImage ? (seg.kenburns!.duration) : segmentDuration(seg, raw);
 
   const keyFilterOf = (id: string) => MASK_KEYS.find((k) => k.id === id)?.filter || null;
+  // 路径蒙版（P1-4）：与导出同一套烘焙逻辑（多边形表达式 → 黑白 PNG），
+  // 段滤镜再用 movie+alphamerge 当 alpha —— 预览与成片口径一致。
+  const workDir = path.join(tmpdir(), `yz-prev-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+  let maskFile: string | undefined;
+  if (seg.mask?.path && seg.mask.path.points.length >= 3) {
+    await mkdir(workDir, { recursive: true });
+    maskFile = path.join(workDir, 'mask.png');
+    const me = polygonAlphaExpr(flattenMaskPath(seg.mask.path, W, H));
+    const g = await runCmd(ffmpeg, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:r=1:d=1`,
+      '-vf', `format=gray,geq=lum='${me}'`, '-frames:v', '1', maskFile], { timeoutMs: 60000, maxBuffer: 8 * 1024 * 1024 });
+    if (!g.ok) return { ok: false, error: `蒙版生成失败：${(g.stderr || g.error || '').slice(-300)}` };
+  }
+  // HSL 分色（P1-6）：与导出同一套生成逻辑（色带 → .cube → lut3d）
+  let hslFile: string | undefined;
+  if (seg.hsl?.bands.length) {
+    await mkdir(workDir, { recursive: true });
+    hslFile = path.join(workDir, 'hsl.cube');
+    await writeFile(hslFile, hslCube(seg.hsl.bands), 'utf8');
+  }
   // ★★★ 预览与导出**共用同一份装配层**（vf / 垫黑底 fc 二选一）—— 这是"预览所见即导出所得"的唯一保证
-  const chain = assembleSegmentChain({ seg, segDur, isImage, W, H, fps, keyFilterOf });
+  const chain = assembleSegmentChain({ seg, segDur, isImage, W, H, fps, keyFilterOf, ...(maskFile ? { maskFile } : {}), ...(hslFile ? { hslFile } : {}) });
   // 播放头时刻生效的画中画（叠加在段画面之上）
   const activeOverlays = (project.overlays || []).filter((o) => o.end > o.start && input.timeSec >= o.start && input.timeSec < o.end);
 
-  const workDir = path.join(tmpdir(), `yz-prev-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   const outPng = path.join(workDir, 'frame.png');
   try {
     await mkdir(workDir, { recursive: true });

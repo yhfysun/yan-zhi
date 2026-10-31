@@ -84,15 +84,17 @@ describe('readClipProject / writeClipProject · v2 序列化边界', () => {
     expect(again2.overlays).toEqual(again.overlays);
   });
 
-  it('★ layers 里 v1 视图外的图层（effect 等未知 kind）落盘保留、再读不丢', () => {
+  // ★ P1-3 之后 effect 已是一等公民（有 effects 视图，视图权威）—— 这里改用真正未知的 kind
+  //   来钉"未知图层原样保留"，特效的序列化由 clip-effect-layers.test.ts 覆盖。
+  it('★ layers 里没有视图的未知 kind 落盘保留、再读不丢', () => {
     const p = readClipProject(CONV)!;
-    const withEffect: ClipProject = {
+    const withFuture: ClipProject = {
       ...p,
-      layers: [...p.layers, { id: 'e1', kind: 'effect', file: 'C:/fx.mov', start: 0, end: 1, track: 3, transform: {} }],
+      layers: [...p.layers, { id: 'h1', kind: 'hologram' as never, file: 'C:/fx.mov', start: 0, end: 1, track: 3, transform: {} }],
     };
-    writeClipProject(CONV, withEffect);
+    writeClipProject(CONV, withFuture);
     const again = readClipProject(CONV)!;
-    expect(again.layers.some((l) => l.id === 'e1' && l.kind === 'effect')).toBe(true);
+    expect(again.layers.some((l) => l.id === 'h1' && (l.kind as string) === 'hologram')).toBe(true);
   });
 
   it('★ 贴纸（P1-1）落盘进 layers[kind=sticker]，读回 stickers 视图一致', () => {

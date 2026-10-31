@@ -386,6 +386,8 @@ public class RcAgent
       case "pagedown": return 0x22;
       case "up": return 0x26; case "down": return 0x28; case "left": return 0x25; case "right": return 0x27;
       case "shift": return 0x10; case "ctrl": case "control": return 0x11; case "alt": return 0x12;
+      // 左 Win 键：只用于 Win+Space 切输入法（组合黑名单在服务端把关，别的 Win 组合到不了这里）
+      case "win": case "meta": case "super": case "lwin": case "cmd": return 0x5B;
       case "printscreen": return 0x2C;
       case "apps": return 0x5D; // 键盘菜单键（不是 Win 键）
       case "plus": case "+": return 0xBB;

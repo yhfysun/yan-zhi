@@ -35,6 +35,17 @@
         <option value="std">推荐</option>
         <option value="high">高清</option>
       </select>
+      <select
+        v-model="outputEncoder"
+        class="cp-quality"
+        title="编码方式：CPU 兼容性最好；硬件加速更快（没有可用硬件时自动回退 CPU）"
+      >
+        <option value="cpu">CPU 编码</option>
+        <option value="auto">硬件加速</option>
+      </select>
+      <button class="cp-btn ghost" title="渲染队列：后台顺序渲染，导出不再卡住编辑" @click="openQueue">
+        <el-icon :size="13"><List /></el-icon>队列<template v-if="activeJobCount"> ({{ activeJobCount }})</template>
+      </button>
       <button
         class="cp-btn ghost"
         title="按 BGM 节拍一键切开时间轴（需要先设 BGM）。会在每个拍点切一刀，段数会变，字幕要重排"
@@ -305,6 +316,15 @@
             >
               <el-icon :size="13"><Picture /></el-icon>
             </button>
+            <!-- 特效层（P1-3）：闪光/漏光/星点/颗粒，点一下放到播放头，有时长可叠加 -->
+            <button
+              class="cp-mini"
+              title="特效：闪光 / 漏光 / 星点闪烁 / 胶片颗粒。点一下在播放头加一段（默认 1.5 秒），可叠加、可在右侧改时间与强度"
+              :disabled="!clipCount"
+              @click="effectLibOpen = true"
+            >
+              <el-icon :size="13"><Star /></el-icon>
+            </button>
             <button
               class="cp-mini"
               :title="beatRunning ? '正在分析节拍…' : '智能踩点：分析 BGM（或选中片段）的节拍，按节拍自动切分片段'"
@@ -466,6 +486,24 @@
                   <div v-if="!stickers.length" class="cp-track-empty">右键图片 → 设为贴纸，或点工具栏「贴纸」从库添加</div>
                 </div>
 
+                <!-- 特效轨（P1-3）：每条自带时间窗口，可叠加 -->
+                <div class="cp-track">
+                  <div
+                    v-for="(e, i) in effects"
+                    :key="e.id"
+                    class="cp-pip cp-effect"
+                    :class="{ active: e.id === selectedEffectId }"
+                    :style="{ left: (e.start * pxPerSec) + 'px', width: Math.max(24, (e.end - e.start) * pxPerSec) + 'px' }"
+                    :title="`特效${i + 1} ${effectLabel(e.fx)}\n${e.start.toFixed(1)}s ~ ${e.end.toFixed(1)}s\n强度 ${((e.intensity ?? effectDefaultIntensity(e.fx)) * 100).toFixed(0)}%`"
+                    @click="selectEffect(e.id)"
+                    @contextmenu.prevent.stop="onEffectMenu($event, e)"
+                  >
+                    <el-icon :size="11"><Star /></el-icon>
+                    <span class="cp-clip-name">{{ effectLabel(e.fx) }}</span>
+                  </div>
+                  <div v-if="!effects.length" class="cp-track-empty">点工具栏「特效」添加闪光 / 漏光 / 星点 / 颗粒</div>
+                </div>
+
                 <!-- 播放头 -->
                 <div class="cp-playhead" :style="{ left: (playhead * pxPerSec) + 'px' }">
                   <span class="cp-playhead-knob"></span>
@@ -532,6 +570,12 @@
               <label>音量 <span class="cp-val">{{ (clipPatch.volume ?? 1).toFixed(2) }}</span></label>
               <input v-model.number="clipPatch.volume" class="cp-range" type="range" min="0" max="2" step="0.05" />
             </div>
+            <!-- 升降调（P1-7）：只改音高不改时长 -->
+            <div v-if="!selectedIsImage" class="cp-field">
+              <label>升降调 <span class="cp-val">{{ (clipPatch.pitch ?? 0) > 0 ? '+' : '' }}{{ (clipPatch.pitch ?? 0).toFixed(0) }} 半音</span></label>
+              <input v-model.number="clipPatch.pitch" class="cp-range" type="range" min="-12" max="12" step="1" />
+              <div class="cp-ins-hint">只改音高、不改时长（变调不变速）；0=不变</div>
+            </div>
             <div class="cp-field">
               <label>方向（先转正再按画幅补边裁切）</label>
               <div class="cp-field-row">
@@ -579,6 +623,47 @@
             <div v-if="clipPatch.colorPreset && clipPatch.colorPreset !== 'none'" class="cp-field">
               <label>滤镜强度 <span class="cp-val">{{ Math.round((clipPatch.colorStrength ?? 1) * 100) }}%</span></label>
               <input v-model.number="clipPatch.colorStrength" class="cp-range" type="range" min="0" max="1" step="0.05" />
+            </div>
+
+            <!-- 3D LUT（P1-5）：.cube 调色（用户在网上下载的 LUT 都能用） -->
+            <div class="cp-field">
+              <label>LUT 调色（.cube）</label>
+              <div class="cp-field-row">
+                <input v-model="clipPatch.lutFile" class="cp-input" placeholder="选择或填写 .cube 路径" />
+                <button class="cp-mini" title="选择 .cube 文件" @click="pickLutFile"><el-icon :size="12"><FolderOpened /></el-icon></button>
+                <button v-if="clipPatch.lutFile" class="cp-mini" title="去掉 LUT" @click="clipPatch.lutFile = ''">✕</button>
+              </div>
+              <template v-if="clipPatch.lutFile">
+                <label>LUT 强度 <span class="cp-val">{{ Math.round((clipPatch.lutStrength ?? 1) * 100) }}%</span></label>
+                <input v-model.number="clipPatch.lutStrength" class="cp-range" type="range" min="0" max="1" step="0.05" />
+              </template>
+            </div>
+
+            <!-- HSL 分色（P1-6）：8 个色带，选中一个调 H/S/L -->
+            <div class="cp-grp">
+              <div class="cp-grp-head" @click="hslOpen = !hslOpen">
+                <el-icon :size="11"><component :is="hslOpen ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+                <span>HSL 分色</span>
+                <span v-if="activeHslCount" class="cp-grp-badge">{{ activeHslCount }} 个色带</span>
+              </div>
+              <div v-show="hslOpen" class="cp-grp-body">
+                <div class="cp-seg-btns">
+                  <button v-for="b in HSL_BANDS" :key="b.id" class="cp-mini" :class="{ on: hslBand === b.id }" @click="hslBand = b.id">{{ b.label }}</button>
+                </div>
+                <div class="cp-field">
+                  <label>色相 <span class="cp-val">{{ hslSel.hue.toFixed(0) }}°</span></label>
+                  <input v-model.number="hslSel.hue" class="cp-range" type="range" min="-180" max="180" step="1" />
+                </div>
+                <div class="cp-field">
+                  <label>饱和度 <span class="cp-val">{{ hslSel.saturation.toFixed(0) }}%</span></label>
+                  <input v-model.number="hslSel.saturation" class="cp-range" type="range" min="-100" max="100" step="1" />
+                </div>
+                <div class="cp-field">
+                  <label>明度 <span class="cp-val">{{ hslSel.lightness.toFixed(0) }}%</span></label>
+                  <input v-model.number="hslSel.lightness" class="cp-range" type="range" min="-100" max="100" step="1" />
+                </div>
+                <div class="cp-ins-hint">只影响选中的色相范围（±45° 渐变过渡）。点「应用片段参数」生效</div>
+              </div>
             </div>
 
             <!-- 手动调节：预设之上微调明暗/冷暖/锐化/暗角 -->
@@ -682,20 +767,64 @@
                     @pick="pickMaskKey"
                   />
                 </div>
-                <div v-if="clipPatch.maskShape && clipPatch.maskShape !== 'none'" class="cp-field">
+                <div v-if="clipPatch.maskShape && clipPatch.maskShape !== 'none' && clipPatch.maskShape !== 'path'" class="cp-field">
                   <label>蒙版大小 <span class="cp-val">{{ (clipPatch.maskScale ?? 0.9).toFixed(2) }}</span></label>
                   <input v-model.number="clipPatch.maskScale" class="cp-range" type="range" min="0.1" max="1" step="0.05" />
                 </div>
-                <div v-if="clipPatch.maskShape && clipPatch.maskShape !== 'none'" class="cp-field">
+                <div v-if="clipPatch.maskShape && clipPatch.maskShape !== 'none' && clipPatch.maskShape !== 'path'" class="cp-field">
                   <label>中心位置（水平 / 垂直）</label>
                   <div class="cp-field-row">
                     <input v-model.number="clipPatch.maskOffsetX" class="cp-range" type="range" min="-0.4" max="0.4" step="0.02" />
                     <input v-model.number="clipPatch.maskOffsetY" class="cp-range" type="range" min="-0.4" max="0.4" step="0.02" />
                   </div>
                 </div>
-                <div v-if="clipPatch.maskShape && clipPatch.maskShape !== 'none'" class="cp-field">
+                <div v-if="clipPatch.maskShape && clipPatch.maskShape !== 'none' && clipPatch.maskShape !== 'path'" class="cp-field">
                   <label>边缘羽化 <span class="cp-val">{{ clipPatch.maskFeather ?? 0 }}px</span></label>
                   <input v-model.number="clipPatch.maskFeather" class="cp-range" type="range" min="0" max="80" step="2" />
+                </div>
+                <!-- 线性蒙版（P1-4）：渐变擦除的方向与位置 -->
+                <template v-if="clipPatch.maskShape === 'linear'">
+                  <div class="cp-field">
+                    <label>渐变角度 <span class="cp-val">{{ clipPatch.maskAngle ?? 0 }}°</span></label>
+                    <input v-model.number="clipPatch.maskAngle" class="cp-range" type="range" min="-180" max="180" step="1" />
+                  </div>
+                  <div class="cp-field">
+                    <label>分界位置 <span class="cp-val">{{ (clipPatch.maskPosition ?? 0.5).toFixed(2) }}</span></label>
+                    <input v-model.number="clipPatch.maskPosition" class="cp-range" type="range" min="0" max="1" step="0.01" />
+                  </div>
+                </template>
+                <!-- 蒙版关键帧（P1-4）：蒙版随时间移动/缩放 -->
+                <div v-if="clipPatch.maskShape && clipPatch.maskShape !== 'none' && clipPatch.maskShape !== 'path'" class="cp-grp">
+                  <div class="cp-grp-head" @click="maskKfOpen = !maskKfOpen">
+                    <el-icon :size="11"><component :is="maskKfOpen ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+                    <span>蒙版关键帧</span>
+                    <span v-if="clipPatch.maskKfs?.length" class="cp-grp-badge">{{ clipPatch.maskKfs.length }} 个</span>
+                    <span class="cp-spacer"></span>
+                    <button class="cp-mini" title="在播放头处打一个蒙版关键帧" @click.stop="addMaskKf"><el-icon :size="11"><Plus /></el-icon></button>
+                    <button v-if="clipPatch.maskKfs?.length" class="cp-mini" title="清空蒙版关键帧" @click.stop="clipPatch.maskKfs = []">
+                      <el-icon :size="11"><Delete /></el-icon>
+                    </button>
+                  </div>
+                  <div v-show="maskKfOpen" class="cp-grp-body">
+                    <div v-if="!clipPatch.maskKfs?.length" class="cp-ins-hint">蒙版可以随时间移动/缩放（t 为段内 0~1）。打两个点以上才生效</div>
+                    <div v-for="(kf, i) in clipPatch.maskKfs" :key="i" class="cp-kf-row">
+                      <input v-model.number="kf.t" class="cp-num" type="number" min="0" max="1" step="0.05" title="t（段内比例）" />
+                      <input v-model.number="kf.scale" class="cp-num" type="number" min="0.05" max="1" step="0.05" title="蒙版大小" />
+                      <input v-model.number="kf.offsetX" class="cp-num" type="number" min="-0.5" max="0.5" step="0.05" title="水平偏移" />
+                      <input v-model.number="kf.offsetY" class="cp-num" type="number" min="-0.5" max="0.5" step="0.05" title="垂直偏移" />
+                      <button class="cp-mini danger" @click="clipPatch.maskKfs.splice(i, 1)"><el-icon :size="11"><Delete /></el-icon></button>
+                    </div>
+                  </div>
+                </div>
+                <!-- 钢笔路径（P1-4）：点几个锚点围出蒙版区域 -->
+                <div class="cp-field">
+                  <label>钢笔路径</label>
+                  <div class="cp-field-row">
+                    <button class="cp-btn ghost" @click="openPathEditor">
+                      {{ clipPatch.maskShape === 'path' ? `编辑路径（${clipPatch.maskPath?.length || 0} 点）` : '画路径蒙版' }}
+                    </button>
+                    <label class="cp-check"><input v-model="clipPatch.maskPathSmooth" type="checkbox" /> 平滑</label>
+                  </div>
                 </div>
               </div>
             </div>
@@ -963,6 +1092,37 @@
               <label>字号 <span class="cp-val">{{ textPatch.fontSizePx }}px</span></label>
               <input v-model.number="textPatch.fontSizePx" class="cp-range" type="range" min="40" max="200" step="2" />
             </div>
+            <!-- 字体与排版（P1-2）：字体 / 字距 / 行距 / 加粗斜体 / 花字底板 -->
+            <div class="cp-field">
+              <label>字体</label>
+              <select v-model="textPatch.fontFamily" class="cp-select">
+                <option value="">默认（微软雅黑）</option>
+                <option v-for="f in FONT_FAMILIES" :key="f.id" :value="f.id">{{ f.label }}</option>
+              </select>
+            </div>
+            <div class="cp-field">
+              <label>字距 <span class="cp-val">{{ textPatch.letterSpacingPx }}px</span></label>
+              <input v-model.number="textPatch.letterSpacingPx" class="cp-range" type="range" min="0" max="60" step="1" />
+            </div>
+            <div class="cp-field">
+              <label>行距 <span class="cp-val">{{ textPatch.lineSpacingPx }}px</span></label>
+              <input v-model.number="textPatch.lineSpacingPx" class="cp-range" type="range" min="0" max="120" step="2" />
+              <div class="cp-ins-hint">行距只对多行文本、且没有动画/变换时生效（ASS 没有原生行距，按行定位）</div>
+            </div>
+            <div class="cp-field">
+              <label>字形</label>
+              <label class="cp-check"><input v-model="textPatch.bold" type="checkbox" /> 加粗</label>
+              <label class="cp-check"><input v-model="textPatch.italic" type="checkbox" /> 斜体</label>
+            </div>
+            <div class="cp-field">
+              <label>花字底板</label>
+              <div class="cp-field-row">
+                <input v-model="textPlateColor" class="cp-color" type="color" title="底板颜色（大描边撑成圆角底板）" />
+                <input v-model.number="textPatch.platePaddingPx" class="cp-num wide" type="number" min="4" max="80" step="1" title="底板厚度（像素）" :disabled="!textPatch.plateColor" />
+                <button class="cp-mini" title="去掉底板" @click="textPatch.plateColor = ''">无</button>
+              </div>
+              <div class="cp-ins-hint">底板 = 半透明圆角块（模板里的「花字 / 气泡」就是它）；厚度越大越圆</div>
+            </div>
             <div class="cp-field">
               <label>位置</label>
               <div class="cp-seg-btns">
@@ -1115,6 +1275,35 @@
             <div class="cp-ins-hint">贴纸默认居中、宽度 30%。需要"弹出/放大"这类动画，可在对话里让剪辑师给贴纸打关键帧</div>
             <button class="cp-btn primary full" @click="applyStickerPatch">应用贴纸参数</button>
             <button class="cp-btn danger full" @click="removeSticker(selectedSticker.id)">删除贴纸</button>
+          </template>
+
+          <!-- 特效层属性（P1-3） -->
+          <template v-else-if="selectedEffect">
+            <div class="cp-ins-head">
+              <span class="cp-ins-title">特效</span>
+              <span class="cp-ins-sub">{{ effectLabel(selectedEffect.fx) }}</span>
+            </div>
+            <div class="cp-field">
+              <label>特效类型</label>
+              <select class="cp-select" :value="selectedEffect.fx" @change="onEffectFxChange">
+                <option v-for="it in EFFECT_LAYERS" :key="it.id" :value="it.id">{{ it.label }} · {{ it.desc }}</option>
+              </select>
+            </div>
+            <div class="cp-field">
+              <label>时间（秒，相对成片）</label>
+              <div class="cp-field-row">
+                <input v-model.number="selectedEffect.start" class="cp-num wide" type="number" step="0.1" min="0" />
+                <span class="cp-tilde">~</span>
+                <input v-model.number="selectedEffect.end" class="cp-num wide" type="number" step="0.1" min="0" />
+              </div>
+            </div>
+            <div class="cp-field">
+              <label>强度 <span class="cp-val">{{ (efIntensity * 100).toFixed(0) }}%</span></label>
+              <input v-model.number="efIntensity" class="cp-range" type="range" min="0" max="1" step="0.01" />
+            </div>
+            <div class="cp-ins-hint">特效层可以叠（例如「闪光 + 颗粒」）。字幕永远在最上层，特效不会盖住字幕</div>
+            <button class="cp-btn primary full" @click="applyEffectPatch">应用特效参数</button>
+            <button class="cp-btn danger full" @click="removeEffect(selectedEffect.id)">删除特效</button>
           </template>
 
           <div v-else class="cp-empty">
@@ -1310,6 +1499,69 @@
       </div>
     </el-dialog>
 
+    <!-- 特效层（P1-3）：卡片式选效果，点一下放到播放头 -->
+    <el-dialog v-model="effectLibOpen" title="特效" width="560px" :append-to-body="true">
+      <div class="cp-sl">
+        <div class="cp-sl-note">
+          特效带自己的时长（默认 1.5 秒），可以在时间轴上多条叠加。
+          <br />加完可在右侧调时间与强度；「胶片颗粒」是整屏噪点，其余是叠在上层的氛围光。
+        </div>
+        <div class="cp-sl-items cp-fx-items">
+          <button
+            v-for="it in EFFECT_LAYERS"
+            :key="it.id"
+            class="cp-sl-item cp-fx-item"
+            :title="it.desc"
+            :disabled="!clipCount"
+            @click="pickEffect(it.id)"
+          >
+            <span class="cp-fx-label">{{ it.label }}</span>
+            <span class="cp-sl-desc">{{ it.desc }}</span>
+            <span class="cp-fx-kind">{{ it.kind === 'filter' ? '整屏' : '叠加' }} · 默认强度 {{ (it.defaultIntensity * 100).toFixed(0) }}%</span>
+          </button>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- 钢笔路径蒙版（P1-4）：在预览帧上点锚点，围出蒙版区域 -->
+    <el-dialog v-model="pathEditorOpen" title="钢笔路径蒙版" width="420px" :append-to-body="true">
+      <div class="cp-path">
+        <div class="cp-ins-hint">在画面上依次点锚点（至少 3 个），自动闭合成蒙版区域。点为归一化坐标，换画幅不会漂。</div>
+        <div class="cp-path-stage">
+          <canvas ref="pathCanvas" class="cp-path-canvas" @click="onPathClick"></canvas>
+        </div>
+        <div class="cp-field-row">
+          <label class="cp-check"><input v-model="pathEditorSmooth" type="checkbox" @change="drawPathEditor" /> 平滑曲线</label>
+          <span class="cp-spacer"></span>
+          <button class="cp-mini" :disabled="!pathEditorPts.length" @click="undoPathPoint">撤销一点</button>
+          <button class="cp-mini" :disabled="!pathEditorPts.length" @click="clearPathPoints">清空</button>
+        </div>
+      </div>
+      <template #footer>
+        <button class="cp-btn ghost" @click="pathEditorOpen = false">取消</button>
+        <button class="cp-btn primary" :disabled="pathEditorPts.length < 3" @click="applyPathMask">应用路径</button>
+      </template>
+    </el-dialog>
+
+    <!-- 渲染队列（P1-9）：后台顺序渲染，导出不再阻塞编辑 -->
+    <el-dialog v-model="queueOpen" title="渲染队列" width="640px" :append-to-body="true">
+      <div class="cp-q">
+        <div class="cp-q-note">导出会进队列后台渲染，期间可以继续编辑；连续导出会按顺序跑（不会互相抢 CPU/显存）。</div>
+        <div v-if="!queueJobs.length" class="cp-q-empty">还没有渲染任务</div>
+        <div v-for="j in queueJobs" :key="j.id" class="cp-q-row">
+          <span class="cp-q-status" :class="`is-${j.status}`">{{ queueStatusLabel(j.status) }}</span>
+          <span class="cp-q-title">{{ j.title }}</span>
+          <span class="cp-q-time">{{ new Date(j.createdAt).toLocaleTimeString() }}</span>
+          <span class="cp-q-file" :title="j.file || j.error || j.note || ''">{{ j.file ? baseName(j.file) : (j.error || j.note || '') }}</span>
+          <button v-if="j.status === 'queued'" class="cp-mini" @click="cancelJob(j.id)">取消</button>
+        </div>
+      </div>
+      <template #footer>
+        <button class="cp-btn ghost" @click="clearQueue">清理已结束</button>
+        <button class="cp-btn primary" @click="queueOpen = false">关闭</button>
+      </template>
+    </el-dialog>
+
     <!-- AI 配乐：本地合成器（模型写和弦/旋律，工具渲染；不含人声） -->
     <el-dialog v-model="musicDialog" title="AI 配乐（本地合成）" width="440px" :append-to-body="true">
       <div class="cp-np">
@@ -1391,10 +1643,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, DArrowLeft, Delete,
-  Close, EditPen, FolderOpened, Headset, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, VideoCamera, VideoPlay, View, WarningFilled,
+  Close, EditPen, FolderOpened, Headset, List, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, Star, VideoCamera, VideoPlay, View, WarningFilled,
 } from '@element-plus/icons-vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
@@ -1407,7 +1659,7 @@ import { api, API_BASE, getLicenseCode } from '../api/client';
 import { clampMenuPos } from '../utils/menuPosition';
 import {
   COLOR_EFFECTS, FX_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
-  TRANSITIONS, OVERLAY_POSITIONS, BLEND_MODES, groupEffects, effectIds, fxParamsOf, type TextStylePreset,
+  TRANSITIONS, OVERLAY_POSITIONS, BLEND_MODES, EFFECT_LAYERS, FONT_FAMILIES, HSL_BANDS, groupEffects, effectIds, fxParamsOf, type TextStylePreset,
 } from '@yan-zhi/shared';
 
 /**
@@ -1443,6 +1695,10 @@ interface ClipSegment {
   speedCurve?: Array<{ t: number; speed: number }>;
   /** 调色预设强度 0~1（1=全量）与手动调节（叠在预设之上） */
   colorStrength?: number;
+  /** P1-5：3D LUT（.cube 本机绝对路径 + 强度 0~1） */
+  lut?: { file: string; strength?: number };
+  /** P1-6：HSL 分色（按色带调 H/S/L） */
+  hsl?: { bands: Array<{ color: string; hue?: number; saturation?: number; lightness?: number }> };
   adjust?: { brightness?: number; contrast?: number; saturation?: number; temperature?: number; sharpness?: number; vignette?: number };
   /** 动态特效 id（见 shared 的 FX_EFFECTS） */
   fx?: string;
@@ -1457,10 +1713,16 @@ interface ClipSegment {
   mask?: {
     shape?: string; key?: string;
     scale?: number; offsetX?: number; offsetY?: number; feather?: number;
+    /** P1-4：线性蒙版方向/位置、蒙版关键帧、钢笔路径 */
+    angle?: number; position?: number;
+    keyframes?: Array<{ t: number; scale?: number; offsetX?: number; offsetY?: number; angle?: number; position?: number }>;
+    path?: { smooth?: boolean; points: Array<{ x: number; y: number }> };
   };
   /** 与前一段之间的转场（挂在后一段上，语义="我进来时怎么出现"） */
   transition?: { type: string; duration?: number };
   audioFile?: string; keepOriginalAudio?: boolean; volume?: number;
+  /** P1-7 升降调（半音 -12~12，只改音高不改时长） */
+  pitch?: number;
   /** 画面裁剪（比例 0~1，裁子区域后回填画幅；与后端 clip-project 同构） */
   crop?: { x?: number; y?: number; w?: number; h?: number };
   /** 关键帧动画：t 为段内时间比例 0~1（与后端 clip-project 同构） */
@@ -1475,6 +1737,9 @@ interface ClipText {
   /** 背景底板色 #RRGGBBAA（A=不透明度）；不填=无底板 */
   backColor?: string;
   color?: string; outlineColor?: string; position?: string; safeArea?: boolean;
+  /** P1-2 排版：字体 id / 字距 / 行距 / 加粗斜体 / 花字底板 */
+  fontFamily?: string; letterSpacingPx?: number; lineSpacingPx?: number;
+  bold?: boolean; italic?: boolean; plateColor?: string; platePaddingPx?: number;
   /** P0-2b：文字层变换（与画中画同语义；有变换时字幕改走 ASS 渲染，且不再套动画预设） */
   transform?: { x?: number; y?: number; scale?: number; rotation?: number; opacity?: number };
   /** P0-2b：变换关键帧（t 为层内 0~1） */
@@ -1484,7 +1749,7 @@ interface ClipProject {
   version: 2; name: string; updatedAt: number;
   /** 图层轨（v2）：字幕/画中画在此落盘；UI 继续操作 texts/overlays 视图字段 */
   layers?: Array<{ id: string; kind: string; start: number; end: number; track: number; transform?: Record<string, unknown> }>;
-  output: { size: string; fps: number; quality?: 'low' | 'std' | 'high' };
+  output: { size: string; fps: number; quality?: 'low' | 'std' | 'high'; encoder?: 'cpu' | 'auto' };
   clips: ClipSegment[]; texts: ClipText[];
   /** 音效链（整片，按顺序串联；见效果库 AUDIO_EFFECTS） */
   audioFx?: string[];
@@ -1507,6 +1772,10 @@ interface ClipProject {
     id: string; file: string; start: number; end: number;
     scale?: number; x?: number; y?: number; rotation?: number; opacity?: number;
     keyframes?: Array<{ t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: string }>;
+  }>;
+  /** P1-3：特效层（闪光/漏光/星点/颗粒，各带时间窗口，可叠加） */
+  effects?: Array<{
+    id: string; fx: string; start: number; end: number; intensity?: number;
   }>;
 }
 interface ConvFile { id?: string; name: string; path: string; type?: string }
@@ -1555,6 +1824,18 @@ const outputQuality = computed({
   },
 });
 const previewUrl = ref('');
+
+/** P1-9：编码方式（cpu=软件编码 / auto=自动用硬件编码器，失败回退 CPU）。 */
+const outputEncoder = computed({
+  get: (): 'cpu' | 'auto' => (project.value?.output?.encoder === 'auto' ? 'auto' : 'cpu'),
+  set: (v: 'cpu' | 'auto') => {
+    const p = project.value;
+    if (!p) return;
+    p.output = { ...p.output, encoder: v };
+    dirty.value = true;
+    void save();
+  },
+});
 /**
  * 监视模式：
  *  · live = 实时预览帧（拖动播放头即时取帧）——**默认**，编辑时用
@@ -1604,14 +1885,17 @@ const videoEl = ref<HTMLVideoElement | null>(null);
 
 const clipPatch = reactive({
   trimStart: undefined as number | undefined, trimEnd: undefined as number | undefined,
-  speed: 1, volume: 1, fadeIn: undefined as number | undefined,
+  speed: 1, volume: 1, pitch: 0, fadeIn: undefined as number | undefined,
   // 曲线变速：起/中/止三段倍速（勾选后生效，与恒定变速互斥）
   speedCurveOn: false, spStart: 1, spMid: 1, spEnd: 1,
   fadeOut: undefined as number | undefined, colorPreset: '', fx: '',
   /** 特效参数（键来自注册表；改特效时由 watch 重建） */
   fxParams: {} as Record<string, number>,
-  // 蒙版（形状与抠像互斥，色键优先）
+  // 蒙版（形状与抠像互斥，色键优先）；P1-4：线性方向/位置、蒙版关键帧、钢笔路径
   maskShape: '', maskKey: '', maskScale: 0.9, maskOffsetX: 0, maskOffsetY: 0, maskFeather: 0,
+  maskAngle: 0, maskPosition: 0.5,
+  maskKfs: [] as Array<{ t: number; scale?: number; offsetX?: number; offsetY?: number }>,
+  maskPath: [] as Array<{ x: number; y: number }>, maskPathSmooth: true,
   // 转场（与前一段之间）
   transitionType: '', transitionDuration: 0.8,
   // 画面裁剪（比例 0~1；w/h=1 且 x/y=0 = 未裁剪）
@@ -1622,10 +1906,18 @@ const clipPatch = reactive({
   kenburnsDir: 'in' as 'in' | 'out' | 'none', kenburnsDuration: 6,
   // 调色：预设强度 + 手动调节（默认值 = 不变）
   colorStrength: 1,
+  lutFile: '', lutStrength: 1,
+  // P1-6 HSL 分色：8 个色带常驻，值为 0 = 不改（保存时只写非零色带）
+  hslBands: HSL_BANDS.map((b) => ({ color: b.id, hue: 0, saturation: 0, lightness: 0 })) as Array<{ color: string; hue: number; saturation: number; lightness: number }>,
   adjBrightness: 0, adjContrast: 1, adjSaturation: 1,
   adjTemperature: 0, adjSharpness: 0, adjVignette: 0,
 });
 const maskOpen = ref(false);
+// P1-6 HSL 分色：当前编辑的色带
+const hslOpen = ref(false);
+const hslBand = ref('red');
+const hslSel = computed(() => clipPatch.hslBands.find((b) => b.color === hslBand.value) || clipPatch.hslBands[0]);
+const activeHslCount = computed(() => clipPatch.hslBands.filter((b) => b.hue || b.saturation || b.lightness).length);
 const transOpen = ref(false);
 const cropOpen = ref(false);
 const kfOpen = ref(false);
@@ -1640,11 +1932,24 @@ const selectedOverlayId = ref('');
 const selectedAudioId = ref('');
 /** 选中的贴纸层（P1-1） */
 const selectedStickerId = ref('');
+/** 选中的特效层（P1-3） */
+const selectedEffectId = ref('');
 const textPatch = reactive({
   text: '', start: 0, end: 0, fontSizePx: 88, outlinePx: 12, backColor: '', animation: '',
   slideDirection: 'right', position: 'bottom', color: '#FFFFFF', outlineColor: '#000000', safeArea: false,
+  // P1-2 排版：字体 / 字距 / 行距 / 字形 / 花字底板
+  fontFamily: '', letterSpacingPx: 0, lineSpacingPx: 0, bold: false, italic: false,
+  plateColor: '', platePaddingPx: 18,
   // 文字层变换（P0-2b）：tfOn=false 时清空 transform，回到原来的 SRT 渲染路径
   tfOn: false, tfX: 0, tfY: 0, tfScale: 1, tfRotation: 0, tfOpacity: 1,
+});
+/** 底板颜色输入框（type=color 只认 #RRGGBB；8 位带透明度时保留原 alpha） */
+const textPlateColor = computed<string>({
+  get: () => (textPatch.plateColor || '#000000').slice(0, 7),
+  set: (v) => {
+    const a = textPatch.plateColor && textPatch.plateColor.length === 9 ? textPatch.plateColor.slice(7) : '';
+    textPatch.plateColor = v + a;
+  },
 });
 
 const convId = computed(() => chat.store.currentConvId || '');
@@ -1948,6 +2253,8 @@ const audios = computed(() => project.value?.audios || []);
 const selectedAudio = computed(() => audios.value.find((a) => a.id === selectedAudioId.value) || null);
 const stickers = computed(() => project.value?.stickers || []);
 const selectedSticker = computed(() => stickers.value.find((s) => s.id === selectedStickerId.value) || null);
+const effects = computed(() => project.value?.effects || []);
+const selectedEffect = computed(() => effects.value.find((e) => e.id === selectedEffectId.value) || null);
 
 /** 音频字段滑杆（缺省值不写字段；淡入淡出不超过本段时长，与后端 normalizeAudio 同口径）。 */
 function setAudioField(key: 'volume' | 'fadeIn' | 'fadeOut', v: number, def: number, lo: number, hi: number) {
@@ -2242,10 +2549,12 @@ function refreshSelectionAfterHistory() {
   if (selectedTextId.value && !texts.value.some((t) => t.id === selectedTextId.value)) selectedTextId.value = '';
   if (selectedAudioId.value && !audios.value.some((a) => a.id === selectedAudioId.value)) selectedAudioId.value = '';
   if (selectedStickerId.value && !stickers.value.some((s) => s.id === selectedStickerId.value)) selectedStickerId.value = '';
+  if (selectedEffectId.value && !effects.value.some((e) => e.id === selectedEffectId.value)) selectedEffectId.value = '';
   if (selectedClipId.value) selectClip(selectedClipId.value);
   else if (selectedTextId.value) selectText(selectedTextId.value);
   else if (selectedAudioId.value) selectAudio(selectedAudioId.value);
   else if (selectedStickerId.value) selectSticker(selectedStickerId.value);
+  else if (selectedEffectId.value) selectEffect(selectedEffectId.value);
   scheduleFrameFetch(200);
 }
 
@@ -2584,12 +2893,23 @@ async function clearClipEffects() {
   const c = selectedClip.value;
   if (!c) return;
   delete c.colorPreset; delete c.fx; delete c.mask; delete c.speed; delete c.volume;
-  delete c.fadeIn; delete c.fadeOut; delete c.kenburns;
+  delete c.fadeIn; delete c.fadeOut; delete c.kenburns; delete c.lut; delete c.hsl; delete c.pitch;
   dirty.value = true; await save();
-  Object.assign(clipPatch, { colorPreset: '', fx: '', maskShape: '', maskKey: '', speed: 1, volume: 1,
+  Object.assign(clipPatch, { colorPreset: '', fx: '', maskShape: '', maskKey: '', speed: 1, volume: 1, pitch: 0,
     fadeIn: undefined, fadeOut: undefined, maskScale: 0.9, maskOffsetX: 0, maskOffsetY: 0, maskFeather: 0 });
   scheduleFrameFetch(150);
   note('已清空该片段的效果');
+}
+
+/** 选 LUT 文件（桌面端原生选择器；Web/移动端直接填路径）。 */
+async function pickLutFile() {
+  const dlg = (window as any).electronAPI?.dialog;
+  if (!dlg?.showOpenFiles) { note('当前环境不支持文件选择器，请直接填写 .cube 路径'); return; }
+  const paths: string[] = (await dlg.showOpenFiles()) || [];
+  const f = paths.find((p) => /\.cube$/i.test(p));
+  if (!f) { if (paths.length) note('只支持 .cube 文件'); return; }
+  clipPatch.lutFile = f;
+  note('已选择 LUT，点「应用片段参数」生效');
 }
 
 /** 把选中字幕的起点对齐到播放头（保持时长不变）。 */
@@ -2744,6 +3064,15 @@ function onClipMouseDown(e: MouseEvent, c: ClipSegment) {
 }
 
 // ===== 键盘快捷键（对标商用软件）=====
+/** 删除当前选中对象（优先级：特效 → 贴纸 → 音频 → 字幕 → 片段）。 */
+function deleteSelected() {
+  if (selectedEffectId.value) return void removeEffect(selectedEffectId.value);
+  if (selectedStickerId.value) return void removeSticker(selectedStickerId.value);
+  if (selectedAudioId.value) return void removeAudio(selectedAudioId.value);
+  if (selectedTextId.value) return removeText();
+  return removeClip();
+}
+
 /**
  * 快捷键表（在剪辑模式下生效）。
  * ★ 只在编辑视图、且焦点不在输入框时生效 —— 否则打字时按 Delete 会删片段。
@@ -2756,8 +3085,8 @@ const SHORTCUTS: Array<{ key: string; ctrl?: boolean; label: string; run: () => 
   { key: 'y', ctrl: true, label: '重做', run: () => void redo() },
   { key: 's', label: '分割', run: () => void splitAtPlayhead() },
   { key: 'd', ctrl: true, label: '复制片段', run: () => void duplicateClip() },
-  { key: 'Delete', label: '删除选中', run: () => void (selectedStickerId.value ? removeSticker(selectedStickerId.value) : selectedAudioId.value ? removeAudio(selectedAudioId.value) : selectedTextId.value ? removeText() : removeClip()) },
-  { key: 'Backspace', label: '删除选中', run: () => void (selectedStickerId.value ? removeSticker(selectedStickerId.value) : selectedAudioId.value ? removeAudio(selectedAudioId.value) : selectedTextId.value ? removeText() : removeClip()) },
+  { key: 'Delete', label: '删除选中', run: () => void deleteSelected() },
+  { key: 'Backspace', label: '删除选中', run: () => void deleteSelected() },
   { key: 'ArrowLeft', label: '播放头左移', run: () => seek(playhead.value - (shiftHeld ? 1 : 0.1)) },
   { key: 'ArrowRight', label: '播放头右移', run: () => seek(playhead.value + (shiftHeld ? 1 : 0.1)) },
   { key: ',', label: '上一帧', run: () => stepFrame(-1) },
@@ -3320,6 +3649,102 @@ const skY = computed<number>({ get: () => selectedSticker.value?.y ?? 0, set: (v
 const skRotation = computed<number>({ get: () => selectedSticker.value?.rotation ?? 0, set: (v) => setStickerField('rotation', v, 0, -180, 180) });
 const skOpacity = computed<number>({ get: () => selectedSticker.value?.opacity ?? 1, set: (v) => setStickerField('opacity', v, 1, 0, 1) });
 
+// ===== 特效层（P1-3）=====
+// ★ 特效 id / 名称 / 默认强度全部来自 shared 的 EFFECT_LAYERS（与后端归一化、工具 schema 同源）
+const effectLibOpen = ref(false);
+const effectDefaultIntensity = (id: string): number => EFFECT_LAYERS.find((e) => e.id === id)?.defaultIntensity ?? 0.5;
+function effectLabel(id: string): string {
+  return EFFECT_LAYERS.find((e) => e.id === id)?.label || id;
+}
+function nextEffectId(): string {
+  let max = 0;
+  for (const e of project.value?.effects || []) {
+    const m = /^e(\d+)$/.exec(e.id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `e${max + 1}`;
+}
+
+/** 在播放头加一段特效（默认 1.5 秒，夹住片尾）。 */
+async function addEffectAtPlayhead(fx: string) {
+  if (!convId.value) { note('还没有会话'); return; }
+  const def = EFFECT_LAYERS.find((e) => e.id === fx);
+  if (!def) return;
+  const p = ensureProject();
+  const start = Math.max(0, Number(playhead.value.toFixed(2)));
+  const end = Math.min(Math.max(start + 0.2, estTotal.value), start + 1.5);
+  if (!(end > start)) { note('播放头已在片尾，无法添加特效'); return; }
+  if (!p.effects) p.effects = [];
+  const item = { id: nextEffectId(), fx, start, end: Number(end.toFixed(2)), intensity: def.defaultIntensity };
+  p.effects.push(item);
+  dirty.value = true;
+  await save();
+  selectEffect(item.id);
+  note(`已加「${def.label}」特效（${start.toFixed(1)}s 起 ${(end - start).toFixed(1)} 秒；右侧可调时间与强度）`);
+}
+
+async function pickEffect(fx: string) {
+  effectLibOpen.value = false;
+  await addEffectAtPlayhead(fx);
+}
+
+/** 换特效类型时把强度重置为该类型默认值（沿用同一窗口，免得"换了效果但看不见"）。 */
+function onEffectFxChange(e: Event) {
+  const fx = (e.target as HTMLSelectElement).value;
+  const it = selectedEffect.value;
+  if (!it) return;
+  it.fx = fx;
+  it.intensity = effectDefaultIntensity(fx);
+}
+
+const efIntensity = computed<number>({
+  get: () => selectedEffect.value?.intensity ?? effectDefaultIntensity(selectedEffect.value?.fx || ''),
+  set: (v) => {
+    const it = selectedEffect.value;
+    if (!it) return;
+    it.intensity = Number(Math.max(0, Math.min(1, Number(v) || 0)).toFixed(3));
+  },
+});
+
+async function applyEffectPatch() {
+  const it = selectedEffect.value;
+  if (!it || !project.value) return;
+  pendingLabel.value = '改特效';
+  it.start = Math.max(0, Number(it.start) || 0);
+  it.end = Math.max(it.start + 0.1, Number(it.end) || 0);
+  if (it.intensity != null) it.intensity = Math.max(0, Math.min(1, Number(it.intensity)));
+  dirty.value = true;
+  await save();
+  note('特效参数已更新');
+}
+
+async function removeEffect(id: string) {
+  const p = project.value;
+  if (!p?.effects) return;
+  pendingLabel.value = '删特效';
+  p.effects = p.effects.filter((e) => e.id !== id);
+  if (!p.effects.length) delete p.effects;
+  if (selectedEffectId.value === id) selectedEffectId.value = '';
+  dirty.value = true;
+  await save();
+}
+
+function onEffectMenu(e: MouseEvent, it: { id: string; fx: string; start: number; end: number }) {
+  openCtxMenu(e, `特效 ${effectLabel(it.fx)}`, [
+    { label: '起点对齐播放头', icon: 'Clock', action: async () => {
+        const cur = project.value?.effects?.find((x) => x.id === it.id);
+        if (!cur) return;
+        pendingLabel.value = '特效对齐';
+        const dur = cur.end - cur.start;
+        cur.start = Number(Math.max(0, Math.min(playhead.value, estTotal.value - 0.1)).toFixed(3));
+        cur.end = Number(Math.min(estTotal.value, cur.start + dur).toFixed(3));
+        dirty.value = true;
+        await save();
+      } },
+    { label: '删除特效', icon: 'Delete', danger: true, action: () => removeEffect(it.id) },
+  ], `effect:${it.id}`);
+}
+
 // ===== 画中画（叠加轨）=====
 /** 音频波形图 URL（服务端 showwavespic；仅限本会话工程引用/登记过的文件）。 */
 function waveUrl(p: string, w = 600, h = 56): string {
@@ -3352,6 +3777,7 @@ function selectOverlay(id: string) {
   selectedTextId.value = '';
   selectedAudioId.value = '';
   selectedStickerId.value = '';
+  selectedEffectId.value = '';
   rightTab.value = 'inspector';
 }
 
@@ -3361,6 +3787,7 @@ function selectAudio(id: string) {
   selectedTextId.value = '';
   selectedOverlayId.value = '';
   selectedStickerId.value = '';
+  selectedEffectId.value = '';
   rightTab.value = 'inspector';
 }
 
@@ -3370,6 +3797,17 @@ function selectSticker(id: string) {
   selectedTextId.value = '';
   selectedOverlayId.value = '';
   selectedAudioId.value = '';
+  selectedEffectId.value = '';
+  rightTab.value = 'inspector';
+}
+
+function selectEffect(id: string) {
+  selectedEffectId.value = id;
+  selectedClipId.value = '';
+  selectedTextId.value = '';
+  selectedOverlayId.value = '';
+  selectedAudioId.value = '';
+  selectedStickerId.value = '';
   rightTab.value = 'inspector';
 }
 
@@ -3532,26 +3970,36 @@ function selectClip(id: string) {
   selectedTextId.value = '';
   selectedAudioId.value = '';
   selectedStickerId.value = '';
+  selectedEffectId.value = '';
   rightTab.value = 'inspector';
   const c = clips.value.find((x) => x.id === id);
   if (!c) return;
   Object.assign(clipPatch, {
     trimStart: c.trimStart, trimEnd: c.trimEnd,
-    speed: c.speed ?? 1, volume: c.volume ?? 1,
+    speed: c.speed ?? 1, volume: c.volume ?? 1, pitch: c.pitch ?? 0,
     speedCurveOn: !!c.speedCurve?.length,
     spStart: c.speedCurve?.[0]?.speed ?? 1,
     spMid: c.speedCurve?.find((p) => Math.abs(p.t - 0.5) < 0.05)?.speed ?? 1,
     spEnd: c.speedCurve?.[c.speedCurve.length - 1]?.speed ?? 1,
     fadeIn: c.fadeIn, fadeOut: c.fadeOut, colorPreset: c.colorPreset || '', fx: c.fx || '',
     fxParams: { ...(c.fxParams || {}) },
-    maskShape: c.mask?.shape || '', maskKey: c.mask?.key || '',
+    maskShape: c.mask?.path ? 'path' : (c.mask?.shape || ''), maskKey: c.mask?.key || '',
     maskScale: c.mask?.scale ?? 0.9, maskOffsetX: c.mask?.offsetX ?? 0,
     maskOffsetY: c.mask?.offsetY ?? 0, maskFeather: c.mask?.feather ?? 0,
+    maskAngle: c.mask?.angle ?? 0, maskPosition: c.mask?.position ?? 0.5,
+    maskKfs: (c.mask?.keyframes || []).map((k) => ({ ...k })),
+    maskPath: (c.mask?.path?.points || []).map((p) => ({ ...p })),
+    maskPathSmooth: c.mask?.path?.smooth !== false,
     transitionType: c.transition?.type || '', transitionDuration: c.transition?.duration ?? 0.8,
     cropX: c.crop?.x ?? 0, cropY: c.crop?.y ?? 0, cropW: c.crop?.w ?? 1, cropH: c.crop?.h ?? 1,
     rotate: c.rotate ?? 0, flip: c.flip ?? '', reverse: c.reverse === true,
     kenburnsDir: c.kenburns?.direction ?? 'in', kenburnsDuration: c.kenburns?.duration ?? 6,
     colorStrength: c.colorStrength ?? 1,
+    lutFile: c.lut?.file || '', lutStrength: c.lut?.strength ?? 1,
+    hslBands: HSL_BANDS.map((b) => {
+      const hit = c.hsl?.bands.find((x) => x.color === b.id);
+      return { color: b.id, hue: hit?.hue ?? 0, saturation: hit?.saturation ?? 0, lightness: hit?.lightness ?? 0 };
+    }),
     adjBrightness: c.adjust?.brightness ?? 0, adjContrast: c.adjust?.contrast ?? 1,
     adjSaturation: c.adjust?.saturation ?? 1, adjTemperature: c.adjust?.temperature ?? 0,
     adjSharpness: c.adjust?.sharpness ?? 0, adjVignette: c.adjust?.vignette ?? 0,
@@ -3567,6 +4015,7 @@ function selectText(id: string) {
   selectedClipId.value = '';
   selectedAudioId.value = '';
   selectedStickerId.value = '';
+  selectedEffectId.value = '';
   rightTab.value = 'inspector';
   const t = texts.value.find((x) => x.id === id);
   if (!t) return;
@@ -3576,6 +4025,8 @@ function selectText(id: string) {
     position: t.position || 'bottom', color: t.color || '#FFFFFF',
     outlineColor: t.outlineColor || '#000000', safeArea: !!t.safeArea,
     outlinePx: t.outlinePx ?? 12, backColor: t.backColor || '',
+    fontFamily: t.fontFamily || '', letterSpacingPx: t.letterSpacingPx ?? 0, lineSpacingPx: t.lineSpacingPx ?? 0,
+    bold: !!t.bold, italic: !!t.italic, plateColor: t.plateColor || '', platePaddingPx: t.platePaddingPx ?? 18,
     tfOn: !!t.transform || !!t.keyframes?.length,
     tfX: t.transform?.x ?? 0, tfY: t.transform?.y ?? 0, tfScale: t.transform?.scale ?? 1,
     tfRotation: t.transform?.rotation ?? 0, tfOpacity: t.transform?.opacity ?? 1,
@@ -3762,6 +4213,121 @@ function clearClipMask() {
   clipPatch.maskKey = '';
 }
 
+// ===== P1-4 蒙版增强：蒙版关键帧 + 钢笔路径 =====
+const maskKfOpen = ref(false);
+const pathEditorOpen = ref(false);
+const pathEditorPts = ref<Array<{ x: number; y: number }>>([]);
+const pathEditorSmooth = ref(true);
+const pathCanvas = ref<HTMLCanvasElement | null>(null);
+
+/** 在播放头处给蒙版打一个关键帧（沿用当前大小/偏移作为初值）。 */
+function addMaskKf() {
+  if (!selectedClip.value) { note('先选中一个片段'); return; }
+  const frac = playheadFractionInSelectedClip();
+  if (frac == null) { note('无法定位播放头（素材时长未知）'); return; }
+  const list = clipPatch.maskKfs;
+  const near = list.find((k) => Math.abs(k.t - frac) < 0.02);
+  if (near) {
+    Object.assign(near, { scale: clipPatch.maskScale, offsetX: clipPatch.maskOffsetX, offsetY: clipPatch.maskOffsetY });
+    note(`已更新 ${frac.toFixed(2)} 处的蒙版关键帧`);
+  } else {
+    list.push({
+      t: Number(frac.toFixed(3)), scale: clipPatch.maskScale,
+      offsetX: clipPatch.maskOffsetX, offsetY: clipPatch.maskOffsetY,
+    });
+    list.sort((a, b) => a.t - b.t);
+    note(`已在播放头（${frac.toFixed(2)}）打蒙版关键帧（至少两个点才生效）`);
+  }
+}
+
+async function openPathEditor() {
+  if (!selectedClip.value) { note('先选中一个片段'); return; }
+  pathEditorPts.value = (clipPatch.maskPath || []).map((p) => ({ ...p }));
+  pathEditorSmooth.value = clipPatch.maskPathSmooth !== false;
+  pathEditorOpen.value = true;
+  await nextTick();
+  drawPathEditor();
+}
+
+/** 画布尺寸按工程画幅走（点坐标是归一化的，换画幅不漂）。 */
+function pathCanvasSize(): { cw: number; ch: number } {
+  const [w, h] = (outSize.value || '1080x1920').split('x').map(Number);
+  const cw = 360;
+  const ch = Math.max(120, Math.round(cw * (h || 1920) / (w || 1080)));
+  return { cw, ch };
+}
+
+/** 画当前预览帧 + 已点的锚点/折线（smooth 仅影响实际渲染，这里用折线近似预览）。 */
+function drawPathEditor() {
+  const cv = pathCanvas.value;
+  if (!cv) return;
+  const { cw, ch } = pathCanvasSize();
+  cv.width = cw;
+  cv.height = ch;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return;
+  const drawPoints = () => {
+    const pts = pathEditorPts.value;
+    if (!pts.length) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,86,86,0.95)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((p, i) => (i ? ctx.lineTo(p.x * cw, p.y * ch) : ctx.moveTo(p.x * cw, p.y * ch)));
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,86,86,0.15)';
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    for (const p of pts) {
+      ctx.beginPath();
+      ctx.arc(p.x * cw, p.y * ch, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  };
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, cw, ch);
+  const src = liveFrameUrl.value;
+  if (!src) { drawPoints(); return; }
+  const img = new Image();
+  img.onload = () => { ctx.drawImage(img, 0, 0, cw, ch); drawPoints(); };
+  img.onerror = () => drawPoints();
+  img.src = src;
+}
+
+function onPathClick(e: MouseEvent) {
+  const cv = pathCanvas.value;
+  if (!cv) return;
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width;
+  const y = (e.clientY - r.top) / r.height;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return;
+  pathEditorPts.value.push({ x: Number(x.toFixed(4)), y: Number(y.toFixed(4)) });
+  drawPathEditor();
+}
+
+function undoPathPoint() {
+  pathEditorPts.value.pop();
+  drawPathEditor();
+}
+
+function clearPathPoints() {
+  pathEditorPts.value = [];
+  drawPathEditor();
+}
+
+function applyPathMask() {
+  if (!selectedClip.value) return;
+  if (pathEditorPts.value.length < 3) { note('至少需要 3 个锚点'); return; }
+  clipPatch.maskShape = 'path';
+  clipPatch.maskKey = '';
+  clipPatch.maskPath = pathEditorPts.value.map((p) => ({ ...p }));
+  clipPatch.maskPathSmooth = pathEditorSmooth.value;
+  pathEditorOpen.value = false;
+  note('路径已写入，点「应用片段参数」生效');
+}
+
 /**
  * 套用字幕样式模板。
  * ★ 只覆盖模板里写了的字段（其余保留用户自己的设置）—— 全量覆盖会把用户
@@ -3778,6 +4344,13 @@ function applyTextStyle(s: TextStylePreset) {
   if (st.animation) textPatch.animation = st.animation;
   // 底板色（textPatch.backColor）留给后端 backColor 字段；空串=无底板
   textPatch.backColor = st.backColor || '';
+  // P1-2 排版：模板是"成套观感"，字形/字距/行距/花字底板一律按模板重置
+  textPatch.bold = !!st.bold;
+  textPatch.italic = !!st.italic;
+  textPatch.letterSpacingPx = st.letterSpacingPx ?? 0;
+  textPatch.lineSpacingPx = st.lineSpacingPx ?? 0;
+  textPatch.plateColor = st.plateColor || '';
+  textPatch.platePaddingPx = st.platePaddingPx ?? 18;
   note(`已套用样式「${s.label}」，点「应用字幕参数」生效`);
 }
 
@@ -3821,6 +4394,9 @@ async function applyClipPatch() {
   }
   const vol = Number(clipPatch.volume);
   if (Number.isFinite(vol) && Math.abs(vol - 1) > 0.001) c.volume = vol; else delete c.volume;
+  // P1-7 升降调：0 半音不写字段（半音取整，与滑杆 step=1 一致）
+  const pv = Math.max(-12, Math.min(12, Math.round(Number(clipPatch.pitch) || 0)));
+  if (pv) c.pitch = pv; else delete c.pitch;
   c.fadeIn = clean(clipPatch.fadeIn);
   c.fadeOut = clean(clipPatch.fadeOut);
   if (clipPatch.colorPreset) c.colorPreset = clipPatch.colorPreset; else delete c.colorPreset;
@@ -3828,6 +4404,25 @@ async function applyClipPatch() {
   const cs = Number(clipPatch.colorStrength);
   if (Number.isFinite(cs) && Math.abs(cs - 1) > 0.001) c.colorStrength = Math.max(0, Math.min(1, cs));
   else delete c.colorStrength;
+  // P1-5 3D LUT：只收 .cube；强度 1 不写字段（与后端 normalizeLut 同口径）
+  const lutFile = String(clipPatch.lutFile || '').trim();
+  if (lutFile && /\.cube$/i.test(lutFile)) {
+    const lsRaw = Number(clipPatch.lutStrength);
+    const ls = Number.isFinite(lsRaw) ? Math.max(0, Math.min(1, lsRaw)) : 1;
+    c.lut = { file: lutFile, ...(Math.abs(ls - 1) > 0.001 ? { strength: Number(ls.toFixed(3)) } : {}) };
+  } else delete c.lut;
+  // P1-6 HSL：只写非零色带（与后端 normalizeHsl 同口径）
+  const bands = clipPatch.hslBands.filter((b) => b.hue || b.saturation || b.lightness);
+  if (bands.length) {
+    c.hsl = {
+      bands: bands.map((b) => ({
+        color: b.color,
+        ...(b.hue ? { hue: Number(b.hue.toFixed(1)) } : {}),
+        ...(b.saturation ? { saturation: Number(b.saturation.toFixed(1)) } : {}),
+        ...(b.lightness ? { lightness: Number(b.lightness.toFixed(1)) } : {}),
+      })),
+    };
+  } else delete c.hsl;
   // 手动调节：只写偏离默认值的项（工程文件要能一眼看出调了什么）
   const adj = {
     ...(Math.abs(clipPatch.adjBrightness) > 0.001 ? { brightness: clipPatch.adjBrightness } : {}),
@@ -3865,13 +4460,21 @@ async function applyClipPatch() {
   // 蒙版：形状与抠像至少给一个才写；都要清空时删字段
   const shape = String(clipPatch.maskShape || '').trim();
   const key = String(clipPatch.maskKey || '').trim();
-  const hasShape = shape && shape !== 'none';
+  const isPath = shape === 'path';
+  const pathPoints = (clipPatch.maskPath || []).map((p) => ({ x: Number(p.x.toFixed(4)), y: Number(p.y.toFixed(4)) }));
+  const hasPath = isPath && pathPoints.length >= 3;
+  const hasShape = !!shape && shape !== 'none' && !isPath;
   const hasKey = key && key !== 'none';
-  if (hasShape || hasKey) {
+  if (hasShape || hasKey || hasPath) {
     c.mask = {
       ...(hasShape ? { shape } : {}),
       ...(hasKey ? { key } : {}),
-      ...(hasShape ? { scale: clipPatch.maskScale, offsetX: clipPatch.maskOffsetX, offsetY: clipPatch.maskOffsetY, feather: clipPatch.maskFeather } : {}),
+      ...(hasShape ? {
+        scale: clipPatch.maskScale, offsetX: clipPatch.maskOffsetX, offsetY: clipPatch.maskOffsetY, feather: clipPatch.maskFeather,
+        ...(shape === 'linear' ? { angle: clipPatch.maskAngle, position: clipPatch.maskPosition } : {}),
+        ...(clipPatch.maskKfs?.length >= 2 ? { keyframes: clipPatch.maskKfs.map((k) => ({ ...k })) } : {}),
+      } : {}),
+      ...(hasPath ? { path: { ...(clipPatch.maskPathSmooth ? { smooth: true } : {}), points: pathPoints } } : {}),
     };
   } else delete c.mask;
   // 转场：第一段没有"前一段"→ 不写（写了也是无效配置，渲染时会忽略）
@@ -4006,6 +4609,21 @@ async function applyTextPatch() {
   if (textPatch.color) t.color = textPatch.color;
   if (textPatch.outlineColor) t.outlineColor = textPatch.outlineColor;
   if (textPatch.safeArea) t.safeArea = true; else delete t.safeArea;
+  // P1-2 排版：0/空 = 删字段（老工程仍然走 SRT 路径，观感不变）
+  if (textPatch.fontFamily) t.fontFamily = textPatch.fontFamily; else delete t.fontFamily;
+  const ls = Math.max(0, Math.min(100, Number(textPatch.letterSpacingPx) || 0));
+  if (ls > 0) t.letterSpacingPx = ls; else delete t.letterSpacingPx;
+  const ln = Math.max(0, Math.min(200, Number(textPatch.lineSpacingPx) || 0));
+  if (ln > 0) t.lineSpacingPx = ln; else delete t.lineSpacingPx;
+  if (textPatch.bold) t.bold = true; else delete t.bold;
+  if (textPatch.italic) t.italic = true; else delete t.italic;
+  if (textPatch.plateColor) {
+    t.plateColor = textPatch.plateColor;
+    t.platePaddingPx = Math.max(4, Math.min(80, Math.round(Number(textPatch.platePaddingPx) || 18)));
+  } else {
+    delete t.plateColor;
+    delete t.platePaddingPx;
+  }
   // 文字层变换（P0-2b）：关掉 = 删字段 → 回到原来的 SRT 渲染路径（老工程观感不变）
   if (textPatch.tfOn) {
     const tf: NonNullable<ClipText['transform']> = {
@@ -4427,25 +5045,102 @@ function onTimeUpdate() { playhead.value = videoEl.value?.currentTime || 0; }
 function onLoadedMeta() { videoDur.value = videoEl.value?.duration || 0; }
 
 // ===== 渲染（唯一出口是 clip_project 工具：不另开 UI 渲染通道）=====
+// ===== 渲染队列（P1-9）=====
+// 导出不再走"发一句话让智能体同步渲染"，而是入队后台跑、前端轮询状态 —— 期间可继续编辑。
+interface RenderJob {
+  id: string; title: string; status: 'queued' | 'running' | 'done' | 'failed' | 'canceled';
+  preview: boolean; createdAt: number; file?: string; error?: string; note?: string;
+}
+const queueOpen = ref(false);
+const queueJobs = ref<RenderJob[]>([]);
+let queueTimer: ReturnType<typeof setInterval> | null = null;
+const activeJobCount = computed(() => queueJobs.value.filter((j) => j.status === 'queued' || j.status === 'running').length);
+
+function queueStatusLabel(s: RenderJob['status']): string {
+  return { queued: '排队中', running: '渲染中', done: '已完成', failed: '失败', canceled: '已取消' }[s];
+}
+
+async function refreshQueue() {
+  if (!convId.value) return;
+  const r = await api.get<{ jobs: RenderJob[] }>(`/plugin/clip-mode/render-queue?conversationId=${encodeURIComponent(convId.value)}`);
+  if (!('error' in r)) queueJobs.value = r.data.jobs || [];
+}
+
+async function openQueue() {
+  queueOpen.value = true;
+  await refreshQueue();
+  if (queueTimer) clearInterval(queueTimer);
+  queueTimer = setInterval(() => { void refreshQueue(); }, 2000);
+}
+
+watch(queueOpen, (v) => {
+  if (!v && queueTimer) { clearInterval(queueTimer); queueTimer = null; }
+});
+
+async function cancelJob(id: string) {
+  await api.post('/plugin/clip-mode/render-queue/cancel', { id });
+  await refreshQueue();
+}
+
+async function clearQueue() {
+  await api.post('/plugin/clip-mode/render-queue/clear', { conversationId: convId.value });
+  await refreshQueue();
+}
+
+/** 入队并返回 jobId；失败返回 null（错误已 note）。 */
+async function enqueueRender(preview: boolean): Promise<string | null> {
+  const r = await api.post<{ ok?: boolean; job?: { id: string } }>('/plugin/clip-mode/render-queue', {
+    conversationId: convId.value,
+    preview,
+    quality: outputQuality.value,
+  });
+  if ('error' in r || !r.data?.job) {
+    note(`加入渲染队列失败：${('error' in r && r.error) || '未知错误'}`);
+    return null;
+  }
+  await refreshQueue();
+  return r.data.job.id;
+}
+
+/** 轮询单个任务直到结束（最长约 15 分钟），期间保持"渲染中"状态。 */
+async function pollJob(jobId: string) {
+  for (let i = 0; i < 600; i++) {
+    await new Promise((res) => setTimeout(res, 1500));
+    await refreshQueue();
+    const job = queueJobs.value.find((j) => j.id === jobId);
+    if (!job) continue;
+    if (job.status === 'done') {
+      rendering.value = false;
+      await loadFiles();
+      note(`成片已生成：${job.file ? baseName(job.file) : '完成'}`);
+      return;
+    }
+    if (job.status === 'failed') {
+      rendering.value = false;
+      note(`渲染失败：${job.error || '未知错误'}`);
+      return;
+    }
+    if (job.status === 'canceled') {
+      rendering.value = false;
+      note('渲染任务已取消');
+      return;
+    }
+  }
+  rendering.value = false;
+  note('渲染超时（任务仍在后台跑，可打开「队列」查看）');
+}
+
 async function render(preview: boolean) {
   if (!clipCount.value) { note('时间轴还没有片段'); return; }
   await ensureConversation();          // ★ 草稿态先建会话（渲染产物要落在会话目录）
   if (!convId.value) { note('无法创建会话，已中止'); return; }
+  await save();
   rendering.value = true;
-  note(preview ? '正在出预览档…' : '正在导出成片…');
-  try {
-    await save();
-    chat.input.value = preview
-      ? '用 clip_project op=render preview=true 出一版快速预览档，只回一句文件路径。'
-      : '用 clip_project op=render 出正式成片，只回一句文件路径与时长。';
-    await chat.send();
-    await loadFiles();
-    note(preview ? '预览档已生成' : '成片已导出');
-  } catch (e) {
-    note(`渲染失败：${e instanceof Error ? e.message : String(e)}`);
-  } finally {
-    rendering.value = false;
-  }
+  note(preview ? '已加入渲染队列（预览档），后台渲染中…' : '已加入渲染队列，后台渲染中…');
+  const jobId = await enqueueRender(preview);
+  if (!jobId) { rendering.value = false; return; }
+  // 不 await：让界面立刻可继续编辑
+  void pollJob(jobId);
 }
 
 // ★ 播放头一动就取帧（这是"边剪辑边预览"的驱动核心）
@@ -4687,6 +5382,8 @@ onMounted(async () => {
 .cp-pip.active { outline: 2px solid #fff; }
 /* 贴纸块（黄色系与画中画区分） */
 .cp-sticker { background: linear-gradient(180deg, #ffe08a, #f5c542); border-color: #c99a1e; color: #4a3500; }
+/* 特效块（青色系，与贴纸/画中画区分） */
+.cp-effect { background: linear-gradient(180deg, #9ef0e0, #55cfb8); border-color: #2b9c86; color: #053d33; }
 /* 贴纸库弹窗 */
 .cp-sl { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; }
 .cp-sl-note { font-size: 11px; line-height: 1.7; color: var(--el-text-color-secondary); padding: 6px 8px; background: var(--el-fill-color-light); border-radius: 4px; }
@@ -4695,6 +5392,28 @@ onMounted(async () => {
 .cp-sl-thumb { width: 72px; height: 72px; object-fit: contain; }
 .cp-sl-label { font-size: 12px; font-weight: 600; }
 .cp-sl-desc { font-size: 10px; color: var(--el-text-color-secondary); text-align: center; line-height: 1.4; }
+/* 特效弹窗：两列卡片（比贴纸少，卡片更宽好读说明） */
+.cp-fx-items { grid-template-columns: 1fr 1fr; }
+.cp-fx-item { align-items: flex-start; text-align: left; gap: 3px; }
+.cp-fx-label { font-size: 13px; font-weight: 600; }
+.cp-fx-item .cp-sl-desc { text-align: left; }
+.cp-fx-kind { font-size: 10px; color: var(--el-text-color-placeholder); }
+/* 钢笔路径蒙版弹窗（P1-4） */
+.cp-path { display: flex; flex-direction: column; gap: 8px; }
+.cp-path-stage { display: flex; justify-content: center; background: #000; border-radius: 4px; overflow: hidden; max-height: 60vh; }
+.cp-path-canvas { max-width: 100%; max-height: 60vh; cursor: crosshair; }
+/* 渲染队列（P1-9） */
+.cp-q { display: flex; flex-direction: column; gap: 6px; max-height: 55vh; overflow: auto; }
+.cp-q-note { font-size: 11px; color: var(--el-text-color-secondary); padding: 6px 8px; background: var(--el-fill-color-light); border-radius: 4px; }
+.cp-q-empty { font-size: 12px; color: var(--el-text-color-placeholder); text-align: center; padding: 16px 0; }
+.cp-q-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; }
+.cp-q-status { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--el-fill-color-light); }
+.cp-q-status.is-running { color: #b45309; background: #fef3c7; }
+.cp-q-status.is-done { color: #047857; background: #d1fae5; }
+.cp-q-status.is-failed { color: #b91c1c; background: #fee2e2; }
+.cp-q-title { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.cp-q-time { font-size: 11px; color: var(--el-text-color-secondary); white-space: nowrap; }
+.cp-q-file { flex: 1; min-width: 0; font-size: 11px; color: var(--el-text-color-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 关键帧行：t / scale / x / y / opacity 五个数字 + 删除 */
 .cp-kf-row { display: flex; align-items: center; gap: 3px; }
 .cp-kf-row .cp-num { flex: 1; min-width: 0; padding: 2px 3px; }

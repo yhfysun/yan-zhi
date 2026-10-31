@@ -77,7 +77,7 @@ async function activate(): Promise<void> {
   wsHandler = null;
   const ctx = {
     id: 'remote-control',
-    config: {},
+    config: { openMode: false },
     log: () => undefined,
     storage: makeStorage(),
     registerTool: () => ({ dispose: () => undefined }),
@@ -218,13 +218,65 @@ describe('远控配对投递链路', () => {
     host.ws.msg({ type: 'decision', confirmId: pending.confirmId, action: 'allow' });
     await vi.advanceTimersByTimeAsync(0);
 
-    // 独占锁先挡住同设备的再次配对（防止两个控制端抢同一台机）
-    const blocked = dataOf(await pair()).error || '';
+    // 别的控制端不能抢「已授予、正在建通道」的会话：独占锁先挡住（15s 宽限内）
+    const blocked = dataOf(await pair('dev-2')).error || '';
     expect(blocked).toContain('独占');
 
     // 但没人接的会话不能长期占锁：宽限期一过必须释放
     await vi.advanceTimersByTimeAsync(60_000);
-    const retry = dataOf(await pair());
+    const retry = dataOf(await pair('dev-2'));
+    expect(retry.error || '').toBe('');
+    expect(retry.data!.status).toBe('pending');
+  });
+
+  it('★同一控制端重试：旧的未连接会话立即释放，不吃「独占」', async () => {
+    // 实报（2026-10-31）：控制端通道没建起来，用户立刻再点一次连接，
+    // 被自己上一把授予、但从没连上通道的会话锁住 → 连吃三次「独占」。
+    const host = await connectHost();
+    const pending = dataOf(await pair('dev-1')).data!;
+    host.ws.msg({ type: 'decision', confirmId: pending.confirmId, action: 'allow' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const retry = dataOf(await pair('dev-1'));
+    expect(retry.error || '').toBe('');
+    expect(retry.data!.status).toBe('pending');
+  });
+
+  it('★会话开始/结束必须即时报给被控端（悬浮卡片出场/消失的唯一即时信号）', async () => {
+    // 实报（2026-10-31）：「被控端没有任何提示」—— 开放模式/白名单直连没有确认弹窗，
+    // 只靠 6s 一次的 /status 轮询，用户根本感知不到。授予与结束都必须主动推送给 host。
+    const host = await connectHost();
+    const pending = dataOf(await pair()).data!;
+    const controller = connectWs(`/session/ws?confirmId=${String(pending.confirmId)}`);
+    host.ws.msg({ type: 'decision', confirmId: pending.confirmId, action: 'allow' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const started = host.ws.last('session.started');
+    expect(started).toBeTruthy();
+    expect(started!.device).toBe('桌面 Windows');
+    expect(started!.via).toBe('confirmed');
+    expect(Number(started!.since)).toBeGreaterThan(0);
+
+    controller.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(host.ws.last('session.ended')).toBeTruthy();
+  });
+
+  it('★一键断开 session.stop {all:true}：会话结束且独占锁释放', async () => {
+    const host = await connectHost();
+    const pending = dataOf(await pair()).data!;
+    const controller = connectWs(`/session/ws?confirmId=${String(pending.confirmId)}`);
+    host.ws.msg({ type: 'decision', confirmId: pending.confirmId, action: 'allow' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.last('session.granted')).toBeTruthy();
+
+    host.ws.msg({ type: 'session.stop', all: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(controller.last('session.ended')).toBeTruthy();
+    expect(host.ws.last('session.ended')).toBeTruthy();
+    // 会话已释放：别的设备重新配对不该再被「独占」挡住
+    const retry = dataOf(await pair('dev-2'));
     expect(retry.error || '').toBe('');
     expect(retry.data!.status).toBe('pending');
   });

@@ -10,6 +10,7 @@ import {
 } from '../services/conversation-lifecycle.js';
 import { normalizePermissionMode } from '../tool-permission.js';
 import { writeTaskPlanFile } from '../services/task-plan-file.js';
+import { suggestNextFor } from '../services/next-step-suggestion.js';
 import { buildPlanStepDetail } from '../services/plan-step-detail.js';
 import { WF_TOOL_PREFIX, MAX_WF_TOOLS_PER_CONVERSATION } from '../services/workflow-tool-registry.js';
 import { buildSystemPromptForBackend, buildToolsForBackend, setRunningTaskPermissionMode, compressConversationNow } from '../llm-task-manager.js';
@@ -779,6 +780,27 @@ router.post('/:id/messages', (req: Request, res: Response) => {
   db.prepare('UPDATE conversation SET updated_at = ?, last_activity_at = ? WHERE id = ?').run(now, now, cid);
   const row = db.prepare('SELECT * FROM message WHERE id = ?').get(id);
   res.json({ data: row });
+});
+
+// POST /api/conversations/:id/suggest-next
+//
+// 输入框下一步建议（2026-10-31）：前端在流式结束、输入框为空时请求一次，
+// 拿到一句话显示为 ghost 文本（Tab 填入、Enter 发送）。
+// ★ 失败一律返回 suggestion:null —— 建议是锦上添花，不能因为模型/网络问题让输入框报错。
+// ★ 归档/回收站会话不生成（只读会话没有"下一步"）。成本与缓存策略见服务文件头。
+router.post('/:id/suggest-next', async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const cid = req.params.id;
+  const conv = db.prepare('SELECT id, archived_at, deleted_at FROM conversation WHERE id = ? AND user_id = ?')
+    .get(cid, userId) as any;
+  if (!conv) { res.status(404).json({ error: '会话不存在' }); return; }
+  if (conv.archived_at || conv.deleted_at) { res.json({ data: { suggestion: null, cached: false } }); return; }
+
+  const body = (req.body || {}) as { platformId?: unknown; modelId?: unknown };
+  const platformId = typeof body.platformId === 'string' ? body.platformId : undefined;
+  const modelId = typeof body.modelId === 'string' ? body.modelId : undefined;
+  const result = await suggestNextFor(cid, userId, { platformId, modelId });
+  res.json({ data: result });
 });
 
 export default router;

@@ -37,6 +37,12 @@
       />
       <!-- 文件已不存在占位：主源 404 + 回退不可用/回退也失败时显示（不再静默裂图/报 file:// 拦截） -->
       <div v-else-if="missingFiles[f.id]" class="deliverable-thumb missing-thumb">文件已不存在</div>
+      <!-- 无缩略图的文档类交付物：给出「类型图标 + 扩展名」的实心块。
+           之前这里直接留空 → 被网格拉到与视频卡同高，中间一片空白像坏卡。 -->
+      <div v-else class="deliverable-thumb file-thumb" :class="`ft-${fileKind(f)}`">
+        <el-icon class="file-thumb-icon"><component :is="fileIcon(f)" /></el-icon>
+        <span class="file-thumb-ext">{{ extLabel(f) }}</span>
+      </div>
       <span class="deliverable-file-name" :title="f.name">{{ f.name }}</span>
       <div class="deliverable-file-bottom">
         <span class="deliverable-file-meta">{{ formatTime(f.createdAt) }}</span>
@@ -54,7 +60,7 @@
 </template>
 
 <script setup lang="ts">
-import { Download, FolderOpened } from '@element-plus/icons-vue';
+import { Download, FolderOpened, Box, Document, Grid, Headset, Notebook, Tickets } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue';
 import type { ConversationFile } from '@yan-zhi/shared';
@@ -137,6 +143,39 @@ function isImage(f: ConversationFile): boolean {
 /** 图片 / 视频才有缩略图；其余（docx / md / xlsx…）只出文件名卡 */
 function hasThumb(f: ConversationFile): boolean {
   return isVideo(f) || isImage(f);
+}
+
+/* ===== 文档类交付物的类型标识（2026-10-30）=====
+ * 无缩略图卡此前留空，网格拉伸后中间一坨空白；改为「按扩展名给图标 + 扩展名角标」。 */
+type FileKind = 'doc' | 'pdf' | 'sheet' | 'slide' | 'audio' | 'archive' | 'code' | 'file';
+const KIND_BY_EXT: Record<string, FileKind> = {
+  doc: 'doc', docx: 'doc', rtf: 'doc', odt: 'doc', txt: 'doc', md: 'doc',
+  pdf: 'pdf',
+  xls: 'sheet', xlsx: 'sheet', csv: 'sheet', ods: 'sheet',
+  ppt: 'slide', pptx: 'slide', odp: 'slide',
+  mp3: 'audio', wav: 'audio', flac: 'audio', m4a: 'audio', aac: 'audio',
+  zip: 'archive', rar: 'archive', '7z': 'archive', tar: 'archive', gz: 'archive',
+  js: 'code', ts: 'code', json: 'code', html: 'code', css: 'code', py: 'code',
+  go: 'code', rs: 'code', java: 'code', sh: 'code', sql: 'code', vue: 'code',
+};
+const ICON_BY_KIND = {
+  doc: Document, pdf: Document, sheet: Grid, slide: Tickets,
+  audio: Headset, archive: Box, code: Notebook, file: Document,
+} as const;
+
+function extOf(f: ConversationFile): string {
+  const m = /\.([a-z0-9]+)$/i.exec((f.name || '').trim());
+  return m ? m[1]!.toLowerCase() : '';
+}
+function fileKind(f: ConversationFile): FileKind {
+  return KIND_BY_EXT[extOf(f)] ?? 'file';
+}
+function fileIcon(f: ConversationFile) {
+  return ICON_BY_KIND[fileKind(f)];
+}
+function extLabel(f: ConversationFile): string {
+  const ext = extOf(f);
+  return ext ? ext.slice(0, 4).toUpperCase() : 'FILE';
 }
 
 /**
@@ -321,6 +360,36 @@ async function reveal(f: ConversationFile) {
   color: rgba(255, 255, 255, 0.45);
   cursor: default;
 }
+/* 文档类类型块：与缩略图同高（72px），浅色底 + 类型色图标 + 扩展名角标；
+   颜色按 --ft-color 派生，亮/暗主题与皮肤下都跟着走 */
+.file-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  background: color-mix(in srgb, var(--ft-color, var(--color-text-secondary)) 11%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ft-color, var(--color-text-secondary)) 20%, transparent);
+  color: var(--ft-color, var(--color-text-secondary));
+  box-sizing: border-box;
+}
+.file-thumb-icon {
+  font-size: 24px;
+}
+.file-thumb-ext {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .6px;
+  line-height: 1;
+  opacity: .8;
+}
+.ft-doc { --ft-color: var(--color-primary); }
+.ft-pdf { --ft-color: var(--color-danger); }
+.ft-sheet { --ft-color: var(--color-success); }
+.ft-slide { --ft-color: var(--color-warning); }
+.ft-audio { --ft-color: var(--color-accent); }
+.ft-archive { --ft-color: var(--color-text-secondary); }
+.ft-code { --ft-color: var(--color-primary); }
 .deliverable-file-card.has-thumb .deliverable-file-name {
   font-size: 11.5px;
 }

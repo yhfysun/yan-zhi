@@ -473,9 +473,12 @@ if (!pythonStage.skipped) {
 console.log(`\n=== [3/3] 逐档打包：${editions.join(' → ')} ===`);
 console.log(`输出目录：${rel(path.resolve(repoRoot, OUT_ROOT, 'desktop'))}/<档>/${DESKTOP_VERSION}/（每档独立）`);
 
+/** 透传给 electron-builder 的额外参数（package.cjs 的 --fast / --no-compress 经此下发） */
+const PACK_EXTRA = String(process.env.YZ_PACK_EXTRA || '').split(/\s+/).filter(Boolean);
+if (PACK_EXTRA.length) console.log(`[build-all] 快速打包参数：${PACK_EXTRA.join(' ')}（不出安装包/不压缩时产物仍在 <档>/<版本>/ 下）`);
+
 for (const edition of editions) {
-  console.log(`\n──────── ${edition}（${LABEL[edition]}）────────`);
-  // 后缀先算好：目录名、edition.json、安装包名三处必须同一个值。
+  console.log(`\n──────── ${edition}（${LABEL[edition]}）────────`);  // 后缀先算好：目录名、edition.json、安装包名三处必须同一个值。
   const suffix = suffixFor(edition);
   const outDir = outDirFor(edition);
   // ★ 必须先写 edition.json：electron-build.cjs 读它注入 YZ_ARTIFACT_SUFFIX 与档位 env，
@@ -491,7 +494,8 @@ for (const edition of editions) {
   // YZ_BUILD_PLUGINS：electron-build 据此只暂存该档选中的插件（打完自动 restore）。
   // YZ_SKIP_PLUGIN_BUILD：并集插件包上面已经构建过（每档都是并集的子集），不再逐档重建。
   // YZ_SKIP_PYTHON_STAGE：Python 运行时由本脚本在循环前统一 stage、结束统一 restore。
-  run(process.execPath, ['./scripts/electron-build.cjs', CONFIG[edition]], {
+  // YZ_PACK_EXTRA：快打包开关（--fast → --dir，--no-compress → compression=store），透传给 electron-builder。
+  run(process.execPath, ['./scripts/electron-build.cjs', CONFIG[edition], ...PACK_EXTRA], {
     YZ_OUTPUT_DIR: outDir,
     YZ_ARTIFACT_SUFFIX: suffix,
     YZ_BUILD_PLUGINS: pluginsCsv,

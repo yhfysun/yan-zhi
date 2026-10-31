@@ -41,6 +41,40 @@
   --font-size-lg: 16px;     /* 区块标题 */
   --line-height-lg: 1.5;
 
+  /* ===== 阅读排版：对话正文（比 UI 基准大一档，长文更耐读） =====
+     仅消息正文/文档视图使用；列表、控件仍走 --font-size-base，避免全局突然变大。 */
+  --font-size-reading: 14px;
+  --line-height-reading: 1.72;
+  /* 对话阅读列固定宽度：超宽屏不让一行排 100+ 字（对标主流对话产品） */
+  --chat-column-max: 760px;
+
+  /* ===== 间距阶梯：新增布局只用这六档，禁止再写 7px/9px/13px 这类散值 ===== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* ===== 面板层级：画布 / 面板 / 浮起 =====
+     · 画布比面板深一点，卡片才有"浮起来"的余地（只靠 1px 灰线分区会像一张长纸）
+     · --chat-canvas 用 color-mix 跟随主题主色，暗色下自动变成带主色倾向的深底，
+       不需要再在 [data-theme="dark"] 里单独维护一份 */
+  --surface-canvas: var(--color-bg);
+  --surface-panel: var(--color-surface);
+  --surface-float: var(--color-surface);
+  --chat-canvas: color-mix(in srgb, var(--color-primary) 4%, var(--color-bg));
+  /* 侧栏面板底色：画布下沉后，侧栏用面板色才看得出「两栏」（壁纸皮肤仍优先显示图片） */
+  --chat-sidebar-bg: color-mix(in srgb, var(--color-surface) 88%, var(--color-bg));
+
+  /* ===== 语义色派生：soft 底 + ring 焦点环 =====
+     组件只引用这三组，不各自 color-mix 出不同浓淡（此前同一角色在不同页面有 5 种灰） */
+  --color-primary-soft: color-mix(in srgb, var(--color-primary) 9%, transparent);
+  --color-primary-ring: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  --color-success-soft: color-mix(in srgb, var(--color-success) 10%, transparent);
+  --color-warning-soft: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  --color-danger-soft: color-mix(in srgb, var(--color-danger) 10%, transparent);
+
   /* 主题色（applyPalette/applySkin 运行时覆盖，这里为默认「瓷·冰」白瓷系冷蓝灰）
      ⚠️ 默认皮肤已改为 builtin:porcelain + 亮色模式（DEFAULT_SETTINGS），
         这里必须跟着改，否则首帧会先闪一下朱砂红再跳到瓷冰。 */

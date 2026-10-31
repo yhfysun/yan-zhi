@@ -1,5 +1,3 @@
-import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
-
 // 会话标题自动生成（2026-10-11）—— 首个任务 completed 时由 LLM 概括对话内容生成短标题。
 //
 // ★ 为什么挂服务端而不是前端：模型选择、chatViaRow（统一出口）、CAS 写库都在服务端；
@@ -19,7 +17,8 @@ import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
 //   （后者 import 本模块 —— 回推事件用下面的回调注入，避免循环依赖）。
 
 import { db } from '../db.js';
-import { chatViaRow, type PlatformModelRow } from './llm-call.js';
+import { chatViaRow } from './llm-call.js';
+import { loadModelRow } from './model-row.js';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('conversation-title');
@@ -77,32 +76,6 @@ export function sanitizeTitle(raw: string): string | null {
 }
 
 /** 生成用的模型行：优先任务自带模型（正在用的必然可用），查不到回退用户默认模型 */
-function loadModelRow(userId: string, platformId?: string, modelId?: string): PlatformModelRow | null {
-  if (platformId && modelId) {
-    const row = db.prepare(
-      `SELECT m.id, m.model_id, p.id AS pid, p.api_url, p.api_key_enc, p.protocol, p.headers_json
-       FROM model m JOIN platform p ON p.id = m.platform_id
-       WHERE m.id = ? AND m.platform_id = ? AND m.user_id = ?`,
-    ).get(modelId, platformId, userId) as PlatformModelRow | undefined;
-    if (row) return row;
-  }
-  // 回退：与 memory-dreaming.findDefaultModel 同口径（可见模型 + 启用平台，默认优先）；
-  // Token 池全停用的平台整平台剔除（候选面过滤，选了必失败不如不选）
-  return (
-    db.prepare(
-      `SELECT m.id, m.model_id, p.id AS pid, p.api_url, p.api_key_enc, p.protocol, p.headers_json
-       FROM model m JOIN platform p ON p.id = m.platform_id
-       WHERE m.user_id = ? AND m.enabled = 1 AND m.type = 'llm' AND m.visible = 1 AND p.llm_enabled = 1
-         AND p.id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})
-       ORDER BY CASE
-         WHEN m.is_default = 1 AND p.is_builtin = 0 THEN 0
-         WHEN m.is_default = 1 THEN 1
-         ELSE 2
-       END, m.created_at ASC
-       LIMIT 1`,
-    ).get(userId) as PlatformModelRow | undefined
-  ) || null;
-}
 
 /** 内存防抖：同会话并发 completed 只放行第一个 */
 const generating = new Set<string>();

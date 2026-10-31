@@ -1,6 +1,8 @@
 // novel_tuiwen 内置工具 —— 有声小说推文视频生成。
 // 底层调用随包分发的 python-scripts/novel_tuiwen/run_pipeline.py（改编 → Edge-TTS 配音 → ffmpeg 合成 → 发布文案）。
-// 画面结构 v3（2026-10-12）：顶部常驻「搜『别名』看全文｜番茄小说」+ 中部「第N集」大字前3秒 + 底部单行字幕；
+// 画面结构 v4（2026-10-18 定稿，冻结）：顶部常驻「搜『别名』看全文｜番茄小说」+ 右上角「第N集」常驻角标
+// + 中部「第N集」大字（第0帧全显，3s 后淡出）+ 第一镜主要内容首帧全显 + 底部单行字幕；
+// kinetic 与背景视频/图片轮播两条渲染路径必须给出同一套首帧信息（见 references/pipeline.md「首帧契约」）。
 // 第4步自动落 publish.txt 发布表单文案（标题≤30字 + 五段内容）。
 // 产物：4:3 (1080x1440) mp4；成片 = deliverable，中间产物留在 workdir（intermediate 语义）。
 import type { BuiltInTool, ToolContext } from '../types';
@@ -76,7 +78,7 @@ export class NovelTuiwenTool implements BuiltInTool {
       ending: { type: 'string', description: '结尾引导口播。发抖音必传：搜索别名XX看后续（XX=生效中的别名关键词）。禁止出现原书名。' },
       banner: { type: 'string', description: '视频顶部常驻引导语（覆盖自动生成的标题条）。书名红线：画面顶部禁原书名，传别名。' },
       alias: { type: 'string', description: '生效中的别名关键词。自动拼顶部常驻标题条「搜『别名』看全文｜番茄小说」并进发布文案标题（发抖音必传）。书名红线：画面与文案均禁原书名，只推别名。' },
-      chapter_num: { type: 'string', description: '第几集（如 3）。画面中部「第N集」大字仅前3秒显示，并决定成片文件名（别名_第N集.mp4）与发布文案；缺省从文件名 chNN 推断。' },
+      chapter_num: { type: 'string', description: '第几集（如 3）。首帧即全显「第N集」大字（保持3秒后淡出）+ 右上角常驻角标，并决定成片文件名（别名_第N集.mp4）与发布文案；**系列视频必须显式传**，缺省从文件名数字推断（不可靠）。' },
       tags: { type: 'string', description: '发布内容自定义话题标签，缺省 "#小说 #推文 <别名>"。' },
       no_publish_copy: { type: 'boolean', description: '跳过生成 publish.txt 发布文案（默认生成到 <outdir>/.work/publish.txt）。' },
       voice: { type: 'string', description: 'TTS 音色（Edge-TTS），默认 zh-CN-YunjianNeural（云健，厚实讲故事感）；女声可用 zh-CN-XiaoyiNeural，年轻男声可用 zh-CN-YunxiaNeural。换音色会自动作废旧分段配音重合成。' },

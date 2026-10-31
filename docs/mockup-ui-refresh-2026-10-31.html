@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>言智 UI 升级原型 · 现状 / 方案A / 方案B</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0b0c10;
+    color: #e8eaf0;
+    -webkit-font-smoothing: antialiased;
+  }
+  .pg { max-width: 1560px; margin: 0 auto; padding: 20px 24px 64px; }
+  .pg-head { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
+  .pg-title { font-size: 15px; font-weight: 600; letter-spacing: .2px; }
+  .pg-sub { font-size: 12px; color: #7b8394; }
+  .switch { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: #171a21; border: 1px solid #262b36; margin-left: auto; }
+  .switch button {
+    appearance: none; border: 0; background: transparent; color: #9aa2b1; cursor: pointer;
+    font-size: 12.5px; padding: 7px 14px; border-radius: 8px; transition: .15s;
+    font-family: inherit;
+  }
+  .switch button:hover { color: #dfe3ea; }
+  .switch button.on { background: #2a3040; color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+  .switch .sep { width: 1px; background: #262b36; margin: 4px 3px; }
+
+  /* ===== 应用画框 ===== */
+  .stage {
+    border-radius: 14px; overflow: hidden; border: 1px solid #262b36;
+    box-shadow: 0 24px 80px rgba(0,0,0,.45);
+    background: var(--canvas);
+    transition: background .25s;
+  }
+  .app { display: flex; flex-direction: column; height: 860px; }
+
+  /* 每个模式的变量集 */
+  .mode-current {
+    --canvas: #f7f8fa; --panel: #ffffff; --panel-2: #fbfbfd; --rail: #f7f8fa;
+    --border: #e7eaf0; --border-strong: #d5dae4;
+    --text: #1a1d24; --text-2: #5a6272; --text-3: #8b93a3;
+    --accent: #4f46e5; --accent-soft: #eef0ff; --accent-ring: rgba(79,70,229,.18);
+    --ok: #2e7d5b;
+    --r-card: 8px; --r-ctrl: 6px; --r-chip: 6px;
+    --shadow-card: none;
+    --fs-body: 13px; --lh-body: 1.6;
+    --topbar-h: 36px;
+  }
+  .mode-a {
+    --canvas: #eef1f6; --panel: #ffffff; --panel-2: #f6f8fb; --rail: #f4f6fa;
+    --border: #e3e8f0; --border-strong: #d3dae6;
+    --text: #14171e; --text-2: #565e6e; --text-3: #8a92a3;
+    --accent: #4f46e5; --accent-soft: #ececfd; --accent-ring: rgba(79,70,229,.20);
+    --ok: #1c8a5d;
+    --r-card: 12px; --r-ctrl: 8px; --r-chip: 6px;
+    --shadow-card: 0 1px 2px rgba(20,23,30,.04), 0 1px 3px rgba(20,23,30,.03);
+    --fs-body: 14px; --lh-body: 1.72;
+    --topbar-h: 44px;
+  }
+  .mode-b {
+    --canvas: #0b0d11; --panel: #12151b; --panel-2: #171b23; --rail: #0e1015;
+    --border: #232933; --border-strong: #2e3542;
+    --text: #e9ecf2; --text-2: #99a1b0; --text-3: #6b7382;
+    --accent: #7a78ff; --accent-soft: rgba(122,120,255,.14); --accent-ring: rgba(122,120,255,.26);
+    --ok: #35d399;
+    --r-card: 12px; --r-ctrl: 8px; --r-chip: 6px;
+    --shadow-card: 0 1px 0 rgba(255,255,255,.02) inset, 0 8px 24px rgba(0,0,0,.28);
+    --fs-body: 14.5px; --lh-body: 1.75;
+    --topbar-h: 44px;
+  }
+
+  /* ===== 顶栏 ===== */
+  .topbar {
+    height: var(--topbar-h); flex: 0 0 auto; display: flex; align-items: center; gap: 14px;
+    padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+    color: var(--text); position: relative; z-index: 3;
+  }
+  .mode-current .topbar { gap: 10px; padding: 0 12px; }
+  .brand { display: flex; align-items: center; gap: 8px; }
+  .brand-mark {
+    width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), #8b7cff); color: #fff; font-size: 11px; font-weight: 700;
+  }
+  .brand-name { font-size: 13px; font-weight: 600; letter-spacing: .3px; }
+  .topnav { display: flex; align-items: center; gap: 2px; margin-left: 8px; }
+  .topnav a {
+    display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px;
+    border-radius: 7px; color: var(--text-2); font-size: 12.5px; text-decoration: none;
+  }
+  .topnav a.on { color: var(--text); background: var(--accent-soft); }
+  .topnav a:hover { background: var(--panel-2); color: var(--text); }
+  .mode-current .topnav a { font-size: 12px; height: 26px; padding: 0 6px; gap: 4px; }
+  .mode-current .topnav a.on { background: transparent; color: var(--accent); }
+  .topnav .ico { font-size: 12px; opacity: .85; }
+  .top-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .icon-btn {
+    width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px;
+    border: 0; background: transparent; color: var(--text-2); cursor: pointer;
+  }
+  .icon-btn:hover { background: var(--panel-2); color: var(--text); }
+  .login-btn {
+    height: 28px; padding: 0 12px; border-radius: 999px; border: 0; cursor: pointer;
+    background: var(--accent); color: #fff; font-size: 12px; font-weight: 500; font-family: inherit;
+  }
+  .mode-current .login-btn { height: 26px; padding: 0 11px; }
+
+  /* ===== 主体 ===== */
+  .body { flex: 1 1 auto; display: flex; min-height: 0; background: var(--canvas); }
+
+  /* 图标轨（方案A/B） */
+  .rail {
+    width: 52px; flex: 0 0 52px; border-right: 1px solid var(--border);
+    background: var(--rail); display: flex; flex-direction: column; align-items: center;
+    gap: 4px; padding: 10px 0;
+  }
+  .mode-current .rail { display: none; }
+  .rail-btn {
+    width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+    border: 0; background: transparent; color: var(--text-3); cursor: pointer;
+  }
+  .rail-btn:hover { color: var(--text); background: var(--panel-2); }
+  .rail-btn.on { color: var(--accent); background: var(--accent-soft); }
+  .rail-sep { width: 20px; height: 1px; background: var(--border); margin: 6px 0; }
+  .rail-spacer { flex: 1; }
+  .rail-avatar {
+    width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+    display: grid; place-items: center; font-size: 11px; font-weight: 600;
+  }
+
+  /* 侧栏 */
+  .side {
+    width: 280px; flex: 0 0 280px; background: var(--panel-2); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .mode-a .side, .mode-b .side { width: 292px; flex-basis: 292px; background: var(--panel); }
+  .side-tabs { display: flex; gap: 4px; padding: 10px 10px 8px; }
+  .mode-a .side-tabs, .mode-b .side-tabs { padding: 12px 14px 6px; gap: 2px; }
+  .side-tab {
+    display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px;
+    border-radius: 7px; font-size: 12px; color: var(--text-2); cursor: pointer; border: 0; background: transparent;
+    font-family: inherit;
+  }
+  .mode-a .side-tab, .mode-b .side-tab { height: 30px; padding: 0 10px; font-size: 12.5px; }
+  .side-tab.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .mode-current .side-tab.on { background: var(--accent-soft); }
+  .side-search { padding: 0 10px 8px; display: flex; gap: 6px; }
+  .mode-a .side-search, .mode-b .side-search { padding: 0 14px 10px; }
+  .search-box {
+    flex: 1; height: 28px; border-radius: var(--r-ctrl); border: 1px solid var(--border);
+    background: var(--panel); display: flex; align-items: center; gap: 6px; padding: 0 9px;
+    color: var(--text-3); font-size: 12px;
+  }
+  .mode-a .search-box, .mode-b .search-box { height: 32px; background: var(--panel-2); }
+  .side-sec { padding: 10px 12px 4px; font-size: 10.5px; letter-spacing: .08em; color: var(--text-3); text-transform: uppercase; }
+  .side-list { flex: 1; overflow: auto; padding: 0 6px 8px; }
+  .mode-a .side-list, .mode-b .side-list { padding: 0 8px 10px; }
+  .row {
+    position: relative; display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px; border-radius: 7px;
+    color: var(--text); font-size: 12.5px; cursor: pointer; margin-bottom: 1px;
+  }
+  .mode-a .row, .mode-b .row { padding: 8px 10px; border-radius: 8px; }
+  .row:hover { background: var(--panel-2); }
+  .mode-a .row:hover, .mode-b .row:hover { background: var(--panel-2); }
+  .row.on { background: var(--accent-soft); }
+  .row.on::before {
+    content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 60%; border-radius: 0 3px 3px 0; background: var(--accent);
+  }
+  .mode-current .row::before { display: none; }
+  .mode-current .row.on { background: #eef0ff; }
+  .row-ico { color: var(--text-3); margin-top: 1px; flex: 0 0 auto; }
+  .row.on .row-ico { color: var(--accent); }
+  .row-main { min-width: 0; flex: 1; }
+  .row-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; }
+  .mode-a .row-title, .mode-b .row-title { font-size: 13px; }
+  .row-meta { font-size: 11px; color: var(--text-3); margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-3); }
+  .dot.ok { background: var(--ok); }
+  .dot.run { background: #d99022; }
+
+  /* 主区 */
+  .main { flex: 1; display: flex; min-width: 0; }
+  .thread {
+    flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative;
+    background: var(--canvas);
+  }
+  .mode-current .thread { background: var(--panel); }
+  .thread-head {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 10px 20px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .mode-a .thread-head, .mode-b .thread-head { padding: 12px 24px; background: transparent; border-bottom: 0; }
+  .th-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+  .mode-a .th-title, .mode-b .th-title { font-size: 14.5px; }
+  .th-sub { font-size: 11.5px; color: var(--text-3); }
+  .th-tag {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  }
+  .th-right { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+
+  .scroll { flex: 1; overflow: auto; padding: 18px 24px 10px; }
+  .mode-a .scroll, .mode-b .scroll { padding: 8px 28px 10px; }
+  .col { max-width: 1040px; margin: 0 auto; }
+  .mode-a .col, .mode-b .col { max-width: 760px; }
+
+  /* 消息 */
+  .turn { margin-bottom: 16px; }
+  .mode-a .turn, .mode-b .turn { margin-bottom: 20px; }
+  .turn-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .avatar {
+    width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent); font-size: 10px; font-weight: 600; flex: 0 0 auto;
+  }
+  .mode-a .avatar, .mode-b .avatar { width: 24px; height: 24px; border-radius: 7px; font-size: 10.5px; }
+  .who { font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .when { font-size: 11px; color: var(--text-3); }
+  .msg {
+    background: transparent; border: 0; padding: 0; font-size: var(--fs-body); line-height: var(--lh-body);
+    color: var(--text);
+  }
+  .mode-a .msg, .mode-b .msg {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
+    padding: 18px 20px; box-shadow: var(--shadow-card);
+  }
+  .user-turn { display: flex; justify-content: flex-end; }
+  .user-bubble {
+    max-width: 78%; padding: 9px 12px; border-radius: 8px; background: var(--panel-2);
+    border: 1px solid var(--border); font-size: var(--fs-body); color: var(--text);
+  }
+  .mode-a .user-bubble, .mode-b .user-bubble {
+    background: var(--accent-soft); border-color: transparent; border-radius: 12px; padding: 10px 14px;
+  }
+
+  .md p { margin: 0 0 12px; }
+  .md p:last-child { margin-bottom: 0; }
+  .md h2 {
+    font-size: 16px; line-height: 1.5; margin: 24px 0 10px; font-weight: 600; color: var(--text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .mode-a .md h2, .mode-b .md h2 { font-size: 17px; letter-spacing: -.1px; }
+  .md h2:first-child { margin-top: 0; }
+  .md ul { margin: 0 0 12px; padding-left: 18px; }
+  .md li { margin-bottom: 6px; }
+  .md li::marker { color: var(--accent); }
+  .md a { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+  .md code {
+    font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: .88em;
+    background: var(--panel-2); border: 1px solid var(--border); padding: 1px 5px; border-radius: 5px;
+  }
+  .mode-current .md code { font-size: 12px; }
+  .path {
+    font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 11.5px; color: var(--text-3);
+  }
+  table { border-collapse: separate; border-spacing: 0; width: 100%; margin: 14px 0; font-size: 12.5px; }
+  .mode-current table { border: 1px solid #ebeef5; }
+  th {
+    text-align: left; font-weight: 600; color: var(--text-2); background: #fafafa;
+    padding: 8px 12px; border-bottom: 1px solid #ebeef5;
+  }
+  .mode-current td { padding: 8px 12px; border-bottom: 1px solid #ebeef5; }
+  .mode-current tr:last-child td { border-bottom: 0; }
+  .mode-a table, .mode-b table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .mode-a th, .mode-b th {
+    background: var(--panel-2); color: var(--text-3); font-size: 11px; letter-spacing: .06em;
+    text-transform: uppercase; padding: 9px 14px; border-bottom: 1px solid var(--border);
+  }
+  .mode-a td, .mode-b td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text); }
+  .mode-a tr:last-child td, .mode-b tr:last-child td { border-bottom: 0; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* 工具/任务卡片（方案A/B 才有） */
+  .tool-card {
+    display: flex; align-items: center; gap: 10px; margin: 14px 0; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2);
+  }
+  .mode-current .tool-card { display: none; }
+  .tool-ico { color: var(--accent); }
+  .tool-name { font-size: 12.5px; color: var(--text); font-weight: 500; }
+  .tool-meta { font-size: 11px; color: var(--text-3); }
+  .tool-status { margin-left: auto; font-size: 11px; color: var(--ok); display: flex; align-items: center; gap: 5px; }
+
+  /* 输入区 */
+  .composer-wrap { flex: 0 0 auto; padding: 8px 24px 18px; }
+  .mode-a .composer-wrap, .mode-b .composer-wrap { padding: 10px 28px 22px; }
+  .composer {
+    max-width: 1040px; margin: 0 auto; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel); padding: 8px 10px 8px;
+    box-shadow: none;
+  }
+  .mode-a .composer, .mode-b .composer {
+    max-width: 760px; border-radius: 14px; padding: 12px 14px 10px; box-shadow: var(--shadow-card);
+  }
+  .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+  .c-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .c-agent { font-size: 11.5px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+  .c-input { font-size: 13px; color: var(--text-3); padding: 6px 2px 10px; }
+  .mode-a .c-input, .mode-b .c-input { font-size: 13.5px; padding: 4px 2px 14px; }
+  .c-bar { display: flex; align-items: center; gap: 6px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: 999px;
+    border: 1px solid var(--border); background: transparent; color: var(--text-2); font-size: 11.5px; cursor: pointer;
+    font-family: inherit;
+  }
+  .mode-a .chip, .mode-b .chip { background: var(--panel-2); border-color: transparent; }
+  .chip.solid { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+  .c-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .send {
+    width: 30px; height: 30px; border-radius: 8px; border: 0; background: var(--accent); color: #fff;
+    display: grid; place-items: center; cursor: pointer;
+  }
+  .mode-current .send { width: 26px; height: 26px; border-radius: 50%; background: #cfcdf7; }
+
+  /* 右侧上下文面板 */
+  .side-r { width: 300px; flex: 0 0 300px; border-left: 1px solid var(--border); background: var(--panel); padding: 14px; }
+  .mode-current .side-r { display: none; }
+  .panel-h { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); margin-bottom: 10px; }
+  .kv { display: flex; justify-content: space-between; font-size: 12px; padding: 7px 0; border-bottom: 1px dashed var(--border); color: var(--text-2); }
+  .kv b { color: var(--text); font-weight: 500; }
+  .bar { height: 4px; border-radius: 2px; background: var(--panel-2); margin-top: 12px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 32%; background: var(--accent); border-radius: 2px; }
+  .panel-note { font-size: 11px; color: var(--text-3); margin-top: 8px; line-height: 1.6; }
+  .mini-card { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+  .mini-title { font-size: 11.5px; color: var(--text); font-weight: 500; margin-bottom: 6px; }
+  .mini-line { font-size: 11px; color: var(--text-3); line-height: 1.7; }
+
+  /* ===== 说明区 ===== */
+  .notes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+  .card {
+    background: #12151b; border: 1px solid #232933; border-radius: 12px; padding: 18px 20px;
+  }
+  .card h3 { margin: 0 0 10px; font-size: 13px; color: #dfe3ea; font-weight: 600; }
+  .card p { margin: 0 0 8px; font-size: 12px; color: #8b93a3; line-height: 1.7; }
+  .card ul { margin: 6px 0 0; padding-left: 16px; }
+  .card li { font-size: 12px; color: #99a1b0; line-height: 1.8; }
+  .swatches { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .sw { width: 54px; }
+  .sw i { display: block; height: 30px; border-radius: 7px; border: 1px solid rgba(255,255,255,.08); }
+  .sw span { display: block; font-size: 10px; color: #6b7382; margin-top: 4px; }
+  .tag-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .tag { font-size: 11px; color: #9aa2b1; border: 1px solid #2a3040; padding: 4px 9px; border-radius: 999px; }
+  @media (max-width: 720px) {
+    .notes { grid-template-columns: 1fr; }
+    .side-r { display: none; }
+    .rail { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="pg">
+  <div class="pg-head">
+    <div>
+      <div class="pg-title">言智 · 界面观感升级原型</div>
+      <div class="pg-sub">同一份真实内容 · 三种皮肤对照 · 切一下就能看出差别在哪</div>
+    </div>
+    <div class="switch" id="sw">
+      <button data-mode="current">现状</button>
+      <button data-mode="a">方案 A · 纸墨进阶</button>
+      <button data-mode="b">方案 B · 深空工作台</button>
+    </div>
+  </div>
+
+  <div class="stage mode-current" id="stage">
+    <div class="app">
+      <!-- 顶栏 -->
+      <div class="topbar">
+        <div class="brand"><div class="brand-mark">言</div><div class="brand-name">言智</div></div>
+        <nav class="topnav">
+          <a href="#" class="on"><span class="ico">◆</span>首页</a>
+          <a href="#"><span class="ico">◇</span>办公</a>
+          <a href="#"><span class="ico">▤</span>浏览器</a>
+          <a href="#"><span class="ico">✉</span>消息</a>
+          <a href="#"><span class="ico">⋯</span>更多</a>
+        </nav>
+        <div class="top-right">
+          <button class="icon-btn">⌕</button>
+          <button class="login-btn">登录</button>
+          <button class="icon-btn">☾</button>
+        </div>
+      </div>
+
+      <div class="body">
+        <!-- 图标轨 -->
+        <aside class="rail">
+          <button class="rail-btn on">▤</button>
+          <button class="rail-btn">✦</button>
+          <button class="rail-btn">◎</button>
+          <button class="rail-btn">▦</button>
+          <div class="rail-sep"></div>
+          <button class="rail-btn">⌗</button>
+          <button class="rail-btn">◫</button>
+          <div class="rail-spacer"></div>
+          <button class="rail-btn">⚙</button>
+          <div class="rail-avatar">Y</div>
+        </aside>
+
+        <!-- 会话侧栏 -->
+        <aside class="side">
+          <div class="side-tabs">
+            <button class="side-tab on">任务</button>
+            <button class="side-tab">定时任务</button>
+            <button class="side-tab">文件</button>
+            <button class="side-tab">发布</button>
+          </div>
+          <div class="side-search">
+            <div class="search-box">⌕ 搜索任务</div>
+            <button class="icon-btn">＋</button>
+          </div>
+          <div class="side-sec">今天</div>
+          <div class="side-list">
+            <div class="row on">
+              <span class="row-ico">◔</span>
+              <div class="row-main">
+                <div class="row-title">制作AI干活第 05 期视频</div>
+                <div class="row-meta"><span class="dot ok"></span>已完成 · 16:10</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="row-ico">◔</span>
+              <div class="row-main">
+                <div class="row-title">智能体运行数据动态图表分析</div>
+                <div class="row-meta"><span class="dot run"></span>执行中 · 15:46</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="row-ico">◔</span>
+              <div class="row-main">
+                <div class="row-title">查询内置智能体及能力</div>
+                <div class="row-meta"><span class="dot ok"></span>已完成 · 14:02</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="row-ico">◔</span>
+              <div class="row-main">
+                <div class="row-title">登录淘宝，抓取店铺数据</div>
+                <div class="row-meta"><span class="dot"></span>等待中 · 12:31</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="row-ico">◔</span>
+              <div class="row-main">
+                <div class="row-title">生成一段风景视频（分镜设计）</div>
+                <div class="row-meta"><span class="dot ok"></span>已完成 · 11:20</div>
+              </div>
+            </div>
+            <div class="row">
+              <span class="row-ico">◔</span>
+              <div class="row-main">
+                <div class="row-title">图片 OCR 文字识别</div>
+                <div class="row-meta"><span class="dot ok"></span>已完成 · 10:08</div>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <!-- 主区 -->
+        <main class="main">
+          <section class="thread">
+            <div class="thread-head">
+              <span class="th-tag">抖音运营</span>
+              <span class="th-title">制作 AI 干活第 05 期视频</span>
+              <span class="th-sub">C:\Users\yhfys\Desktop\小说推文\抖音运营</span>
+              <div class="th-right">
+                <button class="icon-btn">▣</button>
+                <button class="icon-btn">⤓</button>
+                <button class="icon-btn">⋯</button>
+              </div>
+            </div>
+
+            <div class="scroll">
+              <div class="col">
+                <div class="turn user-turn">
+                  <div class="user-bubble">把这一期的成片效果核对一下，有问题就直接说。</div>
+                </div>
+
+                <div class="turn">
+                  <div class="turn-head">
+                    <div class="avatar">抖</div>
+                    <span class="who">抖音运营助手</span>
+                    <span class="when">16:12 · deepseek-flash</span>
+                  </div>
+                  <div class="msg md">
+                    <h2>一、第 06 期成片实测</h2>
+                    <p>实测核验：时长 <span class="num">74.320s</span>（音视频差 <span class="num">0.123s</span>）；字幕亮区 y=1512–1574；12 点抽帧 OCR 9 段全有字幕；BGM 空档中位 −38.7 dB，旁白 −22.6~−31.3 dB。</p>
+                    <p>我还修了一个会直接影响观感的问题：首帧带「第 6 集」大字，正好压在橙色副标题上。我没有把它当封面，改成取 4.2s 大字淡出后的干净帧作为封面（已 OCR 确认六行文字齐全、无重叠）。首帧版留作备查。</p>
+
+                    <h2>二、昨天的第 05 期（已核实公开）</h2>
+                    <ul>
+                      <li>链接 <a href="#">douyin.com/video/770240102286355750</a> 能正常打开，页面标题、描述都还在，合集显示「AI 干活 · 第 5 集」，第 1~5 集齐全，系统还自动生成了章节要点。</li>
+                      <li>发布时间 <span class="num">2026-10-30 18:14</span>，时长 01:00，点赞 1 / 评论 1。</li>
+                    </ul>
+                    <p>但从数据上看，有两点需要说明：</p>
+
+                    <table>
+                      <thead>
+                        <tr><th>指标</th><th>第 05 期</th><th>第 04 期</th><th>第 03 期</th><th>第 02 期</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td>播放</td><td class="num">6</td><td class="num">5</td><td class="num">5</td><td class="num">12</td></tr>
+                        <tr><td>2 秒跳出率</td><td class="num">80%</td><td class="num">40%</td><td class="num">60%</td><td class="num">67%</td></tr>
+                      </tbody>
+                    </table>
+
+                    <p>播放量都在个位数，80% 跳出率只对应 5 个人，翻一个就变 60%，现在还不能据此判断内容好坏。真正能确认的是：账号还没进推荐池（老粉也基本没刷到），问题在冷启动，不在这一条第几条。</p>
+
+                    <h2>两个确实存在的问题</h2>
+                    <ul>
+                      <li><b>描述换行又丢了：</b>第 05 期在管理页里是一整段 246 字无换行；而第 03 期那条明确保留了分段（占位）。说明方法可行，是这一次 paste 掉了。</li>
+                      <li><b>话题还是纯文本：</b>接口 <code>text_extra</code> 为空，5 个 # 不构成真话题，搜索流量进不来。</li>
+                    </ul>
+
+                    <div class="tool-card">
+                      <span class="tool-ico">⚙</span>
+                      <div>
+                        <div class="tool-name">compose_video.py</div>
+                        <div class="tool-meta">ffmpeg · 74.3s · 3 轨合成</div>
+                      </div>
+                      <div class="tool-status"><span class="dot ok"></span>成功</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="composer-wrap">
+              <div class="composer">
+                <div class="c-top">
+                  <div class="c-agent">▣ 抖音运营助手</div>
+                  <button class="icon-btn">⚙</button>
+                </div>
+                <div class="c-input">输入消息，Enter 发送，Shift+Enter 换行；输入 / 打开命令，@ 引用文件</div>
+                <div class="c-bar">
+                  <button class="chip">⌘</button>
+                  <button class="chip">＋</button>
+                  <div class="c-right">
+                    <button class="chip solid">AI（不确认）</button>
+                    <button class="chip">deepseek-flash</button>
+                    <button class="chip">◔</button>
+                    <button class="send">➤</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 上下文面板 -->
+          <aside class="side-r">
+            <div class="panel-h">任务上下文</div>
+            <div class="kv"><span>当前空间</span><b>抖音运营</b></div>
+            <div class="kv"><span>可用工具</span><b>12</b></div>
+            <div class="kv"><span>上下文占用</span><b>32%</b></div>
+            <div class="bar"><i></i></div>
+            <div class="panel-note">超过 80% 时自动压缩历史，保留计划与产物。</div>
+            <div class="mini-card">
+              <div class="mini-title">本次产物</div>
+              <div class="mini-line">06-output/AI干活06期_发布包.md<br />02-work/D6_口播稿.txt</div>
+            </div>
+          </aside>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="card">
+      <h3>为什么现在"显低端"（不是审美问题，是五个结构问题）</h3>
+      <ul>
+        <li><b>没有面板层级</b>：画布、侧栏、正文几乎是同一个白，靠 1px 灰线区分，视觉上是一张长纸，不是工作台。</li>
+        <li><b>没有间距节奏</b>：字号 11–13px 挤在一起，块与块之间 8px，读起来像后台表格页。</li>
+        <li><b>Element Plus 默认脸</b>：表格 #EBEEF5 边框、32px 灰边按钮、默认滚动条，一眼"管理后台"。</li>
+        <li><b>强调色只出现在 Logo</b>：列表状态、激活项、链接、按钮没有统一的品牌色语言。</li>
+        <li><b>内容裸奔</b>：消息没有卡片承载，标题与正文同号，工具调用没有卡片化，长路径/长链接直接铺开。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>方案 A（推荐）· 纸墨进阶</h3>
+      <p>保留亮色品牌资产，只做"结构化"：加图标轨、消息卡片、阅读列宽 760px、字号 14/1.72、强调色成体系。</p>
+      <div class="tag-row">
+        <span class="tag">改动集中在 CSS/Token</span><span class="tag">风险低</span><span class="tag">不动业务流程</span><span class="tag">约 6–8 天</span>
+      </div>
+      <h3 style="margin-top:16px">方案 B · 深空工作台</h3>
+      <p>对标参考图的深色专业感：三层深色面板 + 高对比排版 + 品牌紫强调色。需要新增一套深色皮肤并逐页回归。</p>
+      <div class="tag-row">
+        <span class="tag">观感提升最大</span><span class="tag">需逐页适配</span><span class="tag">约 10–14 天</span>
+      </div>
+      <div class="swatches">
+        <div class="sw"><i style="background:#0b0d11"></i><span>#0B0D11</span></div>
+        <div class="sw"><i style="background:#12151b"></i><span>#12151B</span></div>
+        <div class="sw"><i style="background:#171b23"></i><span>#171B23</span></div>
+        <div class="sw"><i style="background:#7a78ff"></i><span>#7A78FF</span></div>
+        <div class="sw"><i style="background:#35d399"></i><span>#35D399</span></div>
+        <div class="sw"><i style="background:#e9ecf2"></i><span>#E9ECF2</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const sw = document.getElementById('sw');
+  const stage = document.getElementById('stage');
+  const map = { current: 'mode-current', a: 'mode-a', b: 'mode-b' };
+  sw.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-mode]');
+    if (!btn) return;
+    sw.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === btn));
+    stage.className = 'stage ' + map[btn.dataset.mode];
+  });
+  sw.querySelector('button[data-mode="a"]').classList; // no-op
+</script>
+</body>
+</html>

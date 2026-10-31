@@ -2,6 +2,12 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "rc-card-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "4216", "--directory", "tmp/rc-card-preview"],
+      "port": 4216
+    },
+    {
       "name": "layer-demo",
       "runtimeExecutable": "node",
       "runtimeArgs": [".claude/prototype-server.cjs", "--root", "plugins/optional/desktop-manager", "--port", "4218"],

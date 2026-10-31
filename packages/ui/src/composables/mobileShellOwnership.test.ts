@@ -206,12 +206,13 @@ describe('移动端输入框：工具条精简 + 可展开', () => {
     expect(INPUT, '桌面端模型胶囊应在非移动壳下渲染').toMatch(/v-if="!isMobileShell"[\s\S]{0,120}?modelPopOpen/);
   });
 
-  it('★ 输入框默认 1 行、聚焦后展开；桌面端恒定 3~12 行', () => {
+  it('★ 输入框默认 1 行、聚焦后展开；桌面端恒定 3~6 行', () => {
     expect(INPUT, '未定义 inputAutosize').toMatch(/const inputAutosize = computed/);
     // 移动端收起态是 1 行
     expect(INPUT, '收起态不是 1 行').toMatch(/minRows:\s*1,\s*maxRows:\s*1/);
-    // 桌面端保持 3~12
-    expect(INPUT, '桌面端行数被改动（应恒为 3~12）').toMatch(/minRows:\s*3,\s*maxRows:\s*12/);
+    // 桌面端 3~6（2026-10-28 用户实报"输入框能长到半个屏幕"，上限 12 → 6；
+    //   长内容走自动转附件，不靠输入框硬撑高度）
+    expect(INPUT, '桌面端行数被改动（应恒为 3~6）').toMatch(/minRows:\s*3,\s*maxRows:\s*6/);
     // 聚焦/失焦钩子接上了
     expect(INPUT).toMatch(/@focus="onInputFocus"/);
     expect(INPUT).toMatch(/@blur="onInputBlur"/);

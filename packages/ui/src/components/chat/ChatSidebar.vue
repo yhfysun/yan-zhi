@@ -1,17 +1,17 @@
 <template>
   <aside class="sidebar">
     <div class="sidebar-tabs">
-      <div class="sb-tab" :class="{ active: sideTab === 'chat' }" @click="sideTab = 'chat'">
-        <el-icon><ChatDotRound /></el-icon> 任务
+      <div class="sb-tab" :class="{ active: sideTab === 'chat' }" title="任务" @click="sideTab = 'chat'">
+        <el-icon><ChatDotRound /></el-icon> <span class="sb-label">任务</span><span class="sb-label-short">任务</span>
       </div>
-      <div class="sb-tab" :class="{ active: sideTab === 'task' }" @click="sideTab = 'task'">
-        <el-icon><Timer /></el-icon> 定时任务
+      <div class="sb-tab" :class="{ active: sideTab === 'task' }" title="定时任务" @click="sideTab = 'task'">
+        <el-icon><Timer /></el-icon> <span class="sb-label">定时任务</span><span class="sb-label-short">定时</span>
       </div>
-      <div class="sb-tab" :class="{ active: sideTab === 'file' }" @click="sideTab = 'file'">
-        <el-icon><FolderOpened /></el-icon> 文件
+      <div class="sb-tab" :class="{ active: sideTab === 'file' }" title="文件" @click="sideTab = 'file'">
+        <el-icon><FolderOpened /></el-icon> <span class="sb-label">文件</span><span class="sb-label-short">文件</span>
       </div>
-      <div class="sb-tab" :class="{ active: sideTab === 'publish' }" @click="sideTab = 'publish'">
-        <el-icon><Promotion /></el-icon> 发布
+      <div class="sb-tab" :class="{ active: sideTab === 'publish' }" title="发布" @click="sideTab = 'publish'">
+        <el-icon><Promotion /></el-icon> <span class="sb-label">发布</span><span class="sb-label-short">发布</span>
       </div>
     </div>
 
@@ -79,9 +79,17 @@
             >
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon"><StarFilled /></el-icon>
-              <span v-if="renamingId !== conv.id" class="conv-title" :title="conv.title">{{ conv.title }}</span>
+              <div v-if="renamingId !== conv.id" class="conv-main">
+                <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
+                <div class="conv-meta">
+                  <span class="conv-dot" :class="{ run: store.isConvStreaming(conv.id) }"></span>
+                  <span :title="fullTime(conv.updatedAt)">{{ store.isConvStreaming(conv.id) ? '运行中' : relativeTime(conv.updatedAt) }}</span>
+                  <span v-if="conv.scheduledTaskId" class="conv-meta-flag" title="定时任务发起">定时</span>
+                  <span v-if="conv.source === BROWSER_PAGE_SOURCE" class="conv-meta-flag" title="来自浏览器页面对话">页面</span>
+                </div>
+              </div>
               <el-input
-                v-else
+                v-if="renamingId === conv.id"
                 v-model="renamingTitle"
                 size="small"
                 @click.stop
@@ -90,15 +98,6 @@
                 @keydown.esc.prevent="rows.cancelRename"
                 ref="renameInputRef"
               />
-              <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
-              <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
-                <el-icon class="scheduled-badge"><Timer /></el-icon>
-              </el-tooltip>
-              <!-- 来源标记（2026-10-16）：来自浏览器页面对话的会话在这里一眼认出来。
-                   这里只标、不改行为 —— 打开/删除在浏览器面板的「历史」入口里做。 -->
-              <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
-                <span class="conv-src-badge">页面</span>
-              </el-tooltip>
             </div>
           </div>
         </div>
@@ -134,9 +133,17 @@
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
               <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
-              <span v-if="renamingId !== conv.id" class="conv-title" :title="conv.title">{{ conv.title }}</span>
+              <div v-if="renamingId !== conv.id" class="conv-main">
+                <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
+                <div class="conv-meta">
+                  <span class="conv-dot" :class="{ run: store.isConvStreaming(conv.id) }"></span>
+                  <span :title="fullTime(conv.updatedAt)">{{ store.isConvStreaming(conv.id) ? '运行中' : relativeTime(conv.updatedAt) }}</span>
+                  <span v-if="conv.scheduledTaskId" class="conv-meta-flag" title="定时任务发起">定时</span>
+                  <span v-if="conv.source === BROWSER_PAGE_SOURCE" class="conv-meta-flag" title="来自浏览器页面对话">页面</span>
+                </div>
+              </div>
               <el-input
-                v-else
+                v-if="renamingId === conv.id"
                 v-model="renamingTitle"
                 size="small"
                 @click.stop
@@ -146,15 +153,6 @@
                 ref="renameInputRef"
               />
               <!-- 7.4 运行状态徽标：该任务正在跑时行内呼吸圆点 -->
-              <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
-              <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
-                <el-icon class="scheduled-badge"><Timer /></el-icon>
-              </el-tooltip>
-              <!-- 来源标记（2026-10-16）：来自浏览器页面对话的会话在这里一眼认出来。
-                   这里只标、不改行为 —— 打开/删除在浏览器面板的「历史」入口里做。 -->
-              <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
-                <span class="conv-src-badge">页面</span>
-              </el-tooltip>
             </div>
             <!-- 空态（Task 3.2）：统一 EmptyState 组件；搜索无结果时不给 CTA -->
             <EmptyState
@@ -239,9 +237,19 @@
                   <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
                   <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
                   <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
-                  <span v-if="renamingId !== conv.id" class="conv-title" :title="conv.title">{{ conv.title }}</span>
+                  <div v-if="renamingId !== conv.id" class="conv-main">
+                    <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
+                    <div class="conv-meta">
+                      <span class="conv-dot" :class="{ run: store.isConvStreaming(conv.id) }"></span>
+                      <span :title="fullTime(conv.updatedAt)">{{ store.isConvStreaming(conv.id) ? '运行中' : relativeTime(conv.updatedAt) }}</span>
+                      <span v-if="conv.scheduledTaskId" class="conv-meta-flag" title="定时任务发起">定时</span>
+                      <span v-if="conv.source === BROWSER_PAGE_SOURCE" class="conv-meta-flag" title="来自浏览器页面对话">页面</span>
+                    </div>
+                  </div>
+              <!-- 相对时间（2026-10-31）：让列表能按"什么时候干的"扫读；hover/激活才显形，不占常驻注意力 -->
+              <span class="conv-time" :title="fullTime(conv.updatedAt)">{{ relativeTime(conv.updatedAt) }}</span>
                   <el-input
-                    v-else
+                    v-if="renamingId === conv.id"
                     v-model="renamingTitle"
                     size="small"
                     @click.stop
@@ -250,10 +258,6 @@
                     @keydown.esc.prevent="rows.cancelRename"
                     ref="renameInputRef"
                   />
-                  <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
-                  <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
-                    <el-icon class="scheduled-badge"><Timer /></el-icon>
-                  </el-tooltip>
                 </div>
               </div>
             </div>
@@ -270,9 +274,17 @@
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
               <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
-              <span v-if="renamingId !== conv.id" class="conv-title" :title="conv.title">{{ conv.title }}</span>
+              <div v-if="renamingId !== conv.id" class="conv-main">
+                <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
+                <div class="conv-meta">
+                  <span class="conv-dot" :class="{ run: store.isConvStreaming(conv.id) }"></span>
+                  <span :title="fullTime(conv.updatedAt)">{{ store.isConvStreaming(conv.id) ? '运行中' : relativeTime(conv.updatedAt) }}</span>
+                  <span v-if="conv.scheduledTaskId" class="conv-meta-flag" title="定时任务发起">定时</span>
+                  <span v-if="conv.source === BROWSER_PAGE_SOURCE" class="conv-meta-flag" title="来自浏览器页面对话">页面</span>
+                </div>
+              </div>
               <el-input
-                v-else
+                v-if="renamingId === conv.id"
                 v-model="renamingTitle"
                 size="small"
                 @click.stop
@@ -282,15 +294,6 @@
                 ref="renameInputRef"
               />
               <!-- 7.4 运行状态徽标：与根列表同款 -->
-              <span v-if="store.isConvStreaming(conv.id)" class="conv-run-badge" title="运行中"></span>
-              <el-tooltip v-if="conv.scheduledTaskId" content="定时任务发起" placement="top">
-                <el-icon class="scheduled-badge"><Timer /></el-icon>
-              </el-tooltip>
-              <!-- 来源标记（2026-10-16）：来自浏览器页面对话的会话在这里一眼认出来。
-                   这里只标、不改行为 —— 打开/删除在浏览器面板的「历史」入口里做。 -->
-              <el-tooltip v-if="conv.source === BROWSER_PAGE_SOURCE" content="来自浏览器页面对话（在浏览器面板「历史」里打开 / 删除）" placement="top">
-                <span class="conv-src-badge">页面</span>
-              </el-tooltip>
             </div>
             <EmptyState
               v-if="!spaceCollapsed[sp.id] && spaceStore.childSpacesOf(sp.id).length === 0 && (!conversationsBySpace[sp.id] || conversationsBySpace[sp.id].length === 0)"
@@ -691,6 +694,29 @@ import type { ActionSheetAction } from '../common/ActionSheet.vue';
 
 /** 会话来源徽标的判据（模板里 `v-if="conv.source === BROWSER_PAGE_SOURCE"`） */
 const BROWSER_PAGE_SOURCE = CONV_SOURCE_BROWSER_PAGE;
+
+/** 行尾相对时间：今天 → HH:mm；昨天 → 昨天；更早 → M/D（跨年带年份）。
+    只做展示，排序仍由 store 按 updatedAt 决定。 */
+function relativeTime(ts?: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (d.toDateString() === now.toDateString()) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return '昨天';
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}/${d.getDate()}`;
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+/** 悬停提示用完整时间（相对时间读不出精确时刻） */
+function fullTime(ts?: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 const {
   sideTab, search, store, batchMode, toggleConvSelect,

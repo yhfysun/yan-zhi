@@ -48,7 +48,7 @@ export function readClipProject(conversationId?: string): ClipProject | null {
     if (parsed.version === 2) {
       // v2：layers 是唯一存储 → 派生 texts/overlays 内存视图
       const layers = Array.isArray((parsed as ClipProject).layers) ? (parsed as ClipProject).layers : [];
-      const { texts, overlays, audios, stickers } = v1FieldsFromLayers(layers);
+      const { texts, overlays, audios, stickers, effects } = v1FieldsFromLayers(layers);
       return {
         ...(parsed as ClipProject),
         layers,
@@ -56,6 +56,7 @@ export function readClipProject(conversationId?: string): ClipProject | null {
         ...(overlays.length ? { overlays } : {}),
         ...(audios.length ? { audios } : {}),
         ...(stickers.length ? { stickers } : {}),
+        ...(effects.length ? { effects } : {}),
       };
     }
     // v1：texts 必有（老文件），overlays 可选 → 迁移到 v2 内存形态
@@ -95,7 +96,7 @@ export function writeClipProject(conversationId: string | undefined, project: Cl
   // ★ 重建时保留旧层里投影不覆盖的扩展字段（transform/keyframes/track/audio）——
   //   否则 P0-2 给 text 层加 transform 后，每次落盘都会把它抹掉。
   const prevById = new Map((project.layers || []).map((l) => [l.id, l]));
-  const rebuilt: Layer[] = layersFromV1Fields(project.texts, project.overlays || [], project.audios || [], project.stickers || []).map((l) => {
+  const rebuilt: Layer[] = layersFromV1Fields(project.texts, project.overlays || [], project.audios || [], project.stickers || [], project.effects || []).map((l) => {
     const prev = prevById.get(l.id);
     if (!prev) return l;
     // ★ v1 视图**权威**的变换字段（位置/缩放/旋转/透明/混合）只能以投影结果为准，不能从旧层回填：
@@ -107,11 +108,12 @@ export function writeClipProject(conversationId: string | undefined, project: Cl
     delete keep.blend; delete keep.pos;
     return { ...l, transform: { ...keep, ...l.transform } };
   });
-  // v1 视图之外的新 kind 图层（effect…）原样保留。
-  // ★ audio / sticker 不在此列：它们分别由 project.audios / project.stickers 视图**独占**重建 ——
-  //   与 text/video 同一套权威规则，否则 UI 删掉后旧层残值会把它复活。
+  // v1 视图之外、也没有独立视图的 kind 图层原样保留（目前没有这类；未知 kind 也走这里）。
+  // ★ audio / sticker / effect 不在此列：它们分别由 project.audios / project.stickers /
+  //   project.effects 视图**独占**重建 —— 与 text/video 同一套权威规则，
+  //   否则 UI 删掉后旧层残值会把它复活。
   const extra = (project.layers || []).filter(
-    (l) => l.kind !== 'text' && l.kind !== 'video' && l.kind !== 'audio' && l.kind !== 'sticker',
+    (l) => l.kind !== 'text' && l.kind !== 'video' && l.kind !== 'audio' && l.kind !== 'sticker' && l.kind !== 'effect',
   );
   const byId = new Map<string, Layer>();
   for (const l of extra) byId.set(l.id, l);

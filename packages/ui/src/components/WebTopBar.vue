@@ -49,14 +49,6 @@
           <el-icon :size="15"><component :is="m.icon" /></el-icon>
           <span>{{ m.label }}</span>
         </router-link>
-        <!-- 更多：用 el-popover 而非 el-dropdown —— dropdown 会把内容包进 el-scrollbar（overflow 裁剪），
-             二级 hover 面板向右飞出会被裁掉并撑出横向滚动条；popover 内容无滚动包裹，飞出面板正常渲染
-             ★ 2026-09-17：trigger=click → hover（与左侧「办公」模式下拉同一交互口径，用户拍板
-             「不用点击才显示」）。show/hide-after 120ms 与 ModeSwitcher 一致：
-             鼠标只是划过顶栏去点右侧「刷新」时不会闪出大菜单；穿过按钮→浮层的间隙也不会误关
-             （el-popover 的 enterable 默认 true，进入浮层即保持展开）。
-             ★ 触屏（无 hover 能力，Task 4.1）：trigger 退化为 click —— tap 一次展开、再 tap 收起、
-             点外自动关；show/hide-after 归零避免 tap 后的延迟感。桌面鼠标行为不变。 -->
         <el-popover
           v-model:visible="moreOpen"
           :disabled="moreSuppressed"
@@ -100,9 +92,6 @@
         <button v-if="gameWindowSupported" class="title-nav-item title-nav-item--icon" type="button"
                 title="游戏窗（独立置顶）" @click="onOpenGameWindow">
           <el-icon :size="15"><Monitor /></el-icon>
-        </button>
-        <button class="title-nav-item title-nav-item--icon" type="button" title="全局搜索（Ctrl/⌘ K）" @click="onGlobalSearch">
-          <el-icon :size="15"><Search /></el-icon>
         </button>
       </div>
 
@@ -206,7 +195,7 @@ import {
   Search, VideoCamera,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
-import { isElectron } from '../api/client';
+import { isElectron, isCapacitor } from '../api/client';
 import { ElMessage } from 'element-plus';
 import { plainRect } from '../composables/pluginWindowHotkeys';
 import { resolvePluginIcon } from '@yan-zhi/ui/plugin-icons';
@@ -214,13 +203,14 @@ import HoverMenu from './HoverMenu.vue';
 import type { HoverMenuItem } from './HoverMenu.vue';
 import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { openSettingsDialog } from '../composables/useSettingsDialog';
-import ModeSwitcher from './workbench/ModeSwitcher.vue';
 import CommandPalette from './common/CommandPalette.vue';
+import ModeSwitcher from './workbench/ModeSwitcher.vue';
 import { isStandaloneWindow } from '../utils/modeWindow';
 
 // 独立窗口锁定（模式窗口 / 会话窗口）：整个生命周期内上下文不变（窗口打开时即带
 // window= 标记），用常量而非 computed —— 避免模板里每个分支都走 hash 解析。
 const modeLocked = isStandaloneWindow();
+const modeSwitcherOpen = ref(false);
 
 // 超级剪贴板（2026-10-29）：只有桌面端主进程提供了面板能力才显示入口
 const clipboardAvailable = typeof window !== 'undefined' && !!(window as any).electronAPI?.clipboardPanel;
@@ -490,7 +480,6 @@ const moreActive = computed(
 );
 
 const moreOpen = ref(false)
-const modeSwitcherOpen = ref(false);
 // 用户头像下拉展开状态：与"更多"弹层一样落在内容区上方，需一并避让 BrowserView
 const avatarMenuOpen = ref(false);
 // 浮层任一展开 → 通知 BrowserPanel 临时隐藏原生 BrowserView（关闭后自动恢复）
@@ -892,4 +881,5 @@ onUnmounted(() => {
 <style>
 /* 「更多」菜单 popper：外观统一由 HoverMenu.vue 的 .yz-menu-popper 基座提供
    （此前这里另写一份 → 与模式下拉漂移；保留 .more-menu-popper 仅作定位/调试锚点） */
+
 </style>

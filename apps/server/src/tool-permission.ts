@@ -20,6 +20,10 @@ export function normalizePermissionMode(v: unknown): PermissionMode {
 
 /** 明确有副作用的工具（readonly 模式拒绝执行） */
 const WRITE_TOOLS = new Set([
+  // —— 剪映剪辑：把工程写成剪映草稿（落在剪映草稿目录，工作目录之外）——
+  // ★ 按实现判：它会 mkdir + 写 draft_content.json / draft_meta_info.json 到用户剪映草稿根目录，
+  //   与只写会话产物目录的 clip_project 不同，属于真正的「界外写」，只读会话必须走授权。
+  'clip_jianying',
   // —— 文件系统 ——
   'file_write', 'file_edit',
   // —— 任意代码执行 ——

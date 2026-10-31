@@ -229,7 +229,7 @@
             'is-collapsed': isMobileShell && !mobileExpanded,
             'is-expanded': isMobileShell && mobileExpanded,
           }"
-          :placeholder="inputPlaceholder"
+          :placeholder="ghostVisible ? '' : inputPlaceholder"
           :disabled="currentConvArchived"
           @keydown.enter.exact="onEnter"
           @keydown.enter.ctrl="onCtrlEnter"
@@ -241,6 +241,17 @@
           @focus="onInputFocus"
           @blur="onInputBlur"
         />
+        <!-- 下一步建议（2026-10-31）：会话空闲且输入为空时，用灰色 ghost 文本预测下一句；
+             Tab 整句填入（再 Enter 发送）。仅桌面端（移动端没有 Tab 键）；鼠标事件穿透，
+             点输入框仍是正常聚焦。 -->
+        <div
+          v-if="ghostVisible"
+          class="input-ghost"
+          aria-hidden="true"
+        >
+          <span class="input-ghost-text">{{ nextSuggestion }}</span>
+          <span class="input-ghost-key">Tab</span>
+        </div>
       </div>
 
       <!-- 输入框长按菜单（移动端）。Teleport 到 body：输入区在收起态会被压成一行的
@@ -1887,11 +1898,100 @@ function historyNext() {
   input.value = historyCursor.value < 0 ? '' : cmdHistory.value[historyCursor.value];
 }
 
+// ===== 输入框「下一步建议」ghost（2026-10-31）=====
+// 会话空闲且输入为空时由后端预测用户下一句，显示为输入框内的灰字；
+// Tab 整句填入（再 Enter 走原发送路径），Esc 忽略，手动输入即隐藏。
+// 成本：服务端按最后一条消息指纹缓存 5 分钟；前端只在「切会话 / 流式结束 / 消息变化」时预取。
+const nextSuggestion = ref('');
+/** 建议对应的会话 id：异步回来时若已切走就不展示（防串会话） */
+const suggestionConvId = ref('');
+/** 请求序号：只接受最新一次请求的结果（旧请求后到不覆盖） */
+let suggestSeq = 0;
+let suggestTimer: ReturnType<typeof setTimeout> | null = null;
+
+const ghostVisible = computed(() => (
+  !isMobileShell.value
+  && !currentConvArchived.value
+  && !store.streaming
+  && !input.value.trim()
+  && !!nextSuggestion.value
+  && suggestionConvId.value === store.currentConvId
+));
+
+function clearSuggestion() {
+  nextSuggestion.value = '';
+  suggestionConvId.value = '';
+}
+
+async function prefetchSuggestion() {
+  const cid = store.currentConvId;
+  // 关闭开关 / 无会话 / 归档 / 正在执行 / 用户已有输入或会话无消息 → 不请求
+  if (settingsStore2.settings.nextStepSuggest === false) return;
+  if (!cid || currentConvArchived.value || store.streaming) return;
+  if (input.value.trim() || !messageRounds.value.length) return;
+
+  const seq = ++suggestSeq;
+  const model = platformStore.models.find((m) => m.id === selectedModelId.value);
+  try {
+    const r = await api.post<{ suggestion: string | null }>(`/conversations/${cid}/suggest-next`, {
+      platformId: model?.platformId,
+      modelId: model?.id,
+    });
+    if (seq !== suggestSeq) return;
+    if (store.currentConvId !== cid || store.streaming || input.value.trim()) return;
+    const text = String((r as any)?.data?.suggestion || '');
+    if (!text) return;
+    nextSuggestion.value = text;
+    suggestionConvId.value = cid;
+  } catch {
+    // 建议是锦上添花：网络/模型失败一律静默，不影响输入框
+  }
+}
+
+/** 去抖预取：切会话时消息是异步加载的，等一拍再请求才能拿到素材 */
+function schedulePrefetch(delay = 350) {
+  if (suggestTimer) clearTimeout(suggestTimer);
+  suggestTimer = setTimeout(() => { suggestTimer = null; void prefetchSuggestion(); }, delay);
+}
+
+/** Tab / 点击：整句填入输入框并聚焦到末尾（不直接发送，回车仍走原发送路径） */
+async function acceptSuggestion() {
+  if (!nextSuggestion.value) return;
+  const text = nextSuggestion.value;
+  clearSuggestion();
+  input.value = text;
+  await nextTick();
+  const el = inputRef.value?.textarea as HTMLTextAreaElement | undefined;
+  el?.focus();
+  el?.setSelectionRange(input.value.length, input.value.length);
+}
+
+// 触发面：切会话（消息加载完成）/ 流式结束 / 消息数变化 → 去抖后预取
+watch(
+  () => [store.currentConvId, store.streaming, messageRounds.value.length] as const,
+  (nv, ov) => {
+    if (nv[0] !== ov?.[0]) clearSuggestion();
+    schedulePrefetch();
+  },
+);
+// 用户开始打字 → 旧建议立刻让位；清空且仍聚焦时再补一次
+watch(input, (v) => {
+  if (v.trim()) { clearSuggestion(); return; }
+  if (inputFocused.value) schedulePrefetch(600);
+});
+onBeforeUnmount(() => { if (suggestTimer) clearTimeout(suggestTimer); });
+
 /**
  * Tab 补全命令名。
  * ★ 只在**唯一候选**时补：多个候选时 Tab 补哪一个是猜的，猜错比不补更烦人。
  */
 function onTab(e: KeyboardEvent) {
+  // ① 下一步建议优先：输入框为空且显示 ghost → 整句填入（用户紧接着 Enter 发送）
+  if (ghostVisible.value) {
+    e.preventDefault();
+    void acceptSuggestion();
+    return;
+  }
   if (e.isComposing || slashMode.value !== 'command') return;
   const q = slashQuery.value.trim();
   if (!q) return;
@@ -2222,7 +2322,7 @@ function onKeyDown(e: KeyboardEvent) {
   if (slashMenuOpen.value || atMenuOpen.value) { e.preventDefault(); moveIndex(1); return; }
   if (e.key === 'ArrowDown') { e.preventDefault(); historyNext(); }
 }
-function onEsc() { slashMenuOpen.value = false; atMenuOpen.value = false; }
+function onEsc() { slashMenuOpen.value = false; atMenuOpen.value = false; clearSuggestion(); }
 
 function moveIndex(delta: number) {
   if (slashMenuOpen.value) {
@@ -2413,6 +2513,46 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* ===== 下一步建议 ghost（2026-10-31）=====
+   绝对定位盖在 textarea 上方：padding / 字号 / 行高必须与 chat.css 里
+   `.input-textarea .el-textarea__inner` 的 10px 12px / 14px / 1.6 逐项一致，
+   否则灰字会比真实输入文字错开半个字。移动端不渲染（没有 Tab 键）。 */
+.input-textarea-wrap { position: relative; }
+.input-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.6;
+  /* 穿透：点「建议文字」等同于点输入框（聚焦），不会误触发 */
+  pointer-events: none;
+  overflow: hidden;
+  user-select: none;
+}
+.input-ghost-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary, #999);
+  opacity: 0.62;
+}
+.input-ghost-key {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--color-text-secondary, #999) 42%, transparent);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--color-text-secondary, #999);
+  opacity: 0.72;
+}
+
 /* 拖入文件悬停：input 容器边框/背景轻微变化（沿用主题朱砂色） */
 .input-box.is-dragover {
   border-color: var(--color-primary, #c2410c) !important;

@@ -57,16 +57,43 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 阶段 1 第 3 步：采集窗口持有信令，确认弹窗在主窗口 —— 两次跨进程往返
   rcNeedConfirm: (req) => ipcRenderer.invoke('rc:need-confirm', req || {}),
   rcConfirmResult: (id, result) => ipcRenderer.invoke('rc:confirm-result', id, result || {}),
+  // 控制端撤回请求时由采集窗口调用：主窗口据此关掉还开着的确认弹窗
+  rcCancelConfirm: (confirmId) => ipcRenderer.invoke('rc:cancel-confirm', String(confirmId || '')),
   // 主窗口侧订阅（返回取消函数，组件卸载时调用）
   onRcNeedConfirm: (cb) => {
     const h = (_e, payload) => cb(payload);
     ipcRenderer.on('rc:need-confirm', h);
     return () => ipcRenderer.removeListener('rc:need-confirm', h);
   },
+  onRcConfirmCancel: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('rc:confirm-cancel', h);
+    return () => ipcRenderer.removeListener('rc:confirm-cancel', h);
+  },
   // 远控明示原则：会话开始弹系统通知（渲染层轮询发现新会话时调用）
   rcNotify: (title, body) => ipcRenderer.invoke('rc:notify', String(title || ''), String(body || '')),
-  // 远控托盘状态：上报「远控中」会话（托盘提示/菜单随之更新）
-  rcSessionState: (active, device) => ipcRenderer.invoke('rc:session-state', !!active, String(device || '')),
+  // 远控托盘/悬浮卡片状态：上报「远控中」会话（托盘提示、菜单、被控端卡片随之更新）
+  rcSessionState: (active, device, info) => ipcRenderer.invoke(
+    'rc:session-state',
+    !!active,
+    String(device || ''),
+    info && typeof info === 'object' ? { since: Number(info.since) || 0, via: String(info.via || '') } : {},
+  ),
+  // 被控端悬浮卡片（独立窗口）：状态订阅 / 一键断开 / 贴边收起
+  rcCardState: () => ipcRenderer.invoke('rc:card-state'),
+  rcCardDisconnect: () => ipcRenderer.invoke('rc:card-disconnect'),
+  rcCardHide: () => ipcRenderer.invoke('rc:card-hide'),
+  rcCardExpand: () => ipcRenderer.invoke('rc:card-expand'),
+  onRcCardState: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('rc:card-state', h);
+    return () => ipcRenderer.removeListener('rc:card-state', h);
+  },
+  onRcCardDock: (cb) => {
+    const h = (_e, payload) => cb(payload);
+    ipcRenderer.on('rc:card-dock', h);
+    return () => ipcRenderer.removeListener('rc:card-dock', h);
+  },
   // 远控确认弹窗抬升：确认弹窗在主窗口，远控/二维码页是独立子窗口会压在它上面
   rcRaisePrompt: (on) => ipcRenderer.invoke('rc:raise', !!on),
   // 局域网入站端口：检查本机端口是否已在 Windows 防火墙放行 + 一键授权开放（UAC）

@@ -43,6 +43,7 @@ import type { RcConfirmRequest, RcConfirmResult, RcDisplayInfo } from '../compos
 interface RcUiBridge {
   onRcNeedConfirm?: (cb: (payload: { id: number; req: RcConfirmRequest }) => void) => () => void;
   rcConfirmResult?: (id: number, result: RcConfirmResult) => Promise<unknown>;
+  onRcConfirmCancel?: (cb: (payload: { confirmId?: string }) => void) => () => void;
 }
 
 const bridge = (): RcUiBridge | null =>
@@ -58,11 +59,15 @@ const captureDisplayId = ref('');
 
 /** 当前待回答的确认请求；0 = 没有 */
 let confirmSeq = 0;
+/** 当前弹窗对应的 confirmId：控制端撤回时据此判断关的是哪一个 */
+let currentConfirmId = '';
 let offNeedConfirm: (() => void) | null = null;
+let offConfirmCancel: (() => void) | null = null;
 
 onMounted(() => {
   offNeedConfirm = bridge()?.onRcNeedConfirm?.(({ id, req }) => {
     confirmSeq = id;
+    currentConfirmId = String(req?.confirmId || '');
     pendingDevice.value = String(req?.device || '未命名设备');
     displays.value = Array.isArray(req?.displays) ? req.displays : [];
     captureDisplayId.value = String(req?.defaultDisplayId || '');
@@ -70,16 +75,28 @@ onMounted(() => {
     viewOnly.value = false;
     promptVisible.value = true;
   }) || null;
+  // 控制端已取消/超时离开：直接收掉弹窗，别让用户对死请求点「允许」
+  offConfirmCancel = bridge()?.onRcConfirmCancel?.(({ confirmId }) => {
+    const cid = String(confirmId || '');
+    if (!promptVisible.value) return;
+    if (cid && currentConfirmId && cid !== currentConfirmId) return;
+    promptVisible.value = false;
+    confirmSeq = 0;
+    currentConfirmId = '';
+  }) || null;
 });
 onBeforeUnmount(() => {
   offNeedConfirm?.();
   offNeedConfirm = null;
+  offConfirmCancel?.();
+  offConfirmCancel = null;
 });
 
 async function decide(allow: boolean): Promise<void> {
   promptVisible.value = false;
   const id = confirmSeq;
   confirmSeq = 0;
+  currentConfirmId = '';
   if (!id) return;
   const result: RcConfirmResult = allow
     ? {

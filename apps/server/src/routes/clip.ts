@@ -28,6 +28,10 @@ import { planBeatCut } from '../services/clip-beat-cut.js';
 import { TRANSITIONS } from '@yan-zhi/shared';
 import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
 import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-library.js';
+import { clipProjectTool } from '../mcp/api-tool-executor.js';
+import {
+  setRenderQueueRunner, enqueueRenderJob, listRenderJobs, cancelRenderJob, clearFinishedRenderJobs,
+} from '../services/clip-render-queue.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import { executeApiTool } from '../mcp/api-tool-executor.js';
 import {
@@ -854,6 +858,62 @@ router.get('/waveform', async (req: Request, res: Response) => {
   // mtime 进了缓存键 → 文件变了 URL 虽然相同但内容会重新生成；短期浏览器缓存可接受
   res.setHeader('Cache-Control', 'private, max-age=3600');
   return res.end(fs.readFileSync(cacheFile));
+});
+
+// ===== 后台渲染队列（P1-9）=====
+// ★ 执行器在本层注入：路由层同时认识 HTTP 与智能体执行层，服务层不需要反向依赖 mcp。
+//   队列顺序执行 —— 连续导出两个不会再互相抢 CPU/显存。
+setRenderQueueRunner(async (job) => {
+  const r = await clipProjectTool({
+    op: 'render',
+    ...(job.preview ? { preview: true } : {}),
+    ...(job.quality ? { quality: job.quality } : {}),
+    ...(job.output ? { output: job.output } : {}),
+  }, job.conversationId, null);
+  const text = r.content?.[0]?.text || '';
+  if (r.isError) return { ok: false, error: text };
+  try {
+    const parsed = JSON.parse(text) as { ok?: boolean; file?: string; note?: string };
+    if (parsed.ok === false) return { ok: false, error: parsed.note || text };
+    return { ok: true, ...(parsed.file ? { file: parsed.file } : {}), ...(parsed.note ? { note: parsed.note } : {}) };
+  } catch {
+    return { ok: true, note: text };
+  }
+});
+
+router.post('/render-queue', (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const quality = String(req.body?.quality || '').trim().toLowerCase();
+  if (quality && !['low', 'std', 'high'].includes(quality)) {
+    return res.status(400).json({ error: 'quality 只能是 low / std / high' });
+  }
+  const job = enqueueRenderJob({
+    conversationId,
+    ...(req.body?.title ? { title: String(req.body.title) } : {}),
+    preview: req.body?.preview === true,
+    ...(quality ? { quality: quality as 'low' | 'std' | 'high' } : {}),
+    ...(req.body?.output ? { output: String(req.body.output) } : {}),
+  });
+  return res.json({ ok: true, job });
+});
+
+router.get('/render-queue', (req: Request, res: Response) => {
+  const conversationId = String(req.query.conversationId || '').trim();
+  return res.json({ jobs: listRenderJobs(conversationId || undefined) });
+});
+
+router.post('/render-queue/cancel', (req: Request, res: Response) => {
+  const id = String(req.body?.id || '').trim();
+  if (!id) return res.status(400).json({ error: 'id 必填' });
+  // 只能取消"还在排队"的；已开始渲染的不中断（杀 ffmpeg 会留半成品）
+  return res.json({ ok: cancelRenderJob(id) });
+});
+
+router.post('/render-queue/clear', (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  return res.json({ ok: true, removed: clearFinishedRenderJobs(conversationId || undefined) });
 });
 
 export default router;

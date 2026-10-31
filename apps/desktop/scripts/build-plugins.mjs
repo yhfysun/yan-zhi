@@ -31,6 +31,7 @@
  *   构建结束整目录删除 —— 不落在产物根，否则会被原样拷进安装包。
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -162,8 +163,36 @@ function hostBridgeRewritePlugin(shimPath) {
   };
 }
 
+/**
+ * manifest 提取用的宿主桥桩。
+ *
+ * 为什么需要：提取 manifest 要把插件后端入口 bundle 起来再 import 一次，宿主张量
+ * （db/dataDir/logger…）被重定向到 shim，而 shim 读 globalThis.__YZ_SERVER_HOST__。
+ * 这里只求「模块图能求值完」，不碰真 DB；但少数模块在 import 阶段就会调宿主函数
+ * （services/im 用 dataDir() 拼存储路径），所以桩不能简单返回 undefined。
+ */
+function makeHostStub() {
+  const noop = () => undefined;
+  const logger = { info: noop, warn: noop, error: noop, debug: noop, child: () => logger };
+  const chainable = new Proxy(function () {}, { get: () => () => undefined });
+  const table = {
+    createLogger: () => logger,
+    // dataDir 在宿主里是**字符串常量**（db.ts 导出），不是函数
+    dataDir: path.join(os.tmpdir(), 'yz-build-host'),
+    db: chainable,
+    state: {},
+    HOST_BRIDGE_VERSION: 'build-stub',
+    MESSAGE_LIST_COLS: [],
+    COMMAND_TOOLS: [],
+  };
+  return new Proxy(table, {
+    get: (t, p) => (p in t ? t[p] : () => ''),
+    has: () => true,
+  });
+}
+
 /** 提取 manifest：临时入口 re-export manifest 常量 → esbuild bundle → 动态 import 求值 */
-async function extractManifest(absBackendEntry, manifestExport, tmpDir) {
+async function extractManifest(absBackendEntry, manifestExport, tmpDir, serverShimPath) {
   const esbuild = require('esbuild');
   const stub = path.join(tmpDir, `__manifest-stub-${Date.now()}.mjs`);
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -181,12 +210,28 @@ async function extractManifest(absBackendEntry, manifestExport, tmpDir) {
     platform: 'node',
     target: 'node20',
     packages: 'external',
+    // ★ 与 buildBackend 同一套宿主外置：db/state/logger/host-bridge 一律走 shim。
+    //   少了这一步，db.ts 的顶层 `await openSqlite(...)` 会被内联进这个临时 bundle，
+    //   与依赖图的求值顺序叠在一起 → 求值永远不完成，打包进程挂在
+    //   「Detected unsettled top-level await」（实报：clip-mode 构建卡死）。
+    //   注意：这里**不能**像 buildBackend 那样再把工作区包外置 —— 本 bundle 是在构建
+    //   进程里直接 import 的，@yan-zhi/* 会解析到 TS 源码（无扩展名）而加载失败。
+    plugins: [hostBridgeRewritePlugin(serverShimPath)],
     sourcemap: false,
     logLevel: 'silent',
   });
-  const mod = await import(pathToFileURL(outFile).href);
-  fs.rmSync(stub, { force: true });
-  fs.rmSync(outFile, { force: true });
+  // shim 要求宿主桥已注入。manifest 是纯数据，给个桩就够 —— 但桩要能扛住
+  // 模块级调用（services/im 会在 import 时用 dataDir() 拼路径）。
+  const hadHost = Object.prototype.hasOwnProperty.call(globalThis, '__YZ_SERVER_HOST__');
+  if (!hadHost) globalThis.__YZ_SERVER_HOST__ = makeHostStub();
+  let mod;
+  try {
+    mod = await import(pathToFileURL(outFile).href);
+  } finally {
+    if (!hadHost) delete globalThis.__YZ_SERVER_HOST__;
+    fs.rmSync(stub, { force: true });
+    fs.rmSync(outFile, { force: true });
+  }
   return mod.default;
 }
 
@@ -420,7 +465,7 @@ async function buildOne(catalog, id, opts, serverShimPath) {
 
   if (entry.backendEntry && entry.manifestExport) {
     const absBackendEntry = path.join(REPO_ROOT, entry.backendEntry);
-    manifestValue = await extractManifest(absBackendEntry, entry.manifestExport, opts.tmp);
+    manifestValue = await extractManifest(absBackendEntry, entry.manifestExport, opts.tmp, serverShimPath);
     if (entry.backendNoop) {
       // 纯声明式插件（skins 等 27 套皮肤）：数据全在 manifest.json，入口只补 activate 空实现
       // —— 打 skins.ts 本体会把 getPluginManager 等宿主链拉进包，没有必要。
@@ -551,5 +596,14 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  await main();
+  // ★ 显式退出：提取 manifest 时要 import 插件后端图，里面有模块级定时器/句柄
+  //   （clip 的看门狗之类）会一直吊着事件循环 —— 进程干完活却不退，父进程的
+  //   execFileSync 就永远等下去（实报：打包卡住 15 分钟，日志停在「完成 13 个插件」）。
+  main().then(
+    () => process.exit(0),
+    (e) => {
+      console.error(e);
+      process.exit(1);
+    },
+  );
 }

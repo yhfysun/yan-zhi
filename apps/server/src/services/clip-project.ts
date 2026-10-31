@@ -12,7 +12,7 @@
 //   · 片段内时间（trimStart/trimEnd/speed）→ **相对该段原始素材**；
 //   · 字幕/BGM 时间 → **相对成片（拼接后）**，由调用方按各段时长累计推算。
 
-import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX, blendModeOf, OVERLAY_POSITIONS, type BlendModeId, type LayerKfPoint, type LayerTransform } from '@yan-zhi/shared';
+import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX, blendModeOf, effectLayerOf, effectLayerIds, fontFamilyOf, hslBandOf, OVERLAY_POSITIONS, type BlendModeId, type LayerKfPoint, type LayerTransform } from '@yan-zhi/shared';
 
 export interface ClipSegment {
   id: string;
@@ -52,13 +52,24 @@ export interface ClipSegment {
     vignette?: number;
   };
   /** 动态特效 id（见 shared 的 FX_EFFECTS：震动/扫描线/残影/柔光/马赛克…） */
-  fx?: string;
-  /**
+  fx?: string;  /**
    * 动态特效参数（键见效果注册表 FX_EFFECTS[].params）。
    * ★ 只存**偏离默认值**的键：工程文件要能一眼看出调了什么。
    * ★ 未知键/越界值在归一化时丢弃或钳制 —— 脏值只会得到"看着正常但画面不对"的滤镜。
    */
   fxParams?: Record<string, number>;
+  /**
+   * 3D LUT 调色（P1-5）：.cube 文件本机绝对路径 + 强度 0~1（缺省 1）。
+   * ★ 强度 <1 时按「原片与 LUT 结果混合」实现（lut3d 本身没有强度参数）。
+   * ★ 与 colorPreset / adjust 可以叠加：LUT 先建立风格，再手动微调。
+   */
+  lut?: { file: string; strength?: number };
+  /**
+   * HSL 分色（P1-6）：按色带调色相/饱和度/明度（红橙黄绿青蓝紫品红）。
+   * ★ 渲染时生成一张 3D LUT 走 lut3d（本机 ffmpeg 没有 HSL 分色滤镜）；
+   *   与 lut（用户 .cube）可叠加：HSL 先修正，LUT 再上风格。
+   */
+  hsl?: { bands: Array<{ color: string; hue?: number; saturation?: number; lightness?: number }> };
   /** 画面淡入秒（相对该段起点） */
   fadeIn?: number;
   /** 画面淡出秒（相对该段终点） */
@@ -85,6 +96,19 @@ export interface ClipSegment {
     feather?: number;
     /** 色键预设 id（green/blue/white/black 等） */
     key?: string;
+    // ── P1-4 蒙版增强 ──
+    /** 线性蒙版角度（度，0=从左到右，90=从上到下） */
+    angle?: number;
+    /** 线性蒙版位置 0~1（0=几乎全遮，1=几乎全显，0.5=居中） */
+    position?: number;
+    /** 蒙版关键帧（t 为**段内** 0~1）：scale / offsetX / offsetY / angle / position */
+    keyframes?: Array<{ t: number; scale?: number; offsetX?: number; offsetY?: number; angle?: number; position?: number }>;
+    /**
+     * 钢笔路径（坐标归一化到 0~1）：
+     * ★ smooth=true 时按 Catmull-Rom 平滑成贝塞尔曲线；false 时按折线闭合。
+     * ★ 路径蒙版不支持关键帧（渲染时会先烘成一张 PNG，静态）。
+     */
+    path?: { smooth?: boolean; points: Array<{ x: number; y: number }> };
   };
   /**
    * 与前一段之间的转场（**挂在后一段上**，语义 = "我进来时怎么出现"）。
@@ -104,6 +128,11 @@ export interface ClipSegment {
   keepOriginalAudio?: boolean;
   /** 该段整体音量倍数（1/缺省=不变） */
   volume?: number;
+  /**
+   * 升降调（P1-7，半音）：-12~12，正=升高、负=降低；0/缺省=不变。
+   * ★ 只改音高、不改时长（ffmpeg rubberband，变调不变速）；画面与时间轴完全不受影响。
+   */
+  pitch?: number;
   /**
    * 倒放该段（画面与音轨一起倒）。
    * ★ 单段有时长上限（render 层 REVERSE_MAX_SEC）：ffmpeg 的 reverse 要把整段帧读进内存。
@@ -203,6 +232,23 @@ export interface ClipSticker {
   keyframes?: LayerKfPoint[];
 }
 
+/**
+ * 特效层（P1-3）：在成片的某段时间里叠一层画面特效（闪光/漏光/星点/颗粒）。
+ * ★ 与 ClipSegment.fx 的区别：片段特效挂在片段上、整段生效；特效层有自己的时间窗口，
+ *   可多条叠在一起（例如"闪光 + 颗粒"），也可以只在 4 秒片子里闪 1 秒。
+ * ★ fx 必须是 shared 的 EFFECT_LAYERS 注册表里的 id；intensity 0~1（缺省取注册表默认值）。
+ */
+export interface ClipEffect {
+  id: string;
+  /** 特效 id（flash / light-leak / sparkle / grain） */
+  fx: string;
+  /** 相对成片的起始/结束秒 */
+  start: number;
+  end: number;
+  /** 强度 0~1（缺省写注册表默认值；source 类=透明度，grain=噪点幅度） */
+  intensity?: number;
+}
+
 /** 画中画（叠加轨）：在成片的某段时间里把一个小画面叠在主画面上。 */
 export interface ClipOverlay {
   id: string;
@@ -255,6 +301,28 @@ export interface ClipText {
   outlinePx?: number;
   /** 背景底板色 #RRGGBBAA（A=不透明度）；不填 = 无底板 */
   backColor?: string;
+  // ── P1-2 排版 ──
+  /** 字体（shared 的 FONT_FAMILIES id；缺省微软雅黑） */
+  fontFamily?: string;
+  /** 字距（像素，1920 高基准；0=默认） */
+  letterSpacingPx?: number;
+  /**
+   * 行距（**额外**行间隙，像素，1920 高基准）。
+   * ★ ASS 没有原生行距：多行文本按行拆成多条 Dialogue 逐行定位（无动画/无变换时生效）；
+   *   带动画或图层变换的文本忽略该参数（否则逐字/逐字飞入的分片会错位）。
+   */
+  lineSpacingPx?: number;
+  /** 加粗 */
+  bold?: boolean;
+  /** 斜体 */
+  italic?: boolean;
+  /**
+   * 花字/气泡底板色 #RRGGBB[AA]：用**大描边**把文字轮廓撑成圆角底板（剪映式"花字"的常规做法），
+   * 渲染为两层（底板层 + 文字层）。缺省无底板。
+   */
+  plateColor?: string;
+  /** 底板厚度（像素，1920 基准）；缺省 18。只有 plateColor 存在时才生效 */
+  platePaddingPx?: number;
   /** 位置；缺省 bottom */
   position?: 'bottom' | 'center' | 'top';
   /** 竖屏安全区（字幕上抬避开底部 UI）；缺省 false */
@@ -288,7 +356,8 @@ export interface ClipProject {
   version: 2;
   name: string;
   updatedAt: number;
-  output: { size: string; fps: number; quality?: ExportQuality };
+  /** P1-9：encoder=cpu（默认，libx264）/ auto（自动选可用的硬件编码器，失败回退 CPU） */
+  output: { size: string; fps: number; quality?: ExportQuality; encoder?: 'cpu' | 'auto' };
   /** 视频主轨：按数组顺序首尾相接（保持既有渲染/时长语义） */
   clips: ClipSegment[];
   /**
@@ -312,6 +381,8 @@ export interface ClipProject {
   audios?: ClipAudio[];
   /** 贴纸视图字段（仅内存，由 kind=sticker 的 layers 派生；落盘时剥离） */
   stickers?: ClipSticker[];
+  /** 特效层视图字段（仅内存，由 kind=effect 的 layers 派生；落盘时剥离） */
+  effects?: ClipEffect[];
   /**
    * 音效链（整片，按数组顺序串联）。
    * ★ 放"整片"而不是每段：降噪/响度归一这类是**工程级标准化**（多段素材音量忽大忽小，
@@ -375,6 +446,8 @@ export interface Layer {
   keyframes?: LayerKfPoint[];
   /** 音频层专属（P0-7 已接渲染）：音量/淡入淡出/素材内起点 */
   audio?: { volume?: number; fadeIn?: number; fadeOut?: number; trimStart?: number };
+  /** 特效层专属（P1-3 已接渲染）：特效 id + 强度 */
+  effect?: { fx: string; intensity?: number };
 }
 
 /** v1 工程文件（迁移函数的输入形态）：texts 必有、overlays 可选。 */
@@ -429,7 +502,7 @@ function textTransformOf(t: Layer['transform'] | undefined): LayerTransform | un
  * v1 字段（texts/overlays）→ layers（正向投影；迁移与落盘共用）。
  * ★ 纯函数、确定性：同一输入永远得到同一 layers（id 保留原值，不重排）。
  */
-export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], audios: ClipAudio[] = [], stickers: ClipSticker[] = []): Layer[] {
+export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], audios: ClipAudio[] = [], stickers: ClipSticker[] = [], effects: ClipEffect[] = []): Layer[] {
   const layers: Layer[] = [];
   for (const t of texts) {
     // ★ 变换/关键帧存在**图层**上（Layer.transform/keyframes），不塞进 l.text ——
@@ -505,6 +578,21 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], a
       ...(s.keyframes?.length ? { keyframes: s.keyframes.map((k) => ({ ...k })) } : {}),
     });
   }
+  // 特效层（P1-3）：track=3（在贴纸/字幕之上；实际合成顺序由渲染步骤决定）
+  for (const e of effects) {
+    layers.push({
+      id: e.id,
+      kind: 'effect',
+      start: e.start,
+      end: e.end,
+      track: 3,
+      transform: {},
+      effect: {
+        fx: e.fx,
+        ...(e.intensity != null ? { intensity: e.intensity } : {}),
+      },
+    });
+  }
   return layers;
 }
 
@@ -514,11 +602,12 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], a
  *   sticker/effect…）留在 layers 里，v1 视图看不到（也不会被反向投影丢掉 ——
  *   正向投影落盘时以**内存 texts/overlays + 原 layers 中的新 kind** 合并重建）。
  */
-export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overlays: ClipOverlay[]; audios: ClipAudio[]; stickers: ClipSticker[] } {
+export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overlays: ClipOverlay[]; audios: ClipAudio[]; stickers: ClipSticker[]; effects: ClipEffect[] } {
   const texts: ClipText[] = [];
   const overlays: ClipOverlay[] = [];
   const audios: ClipAudio[] = [];
   const stickers: ClipSticker[] = [];
+  const effects: ClipEffect[] = [];
   for (const l of layers) {
     if (l.kind === 'text' && l.text) {
       const tf = textTransformOf(l.transform);
@@ -579,9 +668,17 @@ export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overla
         ...(t.opacity != null && t.opacity < 0.999 ? { opacity: t.opacity } : {}),
         ...(l.keyframes?.length ? { keyframes: l.keyframes.map((k) => ({ ...k })) } : {}),
       });
+    } else if (l.kind === 'effect' && l.effect?.fx) {
+      effects.push({
+        id: l.id,
+        fx: l.effect.fx,
+        start: l.start,
+        end: l.end,
+        ...(l.effect.intensity != null ? { intensity: l.effect.intensity } : {}),
+      });
     }
   }
-  return { texts, overlays, audios, stickers };
+  return { texts, overlays, audios, stickers, effects };
 }
 
 /**
@@ -617,6 +714,13 @@ function parseQuality(v: unknown): ExportQuality | null {
   return QUALITY_IDS.has(q) ? (q as ExportQuality) : null;
 }
 
+/** 解析 encoder 参数（P1-9）：cpu=软件编码 / auto=自动用硬件编码器。 */
+function parseEncoder(v: unknown): 'cpu' | 'auto' | null {
+  if (v == null) return null;
+  const e = String(v).trim().toLowerCase();
+  return e === 'cpu' || e === 'auto' ? e : null;
+}
+
 export function createEmptyProject(name = '未命名剪辑'): ClipProject {
   return {
     version: 2,
@@ -629,8 +733,8 @@ export function createEmptyProject(name = '未命名剪辑'): ClipProject {
   };
 }
 
-/** 生成可读且确定性的 id：c1/c2… t1/t2… o1/o2… a1/a2… s1/s2…（从现有最大序号 +1）。 */
-function nextId(prefix: 'c' | 't' | 'o' | 'a' | 's', existing: Array<{ id: string }>): string {
+/** 生成可读且确定性的 id：c1/c2… t1/t2… o1/o2… a1/a2… s1/s2… e1/e2…（从现有最大序号 +1）。 */
+function nextId(prefix: 'c' | 't' | 'o' | 'a' | 's' | 'e', existing: Array<{ id: string }>): string {
   let max = 0;
   for (const it of existing) {
     const m = String(it.id || '').match(new RegExp(`^${prefix}(\\d+)$`));
@@ -662,13 +766,63 @@ function normalizeMask(v: unknown): ClipSegment['mask'] | null {
   const m = v as Record<string, unknown>;
   const shape = String(m.shape ?? '').trim();
   const key = String(m.key ?? '').trim();
-  const scale = typeof m.scale === 'number' ? Math.max(0.05, Math.min(1, m.scale)) : undefined;
-  const offsetX = typeof m.offsetX === 'number' ? Math.max(-0.5, Math.min(0.5, m.offsetX)) : undefined;
-  const offsetY = typeof m.offsetY === 'number' ? Math.max(-0.5, Math.min(0.5, m.offsetY)) : undefined;
+  const clamp = (val: unknown, lo: number, hi: number): number | undefined => {
+    if (typeof val !== 'number' || !Number.isFinite(val)) return undefined;
+    return Number(Math.max(lo, Math.min(hi, val)).toFixed(4));
+  };
+  const scale = clamp(m.scale, 0.05, 1);
+  const offsetX = clamp(m.offsetX, -0.5, 0.5);
+  const offsetY = clamp(m.offsetY, -0.5, 0.5);
   const feather = typeof m.feather === 'number' ? Math.max(0, Math.min(200, m.feather)) : undefined;
+  const angle = clamp(m.angle, -180, 180);
+  const position = clamp(m.position, 0, 1);
+  // 钢笔路径：3~64 个锚点，坐标夹到画面内（允许轻微越界，渲染时会夹）
+  let path: NonNullable<ClipSegment['mask']>['path'];
+  const pr = m.path as Record<string, unknown> | undefined;
+  if (pr && typeof pr === 'object' && Array.isArray(pr.points)) {
+    const pts = pr.points
+      .map((p) => {
+        const o = p as Record<string, unknown>;
+        const x = clamp(o.x, -0.2, 1.2);
+        const y = clamp(o.y, -0.2, 1.2);
+        return x != null && y != null ? { x, y } : null;
+      })
+      .filter((p): p is { x: number; y: number } => !!p)
+      .slice(0, 64);
+    if (pts.length >= 3) path = { ...(pr.smooth === true ? { smooth: true } : {}), points: pts };
+  }
+  // 蒙版关键帧：只保留给了属性的点（与段关键帧同口径）
+  let keyframes: NonNullable<ClipSegment['mask']>['keyframes'];
+  if (Array.isArray(m.keyframes)) {
+    const pts: NonNullable<NonNullable<ClipSegment['mask']>['keyframes']> = [];
+    for (const raw of m.keyframes) {
+      if (!raw || typeof raw !== 'object') continue;
+      const o = raw as Record<string, unknown>;
+      const t = clamp(o.t, 0, 1);
+      if (t == null) continue;
+      const s = clamp(o.scale, 0.05, 1);
+      const ox = clamp(o.offsetX, -0.5, 0.5);
+      const oy = clamp(o.offsetY, -0.5, 0.5);
+      const an = clamp(o.angle, -180, 180);
+      const po = clamp(o.position, 0, 1);
+      if (s == null && ox == null && oy == null && an == null && po == null) continue;
+      pts.push({ t, ...(s != null ? { scale: s } : {}), ...(ox != null ? { offsetX: ox } : {}), ...(oy != null ? { offsetY: oy } : {}), ...(an != null ? { angle: an } : {}), ...(po != null ? { position: po } : {}) });
+    }
+    if (pts.length >= 2) {
+      pts.sort((a, b) => a.t - b.t);
+      // 同 t 去重（保留后者）
+      const dedup: typeof pts = [];
+      for (const p of pts) {
+        const last = dedup[dedup.length - 1];
+        if (last && Math.abs(last.t - p.t) < 1e-6) dedup[dedup.length - 1] = p;
+        else dedup.push(p);
+      }
+      if (dedup.length >= 2) keyframes = dedup;
+    }
+  }
   const hasShape = shape && shape !== 'none';
   const hasKey = key && key !== 'none';
-  if (!hasShape && !hasKey) return null;
+  if (!hasShape && !hasKey && !path) return null;
   return {
     ...(hasShape ? { shape } : {}),
     ...(scale != null ? { scale } : {}),
@@ -676,7 +830,52 @@ function normalizeMask(v: unknown): ClipSegment['mask'] | null {
     ...(offsetY != null ? { offsetY } : {}),
     ...(feather != null ? { feather } : {}),
     ...(hasKey ? { key } : {}),
+    ...(angle != null ? { angle } : {}),
+    ...(position != null ? { position } : {}),
+    ...(keyframes ? { keyframes } : {}),
+    ...(path ? { path } : {}),
   };
+}
+
+/**
+ * 归一化 3D LUT（P1-5）。
+ * ★ 必须是 .cube 文件：其它扩展名 lut3d 读不了，报错点在渲染（离用户操作很远）。
+ * ★ 强度 0~1；等于 1 时不写字段（默认值不落盘，保持工程干净）。
+ */
+function normalizeLut(v: unknown): ClipSegment['lut'] | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const m = v as Record<string, unknown>;
+  const file = String(m.file ?? '').trim();
+  if (!file || !/\.cube$/i.test(file)) return null;
+  const s = m.strength == null ? 1 : Number(m.strength);
+  const strength = Number.isFinite(s) ? Math.max(0, Math.min(1, s)) : 1;
+  return { file, ...(Math.abs(strength - 1) > 0.001 ? { strength: Number(strength.toFixed(3)) } : {}) };
+}
+
+/**
+ * 归一化 HSL 分色（P1-6）：色带必须在注册表；H/S/L 钳到合法范围；全 0 的色带丢弃。
+ */
+function normalizeHsl(v: unknown): ClipSegment['hsl'] | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const raw = Array.isArray((v as Record<string, unknown>).bands) ? ((v as Record<string, unknown>).bands as unknown[]) : [];
+  const byColor = new Map<string, NonNullable<ClipSegment['hsl']>['bands'][number]>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const color = String(o.color ?? '').trim().toLowerCase();
+    if (!hslBandOf(color)) continue;
+    const clamp = (val: unknown, lo: number, hi: number): number => {
+      const n = Number(val);
+      return Number.isFinite(n) ? Number(Math.max(lo, Math.min(hi, n)).toFixed(1)) : 0;
+    };
+    const hue = clamp(o.hue, -180, 180);
+    const saturation = clamp(o.saturation, -100, 100);
+    const lightness = clamp(o.lightness, -100, 100);
+    if (!hue && !saturation && !lightness) { byColor.delete(color); continue; }
+    byColor.set(color, { color, ...(hue ? { hue } : {}), ...(saturation ? { saturation } : {}), ...(lightness ? { lightness } : {}) });
+  }
+  const bands = [...byColor.values()];
+  return bands.length ? { bands } : null;
 }
 
 /**
@@ -1033,6 +1232,32 @@ function normalizeSticker(v: unknown, id: string): ClipSticker | null {
 }
 
 /**
+ * 归一化特效层（P1-3）。
+ * ★ fx 必须命中 EFFECT_LAYERS 注册表 —— 未知 id 会让渲染"什么都不加"却不报错，
+ *   用户只会觉得"我加了特效但没反应"，所以在这里直接拒绝。
+ * ★ intensity 总是写回（缺省取注册表默认值）：source 类的 alpha 与 grain 的噪点幅度
+ *   都要一个确定值；省略字段会让"没调过"和"调成默认值"在工程文件里长得一样。
+ */
+function normalizeEffect(v: unknown, id: string): ClipEffect | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const m = v as Record<string, unknown>;
+  const fx = String(m.fx ?? '').trim().toLowerCase();
+  const def = effectLayerOf(fx);
+  if (!def) return null;
+  const start = Math.max(0, numOr(m.start, 0));
+  const end = numOr(m.end, 0);
+  if (!(end > start)) return null;
+  const intensity = Number(Math.max(0, Math.min(1, numOr(m.intensity, def.defaultIntensity))).toFixed(3));
+  return {
+    id,
+    fx: def.id,
+    start: Number(start.toFixed(3)),
+    end: Number(end.toFixed(3)),
+    intensity,
+  };
+}
+
+/**
  * 归一化转场配置。返回 null = 无转场（第一段不需要转场，也没有"前一段"可接）。
  * ★ 只做范围钳制与字段白名单；type 的合法性由效果库校验（api-tool-executor），
  *   这里不引效果库以避免 services ↔ shared 的循环依赖。
@@ -1118,6 +1343,17 @@ function locateSticker(project: ClipProject, args: Record<string, unknown>): num
   return idx >= 0 && idx < list.length ? idx : -1;
 }
 
+/** 定位特效层：按 id 优先，其次 1 基序号；返回 -1 = 没找到。 */
+function locateEffect(project: ClipProject, args: Record<string, unknown>): number {
+  const list = project.effects || [];
+  const id = String(args.id ?? '').trim();
+  if (id) return list.findIndex((e) => e.id === id);
+  const raw = Number(args.index);
+  if (!Number.isFinite(raw)) return -1;
+  const idx = Math.round(raw) - 1;
+  return idx >= 0 && idx < list.length ? idx : -1;
+}
+
 /** 字幕条目校验：时间必须成对且 end > start；文本非空。 */
 function validateText(raw: Record<string, unknown>, fallback?: Partial<ClipText>): { ok: true; value: Omit<ClipText, 'id'> } | { ok: false; error: string } {
   const text = String(raw.text ?? fallback?.text ?? '').trim();
@@ -1137,6 +1373,27 @@ function validateText(raw: Record<string, unknown>, fallback?: Partial<ClipText>
   // ★ transform/keyframes 用「显式给了才覆盖」：patch 里传 null/[] 即清除（回到 SRT 原路径）
   const transform = normalizeTextTransform(raw.transform !== undefined ? raw.transform : fallback?.transform);
   const keyframes = normalizeLayerKeyframes(raw.keyframes !== undefined ? raw.keyframes : fallback?.keyframes);
+  // ── P1-2 排版：字体必须在注册表里（拼错会让 libass 静默回退，用户以为"选了没反应"）──
+  const fontRaw = String(raw.fontFamily ?? fallback?.fontFamily ?? '').trim().toLowerCase();
+  const fontFamily = fontFamilyOf(fontRaw)?.id;
+  const numField = (key: 'letterSpacingPx' | 'lineSpacingPx', lo: number, hi: number): number | undefined => {
+    const v = raw[key] !== undefined ? raw[key] : fallback?.[key];
+    if (v == null) return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return undefined;
+    const c = Math.max(lo, Math.min(hi, n));
+    return Math.abs(c) < 0.001 ? undefined : Number(c.toFixed(1));
+  };
+  const letterSpacingPx = numField('letterSpacingPx', 0, 100);
+  const lineSpacingPx = numField('lineSpacingPx', 0, 200);
+  const bold = raw.bold !== undefined ? raw.bold === true : fallback?.bold === true;
+  const italic = raw.italic !== undefined ? raw.italic === true : fallback?.italic === true;
+  const plateRaw = String(raw.plateColor ?? fallback?.plateColor ?? '').trim();
+  const plateColor = /^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(plateRaw) ? plateRaw : undefined;
+  const platePadRaw = raw.platePaddingPx !== undefined ? raw.platePaddingPx : fallback?.platePaddingPx;
+  const platePaddingPx = plateColor
+    ? Math.max(4, Math.min(80, Math.round(numOr(platePadRaw, 18))))
+    : undefined;
   const value: Omit<ClipText, 'id'> = {
     text, start, end,
     ...(String(raw.animation ?? fallback?.animation ?? '').trim()
@@ -1151,6 +1408,12 @@ function validateText(raw: Record<string, unknown>, fallback?: Partial<ClipText>
       ? { outlinePx: Math.max(0, Math.min(60, numOr(raw.outlinePx ?? fallback?.outlinePx, 12))) } : {}),
     ...(raw.backColor != null || fallback?.backColor != null
       ? { backColor: String(raw.backColor ?? fallback?.backColor) } : {}),
+    ...(fontFamily ? { fontFamily } : {}),
+    ...(letterSpacingPx != null ? { letterSpacingPx } : {}),
+    ...(lineSpacingPx != null ? { lineSpacingPx } : {}),
+    ...(bold ? { bold: true } : {}),
+    ...(italic ? { italic: true } : {}),
+    ...(plateColor ? { plateColor, platePaddingPx: platePaddingPx! } : {}),
     ...(position ? { position } : {}),
     ...(raw.safeArea === true || fallback?.safeArea === true ? { safeArea: true } : {}),
     ...(transform ? { transform } : {}),
@@ -1200,6 +1463,7 @@ export function applyClipOp(
         ...(base.overlays ? { overlays: [...base.overlays] } : {}),
         ...(base.audios ? { audios: [...base.audios] } : {}),
         ...(base.stickers ? { stickers: [...base.stickers] } : {}),
+        ...(base.effects ? { effects: [...base.effects] } : {}),
       }
     : createEmptyProject();
   const touch = () => { project.updatedAt = Date.now(); };
@@ -1220,6 +1484,11 @@ export function applyClipOp(
         if (!q) return { ok: false, error: `quality 只能是 low / std / high：${String(args.quality)}` };
         project.output.quality = q;
       }
+      if (args.encoder != null) {
+        const e = parseEncoder(args.encoder);
+        if (!e) return { ok: false, error: `encoder 只能是 cpu / auto：${String(args.encoder)}` };
+        project.output.encoder = e;
+      }
       touch();
       return { ok: true, project, note: `工程「${project.name}」${base ? '已更新元信息' : '已创建'}（${project.output.size}@${project.output.fps}）` };
     }
@@ -1238,6 +1507,11 @@ export function applyClipOp(
         const q = parseQuality(args.quality);
         if (!q) return { ok: false, error: `quality 只能是 low / std / high：${String(args.quality)}` };
         project.output.quality = q;
+      }
+      if (args.encoder != null) {
+        const e = parseEncoder(args.encoder);
+        if (!e) return { ok: false, error: `encoder 只能是 cpu / auto：${String(args.encoder)}` };
+        project.output.encoder = e;
       }
       touch();
       return { ok: true, project, note: `导出规格改为 ${project.output.size}@${project.output.fps}` };
@@ -1275,6 +1549,8 @@ export function applyClipOp(
         const rotate = normalizeRotate(c.rotate);
         const flip = normalizeFlip(c.flip);
         const adjust = normalizeAdjust(c.adjust);
+        const lut = normalizeLut(c.lut);
+        const hsl = normalizeHsl(c.hsl);
         const csRaw = c.colorStrength == null ? NaN : Number(c.colorStrength);
         const colorStrength = Number.isFinite(csRaw) ? Math.max(0, Math.min(1, csRaw)) : undefined;
         const seg: ClipSegment = {
@@ -1288,6 +1564,8 @@ export function applyClipOp(
           ...(colorPreset ? { colorPreset: colorPreset.toLowerCase() } : {}),
           ...(colorStrength != null && Math.abs(colorStrength - 1) > 0.001 ? { colorStrength } : {}),
           ...(adjust ? { adjust } : {}),
+          ...(lut ? { lut } : {}),
+          ...(hsl ? { hsl } : {}),
           ...(fx ? { fx } : {}),
           ...(fxParams ? { fxParams } : {}),
           ...(fadeIn != null ? { fadeIn } : {}),
@@ -1298,6 +1576,8 @@ export function applyClipOp(
           ...(audioFile ? { audioFile } : {}),
           ...(c.keepOriginalAudio === true ? { keepOriginalAudio: true } : {}),
           ...(c.volume != null ? { volume: Math.max(0, numOr(c.volume, 1)) } : {}),
+          ...(c.pitch != null && Math.abs(numOr(c.pitch, 0)) > 0.001
+            ? { pitch: Number(Math.max(-12, Math.min(12, numOr(c.pitch, 0))).toFixed(2)) } : {}),
           ...(crop ? { crop } : {}),
           ...(keyframes ? { keyframes } : {}),
           ...(c.reverse === true ? { reverse: true } : {}),
@@ -1317,7 +1597,7 @@ export function applyClipOp(
       const cur = project.clips[loc.idx];
       const patch = (args.patch && typeof args.patch === 'object' ? args.patch : args) as Record<string, unknown>;
       // 允许 1 基序号定位后不传参数？不允许 —— 静默无变更等于骗人。
-      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'colorStrength', 'adjust', 'fx', 'fxParams', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'crop', 'keyframes', 'reverse', 'rotate', 'flip'];
+      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'colorStrength', 'adjust', 'lut', 'hsl', 'fx', 'fxParams', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'pitch', 'crop', 'keyframes', 'reverse', 'rotate', 'flip'];
       if (!KEYS.some((k) => patch[k] !== undefined)) {
         return { ok: false, error: `update_clip 至少要改一个字段：${KEYS.join(' / ')}` };
       }
@@ -1355,6 +1635,14 @@ export function applyClipOp(
       if (patch.adjust !== undefined) {
         const a = normalizeAdjust(patch.adjust);
         if (a) next.adjust = a; else delete next.adjust;
+      }
+      if (patch.lut !== undefined) {
+        const l = normalizeLut(patch.lut);
+        if (l) next.lut = l; else delete next.lut;
+      }
+      if (patch.hsl !== undefined) {
+        const h = normalizeHsl(patch.hsl);
+        if (h) next.hsl = h; else delete next.hsl;
       }
       if (patch.fx !== undefined) {
         const fx = String(patch.fx).trim().toLowerCase();
@@ -1395,6 +1683,10 @@ export function applyClipOp(
       if (patch.volume !== undefined) {
         const v = Math.max(0, numOr(patch.volume, 1));
         if (Math.abs(v - 1) < 0.001) delete next.volume; else next.volume = v;
+      }
+      if (patch.pitch !== undefined) {
+        const pv = Math.max(-12, Math.min(12, numOr(patch.pitch, 0)));
+        if (Math.abs(pv) < 0.001) delete next.pitch; else next.pitch = Number(pv.toFixed(2));
       }
       if (patch.crop !== undefined) {
         const cr = normalizeCrop(patch.crop);
@@ -1643,6 +1935,52 @@ export function applyClipOp(
       touch();
       return { ok: true, project, note: '贴纸层已清空' };
 
+    // ── 特效层（P1-3）──
+    // ★ 与贴纸同一套：view 是权威（UI/op 删掉后不会再从 layers 残值复活），落盘时重建 layers。
+    case 'add_effect': {
+      const raw = Array.isArray(args.effects) ? args.effects : [args];
+      const added: string[] = [];
+      for (let i = 0; i < raw.length; i++) {
+        if (!project.effects) project.effects = [];
+        const item = normalizeEffect(raw[i], '');
+        if (!item) {
+          return { ok: false, error: `effects[${i}] 非法：fx 必须是 ${effectLayerIds().join(' / ')}；end 必须大于 start` };
+        }
+        item.id = nextId('e', project.effects);
+        project.effects.push(item);
+        added.push(item.id);
+      }
+      touch();
+      return { ok: true, project, note: `已加 ${added.length} 个特效层（${added.join(', ')}）` };
+    }
+
+    case 'update_effect': {
+      if (!project.effects?.length) return { ok: false, error: '工程里还没有特效层' };
+      const idx = locateEffect(project, args);
+      if (idx < 0) return { ok: false, error: `找不到特效层（现有：${project.effects.map((e) => e.id).join(', ')}）` };
+      const patch = (args.patch && typeof args.patch === 'object' ? args.patch : args) as Record<string, unknown>;
+      const merged = normalizeEffect({ ...project.effects[idx], ...patch }, project.effects[idx].id);
+      if (!merged) return { ok: false, error: 'update_effect 结果非法（fx 必须是注册表 id；end 必须大于 start）' };
+      project.effects[idx] = merged;
+      touch();
+      return { ok: true, project, note: `特效层 ${merged.id} 已更新` };
+    }
+
+    case 'remove_effect': {
+      if (!project.effects?.length) return { ok: false, error: '工程里还没有特效层' };
+      const idx = locateEffect(project, args);
+      if (idx < 0) return { ok: false, error: `找不到特效层（现有：${project.effects.map((e) => e.id).join(', ')}）` };
+      const [gone] = project.effects.splice(idx, 1);
+      if (!project.effects.length) delete project.effects;
+      touch();
+      return { ok: true, project, note: `已删除特效层 ${gone.id}` };
+    }
+
+    case 'clear_effects':
+      delete project.effects;
+      touch();
+      return { ok: true, project, note: '特效层已清空' };
+
     case 'clear_bgm':
       delete project.bgm;
       touch();
@@ -1655,7 +1993,8 @@ export function applyClipOp(
           `未知 op：${op}。可选：create / get / set_output / add_clip / update_clip / remove_clip / ` +
           `move_clip / clear_clips / add_text / update_text / remove_text / clear_texts / set_bgm / clear_bgm / ` +
           `add_overlay / update_overlay / remove_overlay / add_audio / update_audio / remove_audio / clear_audios / ` +
-          `add_sticker / update_sticker / remove_sticker / clear_stickers`,
+          `add_sticker / update_sticker / remove_sticker / clear_stickers / ` +
+          `add_effect / update_effect / remove_effect / clear_effects`,
       };
   }
 }
@@ -1697,6 +2036,8 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
       ...(c.speedCurve ? { speedCurve: c.speedCurve } : {}),
       ...(c.colorPreset ? { colorPreset: c.colorPreset } : {}),
       ...(c.colorStrength != null ? { colorStrength: c.colorStrength } : {}),
+      ...(c.lut ? { lut: c.lut } : {}),
+      ...(c.hsl ? { hsl: c.hsl } : {}),
       ...(c.adjust ? { adjust: c.adjust } : {}),
       ...(c.fx ? { fx: c.fx } : {}),
       ...(c.fxParams ? { fxParams: c.fxParams } : {}),
@@ -1706,6 +2047,7 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
       ...(c.audioFile ? { audioFile: c.audioFile } : {}),
       ...(c.keepOriginalAudio ? { keepOriginalAudio: true } : {}),
       ...(c.volume != null ? { volume: c.volume } : {}),
+      ...(c.pitch ? { pitch: c.pitch } : {}),
       ...(c.crop ? { crop: c.crop } : {}),
       ...(c.keyframes ? { keyframes: c.keyframes } : {}),
       ...(c.reverse ? { reverse: true } : {}),
@@ -1724,5 +2066,6 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
     ...(p.overlays?.length ? { overlays: p.overlays.map((o, i) => ({ index: i + 1, ...o })) } : {}),
     ...(p.audios?.length ? { audios: p.audios.map((a, i) => ({ index: i + 1, ...a })) } : {}),
     ...(p.stickers?.length ? { stickers: p.stickers.map((s, i) => ({ index: i + 1, ...s })) } : {}),
+    ...(p.effects?.length ? { effects: p.effects.map((e, i) => ({ index: i + 1, ...e })) } : {}),
   };
 }

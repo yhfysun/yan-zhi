@@ -29,12 +29,16 @@ export function normalizeKeyCombo(keys: string[]): string {
     .join('+');
 }
 
-/** 校验组合键是否允许（Win 键组合、黑名单组合一律拒绝），不通过直接抛错 */
+/** 校验组合键是否允许（Win 键组合、黑名单组合一律拒绝，Win+Space 除外），不通过直接抛错 */
 export function assertComboAllowed(keys: string[]): void {
-  const norm = normalizeKeyCombo(keys);
+  // 空格键在控制端是字面量 ' '，normalizeKeyCombo 会把纯空白 trim 掉 —— 先换成键名再归一
+  const norm = normalizeKeyCombo(keys.map((k) => (String(k) === ' ' ? 'space' : k)));
   if (!norm) throw new Error('keys 不能为空');
-  if (keys.some((k) => /^(win|super|meta|windows)$/.test(String(k).trim().toLowerCase()))) {
-    throw new Error('不允许使用 Win 键组合（黑名单）');
+  // Win 键默认整条黑名单（Win+R / Win+L / Win+E 都能把被控端带到不可控状态）。
+  // 唯一放行 Win+Space：Windows 切输入法的主快捷键，无害且远控里高频需要。
+  const hasWin = keys.some((k) => /^(win|super|meta|windows)$/.test(String(k).trim().toLowerCase()));
+  if (hasWin && norm !== 'space+win') {
+    throw new Error('不允许使用 Win 键组合（黑名单；仅放行 Win+Space 切换输入法）');
   }
   if (DENIED_KEY_COMBOS.has(norm)) throw new Error(`组合键 "${norm}" 在黑名单中，已拒绝`);
 }

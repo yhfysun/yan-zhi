@@ -137,6 +137,16 @@ def test_episode_badge_persistent_no_alpha():
     assert "x=w-text_w-" in f and "y=" in f, "角标定位右上角"
 
 
+def test_kinetic_branch_passes_episode_text():
+    """首帧契约（冻结）：kinetic 分支必须把集数大字传给渲染器。
+
+    2026-10-28 kinetic 变成默认画面引擎时只传了角标 badge_text、漏了中部大字，
+    抖音成片开头「第几集没有」（用户实报）→ 这条守卫防止再漏。
+    """
+    src = open(compose_video.__file__, encoding="utf-8").read()
+    assert "episode_text=badge" in src, "kinetic 渲染必须传中部「第N集」大字（与角标同源）"
+
+
 def test_extract_cover_names_cover_png(monkeypatch):
     """封面图 = 抽成片第0帧，命名 <成片名>_封面.png（发布时直接当首页图片上传）。"""
     calls = {}

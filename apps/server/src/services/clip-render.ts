@@ -16,8 +16,9 @@
 import path from 'node:path';
 import { runCmd } from './exec-cmd.js';
 import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-style.js';
-import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
-import { buildMaskFilter } from './clip-mask.js';
+import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, effectLayerOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
+import { buildMaskFilter, flattenMaskPath, polygonAlphaExpr } from './clip-mask.js';
+import { hslCube } from './clip-hsl.js';
 import type { ClipProject, ClipSegment, ClipText, ClipOverlay, ExportQuality } from './clip-project.js';
 
 export interface RenderProbeResult {
@@ -104,6 +105,8 @@ export interface BuildPlanInput {
   quality?: ExportQuality;
   /** 是否顺带导出封面（缺省：非预览档就导） */
   cover?: boolean;
+  /** 硬件编码器（P1-9）：null/缺省 = CPU；可用性由调用方探测后传入 */
+  hwEncoder?: HwEncoder | null;
 }
 
 /**
@@ -147,6 +150,25 @@ export interface QualityPreset {
   crf: number;
   preset: string;
   audioK: number;
+}
+
+/** 硬件编码器 id（P1-9）。null = CPU（libx264）。 */
+export type HwEncoder = 'nvenc' | 'qsv' | 'amf';
+
+/**
+ * 视频编码参数（P1-9 硬件编码）。
+ * ★ 硬件编码没有 crf，用各自的恒定质量参数近似：nvenc `-cq` / qsv `-global_quality` / amf `-qp`。
+ *   数值沿用质量档的 crf（三档 18/21/28）—— 三家刻度与 x264 不完全等价，但相对关系成立。
+ */
+export function videoEncodeArgs(q: { crf: number; preset: string }, fast: boolean, hw: HwEncoder | null): string[] {
+  const crf = fast ? 30 : q.crf;
+  if (hw === 'nvenc') return ['-c:v', 'h264_nvenc', '-preset', fast ? 'p1' : 'p5', '-cq', String(crf), '-pix_fmt', 'yuv420p'];
+  if (hw === 'qsv') return ['-c:v', 'h264_qsv', '-global_quality', String(crf), '-pix_fmt', 'yuv420p'];
+  if (hw === 'amf') {
+    return ['-c:v', 'h264_amf', '-quality', fast ? 'speed' : 'balanced', '-rc', 'cqp',
+      '-qp_i', String(crf), '-qp_p', String(crf), '-pix_fmt', 'yuv420p'];
+  }
+  return ['-c:v', 'libx264', '-preset', fast ? 'veryfast' : q.preset, '-crf', String(crf), '-pix_fmt', 'yuv420p'];
 }
 
 export const QUALITY_PRESETS: Record<ExportQuality, QualityPreset> = {
@@ -225,6 +247,10 @@ export function buildSegmentFilters(opts: {
   keyFilterOf?: (id: string) => string | null;
   /** 强制覆盖该段的恒定倍速（曲线变速的第一阶段要用 1 倍先出整段） */
   speedOverride?: number;
+  /** 路径蒙版烘好的 PNG（P1-4；无路径蒙版时为空） */
+  maskFile?: string;
+  /** HSL 分色生成好的 .cube（P1-6；无色带时为空） */
+  hslFile?: string;
 }): string[] {
   const { seg, segDur, isImage, W, H, fps } = opts;
   const speedEff = opts.speedOverride ?? seg.speed ?? 1;
@@ -293,7 +319,13 @@ export function buildSegmentFilters(opts: {
 
   // ★ 蒙版紧跟规格化：geq 的 X/Y/W/H 依赖已确定的画面尺寸；
   //   且必须早于 format=yuv420p（yuv 无 alpha 通道，否则蒙版被丢弃）
-  const mf = seg.mask ? buildMaskFilter(seg.mask, opts.keyFilterOf) : null;
+  const mf = seg.mask
+    ? buildMaskFilter(seg.mask, opts.keyFilterOf, {
+      segDur,
+      ...(opts.maskFile ? { pathFile: opts.maskFile } : {}),
+      W, H,
+    })
+    : null;
   if (mf) filters.push(mf);
 
   // ★★ 调色走效果库注册表（2026-10-21 修）：此处原有一份手写的 7 项 COLOR_PRESETS，
@@ -313,6 +345,22 @@ export function buildSegmentFilters(opts: {
         );
       }
       // st ≈ 0 → 什么都不加（等价原片）
+    }
+  }
+  // ★ HSL 分色（P1-6）：由色带参数生成 3D LUT（本机 ffmpeg 没有 HSL 分色滤镜）。
+  //   放在用户 LUT 之前：先按色相修正，再上整体风格。
+  if (opts.hslFile) filters.push(`lut3d=file='${escFilterPath(opts.hslFile)}'`);
+  // ★ 3D LUT（P1-5）：先建立整体风格，再叠手动调节（与剪映的"LUT→微调"顺序一致）。
+  //   强度 <1 时和 colorStrength 同一套做法：原片与 LUT 结果按比例混合
+  //   （lut3d 本身没有强度参数，逐参数插值对 3D LUT 不成立）。
+  if (seg.lut?.file) {
+    const lf = `lut3d=file='${escFilterPath(seg.lut.file)}'`;
+    const st = seg.lut.strength ?? 1;
+    if (st >= 0.999) filters.push(lf);
+    else if (st > 0.001) {
+      filters.push(
+        `format=yuv420p,split[luA][luB];[luB]${lf}[luF];[luA][luF]blend=all_mode=normal:all_opacity=${st.toFixed(3)}`,
+      );
     }
   }
   // 手动调节叠在预设**之上**：用户是想先在风格上调，再微调明暗
@@ -384,6 +432,10 @@ export function assembleSegmentChain(opts: {
   H: number;
   fps: number;
   keyFilterOf?: (id: string) => string | null;
+  /** 路径蒙版烘好的 PNG（P1-4） */
+  maskFile?: string;
+  /** HSL 分色生成好的 .cube（P1-6） */
+  hslFile?: string;
 }): SegmentVideoChain {
   const filters = buildSegmentFilters(opts);
   const opExpr = opacityKfExpr(opts.seg, opts.segDur);
@@ -447,6 +499,114 @@ export function overlayLayerChain(o: {
   return { filters, x, y };
 }
 
+// ===== 特效层（P1-3）=====
+//
+// ★ 两类沿完全不同的路径实现（见 shared 的 EFFECT_LAYERS.kind）：
+//   · source（闪光/漏光/星点）：程序化生成一段全屏素材 → rgba → 强度=alpha →
+//     淡入淡出 → `setpts=PTS+start/TB` 对齐成片时间轴 → 用 enable 窗口 overlay 上去。
+//   · filter（颗粒）：直接给主画面挂 `noise`，用 `enable='between(t,s,e)'` 限定窗口。
+//     noise 带 timeline 支持（`ffmpeg -filters` 里是 T 标志），所以不必另造源。
+//
+// ★ 图片/视频外的第三类输入：lavfi 源必须带 `d=`（时长），且不能 `-ss`。
+//   `setpts=PTS+st/TB` 的理由与画中画一致：lavfi 输入的 PTS 从 0 起，而 enable
+//   看的是成片时间 —— 不对齐会让特效整体前移 st 秒（且窗口前半段完全看不见）。
+//
+// ★ 强度在两类里的落点不同：
+//   · source 是 `colorchannelmixer=aa`（真·透明度，overlay 认 alpha）；
+//   · filter 是噪点幅度 `alls`（noise 的 alls 上限 100）。
+
+/** 特效层的 lavfi 源规格（source 类）；filter 类返回 null。 */
+export function effectSourceSpec(fx: string, o: { W: number; H: number; fps: number; dur: number }): string | null {
+  const size = `${o.W}x${o.H}`;
+  const d = o.dur.toFixed(3);
+  switch (fx) {
+    // 暖白：比纯白柔一点，闪起来不刺眼
+    case 'flash': return `color=c=0xFFF3DC:s=${size}:r=${o.fps}:d=${d}`;
+    // 漏光：从左上角往外衰减的暖橙径向渐变（不是整屏铺色——那是"滤镜"，不是"漏光"）。
+    // ★ 用 gradients（本机随包 ffmpeg 6.1.1 实测可用）：纯色源做不出空间衰减。
+    case 'light-leak': {
+      // 半径 0.9 画面：光晕要覆盖到画面中上部才看得出"漏光"（0.55 太小，暗调片子上只剩一个角）
+      const x1 = Math.round(o.W * 0.9);
+      const y1 = Math.round(o.H * 0.9);
+      return `gradients=s=${size}:r=${o.fps}:d=${d}:c0=0xFF7A1E:c1=black:x0=0:y0=0:x1=${x1}:y1=${y1}:t=radial`;
+    }
+    // 星点：白色底图 + geq 随机稀疏点当 alpha（见 effectLayerChain 的 split/alphamerge）
+    case 'sparkle': return `color=c=white:s=${size}:r=${o.fps}:d=${d}`;
+    default: return null;
+  }
+}
+
+/**
+ * 特效层滤镜片段（纯函数；渲染计划与单测共用同一份定义）。
+ * ★ 输入/输出标签由调用方给：source 类的输入是 lavfi 输入流，filter 类的输入是主画面。
+ */
+export function effectLayerChain(fx: string, o: {
+  inLabel: string;
+  outLabel: string;
+  W: number; H: number; fps: number;
+  /** 窗口起点/终点（成片秒） */
+  start: number; end: number;
+  intensity: number;
+  /** 用于生成唯一中间标签（同一张图里多条特效不能撞名） */
+  idx: number;
+}): { kind: 'source' | 'filter'; fc: string } | null {
+  const def = effectLayerOf(fx);
+  if (!def) return null;
+  const I = Math.max(0, Math.min(1, o.intensity));
+  const st = o.start.toFixed(3);
+  const et = o.end.toFixed(3);
+
+  if (def.kind === 'filter') {
+    // 强度 0.4 → alls 60（实测在暗调素材上也一眼看得出；再高就"脏"了）
+    const alls = Math.max(1, Math.min(100, Math.round(I * 150)));
+    return {
+      kind: 'filter',
+      fc: `[${o.inLabel}]noise=alls=${alls}:allf=t:enable='between(t,${st},${et})'[${o.outLabel}]`,
+    };
+  }
+
+  const dur = Math.max(0.04, o.end - o.start);
+  // 淡入淡出取窗口的 1/3、最多 0.25s：再长就变成"缓慢呼吸"，不像闪光/漏光
+  const fade = Math.min(0.25, dur / 3);
+  const outSt = Math.max(0, dur - fade);
+  const tail = `fade=t=in:st=0:d=${fade.toFixed(3)}:alpha=1,fade=t=out:st=${outSt.toFixed(3)}:d=${fade.toFixed(3)}:alpha=1,` +
+    `fps=${o.fps},setpts=PTS+${st}/TB`;
+
+  if (fx === 'sparkle') {
+    // 白 → **半分辨率** geq 随机点（约 1% 像素、逐帧变化=闪烁）→ 最近邻放大回原尺寸
+    // → 当 alpha → 合成"白点 + 透明底"。
+    // ★ 两个实测结论：① 不适合用 noise 阈值——分布太密，阈值再高也是一层灰噪点；
+    //   ② 点在原分辨率逐像素生成时只有 1px，1080p 上几乎看不见（用户实测反馈），
+    //      所以先在半分辨率生成再放大，得到 2px 的"星点"。
+    const w = `fw${o.idx}`, m = `fm${o.idx}`, mk = `fmk${o.idx}`;
+    return {
+      kind: 'source',
+      fc: `[${o.inLabel}]format=rgba,split=2[${w}][${m}];` +
+        `[${m}]format=gray,scale=ceil(iw/2):ceil(ih/2):flags=neighbor,` +
+        `geq=lum='if(gt(random(1),0.99),255,0)',scale=${o.W}:${o.H}:flags=neighbor[${mk}];` +
+        `[${w}][${mk}]alphamerge,colorchannelmixer=aa=${I.toFixed(3)},${tail}[${o.outLabel}]`,
+    };
+  }
+
+  // flash / light-leak：纯色或渐变源 → alpha 强度 → 淡入淡出 → 对齐时间轴
+  // ★ 漏光用"亮度当 alpha"（alphamerge）：渐变里的黑色区域完全透明，只往画面里**加光**。
+  //   直接整屏铺暖橙会把暗部一起压暗/染色 —— 实测在灰底上整帧变暗，那是滤镜不是漏光。
+  if (fx === 'light-leak') {
+    const c = `lw${o.idx}`, m = `lm${o.idx}`, mk = `lmk${o.idx}`;
+    const soft = Math.max(8, Math.round(Math.min(o.W, o.H) * 0.06));
+    return {
+      kind: 'source',
+      fc: `[${o.inLabel}]gblur=sigma=${soft},noise=alls=12:allf=t,format=rgba,split=2[${c}][${m}];` +
+        `[${m}]format=gray[${mk}];` +
+        `[${c}][${mk}]alphamerge,colorchannelmixer=aa=${I.toFixed(3)},${tail}[${o.outLabel}]`,
+    };
+  }
+  return {
+    kind: 'source',
+    fc: `[${o.inLabel}]format=rgba,colorchannelmixer=aa=${I.toFixed(3)},${tail}[${o.outLabel}]`,
+  };
+}
+
 export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: RenderPlan } | { ok: false; error: string } {
   const { project, workDir, outFile } = input;
   if (!project.clips.length) return { ok: false, error: '工程里没有任何片段（先用 add_clip 加素材或 clip_import 导入目录）' };
@@ -456,9 +616,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
   const fps = project.output.fps || 30;
   const imgSet = new Set((input.imageFiles || []).map((f) => f.toLowerCase()));
   const q = QUALITY_PRESETS[(input.quality ?? project.output.quality ?? 'std') as ExportQuality] ?? QUALITY_PRESETS.std;
-  const x264 = input.fast
-    ? ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-pix_fmt', 'yuv420p']
-    : ['-c:v', 'libx264', '-preset', q.preset, '-crf', String(q.crf), '-pix_fmt', 'yuv420p'];
+  const x264 = videoEncodeArgs(q, input.fast === true, input.hwEncoder ?? null);
   const ab = `${q.audioK}k`;
   // 统一规格：较短边放大到覆盖目标框后居中裁切（横竖屏都填满不变形）
   const normVf = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=${fps}`;
@@ -470,6 +628,32 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
 
   // 蒙版滤镜构造所需的色键查表（来自效果库，单一真相源）
   const keyFilterOf = (id: string) => MASK_KEYS.find((k) => k.id === id)?.filter || null;
+
+  // ②.0 路径蒙版烘焙（P1-4）：钢笔路径的逐像素多边形测试在 1080p 上太慢，
+  //   先按目标画幅烘一张黑白 PNG（一次），段滤镜再用 movie+alphamerge 当 alpha。
+  //   ★ 这一步必须排在所有段加工之前（段滤镜会引用这个文件）。
+  const maskFiles = new Map<string, string>();
+  for (const seg of project.clips) {
+    if (!seg.mask?.path || seg.mask.path.points.length < 3) continue;
+    const file = path.join(workDir, `mask-${safeStem(seg.id)}.png`);
+    const expr = polygonAlphaExpr(flattenMaskPath(seg.mask.path, W, H));
+    steps.push({
+      label: `生成蒙版 ${seg.id}（钢笔路径，${seg.mask.path.points.length} 个锚点）`,
+      args: ['-y', '-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:r=1:d=1`,
+        '-vf', `format=gray,geq=lum='${expr}'`, '-frames:v', '1', file],
+      out: file,
+    });
+    maskFiles.set(seg.id, file);
+  }
+
+  // HSL 分色（P1-6）：参数 → 3D LUT 文本（作为 assets 落盘，段滤镜用 lut3d 引用）。
+  const hslFiles = new Map<string, string>();
+  for (const seg of project.clips) {
+    if (!seg.hsl?.bands.length) continue;
+    const file = path.join(workDir, `hsl-${safeStem(seg.id)}.cube`);
+    assets.push({ file, content: hslCube(seg.hsl.bands) });
+    hslFiles.set(seg.id, file);
+  }
 
   for (let i = 0; i < project.clips.length; i++) {
     const seg = project.clips[i];
@@ -498,6 +682,8 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
     const chain = assembleSegmentChain({
       seg, segDur: chainDur, isImage, W, H, fps, keyFilterOf,
       ...(isRamp ? { speedOverride: 1 } : {}),
+      ...(maskFiles.has(seg.id) ? { maskFile: maskFiles.get(seg.id) } : {}),
+      ...(hslFiles.has(seg.id) ? { hslFile: hslFiles.get(seg.id) } : {}),
     });
 
     const args: string[] = ['-y'];
@@ -517,6 +703,10 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
 
     const hasAudioIn = Boolean(input.hasAudio[seg.id] ?? input.hasAudio[seg.file]);
     const audioFile = seg.audioFile;
+    // P1-7 升降调：半音 → 频率比 2^(n/12)，rubberband 变调不变速（时长/时间轴不受影响）。
+    const pitchFilter = seg.pitch && Math.abs(seg.pitch) > 0.001
+      ? `rubberband=pitch=${Math.pow(2, seg.pitch / 12).toFixed(6)}`
+      : null;
     // 倒放时音轨同步倒放（补的静音源不用处理：倒过来还是静音）
     const revAudio = Boolean(seg.reverse) && !isImage;
     // ★ 透明度关键帧存在时视频必须走 filter_complex（垫黑底），音频也要并进同一条 fc
@@ -526,7 +716,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
     if (audioFile) {
       args.push('-i', audioFile);
       const vol = seg.volume ?? 1;
-      const aChain = [...(revAudio ? ['areverse'] : []), `volume=${vol.toFixed(3)}`];
+      const aChain = [...(revAudio ? ['areverse'] : []), `volume=${vol.toFixed(3)}`, ...(pitchFilter ? [pitchFilter] : [])];
       // ★★ 用 filter_complex 时**不能**再前置裸 `-map 0:v:0` ——
       //   那样会同时映射「原始未加工视频流」与滤镜链产物 `[v]`，产出**两条视频流**，
       //   而 ffmpeg 把未加工的那条放在前面 → 成片分辨率/裁剪/调色全部静默失效
@@ -542,7 +732,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
         // 保留原声并与配音混音（倒放时两路都倒，保持同步）
         const rev = revAudio ? 'areverse,' : '';
         const fc = (useKfFc ? `${chain.fcHead};` : `[0:v]${chain.vf}[v];`) +
-          `[0:a]${rev}volume=${vol.toFixed(3)}[o];[1:a]${rev}volume=${vol.toFixed(3)}[d];[o][d]amix=inputs=2:duration=first:dropout_transition=2[a]`;
+          `[0:a]${rev}volume=${vol.toFixed(3)}[o];[1:a]${rev}volume=${vol.toFixed(3)}[d];[o][d]amix=inputs=2:duration=first:dropout_transition=2${pitchFilter ? `,${pitchFilter}` : ''}[a]`;
         args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
       } else {
         const fc = useKfFc
@@ -557,7 +747,8 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
       if (useKfFc) {
         // 透明度关键帧：视频+音频全走 filter_complex
         if (hasAudioIn) {
-          const volPart = `[0:a]${revAudio ? 'areverse,' : ''}${vol != null && Math.abs(vol - 1) > 0.001 ? `volume=${vol.toFixed(3)}` : 'anull'}[a]`;
+          const volExpr = vol != null && Math.abs(vol - 1) > 0.001 ? `volume=${vol.toFixed(3)}` : 'anull';
+          const volPart = `[0:a]${revAudio ? 'areverse,' : ''}${volExpr}${pitchFilter ? `,${pitchFilter}` : ''}[a]`;
           args.push('-filter_complex', `${chain.fcHead};${volPart}`, '-map', vLabel, '-map', '[a]');
           // ★★ 这里原本**漏了输出路径**：透明度关键帧 + 有原声时 args 到 "-map [a]" 就结束了，
           //   ffmpeg 会报 "At least one output file must be specified"。纯函数测试只看字符串，
@@ -573,6 +764,7 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
         const afParts: string[] = [];
         if (revAudio) afParts.push('areverse');
         if (vol != null && Math.abs(vol - 1) > 0.001) afParts.push(`volume=${vol.toFixed(3)}`);
+        if (pitchFilter) afParts.push(pitchFilter);
         const vArgs = afParts.length ? ['-af', afParts.join(',')] : [];
         args.push('-map', '0:v:0', '-map', '0:a:0', '-vf', chain.vf!, ...vArgs, ...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
       } else {
@@ -794,6 +986,66 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
     }
   }
 
+  // ②.7 特效层（P1-3）：闪光/漏光/星点/颗粒，各带自己的时间窗口，可叠多条
+  //
+  // ★ 放在画中画/贴纸之后、字幕之前：特效是"画面氛围"，字幕必须永远压在最上层。
+  // ★ 没有特效层的工程**一步不多**（老工程渲染计划与出片逐字节不变）。
+  // ★ 每条独立分流：source 类加一路 lavfi 输入再 overlay（alpha 强度），
+  //   filter 类直接挂在当前主画面上（enable 限窗）—— 两类共用同一份注册表与纯函数。
+  if (project.effects?.length) {
+    const fxed = path.join(workDir, 'fx-layers.mp4');
+    const list = project.effects
+      .filter((e) => e.end > e.start && e.start < totalDuration)
+      .sort((a, b) => a.start - b.start);
+    if (list.length) {
+      const args: string[] = ['-y', '-i', cursorFile];
+      const fc: string[] = [];
+      let prev = '0:v';
+      let srcCount = 0;
+      let applied = 0;
+      for (let k = 0; k < list.length; k++) {
+        const e = list[k];
+        const def = effectLayerOf(e.fx);
+        // 注册表外的 id：什么都不加（归一化已拦；这里双保险，绝不回退到别的特效）
+        if (!def) continue;
+        const st = Math.max(0, e.start);
+        const et = Math.min(totalDuration, e.end);
+        const intensity = e.intensity ?? def.defaultIntensity;
+        const outLink = `fx${k}`;
+
+        if (def.kind === 'source') {
+          const spec = effectSourceSpec(e.fx, { W, H, fps, dur: Math.max(0.04, et - st) });
+          if (!spec) continue;
+          args.push('-f', 'lavfi', '-i', spec);
+          srcCount += 1;   // 输入 0 是当前成片，lavfi 从 1 开始
+          const ch = effectLayerChain(e.fx, {
+            inLabel: `${srcCount}:v`, outLabel: outLink, W, H, fps, start: st, end: et, intensity, idx: k,
+          });
+          if (!ch) continue;
+          fc.push(ch.fc);
+          fc.push(
+            `[${prev}][${outLink}]overlay=x=0:y=0:enable='between(t,${st.toFixed(3)},${et.toFixed(3)})':eof_action=repeat,format=yuv420p[vfx${k}]`,
+          );
+          prev = `vfx${k}`;
+        } else {
+          const ch = effectLayerChain(e.fx, {
+            inLabel: prev, outLabel: `vfx${k}`, W, H, fps, start: st, end: et, intensity, idx: k,
+          });
+          if (!ch) continue;
+          fc.push(ch.fc);
+          prev = `vfx${k}`;
+        }
+        applied += 1;
+      }
+      if (applied) {
+        args.push('-filter_complex', fc.join(';'), '-map', `[${prev}]`, '-map', '0:a?',
+          ...x264, '-c:a', 'copy', '-movflags', '+faststart', fxed);
+        steps.push({ label: `特效层合成（${applied} 层）`, args, out: fxed });
+        cursorFile = fxed;
+      }
+    }
+  }
+
   // ③ 字幕（动画与非动画共用同一份 SRT；有动画时另生成 ASS 并用 subtitles 滤镜挂载）
   if (project.texts.length) {
     const subbed = path.join(workDir, 'subbed.mp4');
@@ -962,11 +1214,20 @@ function atempoChain(factor: number): string {
 }
 
 /** #RRGGBB → libass &HAABBGGRR&（字节序反转）。 */
+/**
+ * #RRGGBB / #RRGGBBAA → ASS 颜色 `&HAABBGGRR&`。
+ * ★ 8 位时必须换算 alpha：前端/工具里的 AA 是**不透明度**（FF=不透明），
+ *   ASS 的 alpha 是**透明度**（00=不透明），直接沿用会让半透明底板变成全透明/全不透明。
+ *   此前只认 6 位，8 位直接回落兜底色 —— 模板里的半透明底板其实一直没生效。
+ */
 export function hexToAss(v: string | undefined, fallback: string): string {
   const s = String(v || '').trim().replace(/^#/, '');
-  if (!/^[0-9a-fA-F]{6}$/.test(s)) return fallback;
-  const r = s.slice(0, 2), g = s.slice(2, 4), b = s.slice(4, 6);
-  return `&H00${b}${g}${r}&`.toUpperCase();
+  const rgb = s.slice(0, 6);
+  if (!/^[0-9a-fA-F]{6}$/.test(rgb)) return fallback;
+  if (s.length !== 6 && !(s.length === 8 && /^[0-9a-fA-F]{2}$/.test(s.slice(6)))) return fallback;
+  const r = rgb.slice(0, 2), g = rgb.slice(2, 4), b = rgb.slice(4, 6);
+  const a = s.length === 8 ? (255 - parseInt(s.slice(6, 8), 16)).toString(16).padStart(2, '0') : '00';
+  return `&H${a}${b}${g}${r}&`.toUpperCase();
 }
 
 /** 字幕条目 → SRT（供无动画路线与外部播放器；有动画时另生成 ASS）。 */
@@ -997,6 +1258,18 @@ export function textHasTransform(t: ClipText): boolean {
   );
 }
 
+/** P1-2：这条字幕是否用了 ASS 专属排版（字体/字距/行距/加粗斜体/花字底板）。 */
+export function textHasTypography(t: ClipText): boolean {
+  return !!(
+    t.fontFamily ||
+    t.letterSpacingPx ||
+    t.lineSpacingPx ||
+    t.bold ||
+    t.italic ||
+    t.plateColor
+  );
+}
+
 /**
  * 生成字幕资产：返回 SRT 与（有动画/变换时的）ASS 文本。
  *
@@ -1016,7 +1289,9 @@ export function buildSubtitleAssets(
   const anims = new Set(SUBTITLE_ANIMATION_PRESETS.map((p) => p.id));
   const withAnim = project.texts.filter((t) => t.animation && anims.has(t.animation));
   const hasTransform = project.texts.some(textHasTransform);
-  if (!withAnim.length && !hasTransform) return { srt };
+  // P1-2：字体/字距/行距/加粗斜体/花字底板都只能走 ASS（SRT 没有这些样式位）
+  const hasTypo = project.texts.some(textHasTypography);
+  if (!withAnim.length && !hasTransform && !hasTypo) return { srt };
   const base = withAnim[0] || project.texts[0];
   if (!base) return { srt };
   const fsPx = Math.max(6, Math.round((base.fontSizePx ?? 88) * resY / 1920));
@@ -1026,6 +1301,14 @@ export function buildSubtitleAssets(
 
   // SRT 解析出的条目与工程 texts 一一对应（buildSrtFromTexts 按时序排序，这里同序取动画）
   const ordered = project.texts.slice().sort((a, b) => a.start - b.start);
+  const typoCueOf = (t: ClipText) => ({
+    ...(t.fontFamily ? { fontFamily: t.fontFamily } : {}),
+    ...(t.letterSpacingPx ? { letterSpacingPx: t.letterSpacingPx } : {}),
+    ...(t.lineSpacingPx ? { lineSpacingPx: t.lineSpacingPx } : {}),
+    ...(t.bold ? { bold: true } : {}),
+    ...(t.italic ? { italic: true } : {}),
+    ...(t.plateColor ? { plateColor: hexToAss(t.plateColor, '&H7F000000'), platePaddingPx: t.platePaddingPx ?? 18 } : {}),
+  });
   const cues = parseSrt(srt).map((c, i) => {
     const t = ordered[i];
     if (!t) return { ...c, preset: 'none' };
@@ -1034,13 +1317,14 @@ export function buildSubtitleAssets(
     if (textHasTransform(t)) {
       return {
         ...c,
+        ...typoCueOf(t),
         ...(t.transform ? { transform: t.transform } : {}),
         ...(t.keyframes?.length ? { keyframes: t.keyframes } : {}),
       };
     }
     return t.animation && anims.has(t.animation)
-      ? { ...c, preset: t.animation, ...(t.slideDirection ? { slideDirection: t.slideDirection } : {}), ...(t.position ? { alignment: positionToAlign(t.position) } : {}) }
-      : { ...c, preset: 'none' };
+      ? { ...c, ...typoCueOf(t), preset: t.animation, ...(t.slideDirection ? { slideDirection: t.slideDirection } : {}), ...(t.position ? { alignment: positionToAlign(t.position) } : {}) }
+      : { ...c, ...typoCueOf(t), preset: 'none' };
   });
 
   const r = buildAss(cues, {

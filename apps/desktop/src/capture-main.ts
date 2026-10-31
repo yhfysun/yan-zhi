@@ -18,6 +18,8 @@ import {
 type RcCaptureBridge = {
   rcCaptureReady?: (info: Record<string, unknown>) => Promise<unknown>;
   rcNeedConfirm?: (req: RcConfirmRequest) => Promise<RcConfirmResult>;
+  /** 控制端撤回请求：宿主关掉还开着的确认弹窗 */
+  rcCancelConfirm?: (confirmId: string) => Promise<unknown>;
 };
 
 const bridge = (): RcCaptureBridge | null =>
@@ -44,6 +46,9 @@ const App = {
         setState(text);
         if (level === 'warning') console.warn('[rc-capture]', text);
         else console.log('[rc-capture]', text);
+      },
+      cancelConfirm: (confirmId) => {
+        void bridge()?.rcCancelConfirm?.(confirmId);
       },
     });
     // 暴露给 CDP 排查用（窗口隐藏，只能通过调试端口看状态）

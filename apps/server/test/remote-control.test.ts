@@ -144,6 +144,11 @@ describe('evaluatePair', () => {
   it('缺少 deviceId → 拒绝', () => {
     expect(evaluatePair({ ...pairBase, code: 'abcd-1234', deviceId: '' }).ok).toBe(false);
   });
+
+  it('开放模式 openMode=true：无码无确认直接 granted；独占/deviceId/内网限制仍在（安全底线不放开）', () => {
+    const r = evaluatePair({ ...pairBase, code: '', deviceId: 'dev-open-1', openMode: true });
+    expect(r).toMatchObject({ ok: true, status: 'granted', trusted: true });
+  });
 });
 
 describe('isPrivateRemoteAddr', () => {
@@ -210,6 +215,15 @@ describe('validateInputMsg', () => {
 
   it('Win 键组合拒绝', () => {
     expect(validateInputMsg({ action: 'key', keys: ['win', 'r'] }).ok).toBe(false);
+    expect(validateInputMsg({ action: 'key', keys: ['win', 'l'] }).ok).toBe(false);
+  });
+
+  it('输入法切换放行：Win+Space / Ctrl+Space / Ctrl+Shift / Shift 单按', () => {
+    // Win 只放行 Win+Space（切输入法），其余 Win 组合仍黑名单
+    expect(validateInputMsg({ action: 'key', keys: ['win', ' '] })).toMatchObject({ ok: true });
+    expect(validateInputMsg({ action: 'key', keys: ['ctrl', ' '] })).toMatchObject({ ok: true });
+    expect(validateInputMsg({ action: 'key', keys: ['ctrl', 'shift'] })).toMatchObject({ ok: true });
+    expect(validateInputMsg({ action: 'key', keys: ['shift'] })).toMatchObject({ ok: true });
   });
 
   it('普通组合键放行', () => {

@@ -98,9 +98,10 @@ describe('run_pipeline.py：参数透传', () => {
     expect(RUNPY).toMatch(/\["--images", a\.images\]/);
   });
 
-  it('把 --rate 传给 tts_gen，默认 +10%（YZ_TTS_RATE 可覆盖）', () => {
+  it('把 --rate 传给 tts_gen，默认 +15%（YZ_TTS_RATE 可覆盖）', () => {
     expect(RUNPY).toMatch(/\["--rate", a\.rate\]/);
     expect(RUNPY).toMatch(/YZ_TTS_RATE/);
-    expect(RUNPY).toMatch(/"\+10%"/);
+    // 2026-10-27 默认语速从 +10% 调到 +15%（短视频口播偏快更好完播）——断言随口径更新
+    expect(RUNPY).toMatch(/"\+15%"/);
   });
 });

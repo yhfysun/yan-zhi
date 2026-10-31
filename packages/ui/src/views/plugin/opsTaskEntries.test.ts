@@ -125,8 +125,10 @@ describe('运维会话必须建在 ops 模式（否则任务列表查不到）',
   });
 
   it('后端默认值确认：不传 mode 会落 office（本测试的前提，变了要重新评估）', () => {
+    // 2026-10-31 同步：合法判定收敛到 isValidMode()（内置白名单 ∪ 运行时插件模式），
+    //   默认回落仍是 'office'。
     expect(ROUTE, '★ 后端默认 mode 逻辑变了，需复核本测试前提')
-      .toMatch(/VALID_MODES\.has\(String\(mode\)\)\s*\?\s*String\(mode\)\s*:\s*'office'/);
+      .toMatch(/isValidMode\(String\(mode\)\)\s*\?\s*String\(mode\)\s*:\s*'office'/);
     expect(ROUTE, "★ 合法 mode 里必须包含 'ops'").toMatch(/VALID_MODES = new Set\(\[[^\]]*'ops'/);
   });
 

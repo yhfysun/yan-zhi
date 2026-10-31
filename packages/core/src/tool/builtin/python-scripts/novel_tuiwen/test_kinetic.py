@@ -20,6 +20,11 @@ sys.path.insert(0, HERE)
 import kinetic  # noqa: E402
 
 HAS_FONT = os.path.exists(kinetic.FONT_REG)
+try:
+    from PIL import ImageChops  # noqa: E402
+    HAS_PIL = True
+except Exception:  # pragma: no cover - 缺 Pillow 时跳过像素级守门
+    HAS_PIL = False
 
 
 # ---------- 1) 字幕切块 ----------
@@ -166,3 +171,51 @@ def test_reveal_bounds_and_monotonic():
     assert kinetic.reveal(10.0, 0.5) == pytest.approx(1.0)
     vals = [kinetic.reveal(0.5 + i * 0.05, 0.5) for i in range(12)]
     assert all(a <= b + 1e-9 for a, b in zip(vals, vals[1:]))
+
+
+# ---------- 7) 首帧契约（画面结构 v4，冻结）----------
+# 平台取成片第 0 帧当封面 → 首帧必须含「第N集」大字与第一镜主要内容。
+# 2026-10-28 kinetic 变成默认画面引擎时漏了这两条，抖音成片开头「第几集没有、主要内容没有」（用户实报）。
+
+def _opening_timeline():
+    cues = [(0.0, 6.0, "开完一个小时的会，纪要全靠猜。"), (6.0, 10.0, "第二段。")]
+    scenes = [
+        {"type": "hook", "seg": 0, "kicker": "AI 干活 · 第05期",
+         "title": "开完一小时会", "highlight": "纪要全靠猜"},
+        {"type": "statement", "seg": 1, "title": "不用回放录音"},
+    ]
+    return kinetic.build_timeline(scenes, cues, 10.0)
+
+
+def _renderer(tl, episode_text):
+    return kinetic.KineticRenderer(360, 640, tl, top_text="AI 干活",
+                                   badge_text="第5集", episode_text=episode_text)
+
+
+def _differs(a, b):
+    return ImageChops.difference(a, b).getbbox() is not None
+
+
+@pytest.mark.skipif(not (HAS_FONT and HAS_PIL), reason="缺少字体或 Pillow")
+def test_first_frame_contains_episode_number():
+    tl = _opening_timeline()
+    assert _differs(_renderer(tl, "第5集").frame(0.0), _renderer(tl, "").frame(0.0)), \
+        "首帧必须带「第N集」大字（平台拿第0帧当封面）"
+
+
+@pytest.mark.skipif(not (HAS_FONT and HAS_PIL), reason="缺少字体或 Pillow")
+def test_first_frame_shows_hook_content_without_fadein():
+    """第一镜不做入场动画：reveal 从 0.05s 起会让 t=0 首帧空白。"""
+    tl = _opening_timeline()
+    blank_scene = {**tl[0][0], "title": "", "highlight": "", "kicker": ""}
+    tl_blank = [(blank_scene,) + tl[0][1:]] + tl[1:]
+    assert _differs(_renderer(tl, "第5集").frame(0.0), _renderer(tl_blank, "第5集").frame(0.0)), \
+        "首帧必须画出第一镜的 title/highlight（主要内容）"
+
+
+@pytest.mark.skipif(not (HAS_FONT and HAS_PIL), reason="缺少字体或 Pillow")
+def test_episode_overlay_disappears_after_fade():
+    tl = _opening_timeline()
+    t = kinetic.EP_SHOW + kinetic.EP_FADE + 0.5
+    assert not _differs(_renderer(tl, "第5集").frame(t), _renderer(tl, "").frame(t)), \
+        "「第N集」大字只保留前 3.5 秒，之后不得残留"

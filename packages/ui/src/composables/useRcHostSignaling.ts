@@ -37,8 +37,8 @@ export interface RcElectronAPI {
   rcCapturedDisplay?: () => Promise<{ ok: boolean; displayId?: string; sourceId?: string }>;
   /** 会话开始系统通知（明示原则：远控不静默） */
   rcNotify?: (title: string, body: string) => Promise<unknown>;
-  /** 托盘「远控中」状态上报（提示 + 一键断开菜单项随之更新） */
-  rcSessionState?: (active: boolean, device: string) => Promise<unknown>;
+  /** 被控端卡片/托盘「远控中」状态上报（提示、一键断开菜单项、悬浮卡片随之更新） */
+  rcSessionState?: (active: boolean, device: string, info?: { since?: number; via?: string }) => Promise<unknown>;
   /** 托盘一键断开 → 在 host WS 上发 session.stop {all:true} */
   onRcDisconnectAll?: (cb: () => void) => void;
   /** 确认弹窗需要被看见：主窗口抬到前台并短暂置顶 */
@@ -78,6 +78,8 @@ export interface RcHostSignalingOptions {
   enabled?: boolean;
   /** 弹确认框。缺省视为拒绝（宁可不连，也不静默放行） */
   requestConfirm?: (req: RcConfirmRequest) => Promise<RcConfirmResult>;
+  /** 请求已被控制端撤回（取消/超时）：宿主据此关掉还开着的确认弹窗 */
+  cancelConfirm?: (confirmId: string) => void;
   /** 用户提示；隐藏窗口默认落控制台 */
   notify?: (level: 'info' | 'warning' | 'success', text: string) => void;
 }
@@ -100,6 +102,10 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
   let pingTimer: number | null = null;
   /** 进行中的 WebRTC 连接：sessionId → RTCPeerConnection */
   const pcs = new Map<string, RTCPeerConnection>();
+  /** 通道不在时暂存的确认结果：confirmId → decision 消息（连上后补发，绝不静默丢） */
+  const pendingDecisions = new Map<string, Record<string, unknown>>();
+  /** 通道断开时点的「一键断开」：连上后补发，别让用户点了没反应 */
+  let pendingStopAll = false;
   /** 出帧诊断：sessionId → 周期统计定时器（黑屏排查的唯一可靠证据） */
   const statsTimers = new Map<string, number>();
   const STATS_INTERVAL_MS = 5000;
@@ -159,9 +165,11 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
       const d = (res.data || {}) as Record<string, unknown>;
       pluginEnabled.value = true;
       syncSessionUi(d.session as Record<string, unknown> | null | undefined);
-      const needsWs = !!d.pendingCount || !!d.session;
-      if (needsWs && !connected.value) openHostWs();
-      else if (!needsWs && connected.value && !pcs.size) teardownWs();
+      // 采集层通道常驻：服务端按 hostConn.canCapture 决定会话模式，而 canCapture 只在
+      // rtc.ready 之后才为真。等到「有会话/有待确认」才连的话，开放模式与白名单直连
+      // （无确认弹窗、瞬时授予）永远落在 host 未就绪的那一刻 → 会话被定成 JPEG，
+      // 只能靠事后升级。常驻一个隐藏窗口的 WS 成本可忽略（2026-10-31 两台 PC 实测）。
+      if (!connected.value) openHostWs();
     } catch {
       pluginEnabled.value = false;
     }
@@ -170,19 +178,22 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
   /** 上次通知过的会话设备（只在空 → 有 的跳变时弹系统通知，避免每轮轮询轰炸） */
   let notifiedDevice = '';
   /**
-   * 会话明示（护栏 10「明示原则」）+ 托盘「远控中」状态（护栏 13）。
-   * 以 /status 轮询为唯一真相源：渲染层重载、会话结束、插件停用都会在下一轮自愈，
-   * 不依赖 session.started/ended 消息（白名单直连不经过确认弹窗也覆盖）。
+   * 会话明示（护栏 10「明示原则」）+ 被控端卡片/托盘状态（护栏 13）。
+   * 真相源有两条：/status 轮询做兜底（渲染层重载、插件停用自动自愈），
+   * 以及 host WS 上的 session.started/ended（授权瞬间就推送，不用等下一轮 6s 轮询）。
    */
   function syncSessionUi(sess: Record<string, unknown> | null | undefined): void {
     const api = electron();
     if (!api) return;
     const device = String((sess as { device?: string })?.device || '');
+    const since = Number((sess as { since?: number })?.since) || 0;
+    const via = String((sess as { via?: string })?.via || '');
     try {
-      void api.rcSessionState?.(!!device, device);
+      void api.rcSessionState?.(!!device, device, { since, via });
       if (device && device !== notifiedDevice) {
         notifiedDevice = device;
-        void api.rcNotify?.('远程控制', `${device} 正在远程观看并操作本机（托盘可一键断开）`);
+        const how = via === 'open' ? '（免确认直连）' : via === 'trusted' ? '（信任设备）' : '';
+        void api.rcNotify?.('远程控制', `${device} 正在远程观看并操作本机${how}（屏幕上的卡片可随时断开）`);
       } else if (!device) {
         notifiedDevice = '';
       }
@@ -203,6 +214,14 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
       try {
         sock.send(JSON.stringify({ type: 'rtc.ready' }));
       } catch { /* ignore */ }
+      // 上次通道不在时暂存的确认结果，连上立刻补发
+      flushDecisions();
+      if (pendingStopAll) {
+        try {
+          sock.send(JSON.stringify({ type: 'session.stop', all: true }));
+          pendingStopAll = false;
+        } catch { /* 再等下一轮重连 */ }
+      }
       pingTimer = window.setInterval(() => {
         try {
           sock.send(JSON.stringify({ type: 'ping', t: Date.now() }));
@@ -262,6 +281,29 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
         // 确认要走宿主 UI（采集窗口不可见），不能阻塞在这里等 —— 交给异步流程
         void handlePending(msg);
         break;
+      case 'session.started':
+        // 授权瞬间（含开放模式/白名单直连，这两条不经过确认弹窗）→ 卡片立刻出现
+        syncSessionUi({
+          device: String(msg.device || '未命名设备'),
+          since: Number(msg.since) || Date.now(),
+          via: String(msg.via || ''),
+        });
+        notify('info', `${String(msg.device || '一台设备')} 已连入并开始远控`);
+        break;
+      case 'session.ended':
+        // 会话结束（控制端断开 / 本机断开 / 空闲超时）→ 卡片立即收起
+        syncSessionUi(null);
+        break;
+      case 'session.cancelled': {
+        // 控制端已取消/超时离开：把还开着的确认弹窗收掉，别让用户对死请求点「允许」
+        const cid = String(msg.confirmId || '');
+        if (cid) {
+          pendingDecisions.delete(cid);
+          try { options.cancelConfirm?.(cid); } catch { /* ignore */ }
+          notify('info', `配对请求已撤回${msg.reason ? `（${String(msg.reason)}）` : ''}`);
+        }
+        break;
+      }
       case 'rtc.start':
         // 会话 granted 且走 WebRTC：等控制端的 rtc.offer。跨公网 ICE 配置随本消息下发
         rtcIceServers.value = Array.isArray(msg.iceServers)
@@ -358,17 +400,41 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
     // 静默拒绝是排查黑洞：把结果和原因落一行，控制端/被控端两边都能对上
     notify('info', `配对确认：${res.allow ? '允许' : `拒绝${res.reason ? `（${res.reason}）` : ''}`} · ${device}`);
     if (res.allow) await applyCaptureDisplay(); // 弹窗选的采集源先对主进程生效，随后 handler 按此挑源
-    if (!ws || ws.readyState !== 1) return;
-    try {
-      ws.send(JSON.stringify({
-        type: 'decision',
-        confirmId,
-        action: res.allow ? 'allow' : 'deny',
-        trust: res.allow && (res.trust ?? false),
-        readOnly: res.allow && (res.readOnly ?? false),
-        ...(res.allow && captureDisplayId.value ? { displayId: captureDisplayId.value } : {}),
-      }));
-    } catch { /* ignore */ }
+    sendDecision({
+      type: 'decision',
+      confirmId,
+      action: res.allow ? 'allow' : 'deny',
+      trust: res.allow && (res.trust ?? false),
+      readOnly: res.allow && (res.readOnly ?? false),
+      ...(res.allow && captureDisplayId.value ? { displayId: captureDisplayId.value } : {}),
+    }, device);
+  }
+
+  /**
+   * 发确认结果。通道此刻不在就暂存、连上后补发 —— 原来直接 return 是静默丢弃：
+   * 用户明明点了「允许」，控制端却一直停在「等待确认」，最后报超时未确认。
+   */
+  function sendDecision(msg: Record<string, unknown>, device: string): void {
+    if (ws && ws.readyState === 1) {
+      try {
+        ws.send(JSON.stringify(msg));
+        return;
+      } catch { /* 落到下面暂存 */ }
+    }
+    pendingDecisions.set(String(msg.confirmId || ''), msg);
+    notify('warning', `通道中断，确认结果已暂存，重连后自动重发：${device}`);
+  }
+
+  function flushDecisions(): void {
+    if (!ws || ws.readyState !== 1 || !pendingDecisions.size) return;
+    for (const [cid, msg] of pendingDecisions) {
+      try {
+        ws.send(JSON.stringify(msg));
+        pendingDecisions.delete(cid);
+      } catch {
+        break; // 通道又断了：留着，下次连上再发
+      }
+    }
   }
 
   /** 显示器枚举（仅 Electron 宿主）：填充弹窗下拉框并把默认选择钉在主屏 */
@@ -740,8 +806,12 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
       if (ws && ws.readyState === 1) {
         try {
           ws.send(JSON.stringify({ type: 'session.stop', all: true }));
-        } catch { /* ignore */ }
+          pendingStopAll = false;
+          return;
+        } catch { /* 落到暂存重发 */ }
       }
+      // 通道断了也要记住这次点击：连回来后补发，否则用户点了「断开」却什么都没发生
+      pendingStopAll = true;
     });
     void poll();
     pollTimer = window.setInterval(() => void poll(), 6000);

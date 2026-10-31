@@ -105,6 +105,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   api_video_generate: 'media-video',
   api_video_status: 'media-video',
   clip_project: 'media-video',
+  clip_jianying: 'media-video',
   media_edit: 'media-video',
   media_compose: 'media-video',
   api_srt_generate: 'media-video',

@@ -877,9 +877,18 @@ function getDb() {
   db.pragma('foreign_keys = ON');
   // 加载 sqlite-vec 扩展（向量记忆检索 memory_vec 表依赖此扩展）
   // sqlite-vec 是 SQLite 原生扩展（非 Node addon），无需 electron-rebuild
+  // ★ 打包版必须把 asar 虚拟路径重写到 app.asar.unpacked：loadExtension 是 C 层调用
+  //   （sqlite3 内部走 CreateFileW 打开 DLL），Electron 的 asar 重映射只覆盖 JS 层 fs API，
+  //   管不到 C 层 —— getLoadablePath() 返回的 app.asar\... 路径磁盘上不存在，
+  //   直接报「找不到指定的模块」→ no such module: vec0（2026-10-30 .63 真机实锤）。
   try {
     const sqliteVec = require('sqlite-vec');
-    const vecPath = sqliteVec.getLoadablePath();
+    let vecPath = sqliteVec.getLoadablePath();
+    const asarIdx = vecPath.toLowerCase().indexOf('.asar' + path.sep);
+    if (asarIdx !== -1) {
+      vecPath = vecPath.slice(0, asarIdx + '.asar'.length) + '.unpacked' + vecPath.slice(asarIdx + '.asar'.length);
+      if (!fs.existsSync(vecPath)) throw new Error('unpacked 侧无 DLL: ' + vecPath);
+    }
     db.loadExtension(vecPath);
     console.log('[db] sqlite-vec 扩展已加载:', vecPath);
   } catch (err) {
@@ -13502,6 +13511,9 @@ app.whenReady().then(async () => {
     try { require('./main-log.cjs').attachRendererConsole(win.webContents, 'rc-capture'); } catch { /* 不影响启动 */ }
     win.on('closed', () => {
       if (rcCaptureWindow === win) rcCaptureWindow = null;
+      // 采集窗口没了 = host WS 也断了 = 服务端已结束全部会话：卡片不能还挂着「远控中」
+      // （采集窗口一死就没人再轮询 /status，不在这里收掉就永远收不掉了）
+      try { applyRcSessionState(false, '', {}); } catch { /* 退出流程中忽略 */ }
     });
     win.webContents.on('render-process-gone', (_e, details) => {
       if (rcCaptureWindow !== win) return;
@@ -13597,6 +13609,9 @@ app.whenReady().then(async () => {
   // 主窗口答完再 resolve；超时按拒绝处理，避免会话永远挂着。
   let rcConfirmSeq = 0;
   const rcPendingConfirms = new Map();
+  // 确认窗口 90s：控制端等 95s，必须让「用户在弹窗上点允许」总是先于控制端放弃，
+  // 否则点了允许控制端已经走了 —— 实报「我授权了对方还是没反应，过一会说超时没确认」。
+  const RC_CONFIRM_TTL_MS = 90_000;
   ipcMain.handle('rc:need-confirm', (_e, req) => {
     const id = ++rcConfirmSeq;
     return new Promise((resolve) => {
@@ -13604,11 +13619,12 @@ app.whenReady().then(async () => {
         resolve({ allow: false, reason: 'no-ui' });
         return;
       }
+      const confirmId = String((req && req.confirmId) || '');
       const timer = setTimeout(() => {
         rcPendingConfirms.delete(id);
         resolve({ allow: false, reason: 'timeout' });
-      }, 120_000);
-      rcPendingConfirms.set(id, { resolve, timer });
+      }, RC_CONFIRM_TTL_MS);
+      rcPendingConfirms.set(id, { resolve, timer, confirmId });
       // 明示原则：必须让用户看见请求（主窗口可能被最小化或被其它应用盖住）
       try {
         if (mainWindow.isMinimized()) mainWindow.restore();
@@ -13623,6 +13639,24 @@ app.whenReady().then(async () => {
       } catch { /* ignore */ }
       mainWindow.webContents.send('rc:need-confirm', { id, req: req || {} });
     });
+  });
+  // 控制端撤回请求（取消/超时离开）：按 confirmId 收掉主窗口还开着的弹窗，
+  // 否则用户会对一个已经不存在的请求点「允许」，点了也没人收。
+  ipcMain.handle('rc:cancel-confirm', (_e, confirmId) => {
+    const cid = String(confirmId || '');
+    let hit = false;
+    for (const [key, p] of rcPendingConfirms) {
+      if (!cid || p.confirmId === cid) {
+        clearTimeout(p.timer);
+        rcPendingConfirms.delete(key);
+        p.resolve({ allow: false, reason: 'cancelled' });
+        hit = true;
+      }
+    }
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('rc:confirm-cancel', { confirmId: cid });
+    } catch { /* ignore */ }
+    return { ok: hit };
   });
   ipcMain.handle('rc:confirm-result', (_e, id, result) => {
     const key = Number(id);
@@ -13716,6 +13750,25 @@ app.whenReady().then(async () => {
     });
   });
   const rcFirewallRuleExists = async () => (await rcRunNetsh(['advfirewall', 'firewall', 'show', 'rule', `name=${rcFirewallRuleName}`, 'dir=in'])).ok;
+  // 程序级规则：Windows「安全警报」弹窗被点过「取消」时，系统会给本 exe 自动建程序级
+  // Block。★ 它无条件压过一切端口级 Allow（防火墙求值先 Block 后 Allow）—— 只查端口
+  // 规则会假绿灯：规则建成、状态绿灯，入站照样全丢（2026-10-30 两台真机复现）。
+  const RC_PROGRAM_ALLOW_RULE = 'YanZhi LAN Access';
+  const rcListProgramRules = () => new Promise((resolve) => {
+    const exe = String(process.execPath || '').replace(/'/g, "''");
+    const ps = `Get-NetFirewallApplicationFilter | Where-Object { $_.Program -ieq '${exe}' } | ForEach-Object { $_ | Get-NetFirewallRule } | Select-Object DisplayName,Direction,Action,Enabled | ConvertTo-Json -Compress`;
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 20000 }, (err, stdout) => {
+      if (err) { resolve([]); return; }
+      try {
+        const raw = JSON.parse(String(stdout || 'null'));
+        resolve(Array.isArray(raw) ? raw : (raw ? [raw] : []));
+      } catch { resolve([]); }
+    });
+  });
+  const rcCountInboundBlocks = (rules) => (Array.isArray(rules)
+    ? rules.filter((r) => r && r.Direction === 'Inbound' && r.Action === 'Block' && String(r.Enabled) === 'True').length
+    : 0);
+  const rcProgramBlocked = (rules) => rcCountInboundBlocks(rules) > 0;
   ipcMain.handle('rc:port-status', async () => {
     let listening = false;
     try {
@@ -13723,40 +13776,69 @@ app.whenReady().then(async () => {
       listening = res.ok;
     } catch { /* 后端还没起 */ }
     let ruleExists = false;
-    try { ruleExists = await rcFirewallRuleExists(); } catch { /* netsh 不可用 */ }
-    return { ok: true, port: API_PORT, listening, ruleExists, ruleName: rcFirewallRuleName };
+    let programBlocked = false;
+    try {
+      ruleExists = await rcFirewallRuleExists();
+      programBlocked = rcProgramBlocked(await rcListProgramRules());
+    } catch { /* netsh 不可用 */ }
+    return { ok: true, port: API_PORT, listening, ruleExists, programBlocked, ruleName: rcFirewallRuleName };
   });
   ipcMain.handle('rc:port-open', async () => {
     if (process.platform !== 'win32') return { ok: false, error: '仅 Windows 需要单独放行入站端口' };
-    const ruleArgs = [
-      'advfirewall', 'firewall', 'add', 'rule', `name=${rcFirewallRuleName}`,
-      'dir=in', 'action=allow', 'protocol=TCP', `localport=${API_PORT}`, 'profile=private,domain',
-    ];
-    if (await rcFirewallRuleExists().catch(() => false)) return { ok: true, already: true, ruleName: rcFirewallRuleName };
-    // 先直接试（应用以管理员身份运行时 netsh 本身就有权限）
-    const direct = await rcRunNetsh(ruleArgs);
-    if (direct.ok) return { ok: true, elevated: false, ruleName: rcFirewallRuleName };
-    // 没有管理员权限：弹系统授权窗（UAC）后再写规则 —— 用户点「是」才真正开放
-    const argList = ruleArgs.map((a) => `'${a}'`).join(',');
-    const ps = `Start-Process -FilePath netsh.exe -ArgumentList ${argList} -Verb RunAs -Wait`;
-    return await new Promise((resolve) => {
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 120000 }, (err, _o, se) => {
-        if (err) {
-          resolve({ ok: false, error: String(se || err.message || '提权失败').slice(0, 300) });
-          return;
-        }
-        void rcFirewallRuleExists().then((exists) => resolve(
-          exists
-            ? { ok: true, elevated: true, ruleName: rcFirewallRuleName }
-            : { ok: false, error: '授权窗口被取消，或防火墙规则未生效' },
-        ));
+    // ① 先探现状：程序级 Block（「安全警报」被点过取消时系统自动给 exe 建的）优先级
+    //    高于一切 Allow —— 有它必须删；无 Block 且端口 Allow 已在才算真正放行。
+    let programRules = [];
+    try { programRules = await rcListProgramRules(); } catch { /* PowerShell 不可用 */ }
+    const hasInboundBlock = rcProgramBlocked(programRules);
+    const portRuleOk = await rcFirewallRuleExists().catch(() => false);
+    if (!hasInboundBlock && portRuleOk) return { ok: true, already: true, ruleName: rcFirewallRuleName };
+    // ② 修复脚本（幂等）：删本 exe 的 Inbound Block → 建程序级 Allow → 建端口级 Allow。
+    //    写临时 .ps1 再执行 —— Start-Process 嵌套引号会把含空格参数拆散
+    //   （netsh 报 A specified value is not valid，规则压根没建成），落文件可绕开。
+    const exePs = String(process.execPath || '').replace(/'/g, "''");
+    const fixScript = [
+      "$ErrorActionPreference = 'Stop'",
+      `$exe = '${exePs}'`,
+      // 安全警报点取消产生的程序级 Block：删除（程序级 Allow 保留无害）
+      "Get-NetFirewallApplicationFilter | Where-Object { $_.Program -ieq $exe } | ForEach-Object { $_ | Get-NetFirewallRule } | Where-Object { $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' } | Remove-NetFirewallRule",
+      // 程序级 Allow：比端口级更根本（exe 换端口也覆盖；同时免掉每次的安全警报弹窗）
+      `New-NetFirewallRule -DisplayName '${RC_PROGRAM_ALLOW_RULE}' -Direction Inbound -Program $exe -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null`,
+      // 端口级 Allow（保留，双保险）
+      `netsh advfirewall firewall add rule name="${rcFirewallRuleName}" dir=in action=allow protocol=TCP localport=${API_PORT} profile=any | Out-Null`,
+    ].join('\n');
+    const scriptPath = path.join(app.getPath('temp'), 'yz-fix-fw.ps1');
+    try { fs.writeFileSync(scriptPath, fixScript, 'utf8'); } catch (e) {
+      return { ok: false, error: '写入防火墙修复脚本失败: ' + (e && e.message) };
+    }
+    try {
+      let elevated = false;
+      // 先直接试（应用以管理员身份运行时无需提权）
+      const direct = await new Promise((resolve) => {
+        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { windowsHide: true, timeout: 30000 }, (err) => resolve({ ok: !err }));
       });
-    });
+      if (!direct.ok) {
+        // 无管理员权限：弹系统授权窗（UAC）后再执行 —— 用户点「是」才真正写入。
+        elevated = true;
+        const ps = `(Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','${scriptPath.replace(/'/g, "''")}' -Verb RunAs -Wait -PassThru).ExitCode`;
+        await new Promise((resolve) => {
+          execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 120000 }, () => resolve({ ok: true }));
+        });
+      }
+      // ③ 复核：Block 清干净 + 端口规则在 —— 都满足才算成功，杜绝假成功
+      const [rules2, portOk2] = await Promise.all([
+        rcListProgramRules().catch(() => []),
+        rcFirewallRuleExists().catch(() => false),
+      ]);
+      if (!rcProgramBlocked(rules2) && portOk2) return { ok: true, elevated, ruleName: rcFirewallRuleName };
+      return { ok: false, error: '防火墙修复未生效（授权窗口被取消，或防火墙由组策略接管）' };
+    } finally {
+      try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
+    }
   });
 
   // 远控托盘状态（隐私屏护栏 13 的「远控中」角标）：有会话时托盘提示与菜单给出
   // 「一键断开」入口。渲染层经 /status 轮询上报（自愈：渲染层重载/会话结束都会校正）。
-  let rcRemoteSession = { active: false, device: '' };
+  let rcRemoteSession = { active: false, device: '', since: 0, via: '' };
   // ★ 会话期间必须解除主窗口节流并保持屏幕常亮（2026-10-27 报障根因）：
   //   主窗口被其他应用盖住（如终端全屏）时 Chromium 按「遮挡=不可见」节流渲染器 ——
   //   renderer 里的 libwebrtc 编码管线停摆，WebRTC 画面定格在最后一帧；控制端切副屏、
@@ -13764,9 +13846,20 @@ app.whenReady().then(async () => {
   //   注入链路（WS→C# 代理）不经过渲染器，其实一直在生效 —— 用户看到的是冻住的旧画面。
   //   会话结束恢复节流（浏览器面板的 applyGuestThrottling 只管 webview guest，与此互不影响）。
   let rcKeepAwakeId = 0;
-  ipcMain.handle('rc:session-state', (_e, active, device) => {
-    const next = { active: !!active, device: String(device || '').slice(0, 60) };
-    if (rcRemoteSession.active === next.active && rcRemoteSession.device === next.device) return { ok: true };
+  function applyRcSessionState(active, device, info) {
+    const next = {
+      active: !!active,
+      device: String(device || '').slice(0, 60),
+      since: Number(info && info.since) || 0,
+      via: String((info && info.via) || ''),
+    };
+    if (
+      rcRemoteSession.active === next.active
+      && rcRemoteSession.device === next.device
+      && rcRemoteSession.since === next.since
+      && rcRemoteSession.via === next.via
+    ) return { ok: true };
+    const wasActive = rcRemoteSession.active;
     rcRemoteSession = next;
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -13786,14 +13879,325 @@ app.whenReady().then(async () => {
       tray?.setToolTip(next.active ? `${base} · 远控中（${next.device || '未知设备'}）` : base);
     } catch { /* 托盘未就绪 */ }
     refreshTrayMenu();
+    // 被控端悬浮卡片：会话出现即显示，结束即收起（开放模式没有确认弹窗，这是唯一即时可见的明示）
+    try {
+      if (next.active) {
+        showRcCard();
+        if (wasActive) pushRcCardState();
+      } else {
+        hideRcCard();
+      }
+    } catch (e) {
+      console.warn('[rc-card] 状态同步失败:', e && e.message);
+    }
+    return { ok: true };
+  }
+  ipcMain.handle('rc:session-state', (_e, active, device, info) => applyRcSessionState(active, device, info));
+  // 托盘/卡片「一键断开」→ 持有 host WS 的窗口（阶段 1 起是采集窗口，不再固定主窗口）
+  function forwardRcDisconnectAll() {
+    const target = (rcCaptureWindow && !rcCaptureWindow.isDestroyed()) ? rcCaptureWindow : null;
+    if (!target) return false;
+    try {
+      target.webContents.send('rc:disconnect-all');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  ipcMain.on('rc:disconnect-all', () => {
+    forwardRcDisconnectAll();
+  });
+
+  // ===== 远控悬浮卡片（被控端「正在被远控」明示）=====
+  // 独立透明置顶小窗：默认屏幕顶部居中，可拖动；拖到屏幕左/右边缘自动收成细条，
+  // 光标移到细条上再展开（收起后窗口只有 RC_CARD_SLIVER 宽，靠主进程光标轮询判断悬停，
+  // 不能依赖渲染层 mouseenter —— 太小的窗体上它不可靠）。
+  const RC_CARD_W = 336;
+  const RC_CARD_H = 64;
+  const RC_CARD_SLIVER = 10;
+  const RC_CARD_SNAP = 16;
+  const RC_CARD_MARGIN = 28;
+  const RC_CARD_AUTOHIDE_MS = 700;
+  let rcCardWindow = null;
+  /** 贴边方向：'' = 未贴边；贴边后收起/展开都在该边上切换 */
+  let rcCardEdge = '';
+  let rcCardCollapsed = false;
+  /** 展开态 bounds（收起前记下，展开时还原 y；贴边时不落盘） */
+  let rcCardExpandedBounds = null;
+  let rcCardProgBounds = false;
+  /** 最近一次由代码设置的 bounds：moved 事件即使是程序化设置后异步到达，也不会被当成用户拖动 */
+  let rcCardApplied = null;
+  let rcCardMoveTimer = null;
+  let rcCardHoverTimer = null;
+  let rcCardHoverOutAt = 0;
+
+  function rcCardPosFile() {
+    return path.join(app.getPath('userData'), 'rc-card-window.json');
+  }
+  function readRcCardPos() {
+    try { return JSON.parse(fs.readFileSync(rcCardPosFile(), 'utf8')); } catch { return null; }
+  }
+  function saveRcCardPos() {
+    try {
+      const b = rcCardCollapsed ? rcCardExpandedBounds : (rcCardWindow && !rcCardWindow.isDestroyed() ? rcCardWindow.getBounds() : null);
+      if (!b) return;
+      fs.writeFileSync(rcCardPosFile(), JSON.stringify({ x: b.x, y: b.y, edge: rcCardEdge }));
+    } catch { /* 落盘失败不影响使用 */ }
+  }
+  function rcCardDisplayArea(bounds) {
+    try {
+      return electronScreen.getDisplayMatching(bounds || rcCardWindow.getBounds()).workArea;
+    } catch {
+      return null;
+    }
+  }
+  function setRcCardBounds(b) {
+    if (!rcCardWindow || rcCardWindow.isDestroyed()) return;
+    rcCardProgBounds = true;
+    rcCardApplied = b;
+    try { rcCardWindow.setBounds(b); } catch { /* 显示器切换瞬间可能失败 */ }
+    // 程序化 setBounds 也会触发 moved：留一段窗口期，避免被当成用户拖动
+    setTimeout(() => { rcCardProgBounds = false; }, 150);
+  }
+  function sendRcCardDock() {
+    try {
+      rcCardWindow?.webContents?.send('rc:card-dock', { edge: rcCardEdge, collapsed: rcCardCollapsed });
+    } catch { /* 页面未就绪 */ }
+  }
+  function pushRcCardState() {
+    try {
+      rcCardWindow?.webContents?.send('rc:card-state', { ...rcRemoteSession, edge: rcCardEdge, collapsed: rcCardCollapsed });
+    } catch { /* 页面未就绪 */ }
+  }
+
+  function collapseRcCard(edge) {
+    if (!rcCardWindow || rcCardWindow.isDestroyed()) return;
+    const area = rcCardDisplayArea();
+    const cur = rcCardWindow.getBounds();
+    if (!area) return;
+    if (!rcCardCollapsed) rcCardExpandedBounds = cur;
+    const h = Math.max(48, Math.min(cur.height || RC_CARD_H, 80));
+    const y = Math.max(area.y, Math.min(area.y + area.height - h, cur.y));
+    rcCardEdge = edge;
+    rcCardCollapsed = true;
+    setRcCardBounds({
+      x: edge === 'left' ? area.x : area.x + area.width - RC_CARD_SLIVER,
+      y,
+      width: RC_CARD_SLIVER,
+      height: h,
+    });
+    sendRcCardDock();
+    startRcCardHover();
+    saveRcCardPos();
+  }
+
+  function expandRcCard() {
+    if (!rcCardWindow || rcCardWindow.isDestroyed()) return;
+    const area = rcCardDisplayArea();
+    if (!area) return;
+    const b = rcCardExpandedBounds || rcCardWindow.getBounds();
+    const x = rcCardEdge === 'left'
+      ? area.x
+      : rcCardEdge === 'right'
+        ? area.x + area.width - RC_CARD_W
+        : b.x;
+    const y = Math.max(area.y, Math.min(area.y + area.height - RC_CARD_H, b.y));
+    rcCardCollapsed = false;
+    setRcCardBounds({ x, y, width: RC_CARD_W, height: RC_CARD_H });
+    sendRcCardDock();
+    rcCardHoverOutAt = 0;
+  }
+
+  function stopRcCardHover() {
+    if (rcCardHoverTimer) clearInterval(rcCardHoverTimer);
+    rcCardHoverTimer = null;
+    rcCardHoverOutAt = 0;
+  }
+  /** 光标轮询：收起态命中细条即展开；展开态在贴边时移开一段时间再收起 */
+  function startRcCardHover() {
+    if (rcCardHoverTimer) return;
+    rcCardHoverTimer = setInterval(() => {
+      if (!rcCardWindow || rcCardWindow.isDestroyed() || !rcCardWindow.isVisible()) return;
+      let p; let b;
+      try {
+        p = electronScreen.getCursorScreenPoint();
+        b = rcCardWindow.getBounds();
+      } catch {
+        return;
+      }
+      const hit = p.x >= b.x - 2 && p.x <= b.x + b.width + 2 && p.y >= b.y - 2 && p.y <= b.y + b.height + 2;
+      if (rcCardCollapsed) {
+        if (hit) expandRcCard();
+        return;
+      }
+      if (!rcCardEdge) return;
+      if (hit) {
+        rcCardHoverOutAt = 0;
+        return;
+      }
+      if (!rcCardHoverOutAt) rcCardHoverOutAt = Date.now();
+      else if (Date.now() - rcCardHoverOutAt > RC_CARD_AUTOHIDE_MS) collapseRcCard(rcCardEdge);
+    }, 120);
+  }
+
+  /** 用户拖动结束：贴边则收起；从边缘拖开则脱离贴边并记住位置 */
+  function onRcCardMoved() {
+    if (rcCardProgBounds) return;
+    if (rcCardMoveTimer) clearTimeout(rcCardMoveTimer);
+    rcCardMoveTimer = setTimeout(() => {
+      rcCardMoveTimer = null;
+      if (!rcCardWindow || rcCardWindow.isDestroyed()) return;
+      const b = rcCardWindow.getBounds();
+      // 程序化 setBounds 的 moved 可能晚于防护窗口到达：位置没变就不是用户拖的
+      if (
+        rcCardApplied
+        && Math.abs(b.x - rcCardApplied.x) <= 2
+        && Math.abs(b.y - rcCardApplied.y) <= 2
+        && Math.abs(b.width - rcCardApplied.width) <= 2
+      ) return;
+      rcCardApplied = b;
+      const area = rcCardDisplayArea(b);
+      if (!area) return;
+      if (!rcCardCollapsed) {
+        if (b.x <= area.x + RC_CARD_SNAP) {
+          collapseRcCard('left');
+        } else if (b.x + b.width >= area.x + area.width - RC_CARD_SNAP) {
+          collapseRcCard('right');
+        } else {
+          rcCardEdge = '';
+          rcCardExpandedBounds = b;
+          stopRcCardHover();
+          sendRcCardDock();
+          saveRcCardPos();
+        }
+        return;
+      }
+      // 收起态被拖动：当作用户要把它拉开 —— 解贴边并恢复展开尺寸
+      rcCardEdge = '';
+      rcCardCollapsed = false;
+      rcCardExpandedBounds = { x: b.x, y: b.y, width: RC_CARD_W, height: RC_CARD_H };
+      setRcCardBounds(rcCardExpandedBounds);
+      stopRcCardHover();
+      sendRcCardDock();
+      saveRcCardPos();
+    }, 260);
+  }
+
+  function createRcCardWindow() {
+    if (rcCardWindow && !rcCardWindow.isDestroyed()) return rcCardWindow;
+    const saved = readRcCardPos();
+    let x = 0;
+    let y = 0;
+    try {
+      const area = electronScreen.getPrimaryDisplay().workArea;
+      x = Number.isFinite(saved && saved.x) ? Math.round(saved.x) : Math.round(area.x + (area.width - RC_CARD_W) / 2);
+      y = Number.isFinite(saved && saved.y) ? Math.round(saved.y) : area.y + RC_CARD_MARGIN;
+      // 显示器拔掉/改分辨率：把上次位置钳回可视区
+      const target = rcCardDisplayArea({ x, y, width: RC_CARD_W, height: RC_CARD_H });
+      if (target) {
+        x = Math.max(target.x, Math.min(target.x + target.width - RC_CARD_W, x));
+        y = Math.max(target.y, Math.min(target.y + target.height - RC_CARD_H, y));
+      }
+    } catch { /* 用默认值 */ }
+    const win = new BrowserWindow({
+      x,
+      y,
+      width: RC_CARD_W,
+      height: RC_CARD_H,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      resizable: false,
+      movable: true,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      alwaysOnTop: true,
+      show: false,
+      title: '言智 · 远控中',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.cjs'),
+        nodeIntegration: false,
+        contextIsolation: true,
+        backgroundThrottling: false,
+        additionalArguments: ['--yz-api-port=' + API_PORT, ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])],
+      },
+    });
+    rcCardWindow = win;
+    rcCardExpandedBounds = { x, y, width: RC_CARD_W, height: RC_CARD_H };
+    rcCardApplied = { x, y, width: RC_CARD_W, height: RC_CARD_H };
+    // 隐藏/透明窗口的报错默认不进 stdout：卡片不出现时只能靠这行日志定位
+    try { require('./main-log.cjs').attachRendererConsole(win.webContents, 'rc-card'); } catch { /* 不影响启动 */ }
+    // 与宠物窗同一档位：要压得住任务栏/全屏应用
+    try { win.setAlwaysOnTop(true, 'screen-saver'); } catch { /* ignore */ }
+    try { win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* ignore */ }
+    win.webContents.on('did-finish-load', () => {
+      pushRcCardState();
+      sendRcCardDock();
+    });
+    win.on('moved', onRcCardMoved);
+    win.on('closed', () => {
+      if (rcCardWindow === win) rcCardWindow = null;
+      stopRcCardHover();
+    });
+    if (app.isPackaged) {
+      void win.loadFile(path.join(__dirname, 'dist', 'rc-card.html')).catch((e) => console.warn('[rc-card] 加载失败:', e && e.message));
+    } else {
+      void win.loadURL('http://localhost:1420/rc-card.html').catch((e) => console.warn('[rc-card] 加载失败:', e && e.message));
+    }
+    return win;
+  }
+
+  function showRcCard() {
+    const win = createRcCardWindow();
+    if (!win || win.isDestroyed()) return;
+    // 新会话必须被看见：上一次留下的贴边收起状态一律解除（否则 700ms 后自动收回边缘，
+    // 用户等于什么都没看到）。解除后用户仍可自己再收起。
+    if (rcCardCollapsed || rcCardEdge) {
+      rcCardEdge = '';
+      rcCardCollapsed = false;
+      expandRcCard();
+      stopRcCardHover();
+      sendRcCardDock();
+      saveRcCardPos();
+    }
+    pushRcCardState();
+    try { win.showInactive(); } catch { /* ignore */ }
+    try { win.moveTop(); } catch { /* ignore */ }
+  }
+  function hideRcCard() {
+    if (!rcCardWindow || rcCardWindow.isDestroyed()) return;
+    try { rcCardWindow.hide(); } catch { /* ignore */ }
+    stopRcCardHover();
+  }
+
+  ipcMain.handle('rc:card-state', () => ({
+    ...rcRemoteSession,
+    edge: rcCardEdge,
+    collapsed: rcCardCollapsed,
+    running: !!(rcCardWindow && !rcCardWindow.isDestroyed()),
+  }));
+  ipcMain.handle('rc:card-disconnect', () => {
+    const ok = forwardRcDisconnectAll();
+    return { ok, error: ok ? undefined : '远控采集窗口未运行，无法发送断开指令' };
+  });
+  // 卡片右上角「收起」：贴到离它最近的屏幕边缘
+  ipcMain.handle('rc:card-hide', () => {
+    if (!rcCardWindow || rcCardWindow.isDestroyed()) return { ok: false };
+    const b = rcCardWindow.getBounds();
+    const area = rcCardDisplayArea(b);
+    if (!area) return { ok: false };
+    collapseRcCard(b.x + b.width / 2 < area.x + area.width / 2 ? 'left' : 'right');
+    return { ok: true, edge: rcCardEdge };
+  });
+  ipcMain.handle('rc:card-expand', () => {
+    expandRcCard();
     return { ok: true };
   });
-  // 托盘「一键断开」→ 持有 host WS 的窗口（阶段 1 起是采集窗口，不再固定主窗口）
-  ipcMain.on('rc:disconnect-all', () => {
-    const target = (rcCaptureWindow && !rcCaptureWindow.isDestroyed()) ? rcCaptureWindow : mainWindow;
-    try {
-      target?.webContents?.send('rc:disconnect-all');
-    } catch { /* ignore */ }
+  app.on('before-quit', () => {
+    try { if (rcCardWindow && !rcCardWindow.isDestroyed()) rcCardWindow.destroy(); } catch { /* ignore */ }
   });
 
   // 远程控制隐私屏（软件级）：所有显示器铺全黑置顶窗 + 点击穿透。
@@ -13819,6 +14223,15 @@ app.whenReady().then(async () => {
           win.on('closed', () => rcPrivacyWindows.delete(win));
         }
         console.log('[remote-control] 隐私屏已开启（显示器数=' + rcPrivacyWindows.size + '）');
+        // 隐私屏是同档置顶的全屏窗：卡片必须再抬一次，否则被黑屏整个盖住
+        // （用户就只剩托盘一个断开入口，等于又回到「没有提示」）
+        try {
+          if (rcCardWindow && !rcCardWindow.isDestroyed()) {
+            rcCardWindow.setAlwaysOnTop(true, 'screen-saver');
+            rcCardWindow.moveTop();
+            if (!rcCardWindow.isVisible()) rcCardWindow.showInactive();
+          }
+        } catch { /* ignore */ }
       } else {
         for (const w of [...rcPrivacyWindows]) {
           try { w.destroy(); } catch { /* ignore */ }
@@ -14024,7 +14437,11 @@ app.whenReady().then(async () => {
       "font-src 'self' data:; " +
       // ★ blob: 给 three-vrm 用：GLB 内嵌贴图被解成 blob URL，再由 ImageBitmapLoader
       //   以 fetch(blob:) 读回；connect-src 不放行就会 "Couldn't load texture"（整只模型变白）。
-      `connect-src 'self' blob: ws://localhost:1420 wss://localhost:1420 ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
+      // ★ ws:/wss: 必须按协议放行：远控控制端要连**任意局域网被控端**（ws://192.168.x.x:3001），
+      //   只放行 ${wsOrigins}（本机）会让 192.168.x.x 的 WS 被拦 —— /pair 的 fetch 走 http: 能过，
+      //   WS 不过，表现正是「配对受理了但实时通道没建起来 / 连上没画面」，且只有控制端控制台
+      //   可见 CSP 违规（2026-10-31 实报，两台 PC 互控全中）。
+      `connect-src 'self' blob: ws: wss: ws://localhost:1420 wss://localhost:1420 ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
       // ★ HTML 产物预览用 iframe 加载 `/api/workspace/file-stream?path=…`（见下方 artifact CSP）——
       //   `default-src 'self'` 会把它当外部框架直接拦掉（iframe 里只有一片空白，且报 CSP 违规），
       //   所以显式放行本机 API 源。
@@ -14035,7 +14452,7 @@ app.whenReady().then(async () => {
       "img-src 'self' data: blob: https: http:; " +
       "media-src 'self' blob: data: https: http:; " +
       "font-src 'self' data:; " +
-      `connect-src 'self' blob: ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
+      `connect-src 'self' blob: ws: wss: ${wsOrigins} ${API_ORIGIN} http://localhost:${API_PORT} https: http:;` +
       `frame-src 'self' ${API_ORIGIN} http://localhost:${API_PORT};`;
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     // ★ capture.html 豁免 CSP：其内联自愈脚本（模块加载失败 4s 重载）被 script-src 'self'
@@ -14235,7 +14652,8 @@ app.whenReady().then(async () => {
         // 远控会话进行中：明示状态 + 一键断开（rcRemoteSession 由渲染层 /status 轮询经 IPC 上报）
         ...(rcRemoteSession.active ? [{
           label: `远控中：${rcRemoteSession.device || '未知设备'} —— 一键断开`,
-          click: () => { try { mainWindow?.webContents?.send('rc:disconnect-all'); } catch { /* ignore */ } },
+          // ★ 监听器在采集窗口（阶段 1 起 host WS 归它持有），发给主窗口等于点了个空气
+          click: () => { forwardRcDisconnectAll(); },
         }] : []),
         { type: 'separator' },
         // 超级剪贴板（2026-10-29）：托盘是与主窗口无关的第二个入口，
@@ -14356,7 +14774,11 @@ async function compileDesktopHelper() {
     //     在 256 画布里是左上角一个小点，不裁切会显示成芝麻。
     // v8：--pin 改钉 Progman + 提到兄弟序最前 —— 钉 WorkerW 时 DefView（桌面图标列表）
     //     压在它上面，整屏鼠标被吃掉，表现是"桌面层看得见、按钮和图标全点不动"。
-    const exe = path.join(dir, 'yz-desktop-v8.exe');
+    // v9：新增 --focus —— 桌面层是 Progman 的 WS_CHILD 子窗口，永远拿不到键盘焦点，
+    //     win.focus() 对子窗口无效，Delete/F2/Esc 全都不响应；改名让老 exe 自动重编。
+    // v10：--focus 先把顶层（Progman）提成前台窗口再 SetFocus —— 只 SetFocus 会被系统
+    //      立刻收回（实测焦点几百毫秒后回到前台应用，按键全落到别的应用里）。
+    const exe = path.join(dir, 'yz-desktop-v10.exe');
     if (fs.existsSync(exe)) { desktopHelperPath = exe; return exe; }
     const csc = [
       'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
@@ -14364,7 +14786,7 @@ async function compileDesktopHelper() {
     ].find((p) => fs.existsSync(p));
     if (!csc) { console.warn('[desktop-shell] 未找到 csc.exe，桌面外壳能力不可用'); return null; }
     fs.mkdirSync(dir, { recursive: true });
-    const srcPath = path.join(dir, 'yz-desktop-v8.cs');
+    const srcPath = path.join(dir, 'yz-desktop-v10.cs');
     fs.writeFileSync(srcPath, DESKTOP_HELPER_CS, 'utf8');
     await new Promise((resolve, reject) => {
       execFile(csc, ['/nologo', '/out:' + exe, '/r:System.Drawing.dll', srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {
@@ -14520,6 +14942,7 @@ async function openPluginWindow(opts = {}) {
     win.on('closed', () => {
       pluginWindows.delete(windowId);
       stopHitTestService(windowId);
+      if (focusKeeper && focusKeeper.windowId === windowId) stopFocusKeeper();
       notifyMainWindow('closed', { windowId });
       const hasDesktop = [...pluginWindows.values()].some((r) => r.placement === 'desktop');
       if (!hasDesktop) void restoreIcons('last-desktop-window-closed');
@@ -14791,15 +15214,15 @@ ipcMain.handle('desktop-shell:set-icons-visible', async (e, visible) => {
   if (!cur.data) return { ok: false, error: cur.error || 'helper-unavailable' };
   const now = !!cur.data.visible;
   if (now === want) {
-    if (want) iconSession.markRestored();
+    if (want) { iconSession.markRestored(); clearIconsMarker(); }
     // 已经是隐藏态也要认领，否则退出时不会恢复（桌面会停在无图标状态）
-    else if (fromDesktopLayer) iconSession.claimHidden();
+    else if (fromDesktopLayer) { iconSession.claimHidden(); markIconsHidden(); }
     return { ok: true, changed: false, visible: now };
   }
   const r = await runDesktopHelper(['--toggle-icons', want ? '1' : '0']);
   if (!r.data) return { ok: false, error: r.error || 'toggle-failed' };
-  if (want) iconSession.onShowRequested(false);
-  else iconSession.onHideRequested(true);
+  if (want) { iconSession.onShowRequested(false); clearIconsMarker(); }
+  else { iconSession.onHideRequested(true); markIconsHidden(); }
   console.log('[desktop-shell] 系统桌面图标 →', want ? '显示' : '隐藏', fromDesktopLayer ? '(桌面层)' : '');
   return { ok: true, changed: true, visible: !!r.data.visible };
 });
@@ -14869,14 +15292,33 @@ ipcMain.handle('desktop-shell:file-icon', async (_e, filePath) => {
  * 桌面层删除：走系统回收站（可还原），绝不做永久删除。
  * 一次最多 200 个，逐个尝试，失败的单独回报（不留「部分成功但界面说全成功」）。
  */
-ipcMain.handle('desktop-shell:trash', async (_e, paths) => {
+ipcMain.handle('desktop-shell:trash', async (_e, paths, opts) => {
   const list = Array.isArray(paths) ? paths.map(String).filter(Boolean).slice(0, 200) : [];
   if (!list.length) return { ok: false, trashed: 0, failed: [], error: 'empty' };
+  // 确认框：桌面层的 Delete 是「选中即删」，误触代价太大（真踩过：一次误删整个目录）。
+  // 自动化调用可以传 { confirm: false } 跳过。
+  if (!opts || opts.confirm !== false) {
+    const names = list.slice(0, 6).map((p) => path.basename(p)).join('\n');
+    const more = list.length > 6 ? '\n…共 ' + list.length + ' 项' : '';
+    // 不挂父窗口：桌面层是 Progman 的子窗口，拿它当 parent 会出怪相；
+    // 主窗口又可能在「后台停靠」（坐标 -32000），挂上去弹窗直接跑到屏幕外。
+    const r = await dialog.showMessageBox({
+      type: 'warning',
+      noLink: true,
+      title: '移到回收站',
+      message: list.length === 1 ? '把这 1 项移到回收站？' : '把这 ' + list.length + ' 项移到回收站？',
+      detail: names + more + '\n\n移到回收站后可以从回收站还原。',
+      buttons: ['移到回收站', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (r.response !== 0) return { ok: true, canceled: true, trashed: 0, failed: [] };
+  }
   let trashed = 0;
   const failed = [];
   for (const p of list) {
     try { await shell.trashItem(p); trashed += 1; }
-    catch (e) { failed.push({ path: p, error: String(e && e.message ? e.message : e) }); }
+    catch (err) { failed.push({ path: p, error: String(err && err.message ? err.message : err) }); }
   }
   return { ok: failed.length === 0, trashed, failed };
 });
@@ -14908,11 +15350,78 @@ ipcMain.handle('desktop-shell:pick-folder', async (e) => {
 });
 
 /** 桌面层窗口拿键盘焦点（它是 Progman 的子窗口，点进来不一定会被激活） */
-ipcMain.handle('plugin-window:focus', (_e, windowId) => {
+ipcMain.handle('plugin-window:focus', async (_e, windowId) => {
   const rec = pluginWindows.get(String(windowId));
   if (!rec || !rec.win || rec.win.isDestroyed()) return { ok: false, error: 'not-found' };
-  try { rec.win.focus(); return { ok: true }; } catch (e) { return { ok: false, error: String(e) }; }
+  // 键盘要同时满足两件事，缺一个都是「按了没反应」：
+  //   ① 操作系统把键盘投到这个窗口（子窗口拿不到 → 靠下面的原生助手）
+  //   ② Chromium 自己把 webContents 设成焦点（否则收到 WM_KEYDOWN 也会丢掉）
+  try { rec.win.focus(); } catch { /* 子窗口走不到 */ }
+  try { rec.win.webContents.focus(); } catch { /* 同上 */ }
+  if (process.platform !== 'win32' || rec.placement !== 'desktop') return { ok: true };
+  const r = await focusDesktopWindow(windowId, pluginWindowHwnd(rec.win));
+  // 助手会切前台/改焦点，Chromium 那边的焦点可能被重置 → 再补一次
+  try { if (!rec.win.isDestroyed()) rec.win.webContents.focus(); } catch { /* ignore */ }
+  return r.ok ? { ok: true, native: true } : { ok: false, error: r.error || 'focus-failed' };
 });
+
+/**
+ * 原生抢键盘焦点。桌面层是 WS_CHILD 子窗口，win.focus() 只对顶层窗口有效 ——
+ * 必须由助手进程 attach 输入队列再 SetFocus，并且要一直挂着（一 detach 焦点就没了）。
+ * 所以这是「焦点看守」进程：同一窗口只留一个，换窗口时先杀掉旧的。
+ */
+let focusKeeper = null; // { windowId, hwnd, child }
+function stopFocusKeeper() {
+  const k = focusKeeper;
+  focusKeeper = null;
+  if (!k) return;
+  try { k.child.kill(); } catch { /* 已退出 */ }
+}
+
+function focusDesktopWindow(windowId, hwnd) {
+  const id = String(windowId);
+  if (focusKeeper && focusKeeper.windowId === id && focusKeeper.hwnd === hwnd) {
+    const alive = focusKeeper.child && focusKeeper.child.exitCode === null;
+    if (alive) return Promise.resolve({ ok: true, reused: true });
+  }
+  stopFocusKeeper();
+  return new Promise((resolve) => {
+    if (!desktopHelperPath) {
+      ensureDesktopHelper().then((exe) => (exe ? start() : resolve({ ok: false, error: 'helper-unavailable' })));
+    } else {
+      start();
+    }
+    function start() {
+      let child;
+      try {
+        child = spawn(desktopHelperPath, ['--focus', hwnd], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch (e) {
+        resolve({ ok: false, error: String(e && e.message ? e.message : e) });
+        return;
+      }
+      focusKeeper = { windowId: id, hwnd, child };
+      let settled = false;
+      const settle = (v) => { if (!settled) { settled = true; resolve(v); } };
+      let buf = '';
+      child.stdout.on('data', (d) => {
+        buf += d.toString('utf8');
+        const i = buf.indexOf('\n');
+        if (i < 0) return;
+        const data = parseHelperLine(buf.slice(0, i));
+        if (data && data.ok) settle({ ok: true });
+        else settle({ ok: false, error: (data && data.error) || 'focus-failed' });
+      });
+      child.on('error', (e) => settle({ ok: false, error: String(e && e.message ? e.message : e) }));
+      child.on('exit', () => {
+        if (focusKeeper && focusKeeper.child === child) focusKeeper = null;
+        settle({ ok: false, error: 'helper-exited' });
+      });
+      setTimeout(() => settle({ ok: false, error: 'focus-timeout' }), 2500);
+    }
+  });
+}
+
+app.on('will-quit', stopFocusKeeper);
 
 ipcMain.handle('desktop-shell:open-path', async (_e, filePath) => {
   const p = String(filePath || '');
@@ -14931,9 +15440,30 @@ async function restoreIcons(reason) {
   if (!iconSession.shouldRestore()) return { ok: true, skipped: true };
   const r = await runDesktopHelper(['--toggle-icons', '1']);
   iconSession.markRestored();
+  clearIconsMarker();
   console.log('[desktop-shell] 已恢复系统桌面图标:', reason);
   return { ok: !!r.data, reason };
 }
+
+/**
+ * 「我们藏了图标」的落地记号。桌面层是靠在 Progman 上盖一层窗口 + 关掉系统图标来接管桌面的，
+ * 进程被强杀时恢复逻辑根本没机会跑 —— 下次开机/启动就是一片空白桌面（真被用户骂过）。
+ * 所以在隐藏的那一刻写下记号，正常显示/退出时删掉；启动时若发现记号还在 = 上次是异常退出。
+ */
+const iconsMarkerPath = () => path.join(app.getPath('userData'), 'desktop-icons-hidden.marker');
+function markIconsHidden() {
+  try { fs.writeFileSync(iconsMarkerPath(), String(Date.now())); } catch { /* 记不住就算了，不能影响隐藏 */ }
+}
+function clearIconsMarker() {
+  try { fs.unlinkSync(iconsMarkerPath()); } catch { /* 本来就没有 */ }
+}
+async function restoreIconsIfCrashed() {
+  try { if (!fs.existsSync(iconsMarkerPath())) return; } catch { return; }
+  const r = await runDesktopHelper(['--toggle-icons', '1']);
+  clearIconsMarker();
+  console.log('[desktop-shell] 上次异常退出遗留的隐藏图标，已恢复:', JSON.stringify(r.data || r.error || null));
+}
+void app.whenReady().then(() => { void restoreIconsIfCrashed(); });
 
 /**
  * 看门狗：只要「我们藏过图标」而此刻已经没有存活的桌面层窗口，就恢复图标。

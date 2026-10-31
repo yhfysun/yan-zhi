@@ -116,7 +116,7 @@ test('图标会话：显式显示清除所有权', () => {
 });
 
 test('助手源码包含全部命令', () => {
-  for (const cmd of ['--progman', '--spawn-workerw', '--pin', '--unpin', '--icons-visible', '--toggle-icons', '--foreground', '--icon']) {
+  for (const cmd of ['--progman', '--spawn-workerw', '--pin', '--unpin', '--icons-visible', '--toggle-icons', '--foreground', '--focus', '--icon']) {
     assert.ok(HELPER_CS.includes(cmd), '缺少命令 ' + cmd);
   }
 });

@@ -89,6 +89,22 @@ vi.mock('../stores/verification', () => ({
   }),
 }));
 
+// 宠物伴星（2026-10-28 设置页新增「宠物」分区）：真 store 走 pinia，而本测试
+// 不装 pinia（其余 store 全白名单 mock）→ 必须一并 mock，否则 setup 直接抛
+// "no active Pinia"，看起来像 Settings 坏了。
+vi.mock('../stores/pet', () => ({
+  usePetStore: () => ({
+    settings: {
+      enabled: false, renderer: '2d', pack: '', scale: 1, walk: true, bubble: true,
+      notifyMode: 'toast', vrmMode: 'builtin', vrmBuiltin: '', vrmPath: '', slots: [],
+    },
+    init: vi.fn(), update: vi.fn(),
+  }),
+  PET_SLOT_DEFS: { chat: '对话', tasks: '任务', browser: '浏览器', clip: '剪辑', settings: '设置' },
+  PET_SLOT_DEFAULTS: ['chat', 'tasks', 'browser', 'clip', 'settings'],
+  setPetSlot: (slots: string[], i: number, key: string) => slots.map((s, j) => (j === i ? key : s)),
+}));
+
 vi.mock('../api/client', () => ({
   api: { get: vi.fn(async () => ({ data: { ips: [], port: 3001 } })) },
   API_BASE: '', isCapacitor: false,

@@ -51,6 +51,9 @@
  *   node scripts/package.cjs --list-modes
  *                                  # 列出全部模式与档位预设
  *   --yes                          # 跳过所有交互（含模式选择），按档位预设打包
+ *   --fast                         # 只出免安装目录（electron-builder --dir），不打 NSIS：
+ *                                  #   迭代验证用，省掉打安装器+压缩的时间，直接跑 win-unpacked 里的 exe
+ *   --no-compress                  # 仍然出安装包，但 NSIS 用 store（不压缩）：打包/安装都快，包体翻倍
  *
  * 产物目录（统一树，路径定义在 apps/desktop/scripts/lib/pack-helpers.cjs，单一真相源）：
  *   dist-release/desktop/<档>/<版本>/   ← 安装包 + win-unpacked/
@@ -145,6 +148,16 @@ const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith('--')));
 const VERIFY = !flags.has('--no-verify');
 const KEEP_TMP = flags.has('--keep-tmp');
+
+// ── 快打包（迭代验证用，不下发）──
+// --fast      只出免安装目录（electron-builder --dir）：跳过 NSIS 打安装包与压缩，
+//             产物直接双击 win-unpacked/<app>.exe 就能跑。
+// --no-compress 仍然出安装包，但压缩档改成 store：打包/安装都快，代价是包体翻倍。
+// 两者都经 YZ_PACK_EXTRA 透传给逐档的 electron-build。
+const packExtra = [];
+if (flags.has('--fast') || flags.has('--dir')) packExtra.push('--dir');
+if (flags.has('--no-compress')) packExtra.push('--config.compression=store');
+if (packExtra.length) process.env.YZ_PACK_EXTRA = packExtra.join(' ');
 
 // ── 模式多选（--modes=office,dev）──
 // 与 --editions 正交：--editions 决定「授权档/预置码」，--modes 决定「包里真的有哪些代码」。

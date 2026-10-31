@@ -1113,8 +1113,12 @@ def main():
         if not bg_imgs and bg_clips:
             # 只给了背景视频：抽帧做底图（视频本身不进 kinetic 轨，避免与文字抢注意力）
             bg_imgs = extract_bg_frames(ffmpeg, bg_clips, tmp, W, H)
+        # ★ 首帧契约（v4，冻结）：kinetic 分支同样要「右上角角标 + 中部第N集大字 + 第一镜内容首帧全显」。
+        #   2026-10-28 kinetic 变成默认画面引擎时漏了中部大字与首帧静态 → 抖音成片开头没有集数/主要内容。
+        #   大字与角标同源（都来自 --chapter），两条渲染路径的首帧信息必须一致。
         kinetic_mod.render_video(ffmpeg, video_only, timeline, total, W, H,
                                  top_text=top_text, badge_text=badge, fps=FPS,
+                                 episode_text=badge,
                                  bg_images=bg_imgs,
                                  theme=str((raw_sb or {}).get("theme") or "dark"),
                                  subtitle_style=a.subtitle_style)

@@ -21,6 +21,8 @@ export * from './keyed-serial-queue';
 //   工具参数的 enum。放 server 下会让 core 依赖 server（层次倒置），
 //   于是 schema 只能手写第二份清单 → 与实现漂移（本项目已有三处各写一份的前车之鉴）。
 export * from './clip-effects';
+// 字体注册表（P1-2）：字幕字体选择的单一真相源（工具 enum / UI 下拉 / \fn 解析共用）
+export * from './clip-fonts';
 
 // 智能体默认采样参数（temperature / maxTokens / topP …）——**前后端共用的单一真相源**。
 // ★ 为什么放 shared（2026-10-10 实据）：这些默认值此前散落 **7 处**硬编码，

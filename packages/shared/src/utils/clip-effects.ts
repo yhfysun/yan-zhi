@@ -162,6 +162,7 @@ export const MASK_SHAPES: EffectPreset[] = [
   { id: 'heart', label: '心形', desc: '心形取景，浪漫', filter: 'geq:heart', group: '形状' },
   { id: 'star', label: '星形', desc: '五角星取景，醒目', filter: 'geq:star', group: '形状' },
   { id: 'diamond', label: '菱形', desc: '菱形取景', filter: 'geq:diamond', group: '形状' },
+  { id: 'linear', label: '线性渐变', desc: '沿一个方向渐变擦除（角度/位置可调，P1-4）', filter: 'geq:linear', group: '形状' },
   { id: 'split_left', label: '左半屏', desc: '只显示左半边（分屏用）', filter: 'geq:split_left', group: '分屏' },
   { id: 'split_right', label: '右半屏', desc: '只显示右半边（分屏用）', filter: 'geq:split_right', group: '分屏' },
   { id: 'split_top', label: '上半屏', desc: '只显示上半部分', filter: 'geq:split_top', group: '分屏' },
@@ -179,7 +180,32 @@ export const MASK_KEYS: EffectPreset[] = [
 ];
 
 /**
- * 字幕样式模板 —— 一键套用成套样式（对标剪映/必剪的"字幕模板"）。
+ * HSL 分色色带（P1-6）：八个色相中心 + 中文名。
+ * ★ 三端共用（工具 enum / UI 色带按钮 / 生成 3D LUT 的中心角），写第二份必然漂移。
+ * ★ hueDeg 是该色带的代表色相（度）；渲染时按"到中心的角距离"做线性权重（±45° 内生效），
+ *   相邻色带自然重叠，不会出现硬边。
+ */
+export const HSL_BANDS: Array<{ id: string; label: string; hueDeg: number }> = [
+  { id: 'red', label: '红', hueDeg: 0 },
+  { id: 'orange', label: '橙', hueDeg: 30 },
+  { id: 'yellow', label: '黄', hueDeg: 60 },
+  { id: 'green', label: '绿', hueDeg: 120 },
+  { id: 'cyan', label: '青', hueDeg: 180 },
+  { id: 'blue', label: '蓝', hueDeg: 240 },
+  { id: 'purple', label: '紫', hueDeg: 280 },
+  { id: 'magenta', label: '品红', hueDeg: 320 },
+];
+
+export function hslBandOf(id: string | undefined): { id: string; label: string; hueDeg: number } | null {
+  const key = String(id ?? '').trim().toLowerCase();
+  return key ? HSL_BANDS.find((b) => b.id === key) || null : null;
+}
+
+export function hslBandIds(): string[] {
+  return HSL_BANDS.map((b) => b.id);
+}
+
+/** 字幕样式模板 —— 一键套用成套样式（对标剪映/必剪的"字幕模板"）。
  *
  * ★★★ 为什么需要（2026-10-07 用户问「字幕啥的素材不能建立？」）：
  *   此前只能逐项调字号/颜色/描边/位置 —— 想做出"商用软件那种好看的字幕"
@@ -199,10 +225,20 @@ export interface TextStylePreset {
     /** 背景底板色（#RRGGBBAA，A 为不透明度；不填=无底板） */
     backColor?: string;
     bold?: boolean;
+    italic?: boolean;
     position?: 'bottom' | 'center' | 'top';
     safeArea?: boolean;
     /** 默认动画（用户仍可在属性面板改） */
     animation?: string;
+    // ── P1-2 排版 ──
+    /** 字距（像素，1920 基准） */
+    letterSpacingPx?: number;
+    /** 行距（额外行间隙，像素，1920 基准） */
+    lineSpacingPx?: number;
+    /** 花字/气泡底板色（用大描边撑成圆角底板） */
+    plateColor?: string;
+    /** 底板厚度（像素，1920 基准） */
+    platePaddingPx?: number;
   };
 }
 
@@ -246,6 +282,23 @@ export const TEXT_STYLES: TextStylePreset[] = [
   {
     id: 'punch', label: '重击强调', desc: '超大黄字+弹跳，卡点爆点',
     style: { fontSizePx: 160, color: '#FFD400', outlineColor: '#7A2E00', outlinePx: 22, position: 'center', bold: true, animation: 'pop' },
+  },
+  // ── P1-2 花字 / 气泡 / 排版 ──
+  {
+    id: 'huazi', label: '花字（红底白字）', desc: '大描边撑成圆角底板，综艺/口播标题',
+    style: { fontSizePx: 110, color: '#FFFFFF', outlineColor: '#8A1200', outlinePx: 8, plateColor: '#E23A1A', platePaddingPx: 26, position: 'center', bold: true },
+  },
+  {
+    id: 'plate-dark', label: '气泡底板', desc: '半透明深色圆角底板，压任何画面都清楚',
+    style: { fontSizePx: 84, color: '#FFFFFF', outlineColor: '#000000', outlinePx: 4, plateColor: '#000000CC', platePaddingPx: 28, position: 'bottom', safeArea: true },
+  },
+  {
+    id: 'neon', label: '霓虹发光', desc: '青字深蓝描边，赛博/夜店感',
+    style: { fontSizePx: 104, color: '#7CF9FF', outlineColor: '#0B3A8F', outlinePx: 18, position: 'center', bold: true },
+  },
+  {
+    id: 'wide-title', label: '宽字距标题', desc: '大字距片头标题，电影/综艺片头',
+    style: { fontSizePx: 118, color: '#FFFFFF', outlineColor: '#1F2937', outlinePx: 12, letterSpacingPx: 24, position: 'center', bold: true },
   },
 ];
 
@@ -854,6 +907,54 @@ export interface LayerTransform {
 export type LayerKfValues = LayerTransform;
 
 const LAYER_KF_KEYS = ['x', 'y', 'scale', 'rotation', 'opacity'] as const;
+
+// ===== 特效层（P1-3）=====
+//
+// ★ 与 ClipSegment.fx（片段特效）的区别：片段特效挂在片段上、整段生效；
+//   特效层有自己的 start/end，可以只在某 2 秒里闪一下，也可以多条叠加（闪光 + 颗粒）。
+//
+// ★ 两类实现（渲染分流，见 clip-render 的特效层步骤）：
+//   · source —— 程序化生成一段全屏素材（暖白光 / 暖橙漏光 / 黑白点），
+//               按 alpha 叠在上层；强度 = alpha。
+//   · filter —— 直接作用在主画面上（胶片颗粒），用 enable 限定时间窗口。
+//
+// ★ 为什么是注册表而不是渲染里 if (fx === 'flash')：工具 schema、UI 卡片、op 归一化
+//   三处都要认同一份 id 清单；写第二份必然漂移（本项目反复踩过）。
+
+export type EffectLayerKind = 'source' | 'filter';
+
+export interface EffectLayerPreset {
+  id: string;
+  label: string;
+  /** 一句话观感（UI 卡片与工具描述共用） */
+  desc: string;
+  kind: EffectLayerKind;
+  /** 默认强度 0~1（op 不传 intensity 时用它） */
+  defaultIntensity: number;
+}
+
+export const EFFECT_LAYERS: EffectLayerPreset[] = [
+  { id: 'flash', label: '闪光', desc: '暖白闪一下，卡点 / 转场强调', kind: 'source', defaultIntensity: 0.55 },
+  { id: 'light-leak', label: '漏光', desc: '暖橙光晕轻微闪烁，胶片 / 回忆感', kind: 'source', defaultIntensity: 0.7 },
+  { id: 'sparkle', label: '星点闪烁', desc: '随机白点闪烁，梦幻 / 庆典氛围', kind: 'source', defaultIntensity: 0.7 },
+  { id: 'grain', label: '胶片颗粒', desc: '动态噪点，复古 / 纪实质感', kind: 'filter', defaultIntensity: 0.4 },
+];
+
+/** 按 id 查特效层预设；未知/空返回 null（调用方应"什么都不加"，绝不回退到别的特效）。 */
+export function effectLayerOf(id: string | undefined): EffectLayerPreset | null {
+  const key = String(id ?? '').trim().toLowerCase();
+  if (!key) return null;
+  return EFFECT_LAYERS.find((e) => e.id === key) || null;
+}
+
+export function effectLayerIds(): string[] {
+  return EFFECT_LAYERS.map((e) => e.id);
+}
+
+/** 紧凑清单「id=名称（说明）」—— 工具描述与报错信息共用。 */
+export function effectLayerCatalogText(): string {
+  return EFFECT_LAYERS.map((e) => `${e.id}=${e.label}（${e.desc}）`).join('、');
+}
 
 /**
  * 在层内时间 t（0~1）采样关键帧得到变换值。

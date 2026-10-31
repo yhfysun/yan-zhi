@@ -12,6 +12,15 @@ directories:
 npmRebuild: false
 # 安全加固：只从 app.asar 加载（配合 afterPack 写入的 OnlyLoadAppFromAsar fuse）。
 asar: true
+# ★★ sqlite-vec 平台包 unpack：vec0.dll 是 SQLite 可加载扩展（.dll）而非 Node addon（.node），
+#   smart-unpack 不认 → 被压进 asar → loadExtension 读不到 → no such module: vec0，
+#   向量检索静默降级（2026-10-30 真机实锤）。详见 full.yml 同段注释。
+asarUnpack:
+  - node_modules/sqlite-vec-windows-x64/**
+  - node_modules/sqlite-vec-darwin-x64/**
+  - node_modules/sqlite-vec-darwin-arm64/**
+  - node_modules/sqlite-vec-linux-x64/**
+  - node_modules/sqlite-vec-linux-arm64/**
 # 打包后、出安装包前：清理后端 sourcemap/.d.ts，并写入安全 fuses。
 afterPack: ./electron-builder.after-pack.cjs
 # ★★ node_modules 进不进 asar，由 apps/desktop/package.json 的 **dependencies** 决定

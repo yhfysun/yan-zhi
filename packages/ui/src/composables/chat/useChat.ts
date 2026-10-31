@@ -809,7 +809,17 @@ function createChat() {  const router = useRouter();
     }
   });
   const sideTab = ref<'chat' | 'task' | 'file' | 'publish'>('chat');
-  const contextSidebarOpen = ref(false);
+  /** 上下文栏默认状态：宽屏（≥1400px）默认打开，窄屏收起。
+      用户的显式开关记在 localStorage，下次进入沿用 —— 否则"每次进来都得手动关一次"。 */
+  const CONTEXT_SIDEBAR_KEY = 'yz_context_sidebar_open';
+  function initialContextSidebarOpen(): boolean {
+    if (typeof window === 'undefined') return false;
+    const saved = window.localStorage.getItem(CONTEXT_SIDEBAR_KEY);
+    if (saved === '1') return true;
+    if (saved === '0') return false;
+    return window.innerWidth >= 1400;
+  }
+  const contextSidebarOpen = ref(initialContextSidebarOpen());
   const batchMode = ref(false);
   const selectedConvIds = ref<Set<string>>(new Set());
 
@@ -820,6 +830,9 @@ function createChat() {  const router = useRouter();
 
   function toggleContextSidebar() {
     contextSidebarOpen.value = !contextSidebarOpen.value;
+    try {
+      window.localStorage.setItem(CONTEXT_SIDEBAR_KEY, contextSidebarOpen.value ? '1' : '0');
+    } catch { /* 隐私模式 / 无 localStorage：仅本次生效 */ }
   }
 
   function toggleServerCollapse(sid: string) {
@@ -1477,6 +1490,11 @@ function createChat() {  const router = useRouter();
     //   ⚠️ 不能反过来说"前端有这道就不用改后端"：批量删除/导出这类扫 conversations 的
     //      逻辑走的是 store.conversations 全量，前端过滤拦不住它们。
     let list = store.conversations.filter((c) => !c.archivedAt && !c.deletedAt);
+    // ★ 模式隔离（2026-10-31）：任务列表只显示**当前模式**的会话。
+    //   此前开发模式里会列出办公模式的会话（用户实报「切到开发，任务里还是别的模式的任务」）。
+    //   旧数据没有 mode 字段 → 归 office（它们都是模式化之前建的）。
+    const mode = activeMode.value;
+    list = list.filter((c) => ((c as { mode?: string }).mode || 'office') === mode);
     if (!search.value.trim()) return list;
     const q = search.value.trim().toLowerCase();
     return list.filter((c) => c.title.toLowerCase().includes(q));

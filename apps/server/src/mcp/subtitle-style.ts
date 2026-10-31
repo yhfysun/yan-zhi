@@ -13,7 +13,7 @@
 //   - 需要绝对坐标的（slide/typewriter/flychar）用估宽定位：CJK 字宽≈字号、ASCII≈0.55×字号，
 //     与 api-tool-executor 里 drawtext 标题的估宽口径一致。
 
-import { TEXT_ANIMATIONS, type LayerKfPoint, type LayerTransform } from '@yan-zhi/shared';
+import { TEXT_ANIMATIONS, fontAssNameOf, type LayerKfPoint, type LayerTransform } from '@yan-zhi/shared';
 
 /** 动画预设定义（id 同时是 media_compose subtitleAnimation 参数的合法值） */
 export interface SubtitlePresetDef {
@@ -51,6 +51,19 @@ export interface AssCue {
   transform?: LayerTransform;
   /** 文字层变换关键帧（t 为 **cue 内** 0~1 比例；cue 的时间范围 = 该文字层的 start~end） */
   keyframes?: LayerKfPoint[];
+  // ── P1-2 排版（值均为 **1920 高基准**，buildAss 内按 resY/1920 换算成真实像素）──
+  /** 字体 id（shared 的 FONT_FAMILIES） */
+  fontFamily?: string;
+  /** 字距（像素） */
+  letterSpacingPx?: number;
+  /** 行距（额外行间隙，像素；无动画/无变换时按行拆条定位） */
+  lineSpacingPx?: number;
+  bold?: boolean;
+  italic?: boolean;
+  /** 花字/气泡底板色（**ASS 颜色格式**，调用方已转换）：大描边撑成圆角底板 */
+  plateColor?: string;
+  /** 底板厚度（像素，1920 基准） */
+  platePaddingPx?: number;
 }
 
 /** ASS 时间戳 H:MM:SS.cc（厘秒两位） */
@@ -335,6 +348,25 @@ export function buildAss(
   //   底部(2): 锚点=行底边中点 y=resY-mv；居中(5): y=resY/2；顶部(8): y=mv。
   //   （逐条的 alignment 已在循环内解析为 alignOpt / anchorX / rowY）
 
+  // P1-2 排版：ASS 内联标签（字体/加粗/斜体/字距）。
+  // ★ 数值字段是 1920 高基准，这里统一按 resY/1920 换算（字号/描边由调用方已换算，别混用）。
+  const pxScale = resY / 1920;
+  const typoOf = (c: AssCue): string => {
+    const parts: string[] = [];
+    if (c.fontFamily) parts.push(`\\fn${fontAssNameOf(c.fontFamily)}`);
+    if (c.bold) parts.push('\\b1');
+    if (c.italic) parts.push('\\i1');
+    if (c.letterSpacingPx) parts.push(`\\fsp${Math.max(0, Math.round(c.letterSpacingPx * pxScale))}`);
+    return parts.join('');
+  };
+  // 花字/气泡底板：把文字轮廓用**大描边**撑成圆角底板（libass 没有真正的圆角矩形，
+  //   但放大描边后的字形块在视觉上就是剪映式花字底板）。分两层渲染：底板层在下、文字层在上。
+  const plateOf = (c: AssCue): string | null => {
+    if (!c.plateColor) return null;
+    const pad = Math.max(2, Math.round((c.platePaddingPx ?? 18) * pxScale));
+    return `\\bord${pad}\\3c${c.plateColor}\\shad0`;
+  };
+
   const events: string[] = [];
   for (const c of valid) {
     const dur = c.end - c.start;
@@ -352,28 +384,55 @@ export function buildAss(
     const presetId = c.preset || opts.preset;
     const dirOpt = c.slideDirection || opts.direction;
     const alignOpt = [2, 5, 8].includes(c.alignment ?? -1) ? c.alignment! : align;
-    if (!presetId || presetId === 'none') { events.push(dialogue(c.start, c.end, `{\\fad(300,300)}${text}`)); continue; }
+    const typo = typoOf(c);
+    const plate = plateOf(c);
+    // 静态分支（无动画 / 淡入）：排版（字体/字距/底板）与行距都在这里处理。
+    // ★ ASS 没有原生行距 —— 多行文本按行拆成多条 Dialogue、用 \an+\pos 逐行定位；
+    //   有动画/变换时不做行距（逐字/逐字飞入本来就是分片事件，重排会错位）。
+    // ★ 底板也只在这一分支生效（动画分支的文字是分片事件，底板必须与文字同步分片，
+    //   成本高且语义含糊 —— 需要底板的场景基本都是静态字幕）。
+    if (!presetId || presetId === 'none' || presetId === 'fade') {
+      const staticTags = `\\fad(300,300)${typo}`;
+      const lines = c.text.split(/\r?\n/);
+      const gapPx = c.lineSpacingPx && c.lineSpacingPx > 0 ? Math.round(c.lineSpacingPx * pxScale) : 0;
+      if (gapPx > 0 && lines.length > 1) {
+        const lineH = fs + gapPx;
+        const vAnchor = alignOpt === 5 ? 5 : alignOpt === 8 ? 8 : 2;
+        const x = Math.round(resX / 2);
+        for (let i = 0; i < lines.length; i++) {
+          const y = alignOpt === 8
+            ? mv + i * lineH
+            : alignOpt === 5
+              ? resY / 2 - ((lines.length - 1) / 2) * lineH + i * lineH
+              : resY - mv - (lines.length - 1 - i) * lineH;
+          const tags = `\\an${vAnchor}\\pos(${x},${Math.round(y)})${staticTags}`;
+          const lineText = escAssText(lines[i]);
+          if (plate) events.push(dialogue(c.start, c.end, `{${tags}${plate}}${lineText}`));
+          events.push(dialogue(c.start, c.end, `{${tags}}${lineText}`));
+        }
+        continue;
+      }
+      if (plate) events.push(dialogue(c.start, c.end, `{${staticTags}${plate}}${text}`));
+      events.push(dialogue(c.start, c.end, `{${staticTags}}${text}`));
+      continue;
+    }
     const anchorX = resX / 2;
     const rowY = alignOpt === 5 ? resY / 2 : alignOpt === 8 ? mv : resY - mv;
 
     switch (presetId) {
-      case 'fade': {
-        events.push(dialogue(c.start, c.end, `{\\fad(300,300)}${text}`));
-        break;
-      }
       case 'pop': {
         events.push(
           dialogue(
             c.start,
             c.end,
-            `{\\fad(80,150)\\fscx70\\fscy70\\t(0,160,\\fscx118\\fscy118)\\t(160,340,\\fscx100\\fscy100)}${text}`,
+            `{\\fad(80,150)\\fscx70\\fscy70\\t(0,160,\\fscx118\\fscy118)\\t(160,340,\\fscx100\\fscy100)${typo}}${text}`,
           ),
         );
         break;
       }
       case 'zoom': {
         events.push(
-          dialogue(c.start, c.end, `{\\fad(120,180)\\fscx55\\fscy55\\t(0,240,\\fscx100\\fscy100)}${text}`),
+          dialogue(c.start, c.end, `{\\fad(120,180)\\fscx55\\fscy55\\t(0,240,\\fscx100\\fscy100)${typo}}${text}`),
         );
         break;
       }
@@ -391,7 +450,7 @@ export function buildAss(
           dialogue(
             c.start,
             c.end,
-            `{\\move(${Math.round(x0)},${Math.round(y0)},${Math.round(anchorX)},${Math.round(rowY)},0,300)\\fad(0,200)}${text}`,
+            `{\\move(${Math.round(x0)},${Math.round(y0)},${Math.round(anchorX)},${Math.round(rowY)},0,300)\\fad(0,200)${typo}}${text}`,
           ),
         );
         break;
@@ -409,7 +468,7 @@ export function buildAss(
             dialogue(
               t0,
               c.end,
-              `{\\an${vAnchor}\\pos(${Math.round(x0)},${Math.round(rowY)})\\fad(60,0)}${escAssText(chars.slice(0, i + 1).join(''))}`,
+              `{\\an${vAnchor}\\pos(${Math.round(x0)},${Math.round(rowY)})\\fad(60,0)${typo}}${escAssText(chars.slice(0, i + 1).join(''))}`,
             ),
           );
         }
@@ -420,7 +479,7 @@ export function buildAss(
         const chars = Array.from(plain);
         const per = Math.max(10, Math.round((dur * 100) / chars.length));
         const tags = chars.map((ch) => `{\\k${per}}${ch === ' ' ? ' ' : ch}`).join('');
-        events.push(dialogue(c.start, c.end, `{\\fad(100,150)}${tags}`));
+        events.push(dialogue(c.start, c.end, `{\\fad(100,150)${typo}}${tags}`));
         break;
       }
       case 'flicker': {
@@ -430,7 +489,7 @@ export function buildAss(
           dialogue(
             c.start,
             c.end,
-            `{\\fad(80,150)\\t(0,150,\\bord${big})\\t(150,300,\\bord${ol})\\t(300,450,\\bord${big})\\t(450,600,\\bord${ol})}${text}`,
+            `{\\fad(80,150)\\t(0,150,\\bord${big})\\t(150,300,\\bord${ol})\\t(300,450,\\bord${big})\\t(450,600,\\bord${ol})${typo}}${text}`,
           ),
         );
         break;
@@ -451,7 +510,7 @@ export function buildAss(
             dialogue(
               t0,
               c.end,
-              `{\\an5\\pos(${Math.round(cx)},${Math.round(rowY - fs / 2)})\\move(${Math.round(cx)},${Math.round(rowY - fs / 2 - dy)},${Math.round(cx)},${Math.round(rowY - fs / 2)},0,250)\\fad(80,0)}${escAssText(ch)}`,
+              `{\\an5\\pos(${Math.round(cx)},${Math.round(rowY - fs / 2)})\\move(${Math.round(cx)},${Math.round(rowY - fs / 2 - dy)},${Math.round(cx)},${Math.round(rowY - fs / 2)},0,250)\\fad(80,0)${typo}}${escAssText(ch)}`,
             ),
           );
           x += w;

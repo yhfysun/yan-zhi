@@ -84,6 +84,9 @@ const TOOL_PATH_ARGS: Record<string, PathArgSpec[]> = {
   api_im_send_message: [{ field: 'filePath', action: 'read' }],
   // ── OCR：传 path 读本地图片（读）；传 image(base64) 时不碰磁盘，抽不到自然不判 ──
   api_tool_ocr: [{ field: 'path', action: 'read' }],
+  // ── 剪映剪辑：draftRoot 是**落盘目录**（写）。不传 = 用自动检测到的剪映草稿根（可信）；
+  //    显式传了工作目录外的路径 → 走授权流，不能成为"任意目录静默建目录写文件"的通道。
+  clip_jianying: [{ field: 'draftRoot', action: 'write' }],
   // ── 媒体加工（ffmpeg）：**输入一律本机绝对路径**（前序工具回传的 file 字段）──
   //   ★ 这里全是**读用户本机文件**，且绝对路径是官方用法（工具描述明写"输入一律为本机绝对路径"）
   //     → 若不登记，`media_edit` 会成为一个"读任意文件"的静默通道。

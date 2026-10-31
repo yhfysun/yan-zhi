@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>言智 · 桌面工作台框架原型</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #dfe3ea; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #14171e; }
+  .stage { padding: 22px; display: flex; justify-content: center; }
+  .win {
+    width: 1440px; height: 880px; background: #eef1f6; border-radius: 10px; overflow: hidden;
+    display: flex; flex-direction: column; box-shadow: 0 30px 80px rgba(20,23,30,.25); border: 1px solid #d3dae6;
+  }
+  /* ===== 标题栏：应用自己的栏，不是网页导航 ===== */
+  .titlebar {
+    height: 40px; flex: 0 0 40px; display: flex; align-items: center; gap: 12px;
+    padding: 0 0 0 14px; background: #fff; border-bottom: 1px solid #e3e8f0; user-select: none;
+  }
+  .logo { width: 20px; height: 20px; border-radius: 6px; background: linear-gradient(135deg,#4f46e5,#8b7cff); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; }
+  .ws-tabs { display: flex; align-items: center; gap: 2px; }
+  .ws-tab { height: 26px; padding: 0 10px; border-radius: 7px; font-size: 12.5px; color: #565e6e; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .ws-tab:hover { background: #f3f5f9; }
+  .ws-tab.on { background: #ececfd; color: #4f46e5; font-weight: 600; }
+  .ws-tab .dot { width: 5px; height: 5px; border-radius: 50%; background: #b9c0cd; }
+  .ws-tab.on .dot { background: #4f46e5; }
+  .cmdk {
+    margin-left: 10px; flex: 0 0 300px; height: 26px; border-radius: 7px; border: 1px solid #e3e8f0;
+    background: #f6f8fb; display: flex; align-items: center; gap: 7px; padding: 0 9px; color: #8a92a3; font-size: 12px; cursor: pointer;
+  }
+  .cmdk kbd { margin-left: auto; font: 10px/1 ui-monospace, monospace; background: #fff; border: 1px solid #dfe4ee; border-radius: 4px; padding: 2px 4px; color: #8a92a3; }
+  .tb-spacer { flex: 1; }
+  .tb-btn { width: 30px; height: 28px; display: grid; place-items: center; border: 0; background: transparent; color: #565e6e; border-radius: 6px; cursor: pointer; }
+  .tb-btn:hover { background: #f3f5f9; }
+  .win-controls { display: flex; height: 40px; margin-left: 6px; }
+  .win-controls span { width: 44px; display: grid; place-items: center; color: #565e6e; font-size: 12px; cursor: pointer; }
+  .win-controls span:hover { background: #f3f5f9; }
+  .win-controls .close:hover { background: #e5484d; color: #fff; }
+
+  /* ===== 主体 ===== */
+  .body { flex: 1; display: flex; min-height: 0; }
+  .pane { display: flex; flex-direction: column; min-height: 0; background: #fff; }
+  .pane-tree { width: 264px; flex: 0 0 264px; border-right: 1px solid #e3e8f0; }
+  .pane-main { flex: 1; min-width: 0; background: #fff; }
+  .pane-ai { width: 366px; flex: 0 0 366px; border-left: 1px solid #e3e8f0; background: #fbfcfe; }
+  .pane-head { height: 42px; flex: 0 0 42px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid #eef1f6; }
+  .pane-title { font-size: 12px; font-weight: 600; color: #14171e; letter-spacing: .2px; }
+  .pane-sub { font-size: 11px; color: #8a92a3; }
+  .pane-actions { margin-left: auto; display: flex; gap: 2px; }
+  .icon-btn { width: 26px; height: 26px; display: grid; place-items: center; border: 0; background: transparent; border-radius: 6px; color: #6b7382; cursor: pointer; font-size: 13px; }
+  .icon-btn:hover { background: #f0f3f8; color: #14171e; }
+
+  /* 文件树 */
+  .tree { flex: 1; overflow: auto; padding: 6px; }
+  .tree-row { display: flex; align-items: center; gap: 7px; height: 30px; padding: 0 8px; border-radius: 6px; font-size: 12.5px; color: #303743; cursor: pointer; white-space: nowrap; }
+  .tree-row:hover { background: #f2f5fa; }
+  .tree-row.on { background: #ececfd; color: #4f46e5; font-weight: 500; }
+  .tree-row.folder { color: #565e6e; font-weight: 600; }
+  .tree-row .ficon { width: 16px; text-align: center; font-size: 11px; font-weight: 700; flex: none; }
+  .f-word { color: #2b579a; }
+  .f-xls { color: #1d7044; }
+  .f-ppt { color: #b7472a; }
+  .tree-caret { width: 10px; color: #9aa2b1; font-size: 9px; }
+  .tree-row .tag { margin-left: auto; font-size: 10px; color: #8a92a3; }
+
+  /* 文档画布 */
+  .doc-wrap { flex: 1; overflow: auto; background: #f3f5f9; padding: 26px 40px 60px; display: flex; justify-content: center; }
+  .doc-page { width: 720px; min-height: 900px; background: #fff; border: 1px solid #e3e8f0; border-radius: 4px; box-shadow: 0 2px 10px rgba(20,23,30,.06); padding: 54px 64px; }
+  .doc-page h1 { font-size: 22px; margin: 0 0 6px; font-weight: 700; }
+  .doc-meta { font-size: 11px; color: #8a92a3; margin-bottom: 26px; }
+  .doc-page h2 { font-size: 15px; margin: 26px 0 8px; }
+  .doc-page p { font-size: 13.5px; line-height: 1.8; color: #303743; margin: 0 0 10px; }
+  .doc-page table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 12.5px; }
+  .doc-page th, .doc-page td { border-bottom: 1px solid #e8ecf3; padding: 9px 12px; text-align: left; }
+  .doc-page th { background: #f7f9fc; color: #6b7382; font-size: 11px; font-weight: 600; }
+
+  /* AI / 人工 */
+  .seg { display: flex; gap: 2px; padding: 3px; border-radius: 8px; background: #eef1f6; margin-left: auto; }
+  .seg button { border: 0; background: transparent; font-size: 11.5px; color: #6b7382; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-family: inherit; }
+  .seg button.on { background: #fff; color: #14171e; font-weight: 600; box-shadow: 0 1px 2px rgba(20,23,30,.08); }
+  .ai-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .ai-log { flex: 1; overflow: auto; padding: 14px 14px 8px; }
+  .ai-msg { margin-bottom: 14px; }
+  .ai-msg .who { font-size: 11.5px; font-weight: 600; color: #565e6e; margin-bottom: 5px; display: flex; align-items: center; gap: 6px; }
+  .ai-msg .bubble { background: #fff; border: 1px solid #e3e8f0; border-radius: 10px; padding: 11px 13px; font-size: 12.5px; line-height: 1.7; color: #303743; }
+  .ai-msg.me .bubble { background: #ececfd; border-color: transparent; }
+  .ai-msg.me .who { justify-content: flex-end; }
+  .ai-input { margin: 0 12px 12px; border: 1px solid #e3e8f0; border-radius: 12px; background: #fff; padding: 10px 12px; box-shadow: 0 1px 2px rgba(20,23,30,.04); }
+  .ai-input .ph { font-size: 12.5px; color: #8a92a3; padding: 2px 2px 14px; }
+  .ai-input .bar { display: flex; align-items: center; gap: 6px; }
+  .chip { height: 24px; padding: 0 9px; border-radius: 999px; border: 1px solid #e3e8f0; background: #fff; font-size: 11px; color: #565e6e; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  .chip.solid { background: #ececfd; border-color: transparent; color: #4f46e5; }
+  .send { margin-left: auto; width: 28px; height: 28px; border-radius: 8px; border: 0; background: #4f46e5; color: #fff; display: grid; place-items: center; cursor: pointer; }
+
+  /* 人工模式：右栏收成一条 */
+  .manual-hint { display: none; }
+  .body.manual .pane-ai { width: 56px; flex-basis: 56px; }
+  .body.manual .ai-body { display: none; }
+  .body.manual .manual-hint { display: flex; flex: 1; flex-direction: column; align-items: center; gap: 14px; padding: 16px 0; }
+  .manual-hint .mh-btn { width: 34px; height: 34px; border-radius: 9px; border: 0; background: transparent; color: #565e6e; display: grid; place-items: center; cursor: pointer; font-size: 15px; }
+  .manual-hint .mh-btn:hover { background: #eef1f6; color: #14171e; }
+  .manual-hint .mh-label { writing-mode: vertical-rl; font-size: 11px; color: #8a92a3; letter-spacing: .2em; margin-top: 4px; }
+  .body.manual .doc-page { width: 820px; }
+
+  /* 状态栏 */
+  .statusbar {
+    height: 26px; flex: 0 0 26px; display: flex; align-items: center; gap: 16px;
+    padding: 0 12px; background: #f7f9fc; border-top: 1px solid #e3e8f0; font-size: 11px; color: #6b7382;
+  }
+  .statusbar .dot { width: 6px; height: 6px; border-radius: 50%; background: #1c8a5d; margin-right: 5px; display: inline-block; }
+  .statusbar .sb-item { display: flex; align-items: center; gap: 5px; }
+  .statusbar .sb-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+  .statusbar b { color: #14171e; font-weight: 500; }
+
+  /* 右键菜单 */
+  .ctx {
+    position: fixed; z-index: 50; min-width: 200px; background: #fff; border: 1px solid #e3e8f0; border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(20,23,30,.16); padding: 5px; display: none;
+  }
+  .ctx.on { display: block; }
+  .ctx-item { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 7px; font-size: 12.5px; color: #303743; cursor: pointer; }
+  .ctx-item:hover { background: #f2f5fa; }
+  .ctx-item .k { margin-left: auto; font-size: 10.5px; color: #9aa2b1; }
+  .ctx-item.danger { color: #b91c1c; }
+  .ctx-sep { height: 1px; background: #eef1f6; margin: 4px 6px; }
+
+  /* 页面上的说明 */
+  .caption { max-width: 1440px; margin: 4px auto 0; font-size: 12px; color: #6b7382; line-height: 1.8; }
+  .caption b { color: #14171e; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="win">
+    <!-- 标题栏 -->
+    <div class="titlebar">
+      <div class="logo">言</div>
+      <div class="ws-tabs">
+        <div class="ws-tab on"><span class="dot"></span>办公 · 抖音运营</div>
+        <div class="ws-tab" data-mode="dev"><span class="dot"></span>开发 · ai-assistant</div>
+        <div class="ws-tab"><span class="dot"></span>运维</div>
+      </div>
+      <div class="cmdk">搜索任务、文件、命令 <kbd>Ctrl K</kbd></div>
+      <div class="tb-spacer"></div>
+      <button class="tb-btn" title="新建">＋</button>
+      <button class="tb-btn" title="分屏">▥</button>
+      <div class="win-controls"><span>–</span><span>□</span><span class="close">×</span></div>
+    </div>
+
+    <div class="body" id="body">
+      <!-- 文件树 -->
+      <aside class="pane pane-tree">
+        <div class="pane-head">
+          <span class="pane-title">工作区</span>
+          <span class="pane-sub">D:\小说推文\抖音运营</span>
+          <div class="pane-actions">
+            <button class="icon-btn" title="新建">＋</button>
+            <button class="icon-btn" title="刷新">⟳</button>
+          </div>
+        </div>
+        <div class="tree" id="tree">
+          <div class="tree-row folder"><span class="tree-caret">▾</span><span class="ficon">▣</span>发布物料</div>
+          <div class="tree-row on" style="padding-left:22px"><span class="ficon f-word">W</span>第06期发布说明.docx<span class="tag">已保存</span></div>
+          <div class="tree-row" style="padding-left:22px"><span class="ficon f-xls">X</span>投放数据表.xlsx</div>
+          <div class="tree-row" style="padding-left:22px"><span class="ficon f-ppt">P</span>抖音运营复盘.pptx</div>
+          <div class="tree-row folder" style="margin-top:6px"><span class="tree-caret">▸</span><span class="ficon">▣</span>口播稿</div>
+          <div class="tree-row folder" style="margin-top:6px"><span class="tree-caret">▸</span><span class="ficon">▣</span>成片</div>
+          <div class="tree-row" style="margin-top:10px;color:#8a92a3"><span class="ficon">＋</span>新建文档 / 表格 / 演示</div>
+        </div>
+      </aside>
+
+      <!-- 文档画布 -->
+      <section class="pane pane-main">
+        <div class="pane-head">
+          <span class="pane-title">第06期发布说明.docx</span>
+          <span class="pane-sub">已自动保存 · 14:32</span>
+          <div class="pane-actions">
+            <button class="icon-btn" title="导出 Word">⤓</button>
+            <button class="icon-btn" title="共享">⇪</button>
+            <button class="icon-btn" title="更多">⋯</button>
+          </div>
+        </div>
+        <div class="doc-wrap">
+          <div class="doc-page">
+            <h1>第 06 期发布说明</h1>
+            <div class="doc-meta">抖音运营 · 2026-10-31 · 修改人：你</div>
+            <p>本期沿用「1 小时会议录音，3 句话出纪要」的结构，封面换成 4.2s 大字淡出后的干净帧，避免压住橙色副标题。</p>
+            <h2>一、发布信息</h2>
+            <table>
+              <tr><th>项目</th><th>内容</th></tr>
+              <tr><td>标题</td><td>1 小时会议录音，3 句话出纪要</td></tr>
+              <tr><td>合集</td><td>AI 干活 · 第 6 集</td></tr>
+              <tr><td>发布时间</td><td>2026-10-31 18:00</td></tr>
+            </table>
+            <h2>二、发布前必须确认</h2>
+            <p>1. 描述保留分段（上一期 paste 时丢过一次）。<br />2. 5 个 # 话题要落成真话题，不能只是纯文本。</p>
+            <p>以上两项都由右侧 AI 助手在发布前自动检查；你也可以切到「人工」，自己逐项核对。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- AI 面板 -->
+      <aside class="pane pane-ai">
+        <div class="pane-head">
+          <span class="pane-title">助手</span>
+          <div class="seg" id="seg">
+            <button class="on" data-panel="ai">AI</button>
+            <button data-panel="manual">人工</button>
+          </div>
+        </div>
+        <div class="ai-body">
+          <div class="ai-log">
+            <div class="ai-msg me"><div class="who">你</div><div class="bubble">帮我把这期发布说明补完，再把数据表更新一下。</div></div>
+            <div class="ai-msg">
+              <div class="who"><span style="width:18px;height:18px;border-radius:5px;background:#ececfd;color:#4f46e5;display:inline-grid;place-items:center;font-size:10px">抖</span>抖音运营助手</div>
+              <div class="bubble">已经补完「发布信息」和「发布前确认」两节。数据表新增了「第 06 期」行，等你填播放与跳出率。</div>
+            </div>
+          </div>
+          <div class="ai-input">
+            <div class="ph">让助手改文档、填表格、做演示…</div>
+            <div class="bar">
+              <span class="chip solid">AI（不确认）</span>
+              <span class="chip">deepseek-flash</span>
+              <button class="send">➤</button>
+            </div>
+          </div>
+        </div>
+        <div class="manual-hint">
+          <button class="mh-btn" title="编辑模式">✎</button>
+          <button class="mh-btn" title="格式">¶</button>
+          <button class="mh-btn" title="评论">💬</button>
+          <div class="mh-label">人工编辑</div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- 状态栏 -->
+    <div class="statusbar">
+      <span class="sb-item"><span class="dot"></span><span id="modeLabel">办公模式 · AI 协作</span></span>
+      <span class="sb-item">工作区 <b>抖音运营</b></span>
+      <span class="sb-item">已保存</span>
+      <div class="sb-right">
+        <span class="sb-item">模型 <b>deepseek-flash</b></span>
+        <span class="sb-item">上下文 32%</span>
+        <span class="sb-item">v0.1.1</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 右键菜单 -->
+<div class="ctx" id="ctx">
+  <div class="ctx-item">＋ 新建文档 <span class="k">.docx</span></div>
+  <div class="ctx-item">＋ 新建表格 <span class="k">.xlsx</span></div>
+  <div class="ctx-item">＋ 新建演示 <span class="k">.pptx</span></div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item">✎ 重命名 <span class="k">F2</span></div>
+  <div class="ctx-item">⧉ 复制一份</div>
+  <div class="ctx-sep"></div>
+  <div class="ctx-item danger">⌫ 删除 <span class="k">Del</span></div>
+</div>
+
+<div class="caption">
+  <b>这个框架改了什么：</b>顶部是应用标题栏（工作区标签 + 命令面板），不再是网站导航；
+  三段各自滚动；右栏 AI / 人工一键切换（人工时收成窄条，文档区变宽）；
+  文件树右键即可新建 Word / Excel / PPT、重命名、删除；底部是常驻状态栏。
+</div>
+
+<script>
+  const seg = document.getElementById('seg');
+  const body = document.getElementById('body');
+  const modeLabel = document.getElementById('modeLabel');
+  seg.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-panel]');
+    if (!btn) return;
+    seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === btn));
+    const manual = btn.dataset.panel === 'manual';
+    body.classList.toggle('manual', manual);
+    modeLabel.textContent = manual ? '人工编辑 · 不调用 AI' : '办公模式 · AI 协作';
+  });
+
+  const tree = document.getElementById('tree');
+  const ctx = document.getElementById('ctx');
+  tree.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('.tree-row');
+    if (!row || row.classList.contains('folder')) return;
+    e.preventDefault();
+    ctx.classList.add('on');
+    ctx.style.left = Math.min(e.clientX, window.innerWidth - 220) + 'px';
+    ctx.style.top = Math.min(e.clientY, window.innerHeight - 260) + 'px';
+  });
+  document.addEventListener('click', () => ctx.classList.remove('on'));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') ctx.classList.remove('on'); });
+</script>
+</body>
+</html>
+<style>
+  /* 人工模式下右栏收窄：标题隐藏、切换器竖排，避免控件被挤断 */
+  .body.manual .pane-ai .pane-head { justify-content: center; padding: 8px 0; }
+  .body.manual .pane-ai .pane-title { display: none; }
+  .body.manual .seg { margin-left: 0; flex-direction: column; padding: 2px; }
+  .body.manual .seg button { padding: 4px 6px; }
+</style>

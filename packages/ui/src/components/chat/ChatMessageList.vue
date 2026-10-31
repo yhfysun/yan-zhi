@@ -89,12 +89,19 @@
       </div>
 
       <div v-if="vr.round.finalAssistant || vr.round.steps.length > 0 || isLastRoundStreaming(vr.round, vr.ri)" class="msg msg-assistant" :class="{ 'is-actions-open': actionsShown(vr.round.finalAssistant?.id || '') }" v-on="msgLongPressHandlers(vr.round.finalAssistant?.id || '')">
-        <!-- 8.1 双头像身份：AI 头像 = 当前智能体头像（图标/图片），桌面端显示（窄栏由 CSS 收起） -->
-        <div class="msg-avatar avatar-assistant" :class="{ streaming: isLastRoundStreaming(vr.round, vr.ri) }">
-          <AgentAvatar :id="agentStore.selectedAgent?.id" :name="agentStore.selectedAgent?.name" :avatar="agentStore.selectedAgent?.avatar" :icon-size="17" />
-        </div>
         <div class="msg-body">
           <div class="agent-response-card" :class="{ 'msg-collapsed': collapsedMessages[vr.round.finalAssistant?.id || ''] }" @click="collapsedMessages[vr.round.finalAssistant?.id || ''] ? toggleMsgCollapse(vr.round.finalAssistant?.id || '') : null">
+            <!-- 卡片头（2026-10-31）：头像 + 智能体名 + 模型 + 时间。
+                 此前头像浮在卡片外的左侧留白里，卡片与输入框错位 42px；
+                 名片化后整条回复是一个自解释的单元，扫读时先看到"谁·用什么·什么时候"。 -->
+            <div class="agent-card-head">
+              <span class="agent-card-avatar" :class="{ streaming: isLastRoundStreaming(vr.round, vr.ri) }">
+                <AgentAvatar :id="agentStore.selectedAgent?.id" :name="agentStore.selectedAgent?.name" :avatar="agentStore.selectedAgent?.avatar" :icon-size="15" />
+              </span>
+              <span class="agent-card-name">{{ agentStore.selectedAgent?.name || '智能体' }}</span>
+              <span v-if="currentConvModel" class="agent-card-model">{{ currentConvModel }}</span>
+              <span v-if="vr.round.finalAssistant?.createdAt" class="agent-card-time">{{ formatTime(vr.round.finalAssistant.createdAt) }}</span>
+            </div>
             <div v-show="collapsedMessages[vr.round.finalAssistant?.id || '']" class="msg-collapsed-placeholder">
               <span class="collapsed-line">{{ (vr.round.finalAssistant?.content || '').replace(/\[\[PLATFORM_CONFIG:[^\]]*\]\]/g, '').split('@@REASON@@')[0].replace(/\n/g, ' ').trim().slice(0, 120) }}</span>
               <span class="collapsed-hint">点击展开</span>
@@ -108,13 +115,14 @@
                    ② 已结束：N 步推理 · M 次工具调用（点击展开详情） -->
               <div v-if="showProcessSummary(vr.round, vr.ri)"
                    class="agent-process-summary"
-                   :class="{ 'is-clickable': canExpandProcess(vr.round) }"
+                   :class="{ 'is-clickable': canExpandProcess(vr.round), 'is-open': isProcessOpen(vr.round, vr.ri) }"
                    @click="onProcessSummaryClick(vr.round, vr.ri)">
                 <el-icon :size="13" class="agent-process-summary-icon">
                   <Loading v-if="isRoundLive(vr.round, vr.ri) || isRoundDetailsLoading(vr.round)" class="is-loading" />
                   <CircleCheck v-else />
                 </el-icon>
                 <span class="agent-process-summary-text">{{ processSummaryText(vr.round, vr.ri) }}</span>
+                <span v-if="isProcessOpen(vr.round, vr.ri)" class="agent-process-summary-collapse">收起</span>
                 <el-icon v-if="canExpandProcess(vr.round)" :size="12" class="agent-process-summary-chevron"><ArrowRight /></el-icon>
               </div>
               <!-- 最耗时的 3 个**计划步骤**（2026-10-23 用户要求：按规划步骤而非工具统计）：
@@ -921,6 +929,11 @@ function isLongToolResult(text?: string | null): boolean {
 // ── 费用提醒条（2026-10-17，D4：只提醒、任务不停）────────────────────────────
 // ★ 提示条是**旁路 UI**，不落消息流：落进消息会进上下文，提醒自身在推高它提醒的数字（坑 #15）。
 const costNotice = computed(() => costStore.activeNotice(store.currentConvId));
+/** 当前会话使用的模型：卡片头展示用；没选模型时为空，不占位 */
+const currentConvModel = computed(() => {
+  const conv = (store.conversations as Array<{ id: string; modelId?: string }>).find((c) => c.id === store.currentConvId);
+  return conv?.modelId || '';
+});
 
 function onDismissCostNotice() {
   costStore.dismissNotice(store.currentConvId);
@@ -1310,7 +1323,8 @@ function canExpandProcess(round: MessageRound): boolean {
 function showProcessSummary(round: MessageRound, ri: number): boolean {
   if (isRoundLive(round, ri)) return true;
   if (isRoundDetailsLoading(round)) return true;
-  if (round.hasAgentProcess) return !isProcessOpen(round, ri);
+  // ★ 展开后摘要行必须继续显示：它是唯一的"收起"入口，藏起来就只能滚到底部找收起按钮
+  if (round.hasAgentProcess) return true;
   return roundHasHiddenDetails(round);
 }
 async function onProcessSummaryClick(round: MessageRound, ri: number): Promise<void> {

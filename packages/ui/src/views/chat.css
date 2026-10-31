@@ -22,7 +22,11 @@
 .chat-page .sidebar,
 .sidebar {
   /* 布局相关：保留原 .sidebar 的基础尺寸/边框/排布 */
-  width: var(--chat-sidebar-w, 280px); min-width: 0;
+  width: var(--chat-sidebar-w, 280px);
+  /* flex:0 0 —— 侧栏是固定宽的列表栏，不许被主区挤扁（此前会被压到 ~178px，标签全挤掉） */
+  flex: 0 0 var(--chat-sidebar-w, 280px);
+  min-width: 0;
+  container-type: inline-size;
   border-right: 1px solid var(--glass-border);
   display: flex; flex-direction: column;
   transition: width 0.25s ease; overflow: hidden;
@@ -37,7 +41,8 @@
        现在用户要求"一张大图上下左右居中把容器覆盖掉"，即 cover + no-repeat + center
      · 特异性 (0,3,1) 压过 skin.css 的 [data-skin=on] .sidebar (0,2,0)，
        保证暗色下也走"图片即面板"路径。 */
-  background-color: transparent !important;
+  /* 色值来自 token：无壁纸时给侧栏一个「面板」底色，与画布拉开层级；皮肤壁纸仍走 background-image，不会被盖住 */
+  background-color: var(--chat-sidebar-bg, transparent) !important;
   background-image: var(--skin-task-list-pattern, none) !important;
   background-size: cover !important;
   background-position: center !important;
@@ -2331,3 +2336,477 @@
 }
 .conv-archived-banner > .el-icon { color: var(--el-color-warning, #e6a23c); flex: none; }
 .conv-archived-banner > span { flex: 1; min-width: 0; }
+
+/* ==========================================================================
+   视觉升级 A · 纸墨进阶（2026-10-31）
+   --------------------------------------------------------------------------
+   为什么需要这一层：此前画布/面板/侧栏几乎同色，消息没有容器，标题与正文
+   同号，Element 默认表格与滚动条直接露脸 —— 眼睛看到的是一堆等权重灰字，
+   所以显"廉价"。这里只补结构与排版，不动任何交互逻辑与 DOM 层级。
+
+   约束：
+   · 只使用 tokens.css 的变量；不新增裸色值（rgba 阴影除外）
+   · 宽度类改动收在 ≥768px，避免压掉移动端既有的窄屏留白
+   · 皮肤（skin.css）的壁纸/暗色仍走原有 !important 规则，本段不碰背景图
+   ========================================================================== */
+
+/* ── 画布下沉一档：白卡才有"浮起来"的余地 ──
+   --chat-canvas 由 tokens.css 以主色混色派生，暗色主题自动跟随，无需第二份定义 */
+.chat-page { background: var(--chat-canvas, var(--color-bg)); }
+
+/* ── 桌面端：阅读列收窄到 760px，顶栏/消息/输入三段同一条竖线对齐 ── */
+@media (min-width: 768px) {
+  .chat-topbar {
+    padding: 12px max(24px, calc((100% - var(--chat-column-max, 760px)) / 2));
+    min-height: 56px;
+  }
+  .messages {
+    padding: 20px max(24px, calc((100% - var(--chat-column-max, 760px)) / 2)) 48px;
+  }
+  .input-area {
+    padding: 10px max(24px, calc((100% - var(--chat-column-max, 760px)) / 2)) 20px;
+  }
+}
+
+/* ── 顶栏：标题与标签建立层级，路径退成等宽小字（它是指示，不是内容） ── */
+.chat-topbar { gap: 10px; }
+.chat-topbar .conv-title-display { font-size: 15px; letter-spacing: -0.15px; }
+.chat-topbar .conv-space-chip { font-weight: 500; height: 22px; display: inline-flex; align-items: center; }
+.chat-topbar .conv-dir-chip .conv-dir-path { font-size: 11px; }
+/* 动作按钮收成"幽灵按钮"：不再是一排带灰边的圆圈 */
+.chat-topbar .el-button.is-circle {
+  width: 30px; height: 30px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.chat-topbar .el-button.is-circle:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+.chat-topbar .el-button.is-circle.is-disabled,
+.chat-topbar .el-button.is-circle:disabled { opacity: 0.45; }
+.chat-topbar .new-chat-btn { color: var(--color-primary); }
+.chat-topbar .chat-topbar-actions {
+  display: flex; align-items: center; gap: 2px;
+  padding-left: 8px; margin-left: 2px;
+  border-left: 1px solid var(--color-border);
+}
+
+/* ── 消息节奏：轮次间距 20 → 24，头像与角色名各自降一档 ── */
+.msg { gap: 14px; margin-bottom: 24px; }
+.msg-avatar { width: 28px; height: 28px; border-radius: 8px; font-size: 13px; }
+.msg-meta { gap: 7px; margin-bottom: 6px; padding: 0 2px; }
+.msg-role-name { font-size: 12.5px; color: var(--color-text); }
+.msg-time { font-size: 11px; opacity: 0.7; }
+
+/* ── AI 回复卡片：更强的边界（此前白卡压在白底上几乎看不见） ── */
+.agent-response-card {
+  background: var(--surface-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  border-bottom-left-radius: 6px;
+  box-shadow: var(--shadow-1);
+  padding: 18px 20px;
+}
+.agent-response-card.msg-collapsed { padding: 12px 16px; background: var(--surface-panel); }
+
+/* ── 正文排版：14px / 1.72，标题按层级给字号（此前 h2 只比正文大 2px） ── */
+.agent-response-body,
+.msg-content {
+  font-size: var(--font-size-reading, 14px);
+  line-height: var(--line-height-reading, 1.72);
+}
+.msg-content p,
+.sub-agent-result-content p,
+.main-agent-result-content p,
+.agent-step-partial p { margin: 0 0 12px; }
+.msg-content p:last-child { margin-bottom: 0; }
+.msg-content h1, .msg-content h2, .msg-content h3,
+.msg-content h4, .msg-content h5, .msg-content h6 {
+  margin: 24px 0 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-text);
+  letter-spacing: -0.1px;
+}
+.msg-content > :first-child { margin-top: 0; }
+.msg-content h1 { font-size: 20px; }
+.msg-content h2 { font-size: 17px; }
+.msg-content h3 { font-size: 15.5px; }
+.msg-content h4, .msg-content h5, .msg-content h6 { font-size: 14px; }
+.msg-content li { margin: 4px 0; }
+.msg-content li::marker { color: var(--color-primary); }
+.msg-content ul, .msg-content ol { margin: 0 0 12px; }
+.msg-content hr { border: none; border-top: 1px solid var(--color-border); margin: 20px 0; }
+.msg-content a { border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 35%, transparent); }
+.msg-content blockquote {
+  border-left: 3px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
+  background: var(--color-primary-soft);
+  padding: 8px 14px;
+  border-radius: 0 8px 8px 0;
+}
+.msg-content code {
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-border);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.msg-content pre {
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  padding: 14px 16px;
+}
+.msg-content pre code { background: transparent; border: 0; padding: 0; }
+
+/* ── 表格：去掉竖线，表头轻量、行高放宽、数字对齐 ── */
+.msg-content table {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  margin: 14px 0;
+  font-size: 13px;
+}
+.msg-content th, .msg-content td {
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: 10px 14px;
+  vertical-align: top;
+}
+.msg-content th {
+  background: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.msg-content tbody tr:last-child td { border-bottom: 0; }
+.msg-content tbody tr:nth-child(even) { background: transparent; }
+.msg-content tbody tr:hover { background: var(--color-primary-soft); }
+.msg-content td:first-child { font-variant-numeric: tabular-nums; }
+
+/* ── 用户消息：渐变实底 → 浅主色气泡（长段落不再白字压紫底） ── */
+.msg-user .msg-content {
+  background: var(--color-primary-soft);
+  color: var(--color-text);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 16%, transparent);
+  border-radius: 14px;
+  border-bottom-right-radius: 6px;
+  box-shadow: none;
+  padding: 12px 16px;
+}
+.msg-user .msg-content a { color: var(--color-primary); text-decoration: underline; border-bottom: 0; }
+.msg-user .msg-content a:hover { color: var(--color-primary-dark); background: transparent; }
+.msg-user .msg-content pre { background: var(--color-surface-hover); color: var(--color-text); }
+.msg-user .msg-content::selection,
+.msg-user .msg-content ::selection { background: var(--color-primary-ring); color: var(--color-text); }
+.msg-user .msg-image { border-color: var(--color-border); }
+
+/* ── 工具调用：从"灰底堆叠"改成"可扫读的卡片"（状态色接语义 token） ── */
+.msg-tools-group {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--surface-panel);
+  margin-bottom: 10px;
+}
+.msg-tools-group:hover { border-color: var(--color-border-strong); }
+.tool-group-header { padding: 9px 14px; }
+.tool-group-header:hover { background: var(--color-surface-hover); }
+.tool-group-label { font-size: 12.5px; font-weight: 600; }
+.tool-group-count { background: var(--color-surface-hover); color: var(--color-text-secondary); }
+.tool-group-dot.group-running { color: var(--color-warning); }
+.tool-group-dot.group-ok { color: var(--color-success); }
+.tool-group-dot.group-error { color: var(--color-danger); }
+.tool-group-body { border-top-color: var(--color-border); }
+.tool-item { border-bottom-color: var(--color-border); }
+.tool-item:hover { background: var(--color-surface-hover); }
+.tool-item-fn { font-size: 11.5px; }
+
+/* ── 推理块：浅主色底 + 虚线分隔，与工具卡区分开 ── */
+.msg-reasoning {
+  background: var(--color-primary-soft);
+  border-color: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* ── 输入区：透明壳 → 实心卡片 + 焦点环（与消息卡同一套圆角/边界语言） ── */
+.input-box {
+  background: var(--surface-panel) !important;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  padding: 8px;
+  box-shadow: var(--shadow-1);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.input-box:hover { border-color: var(--color-border-strong); }
+.input-box.focused,
+.input-box:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-ring), var(--shadow-1);
+}
+.input-textarea .el-textarea__inner { padding: 10px 12px; }
+.input-agent-bar { padding: 4px 6px 0; }
+
+/* ── 滚动条：6px 细条 + 透明轨道，只在 hover 时显形 ── */
+.messages::-webkit-scrollbar,
+.conv-tree::-webkit-scrollbar,
+.conv-items::-webkit-scrollbar,
+.agent-list::-webkit-scrollbar { width: 8px; }
+.messages::-webkit-scrollbar-track,
+.conv-tree::-webkit-scrollbar-track,
+.conv-items::-webkit-scrollbar-track,
+.agent-list::-webkit-scrollbar-track { background: transparent; }
+.messages::-webkit-scrollbar-thumb,
+.conv-tree::-webkit-scrollbar-thumb,
+.conv-items::-webkit-scrollbar-thumb,
+.agent-list::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.messages:hover::-webkit-scrollbar-thumb,
+.conv-tree:hover::-webkit-scrollbar-thumb,
+.conv-items:hover::-webkit-scrollbar-thumb,
+.agent-list:hover::-webkit-scrollbar-thumb { background: var(--color-border-strong); background-clip: padding-box; }
+
+/* ── 侧栏：标签页与列表行收紧，激活态用左色条 + 浅主色底 ── */
+.sidebar-tabs { padding: 4px 6px 0; border-bottom: 1px solid var(--color-border); }
+.sb-tab {
+  height: 30px; padding: 0 8px; margin: 0 1px 4px;
+  border-radius: 8px; font-size: 12.5px; gap: 5px;
+  color: var(--color-text-secondary);
+}
+.sb-tab.active {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.conv-item {
+  padding: 7px 9px; border-radius: 8px; margin-bottom: 2px; gap: 8px;
+  align-items: flex-start;
+}
+.conv-item > .el-icon { margin-top: 3px; }
+.conv-item > .el-checkbox { margin-top: 2px; }
+.conv-item:hover { background: var(--color-surface-hover); }
+.conv-item.active {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+.conv-item.active .conv-title { font-weight: 500; }
+.conv-item .conv-title { font-size: 13px; line-height: 1.35; }
+/* 两行式：标题 + 「状态点 · 时间/运行中」——列表可扫读，不再是一排等权重灰字 */
+.conv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.conv-meta {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10.5px; line-height: 1.35; color: var(--color-text-tertiary);
+  overflow: hidden; white-space: nowrap;
+}
+.conv-dot {
+  flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--color-border-strong);
+}
+.conv-dot.run {
+  background: var(--color-warning);
+  box-shadow: 0 0 0 3px var(--color-warning-soft);
+}
+.conv-meta-flag {
+  flex: 0 0 auto; padding: 0 5px; border-radius: 4px; font-size: 10px; line-height: 1.5;
+  background: var(--color-surface-hover); color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+.conv-item.active .conv-meta { color: color-mix(in srgb, var(--color-primary) 70%, transparent); }
+.conv-item.active .conv-dot { background: var(--color-primary); }
+.conv-item.active .conv-dot.run { background: var(--color-warning); }
+.conv-item .el-icon { color: var(--color-text-tertiary); }
+.conv-item.active > .el-icon,
+.conv-item:hover > .el-icon { color: var(--color-primary); }
+.tree-node-head { border-radius: 8px; }
+.tree-node-label { font-size: 12.5px; }
+.tree-count { font-size: 10.5px; }
+
+/* ── 卡片头：头像 + 名称 + 模型 + 时间 ──
+   回复卡片现在是自解释单元：扫读时先看到"谁·用什么·什么时候"。
+   头像收进卡片头（此前浮在卡片外，导致卡片左缘比输入框右缩 42px）。 */
+.msg-assistant .msg-body { max-width: 100%; }
+.agent-card-head {
+  display: flex; align-items: center; gap: 8px;
+  margin: -2px 0 12px; min-height: 24px;
+}
+.agent-card-avatar {
+  flex: 0 0 auto; width: 24px; height: 24px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-primary-soft); color: var(--color-primary);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, transparent);
+  overflow: hidden;
+}
+.agent-card-avatar.streaming { animation: avatarPulse 2s ease-in-out infinite; }
+.agent-card-name { font-size: 12.5px; font-weight: 600; color: var(--color-text); }
+.agent-card-model {
+  font-size: 11px; color: var(--color-text-secondary);
+  background: var(--color-surface-hover);
+  border: 1px solid var(--color-border);
+  padding: 1px 7px; border-radius: 999px;
+  max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-card-time {
+  margin-left: auto; font-size: 11px; color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums; flex: 0 0 auto;
+}
+
+/* ── 移动端：卡片留白收一档，避免窄屏正文被卡片边距吃掉 ── */
+@media (max-width: 767px) {
+  .agent-response-card { padding: 14px 16px; border-radius: 12px; }
+  .msg { gap: 10px; margin-bottom: 18px; }
+  .msg-content { font-size: 14px; line-height: 1.7; }
+  .input-box { border-radius: 14px; }
+}
+.platform-mobile .agent-response-card { border-radius: 12px; }
+
+
+/* ── 上下文栏：空态从 Element 大插画收成一行提示 ──
+   右栏常驻后，4 个 46px 的灰色插画会把面板撑成"到处都缺东西"的观感 */
+.context-empty {
+  font-size: 11.5px; line-height: 1.6;
+  color: var(--color-text-tertiary);
+  padding: 2px 0 6px;
+}
+
+/* 过程摘要条：展开时继续留在原地充当「收起」入口（此前展开即消失，只能滚到底部收） */
+.agent-process-summary.is-open { margin-bottom: 8px; }
+.agent-process-summary.is-open .agent-process-summary-chevron { transform: rotate(90deg); }
+.agent-process-summary-chevron { transition: transform 0.15s ease; }
+.agent-process-summary-collapse {
+  flex: 0 0 auto; font-size: 11px; color: var(--color-primary);
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--color-primary-soft);
+}
+
+/* ==========================================================================
+   内容区分块（2026-10-31）
+   --------------------------------------------------------------------------
+   长回复里"一、二、三"和表格、清单混在一张白纸上，块与块之间没有区分。
+   这里给正文建立三档结构：小节（横线分隔）/ 面板（表格、代码）/ 行内强调，
+   让一条回复能按"段"扫读，而不是一整篇连续文字。
+   ========================================================================== */
+
+/* 小节标题：上方留白 + 细分隔线，标题本身不再靠字号硬撑 */
+.msg-content h2 {
+  margin: 30px 0 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--color-border);
+  font-size: 17px;
+}
+.msg-content h3 {
+  margin: 22px 0 8px;
+  font-size: 15.5px;
+}
+.msg-content > h2:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* 段落与列表：统一呼吸，列表项之间拉开 6px */
+.msg-content p { margin: 0 0 12px; }
+.msg-content ul, .msg-content ol { margin: 10px 0 14px; }
+.msg-content li { margin: 6px 0; }
+.msg-content hr { margin: 28px 0; }
+
+/* 表格 = 面板：外框 + 圆角 + 表头底色，行悬停给反馈（此前只有细边框） */
+.msg-content table {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow-1);
+}
+.msg-content th {
+  background: var(--color-surface-hover);
+  border-bottom: 1px solid var(--color-border);
+}
+.msg-content tbody tr:hover { background: var(--color-primary-soft); }
+.msg-content td { border-bottom: 1px solid var(--color-border); }
+.msg-content tbody tr:last-child td { border-bottom: 0; }
+
+/* 代码块 = 面板：与表格同一套边界语言 */
+.msg-content .code-block-wrapper {
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 14px 0;
+}
+
+/* 卡片内分区：身份行 / 过程 / 正文 之间用一条线分开，结构一眼可见 */
+.agent-card-head {
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.agent-process-summary { margin-bottom: 10px; }
+
+/* ==========================================================================
+   侧栏顶部标签（2026-10-31，第二版）
+   --------------------------------------------------------------------------
+   原来四个标签是小胶囊、字号 11.5、图标和文字挤在一起，像临时工具栏。
+   改成桌面应用常见的分段标签：等宽分布、36px 高、选中用下划线 + 主色，
+   标签区与列表之间用一条底边分隔。
+   ========================================================================== */
+.sidebar-tabs {
+  display: flex; gap: 0; padding: 0 6px;
+  border-bottom: 1px solid var(--color-border);
+  background: transparent;
+}
+.sb-tab {
+  flex: 1 1 0; min-width: 0;
+  height: 38px; padding: 0 4px; margin: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  border-radius: 0; background: transparent;
+  font-size: 12.5px; font-weight: 500; color: var(--color-text-secondary);
+  position: relative; white-space: nowrap;
+}
+.sb-tab .el-icon { font-size: 13px; opacity: 0.8; }
+.sb-tab:hover { background: transparent; color: var(--color-text); }
+.sb-tab.active {
+  background: transparent; color: var(--color-primary); font-weight: 600;
+}
+.sb-tab.active .el-icon { opacity: 1; }
+.sb-tab.active::after {
+  content: ''; position: absolute; left: 18%; right: 18%; bottom: -1px;
+  height: 2px; border-radius: 2px 2px 0 0; background: var(--color-primary);
+}
+
+/* 搜索 + 新建：收成一条 34px 工具条，新建按钮做成主色方形按钮 */
+.conv-header { padding: 8px 10px 8px; }
+.conv-search-row { gap: 8px; }
+.conv-search-row .el-input .el-input__wrapper {
+  border-radius: 8px; box-shadow: none;
+  background: var(--color-surface-hover);
+  border: 1px solid transparent;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.conv-search-row .el-input .el-input__wrapper:hover { background: var(--color-surface); border-color: var(--color-border); }
+.conv-search-row .el-input .el-input__wrapper.is-focus { background: var(--color-surface); border-color: var(--color-primary); }
+.conv-new-icon {
+  width: 30px; height: 30px; border-radius: 8px;
+  border: 0; background: var(--color-primary-soft); color: var(--color-primary);
+}
+.conv-new-icon:hover { background: color-mix(in srgb, var(--color-primary) 16%, transparent); border: 0; color: var(--color-primary); }
+
+/* 侧栏标签的窄窗降级：先换短词（定时任务→定时），再窄只留图标（tooltip 在 title 上）。
+   窗口 1285px 时侧栏只有 280px，四个全称标签会把"发"字挤出可视区。 */
+.sb-label-short { display: none; }
+/* 按**侧栏自身宽度**降级（不是视口）：宽了就该显示全称，窄了才换短词/纯图标 */
+@container (max-width: 259px) {
+  .sidebar-tabs .sb-label { display: none; }
+  .sidebar-tabs .sb-label-short { display: inline; }
+  .sb-tab { font-size: 12px; gap: 4px; padding: 0 2px; }
+}
+@container (max-width: 199px) {
+  .sidebar-tabs .sb-label-short { display: none; }
+  .sb-tab { gap: 0; }
+  .sb-tab .el-icon { font-size: 15px; opacity: 0.9; }
+}

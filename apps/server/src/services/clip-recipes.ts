@@ -49,6 +49,7 @@ export const RECIPE_ALLOWED_OPS: ReadonlySet<string> = new Set([
   'add_overlay', 'update_overlay', 'remove_overlay',
   'add_audio', 'update_audio', 'remove_audio', 'clear_audios',
   'add_sticker', 'update_sticker', 'remove_sticker', 'clear_stickers',
+  'add_effect', 'update_effect', 'remove_effect', 'clear_effects',
 ]);
 
 /**

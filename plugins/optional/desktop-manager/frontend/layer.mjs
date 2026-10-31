@@ -31,6 +31,8 @@ const S = {
   modes: { files: true, layout: true, neat: true },
   busy: false,
   last: null,
+  focused: false,
+  modal: false,          // 正在显示原生确认框（期间不因失焦清选中）
 };
 
 const EMOJI = {
@@ -87,11 +89,51 @@ async function refresh(force) {
 }
 
 function applyState(fences, items, rev) {
+  const first = S.rev < 0;
+  const paths = new Set(items.map((i) => i.path));
+  const before = new Set(S.items.map((i) => i.path));
+  // 已消失的路径从选中集里剔掉，否则 Delete 会去回收站删一个不存在的东西
+  for (const p of [...S.sel]) if (!paths.has(p)) S.sel.delete(p);
   S.fences = fences;
   S.items = items;
   S.rev = rev;
   renderCards();
   reportHotspots();
+  // 首帧（进桌面层）不做「新文件播报」，否则一进桌面就满屏亮点
+  if (!first) revealNew(items.filter((i) => !before.has(i.path)));
+}
+
+/**
+ * 新落到桌面的东西要「亮个相」：新文件被规则自动归进某个分组后，
+ * 卡片可能滚在别处 / 是折叠的 / 里面有几百个文件 —— 不主动指一下，用户根本找不到。
+ * ★ 只选中 + 提示，**不自动进改名态**：新建的文件夹常常是在资源管理器里建的，
+ *   这时候抢走输入框，用户在后来的按键会直接打进文件名里（真踩过）。
+ *   要改名按 F2。
+ */
+async function revealNew(list) {
+  if (!list.length || searchState.open) return;
+  const many = list.length > 3;
+  const picks = many ? [list[list.length - 1]] : list;
+  const groups = [];
+  ensureFocus();
+  for (const it of picks) {
+    const fence = S.fences.find((f) => f.id === it.fenceId);
+    if (!fence) continue;
+    if (fence.collapsed) await toggleCollapse(fence);
+    const rec = S.cards.get(fence.id);
+    const node = rec && rec.items.get(it.path);
+    if (!node) continue;
+    if (!S.sel.has(it.path)) select(node, true);
+    node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    node.animate(
+      [{ filter: 'brightness(1)' }, { filter: 'brightness(1.9)' }, { filter: 'brightness(1)' }],
+      { duration: 700, easing: 'ease-out' },
+    );
+    if (!groups.includes(fence.label)) groups.push(fence.label);
+  }
+  if (many) toast('新增 ' + list.length + ' 项，已归入' + groups.map((g) => '「' + g + '」').join(''));
+  else if (list.length === 1) toast('「' + list[0].name + '」' + (groups[0] ? '已归入「' + groups[0] + '」' : '已放到桌面'));
+  else toast('新增 ' + list.length + ' 项：' + groups.map((g) => '「' + g + '」').join(''));
 }
 
 const itemsOf = (id) => S.items.filter((i) => i.fenceId === id);
@@ -169,6 +211,9 @@ function paintItems(rec, f) {
   rec.items.clear();
   for (const it of list) {
     const node = itemNode(it);
+    // 网格是整体重建的：不把选中态补回来，文件一变（新建一个就变）高亮就凭空消失，
+    // 然后 F2 / Delete 明明有目标却看起来像没选中
+    if (S.sel.has(it.path)) node.classList.add('selection');
     rec.grid.appendChild(node);
     rec.items.set(it.path, node);
   }
@@ -237,10 +282,16 @@ function reportHotspots() {
       if (r.width < 2 || r.height < 2) continue;
       rects.push({ x: r.left, y: r.top, w: r.width, h: r.height });
     }
+    // 有选中项（或正在改名）时整屏都算热区：否则点桌面空白 = 穿透给系统桌面，
+    // 渲染层收不到 pointerdown，选中就永远清不掉（前台本来就是 Progman，也不会来 blur）。
+    if (S.sel.size || document.querySelector('input.rename')) {
+      rects.push({ x: 0, y: 0, w: innerWidth, h: innerHeight });
+    }
+    // 菜单开着时整屏都算热区：否则点在菜单外面 = 落在真实桌面上（窗口穿透），
+    // 渲染层收不到 pointerdown，菜单就永远关不掉。
     const m = $('#menu');
     if (m.classList.contains('on')) {
-      const r = m.getBoundingClientRect();
-      rects.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+      rects.push({ x: 0, y: 0, w: innerWidth, h: innerHeight });
     }
     const org = $('#org');
     if (org.classList.contains('on')) {
@@ -415,7 +466,11 @@ function cardAt(x, y, exceptId) {
 document.addEventListener('pointerdown', (e) => {
   ensureFocus();
   const node = e.target.closest('.ic');
-  if (!node || e.button !== 0) return;
+  if (!node || e.button !== 0) {
+    // 卡片空白 / 分组标题上按下也当作「点空白」：清掉选中（资源管理器行为）
+    if (e.button === 0 && !e.target.closest('#menu') && !e.target.closest('#orgPanel') && !e.target.closest('#searchBox')) clearSel();
+    return;
+  }
   const card = node.closest('.card');
   const fence = S.fences.find((f) => f.id === card.dataset.fence);
   const item = S.items.find((i) => i.path === node.dataset.path);
@@ -429,8 +484,11 @@ document.addEventListener('pointerdown', (e) => {
 /** 桌面层是 Progman 的子窗口，点进来不一定被激活 —— 要键盘操作前先要一次焦点 */
 function ensureFocus() {
   if (!S.windowId || !api || !api.pluginWindow || typeof api.pluginWindow.focus !== 'function') return;
-  if (document.hasFocus()) return;
-  api.pluginWindow.focus(S.windowId).catch(() => {});
+  // 不做「已经要过就跳过」的缓存：原生确认框/别的应用抢走前台后，缓存还是 true，
+  // 于是下一次点击不再要焦点 —— 键盘就静默失效了。每次点击都要一次，主进程那侧会复用看守进程。
+  api.pluginWindow.focus(S.windowId)
+    .then((r) => { S.focused = !!(r && r.ok); })
+    .catch(() => { S.focused = false; });
 }
 
 document.addEventListener('pointermove', (e) => {
@@ -525,10 +583,13 @@ async function assign(name, fenceId) {
 function select(node, on) {
   if (on) { S.sel.add(node.dataset.path); node.classList.add('selection'); }
   else { S.sel.delete(node.dataset.path); node.classList.remove('selection'); }
+  reportHotspots();
 }
 function clearSel() {
+  if (!S.sel.size && !document.querySelector('.ic.selection')) return;
   S.sel.clear();
   document.querySelectorAll('.ic.selection').forEach((n) => n.classList.remove('selection'));
+  reportHotspots();
 }
 
 /* ---------------- 右键菜单 ---------------- */
@@ -557,6 +618,8 @@ function showMenu(x, y, rows) {
   const r = m.getBoundingClientRect();
   m.style.left = Math.max(6, Math.min(x, innerWidth - r.width - 6)) + 'px';
   m.style.top = Math.max(6, Math.min(y, innerHeight - r.height - 6)) + 'px';
+  // 菜单里全是键盘入口（F2 / Del），开菜单时顺手把键盘焦点要到手里
+  ensureFocus();
   reportHotspots();
 }
 
@@ -592,7 +655,12 @@ document.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     const f = S.fences.find((x) => x.id === card.dataset.fence);
     const item = S.items.find((i) => i.path === ic.dataset.path);
-    if (f && item) openItemMenu(f, item, e.clientX, e.clientY);
+    if (f && item) {
+      // 资源管理器的习惯：右键即选中（已在多选里则保留多选），后面的 F2/Del 才有对象
+      S.last = item;
+      if (!S.sel.has(item.path)) { clearSel(); select(ic, true); }
+      openItemMenu(f, item, e.clientX, e.clientY);
+    }
     return;
   }
   if (card) {
@@ -601,7 +669,10 @@ document.addEventListener('contextmenu', (e) => {
     if (f) openCardMenu(f, e.clientX, e.clientY);
     return;
   }
-  // 空白桌面：不接管，让系统菜单出来（窗口此刻是穿透状态）
+  // 空白桌面：不接管，让系统菜单出来（窗口此刻是穿透状态）。
+  // 例外：有选中项时整屏是我们的热区（见 reportHotspots），这一下根本到不了系统桌面 ——
+  // 按资源管理器的习惯，右键空白 = 取消选中。
+  if (S.sel.size) { e.preventDefault(); clearSel(); }
 }, true);
 
 document.addEventListener('pointerdown', (e) => {
@@ -610,7 +681,26 @@ document.addEventListener('pointerdown', (e) => {
   closeMenu();
 }, true);
 
+// 焦点被别的应用拿走 = 菜单该收了（和系统菜单一致）。点了其他窗口时不会有点击事件到我们这儿。
+window.addEventListener('blur', () => {
+  S.focused = false;
+  if ($('#menu').classList.contains('on')) closeMenu();
+  // 点桌面空白/别的窗口 = 取消选中。原生确认框打开时不算（那是我们自己弹的，
+  // 返回后还要保留选中让用户接着操作）。
+  if (!S.modal) clearSel();
+});
+
 /* ---------------- 重命名 / 锁定 / 删除 ---------------- */
+
+/** 双击打开（资源管理器的习惯）：文件用默认程序，文件夹在资源管理器里打开 */
+document.addEventListener('dblclick', (e) => {
+  const node = e.target.closest('.ic');
+  if (!node) return;
+  const item = S.items.find((i) => i.path === node.dataset.path);
+  if (!item) return;
+  e.preventDefault();
+  openItem(item);
+}, true);
 
 function renameCard(f) {
   const rec = S.cards.get(f.id);
@@ -831,6 +921,12 @@ $('#orgPanel').addEventListener('click', (e) => {
   if (b.dataset.org === 'preview') previewPlan();
   if (b.dataset.org === 'apply') applyOrganize();
 });
+// 遮罩层占满整屏，点空白处就该关掉（和搜索面板一致）
+$('#org').addEventListener('pointerdown', (e) => {
+  if (e.target.id !== 'org') return;
+  $('#org').classList.remove('on');
+  reportHotspots();
+});
 
 /* ---------------- 提示 ---------------- */
 
@@ -851,14 +947,18 @@ async function trashSelected() {
     return;
   }
   const paths = [...S.sel];
-  S.sel.clear();
+  S.modal = true;
   try {
     const r = await api.desktopShell.trash(paths);
+    if (r && r.canceled) return;   // 用户在确认框点了取消：选中保持原样，什么都不做
+    S.sel.clear();
     await refresh(true);
     if (r && r.trashed) toast('已移到回收站 ' + r.trashed + ' 项（可从回收站还原）');
     else toast('删除失败：' + ((r && r.failed && r.failed[0] && r.failed[0].error) || '未知原因'));
   } catch (e) {
     toast('删除失败：' + e.message);
+  } finally {
+    S.modal = false;
   }
 }
 
@@ -877,6 +977,17 @@ document.addEventListener('keydown', (e) => {
       const f = S.fences.find((x) => x.id === hovered.dataset.fence);
       if (f) { e.preventDefault(); renameCard(f); }
     }
+    return;
+  }
+  if (e.key === 'Enter') {
+    // 回车 = 打开当前选中项（和双击等价）；输入框里的回车由各自的处理器 stopPropagation
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    const path = S.sel.size ? [...S.sel][0] : (S.last && S.last.path);
+    const item = path && S.items.find((i) => i.path === path);
+    if (!item) return;
+    e.preventDefault();
+    openItem(item);
     return;
   }
   if (e.key !== 'Delete') return;

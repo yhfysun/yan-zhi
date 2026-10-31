@@ -258,6 +258,10 @@
               <el-radio value="ctrlEnter">Ctrl+Enter 发送（Enter 换行）</el-radio>
             </el-radio-group>
           </SettingRow>
+          <!-- 输入框下一步建议（2026-10-31）：会话空闲时用 LLM 预测下一句，输入框内显示为灰字。 -->
+          <SettingRow label="输入框下一步建议" tip="会话结束后预测你接下来最可能输入的一句，显示为输入框内的灰色文字；Tab 填入、Enter 发送。每次生成会调用一次模型，不想花 token 可关闭">
+            <el-switch v-model="nextStepSuggest" />
+          </SettingRow>
 
           <!-- 超级剪贴板（2026-10-29）：独立卡片 + 分组，别和上面的全局快捷键挤成一条长清单；
                采集开关 / 敏感跳过 / 上限 / 保留时长直接写主进程配置（clipboard-config.json），
@@ -1104,6 +1108,8 @@ const keepRecent = ref(6);
 const novelTtsConcurrency = ref(5);
 const novelComposeConcurrency = ref(0);
 const enableCompression = ref(true);
+// 输入框下一步建议（2026-10-31）：默认开，关闭后前端不再请求 /suggest-next
+const nextStepSuggest = ref(true);
 // ── 费用预算（2026-10-17）────────────────────────────────────────────────────
 // ★ 判定前**现读**（后端 getCostBudgetConfig 每次判定都查库）⇒ 这里保存后下一轮即生效，
 //   不存在"改了没反应"。表单与 store 双向：打开时拉一次，保存时整体 PUT。
@@ -1435,6 +1441,7 @@ onMounted(async () => {
   novelTtsConcurrency.value = Number(settingsStore.settings.novelTtsConcurrency) || 5;
   novelComposeConcurrency.value = Math.max(0, Number(settingsStore.settings.novelComposeConcurrency) || 0);
   enableCompression.value = settingsStore.settings.enableCompression;
+  nextStepSuggest.value = settingsStore.settings.nextStepSuggest !== false;
   memoryExtractPlatformId.value = settingsStore.settings.memoryExtractPlatformId;
   memoryExtractModelId.value = settingsStore.settings.memoryExtractModelId;
   if (defaultPlatformId.value) {
@@ -1499,6 +1506,11 @@ watch([defaultModelId, keepRecent, enableCompression, novelTtsConcurrency, novel
     novelTtsConcurrency: novelTtsConcurrency.value,
     novelComposeConcurrency: novelComposeConcurrency.value,
   });
+});
+
+// 下一步建议开关：独立 watch（上面那组的字段语义是"上下文预算"，不要混进来）
+watch(nextStepSuggest, async (v) => {
+  await settingsStore.update({ nextStepSuggest: v });
 });
 
 async function onMemoryExtractPlatformChange() {

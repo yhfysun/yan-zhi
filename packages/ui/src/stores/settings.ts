@@ -399,6 +399,13 @@ export interface AppSettings {
    */
   sendKeyMode: 'enter' | 'ctrlEnter';
   /**
+   * 输入框「下一步建议」（2026-10-31）：会话空闲时用 LLM 预测用户下一句，
+   * 显示为输入框内的灰色 ghost 文本，Tab 填入、Enter 发送。
+   * ★ 默认开启；每次生成是一次轻量 LLM 调用（服务端按最后一条消息做指纹缓存），
+   *   不想花 token 的用户可关闭（关闭后前端完全不请求）。
+   */
+  nextStepSuggest: boolean;
+  /**
    * 本机默认对外 IP（2026-10-17）。设置页「本机 IP」里选定，空 = 自动（优先物理网卡）。
    *
    * ★ 为什么需要：后端本就绑定 0.0.0.0（所有网卡），`/api/network/ip` 也能列出全部 IPv4，
@@ -590,6 +597,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   pluginHotkeys: {},
   panicAccelerator: 'Control+Alt+Escape',
   sendKeyMode: 'enter',
+  nextStepSuggest: true,
   defaultLanIp: '',
 };
 

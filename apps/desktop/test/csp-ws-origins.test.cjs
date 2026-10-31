@@ -68,4 +68,15 @@ describe('CSP · WebSocket 源', () => {
       'CSP 策略里没有 ws:// 源',
     );
   });
+
+  test('④ 按协议放行 ws:/wss:（远控要连任意局域网被控端）', () => {
+    // 2026-10-31 实报：控制端连另一台 PC 的 ws://192.168.x.x:3001 被 CSP 拦掉 ——
+    // /pair 的 fetch 有 http: 放行所以配对成功，WS 没被放行则「受理了但实时通道没建起来」。
+    // wsOrigins 只覆盖本机，任意局域网地址必须靠 scheme 源 ws:/wss: 放行。
+    assert.strictEqual(CONNECT_DIRECTIVES.length, 2, `应有 dev/prod 两支 connect-src，实际 ${CONNECT_DIRECTIVES.length} 支`);
+    for (const d of CONNECT_DIRECTIVES) {
+      assert.match(d, /(^|\s)ws:(\s|;)/, `某支 connect-src 没按协议放行 ws:：${d.slice(0, 80)}…`);
+      assert.match(d, /(^|\s)wss:(\s|;)/, `某支 connect-src 没按协议放行 wss:：${d.slice(0, 80)}…`);
+    }
+  });
 });

@@ -82,7 +82,10 @@ describe('② 三条校验：都得"明确报错"，不能静默吞', () => {
     const body = caseBody('api_conversation_setup');
     // 2026-10-08 同步：白名单已含 clip（剪辑模式，第六模式，见 license.ts EDITION_MODES）
     // 2026-10-16 同步：douyin 模式下线、shop 模式新增（店铺运营）
-    expect(body, '★★ 未定义合法模式').toMatch(/\['office', 'dev', 'ops', 'sec', 'wf', 'clip', 'shop'\]/);
+    // 2026-10-31 同步：白名单尾部并入运行时插件贡献的模式（`...runtimePluginModes()`），
+    //   所以只断言内置七个按序在前，不再要求 `]` 紧跟 'shop'。
+    expect(body, '★★ 未定义合法模式')
+      .toMatch(/\[['"]office['"],\s*['"]dev['"],\s*['"]ops['"],\s*['"]sec['"],\s*['"]wf['"],\s*['"]clip['"],\s*['"]shop['"]/);
     expect(body, '★★ 非法 mode 未报错').toMatch(/未知的工作模式/);
   });
 

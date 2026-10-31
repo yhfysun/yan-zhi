@@ -47,6 +47,16 @@ except Exception:
 
 FPS_DEFAULT = 25
 XFADE = 0.30           # 场景交叉淡化时长（秒）
+
+# ★ 首帧契约（画面结构 v4，2026-10-18 定稿，**冻结**）：
+#   平台取成片第 0 帧当封面/首屏 → kinetic 与 drawtext 两条渲染路径必须给出同一套首帧信息：
+#   ① 顶部标题条、② 右上角「第N集」常驻角标、③ 中部「第N集」大字（第0帧全显 → 3s → 0.5s 淡出）、
+#   ④ 第一镜（hook）的主要内容（不做入场动画，首帧即全显）。
+#   2026-10-28 kinetic 成为默认画面引擎时漏了 ③④ → 抖音成片开头没有集数和主要内容
+#   （用户实报「第几集没有，主要内容没有」）。守门测试见 test_kinetic.py。
+EP_SHOW = 3.0          # 「第N集」大字保持时长（秒）
+EP_FADE = 0.5          # 大字淡出时长（秒）
+OPENING_INSTANT_T = 1.0  # 第一镜把场景时间推到该值 → 所有 reveal 视为已完成（首帧全显）
 REVEAL_SPAN = 0.45     # 单个元素入场时长（秒）
 
 THEME = {
@@ -413,7 +423,8 @@ def build_timeline(scenes, cues, total: float):
 # ── 渲染器 ────────────────────────────────────────────────────────────
 class KineticRenderer:
     def __init__(self, W, H, timeline, top_text="", badge_text="", fps=FPS_DEFAULT,
-                 bg_images=None, theme="dark", subtitle_style="typewriter"):
+                 bg_images=None, theme="dark", subtitle_style="typewriter",
+                 episode_text=""):
         self.W, self.H = W, H
         apply_theme(theme)
         self.subtitle_style = subtitle_style if subtitle_style in ("typewriter", "ticker") \
@@ -423,6 +434,7 @@ class KineticRenderer:
         self.starts = [x[1] for x in timeline]
         self.top_text = top_text or ""
         self.badge_text = badge_text or ""
+        self.episode_text = episode_text or ""
         self.mx = int(W * 0.075)
         self.ctop = int(H * 0.165)
         self.cbot = int(H * 0.735)
@@ -556,12 +568,12 @@ class KineticRenderer:
 
     def frame(self, t: float):
         i, sc, tl, dur, sub = self.locate(t)
-        img = self.render(i, sc, tl, dur, sub)
+        img = self.render(i, sc, tl, dur, sub, gt=t)
         # 转场：本镜最后 XFADE 秒 → 下一镜的入场态
         if i + 1 < len(self.tl) and dur > XFADE * 2 and tl > dur - XFADE:
             p = ease_in_out((tl - (dur - XFADE)) / XFADE)
             nsc, _n0, n1, nsub = self.tl[i + 1]
-            nxt = self.render(i + 1, nsc, 0.0, max(0.05, n1 - _n0), nsub)
+            nxt = self.render(i + 1, nsc, 0.0, max(0.05, n1 - _n0), nsub, gt=t)
             img = self._transition(img, nxt, p, str(sc.get("transition") or "fade"))
         return img
 
@@ -588,17 +600,46 @@ class KineticRenderer:
             return Image.blend(cur, big.crop((l, t, l + W, t + H)), p)
         return Image.blend(cur, nxt, p)
 
-    def render(self, idx: int, sc: dict, tl: float, dur: float, sub: str):
+    def render(self, idx: int, sc: dict, tl: float, dur: float, sub: str, gt: float | None = None):
         from PIL import Image, ImageDraw
+        gt = tl if gt is None else gt
         base = self._bg(idx, min(1.0, tl / max(0.05, dur)))
         ov = Image.new("RGBA", (self.W, self.H), (0, 0, 0, 0))
         d = ImageDraw.Draw(ov)
         kind = sc.get("type") or "statement"
         drawer = getattr(self, f"_draw_{kind}", self._draw_statement)
-        drawer(d, sc, tl, dur)
+        # ★ 首帧契约：平台取第 0 帧当封面 → 第一镜内容不做入场动画（首帧即全显），
+        #   第 2 镜起保留「元素随旁白节奏入场」的观感。字幕仍按真实时间逐字打出。
+        drawer(d, sc, OPENING_INSTANT_T if idx == 0 else tl, dur)
         if sub:
             self._draw_subtitle(d, sub, tl, dur)
+        self._draw_episode(d, gt)
         return Image.alpha_composite(base, ov).convert("RGB")
+
+    def _draw_episode(self, d, t: float):
+        """中部「第N集」大字（首帧契约）：第0帧全显 → 保持 EP_SHOW → EP_FADE 淡出。
+
+        与 compose_video.build_episode_filter 同口径（时间点、字号比例、白字黑描边），
+        两条渲染路径的首帧信息必须一致。"""
+        if not self.episode_text:
+            return
+        if t < EP_SHOW:
+            a = 1.0
+        elif t < EP_SHOW + EP_FADE:
+            a = 1.0 - (t - EP_SHOW) / EP_FADE
+        else:
+            return
+        alpha = int(255 * max(0.0, min(1.0, a)))
+        H, W = self.H, self.W
+        f = font(int(H * 0.115), True)
+        w = f.getlength(self.episode_text)
+        x = (W - w) / 2
+        y = int(H * 0.44)
+        stroke = max(3, int(H * 0.0035))
+        d.text((x + 2, y + 3), self.episode_text, font=f,
+               fill=(0, 0, 0, int(alpha * 0.5)))
+        d.text((x, y), self.episode_text, font=f, fill=THEME["fg"] + (alpha,),
+               stroke_width=stroke, stroke_fill=(0, 0, 0, int(alpha * 0.85)))
 
     # -- 基础绘制 --
     def _text(self, d, text, f, x, y, fill, alpha, line_h=None, center_w=None, stroke=0,
@@ -1252,10 +1293,12 @@ def _alpha_composite(a, b):
 # ── 出片 ──────────────────────────────────────────────────────────────
 def render_video(ffmpeg: str, out_path: str, timeline, total: float, W: int, H: int,
                  top_text: str = "", badge_text: str = "", fps: int = FPS_DEFAULT,
-                 bg_images=None, theme: str = "dark", subtitle_style: str = "typewriter"):
+                 bg_images=None, theme: str = "dark", subtitle_style: str = "typewriter",
+                 episode_text: str = ""):
     """逐帧绘制并管道编码成无声 mp4。返回落盘路径。"""
     r = KineticRenderer(W, H, timeline, top_text=top_text, badge_text=badge_text, fps=fps,
-                        bg_images=bg_images, theme=theme, subtitle_style=subtitle_style)
+                        bg_images=bg_images, theme=theme, subtitle_style=subtitle_style,
+                        episode_text=episode_text)
     n_frames = max(1, int(round(total * fps)))
     cmd = [ffmpeg, "-y", "-v", "error",
            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(fps),
@@ -1302,6 +1345,7 @@ def _cli():
     ap.add_argument("--aspect", default="9:16", choices=["4:3", "9:16", "16:9"])
     ap.add_argument("--top", default="", help="顶部常驻条文案")
     ap.add_argument("--badge", default="", help="右上角角标（如 第3集）")
+    ap.add_argument("--episode", default="", help="中部大字（如 第3集；默认取 --badge）")
     ap.add_argument("--bg-images", default="", help="素材底图，逗号分隔（按顺序轮转，Ken Burns 推拉）")
     ap.add_argument("--theme", default="dark", choices=["dark", "light"], help="配色主题")
     ap.add_argument("--subtitle-style", default="typewriter", choices=["typewriter", "ticker"],
@@ -1344,7 +1388,8 @@ def _cli():
     os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
     render_video(ff, a.out, timeline, t, W, H, a.top, a.badge,
                  bg_images=[p.strip() for p in a.bg_images.split(",") if p.strip()],
-                 theme=a.theme, subtitle_style=a.subtitle_style)
+                 theme=a.theme, subtitle_style=a.subtitle_style,
+                 episode_text=a.episode or a.badge)
     print(f"[kinetic] {a.out}  {t:.1f}s", file=sys.stderr)
 
 

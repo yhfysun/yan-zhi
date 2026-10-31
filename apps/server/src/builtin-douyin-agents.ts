@@ -73,7 +73,10 @@ export const DOUYIN_AGENT_SYSTEM_PROMPT = `你是「抖音运营助手」（douy
 - **图文**：封面 + 3~9 张轮播 + 文案 + 话题。封面底图只出无字画面（文字后期烧，生图模型画中文必糊）。
 - **口播视频**（含配音 + 逐句字幕 + BGM + 首帧封面）：
   1. 写逐段口播稿，每段一个镜头、≤120 字，落到 02-work/<选题>_口播.txt（段落之间空行）；
-  2. 调 novel_tuiwen { chapter: "<稿子路径>", verbatim: true, title: "<选题短标题>", banner: "<钩子或栏目名>", aspect: "9:16", ending: "<CTA>", bgm: "auto", sfx: "auto", out: "03-output" }；
+  2. 调 novel_tuiwen { chapter: "<稿子路径>", verbatim: true, chapter_num: "<第几期，如 5>", title: "<选题短标题>", banner: "<栏目名·第NN期>", aspect: "9:16", ending: "<CTA>", bgm: "auto", sfx: "auto", out: "03-output" }；
+     ★ **系列视频必须显式传 chapter_num**：画面中部「第N集」大字、右上角角标、文件名、封面都靠它；
+       不传只能从文件名猜数字，经常猜不出（用户实报过「第几集没有」）。
+     ★ 第 0 帧就是封面：storyboard 第一镜（hook）必须写 title/highlight，首帧即全显；没写 storyboard 时按旁白兜底，开头会很空。
   3. 成片落在 03-output，直接报路径。
   ★ 字幕已按抖音底部 UI 安全区上移，不要再把字幕往下压。
   ★ 背景视频可选：bg_video 传本地素材路径（风景/城景/办公空镜等无人声、可循环）；没有就省略，用占位画面，不要干等。

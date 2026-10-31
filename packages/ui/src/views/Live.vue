@@ -126,7 +126,16 @@
         </div>
 
         <div v-if="liveStore.scene === 'danmaku-game'" class="live-card">
-          <div class="live-card__title">弹幕游戏 · 赤壁</div>
+          <div class="live-card__title">弹幕游戏</div>
+          <div class="live-actions">
+            <el-button
+              v-for="m in gameModeList"
+              :key="m.key"
+              size="small"
+              :type="gameModeKey === m.key ? 'primary' : 'default'"
+              @click="gamePickMode(m.key)"
+            >{{ m.name }}</el-button>
+          </div>
           <div class="live-actions">
             <el-button size="small" @click="gameGift('fairy')">仙女棒 +2</el-button>
             <el-button size="small" @click="gameGift('donut')">甜甜圈 +8</el-button>
@@ -139,10 +148,7 @@
           <div class="live-actions">
             <el-switch v-model="sourceOn" size="small" active-text="模拟弹幕流" @change="toggleSource" />
           </div>
-          <div class="live-hint">
-            改写度到 60% 就掀翻史实结局。打开「模拟弹幕流」会从服务端按节奏投递演示弹幕，
-            整条链路和真实弹幕一致：源 → /api/live/danmaku → 游戏
-          </div>
+          <div class="live-hint">{{ gameModeHint }}</div>
         </div>
 
         <div v-if="isCaptureScene" class="live-card">
@@ -315,7 +321,7 @@
  * 刻意只做"宠物主播"这一个场景：虚拟人还没接、窗口捕获还没做，
  * 先摆一排空壳场景只会让入口看起来能用其实不能用。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Promotion, VideoCamera, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api/client'
@@ -352,6 +358,45 @@ const sourceOn = ref(false)
 function gameGift(id: string) { gameRef.value?.gift(id) }
 function gameReset() { gameRef.value?.reset() }
 function onGameSay(text: string) { liveStore.say(text, 'danmaku') }
+
+/* ---------- 弹幕游戏玩法切换 ---------- */
+const GAME_MODE_NOTES: Record<string, string> = {
+  chibi: '改写度到 60% 就掀翻史实结局。打开「模拟弹幕流」走完整链路：源 → /api/live/danmaku → 游戏',
+  stars: '客星犯心宿主兵灾。星力到 60%，这一夜天命可违。',
+  debate: '纯投票局：发「甜」「咸」或话题词投票，50% 分界见输赢。',
+  surname: '发自己的姓加入本族，票数最高的姓夺城楼。',
+  mbti: '发你的四字母点亮本型，最亮一格占领矩阵。',
+}
+const gameModeList = ref<Array<{ key: string; name: string }>>([])
+const gameModeKey = ref('chibi')
+const gameModeHint = computed(() => GAME_MODE_NOTES[gameModeKey.value] ?? '')
+
+function syncGameModeList() {
+  const list = gameRef.value?.modeList() ?? []
+  gameModeList.value = list
+  if (!list.some((m) => m.key === gameModeKey.value) && list.length) {
+    gameModeKey.value = list[0].key
+  }
+}
+
+function gamePickMode(key: string) {
+  gameModeKey.value = key
+  gameRef.value?.setMode(key)
+}
+
+onMounted(() => {
+  // 组件挂载后引擎才就绪；拉一次玩法清单供面板渲染
+  nextTick(() => syncGameModeList())
+})
+
+// DanmakuGame 是 v-if 挂载（切到弹幕游戏场景才创建），场景变化后补拉一次清单
+watch(
+  () => liveStore.scene,
+  (scene) => {
+    if (scene !== 'danmaku-game') return
+    nextTick(() => syncGameModeList())
+  },
+)
 async function toggleSource(v: boolean | string | number) {
   try {
     await api.post('/live/source', { kind: v ? 'replay' : 'off' })

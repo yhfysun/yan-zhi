@@ -8,12 +8,19 @@
 //   · 形状蒙版：`format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='<形状表达式>'`
 //     —— alpha=255 显示、0 透明。形状用中心距离/坐标不等式表达。
 //   · 色键抠像：`colorkey=<颜色>:<相似度>:<混合>`（直接可用，来自效果库 MASK_KEYS）。
+//   · 线性蒙版（P1-4）：法线方向的有符号距离 + 角度/位置/羽化，做渐变擦除。
+//   · 钢笔路径（P1-4）：先烘成一张 PNG（折线或 Catmull-Rom 平滑曲线），再用
+//     movie + alphamerge 当 alpha —— 逐像素多边形测试在 1080p 上太慢，必须烘焙。
 //
 // ★★★ 注意 geq 的变量名：**X/Y 是大写**（像素坐标），**W/H 也是大写**（尺寸）。
 //   写成小写 x/y/w/h 会被当成"未定义变量"→ ffmpeg 报错或算出常量 → 蒙版失效。
+// ★ 表达式里的逗号统一写成 `\,`（本机实测；混用裸逗号会出现难以归因的
+//   `Missing ')' or too many args`）。
+
+import { buildPiecewiseExpr, easePointList } from '@yan-zhi/shared';
 
 export interface MaskShapeParams {
-  /** 形状 id：circle / ellipse / rect / rounded / heart / star / diamond / split_* / top_circle */
+  /** 形状 id：circle / ellipse / rect / rounded / heart / star / diamond / split_* / top_circle / linear */
   shape: string;
   /** 蒙版尺寸比例 0.1~1（1 = 占满短边） */
   scale: number;
@@ -22,36 +29,36 @@ export interface MaskShapeParams {
   offsetY: number;
   /** 边缘羽化像素（0 = 硬边） */
   feather: number;
+  /** 线性蒙版角度（度，0=从左到右，90=从上到下） */
+  angle?: number;
+  /** 线性蒙版位置 0~1（0=几乎全遮，1=几乎全显） */
+  position?: number;
+}
+
+/** 表达式版参数：所有数值都允许是 ffmpeg 表达式（关键帧动画用）。 */
+export interface MaskAlphaParams {
+  shape: string;
+  /** 缩放**百分数**表达式（静态时是 "90" 这样的整数） */
+  scalePct: string;
+  offsetX: string;
+  offsetY: string;
+  feather: number;
+  angle?: string;
+  position?: string;
 }
 
 /** 生成形状蒙版的 alpha 表达式（geq 的 a= 部分）。返回 null 表示未知形状。 */
-export function shapeAlphaExpr(p: MaskShapeParams): string | null {
-  const cx = `(W/2 + ${p.offsetX.toFixed(4)}*W)`;
-  const cy = `(H/2 + ${p.offsetY.toFixed(4)}*H)`;
-  // ✅ 语义：scale = 蒙版**占短边的比例**（1 = 撑满短边，0.5 = 一半）。
-  //   半径 = scale * min(W,H) / 2，即直径 = scale * 短边。
-  //
-  // ★★ 第一次写成 `Math.min(50, Math.round(p.scale * 100))` —— 两处错：
-  //   ① 上限 50 把 0.9（应 90）截成 50 → 蒙版恒为短边 50%；② 与 scale 语义反了
-  //   （scale 越大蒙版越大才对）。这类"数值看着合理但量纲错"只能靠打印表达式发现
-  //   （见 tools/verify-masks.cjs —— 它现在直接调实现拿表达式，不再手写复刻）。
-  const pct = Math.max(5, Math.min(100, Math.round(p.scale * 100)));
-  const r = `(${pct}/100*min(W\\,H)/2)`;
+export function maskAlphaExpr(p: MaskAlphaParams): string | null {
+  const cx = `(W/2 + ${p.offsetX}*W)`;
+  const cy = `(H/2 + ${p.offsetY}*H)`;
+  // ✅ 语义：scalePct = 蒙版**占短边的百分比**（100 = 撑满短边，50 = 一半）。
+  //   半径 = pct/100 * min(W,H) / 2，即直径 = pct% * 短边。
+  const r = `(${p.scalePct}/100*min(W\\,H)/2)`;
   const feather = Math.max(0, p.feather);
-  // 硬边 or 羽化：羽化用线性过渡（alpha 从 255 渐到 0）
-  /**
- * 生成带羽化的 alpha：距中心 < r 全不透明；r ~ r+feather 之间线性淡出。
- *
- * ★★ 转义规则（实跑踩到，务必记住）：geq 表达式里
- *   · **外层函数调用的参数分隔** 用 `\,`（filtergraph 会把裸 `,` 当成滤镜分隔符）
- *   · **内层嵌套调用里**（已在一对括号内）直接用 `,`
- *   第一版两处都写 `\,` → `Error initializing filters / Invalid argument`，
- *   报错完全看不出是转义问题（这是实跑验证的价值所在）。
- */
-  const soft = (dist: string) =>
+  const soft = (dist: string, lim: string = r) =>
     feather > 0
-      ? `if(lt(${dist}\\,${r})\\,255\\,if(lt(${dist}\\,${r}+${feather})\\,255*(1-(${dist}-${r})/${feather})\\,0))`
-      : `if(lt(${dist}\\,${r})\\,255\\,0)`;
+      ? `if(lt(${dist}\\,${lim})\\,255\\,if(lt(${dist}\\,${lim}+${feather})\\,255*(1-(${dist}-${lim})/${feather})\\,0))`
+      : `if(lt(${dist}\\,${lim})\\,255\\,0)`;
   const hard = (cond: string) => `if(${cond}\\,255\\,0)`;
 
   switch (p.shape) {
@@ -59,11 +66,11 @@ export function shapeAlphaExpr(p: MaskShapeParams): string | null {
     case 'top_circle': {
       // top_circle：中心上移到画面 1/3 处（口播头像圈）
       const c = p.shape === 'top_circle' ? `(H/3)` : cy;
-      return soft(`hypot(X-(${cx}),Y-(${c}))`);
+      return soft(`hypot(X-(${cx})\\,Y-(${c}))`);
     }
     case 'ellipse':
       // 椭圆：把 x 方向距离按宽高比拉伸后再比较
-      return soft(`hypot((X-(${cx}))*0.75,Y-(${cy}))`);
+      return soft(`hypot((X-(${cx}))*0.75\\,Y-(${cy}))`);
     case 'rect':
       // 矩形：坐标落在以中心为原点、边长 2r 的方框内
       return hard(`between(X\\,${cx}-${r}\\,${cx}+${r})*between(Y\\,${cy}-${r}\\,${cy}+${r})`);
@@ -84,22 +91,14 @@ export function shapeAlphaExpr(p: MaskShapeParams): string | null {
       return hard(`lte(pow(pow(${nx}\\,2)+pow(${ny}\\,2)-1\\,3)-pow(${nx}\\,2)*pow(${ny}\\,3)\\,0)`);
     }
     case 'star': {
-      // 五角星：极坐标下"半径阈值随角度做 5 次起伏"。
-      //
-      // ★★ 转义规则（实跑踩到，务必记住）：geq 表达式里
-      //   · **外层函数调用的参数分隔** 用 `\,`
-      //   · **内层嵌套调用里**（已在一对括号内）直接用 `,` —— 多转义一层会
-      //     "Error initializing filters / Invalid argument"（表达式解析失败）。
-      //   第一版把内层也写成 `\,` 就整条炸了，且报错只说 filter 初始化失败，很难归因。
+      // 五角星：极坐标下"半径阈值随角度做 5 次起伏"
       const dx = `(X-(${cx}))`;
       const dy = `(Y-(${cy}))`;
-      const theta = `atan2(${dy},${dx})`;
-      const dist = `hypot(${dx},${dy})`;
+      const theta = `atan2(${dy}\\,${dx})`;
+      const dist = `hypot(${dx}\\,${dy})`;
       // 阈值 = r * (0.45 + 0.55*|cos(2.5θ)|)，在 5 个方向上达到最大半径
       const lim = `${r}*(0.45+0.55*abs(cos(2.5*${theta})))`;
-      return feather > 0
-        ? `if(lt(${dist}\\,${lim})\\,255\\,if(lt(${dist}\\,${lim}+${feather})\\,255*(1-(${dist}-${lim})/${feather})\\,0))`
-        : `if(lt(${dist}\\,${lim})\\,255\\,0)`;
+      return soft(dist, lim);
     }
     case 'diamond':
       return hard(`lte(abs(X-(${cx}))+abs(Y-(${cy}))\\,${r})`);
@@ -111,42 +110,174 @@ export function shapeAlphaExpr(p: MaskShapeParams): string | null {
       return hard(`lt(Y\\,${cy})`);
     case 'split_bottom':
       return hard(`gt(Y\\,${cy})`);
+    case 'linear': {
+      // 线性蒙版：沿角度方向的有符号距离 d，位置把分界线前后移动，羽化给过渡带。
+      const a = `((${p.angle ?? '0'})*PI/180)`;
+      const d = `((X-(${cx}))*cos(${a})+(Y-(${cy}))*sin(${a}))`;
+      const shift = `(((${p.position ?? '0.5'})-0.5)*hypot(W\\,H))`;
+      if (feather > 0) {
+        return `if(lt(${d}\\,${shift}-${feather}/2)\\,255\\,if(lt(${d}\\,${shift}+${feather}/2)\\,255*(1-(${d}-(${shift})+${feather}/2)/${feather})\\,0))`;
+      }
+      return `if(lt(${d}\\,${shift})\\,255\\,0)`;
+    }
     default:
       return null;
   }
 }
 
 /**
- * 构造完整的蒙版滤镜串（可直接拼进 -vf）。
- * 返回 null 表示"无需蒙版"（shape=none 且无 key）。
+ * 数值版（老接口）：保持原有输出形态（`(90/100*min(...))`、偏移四位小数），
+ * 单测与实跑工具都依赖这些字符串。
+ */
+export function shapeAlphaExpr(p: MaskShapeParams): string | null {
+  const pct = Math.max(5, Math.min(100, Math.round(p.scale * 100)));
+  return maskAlphaExpr({
+    shape: p.shape,
+    scalePct: String(pct),
+    offsetX: p.offsetX.toFixed(4),
+    offsetY: p.offsetY.toFixed(4),
+    feather: p.feather,
+    ...(p.angle != null ? { angle: String(p.angle) } : {}),
+    ...(p.position != null ? { position: String(p.position) } : {}),
+  });
+}
+
+// ===== 钢笔路径（P1-4）=====
+
+/**
+ * 归一化路径 → 像素折线。
+ * ★ smooth=true 用 **Catmull-Rom 样条**（穿过所有锚点、自动算控制点）：
+ *   钢笔的"贝塞尔"在交互语义上就是"点几个点得到平滑曲线"，Catmull-Rom 正是这个语义，
+ *   且不需要用户再拖控制柄。渲染时每段展开 8 个采样点。
+ */
+export function flattenMaskPath(
+  path: { smooth?: boolean; points: Array<{ x: number; y: number }> },
+  W: number,
+  H: number,
+): Array<{ x: number; y: number }> {
+  const pts = (path.points || []).map((p) => ({ x: p.x * W, y: p.y * H }));
+  if (pts.length < 3) return pts;
+  if (!path.smooth) return pts;
+  const out: Array<{ x: number; y: number }> = [];
+  const n = pts.length;
+  const STEPS = 8;
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[(i - 1 + n) % n];
+    const p1 = pts[i];
+    const p2 = pts[(i + 1) % n];
+    const p3 = pts[(i + 2) % n];
+    // Catmull-Rom → 三次贝塞尔控制点
+    const c1 = { x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6 };
+    const c2 = { x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6 };
+    for (let s = 0; s < STEPS; s++) {
+      const t = s / STEPS;
+      const mt = 1 - t;
+      out.push({
+        x: mt * mt * mt * p1.x + 3 * mt * mt * t * c1.x + 3 * mt * t * t * c2.x + t * t * t * p2.x,
+        y: mt * mt * mt * p1.y + 3 * mt * mt * t * c1.y + 3 * mt * t * t * c2.y + t * t * t * p2.y,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 多边形（像素坐标）→ geq 的 alpha 表达式（奇偶规则/射线相交）。
+ * ★ 只在**烘蒙版图**时跑一次，所以表达式长一点没关系；绝不要挂到主滤镜链上逐帧算。
+ */
+export function polygonAlphaExpr(pts: Array<{ x: number; y: number }>): string {
+  const terms: string[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    if (Math.abs(b.y - a.y) < 0.5) continue;   // 水平边不参与射线相交
+    // 半开区间判据：两个端点在射线两侧（ffmpeg 表达式没有 != / neq，用差的绝对值表达异或）
+    const k = (b.x - a.x) / (b.y - a.y);
+    terms.push(
+      `abs(gt(${a.y.toFixed(2)}\\,Y)-gt(${b.y.toFixed(2)}\\,Y))*lt(X\\,${a.x.toFixed(2)}+(Y-${a.y.toFixed(2)})*${k.toFixed(6)})`,
+    );
+  }
+  if (!terms.length) return '0';
+  return `if(eq(mod(${terms.join('+')}\\,2)\\,1)\\,255\\,0)`;
+}
+
+// ===== 完整滤镜串 =====
+
+export interface MaskBuildOptions {
+  /** 段内时长（秒）：有关键帧时把 T 归一化到 0~1 */
+  segDur?: number;
+  /** 路径蒙版烘好的 PNG（绝对路径） */
+  pathFile?: string;
+  W?: number;
+  H?: number;
+}
+
+const escMoviePath = (p: string): string => p.replace(/\\/g, '/').replace(/:/g, '\\:');
+
+/**
+ * 构造完整的蒙版滤镜串（可直接拼进 -vf / filter_complex 的链里）。
+ * 返回 null 表示"无需蒙版"（无形状/无路径/无 key）。
  *
  * ★★★ 关键实现细节（2026-10-07 抽帧踩到，务必照做）：
  *   **只设 alpha 是没用的** —— 后续必须把带 alpha 的画面**合成到黑底**上，
  *   否则 `format=yuv420p`（无 alpha 通道）会把透明度直接丢掉、RGB 原样保留
  *   → **蒙版完全失效**，而且 ffmpeg 不报任何错、产物也能正常播放。
- *   实测证据：circle 与 heart 两版成品的同一帧 **md5 完全相同**（都是完整色条）。
  *
- *   正确写法 = `geq 设 alpha` → `split` → 一份做黑底 → `overlay` 合成：
- *     format=rgba,geq=...[a='<形状>'],split[a][b];[a]drawbox=c=black@1:t=fill[bg];[bg][b]overlay
- *   （不要用 `crop`/`pad` 近似 —— 那只能做矩形，做不了圆/心形；也不要在 geq 里直接
- *    把区域外颜色涂黑，那样叠加到别的素材上时是"黑色块"而不是"透明"，无法做画中画。）
+ *   正确写法 = `geq 设 alpha` → `split` → 一份做黑底 → `overlay` 合成
+ *   （不要用 crop/pad 近似 —— 那只能做矩形，做不了圆/心形/路径）。
  */
 export function buildMaskFilter(mask: {
-  shape?: string; scale?: number; offsetX?: number; offsetY?: number; feather?: number; key?: string;
-}, keyFilter?: (id: string) => string | null): string | null {
+  shape?: string;
+  scale?: number;
+  offsetX?: number;
+  offsetY?: number;
+  feather?: number;
+  key?: string;
+  angle?: number;
+  position?: number;
+  keyframes?: Array<{ t: number; scale?: number; offsetX?: number; offsetY?: number; angle?: number; position?: number }>;
+  path?: { smooth?: boolean; points: Array<{ x: number; y: number }> };
+}, keyFilter?: (id: string) => string | null, opts: MaskBuildOptions = {}): string | null {
   // 色键优先（用户给了抠像就按抠像走）
   if (mask.key && mask.key !== 'none') {
     const kf = keyFilter ? keyFilter(mask.key) : null;
     if (kf) return kf;
   }
+
+  // 路径蒙版：烘好的 PNG 当 alpha（movie 是滤镜源，不必新增 -i 输入，段管线不用改索引）
+  if (mask.path && mask.path.points.length >= 3 && opts.pathFile && opts.W && opts.H) {
+    return `format=rgba[mpm];movie='${escMoviePath(opts.pathFile)}':loop=1,scale=${opts.W}:${opts.H},format=gray[mpmask];` +
+      `[mpm][mpmask]alphamerge,split[a][b];[a]drawbox=c=black@1:t=fill[bg];[bg][b]overlay=shortest=1`;
+  }
+
   const shape = (mask.shape || '').trim();
   if (!shape || shape === 'none') return null;
-  const expr = shapeAlphaExpr({
+
+  // 关键帧 → 表达式（变量 T 是段内秒；乘 /segDur 归一到 0~1）。
+  // ★ buildPiecewiseExpr 输出里的逗号统一转义成 `\,`，与手写表达式的约定一致。
+  const animated = !!opts.segDur && !!mask.keyframes?.length;
+  const kfExpr = (key: 'scale' | 'offsetX' | 'offsetY' | 'angle' | 'position', fallback: number): string => {
+    const pctOf = (v: number) => String(Math.round(Math.max(0.05, Math.min(1, v)) * 100));
+    if (!animated) return key === 'scale' ? pctOf(fallback) : (key === 'offsetX' || key === 'offsetY' ? fallback.toFixed(4) : String(fallback));
+    const pts = mask.keyframes!.filter((k) => typeof k[key] === 'number').map((k) => ({ t: k.t, v: k[key] as number }));
+    if (pts.length < 2) return key === 'scale' ? pctOf(fallback) : (key === 'offsetX' || key === 'offsetY' ? fallback.toFixed(4) : String(fallback));
+    const raw = buildPiecewiseExpr(easePointList(pts), `(T/${opts.segDur!.toFixed(6)})`).replace(/,/g, '\\,');
+    return key === 'scale' ? `(${raw}*100)` : raw;
+  };
+
+  const scale = typeof mask.scale === 'number' && mask.scale > 0 ? Math.min(1, mask.scale) : 0.9;
+  const offsetX = typeof mask.offsetX === 'number' ? Math.max(-0.5, Math.min(0.5, mask.offsetX)) : 0;
+  const offsetY = typeof mask.offsetY === 'number' ? Math.max(-0.5, Math.min(0.5, mask.offsetY)) : 0;
+  const angle = typeof mask.angle === 'number' ? Math.max(-180, Math.min(180, mask.angle)) : 0;
+  const position = typeof mask.position === 'number' ? Math.max(0, Math.min(1, mask.position)) : 0.5;
+  const expr = maskAlphaExpr({
     shape,
-    scale: typeof mask.scale === 'number' && mask.scale > 0 ? Math.min(1, mask.scale) : 0.9,
-    offsetX: typeof mask.offsetX === 'number' ? Math.max(-0.5, Math.min(0.5, mask.offsetX)) : 0,
-    offsetY: typeof mask.offsetY === 'number' ? Math.max(-0.5, Math.min(0.5, mask.offsetY)) : 0,
+    scalePct: kfExpr('scale', scale),
+    offsetX: kfExpr('offsetX', offsetX),
+    offsetY: kfExpr('offsetY', offsetY),
     feather: typeof mask.feather === 'number' ? mask.feather : 0,
+    angle: kfExpr('angle', angle),
+    position: kfExpr('position', position),
   });
   if (!expr) return null;
   // ★ 必须在 rgba 上做（yuv 无 alpha 通道，geq 的 a= 会被忽略）

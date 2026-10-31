@@ -168,12 +168,15 @@ export default defineConfig({
     // ★ 构建清单：scripts/verify-mode-prune.cjs 用它断言「未选模式的源模块没有产出 chunk」。
     //   清单本身就是产物的一部分（.vite/manifest.json，几 KB），不影响运行。
     manifest: true,
-    // 多入口：capture.html 是远控采集窗口（阶段 1，与主窗口解耦）。
-    // dev 由 vite 直接按文件路径服务；打包后输出 dist/capture.html，主进程 loadFile 加载。
+    // 多入口：capture.html 是远控采集窗口、rc-card.html 是被控端悬浮卡片（都与主窗口解耦）。
+    // dev 由 vite 直接按文件路径服务；打包后输出 dist/*.html，主进程 loadFile 加载。
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
         capture: resolve(__dirname, 'capture.html'),
+        'rc-card': resolve(__dirname, 'rc-card.html'),
+        // dev-only 冒烟入口：弹幕游戏五玩法渲染/交互验证（不进主界面）
+        'game-harness': resolve(__dirname, 'game-harness.html'),
       },
     },
   },

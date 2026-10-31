@@ -44,6 +44,7 @@ export const remoteControlManifest: PluginManifest = {
     properties: {
       allowSelfWindowClick: { type: 'boolean', description: '允许操作本应用自身窗口（默认禁止）', default: false },
       allowExternalSubnet: { type: 'boolean', description: '允许非内网网段发起配对（跨公网控制需开启，配合公网可达的本机端口；默认拒绝）', default: false },
+      openMode: { type: 'boolean', description: '开放模式：无需授权码、无需本机确认，内网设备凭 IP 直连（测试便利；默认开启，正式发布前记得关）', default: true },
       idleTimeoutMin: { type: 'number', description: '会话空闲自动断开（分钟）', default: 30 },
       receiveDir: { type: 'string', description: '远控文件收发目录（控制端发来的文件落这里，可下载的也只有这里）', default: '' },
       stunUrls: { type: 'string', description: 'STUN 服务器（逗号分隔，stun: 开头；跨公网 P2P 打洞用，局域网会话不受影响）', default: 'stun:stun.qq.com:3478,stun:stun.l.google.com:19302' },
@@ -257,6 +258,8 @@ export interface PairDecisionInput {
   whitelist: WhitelistEntry[];
   remoteAddr: string;
   allowExternalSubnet: boolean;
+  /** open=无码无确认直连（测试方便）；normal=原授权码+确认流程 */
+  openMode?: boolean;
 }
 
 export interface PairDecisionResult {
@@ -269,8 +272,10 @@ export interface PairDecisionResult {
 }
 
 /**
- * 配对判定（纯函数）：busy > 白名单直连 > 授权码比对 > 来源网段。
+ * 配对判定（纯函数）：busy > open 模式直连 > 白名单直连 > 授权码比对 > 来源网段。
  * 白名单要求 deviceId+deviceToken 双因子匹配，防伪造 deviceId。
+ * open 模式（openMode=true）：只要 deviceId 合法且无独占会话即 granted ——
+ * 授权码与被控端确认全部跳过（测试用便利通道，插件设置可关）。
  */
 export function evaluatePair(input: PairDecisionInput): PairDecisionResult {
   if (!input.allowExternalSubnet && !isPrivateRemoteAddr(input.remoteAddr)) {
@@ -282,6 +287,7 @@ export function evaluatePair(input: PairDecisionInput): PairDecisionResult {
   if (input.hasActiveGranted) {
     return { ok: false, error: '已有远控会话进行中（独占），请先在控制端断开或等其结束' };
   }
+  if (input.openMode) return { ok: true, status: 'granted', trusted: true };
   const entry = input.whitelist.find((w) => w.deviceId === input.deviceId);
   if (entry && input.deviceToken && timingEq(entry.deviceToken, input.deviceToken)) {
     return { ok: true, status: 'granted', trusted: true, entry };
@@ -386,8 +392,14 @@ interface RcSession {
   screen?: { x: number; y: number; w: number; h: number };
   /** 几何来源：capture=实际采集端（权威），agent=代理兜底（仅在还没有 capture 时采用） */
   screenSource?: 'capture' | 'agent';
+  /** 授权来源：open=开放模式直连 / trusted=白名单设备 / confirmed=本机确认（被控端卡片据此明示） */
+  via?: 'open' | 'trusted' | 'confirmed';
+  /** 授予时刻：被控端卡片据此显示会话时长（重连不重置） */
+  grantedAt?: number;
   /** granted 但控制端通道还没建起来时的回收定时器（见 ORPHAN_GRACE_MS） */
   orphanTimer?: ReturnType<typeof setTimeout>;
+  /** pending 阶段通道断开后的重连宽限定时器（见 PENDING_REATTACH_GRACE_MS） */
+  pendingGraceTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface HostConn {
@@ -407,6 +419,9 @@ const PENDING_TTL_MS = 120_000;
  *  不能让一个没人用的会话把「独占」锁死到空闲超时（实报 30 分钟连不上）。 */
 const ORPHAN_GRACE_MS = 15_000;
 
+/** pending 阶段控制端通道断开后的重连宽限（控制端每 3s 心跳，15s 足够重连两三轮） */
+const PENDING_REATTACH_GRACE_MS = 15_000;
+
 // deactivate 钩子需要拿到 activate 闭包里的会话表/代理进程/定时器，
 // 通过模块级转发函数衔接（PluginModule.deactivate 与 activate 不共享作用域）。
 let deactivateImpl: (() => Promise<void>) | null = null;
@@ -425,6 +440,9 @@ export const remoteControlModule: PluginModule = {
     const cfg = (ctx.config || {}) as Record<string, unknown>;
     const allowSelfWindowClick = !!cfg.allowSelfWindowClick;
     const allowExternalSubnet = !!cfg.allowExternalSubnet;
+    // 存量配置里没有 openMode 键 → 视为默认开启（用户要求：打包版也默认免码直连）；
+    // 显式 false 才关。config 归一化若已填默认值则同样落到 true 分支。
+    const openMode = cfg.openMode === undefined ? true : !!cfg.openMode;
     const idleTimeoutMs = (Number(cfg.idleTimeoutMin) || 30) * 60_000;
     // 跨公网 ICE 配置（STUN 打洞 + 可选 TURN 中继）：grant/resume 下发给控制端、
     // rtc.start 下发给被控端采集层；局域网会话里 host candidate 优先，STUN 不影响直连
@@ -647,13 +665,21 @@ export const remoteControlModule: PluginModule = {
 
     const endSession = async (s: RcSession, reason: string): Promise<void> => {
       if (s.status === 'ended') return;
+      const wasPending = s.status === 'pending';
       s.status = 'ended';
       sessions.delete(s.id);
       if (pendingByConfirm.get(s.confirmId) === s) pendingByConfirm.delete(s.confirmId);
       if (grantedByConfirm.get(s.confirmId) === s) grantedByConfirm.delete(s.confirmId);
+      // 待确认会话被作废（控制端取消 / 通道断开 / 超时）：让被控端把确认弹窗收掉，
+      // 否则用户会在一个已经不存在的请求上点「允许」，点了也没人收。
+      if (wasPending) notifyHost({ type: 'session.cancelled', confirmId: s.confirmId, reason });
       if (s.orphanTimer) {
         clearTimeout(s.orphanTimer);
         s.orphanTimer = undefined;
+      }
+      if (s.pendingGraceTimer) {
+        clearTimeout(s.pendingGraceTimer);
+        s.pendingGraceTimer = undefined;
       }
       if (s.token && controllersByToken.get(s.token) === s) controllersByToken.delete(s.token);
       if (s.controllerWs) {
@@ -675,6 +701,8 @@ export const remoteControlModule: PluginModule = {
         s.audioOn = false;
       }
       await audit('session-end', { sessionId: s.id, device: s.deviceName, reason });
+      // 被控端卡片要立刻收掉（等下一轮 /status 会有最长 6s 的「已经断开了还显示远控中」）
+      if (!wasPending) notifyHost({ type: 'session.ended', sessionId: s.id, reason });
       // 没有活动会话时停掉回退采集与代理进程（释放 CPU）
       if (![...sessions.values()].some((x) => x.status === 'granted')) {
         try {
@@ -702,6 +730,23 @@ export const remoteControlModule: PluginModule = {
     const startJpegStream = (s: RcSession, a: RemoteControlAgent): void => {
       const p = s.jpegStream || { fps: 10, scale: 1, quality: 60 };
       a.fire({ op: 'stream', fps: p.fps, scale: p.scale, quality: p.quality, changedOnly: true, mon: s.captureMon });
+    };
+    /**
+     * captureMon=-1 = 整个虚拟桌面：双屏机器上会把两块屏拼成一张超宽画面推给控制端
+     * （2026-10-31 实报「两个屏幕连一块发过来」），点击坐标也跟着被拉偏。
+     * 只有用户从没选过（-1）时才自动落主屏，显式选择要尊重。
+     *
+     * ★ 授予路径与「WebRTC 掉到 JPEG」的降级路径都必须走这里 —— 降级路径原来漏了，
+     *   于是任何先走 WebRTC 再回退的会话都默认整屏拼接。
+     */
+    const resolveDefaultCaptureMon = async (s: RcSession, a: RemoteControlAgent): Promise<void> => {
+      if (s.captureMon >= 0) return;
+      try {
+        const m = await a.call({ op: 'monitors' }, 8000);
+        const list = Array.isArray(m.monitors) ? (m.monitors as Record<string, unknown>[]) : [];
+        const idx = list.findIndex((x) => x && x.primary);
+        if (idx >= 0) s.captureMon = idx;
+      } catch { /* 枚举失败就沿用整个桌面 */ }
     };
 
     /**
@@ -738,9 +783,31 @@ export const remoteControlModule: PluginModule = {
       if (typeof s.orphanTimer.unref === 'function') s.orphanTimer.unref();
     };
 
-    const grantSession = async (s: RcSession, trust: boolean, inputAllowed = true): Promise<void> => {
+    /**
+     * pending 通道断开后的宽限回收：控制端凭 confirmId 重连即撤销，没回来才作废。
+     * 作废必须通知被控端（endSession 内），否则弹窗会留在一个已死的请求上。
+     */
+    const armPendingGrace = (s: RcSession): void => {
+      if (s.pendingGraceTimer) clearTimeout(s.pendingGraceTimer);
+      s.pendingGraceTimer = setTimeout(() => {
+        s.pendingGraceTimer = undefined;
+        if (s.status !== 'pending' || s.controllerWs) return;
+        ctx.log(`[remote-control] 待确认会话 ${s.id.slice(0, 8)} 控制端已离开，作废`);
+        void endSession(s, '控制端已离开，配对请求已作废');
+      }, PENDING_REATTACH_GRACE_MS);
+      if (typeof s.pendingGraceTimer.unref === 'function') s.pendingGraceTimer.unref();
+    };
+
+    const grantSession = async (
+      s: RcSession,
+      trust: boolean,
+      inputAllowed = true,
+      via: RcSession['via'] = 'confirmed',
+    ): Promise<void> => {
       s.status = 'granted';
       s.inputAllowed = inputAllowed;
+      s.via = via;
+      s.grantedAt = Date.now();
       s.token = newDeviceToken();
       s.lastActivityAt = Date.now();
       controllersByToken.set(s.token, s);
@@ -769,17 +836,8 @@ export const remoteControlModule: PluginModule = {
       if (s.mode === 'jpeg') {
         try {
           const a = await ensureAgent();
-          // ★ 默认采「主屏」而不是 -1（整个虚拟桌面）：双屏机器上 -1 会把两块屏拼成一张
-          //   超宽画面推给控制端，用户看到的是「两个屏幕同时出现」且点击坐标被拉偏。
-          //   captureMon 仍是 -1（用户没选过）时才自动落主屏，显式选择要尊重。
-          if (s.captureMon < 0) {
-            try {
-              const m = await a.call({ op: 'monitors' }, 8000);
-              const list = Array.isArray(m.monitors) ? (m.monitors as Record<string, unknown>[]) : [];
-              const idx = list.findIndex((x) => x && x.primary);
-              if (idx >= 0) s.captureMon = idx;
-            } catch { /* 枚举失败就沿用整个桌面 */ }
-          }
+          // 默认采「主屏」而不是整个虚拟桌面（见 resolveDefaultCaptureMon 的说明）
+          await resolveDefaultCaptureMon(s, a);
           const info = await a.call({ op: 'screensize', mon: s.captureMon }, 10000);
           s.screen = { x: Number(info.x) || 0, y: Number(info.y) || 0, w: Number(info.w) || 0, h: Number(info.h) || 0 };
           s.screenSource = 'capture';
@@ -822,6 +880,16 @@ export const remoteControlModule: PluginModule = {
         trustSaved: !!deviceToken,
         ...(s.mode === 'webrtc' && s.captureDisplay ? { captureDisplay: s.captureDisplay } : {}),
       });
+      // 明示原则：会话一授权就推给被控端（开放模式/白名单直连没有确认弹窗，只能靠这条）。
+      // 被控端据此立刻出「远控中」卡片，不依赖 6s 一次的 /status 轮询。
+      notifyHost({
+        type: 'session.started',
+        sessionId: s.id,
+        device: s.deviceName,
+        mode: s.mode,
+        since: s.grantedAt,
+        via: s.via,
+      });
       // 授予时控制端通道还没建起来：给它一个宽限期补上，过期就释放（别锁死独占）
       armOrphanGuard(s);
     };
@@ -838,6 +906,9 @@ export const remoteControlModule: PluginModule = {
       const type = String(msg.type || '');
       if (s.status !== 'granted') {
         if (type === 'pair.wait') sendWsJson(s.controllerWs!, { type: 'pair.pending', confirmId: s.confirmId });
+        // 控制端放弃等待（取消/超时）：立刻作废 pending 并让被控端关掉确认弹窗，
+        // 否则弹窗一直挂着，用户晚点再点「允许」会授予一个没人认领的会话（实报「点了允许没反应」）。
+        else if (type === 'pair.cancel') await endSession(s, '控制端已取消配对');
         return;
       }
       switch (type) {
@@ -882,7 +953,10 @@ export const remoteControlModule: PluginModule = {
           notifyHost({ type: 'rtc.stop', sessionId: s.id });
           try {
             const a = await ensureAgent();
-            const info = await a.call({ op: 'screensize' }, 10000);
+            // ★ 降级路径同样要落主屏：WebRTC 先起来、随后掉到 JPEG 的会话原来用的是 -1，
+            //   控制端看到的是一张把两块屏拼起来的超宽画面（2026-10-31 实报）。
+            await resolveDefaultCaptureMon(s, a);
+            const info = await a.call({ op: 'screensize', mon: s.captureMon }, 10000);
             sendWsJson(s.controllerWs!, {
               type: 'session.mode', mode: 'jpeg',
               screen: { x: info.x ?? 0, y: info.y ?? 0, w: info.w ?? 0, h: info.h ?? 0 },
@@ -893,6 +967,32 @@ export const remoteControlModule: PluginModule = {
           } catch (e) {
             await endSession(s, `回退通道启动失败: ${(e as Error)?.message || e}`);
           }
+          break;
+        }
+        case 'use.webrtc': {
+          // 控制端手动重试低延迟通道（JPEG 掉下来之后唯一能自愈的入口）：
+          // 被控端采集层在场就把会话原地升回 WebRTC，否则明确告诉控制端为什么升不了。
+          if (!hostConn?.canCapture) {
+            sendWsJson(s.controllerWs!, {
+              type: 'webrtc.retry',
+              ok: false,
+              reason: '被控端采集层未就绪（被控端「通道」显示「待会话评估」）：请先让被控端窗口保持可见后重试',
+            });
+            break;
+          }
+          if (s.mode !== 'webrtc') {
+            s.mode = 'webrtc';
+            s.jpegStream = undefined;
+            try { agent?.fire({ op: 'stream', fps: 0 }); } catch { /* 代理没起来就算了 */ }
+            notifyHost({
+              type: 'rtc.start',
+              sessionId: s.id,
+              ...(iceConfig.iceServers.length ? { iceServers: iceConfig.iceServers } : {}),
+            });
+            ctx.log(`[remote-control] 会话 ${s.id} 由 JPEG 手动升级为 WebRTC`);
+          }
+          sendWsJson(s.controllerWs!, { type: 'session.mode', mode: 'webrtc' });
+          sendWsJson(s.controllerWs!, { type: 'webrtc.retry', ok: true });
           break;
         }
         case 'set.quality': {
@@ -1160,17 +1260,22 @@ export const remoteControlModule: PluginModule = {
             if (typeof msg.displayId === 'string' && /^[\w.-]{1,64}$/.test(msg.displayId)) {
               s.captureDisplay = msg.displayId;
             }
-            await grantSession(s, !!msg.trust, msg.readOnly !== true);
+            await grantSession(s, !!msg.trust, msg.readOnly !== true, 'confirmed');
             if (s.controllerWs) sendWsJson(s.controllerWs, { type: 'pair.done' });
-            notifyHost({ type: 'session.started', sessionId: s.id, device: s.deviceName, mode: s.mode });
           } else {
             await endSession(s, '被控端拒绝');
           }
           break;
         }
         case 'session.stop': {
-          const s = [...sessions.values()].find((x) => x.id === msg.sessionId || msg.all);
-          if (s) await endSession(s, '被控端结束会话');
+          // all=true 是托盘/卡片的「一键断开」：旧写法 find(x => x.id === id || msg.all) 只会
+          // 断掉第一条（独占下通常恰好一条，但幽灵会话 + 新会话并存时就漏了）。
+          if (msg.all) {
+            await endAll('被控端结束会话');
+          } else {
+            const s = [...sessions.values()].find((x) => x.id === msg.sessionId);
+            if (s) await endSession(s, '被控端结束会话');
+          }
           break;
         }
         case 'ping':
@@ -1261,6 +1366,10 @@ export const remoteControlModule: PluginModule = {
           clearTimeout(s.orphanTimer);
           s.orphanTimer = undefined;
         }
+        if (s.pendingGraceTimer) {
+          clearTimeout(s.pendingGraceTimer);
+          s.pendingGraceTimer = undefined;
+        }
         if (kind === 'pending') {
           sendWsJson(ws, { type: 'pair.pending', confirmId: s.confirmId });
         } else if (s.token && !silent) {
@@ -1283,6 +1392,9 @@ export const remoteControlModule: PluginModule = {
           if (s.controllerWs !== ws) return;
           s.controllerWs = null;
           if (s.status === 'granted') void endSession(s, '控制端断开');
+          // 等待确认的通道断开：给一个短宽限等它凭 confirmId 重连（控制端 3s 心跳会自己回来），
+          // 宽限内没回来才作废 —— 否则一次网络抖动就把用户正在等的配对杀掉。
+          else if (s.status === 'pending') armPendingGrace(s);
         });
         ws.on('error', () => {
           try {
@@ -1385,10 +1497,24 @@ export const remoteControlModule: PluginModule = {
           }
           const body = await readBody(req);
           const deviceId = String(body.deviceId || '').trim();
-          // 独占判定前先清掉「授了但控制端始终没连上」的会话，别让死会话挡住重连
+          // 独占判定前先清掉「授了但控制端始终没连上」的会话，别让死会话挡住重连。
+          // ★ 同一设备重试：立即释放 —— 授权后它从没建立过通道，没有任何人在看/在控，
+          //   放掉不会打断任何人。实报（2026-10-31）：连线失败后立刻重试，被自己的幽灵
+          //   会话锁住连吃三次「独占」。
+          // ★ 其他设备：保留 15s 宽限 —— 那是「被控端点了允许、控制端正在建通道」的
+          //   自愈窗口（见 grantedByConfirm 补发逻辑），不能抢掉。
           const nowPair = Date.now();
           for (const x of [...sessions.values()]) {
-            if (x.status === 'granted' && !x.controllerWs && nowPair - x.lastActivityAt > ORPHAN_GRACE_MS) {
+            if (x.status !== 'granted') continue;
+            // ★ 同一设备重新配对：不管旧通道是否还挂着都先释放 —— 同设备就是同一个人，
+            //   旧会话要么是异常断开留下的幽灵（通道对象还在，但对面早就没了），要么就是
+            //   他自己想重连。只放「从没连上过」时会漏掉前一种，实报「另一台电脑的老控制端
+            //   一直进不来，本机 dev 却能连」。
+            if (x.deviceId === deviceId) {
+              await endSession(x, '同一控制端重新配对（释放旧会话）');
+              continue;
+            }
+            if (!x.controllerWs && nowPair - x.lastActivityAt > ORPHAN_GRACE_MS) {
               await endSession(x, '控制端未建立通道（自动释放独占）');
             }
           }
@@ -1401,6 +1527,7 @@ export const remoteControlModule: PluginModule = {
             whitelist: Array.from(whitelisted.values()),
             remoteAddr: remoteAddr(req),
             allowExternalSubnet,
+            openMode,
           });
           if (!verdict.ok) {
             await audit('pair-reject', {
@@ -1431,7 +1558,8 @@ export const remoteControlModule: PluginModule = {
           };
           sessions.set(session.id, session);
           if (verdict.status === 'granted') {
-            await grantSession(session, false);
+            // 免确认直连的两种来源要分开记：白名单（entry 命中）vs 开放模式（默认开着）
+            await grantSession(session, false, true, verdict.entry ? 'trusted' : 'open');
             res.json({
               data: {
                 status: 'granted',
@@ -1463,9 +1591,12 @@ export const remoteControlModule: PluginModule = {
           data: {
             panic: panicActive,
             mode: hostConn?.canCapture ? 'webrtc-capable' : 'jpeg',
-            session: [...sessions.values()].find((s) => s.status === 'granted')
-              ? { device: [...sessions.values()].find((s) => s.status === 'granted')!.deviceName }
-              : null,
+            session: (() => {
+              const s = [...sessions.values()].find((x) => x.status === 'granted');
+              return s
+                ? { device: s.deviceName, since: s.grantedAt || s.createdAt, via: s.via || 'confirmed' }
+                : null;
+            })(),
             pendingCount: pendingByConfirm.size,
             // 授权码只在带 host key 的请求里返回（控制端页面不带）
             code: hasHostKey(req) ? storedCode : null,
