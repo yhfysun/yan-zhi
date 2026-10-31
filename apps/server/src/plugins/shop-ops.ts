@@ -56,7 +56,8 @@ export interface ShopIntegration {
 
 /** 支持的平台。entryUrl/loginNote/keyMetrics 给智能体与用户看：P0 的抓数全靠 pageAgent 打开这些页面。 */
 export interface ShopPlatform {
-  id: 'amazon' | 'taobao' | 'pdd' | '1688' | 'tiktok' | 'shopify' | 'warehouse'
+   id: 'amazon' | 'taobao' | 'pdd' | '1688' | 'tiktok' | 'shopify' | 'warehouse'
+    | 'douyin' | 'kuaishou'
     | 'sf-express' | 'jd-logistics' | 'cainiao' | '4px' | 'yunexpress' | 'winit';
   label: string;
   kind: 'store' | 'warehouse' | 'logistics';
@@ -109,6 +110,24 @@ export const SHOP_PLATFORMS: readonly ShopPlatform[] = [
     keyMetrics: ['商品卡与短视频带货数据', '达人合作与佣金口径', '履约时效与差评'],
     integration: { docsUrl: 'https://partner.tiktokshop.com/docv2/page/tts-api-concepts-overview', auth: 'app-key-secret', client: 'ready', enterprise: true },
     credentials: platformCredentialFieldsOf('tiktok'),
+  },
+  {
+    id: 'douyin', label: '抖店（抖音小店）', kind: 'store',
+    entryUrl: 'https://fxg.jinritemai.com/',
+    loginNote: '已接抖店开放平台（App Key/Secret + 商家授权 access_token，在 op.jinritemai.com 创建应用获取）；'
+      + '商品/订单/发货优先走 API；改标题需全量编辑接口未接入，请到后台改。无沙箱，联调即正式数据。',
+    keyMetrics: ['抖店罗盘：曝光 / 点击 / 转化', '直播与短视频渠道占比', '退款率与体验分（商品体验/物流体验/商家服务）', '库存与发货时效（超时发货扣保证金）'],
+    integration: { docsUrl: 'https://op.jinritemai.com/docs/guide-docs/10/23', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: platformCredentialFieldsOf('douyin'),
+  },
+  {
+    id: 'kuaishou', label: '快手小店', kind: 'store',
+    entryUrl: 'https://s.kwaixiaodian.com/',
+    loginNote: '已接快手电商开放平台（AppID + signSecret + 商家授权 access_token，在 open.kwaixiaodian.com 创建应用获取）；'
+      + '商品/订单/发货优先走 API。无沙箱，联调即正式数据；signSecret 与 appSecret 是两个值，别填混。',
+    keyMetrics: ['快手小店经营数据：曝光 / 点击 / 转化', '直播与短视频带货占比', '退款率与小店星级', '库存与发货时效'],
+    integration: { docsUrl: 'https://open.kwaixiaodian.com/docs/dev', auth: 'app-key-secret', client: 'ready', enterprise: true },
+    credentials: platformCredentialFieldsOf('kuaishou'),
   },
   {
     id: 'shopify', label: 'Shopify 独立站', kind: 'store',

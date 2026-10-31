@@ -18,6 +18,8 @@ import { tiktokGetProduct, tiktokListOrders, tiktokListProducts, tiktokSetListin
 import { taobaoGetItem, taobaoListOrders, taobaoListProducts, taobaoSetListing, taobaoShipOffline, taobaoUpdateItem, taobaoUpdateStock } from './taobao.js';
 import { pddGetGoods, pddListOrders, pddListProducts, pddSetListing, pddShip, pddUpdateSkuPrice, pddUpdateStock, pddUpdateTitle } from './pdd.js';
 import { ali1688GetProduct, ali1688ListOrders, ali1688ListProducts, ali1688SetListing, ali1688ShipOffline, ali1688UpdateStock, ali1688UpdateTitle } from './ali1688.js';
+import { douyinEditSkuPrice, douyinLaunchProduct, douyinListOrders, douyinListProducts, douyinLogisticsAdd, douyinRequest, douyinSetOffline, douyinSyncStock } from './douyin.js';
+import { kuaishouEditItem, kuaishouGetItem, kuaishouListOrders, kuaishouListProducts, kuaishouOrderDeliver } from './kuaishou.js';
 import { winitCreateOutbound, winitInventory, winitListOutbound, winitListProducts } from './winit.js';
 
 export interface PlatformActionResult {
@@ -326,6 +328,73 @@ export async function runPlatformAction(
       return norm(await winitCreateOutbound(creds, payload.order as Record<string, unknown>));
     }
 
+    // ---------- 抖店（抖音小店） ----------
+    case 'douyin:product.list':
+      return norm(await douyinListProducts(creds, { page: num(payload, 'page') || 1, pageSize: num(payload, 'pageSize') || 20 }));
+    case 'douyin:product.update':
+      // 抖店没有单独「改标题」接口：编辑走 product.editV2 全量编辑（要完整商品字段，风险大未接），
+      // 如实说明，不让 AI 误以为改成功。
+      return { ok: false, step: 'api', message: '抖店改标题需走 product.editV2 全量编辑接口（需完整商品字段，风险高未接入），请到抖店后台修改' };
+    case 'douyin:product.price': {
+      const missing = required(payload, ['productId', 'skuId', 'price']);
+      if (missing) return { ok: false, message: `${missing}（单位：分）`, step: 'creds' };
+      return norm(await douyinEditSkuPrice(creds, str(payload, 'productId'), str(payload, 'skuId'), Math.round(num(payload, 'price'))));
+    }
+    case 'douyin:product.stock': {
+      const missing = required(payload, ['skuId', 'quantity']);
+      if (missing) return { ok: false, message: `${missing}（sku.syncStock 全量同步）`, step: 'creds' };
+      return norm(await douyinSyncStock(creds, str(payload, 'skuId'), Math.round(num(payload, 'quantity'))));
+    }
+    case 'douyin:product.listing': {
+      const missing = required(payload, ['productId']);
+      if (missing) return { ok: false, message: missing, step: 'creds' };
+      return norm(await (bool(payload, 'online')
+        ? douyinLaunchProduct(creds, str(payload, 'productId'))
+        : douyinSetOffline(creds, str(payload, 'productId'))));
+    }
+    case 'douyin:order.list':
+      return norm(await douyinListOrders(creds, {
+        page: num(payload, 'page') || 0,
+        pageSize: num(payload, 'pageSize') || 20,
+        mainStatus: payload.mainStatus ? String(payload.mainStatus) : undefined,
+      }));
+    case 'douyin:order.ship': {
+      const missing = required(payload, ['orderId', 'companyCode', 'trackingNumber']);
+      if (missing) return { ok: false, message: `抖店发货需要${missing}（companyCode 从 order.logisticsCompanyList 查）`, step: 'creds' };
+      return norm(await douyinLogisticsAdd(creds, str(payload, 'orderId'), str(payload, 'companyCode'), str(payload, 'trackingNumber')));
+    }
+
+    // ---------- 快手小店 ----------
+    case 'kuaishou:product.list':
+      return norm(await kuaishouListProducts(creds, { page: num(payload, 'page') || 1, pageSize: num(payload, 'pageSize') || 20 }));
+    case 'kuaishou:product.update': {
+      const missing = required(payload, ['kwaiItemId', 'title']);
+      if (missing) return { ok: false, message: missing, step: 'creds' };
+      return norm(await kuaishouEditItem(creds, str(payload, 'kwaiItemId'), { title: String(payload.title) }));
+    }
+    case 'kuaishou:product.price': {
+      const missing = required(payload, ['kwaiItemId', 'price']);
+      if (missing) return { ok: false, message: `${missing}（单位：分）`, step: 'creds' };
+      return norm(await kuaishouEditItem(creds, str(payload, 'kwaiItemId'), { priceCents: Math.round(num(payload, 'price')) }));
+    }
+    case 'kuaishou:product.stock': {
+      const missing = required(payload, ['kwaiItemId', 'quantity']);
+      if (missing) return { ok: false, message: missing, step: 'creds' };
+      return norm(await kuaishouEditItem(creds, str(payload, 'kwaiItemId'), { stock: Math.round(num(payload, 'quantity')) }));
+    }
+    case 'kuaishou:product.listing': {
+      const missing = required(payload, ['kwaiItemId']);
+      if (missing) return { ok: false, message: missing, step: 'creds' };
+      return norm(await kuaishouEditItem(creds, str(payload, 'kwaiItemId'), { online: bool(payload, 'online') }));
+    }
+    case 'kuaishou:order.list':
+      return norm(await kuaishouListOrders(creds, { pageSize: num(payload, 'pageSize') || 20, pcursor: payload.pcursor ? String(payload.pcursor) : undefined }));
+    case 'kuaishou:order.ship': {
+      const missing = required(payload, ['orderId', 'expressCode', 'trackingNumber']);
+      if (missing) return { ok: false, message: `快手发货需要${missing}（expressCode 从快递公司列表接口查，数字编码）`, step: 'creds' };
+      return norm(await kuaishouOrderDeliver(creds, str(payload, 'orderId'), str(payload, 'expressCode'), str(payload, 'trackingNumber')));
+    }
+
     default:
       return { ok: false, message: `「${client.label}」的 ${action} 尚未接入`, step: 'api' };
   }
@@ -401,6 +470,20 @@ export async function readbackPlatformAction(
       case 'tiktok:product.stock':
       case 'tiktok:product.listing': {
         const r = await tiktokGetProduct(creds, str(payload, 'productId'));
+        return { supported: true, ok: r.ok, data: r.data, message: r.message };
+      }
+      case 'douyin:product.price':
+      case 'douyin:product.stock':
+      case 'douyin:product.listing': {
+        // 抖店回读：product.detail 按商品 ID 查详情（价格/库存/上下架状态都在）
+        const r = await douyinRequest(creds, 'product.detail', { product_id: str(payload, 'productId') });
+        return { supported: true, ok: r.ok, data: r.data, message: r.message };
+      }
+      case 'kuaishou:product.price':
+      case 'kuaishou:product.update':
+      case 'kuaishou:product.stock':
+      case 'kuaishou:product.listing': {
+        const r = await kuaishouGetItem(creds, str(payload, 'kwaiItemId'));
         return { supported: true, ok: r.ok, data: r.data, message: r.message };
       }
       case 'winit:order.ship': {

@@ -20,6 +20,8 @@ import { taobaoListOrders, taobaoListProducts } from '../services/platform-api/t
 import { pddListOrders, pddListProducts } from '../services/platform-api/pdd.js';
 import { ali1688ListOrders, ali1688ListProducts } from '../services/platform-api/ali1688.js';
 import { tiktokListOrders, tiktokListProducts } from '../services/platform-api/tiktok.js';
+import { douyinListOrders, douyinListProducts } from '../services/platform-api/douyin.js';
+import { kuaishouListOrders, kuaishouListProducts } from '../services/platform-api/kuaishou.js';
 import { winitListProducts } from '../services/platform-api/winit.js';
 
 export interface SyncSummary {
@@ -316,6 +318,79 @@ function normTiktokProducts(data: Record<string, unknown>): NormProduct[] {
   return out;
 }
 
+/**
+ * 抖店商品归一化：product.listV2 出参 data.product_list / data.list（两种口径都兜）。
+ * 每个商品带 skus 数组（sku_id / price 分 / stock_num）。
+ */
+function normDouyinProducts(data: Record<string, unknown>): NormProduct[] {
+  const list = ((data.product_list || data.list || data.products) || []) as Array<Record<string, unknown>>;
+  const out: NormProduct[] = [];
+  for (const p of list) {
+    const pid = strOr(p.product_id ?? p.product_id_str ?? p.id);
+    const status = Number(p.status);
+    const skus = Array.isArray(p.skus) ? p.skus as Array<Record<string, unknown>> : [];
+    for (const s of skus) {
+      const skuId = strOr(s.sku_id ?? s.skuId);
+      const imgs = Array.isArray(p.img) ? p.img as Array<Record<string, unknown>>
+        : Array.isArray(p.imgs) ? p.imgs as Array<Record<string, unknown>> : [];
+      out.push({
+        sku: strOr(s.sku_id_str ?? s.code ?? s.out_sku_id) || `${pid}-${skuId}`,
+        title: strOr(p.name, pid),
+        priceCents: asCents(s.market_price ?? s.price),
+        currency: 'CNY',
+        stock: asInt(s.stock_num),
+        listingStatus: status === 0 ? 'online' : 'offline',
+        imageUrl: imgs[0]?.url ? String(imgs[0].url) : undefined,
+        attrs: { platform: 'douyin', platformProductId: pid, platformSkuId: skuId },
+      } as NormProduct);
+    }
+  }
+  return out;
+}
+
+/**
+ * 快手商品归一化：open.item.list.get 出参 data.items[]，价格单位分。
+ * 列表接口可能不带 SKU 明细；缺 SKU 时商品级一条（platformSkuId 留空），
+ * 改价/库存走商品级 open.item.edit，不硬猜 SKU 级差异。
+ */
+function normKuaishouProducts(data: Record<string, unknown>): NormProduct[] {
+  const list = (data.items || data.list || []) as Array<Record<string, unknown>>;
+  const out: NormProduct[] = [];
+  for (const it of list) {
+    const itemId = strOr(it.kwaiItemId ?? it.kwai_item_id ?? it.item_id);
+    if (!itemId) continue;
+    const itemStatus = Number(it.itemStatus ?? it.item_status ?? 1);
+    const skus = Array.isArray(it.sku_list) ? it.sku_list as Array<Record<string, unknown>> : [];
+    if (skus.length) {
+      for (const s of skus) {
+        out.push({
+          sku: strOr(s.skuNick ?? s.sku_nick ?? s.relSkuId) || `${itemId}-${strOr(s.skuId)}`,
+          title: strOr(it.title, itemId),
+          priceCents: asCents(s.price ?? it.price),
+          currency: 'CNY',
+          stock: asInt(s.stockNum ?? s.stock_num),
+          listingStatus: itemStatus === 1 ? 'online' : 'offline',
+          imageUrl: it.itemPicUrl ? String(it.itemPicUrl) : undefined,
+          attrs: { platform: 'kuaishou', platformProductId: itemId, platformSkuId: strOr(s.skuId) },
+        } as NormProduct);
+      }
+    } else {
+      out.push({
+        sku: strOr(it.relItemId) || itemId,
+        title: strOr(it.title, itemId),
+        priceCents: asCents(it.price),
+        currency: 'CNY',
+        stock: asInt(it.stockNum ?? it.stock_num),
+        listingStatus: itemStatus === 1 ? 'online' : 'offline',
+        imageUrl: it.itemPicUrl ? String(it.itemPicUrl) : undefined,
+        attrs: { platform: 'kuaishou', platformProductId: itemId },
+      } as NormProduct);
+    }
+  }
+  return out;
+}
+
+/** 万邑通商品归一化 */
 function normWinitProducts(data: Record<string, unknown>): NormProduct[] {
   const list = (data.list || data.items || data.records || []) as Array<Record<string, unknown>>;
   return list.map((it) => {
@@ -443,6 +518,24 @@ export async function importProductsFromPlatform(
     const r = await retryRead(() => winitListProducts(creds, { pageSize: opts.limit ?? 50 }), retry);
     if (!r.ok) { sum.errors.push(r.message || '万邑通商品读取失败'); return sum; }
     norms = normWinitProducts(r.data || {});
+  } else if (shop.platform === 'douyin') {
+    const pageSize = opts.limit ?? 20;
+    for (let page = 1; page <= pages; page++) {
+      const r = await retryRead(() => douyinListProducts(creds, { page, pageSize }), retry);
+      if (!r.ok) { sum.errors.push(r.message || '抖店商品读取失败'); break; }
+      const list = normDouyinProducts(r.data || {});
+      norms.push(...list);
+      if (list.length < pageSize) break;
+    }
+  } else if (shop.platform === 'kuaishou') {
+    const pageSize = opts.limit ?? 20;
+    for (let page = 1; page <= pages; page++) {
+      const r = await retryRead(() => kuaishouListProducts(creds, { page, pageSize }), retry);
+      if (!r.ok) { sum.errors.push(r.message || '快手商品读取失败'); break; }
+      const list = normKuaishouProducts(r.data || {});
+      norms.push(...list);
+      if (list.length < pageSize) break;
+    }
   } else {
     sum.errors.push(`「${shop.platform}」没有商品导入适配`);
     return sum;
@@ -538,6 +631,32 @@ function buildProductAction(
     case 'tiktok:listing':
       if (!productId) return { error: '缺少 platformProductId' };
       return { action: 'product.listing', payload: { productId, online: p.listingStatus === 'online' } };
+    case 'douyin:price': {
+      if (!productId || !skuId) return { error: '缺少 platformProductId / platformSkuId（先从抖店导入商品）' };
+      return { action: 'product.price', payload: { productId, skuId, price: p.priceCents } };
+    }
+    case 'douyin:stock':
+      // 抖店库存按 SKU 全量同步（sku.syncStock）
+      if (!skuId) return { error: '缺少 platformSkuId（先从抖店导入商品）' };
+      return { action: 'product.stock', payload: { skuId, quantity: p.stock } };
+    case 'douyin:title':
+      return { error: '抖店改标题需 product.editV2 全量编辑（需完整商品字段，风险高未接入）——请到抖店后台修改' };
+    case 'douyin:listing':
+      if (!productId) return { error: '缺少 platformProductId' };
+      return { action: 'product.listing', payload: { productId, online: p.listingStatus === 'online' } };
+    case 'kuaishou:price':
+      // 快手改价/库存走商品级 open.item.edit（开放平台按 item 粒度编辑）
+      if (!productId) return { error: '缺少 platformProductId（kwaiItemId，先从快手导入商品）' };
+      return { action: 'product.price', payload: { kwaiItemId: productId, price: p.priceCents } };
+    case 'kuaishou:stock':
+      if (!productId) return { error: '缺少 platformProductId（kwaiItemId）' };
+      return { action: 'product.stock', payload: { kwaiItemId: productId, quantity: p.stock } };
+    case 'kuaishou:title':
+      if (!productId) return { error: '缺少 platformProductId（kwaiItemId）' };
+      return { action: 'product.update', payload: { kwaiItemId: productId, title: p.title } };
+    case 'kuaishou:listing':
+      if (!productId) return { error: '缺少 platformProductId（kwaiItemId）' };
+      return { action: 'product.listing', payload: { kwaiItemId: productId, online: p.listingStatus === 'online' } };
     default:
       return { error: `「${platform}」不支持 ${field} 同步` };
   }
@@ -695,6 +814,26 @@ function mapOrderStatus(platform: string, raw: string): OrderStatus {
     if (/WAIT_BUYER_CONFIRM|SEND_GOODS/.test(s)) return 'shipped';
     if (/SUCCESS|FINISHED/.test(s)) return 'completed';
     if (/CLOSE|CANCEL/.test(s)) return 'refunded';
+    return 'paid';
+  }
+  if (platform === 'douyin') {
+    // main_status：1 待确认/待支付 · 103 部分支付 · 105 已支付 · 2 备货中 ·
+    // 101 部分发货 · 3 已发货 · 4 已取消 · 5 已完成 · 21/22/39 退款完结
+    const n = Number(raw);
+    if (n === 1 || n === 103) return 'pending';
+    if (n === 105 || n === 2) return 'paid';
+    if (n === 101 || n === 3) return 'shipped';
+    if (n === 5) return 'completed';
+    if (n === 4 || n === 21 || n === 22 || n === 39) return 'refunded';
+    return 'paid';
+  }
+  if (platform === 'kuaishou') {
+    // status：10 待付款 · 30 已付款 · 40 已发货 · 50 已签收 · 70 订单成功 · 80 订单失败
+    const n = Number(raw);
+    if (n === 10) return 'pending';
+    if (n === 40) return 'shipped';
+    if (n === 50 || n === 70) return 'completed';
+    if (n === 80) return 'refunded';
     return 'paid';
   }
   return 'paid';
@@ -866,13 +1005,52 @@ export async function importOrdersFromPlatform(
       token = String((r.data as { next_page_token?: unknown } | undefined)?.next_page_token ?? '');
       if (!token || !list.length) break;
     }
+  } else if (shop.platform === 'douyin') {
+    const pageSize = opts.limit ?? 20;
+    // 抖店 page 从 0 开始
+    for (let page = 0; page < pages; page++) {
+      const r = await retryRead(() => douyinListOrders(creds, { page, pageSize }), retry);
+      if (!r.ok) { sum.errors.push(r.message || '抖店订单读取失败'); break; }
+      const list = ((r.data?.shop_order_list || []) as Array<Record<string, unknown>>);
+      upsertAll(list.map((o): NormOrder => ({
+        orderNo: strOr(o.order_id ?? o.orderId),
+        buyer: strOr((o.post_addr as Record<string, unknown> | undefined)?.detail) || undefined,
+        amountCents: asCents(o.pay_amount ?? o.order_amount),
+        currency: 'CNY',
+        status: mapOrderStatus('douyin', strOr(o.main_status ?? o.order_status)),
+        items: [],
+        createdAt: asCents(o.create_time) * 1000,
+        attrs: { platform: 'douyin', platformOrderId: strOr(o.order_id ?? o.orderId) },
+      })));
+      if (list.length < pageSize) break;
+    }
+  } else if (shop.platform === 'kuaishou') {
+    const pageSize = opts.limit ?? 20;
+    let pcursor = '';
+    for (let page = 1; page <= pages; page++) {
+      const r = await retryRead(() => kuaishouListOrders(creds, { pcursor, pageSize }), retry);
+      if (!r.ok) { sum.errors.push(r.message || '快手订单读取失败'); break; }
+      const d = r.data || {};
+      const list = ((d.orderInfoList || d.orders || []) as Array<Record<string, unknown>>);
+      upsertAll(list.map((o): NormOrder => ({
+        orderNo: strOr(o.oid ?? o.orderId),
+        buyer: strOr((o.address as Record<string, unknown> | undefined)?.consignee) || undefined,
+        amountCents: asCents(o.totalFee ?? o.total_fee),
+        currency: 'CNY',
+        status: mapOrderStatus('kuaishou', strOr(o.status)),
+        items: [],
+        // 快手订单 createTime 是毫秒
+        createdAt: asCents(o.createTime),
+        attrs: { platform: 'kuaishou', platformOrderId: strOr(o.oid ?? o.orderId) },
+      })));
+      pcursor = strOr(d.pcursor);
+      if (!pcursor || pcursor === 'nomore' || list.length < pageSize) break;
+    }
   } else {
     sum.errors.push(`「${shop.platform}」没有订单导入适配`);
   }
   return sum;
 }
-
-// ======================= 发货：本地 → 平台 =======================
 
 export interface ShipPushInput {
   trackingNo: string;
@@ -933,6 +1111,14 @@ export async function pushShipmentToPlatform(
       return { ok: false, message: 'TikTok 回填需要 packageId（订单详情）与 shippingProviderId' };
     }
     payload = { packageId, trackingNumber: input.trackingNo, shippingProviderId: input.shippingProviderId };
+  } else if (shop.platform === 'douyin') {
+    // 抖店整单发货：company_code 从 order.logisticsCompanyList 查（如 shunfeng）
+    if (!input.companyCode) return { ok: false, message: '抖店回填运单需要 companyCode（order.logisticsCompanyList 可查，如 shunfeng）' };
+    payload = { orderId: platformOrderId, companyCode: input.companyCode, trackingNumber: input.trackingNo };
+  } else if (shop.platform === 'kuaishou') {
+    // 快手发货：expressCode 是数字编码（快递公司列表接口可查）
+    if (!input.companyCode) return { ok: false, message: '快手回填运单需要 expressCode（快递公司列表接口可查的数字编码）' };
+    payload = { orderId: platformOrderId, expressCode: input.companyCode, trackingNumber: input.trackingNo };
   } else {
     return { ok: false, message: `「${shop.platform}」暂不支持运单回填（万邑通请走出库单）` };
   }

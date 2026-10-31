@@ -11,6 +11,8 @@ import { amazonPlatformClient } from './amazon.js';
 import { taobaoPlatformClient } from './taobao.js';
 import { pddPlatformClient } from './pdd.js';
 import { ali1688PlatformClient } from './ali1688.js';
+import { douyinPlatformClient } from './douyin.js';
+import { kuaishouPlatformClient } from './kuaishou.js';
 
 export * from './types.js';
 
@@ -22,6 +24,8 @@ const CLIENTS = new Map<string, PlatformApiClient>([
   [taobaoPlatformClient.id, taobaoPlatformClient],
   [pddPlatformClient.id, pddPlatformClient],
   [ali1688PlatformClient.id, ali1688PlatformClient],
+  [douyinPlatformClient.id, douyinPlatformClient],
+  [kuaishouPlatformClient.id, kuaishouPlatformClient],
 ]);
 
 /** 测试/未来插件注册用：同 id 覆盖 */

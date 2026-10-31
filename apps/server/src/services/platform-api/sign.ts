@@ -27,6 +27,11 @@ export function hmacSha256Hex(secret: string, data: string): string {
   return crypto.createHmac('sha256', secret).update(data, 'utf8').digest('hex');
 }
 
+/** HMAC-SHA256 → Base64（快手小店签名用） */
+export function hmacSha256Base64(secret: string, data: string): string {
+  return crypto.createHmac('sha256', secret).update(data, 'utf8').digest('base64');
+}
+
 /** 把参数按 key 字典序排成 k1v1k2v2…（空值跳过） */
 export function sortedParamConcat(params: Record<string, unknown>): string {
   return Object.keys(params)

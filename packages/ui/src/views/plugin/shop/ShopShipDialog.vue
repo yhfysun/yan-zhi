@@ -90,6 +90,8 @@ const platformLogisticsHint = computed(() => {
     case 'taobao': return '淘宝物流公司编码 company_code（如 SF）';
     case 'amazon': return '亚马逊承运商代码 carrierCode（如 UPS / DHL / USPS）';
     case 'pdd': return '拼多多物流公司 id（数字，pdd.logistics.companies.get 可查）';
+    case 'douyin': return '抖店物流公司编码 company_code（order.logisticsCompanyList 可查，如 shunfeng）';
+    case 'kuaishou': return '快手快递公司数字编码 expressCode（快递公司列表接口可查）';
     case '1688': return '1688 物流公司编码 cpCode';
     case 'tiktok': return 'TikTok 物流商 id shippingProviderId';
     case 'shopify': return 'Shopify 物流公司名称（如 SF Express / DHL）；会走 fulfillment 流程';
