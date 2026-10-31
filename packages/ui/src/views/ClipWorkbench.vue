@@ -376,14 +376,32 @@
                   <button v-if="!texts.length" class="cp-track-empty cp-track-empty-btn" :disabled="!clipCount" title="在播放头处添加一条字幕（也可右键时间轴空白区）" @click="addTextAtPlayhead">＋ 点击添加字幕（说清文案与时间点也可让剪辑师加）</button>
                 </div>
 
-                <!-- 音频轨 -->
+                <!-- 音频轨：整片 BGM（铺底）+ 定时音频层（音效/多段 BGM，P0-7） -->
                 <div class="cp-track">
-                  <div v-if="bgm" class="cp-audio" :style="{ left: 0, width: Math.max(60, estTotal * pxPerSec) + 'px' }" title="背景音乐（整片）">
+                  <div
+                    v-if="bgm"
+                    class="cp-audio"
+                    :style="{ left: 0, width: Math.max(60, estTotal * pxPerSec) + 'px', ...(audios.length ? { top: '32px', height: '20px' } : {}) }"
+                    title="背景音乐（整片铺底）"
+                  >
                     <img v-if="waveUrl(bgm.file)" class="cp-bgm-wave" :src="waveUrl(bgm.file)" alt="" />
                     <el-icon :size="11"><Headset /></el-icon>
                     <span>{{ baseName(bgm.file) }} · 音量 {{ bgm.volume }}</span>
                   </div>
-                  <div v-if="!bgm" class="cp-track-empty">拖入音频素材设为 BGM</div>
+                  <div
+                    v-for="(a, i) in audios"
+                    :key="a.id"
+                    class="cp-audio cp-audio-layer"
+                    :class="{ active: a.id === selectedAudioId }"
+                    :style="{ left: (a.start * pxPerSec) + 'px', width: Math.max(24, (a.end - a.start) * pxPerSec) + 'px', top: '4px', height: '24px' }"
+                    :title="`音频${i + 1} ${baseName(a.file)}\n${a.start.toFixed(1)}s ~ ${a.end.toFixed(1)}s\n音量 ${(a.volume ?? 1).toFixed(2)}${a.fadeIn ? ` · 淡入 ${a.fadeIn}s` : ''}${a.fadeOut ? ` · 淡出 ${a.fadeOut}s` : ''}`"
+                    @click="selectAudio(a.id)"
+                    @contextmenu.prevent.stop="onAudioMenu($event, a)"
+                  >
+                    <el-icon :size="11"><Headset /></el-icon>
+                    <span>{{ baseName(a.file) }}</span>
+                  </div>
+                  <div v-if="!bgm && !audios.length" class="cp-track-empty">右键音频素材 → 设为 BGM / 音效</div>
                 </div>
 
                 <!-- 画中画轨（叠加轨）：右键素材 → 设为画中画 -->
@@ -885,6 +903,7 @@
                   <option v-for="a in g.items" :key="a.id" :value="a.id" :title="a.desc">{{ a.label }} —— {{ a.desc }}</option>
                 </optgroup>
               </select>
+              <div v-if="textPatch.tfOn" class="cp-ins-hint">已启用变换：文字动画预设不生效（二者取其一）</div>
             </div>
             <div class="cp-field">
               <label>滑入方向（仅滑动入场）</label>
@@ -905,6 +924,72 @@
                 <button v-for="p in POSITIONS" :key="p.v" class="cp-mini" :class="{ on: textPatch.position === p.v }" @click="textPatch.position = p.v">{{ p.label }}</button>
               </div>
             </div>
+            <!-- 文字层变换（P0-2b）：与画中画同一套语义/交互（位移/缩放/旋转/透明 + 关键帧） -->
+            <div class="cp-field">
+              <label class="cp-check"><input v-model="textPatch.tfOn" type="checkbox" /> 自由变换（位移/缩放/旋转/透明）</label>
+              <div class="cp-ins-hint">开启后位置以**画面中心**为基准（上面的位置按钮不再生效），成片改用 ASS 渲染；关键帧可与静态值并存</div>
+            </div>
+            <template v-if="textPatch.tfOn">
+              <div class="cp-field">
+                <label>水平偏移 <span class="cp-val">{{ (textPatch.tfX * 100).toFixed(0) }}%</span></label>
+                <input v-model.number="textPatch.tfX" class="cp-range" type="range" min="-0.5" max="0.5" step="0.01" />
+              </div>
+              <div class="cp-field">
+                <label>垂直偏移 <span class="cp-val">{{ (textPatch.tfY * 100).toFixed(0) }}%</span></label>
+                <input v-model.number="textPatch.tfY" class="cp-range" type="range" min="-0.5" max="0.5" step="0.01" />
+              </div>
+              <div class="cp-field">
+                <label>缩放 <span class="cp-val">{{ textPatch.tfScale.toFixed(2) }}×</span></label>
+                <input v-model.number="textPatch.tfScale" class="cp-range" type="range" min="0.05" max="5" step="0.05" />
+              </div>
+              <div class="cp-field">
+                <label>旋转 <span class="cp-val">{{ textPatch.tfRotation.toFixed(0) }}°</span></label>
+                <input v-model.number="textPatch.tfRotation" class="cp-range" type="range" min="-180" max="180" step="1" />
+              </div>
+              <div class="cp-field">
+                <label>不透明度 <span class="cp-val">{{ (textPatch.tfOpacity * 100).toFixed(0) }}%</span></label>
+                <input v-model.number="textPatch.tfOpacity" class="cp-range" type="range" min="0" max="1" step="0.01" />
+              </div>
+              <div class="cp-grp">
+                <div class="cp-grp-head" @click="txKfOpen = !txKfOpen">
+                  <el-icon :size="11"><component :is="txKfOpen ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+                  <span>变换关键帧</span>
+                  <span v-if="selectedText?.keyframes?.length" class="cp-grp-badge">{{ selectedText.keyframes.length }} 个</span>
+                  <span class="cp-spacer"></span>
+                  <button class="cp-mini" title="在播放头处打一个关键帧" @click.stop="addTextKf"><el-icon :size="11"><Plus /></el-icon></button>
+                  <button v-if="selectedText?.keyframes?.length" class="cp-mini" title="清空关键帧" @click.stop="clearTextKfs">
+                    <el-icon :size="11"><Delete /></el-icon>
+                  </button>
+                </div>
+                <div v-show="txKfOpen" class="cp-grp-body">
+                  <div class="cp-ins-hint">t=层内位置（相对这条字幕的起止）；x/y 是中心偏移；缓动作用到**下一个点**；例「从右侧滑入+放大」：起点 x=0.35 缩放 0.6、终点 x=0 缩放 1.1</div>
+                  <div v-if="selectedText?.keyframes?.length" class="cp-kf-head">
+                    <span>t</span><span>x</span><span>y</span><span>缩放</span><span>透明</span><span></span>
+                  </div>
+                  <div v-for="(k, ki) in selectedText?.keyframes || []" :key="ki" class="cp-kf-item">
+                    <div class="cp-kf-row">
+                      <input v-model.number="k.t" class="cp-num" type="number" step="0.05" min="0" max="1" title="层内位置 0~1" />
+                      <input v-model.number="k.x" class="cp-num" type="number" step="0.05" min="-0.5" max="0.5" title="水平中心偏移" />
+                      <input v-model.number="k.y" class="cp-num" type="number" step="0.05" min="-0.5" max="0.5" title="垂直中心偏移" />
+                      <input v-model.number="k.scale" class="cp-num" type="number" step="0.05" min="0.05" max="5" title="缩放倍数" />
+                      <input v-model.number="k.opacity" class="cp-num" type="number" step="0.05" min="0" max="1" title="不透明度" />
+                      <button class="cp-mini danger" title="删除此关键帧" @click="removeTextKf(ki)"><el-icon :size="11"><Close /></el-icon></button>
+                    </div>
+                    <div class="cp-kf-ease">
+                      <span class="cp-kf-ease-label">→ 下一点</span>
+                      <select v-model="k.ease" class="cp-kf-ease-sel" :title="'到下一个关键帧的过渡曲线'">
+                        <option value="">线性（匀速）</option>
+                        <option value="in">缓入（慢起）</option>
+                        <option value="out">缓出（慢收）</option>
+                        <option value="inout">缓入缓出（推荐）</option>
+                        <option value="bezier">自定义贝塞尔</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div v-if="!selectedText?.keyframes?.length" class="cp-ins-hint">点 + 在播放头打点；改完数值会即时保存</div>
+                </div>
+              </div>
+            </template>
             <div class="cp-field">
               <label>颜色</label>
               <div class="cp-field-row">
@@ -915,6 +1000,37 @@
             </div>
             <label class="cp-check"><input v-model="textPatch.safeArea" type="checkbox" /> 竖屏安全区（避开底部 UI）</label>
             <button class="cp-btn primary full" @click="applyTextPatch">应用字幕参数</button>
+          </template>
+
+          <!-- 定时音频属性（P0-7：音效 / 多段 BGM） -->
+          <template v-else-if="selectedAudio">
+            <div class="cp-ins-head">
+              <span class="cp-ins-title">音频</span>
+              <span class="cp-ins-sub">{{ baseName(selectedAudio.file) }}</span>
+            </div>
+            <div class="cp-field">
+              <label>时间（秒，相对成片）</label>
+              <div class="cp-field-row">
+                <input v-model.number="selectedAudio.start" class="cp-num wide" type="number" step="0.1" min="0" />
+                <span class="cp-tilde">~</span>
+                <input v-model.number="selectedAudio.end" class="cp-num wide" type="number" step="0.1" min="0" />
+              </div>
+            </div>
+            <div class="cp-field">
+              <label>音量 <span class="cp-val">{{ audioVolume.toFixed(2) }}</span></label>
+              <input v-model.number="audioVolume" class="cp-range" type="range" min="0" max="2" step="0.05" />
+            </div>
+            <div class="cp-field">
+              <label>淡入 <span class="cp-val">{{ audioFadeIn.toFixed(2) }}s</span></label>
+              <input v-model.number="audioFadeIn" class="cp-range" type="range" min="0" max="10" step="0.05" />
+            </div>
+            <div class="cp-field">
+              <label>淡出 <span class="cp-val">{{ audioFadeOut.toFixed(2) }}s</span></label>
+              <input v-model.number="audioFadeOut" class="cp-range" type="range" min="0" max="10" step="0.05" />
+            </div>
+            <div class="cp-ins-hint">两段 BGM 无缝接：放两条首尾相接的音频（如前一条 0~30s、后一条 30~片尾）。音效通常 0.5~1 秒、音量 0.6~1；需要"说话自动压低"的整片铺底音乐用上面的 BGM 栏勾 duck</div>
+            <button class="cp-btn primary full" @click="applyAudioPatch">应用音频参数</button>
+            <button class="cp-btn danger full" @click="removeAudio(selectedAudio.id)">删除音频</button>
           </template>
 
           <div v-else class="cp-empty">
@@ -1214,6 +1330,10 @@ interface ClipText {
   /** 背景底板色 #RRGGBBAA（A=不透明度）；不填=无底板 */
   backColor?: string;
   color?: string; outlineColor?: string; position?: string; safeArea?: boolean;
+  /** P0-2b：文字层变换（与画中画同语义；有变换时字幕改走 ASS 渲染，且不再套动画预设） */
+  transform?: { x?: number; y?: number; scale?: number; rotation?: number; opacity?: number };
+  /** P0-2b：变换关键帧（t 为层内 0~1） */
+  keyframes?: Array<{ t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: string }>;
 }
 interface ClipProject {
   version: 2; name: string; updatedAt: number;
@@ -1231,6 +1351,11 @@ interface ClipProject {
     x?: number; y?: number; rotation?: number; opacity?: number;
     /** P0-2：变换关键帧（t 为层内 0~1） */
     keyframes?: Array<{ t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: string }>;
+  }>;
+  /** P0-7：定时音频层（转场音效 / 多段 BGM；与整片 bgm 并存） */
+  audios?: Array<{
+    id: string; file: string; start: number; end: number;
+    volume?: number; fadeIn?: number; fadeOut?: number; trimStart?: number;
   }>;
 }
 interface ConvFile { id?: string; name: string; path: string; type?: string }
@@ -1355,12 +1480,18 @@ const cropOpen = ref(false);
 const kfOpen = ref(false);
 /** 画中画关键帧面板展开态（与片段关键帧分开，避免相互影响） */
 const ovKfOpen = ref(false);
+/** 字幕变换关键帧面板展开态 */
+const txKfOpen = ref(false);
 const adjOpen = ref(false);
 const pipOpen = ref(false);
 const selectedOverlayId = ref('');
+/** 选中的定时音频层（P0-7，与片段/字幕/画中画互斥） */
+const selectedAudioId = ref('');
 const textPatch = reactive({
   text: '', start: 0, end: 0, fontSizePx: 88, outlinePx: 12, backColor: '', animation: '',
   slideDirection: 'right', position: 'bottom', color: '#FFFFFF', outlineColor: '#000000', safeArea: false,
+  // 文字层变换（P0-2b）：tfOn=false 时清空 transform，回到原来的 SRT 渲染路径
+  tfOn: false, tfX: 0, tfY: 0, tfScale: 1, tfRotation: 0, tfOpacity: 1,
 });
 
 const convId = computed(() => chat.store.currentConvId || '');
@@ -1660,6 +1791,22 @@ const texts = computed(() => project.value?.texts || []);
 const clipCount = computed(() => clips.value.length);
 const textCount = computed(() => texts.value.length);
 const bgm = computed(() => project.value?.bgm || null);
+const audios = computed(() => project.value?.audios || []);
+const selectedAudio = computed(() => audios.value.find((a) => a.id === selectedAudioId.value) || null);
+
+/** 音频字段滑杆（缺省值不写字段；淡入淡出不超过本段时长，与后端 normalizeAudio 同口径）。 */
+function setAudioField(key: 'volume' | 'fadeIn' | 'fadeOut', v: number, def: number, lo: number, hi: number) {
+  const a = selectedAudio.value;
+  if (!a) return;
+  const dur = Math.max(0.05, a.end - a.start);
+  const cap = key === 'volume' ? hi : Math.min(hi, dur);
+  const n = Math.max(lo, Math.min(cap, Number(v) || 0));
+  if (Math.abs(n - def) < 0.001) delete a[key];
+  else a[key] = Number(n.toFixed(3));
+}
+const audioVolume = computed<number>({ get: () => selectedAudio.value?.volume ?? 1, set: (v) => setAudioField('volume', v, 1, 0, 2) });
+const audioFadeIn = computed<number>({ get: () => selectedAudio.value?.fadeIn ?? 0, set: (v) => setAudioField('fadeIn', v, 0, 0, 10) });
+const audioFadeOut = computed<number>({ get: () => selectedAudio.value?.fadeOut ?? 0, set: (v) => setAudioField('fadeOut', v, 0, 0, 10) });
 const overlays = computed(() => project.value?.overlays || []);
 const selectedOverlay = computed(() => overlays.value.find((o) => o.id === selectedOverlayId.value) || null);
 /**
@@ -1938,8 +2085,10 @@ async function redo() {
 function refreshSelectionAfterHistory() {
   if (selectedClipId.value && !clips.value.some((c) => c.id === selectedClipId.value)) selectedClipId.value = '';
   if (selectedTextId.value && !texts.value.some((t) => t.id === selectedTextId.value)) selectedTextId.value = '';
+  if (selectedAudioId.value && !audios.value.some((a) => a.id === selectedAudioId.value)) selectedAudioId.value = '';
   if (selectedClipId.value) selectClip(selectedClipId.value);
   else if (selectedTextId.value) selectText(selectedTextId.value);
+  else if (selectedAudioId.value) selectAudio(selectedAudioId.value);
   scheduleFrameFetch(200);
 }
 
@@ -2227,6 +2376,9 @@ function onMediaMenu(e: MouseEvent, f: ConvFile) {
       ? [{ label: '设为背景音乐', icon: 'Headset', disabled: !/mp3|m4a|wav|aac|flac/i.test(f.path || f.name),
           action: () => setBgm(f.path) }]
       : [{ label: '设为背景音乐', icon: 'Headset', action: () => setBgm(f.path) }]),
+    ...(/mp3|m4a|wav|aac|flac/i.test(f.path || f.name)
+      ? [{ label: '设为音效（放在播放头）', icon: 'Headset', disabled: !clipCount.value, action: () => addAudioAtPlayhead(f.path) }]
+      : []),
     { label: '复制路径', icon: 'DocumentCopy', action: () => copyText(f.path) },
     { label: '在文件管理器中显示', icon: 'FolderOpened', action: () => revealInSystem(f.path) },
   ], `media:${f.path}`);
@@ -2312,7 +2464,15 @@ async function duplicateText() {
   for (const x of project.value.texts) { const m = /^t(\d+)$/.exec(x.id); if (m) max = Math.max(max, Number(m[1])); }
   const dur = t.end - t.start;
   const start = Number((t.end + 0.2).toFixed(3));
-  const item: ClipText = { ...t, id: `t${max + 1}`, start, end: Number((start + dur).toFixed(3)) };
+  const item: ClipText = {
+    ...t,
+    id: `t${max + 1}`,
+    start,
+    end: Number((start + dur).toFixed(3)),
+    // 变换/关键帧要深拷：浅拷会让副本与原条共享同一个数组（改一个动两个）
+    ...(t.transform ? { transform: { ...t.transform } } : {}),
+    ...(t.keyframes ? { keyframes: t.keyframes.map((k) => ({ ...k })) } : {}),
+  };
   project.value.texts.push(item);
   dirty.value = true; await save();
   selectText(item.id);
@@ -2436,8 +2596,8 @@ const SHORTCUTS: Array<{ key: string; ctrl?: boolean; label: string; run: () => 
   { key: 'y', ctrl: true, label: '重做', run: () => void redo() },
   { key: 's', label: '分割', run: () => void splitAtPlayhead() },
   { key: 'd', ctrl: true, label: '复制片段', run: () => void duplicateClip() },
-  { key: 'Delete', label: '删除选中', run: () => void (selectedTextId.value ? removeText() : removeClip()) },
-  { key: 'Backspace', label: '删除选中', run: () => void (selectedTextId.value ? removeText() : removeClip()) },
+  { key: 'Delete', label: '删除选中', run: () => void (selectedAudioId.value ? removeAudio(selectedAudioId.value) : selectedTextId.value ? removeText() : removeClip()) },
+  { key: 'Backspace', label: '删除选中', run: () => void (selectedAudioId.value ? removeAudio(selectedAudioId.value) : selectedTextId.value ? removeText() : removeClip()) },
   { key: 'ArrowLeft', label: '播放头左移', run: () => seek(playhead.value - (shiftHeld ? 1 : 0.1)) },
   { key: 'ArrowRight', label: '播放头右移', run: () => seek(playhead.value + (shiftHeld ? 1 : 0.1)) },
   { key: ',', label: '上一帧', run: () => stepFrame(-1) },
@@ -2777,6 +2937,99 @@ async function applyBgm() {
   await save();
 }
 
+// ===== 定时音频层（P0-7：转场音效 / 多段 BGM）=====
+function nextAudioId(): string {
+  let max = 0;
+  for (const a of project.value?.audios || []) {
+    const m = /^a(\d+)$/.exec(a.id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `a${max + 1}`;
+}
+
+/** 探测单个文件的时长（放音频时给个合理长度）；失败返回 0。 */
+async function probeFileDuration(p: string): Promise<number> {
+  const hit = mediaMeta.value[p];
+  if (hit && hit.duration > 0) return hit.duration;
+  const r = await api.post<Array<{ path: string; duration: number; ok: boolean }>>('/plugin/clip-mode/probe', { items: [{ path: p }] });
+  if ('error' in r) return 0;
+  const it = (Array.isArray(r.data) ? r.data : []).find((x) => x.path === p);
+  if (!it) return 0;
+  mediaMeta.value = {
+    ...mediaMeta.value,
+    [p]: { path: it.path, duration: it.duration, width: 0, height: 0, hasVideo: false, ok: it.ok },
+  };
+  return it.duration > 0 ? it.duration : 0;
+}
+
+/**
+ * 把音频放到播放头。长度默认取素材真实时长，超出成片则截到片尾。
+ * ★ 探不到时长时用 3 秒占位并如实提示 —— 静默给个错长度比让用户手调更糟。
+ */
+async function addAudioAtPlayhead(file: string) {
+  const p = ensureProject();
+  await ensureConversation();
+  pendingLabel.value = '加音频';
+  const probed = await probeFileDuration(file);
+  const dur = probed > 0.2 ? probed : 3;
+  const total = estTotal.value;
+  const start = Number(Math.min(Math.max(0, playhead.value), Math.max(0, total - 0.2)).toFixed(3));
+  const end = Number(Math.min(total, start + dur).toFixed(3));
+  if (!(end > start)) { note('播放头已在片尾：先把播放头移到要放音频的位置'); return; }
+  if (!p.audios) p.audios = [];
+  const item = { id: nextAudioId(), file, start, end };
+  p.audios.push(item);
+  dirty.value = true;
+  await save();
+  selectAudio(item.id);
+  note(probed > 0.2
+    ? `已放到播放头（${start.toFixed(1)}s ~ ${end.toFixed(1)}s，右侧可调音量/淡入淡出）`
+    : `已放到播放头（默认 3 秒 —— 没探到时长，右侧可改）`);
+}
+
+async function applyAudioPatch() {
+  const a = selectedAudio.value;
+  if (!a || !project.value) return;
+  pendingLabel.value = '改音频';
+  a.start = Math.max(0, Number(a.start) || 0);
+  a.end = Math.max(a.start + 0.05, Number(a.end) || 0);
+  const dur = a.end - a.start;
+  if (a.fadeIn != null) a.fadeIn = Math.max(0, Math.min(dur, Number(a.fadeIn) || 0));
+  if (a.fadeOut != null) a.fadeOut = Math.max(0, Math.min(dur, Number(a.fadeOut) || 0));
+  if (a.volume != null) a.volume = Math.max(0, Math.min(2, Number(a.volume)));
+  dirty.value = true;
+  await save();
+  note('音频已更新');
+}
+
+async function removeAudio(id: string) {
+  const p = project.value;
+  if (!p?.audios) return;
+  pendingLabel.value = '删音频';
+  p.audios = p.audios.filter((a) => a.id !== id);
+  if (!p.audios.length) delete p.audios;
+  if (selectedAudioId.value === id) selectedAudioId.value = '';
+  dirty.value = true;
+  await save();
+}
+
+/** 音频块右键。 */
+function onAudioMenu(e: MouseEvent, a: { id: string; file: string }) {
+  openCtxMenu(e, `音频 ${baseName(a.file)}`, [
+    { label: '起点对齐播放头', icon: 'Clock', action: async () => {
+        const cur = project.value?.audios?.find((x) => x.id === a.id);
+        if (!cur) return;
+        pendingLabel.value = '音频对齐';
+        const dur = cur.end - cur.start;
+        cur.start = Number(Math.max(0, Math.min(playhead.value, estTotal.value - 0.1)).toFixed(3));
+        cur.end = Number(Math.min(estTotal.value, cur.start + dur).toFixed(3));
+        dirty.value = true;
+        await save();
+      } },
+    { label: '删除音频', icon: 'Delete', danger: true, action: () => removeAudio(a.id) },
+  ], `audio:${a.id}`);
+}
+
 // ===== 画中画（叠加轨）=====
 /** 音频波形图 URL（服务端 showwavespic；仅限本会话工程引用/登记过的文件）。 */
 function waveUrl(p: string, w = 600, h = 56): string {
@@ -2807,6 +3060,15 @@ function selectOverlay(id: string) {
   selectedOverlayId.value = id;
   selectedClipId.value = '';
   selectedTextId.value = '';
+  selectedAudioId.value = '';
+  rightTab.value = 'inspector';
+}
+
+function selectAudio(id: string) {
+  selectedAudioId.value = id;
+  selectedClipId.value = '';
+  selectedTextId.value = '';
+  selectedOverlayId.value = '';
   rightTab.value = 'inspector';
 }
 
@@ -2913,9 +3175,61 @@ async function clearOverlayKfs() {
   note('已清空画中画关键帧');
 }
 
+/** 播放头在选中字幕内的比例（0~1）；不在字幕时间范围内返回 null。 */
+function playheadFractionInSelectedText(): number | null {
+  const t = selectedText.value;
+  if (!t) return null;
+  const dur = t.end - t.start;
+  if (!(dur > 0)) return null;
+  const frac = (playhead.value - t.start) / dur;
+  if (frac < -0.001 || frac > 1.001) return null;
+  return Math.max(0, Math.min(1, frac));
+}
+
+/** 在播放头给字幕打变换关键帧：用当前静态变换做初值，之后在列表里改（与画中画同一套交互）。 */
+async function addTextKf() {
+  const t = selectedText.value;
+  if (!t || !project.value) { note('先选中一条字幕'); return; }
+  const frac = playheadFractionInSelectedText();
+  if (frac == null) { note('播放头不在字幕的时间范围内'); return; }
+  pendingLabel.value = '打关键帧';
+  if (!t.keyframes) t.keyframes = [];
+  // 打点即意味着"这条字幕要按变换动" → 顺带勾上自由变换，避免面板状态与实际渲染不一致
+  textPatch.tfOn = true;
+  const near = t.keyframes.find((k) => Math.abs(k.t - frac) < 0.02);
+  const cur = t.transform || {};
+  const pt = near || { t: Number(frac.toFixed(3)) };
+  pt.x = pt.x ?? cur.x ?? 0;
+  pt.y = pt.y ?? cur.y ?? 0;
+  pt.scale = pt.scale ?? cur.scale ?? 1;
+  pt.opacity = pt.opacity ?? cur.opacity ?? 1;
+  if (!near) { t.keyframes.push(pt); t.keyframes.sort((a, b) => a.t - b.t); }
+  dirty.value = true; await save();
+  note(near ? `已更新播放头（${frac.toFixed(2)}）处的关键帧` : `已在播放头（${frac.toFixed(2)}）打关键帧`);
+}
+
+async function removeTextKf(i: number) {
+  const t = selectedText.value;
+  if (!t?.keyframes || !project.value) return;
+  pendingLabel.value = '删关键帧';
+  t.keyframes.splice(i, 1);
+  if (!t.keyframes.length) delete t.keyframes;
+  dirty.value = true; await save();
+}
+
+async function clearTextKfs() {
+  const t = selectedText.value;
+  if (!t || !project.value) return;
+  pendingLabel.value = '清空关键帧';
+  delete t.keyframes;
+  dirty.value = true; await save();
+  note('已清空字幕关键帧');
+}
+
 function selectClip(id: string) {
   selectedClipId.value = id;
   selectedTextId.value = '';
+  selectedAudioId.value = '';
   rightTab.value = 'inspector';
   const c = clips.value.find((x) => x.id === id);
   if (!c) return;
@@ -2949,6 +3263,7 @@ function selectClip(id: string) {
 function selectText(id: string) {
   selectedTextId.value = id;
   selectedClipId.value = '';
+  selectedAudioId.value = '';
   rightTab.value = 'inspector';
   const t = texts.value.find((x) => x.id === id);
   if (!t) return;
@@ -2958,7 +3273,11 @@ function selectText(id: string) {
     position: t.position || 'bottom', color: t.color || '#FFFFFF',
     outlineColor: t.outlineColor || '#000000', safeArea: !!t.safeArea,
     outlinePx: t.outlinePx ?? 12, backColor: t.backColor || '',
+    tfOn: !!t.transform || !!t.keyframes?.length,
+    tfX: t.transform?.x ?? 0, tfY: t.transform?.y ?? 0, tfScale: t.transform?.scale ?? 1,
+    tfRotation: t.transform?.rotation ?? 0, tfOpacity: t.transform?.opacity ?? 1,
   });
+  if (t.keyframes?.length) txKfOpen.value = true;
 }
 
 async function moveClip(delta: number) {
@@ -3384,6 +3703,19 @@ async function applyTextPatch() {
   if (textPatch.color) t.color = textPatch.color;
   if (textPatch.outlineColor) t.outlineColor = textPatch.outlineColor;
   if (textPatch.safeArea) t.safeArea = true; else delete t.safeArea;
+  // 文字层变换（P0-2b）：关掉 = 删字段 → 回到原来的 SRT 渲染路径（老工程观感不变）
+  if (textPatch.tfOn) {
+    const tf: NonNullable<ClipText['transform']> = {
+      ...(Math.abs(textPatch.tfX) > 0.0001 ? { x: Number(textPatch.tfX.toFixed(4)) } : {}),
+      ...(Math.abs(textPatch.tfY) > 0.0001 ? { y: Number(textPatch.tfY.toFixed(4)) } : {}),
+      ...(Math.abs(textPatch.tfScale - 1) > 0.0001 ? { scale: Number(textPatch.tfScale.toFixed(4)) } : {}),
+      ...(Math.abs(textPatch.tfRotation) > 0.0001 ? { rotation: Number(textPatch.tfRotation.toFixed(1)) } : {}),
+      ...(textPatch.tfOpacity < 0.999 ? { opacity: Number(textPatch.tfOpacity.toFixed(3)) } : {}),
+    };
+    if (Object.keys(tf).length) t.transform = tf; else delete t.transform;
+  } else {
+    delete t.transform;
+  }
   dirty.value = true; await save();
   note('字幕已更新');
 }
@@ -3953,6 +4285,9 @@ onMounted(async () => {
 /* 音频条 */
 .cp-audio { position: absolute; top: 10px; height: 38px; display: flex; align-items: center; gap: 5px; padding: 0 8px; border-radius: 5px; background: linear-gradient(180deg, #b6e3c6, #86cfa6); border: 1px solid #5fae7f; color: #14432a; font-size: 11px; overflow: hidden; }
 .cp-bgm-wave { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; opacity: .3; pointer-events: none; }
+/* 定时音频层块（与整片 BGM 同轨、上下分层） */
+.cp-audio-layer { cursor: pointer; }
+.cp-audio-layer.active { outline: 2px solid #fff; }
 /* 画中画块（紫色系区分视频/音频轨） */
 .cp-pip { position: absolute; top: 5px; bottom: 5px; display: flex; align-items: center; padding: 0 6px; border-radius: 5px; background: linear-gradient(180deg, #c9b6f5, #a68ade); border: 1px solid #7d5cc9; color: #fff; font-size: 11px; cursor: pointer; overflow: hidden; }
 .cp-pip.active { outline: 2px solid #fff; }

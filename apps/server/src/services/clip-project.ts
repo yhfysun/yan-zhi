@@ -12,7 +12,7 @@
 //   · 片段内时间（trimStart/trimEnd/speed）→ **相对该段原始素材**；
 //   · 字幕/BGM 时间 → **相对成片（拼接后）**，由调用方按各段时长累计推算。
 
-import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX, blendModeOf, OVERLAY_POSITIONS, type BlendModeId, type LayerKfPoint } from '@yan-zhi/shared';
+import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX, blendModeOf, OVERLAY_POSITIONS, type BlendModeId, type LayerKfPoint, type LayerTransform } from '@yan-zhi/shared';
 
 export interface ClipSegment {
   id: string;
@@ -150,6 +150,34 @@ export interface ClipSegment {
   }>;
 }
 
+/**
+ * 音频层（P0-7）：成片时间轴上的一段声音 —— 独立音效（转场"唰"声）或第二段 BGM 都用它。
+ * ★ 与 `project.bgm` 的分工：bgm 是**整片铺底**（没有显式时长，铺满成片）；
+ *   音频层是**定时**的（start/end 明确）。两段 BGM 无缝接 = 两个首尾相接的音频层。
+ * ★ 时间语义：start/end 相对成片；trimStart 相对**素材**（从第几秒开始取）。
+ */
+export interface ClipAudio {
+  id: string;
+  /** 音频素材本机绝对路径 */
+  file: string;
+  /** 相对成片的起始秒 */
+  start: number;
+  /** 相对成片的结束秒 */
+  end: number;
+  /** 音量倍数 0~2，缺省 1 */
+  volume?: number;
+  /** 淡入秒（片头，从 0 起） */
+  fadeIn?: number;
+  /** 淡出秒（片尾） */
+  fadeOut?: number;
+  /**
+   * 从素材的第几秒开始取（缺省 0）
+   * ★ 不做 duck（说话自动压低）：侧链要看到"人声"，而音频层本身就是音效/BGM，压自己没意义。
+   *   需要闪避的整片铺底音乐仍然走 project.bgm（它有 duck）。
+   */
+  trimStart?: number;
+}
+
 /** 画中画（叠加轨）：在成片的某段时间里把一个小画面叠在主画面上。 */
 export interface ClipOverlay {
   id: string;
@@ -206,6 +234,16 @@ export interface ClipText {
   position?: 'bottom' | 'center' | 'top';
   /** 竖屏安全区（字幕上抬避开底部 UI）；缺省 false */
   safeArea?: boolean;
+  /**
+   * 文字层变换（P0-2b）：与画中画同语义 —— x/y 是**相对画面宽高的中心偏移**（-0.5~0.5，0=居中），
+   * scale 是字号倍数（1=原字号），rotation 是角度（正=顺时针），opacity 0~1。
+   * ★ 一旦有变换，字幕改走 ASS 渲染（\pos/\frz/\fscx/\fscy/\alpha）；
+   *   没有变换的老工程仍走原来的 SRT(+force_style) 路径，出片逐字节不变。
+   * ★ 有变换时**不再套文字动画预设**（两者都是整条 cue 的内联标签，混在一起语义不清）。
+   */
+  transform?: LayerTransform;
+  /** 变换关键帧（t 为**层内** 0~1 比例，层的时间范围即 start~end） */
+  keyframes?: LayerKfPoint[];
 }
 
 export interface ClipProject {
@@ -242,6 +280,11 @@ export interface ClipProject {
   texts: ClipText[];
   /** 画中画视图字段（仅内存，由 layers 派生；落盘时剥离） */
   overlays?: ClipOverlay[];
+  /**
+   * 音频层视图字段（仅内存，由 kind=audio 的 layers 派生；落盘时剥离）。
+   * ★ 与 bgm 并存：bgm 是整片铺底（无时长），这里是定时音频（音效/多段 BGM）。
+   */
+  audios?: ClipAudio[];
   /**
    * 音效链（整片，按数组顺序串联）。
    * ★ 放"整片"而不是每段：降噪/响度归一这类是**工程级标准化**（多段素材音量忽大忽小，
@@ -286,7 +329,7 @@ export interface Layer {
   end: number;
   /** 轨道序号：同刻多图层的叠放次序（大者在上）。v1 迁移固定：text=1、video(画中画)=0 */
   track: number;
-  /** 变换（P0-2：画中画已接渲染；文字层仍只存不渲） */
+  /** 变换（P0-2 画中画已接渲染；P0-2b 文字层也接了 —— 字幕走 ASS 内联标签） */
   transform: {
     x?: number;
     y?: number;
@@ -303,8 +346,8 @@ export interface Layer {
   };
   /** 图层级关键帧（P0-2 已接渲染；t 为层内 0~1 比例） */
   keyframes?: LayerKfPoint[];
-  /** 音频层专属（P0-7 接渲染） */
-  audio?: { volume?: number; fadeIn?: number; fadeOut?: number };
+  /** 音频层专属（P0-7 已接渲染）：音量/淡入淡出/素材内起点 */
+  audio?: { volume?: number; fadeIn?: number; fadeOut?: number; trimStart?: number };
 }
 
 /** v1 工程文件（迁移函数的输入形态）：texts 必有、overlays 可选。 */
@@ -339,20 +382,41 @@ function gridIdOfXY(x: number | undefined, y: number | undefined): string | null
 }
 
 /**
+ * 图层 transform → 文字层变换视图（P0-2b 反向投影）。
+ * ★ 只挑文字层支持的 5 个字段（blend/pos 属于画中画），并丢掉等价默认值：
+ *   老工程的 text 层 transform 是空对象 → 读回来仍是 undefined → 渲染继续走 SRT 原路径。
+ */
+function textTransformOf(t: Layer['transform'] | undefined): LayerTransform | undefined {
+  if (!t) return undefined;
+  const out: LayerTransform = {
+    ...(t.x != null ? { x: t.x } : {}),
+    ...(t.y != null ? { y: t.y } : {}),
+    ...(t.scale != null && Math.abs(t.scale - 1) > 1e-6 ? { scale: t.scale } : {}),
+    ...(t.rotation != null && Math.abs(t.rotation) > 1e-6 ? { rotation: t.rotation } : {}),
+    ...(t.opacity != null && t.opacity < 0.999 ? { opacity: t.opacity } : {}),
+  };
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
  * v1 字段（texts/overlays）→ layers（正向投影；迁移与落盘共用）。
  * ★ 纯函数、确定性：同一输入永远得到同一 layers（id 保留原值，不重排）。
  */
-export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[]): Layer[] {
+export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[], audios: ClipAudio[] = []): Layer[] {
   const layers: Layer[] = [];
   for (const t of texts) {
+    // ★ 变换/关键帧存在**图层**上（Layer.transform/keyframes），不塞进 l.text ——
+    //   否则同一份数据在层里出现两次，落盘后读者不知道该信哪个。
+    const { transform, keyframes, ...textBody } = t;
     layers.push({
       id: t.id,
       kind: 'text',
-      text: { ...t },
+      text: { ...textBody },
       start: t.start,
       end: t.end,
       track: 1,
-      transform: {},
+      transform: transform ? { ...transform } : {},
+      ...(keyframes?.length ? { keyframes: keyframes.map((k) => ({ ...k })) } : {}),
     });
   }
   for (const o of overlays) {
@@ -377,6 +441,24 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[]): 
       ...(o.keyframes?.length ? { keyframes: o.keyframes.map((k) => ({ ...k })) } : {}),
     });
   }
+  // 音频层（P0-7）：时间/素材在顶部字段，音量/淡入淡出/闪避/素材内起点收在 audio 里
+  for (const a of audios) {
+    layers.push({
+      id: a.id,
+      kind: 'audio',
+      file: a.file,
+      start: a.start,
+      end: a.end,
+      track: 2,
+      transform: {},
+      audio: {
+        ...(a.volume != null ? { volume: a.volume } : {}),
+        ...(a.fadeIn != null ? { fadeIn: a.fadeIn } : {}),
+        ...(a.fadeOut != null ? { fadeOut: a.fadeOut } : {}),
+        ...(a.trimStart != null ? { trimStart: a.trimStart } : {}),
+      },
+    });
+  }
   return layers;
 }
 
@@ -386,12 +468,20 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[]): 
  *   sticker/effect…）留在 layers 里，v1 视图看不到（也不会被反向投影丢掉 ——
  *   正向投影落盘时以**内存 texts/overlays + 原 layers 中的新 kind** 合并重建）。
  */
-export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overlays: ClipOverlay[] } {
+export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overlays: ClipOverlay[]; audios: ClipAudio[] } {
   const texts: ClipText[] = [];
   const overlays: ClipOverlay[] = [];
+  const audios: ClipAudio[] = [];
   for (const l of layers) {
     if (l.kind === 'text' && l.text) {
-      texts.push({ ...l.text, start: l.start, end: l.end });
+      const tf = textTransformOf(l.transform);
+      texts.push({
+        ...l.text,
+        start: l.start,
+        end: l.end,
+        ...(tf ? { transform: tf } : {}),
+        ...(l.keyframes?.length ? { keyframes: l.keyframes.map((k) => ({ ...k })) } : {}),
+      });
     } else if (l.kind === 'video' && l.file) {
       const t = l.transform || {};
       // ★ 位置还原顺序：pos（新写入/老工程）→ 恰好落在九宫格上的 x/y（旧 v2 文件由 pos 投影而来）
@@ -416,9 +506,21 @@ export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overla
         ...(t.blend && t.blend !== 'normal' ? { blend: t.blend } : {}),
         ...(l.keyframes?.length ? { keyframes: l.keyframes.map((k) => ({ ...k })) } : {}),
       });
+    } else if (l.kind === 'audio' && l.file) {
+      const a = l.audio || {};
+      audios.push({
+        id: l.id,
+        file: l.file,
+        start: l.start,
+        end: l.end,
+        ...(a.volume != null && Math.abs(a.volume - 1) > 1e-6 ? { volume: a.volume } : {}),
+        ...(a.fadeIn != null && a.fadeIn > 0 ? { fadeIn: a.fadeIn } : {}),
+        ...(a.fadeOut != null && a.fadeOut > 0 ? { fadeOut: a.fadeOut } : {}),
+        ...(a.trimStart != null && a.trimStart > 0 ? { trimStart: a.trimStart } : {}),
+      });
     }
   }
-  return { texts, overlays };
+  return { texts, overlays, audios };
 }
 
 /**
@@ -466,8 +568,8 @@ export function createEmptyProject(name = '未命名剪辑'): ClipProject {
   };
 }
 
-/** 生成可读且确定性的 id：c1/c2… t1/t2… o1/o2…（从现有最大序号 +1，删了中间项也不会撞号）。 */
-function nextId(prefix: 'c' | 't' | 'o', existing: Array<{ id: string }>): string {
+/** 生成可读且确定性的 id：c1/c2… t1/t2… o1/o2… a1/a2…（从现有最大序号 +1，删了中间项也不会撞号）。 */
+function nextId(prefix: 'c' | 't' | 'o' | 'a', existing: Array<{ id: string }>): string {
   let max = 0;
   for (const it of existing) {
     const m = String(it.id || '').match(new RegExp(`^${prefix}(\\d+)$`));
@@ -735,6 +837,35 @@ function normalizeLayerKeyframes(v: unknown): LayerKfPoint[] | undefined {
   return out.length ? out.sort((a, b) => a.t - b.t) : undefined;
 }
 
+/**
+ * 归一化文字层静态变换（P0-2b）：值域与 normalizeLayerKeyframes 同一套。
+ * ★ 等价默认值不写字段（x/y=0、scale=1、rotation=0、opacity=1）—— 工程文件要能一眼看出改了什么；
+ *   全默认返回 null，调用方据此删除 transform 字段 → 该字幕回到 SRT 原渲染路径。
+ */
+function normalizeTextTransform(v: unknown): LayerTransform | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const m = v as Record<string, unknown>;
+  const take = (key: 'x' | 'y' | 'scale' | 'rotation' | 'opacity', lo: number, hi: number): number | undefined => {
+    if (m[key] == null) return undefined;
+    const n = Number(m[key]);
+    if (!Number.isFinite(n)) return undefined;
+    return Number(Math.max(lo, Math.min(hi, n)).toFixed(4));
+  };
+  const x = take('x', -0.5, 0.5);
+  const y = take('y', -0.5, 0.5);
+  const scale = take('scale', 0.05, 5);
+  const rotation = take('rotation', -180, 180);
+  const opacity = take('opacity', 0, 1);
+  const out: LayerTransform = {
+    ...(x != null && Math.abs(x) > 0.0001 ? { x } : {}),
+    ...(y != null && Math.abs(y) > 0.0001 ? { y } : {}),
+    ...(scale != null && Math.abs(scale - 1) > 0.0001 ? { scale } : {}),
+    ...(rotation != null && Math.abs(rotation) > 0.0001 ? { rotation } : {}),
+    ...(opacity != null && opacity < 0.999 ? { opacity } : {}),
+  };
+  return Object.keys(out).length ? out : null;
+}
+
 /** 归一化画中画条目（时间钳制到 0~总长，由调用方给 total；这里先做结构与值域）。 */
 function normalizeOverlay(v: unknown, id: string): ClipOverlay | null {
   if (!v || typeof v !== 'object') return null;
@@ -769,6 +900,41 @@ function normalizeOverlay(v: unknown, id: string): ClipOverlay | null {
     ...(rotation != null && Math.abs(rotation) > 0.001 ? { rotation } : {}),
     ...(opacity != null && opacity < 0.999 ? { opacity } : {}),
     ...(keyframes ? { keyframes } : {}),
+  };
+}
+
+/**
+ * 归一化音频层（P0-7）。返回 null = 非法（缺素材或时间不成立）。
+ * ★ 淡入淡出不能超过本段时长：`afade=t=out:st=` 若落在段尾之后，ffmpeg 不报错、只是**静默不生效**；
+ *   钳到段长是唯一能让用户"调了就看得到"的做法。
+ */
+function normalizeAudio(v: unknown, id: string): ClipAudio | null {
+  if (!v || typeof v !== 'object') return null;
+  const m = v as Record<string, unknown>;
+  const file = String(m.file ?? '').trim();
+  const start = Math.max(0, numOr(m.start, 0));
+  const end = numOr(m.end, 0);
+  if (!file || !(end > start)) return null;
+  const dur = end - start;
+  const clampNum = (val: unknown, lo: number, hi: number): number | undefined => {
+    if (val == null) return undefined;
+    const n = Number(val);
+    if (!Number.isFinite(n)) return undefined;
+    return Number(Math.max(lo, Math.min(hi, n)).toFixed(3));
+  };
+  const volume = clampNum(m.volume, 0, 2);
+  const fadeIn = clampNum(m.fadeIn, 0, Math.min(10, dur));
+  const fadeOut = clampNum(m.fadeOut, 0, Math.min(10, dur));
+  const trimStart = clampNum(m.trimStart, 0, 24 * 3600);
+  return {
+    id,
+    file,
+    start: Number(start.toFixed(3)),
+    end: Number(end.toFixed(3)),
+    ...(volume != null && Math.abs(volume - 1) > 0.001 ? { volume } : {}),
+    ...(fadeIn != null && fadeIn > 0.001 ? { fadeIn } : {}),
+    ...(fadeOut != null && fadeOut > 0.001 ? { fadeOut } : {}),
+    ...(trimStart != null && trimStart > 0.001 ? { trimStart } : {}),
   };
 }
 
@@ -836,6 +1002,17 @@ function locateOverlay(project: ClipProject, args: Record<string, unknown>): num
   return idx >= 0 && idx < overlays.length ? idx : -1;
 }
 
+/** 定位音频层：按 id 优先，其次 1 基序号；返回 -1 = 没找到。 */
+function locateAudio(project: ClipProject, args: Record<string, unknown>): number {
+  const audios = project.audios || [];
+  const id = String(args.id ?? '').trim();
+  if (id) return audios.findIndex((a) => a.id === id);
+  const raw = Number(args.index);
+  if (!Number.isFinite(raw)) return -1;
+  const idx = Math.round(raw) - 1;
+  return idx >= 0 && idx < audios.length ? idx : -1;
+}
+
 /** 字幕条目校验：时间必须成对且 end > start；文本非空。 */
 function validateText(raw: Record<string, unknown>, fallback?: Partial<ClipText>): { ok: true; value: Omit<ClipText, 'id'> } | { ok: false; error: string } {
   const text = String(raw.text ?? fallback?.text ?? '').trim();
@@ -852,6 +1029,9 @@ function validateText(raw: Record<string, unknown>, fallback?: Partial<ClipText>
     dirRaw === 'left' || dirRaw === 'right' || dirRaw === 'up' || dirRaw === 'down'
       ? (dirRaw as ClipText['slideDirection'])
       : undefined;
+  // ★ transform/keyframes 用「显式给了才覆盖」：patch 里传 null/[] 即清除（回到 SRT 原路径）
+  const transform = normalizeTextTransform(raw.transform !== undefined ? raw.transform : fallback?.transform);
+  const keyframes = normalizeLayerKeyframes(raw.keyframes !== undefined ? raw.keyframes : fallback?.keyframes);
   const value: Omit<ClipText, 'id'> = {
     text, start, end,
     ...(String(raw.animation ?? fallback?.animation ?? '').trim()
@@ -868,6 +1048,8 @@ function validateText(raw: Record<string, unknown>, fallback?: Partial<ClipText>
       ? { backColor: String(raw.backColor ?? fallback?.backColor) } : {}),
     ...(position ? { position } : {}),
     ...(raw.safeArea === true || fallback?.safeArea === true ? { safeArea: true } : {}),
+    ...(transform ? { transform } : {}),
+    ...(keyframes ? { keyframes } : {}),
   };
   return { ok: true, value };
 }
@@ -888,6 +1070,8 @@ function validateText(raw: Record<string, unknown>, fallback?: Partial<ClipText>
  *   remove_text {id|index}
  *   clear_texts
  *   set_bgm {file,volume,duck} / clear_bgm / set_audio_fx {fx:[...]}
+ *   add_audio {audios:[{file,start,end,volume?,fadeIn?,fadeOut?,trimStart?}]}
+ *     —— 定时音频层（转场音效 / 多段 BGM）；/ update_audio / remove_audio / clear_audios
  */
 export function applyClipOp(
   base: ClipProject | null,
@@ -909,6 +1093,7 @@ export function applyClipOp(
         texts: [...base.texts],
         output: { ...base.output },
         ...(base.overlays ? { overlays: [...base.overlays] } : {}),
+        ...(base.audios ? { audios: [...base.audios] } : {}),
       }
     : createEmptyProject();
   const touch = () => { project.updatedAt = Date.now(); };
@@ -1267,6 +1452,49 @@ export function applyClipOp(
       return { ok: true, project, note: `已删除画中画 ${gone.id}` };
     }
 
+    case 'add_audio': {
+      const raw = Array.isArray(args.audios) ? args.audios : [args];
+      const added: string[] = [];
+      for (let i = 0; i < raw.length; i++) {
+        if (!project.audios) project.audios = [];
+        const item = normalizeAudio(raw[i], '');
+        if (!item) return { ok: false, error: `audios[${i}] 非法：需要 file + end > start（start/end 相对成片）` };
+        // id 按当前数组重新取号，避免同一批里撞号
+        item.id = nextId('a', project.audios);
+        project.audios.push(item);
+        added.push(item.id);
+      }
+      touch();
+      return { ok: true, project, note: `已加 ${added.length} 段音频（${added.join(', ')}）` };
+    }
+
+    case 'update_audio': {
+      if (!project.audios?.length) return { ok: false, error: '工程里还没有音频层' };
+      const idx = locateAudio(project, args);
+      if (idx < 0) return { ok: false, error: `找不到音频层（现有：${project.audios.map((a) => a.id).join(', ')}）` };
+      const patch = (args.patch && typeof args.patch === 'object' ? args.patch : args) as Record<string, unknown>;
+      const merged = normalizeAudio({ ...project.audios[idx], ...patch }, project.audios[idx].id);
+      if (!merged) return { ok: false, error: 'update_audio 结果非法（file 不能清空；end 必须大于 start）' };
+      project.audios[idx] = merged;
+      touch();
+      return { ok: true, project, note: `音频 ${merged.id} 已更新` };
+    }
+
+    case 'remove_audio': {
+      if (!project.audios?.length) return { ok: false, error: '工程里还没有音频层' };
+      const idx = locateAudio(project, args);
+      if (idx < 0) return { ok: false, error: `找不到音频层（现有：${project.audios.map((a) => a.id).join(', ')}）` };
+      const [gone] = project.audios.splice(idx, 1);
+      if (!project.audios.length) delete project.audios;
+      touch();
+      return { ok: true, project, note: `已删除音频 ${gone.id}` };
+    }
+
+    case 'clear_audios':
+      delete project.audios;
+      touch();
+      return { ok: true, project, note: '音频层已清空' };
+
     case 'clear_bgm':
       delete project.bgm;
       touch();
@@ -1278,7 +1506,7 @@ export function applyClipOp(
         error:
           `未知 op：${op}。可选：create / get / set_output / add_clip / update_clip / remove_clip / ` +
           `move_clip / clear_clips / add_text / update_text / remove_text / clear_texts / set_bgm / clear_bgm / ` +
-          `add_overlay / update_overlay / remove_overlay`,
+          `add_overlay / update_overlay / remove_overlay / add_audio / update_audio / remove_audio / clear_audios`,
       };
   }
 }
@@ -1336,5 +1564,6 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
     texts: p.texts.map((t, i) => ({ index: i + 1, ...t })),
     ...(p.bgm ? { bgm: p.bgm } : {}),
     ...(p.overlays?.length ? { overlays: p.overlays.map((o, i) => ({ index: i + 1, ...o })) } : {}),
+    ...(p.audios?.length ? { audios: p.audios.map((a, i) => ({ index: i + 1, ...a })) } : {}),
   };
 }

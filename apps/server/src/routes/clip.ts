@@ -626,7 +626,9 @@ router.post('/beats', async (req: Request, res: Response) => {
   const project = readClipProject(conversationId);
   const referenced =
     !!project &&
-    (project.clips.some((c) => c.file === p || c.audioFile === p) || project.bgm?.file === p);
+    (project.clips.some((c) => c.file === p || c.audioFile === p) ||
+      project.bgm?.file === p ||
+      (project.audios || []).some((a) => a.file === p));
   let registered = false;
   try {
     registered = !!db.prepare('SELECT id FROM conversation_file WHERE conversation_id = ? AND path = ?').get(conversationId, p);
@@ -695,7 +697,8 @@ router.get('/waveform', async (req: Request, res: Response) => {
     !!project &&
     (project.clips.some((c) => c.file === p || c.audioFile === p) ||
       project.bgm?.file === p ||
-      (project.overlays || []).some((o) => o.file === p));
+      (project.overlays || []).some((o) => o.file === p) ||
+      (project.audios || []).some((a) => a.file === p));
   let registered = false;
   try {
     registered = !!db.prepare('SELECT id FROM conversation_file WHERE conversation_id = ? AND path = ?').get(conversationId, p);

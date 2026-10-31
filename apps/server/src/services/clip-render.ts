@@ -18,7 +18,7 @@ import { runCmd } from './exec-cmd.js';
 import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-style.js';
 import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
 import { buildMaskFilter } from './clip-mask.js';
-import type { ClipProject, ClipSegment, ExportQuality } from './clip-project.js';
+import type { ClipProject, ClipSegment, ClipText, ExportQuality } from './clip-project.js';
 
 export interface RenderProbeResult {
   hasAudio: boolean;
@@ -781,7 +781,8 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
       const assFile = path.join(workDir, 'subtitles.ass');
       assets.push({ file: assFile, content: built.ass });
       steps.push({
-        label: `烧录字幕（动画 ${base.animation}，${project.texts.length} 条）`,
+        // 有动画报动画预设；只靠图层变换触发 ASS 时报"图层变换"（别写出 undefined）
+        label: `烧录字幕（${base.animation ? `动画 ${base.animation}` : '图层变换'}，${project.texts.length} 条）`,
         args: ['-y', '-i', cursorFile, '-vf', `subtitles='${escFilterPath(assFile)}'`, '-c:a', 'copy', '-movflags', '+faststart', subbed],
         out: subbed,
       });
@@ -817,6 +818,53 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
         out: work,
       });
       cursorFile = work;
+    }
+  }
+
+  // ③.8 音频层（P0-7：独立音效轨 / 多段 BGM）
+  //
+  // ★ 放在 BGM 之前：让"说话自动压低"的侧链看到的是**已混入音效**的完整人声轨。
+  // ★ 只是存在音频层才多这一步 —— 没有音频层的老工程渲染计划一步不多（与改动前一致）。
+  // ★ 每条音频先 `-ss/-t` 从素材里取一段，再用 `adelay` 放到成片时间轴上：
+  //   整段丢进 amix 会从第 0 秒就出声（时间点全错，且不报错）。
+  // ★ 混音用 `normalize=0`：amix 默认会按输入数**整体**除以 N —— 一条 0.5 秒的转场音效
+  //   会把全片人声都压掉一半（且在音效窗口之外也照样压）。改成直加后用 alimiter 兜住削波。
+  if (project.audios?.length) {
+    const list = project.audios
+      .filter((a) => a.end > a.start && a.start < totalDuration)
+      .sort((a, b) => a.start - b.start);
+    if (list.length) {
+      const mixed = path.join(workDir, 'audiolayers.mp4');
+      const args: string[] = ['-y', '-i', cursorFile];
+      const fc: string[] = [];
+      const labels: string[] = ['0:a'];
+      let inIdx = 0;
+      for (const a of list) {
+        const st = Math.max(0, a.start);
+        const et = Math.min(totalDuration, a.end);
+        const dur = et - st;
+        if (!(dur > 0.02)) continue;
+        const trim = a.trimStart ?? 0;
+        if (trim > 0) args.push('-ss', trim.toFixed(3));
+        args.push('-t', dur.toFixed(3), '-i', a.file);
+        inIdx++;
+        // ★ aformat 必须在 adelay 之前：adelay 的毫秒值按**通道**给，通道数不统一就会错位
+        const chain = ['aformat=sample_rates=48000:channel_layouts=stereo'];
+        const vol = a.volume ?? 1;
+        if (Math.abs(vol - 1) > 0.001) chain.push(`volume=${vol.toFixed(3)}`);
+        if (a.fadeIn) chain.push(`afade=t=in:st=0:d=${a.fadeIn.toFixed(3)}`);
+        if (a.fadeOut) chain.push(`afade=t=out:st=${Math.max(0, dur - a.fadeOut).toFixed(3)}:d=${a.fadeOut.toFixed(3)}`);
+        const ms = Math.round(st * 1000);
+        if (ms > 0) chain.push(`adelay=${ms}|${ms}`);
+        fc.push(`[${inIdx}:a]${chain.join(',')}[al${inIdx}]`);
+        labels.push(`al${inIdx}`);
+      }
+      if (labels.length > 1) {
+        fc.push(`${labels.map((l) => `[${l}]`).join('')}amix=inputs=${labels.length}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[a]`);
+        args.push('-filter_complex', fc.join(';'), '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', mixed);
+        steps.push({ label: `混入音频层（${labels.length - 1} 段）`, args, out: mixed });
+        cursorFile = mixed;
+      }
     }
   }
 
@@ -914,12 +962,26 @@ export function buildSrtFromTexts(texts: ClipProject['texts']): string {
 }
 
 /**
- * 生成字幕资产：返回 SRT 与（有动画时的）ASS 文本。
+ * 文字层是否带变换（P0-2b）—— 决定字幕走 ASS（有）还是原来的 SRT 路径（无）。
+ * ★ 这是「老工程出片逐字节不变」的开关：没有 transform/keyframes 的工程永远走 SRT。
+ */
+export function textHasTransform(t: ClipText): boolean {
+  const tf = t.transform;
+  return !!(
+    (tf && (tf.x != null || tf.y != null || tf.scale != null || tf.rotation != null || tf.opacity != null)) ||
+    t.keyframes?.length
+  );
+}
+
+/**
+ * 生成字幕资产：返回 SRT 与（有动画/变换时的）ASS 文本。
  *
  * ★ 逐条动画：条片子可以混用多种动效（片头 zoom、中段 karaoke、结尾 fade）——
  *   所以对**每一条**分别标记它自己的 preset/方向/对齐，而不是拿第一条的预设套全片
  *   （那样后两条会被静默按第一条渲染，用户看到的效果与要求不一致且不报错）。
  * 用 buildAss 复用 mcp/subtitle-style.ts 的 8 种动画 —— 剪辑模式与对话剪辑同一套实现。
+ * ★ P0-2b：任一条带图层变换（transform/keyframes）时**也要**出 ASS —— 位移/旋转/缩放/透明度
+ *   是逐条内联标签，SRT+force_style 表达不了。两条路的选择只看"有没有动画/变换"。
  */
 export function buildSubtitleAssets(
   project: ClipProject,
@@ -929,8 +991,10 @@ export function buildSubtitleAssets(
   const srt = buildSrtFromTexts(project.texts);
   const anims = new Set(SUBTITLE_ANIMATION_PRESETS.map((p) => p.id));
   const withAnim = project.texts.filter((t) => t.animation && anims.has(t.animation));
-  if (!withAnim.length) return { srt };
-  const base = withAnim[0];
+  const hasTransform = project.texts.some(textHasTransform);
+  if (!withAnim.length && !hasTransform) return { srt };
+  const base = withAnim[0] || project.texts[0];
+  if (!base) return { srt };
   const fsPx = Math.max(6, Math.round((base.fontSizePx ?? 88) * resY / 1920));
   // ★ 用字幕自己的 outlinePx（模板会写不同宽度），缺省 12；此前固定 12 导致"样式模板改了描边没反应"
   const olPx = Math.max(0, Math.round((base.outlinePx ?? 12) * resY / 1920));
@@ -940,13 +1004,23 @@ export function buildSubtitleAssets(
   const ordered = project.texts.slice().sort((a, b) => a.start - b.start);
   const cues = parseSrt(srt).map((c, i) => {
     const t = ordered[i];
-    return t?.animation && anims.has(t.animation)
+    if (!t) return { ...c, preset: 'none' };
+    // ★ 变换优先于动画预设：两者都是整条 cue 的内联标签，同时套会互相覆盖（顺序决定谁赢），
+    //   所以有变换时不再带 preset。
+    if (textHasTransform(t)) {
+      return {
+        ...c,
+        ...(t.transform ? { transform: t.transform } : {}),
+        ...(t.keyframes?.length ? { keyframes: t.keyframes } : {}),
+      };
+    }
+    return t.animation && anims.has(t.animation)
       ? { ...c, preset: t.animation, ...(t.slideDirection ? { slideDirection: t.slideDirection } : {}), ...(t.position ? { alignment: positionToAlign(t.position) } : {}) }
       : { ...c, preset: 'none' };
   });
 
   const r = buildAss(cues, {
-    preset: base.animation!,
+    preset: base.animation && anims.has(base.animation) ? base.animation : 'none',
     playResX: resX,
     playResY: resY,
     fontSizePx: fsPx,

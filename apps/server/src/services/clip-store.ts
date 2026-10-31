@@ -48,12 +48,13 @@ export function readClipProject(conversationId?: string): ClipProject | null {
     if (parsed.version === 2) {
       // v2：layers 是唯一存储 → 派生 texts/overlays 内存视图
       const layers = Array.isArray((parsed as ClipProject).layers) ? (parsed as ClipProject).layers : [];
-      const { texts, overlays } = v1FieldsFromLayers(layers);
+      const { texts, overlays, audios } = v1FieldsFromLayers(layers);
       return {
         ...(parsed as ClipProject),
         layers,
         texts,
         ...(overlays.length ? { overlays } : {}),
+        ...(audios.length ? { audios } : {}),
       };
     }
     // v1：texts 必有（老文件），overlays 可选 → 迁移到 v2 内存形态
@@ -93,19 +94,22 @@ export function writeClipProject(conversationId: string | undefined, project: Cl
   // ★ 重建时保留旧层里投影不覆盖的扩展字段（transform/keyframes/track/audio）——
   //   否则 P0-2 给 text 层加 transform 后，每次落盘都会把它抹掉。
   const prevById = new Map((project.layers || []).map((l) => [l.id, l]));
-  const rebuilt: Layer[] = layersFromV1Fields(project.texts, project.overlays || []).map((l) => {
+  const rebuilt: Layer[] = layersFromV1Fields(project.texts, project.overlays || [], project.audios || []).map((l) => {
     const prev = prevById.get(l.id);
     if (!prev) return l;
-    // ★ v1 视图**权威**的变换字段（位置/缩放/混合）只能以投影结果为准，不能从旧层回填：
-    //   否则 UI 把画中画从「滤色」改回「正常」时，旧层里残留的 blend 会把它复活 ——
-    //   "overlays 上没有 blend" 是一个**明确的 normal**，合并必须允许删字段，而不只是覆盖。
-    //   其余扩展字段（rotation/opacity 等 P0-2 起的）仍从旧层保留。
+    // ★ v1 视图**权威**的变换字段（位置/缩放/旋转/透明/混合）只能以投影结果为准，不能从旧层回填：
+    //   否则 UI 把画中画从「滤色」改回「正常」、或把字幕变换清空时，旧层里残留的值会把它复活 ——
+    //   "视图上没有这个字段" 是一个**明确的默认值**，合并必须允许删字段，而不只是覆盖。
+    //   其余未知扩展字段仍从旧层保留（将来新加的变换键不至于被一次落盘抹掉）。
     const keep = { ...prev.transform };
-    delete keep.x; delete keep.y; delete keep.scale; delete keep.blend;
+    delete keep.x; delete keep.y; delete keep.scale; delete keep.rotation; delete keep.opacity;
+    delete keep.blend; delete keep.pos;
     return { ...l, transform: { ...keep, ...l.transform } };
   });
-  // v1 视图之外的新 kind 图层（sticker/effect/audio…）原样保留
-  const extra = (project.layers || []).filter((l) => l.kind !== 'text' && l.kind !== 'video');
+  // v1 视图之外的新 kind 图层（sticker/effect…）原样保留。
+  // ★ audio 不在此列（P0-7）：音频层由 project.audios 视图**独占**重建 —— 与 text/video 同一套
+  //   权威规则，否则 UI 删掉一段音频后旧层残值会把它复活。
+  const extra = (project.layers || []).filter((l) => l.kind !== 'text' && l.kind !== 'video' && l.kind !== 'audio');
   const byId = new Map<string, Layer>();
   for (const l of extra) byId.set(l.id, l);
   for (const l of rebuilt) byId.set(l.id, l);

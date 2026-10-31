@@ -13,7 +13,7 @@
 //   - 需要绝对坐标的（slide/typewriter/flychar）用估宽定位：CJK 字宽≈字号、ASCII≈0.55×字号，
 //     与 api-tool-executor 里 drawtext 标题的估宽口径一致。
 
-import { TEXT_ANIMATIONS } from '@yan-zhi/shared';
+import { TEXT_ANIMATIONS, type LayerKfPoint, type LayerTransform } from '@yan-zhi/shared';
 
 /** 动画预设定义（id 同时是 media_compose subtitleAnimation 参数的合法值） */
 export interface SubtitlePresetDef {
@@ -44,6 +44,13 @@ export interface AssCue {
   slideDirection?: 'left' | 'right' | 'up' | 'down';
   /** 该条自己的对齐（逐条位置：标题在中间、字幕在底部）；缺省用 options.alignment */
   alignment?: number;
+  /**
+   * 文字层变换（P0-2b）：给了就**接管本 cue** —— 位置由 `\pos`/`\move` 决定、
+   * 旋转/缩放/透明由内联标签决定，不再套动画预设（两者都是整条 cue 的内联标签，混在一起语义不清）。
+   */
+  transform?: LayerTransform;
+  /** 文字层变换关键帧（t 为 **cue 内** 0~1 比例；cue 的时间范围 = 该文字层的 start~end） */
+  keyframes?: LayerKfPoint[];
 }
 
 /** ASS 时间戳 H:MM:SS.cc（厘秒两位） */
@@ -98,6 +105,146 @@ function escAssText(t: string): string {
     .replace(/\\[A-Za-z]/g, '')
     .replace(/\\/g, '')
     .replace(/\n/g, '\\N');
+}
+
+// ===== 文字层变换 → ASS 内联标签（P0-2b）=====
+//
+// 与 SRT+force_style 的关系：force_style 只能设**整条样式**，表达不了逐条的位移/旋转/缩放/透明度，
+// 所以文字一旦有 transform/keyframes，渲染层就切到 ASS（本文件）；没有变换的老工程仍走 SRT。
+//
+// ★ 坐标系：\pos 用 PlayRes 坐标（= 视频真实分辨率，见文件头）；x/y 是中心偏移比例，
+//   所以 px = PlayResX/2 + x*PlayResX。\an5 让锚点落在文字中心（否则 \pos 指的是底边中点）。
+// ★ `\move` / `\t()` 的时间单位都是**毫秒**、相对**本条 Dialogue** 起点；关键帧 t 是 cue 内 0~1。
+
+type KfKey = 'x' | 'y' | 'scale' | 'rotation' | 'opacity';
+interface KfSeriesPoint { t: number; v: number; ease?: LayerKfPoint['ease'] }
+
+function seriesOf(kfs: LayerKfPoint[], key: KfKey): KfSeriesPoint[] {
+  return kfs
+    .filter((k) => typeof k[key] === 'number' && Number.isFinite(k[key] as number))
+    .map((k) => ({ t: Math.max(0, Math.min(1, k.t)), v: k[key] as number, ease: k.ease }))
+    .sort((a, b) => a.t - b.t);
+}
+
+/** 端外 clamp、段内线性取值（位置两轴取并集时间轴时用它采样）。 */
+function lerpAt(series: KfSeriesPoint[], t: number): number {
+  if (!series.length) return 0;
+  if (t <= series[0].t) return series[0].v;
+  const last = series[series.length - 1];
+  if (t >= last.t) return last.v;
+  for (let i = 1; i < series.length; i++) {
+    const a = series[i - 1], b = series[i];
+    if (t <= b.t) {
+      const span = b.t - a.t;
+      const r = span < 1e-9 ? 1 : (t - a.t) / span;
+      return a.v + (b.v - a.v) * r;
+    }
+  }
+  return last.v;
+}
+
+/**
+ * \t 的 accel 参数：只有 in/out 能用幂次曲线表达，inout/bezier 退回线性。
+ * ★ 诚实边界：ASS 的 \t 只有幂次缓动，没有 cubic-bezier；假装支持会让"预览与成片不一致"。
+ */
+function accelOf(ease?: LayerKfPoint['ease']): string {
+  if (ease === 'in') return '2,';
+  if (ease === 'out') return '0.5,';
+  return '';
+}
+
+/**
+ * 标量属性在一个时间片内的标签：片首静态值 + 片尾 \t。
+ * ★ 片是按**所有属性关键帧时间的并集**切的，片内不会再有该属性的中间点，两头线性插值即精确。
+ */
+function scalarFragment(
+  series: KfSeriesPoint[],
+  staticV: number | undefined,
+  a: number,
+  b: number,
+  dur: number,
+  fmt: (v: number) => string,
+): string[] {
+  if (!series.length) return staticV == null ? [] : [fmt(staticV)];
+  const va = lerpAt(series, a);
+  const vb = lerpAt(series, b);
+  const tags = [fmt(va)];
+  const ms = Math.round((b - a) * dur * 1000);
+  if (ms > 0 && Math.abs(vb - va) > 1e-6) {
+    const ease = series.find((p) => Math.abs(p.t - a) < 1e-6)?.ease;
+    tags.push(`\\t(0,${ms},${accelOf(ease)}${fmt(vb)})`);
+  }
+  return tags;
+}
+
+export interface TextTransformFragment {
+  /** 相对 cue 起点的秒数 */
+  start: number;
+  end: number;
+  /** 内联标签块（不含外层花括号） */
+  tags: string;
+}
+
+/**
+ * 文字层变换 → 若干「时间片」的内联标签；没有有效变换返回 null。
+ *
+ * ★★★ 为什么要切片（真机实测教训）：libass 对 `\t(...\pos(...))` **完全不生效** —— 位置纹丝不动，
+ *   而同一行的 `\t(\fscx)` 正常。位置动画在 ASS 里唯一可靠的做法是 `\move`，且一条 `\move`
+ *   只能表达一段两点线性运动。所以按**所有属性关键帧时间的并集**把 cue 切成若干片，每片一条
+ *   Dialogue：位置用 `\move`，缩放/旋转/透明度用片首静态值 + `\t`。只有静态值时就一片。
+ * ★ 切片对观感没有副作用：相邻片首尾相接、文案相同，中间没有淡入淡出。
+ */
+export function textTransformFragments(c: AssCue, resX: number, resY: number, dur: number): TextTransformFragment[] | null {
+  const tf = c.transform || {};
+  const kfs = (c.keyframes || []).slice().sort((a, b) => a.t - b.t);
+  const hasStatic = tf.x != null || tf.y != null || tf.scale != null || tf.rotation != null || tf.opacity != null;
+  if (!hasStatic && !kfs.length) return null;
+
+  const clampFrac = (v: number) => Math.max(-1, Math.min(1, v));
+  const px = (fx: number) => Math.round(resX / 2 + clampFrac(fx) * resX);
+  const py = (fy: number) => Math.round(resY / 2 + clampFrac(fy) * resY);
+
+  const xs = seriesOf(kfs, 'x');
+  const ys = seriesOf(kfs, 'y');
+  const hasPosKf = xs.length > 0 || ys.length > 0;
+  const at = (t: number): [number, number] => [
+    px(xs.length ? lerpAt(xs, t) : tf.x ?? 0),
+    py(ys.length ? lerpAt(ys, t) : tf.y ?? 0),
+  ];
+
+  // 时间轴 = 所有属性关键帧时间的并集（补 0 / 1 让端点外的值有承载片）
+  const times = Array.from(new Set([0, 1, ...kfs.map((k) => Math.max(0, Math.min(1, k.t)))]))
+    .sort((a, b) => a - b)
+    .filter((t, i, arr) => i === 0 || Math.abs(t - arr[i - 1]) > 1e-6);
+
+  const pct = (v: number) => `\\fscx${Math.round(v * 1000) / 10}\\fscy${Math.round(v * 1000) / 10}`;
+  const rot = (v: number) => `\\frz${Math.round(v * 10) / 10}`;
+  // ASS 的 alpha 是「透明度」：00=不透明、FF=全透明，与工程里的 opacity 正好相反
+  const alpha = (v: number) => {
+    const h = Math.round((1 - Math.max(0, Math.min(1, v))) * 255).toString(16).padStart(2, '0').toUpperCase();
+    return `\\alpha&H${h}&`;
+  };
+
+  const frags: TextTransformFragment[] = [];
+  for (let i = 0; i < times.length - 1; i++) {
+    const a = times[i], b = times[i + 1];
+    if (!(b > a)) continue;
+    const tags: string[] = [];
+    if (hasPosKf) {
+      const [x0, y0] = at(a);
+      const [x1, y1] = at(b);
+      // \move 的时间单位是毫秒、相对**本条**起点（片是独立的一条 Dialogue，所以从 0 起）
+      tags.push('\\an5', `\\move(${x0},${y0},${x1},${y1},0,${Math.round((b - a) * dur * 1000)})`);
+    } else if (tf.x != null || tf.y != null) {
+      const [x0, y0] = at(a);
+      tags.push('\\an5', `\\pos(${x0},${y0})`);
+    }
+    tags.push(...scalarFragment(seriesOf(kfs, 'scale'), tf.scale, a, b, dur, pct));
+    tags.push(...scalarFragment(seriesOf(kfs, 'rotation'), tf.rotation, a, b, dur, rot));
+    tags.push(...scalarFragment(seriesOf(kfs, 'opacity'), tf.opacity, a, b, dur, alpha));
+    frags.push({ start: a * dur, end: b * dur, tags: tags.join('') });
+  }
+  return frags.length ? frags : null;
 }
 
 export interface SlideDirection {
@@ -193,6 +340,14 @@ export function buildAss(
     const dur = c.end - c.start;
     const text = escAssText(c.text);
     const plain = c.text.replace(/[{}\\]/g, '');
+    // ★ 文字层变换（P0-2b）优先：有变换就接管整条 cue —— 位置/旋转/缩放/透明全走内联标签，
+    //   也不再叠加默认淡入（用户要的是"按变换动"，不是"顺带淡一下"）。
+    //   关键帧会被切成若干相邻的时间片（同一段文案连播），原因见 textTransformFragments 的注释。
+    const frags = textTransformFragments(c, resX, resY, dur);
+    if (frags) {
+      for (const f of frags) events.push(dialogue(c.start + f.start, c.start + f.end, `{${f.tags}}${text}`));
+      continue;
+    }
     // 逐条覆盖：动画预设 / 滑入方向 / 对齐（标题居中、字幕底部这种混排靠它）
     const presetId = c.preset || opts.preset;
     const dirOpt = c.slideDirection || opts.direction;

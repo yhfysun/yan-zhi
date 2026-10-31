@@ -840,9 +840,18 @@ export interface LayerKfPoint {
   bezier?: [number, number, number, number];
 }
 
-export interface LayerKfValues {
+/**
+ * 图层变换的静态值（P0-2b：文字层与画中画同语义）。
+ * ★ 单一真相源：ClipText.transform、Layer.transform、ASS 生成（\pos/\frz/\fscx/\fscx）共用这一份，
+ *   否则"工程里存的是什么"与"渲出来的是什么"会各说一套。
+ * ★ x/y 是**相对画面宽高的中心偏移**（-0.5~0.5，0=居中），不是像素。
+ */
+export interface LayerTransform {
   x?: number; y?: number; scale?: number; rotation?: number; opacity?: number;
 }
+
+/** 关键帧采样结果 = 变换静态值（同一组字段）。 */
+export type LayerKfValues = LayerTransform;
 
 const LAYER_KF_KEYS = ['x', 'y', 'scale', 'rotation', 'opacity'] as const;
 

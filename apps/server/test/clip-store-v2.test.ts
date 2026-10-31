@@ -142,3 +142,30 @@ describe('writeClipProject · 混合模式落盘与清除', () => {
     expect(readClipProject(CONV3)!.overlays![0].blend).toBeUndefined();
   });
 });
+
+describe('writeClipProject · 音频层落盘（P0-7）', () => {
+  const CONV4 = 'conv-audio';
+  beforeAll(() => {
+    fs.mkdirSync(path.join(TMP, CONV4, 'intermediate'), { recursive: true });
+  });
+
+  it('★ audios 落进 layers[kind=audio]；读回视图一致；清空后旧层残值不会复活', () => {
+    const base: ClipProject = {
+      version: 2, name: 'p', updatedAt: 1, output: { size: '1080x1920', fps: 30 },
+      clips: [], texts: [], layers: [],
+      audios: [{ id: 'a1', file: 'C:/whoosh.wav', start: 1, end: 2, volume: 0.5, fadeIn: 0.1 }],
+    };
+    writeClipProject(CONV4, base);
+    expect(readClipProject(CONV4)!.audios).toEqual(base.audios);
+
+    const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV4).file, 'utf8'));
+    expect(raw.audios).toBeUndefined();               // 视图字段不落盘
+    expect(raw.layers[0].kind).toBe('audio');
+    expect(raw.layers[0].audio).toEqual({ volume: 0.5, fadeIn: 0.1 });
+
+    // UI 删光音频后：视图为空 + 内存 layers 仍是上一次读到的旧层 → 不得复活
+    const stale = readClipProject(CONV4)!.layers;
+    writeClipProject(CONV4, { ...base, layers: stale, audios: [] });
+    expect(readClipProject(CONV4)!.audios).toBeUndefined();
+  });
+});

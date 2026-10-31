@@ -531,7 +531,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**set_output** 改导出规格 { size:"1080x1920", fps }；' +
         '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, colorStrength?, adjust?, fx?, fxParams?, fadeIn?, fadeOut?, kenburns?, mask?, transition?, crop?, keyframes?, rotate?, flip?, reverse?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）——★ 每段支持画面裁剪 crop、蒙版 mask（形状/色键）、转场 transition、关键帧运镜 keyframes、方向 rotate/flip/reverse、调色强度与手动调节；' +
         '**update_clip** 改某段 { id 或 index, patch:{...同 add_clip 字段} }；**remove_clip** { id|index }；**move_clip** { id|index, to }；**clear_clips**；' +
-        '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, position?, safeArea? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
+        '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, position?, safeArea?, transform?, keyframes? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
+        '★ 文字要**运动**（滑入/放大/旋转/边飘边淡入）用 transform（静态）或 keyframes（t 为层内 0~1，如 [{t:0,x:0.35,scale:0.6},{t:1,x:0,scale:1.1,ease:"out"}]）；有变换时不再套 animation 预设；' +
         '**update_text** { id|index, patch }；**remove_text** { id|index }；**clear_texts**；' +
         '**set_bgm** { file, volume, duck }（duck=true 说话时自动压低，适合带旁白的成片）/ **clear_bgm**；' +
         '**beat_cut** 一键卡点 { everyNth?, beatTransition?, beatTransitionDuration?, minPiece? }（分析 BGM 节拍，在每个拍点切开；' +
@@ -543,6 +544,9 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         'x/y=中心偏移（-0.5~0.5，设置后覆盖 pos）、rotation=旋转角度、opacity=不透明度；' +
         'keyframes 做画中画动画 [{t:0,x:0.3,scale:0.8},{t:1,x:0,scale:1.1,ease:"out"}]（t 为层内 0~1，滑入/放大这样写）；' +
         '**update_overlay** { id|index, patch }（patch 传 null 可清除对应字段）；**remove_overlay** { id|index }；' +
+        '**add_audio** 定时音频层 { audios:[{ file, start, end, volume?, fadeIn?, fadeOut?, trimStart? }] }' +
+        '（start/end 相对成片 —— 转场"唰"声就放一条 0.5~1 秒的；**两段 BGM 无缝接**就放两条首尾相接的；' +
+        '与 set_bgm 的区别：bgm 是整片铺底、音频层是定时的）；**update_audio** { id|index, patch }；**remove_audio** { id|index }；**clear_audios**；' +
         '**render** 渲染成片 { output?, preview?, quality? }（preview=true 出快速预览档，确认后再正式渲染；非预览档会自动顺带导出一张封面 jpg）。' +
         '★ subtitleAnimation 可选：' + effectCatalogText(TEXT_ANIMATIONS) + '（用户要「字幕动效」时选贴合语义的一个）。' +
         '输入一律为本机绝对路径（前序工具返回的 file 字段）。渲染返回 {type:"video", file, url}。',
@@ -557,6 +561,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               'add_text', 'update_text', 'remove_text', 'clear_texts',
               'set_bgm', 'clear_bgm', 'set_audio_fx', 'beat_cut',
               'add_overlay', 'update_overlay', 'remove_overlay', 'render',
+              'add_audio', 'update_audio', 'remove_audio', 'clear_audios',
             ],
             description: '工程操作',
           },
@@ -686,13 +691,41 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 backColor: { type: 'string', description: '背景底板色 #RRGGBBAA（A=不透明度，如 "#000000B3"）；不填=无底板' },
                 position: { type: 'string', enum: ['bottom', 'center', 'top'], description: '字幕位置，默认 bottom' },
                 safeArea: { type: 'boolean', description: 'true=竖屏安全区（字幕上抬，避开抖音/快手底部进度条）' },
+                transform: {
+                  type: 'object',
+                  description: '文字层变换：x/y 是**相对画面宽高的中心偏移**（-0.5~0.5，0=居中）、scale 字号倍数、rotation 角度（正=顺时针）、opacity 0~1。★ 一旦有变换，该条不再套文字动画预设；没有变换的字幕渲染路径完全不变',
+                  properties: {
+                    x: { type: 'number', description: '水平中心偏移 -0.5~0.5（0=居中）' },
+                    y: { type: 'number', description: '垂直中心偏移 -0.5~0.5（0=居中）' },
+                    scale: { type: 'number', description: '字号倍数 0.05~5（1=原字号）' },
+                    rotation: { type: 'number', description: '旋转角度（度，-180~180，正=顺时针）' },
+                    opacity: { type: 'number', description: '不透明度 0~1（0=全透明）' },
+                  },
+                },
+                keyframes: {
+                  type: 'array',
+                  description: '文字层变换关键帧（做"滑入 + 放大"这类文字运动）：t 为**层内** 0~1 比例（层的时间范围 = start~end），每点给 x/y/scale/rotation/opacity 中任意几项；ease 为到下一个点的过渡曲线。例：[{t:0,x:0.35,scale:0.6},{t:1,x:0,scale:1.1,ease:"out"}]',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      t: { type: 'number', description: '层内时间比例 0~1' },
+                      x: { type: 'number', description: '水平中心偏移 -0.5~0.5' },
+                      y: { type: 'number', description: '垂直中心偏移 -0.5~0.5' },
+                      scale: { type: 'number', description: '字号倍数（1=原字号）' },
+                      rotation: { type: 'number', description: '旋转角度（度）' },
+                      opacity: { type: 'number', description: '不透明度 0~1' },
+                      ease: { type: 'string', enum: ['linear', 'in', 'out', 'inout', 'bezier'], description: '到下一个关键帧的过渡曲线' },
+                    },
+                    required: ['t'],
+                  },
+                },
               },
               required: ['text', 'start', 'end'],
             },
           },
           id: { type: 'string', description: 'update/remove/move：目标片段或字幕 id（与 index 二选一）' },
           index: { type: 'number', description: 'update/remove/move：目标序号（从 1 开始，与 id 二选一）' },
-          patch: { type: 'object', description: 'update_clip/update_text：要修改的字段（其余保持不变）。update_clip 接受 clips[] 项的全部字段（含 crop / mask / transition / keyframes）；传 mask:null 或 transition:null 表示清除' },
+          patch: { type: 'object', description: 'update_clip/update_text：要修改的字段（其余保持不变）。update_clip 接受 clips[] 项的全部字段（含 crop / mask / transition / keyframes）；update_text 接受 texts[] 项的全部字段（含 transform / keyframes）；传 mask:null、transition:null、transform:null、keyframes:[] 表示清除' },
           to: { type: 'number', description: 'move_clip：目标位置（1 基）' },
           file: { type: 'string', description: 'set_bgm：BGM 音频绝对路径（首次必填，之后可只调音量）；add_overlay：画中画素材绝对路径' },
           overlays: {
@@ -728,6 +761,24 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                     required: ['t'],
                   },
                 },
+              },
+              required: ['file', 'start', 'end'],
+            },
+          },
+          audios: {
+            type: 'array',
+            description: 'add_audio：定时音频层数组（音效 / 第二段 BGM）。start/end 相对成片时间轴；' +
+              '转场"唰"声 = 一条 0.5~1 秒；两段 BGM 无缝接 = 两条首尾相接（如前一条 0~30s、后一条 30~end）',
+            items: {
+              type: 'object',
+              properties: {
+                file: { type: 'string', description: '音频素材绝对路径（mp3/m4a/wav/aac/flac）' },
+                start: { type: 'number', description: '起始秒（相对成片）' },
+                end: { type: 'number', description: '结束秒（必须 > start）' },
+                volume: { type: 'number', description: '音量倍数 0~2，默认 1（BGM 段常用 0.2~0.4；音效 0.6~1）' },
+                fadeIn: { type: 'number', description: '淡入秒（从段首起，不超过段长）' },
+                fadeOut: { type: 'number', description: '淡出秒（到段尾止，不超过段长）' },
+                trimStart: { type: 'number', description: '从素材的第几秒开始取（默认 0）' },
               },
               required: ['file', 'start', 'end'],
             },
