@@ -10,6 +10,7 @@
 import type { ScanFinding, ScanJob } from '../types.js';
 import { SEVERITY_ORDER } from '../types.js';
 import { maskSecrets } from '../redact.js';
+import { complianceReport } from '../compliance.js';
 
 export type SelfAssetClass = 'source' | 'electron' | 'runtime' | 'package';
 
@@ -126,6 +127,27 @@ function retestLines(job: ScanJob, active: ScanFinding[], suppressed: number): s
   return L;
 }
 
+/** 合规映射：等保 2.0 三级 / OWASP Top 10 2021 子集；未登记规则显式列出，不静默略过 */
+function complianceLines(active: ScanFinding[]): string[] {
+  const { rows, unmapped } = complianceReport(active);
+  const L: string[] = ['## 合规映射（等保 2.0 / OWASP Top 10 子集）', ''];
+  if (!rows.length) {
+    L.push(active.length ? '- 本次发现均不在已登记的控制项子集内。' : '- 没有需要映射的发现。', '');
+  } else {
+    L.push('| 标准 | 控制项 | 命中规则 | 条数 |', '| --- | --- | --- | --- |');
+    for (const r of rows) {
+      L.push(`| ${r.standardLabel} | ${r.controlId} ${r.controlTitle} | ` +
+        `${r.ruleIds.map((x) => maskSecrets(x)).join('、')} | ${r.count} |`);
+    }
+    L.push('');
+  }
+  if (unmapped.length) {
+    L.push(`- 未映射规则：${unmapped.map((x) => maskSecrets(x)).join('、')}（不在本期子集内，按普通修复项处理）`, '');
+  }
+  L.push('> 映射是启发式对照（一条发现可能对应多个控制项），不替代测评机构的正式判定。', '');
+  return L;
+}
+
 /** 言智安全体检报告：执行摘要 → 按资产分类 → 严重度分布 → 修复清单 → 复测项 */
 export function buildSelfHealthReport(job: ScanJob): { text: string; count: number } {
   const active = job.findings.filter((f) => !f.suppressed);
@@ -161,6 +183,7 @@ export function buildSelfHealthReport(job: ScanJob): { text: string; count: numb
   L.push('## 严重度分布', '');
   L.push(distributionOf(active), '');
 
+  L.push(...complianceLines(active));
   L.push(...checklistLines(active));
   L.push(...retestLines(job, active, suppressed));
 

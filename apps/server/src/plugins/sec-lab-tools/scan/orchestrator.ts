@@ -102,6 +102,28 @@ export async function acceptBaseline(
   return baseline;
 }
 
+/**
+ * 滚动基线：同 kind+target 只保留最新一条。
+ * ★ 定时巡检每一轮都要把「本轮全部指纹」写回，否则同一发现会在之后每一轮重复告警；
+ *   而 `acceptBaseline` 是"再建一条"，用在人工 /scan-baseline 上，二者语义不同。
+ */
+export async function upsertBaseline(
+  store: ScanStore, kind: ScanKind, target: string, fingerprints: string[],
+): Promise<ScanBaseline> {
+  const list = (await store.loadBaselines()).filter(
+    (b) => !(b.kind === kind && b.target === target),
+  );
+  const baseline: ScanBaseline = {
+    id: `bl_${randomUUID().slice(0, 8)}`,
+    kind,
+    target,
+    fingerprints: [...new Set(fingerprints)],
+    createdAt: Date.now(),
+  };
+  await store.saveBaselines([...list, baseline].slice(-BASELINE_KEEP));
+  return baseline;
+}
+
 export async function runScan(o: RunScanOptions): Promise<ScanJob> {
   const scanner = pickScanner(o.scanners, o.kind);
   if (!scanner) throw new Error(`没有能处理 ${o.kind} 扫描的引擎`);

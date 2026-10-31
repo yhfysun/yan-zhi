@@ -46,7 +46,7 @@ import { verifySqli, verifyXss, verifySsrf, updateFindingStatus } from './sec-la
 import { runBaseline, runTlsAudit, runHeadersAudit } from './sec-lab-tools/baseline.js';
 // 本机主机基线（2026-10-18）：补 baseline.ts 明确不覆盖的"主机侧"（账号策略/SMB/RDP/防火墙/SSH），只读
 import { runHostBaseline } from './sec-lab-tools/hostbaseline.js';
-import { runWatch, stopAllWatchers } from './sec-lab-tools/watch.js';
+import { runWatch, stopAllWatchers, type SelfCheckResult } from './sec-lab-tools/watch.js';
 import { runBrute } from './sec-lab-tools/brute.js';
 import { runAttackMap } from './sec-lab-tools/attackmap.js';
 import { runSkill, runWarstory, runCheatsheet } from './sec-lab-tools/knowledge.js';
@@ -55,7 +55,7 @@ import { runSast } from './sec-lab-tools/sast.js';
 // ★ maskSensitiveArgs：审计里的工具参数也要按键打码（api 剖面的 auth/adminAuth 会进 argsSummary）
 import { maskSecrets, maskSensitiveArgs } from './sec-lab-tools/scan/redact.js';
 // —— P1：扫描编排（2026-10-30）——
-import { runScan, acceptBaseline, type ScanStore, type ScanBaseline } from './sec-lab-tools/scan/orchestrator.js';
+import { runScan, acceptBaseline, activeBaseline, upsertBaseline, type ScanStore, type ScanBaseline } from './sec-lab-tools/scan/orchestrator.js';
 import { createSourceScanner } from './sec-lab-tools/scan/source/engine.js';
 import { createUrlScanner } from './sec-lab-tools/scan/url/engine.js';
 import { createPackageScanner } from './sec-lab-tools/scan/package/engine.js';
@@ -199,7 +199,7 @@ export const secLabManifest: PluginManifest = {
       { name: 'host-baseline', aliases: ['host_baseline'], desc: '本机主机基线（只读）：账号策略 / SMBv1 / RDP / UAC / Defender / 防火墙 / SSH / 审计服务，补远程核查不到的主机侧', usage: '/host-baseline', group: 'AUDIT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'host_baseline' },
       { name: 'tls-audit', aliases: ['tls_audit'], desc: 'TLS 审计：协议版本 / 加密套件 / 证书有效期与主体', usage: '/tls-audit <host[:port]>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'tls_audit', params: ['target'] },
       { name: 'headers-audit', aliases: ['headers_audit'], desc: 'HTTP 安全响应头审计（HSTS/CSP/XFO/nosniff/Referrer/Permissions）', usage: '/headers-audit <url>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'headers_audit', params: ['target'] },
-      { name: 'watch', desc: '定时巡检：start / stop / list / tick（进程内定时器，重启需重开）', usage: '/watch <start|stop|list|tick> [--target=x] [--intervalMin=30]', group: 'ASSET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'watch', params: ['action'] },
+      { name: 'watch', desc: '定时巡检：start/stop/list/tick；自有资产（仓库路径 / 本机固定端口）跑体检并按指纹只报新增，其他目标 diff 新增端口/子域。进程内定时器，重启需重新 start（基线保留）', usage: '/watch <start|stop|list|tick> [target] [--intervalMin=30]', group: 'ASSET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'watch', params: ['action', 'target'] },
       { name: 'brute', desc: 'HTTP Basic 默认口令自查（8 组公开默认口令；SSH/FTP 请走 hydra）', usage: '/brute <http> <url>', group: 'VERIFY', mode: 'sec', danger: 'I', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'brute', confirm: true, params: ['protocol', 'target'] },
       { name: 'attack-map', aliases: ['attack_map'], desc: 'ATT&CK 映射：把当前发现项映射到技术，给出已覆盖/未覆盖（启发式）', usage: '/attack-map', group: 'INTEL', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'attack_map' },
 
@@ -1668,15 +1668,69 @@ function hostBaselineTool(): BuiltInTool {
   };
 }
 
+/** 服务端判定：该目标是否属于自有资产（与 scan_self 同一套识别，不接受调用方声明）。 */
+async function isSelfWatchTarget(target: string): Promise<boolean> {
+  const t = String(target || '').trim();
+  if (!t) return false;
+  return matchSelfAsset(t, await discoverSelfAssets()) !== null;
+}
+
+/**
+ * 巡检的一轮自有资产体检：跑 kind='self' 作业 → 编排层按基线抑制老指纹 → 滚动基线。
+ * ★ 返回 null 表示目标不是自有资产，让 watch 回到网络巡检。
+ * ★ 新增项只取 jobToOutput（输出层已脱敏）；摘要再过一遍 maskSecrets。
+ */
+async function watchSelfCheck(target: string, timeoutMs: number): Promise<SelfCheckResult | null> {
+  const asset = matchSelfAsset(String(target || ''), await discoverSelfAssets());
+  if (!asset) return null;
+
+  // 首次（该目标没有已落库基线）= 建立基线：本轮不报"新增"，避免一开巡检就刷出全量老问题。
+  // 重启后基线仍在，恢复巡检时只报停机期间真正新增/变化的部分。
+  const prior = await activeBaseline(scanStore, 'self', asset.value);
+
+  const job = await runScan({
+    kind: 'self',
+    target: asset.value,
+    scanners: SCAN_SCANNERS,
+    store: scanStore,
+    createdBy: 'agent',
+    limits: { maxDurationMs: timeoutMs },
+  });
+  if (job.status === 'failed') throw new Error(job.error || '自有资产体检失败');
+
+  const out = jobToOutput(job);
+  const suppressed = job.findings.filter((f) => f.suppressed).length;
+  // 滚动基线：本轮全部指纹成为下一轮的已知集合 —— 下一轮只报新增，已修复项也不会复活
+  await upsertBaseline(scanStore, 'self', job.target, job.findings.map((f) => f.fingerprint));
+
+  const isFirstBaseline = !prior;
+  const added = isFirstBaseline ? [] : out.findings;
+  const summary = maskSecrets(
+    isFirstBaseline
+      ? `${asset.label}：已建立体检基线（${job.findings.length} 条），后续只报新增`
+      : `${asset.label}：新增 ${added.length} 条，共 ${job.findings.length} 条` +
+        (suppressed ? `，基线抑制 ${suppressed} 条` : '') +
+        `（作业 ${job.id}）`,
+  );
+  return {
+    findings: added,
+    summary,
+    newFindings: added.length,
+    totalFindings: job.findings.length,
+    suppressed,
+    jobId: job.id,
+  };
+}
+
 function watchTool(): BuiltInTool {
   return {
     name: 'watch',
-    description: '定时巡检：start 定期跑 recon+portscan 并 diff（新增端口/子域告警）/ stop / list / tick。进程内定时器，重启需重开。',
+    description: '定时巡检：start 按间隔跑检查并只报增量 / stop / list / tick。目标是自有资产（仓库路径 / 本机固定端口）时跑 scan_self 体检（源码规则 + Electron 结构审计 + 运行时探测），用发现项指纹基线抑制老问题；其他目标仍跑 recon+portscan 并 diff 新增端口/子域。进程内定时器：应用重启后巡检清空，需重新 /watch start 恢复（已落库的体检基线保留）。',
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['start', 'stop', 'list', 'tick'], description: '动作' },
-        target: { type: 'string', description: '目标（start / tick / 指定 stop 时必填）' },
+        target: { type: 'string', description: '目标：自有资产路径 / 本机固定端口 URL（如 http://127.0.0.1:3001），或其他已授权域名/IP（start / tick / 指定 stop 时必填）' },
         intervalMin: { type: 'number', description: '间隔分钟，默认 30（5~1440）' },
         timeoutMs: { type: 'number' },
       },
@@ -1685,7 +1739,10 @@ function watchTool(): BuiltInTool {
     async execute(args) {
       const action = String(args.action || 'list');
       const target = args.target ? String(args.target) : undefined;
-      if (action === 'start' || action === 'tick') await assertInScope('watch', String(target || ''));
+      // 自有资产与 scan_self 同口径：不需要登记授权范围；其他目标仍必须过 scope
+      if ((action === 'start' || action === 'tick') && !(await isSelfWatchTarget(String(target || '')))) {
+        await assertInScope('watch', String(target || ''));
+      }
       return withGuard('watch', args, async () => runWatch({
         action: action as 'start' | 'stop' | 'list' | 'tick',
         target,
@@ -1694,7 +1751,7 @@ function watchTool(): BuiltInTool {
       }, async (t, findings, summary) => {
         await pushFindings(t, 'watch', findings);
         await pushAudit({ at: Date.now(), tool: 'watch', target: t, risk: 'active', ok: true, message: summary });
-      }));
+      }, watchSelfCheck));
     },
   };
 }

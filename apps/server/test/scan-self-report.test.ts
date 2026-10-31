@@ -114,6 +114,24 @@ describe('体检报告模板', () => {
     expect(out.text).toContain('/scan-baseline');
   });
 
+  it('合规映射：按等保 / OWASP 聚合，未映射规则显式列出', () => {
+    const job = selfJob([
+      finding('eval', { severity: 'high' }),
+      finding('hardcoded-secret', { severity: 'high' }),
+      finding('custom-unknown-rule'),
+    ]);
+    const out = buildSelfHealthReport(job);
+    const pos = (s: string) => out.text.indexOf(s);
+    expect(pos('## 合规映射（等保 2.0 / OWASP Top 10 子集）')).toBeGreaterThan(pos('## 严重度分布'));
+    expect(pos('## 修复清单')).toBeGreaterThan(pos('## 合规映射（等保 2.0 / OWASP Top 10 子集）'));
+    expect(out.text).toContain('8.1.4.4 入侵防范');
+    expect(out.text).toContain('A03:2021 注入');
+    expect(out.text).toContain('8.1.4.8 数据保密性');
+    expect(out.text).toContain('A02:2021 加密机制失效');
+    expect(out.text).toContain('未映射规则：custom-unknown-rule');
+    expect(out.text).toContain('不替代测评机构的正式判定');
+  });
+
   it('出口脱敏：detail/evidence 里的凭据打码', () => {
     const job = selfJob([finding('leak', {
       detail: '配置里写了 token=supersecretvalue123',

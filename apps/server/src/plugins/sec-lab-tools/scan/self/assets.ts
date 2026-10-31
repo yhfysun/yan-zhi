@@ -59,9 +59,14 @@ export function isInside(root: string, target: string): boolean {
 }
 
 function localPort(target: string): number | null {
-  const m = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d+))?/i.exec(target.trim());
-  if (!m) return null;
-  return m[1] ? Number(m[1]) : 80;
+  const t = target.trim();
+  // 带协议的本地 URL（允许带路径，只取端口）
+  const m = /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d+))?/i.exec(t);
+  if (m) return m[1] ? Number(m[1]) : 80;
+  // 裸 host[:port]（/watch start 127.0.0.1:3001 这类写法）
+  const bare = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::(\d+))?$/i.exec(t);
+  if (!bare) return null;
+  return bare[1] ? Number(bare[1]) : 80;
 }
 
 /** 目标是否属于已发现的自有资产（不信任调用方声明） */

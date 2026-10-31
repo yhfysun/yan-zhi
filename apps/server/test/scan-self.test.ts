@@ -11,6 +11,7 @@ import path from 'node:path';
 import {
   auditElectronConfig, extractMainCsp, extractWebPreferences,
 } from '../src/plugins/sec-lab-tools/scan/self/electron';
+import { matchSelfAsset, type SelfAsset } from '../src/plugins/sec-lab-tools/scan/self/assets';
 
 const tmpDirs: string[] = [];
 afterEach(async () => {
@@ -51,6 +52,21 @@ describe('webPreferences 结构解析', () => {
     const csp = extractMainCsp(text);
     expect(csp?.text).not.toContain('unsafe-eval');
     expect(csp?.line).toBe(1);
+  });
+});
+
+describe('自有资产匹配', () => {
+  const assets: SelfAsset[] = [
+    { id: 'self_runtime_3001', kind: 'runtime', value: 'http://127.0.0.1:3001', label: '本机服务 :3001' },
+  ];
+
+  it('本机固定端口：带协议、带路径、裸 host:port 都认；别的端口不认', () => {
+    expect(matchSelfAsset('http://127.0.0.1:3001', assets)?.value).toBe('http://127.0.0.1:3001');
+    expect(matchSelfAsset('http://127.0.0.1:3001/api/health', assets)?.value).toBe('http://127.0.0.1:3001');
+    expect(matchSelfAsset('127.0.0.1:3001', assets)?.value).toBe('http://127.0.0.1:3001');
+    expect(matchSelfAsset('localhost:3001', assets)?.value).toBe('http://127.0.0.1:3001');
+    expect(matchSelfAsset('127.0.0.1:9999', assets)).toBeNull();
+    expect(matchSelfAsset('https://example.com', assets)).toBeNull();
   });
 });
 
