@@ -533,6 +533,9 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, position?, safeArea? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
         '**update_text** { id|index, patch }；**remove_text** { id|index }；**clear_texts**；' +
         '**set_bgm** { file, volume, duck }（duck=true 说话时自动压低，适合带旁白的成片）/ **clear_bgm**；' +
+        '**beat_cut** 一键卡点 { everyNth?, beatTransition?, beatTransitionDuration?, minPiece? }（分析 BGM 节拍，在每个拍点切开；' +
+        'beatTransition 给切点后一段挂转场，不给 = 硬切；everyNth=2 表示隔一拍切一次；minPiece 默认 0.4 秒 —— 太短的碎片不切）。' +
+        '★ 节拍不明显会直接拒绝（不会硬凑点）；曲线变速段会被跳过。切完段数会变，字幕要重新排。' +
         '**set_audio_fx** 整片音效链 { fx:[...] }（按顺序串联，最多 4 个；空数组=清除。如 ["denoise","loudnorm"]）；' +
         '**add_overlay** 画中画 { file, start, end, pos?, scale? }（start/end 相对成片；pos 可选 topleft/top/topright/left/center/right/bottomleft/bottom/bottomright，scale 相对素材尺寸 0.05~1 默认 0.35）；**update_overlay** { id|index, patch }；**remove_overlay** { id|index }；' +
         '**render** 渲染成片 { output?, preview?, quality? }（preview=true 出快速预览档，确认后再正式渲染；非预览档会自动顺带导出一张封面 jpg）。' +
@@ -547,7 +550,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               'create', 'get', 'set_output',
               'add_clip', 'update_clip', 'remove_clip', 'move_clip', 'clear_clips',
               'add_text', 'update_text', 'remove_text', 'clear_texts',
-              'set_bgm', 'clear_bgm', 'set_audio_fx',
+              'set_bgm', 'clear_bgm', 'set_audio_fx', 'beat_cut',
               'add_overlay', 'update_overlay', 'remove_overlay', 'render',
             ],
             description: '工程操作',
@@ -704,6 +707,10 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           },
           volume: { type: 'number', description: 'set_bgm：BGM 音量 0~1，默认 0.25' },
           duck: { type: 'boolean', description: 'set_bgm：true=说话时自动压低 BGM（侧链压缩），适合带旁白的成片' },
+          everyNth: { type: 'number', description: 'beat_cut：每 N 个拍点切一次（1=每拍，2=隔一拍）。默认 1' },
+          beatTransition: { type: 'string', enum: TRANSITION_IDS, description: `beat_cut：切点处给后一段挂的转场（不给=硬切）。卡点常用 fade / fadeblack / whiteflash 这类短转场` },
+          beatTransitionDuration: { type: 'number', description: 'beat_cut：转场时长（秒），默认 0.15。卡点要短，超过 0.4 会变"软"' },
+          minPiece: { type: 'number', description: 'beat_cut：太短的片不切（秒），默认 0.4' },
           fx: {
             type: 'array',
             items: { type: 'string', enum: AUDIO_FX_IDS.filter((id) => id !== 'none') },

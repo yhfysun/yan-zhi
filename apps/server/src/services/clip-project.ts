@@ -192,14 +192,39 @@ export interface ClipText {
 }
 
 export interface ClipProject {
-  version: 1;
+  /**
+   * 轨道模型 v2（P0-1）：落盘格式只有 clips + layers + bgm/audioFx。
+   *
+   * ★ 存储与内存的分工（这是本模型的全部约定）：
+   *   · **落盘（writeClipProject）**：texts/overlays 被剥离，图层镜像进 layers ——
+   *     layers 是唯一持久化形态（方案文档 4.1 的"迁移而不是并存"）；
+   *   · **内存（readClipProject 之后）**：由 layers **派生**出 texts/overlays 视图字段，
+   *     渲染/预览/路由/摘要/UI 全部继续读 v1 形状 —— 这些消费方一行不改，
+   *     "预览所见=成片所得"与既有 101 条单测零漂移；
+   *   · applyClipOp 继续操作 texts/overlays（op 语义不变，模型与 UI 无感），
+   *     落盘时再镜像回 layers。投影是**机械映射**（同一份纯函数，双向可逆），
+   *     不存在两套编辑语义 —— 这与方案文档否决的"双模型并存"（两套实现）不同。
+   */
+  version: 2;
   name: string;
   updatedAt: number;
   output: { size: string; fps: number; quality?: ExportQuality };
-  /** 视频轨：按数组顺序首尾相接 */
+  /** 视频主轨：按数组顺序首尾相接（保持既有渲染/时长语义） */
   clips: ClipSegment[];
-  /** 字幕轨：时间相对成片 */
+  /**
+   * 通用图层轨（唯一持久化存储）：字幕/画中画都在这里。
+   * ★ kind=text ↔ texts 视图；kind=video ↔ overlays 视图（投影见 v1FieldsFromLayers /
+   *   layersFromV1Fields）。将来 P0-2/P0-3 的新 kind（sticker/effect）只存在于 layers，
+   *   v1 视图看不到 —— 新图层从 P0-2 起直接渲染自 layers。
+   */
+  layers: Layer[];
+  /**
+   * 字幕视图字段（**仅内存**，由 layers 派生；落盘时剥离）。
+   * v1 消费方（clip-render 的字幕管线 / UI / 摘要）读这里。
+   */
   texts: ClipText[];
+  /** 画中画视图字段（仅内存，由 layers 派生；落盘时剥离） */
+  overlays?: ClipOverlay[];
   /**
    * 音效链（整片，按数组顺序串联）。
    * ★ 放"整片"而不是每段：降噪/响度归一这类是**工程级标准化**（多段素材音量忽大忽小，
@@ -207,10 +232,178 @@ export interface ClipProject {
    *   需要逐段不同音效时用 media_edit 单独处理该段再当素材用。
    */
   audioFx?: string[];
-  /** 背景音乐（整片） */
+  /** 背景音乐（整片）。★ P0-1 诚实边界：BGM 保持工程级，音频轨模型归 P0-7。 */
   bgm?: { file: string; volume: number; duck: boolean };
-  /** 画中画叠加轨（时间相对成片；按数组顺序叠加，后叠的在上层） */
+}
+
+// ===== 轨道模型 v2（P0-1）：图层类型与双向投影 =====
+//
+// ★★★ 为什么引入 layers（方案文档 4.1）：
+//   v1 的 texts/overlays 是两套平行叠加轨，表达不了图层顺序/混合模式/图层级关键帧，
+//   也加不了贴纸/特效层。v2 统一成 layers[]：track 决定上下（大者在上），
+//   P0-2/P0-3 在 Layer.transform 上长出变换与混合。
+// ★ 与方案文档 4.1 的两处**诚实偏差**（实施定案）：
+//   ① bgm 不迁进 layers（音频轨模型是 P0-7 的事，本期只做图像/文字层）；
+//   ② 内存保留 texts/overlays 投影视图（消费方零改动），落盘只写 layers ——
+//     迁移的本质是"序列化格式换了"，不是"运行时数据结构换了"。
+
+export type LayerKind = 'text' | 'image' | 'video' | 'sticker' | 'audio' | 'effect';
+
+/**
+ * 通用图层。
+ * ★ kind=text 时 text 字段沿用既有 ClipText 结构（样式/动画全保留，不丢字段）；
+ *   其余 kind 用 file + transform。
+ * ★ transform.x/y 是相对画面宽/高的比例偏移（-0.5~0.5，0=居中）——
+ *   与 v1 画中画 pos 九宫格锚点等价换算（topleft → x=-0.25,y=-0.25 …）。
+ * ★ keyframes 复用段关键帧的 ease 语义（t 为图层内 0~1 比例）；P0-2 接渲染，本期只存不渲。
+ */
+export interface Layer {
+  id: string;
+  kind: LayerKind;
+  /** image/video/sticker 层的素材路径 */
+  file?: string;
+  /** text 层的字幕内容（沿用 v1 字幕结构，start/end 与层 start/end 同值） */
+  text?: ClipText;
+  /** 成片时间轴上的起止秒 */
+  start: number;
+  end: number;
+  /** 轨道序号：同刻多图层的叠放次序（大者在上）。v1 迁移固定：text=1、video(画中画)=0 */
+  track: number;
+  /** 变换（P0-2 接渲染；本期只存不渲） */
+  transform: {
+    x?: number;
+    y?: number;
+    scale?: number;
+    rotation?: number;
+    opacity?: number;
+    blend?: 'normal' | 'screen' | 'multiply' | 'overlay' | 'softlight' | 'add' | 'darken' | 'lighten';
+  };
+  /** 图层级关键帧（P0-2 接渲染；本期只存不渲） */
+  keyframes?: Array<{
+    t: number;
+    x?: number; y?: number; scale?: number; rotation?: number; opacity?: number;
+    ease?: 'linear' | 'in' | 'out' | 'inout' | 'bezier';
+    bezier?: [number, number, number, number];
+  }>;
+  /** 音频层专属（P0-7 接渲染） */
+  audio?: { volume?: number; fadeIn?: number; fadeOut?: number };
+}
+
+/** v1 工程文件（迁移函数的输入形态）：texts 必有、overlays 可选。 */
+export interface ClipProjectV1 {
+  version: 1;
+  name: string;
+  updatedAt: number;
+  output: { size: string; fps: number; quality?: ExportQuality };
+  clips: ClipSegment[];
+  texts: ClipText[];
+  audioFx?: string[];
+  bgm?: { file: string; volume: number; duck: boolean };
   overlays?: ClipOverlay[];
+}
+
+/** 画中画九宫格锚点 → transform.x/y（比例 -0.5~0.5，0=居中；与 OVERLAY_POSITIONS 的九方位一一对应）。 */
+const OVERLAY_POS_TO_XY: Record<string, { x: number; y: number }> = {
+  topleft: { x: -0.25, y: -0.25 },
+  top: { x: 0, y: -0.25 },
+  topright: { x: 0.25, y: -0.25 },
+  left: { x: -0.25, y: 0 },
+  center: { x: 0, y: 0 },
+  right: { x: 0.25, y: 0 },
+  bottomleft: { x: -0.25, y: 0.25 },
+  bottom: { x: 0, y: 0.25 },
+  bottomright: { x: 0.25, y: 0.25 },
+};
+
+/** transform.x/y → 最近九宫格锚点（投影回 v1 时用；非法坐标回落 bottomright）。 */
+function xyToOverlayPos(x: number | undefined, y: number | undefined): string {
+  const px = Math.max(-0.5, Math.min(0.5, x ?? 0.25));
+  const py = Math.max(-0.5, Math.min(0.5, y ?? 0.25));
+  let best = 'bottomright';
+  let bestD = Infinity;
+  for (const [pos, xy] of Object.entries(OVERLAY_POS_TO_XY)) {
+    const d = (xy.x - px) ** 2 + (xy.y - py) ** 2;
+    if (d < bestD) { bestD = d; best = pos; }
+  }
+  return best;
+}
+
+/**
+ * v1 字段（texts/overlays）→ layers（正向投影；迁移与落盘共用）。
+ * ★ 纯函数、确定性：同一输入永远得到同一 layers（id 保留原值，不重排）。
+ */
+export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[]): Layer[] {
+  const layers: Layer[] = [];
+  for (const t of texts) {
+    layers.push({
+      id: t.id,
+      kind: 'text',
+      text: { ...t },
+      start: t.start,
+      end: t.end,
+      track: 1,
+      transform: {},
+    });
+  }
+  for (const o of overlays) {
+    const xy = OVERLAY_POS_TO_XY[o.pos || 'bottomright'] ?? OVERLAY_POS_TO_XY.bottomright;
+    layers.push({
+      id: o.id,
+      kind: 'video',
+      file: o.file,
+      start: o.start,
+      end: o.end,
+      track: 0,
+      transform: { x: xy.x, y: xy.y, ...(o.scale != null ? { scale: o.scale } : {}) },
+    });
+  }
+  return layers;
+}
+
+/**
+ * layers → v1 视图字段（反向投影；读入 v2 文件后派生内存形状用）。
+ * ★ 只认 kind=text / kind=video 且字段完整的新图层；其余 kind（P0-2 起的
+ *   sticker/effect…）留在 layers 里，v1 视图看不到（也不会被反向投影丢掉 ——
+ *   正向投影落盘时以**内存 texts/overlays + 原 layers 中的新 kind** 合并重建）。
+ */
+export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overlays: ClipOverlay[] } {
+  const texts: ClipText[] = [];
+  const overlays: ClipOverlay[] = [];
+  for (const l of layers) {
+    if (l.kind === 'text' && l.text) {
+      texts.push({ ...l.text, start: l.start, end: l.end });
+    } else if (l.kind === 'video' && l.file) {
+      overlays.push({
+        id: l.id,
+        file: l.file,
+        start: l.start,
+        end: l.end,
+        pos: xyToOverlayPos(l.transform?.x, l.transform?.y),
+        ...(l.transform?.scale != null ? { scale: l.transform.scale } : {}),
+      });
+    }
+  }
+  return { texts, overlays };
+}
+
+/**
+ * v1 → v2 纯函数迁移（readClipProject 读到 v1 文件时调用）。
+ * ★ 保留 texts/overlays 在返回值里（内存消费方立即可用）；落盘由 writeClipProject 剥离。
+ * ★ bgm/audioFx 原样保留（P0-1 不迁移音频，见模型注释的诚实边界）。
+ */
+export function migrateV1ToV2(p: ClipProjectV1): ClipProject {
+  return {
+    version: 2,
+    name: p.name,
+    updatedAt: p.updatedAt,
+    output: { ...p.output },
+    clips: p.clips.map((c) => ({ ...c })),
+    layers: layersFromV1Fields(p.texts, p.overlays || []),
+    texts: p.texts.map((t) => ({ ...t })),
+    ...(p.overlays ? { overlays: p.overlays.map((o) => ({ ...o })) } : {}),
+    ...(p.audioFx ? { audioFx: [...p.audioFx] } : {}),
+    ...(p.bgm ? { bgm: { ...p.bgm } } : {}),
+  };
 }
 
 const DEFAULT_OUTPUT = { size: '1080x1920', fps: 30 };
@@ -228,11 +421,12 @@ function parseQuality(v: unknown): ExportQuality | null {
 
 export function createEmptyProject(name = '未命名剪辑'): ClipProject {
   return {
-    version: 1,
+    version: 2,
     name,
     updatedAt: Date.now(),
     output: { ...DEFAULT_OUTPUT },
     clips: [],
+    layers: [],
     texts: [],
   };
 }
@@ -604,7 +798,21 @@ export function applyClipOp(
   args: Record<string, unknown>,
 ): ClipOpResult {
   const project: ClipProject = base
-    ? { ...base, clips: [...base.clips], texts: [...base.texts], output: { ...base.output }, ...(base.overlays ? { overlays: [...base.overlays] } : {}) }
+    ? {
+        ...base,
+        clips: [...base.clips],
+        // ★ layers 一并拷贝：ops 继续操作 texts/overlays 视图，layers 镜像在
+        //   writeClipProject（序列化边界）统一重建 —— op 层不逐 op 维护镜像，
+        //   否则 20 个 op 每个都要记得同步，漏一个就漂移。
+        layers: (base.layers || []).map((l) => ({
+          ...l,
+          ...(l.text ? { text: { ...l.text } } : {}),
+          ...(l.transform ? { transform: { ...l.transform } } : {}),
+        })),
+        texts: [...base.texts],
+        output: { ...base.output },
+        ...(base.overlays ? { overlays: [...base.overlays] } : {}),
+      }
     : createEmptyProject();
   const touch = () => { project.updatedAt = Date.now(); };
 

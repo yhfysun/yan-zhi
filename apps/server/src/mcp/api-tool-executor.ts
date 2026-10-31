@@ -50,6 +50,8 @@ import { applyClipOp, summarizeProject, type ClipProject } from '../services/cli
 import { buildRenderPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
 import { readClipProject, writeClipProject } from '../services/clip-store.js';
 import { COLOR_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectCatalogText, effectFilter } from '@yan-zhi/shared';
+import { analyzeBeats } from '../services/clip-beats.js';
+import { planBeatCut } from '../services/clip-beat-cut.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
 import { systemSpeak, listSystemVoices, pickVoiceForRole, describeVoiceCapacity, inferRoleGender } from './tts-sapi.js';
 import { listEdgeVoices, edgeSpeak, pickEdgeVoiceForRole, defaultEdgeVoice, type EdgeVoice } from './edge-tts.js';
@@ -1969,6 +1971,50 @@ async function clipProjectTool(
       // 临时目录清空失败不该让整个渲染报失败（老规矩：清理必须 try/catch）
       try { await rm(workDir, { recursive: true, force: true }); } catch { /* 忽略 */ }
     }
+  }
+
+  // 一键卡点：分析 BGM 节拍 → 按拍切开时间轴。需要 ffprobe 拿各段时长，所以不走 applyClipOp。
+  if (op === 'beat_cut') {
+    if (!cur) return fail('当前会话还没有剪辑工程（先 op=create + add_clip）');
+    if (!cur.clips.length) return fail('工程里没有片段');
+    const bgmFile = String(args.bgmFile ?? cur.bgm?.file ?? '').trim();
+    if (!bgmFile) return fail('还没有 BGM —— 卡点要基于一首音乐，先 op=set_bgm');
+    const c0 = requireLocalFile(bgmFile, 'bgmFile');
+    if (!c0.ok) return fail(c0.error);
+
+    const txType = String(args.beatTransition ?? '').trim();
+    if (txType && !TRANSITIONS.some((t) => t.id === txType)) {
+      return fail(`未知转场：${txType}（可选：${TRANSITIONS.map((t) => t.id).join(' / ')}）`);
+    }
+
+    const ff = await resolveFfmpeg();
+    if (!ff.ok) return fail(ffmpegMissingHint(ff));
+    const beat = await analyzeBeats(ff.ffmpeg, c0.file);
+    if (!beat.ok) return fail(beat.error || '节拍分析失败');
+    if (!beat.beats.length) {
+      return fail('这段音乐节拍不明显（检出不到 6 个拍点）。硬凑出来的点比没有更糟 —— 换一首鼓点清晰的。');
+    }
+
+    const { durations } = await probeClipSegments(ff.ffprobe, cur);
+    const plan = planBeatCut(cur, durations, {
+      beatTimes: beat.beats,
+      ...(args.everyNth == null ? {} : { everyNth: Number(args.everyNth) }),
+      ...(args.minPiece == null ? {} : { minPieceSec: Number(args.minPiece) }),
+      ...(txType
+        ? { transition: { type: txType, duration: args.beatTransitionDuration == null ? 0.15 : Number(args.beatTransitionDuration) } }
+        : {}),
+    });
+    if (!plan.cuts) return fail('没有可切的拍点（拍点都落在段边界附近，或每段都太短）。可以调小 everyNth 或换一首节奏更密的。');
+
+    const next = { ...cur, clips: plan.clips, updatedAt: Date.now() };
+    await saveClipProject(conversationId, next);
+    return ok(JSON.stringify({
+      ok: true,
+      cuts: plan.cuts, skipped: plan.skipped, dropped: plan.dropped,
+      bpm: beat.bpm, beats: beat.beats.length,
+      note: `${plan.note}（BPM ${beat.bpm}，检出 ${beat.beats.length} 个拍点）`,
+      project: summarizeProject(next),
+    }));
   }
 
   // 编辑层：一律走纯函数 applyClipOp

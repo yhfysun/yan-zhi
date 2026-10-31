@@ -20,8 +20,11 @@ import { readClipProject, writeClipProject, clipProjectPath as clipProjectPathOf
 import { summarizeProject, type ClipProject } from '../services/clip-project.js';
 import { parseProbeJson, probeArgs } from '../services/clip-render.js';
 import { renderPreviewFrame, locateTimeline } from '../services/clip-preview.js';
+import { ensureSegmentProxy } from '../services/clip-proxy.js';
 import { ensureEffectPreview } from '../services/clip-effect-preview.js';
 import { analyzeBeats } from '../services/clip-beats.js';
+import { planBeatCut } from '../services/clip-beat-cut.js';
+import { TRANSITIONS } from '@yan-zhi/shared';
 import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import {
@@ -45,14 +48,51 @@ import fs from 'node:fs';
  * ★ 解析口径共用 parseProbeJson/probeArgs（那才是会漂移的地方）。
  * ★ 失败返回全 0 而非抛错：素材被移走/格式怪时前端按"未知"展示，不该阻塞编辑。
  */
-function probeMediaAsync(ffprobe: string, file: string): Promise<{ duration: number; width: number; height: number; hasVideo: boolean; ok: boolean }> {
+function probeMediaAsync(ffprobe: string, file: string): Promise<{ duration: number; width: number; height: number; hasVideo: boolean; hasAudio: boolean; ok: boolean }> {
   return new Promise((resolve) => {
     execFile(ffprobe, probeArgs(file), { timeout: 20000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      if (err) { resolve({ duration: 0, width: 0, height: 0, hasVideo: false, ok: false }); return; }
+      if (err) { resolve({ duration: 0, width: 0, height: 0, hasVideo: false, hasAudio: false, ok: false }); return; }
       const p = parseProbeJson(String(stdout || ''));
-      resolve({ duration: p.durationSec, width: p.width, height: p.height, hasVideo: p.height > 0, ok: p.durationSec > 0 });
+      resolve({ duration: p.durationSec, width: p.width, height: p.height, hasVideo: p.height > 0, hasAudio: p.hasAudio, ok: p.durationSec > 0 });
     });
   });
+}
+
+/** 图片扩展名（与 clip-render 的 imageFiles 口径一致；命中走 kenburns/图片分支）。 */
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp)$/i;
+
+/**
+ * 代理预览的探测行（durations/hasAudio/imageFiles 一次探齐）。
+ * ★ hasAudio 是渲染计划的必要输入（决定补静音还是透传原声）—— /frame 只需要时长，
+ *   代理要真渲染，必须与 api-tool-executor 的 probeClipSegments 同口径。
+ */
+async function buildProxyProbeRow(
+  ffprobe: string,
+  project: ClipProject,
+): Promise<{ durations: Record<string, number>; hasAudio: Record<string, number | boolean>; imageFiles: string[] }> {
+  const durations: Record<string, number> = {};
+  const hasAudio: Record<string, number | boolean> = {};
+  const imageFiles: string[] = [];
+  const uniq: string[] = [];
+  for (const c of project.clips) if (!uniq.includes(c.file)) uniq.push(c.file);
+  const CONC = 4;
+  for (let i = 0; i < uniq.length; i += CONC) {
+    const batch = uniq.slice(i, i + CONC);
+    const rs = await Promise.all(batch.map((p) => probeMediaAsync(ffprobe, p)));
+    rs.forEach((r, k) => {
+      const p = batch[k];
+      const img = IMAGE_EXT_RE.test(p);
+      if (img) imageFiles.push(p);
+      durations[p] = img ? 0 : r.duration;
+      const seg = project.clips.find((c) => c.file === p);
+      if (seg) {
+        durations[seg.id] = durations[p];
+        hasAudio[seg.id] = img ? false : r.hasAudio;
+        hasAudio[p] = img ? false : r.hasAudio;
+      }
+    });
+  }
+  return { durations, hasAudio, imageFiles };
 }
 
 const router = Router();
@@ -379,6 +419,91 @@ router.get('/frame', async (req: Request, res: Response) => {
   res.setHeader('X-Segment-Index', String(out.segmentIndex || 0));
   res.setHeader('X-Frame-Cached', out.cached ? '1' : '0');
   return res.end(out.png);
+});
+
+// GET /api/plugin/clip-mode/proxy?conversationId=xxx&i=段下标&v=工程版本
+//
+// **段代理预览**（P0-10）：返回某一段的 480p 代理 mp4（命中回文件，未命中同步生成）。
+//
+// ★★★ 缓存失效口径：真实缓存键由服务端按「段指纹 + 代理画幅 + fps」计算
+//   （ensureSegmentProxy → proxyCacheKey）—— 改一段只有那一段的键变。
+//   URL 里的 v= 是**缓存穿透保险**：前端在段指纹变化时换 URL，
+//   即使中间有浏览器/代理缓存层也不会拿旧片骗人（与 /frame 的 v= 同一双保险手法）。
+// ★ Cache-Control no-store：与 /frame 同一理由 —— 浏览器缓存层不认识段指纹，
+//   真正的缓存由服务端磁盘 LRU（clip-proxy 的 pruneProxyCache）负责。
+router.get('/proxy', async (req: Request, res: Response) => {
+  const conversationId = String(req.query.conversationId || '').trim();
+  const i = Math.round(Number(req.query.i));
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!Number.isInteger(i) || i < 0) return res.status(400).json({ error: '段下标 i 必须是非负整数' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const project = readClipProject(conversationId);
+  if (!project) return res.status(404).json({ error: '工程不存在' });
+  if (!project.clips.length) return res.status(409).json({ error: '工程还没有片段' });
+  if (i >= project.clips.length) return res.status(404).json({ error: `段下标越界（共 ${project.clips.length} 段）` });
+
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（代理预览需要它）' });
+
+  const probe = await buildProxyProbeRow(ff.ffprobe, project);
+  const out = await ensureSegmentProxy({ project, segIndex: i, probe, ffmpeg: ff.ffmpeg });
+  if (!out.ok || !out.file) return res.status(500).json({ error: out.error || '代理生成失败' });
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Proxy-Cached', out.cached ? '1' : '0');
+  res.setHeader('X-Proxy-Key', out.key || '');
+  return res.sendFile(out.file);
+});
+
+// POST /api/plugin/clip-mode/beat-cut  body: { conversationId, everyNth?, transition?, minPiece? }
+//
+// **一键卡点**：分析 BGM 节拍 → 在每个拍点切开时间轴（后一段可挂转场）。
+//
+// ★ 为什么"节拍不明显"要直接拒绝：自研检测器只抓鼓点/重音，连绵弦乐会漏。
+//   硬凑出一堆点让用户逐个删，比直接说"换一首"糟糕得多（与 clip-beats 的 MIN_BEATS 同一条纪律）。
+router.post('/beat-cut', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const project = readClipProject(conversationId);
+  if (!project) return res.status(404).json({ error: '工程不存在' });
+  if (!project.clips.length) return res.status(409).json({ error: '工程还没有片段' });
+
+  const bgmFile = String(req.body?.bgmFile || project.bgm?.file || '').trim();
+  if (!bgmFile) return res.status(409).json({ error: '还没有 BGM —— 卡点要基于一首音乐，先把音乐设为 BGM' });
+  if (!fs.existsSync(bgmFile)) return res.status(409).json({ error: 'BGM 文件不存在（可能被移动了）' });
+
+  const txType = String(req.body?.transition || '').trim();
+  if (txType && !TRANSITIONS.some((t) => t.id === txType)) {
+    return res.status(400).json({ error: `未知转场：${txType}` });
+  }
+
+  const ff = await resolveFfmpeg();
+  if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（节拍分析需要它）' });
+
+  const beat = await analyzeBeats(ff.ffmpeg, bgmFile);
+  if (!beat.ok) return res.status(422).json({ error: beat.error });
+  if (!beat.beats.length) {
+    return res.status(422).json({ error: '这段音乐节拍不明显（检出不到 6 个拍点），建议换一首鼓点清晰的' });
+  }
+
+  const durations = await probeProjectDurations(ff.ffprobe, project);
+  const plan = planBeatCut(project, durations, {
+    beatTimes: beat.beats,
+    ...(req.body?.everyNth == null ? {} : { everyNth: Number(req.body.everyNth) }),
+    ...(req.body?.minPiece == null ? {} : { minPieceSec: Number(req.body.minPiece) }),
+    ...(txType ? { transition: { type: txType, duration: req.body?.transitionDuration == null ? 0.15 : Number(req.body.transitionDuration) } } : {}),
+  });
+  if (!plan.cuts) {
+    return res.status(409).json({ error: '没有可切的拍点（拍点都落在段边界附近，或每段都太短）' });
+  }
+
+  const next = { ...project, clips: plan.clips, updatedAt: Date.now() };
+  writeClipProject(conversationId, next);
+  return res.json({
+    ok: true, cuts: plan.cuts, skipped: plan.skipped, dropped: plan.dropped,
+    bpm: beat.bpm, beats: beat.beats.length, note: plan.note,
+  });
 });
 
 // POST /api/plugin/clip-mode/freeze  body: { conversationId, timeSec }

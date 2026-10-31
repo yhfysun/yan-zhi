@@ -317,7 +317,8 @@ describe('ClipWorkbench · 蒙版与字幕样式（对标商用软件的"能建�
 describe('ClipWorkbench · 实时预览（边剪辑边预览）', () => {
   it('★★ 默认必须是实时模式，且监视器渲染实时帧（不是只有成片播放）', () => {
     // 此前"预览"= 上一次渲染的成片，等于没有预览（用户："边剪辑边预览没有？"）
-    expect(CODE).toMatch(/const monitorMode = ref<'live' \| 'clip'>\('live'\)/);
+    // P0-10 起三态：live（实时帧）/ proxy（段代理连播）/ clip（成片）
+    expect(CODE).toMatch(/const monitorMode = ref<'live' \| 'proxy' \| 'clip'>\('live'\)/);
     expect(CODE).toContain('cp-live-frame');
     expect(CODE).toContain('liveFrameUrl');
   });

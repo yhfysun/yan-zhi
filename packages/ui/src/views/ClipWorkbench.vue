@@ -35,6 +35,12 @@
         <option value="std">推荐</option>
         <option value="high">高清</option>
       </select>
+      <button
+        class="cp-btn ghost"
+        title="按 BGM 节拍一键切开时间轴（需要先设 BGM）。会在每个拍点切一刀，段数会变，字幕要重排"
+        :disabled="!bgm || beatCutting"
+        @click="beatCut"
+      >{{ beatCutting ? '卡点中…' : '一键卡点' }}</button>
       <span class="cp-dir-tag" :title="projectDirTitle" @click="spaceDirPicker = true">
         <el-icon :size="12"><FolderOpened /></el-icon>
         {{ currentSpaceDir ? shortPath(currentSpaceDir) : '默认目录' }}
@@ -187,6 +193,28 @@
               @timeupdate="onTimeUpdate"
               @loadedmetadata="onLoadedMeta"
             ></video>
+            <!-- ★★ 段代理预览（P0-10）：每段按指纹取 480p 代理 mp4 顺序连播。
+                 改一段只重取那一段（URL 带段下标 + 工程版本）；
+                 节奏（0.3s 转场/卡点）只有连续播放才看得出来，单帧做不到。 -->
+            <video
+              v-else-if="monitorMode === 'proxy' && proxyClipUrl"
+              ref="proxyVideoEl"
+              class="cp-video"
+              :style="stageStyle"
+              :src="proxyClipUrl"
+              @timeupdate="onProxyTimeUpdate"
+              @loadedmetadata="onProxyLoadedMeta"
+              @ended="onProxyEnded"
+              @error="onProxyError"
+            ></video>
+            <div v-else-if="monitorMode === 'proxy' && proxyLoading" class="cp-monitor-empty">
+              <el-icon :size="24" class="cp-spin"><Loading /></el-icon>
+              <span>正在生成代理…</span>
+            </div>
+            <div v-else-if="monitorMode === 'proxy' && proxyError" class="cp-monitor-empty">
+              <span>{{ proxyError }}</span>
+              <button class="cp-mini" @click="loadProxyForPlayhead">重试</button>
+            </div>
             <div v-else class="cp-monitor-empty">
               <el-icon :size="30"><VideoPlay /></el-icon>
               <span>{{ monitorHint }}</span>
@@ -194,6 +222,9 @@
             <!-- 画面角标：告诉用户现在看的是实时帧还是成片 -->
             <span v-if="monitorMode === 'live' && liveFrameUrl && !frameLoading" class="cp-live-badge">
               <el-icon :size="10"><View /></el-icon>实时
+            </span>
+            <span v-if="monitorMode === 'proxy' && proxyClipUrl" class="cp-live-badge">
+              <el-icon :size="10"><View /></el-icon>代理预览
             </span>
             <!-- 取帧失败如实展示（不静默空白）；后端已给出具体原因 -->
             <span v-if="monitorMode === 'live' && frameError" class="cp-live-err" :title="frameError">{{ frameError }}</span>
@@ -207,9 +238,10 @@
               <el-icon :size="11"><WarningFilled /></el-icon>待重新渲染
             </span>
             <span class="cp-spacer"></span>
-            <!-- 监视模式切换：实时帧（编辑时用）/ 成片播放（核对时用） -->
+            <!-- 监视模式切换：实时帧（编辑时用）/ 代理连播（看节奏）/ 成片（核对出片） -->
             <span class="cp-seg-btns">
               <button class="cp-mini" :class="{ on: monitorMode === 'live' }" title="实时预览：拖动播放头即时出帧（编辑时用）" @click="setMonitorMode('live')">实时</button>
+              <button class="cp-mini" :class="{ on: monitorMode === 'proxy' }" title="代理预览：各段 480p 代理连播，改一段只重渲一段（看节奏/转场/卡点用）。码率低于成片，仅供预览。" @click="setMonitorMode('proxy')">代理</button>
               <button class="cp-mini" :class="{ on: monitorMode === 'clip' }" title="播放已渲染的成片（核对时用）" @click="setMonitorMode('clip')">成片</button>
             </span>
             <span class="cp-zoom">
@@ -1121,7 +1153,9 @@ interface ClipText {
   color?: string; outlineColor?: string; position?: string; safeArea?: boolean;
 }
 interface ClipProject {
-  version: 1; name: string; updatedAt: number;
+  version: 2; name: string; updatedAt: number;
+  /** 图层轨（v2）：字幕/画中画在此落盘；UI 继续操作 texts/overlays 视图字段 */
+  layers?: Array<{ id: string; kind: string; start: number; end: number; track: number; transform?: Record<string, unknown> }>;
   output: { size: string; fps: number; quality?: 'low' | 'std' | 'high' };
   clips: ClipSegment[]; texts: ClipText[];
   /** 音效链（整片，按顺序串联；见效果库 AUDIO_EFFECTS） */
@@ -1183,7 +1217,7 @@ const previewUrl = ref('');
  * ★ 默认 live：剪辑工作台的核心体验是"改一下马上看到"；
  *   此前只有成片模式，等于没有预览（用户："边剪辑边预览没有？"）。
  */
-const monitorMode = ref<'live' | 'clip'>('live');
+const monitorMode = ref<'live' | 'proxy' | 'clip'>('live');
 /** 实时帧的 object URL（服务端返回 PNG，这里转成 URL 给 <img>） */
 const liveFrameUrl = ref('');
 const frameLoading = ref(false);
@@ -1192,7 +1226,30 @@ const frameError = ref('');
 const dragMoved = ref(false);
 const lastNote = ref('');
 const rendering = ref(false);
-const playhead = ref(0);
+const beatCutting = ref(false);
+
+/**
+ * 一键卡点：让服务端分析 BGM 节拍并在每个拍点切开时间轴。
+ * ★ 只调接口、不做本地推算 —— 拍点检测与切片是同一套服务端口径，前端再算一遍必然漂移。
+ */
+async function beatCut() {
+  await ensureConversation();
+  if (!convId.value) { note('先建一个剪辑项目'); return; }
+  beatCutting.value = true;
+  pendingLabel.value = '一键卡点';
+  try {
+    // apiFetch 返回 { data } | { error, status }，两种都要处理
+    const res = await api.post<any>('/plugin/clip-mode/beat-cut', { conversationId: convId.value });
+    const data = (res as any)?.data;
+    if (!data?.ok) { note(`卡点失败：${(res as any)?.error || data?.error || '未知原因'}`); return; }
+    await reloadAll();
+    note(`卡点完成：${data.note || `切开 ${data.cuts} 处`}`);
+  } catch (e) {
+    note(`卡点失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    beatCutting.value = false;
+  }
+}const playhead = ref(0);
 const videoDur = ref(0);
 const zoom = ref(1);
 const bgmVolume = ref(0.25);
@@ -1330,9 +1387,200 @@ function onFrameError() {
   scheduleFrameFetch(60);
 }
 
-function setMonitorMode(m: 'live' | 'clip') {
+function setMonitorMode(m: 'live' | 'proxy' | 'clip') {
   monitorMode.value = m;
   if (m === 'live') scheduleFrameFetch(0);
+  if (m === 'proxy') {
+    // 进代理模式先停本地推进计时器（播放头由 <video> timeupdate 反推）
+    if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    loadProxyForPlayhead();
+  }
+}
+
+// ===== 段代理预览（P0-10）：顺序连播 + 播放头反推 =====
+//
+// ★ 播放模型：单 <video> 元素按段换 src 连播 —— playOne(url, segIdx) 播完一段
+//   （ended）自动切下一段。播放头 = 段在成片时间轴上的起点 + video.currentTime
+//   （各段代理时长与工程口径一致：代理生成的 segDur 换算与 segSeconds/locateTimeline 同源）。
+// ★ 改一段参数 → 工程版本 v 变 → 该段 URL 变 → 自动重取；其余段仍命中服务端缓存。
+// ★ 拖动播放头：定位到所在段、从段内偏移处开播（段内偏移直接赋 video.currentTime）。
+
+/** 当前正在播的段下标（0 基；-1 = 未在播） */
+const proxySegIndex = ref(-1);
+/** 当前段在成片时间轴上的起点（秒） */
+const proxySegStart = ref(0);
+/** 当前段的代理 URL（带工程版本 v=，参数改动后 URL 变 → 强制重取） */
+const proxyClipUrl = ref('');
+const proxyLoading = ref(false);
+const proxyError = ref('');
+/** ended 换源瞬间 timeupdate 可能迟到一帧旧值 → 置位期间不回写播放头 */
+let proxyAdvancing = false;
+/** 序号防竞态：切段/重取期间旧请求回来不覆盖新状态 */
+let proxySeq = 0;
+
+const proxyVideoEl = ref<HTMLVideoElement | null>(null);
+
+/**
+ * 播放头 → (段下标, 段内偏移)。
+ * 与后端 locateTimeline 同口径：kenburns 段用其 duration；时长 0 的段跳过；
+ * t 超出总长时夹到末段尾。
+ */
+function proxyLocate(t: number): { idx: number; offset: number } | null {
+  const list = clips.value;
+  let cursor = 0;
+  for (let k = 0; k < list.length; k++) {
+    const d = segSeconds(list[k]);
+    if (d <= 0) continue;
+    if (t < cursor + d || k === list.length - 1) {
+      return { idx: k, offset: Math.max(0, Math.min(d, t - cursor)) };
+    }
+    cursor += d;
+  }
+  return null;
+}
+
+/** 第 k 段在成片时间轴上的起点（秒；k 越界返回 null）。 */
+function proxySegStartOf(k: number): number | null {
+  if (k < 0 || k >= clips.value.length) return null;
+  let acc = 0;
+  for (let j = 0; j < k; j++) acc += segSeconds(clips.value[j]);
+  return acc;
+}
+
+/** 段代理 URL（i=段下标；v=工程版本 → 段参数改动后 v 变，强制穿透浏览器缓存重取）。 */
+function proxyUrlOf(i: number): string {
+  if (!convId.value) return '';
+  const code = getLicenseCode();
+  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const ver = project.value?.updatedAt || 0;
+  return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&i=${i}&v=${ver}${qs}`;
+}
+
+/**
+ * 载入播放头所在段的代理（进入代理模式 / 拖动播放头 / 工程改动后调用）。
+ * 载入成功后：若处于播放状态则从段内偏移处开播，否则停在偏移位置。
+ */
+async function loadProxyForPlayhead() {
+  if (!convId.value || !clipCount.value) { proxyClipUrl.value = ''; return; }
+  const mySeq = ++proxySeq;
+  const loc = proxyLocate(playhead.value);
+  if (!loc) { proxyClipUrl.value = ''; return; }
+  const start = proxySegStartOf(loc.idx) ?? 0;
+  // 同段同版本已在播 → 不重复取（seek 与 playhead watch 会双双触发，去重）
+  const nextUrl = proxyUrlOf(loc.idx);
+  if (nextUrl === proxyClipUrl.value && !proxyError.value && !proxyLoading.value) return;
+  proxySegIndex.value = loc.idx;
+  proxySegStart.value = start;
+  proxyLoading.value = true;
+  proxyError.value = '';
+  const url = nextUrl;
+  try {
+    // 预检：先发 HEAD 级别的 fetch 拿错误信息（video 元素对非 200 只有黑屏）
+    const res = await fetch(url, { method: 'GET' });
+    if (mySeq !== proxySeq) return;
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      proxyError.value = j.error || `代理生成失败(${res.status})`;
+      proxyClipUrl.value = '';
+      return;
+    }
+    await res.body?.cancel();
+    proxyClipUrl.value = url;
+    proxyLoading.value = false;
+    // 载入后：播放头在段中间 → 从偏移处开始（autoplay 仅在"连续播放"意图下）
+    // 简化：非拖动定位一律停在偏移处，由用户按空格开播（避免每次重取都自动响声）
+    proxyAdvancing = false;
+  } catch (e) {
+    if (mySeq !== proxySeq) return;
+    proxyError.value = `代理加载失败：${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    if (mySeq === proxySeq) proxyLoading.value = false;
+  }
+}
+
+/** 播放当前段（已在此段则续播/从偏移开播），ended 后由 onProxyEnded 续下一段。 */
+function proxyPlayCurrent() {
+  const v = proxyVideoEl.value;
+  if (!v) return;
+  if (proxySegIndex.value < 0) { void loadProxyForPlayhead(); return; }
+  const off = Math.max(0, playhead.value - proxySegStart.value);
+  if (Number.isFinite(v.duration) && v.duration > 0) {
+    v.currentTime = Math.min(off, Math.max(0, v.duration - 0.05));
+  }
+  proxyAdvancing = true;
+  void v.play().catch(() => { /* 用户手势限制/加载中断：静默，UI 已有状态 */ });
+}
+
+/** 顺序连播的步进：ended → 下一段（最后一段结束后停在其段尾）。 */
+async function onProxyEnded() {
+  const next = proxySegIndex.value + 1;
+  if (next >= clips.value.length) {
+    proxyAdvancing = false;
+    const lastStart = proxySegStartOf(clips.value.length - 1) ?? 0;
+    const lastDur = segSeconds(clips.value[clips.value.length - 1]);
+    playhead.value = lastStart + lastDur;
+    note('播放结束');
+    return;
+  }
+  const start = proxySegStartOf(next) ?? 0;
+  proxySegIndex.value = next;
+  proxySegStart.value = start;
+  playhead.value = start;
+  const url = proxyUrlOf(next);
+  const mySeq = ++proxySeq;
+  proxyLoading.value = true;
+  try {
+    const res = await fetch(url);
+    if (mySeq !== proxySeq) return;
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      proxyError.value = j.error || `下一段代理生成失败(${res.status})`;
+      proxyLoading.value = false;
+      proxyAdvancing = false;
+      return;
+    }
+    await res.body?.cancel();
+    proxyClipUrl.value = url;
+  } catch (e) {
+    if (mySeq !== proxySeq) return;
+    proxyError.value = `下一段加载失败：${e instanceof Error ? e.message : String(e)}`;
+    proxyAdvancing = false;
+  } finally {
+    if (mySeq === proxySeq) proxyLoading.value = false;
+  }
+}
+
+/** 播放头反推：段起点 + video.currentTime（守卫期间不回写）。 */
+function onProxyTimeUpdate() {
+  if (!proxyAdvancing) return;
+  const v = proxyVideoEl.value;
+  if (!v) return;
+  playhead.value = proxySegStart.value + (v.currentTime || 0);
+}
+
+function onProxyLoadedMeta() {
+  const v = proxyVideoEl.value;
+  if (!v) return;
+  // 换源后从段内偏移处继续（顺序连播/重取都走这里）
+  const off = Math.max(0, playhead.value - proxySegStart.value);
+  if (Number.isFinite(v.duration) && v.duration > 0) {
+    v.currentTime = Math.min(off, Math.max(0, v.duration - 0.05));
+  }
+  if (proxyAdvancing) void v.play().catch(() => {});
+}
+
+function onProxyError() {
+  if (monitorMode.value !== 'proxy') return;
+  proxyError.value = '代理视频加载失败（素材可能被移动）';
+  proxyAdvancing = false;
+}
+
+/** 代理模式下播放/暂停（空格键走这里；togglePlay 已分流）。 */
+function proxyTogglePlay() {
+  const v = proxyVideoEl.value;
+  if (!v) { void loadProxyForPlayhead(); return; }
+  if (v.paused) { proxyPlayCurrent(); }
+  else { v.pause(); proxyAdvancing = false; }
 }
 
 /** 时长显示：探不到真实值时明确标"未知"，不假装算对了。 */
@@ -1343,7 +1591,12 @@ const textCount = computed(() => texts.value.length);
 const bgm = computed(() => project.value?.bgm || null);
 const overlays = computed(() => project.value?.overlays || []);
 const selectedOverlay = computed(() => overlays.value.find((o) => o.id === selectedOverlayId.value) || null);
-const monitorHint = computed(() => (clipCount.value ? '点「预览档」渲染后可在此播放成片' : '加入素材并让剪辑师渲染后，这里显示成片'));
+const monitorHint = computed(() => {
+  if (monitorMode.value === 'proxy') {
+    return clipCount.value ? '点「代理」连播各段预览（改一段只重渲一段）' : '加入素材后可代理预览';
+  }
+  return clipCount.value ? '点「预览档」渲染后可在此播放成片' : '加入素材并让剪辑师渲染后，这里显示成片';
+});
 
 const BASE_PX_PER_SEC = 34;
 const pxPerSec = computed(() => BASE_PX_PER_SEC * zoom.value);
@@ -2118,6 +2371,10 @@ function stepFrame(dir: number) {
 let playTimer: ReturnType<typeof setInterval> | null = null;
 function togglePlay() {
   if (playTimer) { clearInterval(playTimer); playTimer = null; note('已暂停'); return; }
+  if (monitorMode.value === 'proxy') {
+    proxyTogglePlay();
+    return;
+  }
   if (monitorMode.value === 'clip' && videoEl.value) {
     if (videoEl.value.paused) { void videoEl.value.play(); note('播放成片'); }
     else { videoEl.value.pause(); note('已暂停'); }
@@ -2177,9 +2434,9 @@ async function createProject() {
     // createConversation 只建行、不切当前会话 → 必须 selectConv（否则 save 无 id 可写）
     await chat.selectConv(cid);
     const blank: ClipProject = {
-      version: 1, name, updatedAt: Date.now(),
+      version: 2, name, updatedAt: Date.now(),
       output: { size: newSize.value, fps: newFps.value },
-      clips: [], texts: [],
+      clips: [], texts: [], layers: [],
     };
     const r = await api.put('/plugin/clip-mode/project', { conversationId: cid, project: blank });
     if ('error' in r) { note(`工程创建失败：${r.error}`); return; }
@@ -2296,8 +2553,8 @@ function nextTextId(): string {
 function ensureProject() {
   if (!project.value) {
     project.value = {
-      version: 1, name: projectName.value || '未命名剪辑', updatedAt: Date.now(),
-      output: { size: outSize.value, fps: outFps.value }, clips: [], texts: [],
+      version: 2, name: projectName.value || '未命名剪辑', updatedAt: Date.now(),
+      output: { size: outSize.value, fps: outFps.value }, clips: [], texts: [], layers: [],
     };
   }
   return project.value;
@@ -3198,6 +3455,20 @@ function seek(sec: number) {
   if (videoEl.value && Number.isFinite(videoEl.value.duration)) {
     videoEl.value.currentTime = Math.min(playhead.value, videoEl.value.duration);
   }
+  // 代理模式：跨段定位 → 直接换源（loadProxyForPlayhead 按新播放头定位段与偏移）；
+  // 段内定位 → video 跳到段内偏移。不碰"将要被换掉的旧 video"的 currentTime。
+  if (monitorMode.value === 'proxy' && proxySegIndex.value >= 0) {
+    const loc = proxyLocate(playhead.value);
+    if (loc && loc.idx !== proxySegIndex.value) {
+      void loadProxyForPlayhead();
+    } else if (proxyVideoEl.value && loc) {
+      const off = Math.max(0, playhead.value - proxySegStart.value);
+      const v = proxyVideoEl.value;
+      if (Number.isFinite(v.duration) && v.duration > 0) {
+        v.currentTime = Math.min(off, Math.max(0, v.duration - 0.05));
+      }
+    }
+  }
 }
 /**
  * 吸附（magnetic timeline）：把时间值吸到最近的**片段边界**上。
@@ -3276,6 +3547,25 @@ async function render(preview: boolean) {
 // ★ 播放头一动就取帧（这是"边剪辑边预览"的驱动核心）
 watch(playhead, () => { scheduleFrameFetch(); });
 
+// ★ 代理模式：播放头跨段 → 切到新段的代理（段内拖动不动，跨段才换源）
+watch(playhead, () => {
+  if (monitorMode.value !== 'proxy' || proxyAdvancing) return;
+  const loc = proxyLocate(playhead.value);
+  if (!loc) return;
+  if (loc.idx !== proxySegIndex.value) void loadProxyForPlayhead();
+});
+
+// ★ 代理模式：工程内容变了 → 当前段指纹变 → 重取当前段代理（URL 的 v 变了强制穿透缓存）。
+//   其余段未动，服务端按段指纹命中缓存，不受影响。
+watch(
+  () => [monitorMode.value, clipCount.value, project.value?.updatedAt || 0],
+  ([mode, , ver], prev) => {
+    if (mode !== 'proxy') return;
+    const [prevMode, , prevVer] = prev || [mode, 0, 0];
+    if (prevMode === mode && ver !== prevVer) loadProxyForPlayhead();
+  },
+);
+
 // 工程内容变化（参数改了/加删段）→ 立刻刷新当前帧，让改动马上可见
 watch(() => [clipCount.value, JSON.stringify(project.value?.clips?.map((c) => [c.colorPreset, c.fx, c.mask, c.speed, c.trimStart, c.trimEnd, c.fadeIn, c.fadeOut, c.mask]))], () => {
   if (monitorMode.value === 'live') scheduleFrameFetch(200);
@@ -3288,11 +3578,14 @@ onBeforeUnmount(() => {
   if (frameTimer) clearTimeout(frameTimer);
   if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; }
   replaceFrameUrl('');
+  proxySeq++;   // 作废在途请求（卸载后回来的响应不再写状态）
 });
 
 watch(() => chat.store.currentConvId, async () => {
   previewUrl.value = ''; videoDur.value = 0;
+  proxyClipUrl.value = ''; proxySegIndex.value = -1; proxyError.value = '';
   await loadFiles();
+  if (monitorMode.value === 'proxy') void loadProxyForPlayhead();
   await reload();
   // 自动打开了某个项目（点卡片/切会话）就进编辑视图；否则留在项目列表
   if (project.value) view.value = 'editor';

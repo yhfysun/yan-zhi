@@ -177,6 +177,7 @@ update_clip{ fx: "shakee" } → 报错并列出全部可选 id
 | 复古 / 怀旧 | 颗粒 + 褪色 + 录像带 | `'vintage'`/`'sepia'` + `fx:'oldfilm'` 或 `'vhs'` |
 | 赛博 / 科技 | 高饱和 + 扫描线 / 故障 | `'neon'` + `fx:'scanline'`/`'glitch'` |
 | 情绪推进 | 冷暖段切换 | 前段 `'cool'` → 后段 `'warm'`/`'dawn'` |
+| 卡点（按音乐节拍切） | 一键卡点 | `clip_project op=beat_cut`（需先设 BGM；可 `beatTransition:"fade"` 挂短转场） |
 | 运镜顺滑（不要模板味） | 关键帧 + 缓动 | `ease:'inout'`（线性是最像模板的写法） |
 | 预设太浓 / 一眼假 | 降强度 | `colorStrength:0.3~0.5` |
 | 素材暗、糊、偏色 | 手动调节 | `adjust:{brightness:0.1, sharpness:0.4, temperature:0.3}` |
@@ -217,17 +218,14 @@ update_clip{ fx: "shakee" } → 报错并列出全部可选 id
 ```text
 1) create      { name:"卡点燃剪", size:"1080x1920" }
 2) add_clip    { clips:[ {file:A}, {file:B}, {file:C}, {file:D} ] }   ← 先粗排
-3) get                                                                 ← 拿 timelineStart/End
-4) 按节拍调整每段 trimStart/trimEnd，让切点落在拍上（beats 工具给 BPM/节拍点）
-5) update_clip { index:2, patch:{ transition:{type:"whiteflash", duration:0.15} } }
-   update_clip { index:3, patch:{ transition:{type:"zoomin",      duration:0.2 } } }
-   update_clip { index:4, patch:{ transition:{type:"pixelize",    duration:0.25} } }
-6) set_bgm     { file:音乐, volume:0.9 }          ← 卡点片 BGM 要大声，不要 duck
+3) set_bgm     { file:音乐, volume:0.9 }                              ← 卡点必须先有 BGM
+4) beat_cut    { beatTransition:"fade", beatTransitionDuration:0.15 } ← 一键按拍切开（节拍不明显会拒绝）
+5) get                                                                ← 段数变了，重新看 timeline
+6) 微调：个别段 update_clip 调 speed / trimStart / trimEnd
 7) set_audio_fx{ fx:["loudnorm"] }
-8) update_clip { index:1, patch:{ keyframes:[{t:0,scale:1},{t:0.5,scale:1.08},{t:1,scale:1}] } }
-9) render      { preview:true } → 确认 → render {}
+8) render      { preview:true } → 确认 → render {}
 ```
-**要点**：转场时长 0.15~0.25s 才有"卡"的感觉；超过 0.4s 会变成"软"。
+**要点**：转场时长 0.15~0.25s 才有"卡"的感觉；超过 0.4s 会变成"软"。曲线变速段会被跳过（切开会让曲线每片重跑）。
 
 ### 配方 2 · 口播精剪（知识 / 带货口播）
 

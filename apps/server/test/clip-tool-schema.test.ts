@@ -31,12 +31,15 @@ function clipTool() {
   throw new Error('没找到 clip_project 工具定义');
 }
 
+/** 只在工具执行器层实现的 op（需要 ffprobe/ffmpeg，不适合放进纯函数 applyClipOp）。 */
+const EXECUTOR_ONLY_OPS = ['render', 'beat_cut'];
+
 describe('clip_project 工具面与 applyClipOp 对齐', () => {
-  it('op enum 覆盖 applyClipOp 的每一个 case（外加 render）', () => {
+  it('op enum 覆盖 applyClipOp 的每一个 case（外加执行器独有 op）', () => {
     const tool = clipTool();
     const schema = tool.inputSchema as any;
     const declared: string[] = schema.properties.op.enum;
-    const expected = new Set([...opsFromSource(), 'render']);
+    const expected = new Set([...opsFromSource(), ...EXECUTOR_ONLY_OPS]);
 
     const missing = [...expected].filter((op) => !declared.includes(op));
     const extra = declared.filter((op) => !expected.has(op));
