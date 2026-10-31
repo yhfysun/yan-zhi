@@ -398,6 +398,55 @@ export function assembleSegmentChain(opts: {
   return { vf: null, fcHead, vLabel: 'v0' };
 }
 
+/**
+ * 画中画层的滤镜与位置 —— 渲染（表达式）与抽帧预览（采样后的数字）**共用**。
+ *
+ * 入参既可以是数字也可以是 ffmpeg 表达式：
+ *   · scaleW   目标宽度（数字=像素；表达式=逐帧求值，自动加 eval=frame）
+ *   · rotation 旋转角度（度）；启用时画布按 1.5 倍**对称**外扩，避免任何角度切角
+ *   · opacity  不透明度 0~1；常量走 colorchannelmixer，表达式走 geq 逐帧 alpha
+ *   · xFrac/yFrac 中心偏移（-0.5~0.5，0=居中）；给了就用它，否则退回九宫格锚点
+ *
+ * ★ 旋转外扩后 overlay_w 是外扩框宽度，视觉块居中外扩框 → 非居中锚点要补 ±overlay_w/6，
+ *   否则右下角的画中画会整体内缩一圈（差 25% 宽度，肉眼看得出）。
+ */
+export function overlayLayerChain(o: {
+  scaleW: string;
+  rotation?: string | null;
+  opacity?: string | null;
+  xFrac?: string | null;
+  yFrac?: string | null;
+  anchor: { x: string; y: string };
+  centerX?: boolean;
+  centerY?: boolean;
+}): { filters: string[]; x: string; y: string } {
+  const isNum = (v: string) => /^\d+(\.\d+)?$/.test(v);
+  const filters: string[] = [];
+  // ★ 表达式必须**引号包起来**：buildPiecewiseExpr 的 if(...) 里有逗号，
+  //   裸写会被 filtergraph 当成分隔符（实测报 "No option name near 'frame'"）。
+  filters.push(isNum(o.scaleW) ? `scale=${o.scaleW}:-2` : `scale=w='${o.scaleW}':h=-2:eval=frame`);
+  filters.push('setsar=1');
+
+  const rot = o.rotation ?? null;
+  const hasRot = rot != null && !(isNum(rot) && Math.abs(Number(rot)) < 0.001);
+  if (hasRot) {
+    filters.push('format=rgba', `rotate=a='(${rot})*PI/180':ow=iw*1.5:oh=ih*1.5:fillcolor=black@0`);
+  }
+  if (o.opacity != null) {
+    filters.push('format=yuva420p');
+    filters.push(isNum(o.opacity)
+      ? `colorchannelmixer=aa=${o.opacity}`
+      // geq 只改 alpha，其它平面原样保留（表达式不会报错，只会在画面不对时才发现）
+      : `geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*clip((${o.opacity}),0,1)'`);
+  }
+
+  const padX = hasRot && !o.centerX ? '-overlay_w/6' : '';
+  const padY = hasRot && !o.centerY ? '-overlay_h/6' : '';
+  const x = o.xFrac != null ? `(main_w-overlay_w)/2+main_w*(${o.xFrac})` : `${o.anchor.x}${padX}`;
+  const y = o.yFrac != null ? `(main_h-overlay_h)/2+main_h*(${o.yFrac})` : `${o.anchor.y}${padY}`;
+  return { filters, x, y };
+}
+
 export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: RenderPlan } | { ok: false; error: string } {
   const { project, workDir, outFile } = input;
   if (!project.clips.length) return { ok: false, error: '工程里没有任何片段（先用 add_clip 加素材或 clip_import 导入目录）' };
@@ -648,10 +697,44 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
         const ov = ovs[k];
         const st = Math.max(0, ov.start);
         const et = Math.min(totalDuration, ov.end);
+        const dur = Math.max(0.04, et - st);
         // ★ -t 紧跟 -ss 且在本输入 -i 之前（与段加工同一条铁律：归属到本输入）
-        args.push('-ss', st.toFixed(3), '-t', Math.max(0.04, et - st).toFixed(3), '-i', ov.file);
+        args.push('-ss', st.toFixed(3), '-t', dur.toFixed(3), '-i', ov.file);
         const ovW = Math.max(16, Math.round(W * (ov.scale ?? 0.35)));
-        const anchor = overlayAnchorOf(ov.pos);
+
+        // ── 图层变换/关键帧（P0-2）──
+        // 关键帧 t 是层内 0~1；overlay 表达式里的 t 是**成片时间**，所以要换回层内比例。
+        const kfs = ov.keyframes || [];
+        const kfT = `((t-${st.toFixed(3)})/${dur.toFixed(3)})`;
+        const kfExpr = (key: 'x' | 'y' | 'scale' | 'rotation' | 'opacity'): string | null => {
+          const pts = kfs
+            .filter((kf) => typeof kf[key] === 'number')
+            .map((kf) => ({ t: kf.t, v: kf[key] as number, ease: kf.ease, bezier: kf.bezier }));
+          return pts.length ? buildPiecewiseExpr(easePointList(pts), kfT) : null;
+        };
+        const scaleKf = kfExpr('scale');
+        const rotKf = kfExpr('rotation');
+        const opKf = kfExpr('opacity');
+        let xKf = kfExpr('x');
+        let yKf = kfExpr('y');
+        // ★ 只要出现任何一种"绝对位置"（关键帧或静态 x/y），位置就整体改用中心偏移；
+        //   否则保持九宫格锚点 —— 老工程因此逐字节不变。
+        if (xKf != null || yKf != null || ov.x != null || ov.y != null) {
+          xKf = xKf ?? String(ov.x ?? 0);
+          yKf = yKf ?? String(ov.y ?? 0);
+        }
+        const posId = ov.pos || 'bottomright';
+        const chain = overlayLayerChain({
+          scaleW: scaleKf ? `${ovW}*(${scaleKf})` : String(ovW),
+          rotation: rotKf ?? (ov.rotation != null ? String(ov.rotation) : null),
+          opacity: opKf ?? (ov.opacity != null ? String(ov.opacity) : null),
+          xFrac: xKf,
+          yFrac: yKf,
+          anchor: overlayAnchorOf(ov.pos),
+          centerX: ['top', 'center', 'bottom'].includes(posId),
+          centerY: ['left', 'center', 'right'].includes(posId),
+        });
+
         const bm = ov.blend ? blendModeOf(ov.blend) : null;
         // ★ normal（含老工程无 blend 字段）保持普通覆盖。
         //   不为默认值白付一次全帧 blend —— 绝大多数画中画都是普通覆盖。
@@ -660,8 +743,8 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
           //   `-ss/-t` 之后输入的 PTS 从 0 起，而 `enable` 用的是成片时间 ——
           //   不对齐会让画中画内容整体后移 st 秒，且窗口后半段显示**冻结的最后一帧**
           //   （真机实测：1.2s 处显示的是素材 2.2s 的画面）。
-          fc.push(`[${k + 1}:v]scale=${ovW}:-2,setsar=1,setpts=PTS+${st.toFixed(3)}/TB[ov${k}]`);
-          fc.push(`[${prev}][ov${k}]overlay=x='${anchor.x}':y='${anchor.y}':enable='between(t,${st.toFixed(3)},${et.toFixed(3)})'[v${k}]`);
+          fc.push(`[${k + 1}:v]${chain.filters.join(',')},setpts=PTS+${st.toFixed(3)}/TB[ov${k}]`);
+          fc.push(`[${prev}][ov${k}]overlay=x='${chain.x}':y='${chain.y}':enable='between(t,${st.toFixed(3)},${et.toFixed(3)})'[v${k}]`);
           prev = `v${k}`;
           continue;
         }
@@ -672,8 +755,8 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
         //   `setpts=PTS+st/TB` 把裁剪过的输入对齐到成片时间轴（-ss/-t 后 PTS 从 0 起，
         //   不加这一步窗口会整体前移，表现为"混合从第 0 秒就开始/结束过早"）。
         fc.push(`color=c=0x${bm.neutral.slice(1)}:s=${W}x${H}:r=${fps}:d=${totalDuration.toFixed(3)}[bl${k}]`);
-        fc.push(`[${k + 1}:v]scale=${ovW}:-2,setsar=1,fps=${fps},setpts=PTS+${st.toFixed(3)}/TB[ov${k}]`);
-        fc.push(`[bl${k}][ov${k}]overlay=x='${anchor.x}':y='${anchor.y}':enable='between(t,${st.toFixed(3)},${et.toFixed(3)})':eof_action=repeat,format=yuv420p[ly${k}]`);
+        fc.push(`[${k + 1}:v]${chain.filters.join(',')},fps=${fps},setpts=PTS+${st.toFixed(3)}/TB[ov${k}]`);
+        fc.push(`[bl${k}][ov${k}]overlay=x='${chain.x}':y='${chain.y}':enable='between(t,${st.toFixed(3)},${et.toFixed(3)})':eof_action=repeat,format=yuv420p[ly${k}]`);
         fc.push(`[${prev}][ly${k}]blend=all_mode=${bm.mode}:all_opacity=1:shortest=1[v${k}]`);
         prev = `v${k}`;
       }

@@ -653,3 +653,51 @@ describe('ClipWorkbench · 与后端契约一致', () => {
     expect(body).not.toMatch(/r\.data\.data/);
   });
 });
+
+describe('ClipWorkbench · 画中画变换 / 关键帧（P0-2）', () => {
+  it('★ 面板必须有四个变换控件，且绑定到 computed（直接绑 selectedOverlay 会因为 undefined 显示错位）', () => {
+    for (const bind of ['overlayX', 'overlayY', 'overlayRotation', 'overlayOpacity']) {
+      expect(CODE).toMatch(new RegExp(`v-model\.number="${bind}"`));
+    }
+    // computed 的 get 兜底默认值（computed 不是函数声明，fnBody 取不到 → 用切片）
+    const rot = CODE.slice(CODE.indexOf('const overlayRotation'), CODE.indexOf('const overlayRotation') + 400);
+    const op = CODE.slice(CODE.indexOf('const overlayOpacity'), CODE.indexOf('const overlayOpacity') + 400);
+    expect(rot).toContain('?? 0');
+    expect(op).toContain('?? 1');
+  });
+
+  it('★ 关键帧区：打点/删点/清空都要有入口（只有定义没有按钮 = 死代码）', () => {
+    expect(CODE).toMatch(/@click\.stop="addOverlayKf"/);
+    expect(CODE).toMatch(/@click="removeOverlayKf\(ki\)"/);
+    expect(CODE).toMatch(/@click\.stop="clearOverlayKfs"/);
+    expect(CODE).toContain('selectedOverlay.keyframes');
+  });
+
+  it('★★ 两个轴必须同时进入绝对偏移模式，否则拖一个轴另一个跳回居中', () => {
+    const body = fnBody('setOverlayOffset');
+    expect(body).toContain('if (o.x == null)');
+    expect(body).toContain('if (o.y == null)');
+    // 初值来自九宫格注册表（不许手写第二份比例表）
+    const frac = CODE.slice(CODE.indexOf('function overlayAnchorFraction'), CODE.indexOf('function overlayAnchorFraction') + 400);
+    expect(frac).toContain('OVERLAY_POSITIONS.find');
+    expect(frac).toContain('.fx');
+  });
+
+  it('★ 应用时归一化关键帧：钳制值域 + 按 t 排序（脏值进 ffmpeg 只会静默出错）', () => {
+    const body = fnBody('applyOverlayPatch');
+    expect(body).toContain('keyframes');
+    expect(body).toContain('Math.max(0, Math.min(1');
+    expect(body).toContain('.sort((a, b) => a.t - b.t)');
+  });
+
+  it('★ 播放头换算用画中画自身的 start/end（用成片时长会把 t 算错）', () => {
+    const body = fnBody('playheadFractionInSelectedOverlay');
+    expect(body).toContain('o.end - o.start');
+    expect(body).toContain('playhead.value - o.start');
+  });
+
+  it('★ 混合模式下拉选项来自共享注册表', () => {
+    expect(CODE).toMatch(/v-for="b in BLEND_MODES"/);
+    expect(CODE).toContain('BLEND_MODES');
+  });
+});

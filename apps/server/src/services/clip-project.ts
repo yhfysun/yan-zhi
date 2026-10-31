@@ -12,7 +12,7 @@
 //   · 片段内时间（trimStart/trimEnd/speed）→ **相对该段原始素材**；
 //   · 字幕/BGM 时间 → **相对成片（拼接后）**，由调用方按各段时长累计推算。
 
-import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX, blendModeOf, type BlendModeId } from '@yan-zhi/shared';
+import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX, blendModeOf, OVERLAY_POSITIONS, type BlendModeId, type LayerKfPoint } from '@yan-zhi/shared';
 
 export interface ClipSegment {
   id: string;
@@ -167,6 +167,18 @@ export interface ClipOverlay {
    * ★ 只存非 normal 值：normal 是默认语义，写进文件只会让老工程比对出现噪音。
    */
   blend?: BlendModeId;
+  /**
+   * 中心偏移（相对画面宽/高，-0.5~0.5，0=居中）；**设置后覆盖 pos 九宫格**。
+   * ★ 老工程只有 pos，渲染仍走锚点表达式（逐字节不变）；细调位置与关键帧用 x/y。
+   */
+  x?: number;
+  y?: number;
+  /** 旋转角度（度，正=顺时针）；缺省 0 */
+  rotation?: number;
+  /** 不透明度 0~1；缺省 1（不打点也生效，打点则由关键帧接管） */
+  opacity?: number;
+  /** 变换关键帧（t 为层内 0~1；x/y 是中心偏移、scale 是倍数，语义与静态字段相同） */
+  keyframes?: LayerKfPoint[];
 }
 
 export interface ClipText {
@@ -274,7 +286,7 @@ export interface Layer {
   end: number;
   /** 轨道序号：同刻多图层的叠放次序（大者在上）。v1 迁移固定：text=1、video(画中画)=0 */
   track: number;
-  /** 变换（P0-2 接渲染；本期只存不渲） */
+  /** 变换（P0-2：画中画已接渲染；文字层仍只存不渲） */
   transform: {
     x?: number;
     y?: number;
@@ -283,14 +295,14 @@ export interface Layer {
     opacity?: number;
     /** 混合模式（P0-3：渲染已消费；值来自 shared 的 BLEND_MODES） */
     blend?: BlendModeId;
+    /**
+     * 九宫格锚点（v1 视图 pos 的原样保留）。与 x/y 二选一：
+     * 有 pos 时位置由锚点表达式决定（老工程走这条，渲染逐字节不变）。
+     */
+    pos?: string;
   };
-  /** 图层级关键帧（P0-2 接渲染；本期只存不渲） */
-  keyframes?: Array<{
-    t: number;
-    x?: number; y?: number; scale?: number; rotation?: number; opacity?: number;
-    ease?: 'linear' | 'in' | 'out' | 'inout' | 'bezier';
-    bezier?: [number, number, number, number];
-  }>;
+  /** 图层级关键帧（P0-2 已接渲染；t 为层内 0~1 比例） */
+  keyframes?: LayerKfPoint[];
   /** 音频层专属（P0-7 接渲染） */
   audio?: { volume?: number; fadeIn?: number; fadeOut?: number };
 }
@@ -308,30 +320,22 @@ export interface ClipProjectV1 {
   overlays?: ClipOverlay[];
 }
 
-/** 画中画九宫格锚点 → transform.x/y（比例 -0.5~0.5，0=居中；与 OVERLAY_POSITIONS 的九方位一一对应）。 */
-const OVERLAY_POS_TO_XY: Record<string, { x: number; y: number }> = {
-  topleft: { x: -0.25, y: -0.25 },
-  top: { x: 0, y: -0.25 },
-  topright: { x: 0.25, y: -0.25 },
-  left: { x: -0.25, y: 0 },
-  center: { x: 0, y: 0 },
-  right: { x: 0.25, y: 0 },
-  bottomleft: { x: -0.25, y: 0.25 },
-  bottom: { x: 0, y: 0.25 },
-  bottomright: { x: 0.25, y: 0.25 },
-};
+/** 画中画九宫格锚点 → transform.x/y（比例 -0.5~0.5，0=居中；**来自 shared 的 OVERLAY_POSITIONS**，不另写一份）。 */
+const OVERLAY_POS_TO_XY: Record<string, { x: number; y: number }> = Object.fromEntries(
+  OVERLAY_POSITIONS.map((p) => [p.id, { x: p.fx, y: p.fy }]),
+);
 
-/** transform.x/y → 最近九宫格锚点（投影回 v1 时用；非法坐标回落 bottomright）。 */
-function xyToOverlayPos(x: number | undefined, y: number | undefined): string {
-  const px = Math.max(-0.5, Math.min(0.5, x ?? 0.25));
-  const py = Math.max(-0.5, Math.min(0.5, y ?? 0.25));
-  let best = 'bottomright';
-  let bestD = Infinity;
-  for (const [pos, xy] of Object.entries(OVERLAY_POS_TO_XY)) {
-    const d = (xy.x - px) ** 2 + (xy.y - py) ** 2;
-    if (d < bestD) { bestD = d; best = pos; }
+/**
+ * transform.x/y 是否**恰好**等于某个九宫格值（旧 v2 文件由 pos 投影而来，读回时要还原成 pos）。
+ * ★ 用精确相等而不是"最近锚点"：任意微小偏移都属于显式位置，不能被吸附成锚点
+ *   （吸附会让用户细调的位置在每次读盘后跳回格点）。
+ */
+function gridIdOfXY(x: number | undefined, y: number | undefined): string | null {
+  if (x == null || y == null) return null;
+  for (const [id, p] of Object.entries(OVERLAY_POS_TO_XY)) {
+    if (Math.abs(p.x - x) < 1e-6 && Math.abs(p.y - y) < 1e-6) return id;
   }
-  return best;
+  return null;
 }
 
 /**
@@ -352,6 +356,9 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[]): 
     });
   }
   for (const o of overlays) {
+    const hasXY = o.x != null || o.y != null;
+    // ★ 位置二选一：显式 x/y 优先；否则用九宫格 pos + 等价比例坐标（pos 是权威，
+    //   等价坐标留给只认 x/y 的消费方；两者都由 pos 推导，不会漂移）。
     const xy = OVERLAY_POS_TO_XY[o.pos || 'bottomright'] ?? OVERLAY_POS_TO_XY.bottomright;
     layers.push({
       id: o.id,
@@ -361,11 +368,13 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[]): 
       end: o.end,
       track: 0,
       transform: {
-        x: xy.x,
-        y: xy.y,
+        ...(hasXY ? { x: o.x ?? 0, y: o.y ?? 0 } : { x: xy.x, y: xy.y, pos: o.pos || 'bottomright' }),
         ...(o.scale != null ? { scale: o.scale } : {}),
+        ...(o.rotation != null && Math.abs(o.rotation) > 0.001 ? { rotation: o.rotation } : {}),
+        ...(o.opacity != null && o.opacity < 0.999 ? { opacity: o.opacity } : {}),
         ...(o.blend && o.blend !== 'normal' ? { blend: o.blend } : {}),
       },
+      ...(o.keyframes?.length ? { keyframes: o.keyframes.map((k) => ({ ...k })) } : {}),
     });
   }
   return layers;
@@ -384,14 +393,28 @@ export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overla
     if (l.kind === 'text' && l.text) {
       texts.push({ ...l.text, start: l.start, end: l.end });
     } else if (l.kind === 'video' && l.file) {
+      const t = l.transform || {};
+      // ★ 位置还原顺序：pos（新写入/老工程）→ 恰好落在九宫格上的 x/y（旧 v2 文件由 pos 投影而来）
+      //   → 真正的显式偏移。判错了会让画中画位置整体漂移，且不报错。
+      const gridId = !t.pos ? gridIdOfXY(t.x, t.y) : null;
+      const position: { pos?: string; x?: number; y?: number } = t.pos
+        ? { pos: t.pos }
+        : gridId
+          ? { pos: gridId }
+          : t.x != null || t.y != null
+            ? { x: t.x ?? 0, y: t.y ?? 0 }
+            : { pos: 'bottomright' };
       overlays.push({
         id: l.id,
         file: l.file,
         start: l.start,
         end: l.end,
-        pos: xyToOverlayPos(l.transform?.x, l.transform?.y),
-        ...(l.transform?.scale != null ? { scale: l.transform.scale } : {}),
-        ...(l.transform?.blend && l.transform.blend !== 'normal' ? { blend: l.transform.blend } : {}),
+        ...position,
+        ...(t.scale != null ? { scale: t.scale } : {}),
+        ...(t.rotation != null && Math.abs(t.rotation) > 0.001 ? { rotation: t.rotation } : {}),
+        ...(t.opacity != null && t.opacity < 0.999 ? { opacity: t.opacity } : {}),
+        ...(t.blend && t.blend !== 'normal' ? { blend: t.blend } : {}),
+        ...(l.keyframes?.length ? { keyframes: l.keyframes.map((k) => ({ ...k })) } : {}),
       });
     }
   }
@@ -674,6 +697,44 @@ function normalizeFlip(v: unknown): ClipSegment['flip'] | undefined {
   return s === 'h' || s === 'v' || s === 'both' ? s : undefined;
 }
 
+const KF_EASES = new Set(['linear', 'in', 'out', 'inout', 'bezier']);
+
+/**
+ * 归一化图层关键帧：只保留有意义的点（至少带一个值）。
+ * ★ 值域钳制而不是丢弃：滑出画面/负数缩放这类脏值进 ffmpeg 会得到"看起来正常但不对"的
+ *   滤镜表达式（表达式不报错），钳制是唯一能保证出片可预期的做法。
+ */
+function normalizeLayerKeyframes(v: unknown): LayerKfPoint[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: LayerKfPoint[] = [];
+  for (const raw of v) {
+    if (!raw || typeof raw !== 'object') continue;
+    const k = raw as Record<string, unknown>;
+    const t = Number(k.t);
+    if (!Number.isFinite(t)) continue;
+    const pt: LayerKfPoint = { t: Number(Math.max(0, Math.min(1, t)).toFixed(3)) };
+    const take = (key: 'x' | 'y' | 'scale' | 'rotation' | 'opacity', lo: number, hi: number) => {
+      const n = Number(k[key]);
+      if (!Number.isFinite(n)) return;
+      pt[key] = Number(Math.max(lo, Math.min(hi, n)).toFixed(4));
+    };
+    take('x', -0.5, 0.5);
+    take('y', -0.5, 0.5);
+    take('scale', 0.05, 5);
+    take('rotation', -180, 180);
+    take('opacity', 0, 1);
+    const hasVal = pt.x != null || pt.y != null || pt.scale != null || pt.rotation != null || pt.opacity != null;
+    if (!hasVal) continue;
+    const ease = String(k.ease ?? '').trim().toLowerCase();
+    if (KF_EASES.has(ease)) pt.ease = ease as LayerKfPoint['ease'];
+    if (Array.isArray(k.bezier) && k.bezier.length === 4 && k.bezier.every((n) => Number.isFinite(Number(n)))) {
+      pt.bezier = k.bezier.map(Number) as [number, number, number, number];
+    }
+    out.push(pt);
+  }
+  return out.length ? out.sort((a, b) => a.t - b.t) : undefined;
+}
+
 /** 归一化画中画条目（时间钳制到 0~总长，由调用方给 total；这里先做结构与值域）。 */
 function normalizeOverlay(v: unknown, id: string): ClipOverlay | null {
   if (!v || typeof v !== 'object') return null;
@@ -688,9 +749,26 @@ function normalizeOverlay(v: unknown, id: string): ClipOverlay | null {
   //   静默变成"另一种混合"比不生效更难查，所以不做任何猜测性映射。
   const bm = m.blend == null ? null : blendModeOf(String(m.blend));
   const blend = bm && bm.id !== 'normal' ? bm.id : undefined;
+  // 变换扩展（P0-2）：缺省不写字段，老工程的渲染/落盘形状不变
+  const clampNum = (val: unknown, lo: number, hi: number): number | undefined => {
+    if (val == null) return undefined;
+    const n = Number(val);
+    if (!Number.isFinite(n)) return undefined;
+    return Number(Math.max(lo, Math.min(hi, n)).toFixed(4));
+  };
+  const x = clampNum(m.x, -0.5, 0.5);
+  const y = clampNum(m.y, -0.5, 0.5);
+  const rotation = clampNum(m.rotation, -180, 180);
+  const opacity = clampNum(m.opacity, 0, 1);
+  const keyframes = normalizeLayerKeyframes(m.keyframes);
   return {
     id, file, start: Number(start.toFixed(3)), end: Number(end.toFixed(3)), pos, scale,
     ...(blend ? { blend } : {}),
+    ...(x != null ? { x } : {}),
+    ...(y != null ? { y } : {}),
+    ...(rotation != null && Math.abs(rotation) > 0.001 ? { rotation } : {}),
+    ...(opacity != null && opacity < 0.999 ? { opacity } : {}),
+    ...(keyframes ? { keyframes } : {}),
   };
 }
 

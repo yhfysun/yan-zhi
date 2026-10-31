@@ -741,16 +741,20 @@ export function speedCurveOutToSrc(points: SpeedPoint[], outOffset: number, srcL
  * 画中画锚点：overlay 的 x/y 表达式（可用 main_w/main_h/overlay_w/overlay_h）。
  * ★ 与字幕 9 宫格同一套方位语义，UI 与渲染共用（单一真相源）。
  */
-export const OVERLAY_POSITIONS: Array<{ id: string; label: string; x: string; y: string }> = [
-  { id: 'topleft', label: '左上', x: 'main_w*0.04', y: 'main_h*0.04' },
-  { id: 'top', label: '上中', x: '(main_w-overlay_w)/2', y: 'main_h*0.04' },
-  { id: 'topright', label: '右上', x: 'main_w-overlay_w-main_w*0.04', y: 'main_h*0.04' },
-  { id: 'left', label: '左中', x: 'main_w*0.04', y: '(main_h-overlay_h)/2' },
-  { id: 'center', label: '居中', x: '(main_w-overlay_w)/2', y: '(main_h-overlay_h)/2' },
-  { id: 'right', label: '右中', x: 'main_w-overlay_w-main_w*0.04', y: '(main_h-overlay_h)/2' },
-  { id: 'bottomleft', label: '左下', x: 'main_w*0.04', y: 'main_h-overlay_h-main_h*0.04' },
-  { id: 'bottom', label: '下中', x: '(main_w-overlay_w)/2', y: 'main_h-overlay_h-main_h*0.04' },
-  { id: 'bottomright', label: '右下', x: 'main_w-overlay_w-main_w*0.04', y: 'main_h-overlay_h-main_h*0.04' },
+export const OVERLAY_POSITIONS: Array<{
+  id: string; label: string; x: string; y: string;
+  /** 该锚点等价的比例坐标（-0.5~0.5，0=居中）—— UI 细调位置/打关键帧时用来做初值，别再手写一份 */
+  fx: number; fy: number;
+}> = [
+  { id: 'topleft', label: '左上', x: 'main_w*0.04', y: 'main_h*0.04', fx: -0.25, fy: -0.25 },
+  { id: 'top', label: '上中', x: '(main_w-overlay_w)/2', y: 'main_h*0.04', fx: 0, fy: -0.25 },
+  { id: 'topright', label: '右上', x: 'main_w-overlay_w-main_w*0.04', y: 'main_h*0.04', fx: 0.25, fy: -0.25 },
+  { id: 'left', label: '左中', x: 'main_w*0.04', y: '(main_h-overlay_h)/2', fx: -0.25, fy: 0 },
+  { id: 'center', label: '居中', x: '(main_w-overlay_w)/2', y: '(main_h-overlay_h)/2', fx: 0, fy: 0 },
+  { id: 'right', label: '右中', x: 'main_w-overlay_w-main_w*0.04', y: '(main_h-overlay_h)/2', fx: 0.25, fy: 0 },
+  { id: 'bottomleft', label: '左下', x: 'main_w*0.04', y: 'main_h-overlay_h-main_h*0.04', fx: -0.25, fy: 0.25 },
+  { id: 'bottom', label: '下中', x: '(main_w-overlay_w)/2', y: 'main_h-overlay_h-main_h*0.04', fx: 0, fy: 0.25 },
+  { id: 'bottomright', label: '右下', x: 'main_w-overlay_w-main_w*0.04', y: 'main_h-overlay_h-main_h*0.04', fx: 0.25, fy: 0.25 },
 ];
 
 export function overlayAnchorOf(id: string | undefined): { x: string; y: string } {
@@ -812,4 +816,63 @@ export function blendModeIds(): BlendModeId[] {
 /** 生成「id=中文名（观感）」清单（塞进工具描述；从注册表生成，不手写第二份）。 */
 export function blendCatalogText(): string {
   return BLEND_MODES.filter((m) => m.id !== 'normal').map((m) => `${m.id}=${m.label}（${m.desc}）`).join('、');
+}
+
+// ===== 图层关键帧（P0-2：画中画/文字层的变换与透明度动画）=====
+//
+// ★ 一套数据两种消费方式（同语义，不许分叉）：
+//   · 渲染：交给 buildPiecewiseExpr 生成 ffmpeg 时间表达式（逐帧求值）；
+//   · 预览：交给 sampleLayerKfs 直接算出某一时刻的数值（单帧）。
+//   t 一律是**层内** 0~1 比例（0=层起始，1=层结束），与段关键帧的时间语义一致。
+export interface LayerKfPoint {
+  t: number;
+  /** 相对画面宽/高的中心偏移（-0.5~0.5，0=居中） */
+  x?: number;
+  y?: number;
+  /** 相对基准尺寸的倍数（1=原尺寸） */
+  scale?: number;
+  /** 旋转角度（度，正=顺时针） */
+  rotation?: number;
+  /** 不透明度 0~1 */
+  opacity?: number;
+  /** 本点 → 下一点的过渡曲线 */
+  ease?: EaseType;
+  bezier?: [number, number, number, number];
+}
+
+export interface LayerKfValues {
+  x?: number; y?: number; scale?: number; rotation?: number; opacity?: number;
+}
+
+const LAYER_KF_KEYS = ['x', 'y', 'scale', 'rotation', 'opacity'] as const;
+
+/**
+ * 在层内时间 t（0~1）采样关键帧得到变换值。
+ * ★ 每个属性**独立插值**（只给了 scale 的点不参与 x 的插值），否则稀疏打点会互相拉扯；
+ *   端点之外 clamp（不外推）；没有该属性的点一律忽略。
+ */
+export function sampleLayerKfs(pts: LayerKfPoint[] | undefined, t: number): LayerKfValues {
+  const out: LayerKfValues = {};
+  if (!pts?.length) return out;
+  const tc = Math.max(0, Math.min(1, Number.isFinite(t) ? t : 0));
+  for (const key of LAYER_KF_KEYS) {
+    const ps = pts
+      .filter((p) => Number.isFinite(p[key] as number))
+      .map((p) => ({ t: Math.max(0, Math.min(1, p.t)), v: p[key] as number, ease: p.ease, bezier: p.bezier }))
+      .sort((a, b) => a.t - b.t);
+    if (!ps.length) continue;
+    if (tc <= ps[0].t) { out[key] = ps[0].v; continue; }
+    const last = ps[ps.length - 1];
+    if (tc >= last.t) { out[key] = last.v; continue; }
+    for (let i = 1; i < ps.length; i++) {
+      const a = ps[i - 1], b = ps[i];
+      if (tc <= b.t) {
+        const span = b.t - a.t;
+        const e = span < 1e-9 ? 1 : easeValue((tc - a.t) / span, a.ease, a.bezier);
+        out[key] = a.v + (b.v - a.v) * e;
+        break;
+      }
+    }
+  }
+  return out;
 }

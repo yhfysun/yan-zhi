@@ -784,6 +784,62 @@
               </select>
             </div>
             <div class="cp-ins-hint">{{ overlayBlendDesc }}</div>
+            <div class="cp-field">
+              <label>水平偏移 <span class="cp-val">{{ (overlayX * 100).toFixed(0) }}%</span></label>
+              <input v-model.number="overlayX" class="cp-range" type="range" min="-0.5" max="0.5" step="0.01" />
+            </div>
+            <div class="cp-field">
+              <label>垂直偏移 <span class="cp-val">{{ (overlayY * 100).toFixed(0) }}%</span></label>
+              <input v-model.number="overlayY" class="cp-range" type="range" min="-0.5" max="0.5" step="0.01" />
+            </div>
+            <div class="cp-field">
+              <label>旋转 <span class="cp-val">{{ overlayRotation.toFixed(0) }}°</span></label>
+              <input v-model.number="overlayRotation" class="cp-range" type="range" min="-180" max="180" step="1" />
+            </div>
+            <div class="cp-field">
+              <label>不透明度 <span class="cp-val">{{ (overlayOpacity * 100).toFixed(0) }}%</span></label>
+              <input v-model.number="overlayOpacity" class="cp-range" type="range" min="0" max="1" step="0.01" />
+            </div>
+            <!-- 画中画关键帧：播放头定位 → 打点 → 列表里改数值（位移/缩放/透明度） -->
+            <div class="cp-grp">
+              <div class="cp-grp-head" @click="ovKfOpen = !ovKfOpen">
+                <el-icon :size="11"><component :is="ovKfOpen ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+                <span>关键帧</span>
+                <span v-if="selectedOverlay.keyframes?.length" class="cp-grp-badge">{{ selectedOverlay.keyframes.length }} 个</span>
+                <span class="cp-spacer"></span>
+                <button class="cp-mini" title="在播放头处打一个关键帧" @click.stop="addOverlayKf"><el-icon :size="11"><Plus /></el-icon></button>
+                <button v-if="selectedOverlay.keyframes?.length" class="cp-mini" title="清空关键帧" @click.stop="clearOverlayKfs">
+                  <el-icon :size="11"><Delete /></el-icon>
+                </button>
+              </div>
+              <div v-show="ovKfOpen" class="cp-grp-body">
+                <div class="cp-ins-hint">t=层内位置（相对画中画的起止）；x/y 是中心偏移；缩放>1 放大；缓动作用到**下一个点**</div>
+                <div v-if="selectedOverlay.keyframes?.length" class="cp-kf-head">
+                  <span>t</span><span>x</span><span>y</span><span>缩放</span><span>透明</span><span></span>
+                </div>
+                <div v-for="(k, ki) in selectedOverlay.keyframes || []" :key="ki" class="cp-kf-item">
+                  <div class="cp-kf-row">
+                    <input v-model.number="k.t" class="cp-num" type="number" step="0.05" min="0" max="1" title="层内位置 0~1" />
+                    <input v-model.number="k.x" class="cp-num" type="number" step="0.05" min="-0.5" max="0.5" title="水平中心偏移" />
+                    <input v-model.number="k.y" class="cp-num" type="number" step="0.05" min="-0.5" max="0.5" title="垂直中心偏移" />
+                    <input v-model.number="k.scale" class="cp-num" type="number" step="0.05" min="0.05" max="5" title="缩放倍数" />
+                    <input v-model.number="k.opacity" class="cp-num" type="number" step="0.05" min="0" max="1" title="不透明度" />
+                    <button class="cp-mini danger" title="删除此关键帧" @click="removeOverlayKf(ki)"><el-icon :size="11"><Close /></el-icon></button>
+                  </div>
+                  <div class="cp-kf-ease">
+                    <span class="cp-kf-ease-label">→ 下一点</span>
+                    <select v-model="k.ease" class="cp-kf-ease-sel" :title="'到下一个关键帧的过渡曲线'">
+                      <option value="">线性（匀速）</option>
+                      <option value="in">缓入（慢起）</option>
+                      <option value="out">缓出（慢收）</option>
+                      <option value="inout">缓入缓出（推荐）</option>
+                      <option value="bezier">自定义贝塞尔</option>
+                    </select>
+                  </div>
+                </div>
+                <div v-if="!selectedOverlay.keyframes?.length" class="cp-ins-hint">点 + 在播放头打点；常用「滑入+放大」：起点 x=0.3、缩小，终点 x=0、放大</div>
+              </div>
+            </div>
             <div class="cp-ins-hint">画中画不带音频（口播/配乐由主轨与 BGM 负责）</div>
             <button class="cp-btn primary full" @click="applyOverlayPatch">应用画中画</button>
             <button class="cp-btn danger full" @click="removeOverlay(selectedOverlay.id)">删除画中画</button>
@@ -1169,7 +1225,13 @@ interface ClipProject {
   audioFx?: string[];
   bgm?: { file: string; volume: number; duck: boolean };
   /** 画中画叠加轨（时间相对成片；与后端 clip-project 同构） */
-  overlays?: Array<{ id: string; file: string; start: number; end: number; pos?: string; scale?: number; blend?: string }>;
+  overlays?: Array<{
+    id: string; file: string; start: number; end: number; pos?: string; scale?: number; blend?: string;
+    /** P0-2：中心偏移（-0.5~0.5，0=居中；设置后覆盖 pos）/ 旋转 / 不透明度 */
+    x?: number; y?: number; rotation?: number; opacity?: number;
+    /** P0-2：变换关键帧（t 为层内 0~1） */
+    keyframes?: Array<{ t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: string }>;
+  }>;
 }
 interface ConvFile { id?: string; name: string; path: string; type?: string }
 interface ProjectListItem {
@@ -1291,6 +1353,8 @@ const maskOpen = ref(false);
 const transOpen = ref(false);
 const cropOpen = ref(false);
 const kfOpen = ref(false);
+/** 画中画关键帧面板展开态（与片段关键帧分开，避免相互影响） */
+const ovKfOpen = ref(false);
 const adjOpen = ref(false);
 const pipOpen = ref(false);
 const selectedOverlayId = ref('');
@@ -1612,6 +1676,44 @@ const overlayBlend = computed<string>({
   },
 });
 const overlayBlendDesc = computed(() => BLEND_MODES.find((b) => b.id === overlayBlend.value)?.desc || '');
+
+/** 画中画静态变换（P0-2）。旋转/透明等于默认值时删字段，工程文件保持干净。 */
+function overlayAnchorFraction(): { x: number; y: number } {
+  const hit = OVERLAY_POSITIONS.find((p) => p.id === (selectedOverlay.value?.pos || 'bottomright'));
+  return { x: hit?.fx ?? 0.25, y: hit?.fy ?? 0.25 };
+}
+function setOverlayOffset(axis: 'x' | 'y', v: number) {
+  const o = selectedOverlay.value;
+  if (!o) return;
+  // ★ 两轴必须同时进入"绝对偏移"模式：只设一轴会让另一轴跳回居中（视觉上突然平移）
+  const base = overlayAnchorFraction();
+  if (o.x == null) o.x = base.x;
+  if (o.y == null) o.y = base.y;
+  const n = Math.max(-0.5, Math.min(0.5, Number(v) || 0));
+  o[axis] = Number(n.toFixed(4));
+}
+const overlayX = computed<number>({ get: () => selectedOverlay.value?.x ?? overlayAnchorFraction().x, set: (v) => setOverlayOffset('x', v) });
+const overlayY = computed<number>({ get: () => selectedOverlay.value?.y ?? overlayAnchorFraction().y, set: (v) => setOverlayOffset('y', v) });
+const overlayRotation = computed<number>({
+  get: () => selectedOverlay.value?.rotation ?? 0,
+  set: (v) => {
+    const o = selectedOverlay.value;
+    if (!o) return;
+    const n = Math.max(-180, Math.min(180, Number(v) || 0));
+    if (Math.abs(n) < 0.5) delete o.rotation;
+    else o.rotation = Number(n.toFixed(1));
+  },
+});
+const overlayOpacity = computed<number>({
+  get: () => selectedOverlay.value?.opacity ?? 1,
+  set: (v) => {
+    const o = selectedOverlay.value;
+    if (!o) return;
+    const n = Math.max(0, Math.min(1, Number(v)));
+    if (!(n < 0.999)) delete o.opacity;
+    else o.opacity = Number(n.toFixed(3));
+  },
+});
 const monitorHint = computed(() => {
   if (monitorMode.value === 'proxy') {
     return clipCount.value ? '点「代理」连播各段预览（改一段只重渲一段）' : '加入素材后可代理预览';
@@ -2740,8 +2842,75 @@ async function applyOverlayPatch() {
   pendingLabel.value = '改画中画';
   if (!(o.end > o.start)) { note('画中画终点必须大于起点'); return; }
   o.scale = Math.max(0.05, Math.min(1, o.scale ?? 0.35));
+  if (o.keyframes?.length) {
+    // 关键帧值域与后端 normalizeOverlay 一致：超界钳制而不是丢弃（脏值进 ffmpeg 只会静默出错）
+    o.keyframes = o.keyframes
+      .filter((k) => Number.isFinite(Number(k.t)))
+      .map((k) => {
+        const t = Math.max(0, Math.min(1, Number(k.t)));
+        const out: NonNullable<typeof o.keyframes>[number] = { t: Number(t.toFixed(3)) };
+        const put = (key: 'x' | 'y' | 'scale' | 'rotation' | 'opacity', lo: number, hi: number) => {
+          const n = Number(k[key]);
+          if (Number.isFinite(n)) out[key] = Number(Math.max(lo, Math.min(hi, n)).toFixed(4));
+        };
+        put('x', -0.5, 0.5); put('y', -0.5, 0.5); put('scale', 0.05, 5); put('rotation', -180, 180); put('opacity', 0, 1);
+        if (k.ease) out.ease = k.ease;
+        return out;
+      })
+      .sort((a, b) => a.t - b.t);
+    if (!o.keyframes.length) delete o.keyframes;
+  }
   dirty.value = true; await save();
   note('画中画已应用');
+}
+
+/** 播放头在选中画中画内的比例（0~1）；不在窗口内返回 null。 */
+function playheadFractionInSelectedOverlay(): number | null {
+  const o = selectedOverlay.value;
+  if (!o) return null;
+  const dur = o.end - o.start;
+  if (!(dur > 0)) return null;
+  const frac = (playhead.value - o.start) / dur;
+  if (frac < -0.001 || frac > 1.001) return null;
+  return Math.max(0, Math.min(1, frac));
+}
+
+/** 在播放头给画中画打关键帧：用当前静态值做初值，之后在列表里改。 */
+async function addOverlayKf() {
+  const o = selectedOverlay.value;
+  if (!o || !project.value) { note('先选中一个画中画'); return; }
+  const frac = playheadFractionInSelectedOverlay();
+  if (frac == null) { note('播放头不在画中画的时间范围内'); return; }
+  pendingLabel.value = '打关键帧';
+  if (!o.keyframes) o.keyframes = [];
+  const near = o.keyframes.find((k) => Math.abs(k.t - frac) < 0.02);
+  const base = overlayAnchorFraction();
+  const pt = near || { t: Number(frac.toFixed(3)) };
+  pt.x = pt.x ?? o.x ?? base.x;
+  pt.y = pt.y ?? o.y ?? base.y;
+  pt.scale = pt.scale ?? 1;
+  pt.opacity = pt.opacity ?? o.opacity ?? 1;
+  if (!near) { o.keyframes.push(pt); o.keyframes.sort((a, b) => a.t - b.t); }
+  dirty.value = true; await save();
+  note(near ? `已更新 ${frac.toFixed(2)} 处的关键帧` : `已在播放头（${frac.toFixed(2)}）打关键帧`);
+}
+
+async function removeOverlayKf(i: number) {
+  const o = selectedOverlay.value;
+  if (!o?.keyframes || !project.value) return;
+  pendingLabel.value = '删关键帧';
+  o.keyframes.splice(i, 1);
+  if (!o.keyframes.length) delete o.keyframes;
+  dirty.value = true; await save();
+}
+
+async function clearOverlayKfs() {
+  const o = selectedOverlay.value;
+  if (!o || !project.value) return;
+  pendingLabel.value = '清空关键帧';
+  delete o.keyframes;
+  dirty.value = true; await save();
+  note('已清空画中画关键帧');
 }
 
 function selectClip(id: string) {

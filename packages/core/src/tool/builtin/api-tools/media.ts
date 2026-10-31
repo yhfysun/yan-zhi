@@ -538,9 +538,11 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         'beatTransition 给切点后一段挂转场，不给 = 硬切；everyNth=2 表示隔一拍切一次；minPiece 默认 0.4 秒 —— 太短的碎片不切）。' +
         '★ 节拍不明显会直接拒绝（不会硬凑点）；曲线变速段会被跳过。切完段数会变，字幕要重新排。' +
         '**set_audio_fx** 整片音效链 { fx:[...] }（按顺序串联，最多 4 个；空数组=清除。如 ["denoise","loudnorm"]）；' +
-        '**add_overlay** 画中画 { file, start, end, pos?, scale?, blend? }（start/end 相对成片；pos 可选 topleft/top/topright/left/center/right/bottomleft/bottom/bottomright，scale 相对素材尺寸 0.05~1 默认 0.35；' +
+        '**add_overlay** 画中画 { file, start, end, pos?, scale?, blend?, x?, y?, rotation?, opacity?, keyframes? }（start/end 相对成片；pos 可选 topleft/top/topright/left/center/right/bottomleft/bottom/bottomright，scale 相对素材尺寸 0.05~1 默认 0.35；' +
         'blend 混合模式 = 「画中画怎么和下层画面合成」，缺省 normal=普通覆盖：' + blendCatalogText() + '；' +
-        '**update_overlay** { id|index, patch }；**remove_overlay** { id|index }；' +
+        'x/y=中心偏移（-0.5~0.5，设置后覆盖 pos）、rotation=旋转角度、opacity=不透明度；' +
+        'keyframes 做画中画动画 [{t:0,x:0.3,scale:0.8},{t:1,x:0,scale:1.1,ease:"out"}]（t 为层内 0~1，滑入/放大这样写）；' +
+        '**update_overlay** { id|index, patch }（patch 传 null 可清除对应字段）；**remove_overlay** { id|index }；' +
         '**render** 渲染成片 { output?, preview?, quality? }（preview=true 出快速预览档，确认后再正式渲染；非预览档会自动顺带导出一张封面 jpg）。' +
         '★ subtitleAnimation 可选：' + effectCatalogText(TEXT_ANIMATIONS) + '（用户要「字幕动效」时选贴合语义的一个）。' +
         '输入一律为本机绝对路径（前序工具返回的 file 字段）。渲染返回 {type:"video", file, url}。',
@@ -705,6 +707,27 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 pos: { type: 'string', enum: ['topleft', 'top', 'topright', 'left', 'center', 'right', 'bottomleft', 'bottom', 'bottomright'], description: '锚点方位，默认 bottomright' },
                 scale: { type: 'number', description: '叠加画面宽度比例（0.05~1，默认 0.35）' },
                 blend: { type: 'string', enum: BLEND_IDS, description: '混合模式（与下层画面的合成方式）：screen=提亮叠影（双重曝光/光斑）、multiply=压暗叠影（压字/烟雾）、overlay=对比增强、softlight=柔光、add=加法提亮（火焰/粒子）、darken=变暗、lighten=变亮；缺省 normal=普通覆盖' },
+                x: { type: 'number', description: '水平中心偏移（相对画面宽度，-0.5~0.5，0=居中）；设置后覆盖 pos 九宫格' },
+                y: { type: 'number', description: '垂直中心偏移（相对画面高度，-0.5~0.5，0=居中）；设置后覆盖 pos 九宫格' },
+                rotation: { type: 'number', description: '旋转角度（度，-180~180，正=顺时针）' },
+                opacity: { type: 'number', description: '不透明度 0~1，缺省 1（水印常 0.5~0.7）' },
+                keyframes: {
+                  type: 'array',
+                  description: '变换关键帧（做滑入/放大等画中画动画）：t 为层内 0~1 比例，每点给 x/y/scale/rotation/opacity 中的任意几项；ease 为到下一个点的过渡曲线（linear/in/out/inout/bezier）',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      t: { type: 'number', description: '层内时间比例 0~1' },
+                      x: { type: 'number', description: '水平中心偏移 -0.5~0.5' },
+                      y: { type: 'number', description: '垂直中心偏移 -0.5~0.5' },
+                      scale: { type: 'number', description: '相对基准尺寸的倍数（1=原尺寸）' },
+                      rotation: { type: 'number', description: '旋转角度（度）' },
+                      opacity: { type: 'number', description: '不透明度 0~1' },
+                      ease: { type: 'string', enum: ['linear', 'in', 'out', 'inout', 'bezier'], description: '到下一个关键帧的过渡曲线' },
+                    },
+                    required: ['t'],
+                  },
+                },
               },
               required: ['file', 'start', 'end'],
             },
@@ -723,6 +746,35 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           summaryOnly: { type: 'boolean', description: 'get：true 只返回紧凑摘要（默认即摘要）' },
           output: { type: 'string', description: 'render：输出文件名（如 final.mp4）；不传自动命名' },
           preview: { type: 'boolean', description: 'render：true=快速预览档（低码率，用于快速确认），确认后再正式渲染' },
+        },
+        required: ['op'],
+      },
+    },
+    {
+      name: 'clip_jianying',
+      description:
+        '剪映剪辑模式：检测本机剪映专业版，并把当前会话的剪辑工程导出为**剪映草稿**（draft_content.json），' +
+        '用户在剪映里继续剪、预览、导出。它与 clip_project（应用内剪辑）是并列的第二种剪辑方式：' +
+        '用户说「用剪映剪 / 在剪映里剪 / 导出到剪映」时走本工具。' +
+        'op 一览：' +
+        '**detect** 检测安装与草稿目录（先调它，不要假设用户装了剪映）；' +
+        '**export** 把当前会话工程导出成草稿 { name?, draftRoot?, open? }（草稿名默认取工程名；同名自动加序号，绝不覆盖）；' +
+        '**list** 列出剪映草稿目录里已有的草稿 { draftRoot?, limit? }；' +
+        '**open** 启动本机检测到的剪映（不接受自定义可执行文件；检测不到就不要启动）。' +
+        '**find_export** 扫描剪映刚导出的成片 { sinceMinutes?, nameHint? }（剪映导出完成后用它把文件找回来，交给发布链路）。' +
+        '★ 草稿携带：素材/裁剪/变速/音量/字幕（含字幕动画）/BGM/分段配音/画中画，并把调色预设/结构特效/蒙版/色键/转场/关键帧/kenburns/淡入淡出映射为剪映资源（观感近似，参数可能用剪映默认）。' +
+        '手动调节/曲线变速/整片音效链/BGM 闪避不迁移；没有免费对应项的预设/特效/蒙版会逐项写进 warnings。' +
+        '★ 导出不改变应用内工程；用户在剪映里导出的成片可以再带回来继续处理。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          op: { type: 'string', enum: ['detect', 'export', 'find_export', 'list', 'open'], description: '剪映操作' },
+          name: { type: 'string', description: 'export：草稿名（默认取工程名；同名自动加序号，不覆盖）' },
+          draftRoot: { type: 'string', description: 'export/list：剪映草稿根目录（缺省自动检测；可在剪映「全局设置 → 草稿位置」查看）' },
+          open: { type: 'boolean', description: 'export：true=导出后顺便启动剪映' },
+          sinceMinutes: { type: 'number', description: 'find_export：只找最近 N 分钟内修改的视频，默认 120' },
+          nameHint: { type: 'string', description: 'find_export：按草稿名/文件名过滤（剪映导出的文件名通常就是草稿名）' },
+          limit: { type: 'number', description: 'list/find_export：最多返回几条，默认 20' },
         },
         required: ['op'],
       },

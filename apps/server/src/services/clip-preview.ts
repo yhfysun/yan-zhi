@@ -20,8 +20,8 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdir, rm, readFile } from 'node:fs/promises';
 import { runCmd } from './exec-cmd.js';
-import { MASK_KEYS, overlayAnchorOf, speedCurveOutToSrc } from '@yan-zhi/shared';
-import { assembleSegmentChain, segmentDuration, trimmedSourceLength } from './clip-render.js';
+import { MASK_KEYS, overlayAnchorOf, speedCurveOutToSrc, sampleLayerKfs, type LayerKfPoint } from '@yan-zhi/shared';
+import { assembleSegmentChain, overlayLayerChain, segmentDuration, trimmedSourceLength } from './clip-render.js';
 import type { ClipProject } from './clip-project.js';
 
 interface FrameCacheEntry {
@@ -62,7 +62,7 @@ function projectFingerprint(p: ClipProject): string {
     o: p.output,
     c: p.clips.map((c) => [c.id, c.file, c.trimStart, c.trimEnd, c.speed, c.speedCurve, c.colorPreset, c.colorStrength, c.adjust, c.fx, c.fxParams, c.fadeIn, c.fadeOut, c.kenburns, c.mask, c.crop, c.keyframes, c.reverse, c.rotate, c.flip]),
     // 画中画影响合成画面，必须进指纹（改了画中画不换帧 = 预览骗人）
-    ov: (p.overlays || []).map((o) => [o.id, o.file, o.start, o.end, o.pos, o.scale]),
+    ov: (p.overlays || []).map((o) => [o.id, o.file, o.start, o.end, o.pos, o.scale, o.x, o.y, o.rotation, o.opacity, o.blend, o.keyframes]),
   });
 }
 
@@ -197,7 +197,10 @@ export function clearPreviewCache(): void {
 async function compositeOverlaysOnFrame(
   ffmpeg: string,
   basePng: string,
-  overlays: Array<{ file: string; start: number; end: number; pos?: string; scale?: number }>,
+  overlays: Array<{
+    file: string; start: number; end: number; pos?: string; scale?: number;
+    x?: number; y?: number; rotation?: number; opacity?: number; keyframes?: LayerKfPoint[];
+  }>,
   W: number,
   timelineSec: number,
   workDir: string,
@@ -211,10 +214,31 @@ async function compositeOverlaysOnFrame(
     // 叠加素材内的相对位置：成片时间 - 叠加起点（clamp 到素材内）
     const rel = Math.max(0, timelineSec - ov.start);
     args.push('-ss', rel.toFixed(3), '-i', ov.file);
-    const ovW = Math.max(16, Math.round(W * (ov.scale ?? 0.35)));
-    const anchor = overlayAnchorOf(ov.pos);
-    fc.push(`[${k + 1}:v]scale=${ovW}:-2,setsar=1[ov${k}]`);
-    fc.push(`[${prev}][ov${k}]overlay=x='${anchor.x}':y='${anchor.y}'[v${k}]`);
+    // ★ 关键帧在抽帧预览里**按时刻采样成数值**（单帧跑图，t 表达式没有意义）；
+    //   滤镜链与导出共用 overlayLayerChain —— 口径漂移 = 预览骗人。
+    const kf = sampleLayerKfs(ov.keyframes, (timelineSec - ov.start) / Math.max(1e-6, ov.end - ov.start));
+    const ovW = Math.max(16, Math.round(W * (ov.scale ?? 0.35) * (kf.scale ?? 1)));
+    const rot = kf.rotation ?? ov.rotation ?? null;
+    const op = kf.opacity ?? ov.opacity ?? null;
+    let xFrac = kf.x;
+    let yFrac = kf.y;
+    if (xFrac == null && yFrac == null && (ov.x != null || ov.y != null)) {
+      xFrac = ov.x ?? 0;
+      yFrac = ov.y ?? 0;
+    }
+    const posId = ov.pos || 'bottomright';
+    const chain = overlayLayerChain({
+      scaleW: String(ovW),
+      rotation: rot != null ? String(rot) : null,
+      opacity: op != null ? String(op) : null,
+      xFrac: xFrac != null ? String(xFrac) : null,
+      yFrac: yFrac != null ? String(yFrac) : null,
+      anchor: overlayAnchorOf(ov.pos),
+      centerX: ['top', 'center', 'bottom'].includes(posId),
+      centerY: ['left', 'center', 'right'].includes(posId),
+    });
+    fc.push(`[${k + 1}:v]${chain.filters.join(',')}[ov${k}]`);
+    fc.push(`[${prev}][ov${k}]overlay=x='${chain.x}':y='${chain.y}'[v${k}]`);
     prev = `v${k}`;
   }
   args.push('-filter_complex', fc.join(';'), '-map', `[${prev}]`, '-frames:v', '1', '-q:v', '3', outPng);
