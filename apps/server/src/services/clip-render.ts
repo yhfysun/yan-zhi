@@ -16,7 +16,7 @@
 import path from 'node:path';
 import { runCmd } from './exec-cmd.js';
 import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-style.js';
-import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
+import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
 import { buildMaskFilter } from './clip-mask.js';
 import type { ClipProject, ClipSegment, ExportQuality } from './clip-project.js';
 
@@ -652,8 +652,29 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
         args.push('-ss', st.toFixed(3), '-t', Math.max(0.04, et - st).toFixed(3), '-i', ov.file);
         const ovW = Math.max(16, Math.round(W * (ov.scale ?? 0.35)));
         const anchor = overlayAnchorOf(ov.pos);
-        fc.push(`[${k + 1}:v]scale=${ovW}:-2,setsar=1[ov${k}]`);
-        fc.push(`[${prev}][ov${k}]overlay=x='${anchor.x}':y='${anchor.y}':enable='between(t,${st.toFixed(3)},${et.toFixed(3)})'[v${k}]`);
+        const bm = ov.blend ? blendModeOf(ov.blend) : null;
+        // ★ normal（含老工程无 blend 字段）保持普通覆盖。
+        //   不为默认值白付一次全帧 blend —— 绝大多数画中画都是普通覆盖。
+        if (!bm || !bm.mode || !bm.neutral) {
+          // ★ `setpts=PTS+st/TB` 把裁剪过的输入对齐到成片时间轴：
+          //   `-ss/-t` 之后输入的 PTS 从 0 起，而 `enable` 用的是成片时间 ——
+          //   不对齐会让画中画内容整体后移 st 秒，且窗口后半段显示**冻结的最后一帧**
+          //   （真机实测：1.2s 处显示的是素材 2.2s 的画面）。
+          fc.push(`[${k + 1}:v]scale=${ovW}:-2,setsar=1,setpts=PTS+${st.toFixed(3)}/TB[ov${k}]`);
+          fc.push(`[${prev}][ov${k}]overlay=x='${anchor.x}':y='${anchor.y}':enable='between(t,${st.toFixed(3)},${et.toFixed(3)})'[v${k}]`);
+          prev = `v${k}`;
+          continue;
+        }
+        // ★ 混合模式：blend 是**全画面两输入**运算，而画中画只占一块 →
+        //   ① 先铺一张与画幅等大、按该模式取中性色的底（滤色→黑、正片叠底→白、叠加/柔光→中灰）；
+        //   ② 把画中画按窗口叠上去（窗口外仍是中性色）；
+        //   ③ 再与当前画面 blend —— 中性色在窗口外等价于"不改变下层"。
+        //   `setpts=PTS+st/TB` 把裁剪过的输入对齐到成片时间轴（-ss/-t 后 PTS 从 0 起，
+        //   不加这一步窗口会整体前移，表现为"混合从第 0 秒就开始/结束过早"）。
+        fc.push(`color=c=0x${bm.neutral.slice(1)}:s=${W}x${H}:r=${fps}:d=${totalDuration.toFixed(3)}[bl${k}]`);
+        fc.push(`[${k + 1}:v]scale=${ovW}:-2,setsar=1,fps=${fps},setpts=PTS+${st.toFixed(3)}/TB[ov${k}]`);
+        fc.push(`[bl${k}][ov${k}]overlay=x='${anchor.x}':y='${anchor.y}':enable='between(t,${st.toFixed(3)},${et.toFixed(3)})':eof_action=repeat,format=yuv420p[ly${k}]`);
+        fc.push(`[${prev}][ly${k}]blend=all_mode=${bm.mode}:all_opacity=1:shortest=1[v${k}]`);
         prev = `v${k}`;
       }
       args.push('-filter_complex', fc.join(';'), '-map', `[${prev}]`, '-map', '0:a?', ...x264, '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', piped);

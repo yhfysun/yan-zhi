@@ -96,7 +96,13 @@ export function writeClipProject(conversationId: string | undefined, project: Cl
   const rebuilt: Layer[] = layersFromV1Fields(project.texts, project.overlays || []).map((l) => {
     const prev = prevById.get(l.id);
     if (!prev) return l;
-    return { ...l, transform: { ...prev.transform, ...l.transform } };
+    // ★ v1 视图**权威**的变换字段（位置/缩放/混合）只能以投影结果为准，不能从旧层回填：
+    //   否则 UI 把画中画从「滤色」改回「正常」时，旧层里残留的 blend 会把它复活 ——
+    //   "overlays 上没有 blend" 是一个**明确的 normal**，合并必须允许删字段，而不只是覆盖。
+    //   其余扩展字段（rotation/opacity 等 P0-2 起的）仍从旧层保留。
+    const keep = { ...prev.transform };
+    delete keep.x; delete keep.y; delete keep.scale; delete keep.blend;
+    return { ...l, transform: { ...keep, ...l.transform } };
   });
   // v1 视图之外的新 kind 图层（sticker/effect/audio…）原样保留
   const extra = (project.layers || []).filter((l) => l.kind !== 'text' && l.kind !== 'video');

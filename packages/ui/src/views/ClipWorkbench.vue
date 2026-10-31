@@ -777,6 +777,13 @@
               <label>大小 <span class="cp-val">{{ (selectedOverlay.scale ?? 0.35).toFixed(2) }}×</span></label>
               <input v-model.number="selectedOverlay.scale" class="cp-range" type="range" min="0.05" max="1" step="0.05" />
             </div>
+            <div class="cp-field">
+              <label>混合模式</label>
+              <select v-model="overlayBlend" class="cp-select">
+                <option v-for="b in BLEND_MODES" :key="b.id" :value="b.id">{{ b.label }}</option>
+              </select>
+            </div>
+            <div class="cp-ins-hint">{{ overlayBlendDesc }}</div>
             <div class="cp-ins-hint">画中画不带音频（口播/配乐由主轨与 BGM 负责）</div>
             <button class="cp-btn primary full" @click="applyOverlayPatch">应用画中画</button>
             <button class="cp-btn danger full" @click="removeOverlay(selectedOverlay.id)">删除画中画</button>
@@ -1083,7 +1090,7 @@ import { api, API_BASE, getLicenseCode } from '../api/client';
 import { clampMenuPos } from '../utils/menuPosition';
 import {
   COLOR_EFFECTS, FX_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
-  TRANSITIONS, OVERLAY_POSITIONS, groupEffects, effectIds, fxParamsOf, type TextStylePreset,
+  TRANSITIONS, OVERLAY_POSITIONS, BLEND_MODES, groupEffects, effectIds, fxParamsOf, type TextStylePreset,
 } from '@yan-zhi/shared';
 
 /**
@@ -1162,7 +1169,7 @@ interface ClipProject {
   audioFx?: string[];
   bgm?: { file: string; volume: number; duck: boolean };
   /** 画中画叠加轨（时间相对成片；与后端 clip-project 同构） */
-  overlays?: Array<{ id: string; file: string; start: number; end: number; pos?: string; scale?: number }>;
+  overlays?: Array<{ id: string; file: string; start: number; end: number; pos?: string; scale?: number; blend?: string }>;
 }
 interface ConvFile { id?: string; name: string; path: string; type?: string }
 interface ProjectListItem {
@@ -1591,6 +1598,20 @@ const textCount = computed(() => texts.value.length);
 const bgm = computed(() => project.value?.bgm || null);
 const overlays = computed(() => project.value?.overlays || []);
 const selectedOverlay = computed(() => overlays.value.find((o) => o.id === selectedOverlayId.value) || null);
+/**
+ * 画中画混合模式（下拉的值直接落 overlays[].blend → 落盘进 layers[].transform.blend）。
+ * ★ normal 是默认语义，不写字段：工程文件保持干净，老工程比对不出现噪音。
+ */
+const overlayBlend = computed<string>({
+  get: () => selectedOverlay.value?.blend || 'normal',
+  set: (v: string) => {
+    const o = selectedOverlay.value;
+    if (!o) return;
+    if (v === 'normal') delete o.blend;
+    else o.blend = v;
+  },
+});
+const overlayBlendDesc = computed(() => BLEND_MODES.find((b) => b.id === overlayBlend.value)?.desc || '');
 const monitorHint = computed(() => {
   if (monitorMode.value === 'proxy') {
     return clipCount.value ? '点「代理」连播各段预览（改一段只重渲一段）' : '加入素材后可代理预览';

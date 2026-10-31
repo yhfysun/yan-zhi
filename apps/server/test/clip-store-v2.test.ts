@@ -115,3 +115,30 @@ describe('readClipProject / writeClipProject · v2 序列化边界', () => {
     expect(p.texts).toEqual([]);
   });
 });
+
+describe('writeClipProject · 混合模式落盘与清除', () => {
+  const CONV3 = 'conv-blend';
+  beforeAll(() => {
+    fs.mkdirSync(path.join(TMP, CONV3, 'intermediate'), { recursive: true });
+  });
+
+  it('★ blend 写进 layers[].transform.blend；从 overlays 移除后旧层残值不会复活', () => {
+    const base: ClipProject = {
+      version: 2, name: 'p', updatedAt: 1, output: { size: '1080x1920', fps: 30 },
+      clips: [{ id: 'c1', file: 'C:/a.mp4' }], texts: [], layers: [],
+      overlays: [{ id: 'o1', file: 'C:/p.png', start: 0, end: 1, pos: 'center', scale: 0.4, blend: 'screen' }],
+    };
+    writeClipProject(CONV3, base);
+    expect(readClipProject(CONV3)!.overlays![0].blend).toBe('screen');
+
+    // 模拟 UI 改回「正常」：overlays 上删掉 blend，但内存 layers 仍是上一次读到的旧层。
+    // ★ 如果序列化只做浅合并，旧层里的 blend=screen 会把用户的选择复活（静默回到滤色）。
+    const staleLayers = readClipProject(CONV3)!.layers;
+    writeClipProject(CONV3, {
+      ...base,
+      layers: staleLayers,
+      overlays: [{ id: 'o1', file: 'C:/p.png', start: 0, end: 1, pos: 'center', scale: 0.4 }],
+    });
+    expect(readClipProject(CONV3)!.overlays![0].blend).toBeUndefined();
+  });
+});

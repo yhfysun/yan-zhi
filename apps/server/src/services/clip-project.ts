@@ -12,7 +12,7 @@
 //   · 片段内时间（trimStart/trimEnd/speed）→ **相对该段原始素材**；
 //   · 字幕/BGM 时间 → **相对成片（拼接后）**，由调用方按各段时长累计推算。
 
-import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX } from '@yan-zhi/shared';
+import { FX_EFFECTS, fxParamsOf, speedCurveIsFlat, SPEED_MIN, SPEED_MAX, blendModeOf, type BlendModeId } from '@yan-zhi/shared';
 
 export interface ClipSegment {
   id: string;
@@ -162,6 +162,11 @@ export interface ClipOverlay {
   pos?: string;
   /** 叠加画面的缩放倍数（相对素材自身尺寸，0.05~1） */
   scale?: number;
+  /**
+   * 混合模式（见 shared 的 BLEND_MODES）；缺省 = normal（普通覆盖）。
+   * ★ 只存非 normal 值：normal 是默认语义，写进文件只会让老工程比对出现噪音。
+   */
+  blend?: BlendModeId;
 }
 
 export interface ClipText {
@@ -276,7 +281,8 @@ export interface Layer {
     scale?: number;
     rotation?: number;
     opacity?: number;
-    blend?: 'normal' | 'screen' | 'multiply' | 'overlay' | 'softlight' | 'add' | 'darken' | 'lighten';
+    /** 混合模式（P0-3：渲染已消费；值来自 shared 的 BLEND_MODES） */
+    blend?: BlendModeId;
   };
   /** 图层级关键帧（P0-2 接渲染；本期只存不渲） */
   keyframes?: Array<{
@@ -354,7 +360,12 @@ export function layersFromV1Fields(texts: ClipText[], overlays: ClipOverlay[]): 
       start: o.start,
       end: o.end,
       track: 0,
-      transform: { x: xy.x, y: xy.y, ...(o.scale != null ? { scale: o.scale } : {}) },
+      transform: {
+        x: xy.x,
+        y: xy.y,
+        ...(o.scale != null ? { scale: o.scale } : {}),
+        ...(o.blend && o.blend !== 'normal' ? { blend: o.blend } : {}),
+      },
     });
   }
   return layers;
@@ -380,6 +391,7 @@ export function v1FieldsFromLayers(layers: Layer[]): { texts: ClipText[]; overla
         end: l.end,
         pos: xyToOverlayPos(l.transform?.x, l.transform?.y),
         ...(l.transform?.scale != null ? { scale: l.transform.scale } : {}),
+        ...(l.transform?.blend && l.transform.blend !== 'normal' ? { blend: l.transform.blend } : {}),
       });
     }
   }
@@ -672,7 +684,14 @@ function normalizeOverlay(v: unknown, id: string): ClipOverlay | null {
   if (!file || !(end > start)) return null;
   const pos = String(m.pos ?? '').trim() || 'bottomright';
   const scale = Math.max(0.05, Math.min(1, numOr(m.scale, 0.35)));
-  return { id, file, start: Number(start.toFixed(3)), end: Number(end.toFixed(3)), pos, scale };
+  // ★ 混合模式只收注册表里的合法 id；非法值一律丢弃（回落普通覆盖）。
+  //   静默变成"另一种混合"比不生效更难查，所以不做任何猜测性映射。
+  const bm = m.blend == null ? null : blendModeOf(String(m.blend));
+  const blend = bm && bm.id !== 'normal' ? bm.id : undefined;
+  return {
+    id, file, start: Number(start.toFixed(3)), end: Number(end.toFixed(3)), pos, scale,
+    ...(blend ? { blend } : {}),
+  };
 }
 
 /**

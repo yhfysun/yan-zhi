@@ -1,6 +1,6 @@
 import type { ToolDefinition } from '../../types';
 import type { ApiModuleName } from './index';
-import { COLOR_EFFECTS, FX_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, effectIds, effectCatalogText, fxParamCatalogText, TEXT_ANIMATIONS } from '@yan-zhi/shared';
+import { COLOR_EFFECTS, FX_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, effectIds, effectCatalogText, fxParamCatalogText, TEXT_ANIMATIONS, blendModeIds, blendCatalogText } from '@yan-zhi/shared';
 
 /**
  * 效果清单从 @yan-zhi/shared 的效果库**自动生成**（单一真相源）。
@@ -19,6 +19,7 @@ const AUDIO_FX_IDS = effectIds(AUDIO_EFFECTS);
 const MASK_SHAPE_IDS = effectIds(MASK_SHAPES);
 const MASK_KEY_IDS = effectIds(MASK_KEYS);
 const TEXT_ANIM_IDS = effectIds(TEXT_ANIMATIONS);
+const BLEND_IDS = blendModeIds();
 
 /**
  * AI 媒体生成工具（文生图 / 图生图 / 文生视频 / 图生视频）—— agnes 平台媒体模型的直接调用通道。
@@ -537,7 +538,9 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         'beatTransition 给切点后一段挂转场，不给 = 硬切；everyNth=2 表示隔一拍切一次；minPiece 默认 0.4 秒 —— 太短的碎片不切）。' +
         '★ 节拍不明显会直接拒绝（不会硬凑点）；曲线变速段会被跳过。切完段数会变，字幕要重新排。' +
         '**set_audio_fx** 整片音效链 { fx:[...] }（按顺序串联，最多 4 个；空数组=清除。如 ["denoise","loudnorm"]）；' +
-        '**add_overlay** 画中画 { file, start, end, pos?, scale? }（start/end 相对成片；pos 可选 topleft/top/topright/left/center/right/bottomleft/bottom/bottomright，scale 相对素材尺寸 0.05~1 默认 0.35）；**update_overlay** { id|index, patch }；**remove_overlay** { id|index }；' +
+        '**add_overlay** 画中画 { file, start, end, pos?, scale?, blend? }（start/end 相对成片；pos 可选 topleft/top/topright/left/center/right/bottomleft/bottom/bottomright，scale 相对素材尺寸 0.05~1 默认 0.35；' +
+        'blend 混合模式 = 「画中画怎么和下层画面合成」，缺省 normal=普通覆盖：' + blendCatalogText() + '；' +
+        '**update_overlay** { id|index, patch }；**remove_overlay** { id|index }；' +
         '**render** 渲染成片 { output?, preview?, quality? }（preview=true 出快速预览档，确认后再正式渲染；非预览档会自动顺带导出一张封面 jpg）。' +
         '★ subtitleAnimation 可选：' + effectCatalogText(TEXT_ANIMATIONS) + '（用户要「字幕动效」时选贴合语义的一个）。' +
         '输入一律为本机绝对路径（前序工具返回的 file 字段）。渲染返回 {type:"video", file, url}。',
@@ -701,6 +704,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                 end: { type: 'number', description: '结束秒（必须 > start）' },
                 pos: { type: 'string', enum: ['topleft', 'top', 'topright', 'left', 'center', 'right', 'bottomleft', 'bottom', 'bottomright'], description: '锚点方位，默认 bottomright' },
                 scale: { type: 'number', description: '叠加画面宽度比例（0.05~1，默认 0.35）' },
+                blend: { type: 'string', enum: BLEND_IDS, description: '混合模式（与下层画面的合成方式）：screen=提亮叠影（双重曝光/光斑）、multiply=压暗叠影（压字/烟雾）、overlay=对比增强、softlight=柔光、add=加法提亮（火焰/粒子）、darken=变暗、lighten=变亮；缺省 normal=普通覆盖' },
               },
               required: ['file', 'start', 'end'],
             },

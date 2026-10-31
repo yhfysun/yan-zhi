@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest';
 import {
   COLOR_EFFECTS, TRANSITIONS, TEXT_ANIMATIONS, AUDIO_EFFECTS,
   effectIds, effectFilter, effectCatalogText, groupEffects,
+  BLEND_MODES, blendModeOf, blendModeIds, blendCatalogText,
   type EffectPreset,
 } from '../utils/clip-effects';
 
@@ -166,5 +167,45 @@ describe('OVERLAY_POSITIONS · 画中画锚点', () => {
   it('overlayAnchorOf：未知 id 回落 bottomright（与 ClipOverlay.pos 缺省一致）', () => {
     expect(overlayAnchorOf('nope')).toEqual(overlayAnchorOf('bottomright'));
     expect(overlayAnchorOf(undefined)).toEqual(overlayAnchorOf('bottomright'));
+  });
+});
+
+describe('BLEND_MODES · 混合模式注册表', () => {
+  it('id 唯一，且与工具 schema/UI 下拉同源（blendModeIds 就是注册表顺序）', () => {
+    const ids = blendModeIds();
+    expect(new Set(ids).size).toBe(BLEND_MODES.length);
+    expect(ids).toEqual(BLEND_MODES.map((m) => m.id));
+    expect(ids[0]).toBe('normal');
+  });
+
+  it('★ normal 不产生 blend；其余模式都必须有 ffmpeg mode + 中性色', () => {
+    expect(blendModeOf('normal')!.mode).toBeNull();
+    for (const m of BLEND_MODES.filter((x) => x.id !== 'normal')) {
+      expect(m.mode, `${m.id} 缺 ffmpeg mode`).toBeTruthy();
+      // 中性色必须是 #RRGGBB —— 渲染侧按 0xRRGGBB 直接塞进 color 源
+      expect(m.neutral, `${m.id} 缺中性色`).toMatch(/^#[0-9A-Fa-f]{6}$/);
+    }
+  });
+
+  it('★ add 的 ffmpeg 名是 addition（不能用 id 当 mode：ffmpeg 没有 add 这个 all_mode）', () => {
+    expect(blendModeOf('add')!.mode).toBe('addition');
+    expect(blendModeOf('screen')!.mode).toBe('screen');
+    expect(blendModeOf('multiply')!.mode).toBe('multiply');
+    expect(blendModeOf('overlay')!.mode).toBe('overlay');
+  });
+
+  it('非法/大小写不同的 id：查不到返回 null，合法 id 大小写不敏感', () => {
+    expect(blendModeOf('nope')).toBeNull();
+    expect(blendModeOf('')).toBeNull();
+    expect(blendModeOf(undefined)).toBeNull();
+    expect(blendModeOf('SCREEN')!.id).toBe('screen');
+  });
+
+  it('工具描述清单里带着 screen/multiply/overlay 的适用场景', () => {
+    const text = blendCatalogText();
+    expect(text).toContain('screen=滤色（提亮叠影');
+    expect(text).toContain('multiply=正片叠底（压暗叠影');
+    expect(text).toContain('overlay=叠加（对比增强');
+    expect(text).not.toContain('normal=');   // 默认值不占清单
   });
 });

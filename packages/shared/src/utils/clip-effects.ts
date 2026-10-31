@@ -757,3 +757,59 @@ export function overlayAnchorOf(id: string | undefined): { x: string; y: string 
   const hit = OVERLAY_POSITIONS.find((p) => p.id === id);
   return hit ? { x: hit.x, y: hit.y } : { x: OVERLAY_POSITIONS[8].x, y: OVERLAY_POSITIONS[8].y };
 }
+
+// ===== 混合模式（blend mode）=====
+//
+// ★★★ 为什么要有这张表（2026-10-31，P0-3 混合模式）：
+//   画中画此前只能普通覆盖（src-over），做不出剪映的「双重曝光」（滤色/叠加）
+//   与「提亮光斑」（线性减淡）。混合模式同时驱动 **UI 下拉 / 工具参数 / 渲染滤镜**，
+//   与 COLOR_EFFECTS 同一条铁律：新增一个模式只改这里一处。
+//
+// ★ 字段分工（三者缺一不可）：
+//   · id     —— 对外参数值（工程文件 / 工具 / UI）；
+//   · mode   —— ffmpeg `blend` 滤镜的 all_mode 名。**不能直接拿 id 当 mode**：
+//               ffmpeg 里没有 'add'，加法叫 'addition'（实测文档口径），id≠mode 是常态；
+//   · neutral—— 中性填充色：blend 是**全画面**运算，而画中画只占一块，
+//               其余像素必须填「该模式下不改变下层」的颜色（滤色→黑、正片叠底→白、
+//               叠加/柔光→中灰），否则整帧会被一起提亮/压暗。这是本实现的正确性前提。
+export type BlendModeId = 'normal' | 'screen' | 'multiply' | 'overlay' | 'softlight' | 'add' | 'darken' | 'lighten';
+
+export interface BlendModePreset {
+  id: BlendModeId;
+  /** 中文名（UI 下拉与工具描述共用） */
+  label: string;
+  /** 一句话观感（给模型选模式用，也作 UI tooltip） */
+  desc: string;
+  /** ffmpeg blend 的 all_mode 值；null = 不做混合（普通覆盖，走 overlay 路径） */
+  mode: string | null;
+  /** 该模式下对下层无影响的中性色 #RRGGBB；normal 为 null */
+  neutral: string | null;
+}
+
+export const BLEND_MODES: BlendModePreset[] = [
+  { id: 'normal', label: '正常', desc: '普通覆盖（默认，不做混合）', mode: null, neutral: null },
+  { id: 'screen', label: '滤色', desc: '提亮叠影：暗部透出下层，双重曝光/光斑', mode: 'screen', neutral: '#000000' },
+  { id: 'multiply', label: '正片叠底', desc: '压暗叠影：亮部被压暗，压字/烟雾/阴影', mode: 'multiply', neutral: '#FFFFFF' },
+  { id: 'overlay', label: '叠加', desc: '对比增强：暗更暗亮更亮，质感强化', mode: 'overlay', neutral: '#808080' },
+  { id: 'softlight', label: '柔光', desc: '柔和提对比，人像/氛围柔化', mode: 'softlight', neutral: '#808080' },
+  { id: 'add', label: '线性减淡', desc: '加法提亮：光斑/火焰/粒子叠加', mode: 'addition', neutral: '#000000' },
+  { id: 'darken', label: '变暗', desc: '只取更暗的像素，暗部压叠影', mode: 'darken', neutral: '#FFFFFF' },
+  { id: 'lighten', label: '变亮', desc: '只取更亮的像素，亮部透出', mode: 'lighten', neutral: '#000000' },
+];
+
+/** 按 id 取混合模式；未知/缺省返回 null（调用方按「正常覆盖」处理，绝不猜）。 */
+export function blendModeOf(id: string | undefined): BlendModePreset | null {
+  if (!id) return null;
+  const key = String(id).trim().toLowerCase();
+  return BLEND_MODES.find((m) => m.id === key) || null;
+}
+
+/** 全部合法 id（工具 schema 的 enum 与 UI 下拉同源）。 */
+export function blendModeIds(): BlendModeId[] {
+  return BLEND_MODES.map((m) => m.id);
+}
+
+/** 生成「id=中文名（观感）」清单（塞进工具描述；从注册表生成，不手写第二份）。 */
+export function blendCatalogText(): string {
+  return BLEND_MODES.filter((m) => m.id !== 'normal').map((m) => `${m.id}=${m.label}（${m.desc}）`).join('、');
+}
