@@ -60,6 +60,7 @@ import { createSourceScanner } from './sec-lab-tools/scan/source/engine.js';
 import { createUrlScanner } from './sec-lab-tools/scan/url/engine.js';
 import { createPackageScanner } from './sec-lab-tools/scan/package/engine.js';
 import { createSelfScanner } from './sec-lab-tools/scan/self/engine.js';
+import { buildSelfHealthReport } from './sec-lab-tools/scan/self/report.js';
 import { jobToOutput, SEVERITY_ORDER, type ScanJob, type ScanKind } from './sec-lab-tools/scan/types.js';
 import { discoverSelfAssets, matchSelfAsset } from './sec-lab-tools/scan/self/assets.js';
 // —— P5：经验库（自学习，2026-10-17）——
@@ -461,6 +462,11 @@ export function buildReportExport(input: ReportExportInput): { text: string; cou
   if (jobId) {
     const job = input.jobs.find((j) => j.id === jobId);
     if (!job) throw new Error(`未找到作业 ${jobId}`);
+    // ★ 体检作业走专用模板（方案 6.4）：按资产分类 + 结论先行；通用报告是平铺清单
+    if (job.kind === 'self') {
+      const r = buildSelfHealthReport(job);
+      return { text: r.text, count: r.count, job };
+    }
     const items = job.findings
       .filter((f) => !f.suppressed)
       .map((f) => ({ ...f, target: job.target, tool: 'scan', at: job.finishedAt || job.createdAt }));
@@ -2177,7 +2183,9 @@ function registerRoutes(ctx: PluginContext) {
         return fail(res, 404, e instanceof Error ? e.message : String(e));
       }
       const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-      json(res, { data: { text: result.text, filename: `security-report-${stamp}.md`, count: result.count } });
+      // 体检作业用体检报告的文件名，便于和普通扫描报告区分归档
+      const prefix = result.job?.kind === 'self' ? 'self-health-report' : 'security-report';
+      json(res, { data: { text: result.text, filename: `${prefix}-${stamp}.md`, count: result.count } });
     });
 
     r.get('/audit', async (_req: unknown, res: unknown) => {
