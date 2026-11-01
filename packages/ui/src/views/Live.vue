@@ -145,9 +145,6 @@
             <el-button size="small" type="primary" @click="gameGift('super')">超级空投 +24</el-button>
             <el-button size="small" @click="gameReset">重开一局</el-button>
           </div>
-          <div class="live-actions">
-            <el-switch v-model="sourceOn" size="small" active-text="模拟弹幕流" @change="toggleSource" />
-          </div>
           <div class="live-hint">{{ gameModeHint }}</div>
         </div>
 
@@ -243,9 +240,64 @@
           >
             <el-option v-for="p in voicePacks" :key="p.id" :label="p.name" :value="p.id" />
           </el-select>
-          <div v-else class="live-hint">没有本地语音包，播报会走 Edge 在线合成（需联网）</div>
-          <div v-if="ttsEngine" class="live-hint">当前引擎：{{ TTS_ENGINE_LABEL[ttsEngine] || '本地语音包' }}</div>
+          <div v-if="ttsVoices.length" class="live-voice-row">
+            <el-select
+              v-model="ttsVoice"
+              size="small"
+              class="live-select"
+              placeholder="音色（默认自动）"
+              @change="setTtsVoice"
+            >
+              <el-option
+                v-for="v in ttsVoices"
+                :key="v.name"
+                :label="v.display"
+                :value="v.name"
+              />
+            </el-select>
+          </div>
+          <div v-if="!voicePacks.length" class="live-hint">未安装本地语音包（到 设置 → 语音包 可下载），播报优先走模型层/Edge 在线（需联网）</div>
+          <div v-if="ttsEngine === 'system'" class="live-hint live-hint--warn">当前是系统离线语音，机械感较重：在上方选个音色，或到 设置 → 语音包 装本地包</div>
+          <div class="live-voice-row">
+            <span class="live-hint">语速</span>
+            <el-slider
+              :model-value="ttsRate"
+              size="small"
+              class="live-rate"
+              :min="-10"
+              :max="10"
+              :step="1"
+              :show-tooltip="false"
+              @change="setTtsRate"
+            />
+            <span class="live-hint">{{ ttsRate > 0 ? `+${ttsRate}` : ttsRate }}</span>
+          </div>
+          <div v-if="ttsEngine" class="live-hint">当前引擎：{{ TTS_ENGINE_LABEL[ttsEngine] || ttsEngine }}</div>
           <div v-if="ttsError" class="live-hint live-hint--err">{{ ttsError }}</div>
+        </div>
+
+        <div class="live-card">
+          <div class="live-card__title">弹幕源</div>
+          <el-select v-model="sourceKind" size="small" class="live-select" :disabled="sourceBusy" @change="onSourceKind">
+            <el-option label="关闭" value="off" />
+            <el-option label="模拟弹幕流" value="replay" />
+            <el-option label="抖音直播间" value="douyin" />
+            <el-option label="快手直播间" value="kuaishou" />
+          </el-select>
+          <div v-if="sourceKind === 'douyin' || sourceKind === 'kuaishou'" class="live-voice-row">
+            <el-input
+              v-model="sourceUrl"
+              size="small"
+              class="live-select"
+              placeholder="粘贴直播间网页链接"
+              @keyup.enter="applyWebSource"
+            />
+            <el-button size="small" type="primary" :disabled="sourceBusy" @click="applyWebSource">接入</el-button>
+          </div>
+          <div v-if="sourceKind === 'douyin' || sourceKind === 'kuaishou'" class="live-hint">
+            会用应用内浏览器打开该直播间读弹幕（延迟 1~3 秒，需桌面版）
+          </div>
+          <div v-if="sourceHint" class="live-hint" :class="{ 'live-hint--err': sourceHintIsError }">{{ sourceHint }}</div>
         </div>
       </aside>
 
@@ -354,14 +406,13 @@ petStore.init()
 const chat = useChatStore()
 
 const gameRef = ref<InstanceType<typeof DanmakuGame> | null>(null)
-const sourceOn = ref(false)
 function gameGift(id: string) { gameRef.value?.gift(id) }
 function gameReset() { gameRef.value?.reset() }
 function onGameSay(text: string) { liveStore.say(text, 'danmaku') }
 
 /* ---------- 弹幕游戏玩法切换 ---------- */
 const GAME_MODE_NOTES: Record<string, string> = {
-  chibi: '改写度到 60% 就掀翻史实结局。打开「模拟弹幕流」走完整链路：源 → /api/live/danmaku → 游戏',
+  chibi: '改写度到 60% 就掀翻史实结局。打开「弹幕源 → 模拟弹幕流」走完整链路：源 → /api/live/danmaku → 游戏',
   stars: '客星犯心宿主兵灾。星力到 60%，这一夜天命可违。',
   debate: '纯投票局：发「甜」「咸」或话题词投票，50% 分界见输赢。',
   surname: '发自己的姓加入本族，票数最高的姓夺城楼。',
@@ -397,12 +448,48 @@ watch(
     nextTick(() => syncGameModeList())
   },
 )
-async function toggleSource(v: boolean | string | number) {
+/* ---------- 弹幕源（2026-11-01：模拟流之外接入抖音/快手网页抓取） ---------- */
+
+type SourceKind = 'off' | 'replay' | 'douyin' | 'kuaishou'
+const sourceKind = ref<SourceKind>('off')
+const sourceUrl = ref('')
+const sourceBusy = ref(false)
+const sourceHint = ref('')
+const sourceHintIsError = ref(false)
+
+/** 切换弹幕源；douyin/kuaishou 走「接入」按钮带上链接，这里只处理 off/replay */
+async function onSourceKind(kind: SourceKind) {
+  if (kind === 'douyin' || kind === 'kuaishou') return
+  await postSource(kind, '')
+}
+
+async function applyWebSource() {
+  await postSource(sourceKind.value, sourceUrl.value.trim())
+}
+
+async function postSource(kind: SourceKind, url: string) {
+  sourceBusy.value = true
+  sourceHint.value = ''
   try {
-    await api.post('/live/source', { kind: v ? 'replay' : 'off' })
-  } catch {
-    sourceOn.value = false
-    ElMessage.error('弹幕源切换失败')
+    const r = await api.post<any>('/live/source', { kind, url: url || undefined })
+    const d = (r as any)?.data ?? r
+    if (d?.ok === false) {
+      sourceHint.value = d?.error || '弹幕源启动失败'
+      sourceHintIsError.value = true
+      if (kind === 'douyin' || kind === 'kuaishou') sourceKind.value = 'off'
+      return
+    }
+    sourceHintIsError.value = false
+    sourceHint.value =
+      kind === 'off' ? '弹幕源已关闭'
+        : kind === 'replay' ? '模拟弹幕流已开启'
+          : `已接入直播间，已收到 ${d?.sent ?? 0} 条`
+  } catch (e: any) {
+    sourceHint.value = e?.message || '弹幕源切换失败'
+    sourceHintIsError.value = true
+    if (kind === 'douyin' || kind === 'kuaishou') sourceKind.value = 'off'
+  } finally {
+    sourceBusy.value = false
   }
 }
 
@@ -441,6 +528,7 @@ const pack = ref(petStore.settings.pack || 'boba')
  */
 /** 播报引擎的展示名。写成映射表而不是模板三元：引擎值加了新枚举时这里只补一行 */
 const TTS_ENGINE_LABEL: Record<string, string> = {
+  model: '模型层（与视频配音同链）',
   edge: 'Edge 在线',
   system: '系统语音（离线）',
   local: '本地语音包',
@@ -533,7 +621,12 @@ const {
   speaking: ttsSpeaking,
   error: ttsError,
   engine: ttsEngine,
+  voices: ttsVoices,
+  voice: ttsVoice,
+  rate: ttsRate,
   refresh: refreshVoices,
+  setVoice: setTtsVoice,
+  setRate: setTtsRate,
   speak: speakVoice,
   stop: stopVoice,
   dispose: disposeVoice,
@@ -547,7 +640,45 @@ const LIVE_ACTIONS = [
   { key: 'hop', label: '跳一跳' },
 ]
 
-const performerName = computed(() => PET_PACKS.find((p) => p.id === pack.value)?.label || '宠物')
+/**
+ * 主播名分三份取：宠物包的 label、虚拟人模型名、字幕上屏用合并口径。
+ * 此前只有一份且永远按宠物包取 —— 虚拟人单口时字幕写"宠物"，开场白也念错人。
+ */
+/**
+ * 说话/字幕用的名字：label 里的括号注解（如"噜噜（水豚）"）是给设置页选单看的，
+ * 念出来/TTS 合成出来非常怪（用户原话"为啥一定要放（水豚）括号"）—— 进开场白前剥掉。
+ */
+function spokenName(label: string): string {
+  return label.replace(/[（(][^）)]*[）)]/g, '').trim() || label
+}
+
+const petName = computed(() => spokenName(PET_PACKS.find((p) => p.id === pack.value)?.label || '宠物'))
+const avatarName = computed(
+  () => spokenName(PET_BUILTIN_VRMS.find((v) => v.id === avatarId.value)?.name || '虚拟主播'),
+)
+const performerName = computed(() =>
+  showAvatar.value && !showPet.value ? avatarName.value : petName.value,
+)
+
+/**
+ * 开播开场白：按本场谁出镜说不同的话。
+ * 宠物不是人类主播，不能念"今天想看点什么"这种人类主持稿；
+ * 虚拟人/双人也各有各的口吻。每条都带"大家好"（mount 测试钉了这个词，也是通用礼貌）。
+ */
+function openingLine(): string {
+  if (showAvatar.value && showPet.value) {
+    return `大家好，我是${avatarName.value}，这是我家的${petName.value}。今天我们俩陪大家聊聊，想看什么弹幕告诉我！`
+  }
+  if (showAvatar.value) {
+    return `大家好，我是${avatarName.value}。今天想聊点什么，弹幕告诉我！`
+  }
+  const petLines = [
+    `大家好，我是${petName.value}！今天由本宠物坐镇直播间，点下面的按钮可以让我表演哦～`,
+    `大家好，我是${petName.value}，欢迎来到我的直播间！摸摸我、看我转圈，弹幕我都会回～`,
+    `大家好呀，我是${petName.value}！今天陪大家唠嗑，想聊什么弹幕告诉我～`,
+  ]
+  return petLines[Math.floor(Math.random() * petLines.length)] || petLines[0]
+}
 
 const petState = computed(() => (live.value ? petStateOfPhase(liveStore.phase) : 'idle'))
 
@@ -599,7 +730,7 @@ function onStart() {
   // 开播即进直播模式：服务端只放行只读白名单，观众输入不可信
   void setLiveMode(true)
   startDanmaku()
-  liveStore.say(`大家好，我是${performerName.value}。今天想看点什么？`, 'filler')
+  liveStore.say(openingLine(), 'filler')
 }
 
 async function setLiveMode(on: boolean): Promise<void> {

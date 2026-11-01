@@ -16,6 +16,24 @@ export interface VoicePackOption {
   name: string
 }
 
+/** Edge 在线音色（GET /live/tts/voices 返回的子集） */
+export interface VoiceOption {
+  name: string
+  display: string
+  gender: string
+}
+
+const VOICE_STORAGE_KEY = 'yz.live.voice'
+const RATE_STORAGE_KEY = 'yz.live.rate'
+
+function loadStored(key: string): string {
+  try { return localStorage.getItem(key) || '' } catch { return '' }
+}
+
+function saveStored(key: string, value: string): void {
+  try { value ? localStorage.setItem(key, value) : localStorage.removeItem(key) } catch { /* 仅本窗口 */ }
+}
+
 /** 只留下已安装的语音包；非数组/脏数据一律丢弃 */
 export function pickInstalledPacks(list: unknown): VoicePackOption[] {
   if (!Array.isArray(list)) return []
@@ -36,8 +54,12 @@ export function useLiveTts() {
   const speaking = ref(false)
   const loading = ref(false)
   const error = ref('')
-  /** 实际用的引擎：local（本地语音包）/ edge（在线兜底） */
-  const engine = ref<'local' | 'edge' | ''>('')
+  /** 实际用的引擎：model（模型层，与视频配音同链）/ local（本地语音包）/ edge（在线兜底）/ system */
+  const engine = ref<'model' | 'local' | 'edge' | 'system' | ''>('')
+  /** Edge 音色列表 + 当前选中的音色/语速（持久化，刷新后保留） */
+  const voices = ref<VoiceOption[]>([])
+  const voice = ref(loadStored(VOICE_STORAGE_KEY))
+  const rate = ref(Number(loadStored(RATE_STORAGE_KEY)) || 0)
 
   let el: HTMLAudioElement | null = null
   let onEnd: (() => void) | null = null
@@ -71,6 +93,25 @@ export function useLiveTts() {
     } catch (e: any) {
       error.value = e?.message || '读取语音包失败'
     }
+    // 音色列表独立拉取（失败不影响语音包）：拉不到就地隐藏下拉，不报错打断直播
+    try {
+      const r = await api.get<any>('/live/tts/voices')
+      const d = (r as any)?.data ?? r
+      voices.value = Array.isArray(d?.voices)
+        ? d.voices.filter((v: any) => v && typeof v.name === 'string')
+        : []
+    } catch { voices.value = [] }
+  }
+
+  function setVoice(name: string): void {
+    voice.value = name
+    saveStored(VOICE_STORAGE_KEY, name)
+  }
+
+  function setRate(v: number): void {
+    const n = Math.max(-10, Math.min(10, Math.round(Number(v) || 0)))
+    rate.value = n
+    saveStored(RATE_STORAGE_KEY, n ? String(n) : '')
   }
 
   function stop(): void {
@@ -94,7 +135,12 @@ export function useLiveTts() {
     loading.value = true
     error.value = ''
     try {
-      const r = await api.post<any>('/live/tts', { text: t, packId: packId.value || undefined })
+      const r = await api.post<any>('/live/tts', {
+        text: t,
+        packId: packId.value || undefined,
+        voice: voice.value || undefined,
+        rate: rate.value || undefined,
+      })
       if (r && typeof r === 'object' && 'error' in r) throw new Error((r as any).error)
       const d = (r as any)?.data ?? r
       const url = d?.url
@@ -125,5 +171,5 @@ export function useLiveTts() {
     }
   }
 
-  return { packs, packId, enabled, speaking, loading, error, engine, refresh, speak, stop, dispose }
+  return { packs, packId, enabled, speaking, loading, error, engine, voices, voice, rate, refresh, setVoice, setRate, speak, stop, dispose }
 }

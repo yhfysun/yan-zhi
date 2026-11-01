@@ -470,6 +470,15 @@
   gap: 10px;
 }
 
+/* 语速滑杆：占满行内剩余宽度，数字标签定宽防抖动 */
+.live-rate {
+  flex: 1;
+}
+
+.live-voice-row .live-hint {
+  white-space: nowrap;
+}
+
 .live-voice-state {
   margin-left: auto;
   font-size: 11px;

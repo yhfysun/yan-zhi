@@ -1098,11 +1098,15 @@ async function ttsViaModel(
   for (const key of ctx.keys) {
     let res: Response;
     try {
-      res = await fetchWithTimeout(`${ctx.baseUrl}/v1/audio/speech`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, input: text, voice: voice || 'alloy', response_format: 'mp3' }),
-      }, 180000);
+    res = await fetchWithTimeout(`${ctx.baseUrl}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      // speed：OpenAI 兼容语速参数（0.25~4.0）。直播的语速滑杆（-10~10）映射为 0.5~1.5 倍
+      body: JSON.stringify({
+        model, input: text, voice: voice || 'alloy', response_format: 'mp3',
+        ...(Number(args.speed) > 0 ? { speed: Math.min(4, Math.max(0.25, Number(args.speed))) } : {}),
+      }),
+    }, 180000);
     } catch (e: unknown) {
       lastErr = e instanceof Error ? e.message : String(e);
       continue;
@@ -1128,6 +1132,50 @@ async function ttsViaModel(
     })) };
   }
   return { ok: false, error: lastErr || '未知错误' };
+}
+
+/**
+ * 模型层 TTS 合成 —— 给非 LLM 工具链路（直播播报等）复用的干净出口（2026-11-01）。
+ *
+ * 为什么需要：视频配音（api_tts_speak）第一优先走模型层 /v1/audio/speech，音色自然；
+ * 直播此前完全跳过这一层，直接从本地 8kHz 包 / 系统 SAPI 开始 —— 表现为「视频配音不僵硬、
+ * 直播僵硬」。本包装把 ttsViaModel 的 MpcToolExecutionResult 拆成结构化返回，调用方
+ * 不必解析 content[0].text。判定口径与视频链路同源（resolveMediaPlatform + token 池），
+ * **同一语义只有一处实现**：仍由 ttsViaModel 承担全部合成逻辑。
+ */
+export async function modelTtsSpeak(input: {
+  text: string
+  voice?: string
+  model?: string
+  /** 语速倍率（1 = 原速，0.5~1.5 常用）；不传 = 平台默认 */
+  speed?: number
+  userId?: string | null
+  conversationId?: string
+}): Promise<
+  | { ok: true; url: string; file: string; voice: string; model: string; bytes?: number }
+  | { ok: false; error: string }
+> {
+  const r = await ttsViaModel(
+    { ...(input.model ? { model: input.model } : {}), ...(input.speed ? { speed: input.speed } : {}) },
+    input.text,
+    input.voice || '',
+    input.userId ?? null,
+    input.conversationId,
+  );
+  if (!r.ok) return { ok: false, error: r.error };
+  try {
+    const d = JSON.parse(String(r.result?.content?.[0]?.text || '{}'));
+    if (d?.ok && d?.url) {
+      return {
+        ok: true, url: String(d.url), file: String(d.file || ''),
+        voice: String(d.voice || input.voice || ''), model: String(d.model || input.model || 'tts-1'),
+        bytes: Number(d.bytes) || undefined,
+      };
+    }
+    return { ok: false, error: String(d?.error || '模型层 TTS 返回异常') };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** 列出可用音色：本地语音包（离线）+ Edge 在线 + 系统本地 + 模型层。 */
@@ -3792,7 +3840,7 @@ export async function executeApiTool(
           const valid: string[] = [];
           const unknown: string[] = [];
           for (const ct of raw) {
-            const hit = db.prepare('SELECT id FROM custom_tool WHERE id = ? AND user_id = ? AND enabled = 1').get(ct, uid);
+            const hit = db.prepare('SELECT id FROM custom_tool WHERE id = ? AND (user_id = ? OR is_public = 1) AND enabled = 1').get(ct, uid);
             if (hit) valid.push(ct); else unknown.push(ct);
           }
           if (unknown.length) {
@@ -3932,7 +3980,8 @@ export async function executeApiTool(
 
       // Platform / model
       case 'api_platform_list':
-        return ok(db.prepare('SELECT * FROM platform WHERE user_id = ? ORDER BY created_at DESC').all(requireUser(userId)));
+        // 共享平台（is_public=1）一并可见
+        return ok(db.prepare('SELECT * FROM platform WHERE user_id = ? OR is_public = 1 ORDER BY created_at DESC').all(requireUser(userId)));
       case 'api_platform_create': {
         const uid = requireUser(userId);
         const id = uuid();
@@ -3962,8 +4011,8 @@ export async function executeApiTool(
       }
       case 'api_model_list': {
         const uid = requireUser(userId);
-        if (str(args, 'platformId')) return ok(db.prepare('SELECT * FROM model WHERE platform_id = ? AND user_id = ?').all(str(args, 'platformId'), uid));
-        return ok(db.prepare('SELECT * FROM model WHERE user_id = ?').all(uid));
+        if (str(args, 'platformId')) return ok(db.prepare('SELECT * FROM model WHERE platform_id = ? AND (user_id = ? OR platform_id IN (SELECT id FROM platform WHERE is_public = 1) OR is_public = 1)').all(str(args, 'platformId'), uid));
+        return ok(db.prepare('SELECT * FROM model WHERE user_id = ? OR platform_id IN (SELECT id FROM platform WHERE is_public = 1) OR is_public = 1').all(uid));
       }
       case 'api_model_create': {
         const uid = requireUser(userId);
@@ -4035,9 +4084,9 @@ export async function executeApiTool(
 
       // Skill
       case 'api_skill_list':
-        return ok(db.prepare('SELECT * FROM skill WHERE user_id = ? ORDER BY created_at DESC').all(requireUser(userId)));
+        return ok(db.prepare('SELECT * FROM skill WHERE user_id = ? OR is_public = 1 ORDER BY created_at DESC').all(requireUser(userId)));
       case 'api_skill_get':
-        return ok(db.prepare('SELECT * FROM skill WHERE id = ? AND user_id = ?').get(str(args, 'id'), requireUser(userId)) || null);
+        return ok(db.prepare('SELECT * FROM skill WHERE id = ? AND (user_id = ? OR is_public = 1)').get(str(args, 'id'), requireUser(userId)) || null);
       case 'api_skill_toggle': {
         db.prepare('UPDATE skill SET enabled = ? WHERE id = ? AND user_id = ?').run(args.enabled ? 1 : 0, str(args, 'id'), requireUser(userId));
         return ok({ updated: true });
@@ -4063,7 +4112,7 @@ export async function executeApiTool(
 
       // Custom tool
       case 'api_custom_tool_list':
-        return ok(db.prepare('SELECT * FROM custom_tool WHERE user_id = ? ORDER BY created_at DESC').all(requireUser(userId)));
+        return ok(db.prepare('SELECT * FROM custom_tool WHERE user_id = ? OR is_public = 1 ORDER BY created_at DESC').all(requireUser(userId)));
       case 'api_custom_tool_get':
         return ok(db.prepare('SELECT * FROM custom_tool WHERE id = ? AND user_id = ?').get(str(args, 'id'), requireUser(userId)) || null);
       case 'api_custom_tool_create': {
@@ -5162,7 +5211,7 @@ export async function executeApiTool(
       // 自定义工具增补：执行 / OCR / 从远程安装
       case 'api_custom_tool_execute': {
         const uid = requireUser(userId);
-        const t = db.prepare('SELECT * FROM custom_tool WHERE id = ? AND user_id = ?').get(str(args, 'id'), uid) as any;
+        const t = db.prepare('SELECT * FROM custom_tool WHERE id = ? AND (user_id = ? OR is_public = 1)').get(str(args, 'id'), uid) as any;
         if (!t) return fail('工具不存在');
         if (!t.enabled) return fail('工具未启用');
         // ★ 走 services/tool-deps 的统一入口：与 ReAct 主循环的 custom_ 分支共享
@@ -5446,11 +5495,11 @@ async function toolDetail(name: string, userId?: string): Promise<MpcToolExecuti
   // 3) 自定义工具（★ 2026-10-25：同时识别暴露名 custom_<id8>_<name> —— 搜索结果给的是暴露名，
   //    旧实现只按裸名查会 miss，模型拿着搜索结果查详情会得到"没有这个工具"）
   if (!def && userId) {
-    let row: any = db.prepare('SELECT name, description, parameters FROM custom_tool WHERE name = ? AND user_id = ?').get(toolName, userId);
+    let row: any = db.prepare('SELECT name, description, parameters FROM custom_tool WHERE name = ? AND (user_id = ? OR is_public = 1)').get(toolName, userId);
     if (!row) {
       const m = /^custom_([a-zA-Z0-9]{1,8})_(.+)$/.exec(toolName);
       if (m) {
-        const rows = db.prepare('SELECT id, name, description, parameters FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId) as any[];
+        const rows = db.prepare('SELECT id, name, description, parameters FROM custom_tool WHERE (user_id = ? OR is_public = 1) AND enabled = 1').all(userId) as any[];
         row = rows.find((r) => String(r.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) === m[1] && r.name === m[2]) || null;
       }
     }
@@ -5583,7 +5632,7 @@ async function toolSearch(args: Record<string, unknown>, userId?: string): Promi
   //   模型查到即可直接按该名调用。
   try {
     const customs = (userId
-      ? db.prepare('SELECT id, name, description FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId)
+      ? db.prepare('SELECT id, name, description FROM custom_tool WHERE (user_id = ? OR is_public = 1) AND enabled = 1').all(userId)
       : db.prepare('SELECT id, name, description FROM custom_tool WHERE enabled = 1').all()) as any[];
     for (const ct of customs) {
       rows.push({
