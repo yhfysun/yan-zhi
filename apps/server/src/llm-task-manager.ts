@@ -1213,6 +1213,23 @@ export function createTask(params: {
    */
   opsContext?: OpsContextInput;
 }): string {
+  // ★ 用户额度闸（2026-11-01）：quota_cost_cny 非 NULL 且已用成本 ≥ 额度 → 拒绝新任务。
+  //   已用 = usage_event 全量累计（含估算）；guest 本机单管理员不受限（quota 为 NULL）。
+  try {
+    if (params.userId && params.userId !== 'guest') {
+      const uq = db.prepare('SELECT quota_cost_cny FROM user WHERE id = ?').get(params.userId) as any;
+      const quota = uq?.quota_cost_cny;
+      if (quota != null && quota >= 0) {
+        const used = (db.prepare('SELECT COALESCE(SUM(cost_cny), 0) AS c FROM usage_event WHERE user_id = ?').get(params.userId) as any).c || 0;
+        if (used >= quota) {
+          throw new Error(`额度已用完（已用 ¥${used.toFixed(2)} / 上限 ¥${Number(quota).toFixed(2)}），请联系管理员调整额度`);
+        }
+      }
+    }
+  } catch (e: any) {
+    if (e?.message?.includes('额度')) throw e;
+    // 额度检查自身失败不阻塞调用（fail-open，避免误伤正常使用）
+  }
   // 幂等保护：同 conversationId 已有 running 任务则复用（避免重连重试创建多任务）
   for (const [id, existing] of tasks) {
     if (existing.conversationId === params.conversationId && existing.status === 'running') {

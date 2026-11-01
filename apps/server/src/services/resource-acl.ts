@@ -103,15 +103,23 @@ export function agentDependencyGrants(agentId: string): Array<{ type: AclType; i
       if (!resourceExists(type, id)) return;
       out.set(`${type}:${id}`, { type, id });
     };
+    // ★ 授模型必须连带其所属平台（agent 只传 modelId 时 platform_id 列可能为空）——
+    //   否则模型可见但平台不可见，loadPlatform 仍拒绝（首启实锤）。
+    const add2 = (type: AclType, id: unknown): boolean => {
+      if (!id || typeof id !== 'string') return false;
+      if (!resourceExists(type, id)) return false;
+      out.set(`${type}:${id}`, { type, id });
+      return true;
+    };
     if (a.platform_id) add('platform', a.platform_id);
-    if (a.model_id) add('model', a.model_id);
+    if (a.model_id) { if (add2('model', a.model_id)) { const m = db.prepare('SELECT platform_id FROM model WHERE id = ?').get(a.model_id) as any; if (m?.platform_id) add('platform', m.platform_id); } }
     try {
       const pools = typeof a.model_pools_json === 'string' ? JSON.parse(a.model_pools_json || '{}') : (a.model_pools_json || {});
       for (const list of Object.values(pools || {})) {
         if (!Array.isArray(list)) continue;
         for (const e of list) {
           if (e?.platformId) add('platform', e.platformId);
-          if (e?.modelId) add('model', e.modelId);
+          if (e?.modelId) { if (add2('model', e.modelId)) { const m = db.prepare('SELECT platform_id FROM model WHERE id = ?').get(e.modelId) as any; if (m?.platform_id) add('platform', m.platform_id); } }
         }
       }
     } catch { /* 候选池损坏 → 忽略该部分 */ }

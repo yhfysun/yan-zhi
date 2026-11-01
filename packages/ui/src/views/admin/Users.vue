@@ -85,7 +85,7 @@ const loading = ref(false);
 const dialog = ref(false);
 const saving = ref(false);
 const editing = ref<AdminUser | null>(null);
-const form = ref({ username: '', email: '', password: '', orgIds: [] as string[], roleIds: [] as string[] });
+const form = ref({ username: '', email: '', password: '', orgIds: [] as string[], roleIds: [] as string[], quotaCostCny: null as number | null, usedCost: 0 });
 
 async function reload() {
   loading.value = true;
@@ -119,7 +119,7 @@ function openEdit(u: AdminUser) {
 async function save() {
   saving.value = true;
   try {
-    const body: any = { email: form.value.email || undefined, orgIds: form.value.orgIds, roleIds: form.value.roleIds };
+    const body: any = { email: form.value.email || undefined, orgIds: form.value.orgIds, roleIds: form.value.roleIds, quotaCostCny: form.value.quotaCostCny };
     let res;
     if (editing.value) {
       if (form.value.password) body.password = form.value.password;
@@ -156,4 +156,7 @@ onMounted(reload);
 .admin-header h2 { margin: 0; font-size: 18px; }
 .tag { margin-right: 4px; }
 .dim { color: var(--color-text-secondary); font-size: 12px; }
+.quota-hint { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; }
+.quota-over { color: var(--el-color-danger); font-weight: 600; }
+.dim { color: var(--color-text-secondary); }
 </style>

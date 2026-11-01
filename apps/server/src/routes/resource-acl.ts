@@ -40,14 +40,14 @@ router.get('/catalog', (req: Request, res: Response) => {
   if (!userHasPermission(uid, 'admin.permission.manage') && !userHasPermission(uid, 'admin.user.manage')) {
     res.status(403).json({ error: '无权限', code: 'FORBIDDEN' }); return;
   }
-  const pick = (sql: string) => (db.prepare(sql).all() as any[]).map((r) => ({ id: r.id, name: r.name || r.id }));
+  const pick = (sql: string) => (db.prepare(sql).all() as any[]);
   res.json({
     catalog: {
-      agent: pick("SELECT id, name FROM agent WHERE is_builtin != 1 OR is_builtin IS NULL ORDER BY created_at DESC"),
-      model: pick("SELECT id, COALESCE(NULLIF(alias, ''), model_id) AS name FROM model WHERE id NOT LIKE 'local-model-%' ORDER BY platform_id"),
+      agent: pick("SELECT id, name, COALESCE(NULLIF(category, ''), '未分类') AS category FROM agent WHERE is_builtin != 1 OR is_builtin IS NULL ORDER BY created_at DESC"),
+      model: pick("SELECT m.id, COALESCE(NULLIF(m.alias, ''), m.model_id) AS name, COALESCE(p.name, '未知平台') AS platform FROM model m LEFT JOIN platform p ON p.id = m.platform_id WHERE m.id NOT LIKE 'local-model-%' ORDER BY p.name, m.id"),
       skill: pick('SELECT id, name FROM skill ORDER BY created_at DESC'),
       tool: pick('SELECT id, name FROM custom_tool ORDER BY created_at DESC'),
-      plugin: pick("SELECT id, json_extract(manifest, '\$.name') AS name FROM plugin WHERE state = 'enabled' ORDER BY id"),
+      plugin: pick("SELECT id, json_extract(manifest, '$.name') AS name, json_extract(manifest, '$.category') AS category FROM plugin WHERE state = 'enabled' ORDER BY id"),
     },
   });
 });

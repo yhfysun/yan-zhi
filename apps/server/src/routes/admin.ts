@@ -43,11 +43,16 @@ function bad(res: Response, msg: string, status = 400) {
 // ==================== 用户管理 ====================
 
 router.get('/users', requirePerm('admin.user.manage'), (_req: Request, res: Response) => {
-  const rows = db.prepare('SELECT id, username, email, created_at FROM user ORDER BY created_at ASC').all() as any[];
+  const rows = db.prepare('SELECT id, username, email, created_at, quota_cost_cny FROM user ORDER BY created_at ASC').all() as any[];
+  const usedMap = new Map<string, number>(
+    (db.prepare('SELECT user_id, COALESCE(SUM(cost_cny), 0) AS c FROM usage_event GROUP BY user_id').all() as any[])
+      .map((r) => [r.user_id, r.c]),
+  );
   const list = rows
     .filter((u) => u.id !== 'guest')
     .map((u) => ({
       ...u,
+      usedCost: usedMap.get(u.id) || 0,
       orgs: db.prepare(
         'SELECT org.id, org.name FROM user_org JOIN org ON org.id = user_org.org_id WHERE user_org.user_id = ?',
       ).all(u.id),
@@ -83,7 +88,13 @@ router.patch('/users/:id', requirePerm('admin.user.manage'), (req: Request, res:
   const row = db.prepare('SELECT id FROM user WHERE id = ?').get(target) as { id: string } | undefined;
   if (!row) return bad(res, '用户不存在', 404);
   if (target === 'guest') return bad(res, 'guest 是内置数据归属身份，不可修改', 403);
-  const { email, password, orgIds, roleIds } = req.body || {};
+  const { email, password, orgIds, roleIds, quotaCostCny } = req.body || {};
+  if (quotaCostCny !== undefined) {
+    // 额度（元）：null = 不限；非负数字生效
+    const v = quotaCostCny === null ? null : Number(quotaCostCny);
+    if (v !== null && (!Number.isFinite(v) || v < 0)) return bad(res, '额度需为非负数字或 null（不限）');
+    db.prepare('UPDATE user SET quota_cost_cny = ? WHERE id = ?').run(v, target);
+  }
   if (email !== undefined) db.prepare('UPDATE user SET email = ? WHERE id = ?').run(email || null, target);
   if (password) {
     if (String(password).length < 6) return bad(res, '密码至少 6 位');

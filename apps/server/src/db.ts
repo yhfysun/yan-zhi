@@ -971,6 +971,8 @@ try {
   try { db.exec('ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0'); } catch {}
   // 默认管理员（2026-11-01）：1 = 首次登录未改密码，除改密/登出外所有接口 403
   try { db.exec('ALTER TABLE user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0'); } catch {}
+  // 用户额度（2026-11-01）：LLM 成本上限（元）——NULL = 不限。超限后 LLM 调用被拒（QUOTA_EXCEEDED）。
+  try { db.exec('ALTER TABLE user ADD COLUMN quota_cost_cny REAL'); } catch {}
   // 资源定向授权 ACL（2026-11-01）：agent/model/skill/tool/platform/plugin 逐个授权给指定用户
   //   可见性 = owner ∪ is_public ∪ ACL 名单；写仍归 owner。
   db.exec(`CREATE TABLE IF NOT EXISTS resource_acl (

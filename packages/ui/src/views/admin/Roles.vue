@@ -67,18 +67,21 @@
       </el-tab-pane>
       <el-tab-pane label="资源授权" name="resources">
         <p class="res-tip">勾选该角色<strong>可以使用的</strong>智能体 / 模型 / Skill / 工具 / 插件（批量：勾一次，角色下所有用户生效）。未勾选的私有资源对该角色不可见。</p>
-        <div v-for="g in resCatalogGroups" :key="g.type" class="res-group">
+        <div v-for="g in resGroups" :key="g.type" class="res-group">
           <div class="res-group-head">
-            <el-checkbox
-              :model-value="isResTypeAllChecked(g.type)"
-              :indeterminate="isResTypeIndeterminate(g.type)"
-              @change="(v: any) => toggleResType(g.type, !!v)"
-            >{{ g.label }}<span class="res-count">（{{ (resGrants[g.type] || []).length }}/{{ g.items.length }}）</span></el-checkbox>
+            <b>{{ g.label }}</b>
+            <span class="res-count">已选 {{ (resGrants[g.type] || []).length }} 项</span>
+            <el-button size="small" text type="primary" @click="allResType(g.type)">全选</el-button>
+            <el-button size="small" text @click="clearResType(g.type)">清空</el-button>
           </div>
-          <el-checkbox-group v-model="resGrants[g.type]" class="res-items">
-            <el-checkbox v-for="r in g.items" :key="r.id" :value="r.id">{{ r.name }}</el-checkbox>
-            <span v-if="!g.items.length" class="dim">（暂无可选项）</span>
-          </el-checkbox-group>
+          <div v-for="sg in g.subGroups" :key="sg.label" class="res-subgroup">
+            <div v-if="sg.label" class="res-sub-title">{{ sg.label }}</div>
+            <el-checkbox-group v-model="resGrants[g.type]" class="res-items">
+              <el-checkbox v-for="r in sg.items" :key="r.id" :value="r.id">{{ r.name }}</el-checkbox>
+              <span v-if="!sg.items.length" class="dim">（该分组暂无资源）</span>
+            </el-checkbox-group>
+          </div>
+          <span v-if="!g.subGroups.length" class="dim">（暂无可选项）</span>
         </div>
       </el-tab-pane>
       </el-tabs>
@@ -117,11 +120,29 @@ const RES_GROUPS = [
   { type: 'tool', label: '工具' },
   { type: 'plugin', label: '插件' },
 ];
-const resCatalog = reactive<Record<string, Array<{ id: string; name: string }>>>({});
+const resCatalog = reactive<Record<string, Array<any>>>({});
 const resGrants = reactive<Record<string, string[]>>({ agent: [], model: [], skill: [], tool: [], plugin: [] });
-const resCatalogGroups = computed(() =>
-  RES_GROUPS.map((g) => ({ ...g, items: resCatalog[g.type] || [] })),
+/** 分类分层（2026-11-01 用户要求）：智能体按分类、模型按所属平台、插件按分类分层展示 */
+const resGroups = computed(() =>
+  RES_GROUPS.map((g) => {
+    const items = resCatalog[g.type] || [];
+    const keyField = g.type === 'agent' || g.type === 'plugin' ? 'category' : g.type === 'model' ? 'platform' : null;
+    if (!keyField) return { ...g, subGroups: [{ label: '', items }] };
+    const byKey = new Map<string, any[]>();
+    for (const it of items) {
+      const k = String(it[keyField] || '未分类');
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k)!.push(it);
+    }
+    return { ...g, subGroups: [...byKey.entries()].map(([label, its]) => ({ label, items: its })) };
+  }),
 );
+function allResType(type: string): void {
+  resGrants[type] = (resCatalog[type] || []).map((r) => r.id);
+}
+function clearResType(type: string): void {
+  resGrants[type] = [];
+}
 async function loadResData() {
   try {
     const [cat, grants] = await Promise.all([
@@ -133,18 +154,6 @@ async function loadResData() {
     if ('data' in cat) for (const g of RES_GROUPS) resCatalog[g.type] = cat.data.catalog[g.type] || [];
     for (const g of RES_GROUPS) resGrants[g.type] = ('data' in grants ? grants.data.grants[g.type] : []) || [];
   } catch { /* 目录加载失败不阻塞基础信息编辑 */ }
-}
-function isResTypeAllChecked(type: string): boolean {
-  const items = resCatalog[type] || [];
-  return items.length > 0 && items.every((r) => (resGrants[type] || []).includes(r.id));
-}
-function isResTypeIndeterminate(type: string): boolean {
-  const items = resCatalog[type] || [];
-  const n = (resGrants[type] || []).length;
-  return n > 0 && n < items.length;
-}
-function toggleResType(type: string, checked: boolean): void {
-  resGrants[type] = checked ? (resCatalog[type] || []).map((r) => r.id) : [];
 }
 async function saveRoleGrants(roleId: string): Promise<void> {
   const grants: Record<string, string[]> = {};
@@ -285,4 +294,7 @@ onMounted(reload);
 .perm-group { margin-bottom: 8px; }
 .perm-group-title { font-weight: 600; }
 .perm-items { display: flex; flex-wrap: wrap; padding-left: 20px; }
+.res-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.res-sub-title { font-size: 12px; font-weight: 600; color: var(--el-color-primary); margin: 8px 0 4px; }
+.res-count { font-size: 12px; color: var(--color-text-secondary); }
 </style>

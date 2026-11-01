@@ -96,6 +96,7 @@ router.post('/tasks', (req: Request, res: Response) => {
     if (msg.startsWith('CONVERSATION_TRASHED')) { res.status(409).json({ error: '会话已在回收站，请先从回收站恢复', code: 'CONVERSATION_TRASHED' }); return; }
     if (msg.startsWith('CONVERSATION_ARCHIVED')) { res.status(409).json({ error: '会话已归档，请先恢复归档会话', code: 'CONVERSATION_ARCHIVED' }); return; }
     if (msg.startsWith('CONVERSATION_NOT_FOUND')) { res.status(404).json({ error: '会话不存在', code: 'CONVERSATION_NOT_FOUND' }); return; }
+    if (msg.includes('额度')) { res.status(402).json({ error: msg, code: 'QUOTA_EXCEEDED' }); return; }
     throw e;
   }
   res.json({ data: { taskId } });
