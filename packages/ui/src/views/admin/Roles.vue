@@ -29,7 +29,9 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialog" :title="editing ? '配置角色' : '新建角色'" width="560px">
+    <el-dialog v-model="dialog" :title="editing ? '配置角色' : '新建角色'" width="680px">
+      <el-tabs v-model="roleTab">
+      <el-tab-pane label="基础与权限" name="base">
       <el-form label-width="80px">
         <el-form-item label="名称">
           <el-input v-model="form.name" :disabled="editing?.is_system" />
@@ -62,6 +64,24 @@
           </div>
         </el-form-item>
       </el-form>
+      </el-tab-pane>
+      <el-tab-pane label="资源授权" name="resources">
+        <p class="res-tip">勾选该角色<strong>可以使用的</strong>智能体 / 模型 / Skill / 工具 / 插件（批量：勾一次，角色下所有用户生效）。未勾选的私有资源对该角色不可见。</p>
+        <div v-for="g in resCatalogGroups" :key="g.type" class="res-group">
+          <div class="res-group-head">
+            <el-checkbox
+              :model-value="isResTypeAllChecked(g.type)"
+              :indeterminate="isResTypeIndeterminate(g.type)"
+              @change="(v: any) => toggleResType(g.type, !!v)"
+            >{{ g.label }}<span class="res-count">（{{ (resGrants[g.type] || []).length }}/{{ g.items.length }}）</span></el-checkbox>
+          </div>
+          <el-checkbox-group v-model="resGrants[g.type]" class="res-items">
+            <el-checkbox v-for="r in g.items" :key="r.id" :value="r.id">{{ r.name }}</el-checkbox>
+            <span v-if="!g.items.length" class="dim">（暂无可选项）</span>
+          </el-checkbox-group>
+        </div>
+      </el-tab-pane>
+      </el-tabs>
       <template #footer>
         <el-button @click="dialog = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
@@ -72,6 +92,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue';
+import { reactive } from 'vue';
+import { api } from '../../api/client';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { adminApi, type AdminRole, type RoleBinding, type PermissionDef } from '../../api/admin';
 
@@ -85,6 +107,50 @@ const dialog = ref(false);
 const saving = ref(false);
 const editing = ref<RoleRow | null>(null);
 const form = ref({ name: '', parentId: null as string | null, remark: '', permissionIds: [] as string[] });
+
+/** 资源授权（2026-11-01 角色侧批量勾选）：数据写 resource_acl（principal_type='role'），与资源侧"授权名单"同源互认 */
+const roleTab = ref('base');
+const RES_GROUPS = [
+  { type: 'agent', label: '智能体' },
+  { type: 'model', label: '模型' },
+  { type: 'skill', label: 'Skill' },
+  { type: 'tool', label: '工具' },
+  { type: 'plugin', label: '插件' },
+];
+const resCatalog = reactive<Record<string, Array<{ id: string; name: string }>>>({});
+const resGrants = reactive<Record<string, string[]>>({ agent: [], model: [], skill: [], tool: [], plugin: [] });
+const resCatalogGroups = computed(() =>
+  RES_GROUPS.map((g) => ({ ...g, items: resCatalog[g.type] || [] })),
+);
+async function loadResData() {
+  try {
+    const [cat, grants] = await Promise.all([
+      api.get<{ catalog: Record<string, Array<{ id: string; name: string }>> }>('/resource-acl/catalog'),
+      editing.value
+        ? api.get<{ grants: Record<string, string[]> }>(`/resource-acl/role/${editing.value.id}`)
+        : Promise.resolve({ data: { grants: {} } as any }),
+    ]);
+    if ('data' in cat) for (const g of RES_GROUPS) resCatalog[g.type] = cat.data.catalog[g.type] || [];
+    for (const g of RES_GROUPS) resGrants[g.type] = ('data' in grants ? grants.data.grants[g.type] : []) || [];
+  } catch { /* 目录加载失败不阻塞基础信息编辑 */ }
+}
+function isResTypeAllChecked(type: string): boolean {
+  const items = resCatalog[type] || [];
+  return items.length > 0 && items.every((r) => (resGrants[type] || []).includes(r.id));
+}
+function isResTypeIndeterminate(type: string): boolean {
+  const items = resCatalog[type] || [];
+  const n = (resGrants[type] || []).length;
+  return n > 0 && n < items.length;
+}
+function toggleResType(type: string, checked: boolean): void {
+  resGrants[type] = checked ? (resCatalog[type] || []).map((r) => r.id) : [];
+}
+async function saveRoleGrants(roleId: string): Promise<void> {
+  const grants: Record<string, string[]> = {};
+  for (const g of RES_GROUPS) grants[g.type] = resGrants[g.type] || [];
+  await api.put(`/resource-acl/role/${roleId}`, { grants });
+}
 
 /** 权限树数据（el-tree，2026-11-01 用户要求树形权限） */
 const permTreeRef = ref();
@@ -159,6 +225,7 @@ function openCreate() {
   form.value = { name: '', parentId: null, remark: '', permissionIds: [] };
   dialog.value = true;
   syncTreeChecked();
+  loadResData();
 }
 
 function openEdit(role: RoleRow) {
@@ -171,6 +238,7 @@ function openEdit(role: RoleRow) {
   };
   dialog.value = true;
   syncTreeChecked();
+  loadResData();
 }
 
 async function save() {
@@ -185,6 +253,8 @@ async function save() {
     };
     const res = editing.value ? await adminApi.updateRole(editing.value.id, body) : await adminApi.createRole(body);
     if ('error' in res) { ElMessage.error(res.error); return; }
+    const roleId = editing.value?.id || (res as any).data?.id || (res as any).role?.id;
+    try { if (roleId) await saveRoleGrants(roleId); } catch (e: any) { ElMessage.warning(e?.message || '资源授权保存失败'); }
     ElMessage.success('已保存');
     dialog.value = false;
     await reload();

@@ -10,6 +10,7 @@
  *   以后改共享语义（如按组织共享）只改这里。
  */
 import { db } from '../db.js';
+import { aclExistsSql } from './resource-acl.js';
 import { getAuthMode, userHasPermission } from '../rbac.js';
 
 /** 共享平台 id 子查询（SQL 片段，用于 `x ${SHARED_PLATFORM_IN_SQL}`）。 */
@@ -31,9 +32,10 @@ export function canPublishShared(kind: ShareableKind, userId: string): boolean {
   return userHasPermission(userId, SHARE_PERMS[kind]);
 }
 
-/** 平台可读条件：自己的或共享的（userExpr/idExpr 带 alias 前缀，如 'p.user_id'）。 */
+/** 平台可读条件：自己的或共享的或被定向授权的（userExpr/idExpr 带 alias 前缀，如 'p.user_id'）。 */
 export function platformReadableCond(userExpr: string, idExpr: string): string {
-  return `(${userExpr} = ? OR ${idExpr} IN (SELECT id FROM platform WHERE is_public = 1))`;
+  // ACL（2026-11-01）：被定向授权的平台（含智能体依赖级联授予的）同样可读 —— 4 个参数（userId×4）
+  return `(${userExpr} = ? OR ${idExpr} IN (SELECT id FROM platform WHERE is_public = 1) OR ${aclExistsSql('platform', idExpr)})`;
 }
 
 /** 当前用户能否把平台设为/取消公共（multi 模式需 share.platform.publish 权限；guest 单机恒可）。 */

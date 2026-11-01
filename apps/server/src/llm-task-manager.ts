@@ -678,7 +678,7 @@ function rowToMsg(row: any): Message {
 
 function loadPlatform(platformId: string, userId: string): Platform | null {
   // 共享平台（is_public=1，管理员统一创建授权大家用）对全部用户可调用（2026-11-01）
-  const row = db.prepare(`SELECT * FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')}`).get(platformId, userId) as any;
+  const row = db.prepare(`SELECT * FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')}`).get(platformId, userId, userId, userId, userId) as any;
   // ★ 禁用闸（2026-10-18）：llm_enabled=0 的平台对服务端一切调用不可用
   //   （定时任务/记忆抽取/压缩/子智能体等显式钉平台的路径）—— 视同不存在，
   //   由各调用方的既有「平台不存在」分支兜住，不再向上游发注定 401 的请求。
@@ -786,7 +786,7 @@ function listAvailableModels(userId: string, args: Record<string, unknown>, task
   // 在这里剔除 = 大模型根本选不到它（候选面过滤），而不是选了再报 401/403 让它重试。
   let platformRows: any[];
   if (platformId) {
-    platformRows = db.prepare(`SELECT * FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')} AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(platformId, userId) as any[];
+    platformRows = db.prepare(`SELECT * FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')} AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(platformId, userId, userId, userId, userId) as any[];
   } else {
     // 可见平台 = 自己的 ∪ 共享平台 ∪ 含单模型共享的平台（list_models 是选型唯一清单源）
     platformRows = db.prepare(`SELECT * FROM platform WHERE (user_id = ? OR is_public = 1 OR id IN (SELECT platform_id FROM model WHERE is_public = 1)) AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(userId) as any[];

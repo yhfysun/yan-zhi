@@ -62,9 +62,65 @@ export function setAclUsers(
     const now = Date.now();
     for (const u of users) ins.run(type, id, u, 'user', now);
     for (const r of roles) ins.run(type, id, r, 'role', now);
+    // ★ 智能体依赖自动跟随（2026-11-01）：授权智能体时，其模型/平台/工具/Skill/子智能体
+    //   同步授给名单中的每个主体 —— 否则对方打开智能体是残缺的（引用资源不可见）。
+    if (type === 'agent') {
+      const deps = agentDependencyGrants(id);
+      for (const d of deps) {
+        for (const u of users) ins.run(d.type, d.id, u, 'user', now);
+        for (const r of roles) ins.run(d.type, d.id, r, 'role', now);
+      }
+    }
   });
   tx();
   return users.length + roles.length;
+}
+
+/**
+ * 智能体依赖展开（2026-11-01 用户要求「授权的智能体上面的默认工具/Skill/模型要自动带上」）：
+ * 授予智能体 = 自动授予其引用的 模型（model_id + 候选池）/ 平台 / 自定义工具 / Skill /
+ * 子智能体（递归，子智能体的依赖同样展开）。内置工具是代码内置全员可用，无需 ACL。
+ * 幂等（INSERT OR IGNORE）；取消智能体授权时依赖行保留（多授无害，不影响安全）。
+ */
+export function agentDependencyGrants(agentId: string): Array<{ type: AclType; id: string }> {
+  const out = new Map<string, { type: AclType; id: string }>();
+  const seenAgent = new Set<string>();
+  const parseArr = (raw: unknown): string[] => {
+    try {
+      const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    } catch { return []; }
+  };
+  const walk = (aid: string): void => {
+    if (seenAgent.has(aid)) return;
+    seenAgent.add(aid);
+    const a = db.prepare(
+      'SELECT platform_id, model_id, custom_tool_ids, skill_ids, sub_agent_ids, model_pools_json FROM agent WHERE id = ?',
+    ).get(aid) as any;
+    if (!a) return;
+    const add = (type: AclType, id: unknown): void => {
+      if (!id || typeof id !== 'string') return;
+      if (!resourceExists(type, id)) return;
+      out.set(`${type}:${id}`, { type, id });
+    };
+    if (a.platform_id) add('platform', a.platform_id);
+    if (a.model_id) add('model', a.model_id);
+    try {
+      const pools = typeof a.model_pools_json === 'string' ? JSON.parse(a.model_pools_json || '{}') : (a.model_pools_json || {});
+      for (const list of Object.values(pools || {})) {
+        if (!Array.isArray(list)) continue;
+        for (const e of list) {
+          if (e?.platformId) add('platform', e.platformId);
+          if (e?.modelId) add('model', e.modelId);
+        }
+      }
+    } catch { /* 候选池损坏 → 忽略该部分 */ }
+    for (const t of parseArr(a.custom_tool_ids)) add('tool', t);
+    for (const sk of parseArr(a.skill_ids)) add('skill', sk);
+    for (const sid of parseArr(a.sub_agent_ids)) { add('agent', sid); walk(sid); }
+  };
+  walk(agentId);
+  return [...out.values()];
 }
 
 /**

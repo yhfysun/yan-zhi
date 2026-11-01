@@ -96,7 +96,7 @@ const userId = (req: Request) => req.user!.userId;
 router.get('/', (req: Request, res: Response) => {
   // 共享平台（is_public=1，管理员统一创建授权给大家用）对本机所有用户可见；
   // shared 标记区分"别人的共享平台"（前端据此收敛写入口，写路径后端也挡）。
-  const rows = db.prepare(`SELECT * FROM platform WHERE ${platformReadableCond('user_id', 'id')} AND id NOT LIKE 'local-model-%' ORDER BY created_at DESC`).all(userId(req)) as any[];
+  const rows = db.prepare(`SELECT * FROM platform WHERE ${platformReadableCond('user_id', 'id')} AND id NOT LIKE 'local-model-%' ORDER BY created_at DESC`).all(userId(req), userId(req), userId(req), userId(req)) as any[];
   res.json({ data: rows.map((r) => ({ ...rowToP(r), shared: !!(r.is_public && r.user_id !== userId(req)) })) });
 });
 
@@ -295,7 +295,7 @@ router.post('/models/:mid/share', (req: Request, res: Response) => {
 router.get('/:pid/models', (req: Request, res: Response) => {
   const pid = req.params.pid;
   // 平台可读（自己的或共享的）→ 其模型全部可见；私有平台里**单模型共享**的行也可见
-  const platform = db.prepare(`SELECT id FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')}`).get(pid, userId(req));
+  const platform = db.prepare(`SELECT id FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')}`).get(pid, userId(req), userId(req), userId(req), userId(req));
   if (!platform) {
     // 平台本身不可读：仍允许看到其中单模型共享的行（不能 404 掉整个列表）
     const rows = db.prepare(`SELECT * FROM model WHERE platform_id = ? AND (is_public = 1 OR user_id = ? OR ${aclExistsSql('model', 'model.id')})
