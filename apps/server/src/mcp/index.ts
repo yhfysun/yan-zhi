@@ -21,7 +21,7 @@ function collectExtraDiscoverySources(userId?: string): Array<{ name: string; de
   const rows: Array<{ name: string; description?: string; source: 'custom' | 'mcp' }> = [];
   try {
     const customs = (userId
-      ? db.prepare('SELECT id, name, description FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId)
+      ? db.prepare('SELECT id, name, description FROM custom_tool WHERE (user_id = ? OR is_public = 1) AND enabled = 1').all(userId)
       : db.prepare('SELECT id, name, description FROM custom_tool WHERE enabled = 1').all()) as any[];
     for (const ct of customs) {
       rows.push({
