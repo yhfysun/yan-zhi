@@ -5,7 +5,8 @@ import { usePluginStore } from '../stores/plugin';
 import { resolvePluginComponent } from '../plugin-component-registry';
 import { loadPluginView } from '../plugin-runtime';
 import { SHELL_VIEW_LOADERS } from '../generated/build-modes';
-import { isElectron, isCapacitor } from '../api/client';
+import { isCapacitor } from '../api/client';
+import { useAuthStore } from '../stores/auth';
 import { activeMode, modeRoute, visibleModeDefs, isModeAvailable, setMode, type AppMode } from '../stores/mode';
 import { barePathHashTarget } from './barePathHash';
 
@@ -109,6 +110,32 @@ const routes: RouteRecordRaw[] = [
     name: 'login',
     component: () => import('../views/Login.vue'),
     meta: { title: '登录', guest: true },
+  },
+  {
+    // multi 模式首次安装：创建管理员账号（仅 setupRequired 时由守卫导入）
+    path: '/setup',
+    name: 'setup',
+    component: () => import('../views/Setup.vue'),
+    meta: { title: '初始化管理员', guest: true },
+  },
+  {
+    // 管理后台（multi 模式 + admin 权限点）：组织 / 角色 / 用户 / 权限
+    path: '/admin/users',
+    name: 'admin-users',
+    component: () => import('../views/admin/Users.vue'),
+    meta: { title: '用户管理', requiresAdmin: true },
+  },
+  {
+    path: '/admin/orgs',
+    name: 'admin-orgs',
+    component: () => import('../views/admin/Orgs.vue'),
+    meta: { title: '组织管理', requiresAdmin: true },
+  },
+  {
+    path: '/admin/roles',
+    name: 'admin-roles',
+    component: () => import('../views/admin/Roles.vue'),
+    meta: { title: '角色与权限', requiresAdmin: true },
   },
   {
     path: '/chat',
@@ -413,9 +440,21 @@ router.beforeEach(async (to) => {
     if (activeMode.value !== 'office') setMode('office');
     return { path: '/chat' };
   }
-  // 桌面端本地单机应用无登录概念：/login 直接回对话页
-  if (isElectron && to.path === '/login') {
-    return { path: '/chat' };
+  // multi 模式登录门禁：未初始化 → /setup 首次管理员创建；未登录 → /login。
+  // /license、/login、/setup、meta.guest 页面放行。
+  // ★ guest 本地单机不再拦截 /login（2026-11-01）：设置页提供「登录远程账号」入口，
+  //   本地用户经 /login 配服务器地址 + 登录 multi 后端（login 成功后自动带走 authRequired）。
+  const authStore = useAuthStore();
+  if (!authStore.statusLoaded) await authStore.fetchStatus();
+  if (authStore.authRequired) {
+    // 带着合法 token 刷新页面时，权限可能还没加载（模式过滤/管理页判定都依赖它）
+    if (!authStore.user && localStorage.getItem('auth_token')) {
+      await authStore.loadUser();
+    }
+    if (to.path !== '/setup' && to.path !== '/login' && to.path !== '/license' && !to.meta.guest) {
+      if (authStore.setupRequired) return { path: '/setup' };
+      if (!authStore.isLoggedIn) return { path: '/login' };
+    }
   }
   // 授权码门禁：未激活时拦截到授权页（license/login 页本身放行）
   if (to.path !== '/license' && to.path !== '/login' && !to.meta.guest) {
@@ -423,6 +462,19 @@ router.beforeEach(async (to) => {
     await licenseStore.init();
     if (!licenseStore.verified) {
       return { path: '/license' };
+    }
+  }
+  // multi 模式：模式路由还要过用户菜单权限（menu.<mode>），角色没给的模式弹回第一个可用模式
+  if (authStore.authRequired && authStore.isLoggedIn && Object.keys(MODE_ROUTE_KEYS).includes(to.path)) {
+    const modeKey = MODE_ROUTE_KEYS[to.path];
+    if (authStore.permissions.length && !authStore.hasPermission('menu.' + modeKey)) {
+      return { path: '/chat' };
+    }
+  }
+  // 管理页（/admin/**）与 meta.requiresAdmin 路由：仅拥有 admin 权限点的用户可进
+  if (to.meta.requiresAdmin) {
+    if (!authStore.isLoggedIn || !authStore.hasPermission('admin')) {
+      return { path: '/chat' };
     }
   }
   // ★ 版本档 + 构建期裁剪：目标路由属于未授权、或未编译进本包的模式 → 挡回首个可用模式。

@@ -90,7 +90,8 @@ function preflightResources(userId: string): PreflightContext {
   // 只收 model_id 会导致「画布选的是主键」的工作流被误判拦截（比不预检更糟）。
   const availableModelIds = new Set<string>();
   try {
-    for (const m of db.prepare('SELECT id, model_id FROM model WHERE user_id = ?').all(userId) as any[]) {
+    // 可用模型 = 自己的 ∪ 共享平台 ∪ 单模型共享（与 loadModelRow 的共享兜底同口径）
+    for (const m of db.prepare('SELECT id, model_id FROM model WHERE user_id = ? OR platform_id IN (SELECT id FROM platform WHERE is_public = 1) OR is_public = 1').all(userId) as any[]) {
       if (m?.id) availableModelIds.add(String(m.id));
       if (m?.model_id) availableModelIds.add(String(m.model_id));
     }

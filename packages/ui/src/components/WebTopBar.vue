@@ -7,6 +7,12 @@
 -->
 <template>
   <div class="title-bar">
+    <!-- 管理员视图切换横幅（2026-11-01）：以目标用户身份查看数据时常驻提示 -->
+    <div v-if="viewAsInfo && authStore.hasPermission('admin')" class="viewas-banner">
+      <el-icon :size="13"><User /></el-icon>
+      <span>正在查看 <b>{{ viewAsInfo.username }}</b> 的数据（你的操作都以该身份执行）</span>
+      <button class="viewas-exit" type="button" @click="exitViewAs">退出查看</button>
+    </div>
     <!-- 拖拽背景层：铺满整条标题栏，按钮等交互元素作为兄弟叠在其上方 -->
     <div class="drag-region"></div>
 
@@ -128,10 +134,16 @@
               <el-icon><Collection /></el-icon>
               <span>记忆管理</span>
             </el-dropdown-item>
+            <!-- 退出登录（2026-11-01 RBAC）：multi 模式登录态下的账号切换入口 -->
+            <el-dropdown-item divided command="__logout__">
+              <el-icon><SwitchButton /></el-icon>
+              <span>退出登录</span>
+            </el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <!-- 桌面端：本机身份头像（中性，不引导登录） -->
+      <!-- 桌面端：本机身份头像。RBAC 后（2026-11-01）登录页可配远程地址 + 登录 multi 真实账号，
+           "本地端登录入口是死的"的前提不再成立 → 菜单补「登录 / 切换账号」。 -->
       <el-dropdown v-else-if="!modeLocked && isElectron" trigger="click" popper-class="sidenav-user-popper yz-menu-popper" @visible-change="(v: boolean) => (avatarMenuOpen = v)" @command="onAvatarCommand">
         <span class="title-avatar is-local" :title="localIdentityTitle">
           {{ localIdentityInitial }}
@@ -148,6 +160,10 @@
             <el-dropdown-item command="/memory">
               <el-icon><Collection /></el-icon>
               <span>记忆管理</span>
+            </el-dropdown-item>
+            <el-dropdown-item divided command="__login__">
+              <el-icon><User /></el-icon>
+              <span>登录 / 切换账号</span>
             </el-dropdown-item>
           </el-dropdown-menu>
         </template>
@@ -192,9 +208,10 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search, VideoCamera,
+  Search, VideoCamera, SwitchButton,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
+import { getViewAs, setViewAs } from '../api/client';
 import { isElectron, isCapacitor } from '../api/client';
 import { ElMessage } from 'element-plus';
 import { plainRect } from '../composables/pluginWindowHotkeys';
@@ -462,6 +479,21 @@ const moreItems = computed<HoverMenuItem[]>(() => [
   { key: 'plugins', label: '插件管理', icon: Box, path: '/plugins' },
   ...pluginWindowMenus.value,
   { key: 'license-manage', label: '授权管理', icon: Key, path: '/license-manage' },
+  // 管理后台（RBAC，2026-11-01）：guest 本地单机 = 本机管理员也显示；multi 模式仅 admin 权限可见
+  ...(authStore.hasPermission('admin')
+    ? [
+        {
+          key: 'group-admin',
+          label: '管理后台',
+          icon: Setting,
+          children: [
+            { key: 'admin-users', label: '用户管理', icon: User, path: '/admin/users', desc: '账号与密码重置' },
+            { key: 'admin-orgs', label: '组织管理', icon: Collection, path: '/admin/orgs', desc: '部门/团队层级' },
+            { key: 'admin-roles', label: '角色权限', icon: Key, path: '/admin/roles', desc: '角色与授权' },
+          ],
+        },
+      ]
+    : []),
   { key: 'divider-settings', label: '', divider: true },
   { key: 'settings', label: '设置', icon: Setting, path: '/settings' },
   ...(pluginMenus.value.length
@@ -536,10 +568,27 @@ function onReload() {
 
 // 头像下拉：el-dropdown-item 的 command 会冒泡到 el-dropdown 的 command 事件，
 // 此前未挂监听导致「设置 / 记忆管理」点击无反应
+/** 管理员视图切换横幅（2026-11-01）：激活时顶栏常驻提示，一键退出回自己的数据 */
+const viewAsInfo = computed(() => (authStore.hasPermission('admin') ? getViewAs() : null));
+function exitViewAs() {
+  setViewAs(null);
+  window.location.reload();
+}
+
 function onAvatarCommand(cmd: string) {
   // 桌面端设置入口改开侧导航弹窗（Task 10.3）；Web 端保留 /settings 页内形式
   if (cmd === '/settings' && isElectron) {
     openSettingsDialog();
+    return;
+  }
+  // 账号切换（2026-11-01 RBAC）：退出清 token 回登录页；未登录直接去登录页
+  if (cmd === '__logout__') {
+    authStore.logout();
+    router.push('/login');
+    return;
+  }
+  if (cmd === '__login__') {
+    router.push('/login');
     return;
   }
   if (cmd) router.push(cmd);
@@ -633,6 +682,24 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 管理员视图切换横幅（2026-11-01） */
+.viewas-banner {
+  position: absolute; left: 0; right: 0; top: 100%; z-index: 60;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 5px 16px; font-size: 12.5px;
+  background: var(--el-color-warning-light-9, #fdf6ec);
+  color: var(--el-color-warning-dark-2, #b88230);
+  border-bottom: 1px solid var(--el-color-warning-light-7, #f3d19e);
+  -webkit-app-region: no-drag;
+}
+.viewas-banner b { font-weight: 700; }
+.viewas-exit {
+  border: 1px solid currentColor; border-radius: 999px;
+  background: transparent; color: inherit;
+  font-size: 11.5px; padding: 1px 10px; cursor: pointer;
+}
+.viewas-exit:hover { background: currentColor; color: #fff; }
+
 .title-bar {
   position: relative;
   display: flex;

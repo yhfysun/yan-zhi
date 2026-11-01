@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api, setToken, isLocalClient } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
+import { setPermittedModes, allModeDefs } from './mode';
 
 export interface UserInfo {
   id: string;
@@ -14,6 +15,60 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<UserInfo | null>(null);
   const loading = ref(false);
   const error = ref('');
+
+  // ===== 服务鉴权状态（multi 模式 = 后端作为共享服务，远程连接必须登录） =====
+  const authMode = ref<'guest' | 'multi'>('guest');
+  const authRequired = ref(false);
+  const setupRequired = ref(false);
+  const permissions = ref<string[]>([]);
+  const isAdmin = ref(false);
+  /** 首次登录未改密码（默认管理员）：true 时登录页弹出强制改密表单（2026-11-01） */
+  const mustChangePassword = ref(false);
+  const statusLoaded = ref(false);
+
+  /** 把权限清单映射为"模式放行清单"：menu.<modeKey> 命中 → 该模式放行。
+   *  admin 权限点全放行；清单为空（guest/未加载）→ null 不收敛。 */
+  function applyPermissionToModes(): void {
+    if (!permissions.value.length || permissions.value.includes('admin')) {
+      setPermittedModes(null);
+      return;
+    }
+    const modes = allModeDefs.value
+      .filter((d) => hasPermission('menu.' + d.key))
+      .map((d) => d.key);
+    setPermittedModes(modes.length ? modes : ['__none__']);
+  }
+
+  /** 拉取 /auth/status（幂等可重复调；失败按 guest 处理，不阻断启动）。 */
+  async function fetchStatus(): Promise<void> {
+    try {
+      const result = await api.get<{ mode: 'guest' | 'multi'; authRequired: boolean; setupRequired: boolean }>('/auth/status');
+      if ('data' in result) {
+        authMode.value = result.data.mode;
+        authRequired.value = !!result.data.authRequired;
+        setupRequired.value = !!result.data.setupRequired;
+      }
+    } catch { /* 后端未就绪等，保持默认 guest */ }
+    statusLoaded.value = true;
+  }
+
+  /** 首次安装：创建管理员（仅 multi 模式且未初始化时后端才放行）。 */
+  async function setupAdmin(username: string, password: string): Promise<boolean> {
+    error.value = '';
+    loading.value = true;
+    const result = await api.post<{ token: string; user: UserInfo }>('/auth/setup', { username, password });
+    loading.value = false;
+    if ('error' in result) {
+      error.value = result.error;
+      return false;
+    }
+    setToken(result.data.token);
+    user.value = result.data.user;
+    setupRequired.value = false;
+    authRequired.value = true;
+    await loadUser();
+    return true;
+  }
 
   /**
    * 本地模式的**内部数据归属身份**（不是"登录用户"）。
@@ -57,6 +112,14 @@ export const useAuthStore = defineStore('auth', () => {
     //   身份被误标成 guest（表现为"莫名其妙已登录"）。见 api/backend-ready.ts。
     await waitForBackend();
 
+    // 先探服务鉴权模式（multi = 远程共享后端）：multi 下未登录绝不取 guest token，
+    // 否则壳端会把"guest"当成身份、请求全部 401 后表现为"数据全空"（与 2026-09-13 教训同族）。
+    await fetchStatus();
+    if (authRequired.value) {
+      const hasToken = !!localStorage.getItem('auth_token');
+      if (!hasToken) return; // 留给路由守卫重定向 /login 或 /setup
+    }
+
     const token = localStorage.getItem('auth_token');
     if (!token) {
       // 本机单机端（桌面 / 移动）本地模式：取 guest token，使平台等数据走后端 API（data.db），
@@ -77,17 +140,33 @@ export const useAuthStore = defineStore('auth', () => {
           setToken(guest.data.token);
           user.value = guest.data.user;
         }
+        // ★ 不提前 return（2026-11-01）：guest 模式 /auth/me 现在返回"本机管理员"全树权限，
+        //   首次启动（无旧 token）也必须走一遍 me —— 否则 permissions 恒空，
+        //   管理菜单 / 共享开关 / 账号区全都静默不显示（"功能存在但不可发现"）。
+        //   非本地客户端（Web）无 token 仍直接返回：未登录状态无权限语义，交给路由守卫。
+      } else {
+        return;
       }
-      return;
     }
     loading.value = true;
-    const result = await api.get<{ user: UserInfo }>('/auth/me');
+    const result = await api.get<{ user: UserInfo; isAdmin?: boolean; permissions?: string[]; authMode?: 'guest' | 'multi' }>('/auth/me');
     loading.value = false;
     if ('data' in result) {
       user.value = result.data.user;
+      isAdmin.value = !!result.data.isAdmin;
+      permissions.value = result.data.permissions || [];
+      if (result.data.authMode) authMode.value = result.data.authMode;
+      mustChangePassword.value = !!(result.data as any).mustChangePassword;
+      applyPermissionToModes();
     } else {
-      // 本地模式：鉴权已屏蔽，/auth/me 失败时不清 token、不强制登出，回退内部 guest 身份。
+      // 鉴权失败：multi 模式（后端要求登录）时清 token 引导去登录页；
+      // 本地 guest 模式鉴权已屏蔽，/auth/me 失败时不清 token、不强制登出，回退内部 guest 身份。
       // ★ 这个回退值会被 `isGuestIdentity` 识别 → `isLoggedIn` 为 false（不显示成已登录）。
+      if (authRequired.value) {
+        setToken(null);
+        user.value = null;
+        return;
+      }
       user.value = { id: 'guest', username: 'guest', email: null };
     }
   }
@@ -103,6 +182,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
     setToken(result.data.token);
     user.value = result.data.user;
+    mustChangePassword.value = !!(result.data as any).mustChangePassword;
     return true;
   }
 
@@ -123,7 +203,23 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     setToken(null);
     user.value = null;
+    permissions.value = [];
+    isAdmin.value = false;
+    mustChangePassword.value = false;
+    setPermittedModes(null);
   }
 
-  return { user, loading, error, isLoggedIn, isGuest, useServerApi, loadUser, login, register, logout };
+  /** 是否拥有某权限点（admin 权限点拥有一切由后端保证，这里含树形前缀判断）。 */
+  function hasPermission(key: string): boolean {
+    if (!permissions.value.length) return false;
+    if (permissions.value.includes('admin')) return true;
+    if (permissions.value.includes(key)) return true;
+    return permissions.value.some((p) => key.startsWith(p + '.'));
+  }
+
+  return {
+    user, loading, error, isLoggedIn, isGuest, useServerApi,
+    authMode, authRequired, setupRequired, permissions, isAdmin, statusLoaded,
+    fetchStatus, setupAdmin, loadUser, login, register, logout, hasPermission, mustChangePassword,
+  };
 });

@@ -50,6 +50,8 @@
             <div class="platform-url">{{ p.apiUrl }}</div>
           </div>
           <el-tag v-if="p.isBuiltin" size="small" type="warning" effect="dark">内置</el-tag>
+          <el-tag v-if="p.shared" size="small" type="success" effect="dark">共享</el-tag>
+          <el-tag v-else-if="p.isPublic" size="small" type="success" effect="plain">已共享</el-tag>
           <span :class="['status-dot', p.status]" :title="p.lastHealthAt ? `最近健康：${p.lastHealthAt}` : ''"></span>
         </div>
         <div class="platform-meta">
@@ -61,6 +63,7 @@
         <div class="card-actions">
           <el-button size="small" :loading="testing === p.id" @click="test(p.id)">测试</el-button>
           <el-button size="small" @click="openPlatform(p.id)">管理模型</el-button>
+          <template v-if="!p.shared">
               <el-button v-if="!p.isBuiltin || p.presetKey" size="small" @click="editPlatform(p)">编辑</el-button>
               <!-- 禁用开关（平台级 llm_enabled）：Token 过期等场景一键停用整平台，
                    模型行保留；下拉隐藏 + 全部调用通道（代理/定时任务）拒绝 -->
@@ -70,7 +73,16 @@
                 :loading="togglingId === p.id"
                 @click="toggleDisabled(p)"
               >{{ p.llmEnabled === false ? '启用' : '禁用' }}</el-button>
+              <!-- 共享开关（管理员统一创建语义）：需 share.platform.publish 权限（guest 单机恒有） -->
+              <el-button
+                v-if="canShare"
+                size="small"
+                :type="p.isPublic ? 'info' : 'success'"
+                :loading="sharingId === p.id"
+                @click="toggleShare(p)"
+              >{{ p.isPublic ? '取消共享' : '共享' }}</el-button>
               <el-button size="small" type="danger" @click="del(p.id)">删除</el-button>
+          </template>
         </div>
       </el-card>
       <el-empty v-if="store.platforms.length === 0" description="还没有平台，点击右下角新增" />
@@ -239,6 +251,7 @@ import { Plus, Connection, Download, Delete, RefreshLeft } from '@element-plus/i
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { usePlatformStore } from '../stores';
+import { useAuthStore } from '../stores/auth';
 import { api } from '../api/client';
 import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
@@ -706,6 +719,33 @@ async function del(id: string) {
     ElMessage.success('已删除');
   } catch {}
 }
+
+/** 共享开关（管理员统一创建语义）：guest 单机恒可；multi 模式需 share.platform.publish 权限 */
+const authStore = useAuthStore();
+const canShare = computed(() => {
+  if (!authStore.authRequired) return true;
+  return authStore.hasPermission('share.platform.publish');
+});
+const sharingId = ref('');
+async function toggleShare(p: any) {
+  const toPublic = !p.isPublic;
+  if (toPublic) {
+    const ok = await ElMessageBox.confirm(
+      '共享后所有用户都能看到并使用该平台的模型（API Key 一并共用）。确认共享？',
+      '共享平台', { type: 'warning' },
+    ).catch(() => false);
+    if (!ok) return;
+  }
+  sharingId.value = p.id;
+  try {
+    await store.setPlatformShared(p.id, toPublic);
+    ElMessage.success(toPublic ? '已共享：全部用户可见可用' : '已取消共享');
+  } catch (e: any) {
+    ElMessage.error('操作失败: ' + (e?.message || e));
+  } finally {
+    sharingId.value = '';
+  }
+}
 </script>
 
 <style scoped>
@@ -713,7 +753,24 @@ async function del(id: string) {
 .platform-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
 .filter-select { width: 116px; }
 
-.platform-card { background: var(--glass-bg); backdrop-filter: var(--glass-filter); }
+.platform-card {
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-filter);
+  /* ★ 3D 层次（2026-11-01 用户实报「卡片 3D 感没了」）：
+     静置 = 双层软阴影（贴地 1px 锐影 + 6px 漫射影）压出浮起感；
+     悬停 = 上浮 2px + 阴影加深。皮肤若下发卡片变体底图，阴影叠加在其上不冲突
+     （skin.css 只在 hover 改 border/box-shadow 光晕，静置态无阴影规则）。 */
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 6px 18px rgba(15, 23, 42, 0.08);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+.platform-card:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 2px 4px rgba(15, 23, 42, 0.07),
+    0 14px 30px rgba(15, 23, 42, 0.14);
+}
 /* 禁用的平台整卡降透明度 + 名称变灰，一眼可辨 */
 .platform-card-disabled { opacity: 0.55; }
 .platform-card-disabled .platform-name { text-decoration: line-through; color: var(--color-text-secondary); }
@@ -729,7 +786,12 @@ async function del(id: string) {
 .status-dot.unknown { background: #94a3b8; }
 .platform-meta { margin-top: 12px; font-size: 13px; color: var(--color-text-secondary); display: flex; gap: 6px; }
 .meta-sep { opacity: 0.5; }
-.card-actions { margin-top: 12px; display: flex; gap: 8px; }
+/* ★ 卡片操作行最多 6 个按钮（测试/管理模型/编辑/禁用/共享/删除），340px 卡片装不下一行
+   → 必须 wrap，否则溢出被 el-card(overflow:hidden) 裁掉「删除」+ 出横向滚动条（2026-11-01 用户实报）。
+   EP 自带 .el-button+.el-button{margin-left:12px} 会与 gap 叠加成 20px 且换行后行首仍缩进
+   → 统一归零，间距只由 gap 控制（同 shop.css 的 .shop-mcard-actions 写法）。 */
+.card-actions { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px 8px; }
+.card-actions .el-button + .el-button { margin-left: 0; }
 .form-tip { font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; line-height: 1.5; }
 .form-tip code { background: rgba(59, 130, 246, 0.1); padding: 1px 4px; border-radius: 3px; font-family: "JetBrains Mono", "Cascadia Code", monospace; }
 

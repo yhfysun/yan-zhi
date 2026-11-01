@@ -64,18 +64,17 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <!-- ★★★ 本机单机端（Capacitor 移动端）→ 中性「本机」头像，**不给登录入口**
-                 （2026-09-27 用户：「移动端不应该也是默认登录？」）。
-                 判据：移动端与桌面端一样跑内嵌后端、身份恒为 guest（本地自带，非用户登录），
-                 所以两端该用同一个形态。Web 端才真有登录需求，保留「未登录 → 登录入口」。
-                 此前这里是无条件 `v-else` → 移动端必然渲染出「登录」死入口
-                 （点了进 /login，而本地端登不进任何账号）。 -->
+            <!-- ★ 本机单机端（Capacitor 移动端 / 桌面移动布局）→ 中性「本机」头像。
+                 2026-09-27 用户：「移动端不应该也是默认登录？」——当时本地端登录页
+                 登不进任何账号，入口是死的；**RBAC 之后语义已变**（2026-11-01）：
+                 登录页可配远程服务器地址 + 登录 multi 后端真实账号，入口不再是死的。
+                 所以菜单按登录态分流：已登录 → 退出登录；本地 guest → 登录/切换账号。 -->
             <el-dropdown v-else-if="isLocalClient" trigger="click">
               <span class="mobile-user-avatar is-local" title="本机">{{ localIdentityInitial }}</span>
               <template #dropdown>
                 <el-dropdown-menu>
                   <div class="user-dropdown-header">
-                    <span class="user-dropdown-name">本机</span>
+                    <span class="user-dropdown-name">{{ authStore.isLoggedIn ? authStore.user?.username : '本机' }}</span>
                   </div>
                   <el-dropdown-item @click="$router.push('/settings')">
                     <el-icon><Setting /></el-icon>
@@ -84,6 +83,14 @@
                   <el-dropdown-item @click="$router.push('/memory')">
                     <el-icon><Collection /></el-icon>
                     <span>记忆管理</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item v-if="authStore.isLoggedIn" divided @click="logoutFromMenu">
+                    <el-icon><SwitchButton /></el-icon>
+                    <span>退出登录</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item v-else divided @click="$router.push('/login')">
+                    <el-icon><Avatar /></el-icon>
+                    <span>登录 / 切换账号</span>
                   </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -239,6 +246,12 @@ const isLocalClient = typeof window !== 'undefined'
   && (!!(window as any).electronAPI?.isElectron || !!(window as any).Capacitor?.isNativePlatform);
 /** 本机身份首字母（与 WebTopBar 桌面端同一表述，不暴露 guest 这个内部身份） */
 const localIdentityInitial = computed(() => '本');
+
+/** 头像菜单「退出登录」（2026-11-01 RBAC）：清 token → 回登录页。 */
+function logoutFromMenu() {
+  authStore.logout();
+  setTimeout(() => { window.location.href = '/#/login'; window.location.reload(); }, 300);
+}
 
 /**
  * 独立子窗口路由（meta.bare）：不套应用外壳。
@@ -756,6 +769,11 @@ body {
   padding-right: 0;
 }
 .platform-desktop .page { padding: 20px 24px; }
+
+/* 页面级搜索工具栏（SearchToolbar 直接放在 .page 下时）与下方内容留出呼吸空间
+   —— 2026-11-01 用户实报「贴这么近」：/models 搜索框紧贴平台卡片。
+   包一层容器的页面（如 Agents 的 .agents-content）不受影响，各自控制间距。 */
+.page > .st-bar { margin-bottom: 14px; }
 
 /* ===== Web 端专属布局：WebTopBar 在外层（apps/web/src/App.vue）接管主导航，
        此处只负责让 main-content 顶部避开 36px 顶栏，并清掉原来的 52px SideNav 留位 ===== */

@@ -242,7 +242,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Setting, UserFilled, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, UserFilled, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document, OfficeBuilding } from '@element-plus/icons-vue';
 import { Code } from 'lucide-vue-next';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { useAuthStore } from '../stores/auth';
@@ -342,10 +342,21 @@ const pluginMoreItems = computed(() =>
  *  ★ 独立模式窗口（?window=mode）里隐藏所有**模式切换**类条目（builtinNavItems 里带 mode 的）——
  *    窗口锁定单模式（用户拍板 2026-10-18）；任务/浏览器/消息等非模式条目保留。 */
 const navItems = computed<NavItem[]>(() =>
-  [...builtinNavItems, ...pluginNavItems.value]
+  [...builtinNavItems, ...adminNavItems.value, ...pluginNavItems.value]
     .filter((i) => !(i as any).hideOnMobile || !isMobile.value)
     .filter((i) => !i.mode || (!isModeWindow() && visibleModeDefs.value.some((d) => d.key === i.mode))),
 );
+
+/** 管理后台入口（2026-11-01）：guest 本地单机 = 本机管理员（后端 me 返回全树权限）也显示；
+ *  multi 模式下只有拥有 admin 权限点的登录用户可见。 */
+const adminNavItems = computed<NavItem[]>(() => {
+  if (!authStore.hasPermission('admin')) return [];
+  return [
+    { path: '/admin/users', label: '用户管理', tabLabel: '用户管理', icon: UserFilled, kind: 'route' as const, group: '系统' },
+    { path: '/admin/orgs', label: '组织管理', tabLabel: '组织管理', icon: OfficeBuilding, kind: 'route' as const, group: '系统' },
+    { path: '/admin/roles', label: '角色权限', tabLabel: '角色权限', icon: Key, kind: 'route' as const, group: '系统' },
+  ];
+});
 /** 桌面展开态按 group 分组渲染 */
 const navGroups = computed(() => {
   const groups: Array<{ label: string; items: NavItem[] }> = [];

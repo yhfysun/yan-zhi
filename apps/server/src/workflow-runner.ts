@@ -238,7 +238,8 @@ function wrapHandler(h: NodeHandler, run: WorkflowRunState): NodeHandler {
 // ============================================================
 
 function loadPlatformRow(platformId: string, userId: string): Platform | null {
-  const row = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId) as any;
+  // 共享平台（is_public=1）对全部用户可调用
+  const row = db.prepare(`SELECT * FROM platform WHERE id = ? AND (user_id = ? OR is_public = 1)`).get(platformId, userId) as any;
   if (!row) return null;
   return {
     id: row.id,

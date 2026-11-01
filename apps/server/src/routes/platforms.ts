@@ -3,6 +3,8 @@ import { v4 as uuid } from 'uuid';
 import { MODEL_PROVIDER_PRESETS, findProviderPreset, normalizeProtocol } from '@yan-zhi/shared';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
+import { platformReadableCond, SHARED_PLATFORM_IN_SQL, canPublishShared } from '../services/platform-share.js';
+import { aclExistsSql } from '../services/resource-acl.js';
 
 import {
   listApiKeys,
@@ -52,6 +54,8 @@ const rowToP = (r: any) => ({
   preset_key: r.preset_key || null,
   pause_min_ms: r.pause_min_ms || 0,
   pause_max_ms: r.pause_max_ms || 0,
+  /** 共享平台（管理员统一创建授权大家用）：读可用、写归 owner（2026-11-01 RBAC） */
+  is_public: !!r.is_public,
   created_at: r.created_at,
 });
 
@@ -80,6 +84,8 @@ const rowToM = (r: any) => ({
   visible: r.visible === undefined || r.visible === null ? 1 : r.visible,
   is_default: r.is_default,
   is_builtin: !!r.is_builtin,
+  /** 单模型共享（私有平台里挑几个模型授权大家用） */
+  is_public: !!r.is_public,
   created_at: r.created_at,
 });
 
@@ -88,8 +94,26 @@ const userId = (req: Request) => req.user!.userId;
 // === Platforms ===
 
 router.get('/', (req: Request, res: Response) => {
-  const rows = db.prepare("SELECT * FROM platform WHERE user_id = ? AND id NOT LIKE 'local-model-%' ORDER BY created_at DESC").all(userId(req));
-  res.json({ data: rows.map(rowToP) });
+  // 共享平台（is_public=1，管理员统一创建授权给大家用）对本机所有用户可见；
+  // shared 标记区分"别人的共享平台"（前端据此收敛写入口，写路径后端也挡）。
+  const rows = db.prepare(`SELECT * FROM platform WHERE ${platformReadableCond('user_id', 'id')} AND id NOT LIKE 'local-model-%' ORDER BY created_at DESC`).all(userId(req)) as any[];
+  res.json({ data: rows.map((r) => ({ ...rowToP(r), shared: !!(r.is_public && r.user_id !== userId(req)) })) });
+});
+
+// POST /:id/share —— 设为/取消公共平台（管理员统一创建语义）。
+// 权限：owner 且 multi 模式需 share.platform.publish（guest 单机恒可）。
+router.post('/:id/share', (req: Request, res: Response) => {
+  const pid = req.params.id;
+  const existing = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req)) as any;
+  if (!existing) { res.status(404).json({ error: '平台不存在或无权共享（只有平台归属者能设置共享）' }); return; }
+  if (!canPublishShared('platform', userId(req))) {
+    res.status(403).json({ error: '共享平台需要管理员授权（share.platform.publish）', code: 'FORBIDDEN' });
+    return;
+  }
+  const isPublic = !!req.body?.isPublic;
+  db.prepare('UPDATE platform SET is_public = ? WHERE id = ?').run(isPublic ? 1 : 0, pid);
+  const row = db.prepare('SELECT * FROM platform WHERE id = ?').get(pid);
+  res.json({ data: rowToP(row) });
 });
 
 router.post('/', (req: Request, res: Response) => {
@@ -248,15 +272,39 @@ router.patch('/:id', (req: Request, res: Response) => {
 
 router.get('/all-models', (req: Request, res: Response) => {
 
-  const rows = db.prepare("SELECT * FROM model WHERE user_id = ? AND id NOT LIKE 'local-model-%' AND platform_id NOT LIKE 'local-model-%' ORDER BY platform_id, is_default DESC").all(userId(req));
+  // 可见模型 = 自己的 ∪ 共享平台的 ∪ 单模型共享（is_public=1）
+  const rows = db.prepare(`SELECT * FROM model WHERE (user_id = ? OR platform_id ${SHARED_PLATFORM_IN_SQL} OR is_public = 1 OR ${aclExistsSql('model', 'model.id')})
+    AND id NOT LIKE 'local-model-%' AND platform_id NOT LIKE 'local-model-%' ORDER BY platform_id, is_default DESC`).all(userId(req), userId(req), userId(req), userId(req));
   res.json({ data: rows.map(rowToM) });
+});
+
+// POST /models/:mid/share —— 单模型共享开关（私有平台里挑几个模型授权大家用）。
+// 权限：模型归属者 + multi 模式需 share.model.publish（guest 单机恒可）。
+router.post('/models/:mid/share', (req: Request, res: Response) => {
+  const mid = req.params.mid;
+  const m = db.prepare('SELECT * FROM model WHERE id = ? AND user_id = ?').get(mid, userId(req)) as any;
+  if (!m) { res.status(404).json({ error: '模型不存在或无权共享（只有模型归属者能设置共享）' }); return; }
+  if (!canPublishShared('model', userId(req))) {
+    res.status(403).json({ error: '共享模型需要管理员授权（share.model.publish）', code: 'FORBIDDEN' });
+    return;
+  }
+  db.prepare('UPDATE model SET is_public = ? WHERE id = ?').run(req.body?.isPublic ? 1 : 0, mid);
+  res.json({ data: rowToM(db.prepare('SELECT * FROM model WHERE id = ?').get(mid)) });
 });
 
 router.get('/:pid/models', (req: Request, res: Response) => {
   const pid = req.params.pid;
-  const platform = db.prepare('SELECT id FROM platform WHERE id = ? AND user_id = ?').get(pid, userId(req));
-  if (!platform) { res.status(404).json({ error: '平台不存在' }); return; }
-  const rows = db.prepare('SELECT * FROM model WHERE platform_id = ? AND user_id = ? ORDER BY is_default DESC').all(pid, userId(req));
+  // 平台可读（自己的或共享的）→ 其模型全部可见；私有平台里**单模型共享**的行也可见
+  const platform = db.prepare(`SELECT id FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')}`).get(pid, userId(req));
+  if (!platform) {
+    // 平台本身不可读：仍允许看到其中单模型共享的行（不能 404 掉整个列表）
+    const rows = db.prepare(`SELECT * FROM model WHERE platform_id = ? AND (is_public = 1 OR user_id = ? OR ${aclExistsSql('model', 'model.id')})
+    ORDER BY is_default DESC`).all(pid, userId(req), userId(req), userId(req), userId(req));
+    if (rows.length) { res.json({ data: rows.map(rowToM) }); return; }
+    res.status(404).json({ error: '平台不存在' });
+    return;
+  }
+  const rows = db.prepare(`SELECT * FROM model WHERE platform_id = ? AND (user_id = ? OR is_public = 1 OR user_id = (SELECT user_id FROM platform WHERE id = ?)) ORDER BY is_default DESC`).all(pid, userId(req), pid);
   res.json({ data: rows.map(rowToM) });
 });
 

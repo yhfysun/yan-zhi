@@ -10,11 +10,24 @@
         <div class="auth-logo">
           <img src="../assets/login-logo.png" alt="言智" draggable="false" />
         </div>
-        <h2>{{ isLogin ? '登录' : '注册' }}</h2>
-        <p>{{ isLogin ? '欢迎回来，登录以跨设备同步任务' : '创建账号以跨设备同步数据' }}</p>
+        <template v-if="step === 'changePwd'">
+          <h2>设置新密码</h2>
+          <p>账号 <b>{{ authStore.user?.username }}</b> 首次登录，请设置新密码，下次登录即用</p>
+        </template>
+        <template v-else>
+          <h2>{{ isLogin ? '登录' : '注册' }}</h2>
+          <p>{{ isLogin ? '欢迎回来，登录以跨设备同步任务' : '创建账号以跨设备同步数据' }}</p>
+        </template>
       </div>
 
-      <el-form @submit.prevent="submit" class="auth-form">
+      <!-- 二段式步骤指示（第二步改密时显示）：登录验证 ✓ → 设置密码 -->
+      <div v-if="step === 'changePwd'" class="step-indicator" aria-label="进度">
+        <span class="step-item done"><i class="step-dot"><el-icon><Check /></el-icon></i><span>登录验证</span></span>
+        <span class="step-bar" />
+        <span class="step-item active"><i class="step-dot">2</i><span>设置密码</span></span>
+      </div>
+
+      <el-form v-if="step !== 'changePwd'" @submit.prevent="submit" class="auth-form">
         <el-form-item>
           <el-input
             v-model="username"
@@ -55,26 +68,86 @@
         </el-form-item>
       </el-form>
 
-      <div class="auth-footer">
+      <!-- 二段式第二步：改密时整卡切换，登录表单/服务器地址全部隐藏 -->
+      <el-form v-if="step === 'changePwd'" @submit.prevent="submitChangePwd" class="auth-form change-form">
+        <div class="account-chip">
+          <el-icon><User /></el-icon>
+          <span>{{ authStore.user?.username }}</span>
+          <span class="chip-tag">首次登录</span>
+        </div>
+        <el-form-item>
+          <el-input v-model="newPwd" type="password" placeholder="设置新密码（至少 6 位）" size="large" show-password :prefix-icon="Lock" />
+        </el-form-item>
+        <el-form-item>
+          <el-input v-model="newPwd2" type="password" placeholder="再次输入新密码" size="large" show-password :prefix-icon="Lock" @keyup.enter="submitChangePwd" />
+        </el-form-item>
+        <transition name="form-fade">
+          <el-alert v-if="changePwdError" :title="changePwdError" type="error" show-icon :closable="false"></el-alert>
+        </transition>
+        <p class="pwd-tip">至少 6 位，建议包含字母和数字。设置后下次登录使用新密码。</p>
+        <el-form-item>
+          <el-button class="submit-btn" type="primary" size="large" native-type="submit" :loading="changingPwd">
+            完成并进入
+          </el-button>
+        </el-form-item>
+        <el-button text size="small" class="back-login-link" @click="backToLogin">返回重新登录</el-button>
+      </el-form>
+
+      <template v-else>
+      <!-- multi 多用户模式：账号由管理员在后台创建，不开放自助注册 -->
+      <div v-if="!hideRegister" class="auth-footer">
         <span v-if="isLogin">还没有账号？</span>
         <span v-else>已有账号？</span>
         <el-button text type="primary" class="toggle-link" @click="isLogin = !isLogin; authStore.error = ''">
           {{ isLogin ? '去注册' : '去登录' }}
         </el-button>
       </div>
+
+      <!-- 服务器地址：轻量壳连远程后端（打包内置地址在此显示，可修改；保存后刷新生效） -->
+      <div class="server-field">
+        <el-divider content-position="left">服务器地址</el-divider>
+        <div class="server-row">
+          <el-input v-model="serverBase" placeholder="http://192.168.1.100:3001" clearable size="small" />
+          <el-button size="small" @click="saveServerBase">保存</el-button>
+        </div>
+        <p v-if="bakedBase" class="server-hint">出厂默认：{{ bakedBase }}（如需恢复，清空此处保存）</p>
+      </div>
+      </template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { User, Lock, Message, ArrowLeft } from '@element-plus/icons-vue';
+import { User, Lock, Message, ArrowLeft, Check } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth';
+import { getEffectiveServerBase, getBakedServerBase, setServerBase } from '../api/client';
+import { api } from '../api/client';
 
 const router = useRouter();
 const authStore = useAuthStore();
+// 显示"生效地址"（打包内置的或用户改过的），可直接改成新地址保存
+const serverBase = ref(getEffectiveServerBase());
+const bakedBase = getBakedServerBase();
+/** multi 模式（后端要求登录）下不开放自助注册：账号由管理员创建 */
+const hideRegister = ref(false);
+
+onMounted(async () => {
+  if (!authStore.statusLoaded) await authStore.fetchStatus();
+  hideRegister.value = authStore.authRequired;
+});
+
+function saveServerBase() {
+  try {
+    const v = setServerBase(serverBase.value);
+    ElMessage.success(v ? '已保存，即将刷新生效' : '已清除，即将刷新生效');
+    setTimeout(() => window.location.reload(), 600);
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '地址格式不正确');
+  }
+}
 
 // 返回上一页；若无历史则回到聊天主页
 function goBack() {
@@ -87,10 +160,55 @@ const username = ref('');
 const password = ref('');
 const email = ref('');
 
+// ===== 首次登录强制改密（二段式：登录验证 → 设置密码）=====
+const step = ref<'account' | 'changePwd'>('account');
+const newPwd = ref('');
+const newPwd2 = ref('');
+const changingPwd = ref(false);
+const changePwdError = ref('');
+function backToLogin() {
+  // 返回第一步：清掉半程登录态，重新走登录
+  authStore.logout();
+  step.value = 'account';
+  newPwd.value = '';
+  newPwd2.value = '';
+  changePwdError.value = '';
+}
+async function submitChangePwd() {
+  changePwdError.value = '';
+  if (newPwd.value.length < 6) { changePwdError.value = '新密码至少 6 位'; return; }
+  if (newPwd.value !== newPwd2.value) { changePwdError.value = '两次输入的密码不一致'; return; }
+  changingPwd.value = true;
+  const r = await api.post('/auth/change-password', { newPassword: newPwd.value });
+  changingPwd.value = false;
+  if ('error' in r) { changePwdError.value = r.error; return; }
+  ElMessage.success('密码已设置，欢迎回来');
+  authStore.mustChangePassword = false;
+  router.replace('/chat');
+}
+
 async function submit() {
+  // ★ 服务器地址草稿先落袋（2026-11-01）：API 基址在页面加载时确定，改了地址不保存
+  //   就点登录会打到旧后端（看着像"账号密码错误"）。检测到差异 → 保存并刷新重进。
+  if (serverBase.value.trim().replace(/\/+$/, '') !== getEffectiveServerBase()) {
+    try {
+      setServerBase(serverBase.value);
+      ElMessage.success('服务器地址已切换，页面刷新后请再次登录');
+      setTimeout(() => window.location.reload(), 600);
+      return;
+    } catch (e: any) {
+      ElMessage.error(e?.message || '地址格式不正确');
+      return;
+    }
+  }
   const ok = isLogin.value
     ? await authStore.login(username.value, password.value)
     : await authStore.register(username.value, password.value, email.value);
+  if (ok && authStore.mustChangePassword) {
+    // 首次登录（默认管理员密码为空）：先设置新密码再进入
+    step.value = 'changePwd';
+    return;
+  }
   if (ok) {
     ElMessage.success(isLogin.value ? '登录成功' : '注册成功');
     const redirect = typeof router.currentRoute.value.query.redirect === 'string'
@@ -201,6 +319,50 @@ async function submit() {
   text-align: center; font-size: 13px; color: var(--color-text-secondary);
 }
 
+/* ===== 二段式：第二步「设置新密码」 ===== */
+/* 步骤指示条：登录验证 ✓ —— 设置密码 */
+.step-indicator {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; margin: -8px 0 20px;
+}
+.step-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--color-text-secondary);
+}
+.step-dot {
+  width: 20px; height: 20px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-style: normal; font-weight: 600;
+  background: var(--color-border, #e5e7eb); color: var(--color-text-secondary);
+}
+.step-item.done { color: var(--el-color-success); }
+.step-item.done .step-dot { background: var(--el-color-success); color: #fff; }
+.step-item.active { color: var(--el-color-primary); font-weight: 600; }
+.step-item.active .step-dot { background: var(--el-color-primary); color: #fff; }
+.step-bar {
+  width: 42px; height: 2px; border-radius: 1px;
+  background: linear-gradient(90deg, var(--el-color-success), var(--el-color-primary));
+}
+/* 已登录账号徽标：让用户明确知道在给哪个账号设密码 */
+.account-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  align-self: center; margin-bottom: 16px;
+  padding: 5px 14px; border-radius: 999px;
+  background: var(--el-color-primary-light-9, #ecf2ff);
+  color: var(--el-color-primary); font-size: 13px; font-weight: 600;
+}
+.chip-tag {
+  font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 999px;
+  background: var(--el-color-warning-light-8, #fdf3e0); color: var(--el-color-warning-dark-2, #b88230);
+}
+.change-form { gap: 2px; }
+.change-form .el-form-item { margin-bottom: 16px; }
+.pwd-tip {
+  font-size: 12px; color: var(--color-text-secondary);
+  text-align: center; margin: 0 0 14px;
+}
+.back-login-link { align-self: center; color: var(--color-text-secondary); }
+
 .toggle-link {
   position: relative; font-weight: 600; padding: 0;
 }
@@ -209,6 +371,9 @@ async function submit() {
   background: var(--color-primary); transition: width 0.25s ease;
 }
 .toggle-link:hover::after { width: 100%; }
+
+.server-field { margin-top: 16px; }
+.server-row { display: flex; gap: 8px; }
 
 /* Form transitions */
 .form-expand-enter-active { transition: all 0.3s ease; }

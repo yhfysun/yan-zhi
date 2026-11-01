@@ -93,10 +93,18 @@
                   <span v-if="(form.modelPools[slot] || []).length" class="pool-first-tag">首选：{{ firstPoolName(slot) }}</span>
                 </div>
               </el-form-item>
-              <el-form-item v-if="authStore.isLoggedIn" label="发布到商城">
+              <!-- 共享开关（发布到商城 = is_public）：guest 单机登录后可见；multi 需 share.agent.publish 权限 -->
+              <el-form-item v-if="canPublishAgent" label="发布到商城">
                 <div class="publish-row">
-                  <el-switch v-model="form.isPublic" active-text="公开" inactive-text="私有" />
-                  <span class="publish-hint">开启后将此智能体快照发布到商城供远程节点安装</span>
+                  <el-switch v-model="form.isPublic" active-text="公开" inactive-text="私有" :disabled="!canShareAgent" />
+                  <span class="publish-hint">{{ canShareAgent ? '开启后将此智能体快照发布到商城供远程节点安装' : '发布公共智能体需要管理员授权（share.agent.publish）' }}</span>
+                </div>
+              </el-form-item>
+              <!-- 定向授权名单（2026-11-01 ACL）：不开公开也能指定某些用户可用 -->
+              <el-form-item v-if="canPublishAgent && (props.agent as any)?.id" label="定向授权">
+                <div class="publish-row">
+                  <el-button size="small" @click="aclVisible = true">授权名单（指定哪些用户可用）</el-button>
+                  <span class="publish-hint">不开「公开」时，名单内用户仍可使用此智能体</span>
                 </div>
               </el-form-item>
             </el-form>
@@ -299,10 +307,12 @@
       <el-button @click="visible=false">取消</el-button>
       <el-button type="primary" @click="handleSave">保存</el-button>
     </template>
+      <ResourceAclDialog v-model:visible="aclVisible" type="agent" :id="(props.agent as any)?.id || ''" :name="form.name || '智能体'" />
   </el-dialog>
 </template>
 <script setup lang="ts">
 import { ref, computed, watch, reactive } from 'vue';
+import ResourceAclDialog from './common/ResourceAclDialog.vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { User, EditPen, Cpu, Setting, Connection, Share, Files, Switch, ArrowRight, Collection, CopyDocument, Search, Notebook } from '@element-plus/icons-vue';
 import type { Agent } from '@yan-zhi/shared';
@@ -325,6 +335,13 @@ const skillStore = useSkillStore();
 const toolsStore = useToolsStore();
 
 const visible = computed({ get: () => props.modelValue, set: (v) => emit('update:modelValue', v) });const isEdit = computed(() => !!props.agent?.id);
+
+// 发布到商城（is_public）的可见/可操作收敛：
+// 行显示 = guest 单机（登录即管理员语义）或 multi 有 share.agent.publish 权限；
+// switch 可操作 = guest 单机 或 multi 有权限（无权限时禁用 + 提示，后端同样 403 兜底）。
+const canPublishAgent = computed(() => !authStore.authRequired || authStore.hasPermission('share.agent.publish'));
+const aclVisible = ref(false);
+const canShareAgent = computed(() => !authStore.authRequired || authStore.hasPermission('share.agent.publish'));
 const activeTab = ref('basic');
 const mountTab = ref('tools');
 const mcpExpanded = reactive<Record<string, boolean>>({});

@@ -72,6 +72,10 @@ export interface Platform {
   pauseMinMs?: number;
   /** 请求停顿时间上限（毫秒） */
   pauseMaxMs?: number;
+  /** 共享平台（2026-11-01 RBAC）：is_public=1，管理员统一创建授权给所有用户使用（读可用，写归 owner） */
+  isPublic?: boolean;
+  /** true = 这是**别人的**共享平台（前端据此收敛编辑/删除入口；自己的平台即使 is_public 也不是 shared） */
+  shared?: boolean;
   createdAt: number;
 }
 
@@ -117,6 +121,8 @@ export interface Model {
   lastChatTestOk?: boolean;
   /** 是否为内置平台/模型，内置项只读 */
   isBuiltin?: boolean;
+  /** 单模型共享（2026-11-01 RBAC）：is_public=1 的模型对全部用户可见可用（读），写归 owner */
+  isPublic?: boolean;
 }
 
 /** 会话 */

@@ -9,8 +9,12 @@ import { setPlatformAdapter, getPluginManager, getToolRegistry, setCustomToolDep
 import type { PluginWsRoute } from '@yan-zhi/core';
 import { ensureToolsInitialized } from './mcp/index.js';
 import { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from './constants.js';
-import authRoutes from './auth.js';
+import authRoutes, { seedRbac, wsUpgradeAuthorized, ensureDefaultAdmin, getAuthMode, verifyBearer } from './auth.js';
 import licenseRoutes from './license.js';
+// 管理后台（组织/角色/用户/权限）：仅 multi 模式有意义，但路由挂载不区分模式，
+// 内部 requirePerm 权限点校验保证 guest 身份（无权限）打不进来。
+import adminRoutes from './routes/admin.js';
+import resourceAclRoutes from './routes/resource-acl.js';
 import { scanBuiltinPackages } from './plugins/builtin-packages.js';
 import { installedRebinds, scanInstalledPackages } from './plugins/installed-packages.js';
 import { resolveInstalledEntryPath } from './plugins/install-entry.js';
@@ -168,7 +172,33 @@ setCustomToolDepPreparer({
 ensureToolsInitialized();
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3001;
+
+/**
+ * 监听端口的取值口径（2026-10-31 收口）：
+ *   环境变量 PORT / YANZHI_API_PORT  >  商城设置里用户填的 port  >  3001
+ *
+ * ★ 为什么以前"设置里改端口没用"：`const PORT = Number(process.env.PORT) || 3001`
+ *   只认环境变量，DB 里 `marketplace_config.port` 从头到尾只用于**拼展示地址**，
+ *   而 Electron 启动时又固定下发 `PORT=3001`（main.cjs:1168/1181/1201）⇒ 改了必然不生效，
+ *   复制出去的连接地址还可能连不上。
+ *
+ * ★ 为什么环境变量仍然优先：桌面端是编排者，它下发 PORT 就是它认定的端口，后端不该抢。
+ *   因此 Electron 下行为不变；独立启动（dev / 脚本）时才让 DB 配置真正生效。
+ */
+function resolveListenPort(): number {
+  const fromEnv = Number(process.env.PORT || process.env.YANZHI_API_PORT);
+  if (Number.isFinite(fromEnv) && fromEnv > 0 && fromEnv < 65536) return fromEnv;
+  try {
+    const row = db.prepare('SELECT port FROM marketplace_config WHERE id = 1').get() as { port?: number } | undefined;
+    const p = Number(row?.port);
+    if (Number.isFinite(p) && p >= 1024 && p <= 65535) return p;
+  } catch {
+    // 表未就绪（首次启动早于建表）→ 退回默认，不让它把启动搞挂
+  }
+  return 3001;
+}
+
+const PORT = resolveListenPort();
 
 app.use(cors({ origin: true, credentials: true }));
 // 插件包安装/预览的请求体可能很大：skins 整包 .yzp 20.7MB → base64 约 28MB，10MB 全局上限
@@ -191,6 +221,29 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/license', licenseRoutes);
+// ★ 首次登录强制改密闸（2026-11-01）：默认管理员 yanZhiPower 密码为空，首次登录
+//   must_change_password=1 —— 在设置新密码前，除改密/查自身/登录态接口外全部 403
+//   （PASSWORD_CHANGE_REQUIRED），防止空密码管理员一直裸奔。前端登录响应里的
+//   mustChangePassword 会直接弹改密表单。
+app.use('/api', (req, res, next) => {
+  // ★ 闸挂在业务路由的 authMiddleware **之前**，req.user 此刻尚未赋值 —— 必须自己解析 token
+  const u = verifyBearer(req as any);
+  if (!u || u.userId === 'guest') { next(); return; }
+  if (req.path.startsWith('/auth/change-password') || req.path === '/auth/me' || req.path === '/auth/login'
+      || req.path === '/auth/guest' || req.path === '/auth/status') { next(); return; }
+  try {
+    const row = db
+      .prepare('SELECT must_change_password FROM user WHERE id = ?').get(u.userId) as any;
+    if (row?.must_change_password) {
+      res.status(403).json({ error: '首次登录请先修改密码', code: 'PASSWORD_CHANGE_REQUIRED' });
+      return;
+    }
+  } catch { /* 查询失败不拦截 */ }
+  next();
+});
+// 管理后台：用户/组织/角色/权限（路由内部自带 admin.* 权限校验）
+app.use('/api/admin', adminRoutes);
+app.use('/api/resource-acl', resourceAclRoutes);
 // 授权门禁：必须在**所有业务路由之前**挂载，否则后注册的路由不受保护。
 // 默认关闭（本地模式打开即用），YZ_LICENSE_GUARD=1 时开启 —— 用于局域网/多用户部署，
 // 挡住绕过前端路由守卫直接请求 API 的路径。豁免清单见 license-guard.ts 的 EXEMPT_PREFIXES。
@@ -589,6 +642,15 @@ function currentWsRoutes(): PluginWsRoute[] {
 }
 
 httpServer.on('upgrade', (req, socket, head) => {
+  // ★ multi 模式 WS 鉴权闸（2026-11-01）：upgrade 不走 Express 中间件链，authMiddleware
+  //   对它无效 —— 不挡就是给远程客户端开了无鉴权 WS 后门（聊天流/运维终端）。
+  //   guest 模式恒放行（本机桌面行为不变）。
+  if (!wsUpgradeAuthorized(req)) {
+    logger.warn('[ws] 拒绝未鉴权 WS 升级（multi 模式，无 token 或 token 无效）:', (req.url || '').split('?')[0]);
+    try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { /* 对端已断 */ }
+    socket.destroy();
+    return;
+  }
   // 聊天主链路 WS（2026-10-20，SSE→WS 迁移第一步）：/ws/chat 直接走聊天通道，
   // 不经过插件 WS 路由 / license 校验（聊天是核心能力，与聊天 HTTP 路由同源 guest 身份）。
   if ((req.url || '').startsWith('/ws/chat')) {
@@ -662,6 +724,20 @@ try {
 try {
   migrateLegacyLocalPlatformRows();
 } catch (e) { logger.warn('[migrate] 本地模型平台迁移失败:', e); }
+
+// 启动时种子化 RBAC（权限树 + 根组织 + 系统管理员角色），幂等
+try {
+  seedRbac();
+  // 默认管理员（2026-11-01）：multi 模式且库里没有任何用户时，自动种 yanZhiPower，
+  // 免去首次 /setup；guest 单机模式不种（无登录语义）。
+  if (getAuthMode() === 'multi') {
+    try {
+      if (ensureDefaultAdmin()) console.log('[rbac] 已创建默认管理员账号 yanZhiPower（初始密码 YanZhi@2026，请尽快修改）');
+    } catch (e) { console.warn('[rbac] 默认管理员创建失败（不影响启动）:', e); }
+  }
+} catch (err) {
+  logger.warn('[rbac] 种子化失败（不影响启动）:', err instanceof Error ? err.message : err);
+}
 
 // 启动时为所有用户惰性初始化 agens 线上平台及其模型
 // （首次 seed；已存在则只补齐接口新增模型 + 纠正历史 id/别名拼写 + 按名称补齐媒体能力，不覆盖用户改过的字段）

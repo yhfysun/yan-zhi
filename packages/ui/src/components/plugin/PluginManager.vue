@@ -110,6 +110,8 @@
               >{{ w.label }}</el-button>
               <el-button size="small" text bg @click="openConfig(p)">配置</el-button>
               <el-button size="small" text bg @click="openDetail(p)">详情</el-button>
+              <!-- 定向授权名单（2026-11-01 ACL）：管理员把单个插件授权给指定用户 -->
+              <el-button v-if="canManagePlugins" size="small" text bg type="primary" @click="aclTarget = { id: p.manifest.id, name: p.manifest.name }; aclVisible = true">授权</el-button>
               <el-button size="small" text bg @click="onExport(p)">导出</el-button>
               <el-button v-if="AUDIT_PLUGIN_IDS.includes(p.manifest.id) && p.state === 'enabled'" size="small" text bg @click="onAudit(p)">记录</el-button>
               <el-button
@@ -283,6 +285,8 @@
         >确认安装</el-button>
       </template>
     </el-dialog>
+  
+    <ResourceAclDialog v-model:visible="aclVisible" type="plugin" :id="aclTarget?.id || ''" :name="aclTarget?.name || '插件'" />
   </div>
 </template>
 
@@ -296,6 +300,14 @@ import { plainRect } from '../../composables/pluginWindowHotkeys';
 import { api } from '../../api/client';
 import type { PluginManifest, PluginWindowContribution } from '@yan-zhi/core';
 
+import { useAuthStore } from '../../stores/auth';
+import ResourceAclDialog from '../common/ResourceAclDialog.vue';
+
+const authStore = useAuthStore();
+/** 插件定向授权（2026-11-01 ACL）：管理员（admin.permission.manage）可把单个插件授权给指定用户 */
+const aclVisible = ref(false);
+const aclTarget = ref<{ id: string; name: string } | null>(null);
+const canManagePlugins = computed(() => authStore.hasPermission('admin.permission.manage'));
 const pluginStore = usePluginStore();
 const router = useRouter();
 const keyword = ref('');

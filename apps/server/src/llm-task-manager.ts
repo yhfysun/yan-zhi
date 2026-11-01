@@ -100,6 +100,7 @@ import { dynamicToolRoute } from './services/tool-router.js';
 // 模型标识解析：统一走 services/model-resolve（主键优先 + 存量裸名回退），
 // 不在此另写查询 —— 同一件事两处实现必然漂移。
 import { findModelRow, rowToModel } from './services/model-resolve.js';
+import { platformReadableCond } from './services/platform-share.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from './constants.js';
 import {
   startWorkflowRun, subscribeWorkflowRun, getWorkflowRun, resolveBundleFromDb,
@@ -676,7 +677,8 @@ function rowToMsg(row: any): Message {
 }
 
 function loadPlatform(platformId: string, userId: string): Platform | null {
-  const row = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId) as any;
+  // 共享平台（is_public=1，管理员统一创建授权大家用）对全部用户可调用（2026-11-01）
+  const row = db.prepare(`SELECT * FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')}`).get(platformId, userId) as any;
   // ★ 禁用闸（2026-10-18）：llm_enabled=0 的平台对服务端一切调用不可用
   //   （定时任务/记忆抽取/压缩/子智能体等显式钉平台的路径）—— 视同不存在，
   //   由各调用方的既有「平台不存在」分支兜住，不再向上游发注定 401 的请求。
@@ -784,9 +786,10 @@ function listAvailableModels(userId: string, args: Record<string, unknown>, task
   // 在这里剔除 = 大模型根本选不到它（候选面过滤），而不是选了再报 401/403 让它重试。
   let platformRows: any[];
   if (platformId) {
-    platformRows = db.prepare(`SELECT * FROM platform WHERE id = ? AND user_id = ? AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(platformId, userId) as any[];
+    platformRows = db.prepare(`SELECT * FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')} AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(platformId, userId) as any[];
   } else {
-    platformRows = db.prepare(`SELECT * FROM platform WHERE user_id = ? AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(userId) as any[];
+    // 可见平台 = 自己的 ∪ 共享平台 ∪ 含单模型共享的平台（list_models 是选型唯一清单源）
+    platformRows = db.prepare(`SELECT * FROM platform WHERE (user_id = ? OR is_public = 1 OR id IN (SELECT platform_id FROM model WHERE is_public = 1)) AND llm_enabled = 1 AND id NOT IN (${TOKEN_DEAD_PLATFORM_IDS_SQL})`).all(userId) as any[];
   }
   if (platformRows.length === 0) return platformId ? `平台不存在或未对模型开放: ${platformId}` : '当前用户未配置任何可用于大模型的模型平台';
 
@@ -794,7 +797,8 @@ function listAvailableModels(userId: string, args: Record<string, unknown>, task
   type Row = { platformName: string; platformId: string; protocol: string; m: any };
   const all: Row[] = [];
   for (const p of platformRows) {
-    const models = db.prepare('SELECT * FROM model WHERE platform_id = ? AND user_id = ? AND enabled = 1 AND visible = 1').all(p.id, userId) as any[];
+    // 模型可见性跟随：自己的 ∪ 共享平台的 ∪ 单模型共享（is_public=1）
+    const models = db.prepare(`SELECT * FROM model WHERE platform_id = ? AND (user_id = ? OR is_public = 1 OR platform_id IN (SELECT id FROM platform WHERE is_public = 1)) AND enabled = 1 AND visible = 1`).all(p.id, userId) as any[];
     for (const m of models) {
       const caps: string[] = (() => { try { return JSON.parse(m.capabilities_json || '[]'); } catch { return []; } })();
       if (effType && (m.type || 'llm') !== effType) continue;
@@ -5094,7 +5098,7 @@ function isCustomToolMountedForTask(task: LlmTask, toolName: string): boolean {
     const m = /^custom_([a-zA-Z0-9]{1,8})_(.+)$/.exec(toolName);
     if (!m) return false;
     const [, idTag, tName] = m;
-    const rows = db.prepare('SELECT id, name FROM custom_tool WHERE user_id = ? AND enabled = 1').all(task.userId) as any[];
+    const rows = db.prepare('SELECT id, name FROM custom_tool WHERE (user_id = ? OR is_public = 1) AND enabled = 1').all(task.userId) as any[];
     const tool = rows.find((r: any) =>
       String(r.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) === idTag && r.name === tName);
     if (!tool) return false;
@@ -5721,7 +5725,7 @@ async function executeTool(
     if (m) {
       const idTag = m[1];
       const tName = m[2];
-      const rows = db.prepare('SELECT id, name, code, entry, timeout, enabled, runtime, dependencies_json FROM custom_tool WHERE user_id = ? AND enabled = 1').all(task.userId) as any[];
+      const rows = db.prepare('SELECT id, name, code, entry, timeout, enabled, runtime, dependencies_json FROM custom_tool WHERE (user_id = ? OR is_public = 1) AND enabled = 1').all(task.userId) as any[];
       const tool = rows.find((r: any) => (r.id || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) === idTag && r.name === tName);
       if (tool) {
         try {
@@ -8341,7 +8345,7 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       const skillLines: string[] = [];
       const flowParts: string[] = [];
       for (const skId of skillIds) {
-        const sk = db.prepare('SELECT name, description, body, triggers_json, enabled, files_json FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL)').get(skId, userId) as any;
+        const sk = db.prepare('SELECT name, description, body, triggers_json, enabled, files_json FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL OR is_public = 1)').get(skId, userId) as any;
         if (!sk || !sk.enabled) continue;
         // 项目技能目录里有同名技能 → 跳过 DB 版（项目 SOP 覆盖通用技能）
         if (projectSkillNames.has(String(sk.name || '').toLowerCase())) continue;
@@ -8867,7 +8871,7 @@ function buildCustomToolDescLines(agentId: string | null, userId: string, includ
     const agent = db.prepare('SELECT custom_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
     try { const ids = JSON.parse(agent?.custom_tool_ids || '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; }
   })();
-  const rows = db.prepare('SELECT id, name, description, input_schema_json, enabled FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId) as any[];
+  const rows = db.prepare('SELECT id, name, description, input_schema_json, enabled FROM custom_tool WHERE (user_id = ? OR is_public = 1) AND enabled = 1').all(userId) as any[];
   const lines: string[] = [];
   for (const ct of rows) {
     const viaAgent = !allowed || allowed.includes(ct.id);
@@ -9039,7 +9043,7 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
     const agent = db.prepare('SELECT custom_tool_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
     try { const ids = JSON.parse(agent?.custom_tool_ids || '[]'); return Array.isArray(ids) ? ids : []; } catch { return []; }
   })();
-  const customTools = db.prepare('SELECT id, name, description, input_schema_json, enabled FROM custom_tool WHERE user_id = ? AND enabled = 1').all(userId) as any[];
+  const customTools = db.prepare('SELECT id, name, description, input_schema_json, enabled FROM custom_tool WHERE (user_id = ? OR is_public = 1) AND enabled = 1').all(userId) as any[];
   for (const ct of customTools) {
     const viaAgent = !allowedCustom || allowedCustom.includes(ct.id);
     const viaConv = convMounts.customToolIds.includes(ct.id);

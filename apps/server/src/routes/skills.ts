@@ -1,16 +1,19 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
+import { aclExistsSql } from '../services/resource-acl.js';
 import { db, resetBuiltinSkill } from '../db.js';
 import { isSafeSkillFilePath } from '../services/skill-files.js';
+import { canPublishShared } from '../services/platform-share.js';
 
 const router = Router();
 router.use(authMiddleware);
 
-// GET /api/skills
+// GET /api/skills —— 可见 = 自己的 ∪ guest 预置 ∪ 共享（is_public=1）
 router.get('/', (req: Request, res: Response) => {
   const uid = req.user!.userId;
-  const rows = db.prepare('SELECT * FROM skill WHERE user_id = ? OR user_id = ? ORDER BY created_at DESC').all(uid, 'guest');
+  const rows = db.prepare(`SELECT * FROM skill WHERE user_id = ? OR user_id = ? OR is_public = 1 OR ${aclExistsSql('skill', 'skill.id')}
+    ORDER BY created_at DESC`).all(uid, 'guest', uid, uid, uid, uid);
   res.json({ data: rows });
 });
 
@@ -58,7 +61,14 @@ router.patch('/:id', (req: Request, res: Response) => {
       sets.push('files_json = ?'); vals.push(safe.length ? JSON.stringify(safe) : null);
     }
   }
-  if (req.body.isPublic !== undefined) { sets.push('is_public = ?'); vals.push(req.body.isPublic ? 1 : 0); }
+  // 共享授权收口：multi 模式下把 skill 设为公共需 share.skill.publish 权限
+  if (req.body.isPublic !== undefined) {
+    if (req.body.isPublic && !canPublishShared('skill', userId)) {
+      res.status(403).json({ error: '共享 Skill 需要管理员授权（share.skill.publish）', code: 'FORBIDDEN' });
+      return;
+    }
+    sets.push('is_public = ?'); vals.push(req.body.isPublic ? 1 : 0);
+  }
   if (sets.length === 0) { res.json({ data: existing }); return; }
   vals.push(sid);
   db.prepare(`UPDATE skill SET ${sets.join(', ')} WHERE id = ?`).run(...vals);

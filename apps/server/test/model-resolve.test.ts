@@ -168,3 +168,67 @@ describe('rowToModel · 行映射', () => {
     expect(m.capabilities).toEqual([]);
   });
 });
+describe('findModelRow · 共享平台兜底（is_public，管理员统一创建授权大家用）', () => {
+  let db: YzSqliteDb;
+
+  beforeEach(async () => {
+    const { db: d } = await openSqlite(':memory:');
+    db = d;
+    db.exec(`
+      CREATE TABLE platform (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT,
+        is_public INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE model (
+        id TEXT PRIMARY KEY,
+        platform_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        alias TEXT,
+        type TEXT,
+        context_window INTEGER,
+        capabilities_json TEXT,
+        is_public INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    db.prepare("INSERT INTO platform (id, user_id, name, is_public) VALUES ('p_shared', 'admin', '公司共享平台', 1)").run();
+    db.prepare("INSERT INTO platform (id, user_id, name, is_public) VALUES ('p_private', 'admin', '私有平台', 0)").run();
+    const ins = db.prepare(
+      'INSERT INTO model (id, platform_id, user_id, model_id, alias, type, context_window, capabilities_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    );
+    // 管理员共享平台上的模型（owner 是 admin，不是查询者 carol）
+    ins.run('p_shared-gpt-x', 'p_shared', 'admin', 'gpt-x', '共享 GPT-X', 'llm', 128000, '[]');
+    // 管理员私有平台上的同名模型（不可见）
+    ins.run('p_private-gpt-x', 'p_private', 'admin', 'gpt-x', '私有 GPT-X', 'llm', 128000, '[]');
+    // carol 自己的同名模型（优先级必须高于共享）
+    ins.run('p_mine-gpt-x', 'p_mine', 'carol', 'gpt-x', '我自己的 GPT-X', 'llm', 64000, '[]');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    db.close();
+  });
+
+  it('共享平台模型对其他用户可解析（主键）', () => {
+    const row = findModelRow(db, 'p_shared-gpt-x', 'carol');
+    expect(row?.id).toBe('p_shared-gpt-x');
+  });
+
+  it('共享平台模型对其他用户可解析（API 名，带平台约束）', () => {
+    const row = findModelRow(db, 'gpt-x', 'carol', 'p_shared');
+    expect(row?.id).toBe('p_shared-gpt-x');
+  });
+
+  it('用户自己的同名模型优先于共享平台', () => {
+    const row = findModelRow(db, 'p_mine-gpt-x', 'carol');
+    expect(row?.id).toBe('p_mine-gpt-x');
+  });
+
+  it('管理员私有平台的模型对其他用户不可见', () => {
+    expect(findModelRow(db, 'p_private-gpt-x', 'carol')).toBeUndefined();
+    expect(findModelRow(db, 'gpt-x', 'carol', 'p_private')).toBeUndefined();
+  });
+});

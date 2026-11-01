@@ -615,7 +615,8 @@ async function remove(agent: Agent) {
 .agent-desc { font-size: 12px; color: var(--color-text-secondary); margin: 4px 0 0; line-height: 1.4; }
 .agent-meta { display: flex; align-items: center; gap: 6px; margin: 12px 0 8px; flex-wrap: wrap; }
 .agent-time { font-size: 11px; color: var(--color-text-secondary); margin-left: auto; }
-.agent-actions { display: flex; gap: 4px; border-top: 1px solid var(--color-border-light); padding-top: 8px; }
+.agent-actions { display: flex; flex-wrap: wrap; gap: 4px; border-top: 1px solid var(--color-border-light); padding-top: 8px; }
+.agent-actions .el-button + .el-button { margin-left: 0; }
 
 /* ===== 远程工具条 ===== */
 .remote-toolbar { margin-bottom: 16px; }

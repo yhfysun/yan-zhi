@@ -1,11 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
+import { aclExistsSql } from '../services/resource-acl.js';
 import { db } from '../db.js';
 import { getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
 import { createLogger } from '../services/logger.js';
 import { normalizePermissionMode, checkToolPermission } from '../tool-permission.js';
 import { runOcr } from '../services/ocr.js';
+import { canPublishShared } from '../services/platform-share.js';
 
 const logger = createLogger('tools');
 
@@ -15,8 +17,10 @@ router.use(authMiddleware);
 // GET /api/tools
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const rows = db.prepare('SELECT * FROM custom_tool WHERE user_id = ? ORDER BY created_at DESC').all(userId);
-  res.json({ data: rows });
+  // 可见 = 自己的 ∪ 共享（is_public=1，管理员统一创建授权大家用）
+  const rows = db.prepare(`SELECT * FROM custom_tool WHERE user_id = ? OR is_public = 1 OR ${aclExistsSql('tool', 'custom_tool.id')}
+    ORDER BY created_at DESC`).all(userId, userId, userId, userId);
+  res.json({ data: rows.map((r: any) => ({ ...r, shared: !!(r.is_public && r.user_id !== userId) })) });
 });
 
 // POST /api/tools
@@ -65,7 +69,14 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (req.body.enabled !== undefined) { sets.push('enabled = ?'); vals.push(req.body.enabled ? 1 : 0); }
   if (req.body.timeout !== undefined) { sets.push('timeout = ?'); vals.push(req.body.timeout); }
   if (req.body.dependencies !== undefined) { sets.push('dependencies_json = ?'); vals.push(JSON.stringify(req.body.dependencies)); }
-  if (req.body.isPublic !== undefined) { sets.push('is_public = ?'); vals.push(req.body.isPublic ? 1 : 0); }
+  // 共享授权收口：multi 模式下把工具设为公共需 share.tool.publish 权限
+  if (req.body.isPublic !== undefined) {
+    if (req.body.isPublic && !canPublishShared('tool', userId)) {
+      res.status(403).json({ error: '共享工具需要管理员授权（share.tool.publish）', code: 'FORBIDDEN' });
+      return;
+    }
+    sets.push('is_public = ?'); vals.push(req.body.isPublic ? 1 : 0);
+  }
   if (req.body.category !== undefined) { sets.push('category = ?'); vals.push(req.body.category || '其他'); }
   sets.push('updated_at = ?'); vals.push(Date.now());
   if (sets.length === 0) { res.json({ data: existing }); return; }
@@ -165,7 +176,9 @@ router.get('/builtin/commands', async (_req: Request, res: Response) => {
 router.post('/:id/execute', async (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const tid = req.params.id;
-  const t = db.prepare('SELECT * FROM custom_tool WHERE id = ? AND user_id = ?').get(tid, userId) as any;
+  // 共享工具对全部用户可执行（"用"是共享的核心语义）
+  const t = db.prepare(`SELECT * FROM custom_tool WHERE id = ? AND (user_id = ? OR is_public = 1 OR ${aclExistsSql('tool', 'custom_tool.id')})`)
+    .get(tid, userId, userId, userId, userId) as any;
   if (!t) { res.status(404).json({ error: '工具不存在' }); return; }
   if (!t.enabled) { res.status(400).json({ error: '工具未启用' }); return; }
   const args = (req.body && req.body.args) || {};

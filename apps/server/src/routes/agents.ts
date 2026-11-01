@@ -5,6 +5,8 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
+import { aclExistsSql } from '../services/resource-acl.js';
+import { userHasPermission } from '../rbac.js';
 import { db, resetBuiltinAgent } from '../db.js';
 import { DEFAULT_AGENT_PARAMS } from '../constants.js';
 import { validateModelPools } from '../services/model-pools.js';
@@ -21,15 +23,17 @@ function rowToAgentDto(r: any) {
 router.get('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const rows = db.prepare(
-    'SELECT * FROM agent WHERE user_id = ? OR is_public = 1 ORDER BY is_default DESC, is_builtin DESC, created_at ASC',
-  ).all(userId);
+    `SELECT * FROM agent WHERE user_id = ? OR is_public = 1 OR ${aclExistsSql('agent', 'agent.id')}
+        ORDER BY is_default DESC, is_builtin DESC, created_at ASC`,
+  ).all(userId, userId, userId, userId);
   res.json({ data: rows });
 });
 
 // GET /api/agents/:id
 router.get('/:id', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const row = db.prepare('SELECT * FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(req.params.id, userId);
+  const row = db.prepare(`SELECT * FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1 OR ${aclExistsSql('agent', 'agent.id')})`)
+    .get(req.params.id, userId, userId, userId, userId);
   if (!row) { res.status(404).json({ error: '智能体不存在' }); return; }
   res.json({ data: row });
 });
@@ -43,13 +47,18 @@ function parseJsonCol(v: unknown, fallback: unknown = null): unknown {
 // POST /api/agents —— 创建智能体（含工作流/挂载/子智能体）
 router.post('/', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const b = req.body || {};
+  let b = req.body || {};
   if (!b.name || !String(b.name).trim()) { res.status(400).json({ error: '智能体名称为必填项' }); return; }
+  // 公共智能体发布权限收口：multi 模式下没有 share.agent.publish 权限的一律落私有
+  // （guest/单用户模式不受限，行为不变）
+  if (b.isPublic && !userHasPermission(userId, 'share.agent.publish')) {
+    b = { ...b, isPublic: false };
+  }
   const id = b.id || uuid();
   const now = Date.now();
   db.prepare(
-    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, agent_kind, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, knowledge_base_ids, category, is_public, version, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    `INSERT INTO agent (id, user_id, name, description, avatar, system_prompt, temperature, max_tokens, top_p, frequency_penalty, presence_penalty, platform_id, model_id, workflow_json, inputs_schema_json, config_json, parent_agent_id, agent_kind, allow_sub_agent, is_default, type, builtin_tool_ids, custom_tool_ids, mcp_tool_mounts, skill_ids, sub_agent_ids, ontology_ids, knowledge_base_ids, model_pools_json, category, is_public, version, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id, userId,
     String(b.name).trim(),
@@ -86,6 +95,7 @@ router.post('/', (req: Request, res: Response) => {
       return v.pools || {};
     })()),
     b.category || '',
+    b.isPublic ? 1 : 0,
     b.version ?? 1,
     now, now,
   );
@@ -135,7 +145,14 @@ router.patch('/:id', (req: Request, res: Response) => {
     if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(b[k]); }
   }
   for (const [k, col] of Object.entries({ isDefault: 'is_default', allowSubAgent: 'allow_sub_agent', isPublic: 'is_public' })) {
-    if (b[k] !== undefined) { sets.push(`${col} = ?`); vals.push(b[k] ? 1 : 0); }
+    if (b[k] !== undefined) {
+      // 公共发布权限收口：multi 模式下置 is_public=1 需 share.agent.publish 权限（公开即授权）
+      if (k === 'isPublic' && b[k] && !userHasPermission(userId, 'share.agent.publish')) {
+        res.status(403).json({ error: '发布公共智能体需要管理员授权（share.agent.publish）', code: 'FORBIDDEN' });
+        return;
+      }
+      sets.push(`${col} = ?`); vals.push(b[k] ? 1 : 0);
+    }
   }
   if (b.version !== undefined) { sets.push('version = ?'); vals.push(b.version); }
   if (sets.length === 0) { const row = db.prepare('SELECT * FROM agent WHERE id = ?').get(req.params.id); res.json({ data: row }); return; }

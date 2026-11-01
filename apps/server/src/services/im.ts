@@ -653,7 +653,8 @@ export function parseFeishuInbound(body: any): ParsedFeishuInbound {
   };
 }
 
-/** 取用户默认模型（is_default=1 优先，否则最早启用的模型），返回 platformId + modelId */
+/** 取用户默认模型（is_default=1 优先，否则最早启用的模型），返回 platformId + modelId。
+ *  用户自己的模型优先；没有时回落共享平台（is_public=1）的默认模型。 */
 export function getDefaultModel(userId: string): { platformId: string; modelId: string } | null {
   let row = db.prepare(
     'SELECT id, platform_id FROM model WHERE user_id = ? AND enabled = 1 AND is_default = 1 ORDER BY created_at ASC LIMIT 1',
@@ -662,6 +663,12 @@ export function getDefaultModel(userId: string): { platformId: string; modelId: 
     row = db.prepare(
       'SELECT id, platform_id FROM model WHERE user_id = ? AND enabled = 1 ORDER BY created_at ASC LIMIT 1',
     ).get(userId) as any;
+  }
+  if (!row) {
+    // 共享兜底：共享平台或单模型共享（is_public=1）里显式 is_default 的（不抢别家默认语义）
+    row = db.prepare(
+      `SELECT id, platform_id FROM model WHERE (platform_id IN (SELECT id FROM platform WHERE is_public = 1) OR is_public = 1) AND enabled = 1 AND is_default = 1 ORDER BY created_at ASC LIMIT 1`,
+    ).get() as any;
   }
   if (!row) return null;
   return { platformId: row.platform_id, modelId: row.id };

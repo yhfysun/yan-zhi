@@ -74,7 +74,8 @@ function loadPlatform(req: Request): any | null {
   const userId = req.user!.userId;
   const platformId = (req.body as any)?.platformId || req.query.platformId;
   if (!platformId) return null;
-  const row = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId) as any;
+  // 共享平台（is_public=1，管理员统一创建授权大家用）对全部用户可代理
+  const row = db.prepare('SELECT * FROM platform WHERE id = ? AND (user_id = ? OR is_public = 1)').get(platformId, userId) as any;
   return row || null;
 }
 
@@ -403,7 +404,7 @@ router.get('/models', async (req: Request, res: ExpressResponse) => {
   const userId = req.user!.userId;
   const platformId = req.query.platformId as string;
   if (!platformId) { res.status(400).json({ error: 'platformId 必填' }); return; }
-  const p = db.prepare('SELECT * FROM platform WHERE id = ? AND user_id = ?').get(platformId, userId) as any;
+  const p = db.prepare('SELECT * FROM platform WHERE id = ? AND (user_id = ? OR is_public = 1)').get(platformId, userId) as any;
   if (!p) { res.status(404).json({ error: '平台不存在' }); return; }
   try {
     const triedIds: string[] = [];

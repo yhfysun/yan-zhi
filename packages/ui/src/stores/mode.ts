@@ -128,12 +128,29 @@ export function isModeLicensed(m: AppMode): boolean {
 }
 
 /**
- * 该模式本次是否**可用** = 已编译进包 ∩ 授权放行。
+ * 用户权限放行的模式（multi 多用户模式第三维：角色 menu.* 权限）。
+ * null = 不做权限收敛（guest 本地模式 / 权限尚未加载 / admin 全量）。
+ * 由 stores/auth 在拿到 /auth/me 的 permissions 后调用 setPermittedModes 写入。
+ */
+const permittedModes: Ref<string[] | null> = ref(null);
+
+/** 写入权限放行的模式清单；null 清除收敛。由 stores/auth 调用（避免 mode←auth 循环依赖）。 */
+export function setPermittedModes(modes: string[] | null): void {
+  permittedModes.value = Array.isArray(modes) && modes.length ? modes.slice() : null;
+  if (permittedModes.value && !isModeAvailable(activeMode.value)) {
+    activeMode.value = firstAvailableMode();
+  }
+}
+
+/**
+ * 该模式本次是否**可用** = 已编译进包 ∩ 授权放行 ∩ 用户权限放行。
  *
- * ★ 两个维度必须一起看：后端仍可能按授权档下发 ops，但若这个包是按
- *   `--modes=office,dev` 构建的，ops 入口/页面根本不存在，界面不能露出来。
+ * ★ 三个维度必须一起看：后端仍可能按授权档下发 ops，但若这个包是按
+ *   `--modes=office,dev` 构建的，ops 入口/页面根本不存在，界面不能露出来；
+ *   multi 模式下角色没给 menu.ops 权限的，同样不能露。
  */
 export function isModeAvailable(m: AppMode): boolean {
+  if (permittedModes.value && !permittedModes.value.includes(m)) return false;
   return isModeBuilt(m) && isModeLicensed(m);
 }
 

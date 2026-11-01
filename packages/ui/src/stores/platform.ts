@@ -27,6 +27,9 @@ function rowToPlatform(r: any): Platform {
     presetKey: r.preset_key || undefined,
     pauseMinMs: r.pause_min_ms || 0,
     pauseMaxMs: r.pause_max_ms || 0,
+    /** 共享平台（is_public=1）+「别人的共享平台」标记（写入口前端收敛，后端也挡） */
+    isPublic: !!r.is_public,
+    shared: !!r.shared,
     createdAt: r.created_at,
   };
 }
@@ -54,6 +57,8 @@ export function rowToModel(r: any): Model {
     type: r.type,
     contextWindow: r.context_window,
     enabled: !!r.enabled,
+    /** 单模型共享（is_public=1）*/
+    isPublic: !!r.is_public,
     visible: r.visible === undefined || r.visible === null ? true : !!r.visible,
     isDefault: !!r.is_default,
     capabilities: r.capabilities_json ? tryParse(r.capabilities_json) : undefined,
@@ -132,6 +137,17 @@ function assertEditablePlatform(id: string) {
   if (p?.isBuiltin && !p?.presetKey) {
     throw new Error('内置平台不可编辑');
   }
+  // 别人的共享平台只读（管理员统一创建授权大家用；改配置归 owner）
+  if (p?.shared) {
+    throw new Error('共享平台只读（由管理员统一管理）');
+  }
+}
+
+/** 别人的共享平台：只读（编辑/删除都拒绝）。 */
+function assertSharedReadOnly(id: string) {
+  const store = usePlatformStore();
+  const p = store.platforms.find((x) => x.id === id);
+  if (p?.shared) throw new Error('共享平台只读（由管理员统一管理）');
 }
 
 function assertEditableModel(id: string) {
@@ -316,8 +332,8 @@ export const usePlatformStore = defineStore('platform', () => {
   }
 
   async function deletePlatform(id: string) {
-
-    if (on()) {
+    // 别人的共享平台不可删（owner 才能删；后端同样 404 兜底）
+    assertSharedReadOnly(id);    if (on()) {
       await api.delete(`/platforms/${id}`);
       const adapter = getPlatformAdapter();
       await adapter.keyring.delete(`platform:${id}:apikey`);
@@ -328,6 +344,16 @@ export const usePlatformStore = defineStore('platform', () => {
       await adapter.keyring.delete(`platform:${id}:apikey`);
     }
     await loadPlatforms();
+  }
+
+  /** 设为/取消共享（owner + share.platform.publish 权限；后端校验）。 */
+  async function setPlatformShared(id: string, isPublic: boolean): Promise<void> {
+    if (on()) {
+      await api.post(`/platforms/${id}/share`, { isPublic });
+      await loadPlatforms();
+    } else {
+      throw new Error('共享为多用户服务端能力，本地模式不可用');
+    }
   }
 
   async function updatePlatform(id: string, patch: Partial<{ name: string; protocol: string; apiUrl: string; apiKeyEnc: string; headers: Record<string, string>; status: string; pauseMinMs: number; pauseMaxMs: number; llmEnabled: boolean }>) {
@@ -437,6 +463,13 @@ export const usePlatformStore = defineStore('platform', () => {
     }
     if (patch.platformId !== undefined) await loadModels(patch.platformId);
     else await loadModels();
+  }
+
+  /** 单模型共享开关（owner + share.model.publish 权限；后端校验）。 */
+  async function setModelShared(id: string, isPublic: boolean): Promise<void> {
+    if (!on()) throw new Error('共享为多用户服务端能力，本地模式不可用');
+    await api.post(`/platforms/models/${id}/share`, { isPublic });
+    await loadModels();
   }
 
   async function testModel(modelId: string): Promise<{ ok: boolean; msg: string; durationMs?: number }> {
@@ -651,7 +684,7 @@ export const usePlatformStore = defineStore('platform', () => {
 
   return {
     platforms, models, apiKeys, loading, platformsLoaded, modelsLoaded,
-    loadPlatforms, loadModels, ensurePlatforms, ensureModels, addPlatform, updatePlatform, deletePlatform,
+    loadPlatforms, loadModels, ensurePlatforms, ensureModels, addPlatform, updatePlatform, deletePlatform, setPlatformShared, setModelShared,
     addModel, updateModel, deleteModel,
     fetchRemoteModels, testConnectivity, testModel, testModelCapability,
     testPlatformConfig, fetchModelsPreview, startHealthCheck,

@@ -98,6 +98,45 @@ const IS_DEV_INSTANCE = inst.isDevInstance(process.env);
 const API_PORT = inst.resolveApiPort(process.env);
 const API_ORIGIN = 'http://127.0.0.1:' + API_PORT;
 
+/**
+ * 内置远程后端地址（轻量壳模式专用，2026-11-01）。
+ *
+ * 打包时把目标后端写进 `resources/server-base.json`（{"serverBase": "http://192.168.x.x:3001"}），
+ * 装好的壳开箱直连该地址 —— 用户不用手填 IP。**只在壳模式生效**（打包版且 resources/server
+ * 缺失，即未内置后端）：完整版误带此文件也不会被劫持（本机后端优先，行为不变）。
+ * 渲染层优先级：localStorage yz_server_base（用户在登录页改的）> 内置地址 > 平台默认。
+ * 渲染层通过 additionalArguments 拿值（与 --yz-api-port 同一通道，preload 解析后暴露）。
+ */
+function resolveBakedServerBase() {
+  try {
+    if (!app.isPackaged) return '';
+    const candidates = [
+      path.join(process.resourcesPath, 'server-base.json'),
+      path.join(__dirname, 'resources', 'server-base.json'),
+    ];
+    for (const f of candidates) {
+      if (!fs.existsSync(f)) continue;
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+      const base = String(j.serverBase || '').trim().replace(/\/+$/, '');
+      if (!base) continue;
+      if (!/^https?:\/\//i.test(base)) { console.warn('[server-base] 非法地址（需 http/https 开头），忽略:', base); continue; }
+      // 壳模式守卫：完整版（resources/server 存在）不读内置地址，防止误配置劫持本机后端
+      const hasLocalServer = fs.existsSync(path.join(process.resourcesPath, 'server', 'dist'));
+      if (hasLocalServer) { console.log('[server-base] 检测到内置后端（完整版），忽略内置远程地址'); return ''; }
+      console.log('[server-base] 轻量壳内置后端地址:', base);
+      return base;
+    }
+  } catch (err) {
+    console.warn('[server-base] 读取失败（忽略）:', err && err.message);
+  }
+  return '';
+}
+const BAKED_SERVER_BASE = resolveBakedServerBase();
+/** 下发给渲染层的附加参数（主窗口/采集窗/RC 卡片窗共用）。 */
+const RENDER_EXTRA_ARGS = ['--yz-api-port=' + API_PORT,
+  ...(BAKED_SERVER_BASE ? ['--yz-server-base=' + BAKED_SERVER_BASE] : []),
+  ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])];
+
 // ============================================================
 // userData 目录固定与历史数据迁移（productName 言智 → yan-zhi 配套）
 // db / keyring / models / server-data 全存在 Electron 默认 userData
@@ -1103,8 +1142,39 @@ function readLicenseCodesEnv() {
 
 const guardEnv = readGuardEnv();
 
-function startServer() {
+/** 探测 127.0.0.1:API_PORT 上是否已有健康后端在跑（上次的 detached 守护进程、或手动起的 dev server）。
+ *  命中 ⇒ 本进程复用它且退出时不杀 —— 这是「关掉桌面端、后端继续当服务跑」的复用侧。 */
+async function isServerAlive() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1500);
+    const res = await fetch(`http://127.0.0.1:${API_PORT}/api/health`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return false;
+    const j = await res.json().catch(() => null);
+    return !!j?.ok;
+  } catch { return false; }
+}
+
+async function startServer() {
   const serverDir = path.join(__dirname, '..', 'server');
+  // 壳模式：打包版未内置后端资源（轻量前端壳）⇒ 不启动本地后端，前端配置远程地址使用
+  const shellServerPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server', 'src', 'index.js')
+    : null;
+  if (shellServerPath && !fs.existsSync(shellServerPath)) {
+    console.log('[后端] 未内置后端资源（轻量壳模式），跳过本地后端启动');
+    return;
+  }
+  // 复用：端口上已有健康后端（detached 守护进程 / 手动 dev）⇒ 不重复 spawn，退出也不杀
+  if (await isServerAlive()) {
+    console.log(`[后端] 127.0.0.1:${API_PORT} 已有健康后端，本进程复用之（退出不杀）`);
+    serverProcess = null;
+    return;
+  }
+  // 守护模式：YZ_DETACH_BACKEND=1 ⇒ 后端脱离本进程运行（detached + unref），桌面端退出后继续当后台服务。
+  // 重启后再次进入应用会走上面的复用分支接回同一实例。
+  const detached = process.env.YZ_DETACH_BACKEND === '1';
   // CDP 端点此刻必须已定稿（Chromium 已随 ready 就绪），server env 一次性带下去
   const cdpEndpoint = resolveCdpEndpoint();
   // ★ 浏览器桥的 URL/token（「执行面直连化」P0-3）：桥已在 whenReady 里 start() 过（见调用点注释）。
@@ -1158,13 +1228,14 @@ function startServer() {
     //   要热重载时显式 `YZ_WATCH=1`（此时才注入 YZ_HOT_RELOAD，见下方）。
     const watch = process.env.YZ_WATCH === '1';
     if (fs.existsSync(tsxPath)) {
-      console.log('[后端] 用 Electron Node.js + tsx 启动:', tsxPath, watch ? '(热重载开)' : '(热重载关)');
+      console.log('[后端] 用 Electron Node.js + tsx 启动:', tsxPath, watch ? '(热重载开)' : '(热重载关)', detached ? '(守护模式)' : '');
       serverProcess = spawn(process.execPath, watch ? [tsxPath, 'watch', 'src/index.ts'] : [tsxPath, 'src/index.ts'], {
         cwd: serverDir,
-        stdio: 'inherit',
+        stdio: detached ? 'ignore' : 'inherit',
         // ★ windowsHide：主进程无控制台，不加这个 Windows 会给 node 子进程新开一个
         //   可见终端窗口（之后的 python/ffmpeg 输出全刷在里面，任务停了窗口还在）。
         windowsHide: true,
+        ...(detached ? { detached: true } : {}),
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
           YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
@@ -1175,9 +1246,10 @@ function startServer() {
       console.warn('[后端] tsx CLI 未找到，回退到 npx tsx（可能 ABI 不兼容）');
       serverProcess = spawn('npx', watch ? ['tsx', 'watch', 'src/index.ts'] : ['tsx', 'src/index.ts'], {
         cwd: serverDir,
-        stdio: 'inherit',
+        stdio: detached ? 'ignore' : 'inherit',
         shell: true,
         windowsHide: true,
+        ...(detached ? { detached: true } : {}),
         env: { ...process.env, PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),
           // dev 专属：可选插件自动装载（本分支只在 !app.isPackaged 下执行，生产不设）
           YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
@@ -1185,6 +1257,11 @@ function startServer() {
       });
     }
     serverProcess.on('error', (err) => console.error('后端启动失败:', err));
+    if (detached && serverProcess) {
+      serverProcess.unref();
+      serverProcess = null; // 退出时 before-quit 不再杀它
+      console.log('[后端] 守护模式：后端已脱离本进程，桌面端退出后继续运行');
+    }
   } else {
     // 生产模式：用 Electron 作为 Node.js（ELECTRON_RUN_AS_NODE=1）运行后端编译产物
     const serverPath = path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server', 'src', 'index.js');
@@ -1192,19 +1269,38 @@ function startServer() {
     // 后端日志落盘：新电脑排障必须有据可查（黑屏时无控制台可见）
     const logPath = path.join(app.getPath('userData'), 'server.log');
     try { if (fs.statSync(logPath).size > 5 * 1024 * 1024) fs.unlinkSync(logPath); } catch {}
-    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
     const stamp = () => new Date().toLocaleString('zh-CN', { hour12: false });
-    logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
+    // 守护模式：fd 直接交给子进程（detached 不能用 pipe —— 管道会随主进程退出而断）
+    const logFd = detached ? fs.openSync(logPath, 'a') : null;
+    if (logFd !== null) fs.writeSync(logFd, `\n===== [${stamp()}] 后端启动（守护模式） =====\n`);
+    const logStream = logFd !== null ? null : fs.createWriteStream(logPath, { flags: 'a' });
+    if (logStream) logStream.write(`\n===== [${stamp()}] 后端启动 =====\n`);
     serverProcess = spawn(process.execPath, [serverPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: logFd !== null ? ['ignore', logFd, logFd] : ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      ...(detached ? { detached: true } : {}),
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
     });
-    serverProcess.stdout.on('data', (d) => logStream.write(d));
-    serverProcess.stderr.on('data', (d) => logStream.write(d));
-    serverProcess.on('error', (err) => { logStream.write(`[${stamp()}] 后端进程启动失败: ${err.stack || err}\n`); console.error('后端启动失败:', err); });
-    serverProcess.on('exit', (code) => logStream.write(`\n===== [${stamp()}] 后端退出 code=${code} =====\n`));
-    console.log('后端服务器启动中:', serverPath);
+    if (logStream) {
+      serverProcess.stdout.on('data', (d) => logStream.write(d));
+      serverProcess.stderr.on('data', (d) => logStream.write(d));
+    }
+    serverProcess.on('error', (err) => {
+      const line = `[${stamp()}] 后端进程启动失败: ${err.stack || err}\n`;
+      if (logFd !== null) fs.writeSync(logFd, line); else logStream?.write(line);
+      console.error('后端启动失败:', err);
+    });
+    serverProcess.on('exit', (code) => {
+      const line = `\n===== [${stamp()}] 后端退出 code=${code} =====\n`;
+      if (logFd !== null) fs.writeSync(logFd, line); else logStream?.write(line);
+    });
+    if (detached && serverProcess) {
+      serverProcess.unref();
+      try { fs.closeSync(logFd); } catch {} // fd 已交给子进程继承，主进程侧可关
+      serverProcess = null;
+      console.log('[后端] 守护模式：后端已脱离本进程，桌面端退出后继续运行');
+    }
+    console.log('后端服务器启动中:', serverPath, detached ? '(守护模式)' : '');
   }
 }
 
@@ -1257,7 +1353,7 @@ function createWindow() {
       //   为什么不用 process.env：直启 `electron .` 时环境里没有 YANZHI_API_PORT，
       //   主进程会算出实例默认（2026-10-10 起 dev/生产同为 3001），而 preload 读 env 可能取不到 → 两边不一致。
       //   用 additionalArguments 保证「主进程算什么、渲染层就用什么」。
-      additionalArguments: ['--yz-api-port=' + API_PORT, ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])],
+      additionalArguments: RENDER_EXTRA_ARGS,
     },
   });
 
@@ -13501,7 +13597,7 @@ app.whenReady().then(async () => {
         // ★ 必须为 false：窗口不可见也不能让渲染器降速，否则等于换了个位置继续冻
         backgroundThrottling: false,
         // 与主窗口同口径下发 API 端口（preload 从 process.argv 读取）
-        additionalArguments: ['--yz-api-port=' + API_PORT, ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])],
+        additionalArguments: RENDER_EXTRA_ARGS,
       },
     });
     rcCaptureWindow = win;
@@ -14122,7 +14218,7 @@ app.whenReady().then(async () => {
         nodeIntegration: false,
         contextIsolation: true,
         backgroundThrottling: false,
-        additionalArguments: ['--yz-api-port=' + API_PORT, ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])],
+        additionalArguments: RENDER_EXTRA_ARGS,
       },
     });
     rcCardWindow = win;

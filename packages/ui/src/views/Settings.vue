@@ -45,6 +45,25 @@
       <el-tabs v-model="tab" class="glass-tabs" :class="{ 'is-pane': isPaneMode || (pageShell && !!mobileGroup) }">
       <el-tab-pane label="通用" name="general" lazy>
         <div class="settings-form">
+          <!-- 账号 / 切换账号（2026-11-01 RBAC）：★ 恒显示 —— 之前挂在 showServerBase 条件下，
+               guest 本地模式两行全被藏掉（用户拍桌"退出登录也没有"的根因）。
+               multi 登录 → 用户名+退出登录；本地 guest → 登录/切换账号入口。 -->
+          <SettingRow label="账号" tip="退出后回到登录页，可用其它账号重新登录">
+            <div class="server-base-row">
+              <span class="account-name">{{ accountLabel }}</span>
+              <el-button v-if="authStore.isLoggedIn" size="small" type="warning" plain @click="logoutAccount">退出登录</el-button>
+              <el-button v-else size="small" type="primary" plain @click="goLogin">登录 / 切换账号</el-button>
+            </div>
+          </SettingRow>
+          <!-- 服务器地址：本地模式填远程后端地址（连公司服务器）、multi 模式可改目标后端。
+               改的是 localStorage yz_server_base（优先级高于打包内置地址），保存后刷新生效。 -->
+          <SettingRow label="服务器地址" tip="连接的 yan-zhi 后端服务；本地单机留空即可，连远程服务器时填写。修改后保存并自动刷新生效" tip-after>
+            <div class="server-base-row">
+              <el-input v-model="serverBaseDraft" placeholder="http://192.168.1.100:3001（本地可留空）" clearable style="width: 280px" />
+              <el-button size="small" :type="serverBaseDirty ? 'primary' : 'default'" :disabled="!serverBaseDirty" @click="saveServerBaseSetting">保存</el-button>
+              <el-button v-if="bakedServerBase && serverBaseDraft !== bakedServerBase" size="small" text @click="serverBaseDraft = ''">恢复出厂</el-button>
+            </div>
+          </SettingRow>
           <SettingRow label="深色模式" tip="切换深色/浅色主题" tip-after>
             <el-switch v-model="darkMode" @change="toggleDarkMode" />
           </SettingRow>
@@ -490,7 +509,7 @@
           <SettingRow v-if="mpAuthType !== 'none'" label="凭证">
             <el-input v-model="mpAuthValue" :placeholder="mpAuthType === 'bearer' ? '输入 Token' : '输入 API Key'" style="width: 280px" @blur="onMpAuthChange" />
           </SettingRow>
-          <SettingRow label="端口" tip="默认 3001" tip-after>
+          <SettingRow label="端口" tip="默认 3001。Electron 下端口由启动环境固定，此处只作为对外展示的连接端口；要真正换端口请用 YANZHI_API_PORT 环境变量并重启" tip-after>
             <el-input-number v-model="mpPort" :min="1024" :max="65535" style="width: 180px" @change="onMpPortChange" />
           </SettingRow>
         </div>
@@ -887,6 +906,9 @@ async function pickPetVrm() {
 }
 import { Download, Delete, Upload, Sunny, Moon, ArrowRight, Setting, Brush, DataLine, MagicStick, Link, InfoFilled, Monitor } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { useAuthStore } from '../stores/auth';
+import { getEffectiveServerBase, getBakedServerBase, getServerBase, setServerBase } from '../api/client';
+import { closeSettingsDialog } from '../composables/useSettingsDialog';
 import { POOL_SLOTS, POOL_LABELS, groupModelsForSlot, poolModelsOf } from '../utils/model-pools';
 import { parseNetworkIpResponse, pickDefaultLanIp, sortLanIps, isVirtualNic } from '../utils/lanIp';
 import { useSettingsStore, usePlatformStore, useModelPoolStore, useCostStore } from '../stores';
@@ -1072,6 +1094,44 @@ async function downloadSkinSource(s: SkinTheme) {
 }
 
 const darkMode = ref(settingsStore.settings.darkMode);
+
+// ===== 服务器地址（multi 多用户 / 轻量壳远程后端，2026-11-01）=====
+// 改的是 localStorage yz_server_base（优先级高于打包内置地址）；保存后 reload 让所有模块重连。
+const authStore = useAuthStore();
+const bakedServerBase = getBakedServerBase();
+const serverBaseDraft = ref(getEffectiveServerBase());
+/** 草稿与"用户已保存配置"不同才算可保存（内置地址显示出来不算脏） */
+const serverBaseDirty = computed(() => serverBaseDraft.value.trim().replace(/\/+$/, '') !== getServerBase());
+function saveServerBaseSetting() {
+  try {
+    setServerBase(serverBaseDraft.value);
+    ElMessage.success('已保存，即将刷新生效');
+    setTimeout(() => window.location.reload(), 600);
+  } catch (e: any) {
+    ElMessage.error(e?.message || '地址格式不正确');
+  }
+}
+
+// ===== 账号 / 切换账号（2026-11-01）=====
+const accountLabel = computed(() => {
+  if (authStore.isLoggedIn) return authStore.user?.username || '已登录';
+  return authStore.authRequired ? '未登录' : '本地模式（未登录）';
+});
+function logoutAccount() {
+  ElMessageBox.confirm('退出后需重新登录才能访问该账号的数据。确认退出？', '退出登录', { type: 'warning' })
+    .then(() => {
+      authStore.logout();
+      ElMessage.success('已退出登录');
+      setTimeout(() => { window.location.href = '/#/login'; window.location.reload(); }, 400);
+    })
+    .catch(() => {});
+}
+function goLogin() {
+  // ★ 先关设置弹窗再跳转（2026-11-01 用户拍桌）：弹窗是高 z-index 浮层，
+  //   不关的话登录页渲染在弹窗**后面**，看着像"点了没反应"。
+  closeSettingsDialog();
+  router.push('/login');
+}
 
 /** 低内存模式开关（B5，2026-10-13）：本地 ref + 即时生效（applyLiteMode 由 store.update 触发） */
 const liteMode = ref(settingsStore.settings.liteMode);
@@ -1637,7 +1697,11 @@ const preferredLanIp = computed(() =>
 const connectUrl = computed(() => {
   // 其他节点跨设备连接必须用局域网地址，localhost 仅本机可达
   const host = preferredLanIp.value || window.location.hostname || 'localhost';
-  return `http://${host}:${mpPort.value}/api/marketplace`;
+  // ★ 端口取后端**实际监听**端口（lanPort 来自 /network/ip 回报），不用商城设置里的 mpPort：
+  //   Electron 启动时固定下发 PORT，设置里的 port 改了也不改变监听端口，照它拼地址会连不上
+  //   （2026-10-31 修：此前复制出去的连接地址在改过端口后必然不可达）。
+  const port = lanPort.value || mpPort.value;
+  return `http://${host}:${port}/api/marketplace`;
 });
 
 async function onMpToggle(v: boolean) {
@@ -2361,5 +2425,9 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
 }
+
+/* 服务器地址（通用分区）：输入 + 保存 + 恢复出厂；账号行同排布局 */
+.server-base-row { display: flex; align-items: center; gap: 8px; }
+.account-name { font-size: 13px; color: var(--el-text-color-regular); min-width: 80px; }
 
 </style>

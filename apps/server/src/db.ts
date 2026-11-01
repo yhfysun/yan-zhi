@@ -284,6 +284,7 @@ db.exec(`
     status INTEGER DEFAULT 1,
     llm_enabled INTEGER NOT NULL DEFAULT 1,
     is_builtin INTEGER NOT NULL DEFAULT 0,
+    is_public INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
 
@@ -302,6 +303,7 @@ db.exec(`
     visible INTEGER NOT NULL DEFAULT 1,
     is_default INTEGER DEFAULT 0,
     is_builtin INTEGER NOT NULL DEFAULT 0,
+    is_public INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
 
@@ -583,6 +585,7 @@ db.exec(`
     author TEXT,
     enabled INTEGER DEFAULT 1,
     installs INTEGER DEFAULT 0,
+    is_public INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
   );
 
@@ -959,6 +962,26 @@ try {
   try { db.exec('ALTER TABLE agent ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0'); } catch {}
   // 智能体归属用户（guest=未登录/桌面本地；放开登录后按真实用户隔离）
   try { db.exec('ALTER TABLE agent ADD COLUMN user_id TEXT'); } catch {}
+  // 共享模型平台（2026-11-01 RBAC）：is_public=1 的平台对全部用户可见可用（读），写仍归 owner。
+  // 建表语句已含该列（新库），此 ALTER 兜存量老库。
+  try { db.exec('ALTER TABLE platform ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0'); } catch {}
+  // 共享模型（单模型级共享）：私有平台里挑几个模型授权大家用
+  try { db.exec('ALTER TABLE model ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0'); } catch {}
+  // 共享 skill（skills.ts PATCH 早就在写 is_public，但表里一直没这列 —— 存量 500 bug 一并修掉）
+  try { db.exec('ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0'); } catch {}
+  // 默认管理员（2026-11-01）：1 = 首次登录未改密码，除改密/登出外所有接口 403
+  try { db.exec('ALTER TABLE user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0'); } catch {}
+  // 资源定向授权 ACL（2026-11-01）：agent/model/skill/tool/platform/plugin 逐个授权给指定用户
+  //   可见性 = owner ∪ is_public ∪ ACL 名单；写仍归 owner。
+  db.exec(`CREATE TABLE IF NOT EXISTS resource_acl (
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    user_id       TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (resource_type, resource_id, user_id)
+  )`);
+  // 名单主体类型（2026-11-01 扩展）：'user' | 'role' —— 角色授权即批量（角色下所有用户生效）
+  try { db.exec("ALTER TABLE resource_acl ADD COLUMN principal_type TEXT NOT NULL DEFAULT 'user'"); } catch {}
   // 智能体分类：main=主智能体（会话可选中）/ sub=子智能体（仅供其他智能体引用委派）
   try { db.exec("ALTER TABLE agent ADD COLUMN agent_kind TEXT NOT NULL DEFAULT 'main'"); } catch {}
 } catch {}

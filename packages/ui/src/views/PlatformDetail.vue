@@ -110,6 +110,10 @@
             <el-button size="small" text @click="toggleVisible(m)">{{ m.visible === false ? '恢复可见' : '隐藏' }}</el-button>
             <el-button v-if="!m.isBuiltin" size="small" text @click="editModel(m)">编辑</el-button>
             <el-button v-if="!m.isBuiltin && !m.isDefault" size="small" text @click="setDefault(m)">设为默认</el-button>
+            <!-- 单模型共享：仅平台归属者 + 有共享权限时显示（别人的共享模型行一律只读） -->
+            <el-button v-if="canShareModels && !platformShared" size="small" :type="m.isPublic ? 'info' : 'success'" text :loading="sharingModelId === m.id" @click="toggleShareModel(m)">{{ m.isPublic ? '取消共享' : '共享' }}</el-button>
+            <el-button v-if="canShareModels" size="small" text type="primary" @click="aclTarget = { id: m.id, name: m.alias || m.modelId }; aclVisible = true">授权</el-button>
+            <el-tag v-if="m.isPublic && (platformShared || !canShareModels)" size="small" type="success" effect="plain">共享</el-tag>
             <el-button size="small" type="danger" text @click="del(m)">删除</el-button>
           </div>
         </div>
@@ -266,6 +270,8 @@
 
     <!-- Mobile FAB -->
     <el-button v-if="platformManageable" type="primary" :icon="Plus" circle class="mobile-fab" @click="openAddModel" />
+  
+    <ResourceAclDialog v-model:visible="aclVisible" type="model" :id="aclTarget?.id || ''" :name="aclTarget?.name || '模型'" />
   </div>
 </template>
 
@@ -275,7 +281,9 @@ import { useRoute, useRouter } from 'vue-router';
 import { Plus, ArrowLeft, Expand, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePlatformStore } from '../stores';
+import { useAuthStore } from '../stores/auth';
 import { normalizePricing } from '@yan-zhi/shared';
+import ResourceAclDialog from '../components/common/ResourceAclDialog.vue';
 import { filterModels, modelTypeOptions as buildModelTypeOptions, isFilterActive } from '../utils/modelFilter';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
 import FormDialog from '../components/FormDialog.vue';
@@ -303,6 +311,30 @@ const platformManageable = computed(
   () => !platform.value?.isBuiltin || !!(platform.value as any)?.presetKey,
 );
 const models = computed(() => store.models.filter((m) => m.platformId === platformId.value));
+
+// ── 单模型共享（管理员统一创建语义；guest 单机恒可，multi 需 share.model.publish） ──
+const authStore = useAuthStore();
+const canShareModels = computed(() => {
+  if (!authStore.authRequired) return true;
+  return authStore.hasPermission('share.model.publish');
+});
+const aclVisible = ref(false);
+const aclTarget = ref<{ id: string; name: string } | null>(null);
+/** 别人的共享平台：模型行只读（共享开关/编辑/删除都归 owner） */
+const platformShared = computed(() => !!platform.value?.shared);
+const sharingModelId = ref('');
+async function toggleShareModel(m: any) {
+  const toPublic = !m.isPublic;
+  sharingModelId.value = m.id;
+  try {
+    await store.setModelShared(m.id, toPublic);
+    ElMessage.success(toPublic ? '已共享：全部用户可见可用' : '已取消共享');
+  } catch (e: any) {
+    ElMessage.error('操作失败: ' + (e?.message || e));
+  } finally {
+    sharingModelId.value = '';
+  }
+}
 
 // ── 模型搜索 / 类型筛选（纯前端过滤，不动数据；空关键字 + 空类型 = 全量） ──
 const modelKeyword = ref('');
@@ -738,7 +770,8 @@ async function testCapabilityInForm(c: { value: string; label: string; kind: str
   display: flex; align-items: center; gap: 8px;
   padding-top: 8px; border-top: 1px solid var(--glass-border);
 }
-.model-card-actions { display: flex; gap: 4px; margin-left: auto; }
+.model-card-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+.model-card-actions .el-button + .el-button { margin-left: 0; }
 
 /* 添加卡片 */
 .add-card {

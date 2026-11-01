@@ -35,11 +35,72 @@ export const isLocalClient = isElectron || isCapacitor;
 
 // 移动端支持用户配置远程后端地址（方案 A：连远程节点）；未配置时走内嵌本地后端（方案 B）
 const mobileRemoteBase = getMobileApiBase();
-export const API_BASE = isElectron
-  ? LOCAL_API_BASE
-  : isCapacitor
-    ? (mobileRemoteBase ? mobileRemoteBase.replace(/\/$/, '') + '/api' : LOCAL_API_BASE)
-    : '/api';
+
+// ===== 全局后端地址（轻量壳/任意端连远程后端） =====
+// localStorage key `yz_server_base`：对所有端生效的最高优先级后端地址。
+// 场景：桌面轻量壳（无内嵌后端）填主机后端地址即可当完整客户端用；
+// Web/移动端也能借此连任意远程节点。保存后需 reload 生效（与 mobile_api_base 同语义）。
+const SERVER_BASE_KEY = 'yz_server_base';
+/** 用户配置（页面可改，最高优先级）。 */
+export function getServerBase(): string {
+  try {
+    return localStorage.getItem(SERVER_BASE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+/** 打包内置的后端地址（轻量壳 server-base.json，主进程经 preload 下发；'' = 未内置）。 */
+export function getBakedServerBase(): string {
+  try {
+    return (window as any).electronAPI?.serverBase || '';
+  } catch {
+    return '';
+  }
+}
+export function setServerBase(url: string): string {
+  const trimmed = (url || '').trim().replace(/\/+$/, '');
+  if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+    throw new Error('后端地址必须以 http:// 或 https:// 开头');
+  }
+  try {
+    if (trimmed) localStorage.setItem(SERVER_BASE_KEY, trimmed);
+    else localStorage.removeItem(SERVER_BASE_KEY);
+  } catch { /* ignore */ }
+  return trimmed;
+}
+
+/** 管理员视图切换：查看目标用户的数据（后端 X-YZ-View-As 收口校验 admin 权限） */
+const VIEW_AS_KEY = 'yz_view_as';
+export function getViewAs(): { id: string; username: string } | null {
+  try {
+    const raw = localStorage.getItem(VIEW_AS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+export function setViewAs(v: { id: string; username: string } | null): void {
+  try {
+    if (v) localStorage.setItem(VIEW_AS_KEY, JSON.stringify(v));
+    else localStorage.removeItem(VIEW_AS_KEY);
+  } catch { /* ignore */ }
+}
+
+/** 生效后端地址：用户页面配置 > 打包内置 > ''（未配置，走各端默认）。 */
+export function getEffectiveServerBase(): string {
+  return getServerBase() || getBakedServerBase();
+}
+
+/** 配置了后端地址时返回 `<base>/api`，否则 ''（未配置）。 */
+function serverBaseApi(): string {
+  const base = getEffectiveServerBase();
+  return base ? base + '/api' : '';
+}
+
+export const API_BASE = serverBaseApi()
+  || (isElectron
+    ? LOCAL_API_BASE
+    : isCapacitor
+      ? (mobileRemoteBase ? mobileRemoteBase.replace(/\/$/, '') + '/api' : LOCAL_API_BASE)
+      : '/api');
 const BASE_URL = API_BASE;
 
 /**
@@ -60,7 +121,13 @@ export function wsUrl(path: string): string {
   const prefix = u.pathname.replace(/\/+$/, '');
   const url = `${u.origin}${prefix}${path.startsWith('/') ? path : `/${path}`}`;
   const license = getLicenseCodeSync();
-  return license ? `${url}${url.includes('?') ? '&' : '?'}license=${encodeURIComponent(license)}` : url;
+  // multi 多用户模式：浏览器 WS 带不了 Authorization 头 → token 走 ?token= query
+  // （服务端 wsUpgradeAuthorized 校验；guest 模式后端不看它，带上无害）。
+  const token = getToken();
+  const extra = license || token
+    ? `${license ? `license=${encodeURIComponent(license)}` : ''}${license && token ? '&' : ''}${token ? `token=${encodeURIComponent(token)}` : ''}`
+    : '';
+  return extra ? `${url}${url.includes('?') ? '&' : '?'}${extra}` : url;
 }
 
 const MOBILE_API_BASE_KEY = 'mobile_api_base';
@@ -159,6 +226,9 @@ export async function apiFetch<T = any>(
     ...((options.headers as Record<string, string> | undefined) || {}),
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  // 管理员视图切换（2026-11-01）：查看指定用户的数据（后端校验 admin 权限，普通用户带了这个头也会被忽略）
+  const viewAs = getViewAs();
+  if (viewAs?.id) headers['x-yz-view-as'] = viewAs.id;
   const licenseCode = getLicenseCode();
   if (licenseCode) headers['x-license'] = licenseCode;
 

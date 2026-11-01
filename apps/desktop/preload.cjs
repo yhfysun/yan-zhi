@@ -25,6 +25,23 @@ function resolveApiPort() {
 }
 const API_PORT = resolveApiPort();
 
+/**
+ * 内置远程后端地址（轻量壳模式，2026-11-01）。
+ * 主进程从 resources/server-base.json 读出后经 `--yz-server-base=<url>` 下发；
+ * 未内置（完整版 / 用户未配置）为空串。渲染层 localStorage yz_server_base 可覆盖。
+ */
+function resolveBakedServerBase() {
+  try {
+    const hit = (process.argv || []).find((a) => a.startsWith('--yz-server-base='));
+    if (hit) {
+      const base = hit.split('=').slice(1).join('='); // URL 含 '=' 时保真
+      if (/^https?:\/\//i.test(base)) return base;
+    }
+  } catch { /* ignore */ }
+  return '';
+}
+const BAKED_SERVER_BASE = resolveBakedServerBase();
+
 // ★ 渲染层心跳已删除（2026-10-27）：定时器会被 Chromium 节流（窗口被遮挡/切后台），
 //   拿它当"主线程卡死"的判据会自己和自己打架。现在由主进程主动 executeJavaScript 探活。
 
@@ -34,6 +51,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   apiPort: API_PORT,
   apiBase: 'http://127.0.0.1:' + API_PORT + '/api',
   apiOrigin: 'http://127.0.0.1:' + API_PORT,
+  // 轻量壳内置的远程后端地址（'' = 未内置；渲染层 localStorage yz_server_base 优先级更高）
+  serverBase: BAKED_SERVER_BASE,
   // 是否开发实例（界面可据此区分标题，避免与安装版窗口混淆）
   isDevInstance: (process.argv || []).includes('--yz-dev-instance'),
   // 窗口控制

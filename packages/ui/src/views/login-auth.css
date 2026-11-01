@@ -1,0 +1,40 @@
+/* 登录/初始化页共用样式（自 Login.vue 抽出，Setup.vue / admin 登录类页面复用） */
+.auth-page {
+  display: flex; align-items: center; justify-content: center;
+  /* 用 100% 而非 100vh：桌面端标题栏(36px)会吃掉视口高度，100vh 会导致卡片溢出底部被裁切 */
+  min-height: 100%;
+  padding: 24px;
+  position: relative;
+  background: var(--glass-bg);
+}
+
+.auth-card {
+  width: 100%; max-width: 400px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  padding: 40px 36px;
+  box-shadow: var(--shadow-lg);
+}
+
+.auth-header { text-align: center; margin-bottom: 28px; }
+.auth-header h2 { font-size: 24px; font-weight: 700; margin: 0 0 8px; color: var(--color-text); }
+.auth-header p { font-size: 14px; color: var(--color-text-secondary); margin: 0; }
+
+.auth-form { margin-bottom: 8px; }
+.err { margin-bottom: 14px; }
+
+.submit-btn {
+  width: 100%; height: 44px;
+  background: var(--gradient-primary) !important;
+  border: none !important; color: #fff !important;
+  font-weight: 600; font-size: 15px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.3);
+}
+
+.server-field { margin-top: 8px; }
+.server-row { display: flex; gap: 8px; }
+.server-hint { font-size: 12px; color: var(--color-text-secondary); margin: 6px 0 0; }

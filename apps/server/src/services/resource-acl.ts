@@ -1,0 +1,93 @@
+/**
+ * 资源定向授权（ACL，2026-11-01 用户拍板「我给某个人只授权一两个智能体」）：
+ *   资源可见性 = owner ∪ is_public（共享给所有人）∪ ACL 名单（定向授权给某几个人）；
+ *   写操作永远归 owner（ACL 只授"可用"，不授"可改"）。
+ * 统一收口：resource_acl 表 + 本服务的类型白名单/读写接口，各业务路由的可见性 SQL
+ * 用 aclExistsSql() 拼 EXISTS 子查询。防逐路由自造名单存储。
+ */
+import { db } from '../db.js';
+
+export const ACL_TYPES = ['agent', 'model', 'skill', 'tool', 'platform', 'plugin'] as const;
+export type AclType = (typeof ACL_TYPES)[number];
+
+const RESOURCE_TABLE: Record<AclType, string> = {
+  agent: 'agent',
+  model: 'model',
+  skill: 'skill',
+  tool: 'custom_tool',
+  platform: 'platform',
+  plugin: 'plugin',
+};
+
+export function isAclType(t: string): t is AclType {
+  return (ACL_TYPES as readonly string[]).includes(t);
+}
+
+/** 资源存在性校验（防给不存在的 id 发授权） */
+export function resourceExists(type: AclType, id: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM "${RESOURCE_TABLE[type]}" WHERE id = ?`).get(id);
+}
+
+/** 名单拆分：user 主体 / role 主体（角色授权即批量，角色下所有用户生效） */
+export function getAclPrincipals(type: AclType, id: string): { userIds: string[]; roleIds: string[] } {
+  const rows = db.prepare(
+    'SELECT user_id, principal_type FROM resource_acl WHERE resource_type = ? AND resource_id = ? ORDER BY created_at',
+  ).all(type, id) as any[];
+  return {
+    userIds: rows.filter((r) => (r.principal_type || 'user') === 'user').map((r) => r.user_id),
+    roleIds: rows.filter((r) => r.principal_type === 'role').map((r) => r.user_id),
+  };
+}
+
+/** 兼容旧调用：全部主体 id（用户 + 角色） */
+export function getAclUserIds(type: AclType, id: string): string[] {
+  return (db.prepare('SELECT user_id FROM resource_acl WHERE resource_type = ? AND resource_id = ? ORDER BY created_at')
+    .all(type, id) as any[]).map((r) => r.user_id);
+}
+
+/** 覆盖式设置名单（owner 或管理员调用）；用户不存在/为 guest 的项自动剔除 */
+export function setAclUsers(
+  type: AclType, id: string,
+  principals: { userIds?: string[]; roleIds?: string[] },
+): number {
+  const users = [...new Set(principals.userIds || [])].filter((u) => u && u !== 'guest'
+    && db.prepare('SELECT 1 FROM user WHERE id = ?').get(u));
+  const roles = [...new Set(principals.roleIds || [])].filter((r) => r
+    && db.prepare('SELECT 1 FROM role WHERE id = ?').get(r));
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM resource_acl WHERE resource_type = ? AND resource_id = ?').run(type, id);
+    const ins = db.prepare(
+      'INSERT OR IGNORE INTO resource_acl (resource_type, resource_id, user_id, principal_type, created_at) VALUES (?, ?, ?, ?, ?)',
+    );
+    const now = Date.now();
+    for (const u of users) ins.run(type, id, u, 'user', now);
+    for (const r of roles) ins.run(type, id, r, 'role', now);
+  });
+  tx();
+  return users.length + roles.length;
+}
+
+/**
+ * 可见性判断的名单 SQL 片段：当前请求者命中名单的方式有三种 ——
+ *   ① 主体就是该用户（user 名单）② 主体是用户直接绑定的角色 ③ 主体是用户所属组织被授权的角色。
+ *   返回的片段带 3 个同值参数（调用方按顺序追加 userId ×3）。
+ */
+export function aclExistsSql(type: AclType, idExpr: string): string {
+  return `EXISTS (SELECT 1 FROM resource_acl _acl WHERE _acl.resource_type = '${type}' AND _acl.resource_id = ${idExpr}
+      AND (_acl.user_id = ?
+        OR _acl.user_id IN (SELECT role_id FROM user_role WHERE user_id = ?)
+        OR _acl.user_id IN (SELECT role_id FROM org_role WHERE org_id IN (SELECT org_id FROM user_org WHERE user_id = ?))))`;
+}
+
+export function aclUsersOf(type: AclType, id: string): Array<{ id: string; username: string }> {
+  return db.prepare(
+    `SELECT u.id, u.username FROM resource_acl a JOIN user u ON u.id = a.user_id
+      WHERE a.resource_type = ? AND a.resource_id = ? ORDER BY a.created_at`,
+  ).all(type, id) as any[];
+}
+
+/** 资源 owner（用于鉴权"只有 owner/管理员能改名单"） */
+export function resourceOwner(type: AclType, id: string): string | null {
+  const row = db.prepare(`SELECT user_id AS uid FROM "${RESOURCE_TABLE[type]}" WHERE id = ?`).get(id) as any;
+  return row?.uid ?? null;
+}

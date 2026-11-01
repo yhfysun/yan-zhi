@@ -206,7 +206,16 @@ interface ImEvent {
 
 // ===== 渠道 =====
 /** 当前渠道：'node' 表示言智节点聊天，否则为 IM connector id */
-const channel = ref<'node' | string>('node');
+const CHANNEL_MEMO_KEY = 'yz:chathub:channel';
+/** 上次用过的渠道（im-hub 5.3「默认聊天模式」）：用户实际选过的就是最好的默认，不必在设置页另放字段 */
+function initialChannel(): string {
+  try {
+    const last = localStorage.getItem(CHANNEL_MEMO_KEY);
+    if (last) return last;
+  } catch { /* 隐私模式等 localStorage 不可用 → 默认 node */ }
+  return 'node';
+}
+const channel = ref<string>(initialChannel());
 
 const connectors = ref<any[]>([]);
 const activeConnectorId = ref('');
@@ -314,9 +323,11 @@ function dispatchPoll() {
 function onChannelCommand(cmd: string) {
   if (cmd === 'node') {
     channel.value = 'node';
+    try { localStorage.setItem(CHANNEL_MEMO_KEY, 'node'); } catch { /* ignore */ }
     return;
   }
   channel.value = cmd;
+  try { localStorage.setItem(CHANNEL_MEMO_KEY, cmd); } catch { /* ignore */ }
   const c = connectors.value.find((x) => x.id === cmd);
   if (c) selectConnector(c);
 }
@@ -514,6 +525,11 @@ async function loadConnectors() {
   const res = await api.get<any[]>('/im/connectors');
   if ('error' in res) return;
   connectors.value = (res.data || []).filter((c) => c.enabled);
+  // 记住的渠道指向的 connector 已删/停用 → 回落 node，别停在死渠道上（表现为"发不出去"）
+  if (channel.value !== 'node' && !connectors.value.some((c) => c.id === channel.value)) {
+    channel.value = 'node';
+    try { localStorage.setItem(CHANNEL_MEMO_KEY, 'node'); } catch { /* ignore */ }
+  }
 }
 
 function selectConnector(c: any) {

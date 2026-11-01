@@ -18,6 +18,7 @@
 // 三处必须同口径：运行时解析（本模块）、预检集合（routes/workflow.ts）、seed 回填
 // （builtin-workflow-agents.ts）。任何一处单独改都会让「预检放行 → 运行报错」重现。
 import type { YzSqliteDb } from './sqlite-driver.js';
+import { aclExistsSql } from '../services/resource-acl.js';
 import type { Model } from '@yan-zhi/shared';
 import { createLogger } from './logger.js';
 const logger = createLogger('model-resolve');
@@ -70,7 +71,29 @@ export function findModelRow(
       `[model-resolve] 模型标识回退命中（存量裸名，建议规范为主键）：${modelId} → ${byName.id}`,
     );
   }
-  return byName;
+  if (byName) return byName;
+
+  // 3) 共享兜底（2026-11-01 RBAC）：共享平台（is_public=1）的模型 + 单模型共享（model.is_public=1）
+  //    对全部用户可见可用 —— 用户自己的模型优先（上面 1/2 步已查），查不到才落共享。
+  //    带平台约束时限定该平台；不带时在共享面内解析（同名取第一个）。
+  //    ★ try/catch：迷你库（测试内存库）可能没有 platform 表 —— 共享兜底是"锦上添花"，
+  //      绝不能让它把 1/2 步已经能正常完成的解析炸掉。
+  try {
+    const sharedCond = platformId ? 'AND platform_id = ?' : '';
+    const sharedArgs: any[] = platformId ? [modelId, platformId] : [modelId];
+    // ACL 定向授权（2026-11-01）：EXISTS 参数按 SQL 中 ? 顺序追加在末尾（sharedArgs 之后）
+    const aclCond = ` OR ${aclExistsSql('model', 'model.id')}`;
+    const aclArgs = [userId, userId, userId];
+    const bySharedId = db
+      .prepare(`SELECT * FROM model WHERE id = ? ${sharedCond} AND (platform_id IN (SELECT id FROM platform WHERE is_public = 1) OR is_public = 1${aclCond})`)
+      .get(...sharedArgs, ...aclArgs) as ModelRowLike | undefined;
+    if (bySharedId) return bySharedId;
+    const bySharedName = db
+      .prepare(`SELECT * FROM model WHERE model_id = ? ${sharedCond} AND (platform_id IN (SELECT id FROM platform WHERE is_public = 1) OR is_public = 1${aclCond})`)
+      .get(...sharedArgs, ...aclArgs) as ModelRowLike | undefined;
+    if (bySharedName) return bySharedName;
+  } catch { /* platform 表不存在（迷你库/极老库）→ 跳过共享兜底 */ }
+  return undefined;
 }
 
 /** 行 → 领域模型（字段映射与 workflow-runner / llm-task-manager 保持一致） */

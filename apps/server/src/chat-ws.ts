@@ -16,14 +16,17 @@ import {
   resolveToolResult, injectUserMessage, findRunningTaskId, validateTaskModel,
 } from './llm-task-manager.js';
 import { findCreatedTask, rememberCreatedTask } from './chat-ws-dedupe.js';
-
-/** 本机单用户身份（与 auth.ts 的 LOCAL_USER 一致；全库 user_id 都是 guest） */
-const USER_ID = 'guest';
+import { resolveWsUserId } from './auth.js';
+// 本机单用户身份（与 auth.ts 的 LOCAL_USER 一致；全库 user_id 都是 guest）。
+// ★ multi 模式下身份按连接解析（handleChatUpgrade → client.userId），
+//   远程登录用户的任务/消息归属到其真实 user_id，不再落到 guest。
 
 type Unsub = () => void;
 
 interface ChatWsClient {
   ws: WebSocket;
+  /** 本连接的身份（multi 模式按 token 解析；guest 模式/本机 = 'guest'）。 */
+  userId: string;
   /**
    * 订阅退订函数集合（任务订阅 / 会话订阅），连接关闭时统一释放。
    * ★ 按 key 存（`task:${id}` / `conv:${id}`）：同一连接重复订阅同一目标时先退旧的再挂新的
@@ -62,7 +65,7 @@ interface ClientMsg {
 }
 
 /** 复用 POST /tasks 的「运行中任务 → 追问注入」语义，避免 WS 与 HTTP 两条建任务路径漂移 */
-function createTaskOrInject(payload: ClientMsg): { taskId: string; reused?: boolean; injected?: boolean; injectedMsgId?: string; duplicate?: boolean } {
+function createTaskOrInject(payload: ClientMsg, uid: string): { taskId: string; reused?: boolean; injected?: boolean; injectedMsgId?: string; duplicate?: boolean } {
   const conversationId = payload.conversationId!;
   // ★ 重发幂等（2026-10-26）：前端自动重发时沿用同一个 clientMsgId。
   //   命中说明上一次 create_task 其实已经建好了任务，只是应答在断连中丢了 ——
@@ -71,20 +74,20 @@ function createTaskOrInject(payload: ClientMsg): { taskId: string; reused?: bool
   const clientMsgId = typeof payload.clientMsgId === 'string' ? payload.clientMsgId : undefined;
   const already = findCreatedTask(conversationId, clientMsgId);
   if (already) return { taskId: already, reused: true, duplicate: true };
-  const runningId = findRunningTaskId(conversationId, USER_ID);
+  const runningId = findRunningTaskId(conversationId, uid);
   if (runningId) {
     const inj = payload.userContent
-      ? injectUserMessage(conversationId, String(payload.userContent), USER_ID, clientMsgId)
+      ? injectUserMessage(conversationId, String(payload.userContent), uid, clientMsgId)
       : { status: 'no-task' as const };
     // 并入成功也要记账：否则下一次重发会再注一遍（幂等键只有落进记账才生效）
     if (inj.status === 'injected') rememberCreatedTask(conversationId, clientMsgId, runningId);
     return { taskId: runningId, reused: true, injected: inj.status === 'injected', injectedMsgId: (inj as any).msgId };
   }
-  const modelInvalid = validateTaskModel(USER_ID, String(payload.platformId), String(payload.modelId));
+  const modelInvalid = validateTaskModel(uid, String(payload.platformId), String(payload.modelId));
   if (modelInvalid) throw new Error(modelInvalid);
   const taskId = createTask({
     conversationId,
-    userId: USER_ID,
+    userId: uid,
     platformId: payload.platformId!,
     modelId: payload.modelId!,
     userContent: payload.userContent,
@@ -114,8 +117,10 @@ function send(ws: WebSocket, obj: unknown): void {
 export const chatWsServer = new WebSocketServer({ noServer: true });
 
 export function handleChatUpgrade(req: IncomingMessage, socket: any, head: Buffer): void {
+  // multi 模式：?token=/Authorization 解析真实用户；guest 模式/解析失败 → guest
+  const userId = resolveWsUserId(req);
   chatWsServer.handleUpgrade(req, socket, head, (ws) => {
-    const client: ChatWsClient = { ws, subs: new Map() };
+    const client: ChatWsClient = { ws, userId, subs: new Map() };
     ws.on('message', (data) => handleMessage(client, data));
     ws.on('close', () => {
       for (const un of client.subs.values()) { try { un(); } catch { /* 已释放 */ } }
@@ -147,7 +152,7 @@ function handleMessage(client: ChatWsClient, data: any): void {
           reply('error', { error: '缺少 conversationId/platformId/modelId' });
           break;
         }
-        const r = createTaskOrInject(msg);
+        const r = createTaskOrInject(msg, client.userId);
         reply('ok', { data: { taskId: r.taskId, reused: !!r.reused, injected: !!r.injected, injectedMsgId: r.injectedMsgId, duplicate: !!r.duplicate } });
         break;
       }
@@ -194,7 +199,7 @@ function handleMessage(client: ChatWsClient, data: any): void {
           reply('error', { error: '缺少 conversationId/content' });
           break;
         }
-        const r = injectUserMessage(msg.conversationId, msg.content, USER_ID, typeof msg.clientMsgId === 'string' ? msg.clientMsgId : undefined);
+        const r = injectUserMessage(msg.conversationId, msg.content, client.userId, typeof msg.clientMsgId === 'string' ? msg.clientMsgId : undefined);
         reply('ok', { data: { status: r.status, msgId: r.msgId, duplicate: !!r.duplicate } });
         break;
       }

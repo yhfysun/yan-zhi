@@ -316,7 +316,7 @@ export function validateModelPools(db: YzSqliteDb, userId: string, raw: unknown)
     pools[slot] = sanitizeIds(arr);
   }
   const modelById = new Map(
-    (db.prepare('SELECT id, type, capabilities_json, alias, model_id FROM model WHERE user_id = ?').all(userId) as any[])
+    (db.prepare(`SELECT id, type, capabilities_json, alias, model_id FROM model WHERE user_id = ? OR platform_id IN (SELECT id FROM platform WHERE is_public = 1) OR is_public = 1`).all(userId) as any[])
       .map((r) => [r.id, r]),
   );
   for (const slot of SLOTS) {
