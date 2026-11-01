@@ -50,9 +50,12 @@
               <el-tag :type="s.source === 'local' ? 'warning' : 'success'" size="small" effect="plain">{{ s.source === 'local' ? '自建' : '内置' }}</el-tag>
             </template>
             <template #actions>
-              <el-tooltip v-if="authStore.isLoggedIn" :content="s.isPublic ? '点击下架' : '发布到商城'" placement="top">
+              <!-- 共享开关（发布到商城 = is_public）：guest 单机恒可；multi 需 share.skill.publish 权限 -->
+              <el-tooltip v-if="canShare" :content="s.isPublic ? '点击下架' : '发布到商城'" placement="top">
                 <el-switch :model-value="!!s.isPublic" size="small" @change="(v: boolean) => togglePublish(s.id, v)" />
               </el-tooltip>
+              <!-- 定向授权名单（2026-11-01 ACL）：不开公开也能指定某些用户可用 -->
+              <el-button v-if="canShare" size="small" text type="primary" @click="aclTarget = { id: s.id, name: s.name }; aclVisible = true">授权</el-button>
               <el-switch :model-value="s.enabled" size="small" @change="(v: boolean) => toggle(s.id, v)" />
               <el-tooltip content="导出（.zip，含子目录）" placement="top"><el-button size="small" circle @click="exportSkill(s)"><el-icon :size="14"><Download /></el-icon></el-button></el-tooltip>
               <el-tooltip v-if="s.source === 'local'" content="编辑" placement="top"><el-button size="small" circle @click="openEdit(s)"><el-icon :size="14"><Edit /></el-icon></el-button></el-tooltip>
@@ -140,10 +143,13 @@
     </el-dialog>
 
     <input ref="zipInput" type="file" accept=".zip" style="display: none" @change="onZipFile" />
+  
+    <ResourceAclDialog v-model:visible="aclVisible" type="skill" :id="aclTarget?.id || ''" :name="aclTarget?.name || 'Skill'" />
   </div>
 </template>
 
 <script setup lang="ts">
+import ResourceAclDialog from '../../components/common/ResourceAclDialog.vue';
 import { ref, reactive, computed, onMounted } from 'vue';
 import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, Folder, UploadFilled, Box, Document, Download, CaretRight, CaretBottom } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -157,6 +163,13 @@ import CollapsibleCategory from '../../components/common/CollapsibleCategory.vue
 
 const store = useSkillStore();
 const authStore = useAuthStore();
+/** 共享开关可见性：guest 单机恒可；multi 模式需 share.skill.publish 权限（后端也收口） */
+const aclVisible = ref(false);
+const aclTarget = ref<{ id: string; name: string } | null>(null);
+const canShare = computed(() => {
+  if (!authStore.authRequired) return true;
+  return authStore.hasPermission('share.skill.publish');
+});
 const search = ref('');
 
 const showEditor = ref(false);

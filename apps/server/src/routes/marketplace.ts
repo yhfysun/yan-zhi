@@ -117,6 +117,11 @@ function marketplaceGuard(req: Request, res: Response, next: NextFunction) {
     if (!key || key !== (cfg.auth_token || '')) {
       res.status(401).json({ success: false, error: 'API Key 校验失败' }); return;
     }
+  } else if (authType !== 'none') {
+    // ★ 未知认证类型**必须拒绝**，不能落到"不校验"分支放行（2026-10-31）：
+    //   历史数据里可能存在已从类型定义中移除的 'basic'，静默放行等于商城对外裸奔，
+    //   而配置界面又看不出自己没被保护。
+    res.status(401).json({ success: false, error: `不支持的认证类型: ${authType}` }); return;
   }
   // auth_type === 'none' → 不校验请求头
   next();

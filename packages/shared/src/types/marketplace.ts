@@ -3,8 +3,16 @@
 /** 商城类型 */
 export type MarketplaceType = 'skill' | 'agent' | 'tool';
 
-/** 远程源认证类型 */
-export type AuthType = 'none' | 'bearer' | 'api-key' | 'basic';
+/**
+ * 远程源认证类型。
+ *
+ * ★ 没有 'basic'（2026-10-31 收口）：它曾在类型里存在，但三处实现**从未处理**它 ——
+ *   服务端 `marketplaceGuard`（marketplace.ts:105）与 `authHeaders`
+ *   （marketplace-sources-factory.ts）只分支 bearer / api-key，UI 下拉也只给
+ *   none / bearer / api-key。即"选了 basic = 走 none 分支 = 不校验"，是个静默的安全假象。
+ *   与其补一套没人用过的实现，不如把死类型删掉，让"可选即可用"成立。
+ */
+export type AuthType = 'none' | 'bearer' | 'api-key';
 
 /** 远程商城源 */
 export interface RemoteMarketplaceSource {

@@ -15,6 +15,7 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { INSTALLERS, listInstallers, getInstaller } from '../services/installer-registry.js';
 import { acestepStatus } from '../services/music-acestep.js';
+import { resolveFfmpeg, bindFfmpegPath, readBoundFfmpegPath } from '../mcp/ffmpeg-runtime.js';
 import { createLogger } from '../services/logger.js';
 
 const logger = createLogger('install');
@@ -38,6 +39,30 @@ router.get('/list', async (_req: Request, res: Response) => {
         inflight: [...inflight.keys()],
       },
     });
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// GET /api/install/ffmpeg/status —— ffmpeg 解析结果（含命中来源，便于排障"明明装了却说没有"）
+// ★ 必须注册在 `/:id/status` **之前**：否则会被 :id 路由先吃掉。
+router.get('/ffmpeg/status', async (_req: Request, res: Response) => {
+  try {
+    const st = await resolveFfmpeg();
+    res.json({ data: { ...st, boundPath: await readBoundFfmpegPath() } });
+  } catch (e: unknown) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// POST /api/install/ffmpeg/bind —— 手动绑定 ffmpeg 路径（自动探测的兜底出口）
+// body: { path }；传空串 = 清除绑定恢复自动探测。绑定前校验 libx264，避免绑上裁剪版。
+router.post('/ffmpeg/bind', async (req: Request, res: Response) => {
+  const p = typeof req.body?.path === 'string' ? req.body.path : '';
+  try {
+    const r = await bindFfmpegPath(p);
+    if (!r.ok) { res.status(400).json({ error: r.message }); return; }
+    res.json({ data: { ...r, status: await resolveFfmpeg() } });
   } catch (e: unknown) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }

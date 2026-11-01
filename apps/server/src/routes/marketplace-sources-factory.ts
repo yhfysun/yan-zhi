@@ -40,6 +40,86 @@ function authHeaders(s: any): Record<string, string> {
   return h;
 }
 
+// ===== 远程商品缓存（marketplace_cache）=====
+//
+// ★ 为什么要有：这张表从建库起就只有 CREATE 与 DELETE（删源时清缓存），**从来没有 INSERT**，
+//   等于"设计完了没落地"—— 远程列表每次都实时 fetch，远程节点宕机/断网时商品页直接空白。
+//   现在补上写入与读取，并让"远程失败"时**兜底返回缓存**（过期也用，标 stale），
+//   这样断网状态下用户至少还能看到上次拉到的商品。
+//
+// 缓存粒度：只读端点（列表 / 分类 / 详情）。search 是 POST + 任意 body，不缓存。
+
+/** 新鲜期：10 分钟内直接用缓存不回源；超过则回源，回源失败才用旧缓存。 */
+const CACHE_TTL_MS = 10 * 60 * 1000;
+/** 回源超时：远程卡住不能无限等，超时后走缓存兜底（与 /:id/test 的 10s 一致）。 */
+const FETCH_TIMEOUT_MS = 10000;
+
+function cacheKeyOf(...parts: (string | number)[]): string {
+  return parts.join('|');
+}
+
+function readCache(remoteId: string, itemType: string, key: string): { data: any; cachedAt: number } | null {
+  try {
+    const row = db.prepare('SELECT data_json, cached_at FROM marketplace_cache WHERE remote_id = ? AND item_type = ? AND item_id = ?')
+      .get(remoteId, itemType, key) as any;
+    if (!row) return null;
+    return { data: JSON.parse(row.data_json), cachedAt: Number(row.cached_at) || 0 };
+  } catch {
+    // 缓存坏了不能影响主流程：当成没缓存
+    return null;
+  }
+}
+
+function writeCache(remoteId: string, itemType: string, key: string, data: unknown): void {
+  try {
+    // INSERT OR REPLACE：命中 UNIQUE(remote_id, item_type, item_id) 时整行替换，兼容老 SQLite
+    db.prepare('INSERT OR REPLACE INTO marketplace_cache (id, remote_id, item_type, item_id, data_json, cached_at) VALUES (?,?,?,?,?,?)')
+      .run(uuid(), remoteId, itemType, key, JSON.stringify(data), Date.now());
+  } catch {
+    // 写缓存失败只降级，不阻断响应
+  }
+}
+
+interface RemoteResult { ok: boolean; status: number; data: any; }
+
+async function fetchRemote(url: string, init?: RequestInit): Promise<RemoteResult> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, { ...(init || {}), signal: ctrl.signal });
+    const data = await resp.json().catch(() => null);
+    return { ok: resp.ok, status: resp.status, data };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 带缓存的远程读取：新鲜缓存直接返回；否则回源，成功写缓存，失败兜底用旧缓存。
+ * 返回 null 表示既没拉到也没有缓存可兜底，由调用方按原逻辑报错。
+ */
+async function readThroughCache(
+  s: any, itemType: string, key: string, url: string, init?: RequestInit,
+): Promise<{ data: any; fromCache: boolean; stale: boolean; status?: number } | null> {
+  const hit = readCache(s.id, itemType, key);
+  const fresh = hit && Date.now() - hit.cachedAt < CACHE_TTL_MS;
+  if (fresh) return { data: hit!.data, fromCache: true, stale: false };
+
+  let lastStatus: number | undefined;
+  try {
+    const r = await fetchRemote(url, init);
+    lastStatus = r.status;
+    if (r.ok && r.data != null) {
+      writeCache(s.id, itemType, key, r.data);
+      return { data: r.data, fromCache: false, stale: false };
+    }
+  } catch {
+    // 落到下面缓存兜底
+  }
+  if (hit) return { data: hit.data, fromCache: true, stale: true, status: lastStatus };
+  return null;
+}
+
 export function createMarketplaceSourcesRouter(opts: MarketplaceSourcesOptions): Router {
   const { type, itemPath, itemIdField } = opts;
   const router = Router();
@@ -95,33 +175,42 @@ export function createMarketplaceSourcesRouter(opts: MarketplaceSourcesOptions):
   router.get(`/:id/${itemPath}`, async (req: Request, res: Response) => {
     const s = db.prepare(`SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='${type}'`).get(req.params.id, req.user!.userId) as any;
     if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
-    try {
-      const page = req.query.page || 1; const pageSize = req.query.pageSize || 20;
-      const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/${itemPath}?page=${page}&pageSize=${pageSize}`, { headers: authHeaders(s) });
-      if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
-      res.json(await resp.json());
-    } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+    const page = req.query.page || 1; const pageSize = req.query.pageSize || 20;
+    const r = await readThroughCache(s, type, cacheKeyOf('list', String(page), String(pageSize)),
+      `${marketApiBase(s.base_url)}/api/marketplace/${itemPath}?page=${page}&pageSize=${pageSize}`,
+      { headers: authHeaders(s) });
+    if (!r) { res.status(502).json({ success: false, error: '远程源不可用，且本地没有可用缓存' }); return; }
+    res.json({ ...r.data, cached: r.fromCache, stale: r.stale });
   });
 
   // GET /:id/{item}/categories —— 必须在 /:id/{item}/:itemId 之前注册
   router.get(`/:id/${itemPath}/categories`, async (req: Request, res: Response) => {
     const s = db.prepare(`SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='${type}'`).get(req.params.id, req.user!.userId) as any;
     if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
-    try {
-      const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/${itemPath}/categories`, { headers: authHeaders(s) });
-      if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
-      res.json(await resp.json());
-    } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+    const r = await readThroughCache(s, type, 'categories',
+      `${marketApiBase(s.base_url)}/api/marketplace/${itemPath}/categories`,
+      { headers: authHeaders(s) });
+    if (!r) { res.status(502).json({ success: false, error: '远程源不可用，且本地没有可用缓存' }); return; }
+    res.json({ ...r.data, cached: r.fromCache, stale: r.stale });
   });
 
   router.get(`/:id/${itemPath}/:itemId`, async (req: Request, res: Response) => {
     const s = db.prepare(`SELECT * FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='${type}'`).get(req.params.id, req.user!.userId) as any;
     if (!s) { res.status(404).json({ error: '远程源不存在' }); return; }
-    try {
-      const resp = await fetch(`${marketApiBase(s.base_url)}/api/marketplace/${itemPath}/${encodeURIComponent(req.params.itemId)}`, { headers: authHeaders(s) });
-      if (!resp.ok) { res.status(resp.status).json({ success: false, error: `远程源返回状态码: ${resp.status}` }); return; }
-      res.json(await resp.json());
-    } catch (err: unknown) { res.status(502).json({ success: false, error: err instanceof Error ? err.message : String(err) }); }
+    const r = await readThroughCache(s, type, cacheKeyOf('item', req.params.itemId),
+      `${marketApiBase(s.base_url)}/api/marketplace/${itemPath}/${encodeURIComponent(req.params.itemId)}`,
+      { headers: authHeaders(s) });
+    if (!r) { res.status(502).json({ success: false, error: '远程源不可用，且本地没有可用缓存' }); return; }
+    res.json({ ...r.data, cached: r.fromCache, stale: r.stale });
+  });
+
+  // POST /:id/refresh-cache —— 手动丢弃该源的缓存，下次读取强制回源
+  router.post('/:id/refresh-cache', (req: Request, res: Response) => {
+    if (!db.prepare(`SELECT id FROM remote_marketplace WHERE id = ? AND user_id = ? AND type='${type}'`).get(req.params.id, req.user!.userId)) {
+      res.status(404).json({ error: '远程源不存在' }); return;
+    }
+    db.prepare('DELETE FROM marketplace_cache WHERE remote_id = ?').run(req.params.id);
+    res.json({ ok: true });
   });
 
   router.post(`/:id/${itemPath}/search`, async (req: Request, res: Response) => {

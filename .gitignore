@@ -16,6 +16,9 @@ dist/
 !*.config.js
 !vitest.config.ts
 !eslint.config.*
+# 插件运行时直接加载 JS 源码（不经构建），所以 plugins/ 下的 .js 是**源码不是产物**，
+# 必须入库 —— 否则插件实现只在作者本机存在，别人拉下来永远是 MODULE_NOT_FOUND。
+!plugins/**/*.js
 
 
 # Tauri

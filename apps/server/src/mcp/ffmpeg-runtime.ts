@@ -4,8 +4,17 @@
 // 理由：随包要为每个平台预置二进制（体积翻几倍，且 mac/linux 构建无法在 win 上准备）；
 // 按需下载一次到位，各平台各自取自己的构建。
 //
-// 解析顺序：YZ_FFMPEG_PATH（显式）> 数据目录/ffmpeg（下载安装位）> 随包目录（兼容）> PATH。
-import { existsSync, promises as fsp } from 'node:fs';
+// 解析顺序（2026-10-31 补两级）：
+//   YZ_FFMPEG_PATH（显式）> 用户手动绑定 > 数据目录/ffmpeg（下载安装位）> 随包目录
+//   > 已知落点 > **常见软件自带目录（带可用性校验）** > PATH > 无（引导下载）。
+//
+// ★ 为什么要补「软件自带目录」与「手动绑定」（2026-10-31 实测）：
+//   本机 `C:\APP\EVCapture\ffmpeg.exe` 是**完整版**（2019 构建，带 libx264/aac），
+//   但既不在 PATH、也不在任何已知落点 → resolveFfmpeg 一直返回不可用 →
+//   整条剪辑/媒体链路全断，而文档里记成了"本机无 ffmpeg"（把现象写成了事实）。
+//   同时 `C:\APP\剪映专业版\...\ffmpeg.exe` 是**裁剪版**（无 libx264），
+//   谁先命中谁上岗 —— 所以自动探测必须**校验编码器**，不能只看文件存在。
+import { existsSync, readdirSync, promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,8 +27,8 @@ export interface FfmpegStatus {
   ok: boolean;
   ffmpeg: string;
   ffprobe: string;
-  /** 命中来源：env(显式配置) / installed(已下载) / bundled(随包) / path(系统 PATH) / none */
-  source: 'env' | 'installed' | 'bundled' | 'discovered' | 'path' | 'none';
+  /** 命中来源：env(显式配置) / bound(用户在设置里绑定) / installed(已下载) / bundled(随包) / discovered(自动发现) / path(系统 PATH) / none */
+  source: 'env' | 'bound' | 'installed' | 'bundled' | 'discovered' | 'path' | 'none';
   error: string;
   /** 当前平台可用的下载源；无源时为空串 */
   downloadUrl: string;
@@ -178,6 +187,92 @@ function discoverKnownInstallDirs(): string[] {
   return out;
 }
 
+/**
+ * 候选目录是否**真的能用**：文件在 + 能跑 -version + 有 libx264。
+ * ★ 只看文件存在会选中剪映/HitPaw 的裁剪版（无 libx264），渲染时抛晦涩的
+ *   "Unknown encoder 'libx264'"，用户只会认为"剪辑功能是坏的"。
+ */
+async function isUsableFfmpegDir(dir: string): Promise<boolean> {
+  const ff = path.join(dir, FFMPEG_BIN);
+  if (!existsSync(ff) || !existsSync(path.join(dir, FFPROBE_BIN))) return false;
+  const v = await run(ff, ['-hide_banner', '-version'], 8000);
+  if (!v.ok) return false;
+  const enc = await run(ff, ['-hide_banner', '-encoders'], 10000);
+  return /libx264/.test(enc.out || '');
+}
+
+/**
+ * 常见软件自带 ffmpeg 的目录（Windows：绿色软件常把 ffmpeg 埋在 C:\APP\<软件>\ 里）。
+ * 只扫有限目录 + 有限深度，不做全盘搜索（慢且不可控）。
+ */
+function discoverVendorDirs(): string[] {
+  if (process.platform !== 'win32') return [];
+  const roots: Array<{ root: string; depth: number }> = [
+    { root: 'C:/APP', depth: 2 }, // 剪映把 ffmpeg 埋在两级子目录里
+    { root: 'C:/tools', depth: 1 },
+    { root: 'C:/Program Files', depth: 1 },
+    { root: 'C:/Program Files (x86)', depth: 1 },
+  ];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const budget = { n: 400 };
+  const walk = (dir: string, depth: number): void => {
+    if (budget.n <= 0) return;
+    let ents: import('node:fs').Dirent[] = [];
+    try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (budget.n <= 0) return;
+      if (!e.isDirectory()) continue;
+      const sub = path.join(dir, e.name);
+      budget.n -= 1;
+      if (existsSync(path.join(sub, FFMPEG_BIN)) && existsSync(path.join(sub, FFPROBE_BIN)) && !seen.has(sub)) {
+        seen.add(sub);
+        out.push(sub);
+      }
+      if (depth > 1) walk(sub, depth - 1);
+    }
+  };
+  for (const { root, depth } of roots) walk(root, depth);
+  return out;
+}
+
+/** 用户在设置里手动绑定的路径（给自动探测兜底：装在哪都可能） */
+function bindFilePath(): string {
+  return path.join(installDir(), 'ffmpeg-path.json');
+}
+
+export async function readBoundFfmpegPath(): Promise<string> {
+  try {
+    const j = JSON.parse(await fsp.readFile(bindFilePath(), 'utf8'));
+    return typeof j?.path === 'string' ? j.path : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 绑定/清除手动路径；绑定前先做可用性校验，避免绑上一个不能渲染的裁剪版 */
+export async function bindFfmpegPath(p: string): Promise<{ ok: boolean; message: string; ffmpeg: string }> {
+  const v = String(p || '').trim();
+  if (!v) {
+    try { await fsp.unlink(bindFilePath()); } catch { /* 本来就没绑 */ }
+    resetFfmpegCache();
+    return { ok: true, message: '已清除手动绑定，恢复自动探测', ffmpeg: '' };
+  }
+  const looksBin = /ffmpeg(\.exe)?$/i.test(v);
+  const dir = looksBin && existsSync(v) ? path.dirname(v) : v;
+  if (!existsSync(path.join(dir, FFMPEG_BIN))) {
+    return { ok: false, message: `该路径下没有 ${FFMPEG_BIN}`, ffmpeg: '' };
+  }
+  if (!(await isUsableFfmpegDir(dir))) {
+    return { ok: false, message: '这个 ffmpeg 缺 libx264 编码器（剪映等软件自带的裁剪版常见），无法用于渲染', ffmpeg: '' };
+  }
+  await fsp.mkdir(path.dirname(bindFilePath()), { recursive: true });
+  await fsp.writeFile(bindFilePath(), JSON.stringify({ path: v, boundAt: Date.now() }), 'utf8');
+  resetFfmpegCache();
+  const st = await resolveFfmpeg();
+  return { ok: true, message: `已绑定 ffmpeg：${st.ffmpeg}`, ffmpeg: st.ffmpeg };
+}
+
 /** 解析 ffmpeg / ffprobe。结果缓存；不可用时 error 与 downloadUrl 供上层构造「一键下载」引导。 */
 export async function resolveFfmpeg(): Promise<FfmpegStatus> {
   if (cached) return cached;
@@ -191,6 +286,17 @@ export async function resolveFfmpeg(): Promise<FfmpegStatus> {
     const hit = firstExisting([looksLikeBin ? path.dirname(envPath) : envPath]);
     if (hit) {
       cached = { ok: true, ...hit, source: 'env', error: '', downloadUrl: '', ...base };
+      return cached;
+    }
+  }
+
+  // 1.5) 用户在设置里手动绑定的路径（自动探测的兜底出口）
+  const bound = await readBoundFfmpegPath();
+  if (bound) {
+    const looksLikeBin2 = !existsSync(path.join(bound, FFMPEG_BIN)) && /ffmpeg(\.exe)?$/i.test(bound);
+    const hit = firstExisting([looksLikeBin2 ? path.dirname(bound) : bound]);
+    if (hit && await isUsableFfmpegDir(path.dirname(hit.ffmpeg))) {
+      cached = { ok: true, ...hit, source: 'bound', error: '', downloadUrl: '', ...base };
       return cached;
     }
   }
@@ -219,6 +325,16 @@ export async function resolveFfmpeg(): Promise<FfmpegStatus> {
   if (discovered) {
     cached = { ok: true, ...discovered, source: 'discovered', error: '', downloadUrl: '', ...base };
     return cached;
+  }
+
+  // 3.8) 常见软件自带目录（逐个校验，跳过缺 libx264 的裁剪版）
+  for (const vendorDir of discoverVendorDirs()) {
+    if (!(await isUsableFfmpegDir(vendorDir))) continue;
+    const hit = firstExisting([vendorDir]);
+    if (hit) {
+      cached = { ok: true, ...hit, source: 'discovered', error: '', downloadUrl: '', ...base };
+      return cached;
+    }
   }
 
   // 4) 系统 PATH

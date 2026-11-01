@@ -101,13 +101,16 @@
                 <span class="stat">{{ t.runtime }} · {{ t.timeout }}ms</span>
               </template>
               <template #actions>
-                <el-tooltip v-if="authStore.isLoggedIn" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
+                <!-- 共享开关（发布到商城 = is_public）：guest 单机恒可；multi 需 share.tool.publish 权限（后端也收口） -->
+                <el-tooltip v-if="canShareTools" :content="t.isPublic ? '点击下架' : '发布到商城'" placement="top">
                   <el-switch
                     :model-value="!!t.isPublic"
                     size="small"
                     @change="(v: boolean) => toolsStore.togglePublic(t.id, v)"
                   />
                 </el-tooltip>
+                <!-- 定向授权名单（2026-11-01 ACL） -->
+                <el-button v-if="canShareTools" size="small" text type="primary" @click="aclTarget = { id: t.id, name: t.name }; aclVisible = true">授权</el-button>
                 <el-switch
                   v-model="t.enabled"
                   size="small"
@@ -351,10 +354,13 @@
         <el-button @click="showSchemaDetail = false">关闭</el-button>
       </template>
     </el-dialog>
+  
+    <ResourceAclDialog v-model:visible="aclVisible" type="tool" :id="aclTarget?.id || ''" :name="aclTarget?.name || '工具'" />
   </div>
 </template>
 
 <script setup lang="ts">
+import ResourceAclDialog from '../components/common/ResourceAclDialog.vue';
 import { ref, reactive, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import {
@@ -373,6 +379,13 @@ import SchemaViewer from '../components/common/SchemaViewer.vue';
 // ---- Tab 切换（支持 /mcp 重定向带来的 ?tab=mcp&focus=<id> 深链） ----
 const toolsStore = useToolsStore();
 const authStore = useAuthStore();
+/** 共享开关可见性：guest 单机恒可；multi 模式需 share.tool.publish 权限 */
+const aclVisible = ref(false);
+const aclTarget = ref<{ id: string; name: string } | null>(null);
+const canShareTools = computed(() => {
+  if (!authStore.authRequired) return true;
+  return authStore.hasPermission('share.tool.publish');
+});
 const route = useRoute();
 
 const activeTab = ref<'builtin' | 'custom' | 'mcp' | 'remote'>('builtin');
