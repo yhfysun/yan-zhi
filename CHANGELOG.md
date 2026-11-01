@@ -5,6 +5,14 @@
 ## [Unreleased]
 
 ### Added
+- **多用户 RBAC + 组织/角色/权限体系**：`YZ_AUTH_MODE=multi` 多用户模式——组织/角色/用户/权限等七表 + 权限树种子 + 组织树角色继承（祖先链下传）；首次安装向导 `/setup` 创建管理员；管理后台 `/admin`（用户/组织/角色三页 + `routes/admin.ts`）；资源级 ACL（插件/技能/工具可定向授权给指定用户，`ResourceAclDialog`）；鉴权顺序改为 token 优先于本机回环（修"主机本机恒判 guest 进不了管理页"）；WS upgrade 鉴权闸 + chat-ws 按连接解析真实用户身份（create_task/inject 归属真实用户）；guest 单机模式全量回归冒烟通过。守门测试 `rbac.test.ts` 20 例
+- **共享模型平台**：`platform.is_public` / `model.is_public`——管理员统一创建模型平台共享给全员使用（用户模型优先，读路径收口 `services/platform-share.ts` 唯一出口 `platformReadableCond` + `findModelRow` 共享兜底，写路径 owner-only）；调用面全链路打通（list_models 候选清单、llm-proxy、自定义工具/技能/智能体的 is_public 查询收口）；Models.vue 共享开关 + 角标 + 只读收敛。多用户冒烟（admin 共享 → 普通用户可见可用 → 写 404）通过
+- **轻量壳模式（前端壳连远程后端）**：新增 `electron-builder.shell.yml` 壳打包配置；main.cjs `startServer` async 化——壳模式跳过内置后端启动 / 探活复用已有实例 / `YZ_DETACH_BACKEND=1` detached 守护进程；`bin/dev-desktop-multi.bat` 多实例联调脚本
+- **直播·TTS 链路重构**：对齐视频配音链路——模型层 TTS 优先（`modelTtsSpeak` 复用 ttsViaModel 同一实现，12s 竞速）→ 本地语音包 → Edge（带 rate）→ 系统；新增 `GET /live/tts/voices` Edge 中文音色清单（10 分钟缓存）；直播语音卡新增音色下拉 + 语速滑杆（localStorage 持久化，显式选择优先于链路默认）；模型层 TTS 补 `speed` 参数（滑杆 -10~10 映射 0.5~1.5 倍）；开场白按宠物/虚拟人/双人三路话术生成
+- **直播·抖音/快手弹幕源**：新增 `live-web-source.ts`——浏览器桥开直播间标签页 → 2.5s 轮询 `get_visible_text`（弹幕区容器选择器优先、整页兜底）→ 「昵称：内容」行解析 → 去重（120s 过期）+ 连续失败自动停；路由 `POST /live/source` 扩 kind=douyin|kuaishou；弹幕源卡从弹幕游戏场景挪出成独立卡（消除"功能只写在 A 页面"）
+- **desktop-manager 插件后端落地**：`plugins/optional/desktop-manager/backend/index.js`（20 个端点 + scan/plan/apply/undo 四工具）+ `backend/rules.js` 规则引擎 + shared 五个纯函数模块（围栏/小部件/天气/提醒/桌面窗口）；按既有测试契约反推实现，`node --test` 84 例全绿
+- **商城缓存与端口修复**：marketplace 读穿透缓存 `readThroughCache`（10 分钟新鲜期、回源超时、失败兜底返回旧缓存标 `stale`、`POST /:id/refresh-cache` 手动刷新）；`resolveListenPort()` 让 DB 配置端口真正生效（Electron 下环境变量优先、行为不变）；前端 `connectUrl` 改取后端**实际端口** lanPort（"复制出去能连上"）；删除 `AuthType 'basic'` 死值 + 未知认证类型一律 401（不再静默放行）
+- **ffmpeg 探测与手动绑定**：`isUsableFfmpegDir()` 校验 ffprobe + libx264 编码器（防选中剪映裁剪版导致渲染报 Unknown encoder）；解析链插入用户绑定级与 vendor 探测级；`GET /api/install/ffmpeg/status` + `POST /api/install/ffmpeg/bind`；文档订正"本机无 ffmpeg"错误前提
 - **插件包独立分发（mode-pluginization P6/P7）**：`scripts/package-plugin.cjs --id=X` 把内置产物原样打为 `dist-plugins/X-<ver>.yzp`（同源、排除构建残留、输出清单与 sha256）；安装端支持单清单与多清单包（skins 整包一次装 28 套，卸载单个保留兄弟、卸完才删目录），入口三态解析 `backend/index.js → manifest.main → index.js`，失败回滚半成品目录，重启按清单逐条补绑；`manifest.engine` 与宿主版本（主进程 `app.getVersion()` 注入）比对，不兼容拒绝安装、缺字段放行；安装/预览请求体放宽到 64MB（skins 整包 base64 ≈28MB）。新增插件目录互导 lint、源码模板一致性守门、安装包内容清单断言 `scripts/verify-edition-contents.cjs`（顺带发现历史产物里 3 个 `__frontend-entry-*.mjs` 残留，构建器已改为每次构建前清理）。Web/移动端 HTTP 装载：前端 shim 随包复制（bundle 用相对路径，同一份产物 Electron 与浏览器通用），`/api/plugin-assets/:id/*` 支持插件包内 `frontend/*.mjs|css` 与内置包目录。文档：`docs/plugin-package-spec.md`
 - **智能体下载自动落盘（修「导出」卡死）**：页面「导出」类按钮（抖音创作者中心等，页面生成 blob 再下载）此前在桌面端会弹系统「另存为」框——智能体只会 JS/CDP，点不到原生对话框，任务卡在导出那一步。现在 `persist:browser-view` 分区统一接管 `will-download`：智能体动作窗口内（60s）触发的下载一律直接落盘、永不弹框，目录为 `<工作目录>/downloads/`（无工作目录时存 `系统下载目录/言知下载/`，同名自动加 (1) 后缀）；用户手动下载行为不变（仍走 Electron 默认）。`browser_click` 回执直接带 `downloaded.savedPath`（导出类按钮点击后最多等 3s），新增 `downloads` 动作 / `browser_download` 无参列表模式查最近下载；服务端 Playwright 链路同口径（记录 savedPath、工作目录经 `__workspaceDir` 透传）。9 例落盘单测 + 5 例格式化单测；顺带把 `takeover` 补进桌面端能力清单（消除能力清单 vs switch 的不一致）
 - **远控页双页签（控制电脑 / 被连·本机）+ 关闭按钮**：「更多 → 远程控制」打开的独立窗口一页两用——「控制电脑」保持原控制端表单；新增「被连 · 本机」页签：本机二维码（带授权码，手机扫码即连）/ 授权码大字 / 控制端地址 / 通道状态 / 换码 / 复制邀请 / 管理入口（深链设置局域网页签），数据与设置卡同口径（/network/ip + hostkey → /status，走 license 门禁，未启用/手机上显示引导提示）；右上角 ✕ 关闭按钮（桌面子窗口 window.close 即关，浏览器标签关不掉则后退），会话结束态收口为「重新配对 / 关闭页面」两钮（此前结束态没有任何退出出口）；「扫码连接」按钮只在实际有意义的触屏设备上显示（桌面端隐藏，消除「电脑扫谁」的歧义）
@@ -36,6 +44,10 @@
 - 新增 `CHANGELOG.md`
 
 ### Fixed
+- ★ 模型平台卡片按钮行溢出（用户实报）：/models 卡片一排 6 按钮（测试/管理模型/编辑/禁用/共享/删除）在窄卡被 el-card `overflow:hidden` 裁半 + 卡底出横向滚动——`.card-actions` 桌面端补 `flex-wrap: wrap` 并清零 EP 自带 `.el-button+.el-button{margin-left:12px}`（与 gap 叠成 20px 且换行行首缩进），Agents/PlatformDetail 同步加固；SearchToolbar 与卡片零间距收口 App.vue 全局 `.page > .st-bar { margin-bottom }`（只命中"工具栏直接放 .page 下"的页面）
+- 直播 TTS 三连（用户实测反馈）：选了 Edge 音色仍先走模型层（音色下拉形同虚设）→ 改显式选择优先；开场白念出「噜噜（水豚）」括号注解 → 念白名字剥离全/半角括号；"本地语音包加载不到"实为语音包从未下载（两个 tts-models 目录全空，非 bug）→ 提示改指向「设置 → 语音包」
+- build-plugins 产物目录清理被受管环境 safe-delete 守卫拦死（单次 rmSync ≥50 目标要求确认，打包必被拦）→ `safeRmrf` 逐项删除语义等价、任何环境可过
+- `electron:build:full` 历史命名误导（实为 basic 档）→ 运行时打 deprecation 警告指向 `:basic` / `:pro` / `:all`
 - ★ hunk 级选择性接受（P2-2）丢失行尾风格与末尾换行：快照存原始内容（Windows 下是 CRLF）而合并输出固定 `\n` join → **CRLF 文件部分接受后整个文件行尾变 LF、末尾换行丢失**（未被选中的"保持 before"无从谈起）——输出改为沿用 after 的行尾风格与末尾换行（全选重建逐字节等于 after）；顺带消除 `applyHunkSelection` 复制的 hunk 分组逻辑（写死 context=3，改 context 必然静默失配）→ 与 `computeHunks` 共享 `analyze()`，9+3 例回归
 - ★ llm-task-manager 两处权限档兜底 fail-open（`task.permissionMode || 'default'`：查不到档位就按可写放行）改为 fail-safe readonly —— 守门测试反向断言逼出，2026-09-27 拍板口径的漏网实现
 - sqlite-driver 的 sql.js 回退对 `:memory:` 库落盘 ENOENT（写 `:memory:.tmp` 文件）—— 测试迁移到统一驱动入口时暴露

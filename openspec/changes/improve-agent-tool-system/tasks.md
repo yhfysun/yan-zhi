@@ -1,27 +1,27 @@
 ## 1. API 工具按模块定义
 
-- [ ] 1.1 创建 `packages/core/src/tool/builtin/api-tools/` 目录结构
-- [ ] 1.2 实现 `api-tools/index.ts` — `createApiToolRegistry()` 返回 `Map<moduleName, ToolDef[]>`
-- [ ] 1.3 实现 `api-tools/agent.ts` — Agent CRUD 接口工具定义
-- [ ] 1.4 实现 `api-tools/conversation.ts` — Conversation/Message 接口工具定义
-- [ ] 1.5 实现 `api-tools/platform.ts` — Platform/Model 接口工具定义
-- [ ] 1.6 实现 `api-tools/mcp.ts` — MCP Server/Tool 接口工具定义
-- [ ] 1.7 实现 `api-tools/skill.ts` — Skill 接口工具定义
-- [ ] 1.8 实现 `api-tools/marketplace.ts` — Marketplace 接口工具定义
-- [ ] 1.9 实现 `api-tools/workspace.ts` — 工作区/文件系统接口工具定义
-- [ ] 1.10 实现 `api-tools/memory.ts` — Memory 接口工具定义
+- [x] 1.1 创建 `packages/core/src/tool/builtin/api-tools/` 目录结构
+- [x] 1.2 实现 `api-tools/index.ts` — `createApiToolRegistry()` 返回 `Map<moduleName, ToolDef[]>`
+- [x] 1.3 实现 `api-tools/agent.ts` — Agent CRUD 接口工具定义
+- [x] 1.4 实现 `api-tools/conversation.ts` — Conversation/Message 接口工具定义
+- [x] 1.5 实现 `api-tools/platform.ts` — Platform/Model 接口工具定义
+- [x] 1.6 实现 `api-tools/mcp.ts` — MCP Server/Tool 接口工具定义
+- [x] 1.7 实现 `api-tools/skill.ts` — Skill 接口工具定义
+- [x] 1.8 实现 `api-tools/marketplace.ts` — Marketplace 接口工具定义
+- [x] 1.9 实现 `api-tools/workspace.ts` — 工作区/文件系统接口工具定义
+- [x] 1.10 实现 `api-tools/memory.ts` — Memory 接口工具定义
 
 ## 2. get_api_tools 内置工具
 
-- [ ] 2.1 实现 `GetApiToolsTool` 类：接收 `module` 参数，从 ApiToolRegistry 返回工具定义
-- [ ] 2.2 `module: "list"` 或不传时返回所有可用模块名称列表
-- [ ] 2.3 不存在的 module 返回 `isError: true` 并提示可用模块名
-- [ ] 2.4 在 `ToolRegistry` 中注册 `get_api_tools` 工具
+- [x] 2.1 实现 `GetApiToolsTool` 类：接收 `module` 参数，从 ApiToolRegistry 返回工具定义
+- [x] 2.2 `module: "list"` 或不传时返回所有可用模块名称列表
+- [x] 2.3 不存在的 module 返回 `isError: true` 并提示可用模块名
+- [x] 2.4 在 `ToolRegistry` 中注册 `get_api_tools` 工具
 
 ## 3. 智能体双模式数据模型
 
 - [ ] 3.1 Agent 接口增加 `type` 字段（`"harness"` 默认 | `"workflow"`）+ 挂载五字段
-- [ ] 3.2 数据库 migration：`agent` 表加 `type`（TEXT，默认 `"harness"`）+ 5 个挂载列
+- [x] 3.2 数据库 migration：`agent` 表加 `type`（TEXT，默认 `"harness"`）+ 5 个挂载列
 - [ ] 3.3 Web 端 Dexie schema 同步更新
 - [ ] 3.4 `agent.ts` store 的 `rowToAgent`、`createChatAgent`、`updateAgent` 读写新字段
 
@@ -59,3 +59,6 @@
 - [ ] 8.2 `get_api_tools` 在对话中正常使用
 - [ ] 8.3 旧智能体兼容（type=NULL → harness，挂载为空行为不变）
 - [ ] 8.4 Workflow DAG 画布不退化
+
+> **2026-10-31 校对**：以下勾选按**代码实际情况**回补（此前 tasks.md 滞后于实现）。
+> 只勾选有直接代码证据的条目；未勾选的仍需人工确认。

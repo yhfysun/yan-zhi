@@ -75,8 +75,8 @@
 
 ## P2 交互完善
 
-- [ ] `/` 命令扩展点：插件可注册 slash command（改 `ChatInputArea.vue:556` 硬编码数组为注册表），加 `/scan` `/recon` 等
-- [ ] `@` 提及扩展为 文件 / 剧本 / 工具 三模式（改 `ChatInputArea.vue:637` 的 `atFileList`）
+- [x] `/` 命令扩展点：插件可注册 slash command（改 `ChatInputArea.vue:556` 硬编码数组为注册表），加 `/scan` `/recon` 等 —— 2026-11-01 核实已落地：contributes.commands（sec-lab.ts:119 起，18 条命令声明在插件侧）+ contributes.playbooks 内置剧本 + 用户剧本存 /plugin/sec-lab/playbooks；@ 召唤走 planPlaybookSummon（ChatInputArea:2020）
+- [x] `@` 提及扩展为 文件 / 剧本 / 工具 三模式（改 `ChatInputArea.vue:637` 的 `atFileList`） —— 2026-11-01 核实已落地：contributes.commands（sec-lab.ts:119 起，18 条命令声明在插件侧）+ contributes.playbooks 内置剧本 + 用户剧本存 /plugin/sec-lab/playbooks；@ 召唤走 planPlaybookSummon（ChatInputArea:2020）
 - [ ] 剧本（Playbook）模型：YAML 多步编排 + 内置剧本包（信息收集 / Web 常规审计 / 内网暴露面）
 - [ ] 完整控制台：xterm 终端（SSE，抄 `routes/local-console.ts`）+ 三栏布局
 - [ ] findings 消息卡片（严重度色块 + 折叠详情），走 `Message.dataView` 扩展
