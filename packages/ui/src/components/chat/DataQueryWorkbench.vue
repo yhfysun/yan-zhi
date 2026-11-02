@@ -239,6 +239,11 @@
             @update:current-page="(p:number)=>goPage(p)"
           />
         </div>
+        <div v-if="result && result.columns.length" class="dqw-exits">
+          <button type="button" class="dqw-exit" :disabled="!!exporting" @click="runAction(exportCsv)">导出 CSV</button>
+          <button v-if="isDesktop" type="button" class="dqw-exit" @click="runAction(openPython)">Python 分析</button>
+          <button type="button" class="dqw-exit" :disabled="!!exporting" @click="runAction(exportWord)">生成报告</button>
+        </div>
       </template>
 
       <!-- 图表视图 -->
@@ -367,6 +372,16 @@
         <el-button size="small" type="primary" :disabled="!pinDashId" :loading="pinning" @click="doPin">钉入</el-button>
       </template>
     </el-dialog>
+
+    <!-- Python 分析（仅桌面端）：把当前结果内联成可直接运行的脚本，复制到代码工作台/终端 -->
+    <el-dialog v-model="pythonOpen" title="Python 分析" width="640px">
+      <p class="dqw-pin-tip">已把当前结果（最多 200 行）内联进脚本，复制后可直接在代码工作台或终端运行。</p>
+      <pre class="dqw-python dw-mono">{{ pythonCode }}</pre>
+      <template #footer>
+        <el-button size="small" @click="pythonOpen = false">关闭</el-button>
+        <el-button size="small" type="primary" @click="copyPython">复制脚本</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -378,6 +393,7 @@ import { api } from '../../api/client';
 import type { DataTabContract } from '../../stores/chat';
 import { useDashboardStore } from '../../stores/dashboard';
 import { useChat } from '../../composables/chat/useChat';
+import { usePlatform } from '../../composables/usePlatform';
 import type { DashboardWidget, InlineDataViewChart } from '@yan-zhi/shared';
 import type { ChartData, ChartKind, ChartSpec } from './chart-spec';
 import { buildOntologyIntent, ontologyRowsToChartData } from './ontology-view';
@@ -411,6 +427,7 @@ const viewOptions = [
   { key: 'scatter', label: '散点图', icon: Aim },
 ] as const;
 type Mode = 'table' | 'chart';
+const { isDesktop } = usePlatform();
 
 const mode = ref<Mode>('table');
 const result = ref<RunResp | null>(null);
@@ -857,7 +874,7 @@ async function exportPng() {
 const WORD_DETAIL_LIMIT = 2000;
 const DOCX_KIND = { mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', label: 'Word' };
 const XLSX_KIND = { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', label: 'Excel' };
-const exporting = ref<'' | 'word' | 'excel'>('');
+const exporting = ref<'' | 'word' | 'excel' | 'csv'>('');
 
 const exportTitle = computed(() =>
   props.contract.title
@@ -920,6 +937,53 @@ async function fetchExportRows(): Promise<RunResp | null> {
   if ('error' in resp) { error.value = String(resp.error); return null; }
   if (!resp.data.columns.length) { error.value = '当前条件无可导出数据'; return null; }
   return resp.data;
+}
+
+const CSV_KIND = { mimeType: 'text/csv', label: 'CSV' };
+/** 导出 CSV（P6.11 三出口之一）：BOM + 首行表头，Excel 直接可开 */
+async function exportCsv() {
+  exporting.value = 'csv';
+  error.value = '';
+  try {
+    const data = await fetchExportRows();
+    if (!data) return;
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [data.columns.map(esc).join(',')];
+    for (const row of data.rows) lines.push(data.columns.map((c) => esc((row as any)[c])).join(','));
+    const bytes = new TextEncoder().encode(`﻿${lines.join('\r\n')}`);
+    const { saveDeliverableBytes } = await import('../../utils/deliverable-save');
+    await saveDeliverableBytes(bytes, exportFileName(exportTitle.value, '.csv', { fallback: '数据导出' }), CSV_KIND, { messageId: props.messageId });
+  } catch (e: any) {
+    error.value = '导出失败：' + (e?.message || e);
+  } finally {
+    exporting.value = '';
+  }
+}
+
+// Python 分析（桌面端）：把结果内联进可运行脚本，交给代码工作台/终端
+const pythonOpen = ref(false);
+const pythonCode = ref('');
+async function openPython() {
+  const data = await fetchExportRows();
+  if (!data) return;
+  const head = data.rows.slice(0, 200);
+  pythonCode.value = [
+    'import pandas as pd',
+    `COLUMNS = ${JSON.stringify(data.columns)}`,
+    `ROWS = ${JSON.stringify(head)}`,
+    'df = pd.DataFrame(ROWS, columns=COLUMNS)',
+    'print(df.describe(include="all"))',
+    '# 在此继续分析：df 已就绪（最多 200 行，完整数据请导出 CSV）',
+  ].join('\n');
+  pythonOpen.value = true;
+}
+async function copyPython() {
+  try {
+    await navigator.clipboard.writeText(pythonCode.value);
+    ElMessage.success('脚本已复制');
+  } catch {
+    ElMessage.error('复制失败，请手动选择');
+  }
 }
 
 async function exportExcel() {
@@ -1305,4 +1369,29 @@ onMounted(() => { resetAll(); });
 .dqw-cfg-label { font-size: 12px; color: var(--color-text-secondary); flex: 0 0 auto; }
 .dqw-canvas { height: 100%; display: flex; align-items: stretch; justify-content: center; padding: 6px 12px 2px; box-sizing: border-box; min-height: 200px; }
 .dqw-canvas > * { flex: 1 1 auto; min-height: 180px; }
+/* 三出口（P6.11）：导出 CSV / Python 分析 / 生成报告 */
+.dqw-exits { display: flex; gap: 8px; justify-content: flex-end; padding: 8px 2px 0; }
+.dqw-exit {
+  border: 1px solid var(--el-border-color-lighter);
+  background: transparent;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--el-text-color-regular);
+}
+.dqw-exit:hover:not(:disabled) { background: var(--el-fill-color-light); }
+.dqw-exit:disabled { opacity: .5; cursor: default; }
+.dqw-python {
+  max-height: 360px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  background: #14161a;
+  color: #e6e8ee;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+}
 </style>
