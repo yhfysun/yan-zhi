@@ -215,6 +215,61 @@ const MAX_QUERY_ROWS = 1000;
 const MAX_PAGE_ROWS = 200;
 const DEFAULT_QUERY_TIMEOUT = 15_000;
 
+/** 查询错误中文化（P5.3）：把驱动原文收敛成用户能懂的一句话 */
+export function localizeQueryError(e: unknown): Error {
+  const m = String((e as Error)?.message || e || '');
+  if (/timeout|timed out|ETIMEDOUT|timeout exceeded/i.test(m)) {
+    return new Error('查询超时（15 秒），请缩小时间范围、加过滤条件或减少列');
+  }
+  if (/ECONNREFUSED|ENOTFOUND|connect(ion)? (refused|failed|error)|无法连接/i.test(m)) {
+    return new Error(`数据库连接失败：${m}`);
+  }
+  if (/permission denied|access denied|denied for user/i.test(m)) {
+    return new Error(`权限不足：${m}（建议使用只读账号）`);
+  }
+  return new Error(`查询失败：${m}`);
+}
+
+const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function ph(style: '?' | 'pg', idx: number): string {
+  return style === 'pg' ? `$${idx + 1}` : '?';
+}
+
+/**
+ * 翻页 SQL（P5.3）：有唯一键 + 游标 → keyset（稳定、不怕中途插删）；否则 offset。
+ * keyset 条件用展开的字典序比较（OR 链），不依赖数据库的 row-value 比较支持。
+ */
+export function buildPageSql(
+  dialect: DialectType,
+  baseSql: string,
+  opts: { limit: number; offset: number; keys?: string[]; cursor?: unknown[]; desc?: boolean },
+): { sql: string; params: unknown[]; mode: 'keyset' | 'offset'; warnings: string[] } {
+  const warnings: string[] = [];
+  const keys = (opts.keys || []).map((k) => String(k).trim()).filter(Boolean);
+  if (keys.length) {
+    for (const k of keys) if (!KEY_RE.test(k)) throw new Error(`唯一键「${k}」非法：只能是字母/数字/下划线`);
+    if (!Array.isArray(opts.cursor) || opts.cursor.length !== keys.length) {
+      warnings.push('游标与唯一键数量不一致，已退回 offset 翻页');
+    } else {
+      const style: '?' | 'pg' = dialect === 'postgres' ? 'pg' : '?';
+      const cols = keys.map((k) => quoteIdent(dialect, k));
+      const cmp = opts.desc ? '<' : '>';
+      const segs: string[] = [];
+      for (let i = 0; i < keys.length; i += 1) {
+        const eq = cols.slice(0, i).map((c, j) => `${c} = ${ph(style, j)}`);
+        segs.push(`(${[...eq, `${cols[i]} ${cmp} ${ph(style, i)}`].join(' AND ')})`);
+      }
+      const order = cols.map((c) => `${c} ${opts.desc ? 'DESC' : 'ASC'}`).join(', ');
+      const sql = `SELECT * FROM (${baseSql}) _dq_page WHERE ${segs.join(' OR ')} ORDER BY ${order} LIMIT ${opts.limit}`;
+      return { sql, params: opts.cursor, mode: 'keyset', warnings };
+    }
+  } else {
+    warnings.push('未提供唯一键：按 offset 翻页，数据变化时可能出现重复/漏行');
+  }
+  const sql = `SELECT * FROM (${baseSql}) _dq_page ${paginate(dialect, { offset: opts.offset, limit: opts.limit })}`;
+  return { sql, params: [], mode: 'offset', warnings };
+}
+
 /** 兜底 SQL 模式：单条语句 + 只读护栏（DDL/写语句一律拦） */
 function guardSingleSelect(sql: string): string {
   const text = (sql || '').trim().replace(/;\s*$/, '');
@@ -688,6 +743,12 @@ export interface DataPaginateInput {
   sql?: string;
   offset?: number;
   limit?: number;
+  /** 唯一键（如 ["id"] 或复合键）；提供后可走 keyset 翻页 */
+  keys?: string[];
+  /** 上一页最后一行的键值（与 keys 对齐）；不给则按 offset 翻页 */
+  cursor?: unknown[];
+  /** keyset 方向：默认升序 */
+  desc?: boolean;
   /** 智能体挂载的本体 id 集合；空/未设置 = 不限 */
   allowed?: string[];
 }
@@ -709,24 +770,41 @@ export async function paginateDataForAgent(userId: string, input: DataPaginateIn
   const limit = Math.min(Math.max(Math.floor(input.limit ?? 50), 1), MAX_PAGE_ROWS);
   const offset = Math.max(Math.floor(input.offset ?? 0), 0);
 
+  /** 统一翻页执行：keyset（有唯一键 + 游标）或 offset；驱动错误中文化 */
+  const runPage = async (ds: DataSourceRow, baseSql: string, extra: string[]) => {
+    const page = buildPageSql(dialectOf(ds), baseSql, {
+      limit, offset, keys: input.keys, cursor: input.cursor, desc: input.desc,
+    });
+    try {
+      const result = page.params.length
+        ? await getConnector(ds).queryParam(page.sql, page.params as any, { maxRows: limit, timeoutMs: DEFAULT_QUERY_TIMEOUT })
+        : await getConnector(ds).query(page.sql, { maxRows: limit, timeoutMs: DEFAULT_QUERY_TIMEOUT });
+      return { result, page, warnings: [...extra, ...page.warnings] };
+    } catch (e) {
+      throw localizeQueryError(e);
+    }
+  };
+
   if (input.ontology) {
     const all = filterAllowed(await listOntologiesOf(userId), input.allowed);
     const target = all.find((o) => o.id === input.ontology || o.code === input.ontology);
     if (!target) throw new Error(await ontologyNotFoundMsg(userId, input.ontology, input.allowed));
-    const intent = mergeIntent(target, input.intent, offset + limit);
-    const base = await queryOntologyByRef(userId, target.id, intent, offset + limit, DEFAULT_QUERY_TIMEOUT);
+    // keyset 不需要 offset 预取；offset 翻页要取到 offset+limit 再截
+    const fetchLimit = input.keys?.length && Array.isArray(input.cursor) ? limit : offset + limit;
+    const intent = mergeIntent(target, input.intent, fetchLimit);
+    const base = await queryOntologyByRef(userId, target.id, intent, fetchLimit, DEFAULT_QUERY_TIMEOUT);
     const ds = loadDataSource(userId, base.datasourceId);
-    const sql = `SELECT * FROM (${base.sql}) _dq_page ${paginate(dialectOf(ds), { offset, limit })}`;
-    const result = await getConnector(ds).query(sql, { maxRows: limit, timeoutMs: DEFAULT_QUERY_TIMEOUT });
+    const { result, page, warnings } = await runPage(ds, base.sql, base.warnings);
     return {
       ...result,
       mode: 'ontology' as const,
+      pageMode: page.mode,
       ontology: base.ontology,
       datasourceId: ds.id,
-      sql,
+      sql: page.sql,
       offset,
       limit,
-      warnings: base.warnings,
+      warnings,
     };
   }
 
@@ -735,15 +813,15 @@ export async function paginateDataForAgent(userId: string, input: DataPaginateIn
   }
   const ds = loadDataSource(userId, input.datasourceId);
   const text = guardSingleSelect(input.sql);
-  const sql = `SELECT * FROM (${text}) _dq_page ${paginate(dialectOf(ds), { offset, limit })}`;
-  const result = await getConnector(ds).query(sql, { maxRows: limit, timeoutMs: DEFAULT_QUERY_TIMEOUT });
+  const { result, page, warnings } = await runPage(ds, text, []);
   return {
     ...result,
     mode: 'sql' as const,
+    pageMode: page.mode,
     datasourceId: ds.id,
-    sql,
+    sql: page.sql,
     offset,
     limit,
-    warnings: [] as string[],
+    warnings,
   };
 }

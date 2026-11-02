@@ -104,8 +104,9 @@ export function registerDataTools(m: Map<ApiModuleName, ToolDefinition[]>) {
     {
       name: 'api_data_paginate',
       description:
-        '对上一次查询翻页：把 ontology+intent 或 sql 作为子查询，外层套 LIMIT/OFFSET。返回 { columns, rows, rowCount, offset, limit, sql }。' +
-        '单页上限 200 行，不要一次拉全表',
+        '对上一次查询翻页：把 ontology+intent 或 sql 作为子查询，外层套 page 条件。返回 { columns, rows, rowCount, pageMode, sql }。' +
+        '★ 推荐传 keys（唯一键，如 ["id"]）+ cursor（上一页最后一行的键值）走 keyset：中途增删也不会重复/漏行；' +
+        '不传 keys 则退回 offset（结果会带提示）。单页上限 200 行，不要一次拉全表',
       inputSchema: {
         type: 'object',
         properties: {
@@ -113,8 +114,11 @@ export function registerDataTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           intent: { type: 'object', description: INTENT_DESC },
           sql: { type: 'string', description: '兜底只读 SQL（单条 SELECT）；给了 ontology 时忽略' },
           datasourceId: { type: 'string', description: '数据源 id，缺省用内置项目库' },
-          offset: { type: 'number', description: '偏移量，默认 0' },
+          offset: { type: 'number', description: 'offset 翻页的偏移量，默认 0（keyset 模式忽略）' },
           limit: { type: 'number', description: '每页行数，默认 50，上限 200' },
+          keys: { type: 'array', items: { type: 'string' }, description: '唯一键列名（可复合），如 ["id"]；提供后走 keyset' },
+          cursor: { type: 'array', items: {}, description: '上一页最后一行的键值，与 keys 一一对应' },
+          desc: { type: 'boolean', description: 'keyset 方向：true=降序' },
         },
         required: [],
       },

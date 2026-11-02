@@ -82,7 +82,8 @@
 
 - [ ] 5.1 文档型/键值型 connector（Mongo/ES）：采样推导弱 schema + 嵌套字段拍平为 `a.b.c`，仅投影/筛选
 - [ ] 5.2 本地模型文本模式降级（DSL 走文本 [TOOL_CALL]）
-- [ ] 5.3 行数/超时/翻页 keyset（必须唯一键兜底排序）；错误中文化
+- [x] 5.3 行数/超时/翻页 keyset（必须唯一键兜底排序）；错误中文化
+  → 2026-11-02：`buildPageSql` 支持 keyset（唯一键 + 游标，展开 OR 链字典序比较，方言占位符 `?`/`$n`，升/降序）；无 keys 或游标数量不符自动退回 offset 并带提示；`api_data_paginate` 新增 keys/cursor/desc 参数（schema 与执行端同步）；`localizeQueryError` 统一超时/连接/权限错误为中文；行数上限 200 与 15s 超时原已存在。7 例测试。
 - [x] 5.4 Web 端隐藏需 shell 的 python 分析按钮并提示
   → 2026-11-02：数据面板「Python 分析」按钮以 `usePlatform().isDesktop` 门控，Web/移动端不渲染（无 shell 不误导）。
 - [ ] 5.5 敏感列脱敏/禁止导出；本体健康度看板（描述覆盖率/缺样本值/缺同义词）

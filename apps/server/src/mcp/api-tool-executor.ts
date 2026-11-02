@@ -5325,6 +5325,9 @@ export async function executeApiTool(
             ...(str(args, 'sql') ? { sql: str(args, 'sql') } : {}),
             offset: num(args, 'offset', 0),
             limit: num(args, 'limit', 50),
+            ...(arr(args, 'keys').length ? { keys: arr(args, 'keys').map(String) } : {}),
+            ...(arr(args, 'cursor').length ? { cursor: arr(args, 'cursor') } : {}),
+            ...(args.desc === true ? { desc: true } : {}),
             allowed: agentOntologyIds(userId, agentId, explicitOntologyIds),
           }),
         );
