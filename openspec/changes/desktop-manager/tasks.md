@@ -249,7 +249,8 @@
 - [ ] 六种渲染器在插件 bundle：clock / list / metric / status / text / link
 - [ ] 实例 JSON 校验器（插件内，照 ydash：类型白名单、契约存在、边界钳制、不抛异常）+ 单测
 - [ ] 组件窗口：`desktop` 层 / `overlay` 层；overlay 全屏自动隐藏
-- [ ] 智能体工具：`desktop_widget_set` / `desktop_widget_list`（回传类型 + config schema）
+- [x] 智能体工具：`desktop_widget_set` / `desktop_widget_list`（回传类型 + config schema）
+  → 2026-11-02 落地：`backend/index.js` 两个工具 + `backend/tools.test.mjs` 4 例（自动 id / 校验拒绝 / 唯一性 / 越界钳制）
 - [ ] 手动验收：模型生成一组组件 → 上桌面 → 重启还原
 
 ## P2 代码组件审核流

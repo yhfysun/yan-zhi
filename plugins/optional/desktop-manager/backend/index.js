@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 
 import { buildItems, INBOX_ID } from '../shared/fences.js';
 import { layoutPlan, snapWidth } from '../shared/layout.js';
-import { validateWidgets, dedupeWidgets } from '../shared/widgets.js';
+import { validateWidgets, dedupeWidgets, widgetCatalog } from '../shared/widgets.js';
 import { computeDue, describeDue } from '../shared/reminders.js';
 import { normalizeCfg, buildPlan, validateAiPlan, mergeAiPlan, isKept } from './rules.js';
 
@@ -723,6 +723,35 @@ function textResult(obj) {
   return { content: [{ type: 'text', text: JSON.stringify(obj) }] };
 }
 
+/* ---------------- 组件工具 ---------------- */
+
+function withGeneratedIds(list) {
+  if (!Array.isArray(list)) return list;
+  return list.map((w) => {
+    if (!w || typeof w !== 'object' || w.id) return w;
+    return { ...w, id: `w-${w.type || 'widget'}-${randomUUID().slice(0, 8)}` };
+  });
+}
+
+async function toolWidgetList() {
+  return {
+    widgets: dedupeWidgets((await storage.get('widgets')) || []),
+    catalog: widgetCatalog(),
+  };
+}
+
+async function toolWidgetSet(args) {
+  const bounds = args && args.bounds && typeof args.bounds === 'object'
+    ? { w: Number(args.bounds.w) || 1920, h: Number(args.bounds.h) || 1080 }
+    : { w: 1920, h: 1080 };
+  const v = validateWidgets(withGeneratedIds(args && args.widgets), bounds);
+  if (!v.ok) return { ok: false, error: v.error };
+  const widgets = dedupeWidgets(v.widgets);
+  await storage.set('widgets', widgets);
+  await bumpRev();
+  return { ok: true, widgets };
+}
+
 const TOOLS = [
   {
     name: 'desktop_scan',
@@ -747,6 +776,25 @@ const TOOLS = [
     description: '按 opId 逆序回滚一批整理动作（必须 confirmed=true）',
     inputSchema: { type: 'object', properties: { opId: { type: 'string' }, confirmed: { type: 'boolean' } }, required: ['opId', 'confirmed'] },
     execute: async (args, _ctx) => textResult(await toolUndo(args || {})),
+  },
+  {
+    name: 'desktop_widget_list',
+    description: '列出桌面悬浮组件，并返回可创建的类型目录（types / layers / contracts / configSchema / 数量与尺寸上限）',
+    inputSchema: { type: 'object', properties: {} },
+    execute: async (_args, _ctx) => textResult(await toolWidgetList()),
+  },
+  {
+    name: 'desktop_widget_set',
+    description: '整体覆盖桌面悬浮组件（先 widget_list 再改再 set）。组件缺 id 时自动生成；位置越界会被钳制到屏幕内，校验失败整组不落盘',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        widgets: { type: 'array', items: { type: 'object' }, description: '组件数组（最多 12 个）' },
+        bounds: { type: 'object', properties: { w: { type: 'number' }, h: { type: 'number' } }, description: '屏幕尺寸，默认 1920×1080' },
+      },
+      required: ['widgets'],
+    },
+    execute: async (args, _ctx) => textResult(await toolWidgetSet(args || {})),
   },
 ];
 
