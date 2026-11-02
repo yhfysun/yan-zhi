@@ -7,7 +7,7 @@ export type ShopPlatformChoice =
   | 'tiktok'
   | 'shopify';
 
-export type ShopEntityType = 'undecided' | 'individual' | 'company';
+export type ShopEntityType = 'undecided' | 'individual' | 'sole_proprietor' | 'company';
 export type ShopSupplyChoice = 'stocked' | 'dropship' | 'brand';
 export type ShopExperience = 'beginner' | 'some' | 'experienced';
 export type ShopSetupStepId = 'position' | 'account' | 'open' | 'selection' | 'listing' | 'operate';
@@ -66,8 +66,16 @@ const PLATFORM_LABELS: Record<ShopPlatformChoice, string> = {
 
 const ENTITY_LABELS: Record<ShopEntityType, string> = {
   undecided: '主体待定',
-  individual: '个人 / 个体户',
-  company: '企业主体',
+  individual: '个人身份（身份证开店）',
+  sole_proprietor: '个体工商户（需要营业执照）',
+  company: '企业（需要营业执照）',
+};
+
+const ENTITY_MATERIAL_RULES: Record<ShopEntityType, string> = {
+  undecided: '先确认主体类型，再按平台当前规则列材料。',
+  individual: '个人身份店不得要求营业执照；按平台当前要求准备身份证实名、店铺名称、经营地址等。',
+  sole_proprietor: '个体工商户需要营业执照，并按平台要求准备经营者身份证、收款账户等。',
+  company: '企业需要营业执照，并按平台要求准备法人身份证、对公账户、品牌资质等。',
 };
 
 const SUPPLY_LABELS: Record<ShopSupplyChoice, string> = {
@@ -95,8 +103,8 @@ const STEP_META: Array<Omit<ShopSetupStep, 'state'>> = [
   {
     id: 'account',
     title: '准备账号与资质',
-    summary: '开店账号、主体资料、收款和类目资质要在提交前备齐。',
-    userTask: '准备手机号、邮箱、身份证或营业执照、收款账户。',
+    summary: '按个人、个体工商户或企业准备对应主体资料与类目资质。',
+    userTask: '个人准备身份证实名；个体户/企业准备营业执照与对应主体资料。',
     aiTask: '按目标平台列出材料清单、类目准入与合规风险。',
   },
   {
@@ -161,7 +169,7 @@ export function normalizeShopSetupProfile(value: unknown): ShopSetupProfile {
   const platform = SHOP_PLATFORM_OPTIONS.some((item) => item.value === raw.platform)
     ? raw.platform as ShopPlatformChoice
     : fallback.platform;
-  const entityType = ['individual', 'company'].includes(String(raw.entityType))
+  const entityType = ['individual', 'sole_proprietor', 'company'].includes(String(raw.entityType))
     ? raw.entityType as ShopEntityType
     : fallback.entityType;
   const supplyChoice = ['stocked', 'dropship', 'brand'].includes(String(raw.supplyChoice))
@@ -232,6 +240,7 @@ function profileFacts(profile: ShopSetupProfile): string {
     `- 品类 / 商品方向：${profile.category || '待确认'}`,
     `- 可投入预算：${profile.budgetYuan ? `约 ${profile.budgetYuan} 元人民币` : '待确认'}`,
     `- 经营主体：${ENTITY_LABELS[profile.entityType]}`,
+    `- 主体材料规则：${ENTITY_MATERIAL_RULES[profile.entityType]}`,
     `- 账号状态：${profile.hasAccount ? '已有平台账号' : '还没有平台账号'}`,
     `- 资质状态：${profile.hasQualification ? '主体与类目资质已准备' : '资质尚未准备齐全'}`,
     `- 供货方式：${SUPPLY_LABELS[profile.supplyChoice]}`,
@@ -262,6 +271,7 @@ ${profileFacts(profile)}
 4. 选品必须用 compare_products 做同款匹配，并给出售价、平台佣金、履约、采购和到手利润的逐项测算。
 5. 给出清晰的下一步动作；涉及改价、上下架、建品、发货等写操作时，先出变更单让我确认。付款、退款、验证码和资金动作必须由我本人完成。
 6. 如果平台尚未决定，先比较 2 至 3 个适合我的平台，说明启动成本、流量逻辑、资质门槛和退出成本，再推荐一个。
+7. 主体类型必须严格区分个人身份、个体工商户和企业。个人身份店不得要求营业执照；只有个体工商户和企业才需要营业执照。官方页面写明“个人身份 / 我没有营业执照”时，以页面当前口径为准，不得用历史记忆否定。
 
 【安全边界】
 账号密码、验证码、支付密码由我本人操作。你可以打开官方页面并告诉我每一步填什么，但不得代填或索取这些敏感信息。

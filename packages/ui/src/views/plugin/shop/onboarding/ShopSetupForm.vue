@@ -45,7 +45,8 @@
       <el-form-item label="经营主体">
         <el-radio-group :model-value="profile.entityType" @update:model-value="set('entityType', $event)">
           <el-radio-button value="undecided">待定</el-radio-button>
-          <el-radio-button value="individual">个人 / 个体户</el-radio-button>
+          <el-radio-button value="individual">个人身份</el-radio-button>
+          <el-radio-button value="sole_proprietor">个体工商户</el-radio-button>
           <el-radio-button value="company">企业</el-radio-button>
         </el-radio-group>
       </el-form-item>
@@ -64,9 +65,12 @@
             已有平台账号
           </el-checkbox>
           <el-checkbox :model-value="profile.hasQualification" @update:model-value="set('hasQualification', $event)">
-            主体 / 类目资质已备齐
+            {{ qualificationLabel }}
           </el-checkbox>
         </div>
+        <p v-if="profile.entityType === 'individual'" class="shop-form-tip">
+          个人身份开店不需要营业执照；平台若要求类目资质，会在这里单独列出。
+        </p>
       </el-form-item>
 
       <el-form-item label="投入经验与补充">
@@ -89,6 +93,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import { SHOP_PLATFORM_OPTIONS, type ShopSetupProfile } from './shopOnboarding';
 
 const props = defineProps<{
@@ -98,6 +103,14 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:profile', value: ShopSetupProfile): void;
 }>();
+
+const qualificationLabel = computed(() => {
+  if (props.profile.entityType === 'individual') return '身份证实名与类目资质已备齐';
+  if (props.profile.entityType === 'sole_proprietor' || props.profile.entityType === 'company') {
+    return '营业执照与主体 / 类目资质已备齐';
+  }
+  return '主体 / 类目资质已备齐';
+});
 
 function set<K extends keyof ShopSetupProfile>(key: K, value: unknown): void {
   emit('update:profile', { ...props.profile, [key]: value as ShopSetupProfile[K] });

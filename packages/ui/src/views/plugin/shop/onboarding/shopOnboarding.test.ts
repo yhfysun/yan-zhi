@@ -88,6 +88,28 @@ describe('shop onboarding', () => {
     expect(prompt).toContain('不要再重复询问');
   });
 
+  it('个人身份开店不要求营业执照，个体工商户才要求执照', () => {
+    const personal = normalizeShopSetupProfile({
+      platform: 'douyin',
+      market: '中国',
+      category: '宠物用品',
+      budgetYuan: '1000',
+      entityType: 'individual',
+      hasAccount: true,
+      hasQualification: true,
+    });
+    const personalPrompt = buildShopSetupPrompt(personal);
+    expect(personalPrompt).toContain('个人身份（身份证开店）');
+    expect(personalPrompt).toContain('个人身份店不得要求营业执照');
+
+    const sole = normalizeShopSetupProfile({
+      ...personal,
+      entityType: 'sole_proprietor',
+    });
+    expect(sole.entityType).toBe('sole_proprietor');
+    expect(buildShopSetupPrompt(sole)).toContain('个体工商户（需要营业执照）');
+  });
+
   it('快捷任务会带上当前平台与阶段，并明确交付物', () => {
     const profile = normalizeShopSetupProfile({
       platform: 'tiktok',

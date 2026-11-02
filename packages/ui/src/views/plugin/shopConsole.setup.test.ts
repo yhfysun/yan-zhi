@@ -183,6 +183,8 @@ describe('ShopConsole · setup 守门', () => {
     expect(host.textContent).toContain('开店向导');
     expect(host.textContent).toContain('从 0 开一家能卖的店');
     expect(host.textContent).toContain('第一步 · 经营口径');
+    expect(host.textContent).toContain('个人身份');
+    expect(host.textContent).toContain('个体工商户');
     expect(host.textContent).toContain('店铺项目');
     expect(host.textContent).toContain('已接入资源');
     expect(host.textContent).toContain('先选择一个店铺项目');
