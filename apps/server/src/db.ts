@@ -5007,7 +5007,9 @@ const SKILL_BODY_REFRESH_IDS = ['skill_anime_storyboard', 'skill_video_shot_prom
   //   ★ 不进白名单的话老库永远停在旧 body —— 与上面几条同一个坑。
   'skill_video_editing',
   // 2026-10-31：剪映剪辑（第二种剪辑模式）新增 skill，老库同样要能拿到 body
-  'skill_jianying_editing'];
+  'skill_jianying_editing',
+  // 2026-11-02：Word/Excel/PPT 技能补 office_create / office_read 用法 —— 老库刷新 body
+  'skill_docx_processing', 'skill_xlsx_data_processing', 'skill_pptx_creation'];
 try {
   const getBody = db.prepare('SELECT body, files_json FROM skill WHERE id = ?');
   const setDef = db.prepare('UPDATE skill SET name = ?, description = ?, triggers_json = ?, body = ?, category = ? WHERE id = ?');
