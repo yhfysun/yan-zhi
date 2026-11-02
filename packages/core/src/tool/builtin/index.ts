@@ -39,7 +39,6 @@ export {
 export { JobStatusTool } from './job-status';
 export { DoyzTool } from './doyz';
 export { NovelTuiwenTool } from './novel-tuiwen';
-export { SecurityTool } from './security';
 export { BrowserToolClasses, BROWSER_TOOL_NAMES, BrowserRunRecipeTool } from './browser';
 // ★ A4 根治（2026-10-10）：会话标识透传的入口 —— 执行器在调用 browser_* 前设置，
 //   `callBrowserApi` 把它作为 `x-yz-conversation-id` 带给服务端（读路由据此按会话隔离）。
@@ -110,7 +109,6 @@ import { BuildDashboardDslTool } from './build-dashboard-dsl';
 import { JobStatusTool } from './job-status';
 import { DoyzTool } from './doyz';
 import { NovelTuiwenTool } from './novel-tuiwen';
-import { SecurityTool } from './security';
 import { BrowserToolClasses } from './browser';
 import { CallAgentTool } from './call-agent';
 import { ListSubAgentsTool } from './list-sub-agents';
@@ -178,7 +176,6 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new DoyzTool());
   // 有声小说推文视频生成（章节txt + 背景视频 → 标题/字幕/配音成片）
   registry.register(new NovelTuiwenTool());
-  // registry.register(new SecurityTool());  // 已停注册：低频 + 依赖 python（见上）
   // 浏览器自动化工具集（E3）
   for (const ToolClass of BrowserToolClasses) {
     registry.register(new ToolClass());

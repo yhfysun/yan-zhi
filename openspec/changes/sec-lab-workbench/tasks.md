@@ -86,7 +86,8 @@
   → 2026-11-02：nikto（跳过元信息/统计行，CVE 行标 medium）与 ffuf（逐行 JSON，2xx/3xx 标 low）解析补齐；nmap/nuclei 原有解析回归覆盖；9 例测试。
 - [x] 报告导出 Markdown / HTML 文件
   → 2026-11-02 核实已落地：`sec_report` 支持 markdown / json / html / sarif（HTML 可浏览器打印为 PDF），UI 另有「导出本次扫描 / 导出报告 MD」。注：未生成二进制 Word/PDF（见 P3 doyz 项）。
-- [ ] 与既有 `packages/core/.../builtin/security.ts`（Python 被动侦察）去重收敛
+- [x] 与既有 `packages/core/.../builtin/security.ts`（Python 被动侦察）去重收敛
+  → 2026-11-02：`SecurityTool` 早已停注册（死代码），本轮**彻底删除** `builtin/security.ts` 与随包 `python-scripts/security/security.py`，并移除 index 的导出/导入/停注册注释；能力由 sec-lab 的 recon / portscan / webprobe / subdomain / baseline（headers/TLS）覆盖。`tsc` 无残留引用。
 
 ## P2 能力扩展
 
