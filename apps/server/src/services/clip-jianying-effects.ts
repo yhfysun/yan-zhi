@@ -155,6 +155,9 @@ export const JY_FADE_OUT: JyRef = { name: '渐隐', resourceId: '679832090254823
 
 // ===== 字幕动画（剪映文字入场/出场动画；免费资源）=====
 /** 字幕动画预设 → 剪映文字入场动画 */
+// ★ 2026-11-02：ASS 新增的 shake / wipe / flip3d **故意不映射** ——
+//   剪映免费资源里没有核实过的 resourceId，猜一个会让草稿打开后动画错乱或直接失效。
+//   导出剪映草稿时按"无入场动画"处理（画面/字幕正文仍完整）。
 export const JY_TEXT_INTRO: Record<string, JyRef> = {
   fade: { name: '渐显', resourceId: '6724916044072227332', effectId: '1644304' },
   pop: { name: '弹入', resourceId: '6887482184844710413', effectId: '1644313' },

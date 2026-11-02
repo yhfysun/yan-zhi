@@ -517,6 +517,63 @@ export function buildAss(
         }
         break;
       }
+      // ── 2026-11-02 扩充：抖动 / 擦除 / 3D 翻转 ──
+      //
+      // ★ 为什么都走"绝对定位 + 分片"：
+      //   libass 对 `\t(...\pos(...))` 不生效（见 textTransformFragments 的实测结论），
+      //   位置类动画只能靠多条 Dialogue 逐片移动；\clip 同理（不能 \t 动画化）。
+      //   分片事件首尾相接、文案相同，肉眼看不到跳变。
+      case 'shake': {
+        // 文字中心 y：底部对齐量到行底边、顶部量到行顶边、居中对齐本身就是中心
+        const cy = alignOpt === 5 ? rowY : alignOpt === 8 ? rowY + fs / 2 : rowY - fs / 2;
+        const amp = Math.max(6, Math.round(resX * 0.012));
+        const pattern = [0.9, -0.75, 0.6, -0.45, 0.3, -0.15, 0];
+        const window = Math.max(0.1, Math.min(0.45, dur * 0.5));
+        const step = window / pattern.length;
+        for (let i = 0; i < pattern.length; i++) {
+          const t0 = c.start + i * step;
+          const t1 = i === pattern.length - 1 ? c.end : c.start + (i + 1) * step;
+          const x = Math.round(anchorX + amp * pattern[i]);
+          const fade = i === 0 ? '\\fad(40,0)' : '';
+          events.push(dialogue(t0, t1, `{\\an5\\pos(${x},${Math.round(cy)})${fade}${typo}}${text}`));
+        }
+        break;
+      }
+      case 'wipe': {
+        // 左→右擦除：每条 Dialogue 带一个逐渐变宽的 \clip 矩形，露出同一段文字
+        const cy = alignOpt === 5 ? rowY : alignOpt === 8 ? rowY + fs / 2 : rowY - fs / 2;
+        const w = Math.max(4, estTextWidth(plain, fs));
+        const halfH = Math.max(4, Math.round(fs * 0.85));
+        const x1 = Math.round(anchorX - w / 2);
+        const n = 8;
+        const window = Math.max(0.12, Math.min(0.45, dur * 0.6));
+        const step = window / n;
+        for (let i = 0; i < n; i++) {
+          const x2 = Math.round(x1 + (w * (i + 1)) / n);
+          const t0 = c.start + i * step;
+          const t1 = i === n - 1 ? c.end : c.start + (i + 1) * step;
+          const fade = i === 0 ? '\\fad(40,0)' : '';
+          events.push(
+            dialogue(
+              t0,
+              t1,
+              `{\\an5\\pos(${Math.round(anchorX)},${Math.round(cy)})\\clip(${x1},${Math.round(cy - halfH)},${x2},${Math.round(cy + halfH)})${fade}${typo}}${text}`,
+            ),
+          );
+        }
+        break;
+      }
+      case 'flip3d': {
+        // 沿纵轴翻转：libass 的 \frx/\fry 是伪 3D（无透视），观感接近"翻牌"
+        events.push(
+          dialogue(
+            c.start,
+            c.end,
+            `{\\fad(60,120)\\fry90\\t(0,300,\\fry0)${typo}}${text}`,
+          ),
+        );
+        break;
+      }
     }
   }
 

@@ -52,7 +52,7 @@ describe('parseSrt · SRT 解析', () => {
 
 describe('buildAss · 结构与样式', () => {
   it('预设 id 全部可被 buildAss 接受（防止 enum 与实现脱节）', () => {
-    expect(SUBTITLE_ANIMATION_PRESETS.length).toBe(8);
+    expect(SUBTITLE_ANIMATION_PRESETS.length).toBe(11);
     for (const p of SUBTITLE_ANIMATION_PRESETS) {
       const r = buildAss([{ start: 0, end: 2, text: '测试' }], { ...BASE_OPTS, preset: p.id });
       expect(r.ok).toBe(true);
@@ -155,5 +155,36 @@ describe('buildAss · 各预设动画标签', () => {
     // 三个字的起始时间必须两两不同（重复字 bug 曾让它们共用第一个字的起点）
     const starts = dialogues.map((d) => d.split(',')[1]);
     expect(new Set(starts).size).toBe(3);
+  });
+
+  it('shake：分片左右抖动后回到中心，末片持续到条目结束', () => {
+    const r = buildAss([cue], { ...BASE_OPTS, preset: 'shake' });
+    if (!r.ok) throw new Error(r.error);
+    const dialogues = r.ass.split('\n').filter((l) => l.startsWith('Dialogue'));
+    expect(dialogues.length).toBe(7);
+    // 底对齐：中心 y = resY - mv - fs/2 = 1920 - 200 - 25；首片偏移 +0.9×13px
+    expect(dialogues[0]).toContain('\\an5\\pos(552,1695)');
+    expect(dialogues[dialogues.length - 1]).toContain('\\an5\\pos(540,1695)');
+    // 末片结束 = 字幕结束
+    expect(dialogues[dialogues.length - 1]).toContain(',00:00:03.00,');
+  });
+
+  it('wipe：8 片 \\clip 逐渐变宽，末片覆盖到条目结束', () => {
+    const r = buildAss([cue], { ...BASE_OPTS, preset: 'wipe' });
+    if (!r.ok) throw new Error(r.error);
+    const dialogues = r.ass.split('\n').filter((l) => l.startsWith('Dialogue'));
+    expect(dialogues).toHaveLength(8);
+    const clipOf = (s: string) => s.match(/\\clip\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)/)!;
+    expect(clipOf(dialogues[0])).toBeTruthy();
+    expect(Number(clipOf(dialogues[7])[3])).toBeGreaterThan(Number(clipOf(dialogues[0])[3]));
+    expect(dialogues[dialogues.length - 1]).toContain(',00:00:03.00,');
+  });
+
+  it('flip3d：\\fry90 翻到 0（300ms）', () => {
+    const r = buildAss([cue], { ...BASE_OPTS, preset: 'flip3d' });
+    if (!r.ok) throw new Error(r.error);
+    const d = firstDialogue(r.ass);
+    expect(d).toContain('\\fry90');
+    expect(d).toContain('\\t(0,300,\\fry0)');
   });
 });

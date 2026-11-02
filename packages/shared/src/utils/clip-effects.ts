@@ -40,7 +40,7 @@ export interface EffectPreset {
 export type EffectGroup =
   | '基础' | '人像' | '电影' | '复古' | '风格化' | '特殊'   // 滤镜
   | '滑动' | '形状' | '特效'                                 // 转场
-  | '进阶'                                                   // 文字动画
+  | '进阶' | '强调'                                          // 文字动画（强调类：抖动/擦除/翻转）
   | '变声' | '空间'                                          // 音效
   | '分屏' | '抠像'                                          // 蒙版
   | '动效' | '故障' | '氛围' | '扭曲' | '像素';               // 特效（FX）
@@ -138,6 +138,10 @@ export const TEXT_ANIMATIONS: EffectPreset[] = [
   { id: 'karaoke', label: '卡拉OK染色', desc: '逐字高亮染色，跟读感', filter: '\\k', group: '进阶' },
   { id: 'flicker', label: '描边闪烁', desc: '描边脉冲，强调关键词', filter: '\\t(bord)', group: '进阶' },
   { id: 'flychar', label: '逐字飞入', desc: '每字从上方依次落位，活泼', filter: '\\move + 逐字', group: '进阶' },
+  // ── 2026-11-02 扩充（方案 3.5「文字入场动画扩充」）──
+  { id: 'shake', label: '抖动强调', desc: '入场短促左右抖动后定格，关键词/警告', filter: '分片 \\pos', group: '强调' },
+  { id: 'wipe', label: '擦除显现', desc: '从左到右擦除显现，干净利落', filter: '\\clip 分片', group: '强调' },
+  { id: 'flip3d', label: '3D 翻转', desc: '沿纵轴翻转入场（伪 3D，无透视）', filter: '\\fry + \\t', group: '强调' },
 ];
 
 /**
