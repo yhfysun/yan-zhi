@@ -941,7 +941,9 @@ onMounted(async () => {
   -webkit-backdrop-filter: var(--glass-filter);
   border-left: 1px solid var(--glass-border, #e7e4dc);
   overflow: hidden;
-  transition: flex-basis 0.2s cubic-bezier(0.22, 0.61, 0.36, 1), width 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition:
+    flex-basis var(--motion-panel) var(--ease-out),
+    width var(--motion-panel) var(--ease-out);
 }
 .cp-ai-editor-pane:not(.open) { flex-basis: 0; width: 0; border-left: none; }
 .cp-ai-editor-head {
