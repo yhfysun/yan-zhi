@@ -39,7 +39,7 @@ import { runTargetState } from './sec-lab-tools/state.js';
 import { runProxy } from './sec-lab-tools/proxy.js';
 // —— P2：POC / 情报 / 带外 / 验证（2026-10-17）——
 import { runPocScan, runTemplates } from './sec-lab-tools/templates.js';
-import { lookupCve, searchExploit } from './sec-lab-tools/intel.js';
+import { lookupCve, lookupNvd, searchExploit } from './sec-lab-tools/intel.js';
 import { runOast } from './sec-lab-tools/oast.js';
 import { verifySqli, verifyXss, verifySsrf, updateFindingStatus } from './sec-lab-tools/verify.js';
 // —— P3：基线与巡检（2026-10-17）——
@@ -1496,10 +1496,15 @@ function pocTemplatesTool(): BuiltInTool {
 }
 
 function cveTool(): BuiltInTool {
-  return plainTool('cve_intel', 'CVE 本地情报：CVSS 与 CISA KEV；EPSS 每日变化，刻意不硬编码。查不到会明说，不编。',
-    { keyword: { type: 'string', description: 'CVE 编号或产品关键词（log4j / spring / CVE-2021-44228）' } },
+  return plainTool('cve_intel', 'CVE 情报：默认查本地快照（CVSS/KEV，离线可用）；online=true 时查 NVD（最新数据，需外网）。查不到会明说，不编。',
+    {
+      keyword: { type: 'string', description: 'CVE 编号或产品关键词（log4j / spring / CVE-2021-44228）' },
+      online: { type: 'boolean', description: 'true = 查 NVD 在线（需要外网）；缺省用本地快照' },
+    },
     ['keyword'],
-    async (a) => lookupCve(String(a.keyword || '')));
+    async (a) => (a.online === true
+      ? lookupNvd(String(a.keyword || ''))
+      : lookupCve(String(a.keyword || ''))));
 }
 
 function exploitTool(): BuiltInTool {

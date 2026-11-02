@@ -123,8 +123,87 @@ export function lookupCve(keyword: string): ToolOutput {
   };
 }
 
-/** 利用线索：只给"是否有公开利用"的提示，不提供利用代码。 */
-export function searchExploit(keyword: string): ToolOutput {
+export interface NvdDeps {
+  /** 便于单测注入；默认全局 fetch */
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+}
+
+const NVD_API = 'https://services.nvd.nist.gov/rest/json/cves/2.0';
+
+function severityOf(score: number): Finding['severity'] {
+  return score >= 9 ? 'critical' : score >= 7 ? 'high' : score >= 4 ? 'medium' : 'low';
+}
+
+/**
+ * NVD 在线查询（P2「离线 CVE 库 + NVD 在线查询」的在线部分）：
+ * 按 CVE 编号精确查，或按关键词检索；返回 CVSS/severity/描述/CWE/参考链接。
+ * 网络失败给出可读原因（离线场景请回退本地快照）。
+ */
+export async function lookupNvd(query: string, deps: NvdDeps = {}): Promise<ToolOutput> {
+  const q = String(query || '').trim();
+  if (!q) throw new Error('要给 CVE 编号或关键词（如 CVE-2021-44228 / log4j）');
+  const isId = /^cve-\d{4}-\d{3,}$/i.test(q);
+  const url = isId
+    ? `${NVD_API}?cveId=${encodeURIComponent(q.toUpperCase())}`
+    : `${NVD_API}?keywordSearch=${encodeURIComponent(q)}&resultsPerPage=5`;
+
+  const fetchImpl = deps.fetch || fetch;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), deps.timeoutMs ?? 12_000);
+  let json: any;
+  try {
+    const res = await fetchImpl(url, {
+      headers: { 'User-Agent': 'yan-zhi-sec-lab/1.0 (NVD lookup)' },
+      signal: ctl.signal,
+    });
+    if (!res.ok) throw new Error(`NVD HTTP ${res.status}`);
+    json = await res.json();
+  } catch (e) {
+    const msg = (e as Error)?.name === 'AbortError' ? 'NVD 查询超时' : `NVD 查询失败：${(e as Error).message}`;
+    throw new Error(`${msg}。离线或受限网络请用本地快照（不带 online）。`);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const items = (json?.vulnerabilities || []).map((v: any) => v.cve).filter(Boolean);
+  if (!items.length) {
+    return {
+      tool: 'cve_nvd', target: '', risk: 'passive',
+      summary: `NVD 未返回匹配「${q}」的条目。`,
+      findings: [{ title: 'NVD 无结果', severity: 'info', detail: '请确认 CVE 编号或换关键词；NVD 数据有滞后，必要时看厂商公告。' }],
+      raw: { query: q },
+    };
+  }
+
+  const rows: Array<{ id: string; desc: string; score: number; severity: string; cwes: string[]; refs: string[] }> = items.slice(0, 5).map((cve: any) => {
+    const desc = (cve.descriptions || []).find((d: any) => String(d.lang || '').startsWith('en'))?.value
+      || (cve.descriptions || [])[0]?.value || '';
+    const metrics = cve.metrics || {};
+    const m = (metrics.cvssMetricV31 || metrics.cvssMetricV30 || metrics.cvssMetricV2 || [])[0];
+    const score = Number(m?.cvssData?.baseScore ?? 0);
+    const severity = String(m?.cvssData?.baseSeverity || '').toLowerCase() || severityOf(score);
+    const cwes = (cve.weaknesses || []).flatMap((w: any) => (w.description || []).map((d: any) => d.value)).filter(Boolean);
+    const refs = (cve.references || []).map((r: any) => r.url).filter(Boolean).slice(0, 3);
+    return { id: cve.id, desc, score, severity, cwes, refs };
+  });
+
+  return {
+    tool: 'cve_nvd', target: '', risk: 'passive',
+    summary: `NVD 在线结果（${rows.length} 条）：\n` + rows.map((r) =>
+      `${r.id}  CVSS ${r.score || '—'}${r.severity ? ` (${r.severity})` : ''}\n${r.desc.slice(0, 300)}`).join('\n\n'),
+    findings: rows.map((r) => ({
+      title: `${r.id}${r.score ? ` · CVSS ${r.score}` : ''}`,
+      severity: (['critical', 'high', 'medium', 'low', 'info'].includes(r.severity) ? r.severity : severityOf(r.score)) as Finding['severity'],
+      detail: r.desc.slice(0, 1000),
+      evidence: r.cwes.length ? `CWE: ${r.cwes.join(', ')}` : undefined,
+      remediation: r.refs.length ? `参考：${r.refs.join(' ; ')}` : undefined,
+    })),
+    raw: rows,
+  };
+}
+
+/** 利用线索：只给"是否有公开利用"的提示，不提供利用代码。 */export function searchExploit(keyword: string): ToolOutput {
   const k = String(keyword || '').trim().toLowerCase();
   if (!k) throw new Error('要给产品/组件关键词');
   const hits = CVE_DB.filter((e) => e.products.some((p) => p.includes(k) || k.includes(p)) || e.title.toLowerCase().includes(k));

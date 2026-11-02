@@ -89,8 +89,8 @@
 ## P2 能力扩展
 
 - [ ] 剧本市场（内置 + 自定义上传）
-- [ ] 离线 CVE 库 + NVD 在线查询
-  → 2026-11-02 核实：**离线库已完成**（`sec-lab-tools/intel.ts`：lookupCve / searchExploit + CVSS 基础分）；**NVD 在线查询未接**（工具明确说明不联网，引导 web_search）。
+- [x] 离线 CVE 库 + NVD 在线查询
+  → 2026-11-02：离线库原已存在（lookupCve / searchExploit）；本轮补 `lookupNvd`（NVD API 2.0：cveId 精确查 / keywordSearch，12s 超时，网络失败提示回退本地快照），`cve_intel` 工具加 `online=true` 开关；4 例注入 fetch 测试。
 - [x] 合规基线：等保 2.0 / CIS Benchmark / OWASP Top 10 检查表
   → 2026-11-02 核实已落地：`sec-lab-tools/baseline.ts`（远程可核查子集，框架 owasp / cis / 等保）+ `/headers-audit`、`/tls-audit` 子集。
 - [x] 定时巡检任务与告警
