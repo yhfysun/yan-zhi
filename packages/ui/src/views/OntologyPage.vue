@@ -210,6 +210,22 @@
       </template>
     </el-dialog>
 
+    <OntologyEnrichDialog
+      v-model="enrichOpen"
+      :ontology-id="form.id"
+      :ontology-name="form.name"
+      @applied="onEnrichApplied"
+    />
+
+    <OntologyRelationSuggestDialog
+      v-model="relationSuggestOpen"
+      :datasource-id="form.datasourceId"
+      :source-table="sourceTable"
+      :source-code="form.code"
+      :existing-relations="form.relations"
+      @adopt="onAdoptRelation"
+    />
+
     <!-- 中：编辑区 -->
     <div class="ont-mid">
       <div v-if="!form.id" class="ont-mid-empty">从左侧选择一个本体，或点「新建」</div>
@@ -457,6 +473,7 @@
           </table>
           <div class="ont-add-row">
             <el-button size="small" text :icon="Plus" @click="addRelation">+ 关联关系</el-button>
+            <el-button size="small" text :disabled="!form.datasourceId || !sourceTable" @click="relationSuggestOpen = true">推断关联</el-button>
           </div>
 
           <!-- 查询意图（编译预览 / 试跑共用） -->
@@ -501,6 +518,7 @@
           <span v-if="dirty" class="ds-badge b-draft"><span class="ds-dot err" />未保存改动</span>
           <span style="flex: 1" />
           <el-button size="small" :loading="saving" @click="save(false)">保存草稿</el-button>
+          <el-button size="small" :disabled="!form.id || dirty" title="先保存草稿再进行 AI 富化" @click="enrichOpen = true">AI 富化</el-button>
           <el-button size="small" :loading="previewing" @click="previewData">预览数据</el-button>
           <el-button size="small" :loading="running" @click="tryRun">试跑查询</el-button>
           <el-button size="small" type="primary" :loading="publishing" @click="publish">
@@ -566,6 +584,8 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Plus, Delete, MoreFilled, Coin, Collection, Folder, FolderAdd } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import CompileTrack, { type CompileStage } from '../components/CompileTrack.vue';
+import OntologyEnrichDialog from '../components/ontology/OntologyEnrichDialog.vue';
+import OntologyRelationSuggestDialog from '../components/ontology/OntologyRelationSuggestDialog.vue';
 import StdAttributeTree from '../components/StdAttributeTree.vue';
 import '../styles/data-workbench.css';
 import './datasources.css';
@@ -836,6 +856,26 @@ function addRelation() {
   form.relations.push({ source: form.code, type: 'N:1', target: '', sourceAttr: '', targetAttr: '', viaTable: '', viaSource: '', viaTarget: '', description: '' });
 }
 
+/** 当前本体的来源主表（从 source_sql 的 FROM 取），用于过滤表级关联建议 */
+const sourceTable = computed(() => {
+  const m = /FROM\s+["`]?([A-Za-z0-9_$.]+)["`]?/i.exec(String(form.sourceSql || ''));
+  const raw = m ? m[1] : '';
+  const bare = raw.includes('.') ? raw.slice(raw.lastIndexOf('.') + 1) : raw;
+  return bare.toLowerCase();
+});
+const relationSuggestOpen = ref(false);
+
+/** 采用一条推断关联（去重后加入表单，保存草稿才落库） */
+function onAdoptRelation(rel: { target: string; sourceAttr: string; targetAttr: string }): void {
+  const dup = form.relations.some((r) => r.target === rel.target && r.sourceAttr === rel.sourceAttr && r.targetAttr === rel.targetAttr);
+  if (dup) return;
+  form.relations.push({
+    source: form.code, type: 'N:1', target: rel.target,
+    sourceAttr: rel.sourceAttr, targetAttr: rel.targetAttr,
+    viaTable: '', viaSource: '', viaTarget: '', description: '命名推断',
+  });
+}
+
 /** 从勾选态 + 过滤器文本组装查询意图（编译预览 / 试跑共用） */
 function buildIntent() {
   return {
@@ -848,6 +888,12 @@ function buildIntent() {
 const dirty = ref(false);
 const saving = ref(false);
 const publishing = ref(false);
+/** AI 富化面板（v-model） */
+const enrichOpen = ref(false);
+async function onEnrichApplied(): Promise<void> {
+  // 采纳后重新拉详情：描述/同义词已写回，避免本地 form 还是旧值
+  if (form.id) await selectOntology(form.id);
+}
 const previewing = ref(false);
 const running = ref(false);
 

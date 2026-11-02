@@ -48,8 +48,8 @@
 - [x] 3.6 `views/OntologyPage.vue` + SettingsDrawer 加 `ontology` section：语义区 + 技术映射区 + 四按钮 + draft/published 态
 - [ ] 3.7 **标准属性库**：`routes/std-attributes.ts` + CRUD + preview-sql + refresh；枚举三来源（手工/JSON、SQL 字典、DISTINCT 采样）；表格⇄JSON 双模式编辑
   → 2026-11-02 核实：CRUD + 树结构（group/attr）+ 手工枚举已落地；**preview-sql / refresh / SQL 字典与 DISTINCT 采样未做**。
-- [ ] 3.8 关系管理 UI：suggested 列表 → 确认/拒绝；关系图可视化（可选）
-  → 2026-11-02：现有关系表单（手工增删 N:1/1:N/N:N + 中间表）可用；**建议列表确认/拒绝未接**——后端已提供 `GET /api/datasources/:id/relation-suggestions`，前端待接。
+- [x] 3.8 关系管理 UI：suggested 列表 → 确认/拒绝；关系图可视化（可选）
+  → 2026-11-02：`OntologyRelationSuggestDialog.vue` —— 按当前本体来源表过滤建议、目标表映射到同数据源本体 code、置信度/原因展示、单条或「全部采用」写入关系表单（去重，保存草稿后生效）；目标本体未生成时禁用。关系图可视化（可选项）未做。
 
 ## P3.5 AI 富化（v2 新增）
 
