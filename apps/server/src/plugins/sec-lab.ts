@@ -315,6 +315,30 @@ const loadSnapshots = () => loadList<Snapshot>(K_SNAPSHOTS);
 //   两者在 `PlaybookDef` 上是同一个类型、同一条展开/执行通道 —— 剧本自己不执行，
 //   展开成命令行后仍走各自的护栏与审计，所以"谁定义的"不影响安全性。
 const loadPlaybooks = () => loadList<PlaybookDef>(K_PLAYBOOKS);
+
+/** 剧本形状校验（保存与市场导入共用；步骤必须是 / 开头的命令） */
+function normalizePlaybook(b: any, idPrefix = 'user'): { ok: true; entry: PlaybookDef } | { ok: false; error: string } {
+  const name = String(b?.name || '').trim();
+  const rawSteps = Array.isArray(b?.steps) ? b.steps.map((s: unknown) => String(s).trim()).filter(Boolean) : [];
+  if (!name) return { ok: false, error: '剧本名（name）必填' };
+  if (!rawSteps.length) return { ok: false, error: '剧本至少要有一个步骤（steps）' };
+  if (rawSteps.length > USER_PLAYBOOK_STEPS_MAX) {
+    return { ok: false, error: `步骤最多 ${USER_PLAYBOOK_STEPS_MAX} 步，当前 ${rawSteps.length} 步` };
+  }
+  const bad = rawSteps.find((s: string) => !s.startsWith('/'));
+  if (bad) return { ok: false, error: `每个步骤都要是以 / 开头的命令，例如 /recon \${target}；收到：${bad.slice(0, 40)}` };
+  const id = String(b?.id || '').trim() || `${idPrefix}-${Date.now().toString(36)}`;
+  return {
+    ok: true,
+    entry: {
+      id, name, steps: rawSteps,
+      desc: b?.desc ? String(b.desc) : undefined,
+      group: b?.group ? String(b.group) : 'USER',
+      mode: 'sec',
+      confirmEach: b?.confirmEach === true,
+    },
+  };
+}
 // 存储里的历史/异常数据不能让控制台整页崩：只接受 id/status 齐全的对象
 const loadExperience = async (): Promise<ExperienceEntry[]> =>
   (await loadList<ExperienceEntry>(K_EXPERIENCE)).filter(
@@ -2268,35 +2292,19 @@ function registerRoutes(ctx: PluginContext) {
 
     r.post('/playbooks', async (req: unknown, res: unknown) => {
       const b = bodyOf(req);
-      const name = String(b.name || '').trim();
-      const rawSteps = Array.isArray(b.steps) ? b.steps.map((s) => String(s).trim()).filter(Boolean) : [];
-      if (!name) return fail(res, 400, '剧本名（name）必填');
-      if (!rawSteps.length) return fail(res, 400, '剧本至少要有一个步骤（steps）');
-      if (rawSteps.length > USER_PLAYBOOK_STEPS_MAX) {
-        return fail(res, 400, `步骤最多 ${USER_PLAYBOOK_STEPS_MAX} 步，当前 ${rawSteps.length} 步`);
-      }
-      // 每步都必须是一条命令行（以 `/` 开头）。剧本的定义就是"一串命令"——
-      // 放行裸文本等于给剧本开第二种执行形态，展开时只会得到一条看不懂的报错。
-      const bad = rawSteps.find((s) => !s.startsWith('/'));
-      if (bad) return fail(res, 400, `每个步骤都要是以 / 开头的命令，例如 /recon \${target}；收到：${bad.slice(0, 40)}`);
-      const id = String(b.id || '').trim() || `user-${Date.now().toString(36)}`;
+      const norm = normalizePlaybook(b, 'user');
+      if (!norm.ok) return fail(res, 400, norm.error);
+      const entry = norm.entry;
       const list = await loadPlaybooks();
-      const idx = list.findIndex((p) => p.id === id);
+      const idx = list.findIndex((p) => p.id === entry.id);
       if (idx < 0 && list.length >= USER_PLAYBOOK_MAX) {
         return fail(res, 400, `自定义剧本已达上限 ${USER_PLAYBOOK_MAX} 条，请先删掉不再用的`);
       }
-      const entry: PlaybookDef = {
-        id, name, steps: rawSteps,
-        desc: b.desc ? String(b.desc) : undefined,
-        group: b.group ? String(b.group) : 'USER',
-        mode: 'sec',
-        confirmEach: b.confirmEach === true,
-      };
       const next = idx >= 0 ? list.map((p, i) => (i === idx ? entry : p)) : [...list, entry];
       if (store) await store.set(K_PLAYBOOKS, next);
       await pushAudit({
         at: Date.now(), tool: 'playbook_save', ok: true,
-        message: `${idx >= 0 ? '更新' : '保存'}剧本「${name}」（${rawSteps.length} 步）`,
+        message: `${idx >= 0 ? '更新' : '保存'}剧本「${entry.name}」（${entry.steps.length} 步）`,
       });
       json(res, { ok: true, data: entry });
     });
@@ -2311,6 +2319,52 @@ function registerRoutes(ctx: PluginContext) {
       if (store) await store.set(K_PLAYBOOKS, next);
       await pushAudit({ at: Date.now(), tool: 'playbook_remove', ok: true, message: `删除剧本（${id || name}）` });
       json(res, { ok: true });
+    });
+
+    // ── 剧本市场（P2）：内置 + 自定义统一目录 / 导入 / 导出 ────────────────
+    r.get('/playbooks/catalog', async (_req: unknown, res: unknown) => {
+      const builtIn = ((secLabManifest.contributes as any)?.playbooks || []) as PlaybookDef[];
+      json(res, { data: { builtIn, user: await loadPlaybooks() } });
+    });
+
+    r.get('/playbooks/export', async (req: unknown, res: unknown) => {
+      const id = String((req as any)?.query?.id || '').trim();
+      const list = await loadPlaybooks();
+      json(res, { data: { items: id ? list.filter((p) => p.id === id) : list } });
+    });
+
+    r.post('/playbooks/import', async (req: unknown, res: unknown) => {
+      const b = bodyOf(req);
+      let items: any[] = [];
+      if (Array.isArray(b.items)) items = b.items;
+      else if (typeof b.text === 'string') {
+        try {
+          const parsed = JSON.parse(b.text);
+          items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : [parsed]);
+        } catch {
+          return fail(res, 400, '导入内容不是合法 JSON（支持单个剧本、数组或 {items:[...]}）');
+        }
+      } else if (b.playbook) items = [b.playbook];
+      if (!items.length) return fail(res, 400, '没有可导入的剧本（items / text / playbook 三选一）');
+
+      const list = await loadPlaybooks();
+      let added = 0;
+      let updated = 0;
+      const failed: string[] = [];
+      for (const raw of items.slice(0, 50)) {
+        const n = normalizePlaybook(raw, 'import');
+        if (!n.ok) { failed.push(`${raw?.name || raw?.id || '?'}: ${n.error}`); continue; }
+        const i = list.findIndex((p) => p.id === n.entry.id);
+        if (i >= 0) { list[i] = n.entry; updated += 1; }
+        else if (list.length < USER_PLAYBOOK_MAX) { list.push(n.entry); added += 1; }
+        else failed.push(`${n.entry.name}: 自定义剧本已达上限 ${USER_PLAYBOOK_MAX}`);
+      }
+      if (store) await store.set(K_PLAYBOOKS, list);
+      await pushAudit({
+        at: Date.now(), tool: 'playbook_import', ok: true,
+        message: `导入剧本：新增 ${added} / 更新 ${updated} / 失败 ${failed.length}`,
+      });
+      json(res, { ok: true, data: { added, updated, failed } });
     });
 
     // ── P5：经验库（自学习，2026-10-17）────────────────────────────────────────

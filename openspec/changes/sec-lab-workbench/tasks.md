@@ -88,7 +88,8 @@
 
 ## P2 能力扩展
 
-- [ ] 剧本市场（内置 + 自定义上传）
+- [x] 剧本市场（内置 + 自定义上传）
+  → 2026-11-02：后端 `/playbooks/catalog`（内置 manifest + 自定义）、`/playbooks/import`（单条/数组/{items}，逐条校验、上限控制）、`/playbooks/export`；保存与导入共用 `normalizePlaybook`。前端 SecConsole 顶栏「剧本市场」：内置/自定义分组、导入 JSON、导出全部、删除自定义；5 例路由测试。
 - [x] 离线 CVE 库 + NVD 在线查询
   → 2026-11-02：离线库原已存在（lookupCve / searchExploit）；本轮补 `lookupNvd`（NVD API 2.0：cveId 精确查 / keywordSearch，12s 超时，网络失败提示回退本地快照），`cve_intel` 工具加 `online=true` 开关；4 例注入 fetch 测试。
 - [x] 合规基线：等保 2.0 / CIS Benchmark / OWASP Top 10 检查表

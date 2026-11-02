@@ -32,6 +32,7 @@
         <button type="button" class="sec-fullbtn" @click="toggleFullscreen">
           {{ isFullscreen ? '退出全屏' : '全屏' }}
         </button>
+        <button type="button" class="sec-fullbtn" @click="openPlaybookMarket">剧本市场</button>
         <label class="sec-switch" :class="{ on: cfg.engagementMode }">
           <input v-model="cfg.engagementMode" type="checkbox" @change="saveConfig" />
           <span class="sec-switch-grip" />
@@ -974,6 +975,32 @@
         <el-button size="small" type="warning" @click="confirmRunSim">人工确认并执行</el-button>
       </template>
     </el-dialog>
+
+    <!-- 剧本市场（P2）：内置 + 自定义，导入/导出 -->
+    <el-dialog v-model="pbOpen" title="剧本市场" width="660px">
+      <div class="pb-bar">
+        <el-button size="small" @click="pbFileEl?.click()">导入 JSON</el-button>
+        <input ref="pbFileEl" type="file" accept=".json,application/json" style="display:none" @change="importPlaybooks" />
+        <el-button size="small" @click="exportPlaybooks">导出全部自定义</el-button>
+        <span class="pb-hint">支持单个剧本 / 数组 / {items:[…]}；步骤必须以 / 开头</span>
+      </div>
+      <div class="pb-sec">内置剧本（{{ pbBuiltIn.length }}）</div>
+      <div v-for="p in pbBuiltIn" :key="'b' + p.id" class="pb-row">
+        <span class="pb-name">{{ p.name }}</span>
+        <el-tag size="small">内置</el-tag>
+        <span class="pb-steps">{{ p.steps?.length || 0 }} 步</span>
+      </div>
+      <div class="pb-sec">自定义剧本（{{ pbUser.length }}）</div>
+      <div v-for="p in pbUser" :key="'u' + p.id" class="pb-row">
+        <span class="pb-name">{{ p.name }}</span>
+        <el-tag size="small" type="success">自定义</el-tag>
+        <span class="pb-steps">{{ p.steps?.length || 0 }} 步</span>
+        <el-button size="small" text type="danger" @click="removeUserPlaybook(p)">删除</el-button>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="pbOpen = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1458,6 +1485,53 @@ const lastRunMs = ref<number | null>(null);
 //   在控制台里再加一条执行链，等于把护栏复制一份，迟早漂移。
 // ============================================================
 const commandsStore = useCommandsStore();
+
+// ===== 剧本市场（P2）=====
+const pbOpen = ref(false);
+const pbBuiltIn = ref<any[]>([]);
+const pbUser = ref<any[]>([]);
+const pbFileEl = ref<HTMLInputElement | null>(null);
+
+async function loadPlaybookMarket(): Promise<void> {
+  const r = await api.get<any>(`${BASE}/playbooks/catalog`);
+  if ('error' in r) { ElMessage.error(r.error); return; }
+  pbBuiltIn.value = r.data?.builtIn || [];
+  pbUser.value = r.data?.user || [];
+}
+function openPlaybookMarket(): void {
+  pbOpen.value = true;
+  void loadPlaybookMarket();
+}
+async function importPlaybooks(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  const text = await file.text();
+  const r = await api.post<any>(`${BASE}/playbooks/import`, { text });
+  input.value = '';
+  if ('error' in r) { ElMessage.error(r.error); return; }
+  const d = r.data || {};
+  ElMessage.success(`导入完成：新增 ${d.added} / 更新 ${d.updated}${d.failed?.length ? ` / 失败 ${d.failed.length}` : ''}`);
+  if (d.failed?.length) ElMessage.warning(d.failed.slice(0, 3).join('；'));
+  await loadPlaybookMarket();
+  await commandsStore.loadUserPlaybooks();
+}
+async function exportPlaybooks(): Promise<void> {
+  const r = await api.get<any>(`${BASE}/playbooks/export`);
+  if ('error' in r) { ElMessage.error(r.error); return; }
+  const blob = new Blob([JSON.stringify({ items: r.data?.items || [] }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `sec-playbooks-${Date.now()}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+}
+async function removeUserPlaybook(p: any): Promise<void> {
+  const r = await api.post(`${BASE}/playbooks/remove`, { id: p.id });
+  if ('error' in r) { ElMessage.error(r.error); return; }
+  await loadPlaybookMarket();
+  await commandsStore.loadUserPlaybooks();
+}
 const cmdInput = ref('');
 const cmdHints = ref<CommandDef[]>([]);
 const cmdPlaceholder = computed(() => {
@@ -2984,4 +3058,11 @@ onUnmounted(() => {
   border-radius: 3px; color: var(--sc-amber); font-size: 11px; line-height: 1.5;
 }
 .sec-ai-hint { font-size: 11px; color: var(--sc-fg-3); }
+/* 剧本市场（P2） */
+.pb-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.pb-hint { font-size: 11.5px; color: var(--color-text-secondary); }
+.pb-sec { font-size: 12px; font-weight: 600; margin: 10px 0 6px; }
+.pb-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--glass-border); }
+.pb-name { font-weight: 500; }
+.pb-steps { font-size: 12px; color: var(--color-text-secondary); margin-left: auto; }
 </style>
