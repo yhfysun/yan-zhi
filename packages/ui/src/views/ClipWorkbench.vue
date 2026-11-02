@@ -974,20 +974,26 @@
                 </button>
               </div>
               <div v-show="cropOpen" class="cp-grp-body">
-                <!-- 智能竖屏（P2-4 MVP）：抽样检测人脸 → 中位中心裁成 9:16。
-                     ★ 静态裁切，不是跟踪；检测不到人脸时服务端回退画面中心并给 warning；
-                       会覆盖用户的手动裁剪（点之前先 confirm）。 -->
+                <!-- 智能竖屏（P2-4）：静态 = 中位中心；动态跟随 = 平滑人脸轨迹写进 crop.track。
+                     ★ 两者都**不是 AI 跟踪**（Haar 正脸抽样），侧脸/遮挡会漏检；
+                       检测不到人脸时服务端回退画面中心并给 warning；会覆盖用户的手动裁剪。 -->
                 <div class="cp-field">
+                  <div class="cp-seg-btns">
+                    <button class="cp-btn" :class="{ primary: reframeMode === 'static' }" title="静态裁切：整段用一个人脸中位中心窗口（默认）" @click="reframeMode = 'static'">静态</button>
+                    <button class="cp-btn" :class="{ primary: reframeMode === 'track' }" title="动态跟随：按抽样人脸生成平滑轨迹，裁切窗口随人物移动（非 AI；侧脸可能漏检）" @click="reframeMode = 'track'">动态跟随</button>
+                  </div>
                   <button
                     class="cp-btn full"
                     :disabled="reframing || !selectedClipId"
-                    :title="reframing ? '正在抽样检测人脸…' : '智能竖屏：抽样检测人脸，按中位中心把画面裁成 9:16（静态裁切，非跟踪；检测不到人脸时回退画面中心；会覆盖手动裁剪）'"
+                    :title="reframing ? '正在抽样检测人脸…' : (reframeMode === 'track' ? '动态跟随：抽样检测人脸生成平滑轨迹，裁切窗口随人物移动（非 AI 跟踪；侧脸可能漏检；可撤销；会覆盖手动裁剪）' : '智能竖屏：抽样检测人脸，按中位中心把画面裁成 9:16（静态裁切，非跟踪；检测不到人脸时回退画面中心；会覆盖手动裁剪）')"
                     @click="reframeVerticalSelected"
                   >
                     <el-icon :size="12" :class="{ 'cp-spin': reframing }"><Crop /></el-icon>
-                    {{ reframing ? '检测人脸中…' : '智能竖屏（人脸居中）' }}
+                    {{ reframing ? '检测人脸中…' : (reframeMode === 'track' ? '智能竖屏（动态跟随）' : '智能竖屏（人脸居中）') }}
                   </button>
-                  <div class="cp-ins-hint">静态裁切（非跟踪）：抽样检测人脸 → 中位中心裁成 9:16；检测不到人脸时回退画面中心。会覆盖手动裁剪。</div>
+                  <div class="cp-ins-hint">{{ reframeMode === 'track'
+                    ? '动态跟随：按抽样人脸生成平滑轨迹，裁切窗口随人物移动；非 AI 跟踪，侧脸/遮挡可能漏检，漏检段按最近位置保持。可撤销，会覆盖手动裁剪。'
+                    : '静态裁切（非跟踪）：抽样检测人脸 → 中位中心裁成 9:16；检测不到人脸时回退画面中心。会覆盖手动裁剪。' }}</div>
                 </div>
                 <div class="cp-field">
                   <label>宽度 <span class="cp-val">{{ clipPatch.cropW.toFixed(2) }}</span></label>
@@ -5502,8 +5508,10 @@ const asrModel = ref('small');   // base 快 / small 准（默认）/ medium 最
 const talkingCutting = ref(false);
 /** 字幕转配音（P1-8）：TTS 合成中 */
 const ttsRunning = ref(false);
-/** 智能竖屏（P2-4 MVP）：人脸抽检 + 裁切中 */
+/** 智能竖屏（P2-4）：人脸抽检 + 裁切中 */
 const reframing = ref(false);
+/** 智能竖屏模式：static=静态中位（默认，旧行为）；track=动态人脸跟随（写 crop.track） */
+const reframeMode = ref<'static' | 'track'>('static');
 
 // ===== 多机位（P2 MVP）=====
 // ★ 扁平化：声音对齐 + 等间隔交替 → 生成普通片段拍平进主轨，不引入多轨模型。
@@ -6043,11 +6051,12 @@ async function talkingCutSelected() {
   }
 }
 
-// ===== 智能竖屏重构（P2-4 MVP：静态人脸居中裁切）=====
+// ===== 智能竖屏重构（P2-4：静态居中人脸 / 动态跟随）=====
 /**
- * 抽样检测人脸 → 取中位中心 → 把选中片段裁成 9:16 并写进 crop。
+ * 抽样检测人脸 → 静态取中位中心，或动态生成平滑轨迹 → 写进 crop。
  *
- * ★ 文案必须诚实：这是**静态裁切，不是逐帧跟踪**；检测不到人脸时服务端回退画面中心。
+ * ★ 文案必须诚实：两者都**不是 AI 跟踪**（Haar 正脸抽样）；动态跟随只是把抽样点
+ *   平滑后交给 ffmpeg crop 表达式逐帧移动窗口，侧脸/遮挡会漏检。
  * ★ 会覆盖手动裁剪：已有 crop 时先 confirm（用户手动调的构图不该被一次点击抹掉）。
  * ★ 成功后 reloadAll() 再重新 selectClip：reload 不会自动刷新 clipPatch，
  *   不重选的话右侧裁剪滑杆还显示旧值（看起来像"没生效"）。
@@ -6057,17 +6066,21 @@ async function reframeVerticalSelected() {
   if (!clip) { note('先在时间轴上选中一个视频片段'); return; }
   if (!convId.value) { note('还没有会话'); return; }
   if (clip.kenburns) { note('图片/定格片段没有可检测的人脸（智能竖屏只支持视频段）'); return; }
-  if (clip.crop && !window.confirm('该片段已有手动裁剪，智能竖屏会覆盖它。继续？')) return;
+  const mode = reframeMode.value;
+  const overwriteMsg = mode === 'track'
+    ? '动态跟随后会覆盖该片段已有的裁剪。\n\n跟随人脸移动裁切（非 AI 跟踪），侧脸可能漏检；可撤销。继续？'
+    : '该片段已有手动裁剪，智能竖屏会覆盖它。继续？';
+  if (clip.crop && !window.confirm(overwriteMsg)) return;
   reframing.value = true;
-  pendingLabel.value = '智能竖屏（人脸检测）';
+  pendingLabel.value = mode === 'track' ? '智能竖屏（动态跟随）' : '智能竖屏（人脸检测）';
   try {
     type ReframeResp = {
       ok?: boolean; error?: string; note?: string; warning?: string;
-      faces?: unknown[]; confidence?: number;
-      crop?: { x: number; y: number; w: number; h: number } | null;
+      faces?: unknown[]; confidence?: number; mode?: 'static' | 'track'; trackPoints?: number;
+      crop?: { x: number; y: number; w: number; h: number; track?: Array<{ t: number; x: number; y: number }> } | null;
     };
     const r = await api.post<ReframeResp>('/plugin/clip-mode/reframe-vertical', {
-      conversationId: convId.value, clipId: clip.id, targetAspect: '9:16',
+      conversationId: convId.value, clipId: clip.id, targetAspect: '9:16', mode,
     }) as { data?: ReframeResp; error?: string };
     if ('error' in r && r.error) { note(String(r.error)); return; }
     const d = r.data;

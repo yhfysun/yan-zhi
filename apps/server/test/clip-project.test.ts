@@ -425,6 +425,29 @@ describe('applyClipOp · crop / keyframes / overlay', () => {
     expect(p.clips[1].crop).toBeUndefined();
   });
 
+  it('add_clip 归一化 crop.track（动态跟随）：排序/夹取/同 t 去重/上限 24/少于 2 点丢弃', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ t: (39 - i) / 39, x: (39 - i) / 39, y: 0.5 }));
+    const p = run(null, [['add_clip', { clips: [
+      { file: 'C:/a.mp4', crop: { x: 0, y: 0, w: 0.5, h: 0.9, track: many } },
+      { file: 'C:/b.mp4', crop: { x: 0, y: 0, w: 0.5, h: 0.9, track: [{ t: 0.5, x: 0.5, y: 0.5 }] } }, // 单点 → 丢弃
+      { file: 'C:/c.mp4', crop: { x: 0, y: 0, w: 0.5, h: 0.9, track: [
+        { t: 0.6, x: 1.4, y: -1 }, { t: 0, x: 0.2, y: 0.3 }, { t: 0.6, x: 0.8, y: 0.4 },
+        { t: Number.NaN, x: 0.5, y: 0.5 },                                  // 非法 → 丢
+      ] } },
+    ] }]]);
+    const t1 = p.clips[0].crop!.track!;
+    expect(t1.length).toBeLessThanOrEqual(24);
+    expect(t1[0].t).toBe(0);
+    expect(t1[t1.length - 1].t).toBe(1);
+    for (let i = 1; i < t1.length; i++) expect(t1[i].t).toBeGreaterThan(t1[i - 1].t);
+    expect(p.clips[1].crop!.track).toBeUndefined();
+    // 夹到 0~1、按 t 排序、同 t 保留后者
+    expect(p.clips[2].crop!.track).toEqual([
+      { t: 0, x: 0.2, y: 0.3 },
+      { t: 0.6, x: 0.8, y: 0.4 },
+    ]);
+  });
+
   it('update_clip 把 patch.crop=null 视为清除裁剪', () => {
     let p = run(null, [['add_clip', { clips: [{ file: 'C:/a.mp4', crop: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 } }] }]]);
     expect(p.clips[0].crop).toBeDefined();

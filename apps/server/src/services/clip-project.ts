@@ -159,6 +159,15 @@ export interface ClipSegment {
     /** 裁剪区宽高（比例 0.1~1；1 = 到边） */
     w?: number;
     h?: number;
+    /**
+     * 动态跟随（P2-4 增强，2026-11-02）：裁切窗口中心的轨迹。
+     *
+     * · t = **段内归一化位置 0~1**（相对片段实际使用的源区间，不是秒）；
+     * · x/y = 窗口**中心**在画面内的比例 0~1（不是左上角）；w/h 仍取上面的值；
+     * · 缺省/少于 2 点 = 静态裁切（旧行为，滤镜串逐字节不变）；
+     * · 渲染时由 clip-render 转成 crop 的 x/y 分段线性表达式（t 的换算见那里注释）。
+     */
+    track?: Array<{ t: number; x: number; y: number }>;
   };
   /**
    * 关键帧动画（运镜/淡入淡出的任意组合）。
@@ -1008,6 +1017,45 @@ function normalizeHsl(v: unknown): ClipSegment['hsl'] | null {
  * ★ 只做范围钳制（x/y 0~0.9、w/h 0.1~1），不校验 x+w<=1 —— 越界由 ffmpeg crop 自然夹住
  *   （crop 宽高超出画面会被夹到边界），此处不必重复实现同样的夹取。
  */
+/**
+ * 动态跟随轨迹（crop.track）归一化：排序 → 夹 0~1 → 同点位去重 → 点数上限 24。
+ * 返回 null = 无有效轨迹（少于 2 点没有"移动"可言，按静态裁切处理）。
+ * ★ 非法点直接丢弃而不是整条作废：单帧误检不该让整段跟踪失效。
+ * ★ 上限 24 与 ffmpeg crop 表达式的长度/可读性折中（每点约 60 字符）。
+ */
+const MAX_CROP_TRACK_POINTS = 24;
+function normalizeCropTrack(v: unknown): Array<{ t: number; x: number; y: number }> | null {
+  if (!Array.isArray(v)) return null;
+  const c01 = (n: number) => Math.max(0, Math.min(1, n));
+  const pts: Array<{ t: number; x: number; y: number }> = [];
+  for (const raw of v) {
+    if (!raw || typeof raw !== 'object') continue;
+    const m = raw as Record<string, unknown>;
+    const t = Number(m.t);
+    const x = Number(m.x);
+    const y = Number(m.y);
+    if (![t, x, y].every(Number.isFinite)) continue;
+    pts.push({ t: c01(t), x: c01(x), y: c01(y) });
+  }
+  if (!pts.length) return null;
+  pts.sort((a, b) => a.t - b.t);
+  // 同 t 保留后者：t 夹到 0/1 后端点容易撞在一起，留下"最后一次"观测
+  const dedup: Array<{ t: number; x: number; y: number }> = [];
+  for (const p of pts) {
+    if (dedup.length && Math.abs(dedup[dedup.length - 1].t - p.t) < 1e-6) dedup[dedup.length - 1] = p;
+    else dedup.push(p);
+  }
+  if (dedup.length < 2) return null;
+  if (dedup.length <= MAX_CROP_TRACK_POINTS) return dedup.map((p) => ({ t: p.t, x: p.x, y: p.y }));
+  // 超限：等距抽稀并**保留首尾**（缺端点会让表达式首尾钳到错误位置）
+  const out: Array<{ t: number; x: number; y: number }> = [];
+  for (let i = 0; i < MAX_CROP_TRACK_POINTS; i++) {
+    const idx = Math.round((i * (dedup.length - 1)) / (MAX_CROP_TRACK_POINTS - 1));
+    out.push({ t: dedup[idx].t, x: dedup[idx].x, y: dedup[idx].y });
+  }
+  return out;
+}
+
 function normalizeCrop(v: unknown): ClipSegment['crop'] | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const m = v as Record<string, unknown>;
@@ -1016,7 +1064,8 @@ function normalizeCrop(v: unknown): ClipSegment['crop'] | null {
   const w = Math.max(0.1, Math.min(1, numOr(m.w, 1)));
   const h = Math.max(0.1, Math.min(1, numOr(m.h, 1)));
   if (w >= 0.999 && h >= 0.999) return null;   // 全画幅 = 没裁
-  return { x, y, w, h };
+  const track = normalizeCropTrack(m.track);
+  return { x, y, w, h, ...(track ? { track } : {}) };
 }
 
 /**

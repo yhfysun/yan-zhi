@@ -20,6 +20,17 @@ import { runCmd, lookupOnPath } from './exec-cmd.js';
 import { parseProbeJson, probeArgs } from './clip-render.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import { findPython, getPythonScript, runPythonScript } from '@yan-zhi/core';
+import {
+  buildFaceTrack, trackToCropExpr, filterFaceCenters, computeTrackWindow, median,
+  round4, clampNum,
+  type FaceTrackPoint, type BuildFaceTrackOptions, type BuildFaceTrackResult,
+} from './clip-crop-track.js';
+
+// ★ 动态跟随的纯函数住在 clip-crop-track.ts（避免 clip-reframe ↔ clip-render 循环依赖），
+//   这里 re-export，对外仍是「clip-reframe 的纯函数」，测试/调用方不必关心拆分。
+export { buildFaceTrack, trackToCropExpr };
+export type { FaceTrackPoint, BuildFaceTrackOptions, BuildFaceTrackResult };
+
 
 /** 目标画幅（宽/高）。UI 只暴露这三种；也接受任意正数供将来扩展。 */
 export const TARGET_ASPECTS = { '9:16': 9 / 16, '1:1': 1, '16:9': 16 / 9 } as const;
@@ -61,47 +72,8 @@ export interface ComputeFaceCenteredCropInput {
   sampleCount?: number;
 }
 
-/** zoom 下限：再小窗口会碎到没有构图意义（0.6 = 比最大窗口放大 1.67 倍） */
-const MIN_ZOOM = 0.6;
-const MAX_ZOOM = 1;
-/** 与 clip-project.normalizeCrop 的最小窗口一致（w/h ≥ 0.1），避免落盘后被放大漂移 */
-const MIN_CROP_REL = 0.1;
-/** 人脸框超过画面这个比例 = 误检（近景大脸也不会占满 90%） */
-const MAX_FACE_FRAME_RATIO = 0.9;
-/** 小于画面 0.5% 的框当噪点 */
-const MIN_FACE_FRAME_RATIO = 0.005;
+const clamp = clampNum;
 
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const round4 = (v: number) => Math.round(v * 10000) / 10000;
-
-function median(values: number[]): number {
-  const s = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-}
-
-/** 过滤越界/尺寸异常/非数值的人脸框（误检比没有更糟：会把构图拽偏）。 */
-function validFaces(faces: FaceBox[], frameW: number, frameH: number): Array<{ cx: number; cy: number }> {
-  const out: Array<{ cx: number; cy: number }> = [];
-  for (const f of faces) {
-    if (!f || typeof f !== 'object') continue;
-    const x = Number(f.x);
-    const y = Number(f.y);
-    const w = Number(f.w);
-    const h = Number(f.h);
-    if (![x, y, w, h].every(Number.isFinite)) continue;
-    if (w <= 0 || h <= 0) continue;
-    if (w > frameW * MAX_FACE_FRAME_RATIO || h > frameH * MAX_FACE_FRAME_RATIO) continue;
-    if (w < frameW * MIN_FACE_FRAME_RATIO || h < frameH * MIN_FACE_FRAME_RATIO) continue;
-    // 完全在画面外（含只有边角露出的情况）
-    if (x + w <= 0 || y + h <= 0 || x >= frameW || y >= frameH) continue;
-    const cx = x + w / 2;
-    const cy = y + h / 2;
-    if (cx < 0 || cx > frameW || cy < 0 || cy > frameH) continue;
-    out.push({ cx, cy });
-  }
-  return out;
-}
 
 /**
  * 纯函数：人脸中位中心 → 目标画幅裁切窗口（0~1 相对值）。
@@ -120,37 +92,14 @@ export function computeFaceCenteredCrop(input: ComputeFaceCenteredCropInput): Cr
 
   const warnings: string[] = [];
 
-  const aspectRaw = Number(input.targetAspect);
-  const aspect = Number.isFinite(aspectRaw) && aspectRaw > 0 ? aspectRaw : TARGET_ASPECTS['9:16'];
-  if (!(Number.isFinite(aspectRaw) && aspectRaw > 0)) warnings.push('目标画幅无效，已按 9:16 计算');
-
-  const zoomRaw = Number(input.zoom ?? 1);
-  const zoom = Number.isFinite(zoomRaw) ? clamp(zoomRaw, MIN_ZOOM, MAX_ZOOM) : 1;
-  if (Number.isFinite(zoomRaw) && (zoomRaw < MIN_ZOOM || zoomRaw > MAX_ZOOM)) {
-    warnings.push(`zoom 超出 ${MIN_ZOOM}~${MAX_ZOOM}，已夹取`);
-  }
-
-  // 窗口：保持目标比例的最大内接矩形，再乘 zoom（zoom<1 = 裁得更紧）
-  const frameAspect = frameW / frameH;
-  let winW = frameW;
-  let winH = frameH;
-  if (frameAspect > aspect) winW = frameH * aspect;
-  else winH = frameW / aspect;
-  winW *= zoom;
-  winH *= zoom;
-
-  // 兜底：比例极端时窗口可能小于持久化下限（0.1），按最小窗口整体放大
-  const minW = frameW * MIN_CROP_REL;
-  const minH = frameH * MIN_CROP_REL;
-  if (winW < minW || winH < minH) {
-    const k = Math.max(minW / winW, minH / winH);
-    winW *= k;
-    winH *= k;
-    warnings.push('目标画幅与素材比例差异过大，已按最小可裁窗口处理');
-  }
+  // 窗口：保持目标比例的最大内接矩形，再乘 zoom（zoom<1 = 裁得更紧）。
+  // ★ 与动态跟随共用 computeTrackWindow —— 两条路径的窗口尺寸必须完全一致，
+  //   否则"静态裁一次、动态裁一次"会得到不同构图。
+  const { winW, winH, warnings: winWarn } = computeTrackWindow(frameW, frameH, Number(input.targetAspect), input.zoom);
+  warnings.push(...winWarn);
 
   const faces = Array.isArray(input.faces) ? input.faces : [];
-  const centers = validFaces(faces, frameW, frameH);
+  const centers = filterFaceCenters(faces, frameW, frameH);
   let cx = frameW / 2;
   let cy = frameH / 2;
   if (centers.length) {
@@ -194,7 +143,12 @@ export interface ReframeVerticalInput {
   /** '9:16' | '1:1' | '16:9'（缺省 9:16）；也接受任意正数宽高比 */
   targetAspect?: string | number;
   zoom?: number;
-  /** 抽样帧数（默认 12，脚本上限 24） */
+  /**
+   * static（默认）= 静态居中裁切（旧行为）；track = 生成动态跟随轨迹。
+   * ★ track 只多返回一条 track，由路由决定写不写进 crop；static 的返回值与历史一致。
+   */
+  mode?: 'static' | 'track';
+  /** 抽样帧数（static 默认 12；track 默认 28；脚本上限 40） */
   samples?: number;
   /** 抽样间隔秒（>0 时覆盖 samples） */
   interval?: number;
@@ -218,6 +172,8 @@ export interface ReframeVerticalResult {
   faces?: FaceBox[];
   /** 实际采样帧数 */
   sampleCount?: number;
+  /** 动态跟随轨迹（仅 mode=track 且 ≥2 点时有值；t 为段内 0~1，x/y 为窗口中心比例） */
+  track?: FaceTrackPoint[];
   need?: string;
   hint?: string;
 }
@@ -231,12 +187,17 @@ export function parseTargetAspect(v: string | number | undefined): number | null
   return null;
 }
 
-/** ffprobe 探测宽高（单一出口：probeArgs/parseProbeJson 与其它媒体链路同口径）。 */
-async function probeSize(ffprobe: string, file: string): Promise<{ width: number; height: number } | null> {
+/** ffprobe 探测宽高/时长（单一出口：probeArgs/parseProbeJson 与其它媒体链路同口径）。 */
+async function probeSize(
+  ffprobe: string,
+  file: string,
+): Promise<{ width: number; height: number; duration: number } | null> {
   const r = await runCmd(ffprobe, probeArgs(file), { timeoutMs: 30000, maxBuffer: 4 * 1024 * 1024 });
   if (!r.ok) return null;
   const p = parseProbeJson(r.stdout);
-  return p.width > 0 && p.height > 0 ? { width: p.width, height: p.height } : null;
+  return p.width > 0 && p.height > 0
+    ? { width: p.width, height: p.height, duration: Math.max(0, Number(p.durationSec) || 0) }
+    : null;
 }
 
 interface ScriptFaceOutput {
@@ -315,9 +276,16 @@ export async function reframeVertical(input: ReframeVerticalInput): Promise<Refr
     };
   }
 
-  const samples = clamp(Math.round(Number(input.samples ?? 12)), 1, 24);
+  const mode = input.mode === 'track' ? 'track' : 'static';
+  // track 需要更密的采样（人物走动时静态 12 帧太平滑不了）；脚本上限 40
+  const samples = clamp(Math.round(Number(input.samples ?? (mode === 'track' ? 28 : 12))), 1, 40);
   const start = Math.max(0, Number(input.start ?? 0) || 0);
   const duration = Math.max(0, Number(input.duration ?? 0) || 0);
+  // 片段实际使用的区间长度：track 的 t 归一化与脚本抽样都以它为基准
+  const totalDur = Math.max(0, Number(size.duration) || 0);
+  const windowDur = duration > 0
+    ? (totalDur > 0 ? Math.min(duration, Math.max(0, totalDur - start)) : duration)
+    : (totalDur > 0 ? Math.max(0, totalDur - start) : 0);
   const args = ['--video', file, '--samples', String(samples)];
   if (input.interval != null && Number(input.interval) > 0) args.push('--interval', String(Number(input.interval)));
   if (start > 0) args.push('--start', String(start));
@@ -353,15 +321,38 @@ export async function reframeVertical(input: ReframeVerticalInput): Promise<Refr
       const calc = computeFaceCenteredCrop({
         frameW: w, frameH: h, faces, targetAspect, zoom: input.zoom, sampleCount: samples,
       });
+      // 动态跟随：轨迹的 t 归一化到片段实际使用的源区间；窗口尺寸复用静态那套
+      const trackRes = mode === 'track'
+        ? buildFaceTrack(faces, w, h, windowDur, {
+          targetAspect, zoom: input.zoom, windowStartSec: start, sampleCount: samples,
+        })
+        : null;
+      const warnList: string[] = [];
+      const addWarnings = (s: string | undefined) => {
+        for (const part of String(s || '').split('；').map((x) => x.trim()).filter(Boolean)) {
+          if (!warnList.includes(part)) warnList.push(part);
+        }
+      };
+      addWarnings(calc.warning);
+      if (trackRes) {
+        for (const s of trackRes.warnings) addWarnings(s);
+        if (!trackRes.track.length) {
+          // 静态回退与动态回退的说法重复，保留动态那条（信息更全）
+          const i = warnList.findIndex((s) => s.startsWith('未检测到人脸'));
+          if (i >= 0) warnList.splice(i, 1);
+        }
+      }
+      const track = trackRes?.track.length ? trackRes.track : undefined;
       return {
         ok: true,
         crop: calc.crop,
         confidence: calc.confidence,
-        ...(calc.warning ? { warning: calc.warning } : {}),
+        ...(warnList.length ? { warning: warnList.join('；') } : {}),
         width: w,
         height: h,
         faces,
         sampleCount: samples,
+        ...(track ? { track } : {}),
       };
     }
     const msg = String(parsed?.error || r.stderr || '').trim().slice(0, 400)

@@ -567,12 +567,14 @@ router.post('/talking-cut', async (req: Request, res: Response) => {
   });
 });
 
-// POST /api/plugin/clip-mode/reframe-vertical —— 智能竖屏重构（P2-4 MVP）
+// POST /api/plugin/clip-mode/reframe-vertical —— 智能竖屏重构（P2-4）
 //
-// body: { conversationId, clipId, targetAspect?: '9:16'|'1:1'|'16:9', zoom? }
+// body: { conversationId, clipId, targetAspect?: '9:16'|'1:1'|'16:9', zoom?,
+//         mode?: 'static'|'track' }
 //
-// ★ 定位（2026-11-02 MVP）：**静态人脸居中裁切，不是跟踪**。抽帧检测人脸 → 取中位中心
-//   → 算目标画幅的裁切窗口写进片段既有 `crop`。只写 crop，不改输出规格、不改渲染管线。
+// ★ 默认 static：**静态人脸居中裁切，不是跟踪**（旧行为，逐字节不变）。
+//   mode=track：额外生成平滑的人脸中心轨迹写进 `crop.track`，渲染时用 crop 的 x/y
+//   表达式做分段线性移动裁切。非 AI（Haar 正脸抽样），侧脸/遮挡会漏检。
 // ★ 检测不到人脸 → 服务层回退画面中心并带 warning（如实告知，不静默成功）。
 // ★ 目标画幅与工程输不一致时只在 note 里提示，绝不擅自改 output（输出规格是建项目时定的）。
 router.post('/reframe-vertical', async (req: Request, res: Response) => {
@@ -580,6 +582,11 @@ router.post('/reframe-vertical', async (req: Request, res: Response) => {
   const clipId = String(req.body?.clipId || '').trim();
   if (!conversationId || !clipId) return res.status(400).json({ error: 'conversationId 与 clipId 为必填项' });
   if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const modeRaw = String(req.body?.mode ?? 'static').trim();
+  if (modeRaw !== 'static' && modeRaw !== 'track') {
+    return res.status(400).json({ error: `mode 无效：${modeRaw}（可选 static / track）` });
+  }
+  const mode = modeRaw as 'static' | 'track';
   const project = readClipProject(conversationId);
   if (!project) return res.status(404).json({ error: '工程不存在' });
   const seg = project.clips.find((c) => c.id === clipId);
@@ -604,6 +611,7 @@ router.post('/reframe-vertical', async (req: Request, res: Response) => {
   const r = await reframeVertical({
     file: seg.file,
     targetAspect,
+    mode,
     ...(req.body?.zoom == null ? {} : { zoom: Number(req.body.zoom) }),
     start: trimStart,
     ...(trimEnd > trimStart ? { duration: trimEnd - trimStart } : {}),
@@ -618,8 +626,14 @@ router.post('/reframe-vertical', async (req: Request, res: Response) => {
 
   // 与 normalizeCrop 同口径：整幅无裁剪 = 不写 crop
   const fullFrame = r.crop.w >= 0.999 && r.crop.h >= 0.999;
+  const track = mode === 'track' && (r.track?.length ?? 0) >= 2 ? r.track : undefined;
   if (fullFrame) delete seg.crop;
-  else seg.crop = { x: r.crop.x, y: r.crop.y, w: r.crop.w, h: r.crop.h };
+  else {
+    seg.crop = {
+      x: r.crop.x, y: r.crop.y, w: r.crop.w, h: r.crop.h,
+      ...(track ? { track } : {}),
+    };
+  }
   project.updatedAt = Date.now();
   writeClipProject(conversationId, project);
 
@@ -627,7 +641,11 @@ router.post('/reframe-vertical', async (req: Request, res: Response) => {
   const parts: string[] = [];
   parts.push(fullFrame
     ? '目标画幅与素材一致，无需裁切（已清除该片段的裁剪）'
-    : `已写入裁切窗口 ${r.crop.w.toFixed(2)}×${r.crop.h.toFixed(2)}（静态裁切，非跟踪）`);
+    : track
+      ? `已写入动态跟随裁切（${track.length} 个轨迹点；非 AI 人脸跟随，侧脸可能漏检）`
+      : mode === 'track'
+        ? `已写入静态裁切窗口 ${r.crop.w.toFixed(2)}×${r.crop.h.toFixed(2)}（动态跟随不可用，已回退静态）`
+        : `已写入裁切窗口 ${r.crop.w.toFixed(2)}×${r.crop.h.toFixed(2)}（静态裁切，非跟踪）`);
   parts.push(`抽样 ${r.sampleCount ?? 0} 帧，${faceFrames} 帧检到人脸`);
   if (r.confidence != null && faceFrames > 0) parts.push(`检脸占比 ${Math.round(r.confidence * 100)}%`);
 
@@ -641,10 +659,12 @@ router.post('/reframe-vertical', async (req: Request, res: Response) => {
 
   return res.json({
     ok: true,
-    crop: fullFrame ? null : r.crop,
+    mode,
+    crop: fullFrame ? null : { ...r.crop, ...(track ? { track } : {}) },
     faces: r.faces || [],
     sampleCount: r.sampleCount,
     confidence: r.confidence,
+    ...(track ? { track, trackPoints: track.length } : {}),
     ...(r.warning ? { warning: r.warning } : {}),
     note: parts.join('；'),
     width: r.width,

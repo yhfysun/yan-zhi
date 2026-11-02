@@ -19,6 +19,7 @@ import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-
 import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, effectLayerOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
 import { buildMaskFilter, flattenMaskPath, polygonAlphaExpr } from './clip-mask.js';
 import { hslCube } from './clip-hsl.js';
+import { trackToCropExpr } from './clip-crop-track.js';
 import type { ClipProject, ClipSegment, ClipText, ClipOverlay, ExportQuality } from './clip-project.js';
 import { normalizeInterpolate } from './clip-project.js';
 
@@ -332,10 +333,25 @@ export function buildSegmentFilters(opts: {
   // ★ 画面裁剪（取景）：裁子区域后回填画幅（fill 不变形）——蒙版/字幕坐标不受影响
   if (seg.crop) {
     const c = seg.crop;
-    filters.push(
-      `crop=iw*${c.w?.toFixed(4)}:ih*${c.h?.toFixed(4)}:iw*${c.x?.toFixed(4)}:ih*${c.y?.toFixed(4)}`,
-      `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`,
-    );
+    // 动态跟随（P2-4 增强）：有 ≥2 点的 track 时用 x/y 表达式逐帧移动窗口；否则保持静态写法。
+    // ★ 时间基准：本滤镜排在 setpts=PTS/speed 之后（见下方变速注释），所以 crop 的 `t`
+    //   是**变速后的段内时间**；表达式内部用 `t/segDur` 归一化，与 track 的 0~1 定义域对齐。
+    //   trim 走输入侧 -ss/-t，源时间戳已重基到 0 —— 三者的组合口径见 trackToCropExpr 注释。
+    const expr = c.track && c.track.length >= 2
+      ? trackToCropExpr(c.track, { w: c.w ?? 1, h: c.h ?? 1, dur: segDur })
+      : null;
+    if (expr) {
+      // 表达式含逗号 → 必须用单引号包住，否则 filtergraph 会把它当分隔符
+      filters.push(
+        `crop=iw*${c.w?.toFixed(4)}:ih*${c.h?.toFixed(4)}:x='${expr.x}':y='${expr.y}'`,
+        `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`,
+      );
+    } else {
+      filters.push(
+        `crop=iw*${c.w?.toFixed(4)}:ih*${c.h?.toFixed(4)}:iw*${c.x?.toFixed(4)}:ih*${c.y?.toFixed(4)}`,
+        `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1`,
+      );
+    }
   }
 
   // ★ 关键帧运镜：放大 4 倍后 zoompan，z/x/y 都是分段线性表达式（变量 ot = 输出时间秒；
