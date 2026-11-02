@@ -36,6 +36,7 @@ import {
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import { executeApiTool } from '../mcp/api-tool-executor.js';
 import { transcribeClipAudio } from '../services/clip-asr.js';
+import { reframeVertical, parseTargetAspect } from '../services/clip-reframe.js';
 import {
   planTalkingCut, splitSegmentByKeeps, sourceCutsToFilm, rippleTimelineLayers, TALKING_CUT_DEFAULTS,
 } from '../services/clip-talking-cut.js';
@@ -563,6 +564,91 @@ router.post('/talking-cut', async (req: Request, res: Response) => {
     shiftedLayers: ripple.shifted,
     droppedLayers: ripple.dropped,
     note: `切掉 ${plan.cuts.length} 处（静音/语气词），共 ${plan.removedSec.toFixed(1)}s；片段分成 ${split.segments.length} 段`,
+  });
+});
+
+// POST /api/plugin/clip-mode/reframe-vertical —— 智能竖屏重构（P2-4 MVP）
+//
+// body: { conversationId, clipId, targetAspect?: '9:16'|'1:1'|'16:9', zoom? }
+//
+// ★ 定位（2026-11-02 MVP）：**静态人脸居中裁切，不是跟踪**。抽帧检测人脸 → 取中位中心
+//   → 算目标画幅的裁切窗口写进片段既有 `crop`。只写 crop，不改输出规格、不改渲染管线。
+// ★ 检测不到人脸 → 服务层回退画面中心并带 warning（如实告知，不静默成功）。
+// ★ 目标画幅与工程输不一致时只在 note 里提示，绝不擅自改 output（输出规格是建项目时定的）。
+router.post('/reframe-vertical', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const clipId = String(req.body?.clipId || '').trim();
+  if (!conversationId || !clipId) return res.status(400).json({ error: 'conversationId 与 clipId 为必填项' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const project = readClipProject(conversationId);
+  if (!project) return res.status(404).json({ error: '工程不存在' });
+  const seg = project.clips.find((c) => c.id === clipId);
+  if (!seg) return res.status(404).json({ error: `片段 ${clipId} 不存在` });
+
+  if (seg.kenburns || IMAGE_EXT_RE.test(seg.file)) {
+    return res.status(409).json({ error: '图片/定格片段没有可检测的人脸（智能竖屏只支持视频段）' });
+  }
+  if (seg.rotate || seg.flip) {
+    // 渲染时 rotate/flip 在 crop 之前作用于画面，按原始素材算出的裁切坐标会错位
+    return res.status(409).json({ error: '该片段带旋转/镜像：在旋转/镜像后的画面上手工裁切更可靠（自动裁切会错位）' });
+  }
+  const aspectKey = String(req.body?.targetAspect ?? '9:16').trim();
+  const targetAspect = parseTargetAspect(aspectKey);
+  if (targetAspect == null) {
+    return res.status(400).json({ error: `targetAspect 无效：${aspectKey}（可选 9:16 / 1:1 / 16:9）` });
+  }
+
+  // 只在片段实际使用的区间里抽样：长素材的其它镜头（别的人/没人）不该拉偏构图
+  const trimStart = Math.max(0, Number(seg.trimStart ?? 0));
+  const trimEnd = Number(seg.trimEnd ?? 0);
+  const r = await reframeVertical({
+    file: seg.file,
+    targetAspect,
+    ...(req.body?.zoom == null ? {} : { zoom: Number(req.body.zoom) }),
+    start: trimStart,
+    ...(trimEnd > trimStart ? { duration: trimEnd - trimStart } : {}),
+  });
+  if (!r.ok || !r.crop) {
+    return res.status(r.status || 500).json({
+      error: r.error,
+      ...(r.need ? { need: r.need } : {}),
+      ...(r.hint ? { hint: r.hint } : {}),
+    });
+  }
+
+  // 与 normalizeCrop 同口径：整幅无裁剪 = 不写 crop
+  const fullFrame = r.crop.w >= 0.999 && r.crop.h >= 0.999;
+  if (fullFrame) delete seg.crop;
+  else seg.crop = { x: r.crop.x, y: r.crop.y, w: r.crop.w, h: r.crop.h };
+  project.updatedAt = Date.now();
+  writeClipProject(conversationId, project);
+
+  const faceFrames = r.faces?.length ?? 0;
+  const parts: string[] = [];
+  parts.push(fullFrame
+    ? '目标画幅与素材一致，无需裁切（已清除该片段的裁剪）'
+    : `已写入裁切窗口 ${r.crop.w.toFixed(2)}×${r.crop.h.toFixed(2)}（静态裁切，非跟踪）`);
+  parts.push(`抽样 ${r.sampleCount ?? 0} 帧，${faceFrames} 帧检到人脸`);
+  if (r.confidence != null && faceFrames > 0) parts.push(`检脸占比 ${Math.round(r.confidence * 100)}%`);
+
+  // 画幅一致性提示：只提示，不改工程输出（规格建项目时确定）
+  const [outW, outH] = String(project.output?.size || '').split('x').map(Number);
+  const outAspect = outW > 0 && outH > 0 ? outW / outH : 0;
+  if (outAspect > 0 && Math.abs(outAspect - targetAspect) / targetAspect > 0.02) {
+    parts.push(`注意：工程输出 ${project.output.size} 的画幅是 ${outAspect.toFixed(3)}，与目标 ${aspectKey}（${targetAspect.toFixed(3)}）不一致 —— 本次只改了片段裁切，未改输出；要竖屏成片请在新建项目时选 1080x1920`);
+  }
+  if (r.warning) parts.push(r.warning);
+
+  return res.json({
+    ok: true,
+    crop: fullFrame ? null : r.crop,
+    faces: r.faces || [],
+    sampleCount: r.sampleCount,
+    confidence: r.confidence,
+    ...(r.warning ? { warning: r.warning } : {}),
+    note: parts.join('；'),
+    width: r.width,
+    height: r.height,
   });
 });
 
