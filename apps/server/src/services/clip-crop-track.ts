@@ -212,7 +212,13 @@ export function buildFaceTrack(
     .sort((a, b) => a.t - b.t);
 
   // 同 t 去重（保留后者）
-  pts = pts.filter((p, i) => i === 0 || Math.abs(p.t - pts[i - 1].t) > 1e-6);
+  const dedupPts: FaceTrackPoint[] = [];
+  for (const p of pts) {
+    if (dedupPts.length && Math.abs(dedupPts[dedupPts.length - 1].t - p.t) <= 1e-6) {
+      dedupPts[dedupPts.length - 1] = p;
+    } else dedupPts.push(p);
+  }
+  pts = dedupPts;
   if (pts.length < 2) {
     warnings.push('采样点过于集中，已回退为静态中心裁切');
     return { track: [], confidence, warnings };
@@ -347,7 +353,14 @@ export function trackToCropExpr(
   }
   if (!pts.length) return null;
   pts.sort((a, b) => a.t - b.t);
-  const dedup = pts.filter((p, i) => i === 0 || Math.abs(p.t - pts[i - 1].t) > 1e-6);
+  // 同 t 保留后者（与 clip-project.normalizeCropTrack 同口径）
+  const dedupPts: FaceTrackPoint[] = [];
+  for (const p of pts) {
+    if (dedupPts.length && Math.abs(dedupPts[dedupPts.length - 1].t - p.t) <= 1e-6) {
+      dedupPts[dedupPts.length - 1] = p;
+    } else dedupPts.push(p);
+  }
+  const dedup = dedupPts;
   if (dedup.length < 2) return null;
   const capped = dedup.length > MAX_TRACK_POINTS
     ? Array.from({ length: MAX_TRACK_POINTS }, (_, i) => dedup[Math.round((i * (dedup.length - 1)) / (MAX_TRACK_POINTS - 1))])
