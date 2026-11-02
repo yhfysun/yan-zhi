@@ -232,8 +232,8 @@ export interface Conversation {
    *   而"加一个来源"本该只改 core 一个文件。
    */
   source?: string | null;
-  /** 来源附加信息（页面对话：建这条会话时所在页面的地址 / 站点 / 归属空间） */
-  sourceMeta?: { url?: string; host?: string; scope?: string } | null;
+  /** 来源附加信息（页面对话地址/站点，或店铺任务所属项目） */
+  sourceMeta?: { url?: string; host?: string; scope?: string; shopProjectId?: string } | null;
 }
 
 /** 会话归属的生命周期状态：正常 / 已归档 / 已在回收站 */

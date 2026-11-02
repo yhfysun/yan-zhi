@@ -469,6 +469,11 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   const currentConvId = ref('');
+  /** 下一条新任务会话的附加归属（店铺项目等）；仅当前模式需要时由页面注入。 */
+  const nextConversationSourceMeta = ref<Conversation['sourceMeta']>(null);
+  function setNextConversationSourceMeta(meta: Conversation['sourceMeta']): void {
+    nextConversationSourceMeta.value = meta ? { ...meta } : null;
+  }
   // 会话级消息缓存：每个会话独立一份消息数组，支持多会话并行（后台会话流式时不会污染当前会话视图）
   const messagesByConv = ref<Record<string, Message[]>>({});
   // 当前会话视图：始终指向 messagesByConv 里当前会话的数组（会话未加载/不存在时为空）
@@ -1808,7 +1813,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     if (target && !target.content) target.content = content;
   }
 
-  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string; taskType?: string | null; source?: string; sourceMeta?: { url?: string; host?: string; scope?: string } }): Promise<string> {
+  async function createConversation(title: string, opts?: { platformId?: string; modelId?: string; skillIds?: string[]; spaceId?: string; agentId?: string; taskType?: string | null; source?: string; sourceMeta?: { url?: string; host?: string; scope?: string; shopProjectId?: string } }): Promise<string> {
     // 未显式指定时记录当前选中的智能体，保证会话打开时能还原
     let agentId = opts?.agentId;
     if (!agentId) {
@@ -1826,6 +1831,9 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         spaceId = useSpaceStore().currentSpaceId ?? undefined;
       } catch { /* space store 未加载则忽略 */ }
     }
+    const sourceMeta = opts?.sourceMeta !== undefined
+      ? opts.sourceMeta || undefined
+      : (activeMode.value === 'shop' ? nextConversationSourceMeta.value || undefined : undefined);
     if (isServerMode()) {
       const r = await api.post<any>('/conversations', {
         title, platformId: opts?.platformId, modelId: opts?.modelId,
@@ -1838,7 +1846,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
         taskType: opts?.taskType || null,
         // 来源标记（2026-10-16）：只有页面对话会传；不传 = 普通会话（服务端落 NULL）
         source: opts?.source,
-        sourceMeta: opts?.sourceMeta,
+        sourceMeta,
       });
       if ('data' in r) {
         const row = r.data as any;
@@ -1855,7 +1863,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     await adapter.db.exec(
       'INSERT INTO conversation (id, title, agent_id, platform_id, model_id, space_id, mcp_servers_json, skill_ids_json, pinned, mode, task_type, source, source_meta_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [id, title, agentId || null, opts?.platformId || null, opts?.modelId || null, spaceId || null, '[]', skillIdsJson, 0, activeMode.value, opts?.taskType || null,
-        opts?.source || null, opts?.sourceMeta ? JSON.stringify(opts.sourceMeta) : null, ts, ts],
+        opts?.source || null, sourceMeta ? JSON.stringify(sourceMeta) : null, ts, ts],
     );
     await loadConversations();
     return id;
@@ -4246,7 +4254,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
   }
 
   return {
-    conversations, currentMessages, streaming, currentConvId, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
+    conversations, currentMessages, streaming, currentConvId, nextConversationSourceMeta, setNextConversationSourceMeta, mountedMcpServers, mcpDisabledTools, mcpToolAliases,
     // messagesByConv 只读暴露：宠物窗的活动气泡要跨会话读"正在执行哪个工具"（不新起订阅）
     messagesByConv,
     runningConvIds, isConvStreaming, runStatsByConv,

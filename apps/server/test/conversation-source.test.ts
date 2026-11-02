@@ -148,10 +148,21 @@ describe('会话来源标记 · 写入规范化', () => {
     expect(normalizeConversationSource(123)).toBeNull();
   });
 
-  it('来源附加信息：只留三个已知字段，坏值落 NULL，解析永不抛', () => {
-    const json = normalizeSourceMeta({ url: 'https://a.b/c', host: 'a.b', scope: 'page', evil: 'x' });
+  it('来源附加信息：只留已知字段，坏值落 NULL，解析永不抛', () => {
+    const json = normalizeSourceMeta({
+      url: 'https://a.b/c',
+      host: 'a.b',
+      scope: 'shop-project',
+      shopProjectId: 'p_shop',
+      evil: 'x',
+    });
     expect(json).toBeTruthy();
-    expect(parseSourceMeta(json)).toEqual({ url: 'https://a.b/c', host: 'a.b', scope: 'page' });
+    expect(parseSourceMeta(json)).toEqual({
+      url: 'https://a.b/c',
+      host: 'a.b',
+      scope: 'shop-project',
+      shopProjectId: 'p_shop',
+    });
     expect(normalizeSourceMeta({})).toBeNull();
     expect(normalizeSourceMeta('not-an-object')).toBeNull();
     expect(normalizeSourceMeta([])).toBeNull();

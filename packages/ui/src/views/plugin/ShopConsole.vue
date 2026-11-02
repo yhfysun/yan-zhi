@@ -179,6 +179,11 @@ import ShopAudit from './shop/tabs/ShopAudit.vue';
 import ShopReference from './shop/tabs/ShopReference.vue';
 import ShopLaunchpad from './shop/onboarding/ShopLaunchpad.vue';
 import {
+  buildShopProjects,
+  shopProjectIdOfConversation,
+  shopProjectTasks,
+} from './shop/shopProjectBindings';
+import {
   buildQuickShopPrompt,
   buildShopSetupPrompt,
   createDefaultShopSetupProfile,
@@ -220,11 +225,11 @@ function syncNarrowShopChrome(): void {
   if (window.innerWidth < 900) shellRef.value?.collapseAside();
 }
 
-// ===== 项目 = 一条店铺会话（与剪辑项目同模型；切项目 = 切整块对话上下文）=====
+// ===== 项目 = 稳定项目 id + 多条任务会话；旧会话仍以自身 id 作为项目 id =====
 const chat = useChat();
 const chatStore = useChatStore();
 const chatInputRef = ref<{ fillAndSend: (prompt: string) => Promise<void> } | null>(null);
-const shopProjects = computed(() => chatStore.conversations);
+const shopProjects = computed(() => buildShopProjects(chatStore.conversations));
 
 /** 店铺模式与聊天页共用同一个应用级浏览器预览；关闭时只折叠，不卸载 BrowserPanel。 */
 function openShopBrowserPreview(): void {
@@ -251,7 +256,26 @@ const activeProjectTitle = computed(() =>
   shopProjects.value.find((p) => p.id === activeProjectId.value)?.title
   || (activeProjectId.value ? '未命名项目' : '未归属资源'));
 
-watch(() => chatStore.currentConvId, (id) => { activeProjectId.value = id || ''; }, { immediate: true });
+function armShopProjectContext(projectId: string): void {
+  chatStore.setNextConversationSourceMeta(
+    projectId ? { shopProjectId: projectId, scope: 'shop-project' } : null,
+  );
+}
+
+watch(activeProjectId, (id) => armShopProjectContext(id), { immediate: true });
+
+function syncProjectFromCurrentConversation(): void {
+  const id = chatStore.currentConvId;
+  // A new task starts as a draft with no conversation. Keep the current shop
+  // project mounted so the next message inherits its resources and setup data.
+  if (!id) return;
+  const conv = chatStore.conversations.find((c) => c.id === id);
+  if (!conv) return;
+  activeProjectId.value = shopProjectIdOfConversation(conv);
+}
+
+watch(() => chatStore.currentConvId, syncProjectFromCurrentConversation, { immediate: true });
+watch(() => chatStore.conversations, syncProjectFromCurrentConversation);
 
 // ===== 开店向导：资料按项目持久化，空项目先存草稿 =====
 const SETUP_STORAGE_PREFIX = 'yanzhi:shop-setup:';
@@ -370,13 +394,20 @@ const checking = ref(false);
 
 // ===== 项目/店铺切换 =====
 async function switchProject(id: string): Promise<void> {
-  if (id === activeProjectId.value) return;
-  selectShop('');
-  activeProjectId.value = id;
-  const first = shopConnections.value.find((c) => (c.projectId || '') === id);
-  if (first) selectShop(first.id);
+  const currentBelongsToProject = !!chatStore.currentConvId
+    && shopProjectTasks(chatStore.conversations, id).some((c) => c.id === chatStore.currentConvId);
+  if (id === activeProjectId.value && currentBelongsToProject) return;
+  if (id !== activeProjectId.value) {
+    selectShop('');
+    activeProjectId.value = id;
+    const first = shopConnections.value.find((c) => (c.projectId || '') === id);
+    if (first) selectShop(first.id);
+  }
   if (!id) return;
-  try { await chat.selectConv(id); } catch { /* 会话可能已删：保持空项目 */ }
+  const latestTask = shopProjectTasks(chatStore.conversations, id)[0];
+  if (latestTask) {
+    try { await chat.selectConv(latestTask.id); } catch { /* 会话可能已删：保持空项目 */ }
+  }
 }
 
 async function createProject(): Promise<void> {
@@ -385,6 +416,7 @@ async function createProject(): Promise<void> {
       inputPlaceholder: '未命名店铺项目',
       inputValidator: (v: string) => (!!String(v || '').trim() || '项目名称必填'),
     });
+    chatStore.setNextConversationSourceMeta(null);
     const id = await chatStore.createConversation(String(value).trim());
     await chat.selectConv(id);
     selectShop('');
@@ -396,6 +428,7 @@ async function ensureSetupProject(): Promise<string> {
   if (activeProjectId.value) return activeProjectId.value;
   const suffix = setupProfile.value.category.trim();
   const title = suffix ? `${suffix} · 开店项目` : '我的开店项目';
+  chatStore.setNextConversationSourceMeta(null);
   const id = await chatStore.createConversation(title);
   try {
     window.localStorage.setItem(setupStorageKey(id), JSON.stringify(setupProfile.value));
@@ -457,9 +490,13 @@ async function deleteProject(p: { id: string; title?: string }): Promise<void> {
   } catch { return; }
   const err = await reassignProject(p.id);
   if (err) { ElMessage.error(err); return; }
-  await chatStore.deleteConversation(p.id);
+  const taskIds = shopProjectTasks(chatStore.conversations, p.id).map((c) => c.id);
+  for (const taskId of taskIds.length ? taskIds : [p.id]) {
+    await chatStore.deleteConversation(taskId);
+  }
   if (activeProjectId.value === p.id) {
     activeProjectId.value = '';
+    armShopProjectContext('');
     selectShop('');
   }
   ElMessage.success('项目已删除');
@@ -557,9 +594,10 @@ async function makeDemos(): Promise<void> {
     if (error) { ElMessage.error(error); return; }
     if (!items.length) { ElMessage.warning('后端没有可用的演示模板'); return; }
     let first = '';
+    chatStore.setNextConversationSourceMeta(null);
     for (const t of items) {
       // 同名项目已存在则复用，避免点两次生成两套
-      const existing = chatStore.conversations.find((c) => (c.title || '') === t.title);
+      const existing = shopProjects.value.find((p) => p.title === t.title);
       const pid = existing?.id || await chatStore.createConversation(t.title);
       const err = await seedDemoShops(pid, t.key);
       if (err) { ElMessage.error(err); return; }
@@ -596,12 +634,13 @@ onMounted(async () => {
   window.addEventListener('resize', syncNarrowShopChrome, { passive: true });
   syncNarrowShopChrome();
   await loadShopConsole();
-  // 进店铺模式：项目 = 店铺会话。没有当前会话时自动落到最近一个店铺项目；
+  // 进店铺模式：没有当前会话时自动落到最近项目的最近任务；
   // 一个都没有就保持「未归属」，等用户新建项目或创建演示数据。
   try {
     await chatStore.loadConversations();
-    if (!chatStore.currentConvId && chatStore.conversations.length) {
-      await chat.selectConv(chatStore.conversations[0].id);
+    if (!chatStore.currentConvId && shopProjects.value.length) {
+      const latestTask = shopProjectTasks(chatStore.conversations, shopProjects.value[0].id)[0];
+      if (latestTask) await chat.selectConv(latestTask.id);
     }
   } catch { /* 会话列表拉不到不影响资源管理 */ }
   // 选中店铺：沿用上次或落到当前项目第一条
@@ -613,6 +652,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', syncNarrowShopChrome);
+  chatStore.setNextConversationSourceMeta(null);
   const api = (window as any).electronAPI?.browserView;
   if (api) { try { api.hide(); } catch { /* 窗口销毁中 */ } }
 });

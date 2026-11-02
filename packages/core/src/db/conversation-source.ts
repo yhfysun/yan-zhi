@@ -69,8 +69,10 @@ export interface ConversationSourceMeta {
   url?: string;
   /** 该地址的 host（列表里做"只看本站"过滤用；不存的话每行都要现解析） */
   host?: string;
-  /** 归属空间：'page' = /browser 独立页；'preview' = 对话右栏 */
+  /** 归属空间：'page' = /browser 独立页；'preview' = 对话右栏；'shop-project' = 店铺任务 */
   scope?: string;
+  /** 店铺运营任务所属的稳定项目 id（项目本身可由一条旧会话锚定） */
+  shopProjectId?: string;
 }
 
 /**
@@ -82,7 +84,7 @@ export function normalizeSourceMeta(v: unknown): string | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const src = v as Record<string, unknown>;
   const meta: ConversationSourceMeta = {};
-  for (const k of ['url', 'host', 'scope'] as const) {
+  for (const k of ['url', 'host', 'scope', 'shopProjectId'] as const) {
     const val = src[k];
     if (typeof val === 'string' && val && val.length <= CONV_SOURCE_META_FIELD_MAX) meta[k] = val;
   }
@@ -98,7 +100,7 @@ export function parseSourceMeta(json: unknown): ConversationSourceMeta {
     const parsed = JSON.parse(json);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     const out: ConversationSourceMeta = {};
-    for (const k of ['url', 'host', 'scope'] as const) {
+    for (const k of ['url', 'host', 'scope', 'shopProjectId'] as const) {
       const val = (parsed as Record<string, unknown>)[k];
       // 与写入侧同一条长度上限：手工改过库的超长值也不该灌进列表渲染
       if (typeof val === 'string' && val && val.length <= CONV_SOURCE_META_FIELD_MAX) out[k] = val;

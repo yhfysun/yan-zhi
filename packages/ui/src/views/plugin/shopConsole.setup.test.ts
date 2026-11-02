@@ -133,6 +133,7 @@ vi.mock('../../stores/chat', () => ({
     currentConvId: '',
     loadConversations: async () => {},
     createConversation: async () => 'conv_test',
+    setNextConversationSourceMeta: () => {},
   }),
 }));
 vi.mock('../../composables/chat/useChat', () => ({
