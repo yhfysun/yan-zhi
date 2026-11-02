@@ -28,28 +28,39 @@
 
 ## P2.5 schema 同步升级为富化流水线（v2 新增）
 
-- [ ] 2.5.1 确定性画像采集：类型/注释/基数/空值率/数值分布/日期范围/样本值 TOP-N
+- [x] 2.5.1 确定性画像采集：类型/注释/基数/空值率/数值分布/日期范围/样本值 TOP-N
+  → 2026-11-02 落地：`services/ontology-profile.ts`（行数/非空/空值率/基数/MIN-MAX-AVG/高频 TOP5；列级失败只跳过该列）+ `POST /api/datasources/:id/profile`；8 例单测。
 - [ ] 2.5.2 命名与分布启发式：推断角色+displayName 初值；低基数列标候选枚举
+  → 2026-11-02 部分：低基数判定（distinct ≤ 30 且非空）已随画像提供（`isLowCardinality`），生成本体时低基数列自动挂样本值；**角色/displayName 推断未做**。
 - [ ] 2.5.3 自动关系推断（外键 + 命名 + 值包含检验）→ 写 `ontology_relation(status=suggested)`
-- [ ] 2.5.4 自动本体生成（每表一个，builtin=1，含样本值/候选枚举/同义词留空待富化）
+  → 2026-11-02 部分：**命名推断已落地**（`services/ontology-relation-infer.ts` + `GET /api/datasources/:id/relation-suggestions`，多候选歧义不猜，7 例单测）；外键元数据、值包含检验与 suggested 落库未做（v1 关系仍存 `ontology.relations_json`）。
+- [x] 2.5.4 自动本体生成（每表一个，builtin=1，含样本值/候选枚举/同义词留空待富化）
+  → 2026-11-02：`generateFromTable` 生成时做确定性画像，低基数列自动写入 `sampleValues`；同义词留空待富化（符合原意）。
 
 ## P3 本体管理（v2 大幅扩展）
 
 - [x] 3.1 db.ts 加 `ontology` / `std_attribute` / `ontology_relation` / `ontology_example` / `ontology_enrich_job` 表
 - [x] 3.2 `services/ontology.ts`：CRUD + YAML 导入导出（yaml 库）+ 编译校验
-- [ ] 3.3 **翻译引擎 v2**（v1 单本体编译已落地 `ontology-compiler.ts`，跨本体 JOIN 待做）：关系图最小连接子树(Steiner) → 按基数定 JOIN → 扇出检测 → 行级策略 → 过滤器 → 分组/HAVING/排序 → 方言化 LIMIT
+- [x] 3.3 **翻译引擎 v2**（v1 单本体编译已落地 `ontology-compiler.ts`，跨本体 JOIN 待做）：关系图最小连接子树(Steiner) → 按基数定 JOIN → 扇出检测 → 行级策略 → 过滤器 → 分组/HAVING/排序 → 方言化 LIMIT
+  → 2026-11-02：跨本体 JOIN 升级为**多跳**——BFS 最短路取最小连接子树、多路径歧义拒绝、1:N/N:N 聚合扇出拒绝、N:N 中间表、反向边、多本体字段限定别名；9 例新测试（`ontology-join-compiler.test.ts`）。
 - [ ] 3.4 **四个预览按钮**：预览定义(YAML+SQL+EXPLAIN+诊断) / 预览数据(裸跑前 N 行) / 试跑查询(DSL) / 发布影响面
 - [x] 3.5 `routes/ontologies.ts`：CRUD + yaml/import-yaml/compile/explain/preview-data/try-run/publish/impact
 - [x] 3.6 `views/OntologyPage.vue` + SettingsDrawer 加 `ontology` section：语义区 + 技术映射区 + 四按钮 + draft/published 态
 - [ ] 3.7 **标准属性库**：`routes/std-attributes.ts` + CRUD + preview-sql + refresh；枚举三来源（手工/JSON、SQL 字典、DISTINCT 采样）；表格⇄JSON 双模式编辑
+  → 2026-11-02 核实：CRUD + 树结构（group/attr）+ 手工枚举已落地；**preview-sql / refresh / SQL 字典与 DISTINCT 采样未做**。
 - [ ] 3.8 关系管理 UI：suggested 列表 → 确认/拒绝；关系图可视化（可选）
+  → 2026-11-02：现有关系表单（手工增删 N:1/1:N/N:N + 中间表）可用；**建议列表确认/拒绝未接**——后端已提供 `GET /api/datasources/:id/relation-suggestions`，前端待接。
 
 ## P3.5 AI 富化（v2 新增）
 
-- [ ] 3.5.1 L2 知识库检索接入：复用 knowledge_base + api_kb_search，命中片段作为依据并要求标注来源
-- [ ] 3.5.2 L3 LLM 生成：few-shot exemplar（复用已有人写描述做相似检索）+ 严格 JSON 输出 + confidence
-- [ ] 3.5.3 富化任务：`ontology_enrich_job` 后台任务 + 进度 + 批量采纳/丢弃草稿
-- [ ] 3.5.4 `locked` 保护：人工确认字段永不被同步/富化覆盖；用户「业务术语表」优先级高于 AI
+- [x] 3.5.1 L2 知识库检索接入：复用 knowledge_base + api_kb_search，命中片段作为依据并要求标注来源
+  → 2026-11-02：`runEnrichment` 用 `searchAllKnowledgeBases` 取命中片段注入 prompt（带 库/文档 归属），检索失败降级为空不阻塞；prompt 明确「不要编造未出现的事实」。
+- [x] 3.5.2 L3 LLM 生成：few-shot exemplar（复用已有人写描述做相似检索）+ 严格 JSON 输出 + confidence
+  → 2026-11-02：`collectExemplars` 取同本体已有人写描述（≤5 条）；`llmJson` 严格 JSON + `normalizeSuggestions` 收敛（只收目标字段/置信度 0~1/无内容丢弃）。
+- [x] 3.5.3 富化任务：`ontology_enrich_job` 后台任务 + 进度 + 批量采纳/丢弃草稿
+  → 2026-11-02：新增 `ontology_enrich_job` + `ontology_enrich_draft` 表；`POST /api/ontologies/:id/enrich` 起后台任务，`GET .../enrich/jobs[/:jobId]` 查进度与草稿，`POST .../drafts/accept|discard` 批量处理；8 例测试。
+- [x] 3.5.4 `locked` 保护：人工确认字段永不被同步/富化覆盖；用户「业务术语表」优先级高于 AI
+  → 2026-11-02：有描述的字段直接排除出目标（locked），采纳时再次校验；命中 `refAttr` 的标准属性描述/同义词/置信度覆盖 AI（source=glossary，confidence=1）。
 
 ## P4 数据智能体 + skill 链
 
@@ -61,7 +72,8 @@
       （core schema.ts 无 agent seed，改为前端 stores/agent.ts 同步 seed + v2 迁移；默认助手挂其为子智能体）
 - [ ] 4.4 seed skills 加 `skill_data_analysis`「本体数据分析」、`skill_report_doc`「数据报告生成」
       （数据智能体已挂 skill_xlsx_data_processing / skill_data_visualization / skill_markdown_doc 过渡）
-- [ ] 4.5 前端：chat.ts PreviewTabKind 加 `data`；ChatPreviewPane.vue 加 DataResultPanel 分支（分页表/导出/转分析）
+- [x] 4.5 前端：chat.ts PreviewTabKind 加 `data`；ChatPreviewPane.vue 加 DataResultPanel 分支（分页表/导出/转分析）
+  → 2026-11-02 核实：`PreviewTabKind` 已有 `data`，ChatPreviewPane 的 data 分支由 `DataQueryWorkbench` 承载（分页取数/导出/图表），不必另起 DataResultPanel。
 - [x] 4.6 `.msg-content table` markdown 表格样式；文件交付链路沿用（chat.css 既有样式覆盖）
 - [ ] 4.7 已验证问答沉淀：`ontology_example` 命中复用 + 用作 few-shot；L3 逻辑 SQL + dry-run + 结构化错误自纠（≤2 轮）
 

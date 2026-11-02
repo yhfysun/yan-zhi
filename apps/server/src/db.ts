@@ -5550,6 +5550,39 @@ try { db.exec("ALTER TABLE std_attribute ADD COLUMN value TEXT"); } catch {}
 try { db.exec("ALTER TABLE std_attribute ADD COLUMN kind TEXT DEFAULT 'attr'"); } catch {}
 // 旧库迁移：selections_json（本体级选择列契约：默认直拼 + 非默认关键字召回）
 try { db.exec("ALTER TABLE ontology ADD COLUMN selections_json TEXT DEFAULT '[]'"); } catch {}
+
+// ===== AI 富化（P3.5）：任务 + 草稿（人工采纳后才写回本体） =====
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ontology_enrich_job (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    ontology_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    model TEXT,
+    total INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS ontology_enrich_draft (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    ontology_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    field_name TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    confidence REAL,
+    evidence_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_oej_user_onto ON ontology_enrich_job(user_id, ontology_id, created_at)'); } catch {}
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_oed_job ON ontology_enrich_draft(job_id, status)'); } catch {}
+
 // 回填选择列：selections_json 为空时，生成单组「全部字段」（新结构：{name, fields}），
 // 让未补语义的旧本体的语义摘要立即可用（已补 selections 的本体不动；幂等）。
 try {

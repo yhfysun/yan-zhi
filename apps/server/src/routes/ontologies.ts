@@ -18,6 +18,7 @@ import {
   tryRunOntology,
   updateOntology,
 } from '../services/ontology.js';
+import { acceptDrafts, discardDrafts, getJob, listJobs, startEnrichJob } from '../services/ontology-enrich.js';
 
 const router = Router();
 
@@ -177,6 +178,49 @@ router.get('/:id/yaml', authMiddleware, (req: Request, res: Response) => {
 router.post('/import-yaml', authMiddleware, (req: Request, res: Response) => {
   try {
     res.json({ data: importYaml(req.user!.userId, String(req.body?.yaml || '')) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ===== AI 富化（P3.5）：任务 / 草稿 / 采纳 / 丢弃 =====
+router.post('/:id/enrich', authMiddleware, (req: Request, res: Response) => {
+  try {
+    res.json({ data: startEnrichJob(req.user!.userId, req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get('/:id/enrich/jobs', authMiddleware, (req: Request, res: Response) => {
+  try {
+    res.json({ data: listJobs(req.user!.userId, req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get('/:id/enrich/jobs/:jobId', authMiddleware, (req: Request, res: Response) => {
+  try {
+    res.json({ data: getJob(req.user!.userId, req.params.id, req.params.jobId) });
+  } catch (err) {
+    res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post('/:id/enrich/drafts/accept', authMiddleware, (req: Request, res: Response) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+    res.json({ data: acceptDrafts(req.user!.userId, req.params.id, ids) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post('/:id/enrich/drafts/discard', authMiddleware, (req: Request, res: Response) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+    res.json({ data: { discarded: discardDrafts(req.user!.userId, req.params.id, ids) } });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
