@@ -3951,31 +3951,32 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
       id: 'skill_video_editing', name: '视频剪辑', category: '媒体制作',
       description: '剪辑模式 SOP：clip_project 工程化剪辑（多段裁剪排序 + 调色/特效/蒙版/转场 + 关键帧运镜 + 字幕动画 + 配音 + BGM + 画中画 + 导出），media_edit 做单素材加工，渲染前先出预览档；含 8 个成品配方与"做不到什么"的边界清单。',
       triggers: ['剪辑', '剪视频', '视频剪辑', '加字幕', '字幕动画', '做字幕', '拼接视频', '成片', '加背景音乐', '配 BGM', '片头片尾', '转场', '调色', '蒙版', '关键帧', '画中画', '卡点', '混剪', '剪一条'],
-      body: `# 视频剪辑（剪辑模式）
+      body: `# 视频剪辑
 
-把素材剪成能直接发的成片。**唯一入口是 clip_project 工程**；工程按会话保存，与你在同一份上反复改，**不要清空重建**。
+把素材剪成能直接发的成片。**唯一入口是 clip_project**；工程按会话保存，在同一份上反复改，**不要清空重建**。
 
-## 工具分工
-- **clip_project**：多段拼接 / 画面 / 字幕 / BGM / 画中画 / 导出 —— 要成片都走它
+## 工具
+- **clip_project**：多段/画面/字幕/BGM/画中画/导出 —— 成片都走它
 - **media_edit**：只对单素材做一次加工（抽帧封面 / 变速 / 水印 / 响度）
-- 字幕识别 **media_asr_transcribe**；配音 **api_tts_speak**；BGM **music_compose**；缺画面 **api_image_generate**
+- 字幕识别 media_asr_transcribe；配音 api_tts_speak；BGM music_compose；缺画面 api_image_generate
 
 ## 流程
-1. **摸底**：file_list 看素材；clip_project op=get 看有没有工程。有工程就在它之上改。
-2. **骨架**：op=create → op=add_clip 按播放顺序排段（先 trimStart/trimEnd 粗剪）→ op=get 复核。竖屏 1080x1920，横屏 1920x1080。
-3. **画面**：speed 调节奏；fadeIn/fadeOut 做呼吸；transition 转场（挂**后一段**）；colorPreset 统一色调；fx 结构特效；crop 裁黑边；mask 取景/抠像；图片给 kenburns；视频用 keyframes 运镜（ease 默认 inout 更自然，需给起点锚）。
-4. **字幕**：op=add_text，start/end 相对**成片**（用 op=get 的 timelineStart/End 推算）。动画全片**最多 2 种**：fade / typewriter / pop·flicker / karaoke / zoom·flychar。抖音快手传 safeArea=true。
-5. **声音**：分段配音用 audioFile（默认替换原声，保留现场声传 keepOriginalAudio:true）；set_bgm（有旁白传 duck:true）；set_audio_fx 降噪/响度（最多 4 个）。
-6. **渲染**：op=render {preview:true} 出预览档 → 确认 → op=render 出正式成片（自动带封面）。
+1. **摸底**：file_list 看素材；op=get 看有没有工程，有就在其上改。
+2. **骨架**：create → add_clip 按播放顺序排段（先 trimStart/trimEnd 粗剪）→ get 复核。竖屏 1080x1920 / 横屏 1920x1080。
+3. **画面**：speed 或 speedCurve（互斥）；fadeIn/fadeOut 做呼吸；colorPreset/colorStrength/adjust/fx 调色；crop 裁黑边；mask 取景/抠像；transition 转场；图片 kenburns；视频 keyframes 运镜；rotate/flip/reverse 方向；add_overlay 画中画、add_sticker 贴纸、add_effect 特效层。
+4. **字幕**：add_text，start/end 相对**成片**（按 get 的 timelineStart/End）。动画全片**最多 2 种**：fade/typewriter/pop·flicker/karaoke/zoom·flychar。文字运动用 transform/keyframes（有变换就不套 animation）。抖音快手 safeArea=true。
+5. **声音**：分段配音 audioFile（默认替换原声，保留现场声传 keepOriginalAudio:true）；set_bgm（有旁白 duck:true）；add_audio 放转场音效/第二段音乐；set_audio_fx 降噪/响度（最多 4 个）。
+6. **渲染**：render {preview:true} 预览 → 确认 → render 正式成片（自动带封面）。
 
-## 五条必记语义
-1. 两种时间：trim/speed/keyframes.t 相对**素材或段**；字幕/画中画/BGM 相对**成片**。
-2. 主视频轨**首尾相接**，段间没有空隙；要叠加只能用语画中画或字幕层。
-3. 有转场时成片变短：**成片时长 = Σ段长 − Σ转场时长**，加完转场要重新 get 再排字幕。
-4. 未知 fx 在 add_clip 里被**静默丢弃**，update_clip 才报错 → 加特效优先用 update_clip。
-5. 字幕样式取**基准条**（第一条带动画的）全片统一，逐条改字号无效。
+## 必记语义
+1. 两种时间：trim/speed/keyframes.t 按**素材/段**；字幕/画中画/BGM 按**成片**。
+2. 主轨**首尾相接**无空隙；叠加用画中画/贴纸/字幕/特效层。
+3. 有转场成片变短：**Σ段长 − Σ转场时长**；加完转场/变速重新 get 再排字幕。
+4. 未知 fx 在 add_clip **静默丢弃**，update_clip 才报错 → 加特效优先 update_clip。
+5. 字幕样式取**基准条**全片统一，逐条改字号无效。
+6. 蒙版 shape/key 互斥（key 优先）；keyframes **必须给起点锚**；转场挂**后一段**且 ≤ 任一段一半。
 
-## 配方速记
+## 配方
 卡点：转场 0.15~0.25s + BGM 0.9 + loudnorm + 段缩放关键帧
 口播：denoise→loudnorm + typewriter + BGM 0.12 duck
 产品：图片 kenburns + bright + 居中 pop 大字 + 白闪进末段
@@ -3985,15 +3986,15 @@ Vlog：统一 film 调色 + fade 0.6 转场 + slide 地点字幕 + BGM 0.3 duck
 悬念：night + oldfilm + 居中 typewriter
 混剪：批量 add_clip 10~20 段 + 奇偶段变速 + 每 3~4 段一个转场
 
-## 失败速查
-"加工第 N 段"失败→素材坏，media_edit 试单段或 api_media_normalize；时长不符→规格不一致；字幕偏早偏晚→漏算转场；效果没反应→id 拼错被丢弃；转场黑屏→时长超过段长一半。
+## 失败
+"加工第 N 段"失败→素材坏，media_edit 单段或 normalize；时长不符→规格不一致；字幕偏早/偏晚→漏算转场；效果没反应→id 拼错被丢弃；转场黑屏→超过段长一半。
 
-## 做不到（照实说，别承诺）
-智能抠像 / 美颜 / AI 补帧超分 / 曲线变速 / 混合模式与多视频轨 / 自由钢笔蒙版 / 多机位 / 独立音效轨 / 多段 BGM / 逐条字幕不同字号 / 实时播放预览。
+## 做不到（别承诺）
+AI 智能抠像（只支持纯色色键）/ 美颜 / AI 补帧超分 / 多机位 / 独立音效轨 / 逐条字幕不同字号 / 实时播放预览。
 
-## 交付与硬约束
-给：成片路径与时长、段序、字幕条数与动画、BGM 与音量、还需补什么。**不要贴工程 json**，中文输出。
-素材一律本机绝对路径；**不擅自加效果**；缺 ffmpeg 先告知体积再装；素材缺失如实说，不要造素材充数。`,
+## 交付
+给：路径/时长、段序、字幕数与动画、BGM 音量、还需补什么。**不贴工程 json**，中文输出。
+素材用本机绝对路径；**不擅自加效果**；缺 ffmpeg 先告知体积再装；缺素材如实说，不造。`,
     },
     {
       // 剪映剪辑（2026-10-31）：与应用内剪辑并列的第二种模式。
