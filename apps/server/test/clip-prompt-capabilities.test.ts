@@ -69,3 +69,24 @@ describe('视频剪辑 skill 正文', () => {
     }
   });
 });
+
+/**
+ * 2026-11-02 增量：字幕动画 8→11、音效按描述检索、录音/剪口播（UI 能力）。
+ * ★ 这些能力上线后提示词必须跟上 —— 否则模型会继续只从 8 种动画里挑、
+ *   继续用旧的关键词式 sfx 搜索（甚至不知道 sfx 存在）。
+ */
+describe('提示词覆盖 2026-11-02 新能力', () => {
+  it('系统提示词带抖动/擦除/翻转与音效检索', () => {
+    for (const kw of ['shake', 'wipe', 'flip3d', 'sfx', 'action=search', 'matched=false']) {
+      expect(CLIP_AGENT_SYSTEM_PROMPT, `系统提示词缺少「${kw}」`).toContain(kw);
+    }
+  });
+
+  it('skill 正文带上新动画与 sfx search（并仍在预算内）', () => {
+    const body = skillBody();
+    for (const kw of ['shake', 'wipe', 'flip3d', 'sfx search']) {
+      expect(body, `skill 正文缺少「${kw}」`).toContain(kw);
+    }
+    expect(body.length).toBeLessThanOrEqual(2000);
+  });
+});

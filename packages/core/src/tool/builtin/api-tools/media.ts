@@ -489,7 +489,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
     {
       name: 'media_compose',
       description:
-        '音视频合成（基于 ffmpeg）：① dub 把配音音频混进视频（默认替换原音轨，keepAudio=true 时与人声混合）；② concat 按顺序拼接多段视频；③ subtitle 把 SRT 字幕烧录进画面（可顺带在顶部叠加标题、并控制字幕字号，支持 subtitleAnimation 八种动画预设：淡入/弹跳/缩放/滑动/打字机/卡拉OK/闪烁/逐字飞入）。' +
+        '音视频合成（基于 ffmpeg）：① dub 把配音音频混进视频（默认替换原音轨，keepAudio=true 时与人声混合）；② concat 按顺序拼接多段视频；③ subtitle 把 SRT 字幕烧录进画面（可顺带在顶部叠加标题、并控制字幕字号，支持 subtitleAnimation 十一种动画预设：淡入/弹跳/缩放/滑动/打字机/卡拉OK/闪烁/逐字飞入/抖动/擦除/3D翻转）。' +
         '输入一律为本机文件绝对路径（前序工具返回的 file 字段）。返回 {type:"video", file, url}。' +
         'concat 要求各段编码参数一致（copy 直拼），不一致会报错——先用同参数生成。未找到 ffmpeg 时会给出明确的放置/配置指引。' +
         '★ subtitle 推荐参数：title 传「项目名称」做顶部常驻标题（长标题默认 auto 自适应缩字，绝不溢出；要滚动传 titleFit="scroll"）；subtitleFontSize 不要显式传（默认 88px≈12 字/行，已合适；显式传小值如 34 反而会把 libass 单位当像素放大成巨字）。',
