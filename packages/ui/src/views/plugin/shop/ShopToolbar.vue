@@ -31,14 +31,6 @@
       </div>
     </template>
 
-    <div class="shop-tool-block">
-      <span class="shop-tool-label">工作台</span>
-      <el-radio-group :model-value="lead" size="small" @update:model-value="onLead">
-        <el-radio-button value="human">人工</el-radio-button>
-        <el-radio-button value="ai">AI</el-radio-button>
-      </el-radio-group>
-    </div>
-
     <span class="shop-toolbar-spacer" />
 
     <div class="shop-toolbar-actions">
@@ -52,26 +44,23 @@
 </template>
 
 <script setup lang="ts">
-// 顶部工作条（方案 §6）：店铺类型 / 货源模式 / 工作台模式 + 连接级操作。
-// ★ 人工/AI 只是工作台切换（复用 lead），不改变数据与权限。
+// 顶部工作条（方案 §6）：店铺类型 / 货源模式 + 连接级操作。
+// 主导方切换统一收在 AI 对话栏头部，避免同一动作出现两个入口。
 import { computed } from 'vue';
 import { Monitor } from '@element-plus/icons-vue';
 import type { ShopConnection } from '../shopSession';
-import type { LeadMode } from '../../../stores/mode';
 import { SHOP_TYPE_META, type ShopType, type SupplyMode } from './useShopApi';
 
 const props = defineProps<{
   shop: ShopConnection | null;
   activeProjectTitle: string;
   isStore: boolean;
-  lead: LeadMode;
   checking: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'update:shop-type', v: ShopType): void;
   (e: 'update:supply-mode', v: SupplyMode): void;
-  (e: 'update:lead', v: LeadMode): void;
   (e: 'check'): void;
   (e: 'edit'): void;
   (e: 'remove'): void;
@@ -85,5 +74,4 @@ const supplyMode = computed<SupplyMode>(() => props.shop?.supplyMode ?? 'stocked
 
 function onShopType(v: unknown): void { emit('update:shop-type', v as ShopType); }
 function onSupplyMode(v: unknown): void { emit('update:supply-mode', v as SupplyMode); }
-function onLead(v: unknown): void { emit('update:lead', v as LeadMode); }
 </script>

@@ -204,4 +204,12 @@ describe('ShopConsole · setup 守门', () => {
     expect(host.querySelector('.shop-preview-scrim')).toBeNull();
     expect(host.querySelector('[title="打开浏览器预览"]')).not.toBeNull();
   });
+
+  it('主导方切换只保留 AI 对话栏头部一个入口', async () => {
+    const host = mountConsole();
+    await nextTick();
+    expect(host.querySelectorAll('.lead-toggle-wrap')).toHaveLength(1);
+    expect(host.querySelector('.shop-chat-head .lead-toggle-wrap')).not.toBeNull();
+    expect(host.querySelector('.shop-toolbar .el-radio-group')).toBeNull();
+  });
 });

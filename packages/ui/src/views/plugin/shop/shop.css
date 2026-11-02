@@ -46,7 +46,7 @@
 .shop-tabs > .el-tabs__header { flex: none; margin-bottom: 0; }
 .shop-tabs > .el-tabs__content { flex: 1; min-height: 0; overflow: auto; }
 
-/* ===== 顶部工作条（店铺类型 / 货源模式 / 工作台） ===== */
+/* ===== 顶部工作条（店铺类型 / 货源模式） ===== */
 .shop-toolbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 6px 2px 8px;
