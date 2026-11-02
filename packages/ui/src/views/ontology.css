@@ -353,6 +353,29 @@
   white-space: pre;
   border-radius: 0 0 var(--dw-r-md) var(--dw-r-md);
 }
+
+/* 源文件态 vs 派生产物（P6.7）：同是深色仪器面板，靠底色/左侧线与徽标区分 */
+.dw-root .ont-code-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dw-root .ont-code-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: var(--dw-void-3);
+  color: var(--dw-void-ink-2);
+  flex-shrink: 0;
+}
+.dw-root .ont-derived .ont-code { background: var(--dw-void); border-left: 2px solid var(--dw-void-3); }
+.dw-root .ont-derived .ont-code-badge { color: var(--dw-void-ink-2); }
+.dw-root .ont-source .ont-code { background: var(--dw-void-2); border-left: 2px solid var(--dw-brand); }
+.dw-root .ont-source .ont-code-badge { color: #d8c9fb; }
 .dw-root .ont-run-err {
   margin: 14px;
   padding: 10px 12px;

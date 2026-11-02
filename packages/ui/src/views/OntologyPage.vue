@@ -574,8 +574,15 @@
         </button>
       </div>
       <div class="ont-right-body">
-        <pre v-if="rightTab === 'sql'" class="ont-code dw-mono">{{ compiledSql || '保存后自动编译' }}</pre>
-        <pre v-else-if="rightTab === 'yaml'" class="ont-code dw-mono">{{ yamlText || '从「⋯ → 复制 YAML」导出' }}</pre>
+        <!-- 源文件 vs 派生产物：颜色与徽标必须一眼可分，防止在只读 SQL 上改口径 -->
+        <div v-if="rightTab === 'sql'" class="ont-code-wrap ont-derived">
+          <div class="ont-code-badge"><el-icon :size="11"><Lock /></el-icon>派生 · 只读</div>
+          <pre class="ont-code dw-mono">{{ compiledSql || '保存后自动编译' }}</pre>
+        </div>
+        <div v-else-if="rightTab === 'yaml'" class="ont-code-wrap ont-source">
+          <div class="ont-code-badge"><el-icon :size="11"><EditPen /></el-icon>源文件 · 可改</div>
+          <pre class="ont-code dw-mono">{{ yamlText || '从「⋯ → 复制 YAML」导出' }}</pre>
+        </div>
         <template v-else>
           <div v-if="runError" class="ont-run-err">{{ runError }}</div>
           <div v-else-if="!resultColumns.length" class="ont-empty">点「预览数据」或「试跑查询」查看结果</div>
@@ -612,7 +619,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Plus, Delete, MoreFilled, Coin, Collection, Folder, FolderAdd } from '@element-plus/icons-vue';
+import { Search, Plus, Delete, MoreFilled, Coin, Collection, Folder, FolderAdd, Lock, EditPen } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import CompileTrack, { type CompileStage } from '../components/CompileTrack.vue';
 import OntologyEnrichDialog from '../components/ontology/OntologyEnrichDialog.vue';
