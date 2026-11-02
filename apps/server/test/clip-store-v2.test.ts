@@ -110,6 +110,24 @@ describe('readClipProject / writeClipProject · v2 序列化边界', () => {
     expect(raw.layers.some((l: any) => l.kind === 'sticker')).toBe(true);
   });
 
+  it('★ 多机位组（P2 手动切换）落盘保留；老工程缺字段读回空数组', () => {
+    const p = readClipProject(CONV)!;
+    const group = {
+      id: 'g1', files: ['C:/a.mp4', 'C:/b.mp4'], offsetsSec: [0, 1], headsSec: [1, 0],
+      filmStart: 2, groupDurationSec: 6, slotSec: 3, slotAngles: [0, 1], clipIds: ['c1', 'c2'],
+    };
+    writeClipProject(CONV, { ...p, multicamGroups: [group] });
+    const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV).file, 'utf8')) as Record<string, unknown>;
+    expect(raw.multicamGroups).toEqual([group]);       // 必须落盘（UI 保存一次不能丢组）
+    expect(readClipProject(CONV)!.multicamGroups).toEqual([group]);
+
+    // 老工程（没有该字段）→ 读回空数组，不炸
+    const without = { ...readClipProject(CONV)! } as ClipProject;
+    delete (without as { multicamGroups?: unknown }).multicamGroups;
+    writeClipProject(CONV, without);
+    expect(readClipProject(CONV)!.multicamGroups).toEqual([]);
+  });
+
   it('★ 损坏 json 返回 null（按"还没有工程"处理，不抛错）', () => {
     fs.writeFileSync(clipProjectPath(CONV).file, '{oops', 'utf8');
     expect(readClipProject(CONV)).toBeNull();

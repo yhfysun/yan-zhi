@@ -21,6 +21,7 @@ import {
   migrateV1ToV2,
   layersFromV1Fields,
   v1FieldsFromLayers,
+  normalizeMulticamGroups,
   type ClipProject,
   type ClipProjectV1,
   type ClipText,
@@ -53,6 +54,8 @@ export function readClipProject(conversationId?: string): ClipProject | null {
         ...(parsed as ClipProject),
         layers,
         texts,
+        // 老工程没有多机位组 → 空数组（UI 直接遍历，不必判空）
+        multicamGroups: normalizeMulticamGroups((parsed as ClipProject).multicamGroups),
         ...(overlays.length ? { overlays } : {}),
         ...(audios.length ? { audios } : {}),
         ...(stickers.length ? { stickers } : {}),
@@ -63,7 +66,7 @@ export function readClipProject(conversationId?: string): ClipProject | null {
     const v1 = parsed as unknown as ClipProjectV1;
     if (!Array.isArray(v1.texts)) return null;
     const migrated = migrateV1ToV2(v1);
-    return migrated;
+    return { ...migrated, multicamGroups: [] };
   } catch {
     return null;
   }
@@ -128,6 +131,8 @@ export function writeClipProject(conversationId: string | undefined, project: Cl
     layers,
     ...(project.audioFx ? { audioFx: project.audioFx } : {}),
     ...(project.bgm ? { bgm: project.bgm } : {}),
+    // ★ 必须保留：writeClipProject 是逐字段重建，漏掉 multicamGroups = UI 保存一次就丢组
+    ...(project.multicamGroups?.length ? { multicamGroups: project.multicamGroups } : {}),
   };
   fs.writeFileSync(file, JSON.stringify(persist, null, 2), 'utf8');
   return file;

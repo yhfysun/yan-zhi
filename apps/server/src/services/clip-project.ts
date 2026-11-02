@@ -339,6 +339,70 @@ export interface ClipText {
   keyframes?: LayerKfPoint[];
 }
 
+/**
+ * 多机位组元数据（P2 手动切换）。
+ *
+ * ★ 只记「怎么切」的规划参数，不引入多轨：组内片段仍是普通 clips，
+ *   重建时按槽位重新生成这一小段并原地替换（组时长不变 → 字幕/画中画时间不动）。
+ * ★ headsSec 是各机位裁掉的头部（d_i - min(d)），srcStart = headsSec[angle] + 组内偏移。
+ */
+export interface MulticamGroup {
+  id: string;
+  /** 机位素材（本机绝对路径，顺序即机位号 1..N） */
+  files: string[];
+  /** 各机位相对基准机位的音频偏移（与 files 同序） */
+  offsetsSec: number[];
+  /** 各机位裁掉的头部秒数（恒 ≥0，与 files 同序） */
+  headsSec: number[];
+  /** 组在成片时间轴上的起点（秒） */
+  filmStart: number;
+  /** 组总时长（秒）；重建前后保持不变 */
+  groupDurationSec: number;
+  /** 每个槽位的时长（秒，最后一段可更短） */
+  slotSec: number;
+  /** 每个槽位使用的机位下标（0 基，长度 = ceil(groupDurationSec / slotSec)） */
+  slotAngles: number[];
+  /** 组内片段 id（与主轨 clips 中连续的一段对应，顺序一致） */
+  clipIds: string[];
+}
+
+/**
+ * 归一化多机位组（读写边界）：脏条目丢弃；老工程没有该字段 → 空数组。
+ * ★ 只保留本模型认识的字段，避免 UI/旧版本塞进来的垃圾字段被原样落盘。
+ */
+export function normalizeMulticamGroups(v: unknown): MulticamGroup[] {
+  if (!Array.isArray(v)) return [];
+  const out: MulticamGroup[] = [];
+  const numArr = (x: unknown): number[] =>
+    Array.isArray(x) ? x.map((n) => Number(n)).filter((n) => Number.isFinite(n)) : [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    const id = String(o.id || '').trim();
+    const files = Array.isArray(o.files) ? o.files.map((f) => String(f ?? '').trim()).filter(Boolean) : [];
+    const offsets = numArr(o.offsetsSec);
+    const heads = numArr(o.headsSec);
+    const slotAngles = numArr(o.slotAngles);
+    const clipIds = Array.isArray(o.clipIds) ? o.clipIds.map((c) => String(c ?? '').trim()).filter(Boolean) : [];
+    const filmStart = Number(o.filmStart);
+    const groupDurationSec = Number(o.groupDurationSec);
+    const slotSec = Number(o.slotSec);
+    if (!id || files.length < 2 || !(groupDurationSec > 0) || !(slotSec > 0)) continue;
+    out.push({
+      id,
+      files,
+      offsetsSec: files.map((_, i) => (Number.isFinite(offsets[i]) ? offsets[i] : 0)),
+      headsSec: files.map((_, i) => (Number.isFinite(heads[i]) ? Math.max(0, heads[i]) : 0)),
+      filmStart: Number.isFinite(filmStart) ? Math.max(0, filmStart) : 0,
+      groupDurationSec,
+      slotSec,
+      slotAngles: slotAngles.map((n) => Math.max(0, Math.round(n))),
+      clipIds,
+    });
+  }
+  return out;
+}
+
 export interface ClipProject {
   /**
    * 轨道模型 v2（P0-1）：落盘格式只有 clips + layers + bgm/audioFx。
@@ -392,6 +456,12 @@ export interface ClipProject {
   audioFx?: string[];
   /** 背景音乐（整片）。★ P0-1 诚实边界：BGM 保持工程级，音频轨模型归 P0-7。 */
   bgm?: { file: string; volume: number; duck: boolean };
+  /**
+   * 多机位组（P2 手动切换）：记录每次 add_multicam 的规划参数与片段 id。
+   * ★ 老工程没有该字段 → 读取时归一化为空数组；
+   *   落盘时必须保留（writeClipProject 逐字段重建，漏了就会在 UI 保存时丢组）。
+   */
+  multicamGroups?: MulticamGroup[];
 }
 
 // ===== 轨道模型 v2（P0-1）：图层类型与双向投影 =====

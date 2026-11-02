@@ -39,6 +39,7 @@ import { transcribeClipAudio } from '../services/clip-asr.js';
 import {
   planTalkingCut, splitSegmentByKeeps, sourceCutsToFilm, rippleTimelineLayers, TALKING_CUT_DEFAULTS,
 } from '../services/clip-talking-cut.js';
+import { rebuildMulticamGroup } from '../services/clip-multicam.js';
 
 /** 跑 ffmpeg（复用既有 exec-cmd 的 runCmd，与其它媒体链路同一实现）。 */
 async function runFfmpeg(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stderr: string }> {
@@ -633,6 +634,32 @@ router.post('/multicam', async (req: Request, res: Response) => {
   } catch {
     return res.json({ ok: true, raw: r.content?.[0]?.text || '' });
   }
+});
+
+// POST /api/plugin/clip-mode/multicam/rebuild —— 手动切换机位（原地重建组内片段）
+//
+// body: { conversationId, groupId, slotAngles: number[] }
+//
+// ★ 薄壳：校验存在性 → 纯函数重建 → 写盘；组时长不变，其他片段与图层不动。
+router.post('/multicam/rebuild', (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const groupId = String(req.body?.groupId || '').trim();
+  const rawSlots = req.body?.slotAngles;
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!groupId) return res.status(400).json({ error: 'groupId 必填' });
+  if (!Array.isArray(rawSlots)) return res.status(400).json({ error: 'slotAngles 必须是机位下标的数组' });
+  const slotAngles = rawSlots.map((v: unknown) => Number(v));
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const project = readClipProject(conversationId);
+  if (!project) return res.status(404).json({ error: '工程不存在（先在剪辑工作台建工程）' });
+  if (!(project.multicamGroups || []).some((g) => g.id === groupId)) {
+    return res.status(404).json({ error: `多机位组不存在：${groupId}` });
+  }
+
+  const r = rebuildMulticamGroup(project, groupId, slotAngles);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  writeClipProject(conversationId, r.project);
+  return res.json({ ok: true, groupId: r.groupId, segments: r.segments, note: r.note });
 });
 
 // GET /api/plugin/clip-mode/recipes —— 配方清单（内置 + 自建）

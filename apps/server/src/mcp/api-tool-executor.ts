@@ -63,6 +63,7 @@ import { analyzeBeats } from '../services/clip-beats.js';
 import { syncAudioFiles, formatSyncResult } from '../services/clip-audio-sync.js';
 import {
   buildMulticamFromFiles, planMulticamCuts, buildMulticamSegments, insertMulticamSegments,
+  makeMulticamGroup,
 } from '../services/clip-multicam.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
@@ -2219,10 +2220,30 @@ export async function clipProjectTool(
       durations,
     });
     if (!inserted.ok) return fail(inserted.error);
-    await saveClipProject(conversationId, inserted.project);
+
+    // ★ 写入组元数据：之后 UI 可按槽位点选机位并原地重建（不引入多轨）。
+    //   filmStart = 实际插入位置；headsSec 用规划结果（d_i - min(d)）；
+    //   clipIds 记录本次生成的片段，重建时要求它们仍连续存在。
+    const group = makeMulticamGroup(inserted.project, {
+      files: align.angles.map((a) => a.file),
+      offsetsSec: align.offsetSec,
+      headsSec: plan.headSec,
+      filmStart: inserted.effectiveStartSec,
+      groupDurationSec: plan.groupDurationSec,
+      slotSec: plan.slotSec,
+      cuts: plan.cuts,
+      segments: built.segments,
+    });
+    const nextProject: ClipProject = {
+      ...inserted.project,
+      multicamGroups: [...(cur.multicamGroups || []), group],
+      updatedAt: Date.now(),
+    };
+    await saveClipProject(conversationId, nextProject);
 
     return ok(JSON.stringify({
       ok: true,
+      groupId: group.id,
       angles: align.angles.length,
       offsetSec: align.offsetSec,
       segments: built.segments.length,
@@ -2230,7 +2251,7 @@ export async function clipProjectTool(
       warnings: [...align.warnings, ...plan.warnings],
       note:
         `多机位已生成 ${built.segments.length} 段（${align.angles.length} 个机位，组时长 ${plan.groupDurationSec}s）：` +
-        `${inserted.note}。生成后可在时间轴上手动微调切点。`,
+        `${inserted.note}。可在「多机位」弹窗按槽位手动切换机位并原地重建。`,
     }));
   }
 

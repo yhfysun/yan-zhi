@@ -1602,6 +1602,42 @@
           <em>秒（留空 = 追加到末尾）</em>
         </div>
         <div v-if="multicamError" class="cp-mc-err">{{ multicamError }}</div>
+
+        <!-- 已有多机位组：按槽位点选机位 → 原地重建（不引入多轨，组时长不变） -->
+        <div class="cp-mc-groups">
+          <div class="cp-mc-sep">已有多机位组（按槽位手动切换）</div>
+          <div v-if="!multicamGroups.length" class="cp-empty">还没有多机位组：先在上方选择素材生成</div>
+          <div v-else class="cp-mc-group-list">
+            <button
+              v-for="g in multicamGroups"
+              :key="g.id"
+              class="cp-mc-group"
+              :class="{ active: g.id === selectedMulticamGroupId }"
+              @click="selectMulticamGroup(g.id)"
+            >
+              <span class="cp-mc-group-main">{{ g.files.length }} 机位 · 起点 {{ g.filmStart }}s · 时长 {{ g.groupDurationSec }}s</span>
+              <span class="cp-mc-group-sub">{{ g.clipIds.length }} 段 · 每段 {{ g.slotSec }}s</span>
+            </button>
+          </div>
+          <template v-if="selectedMulticamGroup">
+            <div class="cp-mc-slots">
+              <button
+                v-for="(a, i) in multicamSlotAngles"
+                :key="i"
+                class="cp-mc-slot"
+                :title="`第 ${i + 1} 段：点击切换到下一个机位`"
+                @click="cycleMulticamSlot(i)"
+              >机位{{ a + 1 }}</button>
+            </div>
+            <div v-if="multicamRebuildError" class="cp-mc-err">{{ multicamRebuildError }}</div>
+            <div class="cp-mc-row">
+              <button class="cp-btn primary" :disabled="multicamRebuilding" @click="applyMulticamSlots">
+                {{ multicamRebuilding ? '重建中…' : '应用切换' }}
+              </button>
+              <em>原地重建这些片段；组时长与其他图层时间不变</em>
+            </div>
+          </template>
+        </div>
       </div>
       <template #footer>
         <button class="cp-btn" @click="multicamOpen = false">取消</button>
@@ -1885,6 +1921,10 @@ interface ClipText {
   /** P0-2b：变换关键帧（t 为层内 0~1） */
   keyframes?: Array<{ t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: string }>;
 }
+interface MulticamGroup {
+  id: string; files: string[]; offsetsSec: number[]; headsSec: number[];
+  filmStart: number; groupDurationSec: number; slotSec: number; slotAngles: number[]; clipIds: string[];
+}
 interface ClipProject {
   version: 2; name: string; updatedAt: number;
   /** 图层轨（v2）：字幕/画中画在此落盘；UI 继续操作 texts/overlays 视图字段 */
@@ -1917,6 +1957,8 @@ interface ClipProject {
   effects?: Array<{
     id: string; fx: string; start: number; end: number; intensity?: number;
   }>;
+  /** 多机位组（P2 手动切换）：记录规划参数与组内片段 id */
+  multicamGroups?: MulticamGroup[];
 }
 interface ConvFile { id?: string; name: string; path: string; type?: string }
 interface ProjectListItem {
@@ -5337,6 +5379,15 @@ const multicamFiles = ref<string[]>([]);
 const multicamSwitchEvery = ref(3);
 const multicamDuration = ref<number | null>(null);
 const multicamStart = ref<number | null>(null);
+/** 已有多机位组（手动切换）：选中组 + 每个槽位的机位下标 */
+const selectedMulticamGroupId = ref('');
+const multicamSlotAngles = ref<number[]>([]);
+const multicamRebuilding = ref(false);
+const multicamRebuildError = ref('');
+const multicamGroups = computed(() => project.value?.multicamGroups || []);
+const selectedMulticamGroup = computed(
+  () => multicamGroups.value.find((g) => g.id === selectedMulticamGroupId.value) || null,
+);
 /** 可作为机位的视频素材（与 isVideo 同口径） */
 const multicamCandidates = computed(() => files.value.filter((f) => isVideo(f)));
 
@@ -5346,6 +5397,9 @@ function openMulticam() {
   multicamSwitchEvery.value = 3;
   multicamDuration.value = null;
   multicamStart.value = null;
+  selectedMulticamGroupId.value = '';
+  multicamSlotAngles.value = [];
+  multicamRebuildError.value = '';
   multicamOpen.value = true;
 }
 
@@ -5391,6 +5445,61 @@ async function runMulticam() {
     multicamError.value = e instanceof Error ? e.message : String(e);
   } finally {
     multicamRunning.value = false;
+    pendingLabel.value = '';
+  }
+}
+
+/**
+ * 选中一个多机位组：把已保存的 slotAngles 读进按钮态。
+ * 槽位数 = ceil(组时长 / 每段时长)（与 server 的 multicamSlotCount 同口径）。
+ */
+function selectMulticamGroup(id: string) {
+  const g = multicamGroups.value.find((x) => x.id === id);
+  multicamRebuildError.value = '';
+  selectedMulticamGroupId.value = g ? id : '';
+  if (!g) { multicamSlotAngles.value = []; return; }
+  const count = Math.max(1, Math.ceil(g.groupDurationSec / g.slotSec - 1e-9));
+  multicamSlotAngles.value = Array.from({ length: count }, (_, i) => {
+    const a = Number(g.slotAngles?.[i]);
+    return Number.isInteger(a) && a >= 0 && a < g.files.length ? a : 0;
+  });
+}
+
+function cycleMulticamSlot(index: number) {
+  const g = selectedMulticamGroup.value;
+  if (!g || g.files.length < 2) return;
+  multicamSlotAngles.value = multicamSlotAngles.value.map((a, i) =>
+    i === index ? (a + 1) % g.files.length : a,
+  );
+}
+
+/**
+ * 应用槽位切换：服务端原地重建组内片段（id 与组时长不变），成功后重读工程。
+ * ★ 失败原样展示服务端错误（片段被删/不再连续等只有服务端知道）。
+ */
+async function applyMulticamSlots() {
+  const g = selectedMulticamGroup.value;
+  if (!convId.value) { multicamRebuildError.value = '还没有会话'; return; }
+  if (!g) { multicamRebuildError.value = '先选择一个多机位组'; return; }
+  multicamRebuilding.value = true;
+  multicamRebuildError.value = '';
+  pendingLabel.value = '多机位切换';
+  try {
+    type RebuildResp = { ok?: boolean; error?: string; note?: string; segments?: number; groupId?: string };
+    const r = await api.post<RebuildResp>('/plugin/clip-mode/multicam/rebuild', {
+      conversationId: convId.value,
+      groupId: g.id,
+      slotAngles: [...multicamSlotAngles.value],
+    }) as { data?: RebuildResp; error?: string };
+    if ('error' in r && r.error) { multicamRebuildError.value = String(r.error); return; }
+    const d = r.data;
+    if (!d?.ok) { multicamRebuildError.value = d?.error || '多机位切换失败'; return; }
+    await reloadAll();
+    note(d.note || `多机位已按槽位重建 ${d.segments ?? 0} 段`);
+  } catch (e) {
+    multicamRebuildError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    multicamRebuilding.value = false;
     pendingLabel.value = '';
   }
 }
@@ -5902,6 +6011,17 @@ onMounted(async () => {
 .cp-mc-row em { font-style: normal; font-size: 12px; color: var(--el-text-color-secondary); }
 .cp-mc-err { color: var(--el-color-danger); font-size: 12px; }
 .cp-mc .cp-empty { padding: 10px 0; text-align: center; }
+.cp-mc-groups { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 10px; }
+.cp-mc-sep { font-size: 12px; color: var(--el-text-color-secondary); }
+.cp-mc-group-list { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow: auto; }
+.cp-mc-group { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: transparent; cursor: pointer; text-align: left; }
+.cp-mc-group:hover { background: var(--el-fill-color-light); }
+.cp-mc-group.active { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+.cp-mc-group-main { font-size: 12px; color: var(--el-text-color-regular); }
+.cp-mc-group-sub { font-size: 11px; color: var(--el-text-color-secondary); }
+.cp-mc-slots { display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow: auto; }
+.cp-mc-slot { padding: 4px 10px; border: 1px solid var(--el-border-color); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-regular); font-size: 12px; cursor: pointer; }
+.cp-mc-slot:hover { border-color: var(--el-color-primary); color: var(--el-color-primary); }
 /* 取帧失败提示（贴底居中，不遮挡画面主体） */
 .cp-live-err { position: absolute; left: 8px; right: 8px; bottom: 8px; font-size: 11px; line-height: 1.5; padding: 4px 8px; border-radius: 4px; background: rgb(220 38 38 / 88%); color: #fff; text-align: center; z-index: 5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-transport { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 0; }

@@ -26,7 +26,7 @@ import { runCmd } from './exec-cmd.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import { parseProbeJson, probeArgs, segmentDuration } from './clip-render.js';
 import { syncAudioFiles, type AudioSyncOptions } from './clip-audio-sync.js';
-import type { ClipProject, ClipSegment } from './clip-project.js';
+import type { ClipProject, ClipSegment, MulticamGroup } from './clip-project.js';
 
 /** 默认每段切换间隔（秒）。 */
 export const MULTICAM_DEFAULT_SWITCH_SEC = 3;
@@ -73,7 +73,7 @@ export interface MulticamPlanInput {
 }
 
 export type MulticamPlanResult =
-  | { ok: true; cuts: MulticamCut[]; groupDurationSec: number; headSec: number[]; warnings: string[] }
+  | { ok: true; cuts: MulticamCut[]; groupDurationSec: number; slotSec: number; headSec: number[]; warnings: string[] }
   | { ok: false; error: string };
 
 function clampNum(v: unknown, lo: number, hi: number, fallback: number): number {
@@ -167,7 +167,7 @@ export function planMulticamCuts(input: MulticamPlanInput): MulticamPlanResult {
     k++;
   }
 
-  return { ok: true, cuts, groupDurationSec: groupDuration, headSec, warnings };
+  return { ok: true, cuts, groupDurationSec: groupDuration, slotSec: switchEvery, headSec, warnings };
 }
 
 export type MulticamBuildResult =
@@ -391,5 +391,207 @@ export function insertMulticamSegments(
       Math.abs(clamped - effectiveStart) > 0.01
         ? `请求插在 ${round3(clamped)}s，已落到最近的段边界 ${round3(effectiveStart)}s（第 ${insertIndex} 段之后）`
         : `已插在第 ${insertIndex} 段之后（成片 ${round3(effectiveStart)}s 处）`,
+  };
+}
+
+// ===== 手动切换（P2）：按槽位点选机位 → 原地重建这一段 =====
+
+/** 组的槽位数：ceil(组时长 / 每段时长)；最后一段可短于 slotSec。 */
+export function multicamSlotCount(group: Pick<MulticamGroup, 'groupDurationSec' | 'slotSec'>): number {
+  const dur = Number(group?.groupDurationSec);
+  const slot = Number(group?.slotSec);
+  if (!(dur > 0) || !(slot > 0)) return 0;
+  return Math.max(1, Math.ceil(dur / slot - 1e-9));
+}
+
+export type MulticamCutsResult =
+  | { ok: true; cuts: MulticamCut[]; groupDurationSec: number }
+  | { ok: false; error: string };
+
+/**
+ * 纯函数：按用户指定的槽位机位重建切点（不碰工程、不碰磁盘）。
+ *
+ * · slotAngles 长度必须等于 ceil(groupDurationSec / slotSec)，每项 ∈ [0, files.length-1]；
+ * · srcStart = headsSec[angle] + 组内偏移（与 planMulticamCuts 同一口径）；
+ * · 区间连续、总长恒等于 groupDurationSec（最后一段可用掉不足 slotSec 的尾巴）。
+ */
+export function rebuildMulticamCuts(group: MulticamGroup, slotAngles: number[]): MulticamCutsResult {
+  const files = (Array.isArray(group?.files) ? group.files : [])
+    .map((f) => String(f || '').trim())
+    .filter(Boolean);
+  if (files.length < 2) return { ok: false, error: '多机位组缺少机位文件（至少需要 2 个）' };
+  const heads = Array.isArray(group?.headsSec) ? group.headsSec.map((n) => Number(n)) : [];
+  if (heads.length < files.length) return { ok: false, error: '多机位组缺少各机位的头部偏移（headsSec 数量不足）' };
+  const groupDuration = Number(group.groupDurationSec);
+  if (!(groupDuration > 0)) return { ok: false, error: '多机位组时长无效（groupDurationSec 必须大于 0）' };
+  const slotSec = Number(group.slotSec);
+  if (!(slotSec > 0)) return { ok: false, error: '多机位组每段时长无效（slotSec 必须大于 0）' };
+
+  const expected = multicamSlotCount(group);
+  if (!Array.isArray(slotAngles) || slotAngles.length !== expected) {
+    return {
+      ok: false,
+      error: `槽位数量应为 ${expected}（组时长 ${round3(groupDuration)}s / 每段 ${round3(slotSec)}s），实际 ${Array.isArray(slotAngles) ? slotAngles.length : 0}`,
+    };
+  }
+
+  const cuts: MulticamCut[] = [];
+  let cursor = 0;
+  for (let i = 0; i < expected; i++) {
+    const angle = Number(slotAngles[i]);
+    if (!Number.isInteger(angle) || angle < 0 || angle >= files.length) {
+      return {
+        ok: false,
+        error: `第 ${i + 1} 个槽位的机位 ${JSON.stringify(slotAngles[i])} 无效（可选 1~${files.length}）`,
+      };
+    }
+    const filmStart = round3(cursor);
+    // 最后一段强制收到组时长（避免 ceil/浮点让末尾短一截或越界）
+    const filmEnd = i === expected - 1 ? round3(groupDuration) : round3(Math.min(cursor + slotSec, groupDuration));
+    if (!(filmEnd > filmStart + 1e-6)) {
+      return { ok: false, error: `第 ${i + 1} 段的成片区间无效：${filmStart}s → ${filmEnd}s` };
+    }
+    const head = heads[angle];
+    if (!Number.isFinite(head) || head < 0) return { ok: false, error: `机位 ${angle + 1} 的头部偏移无效` };
+    cuts.push({
+      angleIndex: angle,
+      file: files[angle],
+      filmStart,
+      filmEnd,
+      srcStart: round3(head + filmStart),
+      srcEnd: round3(head + filmEnd),
+    });
+    cursor = filmEnd;
+  }
+  return { ok: true, cuts, groupDurationSec: round3(groupDuration) };
+}
+
+export type MulticamRebuildResult =
+  | {
+      ok: true;
+      project: ClipProject;
+      groupId: string;
+      segments: number;
+      note: string;
+    }
+  | { ok: false; error: string };
+
+/**
+ * 原地重建一个多机位组：只替换组内的连续片段，其他片段与图层完全不动。
+ *
+ * 前置条件（不满足就报可读错误，不猜）：
+ *   · 组存在，且记录了 clipIds；
+ *   · 这些片段都还在工程里，且在 clips 中**连续出现**；
+ *   · 槽位数与 clipIds 数量一致（同一组时长/每段时长，理应一致）。
+ *
+ * ★ 片段 id 沿用原 id（buildMulticamSegments 的 idFactory 复用），
+ *   这样时间轴选中态/图层引用不会因为一次切换全部失效。
+ * ★ 组时长不变 → 主轨总时长与所有字幕/画中画/音频层的时间都无需顺延。
+ */
+export function rebuildMulticamGroup(
+  project: ClipProject,
+  groupId: string,
+  slotAngles: number[],
+): MulticamRebuildResult {
+  const groups = Array.isArray(project?.multicamGroups) ? project.multicamGroups : [];
+  const groupIndex = groups.findIndex((g) => g.id === groupId);
+  if (groupIndex < 0) return { ok: false, error: `多机位组不存在：${groupId || '(空 id)'}` };
+  const group = groups[groupIndex];
+  const clipIds = (Array.isArray(group.clipIds) ? group.clipIds : []).map((id) => String(id || ''));
+  if (!clipIds.length) return { ok: false, error: '多机位组没有记录片段 id，无法原地重建' };
+
+  const clips = Array.isArray(project.clips) ? project.clips : [];
+  const positions = clipIds.map((id) => clips.findIndex((c) => c.id === id));
+  const missing = clipIds.filter((_, i) => positions[i] < 0);
+  if (missing.length) {
+    return { ok: false, error: `多机位组片段已被删除（${missing.join('、')}），无法原地重建` };
+  }
+  const first = positions[0];
+  for (let i = 1; i < positions.length; i++) {
+    if (positions[i] !== first + i) {
+      return { ok: false, error: '多机位组片段在时间轴上不再连续（中间插入了其他片段），无法原地重建' };
+    }
+  }
+
+  const planned = rebuildMulticamCuts(group, slotAngles);
+  if (!planned.ok) return planned;
+  if (planned.cuts.length !== clipIds.length) {
+    return {
+      ok: false,
+      error: `槽位数量（${planned.cuts.length}）与组内片段数（${clipIds.length}）不一致，无法原地重建`,
+    };
+  }
+
+  // 复用原 id：把待替换片段从「已占用 id」集合里排除，避免被去重成 id-2
+  const idSet = new Set(clipIds);
+  const remaining = clips.filter((c) => !idSet.has(c.id));
+  const built = buildMulticamSegments({ clips: remaining }, planned.cuts, (i) => clipIds[i]);
+  if (!built.ok) return built;
+
+  const total = round3(planned.cuts.reduce((sum, c) => sum + (c.filmEnd - c.filmStart), 0));
+  if (Math.abs(total - planned.groupDurationSec) > 1e-6) {
+    return { ok: false, error: `重建后的片段总时长 ${total}s 与组时长 ${planned.groupDurationSec}s 不一致` };
+  }
+
+  const nextClips = [...clips.slice(0, first), ...built.segments, ...clips.slice(first + clipIds.length)];
+  const nextGroup: MulticamGroup = {
+    ...group,
+    slotAngles: slotAngles.map((n) => Number(n)),
+    clipIds: built.segments.map((s) => s.id),
+  };
+  const nextGroups = groups.map((g, i) => (i === groupIndex ? nextGroup : g));
+  return {
+    ok: true,
+    project: { ...project, clips: nextClips, multicamGroups: nextGroups, updatedAt: Date.now() },
+    groupId: group.id,
+    segments: built.segments.length,
+    note: `已按槽位重切 ${built.segments.length} 段（总时长 ${planned.groupDurationSec}s 不变）`,
+  };
+}
+
+/** 生成一个不与现有组冲突的组 id（mcg + 时间戳 base36）。 */
+export function nextMulticamGroupId(project: Pick<ClipProject, 'multicamGroups'>): string {
+  const used = new Set((project?.multicamGroups || []).map((g) => g.id));
+  const base = `mcg${Date.now().toString(36)}`;
+  let id = base;
+  let n = 2;
+  while (used.has(id)) id = `${base}-${n++}`;
+  return id;
+}
+
+export interface MulticamGroupInput {
+  files: string[];
+  /** 与 files 同序；机位 0 恒为 0 */
+  offsetsSec: number[];
+  /** 规划结果（d_i - min(d)），与 files 同序 */
+  headsSec: number[];
+  /** 实际插入位置（成片秒） */
+  filmStart: number;
+  groupDurationSec: number;
+  slotSec: number;
+  /** 本次规划出的切点（slotAngles 由它派生，保证与生成的片段一致） */
+  cuts: MulticamCut[];
+  /** 本次生成的片段（clipIds 由它派生） */
+  segments: ClipSegment[];
+}
+
+/**
+ * 纯函数：把一次 add_multicam 的规划结果固化成组元数据。
+ * ★ 单独抽出来是为了可单测「写入的字段是否正确」，也让执行器不必手抄字段。
+ */
+export function makeMulticamGroup(
+  project: Pick<ClipProject, 'multicamGroups'>,
+  input: MulticamGroupInput,
+): MulticamGroup {
+  return {
+    id: nextMulticamGroupId(project),
+    files: [...input.files],
+    offsetsSec: [...input.offsetsSec],
+    headsSec: [...input.headsSec],
+    filmStart: Number(input.filmStart) || 0,
+    groupDurationSec: Number(input.groupDurationSec),
+    slotSec: Number(input.slotSec),
+    slotAngles: input.cuts.map((c) => c.angleIndex),
+    clipIds: input.segments.map((s) => s.id),
   };
 }
