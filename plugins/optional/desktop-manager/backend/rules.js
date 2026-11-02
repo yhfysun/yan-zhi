@@ -41,23 +41,35 @@ export function globToRegExp(pattern) {
 }
 
 /**
+ * 分组名安全判定：分组名会被 `path.join(桌面目录, name)` 当目录用，
+ * 必须挡住路径分隔符与 `.`/`..` —— 否则一条 `group: '..'` 的规则就能把桌面文件
+ * 移到桌面目录之外（设置页规则是用户/模型可写的）。AI 方案与用户规则共用本判定。
+ */
+export function isSafeGroupName(name) {
+  const s = String(name ?? '').trim();
+  if (!s || s === '.' || s === '..') return false;
+  if (s.length > 40) return false;
+  return !BAD_GROUP_NAME.test(s);
+}
+
+/**
  * 配置归一化：所有默认值在这里补齐，下游不必再写 `x || default`。
  * 规则项同时支持 { match: '*.pdf' } 与 { ext: 'png' } 两种写法。
  */
 export function normalizeCfg(cfg) {
   const c = cfg && typeof cfg === 'object' ? cfg : {};
   const rules = (Array.isArray(c.rules) ? c.rules : [])
-    .filter((r) => r && (r.match || r.ext) && r.group)
+    .filter((r) => r && (r.match || r.ext) && r.group && isSafeGroupName(r.group))
     .map((r) => ({
       pattern: String(r.match || (r.ext ? `*.${String(r.ext).replace(/^\./, '')}` : '')),
-      group: String(r.group),
+      group: String(r.group).trim(),
       priority: Number.isFinite(Number(r.priority)) ? Number(r.priority) : 0,
     }))
     .sort((a, b) => b.priority - a.priority);
 
   return {
     rules,
-    projects: Array.isArray(c.projects) ? c.projects.map(String).filter(Boolean) : [],
+    projects: Array.isArray(c.projects) ? c.projects.map(String).map((s) => s.trim()).filter((s) => s && isSafeGroupName(s)) : [],
     timeCluster: {
       enabled: c.timeCluster ? c.timeCluster.enabled !== false : true,
       windowDays: Number(c.timeCluster && c.timeCluster.windowDays) || 7,
@@ -211,7 +223,7 @@ export function validateAiPlan(plan, allowedFiles, cfg) {
 
   for (const g of groups) {
     const name = String((g && g.name) || '').trim();
-    if (!name || BAD_GROUP_NAME.test(name)) return { ok: false, error: `非法组名: ${name}` };
+    if (!isSafeGroupName(name)) return { ok: false, error: `非法组名: ${name}` };
     const files = Array.isArray(g && g.files) ? g.files.map(String) : [];
     for (const f of files) {
       if (!allowed.has(f)) return { ok: false, error: `AI 编造了不存在的文件: ${f}` };
@@ -233,7 +245,7 @@ export function mergeAiPlan(base, aiGroups, cfg) {
   const taken = new Set();
   for (const g of Array.isArray(aiGroups) ? aiGroups : []) {
     const name = String((g && g.name) || '').trim();
-    if (!name) continue;
+    if (!isSafeGroupName(name)) continue;
     const files = Array.isArray(g && g.files) ? g.files.map(String) : [];
     let target = plan.groups.find((x) => x.name === name);
     if (!target) { target = { name, files: [], by: 'ai' }; plan.groups.push(target); }

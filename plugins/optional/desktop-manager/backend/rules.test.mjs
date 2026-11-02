@@ -9,6 +9,7 @@ import {
   isKept,
   validateAiPlan,
   mergeAiPlan,
+  isSafeGroupName,
 } from './rules.js';
 
 const NOW = Date.parse('2026-10-28T10:00:00Z');
@@ -134,4 +135,32 @@ test('AI 校验通过后可合并：同名组合并且未归类清空', () => {
   const doc = merged.groups.find((g) => g.name === '文档');
   assert.deepEqual(doc.files, ['a.docx', '未命名']);
   assert.deepEqual(merged.unclassified, []);
+});
+
+test('组名安全判定：挡住路径分隔符与 . / ..（防整理时移出桌面）', () => {
+  for (const bad of ['', '. ', '.', '..', '../evil', '..\\evil', 'a/b', 'a\\b', 'x'.repeat(41)]) {
+    assert.equal(isSafeGroupName(bad), false, `应收：${JSON.stringify(bad)}`);
+  }
+  for (const ok of ['文档', '合同 2026', 'A-B', 'x'.repeat(40)]) {
+    assert.equal(isSafeGroupName(ok), true, `应放行：${JSON.stringify(ok)}`);
+  }
+});
+
+test('归一化：不安全组名的规则与项目关键词被剔除', () => {
+  const cfg = normalizeCfg({
+    rules: [
+      { match: '*.pdf', group: '文档' },
+      { match: '*', group: '..' },
+      { match: '*', group: 'a/b' },
+    ],
+    projects: ['项目A', '..', 'x/y'],
+  });
+  assert.deepEqual(cfg.rules.map((r) => r.group), ['文档']);
+  assert.deepEqual(cfg.projects, ['项目A']);
+});
+
+test('AI 校验：组名 .. 被拒', () => {
+  const r = validateAiPlan({ groups: [{ name: '..', files: ['x'] }] }, ['x'], {});
+  assert.equal(r.ok, false);
+  assert.match(r.error, /非法组名/);
 });

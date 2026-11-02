@@ -12,13 +12,13 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 import { buildItems, INBOX_ID } from '../shared/fences.js';
 import { layoutPlan, snapWidth } from '../shared/layout.js';
 import { validateWidgets, dedupeWidgets, widgetCatalog } from '../shared/widgets.js';
 import { computeDue, describeDue } from '../shared/reminders.js';
-import { normalizeCfg, buildPlan, validateAiPlan, mergeAiPlan, isKept } from './rules.js';
+import { normalizeCfg, buildPlan, validateAiPlan, mergeAiPlan, isKept, isSafeGroupName } from './rules.js';
 
 /** 围栏数据结构版本：结构变了就 +1，触发一次性重建（见 ensureFences） */
 const SCHEMA_VERSION = 2;
@@ -235,6 +235,40 @@ async function pushOplog(ops) {
 
 /* ---------------- AI 增强（可选） ---------------- */
 
+// AI 结果缓存（10 分钟）：同一批未归类文件名 + 同一组已有分组名，重复 plan 不再打模型。
+// 键对顺序不敏感（文件名/分组名排序后 hash），只缓存校验通过的结果。
+const AI_CACHE_TTL = 10 * 60 * 1000;
+const AI_CACHE_MAX = 20;
+const aiCache = new Map();
+
+/** 供测试：缓存键 = 排序后的 分组名 + 文件名 的 sha1 */
+export function aiCacheKey(unclassified, groupNames) {
+  const payload = JSON.stringify({
+    groups: [...(groupNames || [])].map(String).sort(),
+    files: [...(unclassified || [])].map(String).sort(),
+  });
+  return createHash('sha1').update(payload).digest('hex');
+}
+
+function aiCacheGet(key) {
+  const hit = aiCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > AI_CACHE_TTL) { aiCache.delete(key); return null; }
+  return hit.groups;
+}
+
+function aiCacheSet(key, groups) {
+  aiCache.set(key, { at: Date.now(), groups });
+  if (aiCache.size <= AI_CACHE_MAX) return;
+  // 超上限只淘汰最旧的一条（缓存是加速器，不是状态，丢哪条都不影响正确性）
+  let oldestKey = null;
+  let oldestAt = Infinity;
+  for (const [k, v] of aiCache) {
+    if (v.at < oldestAt) { oldestAt = v.at; oldestKey = k; }
+  }
+  if (oldestKey) aiCache.delete(oldestKey);
+}
+
 /**
  * 只把「规则没覆盖的文件名 + 已有组名」交给模型，让它补归组建议。
  * 任何一步不成就返回 null，由调用方回落规则 —— 不弹错框、不中断整理。
@@ -246,6 +280,9 @@ async function aiSuggest(unclassified, groupNames, files) {
   const llmJson = h && (h.llmJson || (h.llm && h.llm.json));
   if (typeof llmJson !== 'function') return { error: { code: 'no-model' } };
   if (unclassified.length === 0) return { groups: [] };
+  const key = aiCacheKey(unclassified, groupNames);
+  const cached = aiCacheGet(key);
+  if (cached) return { groups: cached, cached: true };
   try {
     const out = await llmJson({
       system: '你是桌面整理助手。只输出 JSON：{"groups":[{"name":"分组名","files":["文件名"]}]}。只能使用给定的文件名与已存在的分组名，不得编造。',
@@ -256,6 +293,7 @@ async function aiSuggest(unclassified, groupNames, files) {
     if (!out || typeof out !== 'object') return { error: { code: 'bad-json' } };
     const v = validateAiPlan(out, unclassified, { maxGroups: DEFAULT_CONFIG.maxGroups });
     if (!v.ok) return { error: { code: 'invalid', reason: v.error } };
+    aiCacheSet(key, v.groups);
     return { groups: v.groups };
   } catch (e) {
     return { error: { code: 'timeout', reason: e instanceof Error ? e.message : String(e) } };
@@ -661,8 +699,12 @@ async function toolApply(args) {
   const root = desktopDir();
   const ops = [];
   let moved = 0;
+  let skippedGroups = 0;
   for (const g of plan.files.groups || []) {
+    // 写入侧二次校验（规则归一化已挡过一次）：组名要当目录名用，绝不允许越界
+    if (!isSafeGroupName(g.name)) { skippedGroups += 1; continue; }
     const targetDir = path.join(root, g.name);
+    if (!targetDir.startsWith(root + path.sep)) { skippedGroups += 1; continue; }
     try {
       await fsp.mkdir(targetDir, { recursive: true });
     } catch {
@@ -683,7 +725,7 @@ async function toolApply(args) {
   }
   const opId = await pushOplog(ops);
   await bumpRev();
-  return { ok: true, opId, moved };
+  return { ok: true, opId, moved, ...(skippedGroups ? { skippedGroups } : {}) };
 }
 
 async function toolUndo(args) {

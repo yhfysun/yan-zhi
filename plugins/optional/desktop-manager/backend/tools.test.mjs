@@ -1,7 +1,7 @@
 // 组件工具测试（desktop_widget_set / desktop_widget_list）
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { desktopManagerModule } from './index.js';
+import { desktopManagerModule, aiCacheKey } from './index.js';
 
 function setup() {
   const store = new Map();
@@ -99,4 +99,13 @@ test('desktop_widget_set：唯一性冲突与越界坐标钳制', async () => {
   } finally {
     cleanup();
   }
+});
+
+test('aiCacheKey：排序后哈希（顺序无关），内容不同则不同', () => {
+  const a = aiCacheKey(['b.txt', 'a.txt'], ['合同', '财务']);
+  const b = aiCacheKey(['a.txt', 'b.txt'], ['财务', '合同']);
+  assert.equal(a, b);
+  assert.notEqual(a, aiCacheKey(['a.txt'], ['合同', '财务']));
+  assert.notEqual(a, aiCacheKey(['a.txt', 'b.txt'], ['合同']));
+  assert.match(a, /^[0-9a-f]{40}$/);
 });
