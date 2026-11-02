@@ -2,9 +2,16 @@
   <div class="shop-launchpad">
     <header class="shop-launch-head">
       <div class="shop-launch-title-wrap">
-        <span class="shop-launch-flag"><Sparkles :size="13" /> AI 开店工作台</span>
+        <span class="shop-launch-flag"><Sparkles :size="13" /> 店铺运营 · 从零开店</span>
         <h1>{{ projectTitle || '从 0 开一家能卖的店' }}</h1>
-        <p>先定经营口径，再让 AI 查平台、做选品、算利润、备 Listing。登录、验证码、资金动作由你本人完成。</p>
+        <div class="shop-launch-context" aria-label="当前开店上下文">
+          <span>{{ platformLabel }}</span>
+          <i aria-hidden="true"></i>
+          <span>{{ profile.market || '市场待确认' }}</span>
+          <i aria-hidden="true"></i>
+          <span>{{ profile.category || '品类待确认' }}</span>
+        </div>
+        <p>先定经营口径，AI 会据此查规则、选品算账并准备 Listing。登录与付款仍由你完成。</p>
       </div>
       <div class="shop-launch-score">
         <strong>{{ progress.percent }}%</strong>
@@ -19,7 +26,7 @@
             <span class="shop-setup-kicker">六步推进</span>
             <h2 id="shop-launch-flow-title">从没店铺到首单</h2>
           </div>
-          <el-button type="primary" :icon="ArrowRight" @click="emit('start')">让 AI 接着做</el-button>
+          <el-button type="primary" :icon="ArrowRight" @click="emit('start')">AI 按当前资料继续</el-button>
         </div>
         <ShopSetupSteps :progress="progress" @toggle-step="onToggleStep" />
         <div class="shop-launch-flow-actions">
@@ -45,7 +52,7 @@
           <span class="shop-setup-kicker">直接派活</span>
           <h2 id="shop-launch-actions-title">让 AI 从具体任务开始</h2>
         </div>
-        <span class="shop-launch-actions-note">会带上右侧已填写的信息，缺什么只问一次</span>
+        <span class="shop-launch-actions-note">会带上已填写的信息，缺什么只问一次</span>
       </div>
       <div class="shop-launch-action-list">
         <button
@@ -76,7 +83,7 @@
 </template>
 
 <script setup lang="ts">
-import type { Component } from 'vue';
+import { computed, type Component } from 'vue';
 import {
   ArrowRight,
   Boxes,
@@ -91,19 +98,24 @@ import {
 } from 'lucide-vue-next';
 import ShopSetupForm from './ShopSetupForm.vue';
 import ShopSetupSteps from './ShopSetupSteps.vue';
-import type {
-  ShopQuickAction,
-  ShopSetupProfile,
-  ShopSetupProgress,
-  ShopSetupStepId,
+import {
+  SHOP_PLATFORM_OPTIONS,
+  type ShopQuickAction,
+  type ShopSetupProfile,
+  type ShopSetupProgress,
+  type ShopSetupStepId,
 } from './shopOnboarding';
 
-defineProps<{
+const props = defineProps<{
   projectTitle: string;
   profile: ShopSetupProfile;
   progress: ShopSetupProgress;
   hasConnection: boolean;
 }>();
+
+const platformLabel = computed(() =>
+  SHOP_PLATFORM_OPTIONS.find((item) => item.value === props.profile.platform)?.label
+  || '平台待选择');
 
 const emit = defineEmits<{
   (e: 'update:profile', value: ShopSetupProfile): void;

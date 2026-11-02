@@ -325,6 +325,7 @@ export const SCENES: SceneDef[] = [
       '- 账号注册、登录、实名认证、验证码、收款与付款由用户本人完成；你负责打开官方入口、逐步指引和核对，不代填敏感信息。',
       '- 改价/改库存/上下架/建品/发货等写操作先出变更单，用户确认后执行；不要再说“当前版本只能只读”。',
       '- 工具调用走短路径：简单查询直接执行，平台规则与多步网页操作才委派 pageAgent；已有结果不重复查。',
+      '- 浏览器导航同一 URL 只做一次；页面未就绪时改用 browser_get_tabs / browser_get_page_content 等待，不得连续重复 browser_navigate。',
     ].join('\n'),
     skillKeywords: ['选品', '店铺', '亚马逊', 'amazon', '淘宝', '1688', '跨境', 'listing', '利润', 'shop'],
     isMode: true,

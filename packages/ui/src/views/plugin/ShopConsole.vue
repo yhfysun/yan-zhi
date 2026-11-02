@@ -112,6 +112,9 @@
           <span class="shop-chat-title">AI 助手</span>
           <span class="shop-chat-spacer"></span>
           <LeadToggle :model-value="lead" mode="shop" @update:model-value="onLeadChange" />
+          <button class="shop-chat-btn" title="打开浏览器预览" @click="openShopBrowserPreview">
+            <el-icon :size="12"><Monitor /></el-icon>
+          </button>
           <button class="shop-chat-btn" title="收起对话" @click="chatCollapsed = true">
             <el-icon :size="12"><ArrowRight /></el-icon>
           </button>
@@ -125,6 +128,15 @@
         <el-icon :size="13"><ChatDotRound /></el-icon><span>AI</span>
       </button>
     </section>
+
+    <button
+      v-if="chat.store.rightPanelOpen"
+      type="button"
+      class="shop-preview-scrim"
+      aria-label="关闭浏览器预览"
+      @click="closeShopBrowserPreview"
+    ></button>
+    <ChatPreviewPane />
 
     <ChatDialogs />
 
@@ -143,11 +155,12 @@
 // 页签内容全部拆到 ./shop/tabs/*；本文件只负责布局与页面级状态（2026-10-22 重构 §6）。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { ChatDotRound, ArrowRight } from '@element-plus/icons-vue';
+import { ChatDotRound, ArrowRight, Monitor } from '@element-plus/icons-vue';
 import ConsoleShell from '../../components/console/ConsoleShell.vue';
 import ChatMessageList from '../../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../../components/chat/ChatInputArea.vue';
 import ChatDialogs from '../../components/chat/ChatDialogs.vue';
+import ChatPreviewPane from '../../components/chat/ChatPreviewPane.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import { useChatStore } from '../../stores/chat';
 import { useChat } from '../../composables/chat/useChat';
@@ -212,6 +225,18 @@ const chat = useChat();
 const chatStore = useChatStore();
 const chatInputRef = ref<{ fillAndSend: (prompt: string) => Promise<void> } | null>(null);
 const shopProjects = computed(() => chatStore.conversations);
+
+/** 店铺模式与聊天页共用同一个应用级浏览器预览；关闭时只折叠，不卸载 BrowserPanel。 */
+function openShopBrowserPreview(): void {
+  const browserTab = chat.store.previewTabs.find((tab) => tab.kind === 'browser');
+  if (browserTab) chat.store.activatePreviewTab(browserTab.id);
+  else chat.store.openTab({ kind: 'browser', name: '浏览器', url: '' });
+  chat.store.rightPanelOpen = true;
+}
+
+function closeShopBrowserPreview(): void {
+  chat.store.rightPanelOpen = false;
+}
 /** 当前项目 id；'' = 未归属（历史连接 / 还没建项目） */
 const activeProjectId = ref('');
 const activeProjectTitle = computed(() =>
@@ -580,6 +605,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', syncNarrowShopChrome);
+  const api = (window as any).electronAPI?.browserView;
+  if (api) { try { api.hide(); } catch { /* 窗口销毁中 */ } }
 });
 </script>
 

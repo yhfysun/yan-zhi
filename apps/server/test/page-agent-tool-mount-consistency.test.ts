@@ -112,6 +112,30 @@ describe('pageAgent 三处一致性（守门）', () => {
     ).toEqual([]);
   });
 
+  it('B2. 多标签管理工具必须挂载（技能会直接指导 pageAgent 使用）', () => {
+    const mounted = new Set(parseMountedTools(readOrFail(DB_SRC)));
+    const required = [
+      'browser_get_tabs',
+      'browser_new_tab',
+      'browser_switch_tab',
+      'browser_close_tab',
+      'browser_wait_for',
+    ];
+    const missing = required.filter((name) => !mounted.has(name));
+    expect(
+      missing,
+      `pageAgent 会被技能要求管理多标签页，但工具面缺失：${missing.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('B3. 页面未就绪时必须改用标签页工具，禁止重复导航', () => {
+    const dbSrc = readOrFail(DB_SRC);
+    const prompt = parsePrompt(dbSrc);
+    expect(prompt).toContain('浏览器页面未就绪');
+    expect(prompt).toContain('禁止再次 navigate');
+    expect(prompt).toContain('browser_get_tabs');
+  });
+
   it('C. 前端副本的挂载清单必须与服务端逐项一致', () => {
     const server = parseMountedTools(readOrFail(DB_SRC));
     const ui = parseUiCopy(readOrFail(UI_AGENT_SRC));

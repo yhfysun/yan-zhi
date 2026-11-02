@@ -2,13 +2,13 @@
   <section class="shop-setup-form" aria-labelledby="shop-setup-form-title">
     <div class="shop-setup-form-head">
       <div>
-        <span class="shop-setup-kicker">只问必要信息</span>
-        <h2 id="shop-setup-form-title">先把开店口径定下来</h2>
+        <span class="shop-setup-kicker">第一步 · 经营口径</span>
+        <h2 id="shop-setup-form-title">先定好，AI 再执行</h2>
       </div>
-      <span class="shop-setup-saved">自动保存</span>
+      <span class="shop-setup-saved">已自动保存</span>
     </div>
     <p class="shop-setup-form-lead">
-      这些信息会随项目保存，并一次性交给 AI。不要填账号密码、验证码或支付信息。
+      平台、市场、品类和预算会直接影响选品与利润测算。一次填完，后续对话不再重复问。
     </p>
 
     <el-form label-position="top" class="shop-setup-fields">
@@ -58,7 +58,7 @@
         </el-radio-group>
       </el-form-item>
 
-      <el-form-item label="准备进度">
+      <el-form-item label="账号与资质">
         <div class="shop-setup-checks">
           <el-checkbox :model-value="profile.hasAccount" @update:model-value="set('hasAccount', $event)">
             已有平台账号
@@ -69,7 +69,7 @@
         </div>
       </el-form-item>
 
-      <el-form-item label="经验与约束">
+      <el-form-item label="投入经验与补充">
         <el-select :model-value="profile.experience" class="shop-form-full" @update:model-value="set('experience', $event)">
           <el-option label="第一次开店" value="beginner" />
           <el-option label="做过一些电商" value="some" />

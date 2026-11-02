@@ -122,6 +122,10 @@ vi.mock('./shop/useShopApi', async () => {
 vi.mock('../../components/chat/ChatMessageList.vue', () => ({ default: { name: 'ChatMessageList', render: () => null } }));
 vi.mock('../../components/chat/ChatInputArea.vue', () => ({ default: { name: 'ChatInputArea', render: () => null } }));
 vi.mock('../../components/chat/ChatDialogs.vue', () => ({ default: { name: 'ChatDialogs', render: () => null } }));
+vi.mock('../../components/chat/ChatPreviewPane.vue', async () => {
+  const { h } = await import('vue');
+  return { default: { name: 'ChatPreviewPane', render: () => h('aside', { class: 'right-panel' }) } };
+});
 // 项目 = 店铺会话：测试里给一个空列表的替身，避免拉起 pinia/网络
 vi.mock('../../stores/chat', () => ({
   useChatStore: () => ({
@@ -132,7 +136,15 @@ vi.mock('../../stores/chat', () => ({
   }),
 }));
 vi.mock('../../composables/chat/useChat', () => ({
-  useChat: () => ({ selectConv: async () => {} }),
+  useChat: () => ({
+    selectConv: async () => {},
+    store: {
+      rightPanelOpen: false,
+      previewTabs: [],
+      activatePreviewTab: vi.fn(),
+      openTab: vi.fn(),
+    },
+  }),
 }));
 
 import ShopConsole from './ShopConsole.vue';
@@ -170,7 +182,11 @@ describe('ShopConsole · setup 守门', () => {
     expect(host.textContent).toContain('物流');
     expect(host.textContent).toContain('开店向导');
     expect(host.textContent).toContain('从 0 开一家能卖的店');
-    expect(host.textContent).toContain('只问必要信息');
+    expect(host.textContent).toContain('第一步 · 经营口径');
+    expect(host.textContent).toContain('店铺项目');
+    expect(host.textContent).toContain('已接入资源');
+    expect(host.textContent).toContain('先选择一个店铺项目');
+    expect(host.textContent).toContain('新建项目后再接入店铺、仓储或物流');
     expect(host.textContent).toContain('概览');
     expect(host.textContent).toContain('口径速查');
   });
@@ -181,5 +197,7 @@ describe('ShopConsole · setup 守门', () => {
     expect(host.querySelector('.shop-work')).not.toBeNull();
     expect(host.querySelector('.shop-chat')).not.toBeNull();
     expect(host.querySelector('.shop-chat-head')?.textContent).toContain('AI 助手');
+    expect(host.querySelector('.right-panel')).not.toBeNull();
+    expect(host.querySelector('[title="打开浏览器预览"]')).not.toBeNull();
   });
 });

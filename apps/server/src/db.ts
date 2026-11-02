@@ -1346,6 +1346,8 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   // 多标签管理：技能会要求 pageAgent 并行开页、按 tabId 读取、收尾只关自己打开的页。
   // 2026-11-02 日志反复出现“子智能体调用未授予工具被拒: browser_get_tabs”，根因就是这里缺挂载。
   'browser_get_tabs', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab',
+  // 页面未就绪 / 异步加载时先等待再读，避免模型重复 navigate。
+  'browser_wait_for',
   // ★★★ 2026-10-09 修（B2，high）：下面三个**必须挂载** —— 因为提示词正文（见
   //   PAGE_AGENT_PROMPT 的「读页工具分工」段）**主动推荐**模型使用它们，
   //   而此前挂载清单里没有 → 模型照提示词调用 → 命中"工具不存在"分支白跑一轮，
@@ -1482,6 +1484,12 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 5a. 需要查看视口外的内容（长列表、懒加载、视口外按钮）时，先 browser_scroll 滚动，再重新 browser_get_page_content 拿最新状态
 6. 用 browser_get_page_content 获取最终结果（正文/搜索结果等）
 7. 返回任务结果摘要（用中文）
+
+【导航失败处理（必须遵守）】
+- 同一 URL 只调用一次 browser_navigate。
+- 若返回“浏览器页面未就绪”或等待 guest 超时，禁止再次 navigate 同一 URL。
+- 改用 browser_get_tabs 查看已有页面；tab 已存在时用 browser_get_page_content 传 tabId 等待/读取，必要时 browser_wait_for。
+- 预览面板始终无法创建时，停止重试并让用户点击“浏览器预览”；不要通过更换 URL 或反复开新 tab 绕过。
 
 【核心工作方式 — 元素编号定位（最重要）】
 1. 每到一个新页面或弹窗出现后，先 browser_get_page_content 获取带编号（index）的可交互元素列表，已穿透 iframe/Shadow DOM（含登录弹窗内的元素）。

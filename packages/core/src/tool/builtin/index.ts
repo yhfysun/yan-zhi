@@ -233,8 +233,9 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new DesignAssetSitesTool());
   registry.register(new ConfigureModelPlatformTool());
   registry.register(new ImageAnalyzeTool());
-  // compare_products 比价工具已停止注册（2026-09-14 工具瘦身：购物场景专用、低频；源码保留）
-  // registry.register(new CompareProductsTool());
+  // 店铺运营的选品/货源链路以 compare_products 为同款匹配核心；未挂载该工具的会话不会看到它，
+  // 但店铺助手必须能真实执行，否则提示词会反复推荐一个不存在的工具。
+  registry.register(new CompareProductsTool());
 }
 
 /** 注册管理工具函数到 registry（getExtraSources：自定义/MCP 等额外发现来源，由 server 注入） */

@@ -166,6 +166,9 @@ const PAGE_AGENT_ID = 'a_builtin_page_agent';
 const PAGE_AGENT_BUILTIN_TOOLS = [
   // 四件套：访问 URL / 输入内容 / 点击 / 专门获取当前页面内容
   'browser_navigate', 'browser_type', 'browser_click', 'browser_get_page_content',
+  // 多标签管理（与服务端 db.ts 对齐；技能会直接要求 get/new/switch/close）
+  'browser_get_tabs', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab',
+  'browser_wait_for',
   // 读页分工三件套（2026-10-13 补齐，此前与本副本漂移）：坐标 / 层级树 / 纯正文
   'browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text',
   // 滚动：查看视口外内容 / 触发懒加载（v4 回补，四件套收口时误删导致 agent 无法滚动）

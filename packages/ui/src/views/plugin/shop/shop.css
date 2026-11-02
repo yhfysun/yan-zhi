@@ -6,6 +6,25 @@
   justify-content: space-between;
   margin-bottom: 8px;
 }
+.shop-side-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.shop-side-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.shop-side-desc {
+  margin: -2px 0 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
 .shop-console {
   --shop-accent: #0f766e;
   --shop-accent-soft: color-mix(in srgb, var(--shop-accent) 11%, var(--el-bg-color));
@@ -66,6 +85,52 @@
   background: transparent; color: var(--el-text-color-secondary); cursor: pointer;
 }
 .shop-chat-btn:hover { background: var(--el-fill-color-light); color: var(--el-color-primary); }
+
+/* 浏览器预览：与聊天页共用同一个 ChatPreviewPane，但在店铺模式里作为右侧覆盖层，
+   避免第三栏再把开店工作台挤窄。关闭时只折叠，BrowserPanel 仍保持挂载以接收
+   pageAgent 的 tabCreated 广播。 */
+.shop-preview-scrim {
+  position: fixed;
+  inset: 36px 0 0;
+  z-index: 210;
+  padding: 0;
+  border: 0;
+  background: rgba(15, 23, 42, 0.22);
+  backdrop-filter: blur(1.5px);
+  cursor: default;
+}
+.shop-console .right-panel {
+  position: fixed;
+  top: 36px;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  z-index: 220;
+  width: min(760px, 62vw);
+  min-width: 420px;
+  max-width: calc(100vw - 24px);
+  height: auto;
+  flex: none;
+  border-left: 1px solid var(--el-border-color);
+  border-radius: 10px 0 0 10px;
+  background: var(--el-bg-color);
+  box-shadow: -12px 0 36px color-mix(in srgb, var(--el-text-color-primary) 14%, transparent);
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 180ms ease-out, opacity 120ms ease-out;
+}
+.shop-console .right-panel.open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.shop-console .right-panel:not(.open) {
+  width: 0;
+  min-width: 0;
+  border-left: none;
+  opacity: 0;
+}
 
 /* LeadToggle 默认是右下角悬浮，在本页会压住发送按钮 —— 收进对话栏头部做内联按钮。
    （全局样式文件不能用 :deep()，直接按类名命中子组件内部即可） */
@@ -165,13 +230,33 @@
 .shop-projects { flex: 1; min-height: 0; overflow: auto; }
 .shop-project {
   display: flex; align-items: center; gap: 6px;
-  padding: 7px 8px; border-radius: 6px; cursor: pointer;
+  min-width: 0;
+  border-radius: 6px;
   font-size: 13px;
 }
 .shop-project:hover { background: var(--el-fill-color-light); }
 .shop-project.active { background: var(--el-color-primary-light-9); }
+.shop-project-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.shop-project-main:focus-visible {
+  outline: 2px solid var(--shop-accent);
+  outline-offset: -2px;
+}
 .shop-project-icon { color: var(--el-color-primary); }
+.shop-project-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
 .shop-project-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shop-project-meta { color: var(--el-text-color-secondary); font-size: 10px; }
 .shop-project-count {
   font-size: 11px; color: var(--el-text-color-secondary);
   background: var(--el-fill-color); border-radius: 8px; padding: 0 6px;
@@ -183,7 +268,35 @@
   font-size: 14px; line-height: 1; cursor: pointer;
 }
 .shop-project:hover .shop-project-del { display: inline-flex; }
+.shop-project:focus-within .shop-project-del { display: inline-flex; }
 .shop-project-del:hover { color: var(--el-color-danger); background: var(--el-color-danger-light-9); }
+.shop-project-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+}
+.shop-project-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--shop-accent-soft);
+  color: var(--shop-accent);
+}
+.shop-project-empty strong { font-size: 12px; }
+.shop-project-empty p {
+  margin: 0 0 3px;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
 
 /* ===== 店铺列表（左栏下半）===== */
 .shop-shops { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter); }
@@ -194,10 +307,49 @@
 }
 .shop-shop-row:hover { background: var(--el-fill-color-light); }
 .shop-shop-row.active { background: var(--el-color-primary-light-9); }
+.shop-shop-row {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.shop-shop-row:focus-visible {
+  outline: 2px solid var(--shop-accent);
+  outline-offset: -2px;
+}
 .shop-shop-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shop-shop-badges { display: flex; gap: 3px; flex: none; }
 .shop-shop-badges .el-tag { height: 18px; padding: 0 4px; font-size: 10px; }
 .shop-kind-tag { font-size: 10px; }
+.shop-resource-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 11px 12px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+}
+.shop-resource-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-bottom: 2px;
+  border-radius: 6px;
+  background: var(--shop-accent-soft);
+  color: var(--shop-accent);
+}
+.shop-resource-empty strong { font-size: 12px; }
+.shop-resource-empty p {
+  margin: 0 0 5px;
+  color: var(--el-text-color-secondary);
+  font-size: 10px;
+  line-height: 1.55;
+}
 
 /* ===== 页签内表格与空态 ===== */
 .shop-tab-body { padding-top: 6px; }
@@ -310,8 +462,30 @@
   line-height: 1.3;
   letter-spacing: 0;
 }
+.shop-launch-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  color: var(--el-text-color-regular);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.shop-launch-context span {
+  padding: 2px 7px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  background: var(--el-fill-color-lighter);
+}
+.shop-launch-context i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--el-text-color-placeholder);
+}
 .shop-launch-head p {
-  margin: 8px 0 0;
+  margin: 7px 0 0;
   max-width: 690px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
@@ -578,6 +752,13 @@
   .shop-launch-section-head .el-button { align-self: flex-start; }
 }
 @media (max-width: 900px) {
+  .shop-console .right-panel {
+    top: 36px;
+    width: 100vw;
+    min-width: 0;
+    max-width: 100vw;
+    border-radius: 0;
+  }
   .shop-console .cs-aside-toggle {
     top: auto;
     bottom: 16px;

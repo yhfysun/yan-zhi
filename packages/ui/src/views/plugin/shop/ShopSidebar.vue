@@ -1,8 +1,12 @@
 <template>
   <div class="shop-side-head">
-    <span class="shop-side-title">项目</span>
+    <div class="shop-side-heading">
+      <span class="shop-side-title">店铺项目</span>
+      <span v-if="projects.length" class="shop-side-count">{{ projects.length }}</span>
+    </div>
     <el-button size="small" type="primary" plain :icon="Plus" @click="emit('create-project')">新建</el-button>
   </div>
+  <p class="shop-side-desc">一个项目保存一套开店资料、对话和资源。</p>
 
   <div class="shop-projects">
     <div
@@ -10,11 +14,14 @@
       :key="p.id"
       class="shop-project"
       :class="{ active: p.id === activeProjectId }"
-      @click="emit('select-project', p.id)"
     >
-      <el-icon class="shop-project-icon"><ChatLineSquare /></el-icon>
-      <span class="shop-project-name" :title="p.title">{{ p.title || '未命名项目' }}</span>
-      <span class="shop-project-count">{{ countOf(p.id) }}</span>
+      <button class="shop-project-main" type="button" @click="emit('select-project', p.id)">
+        <el-icon class="shop-project-icon"><ChatLineSquare /></el-icon>
+        <span class="shop-project-copy">
+          <span class="shop-project-name" :title="p.title">{{ p.title || '未命名项目' }}</span>
+          <span class="shop-project-meta">{{ countOf(p.id) ? `${countOf(p.id)} 项资源` : '尚未接入资源' }}</span>
+        </span>
+      </button>
       <button class="shop-project-del" title="删除项目" @click.stop="emit('delete-project', p)"><el-icon><Close /></el-icon></button>
     </div>
 
@@ -23,26 +30,31 @@
       v-if="orphanCount"
       class="shop-project"
       :class="{ active: activeProjectId === '' }"
-      @click="emit('select-project', '')"
     >
-      <el-icon class="shop-project-icon"><Shop /></el-icon>
-      <span class="shop-project-name">未归属资源</span>
-      <span class="shop-project-count">{{ orphanCount }}</span>
+      <button class="shop-project-main" type="button" @click="emit('select-project', '')">
+        <el-icon class="shop-project-icon"><Shop /></el-icon>
+        <span class="shop-project-copy">
+          <span class="shop-project-name">未归属资源</span>
+          <span class="shop-project-meta">{{ orphanCount }} 项历史资源</span>
+        </span>
+      </button>
     </div>
 
-    <div v-if="!projects.length && !orphanCount" class="shop-empty">
-      <p>还没有店铺项目。</p>
-      <p class="shop-empty-hint">
-        一个项目 = 一家店的经营上下文（对话 + 资源）。新建后，在中间绑定
-        <strong>店铺 / 仓储 / 物流</strong>，并按 商品 → 订单 → 发货 经营。
-      </p>
+    <div v-if="!projects.length && !orphanCount" class="shop-project-empty">
+      <span class="shop-project-empty-icon" aria-hidden="true"><FolderOpened /></span>
+      <strong>先建一个店铺项目</strong>
+      <p>开店资料、AI 对话和后续商品订单都会归到这个项目。</p>
+      <el-button size="small" type="primary" plain @click="emit('create-project')">新建店铺项目</el-button>
     </div>
   </div>
 
   <!-- 当前项目下的资源（店铺列表带 演示/测试/生产 · 有货源/无货源 角标） -->
   <div class="shop-shops">
     <div class="shop-shops-head">
-      <span class="shop-side-title">资源</span>
+      <div class="shop-side-heading">
+        <span class="shop-side-title">已接入资源</span>
+        <span class="shop-side-count">{{ shops.length }}</span>
+      </div>
       <el-button
         size="small"
         type="primary"
@@ -51,9 +63,10 @@
         @click="emit('create-connection')"
       >＋ 连接</el-button>
     </div>
-    <div
+    <button
       v-for="c in shops"
       :key="c.id"
+      type="button"
       class="shop-shop-row"
       :class="{ active: c.id === activeShopId }"
       @click="emit('select-shop', c.id)"
@@ -64,10 +77,23 @@
         <el-tag size="small" effect="plain" :type="shopTypeMeta(c).tag">{{ shopTypeMeta(c).label }}</el-tag>
         <el-tag size="small" effect="plain" :type="supplyMeta(c).tag">{{ supplyMeta(c).label }}</el-tag>
       </span>
+    </button>
+    <div v-if="!shops.length" class="shop-resource-empty" role="status">
+      <span class="shop-resource-empty-icon" aria-hidden="true"><Shop /></span>
+      <strong>{{ activeProjectId ? '还没有接入店铺' : '先选择一个店铺项目' }}</strong>
+      <p>
+        {{ activeProjectId
+          ? '接入后可同步商品、订单和库存；仓储与物流也从这里添加。'
+          : '新建项目后再接入店铺、仓储或物流。' }}
+      </p>
+      <el-button
+        size="small"
+        type="primary"
+        plain
+        :disabled="!activeProjectId"
+        @click="emit('create-connection')"
+      >接入店铺</el-button>
     </div>
-    <p v-if="!shops.length" class="shop-empty-hint">
-      {{ activeProjectId ? '这个项目还没有资源，点「＋ 连接」登记一条。' : '先在左侧新建一个店铺项目。' }}
-    </p>
   </div>
 
   <!-- 演示数据：空控制台一眼看懂怎么用；清空只删当前项目的 demo 行 -->
@@ -76,13 +102,13 @@
       <span class="shop-demo-hint">{{ demoCount }} 条演示数据</span>
       <el-button size="small" text type="danger" :loading="demoBusy" @click="emit('clear-demo')">清空演示</el-button>
     </template>
-    <el-button v-else size="small" text type="primary" :loading="demoBusy" @click="emit('seed-demo')">＋ 创建演示项目</el-button>
+    <el-button v-else size="small" text type="primary" :loading="demoBusy" @click="emit('seed-demo')">先看演示项目</el-button>
   </div>
 </template>
 
 <script setup lang="ts">
 // 左栏：项目列表 + 当前项目的资源列表（店铺/仓储/物流统一一处，带类型与货源角标）。
-import { ChatLineSquare, Plus, Shop } from '@element-plus/icons-vue';
+import { ChatLineSquare, FolderOpened, Plus, Shop } from '@element-plus/icons-vue';
 import type { ShopConnection } from '../shopSession';
 import { SHOP_TYPE_META, SUPPLY_META, type ShopType, type SupplyMode } from './useShopApi';
 

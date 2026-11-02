@@ -44,13 +44,15 @@ export const SHOP_AGENT_BUILTIN_TOOLS = [
   // 委派 pageAgent 抓数 / 现查平台规则
   'call_agent', 'list_sub_agents', 'spawn_subagent',
   // 店铺连接与本地业务库（P0 已落地）
-  'conn_list', 'conn_check',
+  // conn_delete 故意不挂：删连接属于高风险管理动作，只在控制台人工操作。
+  'conn_list', 'conn_create', 'conn_update', 'conn_check',
   'shop_dashboard', 'shop_product_list', 'shop_order_list',
   'shop_product_create', 'shop_product_update',
-  'shop_price_update', 'shop_stock_update', 'shop_listing_publish',
+  'shop_price_update', 'shop_stock_update', 'shop_listing_publish', 'shop_listing_create',
+  'shop_campaign_apply', 'shop_reply_send', 'shop_order_place',
   'shop_order_ship', 'shop_shipment_track', 'shop_platform_open',
   // 平台官方 API（读直接执行；写仍走变更单闸门）
-  'shop_api_check', 'shop_platform_api', 'shop_platform_sync',
+  'shop_sp_api_check', 'shop_api_check', 'shop_platform_api', 'shop_platform_sync',
   'shop_purchase_list', 'shop_purchase_create', 'shop_purchase_update', 'shop_purchase_jump',
   'shop_track_query', 'shop_write_log',
   // 交互与规划
@@ -103,6 +105,7 @@ export const SHOP_AGENT_SYSTEM_PROMPT = `你是「店铺运营助手」（shopAg
 3. **账号与资质**：按平台现查材料清单。账号注册、实名认证、验证码、收款绑定和最终提交由用户本人完成；你负责打开官方入口、逐步指引、核对字段。
 4. **开店后立即衔接经营**：平台开店完成并登记连接后，继续做选品、货源、Listing、定价、库存/履约和首单检查，不要重新从“你卖什么”问起。
 5. **短路径执行**：简单查询直接调用对应工具；只有平台规则、页面数据或多步网页操作才委派 pageAgent。工具已经返回结果后，不重复调用同一工具求证。
+6. **浏览器导航纪律**：同一任务对同一 URL 只调用一次 browser_navigate。若返回“浏览器页面未就绪”，不得再次 navigate；先 browser_get_tabs 查看已有 tab，再用 browser_get_page_content / browser_wait_for 按 tabId 等待或读取。预览面板始终无法创建时，停止重试并明确让用户点击右上角“浏览器预览”。
 
 ## 硬约束
 - **写操作一律先出变更单**：改价 / 改库存 / 上下架 / 新建或编辑商品 / 发货，必须先用对应工具（不带 confirmed）把变更单交给用户，**用户明确同意后**再原样重试并带 confirmed: true；生产店铺再加 approveProduction: true。绝不允许自己批准自己。获批后本地业务库命中时工具会直接改库并回读（控制台实时可见）；平台侧动作按指引由 pageAgent 完成。
@@ -161,6 +164,7 @@ export const shopModeScene: BuiltinSceneDef = {
       '- 账号注册、登录、实名认证、验证码、收款与付款由用户本人完成；你负责打开官方入口、逐步指引和核对，不代填敏感信息。',
       '- 改价/改库存/上下架/建品/发货等写操作先出变更单，用户确认后执行；不要再说“当前版本只能只读”。',
       '- 工具调用走短路径：简单查询直接执行，平台规则与多步网页操作才委派 pageAgent；已有结果不重复查。',
+      '- 浏览器导航同一 URL 只做一次；页面未就绪时改用 browser_get_tabs / browser_get_page_content 等待，不得连续重复 browser_navigate。',
     ].join('\n'),
     skillKeywords: ['选品', '店铺', '亚马逊', 'amazon', '淘宝', '1688', '跨境', 'listing', '利润', 'shop'],
     examples: [
