@@ -3,6 +3,10 @@
 // 本体字段通过 refAttr 引用属性的 key；带子节点的属性其子节点 value 即枚举取值（供智能体召回）。
 import { v4 as uuid } from 'uuid';
 import { db } from '../db.js';
+import { getConnector, type DataSourceRow } from './connector.js';
+import { guardSqlConsole } from './sql-guard.js';
+
+export type EnumSource = 'manual' | 'sql' | 'distinct';
 
 export interface StdAttrNode {
   id: string;
@@ -16,6 +20,10 @@ export interface StdAttrNode {
   description: string;
   synonyms: string[];
   enums: string[];
+  /** 枚举来源：manual 手填 / sql 只读 SELECT / distinct 对 SELECT 结果去重 */
+  enumSource: EnumSource;
+  enumSql: string;
+  enumDatasourceId: string;
   children: StdAttrNode[];
 }
 
@@ -31,6 +39,9 @@ interface StdAttrRow {
   description: string | null;
   synonyms_json: string | null;
   enum_json: string | null;
+  enum_source: string | null;
+  enum_sql: string | null;
+  enum_datasource_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -57,6 +68,9 @@ function toNode(row: StdAttrRow): StdAttrNode {
     description: row.description || '',
     synonyms: parseList(row.synonyms_json),
     enums: parseList(row.enum_json),
+    enumSource: (row.enum_source === 'sql' || row.enum_source === 'distinct' ? row.enum_source : 'manual') as EnumSource,
+    enumSql: row.enum_sql || '',
+    enumDatasourceId: row.enum_datasource_id || '',
     children: [],
   };
 }
@@ -110,6 +124,9 @@ export interface StdAttrInput {
   description?: string;
   synonyms?: string[];
   enums?: string[];
+  enumSource?: EnumSource;
+  enumSql?: string;
+  enumDatasourceId?: string;
 }
 
 const DATA_TYPES = new Set(['string', 'number', 'date', 'boolean', 'enum']);
@@ -135,13 +152,16 @@ export function createStdAttrNode(userId: string, input: StdAttrInput): StdAttrN
     const dataType = input.dataType && DATA_TYPES.has(input.dataType) ? input.dataType : 'string';
     try {
       db.prepare(
-        'INSERT INTO std_attribute (id, user_id, kind, parent_id, key, name, value, data_type, unit, description, synonyms_json, enum_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO std_attribute (id, user_id, kind, parent_id, key, name, value, data_type, unit, description, synonyms_json, enum_json, enum_source, enum_sql, enum_datasource_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).run(
         id, userId, 'attr', parentId, key,
         input.name?.trim() || key, input.value?.trim() || null, dataType,
         input.unit?.trim() || null, input.description?.trim() || null,
         JSON.stringify((input.synonyms || []).map((s) => s.trim()).filter(Boolean)),
         JSON.stringify((input.enums || []).map((s) => String(s).trim()).filter((s) => s !== '')),
+        input.enumSource === 'sql' || input.enumSource === 'distinct' ? input.enumSource : 'manual',
+        input.enumSql?.trim() || null,
+        input.enumDatasourceId?.trim() || null,
         now, now,
       );
     } catch (e) {
@@ -190,16 +210,23 @@ export function updateStdAttrNode(userId: string, id: string, input: StdAttrInpu
   const dataType = input.dataType && DATA_TYPES.has(input.dataType) ? input.dataType : undefined;
   const enums = input.enums !== undefined ? JSON.stringify(input.enums.map((s) => String(s).trim()).filter((s) => s !== '')) : undefined;
   const synonyms = input.synonyms !== undefined ? JSON.stringify(input.synonyms.map((s) => s.trim()).filter(Boolean)) : undefined;
+  const enumSource = input.enumSource === 'sql' || input.enumSource === 'distinct'
+    ? input.enumSource
+    : input.enumSource === 'manual' ? 'manual' : undefined;
   try {
     db.prepare(
       `UPDATE std_attribute SET
          key = COALESCE(?, key), name = COALESCE(?, name), value = COALESCE(?, value),
          data_type = COALESCE(?, data_type), unit = COALESCE(?, unit), description = COALESCE(?, description),
-         synonyms_json = COALESCE(?, synonyms_json), enum_json = COALESCE(?, enum_json), updated_at = ?
+         synonyms_json = COALESCE(?, synonyms_json), enum_json = COALESCE(?, enum_json),
+         enum_source = COALESCE(?, enum_source), enum_sql = COALESCE(?, enum_sql),
+         enum_datasource_id = COALESCE(?, enum_datasource_id), updated_at = ?
        WHERE id = ? AND user_id = ?`,
     ).run(
       key ?? null, input.name?.trim() ?? null, input.value?.trim() ?? null, dataType ?? null,
-      input.unit?.trim() ?? null, input.description?.trim() ?? null, synonyms, enums, Date.now(), id, userId,
+      input.unit?.trim() ?? null, input.description?.trim() ?? null, synonyms, enums,
+      enumSource ?? null, input.enumSql?.trim() ?? null, input.enumDatasourceId?.trim() ?? null,
+      Date.now(), id, userId,
     );
   } catch (e) {
     if (String((e as Error).message).includes('UNIQUE')) throw new Error(`key 已存在: ${key}`);
@@ -218,4 +245,61 @@ export function deleteStdAttrNode(userId: string, id: string): void {
     db.prepare('UPDATE std_attribute SET parent_id = ?, updated_at = ? WHERE id = ?').run(node.parentId ?? null, now, c.id);
   }
   db.prepare('DELETE FROM std_attribute WHERE id = ? AND user_id = ?').run(id, userId);
+}
+
+export interface EnumPreview {
+  values: string[];
+  sql: string;
+  source: EnumSource;
+  datasourceId: string;
+}
+
+/**
+ * 枚举预览（P3.7）：只读 SELECT → 首列去重值（最多 30）。
+ * manual 不走 SQL；sql 原样执行；distinct 对结果整体去重。
+ */
+export async function previewEnum(
+  userId: string,
+  opts: { id?: string; datasourceId?: string; sql?: string; source?: EnumSource },
+): Promise<EnumPreview> {
+  let datasourceId = String(opts.datasourceId || '').trim();
+  let sql = String(opts.sql || '').trim();
+  let source: EnumSource = opts.source || 'sql';
+
+  if (opts.id) {
+    const node = getStdAttrById(userId, opts.id);
+    if (!node) throw new Error('标准属性节点不存在');
+    datasourceId = node.enumDatasourceId;
+    sql = node.enumSql;
+    source = node.enumSource;
+  }
+  if (source === 'manual') throw new Error('手工枚举无需预览，直接编辑取值');
+  if (!datasourceId) throw new Error('缺少数据源（enumDatasourceId）');
+  if (!sql) throw new Error('缺少枚举 SELECT（enumSql）');
+
+  const guard = guardSqlConsole(sql, false);
+  if (!guard.ok || !guard.reads.length) throw new Error('枚举来源只允许只读 SELECT 语句');
+  const stat = guard.reads[0].text;
+  const finalSql = source === 'distinct' ? `SELECT DISTINCT * FROM (${stat}) _enum LIMIT 30` : stat;
+
+  const ds = db.prepare('SELECT * FROM data_source WHERE id = ? AND user_id = ?').get(datasourceId, userId) as DataSourceRow | undefined;
+  if (!ds) throw new Error('数据源不存在');
+  const r = await getConnector(ds).query(finalSql, { maxRows: 30, timeoutMs: 15000 });
+  const values = [...new Set(
+    r.rows
+      .map((row) => String(Object.values(row)[0] ?? '').trim())
+      .filter(Boolean),
+  )].slice(0, 30);
+  return { values, sql: finalSql, source, datasourceId };
+}
+
+/** 刷新枚举：跑一次预览并写回 enum_json（人工可再改） */
+export async function refreshEnum(userId: string, id: string): Promise<StdAttrNode> {
+  const node = getStdAttrById(userId, id);
+  if (!node) throw new Error('标准属性节点不存在');
+  if (node.kind !== 'attr') throw new Error('只有属性节点才有枚举');
+  if (node.enumSource === 'manual') throw new Error('手工枚举请直接编辑取值');
+  const preview = await previewEnum(userId, { id });
+  updateStdAttrNode(userId, id, { enums: preview.values });
+  return getStdAttrById(userId, id)!;
 }

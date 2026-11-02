@@ -5548,6 +5548,10 @@ try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_std_attr_user_key ON std_at
 try { db.exec("ALTER TABLE std_attribute ADD COLUMN parent_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE std_attribute ADD COLUMN value TEXT"); } catch {}
 try { db.exec("ALTER TABLE std_attribute ADD COLUMN kind TEXT DEFAULT 'attr'"); } catch {}
+// 枚举来源（P3.7）：manual=手填/JSON；sql=自定义只读 SELECT；distinct=对 SELECT 结果去重
+try { db.exec("ALTER TABLE std_attribute ADD COLUMN enum_source TEXT DEFAULT 'manual'"); } catch {}
+try { db.exec("ALTER TABLE std_attribute ADD COLUMN enum_sql TEXT"); } catch {}
+try { db.exec("ALTER TABLE std_attribute ADD COLUMN enum_datasource_id TEXT"); } catch {}
 // 旧库迁移：selections_json（本体级选择列契约：默认直拼 + 非默认关键字召回）
 try { db.exec("ALTER TABLE ontology ADD COLUMN selections_json TEXT DEFAULT '[]'"); } catch {}
 

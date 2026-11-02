@@ -47,7 +47,7 @@
 - [x] 3.5 `routes/ontologies.ts`：CRUD + yaml/import-yaml/compile/explain/preview-data/try-run/publish/impact
 - [x] 3.6 `views/OntologyPage.vue` + SettingsDrawer 加 `ontology` section：语义区 + 技术映射区 + 四按钮 + draft/published 态
 - [ ] 3.7 **标准属性库**：`routes/std-attributes.ts` + CRUD + preview-sql + refresh；枚举三来源（手工/JSON、SQL 字典、DISTINCT 采样）；表格⇄JSON 双模式编辑
-  → 2026-11-02 核实：CRUD + 树结构（group/attr）+ 手工枚举已落地；**preview-sql / refresh / SQL 字典与 DISTINCT 采样未做**。
+  → 2026-11-02：**后端完成** —— std_attribute 增 `enum_source`（manual/sql/distinct）/`enum_sql`/`enum_datasource_id`；`POST /api/std-attributes/preview-enum` 与 `POST /:id/refresh-enum`（只读护栏 + 首列去重 ≤30，distinct 对结果整体去重）；6 例测试。**前端表格⇄JSON 双模式编辑未做**。
 - [x] 3.8 关系管理 UI：suggested 列表 → 确认/拒绝；关系图可视化（可选）
   → 2026-11-02：`OntologyRelationSuggestDialog.vue` —— 按当前本体来源表过滤建议、目标表映射到同数据源本体 code、置信度/原因展示、单条或「全部采用」写入关系表单（去重，保存草稿后生效）；目标本体未生成时禁用。关系图可视化（可选项）未做。
 
