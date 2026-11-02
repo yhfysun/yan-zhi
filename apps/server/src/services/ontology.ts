@@ -59,6 +59,7 @@ interface OntologyRow {
   created_at: number;
   updated_at: number;
   published_at: number | null;
+  published_json: string | null;
 }
 
 export interface OntologyEntity { name: string; type: 'primary' | 'foreign'; expr: string }
@@ -344,12 +345,117 @@ export function deleteOntology(userId: string, id: string): void {
 }
 
 /** 发布：草稿对智能体不可见，发布即改取数口径（version 持久递增） */
+/** 发布快照：冻结口径，供预检 diff 与 24h 回滚 */
+function snapshotOf(row: OntologyRow): string {
+  return JSON.stringify({
+    description: row.description || '',
+    dimensions: parseJsonList<OntologyDimension>(row.dimensions_json),
+    timeDimensions: parseJsonList<OntologyTimeDimension>(row.time_dimensions_json),
+    measures: parseJsonList<OntologyMeasure>(row.measures_json),
+  });
+}
+
 export function publishOntology(userId: string, id: string): OntologyInfo {
   const row = getRow(userId, id);
   if (!row) throw new Error('本体不存在');
   const now = Date.now();
-  db.prepare("UPDATE ontology SET status='published', version=version+1, published_at=?, updated_at=? WHERE id=? AND user_id=?").run(
-    now, now, id, userId,
+  db.prepare("UPDATE ontology SET status='published', version=version+1, published_at=?, published_json=?, updated_at=? WHERE id=? AND user_id=?").run(
+    now, snapshotOf(row), now, id, userId,
+  );
+  return toInfo(getRow(userId, id)!);
+}
+
+export interface OntologyFieldDiff {
+  kind: 'description' | 'dimension' | 'time' | 'measure';
+  name: string;
+  change: 'added' | 'removed' | 'changed';
+  before?: string;
+  after?: string;
+}
+
+/** 发布预检影响面（P6.8）：口径 diff + 引用本体的智能体 + 回滚窗口 */
+export function impactOntology(userId: string, id: string): {
+  version: number;
+  publishedAt: number | null;
+  baselineExists: boolean;
+  diff: OntologyFieldDiff[];
+  agents: Array<{ id: string; name: string; mounted: boolean }>;
+  rollbackUntil: number | null;
+} {
+  const row = getRow(userId, id);
+  if (!row) throw new Error('本体不存在');
+  let base: any = null;
+  try { base = row.published_json ? JSON.parse(row.published_json) : null; } catch { base = null; }
+
+  const current = {
+    description: row.description || '',
+    dimensions: parseJsonList<any>(row.dimensions_json),
+    timeDimensions: parseJsonList<any>(row.time_dimensions_json),
+    measures: parseJsonList<any>(row.measures_json),
+  };
+  const diff: OntologyFieldDiff[] = [];
+  if (!base) {
+    for (const d of current.dimensions) diff.push({ kind: 'dimension', name: d.name, change: 'added', after: d.description || '' });
+    for (const t of current.timeDimensions) diff.push({ kind: 'time', name: t.name, change: 'added', after: t.description || '' });
+    for (const m of current.measures) diff.push({ kind: 'measure', name: m.name, change: 'added', after: m.description || '' });
+  } else {
+    if ((base.description || '') !== current.description) {
+      diff.push({ kind: 'description', name: '本体描述', change: 'changed', before: base.description || '', after: current.description });
+    }
+    const compare = (kind: OntologyFieldDiff['kind'], before: any[], after: any[], fmt: (x: any) => string) => {
+      const b = new Map(before.map((x) => [x.name, x]));
+      const a = new Map(after.map((x) => [x.name, x]));
+      for (const [name, x] of a) {
+        const old = b.get(name);
+        if (!old) diff.push({ kind, name, change: 'added', after: fmt(x) });
+        else if (fmt(old) !== fmt(x)) diff.push({ kind, name, change: 'changed', before: fmt(old), after: fmt(x) });
+      }
+      for (const [name, x] of b) if (!a.has(name)) diff.push({ kind, name, change: 'removed', before: fmt(x) });
+    };
+    const fmt = (x: any) => `${x.expr || ''}${x.agg ? ` · ${x.agg}` : ''}${x.description ? ` · ${x.description}` : ''}`;
+    compare('dimension', base.dimensions || [], current.dimensions, fmt);
+    compare('time', base.timeDimensions || [], current.timeDimensions, fmt);
+    compare('measure', base.measures || [], current.measures, fmt);
+  }
+
+  const agentRows = db.prepare('SELECT id, name, ontology_ids FROM agent WHERE user_id = ?').all(userId) as any[];
+  const agents = agentRows
+    .map((a) => {
+      let ids: string[] = [];
+      try { const v = JSON.parse(a.ontology_ids || '[]'); ids = Array.isArray(v) ? v.map(String) : []; } catch { ids = []; }
+      // '[]' = 不限（全部已发布本体）—— 视为引用，命中受影响
+      const mounted = ids.length === 0 || ids.includes(id);
+      return { id: a.id, name: a.name, mounted };
+    })
+    .filter((a) => a.mounted);
+
+  return {
+    version: row.version,
+    publishedAt: row.published_at ?? null,
+    baselineExists: !!base,
+    diff,
+    agents,
+    rollbackUntil: row.published_at ? row.published_at + 24 * 3600 * 1000 : null,
+  };
+}
+
+/** 24h 回滚：恢复上一次发布快照（版本 +1，保持已发布） */
+export function rollbackOntology(userId: string, id: string): OntologyInfo {
+  const row = getRow(userId, id);
+  if (!row) throw new Error('本体不存在');
+  if (!row.published_json) throw new Error('没有可回滚的发布快照');
+  if (!row.published_at || Date.now() - row.published_at > 24 * 3600 * 1000) {
+    throw new Error('已超过 24 小时回滚窗口');
+  }
+  let snap: any;
+  try { snap = JSON.parse(row.published_json); } catch { throw new Error('发布快照损坏'); }
+  db.prepare(
+    `UPDATE ontology SET description = ?, dimensions_json = ?, time_dimensions_json = ?, measures_json = ?,
+       status = 'published', version = version + 1, updated_at = ? WHERE id = ? AND user_id = ?`,
+  ).run(
+    snap.description || null, JSON.stringify(snap.dimensions || []),
+    JSON.stringify(snap.timeDimensions || []), JSON.stringify(snap.measures || []),
+    Date.now(), id, userId,
   );
   return toInfo(getRow(userId, id)!);
 }

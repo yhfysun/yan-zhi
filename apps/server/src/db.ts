@@ -5554,6 +5554,8 @@ try { db.exec("ALTER TABLE std_attribute ADD COLUMN enum_sql TEXT"); } catch {}
 try { db.exec("ALTER TABLE std_attribute ADD COLUMN enum_datasource_id TEXT"); } catch {}
 // 旧库迁移：selections_json（本体级选择列契约：默认直拼 + 非默认关键字召回）
 try { db.exec("ALTER TABLE ontology ADD COLUMN selections_json TEXT DEFAULT '[]'"); } catch {}
+// 发布快照（P6.8）：发布时冻结口径，用于「发布预检 diff」与 24h 回滚
+try { db.exec('ALTER TABLE ontology ADD COLUMN published_json TEXT'); } catch {}
 
 // ===== AI 富化（P3.5）：任务 + 草稿（人工采纳后才写回本体） =====
 db.exec(`

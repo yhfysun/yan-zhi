@@ -15,6 +15,8 @@ import {
   listOntologies,
   previewOntologyData,
   publishOntology,
+  impactOntology,
+  rollbackOntology,
   tryRunOntology,
   updateOntology,
 } from '../services/ontology.js';
@@ -66,6 +68,24 @@ router.delete('/:id', authMiddleware, (req: Request, res: Response) => {
 router.post('/:id/publish', authMiddleware, (req: Request, res: Response) => {
   try {
     res.json({ data: publishOntology(req.user!.userId, req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/ontologies/:id/impact —— 发布预检：口径 diff + 受影响智能体 + 回滚窗口
+router.get('/:id/impact', authMiddleware, (req: Request, res: Response) => {
+  try {
+    res.json({ data: impactOntology(req.user!.userId, req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/ontologies/:id/rollback —— 24h 内回滚到上一次发布快照
+router.post('/:id/rollback', authMiddleware, (req: Request, res: Response) => {
+  try {
+    res.json({ data: rollbackOntology(req.user!.userId, req.params.id) });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

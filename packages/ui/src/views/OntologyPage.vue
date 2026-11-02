@@ -237,6 +237,13 @@
       </template>
     </el-dialog>
 
+    <OntologyPublishDialog
+      v-model="publishOpen"
+      :ontology-id="form.id"
+      :ontology-name="form.name"
+      @published="onPublished"
+    />
+
     <!-- 中：编辑区 -->
     <div class="ont-mid">
       <div v-if="!form.id" class="ont-mid-empty">
@@ -626,6 +633,7 @@ import OntologyEnrichDialog from '../components/ontology/OntologyEnrichDialog.vu
 import OntologyRelationSuggestDialog from '../components/ontology/OntologyRelationSuggestDialog.vue';
 import OntologyFieldTable from '../components/ontology/OntologyFieldTable.vue';
 import OntologyRelationMap from '../components/ontology/OntologyRelationMap.vue';
+import OntologyPublishDialog from '../components/ontology/OntologyPublishDialog.vue';
 import StdAttributeTree from '../components/StdAttributeTree.vue';
 import '../styles/data-workbench.css';
 import './datasources.css';
@@ -905,6 +913,13 @@ const sourceTable = computed(() => {
 });
 const relationSuggestOpen = ref(false);
 const relationMapOpen = ref(false);
+/** 发布预检弹层（P6.8） */
+const publishOpen = ref(false);
+async function onPublished(): Promise<void> {
+  const id = form.id;
+  await load(true);
+  if (id) await selectOntology(id);
+}
 /** code → 显示名（关系图节点标签；当前编辑中的本体用 form.name） */
 const ontologyNames = computed<Record<string, string>>(() => {
   const map: Record<string, string> = {};
@@ -1096,18 +1111,11 @@ async function publish() {
     ElMessage.error(`有 ${lowConfidenceFields.value.length} 个字段置信度低于 70%（${names}${lowConfidenceFields.value.length > 5 ? ' 等' : ''}），请先补描述或人工确认后再发布`);
     return;
   }
-  publishing.value = true;
-  // 发布前先落草稿（所见即所发）
+  // 发布前先落草稿（所见即所发）；保存完成后再次进入本函数，改为打开预检弹层
   if (dirty.value) {
-    publishing.value = false;
     return save(true);
   }
-  const res = await api.post<OntologyInfo>(`/ontologies/${form.id}/publish`);
-  publishing.value = false;
-  if ('error' in res) return ElMessage.error(res.error);
-  ElMessage.success(`已发布 v${res.data.version}，智能体即刻生效`);
-  await load(true);
-  fillForm(res.data);
+  publishOpen.value = true;
 }
 
 function onHeadCmd(cmd: string) {
