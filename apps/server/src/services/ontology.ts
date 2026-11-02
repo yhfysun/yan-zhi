@@ -557,6 +557,31 @@ export async function tryRunOntology(userId: string, id: string, intent: QueryIn
 }
 
 /**
+ * 按意图执行（P4.7 L3 自纠用）：限行执行；失败时抛出带 `structured` 字段的错误，
+ * 供调用方把 {stage, errors} 原样回喂模型，而不是让模型猜。
+ */
+export async function runOntologyIntent(
+  userId: string, id: string, intent: QueryIntent, maxRows = 1,
+): Promise<{ columns: string[]; rows: Record<string, unknown>[]; rowCount: number; truncated: boolean; latencyMs: number; compiledSql: string; warnings: string[] }> {
+  const { row, ds } = loadWithDatasource(userId, id);
+  let compiled: ReturnType<typeof compileOntologyQuery>;
+  try {
+    const limit = Math.max(1, Math.min(Number((intent as any).limit) || maxRows, maxRows));
+    compiled = compileOntologyQuery(getDialectOf(ds), getSpec(row), { ...intent, limit });
+  } catch (e) {
+    throw Object.assign(e as Error, {
+      structured: { stage: 'compile', errors: ((e as any).compileErrors as string[]) || [(e as Error).message] },
+    });
+  }
+  try {
+    const result = await getConnector(ds).query(compiled.sql, { maxRows });
+    return { ...result, compiledSql: compiled.sql, warnings: compiled.warnings };
+  } catch (e) {
+    throw Object.assign(e as Error, { structured: { stage: 'exec', errors: [(e as Error).message] } });
+  }
+}
+
+/**
  * 智能体取数通道（P4.1）：按 id 或 code 定位本体 → 编译意图 → 只读执行。
  * 与 tryRunOntology 的区别：这里允许用 code 引用（LLM 从 api_ontology_search 拿到的是 code），
  * 且优先命中 published 版本（草稿对智能体不可见）。

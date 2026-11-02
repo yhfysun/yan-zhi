@@ -22,6 +22,7 @@ import {
 } from '../services/ontology.js';
 import { acceptDrafts, discardDrafts, getJob, listJobs, startEnrichJob } from '../services/ontology-enrich.js';
 import { saveExample, searchExamples } from '../services/ontology-example.js';
+import { askOntology } from '../services/ontology-ask.js';
 
 const router = Router();
 
@@ -273,6 +274,21 @@ router.get('/:id/examples', authMiddleware, (req: Request, res: Response) => {
         ? searchExamples(req.user!.userId, q, { ontologyId: req.params.id, limit: 5, minScore: 0 })
         : searchExamples(req.user!.userId, '', { ontologyId: req.params.id, limit: 5, minScore: 0 }),
     });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/ontologies/:id/ask —— L3：自然语言 → DSL → dry-run/执行（失败自动纠错 ≤2 轮）
+router.post('/:id/ask', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const question = String(req.body?.question || '').trim();
+    if (!question) { res.status(400).json({ error: '缺少 question' }); return; }
+    const data = await askOntology(req.user!.userId, req.params.id, question, {
+      dryRun: req.body?.dryRun !== false,
+      limit: Number(req.body?.limit) || undefined,
+    });
+    res.json({ data });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

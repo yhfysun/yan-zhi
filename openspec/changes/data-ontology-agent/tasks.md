@@ -75,8 +75,8 @@
 - [x] 4.5 前端：chat.ts PreviewTabKind 加 `data`；ChatPreviewPane.vue 加 DataResultPanel 分支（分页表/导出/转分析）
   → 2026-11-02 核实：`PreviewTabKind` 已有 `data`，ChatPreviewPane 的 data 分支由 `DataQueryWorkbench` 承载（分页取数/导出/图表），不必另起 DataResultPanel。
 - [x] 4.6 `.msg-content table` markdown 表格样式；文件交付链路沿用（chat.css 既有样式覆盖）
-- [ ] 4.7 已验证问答沉淀：`ontology_example` 命中复用 + 用作 few-shot；L3 逻辑 SQL + dry-run + 结构化错误自纠（≤2 轮）
-  → 2026-11-02 部分：**问答沉淀完成** —— 新增 `ontology_example` 表、`services/ontology-example.ts`（同问题去重保存、中文 bigram 相似度召回、used_count、few-shot 只给问题+DSL 不含物理 SQL）；`digestOntologies` 在有提问时自动召回并注入「已验证问答」，`GET/POST /api/ontologies/:id/examples` 管理；4 例测试。**L3 逻辑 SQL 生成 + dry-run + 结构化错误自纠（≤2 轮）未做**（需模型编排）。
+- [x] 4.7 已验证问答沉淀：`ontology_example` 命中复用 + 用作 few-shot；L3 逻辑 SQL + dry-run + 结构化错误自纠（≤2 轮）
+  → 2026-11-02：问答沉淀 —— `ontology_example` 表 + 去重保存 + 中文 bigram 召回 + used_count，`digestOntologies` 自动注入 few-shot（只给问题+DSL）；L3 —— 新增 `services/ontology-ask.ts`：LLM 产出 intent → 编译+限行 dry-run → 失败回喂 `{stage, errors}` 最多再纠 2 轮 → 成功沉淀示例；`runOntologyIntent` 给错误打 `structured` 标记；`POST /api/ontologies/:id/ask`（dryRun 默认 true）/ `GET/POST /:id/examples`。共 8 例测试（沉淀 4 + 自纠 4）。
 
 ## P5 非关系型与打磨
 
