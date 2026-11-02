@@ -596,6 +596,45 @@ router.post('/tts', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/plugin/clip-mode/multicam —— 多机位编排（声音对齐 + 一键交替切换）
+//
+// body: { conversationId, files: string[], switchEvery?, duration?, start? }
+//
+// ★ 薄壳：真正的对齐/规划/拍平都在 clip_project 的 add_multicam（执行器层），
+//   与智能体调工具走**同一条路径** —— 避免 UI 与模型两套实现漂移。
+// ★ 这里只做 HTTP 级校验（会话、工程、文件存在性），错误直接给可读中文。
+router.post('/multicam', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const files = (Array.isArray(req.body?.files) ? req.body.files : [])
+    .map((f: unknown) => String(f ?? '').trim())
+    .filter(Boolean);
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (files.length < 2) return res.status(400).json({ error: '多机位至少需要勾选 2 个视频文件' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  if (!readClipProject(conversationId)) return res.status(404).json({ error: '工程不存在（先在剪辑工作台建工程）' });
+  for (let i = 0; i < files.length; i++) {
+    try {
+      if (!fs.statSync(files[i]).isFile()) return res.status(400).json({ error: `机位 ${i + 1} 不是文件：${files[i]}` });
+    } catch {
+      return res.status(400).json({ error: `机位 ${i + 1} 文件不存在：${files[i]}` });
+    }
+  }
+
+  const r = await executeApiTool('clip_project', {
+    op: 'add_multicam',
+    files,
+    ...(req.body?.switchEvery == null ? {} : { switchEvery: Number(req.body.switchEvery) }),
+    ...(req.body?.duration == null ? {} : { duration: Number(req.body.duration) }),
+    ...(req.body?.start == null ? {} : { start: Number(req.body.start) }),
+  }, undefined, undefined, undefined, conversationId);
+  if (r.isError) return res.status(500).json({ error: r.content?.[0]?.text || '多机位生成失败' });
+  try {
+    return res.json(JSON.parse(r.content?.[0]?.text || '{}'));
+  } catch {
+    return res.json({ ok: true, raw: r.content?.[0]?.text || '' });
+  }
+});
+
 // GET /api/plugin/clip-mode/recipes —— 配方清单（内置 + 自建）
 //
 // ★ 与对话里的 op=list_recipes 同源（services/clip-recipe-store），UI 与智能体看到的是同一份。

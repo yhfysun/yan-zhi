@@ -332,6 +332,16 @@
             >
               <el-icon :size="13" :class="{ 'cp-spin': talkingCutting }"><Crop /></el-icon>
             </button>
+            <!-- 多机位（P2 MVP）：多个同时录制的机位 → 声音自动对齐 → 等间隔交替切换，
+                 生成一串普通片段拍平进主轨（不做多轨；生成后可在时间轴微调切点） -->
+            <button
+              class="cp-mini"
+              title="多机位：勾选 ≥2 个同时录制的机位视频，先用声音自动对齐，再按间隔交替切换生成普通片段（生成后可在时间轴手动调整）"
+              :disabled="multicamCandidates.length < 2"
+              @click="openMulticam"
+            >
+              <el-icon :size="13"><VideoCamera /></el-icon>
+            </button>
             <!-- 字幕转配音（P1-8）：把选中字幕读成配音，按字幕时间落进音频轨 -->
             <button
               class="cp-mini"
@@ -1559,6 +1569,48 @@
         </div>
         <div class="cp-ins-hint">录音在本机完成、不上传云端；保存后按播放头位置放进音频轨，右侧可调音量/淡入淡出。</div>
       </div>
+    </el-dialog>
+
+    <!-- 多机位（P2 MVP）：勾选机位 → 声音自动对齐 → 等间隔交替生成普通片段 -->
+    <el-dialog v-model="multicamOpen" title="多机位（声音自动对齐）" width="540px" :append-to-body="true">
+      <div class="cp-mc">
+        <div class="cp-mc-note">
+          勾选 <b>≥2 个同时录制的机位视频</b>：会尝试用声音自动对齐各机位，再按间隔在机位间交替切换。
+          <br />生成的是<b>普通片段</b>（已拍平进主轨），生成后可在时间轴上手动调整切点。
+        </div>
+        <div class="cp-mc-list">
+          <label v-for="f in multicamCandidates" :key="f.path" class="cp-mc-item">
+            <input v-model="multicamFiles" type="checkbox" :value="f.path" />
+            <el-icon :size="14"><VideoCamera /></el-icon>
+            <span class="cp-mc-name">{{ f.name }}</span>
+          </label>
+          <div v-if="!multicamCandidates.length" class="cp-empty">素材库里还没有视频文件，先从本机导入。</div>
+        </div>
+        <div class="cp-mc-row">
+          <span>切换间隔</span>
+          <input v-model.number="multicamSwitchEvery" class="cp-num" type="number" min="0.5" max="30" step="0.5" />
+          <em>秒（默认 3）</em>
+        </div>
+        <div class="cp-mc-row">
+          <span>组时长</span>
+          <input v-model.number="multicamDuration" class="cp-num" type="number" min="0" step="1" placeholder="自动" />
+          <em>秒（留空 = 取各机位最短可用）</em>
+        </div>
+        <div class="cp-mc-row">
+          <span>插入位置</span>
+          <input v-model.number="multicamStart" class="cp-num" type="number" min="0" step="1" placeholder="末尾" />
+          <em>秒（留空 = 追加到末尾）</em>
+        </div>
+        <div v-if="multicamError" class="cp-mc-err">{{ multicamError }}</div>
+      </div>
+      <template #footer>
+        <button class="cp-btn" @click="multicamOpen = false">取消</button>
+        <button
+          class="cp-btn primary"
+          :disabled="multicamRunning || multicamFiles.length < 2"
+          @click="runMulticam"
+        >{{ multicamRunning ? '对齐并生成中…' : '生成多机位' }}</button>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="stickerLibOpen" title="贴纸库" width="560px" :append-to-body="true">
@@ -5276,6 +5328,73 @@ const talkingCutting = ref(false);
 /** 字幕转配音（P1-8）：TTS 合成中 */
 const ttsRunning = ref(false);
 
+// ===== 多机位（P2 MVP）=====
+// ★ 扁平化：声音对齐 + 等间隔交替 → 生成普通片段拍平进主轨，不引入多轨模型。
+const multicamOpen = ref(false);
+const multicamRunning = ref(false);
+const multicamError = ref('');
+const multicamFiles = ref<string[]>([]);
+const multicamSwitchEvery = ref(3);
+const multicamDuration = ref<number | null>(null);
+const multicamStart = ref<number | null>(null);
+/** 可作为机位的视频素材（与 isVideo 同口径） */
+const multicamCandidates = computed(() => files.value.filter((f) => isVideo(f)));
+
+function openMulticam() {
+  multicamError.value = '';
+  multicamFiles.value = [];
+  multicamSwitchEvery.value = 3;
+  multicamDuration.value = null;
+  multicamStart.value = null;
+  multicamOpen.value = true;
+}
+
+/**
+ * 提交多机位：服务端对齐 → 规划 → 生成片段 → 插入主轨。
+ * ★ 与智能体走同一个 add_multicam（路由是薄壳），避免 UI/模型两套实现漂移。
+ */
+async function runMulticam() {
+  if (!convId.value) { multicamError.value = '还没有会话'; return; }
+  if (multicamFiles.value.length < 2) { multicamError.value = '至少勾选 2 个机位视频'; return; }
+  multicamRunning.value = true;
+  multicamError.value = '';
+  pendingLabel.value = '多机位对齐与生成';
+  try {
+    type McResp = {
+      ok?: boolean; error?: string; note?: string; segments?: number; angles?: number;
+      groupDurationSec?: number; offsetSec?: number[]; warnings?: string[];
+    };
+    const body: Record<string, unknown> = {
+      conversationId: convId.value,
+      files: [...multicamFiles.value],
+      switchEvery: Number(multicamSwitchEvery.value) || 3,
+    };
+    if (multicamDuration.value != null && Number(multicamDuration.value) > 0) body.duration = Number(multicamDuration.value);
+    if (multicamStart.value != null && Number.isFinite(Number(multicamStart.value))) body.start = Number(multicamStart.value);
+
+    const r = await api.post<McResp>('/plugin/clip-mode/multicam', body) as { data?: McResp; error?: string };
+    if ('error' in r && r.error) { multicamError.value = String(r.error); return; }
+    const d = r.data;
+    if (!d?.ok) { multicamError.value = d?.error || '多机位生成失败'; return; }
+
+    // 片段 id 全变（新增一批），清掉选中避免属性面板指向幽灵片段
+    selectedClipId.value = '';
+    await reloadAll();
+    const offs = (d.offsetSec || []).map((v, i) => `机位${i + 1}:${v}s`).join('，');
+    const warn = d.warnings?.length
+      ? `；警告：${d.warnings[0]}${d.warnings.length > 1 ? `（等 ${d.warnings.length} 条）` : ''}`
+      : '';
+    note(`多机位：${d.segments ?? 0} 段，${d.angles ?? multicamFiles.value.length} 个机位，组时长 ${d.groupDurationSec ?? '?'}s；对齐偏移 ${offs}${warn}`);
+    multicamOpen.value = false;
+    multicamFiles.value = [];
+  } catch (e) {
+    multicamError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    multicamRunning.value = false;
+    pendingLabel.value = '';
+  }
+}
+
 /**
  * 字幕转配音：把**选中的字幕**读成配音，按字幕起点放进音频轨，时长以合成结果为准。
  * ★ 与 ASR 对称：ASR 是"语音→字幕"，这里是"字幕→语音"；
@@ -5771,6 +5890,18 @@ onMounted(async () => {
 .cp-rec-audio { width: 100%; }
 .cp-rec-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
 .cp-rec-on { color: #e11d48; }
+/* 多机位弹窗：机位勾选 + 参数 */
+.cp-mc { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.cp-mc-note { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; }
+.cp-mc-list { max-height: 240px; overflow: auto; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; padding: 8px; }
+.cp-mc-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.cp-mc-item:hover { background: var(--el-fill-color-light); }
+.cp-mc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-mc-row { display: flex; align-items: center; gap: 8px; }
+.cp-mc-row > span { width: 64px; flex: 0 0 auto; color: var(--el-text-color-regular); }
+.cp-mc-row em { font-style: normal; font-size: 12px; color: var(--el-text-color-secondary); }
+.cp-mc-err { color: var(--el-color-danger); font-size: 12px; }
+.cp-mc .cp-empty { padding: 10px 0; text-align: center; }
 /* 取帧失败提示（贴底居中，不遮挡画面主体） */
 .cp-live-err { position: absolute; left: 8px; right: 8px; bottom: 8px; font-size: 11px; line-height: 1.5; padding: 4px 8px; border-radius: 4px; background: rgb(220 38 38 / 88%); color: #fff; text-align: center; z-index: 5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-transport { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 0; }

@@ -3962,7 +3962,7 @@ api_tts_voices 返回 capacityNote 说明音色数不够时，**如实告诉用�
 
 ## 流程
 1. **摸底**：file_list 看素材；op=get 看有没有工程，有就在其上改。
-2. **骨架**：create → add_clip 按播放顺序排段（trimStart/trimEnd 粗剪）→ get 复核。竖屏 1080x1920 / 横屏 1920x1080。
+2. **骨架**：create → add_clip 按播放顺序排段（trimStart/trimEnd 粗剪）；多机位 add_multicam 拍平 → get 复核。竖屏 1080x1920 / 横屏 1920x1080。
 3. **画面**：speed 或 speedCurve（互斥）；fadeIn/fadeOut 做呼吸；colorPreset/colorStrength/adjust/fx 调色；crop 裁黑边；mask 取景/抠像；transition 转场；图片 kenburns；视频 keyframes 运镜；rotate/flip/reverse 方向；add_overlay 画中画、add_sticker 贴纸、add_effect 特效层。
 4. **字幕**：add_text，start/end 相对**成片**（按 get 的 timelineStart/End）。动画全片**最多 2 种**：fade/typewriter/pop·flicker/karaoke/zoom·flychar/slide/shake·wipe/flip3d。文字运动用 transform/keyframes（有变换就不套 animation）。抖音快手 safeArea=true。
 5. **声音**：分段配音 audioFile（默认替换原声，保留现场声传 keepOriginalAudio:true）；set_bgm（有旁白 duck:true）；add_audio 放转场音效/第二段音乐；音效用 sfx search（自然语言）→ render；set_audio_fx 降噪/响度（最多 4 个）。
@@ -3989,11 +3989,11 @@ Vlog：统一 film 调色 + fade 0.6 转场 + slide 地点字幕 + BGM 0.3 duck
 ## 失败
 "加工第 N 段"失败→素材坏，media_edit 重做该段；时长不符→规格不一；字幕偏早/晚→漏算转场；效果没反应→id 拼错被丢弃；转场黑屏→超段长一半。
 
-## 做不到（别承诺）
-AI 智能抠像（只支持纯色色键）/ 美颜 / AI 补帧超分 / 多机位 / 逐条字幕不同字号。
+## 做不到
+AI 智能抠像（只支持纯色色键）/ 美颜 / AI 补帧超分 / 逐条字幕不同字号。
 
 ## 交付
-给：路径/时长、段序、字幕与动画、BGM、还需补什么。**不贴工程 json**，中文输出。
+给：路径/时长、段序、字幕与动画、BGM、还需补什么。**不贴工程**，中文输出。
 素材用本机路径；**不擅自加效果**；缺 ffmpeg 先告知体积再装；缺素材如实说，不造。`,
     },
     {

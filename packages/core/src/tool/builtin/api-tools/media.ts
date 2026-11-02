@@ -554,6 +554,10 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '与 set_bgm 的区别：bgm 是整片铺底、音频层是定时的）；**update_audio** { id|index, patch }；**remove_audio** { id|index }；**clear_audios**；' +
         '**add_tts** 文字转配音 { text, start?, voice?, character?, rate?, volume?, subtitle?, fadeIn?, fadeOut? }' +
         '（本地 TTS 合成后作为**定时音频层**放进时间轴，时长按实测自动对齐；start 缺省接在上一段配音之后；subtitle=true 同时加一条等长字幕）；' +
+        '**add_multicam** 多机位一键交替 { files:[...], switchEvery?, duration?, start? }' +
+        '（★ files 为 ≥2 个**同时录制**的机位视频本机路径：先用声音自动对齐各机位，再按 switchEvery 秒（默认 3，夹 0.5~30）在机位间轮换，' +
+        '生成一串带裁切的**普通片段**拍平进主轨；duration 可选组时长（夹到各机位可用范围内），start 可选插入位置（缺省追加到末尾）；' +
+        '对齐置信度低会在 warnings 里列出。它只做"等间隔交替"这一种切法，逐切点手动切换/多轨未做 —— 生成后可在时间轴上微调）；' +
         '**配方**（把一组 op 存成模板）：**list_recipes** 看清单（内置 + 自建，带参数说明）；' +
         '**apply_recipe** { recipe, params? } 一键套用（任一步失败即停并指出第几步）；' +
         '**save_recipe** { recipe, name, description?, params?, steps:[{op,args}] } 存成自建配方（步骤里可用 "{{参数名}}" 占位）；' +
@@ -579,6 +583,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
               'set_bgm', 'clear_bgm', 'set_audio_fx', 'beat_cut',
               'add_overlay', 'update_overlay', 'remove_overlay', 'render',
               'add_audio', 'update_audio', 'remove_audio', 'clear_audios', 'add_tts',
+              'add_multicam',
               'list_recipes', 'apply_recipe', 'save_recipe', 'delete_recipe',
               'add_sticker', 'update_sticker', 'remove_sticker', 'clear_stickers',
               'add_effect', 'update_effect', 'remove_effect', 'clear_effects',
@@ -906,7 +911,14 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
             },
           },
           text: { type: 'string', description: 'add_tts：要读出来的台词/旁白（与 texts 数组里的 text 是两回事）' },
-          start: { type: 'number', description: 'add_tts：配音放到成片的第几秒；**不传=接在最后一条音频层之后**（多句连续调用自然首尾相接）' },
+          start: { type: 'number', description: 'add_tts：配音放到成片的第几秒；**不传=接在最后一条音频层之后**（多句连续调用自然首尾相接）。add_multicam：多机位组插到成片第几秒（不传=追加到末尾；落在段中间时插到覆盖该时刻的段之后）' },
+          files: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'add_multicam：≥2 个**同时录制**的机位视频本机绝对路径（第 1 个为对齐基准；各机位必须有音轨，用声音自动对齐）',
+          },
+          switchEvery: { type: 'number', description: 'add_multicam：每段切换间隔（秒），默认 3，夹 0.5~30' },
+          duration: { type: 'number', description: 'add_multicam：可选组时长（秒）；不传=各机位可用尾部的最短值，传了会夹到可用范围内' },
           voice: { type: 'string', description: 'add_tts：显式音色（Edge 形如 zh-CN-YunxiNeural，用 api_tts_voices 查；留空按 character 自动分配）' },
           character: { type: 'string', description: 'add_tts：角色名（如"旁白"/"男主"），同角色锁定同一音色' },
           rate: { type: 'number', description: 'add_tts：语速 -10~10，0 为正常' },

@@ -61,6 +61,9 @@ import {
 import { COLOR_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectCatalogText, effectFilter } from '@yan-zhi/shared';
 import { analyzeBeats } from '../services/clip-beats.js';
 import { syncAudioFiles, formatSyncResult } from '../services/clip-audio-sync.js';
+import {
+  buildMulticamFromFiles, planMulticamCuts, buildMulticamSegments, insertMulticamSegments,
+} from '../services/clip-multicam.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
 import { systemSpeak, listSystemVoices, pickVoiceForRole, describeVoiceCapacity, inferRoleGender } from './tts-sapi.js';
@@ -2166,6 +2169,69 @@ export async function clipProjectTool(
     const r = deleteCustomRecipe(id);
     if (!r.ok) return fail(r.error);
     return ok(JSON.stringify({ ok: true, note: `配方 ${id} 已删除` }));
+  }
+
+  // —— 多机位编排（P2）：声音对齐 → 规划轮换 → 拍平成普通片段插进主轨 ——
+  //
+  // ★ 为什么是「扁平化」而不是多轨：主轨是顺序 clips 数组，多机位的产物本来就是
+  //   多次切换后的普通剪辑。对齐与规划是纯函数（clip-multicam），这里只做 IO 串联。
+  // ★ 对齐置信度低不中断（warnings 逐条返回），无音轨/过短才报错 —— 见服务层。
+  if (op === 'add_multicam') {
+    const files = (Array.isArray(args.files) ? args.files : [])
+      .map((f) => String(f ?? '').trim())
+      .filter(Boolean);
+    if (files.length < 2) return fail('add_multicam 需要 files（≥2 个机位视频的本机绝对路径）');
+    if (!cur) return fail('当前会话还没有剪辑工程（先 op=create）');
+
+    const switchEverySec = args.switchEvery == null ? undefined : Number(args.switchEvery);
+    if (switchEverySec != null && !Number.isFinite(switchEverySec)) return fail('switchEvery 必须是秒数');
+    const durationSec = args.duration == null ? undefined : Number(args.duration);
+    if (durationSec != null && !(durationSec > 0)) return fail('duration 必须是大于 0 的秒数');
+    const startSec = args.start == null ? undefined : Number(args.start);
+    if (startSec != null && !Number.isFinite(startSec)) return fail('start 必须是秒数（成片时间轴位置）');
+
+    const ff = await resolveFfmpeg();
+    if (!ff.ok) return fail(ffmpegMissingHint(ff));
+
+    const align = await buildMulticamFromFiles(files, {
+      ...(args.maxLagSec == null ? {} : { maxLagSec: Number(args.maxLagSec) }),
+    });
+    if (!align.ok) return fail(align.error);
+
+    const plan = planMulticamCuts({
+      angles: align.angles,
+      ...(switchEverySec != null ? { switchEverySec } : {}),
+      ...(durationSec != null ? { durationSec } : {}),
+    });
+    if (!plan.ok) return fail(plan.error);
+
+    const built = buildMulticamSegments(cur, plan.cuts, (i) => `mc${Date.now().toString(36)}-${i + 1}`);
+    if (!built.ok) return fail(built.error);
+
+    // 插入位置需要现有各段的真实时长；追加到末尾则不必探测。
+    let durations: Record<string, number> = {};
+    if (startSec != null) {
+      const probed = await probeClipSegments(ff.ffprobe, cur);
+      durations = probed.durations;
+    }
+    const inserted = insertMulticamSegments(cur, built.segments, {
+      ...(startSec != null ? { startSec } : {}),
+      durations,
+    });
+    if (!inserted.ok) return fail(inserted.error);
+    await saveClipProject(conversationId, inserted.project);
+
+    return ok(JSON.stringify({
+      ok: true,
+      angles: align.angles.length,
+      offsetSec: align.offsetSec,
+      segments: built.segments.length,
+      groupDurationSec: plan.groupDurationSec,
+      warnings: [...align.warnings, ...plan.warnings],
+      note:
+        `多机位已生成 ${built.segments.length} 段（${align.angles.length} 个机位，组时长 ${plan.groupDurationSec}s）：` +
+        `${inserted.note}。生成后可在时间轴上手动微调切点。`,
+    }));
   }
 
   // —— 文字转配音（P1-8）：合成 → 量时长 → 作为**定时音频层**落进工程 ——
