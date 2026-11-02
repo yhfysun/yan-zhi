@@ -25,6 +25,10 @@ export interface OntologyDimension {
   sampleValues?: string[];
   /** 候选枚举（低基数列的 DISTINCT 值） */
   enums?: string[];
+  /** AI 富化置信度（0~1）；人工确认后不再变 */
+  confidence?: number;
+  /** 人工确认锁定：同步/富化不再覆盖 */
+  locked?: boolean;
 }
 
 export interface OntologyTimeDimension {
@@ -35,6 +39,8 @@ export interface OntologyTimeDimension {
   role?: string;
   synonyms?: string[];
   granularities?: TimeGrain[];
+  confidence?: number;
+  locked?: boolean;
 }
 
 export interface OntologyMeasure {
@@ -48,6 +54,8 @@ export interface OntologyMeasure {
   displayName?: string;
   role?: string;
   synonyms?: string[];
+  confidence?: number;
+  locked?: boolean;
 }
 
 /**

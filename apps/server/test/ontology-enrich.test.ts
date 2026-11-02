@@ -153,7 +153,7 @@ describe('采纳 / 丢弃', () => {
 
     const row = db.prepare('SELECT dimensions_json FROM ontology WHERE id = ?').get(OID) as any;
     const dims = JSON.parse(row.dimensions_json) as any[];
-    expect(dims.find((d) => d.name === 'region')).toMatchObject({ description: '销售大区', synonyms: ['大区'] });
+    expect(dims.find((d) => d.name === 'region')).toMatchObject({ description: '销售大区', synonyms: ['大区'], confidence: 0.8, locked: true });
     expect(dims.find((d) => d.name === 'status').description).toBe('人工口径');
 
     const drafts = getJob(UID, OID, jobId).drafts;

@@ -304,6 +304,9 @@
             </div>
           </div>
 
+          <!-- 字段总览（P6.5）：角色/置信度/锁定；低置信度禁止发布 -->
+          <OntologyFieldTable v-if="allFields.length" :fields="allFields" />
+
           <!-- 选择列 / 度量 / 时间维度 -->
           <div class="ont-fgroup">
             <span>选择列 / 度量 / 时间维度</span>
@@ -602,6 +605,7 @@ import { api } from '../api/client';
 import CompileTrack, { type CompileStage } from '../components/CompileTrack.vue';
 import OntologyEnrichDialog from '../components/ontology/OntologyEnrichDialog.vue';
 import OntologyRelationSuggestDialog from '../components/ontology/OntologyRelationSuggestDialog.vue';
+import OntologyFieldTable from '../components/ontology/OntologyFieldTable.vue';
 import StdAttributeTree from '../components/StdAttributeTree.vue';
 import '../styles/data-workbench.css';
 import './datasources.css';
@@ -620,9 +624,9 @@ interface OntologyInfo {
   description: string | null;
   synonyms: string[];
   sourceSql: string;
-  dimensions: { name: string; expr: string; description?: string }[];
-  timeDimensions: { name: string; expr: string; description?: string }[];
-  measures: { name: string; expr: string; agg: string; description?: string }[];
+  dimensions: { name: string; expr: string; description?: string; displayName?: string; role?: string; synonyms?: string[]; sampleValues?: string[]; enums?: string[]; confidence?: number; locked?: boolean }[];
+  timeDimensions: { name: string; expr: string; description?: string; displayName?: string; role?: string; synonyms?: string[]; confidence?: number; locked?: boolean }[];
+  measures: { name: string; expr: string; agg: string; description?: string; displayName?: string; role?: string; synonyms?: string[]; confidence?: number; locked?: boolean }[];
   filters: { name: string; expr: string; keywords?: string[]; isDefault?: boolean; description?: string }[];
   selections: { name: string; description?: string; keywords?: string[]; fields?: string[] }[];
   relations: {
@@ -829,9 +833,9 @@ const REL_TYPES = ['1:1', '1:N', 'N:1', 'N:N'] as const;
 const form = reactive({
   id: '', datasourceId: '', code: '', name: '', domain: '', description: '',
   synonymsText: '', sourceSql: '',
-  dimensions: [] as { name: string; expr: string; refAttr: string; description: string }[],
-  measures: [] as { name: string; expr: string; agg: string; refAttr: string; description: string }[],
-  timeDimensions: [] as { name: string; expr: string; description: string }[],
+  dimensions: [] as { name: string; expr: string; refAttr: string; description: string; displayName?: string; role?: string; synonyms?: string[]; sampleValues?: string[]; enums?: string[]; confidence?: number; locked?: boolean }[],
+  measures: [] as { name: string; expr: string; agg: string; refAttr: string; description: string; displayName?: string; role?: string; synonyms?: string[]; confidence?: number; locked?: boolean }[],
+  timeDimensions: [] as { name: string; expr: string; description: string; displayName?: string; role?: string; synonyms?: string[]; confidence?: number; locked?: boolean }[],
   selections: [] as { name: string; keywordsText: string; fields: string[] }[],
   filters: [] as { name: string; keywordsText: string; isDefault: boolean; expr: string; description: string }[],
   relations: [] as {
@@ -881,6 +885,27 @@ const sourceTable = computed(() => {
 });
 const relationSuggestOpen = ref(false);
 
+/** 字段总览（P6.5）：角色/置信度/锁定；锁定默认取「描述非空」= 人工已确认 */
+function pickFields(kind: 'dimension' | 'time' | 'measure', arr: any[]): any[] {
+  return arr.filter((x) => x.name).map((x) => ({
+    kind,
+    name: x.name,
+    displayName: x.displayName,
+    role: x.role,
+    description: x.description,
+    confidence: x.confidence,
+    locked: !!x.locked || !!String(x.description || '').trim(),
+    samples: x.sampleValues?.length || 0,
+    enums: x.enums?.length || 0,
+  }));
+}
+const allFields = computed(() => [
+  ...pickFields('dimension', form.dimensions),
+  ...pickFields('time', form.timeDimensions),
+  ...pickFields('measure', form.measures),
+]);
+const lowConfidenceFields = computed(() => allFields.value.filter((f) => typeof f.confidence === 'number' && f.confidence < 0.7));
+
 /** 采用一条推断关联（去重后加入表单，保存草稿才落库） */
 function onAdoptRelation(rel: { target: string; sourceAttr: string; targetAttr: string }): void {
   const dup = form.relations.some((r) => r.target === rel.target && r.sourceAttr === rel.sourceAttr && r.targetAttr === rel.targetAttr);
@@ -918,9 +943,9 @@ function fillForm(o: OntologyInfo) {
     id: o.id, datasourceId: o.datasourceId, code: o.code, name: o.name,
     domain: o.domain || '', description: o.description || '',
     synonymsText: o.synonyms.join('\n'), sourceSql: o.sourceSql,
-    dimensions: o.dimensions.map((d) => ({ name: d.name, expr: d.expr, refAttr: (d as any).refAttr || '', description: d.description || '' })),
-    measures: o.measures.map((m) => ({ name: m.name, expr: m.expr, agg: m.agg, refAttr: (m as any).refAttr || '', description: m.description || '' })),
-    timeDimensions: o.timeDimensions.map((t) => ({ name: t.name, expr: t.expr, description: t.description || '' })),
+    dimensions: o.dimensions.map((d) => ({ ...extras(d), name: d.name, expr: d.expr, refAttr: (d as any).refAttr || '', description: d.description || '' })),
+    measures: o.measures.map((m) => ({ ...extras(m), name: m.name, expr: m.expr, agg: m.agg, refAttr: (m as any).refAttr || '', description: m.description || '' })),
+    timeDimensions: o.timeDimensions.map((t) => ({ ...extras(t), name: t.name, expr: t.expr, description: t.description || '' })),
     selections: (o.selections || []).map((s) => ({ name: s.name, keywordsText: joinKw([...(s.keywords || []), ...(s.description ? [s.description] : [])]), fields: [...(s.fields || (s.name ? [s.name] : []))] })),
     filters: (o.filters || []).map((f) => ({ name: f.name, keywordsText: joinKw(f.keywords), isDefault: !!f.isDefault, expr: f.expr, description: f.description || '' })),
     relations: (o.relations || []).map((r) => ({
@@ -961,6 +986,19 @@ function openCreate() {
   dirty.value = false;
 }
 
+/** 语义扩展字段：回填与保存都原样带上（启发式/AI 富化的产物不因保存丢失） */
+function extras(x: any): Record<string, unknown> {
+  return {
+    displayName: x.displayName || undefined,
+    role: x.role || undefined,
+    synonyms: Array.isArray(x.synonyms) && x.synonyms.length ? x.synonyms : undefined,
+    sampleValues: Array.isArray(x.sampleValues) && x.sampleValues.length ? x.sampleValues : undefined,
+    enums: Array.isArray(x.enums) && x.enums.length ? x.enums : undefined,
+    confidence: typeof x.confidence === 'number' ? x.confidence : undefined,
+    locked: x.locked || undefined,
+  };
+}
+
 /** UI 行 → 保存载荷（keywordsText 等纯 UI 字段不落库） */
 function payload() {
   return {
@@ -971,13 +1009,13 @@ function payload() {
     sourceSql: form.sourceSql,
     dimensions: form.dimensions
       .filter((d) => d.name && d.expr)
-      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), refAttr: d.refAttr || undefined, description: d.description || undefined })),
+      .map((d) => ({ ...extras(d), name: d.name.trim(), expr: d.expr.trim(), refAttr: d.refAttr || undefined, description: d.description || undefined })),
     measures: form.measures
       .filter((m) => m.name && (m.expr || m.agg === 'count'))
-      .map((m) => ({ name: m.name.trim(), expr: m.expr.trim() || '*', agg: m.agg, refAttr: m.refAttr || undefined, description: m.description || undefined })),
+      .map((m) => ({ ...extras(m), name: m.name.trim(), expr: m.expr.trim() || '*', agg: m.agg, refAttr: m.refAttr || undefined, description: m.description || undefined })),
     timeDimensions: form.timeDimensions
       .filter((d) => d.name && d.expr)
-      .map((d) => ({ name: d.name.trim(), expr: d.expr.trim(), description: d.description || undefined })),
+      .map((d) => ({ ...extras(d), name: d.name.trim(), expr: d.expr.trim(), description: d.description || undefined })),
     selections: form.selections
       .filter((s) => s.name && s.fields.length)
       .map((s) => ({
@@ -1025,6 +1063,11 @@ async function save(publishAfter: boolean) {
 
 async function publish() {
   if (!form.id) return;
+  if (lowConfidenceFields.value.length) {
+    const names = lowConfidenceFields.value.slice(0, 5).map((f) => f.name).join('、');
+    ElMessage.error(`有 ${lowConfidenceFields.value.length} 个字段置信度低于 70%（${names}${lowConfidenceFields.value.length > 5 ? ' 等' : ''}），请先补描述或人工确认后再发布`);
+    return;
+  }
   publishing.value = true;
   // 发布前先落草稿（所见即所发）
   if (dirty.value) {

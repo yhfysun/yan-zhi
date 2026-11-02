@@ -381,6 +381,9 @@ export function acceptDrafts(userId: string, ontologyId: string, ids: string[]):
       if (!field || isLocked(field) || (!description && !synonyms.length)) { skipped += 1; continue; }
       if (description) field.description = description;
       if (synonyms.length) field.synonyms = [...new Set([...(Array.isArray(field.synonyms) ? field.synonyms : []), ...synonyms])].slice(0, 12);
+      // 采纳 = 人工确认：记录来源置信度并锁定，后续同步/富化不再覆盖
+      if (typeof d.confidence === 'number') field.confidence = d.confidence;
+      field.locked = true;
       mark.run(Date.now(), id);
       accepted += 1;
     }
