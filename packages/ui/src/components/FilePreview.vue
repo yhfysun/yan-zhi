@@ -767,19 +767,49 @@ const humanSize = computed(() => {
 
 const renderedMd = computed(() => (kind.value === 'text' && isMd.value ? md.render(content.value) : ''));
 
+/** 文件扩展名 → highlight.js 语言名（扩展名与语言名不同名的常见格式都要映射） */
+const CODE_LANG_ALIAS: Record<string, string> = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+  ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
+  py: 'python', pyw: 'python',
+  yml: 'yaml',
+  html: 'xml', htm: 'xml', vue: 'xml', svg: 'xml', xsd: 'xml', xsl: 'xml',
+  jsonc: 'json', json5: 'json',
+  sh: 'bash', zsh: 'bash', fish: 'bash',
+  ps1: 'powershell', psm1: 'powershell',
+  kt: 'kotlin', kts: 'kotlin',
+  rs: 'rust', cs: 'csharp', rb: 'ruby', pl: 'perl',
+  h: 'c', hpp: 'cpp', cc: 'cpp', cxx: 'cpp', hxx: 'cpp',
+  conf: 'ini', cfg: 'ini', properties: 'ini', toml: 'ini',
+  dockerfile: 'dockerfile', env: 'bash',
+};
+
+/** 展示用文本：JSON 自动格式化（编辑态仍用原文，保存不会把用户的格式改掉） */
+const displayCode = computed(() => {
+  if (kind.value !== 'text' || isMd.value) return content.value;
+  const e = ext.value;
+  if (e === 'json' || e === 'jsonc' || e === 'json5') {
+    try { return JSON.stringify(JSON.parse(content.value), null, 2); } catch { return content.value; }
+  }
+  return content.value;
+});
+
+const codeLang = computed(() => CODE_LANG_ALIAS[ext.value] || ext.value);
+
 /** 代码视图：高亮（不认识的扩展名按纯文本转义） */
 const renderedCode = computed(() => {
   if (kind.value !== 'text' || isMd.value) return '';
-  if (ext.value && hljs.getLanguage(ext.value)) {
-    return hljs.highlight(content.value, { language: ext.value }).value;
+  const lang = codeLang.value;
+  if (lang && hljs.getLanguage(lang)) {
+    return hljs.highlight(displayCode.value, { language: lang }).value;
   }
-  return md.utils.escapeHtml(content.value);
+  return md.utils.escapeHtml(displayCode.value);
 });
 
 /** 行号列：纯文本节点（大文件几十万行也不会生成几十万个 DOM 节点） */
 const lineNos = computed(() => {
   if (kind.value !== 'text' || isMd.value) return '';
-  const n = content.value.split('\n').length;
+  const n = displayCode.value.split('\n').length;
   const parts: string[] = [];
   for (let i = 1; i <= n; i++) parts.push(String(i));
   return parts.join('\n');
@@ -1626,6 +1656,9 @@ watch(() => props.file?.path, () => {
   color: var(--el-text-color-placeholder); user-select: none; white-space: pre;
   border-right: 1px solid var(--el-border-color-lighter);
   font-family: 'Consolas', 'Monaco', monospace;
+  /* 横向滚动时行号跟随（Notepad++ 式）：粘在左侧并铺不透明底色 */
+  position: sticky; left: 0; z-index: 1;
+  background: var(--el-bg-color);
 }
 .fp-code { margin: 0; padding: 12px; flex: 1; min-width: 0; background: transparent; font-family: 'Consolas', 'Monaco', monospace; }
 /* 编辑模式：等宽 textarea 编辑器 */
