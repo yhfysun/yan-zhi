@@ -36,10 +36,11 @@ import {
 } from './ops-known-hosts.js';
 import {
   buildHttpSignals, buildMonitorSignals, buildPortSignals, collectorFailureSignal, normalizeMonitorConfig,
-  parseListeningPorts, parseMonitorOutput,
-  type OpsAlertSignal, type OpsHttpCheckResult, type OpsMonitorConfig,
+  parseListeningPorts, parseMonitorOutput, publicMonitorConfig, webhookUrlError,
+  type OpsAlertEvent, type OpsAlertSignal, type OpsHttpCheckResult, type OpsMonitorConfig,
 } from './ops-monitor.js';
 import { createOpsMonitorStore } from './ops-monitor-store.js';
+import { sendOpsMonitorNotifications } from './ops-notify.js';
 const logger = createLogger('ops-shell');
 
 export const OPS_SHELL_ID = 'ops-shell';
@@ -47,7 +48,7 @@ export const OPS_SHELL_ID = 'ops-shell';
 export const opsShellManifest: PluginManifest = {
   id: OPS_SHELL_ID,
   name: '运维',
-  version: '0.2.0',
+  version: '0.3.0',
   category: '操作',
   description:
     '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询与常驻巡检告警；「更多 → 运维」打开运维控制台：命令终端 / 容器面板 / SQL 查询 / 事件中心 + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
@@ -147,7 +148,7 @@ interface OpsGroup {
 }
 
 let pluginStorage: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> } | null = null;
-const monitorStore = createOpsMonitorStore(db);
+const monitorStore = createOpsMonitorStore(db, { encrypt, decrypt });
 let monitorTimer: NodeJS.Timeout | null = null;
 let monitorCycleRunning = false;
 const monitorLastRun = new Map<string, number>();
@@ -228,6 +229,26 @@ async function collectServiceSignals(
   return signals;
 }
 
+async function deliverMonitorNotifications(
+  conn: StoredConnection,
+  config: OpsMonitorConfig,
+  result: { notifyCandidates: OpsAlertEvent[]; resolvedAlerts: OpsAlertEvent[] },
+  now: number,
+): Promise<void> {
+  if (result.notifyCandidates.length) {
+    const sent = await sendOpsMonitorNotifications(conn.name, config, result.notifyCandidates, 'alert', now);
+    // 至少一次投递：多通道里只要有一个失败就不标记已通知，宁可下次重复，也不静默漏告警。
+    if (sent.attempted > 0 && sent.failed === 0) {
+      for (const alert of result.notifyCandidates) {
+        monitorStore.markAlertsNotified([alert.id], alert.severity, now);
+      }
+    }
+  }
+  if (config.notifyOnResolve && result.resolvedAlerts.length) {
+    await sendOpsMonitorNotifications(conn.name, config, result.resolvedAlerts, 'recovery', now);
+  }
+}
+
 export async function runOpsMonitorCycle(
   options: { connectionId?: string; force?: boolean } = {},
 ): Promise<OpsMonitorCycleResult> {
@@ -259,21 +280,23 @@ export async function runOpsMonitorCycle(
         sample.sampledAt = now;
         monitorStore.recordSample(sample);
         const serviceSignals = await collectServiceSignals(conn, config);
-        monitorStore.reconcileAlerts(
+        const alertResult = monitorStore.reconcileAlerts(
           conn.id,
           conn.name,
           [...buildMonitorSignals(sample, config), ...serviceSignals],
           now,
         );
+        await deliverMonitorNotifications(conn, config, alertResult, now);
         sampled++;
       } catch (e) {
-        monitorStore.reconcileAlerts(
+        const alertResult = monitorStore.reconcileAlerts(
           conn.id,
           conn.name,
           [collectorFailureSignal(conn.id, (e as Error).message)],
           now,
           { resolveMissing: false },
         );
+        await deliverMonitorNotifications(conn, config, alertResult, now);
         failed++;
       }
     }
@@ -2134,7 +2157,9 @@ export function makeTools(): BuiltInTool[] {
             id: item.id,
             name: item.name,
             tag: item.tag,
-            config: monitorStore.getConfig(item.id),
+              config: monitorStore.getConfig(item.id)
+                ? publicMonitorConfig(monitorStore.getConfig(item.id)!)
+                : null,
             latestSample: monitorStore.listSamples(item.id, 1)[0] || null,
           })),
           alerts,
@@ -4283,7 +4308,9 @@ const opsShellModule: PluginModule = {
               name: conn.name,
               type: conn.type,
               tag: conn.tag,
-              config: monitorStore.getConfig(conn.id),
+              config: monitorStore.getConfig(conn.id)
+                ? publicMonitorConfig(monitorStore.getConfig(conn.id)!)
+                : null,
               latestSample: monitorStore.listSamples(conn.id, 1)[0] || null,
             })),
             alerts,
@@ -4300,10 +4327,20 @@ const opsShellModule: PluginModule = {
         if (!conn) { failRes(res, 404, '连接不存在'); return; }
         if (conn.type === 'database') { failRes(res, 400, '数据库连接不支持常驻巡检'); return; }
         const current = monitorStore.getConfig(id) || normalizeMonitorConfig(id, {}, Date.now());
+        const has = (key: string) => Object.prototype.hasOwnProperty.call(body, key);
+        const feishuWebhook = has('feishuWebhook') ? String(body.feishuWebhook || '').trim() : current.feishuWebhook;
+        const wecomWebhook = has('wecomWebhook') ? String(body.wecomWebhook || '').trim() : current.wecomWebhook;
+        const feishuError = webhookUrlError(feishuWebhook, 'feishu');
+        if (feishuError) { failRes(res, 400, feishuError); return; }
+        const wecomError = webhookUrlError(wecomWebhook, 'wecom');
+        if (wecomError) { failRes(res, 400, wecomError); return; }
         const next = normalizeMonitorConfig(id, {
           ...current,
           ...body,
+          feishuWebhook,
+          wecomWebhook,
           enabled: body.enabled === undefined ? current.enabled : body.enabled === true,
+          silenceUntil: current.silenceUntil,
           updatedAt: Date.now(),
         }, Date.now());
         monitorStore.saveConfig(next);
@@ -4317,7 +4354,34 @@ const opsShellModule: PluginModule = {
             logger.warn('[ops-shell] 启用巡检后首次采样失败:', (e as Error).message);
           });
         }
-        jsonRes(res).json({ data: next });
+        jsonRes(res).json({ data: publicMonitorConfig(next) });
+      });
+
+      r.post('/monitor/config/:id/silence', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const minutes = Math.floor(Number(body.minutes));
+        if (!Number.isFinite(minutes) || minutes < 0 || minutes > 1440) {
+          failRes(res, 400, '静默时长必须在 0–1440 分钟');
+          return;
+        }
+        const conn = (await loadConnections()).find((item) => item.id === id);
+        if (!conn) { failRes(res, 404, '连接不存在'); return; }
+        if (conn.type === 'database') { failRes(res, 400, '数据库连接不支持巡检静默'); return; }
+        const current = monitorStore.getConfig(id) || normalizeMonitorConfig(id, {}, Date.now());
+        const now = Date.now();
+        const next = normalizeMonitorConfig(id, {
+          ...current,
+          silenceUntil: minutes ? now + minutes * 60000 : undefined,
+          updatedAt: now,
+        }, now);
+        monitorStore.saveConfig(next);
+        await audit('monitor.silence', {
+          connection: conn.name,
+          detail: minutes ? `静默 ${minutes} 分钟` : '取消静默',
+          ok: true,
+        });
+        jsonRes(res).json({ data: publicMonitorConfig(next) });
       });
 
       r.post('/monitor/run', async (req: unknown, res: unknown) => {

@@ -56,6 +56,9 @@ beforeEach(() => {
         id: 'c1', name: 'prod-web', type: 'ssh', tag: '生产',
         config: {
           connectionId: 'c1', enabled: true, intervalSec: 60, loadPct: 80, memPct: 90, diskPct: 85,
+          ports: [22, 8080], httpChecks: [],
+          feishuConfigured: true, wecomConfigured: false,
+          notifyMinSeverity: 'warning', notifyOnResolve: true,
           updatedAt: 1,
         },
         latestSample: {
@@ -83,6 +86,9 @@ describe('OpsMonitorCenter mount', () => {
     expect(host.textContent).toContain('50%');
     expect(host.textContent).toContain('76%');
     expect(host.textContent).toContain('88%');
+    expect(host.textContent).toContain('飞书 Webhook');
+    expect(host.textContent).toContain('已配置');
+    expect(host.textContent).toContain('通知未静默');
     expect(host.textContent).toContain('磁盘使用率偏高');
     expect(host.textContent).toContain('prod-web');
     expect(host.textContent).not.toContain('orders-db');
@@ -96,6 +102,16 @@ describe('OpsMonitorCenter mount', () => {
     button!.click();
     await settle();
     expect(apiMock.post).toHaveBeenCalledWith('/plugin/ops-shell/monitor/run', { connectionId: 'c1' });
+    app.unmount();
+  });
+
+  it('静默按钮调用连接级静默接口', async () => {
+    const { app, host } = await mountCenter();
+    const button = [...host.querySelectorAll('button')].find((item) => item.textContent?.includes('静默 1h'));
+    expect(button).toBeTruthy();
+    button!.click();
+    await settle();
+    expect(apiMock.post).toHaveBeenCalledWith('/plugin/ops-shell/monitor/config/c1/silence', { minutes: 60 });
     app.unmount();
   });
 });

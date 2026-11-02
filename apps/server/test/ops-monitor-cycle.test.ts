@@ -1,7 +1,7 @@
 /**
  * 常驻巡检周期真跑：假 SSH 返回固定指标，验证样本落库、告警生成与去重。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/utils/crypto.js', () => ({
   encrypt: (value: string) => `ENC:${value}`,
@@ -88,6 +88,10 @@ beforeEach(async () => {
   }));
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('runOpsMonitorCycle', () => {
   it('采样成功写入指标，并按阈值生成三组告警', async () => {
     const result = await runOpsMonitorCycle({ connectionId: 'c1', force: true });
@@ -103,5 +107,25 @@ describe('runOpsMonitorCycle', () => {
     const store = createOpsMonitorStore(db);
     expect(store.listSamples('c1', 10)).toHaveLength(2);
     expect(store.listAlerts('open')).toHaveLength(3);
+  });
+
+  it('通知成功后记录 notifiedSeverity，下一轮不重复发送', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const store = createOpsMonitorStore(db);
+    store.saveConfig(normalizeMonitorConfig('c1', {
+      enabled: true,
+      loadPct: 80,
+      memPct: 80,
+      diskPct: 80,
+      feishuWebhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/fake',
+      notifyMinSeverity: 'warning',
+    }));
+
+    await runOpsMonitorCycle({ connectionId: 'c1', force: true });
+    await runOpsMonitorCycle({ connectionId: 'c1', force: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(store.listAlerts('open').every((alert) => alert.notifiedSeverity === 'critical')).toBe(true);
   });
 });

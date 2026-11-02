@@ -2,6 +2,7 @@ import {
   normalizeMonitorConfig,
   reconcileAlerts,
   type OpsAlertEvent,
+  type OpsAlertSeverity,
   type OpsAlertSignal,
   type OpsAlertStatus,
   type OpsMetricSample,
@@ -19,6 +20,11 @@ export interface MonitorDatabase {
   prepare(sql: string): Statement;
 }
 
+export interface SecretCodec {
+  encrypt(value: string): string;
+  decrypt(value: string): string;
+}
+
 const sampleLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 
 function parseJsonArray(raw: unknown): unknown[] {
@@ -30,7 +36,15 @@ function parseJsonArray(raw: unknown): unknown[] {
   }
 }
 
-export function createOpsMonitorStore(database: MonitorDatabase) {
+export function createOpsMonitorStore(
+  database: MonitorDatabase,
+  codec: SecretCodec = { encrypt: (value) => value, decrypt: (value) => value },
+) {
+  const decryptSecret = (value: unknown): string | undefined => {
+    if (!value) return undefined;
+    try { return codec.decrypt(String(value)); } catch { return undefined; }
+  };
+
   const ensureSchema = () => {
     database.exec(`
       CREATE TABLE IF NOT EXISTS ops_monitor_config (
@@ -42,6 +56,11 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
         disk_pct REAL NOT NULL DEFAULT 85,
         ports_json TEXT NOT NULL DEFAULT '[]',
         http_checks_json TEXT NOT NULL DEFAULT '[]',
+        feishu_webhook_enc TEXT,
+        wecom_webhook_enc TEXT,
+        notify_min_severity TEXT NOT NULL DEFAULT 'warning',
+        notify_on_resolve INTEGER NOT NULL DEFAULT 0,
+        silence_until INTEGER,
         updated_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS ops_metric_sample (
@@ -75,7 +94,9 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
         first_seen INTEGER NOT NULL,
         last_seen INTEGER NOT NULL,
         ack_at INTEGER,
-        resolved_at INTEGER
+        resolved_at INTEGER,
+        notified_at INTEGER,
+        notified_severity TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_ops_alert_conn_status
         ON ops_alert_event(connection_id, status, last_seen DESC);
@@ -87,6 +108,13 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
     for (const sql of [
       "ALTER TABLE ops_monitor_config ADD COLUMN ports_json TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE ops_monitor_config ADD COLUMN http_checks_json TEXT NOT NULL DEFAULT '[]'",
+      'ALTER TABLE ops_monitor_config ADD COLUMN feishu_webhook_enc TEXT',
+      'ALTER TABLE ops_monitor_config ADD COLUMN wecom_webhook_enc TEXT',
+      "ALTER TABLE ops_monitor_config ADD COLUMN notify_min_severity TEXT NOT NULL DEFAULT 'warning'",
+      'ALTER TABLE ops_monitor_config ADD COLUMN notify_on_resolve INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE ops_monitor_config ADD COLUMN silence_until INTEGER',
+      'ALTER TABLE ops_alert_event ADD COLUMN notified_at INTEGER',
+      'ALTER TABLE ops_alert_event ADD COLUMN notified_severity TEXT',
     ]) {
       try { database.exec(sql); } catch { /* 列已存在 */ }
     }
@@ -95,8 +123,9 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
   const saveConfig = (config: OpsMonitorConfig) => {
     database.prepare(`
       INSERT INTO ops_monitor_config
-        (connection_id, enabled, interval_sec, load_pct, mem_pct, disk_pct, ports_json, http_checks_json, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (connection_id, enabled, interval_sec, load_pct, mem_pct, disk_pct, ports_json, http_checks_json,
+         feishu_webhook_enc, wecom_webhook_enc, notify_min_severity, notify_on_resolve, silence_until, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(connection_id) DO UPDATE SET
         enabled=excluded.enabled,
         interval_sec=excluded.interval_sec,
@@ -105,6 +134,11 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
         disk_pct=excluded.disk_pct,
         ports_json=excluded.ports_json,
         http_checks_json=excluded.http_checks_json,
+        feishu_webhook_enc=excluded.feishu_webhook_enc,
+        wecom_webhook_enc=excluded.wecom_webhook_enc,
+        notify_min_severity=excluded.notify_min_severity,
+        notify_on_resolve=excluded.notify_on_resolve,
+        silence_until=excluded.silence_until,
         updated_at=excluded.updated_at
     `).run(
       config.connectionId,
@@ -115,6 +149,11 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
       config.diskPct,
       JSON.stringify(config.ports || []),
       JSON.stringify(config.httpChecks || []),
+      config.feishuWebhook ? codec.encrypt(config.feishuWebhook) : null,
+      config.wecomWebhook ? codec.encrypt(config.wecomWebhook) : null,
+      config.notifyMinSeverity,
+      config.notifyOnResolve ? 1 : 0,
+      config.silenceUntil || null,
       config.updatedAt,
     );
     if (!config.enabled) {
@@ -135,6 +174,11 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
       diskPct: row.disk_pct,
       ports: parseJsonArray(row.ports_json) as number[],
       httpChecks: parseJsonArray(row.http_checks_json) as OpsMonitorConfig['httpChecks'],
+      feishuWebhook: decryptSecret(row.feishu_webhook_enc),
+      wecomWebhook: decryptSecret(row.wecom_webhook_enc),
+      notifyMinSeverity: row.notify_min_severity === 'critical' ? 'critical' : 'warning',
+      notifyOnResolve: row.notify_on_resolve === 1,
+      silenceUntil: row.silence_until || undefined,
       updatedAt: row.updated_at,
     }, row.updated_at) : null;
   };
@@ -149,6 +193,11 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
       diskPct: row.disk_pct,
       ports: parseJsonArray(row.ports_json) as number[],
       httpChecks: parseJsonArray(row.http_checks_json) as OpsMonitorConfig['httpChecks'],
+      feishuWebhook: decryptSecret(row.feishu_webhook_enc),
+      wecomWebhook: decryptSecret(row.wecom_webhook_enc),
+      notifyMinSeverity: row.notify_min_severity === 'critical' ? 'critical' : 'warning',
+      notifyOnResolve: row.notify_on_resolve === 1,
+      silenceUntil: row.silence_until || undefined,
       updatedAt: row.updated_at,
     }, row.updated_at));
   };
@@ -201,6 +250,8 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
     lastSeen: row.last_seen,
     ackAt: row.ack_at ?? undefined,
     resolvedAt: row.resolved_at ?? undefined,
+    notifiedAt: row.notified_at ?? undefined,
+    notifiedSeverity: row.notified_severity ?? undefined,
   });
 
   const reconcile = (
@@ -222,8 +273,8 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
     const upsert = database.prepare(`
       INSERT INTO ops_alert_event
         (id, fingerprint, connection_id, connection_name, metric, severity, status, value, threshold,
-         title, detail, first_seen, last_seen, ack_at, resolved_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         title, detail, first_seen, last_seen, ack_at, resolved_at, notified_at, notified_severity)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         value=excluded.value,
         threshold=excluded.threshold,
@@ -233,20 +284,23 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
         last_seen=excluded.last_seen,
         status=excluded.status,
         ack_at=excluded.ack_at,
-        resolved_at=NULL
+        resolved_at=NULL,
+        notified_at=excluded.notified_at,
+        notified_severity=excluded.notified_severity
     `);
     for (const alert of result.alerts) {
       upsert.run(
         alert.id, alert.fingerprint, alert.connectionId, alert.connectionName, alert.metric,
         alert.severity, alert.status, alert.value, alert.threshold, alert.title, alert.detail,
         alert.firstSeen, alert.lastSeen, alert.ackAt ?? null, null,
+        alert.notifiedAt ?? null, alert.notifiedSeverity ?? null,
       );
     }
     database.prepare(`
       DELETE FROM ops_alert_event
       WHERE status='resolved' AND resolved_at < ?
     `).run(now - 90 * 24 * 60 * 60 * 1000);
-    return result.alerts;
+    return result;
   };
 
   const listAlerts = (filter: 'open' | 'all' | OpsAlertStatus = 'open'): OpsAlertEvent[] => {
@@ -266,6 +320,13 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
     return (result.changes || 0) > 0;
   };
 
+  const markAlertsNotified = (ids: string[], severity: OpsAlertSeverity, now = Date.now()): void => {
+    const update = database.prepare(`
+      UPDATE ops_alert_event SET notified_at=?, notified_severity=? WHERE id=?
+    `);
+    for (const id of ids) update.run(now, severity, id);
+  };
+
   return {
     ensureSchema,
     saveConfig,
@@ -276,5 +337,6 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
     reconcileAlerts: reconcile,
     listAlerts,
     acknowledgeAlert,
+    markAlertsNotified,
   };
 }

@@ -48,6 +48,39 @@
           <span>HTTP 检查</span>
           <el-input v-model="httpChecksText" type="textarea" :rows="3" size="small" placeholder="api|http://127.0.0.1:8080/health|200" />
         </label>
+        <label class="omc-wide">
+          <span class="omc-label-line">
+            飞书 Webhook
+            <em v-if="config.feishuConfigured">已配置</em>
+            <button v-if="config.feishuConfigured" type="button" class="omc-clear" @click="clearWebhook('feishu')">清除</button>
+          </span>
+          <el-input v-model="feishuWebhookInput" type="password" show-password size="small" placeholder="留空则不修改" />
+        </label>
+        <label class="omc-wide">
+          <span class="omc-label-line">
+            企业微信 Webhook
+            <em v-if="config.wecomConfigured">已配置</em>
+            <button v-if="config.wecomConfigured" type="button" class="omc-clear" @click="clearWebhook('wecom')">清除</button>
+          </span>
+          <el-input v-model="wecomWebhookInput" type="password" show-password size="small" placeholder="留空则不修改" />
+        </label>
+        <label>
+          <span>通知级别</span>
+          <el-select v-model="config.notifyMinSeverity" size="small">
+            <el-option value="warning" label="警告及以上" />
+            <el-option value="critical" label="仅严重" />
+          </el-select>
+        </label>
+        <div class="omc-switch omc-notify-switch">
+          <span>恢复通知</span>
+          <el-switch v-model="config.notifyOnResolve" size="small" />
+        </div>
+        <div class="omc-silence omc-wide">
+          <span>{{ silenceLabel }}</span>
+          <el-button size="small" @click="silence(60)">静默 1h</el-button>
+          <el-button size="small" @click="silence(480)">静默 8h</el-button>
+          <el-button v-if="config.silenceUntil && config.silenceUntil > Date.now()" size="small" text @click="silence(0)">取消静默</el-button>
+        </div>
       </div>
 
       <div class="omc-actions">
@@ -110,7 +143,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { Refresh } from '@element-plus/icons-vue';
 import { api } from '../../api/client';
 import { startVisiblePolling } from '../../utils/visible-polling';
@@ -131,6 +164,11 @@ interface MonitorConfig {
   diskPct: number;
   ports: number[];
   httpChecks: Array<{ name: string; url: string; expectedStatus: number }>;
+  feishuConfigured: boolean;
+  wecomConfigured: boolean;
+  notifyMinSeverity: 'warning' | 'critical';
+  notifyOnResolve: boolean;
+  silenceUntil?: number;
   updatedAt: number;
 }
 
@@ -181,6 +219,8 @@ const error = ref('');
 const alertFilter = ref<'open' | 'all'>('open');
 const portsText = ref('');
 const httpChecksText = ref('');
+const feishuWebhookInput = ref('');
+const wecomWebhookInput = ref('');
 let poll: (() => void) | null = null;
 
 const monitorConnections = computed(() => props.connections.filter((conn) => conn.type !== 'database'));
@@ -191,8 +231,12 @@ const activeCount = computed(() => overview.value.activeCount);
 const acknowledgedCount = computed(() => overview.value.acknowledgedCount);
 const config = ref<MonitorConfig>({
   connectionId: '', enabled: false, intervalSec: 60, loadPct: 80, memPct: 90, diskPct: 85,
-  ports: [], httpChecks: [], updatedAt: 0,
+  ports: [], httpChecks: [], feishuConfigured: false, wecomConfigured: false,
+  notifyMinSeverity: 'warning', notifyOnResolve: false, updatedAt: 0,
 });
+const silenceLabel = computed(() => config.value.silenceUntil && config.value.silenceUntil > Date.now()
+  ? `通知已静默至 ${formatTime(config.value.silenceUntil)}`
+  : '通知未静默');
 
 function applyConfig(): void {
   const item = selectedOverview.value;
@@ -207,12 +251,18 @@ function applyConfig(): void {
         diskPct: 85,
         ports: [],
         httpChecks: [],
+        feishuConfigured: false,
+        wecomConfigured: false,
+        notifyMinSeverity: 'warning',
+        notifyOnResolve: false,
         updatedAt: Date.now(),
       };
   portsText.value = (config.value.ports || []).join(', ');
   httpChecksText.value = (config.value.httpChecks || [])
     .map((check) => `${check.name}|${check.url}|${check.expectedStatus}`)
     .join('\n');
+  feishuWebhookInput.value = '';
+  wecomWebhookInput.value = '';
 }
 
 async function load(): Promise<void> {
@@ -263,6 +313,10 @@ async function save(): Promise<void> {
       diskPct: config.value.diskPct,
       ports,
       httpChecks,
+      notifyMinSeverity: config.value.notifyMinSeverity,
+      notifyOnResolve: config.value.notifyOnResolve,
+      ...(feishuWebhookInput.value.trim() ? { feishuWebhook: feishuWebhookInput.value.trim() } : {}),
+      ...(wecomWebhookInput.value.trim() ? { wecomWebhook: wecomWebhookInput.value.trim() } : {}),
     });
     if ('error' in result) {
       ElMessage.error(result.error);
@@ -273,10 +327,40 @@ async function save(): Promise<void> {
     httpChecksText.value = (result.data.httpChecks || [])
       .map((check) => `${check.name}|${check.url}|${check.expectedStatus}`)
       .join('\n');
+    feishuWebhookInput.value = '';
+    wecomWebhookInput.value = '';
     await load();
   } finally {
     saving.value = false;
   }
+}
+
+async function clearWebhook(channel: 'feishu' | 'wecom'): Promise<void> {
+  if (!selectedId.value) return;
+  const label = channel === 'feishu' ? '飞书' : '企业微信';
+  const ok = await ElMessageBox.confirm(`清除${label} Webhook？`, '清除通知通道', {
+    type: 'warning', confirmButtonText: '清除', cancelButtonText: '取消',
+  }).then(() => true).catch(() => false);
+  if (!ok) return;
+  const result = await api.put<MonitorConfig>(`/plugin/ops-shell/monitor/config/${selectedId.value}`, {
+    [channel === 'feishu' ? 'feishuWebhook' : 'wecomWebhook']: '',
+  });
+  if ('error' in result) {
+    ElMessage.error(result.error);
+    return;
+  }
+  config.value = { ...result.data };
+  await load();
+}
+
+async function silence(minutes: number): Promise<void> {
+  if (!selectedId.value) return;
+  const result = await api.post<MonitorConfig>(`/plugin/ops-shell/monitor/config/${selectedId.value}/silence`, { minutes });
+  if ('error' in result) {
+    ElMessage.error(result.error);
+    return;
+  }
+  config.value = { ...result.data };
 }
 
 async function runNow(): Promise<void> {
@@ -343,6 +427,13 @@ onUnmounted(() => {
 .omc-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .omc-fields label { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--color-text-secondary); }
 .omc-wide { grid-column: 1 / -1; }
+.omc-label-line { display: flex; align-items: center; gap: 6px; }
+.omc-label-line em { padding: 1px 5px; border-radius: 3px; font-style: normal; color: var(--color-success); background: color-mix(in srgb, var(--color-success) 12%, transparent); }
+.omc-clear { margin-left: auto; padding: 0; border: 0; background: transparent; color: var(--color-text-tertiary); font-size: 10px; cursor: pointer; }
+.omc-clear:hover { color: var(--color-danger); }
+.omc-notify-switch { align-self: end; padding-bottom: 5px; }
+.omc-silence { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--color-text-secondary); }
+.omc-silence > span { flex: 1; min-width: 0; }
 .omc-fields :deep(.el-input-number) { width: 100%; }
 .omc-actions { display: flex; gap: 8px; }
 .omc-latest { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }

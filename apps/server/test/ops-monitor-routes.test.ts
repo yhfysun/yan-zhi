@@ -8,7 +8,7 @@ vi.mock('../src/utils/crypto.js', () => ({
   decrypt: (value: string) => String(value).replace(/^ENC:/, ''),
 }));
 
-import { opsShellModule } from '../src/plugins/ops-shell.js';
+import { makeTools, opsShellModule } from '../src/plugins/ops-shell.js';
 import { db } from '../src/db.js';
 import { createOpsMonitorStore } from '../src/plugins/ops-monitor-store.js';
 
@@ -119,6 +119,48 @@ describe('ops-shell monitor routes', () => {
     expect((overview.body as any).data.connections[0].config.httpChecks[0]).toMatchObject({
       name: 'health', expectedStatus: 200,
     });
+  });
+
+  it('Webhook 加密保存且 API 只返回已配置状态；静默窗口可设置和取消', async () => {
+    const saved = await call('PUT', '/monitor/config/c1', {
+      enabled: false,
+      feishuWebhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/TEST_SECRET',
+      wecomWebhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=TEST_SECRET',
+      notifyMinSeverity: 'critical',
+      notifyOnResolve: true,
+    });
+    expect(saved.statusCode).toBe(200);
+    const view = (saved.body as any).data;
+    expect(view).toMatchObject({ feishuConfigured: true, wecomConfigured: true, notifyMinSeverity: 'critical' });
+    expect(JSON.stringify(view)).not.toContain('TEST_SECRET');
+
+    const muted = await call('POST', '/monitor/config/c1/silence', { minutes: 60 });
+    expect(muted.statusCode).toBe(200);
+    expect((muted.body as any).data.silenceUntil).toBeGreaterThan(Date.now());
+    const unmuted = await call('POST', '/monitor/config/c1/silence', { minutes: 0 });
+    expect((unmuted.body as any).data.silenceUntil).toBeUndefined();
+  });
+
+  it('非官方 Webhook 域名被拒绝', async () => {
+    const bad = await call('PUT', '/monitor/config/c1', {
+      enabled: false,
+      feishuWebhook: 'https://evil.example/hook',
+    });
+    expect(bad.statusCode).toBe(400);
+    expect((bad.body as any).error).toContain('域名');
+  });
+
+  it('monitor_overview 工具不把 Webhook 地址送进模型上下文', async () => {
+    await call('PUT', '/monitor/config/c1', {
+      enabled: false,
+      feishuWebhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/TEST_SECRET',
+    });
+    const tool = makeTools().find((item) => item.name === 'monitor_overview');
+    expect(tool).toBeTruthy();
+    const result = await tool!.execute!({ connection: 'prod-web' });
+    const text = (result as any).content.map((item: any) => item.text || '').join('');
+    expect(text).toContain('feishuConfigured');
+    expect(text).not.toContain('TEST_SECRET');
   });
 
   it('活动事件可确认，确认后仍留在 open 列表', async () => {

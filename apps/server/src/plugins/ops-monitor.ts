@@ -11,6 +11,11 @@ export interface OpsMonitorConfig {
   diskPct: number;
   ports: number[];
   httpChecks: Array<{ name: string; url: string; expectedStatus: number }>;
+  feishuWebhook?: string;
+  wecomWebhook?: string;
+  notifyMinSeverity: 'warning' | 'critical';
+  notifyOnResolve: boolean;
+  silenceUntil?: number;
   updatedAt: number;
 }
 
@@ -45,6 +50,13 @@ export interface OpsAlertEvent extends OpsAlertSignal {
   lastSeen: number;
   ackAt?: number;
   resolvedAt?: number;
+  notifiedAt?: number;
+  notifiedSeverity?: OpsAlertSeverity;
+}
+
+export interface OpsMonitorConfigView extends Omit<OpsMonitorConfig, 'feishuWebhook' | 'wecomWebhook'> {
+  feishuConfigured: boolean;
+  wecomConfigured: boolean;
 }
 
 export const DEFAULT_MONITOR_CONFIG = {
@@ -72,6 +84,31 @@ function safeCheckUrl(raw: unknown): string {
   } catch {
     return '';
   }
+}
+
+const WEBHOOK_HOSTS = {
+  feishu: new Set(['open.feishu.cn', 'open.larksuite.com']),
+  wecom: new Set(['qyapi.weixin.qq.com']),
+} as const;
+
+export function webhookUrlError(raw: unknown, channel: 'feishu' | 'wecom'): string | null {
+  const value = String(raw || '').trim();
+  if (!value) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return 'Webhook 地址格式非法';
+  }
+  if (url.protocol !== 'https:') return 'Webhook 必须使用 HTTPS';
+  if (!WEBHOOK_HOSTS[channel].has(url.hostname)) return `Webhook 域名不属于${channel === 'feishu' ? '飞书' : '企业微信'}官方域名`;
+  if (url.username || url.password) return 'Webhook 地址不能包含账号密码';
+  return null;
+}
+
+function safeWebhook(raw: unknown, channel: 'feishu' | 'wecom'): string | undefined {
+  const value = String(raw || '').trim();
+  return value && !webhookUrlError(value, channel) ? value : undefined;
 }
 
 function normalizePorts(raw: unknown): number[] {
@@ -112,8 +149,38 @@ export function normalizeMonitorConfig(
     diskPct: clamp(raw.diskPct, 1, 100, DEFAULT_MONITOR_CONFIG.diskPct),
     ports: normalizePorts(raw.ports),
     httpChecks: normalizeHttpChecks(raw.httpChecks),
+    feishuWebhook: safeWebhook(raw.feishuWebhook, 'feishu'),
+    wecomWebhook: safeWebhook(raw.wecomWebhook, 'wecom'),
+    notifyMinSeverity: raw.notifyMinSeverity === 'critical' ? 'critical' : 'warning',
+    notifyOnResolve: raw.notifyOnResolve === true,
+    silenceUntil: Number(raw.silenceUntil) > now ? Number(raw.silenceUntil) : undefined,
     updatedAt: Number(raw.updatedAt) || now,
   };
+}
+
+export function publicMonitorConfig(config: OpsMonitorConfig): OpsMonitorConfigView {
+  const { feishuWebhook, wecomWebhook, ...rest } = config;
+  return {
+    ...rest,
+    feishuConfigured: !!feishuWebhook,
+    wecomConfigured: !!wecomWebhook,
+  };
+}
+
+export function buildMonitorNotificationText(
+  connectionName: string,
+  alerts: OpsAlertEvent[],
+  config: OpsMonitorConfig,
+  kind: 'alert' | 'recovery' = 'alert',
+): string {
+  const threshold = config.notifyMinSeverity === 'critical' ? 2 : 1;
+  const selected = alerts.filter((alert) => (alert.severity === 'critical' ? 2 : 1) >= threshold);
+  if (!selected.length) return '';
+  return selected.map((alert) => [
+    `[${kind === 'recovery' ? '恢复' : alert.severity === 'critical' ? '严重' : '警告'}] ${alert.title}`,
+    `连接：${connectionName}`,
+    kind === 'recovery' ? '指标已恢复到阈值以内' : alert.detail,
+  ].join('\n')).join('\n\n');
 }
 
 function section(output: string, name: string): string {
@@ -193,10 +260,9 @@ export function collectorFailureSignal(connectionId: string, error: string): Ops
 export function parseListeningPorts(output: string): number[] {
   const ports = new Set<number>();
   for (const line of output.split(/\r?\n/)) {
-    for (const match of line.matchAll(/:(\d{1,5})(?:\s|$)/g)) {
-      const port = Number(match[1]);
-      if (port >= 1 && port <= 65535) ports.add(port);
-    }
+    const local = line.trim().split(/\s+/)[3] || '';
+    const port = Number(local.match(/:(\d{1,5})$/)?.[1]);
+    if (port >= 1 && port <= 65535) ports.add(port);
   }
   return [...ports].sort((a, b) => a - b);
 }
@@ -256,7 +322,12 @@ export function reconcileAlerts(
   connectionName: string,
   now: number,
   options: { resolveMissing?: boolean } = {},
-): { alerts: OpsAlertEvent[]; resolvedIds: string[] } {
+): {
+  alerts: OpsAlertEvent[];
+  resolvedIds: string[];
+  resolvedAlerts: OpsAlertEvent[];
+  notifyCandidates: OpsAlertEvent[];
+} {
   const byFingerprint = new Map(existing.map((alert) => [alert.fingerprint, alert]));
   const next: OpsAlertEvent[] = [];
   const seen = new Set<string>();
@@ -267,7 +338,7 @@ export function reconcileAlerts(
       const escalated = old.status === 'acknowledged'
         && old.severity === 'warning'
         && signal.severity === 'critical';
-      next.push({
+      const alert: OpsAlertEvent = {
         ...old,
         ...signal,
         connectionName,
@@ -275,16 +346,18 @@ export function reconcileAlerts(
         ackAt: escalated ? undefined : old.ackAt,
         lastSeen: now,
         resolvedAt: undefined,
-      });
+      };
+      next.push(alert);
     } else {
-      next.push({
+      const alert: OpsAlertEvent = {
           ...signal,
           id: `alert-${connectionId}-${signal.metric}-${now}`,
           connectionName,
           status: 'active',
           firstSeen: now,
           lastSeen: now,
-      });
+      };
+      next.push(alert);
     }
   }
   if (options.resolveMissing === false) {
@@ -292,10 +365,17 @@ export function reconcileAlerts(
       if (!seen.has(alert.fingerprint)) next.push(alert);
     }
   }
+  const resolvedAlerts = options.resolveMissing === false
+    ? []
+    : existing.filter((alert) => !seen.has(alert.fingerprint));
+  const severityRank = (severity?: OpsAlertSeverity) => severity === 'critical' ? 2 : severity === 'warning' ? 1 : 0;
   return {
     alerts: next,
-    resolvedIds: options.resolveMissing === false
-      ? []
-      : existing.filter((alert) => !seen.has(alert.fingerprint)).map((alert) => alert.id),
+    resolvedIds: resolvedAlerts.map((alert) => alert.id),
+    resolvedAlerts,
+    notifyCandidates: next.filter((alert) => (
+      alert.status === 'active'
+      && severityRank(alert.severity) > severityRank(alert.notifiedSeverity)
+    )),
   };
 }

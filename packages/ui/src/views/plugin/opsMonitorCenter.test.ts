@@ -33,6 +33,10 @@ describe('OpsMonitorCenter', () => {
     expect(MONITOR).toContain('diskPct');
     expect(MONITOR).toContain('监听端口');
     expect(MONITOR).toContain('HTTP 检查');
+    expect(MONITOR).toContain('飞书 Webhook');
+    expect(MONITOR).toContain('企业微信 Webhook');
+    expect(MONITOR).toContain('静默 1h');
+    expect(MONITOR).toContain('恢复通知');
     expect(MONITOR).toContain('el-switch');
   });
 });

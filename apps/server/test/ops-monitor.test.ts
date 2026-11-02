@@ -10,10 +10,13 @@ import {
   buildMonitorSignals,
   buildHttpSignals,
   buildPortSignals,
+  buildMonitorNotificationText,
   normalizeMonitorConfig,
   parseListeningPorts,
   parseMonitorOutput,
+  publicMonitorConfig,
   reconcileAlerts,
+  webhookUrlError,
   type OpsAlertEvent,
   type OpsMonitorConfig,
 } from '../src/plugins/ops-monitor.js';
@@ -91,6 +94,35 @@ LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*`);
     expect(signals[0]).toMatchObject({ metric: 'http', severity: 'critical' });
     expect(signals[0].fingerprint).toContain('/health');
   });
+
+  it('Webhook 只允许官方 HTTPS 地址，公开配置不泄露地址', () => {
+    expect(webhookUrlError('https://open.feishu.cn/open-apis/bot/v2/hook/token', 'feishu')).toBeNull();
+    expect(webhookUrlError('http://open.feishu.cn/open-apis/bot/v2/hook/token', 'feishu')).toContain('HTTPS');
+    expect(webhookUrlError('https://evil.example/hook', 'feishu')).toContain('域名');
+    expect(webhookUrlError('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x', 'wecom')).toBeNull();
+
+    const config = normalizeMonitorConfig('conn-1', {
+      enabled: true,
+      feishuWebhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/token',
+      wecomWebhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret',
+    });
+    const view = publicMonitorConfig(config);
+    expect(view).toMatchObject({ feishuConfigured: true, wecomConfigured: true });
+    expect(JSON.stringify(view)).not.toContain('token');
+    expect(JSON.stringify(view)).not.toContain('key=secret');
+  });
+
+  it('通知文本包含连接、严重级别和当前值', () => {
+    const config = normalizeMonitorConfig('conn-1', { enabled: true });
+    const text = buildMonitorNotificationText('prod-web', [{
+      id: 'a1', fingerprint: 'conn-1:disk', connectionId: 'conn-1', connectionName: 'prod-web',
+      metric: 'disk', severity: 'critical', status: 'active', value: 96, threshold: 85,
+      title: '磁盘使用率偏高', detail: '当前 96%，阈值 85%', firstSeen: 1000, lastSeen: 2000,
+    }], config);
+    expect(text).toContain('prod-web');
+    expect(text).toContain('严重');
+    expect(text).toContain('当前 96%');
+  });
 });
 
 describe('monitor · 告警去重与恢复', () => {
@@ -130,6 +162,7 @@ describe('monitor · 告警去重与恢复', () => {
     const result = reconcileAlerts([existing], [critical], 'conn-1', 'prod-web', 2500);
     expect(result.alerts[0]).toMatchObject({ id: 'alert-1', status: 'active', severity: 'critical' });
     expect(result.alerts[0].ackAt).toBeUndefined();
+    expect(result.notifyCandidates.map((item) => item.id)).toEqual(['alert-1']);
   });
 
   it('采集失败时保留已有指标事件，只叠加 collector 事件', () => {
@@ -168,6 +201,30 @@ describe('monitor · 告警去重与恢复', () => {
 
     store.acknowledgeAlert(alerts[0].id, 2200);
     expect(store.listAlerts('open')[0].status).toBe('acknowledged');
+    db.close();
+  });
+
+  it('Webhook 在 SQLite 中加密保存，读取时还原', () => {
+    const db = new Database(':memory:');
+    const store = createOpsMonitorStore(db, {
+      encrypt: (value) => `enc:${Buffer.from(value).toString('base64')}`,
+      decrypt: (value) => Buffer.from(value.replace(/^enc:/, ''), 'base64').toString(),
+    });
+    store.ensureSchema();
+    store.saveConfig(normalizeMonitorConfig('conn-1', {
+      enabled: true,
+      feishuWebhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/TEST_SECRET',
+      notifyMinSeverity: 'critical',
+      notifyOnResolve: true,
+    }));
+    const raw = db.prepare('SELECT feishu_webhook_enc FROM ops_monitor_config WHERE connection_id=?').get('conn-1') as any;
+    expect(raw.feishu_webhook_enc).toContain('enc:');
+    expect(raw.feishu_webhook_enc).not.toContain('TEST_SECRET');
+    expect(store.getConfig('conn-1')).toMatchObject({
+      feishuWebhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/TEST_SECRET',
+      notifyMinSeverity: 'critical',
+      notifyOnResolve: true,
+    });
     db.close();
   });
 });
