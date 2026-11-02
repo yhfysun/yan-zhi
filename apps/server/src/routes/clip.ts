@@ -37,6 +37,7 @@ import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import { executeApiTool } from '../mcp/api-tool-executor.js';
 import { transcribeClipAudio } from '../services/clip-asr.js';
 import { reframeVertical, parseTargetAspect } from '../services/clip-reframe.js';
+import { probeMatteRuntime } from '../services/clip-matte.js';
 import {
   planTalkingCut, splitSegmentByKeeps, sourceCutsToFilm, rippleTimelineLayers, TALKING_CUT_DEFAULTS,
 } from '../services/clip-talking-cut.js';
@@ -669,6 +670,46 @@ router.post('/reframe-vertical', async (req: Request, res: Response) => {
     note: parts.join('；'),
     width: r.width,
     height: r.height,
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 智能抠像（P2-1）—— **运行时骨架**：只探测 + 生成蒙版，未接渲染
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/plugin/clip-mode/matte/probe —— Python / onnxruntime / 模型探测
+// ★ 结果必须真实：缺模型就是 ok:false + 可执行指引（模型放哪、约多大、侧车 JSON 示例），
+//   绝不自动下载、绝不假装可用。
+router.get('/matte/probe', async (_req: Request, res: Response) => {
+  try {
+    const r = await probeMatteRuntime();
+    return res.json({
+      ok: r.ok,
+      python: r.python,
+      modelId: r.modelId,
+      modelPath: r.modelPath,
+      preset: r.preset,
+      guidance: r.guidance,
+      onnxruntime: r.onnxruntime,
+    });
+  } catch (e: unknown) {
+    return res.status(500).json({
+      ok: false,
+      python: '', modelId: '', modelPath: '', preset: null, onnxruntime: '',
+      guidance: [`探测失败：${e instanceof Error ? e.message : String(e)}`],
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+});
+
+// POST /api/plugin/clip-mode/matte/apply —— 骨架阶段**不提供**渲染应用
+// ★ 不把半成品伪装成可用：抠像要产出透明视频/替换片段画面，需要渲染管线接入，
+//   本轮明确未做。前端据此不展示可用按钮。
+router.post('/matte/apply', (_req: Request, res: Response) => {
+  return res.status(501).json({
+    ok: false,
+    skeleton: true,
+    error: '骨架阶段：仅运行时探测与蒙版生成，尚未接入渲染',
   });
 });
 

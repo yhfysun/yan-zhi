@@ -138,6 +138,33 @@
           <div class="cp-ins-hint">非 AI 补帧；输出帧率高于素材帧率时才有意义</div>
         </div>
 
+        <!-- 智能抠像（P2-1）：**骨架阶段**，只探测运行时，不提供渲染应用。
+             ★ 未就绪时不给可点按钮；文案明确「需要自行放置 ONNX 模型；接入渲染前不可用」。
+             ★ probe 结果原样展示（含放置目录与侧车 JSON 示例），不自动下载。 -->
+        <div class="cp-panel-head sub">
+          <span>智能抠像（P2-1）</span>
+          <button class="cp-mini" :disabled="matteProbing" title="重新探测 Python / onnxruntime / ONNX 抠像模型" @click="probeMatte">
+            <el-icon :size="11" :class="{ 'cp-spin': matteProbing }"><Refresh /></el-icon>
+          </button>
+        </div>
+        <div class="cp-matte">
+          <div v-if="matteProbing" class="cp-ins-hint">正在探测运行时…</div>
+          <template v-else-if="matteInfo">
+            <div class="cp-matte-state" :class="matteInfo.ok ? 'ok' : 'bad'">
+              {{ matteInfo.ok ? '可用' : '不可用' }}
+              <span v-if="matteInfo.onnxruntime" class="cp-matte-ver">onnxruntime {{ matteInfo.onnxruntime }}</span>
+            </div>
+            <div v-if="matteInfo.modelPath" class="cp-matte-path" :title="matteInfo.modelPath">{{ matteInfo.modelPath }}</div>
+            <div class="cp-ins-hint">
+              {{ matteInfo.ok
+                ? '运行时已就绪；接入渲染前仍不可用（当前仅探测与蒙版生成）。'
+                : '需要自行放置 ONNX 分割模型；接入渲染前不可用。' }}
+            </div>
+            <pre class="cp-matte-guide">{{ matteInfo.guidance.join('\n') }}</pre>
+          </template>
+          <div v-else class="cp-ins-hint">尚未探测（点右上刷新）。</div>
+        </div>
+
         <!-- 音效链（整片）：降噪/响度归一/变声/混响… 按顺序串联 -->
         <div class="cp-panel-head sub">
           <span>音效</span>
@@ -6096,6 +6123,42 @@ async function reframeVerticalSelected() {
   }
 }
 
+// ===== 智能抠像（P2-1：运行时骨架）=====
+// ★ 只显示探测结果，不提供「应用抠像」按钮：渲染未接（POST /matte/apply 返回 501）。
+// ★ 文案与按钮都如实：缺模型时展示放置目录与侧车 JSON 示例，不自动下载。
+type MattePresetInfo = {
+  id: string; label: string; fileHint: string; inputSize: number;
+  mean: number[]; std: number[]; channelOrder: string; approxSizeMB: number;
+};
+type MatteProbeInfo = {
+  ok: boolean; python: string; modelId: string; modelPath: string;
+  preset: MattePresetInfo | null; guidance: string[]; onnxruntime: string;
+};
+
+const matteProbing = ref(false);
+const matteInfo = ref<MatteProbeInfo | null>(null);
+
+function matteProbeFailed(message: string): MatteProbeInfo {
+  return {
+    ok: false, python: '', modelId: '', modelPath: '', preset: null, onnxruntime: '',
+    guidance: [`探测失败：${message}`],
+  };
+}
+
+async function probeMatte() {
+  if (matteProbing.value) return;
+  matteProbing.value = true;
+  try {
+    const r = await api.get<MatteProbeInfo>('/plugin/clip-mode/matte/probe');
+    if ('error' in r) { matteInfo.value = matteProbeFailed(String(r.error)); return; }
+    matteInfo.value = r.data;
+  } catch (e: unknown) {
+    matteInfo.value = matteProbeFailed(e instanceof Error ? e.message : String(e));
+  } finally {
+    matteProbing.value = false;
+  }
+}
+
 // ===== 播放头 =====
 function seek(sec: number) {
   playhead.value = Math.max(0, sec);
@@ -6342,6 +6405,8 @@ onMounted(async () => {
   await loadProjects();
   // 进编辑视图后立刻出一帧（否则监视器空白，用户会以为预览坏了）
   if (view.value === 'editor' && clipCount.value) scheduleFrameFetch(300);
+  // 抠像运行时探测（P2-1）：不阻塞首屏；结果只读展示（可用/不可用 + 模型放置指引）
+  void probeMatte();
 });
 </script>
 
@@ -6382,6 +6447,14 @@ onMounted(async () => {
 .cp-prop { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
 .cp-prop > span { color: var(--el-text-color-secondary); }
 .cp-prop > b { font-weight: 500; font-variant-numeric: tabular-nums; }
+/* 智能抠像（P2-1）：状态 + 模型路径 + 只读指引（不自动下载） */
+.cp-matte { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 4px; }
+.cp-matte-state { font-size: 11px; display: flex; align-items: center; gap: 6px; }
+.cp-matte-state.ok { color: var(--el-color-success, #67c23a); }
+.cp-matte-state.bad { color: var(--el-color-warning, #e6a23c); }
+.cp-matte-ver { color: var(--el-text-color-secondary); font-variant-numeric: tabular-nums; }
+.cp-matte-path { font-size: 10px; color: var(--el-text-color-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-matte-guide { margin: 0; padding: 5px 6px; max-height: 132px; overflow: auto; font-size: 10px; line-height: 1.45; white-space: pre-wrap; word-break: break-all; color: var(--el-text-color-secondary); background: var(--el-fill-color-light); border-radius: 4px; }
 .cp-tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--el-fill-color); color: var(--el-text-color-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* 项目目录标签（可点击更换）：与只读规格标签区分开 —— 它是可操作的 */
 .cp-dir-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 7px; border-radius: 3px; border: 1px solid var(--el-border-color-lighter); color: var(--el-text-color-regular); cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
