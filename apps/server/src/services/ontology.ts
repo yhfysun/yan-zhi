@@ -8,6 +8,7 @@ import { YANZHI_AGENT_ID } from '../builtin-yanzhi-agent.js';
 import { getConnector, type DataSourceRow } from './connector.js';
 import { validateOntology, checkSourceSqlAliases } from './ontology-validator.js';
 import { buildTableOntologySpec, type TableSchemaLite } from './ontology-table-gen.js';
+import { profileTable, withSampleValues } from './ontology-profile.js';
 import {
   compileOntologyQuery,
   compileOntologyJoinQuery,
@@ -884,9 +885,17 @@ export async function generateTableOntology(
   userId: string,
   ds: DataSourceRow,
   table: TableSchemaLite,
-  opts?: { builtin?: boolean; silentConflict?: boolean },
+  opts?: { builtin?: boolean; silentConflict?: boolean; withProfile?: boolean },
 ): Promise<OntologyInfo> {
-  const gen = buildTableOntologySpec(table, ds.name);
+  let gen = buildTableOntologySpec(table, ds.name);
+  // 用户从 UI 生成时顺带做确定性画像：低基数列挂真实样本值。
+  // 内置/启动重放不画像 —— 启动期不该打库，也不该让离线环境变慢。
+  if (opts?.withProfile) {
+    try {
+      const profile = await profileTable(userId, ds.id, table.name);
+      gen = { ...gen, dimensions: withSampleValues(gen.dimensions, profile) };
+    } catch { /* 画像失败不影响生成（只是没有样本值） */ }
+  }
   const existing = db
     .prepare('SELECT * FROM ontology WHERE user_id = ? AND code = ?')
     .get(userId, gen.code) as OntologyRow | undefined;
@@ -947,5 +956,5 @@ export async function generateFromTable(userId: string, datasourceId: string, ta
   const schema = await getConnector(ds).schemaInfo();
   const table = schema.find((t) => t.name === tableName) || schema.find((t) => t.name.toLowerCase() === tableName.toLowerCase());
   if (!table) throw new Error(`数据源 ${ds.name} 中找不到表「${tableName}」，请先同步结构`);
-  return generateTableOntology(userId, ds, table, { builtin: false });
+  return generateTableOntology(userId, ds, table, { builtin: false, withProfile: true });
 }

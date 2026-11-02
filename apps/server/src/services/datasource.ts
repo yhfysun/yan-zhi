@@ -12,6 +12,7 @@ import {
   type TestResult,
 } from './connector.js';
 import { guardSqlConsole } from './sql-guard.js';
+import { inferRelations, type RelationSuggestion } from './ontology-relation-infer.js';
 
 export interface DataSourceInfo {
   id: string;
@@ -262,6 +263,19 @@ export async function syncDataSourceSchema(userId: string, id: string): Promise<
     db.prepare('UPDATE data_source SET status = ?, last_error = ? WHERE id = ?').run('error', msg, id);
     throw err;
   }
+}
+
+/** 关联推断（P2.5.3）：按 `xxx_id` 命名与目标表主键给出 N:1 候选，**只建议不落库**。 */
+export async function suggestRelations(userId: string, id: string): Promise<RelationSuggestion[]> {
+  const row = getRow(userId, id);
+  if (!row) throw new Error('数据源不存在');
+  const tables = await getConnector(row).schemaInfo();
+  return inferRelations(tables.map((t) => ({
+    name: t.name,
+    kind: t.kind,
+    comment: t.comment,
+    columns: t.columns.map((c) => ({ name: c.name, type: c.type, pk: c.pk })),
+  })));
 }
 
 // ===== SQL 控制台（P2.1）=====

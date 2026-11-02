@@ -162,7 +162,7 @@ const TAG: OntologySpecWithCode = {
 };
 
 describe('compileOntologyJoinQuery · 单跳与 via', () => {
-  it('直连 N:1：INNER JOIN ON 双方属性', () => {
+  it('直连 N:1：INNER JOIN ON 双方属性，字段限定到本体别名', () => {
     const r = compileOntologyJoinQuery('sqlite', [ORDER, USER], {
       root: 'order', join: ['user'],
       dimensions: ['user_name'],
@@ -171,20 +171,28 @@ describe('compileOntologyJoinQuery · 单跳与 via', () => {
     expect(r.sql).toContain('FROM (SELECT o.id AS order_id');
     expect(r.sql).toContain('INNER JOIN (SELECT u.id AS user_id');
     expect(r.sql).toContain('ON _ont."user_id" = t_user."user_id"');
-    expect(r.sql).toContain('user_name AS "user_name"');
-    expect(r.sql).toContain('GROUP BY user_name');
+    expect(r.sql).toContain('t_user."user_name" AS "user_name"');
+    expect(r.sql).toContain('GROUP BY t_user."user_name"');
   });
 
-  it('N:N via 中间表展开两跳', () => {
+  it('N:N via 中间表展开两跳（只查维度，避免聚合扇出）', () => {
     const r = compileOntologyJoinQuery('sqlite', [ORDER, TAG], {
       root: 'order', join: ['tag'],
       dimensions: ['tag.tag_name'],
-      measures: [{ name: 'amount_sum' }],
     });
     expect(r.sql).toContain('INNER JOIN "t_order_tag" _via_0');
     expect(r.sql).toContain('ON _via_0."order_id" = _ont."order_id"');
     expect(r.sql).toContain('ON _via_0."tag_id" = t_tag."tag_id"');
-    expect(r.sql).toContain('tag_name AS "tag.tag_name"');
+    expect(r.sql).toContain('t_tag."tag_name" AS "tag.tag_name"');
+  });
+
+  it('N:N + 度量：扇出拒绝', () => {
+    expect(() =>
+      compileOntologyJoinQuery('sqlite', [ORDER, TAG], {
+        root: 'order', join: ['tag'],
+        dimensions: ['tag.tag_name'], measures: [{ name: 'amount_sum' }],
+      }),
+    ).toThrow(/扇出放大/);
   });
 
   it('过滤器名白名单解析 + 裸条件放行', () => {
@@ -204,12 +212,13 @@ describe('compileOntologyJoinQuery · 单跳与 via', () => {
     ).toThrow(/过滤器「大额x」不存在/);
   });
 
-  it('无关联关系的 join 拒绝', () => {
-    expect(() =>
-      compileOntologyJoinQuery('sqlite', [ORDER, USER, TAG], {
-        root: 'user', join: ['tag'], dimensions: ['tag_name'],
-      }),
-    ).toThrow(/没有已声明的关联关系/);
+  it('无直连关系但有中间本体：多跳自动接通（不再要求直连）', () => {
+    const r = compileOntologyJoinQuery('sqlite', [ORDER, USER, TAG], {
+      root: 'user', join: ['tag'], dimensions: ['tag_name'],
+    });
+    expect(r.sql).toContain('t_order');
+    expect(r.sql).toContain('t_tag');
+    expect(r.sql).toContain('t_tag."tag_name"');
   });
 
   it('N:N 缺 via 定义拒绝', () => {

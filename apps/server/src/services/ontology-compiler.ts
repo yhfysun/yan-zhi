@@ -16,6 +16,7 @@ export interface OntologyDimension {
   name: string;
   expr: string; // 引用 source_sql 输出列别名
   description?: string;
+  synonyms?: string[];
   refAttr?: string;
   sampleValues?: string[];
 }
@@ -24,6 +25,7 @@ export interface OntologyTimeDimension {
   name: string;
   expr: string;
   description?: string;
+  synonyms?: string[];
   granularities?: TimeGrain[];
 }
 
@@ -35,6 +37,7 @@ export interface OntologyMeasure {
   /** 挂载的标准属性 key（std_attribute），统一口径/单位/枚举 */
   refAttr?: string;
   description?: string;
+  synonyms?: string[];
 }
 
 /**
@@ -313,38 +316,137 @@ export function compileOntologyJoinQuery(
     throw Object.assign(new Error(`根本体「${intent.root}」不存在或未发布`), { compileErrors: [`根本体「${intent.root}」不存在或未发布`] });
   }
 
-  // ── 关系解析：root 与每个 join 目标之间必须有且只有一条已声明关系 ──
-  const joins: { code: string; rel: OntologyRelation; declaredOnRoot: boolean }[] = [];
+  // ── 关系图：所有已发布本体之间的已声明关系，JOIN 可从任一侧发起 ──
+  type JoinEdge = { from: string; to: string; rel: OntologyRelation };
+  const adjacency = new Map<string, JoinEdge[]>();
+  for (const s of specs) {
+    for (const rel of s.relations || []) {
+      if (!byCode.has(rel.source) || !byCode.has(rel.target)) continue;
+      const push = (from: string, to: string) => {
+        if (!adjacency.has(from)) adjacency.set(from, []);
+        adjacency.get(from)!.push({ from, to, rel });
+      };
+      push(rel.source, rel.target);
+      push(rel.target, rel.source);
+    }
+  }
+
+  // ── 目标校验：去重、必须存在、不能是 root ──
+  const targets: string[] = [];
   const seen = new Set<string>();
   for (const code of intent.join || []) {
     if (code === intent.root) continue;
     if (!byCode.has(code)) { errors.push(`待关联本体「${code}」不存在或未发布`); continue; }
     if (seen.has(code)) { errors.push(`本体「${code}」在 join 中重复出现`); continue; }
     seen.add(code);
-    const onRoot = root.relations.filter((r) => r.source === intent.root && r.target === code);
-    const onTarget = byCode.get(code)!.relations.filter((r) => r.source === code && r.target === intent.root);
-    if (onRoot.length + onTarget.length === 0) {
-      errors.push(`本体「${intent.root}」与「${code}」之间没有已声明的关联关系`);
-      continue;
-    }
-    if (onRoot.length + onTarget.length > 1) {
-      errors.push(`本体「${intent.root}」与「${code}」之间声明了多条关联（路径歧义），v1 拒绝编译`);
-      continue;
-    }
-    joins.push({ code, rel: onRoot[0] || onTarget[0], declaredOnRoot: onRoot.length > 0 });
+    targets.push(code);
   }
   if (errors.length) {
     throw Object.assign(new Error(errors.join('；')), { compileErrors: errors });
   }
 
-  const involved = [root, ...joins.map((j) => byCode.get(j.code)!)];
+  // ── Steiner 连接子树：对每个目标取最短路径；多条等价最短路 = 多路径扇出，拒绝 ──
+  const dist = new Map<string, number>([[intent.root, 0]]);
+  const parents = new Map<string, JoinEdge[]>();
+  const queue: string[] = [intent.root];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    const nextDist = (dist.get(cur) ?? 0) + 1;
+    for (const edge of adjacency.get(cur) || []) {
+      if (!dist.has(edge.to)) {
+        dist.set(edge.to, nextDist);
+        parents.set(edge.to, [edge]);
+        queue.push(edge.to);
+      } else if (dist.get(edge.to) === nextDist) {
+        parents.get(edge.to)!.push(edge);
+      }
+    }
+  }
+
+  /** 每个节点只保留一条父边（所有目标路径的并集 = 最小连接子树） */
+  const parentEdgeOf = new Map<string, JoinEdge>();
+  for (const target of targets) {
+    if (!dist.has(target)) {
+      errors.push(`本体「${intent.root}」与「${target}」之间没有可达的关联路径`);
+      continue;
+    }
+    // 回溯路径，逐节点检查是否有等价最短父边（多路径 → 编译结果不唯一）
+    const chain: JoinEdge[] = [];
+    let cur = target;
+    let ambiguous = false;
+    while (cur !== intent.root) {
+      const ps = parents.get(cur);
+      if (!ps || !ps.length) break;
+      if (ps.length > 1) {
+        errors.push(`本体「${cur}」存在多条等价最短关联（多路径扇出），拒绝编译`);
+        ambiguous = true;
+        break;
+      }
+      chain.push(ps[0]);
+      cur = ps[0].from;
+    }
+    if (ambiguous) continue;
+    for (const edge of chain) {
+      const existing = parentEdgeOf.get(edge.to);
+      if (existing && existing.from !== edge.from) {
+        errors.push(`本体「${edge.to}」的关联路径冲突（${existing.from} / ${edge.from}），拒绝编译`);
+      } else {
+        parentEdgeOf.set(edge.to, edge);
+      }
+    }
+  }
+  if (errors.length) {
+    throw Object.assign(new Error(errors.join('；')), { compileErrors: errors });
+  }
+
+  // 按到 root 的距离排序，保证 JOIN 时父表一定已就位
+  const joinEdges = [...parentEdgeOf.entries()]
+    .sort((a, b) => (dist.get(a[1].from) ?? 0) - (dist.get(b[1].from) ?? 0))
+    .map(([, edge]) => edge);
+
+  /** 一条边对「从 from 侧拉入 to 侧」的有效基数（反向时 1:N ↔ N:1） */
+  const effectiveCardinality = (edge: JoinEdge): OntologyRelation['type'] => {
+    if (edge.from === edge.rel.source) return edge.rel.type;
+    if (edge.rel.type === '1:N') return 'N:1';
+    if (edge.rel.type === 'N:1') return '1:N';
+    return edge.rel.type;
+  };
+
+  // 扇出拒绝：带聚合时，一对多 / 多对多 JOIN 会把结果放大成重复计数（先聚合再关联也不行）
+  const willAggregate = (intent.measures?.length ?? 0) > 0
+    || (!intent.dimensions?.length && !intent.timeDimension && root.measures.length > 0);
+  if (willAggregate) {
+    for (const edge of joinEdges) {
+      const card = effectiveCardinality(edge);
+      if (card === '1:N' || card === 'N:N') {
+        errors.push(`关联「${edge.from} → ${edge.to}」为${card === 'N:N' ? '多对多' : '一对多'}，聚合查询会被扇出放大；请从多的一侧发起或拆分查询`);
+      }
+    }
+  }
+  if (errors.length) {
+    throw Object.assign(new Error(errors.join('；')), { compileErrors: errors });
+  }
+
+  const involved = [root, ...joinEdges.map((e) => byCode.get(e.to)!)];
+
+  /** JOIN 表别名：本体 code 可能带短横线，SQL 别名只保留安全字符 */
+  const aliasOf = (code: string) => `t_${String(code).replace(/[^A-Za-z0-9_]/g, '_')}`;
+  /** 根本体的 FROM 别名固定为 _ont（其余按 code 派生） */
+  const tableAlias = (code: string) => (code === intent.root ? '_ont' : aliasOf(code));
+  const multi = involved.length > 1;
+  /** 多本体时把字段表达式限定到自己的子查询别名，避免同名列互相抢占 */
+  const qualify = (code: string, expr: string): string => {
+    if (!multi || !expr || expr === '*') return expr;
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(expr) ? `${tableAlias(code)}.${quoteIdent('sqlite', expr)}` : expr;
+  };
 
   /** 字段引用解析：支持 'code.name' 与裸 'name'（裸名须在全部参与本体中唯一） */
-  function resolveRef(ref: string): { expr: string } | null {
+  function resolveRef(ref: string): { expr: string; code: string } | null {
     const [ns, name] = splitRef(ref);
     const scopes = ns ? involved.filter((s) => s.code === ns) : involved;
     if (ns && !scopes.length) { errors.push(`引用「${ref}」的本体「${ns}」不在本次查询中`); return null; }
     let expr: string | null = null;
+    let code = '';
     for (const s of scopes) {
       const hit =
         s.dimensions.find((d) => d.name === name) ||
@@ -353,10 +455,11 @@ export function compileOntologyJoinQuery(
       if (hit) {
         if (expr && expr !== hit.expr) { errors.push(`字段「${ref}」在多个本体中重名，请用 code.name 消歧`); return null; }
         expr = hit.expr;
+        code = s.code;
       }
     }
     if (!expr) errors.push(`字段「${ref}」不存在（维度/度量/时间维度中均未找到）`);
-    return expr ? { expr } : null;
+    return expr ? { expr, code } : null;
   }
 
   const selectItems: string[] = [];
@@ -366,8 +469,9 @@ export function compileOntologyJoinQuery(
   for (const ref of intent.dimensions || []) {
     const hit = resolveRef(ref);
     if (!hit) continue;
-    selectItems.push(`${hit.expr} AS ${outCol(ref)}`);
-    groupByItems.push(hit.expr);
+    const expr = qualify(hit.code, hit.expr);
+    selectItems.push(`${expr} AS ${outCol(ref)}`);
+    groupByItems.push(expr);
     outputRefs.add(ref);
   }
 
@@ -383,7 +487,7 @@ export function compileOntologyJoinQuery(
       const grain = intent.timeDimension.grain || 'day';
       if (!GRAINS.has(grain)) errors.push(`时间粒度「${grain}」不支持`);
       else {
-        const bucket = dateTrunc(dialect, hit.expr, grain);
+        const bucket = dateTrunc(dialect, qualify(hit.code, hit.expr), grain);
         selectItems.push(`${bucket} AS ${outCol(intent.timeDimension.name)}`);
         groupByItems.push(bucket);
         outputRefs.add(intent.timeDimension.name);
@@ -393,19 +497,21 @@ export function compileOntologyJoinQuery(
 
   const measureIntents = intent.measures?.length
     ? intent.measures
-    : root.measures.length
+    : (!intent.dimensions?.length && !intent.timeDimension && root.measures.length
       ? [{ name: root.measures[0].name }]
-      : [];
+      : []);
 
   for (const m of measureIntents) {
     const [ns, name] = splitRef(m.name);
     const scopes = ns ? involved.filter((s) => s.code === ns) : involved;
     let def: OntologyMeasure | undefined;
+    let defCode = '';
     for (const s of scopes) {
       const hit = s.measures.find((x) => x.name === name);
       if (hit) {
         if (def && def.expr !== hit.expr) { errors.push(`度量「${m.name}」在多个本体中重名，请用 code.name 消歧`); def = undefined; break; }
         def = hit;
+        defCode = s.code;
       }
     }
     if (!def) { errors.push(`度量「${m.name}」不存在，可用：${involved.flatMap((s) => s.measures.map((x) => x.name)).join(', ') || '无'}`); continue; }
@@ -413,7 +519,7 @@ export function compileOntologyJoinQuery(
     if (!AGGS.has(agg)) { errors.push(`聚合「${agg}」不支持，可选 ${[...AGGS].join('/')}`); continue; }
     if (agg === 'count' && def.expr && def.expr !== '*') { warnings.push(`度量「${def.name}」意图为 count，按其定义 ${def.agg} 执行`); agg = def.agg; }
     if (def.additive === 'non_additive' && m.agg && m.agg !== def.agg) { warnings.push(`度量「${def.name}」为不可加度量，忽略改写聚合的请求，按定义 ${def.agg} 执行`); agg = def.agg; }
-    selectItems.push(`${aggExpr(agg, def.expr)} AS ${outCol(m.name)}`);
+    selectItems.push(`${aggExpr(agg, qualify(defCode, def.expr))} AS ${outCol(m.name)}`);
     outputRefs.add(m.name);
   }
 
@@ -421,27 +527,34 @@ export function compileOntologyJoinQuery(
     throw Object.assign(new Error(errors.join('；') || '查询意图为空：至少需要一个维度、时间维度或度量'), { compileErrors: errors });
   }
 
-  // ── FROM + JOIN 链 ──
+  // ── FROM + JOIN 链（按 BFS 距离展开最小连接子树） ──
   const q = (id: string) => quoteIdent('sqlite', id).replace(/`/g, '"');
   const lines: string[] = ['SELECT'];
   lines.push(selectItems.map((s) => `  ${s}`).join(',\n'));
   lines.push(`FROM (${root.sourceSql}) _ont`);
-  joins.forEach((j, i) => {
-    const tAlias = `t_${j.code}`;
-    const src = j.declaredOnRoot ? j.rel.sourceAttr : j.rel.targetAttr;
-    const dst = j.declaredOnRoot ? j.rel.targetAttr : j.rel.sourceAttr;
-    if (j.rel.type === 'N:N') {
-      if (!j.rel.via) { errors.push(`关联「${intent.root}→${j.code}」为 N:N 但缺少中间表 via 定义`); return; }
-      const vAlias = `_via_${i}`;
-      lines.push(`INNER JOIN ${q(j.rel.via.table)} ${vAlias}`);
-      lines.push(`  ON ${vAlias}.${q(j.rel.via.sourceColumn)} = _ont.${q(src)}`);
-      lines.push(`INNER JOIN (${byCode.get(j.code)!.sourceSql}) ${tAlias}`);
-      lines.push(`  ON ${vAlias}.${q(j.rel.via.targetColumn)} = ${tAlias}.${q(dst)}`);
+  let viaSeq = 0;
+  for (const edge of joinEdges) {
+    const child = byCode.get(edge.to)!;
+    const childAlias = aliasOf(edge.to);
+    const parentAlias = edge.from === intent.root ? '_ont' : aliasOf(edge.from);
+    const rel = edge.rel;
+    const parentIsSource = edge.from === rel.source;
+    const parentCol = parentIsSource ? rel.sourceAttr : rel.targetAttr;
+    const childCol = parentIsSource ? rel.targetAttr : rel.sourceAttr;
+    if (rel.type === 'N:N') {
+      if (!rel.via) { errors.push(`关联「${edge.from}→${edge.to}」为 N:N 但缺少中间表 via 定义`); continue; }
+      const vAlias = `_via_${viaSeq++}`;
+      const viaParentCol = parentIsSource ? rel.via.sourceColumn : rel.via.targetColumn;
+      const viaChildCol = parentIsSource ? rel.via.targetColumn : rel.via.sourceColumn;
+      lines.push(`INNER JOIN ${q(rel.via.table)} ${vAlias}`);
+      lines.push(`  ON ${vAlias}.${q(viaParentCol)} = ${parentAlias}.${q(parentCol)}`);
+      lines.push(`INNER JOIN (${child.sourceSql}) ${childAlias}`);
+      lines.push(`  ON ${vAlias}.${q(viaChildCol)} = ${childAlias}.${q(childCol)}`);
     } else {
-      lines.push(`INNER JOIN (${byCode.get(j.code)!.sourceSql}) ${tAlias}`);
-      lines.push(`  ON _ont.${q(src)} = ${tAlias}.${q(dst)}`);
+      lines.push(`INNER JOIN (${child.sourceSql}) ${childAlias}`);
+      lines.push(`  ON ${parentAlias}.${q(parentCol)} = ${childAlias}.${q(childCol)}`);
     }
-  });
+  }
 
   const resolvedFilters = resolveIntentFilters(
     involved.map((s) => ({ code: s.code, filters: s.filters })), intent.filters, warnings, errors,

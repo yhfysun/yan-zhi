@@ -6,10 +6,12 @@ import {
   createDataSource,
   deleteDataSource,
   listDataSources,
+  suggestRelations,
   syncDataSourceSchema,
   testDataSource,
   updateDataSource,
 } from '../services/datasource.js';
+import { profileTable } from '../services/ontology-profile.js';
 
 const router = Router();
 
@@ -59,6 +61,26 @@ router.post('/:id/test', authMiddleware, async (req: Request, res: Response) => 
 router.get('/:id/schema', authMiddleware, async (req: Request, res: Response) => {
   try {
     res.json({ data: await syncDataSourceSchema(req.user!.userId, req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/datasources/:id/profile —— 确定性画像（行数/空值率/基数/极值/高频样本）
+router.post('/:id/profile', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const table = String(req.body?.table || '').trim();
+    if (!table) { res.status(400).json({ error: '缺少 table' }); return; }
+    res.json({ data: await profileTable(req.user!.userId, req.params.id, table) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/datasources/:id/relation-suggestions —— 按命名+主键给出 N:1 关联候选（只建议，不落库）
+router.get('/:id/relation-suggestions', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    res.json({ data: await suggestRelations(req.user!.userId, req.params.id) });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
