@@ -227,14 +227,43 @@
   overflow: hidden;
   user-select: none;
 }
+.dw-root .dc-ed-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  background: var(--dw-void);
+}
+/* 高亮层：与 textarea 同字体/内边距；textarea 文字透明，视觉由本层提供 */
+.dw-root .dc-hl {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1.75;
+  white-space: pre;
+  pointer-events: none;
+  color: #5b6273;
+}
+.dw-root .dc-hl .rest { opacity: 0.5; }
+.dw-root .dc-hl .cur {
+  background: rgba(124, 58, 237, 0.16);
+  color: var(--dw-void-ink);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.25);
+}
 .dw-root .dc-textarea {
   flex: 1;
   min-width: 0;
+  position: relative;
+  z-index: 1;
   border: none;
   outline: none;
   resize: none;
-  background: var(--dw-void);
-  color: var(--dw-void-ink);
+  background: transparent;
+  color: transparent;
   caret-color: #c9aefb;
   font-size: 12.5px;
   line-height: 1.75;
@@ -242,6 +271,15 @@
   white-space: pre;
   overflow: auto;
   tab-size: 2;
+}
+.dw-root .dc-ed-hint kbd {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--dw-void-3);
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: var(--dw-f-mono);
+  color: var(--dw-void-ink-2);
 }
 .dw-root .dc-textarea::placeholder {
   color: #4a5060;

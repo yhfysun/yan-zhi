@@ -82,23 +82,29 @@
             <span>query.sql</span>
             <span v-if="activeDs" class="dw-mono">{{ typeLabel(activeDs.type) }}</span>
             <span style="color: #4a5060">|</span>
-            <span>{{ statementCount }} 条语句</span>
+            <span>{{ statementCount }} 条语句 · 光标第 {{ cursorStmtIndex || '—' }} 条</span>
             <span style="flex: 1" />
-            <span class="dc-ed-hint">⌃↵ 运行选中 / 光标所在语句</span>
+            <span class="dc-ed-hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> 选中/光标 · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> 全部</span>
           </div>
           <div class="dc-ed-body">
             <div ref="gutterEl" class="dc-gutter dw-mono"><div v-for="n in lineCount" :key="n">{{ n }}</div></div>
-            <textarea
-              ref="editorEl"
-              v-model="editorText"
-              class="dc-textarea dw-mono"
-              spellcheck="false"
-              wrap="off"
-              placeholder="-- 输入 SQL；Ctrl+Enter 运行选中段，Ctrl+Shift+Enter 运行全部"
-              @scroll="syncGutter"
-              @keydown.ctrl.enter.prevent="onCtrlEnter"
-              @keydown.meta.enter.prevent="onCtrlEnter"
-            />
+            <div class="dc-ed-area">
+              <pre ref="hlEl" class="dc-hl dw-mono" aria-hidden="true" v-html="highlightHtml"></pre>
+              <textarea
+                ref="editorEl"
+                v-model="editorText"
+                class="dc-textarea dw-mono"
+                spellcheck="false"
+                wrap="off"
+                placeholder="-- 输入 SQL；Ctrl+Enter 运行选中段，Ctrl+Shift+Enter 运行全部"
+                @scroll="syncGutter"
+                @click="syncCursor"
+                @keyup="syncCursor"
+                @select="syncCursor"
+                @keydown.ctrl.enter.prevent="onCtrlEnter"
+                @keydown.meta.enter.prevent="onCtrlEnter"
+              />
+            </div>
           </div>
         </div>
 
@@ -240,12 +246,51 @@ async function onDsChange() {
 const editorText = ref('');
 const editorEl = ref<HTMLTextAreaElement | null>(null);
 const gutterEl = ref<HTMLElement | null>(null);
+const hlEl = ref<HTMLElement | null>(null);
 
 const lineCount = computed(() => editorText.value.split('\n').length);
-const statementCount = computed(() => splitSqlStatements(editorText.value).length);
+const statements = computed(() => splitSqlStatements(editorText.value));
+const statementCount = computed(() => statements.value.length);
+
+// 光标所在语句（1 起）；用于状态条与"选中段高亮/其余灰化"
+const cursorOffset = ref(0);
+const cursorStmtIndex = computed(() => {
+  const list = statements.value;
+  if (!list.length) return 0;
+  const off = cursorOffset.value;
+  const hit = list.findIndex((s) => off >= s.start && off <= s.end);
+  if (hit >= 0) return hit + 1;
+  let idx = 1;
+  for (const s of list) if (off > s.end) idx += 1;
+  return Math.min(idx, list.length);
+});
+function syncCursor() {
+  const el = editorEl.value;
+  if (el) cursorOffset.value = el.selectionStart;
+}
+const escHtml = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' } as Record<string, string>)[c]);
+const highlightHtml = computed(() => {
+  const raw = editorText.value;
+  const list = statements.value;
+  if (!list.length) return escHtml(raw);
+  let out = '';
+  let pos = 0;
+  list.forEach((s, i) => {
+    out += `<span class="rest">${escHtml(raw.slice(pos, s.start))}</span>`;
+    const body = escHtml(raw.slice(s.start, s.end));
+    out += i === cursorStmtIndex.value - 1 ? `<span class="cur">${body}</span>` : `<span class="rest">${body}</span>`;
+    pos = s.end;
+  });
+  out += `<span class="rest">${escHtml(raw.slice(pos))}</span>`;
+  return out;
+});
 
 function syncGutter() {
   if (gutterEl.value && editorEl.value) gutterEl.value.scrollTop = editorEl.value.scrollTop;
+  if (hlEl.value && editorEl.value) {
+    hlEl.value.scrollTop = editorEl.value.scrollTop;
+    hlEl.value.scrollLeft = editorEl.value.scrollLeft;
+  }
 }
 
 function insertName(name: string) {
