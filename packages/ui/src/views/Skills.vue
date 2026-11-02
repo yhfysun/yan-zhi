@@ -1,5 +1,5 @@
 <template>
-  <div class="page">
+  <div class="skills-host" :class="{ 'is-local': route.params.id === 'local' }">
     <!-- 无 id → 商城首页；有 id → 子页面 -->
     <MarketplaceCards v-if="!route.params.id" />
     <LocalSkillMarket v-else-if="route.params.id === 'local'" />
@@ -29,6 +29,12 @@ function parseRemoteId(id: string): string {
 </script>
 
 <style scoped>
-.page { min-height: 100%; }
+/* 本地商城内部由 PageFrame 自管滚动与留白；其余子页沿用整页滚动（等价原 .page） */
+.skills-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.skills-host:not(.is-local) { overflow-y: auto; padding: 28px 36px; }
+.skills-host.is-local > * { flex: 1; min-height: 0; }
 .invalid-page { padding: 80px 0; text-align: center; }
+@media (max-width: 767px) {
+  .skills-host:not(.is-local) { padding: 16px; }
+}
 </style>

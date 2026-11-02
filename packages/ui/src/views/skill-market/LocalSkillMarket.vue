@@ -1,5 +1,5 @@
 <template>
-  <PageFrame title="本地商城" subtitle="内置 Skill 与自定义 Skill">
+  <PageFrame title="本地商城" subtitle="内置 Skill 与自定义 Skill" :scroll="false" :pad="false">
     <template #back>
       <el-button text @click="$router.push('/skills')"><el-icon><ArrowLeft /></el-icon> 商城首页</el-button>
     </template>
@@ -25,6 +25,8 @@
       </SearchToolbar>
     </template>
 
+    <div class="skills-body">
+      <div class="skills-main">
     <div class="skill-groups">
       <CollapsibleCategory
         v-for="group in groupedSkills"
@@ -65,6 +67,60 @@
         </CardGrid>
       </CollapsibleCategory>
       <el-empty v-if="filteredSkills.length === 0" description="还没有 Skill" />
+    </div>
+      </div>
+
+    <!-- 右侧编辑详情（2026-11-02，P1-2）：宽屏在容器里编辑，窄屏仍弹窗 -->
+    <template v-if="detailOpen">
+      <div class="rs-handle" @mousedown="detailR.startDrag($event, 'right')"></div>
+      <aside class="skill-detail-pane" :style="{ width: detailW + 'px' }">
+        <header class="skill-detail-head">
+          <span class="skill-detail-title">{{ editing?.name || 'Skill' }}</span>
+          <el-button text :icon="Close" title="关闭详情" @click="closeDetail" />
+        </header>
+        <div class="skill-detail-body">
+          <div class="editor-layout">
+            <div class="editor-form">
+              <el-form label-width="80px">
+                <el-form-item label="名称"><el-input v-model="editor.name" disabled /></el-form-item>
+                <el-form-item label="描述"><el-input v-model="editor.description" type="textarea" :rows="2" /></el-form-item>
+                <el-form-item label="触发词">
+                  <el-input v-model="triggersText" placeholder="逗号分隔，如：excel,xlsx,数据分析" />
+                </el-form-item>
+                <el-form-item label="内容">
+                  <el-input v-model="editor.bodyMd" type="textarea" :rows="10" placeholder="Skill Markdown 内容（SKILL.md 本体）" />
+                </el-form-item>
+                <el-form-item label="子目录">
+                  <div class="subfiles">
+                    <div v-for="(f, i) in editorFiles" :key="i" class="subfile-row">
+                      <el-input v-model="f.path" size="small" placeholder="相对路径，如 references/api-notes.md" class="subfile-path" @focus="editingFile = i" />
+                      <el-button size="small" @click="editingFile = i">编辑内容</el-button>
+                      <el-button size="small" type="danger" text @click="editorFiles.splice(i, 1); if (editingFile === i) editingFile = null"><el-icon><Delete /></el-icon></el-button>
+                    </div>
+                    <el-button size="small" @click="editorFiles.push({ path: '', content: '' })">+ 添加子文件</el-button>
+                  </div>
+                </el-form-item>
+              </el-form>
+              <el-form v-if="editingFile !== null" label-width="80px" class="subfile-editor">
+                <el-form-item :label="editorFiles[editingFile]?.path || '路径'">
+                  <el-input v-model="editorFiles[editingFile].content" type="textarea" :rows="8" placeholder="子文件内容" />
+                </el-form-item>
+                <el-button size="small" @click="editingFile = null">收起</el-button>
+              </el-form>
+            </div>
+            <div class="editor-preview">
+              <div class="preview-title">实时预览</div>
+              <pre class="preview-md">{{ previewMd }}</pre>
+            </div>
+          </div>
+        </div>
+        <footer class="skill-detail-foot">
+          <span class="skill-detail-gap"></span>
+          <el-button @click="closeDetail">取消</el-button>
+          <el-button type="primary" @click="saveSkill">保存</el-button>
+        </footer>
+      </aside>
+    </template>
     </div>
 
     <!-- 新建/编辑弹窗 -->
@@ -151,8 +207,9 @@
 <script setup lang="ts">
 import ResourceAclDialog from '../../components/common/ResourceAclDialog.vue';
 import PageFrame from '../../components/common/PageFrame.vue';
-import { ref, reactive, computed, onMounted } from 'vue';
-import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, Folder, UploadFilled, Box, Document, Download, CaretRight, CaretBottom } from '@element-plus/icons-vue';
+import { useResizable } from '../../composables/useResizable';
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
+import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, Folder, UploadFilled, Box, Document, Download, CaretRight, CaretBottom, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useSkillStore, useAuthStore } from '../../stores';
 import { getPlatformAdapter } from '@yan-zhi/core';
@@ -176,6 +233,17 @@ const search = ref('');
 const showEditor = ref(false);
 const showPreview = ref(false);
 const showImport = ref(false);
+
+// ===== 右侧编辑详情（P1-2，2026-11-02）：宽屏容器编辑，窄屏弹窗 =====
+const wide = ref(typeof window !== 'undefined' ? window.innerWidth >= 1100 : true);
+function syncWide() { wide.value = window.innerWidth >= 1100; }
+onMounted(() => window.addEventListener('resize', syncWide));
+onUnmounted(() => window.removeEventListener('resize', syncWide));
+const detailSkillId = ref('');
+const detailR = useResizable('skills_detail', 560, 380, 920);
+const { width: detailW } = detailR;
+const detailOpen = computed(() => wide.value && !!detailSkillId.value);
+function closeDetail() { detailSkillId.value = ''; }
 const editing = ref<Skill | null>(null);
 const previewContent = ref('');
 const editor = ref({ name: '', description: '', bodyMd: '' });
@@ -311,7 +379,8 @@ function openEdit(s: Skill) {
   editorFiles.value = (s.files || []).map(f => ({ ...f }));
   editingFile.value = null;
   triggersText.value = (s.frontmatter?.triggers || []).join(', ');
-  showEditor.value = true;
+  if (wide.value) { detailSkillId.value = s.id; showEditor.value = false; }
+  else { showEditor.value = true; }
 }
 
 async function saveSkill() {
@@ -333,6 +402,7 @@ async function saveSkill() {
     ElMessage.success('已创建');
   }
   showEditor.value = false;
+  detailSkillId.value = '';
 }
 
 function previewSkill(s: Skill) {
@@ -626,6 +696,45 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 
 <style scoped>
 /* 页头与工具条由 PageFrame 提供（2026-11-02），本页只保留内容区样式 */
+
+/* ===== 右侧编辑详情（P1-2）===== */
+.skills-body { display: flex; height: 100%; min-height: 0; }
+.skills-main { flex: 1; min-width: 0; overflow-y: auto; padding: 0 36px 24px; }
+.skill-detail-pane {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.skill-detail-head {
+  flex: 0 0 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.skill-detail-title {
+  flex: 1; min-width: 0;
+  font-size: 12.5px; font-weight: 600; color: var(--color-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.skill-detail-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 12px 14px 20px;
+}
+/* 面板较窄：表单与预览上下叠放，避免双栏挤压 */
+.skill-detail-pane .editor-layout { grid-template-columns: 1fr; gap: 12px; }
+.skill-detail-foot {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--color-border);
+}
+.skill-detail-gap { flex: 1; }
 /* 搜索框 / 分类筛选 / 导入图标按钮的尺寸规范统一在 styles/surface.css：
    .yz-cat-select（筛选下拉）+ .yz-icon-btn（32×32 正圆图标按钮），各管理页共用 */
 
@@ -684,10 +793,8 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 
 /* ===== Mobile ===== */
 @media (max-width: 767px) {
-  .local-market { padding: 0 !important; width: 100%; }
-  .lm-header { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px; }
-  .lm-header-left { flex-wrap: wrap; }
-  .lm-title { font-size: 18px; }
+  /* 页头/工具条由 PageFrame 提供；列表区自己补留白（卡片网格内已有 14px） */
+  .skills-main { padding: 0 2px 16px; }
   /* 卡片网格在 CardGrid 内部：窄屏收成单列并补页面留白 */
   .skill-groups :deep(.cg) { grid-template-columns: minmax(0, 1fr); gap: 10px; width: 100%; padding: 0 14px 14px; box-sizing: border-box; }
   .editor-layout { grid-template-columns: 1fr; gap: 12px; }

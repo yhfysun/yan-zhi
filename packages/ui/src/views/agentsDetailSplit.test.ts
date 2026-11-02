@@ -48,3 +48,20 @@ describe('P1-2 工具参数详情右侧面板', () => {
     expect(TOOLS).toMatch(/detailOpen/);
   });
 });
+
+describe('P1-2 Skill 本地商城右侧编辑', () => {
+  const SKILLS = strip(readRepo('packages/ui/src/views/skill-market/LocalSkillMarket.vue'));
+  const SKILLS_HOST = strip(readRepo('packages/ui/src/views/Skills.vue'));
+
+  it('宽屏在右侧容器编辑，窄屏保留弹窗', () => {
+    expect(SKILLS).toMatch(/useResizable\('skills_detail'/);
+    expect(SKILLS).toMatch(/skill-detail-pane/);
+    expect(SKILLS).toMatch(/detailOpen/);
+    expect(SKILLS).toMatch(/if \(wide\.value\) \{ detailSkillId\.value = s\.id; showEditor\.value = false; \}/);
+  });
+
+  it('本地商城由外层容器限高，否则面板无法撑满视口', () => {
+    expect(SKILLS_HOST).toMatch(/class="skills-host"/);
+    expect(SKILLS_HOST).toMatch(/\.skills-host\.is-local > \*/);
+  });
+});
