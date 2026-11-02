@@ -38,3 +38,13 @@ describe('P1-2 智能体列表 + 右侧详情', () => {
     expect(AGENTS).toMatch(/detailFormRef\?\.reset\(\)/);
   });
 });
+
+describe('P1-2 工具参数详情右侧面板', () => {
+  const TOOLS = strip(readRepo('packages/ui/src/views/ToolMarket.vue'));
+  it('宽屏用右侧容器，窄屏保留弹窗', () => {
+    expect(TOOLS).toMatch(/tool-detail-pane/);
+    expect(TOOLS).toMatch(/useResizable\('tools_detail'/);
+    expect(TOOLS).toMatch(/v-if="!wide"/);
+    expect(TOOLS).toMatch(/detailOpen/);
+  });
+});

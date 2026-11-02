@@ -1,5 +1,7 @@
 <template>
-  <PageFrame title="工具与连接" subtitle="内置工具、自定义工具、MCP 服务与远程工具商城">
+  <PageFrame title="工具与连接" subtitle="内置工具、自定义工具、MCP 服务与远程工具商城" :scroll="false" :pad="false">
+    <div class="tools-body">
+      <div class="tools-main">
     <!-- 四 tab：内置工具 / 自定义工具 / MCP 服务 / 远程工具商城 -->
     <el-tabs v-model="activeTab" class="tl-tabs">
       <!-- ===== Tab 1：内置工具 ===== -->
@@ -205,6 +207,33 @@
         </div>
       </el-tab-pane>
     </el-tabs>
+      </div>
+
+      <!-- 右侧参数详情（2026-11-02，P1-2）：宽屏用容器而不是弹窗，宽度可拖拽并记忆 -->
+      <template v-if="detailOpen">
+        <div class="rs-handle" @mousedown="detailR.startDrag($event, 'right')"></div>
+        <aside v-if="schemaDetail" class="tool-detail-pane" :style="{ width: detailW + 'px' }">
+          <header class="tool-detail-head">
+            <el-tag size="small" type="info" effect="plain">{{ schemaDetail.kind }}</el-tag>
+            <span class="tool-detail-name" :title="schemaDetail.name">{{ schemaDetail.name }}</span>
+            <el-button text :icon="Close" title="关闭详情" @click="closeDetail" />
+          </header>
+          <div class="tool-detail-body">
+            <div class="schema-detail-head">
+              <span v-if="schemaDetail.meta" class="stat">{{ schemaDetail.meta }}</span>
+              <span v-if="schemaDetail.isPublic" class="stat">已公开</span>
+            </div>
+            <p class="schema-detail-desc">{{ schemaDetail.description }}</p>
+            <SchemaViewer
+              :sections="[
+                { label: '入参', text: fmtSchema(schemaDetail.inputSchema) },
+                { label: '出参', text: fmtSchema(schemaDetail.outputSchema) },
+              ]"
+            />
+          </div>
+        </aside>
+      </template>
+    </div>
 
     <!-- ========== 自定义工具 Dialog ========== -->
     <el-dialog
@@ -325,6 +354,7 @@
        现改为：卡片只展示摘要，点击整张卡片 → 弹窗里看完整入参/出参（长 JSON 有独立滚动区，
        不再挤压卡片布局）。 -->
     <el-dialog
+      v-if="!wide"
       v-model="showSchemaDetail"
       :title="schemaDetail ? `${schemaDetail.name}` : '参数详情'"
       width="720px"
@@ -358,10 +388,11 @@
 <script setup lang="ts">
 import PageFrame from '../components/common/PageFrame.vue';
 import ResourceAclDialog from '../components/common/ResourceAclDialog.vue';
-import { ref, reactive, computed, onMounted } from 'vue';
+import { useResizable } from '../composables/useResizable';
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute } from 'vue-router';
 import {
-  Plus, ArrowLeft, Cloudy,
+  Plus, ArrowLeft, Cloudy, Close,
 } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useAuthStore } from '../stores';
@@ -522,6 +553,16 @@ function openSchemaDetail(d: SchemaDetail) {
   schemaDetail.value = d;
   showSchemaDetail.value = true;
 }
+
+// ===== 列表 + 右侧详情（P1-2，2026-11-02）=====
+const wide = ref(typeof window !== 'undefined' ? window.innerWidth >= 1100 : true);
+function syncWide() { wide.value = window.innerWidth >= 1100; }
+onMounted(() => window.addEventListener('resize', syncWide));
+onUnmounted(() => window.removeEventListener('resize', syncWide));
+const detailR = useResizable('tools_detail', 520, 360, 900);
+const { width: detailW } = detailR;
+const detailOpen = computed(() => wide.value && showSchemaDetail.value && !!schemaDetail.value);
+function closeDetail() { showSchemaDetail.value = false; }
 function fmtSchema(schema: unknown): string {
   if (!schema || (typeof schema === 'object' && Object.keys(schema as object).length === 0)) return '（无）';
   try { return JSON.stringify(schema, null, 2); } catch { return String(schema); }
@@ -749,6 +790,36 @@ async function installTool(item: any) {
 <style scoped>
 /* ---- 页面 ---- */
 /* .page / .page-title / .page-sub come from App.vue global */
+
+/* ===== 列表 + 右侧参数详情（P1-2）===== */
+.tools-body { display: flex; height: 100%; min-height: 0; }
+.tools-main { flex: 1; min-width: 0; overflow-y: auto; padding: 0 36px 28px; }
+.tool-detail-pane {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.tool-detail-head {
+  flex: 0 0 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.tool-detail-name {
+  flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--color-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tool-detail-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 14px 16px 24px;
+  display: flex; flex-direction: column; gap: 10px;
+}
 .page-top { margin-bottom: 20px; }
 
 /* ---- Tab ---- */
@@ -869,6 +940,7 @@ async function installTool(item: any) {
 @media (max-width: 767px) {
   .page-top { margin-bottom: 14px; }
   .page-title { font-size: 18px; }
+  .tools-main { padding: 0 16px 20px; }
   .tab-toolbar { flex-wrap: wrap; }
   .sub-header { flex-wrap: wrap; gap: 10px; padding-bottom: 12px; }
   .sub-header-info { width: 100%; }
