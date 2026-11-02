@@ -96,6 +96,10 @@ describe('P3-④ 图标一致性', () => {
       'packages/ui/src/components/BrowserPanel.vue',
       'packages/ui/src/views/RemoteControl.vue',
       'packages/ui/src/views/ClipPanel.vue',
+      'packages/ui/src/views/DocumentTypesPage.vue',
+      'packages/ui/src/views/EnvConfig.vue',
+      'packages/ui/src/views/plugin/shop/ShopSidebar.vue',
+      'packages/ui/src/components/pet/PetPackPicker.vue',
     ]) {
       expect(readRepo(p), `${p} 仍用文字关闭符`).not.toMatch(/>\s*[×✕]\s*<\/button>/);
     }

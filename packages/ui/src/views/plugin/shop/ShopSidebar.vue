@@ -15,7 +15,7 @@
       <el-icon class="shop-project-icon"><ChatLineSquare /></el-icon>
       <span class="shop-project-name" :title="p.title">{{ p.title || '未命名项目' }}</span>
       <span class="shop-project-count">{{ countOf(p.id) }}</span>
-      <button class="shop-project-del" title="删除项目" @click.stop="emit('delete-project', p)">×</button>
+      <button class="shop-project-del" title="删除项目" @click.stop="emit('delete-project', p)"><el-icon><Close /></el-icon></button>
     </div>
 
     <!-- 历史连接没有 projectId：单独列出，避免"看不见/丢数据" -->

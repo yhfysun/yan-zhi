@@ -135,7 +135,7 @@
 
     <!-- 安装日志 -->
     <div v-if="installLog" class="env-log">
-      <div class="env-log-head">安装日志<button class="env-log-close" @click="installLog = ''">×</button></div>
+      <div class="env-log-head">安装日志<button class="env-log-close" @click="installLog = ''"><el-icon><Close /></el-icon></button></div>
       <pre class="env-log-body">{{ installLog }}</pre>
     </div>
   </div>

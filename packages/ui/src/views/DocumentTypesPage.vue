@@ -79,7 +79,7 @@
             <div class="dt-row-actions">
               <button type="button" :disabled="isBuiltin || i === 0" @click="move(i, -1)">↑</button>
               <button type="button" :disabled="isBuiltin || i === draft.sections.length - 1" @click="move(i, 1)">↓</button>
-              <button type="button" class="danger" :disabled="isBuiltin" @click="draft.sections.splice(i, 1)">×</button>
+              <button type="button" class="danger" :disabled="isBuiltin" @click="draft.sections.splice(i, 1)"><el-icon><Close /></el-icon></button>
             </div>
           </div>
         </div>
@@ -107,7 +107,7 @@
             :disabled="isBuiltin"
             @update:model-value="(val: string) => (v.options = val.split(',').map((x) => x.trim()).filter(Boolean))"
           />
-          <button type="button" class="dt-del" :disabled="isBuiltin" @click="draft.variables!.splice(i, 1)">×</button>
+          <button type="button" class="dt-del" :disabled="isBuiltin" @click="draft.variables!.splice(i, 1)"><el-icon><Close /></el-icon></button>
         </div>
       </template>
     </section>

@@ -11,7 +11,7 @@
     >
       <span class="chr-pack" :style="thumbStyle(p)" />
       <span class="chr-name">{{ p.short }}</span>
-      <span v-if="p.user" class="chr-del" title="删除这个形象" @click.stop="remove(p.id)">×</span>
+      <span v-if="p.user" class="chr-del" title="删除这个形象" @click.stop="remove(p.id)"><el-icon><Close /></el-icon></span>
     </button>
     <button type="button" class="chr chr-add" title="导入 GIF / 图片 / 精灵图集" @click="$emit('import')">
       <span class="chr-plus">＋</span>
