@@ -38,6 +38,8 @@ export const CLIP_AGENT_BUILTIN_TOOLS = [
   'publish_enqueue', 'publish_mark_published',
   // 单素材加工：抽帧做封面 / 变速 / 转场 / 水印 / 响度归一（工程渲染之外的单点补刀）
   'media_edit',
+  // 多机位前置：两段同时录制、起点不同的素材 → 离线音频对齐求时间偏移（纯 DSP，非 AI）
+  'api_media_audio_sync',
   'media_compose',
   'api_srt_generate',
   // 本地语音转字幕（whisper.cpp）：素材只有音频时从**语音**识别出 SRT
@@ -81,6 +83,8 @@ export const CLIP_AGENT_SYSTEM_PROMPT = `你是「剪辑师」（clipAgent），
   工程按会话保存，用户与你在同一份工程上反复改，**改一处就继续在旧工程上改，不要重建**。
 - **media_edit**：只对**单个素材**做一次加工（抽帧做封面 / 变速 / 转场 / 水印 / 响度归一）——
   这些是工程之外的补刀，不要用它替代工程渲染。
+- **api_media_audio_sync**：两段同时录制、起点不同的素材（双机位/摄像机+手机）先用它算时间偏移
+  （纯本地 DSP），再按返回的裁剪建议对齐；它只做两两对齐，不等于多机位编排。
 - **clip_jianying**：剪映剪辑模式 —— 先 op=detect 看本机装没装剪映；用户明确要「用剪映剪 /
   导出到剪映」时，把当前工程 op=export 成剪映草稿（可 open:true 启动剪映），用户在剪映里继续剪并导出。
   ★ 草稿会带：素材/裁剪/变速/音量/字幕（含字幕动画）/BGM/画中画，并把调色/结构特效/蒙版/色键/转场/

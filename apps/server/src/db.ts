@@ -1269,7 +1269,7 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 多模态 / 商品对比
   'image_analyze', 'compare_products',
   // AI 媒体生成（文生图/文生视频，agnes 平台）+ 文字转语音（模型层 + 系统语音兜底）+ 合成
-  'api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_edit', 'media_install_ffmpeg', 'media_install_ytdlp',
+  'api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_edit', 'api_media_audio_sync', 'media_install_ffmpeg', 'media_install_ytdlp',
   // 网络素材获取 + 竖屏规格统一（用户诉求：让模型自己下载公开素材、拼成长视频）
   'api_media_fetch', 'api_media_normalize',
   // 有声小说推文视频生成（章节txt + 背景视频 → 标题/字幕/配音 4:3 成片）
@@ -1951,7 +1951,7 @@ const STORYBOARD_AGENT_BUILTIN_TOOLS = [
   // 参考图识别（用户给的设定图/风格图只有路径，必须调它才能看到画面）
   'image_analyze',
   // 媒体产物：分镜出图 / 出片 / 台词配音 / 字幕 / 音视频合成（agnes 媒体模型 + 系统语音 + ffmpeg 兜底）
-  'api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_edit', 'media_install_ffmpeg', 'media_install_ytdlp',
+  'api_image_generate', 'api_video_generate', 'api_video_status', 'api_tts_speak', 'api_tts_voices', 'api_srt_generate', 'media_compose', 'media_edit', 'api_media_audio_sync', 'media_install_ffmpeg', 'media_install_ytdlp',
   // 网络素材获取 + 竖屏规格统一：找参考视频/空镜素材自己下载；多镜拼长视频前先统一规格
   'api_media_fetch', 'api_media_normalize',
   // 联网查风格参考与平台参数（委派 pageAgent）；list_models 用于生产段挑选可用的图/视频模型

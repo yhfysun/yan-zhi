@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { CLIP_AGENT_SYSTEM_PROMPT } from '../src/plugins/clip-mode/seed.js';
+import { CLIP_AGENT_SYSTEM_PROMPT, CLIP_AGENT_BUILTIN_TOOLS } from '../src/plugins/clip-mode/seed.js';
 
 const DB_SRC = readFileSync(resolve(__dirname, '..', 'src', 'db.ts'), 'utf8');
 
@@ -88,5 +88,26 @@ describe('提示词覆盖 2026-11-02 新能力', () => {
       expect(body, `skill 正文缺少「${kw}」`).toContain(kw);
     }
     expect(body.length).toBeLessThanOrEqual(2000);
+  });
+});
+
+/**
+ * 2026-11-02 收尾：多机位音频对齐工具必须**注册进智能体工具清单**。
+ * ★ 只在执行器白名单里注册 = "能按名调用但模型看不到"，等于没上；
+ *   这里同时钉住剪辑师清单、另外两处内置媒体清单和系统提示词的分工说明。
+ */
+describe('api_media_audio_sync 工具注册', () => {
+  it('剪辑师工具清单包含它', () => {
+    expect(CLIP_AGENT_BUILTIN_TOOLS).toContain('api_media_audio_sync');
+  });
+
+  it('其余内置媒体工具清单也包含它（至少两处 db 种子）', () => {
+    const hits = DB_SRC.match(/api_media_audio_sync/g) || [];
+    expect(hits.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('系统提示词说明用途与边界（两两对齐，不是多机位编排）', () => {
+    expect(CLIP_AGENT_SYSTEM_PROMPT).toContain('api_media_audio_sync');
+    expect(CLIP_AGENT_SYSTEM_PROMPT).toContain('两两对齐');
   });
 });
