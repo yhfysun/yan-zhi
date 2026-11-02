@@ -73,6 +73,11 @@
             <el-input v-model="n.node.key" size="small" class="dw-mono std-in-key" placeholder="key" />
             <el-input v-model="n.node.value" size="small" class="std-in-value" placeholder="value" />
             <el-input v-model="n.node.description" size="small" class="std-in-def" placeholder="def（描述）" />
+            <el-input v-model="n.node.synonymsText" size="small" class="std-in-syn" placeholder="同义词（逗号分隔）" />
+            <span v-if="n.node.groupPath" class="ont-tag" :title="n.node.groupPath">{{ n.node.groupPath }}</span>
+            <el-tooltip v-if="impactOf(n.node).count" :content="impactOf(n.node).title">
+              <span class="ont-tag">影响 {{ impactOf(n.node).count }} 本体</span>
+            </el-tooltip>
             <el-button size="small" text @click="openEnum(n.node)">枚举</el-button>
             <el-button size="small" text type="danger" :icon="Delete" @click="removeNode(n.node)" />
           </span>
@@ -156,6 +161,10 @@ interface StdNode {
   enumSource: 'manual' | 'sql' | 'distinct';
   enumSql: string;
   enumDatasourceId: string;
+  /** UI 文本（逗号分隔），保存时拆成数组 */
+  synonymsText?: string;
+  /** 语义分组路径（祖先分组名） */
+  groupPath?: string;
   children: StdNode[];
 }
 
@@ -165,6 +174,44 @@ const saving = ref(false);
 const keyword = ref('');
 const folded = ref(new Set<string>());
 const dragOver = ref('');
+
+// 改动影响：key → 引用它的本体数/名称（维度/度量上的 refAttr）
+interface Impact { count: number; names: string[] }
+const ontologyImpact = ref(new Map<string, Impact>());
+
+function impactOf(n: StdNode): { count: number; title: string } {
+  const hit = n.key ? ontologyImpact.value.get(n.key) : undefined;
+  return hit ? { count: hit.count, title: hit.names.join('、') } : { count: 0, title: '' };
+}
+
+async function loadImpact(): Promise<void> {
+  const res = await api.get<any[]>('/ontologies');
+  if ('error' in res) return;
+  const map = new Map<string, Impact & { seen: Set<string> }>();
+  for (const o of res.data || []) {
+    for (const f of [...(o.dimensions || []), ...(o.measures || [])]) {
+      const key = f?.refAttr;
+      if (!key) continue;
+      const cur = map.get(key) || { count: 0, names: [] as string[], seen: new Set<string>() };
+      if (!cur.seen.has(o.id)) { cur.seen.add(o.id); cur.count += 1; cur.names.push(o.name || o.code); }
+      map.set(key, cur);
+    }
+  }
+  ontologyImpact.value = map as unknown as Map<string, Impact>;
+}
+
+function parseSyn(text: string | undefined): string[] {
+  return String(text || '').split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
+}
+
+/** 回填 UI 文本与语义分组路径 */
+function annotate(nodes: StdNode[], parentPath = ''): void {
+  for (const n of nodes) {
+    n.synonymsText = (n.synonyms || []).join(', ');
+    n.groupPath = parentPath;
+    annotate(n.children || [], n.kind === 'group' ? (parentPath ? `${parentPath} / ${n.name}` : n.name) : parentPath);
+  }
+}
 
 // ===== 表格 / JSON 双模式 =====
 const viewMode = ref<'table' | 'json'>('table');
@@ -306,6 +353,8 @@ async function load() {
   loading.value = false;
   if ('error' in res) return ElMessage.error(res.error);
   tree.value = res.data || [];
+  annotate(tree.value);
+  void loadImpact();
 }
 
 type VisNode =
@@ -395,7 +444,7 @@ async function saveAll() {
   saving.value = true;
   try {
     const put = async (n: StdNode): Promise<boolean> => {
-      const body = n.kind === 'group' ? { name: n.name } : { key: n.key, value: n.value, description: n.description };
+      const body = n.kind === 'group' ? { name: n.name } : { key: n.key, value: n.value, description: n.description, synonyms: parseSyn(n.synonymsText) };
       const res = await api.patch(`/std-attributes/${n.id}`, body);
       if ('error' in res) { ElMessage.error(res.error); return false; }
       for (const c of n.children) { if (!(await put(c))) return false; }
@@ -450,6 +499,7 @@ onMounted(() => { void load(); });
 .std-row.drag-over { outline: 1.5px dashed var(--color-primary); outline-offset: -2px; background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
 .std-in-key { width: 150px; flex-shrink: 0; }
 .std-in-value { width: 160px; flex-shrink: 0; }
+.std-in-syn { width: 140px; flex-shrink: 0; }
 .std-in-def { flex: 1; min-width: 0; }
 .std-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 8px; gap: 10px; }
 </style>

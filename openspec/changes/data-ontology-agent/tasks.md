@@ -104,7 +104,8 @@
   → 2026-11-02：编译预览两个 tab 分别挂 `.ont-derived`（--void + 锁图标「派生 · 只读」）与 `.ont-source`（--void-2 + 品牌左线 + 编辑图标「源文件 · 可改」）。
 - [x] 6.8 **发布预检浮层**：口径 diff（+/−）+ 引用本体的智能体清单（受影响项玫红标注）+ 24h 回滚承诺 + 版本号；配套「N 处未保存改动 + 撤销」
   → 2026-11-02：ontology 增 `published_json` 发布快照；`GET /:id/impact` 返回 口径 diff（新增/移除/修改，按维度/时间/度量/描述）+ 挂载智能体（含 ontology_ids='[]' 全量挂载）+ 回滚截止；`POST /:id/rollback` 24h 内恢复快照（版本 +1）。前端 `OntologyPublishDialog`：版本号、diff 着色、智能体玫红标签、回滚入口；发布改为「先保存 → 预检 → 确认发布」。5 例后端测试。
-- [ ] 6.9 `StdAttributeEditor.vue`：key/value/def/next 四列 + 同义词 + 语义分组；三种录入（表格⇄JSON 双模式 / SQL 取字典表预览映射 / DISTINCT 采样）+ 改动影响 N 个本体提示
+- [x] 6.9 `StdAttributeEditor.vue`：key/value/def/next 四列 + 同义词 + 语义分组；三种录入（表格⇄JSON 双模式 / SQL 取字典表预览映射 / DISTINCT 采样）+ 改动影响 N 个本体提示
+  → 2026-11-02：在 `StdAttributeTree.vue` 落地（未另建同名组件）：行内 key/value/def + **同义词**输入 + **语义分组路径**标签；三种录入 = 表格 / JSON 双模式（工具栏切换）、SQL 取字典（枚举弹窗 SQL 来源 + 预览）、DISTINCT 采样；行上显示「影响 N 个本体」并 tooltip 列名称；保存时同义词按逗号拆分。原「next」列未单列（以语义分组路径/影响面承载）。
 - [ ] 6.10 `SqlConsole.vue`：schema 树 + 深色编辑器（选中段高亮、未选中灰化、`N 条语句 · 光标在第 M 条`）+ 常驻只读护栏徽标 + 键位标注 + 结果网格（NULL 弱化显示 / 耗时行数截断）
 - [ ] 6.11 `DataResultPanel.vue` 注册为 `PreviewTab` 新 kind：本体来源标注 + 过滤器 chip 条 + 迷你趋势图 + 分页 + 底部「导出 CSV / Python 分析 / 生成报告」三出口
 - [ ] 6.12 SettingsDrawer 新增 `data-sources` / `ontology` / `std-attribute` 三个 section（**不往 SideNav 平铺**，沿用 2026-09-03 精简约定）
