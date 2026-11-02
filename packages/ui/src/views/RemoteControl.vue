@@ -8,7 +8,7 @@
             <span class="rc-logo">言智 · 远程控制</span>
             <span class="rc-sub">{{ setupTab === 'host' ? '本机作为被控端：扫码 / 地址即可连入' : '连接到局域网内运行言智的电脑' }}</span>
           </div>
-          <button v-if="phase !== 'pending'" class="rc-close" title="关闭页面" @click="closeRemotePage">✕</button>
+          <button v-if="phase !== 'pending'" class="rc-close" title="关闭页面" @click="closeRemotePage"><el-icon><Close /></el-icon></button>
         </div>
 
         <template v-if="phase === 'setup'">
@@ -225,7 +225,7 @@
       <div v-if="actionsOpen" class="rc-sheet" :class="{ touch: isTouch }" @pointerdown.stop @click.stop>
         <div class="rc-sheet-head">
           <span>操作</span>
-          <button class="rc-panel-x" @click="actionsOpen = false">✕</button>
+          <button class="rc-panel-x" @click="actionsOpen = false"><el-icon><Close /></el-icon></button>
         </div>
         <div class="rc-sheet-grid">
           <button v-if="linkKind !== 'android'" class="rc-act" @click="doAction(rightClickAtLast)">
@@ -347,7 +347,7 @@
 
       <!-- 剪贴板面板（纯文本；全屏下 Ctrl+V 直通注入 = 用被控端剪贴板粘贴） -->
       <div v-if="clipPanelOpen" class="rc-panel" @pointerdown.stop @click.stop>
-        <div class="rc-panel-head">剪贴板互通<button class="rc-panel-x" @click="clipPanelOpen = false">✕</button></div>
+        <div class="rc-panel-head">剪贴板互通<button class="rc-panel-x" @click="clipPanelOpen = false"><el-icon><Close /></el-icon></button></div>
         <textarea v-model="clipText" class="rc-panel-text" rows="4" placeholder="把要发送的内容粘贴到这里；「取远端」会把被控端剪贴板填进来"></textarea>
         <div class="rc-panel-actions">
           <button class="rc-btn rc-btn-primary" :disabled="!clipText.trim() || clipBusy" @click="sendClipboard">发送到被控端</button>
@@ -359,7 +359,7 @@
 
       <!-- 文件面板（发送 → 被控端接收目录；列表/下载 ← 接收目录） -->
       <div v-if="filePanelOpen" class="rc-panel rc-panel-wide" @pointerdown.stop @click.stop>
-        <div class="rc-panel-head">文件传输<button class="rc-panel-x" @click="filePanelOpen = false">✕</button></div>
+        <div class="rc-panel-head">文件传输<button class="rc-panel-x" @click="filePanelOpen = false"><el-icon><Close /></el-icon></button></div>
         <div
           class="rc-file-drop" :class="{ over: fileDrag }"
           @dragover.prevent="fileDrag = true" @dragleave.prevent="fileDrag = false" @drop.prevent="onPanelFileDrop"
@@ -379,7 +379,7 @@
 
       <!-- 输入链路诊断：坐标/尺寸/权限一眼看全，坏了能自己判断断在哪一段 -->
       <div v-if="diagOpen" class="rc-panel rc-panel-wide" @pointerdown.stop @click.stop>
-        <div class="rc-panel-head">输入链路诊断<button class="rc-panel-x" @click="diagOpen = false">✕</button></div>
+        <div class="rc-panel-head">输入链路诊断<button class="rc-panel-x" @click="diagOpen = false"><el-icon><Close /></el-icon></button></div>
         <div class="rc-diag">
           <div class="rc-diag-row"><span>连接 / 模式</span><b>{{ linkKind }} · {{ mode }}</b></div>
           <div class="rc-diag-row"><span>远端屏幕</span><b>{{ screen.w }}×{{ screen.h }} @ {{ screen.x }},{{ screen.y }}</b></div>

@@ -11,7 +11,7 @@
       <!-- 展开后的介绍 -->
       <transition name="intro-pop">
         <div v-if="introExpanded" class="app-intro" :style="introStyle">
-          <button class="intro-close" @click="introExpanded = false">×</button>
+          <button class="intro-close" @click="introExpanded = false"><el-icon><Close /></el-icon></button>
           <h1 class="app-title">言智 <span class="app-en">Yan-Zhi</span></h1>
           <p class="app-subtitle">语言可控的智能体平台</p>
         </div>
@@ -41,7 +41,7 @@
       <div v-if="showFeatureNav && !showEarthMap" class="feature-nav-panel glass-card">
         <div class="feature-nav-header">
           <span class="feature-nav-title">功能导航</span>
-          <button class="feature-nav-close" @click="showFeatureNav = false" aria-label="关闭">×</button>
+          <button class="feature-nav-close" @click="showFeatureNav = false" aria-label="关闭"><el-icon><Close /></el-icon></button>
         </div>
         <div class="feature-nav-list">
           <div

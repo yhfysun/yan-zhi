@@ -269,7 +269,7 @@
           <span class="cp-gname-t">{{ g.name }}</span><span class="cp-ctx-key">{{ g.count }}</span>
         </button>
         <button class="cp-gact" title="重命名分组" @click.stop="openGroupRename(g)">✎</button>
-        <button class="cp-gact danger" title="删除分组（条目保留）" @click.stop="removeGroup(g)">×</button>
+        <button class="cp-gact danger" title="删除分组（条目保留）" @click.stop="removeGroup(g)"><el-icon><Close /></el-icon></button>
       </div>
       <div v-if="!groups.length" class="cp-gempty">还没有分组，可以先建一个，如「工作话术」</div>
       <div class="cp-ctx-sep"></div>
@@ -296,7 +296,7 @@
         <template v-else-if="dialog.mode === 'tags'">
           <div class="cp-tagbox">
             <span v-for="(t, i) in dialog.tags" :key="t" class="cp-tagchip">
-              #{{ t }}<button class="cp-tagx" @click="removeTag(i)">×</button>
+              #{{ t }}<button class="cp-tagx" @click="removeTag(i)"><el-icon><Close /></el-icon></button>
             </span>
             <input
               ref="dialogInput"

@@ -28,7 +28,7 @@
           <span class="tab-bg-badge" v-if="tab.background" title="后台子智能体自己开的工作页（不是你打开的那一页）">后台</span>
           <!-- 休眠页（内存回收）：页面进程已释放，切到该 tab 会按 url 自动重载 -->
           <span class="tab-sleep-badge" v-if="tab.suspended" title="已休眠释放内存，点击切换即恢复">休眠</span>
-          <button class="tab-close" @click.stop="closeTab(tab.id)" v-if="tabs.length > 1" title="关闭标签页">×</button>
+          <button class="tab-close" @click.stop="closeTab(tab.id)" v-if="tabs.length > 1" title="关闭标签页"><el-icon><Close /></el-icon></button>
         </div>
         <button class="tab-new" @click="newTab()" title="新建标签页">
           <svg viewBox="0 0 24 24" width="15" height="15"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor"/></svg>
@@ -81,7 +81,7 @@
       <div class="url-bar" :class="{ focused: urlFocused || omniboxOpen }">
         <svg class="url-lock" viewBox="0 0 24 24" width="14" height="14" v-if="isSecure"><path fill="currentColor" d="M12 1a5 5 0 00-5 5v3H6a2 2 0 00-2 2v9a2 2 0 002 2h12a2 2 0 002-2v-9a2 2 0 00-2-2h-1V6a5 5 0 00-5-5zm3 8H9V6a3 3 0 016 0v3z"/></svg>
         <input v-model="urlInput" class="url-input" placeholder="输入网址或搜索…" @input="onUrlInput" @keydown="onUrlKeydown" @focus="onUrlFocus" @blur="onUrlBlur" />
-        <button v-if="urlInput" class="url-clear" @click="urlInput = ''">×</button>
+        <button v-if="urlInput" class="url-clear" @click="urlInput = ''"><el-icon><Close /></el-icon></button>
         <!-- 地址栏联想（接入参考客户端的 OmniboxSuggest）：书签 / 历史 / 搜索，↑↓ 选择、回车直达 -->
         <div v-if="omniboxOpen" class="omnibox-panel" @mousedown.prevent>
           <div
@@ -534,7 +534,7 @@
       <div v-for="(p, i) in pinned" :key="p.url" class="pin-row">
         <span class="pin-name">{{ p.name }}</span>
         <span class="pin-url">{{ p.url }}</span>
-        <button class="pin-del" @click="removePin(i)">×</button>
+        <button class="pin-del" @click="removePin(i)"><el-icon><Close /></el-icon></button>
       </div>
       <div class="pin-add">
         <el-input v-model="newPinName" size="small" placeholder="名称" style="width:90px" />

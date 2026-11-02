@@ -85,4 +85,19 @@ describe('P3-④ 图标一致性', () => {
     expect(readRepo('packages/ui/src/components/browser/PageChatDock.vue')).toMatch(/<Close \/>/);
     expect(readRepo('packages/ui/src/components/dashboard/DashboardWidgetCard.vue')).toMatch(/<Close \/>/);
   });
+
+  it('主要页面的按钮不再用文字 × / ✕ 做关闭', () => {
+    for (const p of [
+      'packages/ui/src/views/Home.vue',
+      'packages/ui/src/components/home/EarthMap.vue',
+      'packages/ui/src/components/home/SolarSystem.vue',
+      'packages/ui/src/components/home/FeatureGuide.vue',
+      'packages/ui/src/views/PetPopup.vue',
+      'packages/ui/src/components/BrowserPanel.vue',
+      'packages/ui/src/views/RemoteControl.vue',
+      'packages/ui/src/views/ClipPanel.vue',
+    ]) {
+      expect(readRepo(p), `${p} 仍用文字关闭符`).not.toMatch(/>\s*[×✕]\s*<\/button>/);
+    }
+  });
 });

@@ -16,7 +16,7 @@
     <!-- 大洲描述面板（左侧） -->
     <transition name="panel-slide">
       <div v-if="selectedContinent" class="continent-panel glass-card">
-        <button class="panel-close" @click="selectedContinent = null">×</button>
+        <button class="panel-close" @click="selectedContinent = null"><el-icon><Close /></el-icon></button>
         <div class="continent-header">
           <span class="continent-emoji-lg">{{ selectedContinent.emoji }}</span>
           <div>
@@ -36,7 +36,7 @@
     <!-- 国家详情面板（右侧） -->
     <transition name="panel-slide">
       <div v-if="selectedCountry" class="country-panel glass-card">
-        <button class="panel-close" @click="selectedCountry = null">×</button>
+        <button class="panel-close" @click="selectedCountry = null"><el-icon><Close /></el-icon></button>
         <h3 class="country-name">{{ selectedCountry.name }} <span class="country-en">{{ selectedCountry.enName }}</span></h3>
         <div class="country-flag">{{ getFlagEmoji(selectedCountry.code) }}</div>
         <div class="country-info-list">

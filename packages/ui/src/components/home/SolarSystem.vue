@@ -46,7 +46,7 @@
       <div v-if="helpVisible" class="solar-help glass-card" @click.self="helpVisible = false">
         <div class="help-head">
           <span>太阳系操作说明</span>
-          <button class="help-close" @click="helpVisible = false">×</button>
+          <button class="help-close" @click="helpVisible = false"><el-icon><Close /></el-icon></button>
         </div>
         <ul class="help-list">
           <li><b>左键点击星球</b>：聚焦查看该星球（面板可折叠成小图标拖动）</li>
@@ -71,7 +71,7 @@
         </div>
         <!-- 展开状态：完整面板 -->
         <div v-else class="planet-panel glass-card">
-          <button class="panel-close" @click="closePlanet">×</button>
+          <button class="panel-close" @click="closePlanet"><el-icon><Close /></el-icon></button>
           <div class="panel-header" @click="panelCollapsed = true">
             <div class="panel-icon" :style="{ background: selectedPlanet.color }">{{ selectedPlanet.emoji }}</div>
             <div class="panel-titles">

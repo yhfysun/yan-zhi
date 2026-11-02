@@ -27,7 +27,7 @@
           :title="muted ? '恢复通知' : '静音通知'"
           @click.stop="toggleMute"
         >{{ muted ? '🔕' : '🔔' }}</button>
-        <button type="button" class="p-icon-btn" title="关闭" @click.stop="close">✕</button>
+        <button type="button" class="p-icon-btn" title="关闭" @click.stop="close"><el-icon><Close /></el-icon></button>
       </div>
       <div class="p-body">
         <div v-if="!tasks.length" class="p-empty">没有任务 —— 点半圆菜单「新建任务」开始</div>

@@ -13,7 +13,7 @@
                 <span class="guide-route">{{ feature.route }}</span>
               </div>
             </div>
-            <button class="guide-close" @click="$emit('close')" aria-label="关闭">×</button>
+            <button class="guide-close" @click="$emit('close')" aria-label="关闭"><el-icon><Close /></el-icon></button>
           </header>
 
           <div class="guide-divider"></div>
