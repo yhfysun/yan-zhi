@@ -341,6 +341,16 @@
             >
               <el-icon :size="13" :class="{ 'cp-spin': ttsRunning }"><Microphone /></el-icon>
             </button>
+            <!-- 录音（旁白/口播）：本机 MediaRecorder → 会话素材 → 播放头处音频层 -->
+            <button
+              class="cp-mini"
+              :class="{ 'cp-rec-on': recState === 'recording' }"
+              :title="recState === 'recording' ? '正在录音…（点开弹窗可停止）' : '录音：用麦克风录一段旁白/口播，保存后按播放头位置放进音频轨（本机处理）'"
+              :disabled="recState === 'requesting' || recState === 'saving'"
+              @click="openRecorder"
+            >
+              <el-icon :size="13"><Microphone /></el-icon>
+            </button>
             <!-- 剪辑配方（P1-11）：一组已验证的 op，填参数一键套用 -->
             <button
               class="cp-mini"
@@ -1519,6 +1529,24 @@
     </el-dialog>
 
     <!-- 贴纸库（P1-1）：ffmpeg 合成的透明 PNG，点一下放到播放头 -->
+    <el-dialog v-model="recOpen" title="录音（旁白 / 口播）" width="420px" :append-to-body="true" :close-on-click-modal="false">
+      <div class="cp-rec">
+        <div class="cp-rec-time">{{ formatRecTime(recMs) }}</div>
+        <div class="cp-rec-state">
+          {{ recState === 'recording' ? '正在录音…' : recState === 'requesting' ? '正在打开麦克风…' : recState === 'saving' ? '正在保存到素材库…' : recState === 'review' ? '已录制：可试听、重录或保存' : '准备录音' }}
+        </div>
+        <div v-if="recError" class="cp-rec-err">{{ recError }}</div>
+        <audio v-if="recUrl" :src="recUrl" controls class="cp-rec-audio"></audio>
+        <div class="cp-rec-actions">
+          <button v-if="recState === 'recording'" class="cp-btn danger" @click="stopRecording">停止</button>
+          <button v-else-if="recState === 'review'" class="cp-btn" @click="startRecording">重录</button>
+          <button v-if="recState === 'review'" class="cp-btn primary" @click="saveRecording">保存到音轨</button>
+          <button class="cp-btn ghost" @click="recOpen = false">关闭</button>
+        </div>
+        <div class="cp-ins-hint">录音在本机完成、不上传云端；保存后按播放头位置放进音频轨，右侧可调音量/淡入淡出。</div>
+      </div>
+    </el-dialog>
+
     <el-dialog v-model="stickerLibOpen" title="贴纸库" width="560px" :append-to-body="true">
       <div class="cp-sl">
         <div class="cp-sl-note">
@@ -1701,6 +1729,7 @@ import { leadOf, activeMode, type LeadMode } from '../stores/mode';
 import { useChat } from '../composables/chat/useChat';
 import { api, API_BASE, getLicenseCode } from '../api/client';
 import { clampOffset, localLayerT, round4, sampleLayerTf, shiftLayerPosition } from '../utils/clip-stage-geometry';
+import { formatRecTime, pickRecorderMime, recordingFileName, RECORDING_MAX_MS } from '../utils/clip-recording';
 import { clampMenuPos } from '../utils/menuPosition';
 import {
   COLOR_EFFECTS, FX_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
@@ -2897,7 +2926,7 @@ function pickViaInput(cid: string) {
 }
 
 /** 非桌面端：把文件字节交给服务端落盘（无原生路径可用）。 */
-async function uploadFileBytes(cid: string, f: File): Promise<boolean> {
+async function uploadFileBytesPath(cid: string, f: File): Promise<string | null> {
   try {
     const buf = await f.arrayBuffer();
     // 分块 base64（大文件一次性 btoa 会爆栈）
@@ -2907,13 +2936,20 @@ async function uploadFileBytes(cid: string, f: File): Promise<boolean> {
     for (let i = 0; i < bytes.length; i += CHUNK) {
       bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)) as unknown as number[]);
     }
-    const r = await api.post(`/conversations/${encodeURIComponent(cid)}/files/upload`, {
+    const r = await api.post<{ path?: string }>(`/conversations/${encodeURIComponent(cid)}/files/upload`, {
       name: f.name, category: 'upload', base64: btoa(bin),
     });
-    return !('error' in r);
+    if ('error' in r) return null;
+    const p = (r as { data?: { path?: string } }).data?.path;
+    return p ? String(p) : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** 只关心成败的旧入口（拖入上传用）；需要落盘路径的用 uploadFileBytesPath。 */
+async function uploadFileBytes(cid: string, f: File): Promise<boolean> {
+  return !!(await uploadFileBytesPath(cid, f));
 }
 
 /** 桌面端：逐条登记真实路径（引用式素材）。 */
@@ -3695,6 +3731,152 @@ async function addAudioAtPlayhead(file: string) {
     ? `已放到播放头（${start.toFixed(1)}s ~ ${end.toFixed(1)}s，右侧可调音量/淡入淡出）`
     : `已放到播放头（默认 3 秒 —— 没探到时长，右侧可改）`);
 }
+
+// ===== 录音（旁白 / 口播）：MediaRecorder → 会话素材 → 音频轨 =====
+//
+// ★ 为什么放在工作台而不是对话：口播是"看着画面录"的动作，必须和播放头/时间轴在一起。
+// ★ 录音只在本机：不上传云端，走既有 /files/upload 落进会话 upload 目录，
+//   之后与其它音频素材走**同一条**音频层链路（音量/淡入淡出/混音都由渲染侧处理）。
+const recOpen = ref(false);
+const recState = ref<'idle' | 'requesting' | 'recording' | 'review' | 'saving'>('idle');
+const recMs = ref(0);
+const recError = ref('');
+const recUrl = ref('');
+const recBlob = ref<Blob | null>(null);
+const recMime = ref('');
+let recTimer: ReturnType<typeof setInterval> | null = null;
+let recorder: MediaRecorder | null = null;
+let recStream: MediaStream | null = null;
+let recStartedAt = 0;
+
+function stopRecStream() {
+  recStream?.getTracks().forEach((t) => { try { t.stop(); } catch { /* ignore */ } });
+  recStream = null;
+}
+function clearRecClock() {
+  if (recTimer) { clearInterval(recTimer); recTimer = null; }
+}
+function revokeRecUrl() {
+  if (recUrl.value) {
+    try { URL.revokeObjectURL(recUrl.value); } catch { /* ignore */ }
+    recUrl.value = '';
+  }
+}
+
+/** 释放麦克风/计时器/临时 URL（关闭弹窗、卸载、出错共用）。 */
+function cleanupRecording() {
+  clearRecClock();
+  if (recorder) {
+    recorder.ondataavailable = null;
+    recorder.onstop = null;
+    try { if (recorder.state !== 'inactive') recorder.stop(); } catch { /* ignore */ }
+    recorder = null;
+  }
+  stopRecStream();
+  revokeRecUrl();
+  recBlob.value = null;
+  recMime.value = '';
+  recMs.value = 0;
+  recError.value = '';
+  recState.value = 'idle';
+}
+
+async function openRecorder() {
+  // 弹窗已开着（可能正在试听/录音）→ 不重开，避免把未保存的录音直接冲掉
+  if (recOpen.value) return;
+  const cid = await ensureConversation();
+  if (!cid) { note('先建一个剪辑项目再录音'); return; }
+  cleanupRecording();
+  recOpen.value = true;
+  await startRecording();
+}
+
+async function startRecording() {
+  clearRecClock();
+  revokeRecUrl();
+  recBlob.value = null;
+  recError.value = '';
+  recMs.value = 0;
+  recState.value = 'requesting';
+  try {
+    const md = navigator.mediaDevices;
+    if (!md?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      throw new Error('当前环境不支持录音（缺少麦克风接口或 MediaRecorder）');
+    }
+    const stream = await md.getUserMedia({ audio: true });
+    recStream = stream;
+    const mime = pickRecorderMime((m) => MediaRecorder.isTypeSupported(m));
+    const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    recorder = rec;
+    const chunks: BlobPart[] = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    rec.onstop = () => {
+      const type = rec.mimeType || mime || 'audio/webm';
+      const blob = new Blob(chunks, { type });
+      stopRecStream();
+      if (!blob.size) {
+        recState.value = 'idle';
+        recError.value = '没有录到声音（检查系统麦克风输入是否被静音）';
+        return;
+      }
+      recBlob.value = blob;
+      recMime.value = type;
+      recUrl.value = URL.createObjectURL(blob);
+      recState.value = 'review';
+    };
+    rec.onerror = () => {
+      cleanupRecording();
+      recError.value = '录音出错（设备被占用或已断开），请重试';
+    };
+    rec.start(250);   // 每 250ms 收一段数据，长时间录音不会全堆在内存末尾
+    recStartedAt = Date.now();
+    recState.value = 'recording';
+    recTimer = setInterval(() => {
+      recMs.value = Date.now() - recStartedAt;
+      if (recMs.value >= RECORDING_MAX_MS) {
+        note('已达到单次录音上限（30 分钟），已自动停止');
+        stopRecording();
+      }
+    }, 200);
+  } catch (e) {
+    stopRecStream();
+    recorder = null;
+    recState.value = 'idle';
+    const err = e instanceof Error ? e : null;
+    recError.value = err?.name === 'NotAllowedError' || err?.name === 'SecurityError'
+      ? '麦克风权限被拒绝：请在系统/应用设置里允许麦克风后重试'
+      : `无法打开麦克风：${err?.message || String(e)}`;
+  }
+}
+
+function stopRecording() {
+  clearRecClock();
+  try { if (recorder && recorder.state !== 'inactive') recorder.stop(); } catch { /* ignore */ }
+}
+
+/** 保存：上传到会话素材库（拿到绝对路径）→ 放到播放头。 */
+async function saveRecording() {
+  if (!recBlob.value || !convId.value) return;
+  recState.value = 'saving';
+  try {
+    const name = recordingFileName(new Date(), recMime.value);
+    const f = new File([recBlob.value], name, { type: recMime.value || 'audio/webm' });
+    const path = await uploadFileBytesPath(convId.value, f);
+    if (!path) {
+      recState.value = 'review';
+      note('录音保存失败（上传未成功，请重试）');
+      return;
+    }
+    await loadFiles();
+    await addAudioAtPlayhead(path);   // 内部会 note 位置并选中该音频层
+    recOpen.value = false;            // watch 负责清理麦克风与临时 URL
+  } catch (e) {
+    recState.value = 'review';
+    note(`录音保存失败：${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+watch(recOpen, (open) => { if (!open) cleanupRecording(); });
 
 async function applyAudioPatch() {
   const a = selectedAudio.value;
@@ -5442,6 +5624,7 @@ onBeforeUnmount(() => {
   if (frameTimer) clearTimeout(frameTimer);
   if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; }
   stopProxyClock();
+  cleanupRecording();
   stageRO?.disconnect();
   stageRO = null;
   replaceFrameUrl('');
@@ -5549,6 +5732,14 @@ onMounted(async () => {
 /* 矢量图层容器：贴在底图（<img>/<video>）的实际渲染框上（位置/尺寸由 measureStageBox 写入） */
 .cp-vector-frame { position: absolute; z-index: 3; pointer-events: none; }
 .cp-vec-note { font-size: 11px; color: var(--el-text-color-placeholder); white-space: nowrap; }
+/* 录音弹窗 */
+.cp-rec { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.cp-rec-time { font-size: 34px; line-height: 1.1; font-variant-numeric: tabular-nums; letter-spacing: 1px; }
+.cp-rec-state { font-size: 12px; color: var(--el-text-color-secondary); }
+.cp-rec-err { font-size: 12px; color: var(--el-color-danger); text-align: center; line-height: 1.5; }
+.cp-rec-audio { width: 100%; }
+.cp-rec-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.cp-rec-on { color: #e11d48; }
 /* 取帧失败提示（贴底居中，不遮挡画面主体） */
 .cp-live-err { position: absolute; left: 8px; right: 8px; bottom: 8px; font-size: 11px; line-height: 1.5; padding: 4px 8px; border-radius: 4px; background: rgb(220 38 38 / 88%); color: #fff; text-align: center; z-index: 5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-transport { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 0; }

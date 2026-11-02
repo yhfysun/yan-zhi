@@ -798,3 +798,49 @@ describe('ClipWorkbench · P2-5 智能剪口播', () => {
     expect(body).toContain('await reloadAll()');
   });
 });
+
+/**
+ * 录音（旁白/口播）：静态守门。
+ * ★ MediaRecorder 在 jsdom 里不存在，这里锁的是"接线正确"：
+ *   麦克风授权 → 计时 → 试听 → 上传拿路径 → 放进音频轨；关窗必须释放麦克风。
+ */
+describe('ClipWorkbench · 录音（MediaRecorder）', () => {
+  it('工具栏入口 + 录音弹窗（停止/重录/保存到音轨）', () => {
+    expect(SRC).toMatch(/@click="openRecorder"/);
+    expect(SRC).toMatch(/v-model="recOpen"/);
+    expect(SRC).toContain('保存到音轨');
+    expect(SRC).toContain('重录');
+  });
+
+  it('★ 打开录音要申请麦克风并选支持的 MIME（不写死 webm）', () => {
+    const start = fnBody('startRecording');
+    expect(start).toContain('getUserMedia');
+    expect(start).toContain('MediaRecorder');
+    expect(start).toContain('pickRecorderMime');
+    expect(start).toContain('MediaRecorder.isTypeSupported');
+  });
+
+  it('★ 保存走会话上传拿绝对路径 → addAudioAtPlayhead（与其它音频同一链路）', () => {
+    const save = fnBody('saveRecording');
+    expect(save).toContain('uploadFileBytesPath');
+    expect(save).toContain('addAudioAtPlayhead');
+    expect(save).toContain('recordingFileName');
+  });
+
+  it('★ 关闭弹窗/卸载都要释放麦克风与临时 URL', () => {
+    const cleanup = fnBody('cleanupRecording');
+    expect(cleanup).toContain('stopRecStream');
+    expect(cleanup).toContain('revokeRecUrl');
+    expect(fnBody('stopRecStream')).toContain('getTracks');
+    expect(fnBody('revokeRecUrl')).toContain('revokeObjectURL');
+    expect(CODE).toMatch(/watch\(recOpen, \(open\) => \{ if \(!open\) cleanupRecording\(\); \}\);/);
+    const i = CODE.indexOf('onBeforeUnmount(');
+    expect(i).toBeGreaterThan(0);
+    expect(CODE.slice(i, i + 400)).toContain('cleanupRecording');
+  });
+
+  it('单次录音有上限（防止忘记录音占满磁盘）', () => {
+    const start = fnBody('startRecording');
+    expect(start).toContain('RECORDING_MAX_MS');
+  });
+});
