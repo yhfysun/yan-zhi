@@ -91,7 +91,7 @@
 - [x] 5.5 敏感列脱敏/禁止导出；本体健康度看板（描述覆盖率/缺样本值/缺同义词）
   → 2026-11-02：健康度看板（`ontologyHealth` + `GET /api/ontologies/health` + 弹窗，2 例测试）；**敏感列脱敏** —— 字段 `sensitive` 标记（字段总览可勾选），`queryDataForAgent`（普通/契约）、`previewDataForAgent`、`paginateDataForAgent` 结果统一遮成 `***` 并在 warnings 说明；导出复用同一结果，天然只能拿到脱敏值。4 例脱敏测试。
 - [ ] 5.6 `npx openspec validate --all` + 三端查询/控制台回归截图
-  → 2026-11-02：**validate 已跑通 33/33**（`npx -y @fission-ai/openspec@1.16.0 validate --all`）。为过校验补了：7 个 change 的 `## Why`、7 个无 spec 变更的 `.openspec.yaml skip_specs`、data-ontology spec 的重复/缺 scenario 修正。**三端回归截图未做**（需在运行中的应用里人工核验）。
+  → 2026-11-02：**validate 已跑通 33/33**（`npx -y @fission-ai/openspec@1.16.0 validate --all`）。为过校验补了：7 个 change 的 `## Why`、7 个无 spec 变更的 `.openspec.yaml skip_specs`、data-ontology spec 的重复/缺 scenario 修正。**回归以自动化代替截图**：数据域 20 个测试文件 155 例全绿 + `vue-tsc`/`tsc` 无相关错误；**三端截图未做**——本机 Browser preview 未启用、Playwright MCP 桥接不可用、且不允许再起第二个 Vite dev server，截图核验需在人工环境补。
 
 ## P6 UI 设计落地（对齐 ui-design.md + ui-prototype.html）
 
