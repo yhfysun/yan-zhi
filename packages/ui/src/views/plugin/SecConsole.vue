@@ -986,9 +986,10 @@
     <!-- 剧本市场（P2）：内置 + 自定义，导入/导出 -->
     <el-dialog v-model="pbOpen" title="剧本市场" width="660px">
       <div class="pb-bar">
-        <el-button size="small" @click="pbFileEl?.click()">导入 JSON</el-button>
-        <input ref="pbFileEl" type="file" accept=".json,application/json" style="display:none" @change="importPlaybooks" />
-        <el-button size="small" @click="exportPlaybooks">导出全部自定义</el-button>
+        <el-button size="small" @click="pbFileEl?.click()">导入 JSON / YAML</el-button>
+        <input ref="pbFileEl" type="file" accept=".json,.yaml,.yml,application/json,text/yaml" style="display:none" @change="importPlaybooks" />
+        <el-button size="small" @click="exportPlaybooks">导出全部自定义（JSON）</el-button>
+        <el-button size="small" @click="exportPlaybooksYaml">导出 YAML</el-button>
         <span class="pb-hint">支持单个剧本 / 数组 / {items:[…]}；步骤必须以 / 开头</span>
       </div>
       <div class="pb-sec">内置剧本（{{ pbBuiltIn.length }}）</div>
@@ -1590,6 +1591,17 @@ async function exportPlaybooks(): Promise<void> {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 3000);
 }
+async function exportPlaybooksYaml(): Promise<void> {
+  const r = await api.get<any>(`${BASE}/playbooks/export?format=yaml`);
+  if ('error' in r) { ElMessage.error(r.error); return; }
+  const blob = new Blob([String(r.data?.yaml || '')], { type: 'text/yaml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `sec-playbooks-${Date.now()}.yaml`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+}
+
 async function removeUserPlaybook(p: any): Promise<void> {
   const r = await api.post(`${BASE}/playbooks/remove`, { id: p.id });
   if ('error' in r) { ElMessage.error(r.error); return; }

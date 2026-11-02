@@ -79,7 +79,7 @@ describe('剧本市场', () => {
     const bad = res();
     await routes['POST /playbooks/import']({ body: { text: 'not json' } }, bad);
     expect(bad.code).toBe(400);
-    expect(bad.body.error).toContain('不是合法 JSON');
+    expect(bad.body.error).toContain('不是合法');
   });
 
   it('目录：内置剧本齐全 + 自定义单独列出', async () => {
@@ -99,5 +99,23 @@ describe('剧本市场', () => {
     const one = res();
     await routes['GET /playbooks/export']({ query: { id: 'b' } }, one);
     expect(one.body.data.items.map((p: any) => p.id)).toEqual(['b']);
+  });
+
+  it('YAML 导入 / 导出；内置含「内网暴露面」', async () => {
+    const yamlText = 'name: Y1\nid: y1\ndesc: yaml 剧本\nsteps:\n  - /env\n  - /recon ${target}\n';
+    const imp = res();
+    await routes['POST /playbooks/import']({ body: { text: yamlText } }, imp);
+    expect(imp.body.data).toMatchObject({ added: 1, updated: 0, failed: [] });
+
+    const exp = res();
+    await routes['GET /playbooks/export']({ query: { format: 'yaml' } }, exp);
+    expect(exp.body.data.count).toBe(1);
+    expect(exp.body.data.yaml).toContain('Y1');
+    expect(exp.body.data.yaml).toContain('/env');
+
+    const cat = res();
+    await routes['GET /playbooks/catalog']({}, cat);
+    const names = (cat.body.data.builtIn as any[]).map((p) => p.name);
+    expect(names).toContain('内网暴露面');
   });
 });

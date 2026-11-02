@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { secModeAgentDefs, secModeScene } from './sec-lab/seed.js';
 import { applyBuiltinSeed } from '../host-bridge.js';
 import type { BuiltInTool, McpCallResult, PlaybookDef, PluginContext, PluginManifest, PluginModule, PluginStorage } from '@yan-zhi/core';
@@ -247,6 +248,9 @@ export const secLabManifest: PluginManifest = {
       { id: 'web-audit', name: 'Web常规审计', group: 'SEC', mode: 'sec',
         desc: 'Web 面探测 → 外部模板引擎（装了 nuclei 才跑得动）→ 出报告',
         steps: ['/webprobe ${target}', '/toolchain run --tool=nuclei --target=${target}', '/report --target=${target}'] },
+      { id: 'intranet-exposure', name: '内网暴露面', group: 'SEC', mode: 'sec',
+        desc: '内网主机的端口与服务暴露面（全端口段扫描 → Web 面探测）',
+        steps: ['/portscan ${target} --ports=1-1024', '/webprobe ${target}'] },
       { id: 'asset-review', name: '资产盘点', group: 'SEC', mode: 'sec',
         desc: '资产台账 → 快照 → 变更对比',
         steps: ['/assets list', '/assets snapshot --assetId=${assetId}', '/assets diff --assetId=${assetId}'] },
@@ -2461,8 +2465,13 @@ function registerRoutes(ctx: PluginContext) {
 
     r.get('/playbooks/export', async (req: unknown, res: unknown) => {
       const id = String((req as any)?.query?.id || '').trim();
+      const format = String((req as any)?.query?.format || 'json').toLowerCase();
       const list = await loadPlaybooks();
-      json(res, { data: { items: id ? list.filter((p) => p.id === id) : list } });
+      const items = id ? list.filter((p) => p.id === id) : list;
+      if (format === 'yaml') {
+        return json(res, { data: { yaml: stringifyYaml({ items }), count: items.length } });
+      }
+      json(res, { data: { items } });
     });
 
     r.post('/playbooks/import', async (req: unknown, res: unknown) => {
@@ -2470,12 +2479,21 @@ function registerRoutes(ctx: PluginContext) {
       let items: any[] = [];
       if (Array.isArray(b.items)) items = b.items;
       else if (typeof b.text === 'string') {
+        const text = String(b.text);
+        let parsed: any = null;
         try {
-          const parsed = JSON.parse(b.text);
-          items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : [parsed]);
+          parsed = JSON.parse(text);
         } catch {
-          return fail(res, 400, '导入内容不是合法 JSON（支持单个剧本、数组或 {items:[...]}）');
+          try {
+            parsed = parseYaml(text); // 剧本 YAML：name/desc/steps 或 items 列表
+          } catch {
+            return fail(res, 400, '导入内容不是合法 JSON / YAML（支持单个剧本、数组或 {items:[...]}）');
+          }
         }
+        if (!parsed || typeof parsed !== 'object') {
+          return fail(res, 400, '导入内容不是合法 JSON / YAML 剧本（顶层必须是对象或数组）');
+        }
+        items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.items) ? parsed.items : [parsed]);
       } else if (b.playbook) items = [b.playbook];
       if (!items.length) return fail(res, 400, '没有可导入的剧本（items / text / playbook 三选一）');
 

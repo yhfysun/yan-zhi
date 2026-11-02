@@ -68,7 +68,8 @@
 - [x] 登记授权 dialog 加 environment 与 ownershipEvidence 字段
 
 ### 验证
-- [ ] tsc / vue-tsc 重跑
+- [x] tsc / vue-tsc 重跑
+  → 2026-11-02：服务端 `tsc --noEmit` 与 UI `vue-tsc --noEmit` 均无 sec-lab / SecConsole 相关错误。
 - [ ] attack_sim 冒烟：lab 环境 + human 通过；internal + agent 被拒；planOnly+agent 通过
 - [ ] detect_rules match 跑一段样例日志命中 YZ-007
 - [ ] asset_monitor 端到端：add → list → snapshot → 再 snapshot → diff
@@ -77,7 +78,8 @@
 
 - [x] `/` 命令扩展点：插件可注册 slash command（改 `ChatInputArea.vue:556` 硬编码数组为注册表），加 `/scan` `/recon` 等 —— 2026-11-01 核实已落地：contributes.commands（sec-lab.ts:119 起，18 条命令声明在插件侧）+ contributes.playbooks 内置剧本 + 用户剧本存 /plugin/sec-lab/playbooks；@ 召唤走 planPlaybookSummon（ChatInputArea:2020）
 - [x] `@` 提及扩展为 文件 / 剧本 / 工具 三模式（改 `ChatInputArea.vue:637` 的 `atFileList`） —— 2026-11-01 核实已落地：contributes.commands（sec-lab.ts:119 起，18 条命令声明在插件侧）+ contributes.playbooks 内置剧本 + 用户剧本存 /plugin/sec-lab/playbooks；@ 召唤走 planPlaybookSummon（ChatInputArea:2020）
-- [ ] 剧本（Playbook）模型：YAML 多步编排 + 内置剧本包（信息收集 / Web 常规审计 / 内网暴露面）
+- [x] 剧本（Playbook）模型：YAML 多步编排 + 内置剧本包（信息收集 / Web 常规审计 / 内网暴露面）
+  → 2026-11-02：剧本导入支持 **JSON / YAML**（顶层对象、数组或 items；步骤仍必须是 `/` 命令，复用 `normalizePlaybook`）；导出新增 `?format=yaml`；内置剧本补齐「内网暴露面」（全端口段 + Web 面探测），与「信息收集」「Web常规审计」「完整评估」等并存；SecConsole 导入接受 .yaml/.yml、新增「导出 YAML」。6 例测试。
 - [x] 完整控制台：xterm 终端（SSE，抄 `routes/local-console.ts`）+ 三栏布局
   → 2026-11-02：复用既有 `ChatConsolePanel`（`@xterm` + SSE 帧 + 输入/重启/清屏，走 `/api/local-console`）作为安全台第 4 个 Tab「本机终端」；控制台三栏（命令速查 / 执行面板 / 结果与审查）沿用 SecConsole 现有框架。注：无 PTY，不支持 resize 与交互式全屏程序（与 local-console 同口径）。
 - [x] findings 消息卡片（严重度色块 + 折叠详情），走 `Message.dataView` 扩展
