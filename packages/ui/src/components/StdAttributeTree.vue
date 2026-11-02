@@ -2,6 +2,10 @@
   <div class="std-tree" v-loading="loading">
     <div class="std-toolbar">
       <el-input v-model="keyword" size="small" clearable :prefix-icon="Search" placeholder="搜索 key / 值 / 描述 / 分组" />
+      <el-radio-group v-model="viewMode" size="small" @change="onModeChange">
+        <el-radio-button value="table">表格</el-radio-button>
+        <el-radio-button value="json">JSON</el-radio-button>
+      </el-radio-group>
       <el-dropdown trigger="click" @command="onAddCmd">
         <el-button size="small" type="primary" :icon="Plus">新增</el-button>
         <template #dropdown>
@@ -13,7 +17,7 @@
       </el-dropdown>
     </div>
 
-    <div class="std-scroll" @drop="onDropRoot" @dragover.prevent>
+    <div v-if="viewMode === 'table'" class="std-scroll" @drop="onDropRoot" @dragover.prevent>
       <template v-for="n in visibleNodes" :key="n.key">
         <div
           v-if="n.kind === 'group'"
@@ -69,6 +73,7 @@
             <el-input v-model="n.node.key" size="small" class="dw-mono std-in-key" placeholder="key" />
             <el-input v-model="n.node.value" size="small" class="std-in-value" placeholder="value" />
             <el-input v-model="n.node.description" size="small" class="std-in-def" placeholder="def（描述）" />
+            <el-button size="small" text @click="openEnum(n.node)">枚举</el-button>
             <el-button size="small" text type="danger" :icon="Delete" @click="removeNode(n.node)" />
           </span>
         </div>
@@ -78,10 +83,56 @@
       </div>
     </div>
 
+    <div v-else class="std-json">
+      <el-input v-model="jsonText" type="textarea" :rows="18" class="dw-mono" spellcheck="false" placeholder="属性数组 JSON" />
+    </div>
+
     <footer class="std-footer">
-      <span class="ont-hint">修改后点「保存全部」；属性 key 是本体字段 refAttr 的引用标识；分组下的子属性 value 即枚举取值</span>
-      <el-button type="primary" size="small" :loading="saving" @click="saveAll">保存全部</el-button>
+      <span class="ont-hint">
+        {{ viewMode === 'json'
+          ? 'JSON 模式可批量改 key/名称/值/描述/同义词/枚举与枚举来源；新增节点请用表格模式。'
+          : '修改后点「保存全部」；属性 key 是本体字段 refAttr 的引用标识；点「枚举」配置取值来源。' }}
+      </span>
+      <el-button v-if="viewMode === 'json'" type="primary" size="small" :loading="saving" @click="applyJson">应用 JSON</el-button>
+      <el-button v-else type="primary" size="small" :loading="saving" @click="saveAll">保存全部</el-button>
     </footer>
+
+    <!-- 枚举取值 -->
+    <el-dialog v-model="enumOpen" :title="`枚举 · ${enumNode?.key || ''}`" width="620px">
+      <template v-if="enumNode">
+        <el-form label-width="90px" size="small">
+          <el-form-item label="来源">
+            <el-radio-group v-model="enumForm.source">
+              <el-radio-button value="manual">手填 / JSON</el-radio-button>
+              <el-radio-button value="sql">SQL 字典</el-radio-button>
+              <el-radio-button value="distinct">DISTINCT 采样</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <template v-if="enumForm.source !== 'manual'">
+            <el-form-item label="数据源">
+              <el-select v-model="enumForm.datasourceId" placeholder="选择数据源" style="width: 100%">
+                <el-option v-for="d in datasources" :key="d.id" :label="d.name" :value="d.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="SELECT">
+              <el-input v-model="enumForm.sql" type="textarea" :rows="4" class="dw-mono" spellcheck="false" placeholder="只读 SELECT，首列作为取值，如 SELECT DISTINCT status FROM orders" />
+            </el-form-item>
+            <el-form-item label=" ">
+              <el-button size="small" :loading="enumPreviewing" @click="previewEnumValues">预览</el-button>
+              <span class="ont-hint" style="margin-left: 8px">{{ enumPreview.length ? `命中 ${enumPreview.length} 个取值` : '' }}</span>
+            </el-form-item>
+          </template>
+          <el-form-item label="取值">
+            <el-input v-model="enumForm.text" type="textarea" :rows="5" placeholder="每行一个取值（也可直接粘 JSON 数组）" />
+            <div class="ont-hint" style="margin-top: 4px">保存后作为该属性的枚举，供智能体与本体字段引用。</div>
+          </el-form-item>
+        </el-form>
+      </template>
+      <template #footer>
+        <el-button size="small" @click="enumOpen = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="enumSaving" @click="saveEnum">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -100,6 +151,11 @@ interface StdNode {
   value: string;
   dataType: string;
   description: string;
+  synonyms: string[];
+  enums: string[];
+  enumSource: 'manual' | 'sql' | 'distinct';
+  enumSql: string;
+  enumDatasourceId: string;
   children: StdNode[];
 }
 
@@ -109,6 +165,140 @@ const saving = ref(false);
 const keyword = ref('');
 const folded = ref(new Set<string>());
 const dragOver = ref('');
+
+// ===== 表格 / JSON 双模式 =====
+const viewMode = ref<'table' | 'json'>('table');
+const jsonText = ref('');
+
+function flattenAttrs(nodes: StdNode[], out: StdNode[] = []): StdNode[] {
+  for (const n of nodes) {
+    if (n.kind === 'attr') out.push(n);
+    flattenAttrs(n.children, out);
+  }
+  return out;
+}
+
+function toJsonRows(): unknown[] {
+  return flattenAttrs(tree.value).map((n) => ({
+    id: n.id, key: n.key, name: n.name, value: n.value, description: n.description,
+    synonyms: n.synonyms || [], enums: n.enums || [],
+    enumSource: n.enumSource || 'manual', enumSql: n.enumSql || '', enumDatasourceId: n.enumDatasourceId || '',
+  }));
+}
+
+function onModeChange(): void {
+  if (viewMode.value === 'json') jsonText.value = JSON.stringify(toJsonRows(), null, 2);
+}
+
+async function applyJson(): Promise<void> {
+  let rows: any[];
+  try {
+    const parsed = JSON.parse(jsonText.value);
+    if (!Array.isArray(parsed)) throw new Error('顶层必须是数组');
+    rows = parsed;
+  } catch (e) {
+    ElMessage.error(`JSON 解析失败：${(e as Error).message}`);
+    return;
+  }
+  saving.value = true;
+  try {
+    let n = 0;
+    for (const r of rows) {
+      if (!r || typeof r.id !== 'string') continue;
+      const body: Record<string, unknown> = {};
+      for (const k of ['key', 'name', 'value', 'description', 'enumSource', 'enumSql', 'enumDatasourceId'] as const) {
+        if (r[k] !== undefined) body[k] = r[k];
+      }
+      if (Array.isArray(r.synonyms)) body.synonyms = r.synonyms.map(String);
+      if (Array.isArray(r.enums)) body.enums = r.enums.map(String);
+      if (!Object.keys(body).length) continue;
+      const res = await api.patch(`/std-attributes/${r.id}`, body);
+      if ('error' in res) { ElMessage.error(`保存 ${r.key || r.id} 失败：${res.error}`); return; }
+      n += 1;
+    }
+    ElMessage.success(`已应用 ${n} 条属性`);
+    await load();
+    onModeChange();
+  } finally {
+    saving.value = false;
+  }
+}
+
+// ===== 枚举配置 =====
+interface DataSourceLite { id: string; name: string }
+const datasources = ref<DataSourceLite[]>([]);
+const enumOpen = ref(false);
+const enumNode = ref<StdNode | null>(null);
+const enumPreview = ref<string[]>([]);
+const enumPreviewing = ref(false);
+const enumSaving = ref(false);
+const enumForm = ref({ source: 'manual' as 'manual' | 'sql' | 'distinct', datasourceId: '', sql: '', text: '' });
+
+async function loadDatasources(): Promise<void> {
+  if (datasources.value.length) return;
+  const res = await api.get<DataSourceLite[]>('/datasources');
+  if (!('error' in res)) datasources.value = res.data || [];
+}
+
+async function openEnum(node: StdNode): Promise<void> {
+  enumNode.value = node;
+  enumForm.value = {
+    source: node.enumSource || 'manual',
+    datasourceId: node.enumDatasourceId || '',
+    sql: node.enumSql || '',
+    text: (node.enums || []).join('\n'),
+  };
+  enumPreview.value = [];
+  enumOpen.value = true;
+  await loadDatasources();
+}
+
+async function previewEnumValues(): Promise<void> {
+  enumPreviewing.value = true;
+  try {
+    const res = await api.post<{ values: string[] }>('/std-attributes/preview-enum', {
+      datasourceId: enumForm.value.datasourceId,
+      sql: enumForm.value.sql,
+      source: enumForm.value.source,
+    });
+    if ('error' in res) { ElMessage.error(res.error); return; }
+    enumPreview.value = res.data.values || [];
+    enumForm.value.text = enumPreview.value.join('\n');
+  } finally {
+    enumPreviewing.value = false;
+  }
+}
+
+function parseEnumText(text: string): string[] {
+  const t = text.trim();
+  if (!t) return [];
+  if (t.startsWith('[')) {
+    try {
+      const v = JSON.parse(t);
+      return Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
+    } catch { /* 按行解析 */ }
+  }
+  return t.split(/[\n,，]/).map((s) => s.trim()).filter(Boolean);
+}
+
+async function saveEnum(): Promise<void> {
+  if (!enumNode.value) return;
+  enumSaving.value = true;
+  try {
+    const res = await api.patch(`/std-attributes/${enumNode.value.id}`, {
+      enums: parseEnumText(enumForm.value.text),
+      enumSource: enumForm.value.source,
+      enumSql: enumForm.value.sql,
+      enumDatasourceId: enumForm.value.datasourceId,
+    });
+    if ('error' in res) { ElMessage.error(res.error); return; }
+    enumOpen.value = false;
+    ElMessage.success('枚举已保存');
+    await load();
+  } finally {
+    enumSaving.value = false;
+  }
+}
 
 async function load() {
   loading.value = true;
@@ -247,6 +437,7 @@ onMounted(() => { void load(); });
 .std-tree { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .std-toolbar { display: flex; gap: 8px; margin-bottom: 8px; }
 .std-scroll { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--glass-border); border-radius: 10px; padding: 6px; }
+.std-json { flex: 1; min-height: 0; display: flex; }
 .std-row { border-radius: 8px; min-height: 34px; display: flex; align-items: center; margin-bottom: 2px; }
 .std-row-inner { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
 .std-row-group { cursor: pointer; user-select: none; background: color-mix(in srgb, var(--color-text) 2%, transparent); }
