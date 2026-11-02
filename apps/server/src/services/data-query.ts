@@ -5,7 +5,7 @@
 import { db } from '../db.js';
 import { getConnector, type DataSourceRow } from './connector.js';
 import { ensureProjectDataSource, listDataSources } from './datasource.js';
-import { compileOntology, ensureBuiltinOntologiesSync, listOntologies, queryOntologyByRef, type OntologyInfo } from './ontology.js';
+import { compileOntology, ensureBuiltinOntologiesSync, listOntologies, queryOntologyByRef, maskOntologyResult, type OntologyInfo } from './ontology.js';
 import { runOntologyContract, validateStrictIntent } from './ontology-contract.js';
 import type { QueryIntent } from './ontology-compiler.js';
 import { buildOntologyDigest, recallConfigFromEnv, scoreKeywords } from './ontology-recall.js';
@@ -316,17 +316,32 @@ export async function queryDataForAgent(userId: string, input: DataQueryInput) {
   if (input.ontology) {
     // ★ 契约模式（2026-10-03 融合方案）：严格过滤器白名单 + 契约菜单 + 业务名列映射
     if (input.contract) {
-      return runOntologyContract(userId, {
+      const r = await runOntologyContract(userId, {
         ontology: input.ontology,
         intent: input.intent,
         allowed: input.allowed,
         limit,
       });
+      const cols = (r.columns || [])
+        .map((c: any) => (typeof c === 'string' ? c : String(c?.name ?? '')))
+        .filter(Boolean);
+      const m = maskOntologyResult(userId, input.ontology, cols, (r.rows || []) as Record<string, unknown>[]);
+      return {
+        ...r,
+        rows: m.rows,
+        warnings: [...(r.warnings || []), ...(m.masked.length ? [`已按敏感列脱敏：${m.masked.join('、')}`] : [])],
+      };
     }
     const all = filterAllowed(await listOntologiesOf(userId), input.allowed);
     const target = all.find((o) => o.id === input.ontology || o.code === input.ontology);
     if (!target) throw new Error(await ontologyNotFoundMsg(userId, input.ontology, input.allowed));
-    return queryOntologyByRef(userId, target.id, mergeIntent(target, input.intent, limit), limit, DEFAULT_QUERY_TIMEOUT);
+    const result = await queryOntologyByRef(userId, target.id, mergeIntent(target, input.intent, limit), limit, DEFAULT_QUERY_TIMEOUT);
+    const masked = maskOntologyResult(userId, target.id, result.columns || [], result.rows || []);
+    return {
+      ...result,
+      rows: masked.rows,
+      warnings: [...(result.warnings || []), ...(masked.masked.length ? [`已按敏感列脱敏：${masked.masked.join('、')}`] : [])],
+    };
   }
   if (!input.sql?.trim()) {
     throw new Error('必须提供 ontology（本体 id/code）或 sql（只读 SQL）之一');
@@ -449,6 +464,7 @@ export async function previewDataForAgent(userId: string, input: DataQueryInput)
   let sql: string;
   let source: 'ontology' | 'sql';
   let ontologyCode: string | undefined;
+  let ontologyRef: string | undefined;
   let groupColumns: string[] = [];
   let compileWarnings: string[] = [];
 
@@ -467,6 +483,7 @@ export async function previewDataForAgent(userId: string, input: DataQueryInput)
     compileWarnings = compiled.warnings || [];
     ds = loadDataSource(userId, target.datasourceId);
     ontologyCode = target.code;
+    ontologyRef = target.id;
     groupColumns = [
       ...(intent.dimensions || []),
       ...(intent.timeDimension ? [intent.timeDimension.name] : []),
@@ -495,7 +512,12 @@ export async function previewDataForAgent(userId: string, input: DataQueryInput)
     { maxRows: PREVIEW_SAMPLE_ROWS, timeoutMs: DEFAULT_QUERY_TIMEOUT },
   );
   const sampleColumns = sampleRes.columns || [];
-  const sampleRows = (sampleRes.rows || []) as Array<Record<string, unknown>>;
+  const rawSampleRows = (sampleRes.rows || []) as Array<Record<string, unknown>>;
+  const maskedSample = ontologyRef
+    ? maskOntologyResult(userId, ontologyRef, sampleColumns, rawSampleRows)
+    : { rows: rawSampleRows, masked: [] as string[] };
+  const sampleRows = maskedSample.rows;
+  if (maskedSample.masked.length) compileWarnings = [...compileWarnings, `已按敏感列脱敏：${maskedSample.masked.join('、')}`];
 
   const nullCounts: Record<string, number> = {};
   if (groupColumns.length && total > 0) {
@@ -795,8 +817,10 @@ export async function paginateDataForAgent(userId: string, input: DataPaginateIn
     const base = await queryOntologyByRef(userId, target.id, intent, fetchLimit, DEFAULT_QUERY_TIMEOUT);
     const ds = loadDataSource(userId, base.datasourceId);
     const { result, page, warnings } = await runPage(ds, base.sql, base.warnings);
+    const masked = maskOntologyResult(userId, target.id, result.columns || [], result.rows || []);
     return {
       ...result,
+      rows: masked.rows,
       mode: 'ontology' as const,
       pageMode: page.mode,
       ontology: base.ontology,
@@ -804,7 +828,7 @@ export async function paginateDataForAgent(userId: string, input: DataPaginateIn
       sql: page.sql,
       offset,
       limit,
-      warnings,
+      warnings: [...warnings, ...(masked.masked.length ? [`已按敏感列脱敏：${masked.masked.join('、')}`] : [])],
     };
   }
 

@@ -343,7 +343,7 @@
 
           <div v-show="subTab === 'fields'">
           <!-- 字段总览（P6.5）：角色/置信度/锁定；低置信度禁止发布 -->
-          <OntologyFieldTable v-if="allFields.length" :fields="allFields" />
+          <OntologyFieldTable v-if="allFields.length" :fields="allFields" @toggle-sensitive="onToggleSensitive" />
 
           <!-- 选择列 / 度量 / 时间维度 -->
           <div class="ont-fgroup">
@@ -971,6 +971,7 @@ function pickFields(kind: 'dimension' | 'time' | 'measure', arr: any[]): any[] {
     description: x.description,
     confidence: x.confidence,
     locked: !!x.locked || !!String(x.description || '').trim(),
+    sensitive: !!x.sensitive,
     samples: x.sampleValues?.length || 0,
     enums: x.enums?.length || 0,
   }));
@@ -981,6 +982,15 @@ const allFields = computed(() => [
   ...pickFields('measure', form.measures),
 ]);
 const lowConfidenceFields = computed(() => allFields.value.filter((f) => typeof f.confidence === 'number' && f.confidence < 0.7));
+
+/** 敏感列开关（P5.5）：命中当前表单对应字段，保存后生效 */
+function onToggleSensitive(p: { kind: string; name: string; value: boolean }): void {
+  const arr: any[] = p.kind === 'dimension' ? form.dimensions : p.kind === 'time' ? form.timeDimensions : form.measures;
+  const field = arr.find((x) => x.name === p.name);
+  if (!field) return;
+  field.sensitive = p.value || undefined;
+  dirty.value = true;
+}
 
 // ===== 五子页签（P6.4）=====
 type SubTab = 'semantics' | 'fields' | 'filters' | 'relations' | 'physical';
@@ -1102,6 +1112,7 @@ function extras(x: any): Record<string, unknown> {
     enums: Array.isArray(x.enums) && x.enums.length ? x.enums : undefined,
     confidence: typeof x.confidence === 'number' ? x.confidence : undefined,
     locked: x.locked || undefined,
+    sensitive: x.sensitive || undefined,
   };
 }
 

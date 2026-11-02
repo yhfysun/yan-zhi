@@ -87,8 +87,8 @@
   → 2026-11-02：`buildPageSql` 支持 keyset（唯一键 + 游标，展开 OR 链字典序比较，方言占位符 `?`/`$n`，升/降序）；无 keys 或游标数量不符自动退回 offset 并带提示；`api_data_paginate` 新增 keys/cursor/desc 参数（schema 与执行端同步）；`localizeQueryError` 统一超时/连接/权限错误为中文；行数上限 200 与 15s 超时原已存在。7 例测试。
 - [x] 5.4 Web 端隐藏需 shell 的 python 分析按钮并提示
   → 2026-11-02：数据面板「Python 分析」按钮以 `usePlatform().isDesktop` 门控，Web/移动端不渲染（无 shell 不误导）。
-- [ ] 5.5 敏感列脱敏/禁止导出；本体健康度看板（描述覆盖率/缺样本值/缺同义词）
-  → 2026-11-02 部分：**健康度看板完成** —— `ontologyHealth` 服务 + `GET /api/ontologies/health` + OntologyPage「健康度」弹窗（汇总卡 + 逐本体覆盖率/缺样本/缺同义词/低置信度，2 例测试）。**敏感列脱敏/禁止导出未做**。
+- [x] 5.5 敏感列脱敏/禁止导出；本体健康度看板（描述覆盖率/缺样本值/缺同义词）
+  → 2026-11-02：健康度看板（`ontologyHealth` + `GET /api/ontologies/health` + 弹窗，2 例测试）；**敏感列脱敏** —— 字段 `sensitive` 标记（字段总览可勾选），`queryDataForAgent`（普通/契约）、`previewDataForAgent`、`paginateDataForAgent` 结果统一遮成 `***` 并在 warnings 说明；导出复用同一结果，天然只能拿到脱敏值。4 例脱敏测试。
 - [ ] 5.6 `npx openspec validate --all` + 三端查询/控制台回归截图
 
 ## P6 UI 设计落地（对齐 ui-design.md + ui-prototype.html）

@@ -29,6 +29,8 @@ export interface OntologyDimension {
   confidence?: number;
   /** 人工确认锁定：同步/富化不再覆盖 */
   locked?: boolean;
+  /** 敏感列：查询结果与导出按 *** 脱敏 */
+  sensitive?: boolean;
 }
 
 export interface OntologyTimeDimension {
@@ -41,6 +43,7 @@ export interface OntologyTimeDimension {
   granularities?: TimeGrain[];
   confidence?: number;
   locked?: boolean;
+  sensitive?: boolean;
 }
 
 export interface OntologyMeasure {
@@ -56,6 +59,7 @@ export interface OntologyMeasure {
   synonyms?: string[];
   confidence?: number;
   locked?: boolean;
+  sensitive?: boolean;
 }
 
 /**

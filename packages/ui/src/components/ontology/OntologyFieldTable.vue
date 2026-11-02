@@ -43,6 +43,15 @@
           <el-tag v-if="row.enums" size="small" type="success" style="margin-left: 4px">枚举 {{ row.enums }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="敏感" width="64" align="center">
+        <template #default="{ row }">
+          <el-checkbox
+            :model-value="!!row.sensitive"
+            size="small"
+            @update:model-value="(v: boolean) => emit('toggleSensitive', { kind: row.kind, name: row.name, value: v })"
+          />
+        </template>
+      </el-table-column>
       <el-table-column label="锁定" width="64" align="center">
         <template #default="{ row }">
           <el-icon v-if="row.locked" :size="14" class="oft-lock" title="人工确认，不被同步/富化覆盖"><Lock /></el-icon>
@@ -65,11 +74,13 @@ export interface FieldRow {
   description?: string;
   confidence?: number;
   locked?: boolean;
+  sensitive?: boolean;
   samples?: number;
   enums?: number;
 }
 
 const props = defineProps<{ fields: FieldRow[] }>();
+const emit = defineEmits<{ (e: 'toggleSensitive', p: { kind: string; name: string; value: boolean }): void }>();
 
 const KIND_LABEL: Record<string, string> = { dimension: '维度', time: '时间', measure: '度量' };
 const ROLE_LABEL: Record<string, string> = {

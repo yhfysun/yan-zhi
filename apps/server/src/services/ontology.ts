@@ -346,8 +346,41 @@ export function deleteOntology(userId: string, id: string): void {
 }
 
 /** 发布：草稿对智能体不可见，发布即改取数口径（version 持久递增） */
-export interface OntologyHealthRow {
-  id: string;
+export const MASKED_VALUE = '***';
+
+/** 敏感列脱敏（P5.5）：只处理明确标了 sensitive 的列；null 保持 null */
+export function maskRowsByFields(
+  fields: Array<{ name: string; sensitive?: boolean }>,
+  columns: string[],
+  rows: Record<string, unknown>[],
+): { rows: Record<string, unknown>[]; masked: string[] } {
+  const sensitive = new Set((fields || []).filter((f) => f?.sensitive).map((f) => f.name));
+  const hit = (columns || []).filter((c) => sensitive.has(c));
+  if (!hit.length) return { rows, masked: [] };
+  const out = rows.map((r) => {
+    const next = { ...r };
+    for (const c of hit) if (next[c] !== null && next[c] !== undefined) next[c] = MASKED_VALUE;
+    return next;
+  });
+  return { rows: out, masked: hit };
+}
+
+/** 按本体（id 或 code）解析敏感字段并脱敏；找不到本体时原样返回 */
+export function maskOntologyResult(
+  userId: string, ref: string, columns: string[], rows: Record<string, unknown>[],
+): { rows: Record<string, unknown>[]; masked: string[] } {
+  const row = getRow(userId, ref)
+    || (db.prepare('SELECT * FROM ontology WHERE user_id = ? AND code = ?').get(userId, ref) as OntologyRow | undefined);
+  if (!row) return { rows, masked: [] };
+  const fields = [
+    ...parseJsonList<any>(row.dimensions_json),
+    ...parseJsonList<any>(row.time_dimensions_json),
+    ...parseJsonList<any>(row.measures_json),
+  ];
+  return maskRowsByFields(fields, columns, rows);
+}
+
+export interface OntologyHealthRow {  id: string;
   code: string;
   name: string;
   status: string;
