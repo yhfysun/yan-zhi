@@ -31,6 +31,7 @@ export interface BuiltinToolItem {
 /** 内置工具分类配置（有序，前缀/名称匹配，未命中归入"其他"） */
 const BUILTIN_TOOL_CATEGORIES: { key: string; label: string; prefixes?: string[]; names?: string[] }[] = [
   { key: 'file', label: '文件读写', prefixes: ['file_'] },
+  { key: 'office', label: '办公文档', names: ['office_create', 'office_read'] },
   { key: 'browser', label: '浏览器自动化', prefixes: ['browser_'] },
   { key: 'subagent', label: '子智能体', names: ['call_agent', 'list_sub_agents'] },
   { key: 'cmd', label: '命令执行', names: ['cmd_exec'] },
