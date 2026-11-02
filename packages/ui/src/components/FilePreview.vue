@@ -35,6 +35,16 @@
         <button :class="{ on: mdMode === 'edit' }" @click="switchMdMode('edit')">编辑</button>
         <button :class="{ on: mdMode === 'split' }" @click="switchMdMode('split')">分屏</button>
       </div>
+      <!-- CSV：表格内直接编辑（单元格改值、加行加列） -->
+      <template v-if="csvCanEdit">
+        <el-button v-if="!csvEditing" class="fp-wide-only" size="small" text bg @click="startCsvEdit">
+          <el-icon><EditPen /></el-icon>&nbsp;编辑表格
+        </el-button>
+        <template v-else>
+          <el-button size="small" :disabled="saving" @click="cancelCsvEdit">取消</el-button>
+          <el-button size="small" type="primary" :loading="saving" @click="saveCsvEdit">保存</el-button>
+        </template>
+      </template>
       <!-- 非文本类之外的纯文本：直接切换编辑 -->
       <template v-else-if="canEdit">
         <el-button v-if="!editing" class="fp-wide-only" size="small" text bg @click="startEdit">
@@ -191,17 +201,42 @@
       <div v-else-if="kind === 'word'" class="fp-docx">
         <div class="fp-docx-page" v-html="docxHtml"></div>
       </div>
-      <!-- CSV 表格化（首行为表头，>1000 行截断） -->
+      <!-- CSV 表格化（首行为表头，>1000 行截断）；可切换成表格编辑 -->
       <div v-else-if="kind === 'csv'" class="fp-table-wrap">
-        <table class="fp-table">
-          <thead><tr><th v-for="(c, i) in csvRows[0]" :key="'h' + i">{{ c }}</th></tr></thead>
-          <tbody>
-            <tr v-for="(row, r) in csvBodyRows" :key="r">
-              <td v-for="(c, i) in row" :key="i">{{ c }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-if="csvTruncated" class="fp-hint fp-table-hint">超过 1000 行，仅显示前 1000 行</div>
+        <template v-if="csvEditing && csvEditRows.length">
+          <div class="fp-csv-tools">
+            <el-button size="small" @click="csvAddRow">+ 行</el-button>
+            <el-button size="small" @click="csvAddCol">+ 列</el-button>
+            <span class="fp-hint">单元格可直接修改，保存后写回 .csv</span>
+          </div>
+          <table class="fp-table fp-table-edit">
+            <thead>
+              <tr>
+                <th v-for="(c, i) in csvEditRows[0]" :key="'eh' + i">
+                  <input v-model="csvEditRows[0][i]" class="fp-cell-input" spellcheck="false" />
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, r) in csvEditRows.slice(1)" :key="'er' + r">
+                <td v-for="(c, i) in row" :key="i">
+                  <input v-model="row[i]" class="fp-cell-input" spellcheck="false" />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+        <template v-else>
+          <table class="fp-table">
+            <thead><tr><th v-for="(c, i) in csvRows[0]" :key="'h' + i">{{ c }}</th></tr></thead>
+            <tbody>
+              <tr v-for="(row, r) in csvBodyRows" :key="r">
+                <td v-for="(c, i) in row" :key="i">{{ c }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="csvTruncated" class="fp-hint fp-table-hint">超过 1000 行，仅显示前 1000 行</div>
+        </template>
       </div>
       <!-- MD 编辑模式：整屏源码（Ctrl+S 保存） -->
       <div v-else-if="isMdText && mdMode === 'edit'" class="fp-edit-wrap">
@@ -880,6 +915,54 @@ const csvRows = computed<string[][]>(() => {
 const csvBodyRows = computed(() => csvRows.value.slice(1, 1 + CSV_MAX_ROWS));
 const csvTruncated = computed(() => csvRows.value.length - 1 > CSV_MAX_ROWS);
 
+// ===== CSV 可编辑表格（Notepad++ 不够，按表格来：单元格直接改、加行加列、回写 CSV） =====
+const csvEditing = ref(false);
+const csvEditRows = ref<string[][]>([]);
+const csvCanEdit = computed(() => kind.value === 'csv' && !truncated.value && !csvTruncated.value);
+
+function startCsvEdit() {
+  const cols = Math.max(1, ...csvRows.value.map((r) => r.length));
+  const rows = csvRows.value.map((r) => {
+    const cells = [...r];
+    while (cells.length < cols) cells.push('');
+    return cells;
+  });
+  csvEditRows.value = rows.length ? rows : [['', '']];
+  csvEditing.value = true;
+}
+function cancelCsvEdit() {
+  csvEditing.value = false;
+  csvEditRows.value = [];
+}
+function csvAddRow() {
+  const cols = csvEditRows.value[0]?.length || 1;
+  csvEditRows.value = [...csvEditRows.value, Array(cols).fill('')];
+}
+function csvAddCol() {
+  csvEditRows.value = csvEditRows.value.map((r) => [...r, '']);
+}
+function csvToText(rows: string[][]): string {
+  const esc = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  return rows.map((r) => r.map(esc).join(',')).join('\n');
+}
+async function saveCsvEdit() {
+  saving.value = true;
+  try {
+    const { getPlatformAdapter } = await import('@yan-zhi/core');
+    const text = csvToText(csvEditRows.value);
+    await getPlatformAdapter().fs.writeFile(props.file.path, text);
+    recordSnapshot();
+    content.value = text;
+    byteSize.value = new Blob([text]).size;
+    csvEditing.value = false;
+    ElMessage.success('已保存');
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e?.message || e));
+  } finally {
+    saving.value = false;
+  }
+}
+
 /** 基础 CSV 解析：支持引号包裹、引号转义（""）、逗号/换行分隔 */
 function parseCsv(s: string): string[][] {
   const rows: string[][] = [];
@@ -943,9 +1026,15 @@ function sanitizeDocxHtml(html: string): string {
   return div.innerHTML;
 }
 const TEXT_EXTS = new Set([
-  'md', 'markdown', 'txt', 'log', 'json', 'py', 'js', 'ts', 'jsx', 'tsx', 'vue', 'html', 'htm', 'css', 'scss', 'less',
-  'xml', 'yaml', 'yml', 'ini', 'cfg', 'conf', 'env', 'sh', 'bat', 'ps1', 'sql', 'java', 'kt', 'go', 'rs', 'c', 'h',
-  'cpp', 'hpp', 'cs', 'php', 'rb', 'swift', 'toml', 'properties', 'gitignore', 'lock',
+  'md', 'mdx', 'markdown', 'txt', 'log', 'json', 'jsonc', 'json5', 'ndjson', 'jsonl',
+  'py', 'pyw', 'js', 'mjs', 'cjs', 'ts', 'mts', 'cts', 'jsx', 'tsx', 'vue', 'svelte', 'astro',
+  'html', 'htm', 'css', 'scss', 'less', 'xml', 'svg', 'yaml', 'yml', 'ini', 'cfg', 'conf', 'env',
+  'sh', 'bash', 'zsh', 'bat', 'ps1', 'sql', 'java', 'kt', 'kts', 'go', 'rs', 'c', 'h', 'cc', 'cpp',
+  'hpp', 'hxx', 'cxx', 'cs', 'php', 'rb', 'swift', 'dart', 'scala', 'lua', 'pl', 'pm', 'r', 'jl',
+  'ex', 'exs', 'clj', 'proto', 'graphql', 'gql', 'toml', 'properties', 'gradle', 'groovy',
+  'dockerfile', 'makefile', 'mk', 'cmake', 'nix', 'tf', 'hcl', 'tex', 'diff', 'patch', 'map',
+  'asm', 's', 'glsl', 'vert', 'frag', 'hlsl', 'wgsl', 'tsv', 'csv',
+  'gitignore', 'gitattributes', 'editorconfig', 'npmrc', 'nvmrc', 'babelrc', 'prettierrc', 'eslintrc', 'lock',
   // 言智中间格式（纯文本 JSON：文档 / 看板）
   'ydoc', 'ydash',
 ]);
@@ -1710,6 +1799,16 @@ watch(() => props.file?.path, () => {
   text-align: left; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis;
 }
 .fp-table th { background: var(--el-fill-color-light); position: sticky; top: 0; font-weight: 600; }
+/* CSV 表格编辑：单元格即输入框，保持表格观感 */
+.fp-csv-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.fp-table-edit th, .fp-table-edit td { padding: 0; max-width: none; overflow: visible; }
+.fp-cell-input {
+  width: 100%; min-width: 90px; box-sizing: border-box;
+  border: none; outline: none; background: transparent;
+  padding: 5px 10px; font: inherit; color: inherit;
+}
+.fp-cell-input:focus { box-shadow: inset 0 0 0 1px var(--color-primary); border-radius: 3px; }
+.fp-table-edit th .fp-cell-input { font-weight: 600; }
 .fp-table tr:hover td { background: var(--el-fill-color-lighter); }
 .fp-table-hint { padding-top: 8px; color: var(--el-text-color-secondary); }
 /* Excel 带样式表格：原生网格外观（列标/行号/网格线），列总和超出容器时横向滚动 */

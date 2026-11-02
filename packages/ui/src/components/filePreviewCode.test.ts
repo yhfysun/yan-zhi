@@ -29,4 +29,19 @@ describe('FilePreview 代码视图', () => {
     const block = SRC.slice(SRC.indexOf('.fp-lns {'), SRC.indexOf('.fp-code {'));
     expect(block).toMatch(/position: sticky; left: 0/);
   });
+
+  it('CSV 支持表格编辑并回写', () => {
+    expect(SRC).toMatch(/function startCsvEdit/);
+    expect(SRC).toMatch(/function csvAddRow/);
+    expect(SRC).toMatch(/function csvAddCol/);
+    expect(SRC).toMatch(/function saveCsvEdit/);
+    expect(SRC).toMatch(/fp-cell-input/);
+    expect(SRC).toMatch(/csvToText/);
+  });
+
+  it('常见文本格式都在白名单内', () => {
+    for (const ext of ['java', 'py', 'xml', 'yaml', 'toml', 'log', 'csv', 'tsv', 'dart', 'proto', 'graphql', 'mdx', 'jsonc']) {
+      expect(SRC, ext).toMatch(new RegExp(`'${ext}'`));
+    }
+  });
 });

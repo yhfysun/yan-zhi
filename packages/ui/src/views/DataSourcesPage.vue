@@ -68,11 +68,12 @@
               </div>
             </div>
             <div class="tp-g">
-              <span class="ds-eyebrow">文档型 · 无 JOIN 下推（P5 落地）</span>
+              <span class="ds-eyebrow">文档型 · 仅投影/筛选（无 JOIN）</span>
               <div class="tp-row">
                 <button
                   v-for="t in DOC_TYPES" :key="t" type="button"
-                  class="tp-btn tp-na" disabled
+                  class="tp-btn" :class="{ on: form.type === t }"
+                  @click="form.type = t"
                 >{{ typeLabel(t) }}</button>
               </div>
             </div>
@@ -238,7 +239,7 @@ import '../styles/data-workbench.css';
 
 // ===== 类型分组（能力差异写进分组标题，用户选型前即知情） =====
 const RELATIONAL_TYPES = ['mysql', 'postgres', 'dm', 'oracle', 'sqlite'] as const;
-const DOC_TYPES = ['mongo', 'elastic'] as const;
+const DOC_TYPES = ['mongo', 'elasticsearch'] as const;
 const ALL_TYPES = [...RELATIONAL_TYPES, 'project', ...DOC_TYPES];
 
 const TYPE_LABELS: Record<string, string> = {
@@ -249,11 +250,13 @@ const TYPE_LABELS: Record<string, string> = {
   sqlite: 'SQLite',
   project: '项目库',
   mongo: 'MongoDB',
-  elastic: 'Elasticsearch',
+  elasticsearch: 'Elasticsearch',
 };
 const typeLabel = (t: string) => TYPE_LABELS[t] || t;
 
-const DEFAULT_PORTS: Record<string, string> = { mysql: '3306', postgres: '5432', dm: '5236', oracle: '1521' };
+const DEFAULT_PORTS: Record<string, string> = {
+  mysql: '3306', postgres: '5432', dm: '5236', oracle: '1521', mongo: '27017', elasticsearch: '9200',
+};
 const defaultPort = (t: string) => DEFAULT_PORTS[t] || '—';
 
 // ===== 列表 =====

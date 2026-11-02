@@ -80,7 +80,8 @@
 
 ## P5 非关系型与打磨
 
-- [ ] 5.1 文档型/键值型 connector（Mongo/ES）：采样推导弱 schema + 嵌套字段拍平为 `a.b.c`，仅投影/筛选
+- [x] 5.1 文档型/键值型 connector（Mongo/ES）：采样推导弱 schema + 嵌套字段拍平为 `a.b.c`，仅投影/筛选
+  → 2026-11-02：新增 `doc-schema.ts`（嵌套拍平 ≤4 层、类型推断、投影、冲突归 json）与 `doc-connectors.ts`（ES 走 HTTP `_mapping`/`_search`，无驱动；Mongo 走可选 `mongodb` 驱动，未装时给安装指引，采样 50 条推 schema）；数据源类型新增 mongo/elasticsearch 并启用前端入口；查询走 `POST /api/datasources/:id/docs/query`（projection/filter，只读，`query()` 拒绝 SQL）；4 例纯函数测试。Mongo 实连需先安装驱动。
 - [ ] 5.2 本地模型文本模式降级（DSL 走文本 [TOOL_CALL]）
 - [x] 5.3 行数/超时/翻页 keyset（必须唯一键兜底排序）；错误中文化
   → 2026-11-02：`buildPageSql` 支持 keyset（唯一键 + 游标，展开 OR 链字典序比较，方言占位符 `?`/`$n`，升/降序）；无 keys 或游标数量不符自动退回 offset 并带提示；`api_data_paginate` 新增 keys/cursor/desc 参数（schema 与执行端同步）；`localizeQueryError` 统一超时/连接/权限错误为中文；行数上限 200 与 15s 超时原已存在。7 例测试。

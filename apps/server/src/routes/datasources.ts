@@ -12,6 +12,7 @@ import {
   updateDataSource,
 } from '../services/datasource.js';
 import { profileTable } from '../services/ontology-profile.js';
+import { queryDocuments } from '../services/doc-query.js';
 
 const router = Router();
 
@@ -61,6 +62,23 @@ router.post('/:id/test', authMiddleware, async (req: Request, res: Response) => 
 router.get('/:id/schema', authMiddleware, async (req: Request, res: Response) => {
   try {
     res.json({ data: await syncDataSourceSchema(req.user!.userId, req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/datasources/:id/docs/query —— 文档型数据源查询（projection/filter，只读）
+router.post('/:id/docs/query', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const b = req.body || {};
+    res.json({
+      data: await queryDocuments(req.user!.userId, req.params.id, {
+        collection: b.collection ? String(b.collection) : undefined,
+        projection: Array.isArray(b.projection) ? b.projection.map(String) : undefined,
+        filter: b.filter,
+        limit: Number(b.limit) || undefined,
+      }),
+    });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

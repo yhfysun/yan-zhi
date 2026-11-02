@@ -6,6 +6,7 @@ import path from 'path';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import { dataDir } from '../db.js';
 import type { DialectType } from './dialect.js';
+import { ElasticConnector, MongoConnector } from './doc-connectors.js';
 
 /**
  * SQLite 文件数据源的驱动探测（connector 专用，与主库 sqlite-driver 同源）：
@@ -26,10 +27,10 @@ async function openSqliteFile(file: string, readonly: boolean): Promise<import('
   return res.db;
 }
 
-export type DataSourceType = DialectType | 'project';
+export type DataSourceType = DialectType | 'project' | 'mongo' | 'elasticsearch';
 
 export const DATASOURCE_TYPES: readonly DataSourceType[] = [
-  'mysql', 'postgres', 'dm', 'oracle', 'sqlite', 'project',
+  'mysql', 'postgres', 'dm', 'oracle', 'sqlite', 'project', 'mongo', 'elasticsearch',
 ];
 
 export type RunParam = string | number | boolean | null;
@@ -721,8 +722,32 @@ function createConnector(row: DataSourceRow): Connector {
       return new OracleLikeConnector('oracle', row);
     case 'dm':
       return new OracleLikeConnector('dm', row);
+    case 'elasticsearch': {
+      const opts = parseOptions(row);
+      const scheme = opts.scheme === 'https' ? 'https' : 'http';
+      const host = row.host || '127.0.0.1';
+      const url = typeof opts.url === 'string' && opts.url
+        ? opts.url
+        : `${scheme}://${host}:${row.port || 9200}`;
+      return new ElasticConnector({
+        url, username: row.username, password: getPassword(row),
+        index: row.database, timeoutMs: Number(opts.timeoutMs) || undefined,
+      });
+    }
+    case 'mongo': {
+      const opts = parseOptions(row);
+      const host = row.host || '127.0.0.1';
+      const url = typeof opts.url === 'string' && opts.url
+        ? opts.url
+        : `${host}:${row.port || 27017}`;
+      return new MongoConnector({
+        url, username: row.username, password: getPassword(row),
+        database: row.database, index: typeof opts.collection === 'string' ? opts.collection : null,
+        timeoutMs: Number(opts.timeoutMs) || undefined,
+      });
+    }
     default:
-      throw new Error(`不支持的数据源类型: ${row.type}（文档型 Mongo/Elastic 在 P5 落地）`);
+      throw new Error(`不支持的数据源类型: ${row.type}`);
   }
 }
 
