@@ -465,8 +465,12 @@ export interface ClipProject {
    *   · applyClipOp 继续操作 texts/overlays（op 语义不变，模型与 UI 无感），
    *     落盘时再镜像回 layers。投影是**机械映射**（同一份纯函数，双向可逆），
    *     不存在两套编辑语义 —— 这与方案文档否决的"双模型并存"（两套实现）不同。
+   *
+   * ★ v3（2026-11-02，多轨 S1）：落盘已是 v3（tracks + timedLayers），读盘后内存对象
+   *   **同时**带 v3 规范字段与上面这套 v2 视图 —— 类型上因此是 `2 | 3`。
+   *   所有既有签名继续用 ClipProject，消费方无需改动；v3 细节见 clip-project-v3.ts。
    */
-  version: 2;
+  version: 2 | 3;
   name: string;
   updatedAt: number;
   /** P1-9：encoder=cpu（默认，libx264）/ auto（自动选可用的硬件编码器，失败回退 CPU） */

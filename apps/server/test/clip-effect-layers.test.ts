@@ -109,14 +109,14 @@ describe('P1-3 · 双向投影', () => {
     expect(v1FieldsFromLayers(L).effects).toEqual(effects);
   });
 
-  it('序列化 round-trip：写盘只存 layers，读盘派生 effects；视图删掉后不复活', () => {
+  it('序列化 round-trip：写盘只存 timedLayers，读盘派生 effects；视图删掉后不复活', () => {
     const conv = 'fx-conv';
     fs.mkdirSync(path.join(TMP, conv, 'intermediate'), { recursive: true });
     const p = run(baseProject(), [['add_effect', { effects: [{ fx: 'sparkle', start: 0.5, end: 2 }] }]]);
     writeClipProject(conv, p);
 
-    const disk = JSON.parse(fs.readFileSync(clipProjectPath(conv).file, 'utf8')) as { layers: Array<{ kind: string }> };
-    expect(disk.layers.some((l) => l.kind === 'effect')).toBe(true);
+    const disk = JSON.parse(fs.readFileSync(clipProjectPath(conv).file, 'utf8')) as { timedLayers: Array<{ kind: string }> };
+    expect(disk.timedLayers.some((l) => l.kind === 'effect')).toBe(true);
 
     const back = readClipProject(conv)!;
     expect(back.effects).toEqual(p.effects);
@@ -124,8 +124,8 @@ describe('P1-3 · 双向投影', () => {
     // ★ 视图权威：把 effects 清掉再写，layer 必须一起消失
     delete back.effects;
     writeClipProject(conv, back);
-    const disk2 = JSON.parse(fs.readFileSync(clipProjectPath(conv).file, 'utf8')) as { layers: Array<{ kind: string }> };
-    expect(disk2.layers.some((l) => l.kind === 'effect')).toBe(false);
+    const disk2 = JSON.parse(fs.readFileSync(clipProjectPath(conv).file, 'utf8')) as { timedLayers: Array<{ kind: string }> };
+    expect(disk2.timedLayers.some((l) => l.kind === 'effect')).toBe(false);
     expect(readClipProject(conv)!.effects).toBeUndefined();
   });
 });

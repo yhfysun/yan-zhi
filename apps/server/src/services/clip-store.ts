@@ -6,11 +6,15 @@
 //   两条入口若各自拼路径，必然会漂移 —— 表现为「AI 改的工程 UI 看不到」，
 //   而两边都不报错（都在"成功地"读写两个不同的文件）。
 //
-// ★ 轨道模型 v2 序列化边界（P0-1）：
-//   · 写盘：剥离 texts/overlays（内存投影字段），图层从这两个视图**重建**进 layers；
-//     layers 是唯一持久化形态。layers 里 v1 视图外的新 kind（sticker/effect…）原样保留。
-//   · 读盘：version=1 → migrateV1ToV2；version=2 → 用 layers 派生 texts/overlays 视图。
-//     无论哪种版本，**内存形态统一**：消费方（渲染/预览/路由/UI）永远读 v1 形状。
+// ★ 轨道模型 v3（S1，2026-11-02）：**落盘只有 v3**，内存统一 v3 + v2 投影视图。
+//   · 写盘：tracks / timedLayers 是唯一持久化形态。S1 期间 applyClipOp 与 UI 仍编辑
+//     v2 视图（clips/texts/overlays/audios/stickers/effects/layers），落盘时由视图**重建**
+//     轨道与定时层 —— 否则 op 的改动静默丢失。
+//   · 读盘：v1 → migrateV1ToV2 → v3；v2 → v3；v3 → 校验后派生 v2 视图。
+//     无论磁盘版本，**内存形态统一**：消费方（渲染/预览/路由/UI）永远读 v2 形状。
+//   · 备份：磁盘上是 v1 → `clip-project.v1.bak`（既有行为保留）；v2 → `clip-project.v2.bak`
+//     （方案 §6：迁移坏老草稿 = 用户成果丢失，必须可回退）。只留首次迁移的原件。
+//   · 迁移/校验失败：**不写盘**，原文件保持不动。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,16 +23,21 @@ import path from 'node:path';
 import { resolveArtifactDirFor } from '../host-bridge.js';
 import {
   migrateV1ToV2,
-  layersFromV1Fields,
   v1FieldsFromLayers,
   normalizeMulticamGroups,
   normalizeOutput,
   type ClipProject,
   type ClipProjectV1,
-  type ClipText,
-  type ClipOverlay,
-  type Layer,
 } from './clip-project.js';
+import {
+  buildProjectV3ForWrite,
+  loadedFromV2,
+  validateProjectV3,
+  v2ViewsOfV3,
+  CLIP_PROJECT_V3_VERSION,
+  type ClipProjectV3,
+  type ClipProjectV3Loaded,
+} from './clip-project-v3.js';
 
 export const CLIP_PROJECT_FILE = 'clip-project.json';
 
@@ -40,36 +49,58 @@ export function clipProjectPath(conversationId?: string): { dir: string; file: s
   return { dir, file: path.join(dir, CLIP_PROJECT_FILE) };
 }
 
-/** 读工程；不存在或损坏返回 null（调用方按"还没有工程"处理，不抛错）。 */
-export function readClipProject(conversationId?: string): ClipProject | null {
+/**
+ * v1/v2 文件 → 既有 v2 内存形态（归一化规则与 S1 之前**逐行相同**）。
+ * ★ 单独抽出来是为了让"老工程读入的 v2 视图"与迁移前保持字节级一致：
+ *   v3 迁移只负责在旁边补 tracks/timedLayers，不参与视图归一化。
+ */
+function normalizeV2Shape(parsed: ClipProject | ClipProjectV1): ClipProject | null {
+  if (!parsed || !Array.isArray((parsed as ClipProject).clips)) return null;
+  if (parsed.version === 2) {
+    // v2：layers 是唯一存储 → 派生 texts/overlays 内存视图
+    const layers = Array.isArray((parsed as ClipProject).layers) ? (parsed as ClipProject).layers : [];
+    const { texts, overlays, audios, stickers, effects } = v1FieldsFromLayers(layers);
+    return {
+      ...(parsed as ClipProject),
+      layers,
+      texts,
+      // 补帧方式只认 off/blend/mci；历史脏值摘掉（等价 off，off 不落字段）
+      output: normalizeOutput((parsed as ClipProject).output),
+      // 老工程没有多机位组 → 空数组（UI 直接遍历，不必判空）
+      multicamGroups: normalizeMulticamGroups((parsed as ClipProject).multicamGroups),
+      ...(overlays.length ? { overlays } : {}),
+      ...(audios.length ? { audios } : {}),
+      ...(stickers.length ? { stickers } : {}),
+      ...(effects.length ? { effects } : {}),
+    };
+  }
+  // v1：texts 必有（老文件），overlays 可选 → 迁移到 v2 内存形态
+  const v1 = parsed as unknown as ClipProjectV1;
+  if (!Array.isArray(v1.texts)) return null;
+  const migrated = migrateV1ToV2(v1);
+  return { ...migrated, multicamGroups: [] };
+}
+
+/** 读工程；不存在、损坏或结构非法返回 null（调用方按"还没有工程"处理，不抛错）。 */
+export function readClipProject(conversationId?: string): ClipProjectV3Loaded | null {
   try {
     const { file } = clipProjectPath(conversationId);
     if (!fs.existsSync(file)) return null;
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as ClipProject | ClipProjectV1;
-    if (!parsed || !Array.isArray(parsed.clips)) return null;
-    if (parsed.version === 2) {
-      // v2：layers 是唯一存储 → 派生 texts/overlays 内存视图
-      const layers = Array.isArray((parsed as ClipProject).layers) ? (parsed as ClipProject).layers : [];
-      const { texts, overlays, audios, stickers, effects } = v1FieldsFromLayers(layers);
-      return {
-        ...(parsed as ClipProject),
-        layers,
-        texts,
-        // 补帧方式只认 off/blend/mci；历史脏值摘掉（等价 off，off 不落字段）
-        output: normalizeOutput((parsed as ClipProject).output),
-        // 老工程没有多机位组 → 空数组（UI 直接遍历，不必判空）
-        multicamGroups: normalizeMulticamGroups((parsed as ClipProject).multicamGroups),
-        ...(overlays.length ? { overlays } : {}),
-        ...(audios.length ? { audios } : {}),
-        ...(stickers.length ? { stickers } : {}),
-        ...(effects.length ? { effects } : {}),
-      };
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as ClipProjectV3 | ClipProject | ClipProjectV1;
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    // v3：规范形态 → 校验 → 投影出 v2 视图（渲染/UI/AI op 继续读 v2 形状）
+    if (parsed.version === CLIP_PROJECT_V3_VERSION) {
+      const v3 = parsed as ClipProjectV3;
+      if (!Array.isArray(v3.tracks)) return null;
+      const check = validateProjectV3(v3);
+      if (!check.ok) return null;
+      return v2ViewsOfV3(v3);
     }
-    // v1：texts 必有（老文件），overlays 可选 → 迁移到 v2 内存形态
-    const v1 = parsed as unknown as ClipProjectV1;
-    if (!Array.isArray(v1.texts)) return null;
-    const migrated = migrateV1ToV2(v1);
-    return { ...migrated, multicamGroups: [] };
+
+    // v1 / v2：先得到既有 v2 形态，再迁到 v3 内存（视图原样保留 → 出片路径零改动）
+    const v2 = normalizeV2Shape(parsed);
+    return v2 ? loadedFromV2(v2) : null;
   } catch {
     return null;
   }
@@ -78,64 +109,47 @@ export function readClipProject(conversationId?: string): ClipProject | null {
 /**
  * 写工程（目录不存在则创建）；返回落盘路径。
  *
- * ★ v2 序列化边界：剥离 texts/overlays（内存投影），layers 从这两个视图重建。
- *   这样"layers 是唯一存储"不会因某个 op 忘了同步而破坏 —— 序列化时统一做，
- *   op 层（applyClipOp）不需要逐 op 维护镜像。
- * ★ v1 备份：首次把 v1 文件迁出时留 `.v1.bak`（方案文档 §7 风险表的缓解措施：
- *   迁移坏老草稿 = 用户成果丢失，必须可回退）。
+ * ★ 落盘只写 v3：`tracks` / `timedLayers` 是唯一存储，v2 视图字段一律剥离。
+ * ★ 备份：v1 → .v1.bak、v2 → .v2.bak（首次迁移的原件，可回退）。
+ * ★ 迁移/校验失败 → 抛错且**不写盘**（原文件保持不动）。
  */
 export function writeClipProject(conversationId: string | undefined, project: ClipProject): string {
   const { dir, file } = clipProjectPath(conversationId);
   fs.mkdirSync(dir, { recursive: true });
-  // v1 备份：落盘前若磁盘上是 v1 且内存已是 v2（刚迁移），先把原件复制走
+
+  // 1) 先构建 + 校验：任何失败都在碰文件之前发生
+  const v3 = buildProjectV3ForWrite(project);
+  const check = validateProjectV3(v3);
+  if (!check.ok) throw new Error(`剪辑工程无法保存为 v3：${check.error}`);
+
+  // 2) 迁移备份：只在磁盘上是旧版本、且备份还不存在时复制一份
   if (fs.existsSync(file)) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: number };
-      if (raw.version === 1) {
-        const bak = path.join(dir, 'clip-project.v1.bak');
+      const bakName = raw.version === 1
+        ? 'clip-project.v1.bak'
+        : raw.version === 2
+          ? 'clip-project.v2.bak'
+          : null;
+      if (bakName) {
+        const bak = path.join(dir, bakName);
         if (!fs.existsSync(bak)) fs.copyFileSync(file, bak);
-        // 备份只留一份（首次迁移原件）；内存已是 v2 → 下次写盘正常覆盖
       }
-    } catch { /* 读不出来说明不是合法 json，备份跳过（写盘本身会报错或成功覆盖） */ }
+    } catch { /* 读不出来说明不是合法 json，备份跳过（写盘本身会成功覆盖） */ }
   }
-  // 序列化形态：texts/overlays 剥离，layers 重建（text 层的 text 字段与视图同源）。
-  // ★ 重建时保留旧层里投影不覆盖的扩展字段（transform/keyframes/track/audio）——
-  //   否则 P0-2 给 text 层加 transform 后，每次落盘都会把它抹掉。
-  const prevById = new Map((project.layers || []).map((l) => [l.id, l]));
-  const rebuilt: Layer[] = layersFromV1Fields(project.texts, project.overlays || [], project.audios || [], project.stickers || [], project.effects || []).map((l) => {
-    const prev = prevById.get(l.id);
-    if (!prev) return l;
-    // ★ v1 视图**权威**的变换字段（位置/缩放/旋转/透明/混合）只能以投影结果为准，不能从旧层回填：
-    //   否则 UI 把画中画从「滤色」改回「正常」、或把字幕变换清空时，旧层里残留的值会把它复活 ——
-    //   "视图上没有这个字段" 是一个**明确的默认值**，合并必须允许删字段，而不只是覆盖。
-    //   其余未知扩展字段仍从旧层保留（将来新加的变换键不至于被一次落盘抹掉）。
-    const keep = { ...prev.transform };
-    delete keep.x; delete keep.y; delete keep.scale; delete keep.rotation; delete keep.opacity;
-    delete keep.blend; delete keep.pos;
-    return { ...l, transform: { ...keep, ...l.transform } };
-  });
-  // v1 视图之外、也没有独立视图的 kind 图层原样保留（目前没有这类；未知 kind 也走这里）。
-  // ★ audio / sticker / effect 不在此列：它们分别由 project.audios / project.stickers /
-  //   project.effects 视图**独占**重建 —— 与 text/video 同一套权威规则，
-  //   否则 UI 删掉后旧层残值会把它复活。
-  const extra = (project.layers || []).filter(
-    (l) => l.kind !== 'text' && l.kind !== 'video' && l.kind !== 'audio' && l.kind !== 'sticker' && l.kind !== 'effect',
-  );
-  const byId = new Map<string, Layer>();
-  for (const l of extra) byId.set(l.id, l);
-  for (const l of rebuilt) byId.set(l.id, l);
-  const layers = [...byId.values()];
+
+  // 3) 落盘：逐字段重建，避免把内存投影视图写进文件
   const persist: Record<string, unknown> = {
-    version: 2,
-    name: project.name,
-    updatedAt: project.updatedAt,
-    output: project.output,
-    clips: project.clips,
-    layers,
-    ...(project.audioFx ? { audioFx: project.audioFx } : {}),
-    ...(project.bgm ? { bgm: project.bgm } : {}),
-    // ★ 必须保留：writeClipProject 是逐字段重建，漏掉 multicamGroups = UI 保存一次就丢组
-    ...(project.multicamGroups?.length ? { multicamGroups: project.multicamGroups } : {}),
+    version: CLIP_PROJECT_V3_VERSION,
+    name: v3.name,
+    updatedAt: v3.updatedAt,
+    output: v3.output,
+    tracks: v3.tracks,
+    timedLayers: v3.timedLayers,
+    ...(v3.audioFx ? { audioFx: v3.audioFx } : {}),
+    ...(v3.bgm ? { bgm: v3.bgm } : {}),
+    // ★ 必须保留：逐字段重建，漏掉 multicamGroups = UI 保存一次就丢组
+    ...(v3.multicamGroups?.length ? { multicamGroups: v3.multicamGroups } : {}),
   };
   fs.writeFileSync(file, JSON.stringify(persist, null, 2), 'utf8');
   return file;

@@ -41,12 +41,12 @@ function v1Fixture(): ClipProjectV1 {
 }
 
 describe('readClipProject / writeClipProject · v2 序列化边界', () => {
-  it('★ v1 文件读入即迁移：version=2 + layers + texts 视图可用；首次写盘留 .v1.bak', () => {
+  it('★ v1 文件读入即迁移：version=3 + layers + texts 视图可用；首次写盘留 .v1.bak', () => {
     const { file } = clipProjectPath(CONV);
     fs.writeFileSync(file, JSON.stringify(v1Fixture()), 'utf8');
     const p = readClipProject(CONV);
     expect(p).not.toBeNull();
-    expect(p!.version).toBe(2);
+    expect(p!.version).toBe(3);
     expect(p!.layers).toHaveLength(1);
     expect(p!.layers[0].kind).toBe('text');
     expect(p!.texts).toHaveLength(1);
@@ -60,17 +60,19 @@ describe('readClipProject / writeClipProject · v2 序列化边界', () => {
     expect(bak.version).toBe(1);
   });
 
-  it('★ v2 落盘只含 layers（texts/overlays 剥离）；再读派生视图一致', () => {
+  it('★ v2 落盘只含 v3 存储（tracks/timedLayers，clips/texts/overlays 剥离）；再读派生视图一致', () => {
     let p = readClipProject(CONV)!;
     // 画中画视图 + 新字幕（走 op）
     p = { ...p, overlays: [{ id: 'o1', file: 'C:/p.mp4', start: 1, end: 3, pos: 'topleft', scale: 0.5 }] };
     writeClipProject(CONV, p);
     const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV).file, 'utf8')) as Record<string, unknown>;
-    expect(raw.version).toBe(2);
+    expect(raw.version).toBe(3);
     expect(raw.texts).toBeUndefined();
     expect(raw.overlays).toBeUndefined();
-    expect(Array.isArray(raw.layers)).toBe(true);
-    expect((raw.layers as unknown[]).length).toBe(2);
+    expect(raw.clips).toBeUndefined();
+    expect(raw.layers).toBeUndefined();
+    expect(Array.isArray(raw.timedLayers)).toBe(true);
+    expect((raw.timedLayers as unknown[]).length).toBe(2);
 
     const again = readClipProject(CONV)!;
     expect(again.texts).toHaveLength(1);
@@ -107,7 +109,7 @@ describe('readClipProject / writeClipProject · v2 序列化边界', () => {
     expect(again.stickers).toEqual([{ id: 's1', file: 'C:/s.png', start: 1, end: 2, scale: 0.4, x: 0.1 }]);
     const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV).file, 'utf8'));
     expect(raw.stickers).toBeUndefined();                 // 视图字段不落盘
-    expect(raw.layers.some((l: any) => l.kind === 'sticker')).toBe(true);
+    expect(raw.timedLayers.some((l: any) => l.kind === 'sticker')).toBe(true);
   });
 
   it('★ 多机位组（P2 手动切换）落盘保留；老工程缺字段读回空数组', () => {
@@ -143,7 +145,7 @@ describe('readClipProject / writeClipProject · v2 序列化边界', () => {
       'utf8',
     );
     const p = readClipProject(CONV2)!;
-    expect(p.version).toBe(2);
+    expect(p.version).toBe(3);
     expect(p.layers).toEqual([]);
     expect(p.texts).toEqual([]);
   });
@@ -216,7 +218,7 @@ describe('writeClipProject · 音频层落盘（P0-7）', () => {
     fs.mkdirSync(path.join(TMP, CONV4, 'intermediate'), { recursive: true });
   });
 
-  it('★ audios 落进 layers[kind=audio]；读回视图一致；清空后旧层残值不会复活', () => {
+  it('★ audios 落进 audio 轨；读回视图一致；清空后旧层残值不会复活', () => {
     const base: ClipProject = {
       version: 2, name: 'p', updatedAt: 1, output: { size: '1080x1920', fps: 30 },
       clips: [], texts: [], layers: [],
@@ -227,8 +229,8 @@ describe('writeClipProject · 音频层落盘（P0-7）', () => {
 
     const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV4).file, 'utf8'));
     expect(raw.audios).toBeUndefined();               // 视图字段不落盘
-    expect(raw.layers[0].kind).toBe('audio');
-    expect(raw.layers[0].audio).toEqual({ volume: 0.5, fadeIn: 0.1 });
+    const audioTrack = (raw.tracks as Array<{ kind: string; items: unknown[] }>).find((t) => t.kind === 'audio')!;
+    expect(audioTrack.items[0]).toMatchObject({ type: 'audio', id: 'a1', file: 'C:/whoosh.wav', start: 1, duration: 1, volume: 0.5, fadeIn: 0.1 });
 
     // UI 删光音频后：视图为空 + 内存 layers 仍是上一次读到的旧层 → 不得复活
     const stale = readClipProject(CONV4)!.layers;
