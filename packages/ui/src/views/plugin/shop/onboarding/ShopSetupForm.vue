@@ -44,11 +44,11 @@
 
       <el-form-item label="经营主体">
         <el-radio-group :model-value="profile.entityType" @update:model-value="set('entityType', $event)">
-          <el-radio-button value="undecided">待定</el-radio-button>
-          <el-radio-button value="individual">个人身份</el-radio-button>
-          <el-radio-button value="sole_proprietor">个体工商户</el-radio-button>
-          <el-radio-button value="company">企业</el-radio-button>
+          <el-radio-button v-for="item in entityOptions" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </el-radio-button>
         </el-radio-group>
+        <p class="shop-form-tip">{{ entityGuidance }}</p>
       </el-form-item>
 
       <el-form-item label="供货方式">
@@ -94,7 +94,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { SHOP_PLATFORM_OPTIONS, type ShopSetupProfile } from './shopOnboarding';
+import {
+  SHOP_PLATFORM_OPTIONS,
+  entityGuidanceOf,
+  shopEntityOptionsOf,
+  type ShopSetupProfile,
+} from './shopOnboarding';
 
 const props = defineProps<{
   profile: ShopSetupProfile;
@@ -104,8 +109,11 @@ const emit = defineEmits<{
   (e: 'update:profile', value: ShopSetupProfile): void;
 }>();
 
+const entityOptions = computed(() => shopEntityOptionsOf(props.profile.platform));
+const entityGuidance = computed(() => entityGuidanceOf(props.profile));
+
 const qualificationLabel = computed(() => {
-  if (props.profile.entityType === 'individual') return '身份证实名与类目资质已备齐';
+  if (props.profile.entityType === 'individual') return '平台要求的个人实名资料已备齐';
   if (props.profile.entityType === 'sole_proprietor' || props.profile.entityType === 'company') {
     return '营业执照与主体 / 类目资质已备齐';
   }

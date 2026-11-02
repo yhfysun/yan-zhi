@@ -66,17 +66,49 @@ const PLATFORM_LABELS: Record<ShopPlatformChoice, string> = {
 
 const ENTITY_LABELS: Record<ShopEntityType, string> = {
   undecided: '主体待定',
-  individual: '个人身份（身份证开店）',
+  individual: '个人 / 自然人',
   sole_proprietor: '个体工商户（需要营业执照）',
-  company: '企业（需要营业执照）',
+  company: '企业 / 公司（需要营业执照）',
 };
 
-const ENTITY_MATERIAL_RULES: Record<ShopEntityType, string> = {
-  undecided: '先确认主体类型，再按平台当前规则列材料。',
-  individual: '个人身份店不得要求营业执照；按平台当前要求准备身份证实名、店铺名称、经营地址等。',
-  sole_proprietor: '个体工商户需要营业执照，并按平台要求准备经营者身份证、收款账户等。',
-  company: '企业需要营业执照，并按平台要求准备法人身份证、对公账户、品牌资质等。',
+export const SHOP_PLATFORM_ENTITY_GUIDANCE: Record<ShopPlatformChoice, string> = {
+  undecided: '先选择目标平台，再由 AI 核验该平台的主体类型与材料要求。',
+  douyin: '抖店当前官方入驻页明确支持个人身份（身份证开店）、个体工商户和企业；个人身份只需身份证实名等页面要求资料，不得额外索要营业执照。',
+  amazon: '亚马逊主体要求因站点、类目而异；Individual / Professional 是销售计划，不等同营业执照主体，请以目标站点入驻页为准。',
+  taobao: '淘宝 / 天猫主体与资质要求随个人店、企业店和类目变化，请以当前官方入驻页为准。',
+  pdd: '拼多多主体与类目资质要求随店铺类型和官方规则变化，请以当前入驻页为准。',
+  tiktok: 'TikTok Shop 各站点的主体、本地资质和类目要求不同，请按目标市场官方入驻页核验。',
+  shopify: 'Shopify 平台开店审核通常不按抖店主体分类，但经营主体、税务与支付渠道仍需按实际业务核验。',
 };
+
+export function entityGuidanceOf(profile: ShopSetupProfile): string {
+  const platform = platformLabelOf(profile);
+  const guidance = SHOP_PLATFORM_ENTITY_GUIDANCE[profile.platform];
+  if (profile.entityType === 'individual') {
+    return profile.platform === 'douyin'
+      ? guidance
+      : `${platform}：${guidance} 不得把抖店或其他平台规则直接套用。`;
+  }
+  if (profile.entityType === 'sole_proprietor') {
+    return `当前按个体工商户记录；是否需要营业执照及补充材料，以 ${platform} 当前官方入驻页为准。`;
+  }
+  if (profile.entityType === 'company') {
+    return `当前按企业 / 公司记录；主体、品牌与类目材料以 ${platform} 当前官方入驻页为准。`;
+  }
+  return guidance;
+}
+
+export function shopEntityOptionsOf(platform: ShopPlatformChoice): Array<{ value: ShopEntityType; label: string }> {
+  return [
+    { value: 'undecided', label: '待确认' },
+    {
+      value: 'individual',
+      label: platform === 'douyin' ? '个人身份（身份证开店）' : '个人 / 自然人',
+    },
+    { value: 'sole_proprietor', label: '个体工商户' },
+    { value: 'company', label: '企业 / 公司' },
+  ];
+}
 
 const SUPPLY_LABELS: Record<ShopSupplyChoice, string> = {
   stocked: '有货源',
@@ -239,8 +271,8 @@ function profileFacts(profile: ShopSetupProfile): string {
     `- 目标市场：${profile.market || '待确认'}`,
     `- 品类 / 商品方向：${profile.category || '待确认'}`,
     `- 可投入预算：${profile.budgetYuan ? `约 ${profile.budgetYuan} 元人民币` : '待确认'}`,
-    `- 经营主体：${ENTITY_LABELS[profile.entityType]}`,
-    `- 主体材料规则：${ENTITY_MATERIAL_RULES[profile.entityType]}`,
+    `- 经营主体（通用记录口径）：${ENTITY_LABELS[profile.entityType]}`,
+    `- 平台主体规则：${entityGuidanceOf(profile)}`,
     `- 账号状态：${profile.hasAccount ? '已有平台账号' : '还没有平台账号'}`,
     `- 资质状态：${profile.hasQualification ? '主体与类目资质已准备' : '资质尚未准备齐全'}`,
     `- 供货方式：${SUPPLY_LABELS[profile.supplyChoice]}`,
@@ -255,6 +287,9 @@ export function buildShopSetupPrompt(
 ): string {
   const title = options.projectTitle?.trim() || '我的店铺项目';
   const platform = options.platformLabel?.trim() || platformLabelOf(profile);
+  const creationInstruction = profile.platform === 'douyin' && profile.entityType === 'individual'
+    ? '抖店个人身份必须点击“个人身份 / 我没有营业执照”入口继续。'
+    : '按目标平台当前入驻页提供的实际主体入口继续，不得套用抖店或其他平台的入口名称。';
 
   return `我正在从零开一家店，请作为我的店铺运营负责人，直接带我完成，不要只给泛泛建议。
 
@@ -271,8 +306,8 @@ ${profileFacts(profile)}
 4. 选品必须用 compare_products 做同款匹配，并给出售价、平台佣金、履约、采购和到手利润的逐项测算。
 5. 给出清晰的下一步动作；涉及改价、上下架、建品、发货等写操作时，先出变更单让我确认。付款、退款、验证码和资金动作必须由我本人完成。
 6. 如果平台尚未决定，先比较 2 至 3 个适合我的平台，说明启动成本、流量逻辑、资质门槛和退出成本，再推荐一个。
-7. 主体类型必须严格区分个人身份、个体工商户和企业。个人身份店不得要求营业执照；只有个体工商户和企业才需要营业执照。官方页面写明“个人身份 / 我没有营业执照”时，以页面当前口径为准，不得用历史记忆否定。
-8. 如果目标是创建店铺，直接进入平台实际开店创建流程；材料查询页只用于核对，不能当作开店完成。个人身份必须点击“个人身份 / 我没有营业执照”入口继续。
+7. 主体类型只是通用记录口径，不代表所有平台政策一致。${entityGuidanceOf(profile)} 必须打开目标平台当前官方入驻页核验，不得把抖店或其他平台规则直接套用。
+8. 如果目标是创建店铺，直接进入平台实际开店创建流程；材料查询页只用于核对，不能当作开店完成。${creationInstruction}
 
 【安全边界】
 账号密码、验证码、支付密码由我本人操作。你可以打开官方页面并告诉我每一步填什么，但不得代填或索取这些敏感信息。

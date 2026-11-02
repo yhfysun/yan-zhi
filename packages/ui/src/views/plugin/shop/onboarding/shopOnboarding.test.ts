@@ -88,7 +88,7 @@ describe('shop onboarding', () => {
     expect(prompt).toContain('不要再重复询问');
   });
 
-  it('个人身份开店不要求营业执照，个体工商户才要求执照', () => {
+  it('抖店个人身份不要求营业执照，个体工商户才要求执照', () => {
     const personal = normalizeShopSetupProfile({
       platform: 'douyin',
       market: '中国',
@@ -100,7 +100,8 @@ describe('shop onboarding', () => {
     });
     const personalPrompt = buildShopSetupPrompt(personal);
     expect(personalPrompt).toContain('个人身份（身份证开店）');
-    expect(personalPrompt).toContain('个人身份店不得要求营业执照');
+    expect(personalPrompt).toContain('抖店当前官方入驻页明确支持个人身份');
+    expect(personalPrompt).toContain('不得额外索要营业执照');
     expect(personalPrompt).toContain('直接进入平台实际开店创建流程');
 
     const sole = normalizeShopSetupProfile({
@@ -109,6 +110,21 @@ describe('shop onboarding', () => {
     });
     expect(sole.entityType).toBe('sole_proprietor');
     expect(buildShopSetupPrompt(sole)).toContain('个体工商户（需要营业执照）');
+  });
+
+  it('非抖店平台不得套用抖店个人主体规则', () => {
+    const amazon = normalizeShopSetupProfile({
+      platform: 'amazon',
+      market: '美国',
+      category: '宠物用品',
+      budgetYuan: '30000',
+      entityType: 'individual',
+    });
+    const prompt = buildShopSetupPrompt(amazon);
+
+    expect(prompt).toContain('亚马逊主体要求因站点、类目而异');
+    expect(prompt).toContain('不得把抖店或其他平台规则直接套用');
+    expect(prompt).not.toContain('抖店当前官方入驻页明确支持个人身份');
   });
 
   it('快捷任务会带上当前平台与阶段，并明确交付物', () => {
