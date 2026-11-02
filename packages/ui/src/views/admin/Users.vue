@@ -20,6 +20,13 @@
           <span v-if="!row.roles?.length" class="dim">无角色</span>
         </template>
       </el-table-column>
+      <el-table-column label="额度" width="190">
+        <template #default="{ row }">
+          <span :class="{ 'quota-over': row.quota_cost_cny != null && (row.usedCost || 0) >= row.quota_cost_cny }">
+            ¥{{ (row.usedCost || 0).toFixed(2) }}<template v-if="row.quota_cost_cny != null"> / ¥{{ Number(row.quota_cost_cny).toFixed(2) }}</template><span v-else class="dim"> / 不限</span>
+          </span>
+        </template>
+      </el-table-column>
       <el-table-column label="创建时间" width="170">
         <template #default="{ row }">{{ new Date(row.created_at).toLocaleString() }}</template>
       </el-table-column>
@@ -53,6 +60,18 @@
           <el-select v-model="form.roleIds" multiple placeholder="选择角色" style="width: 100%">
             <el-option v-for="r in roles" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="额度">
+          <el-input-number
+            v-model="form.quotaCostCny"
+            :min="0"
+            :precision="2"
+            :controls="false"
+            :value-on-clear="null"
+            placeholder="留空 = 不限"
+            style="width: 100%"
+          />
+          <div class="quota-hint">LLM 成本上限（元），累计超出后拒绝新任务；留空 = 不限</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -100,7 +119,7 @@ async function reload() {
 
 function openCreate() {
   editing.value = null;
-  form.value = { username: '', email: '', password: '', orgIds: [], roleIds: [] };
+  form.value = { username: '', email: '', password: '', orgIds: [], roleIds: [], quotaCostCny: null, usedCost: 0 };
   dialog.value = true;
 }
 
@@ -112,6 +131,8 @@ function openEdit(u: AdminUser) {
     password: '',
     orgIds: u.orgs?.map((o) => o.id) || [],
     roleIds: u.roles?.map((r) => r.id) || [],
+    quotaCostCny: u.quota_cost_cny ?? null,
+    usedCost: u.usedCost || 0,
   };
   dialog.value = true;
 }

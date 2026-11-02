@@ -1178,6 +1178,22 @@ export function resolveEffectiveWorkspaceDir(
   return serverState.workspaceDir || undefined;
 }
 
+/**
+ * 用户额度闸（2026-11-01）：quota_cost_cny 非 NULL 且已用成本 ≥ 额度 → 抛错拒绝新任务。
+ * 已用 = usage_event 全量累计（含估算）；guest 本机单管理员不受限（quota 为 NULL）。
+ * 独立导出便于守门测试；调用方负责「额度超限抛出，其它异常 fail-open」。
+ */
+export function checkUserQuota(userId: string | null | undefined): void {
+  if (!userId || userId === 'guest') return;
+  const uq = db.prepare('SELECT quota_cost_cny FROM user WHERE id = ?').get(userId) as any;
+  const quota = uq?.quota_cost_cny;
+  if (quota == null || quota < 0) return;
+  const used = (db.prepare('SELECT COALESCE(SUM(cost_cny), 0) AS c FROM usage_event WHERE user_id = ?').get(userId) as any).c || 0;
+  if (used >= quota) {
+    throw new Error(`额度已用完（已用 ¥${used.toFixed(2)} / 上限 ¥${Number(quota).toFixed(2)}），请联系管理员调整额度`);
+  }
+}
+
 export function createTask(params: {
   conversationId: string;
   userId: string;
@@ -1212,23 +1228,17 @@ export function createTask(params: {
    * 服务端回查连接/发布项目详情后注入**系统提示词** —— 用户回合只留用户原话。
    */
   opsContext?: OpsContextInput;
+  /**
+   * 模式切换（four-mode 2b.5）：本轮用户从 from 切到 to。
+   * 只追加一段系统提示词（不伪造用户消息、历史消息不动），让模型知道人格/工具面变了。
+   */
+  modeSwitch?: { from: string; to: string; fromLabel?: string; toLabel?: string };
 }): string {
-  // ★ 用户额度闸（2026-11-01）：quota_cost_cny 非 NULL 且已用成本 ≥ 额度 → 拒绝新任务。
-  //   已用 = usage_event 全量累计（含估算）；guest 本机单管理员不受限（quota 为 NULL）。
+  // ★ 用户额度闸（2026-11-01）：超限抛错，检查自身失败不阻塞调用（fail-open）。
   try {
-    if (params.userId && params.userId !== 'guest') {
-      const uq = db.prepare('SELECT quota_cost_cny FROM user WHERE id = ?').get(params.userId) as any;
-      const quota = uq?.quota_cost_cny;
-      if (quota != null && quota >= 0) {
-        const used = (db.prepare('SELECT COALESCE(SUM(cost_cny), 0) AS c FROM usage_event WHERE user_id = ?').get(params.userId) as any).c || 0;
-        if (used >= quota) {
-          throw new Error(`额度已用完（已用 ¥${used.toFixed(2)} / 上限 ¥${Number(quota).toFixed(2)}），请联系管理员调整额度`);
-        }
-      }
-    }
+    checkUserQuota(params.userId);
   } catch (e: any) {
     if (e?.message?.includes('额度')) throw e;
-    // 额度检查自身失败不阻塞调用（fail-open，避免误伤正常使用）
   }
   // 幂等保护：同 conversationId 已有 running 任务则复用（避免重连重试创建多任务）
   for (const [id, existing] of tasks) {
@@ -3355,6 +3365,8 @@ async function runReActLoop(task: LlmTask, params: {
   workspaceDir?: string;
   /** 运维现场（AI 模式窗口）：服务端回查连接/发布项目后注入系统提示词，不进用户回合 */
   opsContext?: OpsContextInput;
+  /** 模式切换（four-mode 2b.5）：只注入系统提示词 */
+  modeSwitch?: { from: string; to: string; fromLabel?: string; toLabel?: string };
 }) {
   const { conversationId: convId, userId, options } = params;
   // ★★★ 运行参数（温度/最大输出/最大步数）**每轮实时读库**，不再用创建任务时的快照。
@@ -3656,6 +3668,17 @@ async function runReActLoop(task: LlmTask, params: {
     // 浏览器记忆不做自动注入：按需召回模式，智能体需要时调用 api_browser_memory_read 工具拉取
     if (modePrompt.length) {
       systemPromptBuilt += '\n\n## 模式指令（用户在输入框开启，优先级高于默认行为）\n' + modePrompt.join('\n');
+    }
+    // 模式切换说明（four-mode 2b.5）：只进系统提示词，历史消息原样保留。
+    // 标签来自前端模式定义，做长度与换行收敛，避免把任意文本当指令注入。
+    if (params.modeSwitch && params.modeSwitch.from !== params.modeSwitch.to) {
+      const clean = (v: unknown, fallback: string) => {
+        const s = String(v ?? '').replace(/[\r\n]+/g, ' ').trim().slice(0, 24);
+        return s || fallback;
+      };
+      const fromL = clean(params.modeSwitch.fromLabel, params.modeSwitch.from);
+      const toL = clean(params.modeSwitch.toLabel, params.modeSwitch.to);
+      systemPromptBuilt += `\n\n## 模式切换\n用户已从「${fromL}」切换到「${toL}」模式。请按${toL}模式的职责与工具面继续执行；切换前的历史消息是上下文，不要让用户重复提供。`;
     }
     // 运维现场注入（2026-10-21）：连接名/主机/终端现场/发布目标。
     // ★ 这些信息**只进系统提示词，不进用户回合** —— 用户消息保持原话入库，

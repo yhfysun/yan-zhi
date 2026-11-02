@@ -98,10 +98,10 @@
 - [x] `edition.json` 增 `plugins` / `pluginsExcluded`（`YZ_BUILD_PLUGINS` 优先，否则按档位预设）；`modes` 改由选中插件推导（显式 `YZ_BUILD_MODES` 只保留插件覆盖得到的部分）→ license 的三维交集（构建档 ∩ 授权档 ∩ 构建模式）继续成立。
 - [x] 运行时消费：main.cjs 注入 `YZ_BUILD_PLUGINS_EXCLUDED`；server `registerPkgOrSource` 与 skins 分支跳过未选插件（源码兜底不再把"目录已移走"的插件拉起来）。`plugins/build-selection.ts` 纯函数 + 守门。
 - [x] 前端同源裁剪：`select-modes --plugins=` 把未选插件的视图从生成表剔除（否则功能插件（不属任何模式）的 chunk 恒在主包，泄漏断言失真）。build-all 传并集。
-- [ ] extraResources 按选拷贝：皮肤资产随 skins（已随 `builtin/skins/assets` 一起 prune ✓）、**python 运行时随 computer-use 未做**（`resources/python` 仍是 yml 无条件 extraResources）。
+- [x] extraResources 按选拷贝：皮肤资产随 skins（已随 `builtin/skins/assets` 一起 prune ✓）、python 运行时随 computer-use —— 2026-11-02 核实已落地：`scripts/lib/python-runtime-stage.cjs` + electron-build/build-all 按选择集把 `resources/python` 与 `python-tools` 移入 `.prune-hold`（留空壳），退出自动移回；4 例 node:test。
 - [ ] lite/basic/pro 三档产物内容断言 + 冒烟（本机未跑真实 electron-builder；命令：`node scripts/package.cjs desktop:lite --plugins=... --dry-run` 先看计划）。
 - [ ] 设计 §7 尾项：server tsc 仍编译全部插件源码（`apps/server/dist/.../plugins/*.js`），目前靠 `YZ_BUILD_PLUGINS_EXCLUDED` 运行时不注册兜底；主产物真正变薄待做。
-- [ ] `android-mirror` 插件未登记进 `build/plugins.catalog.json`（历史遗漏）：它既不参与选择集裁剪，也永远不会被排除 —— 其 `views/plugin/AndroidMirror.vue` 恒在主包。
+- [x] `android-mirror` 插件登记进 `build/plugins.catalog.json`（2026-11-02 补历史遗漏）：`kind=feature`、desktopOnly、backendEntry + manifestExport + AndroidMirror.vue，三档预设均纳入（保持现行为）；已用 `build-plugins --id=android-mirror` 实跑验证可打包。
 
 ## P6 单独打包（2026-10-26 完成主体）
 

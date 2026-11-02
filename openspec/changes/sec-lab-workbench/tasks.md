@@ -80,16 +80,21 @@
 - [ ] 剧本（Playbook）模型：YAML 多步编排 + 内置剧本包（信息收集 / Web 常规审计 / 内网暴露面）
 - [ ] 完整控制台：xterm 终端（SSE，抄 `routes/local-console.ts`）+ 三栏布局
 - [ ] findings 消息卡片（严重度色块 + 折叠详情），走 `Message.dataView` 扩展
-- [ ] B 轨 adapter 补全：nmap / nuclei / nikto / ffuf 输出解析与版本容错
-- [ ] 报告导出 Markdown / HTML 文件
+- [x] B 轨 adapter 补全：nmap / nuclei / nikto / ffuf 输出解析与版本容错
+  → 2026-11-02：nikto（跳过元信息/统计行，CVE 行标 medium）与 ffuf（逐行 JSON，2xx/3xx 标 low）解析补齐；nmap/nuclei 原有解析回归覆盖；9 例测试。
+- [x] 报告导出 Markdown / HTML 文件
+  → 2026-11-02 核实已落地：`sec_report` 支持 markdown / json / html / sarif（HTML 可浏览器打印为 PDF），UI 另有「导出本次扫描 / 导出报告 MD」。注：未生成二进制 Word/PDF（见 P3 doyz 项）。
 - [ ] 与既有 `packages/core/.../builtin/security.ts`（Python 被动侦察）去重收敛
 
 ## P2 能力扩展
 
 - [ ] 剧本市场（内置 + 自定义上传）
 - [ ] 离线 CVE 库 + NVD 在线查询
-- [ ] 合规基线：等保 2.0 / CIS Benchmark / OWASP Top 10 检查表
-- [ ] 定时巡检任务与告警
+  → 2026-11-02 核实：**离线库已完成**（`sec-lab-tools/intel.ts`：lookupCve / searchExploit + CVSS 基础分）；**NVD 在线查询未接**（工具明确说明不联网，引导 web_search）。
+- [x] 合规基线：等保 2.0 / CIS Benchmark / OWASP Top 10 检查表
+  → 2026-11-02 核实已落地：`sec-lab-tools/baseline.ts`（远程可核查子集，框架 owasp / cis / 等保）+ `/headers-audit`、`/tls-audit` 子集。
+- [x] 定时巡检任务与告警
+  → 2026-11-02 核实已落地：`sec-lab-tools/watch.ts`（进程内定时器 + unref，start/stop/list，发现项统一写 findings；重启后需重新 start，已在工具文案说明）。
 
 ## P3 协同
 

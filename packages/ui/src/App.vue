@@ -184,6 +184,7 @@ import { installSelectAllScope } from './utils/selectAllScope';
 import { isModeWindow, isConvWindow, convIdOfWindow, modeKeyOfRoute } from './utils/modeWindow';
 import * as modeModule from './stores/mode';
 import { pluginModeMeta } from './stores/mode';
+import { recordModeTransition } from './stores/modeTransitions';
 import { useChat } from './composables/chat/useChat';
 import { usePetBridge } from './composables/usePetBridge';
 import { useChatStore } from './stores/chat';
@@ -730,6 +731,9 @@ authStore.loadUser();
     } else {
       await chat.startNewChat(m === 'dev' ? codeStore.projectSpaceId : undefined);
     }
+    // 5) 模式切换分隔提示（2b.5）：只记事件，由消息流渲染轻量分隔 + 下一轮 system prompt 追加，
+    //    不伪造用户消息。等会话落定后再记，convId 才指向切换后真正停留的会话。
+    recordModeTransition({ convId: chatStore.currentConvId || '', at: Date.now(), from: old, to: m });
   });
 }
 </script>

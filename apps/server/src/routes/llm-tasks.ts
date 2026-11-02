@@ -42,7 +42,7 @@ function normalizeOpsContext(raw: unknown): OpsContextInput | undefined {
 // POST /api/llm/tasks  创建任务
 router.post('/tasks', (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds, workspaceDir, pathGuard, toolEnv: toolEnvRaw, opsContext } = req.body || {};
+  const { conversationId, platformId, modelId, userContent, agentId, appGuide, systemPrompt, tools, options, modeFlags, maxSteps, memoryExtractPlatformId, memoryExtractModelId, ontologyIds, workspaceDir, pathGuard, toolEnv: toolEnvRaw, opsContext, modeSwitch } = req.body || {};
   if (!conversationId || !platformId || !modelId) {
     res.status(400).json({ error: '缺少 conversationId/platformId/modelId' });
     return;
@@ -88,6 +88,16 @@ router.post('/tasks', (req: Request, res: Response) => {
       // 运维现场（2026-10-21）：薄描述，服务端回查详情后注入系统提示词。
       // ★ 白名单化 —— 只接受约定字段，防止调用方往系统提示词里塞任意内容。
       opsContext: normalizeOpsContext(opsContext),
+      // 模式切换（four-mode 2b.5）：白名单化，只接受 from/to 与可选标签
+      modeSwitch: modeSwitch && typeof modeSwitch === 'object'
+        && typeof modeSwitch.from === 'string' && typeof modeSwitch.to === 'string'
+        ? {
+            from: modeSwitch.from.slice(0, 32),
+            to: modeSwitch.to.slice(0, 32),
+            fromLabel: typeof modeSwitch.fromLabel === 'string' ? modeSwitch.fromLabel : undefined,
+            toLabel: typeof modeSwitch.toLabel === 'string' ? modeSwitch.toLabel : undefined,
+          }
+        : undefined,
     });
   } catch (e: any) {
     // 会话被归档/删除/不存在时不给 500：前端要靠这个状态码给出「去恢复」的入口

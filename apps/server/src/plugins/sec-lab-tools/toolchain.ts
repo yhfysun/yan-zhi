@@ -92,6 +92,32 @@ export const TOOLCHAIN: Record<string, ExternalTool> = {
     capability: 'Web 服务器综合扫描（A 轨替代：webprobe）',
     install: 'apt install nikto / brew install nikto',
     buildArgs: (p) => ['-h', p.target, '-Format', 'txt', '-nointeractive'],
+    // nikto txt 输出：每条发现以 "+ " 开头；头部的 Target/Start Time/Server 等是元信息，不是发现。
+    parse: (stdout) => {
+      const findings: Finding[] = [];
+      const items: string[] = [];
+      for (const raw of stdout.split('\n')) {
+        const line = raw.trim();
+        if (!line.startsWith('+ ')) continue;
+        const body = line.slice(2).trim();
+        if (!body) continue;
+        if (/^(Target|Start Time|End Time|Server|SSL Info|No CGI|Root page|Platform|Hostname|IP|Port)\b/i.test(body)) continue;
+        // 尾部统计行（"8163 requests: 0 error(s) and 3 item(s) reported"）不是发现
+        if (/^\d+\s+(requests?|item\(s\)|error\(s\))/i.test(body)) continue;
+        const stripped = /^(?:OSVDB-\d+|CVE-\d{4}-\d+):\s*(.*)$/i.exec(body);
+        const text = (stripped ? stripped[1] : body).trim();
+        if (!text) continue;
+        items.push(text);
+        findings.push({
+          title: text.slice(0, 120),
+          severity: /CVE-\d{4}/i.test(body) ? 'medium' : 'info',
+          detail: text,
+          evidence: line.slice(0, 500),
+        });
+        if (findings.length >= 100) break;
+      }
+      return { findings, raw: { items } };
+    },
   },
   whatweb: {
     name: 'whatweb',
@@ -105,6 +131,42 @@ export const TOOLCHAIN: Record<string, ExternalTool> = {
     bin: ['ffuf'],
     capability: '目录与参数爆破（A 轨替代：webprobe 路径探测）',
     install: 'go install github.com/ffuf/ffuf/v2@latest',
+    // 字典不内置：优先环境变量 YZ_SEC_WORDLIST，其次由调用方 extraArgs 补 -w。
+    // -json 输出逐行 JSON，便于解析；-s 静默掉 banner。
+    buildArgs: (p) => {
+      const args = ['-u', p.target, '-json', '-s'];
+      const wl = process.env.YZ_SEC_WORDLIST;
+      if (wl) args.push('-w', wl);
+      return args;
+    },
+    parse: (stdout) => {
+      const findings: Finding[] = [];
+      const items: unknown[] = [];
+      for (const raw of stdout.split('\n')) {
+        const line = raw.trim();
+        if (!line.startsWith('{')) continue;
+        try {
+          const j = JSON.parse(line) as {
+            input?: Record<string, string>; url?: string; status?: number; length?: number; words?: number; lines?: number;
+          };
+          items.push(j);
+          const path = j.input?.FUZZ || j.url || '-';
+          const ok = typeof j.status === 'number' && j.status >= 200 && j.status < 400;
+          findings.push({
+            title: `${j.status ?? '?'} · ${path}`,
+            severity: ok ? 'low' : 'info',
+            detail: [
+              j.url,
+              j.status != null ? `status ${j.status}` : '',
+              j.length != null ? `len ${j.length}` : '',
+              j.words != null ? `words ${j.words}` : '',
+            ].filter(Boolean).join(' · '),
+            evidence: line.slice(0, 500),
+          });
+        } catch { /* 非 JSON 行忽略 */ }
+      }
+      return { findings, raw: { items } };
+    },
   },
   sqlmap: {
     name: 'sqlmap',

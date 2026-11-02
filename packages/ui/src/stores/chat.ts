@@ -20,7 +20,8 @@ import { requestChatWs, sendChatWs, onTaskEvent, onConvEvent, onChatWsClose } fr
 import { applyInlineDataViews, saveInlineDataView } from '../utils/inline-data-views';
 import { useAuthStore } from './auth';
 // 会话按模式隔离：loadConversations / createConversation 都要知道"当前在哪个模式"
-import { activeMode } from './mode';
+import { activeMode, modeDefOf } from './mode';
+import { latestTransitionFor } from './modeTransitions';
 // 历史窗口不变量（裁剪保留轮头 + 裁剪后游标对齐），纯函数，见该文件顶部注释
 import { trimStartIndex, syncPagingAfterTrim } from './history-window';
 // 浏览器动作 → 人话（实况条展示「正在点击「发布」」，而不是干巴巴的"执行中"）
@@ -4020,6 +4021,17 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
       const appGuide = appSettings.appGuide;
       const maxSteps = getMaxReActSteps();
 
+      // 模式切换提示（2b.5）：仅当最近一次切换发生在该会话最后一条消息之后才随本轮下发；
+      // 后端只把它追加进系统提示词，不写用户消息。发过一条后时间戳越过切换点，自然不再带。
+      const lastMsgTs = currentMessages.value.reduce((m, x) => Math.max(m, x.createdAt || 0), 0);
+      const mt = latestTransitionFor(convId);
+      const modeSwitch = mt && mt.at > lastMsgTs
+        ? {
+            from: mt.from, to: mt.to,
+            fromLabel: modeDefOf(mt.from).label, toLabel: modeDefOf(mt.to).label,
+          }
+        : undefined;
+
       const taskRes = await requestChatWs<any>('create_task', {
         conversationId: convId,
         platformId: platform.id,
@@ -4053,6 +4065,7 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
           plan: planMode.value,
           answerOnly: answerOnly.value,
         },
+        modeSwitch,
         options: {
           temperature: options.temperature,
           maxTokens: options.maxTokens,

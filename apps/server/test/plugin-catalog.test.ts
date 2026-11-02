@@ -77,8 +77,8 @@ describe('plugins.catalog.json 契约', () => {
     }
   });
 
-  it('desktopOnly 插件与目录事实一致（ops/sec/shop/cicd/java/computer-use/remote-control）', () => {
-    for (const id of ['ops-shell', 'sec-lab', 'shop-ops', 'cicd-pipeline', 'java-suite', 'computer-use', 'remote-control']) {
+  it('desktopOnly 插件与目录事实一致（ops/sec/shop/cicd/java/computer-use/remote-control/android-mirror）', () => {
+    for (const id of ['ops-shell', 'sec-lab', 'shop-ops', 'cicd-pipeline', 'java-suite', 'computer-use', 'remote-control', 'android-mirror']) {
       expect(plugins[id].desktopOnly, `${id} 应为 desktopOnly`).toBe(true);
     }
   });

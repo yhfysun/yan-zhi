@@ -62,6 +62,7 @@ interface ClientMsg {
   ontologyIds?: string[];
   workspaceDir?: string;
   pathGuard?: string;
+  modeSwitch?: { from: string; to: string; fromLabel?: string; toLabel?: string };
 }
 
 /** 复用 POST /tasks 的「运行中任务 → 追问注入」语义，避免 WS 与 HTTP 两条建任务路径漂移 */
@@ -104,6 +105,7 @@ function createTaskOrInject(payload: ClientMsg, uid: string): { taskId: string; 
     ontologyIds: Array.isArray(payload.ontologyIds) ? payload.ontologyIds.map(String) : undefined,
     workspaceDir: typeof payload.workspaceDir === 'string' ? payload.workspaceDir : undefined,
     pathGuard: (payload.pathGuard === 'strict' || payload.pathGuard === 'off' || payload.pathGuard === 'ask') ? payload.pathGuard : undefined,
+    modeSwitch: payload.modeSwitch,
   });
   rememberCreatedTask(conversationId, clientMsgId, taskId);
   return { taskId };

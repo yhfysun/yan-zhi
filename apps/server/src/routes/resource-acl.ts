@@ -7,7 +7,7 @@ import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import {
-  isAclType, getAclPrincipals, setAclUsers, resourceOwner, resourceExists,
+  isAclType, getAclPrincipals, setAclUsers, resourceOwner, resourceExists, agentDependencyGrants,
 } from '../services/resource-acl.js';
 import { userHasPermission, invalidatePermissionCache } from '../rbac.js';
 
@@ -84,6 +84,13 @@ router.put('/role/:roleId', (req: Request, res: Response) => {
     for (const id of ids || []) {
       if (typeof id === 'string' && id && resourceExists(type, id)) wanted.add(`${type}:${id}`);
     }
+  }
+  // ★ 智能体依赖级联（与资源侧名单同口径）：授角色 = 角色下所有人自动获得其模型/平台/
+  //   工具/Skill/子智能体，否则角色视角配好的智能体打开仍是残缺的。
+  for (const key of [...wanted]) {
+    const [type, id] = key.split(':');
+    if (type !== 'agent') continue;
+    for (const d of agentDependencyGrants(id)) wanted.add(`${d.type}:${d.id}`);
   }
   const existingRows = db.prepare(
     "SELECT resource_type, resource_id FROM resource_acl WHERE principal_type = 'role' AND user_id = ?",

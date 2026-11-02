@@ -28,6 +28,10 @@
         <span class="msg-date-divider-text">{{ dateDividerFor(vr.ri) }}</span>
         <span class="msg-date-divider-line"></span>
       </div>
+      <!-- 模式切换分隔（2b.5）：轻量提示，不伪造用户消息 -->
+      <div v-if="modeDividerFor(vr.ri)" class="msg-mode-divider">
+        <span class="msg-mode-divider-text">{{ modeDividerFor(vr.ri) }}</span>
+      </div>
       <div class="round-group" :data-round="vr.ri">
       <div
         v-if="vr.round.user"
@@ -512,6 +516,11 @@
       </div>
     </template>
 
+    <!-- 切换后还没发消息：提示停在消息流末尾（再次发消息后由轮次前的分隔接管） -->
+    <div v-if="trailingModeDivider" class="msg-mode-divider msg-mode-divider-tail">
+      <span class="msg-mode-divider-text">{{ trailingModeDivider }}</span>
+    </div>
+
     <!-- 任务结束后的「本次改了哪些文件」汇总（trae 式 review）：跑的过程中不显示，
          结束后按会话聚合 pending 快照，可逐文件看 diff、保留或撤销。 -->
     <ChatTaskChangeSummary
@@ -784,7 +793,8 @@ import PlanStepDetailDialog from './PlanStepDetailDialog.vue';
 import AgentAvatar from '../AgentAvatar.vue';
 import SkeletonList from '../common/SkeletonList.vue';
 import { useCodeStore } from '../../stores/code';
-import { activeMode } from '../../stores/mode';
+import { activeMode, allModeDefs } from '../../stores/mode';
+import { transitionsFor } from '../../stores/modeTransitions';
 import PlatformConfigCard from '../PlatformConfigCard.vue';
 import SubAgentRoundView from './SubAgentRoundView.vue';
 import DeliverableFileCard from './DeliverableFileCard.vue';
@@ -1069,6 +1079,39 @@ function dateDividerFor(ri: number): string {
   //   前一轮在窗外时 rounds[ri-1] 仍存在（数据在，只是没渲染），逻辑天然正确。
   return formatDayLabel(ts);
 }
+
+// ===== 模式切换分隔（four-mode 2b.5）=====
+// 切换模式本身不产生消息；这里按「切换时间点落在哪两轮之间」渲染一条轻量提示。
+// 数据来自 stores/modeTransitions（localStorage 持久化），不写消息、不进上下文。
+
+const modeTransitions = computed(() => transitionsFor(store.currentConvId));
+
+function modeLabel(key: string): string {
+  return allModeDefs.value.find((d) => d.key === key)?.label || key;
+}
+
+/** 第 ri 轮前是否渲染模式切换提示（空串 = 不渲染）；多条切换只显示最近一条 */
+function modeDividerFor(ri: number): string {
+  const rows = modeTransitions.value;
+  if (!rows.length) return '';
+  const rounds = messageRounds.value;
+  const ts = rounds[ri]?.user?.createdAt || 0;
+  if (!ts) return '';
+  const prevTs = ri > 0 ? (rounds[ri - 1]?.user?.createdAt || 0) : 0;
+  const hit = rows.filter((t) => t.at > prevTs && t.at <= ts).pop();
+  return hit ? `已切换到「${modeLabel(hit.to)}」模式` : '';
+}
+
+/** 切换后尚未发消息：提示挂在消息流末尾 */
+const trailingModeDivider = computed(() => {
+  const rows = modeTransitions.value;
+  if (!rows.length) return '';
+  const last = rows[rows.length - 1];
+  const msgs = store.currentMessages;
+  if (!msgs.length) return ''; // 空会话由欢迎卡承担，不叠提示
+  const lastTs = msgs.reduce((m, x) => Math.max(m, x.createdAt || 0), 0);
+  return last.at > lastTs ? `已切换到「${modeLabel(last.to)}」模式` : '';
+});
 
 // ===== 移动端：长按消息露出那条操作排 =====
 //

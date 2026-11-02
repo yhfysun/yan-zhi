@@ -219,10 +219,12 @@
 - [x] `desktop_plan({ strategy })`：缺省读设置（默认 `rules`）；规则方案 JSON（组名/成员/目标目录）
 - [x] **AI 增强**：只把规则未覆盖文件名 + 已有组名交模型；严格 JSON 输出；五道校验（来源集合/组名合法/数量上限/受保护文件/目录越界）
 - [x] **AI 回落**：`no-model|timeout|bad-json|校验失败` → 回落规则并在方案标注「AI 不可用，已按规则生成」+ 原因；不弹错框
-- [ ] AI 成本护栏：单次 ≤200 文件名、maxTokens 上限、20s 超时、10 分钟结果缓存（文件名集合 hash）
+- [x] AI 成本护栏：单次 ≤200 文件名、maxTokens 上限、20s 超时、10 分钟结果缓存（文件名集合 hash）
+  → 2026-11-02 落地：`aiSuggest` 已有 200 上限 / maxTokens 2000 / 20s；补 10 分钟结果缓存（排序后组名+文件名 sha1，只缓存校验通过结果，上限 20 条）+ `aiCacheKey` 单测。
 - [x] `desktop_apply`：`confirmed` 闸门 → 先写 oplog 再移动 → 冲突改 `name (2).ext` → 逐条回报
 - [x] `desktop_undo`：oplog 逆序回滚；用户已改动文件跳过并回报
-- [ ] 越界路径拒绝 + 单测；只移不删（清理=移入 `归档/<年月>/`）
+- [x] 越界路径拒绝 + 单测；只移不删（清理=移入 `归档/<年月>/`）
+  → 2026-11-02：补 `isSafeGroupName`（挡 `.`/`..`/路径分隔符/超长），`normalizeCfg` 剔除不安全规则与项目关键词，AI 方案校验复用，`desktop_apply` 写入侧再校验一次；3 例单测。实现里没有任何删除路径（只 rename），归档清理未单独提供。
 - [ ] 手动验收：真实桌面 50+ 文件 **规则模式与 AI 模式各跑一轮** scan→plan→apply→undo，文件零丢失；断网/无模型时 AI 模式回落正常
 
 ## P0-B 围栏（插件前端 + 基座窗口）
@@ -255,10 +257,14 @@
 
 ## P2 代码组件审核流
 
-- [ ] 草稿生成到 `plugins/installed/<id>/`，manifest `enabled: false`
-- [ ] 审核页：权限清单高亮、代码 diff、来源模型/时间、启用按钮
-- [ ] 守门测试：未审核草稿不可被工具调用、模型不能 self-enable
-- [ ] 市场分发：`.yzp` 导出/安装复用既有链路
+- [x] 草稿生成到 `plugins/installed/<id>/`，manifest `enabled: false`
+  → 2026-11-02 核实：实现改为**更硬隔离**——草稿写 `plugins/drafts/<id>/`（装载器不扫描该目录），审核通过才 `rename` 到 `installed/` 并注册；「未审核不可执行」由物理位置保证，不依赖 enabled 标志。见 `services/plugin-drafts.ts`。
+- [x] 审核页：权限清单高亮、代码 diff、来源模型/时间、启用按钮
+  → 2026-11-02 核实：`components/plugin/PluginManager.vue`「待审核草稿」区（permissions 标签、来源/时间/文件清单、查看代码、通过并启用、删除）。
+- [x] 守门测试：未审核草稿不可被工具调用、模型不能 self-enable
+  → 2026-11-02 核实：`test/plugin-drafts.test.ts` 6 例（隔离目录、路径穿越、确认串精确匹配、通过才移动）；模型只有 `create_plugin_draft` 工具，approve 仅走 HTTP + 确认串，草稿不在 manager 里所以 `api_plugin_enable` 也找不到。
+- [x] 市场分发：`.yzp` 导出/安装复用既有链路
+  → 2026-11-02 核实：审核通过后即普通 installed 插件，`GET /api/plugins/:id/export` 直接可用。
 
 > **2026-10-31 校对**：以下勾选按**代码实际情况**回补（此前 tasks.md 滞后于实现）。
 > 只勾选有直接代码证据的条目；未勾选的仍需人工确认。

@@ -23,7 +23,8 @@
 - [x] 2b.2 确认四模式右栏/中栏都读同一个 `chatStore.currentConvId`，切换模式后历史消息连续可见
 - [x] 2b.3 工作目录单一真源：各模式统一读 `settings.workspaceDir`；`codeStore.projectDir` 继续与之双向同步（`code.ts:86-94`）
 - [x] 2b.4 场景提示词按模式追加到后续消息（复用 `useChat.ts:1670-1673`），历史消息不动
-- [ ] 2b.5 模式切换时插入轻量「模式切换分隔提示」（仅 UI 提示 + system prompt 追加，**不伪造用户消息**）
+- [x] 2b.5 模式切换时插入轻量「模式切换分隔提示」（仅 UI 提示 + system prompt 追加，**不伪造用户消息**）
+  → 2026-11-02 落地：`stores/modeTransitions.ts` 记录（localStorage，按会话隔离）；ChatMessageList 按切换时间点渲染分隔条；`modeSwitch` 经 WS/HTTP 透传，后端只追加系统提示词（`## 模式切换`）。4 例记录测试 + 4 例服务端守门。
 - [x] 2b.6 界面状态各自保留：`code.ts` 的 `openFiles`、`OpsConsole` 的 `windows` 切模式后不丢
 - [x] 2b.7 回归验证：办公提问 → 切开发看历史 → 切运维发布，全程同一会话（`mode.test.ts` 覆盖状态矩阵）
 

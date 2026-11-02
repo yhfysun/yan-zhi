@@ -10,6 +10,9 @@ export interface AdminUser {
   orgs: { id: string; name: string }[];
   roles: { id: string; name: string }[];
   permissions: string[];
+  /** 额度（元，null/缺省 = 不限）与已用成本（2026-11-01 用户额度闸） */
+  quota_cost_cny?: number | null;
+  usedCost?: number;
 }
 export interface AdminOrg { id: string; name: string; parent_id: string | null; sort_order: number; user_count?: number; role_ids?: string[] }
 export interface AdminRole { id: string; name: string; parent_id: string | null; is_system: number; remark: string | null; permission_count?: number }

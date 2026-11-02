@@ -322,6 +322,21 @@
   white-space: nowrap;
 }
 
+/* ===== 模式切换分隔（four-mode 2b.5）：轻量提示，不是消息 ===== */
+.msg-mode-divider {
+  display: flex; justify-content: center;
+  margin: 0 0 12px; user-select: none;
+}
+.msg-mode-divider-tail { margin-top: 4px; }
+.msg-mode-divider-text {
+  font-size: var(--font-size-sm, 12px);
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+  padding: 2px 10px;
+  border: 1px dashed var(--glass-border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 .chat-topbar {
   display: flex; align-items: center; gap: 8px;
   padding: 10px max(20px, calc((100% - 820px) / 2));

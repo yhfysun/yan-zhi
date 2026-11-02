@@ -185,6 +185,19 @@
       "defaultEnabled": false,
       "notes": "preload rc:* 专用通道留基座（主进程能力，不随插件裁剪）。前端两处是基座外壳（App.vue 的 RemoteControlHost 与 router 的 /remote 控制端免授权页），改由 select-modes 生成的 SHELL_VIEW_LOADERS 按选择集裁剪：未选本插件时两者的 import 表达式在源码层就不存在（Rollup 不产出 chunk），verify-plugin-prune 的组件名扫描因此成立。"
     },
+    "android-mirror": {
+      "kind": "feature",
+      "label": "安卓远控",
+      "desc": "手机投屏与操作（scrcpy，USB / 无线调试）",
+      "desktopOnly": true,
+      "backendEntry": "apps/server/src/plugins/android-mirror.ts",
+      "manifestExport": "androidMirrorManifest",
+      "frontendViews": [
+        "views/plugin/AndroidMirror.vue"
+      ],
+      "defaultEnabled": false,
+      "notes": "2026-11-02 补登记（历史遗漏）：此前不参与选择集裁剪，AndroidMirror.vue 恒在主包。现按档位显式纳入，未选档位可真正裁掉视图与后端注册。"
+    },
     "skins": {
       "kind": "resource",
       "label": "皮肤库",
@@ -204,7 +217,8 @@
       "skins",
       "git-explorer",
       "computer-use",
-      "remote-control"
+      "remote-control",
+      "android-mirror"
     ],
     "basic": [
       "office-core",
@@ -212,6 +226,7 @@
       "git-explorer",
       "computer-use",
       "remote-control",
+      "android-mirror",
       "dev-mode",
       "wf-mode"
     ],
@@ -221,6 +236,7 @@
       "git-explorer",
       "computer-use",
       "remote-control",
+      "android-mirror",
       "dev-mode",
       "wf-mode",
       "clip-mode",

@@ -65,15 +65,21 @@ router.get('/users', requirePerm('admin.user.manage'), (_req: Request, res: Resp
 });
 
 router.post('/users', requirePerm('admin.user.manage'), (req: Request, res: Response) => {
-  const { username, password, email, orgIds = [], roleIds = [] } = req.body || {};
+  const { username, password, email, orgIds = [], roleIds = [], quotaCostCny } = req.body || {};
   if (!username || !password) return bad(res, '用户名和密码为必填项');
   if (String(username).length < 2 || String(username).length > 32) return bad(res, '用户名长度 2-32 字符');
   if (String(password).length < 6) return bad(res, '密码至少 6 位');
   if (db.prepare('SELECT id FROM user WHERE username = ?').get(username)) return bad(res, '该用户名已存在', 409);
+  // 额度（元）：null/缺省 = 不限；非法值在建用户前拒绝，避免留下半成品账号
+  let quotaVal: number | null = null;
+  if (quotaCostCny !== undefined && quotaCostCny !== null) {
+    quotaVal = Number(quotaCostCny);
+    if (!Number.isFinite(quotaVal) || quotaVal < 0) return bad(res, '额度需为非负数字或 null（不限）');
+  }
   const id = uuid();
   const now = Date.now();
-  db.prepare('INSERT INTO user (id, username, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(id, username, email || null, bcrypt.hashSync(password, 10), now);
+  db.prepare('INSERT INTO user (id, username, email, password_hash, quota_cost_cny, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, username, email || null, bcrypt.hashSync(password, 10), quotaVal, now);
   const insOrg = db.prepare('INSERT OR IGNORE INTO user_org (user_id, org_id, created_at) VALUES (?, ?, ?)');
   for (const orgId of orgIds) insOrg.run(id, orgId, now);
   const insRole = db.prepare('INSERT OR IGNORE INTO user_role (user_id, role_id, created_at) VALUES (?, ?, ?)');
