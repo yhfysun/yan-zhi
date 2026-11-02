@@ -21,6 +21,7 @@ const PANEL = strip(readFileSync(resolve(__dirname, '../../components/ops/Releas
 // ★ CicdConsole 的模板里有 `placeholder="target/*.jar"`：`/*` 会让「剥块注释」的 strip 吃掉后续代码，
 //   所以这里读原文，不做注释剥离。
 const CICD = readFileSync(resolve(__dirname, 'CicdConsole.vue'), 'utf8');
+const CICD_STORE = strip(readFileSync(resolve(__dirname, '../../stores/cicd.ts'), 'utf8'));
 
 describe('运维左栏 · 发布项目面板', () => {
   it('左栏渲染面板，并传入当前窗口绑定的项目', () => {
@@ -89,12 +90,37 @@ describe('运维「发布」页签 + 发布确认', () => {
     expect(CONSOLE).toMatch(/import CicdConsole from '\.\/CicdConsole\.vue'/);
   });
 
-  it('★ 发布前展示目标 + 目录 + 重启脚本；生产连接额外警示', () => {
+  it('★ 发布前展示目标 + 目录 + 重启脚本；生产发布展示服务端计划', () => {
     const fn = CICD.match(/async function executePipeline\(\)[\s\S]*?\n\}/);
     expect(fn, '找不到 executePipeline').toBeTruthy();
     expect(fn![0]).toMatch(/ElMessageBox\.confirm/);
     expect(fn![0]).toMatch(/发布目录/);
     expect(fn![0]).toMatch(/重启脚本/);
-    expect(fn![0]).toMatch(/生产连接/);
+    expect(fn![0]).toMatch(/健康检查/);
+    expect(fn![0]).toMatch(/回滚命令/);
+    expect(fn![0]).toMatch(/生产发布审批/);
+    expect(fn![0]).toMatch(/ElMessageBox\.confirm\(confirmPlan\(approval\.command\)/);
+  });
+
+  it('★ 生产发布先领审批、人工批准后再执行，不能由前端直接跳过服务端闸门', () => {
+    const fn = CICD.match(/async function executePipeline\(\)[\s\S]*?\n\}/);
+    expect(fn![0]).toContain('/approval');
+    expect(fn![0]).toContain('/plugin/ops-shell/approvals/');
+    expect(fn![0]).toMatch(/approve: true/);
+    expect(fn![0]).toMatch(/api\.delete\(`\/plugin\/ops-shell\/approvals\//);
+    expect(fn![0]).toMatch(/if \(!ok\) return/);
+  });
+
+  it('发布目标可配置健康检查、回滚命令与自动回滚', () => {
+    expect(CICD).toContain('健康检查命令');
+    expect(CICD).toContain('回滚命令');
+    expect(CICD).toContain('健康检查失败后自动执行回滚命令');
+    expect(PANEL).toContain('健康检查命令');
+    expect(PANEL).toContain('健康检查失败后自动回滚');
+  });
+
+  it('SSE 客户端遇到 HTTP 失败要回显错误，不能伪装成“执行未完成”', () => {
+    expect(CICD_STORE).toContain('if (!resp.ok)');
+    expect(CICD_STORE).toContain('发布请求失败');
   });
 });

@@ -72,6 +72,12 @@ describe('P1-2 插件列表 + 右侧详情', () => {
     expect(PM).toMatch(/v-if="!wide"/);
   });
 
+  it('详情是结构化信息，原始 JSON 折叠', () => {
+    expect(PM).toMatch(/contributionRows/);
+    expect(PM).toMatch(/detailManifest/);
+    expect(PM).toMatch(/pm-detail-raw/);
+  });
+
   it('插件页接入 PageFrame 并自行管理滚动', () => {
     expect(PAGE).toMatch(/<PageFrame/);
     expect(PAGE).toMatch(/:scroll="false"/);

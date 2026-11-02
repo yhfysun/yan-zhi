@@ -106,6 +106,12 @@
           <el-button link size="small" title="移除" @click="form.targets.splice(i, 1)">
             <el-icon :size="12"><Close /></el-icon>
           </el-button>
+          <el-input v-model="t.healthCheckCommand" size="small" placeholder="健康检查命令" class="relp-target-wide" />
+          <el-input v-model="t.rollbackCommand" size="small" placeholder="回滚命令" class="relp-target-wide" />
+          <div class="relp-target-check relp-target-wide">
+            <el-checkbox v-model="t.autoRollback" size="small" />
+            健康检查失败后自动回滚
+          </div>
         </div>
         <div v-if="!form.targets.length" class="relp-empty">未配置部署目标（可稍后补）</div>
 
@@ -143,7 +149,14 @@ const emit = defineEmits<{
 
 interface ConnRow { id: string; name: string; host: string; username: string; tag?: string }
 interface PipelineRow { id: string; name: string }
-interface TargetForm { connectionId: string; remotePath: string; restartScript: string }
+interface TargetForm {
+  connectionId: string;
+  remotePath: string;
+  restartScript: string;
+  healthCheckCommand?: string;
+  rollbackCommand?: string;
+  autoRollback?: boolean;
+}
 
 const electron = (window as any).electronAPI;
 const projects = ref<ReleaseProject[]>([]);
@@ -209,7 +222,14 @@ function openEdit(p: ReleaseProject): void {
     scaffold: 'empty',
     buildCommand: p.buildHint?.command || '',
     artifact: p.buildHint?.artifact || '',
-    targets: p.targets.map((t) => ({ connectionId: t.connectionId, remotePath: t.remotePath, restartScript: t.restartScript })),
+    targets: p.targets.map((t) => ({
+      connectionId: t.connectionId,
+      remotePath: t.remotePath,
+      restartScript: t.restartScript,
+      healthCheckCommand: t.healthCheckCommand || '',
+      rollbackCommand: t.rollbackCommand || '',
+      autoRollback: t.autoRollback === true,
+    })),
     pipelineIds: [...(p.pipelineIds || [])],
   };
   dialogVisible.value = true;
@@ -217,7 +237,14 @@ function openEdit(p: ReleaseProject): void {
 }
 
 function addTarget(): void {
-  form.value.targets.push({ connectionId: connections.value[0]?.id || '', remotePath: '', restartScript: '' });
+  form.value.targets.push({
+    connectionId: connections.value[0]?.id || '',
+    remotePath: '',
+    restartScript: '',
+    healthCheckCommand: '',
+    rollbackCommand: '',
+    autoRollback: false,
+  });
 }
 
 async function pickDir(field: 'localDir' | 'parentDir'): Promise<void> {
@@ -255,6 +282,9 @@ async function save(): Promise<void> {
       name: connName(t.connectionId),
       remotePath: t.remotePath.trim(),
       restartScript: t.restartScript.trim(),
+      healthCheckCommand: t.healthCheckCommand?.trim() || undefined,
+      rollbackCommand: t.rollbackCommand?.trim() || undefined,
+      autoRollback: t.autoRollback === true,
     })),
     pipelineIds: form.value.pipelineIds,
   };
@@ -335,4 +365,6 @@ function toggleBind(p: ReleaseProject): void {
 .relp-targets-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--color-text-secondary); }
 .relp-target { display: grid; grid-template-columns: 1.1fr 1fr 1fr auto; gap: 6px; align-items: center; }
 .relp-target-conn { min-width: 0; }
+.relp-target-wide { grid-column: 1 / -1; }
+.relp-target-check { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--color-text-secondary); }
 </style>

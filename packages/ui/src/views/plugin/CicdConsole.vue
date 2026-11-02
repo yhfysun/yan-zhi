@@ -95,6 +95,7 @@
               <div class="history-list">
                 <div v-for="run in pipelineRuns" :key="run.id" class="history-item">
                   <span class="run-status" :class="run.status">{{ run.status }}</span>
+                  <span v-if="run.rolledBack" class="run-rollback">已回滚</span>
                   <span class="run-target">{{ run.targetName }}</span>
                   <span class="run-time">{{ formatTime(run.startedAt) }}</span>
                 </div>
@@ -376,6 +377,20 @@
               <input v-model="t.restartScript" placeholder="sh restart.sh" />
             </div>
           </div>
+          <div class="form-row">
+            <div class="form-item">
+              <label>健康检查命令</label>
+              <input v-model="t.healthCheckCommand" placeholder="curl -fsS http://127.0.0.1:8080/health" />
+            </div>
+            <div class="form-item">
+              <label>回滚命令</label>
+              <input v-model="t.rollbackCommand" placeholder="sh rollback.sh" />
+            </div>
+          </div>
+          <label class="target-check">
+            <input v-model="t.autoRollback" type="checkbox" />
+            健康检查失败后自动执行回滚命令
+          </label>
           <button class="btn btn-sm btn-danger" @click="form.targets.splice(i, 1)">删除目标</button>
         </div>
       </div>
@@ -389,10 +404,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
-import { ElDialog, ElMessageBox } from 'element-plus';
+import { h, ref, computed, onMounted, watch } from 'vue';
+import { ElDialog, ElMessage, ElMessageBox } from 'element-plus';
 import { useCicdStore } from '../../stores/cicd';
 import { useCodeStore } from '../../stores/code';
+import { api } from '../../api/client';
 import type { CicdPipeline, PipelineStep, DeployTarget, ProjectDetectResult, BuildType } from '@yan-zhi/shared';
 
 const cicdStore = useCicdStore();
@@ -446,6 +462,21 @@ function stepSummary(step: PipelineStep): string {
 
 function formatTime(ts: number): string { return new Date(ts).toLocaleString('zh-CN'); }
 
+function confirmPlan(text: string) {
+  return h('pre', {
+    style: {
+      margin: '0',
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'anywhere',
+      fontFamily: 'inherit',
+      lineHeight: '1.6',
+      textAlign: 'left',
+      maxHeight: '420px',
+      overflow: 'auto',
+    },
+  }, text);
+}
+
 function selectPipeline(p: CicdPipeline) {
   selectedPipeline.value = p;
   selectedTargetId.value = p.targets[0]?.id || '';
@@ -454,26 +485,74 @@ function selectPipeline(p: CicdPipeline) {
 
 async function executePipeline() {
   if (!selectedPipeline.value) return;
-  // 7b.12 发布前确认：把「目标 + 目录 + 重启脚本」摆到人面前；生产连接额外警示。
   const target = selectedPipeline.value.targets.find((t) => t.id === selectedTargetId.value)
     || selectedPipeline.value.targets[0];
   const conn = target ? connections.value.find((c) => c.id === target.connectionId) : undefined;
-  const prod = /生产|prod/i.test(conn?.tag || '');
-  const detail = [
+  if (!target) {
+    ElMessage.warning('未配置部署目标');
+    return;
+  }
+  const localDetail = [
     `流水线：${selectedPipeline.value.name}`,
-    `目标：${target?.name || '默认'}（${conn ? `${conn.name} ${conn.host}` : '连接未设置'}）`,
-    `发布目录：${target?.remotePath || '（未设置）'}`,
-    `重启脚本：${target?.restartScript || '（未设置）'}`,
-    prod ? '\n⚠ 生产连接：确认后立即执行「打包 → 备份 → 上传 → 重启」。' : '',
+    `目标：${target.name}（${conn ? `${conn.name} ${conn.host}` : '连接未设置'}）`,
+    `发布目录：${target.remotePath || '（未设置）'}`,
+    `重启脚本：${target.restartScript || '（未设置）'}`,
+    `健康检查：${target.healthCheckCommand || '（未配置）'}`,
+    `回滚命令：${target.rollbackCommand || '（未配置）'}${target.autoRollback ? '（自动）' : ''}`,
   ].join('\n');
-  const ok = await ElMessageBox.confirm(detail, prod ? '生产发布确认' : '发布确认', {
-    type: 'warning', confirmButtonText: '开始发布', cancelButtonText: '取消',
-  }).then(() => true).catch(() => false);
-  if (!ok) return;
+
   running.value = true;
-  await cicdStore.runPipeline(selectedPipeline.value.id, selectedTargetId.value || undefined);
-  running.value = false;
-  if (selectedPipeline.value) await cicdStore.refreshRuns(selectedPipeline.value.id);
+  try {
+    const prep = await api.post<{
+      required: boolean;
+      approval?: { id: string; command: string; status: 'pending' | 'approved' | 'rejected' };
+    }>(`/plugin/cicd-pipeline/pipelines/${selectedPipeline.value.id}/approval`, {
+      targetId: target.id,
+    });
+    if ('error' in prep) {
+      ElMessage.error(prep.error);
+      return;
+    }
+
+    if (prep.data.required && !prep.data.approval) {
+      ElMessage.error('生产审批记录生成失败，请重试');
+      return;
+    }
+    if (prep.data.required && prep.data.approval) {
+      const approval = prep.data.approval;
+      if (approval.status === 'rejected') {
+        ElMessage.error('这次发布已被拒绝，请调整发布计划后再发起');
+        return;
+      }
+      if (approval.status === 'pending') {
+        const ok = await ElMessageBox.confirm(confirmPlan(approval.command), '生产发布审批', {
+          type: 'warning', confirmButtonText: '批准并发布', cancelButtonText: '取消发布',
+        }).then(() => true).catch(() => false);
+        const decided = ok
+          ? await api.post(`/plugin/ops-shell/approvals/${approval.id}`, { approve: true })
+          : await api.delete(`/plugin/ops-shell/approvals/${approval.id}`);
+        if ('error' in decided) {
+          ElMessage.error(decided.error);
+          return;
+        }
+        if (!ok) return;
+      }
+    } else {
+      const ok = await ElMessageBox.confirm(confirmPlan(localDetail), '发布确认', {
+        type: 'warning', confirmButtonText: '开始发布', cancelButtonText: '取消',
+      }).then(() => true).catch(() => false);
+      if (!ok) return;
+    }
+
+    const result = await cicdStore.runPipeline(selectedPipeline.value.id, selectedTargetId.value || undefined);
+    if (typeof result === 'string') {
+      ElMessage.error(result);
+      return;
+    }
+    if (selectedPipeline.value) await cicdStore.refreshRuns(selectedPipeline.value.id);
+  } finally {
+    running.value = false;
+  }
 }
 
 async function removePipeline() {
@@ -571,6 +650,7 @@ function addTarget() {
     id: `target-${Date.now()}`,
     name: idx === 0 ? '生产' : idx === 1 ? '测试' : `目标${idx + 1}`,
     connectionId: '', remotePath: '', restartScript: 'sh restart.sh',
+    healthCheckCommand: '', rollbackCommand: '', autoRollback: false,
   });
 }
 
@@ -676,6 +756,7 @@ onMounted(async () => {
 .run-status { font-weight: 500; }
 .run-status.success { color: var(--color-success); }
 .run-status.failed { color: var(--color-danger); }
+.run-rollback { color: var(--color-warning); }
 .empty-state { padding: 16px; text-align: center; opacity: 0.5; font-size: 13px; }
 
 /* Dialog content */
@@ -709,6 +790,8 @@ onMounted(async () => {
 .json-editor { width: 100%; font-family: var(--font-mono); font-size: 11px; background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 6px; box-sizing: border-box; resize: vertical; }
 
 .target-edit-card { border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 10px; margin-bottom: 8px; background: var(--color-surface); }
+.target-check { display: inline-flex; align-items: center; gap: 6px; margin: 0 10px 8px 0; font-size: 12px; color: var(--color-text-secondary); cursor: pointer; }
+.target-check input { width: auto; }
 
 .btn { padding: 5px 12px; border-radius: var(--radius-sm); border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text); cursor: pointer; font-size: 12px; transition: all var(--motion-fast) var(--ease-out); }
 .btn:hover { background: var(--color-surface-hover); }

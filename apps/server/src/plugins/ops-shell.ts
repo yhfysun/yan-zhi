@@ -23,8 +23,8 @@ import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
 import { encrypt, decrypt, pushPluginAudit, createLogger, db } from '../host-bridge.js';
 import { guard, capOutput, isDangerous, isReadonly, isProductionTag, resolveSilent, type SilentCapability, type SilentFlags } from './ops-shell-guard.js';
 import {
-  pruneApprovals, capApprovals, takeApproval, hasPending, makeRequest, pendingMessage, rejectedMessage,
-  type ApprovalRequest,
+  pruneApprovals, capApprovals, takeApproval, hasPending, makeRequest, pendingMessage, rejectedMessage, approvalId,
+  type ApprovalRequest, type ApprovalKind,
 } from './ops-approvals.js';
 import {
   TermRecorder, MAX_RECORDINGS, parseCast, readRecordingFile, removeRecordingFile, sweepOrphanRecordings,
@@ -352,6 +352,9 @@ export function normalizeReleaseTargets(
       connectionId,
       remotePath: String(o.remotePath || '').trim(),
       restartScript: String(o.restartScript || '').trim(),
+      healthCheckCommand: String(o.healthCheckCommand || '').trim() || undefined,
+      rollbackCommand: String(o.rollbackCommand || '').trim() || undefined,
+      autoRollback: o.autoRollback === true,
       ...(env && Object.keys(env).length ? { env } : {}),
     });
   }
@@ -1532,6 +1535,64 @@ async function gateProductionAction(
   return { blocked: pendingMessage(req) };
 }
 
+/**
+ * 人工审批桥：供 CICD 等其它运维执行面复用 ops-shell 的审批队列。
+ * 发布审批不复用 silent 权限，生产计划必须逐次由人确认。
+ */
+export async function requestManualApproval(
+  conn: StoredConnection,
+  subject: string,
+  reason: string,
+  kind: ApprovalKind = 'release',
+): Promise<ApprovalRequest> {
+  if (!pluginStorage) throw new Error('运维审批存储不可用，请确认 ops-shell 插件已启用');
+  const list = await loadApprovals();
+  const id = approvalId(conn.id, subject);
+  const existing = list.find((a) => a.id === id);
+  if (existing) return existing;
+
+  const req = makeRequest(conn.id, conn.name, subject, reason, Date.now(), kind);
+  await saveApprovals([req, ...list]);
+  await audit('approval.requested', { connection: conn.name, detail: subject.slice(0, 200), ok: true });
+  return req;
+}
+
+/**
+ * 消费一次人工审批。未批准时创建/保留待批准项并返回阻断文案；
+ * 已批准/拒绝时消费记录后返回结果，保证同一计划不能重复发布。
+ */
+export async function consumeManualApproval(
+  conn: StoredConnection,
+  subject: string,
+  reason: string,
+  kind: ApprovalKind = 'release',
+): Promise<{ blocked: string | null; approvalId: string }> {
+  if (!pluginStorage) throw new Error('运维审批存储不可用，请确认 ops-shell 插件已启用');
+  const list = await loadApprovals();
+  const { hit, rest } = takeApproval(list, conn.id, subject);
+  const id = approvalId(conn.id, subject);
+  if (hit) {
+    await saveApprovals(rest);
+    if (hit.status === 'approved') {
+      await audit('approval.granted', { connection: conn.name, detail: subject.slice(0, 200), ok: true });
+      return { blocked: null, approvalId: id };
+    }
+    await audit('approval.rejected', { connection: conn.name, detail: subject.slice(0, 200), ok: false });
+    return { blocked: rejectedMessage(hit), approvalId: id };
+  }
+
+  const req = await requestManualApproval(conn, subject, reason, kind);
+  return { blocked: pendingMessage(req), approvalId: req.id };
+}
+
+/** 其它运维执行面（如 CICD）写入同一条审计链路。 */
+export async function auditOpsEvent(
+  action: string,
+  opts: { connection?: string; detail?: string; ok: boolean },
+): Promise<void> {
+  await audit(action, opts);
+}
+
 // ---------- SSH 命令执行 ----------
 
 export function sshExec(client: Client, command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
@@ -1563,6 +1624,9 @@ function textResult(text: string): McpCallResult {
 }
 
 export async function execOnConnection(conn: StoredConnection, command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  if (isDangerous(command)) {
+    throw new Error(`命令命中危险黑名单，已拒绝执行：${command.slice(0, 120)}`);
+  }
   const client = await getSsh(conn);
   const res = await sshExec(client, command, timeoutMs);
   const out = capOutput(res.stdout);
@@ -4268,6 +4332,27 @@ const opsShellModule: PluginModule = {
           connection: list[idx].connectionName, detail: list[idx].command.slice(0, 200), ok: approve,
         });
         jsonRes(res).json({ data: list[idx] });
+      });
+
+      // 用户在确认框点“取消”时撤回尚未决策的请求，避免一条不打算执行的计划继续挂在审批队列。
+      r.delete('/approvals/:id', async (req: unknown, res: unknown) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const list = await loadApprovals();
+        const row = list.find((item) => item.id === id);
+        if (!row) { failRes(res, 404, '该审批请求不存在或已过期'); return; }
+        if (row.status !== 'pending') { failRes(res, 409, '该请求已被处理，不能撤回'); return; }
+        try {
+          await saveApprovals(list.filter((item) => item.id !== id));
+        } catch (e) {
+          failRes(res, 500, (e as Error).message);
+          return;
+        }
+        await audit('approval.cancelled', {
+          connection: row.connectionName,
+          detail: row.command.slice(0, 200),
+          ok: true,
+        });
+        jsonRes(res).json({ data: { cancelled: true } });
       });
     });
   },

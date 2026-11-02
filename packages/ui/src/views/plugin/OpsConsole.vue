@@ -107,9 +107,9 @@
         <!-- 待批准命令：AI 在生产连接上发起的写操作会停在这里等人点头（任何 Tab 下都可见） -->
         <div v-if="approvals.length" class="ops-approvals">
           <div v-for="a in approvals" :key="a.id" class="ops-approval">
-            <span class="ops-approval-tag">待批准</span>
+            <span class="ops-approval-tag">{{ a.kind === 'release' ? '发布审批' : '待批准' }}</span>
             <span class="ops-approval-conn">{{ a.connectionName }}</span>
-            <code class="ops-approval-cmd" :title="a.command">{{ a.command }}</code>
+            <code class="ops-approval-cmd" :class="{ 'is-release': a.kind === 'release' }" :title="a.command">{{ a.command }}</code>
             <div class="ops-approval-actions">
               <el-button size="small" type="primary" @click="decideApproval(a, true)">批准</el-button>
               <el-button size="small" @click="decideApproval(a, false)">拒绝</el-button>
@@ -3055,6 +3055,7 @@ init();
 interface ApprovalRow {
   id: string;
   connectionName: string;
+  kind?: 'command' | 'release';
   command: string;
   reason: string;
   status: string;
@@ -3072,7 +3073,9 @@ async function decideApproval(row: ApprovalRow, approve: boolean) {
   const r = await api.post(`/plugin/ops-shell/approvals/${row.id}`, { approve });
   if ('error' in r) { ElMessage.error(r.error); return; }
   approvals.value = approvals.value.filter((a) => a.id !== row.id);
-  ElMessage.success(approve ? '已批准 —— 助手会原样重试该命令' : '已拒绝执行');
+  ElMessage.success(approve
+    ? (row.kind === 'release' ? '已批准发布计划 —— 发布助手可原样重试' : '已批准 —— 助手会原样重试该命令')
+    : '已拒绝执行');
 }
 
 onMounted(() => {
@@ -3229,6 +3232,10 @@ onUnmounted(() => {
 .ops-approval-cmd {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: Consolas, "Courier New", monospace; color: var(--color-text-primary);
+}
+.ops-approval-cmd.is-release {
+  max-height: 180px; overflow: auto; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-family: inherit; line-height: 1.55;
 }
 .ops-approval-actions { flex-shrink: 0; display: flex; gap: 6px; }
 

@@ -1,4 +1,4 @@
-// 命令审批闸门（结构化人工批准）。
+// 命令 / 发布审批闸门（结构化人工批准）。
 //
 // 为什么必须重做：原来的「二次确认」是**模型自己传 `confirmed: true`** —— 也就是说，
 // 只要 LLM 在下一轮把参数补上，生产库上的 `systemctl restart` 就直接执行了。所谓确认
@@ -11,12 +11,15 @@
 import { createHash } from 'node:crypto';
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+export type ApprovalKind = 'command' | 'release';
 
 export interface ApprovalRequest {
   id: string;
   connectionId: string;
   connectionName: string;
-  /** 命令原文 —— 批准绑定到这一条，不允许「批准 A 执行 B」 */
+  /** 审批对象类型；release 用于一次完整发布计划，历史记录缺省视为 command。 */
+  kind?: ApprovalKind;
+  /** 审批对象原文（命令或完整发布计划）—— 批准绑定到这一份，不允许「批准 A 执行 B」 */
   command: string;
   /** 触发原因（如「命令模式默认命令」「容器重启」），用于界面展示 */
   reason: string;
@@ -85,11 +88,13 @@ export function makeRequest(
   command: string,
   reason: string,
   now = Date.now(),
+  kind: ApprovalKind = 'command',
 ): ApprovalRequest {
   return {
     id: approvalId(connectionId, command),
     connectionId,
     connectionName,
+    kind,
     command,
     reason,
     status: 'pending',
@@ -103,23 +108,29 @@ export function makeRequest(
  *   既不能当成失败去重试改写，也不能自己编一个「已批准」继续。
  */
 export function pendingMessage(a: ApprovalRequest): string {
+  const isRelease = a.kind === 'release';
   return [
-    '⏸ 该命令需要人工批准，尚未执行。',
+    isRelease ? '⏸ 该发布需要人工批准，尚未执行。' : '⏸ 该命令需要人工批准，尚未执行。',
     `连接：${a.connectionName}（标记为生产环境）`,
-    `命令：${a.command}`,
-    '已把这条命令提交给运维人员审批。',
-    '请**停止**在此等待，不要改写命令、不要换用其它工具绕过、不要假定它已获批准。',
-    '人工批准后，原样重新调用本工具即可继续。',
+    isRelease ? `发布计划：${a.command}` : `命令：${a.command}`,
+    isRelease ? '已把这次发布提交给运维人员审批。' : '已把这条命令提交给运维人员审批。',
+    isRelease
+      ? '请**停止**在此等待，不要改写发布计划、不要绕过流水线、不要假定它已获批准。'
+      : '请**停止**在此等待，不要改写命令、不要换用其它工具绕过、不要假定它已获批准。',
+    isRelease ? '人工批准后，原样重新执行同一发布即可继续。' : '人工批准后，原样重新调用本工具即可继续。',
   ].join('\n');
 }
 
 /** 给模型的工具结果（被拒绝） */
 export function rejectedMessage(a: ApprovalRequest): string {
+  const isRelease = a.kind === 'release';
   return [
-    '⛔ 该命令已被运维人员**拒绝**执行。',
+    isRelease ? '⛔ 该发布已被运维人员**拒绝**执行。' : '⛔ 该命令已被运维人员**拒绝**执行。',
     `连接：${a.connectionName}`,
-    `命令：${a.command}`,
-    '不要再重试这条命令，也不要尝试用其它写法（拆分、改参数、换工具、换连接）达成同样效果。',
+    isRelease ? `发布计划：${a.command}` : `命令：${a.command}`,
+    isRelease
+      ? '不要再重试这份发布计划，也不要尝试绕过审批队列（拆分步骤、换连接、直接调用执行接口）达成同样效果。'
+      : '不要再重试这条命令，也不要尝试用其它写法（拆分、改参数、换工具、换连接）达成同样效果。',
     '如果确有需要，请向用户说明目的并等待其明确指示。',
   ].join('\n');
 }

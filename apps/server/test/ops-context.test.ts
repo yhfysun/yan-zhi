@@ -79,7 +79,11 @@ describe('buildOpsFieldContext —— 现场段', () => {
         name: 'demo', localDir: '/work/demo',
         techStack: { buildType: 'vite' },
         buildHint: { command: 'pnpm build', artifact: 'dist' },
-        targets: [{ name: '生产', connectionId: 'c1', remotePath: '/opt/app', restartScript: 'docker restart app' }],
+        targets: [{
+          name: '生产', connectionId: 'c1', remotePath: '/opt/app', restartScript: 'docker restart app',
+          healthCheckCommand: 'curl -fsS http://127.0.0.1:8080/health',
+          rollbackCommand: 'docker restart app-previous', autoRollback: true,
+        }],
       },
       resolveConnectionName: (id) => (id === 'c1' ? '42' : undefined),
     });
@@ -87,6 +91,8 @@ describe('buildOpsFieldContext —— 现场段', () => {
     expect(out).toContain('/work/demo');
     expect(out).toContain('pnpm build');
     expect(out).toContain('生产：42');
+    expect(out).toContain('健康检查 curl -fsS');
+    expect(out).toContain('回滚 docker restart app-previous（自动）');
   });
 
   it('发布目标指向已删除连接时明确标注', () => {

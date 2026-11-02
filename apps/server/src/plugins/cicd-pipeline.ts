@@ -42,9 +42,13 @@ import {
   ensureRemoteDir,
   backupRemoteName,
   collectLocalFiles,
+  requestManualApproval,
+  consumeManualApproval,
+  auditOpsEvent,
   type StoredConnection,
 } from './ops-shell.js';
 import type { SFTPWrapper } from 'ssh2';
+import { releaseApprovalSubject, shellQuote } from './cicd-release-policy.js';
 
 export const CICD_PLUGIN_ID = 'cicd-pipeline';
 
@@ -371,6 +375,21 @@ function interpolate(template: string, vars: Record<string, string>): string {
   return template.replace(/\$\{(\w+)\}/g, (_, key) => vars[key] ?? '');
 }
 
+async function releaseApprovalContext(
+  pipeline: CicdPipeline,
+  target: DeployTarget,
+): Promise<{ conn: StoredConnection; subject: string }> {
+  const conn = (await loadConnections()).find((item) => item.id === target.connectionId);
+  if (!conn) throw new Error(`部署目标连接不存在: ${target.connectionId}`);
+  if (isProductionTag(conn.tag) && !target.healthCheckCommand?.trim()) {
+    throw new Error('生产发布必须配置健康检查命令，未配置时不允许发起审批');
+  }
+  if (target.autoRollback && !target.rollbackCommand?.trim()) {
+    throw new Error('已开启自动回滚，但未配置回滚命令');
+  }
+  return { conn, subject: releaseApprovalSubject(pipeline, target, conn) };
+}
+
 // ============================================================
 // 本地命令执行
 // ============================================================
@@ -431,6 +450,7 @@ export class PipelineExecutor {
     target: DeployTarget,
     triggeredBy: string,
     onProgress: (event: ProgressEvent) => void,
+    options: { approvalId?: string } = {},
   ): Promise<CicdRun> {
     const runId = makeId('run');
     const run: CicdRun = {
@@ -439,6 +459,7 @@ export class PipelineExecutor {
       pipelineName: pipeline.name,
       targetId: target.id,
       targetName: target.name,
+      approvalId: options.approvalId,
       status: 'running',
       startedAt: Date.now(),
       stepResults: [],
@@ -453,13 +474,73 @@ export class PipelineExecutor {
       ...target.env,
     };
 
+    const appendRemoteStep = async (
+      stepId: string,
+      stepName: string,
+      command: string,
+      config: Omit<ExecRemoteStepConfig, 'command' | 'connectionId'> = {},
+    ): Promise<StepResult> => {
+      const stepStart = Date.now();
+      onProgress({ runId, type: 'step-start', stepId, stepName, timestamp: stepStart });
+      const logChunks: string[] = [];
+      const onLog = (line: string) => {
+        logChunks.push(line);
+        onProgress({ runId, type: 'step-log', stepId, log: line, timestamp: Date.now() });
+      };
+      let status: StepStatus = 'success';
+      let output = '';
+      let error = '';
+      try {
+        const result = await this.execRemote(
+          { connectionId: target.connectionId, command, ...config },
+          target,
+          vars,
+          onLog,
+        );
+        output = result.output;
+        status = result.status;
+      } catch (e) {
+        error = (e as Error).message;
+        status = 'failed';
+        onLog(`[错误] ${error}`);
+      }
+      const result: StepResult = {
+        stepId,
+        stepName,
+        status,
+        startedAt: stepStart,
+        finishedAt: Date.now(),
+        duration: Date.now() - stepStart,
+        output,
+        error,
+      };
+      run.stepResults.push(result);
+      run.logs.push({
+        stepId, stepName, log: logChunks.join('\n'), status, duration: result.duration || 0,
+      });
+      onProgress({
+        runId, type: 'step-finish', stepId, stepName, status, duration: result.duration, timestamp: Date.now(),
+      });
+      return result;
+    };
+
     // preBuild 钩子
     if (pipeline.preBuild) {
       onProgress({ runId, type: 'step-log', log: `[preBuild] ${pipeline.preBuild}`, timestamp: Date.now() });
-      await runLocal(pipeline.preBuild, pipeline.projectDir, undefined, 60000, () => {});
+      const pre = await runLocal(pipeline.preBuild, pipeline.projectDir, undefined, 60000, () => {});
+      if (pre.code !== 0) {
+        run.status = 'failed';
+        run.stepResults.push({
+          stepId: 'pre-build',
+          stepName: '发布前置脚本',
+          status: 'failed',
+          output: pre.stdout,
+          error: pre.stderr || `exit ${pre.code}`,
+        });
+      }
     }
 
-    for (const step of pipeline.steps) {
+    for (const step of run.status === 'running' ? pipeline.steps : []) {
       if (!step.enabled) {
         run.stepResults.push({ stepId: step.id, stepName: step.name, status: 'skipped' });
         continue;
@@ -530,11 +611,70 @@ export class PipelineExecutor {
     if (run.status === 'running') {
       // postDeploy 钩子
       if (pipeline.postDeploy) {
-        await runLocal(pipeline.postDeploy, pipeline.projectDir, undefined, 60000, () => {});
+        const stepStart = Date.now();
+        const logChunks: string[] = [];
+        onProgress({
+          runId, type: 'step-start', stepId: 'post-deploy', stepName: '发布后置脚本', timestamp: stepStart,
+        });
+        const post = await runLocal(pipeline.postDeploy, pipeline.projectDir, undefined, 60000, (line) => {
+          logChunks.push(line);
+          onProgress({ runId, type: 'step-log', stepId: 'post-deploy', log: line, timestamp: Date.now() });
+        });
+        const status: StepStatus = post.code === 0 ? 'success' : 'failed';
+        const duration = Date.now() - stepStart;
+        run.stepResults.push({
+          stepId: 'post-deploy',
+          stepName: '发布后置脚本',
+          status,
+          startedAt: stepStart,
+          finishedAt: Date.now(),
+          duration,
+          output: post.stdout,
+          error: status === 'failed' ? post.stderr || `exit ${post.code}` : undefined,
+        });
+        run.logs.push({
+          stepId: 'post-deploy',
+          stepName: '发布后置脚本',
+          log: logChunks.join('\n'),
+          status,
+          duration,
+        });
+        onProgress({
+          runId, type: 'step-finish', stepId: 'post-deploy', stepName: '发布后置脚本',
+          status, duration, timestamp: Date.now(),
+        });
+        if (status === 'failed') run.status = 'failed';
       }
-      run.status = run.stepResults.every((r) => r.status === 'success' || r.status === 'skipped')
-        ? 'success'
-        : 'failed';
+    }
+
+    if (run.status === 'running') {
+      const failedStep = run.stepResults.find((result) => result.status === 'failed');
+      if (failedStep) {
+        run.status = 'failed';
+      } else if (target.healthCheckCommand) {
+        const health = await appendRemoteStep(
+          'health-check',
+          '健康检查',
+          target.healthCheckCommand,
+          { timeout: 30000 },
+        );
+        if (health.status !== 'success') {
+          run.status = 'failed';
+          if (target.autoRollback && target.rollbackCommand) {
+            const rollback = await appendRemoteStep(
+              'auto-rollback',
+              '自动回滚',
+              target.rollbackCommand,
+              { timeout: 120000 },
+            );
+            run.rolledBack = rollback.status === 'success';
+          }
+        }
+      }
+    }
+
+    if (run.status === 'running') {
+      run.status = 'success';
     }
 
     run.finishedAt = Date.now();
@@ -642,31 +782,47 @@ export class PipelineExecutor {
     const conn = await findConnection(connId);
     const remotePath = config.remotePath || target.remotePath;
     const backupDir = config.backupDir || `${dirname(remotePath)}/backups`;
+    if (!remotePath) return { output: '备份源路径不能为空', status: 'failed' };
+    if (!backupDir) return { output: '备份目录不能为空', status: 'failed' };
     const ts = new Date();
     const backupName = config.nameTemplate
       ? interpolate(config.nameTemplate, { name: basename(remotePath), timestamp: ts.toISOString() })
       : backupRemoteName(basename(remotePath), ts);
+    const backupPath = config.strategy === 'tar'
+      ? `${backupDir}/${backupName}.tar.gz`
+      : `${backupDir}/${backupName}`;
 
     // 确保备份目录存在
-    await execOnConnection(conn, `mkdir -p ${backupDir}`, 10000);
+    const mkdir = await execOnConnection(conn, `mkdir -p ${shellQuote(backupDir)}`, 10000);
+    if (mkdir.code !== 0) {
+      return { output: mkdir.stderr || '创建备份目录失败', status: 'failed' };
+    }
 
     let cmd: string;
     if (config.strategy === 'tar') {
-      cmd = `tar -czf ${backupDir}/${backupName}.tar.gz -C ${dirname(remotePath)} ${basename(remotePath)} 2>/dev/null || true`;
+      cmd = `tar -czf ${shellQuote(backupPath)} -C ${shellQuote(dirname(remotePath))} ${shellQuote(basename(remotePath))}`;
     } else if (config.strategy === 'mv') {
-      cmd = `mv ${remotePath} ${backupDir}/${backupName} 2>/dev/null || true`;
+      cmd = `mv ${shellQuote(remotePath)} ${shellQuote(backupPath)}`;
     } else {
-      cmd = `cp -r ${remotePath} ${backupDir}/${backupName} 2>/dev/null || true`;
+      cmd = `cp -r ${shellQuote(remotePath)} ${shellQuote(backupPath)}`;
     }
     onLog(`[backup] ${cmd}`);
     const r = await execOnConnection(conn, cmd, 60000);
     onLog(r.stdout || r.stderr || '[backup] done');
+    if (r.code !== 0) {
+      return { output: r.stderr || `备份命令失败（exit ${r.code}）`, status: 'failed' };
+    }
+
+    const verify = await execOnConnection(conn, `test -e ${shellQuote(backupPath)}`, 10000);
+    if (verify.code !== 0) {
+      return { output: verify.stderr || `备份文件未生成: ${backupPath}`, status: 'failed' };
+    }
 
     // 滚动清理旧备份
-    const cleanCmd = `ls -t ${backupDir}/*.bak-* ${backupDir}/*.tar.gz 2>/dev/null | tail -n +${config.keepCount + 1} | xargs rm -f 2>/dev/null || true`;
+    const cleanCmd = `ls -t ${shellQuote(backupDir)}/*.bak-* ${shellQuote(backupDir)}/*.tar.gz 2>/dev/null | tail -n +${config.keepCount + 1} | xargs rm -f 2>/dev/null || true`;
     await execOnConnection(conn, cleanCmd, 10000);
 
-    return { output: r.stdout, status: r.code === 0 ? 'success' : 'failed' };
+    return { output: r.stdout, status: 'success' };
   }
 
   /** 上传：SFTP put（支持增量） */
@@ -951,13 +1107,12 @@ export function makeCicdTools(): BuiltInTool[] {
     },
     {
       name: 'cicd_run_pipeline',
-      description: '执行 CI/CD 流水线（打包→备份→上传→重启）。返回执行结果摘要。生产连接（tag 含生产/prod）必须显式带 confirmed=true。',
+      description: '执行 CI/CD 流水线（打包→备份→上传→重启→健康检查）。生产连接的发布必须先由人工在审批队列中批准；模型不能自行确认。',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: '流水线 ID' },
           targetId: { type: 'string', description: '部署目标 ID（不传则用第一个目标）' },
-          confirmed: { type: 'boolean', description: '生产连接发布必须由人确认后带 true（模型自报确认不算人工批准）' },
         },
         required: ['id'],
       },
@@ -969,32 +1124,43 @@ export function makeCicdTools(): BuiltInTool[] {
           ? pipeline.targets.find((t) => t.id === args.targetId)
           : pipeline.targets[0];
         if (!target) return textResult('未配置部署目标');
-        // 7b.12：生产连接的发布必须显式确认（把目标/目录/重启脚本摆给模型转述给人）
-        const conn = (await loadConnections()).find((c) => c.id === target.connectionId);
-        if (conn && isProductionTag(conn.tag) && args.confirmed !== true) {
-          return textResult([
-            `目标「${target.name}」是生产连接，发布前需要确认：`,
-            `流水线：${pipeline.name}`,
-            `服务器：${conn.name}（${conn.host}）`,
-            `发布目录：${target.remotePath || '（未设置）'}`,
-            `重启脚本：${target.restartScript || '（未设置）'}`,
-            '',
-            '向用户展示以上信息并取得同意后，带 confirmed=true 重新调用。',
-          ].join('\n'));
+        let context: Awaited<ReturnType<typeof releaseApprovalContext>>;
+        try {
+          context = await releaseApprovalContext(pipeline, target);
+        } catch (e) {
+          return textResult(`发布配置无效：${(e as Error).message}`);
+        }
+        const { conn, subject } = context;
+        let approvalId: string | undefined;
+        if (isProductionTag(conn.tag)) {
+          const gate = await consumeManualApproval(conn, subject, '生产发布');
+          if (gate.blocked) return textResult(gate.blocked);
+          approvalId = gate.approvalId;
         }
 
+        await auditOpsEvent('cicd.release.start', {
+          connection: conn.name,
+          detail: `${pipeline.name} → ${target.name}${approvalId ? `（审批 ${approvalId}）` : ''}`,
+          ok: true,
+        });
         const executor = new PipelineExecutor();
         const logs: string[] = [];
         const run = await executor.execute(pipeline, target, 'ai-assistant', (event) => {
           if (event.type === 'step-start') logs.push(`▶ ${event.stepName}`);
           else if (event.type === 'step-finish') logs.push(`  → ${event.status} (${event.duration}ms)`);
           else if (event.type === 'run-finish') logs.push(`\n结果: ${event.status}`);
+        }, { approvalId });
+        await auditOpsEvent('cicd.release.finish', {
+          connection: conn.name,
+          detail: `${pipeline.name} → ${target.name}: ${run.status}${run.rolledBack ? '（已回滚）' : ''}`,
+          ok: run.status === 'success',
         });
 
         return textResult([
           `流水线: ${pipeline.name}`,
           `目标: ${target.name}`,
           `状态: ${run.status}`,
+          ...(run.rolledBack ? ['回滚: 已执行成功'] : []),
           `耗时: ${((run.finishedAt || 0) - run.startedAt) / 1000}s`,
           ...logs,
         ].join('\n'));
@@ -1018,7 +1184,7 @@ export function makeCicdTools(): BuiltInTool[] {
         const limit = (args.limit as number) || 20;
         return textResult(JSON.stringify(filtered.slice(-limit).map((r) => ({
           id: r.id, pipelineName: r.pipelineName, targetName: r.targetName,
-          status: r.status, startedAt: r.startedAt, finishedAt: r.finishedAt,
+          status: r.status, rolledBack: r.rolledBack === true, startedAt: r.startedAt, finishedAt: r.finishedAt,
         })), null, 2));
       },
     },
@@ -1140,10 +1306,77 @@ export const cicdModule: PluginModule = {
         (res as { json: (d: unknown) => void }).json({ ok: true });
       });
 
+      // 生产发布先领取一条与完整计划绑定的待审批记录。UI 在用户确认后显式批准，
+      // 然后调用 /run；模型工具没有这个“直接批准”入口。
+      r.post('/pipelines/:id/approval', async (req, res) => {
+        const id = (req as { params: { id: string } }).params.id;
+        const body = (req as { body: { targetId?: string } }).body || {};
+        const list = await loadPipelines();
+        const pipeline = list.find((p) => p.id === id);
+        if (!pipeline) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '流水线不存在' });
+          return;
+        }
+        const target = body.targetId
+          ? pipeline.targets.find((t) => t.id === body.targetId)
+          : pipeline.targets[0];
+        if (!target) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: '未配置部署目标' });
+          return;
+        }
+        try {
+          const { conn, subject } = await releaseApprovalContext(pipeline, target);
+          if (!isProductionTag(conn.tag)) {
+            (res as { json: (d: unknown) => void }).json({ data: { required: false } });
+            return;
+          }
+          const approval = await requestManualApproval(conn, subject, '生产发布');
+          (res as { json: (d: unknown) => void }).json({ data: { required: true, approval } });
+        } catch (e) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: (e as Error).message });
+        }
+      });
+
       // 执行流水线（SSE 进度推送）
       r.post('/pipelines/:id/run', async (req, res) => {
         const id = (req as { params: { id: string } }).params.id;
         const body = (req as { body: { targetId?: string } }).body;
+
+        const list = await loadPipelines();
+        const pipeline = list.find((p) => p.id === id);
+        if (!pipeline) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(404).json({ error: '流水线不存在' });
+          return;
+        }
+        const target = body.targetId
+          ? pipeline.targets.find((t) => t.id === body.targetId)
+          : pipeline.targets[0];
+        if (!target) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: '未配置部署目标' });
+          return;
+        }
+
+        let approvalId: string | undefined;
+        let conn: StoredConnection;
+        try {
+          const context = await releaseApprovalContext(pipeline, target);
+          conn = context.conn;
+          if (isProductionTag(conn.tag)) {
+            const gate = await consumeManualApproval(conn, context.subject, '生产发布');
+            if (gate.blocked) {
+              (res as { status: (n: number) => { json: (d: unknown) => void } }).status(428).json({
+                error: gate.blocked,
+                approvalId: gate.approvalId,
+              });
+              return;
+            }
+            approvalId = gate.approvalId;
+          }
+        } catch (e) {
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(400).json({ error: (e as Error).message });
+          return;
+        }
+
         const resSSE = res as {
           setHeader: (k: string, v: string) => void;
           write: (d: string) => void;
@@ -1153,17 +1386,19 @@ export const cicdModule: PluginModule = {
         resSSE.setHeader('Cache-Control', 'no-cache');
         resSSE.setHeader('Connection', 'keep-alive');
 
-        const list = await loadPipelines();
-        const pipeline = list.find((p) => p.id === id);
-        if (!pipeline) { resSSE.write(`data: ${JSON.stringify({ error: '流水线不存在' })}\n\n`); resSSE.end(); return; }
-        const target = body.targetId
-          ? pipeline.targets.find((t) => t.id === body.targetId)
-          : pipeline.targets[0];
-        if (!target) { resSSE.write(`data: ${JSON.stringify({ error: '未配置部署目标' })}\n\n`); resSSE.end(); return; }
-
+        await auditOpsEvent('cicd.release.start', {
+          connection: conn.name,
+          detail: `${pipeline.name} → ${target.name}${approvalId ? `（审批 ${approvalId}）` : ''}`,
+          ok: true,
+        });
         const executor = new PipelineExecutor();
         const run = await executor.execute(pipeline, target, 'user', (event) => {
           resSSE.write(`data: ${JSON.stringify(event)}\n\n`);
+        }, { approvalId });
+        await auditOpsEvent('cicd.release.finish', {
+          connection: conn.name,
+          detail: `${pipeline.name} → ${target.name}: ${run.status}${run.rolledBack ? '（已回滚）' : ''}`,
+          ok: run.status === 'success',
         });
         resSSE.write(`data: ${JSON.stringify({ type: 'complete', run })}\n\n`);
         resSSE.end();

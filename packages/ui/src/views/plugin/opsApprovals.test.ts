@@ -39,6 +39,12 @@ describe('OpsConsole · 待批准命令条', () => {
     expect(fn![0]).toMatch(/a\.status === 'pending'/);
   });
 
+  it('发布审批展示完整计划，不只显示被省略号截断的首行', () => {
+    expect(CONSOLE).toContain("a.kind === 'release' ? '发布审批'");
+    expect(CONSOLE).toMatch(/is-release/);
+    expect(CONSOLE).toMatch(/white-space: pre-wrap/);
+  });
+
   it('★ 决策必须显式传 approve 布尔值（缺省当成「批准」是最危险的默认）', () => {
     const fn = CONSOLE.match(/async function decideApproval\(row: ApprovalRow, approve: boolean\)[\s\S]*?\n\}/);
     expect(fn, '找不到 decideApproval').toBeTruthy();

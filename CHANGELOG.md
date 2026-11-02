@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- **运维发布安全闭环（P0）**：生产发布不再接受模型自报 `confirmed`，改为复用 ops-shell 的人工审批队列；审批指纹覆盖流水线步骤、部署目标、健康检查与回滚配置，计划变更自动失效且一次批准只能消费一次。CICD 远端执行统一经过危险命令护栏并写入 `cicd.release.start/finish` 审计；备份命令失败或备份文件校验不通过会直接阻断上传；部署目标新增健康检查、回滚命令与自动回滚，健康检查失败时执行回滚并把步骤证据写入运行记录。新增发布审批/备份/回滚守门测试
 - **多用户 RBAC + 组织/角色/权限体系**：`YZ_AUTH_MODE=multi` 多用户模式——组织/角色/用户/权限等七表 + 权限树种子 + 组织树角色继承（祖先链下传）；首次安装向导 `/setup` 创建管理员；管理后台 `/admin`（用户/组织/角色三页 + `routes/admin.ts`）；资源级 ACL（插件/技能/工具可定向授权给指定用户，`ResourceAclDialog`）；鉴权顺序改为 token 优先于本机回环（修"主机本机恒判 guest 进不了管理页"）；WS upgrade 鉴权闸 + chat-ws 按连接解析真实用户身份（create_task/inject 归属真实用户）；guest 单机模式全量回归冒烟通过。守门测试 `rbac.test.ts` 20 例
 - **共享模型平台**：`platform.is_public` / `model.is_public`——管理员统一创建模型平台共享给全员使用（用户模型优先，读路径收口 `services/platform-share.ts` 唯一出口 `platformReadableCond` + `findModelRow` 共享兜底，写路径 owner-only）；调用面全链路打通（list_models 候选清单、llm-proxy、自定义工具/技能/智能体的 is_public 查询收口）；Models.vue 共享开关 + 角标 + 只读收敛。多用户冒烟（admin 共享 → 普通用户可见可用 → 写 404）通过
 - **轻量壳模式（前端壳连远程后端）**：新增 `electron-builder.shell.yml` 壳打包配置；main.cjs `startServer` async 化——壳模式跳过内置后端启动 / 探活复用已有实例 / `YZ_DETACH_BACKEND=1` detached 守护进程；`bin/dev-desktop-multi.bat` 多实例联调脚本

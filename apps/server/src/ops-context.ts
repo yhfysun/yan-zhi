@@ -51,7 +51,15 @@ export interface OpsReleaseProjectInfo {
   localDir?: string;
   techStack?: { buildType?: string } | null;
   buildHint?: { command?: string; artifact?: string } | null;
-  targets?: Array<{ name: string; connectionId?: string; remotePath?: string; restartScript?: string }>;
+  targets?: Array<{
+    name: string;
+    connectionId?: string;
+    remotePath?: string;
+    restartScript?: string;
+    healthCheckCommand?: string;
+    rollbackCommand?: string;
+    autoRollback?: boolean;
+  }>;
 }
 
 const TYPE_LABELS: Record<string, string> = { ssh: 'SSH', docker: 'Docker', database: '数据库' };
@@ -111,7 +119,9 @@ export function buildOpsFieldContext(args: {
     const p = releaseProject;
     const targets = (p.targets || []).map((t) => {
       const connName = (t.connectionId && args.resolveConnectionName?.(t.connectionId)) || '连接已删除';
-      return `  - ${t.name}：${connName}；发布目录 ${t.remotePath || '（未填）'}；重启 ${t.restartScript || '（未填）'}`;
+      return `  - ${t.name}：${connName}；发布目录 ${t.remotePath || '（未填）'}；重启 ${t.restartScript || '（未填）'}`
+        + `；健康检查 ${t.healthCheckCommand || '（未配置）'}`
+        + `；回滚 ${t.rollbackCommand || '（未配置）'}${t.autoRollback ? '（自动）' : ''}`;
     });
     const build = [
       p.techStack?.buildType ? `技术栈 ${p.techStack.buildType}` : '',

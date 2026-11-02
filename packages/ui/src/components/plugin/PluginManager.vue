@@ -177,7 +177,45 @@
             <span class="pm-detail-title" :title="detailPlugin?.manifest.name">{{ detailPlugin?.manifest.name || '插件详情' }}</span>
             <el-button text :icon="Close" title="关闭详情" @click="detailOpen = false" />
           </header>
-          <pre class="pm-detail pm-code pm-detail-body">{{ detailContent }}</pre>
+          <div class="pm-detail-body">
+            <template v-if="detailManifest">
+              <div class="pm-detail-card">
+                <div class="pm-detail-name-row">
+                  <span class="pm-detail-name">{{ detailManifest.name }}</span>
+                  <span class="pm-detail-ver">v{{ detailManifest.version }}</span>
+                  <el-tag v-if="detailManifest.category" size="small" type="info" effect="plain">{{ detailManifest.category }}</el-tag>
+                </div>
+                <p class="pm-detail-desc">{{ detailManifest.description || '暂无描述' }}</p>
+                <div class="pm-detail-meta">
+                  <span>状态：{{ detailStateText }}</span>
+                  <span>作者：{{ detailManifest.author || '—' }}</span>
+                </div>
+              </div>
+
+              <template v-if="detailManifest.permissions?.length">
+                <div class="pm-detail-sec-title">权限</div>
+                <div class="pm-detail-tags">
+                  <el-tag v-for="perm in detailManifest.permissions" :key="perm" size="small" type="warning" effect="plain">{{ perm }}</el-tag>
+                </div>
+              </template>
+
+              <template v-if="contributionRows.length">
+                <div class="pm-detail-sec-title">贡献</div>
+                <div class="pm-detail-rows">
+                  <div v-for="row in contributionRows" :key="row.label" class="pm-detail-row">
+                    <span class="k">{{ row.label }}</span>
+                    <span class="v">{{ row.value }}</span>
+                  </div>
+                </div>
+              </template>
+
+              <el-collapse class="pm-detail-raw">
+                <el-collapse-item title="原始清单（JSON）" name="raw">
+                  <pre class="pm-detail pm-code">{{ detailContent }}</pre>
+                </el-collapse-item>
+              </el-collapse>
+            </template>
+          </div>
         </aside>
       </template>
     </div>
@@ -687,6 +725,32 @@ onUnmounted(() => window.removeEventListener('resize', syncWide));
 const detailR = useResizable('plugins_detail', 480, 340, 800);
 const { width: detailW } = detailR;
 const detailPaneOpen = computed(() => wide.value && detailOpen.value && !!detailPlugin.value);
+const detailManifest = computed<PluginManifest | null>(() => detailPlugin.value?.manifest || null);
+const detailStateText = computed(() => {
+  const s = detailPlugin.value?.state;
+  return s === 'enabled' ? '已启用' : s === 'disabled' ? '已停用' : (s === 'error' ? '异常' : String(s || '—'));
+});
+const contributionRows = computed<Array<{ label: string; value: string }>>(() => {
+  const c = detailManifest.value?.contributes;
+  if (!c) return [];
+  const rows: Array<{ label: string; value: string }> = [];
+  const add = (label: string, v: unknown) => {
+    const n = Array.isArray(v) ? v.length : 0;
+    if (n) rows.push({ label, value: `${n} 项` });
+  };
+  add('工具', c.tools);
+  add('路由', c.routes);
+  add('桌面窗口', c.windows);
+  add('侧栏入口', c.sidebar);
+  add('主题', c.themes);
+  add('布局', c.layouts);
+  add('设置页', c.settingsTabs);
+  add('命令', c.commands);
+  add('剧本', c.playbooks);
+  add('后端接口', c.backendRoutes);
+  if (c.mode) rows.push({ label: '模式', value: (c.mode as any).label || (c.mode as any).key || '已声明' });
+  return rows;
+});
 
 async function onUninstall(p: PluginInfo) {
   try {
@@ -816,6 +880,19 @@ onMounted(() => {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pm-detail-body { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 14px; }
+.pm-detail-card { padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg); }
+.pm-detail-name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pm-detail-name { font-size: 14px; font-weight: 700; color: var(--color-text); }
+.pm-detail-ver { font-size: 11px; color: var(--color-text-tertiary); font-family: ui-monospace, monospace; }
+.pm-detail-desc { margin: 8px 0 10px; font-size: 12.5px; line-height: 1.7; color: var(--color-text-secondary); }
+.pm-detail-meta { display: flex; gap: 14px; font-size: 11.5px; color: var(--color-text-tertiary); }
+.pm-detail-sec-title { margin: 14px 0 6px; font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+.pm-detail-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.pm-detail-rows { display: flex; flex-direction: column; gap: 6px; }
+.pm-detail-row { display: flex; gap: 10px; font-size: 12.5px; }
+.pm-detail-row .k { flex: 0 0 76px; color: var(--color-text-secondary); }
+.pm-detail-row .v { flex: 1; color: var(--color-text); }
+.pm-detail-raw { margin-top: 14px; }
 .pm-toolbar {
   position: sticky;
   top: 0;

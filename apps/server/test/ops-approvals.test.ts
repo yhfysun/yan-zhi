@@ -41,7 +41,12 @@ vi.mock('ssh2', async () => {
   return { Client: FakeClient };
 });
 
-import { makeTools, opsShellModule } from '../src/plugins/ops-shell.js';
+import {
+  consumeManualApproval,
+  makeTools,
+  opsShellModule,
+  requestManualApproval,
+} from '../src/plugins/ops-shell.js';
 import type { McpCallResult } from '@yan-zhi/core';
 import {
   APPROVAL_TTL_MS, approvalId, capApprovals, hasPending, pendingMessage,
@@ -118,6 +123,14 @@ describe('approvals · 纯函数', () => {
     expect(msg).toMatch(/拒绝/);
     expect(msg).toMatch(/不要再重试/);
     expect(msg).toMatch(/其它写法/);
+  });
+
+  it('发布审批文案与命令审批区分，并明确禁止绕过审批队列', () => {
+    const release = base({ kind: 'release', command: '[发布审批] order → 生产' });
+    expect(pendingMessage(release as never)).toContain('该发布需要人工批准');
+    const rejected = rejectedMessage(release as never);
+    expect(rejected).toContain('该发布已被运维人员');
+    expect(rejected).toContain('绕过审批队列');
   });
 });
 
@@ -268,6 +281,34 @@ describe('ssh_exec · 生产连接的人工批准闸门', () => {
     await decide('c1', 'docker restart nginx', true);
     const second = await runTool('docker_restart', { connection: 'prod-1', container: 'nginx' });
     expect(second).toContain('已重启');
+  });
+});
+
+describe('发布审批桥 · CICD 复用 ops-shell 审批队列', () => {
+  it('★ 生产发布先登记人工审批；批准后只消费一次', async () => {
+    const conn = prod('release-prod');
+    const subject = '[发布审批] order → 生产\n审批指纹：abc123';
+    await storage.set('connections', [conn]);
+
+    const req = await requestManualApproval(conn as never, subject, '生产发布');
+    expect(req).toMatchObject({
+      kind: 'release',
+      connectionId: conn.id,
+      command: subject,
+      status: 'pending',
+    });
+    expect(sshClients).toHaveLength(0);
+
+    const blocked = await consumeManualApproval(conn as never, subject, '生产发布');
+    expect(blocked.blocked).toContain('该发布需要人工批准');
+
+    await decide(conn.id, subject, true);
+    const granted = await consumeManualApproval(conn as never, subject, '生产发布');
+    expect(granted.blocked).toBeNull();
+
+    const retry = await consumeManualApproval(conn as never, subject, '生产发布');
+    expect(retry.blocked).toContain('该发布需要人工批准');
+    expect(sshClients).toHaveLength(0);
   });
 });
 

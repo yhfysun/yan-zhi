@@ -145,6 +145,12 @@ export interface DeployTarget {
   connectionId: string;
   remotePath: string;
   restartScript: string;
+  /** 发布后健康检查命令；失败时本次发布判为失败。 */
+  healthCheckCommand?: string;
+  /** 健康检查失败时使用的回滚命令。 */
+  rollbackCommand?: string;
+  /** true = 健康检查失败后自动执行 rollbackCommand。 */
+  autoRollback?: boolean;
   env?: Record<string, string>;
 }
 
@@ -211,6 +217,10 @@ export interface CicdRun {
   pipelineName: string;
   targetId: string;
   targetName: string;
+  /** 生产发布使用的人工审批记录 id（非生产为空）。 */
+  approvalId?: string;
+  /** 健康检查失败后是否已成功执行回滚。 */
+  rolledBack?: boolean;
   status: RunStatus;
   startedAt: number;
   finishedAt?: number;

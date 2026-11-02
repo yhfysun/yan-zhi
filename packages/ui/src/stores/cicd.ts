@@ -105,6 +105,18 @@ export const useCicdStore = defineStore('cicd', () => {
         }),
         body: JSON.stringify({ targetId }),
       }).then(async (resp) => {
+        if (!resp.ok) {
+          const raw = await resp.text().catch(() => '');
+          let message = `发布请求失败（HTTP ${resp.status}）`;
+          try {
+            const parsed = JSON.parse(raw) as { error?: string };
+            if (parsed.error) message = parsed.error;
+          } catch {
+            if (raw) message = raw;
+          }
+          resolve(message);
+          return;
+        }
         if (!resp.body) { resolve('无法获取流'); return; }
         // SSE 解码统一走 utils/sse（P5 收口）
         await consumeSseStream(resp.body, (payload) => {

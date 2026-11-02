@@ -29,15 +29,17 @@ import {
 import { readFileSync as readSrc } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 
-describe('cicd-pipeline · 侧栏入口 + 生产发布确认', () => {
+describe('cicd-pipeline · 侧栏入口 + 生产发布审批', () => {
   const SRC = readSrc(resolvePath(__dirname, '../src/plugins/cicd-pipeline.ts'), 'utf8');
+  const POLICY = readSrc(resolvePath(__dirname, '../src/plugins/cicd-release-policy.ts'), 'utf8');
   it('7b.14：插件有「更多 → 运维」侧栏入口', () => {
     expect(SRC).toContain("moreGroup: 'ops'");
     expect(SRC).toContain("route: '/cicd'");
   });
-  it('7b.12：生产连接的 cicd_run_pipeline 必须 confirmed', () => {
-    expect(SRC).toMatch(/isProductionTag\(conn\.tag\) && args\.confirmed !== true/);
-    expect(SRC).toContain('发布目录：${target.remotePath');
+  it('P0：生产连接的 cicd_run_pipeline 走人工审批队列，不再接受模型 confirmed', () => {
+    expect(SRC).toContain('consumeManualApproval(conn, subject');
+    expect(SRC).not.toContain('args.confirmed');
+    expect(POLICY).toContain('发布目录：${target.remotePath');
   });
 });
 
@@ -90,6 +92,20 @@ describe('normalizeReleaseTargets · 部署目标', () => {
     expect(r.targets).toHaveLength(1);
     expect(r.targets![0].name).toBe('生产');
     expect(r.targets![0].env).toEqual({ PORT: '8080', MODE: 'prod' });
+  });
+
+  it('发布目标保留健康检查与回滚配置', () => {
+    const r = normalizeReleaseTargets([{
+      connectionId: 'c1', name: '生产', remotePath: '/app', restartScript: 'sh restart.sh',
+      healthCheckCommand: ' curl -fsS http://127.0.0.1:8080/health ',
+      rollbackCommand: 'sh rollback.sh',
+      autoRollback: true,
+    }], conns);
+    expect(r.targets![0]).toMatchObject({
+      healthCheckCommand: 'curl -fsS http://127.0.0.1:8080/health',
+      rollbackCommand: 'sh rollback.sh',
+      autoRollback: true,
+    });
   });
 
   it('未传 targets 表示「保持原值」（返回 targets=undefined）', () => {
