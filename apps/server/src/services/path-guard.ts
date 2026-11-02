@@ -100,6 +100,11 @@ const TOOL_PATH_ARGS: Record<string, PathArgSpec[]> = {
     { field: 'overlay', action: 'read' },
     { field: 'audio', action: 'read' },
   ],
+  // 多机位音频对齐：输入两段本机素材，只读
+  api_media_audio_sync: [
+    { field: 'a', action: 'read' },
+    { field: 'b', action: 'read' },
+  ],
   // media_compose：输入 segments（数组，元素含 file）；输出落会话产物目录（走 mediaTarget）
   // ★ 数组内元素暂不在本表覆盖范围（见文件末尾"已知不覆盖"，留作后续）。
 };

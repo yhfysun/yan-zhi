@@ -1006,6 +1006,30 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
       },
     },
     {
+      name: 'api_media_audio_sync',
+      description:
+        '离线音频对齐（多机位/双机位）：输入两段**同时录制、起点不同**的音视频本机绝对路径 a/b，' +
+        '用声音能量包络做互相关，返回两者的时间偏移 offsetSec。**纯本地 DSP，不调用任何 AI 模型**；' +
+        '只做两两对齐，不是完整的多机位编辑（编排/切换仍走 clip_project）。' +
+        '★ 符号约定：offsetSec > 0 表示 **B 的内容比 A 晚 offsetSec 秒出现**（B 开始录音更晚）；' +
+        'offsetSec < 0 表示 **B 比 A 早**。使用建议：若 B 更早，B 多出 |offsetSec| 秒头部，裁掉 B 开头即可对齐；' +
+        '若 B 更晚，则裁 A 的开头。' +
+        '返回 { ok, offsetSec, score, confident, aUsedSec, bUsedSec }；score < 0.55 时 confident=false，' +
+        '仍返回最佳候选，建议人工复核。静音/无音轨/时长不足 1 秒会返回可读错误。' +
+        '耗时随参与对齐的素材长度增长（默认只取前 180 秒，最长 600 秒）。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          a: { type: 'string', description: 'A 素材本机绝对路径（音频或视频，必须有音轨）' },
+          b: { type: 'string', description: 'B 素材本机绝对路径（与 A 同时录制）' },
+          capSec: { type: 'number', description: '每个素材最多参与对齐的前 N 秒，默认 180（夹在 30~600）' },
+          maxLagSec: { type: 'number', description: '最大搜索位移（秒），默认 15（夹在 0.5~60）。两机位起点差更大时调高' },
+          hopSec: { type: 'number', description: '包络帧移（秒），默认 0.1；越小越精细但越慢' },
+        },
+        required: ['a', 'b'],
+      },
+    },
+    {
       name: 'media_edit',
       description:
         '视频剪辑与特效加工（基于 ffmpeg）：对素材做**加工**，与 media_compose 的「组装」互补。' +

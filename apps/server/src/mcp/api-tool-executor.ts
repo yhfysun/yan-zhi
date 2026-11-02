@@ -60,6 +60,7 @@ import {
 } from '../services/clip-jianying.js';
 import { COLOR_EFFECTS, TRANSITIONS, AUDIO_EFFECTS, effectCatalogText, effectFilter } from '@yan-zhi/shared';
 import { analyzeBeats } from '../services/clip-beats.js';
+import { syncAudioFiles, formatSyncResult } from '../services/clip-audio-sync.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
 import { systemSpeak, listSystemVoices, pickVoiceForRole, describeVoiceCapacity, inferRoleGender } from './tts-sapi.js';
@@ -458,6 +459,8 @@ export const SUPPORTED_API_TOOLS = new Set([
   'media_asr_transcribe', 'whisper_install',
   // 剪辑与特效层：裁剪/变速/抽帧/变换/淡入淡出/调色/转场/画中画/图片运镜/BGM/音量/响度（统一走 media_edit 的 op）
   'media_edit',
+  // 多机位前置：两段素材的离线音频对齐（纯 DSP，返回时间偏移；不做多机位编排）
+  'api_media_audio_sync',
   // 剪辑工程：多段 + 字幕(含动画) + BGM 的工程化剪辑与渲染（剪辑模式的唯一出口）
   'clip_project',
   // 剪映剪辑（第二种剪辑模式）：工程 → 剪映草稿 / 检测安装 / 启动剪映
@@ -2992,6 +2995,31 @@ const COLOR_PRESETS: Record<string, string> = Object.fromEntries(
 );
 const XFADE_TYPES = TRANSITIONS.map((t) => t.filter);
 
+/** 多机位音频对齐（两两）：返回 A/B 的时间偏移，不做多机位编排。 */
+async function mediaAudioSync(args: Record<string, unknown>): Promise<MpcToolExecutionResult> {
+  const a = str(args, 'a').trim();
+  const b = str(args, 'b').trim();
+  if (!a || !b) return fail('需要 a 与 b 两个本机绝对路径');
+  const r = await syncAudioFiles(a, b, {
+    capSec: args.capSec == null ? undefined : num(args, 'capSec', 180),
+    maxLagSec: args.maxLagSec == null ? undefined : num(args, 'maxLagSec', 15),
+    hopSec: args.hopSec == null ? undefined : num(args, 'hopSec', 0.1),
+  });
+  if (!r.ok) return fail(formatSyncResult(r));
+  return ok({
+    ok: true,
+    offsetSec: r.offsetSec,
+    score: r.score,
+    confident: r.confident,
+    aUsedSec: r.aUsedSec,
+    bUsedSec: r.bUsedSec,
+    signConvention:
+      'offsetSec>0：B 的内容比 A 晚 offsetSec 秒出现（B 开始录音更晚）；offsetSec<0：B 更早。' +
+      'B 更早则裁 B 开头 |offsetSec| 秒，B 更晚则裁 A 开头。',
+    message: formatSyncResult(r),
+  });
+}
+
 async function mediaEdit(
   args: Record<string, unknown>,
   conversationId?: string,
@@ -5295,6 +5323,8 @@ export async function executeApiTool(
         return await mediaCompose(args, conversationId);
       case 'media_edit':
         return await mediaEdit(args, conversationId);
+      case 'api_media_audio_sync':
+        return await mediaAudioSync(args);
       case 'clip_project':
         return await clipProjectTool(args, conversationId, userId);
       case 'clip_jianying':
