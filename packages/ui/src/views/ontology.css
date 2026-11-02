@@ -109,6 +109,36 @@
 .ont-guide ol b { color: var(--color-text); font-weight: 600; }
 .ont-guide-actions { display: flex; gap: 8px; }
 
+/* 五子页签（P6.4）：语义 / 字段 / 过滤 / 关联 / 物理 */
+.ont-subtabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--glass-border);
+}
+.ont-subtab {
+  border: none;
+  background: transparent;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ont-subtab:hover { background: var(--glass-bg-hover); }
+.ont-subtab.on {
+  color: var(--color-text);
+  background: var(--glass-bg, rgba(127, 127, 127, 0.1));
+  box-shadow: inset 0 -2px 0 var(--dw-brand, #7c3aed);
+}
+
+/* 同义词 chips（P6.4） */
+.ont-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 0; }
+.ont-chip-input { width: 120px; }
+
 /* 左栏双 Tab：本体 / 标准属性 */
 .ont-left-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .ont-left-tab {

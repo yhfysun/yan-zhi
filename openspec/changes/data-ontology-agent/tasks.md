@@ -94,8 +94,8 @@
   → 2026-11-02 核实：`components/CompileTrack.vue` 已存在并用于本体页编译预览。
 - [x] 6.3 `DataSourceList.vue` + `DataSourceForm.vue`：类型按语族分 3 组（分组标题写明 JOIN 能力差异）、四种连接态、**失败态错误码折叠诊断**、新建表单弱化为白底+左侧品牌竖线
   → 2026-11-02 核实已落地（以 `DataSourcesPage.vue` 单页承载，未拆两个组件）：类型三组「关系型·支持自动 JOIN / 内置 / 文档型·无 JOIN 下推」；状态四态（已连接 / 连接失败 / 已就绪 / 未同步）；失败态按错误码展开诊断建议（防火墙/服务名/pg_hba 等）；表单 `.ds-form` 白底 + 左侧 `--dw-brand` 竖线。
-- [ ] 6.4 `OntologyWorkbench.vue` 三栏骨架 + 5 子页签（带计数徽标）；语义页分「标识/语义/物理」三段，同义词改 chip 输入
-  → 2026-11-02：三栏骨架已由 `OntologyPage.vue` 承载（左树/中编辑/右编译），未拆独立 OntologyWorkbench 与 5 子页签徽标。
+- [x] 6.4 `OntologyWorkbench.vue` 三栏骨架 + 5 子页签（带计数徽标）；语义页分「标识/语义/物理」三段，同义词改 chip 输入
+  → 2026-11-02：三栏由 `OntologyPage.vue` 承载（左树/中编辑/右编译）；中栏新增 5 子页签（语义/字段/过滤/关联/物理，字段/过滤/关联带计数徽标），各段用 `v-show` 挂到对应页签；语义页原本已分「标识/语义/物理」三段；同义词改为 chips（回车添加、点 × 删除，仍以 synonymsText 为真相源）。未拆独立 OntologyWorkbench 组件（避免整页重写风险）。
 - [x] 6.5 `OntologyFieldTable.vue`：角色徽标 + 置信度列（<0.70 浅黄底且禁止发布）+ 锁图标（locked 不被同步覆盖）
   → 2026-11-02：新增字段总览组件并接入本体编辑区（角色徽标/description/置信度/锁定/样本与枚举计数）；置信度 <70% 行浅黄底，发布前拦截并提示字段名；AI 富化采纳写回 confidence 与 locked=true；语义扩展字段随保存/回填保留。
 - [x] 6.6 `OntologyRelationMap.vue` SVG 关系图（不引图库）+ 关系表 + **扇出风险警示卡**

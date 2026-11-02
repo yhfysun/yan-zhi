@@ -283,7 +283,19 @@
           </div>
         </div>
 
+        <!-- 五子页签（P6.4）：语义 / 字段 / 过滤 / 关联 / 物理 -->
+        <div class="ont-subtabs">
+          <button
+            v-for="t in SUB_TABS" :key="t.key" type="button"
+            class="ont-subtab" :class="{ on: subTab === t.key }"
+            @click="subTab = t.key"
+          >
+            {{ t.label }}<span v-if="tabCount(t.key)" class="ont-tag">{{ tabCount(t.key) }}</span>
+          </button>
+        </div>
+
         <div class="ont-scroll">
+          <div v-show="subTab === 'semantics'">
           <!-- 标识 -->
           <div class="ont-fgroup"><span>标识</span><small>改 code 会断开引用它的智能体</small></div>
           <div class="ont-fgrid">
@@ -312,16 +324,21 @@
                 <el-option v-for="d in DOMAINS" :key="d" :label="d" :value="d" />
               </el-select>
             </div>
-            <div class="ont-field">
-              <label>同义词（一行一个，用于命中提问）</label>
-              <el-input v-model="form.synonymsText" type="textarea" :rows="2" size="small" />
+            <div class="ont-field ont-full">
+              <label>同义词（回车添加，用于命中提问）</label>
+              <div class="ont-chips">
+                <el-tag v-for="s in synonymList" :key="s" closable size="small" @close="removeSynonym(s)">{{ s }}</el-tag>
+                <el-input v-model="synonymInput" size="small" class="ont-chip-input" placeholder="+ 同义词" @keyup.enter="addSynonym" />
+              </div>
             </div>
             <div class="ont-field ont-full">
               <label>业务描述（写清口径与粒度）</label>
               <el-input v-model="form.description" type="textarea" :rows="3" size="small" />
             </div>
           </div>
+          </div>
 
+          <div v-show="subTab === 'fields'">
           <!-- 字段总览（P6.5）：角色/置信度/锁定；低置信度禁止发布 -->
           <OntologyFieldTable v-if="allFields.length" :fields="allFields" />
 
@@ -431,7 +448,9 @@
           <div class="ont-add-row">
             <el-button size="small" text :icon="Plus" :disabled="!fieldOptions.length" @click="addSelection">+ 选择列</el-button>
           </div>
+          </div>
 
+          <div v-show="subTab === 'filters'">
           <!-- 过滤器：命中才注入 WHERE（区别于下方强制注入的行级策略） -->
           <div class="ont-fgroup">
             <span>过滤器</span>
@@ -462,7 +481,9 @@
           <div class="ont-add-row">
             <el-button size="small" text :icon="Plus" @click="addFilter">+ 过滤器</el-button>
           </div>
+          </div>
 
+          <div v-show="subTab === 'relations'">
           <!-- 关联关系：跨本体 JOIN 路径（N:N 经中间表展开两跳） -->
           <div class="ont-fgroup">
             <span>关联关系</span>
@@ -513,7 +534,9 @@
             <el-button size="small" text :disabled="!form.datasourceId || !sourceTable" @click="relationSuggestOpen = true">推断关联</el-button>
             <el-button size="small" text :disabled="!form.relations.length" @click="relationMapOpen = true">关系图</el-button>
           </div>
+          </div>
 
+          <div v-show="subTab === 'fields'">
           <!-- 查询意图（编译预览 / 试跑共用） -->
           <div class="ont-fgroup">
             <span>查询意图（编译预览 / 试跑）</span>
@@ -526,7 +549,9 @@
               placeholder="过滤器，如：created_at >= '2026-01-01'（留空 = 不过滤）"
             />
           </div>
+          </div>
 
+          <div v-show="subTab === 'filters'">
           <!-- 行级策略 -->
           <div class="ont-fgroup"><span>行级策略</span><small>强制注入 WHERE，用户不可绕过</small></div>
           <div class="ont-fgrid">
@@ -536,7 +561,9 @@
             </div>
             <el-button size="small" text :icon="Plus" @click="form.policies.push('')">+ 行级策略</el-button>
           </div>
+          </div>
 
+          <div v-show="subTab === 'physical'">
           <!-- 物理 -->
           <div class="ont-fgroup"><span>物理</span><small>大模型看不到这一段，只有编译器用</small></div>
           <div class="ont-field ont-full">
@@ -548,6 +575,7 @@
             <span v-if="form.builtin" class="ont-hint">
               内置本体的物理 SQL 由结构同步维护；补好语义描述与同义词后即可发布。
             </span>
+          </div>
           </div>
         </div>
 
@@ -948,6 +976,36 @@ const allFields = computed(() => [
   ...pickFields('measure', form.measures),
 ]);
 const lowConfidenceFields = computed(() => allFields.value.filter((f) => typeof f.confidence === 'number' && f.confidence < 0.7));
+
+// ===== 五子页签（P6.4）=====
+type SubTab = 'semantics' | 'fields' | 'filters' | 'relations' | 'physical';
+const subTab = ref<SubTab>('semantics');
+const SUB_TABS: Array<{ key: SubTab; label: string }> = [
+  { key: 'semantics', label: '语义' },
+  { key: 'fields', label: '字段' },
+  { key: 'filters', label: '过滤' },
+  { key: 'relations', label: '关联' },
+  { key: 'physical', label: '物理' },
+];
+function tabCount(k: SubTab): number {
+  if (k === 'fields') return form.dimensions.length + form.measures.length + form.timeDimensions.length;
+  if (k === 'filters') return form.filters.length + form.policies.length;
+  if (k === 'relations') return form.relations.length;
+  return 0;
+}
+
+// 同义词 chips（synonymsText 仍是唯一真相源）
+const synonymList = computed(() => form.synonymsText.split('\n').map((s) => s.trim()).filter(Boolean));
+const synonymInput = ref('');
+function addSynonym(): void {
+  const v = synonymInput.value.trim();
+  if (!v) return;
+  form.synonymsText = [...new Set([...synonymList.value, v])].join('\n');
+  synonymInput.value = '';
+}
+function removeSynonym(s: string): void {
+  form.synonymsText = synonymList.value.filter((x) => x !== s).join('\n');
+}
 
 /** 采用一条推断关联（去重后加入表单，保存草稿才落库） */
 function onAdoptRelation(rel: { target: string; sourceAttr: string; targetAttr: string }): void {
