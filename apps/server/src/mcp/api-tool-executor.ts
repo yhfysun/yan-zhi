@@ -3080,8 +3080,8 @@ async function mediaAudioSync(args: Record<string, unknown>): Promise<MpcToolExe
     aUsedSec: r.aUsedSec,
     bUsedSec: r.bUsedSec,
     signConvention:
-      'offsetSec>0：B 的内容比 A 晚 offsetSec 秒出现（B 开始录音更晚）；offsetSec<0：B 更早。' +
-      'B 更早则裁 B 开头 |offsetSec| 秒，B 更晚则裁 A 开头。',
+      'offsetSec>0：B 开始录音更早（多出 offsetSec 秒头部）→ 裁 B 开头；' +
+      'offsetSec<0：B 开始更晚（缺少 |offsetSec| 秒头部）→ 裁 A 开头。',
     message: formatSyncResult(r),
   });
 }

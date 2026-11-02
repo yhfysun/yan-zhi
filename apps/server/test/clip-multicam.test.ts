@@ -80,21 +80,23 @@ describe('planMulticamCuts · 规划', () => {
     expect(r.cuts[0].srcEnd).toBe(3);
   });
 
-  it('offsetSec>0 与 <0 都按 |offset| 加头部偏移', () => {
+  it('★ 组 0 点取最晚开始机位：head_i = d_i - min(d)', () => {
     const r = planMulticamCuts({
-      angles: [angle('a.mp4', 0, 12), angle('later.mp4', 2, 14), angle('earlier.mp4', -1.5, 12)],
+      angles: [angle('a.mp4', 0, 12), angle('extra_head.mp4', 2, 14), angle('late_start.mp4', -1.5, 12)],
       switchEverySec: 3,
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.headSec).toEqual([0, 2, 1.5]);
-    // 第 2 段（k=1）轮到机位 1：srcStart = 2 + 3 = 5
+    // min(d)=-1.5：机位 0 补 1.5 头部、机位 1 补 3.5、机位 2（最晚开始）为 0
+    expect(r.headSec).toEqual([1.5, 3.5, 0]);
+    expect(r.groupDurationSec).toBe(10.5);
+    // 第 2 段（k=1）轮到机位 1：srcStart = 3.5 + 3 = 6.5
     expect(r.cuts[1].angleIndex).toBe(1);
-    expect(r.cuts[1].srcStart).toBe(5);
-    expect(r.cuts[1].srcEnd).toBe(8);
-    // 第 3 段（k=2）轮到机位 2：srcStart = 1.5 + 6 = 7.5
+    expect(r.cuts[1].srcStart).toBe(6.5);
+    expect(r.cuts[1].srcEnd).toBe(9.5);
+    // 第 3 段（k=2）轮到机位 2：头部 0 → srcStart = 6
     expect(r.cuts[2].angleIndex).toBe(2);
-    expect(r.cuts[2].srcStart).toBe(7.5);
+    expect(r.cuts[2].srcStart).toBe(6);
   });
 
   it('组时长取各机位可用尾部的最小值', () => {

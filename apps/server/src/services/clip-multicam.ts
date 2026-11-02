@@ -9,13 +9,12 @@
 //   生成后它就是普通时间轴内容，用户可继续手动微调切点。
 //
 // ★ 对齐规则（与 clip-audio-sync 的符号约定配套）：
-//   offsetSec 来自 syncAudioFiles(机位0, 机位i)：
-//     · offsetSec > 0：机位 i 的内容比机位 0 晚 offsetSec 出现 → 从源 offsetSec 开始才对齐组起点；
-//     · offsetSec < 0：机位 i 的内容比机位 0 早 |offsetSec| 出现 → 机位 i 多出头部，裁掉它才能对齐。
-//   ★ MVP 简化：统一按 `head_i = |offsetSec|` 给**每个机位**加头部偏移（即各自裁掉 |offset|）；
-//     组起点固定取「共同内容的第一个可对齐帧」，不额外整体平移。注释里显式写死，避免后续误改。
-//   ★ 代价：若某些机位明显晚开始（offset 很大），组时长会被最短的可用尾部限制；
-//     真正“最晚开始机位做 0 点”的全局平移留给后续版本（本 MVP 不做多轨时间线）。
+//   d_i = syncAudioFiles(机位0, 机位i).offsetSec：
+//     · d_i > 0：机位 i **开始录音更早**，多出 d_i 秒头部；
+//     · d_i < 0：机位 i **开始录音更晚**，缺少 |d_i| 秒头部。
+//   ★ 组 0 点取「最晚开始」的那个机位（min d）：head_i = d_i - min(d)（恒 ≥0）。
+//     每个机位各自裁掉这段头部后，组起点看到的是同一时刻的画面。
+//   ★ 组时长 = min(usable_i - head_i)；拍平后就是普通时间轴内容，可继续手动微调切点。
 //
 // ★ 边界：
 //   · 少于 2 个机位直接报错（多机位没有意义）；
@@ -92,8 +91,8 @@ function round3(n: number): number {
  * 输出是**连续的成片时间区间**：cuts[0].filmStart=0，后一段的 filmStart = 前一段 filmEnd，
  * 最后一段 filmEnd = 组时长（浮点误差 1e-6 内）。调用方据此生成 ClipSegment。
  *
- * 每个机位的素材起点：`srcStart = |offsetSec| + 组内偏移`。
- * （见文件头的对齐规则与 MVP 简化说明。）
+ * 每个机位的素材起点：`srcStart = head_i + 组内偏移`，其中 `head_i = d_i - min(d)`。
+ * （见文件头的对齐规则。）
  */
 export function planMulticamCuts(input: MulticamPlanInput): MulticamPlanResult {
   const angles = Array.isArray(input?.angles) ? input.angles : [];
@@ -102,6 +101,9 @@ export function planMulticamCuts(input: MulticamPlanInput): MulticamPlanResult {
   const warnings: string[] = [];
   const headSec: number[] = [];
   let maxGroup = Number.POSITIVE_INFINITY;
+  // 组 0 点 = 最晚开始的机位：d_i 越小表示开始越晚（见文件头符号约定）
+  const offsets = angles.map((a) => (Number.isFinite(Number(a?.offsetSec)) ? Number(a.offsetSec) : 0));
+  const minOffset = Math.min(...offsets);
 
   for (let i = 0; i < angles.length; i++) {
     const a = angles[i];
@@ -110,9 +112,8 @@ export function planMulticamCuts(input: MulticamPlanInput): MulticamPlanResult {
     if (!Number.isFinite(usable) || usable <= 0) {
       return { ok: false, error: `机位 ${i + 1} 的可用时长无效（${a.usableSec}）` };
     }
-    const offset = Number.isFinite(Number(a.offsetSec)) ? Number(a.offsetSec) : 0;
-    // MVP：正负偏移都表现为“该机位要跳过多少头部才对齐组起点”。
-    const head = round3(Math.abs(offset));
+    // 该机位相对“最晚开始机位”多出的头部：d_i - min(d)，恒 ≥ 0
+    const head = round3(offsets[i] - minOffset);
     headSec.push(head);
     const avail = usable - head;
     if (avail < MIN_AVAILABLE_SEC) {

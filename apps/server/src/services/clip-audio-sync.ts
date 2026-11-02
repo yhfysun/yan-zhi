@@ -9,11 +9,11 @@
 //   （编排与合成仍走 clip_project / clip_jianying 的既有链路。）
 //
 // ★ 符号约定（工具描述里也要写，模型靠它决定裁哪一边）：
-//   offsetSec > 0 表示 **B 的内容比 A 晚 offsetSec 秒出现**（即 B 开始录音更晚）；
-//   offsetSec < 0 表示 **B 比 A 早出现**（B 开始录音更早）。
+//   offsetSec > 0：同一段内容在 B 的时间轴上**晚** offsetSec 出现 → B **开始录音更早**、多出 offsetSec 秒头部；
+//   offsetSec < 0：B 的内容更早出现 → B **开始录音更晚**、缺少 |offsetSec| 秒头部。
 //   使用建议：
-//     · B 更早（offsetSec < 0）→ B 多出 |offsetSec| 秒头部，裁掉 B 开头即可对齐；
-//     · B 更晚（offsetSec > 0）→ 裁掉 A 的开头 |offsetSec| 秒。
+//     · offsetSec > 0 → 裁掉 **B** 的开头 offsetSec 秒即可对齐；
+//     · offsetSec < 0 → 裁掉 **A** 的开头 |offsetSec| 秒即可对齐。
 //
 // ★ 边界：静音/近乎静音的素材包络方差≈0，无法对齐（返回 ok:false）；
 //   音乐与说话声大量重叠时互相关可能被音乐主导而失准；两段素材重叠时长太短也会不可靠。
@@ -39,7 +39,7 @@ const MAX_CAP_SEC = 600;
 const SILENCE_STD = 1e-6;
 
 export interface EnvelopeOffset {
-  /** >0：B 的内容比 A 晚出现；<0：B 更早（见文件头符号约定） */
+  /** >0：B 多出头部（B 开始录音更早）；<0：B 缺头部（见文件头符号约定） */
   offsetSec: number;
   /** 最佳位置的归一化相关分数，-1~1 */
   score: number;
@@ -117,8 +117,8 @@ export function envelopeStd(env: Float32Array): number {
 /**
  * 纯函数：去均值归一化互相关，找 B 相对 A 的时间位移。
  *
- * 符号约定：offsetSec > 0 表示 B 的内容比 A 晚 offsetSec 秒出现（B 开始录音更晚）；
- * offsetSec < 0 表示 B 更早。
+ * 符号约定：offsetSec > 0 表示 B 多出 offsetSec 秒头部（B 开始录音更早）；
+ * offsetSec < 0 表示 B 缺少 |offsetSec| 秒头部（B 开始录音更晚）。
  *
  * 极端输入（空包络/静音/重叠过短）不抛错：返回 offsetSec=0、score=0、confident=false。
  * 最佳分数低于 0.55 时 confident=false，但仍返回最佳候选与分数。
@@ -239,8 +239,8 @@ async function assertFile(p: string, label: string): Promise<string | null> {
 /**
  * 对齐两个本机音视频文件（多机位/双机位）。
  *
- * offsetSec 符号：>0 表示 B 的内容比 A 晚出现（B 开始录音更晚）；<0 表示 B 更早。
- * 若 B 更早，B 多出 |offsetSec| 秒头部，裁掉 B 开头即可对齐；B 更晚则裁 A 开头。
+ * offsetSec 符号：>0 表示 B 多出 |offsetSec| 秒头部（B 开始录音更早），裁 B 开头；
+ * <0 表示 B 缺少 |offsetSec| 秒头部（B 开始录音更晚），裁 A 开头。
  */
 export async function syncAudioFiles(
   aPath: string,
@@ -301,9 +301,9 @@ export async function syncAudioFiles(
 export function formatSyncResult(r: AudioSyncResult): string {
   if (!r.ok) return `音频对齐失败：${r.error || '未知错误'}`;
   const dir = (r.offsetSec ?? 0) > 0
-    ? `B 的内容比 A 晚 ${r.offsetSec}s 出现（B 开始录音更晚）→ 裁掉 A 开头 ${r.offsetSec}s 即可对齐`
+    ? `B 开始录音更早（多出 ${r.offsetSec}s 头部）→ 裁掉 B 开头 ${r.offsetSec}s 即可对齐`
     : (r.offsetSec ?? 0) < 0
-      ? `B 的内容比 A 早 ${Math.abs(r.offsetSec!)}s 出现（B 开始录音更早）→ 裁掉 B 开头 ${Math.abs(r.offsetSec!)}s 即可对齐`
+      ? `B 开始录音更晚（缺少 ${Math.abs(r.offsetSec!)}s 头部）→ 裁掉 A 开头 ${Math.abs(r.offsetSec!)}s 即可对齐`
       : '两段音频起点一致，无需裁剪';
   return [
     `offsetSec=${r.offsetSec}`,

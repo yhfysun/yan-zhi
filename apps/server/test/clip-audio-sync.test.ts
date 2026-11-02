@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { rmsEnvelope, findEnvelopeOffset, syncAudioFiles } from '../src/services/clip-audio-sync';
+import { rmsEnvelope, findEnvelopeOffset, syncAudioFiles, formatSyncResult } from '../src/services/clip-audio-sync';
 
 const FFMPEG = process.env.YZ_FFMPEG_PATH
   || path.join(process.env.APPDATA || '', 'yan-zhi', 'server-data', 'ffmpeg', 'ffmpeg.exe');
@@ -181,4 +181,19 @@ describe.skipIf(!HAS_FFMPEG)('syncAudioFiles · ffmpeg 实跑', () => {
     expect(r.ok).toBe(false);
     expect(r.error || '').toContain('静音');
   }, 120000);
+});
+
+
+describe('formatSyncResult · 符号解释（防再次写反）', () => {
+  const base = { ok: true as const, score: 0.9, confident: true, aUsedSec: 10, bUsedSec: 10 };
+  it('offset>0 → B 多出头部，裁 B 开头', () => {
+    const msg = formatSyncResult({ ...base, offsetSec: 1.2 });
+    expect(msg).toContain('裁掉 B 开头');
+    expect(msg).not.toContain('裁掉 A 开头');
+  });
+  it('offset<0 → B 缺头部，裁 A 开头', () => {
+    const msg = formatSyncResult({ ...base, offsetSec: -1.2 });
+    expect(msg).toContain('裁掉 A 开头');
+    expect(msg).not.toContain('裁掉 B 开头');
+  });
 });

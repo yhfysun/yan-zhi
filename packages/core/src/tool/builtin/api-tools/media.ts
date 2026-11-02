@@ -1023,9 +1023,8 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '离线音频对齐（多机位/双机位）：输入两段**同时录制、起点不同**的音视频本机绝对路径 a/b，' +
         '用声音能量包络做互相关，返回两者的时间偏移 offsetSec。**纯本地 DSP，不调用任何 AI 模型**；' +
         '只做两两对齐，不是完整的多机位编辑（编排/切换仍走 clip_project）。' +
-        '★ 符号约定：offsetSec > 0 表示 **B 的内容比 A 晚 offsetSec 秒出现**（B 开始录音更晚）；' +
-        'offsetSec < 0 表示 **B 比 A 早**。使用建议：若 B 更早，B 多出 |offsetSec| 秒头部，裁掉 B 开头即可对齐；' +
-        '若 B 更晚，则裁 A 的开头。' +
+        '★ 符号约定：offsetSec > 0 表示 **B 开始录音更早、多出 offsetSec 秒头部**（裁 B 开头）；' +
+        'offsetSec < 0 表示 **B 开始录音更晚、缺少 |offsetSec| 秒头部**（裁 A 开头）。' +
         '返回 { ok, offsetSec, score, confident, aUsedSec, bUsedSec }；score < 0.55 时 confident=false，' +
         '仍返回最佳候选，建议人工复核。静音/无音轨/时长不足 1 秒会返回可读错误。' +
         '耗时随参与对齐的素材长度增长（默认只取前 180 秒，最长 600 秒）。',
