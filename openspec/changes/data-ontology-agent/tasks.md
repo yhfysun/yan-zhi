@@ -110,7 +110,8 @@
   → 2026-11-02：在 `DataConsolePage.vue` + `console.css` 落地（未另建 SqlConsole 组件）：schema 树/深色编辑器原已存在；本次补高亮层（光标所在语句高亮、其余灰化，透明 textarea + 同步滚动）、状态条「N 条语句 · 光标第 M 条」、`Ctrl+Enter` / `Ctrl+Shift+Enter` kbd 标注；只读徽标、NULL 弱化、行数/耗时/截断提示原已具备。
 - [x] 6.11 `DataResultPanel.vue` 注册为 `PreviewTab` 新 kind：本体来源标注 + 过滤器 chip 条 + 迷你趋势图 + 分页 + 底部「导出 CSV / Python 分析 / 生成报告」三出口
   → 2026-11-02：由 `DataQueryWorkbench` 承载（`PreviewTabKind='data'` 已注册）：本体选择/来源、过滤器条、分页、图表视图（趋势/多系列）原已具备；本次补底部三出口——导出 CSV（BOM 表头）、Python 分析（桌面端，生成可运行 pandas 脚本并复制）、生成报告（复用 Word 导出）。
-- [ ] 6.12 SettingsDrawer 新增 `data-sources` / `ontology` / `std-attribute` 三个 section（**不往 SideNav 平铺**，沿用 2026-09-03 精简约定）
+- [x] 6.12 SettingsDrawer 新增 `data-sources` / `ontology` / `std-attribute` 三个 section（**不往 SideNav 平铺**，沿用 2026-09-03 精简约定）
+  → 2026-11-02：SettingsDrawer 左导航新增「数据源 / 本体 / 标准属性」三项（datasources / ontology / stdattrs），分别懒加载 DataSourcesPage、OntologyPage、StdAttributeTree；SideNav 保持原有下拉入口，不新增平铺项。
 - [ ] 6.13 中英混排标题字形断层：为中文标题单独声明 `PingFang SC` 600 字重
 - [x] 6.14 **零数据引导态**：本体数为 0 时中栏不显示空表单，改显示「从数据源同步 → AI 生成草稿 → 你只需复核」三步引导（对应 ui-design.md §5 开放问题 1）
   → 2026-11-02：`OntologyPage.vue` 中栏空态改为三步引导（同步数据源 → 从表生成 → 补口径/AI 富化），带「从表生成 / 手写 SQL」入口；样式 `ontology.css .ont-guide`。

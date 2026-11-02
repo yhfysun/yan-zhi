@@ -85,6 +85,9 @@ const builtinSections: SettingsSection[] = [
   { section: 'agents', label: '智能体', icon: Box },
   { section: 'knowledge', label: '知识库', icon: Collection },
   { section: 'memory', label: '记忆管理', icon: Memo },
+  { section: 'datasources', label: '数据源', icon: Collection },
+  { section: 'ontology', label: '本体', icon: Box },
+  { section: 'stdattrs', label: '标准属性', icon: Memo },
 
   { section: 'connections', label: 'IM 连接', icon: Promotion },
   { section: 'env', label: '开发环境', icon: Monitor },
@@ -126,6 +129,9 @@ const builtinComponents: Record<string, ReturnType<typeof defineAsyncComponent>>
   agents: defineAsyncComponent(() => import('../views/Agents.vue')),
   knowledge: defineAsyncComponent(() => import('../views/Knowledge.vue')),
   memory: defineAsyncComponent(() => import('../components/memory/MemoryManage.vue')),
+  datasources: defineAsyncComponent(() => import('../views/DataSourcesPage.vue')),
+  ontology: defineAsyncComponent(() => import('../views/OntologyPage.vue')),
+  stdattrs: defineAsyncComponent(() => import('../components/StdAttributeTree.vue')),
 
   connections: defineAsyncComponent(() => import('../views/Connections.vue')),
   env: defineAsyncComponent(() => import('../views/EnvConfig.vue')),
