@@ -58,6 +58,8 @@ describe('店铺助手工具面一致性', () => {
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('个体工商户');
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('个人身份店不得要求营业执照');
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('不得用历史记忆否定');
+    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('材料查询页只用于核对');
+    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('进入实际开店创建流程');
   });
 
   it('选品核心工具 compare_products 必须真实注册并挂载', () => {

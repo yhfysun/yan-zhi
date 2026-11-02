@@ -101,6 +101,7 @@ describe('shop onboarding', () => {
     const personalPrompt = buildShopSetupPrompt(personal);
     expect(personalPrompt).toContain('个人身份（身份证开店）');
     expect(personalPrompt).toContain('个人身份店不得要求营业执照');
+    expect(personalPrompt).toContain('直接进入平台实际开店创建流程');
 
     const sole = normalizeShopSetupProfile({
       ...personal,
