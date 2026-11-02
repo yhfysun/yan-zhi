@@ -179,16 +179,18 @@
       <main class="cp-center">
         <!-- 监视器 -->
         <section class="cp-monitor">
-          <div class="cp-monitor-stage">
+          <div class="cp-monitor-stage" ref="stageEl">
             <!-- ★★ 实时预览：拖动播放头即时出帧（边剪辑边预览）。
                  这是剪辑工作台的核心体验 —— 改一下马上看到；此前只有"渲染完才能看"。 -->
             <img
               v-if="monitorMode === 'live' && liveFrameUrl"
+              ref="liveImgEl"
               class="cp-video cp-live-frame"
               :style="stageStyle"
               :src="liveFrameUrl"
               :alt="`预览帧 ${playhead.toFixed(2)}s`"
               @error="onFrameError"
+              @load="measureStageBox"
             />
             <div v-else-if="monitorMode === 'live' && frameLoading" class="cp-monitor-empty">
               <el-icon :size="24" class="cp-spin"><Loading /></el-icon>
@@ -230,12 +232,42 @@
               <el-icon :size="30"><VideoPlay /></el-icon>
               <span>{{ monitorHint }}</span>
             </div>
-            <!-- 画面角标：告诉用户现在看的是实时帧还是成片 -->
-            <span v-if="monitorMode === 'live' && liveFrameUrl && !frameLoading" class="cp-live-badge">
-              <el-icon :size="10"><View /></el-icon>实时
+            <!-- ★★ 矢量图层实时合成（P1-10 / C-1）：字幕/贴纸画在 DOM 上，
+                 代理模式再叠一路画中画 <video>；拖动不经服务端，松手才落盘。
+                 盒子按底图（<img>/<video>）的实际渲染框定位 —— 舞台有黑边，
+                 直接 inset:0 会让竖屏工程整体错位。 -->
+            <div v-if="vectorLayerVisible" class="cp-vector-frame" :style="vectorFrameStyle">
+              <ClipVectorLayer
+                :box-width="vecBox.width"
+                :box-height="vecBox.height"
+                :playhead="playhead"
+                :texts="texts"
+                :stickers="stickers"
+                :overlays="overlays"
+                :pip-mode="monitorMode === 'proxy' ? 'video' : 'hit'"
+                :playing="proxyPlaying"
+                :selected-text-id="selectedTextId"
+                :selected-sticker-id="selectedStickerId"
+                :selected-overlay-id="selectedOverlayId"
+                :src-of="layerMediaUrl"
+                @select="onVectorSelect"
+                @commit="onVectorCommit"
+              />
+            </div>
+            <!-- 画面角标：告诉用户现在看的是实时帧还是代理 -->
+            <span
+              v-if="monitorMode === 'live' && liveFrameUrl && !frameLoading"
+              class="cp-live-badge"
+              title="实时预览（与成片可能有细微差异）：底图是服务端抽的合成帧，字幕/贴纸由前端叠加"
+            >
+              <el-icon :size="10"><View /></el-icon>实时 · 矢量图层合成
             </span>
-            <span v-if="monitorMode === 'proxy' && proxyClipUrl" class="cp-live-badge">
-              <el-icon :size="10"><View /></el-icon>代理预览
+            <span
+              v-if="monitorMode === 'proxy' && proxyClipUrl"
+              class="cp-live-badge"
+              title="代理预览 · 矢量图层实时合成：480p 代理画面 + 前端字幕/贴纸/画中画，码率低于成片，仅供预览"
+            >
+              <el-icon :size="10"><View /></el-icon>代理预览 · 矢量图层实时合成
             </span>
             <!-- 取帧失败如实展示（不静默空白）；后端已给出具体原因 -->
             <span v-if="monitorMode === 'live' && frameError" class="cp-live-err" :title="frameError">{{ frameError }}</span>
@@ -248,6 +280,7 @@
             <span v-if="monitorMode === 'clip' && videoDur && Math.abs(videoDur - estTotal) > 0.5" class="cp-stale" title="成片长度与当前工程不一致：改动后需重新渲染">
               <el-icon :size="11"><WarningFilled /></el-icon>待重新渲染
             </span>
+            <span v-if="monitorMode !== 'clip'" class="cp-vec-note" title="字幕/贴纸/画中画由前端实时合成；描边、底板、字体度量与 ASS 渲染存在细微差异，以成片为准">实时预览（与成片可能有细微差异）</span>
             <span class="cp-spacer"></span>
             <!-- 监视模式切换：实时帧（编辑时用）/ 代理连播（看节奏）/ 成片（核对出片） -->
             <span class="cp-seg-btns">
@@ -1652,10 +1685,12 @@ import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
 import WorkspaceDirDialog from '../components/WorkspaceDirDialog.vue';
 import EffectCardGrid from '../components/clip/EffectCardGrid.vue';
+import ClipVectorLayer from '../components/clip/ClipVectorLayer.vue';
 import { useSpaceStore } from '../stores/space';
 import { leadOf, activeMode, type LeadMode } from '../stores/mode';
 import { useChat } from '../composables/chat/useChat';
 import { api, API_BASE, getLicenseCode } from '../api/client';
+import { clampOffset, localLayerT, round4, sampleLayerTf, shiftLayerPosition } from '../utils/clip-stage-geometry';
 import { clampMenuPos } from '../utils/menuPosition';
 import {
   COLOR_EFFECTS, FX_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
@@ -2048,6 +2083,7 @@ function onFrameError() {
 }
 
 function setMonitorMode(m: 'live' | 'proxy' | 'clip') {
+  if (m !== 'proxy') setProxyAdvancing(false);
   monitorMode.value = m;
   if (m === 'live') scheduleFrameFetch(0);
   if (m === 'proxy') {
@@ -2055,6 +2091,7 @@ function setMonitorMode(m: 'live' | 'proxy' | 'clip') {
     if (playTimer) { clearInterval(playTimer); playTimer = null; }
     loadProxyForPlayhead();
   }
+  void nextTick(() => measureStageBox());
 }
 
 // ===== 段代理预览（P0-10）：顺序连播 + 播放头反推 =====
@@ -2075,6 +2112,16 @@ const proxyLoading = ref(false);
 const proxyError = ref('');
 /** ended 换源瞬间 timeupdate 可能迟到一帧旧值 → 置位期间不回写播放头 */
 let proxyAdvancing = false;
+// ★ 播放状态另存一份响应式引用：矢量图层组件要据此决定画中画 <video> 的播放/暂停。
+const proxyPlaying = ref(false);
+
+/** 统一入口：同步「是否连播」到响应式引用，并驱动 rAF 播放时钟（矢量图层平滑跟帧）。 */
+function setProxyAdvancing(v: boolean) {
+  proxyAdvancing = v;
+  proxyPlaying.value = v;
+  if (v) startProxyClock();
+  else stopProxyClock();
+}
 /** 序号防竞态：切段/重取期间旧请求回来不覆盖新状态 */
 let proxySeq = 0;
 
@@ -2149,7 +2196,7 @@ async function loadProxyForPlayhead() {
     proxyLoading.value = false;
     // 载入后：播放头在段中间 → 从偏移处开始（autoplay 仅在"连续播放"意图下）
     // 简化：非拖动定位一律停在偏移处，由用户按空格开播（避免每次重取都自动响声）
-    proxyAdvancing = false;
+    setProxyAdvancing(false);
   } catch (e) {
     if (mySeq !== proxySeq) return;
     proxyError.value = `代理加载失败：${e instanceof Error ? e.message : String(e)}`;
@@ -2167,7 +2214,7 @@ function proxyPlayCurrent() {
   if (Number.isFinite(v.duration) && v.duration > 0) {
     v.currentTime = Math.min(off, Math.max(0, v.duration - 0.05));
   }
-  proxyAdvancing = true;
+  setProxyAdvancing(true);
   void v.play().catch(() => { /* 用户手势限制/加载中断：静默，UI 已有状态 */ });
 }
 
@@ -2175,7 +2222,7 @@ function proxyPlayCurrent() {
 async function onProxyEnded() {
   const next = proxySegIndex.value + 1;
   if (next >= clips.value.length) {
-    proxyAdvancing = false;
+    setProxyAdvancing(false);
     const lastStart = proxySegStartOf(clips.value.length - 1) ?? 0;
     const lastDur = segSeconds(clips.value[clips.value.length - 1]);
     playhead.value = lastStart + lastDur;
@@ -2196,7 +2243,7 @@ async function onProxyEnded() {
       const j = await res.json().catch(() => ({}));
       proxyError.value = j.error || `下一段代理生成失败(${res.status})`;
       proxyLoading.value = false;
-      proxyAdvancing = false;
+      setProxyAdvancing(false);
       return;
     }
     await res.body?.cancel();
@@ -2204,7 +2251,7 @@ async function onProxyEnded() {
   } catch (e) {
     if (mySeq !== proxySeq) return;
     proxyError.value = `下一段加载失败：${e instanceof Error ? e.message : String(e)}`;
-    proxyAdvancing = false;
+    setProxyAdvancing(false);
   } finally {
     if (mySeq === proxySeq) proxyLoading.value = false;
   }
@@ -2226,13 +2273,18 @@ function onProxyLoadedMeta() {
   if (Number.isFinite(v.duration) && v.duration > 0) {
     v.currentTime = Math.min(off, Math.max(0, v.duration - 0.05));
   }
-  if (proxyAdvancing) void v.play().catch(() => {});
+  // 原始尺寸到位 → 重新测量画面框（矢量图层要贴着画面而不是舞台）
+  void nextTick(() => measureStageBox());
+  if (proxyAdvancing) {
+    void v.play().catch(() => {});
+    startProxyClock();
+  }
 }
 
 function onProxyError() {
   if (monitorMode.value !== 'proxy') return;
   proxyError.value = '代理视频加载失败（素材可能被移动）';
-  proxyAdvancing = false;
+  setProxyAdvancing(false);
 }
 
 /** 代理模式下播放/暂停（空格键走这里；togglePlay 已分流）。 */
@@ -2240,7 +2292,7 @@ function proxyTogglePlay() {
   const v = proxyVideoEl.value;
   if (!v) { void loadProxyForPlayhead(); return; }
   if (v.paused) { proxyPlayCurrent(); }
-  else { v.pause(); proxyAdvancing = false; }
+  else { v.pause(); setProxyAdvancing(false); }
 }
 
 /** 时长显示：探不到真实值时明确标"未知"，不假装算对了。 */
@@ -2394,6 +2446,164 @@ const stageStyle = computed(() => {
   const [w, h] = outSize.value.split('x').map(Number);
   return { aspectRatio: `${w && h ? w / h : 9 / 16}` };
 });
+
+// ===== 矢量图层实时合成（P1-10 / C-1）=====
+//
+// ★ 底图是 <img>（live 帧）/ <video>（proxy 代理），二者在舞台里按比例居中，四周留黑边。
+//   矢量层必须贴着**画面框**而不是舞台（否则竖屏工程的字幕/贴纸整体偏移）。
+//   这里不做 CSS 布局猜测，直接量底图的实际渲染框 —— 比例/黑边怎么变都对得上。
+const stageEl = ref<HTMLElement | null>(null);
+const liveImgEl = ref<HTMLImageElement | null>(null);
+const vecBox = reactive({ left: 0, top: 0, width: 0, height: 0, ready: false, mode: '' as 'live' | 'proxy' | 'clip' | '' });
+/** 舞台尺寸变化（窗口缩放/面板折叠）→ 重新量画面框 */
+let stageRO: ResizeObserver | null = null;
+
+function measureStageBox() {
+  const stage = stageEl.value;
+  const media = monitorMode.value === 'live'
+    ? liveImgEl.value
+    : monitorMode.value === 'proxy' ? proxyVideoEl.value : null;
+  if (!stage || !media) { vecBox.ready = false; return; }
+  const s = stage.getBoundingClientRect();
+  const m = media.getBoundingClientRect();
+  if (!(m.width > 0) || !(m.height > 0)) { vecBox.ready = false; return; }
+  vecBox.left = m.left - s.left;
+  vecBox.top = m.top - s.top;
+  vecBox.width = m.width;
+  vecBox.height = m.height;
+  vecBox.mode = monitorMode.value;
+  vecBox.ready = true;
+}
+
+const vectorLayerVisible = computed(() => {
+  if (monitorMode.value === 'clip' || !vecBox.ready) return false;
+  // 刚切模式时框还是上一个模式的 → 先不显示（否则会闪一下错位）
+  if (vecBox.mode !== monitorMode.value) return false;
+  if (monitorMode.value === 'live') return !!liveFrameUrl.value && !frameLoading.value;
+  return !!proxyClipUrl.value;
+});
+
+const vectorFrameStyle = computed(() => ({
+  left: `${vecBox.left}px`,
+  top: `${vecBox.top}px`,
+  width: `${vecBox.width}px`,
+  height: `${vecBox.height}px`,
+}));
+
+/**
+ * 图层素材（贴纸/画中画）→ 浏览器可播 URL。
+ * ★ 不走 /conversations/:id/file-stream：那是「已登记交付物」通道，导入素材是**引用式**
+ *   （绝对路径可能在会话目录之外）。layer-media 只放行**当前工程真实引用**的路径，
+ *   由服务端读工程做白名单，前端不参与路径判定。
+ */
+function layerMediaUrl(file: string): string {
+  const p = String(file || '').trim();
+  if (!p || !convId.value) return '';
+  const code = getLicenseCode();
+  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  return `${API_BASE}/plugin/clip-mode/layer-media?conversationId=${encodeURIComponent(convId.value)}&path=${encodeURIComponent(p)}${qs}`;
+}
+
+function onVectorSelect(kind: 'text' | 'sticker' | 'overlay', id: string) {
+  if (kind === 'text') selectText(id);
+  else if (kind === 'sticker') selectSticker(id);
+  else selectOverlay(id);
+}
+
+/**
+ * 拖动落点 → 工程（松手才落盘）。
+ * ★ 组件给的是**目标中心偏移**（-0.5~0.5），不是"加了多少"：
+ *   图层有关键帧时渲染侧关键帧优先，只改静态 x/y 会"松手弹回"——这里按差值整体平移关键帧，
+ *   动画形状保留、落点精确。
+ */
+async function onVectorCommit(
+  kind: 'text' | 'sticker' | 'overlay',
+  id: string,
+  x: number,
+  y: number,
+) {
+  const p = project.value;
+  if (!p) return;
+  const targetX = clampOffset(x);
+  const targetY = clampOffset(y);
+  let start = 0;
+  let end = 0;
+  let tf: { x?: number; y?: number; scale?: number; rotation?: number; opacity?: number } | undefined;
+  let kfs: Array<{ t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: string }> | undefined;
+  let apply: (shifted: ReturnType<typeof shiftLayerPosition>) => void;
+
+  if (kind === 'text') {
+    const t = p.texts.find((v) => v.id === id);
+    if (!t) return;
+    start = t.start; end = t.end; tf = t.transform; kfs = t.keyframes;
+    apply = (shifted) => {
+      const next = { ...shifted.tf };
+      if (Math.abs(Number(next.x ?? 0)) < 1e-4) delete next.x;
+      if (Math.abs(Number(next.y ?? 0)) < 1e-4) delete next.y;
+      if (Object.keys(next).length) t.transform = next; else delete t.transform;
+      if (shifted.kfs) t.keyframes = shifted.kfs;
+      if (selectedTextId.value === id) {
+        textPatch.tfOn = true;
+        textPatch.tfX = targetX;
+        textPatch.tfY = targetY;
+      }
+    };
+  } else if (kind === 'sticker') {
+    const s = p.stickers?.find((v) => v.id === id);
+    if (!s) return;
+    start = s.start; end = s.end; tf = s; kfs = s.keyframes;
+    apply = (shifted) => {
+      if (Math.abs(Number(shifted.tf.x ?? 0)) < 1e-4) delete s.x; else s.x = round4(Number(shifted.tf.x));
+      if (Math.abs(Number(shifted.tf.y ?? 0)) < 1e-4) delete s.y; else s.y = round4(Number(shifted.tf.y));
+      if (shifted.kfs) s.keyframes = shifted.kfs;
+    };
+  } else {
+    const o = p.overlays?.find((v) => v.id === id);
+    if (!o) return;
+    start = o.start; end = o.end; tf = o; kfs = o.keyframes;
+    apply = (shifted) => {
+      if (Math.abs(Number(shifted.tf.x ?? 0)) < 1e-4) delete o.x; else o.x = round4(Number(shifted.tf.x));
+      if (Math.abs(Number(shifted.tf.y ?? 0)) < 1e-4) delete o.y; else o.y = round4(Number(shifted.tf.y));
+      if (shifted.kfs) o.keyframes = shifted.kfs;
+    };
+  }
+
+  const eff = sampleLayerTf(tf, kfs, localLayerT(playhead.value, start, end)).eff;
+  const dx = targetX - (eff.x ?? 0);
+  const dy = targetY - (eff.y ?? 0);
+  if (Math.abs(dx) < 1e-4 && Math.abs(dy) < 1e-4) return;
+
+  pendingLabel.value = kind === 'text' ? '拖动字幕' : kind === 'sticker' ? '拖动贴纸' : '拖动画中画';
+  apply(shiftLayerPosition(tf, kfs, dx, dy));
+  dirty.value = true;
+  await save();
+  // live 模式的画中画已烤进底图 → 位置变了要重取一帧；文字/贴纸是前端画的，不用等 ffmpeg
+  if (kind === 'overlay' && monitorMode.value === 'live') scheduleFrameFetch(120);
+  void nextTick(() => measureStageBox());
+  note('位置已保存');
+}
+
+/**
+ * 代理播放时钟：<video> 的 timeupdate 只有 ~4Hz，字幕/贴纸关键帧会一顿一顿。
+ * ★ 用 rAF 按 video.currentTime 推进播放头（60Hz），矢量层随播放头采样 → 肉眼无跳变。
+ * ★ 只写 playhead，不触发取帧（scheduleFrameFetch 在非 live 模式直接返回）。
+ */
+let proxyClock: number | null = null;
+function startProxyClock() {
+  if (proxyClock != null) return;
+  const tick = () => {
+    const v = proxyVideoEl.value;
+    if (!v || !proxyAdvancing) { proxyClock = null; return; }
+    const t = proxySegStart.value + (v.currentTime || 0);
+    if (Number.isFinite(t)) playhead.value = Math.max(0, Math.min(estTotal.value, t));
+    proxyClock = requestAnimationFrame(tick);
+  };
+  proxyClock = requestAnimationFrame(tick);
+}
+function stopProxyClock() {
+  if (proxyClock != null) { cancelAnimationFrame(proxyClock); proxyClock = null; }
+}
+
 
 const selectedClip = computed(() => clips.value.find((c) => c.id === selectedClipId.value) || null);
 /** 选中的是图片素材（含定格帧）→ 属性面板显示"运镜 + 时长"而不是变速 */
@@ -5146,6 +5356,12 @@ async function render(preview: boolean) {
 // ★ 播放头一动就取帧（这是"边剪辑边预览"的驱动核心）
 watch(playhead, () => { scheduleFrameFetch(); });
 
+// ★ 矢量图层：底图/模式/画幅/加载态变了 → 重新量画面框（量到才显示，避免先闪到错位置）
+watch(
+  () => [monitorMode.value, liveFrameUrl.value, proxyClipUrl.value, frameLoading.value, outSize.value],
+  () => { void nextTick(() => measureStageBox()); },
+);
+
 // ★ 代理模式：播放头跨段 → 切到新段的代理（段内拖动不动，跨段才换源）
 watch(playhead, () => {
   if (monitorMode.value !== 'proxy' || proxyAdvancing) return;
@@ -5176,6 +5392,9 @@ onBeforeUnmount(() => {
   if (playTimer) { clearInterval(playTimer); playTimer = null; }
   if (frameTimer) clearTimeout(frameTimer);
   if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; }
+  stopProxyClock();
+  stageRO?.disconnect();
+  stageRO = null;
   replaceFrameUrl('');
   proxySeq++;   // 作废在途请求（卸载后回来的响应不再写状态）
 });
@@ -5193,6 +5412,11 @@ watch(() => chat.store.currentConvId, async () => {
 onMounted(async () => {
   window.addEventListener('keydown', onKeyDown);
   document.addEventListener('mousedown', onDocMouseDown, true);
+  // ★ 舞台尺寸变化（窗口缩放/面板开合）→ 画面框跟着变，矢量层必须重新贴位
+  if (typeof ResizeObserver !== 'undefined' && stageEl.value) {
+    stageRO = new ResizeObserver(() => measureStageBox());
+    stageRO.observe(stageEl.value);
+  }
   await loadFiles();
   await reload();
   // ★ 进剪辑模式的第一屏是**项目列表**（剪映式草稿箱），不是空白时间轴：
@@ -5272,9 +5496,12 @@ onMounted(async () => {
 .cp-spin { animation: cp-rotate 1s linear infinite; }
 @keyframes cp-rotate { from { transform: rotate(0) } to { transform: rotate(360deg) } }
 /* 「实时」角标：让用户清楚现在看的是实时帧而不是成片 */
-.cp-live-badge { position: absolute; left: 8px; top: 8px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; font-size: 10px; border-radius: 3px; background: rgb(22 163 74 / 88%); color: #fff; z-index: 2; }
+.cp-live-badge { position: absolute; left: 8px; top: 8px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; font-size: 10px; border-radius: 3px; background: rgb(22 163 74 / 88%); color: #fff; z-index: 5; }
+/* 矢量图层容器：贴在底图（<img>/<video>）的实际渲染框上（位置/尺寸由 measureStageBox 写入） */
+.cp-vector-frame { position: absolute; z-index: 3; pointer-events: none; }
+.cp-vec-note { font-size: 11px; color: var(--el-text-color-placeholder); white-space: nowrap; }
 /* 取帧失败提示（贴底居中，不遮挡画面主体） */
-.cp-live-err { position: absolute; left: 8px; right: 8px; bottom: 8px; font-size: 11px; line-height: 1.5; padding: 4px 8px; border-radius: 4px; background: rgb(220 38 38 / 88%); color: #fff; text-align: center; z-index: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-live-err { position: absolute; left: 8px; right: 8px; bottom: 8px; font-size: 11px; line-height: 1.5; padding: 4px 8px; border-radius: 4px; background: rgb(220 38 38 / 88%); color: #fff; text-align: center; z-index: 5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-transport { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 0; }
 .cp-time { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--el-text-color-regular); }
 /* 「待重新渲染」角标：成片与工程不一致时提醒（避免用户以为改动没生效） */

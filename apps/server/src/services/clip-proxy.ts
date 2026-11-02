@@ -38,8 +38,9 @@ export const PROXY_CACHE_MAX = 500;
 /** 触发清理的占比（超过即淘汰到 75%）。 */
 const PRUNE_RATIO = 0.75;
 
-/** 缓存目录版本号：改了代理口径（画幅/编码/指纹结构）就改这里，旧缓存整体作废。 */
-const PROXY_CACHE_VERSION = 'v1';
+/** 缓存目录版本号：改了代理口径（画幅/编码/指纹结构/包含哪些图层）就改这里，旧缓存整体作废。 */
+// v2（P1-10）：代理不再烤贴纸（矢量图层改由前端实时合成），旧的带贴纸缓存必须作废。
+const PROXY_CACHE_VERSION = 'v2';
 
 export function proxyCacheDir(): string {
   return path.join(tmpdir(), `yz-clip-proxy-${PROXY_CACHE_VERSION}`);
@@ -111,10 +112,38 @@ export interface ProxyProbeRow {
 }
 
 /**
+ * 代理用的「单段派生工程」：只保留该段素材与音频处理，把所有**矢量图层**清空。
+ *
+ * ★★★ 为什么必须清贴纸（P1-10，2026-11-02）：
+ *   P1-10 起字幕/贴纸/画中画由前端 DOM 实时合成。若代理里还烤了一遍贴纸，
+ *   前端再叠一层就是**重影**，而且拖动时旧贴纸会留在底图上（看起来像"拖动失效"）。
+ *   texts/overlays 原本就清空；stickers 是 P1-1 新增的独立视图字段，此前漏了。
+ * ★ 特效层（effects）**不清**：那是像素级效果（C-2 才上前端），代理里烤进去是
+ *   "代理近似"的一部分，前端不会重复绘制。
+ * ★ 定时音频层（audios）保持原样：属于代理听感范围，不在本项动。
+ */
+export function proxyDerivedProject(
+  project: ClipProject,
+  seg: ClipSegment,
+  size: { w: number; h: number },
+): ClipProject {
+  return {
+    ...project,
+    clips: [seg],
+    texts: [],
+    overlays: [],
+    stickers: [],
+    audioFx: undefined,
+    bgm: undefined,
+    output: { ...project.output, size: `${size.w}x${size.h}` },
+  };
+}
+
+/**
  * 生成（或命中）某一段的 480p 代理 mp4。
  *
  * ★ 渲染走 buildRenderPlan + runRenderPlan（与成片同一出口、同一执行器）：
- *   派生单段工程（clips=[该段]、texts/overlays/bgm/audioFx 清空），画幅换代理规格，
+ *   派生单段工程（clips=[该段]、矢量图层清空），画幅换代理规格，
  *   fast=true（预览档编码参数）。产物先落临时目录、成功后 rename 进缓存位 ——
  *   半成品绝不占缓存位（否则命中判定会拿到坏文件）。
  */
@@ -156,15 +185,7 @@ export async function ensureSegmentProxy(input: {
   } catch { /* 不存在 → 未命中 */ }
 
   // ---- 未命中 → 同步生成（派生单段工程走渲染计划）----
-  const single: ClipProject = {
-    ...project,
-    clips: [seg],
-    texts: [],
-    overlays: [],
-    audioFx: undefined,
-    bgm: undefined,
-    output: { ...project.output, size: `${size.w}x${size.h}` },
-  };
+  const single = proxyDerivedProject(project, seg, size);
   const workDir = path.join(dir, `tmp-${key}-${Date.now()}`);
   try {
     await mkdir(workDir, { recursive: true });

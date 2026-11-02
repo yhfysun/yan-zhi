@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   segmentFingerprint, proxyCacheKey, proxyTargetSize, proxySegmentSeconds,
-  pruneProxyCache, proxyCacheDir, PROXY_CACHE_MAX,
+  pruneProxyCache, proxyCacheDir, PROXY_CACHE_MAX, proxyDerivedProject,
 } from '../src/services/clip-proxy';
 import { createEmptyProject, applyClipOp, type ClipProject } from '../src/services/clip-project';
 
@@ -209,5 +209,38 @@ describe('pruneProxyCache · 缓存清理', () => {
     expect(fs.existsSync(path.join(proxyCacheDir(), 'bb000000000000000000.mp4'))).toBe(false);
     // tmp-* 目录仍在
     expect(fs.existsSync(path.join(proxyCacheDir(), 'tmp-probe', 'inner.txt'))).toBe(true);
+  });
+});
+
+describe('proxyDerivedProject · 矢量图层不进代理（P1-10）', () => {
+  it('★ 清空 texts/overlays/stickers：前端会自己合成，代理再烤一遍就是重影', () => {
+    const p = proj([
+      ['add_clip', { clips: [{ file: 'C:/a.mp4' }] }],
+      ['add_text', { texts: [{ text: 'hello', start: 0, end: 1 }] }],
+      ['add_overlay', { file: 'C:/pip.mp4', start: 0, end: 1 }],
+      ['add_sticker', { file: 'C:/st.png', start: 0, end: 1 }],
+    ]);
+    expect(p.texts.length).toBe(1);
+    expect(p.overlays?.length).toBe(1);
+    expect(p.stickers?.length).toBe(1);
+
+    const single = proxyDerivedProject(p, p.clips[0], { w: 270, h: 480 });
+    expect(single.clips).toHaveLength(1);
+    expect(single.texts).toEqual([]);
+    expect(single.overlays).toEqual([]);
+    expect(single.stickers).toEqual([]);
+    expect(single.output.size).toBe('270x480');
+    expect(single.bgm).toBeUndefined();
+    expect(single.audioFx).toBeUndefined();
+  });
+
+  it('不改原工程（派生是拷贝）', () => {
+    const p = proj([
+      ['add_clip', { clips: [{ file: 'C:/a.mp4' }] }],
+      ['add_sticker', { file: 'C:/st.png', start: 0, end: 1 }],
+    ]);
+    proxyDerivedProject(p, p.clips[0], { w: 270, h: 480 });
+    expect(p.stickers?.length).toBe(1);
+    expect(p.clips.length).toBe(1);
   });
 });

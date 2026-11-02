@@ -22,6 +22,7 @@ import { listAllRecipes } from '../services/clip-recipe-store.js';
 import { parseProbeJson, probeArgs } from '../services/clip-render.js';
 import { renderPreviewFrame, locateTimeline } from '../services/clip-preview.js';
 import { ensureSegmentProxy } from '../services/clip-proxy.js';
+import { isProjectSourcePath } from '../services/clip-layer-media.js';
 import { ensureEffectPreview } from '../services/clip-effect-preview.js';
 import { analyzeBeats } from '../services/clip-beats.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
@@ -587,6 +588,29 @@ router.get('/proxy', async (req: Request, res: Response) => {
   res.setHeader('X-Proxy-Cached', out.cached ? '1' : '0');
   res.setHeader('X-Proxy-Key', out.key || '');
   return res.sendFile(out.file);
+});
+
+// GET /api/plugin/clip-mode/layer-media?conversationId=..&path=..
+//
+// **矢量图层素材流**（P1-10）：贴纸/画中画由前端 DOM 实时合成，需要浏览器能直接播的 URL。
+// ★ 只放行**当前工程真实引用**的路径（services/clip-layer-media 白名单），
+//   不放开"任意本机路径"——否则浏览器侧的 <img>/<video> 等于读整台机器。
+// ★ sendFile 原生支持 Range/206：画中画 <video> 可边下边播、任意 seek。
+router.get('/layer-media', (req: Request, res: Response) => {
+  const conversationId = String(req.query.conversationId || '').trim();
+  const p = String(req.query.path || '').trim();
+  if (!conversationId || !p) return res.status(400).json({ error: 'conversationId 与 path 为必填项' });
+  if (p.length > 1000) return res.status(400).json({ error: 'path 过长' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const project = readClipProject(conversationId);
+  if (!project) return res.status(404).json({ error: '工程不存在' });
+  if (!isProjectSourcePath(project, p)) return res.status(403).json({ error: '该路径未被当前工程引用' });
+  try {
+    if (!fs.statSync(p).isFile()) return res.status(404).json({ error: '文件不存在' });
+  } catch {
+    return res.status(404).json({ error: '文件不存在' });
+  }
+  return res.sendFile(path.resolve(p));
 });
 
 // POST /api/plugin/clip-mode/beat-cut  body: { conversationId, everyNth?, transition?, minPiece? }

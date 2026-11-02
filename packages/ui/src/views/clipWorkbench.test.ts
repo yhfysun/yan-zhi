@@ -701,3 +701,75 @@ describe('ClipWorkbench · 画中画变换 / 关键帧（P0-2）', () => {
     expect(CODE).toContain('BLEND_MODES');
   });
 });
+
+/**
+ * P1-10（C-1）矢量图层实时合成：静态守门。
+ * ★ 这些断言对应方案文档的硬约束：
+ *   · 矢量层必须叠在**画面框**上（量底图，不是给舞台 inset:0）；
+ *   · 代理模式要有「代理预览 · 矢量图层实时合成」角标（避免误以为成片是这个码率）；
+ *   · 拖动松手才落盘（拖动过程不请求服务端）；
+ *   · 播放头用 rAF 跟 <video>（timeupdate 只有 ~4Hz，关键帧会一顿一顿）。
+ */
+describe('ClipWorkbench · P1-10 矢量图层实时合成', () => {
+  const VEC = readFileSync(path.resolve(here, '../components/clip/ClipVectorLayer.vue'), 'utf8');
+
+  it('★ 监视器里叠了矢量图层，且画中画按模式分「代理第二路 video / live 命中框」', () => {
+    expect(SRC).toContain('<ClipVectorLayer');
+    expect(SRC).toContain('class="cp-vector-frame"');
+    expect(SRC).toMatch(/:pip-mode="monitorMode === 'proxy' \? 'video' : 'hit'"/);
+  });
+
+  it('★★ 矢量层贴在底图实际渲染框上（舞台有黑边，不能铺满舞台）', () => {
+    const m = fnBody('measureStageBox');
+    expect(m).toContain('getBoundingClientRect');
+    expect(m).toContain('liveImgEl.value');
+    expect(m).toContain('proxyVideoEl.value');
+    // 容器用测量值定位
+    expect(SRC).toContain(':style="vectorFrameStyle"');
+    const i = CODE.indexOf('const vectorLayerVisible');
+    const vis = CODE.slice(i, i + 400);
+    expect(vis).toContain("'clip'");
+    // 成片模式不叠（已烤进成片）
+    expect(vis).toContain('proxyClipUrl.value');
+  });
+
+  it('★ 角标明确标注「代理预览 · 矢量图层实时合成」与细微差异提示', () => {
+    expect(SRC).toContain('代理预览 · 矢量图层实时合成');
+    expect(SRC).toContain('实时预览（与成片可能有细微差异）');
+  });
+
+  it('★ 拖动松手才落盘：onVectorCommit 里 save()，拖动过程只改本地覆盖值', () => {
+    const body = fnBody('onVectorCommit');
+    expect(body).toContain('shiftLayerPosition');
+    expect(body).toContain('await save()');
+    expect(body).toContain('dirty.value = true');
+    // 组件侧：pointerup 才 emit commit
+    expect(VEC).toContain("emit('commit'");
+    expect(VEC).toMatch(/function onDragUp\(/);
+  });
+
+  it('★ 图层素材走工程引用白名单端点（不是任意路径流）', () => {
+    const body = fnBody('layerMediaUrl');
+    expect(body).toContain('/plugin/clip-mode/layer-media');
+    expect(body).toContain('conversationId=');
+    expect(body).toContain('encodeURIComponent(p)');
+  });
+
+  it('★ 代理播放用 rAF 推播放头（timeupdate 太粗，关键帧会跳）', () => {
+    const clock = fnBody('startProxyClock');
+    expect(clock).toContain('requestAnimationFrame');
+    expect(clock).toContain('v.currentTime');
+    const adv = fnBody('setProxyAdvancing');
+    expect(adv).toContain('startProxyClock');
+    expect(adv).toContain('stopProxyClock');
+    // 组件靠 playing 决定画中画 <video> 的播放/暂停
+    expect(VEC).toContain('props.playing');
+  });
+
+  it('★ 组件按播放头过滤图层并采样关键帧（不自己发明公式）', () => {
+    expect(VEC).toContain('layerVisibleAt');
+    expect(VEC).toContain('sampleLayerTf');
+    expect(VEC).toContain('layerCenterPx');
+    expect(VEC).toContain('buildTextCss');
+  });
+});
