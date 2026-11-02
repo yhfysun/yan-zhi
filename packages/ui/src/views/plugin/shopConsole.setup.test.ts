@@ -197,7 +197,8 @@ describe('ShopConsole · setup 守门', () => {
     expect(host.querySelector('.shop-work')).not.toBeNull();
     expect(host.querySelector('.shop-chat')).not.toBeNull();
     expect(host.querySelector('.shop-chat-head')?.textContent).toContain('AI 助手');
-    expect(host.querySelector('.right-panel')).not.toBeNull();
+    expect(host.querySelector('.shop-main > .right-panel')).not.toBeNull();
+    expect(host.querySelector('.shop-preview-scrim')).toBeNull();
     expect(host.querySelector('[title="打开浏览器预览"]')).not.toBeNull();
   });
 });

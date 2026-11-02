@@ -24,7 +24,11 @@
     <!-- ============ 主区：工作台（工具条 + 页签） + 常驻 AI 对话栏 ============ -->
     <section
       class="shop-main"
-      :class="{ 'is-lead-ai': lead === 'ai', 'is-chat-collapsed': chatCollapsed }"
+      :class="{
+        'is-lead-ai': lead === 'ai',
+        'is-chat-collapsed': chatCollapsed,
+        'has-preview': chat.store.rightPanelOpen,
+      }"
       :style="{ '--shop-chat-w': chatR.width.value + 'px' }"
     >
       <div class="shop-work">
@@ -41,6 +45,7 @@
           @edit="openEdit()"
           @remove="removeShop()"
           @open-platform="tab = 'platform'"
+          @open-browser="openShopBrowserPreview"
         />
 
         <el-tabs v-model="tab" class="shop-tabs">
@@ -123,20 +128,13 @@
         <ChatInputArea ref="chatInputRef" />
       </aside>
 
+      <ChatPreviewPane />
+
       <!-- 对话栏收起后右下角的悬浮入口 -->
       <button v-if="chatCollapsed" class="shop-chat-fab" title="展开 AI 对话" @click="chatCollapsed = false">
         <el-icon :size="13"><ChatDotRound /></el-icon><span>AI</span>
       </button>
     </section>
-
-    <button
-      v-if="chat.store.rightPanelOpen"
-      type="button"
-      class="shop-preview-scrim"
-      aria-label="关闭浏览器预览"
-      @click="closeShopBrowserPreview"
-    ></button>
-    <ChatPreviewPane />
 
     <ChatDialogs />
 
@@ -216,7 +214,9 @@ function onLeadChange(v: LeadMode): void {
 /** 平板/手机宽度下优先给工作台让位；资源栏和 AI 栏都从边缘入口按需展开。 */
 function syncNarrowShopChrome(): void {
   if (typeof window === 'undefined') return;
-  if (window.innerWidth < 1100 && lead.value !== 'ai') chatCollapsed.value = true;
+  if (window.innerWidth < 1100 && lead.value !== 'ai' && !chat.store.rightPanelOpen) {
+    chatCollapsed.value = true;
+  }
   if (window.innerWidth < 900) shellRef.value?.collapseAside();
 }
 
@@ -232,11 +232,19 @@ function openShopBrowserPreview(): void {
   if (browserTab) chat.store.activatePreviewTab(browserTab.id);
   else chat.store.openTab({ kind: 'browser', name: '浏览器', url: '' });
   chat.store.rightPanelOpen = true;
+  chatCollapsed.value = false;
+  if (typeof window !== 'undefined' && window.innerWidth < 1600) shellRef.value?.collapseAside();
 }
 
 function closeShopBrowserPreview(): void {
   chat.store.rightPanelOpen = false;
 }
+
+watch(() => chat.store.rightPanelOpen, (open) => {
+  if (!open) return;
+  chatCollapsed.value = false;
+  if (typeof window !== 'undefined' && window.innerWidth < 1600) shellRef.value?.collapseAside();
+});
 /** 当前项目 id；'' = 未归属（历史连接 / 还没建项目） */
 const activeProjectId = ref('');
 const activeProjectTitle = computed(() =>

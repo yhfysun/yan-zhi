@@ -42,6 +42,7 @@
     <span class="shop-toolbar-spacer" />
 
     <div class="shop-toolbar-actions">
+      <el-button size="small" :icon="Monitor" @click="emit('open-browser')">浏览器</el-button>
       <el-button v-if="shop" size="small" :loading="checking" @click="emit('check')">配置自检</el-button>
       <el-button v-if="shop" size="small" @click="emit('edit')">编辑</el-button>
       <el-button v-if="shop && isStore" size="small" type="primary" plain @click="emit('open-platform')">平台后台</el-button>
@@ -54,6 +55,7 @@
 // 顶部工作条（方案 §6）：店铺类型 / 货源模式 / 工作台模式 + 连接级操作。
 // ★ 人工/AI 只是工作台切换（复用 lead），不改变数据与权限。
 import { computed } from 'vue';
+import { Monitor } from '@element-plus/icons-vue';
 import type { ShopConnection } from '../shopSession';
 import type { LeadMode } from '../../../stores/mode';
 import { SHOP_TYPE_META, type ShopType, type SupplyMode } from './useShopApi';
@@ -74,6 +76,7 @@ const emit = defineEmits<{
   (e: 'edit'): void;
   (e: 'remove'): void;
   (e: 'open-platform'): void;
+  (e: 'open-browser'): void;
 }>();
 
 const shopType = computed<ShopType>(() => props.shop?.shopType ?? (props.shop?.demo ? 'demo' : props.shop?.isProduction ? 'production' : 'test'));
