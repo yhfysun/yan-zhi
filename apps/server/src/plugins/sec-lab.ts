@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { secModeAgentDefs, secModeScene } from './sec-lab/seed.js';
 import { applyBuiltinSeed } from '../host-bridge.js';
 import type { BuiltInTool, McpCallResult, PlaybookDef, PluginContext, PluginManifest, PluginModule, PluginStorage } from '@yan-zhi/core';
@@ -23,6 +24,7 @@ import {
 import { renderOutput, sortFindings, type Finding, type ToolOutput } from './sec-lab-types.js';
 // ★ 宿主能力走宿主桥（mode-pluginization P3）。
 import { pushPluginAudit } from '../host-bridge.js';
+import { getAuthMode } from '../rbac.js';
 import { runRecon } from './sec-lab-tools/recon.js';
 import { runPortScan } from './sec-lab-tools/portscan.js';
 import { runWebProbe } from './sec-lab-tools/webprobe.js';
@@ -291,6 +293,31 @@ const K_SCAN_BASELINES = 'scan_baselines';
 const AUDIT_MAX = 500;
 
 let store: PluginStorage | null = null;
+
+// ── 多用户交战隔离（P3）────────────────────────────────────────────────────
+// ★ 只在 multi 模式下按用户隔离 key；guest/单机仍用原始 key（存量数据不受影响）。
+//   用 AsyncLocalStorage 传递用户身份：工具执行（ctx.userId）与 HTTP 路由（req.user）
+//   两条入口都在进入时 runAsUser，存储层对调用方无感。
+const userAls = new AsyncLocalStorage<string>();
+
+function scopedKey(key: string): string {
+  const uid = userAls.getStore();
+  if (!uid || uid === 'guest' || getAuthMode() !== 'multi') return key;
+  return `${key}::u::${uid}`;
+}
+
+function scopedStorage(raw: PluginStorage): PluginStorage {
+  return {
+    get: <T>(k: string) => raw.get<T>(scopedKey(k)),
+    set: (k: string, v: unknown) => raw.set(scopedKey(k), v),
+    delete: (k: string) => raw.delete(scopedKey(k)),
+  };
+}
+
+function runAsUser<T>(uid: unknown, fn: () => T): T {
+  const id = typeof uid === 'string' && uid ? uid : undefined;
+  return id ? userAls.run(id, fn) : fn();
+}
 
 interface AuditEntry {
   at: number; tool: string; target?: string; risk?: string;
@@ -2188,7 +2215,19 @@ function experienceReviewTool(): BuiltInTool {
 
 function registerRoutes(ctx: PluginContext) {
   ctx.registerBackendRoute((app: unknown) => {
-    const r = app as {
+    // 每条路由都在「当前请求用户」的 AsyncLocalStorage 上下文里执行 → 存储 key 自动按用户隔离
+    const raw = app as any;
+    const wrapped = new Proxy(raw, {
+      get(target, prop) {
+        const v = target[prop];
+        if ((prop === 'get' || prop === 'post' || prop === 'put' || prop === 'delete') && typeof v === 'function') {
+          return (p: string, h: (...a: any[]) => any) =>
+            v.call(target, p, (req: any, res: any) => runAsUser(req?.user?.userId, () => h(req, res)));
+        }
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const r = wrapped as {
       get: (p: string, h: (...a: unknown[]) => void) => void;
       post: (p: string, h: (...a: unknown[]) => void) => void;
       delete: (p: string, h: (...a: unknown[]) => void) => void;
@@ -2636,12 +2675,15 @@ export const SEC_TOOL_FACTORIES: Record<string, () => BuiltInTool> = {
 export const secLabModule: PluginModule = {
   async activate(ctx: PluginContext) {
     applyBuiltinSeed({ agents: secModeAgentDefs, scenes: [secModeScene] });
-    store = ctx.storage;
+    store = scopedStorage(ctx.storage);
     // 旧库归一：历史发现项里可能存着脱敏修复前写入的凭据原文，且每次扫描都追加导致大量重复
     void normalizeStoredFindings().catch(() => { /* 清理失败不阻断启动 */ });
     // 工具注册与 /run 路由共用同一份工厂表（见 SEC_TOOL_FACTORIES）
     for (const factory of Object.values(SEC_TOOL_FACTORIES)) {
-      ctx.registerTool(factory());
+      const t = factory() as any;
+      const orig = t.execute.bind(t);
+      t.execute = (args: any, toolCtx?: any) => runAsUser(toolCtx?.userId, () => orig(args, toolCtx));
+      ctx.registerTool(t);
     }
     registerRoutes(ctx);
     ctx.log('[sec-lab] 已启用：仅限自有资产或已授权目标，所有动作受授权范围与黑名单约束');
