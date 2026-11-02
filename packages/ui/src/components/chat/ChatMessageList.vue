@@ -234,6 +234,10 @@
                         <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到。
                              展开体里再放一份会重复，故只此一处；hover 浮层放大、双击进灯箱、右键取用。 -->
                         <ToolMediaPreview v-if="toolMedia(getStepToolResult(step, tc.id))" :media="toolMedia(getStepToolResult(step, tc.id))!" class="tool-item-media-inline" />
+                        <SecFindingsCard
+                          v-if="secFindingsOf(getStepToolResult(step, tc.id)).length"
+                          :findings="secFindingsOf(getStepToolResult(step, tc.id))"
+                        />
                         <div v-if="isToolItemOpen(tc.id, 'agent-step-' + vr.ri + '-' + si + '-' + idx)" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
@@ -308,6 +312,10 @@
                         </div>
                         <!-- 本条调用产出的图片 / 视频：贴在工具卡片上（折叠体之外）—— 展开状态无关，收起也能看到 -->
                           <ToolMediaPreview v-if="toolMedia(getToolResult(tc.id))" :media="toolMedia(getToolResult(tc.id))!" class="tool-item-media-inline" />
+                          <SecFindingsCard
+                            v-if="secFindingsOf(getToolResult(tc.id)).length"
+                            :findings="secFindingsOf(getToolResult(tc.id))"
+                          />
                           <div v-if="expandedTools['round-' + vr.ri + '-' + idx]" class="tool-item-body">
                           <div class="tool-item-section">
                             <div class="tool-item-label">参数</div>
@@ -820,6 +828,8 @@ import MediaViewer from '../media/MediaViewer.vue';
 import MediaContextMenu from '../media/MediaContextMenu.vue';
 import MediaHoverFloat from '../media/MediaHoverFloat.vue';
 import ToolMediaPreview from './ToolMediaPreview.vue';
+import SecFindingsCard from './SecFindingsCard.vue';
+import { parseSecFindings as secFindingsOf } from '../../utils/sec-findings';
 import ChatFileChangeCard from './ChatFileChangeCard.vue';
 import DeepThinkBadge from './DeepThinkBadge.vue';
 import { roundReasoningChars, roundReasoningText } from '../../composables/chat/reasoning-summary';
