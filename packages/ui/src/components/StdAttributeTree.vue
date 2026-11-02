@@ -249,7 +249,7 @@ onMounted(() => { void load(); });
 .std-scroll { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--glass-border); border-radius: 10px; padding: 6px; }
 .std-row { border-radius: 8px; min-height: 34px; display: flex; align-items: center; margin-bottom: 2px; }
 .std-row-inner { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
-.std-row-group { cursor: pointer; user-select: none; background: rgba(15, 23, 42, 0.02); }
+.std-row-group { cursor: pointer; user-select: none; background: color-mix(in srgb, var(--color-text) 2%, transparent); }
 .std-row-group:hover { background: var(--glass-bg-hover); }
 .std-row-root { opacity: 0.8; }
 .std-fold { color: var(--color-text-secondary); transition: transform 0.15s ease; flex-shrink: 0; }

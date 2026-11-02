@@ -210,7 +210,7 @@ onMounted(resolve);
   overflow: hidden;
   background: var(--color-bg, #ffffff);
   color: var(--color-text, #1f2937);
-  border: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+  border: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
 }
 .atp-head {
   display: flex;
@@ -219,7 +219,7 @@ onMounted(resolve);
   padding: 6px 10px;
   font-size: 11px;
   line-height: 1.4;
-  border-bottom: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.08));
+  border-bottom: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 8%, transparent));
 }
 .atp-name {
   flex: 1 1 auto;
@@ -257,7 +257,7 @@ onMounted(resolve);
 }
 /* 纸面：图片/表格/文本都垫白底，像一张被预览的纸 */
 .atp-stage-paper {
-  background: #ffffff;
+  background: var(--color-surface);
   border-radius: 6px;
 }
 .atp-img {

@@ -399,7 +399,7 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); });
 
 .cce-head {
   display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; flex-shrink: 0;
-  border-bottom: 1px solid var(--color-border, rgba(15,23,42,0.08));
+  border-bottom: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 8%, transparent));
   background: color-mix(in srgb, #ef4444 6%, var(--color-surface, #fff));
   font-size: 13px;
 }
@@ -408,10 +408,10 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); });
 .cce-file { font-weight: 400; color: var(--color-text-secondary, #6b6b66); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cce-conflict-count { font-size: 12px; color: var(--color-text-secondary, #6b6b66); }
 .cce-spacer { flex: 1; }
-.cce-divider { width: 1px; height: 18px; background: var(--color-border, rgba(15,23,42,0.1)); margin: 0 4px; }
+.cce-divider { width: 1px; height: 18px; background: var(--color-border, color-mix(in srgb, var(--color-text) 10%, transparent)); margin: 0 4px; }
 .cce-btn {
   height: 28px; padding: 0 10px; font-size: 12px;
-  border: 1px solid var(--color-border, rgba(15,23,42,0.12)); border-radius: 6px;
+  border: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 12%, transparent)); border-radius: 6px;
   background: var(--color-surface, #fff); color: var(--color-text, #1a1a1a); cursor: pointer; flex-shrink: 0;
   display: inline-flex; align-items: center; gap: 4px;
 }
@@ -428,20 +428,20 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); });
 /* ===== 三栏布局 ===== */
 .cce-merge { flex: 1; min-height: 0; display: flex; overflow: hidden; }
 .cce-col-left, .cce-col-mid, .cce-col-right { display: flex; flex-direction: column; min-height: 0; }
-.cce-col-left { flex: 1 1 33%; border-right: 1px solid var(--color-border, rgba(15,23,42,0.08)); }
+.cce-col-left { flex: 1 1 33%; border-right: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 8%, transparent)); }
 .cce-col-mid { flex: 1 1 34%; }
-.cce-col-right { flex: 1 1 33%; border-left: 1px solid var(--color-border, rgba(15,23,42,0.08)); }
+.cce-col-right { flex: 1 1 33%; border-left: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 8%, transparent)); }
 
 .cce-col-head {
   display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; flex-shrink: 0;
-  border-bottom: 1px solid var(--color-border, rgba(15,23,42,0.06));
-  background: var(--color-surface-hover, rgba(15,23,42,0.02)); font-size: 12px; font-weight: 600;
+  border-bottom: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 6%, transparent));
+  background: var(--color-surface-hover, color-mix(in srgb, var(--color-text) 2%, transparent)); font-size: 12px; font-weight: 600;
 }
 .cce-col-head.center { justify-content: center; }
 .cce-col-title { color: var(--color-text, #1a1a1a); }
 .cce-sync-btn {
   margin-left: auto; display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 22px; border: 1px solid var(--color-border, rgba(15,23,42,0.12)); border-radius: 4px;
+  width: 24px; height: 22px; border: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 12%, transparent)); border-radius: 4px;
   background: transparent; cursor: pointer; color: var(--color-text-secondary, #6b6b66); font-size: 12px;
 }
 .cce-sync-btn:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
@@ -472,12 +472,12 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); });
 .cce-line.ours:hover .cce-line-sync, .cce-line.theirs:hover .cce-line-sync { opacity: 1; }
 
 /* 中栏冲突工具栏 */
-.cce-conflict-toolbar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 11px; background: color-mix(in srgb, #ef4444 5%, transparent); border-bottom: 1px solid var(--color-border, rgba(15,23,42,0.06)); }
+.cce-conflict-toolbar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 11px; background: color-mix(in srgb, #ef4444 5%, transparent); border-bottom: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 6%, transparent)); }
 .cce-seg-conflict.done .cce-conflict-toolbar { background: color-mix(in srgb, #10b981 5%, transparent); }
 .cce-conflict-done { color: #10b981; font-weight: 600; }
 .cce-conflict-todo { color: #ef4444; font-weight: 600; }
 .cce-mini-btn {
-  height: 20px; padding: 0 8px; font-size: 11px; border: 1px solid var(--color-border, rgba(15,23,42,0.12)); border-radius: 4px;
+  height: 20px; padding: 0 8px; font-size: 11px; border: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 12%, transparent)); border-radius: 4px;
   background: var(--color-surface, #fff); color: var(--color-text-secondary, #6b6b66); cursor: pointer; white-space: nowrap;
 }
 .cce-mini-btn:hover { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
@@ -487,8 +487,8 @@ onUnmounted(() => { document.removeEventListener('keydown', onKey); });
 .cce-result-edit {
   width: calc(100% - 8px); margin: 4px; padding: 6px 8px; border: none; border-radius: 4px;
   font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; line-height: 1.5; resize: vertical;
-  background: var(--color-surface-hover, rgba(15,23,42,0.02)); color: var(--color-text, #1a1a1a);
-  outline: 1px solid var(--color-border, rgba(15,23,42,0.08));
+  background: var(--color-surface-hover, color-mix(in srgb, var(--color-text) 2%, transparent)); color: var(--color-text, #1a1a1a);
+  outline: 1px solid var(--color-border, color-mix(in srgb, var(--color-text) 8%, transparent));
 }
 .cce-result-edit:focus { outline: 1px solid var(--color-primary, #c2410c); }
 </style>

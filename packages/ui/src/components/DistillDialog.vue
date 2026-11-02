@@ -199,7 +199,7 @@ async function saveSkill() {
 .distill-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .distill-section-title { font-size: 13px; font-weight: 600; color: var(--color-text-secondary); margin-bottom: 8px; }
 .distill-msgs { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-.distill-msg { padding: 8px 12px; border-radius: 8px; background: rgba(15,23,42,0.04); }
+.distill-msg { padding: 8px 12px; border-radius: 8px; background: color-mix(in srgb, var(--color-text) 4%, transparent); }
 .distill-msg.role-user { border-left: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent); }
 .distill-msg.role-assistant { border-left: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent); }
 .distill-msg-role { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
@@ -209,7 +209,7 @@ async function saveSkill() {
 .distill-actions { display: flex; justify-content: center; padding: 12px 0; }
 .distill-loading { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 24px 0; color: var(--color-text-secondary); }
 .distill-result { display: flex; flex-direction: column; gap: 12px; }
-.distill-result-md { background: rgba(15,23,42,0.04); padding: 16px; border-radius: 8px; font-family: "JetBrains Mono", monospace; font-size: 13px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.distill-result-md { background: color-mix(in srgb, var(--color-text) 4%, transparent); padding: 16px; border-radius: 8px; font-family: "JetBrains Mono", monospace; font-size: 13px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .distill-refine { display: flex; flex-direction: column; gap: 8px; }
 .refine-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 

@@ -324,7 +324,7 @@ onMounted(loadAll);
 .dash-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .dash-desc { padding: 8px 14px 0; font-size: 12px; color: var(--color-text-secondary); }
 .dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); grid-auto-rows: 56px; gap: 10px; padding: 12px; }
-.dash-widget { position: relative; display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; background: #fff; overflow: hidden; }
+.dash-widget { position: relative; display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; background: var(--color-surface); overflow: hidden; }
 .dash-widget.off { opacity: 0.5; }
 .dw-pick { position: absolute; top: 4px; right: 6px; z-index: 2; }
 .dash-save { display: flex; flex-direction: column; gap: 8px; }

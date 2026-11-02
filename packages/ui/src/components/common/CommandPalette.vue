@@ -1,10 +1,11 @@
 <template>
-  <!-- ⌘K 全局搜索面板（spec「桌面端一体化顶栏 · 全局搜索」基础版）：
-       自绘浮层（Teleport 到 body）—— 顶部输入框 + 分组结果列表（任务 / 空间）。
+  <!-- ⌘K 全局命令面板（spec「桌面端一体化顶栏 · 全局搜索」基础版 + 2026-11-02 命令条目）：
+       自绘浮层（Teleport 到 body）—— 顶部输入框 + 分组结果列表（命令 / 任务 / 空间）。
+       · 命令：新建任务、设置、侧栏/上下文栏开关、切换模式（常驻，可按词过滤）；
        · 任务：当前模式的会话列表按标题过滤，前 8 条 → 跳 /chat 并激活该会话；
        · 空间：空间树 store 过滤 → 切换空间并回任务页；
        · 文件：无全局文件索引 store（file.ts 是会话级），该类暂缺 —— 基础版按 spec 允许跳过。
-       键盘：↑↓ 选择、Enter 跳转、Esc 关闭；样式全 token 化（圆角 12px + --shadow-3）。 -->
+       键盘：↑↓ 选择、Enter 执行、Esc 关闭；样式全 token 化（圆角 12px + --shadow-3）。 -->
   <Teleport to="body">
     <transition name="cmdk-fade">
       <div v-if="visible" class="cmdk-overlay" @mousedown.self="close">
@@ -16,7 +17,7 @@
               v-model="query"
               class="cmdk-input"
               type="text"
-              placeholder="搜索任务 / 空间…"
+              placeholder="搜索命令 / 任务 / 空间…"
               @keydown="onKeydown"
             />
             <button type="button" class="cmdk-esc-hint" aria-label="关闭" @click="close">Esc</button>
@@ -51,9 +52,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch, type Component } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowRight, ChatDotRound, Folder, Search } from '@element-plus/icons-vue';
+import { ArrowRight, ChatDotRound, Folder, Search, Plus, Setting, Fold, Expand, Switch } from '@element-plus/icons-vue';
 import { useChatStore, useSpaceStore } from '../../stores';
 import { useChat } from '../../composables/chat/useChat';
+import { activeMode, setMode, modeRoute, visibleModeDefs } from '../../stores/mode';
 
 const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{ (e: 'update:visible', v: boolean): void }>();
@@ -87,7 +89,33 @@ watch(
   },
 );
 
-interface PaletteItem { key: string; type: 'task' | 'space'; title: string; desc: string; icon: Component }
+interface PaletteItem { key: string; type: 'task' | 'space' | 'command'; title: string; desc: string; icon: Component }
+
+/**
+ * 命令条目（2026-11-02）：面板不只搜任务/空间，也是全局动作入口。
+ * 常驻显示（不依赖搜索词），搜索时按标题/说明过滤。
+ */
+const commandItems = computed<PaletteItem[]>(() => {
+  const q = query.value.trim().toLowerCase();
+  const items: PaletteItem[] = [
+    { key: 'cmd:new', type: 'command', title: '新建任务', desc: 'Ctrl+N', icon: Plus },
+    { key: 'cmd:office', type: 'command', title: '打开办公工作台', desc: '文件 / 文档 / AI', icon: Folder },
+    { key: 'cmd:settings', type: 'command', title: '打开设置', desc: '设置', icon: Setting },
+    { key: 'cmd:sidebar', type: 'command', title: '折叠/展开任务侧栏', desc: 'Ctrl+B', icon: Fold },
+    { key: 'cmd:context', type: 'command', title: '开关右侧上下文栏', desc: 'Ctrl+J', icon: Expand },
+    // 模式切换：只列当前可见且非当前模式的项（与顶栏模式下拉同口径）
+    ...visibleModeDefs.value
+      .filter((m) => m.key !== activeMode.value)
+      .map<PaletteItem>((m) => ({
+        key: 'mode:' + m.key,
+        type: 'command',
+        title: `切换到${m.label}`,
+        desc: '模式',
+        icon: Switch,
+      })),
+  ];
+  return items.filter((it) => !q || it.title.toLowerCase().includes(q) || it.desc.toLowerCase().includes(q));
+});
 
 /** 任务：当前模式会话按标题过滤，前 8 条（spec 基础版口径） */
 const taskItems = computed<PaletteItem[]>(() => {
@@ -119,10 +147,11 @@ const spaceItems = computed<PaletteItem[]>(() => {
     }));
 });
 
-const flatResults = computed<PaletteItem[]>(() => [...taskItems.value, ...spaceItems.value]);
+const flatResults = computed<PaletteItem[]>(() => [...commandItems.value, ...taskItems.value, ...spaceItems.value]);
 
 const groupedResults = computed(() => {
   const groups: Array<{ key: string; label: string; items: PaletteItem[] }> = [];
+  if (commandItems.value.length) groups.push({ key: 'commands', label: '命令', items: commandItems.value });
   if (taskItems.value.length) groups.push({ key: 'tasks', label: '任务', items: taskItems.value });
   if (spaceItems.value.length) groups.push({ key: 'spaces', label: '空间', items: spaceItems.value });
   return groups;
@@ -150,8 +179,44 @@ function moveActive(delta: number) {
   });
 }
 
+function runCommand(key: string) {
+  if (key === 'cmd:new') {
+    if (!onWorkbenchPage()) void router.push('/chat');
+    void useChat().startNewChat();
+    return;
+  }
+  if (key === 'cmd:settings') {
+    void router.push('/settings');
+    return;
+  }
+  if (key === 'cmd:office') {
+    void router.push('/office');
+    return;
+  }
+  if (key === 'cmd:sidebar') {
+    if (!route.path.startsWith('/chat')) { void router.push('/chat'); return; }
+    const chat = useChat();
+    chat.convCollapsed.value = !chat.convCollapsed.value;
+    return;
+  }
+  if (key === 'cmd:context') {
+    if (!route.path.startsWith('/chat')) { void router.push('/chat'); return; }
+    useChat().toggleContextSidebar();
+    return;
+  }
+  if (key.startsWith('mode:')) {
+    const m = key.slice('mode:'.length);
+    setMode(m);
+    void router.push(modeRoute(m));
+  }
+}
+
 function choose(item: PaletteItem) {
   close();
+  if (item.type === 'command') {
+    runCommand(item.key);
+    return;
+  }
   if (item.type === 'task') {
     // 任务 → 激活该会话（useChat 单例在 App 启动时已创建，与 WebTopBar「新任务」同一惰性口径）
     if (!onWorkbenchPage()) void router.push('/chat');

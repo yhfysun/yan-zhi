@@ -902,7 +902,7 @@ onMounted(() => {
 /* 皮肤渐变色块：铺满图标容器，不再叠主题色浅底 */
 .pm-swatch {
   background: none;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 .pm-perms {
   display: flex;
@@ -1117,6 +1117,6 @@ onMounted(() => {
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-secondary);
-  background: var(--color-surface-hover, rgba(15, 23, 42, 0.05));
+  background: var(--color-surface-hover, color-mix(in srgb, var(--color-text) 5%, transparent));
 }
 </style>

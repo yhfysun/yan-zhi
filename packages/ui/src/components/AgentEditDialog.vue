@@ -742,7 +742,7 @@ async function handleDelete() {
 .image-picker::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 999px; }
 .image-cell {
   aspect-ratio: 1; padding: 0; border-radius: 10px; overflow: hidden; cursor: pointer;
-  border: 2px solid transparent; background: rgba(15,23,42,0.04); transition: border-color 0.15s, transform 0.15s;
+  border: 2px solid transparent; background: color-mix(in srgb, var(--color-text) 4%, transparent); transition: border-color 0.15s, transform 0.15s;
 }
 .image-cell img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .image-cell:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
@@ -755,7 +755,7 @@ async function handleDelete() {
   background: var(--glass-bg);
 }
 .type-card:hover { border-color: var(--color-primary); color: var(--color-text); }
-.type-card .type-icon { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(15,23,42,0.05); color: var(--color-text-secondary); }
+.type-card .type-icon { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: color-mix(in srgb, var(--color-text) 5%, transparent); color: var(--color-text-secondary); }
 .type-card.active { border-color: var(--color-primary); background: rgba(99,102,241,0.04); }
 .type-selector.disabled .type-card { opacity: 0.6; cursor: not-allowed; }
 .type-selector.disabled .type-card:hover { border-color: var(--el-border-color); color: var(--el-text-color-regular); }
@@ -770,14 +770,14 @@ async function handleDelete() {
 .param-head { display: flex; justify-content: space-between; align-items: baseline; }
 .param-label { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; }
 .param-val { font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 600; color: var(--color-primary); }
-.param-item :deep(.el-slider) { --el-slider-main-bg-color: var(--color-primary); --el-slider-runway-bg-color: rgba(15,23,42,0.08); --el-slider-height: 4px; --el-slider-button-size: 12px; }
+.param-item :deep(.el-slider) { --el-slider-main-bg-color: var(--color-primary); --el-slider-runway-bg-color: color-mix(in srgb, var(--color-text) 8%, transparent); --el-slider-height: 4px; --el-slider-button-size: 12px; }
 
 /* 本体挂载双栏 */
 .ont-mount-hint { font-size: var(--font-size-xs); color: var(--color-text-secondary); margin-bottom: 8px; }
 .ont-mount { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; flex: 1; min-height: 220px; }
 .ont-col {
   display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
-  border: 1px solid var(--glass-border); border-radius: 10px; background: rgba(15,23,42,0.02); padding: 8px;
+  border: 1px solid var(--glass-border); border-radius: 10px; background: color-mix(in srgb, var(--color-text) 2%, transparent); padding: 8px;
 }
 .ont-col-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .ont-col-title { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
@@ -790,14 +790,14 @@ async function handleDelete() {
 .mount-tab {
   flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
   padding: 9px 14px; border-radius: 10px; font-size: 13px; font-weight: 500; cursor: pointer;
-  border: 1.5px solid var(--glass-border); background: rgba(15,23,42,0.01);
+  border: 1.5px solid var(--glass-border); background: color-mix(in srgb, var(--color-text) 1%, transparent);
   color: var(--color-text-secondary); transition: all 0.15s;
 }
 .mount-tab:hover { border-color: var(--color-primary); color: var(--color-text); }
 .mount-tab.active { border-color: var(--color-primary); background: rgba(99,102,241,0.06); color: var(--color-primary); }
 .mount-tab .badge {
   font-size: 10px; font-weight: 700; min-width: 20px; height: 20px; border-radius: 10px;
-  background: rgba(15,23,42,0.06); display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent); display: flex; align-items: center; justify-content: center;
   padding: 0 6px;
 }
 .mount-tab.active .badge { background: rgba(99,102,241,0.15); color: var(--color-primary); }
@@ -830,7 +830,7 @@ async function handleDelete() {
 .tool-cat-arrow { transition: transform 0.15s; color: var(--color-text-secondary); }
 .tool-cat-arrow.open { transform: rotate(90deg); }
 .tool-cat-name { font-size: 12px; font-weight: 600; color: var(--color-text); transition: color 0.15s; }
-.tool-cat-count { font-size: 10px; font-weight: 700; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 8px; padding: 1px 6px; }
+.tool-cat-count { font-size: 10px; font-weight: 700; color: var(--color-text-secondary); background: color-mix(in srgb, var(--color-text) 6%, transparent); border-radius: 8px; padding: 1px 6px; }
 
 @media (max-width: 767px) {
   .tab-inner { padding: 4px 2px 4px 0; }

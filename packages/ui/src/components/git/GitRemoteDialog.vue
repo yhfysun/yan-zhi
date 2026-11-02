@@ -323,7 +323,7 @@ async function doRename(r: GitRemote): Promise<void> {
 }
 .grm-btn {
   flex-shrink: 0; padding: 4px 10px; font-size: 12px; cursor: pointer;
-  border: 1px solid var(--glass-border, #e7e4dc); border-radius: 6px; background: #fff;
+  border: 1px solid var(--glass-border, #e7e4dc); border-radius: 6px; background: var(--color-surface);
 }
 .grm-btn:hover:not(:disabled) { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }
 .grm-btn:disabled { opacity: 0.4; cursor: not-allowed; }

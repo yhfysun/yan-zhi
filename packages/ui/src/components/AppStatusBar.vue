@@ -21,14 +21,26 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useRoute } from 'vue-router';
 import { useSettingsStore } from '../stores/settings';
 import { useChatStore } from '../stores/chat';
+import { usePlatformStore } from '../stores/platform';
 import { activeMode, modeDefOf } from '../stores/mode';
+import { officePanel } from '../stores/officeWorkbench';
 
 const settingsStore = useSettingsStore();
 const chatStore = useChatStore();
+const platformStore = usePlatformStore();
+const route = useRoute();
 
-const modeLabel = computed(() => modeDefOf(activeMode.value).label);
+/** 工作台要同步显示 AI / 人工（人工 = 不调用任何模型），聊天页保持只显示模式名 */
+const modeLabel = computed(() => {
+  const base = modeDefOf(activeMode.value).label;
+  if (activeMode.value === 'office' && route.path.startsWith('/office')) {
+    return `${base} · ${officePanel.value === 'manual' ? '人工编辑' : 'AI 协作'}`;
+  }
+  return base;
+});
 
 /** 工作区取路径最后一段；未设置时给明确文案，不显示空串 */
 const workspaceName = computed(() => {
@@ -38,10 +50,17 @@ const workspaceName = computed(() => {
   return parts[parts.length - 1] || dir;
 });
 
-/** 当前会话的模型优先，其次设置里的默认模型 */
+/**
+ * 当前会话的模型优先，其次设置里的默认模型。
+ * ★ 显示**展示名**（alias 优先，其次 modelId），解析不到整项隐藏：
+ *   以前直接渲染 modelId，用户看到的是 `e8aa6005-…` 这种内部 id（2026-11-02 实报）。
+ */
 const modelLabel = computed(() => {
   const conv = chatStore.conversations.find((c) => c.id === chatStore.currentConvId);
-  return conv?.modelId || settingsStore.settings.defaultModelId || '';
+  const id = (conv?.modelId || settingsStore.settings.defaultModelId || '').trim();
+  if (!id) return '';
+  const m = platformStore.resolveModel(id, conv?.platformId);
+  return m ? (m.alias || m.modelId || '').trim() : '';
 });
 
 const busy = computed(() => !!chatStore.streaming);

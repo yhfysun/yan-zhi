@@ -2199,7 +2199,7 @@ watch(activeNavRound, () => {
   margin: 8px 0;
   border: 1px solid var(--el-border-color-lighter, #e2e8f0);
   border-radius: 6px;
-  background: #fff;
+  background: var(--color-surface);
 }
 
 /* 文档围栏解析失败时的提示（不渲染半截文档） */
@@ -2292,7 +2292,7 @@ watch(activeNavRound, () => {
   background: color-mix(in srgb, var(--color-bg-elevated, #fff) 88%, transparent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  box-shadow: var(--shadow-1, 0 2px 8px rgba(15, 23, 42, 0.08));
+  box-shadow: var(--shadow-1, 0 2px 8px color-mix(in srgb, var(--color-text) 8%, transparent));
   color: var(--color-text-secondary, #5a6272);
   font-size: 12px;
   white-space: nowrap;

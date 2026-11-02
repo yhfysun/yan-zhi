@@ -124,6 +124,19 @@ describe('UI · 两处列表同口径 + 归档只读', () => {
     expect(INPUT_AREA).toMatch(/:disabled="currentConvArchived"/);
     expect(INPUT_AREA).toMatch(/该会话已归档（只读）/);
   });
+
+  it('归档/回收站缓存随模式切换失效（2026-11-02 跨模式串台）', () => {
+    // 拉取已带 mode，但这两个数组是缓存：切模式不失效就会一直显示上一个模式的项。
+    expect(USE_CHAT).toMatch(
+      /watch\(activeMode, \(\) => \{[\s\S]{0,200}?archivedConversations\.value = \[\][\s\S]{0,200}?trashedConversations\.value = \[\][\s\S]{0,200}?loadLifecycleLists\(\)/,
+    );
+  });
+
+  it('未命名会话渲染占位文案，而不是空行', () => {
+    expect(SIDEBAR).toMatch(/function convTitle/);
+    expect(SIDEBAR).toMatch(/未命名任务/);
+    expect(SIDEBAR).toMatch(/convTitle\(conv\)/);
+  });
 });
 
 describe('后端收口 · 列表 SQL 与任务入口', () => {

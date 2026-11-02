@@ -135,7 +135,7 @@ async function submit() {
 .machine-info {
   margin-bottom: 16px;
   padding: 10px 14px;
-  background: rgba(15, 23, 42, 0.04);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
   border-radius: var(--radius-sm);
 }
 [data-theme="dark"] .machine-info { background: rgba(255, 255, 255, 0.05); }

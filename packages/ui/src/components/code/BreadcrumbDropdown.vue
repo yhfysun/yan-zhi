@@ -315,7 +315,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown, true));
   background: var(--color-surface, #fff);
   border: 1px solid var(--glass-border, #e7e4dc);
   border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.16);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--color-text) 16%, transparent);
   overflow: hidden;
 }
 .bc-arrow {

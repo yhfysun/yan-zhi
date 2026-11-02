@@ -316,7 +316,7 @@ onMounted(async () => {
 .env-tab.on {
   background: var(--color-surface, #fff);
   color: var(--color-primary, #c2410c); font-weight: 600;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--color-text) 8%, transparent);
 }
 .env-tab-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-text-tertiary, #9c9b94); flex-shrink: 0; }
 .env-tab-dot.ok { background: var(--color-success, #2f6b4f); }

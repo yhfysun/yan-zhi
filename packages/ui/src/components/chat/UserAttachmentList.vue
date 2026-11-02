@@ -383,11 +383,11 @@ onBeforeUnmount(() => closeMediaHover());
   overflow-y: hidden;
   padding-bottom: 2px;
   scrollbar-width: thin;
-  scrollbar-color: var(--glass-border, rgba(15, 23, 42, 0.2)) transparent;
+  scrollbar-color: var(--glass-border, rgba(0, 0, 0, 0.2)) transparent;
 }
 .ual-chips::-webkit-scrollbar { height: 5px; }
 .ual-chips::-webkit-scrollbar-thumb {
-  background: var(--glass-border, rgba(15, 23, 42, 0.2));
+  background: var(--glass-border, rgba(0, 0, 0, 0.2));
   border-radius: 3px;
 }
 .ual-chips::-webkit-scrollbar-track { background: transparent; }
@@ -397,7 +397,7 @@ onBeforeUnmount(() => closeMediaHover());
   align-items: center;
   gap: 4px;
   padding: 3px 9px;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 10%, transparent));
   border-radius: 999px;
   background: var(--glass-bg, #fff);
   color: var(--color-text-secondary);
@@ -420,7 +420,7 @@ onBeforeUnmount(() => closeMediaHover());
   padding: 0;
   border: none;
   border-radius: 6px;
-  background: var(--glass-bg, rgba(15, 23, 42, 0.06));
+  background: var(--glass-bg, color-mix(in srgb, var(--color-text) 6%, transparent));
   color: var(--color-text-secondary);
   opacity: 0.75;
   cursor: pointer;
@@ -434,7 +434,7 @@ onBeforeUnmount(() => closeMediaHover());
   max-width: 180px;
   padding: 3px 8px;
   border-radius: 8px;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 10%, transparent));
   background: var(--glass-bg, #fff);
   color: var(--color-text, #1f2937);
   font-size: 11px;

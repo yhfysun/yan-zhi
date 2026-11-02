@@ -123,7 +123,7 @@ function onClose(): void { void leave(); }
   gap: 4px;
   height: 24px;
   padding: 0 9px;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.12));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 12%, transparent));
   border-radius: 6px;
   background: transparent;
   font-size: 12px;

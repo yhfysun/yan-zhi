@@ -33,7 +33,7 @@
         >✨ 技能</button>
         <button class="pcd-icon-btn" title="页面指令（管理 / 新建）" @click="$emit('manage')">指令</button>
         <button class="pcd-icon-btn" :disabled="!state.messages.length" title="清空本页对话" @click="onClear">清空</button>
-        <button class="pcd-icon-btn" title="收起面板" @click="$emit('close')">✕</button>
+        <button class="pcd-icon-btn" title="收起面板" @click="$emit('close')"><el-icon :size="14"><Close /></el-icon></button>
       </div>
     </div>
 
@@ -106,6 +106,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { usePageChatStore } from '../../stores/page-chat';
 import { usePageCommandsStore } from '../../stores/page-commands';

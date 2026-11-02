@@ -187,7 +187,7 @@ onMounted(load);
 .pq-hint { font-size: 11.5px; opacity: 0.8; margin-top: 6px; line-height: 1.6; }
 
 .pq-item {
-  border: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.08));
+  border: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 8%, transparent));
   border-radius: 10px;
   padding: 8px 10px;
   display: flex;

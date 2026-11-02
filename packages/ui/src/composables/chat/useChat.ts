@@ -4712,6 +4712,18 @@ ${q.text}
     } catch { /* 拉取失败保留旧列表，不闪空 */ }
     await store.loadLifecycleCounts();
   }
+  /**
+   * 归档 / 回收站按模式隔离（2026-11-02）。
+   *
+   * 拉取本身已带 mode（server 与本地 SQL 都按 mode 过滤），但这两个数组是缓存，
+   * 切模式时不会自动失效 —— 侧栏角标和展开后的列表会短暂（或一直等不到重拉时）
+   * 显示上一个模式的会话。这里在模式变化时先清空再重拉：宁可空一瞬，也不串台。
+   */
+  watch(activeMode, () => {
+    archivedConversations.value = [];
+    trashedConversations.value = [];
+    void loadLifecycleLists();
+  });
 
   function toggleConvSelect(id: string) {
     const next = new Set(selectedConvIds.value);

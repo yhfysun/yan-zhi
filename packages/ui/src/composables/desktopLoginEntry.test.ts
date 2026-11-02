@@ -99,9 +99,11 @@ describe('桌面端身份区：必须有头像，且不得是登录入口', () =
   it('★★ guest 不算登录态（三条分支的前提，不能回归）', () => {
     expect(AUTH, '★★ isLoggedIn 退化成 !!user（guest 会被当成已登录）')
       .toMatch(/isLoggedIn = computed\(\(\) => !!user\.value && !isGuestIdentity\(user\.value\)\)/);
-    // 桌面端没有 SideNav，所以 WebTopBar 是唯一身份入口 —— 这条是"必须给头像"的理由
+    // 桌面端没有 SideNav，所以 WebTopBar 是唯一身份入口 —— 这条是"必须给头像"的理由。
+    // 2026-11-02：判据从 isMobile（窄窗 ∪ 平台）收紧为 isMobilePlatform（仅 Capacitor）——
+    // 旧写法在桌面/Web 窄窗口下会渲染 220px 桌面侧栏并盖住聊天区；两者都保证桌面端无 SideNav。
     expect(APP, '★ SideNav 渲染条件变了（若桌面端也会渲染 SideNav，本测试前提需复核）')
-      .toMatch(/<SideNav v-if="isMobile" \/>/);
+      .toMatch(/<SideNav v-if="isMobilePlatform" \/>/);
   });
 
   it('★ 桌面端头像下拉给常用入口，但不提供"退出登录"', () => {

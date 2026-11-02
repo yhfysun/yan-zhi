@@ -216,7 +216,7 @@ async function save() {
 
 <style scoped>
 .platform-config-card {
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 8%, transparent));
   border-radius: 12px;
   padding: 14px 16px;
   background: var(--glass-bg, rgba(255, 255, 255, 0.6));

@@ -19,58 +19,17 @@
 import { Router, Request, Response } from 'express';
 import { statSync } from 'node:fs';
 import { authMiddleware } from '../auth.js';
-import { db } from '../db.js';
-import { serverState } from '../state.js';
-import { isWithinRoot, normalizeForCompare } from '../services/path-guard.js';
-import { resolveArtifactDirFor } from '../services/artifact-dir.js';
-import { resolveSpaceResourceRoot } from '../services/space-resources.js';
+import { isAllowedPathForUser } from '../services/allowed-roots.js';
 
 const router = Router();
 router.use(authMiddleware);
-
-/** 算出「本用户允许流式读取的根集合」（与 path-guard 的允许根同一套语义，禁止在调用方复刻）。 */
-function allowedRootsForUser(userId: string): string[] {
-  const roots: string[] = [];
-  const gw = (serverState.workspaceDir || '').trim();
-  if (gw) roots.push(gw);
-  // 用户的空间目录（绑定的真实目录 + 未绑定的服务端内部空间目录都算）
-  try {
-    const spaces = db.prepare('SELECT id, dir_path FROM space WHERE user_id = ?').all(userId) as Array<{ id: string; dir_path: string | null }>;
-    for (const s of spaces) {
-      try { roots.push(resolveSpaceResourceRoot(s)); } catch { /* 忽略单个空间解析失败 */ }
-    }
-  } catch { /* 表不存在等极端情况 */ }
-  // 用户各会话的产物根/目录（会话工作目录派生产物落在这里）
-  // ★ 排除回收站（2026-10-16 缺陷 M3）：已删会话的产物目录不再作为工作区根暴露。
-  //   归档的保留 —— 归档是「收起来」不是「销毁」，产物仍应可在工作区里找到。
-  try {
-    const convs = db.prepare('SELECT id FROM conversation WHERE user_id = ? AND deleted_at IS NULL').all(userId) as Array<{ id: string }>;
-    for (const c of convs) {
-      for (const category of ['deliverable', 'intermediate', 'upload'] as const) {
-        try {
-          const r = resolveArtifactDirFor({ conversationId: c.id, category });
-          if (r.root) roots.push(r.root);
-          if (r.dir) roots.push(r.dir);
-        } catch { /* 单个会话解析失败不阻断 */ }
-      }
-    }
-  } catch { /* 忽略 */ }
-  const deduped = new Set(
-    roots
-      .map((r) => normalizeForCompare(r.replace(/[\\/]+$/, '')))
-      .filter(Boolean),
-  );
-  return [...deduped];
-}
 
 router.get('/file-stream', (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const p = String(req.query.path || '').trim();
   if (!p || p.length > 1000) { res.status(400).json({ error: 'path 为必填项' }); return; }
 
-  const norm = normalizeForCompare(p);
-  const hit = allowedRootsForUser(userId).some((root) => root && isWithinRoot(norm, root));
-  if (!hit) { res.status(403).json({ error: '路径不在允许范围内' }); return; }
+  if (!isAllowedPathForUser(userId, p)) { res.status(403).json({ error: '路径不在允许范围内' }); return; }
 
   try {
     if (!statSync(p).isFile()) { res.status(404).json({ error: '文件不存在' }); return; }

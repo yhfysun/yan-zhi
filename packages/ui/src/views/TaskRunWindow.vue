@@ -216,7 +216,7 @@ onBeforeUnmount(stopPoll);
   height: 24px;
   padding: 0 8px;
   font-size: 11.5px;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 8%, transparent));
   border-radius: 6px;
   background: transparent;
   color: var(--el-text-color-secondary, #64748b);
@@ -254,7 +254,7 @@ onBeforeUnmount(stopPoll);
   gap: 8px;
   flex-shrink: 0;
   padding: 8px 14px;
-  border-bottom: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  border-bottom: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 8%, transparent));
   font-size: 12px;
   color: var(--el-text-color-secondary, #64748b);
 }
@@ -283,7 +283,7 @@ onBeforeUnmount(stopPoll);
   max-height: 32%;
   overflow: auto;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  border-bottom: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 8%, transparent));
   background: var(--el-fill-color-lighter, #fafaf9);
 }
 .trw-plan-title {

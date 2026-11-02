@@ -2383,7 +2383,7 @@ onMounted(async () => {
   border-radius: 4px;
   background: var(--color-background-secondary, rgba(127, 127, 127, 0.08));
 }
-.connect-url-box { display: flex; align-items: center; gap: 8px; background: rgba(15,23,42,0.04); border-radius: 6px; padding: 6px 10px; }
+.connect-url-box { display: flex; align-items: center; gap: 8px; background: color-mix(in srgb, var(--color-text) 4%, transparent); border-radius: 6px; padding: 6px 10px; }
 .connect-url-box code { font-family: monospace; font-size: 13px; color: var(--color-primary); }
 
 /* ===== 短信验证码 ===== */

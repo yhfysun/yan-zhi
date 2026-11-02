@@ -886,7 +886,7 @@ async function onDelete(task: ScheduledTask) {
   color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 .st-group-header:hover {
-  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.04));
+  background: var(--glass-bg-hover, color-mix(in srgb, var(--color-text) 4%, transparent));
 }
 
 .st-collapse-icon {
@@ -940,7 +940,7 @@ async function onDelete(task: ScheduledTask) {
   gap: 10px;
   padding: 9px 12px;
   border-radius: 10px;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 10%, transparent));
   background: var(--el-fill-color-blank, #fff);
 }
 
@@ -1019,7 +1019,7 @@ async function onDelete(task: ScheduledTask) {
   justify-content: flex-end;
   gap: 8px;
   padding-top: 6px;
-  border-top: 1px solid var(--el-border-color-lighter, var(--glass-border, rgba(15, 23, 42, 0.06)));
+  border-top: 1px solid var(--el-border-color-lighter, var(--glass-border, color-mix(in srgb, var(--color-text) 6%, transparent)));
 }
 
 @media (max-width: 767px) {

@@ -37,7 +37,7 @@ const TOOLTIP_STYLE = {
   borderWidth: 1,
   padding: [8, 10] as [number, number],
   textStyle: { color: '#334155', fontSize: 12 },
-  extraCssText: 'box-shadow: 0 8px 24px rgba(15,23,42,.12); border-radius: 8px;',
+  extraCssText: 'box-shadow: 0 8px 24px color-mix(in srgb, var(--color-text) 12%, transparent); border-radius: 8px;',
 };
 
 function sum(values: number[]): number {

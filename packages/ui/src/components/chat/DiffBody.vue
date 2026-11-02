@@ -402,7 +402,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+  border: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
   border-radius: 6px;
   overflow: hidden;
   font-size: 12px;
@@ -425,8 +425,8 @@ onBeforeUnmount(() => {
   gap: 6px;
   padding: 4px 8px;
   flex-shrink: 0;
-  background: var(--el-fill-color-light, rgba(15, 23, 42, 0.04));
-  border-bottom: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+  background: var(--el-fill-color-light, color-mix(in srgb, var(--color-text) 4%, transparent));
+  border-bottom: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
   font-family: initial;
 }
 .dv-name {
@@ -442,7 +442,7 @@ onBeforeUnmount(() => {
 .dv-spacer { flex: 1; }
 .dv-sep {
   width: 1px; height: 14px; flex-shrink: 0;
-  background: var(--el-border-color-lighter, rgba(15, 23, 42, 0.12));
+  background: var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 12%, transparent));
 }
 .dv-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -495,7 +495,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 3px 10px;
-  background: var(--el-fill-color, rgba(15, 23, 42, 0.06));
+  background: var(--el-fill-color, color-mix(in srgb, var(--color-text) 6%, transparent));
   color: var(--el-text-color-secondary, #64748b);
   font-size: 11px;
   white-space: nowrap;
@@ -515,8 +515,8 @@ onBeforeUnmount(() => {
   text-align: right;
   font-size: 11px;
   color: var(--el-text-color-placeholder, #94a3b8);
-  background: var(--el-fill-color-light, rgba(15, 23, 42, 0.03));
-  border-right: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.06));
+  background: var(--el-fill-color-light, color-mix(in srgb, var(--color-text) 3%, transparent));
+  border-right: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 6%, transparent));
   box-sizing: border-box;
   /* 横向滚动时行号保持可见（IDEA 的 gutter 行为） */
   position: sticky;
@@ -549,7 +549,7 @@ onBeforeUnmount(() => {
 .dv-divider {
   align-self: stretch;
   cursor: col-resize;
-  background: var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+  background: var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
   position: relative;
   transition: background 0.15s ease;
 }
@@ -565,8 +565,8 @@ onBeforeUnmount(() => {
   height: 7px;
   flex-shrink: 0;
   cursor: row-resize;
-  background: var(--el-fill-color-light, rgba(15, 23, 42, 0.04));
-  border-top: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.08));
+  background: var(--el-fill-color-light, color-mix(in srgb, var(--color-text) 4%, transparent));
+  border-top: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 8%, transparent));
   position: relative;
   transition: background 0.15s ease;
 }
@@ -577,7 +577,7 @@ onBeforeUnmount(() => {
   width: 28px; height: 3px;
   transform: translate(-50%, -50%);
   border-radius: 2px;
-  background: var(--el-border-color, rgba(15, 23, 42, 0.2));
+  background: var(--el-border-color, rgba(0, 0, 0, 0.2));
   transition: background 0.15s ease;
 }
 .dv-resize-v:hover { background: color-mix(in srgb, var(--color-primary, #4f46e5) 8%, transparent); }

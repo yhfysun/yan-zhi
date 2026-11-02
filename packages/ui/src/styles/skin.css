@@ -1779,7 +1779,7 @@ html[data-skin="on"] .loading-overlay {
 [data-theme="light"][data-skin="on"] .el-select__wrapper,
 [data-theme="light"][data-skin="on"] .el-input-number .el-input__wrapper {
   border-color: var(--color-border) !important;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.10), 0 1px 3px rgba(15, 23, 42, 0.06) !important;
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--color-text) 10%, transparent), 0 1px 3px color-mix(in srgb, var(--color-text) 6%, transparent) !important;
 }
 [data-skin="on"] .el-input__wrapper.is-focus,
 [data-skin="on"] .el-select__wrapper.is-focused,
@@ -1815,7 +1815,7 @@ html[data-skin="on"] .loading-overlay {
 }
 [data-theme="light"][data-skin="on"] .input-box {
   /* 浅色主题下投影改用更柔和的冷灰，避免深投影在亮底上显得脏 */
-  box-shadow: 0 6px 26px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.08) !important;
+  box-shadow: 0 6px 26px color-mix(in srgb, var(--color-text) 14%, transparent), 0 2px 6px color-mix(in srgb, var(--color-text) 8%, transparent) !important;
 }
 
 /* ===== 底部聊天输入区 =====
@@ -1835,7 +1835,7 @@ html[data-skin="on"] .loading-overlay {
 [data-theme="light"][data-skin="on"] .input-box.focused,
 [data-theme="light"][data-skin="on"] .input-box:hover {
   border-color: var(--color-border) !important;
-  box-shadow: 0 6px 26px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.08) !important;
+  box-shadow: 0 6px 26px color-mix(in srgb, var(--color-text) 14%, transparent), 0 2px 6px color-mix(in srgb, var(--color-text) 8%, transparent) !important;
 }
 /* 任务输入框内部的 textarea：聚焦时也不出任何边框 / ring —— 用户原话
    "就一个地方不要显示，就是输入框里面的文字区域的框去掉，选中也不要有"。

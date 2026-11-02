@@ -369,6 +369,22 @@ router.post('/rename', (req, res) => {
   }
 });
 
+// POST /api/workspace/copy  { from, to } —— 复制文件 / 目录（办公工作台「复制一份」）
+router.post('/copy', (req, res) => {
+  const from = toAbs(req.body?.from);
+  const to = toAbs(req.body?.to);
+  if (!from || !to) return res.status(400).json({ error: '缺少 from / to 参数' });
+  if (from === to) return res.status(400).json({ error: '源与目标相同' });
+  if (!fs.existsSync(from)) return res.status(404).json({ error: '源文件不存在' });
+  if (fs.existsSync(to)) return res.status(409).json({ error: '目标已存在' });
+  try {
+    fs.cpSync(from, to, { recursive: true, errorOnExist: true, force: false });
+    res.json({ ok: true, path: to });
+  } catch (err) {
+    res.status(500).json({ error: `复制失败：${err instanceof Error ? err.message : String(err)}` });
+  }
+});
+
 // POST /api/workspace/delete  { path } —— 删除文件 / 递归删除目录
 router.post('/delete', (req, res) => {
   const abs = toAbs(req.body?.path);

@@ -810,7 +810,7 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   border: 1px solid var(--glass-border, #e7e4dc);
   background: var(--glass-bg, #fff);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-text) 14%, transparent);
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
 }

@@ -1,36 +1,42 @@
 <template>
-  <div class="page">
-    <header class="page-header">
-      <h2 class="page-title">模型平台管理</h2>
-      <div style="display:flex;gap:10px">
-        <el-button :icon="Download" @click="showLocalMarket = true">本地模型商城</el-button>
-        <el-button type="primary" :icon="Plus" @click="openAdd" class="add-btn-desktop">新增平台</el-button>
-      </div>
-    </header>
+  <PageFrame
+    title="模型平台管理"
+    subtitle="平台、模型与调用配额；内置平台/模型只读，自定义项随平台管理。"
+    :scroll="false"
+    :pad="false"
+  >
+    <template #actions>
+      <el-button :icon="Download" @click="showLocalMarket = true">本地模型商城</el-button>
+      <el-button type="primary" :icon="Plus" @click="openAdd" class="add-btn-desktop">新增平台</el-button>
+    </template>
 
     <!-- 平台搜索 / 筛选：平台多了之后靠肉眼扫卡片找不动了 -->
-    <SearchToolbar v-model:query="platformKeyword" placeholder="搜索平台名称 / API URL" :count="filteredPlatforms.length">
-      <template #actions>
-        <el-select v-model="protocolFilter" size="small" placeholder="全部协议" class="filter-select">
-          <el-option label="全部协议" value="" />
-          <el-option label="OpenAI" value="openai" />
-          <el-option label="OpenAI Responses" value="openai-responses" />
-          <el-option label="Anthropic" value="anthropic" />
-          <el-option label="自定义" value="custom" />
-        </el-select>
-        <el-select v-model="statusFilter" size="small" placeholder="全部状态" class="filter-select">
-          <el-option label="全部状态" value="" />
-          <el-option label="正常" value="healthy" />
-          <el-option label="掉线" value="down" />
-          <el-option label="未知" value="unknown" />
-        </el-select>
-        <el-button v-if="platformFilterActive" size="small" text @click="clearPlatformFilter">重置</el-button>
-      </template>
-    </SearchToolbar>
+    <template #toolbar>
+      <SearchToolbar v-model:query="platformKeyword" placeholder="搜索平台名称 / API URL" :count="filteredPlatforms.length">
+        <template #actions>
+          <el-select v-model="protocolFilter" size="small" placeholder="全部协议" class="filter-select">
+            <el-option label="全部协议" value="" />
+            <el-option label="OpenAI" value="openai" />
+            <el-option label="OpenAI Responses" value="openai-responses" />
+            <el-option label="Anthropic" value="anthropic" />
+            <el-option label="自定义" value="custom" />
+          </el-select>
+          <el-select v-model="statusFilter" size="small" placeholder="全部状态" class="filter-select">
+            <el-option label="全部状态" value="" />
+            <el-option label="正常" value="healthy" />
+            <el-option label="掉线" value="down" />
+            <el-option label="未知" value="unknown" />
+          </el-select>
+          <el-button v-if="platformFilterActive" size="small" text @click="clearPlatformFilter">重置</el-button>
+        </template>
+      </SearchToolbar>
+    </template>
 
     <!-- 内置厂商宫格已收进「新增平台」弹窗（2026-10-18）：页面不再常驻，点按钮先选厂商、再填信息 -->
 
-    <div class="platform-grid">
+    <div class="models-body">
+      <div class="platform-list-pane">
+        <div class="platform-grid">
       <template v-if="store.loading">
         <div v-for="n in 4" :key="n" class="platform-card skeleton-card">
           <el-skeleton animated>
@@ -90,6 +96,17 @@
         v-else-if="filteredPlatforms.length === 0"
         description="没有匹配的平台，换个关键字或筛选条件试试"
       />
+        </div>
+      </div>
+
+      <!-- 右侧详情（2026-11-02）：宽屏用容器而不是弹窗，宽度可拖拽并记忆 -->
+      <template v-if="splitOpen">
+        <div class="rs-handle rs-handle-left" @mousedown="detailR.startDrag($event, 'right')"></div>
+        <aside class="platform-detail-pane" :style="{ width: detailW + 'px' }">
+          <el-button class="detail-close" text :icon="Close" title="关闭详情" @click="closeDetail" />
+          <PlatformDetail :key="detailId" :platform-id="detailId" embedded />
+        </aside>
+      </template>
     </div>
 
     <FormDialog
@@ -205,10 +222,11 @@
       </template>
     </FormDialog>
 
-    <!-- 管理模型：弹窗内嵌平台详情，不再路由跳转（在设置抽屉中打开也不会切走主页面） -->
+    <!-- 管理模型：宽屏走右侧分栏（见上），窄屏回落弹窗内嵌详情 -->
     <el-dialog
+      v-if="!wide"
       v-model="showDetail"
-      :title="detailTitle"
+      :title="'管理模型 - ' + detailTitle"
       width="860px"
       top="6vh"
       class="platform-detail-dialog"
@@ -242,23 +260,25 @@
 
     <!-- 本地模型商城：国内源下载 / 测试启用 / 删除 / Ollama 接入 -->
     <LocalModelMarket v-model="showLocalMarket" />
-  </div>
+  </PageFrame>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
-import { Plus, Connection, Download, Delete, RefreshLeft } from '@element-plus/icons-vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { Plus, Connection, Download, Delete, RefreshLeft, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ModelType, PlatformApiKey } from '@yan-zhi/shared';
 import { usePlatformStore } from '../stores';
 import { useAuthStore } from '../stores/auth';
 import { api } from '../api/client';
+import { useResizable } from '../composables/useResizable';
 import { waitForBackend } from '../api/backend-ready';
 import { DEFAULT_CONTEXT_WINDOW } from '../utils/context-window';
 import PlatformDetail from './PlatformDetail.vue';
 import LocalModelMarket from '../components/LocalModelMarket.vue';
 import FormDialog from '../components/FormDialog.vue';
 import StatusActionBar from '../components/common/StatusActionBar.vue';
+import PageFrame from '../components/common/PageFrame.vue';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
 import PlatformPresetGrid from '../components/PlatformPresetGrid.vue';
 import AddPresetDialog from '../components/AddPresetDialog.vue';
@@ -360,8 +380,22 @@ const showDetail = ref(false);
 const detailId = ref('');
 const detailTitle = computed(() => {
   const p = store.platforms.find((x) => x.id === detailId.value);
-  return p ? `管理模型 - ${p.name}` : '管理模型';
+  return p ? p.name : '平台详情';
 });
+
+/** 宽屏（>=1100px）走「列表 + 右侧详情」分栏；窄屏回落弹窗，避免详情挤压主列表 */
+const wide = ref(typeof window !== 'undefined' ? window.innerWidth >= 1100 : true);
+function syncWide() { wide.value = window.innerWidth >= 1100; }
+onMounted(() => window.addEventListener('resize', syncWide));
+onUnmounted(() => window.removeEventListener('resize', syncWide));
+const splitOpen = computed(() => wide.value && showDetail.value && !!detailId.value);
+/** 右侧详情宽度：拖拽调宽 + localStorage 记忆（useResizable 内建持久化） */
+const detailR = useResizable('models_detail', 560, 380, 920);
+const { width: detailW } = detailR;
+function closeDetail() {
+  showDetail.value = false;
+  detailId.value = '';
+}
 const editingId = ref('');
 const testing = ref('');
 /** 编辑目录厂商平台（preset）：协议/API URL 只读（厂商文档常量），名称/Token/停顿可改 */
@@ -750,6 +784,26 @@ async function toggleShare(p: any) {
 
 <style scoped>
 /* .page / .page-header / .page-title come from App.vue global */
+
+/* ===== 列表 + 右侧详情（2026-11-02）=====
+   宽屏时详情用容器而不是弹窗；宽度由 .rs-handle 拖拽（useResizable 持久化）。 */
+.models-body { display: flex; height: 100%; min-height: 0; }
+.platform-list-pane { flex: 1; min-width: 320px; overflow-y: auto; padding: 0 36px 24px; }
+.platform-detail-pane {
+  flex: 0 0 auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding-top: 36px;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.detail-close { position: absolute; top: 4px; right: 8px; z-index: 5; }
+.platform-detail-pane :deep(.page) { flex: 1; min-height: 0; overflow-y: auto; padding: 0 18px 16px; }
+.platform-detail-pane :deep(.page-header) { padding-top: 0; }
+
 .platform-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 20px; }
 .filter-select { width: 116px; }
 
@@ -761,15 +815,15 @@ async function toggleShare(p: any) {
      悬停 = 上浮 2px + 阴影加深。皮肤若下发卡片变体底图，阴影叠加在其上不冲突
      （skin.css 只在 hover 改 border/box-shadow 光晕，静置态无阴影规则）。 */
   box-shadow:
-    0 1px 2px rgba(15, 23, 42, 0.06),
-    0 6px 18px rgba(15, 23, 42, 0.08);
+    0 1px 2px color-mix(in srgb, var(--color-text) 6%, transparent),
+    0 6px 18px color-mix(in srgb, var(--color-text) 8%, transparent);
   transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
 }
 .platform-card:hover {
   transform: translateY(-2px);
   box-shadow:
-    0 2px 4px rgba(15, 23, 42, 0.07),
-    0 14px 30px rgba(15, 23, 42, 0.14);
+    0 2px 4px color-mix(in srgb, var(--color-text) 7%, transparent),
+    0 14px 30px color-mix(in srgb, var(--color-text) 14%, transparent);
 }
 /* 禁用的平台整卡降透明度 + 名称变灰，一眼可辨 */
 .platform-card-disabled { opacity: 0.55; }
@@ -812,6 +866,7 @@ async function toggleShare(p: any) {
 @media (max-width: 767px) {
   .add-btn-desktop { display: none; }
   .mobile-fab { display: flex; }
+  .platform-list-pane { padding: 0 16px 16px; }
   .platform-grid { grid-template-columns: 1fr; gap: 14px; }
   .card-actions { flex-wrap: wrap; gap: 6px; }
   .card-actions .el-button { font-size: 12px; padding: 5px 10px; }

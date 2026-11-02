@@ -45,7 +45,7 @@
         </div>
       </div>
 
-      <div class="conv-tree" @contextmenu.prevent="openTreeMenu($event)" v-on="bindLongPress((ev) => openTreeMenu(ev))">
+      <div class="conv-tree" ref="convTreeEl" @scroll.passive="onConvTreeScroll" @contextmenu.prevent="openTreeMenu($event)" v-on="bindLongPress((ev) => openTreeMenu(ev))">
         <!-- ── 置顶分组（2026-10-09）──────────────────────────────
              ★★★ 为什么提到**根节点之外**（2026-10-09 用户实测「置顶点了没用」的根因）：
                v1 把这个分组塞进「任务」根节点的 .tree-children 里。而「任务」根节点可折叠
@@ -80,7 +80,7 @@
               <el-checkbox v-if="batchMode" :model-value="selectedConvIds.has(conv.id)" @click.stop @change="toggleConvSelect(conv.id)" />
               <el-icon class="pin-icon"><StarFilled /></el-icon>
               <div v-if="renamingId !== conv.id" class="conv-main">
-                <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
+                <div class="conv-title" :title="convTitle(conv)">{{ convTitle(conv) }}</div>
                 <div class="conv-meta">
                   <span class="conv-dot" :class="{ run: store.isConvStreaming(conv.id) }"></span>
                   <span :title="fullTime(conv.updatedAt)">{{ store.isConvStreaming(conv.id) ? '运行中' : relativeTime(conv.updatedAt) }}</span>
@@ -134,7 +134,7 @@
               <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
               <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
               <div v-if="renamingId !== conv.id" class="conv-main">
-                <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
+                <div class="conv-title" :title="convTitle(conv)">{{ convTitle(conv) }}</div>
                 <div class="conv-meta">
                   <span class="conv-dot" :class="{ run: store.isConvStreaming(conv.id) }"></span>
                   <span :title="fullTime(conv.updatedAt)">{{ store.isConvStreaming(conv.id) ? '运行中' : relativeTime(conv.updatedAt) }}</span>
@@ -238,7 +238,7 @@
                   <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
                   <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
                   <div v-if="renamingId !== conv.id" class="conv-main">
-                    <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
+                    <div class="conv-title" :title="convTitle(conv)">{{ convTitle(conv) }}</div>
                     <div class="conv-meta">
                       <span class="conv-dot" :class="{ run: store.isConvStreaming(conv.id) }"></span>
                       <span :title="fullTime(conv.updatedAt)">{{ store.isConvStreaming(conv.id) ? '运行中' : relativeTime(conv.updatedAt) }}</span>
@@ -275,7 +275,7 @@
               <el-icon class="pin-icon" v-if="conv.pinned"><StarFilled /></el-icon>
               <el-icon v-else-if="!batchMode"><ChatDotRound /></el-icon>
               <div v-if="renamingId !== conv.id" class="conv-main">
-                <div class="conv-title" :title="conv.title">{{ conv.title }}</div>
+                <div class="conv-title" :title="convTitle(conv)">{{ convTitle(conv) }}</div>
                 <div class="conv-meta">
                   <span class="conv-dot" :class="{ run: store.isConvStreaming(conv.id) }"></span>
                   <span :title="fullTime(conv.updatedAt)">{{ store.isConvStreaming(conv.id) ? '运行中' : relativeTime(conv.updatedAt) }}</span>
@@ -331,7 +331,7 @@
               @contextmenu.prevent="openConvMenu($event, conv)"
             >
               <el-icon class="pin-icon"><FolderChecked /></el-icon>
-              <span class="conv-title" :title="conv.title">{{ conv.title }}</span>
+              <span class="conv-title" :title="convTitle(conv)">{{ convTitle(conv) }}</span>
               <span v-if="!batchMode" class="task-row-actions" @click.stop>
                 <span class="task-row-act" role="button" title="恢复到主列表（可继续对话）" @click="archiveConv(conv, false)"><el-icon :size="12"><RefreshLeft /></el-icon></span>
                 <span class="task-row-act is-danger" role="button" title="删除（移入回收站）" @click="rows.remove(conv)"><el-icon :size="12"><Delete /></el-icon></span>
@@ -359,7 +359,7 @@
               @click="rows.activate(conv)"
             >
               <el-icon class="pin-icon"><Delete /></el-icon>
-              <span class="conv-title" :title="conv.title">{{ conv.title }}</span>
+              <span class="conv-title" :title="convTitle(conv)">{{ convTitle(conv) }}</span>
               <span class="task-row-actions" @click.stop>
                 <span class="task-row-act" role="button" title="恢复" @click="restoreConv(conv)"><el-icon :size="12"><RefreshLeft /></el-icon></span>
                 <span class="task-row-act is-danger" role="button" title="永久删除（不可恢复）" @click="purgeConv(conv)"><el-icon :size="12"><Delete /></el-icon></span>
@@ -670,7 +670,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
+import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import {
   Plus, ChatDotRound, Star, StarFilled, EditPen, Delete, FolderOpened, Rank, ArrowRight, Close, Search, CaretRight, Timer, Memo, Tools, FolderChecked, Box, RefreshLeft, Monitor, Refresh, Promotion,
 } from '@element-plus/icons-vue';
@@ -679,6 +679,7 @@ import { getTaskType, isParentTaskType, getChildTaskTypes } from '@yan-zhi/share
 // 来源标记的白名单常量取自 core（别在模板里写 'browser-page' 字面量）
 import { CONV_SOURCE_BROWSER_PAGE } from '@yan-zhi/core';
 import { useChat } from '../../composables/chat/useChat';
+import { activeMode } from '../../stores/mode';
 import { useTaskRowActions } from '../../composables/useTaskRowActions';
 import { bindLongPress } from '../../composables/useLongPress';
 import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
@@ -716,6 +717,16 @@ function fullTime(ts?: number): string {
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * 会话标题展示兜底（2026-11-02）：新建后尚未命名的会话标题为空，
+ * 侧栏只剩时间和计数，看起来像一行坏数据。统一显示「未命名任务」，
+ * 首条消息发出后由后端自动命名覆盖。
+ */
+function convTitle(c: { title?: string }): string {
+  const t = (c.title || '').trim();
+  return t || '未命名任务';
 }
 
 const {
@@ -1049,10 +1060,47 @@ async function onEmptyTrash() {
   } catch { /* 用户取消 */ }
 }
 
+// ═══ 任务列表滚动位置记忆（2026-11-02）════════════════════════════════════════
+// 按模式分别记忆（各模式的列表互不相干，串用会让用户切回来滚到别处）。
+// 恢复时机不能只在 onMounted：会话是异步拉取的，挂载时列表还没渲染（scrollHeight 为 0）。
+const convTreeEl = ref<HTMLElement | null>(null);
+const CONV_SCROLL_KEY = 'yz:conv_tree_scroll';
+let convScrollRestored = false;
+let convScrollTimer: ReturnType<typeof setTimeout> | null = null;
+function convScrollStorageKey(): string {
+  return `${CONV_SCROLL_KEY}:${activeMode.value}`;
+}
+function restoreConvTreeScroll() {
+  if (convScrollRestored) return;
+  const el = convTreeEl.value;
+  if (!el || el.scrollHeight <= el.clientHeight) return;
+  const saved = Number(localStorage.getItem(convScrollStorageKey()));
+  if (Number.isFinite(saved) && saved > 0) el.scrollTop = saved;
+  convScrollRestored = true;
+}
+function onConvTreeScroll() {
+  const el = convTreeEl.value;
+  if (!el) return;
+  if (convScrollTimer) clearTimeout(convScrollTimer);
+  convScrollTimer = setTimeout(() => {
+    try { localStorage.setItem(convScrollStorageKey(), String(el.scrollTop)); } catch { /* 隐私模式忽略 */ }
+  }, 200);
+}
+watch(() => filteredConversations.value.length, () => { void nextTick(restoreConvTreeScroll); });
+// 切模式：列表换成另一份，旧的恢复标记作废，等新模式列表渲染后再恢复
+watch(activeMode, () => {
+  convScrollRestored = false;
+  void nextTick(restoreConvTreeScroll);
+});
+
 onMounted(() => {
   document.addEventListener('mousedown', onDocMouseDown, true);
   // 侧栏角标需要这两个数；列表本身只在展开时才拉（不进主列表）
   void loadLifecycleLists();
+  void nextTick(restoreConvTreeScroll);
 });
-onBeforeUnmount(() => document.removeEventListener('mousedown', onDocMouseDown, true));
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocMouseDown, true);
+  if (convScrollTimer) clearTimeout(convScrollTimer);
+});
 </script>

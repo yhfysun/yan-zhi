@@ -311,7 +311,7 @@ onUnmounted(stopPoll);
   margin-top: 8px;
   padding: 8px 10px;
   border-radius: 6px;
-  background: #fff7e6;
+  background: color-mix(in srgb, var(--color-warning) 12%, var(--color-surface));
   border: 1px solid #ffe0a3;
 }
 .lm-warn-title { font-size: 12px; font-weight: 600; color: #ad6800; }

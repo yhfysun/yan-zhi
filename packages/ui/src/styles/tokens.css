@@ -7,6 +7,9 @@
   /* ===== 中性纸墨骨架：背景/文字/边框不绑定主题色，切主题只换强调色，全局不突兀 ===== */
   --color-bg: #F7F8FA;
   --color-surface: #FFFFFF;
+  /* 浮起表面（提示条 / 浮层底座）：此前多处写成 var(--color-bg-elevated, #fff)，
+     但该变量从未定义 → 暗色下回退成白块。这里补上唯一来源（P3 暗色收尾）。 */
+  --color-bg-elevated: var(--color-surface);
   --color-surface-hover: #F0F2F7;
   --color-border: #E7EAF0;
   --color-border-strong: #D5DAE4;
@@ -192,6 +195,7 @@
   /* ===== 动效：时长三档 + 统一缓动（出场比入场快约 25%） ===== */
   --motion-fast: 120ms;   /* hover / 按压 / 即时反馈 */
   --motion-base: 180ms;   /* 展开 / 收起 / 常规状态变化 */
+  --motion-panel: 200ms;  /* 侧栏 / 分栏面板宽度变化（P3 统一） */
   --motion-slow: 240ms;   /* 弹窗 / 抽屉 / 覆盖层入场 */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);        /* 入场：自然减速 */
   --ease-in: cubic-bezier(0.4, 0, 1, 1);             /* 出场：轻快收尾 */
@@ -232,6 +236,7 @@
 [data-theme="dark"] {
   --color-bg: #101216;
   --color-surface: #171A21;
+  --color-bg-elevated: var(--color-surface);
   --color-surface-hover: #1F232D;
   --color-border: #262B36;
   --color-border-strong: #343B49;

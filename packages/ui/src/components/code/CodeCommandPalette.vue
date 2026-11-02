@@ -174,14 +174,14 @@ function run(it: PaletteItem) {
   position: fixed; inset: 0; z-index: 2000;
   display: flex; align-items: flex-start; justify-content: center;
   padding-top: 12vh;
-  background: rgba(15, 23, 42, 0.28);
+  background: rgba(0, 0, 0, 0.28);
 }
 .ccp {
   width: 560px; max-width: 92vw;
   background: var(--color-surface, #fff);
   border: 1px solid var(--glass-border, #e7e4dc);
   border-radius: 12px;
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
   overflow: hidden;
   display: flex; flex-direction: column;
 }

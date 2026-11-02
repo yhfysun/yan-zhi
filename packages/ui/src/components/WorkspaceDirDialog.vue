@@ -529,7 +529,7 @@ function clearDir() {
   padding: 9px 14px;
   cursor: pointer;
   transition: background 0.12s;
-  border-bottom: 1px solid rgba(15,23,42,0.04);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text) 4%, transparent);
 }
 .wdd-entry:last-child { border-bottom: none; }
 .wdd-entry:hover { background: var(--glass-bg-hover); }

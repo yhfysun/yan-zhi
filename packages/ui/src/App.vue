@@ -26,8 +26,11 @@
         <template v-else>
         <!-- 桌面端：竖排 SideNav 退役，主导航由 apps/desktop TitleBar 横排承担；
              web 端：WebTopBar 在 apps/web/src/App.vue 接管主导航，SideNav 也不再渲染；
-             仅 Capacitor 端仍保留竖排 SideNav 的 tab-bar 分支。 -->
-        <SideNav v-if="isMobile" />
+             仅 Capacitor 端仍保留竖排 SideNav 的 tab-bar 分支。
+             ★ 判据必须是 isMobilePlatform（平台），不能是 isMobile（窄窗 ∪ 平台）：
+               桌面/Web 的窄窗口下 isMobile 也为真，会渲染出 220px 的桌面侧栏，
+               以 fixed + z-index 盖住聊天区（2026-11-02 390 宽截图实见）。 -->
+        <SideNav v-if="isMobilePlatform" />
         <!-- Mobile TopBar —— ★ 仅 Capacitor 端渲染（见 mobileShellAsRoot 注释）：
              桌面/Web 端的窄窗口已有外层 WebTopBar，再画一条会双标题栏重叠。
 
@@ -658,6 +661,7 @@ const ROUTE_TITLES: Record<string, string> = {
   code: '代码',
   settings: '设置',
   login: '登录',
+  'office-workbench': '办公工作台',
 };
 
 const pageTitle = computed(() => {
@@ -745,6 +749,7 @@ authStore.loadUser();
 @import './styles/overlay.css';
 @import './styles/menu.css';
 @import './styles/surface.css';
+@import './styles/element-unify.css';
 @import './styles/task-row.css';
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -891,11 +896,11 @@ body {
    仅 hover 提亮，表明它是个可点开的菜单而不是状态指示。与 WebTopBar 的
    `.title-avatar.is-local` 同一形态（两端都是本机单机端，形态必须一致）。 */
 .mobile-user-avatar.is-local {
-  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06));
+  background: var(--glass-bg-hover, color-mix(in srgb, var(--color-text) 6%, transparent));
   color: var(--color-text-secondary);
 }
 .mobile-user-avatar.is-local:active {
-  background: var(--glass-bg-active, rgba(15, 23, 42, 0.1));
+  background: var(--glass-bg-active, color-mix(in srgb, var(--color-text) 10%, transparent));
   color: var(--color-text-primary, #0f172a);
 }
 

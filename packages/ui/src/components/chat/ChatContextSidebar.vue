@@ -176,14 +176,18 @@ watch([currentConvId, () => contextSidebarOpen.value], ([cid, open]) => {
   width: 0;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
+  border-left: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 10%, transparent));
   background: var(--glass-bg, rgba(255, 255, 255, 0.72));
   backdrop-filter: var(--glass-filter, blur(14px));
   -webkit-backdrop-filter: var(--glass-filter, blur(14px));
   overflow: hidden;
   opacity: 0;
   pointer-events: none;
-  transition: flex-basis 0.24s ease, min-width 0.24s ease, width 0.24s ease, opacity 0.2s ease;
+  transition:
+    flex-basis var(--motion-panel) var(--ease-out),
+    min-width var(--motion-panel) var(--ease-out),
+    width var(--motion-panel) var(--ease-out),
+    opacity var(--motion-fast) var(--ease-standard);
 }
 
 .context-sidebar.open {
@@ -201,7 +205,7 @@ watch([currentConvId, () => contextSidebarOpen.value], ([cid, open]) => {
   align-items: center;
   justify-content: space-between;
   padding: 0 12px 0 16px;
-  border-bottom: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
+  border-bottom: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 10%, transparent));
 }
 
 .context-sidebar-title {
@@ -259,7 +263,7 @@ watch([currentConvId, () => contextSidebarOpen.value], ([cid, open]) => {
   align-items: flex-start;
   gap: 8px;
   padding: 9px 10px;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 10%, transparent));
   border-radius: 9px;
   background: var(--el-fill-color-blank, rgba(255, 255, 255, 0.66));
   color: var(--skin-text, var(--el-text-color-primary, #1e293b));
@@ -307,7 +311,7 @@ watch([currentConvId, () => contextSidebarOpen.value], ([cid, open]) => {
     flex-basis: auto;
     transform: translateX(100%);
     transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
-    box-shadow: -18px 0 36px rgba(15, 23, 42, 0.18);
+    box-shadow: -18px 0 36px color-mix(in srgb, var(--color-text) 18%, transparent);
   }
 
   .context-sidebar.open {
@@ -334,7 +338,7 @@ watch([currentConvId, () => contextSidebarOpen.value], ([cid, open]) => {
     flex-basis: auto;
     transform: translateX(100%);
     transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
-    box-shadow: -18px 0 36px rgba(15, 23, 42, 0.18);
+    box-shadow: -18px 0 36px color-mix(in srgb, var(--color-text) 18%, transparent);
   }
 
   .context-sidebar.open {
@@ -364,7 +368,7 @@ watch([currentConvId, () => contextSidebarOpen.value], ([cid, open]) => {
   flex-basis: auto;
   transform: translateX(100%);
   transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
-  box-shadow: -18px 0 36px rgba(15, 23, 42, 0.18);
+  box-shadow: -18px 0 36px color-mix(in srgb, var(--color-text) 18%, transparent);
 }
 
 .platform-mobile .context-sidebar.open {

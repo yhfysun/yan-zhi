@@ -522,7 +522,7 @@ defineExpose({
   height: 100px;
   padding: 10px 10px 8px;
   border-radius: 12px;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.1));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 10%, transparent));
   background: var(--el-bg-color, #fff);
   /* 8.3 欢迎卡卡片化对齐 elevation token（选中态的强调阴影优先级更高，不冲突） */
   box-shadow: var(--shadow-1);
@@ -536,7 +536,7 @@ defineExpose({
 }
 
 .sc-card.is-front:not(.is-active) {
-  border-color: color-mix(in srgb, var(--scene-color) 45%, var(--glass-border, rgba(15, 23, 42, 0.1)));
+  border-color: color-mix(in srgb, var(--scene-color) 45%, var(--glass-border, color-mix(in srgb, var(--color-text) 10%, transparent)));
 }
 
 .sc-card.is-active {
@@ -634,7 +634,7 @@ defineExpose({
   color: var(--el-text-color-regular, #475569);
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px dashed var(--glass-border, rgba(15, 23, 42, 0.14));
+  border: 1px dashed var(--glass-border, color-mix(in srgb, var(--color-text) 14%, transparent));
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
@@ -698,7 +698,7 @@ defineExpose({
   height: 28px;
   padding: 0 10px;
   border-radius: 8px;
-  border: 1px solid var(--glass-border, rgba(15, 23, 42, 0.12));
+  border: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 12%, transparent));
   background: var(--el-bg-color, #fff);
   color: var(--el-text-color-regular, #475569);
   font-size: 12px;

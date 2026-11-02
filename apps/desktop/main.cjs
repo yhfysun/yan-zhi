@@ -1319,6 +1319,61 @@ function getAppIconPath() {
   return path.join(__dirname, '..', '..', 'assets', 'icons', 'icon.ico');
 }
 
+// ===== 窗口尺寸/位置记忆（2026-11-02）=====
+// 目标：重启回到上次的窗口大小与位置；最大化状态也记住。
+// 只在「正常态」存 bounds —— 最大化时 getBounds 是全屏尺寸，直接存会把用户原先的窗口大小覆盖掉。
+// 恢复前做多屏可见性校验：显示器拔掉/分辨率变了不能把窗口还原到屏幕外（用户会以为"应用没打开"）。
+const MIN_WIN_W = 800;
+const MIN_WIN_H = 600;
+
+function windowStateFile() {
+  return path.join(app.getPath('userData'), 'window-state.json');
+}
+
+function readWindowState() {
+  try {
+    const raw = fs.readFileSync(windowStateFile(), 'utf8');
+    const s = JSON.parse(raw);
+    return s && typeof s === 'object' ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 位置是否落在任一显示器的可用区域内（允许负坐标的多屏布局） */
+function windowStateValid(s) {
+  if (!s) return false;
+  if (!['x', 'y', 'width', 'height'].every((k) => Number.isFinite(Number(s[k])))) return false;
+  const width = Number(s.width);
+  const height = Number(s.height);
+  if (width < MIN_WIN_W || height < MIN_WIN_H) return false;
+  const x = Number(s.x);
+  const y = Number(s.y);
+  try {
+    return electronScreen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      // 只要求标题栏区域与显示器有交集，避免部分越界被判成非法
+      return x + width > a.x + 40 && x < a.x + a.width - 40
+        && y + 40 < a.y + a.height && y + height > a.y;
+    });
+  } catch {
+    return false;
+  }
+}
+
+function saveWindowState(win) {
+  try {
+    if (!win || win.isDestroyed()) return;
+    // 后台停靠时窗口被移到屏幕外，这时的坐标不能当作用户位置存下来
+    if (dockedOffscreen) return;
+    const maximized = win.isMaximized();
+    const b = maximized && typeof win.getNormalBounds === 'function' ? win.getNormalBounds() : win.getBounds();
+    fs.writeFileSync(windowStateFile(), JSON.stringify({
+      x: b.x, y: b.y, width: b.width, height: b.height, maximized,
+    }));
+  } catch { /* 写失败不影响使用 */ }
+}
+
 /** 创建主窗口 */
 function createWindow() {
   // 防重入：窗口已存在且未销毁时直接返回
@@ -1327,12 +1382,16 @@ function createWindow() {
     mainWindow.focus();
     return mainWindow;
   }
+  const savedWin = readWindowState();
+  const useSavedWin = windowStateValid(savedWin);
+  const restoreMaximized = !!(useSavedWin && savedWin.maximized);
   mainWindow = new BrowserWindow({
     icon: getAppIconPath(),
-    width: 1280,
-    height: 840,
-    minWidth: 800,
-    minHeight: 600,
+    width: useSavedWin ? Number(savedWin.width) : 1280,
+    height: useSavedWin ? Number(savedWin.height) : 840,
+    ...(useSavedWin ? { x: Number(savedWin.x), y: Number(savedWin.y) } : {}),
+    minWidth: MIN_WIN_W,
+    minHeight: MIN_WIN_H,
     frame: false,           // 无边框窗口（自定义标题栏）
     titleBarStyle: 'hidden',
     backgroundColor: '#1D1D1C',  // 匹配 dark 主题 --glass-bg，消除窗口创建到首屏渲染间的黑屏
@@ -1361,6 +1420,21 @@ function createWindow() {
   //   都在渲染层，其 `console.*` 只出现在 devtools —— 用户一关 devtools 就再无任何线索。
   //   这里挂 `console-message` 把 warn/error（及带 [browser] 前缀的信息）收进主进程日志。
   try { require('./main-log.cjs').attachRendererConsole(mainWindow.webContents, 'renderer'); } catch { /* 不影响启动 */ }
+
+  // 窗口尺寸/位置/最大化：变更后节流落盘（移动与缩放会高频触发，不必每次都写文件）
+  let saveWinTimer = null;
+  const scheduleSaveWinState = () => {
+    clearTimeout(saveWinTimer);
+    saveWinTimer = setTimeout(() => saveWindowState(mainWindow), 400);
+  };
+  mainWindow.on('resize', scheduleSaveWinState);
+  mainWindow.on('move', scheduleSaveWinState);
+  mainWindow.on('maximize', scheduleSaveWinState);
+  mainWindow.on('unmaximize', scheduleSaveWinState);
+  mainWindow.on('close', () => {
+    clearTimeout(saveWinTimer);
+    saveWindowState(mainWindow);
+  });
 
   // ★★★ 主窗口渲染进程崩溃自愈（2026-10-27 用户实报「最小化后应用直接黑屏了」）：
   //   此前只有 BrowserView / overlay 有 render-process-gone 处理，主窗口渲染进程
@@ -1395,6 +1469,8 @@ function createWindow() {
         if (iconOk) mainWindow.setIcon(iconPath);
       } catch (e) { console.warn('[dev-icon] setIcon 失败:', e && e.message); }
     }
+    // 还原上次的最大化状态（在 show 之前 maximize，避免先闪一下小窗再铺满）
+    if (restoreMaximized) { try { mainWindow.maximize(); } catch { /* ignore */ } }
     mainWindow?.show();
     // ★ splash 生命周期收口：主窗真正可见后才销毁（无缝衔接，不白闪）。
     //   挂在 ready-to-show 里而非健康检查通过处 —— 建窗 ≠ 可见。

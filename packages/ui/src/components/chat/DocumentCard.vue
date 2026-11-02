@@ -774,7 +774,7 @@ onBeforeUnmount(() => {
 .doc-word-menu {
   position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 244px; padding: 6px;
   border: 1px solid var(--el-border-color-lighter); border-radius: 8px; background: var(--el-bg-color-overlay);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, .12), 0 2px 6px rgba(15, 23, 42, .06);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--color-text) 12%, transparent), 0 2px 6px color-mix(in srgb, var(--color-text) 6%, transparent);
 }
 /* 按钮与菜单间的 4px 间隙补桥，鼠标穿过去不误关 */
 .doc-word-menu::before { content: ''; position: absolute; left: 0; right: 0; top: -6px; height: 6px; }

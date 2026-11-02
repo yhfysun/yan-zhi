@@ -19,7 +19,7 @@
       <div class="dwc-actions">
         <button class="dwc-btn" title="切换宽度" @click="$emit('cycle-width')">{{ widget.pos.w }}/12</button>
         <button class="dwc-btn" title="刷新" :disabled="loading" @click="load">↻</button>
-        <button class="dwc-btn danger" title="移除" @click="$emit('remove')">×</button>
+        <button class="dwc-btn danger" title="移除" @click="$emit('remove')"><el-icon :size="12"><Close /></el-icon></button>
       </div>
     </div>
 
@@ -69,6 +69,7 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue';
+import { Close } from '@element-plus/icons-vue';
 import { api } from '../../api/client';
 import type { DashboardWidget } from '@yan-zhi/shared';
 import type { ChartData, ChartKind, ChartSpec } from '../chat/chart-spec';

@@ -45,6 +45,17 @@
         <!-- 模式切换（四模式工作台）：首页之后、其余导航之前，hover 展开 -->
         <ModeSwitcher v-model="modeSwitcherOpen" />
 
+        <!-- 办公工作台（P2）：仅办公室模式露出；聊天页本身不变 -->
+        <router-link
+          v-if="activeMode === 'office'"
+          to="/office"
+          class="title-nav-item"
+          :class="{ active: isActive('/office') }"
+        >
+          <el-icon :size="15"><Files /></el-icon>
+          <span>工作台</span>
+        </router-link>
+
         <router-link
           v-for="m in navAfter"
           :key="m.path"
@@ -222,6 +233,8 @@ import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { openSettingsDialog } from '../composables/useSettingsDialog';
 import CommandPalette from './common/CommandPalette.vue';
 import ModeSwitcher from './workbench/ModeSwitcher.vue';
+import { activeMode } from '../stores/mode';
+import { useChat } from '../composables/chat/useChat';
 import { isStandaloneWindow } from '../utils/modeWindow';
 
 // 独立窗口锁定（模式窗口 / 会话窗口）：整个生命周期内上下文不变（窗口打开时即带
@@ -601,11 +614,40 @@ function onGlobalSearch() {
   paletteVisible.value = true;
 }
 
-/** ⌘K / Ctrl+K：桌面与 Web 都监听（浏览器里 Ctrl+K 默认聚焦地址栏，需 preventDefault） */
+/**
+ * 全局快捷键（2026-11-02）：
+ *   ⌘K / Ctrl+K 命令面板（桌面与 Web 都监听；浏览器里 Ctrl+K 默认聚焦地址栏，需 preventDefault）
+ *   Ctrl+B 折叠/展开任务侧栏    Ctrl+J 开关右侧上下文栏    Ctrl+N 新建任务
+ * ★ B/J/N 在输入框内不拦截：聊天输入框里这三个键有文本编辑语义；
+ *   K 没有输入冲突（且输入框内也需要它开面板），故不受此限制。
+ */
 function onCmdKKeydown(e: KeyboardEvent) {
-  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+  const key = e.key.toLowerCase();
+  if (key === 'k') {
     e.preventDefault();
     paletteVisible.value = true;
+    return;
+  }
+  const el = e.target as HTMLElement | null;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+  if (key === 'b') {
+    e.preventDefault();
+    if (!route.path.startsWith('/chat')) { void router.push('/chat'); return; }
+    const chat = useChat();
+    chat.convCollapsed.value = !chat.convCollapsed.value;
+    return;
+  }
+  if (key === 'j') {
+    e.preventDefault();
+    if (!route.path.startsWith('/chat')) { void router.push('/chat'); return; }
+    useChat().toggleContextSidebar();
+    return;
+  }
+  if (key === 'n') {
+    e.preventDefault();
+    if (!route.path.startsWith('/chat')) void router.push('/chat');
+    void useChat().startNewChat();
   }
 }
 
@@ -854,11 +896,11 @@ onUnmounted(() => {
 /* 桌面端「本机」身份头像：中性灰底（不用主题色实底 —— 那是"可点的登录入口"的语义），
    只有 hover 才提亮，表明它是个可点开的菜单而不是状态指示。 */
 .title-avatar.is-local {
-  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06));
+  background: var(--glass-bg-hover, color-mix(in srgb, var(--color-text) 6%, transparent));
   color: var(--color-text-secondary);
 }
 .title-avatar.is-local:hover {
-  background: var(--glass-bg-active, rgba(15, 23, 42, 0.1));
+  background: var(--glass-bg-active, color-mix(in srgb, var(--color-text) 10%, transparent));
   color: var(--color-text-primary, #0f172a);
 }
 

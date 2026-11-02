@@ -1173,7 +1173,7 @@ onMounted(() => { resetAll(); });
 .dqw-split-main:disabled { color: var(--color-text-tertiary); cursor: default; }
 .dqw-caret { font-size: 10px; line-height: 1; color: var(--color-text-tertiary); transition: transform .15s; }
 .dqw-caret.open { transform: rotate(180deg); }
-.dqw-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 132px; padding: 4px; border-radius: 8px; border: 1px solid var(--el-border-color-lighter); background: var(--el-bg-color-overlay); box-shadow: 0 10px 24px rgba(15, 23, 42, .12), 0 2px 6px rgba(15, 23, 42, .06); }
+.dqw-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 132px; padding: 4px; border-radius: 8px; border: 1px solid var(--el-border-color-lighter); background: var(--el-bg-color-overlay); box-shadow: 0 10px 24px color-mix(in srgb, var(--color-text) 12%, transparent), 0 2px 6px color-mix(in srgb, var(--color-text) 6%, transparent); }
 /* hover 菜单与触发按钮之间有 4px 间隙：补一条透明桥，鼠标穿过去不会误关 */
 .dqw-pop::before { content: ''; position: absolute; left: 0; right: 0; top: -6px; height: 6px; }
 .dqw-actions-menu { left: auto; right: 0; min-width: 148px; }

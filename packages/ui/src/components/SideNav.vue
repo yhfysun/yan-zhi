@@ -470,7 +470,7 @@ function toggleTheme() {
 /* 本机身份（本地单机端）：中性灰底 + 次级文字色 —— 不用主题色实底，
    那套配色是"可点的登录入口"语义。与 WebTopBar 的 .title-avatar.is-local 一致。 */
 .nav-avatar-wrap.is-local .nav-avatar.is-local {
-  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06));
+  background: var(--glass-bg-hover, color-mix(in srgb, var(--color-text) 6%, transparent));
   color: var(--color-text-secondary);
 }
 
@@ -483,7 +483,7 @@ function toggleTheme() {
   background: var(--el-bg-color, #fff);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  transition: width 0.2s ease;
+  transition: width var(--motion-panel) var(--ease-out);
 }
 .side-nav-desktop.collapsed {
   width: 56px;
@@ -689,7 +689,7 @@ function toggleTheme() {
   position: fixed;
   inset: 0;
   z-index: 1200;
-  background: rgba(15, 23, 42, 0.45);
+  background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: flex-end;
 }

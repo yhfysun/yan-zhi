@@ -897,7 +897,7 @@ async function decodeQrImage(file: File): Promise<string | null> {
 .guide-list code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(15, 23, 42, 0.06);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
   font-size: 12px;
 }
 
@@ -905,7 +905,7 @@ async function decodeQrImage(file: File): Promise<string | null> {
   margin-top: 14px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.05);
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
   font-size: 13px;
 }
 

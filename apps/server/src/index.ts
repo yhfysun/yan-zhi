@@ -62,6 +62,7 @@ import imRoutes from './routes/im.js';
 import kbRoutes from './routes/kb.js';
 import mcpBridgeRoutes from './mcp/index.js';
 import previewRoutes from './routes/preview.js';
+import officeRoutes from './routes/office.js';
 import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
@@ -500,6 +501,8 @@ app.use('/api/exec', execRoutes);
 app.use('/api/llm', llmLogsRoutes);
 // PDF 高保真预览通道（PyMuPDF 栅格化，作为 unpdf 文本提取的升级渲染）
 app.use('/api/preview', previewRoutes);
+// 办公三件套：docx / xlsx / pptx 的生成、结构化解析与导出（P2）
+app.use('/api/office', officeRoutes);
 // 代码模式：开发环境（Java/Maven/Python/Node/Git）配置与探测
 if (!process.env.MOBILE_MODE) {
   app.use('/api/env', envRoutes);

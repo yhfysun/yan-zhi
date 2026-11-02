@@ -2872,7 +2872,7 @@ onBeforeUnmount(() => {
   padding: 0 !important;
   border: none !important;
   background: transparent !important;
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.24) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24) !important;
 }
 .atp-popper.el-popper.is-light {
   background-image: none !important;
@@ -2896,7 +2896,7 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   border: 1px solid var(--glass-border, rgba(0, 0, 0, 0.08));
   background: var(--color-bg-elevated, #fff);
-  box-shadow: 0 8px 26px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--color-text) 18%, transparent);
 }
 .ilm-item {
   display: flex;

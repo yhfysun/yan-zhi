@@ -1,0 +1,59 @@
+/* ============================================================
+   Element Plus 统一层（P3，2026-11-02）
+
+   只收敛「同类控件在不同页面长得不一样」的部分：按钮字重、表格、
+   空态、分页、标签。颜色/圆角/动效全部走 tokens.css 与 motion.css，
+   这里不出现任何硬编码色值。
+
+   下拉与弹窗已有专门文件：menu.css（下拉/菜单）、overlay.css（对话框）。
+   ============================================================ */
+
+/* ===== 按钮：统一字重（大小档位保持 EP 默认，避免挤动各页工具条） ===== */
+.el-button { font-weight: 500; }
+.el-button.is-text,
+.el-button.is-link { font-weight: 500; }
+.el-button .el-icon + span { margin-left: 6px; }
+
+/* ===== 表格：表头浅底、正文次级色、行 hover 用墨色叠加（暗色自动反转） ===== */
+.el-table {
+  --el-table-header-bg-color: var(--color-bg);
+  --el-table-header-text-color: var(--color-text-tertiary);
+  --el-table-text-color: var(--color-text-secondary);
+  --el-table-border-color: var(--color-border);
+  --el-table-row-hover-bg-color: color-mix(in srgb, var(--color-text) 3%, transparent);
+  font-size: 13px;
+}
+.el-table th.el-table__cell {
+  font-weight: 600;
+  font-size: 12px;
+}
+.el-table .el-table__cell {
+  padding: 8px 0;
+}
+
+/* ===== 空态：统一说明文字层级与留白（各页 el-empty 不再忽大忽小） ===== */
+.el-empty {
+  padding: 28px 0;
+}
+.el-empty__description p {
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+}
+.el-empty__image {
+  opacity: 0.92;
+}
+
+/* ===== 分页：对齐控件圆角与字号 ===== */
+.el-pagination {
+  font-size: 12px;
+}
+.el-pagination .el-pager li,
+.el-pagination button {
+  border-radius: var(--radius-xs);
+}
+.el-pagination .el-pager li.is-active {
+  font-weight: 600;
+}
+
+/* ===== 标签：统一字重（圆角已由 surface.css 下沉到微件档） ===== */
+.el-tag { font-weight: 500; }

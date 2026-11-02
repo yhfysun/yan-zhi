@@ -48,7 +48,7 @@
       <div v-if="selectedChunk" class="kb-chunk-panel">
         <div class="kb-chunk-panel-head">
           <b>{{ selectedChunk.docName || selectedChunk.label }}</b>
-          <el-button size="small" text @click="selectedChunk = null">×</el-button>
+          <el-button size="small" text :icon="Close" title="关闭" @click="selectedChunk = null" />
         </div>
         <pre class="kb-chunk-panel-body">{{ selectedChunk.content }}</pre>
       </div>
@@ -56,7 +56,7 @@
       <div v-if="entityInfo" class="kb-chunk-panel">
         <div class="kb-chunk-panel-head">
           <b>实体：#{{ entityInfo.name }}</b>
-          <el-button size="small" text @click="entityInfo = null">×</el-button>
+          <el-button size="small" text :icon="Close" title="关闭" @click="entityInfo = null" />
         </div>
         <div class="kb-entity-panel-body">
           <div v-if="entityInfo.description" class="kb-entity-about">{{ entityInfo.description }}</div>
@@ -97,7 +97,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { VueFlow, useVueFlow, type Node, type Edge } from '@vue-flow/core';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
-import { Refresh, Search, ZoomIn, ZoomOut, MagicStick, FullScreen, Aim } from '@element-plus/icons-vue';
+import { Refresh, Search, ZoomIn, ZoomOut, MagicStick, FullScreen, Aim, Close } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api } from '../api/client';
 import FormDialog from './FormDialog.vue';

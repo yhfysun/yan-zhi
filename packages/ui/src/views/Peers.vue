@@ -470,7 +470,7 @@ function scrollToBottom() {
   max-width: 72%;
   padding: 10px 12px;
   border-radius: 14px;
-  background: rgba(15, 23, 42, 0.05);
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
 }
 
 .message-row.mine .message-bubble {

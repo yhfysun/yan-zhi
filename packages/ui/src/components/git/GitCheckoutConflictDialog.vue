@@ -112,7 +112,7 @@ function doForce(): void { void run('force'); }
 .gxc-options { display: flex; flex-direction: column; gap: 8px; }
 .gxc-opt {
   text-align: left; cursor: pointer; padding: 10px 12px;
-  border: 1px solid var(--glass-border, #e7e4dc); border-radius: 8px; background: #fff;
+  border: 1px solid var(--glass-border, #e7e4dc); border-radius: 8px; background: var(--color-surface);
 }
 .gxc-opt:hover:not(:disabled) { border-color: var(--color-primary, #c2410c); background: #fdf8f5; }
 .gxc-opt:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -129,7 +129,7 @@ function doForce(): void { void run('force'); }
 .gxc-foot { display: flex; }
 .gxc-spacer { flex: 1; }
 .gxc-btn {
-  border: 1px solid var(--glass-border, #e7e4dc); background: #fff;
+  border: 1px solid var(--glass-border, #e7e4dc); background: var(--color-surface);
   border-radius: 6px; padding: 5px 14px; font-size: 13px; cursor: pointer;
 }
 .gxc-btn:hover:not(:disabled) { border-color: var(--color-primary, #c2410c); color: var(--color-primary, #c2410c); }

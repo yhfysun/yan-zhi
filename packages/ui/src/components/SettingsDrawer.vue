@@ -173,7 +173,7 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: 0;
   z-index: 1999;
-  background: rgba(15, 23, 42, 0.5);
+  background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
 }
@@ -188,8 +188,8 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   background: var(--el-bg-color, #fff);
-  border-left: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
-  box-shadow: -18px 0 48px rgba(15, 23, 42, 0.22);
+  border-left: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
+  box-shadow: -18px 0 48px rgba(0, 0, 0, 0.22);
   color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
@@ -198,7 +198,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+  border-bottom: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
   flex-shrink: 0;
 }
 
@@ -231,7 +231,7 @@ onBeforeUnmount(() => {
 }
 
 .settings-drawer-close:hover {
-  background: var(--el-fill-color-light, rgba(15, 23, 42, 0.06));
+  background: var(--el-fill-color-light, color-mix(in srgb, var(--color-text) 6%, transparent));
   color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
@@ -246,7 +246,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   overflow-y: auto;
   padding: 12px 8px;
-  border-right: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+  border-right: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
   background: var(--el-fill-color-blank, #fff);
 }
 
@@ -269,7 +269,7 @@ onBeforeUnmount(() => {
 }
 
 .settings-drawer-nav-item:hover {
-  background: var(--el-fill-color-light, rgba(15, 23, 42, 0.05));
+  background: var(--el-fill-color-light, color-mix(in srgb, var(--color-text) 5%, transparent));
   color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
@@ -350,7 +350,7 @@ onBeforeUnmount(() => {
     overflow-y: hidden;
     padding: 8px 10px;
     border-right: none;
-    border-bottom: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+    border-bottom: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
     background: var(--el-fill-color-blank, #fff);
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none; /* chip 滚动条在触屏上是噪音，藏掉（手势可滚） */

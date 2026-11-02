@@ -1,0 +1,295 @@
+<!--
+  WorkspaceFileTree.vue — 办公工作台左栏：工作区文件树（2026-11-02，P2）
+
+  数据走 /api/workspace/tree（逐级懒加载），CRUD 走 /api/workspace/*
+  与 /api/office/create（docx/xlsx/pptx）。右键菜单照原型：
+  新建文档/表格/演示、重命名、复制一份、删除。
+-->
+<template>
+  <aside class="ws-tree">
+    <header class="ws-head">
+      <div class="ws-head-text">
+        <span class="ws-title">工作区</span>
+        <span class="ws-sub" :title="rootDir">{{ rootName }}</span>
+      </div>
+      <div class="ws-head-actions">
+        <el-dropdown trigger="click" :disabled="!rootDir" @command="onCreatePick">
+          <button class="ws-icon-btn" type="button" title="新建文档 / 表格 / 演示">
+            <el-icon :size="14"><Plus /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="doc">新建文档（.docx）</el-dropdown-item>
+              <el-dropdown-item command="sheet">新建表格（.xlsx）</el-dropdown-item>
+              <el-dropdown-item command="slides">新建演示（.pptx）</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <button class="ws-icon-btn" type="button" title="刷新" :disabled="loading" @click="refresh()">
+          <el-icon :size="14" :class="{ spin: loading }"><Refresh /></el-icon>
+        </button>
+      </div>
+    </header>
+
+    <div class="ws-body">
+      <div v-if="!rootDir" class="ws-empty">
+        未设置工作目录
+        <div class="ws-empty-actions">
+          <el-button size="small" type="primary" @click="emit('pick-dir')">选择目录</el-button>
+        </div>
+      </div>
+      <div v-else-if="error" class="ws-empty">{{ error }}</div>
+      <div v-else-if="loading && flatNodes.length === 0" class="ws-empty">正在读取目录…</div>
+      <div v-else-if="flatNodes.length === 0" class="ws-empty">目录是空的，从右上角新建文档开始</div>
+
+      <div
+        v-for="node in flatNodes"
+        :key="node.path"
+        class="ws-row"
+        :class="{ 'is-dir': node.isDir, 'is-active': node.path === selectedPath }"
+        :style="{ paddingLeft: 8 + node.depth * 14 + 'px' }"
+        @click="onRowClick(node)"
+        @contextmenu.prevent="openMenu($event, node)"
+      >
+        <span class="ws-caret" @click.stop="onRowClick(node)">
+          <el-icon v-if="node.isDir" :size="10">
+            <ArrowDown v-if="expanded[node.path]" /><ArrowRight v-else />
+          </el-icon>
+        </span>
+        <span class="ws-ficon" :class="iconClass(node)">{{ iconText(node) }}</span>
+        <span class="ws-name" :title="node.name">{{ node.name }}</span>
+      </div>
+    </div>
+
+    <!-- 右键菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="menu.visible"
+        class="ws-menu"
+        :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
+        @mousedown.stop
+      >
+        <button class="ws-menu-item" type="button" @click="menuCreate('doc')">＋ 新建文档 <span>.docx</span></button>
+        <button class="ws-menu-item" type="button" @click="menuCreate('sheet')">＋ 新建表格 <span>.xlsx</span></button>
+        <button class="ws-menu-item" type="button" @click="menuCreate('slides')">＋ 新建演示 <span>.pptx</span></button>
+        <div class="ws-menu-sep"></div>
+        <button class="ws-menu-item" type="button" @click="menuRename">✎ 重命名</button>
+        <button class="ws-menu-item" type="button" @click="menuDuplicate">⧉ 复制一份</button>
+        <div class="ws-menu-sep"></div>
+        <button class="ws-menu-item danger" type="button" @click="menuDelete">⌫ 删除</button>
+      </div>
+    </Teleport>
+  </aside>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onBeforeUnmount, reactive, watch } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { Plus, Refresh, ArrowRight, ArrowDown } from '@element-plus/icons-vue';
+import { useWorkspaceFiles, type WsNode, type OfficeDocKind } from '../../composables/office/useWorkspaceFiles';
+import { officeSelectedFile } from '../../stores/officeWorkbench';
+
+const emit = defineEmits<{ (e: 'pick-dir'): void }>();
+
+const {
+  rootDir, loading, error, selectedPath, flatNodes, expanded,
+  loadRoot, toggleDir, refresh, select, createDoc, renameNode, duplicateNode, deleteNode,
+} = useWorkspaceFiles();
+
+const rootName = computed(() => {
+  const r = rootDir.value.replace(/[\\/]+$/, '');
+  return r.split(/[\\/]/).pop() || r || '未设置';
+});
+
+function extOf(name: string): string {
+  const i = name.lastIndexOf('.');
+  return i >= 0 ? name.slice(i).toLowerCase() : '';
+}
+function iconText(node: WsNode): string {
+  if (node.isDir) return '▣';
+  const ext = extOf(node.name);
+  if (ext === '.docx') return 'W';
+  if (ext === '.xlsx') return 'X';
+  if (ext === '.pptx') return 'P';
+  return '·';
+}
+function iconClass(node: WsNode): string {
+  if (node.isDir) return 'is-folder';
+  const ext = extOf(node.name);
+  if (ext === '.docx') return 'f-word';
+  if (ext === '.xlsx') return 'f-xls';
+  if (ext === '.pptx') return 'f-ppt';
+  return '';
+}
+
+function onRowClick(node: WsNode) {
+  if (node.isDir) {
+    void toggleDir(node);
+    return;
+  }
+  select(node.path);
+  officeSelectedFile.value = node.path;
+}
+
+// 手机/触屏没有右键：长按同一行打开菜单。桌面右键已覆盖主要场景，这里不额外引组件。
+const menu = reactive({ visible: false, x: 0, y: 0, node: null as WsNode | null });
+function openMenu(e: MouseEvent, node: WsNode) {
+  menu.visible = true;
+  menu.node = node;
+  menu.x = Math.min(e.clientX, window.innerWidth - 220);
+  menu.y = Math.min(e.clientY, window.innerHeight - 260);
+  select(node.path);
+}
+function closeMenu() { menu.visible = false; }
+function onDocMouseDown() { if (menu.visible) closeMenu(); }
+function onKeydown(e: KeyboardEvent) { if (e.key === 'Escape' && menu.visible) closeMenu(); }
+
+async function promptName(title: string, initial: string): Promise<string | null> {
+  try {
+    const r = await ElMessageBox.prompt('名称', title, {
+      inputValue: initial,
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValidator: (v: string) => (!!String(v || '').trim() ? true : '名称不能为空'),
+    });
+    return String(r.value || '').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function doCreate(kind: OfficeDocKind) {
+  closeMenu();
+  const label = kind === 'doc' ? '文档' : kind === 'sheet' ? '表格' : '演示';
+  const name = await promptName(`新建${label}`, `未命名${label}`);
+  if (!name) return;
+  const r = await createDoc(kind, name);
+  if (!r.ok) { ElMessage.error(r.error || '创建失败'); return; }
+  ElMessage.success(`已创建${label}`);
+}
+
+function onCreatePick(cmd: string) { void doCreate(cmd as OfficeDocKind); }
+function menuCreate(kind: OfficeDocKind) { void doCreate(kind); }
+
+async function menuRename() {
+  const node = menu.node;
+  closeMenu();
+  if (!node) return;
+  const name = await promptName('重命名', node.name);
+  if (!name || name === node.name) return;
+  const r = await renameNode(node, name);
+  if (!r.ok) { ElMessage.error(r.error || '重命名失败'); return; }
+  ElMessage.success('已重命名');
+}
+
+async function menuDuplicate() {
+  const node = menu.node;
+  closeMenu();
+  if (!node) return;
+  const r = await duplicateNode(node);
+  if (!r.ok) { ElMessage.error(r.error || '复制失败'); return; }
+  ElMessage.success('已复制一份');
+}
+
+async function menuDelete() {
+  const node = menu.node;
+  closeMenu();
+  if (!node) return;
+  try {
+    await ElMessageBox.confirm(`删除「${node.name}」？文件会被直接删除，不进回收站。`, '删除', {
+      type: 'warning',
+      confirmButtonClass: 'yz-confirm-danger',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    });
+  } catch { return; }
+  const r = await deleteNode(node);
+  if (!r.ok) { ElMessage.error(r.error || '删除失败'); return; }
+  ElMessage.success('已删除');
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', onDocMouseDown, true);
+  document.addEventListener('keydown', onKeydown);
+  void loadRoot();
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocMouseDown, true);
+  document.removeEventListener('keydown', onKeydown);
+});
+watch(rootDir, () => { void loadRoot(true); });
+
+defineExpose({ doCreate });
+</script>
+
+<style scoped>
+.ws-tree {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.ws-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+.ws-head-text { min-width: 0; display: flex; flex-direction: column; }
+.ws-title { font-size: 12px; font-weight: 700; color: var(--color-text); }
+.ws-sub {
+  font-size: 11px; color: var(--color-text-tertiary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px;
+}
+.ws-head-actions { margin-left: auto; display: flex; gap: 2px; }
+.ws-icon-btn {
+  width: 26px; height: 26px; display: grid; place-items: center;
+  border: none; border-radius: 6px; background: transparent;
+  color: var(--color-text-secondary); cursor: pointer;
+}
+.ws-icon-btn:hover:not(:disabled) { background: var(--glass-bg-hover); color: var(--color-text); }
+.ws-icon-btn:disabled { opacity: 0.4; cursor: default; }
+.spin { animation: ws-spin 0.9s linear infinite; }
+@keyframes ws-spin { to { transform: rotate(360deg); } }
+
+.ws-body { flex: 1; min-height: 0; overflow: auto; padding: 6px 4px 12px; }
+.ws-empty { padding: 22px 14px; font-size: 12px; color: var(--color-text-tertiary); line-height: 1.6; }
+.ws-empty-actions { margin-top: 10px; }
+
+.ws-row {
+  display: flex; align-items: center; gap: 6px;
+  height: 30px; padding-right: 8px; border-radius: 6px;
+  font-size: 12.5px; color: var(--color-text); cursor: pointer; white-space: nowrap;
+}
+.ws-row:hover { background: var(--glass-bg-hover); }
+.ws-row.is-active { background: color-mix(in srgb, var(--color-primary) 12%, transparent); color: var(--color-primary); font-weight: 500; }
+.ws-row.is-dir { color: var(--color-text-secondary); font-weight: 600; }
+.ws-caret { width: 12px; flex: 0 0 12px; display: inline-flex; justify-content: center; color: var(--color-text-tertiary); }
+.ws-ficon { width: 16px; flex: 0 0 16px; text-align: center; font-size: 10px; font-weight: 700; }
+.ws-ficon.is-folder { color: var(--color-text-tertiary); font-size: 11px; }
+.ws-ficon.f-word { color: #2b579a; }
+.ws-ficon.f-xls { color: #1d7044; }
+.ws-ficon.f-ppt { color: #b7472a; }
+.ws-name { overflow: hidden; text-overflow: ellipsis; }
+
+.ws-menu {
+  position: fixed; z-index: 3000; min-width: 200px;
+  padding: 5px; border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated, var(--glass-bg, #fff));
+  box-shadow: var(--shadow-3);
+}
+.ws-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 10px; border: none; border-radius: 7px; background: transparent;
+  font-size: 12.5px; color: var(--color-text); text-align: left; cursor: pointer;
+}
+.ws-menu-item:hover { background: var(--glass-bg-hover); }
+.ws-menu-item span { margin-left: auto; font-size: 10.5px; color: var(--color-text-tertiary); }
+.ws-menu-item.danger { color: #b91c1c; }
+.ws-menu-sep { height: 1px; margin: 4px 6px; background: var(--color-border); }
+</style>

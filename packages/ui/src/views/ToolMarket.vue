@@ -1,9 +1,5 @@
 <template>
-  <div class="page">
-    <div class="page-top">
-      <h2 class="page-title">工具与连接</h2>
-    </div>
-
+  <PageFrame title="工具与连接" subtitle="内置工具、自定义工具、MCP 服务与远程工具商城">
     <!-- 四 tab：内置工具 / 自定义工具 / MCP 服务 / 远程工具商城 -->
     <el-tabs v-model="activeTab" class="tl-tabs">
       <!-- ===== Tab 1：内置工具 ===== -->
@@ -356,10 +352,11 @@
     </el-dialog>
   
     <ResourceAclDialog v-model:visible="aclVisible" type="tool" :id="aclTarget?.id || ''" :name="aclTarget?.name || '工具'" />
-  </div>
+  </PageFrame>
 </template>
 
 <script setup lang="ts">
+import PageFrame from '../components/common/PageFrame.vue';
 import ResourceAclDialog from '../components/common/ResourceAclDialog.vue';
 import { ref, reactive, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
@@ -755,14 +752,27 @@ async function installTool(item: any) {
 .page-top { margin-bottom: 20px; }
 
 /* ---- Tab ---- */
+/* 页头由 PageFrame 常驻；tab 条与工具条在内容区滚动时吸附在顶部（2026-11-02） */
 .tl-tabs :deep(.el-tabs__header) {
-  margin-bottom: 20px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin-bottom: 14px;
+  padding-top: 2px;
+  background: var(--color-bg);
 }
+/* Element Plus 默认给内容区 overflow:hidden，会让 pane 内的 sticky 工具条失效 */
+.tl-tabs :deep(.el-tabs__content) { overflow: visible; }
 
 /* ---- tab 顶部工具栏（左搜索 / 右操作：搜索框与 actions 均由 SearchToolbar 提供） ---- */
 .tab-toolbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 16px;
+  position: sticky;
+  top: 43px;
+  z-index: 15;
+  padding: 6px 0;
+  background: var(--color-bg);
 }
 .tab-toolbar-inline { margin-bottom: 14px; }
 /* 分类筛选下拉宽度由 .yz-cat-select 统一给定（styles/surface.css） */

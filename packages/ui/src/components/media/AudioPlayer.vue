@@ -256,7 +256,7 @@ onBeforeUnmount(() => {
 .ap-track-bg {
   position: absolute; left: 0; right: 0; height: 4px;
   border-radius: 2px;
-  background: var(--el-border-color-lighter, rgba(15, 23, 42, 0.12));
+  background: var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 12%, transparent));
 }
 .ap-track-fill {
   position: absolute; left: 0; height: 4px;
@@ -268,9 +268,9 @@ onBeforeUnmount(() => {
   width: 10px; height: 10px;
   margin-left: -5px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--color-surface);
   border: 2px solid var(--el-color-primary, #7c3aed);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   pointer-events: none;
 }
 .ap-times {

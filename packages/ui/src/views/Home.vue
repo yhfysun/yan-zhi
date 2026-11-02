@@ -219,7 +219,7 @@ function handleInfoClick(item: HomeMenuItem) {
 .home-overlay > * { pointer-events: auto; }
 
 /* 应用介绍小圆点（可拖拽，InfoFilled 图标）
-   2026-09-13 修「亮色系黑底黑字」：原写死深色底 + 白字（rgba(15,23,42,.7) / #fff），
+   2026-09-13 修「亮色系黑底黑字」：原写死深色底 + 白字（rgba(0, 0, 0, 0.7) / #fff），
    首页太阳系 canvas 恒为深空黑，浅色主题下这些浮层仍按深色渲染尚可读；
    但功能导航面板等**不压 canvas 之外的区域**在浅色主题下会与浅底冲突。
    这里统一走主题 token：深色主题下由 data-theme 派生的 surface 就是深色，观感不变；
@@ -228,7 +228,7 @@ function handleInfoClick(item: HomeMenuItem) {
   position: absolute; z-index: 50;
   width: 36px; height: 36px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(15, 23, 42, 0.7);
+  background: rgba(0, 0, 0, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.15);
   color: rgba(255, 255, 255, 0.9);
   cursor: grab; user-select: none;
@@ -302,7 +302,7 @@ function handleInfoClick(item: HomeMenuItem) {
 .feature-nav-btn:hover { transform: scale(1.06); }
 
 /* ===== 功能列表面板 =====
-   2026-09-13：原来底/字/边框全写死深色（rgba(15,23,42,.78) + #fff），
+   2026-09-13：原来底/字/边框全写死深色（rgba(0, 0, 0, 0.78) + #fff），
    浅色主题下这块"浮在浅色页面上的深色板"就是用户说的「还有黑底黑字」。
    改为走主题 token（--color-surface / --color-text / --color-border），
    深浅两种主题各取所需：深色主题下视觉与原先一致，浅色主题下自动浅底深字。 */
@@ -321,7 +321,7 @@ function handleInfoClick(item: HomeMenuItem) {
   width: 280px;
   max-height: calc(100% - 72px - 12px);
   display: flex; flex-direction: column;
-  background: var(--color-surface, rgba(15, 23, 42, 0.78));
+  background: var(--color-surface, rgba(0, 0, 0, 0.78));
   border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
   border-radius: 14px;
   backdrop-filter: blur(18px);

@@ -1498,7 +1498,7 @@ function openDraft(taskId: string) {
   padding: 8px 10px; border-radius: 8px; background: var(--btn-bg);
   cursor: pointer; transition: background 0.15s, box-shadow 0.15s;
 }
-.msg-check-item:hover { background: rgba(15,23,42,0.06); }
+.msg-check-item:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
 .msg-check-item.is-checked { background: color-mix(in srgb, var(--color-primary) 10%, transparent); box-shadow: inset 2px 0 0 var(--color-primary); }
 .msg-check-item.is-excluded { opacity: 0.45; cursor: not-allowed; }
 .msg-check-item.is-required { background: color-mix(in srgb, var(--color-accent) 12%, transparent); box-shadow: inset 2px 0 0 var(--color-accent); }
@@ -1516,7 +1516,7 @@ function openDraft(taskId: string) {
   background: transparent; cursor: pointer; color: var(--color-text-secondary);
   transition: background 0.15s, color 0.15s;
 }
-.msg-perm-btn:hover { background: rgba(15,23,42,0.08); }
+.msg-perm-btn:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); }
 .msg-perm-btn.perm-required { color: var(--color-accent); }
 .msg-perm-btn.perm-excluded { color: var(--el-color-danger); }
 .msg-check-content {
@@ -1578,7 +1578,7 @@ function openDraft(taskId: string) {
   max-height: 220px; overflow-y: auto;
   display: flex; flex-direction: column; gap: 6px;
 }
-.source-msg { padding: 6px 10px; border-radius: 6px; background: rgba(15,23,42,0.04); }
+.source-msg { padding: 6px 10px; border-radius: 6px; background: color-mix(in srgb, var(--color-text) 4%, transparent); }
 .source-msg.role-user { border-left: 1px solid color-mix(in srgb, var(--color-primary) 40%, transparent); }
 .source-msg.role-assistant { border-left: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent); }
 .source-msg-role { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); }
@@ -1587,7 +1587,7 @@ function openDraft(taskId: string) {
   margin-top: 2px; font-family: inherit; margin: 2px 0 0;
 }
 .result-md {
-  background: rgba(15,23,42,0.04); padding: 12px; border-radius: 6px;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent); padding: 12px; border-radius: 6px;
   font-family: "JetBrains Mono", monospace; font-size: 12px;
   max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   margin: 0;
@@ -1677,7 +1677,7 @@ function openDraft(taskId: string) {
 .fm-triggers { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; align-items: center; }
 
 .skill-body-md {
-  background: rgba(15,23,42,0.04); padding: 12px; border-radius: 6px;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent); padding: 12px; border-radius: 6px;
   font-family: "JetBrains Mono", monospace; font-size: 12px;
   max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   margin: 0;
@@ -1685,7 +1685,7 @@ function openDraft(taskId: string) {
 
 .refine-result { display: flex; flex-direction: column; gap: 6px; }
 .refine-result-md {
-  background: rgba(15,23,42,0.04); padding: 12px; border-radius: 6px;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent); padding: 12px; border-radius: 6px;
   font-family: "JetBrains Mono", monospace; font-size: 12px;
   max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   margin: 0;
@@ -1762,7 +1762,7 @@ function openDraft(taskId: string) {
   gap: 8px; margin-bottom: 6px;
 }
 .md-body {
-  background: rgba(15,23,42,0.03); padding: 12px; border-radius: 6px;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent); padding: 12px; border-radius: 6px;
   font-size: 13px; line-height: 1.7; max-height: 320px; overflow: auto;
   word-break: break-word;
 }
@@ -1771,11 +1771,11 @@ function openDraft(taskId: string) {
 .md-body :deep(ul), .md-body :deep(ol) { padding-left: 20px; margin: 6px 0; }
 .md-body :deep(p) { margin: 6px 0; }
 .md-body :deep(code) {
-  background: rgba(15,23,42,0.08); padding: 1px 4px; border-radius: 3px;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent); padding: 1px 4px; border-radius: 3px;
   font-family: "JetBrains Mono", monospace; font-size: 12px;
 }
 .md-body :deep(pre) {
-  background: rgba(15,23,42,0.06); padding: 8px 10px; border-radius: 6px; overflow-x: auto;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent); padding: 8px 10px; border-radius: 6px; overflow-x: auto;
 }
 .md-empty { color: var(--color-text-secondary); }
 .body-editor :deep(textarea) { font-family: "JetBrains Mono", monospace; font-size: 12px; }
@@ -1784,7 +1784,7 @@ function openDraft(taskId: string) {
 /* 左屏消息气泡化回放（用户右 / 助手左），勾选与三态权限档保留 */
 .msg-check-item .msg-check-body {
   border-radius: 12px; padding: 8px 10px; max-width: 88%;
-  background: rgba(15,23,42,0.04);
+  background: color-mix(in srgb, var(--color-text) 4%, transparent);
 }
 .msg-check-item.role-user { flex-direction: row-reverse; }
 .msg-check-item.role-user .msg-check-body {

@@ -1,5 +1,43 @@
 <template>
-  <div class="page">
+  <PageFrame
+    :title="frameTitle"
+    :subtitle="frameSubtitle"
+    :scroll="currentView !== 'local-agents'"
+    :pad="currentView !== 'local-agents'"
+  >
+    <template #back>
+      <el-button
+        v-if="currentView !== 'marketplace'"
+        text
+        :icon="ArrowLeft"
+        class="back-btn"
+        @click="goToMarketplace()"
+      >返回商城</el-button>
+    </template>
+
+    <template #actions v-if="currentView === 'local-agents'">
+      <!-- 智能体平台默认候选池：对所有智能体生效（单个智能体未单独配时用这里） -->
+      <el-button :icon="MagicStick" @click="openPools">候选池</el-button>
+      <el-button type="primary" :icon="Plus" @click="createAgent" class="fab-add">新建智能体</el-button>
+    </template>
+
+    <template #toolbar>
+      <SearchToolbar
+        v-if="currentView === 'local-agents'"
+        v-model:query="agentKeyword"
+        placeholder="搜索智能体名称 / 描述 / 分类"
+        :count="visibleAgents.length"
+      />
+      <div v-else-if="currentView === 'remote-agents'" class="remote-toolbar">
+        <SearchToolbar
+          v-model:query="remoteAgentKeyword"
+          placeholder="搜索远程智能体名称 / 描述"
+          :count="filteredRemoteAgents.length"
+        />
+        <el-button size="small" @click="browseAgentSource(selectedRemoteSource)">刷新列表</el-button>
+      </div>
+    </template>
+
     <!-- ===== 商城卡片入口页 ===== -->
     <template v-if="currentView === 'marketplace'">
       <MarketplaceShell title="智能体商店" subtitle="管理本地智能体，或接入远程智能体商城">
@@ -61,21 +99,6 @@
 
     <!-- ===== 本地智能体列表页 ===== -->
     <template v-if="currentView === 'local-agents'">
-      <header class="page-header">
-        <div class="back-header">
-          <el-button text :icon="ArrowLeft" class="back-btn" @click="goToMarketplace()">返回商城</el-button>
-          <div>
-            <h2 class="page-title">本地智能体</h2>
-            <p class="page-sub">内置智能体与自定义创建的智能体</p>
-          </div>
-        </div>
-        <div class="header-actions">
-          <!-- 智能体平台默认候选池：对所有智能体生效（单个智能体未单独配时用这里） -->
-          <el-button :icon="MagicStick" @click="openPools">候选池</el-button>
-          <el-button type="primary" :icon="Plus" @click="createAgent" class="fab-add">新建智能体</el-button>
-        </div>
-      </header>
-
       <div class="agents-layout">
         <!-- 分类侧栏：按自定义分类标签分组筛选 -->
         <aside class="cat-sidebar" v-if="!loading">
@@ -93,12 +116,6 @@
         </aside>
 
         <div class="agents-content" v-loading="loading">
-          <!-- 搜索条固定在列表顶部，只有列表区滚动（搜索条不随内容滚走） -->
-          <SearchToolbar
-            v-model:query="agentKeyword"
-            placeholder="搜索智能体名称 / 描述 / 分类"
-            :count="visibleAgents.length"
-          />
           <div class="agents-scroll">
           <template v-if="loading">
             <el-skeleton v-for="n in 4" :key="n" animated style="padding:16px">
@@ -164,26 +181,6 @@
 
     <!-- ===== 远程智能体列表页 ===== -->
     <template v-if="currentView === 'remote-agents'">
-      <header class="page-header">
-        <div class="back-header">
-          <el-button text :icon="ArrowLeft" class="back-btn" @click="goToMarketplace()">返回商城</el-button>
-          <div>
-            <h2 class="page-title">{{ selectedRemoteSource?.name || '远程商城' }}</h2>
-            <p class="page-sub mono">{{ selectedRemoteSource?.base_url || '' }}</p>
-          </div>
-        </div>
-      </header>
-
-      <div class="remote-toolbar">
-        <el-button size="small" @click="browseAgentSource(selectedRemoteSource)">刷新列表</el-button>
-      </div>
-
-      <SearchToolbar
-        v-model:query="remoteAgentKeyword"
-        placeholder="搜索远程智能体名称 / 描述"
-        :count="filteredRemoteAgents.length"
-      />
-
       <div v-if="filteredRemoteAgents.length === 0 && remoteAgentKeyword.trim()" style="padding: 40px 0; text-align: center; color: var(--color-text-secondary);">
         没有匹配的远程智能体
       </div>
@@ -255,7 +252,7 @@
     </el-dialog>
 
     <AgentEditDialog v-model="showEdit" :agent="editing" @saved="onSaved" @deleted="onDeleted" />
-  </div>
+  </PageFrame>
 </template>
 
 <script setup lang="ts">
@@ -275,6 +272,7 @@ import FormDialog from '../components/FormDialog.vue';
 import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
 import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
 import MarketplaceEmpty from '../components/marketplace/MarketplaceEmpty.vue';
+import PageFrame from '../components/common/PageFrame.vue';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
 
 const router = useRouter();
@@ -344,6 +342,18 @@ const filteredRemoteAgents = computed(() => {
 });
 const selectedRemoteSource = ref<any>(null);
 const agentSourceForm = ref({ name: '', baseUrl: '', authType: 'none', authValue: '' });
+
+/** PageFrame 页头：商城入口页保留 MarketplaceShell 自己的标题，管理页交给统一骨架 */
+const frameTitle = computed(() => {
+  if (currentView.value === 'local-agents') return '本地智能体';
+  if (currentView.value === 'remote-agents') return selectedRemoteSource.value?.name || '远程商城';
+  return '';
+});
+const frameSubtitle = computed(() => {
+  if (currentView.value === 'local-agents') return '内置智能体与自定义创建的智能体';
+  if (currentView.value === 'remote-agents') return selectedRemoteSource.value?.base_url || '';
+  return '';
+});
 
 // 统计：内置 = 默认助理 + 内置标记（pageAgent / 数据查询分析助手）
 const builtinCount = computed(() => store.agents.filter((a) => a.isDefault || a.isBuiltin).length);
@@ -543,14 +553,14 @@ async function remove(agent: Agent) {
 .connect-dot.unknown { background: #94a3b8; }
 
 /* ===== 智能体列表：侧栏 + 内容布局 ===== */
-.agents-layout { display: flex; gap: 16px; align-items: flex-start; }
+/* PageFrame 已承担页头/工具条与页面留白，这里只负责两栏自身撑满剩余高度 */
+.agents-layout { display: flex; gap: 16px; align-items: stretch; height: 100%; padding: 0 36px 24px; }
 .cat-sidebar {
   flex-shrink: 0; width: 168px;
-  position: sticky; top: 12px;
   display: flex; flex-direction: column; gap: 4px;
   padding: 10px 8px;
   background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-  max-height: calc(100vh - 160px); overflow-y: auto;
+  height: 100%; overflow-y: auto;
 }
 .cat-sidebar-title { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); text-transform: uppercase; padding: 2px 8px 6px; }
 .cat-side-item {
@@ -560,12 +570,11 @@ async function remove(agent: Agent) {
 }
 .cat-side-item:hover { background: rgba(99,102,241,0.06); color: var(--color-text); }
 .cat-side-item.active { background: rgba(99,102,241,0.12); color: var(--color-primary); font-weight: 600; }
-.cat-side-count { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); background: rgba(15,23,42,0.06); border-radius: 8px; padding: 0 6px; }
+.cat-side-count { font-size: 11px; font-weight: 600; color: var(--color-text-secondary); background: color-mix(in srgb, var(--color-text) 6%, transparent); border-radius: 8px; padding: 0 6px; }
 .cat-side-item.active .cat-side-count { color: var(--color-primary); background: rgba(99,102,241,0.15); }
 /* 列表区独立滚动：搜索条固定在顶部，滚动只发生在卡片区（筛选条不被内容顶走） */
-.agents-content { flex: 1; min-width: 0; display: flex; flex-direction: column; max-height: calc(100vh - 160px); }
-.agents-content > :deep(.st-bar) { flex-shrink: 0; margin-bottom: 12px; }
-.agents-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.agents-content { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.agents-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
 
 /* ===== 智能体卡片网格 ===== */
 .agent-cat { margin-bottom: 14px; }
@@ -619,12 +628,15 @@ async function remove(agent: Agent) {
 .agent-actions .el-button + .el-button { margin-left: 0; }
 
 /* ===== 远程工具条 ===== */
-.remote-toolbar { margin-bottom: 16px; }
+.remote-toolbar { display: flex; align-items: center; gap: 8px; }
+.remote-toolbar :deep(.st-bar) { flex: 1; min-width: 0; }
 
 @media (max-width: 767px) {
   .marketplace-grid, .agent-grid { grid-template-columns: 1fr; gap: 12px; }
-  .agents-layout { flex-direction: column; gap: 10px; }
-  .cat-sidebar { width: 100%; position: static; max-height: none; flex-direction: row; flex-wrap: wrap; }
+  .agents-layout { flex-direction: column; gap: 10px; height: auto; padding: 0 16px 16px; }
+  .cat-sidebar { width: 100%; height: auto; position: static; max-height: none; flex-direction: row; flex-wrap: wrap; }
+  .agents-content { height: auto; }
+  .agents-scroll { overflow: visible; }
   .sub-header { flex-wrap: wrap; gap: 10px; }
   .sub-header-info { width: 100%; }
   .agent-actions { flex-wrap: wrap; }

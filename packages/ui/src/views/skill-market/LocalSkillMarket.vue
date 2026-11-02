@@ -1,10 +1,10 @@
 <template>
-  <div class="local-market">
-    <header class="lm-header">
-      <div class="lm-header-left">
-        <el-button text @click="$router.push('/skills')"><el-icon><ArrowLeft /></el-icon> 商城首页</el-button>
-        <h2 class="lm-title">本地商城</h2>
-      </div>
+  <PageFrame title="本地商城" subtitle="内置 Skill 与自定义 Skill">
+    <template #back>
+      <el-button text @click="$router.push('/skills')"><el-icon><ArrowLeft /></el-icon> 商城首页</el-button>
+    </template>
+
+    <template #toolbar>
       <SearchToolbar v-model:query="search" placeholder="搜索...">
         <template #actions>
           <el-select v-model="catFilter" size="default" class="yz-cat-select" placeholder="全部分类">
@@ -23,7 +23,7 @@
           </el-tooltip>
         </template>
       </SearchToolbar>
-    </header>
+    </template>
 
     <div class="skill-groups">
       <CollapsibleCategory
@@ -145,11 +145,12 @@
     <input ref="zipInput" type="file" accept=".zip" style="display: none" @change="onZipFile" />
   
     <ResourceAclDialog v-model:visible="aclVisible" type="skill" :id="aclTarget?.id || ''" :name="aclTarget?.name || 'Skill'" />
-  </div>
+  </PageFrame>
 </template>
 
 <script setup lang="ts">
 import ResourceAclDialog from '../../components/common/ResourceAclDialog.vue';
+import PageFrame from '../../components/common/PageFrame.vue';
 import { ref, reactive, computed, onMounted } from 'vue';
 import { Plus, Files, ArrowLeft, Edit, Delete, FolderOpened, Folder, UploadFilled, Box, Document, Download, CaretRight, CaretBottom } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -624,11 +625,7 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 </script>
 
 <style scoped>
-.local-market { padding: 24px; }
-
-.lm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
-.lm-header-left { display: flex; align-items: center; gap: 12px; }
-.lm-title { font-size: 20px; font-weight: 600; margin: 0; }
+/* 页头与工具条由 PageFrame 提供（2026-11-02），本页只保留内容区样式 */
 /* 搜索框 / 分类筛选 / 导入图标按钮的尺寸规范统一在 styles/surface.css：
    .yz-cat-select（筛选下拉）+ .yz-icon-btn（32×32 正圆图标按钮），各管理页共用 */
 
@@ -658,12 +655,12 @@ function parseSkillMd(md: string): { frontmatter: any; bodyMd: string; body: str
 .editor-preview { display: flex; flex-direction: column; }
 .preview-title { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 8px; font-weight: 600; }
 .preview-md {
-  flex: 1; background: rgba(15, 23, 42, 0.04); padding: 12px; border-radius: 6px;
+  flex: 1; background: color-mix(in srgb, var(--color-text) 4%, transparent); padding: 12px; border-radius: 6px;
   font-family: "JetBrains Mono", monospace; font-size: 12px; overflow: auto;
   white-space: pre-wrap; min-height: 360px; max-height: 480px; word-break: break-word;
 }
 .preview-content {
-  background: rgba(15, 23, 42, 0.04); padding: 16px; border-radius: 6px;
+  background: color-mix(in srgb, var(--color-text) 4%, transparent); padding: 16px; border-radius: 6px;
   font-family: "JetBrains Mono", monospace; font-size: 13px; max-height: 500px;
   overflow: auto; white-space: pre-wrap;
 }

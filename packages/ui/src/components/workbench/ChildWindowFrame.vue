@@ -127,7 +127,7 @@ defineExpose({ mode, maximized });
   flex-shrink: 0;
   padding: 0 0 0 12px;
   background: var(--glass-bg, #fafaf9);
-  border-bottom: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  border-bottom: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 8%, transparent));
   z-index: 2;
 }
 

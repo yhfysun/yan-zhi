@@ -926,7 +926,7 @@ async function del(id: string) {
 .status-dot.error { background: #ef4444; }
 
 .card-body {
-  background: rgba(15, 23, 42, 0.03);
+  background: color-mix(in srgb, var(--color-text) 3%, transparent);
   border-radius: 8px; padding: 10px 12px;
 }
 .card-addr {
@@ -955,7 +955,7 @@ async function del(id: string) {
 .preview-tools {
   margin-top: 8px; border: 1px solid var(--glass-border); border-radius: 8px;
   padding: 8px 12px; max-height: 200px; overflow-y: auto;
-  background: rgba(15, 23, 42, 0.02);
+  background: color-mix(in srgb, var(--color-text) 2%, transparent);
 }
 .preview-header { font-size: 12px; color: var(--color-text-secondary); padding-bottom: 6px; border-bottom: 1px solid var(--glass-border); margin-bottom: 6px; }
 .preview-list { display: flex; flex-direction: column; gap: 4px; }
@@ -964,7 +964,7 @@ async function del(id: string) {
 .tool-name { font-family: "JetBrains Mono", monospace; color: var(--color-text); flex-shrink: 0; }
 .tool-desc { color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-content {
-  background: rgba(15, 23, 42, 0.03); padding: 16px; border-radius: 8px;
+  background: color-mix(in srgb, var(--color-text) 3%, transparent); padding: 16px; border-radius: 8px;
   font-family: "JetBrains Mono", "Cascadia Code", monospace; font-size: 12px;
   max-height: 500px; overflow: auto; white-space: pre-wrap; word-break: break-word;
 }
@@ -982,12 +982,12 @@ async function del(id: string) {
 }
 .tool-meta-input {
   flex: 1; height: 26px; padding: 0 8px;
-  border: 1px solid rgba(15,23,42,0.08); border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); border-radius: 5px;
   font-size: 11px; outline: none; background: transparent;
   transition: border-color 0.15s; min-width: 0;
 }
 .tool-meta-input:focus { border-color: var(--color-primary); }
-.tool-meta-input::placeholder { color: rgba(15,23,42,0.3); font-style: italic; }
+.tool-meta-input::placeholder { color: rgba(0, 0, 0, 0.3); font-style: italic; }
 
 .tool-card-desc {
   font-size: 12px; color: var(--color-text-secondary); line-height: 1.5;
@@ -1004,7 +1004,7 @@ async function del(id: string) {
 /* 入参/出参行内展开块：SchemaViewer 根（.sv）叠加定位与衬底 */
 .tool-schema-block {
   margin: 6px 0 0 24px; padding: 8px 10px; border-radius: 8px;
-  background: rgba(15, 23, 42, 0.06); border: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent); border: 1px solid var(--glass-border);
 }
 :root[data-theme="dark"] .tool-schema-block { background: rgba(255, 255, 255, 0.04); }
 
@@ -1022,7 +1022,7 @@ async function del(id: string) {
 .endpoint-url { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
 .endpoint-url code, .endpoint-tip code {
   font-family: "JetBrains Mono", "Cascadia Code", monospace;
-  background: rgba(15, 23, 42, 0.06); padding: 2px 6px; border-radius: 4px; font-size: 12px;
+  background: color-mix(in srgb, var(--color-text) 6%, transparent); padding: 2px 6px; border-radius: 4px; font-size: 12px;
 }
 .endpoint-url code { color: var(--color-primary); word-break: break-all; min-width: 0; }
 .endpoint-tip { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; }

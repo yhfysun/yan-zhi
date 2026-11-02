@@ -66,7 +66,7 @@
       </el-button>
       <!-- 窄面板「更多」：与上面按钮同一批动作，保证工具条永远一行、入口不丢 -->
       <el-dropdown class="fp-more" trigger="click" @command="onMoreCommand">
-        <button class="fp-more-btn" title="更多文件操作">⋯</button>
+        <button class="fp-more-btn" title="更多文件操作"><el-icon :size="15"><More /></el-icon></button>
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item command="folder">在文件管理器中显示</el-dropdown-item>
@@ -265,7 +265,7 @@ import { parseYdoc, toYdoc } from '../utils/ydoc';
 import { stampedFileName } from '../utils/download-name';
 import type { DocumentInstance } from '../utils/document-types';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Document, Download, EditPen, FolderOpened, Link, Monitor } from '@element-plus/icons-vue';
+import { Document, Download, EditPen, FolderOpened, Link, Monitor, More } from '@element-plus/icons-vue';
 import { extractPdfPages, extractDocxHtml } from '@yan-zhi/core';
 import { decodeTextBytes, base64ToBytes, looksBinaryBytes, encodingLabel, type TextEncoding } from '@yan-zhi/shared';
 import { renderPdfToImages } from '../utils/pdf-render';
@@ -1585,7 +1585,7 @@ watch(() => props.file?.path, () => {
   line-height: 16px;
   background: var(--el-fill-color-light, #f1f5f9);
   color: var(--el-text-color-secondary, #64748b);
-  border: 1px solid var(--el-border-color-lighter, rgba(15, 23, 42, 0.1));
+  border: 1px solid var(--el-border-color-lighter, color-mix(in srgb, var(--color-text) 10%, transparent));
 }
 .fp-loading, .fp-error { padding: 40px; text-align: center; color: var(--el-text-color-secondary); }
 .fp-image-wrap { text-align: center; padding: 12px; }
@@ -1709,7 +1709,7 @@ watch(() => props.file?.path, () => {
 .fp-docx-page {
   max-width: 820px; margin: 0 auto; padding: 40px 48px;
   background: var(--el-bg-color, #fff); color: var(--el-text-color-primary);
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08); border-radius: 4px;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--color-text) 8%, transparent); border-radius: 4px;
   font-size: 14px; line-height: 1.8;
 }
 .fp-docx-page :deep(h1) { font-size: 1.7em; margin: 0.6em 0 0.4em; line-height: 1.4; }

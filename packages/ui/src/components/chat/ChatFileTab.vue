@@ -591,7 +591,7 @@ function fileMeta(name: string) {
   align-items: center;
   gap: 4px;
   padding: 8px 0;
-  border-right: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  border-right: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 8%, transparent));
   background: var(--el-fill-color-lighter, #f8fafc);
 }
 
@@ -609,7 +609,7 @@ function fileMeta(name: string) {
 }
 
 .fs-act-btn:hover {
-  background: var(--glass-bg-hover, rgba(15, 23, 42, 0.06));
+  background: var(--glass-bg-hover, color-mix(in srgb, var(--color-text) 6%, transparent));
   color: var(--skin-text, var(--el-text-color-primary, #1e293b));
 }
 
@@ -637,7 +637,7 @@ function fileMeta(name: string) {
   align-items: center;
   gap: 6px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--glass-border, rgba(15, 23, 42, 0.08));
+  border-bottom: 1px solid var(--glass-border, color-mix(in srgb, var(--color-text) 8%, transparent));
   min-height: 35px;
 }
 
@@ -719,7 +719,7 @@ function fileMeta(name: string) {
   user-select: none;
 }
 
-.fs-row:hover { background: var(--glass-bg-hover, rgba(15, 23, 42, 0.05)); }
+.fs-row:hover { background: var(--glass-bg-hover, color-mix(in srgb, var(--color-text) 5%, transparent)); }
 .fs-row.is-file:hover .fs-name { color: var(--color-primary, #7c3aed); }
 .fs-row.active { background: color-mix(in srgb, var(--color-primary, #7c3aed) 12%, transparent); color: var(--color-primary, #7c3aed); }
 

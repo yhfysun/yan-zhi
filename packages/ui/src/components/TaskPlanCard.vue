@@ -58,7 +58,7 @@ const hasFailed = computed(() => steps.value.some((s) => s.status === 'failed'))
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 12px;
   background: var(--el-bg-color);
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--color-text) 5%, transparent);
   overflow: hidden;
 }
 .task-plan-head {

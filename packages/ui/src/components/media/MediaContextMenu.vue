@@ -56,7 +56,7 @@ function run(action: (t: MediaTarget) => void | Promise<void>) {
   border-radius: 10px;
   border: 1px solid var(--glass-border);
   background: var(--glass-bg, #fff);
-  box-shadow: 0 8px 26px rgba(15, 23, 42, 0.16);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--color-text) 16%, transparent);
   backdrop-filter: blur(12px);
 }
 .media-ctx-item {
@@ -73,6 +73,6 @@ function run(action: (t: MediaTarget) => void | Promise<void>) {
 .media-ctx-sep {
   height: 1px;
   margin: 4px 6px;
-  background: var(--color-border-tertiary, rgba(15, 23, 42, 0.08));
+  background: var(--color-border-tertiary, color-mix(in srgb, var(--color-text) 8%, transparent));
 }
 </style>
