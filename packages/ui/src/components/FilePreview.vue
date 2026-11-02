@@ -17,6 +17,10 @@
       <el-button class="fp-wide-only" size="small" text bg title="另存为到其他位置（默认文件名带时间戳）" @click="saveAs">
         <el-icon><Download /></el-icon>&nbsp;{{ ext === 'ydoc' ? '另存为 .ydoc' : '另存为' }}
       </el-button>
+      <!-- .ydoc：直接导出 Word（复用 DocumentCard 的两套导出：可编辑图表 / 图片） -->
+      <el-button v-if="isYdoc" class="fp-wide-only" size="small" text bg title="导出为 Word" @click="exportYdocWord()">
+        <el-icon><Download /></el-icon>&nbsp;导出 Word
+      </el-button>
       <!-- 文本类文件：把这份文件引用到对话输入框（按路径带上，补充指令后发送） -->
       <el-button
         v-if="kind === 'text'"
@@ -249,14 +253,14 @@
       </div>
       <!-- 编辑模式：纯文本编辑（Ctrl+S 保存） -->
       <div v-else-if="editing && isYdoc && ydocEdit" class="fp-ydoc">
-        <DocumentCard :doc="ydocEdit" editable hide-actions />
+        <DocumentCard ref="ydocEditCardRef" :doc="ydocEdit" editable hide-actions />
       </div>
       <div v-else-if="editing" class="fp-edit-wrap">
         <textarea v-model="editContent" class="fp-editor" spellcheck="false" @keydown="onEditorKeydown"></textarea>
       </div>
       <!-- .ydoc 文档：富预览（指标/表格/图表），卡片自带「下载」两种 Word 模式 -->
       <div v-else-if="ydocDoc" class="fp-ydoc">
-        <DocumentCard :doc="ydocDoc" />
+        <DocumentCard ref="ydocCardRef" :doc="ydocDoc" />
       </div>
       <!-- HTML 渲染预览：sandbox 不给 allow-same-origin ⇒ 脚本可跑但拿不到应用上下文/存储 -->
       <div v-else-if="kind === 'text' && isHtmlText && htmlMode === 'preview'" class="fp-html-wrap">
@@ -602,6 +606,14 @@ const ydocDoc = computed<DocumentInstance | null>(() => {
 const isYdoc = computed(() => ext.value === 'ydoc' && !!ydocDoc.value);
 /** 编辑态的可变副本：改完保存才序列化回 .ydoc */
 const ydocEdit = ref<DocumentInstance | null>(null);
+/** DocumentCard 暴露的 Word 导出：FilePreview 与办公工作台共用这一套 */
+const ydocCardRef = ref<any>(null);
+const ydocEditCardRef = ref<any>(null);
+function exportYdocWord(mode: 'native' | 'image' = 'native') {
+  const card = editing.value ? ydocEditCardRef.value : ydocCardRef.value;
+  void card?.exportWord?.(mode);
+}
+defineExpose({ exportYdocWord });
 
 // ===== 编辑模式（仅限未截断的文本类文件）=====
 const editing = ref(false);

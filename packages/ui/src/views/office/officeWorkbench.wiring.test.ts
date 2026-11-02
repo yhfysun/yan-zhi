@@ -94,6 +94,21 @@ describe('P2-4 文件树与三套视图', () => {
     expect(DOCVIEW).toMatch(/startSlideEdit/);
     expect(strip(readRepo('apps/server/src/routes/office.ts'))).toMatch(/router\.post\('\/save'/);
   });
+
+  it('右键可新建（空白处 / 目录），支持 md / txt', () => {
+    const TREE = strip(readRepo('packages/ui/src/components/office/WorkspaceFileTree.vue'));
+    expect(TREE).toMatch(/openBlankMenu/);
+    expect(TREE).toMatch(/新建 Markdown/);
+    expect(TREE).toMatch(/workspace\/create/);
+  });
+
+  it('自定义 .ydoc 导出直接是 Word（复用 DocumentCard 的导出）', () => {
+    expect(WORKBENCH).toMatch(/exportYdocWord/);
+    expect(WORKBENCH).toMatch(/\.ydoc/);
+    const PREVIEW = strip(readRepo('packages/ui/src/components/FilePreview.vue'));
+    expect(PREVIEW).toMatch(/defineExpose\(\{ exportYdocWord \}\)/);
+    expect(readRepo('packages/ui/src/components/chat/DocumentCard.vue')).toMatch(/defineExpose\(\{ exportWord \}\)/);
+  });
 });
 
 describe('P2-3 后端办公文档接口', () => {

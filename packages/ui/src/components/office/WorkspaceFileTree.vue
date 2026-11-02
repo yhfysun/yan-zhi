@@ -1,7 +1,7 @@
 <!--
   WorkspaceFileTree.vue — 办公工作台左栏：工作区文件树（2026-11-02，P2）
 
-  数据走 /api/workspace/tree（逐级懒加载），CRUD 走 /api/workspace/*
+  数据走 /api/workspace/tree（逐级懒加载），CRUD 走 /api/workspace 的 create / rename / copy / delete，
   与 /api/office/create（docx/xlsx/pptx）。右键菜单照原型：
   新建文档/表格/演示、重命名、复制一份、删除。
 -->
@@ -31,7 +31,7 @@
       </div>
     </header>
 
-    <div class="ws-body">
+    <div class="ws-body" @contextmenu.prevent="openBlankMenu">
       <div v-if="!rootDir" class="ws-empty">未设置工作目录</div>
       <div v-else-if="error" class="ws-empty">{{ error }}</div>
       <div v-else-if="loading && flatNodes.length === 0" class="ws-empty">正在读取目录…</div>
@@ -44,7 +44,7 @@
         :class="{ 'is-dir': node.isDir, 'is-active': node.path === selectedPath }"
         :style="{ paddingLeft: 8 + node.depth * 14 + 'px' }"
         @click="onRowClick(node)"
-        @contextmenu.prevent="openMenu($event, node)"
+        @contextmenu.prevent.stop="openMenu($event, node)"
       >
         <span class="ws-caret" @click.stop="onRowClick(node)">
           <el-icon v-if="node.isDir" :size="10">
@@ -67,11 +67,15 @@
         <button class="ws-menu-item" type="button" @click="menuCreate('doc')">＋ 新建文档 <span>.docx</span></button>
         <button class="ws-menu-item" type="button" @click="menuCreate('sheet')">＋ 新建表格 <span>.xlsx</span></button>
         <button class="ws-menu-item" type="button" @click="menuCreate('slides')">＋ 新建演示 <span>.pptx</span></button>
-        <div class="ws-menu-sep"></div>
-        <button class="ws-menu-item" type="button" @click="menuRename">✎ 重命名</button>
-        <button class="ws-menu-item" type="button" @click="menuDuplicate">⧉ 复制一份</button>
-        <div class="ws-menu-sep"></div>
-        <button class="ws-menu-item danger" type="button" @click="menuDelete">⌫ 删除</button>
+        <button class="ws-menu-item" type="button" @click="menuCreate('md')">＋ 新建 Markdown <span>.md</span></button>
+        <button class="ws-menu-item" type="button" @click="menuCreate('txt')">＋ 新建文本 <span>.txt</span></button>
+        <template v-if="menu.node">
+          <div class="ws-menu-sep"></div>
+          <button class="ws-menu-item" type="button" @click="menuRename">✎ 重命名</button>
+          <button class="ws-menu-item" type="button" @click="menuDuplicate">⧉ 复制一份</button>
+          <div class="ws-menu-sep"></div>
+          <button class="ws-menu-item danger" type="button" @click="menuDelete">⌫ 删除</button>
+        </template>
       </div>
     </Teleport>
   </aside>
@@ -82,11 +86,12 @@ import { computed, onMounted, onBeforeUnmount, reactive, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, Refresh, ArrowRight, ArrowDown } from '@element-plus/icons-vue';
 import { useWorkspaceFiles, type WsNode, type OfficeDocKind } from '../../composables/office/useWorkspaceFiles';
+import { api } from '../../api/client';
 import { officeSelectedFile } from '../../stores/officeWorkbench';
 
 const {
   rootDir, loading, error, selectedPath, flatNodes, expanded,
-  loadRoot, toggleDir, refresh, select, createDoc, renameNode, duplicateNode, deleteNode,
+  loadRoot, toggleDir, refresh, select, createDoc, renameNode, duplicateNode, deleteNode, targetDir,
 } = useWorkspaceFiles();
 
 const rootName = computed(() => {
@@ -130,8 +135,16 @@ function openMenu(e: MouseEvent, node: WsNode) {
   menu.visible = true;
   menu.node = node;
   menu.x = Math.min(e.clientX, window.innerWidth - 220);
-  menu.y = Math.min(e.clientY, window.innerHeight - 260);
+  menu.y = Math.min(e.clientY, window.innerHeight - 300);
   select(node.path);
+}
+/** 空白处右键：在根目录新建（不针对具体文件） */
+function openBlankMenu(e: MouseEvent) {
+  menu.visible = true;
+  menu.node = null;
+  menu.x = Math.min(e.clientX, window.innerWidth - 220);
+  menu.y = Math.min(e.clientY, window.innerHeight - 300);
+  select('');
 }
 function closeMenu() { menu.visible = false; }
 function onDocMouseDown() { if (menu.visible) closeMenu(); }
@@ -151,8 +164,26 @@ async function promptName(title: string, initial: string): Promise<string | null
   }
 }
 
-async function doCreate(kind: OfficeDocKind) {
+type CreateKind = OfficeDocKind | 'md' | 'txt';
+
+async function doCreate(kind: CreateKind) {
   closeMenu();
+  if (kind === 'md' || kind === 'txt') {
+    const label = kind === 'md' ? 'Markdown' : '文本';
+    const name = await promptName(`新建${label}`, kind === 'md' ? '未命名文档' : '未命名文本');
+    if (!name) return;
+    const dir = targetDir();
+    if (!dir) { ElMessage.error('未设置工作目录'); return; }
+    const ext = kind === 'md' ? '.md' : '.txt';
+    const file = /\.[a-z0-9]+$/i.test(name) ? name : name + ext;
+    const path = `${dir}/${file}`;
+    const r = await api.post('/workspace/create', { path });
+    if (!('data' in r)) { ElMessage.error(r.error || '创建失败'); return; }
+    await refresh();
+    select(path);
+    ElMessage.success(`已创建${label}`);
+    return;
+  }
   const label = kind === 'doc' ? '文档' : kind === 'sheet' ? '表格' : '演示';
   const name = await promptName(`新建${label}`, `未命名${label}`);
   if (!name) return;
@@ -161,8 +192,8 @@ async function doCreate(kind: OfficeDocKind) {
   ElMessage.success(`已创建${label}`);
 }
 
-function onCreatePick(cmd: string) { void doCreate(cmd as OfficeDocKind); }
-function menuCreate(kind: OfficeDocKind) { void doCreate(kind); }
+function onCreatePick(cmd: string) { void doCreate(cmd as CreateKind); }
+function menuCreate(kind: CreateKind) { void doCreate(kind); }
 
 async function menuRename() {
   const node = menu.node;

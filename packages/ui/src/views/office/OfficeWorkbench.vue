@@ -19,7 +19,7 @@
           <span class="wb-file-sub">{{ fileSub }}</span>
         </div>
         <div v-if="selectedPath" class="wb-main-actions">
-          <el-button size="small" :icon="Download" @click="exportFile">导出</el-button>
+          <el-button size="small" :icon="Download" @click="exportFile">{{ exportLabel }}</el-button>
           <el-button size="small" :icon="Link" @click="openLocal">本机打开</el-button>
         </div>
       </header>
@@ -40,7 +40,7 @@
       </div>
 
       <div v-else class="wb-editor">
-        <FilePreview v-if="useFilePreview" :file="{ name: fileName, path: selectedPath }" />
+        <FilePreview v-if="useFilePreview" ref="editorRef" :file="{ name: fileName, path: selectedPath }" />
         <OfficeDocumentView v-else :path="selectedPath" />
       </div>
 
@@ -73,6 +73,7 @@ import { useChat } from '../../composables/chat/useChat';
 
 const { selectedPath, rootDir, refresh } = useWorkspaceFiles();
 const treeRef = ref<InstanceType<typeof WorkspaceFileTree> | null>(null);
+const editorRef = ref<InstanceType<typeof FilePreview> | null>(null);
 /** 工作目录选择弹窗与聊天页共用同一个（见 ChatDialogs） */
 const { showWorkspaceDir } = useChat();
 const router = useRouter();
@@ -107,16 +108,19 @@ const useFilePreview = computed(() => {
   return !/\.pptx$/i.test(p);
 });
 
-function extOf(p: string): string {
-  const i = p.lastIndexOf('.');
-  return i >= 0 ? p.slice(i).toLowerCase() : '';
-}
+const isYdocFile = computed(() => /\.ydoc$/i.test(selectedPath.value));
+const exportLabel = computed(() => (isYdocFile.value ? '导出 Word' : '导出'));
 
 async function exportFile() {
   const p = selectedPath.value;
   if (!p) return;
-  const name = fileName.value || 'document';
   try {
+    // 自定义文档格式 .ydoc：直接走 DocumentCard 的 Word 导出（可编辑图表）
+    if (isYdocFile.value) {
+      editorRef.value?.exportYdocWord?.();
+      return;
+    }
+    const name = fileName.value || 'document';
     const electronAPI = (window as unknown as { electronAPI?: any }).electronAPI;
     if (electronAPI?.dialog?.saveFile) {
       const r = await electronAPI.dialog.saveFile({ defaultName: name, sourcePath: p });
