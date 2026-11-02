@@ -740,6 +740,11 @@
           </article>
         </div>
 
+        <!-- ===== 本机终端（xterm + SSE）· 独立 Tab ===== -->
+        <div v-show="tab === 'tty'" class="sec-pane sec-pane-scroll sec-tty-pane">
+          <ChatConsolePanel />
+        </div>
+
         <!-- ===== 能力边界（明确不实现 + 规划中）· 并进「环境」Tab ===== -->
         <div v-show="tab === 'env'" class="sec-pane sec-pane-scroll">
           <!-- 2026-10-30：旧的「能力边界 / 规划」清单默认折叠 —— 它是方案文档的早期快照，
@@ -1009,6 +1014,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ChatDotRound, Close, QuestionFilled, Setting, User } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, API_BASE, isElectron } from '../../api/client';
+import ChatConsolePanel from '../../components/chat/ChatConsolePanel.vue';
 import { consumeSseStream } from '../../utils/sse';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
@@ -1381,6 +1387,7 @@ const TABS = [
   { value: 'run',    num: '01', name: '终端', sub: 'TERM',   badge: '' },
   { value: 'review', num: '02', name: '结果', sub: 'REVIEW', badge: '0' },
   { value: 'env',    num: '03', name: '环境', sub: 'LAB',    badge: '' },
+  { value: 'tty',    num: '04', name: '本机终端', sub: 'TTY', badge: '' },
 ] as const;
 
 const BASIC_TOOLS = [
@@ -3058,6 +3065,10 @@ onUnmounted(() => {
   border-radius: 3px; color: var(--sc-amber); font-size: 11px; line-height: 1.5;
 }
 .sec-ai-hint { font-size: 11px; color: var(--sc-fg-3); }
+/* 本机终端 Tab：让 ChatConsolePanel 撑满可用高度 */
+.sec-tty-pane { display: flex; min-height: 0; }
+.sec-tty-pane > * { flex: 1; min-height: 0; }
+
 /* 剧本市场（P2） */
 .pb-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 .pb-hint { font-size: 11.5px; color: var(--color-text-secondary); }
