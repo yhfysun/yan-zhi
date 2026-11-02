@@ -102,6 +102,14 @@ describe('P2-4 文件树与三套视图', () => {
     expect(TREE).toMatch(/workspace\/create/);
   });
 
+  it('工作台记住上次文件与目录展开状态', () => {
+    const WS = strip(readRepo('packages/ui/src/composables/office/useWorkspaceFiles.ts'));
+    expect(WS).toMatch(/yz:office:tree:expanded/);
+    expect(WS).toMatch(/function revealPath/);
+    expect(WS).toMatch(/officeSelectedFile/);
+    expect(WORKBENCH).toMatch(/revealPath/);
+  });
+
   it('自定义 .ydoc 导出直接是 Word（复用 DocumentCard 的导出）', () => {
     expect(WORKBENCH).toMatch(/exportYdocWord/);
     expect(WORKBENCH).toMatch(/\.ydoc/);

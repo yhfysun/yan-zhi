@@ -6,6 +6,7 @@
 import { ref, computed } from 'vue';
 import { api } from '../../api/client';
 import { useSettingsStore } from '../../stores/settings';
+import { officeSelectedFile } from '../../stores/officeWorkbench';
 
 export interface WsEntry {
   name: string;
@@ -29,6 +30,23 @@ export const OFFICE_EXT: Record<OfficeDocKind, string> = {
 
 const childrenByDir = ref<Record<string, WsEntry[]>>({});
 const expanded = ref<Record<string, boolean>>({});
+
+// 展开状态按工作区根记忆：回到工作台时目录树还是上次的样子
+const EXPANDED_KEY = 'yz:office:tree:expanded';
+function expandedKey(): string {
+  return `${EXPANDED_KEY}:${rootDir.value}`;
+}
+function readExpanded(): Record<string, boolean> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(expandedKey()) || '{}');
+    return raw && typeof raw === 'object' ? (raw as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+function persistExpanded(): void {
+  try { localStorage.setItem(expandedKey(), JSON.stringify(expanded.value)); } catch { /* 隐私模式忽略 */ }
+}
 const loadingDirs = ref<Record<string, boolean>>({});
 const loading = ref(false);
 const error = ref('');
@@ -95,6 +113,7 @@ async function loadRoot(force = false): Promise<void> {
   }
   loading.value = true;
   error.value = '';
+  expanded.value = readExpanded();
   try {
     await loadDir(root, force);
   } finally {
@@ -106,10 +125,12 @@ async function toggleDir(node: WsNode): Promise<void> {
   if (!node.isDir) return;
   if (expanded.value[node.path]) {
     expanded.value = { ...expanded.value, [node.path]: false };
+    persistExpanded();
     return;
   }
   await loadDir(node.path);
   expanded.value = { ...expanded.value, [node.path]: true };
+  persistExpanded();
 }
 
 /** 展平可见节点（只展开 expanded 里的目录），供列表渲染 */
@@ -143,6 +164,32 @@ async function refresh(): Promise<void> {
 
 function select(path: string): void {
   selectedPath.value = path;
+  officeSelectedFile.value = path;
+}
+
+/**
+ * 打开上次的文件：把祖先目录逐级展开并选中目标。
+ * 用于回到工作台时恢复「上次看到哪」——目录没有展开时目标行不可见，直接 select 也能预览，
+ * 但树上看不到高亮，体验割裂。
+ */
+async function revealPath(target: string): Promise<void> {
+  const root = trimSlash(rootDir.value);
+  if (!root || !target) return;
+  const norm = target.replace(/\\/g, '/');
+  if (!norm.toLowerCase().startsWith(root.toLowerCase())) { select(target); return; }
+  const rel = norm.slice(root.length).replace(/^\/+/, '');
+  const parts = rel.split('/').filter(Boolean);
+  parts.pop();
+  const next = { ...expanded.value };
+  let cur = root;
+  for (const seg of parts) {
+    cur = `${cur}/${seg}`;
+    await loadDir(cur);
+    next[cur] = true;
+  }
+  expanded.value = next;
+  persistExpanded();
+  select(target);
 }
 
 async function createDoc(kind: OfficeDocKind, name: string): Promise<{ ok: boolean; path?: string; error?: string }> {
@@ -211,6 +258,7 @@ export function useWorkspaceFiles() {
     toggleDir,
     refresh,
     select,
+    revealPath,
     createDoc,
     renameNode,
     duplicateNode,

@@ -67,11 +67,11 @@ import ChatDialogs from '../../components/chat/ChatDialogs.vue';
 import ChatSkillCards from '../../components/chat/ChatSkillCards.vue';
 import { useWorkspaceFiles } from '../../composables/office/useWorkspaceFiles';
 import { useResizable } from '../../composables/useResizable';
-import { officePanel, setOfficePanel } from '../../stores/officeWorkbench';
+import { officePanel, setOfficePanel, officeSelectedFile } from '../../stores/officeWorkbench';
 import { API_BASE, buildRequestHeaders } from '../../api/client';
 import { useChat } from '../../composables/chat/useChat';
 
-const { selectedPath, rootDir, refresh } = useWorkspaceFiles();
+const { selectedPath, rootDir, refresh, loadRoot, revealPath } = useWorkspaceFiles();
 const treeRef = ref<InstanceType<typeof WorkspaceFileTree> | null>(null);
 const editorRef = ref<InstanceType<typeof FilePreview> | null>(null);
 /** 工作目录选择弹窗与聊天页共用同一个（见 ChatDialogs） */
@@ -84,9 +84,17 @@ function goAi() {
   void router.push('/chat');
 }
 
-// 工作台只承担人工形态：直接打开 /office 且上次停在 AI 时，回到聊天页
-onMounted(() => {
-  if (officePanel.value === 'ai') void router.replace('/chat');
+// 工作台只承担人工形态：直接打开 /office 且上次停在 AI 时，回到聊天页；
+// 否则恢复上次打开的文件（含祖先目录展开）。
+onMounted(async () => {
+  if (officePanel.value === 'ai') {
+    void router.replace('/chat');
+    return;
+  }
+  await loadRoot();
+  if (!selectedPath.value && officeSelectedFile.value) {
+    await revealPath(officeSelectedFile.value);
+  }
 });
 const treeR = useResizable('office_tree', 264, 200, 480);
 const { width: treeW } = treeR;
