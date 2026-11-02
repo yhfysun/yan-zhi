@@ -822,7 +822,6 @@ onMounted(() => {
   z-index: 5;
   background: var(--color-bg);
   padding-top: 16px;
-}
   display: flex;
   justify-content: space-between;
   align-items: center;
