@@ -1462,6 +1462,8 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - file_edit: 改文件。**多文件或多处改动用 patch 模式**（"*** Begin Patch … *** End Patch"，按行上下文定位、整份补丁原子生效，不用复述整段原文）；单处小改用 old_string（必须逐字一致且唯一）。整段重写用 file_write。
 - file_write: 写文件到工作目录——抓到正文/结果后直接落盘（长内容别只贴在回复里，有截断风险）。
   ★ 只读权限会话会在运行时被拒绝（这是预期行为，不是故障）
+- office_create: 新建 Word / Excel / PPT 空文档（doc/sheet/slides），返回绝对路径；交付办公文档时先建再填内容，与办公工作台格式一致。
+- office_read: 读 Word / Excel / PPT 的结构化内容（标题层级/表格/工作表/幻灯片文字）；修改已有办公文档前先看清结构。
 - python_exec: 在本机执行 Python——统计/切分/合并/生成 CSV 等；适合一切"算一下/批处理"的活。
 - js_exec: 在本机执行 JavaScript(Node)——JSON 处理/字符串批处理/小脚本。
 - cmd_exec: 执行本机系统命令——调用 CLI（如 ffmpeg / yt-dlp / 目录操作等）。
@@ -3697,7 +3699,7 @@ body: `# 视频镜头提示词工程\n\n让视频大模型一次生成对的分�
 ## 第二步：读资料（按来源选工具）
 | 来源 | 做法 |
 |---|---|
-| .docx/.xlsx/.pptx/.pdf | 先 file_to_markdown 转 md，再 file_read 读（不要直接读二进制办公文件） |
+| .docx/.xlsx/.pptx/.pdf | 先 file_to_markdown 转 md，再 file_read 读；要改结构/表格时改用 office_read 直接读结构化内容（Word/Excel/PPT） |
 | 图片 / 扫描件 / 拍照件 | 先 api_tool_ocr 取文字（lang 按语种：eng/jpn/kor/rus/fra/deu/spa；中英混排 chi_sim+eng），再 image_analyze 看版式与表格结构 |
 | 网页原文 | browser_navigate + browser_get_page_content 取正文；多步网站操作委派 pageAgent |
 | 纯文本 | file_read 直接读 |
