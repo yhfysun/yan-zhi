@@ -1,5 +1,5 @@
 <template>
-  <ConsoleShell storage-key="shop_aside" root-class="shop-console" :default-width="260">
+  <ConsoleShell ref="shellRef" storage-key="shop_aside" root-class="shop-console" :default-width="260">
     <!-- ============ 左栏：项目 + 资源（ShopSidebar） ============ -->
     <template #aside>
       <ShopSidebar
@@ -44,6 +44,20 @@
         />
 
         <el-tabs v-model="tab" class="shop-tabs">
+          <el-tab-pane label="开店向导" name="setup">
+            <ShopLaunchpad
+              :project-title="activeProjectId ? activeProjectTitle : ''"
+              :profile="setupProfile"
+              :progress="setupProgress"
+              :has-connection="projectConns.length > 0"
+              @update:profile="updateSetupProfile"
+              @start="startSetupAi()"
+              @quick-action="runSetupQuickAction"
+              @toggle-step="toggleSetupStep"
+              @create-connection="createConnectionFromSetup()"
+            />
+          </el-tab-pane>
+
           <el-tab-pane label="概览" name="overview">
             <ShopOverview :shop="active" :check="checkForActive" :platform-label="platformLabel" :kind-of="kindOf" />
           </el-tab-pane>
@@ -103,7 +117,7 @@
           </button>
         </div>
         <ChatMessageList />
-        <ChatInputArea />
+        <ChatInputArea ref="chatInputRef" />
       </aside>
 
       <!-- 对话栏收起后右下角的悬浮入口 -->
@@ -117,6 +131,7 @@
     <ShopConnectionDialog
       v-model="connDialog.visible"
       :editing="connDialog.editing"
+      :initial-platform="connDialog.initialPlatform"
       :project-id="activeProjectId"
       @saved="connDialog.visible = false"
     />
@@ -126,7 +141,7 @@
 <script setup lang="ts">
 // 店铺运营控制台壳（/shop）：左栏项目/资源 + 顶部工作条 + 页签 + 常驻 AI 对话栏。
 // 页签内容全部拆到 ./shop/tabs/*；本文件只负责布局与页面级状态（2026-10-22 重构 §6）。
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ChatDotRound, ArrowRight } from '@element-plus/icons-vue';
 import ConsoleShell from '../../components/console/ConsoleShell.vue';
@@ -151,9 +166,20 @@ import ShopWinitOutbound from './shop/tabs/ShopWinitOutbound.vue';
 import ShopPlatformView from './shop/tabs/ShopPlatformView.vue';
 import ShopAudit from './shop/tabs/ShopAudit.vue';
 import ShopReference from './shop/tabs/ShopReference.vue';
+import ShopLaunchpad from './shop/onboarding/ShopLaunchpad.vue';
+import {
+  buildQuickShopPrompt,
+  buildShopSetupPrompt,
+  createDefaultShopSetupProfile,
+  normalizeShopSetupProfile,
+  setupProgressOf,
+  type ShopQuickAction,
+  type ShopSetupProfile,
+  type ShopSetupStepId,
+} from './shop/onboarding/shopOnboarding';
 import {
   shopConnections, shopPlatforms, shopActiveId, shopCheck, shopCheckId, shopAudit,
-  loadShopConsole, selectShop, deleteShop, checkShop,
+  loadShopConsole, loadShopAudit, loadShopDemoData, selectShop, deleteShop, checkShop,
   seedDemoShops, clearDemoShops, getDemoTemplates, reassignProject,
   type ShopConnection,
 } from './shopSession';
@@ -164,17 +190,27 @@ import {
 
 // 对话栏：宽度可拖拽并持久化（与运维/工作流同一个 useResizable）
 const chatR = useResizable('shop_chat', 360, 280, 760);
+const shellRef = ref<{ collapseAside: () => void } | null>(null);
 /** 小屏（<1100）首次进入先收起对话栏，用右下角悬浮入口展开；宽屏保持常驻。 */
 const chatCollapsed = ref(typeof window !== 'undefined' && window.innerWidth < 1100);
 /** 主导方：human=工作台居中+对话在右；ai=对话居中（LeadToggle / 工作台切换同步生效） */
 const lead = computed<LeadMode>(() => leadOf(activeMode.value));
 function onLeadChange(v: LeadMode): void {
   setLead(activeMode.value, v);
+  if (v === 'ai') chatCollapsed.value = false;
+}
+
+/** 平板/手机宽度下优先给工作台让位；资源栏和 AI 栏都从边缘入口按需展开。 */
+function syncNarrowShopChrome(): void {
+  if (typeof window === 'undefined') return;
+  if (window.innerWidth < 1100 && lead.value !== 'ai') chatCollapsed.value = true;
+  if (window.innerWidth < 900) shellRef.value?.collapseAside();
 }
 
 // ===== 项目 = 一条店铺会话（与剪辑项目同模型；切项目 = 切整块对话上下文）=====
 const chat = useChat();
 const chatStore = useChatStore();
+const chatInputRef = ref<{ fillAndSend: (prompt: string) => Promise<void> } | null>(null);
 const shopProjects = computed(() => chatStore.conversations);
 /** 当前项目 id；'' = 未归属（历史连接 / 还没建项目） */
 const activeProjectId = ref('');
@@ -183,6 +219,47 @@ const activeProjectTitle = computed(() =>
   || (activeProjectId.value ? '未命名项目' : '未归属资源'));
 
 watch(() => chatStore.currentConvId, (id) => { activeProjectId.value = id || ''; }, { immediate: true });
+
+// ===== 开店向导：资料按项目持久化，空项目先存草稿 =====
+const SETUP_STORAGE_PREFIX = 'yanzhi:shop-setup:';
+const setupProfile = ref<ShopSetupProfile>(createDefaultShopSetupProfile());
+const setupProgress = computed(() =>
+  setupProgressOf(setupProfile.value, projectConns.value.length > 0));
+
+function setupStorageKey(projectId = activeProjectId.value): string {
+  return `${SETUP_STORAGE_PREFIX}${projectId || 'draft'}`;
+}
+
+function readSetupProfile(projectId = activeProjectId.value): ShopSetupProfile {
+  try {
+    const raw = window.localStorage.getItem(setupStorageKey(projectId));
+    return raw ? normalizeShopSetupProfile(JSON.parse(raw)) : createDefaultShopSetupProfile();
+  } catch {
+    return createDefaultShopSetupProfile();
+  }
+}
+
+function saveSetupProfile(projectId = activeProjectId.value): void {
+  try {
+    window.localStorage.setItem(setupStorageKey(projectId), JSON.stringify(setupProfile.value));
+  } catch { /* 本地存储不可用不阻断开店流程 */ }
+}
+
+watch(activeProjectId, (id) => {
+  setupProfile.value = readSetupProfile(id);
+}, { immediate: true });
+
+function updateSetupProfile(next: ShopSetupProfile): void {
+  setupProfile.value = normalizeShopSetupProfile(next);
+  saveSetupProfile();
+}
+
+function toggleSetupStep(id: ShopSetupStepId, done: boolean): void {
+  const steps = new Set(setupProfile.value.completedSteps);
+  if (done) steps.add(id);
+  else steps.delete(id);
+  updateSetupProfile({ ...setupProfile.value, completedSteps: [...steps] });
+}
 
 const projectConns = computed(() =>
   shopConnections.value.filter((c) => (c.projectId || '') === activeProjectId.value));
@@ -211,18 +288,19 @@ const isWinit = computed(() => active.value?.platform === 'winit');
 const isDropship = computed(() => (active.value?.supplyMode ?? 'stocked') === 'dropship');
 
 // ===== 页签 =====
-type ShopTab = 'overview' | 'products' | 'orders' | 'shipments' | 'inventory' | 'platform' | 'logistics' | 'outbound' | 'audit' | 'reference';
-const tab = ref<ShopTab>('overview');
+type ShopTab = 'setup' | 'overview' | 'products' | 'orders' | 'shipments' | 'inventory' | 'platform' | 'logistics' | 'outbound' | 'audit' | 'reference';
+const tab = ref<ShopTab>('setup');
 
 /** 切店后保证当前页签对这类资源仍可见（否则 el-tabs 会停在隐藏面板上显示空白） */
 function ensureTabVisible(): void {
   if (!active.value) return;
+  if (tab.value === 'setup') return;
   if (isLogistics.value) {
-    if (!['overview', 'logistics', 'audit', 'reference'].includes(tab.value)) tab.value = 'logistics';
+    if (!['setup', 'overview', 'logistics', 'audit', 'reference'].includes(tab.value)) tab.value = 'logistics';
     return;
   }
   if (!isStore.value) {
-    const allowed = isWinit.value ? ['overview', 'outbound', 'audit', 'reference'] : ['overview', 'audit', 'reference'];
+    const allowed = isWinit.value ? ['setup', 'overview', 'outbound', 'audit', 'reference'] : ['setup', 'overview', 'audit', 'reference'];
     if (!allowed.includes(tab.value)) tab.value = 'overview';
     return;
   }
@@ -232,9 +310,16 @@ function ensureTabVisible(): void {
 /** 选中店铺变化 → 保证页签合法 + 拉该店业务数据（仅店铺类） */
 watch(() => active.value?.id, (id) => {
   ensureTabVisible();
-  if (!id) return;
+  if (active.value?.demo) void loadShopDemoData();
+  if (!id || tab.value === 'setup') return;
   if (isStore.value) void loadShopBiz(id);
 }, { immediate: true });
+
+watch(tab, (next) => {
+  if (next === 'audit') void loadShopAudit();
+  if (next === 'setup' || !active.value || !isStore.value) return;
+  void loadShopBiz(active.value.id);
+});
 
 watch(isDropship, () => ensureTabVisible());
 
@@ -270,8 +355,62 @@ async function createProject(): Promise<void> {
     const id = await chatStore.createConversation(String(value).trim());
     await chat.selectConv(id);
     selectShop('');
-    tab.value = 'overview';
+    tab.value = 'setup';
   } catch { /* 取消 */ }
+}
+
+async function ensureSetupProject(): Promise<string> {
+  if (activeProjectId.value) return activeProjectId.value;
+  const suffix = setupProfile.value.category.trim();
+  const title = suffix ? `${suffix} · 开店项目` : '我的开店项目';
+  const id = await chatStore.createConversation(title);
+  try {
+    window.localStorage.setItem(setupStorageKey(id), JSON.stringify(setupProfile.value));
+  } catch { /* 本地存储不可用时仍可继续 */ }
+  await chat.selectConv(id);
+  selectShop('');
+  tab.value = 'setup';
+  return id;
+}
+
+async function deliverShopPrompt(prompt: string): Promise<void> {
+  try {
+    await ensureSetupProject();
+    chatCollapsed.value = false;
+    await nextTick();
+    const input = chatInputRef.value;
+    if (!input) {
+      ElMessage.error('AI 输入区还没准备好，请稍后重试');
+      return;
+    }
+    void input.fillAndSend(prompt).catch((error: unknown) => {
+      ElMessage.error((error as Error)?.message || 'AI 任务启动失败');
+    });
+  } catch (error) {
+    ElMessage.error((error as Error)?.message || '创建店铺项目失败');
+  }
+}
+
+async function startSetupAi(): Promise<void> {
+  const title = activeProjectId.value
+    ? activeProjectTitle.value
+    : setupProfile.value.category.trim()
+      ? `${setupProfile.value.category.trim()} · 开店项目`
+      : '我的开店项目';
+  await deliverShopPrompt(buildShopSetupPrompt(setupProfile.value, { projectTitle: title }));
+}
+
+async function runSetupQuickAction(action: ShopQuickAction): Promise<void> {
+  await deliverShopPrompt(buildQuickShopPrompt(action, setupProfile.value));
+}
+
+async function createConnectionFromSetup(): Promise<void> {
+  try {
+    await ensureSetupProject();
+    openCreate(setupProfile.value.platform === 'undecided' ? undefined : setupProfile.value.platform);
+  } catch (error) {
+    ElMessage.error((error as Error)?.message || '创建店铺项目失败');
+  }
 }
 
 /** 删除项目 = 删这条店铺会话；资源先迁出（演示数据清除，真实资源归到未归属） */
@@ -294,14 +433,17 @@ async function deleteProject(p: { id: string; title?: string }): Promise<void> {
 }
 
 // ===== 连接弹窗 =====
-const connDialog = ref<{ visible: boolean; editing: ShopConnection | null }>({ visible: false, editing: null });
+const connDialog = ref<{ visible: boolean; editing: ShopConnection | null; initialPlatform?: string }>({
+  visible: false,
+  editing: null,
+});
 
-function openCreate(): void {
+function openCreate(initialPlatform?: string): void {
   if (!activeProjectId.value) {
     ElMessage.warning('先在左侧新建一个店铺项目，资源都归属到项目里');
     return;
   }
-  connDialog.value = { visible: true, editing: null };
+  connDialog.value = { visible: true, editing: null, initialPlatform };
 }
 function openEdit(): void {
   if (!active.value) return;
@@ -418,6 +560,8 @@ async function clearDemos(): Promise<void> {
 }
 
 onMounted(async () => {
+  window.addEventListener('resize', syncNarrowShopChrome, { passive: true });
+  syncNarrowShopChrome();
   await loadShopConsole();
   // 进店铺模式：项目 = 店铺会话。没有当前会话时自动落到最近一个店铺项目；
   // 一个都没有就保持「未归属」，等用户新建项目或创建演示数据。
@@ -432,6 +576,10 @@ onMounted(async () => {
     const first = projectConns.value[0];
     if (first) selectShop(first.id);
   }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncNarrowShopChrome);
 });
 </script>
 

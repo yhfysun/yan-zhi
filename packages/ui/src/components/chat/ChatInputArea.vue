@@ -2424,6 +2424,24 @@ function onDrop(e: DragEvent) {
   dragDepth = 0;
   dragOver.value = false;
 }
+
+/** 供页面内工作台预填并发送结构化指令，复用同一套发送、上下文和工具链。 */
+function fillInputForAi(text: string): void {
+  input.value = text;
+  void nextTick(() => inputRef.value?.focus?.());
+}
+
+async function fillAndSendForAi(text: string): Promise<void> {
+  input.value = text;
+  await nextTick();
+  await send();
+}
+
+defineExpose({
+  fillInput: fillInputForAi,
+  fillAndSend: fillAndSendForAi,
+});
+
 // 兜底：拖出窗口 / 异常情况下未能正确配对 dragleave，重置遮罩
 function onWindowDragEnd() {
   dragDepth = 0;

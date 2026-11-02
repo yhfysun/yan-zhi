@@ -97,6 +97,7 @@ const props = defineProps<{
   modelValue: boolean;
   editing: ShopConnection | null;
   projectId: string;
+  initialPlatform?: string;
 }>();
 
 const emit = defineEmits<{
@@ -158,7 +159,7 @@ watch(() => props.modelValue, (visible) => {
   if (!visible) return;
   const c = props.editing;
   form.value = {
-    platform: c?.platform || 'amazon',
+    platform: c?.platform || props.initialPlatform || 'amazon',
     site: c?.site || '',
     shopName: c?.shopName || '',
     sellerId: c?.sellerId || '',

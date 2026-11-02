@@ -76,7 +76,11 @@ function toggleAside(): void {
   collapsed.value = !collapsed.value;
 }
 
-defineExpose({ collapsed, toggleAside, asideW });
+function collapseAside(): void {
+  collapsed.value = true;
+}
+
+defineExpose({ collapsed, toggleAside, collapseAside, asideW });
 </script>
 
 <style scoped>

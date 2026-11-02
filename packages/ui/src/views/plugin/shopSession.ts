@@ -171,14 +171,34 @@ async function loadDemoData(): Promise<void> {
   else shopDemoData.value = {};
 }
 
-/** 进控制台时拉一次全量（平台清单只需一次，但重复拉无害且并发更省心） */
+let lastCoreLoadAt = 0;
+let lastAuditLoadAt = 0;
+let lastDemoLoadAt = 0;
+
+/** 审计列表按需加载（只有打开“操作日志”时才需要）。 */
+export async function loadShopAudit(force = false): Promise<void> {
+  if (!force && Date.now() - lastAuditLoadAt < 30_000) return;
+  await loadAudit();
+  lastAuditLoadAt = Date.now();
+}
+
+/** 演示快照按需加载（只有选中演示资源时才需要）。 */
+export async function loadShopDemoData(force = false): Promise<void> {
+  if (!force && Date.now() - lastDemoLoadAt < 30_000) return;
+  await loadDemoData();
+  lastDemoLoadAt = Date.now();
+}
+
+/** 进控制台只拉开店必需的三组数据；审计与演示快照在进入对应区域时再拉。 */
 export async function loadShopConsole(force = false): Promise<void> {
   if (shopLoading.value) return;
-  if (!force && shopConnections.value.length && shopPlatforms.value.length) return;
+  if (!force && shopConnections.value.length && shopPlatforms.value.length
+    && Date.now() - lastCoreLoadAt < 30_000) return;
   shopLoading.value = true;
   shopError.value = '';
   try {
-    await Promise.all([loadPlatforms(), loadGroups(), loadConnections(), loadAudit(), loadDemoData()]);
+    await Promise.all([loadPlatforms(), loadGroups(), loadConnections()]);
+    lastCoreLoadAt = Date.now();
   } finally {
     shopLoading.value = false;
   }

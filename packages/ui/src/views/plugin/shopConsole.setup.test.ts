@@ -38,6 +38,8 @@ vi.mock('./shopSession', async () => {
     shopDemoData: ref({}),
     SHOP_UNGROUPED: '__ungrouped__',
     loadShopConsole: vi.fn(async () => {}),
+    loadShopAudit: vi.fn(async () => {}),
+    loadShopDemoData: vi.fn(async () => {}),
     selectShop: vi.fn(),
     createShop: vi.fn(async () => ''),
     updateShop: vi.fn(async () => ''),
@@ -166,6 +168,9 @@ describe('ShopConsole · setup 守门', () => {
     expect(host.textContent).toContain('店铺');
     expect(host.textContent).toContain('仓储');
     expect(host.textContent).toContain('物流');
+    expect(host.textContent).toContain('开店向导');
+    expect(host.textContent).toContain('从 0 开一家能卖的店');
+    expect(host.textContent).toContain('只问必要信息');
     expect(host.textContent).toContain('概览');
     expect(host.textContent).toContain('口径速查');
   });
