@@ -11,84 +11,100 @@
     因此本页只呈现「授权状态类」信息（档位 / 模式 / 时效），不含任何可被复制的凭据。
     → 连带影响：用户无法从界面自助获取机器标识，签发方也就无法按机器绑定授权码。
       档位授权（lite/basic/pro）不依赖机器标识，不受影响。
+
+  布局（2026-11-02，P1-2）：左侧分组列表 + 右侧详情容器，宽屏可拖拽；窄屏列表横向排列。
 -->
 <template>
-  <div class="page">
-    <header class="page-header">
-      <div>
-        <h2 class="page-title">授权管理</h2>
-        <div class="page-sub">查看当前授权状态，或更换授权码</div>
-      </div>
-    </header>
+  <PageFrame title="授权管理" subtitle="查看当前授权状态，或更换授权码" :scroll="false" :pad="false">
+    <div class="lic-body">
+      <aside class="lic-nav" :style="{ width: wide ? navW + 'px' : '' }">
+        <button
+          v-for="s in sections"
+          :key="s.key"
+          type="button"
+          class="lic-nav-item"
+          :class="{ active: activeSection === s.key }"
+          @click="activeSection = s.key"
+        >
+          <el-icon :size="15"><component :is="s.icon" /></el-icon>
+          <span>{{ s.label }}</span>
+        </button>
+      </aside>
+      <div v-if="wide" class="rs-handle" @mousedown="navR.startDrag($event, 'left')"></div>
 
-    <!-- 当前授权状态：只放状态类信息，不含凭据 -->
-    <section class="card">
-      <div class="card-head">
-        <span class="card-title">当前授权</span>
-        <span :class="['state-chip', licenseStore.verified ? 'is-ok' : 'is-bad']">
-          {{ licenseStore.verified ? '已激活' : '未激活' }}
-        </span>
-      </div>
+      <section class="lic-detail">
+        <!-- 当前授权状态：只放状态类信息，不含凭据 -->
+        <div v-if="activeSection === 'current'" class="card">
+          <div class="card-head">
+            <span class="card-title">当前授权</span>
+            <span :class="['state-chip', licenseStore.verified ? 'is-ok' : 'is-bad']">
+              {{ licenseStore.verified ? '已激活' : '未激活' }}
+            </span>
+          </div>
 
-      <div class="rows">
-        <div class="row">
-          <span class="k">版本档位</span>
-          <span class="v">{{ editionText || '—' }}</span>
-        </div>
-        <div class="row">
-          <span class="k">可用模式</span>
-          <span class="v">
-            <template v-if="modeLabels.length">
-              <span v-for="m in modeLabels" :key="m" class="mode-tag">{{ m }}</span>
-            </template>
-            <template v-else>—</template>
-          </span>
-        </div>
-        <div class="row">
-          <span class="k">到期时间</span>
-          <span class="v">{{ expireText }}</span>
-        </div>
-        <div class="row">
-          <span class="k">激活时效</span>
-          <span class="v" :class="'remain-' + remainLevel">{{ remainText || '永不过期' }}</span>
-        </div>
-      </div>
+          <div class="rows">
+            <div class="row">
+              <span class="k">版本档位</span>
+              <span class="v">{{ editionText || '—' }}</span>
+            </div>
+            <div class="row">
+              <span class="k">可用模式</span>
+              <span class="v">
+                <template v-if="modeLabels.length">
+                  <span v-for="m in modeLabels" :key="m" class="mode-tag">{{ m }}</span>
+                </template>
+                <template v-else>—</template>
+              </span>
+            </div>
+            <div class="row">
+              <span class="k">到期时间</span>
+              <span class="v">{{ expireText }}</span>
+            </div>
+            <div class="row">
+              <span class="k">激活时效</span>
+              <span class="v" :class="'remain-' + remainLevel">{{ remainText || '永不过期' }}</span>
+            </div>
+          </div>
 
-      <!-- 不可用原因（未激活 / 校验失败时才有） -->
-      <p v-if="!licenseStore.verified && reasonText" class="reason">{{ reasonText }}</p>
-    </section>
+          <p v-if="!licenseStore.verified && reasonText" class="reason">{{ reasonText }}</p>
+        </div>
 
-    <!-- 更换授权码 -->
-    <section class="card">
-      <div class="card-head">
-        <span class="card-title">更换授权码</span>
-      </div>
-      <p class="hint">
-        粘贴新授权码后激活。新码的版本档位会立即生效，无需重启。
-      </p>
-      <el-input
-        v-model="newCode"
-        type="textarea"
-        :rows="4"
-        placeholder="粘贴新的授权码"
-        resize="none"
-        class="code-input"
-      />
-      <div class="form-actions">
-        <el-button
-          type="primary"
-          :loading="swapping"
-          :disabled="!newCode.trim()"
-          @click="swap"
-        >更换授权码</el-button>
-      </div>
-      <p v-if="error" class="error">{{ error }}</p>
-    </section>
-  </div>
+        <!-- 更换授权码 -->
+        <div v-else class="card">
+          <div class="card-head">
+            <span class="card-title">更换授权码</span>
+          </div>
+          <p class="hint">
+            粘贴新授权码后激活。新码的版本档位会立即生效，无需重启。
+          </p>
+          <el-input
+            v-model="newCode"
+            type="textarea"
+            :rows="4"
+            placeholder="粘贴新的授权码"
+            resize="none"
+            class="code-input"
+          />
+          <div class="form-actions">
+            <el-button
+              type="primary"
+              :loading="swapping"
+              :disabled="!newCode.trim()"
+              @click="swap"
+            >更换授权码</el-button>
+          </div>
+          <p v-if="error" class="error">{{ error }}</p>
+        </div>
+      </section>
+    </div>
+  </PageFrame>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { Key, SwitchButton } from '@element-plus/icons-vue';
+import PageFrame from '../components/common/PageFrame.vue';
+import { useResizable } from '../composables/useResizable';
 import { useLicenseStore, EDITION_LABELS } from '../stores/license';
 import { allModeDefs } from '../stores/mode';
 
@@ -97,6 +113,21 @@ const licenseStore = useLicenseStore();
 const newCode = ref('');
 const swapping = ref(false);
 const error = ref('');
+
+// ===== 左侧分组（P1-2）=====
+type SectionKey = 'current' | 'swap';
+const sections: Array<{ key: SectionKey; label: string; icon: unknown }> = [
+  { key: 'current', label: '当前授权', icon: Key },
+  { key: 'swap', label: '更换授权码', icon: SwitchButton },
+];
+const activeSection = ref<SectionKey>('current');
+
+const wide = ref(typeof window !== 'undefined' ? window.innerWidth >= 900 : true);
+function syncWide() { wide.value = window.innerWidth >= 900; }
+onMounted(() => window.addEventListener('resize', syncWide));
+onUnmounted(() => window.removeEventListener('resize', syncWide));
+const navR = useResizable('license_nav', 220, 160, 360);
+const { width: navW } = navR;
 
 /** 模式 key → 中文名（复用模式定义，含运行时插件模式；找不到就原样显示 key）。 */
 function modeLabelOf(key: string): string {
@@ -175,8 +206,41 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.page { max-width: 720px; }
+.lic-body { flex: 1; min-height: 0; display: flex; }
+.lic-nav {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow-y: auto;
+}
+.lic-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 38px;
+  padding: 0 12px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.lic-nav-item:hover { background: var(--glass-bg-hover); color: var(--color-text); }
+.lic-nav-item.active {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.lic-detail { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 24px 28px; }
 .card {
+  max-width: 720px;
   background: var(--glass-bg);
   backdrop-filter: var(--glass-filter);
   -webkit-backdrop-filter: var(--glass-filter);
@@ -184,7 +248,6 @@ onMounted(async () => {
   border-radius: var(--radius-md);
   padding: 18px 20px;
 }
-.card + .card { margin-top: 16px; }
 .card-head {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 14px;
@@ -220,5 +283,16 @@ onMounted(async () => {
 }
 .form-actions { margin-top: 12px; }
 .reason { margin-top: 12px; font-size: 12.5px; color: var(--color-warning); }
-.error { margin-top: 10px; font-size: 12.5px; color: var(--color-danger); }
+
+@media (max-width: 899px) {
+  .lic-body { flex-direction: column; }
+  .lic-nav {
+    flex-direction: row;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+    overflow-x: auto;
+  }
+  .lic-nav-item { flex: 0 0 auto; }
+  .lic-detail { padding: 16px; }
+}
 </style>

@@ -49,6 +49,18 @@ describe('P1-2 工具参数详情右侧面板', () => {
   });
 });
 
+describe('P1-2 授权页分组 + 详情', () => {
+  const LIC = strip(readRepo('packages/ui/src/views/LicenseManage.vue'));
+
+  it('左侧分组可拖拽，右侧详情自滚', () => {
+    expect(LIC).toMatch(/<PageFrame/);
+    expect(LIC).toMatch(/useResizable\('license_nav'/);
+    expect(LIC).toMatch(/lic-nav-item/);
+    expect(LIC).toMatch(/activeSection/);
+    expect(LIC).toMatch(/lic-detail/);
+  });
+});
+
 describe('P1-2 插件列表 + 右侧详情', () => {
   const PM = strip(readRepo('packages/ui/src/components/plugin/PluginManager.vue'));
   const PAGE = strip(readRepo('packages/ui/src/views/PluginsPage.vue'));
