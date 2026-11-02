@@ -20,6 +20,7 @@ import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildP
 import { buildMaskFilter, flattenMaskPath, polygonAlphaExpr } from './clip-mask.js';
 import { hslCube } from './clip-hsl.js';
 import type { ClipProject, ClipSegment, ClipText, ClipOverlay, ExportQuality } from './clip-project.js';
+import { normalizeInterpolate } from './clip-project.js';
 
 export interface RenderProbeResult {
   hasAudio: boolean;
@@ -251,6 +252,12 @@ export function buildSegmentFilters(opts: {
   maskFile?: string;
   /** HSL 分色生成好的 .cube（P1-6；无色带时为空） */
   hslFile?: string;
+  /**
+   * 补帧方式（2026-11-02）：把**视频段**升到工程 fps 时用 minterpolate 代替 fps 帧复制。
+   * off/缺省 = 老行为（逐字节不变）；blend/mci 见 clip-project 的 output.interpolate 注释。
+   * ★ 图片段不走这里：zoompan 直接按目标 fps 生成帧，没有"源帧率"可插。
+   */
+  interpolate?: 'off' | 'blend' | 'mci';
 }): string[] {
   const { seg, segDur, isImage, W, H, fps } = opts;
   const speedEff = opts.speedOverride ?? seg.speed ?? 1;
@@ -286,7 +293,14 @@ export function buildSegmentFilters(opts: {
     filters.push(`scale=${W * 4}:-2`, `zoompan=z='${zExpr}':d=${frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=${fps}`);
     filters.push('setsar=1');
   } else {
-    filters.push(`scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,fps=${fps}`);
+    // ★ 这是段链里**唯一**把素材升到工程帧率的位置。
+    //   interpolate=off（缺省）时保持 fps=N（复制帧），滤镜串与历史逐字节一致；
+    //   blend/mci 时换成 minterpolate —— 非 AI（不是 RIFE）：blend 只做时间混合（快），
+    //   mci 是运动补偿光流（慢，可能伪影）。源帧率不低于输出时它自然近似原样。
+    const rate = opts.interpolate && opts.interpolate !== 'off'
+      ? `minterpolate=fps=${fps}:mi_mode=${opts.interpolate}${opts.interpolate === 'mci' ? ':mc_mode=aobmc:vsbmc=1' : ''}`
+      : `fps=${fps}`;
+    filters.push(`scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1,${rate}`);
   }
 
   // ★ 画面裁剪（取景）：裁子区域后回填画幅（fill 不变形）——蒙版/字幕坐标不受影响
@@ -436,6 +450,8 @@ export function assembleSegmentChain(opts: {
   maskFile?: string;
   /** HSL 分色生成好的 .cube（P1-6） */
   hslFile?: string;
+  /** 补帧方式（2026-11-02，渲染出口传工程 output.interpolate；预览/缺省由 off 保持原行为） */
+  interpolate?: 'off' | 'blend' | 'mci';
 }): SegmentVideoChain {
   const filters = buildSegmentFilters(opts);
   const opExpr = opacityKfExpr(opts.seg, opts.segDur);
@@ -614,6 +630,8 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
   const [W, H] = project.output.size.split('x').map(Number);
   if (!(W > 0 && H > 0)) return { ok: false, error: `导出规格非法：${project.output.size}` };
   const fps = project.output.fps || 30;
+  // 补帧方式：只认三值，脏值/缺省一律 off（老工程走原 fps 帧复制，逐字节不变）
+  const interpolate = normalizeInterpolate(project.output.interpolate);
   const imgSet = new Set((input.imageFiles || []).map((f) => f.toLowerCase()));
   const q = QUALITY_PRESETS[(input.quality ?? project.output.quality ?? 'std') as ExportQuality] ?? QUALITY_PRESETS.std;
   const x264 = videoEncodeArgs(q, input.fast === true, input.hwEncoder ?? null);
@@ -681,6 +699,8 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
     // ★ 段滤镜链走**共享装配层**（与实时预览同一份定义）—— 各写一套必然漂移
     const chain = assembleSegmentChain({
       seg, segDur: chainDur, isImage, W, H, fps, keyFilterOf,
+      // 只给视频段传补帧（图片段 zoompan 已按目标 fps 生成，无需插帧）
+      ...(interpolate !== 'off' && !isImage ? { interpolate } : {}),
       ...(isRamp ? { speedOverride: 1 } : {}),
       ...(maskFiles.has(seg.id) ? { maskFile: maskFiles.get(seg.id) } : {}),
       ...(hslFiles.has(seg.id) ? { hslFile: hslFiles.get(seg.id) } : {}),

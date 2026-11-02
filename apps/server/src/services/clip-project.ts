@@ -421,7 +421,20 @@ export interface ClipProject {
   name: string;
   updatedAt: number;
   /** P1-9：encoder=cpu（默认，libx264）/ auto（自动选可用的硬件编码器，失败回退 CPU） */
-  output: { size: string; fps: number; quality?: ExportQuality; encoder?: 'cpu' | 'auto' };
+  output: {
+    size: string;
+    fps: number;
+    quality?: ExportQuality;
+    encoder?: 'cpu' | 'auto';
+    /**
+     * 补帧方式（2026-11-02）：
+     *   · off（缺省，老工程**不写该字段**）= 复制帧，与历史行为逐字节一致；
+     *   · blend = ffmpeg minterpolate mi_mode=blend（快，只做时间混合）；
+     *   · mci   = minterpolate mi_mode=mci + mc_mode=aobmc（光流运动补偿，慢，可能有伪影）。
+     * ★ 非 AI（不是 RIFE）；只在输出帧率高于素材帧率时才看得出效果。
+     */
+    interpolate?: 'off' | 'blend' | 'mci';
+  };
   /** 视频主轨：按数组顺序首尾相接（保持既有渲染/时长语义） */
   clips: ClipSegment[];
   /**
@@ -789,6 +802,27 @@ function parseEncoder(v: unknown): 'cpu' | 'auto' | null {
   if (v == null) return null;
   const e = String(v).trim().toLowerCase();
   return e === 'cpu' || e === 'auto' ? e : null;
+}
+
+/**
+ * 补帧方式归一化（2026-11-02）：只认 off / blend / mci，其余一律视为 off。
+ * ★ 与 quality 的「非法值报错」不同：这个字段是**渲染优化开关**，猜不出用户意图时
+ *   退回开箱默认（复制帧）比拒绝保存更安全 —— 也保证历史脏值不会把渲染拖进慢路径。
+ */
+export function normalizeInterpolate(v: unknown): 'off' | 'blend' | 'mci' {
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === 'blend' || s === 'mci' ? s : 'off';
+}
+
+/**
+ * 读取边界归一化 output：把非法 interpolate 从对象里摘掉（off 不落字段）。
+ * ★ 老工程没有 interpolate → 原样返回，写回时逐字节不变。
+ */
+export function normalizeOutput<T extends { interpolate?: unknown }>(out: T): T {
+  const v = out.interpolate;
+  if (v == null || v === 'off' || v === 'blend' || v === 'mci') return out;
+  const { interpolate: _drop, ...rest } = out as T & { interpolate?: unknown };
+  return rest as T;
 }
 
 export function createEmptyProject(name = '未命名剪辑'): ClipProject {
@@ -1497,7 +1531,7 @@ function validateText(raw: Record<string, unknown>, fallback?: Partial<ClipText>
  *
  * op 一览：
  *   create / get            —— 工程元信息（create 可带 name 与 output）
- *   set_output {size,fps}   —— 改导出规格
+ *   set_output {size,fps,quality,encoder,interpolate} —— 改导出规格（interpolate=补帧方式，非 AI）
  *   add_clip {clips:[...]}  —— 追加片段（可一次多段）
  *   update_clip {id|index, patch}
  *   remove_clip {id|index}
@@ -1559,6 +1593,12 @@ export function applyClipOp(
         if (!e) return { ok: false, error: `encoder 只能是 cpu / auto：${String(args.encoder)}` };
         project.output.encoder = e;
       }
+      if (args.interpolate != null) {
+        const mode = normalizeInterpolate(args.interpolate);
+        // off = 默认值 → 不落字段（老工程/关闭补帧的工程保持干净，渲染行为一致）
+        if (mode === 'off') delete project.output.interpolate;
+        else project.output.interpolate = mode;
+      }
       touch();
       return { ok: true, project, note: `工程「${project.name}」${base ? '已更新元信息' : '已创建'}（${project.output.size}@${project.output.fps}）` };
     }
@@ -1582,6 +1622,11 @@ export function applyClipOp(
         const e = parseEncoder(args.encoder);
         if (!e) return { ok: false, error: `encoder 只能是 cpu / auto：${String(args.encoder)}` };
         project.output.encoder = e;
+      }
+      if (args.interpolate != null) {
+        const mode = normalizeInterpolate(args.interpolate);
+        if (mode === 'off') delete project.output.interpolate;
+        else project.output.interpolate = mode;
       }
       touch();
       return { ok: true, project, note: `导出规格改为 ${project.output.size}@${project.output.fps}` };

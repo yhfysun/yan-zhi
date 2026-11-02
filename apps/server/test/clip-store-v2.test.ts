@@ -176,6 +176,40 @@ describe('writeClipProject · 混合模式落盘与清除', () => {
   });
 });
 
+describe('writeClipProject · output.interpolate 读回落盘（2026-11-02）', () => {
+  const CONV5 = 'conv-interp';
+  beforeAll(() => {
+    fs.mkdirSync(path.join(TMP, CONV5, 'intermediate'), { recursive: true });
+  });
+
+  const mk = (interpolate?: 'off' | 'blend' | 'mci'): ClipProject => ({
+    version: 2, name: 'p', updatedAt: 1,
+    output: { size: '1080x1920', fps: 30, ...(interpolate ? { interpolate } : {}) },
+    clips: [], texts: [], layers: [],
+  });
+
+  it('老工程（无该字段）落盘后仍没有 minterpolate 开关 —— 输出对象逐字节不变', () => {
+    writeClipProject(CONV5, mk());
+    const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV5).file, 'utf8'));
+    expect(raw.output).toEqual({ size: '1080x1920', fps: 30 });
+    expect(readClipProject(CONV5)!.output.interpolate).toBeUndefined();
+  });
+
+  it('blend/mci 跟随落盘与读回', () => {
+    for (const v of ['blend', 'mci'] as const) {
+      writeClipProject(CONV5, mk(v));
+      expect(readClipProject(CONV5)!.output.interpolate).toBe(v);
+      const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV5).file, 'utf8'));
+      expect(raw.output.interpolate).toBe(v);
+    }
+  });
+
+  it('脏值读取时摘掉（等价 off），不把渲染拖进慢路径', () => {
+    writeClipProject(CONV5, { ...mk(), output: { size: '1080x1920', fps: 30, interpolate: 'rife' as never } });
+    expect(readClipProject(CONV5)!.output.interpolate).toBeUndefined();
+  });
+});
+
 describe('writeClipProject · 音频层落盘（P0-7）', () => {
   const CONV4 = 'conv-audio';
   beforeAll(() => {

@@ -22,6 +22,7 @@ import {
   layersFromV1Fields,
   v1FieldsFromLayers,
   normalizeMulticamGroups,
+  normalizeOutput,
   type ClipProject,
   type ClipProjectV1,
   type ClipText,
@@ -54,6 +55,8 @@ export function readClipProject(conversationId?: string): ClipProject | null {
         ...(parsed as ClipProject),
         layers,
         texts,
+        // 补帧方式只认 off/blend/mci；历史脏值摘掉（等价 off，off 不落字段）
+        output: normalizeOutput((parsed as ClipProject).output),
         // 老工程没有多机位组 → 空数组（UI 直接遍历，不必判空）
         multicamGroups: normalizeMulticamGroups((parsed as ClipProject).multicamGroups),
         ...(overlays.length ? { overlays } : {}),

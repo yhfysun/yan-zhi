@@ -123,6 +123,19 @@
           <div class="cp-prop"><span>片段</span><b>{{ clipCount }} 段</b></div>
           <div class="cp-prop"><span>字幕</span><b>{{ textCount }} 条</b></div>
           <div class="cp-prop"><span>时长</span><b>{{ totalDurationLabel }}</b></div>
+          <div class="cp-prop">
+            <span>补帧</span>
+            <select
+              v-model="outputInterpolate"
+              class="cp-select cp-select-mini"
+              title="非 AI 补帧：把输出帧率补到工程帧率。输出帧率高于素材帧率时才有效；光流较慢，快速运动可能有伪影"
+            >
+              <option value="off">关闭</option>
+              <option value="blend">混合（快）</option>
+              <option value="mci">光流（慢）</option>
+            </select>
+          </div>
+          <div class="cp-ins-hint">非 AI 补帧；输出帧率高于素材帧率时才有意义</div>
         </div>
 
         <!-- 音效链（整片）：降噪/响度归一/变声/混响… 按顺序串联 -->
@@ -1929,7 +1942,7 @@ interface ClipProject {
   version: 2; name: string; updatedAt: number;
   /** 图层轨（v2）：字幕/画中画在此落盘；UI 继续操作 texts/overlays 视图字段 */
   layers?: Array<{ id: string; kind: string; start: number; end: number; track: number; transform?: Record<string, unknown> }>;
-  output: { size: string; fps: number; quality?: 'low' | 'std' | 'high'; encoder?: 'cpu' | 'auto' };
+  output: { size: string; fps: number; quality?: 'low' | 'std' | 'high'; encoder?: 'cpu' | 'auto'; interpolate?: 'off' | 'blend' | 'mci' };
   clips: ClipSegment[]; texts: ClipText[];
   /** 音效链（整片，按顺序串联；见效果库 AUDIO_EFFECTS） */
   audioFx?: string[];
@@ -2014,6 +2027,27 @@ const outputEncoder = computed({
     const p = project.value;
     if (!p) return;
     p.output = { ...p.output, encoder: v };
+    dirty.value = true;
+    void save();
+  },
+});
+/**
+ * 补帧方式（2026-11-02）：写进工程 output.interpolate，改了就落盘。
+ * ★ 非 AI：off=复制帧（默认）/ blend=混合（快）/ mci=光流运动补偿（慢，可能伪影）。
+ *   只有输出帧率高于素材帧率时才看得出差别；off 不落字段（与历史工程一致）。
+ */
+const outputInterpolate = computed({
+  get: (): 'off' | 'blend' | 'mci' => {
+    const v = project.value?.output?.interpolate;
+    return v === 'blend' || v === 'mci' ? v : 'off';
+  },
+  set: (v: 'off' | 'blend' | 'mci') => {
+    const p = project.value;
+    if (!p) return;
+    const next = { ...p.output };
+    if (v === 'off') delete next.interpolate;
+    else next.interpolate = v;
+    p.output = next;
     dirty.value = true;
     void save();
   },
@@ -2920,7 +2954,9 @@ async function persistProject(): Promise<boolean> {
   if (!project.value) return false;
   if (!convId.value) return false;  // 草稿态不落盘（首次加素材时由 ensureConversation 建会话）
   project.value.name = projectName.value || project.value.name;
-  project.value.output = { size: outSize.value, fps: outFps.value };
+  // ★ 只覆盖规格两项，其余 output 字段（quality/encoder/interpolate）原样保留 ——
+  //   否则每次保存都会把刚选的补帧方式/质量档/编码方式抹掉。
+  project.value.output = { ...project.value.output, size: outSize.value, fps: outFps.value };
   project.value.updatedAt = Date.now();
   const r = await api.put('/plugin/clip-mode/project', { conversationId: convId.value, project: project.value });
   if ('error' in r) { note(`保存失败：${r.error}`); return false; }
@@ -5963,6 +5999,8 @@ onMounted(async () => {
 .cp-quality { font-size: 11px; padding: 2px 4px; border-radius: 3px; border: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-blank); color: var(--el-text-color-regular); cursor: pointer; }
 .cp-dir-tag:hover { border-color: var(--el-color-primary); color: var(--el-color-primary); }
 .cp-select { flex: 1; min-width: 0; padding: 3px 6px; font-size: 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); }
+/* 工程设置里的小下拉（补帧方式）：与 11px 属性行同高，不抢标题宽度 */
+.cp-select-mini { flex: 0 0 96px; padding: 1px 4px; font-size: 11px; }
 .cp-spec-fps { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--el-text-color-secondary); }
 .cp-num { width: 52px; padding: 3px 6px; font-size: 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; }
 .cp-num.wide { width: 100%; min-width: 0; }

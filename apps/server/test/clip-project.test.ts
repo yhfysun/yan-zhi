@@ -923,3 +923,69 @@ describe('片段方向：旋转 / 镜像 / 倒放', () => {
     expect(r.error).toContain('reverse');
   });
 });
+
+describe('补帧方式 interpolate（非 AI，2026-11-02）', () => {
+  const base = (interpolate?: string): ClipProject => {
+    let p = run(null, [
+      ['create', { size: '1080x1920', fps: 30 }],
+      ['add_clip', { clips: [{ file: 'C:/a.mp4' }] }],
+    ]);
+    if (interpolate != null) p = run(p, [['set_output', { interpolate }]]);
+    return p;
+  };
+  /** 取第 1 段 -vf 的滤镜串（视频段升帧就在这一处）。 */
+  const vfOf = (p: ClipProject): string => {
+    const r = buildRenderPlan({
+      project: p, durations: { 'C:/a.mp4': 4 }, hasAudio: { 'C:/a.mp4': true },
+      workDir: 'C:/w', outFile: 'C:/w/o.mp4',
+    });
+    if (!r.ok) throw new Error(r.error);
+    const args = r.plan.steps[0].args;
+    return String(args[args.indexOf('-vf') + 1]);
+  };
+
+  it('缺省 / off：仍是 fps= 复制帧、没有 minterpolate（老工程逐字节不变）', () => {
+    const off = vfOf(base());
+    expect(off).toContain('setsar=1,fps=30');
+    expect(off).not.toContain('minterpolate');
+    // 显式选「关闭」与缺省产出一致，且不落字段
+    const explicit = base('off');
+    expect(explicit.output.interpolate).toBeUndefined();
+    expect(vfOf(explicit)).toBe(off);
+  });
+
+  it('blend：升帧那处换成 minterpolate mi_mode=blend，不再有单独的 fps= 帧复制', () => {
+    const vf = vfOf(base('blend'));
+    expect(vf).toContain('setsar=1,minterpolate=fps=30:mi_mode=blend');
+    expect(vf).not.toContain('setsar=1,fps=');   // 旧帧复制已替换
+  });
+
+  it('mci：光流运动补偿参数 aobmc + vsbmc', () => {
+    const vf = vfOf(base('mci'));
+    expect(vf).toContain('minterpolate=fps=30:mi_mode=mci:mc_mode=aobmc:vsbmc=1');
+    expect(vf).not.toContain('setsar=1,fps=');
+  });
+
+  it('非法值回落 off（不报错、不落字段）', () => {
+    const bad = base('rife');
+    expect(bad.output.interpolate).toBeUndefined();
+    expect(vfOf(bad)).toContain('setsar=1,fps=30');
+    // 从 mci 改回 off 字段被清掉
+    const off = run(base('mci'), [['set_output', { interpolate: 'off' }]]);
+    expect(off.output.interpolate).toBeUndefined();
+  });
+
+  it('图片段不走 minterpolate（zoompan 已按目标 fps 生成，没有源帧率可插）', () => {
+    const p = run(null, [
+      ['create', { size: '1080x1920', fps: 30 }],
+      ['add_clip', { clips: [{ file: 'C:/pic.png', kenburns: { direction: 'in', duration: 3 } }] }],
+      ['set_output', { interpolate: 'mci' }],
+    ]);
+    const r = buildRenderPlan({
+      project: p, durations: {}, hasAudio: {}, workDir: 'C:/w', outFile: 'C:/w/o.mp4', imageFiles: ['C:/pic.png'],
+    });
+    if (!r.ok) throw new Error(r.error);
+    expect(r.plan.steps[0].args.join(' ')).not.toContain('minterpolate');
+    expect(r.plan.steps[0].args.join(' ')).toContain('zoompan');
+  });
+});

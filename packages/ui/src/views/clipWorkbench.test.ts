@@ -151,6 +151,16 @@ describe('ClipWorkbench · 草稿态会话（工程可落盘）', () => {
     const body = CODE.slice(i, i + 600);
     expect(body).toContain('if (!convId.value) return false');
   });
+
+  it('工程设置有「补帧方式」下拉；保存时保留 output 的其它字段（否则选完即被抹掉）', () => {
+    expect(CODE).toContain('outputInterpolate');
+    expect(CODE).toMatch(/v-model="outputInterpolate"/);
+    // 诚实定位：必须写清非 AI，避免被当成 RIFE
+    expect(CODE).toContain('非 AI 补帧');
+    const body = fnBody('persistProject');
+    expect(body).toContain('...project.value.output');
+    expect(body).not.toMatch(/output\s*=\s*\{\s*size:/);
+  });
 });
 
 describe('ClipWorkbench · 手动剪辑闭环（双驱动：UI 与对话都得能用）', () => {

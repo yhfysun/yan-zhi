@@ -532,7 +532,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         'op 一览：' +
         '**create** 建工程/改元信息 { name, size, fps, quality }；' +
         '**get** 读工程（默认返回紧凑摘要：各段 index/id/时间轴起止/时长 + 字幕；summaryOnly=true 时只给摘要）；' +
-        '**set_output** 改导出规格 { size:"1080x1920", fps }；' +
+        '**set_output** 改导出规格 { size:"1080x1920", fps, quality?, encoder?, interpolate? }（interpolate=补帧方式：off 关闭 / blend 混合（快） / mci 光流（慢，非 AI））；' +
         '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, colorStrength?, adjust?, fx?, fxParams?, fadeIn?, fadeOut?, kenburns?, mask?, transition?, crop?, keyframes?, rotate?, flip?, reverse?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）——★ 每段支持画面裁剪 crop、蒙版 mask（形状/色键）、转场 transition、关键帧运镜 keyframes、方向 rotate/flip/reverse、调色强度与手动调节；' +
         '**update_clip** 改某段 { id 或 index, patch:{...同 add_clip 字段} }；**remove_clip** { id|index }；**move_clip** { id|index, to }；**clear_clips**；' +
         '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, fontFamily?, letterSpacingPx?, lineSpacingPx?, bold?, italic?, plateColor?, platePaddingPx?, position?, safeArea?, transform?, keyframes? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
@@ -626,6 +626,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
           fps: { type: 'number', description: 'create/set_output：帧率，默认 30' },
           quality: { type: 'string', enum: ['low', 'std', 'high'], description: '导出质量档：low=省流（crf28，音轨128k）/ std=推荐（crf21，192k）/ high=高清（crf18，256k）。create/set_output 设工程默认档，render 传则只覆盖本次' },
           encoder: { type: 'string', enum: ['cpu', 'auto'], description: '编码方式（P1-9）：cpu=软件编码（默认，兼容性最好）/ auto=自动用可用的硬件编码器（nvenc/qsv/amf，没有则回退 CPU）。create/set_output 设工程默认，跟随保存' },
+          interpolate: { type: 'string', enum: ['off', 'blend', 'mci'], description: '补帧方式（非 AI，2026-11-02）：off=关闭（默认，复制帧）；blend=混合补帧（快）；mci=光流运动补偿（慢，可能伪影）。只在输出 fps 高于素材帧率时才看得出效果 —— 不要宣传成 RIFE/AI 补帧。create/set_output 设工程默认，跟随保存' },
           clips: {
             type: 'array',
             description: 'add_clip：素材数组，按数组顺序首尾相接',
