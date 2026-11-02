@@ -23,6 +23,8 @@ export interface ColumnProfile {
   avg?: string;
   /** 高频样本值（最多 5 个，单值截断 120 字符） */
   samples: string[];
+  /** 低基数列（distinct ≤ 30）的全部去重值，用作候选枚举 */
+  values?: string[];
 }
 
 export interface TableProfile {
@@ -63,6 +65,14 @@ export function buildSamplesSql(dialect: DialectType, table: string, column: str
   const t = quoteIdent(dialect, table);
   const c = quoteIdent(dialect, column);
   return `SELECT ${c} AS v, COUNT(*) AS n FROM ${t} WHERE ${c} IS NOT NULL GROUP BY ${c} ORDER BY n DESC LIMIT ${Math.max(1, Math.min(limit, 20))}`;
+}
+
+/** 低基数列去重值 SQL（候选枚举，最多 ENUM_MAX 个） */
+export const ENUM_MAX = 30;
+export function buildDistinctSql(dialect: DialectType, table: string, column: string, limit = ENUM_MAX): string {
+  const t = quoteIdent(dialect, table);
+  const c = quoteIdent(dialect, column);
+  return `SELECT DISTINCT ${c} AS v FROM ${t} WHERE ${c} IS NOT NULL LIMIT ${Math.max(1, Math.min(limit, ENUM_MAX))}`;
 }
 
 function sampleText(v: unknown): string {
@@ -112,6 +122,16 @@ export async function profileTableWith(
 
     const total = num(stats?.total);
     const nonNull = num(stats?.nonnull);
+    const distinctCount = stats && stats.dist !== undefined ? num(stats.dist) : undefined;
+    let values: string[] | undefined;
+    if (distinctCount !== undefined && distinctCount > 0 && distinctCount <= ENUM_MAX) {
+      try {
+        const r = await runner.query(buildDistinctSql(dialect, table, col.name));
+        values = r.rows.map((x) => sampleText(x.v)).filter((s) => s !== '');
+      } catch (e) {
+        warnings.push(`列 ${col.name} 枚举失败：${(e as Error).message}`);
+      }
+    }
     out.push({
       column: col.name,
       type: col.type || '',
@@ -119,11 +139,12 @@ export async function profileTableWith(
       nonNull,
       nullCount: Math.max(0, total - nonNull),
       nullRate: total ? Math.max(0, Math.min(1, (total - nonNull) / total)) : 0,
-      distinctCount: stats && stats.dist !== undefined ? num(stats.dist) : undefined,
+      distinctCount,
       min: extremeText(stats?.mn),
       max: extremeText(stats?.mx),
       avg: extremeText(stats?.av),
       samples,
+      values,
     });
   }
   return { table, rowCount, columns: out, warnings };

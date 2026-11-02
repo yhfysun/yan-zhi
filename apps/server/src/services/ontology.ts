@@ -9,6 +9,7 @@ import { getConnector, type DataSourceRow } from './connector.js';
 import { validateOntology, checkSourceSqlAliases } from './ontology-validator.js';
 import { buildTableOntologySpec, type TableSchemaLite } from './ontology-table-gen.js';
 import { profileTable, withSampleValues } from './ontology-profile.js';
+import { applyFieldHeuristics } from './ontology-heuristics.js';
 import {
   compileOntologyQuery,
   compileOntologyJoinQuery,
@@ -893,8 +894,14 @@ export async function generateTableOntology(
   if (opts?.withProfile) {
     try {
       const profile = await profileTable(userId, ds.id, table.name);
-      gen = { ...gen, dimensions: withSampleValues(gen.dimensions, profile) };
-    } catch { /* 画像失败不影响生成（只是没有样本值） */ }
+      const h = applyFieldHeuristics(gen, profile);
+      gen = {
+        ...gen,
+        dimensions: withSampleValues(h.dimensions, profile),
+        timeDimensions: h.timeDimensions,
+        measures: h.measures,
+      };
+    } catch { /* 画像失败不影响生成（只是没有样本值/显示名） */ }
   }
   const existing = db
     .prepare('SELECT * FROM ontology WHERE user_id = ? AND code = ?')

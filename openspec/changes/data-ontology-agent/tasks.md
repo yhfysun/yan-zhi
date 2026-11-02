@@ -30,8 +30,8 @@
 
 - [x] 2.5.1 确定性画像采集：类型/注释/基数/空值率/数值分布/日期范围/样本值 TOP-N
   → 2026-11-02 落地：`services/ontology-profile.ts`（行数/非空/空值率/基数/MIN-MAX-AVG/高频 TOP5；列级失败只跳过该列）+ `POST /api/datasources/:id/profile`；8 例单测。
-- [ ] 2.5.2 命名与分布启发式：推断角色+displayName 初值；低基数列标候选枚举
-  → 2026-11-02 部分：低基数判定（distinct ≤ 30 且非空）已随画像提供（`isLowCardinality`），生成本体时低基数列自动挂样本值；**角色/displayName 推断未做**。
+- [x] 2.5.2 命名与分布启发式：推断角色+displayName 初值；低基数列标候选枚举
+  → 2026-11-02：`services/ontology-heuristics.ts` —— 列名词表映射 displayName（user_id→用户编号）、角色推断（identifier/foreign_key/time/measure/enum/dimension）、低基数（≤30）自动带 DISTINCT 候选枚举；生成本体时接入，已有值不覆盖。6 例单测，画像补 values 字段。
 - [ ] 2.5.3 自动关系推断（外键 + 命名 + 值包含检验）→ 写 `ontology_relation(status=suggested)`
   → 2026-11-02 部分：**命名推断已落地**（`services/ontology-relation-infer.ts` + `GET /api/datasources/:id/relation-suggestions`，多候选歧义不猜，7 例单测）；外键元数据、值包含检验与 suggested 落库未做（v1 关系仍存 `ontology.relations_json`）。
 - [x] 2.5.4 自动本体生成（每表一个，builtin=1，含样本值/候选枚举/同义词留空待富化）

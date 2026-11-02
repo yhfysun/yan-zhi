@@ -43,6 +43,7 @@ describe('profileTableWith', () => {
       runner({
         'COUNT(*) AS total': [{ total: 100, nonnull: 80, dist: 4, mn: 'a', mx: 'z', av: 12.5 }],
         'GROUP BY': [{ v: 'paid', n: 50 }, { v: 'refund', n: 20 }],
+        'SELECT DISTINCT': [{ v: 'paid' }, { v: 'refund' }, { v: 'new' }, { v: 'void' }],
       }),
       'sqlite',
       'orders',
@@ -57,6 +58,7 @@ describe('profileTableWith', () => {
     expect(c.max).toBe('z');
     expect(c.avg).toBe('12.5');
     expect(c.samples).toEqual(['paid', 'refund']);
+    expect(c.values, '低基数列应带全部去重值（候选枚举）').toEqual(['paid', 'refund', 'new', 'void']);
     expect(isLowCardinality(c)).toBe(true);
     expect(r.warnings).toEqual([]);
   });

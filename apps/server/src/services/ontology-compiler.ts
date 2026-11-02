@@ -16,15 +16,23 @@ export interface OntologyDimension {
   name: string;
   expr: string; // 引用 source_sql 输出列别名
   description?: string;
+  /** 业务显示名（P2.5.2 启发式初值，可人工改） */
+  displayName?: string;
+  /** 字段角色：identifier / foreign_key / time / measure / enum / dimension */
+  role?: string;
   synonyms?: string[];
   refAttr?: string;
   sampleValues?: string[];
+  /** 候选枚举（低基数列的 DISTINCT 值） */
+  enums?: string[];
 }
 
 export interface OntologyTimeDimension {
   name: string;
   expr: string;
   description?: string;
+  displayName?: string;
+  role?: string;
   synonyms?: string[];
   granularities?: TimeGrain[];
 }
@@ -37,6 +45,8 @@ export interface OntologyMeasure {
   /** 挂载的标准属性 key（std_attribute），统一口径/单位/枚举 */
   refAttr?: string;
   description?: string;
+  displayName?: string;
+  role?: string;
   synonyms?: string[];
 }
 
