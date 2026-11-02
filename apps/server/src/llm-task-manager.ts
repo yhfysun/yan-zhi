@@ -2658,6 +2658,9 @@ function coerceDsmlValue(raw: string): unknown {
   return raw;
 }
 
+/** 文本模式补充说明（P5.2）：arguments 允许嵌套对象/数组，数据查询 DSL 直接塞进 intent */
+const TEXT_MODE_NESTED_HINT = '\n参数可以是嵌套对象/数组，例如数据查询：[TOOL_CALL]{"name":"api_data_query","arguments":{"ontology":"orders","intent":{"dimensions":["region"],"measures":[{"name":"amount"}]}}}[/TOOL_CALL]。';
+
 /**
  * 从 content 中解析所有 [TOOL_CALL] 块和 <function=xxx> XML 块（大小写不敏感），
  * 返回工具调用数组 + 清理后的 content + 被跳过的「只有名字没参数」的工具名。
@@ -2684,8 +2687,7 @@ function coerceDsmlValue(raw: string): unknown {
  *   无必填参数的工具（`list_sub_agents` 等）与"拿不到工具定义"的情况**一律照常产出** ——
  *   否则会把合法的无参调用误杀（这个副作用比假空参更严重）。
  */
-export function parseTextModeToolCalls(
-  fullContent: string,
+export function parseTextModeToolCalls(  fullContent: string,
   toolDefs?: any[],
 ): {
   toolCalls: { id: string; name: string; arguments: string }[];
@@ -3879,7 +3881,7 @@ async function runReActLoop(task: LlmTask, params: {
             ).join('\n');
             return `- ${t.function.name}: ${t.function.description || ''}\n  参数：\n${params}`;
           }).join('\n');
-          llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
+          llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。${TEXT_MODE_NESTED_HINT}`;
         }
 
         // 本轮生效参数（显式传入 > 智能体现值），供快照展示与 LLM 调用共用
@@ -4029,7 +4031,7 @@ async function runReActLoop(task: LlmTask, params: {
                 ).join('\n');
                 return `- ${t.function.name}: ${t.function.description || ''}\n  参数：\n${params}`;
               }).join('\n');
-              sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
+              sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。${TEXT_MODE_NESTED_HINT}`;
             }
             fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
             streamFlag.terminated = true; // 文本模式重试同样重置收尾判定
@@ -7261,7 +7263,7 @@ async function runSubAgentImpl(
           ).join('\n');
           return `- ${t.function.name}: ${t.function.description || ''}\n  参数：\n${params}`;
         }).join('\n');
-        llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
+        llmMessages[0].content += `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。${TEXT_MODE_NESTED_HINT}`;
       }
 
       // 快照（与主智能体格式对齐：包含本轮实际发给大模型的完整消息历史，内容超长截断）
@@ -7352,7 +7354,7 @@ async function runSubAgentImpl(
               ).join('\n');
               return `- ${t.function.name}: ${t.function.description || ''}\n  参数：\n${params}`;
             }).join('\n');
-            sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。`;
+            sysMsg.content = (sysMsg.content || '') + `\n\n## 工具调用（文本模式）\n当要调用工具时，在回复中以下格式输出（可多次调用）：\n[TOOL_CALL]{"name":"工具名","arguments":{"参数名":"参数值"}}[/TOOL_CALL]\n可用工具：\n${toolList}\n调用后等待返回结果，再继续回复。${TEXT_MODE_NESTED_HINT}`;
           }
           fullContent = ''; fullReasoning = ''; toolCallAcc.length = 0; usageTokens = 0;
           for await (const chunk of client.chatStream(llmMessages, {
