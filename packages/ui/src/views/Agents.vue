@@ -136,7 +136,7 @@
                 :class="{ 'is-default': agent.isDefault }"
                 shadow="hover"
               >
-                <div class="agent-card-head" @click="agent.type === 'workflow' ? openCanvas(agent.id) : editAgent(agent)">
+                <div class="agent-card-head" @click="openAgent(agent)">
                   <div class="agent-avatar"><AgentAvatar :id="agent.id" :name="agent.name" :avatar="agent.avatar" :icon-size="22" /></div>
                   <div class="agent-info">
                     <div class="agent-name">
@@ -155,7 +155,7 @@
                   <span class="agent-time">{{ formatTime(agent.updatedAt) }}</span>
                 </div>
                 <div class="agent-actions" @click.stop>
-                  <el-button text size="small" :icon="EditPen" @click="editAgent(agent)">编辑</el-button>
+                  <el-button text size="small" :icon="EditPen" @click="openAgent(agent)">编辑</el-button>
                   <el-button v-if="agent.type === 'workflow'" text size="small" :icon="Setting" @click="openCanvas(agent.id)">设计</el-button>
                   <el-button v-if="!agent.isDefault && !agent.isBuiltin" text size="small" type="danger" :icon="Delete" @click="remove(agent)">删除</el-button>
                 </div>
@@ -176,6 +176,32 @@
           </el-empty>
           </div>
         </div>
+
+        <!-- 右侧详情（2026-11-02，P1-2）：宽屏编辑走容器而不是弹窗，宽度可拖拽并记忆 -->
+        <template v-if="detailOpen">
+          <div class="rs-handle" @mousedown="detailR.startDrag($event, 'right')"></div>
+          <aside class="agent-detail-pane" :style="{ width: detailW + 'px' }">
+            <header class="agent-detail-head">
+              <span class="agent-detail-title">{{ detailAgent?.name || '智能体' }}</span>
+              <el-button text :icon="Close" title="关闭详情" @click="closeDetail" />
+            </header>
+            <AgentEditForm
+              v-if="detailAgent"
+              ref="detailFormRef"
+              :agent="detailAgent"
+              @close="closeDetail"
+              @saved="onDetailSaved"
+              @deleted="onDetailDeleted"
+            />
+            <footer class="agent-detail-foot">
+              <el-button v-if="canDeleteDetail" type="danger" plain :disabled="!detailFormRef" @click="detailFormRef?.remove()">删除</el-button>
+              <el-button v-if="canResetDetail" plain :disabled="!detailFormRef" @click="detailFormRef?.reset()">恢复默认</el-button>
+              <span class="agent-detail-gap"></span>
+              <el-button @click="closeDetail">关闭</el-button>
+              <el-button type="primary" :disabled="!detailFormRef" @click="detailFormRef?.save()">保存</el-button>
+            </footer>
+          </aside>
+        </template>
       </div>
     </template>
 
@@ -256,9 +282,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor, ArrowRight, ArrowDown, MagicStick } from '@element-plus/icons-vue';
+import { Plus, EditPen, Delete, Setting, Lock, ArrowLeft, UserFilled, Monitor, ArrowRight, ArrowDown, MagicStick, Close } from '@element-plus/icons-vue';
 import { ElMessageBox, ElMessage } from 'element-plus';
 import { useAgentStore } from '../stores/agent';
 import { useModelPoolStore, usePlatformStore } from '../stores';
@@ -268,6 +294,8 @@ import { waitForBackend } from '../api/backend-ready';
 import type { Agent } from '@yan-zhi/shared';
 import AgentAvatar from '../components/AgentAvatar.vue';
 import AgentEditDialog from '../components/AgentEditDialog.vue';
+import AgentEditForm from '../components/AgentEditForm.vue';
+import { useResizable } from '../composables/useResizable';
 import FormDialog from '../components/FormDialog.vue';
 import MarketplaceShell from '../components/marketplace/MarketplaceShell.vue';
 import MarketplaceCard from '../components/marketplace/MarketplaceCard.vue';
@@ -513,6 +541,32 @@ function onDeleted(_id: string) {
   showEdit.value = false;
 }
 
+// ===== 列表 + 右侧详情（P1-2，2026-11-02）=====
+// 宽屏（>=1100）点卡片/编辑进右侧容器；窄屏仍走弹窗，避免详情把列表挤没。
+const wide = ref(typeof window !== 'undefined' ? window.innerWidth >= 1100 : true);
+function syncWide() { wide.value = window.innerWidth >= 1100; }
+onMounted(() => window.addEventListener('resize', syncWide));
+onUnmounted(() => window.removeEventListener('resize', syncWide));
+
+const detailAgentId = ref('');
+const detailAgent = computed(() => store.agents.find((a) => a.id === detailAgentId.value) || null);
+const detailOpen = computed(() => wide.value && !!detailAgentId.value && !!detailAgent.value);
+const canDeleteDetail = computed(() => !!detailAgent.value && !detailAgent.value.isDefault && !detailAgent.value.isBuiltin);
+const canResetDetail = computed(() => !!detailAgent.value && !!(detailAgent.value.isBuiltin || detailAgent.value.isDefault));
+const detailR = useResizable('agents_detail', 560, 380, 920);
+const { width: detailW } = detailR;
+const detailFormRef = ref<InstanceType<typeof AgentEditForm> | null>(null);
+function closeDetail() { detailAgentId.value = ''; }
+function onDetailSaved() { /* 保存后 store 已更新，详情保持打开便于继续调 */ }
+function onDetailDeleted() { closeDetail(); }
+
+/** 卡片/编辑入口：工作流仍进画布；宽屏进右侧详情，窄屏弹窗 */
+function openAgent(agent: Agent) {
+  if (agent.type === 'workflow') { openCanvas(agent.id); return; }
+  if (wide.value) { detailAgentId.value = agent.id; return; }
+  editAgent(agent);
+}
+
 async function remove(agent: Agent) {
   await ElMessageBox.confirm(`确定删除智能体「${agent.name}」？此操作不可恢复。`, '确认删除', {
     type: 'warning',
@@ -574,6 +628,38 @@ async function remove(agent: Agent) {
 .cat-side-item.active .cat-side-count { color: var(--color-primary); background: rgba(99,102,241,0.15); }
 /* 列表区独立滚动：搜索条固定在顶部，滚动只发生在卡片区（筛选条不被内容顶走） */
 .agents-content { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+/* ===== 右侧详情（P1-2）：列表保持可滚，详情独立滚动 ===== */
+.agent-detail-pane {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.agent-detail-head {
+  flex: 0 0 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.agent-detail-title {
+  font-size: 12.5px; font-weight: 600; color: var(--color-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-detail-head .el-button { margin-left: auto; }
+.agent-detail-pane :deep(.aef-root) { flex: 1; min-height: 0; height: auto; }
+.agent-detail-foot {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--color-border);
+}
+.agent-detail-gap { flex: 1; }
 .agents-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
 
 /* ===== 智能体卡片网格 ===== */
