@@ -5557,6 +5557,22 @@ try { db.exec("ALTER TABLE ontology ADD COLUMN selections_json TEXT DEFAULT '[]'
 // 发布快照（P6.8）：发布时冻结口径，用于「发布预检 diff」与 24h 回滚
 try { db.exec('ALTER TABLE ontology ADD COLUMN published_json TEXT'); } catch {}
 
+// 已验证问答沉淀（P4.7）：成功的提问 → DSL/SQL 作为后续 few-shot
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ontology_example (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    ontology_id TEXT,
+    question TEXT NOT NULL,
+    intent_json TEXT,
+    sql TEXT,
+    row_count INTEGER DEFAULT 0,
+    used_count INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+`);
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_ontology_example_user ON ontology_example(user_id, ontology_id, created_at)'); } catch {}
+
 // ===== AI 富化（P3.5）：任务 + 草稿（人工采纳后才写回本体） =====
 db.exec(`
   CREATE TABLE IF NOT EXISTS ontology_enrich_job (

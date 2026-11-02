@@ -26,6 +26,7 @@ import {
 } from './ontology-compiler.js';
 import type { DialectType } from './dialect.js';
 import { buildOntologyDigest, recallConfigFromEnv } from './ontology-recall.js';
+import { searchExamples, markExamplesUsed, formatExamplesForPrompt } from './ontology-example.js';
 import { ensureAppGroup, APP_GROUP_NAME } from './ontology-group.js';
 import { BUILTIN_TABLE_DOCS, COMMON_FIELD_DOCS } from './ontology-docs.js';
 import { createLogger } from './logger.js';
@@ -522,7 +523,16 @@ export function digestOntologies(
       ? db.prepare('SELECT * FROM ontology WHERE user_id = ? AND datasource_id = ?').all(userId, opts.datasourceId)
       : db.prepare('SELECT * FROM ontology WHERE user_id = ?').all(userId)
   ) as OntologyRow[];
-  return buildOntologyDigest(rows.map(toInfo), opts.question || '', recallConfigFromEnv());
+  const digest = buildOntologyDigest(rows.map(toInfo), opts.question || '', recallConfigFromEnv());
+  if (!opts.question) return digest;
+  try {
+    const examples = searchExamples(userId, opts.question, { limit: 3 });
+    if (!examples.length) return digest;
+    markExamplesUsed(examples.map((e) => e.id));
+    return `${digest}\n\n${formatExamplesForPrompt(examples)}`;
+  } catch {
+    return digest;
+  }
 }
 
 /** 数据预览：裸跑 source_sql 前 N 行（不套任何选择器/过滤器） */

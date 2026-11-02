@@ -21,6 +21,7 @@ import {
   updateOntology,
 } from '../services/ontology.js';
 import { acceptDrafts, discardDrafts, getJob, listJobs, startEnrichJob } from '../services/ontology-enrich.js';
+import { saveExample, searchExamples } from '../services/ontology-example.js';
 
 const router = Router();
 
@@ -241,6 +242,37 @@ router.post('/:id/enrich/drafts/discard', authMiddleware, (req: Request, res: Re
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
     res.json({ data: { discarded: discardDrafts(req.user!.userId, req.params.id, ids) } });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// ===== 已验证问答（P4.7）=====
+router.post('/:id/examples', authMiddleware, (req: Request, res: Response) => {
+  try {
+    const b = req.body || {};
+    res.json({
+      data: saveExample(req.user!.userId, {
+        ontologyId: req.params.id,
+        question: String(b.question || ''),
+        intent: b.intent,
+        sql: typeof b.sql === 'string' ? b.sql : undefined,
+        rowCount: Number.isFinite(Number(b.rowCount)) ? Number(b.rowCount) : undefined,
+      }),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get('/:id/examples', authMiddleware, (req: Request, res: Response) => {
+  try {
+    const q = String(req.query.q || '');
+    res.json({
+      data: q
+        ? searchExamples(req.user!.userId, q, { ontologyId: req.params.id, limit: 5, minScore: 0 })
+        : searchExamples(req.user!.userId, '', { ontologyId: req.params.id, limit: 5, minScore: 0 }),
+    });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
