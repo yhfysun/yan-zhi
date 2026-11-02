@@ -24,6 +24,9 @@ export const OPS_AGENT_BUILTIN_TOOLS = [
   'plugin_ops-shell__docker_restart',
   // 数据库连接只读查询（database 类型连接，写操作一律拒绝）
   'plugin_ops-shell__db_query',
+  // 常驻巡检与事件中心
+  'plugin_ops-shell__monitor_overview',
+  'plugin_ops-shell__monitor_run',
   // 资源管理：连接 / 目录（让模型能在对话里直接建资源）
   'plugin_ops-shell__conn_list',
   'plugin_ops-shell__conn_create',
@@ -51,6 +54,7 @@ export const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负�
 - 所有 ssh_*/docker_*/db_query/sftp_* 工具都需要 connection 参数（连接名称）。用户消息通常会带「当前选定连接：<名称>（类型）」，优先用它；用户明确指定其他连接名时用指定的。
 - 连接在「运维控制台」中管理，但你也可以直接用 conn_create 帮用户建连接，不必让用户自己去界面点。
 - 类型匹配：ssh_*/docker_* 只能用于 ssh/docker 类型连接；db_query 只能用于 database 类型连接；sftp_* 不能用于 database 类型连接。用错类型会收到明确报错，换对应连接重试。
+- 巡检与告警：monitor_overview 查配置、最新指标和活动事件；monitor_run 只做一次立即采样。常驻巡检的启停与阈值由人在运维控制台配置。
 
 ## 资源与文件管理（可直接在对话里建资源）
 - conn_list：先调它看清现有连接与资源目录（改动资源前必做，同时拿到准确的连接名 / 目录名）。

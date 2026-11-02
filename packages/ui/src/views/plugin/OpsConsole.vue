@@ -638,6 +638,10 @@
             </div>
           </el-tab-pane>
 
+          <el-tab-pane label="巡检" name="monitor" lazy>
+            <OpsMonitorCenter :connections="connections" :active-connection-id="activeConn?.id || ''" />
+          </el-tab-pane>
+
           <!-- 操作日志：ssh/docker/db 工具执行审计（LLM 调用明细见「工具与连接 → LLM 日志」页） -->
           <el-tab-pane label="操作日志" name="log">
             <div class="ops-audit">
@@ -811,6 +815,7 @@ import { usePlatformStore } from '../../stores/platform';
 import SftpPanel from './SftpPanel.vue';
 import OpsConnectionDialog, { type OpsConn } from './OpsConnectionDialog.vue';
 import OpsMetricsPanel from '../../components/ops/OpsMetricsPanel.vue';
+import OpsMonitorCenter from '../../components/ops/OpsMonitorCenter.vue';
 import OpsRecordingsPanel from '../../components/ops/OpsRecordingsPanel.vue';
 import OpsKnownHostsPanel from '../../components/ops/OpsKnownHostsPanel.vue';
 import OpsStepCards from '../../components/ops/OpsStepCards.vue';

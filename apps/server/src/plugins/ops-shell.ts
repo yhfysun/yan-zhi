@@ -34,6 +34,11 @@ import {
   hostPortOf, verifyHostKey, outcomeAllows, mismatchMessage, unknownHostMessage,
   type HostKeyRecord, type KnownHostMode, type VerifyOutcome,
 } from './ops-known-hosts.js';
+import {
+  buildMonitorSignals, collectorFailureSignal, normalizeMonitorConfig, parseMonitorOutput,
+  type OpsMonitorConfig,
+} from './ops-monitor.js';
+import { createOpsMonitorStore } from './ops-monitor-store.js';
 const logger = createLogger('ops-shell');
 
 export const OPS_SHELL_ID = 'ops-shell';
@@ -41,10 +46,10 @@ export const OPS_SHELL_ID = 'ops-shell';
 export const opsShellManifest: PluginManifest = {
   id: OPS_SHELL_ID,
   name: '运维',
-  version: '0.1.0',
+  version: '0.2.0',
   category: '操作',
   description:
-    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询；「更多 → 运维」打开运维控制台：按连接类型呈现命令终端 / 容器面板 / SQL 查询 + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
+    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询与常驻巡检告警；「更多 → 运维」打开运维控制台：命令终端 / 容器面板 / SQL 查询 / 事件中心 + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
   permissions: ['remote-shell', 'shell', 'network'],
   contributes: {
     // ★ 模式运行时化（P3）：模式定义随插件声明，前端动态合并（替代构建期硬编码表的部分消费方）
@@ -60,6 +65,8 @@ export const opsShellManifest: PluginManifest = {
       'docker_logs',
       'docker_restart',
       'db_query',
+      'monitor_overview',
+      'monitor_run',
     ],
     // ★ 2026-10-16 去掉 sidebar 贡献：它渲染的「更多 → 运维」分组与顶栏**模式下拉**是同一个
     //   入口（都进 /ops），属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
@@ -139,6 +146,17 @@ interface OpsGroup {
 }
 
 let pluginStorage: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> } | null = null;
+const monitorStore = createOpsMonitorStore(db);
+let monitorTimer: NodeJS.Timeout | null = null;
+let monitorCycleRunning = false;
+const monitorLastRun = new Map<string, number>();
+
+const MONITOR_COMMAND = [
+  "printf '__YZ_LOAD__ '; cat /proc/loadavg",
+  "printf '__YZ_CPU__ '; nproc",
+  "printf '__YZ_MEM__\\n'; free -m",
+  "printf '__YZ_DISK__\\n'; df -P / | tail -1",
+].join('; ');
 
 export async function loadConnections(): Promise<StoredConnection[]> {
   if (!pluginStorage) return [];
@@ -161,6 +179,75 @@ async function saveConnections(list: StoredConnection[]): Promise<void> {
   if (!Array.isArray(check) || check.length !== list.length) {
     throw new Error('连接写入校验失败（plugin_storage 未正确落库）');
   }
+}
+
+export interface OpsMonitorCycleResult {
+  checked: number;
+  sampled: number;
+  failed: number;
+}
+
+export async function runOpsMonitorCycle(
+  options: { connectionId?: string; force?: boolean } = {},
+): Promise<OpsMonitorCycleResult> {
+  if (monitorCycleRunning) return { checked: 0, sampled: 0, failed: 0 };
+  monitorCycleRunning = true;
+  try {
+    const now = Date.now();
+    const configs = monitorStore.listConfigs();
+    const connections = await loadConnections();
+    const candidates = options.connectionId
+      ? connections.filter((conn) => conn.id === options.connectionId)
+      : connections.filter((conn) => configs.find((item) => item.connectionId === conn.id)?.enabled === true);
+    const targets = candidates.filter((conn) => conn.type !== 'database');
+    let sampled = 0;
+    let failed = 0;
+    for (const conn of targets) {
+      const config = configs.find((item) => item.connectionId === conn.id)
+        || normalizeMonitorConfig(conn.id, { enabled: true }, now);
+      if (!options.force && !config.enabled) continue;
+      const last = monitorLastRun.get(conn.id) || 0;
+      if (!options.force && now - last < config.intervalSec * 1000) continue;
+      monitorLastRun.set(conn.id, now);
+      try {
+        const result = await execOnConnection(conn, MONITOR_COMMAND, 20000);
+        if (result.code !== 0) throw new Error(result.stderr || `exit ${result.code}`);
+        const sample = parseMonitorOutput(result.stdout);
+        if (!sample) throw new Error('指标输出解析失败');
+        sample.connectionId = conn.id;
+        sample.sampledAt = now;
+        monitorStore.recordSample(sample);
+        monitorStore.reconcileAlerts(conn.id, conn.name, buildMonitorSignals(sample, config), now);
+        sampled++;
+      } catch (e) {
+        monitorStore.reconcileAlerts(
+          conn.id,
+          conn.name,
+          [collectorFailureSignal(conn.id, (e as Error).message)],
+          now,
+          { resolveMissing: false },
+        );
+        failed++;
+      }
+    }
+    return { checked: targets.length, sampled, failed };
+  } finally {
+    monitorCycleRunning = false;
+  }
+}
+
+function startOpsMonitor(): void {
+  monitorStore.ensureSchema();
+  if (monitorTimer || process.env.VITEST || process.env.NODE_ENV === 'test') return;
+  monitorTimer = setInterval(() => {
+    void runOpsMonitorCycle().catch((e) => {
+      logger.warn('[ops-shell] 巡检周期失败:', (e as Error).message);
+    });
+  }, 15000);
+  if (typeof monitorTimer.unref === 'function') monitorTimer.unref();
+  void runOpsMonitorCycle().catch((e) => {
+    logger.warn('[ops-shell] 首次巡检失败:', (e as Error).message);
+  });
 }
 
 function toClientView(c: StoredConnection) {
@@ -1981,6 +2068,49 @@ export function makeTools(): BuiltInTool[] {
         }
       },
     },
+    {
+      name: 'monitor_overview',
+      description: '查看常驻巡检配置、最新指标和活动告警事件。可选按连接名过滤；只读。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          connection: { type: 'string', description: '可选：连接名称或 connectionId' },
+        },
+      },
+      execute: async (args) => {
+        const conns = await loadConnections();
+        const conn = args.connection ? await resolveConn(args) : null;
+        const alerts = monitorStore.listAlerts('open').filter((alert) => !conn || alert.connectionId === conn.id);
+        const rows = conn ? [conn] : conns;
+        return textResult(JSON.stringify({
+          connections: rows.map((item) => ({
+            id: item.id,
+            name: item.name,
+            tag: item.tag,
+            config: monitorStore.getConfig(item.id),
+            latestSample: monitorStore.listSamples(item.id, 1)[0] || null,
+          })),
+          alerts,
+        }, null, 2));
+      },
+    },
+    {
+      name: 'monitor_run',
+      description: '立即执行一次只读指标巡检并返回采样结果。仅用于诊断，不代表开启常驻巡检。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          connection: { type: 'string', description: '连接名称或 connectionId' },
+        },
+        required: ['connection'],
+      },
+      execute: async (args) => {
+        const conn = await resolveConn(args);
+        if (conn.type === 'database') return textResult('数据库连接不支持指标巡检');
+        const result = await runOpsMonitorCycle({ connectionId: conn.id, force: true });
+        return textResult(JSON.stringify(result, null, 2));
+      },
+    },
 
     // ===== 资源管理（连接 / 目录）：让运维助手能在对话里直接建资源 =====
     {
@@ -2719,6 +2849,7 @@ const opsShellModule: PluginModule = {
   activate(ctx) {
     applyBuiltinSeed({ agents: opsModeAgentDefs, scenes: [opsModeScene] });
     pluginStorage = ctx.storage;
+    startOpsMonitor();
     // 录制开关：默认开（对齐堡垒机的合规口径），可在插件管理页关掉
     recordSessions = (ctx.config as { recordSessions?: boolean } | undefined)?.recordSessions !== false;
     // 同时上传的文件数上限（其余排队候补）：配置可能被手改坏，统一收进 1–32
@@ -4094,6 +4225,96 @@ const opsShellModule: PluginModule = {
         }
       });
 
+      // ===== 常驻巡检 / 事件中心 =====
+      r.get('/monitor/overview', async (_req: unknown, res: unknown) => {
+        const connections = await loadConnections();
+        const alerts = monitorStore.listAlerts('open');
+        jsonRes(res).json({
+          data: {
+            connections: connections.map((conn) => ({
+              id: conn.id,
+              name: conn.name,
+              type: conn.type,
+              tag: conn.tag,
+              config: monitorStore.getConfig(conn.id),
+              latestSample: monitorStore.listSamples(conn.id, 1)[0] || null,
+            })),
+            alerts,
+            activeCount: alerts.filter((alert) => alert.status === 'active').length,
+            acknowledgedCount: alerts.filter((alert) => alert.status === 'acknowledged').length,
+          },
+        });
+      });
+
+      r.put('/monitor/config/:id', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const conn = (await loadConnections()).find((item) => item.id === id);
+        if (!conn) { failRes(res, 404, '连接不存在'); return; }
+        if (conn.type === 'database') { failRes(res, 400, '数据库连接不支持常驻巡检'); return; }
+        const current = monitorStore.getConfig(id) || normalizeMonitorConfig(id, {}, Date.now());
+        const next = normalizeMonitorConfig(id, {
+          ...current,
+          ...body,
+          enabled: body.enabled === undefined ? current.enabled : body.enabled === true,
+          updatedAt: Date.now(),
+        }, Date.now());
+        monitorStore.saveConfig(next);
+        await audit('monitor.config.update', {
+          connection: conn.name,
+          detail: `${next.enabled ? '开启' : '关闭'}；间隔 ${next.intervalSec}s；阈值 load/mem/disk=${next.loadPct}/${next.memPct}/${next.diskPct}`,
+          ok: true,
+        });
+        if (next.enabled) {
+          void runOpsMonitorCycle({ connectionId: id, force: true }).catch((e) => {
+            logger.warn('[ops-shell] 启用巡检后首次采样失败:', (e as Error).message);
+          });
+        }
+        jsonRes(res).json({ data: next });
+      });
+
+      r.post('/monitor/run', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        try {
+          const result = await runOpsMonitorCycle({
+            connectionId: body.connectionId ? String(body.connectionId) : undefined,
+            force: true,
+          });
+          jsonRes(res).json({ data: result });
+        } catch (e) {
+          failRes(res, 500, (e as Error).message);
+        }
+      });
+
+      r.get('/monitor/alerts', async (req: unknown, res: unknown) => {
+        const status = String((req as { query: Record<string, string> }).query?.status || 'open');
+        if (!['open', 'all', 'active', 'acknowledged', 'resolved'].includes(status)) {
+          failRes(res, 400, 'status 非法');
+          return;
+        }
+        jsonRes(res).json({ data: monitorStore.listAlerts(status as 'open' | 'all' | 'active' | 'acknowledged' | 'resolved') });
+      });
+
+      r.post('/monitor/alerts/:id/ack', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const alerts = monitorStore.listAlerts('all');
+        const row = alerts.find((alert) => alert.id === id);
+        if (!row) { failRes(res, 404, '告警事件不存在'); return; }
+        if (!monitorStore.acknowledgeAlert(id)) { failRes(res, 409, '该告警已确认或已恢复'); return; }
+        await audit('monitor.alert.ack', {
+          connection: row.connectionName,
+          detail: `${row.title}：${row.detail}`,
+          ok: true,
+        });
+        jsonRes(res).json({ data: { ok: true } });
+      });
+
+      r.get('/monitor/metrics/:id', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const limit = Number((req as { query: Record<string, string> }).query?.limit || 60);
+        jsonRes(res).json({ data: monitorStore.listSamples(id, limit) });
+      });
+
       // 终端会话（命令模式）：open 返回 sessionId，SSE 读输出，POST 写输入
       const termSessions = new Map<string, { stream: ClientChannel; lastActive: number; recorder: TermRecorder | null; connectionName: string; tag?: string }>();
       /** 收尾一条 SSE 会话的录像（幂等：recorder 置空后不会重复落库） */
@@ -4358,6 +4579,9 @@ const opsShellModule: PluginModule = {
   },
 
   deactivate() {
+    if (monitorTimer) clearInterval(monitorTimer);
+    monitorTimer = null;
+    monitorLastRun.clear();
     for (const [id] of sshPool) disconnect(id);
     pluginStorage = null;
   },
