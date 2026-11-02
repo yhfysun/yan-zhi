@@ -45,17 +45,6 @@
         <!-- 模式切换（四模式工作台）：首页之后、其余导航之前，hover 展开 -->
         <ModeSwitcher v-model="modeSwitcherOpen" />
 
-        <!-- 办公工作台（P2）：仅办公室模式露出；聊天页本身不变 -->
-        <router-link
-          v-if="activeMode === 'office'"
-          to="/office"
-          class="title-nav-item"
-          :class="{ active: isActive('/office') }"
-        >
-          <el-icon :size="15"><Files /></el-icon>
-          <span>工作台</span>
-        </router-link>
-
         <router-link
           v-for="m in navAfter"
           :key="m.path"
@@ -108,7 +97,7 @@
         <!-- 游戏窗（P2）：独立置顶窗跑 /browser，用于网页游戏/盯盘这类不该被主窗口遮住的场景 -->
         <button v-if="gameWindowSupported" class="title-nav-item title-nav-item--icon" type="button"
                 title="游戏窗（独立置顶）" @click="onOpenGameWindow">
-          <el-icon :size="15"><Monitor /></el-icon>
+          <el-icon :size="15"><VideoPlay /></el-icon>
         </button>
       </div>
 
@@ -219,7 +208,7 @@ import { useRoute, useRouter } from 'vue-router';
 import {
   Minus, FullScreen, CopyDocument, Close, Moon, Sunny, HomeFilled, ChatDotRound, Monitor, Promotion, Setting, Collection,
   More, Cpu, Tools, Files, User, Link, Platform, MagicStick, Memo, Box, DataLine, Operation, Share, Refresh, Key,
-  Search, VideoCamera, SwitchButton,
+  Search, VideoCamera, SwitchButton, VideoPlay,
 } from '@element-plus/icons-vue';
 import { useSettingsStore, useAuthStore, usePluginStore } from '@yan-zhi/ui';
 import { getViewAs, setViewAs } from '../api/client';
@@ -233,7 +222,6 @@ import { titleBarOverlayOpen } from '../composables/useTitleBarOverlay';
 import { openSettingsDialog } from '../composables/useSettingsDialog';
 import CommandPalette from './common/CommandPalette.vue';
 import ModeSwitcher from './workbench/ModeSwitcher.vue';
-import { activeMode } from '../stores/mode';
 import { useChat } from '../composables/chat/useChat';
 import { isStandaloneWindow } from '../utils/modeWindow';
 

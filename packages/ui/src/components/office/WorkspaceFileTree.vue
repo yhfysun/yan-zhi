@@ -25,19 +25,14 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <button class="ws-icon-btn" type="button" title="刷新" :disabled="loading" @click="refresh()">
+        <button class="ws-icon-btn" type="button" title="刷新" :disabled="!rootDir || loading" @click="refresh()">
           <el-icon :size="14" :class="{ spin: loading }"><Refresh /></el-icon>
         </button>
       </div>
     </header>
 
     <div class="ws-body">
-      <div v-if="!rootDir" class="ws-empty">
-        未设置工作目录
-        <div class="ws-empty-actions">
-          <el-button size="small" type="primary" @click="emit('pick-dir')">选择目录</el-button>
-        </div>
-      </div>
+      <div v-if="!rootDir" class="ws-empty">未设置工作目录</div>
       <div v-else-if="error" class="ws-empty">{{ error }}</div>
       <div v-else-if="loading && flatNodes.length === 0" class="ws-empty">正在读取目录…</div>
       <div v-else-if="flatNodes.length === 0" class="ws-empty">目录是空的，从右上角新建文档开始</div>
@@ -88,8 +83,6 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, Refresh, ArrowRight, ArrowDown } from '@element-plus/icons-vue';
 import { useWorkspaceFiles, type WsNode, type OfficeDocKind } from '../../composables/office/useWorkspaceFiles';
 import { officeSelectedFile } from '../../stores/officeWorkbench';
-
-const emit = defineEmits<{ (e: 'pick-dir'): void }>();
 
 const {
   rootDir, loading, error, selectedPath, flatNodes, expanded,
@@ -258,7 +251,6 @@ defineExpose({ doCreate });
 
 .ws-body { flex: 1; min-height: 0; overflow: auto; padding: 6px 4px 12px; }
 .ws-empty { padding: 22px 14px; font-size: 12px; color: var(--color-text-tertiary); line-height: 1.6; }
-.ws-empty-actions { margin-top: 10px; }
 
 .ws-row {
   display: flex; align-items: center; gap: 6px;

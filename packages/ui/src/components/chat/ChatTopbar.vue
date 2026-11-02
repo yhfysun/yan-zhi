@@ -106,6 +106,15 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+      <!-- 办公模式：AI / 人工（人工 → 办公工作台；右栏收起、不调用模型） -->
+      <el-segmented
+        v-if="activeMode === 'office' && !isMobile"
+        class="office-seg"
+        size="small"
+        :model-value="'ai'"
+        :options="[{ label: 'AI', value: 'ai' }, { label: '人工', value: 'manual' }]"
+        @change="onOfficeSeg"
+      />
       <el-dropdown v-if="isMobile && authStore.isLoggedIn" trigger="click">
         <span class="mobile-user-avatar">{{ authStore.user?.username?.slice(0, 1) || 'U' }}</span>
         <template #dropdown>
@@ -133,8 +142,11 @@
 
 <script setup lang="ts">
 import { computed, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { Expand, FolderOpened, Fold, DataLine, Monitor, Operation, DocumentAdd, SwitchButton, Avatar, Platform } from '@element-plus/icons-vue';
 import { useChat } from '../../composables/chat/useChat';
+import { activeMode } from '../../stores/mode';
+import { setOfficePanel } from '../../stores/officeWorkbench';
 import { usePlatform } from '../../composables/usePlatform';
 import { useSettingsStore } from '../../stores/settings';
 import { useSpaceStore } from '../../stores/space';
@@ -150,6 +162,19 @@ const {
 
 const settingsStore = useSettingsStore();
 const spaceStore = useSpaceStore();
+const router = useRouter();
+/** 人工模式 = 办公工作台（文件树 + 画布，AI 右栏收起） */
+function goManualPanel() {
+  setOfficePanel('manual');
+  void router.push('/office');
+}
+function goAiPanel() {
+  setOfficePanel('ai');
+}
+function onOfficeSeg(v: string | number | boolean) {
+  if (v === 'manual') goManualPanel();
+  else goAiPanel();
+}
 // 所属空间（2026-10-23）：只读展示，空间列表一般侧栏已加载；为空时这里补一次
 const convSpace = computed(() => {
   const id = currentConv.value?.spaceId;
@@ -276,4 +301,11 @@ function openConsoleTab() {
 .cost-detail-val { flex-shrink: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .cost-detail-warn { margin-top: 10px; color: var(--el-color-warning); }
 .cost-detail-note { margin-top: 8px; color: var(--el-text-color-secondary, #909399); }
+
+/* 办公模式 AI / 人工：原生 segmented，尺寸贴近图标按钮 */
+.office-seg {
+  flex-shrink: 0;
+  --el-segmented-item-selected-bg-color: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  --el-segmented-item-selected-color: var(--color-primary);
+}
 </style>

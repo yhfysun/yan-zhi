@@ -29,16 +29,22 @@ describe('P2-1 办公工作台骨架', () => {
     expect(ROUTER).toMatch(/'\/office': 'office'/);
   });
 
-  it('顶栏有「工作台」入口（仅办公室模式）', () => {
-    expect(TOPBAR).toMatch(/to="\/office"/);
-    expect(TOPBAR).toMatch(/activeMode === 'office'/);
+  it('不再单独出「工作台」入口；入口收在办公模式聊天顶栏的 AI/人工 切换', () => {
+    expect(TOPBAR).not.toMatch(/to="\/office"/);
+    const CHAT_TOPBAR = strip(readRepo('packages/ui/src/components/chat/ChatTopbar.vue'));
+    expect(CHAT_TOPBAR).toMatch(/AI \/ 人工/);
+    expect(CHAT_TOPBAR).toMatch(/goManualPanel/);
+    expect(CHAT_TOPBAR).toMatch(/router\.push\('\/office'\)/);
   });
 
-  it('三栏：文件树 / 画布 / AI，并复用聊天组件', () => {
+  it('三栏：文件树 / 画布 / 人工窄条；AI 形态就是聊天页', () => {
     expect(WORKBENCH).toMatch(/<WorkspaceFileTree/);
     expect(WORKBENCH).toMatch(/<OfficeDocumentView/);
-    expect(WORKBENCH).toMatch(/<ChatMessageList \/>/);
-    expect(WORKBENCH).toMatch(/<ChatInputArea \/>/);
+    expect(WORKBENCH).toMatch(/<FilePreview/);
+    expect(WORKBENCH).toMatch(/wb-rail-label/);
+    // 工作台不再内嵌聊天：AI = /chat，人工 = 这里
+    expect(WORKBENCH).not.toMatch(/<ChatMessageList \/>/);
+    expect(WORKBENCH).not.toMatch(/<ChatInputArea \/>/);
   });
 
   it('状态栏在 /office 下同步 AI/人工', () => {
@@ -49,10 +55,10 @@ describe('P2-1 办公工作台骨架', () => {
 });
 
 describe('P2-2 AI / 人工切换', () => {
-  it('人工模式右栏收窄且聊天输入消失', () => {
-    expect(WORKBENCH).toMatch(/v-else class="wb-manual"/);
-    expect(WORKBENCH).toMatch(/isManual/);
-    expect(WORKBENCH).toMatch(/人工编辑 · 不调用 AI/);
+  it('人工模式是独立形态：窄条 + 切回 AI，不再内嵌聊天', () => {
+    expect(WORKBENCH).toMatch(/wb-rail-btn/);
+    expect(WORKBENCH).toMatch(/人工编辑/);
+    expect(WORKBENCH).toMatch(/function goAi/);
   });
 });
 
@@ -78,6 +84,14 @@ describe('P2-4 文件树与三套视图', () => {
     expect(DOCVIEW).toMatch(/odv-sheet-wrap/);
     expect(DOCVIEW).toMatch(/odv-slides-wrap/);
     expect(DOCVIEW).toMatch(/\/office\/content/);
+  });
+
+  it('文本类复用 FilePreview，pptx 支持文字回写', () => {
+    expect(WORKBENCH).toMatch(/<FilePreview/);
+    expect(WORKBENCH).toMatch(/useFilePreview/);
+    expect(DOCVIEW).toMatch(/\/office\/save/);
+    expect(DOCVIEW).toMatch(/startSlideEdit/);
+    expect(strip(readRepo('apps/server/src/routes/office.ts'))).toMatch(/router\.post\('\/save'/);
   });
 });
 

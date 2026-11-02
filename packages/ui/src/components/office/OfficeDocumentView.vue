@@ -57,13 +57,40 @@
 
     <!-- 演示 -->
     <div v-else-if="kind === 'slides'" class="odv-slides-wrap">
+      <div class="odv-slide-toolbar">
+        <template v-if="!editingSlides">
+          <el-button size="small" @click="startSlideEdit">编辑文字</el-button>
+        </template>
+        <template v-else>
+          <el-button size="small" @click="cancelSlideEdit">取消</el-button>
+          <el-button size="small" type="primary" :loading="savingSlides" @click="saveSlideEdits">保存</el-button>
+        </template>
+        <span v-if="slideError" class="odv-slide-error">{{ slideError }}</span>
+      </div>
       <section v-for="s in slides" :key="s.index" class="odv-slide">
         <div class="odv-slide-no">第 {{ s.index }} 页</div>
         <h3 class="odv-slide-title">{{ s.title || '（无标题）' }}</h3>
-        <p v-for="(t, i) in s.texts" :key="i" class="odv-slide-text">{{ t }}</p>
-        <div v-if="s.notes" class="odv-slide-notes">备注：{{ s.notes }}</div>
+        <template v-if="editingSlides">
+          <div v-for="st in s.shapeTexts" :key="st.shape" class="odv-slide-edit-row">
+            <el-input v-model="st.text" type="textarea" :rows="2" size="small" />
+          </div>
+        </template>
+        <template v-else>
+          <p v-for="(t, i) in s.texts" :key="i" class="odv-slide-text">{{ t }}</p>
+          <div v-if="s.notes" class="odv-slide-notes">备注：{{ s.notes }}</div>
+        </template>
       </section>
       <div v-if="slides.length === 0" class="odv-empty-inline">（空演示）</div>
+    </div>
+
+    <!-- Markdown：直接渲染（工作区里最常见的说明/术语文档） -->
+    <div v-else-if="kind === 'md'" class="odv-md-wrap">
+      <article class="odv-markdown" v-html="renderedMd"></article>
+    </div>
+
+    <!-- 纯文本：等宽展示，保留换行 -->
+    <div v-else-if="kind === 'text'" class="odv-text-wrap">
+      <pre class="odv-text">{{ textContent }}</pre>
     </div>
 
     <div v-else class="odv-empty">暂不支持预览该格式，请用本机 Office 打开。</div>
@@ -73,23 +100,66 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { api } from '../../api/client';
+import { useChat } from '../../composables/chat/useChat';
 
 type DocBlock =
   | { type: 'heading'; level: number; text: string }
   | { type: 'paragraph'; text: string }
   | { type: 'table'; rows: string[][] };
 interface Sheet { name: string; rows: Array<Array<string | number>>; truncated?: boolean }
-interface Slide { index: number; title: string; texts: string[]; notes: string }
+interface Slide { index: number; title: string; texts: string[]; notes: string; shapeTexts?: Array<{ shape: number; text: string }> }
 
 const props = defineProps<{ path: string }>();
 
 const loading = ref(false);
 const error = ref('');
-const kind = ref<'doc' | 'sheet' | 'slides' | 'unknown'>('unknown');
+const kind = ref<'doc' | 'sheet' | 'slides' | 'md' | 'text' | 'unknown'>('unknown');
 const docBlocks = ref<DocBlock[]>([]);
 const sheetTabs = ref<Sheet[]>([]);
 const activeSheet = ref(0);
 const slides = ref<Slide[]>([]);
+const textContent = ref('');
+const editingSlides = ref(false);
+const savingSlides = ref(false);
+const slideError = ref('');
+
+function startSlideEdit() {
+  editingSlides.value = true;
+  slideError.value = '';
+}
+function cancelSlideEdit() {
+  editingSlides.value = false;
+  void load();
+}
+async function saveSlideEdits() {
+  if (!props.path) return;
+  savingSlides.value = true;
+  slideError.value = '';
+  try {
+    const payload = slides.value.map((s) => ({
+      index: s.index,
+      shapes: (s.shapeTexts || []).map((t) => ({ shape: t.shape, text: t.text })),
+    }));
+    const r = await api.post('/office/save', { path: props.path, slides: payload });
+    if (!('data' in r)) { slideError.value = r.error || '保存失败'; return; }
+    editingSlides.value = false;
+    await load();
+  } catch (e: any) {
+    slideError.value = e?.message || '保存失败';
+  } finally {
+    savingSlides.value = false;
+  }
+}
+
+const { renderMarkdown } = useChat();
+const renderedMd = computed(() => (textContent.value ? renderMarkdown(textContent.value) : ''));
+
+const OFFICE_EXT = new Set(['.docx', '.xlsx', '.xlsm', '.pptx']);
+const MD_EXT = new Set(['.md', '.markdown']);
+const TEXT_EXT = new Set([
+  '.txt', '.log', '.json', '.yaml', '.yml', '.csv', '.tsv', '.ini', '.env',
+  '.ts', '.js', '.mjs', '.cjs', '.py', '.sh', '.css', '.html', '.xml', '.sql', '.toml',
+]);
 
 const activeSheetObj = computed(() => sheetTabs.value[activeSheet.value] || null);
 
@@ -180,6 +250,12 @@ defineExpose({ load, ext: () => extOf(props.path) });
   display: flex; flex-direction: column; gap: 18px; align-items: center;
   background: var(--color-bg);
 }
+.odv-slide-toolbar {
+  width: min(760px, 100%);
+  display: flex; align-items: center; gap: 8px;
+}
+.odv-slide-error { font-size: 12px; color: var(--color-danger); }
+.odv-slide-edit-row { width: 100%; }
 .odv-slide {
   width: min(760px, 100%); aspect-ratio: 16 / 9; padding: 34px 44px;
   background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px;

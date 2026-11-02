@@ -99,7 +99,6 @@ const commandItems = computed<PaletteItem[]>(() => {
   const q = query.value.trim().toLowerCase();
   const items: PaletteItem[] = [
     { key: 'cmd:new', type: 'command', title: '新建任务', desc: 'Ctrl+N', icon: Plus },
-    { key: 'cmd:office', type: 'command', title: '打开办公工作台', desc: '文件 / 文档 / AI', icon: Folder },
     { key: 'cmd:settings', type: 'command', title: '打开设置', desc: '设置', icon: Setting },
     { key: 'cmd:sidebar', type: 'command', title: '折叠/展开任务侧栏', desc: 'Ctrl+B', icon: Fold },
     { key: 'cmd:context', type: 'command', title: '开关右侧上下文栏', desc: 'Ctrl+J', icon: Expand },
@@ -187,10 +186,6 @@ function runCommand(key: string) {
   }
   if (key === 'cmd:settings') {
     void router.push('/settings');
-    return;
-  }
-  if (key === 'cmd:office') {
-    void router.push('/office');
     return;
   }
   if (key === 'cmd:sidebar') {

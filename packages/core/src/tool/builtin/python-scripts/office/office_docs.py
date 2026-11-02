@@ -121,6 +121,37 @@ def read_sheet(path: str) -> dict:
     return {"kind": "sheet", "sheets": sheets}
 
 
+def save_slides(path: str, payload: dict) -> None:
+    """按「幻灯片序号 + 形状序号」回写文字，保持版式/图片不动。"""
+    from pptx import Presentation
+
+    prs = Presentation(path)
+    for s in payload.get("slides") or []:
+        try:
+            idx = int(s.get("index")) - 1
+        except Exception:
+            continue
+        if idx < 0 or idx >= len(prs.slides):
+            continue
+        slide = prs.slides[idx]
+        shapes = list(slide.shapes)
+        for item in s.get("shapes") or []:
+            try:
+                si = int(item.get("shape"))
+            except Exception:
+                continue
+            if si < 0 or si >= len(shapes):
+                continue
+            shape = shapes[si]
+            try:
+                if not shape.has_text_frame:
+                    continue
+            except Exception:
+                continue
+            shape.text_frame.text = str(item.get("text") or "")
+    prs.save(path)
+
+
 def _cell_text(v) -> object:
     if v is None:
         return ""
@@ -142,13 +173,17 @@ def read_slides(path: str) -> dict:
         except Exception:
             title = ""
         texts = []
-        for shape in slide.shapes:
+        shape_texts = []
+        for idx, shape in enumerate(slide.shapes):
             try:
                 if not shape.has_text_frame:
                     continue
             except Exception:
                 continue
-            text = (shape.text_frame.text or "").strip()
+            raw = shape.text_frame.text or ""
+            text = raw.strip()
+            if text:
+                shape_texts.append({"shape": idx, "text": raw})
             if not text or text == title:
                 continue
             texts.append(text)
@@ -158,7 +193,7 @@ def read_slides(path: str) -> dict:
                 notes = (slide.notes_slide.notes_text_frame.text or "").strip()
         except Exception:
             notes = ""
-        slides.append({"index": i, "title": title, "texts": texts, "notes": notes})
+        slides.append({"index": i, "title": title, "texts": texts, "shapeTexts": shape_texts, "notes": notes})
     return {"kind": "slides", "slides": slides, "width": prs.slide_width, "height": prs.slide_height}
 
 
@@ -174,6 +209,10 @@ def main() -> None:
     pr = sub.add_parser("read")
     pr.add_argument("--path", required=True)
 
+    ps = sub.add_parser("save")
+    ps.add_argument("--path", required=True)
+    ps.add_argument("--json-file", required=True)
+
     args = ap.parse_args()
     try:
         if args.cmd == "create":
@@ -186,6 +225,16 @@ def main() -> None:
                 create_sheet(path, title)
             else:
                 create_slides(path, title)
+            print(json.dumps({"ok": True, "path": path}, ensure_ascii=False))
+            return
+
+        if args.cmd == "save":
+            path = os.path.abspath(args.path)
+            if not path.lower().endswith(".pptx"):
+                _fail("目前仅支持写回 .pptx")
+            with open(args.json_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            save_slides(path, payload)
             print(json.dumps({"ok": True, "path": path}, ensure_ascii=False))
             return
 

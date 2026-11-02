@@ -12,6 +12,7 @@
 //   GET  /api/office/export?path=...                                    → 文件流（下载）
 import { Router, Request, Response } from 'express';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { authMiddleware } from '../auth.js';
 import { getPythonScript, runPythonScript } from '@yan-zhi/core';
@@ -112,8 +113,39 @@ router.get('/content', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/export', (req: Request, res: Response) => {
+// POST /api/office/save  { path, slides: [{ index, shapes: [{ shape, text }] }] }
+// pptx 文字回写：只改指定形状的文本，版式/图片不动。
+router.post('/save', async (req: Request, res: Response) => {
   const userId = req.user!.userId;
+  const { path: p, slides } = (req.body || {}) as { path?: string; slides?: unknown };
+  if (!p || !Array.isArray(slides)) { res.status(400).json({ error: 'path 与 slides 为必填项' }); return; }
+  if (!isAllowedPathForUser(userId, p)) { res.status(403).json({ error: '路径不在允许范围内' }); return; }
+  if (path.extname(p).toLowerCase() !== '.pptx') { res.status(400).json({ error: '目前仅支持写回 .pptx' }); return; }
+  try {
+    if (!fs.statSync(p).isFile()) { res.status(404).json({ error: '文件不存在' }); return; }
+  } catch {
+    res.status(404).json({ error: '文件不存在' }); return;
+  }
+
+  const script = getPythonScript('office/office_docs.py');
+  if (!script) { res.status(501).json({ error: '办公文档脚本缺失（office/office_docs.py）' }); return; }
+  const tmpJson = path.join(os.tmpdir(), `yz_office_save_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+  try {
+    fs.writeFileSync(tmpJson, JSON.stringify({ slides }), 'utf8');
+    const r = await runPythonScript(script, ['save', '--path', p, '--json-file', tmpJson], { timeout: 60000 });
+    if (r.exitCode !== 0) {
+      const msg = (r.stderr || r.stdout || '').slice(0, 500);
+      res.status(500).json({ error: `保存失败：${msg}` }); return;
+    }
+    res.json({ data: { path: p } });
+  } catch (e: unknown) {
+    res.status(500).json({ error: `保存异常：${e instanceof Error ? e.message : String(e)}` });
+  } finally {
+    try { fs.rmSync(tmpJson, { force: true }); } catch { /* ignore */ }
+  }
+});
+
+router.get('/export', (req: Request, res: Response) => {  const userId = req.user!.userId;
   const p = String(req.query.path || '').trim();
   if (!p || p.length > 1000) { res.status(400).json({ error: 'path 为必填项' }); return; }
   if (!isAllowedPathForUser(userId, p)) { res.status(403).json({ error: '路径不在允许范围内' }); return; }
