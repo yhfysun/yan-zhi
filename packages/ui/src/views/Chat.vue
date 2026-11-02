@@ -34,6 +34,12 @@
         <ChatTopbar />
         <ChatMessageList />
         <ChatInputArea />
+        <!-- 办公模式 AI / 人工：右下角悬浮切换（与开发模式同一形态） -->
+        <LeadToggle
+          :model-value="officePanel === 'manual' ? 'human' : 'ai'"
+          mode="office"
+          @update:model-value="onOfficeLead"
+        />
       </div>
       <div v-if="contextSidebarOpen" class="rs-handle rs-handle-right" @mousedown="contextR.startDrag($event, 'right')"></div>
       <ChatContextSidebar />
@@ -49,9 +55,13 @@
 
 <script setup lang="ts">
 import { watch, onBeforeUnmount, nextTick, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import { Fold, Expand, FolderChecked } from '@element-plus/icons-vue';
 import { useChat } from '../composables/chat/useChat';
 import { useResizable } from '../composables/useResizable';
+import LeadToggle from '../components/workbench/LeadToggle.vue';
+import { officePanel, setOfficePanel } from '../stores/officeWorkbench';
+import type { LeadMode } from '../stores/mode';
 import ChatSidebar from '../components/chat/ChatSidebar.vue';
 import ChatTopbar from '../components/chat/ChatTopbar.vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
@@ -63,6 +73,17 @@ import ChatSkillCards from '../components/chat/ChatSkillCards.vue';
 import ChatDialogs from '../components/chat/ChatDialogs.vue';
 
 const { convCollapsed, drawerOpen, store, contextSidebarOpen, currentConvArchived, currentConv, archiveConv } = useChat();
+const router = useRouter();
+
+/** 办公模式：AI（聊天页）↔ 人工（工作台）；工作台的悬浮按钮走反向切换 */
+function onOfficeLead(v: LeadMode) {
+  if (v === 'human') {
+    setOfficePanel('manual');
+    void router.push('/office');
+  } else {
+    setOfficePanel('ai');
+  }
+}
 const sidebarR = useResizable('chat_sidebar', 280, 200, 460);
 const contextR = useResizable('chat_context', 286, 240, 480);
 const rightR = useResizable('chat_right', 480, 320, 1200);

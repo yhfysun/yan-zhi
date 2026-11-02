@@ -29,19 +29,21 @@ describe('P2-1 办公工作台骨架', () => {
     expect(ROUTER).toMatch(/'\/office': 'office'/);
   });
 
-  it('不再单独出「工作台」入口；入口收在办公模式聊天顶栏的 AI/人工 切换', () => {
+  it('不再单独出「工作台」入口；入口是右下角悬浮按钮（与开发模式同形态）', () => {
     expect(TOPBAR).not.toMatch(/to="\/office"/);
-    const CHAT_TOPBAR = strip(readRepo('packages/ui/src/components/chat/ChatTopbar.vue'));
-    expect(CHAT_TOPBAR).toMatch(/AI \/ 人工/);
-    expect(CHAT_TOPBAR).toMatch(/goManualPanel/);
-    expect(CHAT_TOPBAR).toMatch(/router\.push\('\/office'\)/);
+    const CHAT = strip(readRepo('packages/ui/src/views/Chat.vue'));
+    expect(CHAT).toMatch(/<LeadToggle/);
+    expect(CHAT).toMatch(/mode="office"/);
+    expect(CHAT).toMatch(/onOfficeLead/);
+    // 顶栏不再有 AI/人工 胶囊
+    expect(strip(readRepo('packages/ui/src/components/chat/ChatTopbar.vue'))).not.toMatch(/office-seg/);
   });
 
-  it('三栏：文件树 / 画布 / 人工窄条；AI 形态就是聊天页', () => {
+  it('三栏：文件树 / 画布；AI 形态就是聊天页', () => {
     expect(WORKBENCH).toMatch(/<WorkspaceFileTree/);
     expect(WORKBENCH).toMatch(/<OfficeDocumentView/);
     expect(WORKBENCH).toMatch(/<FilePreview/);
-    expect(WORKBENCH).toMatch(/wb-rail-label/);
+    expect(WORKBENCH).toMatch(/<LeadToggle/);
     // 工作台不再内嵌聊天：AI = /chat，人工 = 这里
     expect(WORKBENCH).not.toMatch(/<ChatMessageList \/>/);
     expect(WORKBENCH).not.toMatch(/<ChatInputArea \/>/);
@@ -55,9 +57,8 @@ describe('P2-1 办公工作台骨架', () => {
 });
 
 describe('P2-2 AI / 人工切换', () => {
-  it('人工模式是独立形态：窄条 + 切回 AI，不再内嵌聊天', () => {
-    expect(WORKBENCH).toMatch(/wb-rail-btn/);
-    expect(WORKBENCH).toMatch(/人工编辑/);
+  it('人工模式是独立形态：右下角悬浮按钮切回 AI', () => {
+    expect(WORKBENCH).toMatch(/<LeadToggle[^>]*mode="office"/);
     expect(WORKBENCH).toMatch(/function goAi/);
   });
 });

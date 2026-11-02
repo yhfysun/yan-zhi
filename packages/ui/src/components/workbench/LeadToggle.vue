@@ -40,15 +40,16 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: LeadMode): void;
 }>();
 
-/** 人工侧的名称与图标：开发=编辑模式，工作流=运行模式，店铺=工作台模式，运维/安全=命令模式 */
+/** 人工侧的名称与图标：开发=编辑模式，工作流=运行模式，店铺=工作台模式，办公=人工编辑，运维/安全=命令模式 */
 const humanLabel = computed(() =>
   props.mode === 'dev' ? '编辑模式'
     : props.mode === 'wf' ? '运行模式'
       : props.mode === 'shop' ? '工作台模式'
-        : '命令模式',
+        : props.mode === 'office' ? '人工编辑'
+          : '命令模式',
 );
 const humanIcon = computed(() =>
-  props.mode === 'dev' ? Monitor
+  props.mode === 'dev' || props.mode === 'office' ? Monitor
     : props.mode === 'wf' ? Connection
       : Grid,
 );

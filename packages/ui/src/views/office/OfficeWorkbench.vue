@@ -43,15 +43,10 @@
         <FilePreview v-if="useFilePreview" :file="{ name: fileName, path: selectedPath }" />
         <OfficeDocumentView v-else :path="selectedPath" />
       </div>
-    </section>
 
-    <!-- 右：人工模式窄条（AI 形态就是聊天页，不在此重复） -->
-    <aside class="wb-ai">
-      <button class="wb-rail-btn" type="button" title="切回 AI 助手" @click="goAi">
-        <el-icon :size="18"><ChatDotRound /></el-icon>
-      </button>
-      <div class="wb-rail-label">人工编辑</div>
-    </aside>
+      <!-- 人工 → AI：与开发模式同一形态的右下角悬浮按钮 -->
+      <LeadToggle :model-value="'human'" mode="office" @update:model-value="goAi" />
+    </section>
 
     <!-- 聊天共用的弹层：工作目录选择 / 技能卡 / 定时任务等（与聊天页同一套） -->
     <ChatDialogs />
@@ -63,10 +58,11 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { ChatDotRound, Download, Link, Files, Plus, FolderOpened, Refresh } from '@element-plus/icons-vue';
+import { Download, Link, Files, Plus, FolderOpened, Refresh } from '@element-plus/icons-vue';
 import WorkspaceFileTree from '../../components/office/WorkspaceFileTree.vue';
 import OfficeDocumentView from '../../components/office/OfficeDocumentView.vue';
 import FilePreview from '../../components/FilePreview.vue';
+import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import ChatDialogs from '../../components/chat/ChatDialogs.vue';
 import ChatSkillCards from '../../components/chat/ChatSkillCards.vue';
 import { useWorkspaceFiles } from '../../composables/office/useWorkspaceFiles';
@@ -196,36 +192,8 @@ function openLocal() {
 .wb-file-sub { font-size: 11px; color: var(--color-text-tertiary); white-space: nowrap; }
 .wb-main-actions { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
 .wb-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-
-/* ===== 右：人工模式窄条（AI 形态 = 聊天页） ===== */
-.wb-ai {
-  flex: 0 0 56px;
-  width: 56px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding-top: 12px;
-  border-left: 1px solid var(--color-border);
-  background: var(--color-bg);
-}
-.wb-rail-btn {
-  width: 34px; height: 34px;
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  display: grid; place-items: center;
-  background: var(--color-surface);
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition: color var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
-}
-.wb-rail-btn:hover { color: var(--color-primary); border-color: var(--color-primary); }
-.wb-rail-label {
-  writing-mode: vertical-rl;
-  font-size: 10.5px;
-  letter-spacing: 0.18em;
-  color: var(--color-text-tertiary);
-}
+/* 右下角悬浮的切换按钮（LeadToggle）以画布为定位基准 */
+.wb-main { position: relative; }
 
 /* ===== 空态：明确下一步 ===== */
 .wb-empty {
@@ -256,12 +224,5 @@ function openLocal() {
 @media (max-width: 1100px) {
   .office-wb { flex-direction: column; }
   .wb-tree { flex: 0 0 220px; width: 100%; border-right: none; border-bottom: 1px solid var(--color-border); }
-  .wb-ai {
-    flex: 0 0 52px; width: 100%;
-    flex-direction: row; justify-content: center; align-items: center;
-    padding: 0; gap: 10px;
-    border-left: none; border-top: 1px solid var(--color-border);
-  }
-  .wb-rail-label { writing-mode: horizontal-tb; }
 }
 </style>
