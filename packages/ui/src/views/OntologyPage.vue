@@ -226,6 +226,17 @@
       @adopt="onAdoptRelation"
     />
 
+    <el-dialog v-model="relationMapOpen" title="关系图 · 扇出风险" width="760px">
+      <OntologyRelationMap
+        :relations="form.relations.map((r) => ({ ...r, via: r.viaTable ? { table: r.viaTable, sourceColumn: r.viaSource, targetColumn: r.viaTarget } : undefined }))"
+        :current-code="form.code"
+        :names="ontologyNames"
+      />
+      <template #footer>
+        <el-button size="small" @click="relationMapOpen = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 中：编辑区 -->
     <div class="ont-mid">
       <div v-if="!form.id" class="ont-mid-empty">
@@ -448,7 +459,7 @@
           <!-- 关联关系：跨本体 JOIN 路径（N:N 经中间表展开两跳） -->
           <div class="ont-fgroup">
             <span>关联关系</span>
-            <small>对方本体须已发布；N:N 走中间表两跳。摘要全量拼入，编译 v1 只做单跳</small>
+            <small>对方本体须已发布；支持多跳（自动找最短连接路径），N:N 走中间表两跳</small>
           </div>
           <table class="ont-spec-table">
             <thead>
@@ -493,6 +504,7 @@
           <div class="ont-add-row">
             <el-button size="small" text :icon="Plus" @click="addRelation">+ 关联关系</el-button>
             <el-button size="small" text :disabled="!form.datasourceId || !sourceTable" @click="relationSuggestOpen = true">推断关联</el-button>
+            <el-button size="small" text :disabled="!form.relations.length" @click="relationMapOpen = true">关系图</el-button>
           </div>
 
           <!-- 查询意图（编译预览 / 试跑共用） -->
@@ -606,6 +618,7 @@ import CompileTrack, { type CompileStage } from '../components/CompileTrack.vue'
 import OntologyEnrichDialog from '../components/ontology/OntologyEnrichDialog.vue';
 import OntologyRelationSuggestDialog from '../components/ontology/OntologyRelationSuggestDialog.vue';
 import OntologyFieldTable from '../components/ontology/OntologyFieldTable.vue';
+import OntologyRelationMap from '../components/ontology/OntologyRelationMap.vue';
 import StdAttributeTree from '../components/StdAttributeTree.vue';
 import '../styles/data-workbench.css';
 import './datasources.css';
@@ -884,6 +897,14 @@ const sourceTable = computed(() => {
   return bare.toLowerCase();
 });
 const relationSuggestOpen = ref(false);
+const relationMapOpen = ref(false);
+/** code → 显示名（关系图节点标签；当前编辑中的本体用 form.name） */
+const ontologyNames = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {};
+  for (const o of list.value) map[o.code] = o.name;
+  if (form.code) map[form.code] = form.name || form.code;
+  return map;
+});
 
 /** 字段总览（P6.5）：角色/置信度/锁定；锁定默认取「描述非空」= 人工已确认 */
 function pickFields(kind: 'dimension' | 'time' | 'measure', arr: any[]): any[] {
