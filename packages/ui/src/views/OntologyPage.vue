@@ -18,6 +18,7 @@
           <el-button size="small" style="flex: 1" :icon="Coin" @click="openTableDialog">从表生成</el-button>
           <el-button size="small" style="flex: 1" :icon="Plus" @click="openSqlWizard">手写 SQL</el-button>
           <el-button size="small" style="flex: 0 0 auto" :icon="FolderAdd" title="新建本体包（可多级）" @click="createGroup()" />
+          <el-button size="small" style="flex: 0 0 auto" :icon="DataLine" title="本体健康度" @click="healthOpen = true" />
         </div>
       </div>
       <div class="ont-list" @drop="onDropToRoot" @dragover.prevent>
@@ -243,6 +244,8 @@
       :ontology-name="form.name"
       @published="onPublished"
     />
+
+    <OntologyHealthDialog v-model="healthOpen" />
 
     <!-- 中：编辑区 -->
     <div class="ont-mid">
@@ -654,7 +657,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Plus, Delete, MoreFilled, Coin, Collection, Folder, FolderAdd, Lock, EditPen } from '@element-plus/icons-vue';
+import { Search, Plus, Delete, MoreFilled, Coin, Collection, Folder, FolderAdd, Lock, EditPen, DataLine } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import CompileTrack, { type CompileStage } from '../components/CompileTrack.vue';
 import OntologyEnrichDialog from '../components/ontology/OntologyEnrichDialog.vue';
@@ -662,6 +665,7 @@ import OntologyRelationSuggestDialog from '../components/ontology/OntologyRelati
 import OntologyFieldTable from '../components/ontology/OntologyFieldTable.vue';
 import OntologyRelationMap from '../components/ontology/OntologyRelationMap.vue';
 import OntologyPublishDialog from '../components/ontology/OntologyPublishDialog.vue';
+import OntologyHealthDialog from '../components/ontology/OntologyHealthDialog.vue';
 import StdAttributeTree from '../components/StdAttributeTree.vue';
 import '../styles/data-workbench.css';
 import './datasources.css';
@@ -943,6 +947,7 @@ const relationSuggestOpen = ref(false);
 const relationMapOpen = ref(false);
 /** 发布预检弹层（P6.8） */
 const publishOpen = ref(false);
+const healthOpen = ref(false);
 async function onPublished(): Promise<void> {
   const id = form.id;
   await load(true);

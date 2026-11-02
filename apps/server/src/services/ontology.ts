@@ -346,8 +346,68 @@ export function deleteOntology(userId: string, id: string): void {
 }
 
 /** 发布：草稿对智能体不可见，发布即改取数口径（version 持久递增） */
-/** 发布快照：冻结口径，供预检 diff 与 24h 回滚 */
-function snapshotOf(row: OntologyRow): string {
+export interface OntologyHealthRow {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  fields: number;
+  described: number;
+  descriptionRate: number;
+  missingSamples: number;
+  missingSynonyms: number;
+  lowConfidence: number;
+}
+
+/** 本体健康度（P5.5）：描述覆盖率 / 缺样本值 / 缺同义词 / 低置信度字段 */
+export function ontologyHealth(userId: string, opts: { datasourceId?: string } = {}): {
+  rows: OntologyHealthRow[];
+  summary: { count: number; fields: number; described: number; descriptionRate: number; missingSamples: number; missingSynonyms: number; lowConfidence: number };
+} {
+  const rows = (
+    opts.datasourceId
+      ? db.prepare('SELECT * FROM ontology WHERE user_id = ? AND datasource_id = ?').all(userId, opts.datasourceId)
+      : db.prepare('SELECT * FROM ontology WHERE user_id = ?').all(userId)
+  ) as OntologyRow[];
+
+  const out: OntologyHealthRow[] = rows.map((row) => {
+    const fields = [
+      ...parseJsonList<any>(row.dimensions_json),
+      ...parseJsonList<any>(row.time_dimensions_json),
+      ...parseJsonList<any>(row.measures_json),
+    ].filter((f) => f && typeof f.name === 'string');
+    const described = fields.filter((f) => String(f.description || '').trim()).length;
+    return {
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      status: row.status,
+      fields: fields.length,
+      described,
+      descriptionRate: fields.length ? described / fields.length : 0,
+      missingSamples: fields.filter((f) => !Array.isArray(f.sampleValues) || !f.sampleValues.length).length,
+      missingSynonyms: fields.filter((f) => !Array.isArray(f.synonyms) || !f.synonyms.length).length,
+      lowConfidence: fields.filter((f) => typeof f.confidence === 'number' && f.confidence < 0.7).length,
+    };
+  });
+  const sum = (k: keyof OntologyHealthRow) => out.reduce((n, r) => n + Number(r[k] || 0), 0);
+  const fields = sum('fields');
+  const described = sum('described');
+  return {
+    rows: out.sort((a, b) => a.descriptionRate - b.descriptionRate || b.fields - a.fields),
+    summary: {
+      count: out.length,
+      fields,
+      described,
+      descriptionRate: fields ? described / fields : 0,
+      missingSamples: sum('missingSamples'),
+      missingSynonyms: sum('missingSynonyms'),
+      lowConfidence: sum('lowConfidence'),
+    },
+  };
+}
+
+/** 发布快照：冻结口径，供预检 diff 与 24h 回滚 */function snapshotOf(row: OntologyRow): string {
   return JSON.stringify({
     description: row.description || '',
     dimensions: parseJsonList<OntologyDimension>(row.dimensions_json),

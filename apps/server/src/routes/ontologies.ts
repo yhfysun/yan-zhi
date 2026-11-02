@@ -17,6 +17,7 @@ import {
   publishOntology,
   impactOntology,
   rollbackOntology,
+  ontologyHealth,
   tryRunOntology,
   updateOntology,
 } from '../services/ontology.js';
@@ -32,6 +33,15 @@ router.get('/', authMiddleware, (req: Request, res: Response) => {
     data: listOntologies(req.user!.userId, {
       datasourceId: (req.query.datasourceId as string) || undefined,
       keyword: (req.query.keyword as string) || undefined,
+    }),
+  });
+});
+
+// GET /api/ontologies/health —— 健康度：描述覆盖率/缺样本值/缺同义词/低置信度
+router.get('/health', authMiddleware, (req: Request, res: Response) => {
+  res.json({
+    data: ontologyHealth(req.user!.userId, {
+      datasourceId: (req.query.datasourceId as string) || undefined,
     }),
   });
 });
