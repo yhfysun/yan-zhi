@@ -51,7 +51,8 @@ import { verifySqli, verifyXss, verifySsrf, updateFindingStatus } from './sec-la
 // —— P3：基线与巡检（2026-10-17）——
 import { runBaseline, runTlsAudit, runHeadersAudit } from './sec-lab-tools/baseline.js';
 // 本机主机基线（2026-10-18）：补 baseline.ts 明确不覆盖的"主机侧"（账号策略/SMB/RDP/防火墙/SSH），只读
-import { runHostBaseline } from './sec-lab-tools/hostbaseline.js';
+import { runHostBaseline, runHostBaselineOverSsh } from './sec-lab-tools/hostbaseline.js';
+import { getSsh, loadConnections } from './ops-shell.js';
 import { runWatch, stopAllWatchers, type SelfCheckResult } from './sec-lab-tools/watch.js';
 import { runBrute } from './sec-lab-tools/brute.js';
 import { runAttackMap } from './sec-lab-tools/attackmap.js';
@@ -202,7 +203,7 @@ export const secLabManifest: PluginManifest = {
 
       // ── P3：基线与巡检（2026-10-17）────────────────────────────────────────
       { name: 'baseline', desc: '配置基线核查：响应头 + TLS + Cookie，按 owasp/cis/等保 出分（仅可远程核查子集）', usage: '/baseline <url> [--profile=owasp|cis|djbh]', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'baseline_scan', params: ['target'] },
-      { name: 'host-baseline', aliases: ['host_baseline'], desc: '本机主机基线（只读）：账号策略 / SMBv1 / RDP / UAC / Defender / 防火墙 / SSH / 审计服务，补远程核查不到的主机侧', usage: '/host-baseline', group: 'AUDIT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'host_baseline' },
+      { name: 'host-baseline', aliases: ['host_baseline'], desc: '主机基线（只读）：本机或经 ops-shell SSH 连接体检远端 Linux；账号/SSH/防火墙/审计/IP 转发', usage: '/host-baseline [--connection=连接名]', group: 'AUDIT', mode: 'sec', danger: 'P', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'host_baseline', params: ['connection'] },
       { name: 'tls-audit', aliases: ['tls_audit'], desc: 'TLS 审计：协议版本 / 加密套件 / 证书有效期与主体', usage: '/tls-audit <host[:port]>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'tls_audit', params: ['target'] },
       { name: 'headers-audit', aliases: ['headers_audit'], desc: 'HTTP 安全响应头审计（HSTS/CSP/XFO/nosniff/Referrer/Permissions）', usage: '/headers-audit <url>', group: 'AUDIT', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'headers_audit', params: ['target'] },
       { name: 'watch', desc: '定时巡检：start/stop/list/tick；自有资产（仓库路径 / 本机固定端口）跑体检并按指纹只报新增，其他目标 diff 新增端口/子域。进程内定时器，重启需重新 start（基线保留）', usage: '/watch <start|stop|list|tick> [target] [--intervalMin=30]', group: 'ASSET', mode: 'sec', danger: 'A', kind: 'tool', pluginId: SEC_LAB_ID, tool: 'watch', params: ['action', 'target'] },
@@ -1719,11 +1720,40 @@ function headersAuditTool(): BuiltInTool {
 function hostBaselineTool(): BuiltInTool {
   return {
     name: 'host_baseline',
-    description: '本机主机安全基线（只读体检，不改任何设置）：Windows 查密码策略/账户锁定/SMBv1/RDP/UAC/Defender/防火墙；Linux 查 SSH 配置/shadow 权限/防火墙/auditd/IP 转发。补 /baseline 远程核查不到的主机侧配置。',
-    inputSchema: { type: 'object', properties: {} },
+    description: '主机安全基线（只读体检，不改任何设置）：不带 connection = 体检本机；带 connection（ops-shell 已保存的 SSH 连接 id/名称）= 经 SSH 体检远端 Linux 主机（固定只读命令，复用同一套判定）。',
+    inputSchema: {
+      type: 'object',
+      properties: { connection: { type: 'string', description: 'ops-shell 连接 id 或名称（可选；给了就体检远端主机）' } },
+      required: [],
+    },
     async execute(args) {
-      // 无目标工具：仍然过 withGuard（同一套审计），只是不要求 scope
-      return withGuard('host_baseline', args, async () => runHostBaseline());
+      const ref = String((args as any).connection || '').trim();
+      if (!ref) {
+        // 无目标工具：仍然过 withGuard（同一套审计），只是不要求 scope
+        return withGuard('host_baseline', args, async () => runHostBaseline());
+      }
+      const conns = await loadConnections();
+      const conn = conns.find((c) => c.id === ref || c.name === ref);
+      if (!conn) {
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: `连接不存在：${ref}（先用 conn_list 查看 ops-shell 已保存的连接）` }],
+        } as McpCallResult;
+      }
+      // 远端体检是主动连接：把连接 host 作为 target 交给 guard 做授权范围校验
+      return withGuard('host_baseline', { ...(args as any), target: conn.host }, async () => {
+        const client = await getSsh(conn);
+        const exec = (cmd: string): Promise<string> => new Promise((resolve, reject) => {
+          client.exec(cmd, (err, stream) => {
+            if (err) { reject(err); return; }
+            let out = '';
+            stream.on('data', (d: Buffer) => { out += d.toString(); });
+            stream.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+            stream.on('close', () => resolve(out));
+          });
+        });
+        return runHostBaselineOverSsh(exec, `${conn.name || conn.host}(${conn.host})`);
+      });
     },
   };
 }

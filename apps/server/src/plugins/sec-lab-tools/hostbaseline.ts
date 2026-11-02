@@ -212,6 +212,51 @@ export function assessHostBaseline(raw: HostRaw): { checks: HostCheck[]; finding
 
 // ---------- 采集（只读固定命令） ----------
 
+/**
+ * 远端主机基线（P3 ops-shell 联动）：通过已保存的 SSH 连接执行同一份**只读固定命令**，
+ * 采集 raw 后复用 assessHostBaseline —— 判定逻辑与本地完全同源。
+ * exec 由调用方注入（ssh2 client.exec），测试可用假实现。
+ */
+export async function runHostBaselineOverSsh(
+  exec: (cmd: string) => Promise<string>,
+  label: string,
+): Promise<ToolOutput> {
+  const safe = async (cmd: string): Promise<string> => {
+    try { return await exec(cmd); } catch { return ''; }
+  };
+  const [sshd, shadowMode, fwFirewalld, fwUfw, auditd, ipForward] = await Promise.all([
+    safe('cat /etc/ssh/sshd_config 2>/dev/null'),
+    safe('stat -c %a /etc/shadow 2>/dev/null'),
+    safe('systemctl is-active firewalld 2>/dev/null'),
+    safe('ufw status 2>/dev/null'),
+    safe('systemctl is-active auditd 2>/dev/null'),
+    safe('sysctl -n net.ipv4.ip_forward 2>/dev/null'),
+  ]);
+
+  // 远端统一按 Linux 判定（复用同一套 assessHostBaseline）
+  const raw: HostRaw = { platform: 'linux' };
+  if (sshd.trim()) raw.sshd = sshd;
+  if (shadowMode.trim()) raw.shadowMode = shadowMode.trim();
+  if (fwFirewalld.trim() === 'active' || /status:\s*active/i.test(fwUfw)) raw.firewallActive = 'active';
+  else if (fwFirewalld.trim() || fwUfw.trim()) raw.firewallActive = 'inactive';
+  if (auditd.trim()) raw.auditdActive = auditd.trim();
+  if (ipForward.trim()) raw.ipForward = ipForward.trim();
+
+  const { checks, findings, score } = assessHostBaseline(raw);
+  const okN = checks.filter((c) => c.status === 'ok').length;
+  const failN = checks.filter((c) => c.status === 'fail').length;
+  const skipN = checks.filter((c) => c.status === 'skip').length;
+  return {
+    tool: 'host_baseline',
+    target: label,
+    risk: 'active',
+    summary: `远端主机基线 ${label} 得分 ${score}/100　通过 ${okN}　失败 ${failN}　无法核查 ${skipN}（经 ops-shell SSH 连接执行只读命令，未做任何修改）`,
+    findings,
+    raw: { platform: raw.platform, target: label, score, checks },
+  };
+}
+
+
 export async function runHostBaseline(): Promise<ToolOutput> {
   const raw: HostRaw = { platform: process.platform };
 

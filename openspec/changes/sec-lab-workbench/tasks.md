@@ -103,6 +103,7 @@
 
 - [x] 多用户交战隔离
   → 2026-11-02：sec-lab 存储按用户隔离 —— `AsyncLocalStorage` 传身份（工具执行用 `ctx.userId`、HTTP 路由用 `req.user`），`scopedStorage` 在 **multi 模式**给 key 加 `::u::<userId>` 后缀；guest/单机沿用原始 key（存量数据不受影响）。3 例测试（互相看不到、guest 原 key、无上下文不隔离）。
-- [ ] 与 ops-shell 联动（SSH 连接 → 主机侧基线核查）
+- [x] 与 ops-shell 联动（SSH 连接 → 主机侧基线核查）
+  → 2026-11-02：`host_baseline` 新增 `connection` 参数（ops-shell 连接 id/名称）：经 `getSsh` 执行固定只读命令（sshd_config、shadow 权限、firewalld/ufw、auditd、ip_forward），复用 `assessHostBaseline` 同一套判定；连接 host 作为 target 过授权范围/审计闸门。3 例注入 exec 测试（失败项/全 skip/合规 100 分）。
 - [x] 报告走 doyz 通道导出 Word / PDF
   → 2026-11-02：`POST /plugin/sec-lab/report/export` —— markdown/Word 走随包 doyz（from-md → export docx，返回 base64）；**PDF 不假装生成二进制**：doyz 不产 PDF，返回可打印 HTML 由前端打印另存。SecConsole 报告区新增「导出 Word / 导出 PDF」；3 例路由测试（markdown/非法格式/未知作业）。
