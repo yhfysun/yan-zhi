@@ -322,6 +322,16 @@
             >
               <el-icon :size="13" :class="{ 'cp-spin': asrRunning }"><Microphone /></el-icon>
             </button>
+            <!-- 智能剪口播（P2-5）：识别选中片段语音 → 删静音/语气词 → 自动切段，
+                 字幕/画中画等图层随剪辑一起前移。可 Ctrl+Z 撤销。 -->
+            <button
+              class="cp-mini"
+              :title="talkingCutting ? '正在识别并剪口播…（本地 whisper.cpp）' : '智能剪口播：识别选中片段的语音，自动切掉静音与语气词（字幕/画中画会随剪辑一起前移，可撤销）'"
+              :disabled="talkingCutting || !selectedClipId"
+              @click="talkingCutSelected"
+            >
+              <el-icon :size="13" :class="{ 'cp-spin': talkingCutting }"><Crop /></el-icon>
+            </button>
             <!-- 字幕转配音（P1-8）：把选中字幕读成配音，按字幕时间落进音频轨 -->
             <button
               class="cp-mini"
@@ -1678,7 +1688,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
-  ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, DArrowLeft, Delete,
+  ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, Crop, DArrowLeft, Delete,
   Close, EditPen, FolderOpened, Headset, List, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, Star, VideoCamera, VideoPlay, View, WarningFilled,
 } from '@element-plus/icons-vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
@@ -5048,6 +5058,8 @@ async function addTextAtPlayhead() {
 //   服务端比前端清楚"到底缺二进制还是模型、该放哪个目录"。
 const asrRunning = ref(false);
 const asrModel = ref('small');   // base 快 / small 准（默认）/ medium 最准但慢
+/** 智能剪口播（P2-5）进行中 */
+const talkingCutting = ref(false);
 /** 字幕转配音（P1-8）：TTS 合成中 */
 const ttsRunning = ref(false);
 
@@ -5177,6 +5189,43 @@ async function runAsrOnSelected() {
     note(e instanceof Error ? e.message : String(e));
   } finally {
     asrRunning.value = false;
+    pendingLabel.value = '';
+  }
+}
+
+// ===== 智能剪口播（P2-5）=====
+/**
+ * 识别选中片段的口播，自动删静音/语气词并切段；字幕/画中画等图层在服务端随剪辑前移。
+ * ★ 为什么一步到位（不先弹确认）：切完可用 Ctrl+Z 整条撤销，而"先看计划再确认"要再跑一遍
+ *   识别（几十秒）才看得到结果 —— 对高频操作不划算。服务端保留 apply=false 的口子。
+ */
+async function talkingCutSelected() {
+  const clip = selectedClip.value;
+  if (!clip) { note('先在时间轴上选中一个口播片段'); return; }
+  if (!convId.value) { note('还没有会话'); return; }
+  talkingCutting.value = true;
+  pendingLabel.value = '智能剪口播';
+  try {
+    type CutResp = {
+      ok?: boolean; applied?: boolean; note?: string; error?: string;
+      cuts?: unknown[]; removedSec?: number; segments?: number; droppedLayers?: number;
+    };
+    const r = await api.post<CutResp>('/plugin/clip-mode/talking-cut', {
+      conversationId: convId.value, clipId: clip.id, model: asrModel.value,
+    }) as { data?: CutResp; error?: string };
+    if ('error' in r && r.error) { note(String(r.error)); return; }
+    const d = r.data;
+    if (!d?.ok) { note(d?.error || '智能剪口播失败'); return; }
+    if (!d.applied) { note(d.note || '没有检测到可剪的静音'); return; }
+    // 片段被切成多段，原 id 已不存在 → 清掉选中，避免属性面板指向幽灵片段
+    selectedClipId.value = '';
+    await reloadAll();
+    const dropped = d.droppedLayers ? `，随剪辑移除 ${d.droppedLayers} 个图层` : '';
+    note(`智能剪口播：切掉 ${d.cuts?.length ?? 0} 处静音/语气词，共 ${Number(d.removedSec ?? 0).toFixed(1)}s，分成 ${d.segments ?? 0} 段${dropped}（可 Ctrl+Z 撤销）`);
+  } catch (e: unknown) {
+    note(`智能剪口播失败：${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    talkingCutting.value = false;
     pendingLabel.value = '';
   }
 }

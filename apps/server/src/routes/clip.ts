@@ -19,7 +19,7 @@ import {
 import { readClipProject, writeClipProject, clipProjectPath as clipProjectPathOf } from '../services/clip-store.js';
 import { summarizeProject, type ClipProject } from '../services/clip-project.js';
 import { listAllRecipes } from '../services/clip-recipe-store.js';
-import { parseProbeJson, probeArgs } from '../services/clip-render.js';
+import { parseProbeJson, probeArgs, segmentDuration } from '../services/clip-render.js';
 import { renderPreviewFrame, locateTimeline } from '../services/clip-preview.js';
 import { ensureSegmentProxy } from '../services/clip-proxy.js';
 import { isProjectSourcePath } from '../services/clip-layer-media.js';
@@ -35,11 +35,10 @@ import {
 } from '../services/clip-render-queue.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import { executeApiTool } from '../mcp/api-tool-executor.js';
+import { transcribeClipAudio } from '../services/clip-asr.js';
 import {
-  resolveWhisper, ensureWav16k, runWhisperToSrt,
-  WHISPER_MODELS, DEFAULT_WHISPER_MODEL,
-} from '../mcp/whisper-runtime.js';
-import { parseSrt } from '../mcp/subtitle-style.js';
+  planTalkingCut, splitSegmentByKeeps, sourceCutsToFilm, rippleTimelineLayers, TALKING_CUT_DEFAULTS,
+} from '../services/clip-talking-cut.js';
 
 /** 跑 ffmpeg（复用既有 exec-cmd 的 runCmd，与其它媒体链路同一实现）。 */
 async function runFfmpeg(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stderr: string }> {
@@ -395,61 +394,160 @@ router.post('/library/sticker', async (req: Request, res: Response) => {
 router.post('/asr', async (req: Request, res: Response) => {
   const conversationId = String(req.body?.conversationId || '').trim();
   const inputRaw = String(req.body?.path || '').trim();
-  const model = String(req.body?.model || '').trim() || DEFAULT_WHISPER_MODEL;
-  const language = String(req.body?.language || '').trim() || 'zh';
   if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
   if (!inputRaw) return res.status(400).json({ error: 'path 必填（音频或视频文件路径）' });
-  if (!WHISPER_MODELS[model]) {
-    return res.status(400).json({ error: `未知模型 ${model}，可选：${Object.keys(WHISPER_MODELS).join(' / ')}` });
-  }
   const conv = db.prepare('SELECT id FROM conversation WHERE id = ?').get(conversationId) as { id?: string } | undefined;
   if (!conv) return res.status(404).json({ error: '会话不存在' });
 
   const input = path.isAbsolute(inputRaw) ? inputRaw : path.resolve(inputRaw);
   if (!fs.existsSync(input)) return res.status(404).json({ error: `文件不存在：${input}` });
 
-  // 依赖分诊：四类缺失各自给不同指引（前端原样展示，不让用户猜）
-  const wh = await resolveWhisper(model);
-  if (!wh.ok) {
-    return res.status(503).json({
-      error: wh.error,
-      need: 'whisper',
-      model, installDir: wh.installDir, modelsDir: wh.modelsDir,
-      // 前端据此给出「去装」的动作（调 whisper_install 走对话，或手动放置）
-      hint: '可在对话里让剪辑师调用 whisper_install 安装，或按上面目录手动放置。',
-    });
+  // 识别编排（依赖分诊 + 临时文件清理）在 services/clip-asr：与智能剪口播共用同一份
+  const r = await transcribeClipAudio({ input, model: req.body?.model, language: req.body?.language });
+  if (!r.ok) return res.status(r.status || 500).json({ error: r.error, ...(r.extra || {}) });
+  // ★ 返回形态对齐 /clip/probe 的 `{data: ...}`（前端 apiFetch 解包后 r.data 即数组本身）
+  //   model 用**实际使用**的档位（请求 small 但本机只有 base 时会自动降级，如实回报）
+  return res.json({ data: r.cues, ok: true, model: r.model, requestedModel: r.requestedModel, language: r.language, source: r.source });
+});
+
+// POST /api/plugin/clip-mode/talking-cut —— 智能剪口播（P2-5）
+//
+// body: { conversationId, clipId, minSilence?, padding?, removeFillers?, model?, language?, apply? }
+//
+// 流程：按片段范围截取音轨 → 本地 whisper 识别 → 规划静音/语气词删除 → 切成多个保留片段 →
+// 把字幕/画中画/贴纸/音频/特效层按删除量整体前移（ripple）→ 落盘。
+// ★ 只处理恒定倍速、原声未关闭、无段级关键帧的片段（否则切分会错位/重复，直接拒绝并说明原因）。
+// ★ apply=false 只出计划不落盘（给未来做预览弹窗留的口子；当前 UI 直接 apply）。
+router.post('/talking-cut', async (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const clipId = String(req.body?.clipId || '').trim();
+  if (!conversationId || !clipId) return res.status(400).json({ error: 'conversationId 与 clipId 为必填项' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const project = readClipProject(conversationId);
+  if (!project) return res.status(404).json({ error: '工程不存在' });
+  const idx = project.clips.findIndex((c) => c.id === clipId);
+  if (idx < 0) return res.status(404).json({ error: `片段 ${clipId} 不存在` });
+  const seg = project.clips[idx];
+
+  // 先做"切了会错"的守卫（在跑 ASR 之前，别让用户等几十秒才看到报错）
+  if (seg.speedCurve?.length) {
+    return res.status(409).json({ error: '该片段用了曲线变速：时间映射非线性，切开后音画会错位。请先改成恒定速度' });
   }
+  if (seg.kenburns || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(seg.file)) {
+    return res.status(409).json({ error: '图片/定格片段没有口播音频，无法智能剪口播' });
+  }
+  if (seg.audioFile) {
+    return res.status(409).json({ error: '该片段换成配音文件了：配音与画面时间轴的口径未验证，暂不支持自动剪口播' });
+  }
+  if (seg.keepOriginalAudio === false) {
+    return res.status(409).json({ error: '该片段已关闭原声：没有可识别的语音（如需按配音剪，请先处理配音轨）' });
+  }
+  if (seg.keyframes?.length || seg.mask?.keyframes?.length) {
+    return res.status(409).json({ error: '该片段带段级/蒙版关键帧：切开后动画会在每段重复。请先清除关键帧再剪' });
+  }
+
   const ff = await resolveFfmpeg();
   if (!ff.ok) return res.status(503).json({ error: ff.error, need: 'ffmpeg', hint: '可调用 media_install_ffmpeg。' });
 
-  const wav = await ensureWav16k(input, ff.ffmpeg);
-  if (!wav.ok) return res.status(500).json({ error: `音频准备失败：${wav.error || '未知错误'}` });
-
-  try {
-    const workPrefix = path.join(path.dirname(wav.wav), 'out');
-    const run = await runWhisperToSrt({
-      bin: wh.bin, model: wh.model, wav: wav.wav, outPrefix: workPrefix, language,
-    });
-    if (!run.ok) {
-      return res.status(500).json({ error: run.error || 'whisper 执行失败' });
+  // 片段在成片时间轴上的起点 + 源文件真实时长（定位靠它们，猜错会 ripple 到错误位置）
+  const durations = await probeProjectDurations(ff.ffprobe, project);
+  let clipStart = 0;
+  for (let i = 0; i < idx; i++) {
+    const prev = project.clips[i];
+    const raw = durations[prev.id] ?? durations[prev.file] ?? 0;
+    const d = prev.kenburns ? (prev.kenburns.duration || 0) : (raw > 0 ? segmentDuration(prev, raw) : 0);
+    if (!(d > 0)) {
+      return res.status(409).json({ error: `前序片段 ${i + 1} 时长未知（素材可能被移动），无法计算时间轴位置` });
     }
-    const content = fs.readFileSync(run.srt, 'utf8');
-    const cues = parseSrt(content).map((c) => ({ text: c.text, start: c.start, end: c.end }));
-    if (!cues.length) {
-      return res.status(422).json({
-        error: '未检测到可用语音内容（识别结果为空）',
-        hint: `可能原因：① 音频没有说话声；② 语言参数与实际不符（当前 ${language}）；③ 音频过短。可换 medium 模型重试。`,
-      });
-    }
-    // ★ 返回形态对齐 /clip/probe 的 `{data: ...}`（前端 apiFetch 解包后 r.data 即数组本身）
-    //   model 用**实际使用**的档位（请求 small 但本机只有 base 时会自动降级，如实回报）
-    return res.json({ data: cues, ok: true, model: wh.modelName || model, requestedModel: model, language, source: wh.source });
-  } catch (e: unknown) {
-    return res.status(500).json({ error: `转写异常：${e instanceof Error ? e.message : String(e)}` });
-  } finally {
-    // 临时音频清理失败不该让请求失败
-    try { fs.rmSync(path.dirname(wav.wav), { recursive: true, force: true }); } catch { /* ignore */ }
+    clipStart += d;
   }
+  const sourceDur = durations[seg.id] ?? durations[seg.file] ?? 0;
+  const trimStart = Math.max(0, Number(seg.trimStart ?? 0));
+  const trimEnd = Number(seg.trimEnd ?? sourceDur);
+  if (!(trimEnd > trimStart + 0.1)) {
+    return res.status(409).json({ error: '无法确定该片段的裁剪范围（素材时长未知或区间为空）' });
+  }
+
+  // 只转写片段范围（源文件时间）—— 长素材不整条跑
+  const asr = await transcribeClipAudio({
+    input: seg.file,
+    model: req.body?.model,
+    language: req.body?.language,
+    ss: trimStart,
+    duration: trimEnd - trimStart,
+  });
+  if (!asr.ok) {
+    return res.status(asr.status || 500).json({ error: asr.error, ...(asr.extra || {}) });
+  }
+  // whisper 时间是**截取区间内**的相对时间 → 加回 trimStart 变回源文件时间
+  const cues = (asr.cues || []).map((c) => ({
+    text: c.text,
+    start: Number((c.start + trimStart).toFixed(3)),
+    end: Number((c.end + trimStart).toFixed(3)),
+  }));
+
+  const plan = planTalkingCut(
+    cues,
+    { start: trimStart, end: trimEnd },
+    {
+      ...(req.body?.minSilence != null ? { minSilence: Number(req.body.minSilence) } : {}),
+      ...(req.body?.padding != null ? { padding: Number(req.body.padding) } : {}),
+      ...(req.body?.removeFillers != null ? { removeFillers: req.body.removeFillers !== false } : {}),
+    },
+  );
+  if (!plan.ok) return res.status(422).json({ error: plan.error, cues: cues.length });
+
+  const base = {
+    ok: true,
+    cues: cues.length,
+    cuts: plan.cuts,
+    keptSec: plan.speechSec,
+    removedSec: plan.removedSec,
+    model: asr.model,
+  };
+  if (!plan.cuts.length) {
+    const minSilence = Number(req.body?.minSilence ?? TALKING_CUT_DEFAULTS.minSilence);
+    return res.json({
+      ...base, applied: false,
+      note: `没有可剪的静音（阈值 ${minSilence}s，检测到 ${plan.keeps.length} 段连续语音）`,
+    });
+  }
+  if (req.body?.apply === false) {
+    return res.json({ ...base, applied: false, keeps: plan.keeps });
+  }
+
+  // 新片段 id：保证与工程内已有 id 不撞
+  const used = new Set(project.clips.map((c) => c.id));
+  const makeId = (i: number) => {
+    const baseId = `${seg.id}-k${i + 1}`;
+    let id = baseId;
+    let n = 1;
+    while (used.has(id)) id = `${baseId}-${n++}`;
+    used.add(id);
+    return id;
+  };
+  const split = splitSegmentByKeeps(seg, plan.keeps, makeId);
+  if (!split.ok) return res.status(409).json({ error: split.error });
+
+  // 删除区间换算到成片时间，搬动图层（字幕/画中画/贴纸/音频/特效）
+  const removals = sourceCutsToFilm(plan.cuts, {
+    trimStart,
+    speed: seg.speed ?? 1,
+    clipStartFilm: clipStart,
+  });
+  project.clips.splice(idx, 1, ...split.segments);
+  const ripple = rippleTimelineLayers(project, removals);
+  project.updatedAt = Date.now();
+  writeClipProject(conversationId, project);
+
+  return res.json({
+    ...base,
+    applied: true,
+    segments: split.segments.length,
+    shiftedLayers: ripple.shifted,
+    droppedLayers: ripple.dropped,
+    note: `切掉 ${plan.cuts.length} 处（静音/语气词），共 ${plan.removedSec.toFixed(1)}s；片段分成 ${split.segments.length} 段`,
+  });
 });
 
 // POST /api/plugin/clip-mode/tts —— 字幕转配音（文本 → 定时音频层）

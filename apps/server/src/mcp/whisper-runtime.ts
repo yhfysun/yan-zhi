@@ -505,20 +505,32 @@ export async function ensureWav16k(
   inputPath: string,
   ffmpegPath: string,
   outDir?: string,
+  /**
+   * 只抽取某一段（源文件时间）。不给 = 整条。
+   * ★ 智能剪口播（P2-5）只需要片段范围内的语音：整条源文件转写又慢、还会产生
+   *   大量片段外的 cue，长素材上体验很差。
+   */
+  opts?: { ss?: number; duration?: number },
 ): Promise<{ ok: boolean; wav: string; error?: string }> {
   const dir = outDir || path.join(tmpdir(), `yz-whisper-wav-${Date.now()}`);
   const wav = path.join(dir, 'audio16k.wav');
   try {
     await fsp.mkdir(dir, { recursive: true });
-    const r = await runCmd(ffmpegPath, [
-      '-y', '-hide_banner', '-loglevel', 'error',
+    const args: string[] = ['-y', '-hide_banner', '-loglevel', 'error'];
+    const ss = Number(opts?.ss ?? 0);
+    const dur = Number(opts?.duration ?? 0);
+    // 输入侧 seek/裁长（放在 -i 之前）：只解码需要的区间
+    if (ss > 0.001) args.push('-ss', ss.toFixed(3));
+    if (dur > 0.001) args.push('-t', dur.toFixed(3));
+    args.push(
       '-i', inputPath,
       '-vn',                    // 丢视频轨（视频输入时只留音频）
       '-ac', '1',               // 单声道
       '-ar', '16000',           // 16kHz（whisper.cpp 要求）
       '-c:a', 'pcm_s16le',
       wav,
-    ], { timeoutMs: 600000, maxBuffer: 16 * 1024 * 1024 });
+    );
+    const r = await runCmd(ffmpegPath, args, { timeoutMs: 600000, maxBuffer: 16 * 1024 * 1024 });
     if (!r.ok) return { ok: false, wav, error: `ffmpeg 抽音轨失败：${r.stderr || r.error}` };
     if (!existsSync(wav)) return { ok: false, wav, error: 'ffmpeg 未产出音频文件' };
     return { ok: true, wav };

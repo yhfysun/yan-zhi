@@ -773,3 +773,28 @@ describe('ClipWorkbench · P1-10 矢量图层实时合成', () => {
     expect(VEC).toContain('buildTextCss');
   });
 });
+
+/**
+ * P2-5 智能剪口播：静态守门。
+ * ★ 对应硬约束：只走服务端管线（ASR+切片+ripple 同一出口）、切完清理失效选中并刷新工程。
+ */
+describe('ClipWorkbench · P2-5 智能剪口播', () => {
+  it('工具栏入口存在且调用 talkingCutSelected', () => {
+    expect(SRC).toMatch(/@click="talkingCutSelected"/);
+    expect(SRC).toContain('智能剪口播');
+  });
+
+  it('★ 请求走 /talking-cut，带 clipId 与本地模型档位', () => {
+    const body = fnBody('talkingCutSelected');
+    expect(body).toContain('/plugin/clip-mode/talking-cut');
+    expect(body).toContain('clipId: clip.id');
+    expect(body).toContain('model: asrModel.value');
+    expect(body).toContain('conversationId: convId.value');
+  });
+
+  it('★ 切完清掉失效选中并重新读取工程（原 id 已不存在）', () => {
+    const body = fnBody('talkingCutSelected');
+    expect(body).toContain("selectedClipId.value = ''");
+    expect(body).toContain('await reloadAll()');
+  });
+});
