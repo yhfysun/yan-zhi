@@ -31,6 +31,8 @@ describe('OpsMonitorCenter', () => {
     expect(MONITOR).toContain('loadPct');
     expect(MONITOR).toContain('memPct');
     expect(MONITOR).toContain('diskPct');
+    expect(MONITOR).toContain('监听端口');
+    expect(MONITOR).toContain('HTTP 检查');
     expect(MONITOR).toContain('el-switch');
   });
 });

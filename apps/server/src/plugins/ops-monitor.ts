@@ -1,4 +1,4 @@
-export type OpsAlertMetric = 'load' | 'memory' | 'disk' | 'collector';
+export type OpsAlertMetric = 'load' | 'memory' | 'disk' | 'collector' | 'port' | 'http';
 export type OpsAlertSeverity = 'warning' | 'critical';
 export type OpsAlertStatus = 'active' | 'acknowledged' | 'resolved';
 
@@ -9,6 +9,8 @@ export interface OpsMonitorConfig {
   loadPct: number;
   memPct: number;
   diskPct: number;
+  ports: number[];
+  httpChecks: Array<{ name: string; url: string; expectedStatus: number }>;
   updatedAt: number;
 }
 
@@ -59,6 +61,43 @@ const clamp = (value: unknown, min: number, max: number, fallback: number): numb
   return Math.min(max, Math.max(min, Math.round(n * 10) / 10));
 };
 
+function safeCheckUrl(raw: unknown): string {
+  const value = String(raw || '').trim();
+  if (!value || value.length > 500) return '';
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    if (url.username || url.password) return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizePorts(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw
+    .map((value) => Math.floor(Number(value)))
+    .filter((port) => Number.isInteger(port) && port >= 1 && port <= 65535))]
+    .slice(0, 20);
+}
+
+function normalizeHttpChecks(raw: unknown): OpsMonitorConfig['httpChecks'] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const value = item as Record<string, unknown>;
+    const url = safeCheckUrl(value.url);
+    if (!url) return [];
+    const expected = Math.floor(Number(value.expectedStatus || 200));
+    return [{
+      name: String(value.name || url).trim().slice(0, 60),
+      url,
+      expectedStatus: expected >= 100 && expected <= 599 ? expected : 200,
+    }];
+  }).slice(0, 10);
+}
+
 export function normalizeMonitorConfig(
   connectionId: string,
   raw: Partial<OpsMonitorConfig> = {},
@@ -71,6 +110,8 @@ export function normalizeMonitorConfig(
     loadPct: clamp(raw.loadPct, 1, 500, DEFAULT_MONITOR_CONFIG.loadPct),
     memPct: clamp(raw.memPct, 1, 100, DEFAULT_MONITOR_CONFIG.memPct),
     diskPct: clamp(raw.diskPct, 1, 100, DEFAULT_MONITOR_CONFIG.diskPct),
+    ports: normalizePorts(raw.ports),
+    httpChecks: normalizeHttpChecks(raw.httpChecks),
     updatedAt: Number(raw.updatedAt) || now,
   };
 }
@@ -147,6 +188,65 @@ export function collectorFailureSignal(connectionId: string, error: string): Ops
     title: '指标采集失败',
     detail: error.slice(0, 300),
   };
+}
+
+export function parseListeningPorts(output: string): number[] {
+  const ports = new Set<number>();
+  for (const line of output.split(/\r?\n/)) {
+    for (const match of line.matchAll(/:(\d{1,5})(?:\s|$)/g)) {
+      const port = Number(match[1]);
+      if (port >= 1 && port <= 65535) ports.add(port);
+    }
+  }
+  return [...ports].sort((a, b) => a - b);
+}
+
+export function buildPortSignals(listeningPorts: number[], config: OpsMonitorConfig): OpsAlertSignal[] {
+  if (!config.enabled) return [];
+  const listening = new Set(listeningPorts);
+  return config.ports
+    .filter((port) => !listening.has(port))
+    .map((port) => ({
+      fingerprint: `${config.connectionId}:port:${port}`,
+      connectionId: config.connectionId,
+      metric: 'port' as const,
+      severity: 'critical' as const,
+      value: 0,
+      threshold: port,
+      title: `端口 ${port} 未监听`,
+      detail: `本机未监听 TCP ${port}`,
+    }));
+}
+
+export interface OpsHttpCheckResult {
+  name: string;
+  url: string;
+  status?: number;
+  error?: string;
+}
+
+export function buildHttpSignals(
+  results: OpsHttpCheckResult[],
+  config: OpsMonitorConfig,
+): OpsAlertSignal[] {
+  if (!config.enabled) return [];
+  const byUrl = new Map(results.map((result) => [result.url, result]));
+  return config.httpChecks.flatMap((check) => {
+    const result = byUrl.get(check.url);
+    if (result?.status === check.expectedStatus) return [];
+    return [{
+      fingerprint: `${config.connectionId}:http:${check.url}`,
+      connectionId: config.connectionId,
+      metric: 'http' as const,
+      severity: 'critical' as const,
+      value: result?.status || 0,
+      threshold: check.expectedStatus,
+      title: `HTTP 检查失败：${check.name}`,
+      detail: result?.error
+        ? `${check.url}：${result.error}`
+        : `${check.url} 返回 ${result?.status ?? '无响应'}，预期 ${check.expectedStatus}`,
+    }];
+  });
 }
 
 export function reconcileAlerts(

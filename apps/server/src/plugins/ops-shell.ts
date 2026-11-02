@@ -35,8 +35,9 @@ import {
   type HostKeyRecord, type KnownHostMode, type VerifyOutcome,
 } from './ops-known-hosts.js';
 import {
-  buildMonitorSignals, collectorFailureSignal, normalizeMonitorConfig, parseMonitorOutput,
-  type OpsMonitorConfig,
+  buildHttpSignals, buildMonitorSignals, buildPortSignals, collectorFailureSignal, normalizeMonitorConfig,
+  parseListeningPorts, parseMonitorOutput,
+  type OpsAlertSignal, type OpsHttpCheckResult, type OpsMonitorConfig,
 } from './ops-monitor.js';
 import { createOpsMonitorStore } from './ops-monitor-store.js';
 const logger = createLogger('ops-shell');
@@ -158,6 +159,10 @@ const MONITOR_COMMAND = [
   "printf '__YZ_DISK__\\n'; df -P / | tail -1",
 ].join('; ');
 
+function shellQuoteSafe(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 export async function loadConnections(): Promise<StoredConnection[]> {
   if (!pluginStorage) return [];
   const rows = await pluginStorage.get<StoredConnection[]>('connections');
@@ -185,6 +190,42 @@ export interface OpsMonitorCycleResult {
   checked: number;
   sampled: number;
   failed: number;
+}
+
+async function collectServiceSignals(
+  conn: StoredConnection,
+  config: OpsMonitorConfig,
+): Promise<OpsAlertSignal[]> {
+  const signals: OpsAlertSignal[] = [];
+  if (config.ports.length) {
+    const result = await execOnConnection(conn, 'ss -lnt 2>/dev/null || netstat -lnt 2>/dev/null', 15000);
+    if (result.code === 0) {
+      signals.push(...buildPortSignals(parseListeningPorts(result.stdout), config));
+    } else {
+      signals.push({
+        fingerprint: `${conn.id}:port-check`,
+        connectionId: conn.id,
+        metric: 'port',
+        severity: 'critical',
+        value: 0,
+        threshold: 0,
+        title: '端口检查失败',
+        detail: result.stderr || `exit ${result.code}`,
+      });
+    }
+  }
+  const httpResults: OpsHttpCheckResult[] = await Promise.all(config.httpChecks.map(async (check) => {
+    const command = `curl -sS -o /dev/null -w '%{http_code}' --max-time 5 --connect-timeout 3 ${shellQuoteSafe(check.url)}`;
+    const result = await execOnConnection(conn, command, 10000);
+    const status = Number(result.stdout.trim());
+    return {
+      ...check,
+      status: result.code === 0 && Number.isFinite(status) ? status : undefined,
+      error: result.code === 0 ? undefined : (result.stderr || `exit ${result.code}`),
+    };
+  }));
+  signals.push(...buildHttpSignals(httpResults, config));
+  return signals;
 }
 
 export async function runOpsMonitorCycle(
@@ -217,7 +258,13 @@ export async function runOpsMonitorCycle(
         sample.connectionId = conn.id;
         sample.sampledAt = now;
         monitorStore.recordSample(sample);
-        monitorStore.reconcileAlerts(conn.id, conn.name, buildMonitorSignals(sample, config), now);
+        const serviceSignals = await collectServiceSignals(conn, config);
+        monitorStore.reconcileAlerts(
+          conn.id,
+          conn.name,
+          [...buildMonitorSignals(sample, config), ...serviceSignals],
+          now,
+        );
         sampled++;
       } catch (e) {
         monitorStore.reconcileAlerts(

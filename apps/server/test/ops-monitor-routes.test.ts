@@ -103,14 +103,21 @@ describe('ops-shell monitor routes', () => {
       loadPct: 70,
       memPct: 80,
       diskPct: 75,
+      ports: [22, 8080],
+      httpChecks: [{ name: 'health', url: 'http://127.0.0.1:8080/health', expectedStatus: 200 }],
     });
     expect(saved.statusCode).toBe(200);
-    expect((saved.body as any).data).toMatchObject({ connectionId: 'c1', loadPct: 70, memPct: 80 });
+    expect((saved.body as any).data).toMatchObject({
+      connectionId: 'c1', loadPct: 70, memPct: 80, ports: [22, 8080],
+    });
 
     const overview = await call('GET', '/monitor/overview');
     expect(overview.statusCode).toBe(200);
     expect((overview.body as any).data.connections[0].config).toMatchObject({
       enabled: false, intervalSec: 30, diskPct: 75,
+    });
+    expect((overview.body as any).data.connections[0].config.httpChecks[0]).toMatchObject({
+      name: 'health', expectedStatus: 200,
     });
   });
 

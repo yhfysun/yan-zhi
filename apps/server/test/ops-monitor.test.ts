@@ -8,7 +8,10 @@ import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   buildMonitorSignals,
+  buildHttpSignals,
+  buildPortSignals,
   normalizeMonitorConfig,
+  parseListeningPorts,
   parseMonitorOutput,
   reconcileAlerts,
   type OpsAlertEvent,
@@ -61,6 +64,32 @@ describe('monitor · 指标解析与阈值', () => {
       ['memory', 'warning'],
       ['disk', 'warning'],
     ]);
+  });
+
+  it('解析监听端口，并只对配置中未监听端口告警', () => {
+    const ports = parseListeningPorts(`LISTEN 0 128 0.0.0.0:22 0.0.0.0:*
+LISTEN 0 128 *:443 *:*
+LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*`);
+    expect(ports).toEqual([22, 443, 8080]);
+    const config = normalizeMonitorConfig('conn-1', { enabled: true, ports: [22, 3306, 8080] });
+    expect(buildPortSignals(ports, config).map((signal) => signal.fingerprint)).toEqual(['conn-1:port:3306']);
+  });
+
+  it('HTTP 状态不等于配置值时产生独立事件', () => {
+    const config = normalizeMonitorConfig('conn-1', {
+      enabled: true,
+      httpChecks: [
+        { name: 'api', url: 'http://127.0.0.1:8080/health', expectedStatus: 200 },
+        { name: 'web', url: 'https://example.com/', expectedStatus: 302 },
+      ],
+    });
+    const signals = buildHttpSignals([
+      { name: 'api', url: 'http://127.0.0.1:8080/health', status: 503 },
+      { name: 'web', url: 'https://example.com/', status: 302 },
+    ], config);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({ metric: 'http', severity: 'critical' });
+    expect(signals[0].fingerprint).toContain('/health');
   });
 });
 

@@ -21,6 +21,15 @@ export interface MonitorDatabase {
 
 const sampleLifetimeMs = 7 * 24 * 60 * 60 * 1000;
 
+function parseJsonArray(raw: unknown): unknown[] {
+  try {
+    const parsed = JSON.parse(String(raw || '[]'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export function createOpsMonitorStore(database: MonitorDatabase) {
   const ensureSchema = () => {
     database.exec(`
@@ -31,6 +40,8 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
         load_pct REAL NOT NULL DEFAULT 80,
         mem_pct REAL NOT NULL DEFAULT 90,
         disk_pct REAL NOT NULL DEFAULT 85,
+        ports_json TEXT NOT NULL DEFAULT '[]',
+        http_checks_json TEXT NOT NULL DEFAULT '[]',
         updated_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS ops_metric_sample (
@@ -73,19 +84,27 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
       CREATE INDEX IF NOT EXISTS idx_ops_alert_resolved
         ON ops_alert_event(status, resolved_at);
     `);
+    for (const sql of [
+      "ALTER TABLE ops_monitor_config ADD COLUMN ports_json TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE ops_monitor_config ADD COLUMN http_checks_json TEXT NOT NULL DEFAULT '[]'",
+    ]) {
+      try { database.exec(sql); } catch { /* 列已存在 */ }
+    }
   };
 
   const saveConfig = (config: OpsMonitorConfig) => {
     database.prepare(`
       INSERT INTO ops_monitor_config
-        (connection_id, enabled, interval_sec, load_pct, mem_pct, disk_pct, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (connection_id, enabled, interval_sec, load_pct, mem_pct, disk_pct, ports_json, http_checks_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(connection_id) DO UPDATE SET
         enabled=excluded.enabled,
         interval_sec=excluded.interval_sec,
         load_pct=excluded.load_pct,
         mem_pct=excluded.mem_pct,
         disk_pct=excluded.disk_pct,
+        ports_json=excluded.ports_json,
+        http_checks_json=excluded.http_checks_json,
         updated_at=excluded.updated_at
     `).run(
       config.connectionId,
@@ -94,6 +113,8 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
       config.loadPct,
       config.memPct,
       config.diskPct,
+      JSON.stringify(config.ports || []),
+      JSON.stringify(config.httpChecks || []),
       config.updatedAt,
     );
     if (!config.enabled) {
@@ -112,6 +133,8 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
       loadPct: row.load_pct,
       memPct: row.mem_pct,
       diskPct: row.disk_pct,
+      ports: parseJsonArray(row.ports_json) as number[],
+      httpChecks: parseJsonArray(row.http_checks_json) as OpsMonitorConfig['httpChecks'],
       updatedAt: row.updated_at,
     }, row.updated_at) : null;
   };
@@ -124,6 +147,8 @@ export function createOpsMonitorStore(database: MonitorDatabase) {
       loadPct: row.load_pct,
       memPct: row.mem_pct,
       diskPct: row.disk_pct,
+      ports: parseJsonArray(row.ports_json) as number[],
+      httpChecks: parseJsonArray(row.http_checks_json) as OpsMonitorConfig['httpChecks'],
       updatedAt: row.updated_at,
     }, row.updated_at));
   };

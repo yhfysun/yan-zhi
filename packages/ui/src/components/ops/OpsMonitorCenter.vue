@@ -40,6 +40,14 @@
           <span>磁盘阈值（%）</span>
           <el-input-number v-model="config.diskPct" :min="1" :max="100" :step="5" size="small" controls-position="right" />
         </label>
+        <label class="omc-wide">
+          <span>监听端口</span>
+          <el-input v-model="portsText" size="small" placeholder="22, 443, 8080" />
+        </label>
+        <label class="omc-wide">
+          <span>HTTP 检查</span>
+          <el-input v-model="httpChecksText" type="textarea" :rows="3" size="small" placeholder="api|http://127.0.0.1:8080/health|200" />
+        </label>
       </div>
 
       <div class="omc-actions">
@@ -121,6 +129,8 @@ interface MonitorConfig {
   loadPct: number;
   memPct: number;
   diskPct: number;
+  ports: number[];
+  httpChecks: Array<{ name: string; url: string; expectedStatus: number }>;
   updatedAt: number;
 }
 
@@ -137,7 +147,7 @@ interface MetricSample {
 interface AlertEvent {
   id: string;
   connectionName: string;
-  metric: 'load' | 'memory' | 'disk' | 'collector';
+  metric: 'load' | 'memory' | 'disk' | 'collector' | 'port' | 'http';
   severity: 'warning' | 'critical';
   status: 'active' | 'acknowledged' | 'resolved';
   title: string;
@@ -169,6 +179,8 @@ const running = ref(false);
 const ackingId = ref('');
 const error = ref('');
 const alertFilter = ref<'open' | 'all'>('open');
+const portsText = ref('');
+const httpChecksText = ref('');
 let poll: (() => void) | null = null;
 
 const monitorConnections = computed(() => props.connections.filter((conn) => conn.type !== 'database'));
@@ -178,7 +190,8 @@ const alerts = computed(() => overview.value.alerts);
 const activeCount = computed(() => overview.value.activeCount);
 const acknowledgedCount = computed(() => overview.value.acknowledgedCount);
 const config = ref<MonitorConfig>({
-  connectionId: '', enabled: false, intervalSec: 60, loadPct: 80, memPct: 90, diskPct: 85, updatedAt: 0,
+  connectionId: '', enabled: false, intervalSec: 60, loadPct: 80, memPct: 90, diskPct: 85,
+  ports: [], httpChecks: [], updatedAt: 0,
 });
 
 function applyConfig(): void {
@@ -192,8 +205,14 @@ function applyConfig(): void {
         loadPct: 80,
         memPct: 90,
         diskPct: 85,
+        ports: [],
+        httpChecks: [],
         updatedAt: Date.now(),
       };
+  portsText.value = (config.value.ports || []).join(', ');
+  httpChecksText.value = (config.value.httpChecks || [])
+    .map((check) => `${check.name}|${check.url}|${check.expectedStatus}`)
+    .join('\n');
 }
 
 async function load(): Promise<void> {
@@ -223,6 +242,17 @@ function formatTime(timestamp: number): string {
 
 async function save(): Promise<void> {
   if (!selectedId.value) return;
+  const ports = [...new Set(portsText.value.split(/[\s,，]+/).map(Number)
+    .filter((port) => Number.isInteger(port) && port >= 1 && port <= 65535))];
+  const httpChecks = httpChecksText.value.split(/\r?\n/).flatMap((line) => {
+    const [name, url, status] = line.split('|').map((part) => part.trim());
+    if (!url) return [];
+    return [{
+      name: name || url,
+      url,
+      expectedStatus: Number(status) || 200,
+    }];
+  });
   saving.value = true;
   try {
     const result = await api.put<MonitorConfig>(`/plugin/ops-shell/monitor/config/${selectedId.value}`, {
@@ -231,12 +261,18 @@ async function save(): Promise<void> {
       loadPct: config.value.loadPct,
       memPct: config.value.memPct,
       diskPct: config.value.diskPct,
+      ports,
+      httpChecks,
     });
     if ('error' in result) {
       ElMessage.error(result.error);
       return;
     }
     config.value = { ...result.data };
+    portsText.value = (result.data.ports || []).join(', ');
+    httpChecksText.value = (result.data.httpChecks || [])
+      .map((check) => `${check.name}|${check.url}|${check.expectedStatus}`)
+      .join('\n');
     await load();
   } finally {
     saving.value = false;
@@ -306,6 +342,7 @@ onUnmounted(() => {
 .omc-switch { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
 .omc-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .omc-fields label { min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--color-text-secondary); }
+.omc-wide { grid-column: 1 / -1; }
 .omc-fields :deep(.el-input-number) { width: 100%; }
 .omc-actions { display: flex; gap: 8px; }
 .omc-latest { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
