@@ -101,6 +101,14 @@
 /* 手写 SQL 向导：预览结果表 */
 .wiz-preview { max-height: 260px; overflow: auto; border: 1px solid var(--glass-border); border-radius: 8px; }
 
+/* 零数据引导（P6.14）：本体数为 0 时的三步说明，替代空表单 */
+.ont-guide { max-width: 560px; margin: 0 auto; padding: 28px 24px; text-align: left; }
+.ont-guide h3 { margin: 0 0 8px; font-size: 18px; }
+.ont-guide p { margin: 0 0 14px; font-size: 13px; color: var(--color-text-secondary); line-height: 1.7; }
+.ont-guide ol { margin: 0 0 18px; padding-left: 20px; font-size: 13px; line-height: 1.9; color: var(--color-text-secondary); }
+.ont-guide ol b { color: var(--color-text); font-weight: 600; }
+.ont-guide-actions { display: flex; gap: 8px; }
+
 /* 左栏双 Tab：本体 / 标准属性 */
 .ont-left-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .ont-left-tab {

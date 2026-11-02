@@ -88,10 +88,13 @@
 
 ## P6 UI 设计落地（对齐 ui-design.md + ui-prototype.html）
 
-- [ ] 6.1 `packages/ui/src/styles/data-workbench.css`：落地设计令牌（表面/状态/语义角色色/`--void*` 深色仪器面板/三字体角色），深色模式下 `--void*` 提亮以保住与背景的层级差
-- [ ] 6.2 `CompileTrack.vue` 编译轨道组件（**全局可复用**的多阶段指示器，结构同步与 AI 富化流程复用同一语言）
+- [x] 6.1 `packages/ui/src/styles/data-workbench.css`：落地设计令牌（表面/状态/语义角色色/`--void*` 深色仪器面板/三字体角色），深色模式下 `--void*` 提亮以保住与背景的层级差
+  → 2026-11-02 核实：令牌文件已存在（.dw-root 作用域，--dw-* 前缀，含 --void/--void-2 与角色色）。
+- [x] 6.2 `CompileTrack.vue` 编译轨道组件（**全局可复用**的多阶段指示器，结构同步与 AI 富化流程复用同一语言）
+  → 2026-11-02 核实：`components/CompileTrack.vue` 已存在并用于本体页编译预览。
 - [ ] 6.3 `DataSourceList.vue` + `DataSourceForm.vue`：类型按语族分 3 组（分组标题写明 JOIN 能力差异）、四种连接态、**失败态错误码折叠诊断**、新建表单弱化为白底+左侧品牌竖线
 - [ ] 6.4 `OntologyWorkbench.vue` 三栏骨架 + 5 子页签（带计数徽标）；语义页分「标识/语义/物理」三段，同义词改 chip 输入
+  → 2026-11-02：三栏骨架已由 `OntologyPage.vue` 承载（左树/中编辑/右编译），未拆独立 OntologyWorkbench 与 5 子页签徽标。
 - [ ] 6.5 `OntologyFieldTable.vue`：角色徽标 + 置信度列（<0.70 浅黄底且禁止发布）+ 锁图标（locked 不被同步覆盖）
 - [ ] 6.6 `OntologyRelationMap.vue` SVG 关系图（不引图库）+ 关系表 + **扇出风险警示卡**
 - [ ] 6.7 源文件态/派生产物视觉区分：YAML 用 `--void-2` + `源文件 · 可改`；编译 SQL 用 `--void` + `派生 · 只读`（防止用户改错地方）
@@ -101,5 +104,6 @@
 - [ ] 6.11 `DataResultPanel.vue` 注册为 `PreviewTab` 新 kind：本体来源标注 + 过滤器 chip 条 + 迷你趋势图 + 分页 + 底部「导出 CSV / Python 分析 / 生成报告」三出口
 - [ ] 6.12 SettingsDrawer 新增 `data-sources` / `ontology` / `std-attribute` 三个 section（**不往 SideNav 平铺**，沿用 2026-09-03 精简约定）
 - [ ] 6.13 中英混排标题字形断层：为中文标题单独声明 `PingFang SC` 600 字重
-- [ ] 6.14 **零数据引导态**：本体数为 0 时中栏不显示空表单，改显示「从数据源同步 → AI 生成草稿 → 你只需复核」三步引导（对应 ui-design.md §5 开放问题 1）
+- [x] 6.14 **零数据引导态**：本体数为 0 时中栏不显示空表单，改显示「从数据源同步 → AI 生成草稿 → 你只需复核」三步引导（对应 ui-design.md §5 开放问题 1）
+  → 2026-11-02：`OntologyPage.vue` 中栏空态改为三步引导（同步数据源 → 从表生成 → 补口径/AI 富化），带「从表生成 / 手写 SQL」入口；样式 `ontology.css .ont-guide`。
 - [ ] 6.15 无障碍与响应式：焦点环（`:focus-visible` 2px 品牌色）、表格键盘导航、<1280px 时标准属性 def 列换行策略

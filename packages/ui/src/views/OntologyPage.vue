@@ -228,7 +228,23 @@
 
     <!-- 中：编辑区 -->
     <div class="ont-mid">
-      <div v-if="!form.id" class="ont-mid-empty">从左侧选择一个本体，或点「新建」</div>
+      <div v-if="!form.id" class="ont-mid-empty">
+        <!-- 零数据引导（P6.14）：本体数为 0 时不摆空表单，给「同步 → 生成 → 补口径」三步 -->
+        <div v-if="!loading && !list.length" class="ont-guide">
+          <h3 class="dw-display">还没有本体</h3>
+          <p>三步开始：同步数据源结构 → 选表生成本体 → 补业务口径并发布。</p>
+          <ol>
+            <li><b>同步数据源</b>：设置 → 数据源，测试连接并拉取库表结构（内置项目库已自动同步）。</li>
+            <li><b>从表生成</b>：数值列自动成为度量、日期时间列为时间维度，其余为维度。</li>
+            <li><b>补口径</b>：编辑描述/同义词；不确定时点「AI 富化」，采纳草稿后发布。</li>
+          </ol>
+          <div class="ont-guide-actions">
+            <el-button size="small" type="primary" :icon="Coin" @click="openTableDialog">从表生成</el-button>
+            <el-button size="small" :icon="Plus" @click="openSqlWizard">手写 SQL</el-button>
+          </div>
+        </div>
+        <template v-else>从左侧选择一个本体，或点「新建」</template>
+      </div>
       <template v-else>
         <div class="ont-mid-head">
           <div>
