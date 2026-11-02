@@ -15,7 +15,8 @@ import {
   rebuildMulticamCuts, rebuildMulticamGroup, multicamSlotCount, makeMulticamGroup,
   beatTimesToBoundaries, computeBeatBoundaries, validateSlotBoundaries,
   normalizeMulticamBoundaries, applyMulticamBoundaries,
-  MULTICAM_DEFAULT_SWITCH_SEC,
+  insertMulticamBoundary, removeMulticamBoundary,
+  MULTICAM_DEFAULT_SWITCH_SEC, MULTICAM_MAX_BOUNDARIES,
 } from '../src/services/clip-multicam.js';
 import type { MulticamAngle, MulticamCut } from '../src/services/clip-multicam.js';
 import type { ClipProject, MulticamGroup } from '../src/services/clip-project.js';
@@ -842,11 +843,11 @@ describe('applyMulticamBoundaries · 服务路径', () => {
     if (explicit.ok) expect(explicit.project.multicamGroups?.[0].slotAngles).toEqual([1, 0, 2, 1]);
   });
 
-  it('切点数量与原组段数不一致 → 可读错误（本次不支持增删切点），不改工程', () => {
+  it('一次增删超过 1 个切点（批量）→ 可读错误，不改工程', () => {
     const before = makeProject();
-    const r = applyMulticamBoundaries(before, 'g1', [3, 6]);
+    const r = applyMulticamBoundaries(before, 'g1', [1, 2.5, 4, 6, 8]);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain('不支持增删切点');
+    if (!r.ok) expect(r.error).toContain('一次只支持增删一个切点');
     expect(before.multicamGroups?.[0].slotBoundariesSec).toEqual([2, 5, 8]);
   });
 
@@ -867,5 +868,177 @@ describe('applyMulticamBoundaries · 服务路径', () => {
     if (!missing.ok) expect(missing.error).toContain('不存在');
     const empty = applyMulticamBoundaries(before, 'g1', []);
     expect(empty.ok).toBe(false);
+  });
+});
+
+// ===== 切点增删：纯函数 + 与原地重建串联 =====
+
+describe('insertMulticamBoundary · 加切点', () => {
+  it('在最长的槽位中点插入；新槽位机位 = 左侧 +1（取模）', () => {
+    // 槽位 [0,2] / [2,5] / [5,10]：最长是最后一段，中点 7.5
+    const r = insertMulticamBoundary([2, 5], [0, 1, 2], 10, 3);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([2, 5, 7.5]);
+    expect(r.slotAngles).toEqual([0, 1, 2, 0]); // 左槽机位 2 → (2+1)%3 = 0
+    expect(r.note).toContain('最长一段');
+  });
+
+  it('最长段不在末尾时插在中间；机位 +1 回绕', () => {
+    // 槽位 [0,3] / [3,8] / [8,10]：最长是中间 [3,8]，中点 5.5
+    const r = insertMulticamBoundary([3, 8], [1, 1, 0], 10, 2);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([3, 5.5, 8]);
+    expect(r.slotAngles).toEqual([1, 1, 0, 0]); // 左槽机位 1 → (1+1)%2 = 0
+  });
+
+  it('等间隔组（无切点）→ 在整段中点插一个切点', () => {
+    const r = insertMulticamBoundary([], [0], 10, 2);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([5]);
+    expect(r.slotAngles).toEqual([0, 1]);
+  });
+
+  it('组时长过短 → 可读错误', () => {
+    const r = insertMulticamBoundary([], [0], 0.4, 2);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('组时长过短');
+  });
+
+  it('切点数量上限 → 可读错误', () => {
+    const many = Array.from({ length: MULTICAM_MAX_BOUNDARIES }, (_, i) =>
+      Number((0.3 + i * 0.01).toFixed(3)));
+    const r = insertMulticamBoundary(many, [0], 100, 2);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('上限');
+  });
+
+  it('最长段太窄、中点被 normalize 丢弃 → 报错（不静默少加）', () => {
+    const r = insertMulticamBoundary([0.5, 0.8], [0, 1, 2], 1.2, 3);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('无法再插入切点');
+  });
+
+  it('结果经 normalize 后仍合法（严格递增、贴边/最小间隔均满足）', () => {
+    const r = insertMulticamBoundary([1, 4], [0, 1, 2], 9, 3);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = normalizeMulticamBoundaries(r.boundaries, 9);
+    expect(v.ok).toBe(true);
+    if (v.ok) expect(v.boundaries).toEqual(r.boundaries);
+    for (let i = 1; i < r.boundaries.length; i++) {
+      expect(r.boundaries[i] - r.boundaries[i - 1]).toBeGreaterThanOrEqual(0.5 - 1e-9);
+    }
+    expect(r.slotAngles).toHaveLength(r.boundaries.length + 1);
+  });
+});
+
+describe('removeMulticamBoundary · 删切点', () => {
+  it('删除第 index 个切点，合并时保留左侧槽位机位', () => {
+    // 槽位 [0,2] [2,5] [5,10]，机位 [0,1,2]；删切点 1（5s）→ 保留左槽（机位1），丢掉右槽（机位2）
+    const r = removeMulticamBoundary([2, 5], [0, 1, 2], 1);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([2]);
+    expect(r.slotAngles).toEqual([0, 1]);
+  });
+
+  it('删除第一个切点：保留第 1 段的机位', () => {
+    const r = removeMulticamBoundary([2, 5], [2, 0, 1], 0);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([5]);
+    expect(r.slotAngles).toEqual([2, 1]);
+  });
+
+  it('索引越界 → 可读错误', () => {
+    const r = removeMulticamBoundary([2, 5], [0, 1, 2], 2);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('不存在');
+    expect(removeMulticamBoundary([2, 5], [0, 1, 2], -1).ok).toBe(false);
+    expect(removeMulticamBoundary([2, 5], [0, 1, 2], 0.5).ok).toBe(false);
+  });
+
+  it('只剩一个槽位（没有切点）→ 报错', () => {
+    const r = removeMulticamBoundary([], [0], 0);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('只剩一个槽位');
+  });
+
+  it('至少保留一个切点（再删组内只剩一个槽位）→ 报错', () => {
+    const r = removeMulticamBoundary([3], [0, 1], 0);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('至少');
+  });
+
+  it('槽位数量与切点数不匹配 → 报错', () => {
+    const r = removeMulticamBoundary([2, 5], [0, 1], 0);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('不一致');
+  });
+});
+
+describe('applyMulticamBoundaries · 增删切点串联重建', () => {
+  function makeProject(): ClipProject {
+    return {
+      ...createEmptyProject('t'),
+      clips: [
+        { id: 'pre', file: 'p.mp4', trimStart: 0, trimEnd: 2 },
+        { id: 'mc1', file: 'a.mp4', trimStart: 0, trimEnd: 2 },
+        { id: 'mc2', file: 'b.mp4', trimStart: 2, trimEnd: 5 },
+        { id: 'mc3', file: 'c.mp4', trimStart: 5, trimEnd: 8 },
+        { id: 'mc4', file: 'a.mp4', trimStart: 8, trimEnd: 10.5 },
+        { id: 'post', file: 'q.mp4', trimStart: 0, trimEnd: 4 },
+      ],
+      layers: [{ id: 't1', kind: 'text', start: 0, end: 20, track: 1, transform: {} }],
+      multicamGroups: [groupFixture({ slotBoundariesSec: [2, 5, 8] })],
+    };
+  }
+  const totalOf = (p: ClipProject) => p.clips.reduce((s, c) => s + ((c.trimEnd ?? 0) - (c.trimStart ?? 0)), 0);
+
+  it('★ 加切点：段数 +1、新段发新 id、原 id 按位置复用、组时长与其他内容不变', () => {
+    const before = makeProject();
+    // 最长槽位 [8,10.5] 中点 9.25；左槽机位 0 + 1 = 机位 1（b.mp4）
+    const r = applyMulticamBoundaries(before, 'g1', [2, 5, 8, 9.25], [0, 1, 2, 0, 1]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([2, 5, 8, 9.25]);
+    expect(r.segments).toBe(5);
+    const after = r.project;
+    const ids = after.clips.map((c) => c.id);
+    expect(ids.slice(0, 5)).toEqual(['pre', 'mc1', 'mc2', 'mc3', 'mc4']);
+    expect(ids[5]).not.toBe('post'); // 新段拿到新 id
+    expect(ids[6]).toBe('post');
+    expect(after.clips.slice(1, 6).map((c) => [c.trimStart, c.trimEnd])).toEqual([
+      [1.5, 3.5], [5.5, 8.5], [5, 8], [9.5, 10.75], [12.75, 14],
+    ]);
+    expect(after.clips[5]).toMatchObject({ file: 'b.mp4', label: '机位2' });
+    expect(totalOf(after)).toBeCloseTo(totalOf(before), 6);
+    expect(after.clips[0]).toEqual(before.clips[0]);
+    expect(after.layers).toBe(before.layers);
+    expect(after.multicamGroups?.[0].slotAngles).toEqual([0, 1, 2, 0, 1]);
+    expect(after.multicamGroups?.[0].clipIds).toHaveLength(5);
+  });
+
+  it('★ 删切点：段数 -1、合并保留左槽片段 id、原右槽片段消失、组时长不变', () => {
+    const before = makeProject();
+    // 删切点 0（2s）：槽位 0 [0,2] 与槽位 1 [2,5] 合并，保留左槽机位 0
+    const r = applyMulticamBoundaries(before, 'g1', [5, 8], [0, 2, 0]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.segments).toBe(3);
+    const after = r.project;
+    expect(after.clips.map((c) => c.id)).toEqual(['pre', 'mc1', 'mc3', 'mc4', 'post']);
+    expect(after.clips.slice(1, 4).map((c) => c.file)).toEqual(['a.mp4', 'c.mp4', 'a.mp4']);
+    expect(after.clips.slice(1, 4).map((c) => [c.trimStart, c.trimEnd])).toEqual([
+      [1.5, 6.5], [5, 8], [9.5, 12],
+    ]);
+    expect(totalOf(after)).toBeCloseTo(totalOf(before), 6);
+    expect(after.clips[0]).toEqual(before.clips[0]);
+    expect(after.layers).toBe(before.layers);
+    expect(after.multicamGroups?.[0].slotAngles).toEqual([0, 2, 0]);
+    expect(after.multicamGroups?.[0].clipIds).toEqual(['mc1', 'mc3', 'mc4']);
   });
 });

@@ -43,6 +43,8 @@ export const MULTICAM_BEAT_EDGE_SEC = 0.25;
 export const MULTICAM_BEAT_MIN_GAP_SEC = 0.5;
 /** 跟节拍：有效切点少于这个数就回退等间隔（至少要有 2 个切点 = 3 段）。 */
 export const MULTICAM_BEAT_MIN_CUTS = 2;
+/** 单组切点数量上限：再密就几乎每段都贴着最小间隔，没有可剪意义。 */
+export const MULTICAM_MAX_BOUNDARIES = 200;
 
 /** 切换方式：MVP 两种都按 order 依次轮换（保留字段是为了后续差异化，不额外引入行为）。 */
 export type MulticamSwitchMode = 'every' | 'alternate';
@@ -753,10 +755,20 @@ export type MulticamRebuildResult =
  *   这样时间轴选中态/图层引用不会因为一次切换全部失效。
  * ★ 组时长不变 → 主轨总时长与所有字幕/画中画/音频层的时间都无需顺延。
  */
+export interface RebuildMulticamGroupOptions {
+  /**
+   * 与规划出的段一一对应的目标 id；`null` = 该段是新插入的，需要生成新 id。
+   * 缺省 = 用组里记录的 clipIds（数量必须与规划段数一致）。
+   * ★ 增删切点后段数会变，调用方用它在正确的槽位复用原 id、给新段发新 id。
+   */
+  segmentIds?: Array<string | null>;
+}
+
 export function rebuildMulticamGroup(
   project: ClipProject,
   groupId: string,
   slotAngles: number[],
+  options: RebuildMulticamGroupOptions = {},
 ): MulticamRebuildResult {
   const groups = Array.isArray(project?.multicamGroups) ? project.multicamGroups : [];
   const groupIndex = groups.findIndex((g) => g.id === groupId);
@@ -765,32 +777,50 @@ export function rebuildMulticamGroup(
   const clipIds = (Array.isArray(group.clipIds) ? group.clipIds : []).map((id) => String(id || ''));
   if (!clipIds.length) return { ok: false, error: '多机位组没有记录片段 id，无法原地重建' };
 
+  const planned = rebuildMulticamCuts(group, slotAngles);
+  if (!planned.ok) return planned;
+
+  const targetIds: Array<string | null> = Array.isArray(options.segmentIds)
+    ? options.segmentIds.map((id) => (id == null ? null : String(id)))
+    : clipIds;
+  if (targetIds.length !== planned.cuts.length) {
+    return {
+      ok: false,
+      error: `槽位数量（${planned.cuts.length}）与目标片段数（${targetIds.length}）不一致，无法原地重建`,
+    };
+  }
+  // 只有有 id 的段需要已存在且连续；null 段是新插入的（由 buildMulticamSegments 发新 id）。
+  const namedIds = targetIds.filter((id): id is string => !!id);
+  if (!namedIds.length) return { ok: false, error: '多机位组没有记录片段 id，无法原地重建' };
+  const clipIdSet = new Set(clipIds);
+  const foreign = namedIds.filter((id) => !clipIdSet.has(id));
+  if (foreign.length) {
+    return { ok: false, error: `目标片段 id 不属于该多机位组（${foreign.join('、')}），无法原地重建` };
+  }
+
   const clips = Array.isArray(project.clips) ? project.clips : [];
+  // 连续性按**原组全部片段**校验：删切点时被合并掉的那段仍在时间轴上，不能被当成“中间插入的片段”。
   const positions = clipIds.map((id) => clips.findIndex((c) => c.id === id));
   const missing = clipIds.filter((_, i) => positions[i] < 0);
   if (missing.length) {
     return { ok: false, error: `多机位组片段已被删除（${missing.join('、')}），无法原地重建` };
   }
   const first = positions[0];
+  const last = positions[positions.length - 1];
   for (let i = 1; i < positions.length; i++) {
-    if (positions[i] !== first + i) {
+    if (positions[i] !== positions[0] + i) {
       return { ok: false, error: '多机位组片段在时间轴上不再连续（中间插入了其他片段），无法原地重建' };
     }
   }
 
-  const planned = rebuildMulticamCuts(group, slotAngles);
-  if (!planned.ok) return planned;
-  if (planned.cuts.length !== clipIds.length) {
-    return {
-      ok: false,
-      error: `槽位数量（${planned.cuts.length}）与组内片段数（${clipIds.length}）不一致，无法原地重建`,
-    };
-  }
-
   // 复用原 id：把待替换片段从「已占用 id」集合里排除，避免被去重成 id-2
-  const idSet = new Set(clipIds);
+  const idSet = new Set(namedIds);
   const remaining = clips.filter((c) => !idSet.has(c.id));
-  const built = buildMulticamSegments({ clips: remaining }, planned.cuts, (i) => clipIds[i]);
+  const built = buildMulticamSegments(
+    { clips: remaining },
+    planned.cuts,
+    (i) => targetIds[i] ?? `${group.id}_s${i + 1}`,
+  );
   if (!built.ok) return built;
 
   const total = round3(planned.cuts.reduce((sum, c) => sum + (c.filmEnd - c.filmStart), 0));
@@ -798,7 +828,7 @@ export function rebuildMulticamGroup(
     return { ok: false, error: `重建后的片段总时长 ${total}s 与组时长 ${planned.groupDurationSec}s 不一致` };
   }
 
-  const nextClips = [...clips.slice(0, first), ...built.segments, ...clips.slice(first + clipIds.length)];
+  const nextClips = [...clips.slice(0, first), ...built.segments, ...clips.slice(last + 1)];
   const nextGroup: MulticamGroup = {
     ...group,
     slotAngles: slotAngles.map((n) => Number(n)),
@@ -836,11 +866,53 @@ function cycleSlotAngles(existing: unknown, count: number, fileCount: number): n
   });
 }
 
+/** 组的“旧边界”：优先用落盘的 slotBoundariesSec；等间隔组按 slotSec 推导。数量必须 = count-1。 */
+function groupBoundariesForCount(group: MulticamGroup, count: number): number[] | null {
+  const dur = Number(group.groupDurationSec);
+  const existing = (Array.isArray(group.slotBoundariesSec) ? group.slotBoundariesSec : [])
+    .map((n) => round3(Number(n)));
+  if (existing.length === count - 1) {
+    const check = validateSlotBoundaries(existing, dur);
+    if (check.ok && check.boundaries.length === existing.length) return check.boundaries;
+  }
+  const slot = Number(group.slotSec);
+  if (!(dur > 0) || !(slot > 0)) return null;
+  const derived = Array.from({ length: Math.max(0, count - 1) }, (_, i) => round3((i + 1) * slot));
+  const check = validateSlotBoundaries(derived, dur);
+  if (!check.ok || check.boundaries.length !== derived.length) return null;
+  return check.boundaries;
+}
+
+function sameBoundary(a: number, b: number): boolean {
+  return Math.abs(a - b) < 1e-6;
+}
+
+/** 新边界比旧边界多一个 → 返回被插入的下标；对不上返回 -1。 */
+function findInsertedBoundaryIndex(oldB: number[], newB: number[]): number {
+  let j = 0;
+  for (let i = 0; i < newB.length; i++) {
+    if (j < oldB.length && sameBoundary(newB[i], oldB[j])) { j++; continue; }
+    return i;
+  }
+  return -1;
+}
+
+/** 新边界比旧边界少一个 → 返回被删除的下标；对不上返回 -1。 */
+function findRemovedBoundaryIndex(oldB: number[], newB: number[]): number {
+  let j = 0;
+  for (let i = 0; i < oldB.length; i++) {
+    if (j < newB.length && sameBoundary(oldB[i], newB[j])) { j++; continue; }
+    return i;
+  }
+  return -1;
+}
+
 /**
  * 服务路径（纯函数）：把一组新切点写进组并**原地重建**组内片段。
  *
  * · 组不存在 / 组时长过短 / 没有有效切点 → 可读错误；
- * · 切点数量对应 N 段，必须与原组片段数一致 —— 本次只支持移动切点，不支持增删；
+ * · 切点数量可以比原组多 1 / 少 1（增删切点）：按新旧边界差异定位插入/删除位置，
+ *   在正确槽位复用原片段 id，新段发新 id；超过 1 个的批量增删不支持；
  * · slotAngles 缺省时按现有槽位循环补齐/截断；给了则必须长度 = 切点数+1、值域合法；
  * · 更新组 `slotBoundariesSec` 后复用 `rebuildMulticamGroup`（id/组时长/其他图层均不动）。
  */
@@ -860,12 +932,35 @@ export function applyMulticamBoundaries(
   const normalized = normalizeMulticamBoundaries(rawBoundaries, group.groupDurationSec);
   if (!normalized.ok) return normalized;
   const count = normalized.boundaries.length + 1;
+  if (normalized.boundaries.length > MULTICAM_MAX_BOUNDARIES) {
+    return { ok: false, error: `切点数量已达上限（${MULTICAM_MAX_BOUNDARIES} 个）` };
+  }
 
   const clipIds = (Array.isArray(group.clipIds) ? group.clipIds : []).map((id) => String(id || ''));
-  if (clipIds.length && clipIds.length !== count) {
+  if (!clipIds.length) return { ok: false, error: '多机位组没有记录片段 id，无法原地重建' };
+
+  // 段数变化：只允许单次 +1（加切点）/-1（删切点），并从新旧边界差异定位是哪一个槽位。
+  let segmentIds: Array<string | null>;
+  const delta = count - clipIds.length;
+  if (delta === 0) {
+    segmentIds = clipIds;
+  } else if (delta === 1) {
+    const oldB = groupBoundariesForCount(group, clipIds.length);
+    if (!oldB) return { ok: false, error: '无法确定多机位组原有切点，不能添加切点' };
+    const j = findInsertedBoundaryIndex(oldB, normalized.boundaries);
+    if (j < 0) return { ok: false, error: '无法识别新增切点的位置，不能重建' };
+    segmentIds = [...clipIds.slice(0, j + 1), null, ...clipIds.slice(j + 1)];
+  } else if (delta === -1) {
+    const oldB = groupBoundariesForCount(group, clipIds.length);
+    if (!oldB) return { ok: false, error: '无法确定多机位组原有切点，不能删除切点' };
+    const i = findRemovedBoundaryIndex(oldB, normalized.boundaries);
+    if (i < 0) return { ok: false, error: '无法识别删除切点的位置，不能重建' };
+    // 合并时保留左侧槽位的片段（去掉右槽位的 id）
+    segmentIds = clipIds.filter((_, k) => k !== i + 1);
+  } else {
     return {
       ok: false,
-      error: `切点对应 ${count} 段，原组是 ${clipIds.length} 段；当前只支持拖动现有切点，不支持增删切点`,
+      error: `切点对应 ${count} 段，原组是 ${clipIds.length} 段；一次只支持增删一个切点`,
     };
   }
 
@@ -894,7 +989,7 @@ export function applyMulticamBoundaries(
     ...project,
     multicamGroups: groups.map((g, i) => (i === groupIndex ? nextGroup : g)),
   };
-  const rebuilt = rebuildMulticamGroup(projected, groupId, angles);
+  const rebuilt = rebuildMulticamGroup(projected, groupId, angles, { segmentIds });
   if (!rebuilt.ok) return rebuilt;
   return {
     ok: true,
@@ -905,6 +1000,137 @@ export function applyMulticamBoundaries(
     segments: rebuilt.segments,
     warnings: normalized.warnings,
     note: `已按 ${normalized.boundaries.length} 个切点重切 ${rebuilt.segments} 段（总时长 ${round3(Number(group.groupDurationSec))}s 不变）`,
+  };
+}
+
+export type InsertMulticamBoundaryResult =
+  | { ok: true; boundaries: number[]; slotAngles: number[]; note: string }
+  | { ok: false; error: string };
+
+/**
+ * 纯函数：在最长的槽位中点插入一个切点（切点增删的“加”）。
+ *
+ * · 槽位 = `[0, ...boundaries, 组时长]`；取最长的一段插中点，避免越加越碎；
+ * · 新槽位的机位 = **左侧槽位机位 + 1**（对 angleCount 取模）；
+ * · 结果再过一遍 `normalizeMulticamBoundaries`：中点离相邻切点不足 0.5s 会被推开/丢弃，
+ *   数量没有真的 +1 就报可读错误（UI 保持原样并提示），不静默丢切点。
+ */
+export function insertMulticamBoundary(
+  boundaries: number[],
+  slotAngles: number[],
+  groupDurationSec: number,
+  angleCount: number,
+): InsertMulticamBoundaryResult {
+  const dur = Number(groupDurationSec);
+  if (!Number.isFinite(dur) || !(dur > 2 * MULTICAM_BEAT_EDGE_SEC + 1e-9)) {
+    return {
+      ok: false,
+      error: `组时长过短（${round3(Number.isFinite(dur) ? dur : 0)}s），两侧各需留 ${MULTICAM_BEAT_EDGE_SEC}s，无法添加切点`,
+    };
+  }
+  const count = Number(angleCount);
+  if (!Number.isInteger(count) || count < 1) return { ok: false, error: '机位数量无效，无法添加切点' };
+  const base = (Array.isArray(boundaries) ? boundaries : [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  if (base.length >= MULTICAM_MAX_BOUNDARIES) {
+    return { ok: false, error: `切点数量已达上限（${MULTICAM_MAX_BOUNDARIES} 个）` };
+  }
+
+  const edges = [0, ...base, round3(dur)];
+  let longest = 0;
+  for (let i = 1; i < edges.length - 1; i++) {
+    if (edges[i + 1] - edges[i] > edges[longest + 1] - edges[longest] + 1e-9) longest = i;
+  }
+  const longestLen = round3(edges[longest + 1] - edges[longest]);
+  const mid = round3((edges[longest] + edges[longest + 1]) / 2);
+
+  const normalized = normalizeMulticamBoundaries([...base, mid].sort((a, b) => a - b), dur);
+  if (!normalized.ok) return { ok: false, error: normalized.error };
+  if (normalized.boundaries.length !== base.length + 1) {
+    return {
+      ok: false,
+      error: `最长的一段只有 ${longestLen}s，中点离相邻切点不足 ${MULTICAM_BEAT_MIN_GAP_SEC}s，无法再插入切点`,
+    };
+  }
+
+  // 规整后找“新出现的那个切点”的下标 = 被插入的切点下标 = 左侧槽位下标。
+  let insertAt = longest;
+  const matched = new Set<number>();
+  for (let i = 0; i < normalized.boundaries.length; i++) {
+    const hit = base.findIndex((b, k) => !matched.has(k) && sameBoundary(b, normalized.boundaries[i]));
+    if (hit < 0) { insertAt = i; break; }
+    matched.add(hit);
+  }
+
+  const expected = base.length + 1;
+  const slots = Array.isArray(slotAngles) && slotAngles.length === expected
+    ? slotAngles.map((n) => Number(n))
+    : cycleSlotAngles(slotAngles, expected, count);
+  const leftAngle = Number.isInteger(slots[insertAt]) && slots[insertAt] >= 0 && slots[insertAt] < count
+    ? slots[insertAt]
+    : 0;
+  const newAngle = (leftAngle + 1) % count;
+  const nextSlots = [
+    ...slots.slice(0, insertAt + 1),
+    newAngle,
+    ...slots.slice(insertAt + 1),
+  ].map((n) => (Number.isInteger(n) && n >= 0 && n < count ? n : 0));
+
+  return {
+    ok: true,
+    boundaries: normalized.boundaries,
+    slotAngles: nextSlots,
+    note: `已在最长一段（第 ${longest + 1} 段，${round3(edges[longest])}s→${round3(edges[longest + 1])}s）中点 ${normalized.boundaries[insertAt]}s 插入切点；新段取机位${newAngle + 1}`,
+  };
+}
+
+export type RemoveMulticamBoundaryResult =
+  | { ok: true; boundaries: number[]; slotAngles: number[] }
+  | { ok: false; error: string };
+
+/**
+ * 纯函数：删除第 index 个切点（0 基，切点增删的“删”）。
+ *
+ * · 删除 = 合并左右两个槽位，**保留左侧槽位的机位**（slotAngles 去掉右槽位）；
+ * · 索引越界 / 只剩一个槽位（没有切点）/ 删完只剩一个槽位 → 可读错误，不改数据。
+ */
+export function removeMulticamBoundary(
+  boundaries: number[],
+  slotAngles: number[],
+  index: number,
+): RemoveMulticamBoundaryResult {
+  const list = (Array.isArray(boundaries) ? boundaries : [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  if (list.length <= 1) {
+    return {
+      ok: false,
+      error: list.length
+        ? '至少要保留一个切点（再删组内只剩一个槽位）'
+        : '该组没有切点（只剩一个槽位），无法删除',
+    };
+  }
+  const idx = Number(index);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) {
+    return {
+      ok: false,
+      error: `第 ${Number.isFinite(idx) ? idx + 1 : '?'} 个切点不存在（共 ${list.length} 个）`,
+    };
+  }
+  const slots = Array.isArray(slotAngles) ? slotAngles.map((n) => Number(n)) : [];
+  if (slots.length !== list.length + 1) {
+    return {
+      ok: false,
+      error: `槽位数量（${slots.length}）与切点数（${list.length}）不一致，无法删除切点`,
+    };
+  }
+  return {
+    ok: true,
+    boundaries: list.filter((_, i) => i !== idx),
+    slotAngles: slots.filter((_, i) => i !== idx + 1),
   };
 }
 
