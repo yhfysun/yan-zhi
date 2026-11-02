@@ -14,13 +14,21 @@ export {
   parseMatteSidecar,
   matteModelDir,
   matteSidecarExample,
+  matteSourcesFor,
+  mirrorPrefixes,
+  mirrorsOverridden,
   generatePortraitMatte,
+  installMatteModel,
   resetMatteRuntimeCache,
   type MatteModelSpec,
+  type MatteSource,
   type MatteSidecarResult,
   type MatteRuntime,
   type GeneratePortraitMatteInput,
   type GeneratePortraitMatteResult,
+  type InstallMatteModelOptions,
+  type InstallMatteModelResult,
+  type MatteDownloadAttempt,
 } from './clip-matte-runtime.js';
 
 /**

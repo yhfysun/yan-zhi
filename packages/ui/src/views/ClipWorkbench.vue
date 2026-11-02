@@ -138,9 +138,9 @@
           <div class="cp-ins-hint">非 AI 补帧；输出帧率高于素材帧率时才有意义</div>
         </div>
 
-        <!-- 智能抠像（P2-1）：**骨架阶段**，只探测运行时，不提供渲染应用。
-             ★ 未就绪时不给可点按钮；文案明确「需要自行放置 ONNX 模型；接入渲染前不可用」。
-             ★ probe 结果原样展示（含放置目录与侧车 JSON 示例），不自动下载。 -->
+        <!-- 智能抠像（P2-1）：运行时探测 + 模型下载（用户显式触发）。
+             ★ 缺模型时如实显示"可下载或手动放置"，绝不静默自动下载。
+             ★ 抠像效果以导出/代理为准；实时单帧预览不做抠像。 -->
         <div class="cp-panel-head sub">
           <span>智能抠像（P2-1）</span>
           <button class="cp-mini" :disabled="matteProbing" title="重新探测 Python / onnxruntime / ONNX 抠像模型" @click="probeMatte">
@@ -152,14 +152,42 @@
           <template v-else-if="matteInfo">
             <div class="cp-matte-state" :class="matteInfo.ok ? 'ok' : 'bad'">
               {{ matteInfo.ok ? '可用' : '不可用' }}
+              <span v-if="matteInfo.modelId" class="cp-matte-ver">模型 {{ matteInfo.modelId }}</span>
               <span v-if="matteInfo.onnxruntime" class="cp-matte-ver">onnxruntime {{ matteInfo.onnxruntime }}</span>
             </div>
             <div v-if="matteInfo.modelPath" class="cp-matte-path" :title="matteInfo.modelPath">{{ matteInfo.modelPath }}</div>
             <div class="cp-ins-hint">
               {{ matteInfo.ok
-                ? '运行时已就绪；接入渲染前仍不可用（当前仅探测与蒙版生成）。'
-                : '需要自行放置 ONNX 分割模型；接入渲染前不可用。' }}
+                ? '运行时已就绪；在片段属性面板开启「智能抠像」即可（效果以导出/代理为准）。'
+                : '缺模型或运行时：可点下方「下载模型」，或按指引手动放置（不会自动下载）。' }}
             </div>
+            <div v-if="matteModels.length" class="cp-matte-models">
+              <label v-for="m in matteModels" :key="m.id" class="cp-matte-model">
+                <input
+                  v-model="matteSelectedModel"
+                  type="radio"
+                  :value="m.id"
+                  :disabled="matteDownloading || !m.downloadable"
+                />
+                <span class="cp-matte-model-name">
+                  {{ m.label }}（{{ m.approxSizeMB }}MB）
+                  <em v-if="m.installed">已安装</em>
+                  <em v-else-if="m.manualOnly" class="bad">仅手动放置</em>
+                </span>
+                <span class="cp-ins-hint">
+                  {{ m.license }}
+                  <template v-if="m.sources.length"> · {{ m.sources.length }} 个源（境内/外按序回退）</template>
+                </span>
+              </label>
+              <button
+                class="cp-btn full"
+                :disabled="matteDownloading || !matteDownloadTarget"
+                @click="downloadMatteModel"
+              >
+                {{ matteDownloading ? '下载中…（大模型可能较久）' : `下载模型${matteDownloadTarget ? `：${matteDownloadTarget.label}` : ''}` }}
+              </button>
+            </div>
+            <pre v-if="matteDownloadNote" class="cp-matte-guide">{{ matteDownloadNote }}</pre>
             <pre class="cp-matte-guide">{{ matteInfo.guidance.join('\n') }}</pre>
           </template>
           <div v-else class="cp-ins-hint">尚未探测（点右上刷新）。</div>
@@ -951,6 +979,61 @@
                     <label class="cp-check"><input v-model="clipPatch.maskPathSmooth" type="checkbox" /> 平滑</label>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <!-- 智能抠像（P2-1）：人像分割后换背景；需模型，渲染会变慢 -->
+            <div class="cp-grp">
+              <div class="cp-grp-head" @click="matteOpen = !matteOpen">
+                <el-icon :size="11"><component :is="matteOpen ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+                <span>智能抠像</span>
+                <span v-if="clipPatch.matteOn" class="cp-grp-badge">{{ matteBgLabel(clipPatch.matteBackground) }}</span>
+                <span class="cp-spacer"></span>
+                <button v-if="clipPatch.matteOn" class="cp-mini" title="关闭智能抠像" @click.stop="clipPatch.matteOn = false">
+                  <el-icon :size="11"><Delete /></el-icon>
+                </button>
+              </div>
+              <div v-show="matteOpen" class="cp-grp-body">
+                <div v-if="matteInfo && !matteInfo.ok" class="cp-ins-hint">
+                  运行时/模型未就绪：先在左侧「智能抠像」点「下载模型」或手动放置（不会自动下载）。
+                </div>
+                <label class="cp-check">
+                  <input v-model="clipPatch.matteOn" type="checkbox" :disabled="!matteInfo?.ok" />
+                  启用智能抠像（需模型；渲染会明显变慢）
+                </label>
+                <template v-if="clipPatch.matteOn">
+                  <div class="cp-field">
+                    <label>背景</label>
+                    <select v-model="clipPatch.matteBackground" class="cp-select">
+                      <option value="black">黑底</option>
+                      <option value="white">白底</option>
+                      <option value="green">绿幕</option>
+                      <option value="blur">原画面模糊</option>
+                    </select>
+                  </div>
+                  <div v-if="clipPatch.matteBackground === 'green'" class="cp-field">
+                    <label>背景色 <span class="cp-val">{{ clipPatch.matteColor }}</span></label>
+                    <input v-model="clipPatch.matteColor" class="cp-color" type="color" title="绿幕背景色" />
+                  </div>
+                  <div class="cp-field">
+                    <label>边缘羽化 <span class="cp-val">{{ clipPatch.matteFeather }}px</span></label>
+                    <input v-model.number="clipPatch.matteFeather" class="cp-range" type="range" min="0" max="20" step="1" />
+                  </div>
+                  <div class="cp-field">
+                    <label>蒙版帧率 <span class="cp-val">{{ clipPatch.matteFps }} fps</span></label>
+                    <input v-model.number="clipPatch.matteFps" class="cp-range" type="range" min="5" max="15" step="1" />
+                  </div>
+                  <div class="cp-field">
+                    <label>模型</label>
+                    <select v-model="clipPatch.matteModel" class="cp-select">
+                      <option value="">默认（运行时自动选）</option>
+                      <option v-for="m in installedMatteModels" :key="m.id" :value="m.id">{{ m.label }}</option>
+                    </select>
+                  </div>
+                  <div class="cp-ins-hint">
+                    生成蒙版需时间（约 0.1~0.2s/帧），效果以导出/代理为准；实时单帧预览不抠像。图片素材不支持。
+                  </div>
+                </template>
               </div>
             </div>
 
@@ -2018,6 +2101,11 @@ interface ClipSegment {
     keyframes?: Array<{ t: number; scale?: number; offsetX?: number; offsetY?: number; angle?: number; position?: number }>;
     path?: { smooth?: boolean; points: Array<{ x: number; y: number }> };
   };
+  /** 智能抠像（P2-1）：存在即启用；需已放置/下载 ONNX 模型，渲染会变慢 */
+  matte?: {
+    background?: 'black' | 'white' | 'green' | 'blur';
+    color?: string; feather?: number; fps?: number; model?: string;
+  };
   /** 与前一段之间的转场（挂在后一段上，语义="我进来时怎么出现"） */
   transition?: { type: string; duration?: number };
   audioFile?: string; keepOriginalAudio?: boolean; volume?: number;
@@ -2225,6 +2313,9 @@ const clipPatch = reactive({
   maskAngle: 0, maskPosition: 0.5,
   maskKfs: [] as Array<{ t: number; scale?: number; offsetX?: number; offsetY?: number }>,
   maskPath: [] as Array<{ x: number; y: number }>, maskPathSmooth: true,
+  // 智能抠像（P2-1）：matteOn=false 时删字段；背景/羽化/帧率/模型与后端 normalizeMatte 同口径
+  matteOn: false, matteBackground: 'black' as 'black' | 'white' | 'green' | 'blur',
+  matteColor: '#00FF00', matteFeather: 0, matteFps: 10, matteModel: '',
   // 转场（与前一段之间）
   transitionType: '', transitionDuration: 0.8,
   // 画面裁剪（比例 0~1；w/h=1 且 x/y=0 = 未裁剪）
@@ -2244,6 +2335,7 @@ const clipPatch = reactive({
   beautySmooth: 0, beautyWhiten: 0,
 });
 const maskOpen = ref(false);
+const matteOpen = ref(false);
 // P1-6 HSL 分色：当前编辑的色带
 const hslOpen = ref(false);
 const hslBand = ref('red');
@@ -4653,6 +4745,12 @@ function selectClip(id: string) {
     maskKfs: (c.mask?.keyframes || []).map((k) => ({ ...k })),
     maskPath: (c.mask?.path?.points || []).map((p) => ({ ...p })),
     maskPathSmooth: c.mask?.path?.smooth !== false,
+    matteOn: !!c.matte,
+    matteBackground: c.matte?.background ?? 'black',
+    matteColor: c.matte?.color ?? '#00FF00',
+    matteFeather: c.matte?.feather ?? 0,
+    matteFps: c.matte?.fps ?? 10,
+    matteModel: c.matte?.model ?? '',
     transitionType: c.transition?.type || '', transitionDuration: c.transition?.duration ?? 0.8,
     cropX: c.crop?.x ?? 0, cropY: c.crop?.y ?? 0, cropW: c.crop?.w ?? 1, cropH: c.crop?.h ?? 1,
     rotate: c.rotate ?? 0, flip: c.flip ?? '', reverse: c.reverse === true,
@@ -4669,6 +4767,7 @@ function selectClip(id: string) {
     beautySmooth: c.beauty?.smooth ?? 0, beautyWhiten: c.beauty?.whiten ?? 0,
   });
   if (c.mask?.shape || c.mask?.key) maskOpen.value = true;
+  if (c.matte) matteOpen.value = true;
   if (c.transition?.type) transOpen.value = true;
   if (c.crop) cropOpen.value = true;
   if (c.keyframes?.length) kfOpen.value = true;
@@ -5170,6 +5269,20 @@ async function applyClipPatch() {
       ...(hasPath ? { path: { ...(clipPatch.maskPathSmooth ? { smooth: true } : {}), points: pathPoints } } : {}),
     };
   } else delete c.mask;
+  // 智能抠像（P2-1）：开关关掉就删字段；开启时空对象也代表启用（与后端 normalizeMatte 同口径）
+  if (clipPatch.matteOn) {
+    const bg = clipPatch.matteBackground;
+    const color = /^#[0-9a-fA-F]{6}$/.test(clipPatch.matteColor) ? clipPatch.matteColor.toUpperCase() : '';
+    const feather = Math.max(0, Math.min(20, Math.round(Number(clipPatch.matteFeather) || 0)));
+    const fps = Math.max(5, Math.min(15, Math.round(Number(clipPatch.matteFps) || 10)));
+    c.matte = {
+      ...(bg !== 'black' ? { background: bg } : {}),
+      ...(bg === 'green' && color && color !== '#00FF00' ? { color } : {}),
+      ...(feather > 0 ? { feather } : {}),
+      ...(Math.abs(fps - 10) > 0.001 ? { fps } : {}),
+      ...(clipPatch.matteModel ? { model: clipPatch.matteModel } : {}),
+    };
+  } else delete c.matte;
   // 转场：第一段没有"前一段"→ 不写（写了也是无效配置，渲染时会忽略）
   const i = selectedClipIndex.value;
   if (clipPatch.transitionType && i > 0) {
@@ -6123,9 +6236,9 @@ async function reframeVerticalSelected() {
   }
 }
 
-// ===== 智能抠像（P2-1：运行时骨架）=====
-// ★ 只显示探测结果，不提供「应用抠像」按钮：渲染未接（POST /matte/apply 返回 501）。
-// ★ 文案与按钮都如实：缺模型时展示放置目录与侧车 JSON 示例，不自动下载。
+// ===== 智能抠像（P2-1：运行时探测 + 模型下载 + 片段 matte）=====
+// ★ 下载必须由用户**显式点击**触发（不静默自动下载）；失败展示每个源的原因与手动放置路径。
+// ★ 抠像效果以导出/代理为准：实时单帧预览（/frame）不做抠像。
 type MattePresetInfo = {
   id: string; label: string; fileHint: string; inputSize: number;
   mean: number[]; std: number[]; channelOrder: string; approxSizeMB: number;
@@ -6134,9 +6247,34 @@ type MatteProbeInfo = {
   ok: boolean; python: string; modelId: string; modelPath: string;
   preset: MattePresetInfo | null; guidance: string[]; onnxruntime: string;
 };
+type MatteSourceInfo = { url: string; label: string; region: 'intl' | 'cn' };
+type MatteModelInfo = {
+  id: string; label: string; fileHint: string; approxSizeMB: number; sizeBytes: number;
+  license: string; note: string; installed: boolean; installedBytes: number;
+  sources: MatteSourceInfo[]; downloadable: boolean; manualOnly: boolean;
+};
+type MatteInstallResp = {
+  ok: boolean; model?: string; sourceUsed?: string; bytes?: number; alreadyInstalled?: boolean;
+  error?: string; manualPath?: string; guidance?: string[];
+  attempts?: Array<{ source: MatteSourceInfo; error: string }>;
+};
 
 const matteProbing = ref(false);
 const matteInfo = ref<MatteProbeInfo | null>(null);
+const matteModels = ref<MatteModelInfo[]>([]);
+const matteSelectedModel = ref('');
+const matteDownloading = ref(false);
+const matteDownloadNote = ref('');
+const installedMatteModels = computed(() => matteModels.value.filter((m) => m.installed));
+const matteDownloadTarget = computed(() => {
+  if (!matteModels.value.length) return null;
+  const picked = matteModels.value.find((m) => m.id === matteSelectedModel.value && m.downloadable);
+  return picked || matteModels.value.find((m) => m.downloadable) || null;
+});
+
+function matteBgLabel(bg: string): string {
+  return bg === 'white' ? '白底' : bg === 'green' ? '绿幕' : bg === 'blur' ? '模糊背景' : '黑底';
+}
 
 function matteProbeFailed(message: string): MatteProbeInfo {
   return {
@@ -6156,6 +6294,53 @@ async function probeMatte() {
     matteInfo.value = matteProbeFailed(e instanceof Error ? e.message : String(e));
   } finally {
     matteProbing.value = false;
+  }
+}
+
+async function loadMatteModels() {
+  try {
+    const r = await api.get<{ ok: boolean; modelDir: string; models: MatteModelInfo[] }>('/plugin/clip-mode/matte/models');
+    if ('error' in r) return;
+    matteModels.value = r.data.models || [];
+    if (!matteSelectedModel.value) {
+      matteSelectedModel.value = matteModels.value.find((m) => !m.installed && m.downloadable)?.id
+        || matteModels.value.find((m) => m.downloadable)?.id || '';
+    }
+  } catch { /* 清单加载失败不影响探测结果 */ }
+}
+
+/**
+ * 下载模型（用户显式触发）。成功后重新探测运行时并刷新清单；
+ * 失败时把各源摘要与手动放置路径原样展示（不静默）。
+ */
+async function downloadMatteModel() {
+  const target = matteDownloadTarget.value;
+  if (!target || matteDownloading.value) return;
+  matteDownloading.value = true;
+  matteDownloadNote.value = `正在下载 ${target.label}…（按源顺序回退，失败会说明每个源）`;
+  try {
+    const r = await api.post<MatteInstallResp>('/plugin/clip-mode/matte/install', { id: target.id });
+    if ('error' in r) {
+      matteDownloadNote.value = `下载失败：${String(r.error)}`;
+      return;
+    }
+    const d = r.data;
+    if (!d.ok) {
+      const lines = [d.error || '下载失败'];
+      if (d.attempts?.length) lines.push(...d.attempts.map((a) => `· ${a.source.label}：${a.error}`));
+      if (d.manualPath) lines.push(`手动放置路径：${d.manualPath}`);
+      if (d.guidance?.length) lines.push(...d.guidance);
+      matteDownloadNote.value = lines.join('\n');
+      return;
+    }
+    matteDownloadNote.value = d.alreadyInstalled
+      ? `模型已存在：${d.model}`
+      : `下载完成：${d.model}（${Math.round((d.bytes || 0) / 1024 / 1024 * 10) / 10}MB，来源 ${d.sourceUsed || '未知'}）`;
+    await Promise.all([probeMatte(), loadMatteModels()]);
+  } catch (e: unknown) {
+    matteDownloadNote.value = `下载失败：${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    matteDownloading.value = false;
   }
 }
 
@@ -6405,8 +6590,9 @@ onMounted(async () => {
   await loadProjects();
   // 进编辑视图后立刻出一帧（否则监视器空白，用户会以为预览坏了）
   if (view.value === 'editor' && clipCount.value) scheduleFrameFetch(300);
-  // 抠像运行时探测（P2-1）：不阻塞首屏；结果只读展示（可用/不可用 + 模型放置指引）
+  // 抠像运行时探测（P2-1）：不阻塞首屏；结果只读展示（可用/不可用 + 模型放置/下载）
   void probeMatte();
+  void loadMatteModels();
 });
 </script>
 
@@ -6455,6 +6641,12 @@ onMounted(async () => {
 .cp-matte-ver { color: var(--el-text-color-secondary); font-variant-numeric: tabular-nums; }
 .cp-matte-path { font-size: 10px; color: var(--el-text-color-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-matte-guide { margin: 0; padding: 5px 6px; max-height: 132px; overflow: auto; font-size: 10px; line-height: 1.45; white-space: pre-wrap; word-break: break-all; color: var(--el-text-color-secondary); background: var(--el-fill-color-light); border-radius: 4px; }
+.cp-matte-models { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; }
+.cp-matte-model { display: flex; flex-direction: column; gap: 2px; font-size: 11px; cursor: pointer; }
+.cp-matte-model input { margin-right: 4px; }
+.cp-matte-model-name { display: inline-flex; align-items: center; gap: 6px; }
+.cp-matte-model-name em { font-style: normal; font-size: 10px; padding: 0 4px; border-radius: 3px; background: var(--el-color-success-light-9); color: var(--el-color-success); }
+.cp-matte-model-name em.bad { background: var(--el-color-warning-light-9); color: var(--el-color-warning); }
 .cp-tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--el-fill-color); color: var(--el-text-color-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* 项目目录标签（可点击更换）：与只读规格标签区分开 —— 它是可操作的 */
 .cp-dir-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 7px; border-radius: 3px; border: 1px solid var(--el-border-color-lighter); color: var(--el-text-color-regular); cursor: pointer; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

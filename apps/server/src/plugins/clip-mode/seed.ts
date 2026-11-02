@@ -116,6 +116,9 @@ export const CLIP_AGENT_SYSTEM_PROMPT = `你是「剪辑师」（clipAgent），
      linear 是渐变擦除（angle 定方向、position 定位置）；keyframes 让蒙版运动；
      path 是钢笔路径（归一化锚点）。人物特写用圆形蒙版，分屏对比用 split_left/right，
      绿幕合成用 key + add_overlay。
+   · 智能抠像：matte { background:'black'|'white'|'green'|'blur', color?, feather? 0~20, fps? 5~15, model? }
+     人像分割后换背景。★ 需要本机已放置或下载 ONNX 模型；渲染会明显变慢（约 0.1~0.2s/帧），
+     效果以导出/代理为准（实时单帧预览不抠像）。图片素材不支持；缺模型时如实告知并给放置/下载指引。
    · 运镜：图片用 kenburns；视频用 keyframes（t 为**段内** 0~1，**必须给起点锚**
      {t:0,...}，只给一个点等于全程常量；位移要配 scale>1；ease 用 inout 最自然）。
    · 方向与画幅：rotate 90/270 会大幅裁切，多半要同时 set_output 改画幅；flip 镜像；

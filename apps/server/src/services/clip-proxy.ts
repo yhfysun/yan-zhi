@@ -23,10 +23,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import {
-  buildRenderPlan, runRenderPlan, segmentDuration,
+import { buildRenderPlan, runRenderPlan, segmentDuration,
   type BuildPlanInput,
 } from './clip-render.js';
+import { materializeSegmentMatte, matteRuntimeHint } from './clip-matte-render.js';
 import type { ClipProject, ClipSegment } from './clip-project.js';
 
 /** 代理画幅：长边 480（竖屏 270x480，横屏 480x270，方图按比例）。 */
@@ -62,6 +62,8 @@ export function segmentFingerprint(seg: ClipSegment): string {
     seg.kenburns ?? null, seg.mask ?? null, seg.crop ?? null,
     seg.keyframes ?? null, seg.reverse ?? false, seg.rotate ?? 0, seg.flip ?? '',
     seg.audioFile ?? '', seg.keepOriginalAudio ?? false, seg.volume ?? 1,
+    // P2-1：抠像参数变了必须重渲代理（否则预览还是旧背景）
+    seg.matte ?? null,
   ]);
 }
 
@@ -70,9 +72,11 @@ export function proxyCacheKey(
   seg: ClipSegment,
   size: { w: number; h: number },
   fps: number,
+  /** 额外失效因子（P2-1：模型是否已放置 —— 装好模型后旧代理必须重渲） */
+  extra = '',
 ): string {
   return createHash('sha1')
-    .update(`${PROXY_CACHE_VERSION}|${segmentFingerprint(seg)}|${size.w}x${size.h}|${fps}`)
+    .update(`${PROXY_CACHE_VERSION}|${segmentFingerprint(seg)}|${size.w}x${size.h}|${fps}|${extra}`)
     .digest('hex')
     .slice(0, 20);
 }
@@ -153,7 +157,15 @@ export async function ensureSegmentProxy(input: {
   segIndex: number;
   probe: ProxyProbeRow;
   ffmpeg: string;
-}): Promise<{ ok: boolean; file?: string; cached?: boolean; key?: string; seconds?: number; error?: string }> {
+  /** ffprobe（抠像物质化需要探测源分辨率/帧率；缺省由 ffmpeg 路径推导） */
+  ffprobe?: string;
+}): Promise<{
+  ok: boolean; file?: string; cached?: boolean; key?: string; seconds?: number;
+  error?: string;
+  /** 非致命提示（例如抠像失败已退回原片段） */
+  warning?: string;
+  matteFallback?: boolean;
+}> {
   const { project, ffmpeg } = input;
   const seg = project.clips[input.segIndex];
   if (!seg) return { ok: false, error: '段下标越界' };
@@ -169,7 +181,7 @@ export async function ensureSegmentProxy(input: {
     return { ok: false, error: '段时长不可知（素材丢失或探测失败），无法生成代理' };
   }
 
-  const key = proxyCacheKey(seg, size, fps);
+  const key = proxyCacheKey(seg, size, fps, seg.matte ? matteRuntimeHint(seg.matte) : '');
   const dir = proxyCacheDir();
   const file = path.join(dir, `${key}.mp4`);
 
@@ -185,7 +197,23 @@ export async function ensureSegmentProxy(input: {
   } catch { /* 不存在 → 未命中 */ }
 
   // ---- 未命中 → 同步生成（派生单段工程走渲染计划）----
-  const single = proxyDerivedProject(project, seg, size);
+  // ★ 智能抠像：代理也要物质化（否则代理预览无抠像）。抠像失败**退回原片段**并带 warning ——
+  //   预览宁可少一个效果，也不能整段黑/空白；成片导出仍会因抠像失败而明确报错。
+  let effectiveSeg = seg;
+  let matteWarning: string | undefined;
+  if (seg.matte) {
+    const mat = await materializeSegmentMatte(seg, {
+      ffmpeg,
+      ...(input.ffprobe ? { ffprobe: input.ffprobe } : {}),
+      durations: input.probe.durations,
+    });
+    if (mat.ok) {
+      effectiveSeg = mat.segment;
+    } else {
+      matteWarning = `智能抠像不可用，代理已退回原片段（成片导出会明确报错）：${mat.error}`;
+    }
+  }
+  const single = proxyDerivedProject(project, effectiveSeg, size);
   const workDir = path.join(dir, `tmp-${key}-${Date.now()}`);
   try {
     await mkdir(workDir, { recursive: true });
@@ -216,7 +244,10 @@ export async function ensureSegmentProxy(input: {
     await mkdir(dir, { recursive: true });
     await rename(outFile, file);
     await pruneProxyCache();
-    return { ok: true, file, cached: false, key, seconds: segDur };
+    return {
+      ok: true, file, cached: false, key, seconds: segDur,
+      ...(matteWarning ? { warning: matteWarning, matteFallback: true } : {}),
+    };
   } catch (e: unknown) {
     return { ok: false, error: `代理生成异常：${e instanceof Error ? e.message : String(e)}` };
   } finally {

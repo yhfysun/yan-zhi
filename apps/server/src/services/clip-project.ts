@@ -117,6 +117,25 @@ export interface ClipSegment {
     path?: { smooth?: boolean; points: Array<{ x: number; y: number }> };
   };
   /**
+   * 智能抠像（P2-1）：人像/主体分割后换背景。
+   * ★ **字段存在即启用**（空对象 = 全默认）；老工程没有该字段 → 渲染行为零变化。
+   * ★ 本字段不参与 buildRenderPlan 的纯函数输出：渲染前由 clip-matte-render 把该段
+   *   "物质化"成一张背景已合成的临时成片，再交给既有渲染链（见文档「四十六」）。
+   * ★ 需要本机已放置/下载 ONNX 分割模型；单帧推理约 0.1~0.2s，渲染会明显变慢。
+   */
+  matte?: {
+    /** 背景：black/white/green 纯色或 blur（原画面模糊）；缺省 black */
+    background?: 'black' | 'white' | 'green' | 'blur';
+    /** 自定义背景色 #RRGGBB（仅 background=green 时生效；缺省绿 #00FF00） */
+    color?: string;
+    /** 蒙版边缘羽化 0~20px（缺省 0） */
+    feather?: number;
+    /** 蒙版生成帧率 5~15（缺省 10；越高越顺滑也越慢） */
+    fps?: number;
+    /** 指定已安装的模型 id（缺省用运行时自动选中的模型） */
+    model?: string;
+  };
+  /**
    * 与前一段之间的转场（**挂在后一段上**，语义 = "我进来时怎么出现"）。
    * ★ 为什么挂在后一段而不是做成独立"转场轨"：转场本质是两段的连接属性，
    *   独立轨道会引入"转场必须正好覆盖交界处"的一致性约束，编辑时极易错位
@@ -972,6 +991,42 @@ function normalizeMask(v: unknown): ClipSegment['mask'] | null {
 }
 
 /**
+ * 归一化智能抠像配置（P2-1）。
+ *
+ * ★ 存在即启用：返回对象（哪怕是空对象）就代表开了抠像；返回 null = 没开。
+ * ★ 只做白名单与范围钳制：
+ *   · background 缺省/非法 → black（不写字段）；
+ *   · color 只在 background=green 时收，且必须是 #RRGGBB（缺省绿不写）；
+ *   · feather 0~20、fps 5~15，默认值不写字段（工程文件要能一眼看出调了什么）；
+ *   · model 只收非空字符串。
+ * 脏值必须在写盘前拦住：非法 fps 会让蒙版脚本参数报错，而报错点在渲染时，离用户操作很远。
+ */
+export function normalizeMatte(v: unknown): ClipSegment['matte'] | null {
+  if (v == null || typeof v !== 'object' || Array.isArray(v)) return null;
+  const m = v as Record<string, unknown>;
+  const bgRaw = String(m.background ?? '').trim().toLowerCase();
+  const background = bgRaw === 'white' || bgRaw === 'green' || bgRaw === 'blur' ? bgRaw : 'black';
+  const colorRaw = String(m.color ?? '').trim();
+  const color = /^#[0-9a-fA-F]{6}$/.test(colorRaw) ? colorRaw.toUpperCase() : undefined;
+  const featherRaw = Number(m.feather);
+  const feather = Number.isFinite(featherRaw)
+    ? Number(Math.max(0, Math.min(20, featherRaw)).toFixed(2))
+    : undefined;
+  const fpsRaw = Number(m.fps);
+  const fps = Number.isFinite(fpsRaw)
+    ? Number(Math.max(5, Math.min(15, Math.round(fpsRaw))).toFixed(3))
+    : undefined;
+  const model = String(m.model ?? '').trim() || undefined;
+  return {
+    ...(background !== 'black' ? { background } : {}),
+    ...(background === 'green' && color && color !== '#00FF00' ? { color } : {}),
+    ...(feather != null && feather > 0 ? { feather } : {}),
+    ...(fps != null && Math.abs(fps - 10) > 0.001 ? { fps } : {}),
+    ...(model ? { model } : {}),
+  };
+}
+
+/**
  * 归一化 3D LUT（P1-5）。
  * ★ 必须是 .cube 文件：其它扩展名 lut3d 读不了，报错点在渲染（离用户操作很远）。
  * ★ 强度 0~1；等于 1 时不写字段（默认值不落盘，保持工程干净）。
@@ -1742,6 +1797,7 @@ export function applyClipOp(
         const speedCurve = normalizeSpeedCurve(c.speedCurve);
         const kb = c.kenburns as Record<string, unknown> | undefined;
         const mask = normalizeMask(c.mask);
+        const matte = normalizeMatte(c.matte);
         const transition = normalizeTransition(c.transition);
         const fadeIn = optionalPositive(c.fadeIn);
         const fadeOut = optionalPositive(c.fadeOut);
@@ -1782,6 +1838,7 @@ export function applyClipOp(
           ...(fadeOut != null ? { fadeOut } : {}),
           ...(kb ? { kenburns: { direction: kb.direction === 'out' ? 'out' : kb.direction === 'none' ? 'none' : 'in', duration: Math.max(1, numOr(kb.duration, 6)) } } : {}),
           ...(mask ? { mask } : {}),
+          ...(matte ? { matte } : {}),
           ...(transition ? { transition } : {}),
           ...(audioFile ? { audioFile } : {}),
           ...(c.keepOriginalAudio === true ? { keepOriginalAudio: true } : {}),
@@ -1807,7 +1864,7 @@ export function applyClipOp(
       const cur = project.clips[loc.idx];
       const patch = (args.patch && typeof args.patch === 'object' ? args.patch : args) as Record<string, unknown>;
       // 允许 1 基序号定位后不传参数？不允许 —— 静默无变更等于骗人。
-      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'colorStrength', 'adjust', 'beauty', 'lut', 'hsl', 'fx', 'fxParams', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'pitch', 'crop', 'keyframes', 'reverse', 'rotate', 'flip'];
+      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'colorStrength', 'adjust', 'beauty', 'lut', 'hsl', 'fx', 'fxParams', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'matte', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'pitch', 'crop', 'keyframes', 'reverse', 'rotate', 'flip'];
       if (!KEYS.some((k) => patch[k] !== undefined)) {
         return { ok: false, error: `update_clip 至少要改一个字段：${KEYS.join(' / ')}` };
       }
@@ -1882,6 +1939,11 @@ export function applyClipOp(
       if (patch.mask !== undefined) {
         const m = normalizeMask(patch.mask);
         if (m) next.mask = m; else delete next.mask;
+      }
+      if (patch.matte !== undefined) {
+        // null/false → 关闭抠像；空对象 {} → 开启并使用全默认
+        const mt = normalizeMatte(patch.matte);
+        if (mt) next.matte = mt; else delete next.matte;
       }
       if (patch.transition !== undefined) {
         const tr = normalizeTransition(patch.transition);
@@ -2258,6 +2320,7 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
       ...(c.fxParams ? { fxParams: c.fxParams } : {}),
       ...(c.fadeIn ? { fadeIn: c.fadeIn } : {}),
       ...(c.fadeOut ? { fadeOut: c.fadeOut } : {}),
+      ...(c.matte ? { matte: c.matte } : {}),
       ...(c.kenburns ? { kenburns: c.kenburns } : {}),
       ...(c.audioFile ? { audioFile: c.audioFile } : {}),
       ...(c.keepOriginalAudio ? { keepOriginalAudio: true } : {}),

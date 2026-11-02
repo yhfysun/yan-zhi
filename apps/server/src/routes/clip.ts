@@ -37,7 +37,9 @@ import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import { executeApiTool } from '../mcp/api-tool-executor.js';
 import { transcribeClipAudio } from '../services/clip-asr.js';
 import { reframeVertical, parseTargetAspect } from '../services/clip-reframe.js';
-import { probeMatteRuntime } from '../services/clip-matte.js';
+import {
+  probeMatteRuntime, MATTE_MODELS, matteSourcesFor, matteModelDir, installMatteModel,
+} from '../services/clip-matte.js';
 import {
   planTalkingCut, splitSegmentByKeeps, sourceCutsToFilm, rippleTimelineLayers, TALKING_CUT_DEFAULTS,
 } from '../services/clip-talking-cut.js';
@@ -702,15 +704,67 @@ router.get('/matte/probe', async (_req: Request, res: Response) => {
   }
 });
 
-// POST /api/plugin/clip-mode/matte/apply —— 骨架阶段**不提供**渲染应用
-// ★ 不把半成品伪装成可用：抠像要产出透明视频/替换片段画面，需要渲染管线接入，
-//   本轮明确未做。前端据此不展示可用按钮。
+// POST /api/plugin/clip-mode/matte/apply —— 已由「片段 matte 字段 + 渲染前物质化」替代
+// ★ 保留接口只为不让旧前端拿到 404；真正的抠像入口是 ClipSegment.matte（见 clip-matte-render）。
 router.post('/matte/apply', (_req: Request, res: Response) => {
   return res.status(501).json({
     ok: false,
     skeleton: true,
-    error: '骨架阶段：仅运行时探测与蒙版生成，尚未接入渲染',
+    error: '抠像已改为「片段 matte 字段」：在片段属性面板开启智能抠像，或 clip_project update_clip 传 matte；此接口不再使用',
   });
+});
+
+// GET /api/plugin/clip-mode/matte/models —— 模型清单（已安装/可下载/仅手动 + 体积 + 许可）
+//
+// ★ 只读注册表 + 磁盘存在性：不探测 Python（探测走 /matte/probe，避免 UI 一次加载起两个子进程）。
+// ★ sources 原样返回（含环境变量镜像），UI 可如实展示"国内外源"与第三方失效风险。
+router.get('/matte/models', (_req: Request, res: Response) => {
+  const dir = matteModelDir();
+  const models = Object.values(MATTE_MODELS).map((spec) => {
+    const file = path.join(dir, spec.fileHint);
+    let installed = false;
+    let installedBytes = 0;
+    try {
+      const st = fs.statSync(file);
+      installed = st.isFile() && st.size > 0;
+      installedBytes = installed ? st.size : 0;
+    } catch { /* 未安装 */ }
+    const sources = matteSourcesFor(spec.id);
+    return {
+      id: spec.id,
+      label: spec.label,
+      fileHint: spec.fileHint,
+      approxSizeMB: spec.approxSizeMB,
+      sizeBytes: spec.sizeBytes || 0,
+      license: spec.license,
+      note: spec.note || '',
+      installed,
+      installedBytes,
+      sources,
+      downloadable: sources.length > 0,
+      manualOnly: sources.length === 0,
+    };
+  });
+  return res.json({ ok: true, modelDir: dir, models });
+});
+
+// POST /api/plugin/clip-mode/matte/install  body: { id, force? }
+//
+// ★ 用户**显式**触发（前端按钮）；同步下载，大模型可能耗时较长 —— 可接受。
+// ★ 成功 = 已通过大小/hash/ONNX 加载校验并原子落盘；失败返回每个源的原因与手动放置路径。
+router.post('/matte/install', async (req: Request, res: Response) => {
+  const id = String(req.body?.id || '').trim();
+  if (!id) return res.status(400).json({ error: 'id 必填（模型 id，见 GET /matte/models）' });
+  if (!MATTE_MODELS[id]) {
+    return res.status(400).json({ error: `未知模型：${id}（可选：${Object.keys(MATTE_MODELS).join(' / ')}）` });
+  }
+  try {
+    const r = await installMatteModel(id, { force: req.body?.force === true });
+    if (!r.ok) return res.status(422).json(r);
+    return res.json(r);
+  } catch (e: unknown) {
+    return res.status(500).json({ ok: false, error: `下载异常：${e instanceof Error ? e.message : String(e)}` });
+  }
 });
 
 // POST /api/plugin/clip-mode/tts —— 字幕转配音（文本 → 定时音频层）
@@ -954,12 +1008,17 @@ router.get('/proxy', async (req: Request, res: Response) => {
   if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（代理预览需要它）' });
 
   const probe = await buildProxyProbeRow(ff.ffprobe, project);
-  const out = await ensureSegmentProxy({ project, segIndex: i, probe, ffmpeg: ff.ffmpeg });
+  const out = await ensureSegmentProxy({
+    project, segIndex: i, probe, ffmpeg: ff.ffmpeg, ffprobe: ff.ffprobe,
+  });
   if (!out.ok || !out.file) return res.status(500).json({ error: out.error || '代理生成失败' });
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Proxy-Cached', out.cached ? '1' : '0');
   res.setHeader('X-Proxy-Key', out.key || '');
+  // 抠像失败退回原片段时把原因带到响应头（前端可在代理条上提示；不影响播放）
+  if (out.matteFallback) res.setHeader('X-Proxy-Matte-Fallback', '1');
+  if (out.warning) res.setHeader('X-Proxy-Note', encodeURIComponent(out.warning));
   return res.sendFile(out.file);
 });
 

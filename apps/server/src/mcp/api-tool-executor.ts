@@ -49,6 +49,7 @@ import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-l
 import { singingStatus, installSingingRuntime, importModelZip } from '../services/music-sing-install.js';
 import { applyClipOp, summarizeProject, nextAudioSlot, type ClipProject } from '../services/clip-project.js';
 import { buildRenderPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
+import { materializeProjectMatte } from '../services/clip-matte-render.js';
 import { detectHwEncoder } from '../services/clip-hw-encode.js';
 import { readClipProject, writeClipProject } from '../services/clip-store.js';
 import { applyRecipe } from '../services/clip-recipes.js';
@@ -1994,8 +1995,33 @@ export async function clipProjectTool(
     }
     // P1-9 硬件编码：工程开了 auto 才探测（结果按 ffmpeg 路径缓存）；默认 CPU 不变
     const hw = cur.output.encoder === 'auto' ? await detectHwEncoder(ff.ffmpeg) : null;
+
+    // ★ 智能抠像（P2-1）物质化：在进入 buildRenderPlan **之前**把带 matte 的段换成
+    //   "背景已合成的临时成片"。无 matte 时返回同一个工程对象（渲染计划零变化）。
+    //   失败即整次导出失败（绝不产出"看似成功但背景没换"的成片）。
+    let renderProject = cur;
+    let matteCleanup: (() => Promise<void>) | undefined;
+    let matteUsed = 0;
+    if (cur.clips.some((c) => c.matte)) {
+      const mat = await materializeProjectMatte(cur, {
+        ffmpeg: ff.ffmpeg, ffprobe: ff.ffprobe, durations,
+      });
+      if (!mat.ok) return fail(mat.error);
+      renderProject = mat.project;
+      matteCleanup = mat.cleanup;
+      matteUsed = mat.materialized;
+      // 派生段的文件变了：时长/音轨按派生段重挂（同 id，渲染计划按 id 取值）
+      for (const seg of renderProject.clips) {
+        const orig = cur.clips.find((c) => c.id === seg.id);
+        if (orig && orig.file !== seg.file && seg.trimEnd != null) {
+          durations[seg.id] = seg.trimEnd;
+          hasAudio[seg.id] = hasAudio[orig.id] ?? hasAudio[orig.file] ?? false;
+        }
+      }
+    }
+
     const planInput = {
-      project: cur, durations, hasAudio, workDir, outFile,
+      project: renderProject, durations, hasAudio, workDir, outFile,
       ...(bgmFile ? { bgmFile } : {}),
       imageFiles: images,
       fast: args.preview === true,
@@ -2050,13 +2076,14 @@ export async function clipProjectTool(
         clips: cur.clips.length, texts: cur.texts.length,
         steps: steps.length,
         ...(coverFile ? { cover: coverFile } : {}),
-        note: `成片已生成（${cur.clips.length} 段 / ${cur.texts.length} 条字幕 / ${totalDuration}s）${hwUsed ? `，硬件编码 ${hwUsed}` : ''}${coverFile ? '，封面已导出' : ''}${coverNote}${bgmNote}`,
+        note: `成片已生成（${cur.clips.length} 段 / ${cur.texts.length} 条字幕 / ${totalDuration}s）${hwUsed ? `，硬件编码 ${hwUsed}` : ''}${matteUsed ? `，智能抠像 ${matteUsed} 段` : ''}${coverFile ? '，封面已导出' : ''}${coverNote}${bgmNote}`,
       }));
     } catch (e: unknown) {
       return fail(`渲染异常：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       // 临时目录清空失败不该让整个渲染报失败（老规矩：清理必须 try/catch）
       try { await rm(workDir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+      try { await matteCleanup?.(); } catch { /* 抠像缓存清理失败不影响结果 */ }
     }
   }
 

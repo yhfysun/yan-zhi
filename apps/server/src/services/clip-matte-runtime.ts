@@ -12,11 +12,21 @@
 // ★ 解释器解析沿用仓库既有链路（与 clip-reframe 完全一致）：
 //   YZ_CLIP_PYTHON > findPython()（YZ_PYTHON / 随包 / 系统）> PATH 上的 python/python3/py。
 //   不另写第二套定位逻辑。
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, createReadStream, createWriteStream, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findPython, getPythonScript, runPythonScript } from '@yan-zhi/core';
 import { runCmd, lookupOnPath } from './exec-cmd.js';
+
+/** 模型下载源（国内外按顺序回退；cn 多为第三方加速，可能失效）。 */
+export interface MatteSource {
+  url: string;
+  label: string;
+  region: 'intl' | 'cn';
+}
 
 /** 抠像预处理预设（与 python-scripts/clip_matte/portrait_mask.py 的 PRESETS 同值）。 */
 export interface MatteModelSpec {
@@ -31,38 +41,111 @@ export interface MatteModelSpec {
   channelOrder: 'RGB' | 'BGR';
   /** 约体积（MB），仅用于给用户明确的放置预期；不参与校验。 */
   approxSizeMB: number;
+  /** 下载源（按数组顺序尝试）；空数组 = 没有核实过的源，只能手动放置。 */
+  sources: MatteSource[];
+  /** 预期字节数（0 = 不校验；用于挡住镜像返回的错误页面/半截文件）。 */
+  sizeBytes?: number;
+  /** 预期 sha256（可选；有则严格校验）。 */
+  sha256?: string;
+  /** 许可提示（UI 与文档共用，避免两处文案漂移）。 */
+  license: string;
   note?: string;
+}
+
+const REMBG_RELEASE = 'https://github.com/danielgatis/rembg/releases/download/v0.0.0';
+
+/** GitHub Release 官方直链 + 两个第三方前缀镜像（按 intl → cn 排列）。 */
+function rembgSources(file: string): MatteSource[] {
+  const direct = `${REMBG_RELEASE}/${file}`;
+  return [
+    { url: direct, label: 'GitHub Release（官方）', region: 'intl' },
+    { url: `https://ghfast.top/${direct}`, label: 'ghfast.top 加速（第三方，可能失效）', region: 'cn' },
+    { url: `https://gh-proxy.com/${direct}`, label: 'gh-proxy.com 加速（第三方，可能失效）', region: 'cn' },
+  ];
 }
 
 /**
  * 已知分割模型注册表 —— **单一真相源**（路由/UI/指引都读这里）。
  * ★ 体积为公开权重的近似值，仅作提示；实际文件大小以用户下载的为准。
  * ★ u2net/u2netp 用 ImageNet 归一化（RGB）；RMBG-1.4 与 MODNet 用 0.5/0.5。
+ * ★ 只给**核实过**的下载源写 URL：RMBG/MODNet 没有确认过的官方 ONNX 直链，
+ *   sources 留空（仅手动放置），绝不写假 URL。
+ * ★ u2netp 的 sizeBytes/sha256 来自本机实测的 rembg release 文件（4,574,861 字节）；
+ *   u2net 的 sizeBytes 取自 rembg release 公开元数据（若镜像换了文件会被大小校验挡住）。
  */
 export const MATTE_MODELS: Record<string, MatteModelSpec> = {
   rmbg14: {
     id: 'rmbg14', label: 'RMBG-1.4（人像/商品通用，质量好）', fileHint: 'rmbg14.onnx',
     inputSize: 1024, mean: [0.5, 0.5, 0.5], std: [0.5, 0.5, 0.5], channelOrder: 'RGB',
-    approxSizeMB: 176, note: 'BRIA RMBG-1.4 的 ONNX 导出；非商用需遵守其许可',
+    approxSizeMB: 176, sources: [], sizeBytes: 0,
+    license: 'BRIA RMBG-1.4：非商用需遵守其许可；商用需向 BRIA 取得授权',
+    note: '本应用没有核实过的官方 ONNX 直链，请手动放置 rmbg14.onnx',
   },
   u2net: {
     id: 'u2net', label: 'U²-Net（通用显著性分割）', fileHint: 'u2net.onnx',
     inputSize: 320, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225], channelOrder: 'RGB',
-    approxSizeMB: 176, note: '输入 320×320，ImageNet mean/std',
+    approxSizeMB: 168, sources: rembgSources('u2net.onnx'), sizeBytes: 175997641,
+    license: 'U²-Net 权重：Apache-2.0（开源可商用；以官方仓库为准）',
+    note: '输入 320×320，ImageNet mean/std',
   },
   u2netp: {
     id: 'u2netp', label: 'U²-Netp（轻量版，快但精度低）', fileHint: 'u2netp.onnx',
     inputSize: 320, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225], channelOrder: 'RGB',
-    approxSizeMB: 5, note: '输入 320×320，ImageNet mean/std',
+    approxSizeMB: 4.4, sources: rembgSources('u2netp.onnx'), sizeBytes: 4574861,
+    sha256: '309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8',
+    license: 'U²-Netp 权重：Apache-2.0（开源可商用；以官方仓库为准）',
+    note: '输入 320×320，ImageNet mean/std；本机实测约 132ms/帧@320',
   },
   modnet: {
     id: 'modnet', label: 'MODNet（人像软蒙版）', fileHint: 'modnet.onnx',
     inputSize: 256, mean: [0.5, 0.5, 0.5], std: [0.5, 0.5, 0.5], channelOrder: 'RGB',
-    approxSizeMB: 25, note: '输入 256×256',
+    approxSizeMB: 25, sources: [], sizeBytes: 0,
+    license: 'MODNet：Apache-2.0（以官方仓库为准）',
+    note: '本应用没有核实过的官方 ONNX 直链，请手动放置 modnet.onnx',
   },
 };
 
 export const DEFAULT_MATTE_MODEL = 'rmbg14';
+
+/**
+ * 环境变量镜像前缀（`YZ_MATTE_MIRRORS`，逗号/分号/换行分隔）：
+ * 每项是一个可拼在 GitHub 直链前面的前缀（如 `https://ghfast.top/`）。
+ * ★ `YZ_MATTE_MIRRORS=none` = **覆盖**：不再尝试内置第三方镜像，只用官方直链 + 自填前缀。
+ * ★ 自填前缀排在内置镜像之前（用户更清楚哪个源适合自己）。
+ */
+export function mirrorPrefixes(): Array<{ prefix: string; label: string }> {
+  const raw = String(process.env.YZ_MATTE_MIRRORS || '').trim();
+  if (!raw) return [];
+  return raw.split(/[,;\r\n]+/).map((s) => s.trim()).filter((s) => s && !/^none$/i.test(s))
+    .map((prefix, i) => ({ prefix, label: `YZ_MATTE_MIRRORS 镜像 ${i + 1}` }));
+}
+
+/** 环境变量是否要求"覆盖"内置镜像（none）。 */
+export function mirrorsOverridden(): boolean {
+  return /(^|[,;\r\n]+)none($|[,;\r\n]+)/i.test(String(process.env.YZ_MATTE_MIRRORS || ''));
+}
+
+/**
+ * 某个模型的下载源（按尝试顺序）：官方直链 → 环境变量镜像 → 内置第三方镜像。
+ * 纯函数（只读 env），UI 展示与安装器共用，避免两处顺序漂移。
+ */
+export function matteSourcesFor(id: string): MatteSource[] {
+  const spec = MATTE_MODELS[id];
+  if (!spec) return [];
+  const sources = spec.sources.map((s) => ({ ...s }));
+  const intl = sources.filter((s) => s.region === 'intl');
+  const builtinCn = sources.filter((s) => s.region === 'cn');
+  const env = mirrorPrefixes();
+  const override = mirrorsOverridden();
+  if (!env.length && !override) return sources;
+  const extra: MatteSource[] = [];
+  for (const m of env) {
+    for (const s of intl) {
+      extra.push({ url: `${m.prefix}${s.url}`, label: `${m.label}（${s.label}）`, region: 'cn' });
+    }
+  }
+  return [...intl, ...extra, ...(override ? [] : builtinCn)];
+}
 
 const MIN_INPUT_SIZE = 64;
 const MAX_INPUT_SIZE = 4096;
@@ -142,6 +225,8 @@ export function parseMatteSidecar(raw: unknown): MatteSidecarResult {
       std: std.value.map((v) => clamp(v, -10, 10)) as [number, number, number],
       channelOrder,
       approxSizeMB: 0,
+      sources: [],
+      license: '自定义模型：许可由模型来源决定（本应用不代为分发）',
       note: '来自侧车 JSON；inputSize/mean/std 必须与模型训练时一致',
     },
   };
@@ -275,16 +360,25 @@ async function findRuntimePython(): Promise<{ python: string; onnxruntime: strin
   };
 }
 
-let cached: MatteRuntime | null = null;
+let cached = new Map<string, MatteRuntime>();
 
-export function resetMatteRuntimeCache(): void { cached = null; }
+export function resetMatteRuntimeCache(): void { cached = new Map(); }
+
+export interface ResolveMatteRuntimeOptions {
+  /** 项目里指定的模型 id（`seg.matte.model`）；缺省 = 运行时自动选一个已安装的。 */
+  model?: string;
+}
 
 /**
  * 探测抠像运行时：Python / onnxruntime / 模型。
- * 成功结果缓存（避免每次 UI 探测都起子进程）；失败不缓存，用户放置模型后可立即重试。
+ * 成功结果**按模型 id 缓存**（避免每次 UI 探测都起子进程）；失败不缓存，用户放置/下载模型后可立即重试。
+ * ★ 指定 model 时优先用该模型；没装就给可读错误（不悄悄换成别的模型 —— 用户选的是质量口径）。
  */
-export async function resolveMatteRuntime(): Promise<MatteRuntime> {
-  if (cached?.ok) return cached;
+export async function resolveMatteRuntime(options?: ResolveMatteRuntimeOptions): Promise<MatteRuntime> {
+  const want = String(options?.model || '').trim();
+  const cacheKey = want || 'auto';
+  const hit = cached.get(cacheKey);
+  if (hit?.ok) return hit;
 
   const dir = matteModelDir();
   const guidance: string[] = [`模型放置目录：${dir}`];
@@ -294,7 +388,29 @@ export async function resolveMatteRuntime(): Promise<MatteRuntime> {
 
   let resolved: ResolvedModel;
   const envModel = process.env.YZ_MATTE_MODEL?.trim();
-  if (envModel) {
+  const envBase = envModel ? path.basename(envModel).replace(/\.onnx$/i, '') : '';
+  if (want) {
+    if (envModel && envBase.toLowerCase() === want.toLowerCase()) {
+      resolved = existsSync(envModel)
+        ? resolveModelFile(envModel)
+        : { ok: false, error: `YZ_MATTE_MODEL 指向的模型文件不存在：${envModel}` };
+    } else {
+      const file = path.join(dir, `${want}.onnx`);
+      if (existsSync(file)) {
+        resolved = resolveModelFile(file);
+      } else {
+        let installed: string[] = [];
+        try {
+          installed = existsSync(dir) ? readdirSync(dir).filter((n) => /\.onnx$/i.test(n)).sort() : [];
+        } catch { /* 目录不可读 → 下面统一报 */ }
+        resolved = {
+          ok: false,
+          error: `指定模型未安装：${want}（模型目录里已有：${installed.join(', ') || '无'}）。`
+            + `可点剪辑页「智能抠像」里的「下载模型」，或手动放置 ${want}.onnx`,
+        };
+      }
+    }
+  } else if (envModel) {
     if (!path.isAbsolute(envModel)) {
       resolved = { ok: false, error: `YZ_MATTE_MODEL 必须是绝对路径（当前：${envModel}）` };
     } else if (!existsSync(envModel)) {
@@ -313,8 +429,8 @@ export async function resolveMatteRuntime(): Promise<MatteRuntime> {
   }
   if (!resolved.ok) {
     guidance.push(
-      '请自行放置 ONNX 分割模型（本应用不自动下载）：',
-      `  · 方式一：把 rmbg14.onnx（约176MB，1024 输入）/ u2net.onnx（约176MB，320）放入上面的目录`,
+      '也可在剪辑页点「下载模型」由你显式触发（本应用不自动下载），或自行放置 ONNX 分割模型：',
+      `  · 方式一：把 rmbg14.onnx（约176MB，1024 输入）/ u2net.onnx（约168MB，320）/ u2netp.onnx（约4.4MB，320）放入上面的目录`,
       `  · 方式二：任意 <名称>.onnx + 同名 <名称>.json，JSON 示例：${matteSidecarExample()}`,
       '  · 方式三：设置环境变量 YZ_MATTE_MODEL=<模型绝对路径>',
     );
@@ -332,7 +448,7 @@ export async function resolveMatteRuntime(): Promise<MatteRuntime> {
     ...(resolved.configPath ? { configPath: resolved.configPath } : {}),
     ...(ok ? {} : { error: resolved.error || rt.error || '抠像运行时未就绪' }),
   };
-  if (ok) cached = result;
+  if (ok) cached.set(cacheKey, result);
   return result;
 }
 
@@ -376,6 +492,8 @@ export interface GeneratePortraitMatteInput {
   duration?: number;
   /** 蒙版输出帧率（默认 10，夹到 1~60） */
   fps?: number;
+  /** 指定已安装模型 id（缺省 = 运行时自动选） */
+  modelId?: string;
 }
 
 export interface GeneratePortraitMatteResult {
@@ -419,7 +537,7 @@ export async function generatePortraitMatte(input: GeneratePortraitMatteInput): 
     return { ok: false, status: 400, error: 'outPath 必须是 .mp4（蒙版容器固定为 mp4v/yuv420p）' };
   }
 
-  const rt = await resolveMatteRuntime();
+  const rt = await resolveMatteRuntime(input.modelId ? { model: input.modelId } : undefined);
   if (!rt.ok) {
     return {
       ok: false, status: 503,
@@ -483,5 +601,216 @@ export async function generatePortraitMatte(input: GeneratePortraitMatteInput): 
     fps: Number(parsed.fps) || fps,
     model: String(parsed.model || rt.modelId),
     outPath,
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 模型下载（应用内显式触发；国内外源按顺序回退 + 大小/hash/ONNX 校验）
+// ════════════════════════════════════════════════════════════════════════════
+
+export interface MatteDownloadAttempt {
+  source: MatteSource;
+  error: string;
+}
+
+export interface InstallMatteModelOptions {
+  /** true = 即使已存在也重新下载覆盖 */
+  force?: boolean;
+  /** 下载进度（字节数/源） */
+  onProgress?: (p: { bytes: number; total?: number; source: MatteSource }) => void;
+  /** 单个源总超时（毫秒，默认 120000） */
+  timeoutMs?: number;
+  /** 测试注入：替换网络下载（**必须写入 dest**） */
+  download?: (url: string, dest: string, opts: {
+    timeoutMs: number;
+    onBytes?: (bytes: number, total?: number) => void;
+  }) => Promise<{ ok: boolean; bytes?: number; error?: string }>;
+  /** 测试注入：替换 ONNX 有效性校验 */
+  verifyOnnx?: (file: string) => Promise<{ ok: boolean; error?: string }>;
+  /** 测试注入：模型规格覆盖（正常调用不传） */
+  spec?: MatteModelSpec;
+  /** 测试注入：模型目录覆盖（正常 = matteModelDir()） */
+  modelDir?: string;
+}
+
+export interface InstallMatteModelResult {
+  ok: boolean;
+  /** 安装后的模型绝对路径 */
+  model?: string;
+  /** 实际成功的源 URL */
+  sourceUsed?: string;
+  bytes?: number;
+  /** 已经存在有效模型（未覆盖，也未发起下载） */
+  alreadyInstalled?: boolean;
+  /** 每个失败源的可读原因（按尝试顺序） */
+  attempts?: MatteDownloadAttempt[];
+  error?: string;
+  /** 手动放置的最终路径（全失败时给用户可执行动作） */
+  manualPath?: string;
+  guidance?: string[];
+}
+
+/** 文件 sha256（流式计算，不把 176MB 读进内存）。 */
+async function sha256File(file: string): Promise<string> {
+  const hash = createHash('sha256');
+  await pipeline(createReadStream(file), hash);
+  return hash.digest('hex');
+}
+
+/**
+ * 默认下载器：fetch → 边下边写 dest。
+ * ★ 连接超时 20s（等响应头）、单源总超时 120s；重定向交给 fetch 跟随。
+ */
+async function httpDownload(
+  url: string,
+  dest: string,
+  opts: { timeoutMs: number; onBytes?: (bytes: number, total?: number) => void },
+): Promise<{ ok: boolean; bytes?: number; error?: string }> {
+  const ac = new AbortController();
+  let timer: NodeJS.Timeout | null = setTimeout(() => ac.abort(new Error('连接超时（20s）')), 20000);
+  const totalTimer = setTimeout(() => ac.abort(new Error(`下载超时（${Math.round(opts.timeoutMs / 1000)}s）`)), opts.timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ac.signal, redirect: 'follow' });
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (!res.ok || !res.body) return { ok: false, error: `HTTP ${res.status}` };
+    const total = Number(res.headers.get('content-length')) || undefined;
+    let bytes = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body = Readable.fromWeb(res.body as any);
+    body.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+      opts.onBytes?.(bytes, total);
+    });
+    await pipeline(body, createWriteStream(dest));
+    return { ok: true, bytes };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    if (timer) clearTimeout(timer);
+    clearTimeout(totalTimer);
+  }
+}
+
+/** 用本机 Python + onnxruntime 实际加载一次，确认不是坏文件/HTML 错误页。 */
+async function verifyOnnxWithPython(file: string): Promise<{ ok: boolean; error?: string }> {
+  const rt = await resolveMatteRuntime();
+  if (!rt.python) {
+    return { ok: false, error: '没有可用的 Python 解释器，无法校验 ONNX（请安装 Python 或手动放置模型）' };
+  }
+  if (!rt.onnxruntime) {
+    return { ok: false, error: `Python（${rt.python}）缺少 onnxruntime，无法校验 ONNX` };
+  }
+  const code = 'import sys, onnxruntime as o; o.InferenceSession(sys.argv[1])';
+  const r = await runCmd(rt.python, ['-c', code, file], { timeoutMs: 60000, maxBuffer: 1024 * 1024 });
+  if (r.ok) return { ok: true };
+  return { ok: false, error: `ONNX 校验失败：${String(r.stderr || r.error || '').trim().slice(-300) || `退出码 ${r.code}`}` };
+}
+
+/**
+ * 下载并安装一个抠像模型（**用户显式触发**，绝不自动下载）。
+ *
+ * 流程：按 sources 顺序尝试 → 写 `<model>.onnx.download` 临时文件 → 校验 sizeBytes/sha256
+ * → Python onnxruntime 实际加载一次 → 原子 rename 到 `<model>.onnx`。
+ * ★ 已存在非空模型时默认**不覆盖**（除非 force）；否则会悄悄换掉用户手动放的高质量模型。
+ * ★ 全部失败返回每个源的原因与手动放置路径，不伪造成功。
+ */
+export async function installMatteModel(
+  id: string,
+  opts: InstallMatteModelOptions = {},
+): Promise<InstallMatteModelResult> {
+  const spec = opts.spec ?? MATTE_MODELS[id];
+  if (!spec) {
+    return { ok: false, error: `未知模型：${id}（可选：${Object.keys(MATTE_MODELS).join(' / ')}）` };
+  }
+  const dir = opts.modelDir ?? matteModelDir();
+  const target = path.join(dir, spec.fileHint);
+
+  try {
+    const st = statSync(target);
+    if (st.isFile() && st.size > 0 && !opts.force) {
+      return { ok: true, model: target, bytes: st.size, alreadyInstalled: true };
+    }
+  } catch { /* 未安装 → 继续下载 */ }
+
+  // 真实调用时动态拼上环境变量镜像；测试给了 spec 就按 spec.sources 原样走。
+  const sources = opts.spec ? spec.sources : matteSourcesFor(id);
+  if (!sources.length) {
+    return {
+      ok: false,
+      error: `模型「${spec.label}」没有核实过的下载源，请手动放置 ${spec.fileHint}`,
+      manualPath: target,
+      guidance: [`模型目录：${dir}`, spec.note || '', '也可设置环境变量 YZ_MATTE_MODEL 指向任意位置的模型'].filter(Boolean),
+    };
+  }
+
+  const temp = `${target}.download`;
+  const attempts: MatteDownloadAttempt[] = [];
+  const download = opts.download ?? httpDownload;
+  const timeoutMs = opts.timeoutMs ?? 120000;
+
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    return { ok: false, error: `无法创建模型目录：${dir}（${e instanceof Error ? e.message : String(e)}）` };
+  }
+
+  for (const source of sources) {
+    try { rmSync(temp, { force: true }); } catch { /* 继续 */ }
+    const r = await download(source.url, temp, {
+      timeoutMs,
+      onBytes: (bytes, total) => opts.onProgress?.({ bytes, total, source }),
+    });
+    if (!r.ok) {
+      attempts.push({ source, error: r.error || '下载失败' });
+      continue;
+    }
+    let size = 0;
+    try { size = statSync(temp).size; } catch { /* 下面按 0 处理 */ }
+    if (!(size > 0)) {
+      attempts.push({ source, error: '下载文件为空' });
+      continue;
+    }
+    if (spec.sizeBytes && spec.sizeBytes > 0 && size !== spec.sizeBytes) {
+      attempts.push({ source, error: `文件大小不符：期望 ${spec.sizeBytes} 字节，实际 ${size} 字节` });
+      continue;
+    }
+    if (spec.sha256) {
+      const got = await sha256File(temp);
+      if (got.toLowerCase() !== spec.sha256.toLowerCase()) {
+        attempts.push({ source, error: `sha256 不符：期望 ${spec.sha256}，实际 ${got}` });
+        continue;
+      }
+    }
+    const verify = await (opts.verifyOnnx ?? verifyOnnxWithPython)(temp);
+    if (!verify.ok) {
+      attempts.push({ source, error: verify.error || 'ONNX 校验失败' });
+      continue;
+    }
+    try {
+      renameSync(temp, target);
+    } catch (e) {
+      attempts.push({ source, error: `落盘失败：${e instanceof Error ? e.message : String(e)}` });
+      continue;
+    }
+    resetMatteRuntimeCache();
+    return {
+      ok: true, model: target, sourceUsed: source.url, bytes: size,
+      ...(attempts.length ? { attempts } : {}),
+    };
+  }
+
+  try { rmSync(temp, { force: true }); } catch { /* 清理失败不影响结果 */ }
+  const guidance = [
+    `手动放置：把 ${spec.fileHint} 下载后放到 ${dir}`,
+    '也可设置环境变量 YZ_MATTE_MODEL 指向任意位置的模型',
+    ...(spec.note ? [spec.note] : []),
+  ];
+  return {
+    ok: false,
+    error: `全部下载源均失败（${attempts.length} 个）：\n`
+      + attempts.map((a) => `· ${a.source.label}：${a.error}`).join('\n'),
+    attempts,
+    manualPath: target,
+    guidance,
   };
 }

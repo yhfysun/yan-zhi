@@ -533,7 +533,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**create** 建工程/改元信息 { name, size, fps, quality }；' +
         '**get** 读工程（默认返回紧凑摘要：各段 index/id/时间轴起止/时长 + 字幕；summaryOnly=true 时只给摘要）；' +
         '**set_output** 改导出规格 { size:"1080x1920", fps, quality?, encoder?, interpolate? }（interpolate=补帧方式：off 关闭 / blend 混合（快） / mci 光流（慢，非 AI））；' +
-        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, colorStrength?, adjust?, beauty?, fx?, fxParams?, fadeIn?, fadeOut?, kenburns?, mask?, transition?, crop?, keyframes?, rotate?, flip?, reverse?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）——★ 每段支持画面裁剪 crop、蒙版 mask（形状/色键）、转场 transition、关键帧运镜 keyframes、方向 rotate/flip/reverse、调色强度与手动调节、基础美颜 beauty（**非 AI，全画面**柔肤/美白，不识别面部）；' +
+        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, colorStrength?, adjust?, beauty?, fx?, fxParams?, fadeIn?, fadeOut?, kenburns?, mask?, matte?, transition?, crop?, keyframes?, rotate?, flip?, reverse?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）——★ 每段支持画面裁剪 crop、蒙版 mask（形状/色键）、智能抠像 matte（人像分割换背景，需模型且渲染变慢）、转场 transition、关键帧运镜 keyframes、方向 rotate/flip/reverse、调色强度与手动调节、基础美颜 beauty（**非 AI，全画面**柔肤/美白，不识别面部）；' +
         '**update_clip** 改某段 { id 或 index, patch:{...同 add_clip 字段} }；**remove_clip** { id|index }；**move_clip** { id|index, to }；**clear_clips**；' +
         '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, fontFamily?, letterSpacingPx?, lineSpacingPx?, bold?, italic?, plateColor?, platePaddingPx?, position?, safeArea?, transform?, keyframes? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
         '★ 排版：fontFamily 选字体（' + fontFamilyCatalogText() + '）；letterSpacingPx 字距；lineSpacingPx 行距（多行且无动画/无变换时生效）；bold/italic 加粗斜体；plateColor 给「花字/气泡」圆角底板（综艺字幕那种色块）' +
@@ -755,6 +755,21 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                       },
                       required: ['points'],
                     },
+                  },
+                },
+                matte: {
+                  type: 'object',
+                  description: '智能抠像（P2-1）：分隔人像/主体后换背景。{ background?, color?, feather?, fps?, model? }。★ 需要本机已放置或下载 ONNX 分割模型；单帧推理约 0.1~0.2s，渲染会明显变慢；效果以导出/代理为准（实时单帧预览不抠像）。图片素材不支持',
+                  properties: {
+                    background: {
+                      type: 'string',
+                      enum: ['black', 'white', 'green', 'blur'],
+                      description: '背景：black/white/green 纯色，blur=原画面模糊（缺省 black）',
+                    },
+                    color: { type: 'string', description: '自定义背景色 #RRGGBB（仅 background=green 时生效，缺省绿 #00FF00）' },
+                    feather: { type: 'number', description: '蒙版边缘羽化 0~20 像素（缺省 0）' },
+                    fps: { type: 'number', description: '蒙版生成帧率 5~15（缺省 10；越高越顺滑也越慢）' },
+                    model: { type: 'string', description: '指定已安装的模型 id（如 u2netp；缺省用运行时自动选中的模型）' },
                   },
                 },
                 transition: {
