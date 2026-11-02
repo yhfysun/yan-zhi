@@ -2,6 +2,10 @@
 
 > 状态：P1/P2/P3(部分) 已实施（2026-09-04）| 选型定案：B（PowerShell/Win32 零原生依赖，nut-js 适配器留待后续）
 
+## Why
+
+系统级桌面输入自动化此前不存在（只有浏览器页内的 playwright），需要一条能被智能体循环调用的桌面操作能力；同时内置插件此前无法导出与分发。
+
 ## 一、现状调研结论（基于实际源码）
 
 - 插件体系：`packages/core/src/plugin/`（manifest/loader/registry/permissions/api），后端管理器 `PluginManager`，路由 `apps/server/src/routes/plugins.ts`（install/enable/disable/config）。

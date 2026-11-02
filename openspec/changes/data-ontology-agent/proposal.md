@@ -1,5 +1,4 @@
-# 为什么
-
+## Why
 言智当前只能查「自家 server 的 data.db」（业务硬编码 SQL），没有任何面向用户/智能体的数据查询能力：
 
 - 无法接入外部数据库（MySQL / PostgreSQL / 达梦 DM / Oracle / SQLite 等），也没有关系型之外的数据源（CSV、API 等）。
