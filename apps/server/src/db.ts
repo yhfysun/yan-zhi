@@ -1234,6 +1234,8 @@ try {
 const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 文件读写
   'file_read', 'file_write', 'file_list',
+  // 办公三件套（Word/Excel/PPT 的新建与结构化读取；与办公工作台同源）
+  'office_create', 'office_read',
   // 代码工具
   'code_search', 'code_outline', 'code_diagnostics', 'js_exec', 'python_exec',
   // 命令执行
