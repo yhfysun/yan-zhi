@@ -779,6 +779,28 @@
               </div>
             </div>
 
+            <!-- 基础美颜：非 AI、全画面生效（不是人脸磨皮） -->
+            <div class="cp-grp">
+              <div class="cp-grp-head" @click="beautyOpen = !beautyOpen">
+                <el-icon :size="11"><component :is="beautyOpen ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+                <span>美颜（非 AI）</span>
+                <span v-if="clipPatch.beautySmooth || clipPatch.beautyWhiten" class="cp-grp-badge">已开</span>
+                <span class="cp-spacer"></span>
+                <button class="cp-mini" title="复位美颜" @click.stop="resetBeauty"><el-icon :size="11"><Refresh /></el-icon></button>
+              </div>
+              <div v-show="beautyOpen" class="cp-grp-body">
+                <div class="cp-field">
+                  <label>柔肤 <span class="cp-val">{{ clipPatch.beautySmooth.toFixed(2) }}</span></label>
+                  <input v-model.number="clipPatch.beautySmooth" class="cp-range" type="range" min="0" max="1" step="0.02" />
+                </div>
+                <div class="cp-field">
+                  <label>美白 <span class="cp-val">{{ clipPatch.beautyWhiten.toFixed(2) }}</span></label>
+                  <input v-model.number="clipPatch.beautyWhiten" class="cp-range" type="range" min="0" max="1" step="0.02" />
+                </div>
+                <div class="cp-ins-hint">全画面生效，不识别面部：整帧一起柔化/提亮（背景同样被处理）。点「应用片段参数」生效</div>
+              </div>
+            </div>
+
             <!-- 特效：结构类效果（震动/扫描线/残影/柔光/马赛克…）—— 与调色分工 -->
             <div class="cp-field">
               <label>特效 <span v-if="clipPatch.fx" class="cp-val">{{ fxLabelOf(clipPatch.fx) }}</span></label>
@@ -1933,6 +1955,8 @@ interface ClipSegment {
   /** P1-6：HSL 分色（按色带调 H/S/L） */
   hsl?: { bands: Array<{ color: string; hue?: number; saturation?: number; lightness?: number }> };
   adjust?: { brightness?: number; contrast?: number; saturation?: number; temperature?: number; sharpness?: number; vignette?: number };
+  /** 基础美颜（**非 AI**，全画面生效）：柔肤 smooth / 美白 whiten，均 0~1（0/缺省 = 不生效） */
+  beauty?: { smooth?: number; whiten?: number };
   /** 动态特效 id（见 shared 的 FX_EFFECTS） */
   fx?: string;
   /** 动态特效参数（键见注册表的 params 声明） */
@@ -2173,6 +2197,8 @@ const clipPatch = reactive({
   hslBands: HSL_BANDS.map((b) => ({ color: b.id, hue: 0, saturation: 0, lightness: 0 })) as Array<{ color: string; hue: number; saturation: number; lightness: number }>,
   adjBrightness: 0, adjContrast: 1, adjSaturation: 1,
   adjTemperature: 0, adjSharpness: 0, adjVignette: 0,
+  // 基础美颜（非 AI，全画面）：0 = 不处理
+  beautySmooth: 0, beautyWhiten: 0,
 });
 const maskOpen = ref(false);
 // P1-6 HSL 分色：当前编辑的色带
@@ -2188,6 +2214,8 @@ const ovKfOpen = ref(false);
 /** 字幕变换关键帧面板展开态 */
 const txKfOpen = ref(false);
 const adjOpen = ref(false);
+/** 基础美颜（非 AI）面板展开态 */
+const beautyOpen = ref(false);
 const pipOpen = ref(false);
 const selectedOverlayId = ref('');
 /** 选中的定时音频层（P0-7，与片段/字幕/画中画互斥） */
@@ -4595,6 +4623,7 @@ function selectClip(id: string) {
     adjBrightness: c.adjust?.brightness ?? 0, adjContrast: c.adjust?.contrast ?? 1,
     adjSaturation: c.adjust?.saturation ?? 1, adjTemperature: c.adjust?.temperature ?? 0,
     adjSharpness: c.adjust?.sharpness ?? 0, adjVignette: c.adjust?.vignette ?? 0,
+    beautySmooth: c.beauty?.smooth ?? 0, beautyWhiten: c.beauty?.whiten ?? 0,
   });
   if (c.mask?.shape || c.mask?.key) maskOpen.value = true;
   if (c.transition?.type) transOpen.value = true;
@@ -4979,6 +5008,12 @@ function resetAdjust() {
   clipPatch.adjVignette = 0;
 }
 
+/** 基础美颜一键复位（同样只改面板值，点"应用片段参数"才落盘）。 */
+function resetBeauty() {
+  clipPatch.beautySmooth = 0;
+  clipPatch.beautyWhiten = 0;
+}
+
 async function applyClipPatch() {
   pendingLabel.value = '修改片段参数';
   const c = selectedClip.value;
@@ -5042,6 +5077,12 @@ async function applyClipPatch() {
     ...(clipPatch.adjVignette > 0.001 ? { vignette: clipPatch.adjVignette } : {}),
   };
   if (Object.keys(adj).length) c.adjust = adj; else delete c.adjust;
+  // 基础美颜（非 AI，全画面）：两项都 0 → 不写字段（滤镜串与未设置时完全一致）
+  const bty = {
+    ...(clipPatch.beautySmooth > 0.001 ? { smooth: Number(Math.min(1, clipPatch.beautySmooth).toFixed(3)) } : {}),
+    ...(clipPatch.beautyWhiten > 0.001 ? { whiten: Number(Math.min(1, clipPatch.beautyWhiten).toFixed(3)) } : {}),
+  };
+  if (Object.keys(bty).length) c.beauty = bty; else delete c.beauty;
   if (clipPatch.fx) c.fx = clipPatch.fx; else delete c.fx;
   // 特效参数：只写偏离默认值的键（键与范围以注册表为准，UI 不自己兜底）
   if (clipPatch.fx) {

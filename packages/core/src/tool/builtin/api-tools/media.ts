@@ -533,7 +533,7 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
         '**create** 建工程/改元信息 { name, size, fps, quality }；' +
         '**get** 读工程（默认返回紧凑摘要：各段 index/id/时间轴起止/时长 + 字幕；summaryOnly=true 时只给摘要）；' +
         '**set_output** 改导出规格 { size:"1080x1920", fps, quality?, encoder?, interpolate? }（interpolate=补帧方式：off 关闭 / blend 混合（快） / mci 光流（慢，非 AI））；' +
-        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, colorStrength?, adjust?, fx?, fxParams?, fadeIn?, fadeOut?, kenburns?, mask?, transition?, crop?, keyframes?, rotate?, flip?, reverse?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）——★ 每段支持画面裁剪 crop、蒙版 mask（形状/色键）、转场 transition、关键帧运镜 keyframes、方向 rotate/flip/reverse、调色强度与手动调节；' +
+        '**add_clip** 追加素材 { clips:[{ file, label?, trimStart?, trimEnd?, speed?, colorPreset?, colorStrength?, adjust?, beauty?, fx?, fxParams?, fadeIn?, fadeOut?, kenburns?, mask?, transition?, crop?, keyframes?, rotate?, flip?, reverse?, audioFile?, keepOriginalAudio?, volume? }] }（可一次多段，顺序即播放顺序）——★ 每段支持画面裁剪 crop、蒙版 mask（形状/色键）、转场 transition、关键帧运镜 keyframes、方向 rotate/flip/reverse、调色强度与手动调节、基础美颜 beauty（**非 AI，全画面**柔肤/美白，不识别面部）；' +
         '**update_clip** 改某段 { id 或 index, patch:{...同 add_clip 字段} }；**remove_clip** { id|index }；**move_clip** { id|index, to }；**clear_clips**；' +
         '**add_text** 加字幕 { texts:[{ text, start, end, animation?, slideDirection?, fontSizePx?, color?, outlineColor?, outlinePx?, backColor?, fontFamily?, letterSpacingPx?, lineSpacingPx?, bold?, italic?, plateColor?, platePaddingPx?, position?, safeArea?, transform?, keyframes? }] }（start/end 相对**成片**时间轴，可先用 get 看各段起止）；' +
         '★ 排版：fontFamily 选字体（' + fontFamilyCatalogText() + '）；letterSpacingPx 字距；lineSpacingPx 行距（多行且无动画/无变换时生效）；bold/italic 加粗斜体；plateColor 给「花字/气泡」圆角底板（综艺字幕那种色块）' +
@@ -665,6 +665,14 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
                     temperature: { type: 'number', description: '色温 -1~1（正=偏暖，负=偏冷；0=不变）' },
                     sharpness: { type: 'number', description: '锐化 0~1（0=不锐化）' },
                     vignette: { type: 'number', description: '暗角 0~1（0=无暗角）' },
+                  },
+                },
+                beauty: {
+                  type: 'object',
+                  description: '基础美颜（**非 AI**，全画面生效，不识别面部）：{ smooth?, whiten? }，均 0~1（0/缺省 = 不生效）。整帧一起柔化/提亮，背景同样被处理；需要人脸磨皮/瘦脸/美体时如实告知用户当前不支持',
+                  properties: {
+                    smooth: { type: 'number', description: '柔肤 0~1（轻度模糊；0=不处理）' },
+                    whiten: { type: 'number', description: '美白 0~1（提亮 + 轻微降饱和；0=不处理）' },
                   },
                 },
                 lut: {

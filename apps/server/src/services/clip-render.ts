@@ -237,6 +237,32 @@ export function buildAdjustFilters(adj: ClipSegment['adjust']): string[] {
   return out;
 }
 
+/**
+ * 基础美颜（**非 AI**，全画面生效）→ ffmpeg 滤镜串。
+ *
+ * · 柔肤 smooth：`boxblur` 轻度模糊（luma_radius 1~3，随 0~1 线性放大到 2 倍再取整）。
+ * · 美白 whiten：`eq` 提亮 + 轻微降饱和（亮 0~0.06、饱和 1~0.92）。
+ * ★ 不识别面部：整帧一起糊/提亮，背景与五官同样被处理（与剪映的人脸磨皮不是一个量级）。
+ * ★ 两项都为 0/缺省 → 返回空数组，滤镜串与历史逐字节一致。
+ * ★ 位置（见 buildSegmentFilters 调用处）：调色/adjust **之后**、结构类特效（FX）与
+ *   淡入淡出之前 —— 先定色调再柔化质感；反过来调色的对比/锐化会把柔肤效果抵掉。
+ *   蒙版更早，所以柔化不会糊掉蒙版边缘。
+ */
+export function buildBeautyFilters(beauty: ClipSegment['beauty']): string[] {
+  if (!beauty) return [];
+  const out: string[] = [];
+  const sm = Math.min(1, Math.max(0, beauty.smooth ?? 0));
+  if (sm > 0.001) {
+    const r = 1 + Math.round(2 * sm); // 1~3
+    out.push(`boxblur=luma_radius=${r}:luma_power=1`);
+  }
+  const wh = Math.min(1, Math.max(0, beauty.whiten ?? 0));
+  if (wh > 0.001) {
+    out.push(`eq=brightness=${(0.06 * wh).toFixed(3)}:saturation=${(1 - 0.08 * wh).toFixed(3)}`);
+  }
+  return out;
+}
+
 export function buildSegmentFilters(opts: {
   seg: ClipSegment;
   /** 段内有效时长（秒，已含变速） */
@@ -379,6 +405,10 @@ export function buildSegmentFilters(opts: {
   }
   // 手动调节叠在预设**之上**：用户是想先在风格上调，再微调明暗
   filters.push(...buildAdjustFilters(seg.adjust));
+  // ★ 基础美颜（非 AI，全画面）排在调色/adjust 之后、结构类特效之前：
+  //   先定色调再做质感柔化（柔肤是模糊，若在调色前，后面的对比/锐化会把柔化抵掉）；
+  //   而蒙版更早（柔化不糊蒙版边缘）、fade 更晚（黑场过渡不被柔化）。
+  filters.push(...buildBeautyFilters(seg.beauty));
 
   // ★ 动态特效（FX）排在调色之后、淡入淡出之前：
   //   先定色调再上结构类效果（扫描线/马赛克/残影），否则"调色"会把特效的纹理一起洗掉；

@@ -51,6 +51,12 @@ export interface ClipSegment {
     sharpness?: number;
     vignette?: number;
   };
+  /**
+   * 基础美颜（**非 AI**，全画面生效）：柔肤 smooth / 美白 whiten，均 0~1。
+   * ★ 0/缺省 = 不生效，且不改变滤镜串（老工程出片逐字节不变）。
+   * ★ 不做人脸识别：整帧一起柔化/提亮（背景同样被处理），也不做瘦脸/美体。
+   */
+  beauty?: { smooth?: number; whiten?: number };
   /** 动态特效 id（见 shared 的 FX_EFFECTS：震动/扫描线/残影/柔光/马赛克…） */
   fx?: string;  /**
    * 动态特效参数（键见效果注册表 FX_EFFECTS[].params）。
@@ -1164,6 +1170,29 @@ function normalizeAdjust(v: unknown): ClipSegment['adjust'] | null {
 }
 
 /**
+ * 归一化基础美颜（非 AI，全画面）：smooth/whiten 夹 0~1，非法值丢弃。
+ * 返回 null = 两项都无有效值（全 0/缺省）→ 不写字段，滤镜串与未设置时逐字节一致。
+ */
+function normalizeBeauty(v: unknown): ClipSegment['beauty'] | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const m = v as Record<string, unknown>;
+  const pick = (key: string): number | undefined => {
+    const raw = m[key];
+    if (raw == null) return undefined;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return undefined;
+    return Number(Math.max(0, Math.min(1, n)).toFixed(3));
+  };
+  const smooth = pick('smooth');
+  const whiten = pick('whiten');
+  const out = {
+    ...(smooth != null && smooth > 0.001 ? { smooth } : {}),
+    ...(whiten != null && whiten > 0.001 ? { whiten } : {}),
+  };
+  return Object.keys(out).length ? out : null;
+}
+
+/**
  * 旋转角度归一化：只接受 90/180/270。
  * ★ 0/缺省 = 不旋转 → 不写字段（工程文件里不该出现无意义的 rotate:0）。
  */
@@ -1679,6 +1708,7 @@ export function applyClipOp(
         const rotate = normalizeRotate(c.rotate);
         const flip = normalizeFlip(c.flip);
         const adjust = normalizeAdjust(c.adjust);
+        const beauty = normalizeBeauty(c.beauty);
         const lut = normalizeLut(c.lut);
         const hsl = normalizeHsl(c.hsl);
         const csRaw = c.colorStrength == null ? NaN : Number(c.colorStrength);
@@ -1694,6 +1724,7 @@ export function applyClipOp(
           ...(colorPreset ? { colorPreset: colorPreset.toLowerCase() } : {}),
           ...(colorStrength != null && Math.abs(colorStrength - 1) > 0.001 ? { colorStrength } : {}),
           ...(adjust ? { adjust } : {}),
+          ...(beauty ? { beauty } : {}),
           ...(lut ? { lut } : {}),
           ...(hsl ? { hsl } : {}),
           ...(fx ? { fx } : {}),
@@ -1727,7 +1758,7 @@ export function applyClipOp(
       const cur = project.clips[loc.idx];
       const patch = (args.patch && typeof args.patch === 'object' ? args.patch : args) as Record<string, unknown>;
       // 允许 1 基序号定位后不传参数？不允许 —— 静默无变更等于骗人。
-      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'colorStrength', 'adjust', 'lut', 'hsl', 'fx', 'fxParams', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'pitch', 'crop', 'keyframes', 'reverse', 'rotate', 'flip'];
+      const KEYS = ['file', 'label', 'trimStart', 'trimEnd', 'speed', 'colorPreset', 'colorStrength', 'adjust', 'beauty', 'lut', 'hsl', 'fx', 'fxParams', 'fadeIn', 'fadeOut', 'kenburns', 'mask', 'transition', 'audioFile', 'keepOriginalAudio', 'volume', 'pitch', 'crop', 'keyframes', 'reverse', 'rotate', 'flip'];
       if (!KEYS.some((k) => patch[k] !== undefined)) {
         return { ok: false, error: `update_clip 至少要改一个字段：${KEYS.join(' / ')}` };
       }
@@ -1765,6 +1796,10 @@ export function applyClipOp(
       if (patch.adjust !== undefined) {
         const a = normalizeAdjust(patch.adjust);
         if (a) next.adjust = a; else delete next.adjust;
+      }
+      if (patch.beauty !== undefined) {
+        const b = normalizeBeauty(patch.beauty);
+        if (b) next.beauty = b; else delete next.beauty;
       }
       if (patch.lut !== undefined) {
         const l = normalizeLut(patch.lut);
@@ -2169,6 +2204,7 @@ export function summarizeProject(p: ClipProject, durations: Record<string, numbe
       ...(c.lut ? { lut: c.lut } : {}),
       ...(c.hsl ? { hsl: c.hsl } : {}),
       ...(c.adjust ? { adjust: c.adjust } : {}),
+      ...(c.beauty ? { beauty: c.beauty } : {}),
       ...(c.fx ? { fx: c.fx } : {}),
       ...(c.fxParams ? { fxParams: c.fxParams } : {}),
       ...(c.fadeIn ? { fadeIn: c.fadeIn } : {}),
