@@ -49,8 +49,25 @@ describe('P1-2 工具参数详情右侧面板', () => {
   });
 });
 
-describe('P1-2 Skill 本地商城右侧编辑', () => {
-  const SKILLS = strip(readRepo('packages/ui/src/views/skill-market/LocalSkillMarket.vue'));
+describe('P1-2 插件列表 + 右侧详情', () => {
+  const PM = strip(readRepo('packages/ui/src/components/plugin/PluginManager.vue'));
+  const PAGE = strip(readRepo('packages/ui/src/views/PluginsPage.vue'));
+
+  it('宽屏用右侧容器，窄屏保留弹窗', () => {
+    expect(PM).toMatch(/useResizable\('plugins_detail'/);
+    expect(PM).toMatch(/pm-detail-pane/);
+    expect(PM).toMatch(/detailPaneOpen/);
+    expect(PM).toMatch(/v-if="!wide"/);
+  });
+
+  it('插件页接入 PageFrame 并自行管理滚动', () => {
+    expect(PAGE).toMatch(/<PageFrame/);
+    expect(PAGE).toMatch(/:scroll="false"/);
+    expect(PM).toMatch(/\.pm-main/);
+  });
+});
+
+describe('P1-2 Skill 本地商城右侧编辑', () => {  const SKILLS = strip(readRepo('packages/ui/src/views/skill-market/LocalSkillMarket.vue'));
   const SKILLS_HOST = strip(readRepo('packages/ui/src/views/Skills.vue'));
 
   it('宽屏在右侧容器编辑，窄屏保留弹窗', () => {

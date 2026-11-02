@@ -1,5 +1,7 @@
 <template>
   <div class="plugin-manager">
+    <div class="pm-body">
+      <div class="pm-main">
     <!-- 统一工具条：左搜索 / 右「分类筛选 → 操作按钮」（与商城、工具、MCP 各页一致） -->
     <div class="pm-toolbar">
       <el-input
@@ -165,6 +167,20 @@
         </div>
       </section>
     </div>
+      </div>
+
+      <!-- 右侧详情（2026-11-02，P1-2）：宽屏用容器而不是弹窗，宽度可拖拽并记忆 -->
+      <template v-if="detailPaneOpen">
+        <div class="rs-handle" @mousedown="detailR.startDrag($event, 'right')"></div>
+        <aside class="pm-detail-pane" :style="{ width: detailW + 'px' }">
+          <header class="pm-detail-head">
+            <span class="pm-detail-title" :title="detailPlugin?.manifest.name">{{ detailPlugin?.manifest.name || '插件详情' }}</span>
+            <el-button text :icon="Close" title="关闭详情" @click="detailOpen = false" />
+          </header>
+          <pre class="pm-detail pm-code pm-detail-body">{{ detailContent }}</pre>
+        </aside>
+      </template>
+    </div>
 
     <el-dialog v-model="configOpen" title="插件配置" width="520" :close-on-click-modal="false">
       <el-input v-model="configText" type="textarea" :rows="10" class="pm-json-input" />
@@ -174,7 +190,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="detailOpen" title="插件详情" width="520">
+    <el-dialog v-if="!wide" v-model="detailOpen" title="插件详情" width="520">
       <pre class="pm-detail pm-code">{{ detailContent }}</pre>
     </el-dialog>
 
@@ -291,10 +307,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Document, Upload, Box, Collection, UploadFilled, Share, Mouse } from '@element-plus/icons-vue';
+import { Search, Document, Upload, Box, Collection, UploadFilled, Share, Mouse, Close } from '@element-plus/icons-vue';
+import { useResizable } from '../../composables/useResizable';
 import { usePluginStore, type PluginInfo } from '../../stores/plugin';
 import { plainRect } from '../../composables/pluginWindowHotkeys';
 import { api } from '../../api/client';
@@ -656,9 +673,20 @@ async function saveConfig() {
 }
 
 function openDetail(p: PluginInfo) {
+  detailPlugin.value = p;
   detailContent.value = JSON.stringify(p.manifest, null, 2);
   detailOpen.value = true;
 }
+
+// ===== 列表 + 右侧详情（P1-2）：宽屏容器、窄屏弹窗 =====
+const detailPlugin = ref<PluginInfo | null>(null);
+const wide = ref(typeof window !== 'undefined' ? window.innerWidth >= 1100 : true);
+function syncWide() { wide.value = window.innerWidth >= 1100; }
+onMounted(() => window.addEventListener('resize', syncWide));
+onUnmounted(() => window.removeEventListener('resize', syncWide));
+const detailR = useResizable('plugins_detail', 480, 340, 800);
+const { width: detailW } = detailR;
+const detailPaneOpen = computed(() => wide.value && detailOpen.value && !!detailPlugin.value);
 
 async function onUninstall(p: PluginInfo) {
   try {
@@ -756,9 +784,45 @@ onMounted(() => {
 
 <style scoped>
 .plugin-manager {
-  padding: 16px;
+  padding: 0;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
+/* 列表 + 右侧详情（P1-2） */
+.pm-body { flex: 1; min-height: 0; display: flex; }
+.pm-main { flex: 1; min-width: 0; overflow-y: auto; padding: 0 16px 16px; }
+.pm-detail-pane {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.pm-detail-head {
+  flex: 0 0 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.pm-detail-title {
+  flex: 1; min-width: 0;
+  font-size: 12.5px; font-weight: 600; color: var(--color-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pm-detail-body { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 14px; }
 .pm-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--color-bg);
+  padding-top: 16px;
+}
   display: flex;
   justify-content: space-between;
   align-items: center;
