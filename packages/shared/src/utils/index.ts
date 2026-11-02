@@ -21,6 +21,8 @@ export * from './keyed-serial-queue';
 //   工具参数的 enum。放 server 下会让 core 依赖 server（层次倒置），
 //   于是 schema 只能手写第二份清单 → 与实现漂移（本项目已有三处各写一份的前车之鉴）。
 export * from './clip-effects';
+// 音效匹配（按描述找音效）：工具 sfx.search / /library?q= / 工作台共用
+export * from './clip-sfx-match';
 // 字体注册表（P1-2）：字幕字体选择的单一真相源（工具 enum / UI 下拉 / \fn 解析共用）
 export * from './clip-fonts';
 

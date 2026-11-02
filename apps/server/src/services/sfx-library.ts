@@ -9,6 +9,7 @@
 //      所以这里只提供"音效 + 氛围垫"，旋律配乐需要用户自备或走素材市场。
 //
 // ★ 每个音效都**实测过**（tools/verify-sfx-library.cjs）：能生成、有时长、有音轨。
+import { matchSfx } from '@yan-zhi/shared';
 
 export interface SfxItem {
   id: string;
@@ -205,4 +206,13 @@ export const SFX_LIBRARY: SfxItem[] = [
 
 export function sfxById(id: string): SfxItem | null {
   return SFX_LIBRARY.find((s) => s.id === id) || null;
+}
+
+/**
+ * 按描述检索音效（"紧张"/"卡点鼓"/"转场音"…）。
+ * ★ 匹配算法在 shared（clip-sfx-match），与工作台搜索框共用 —— 工具搜得到、
+ *   界面搜不到这种漂移比"搜不准"更糟。
+ */
+export function searchSfxLibrary(query: string, limit = 5) {
+  return matchSfx(query, SFX_LIBRARY, { limit });
 }

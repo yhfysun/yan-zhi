@@ -27,7 +27,7 @@ import { ensureEffectPreview } from '../services/clip-effect-preview.js';
 import { analyzeBeats } from '../services/clip-beats.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
 import { TRANSITIONS } from '@yan-zhi/shared';
-import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
+import { SFX_LIBRARY, sfxById, searchSfxLibrary } from '../services/sfx-library.js';
 import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-library.js';
 import { clipProjectTool } from '../mcp/api-tool-executor.js';
 import {
@@ -247,10 +247,25 @@ router.post('/probe', async (req: Request, res: Response) => {
 //
 // ★ 诚实说明为什么只有"音效 + 氛围垫"没有旋律 BGM：
 //   合成器做不出编曲；打包真实音乐又涉及版权与体积。详见 services/sfx-library.ts 顶部注释。
-router.get('/library', (_req: Request, res: Response) => {
+router.get('/library', (req: Request, res: Response) => {
+  const note = '音效为 ffmpeg 实时合成（免版权）。旋律性配乐请自备或从素材市场获取。';
+  const q = String(req.query.q || '').trim();
+  // ★ 带 q = 按描述排序返回（与工具 sfx.search / 工作台搜索框同一份匹配器）；
+  //   不带 q 保持原样返回全库（老调用方不受影响）。
+  if (q) {
+    const r = searchSfxLibrary(q, 12);
+    return res.json({
+      sfx: r.hits.map((h) => ({ ...h.item, score: h.score, reason: h.reason })),
+      matched: r.matched,
+      query: q,
+      note,
+    });
+  }
   res.json({
     sfx: SFX_LIBRARY.map((s) => ({ id: s.id, label: s.label, desc: s.desc, group: s.group, maxSec: s.maxSec })),
-    note: '音效为 ffmpeg 实时合成（免版权）。旋律性配乐请自备或从素材市场获取。',
+    matched: true,
+    query: '',
+    note,
   });
 });
 

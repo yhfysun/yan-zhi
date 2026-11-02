@@ -260,8 +260,9 @@ export function registerMediaTools(m: Map<ApiModuleName, ToolDefinition[]>) {
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['list', 'search', 'render'], description: 'list=按分类列出全部；search=关键词搜索；render=合成一个音效文件' },
-          query: { type: 'string', description: 'search 的关键词（匹配 id/label/desc/group），如「转场」「心跳」「雨」' },
+          action: { type: 'string', enum: ['list', 'search', 'render'], description: 'list=按分类列出全部；search=按描述搜索（推荐）；render=合成一个音效文件' },
+          query: { type: 'string', description: 'search 的描述（自然语言，按意图匹配），如「紧张的氛围」「卡点鼓」「转场音」「提示」' },
+          limit: { type: 'number', description: 'search 返回条数（默认 5，最多 20）' },
           id: { type: 'string', description: 'render 的音效 id（先用 list/search 取得）' },
         },
         required: ['action'],

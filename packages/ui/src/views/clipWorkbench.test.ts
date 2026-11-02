@@ -844,3 +844,26 @@ describe('ClipWorkbench · 录音（MediaRecorder）', () => {
     expect(start).toContain('RECORDING_MAX_MS');
   });
 });
+
+/**
+ * AI 音效匹配（按描述找音效）：静态守门。
+ * ★ 必须与工具 sfx.search 共用 shared 的 matchSfx —— 两边各写一套就会出现
+ *   "剪辑师找得到、界面搜不到"的割裂。
+ */
+describe('ClipWorkbench · 按描述找音效', () => {
+  it('音效弹窗有搜索框与无匹配提示', () => {
+    expect(SRC).toContain('v-model="sfxQuery"');
+    expect(SRC).toContain('sfxViewGroups');
+    expect(SRC).toContain('sfxNoMatch');
+  });
+
+  it('★ 使用 shared 的 matchSfx（不自己写一份匹配）', () => {
+    expect(CODE).toContain('matchSfx');
+    expect(CODE).toMatch(/matchSfx\(q, sfxLibItems\.value/);
+  });
+
+  it('关闭弹窗清空搜索词（下次打开回到完整分组）', () => {
+    const body = CODE.slice(CODE.indexOf('watch(sfxLibOpen'), CODE.indexOf('watch(sfxLibOpen') + 400);
+    expect(body).toContain("sfxQuery.value = ''");
+  });
+});

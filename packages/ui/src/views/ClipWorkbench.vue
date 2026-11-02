@@ -1469,7 +1469,21 @@
           音效由 ffmpeg 实时合成（<b>免版权</b>），点一下即生成并加到素材库。
           <br />旋律性配乐无法合成，请自备或从素材市场获取。
         </div>
-        <div v-for="g in sfxGroups" :key="g.group" class="cp-sfxl-group">
+        <!-- 按描述找音效：意图词典 + 文本重叠（与服务端 sfx.search 同一匹配器） -->
+        <div class="cp-sfxl-search">
+          <input
+            v-model="sfxQuery"
+            class="cp-input"
+            type="search"
+            placeholder="按描述找音效：紧张 / 转场 / 卡点鼓 / 提示 / 氛围…"
+            @keydown.stop
+          />
+          <button v-if="sfxQuery" class="cp-mini" title="清除搜索" @click="sfxQuery = ''">清除</button>
+        </div>
+        <div v-if="sfxNoMatch" class="cp-sfxl-empty">
+          没有匹配的音效 —— 换个说法试试：紧张、转场、卡点、提示、氛围、雨、太空…
+        </div>
+        <div v-for="g in sfxViewGroups" :key="g.group" class="cp-sfxl-group">
           <div class="cp-sfxl-gtitle">{{ g.group }}</div>
           <div class="cp-sfxl-items">
             <div v-for="it in g.items" :key="it.id" class="cp-sfxl-item" :title="it.desc">
@@ -1733,7 +1747,7 @@ import { formatRecTime, pickRecorderMime, recordingFileName, RECORDING_MAX_MS } 
 import { clampMenuPos } from '../utils/menuPosition';
 import {
   COLOR_EFFECTS, FX_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
-  TRANSITIONS, OVERLAY_POSITIONS, BLEND_MODES, EFFECT_LAYERS, FONT_FAMILIES, HSL_BANDS, groupEffects, effectIds, fxParamsOf, type TextStylePreset,
+  TRANSITIONS, OVERLAY_POSITIONS, BLEND_MODES, EFFECT_LAYERS, FONT_FAMILIES, HSL_BANDS, groupEffects, effectIds, fxParamsOf, matchSfx, type TextStylePreset,
 } from '@yan-zhi/shared';
 
 /**
@@ -4502,7 +4516,10 @@ function previewSfx(id: string) {
 }
 // 关弹窗就停音：否则用户关掉面板后声音还在响，会以为是 bug
 watch(sfxLibOpen, (open) => {
-  if (!open && sfxAudio) { sfxAudio.pause(); sfxAudio = null; sfxPlaying.value = ''; }
+  if (!open) {
+    sfxQuery.value = '';
+    if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; sfxPlaying.value = ''; }
+  }
 });
 
 /** 音效库分组（弹窗按组渲染） */
@@ -4515,6 +4532,20 @@ const sfxGroups = computed(() => {
   }
   return [...map.entries()].map(([group, items]) => ({ group, items }));
 });
+
+/**
+ * 按描述搜索音效（P2「AI 音效匹配」）。
+ * ★ 与服务端工具 sfx.search 共用 shared 的 matchSfx —— 两边结果必须一致，
+ *   否则会出现"让剪辑师找得到、自己搜不到"的割裂。
+ */
+const sfxQuery = ref('');
+const sfxViewGroups = computed(() => {
+  const q = sfxQuery.value.trim();
+  if (!q) return sfxGroups.value;
+  const r = matchSfx(q, sfxLibItems.value, { limit: 12 });
+  return r.hits.length ? [{ group: `匹配结果 · ${r.hits.length}`, items: r.hits.map((h) => h.item) }] : [];
+});
+const sfxNoMatch = computed(() => !!sfxQuery.value.trim() && sfxViewGroups.value.length === 0);
 
 async function openSfxLibrary() {
   sfxLibOpen.value = true;
@@ -5775,6 +5806,10 @@ onMounted(async () => {
 /* 音效库弹窗 */
 .cp-sfxl { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; }
 .cp-sfxl-note { font-size: 11px; line-height: 1.7; color: var(--el-text-color-secondary); padding: 6px 8px; background: var(--el-fill-color-light); border-radius: 4px; }
+/* 按描述找音效 */
+.cp-sfxl-search { display: flex; gap: 6px; align-items: center; }
+.cp-sfxl-search .cp-input { margin: 0; flex: 1; min-width: 0; }
+.cp-sfxl-empty { font-size: 12px; color: var(--el-text-color-secondary); padding: 12px 8px; text-align: center; line-height: 1.6; }
 /* 配方弹窗（P1-11） */
 .cp-rp { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; }
 .cp-rp-note { font-size: 11px; line-height: 1.7; color: var(--el-text-color-secondary); padding: 6px 8px; background: var(--el-fill-color-light); border-radius: 4px; }

@@ -44,7 +44,7 @@ import { ensureArtifactDirFor, resolveArtifactDirFor } from '../services/artifac
 import { composeMusic } from '../services/music-render.js';
 import { listDocumentTypes } from '../services/document-type.js';
 import { generateSong } from '../services/music-generate.js';
-import { SFX_LIBRARY, sfxById } from '../services/sfx-library.js';
+import { SFX_LIBRARY, sfxById, searchSfxLibrary } from '../services/sfx-library.js';
 import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-library.js';
 import { singingStatus, installSingingRuntime, importModelZip } from '../services/music-sing-install.js';
 import { applyClipOp, summarizeProject, nextAudioSlot, type ClipProject } from '../services/clip-project.js';
@@ -2591,10 +2591,19 @@ async function mediaSfx(
   }
 
   if (action === 'search') {
-    const q = String(args.query || '').trim().toLowerCase();
-    const hits = SFX_LIBRARY.filter((s) => !q
-      || [s.id, s.label, s.desc, s.group].some((v) => String(v).toLowerCase().includes(q)));
-    return ok(JSON.stringify({ ok: true, count: hits.length, items: hits.map(brief) }));
+    const q = String(args.query || '').trim();
+    // ★ 按描述匹配（意图词典 + 文本重叠）：模型说"来个紧张的转场音"也能找到；
+    //   空查询返回空结果（旧实现会返回全库，等于把"没搜到"伪装成"搜到了"）。
+    const limit = Math.max(1, Math.min(20, Math.round(Number(args.limit) || 5)));
+    const r = searchSfxLibrary(q, limit);
+    return ok(JSON.stringify({
+      ok: true,
+      query: q,
+      matched: r.matched,
+      count: r.hits.length,
+      items: r.hits.map((h) => ({ ...brief(h.item), score: h.score, reason: h.reason })),
+      ...(r.matched ? {} : { hint: '没找到足够接近的音效；可换更口语的描述（如：紧张、转场、卡点鼓、提示、氛围）' }),
+    }));
   }
 
   if (action !== 'render') return fail('action 只能是 list / search / render');
