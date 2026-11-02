@@ -9,9 +9,13 @@
 // 合规声明（重要）：本模块仅用于自有资产或持有书面授权目标的安全评估。
 // 所有带目标的工具都会先过 sec-lab-guard 的授权范围校验，越界直接拒绝并记审计。
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { secModeAgentDefs, secModeScene } from './sec-lab/seed.js';
 import { applyBuiltinSeed } from '../host-bridge.js';
 import type { BuiltInTool, McpCallResult, PlaybookDef, PluginContext, PluginManifest, PluginModule, PluginStorage } from '@yan-zhi/core';
+import { getPythonScript, runPythonScript } from '@yan-zhi/core';
 import {
   DEFAULT_SEC_CONFIG, guard, normalizeTarget, isTrustedHumanCall, markTrustedHumanCall,
   type ScopeEntry, type SecConfig,
@@ -2319,6 +2323,65 @@ function registerRoutes(ctx: PluginContext) {
       if (store) await store.set(K_PLAYBOOKS, next);
       await pushAudit({ at: Date.now(), tool: 'playbook_remove', ok: true, message: `删除剧本（${id || name}）` });
       json(res, { ok: true });
+    });
+
+    // ── 报告导出（P3）：Word 走 doyz；PDF 用可打印 HTML（doyz 不产 PDF） ──
+    r.post('/report/export', async (req: unknown, res: unknown) => {
+      const b = bodyOf(req);
+      const format = String(b.format || 'docx').toLowerCase();
+      if (!['docx', 'pdf', 'markdown'].includes(format)) return fail(res, 400, 'format 仅支持 docx / pdf / markdown');
+      let report: { text: string; count: number };
+      try {
+        report = buildReportExport({
+          jobId: b.jobId ? String(b.jobId) : undefined,
+          jobs: await loadList<ScanJob>(K_SCAN_JOBS),
+          findings: (await loadFindings()) as any,
+        });
+      } catch (e) {
+        return fail(res, 400, (e as Error).message);
+      }
+      if (format === 'markdown') {
+        return json(res, {
+          data: {
+            filename: `sec-report-${Date.now().toString(36)}.md`,
+            mimeType: 'text/markdown',
+            base64: Buffer.from(report.text, 'utf8').toString('base64'),
+            count: report.count,
+          },
+        });
+      }
+      const script = getPythonScript('doyz/doyz.py');
+      if (!script) return fail(res, 501, 'doyz 脚本缺失（python-tools/doyz/doyz.py）');
+      const dir = path.join(os.tmpdir(), 'yz-sec-report');
+      fs.mkdirSync(dir, { recursive: true });
+      const base = `sec-report-${Date.now().toString(36)}`;
+      const mdPath = path.join(dir, `${base}.md`);
+      fs.writeFileSync(mdPath, report.text, 'utf8');
+      const doyzPath = path.join(dir, `${base}.doyz`);
+      const docxPath = path.join(dir, `${base}.docx`);
+      const r1 = await runPythonScript(script, ['from-md', '--md', mdPath, '-o', doyzPath], { timeout: 60000 });
+      if (r1.exitCode !== 0) return fail(res, 500, `生成 doyz 失败：${(r1.stderr || r1.stdout || '').slice(0, 300)}`);
+      const r2 = await runPythonScript(script, ['export', doyzPath, '--to', 'docx', '--chart', 'native', '-o', docxPath], { timeout: 60000 });
+      if (r2.exitCode !== 0) return fail(res, 500, `导出 Word 失败：${(r2.stderr || r2.stdout || '').slice(0, 300)}`);
+      if (format === 'docx') {
+        return json(res, {
+          data: {
+            filename: `${base}.docx`,
+            mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            base64: fs.readFileSync(docxPath).toString('base64'),
+            count: report.count,
+          },
+        });
+      }
+      // pdf：不假装生成二进制 —— 给可打印 HTML，由前端打印另存为 PDF
+      const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as Record<string, string>)[c]);
+      const html = `<!doctype html><meta charset="utf-8"><title>安全评估报告</title><style>body{font:14px/1.6 -apple-system,"Microsoft YaHei",sans-serif;margin:32px}pre{white-space:pre-wrap;font:inherit}</style><pre>${esc(report.text)}</pre>`;
+      return json(res, {
+        data: {
+          filename: `${base}.html`, mimeType: 'text/html', html, count: report.count,
+          note: 'doyz 不产出 PDF：已生成可打印 HTML，用浏览器「打印 → 另存为 PDF」',
+        },
+      });
     });
 
     // ── 剧本市场（P2）：内置 + 自定义统一目录 / 导入 / 导出 ────────────────

@@ -454,6 +454,8 @@
                 @click="exportFindingsReport(lastJobId)"
               >导出本次扫描</el-button>
               <el-button size="small" :loading="exportingReport" @click="exportFindingsReport()">导出报告 MD</el-button>
+              <el-button size="small" :loading="exportingDocx" @click="exportReportDocx()">导出 Word</el-button>
+              <el-button size="small" :loading="exportingPdf" @click="exportReportPdf()">导出 PDF</el-button>
             </header>
             <div class="sec-finding-list">
               <div v-for="f in findings" :key="f.id" class="sec-finding" :data-sev="f.severity">
@@ -1010,7 +1012,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { ChatDotRound, Close, QuestionFilled, Setting, User } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api, API_BASE, isElectron } from '../../api/client';
@@ -1022,6 +1024,7 @@ import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import FormDialog from '../../components/FormDialog.vue';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
+import { setWorkbenchContext } from '../../stores/workbenchContext';
 import { useChat } from '../../composables/chat/useChat';
 // 命令中枢（2026-10-16）：命令行与聊天框的面板**同源**（同一份解析、同一个执行出口）
 import type { CommandDef } from '@yan-zhi/core';
@@ -1433,6 +1436,11 @@ const onFullscreenChange = (): void => { isFullscreen.value = !!document.fullscr
 onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange));
 onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenChange));
 const scopes = ref<ScopeRow[]>([]);
+
+/** 底部状态栏：授权目标（安全模式的「上下文」= 这批授权目标，没登记就是不能扫） */
+watch(() => scopes.value.length, (n) => {
+  setWorkbenchContext('sec', { label: '目标', value: n ? `共 ${n} 个授权` : '未登记' });
+}, { immediate: true });
 const findings = ref<Array<{ id: string; title: string; severity: string; detail: string; target: string; tool?: string; at?: number; remediation?: string }>>([]);
 const audit = ref<Array<{ at: number; tool: string; target?: string; ok: boolean; message: string }>>([]);
 const toolchain = ref<Array<{ name: string; available: boolean; capability: string; install: string }>>([]);
@@ -1498,6 +1506,55 @@ const pbOpen = ref(false);
 const pbBuiltIn = ref<any[]>([]);
 const pbUser = ref<any[]>([]);
 const pbFileEl = ref<HTMLInputElement | null>(null);
+
+// ===== 报告导出（P3）：Word 走 doyz；PDF 用可打印 HTML =====
+const exportingDocx = ref(false);
+const exportingPdf = ref(false);
+
+function downloadBase64(b64: string, filename: string, mime: string): void {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+}
+
+async function exportReportDocx(): Promise<void> {
+  exportingDocx.value = true;
+  try {
+    const r = await api.post<any>(`${BASE}/report/export`, {
+      format: 'docx',
+      jobId: lastJobId.value || undefined,
+    });
+    if ('error' in r) { ElMessage.error(r.error); return; }
+    downloadBase64(r.data.base64, r.data.filename, r.data.mimeType);
+    ElMessage.success(`已导出 Word（${r.data.count} 条发现项）`);
+  } finally {
+    exportingDocx.value = false;
+  }
+}
+
+async function exportReportPdf(): Promise<void> {
+  exportingPdf.value = true;
+  try {
+    const r = await api.post<any>(`${BASE}/report/export`, {
+      format: 'pdf',
+      jobId: lastJobId.value || undefined,
+    });
+    if ('error' in r) { ElMessage.error(r.error); return; }
+    if (!r.data?.html) { ElMessage.error('服务端未返回可打印报告'); return; }
+    const w = window.open('', '_blank');
+    if (!w) { ElMessage.warning('打印窗口被拦截，请允许弹窗后重试'); return; }
+    w.document.write(r.data.html);
+    w.document.close();
+    w.focus();
+    w.print();
+    ElMessage.info(r.data.note || '在打印对话框中选择「另存为 PDF」');
+  } finally {
+    exportingPdf.value = false;
+  }
+}
 
 async function loadPlaybookMarket(): Promise<void> {
   const r = await api.get<any>(`${BASE}/playbooks/catalog`);

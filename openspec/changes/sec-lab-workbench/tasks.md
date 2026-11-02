@@ -103,4 +103,5 @@
 
 - [ ] 多用户交战隔离
 - [ ] 与 ops-shell 联动（SSH 连接 → 主机侧基线核查）
-- [ ] 报告走 doyz 通道导出 Word / PDF
+- [x] 报告走 doyz 通道导出 Word / PDF
+  → 2026-11-02：`POST /plugin/sec-lab/report/export` —— markdown/Word 走随包 doyz（from-md → export docx，返回 base64）；**PDF 不假装生成二进制**：doyz 不产 PDF，返回可打印 HTML 由前端打印另存。SecConsole 报告区新增「导出 Word / 导出 PDF」；3 例路由测试（markdown/非法格式/未知作业）。
