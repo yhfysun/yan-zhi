@@ -40,7 +40,7 @@ import { reframeVertical, parseTargetAspect } from '../services/clip-reframe.js'
 import {
   planTalkingCut, splitSegmentByKeeps, sourceCutsToFilm, rippleTimelineLayers, TALKING_CUT_DEFAULTS,
 } from '../services/clip-talking-cut.js';
-import { rebuildMulticamGroup } from '../services/clip-multicam.js';
+import { applyMulticamBoundaries, rebuildMulticamGroup } from '../services/clip-multicam.js';
 
 /** 跑 ffmpeg（复用既有 exec-cmd 的 runCmd，与其它媒体链路同一实现）。 */
 async function runFfmpeg(bin: string, args: string[], timeoutMs: number): Promise<{ ok: boolean; stderr: string }> {
@@ -748,6 +748,51 @@ router.post('/multicam/rebuild', (req: Request, res: Response) => {
   if (!r.ok) return res.status(400).json({ error: r.error });
   writeClipProject(conversationId, r.project);
   return res.json({ ok: true, groupId: r.groupId, segments: r.segments, note: r.note });
+});
+
+// POST /api/plugin/clip-mode/multicam/boundaries —— 逐切点拖拽（按新切点原地重建组内片段）
+//
+// body: { conversationId, groupId, boundariesSec: number[], slotAngles?: number[] }
+//
+// ★ 薄壳：服务层 normalizeMulticamBoundaries 规整（越界/过近/乱序）→ 更新组 → rebuildMulticamGroup。
+// ★ 组时长不变；其他片段与图层不动。等间隔组也可借此转为边界模式（边界数需与原片段数匹配）。
+router.post('/multicam/boundaries', (req: Request, res: Response) => {
+  const conversationId = String(req.body?.conversationId || '').trim();
+  const groupId = String(req.body?.groupId || '').trim();
+  const rawBoundaries = req.body?.boundariesSec;
+  if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
+  if (!groupId) return res.status(400).json({ error: 'groupId 必填' });
+  if (!Array.isArray(rawBoundaries)) return res.status(400).json({ error: 'boundariesSec 必须是切点的秒数数组' });
+  const slotAngles = req.body?.slotAngles == null
+    ? undefined
+    : Array.isArray(req.body.slotAngles)
+      ? req.body.slotAngles.map((v: unknown) => Number(v))
+      : null;
+  if (slotAngles === null) return res.status(400).json({ error: 'slotAngles 必须是机位下标的数组' });
+  if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
+  const project = readClipProject(conversationId);
+  if (!project) return res.status(404).json({ error: '工程不存在（先在剪辑工作台建工程）' });
+  if (!(project.multicamGroups || []).some((g) => g.id === groupId)) {
+    return res.status(404).json({ error: `多机位组不存在：${groupId}` });
+  }
+
+  const r = applyMulticamBoundaries(
+    project,
+    groupId,
+    rawBoundaries.map((v: unknown) => Number(v)),
+    slotAngles,
+  );
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  writeClipProject(conversationId, r.project);
+  return res.json({
+    ok: true,
+    groupId: r.groupId,
+    boundaries: r.boundaries,
+    slotAngles: r.slotAngles,
+    segments: r.segments,
+    warnings: r.warnings,
+    note: r.note,
+  });
 });
 
 // GET /api/plugin/clip-mode/recipes —— 配方清单（内置 + 自建）

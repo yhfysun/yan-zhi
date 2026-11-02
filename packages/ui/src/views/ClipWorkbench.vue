@@ -1655,6 +1655,28 @@
             </button>
           </div>
           <template v-if="selectedMulticamGroup">
+            <!-- 切点条：每个切点是可拖拽的竖向把手；松手后才重建（静态，不是实时预览） -->
+            <div v-if="multicamBoundaries.length" class="cp-mc-cutbar-wrap">
+              <div ref="multicamCutBarRef" class="cp-mc-cutbar" :class="{ dragging: multicamDragIndex >= 0 }">
+                <div
+                  v-for="(seg, i) in multicamSegments"
+                  :key="`mc-seg-${i}`"
+                  class="cp-mc-cutseg"
+                  :style="{ flexGrow: String(seg.len) }"
+                  :title="`第 ${i + 1} 段：机位${(multicamSlotAngles[i] ?? 0) + 1} · ${seg.start.toFixed(2)}s → ${seg.end.toFixed(2)}s`"
+                ><span>{{ seg.len.toFixed(2) }}s</span></div>
+                <div
+                  v-for="(b, i) in multicamBoundaries"
+                  :key="`mc-cut-${i}`"
+                  class="cp-mc-cut-handle"
+                  :style="{ left: multicamBoundaryPct(b) }"
+                  :title="`切点 ${i + 1}：${b.toFixed(2)}s（拖动后松手生效）`"
+                  @pointerdown.stop="startMulticamBoundaryDrag(i, $event)"
+                ></div>
+              </div>
+              <div class="cp-mc-cutbar-hint">拖动切点后松手生效；静态重建，不是实时预览</div>
+            </div>
+            <div v-else class="cp-mc-cutbar-hint">该组没有可拖动的切点（等间隔组首段已长于组时长）</div>
             <div class="cp-mc-slots">
               <button
                 v-for="(a, i) in multicamSlotAngles"
@@ -5448,10 +5470,31 @@ const selectedMulticamGroupId = ref('');
 const multicamSlotAngles = ref<number[]>([]);
 const multicamRebuilding = ref(false);
 const multicamRebuildError = ref('');
+/** 切点条：当前组的组内切点（秒）；拖动中只改本地，松手才提交 */
+const multicamBoundaries = ref<number[]>([]);
+const multicamCutBarRef = ref<HTMLElement | null>(null);
+const multicamDragIndex = ref(-1);
+/** 拖拽前的边界快照：失败时回滚 */
+let multicamDragSnapshot: number[] = [];
+let multicamDragMoved = false;
+/** 与服务端同口径：切点离组首/组尾 0.25s，相邻至少 0.5s */
+const MC_CUT_EDGE_SEC = 0.25;
+const MC_CUT_MIN_GAP_SEC = 0.5;
 const multicamGroups = computed(() => project.value?.multicamGroups || []);
 const selectedMulticamGroup = computed(
   () => multicamGroups.value.find((g) => g.id === selectedMulticamGroupId.value) || null,
 );
+/** 切点条的各段（用于实时显示拖动后的区间长度） */
+const multicamSegments = computed(() => {
+  const g = selectedMulticamGroup.value;
+  const dur = Number(g?.groupDurationSec) || 0;
+  const edges = [0, ...multicamBoundaries.value, dur];
+  return edges.slice(0, -1).map((start, i) => ({
+    start,
+    end: edges[i + 1],
+    len: Math.max(0.01, edges[i + 1] - start),
+  }));
+});
 /** 可作为机位的视频素材（与 isVideo 同口径） */
 const multicamCandidates = computed(() => files.value.filter((f) => isVideo(f)));
 
@@ -5523,7 +5566,8 @@ function selectMulticamGroup(id: string) {
   const g = multicamGroups.value.find((x) => x.id === id);
   multicamRebuildError.value = '';
   selectedMulticamGroupId.value = g ? id : '';
-  if (!g) { multicamSlotAngles.value = []; return; }
+  multicamDragIndex.value = -1;
+  if (!g) { multicamSlotAngles.value = []; multicamBoundaries.value = []; return; }
   const boundaries = Array.isArray(g.slotBoundariesSec) ? g.slotBoundariesSec : [];
   const count = boundaries.length
     ? boundaries.length + 1
@@ -5532,6 +5576,121 @@ function selectMulticamGroup(id: string) {
     const a = Number(g.slotAngles?.[i]);
     return Number.isInteger(a) && a >= 0 && a < g.files.length ? a : 0;
   });
+  initMulticamBoundaries(g, count);
+}
+
+/**
+ * 选中组时初始化切点条：
+ * · 已有 slotBoundariesSec → 直接用；
+ * · 等间隔组（无边界）→ 按 slotSec 生成初始边界（最后一段可短于 slotSec），再允许拖动。
+ */
+function initMulticamBoundaries(g: MulticamGroup, slotCount: number) {
+  const existing = Array.isArray(g.slotBoundariesSec)
+    ? g.slotBoundariesSec.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+    : [];
+  if (existing.length) { multicamBoundaries.value = [...existing]; return; }
+  const dur = Number(g.groupDurationSec) || 0;
+  const slot = Number(g.slotSec) || 0;
+  const out: number[] = [];
+  if (dur > MC_CUT_EDGE_SEC * 2 && slot > 0) {
+    for (let t = slot; t < dur - MC_CUT_EDGE_SEC && out.length < 200; t += slot) {
+      const b = Number(t.toFixed(3));
+      if (b >= MC_CUT_EDGE_SEC) out.push(b);
+    }
+  }
+  // 边界数必须等于槽位数-1（与服务端重建的槽位校验同口径）
+  multicamBoundaries.value = out.slice(0, Math.max(0, slotCount - 1));
+}
+
+/** 切点在条上的百分比位置 */
+function multicamBoundaryPct(b: number): string {
+  const dur = Number(selectedMulticamGroup.value?.groupDurationSec) || 0;
+  if (!(dur > 0)) return '0%';
+  return `${Math.min(100, Math.max(0, (Number(b) / dur) * 100))}%`;
+}
+
+function startMulticamBoundaryDrag(index: number, e: PointerEvent) {
+  if (multicamRebuilding.value || multicamDragIndex.value >= 0) return;
+  multicamDragIndex.value = index;
+  multicamDragSnapshot = [...multicamBoundaries.value];
+  multicamDragMoved = false;
+  multicamRebuildError.value = '';
+  const el = e.currentTarget as HTMLElement | null;
+  try { el?.setPointerCapture?.(e.pointerId); } catch { /* 不支持捕获时退回 window 监听 */ }
+  window.addEventListener('pointermove', onMulticamBoundaryMove);
+  window.addEventListener('pointerup', endMulticamBoundaryDrag);
+  e.preventDefault();
+}
+
+/** 拖动中只改本地位置：夹在两侧邻居的最小间隔内（与服务端同口径，前端先夹）。 */
+function onMulticamBoundaryMove(e: PointerEvent) {
+  const i = multicamDragIndex.value;
+  if (i < 0) return;
+  const bar = multicamCutBarRef.value;
+  const g = selectedMulticamGroup.value;
+  if (!bar || !g) return;
+  const rect = bar.getBoundingClientRect();
+  const dur = Number(g.groupDurationSec) || 0;
+  if (rect.width <= 0 || !(dur > 0)) return;
+  const list = multicamBoundaries.value;
+  const lo = i > 0 ? list[i - 1] + MC_CUT_MIN_GAP_SEC : MC_CUT_EDGE_SEC;
+  const hi = i < list.length - 1 ? list[i + 1] - MC_CUT_MIN_GAP_SEC : dur - MC_CUT_EDGE_SEC;
+  if (hi < lo) return;
+  const raw = ((e.clientX - rect.left) / rect.width) * dur;
+  const b = Number(Math.min(hi, Math.max(lo, raw)).toFixed(3));
+  if (b === list[i]) return;
+  const next = [...list];
+  next[i] = b;
+  multicamBoundaries.value = next;
+  multicamDragMoved = true;
+}
+
+async function endMulticamBoundaryDrag() {
+  window.removeEventListener('pointermove', onMulticamBoundaryMove);
+  window.removeEventListener('pointerup', endMulticamBoundaryDrag);
+  const i = multicamDragIndex.value;
+  multicamDragIndex.value = -1;
+  const g = selectedMulticamGroup.value;
+  if (i < 0 || !g || !multicamDragMoved) return;
+  multicamDragMoved = false;
+  await submitMulticamBoundaries(g.id, [...multicamBoundaries.value], multicamDragSnapshot);
+}
+
+/**
+ * 提交新切点：服务端规整 → 更新组 → 原地重建（id/组时长/其他图层不变）。
+ * ★ 失败原样展示服务端错误并回滚本地把手位置。
+ */
+async function submitMulticamBoundaries(groupId: string, boundaries: number[], snapshot: number[]) {
+  if (!convId.value) { multicamRebuildError.value = '还没有会话'; multicamBoundaries.value = snapshot; return; }
+  multicamRebuilding.value = true;
+  multicamRebuildError.value = '';
+  pendingLabel.value = '按切点重建';
+  try {
+    type BoundariesResp = {
+      ok?: boolean; error?: string; note?: string; segments?: number;
+      boundaries?: number[]; slotAngles?: number[]; warnings?: string[];
+    };
+    const r = await api.post<BoundariesResp>('/plugin/clip-mode/multicam/boundaries', {
+      conversationId: convId.value,
+      groupId,
+      boundariesSec: boundaries,
+      slotAngles: [...multicamSlotAngles.value],
+    }) as { data?: BoundariesResp; error?: string };
+    if ('error' in r && r.error) { multicamRebuildError.value = String(r.error); multicamBoundaries.value = snapshot; return; }
+    const d = r.data;
+    if (!d?.ok) { multicamRebuildError.value = d?.error || '切点重建失败'; multicamBoundaries.value = snapshot; return; }
+    await reloadAll();
+    // 从落盘结果重读（服务端可能规整过切点）
+    selectMulticamGroup(groupId);
+    const warn = d.warnings?.length ? `；警告：${d.warnings.join('；')}` : '';
+    note(`${d.note || `已按切点重建 ${d.segments ?? 0} 段`}${warn}`);
+  } catch (e) {
+    multicamRebuildError.value = e instanceof Error ? e.message : String(e);
+    multicamBoundaries.value = snapshot;
+  } finally {
+    multicamRebuilding.value = false;
+    pendingLabel.value = '';
+  }
 }
 
 /** 组列表副标题：跟节拍组显示切点数，等间隔组显示每段时长。 */
@@ -6138,6 +6297,13 @@ onMounted(async () => {
 .cp-mc-group-main { font-size: 12px; color: var(--el-text-color-regular); }
 .cp-mc-group-sub { font-size: 11px; color: var(--el-text-color-secondary); }
 .cp-mc-slots { display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow: auto; }
+.cp-mc-cutbar-wrap { display: flex; flex-direction: column; gap: 3px; }
+.cp-mc-cutbar { position: relative; display: flex; align-items: stretch; height: 28px; border: 1px solid var(--el-border-color); border-radius: 4px; background: var(--el-fill-color-lighter); user-select: none; touch-action: none; }
+.cp-mc-cutbar.dragging { border-color: var(--el-color-primary); }
+.cp-mc-cutseg { display: flex; align-items: center; justify-content: center; min-width: 2px; padding: 0 2px; border-right: 1px solid var(--el-border-color-lighter); color: var(--el-text-color-secondary); font-size: 10px; white-space: nowrap; overflow: hidden; }
+.cp-mc-cut-handle { position: absolute; top: -3px; width: 8px; height: 34px; margin-left: -4px; border-radius: 3px; background: var(--el-color-primary); cursor: ew-resize; touch-action: none; box-shadow: 0 0 0 1px var(--el-color-white); }
+.cp-mc-cut-handle:hover, .cp-mc-cutbar.dragging .cp-mc-cut-handle:active { background: var(--el-color-primary-light-3); }
+.cp-mc-cutbar-hint { font-size: 10px; color: var(--el-text-color-secondary); }
 .cp-mc-slot { padding: 4px 10px; border: 1px solid var(--el-border-color); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-regular); font-size: 12px; cursor: pointer; }
 .cp-mc-slot:hover { border-color: var(--el-color-primary); color: var(--el-color-primary); }
 /* 取帧失败提示（贴底居中，不遮挡画面主体） */

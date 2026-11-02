@@ -14,6 +14,7 @@ import {
   planMulticamCuts, buildMulticamSegments, buildMulticamFromFiles, insertMulticamSegments,
   rebuildMulticamCuts, rebuildMulticamGroup, multicamSlotCount, makeMulticamGroup,
   beatTimesToBoundaries, computeBeatBoundaries, validateSlotBoundaries,
+  normalizeMulticamBoundaries, applyMulticamBoundaries,
   MULTICAM_DEFAULT_SWITCH_SEC,
 } from '../src/services/clip-multicam.js';
 import type { MulticamAngle, MulticamCut } from '../src/services/clip-multicam.js';
@@ -733,5 +734,138 @@ describe('normalizeMulticamGroups · 边界字段读写', () => {
     for (const bad of [[0, 5], [5, 2], [2, 10], [2, Number.NaN], [2, 5, 5]]) {
       expect(normalizeMulticamGroups([raw({ slotBoundariesSec: bad })])[0].slotBoundariesSec).toBeUndefined();
     }
+  });
+});
+
+// ===== 逐切点拖拽：边界规整 + 服务路径 =====
+
+describe('normalizeMulticamBoundaries · 拖拽规整', () => {
+  it('乱序/越界：排序后严格递增，贴边值夹到 0.25 / 组时长-0.25', () => {
+    const r = normalizeMulticamBoundaries([8, 1, 2.5, 99, -3], 10);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([0.25, 1, 2.5, 8, 9.75]);
+    for (let i = 1; i < r.boundaries.length; i++) expect(r.boundaries[i]).toBeGreaterThan(r.boundaries[i - 1]);
+    expect(r.warnings.some((w) => w.includes('夹到边界'))).toBe(true);
+  });
+
+  it('相邻过近 → 推开到最小间隔 0.5s 并给 warning（不超过组尾）', () => {
+    const r = normalizeMulticamBoundaries([1, 1.2, 1.4], 10);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([1, 1.5, 2]);
+    expect(r.warnings.some((w) => w.includes('最小间隔'))).toBe(true);
+  });
+
+  it('推开后越界 → 丢弃，并给 warning', () => {
+    const r = normalizeMulticamBoundaries([9.6, 9.7], 10);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([9.6]);
+    expect(r.warnings.some((w) => w.includes('丢弃'))).toBe(true);
+  });
+
+  it('非有限值丢弃；重复值合并', () => {
+    const r = normalizeMulticamBoundaries([2, Number.NaN, 2, Infinity, 4], 10);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([2, 4]);
+    expect(r.warnings.some((w) => w.includes('非数字'))).toBe(true);
+    expect(r.warnings.some((w) => w.includes('重复'))).toBe(true);
+  });
+
+  it('空数组 / 全无效 / 组时长过短 → ok:false（UI 据此保持原样）', () => {
+    expect(normalizeMulticamBoundaries([], 10).ok).toBe(false);
+    expect(normalizeMulticamBoundaries([Number.NaN], 10).ok).toBe(false);
+    expect(normalizeMulticamBoundaries([0.3], 0.4).ok).toBe(false);
+    expect(normalizeMulticamBoundaries([0.3], Number.NaN).ok).toBe(false);
+  });
+});
+
+describe('applyMulticamBoundaries · 服务路径', () => {
+  function makeProject(over: Partial<MulticamGroup> = {}): ClipProject {
+    return {
+      ...createEmptyProject('t'),
+      clips: [
+        { id: 'pre', file: 'p.mp4', trimStart: 0, trimEnd: 2 },
+        { id: 'mc1', file: 'a.mp4', trimStart: 0, trimEnd: 2 },
+        { id: 'mc2', file: 'b.mp4', trimStart: 2, trimEnd: 5 },
+        { id: 'mc3', file: 'c.mp4', trimStart: 5, trimEnd: 8 },
+        { id: 'mc4', file: 'a.mp4', trimStart: 8, trimEnd: 10.5 },
+        { id: 'post', file: 'q.mp4', trimStart: 0, trimEnd: 4 },
+      ],
+      layers: [{ id: 't1', kind: 'text', start: 0, end: 20, track: 1, transform: {} }],
+      multicamGroups: [groupFixture({ slotBoundariesSec: [2, 5, 8], ...over })],
+    };
+  }
+  const totalOf = (p: ClipProject) => p.clips.reduce((s, c) => s + ((c.trimEnd ?? 0) - (c.trimStart ?? 0)), 0);
+
+  it('★ 边界变化后原地重建：id/组时长不变，其他片段与图层不动', () => {
+    const before = makeProject();
+    const r = applyMulticamBoundaries(before, 'g1', [1.5, 4, 7]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.boundaries).toEqual([1.5, 4, 7]);
+    expect(r.slotAngles).toEqual([0, 1, 2, 0]);
+    expect(r.segments).toBe(4);
+    const after = r.project;
+    expect(after.clips.map((c) => c.id)).toEqual(['pre', 'mc1', 'mc2', 'mc3', 'mc4', 'post']);
+    expect(after.clips.slice(1, 5).map((c) => [c.trimStart, c.trimEnd])).toEqual([
+      [1.5, 3], [5, 7.5], [4, 7], [8.5, 12],
+    ]);
+    expect(totalOf(after)).toBeCloseTo(totalOf(before), 6);
+    expect(after.clips[0]).toEqual(before.clips[0]);
+    expect(after.clips[5]).toEqual(before.clips[5]);
+    expect(after.layers).toBe(before.layers);
+    expect(after.multicamGroups?.[0].slotBoundariesSec).toEqual([1.5, 4, 7]);
+    expect(after.multicamGroups?.[0].slotAngles).toEqual([0, 1, 2, 0]);
+  });
+
+  it('原本等间隔（无边界）→ 本次转为边界模式', () => {
+    const before = makeProject({ slotBoundariesSec: undefined });
+    expect(before.multicamGroups?.[0].slotBoundariesSec).toBeUndefined();
+    const r = applyMulticamBoundaries(before, 'g1', [3, 6, 9]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.segments).toBe(4);
+    expect(r.project.multicamGroups?.[0].slotBoundariesSec).toEqual([3, 6, 9]);
+    expect(totalOf(r.project)).toBeCloseTo(totalOf(before), 6);
+  });
+
+  it('slotAngles 缺省时按现有槽位循环补齐/截断；显式给则原样使用', () => {
+    const before = makeProject({ slotAngles: [2] });
+    const derived = applyMulticamBoundaries(before, 'g1', [2, 5, 8]);
+    expect(derived.ok).toBe(true);
+    if (derived.ok) expect(derived.slotAngles).toEqual([2, 2, 2, 2]);
+    const explicit = applyMulticamBoundaries(before, 'g1', [2, 5, 8], [1, 0, 2, 1]);
+    expect(explicit.ok).toBe(true);
+    if (explicit.ok) expect(explicit.project.multicamGroups?.[0].slotAngles).toEqual([1, 0, 2, 1]);
+  });
+
+  it('切点数量与原组段数不一致 → 可读错误（本次不支持增删切点），不改工程', () => {
+    const before = makeProject();
+    const r = applyMulticamBoundaries(before, 'g1', [3, 6]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('不支持增删切点');
+    expect(before.multicamGroups?.[0].slotBoundariesSec).toEqual([2, 5, 8]);
+  });
+
+  it('slotAngles 长度/值域不合法 → 可读错误', () => {
+    const before = makeProject();
+    const badLen = applyMulticamBoundaries(before, 'g1', [2, 5, 8], [0, 1, 2]);
+    expect(badLen.ok).toBe(false);
+    if (!badLen.ok) expect(badLen.error).toContain('槽位数量应为 4');
+    const badVal = applyMulticamBoundaries(before, 'g1', [2, 5, 8], [0, 1, 9, 0]);
+    expect(badVal.ok).toBe(false);
+    if (!badVal.ok) expect(badVal.error).toContain('无效');
+  });
+
+  it('组不存在 / 无有效切点 → 可读错误', () => {
+    const before = makeProject();
+    const missing = applyMulticamBoundaries(before, 'nope', [2, 5, 8]);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain('不存在');
+    const empty = applyMulticamBoundaries(before, 'g1', []);
+    expect(empty.ok).toBe(false);
   });
 });
