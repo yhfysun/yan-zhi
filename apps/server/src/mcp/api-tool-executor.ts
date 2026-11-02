@@ -63,7 +63,7 @@ import { analyzeBeats } from '../services/clip-beats.js';
 import { syncAudioFiles, formatSyncResult } from '../services/clip-audio-sync.js';
 import {
   buildMulticamFromFiles, planMulticamCuts, buildMulticamSegments, insertMulticamSegments,
-  makeMulticamGroup,
+  makeMulticamGroup, computeBeatBoundaries,
 } from '../services/clip-multicam.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
@@ -2199,10 +2199,38 @@ export async function clipProjectTool(
     });
     if (!align.ok) return fail(align.error);
 
+    // 跟节拍（P2）：先用第 1 个机位的音频分析节拍 → 组内切点边界；
+    // ★ 分析失败 / 有效切点不足 → **如实回退等间隔**，warnings 写明原因（附原文），不假装成功。
+    const switchOnBeat = args.switchOnBeat === true;
+    const warnings: string[] = [...align.warnings];
+    let slotBoundariesSec: number[] | undefined;
+    let beatDriven = false;
+    let beatNote = '';
+    if (switchOnBeat) {
+      // 边界要相对组时长校验，所以先算一次几何（heads/组时长），再按边界重规划。
+      const probe = planMulticamCuts({
+        angles: align.angles,
+        ...(switchEverySec != null ? { switchEverySec } : {}),
+        ...(durationSec != null ? { durationSec } : {}),
+      });
+      if (!probe.ok) return fail(probe.error);
+      const beat = await computeBeatBoundaries(ff.ffmpeg, align.angles[0].file, probe.headSec[0], probe.groupDurationSec);
+      if (beat.ok) {
+        slotBoundariesSec = beat.boundaries;
+        beatDriven = true;
+        warnings.push(...beat.warnings);
+        beatNote = `切点跟节拍：${beat.boundaries.length + 1} 段（BPM ${beat.bpm || '未测出'}）`;
+      } else {
+        warnings.push(`切点跟节拍未生效，已回退等间隔：${beat.error}`);
+        beatNote = '节拍不足/分析失败，已回退等间隔';
+      }
+    }
+
     const plan = planMulticamCuts({
       angles: align.angles,
       ...(switchEverySec != null ? { switchEverySec } : {}),
       ...(durationSec != null ? { durationSec } : {}),
+      ...(slotBoundariesSec ? { slotBoundariesSec } : {}),
     });
     if (!plan.ok) return fail(plan.error);
 
@@ -2233,6 +2261,7 @@ export async function clipProjectTool(
       slotSec: plan.slotSec,
       cuts: plan.cuts,
       segments: built.segments,
+      ...(slotBoundariesSec ? { slotBoundariesSec } : {}),
     });
     const nextProject: ClipProject = {
       ...inserted.project,
@@ -2248,10 +2277,11 @@ export async function clipProjectTool(
       offsetSec: align.offsetSec,
       segments: built.segments.length,
       groupDurationSec: plan.groupDurationSec,
-      warnings: [...align.warnings, ...plan.warnings],
+      beatDriven,
+      warnings: [...warnings, ...plan.warnings],
       note:
         `多机位已生成 ${built.segments.length} 段（${align.angles.length} 个机位，组时长 ${plan.groupDurationSec}s）：` +
-        `${inserted.note}。可在「多机位」弹窗按槽位手动切换机位并原地重建。`,
+        `${inserted.note}。${beatNote ? `${beatNote}。` : ''}可在「多机位」弹窗按槽位手动切换机位并原地重建。`,
     }));
   }
 

@@ -70,9 +70,9 @@ describe('clip_project 工具面与 applyClipOp 对齐', () => {
     }
   });
 
-  it('add_multicam 声明了 files / switchEvery / duration / start（多机位能力要看得见）', () => {
+  it('add_multicam 声明了 files / switchEvery / duration / start / switchOnBeat（多机位能力要看得见）', () => {
     const props = (clipTool().inputSchema as any).properties;
-    for (const k of ['files', 'switchEvery', 'duration', 'start']) {
+    for (const k of ['files', 'switchEvery', 'duration', 'start', 'switchOnBeat']) {
       expect(props[k], `add_multicam 缺参数 ${k}：模型调不到多机位`).toBeTruthy();
     }
     expect(props.files.items?.type).toBe('string');

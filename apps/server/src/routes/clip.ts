@@ -599,10 +599,11 @@ router.post('/tts', async (req: Request, res: Response) => {
 
 // POST /api/plugin/clip-mode/multicam —— 多机位编排（声音对齐 + 一键交替切换）
 //
-// body: { conversationId, files: string[], switchEvery?, duration?, start? }
+// body: { conversationId, files: string[], switchEvery?, duration?, start?, switchOnBeat? }
 //
 // ★ 薄壳：真正的对齐/规划/拍平都在 clip_project 的 add_multicam（执行器层），
 //   与智能体调工具走**同一条路径** —— 避免 UI 与模型两套实现漂移。
+// ★ switchOnBeat=true：切点跟第 1 个机位的音频节拍（不足时回退等间隔，warnings 说明原因）。
 // ★ 这里只做 HTTP 级校验（会话、工程、文件存在性），错误直接给可读中文。
 router.post('/multicam', async (req: Request, res: Response) => {
   const conversationId = String(req.body?.conversationId || '').trim();
@@ -627,6 +628,7 @@ router.post('/multicam', async (req: Request, res: Response) => {
     ...(req.body?.switchEvery == null ? {} : { switchEvery: Number(req.body.switchEvery) }),
     ...(req.body?.duration == null ? {} : { duration: Number(req.body.duration) }),
     ...(req.body?.start == null ? {} : { start: Number(req.body.start) }),
+    ...(req.body?.switchOnBeat === true ? { switchOnBeat: true } : {}),
   }, undefined, undefined, undefined, conversationId);
   if (r.isError) return res.status(500).json({ error: r.content?.[0]?.text || '多机位生成失败' });
   try {

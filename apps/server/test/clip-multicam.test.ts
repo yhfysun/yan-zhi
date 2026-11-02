@@ -13,11 +13,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   planMulticamCuts, buildMulticamSegments, buildMulticamFromFiles, insertMulticamSegments,
   rebuildMulticamCuts, rebuildMulticamGroup, multicamSlotCount, makeMulticamGroup,
+  beatTimesToBoundaries, computeBeatBoundaries, validateSlotBoundaries,
   MULTICAM_DEFAULT_SWITCH_SEC,
 } from '../src/services/clip-multicam.js';
 import type { MulticamAngle, MulticamCut } from '../src/services/clip-multicam.js';
 import type { ClipProject, MulticamGroup } from '../src/services/clip-project.js';
-import { createEmptyProject } from '../src/services/clip-project.js';
+import { createEmptyProject, normalizeMulticamGroups } from '../src/services/clip-project.js';
 
 // vi.mock 会被提升到文件顶部：可变状态必须放进 vi.hoisted。
 const h = vi.hoisted(() => ({
@@ -25,6 +26,8 @@ const h = vi.hoisted(() => ({
   probes: [] as Array<{ durationSec: number; hasAudio: boolean }>,
   /** syncAudioFiles 的实现（由用例替换） */
   sync: null as null | ((a: string, b: string) => unknown),
+  /** analyzeBeats 的实现（由用例替换）；null = 未设置 */
+  beats: null as null | { ok: boolean; beats?: number[]; bpm?: number; duration?: number; error?: string },
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -48,6 +51,13 @@ vi.mock('../src/services/clip-audio-sync.js', () => ({
   syncAudioFiles: vi.fn(async (a: string, b: string) => {
     if (!h.sync) throw new Error('syncAudioFiles 未设置');
     return h.sync(a, b);
+  }),
+}));
+
+vi.mock('../src/services/clip-beats.js', () => ({
+  analyzeBeats: vi.fn(async () => {
+    if (!h.beats) throw new Error('analyzeBeats 未设置');
+    return { beats: [], bpm: 0, duration: 0, ...h.beats };
   }),
 }));
 
@@ -488,5 +498,240 @@ describe('makeMulticamGroup · add_multicam 组元数据', () => {
     const r = rebuildMulticamCuts(g, [1, 0]);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.cuts[0].srcStart).toBe(0);
+  });
+
+  it('跟节拍：slotBoundariesSec 固化进组，rebuild 按边界消费', () => {
+    const cuts: MulticamCut[] = [
+      { angleIndex: 0, file: 'a.mp4', filmStart: 0, filmEnd: 2, srcStart: 0, srcEnd: 2 },
+      { angleIndex: 1, file: 'b.mp4', filmStart: 2, filmEnd: 3.5, srcStart: 0, srcEnd: 1.5 },
+      { angleIndex: 0, file: 'a.mp4', filmStart: 3.5, filmEnd: 6, srcStart: 3.5, srcEnd: 6 },
+    ];
+    const g = makeMulticamGroup(
+      { multicamGroups: [] },
+      {
+        files: ['a.mp4', 'b.mp4'], offsetsSec: [0, 0], headsSec: [0, 0], filmStart: 0,
+        groupDurationSec: 6, slotSec: 3, cuts, segments: cuts.map((c, i) => ({ id: `mc${i + 1}`, file: c.file })),
+        slotBoundariesSec: [2, 3.5],
+      },
+    );
+    expect(g.slotBoundariesSec).toEqual([2, 3.5]);
+    expect(multicamSlotCount(g)).toBe(3);
+    const r = rebuildMulticamCuts(g, [1, 1, 0]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.cuts.map((c) => [c.filmStart, c.filmEnd])).toEqual([[0, 2], [2, 3.5], [3.5, 6]]);
+  });
+});
+
+// ===== 跟节拍（P2）：边界规划 / 拍点换算 / 回退 =====
+
+describe('planMulticamCuts · 按边界切', () => {
+  it('自定义边界：区间连续、总时长不变、首末段正确、机位按顺序轮换', () => {
+    const r = planMulticamCuts({
+      angles: [angle('a.mp4', 0, 12), angle('b.mp4', 0, 12)],
+      slotBoundariesSec: [1, 2.5, 7],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.groupDurationSec).toBe(12);
+    expect(r.slotBoundariesSec).toEqual([1, 2.5, 7]);
+    expect(r.cuts.map((c) => [c.filmStart, c.filmEnd])).toEqual([[0, 1], [1, 2.5], [2.5, 7], [7, 12]]);
+    expect(r.cuts.map((c) => c.angleIndex)).toEqual([0, 1, 0, 1]);
+    expectContinuous(r.cuts, 12);
+    // 头部偏移为 0：素材时间 = 组内时间
+    expect([r.cuts[0].srcStart, r.cuts[0].srcEnd]).toEqual([0, 1]);
+    expect([r.cuts[3].srcStart, r.cuts[3].srcEnd]).toEqual([7, 12]);
+  });
+
+  it('边界切点时 srcStart 仍带各机位头部偏移', () => {
+    const r = planMulticamCuts({
+      angles: [angle('a.mp4', 0.5, 10), angle('b.mp4', -0.5, 10)],
+      slotBoundariesSec: [2, 4],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // min(d)=-0.5 → heads = [1, 0]
+    expect(r.headSec).toEqual([1, 0]);
+    expect([r.cuts[0].srcStart, r.cuts[0].srcEnd]).toEqual([1, 3]);
+    expect([r.cuts[1].srcStart, r.cuts[1].srcEnd]).toEqual([2, 4]);
+  });
+
+  it('边界越界 / 非递增 → 可读错误', () => {
+    const angles = [angle('a.mp4', 0, 10), angle('b.mp4', 0, 10)];
+    const out = planMulticamCuts({ angles, slotBoundariesSec: [3, 20] });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.error).toContain('越过组范围');
+    const inc = planMulticamCuts({ angles, slotBoundariesSec: [3, 2] });
+    expect(inc.ok).toBe(false);
+    if (!inc.ok) expect(inc.error).toContain('严格递增');
+    const dup = planMulticamCuts({ angles, slotBoundariesSec: [3, 3] });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error).toContain('严格递增');
+  });
+
+  it('★ 无边界 / 空边界：等间隔默认路径完全不变', () => {
+    const angles = [angle('a.mp4', 0, 10), angle('b.mp4', 0, 10)];
+    const base = planMulticamCuts({ angles, switchEverySec: 3 });
+    const empty = planMulticamCuts({ angles, switchEverySec: 3, slotBoundariesSec: [] });
+    expect(empty).toEqual(base);
+    expect(base.ok).toBe(true);
+    if (base.ok) expect(base.slotBoundariesSec).toBeUndefined();
+  });
+
+  it('validateSlotBoundaries 规整：合法边界 round3、空数组 = 无边界', () => {
+    const ok = validateSlotBoundaries([1.23456, 5], 10);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.boundaries).toEqual([1.235, 5]);
+    const none = validateSlotBoundaries(undefined, 10);
+    expect(none).toEqual({ ok: true, boundaries: [] });
+  });
+});
+
+describe('beatTimesToBoundaries · 拍点 → 组内切点', () => {
+  it('按 headsSec[0] 换算组内时间（拍点相对素材文件）', () => {
+    const r = beatTimesToBoundaries([0, 1, 2, 3, 4], 1, 10);
+    // 组内 = beat - 1 → [-1, 0, 1, 2, 3]；0 与负数贴边被过滤
+    expect(r.boundaries).toEqual([1, 2, 3]);
+    expect(r.beatsUsed).toBe(3);
+    expect(r.beatsTotal).toBe(5);
+  });
+
+  it('贴边过滤：0.25 内与组尾前 0.25 内的拍点丢弃', () => {
+    const r = beatTimesToBoundaries([0.2, 1, 2, 9.9], 0, 10);
+    expect(r.boundaries).toEqual([1, 2]);
+  });
+
+  it('最小间隔 0.5s：相邻过密只保留前者', () => {
+    const r = beatTimesToBoundaries([1, 1.2, 1.6, 3], 0, 10);
+    expect(r.boundaries).toEqual([1, 1.6, 3]);
+  });
+
+  it('输入乱序也能排好；非有限值丢弃', () => {
+    const r = beatTimesToBoundaries([3, Number.NaN, 1, 2], 0, 10);
+    expect(r.boundaries).toEqual([1, 2, 3]);
+    expect(r.beatsTotal).toBe(3);
+  });
+});
+
+describe('computeBeatBoundaries · 分析节拍 + 回退', () => {
+  beforeEach(() => {
+    h.beats = null;
+  });
+
+  it('分析成功 → 返回组内边界与 bpm', async () => {
+    h.beats = { ok: true, beats: [1, 2, 3, 4, 5], bpm: 120, duration: 10 };
+    const r = await computeBeatBoundaries('ffmpeg', 'a.mp4', 0.5, 10);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.boundaries).toEqual([0.5, 1.5, 2.5, 3.5, 4.5]);
+      expect(r.bpm).toBe(120);
+    }
+  });
+
+  it('有效切点 < 2 → 明确失败（调用方据此回退等间隔）', async () => {
+    h.beats = { ok: true, beats: [1, 20], bpm: 0, duration: 10 };
+    const r = await computeBeatBoundaries('ffmpeg', 'a.mp4', 0, 10);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('音频节拍不足');
+  });
+
+  it('分析失败 → 带原始错误原文', async () => {
+    h.beats = { ok: false, error: '该文件没有音轨', beats: [], bpm: 0, duration: 0 };
+    const r = await computeBeatBoundaries('ffmpeg', 'a.mp4', 0, 10);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain('音频节拍分析失败');
+      expect(r.error).toContain('该文件没有音轨');
+    }
+  });
+
+  it('节拍点被过滤时带 warning', async () => {
+    h.beats = { ok: true, beats: [1, 1.1, 1.2, 2, 3], bpm: 100, duration: 10 };
+    const r = await computeBeatBoundaries('ffmpeg', 'a.mp4', 0, 10);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.boundaries).toEqual([1, 2, 3]);
+      expect(r.warnings.some((w) => w.includes('过滤'))).toBe(true);
+    }
+  });
+});
+
+describe('rebuildMulticamCuts · 带边界', () => {
+  const beatGroup = (over: Partial<MulticamGroup> = {}): MulticamGroup =>
+    groupFixture({ slotBoundariesSec: [2, 5, 8], slotAngles: [0, 1, 2, 0], ...over });
+
+  it('槽位数 = 边界数+1，按边界切、源起点含头部偏移', () => {
+    expect(multicamSlotCount(beatGroup())).toBe(4);
+    const r = rebuildMulticamCuts(beatGroup(), [1, 2, 0, 1]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.cuts.map((c) => [c.filmStart, c.filmEnd])).toEqual([[0, 2], [2, 5], [5, 8], [8, 10.5]]);
+    expect(r.cuts.map((c) => c.angleIndex)).toEqual([1, 2, 0, 1]);
+    // 机位 2（head=3.5）第 1 段 0→2 → 素材 3.5→5.5
+    expect([r.cuts[0].srcStart, r.cuts[0].srcEnd]).toEqual([3.5, 5.5]);
+    expect(r.cuts[r.cuts.length - 1].filmEnd).toBeCloseTo(10.5, 6);
+  });
+
+  it('槽位数量不符 → 错误里说明节拍切点数', () => {
+    const r = rebuildMulticamCuts(beatGroup(), [0, 1, 2]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain('按 3 个节拍切点共 4 段');
+  });
+
+  it('组里边界非法（越界/非递增）→ 可读错误，不回退静默重排', () => {
+    const bad = rebuildMulticamCuts(beatGroup({ slotBoundariesSec: [5, 2] }), [0, 1, 2]);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error).toContain('严格递增');
+    const out = rebuildMulticamCuts(beatGroup({ slotBoundariesSec: [2, 99] }), [0, 1, 2]);
+    expect(out.ok).toBe(false);
+  });
+
+  it('原地重建：id 不变、组时长不变、其他片段与图层不动', () => {
+    const project: ClipProject = {
+      ...createEmptyProject('t'),
+      clips: [
+        { id: 'pre', file: 'p.mp4', trimStart: 0, trimEnd: 2 },
+        { id: 'mc1', file: 'a.mp4', trimStart: 0, trimEnd: 2 },
+        { id: 'mc2', file: 'b.mp4', trimStart: 2, trimEnd: 5 },
+        { id: 'mc3', file: 'c.mp4', trimStart: 5, trimEnd: 8 },
+        { id: 'mc4', file: 'a.mp4', trimStart: 8, trimEnd: 10.5 },
+        { id: 'post', file: 'q.mp4', trimStart: 0, trimEnd: 4 },
+      ],
+      layers: [{ id: 't1', kind: 'text', start: 0, end: 20, track: 1, transform: {} }],
+      multicamGroups: [beatGroup()],
+    };
+    const totalOf = (p: ClipProject) => p.clips.reduce((s, c) => s + ((c.trimEnd ?? 0) - (c.trimStart ?? 0)), 0);
+    const r = rebuildMulticamGroup(project, 'g1', [2, 2, 2, 2]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const after = r.project;
+    expect(after.clips.map((c) => c.id)).toEqual(['pre', 'mc1', 'mc2', 'mc3', 'mc4', 'post']);
+    expect(after.clips.slice(1, 5).map((c) => [c.trimStart, c.trimEnd])).toEqual([
+      [0, 2], [2, 5], [5, 8], [8, 10.5],
+    ]);
+    expect(after.clips.slice(1, 5).map((c) => c.file)).toEqual(['c.mp4', 'c.mp4', 'c.mp4', 'c.mp4']);
+    expect(totalOf(after)).toBeCloseTo(totalOf(project), 6);
+    expect(after.clips[0]).toEqual(project.clips[0]);
+    expect(after.clips[5]).toEqual(project.clips[5]);
+    expect(after.layers).toBe(project.layers);
+    expect(after.multicamGroups?.[0].slotBoundariesSec).toEqual([2, 5, 8]);
+  });
+});
+
+describe('normalizeMulticamGroups · 边界字段读写', () => {
+  const raw = (over: Record<string, unknown> = {}) => ({
+    id: 'g1', files: ['a.mp4', 'b.mp4'], offsetsSec: [0, 0], headsSec: [0, 0],
+    filmStart: 0, groupDurationSec: 10, slotSec: 3, slotAngles: [0, 1, 0, 1], clipIds: ['mc1'],
+    ...over,
+  });
+
+  it('合法边界保留；老工程无字段 → 不带该字段', () => {
+    expect(normalizeMulticamGroups([raw({ slotBoundariesSec: [2, 5] })])[0].slotBoundariesSec).toEqual([2, 5]);
+    expect(normalizeMulticamGroups([raw()])[0].slotBoundariesSec).toBeUndefined();
+  });
+
+  it('越界/非递增/含非数 → 整组退回等间隔（不保留脏边界）', () => {
+    for (const bad of [[0, 5], [5, 2], [2, 10], [2, Number.NaN], [2, 5, 5]]) {
+      expect(normalizeMulticamGroups([raw({ slotBoundariesSec: bad })])[0].slotBoundariesSec).toBeUndefined();
+    }
   });
 });

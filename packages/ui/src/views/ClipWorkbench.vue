@@ -1588,7 +1588,7 @@
     <el-dialog v-model="multicamOpen" title="多机位（声音自动对齐）" width="540px" :append-to-body="true">
       <div class="cp-mc">
         <div class="cp-mc-note">
-          勾选 <b>≥2 个同时录制的机位视频</b>：会尝试用声音自动对齐各机位，再按间隔在机位间交替切换。
+          勾选 <b>≥2 个同时录制的机位视频</b>：会尝试用声音自动对齐各机位，再按间隔（或音频节拍）在机位间交替切换。
           <br />生成的是<b>普通片段</b>（已拍平进主轨），生成后可在时间轴上手动调整切点。
         </div>
         <div class="cp-mc-list">
@@ -1602,7 +1602,14 @@
         <div class="cp-mc-row">
           <span>切换间隔</span>
           <input v-model.number="multicamSwitchEvery" class="cp-num" type="number" min="0.5" max="30" step="0.5" />
-          <em>秒（默认 3）</em>
+          <em>秒（默认 3；跟节拍不足时按它回退）</em>
+        </div>
+        <div class="cp-mc-row">
+          <label class="cp-mc-check">
+            <input v-model="multicamSwitchOnBeat" type="checkbox" />
+            切点跟节拍（先分析第 1 个机位的音频）
+          </label>
+          <em>节拍不足/分析失败会回退等间隔并在警告里说明</em>
         </div>
         <div class="cp-mc-row">
           <span>组时长</span>
@@ -1629,7 +1636,7 @@
               @click="selectMulticamGroup(g.id)"
             >
               <span class="cp-mc-group-main">{{ g.files.length }} 机位 · 起点 {{ g.filmStart }}s · 时长 {{ g.groupDurationSec }}s</span>
-              <span class="cp-mc-group-sub">{{ g.clipIds.length }} 段 · 每段 {{ g.slotSec }}s</span>
+              <span class="cp-mc-group-sub">{{ g.clipIds.length }} 段 · {{ multicamGroupModeLabel(g) }}</span>
             </button>
           </div>
           <template v-if="selectedMulticamGroup">
@@ -1937,6 +1944,8 @@ interface ClipText {
 interface MulticamGroup {
   id: string; files: string[]; offsetsSec: number[]; headsSec: number[];
   filmStart: number; groupDurationSec: number; slotSec: number; slotAngles: number[]; clipIds: string[];
+  /** 跟节拍切点（组内相对秒，严格递增）；缺省 = 等间隔模式 */
+  slotBoundariesSec?: number[];
 }
 interface ClipProject {
   version: 2; name: string; updatedAt: number;
@@ -5413,6 +5422,8 @@ const multicamRunning = ref(false);
 const multicamError = ref('');
 const multicamFiles = ref<string[]>([]);
 const multicamSwitchEvery = ref(3);
+/** 切点跟节拍（P2）：先分析第 1 个机位的音频；失败会由服务端回退等间隔并给 warning */
+const multicamSwitchOnBeat = ref(false);
 const multicamDuration = ref<number | null>(null);
 const multicamStart = ref<number | null>(null);
 /** 已有多机位组（手动切换）：选中组 + 每个槽位的机位下标 */
@@ -5431,6 +5442,7 @@ function openMulticam() {
   multicamError.value = '';
   multicamFiles.value = [];
   multicamSwitchEvery.value = 3;
+  multicamSwitchOnBeat.value = false;
   multicamDuration.value = null;
   multicamStart.value = null;
   selectedMulticamGroupId.value = '';
@@ -5452,13 +5464,14 @@ async function runMulticam() {
   try {
     type McResp = {
       ok?: boolean; error?: string; note?: string; segments?: number; angles?: number;
-      groupDurationSec?: number; offsetSec?: number[]; warnings?: string[];
+      groupDurationSec?: number; offsetSec?: number[]; warnings?: string[]; beatDriven?: boolean;
     };
     const body: Record<string, unknown> = {
       conversationId: convId.value,
       files: [...multicamFiles.value],
       switchEvery: Number(multicamSwitchEvery.value) || 3,
     };
+    if (multicamSwitchOnBeat.value) body.switchOnBeat = true;
     if (multicamDuration.value != null && Number(multicamDuration.value) > 0) body.duration = Number(multicamDuration.value);
     if (multicamStart.value != null && Number.isFinite(Number(multicamStart.value))) body.start = Number(multicamStart.value);
 
@@ -5471,10 +5484,10 @@ async function runMulticam() {
     selectedClipId.value = '';
     await reloadAll();
     const offs = (d.offsetSec || []).map((v, i) => `机位${i + 1}:${v}s`).join('，');
-    const warn = d.warnings?.length
-      ? `；警告：${d.warnings[0]}${d.warnings.length > 1 ? `（等 ${d.warnings.length} 条）` : ''}`
-      : '';
-    note(`多机位：${d.segments ?? 0} 段，${d.angles ?? multicamFiles.value.length} 个机位，组时长 ${d.groupDurationSec ?? '?'}s；对齐偏移 ${offs}${warn}`);
+    // 节拍失败/过滤等警告原样展示（服务端已写成可读中文），不在这里截断。
+    const warn = d.warnings?.length ? `；警告：${d.warnings.join('；')}` : '';
+    const beat = d.beatDriven ? '；切点跟节拍' : '';
+    note(`多机位：${d.segments ?? 0} 段，${d.angles ?? multicamFiles.value.length} 个机位，组时长 ${d.groupDurationSec ?? '?'}s${beat}；对齐偏移 ${offs}${warn}`);
     multicamOpen.value = false;
     multicamFiles.value = [];
   } catch (e) {
@@ -5487,18 +5500,27 @@ async function runMulticam() {
 
 /**
  * 选中一个多机位组：把已保存的 slotAngles 读进按钮态。
- * 槽位数 = ceil(组时长 / 每段时长)（与 server 的 multicamSlotCount 同口径）。
+ * 槽位数：跟节拍组 = 边界数+1；等间隔组 = ceil(组时长 / 每段)（与 server 的 multicamSlotCount 同口径）。
  */
 function selectMulticamGroup(id: string) {
   const g = multicamGroups.value.find((x) => x.id === id);
   multicamRebuildError.value = '';
   selectedMulticamGroupId.value = g ? id : '';
   if (!g) { multicamSlotAngles.value = []; return; }
-  const count = Math.max(1, Math.ceil(g.groupDurationSec / g.slotSec - 1e-9));
+  const boundaries = Array.isArray(g.slotBoundariesSec) ? g.slotBoundariesSec : [];
+  const count = boundaries.length
+    ? boundaries.length + 1
+    : Math.max(1, Math.ceil(g.groupDurationSec / g.slotSec - 1e-9));
   multicamSlotAngles.value = Array.from({ length: count }, (_, i) => {
     const a = Number(g.slotAngles?.[i]);
     return Number.isInteger(a) && a >= 0 && a < g.files.length ? a : 0;
   });
+}
+
+/** 组列表副标题：跟节拍组显示切点数，等间隔组显示每段时长。 */
+function multicamGroupModeLabel(g: MulticamGroup): string {
+  const boundaries = Array.isArray(g.slotBoundariesSec) ? g.slotBoundariesSec : [];
+  return boundaries.length ? `切点跟节拍（${g.groupDurationSec}s 内 ${boundaries.length} 刀）` : `每段 ${g.slotSec}s`;
 }
 
 function cycleMulticamSlot(index: number) {
@@ -6047,6 +6069,7 @@ onMounted(async () => {
 .cp-mc-row { display: flex; align-items: center; gap: 8px; }
 .cp-mc-row > span { width: 64px; flex: 0 0 auto; color: var(--el-text-color-regular); }
 .cp-mc-row em { font-style: normal; font-size: 12px; color: var(--el-text-color-secondary); }
+.cp-mc-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--el-text-color-regular); cursor: pointer; }
 .cp-mc-err { color: var(--el-color-danger); font-size: 12px; }
 .cp-mc .cp-empty { padding: 10px 0; text-align: center; }
 .cp-mc-groups { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 10px; }

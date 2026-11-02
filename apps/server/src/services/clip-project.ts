@@ -360,8 +360,13 @@ export interface MulticamGroup {
   groupDurationSec: number;
   /** 每个槽位的时长（秒，最后一段可更短） */
   slotSec: number;
-  /** 每个槽位使用的机位下标（0 基，长度 = ceil(groupDurationSec / slotSec)） */
+  /** 每个槽位使用的机位下标（0 基；等间隔组长度 = ceil(groupDurationSec / slotSec)，跟节拍组 = 边界数+1） */
   slotAngles: number[];
+  /**
+   * 节拍切点（P2-跟节拍，可选）：组内相对时间的切点，严格递增且 0 < b < groupDurationSec。
+   * ★ 无此字段 = 等间隔模式（老工程 / 未开跟节拍）；有边界时槽位数 = 边界数 + 1。
+   */
+  slotBoundariesSec?: number[];
   /** 组内片段 id（与主轨 clips 中连续的一段对应，顺序一致） */
   clipIds: string[];
 }
@@ -388,6 +393,15 @@ export function normalizeMulticamGroups(v: unknown): MulticamGroup[] {
     const groupDurationSec = Number(o.groupDurationSec);
     const slotSec = Number(o.slotSec);
     if (!id || files.length < 2 || !(groupDurationSec > 0) || !(slotSec > 0)) continue;
+    // 节拍切点：整组必须全部合法（有限、0 < b < 组时长、严格递增）才保留；
+    // 任何越界/非递增都退回等间隔模式 —— 脏数据宁可不跟节拍，也不能让规划炸掉。
+    let slotBoundariesSec: number[] | undefined;
+    if (Array.isArray(o.slotBoundariesSec) && o.slotBoundariesSec.length) {
+      const raw = o.slotBoundariesSec.map((n) => Number(n));
+      const valid = raw.every((b) => Number.isFinite(b))
+        && raw.every((b, i) => b > 0 && b < groupDurationSec && (i === 0 || b > raw[i - 1]));
+      if (valid) slotBoundariesSec = raw.map((b) => Number(b.toFixed(3)));
+    }
     out.push({
       id,
       files,
@@ -397,6 +411,7 @@ export function normalizeMulticamGroups(v: unknown): MulticamGroup[] {
       groupDurationSec,
       slotSec,
       slotAngles: slotAngles.map((n) => Math.max(0, Math.round(n))),
+      ...(slotBoundariesSec ? { slotBoundariesSec } : {}),
       clipIds,
     });
   }

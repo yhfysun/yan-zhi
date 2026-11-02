@@ -26,6 +26,7 @@ import { runCmd } from './exec-cmd.js';
 import { resolveFfmpeg } from '../mcp/ffmpeg-runtime.js';
 import { parseProbeJson, probeArgs, segmentDuration } from './clip-render.js';
 import { syncAudioFiles, type AudioSyncOptions } from './clip-audio-sync.js';
+import { analyzeBeats } from './clip-beats.js';
 import type { ClipProject, ClipSegment, MulticamGroup } from './clip-project.js';
 
 /** 默认每段切换间隔（秒）。 */
@@ -36,6 +37,12 @@ export const MULTICAM_MAX_SWITCH_SEC = 30;
 const MIN_GROUP_SEC = 0.5;
 /** 可用尾部时长下限（秒）：扣掉头部偏移后不足这么多就没有可剪内容。 */
 const MIN_AVAILABLE_SEC = 0.1;
+/** 跟节拍：切点离组首/组尾至少留这么多秒，避免贴边碎段。 */
+export const MULTICAM_BEAT_EDGE_SEC = 0.25;
+/** 跟节拍：相邻切点最小间隔（秒），节拍点过密时只保留前者。 */
+export const MULTICAM_BEAT_MIN_GAP_SEC = 0.5;
+/** 跟节拍：有效切点少于这个数就回退等间隔（至少要有 2 个切点 = 3 段）。 */
+export const MULTICAM_BEAT_MIN_CUTS = 2;
 
 /** 切换方式：MVP 两种都按 order 依次轮换（保留字段是为了后续差异化，不额外引入行为）。 */
 export type MulticamSwitchMode = 'every' | 'alternate';
@@ -70,11 +77,76 @@ export interface MulticamPlanInput {
   durationSec?: number;
   /** every / alternate：MVP 行为一致（按顺序循环） */
   mode?: MulticamSwitchMode;
+  /**
+   * 跟节拍切点（组内相对时间，秒）：严格递增且 0 < b < 组时长。
+   * ★ 不传 / 空数组 = 等间隔模式（行为与历史逐字节一致）；传了则按边界切，槽位数 = 边界数+1。
+   */
+  slotBoundariesSec?: number[];
 }
 
 export type MulticamPlanResult =
-  | { ok: true; cuts: MulticamCut[]; groupDurationSec: number; slotSec: number; headSec: number[]; warnings: string[] }
+  | {
+      ok: true;
+      cuts: MulticamCut[];
+      groupDurationSec: number;
+      slotSec: number;
+      headSec: number[];
+      warnings: string[];
+      /** 仅跟节拍模式返回：实际使用的切点边界（等间隔模式不带该字段） */
+      slotBoundariesSec?: number[];
+    }
   | { ok: false; error: string };
+
+export type SlotBoundariesResult =
+  | { ok: true; boundaries: number[] }
+  | { ok: false; error: string };
+
+/**
+ * 纯函数：校验并规整切点边界。
+ *
+ * · 空数组 / 缺省 → 无边界（等间隔模式）；
+ * · 每个切点必须是有限秒数、严格递增、0 < b < groupDurationSec；
+ * · 统一 round3 后再校验，避免“四舍五入后不再递增”的浮点坑。
+ */
+export function validateSlotBoundaries(v: unknown, groupDurationSec: number): SlotBoundariesResult {
+  if (v == null) return { ok: true, boundaries: [] };
+  if (!Array.isArray(v)) return { ok: false, error: '切点边界必须是秒数数组' };
+  if (!v.length) return { ok: true, boundaries: [] };
+  const dur = Number(groupDurationSec);
+  if (!(dur > 0)) return { ok: false, error: '组时长无效，无法校验切点边界' };
+  const arr = v.map((n) => round3(Number(n)));
+  for (let i = 0; i < arr.length; i++) {
+    const b = arr[i];
+    if (!Number.isFinite(b)) return { ok: false, error: `第 ${i + 1} 个切点不是有效秒数` };
+    if (!(b > 1e-6) || !(b < dur - 1e-6)) {
+      return { ok: false, error: `第 ${i + 1} 个切点 ${b}s 越过组范围（应大于 0 且小于组时长 ${round3(dur)}s）` };
+    }
+    if (i > 0 && !(b > arr[i - 1])) {
+      return { ok: false, error: `切点必须严格递增（第 ${i} 个 ${arr[i - 1]}s 不小于第 ${i + 1} 个 ${b}s）` };
+    }
+  }
+  return { ok: true, boundaries: arr };
+}
+
+/** 按边界生成连续区间（edges[0]=0，edges[n]=组时长）。 */
+function cutsFromEdges(angles: MulticamAngle[], headSec: number[], edges: number[]): MulticamCut[] {
+  const cuts: MulticamCut[] = [];
+  for (let i = 0; i < edges.length - 1; i++) {
+    const angleIndex = i % angles.length;
+    const filmStart = round3(edges[i]);
+    const filmEnd = round3(edges[i + 1]);
+    const base = headSec[angleIndex];
+    cuts.push({
+      angleIndex,
+      file: angles[angleIndex].file,
+      filmStart,
+      filmEnd,
+      srcStart: round3(base + filmStart),
+      srcEnd: round3(base + filmEnd),
+    });
+  }
+  return cuts;
+}
 
 function clampNum(v: unknown, lo: number, hi: number, fallback: number): number {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
@@ -145,6 +217,23 @@ export function planMulticamCuts(input: MulticamPlanInput): MulticamPlanResult {
     return { ok: false, error: `组时长过短（${groupDuration}s，至少 ${MIN_GROUP_SEC}s）` };
   }
 
+  // 跟节拍模式：切点按边界走（槽位数 = 边界数+1）；无边界时保持历史上的等间隔循环不动。
+  const boundariesCheck = validateSlotBoundaries(input.slotBoundariesSec, groupDuration);
+  if (!boundariesCheck.ok) return boundariesCheck;
+  const boundaries = boundariesCheck.boundaries;
+  if (boundaries.length) {
+    const cuts = cutsFromEdges(angles, headSec, [0, ...boundaries, groupDuration]);
+    return {
+      ok: true,
+      cuts,
+      groupDurationSec: groupDuration,
+      slotSec: switchEvery,
+      headSec,
+      warnings,
+      slotBoundariesSec: boundaries,
+    };
+  }
+
   const cuts: MulticamCut[] = [];
   let cursor = 0;
   let k = 0;
@@ -168,6 +257,82 @@ export function planMulticamCuts(input: MulticamPlanInput): MulticamPlanResult {
   }
 
   return { ok: true, cuts, groupDurationSec: groupDuration, slotSec: switchEvery, headSec, warnings };
+}
+
+// ===== 跟节拍（P2）：第 1 个机位的音频 → 组内切点边界 =====
+
+export interface BeatBoundaryPlan {
+  /** 组内相对时间的切点（严格递增，已过滤贴边与过密点） */
+  boundaries: number[];
+  /** 保留的切点数（= boundaries.length） */
+  beatsUsed: number;
+  /** 过滤前的拍点数 */
+  beatsTotal: number;
+}
+
+/**
+ * 纯函数：拍点（相对**素材文件**的秒数）→ 组内切点边界。
+ *
+ * · 机位 1 相对组起点的头部偏移是 headsSec[0] → 组内时间 = beat - headsSec[0]；
+ * · 只保留 0.25 < 组内时间 < 组时长-0.25（避免贴边碎段）；
+ * · 相邻切点 < 0.5s 只保留前者（防止节拍点过密把时间轴炸成筛子）。
+ */
+export function beatTimesToBoundaries(
+  beats: number[],
+  headSec0: number,
+  groupDurationSec: number,
+): BeatBoundaryPlan {
+  const dur = Number(groupDurationSec);
+  const head = Number.isFinite(Number(headSec0)) ? Number(headSec0) : 0;
+  const list = (Array.isArray(beats) ? beats : [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => a - b);
+  const boundaries: number[] = [];
+  if (!(dur > 2 * MULTICAM_BEAT_EDGE_SEC)) return { boundaries, beatsUsed: 0, beatsTotal: list.length };
+  const lo = MULTICAM_BEAT_EDGE_SEC;
+  const hi = dur - MULTICAM_BEAT_EDGE_SEC;
+  for (const t of list) {
+    const rel = round3(t - head);
+    if (!(rel > lo) || !(rel < hi)) continue;
+    if (boundaries.length && rel - boundaries[boundaries.length - 1] < MULTICAM_BEAT_MIN_GAP_SEC - 1e-9) continue;
+    boundaries.push(rel);
+  }
+  return { boundaries, beatsUsed: boundaries.length, beatsTotal: list.length };
+}
+
+export type BeatBoundaryResult =
+  | { ok: true; boundaries: number[]; bpm: number; warnings: string[] }
+  | { ok: false; error: string };
+
+/**
+ * IO 层：分析第 1 个机位的音频节拍 → 组内切点边界。
+ *
+ * ★ 只用机位 1：组以它为对齐基准，头部偏移最小（headsSec[0] 通常为 0），换算最稳。
+ * ★ 分析失败 / 有效切点不足 → ok:false（调用方据此**如实回退等间隔**并在 warnings 写明原因）。
+ */
+export async function computeBeatBoundaries(
+  ffmpegBin: string,
+  file: string,
+  headSec0: number,
+  groupDurationSec: number,
+): Promise<BeatBoundaryResult> {
+  const det = await analyzeBeats(ffmpegBin, file);
+  if (!det.ok) return { ok: false, error: `音频节拍分析失败：${det.error || '未知错误'}` };
+  const plan = beatTimesToBoundaries(det.beats, headSec0, groupDurationSec);
+  if (plan.boundaries.length < MULTICAM_BEAT_MIN_CUTS) {
+    return {
+      ok: false,
+      error: `音频节拍不足（有效切点 ${plan.boundaries.length} 个，至少需要 ${MULTICAM_BEAT_MIN_CUTS} 个；BPM ${det.bpm || '未测出'}）`,
+    };
+  }
+  const warnings: string[] = [];
+  if (plan.beatsUsed < plan.beatsTotal) {
+    warnings.push(
+      `节拍点贴边/过密已过滤：${plan.beatsTotal} 个拍点保留 ${plan.beatsUsed} 个切点（最小间隔 ${MULTICAM_BEAT_MIN_GAP_SEC}s）`,
+    );
+  }
+  return { ok: true, boundaries: plan.boundaries, bpm: det.bpm, warnings };
 }
 
 export type MulticamBuildResult =
@@ -396,8 +561,12 @@ export function insertMulticamSegments(
 
 // ===== 手动切换（P2）：按槽位点选机位 → 原地重建这一段 =====
 
-/** 组的槽位数：ceil(组时长 / 每段时长)；最后一段可短于 slotSec。 */
-export function multicamSlotCount(group: Pick<MulticamGroup, 'groupDurationSec' | 'slotSec'>): number {
+/**
+ * 组的槽位数：跟节拍组 = 边界数+1；等间隔组 = ceil(组时长 / 每段时长)；最后一段可短于 slotSec。
+ */
+export function multicamSlotCount(group: Pick<MulticamGroup, 'groupDurationSec' | 'slotSec' | 'slotBoundariesSec'>): number {
+  const boundaries = Array.isArray(group?.slotBoundariesSec) ? group.slotBoundariesSec : [];
+  if (boundaries.length) return boundaries.length + 1;
   const dur = Number(group?.groupDurationSec);
   const slot = Number(group?.slotSec);
   if (!(dur > 0) || !(slot > 0)) return 0;
@@ -427,11 +596,19 @@ export function rebuildMulticamCuts(group: MulticamGroup, slotAngles: number[]):
   const slotSec = Number(group.slotSec);
   if (!(slotSec > 0)) return { ok: false, error: '多机位组每段时长无效（slotSec 必须大于 0）' };
 
-  const expected = multicamSlotCount(group);
+  // 跟节拍组：按组内边界切（槽位数 = 边界数+1）；无边界 = 等间隔（历史行为不变）。
+  const boundariesCheck = validateSlotBoundaries(group.slotBoundariesSec, groupDuration);
+  if (!boundariesCheck.ok) return boundariesCheck;
+  const boundaries = boundariesCheck.boundaries;
+  const edges = boundaries.length ? [0, ...boundaries, round3(groupDuration)] : null;
+  const expected = multicamSlotCount({ groupDurationSec: groupDuration, slotSec, slotBoundariesSec: boundaries });
   if (!Array.isArray(slotAngles) || slotAngles.length !== expected) {
+    const detail = edges
+      ? `按 ${boundaries.length} 个节拍切点共 ${expected} 段`
+      : `组时长 ${round3(groupDuration)}s / 每段 ${round3(slotSec)}s`;
     return {
       ok: false,
-      error: `槽位数量应为 ${expected}（组时长 ${round3(groupDuration)}s / 每段 ${round3(slotSec)}s），实际 ${Array.isArray(slotAngles) ? slotAngles.length : 0}`,
+      error: `槽位数量应为 ${expected}（${detail}），实际 ${Array.isArray(slotAngles) ? slotAngles.length : 0}`,
     };
   }
 
@@ -445,9 +622,13 @@ export function rebuildMulticamCuts(group: MulticamGroup, slotAngles: number[]):
         error: `第 ${i + 1} 个槽位的机位 ${JSON.stringify(slotAngles[i])} 无效（可选 1~${files.length}）`,
       };
     }
-    const filmStart = round3(cursor);
-    // 最后一段强制收到组时长（避免 ceil/浮点让末尾短一截或越界）
-    const filmEnd = i === expected - 1 ? round3(groupDuration) : round3(Math.min(cursor + slotSec, groupDuration));
+    const filmStart = edges ? round3(edges[i]) : round3(cursor);
+    // 等间隔模式：最后一段强制收到组时长（避免 ceil/浮点让末尾短一截或越界）
+    const filmEnd = edges
+      ? round3(edges[i + 1])
+      : i === expected - 1
+        ? round3(groupDuration)
+        : round3(Math.min(cursor + slotSec, groupDuration));
     if (!(filmEnd > filmStart + 1e-6)) {
       return { ok: false, error: `第 ${i + 1} 段的成片区间无效：${filmStart}s → ${filmEnd}s` };
     }
@@ -573,6 +754,8 @@ export interface MulticamGroupInput {
   cuts: MulticamCut[];
   /** 本次生成的片段（clipIds 由它派生） */
   segments: ClipSegment[];
+  /** 跟节拍切点（可选；不传/空 = 等间隔组） */
+  slotBoundariesSec?: number[];
 }
 
 /**
@@ -583,6 +766,7 @@ export function makeMulticamGroup(
   project: Pick<ClipProject, 'multicamGroups'>,
   input: MulticamGroupInput,
 ): MulticamGroup {
+  const boundaries = Array.isArray(input.slotBoundariesSec) ? input.slotBoundariesSec : [];
   return {
     id: nextMulticamGroupId(project),
     files: [...input.files],
@@ -592,6 +776,7 @@ export function makeMulticamGroup(
     groupDurationSec: Number(input.groupDurationSec),
     slotSec: Number(input.slotSec),
     slotAngles: input.cuts.map((c) => c.angleIndex),
+    ...(boundaries.length ? { slotBoundariesSec: boundaries.map((b) => Number(b)) } : {}),
     clipIds: input.segments.map((s) => s.id),
   };
 }
