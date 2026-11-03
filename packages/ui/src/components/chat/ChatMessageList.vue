@@ -553,7 +553,9 @@
       <div class="wf-welcome-foot">提示：点上方「可用工作流」勾选几个，我就能用 wf_&lt;id&gt; 工具调用它们</div>
     </div>
 
-    <ChatWelcome v-if="!isCodeMode && !isWorkflowMode && store.currentMessages.length === 0 && !store.streaming && !historyLoading" />
+    <slot v-if="!isCodeMode && !isWorkflowMode && store.currentMessages.length === 0 && !store.streaming && !historyLoading" name="welcome">
+      <ChatWelcome />
+    </slot>
     <div v-if="isCodeMode && store.currentMessages.length === 0 && !store.streaming && !historyLoading" class="code-welcome">
       <div class="code-welcome-greeting">
         <div class="code-welcome-avatar"><el-icon :size="24"><Monitor /></el-icon></div>

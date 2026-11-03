@@ -19,6 +19,9 @@ vi.mock('../../../stores/chat', async () => {
   const { reactive, ref } = await import('vue');
   const currentConvId = ref(chatMock.currentConvId);
   const conversations = ref(chatMock.conversations);
+  const workspaceDir = ref('');
+  const hasWorkspaceDir = ref(false);
+  const showWorkspaceDir = ref(false);
   const state = reactive({
     conversations,
     currentConvId,
@@ -26,9 +29,10 @@ vi.mock('../../../stores/chat', async () => {
     createConversation: async () => 'conv_test',
     deleteConversation: async () => {},
     setNextConversationSourceMeta: vi.fn(),
+    isConvStreaming: () => false,
   });
   chatMock.state = state;
-  chatMock.refs = { conversations, currentConvId };
+  chatMock.refs = { conversations, currentConvId, workspaceDir, hasWorkspaceDir, showWorkspaceDir };
   return { useChatStore: () => state };
 });
 
@@ -44,6 +48,9 @@ vi.mock('../../../composables/chat/useChat', () => ({
       activatePreviewTab: vi.fn(),
       openTab: vi.fn(),
     },
+    workspaceDir: chatMock.refs.workspaceDir,
+    hasWorkspaceDir: chatMock.refs.hasWorkspaceDir,
+    showWorkspaceDir: chatMock.refs.showWorkspaceDir,
   }),
 }));
 
@@ -145,6 +152,7 @@ vi.mock('../../../components/chat/ChatPreviewPane.vue', () => ({ default: { name
 vi.mock('./shop/ShopConnectionDialog.vue', () => ({ default: { name: 'ShopConnectionDialog', render: () => null } }));
 
 import ShopConsole from '../ShopConsole.vue';
+import { workbenchContextOf } from '../../../stores/workbenchContext';
 
 let app: App | null = null;
 
@@ -190,6 +198,9 @@ beforeEach(() => {
   ];
   chatMock.refs.conversations.value = chatMock.conversations;
   chatMock.state.currentConvId = '';
+  chatMock.refs.workspaceDir.value = '';
+  chatMock.refs.hasWorkspaceDir.value = false;
+  chatMock.refs.showWorkspaceDir.value = false;
 });
 
 afterEach(() => {
@@ -214,6 +225,7 @@ describe('ShopConsole project task binding', () => {
       shopProjectId: 'p_shop',
       scope: 'shop-project',
     });
+    expect(workbenchContextOf('shop')).toEqual({ label: '项目', value: '家居店铺' });
   });
 
   it('opens the latest task when the current project is selected', async () => {
@@ -228,5 +240,41 @@ describe('ShopConsole project task binding', () => {
     await nextTick();
 
     expect(chatMock.selected.at(-1)).toBe('c_latest');
+  });
+
+  it('lists project tasks so older shop conversations stay reachable', async () => {
+    chatMock.state.currentConvId = 'c_latest';
+    const host = mountConsole();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+
+    const tasks = [...host.querySelectorAll<HTMLButtonElement>('.shop-project-task')];
+    expect(tasks).toHaveLength(2);
+    expect(tasks.map((item) => item.textContent)).toEqual([
+      expect.stringContaining('开店资料'),
+      expect.stringContaining('家居店铺'),
+    ]);
+
+    tasks[1].click();
+    await nextTick();
+    expect(chatMock.selected.at(-1)).toBe('p_shop');
+  });
+
+  it('exposes the project material directory as a direct project action', async () => {
+    chatMock.state.currentConvId = 'c_latest';
+    const host = mountConsole();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+
+    expect(host.querySelector('.shop-project-workspace')?.textContent).toContain('素材目录');
+    expect(host.querySelector('.shop-project-workspace')?.textContent).toContain('未绑定');
+    (host.querySelector('.shop-project-workspace-action') as HTMLButtonElement).click();
+    expect(chatMock.refs.showWorkspaceDir.value).toBe(true);
+
+    chatMock.refs.workspaceDir.value = 'D:/shops/jiaju';
+    chatMock.refs.hasWorkspaceDir.value = true;
+    await nextTick();
+    expect(host.querySelector('.shop-project-workspace')?.textContent).toContain('jiaju');
+    expect(host.querySelector('.shop-project-workspace strong')?.getAttribute('title')).toBe('D:/shops/jiaju');
   });
 });

@@ -48,6 +48,45 @@
     </div>
   </div>
 
+  <div v-if="activeProjectId" class="shop-project-workspace">
+    <span class="shop-project-workspace-icon" aria-hidden="true"><FolderOpened /></span>
+    <span class="shop-project-workspace-copy">
+      <span>素材目录</span>
+      <strong :title="projectWorkspaceDir || '未绑定'">
+        {{ projectWorkspaceDir ? workspaceBaseName : '未绑定' }}
+      </strong>
+    </span>
+    <button
+      type="button"
+      class="shop-project-workspace-action"
+      :title="projectWorkspaceDir ? '更换项目素材目录' : '选择项目素材目录'"
+      @click="emit('choose-workspace')"
+    >{{ projectWorkspaceDir ? '更换' : '选择' }}</button>
+  </div>
+
+  <div v-if="projectTasks.length > 1" class="shop-project-tasks">
+    <div class="shop-project-tasks-head">
+      <span>最近任务</span>
+      <span>{{ projectTasks.length }}</span>
+    </div>
+    <div class="shop-project-task-list">
+      <button
+        v-for="task in projectTasks"
+        :key="task.id"
+        type="button"
+        class="shop-project-task"
+        :class="{ active: task.id === activeTaskId }"
+        :title="task.title || '未命名任务'"
+        @click="emit('select-task', task.id)"
+      >
+        <el-icon :size="12"><ChatLineSquare /></el-icon>
+        <span class="shop-project-task-name">{{ task.title || '未命名任务' }}</span>
+        <span v-if="task.running" class="shop-project-task-running" aria-label="任务运行中"></span>
+        <span v-else-if="task.id === activeTaskId" class="shop-project-task-current">当前</span>
+      </button>
+    </div>
+  </div>
+
   <!-- 当前项目下的资源（店铺列表带 演示/测试/生产 · 有货源/无货源 角标） -->
   <div class="shop-shops">
     <div class="shop-shops-head">
@@ -108,15 +147,20 @@
 
 <script setup lang="ts">
 // 左栏：项目列表 + 当前项目的资源列表（店铺/仓储/物流统一一处，带类型与货源角标）。
+import { computed } from 'vue';
 import { ChatLineSquare, FolderOpened, Plus, Shop } from '@element-plus/icons-vue';
 import type { ShopConnection } from '../shopSession';
 import { SHOP_TYPE_META, SUPPLY_META, type ShopType, type SupplyMode } from './useShopApi';
 
 interface ProjectItem { id: string; title?: string }
+interface ProjectTaskItem { id: string; title?: string; running?: boolean }
 
 const props = defineProps<{
   projects: ProjectItem[];
   activeProjectId: string;
+  projectWorkspaceDir: string;
+  projectTasks: ProjectTaskItem[];
+  activeTaskId: string;
   shops: ShopConnection[];
   activeShopId: string;
   orphanCount: number;
@@ -127,6 +171,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'select-project', id: string): void;
+  (e: 'choose-workspace'): void;
+  (e: 'select-task', id: string): void;
   (e: 'create-project'): void;
   (e: 'delete-project', p: ProjectItem): void;
   (e: 'select-shop', id: string): void;
@@ -138,6 +184,10 @@ const emit = defineEmits<{
 function countOf(id: string): number {
   return props.counts[id] || 0;
 }
+
+const workspaceBaseName = computed(() =>
+  props.projectWorkspaceDir.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || props.projectWorkspaceDir,
+);
 
 /** 老连接没有 shopType：按 demo / 生产标签推导（与后端 shopContextOf 同口径） */
 function shopTypeOf(c: ShopConnection): ShopType {

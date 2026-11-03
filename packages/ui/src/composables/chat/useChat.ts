@@ -898,11 +898,26 @@ function createChat() {  const router = useRouter();
 
   const showWorkspaceDir = ref(false);
   const settingsStore = useSettingsStore();
-  /** 店铺运营：工作目录按项目（=店铺会话绑定的空间）隔离，未绑定就是空 —— 不继承全局 */
+  function shopProjectIdOf(conv: Conversation | undefined | null): string {
+    if (!conv) return '';
+    return String(conv.sourceMeta?.shopProjectId || '').trim() || conv.id;
+  }
+  function shopProjectConversations(projectId: string): Conversation[] {
+    if (!projectId) return [];
+    return store.conversations.filter((conv) => shopProjectIdOf(conv) === projectId);
+  }
+  function activeShopProjectId(): string {
+    const conv = store.conversations.find((item) => item.id === store.currentConvId);
+    return shopProjectIdOf(conv) || String(store.nextConversationSourceMeta?.shopProjectId || '').trim();
+  }
+  function shopProjectSpaceId(projectId: string): string {
+    return shopProjectConversations(projectId).find((conv) => conv.spaceId)?.spaceId || '';
+  }
+  /** 店铺运营：工作目录按稳定项目隔离，项目下所有任务共用同一空间目录。 */
   const shopProjectDir = computed(() => {
     if (activeMode.value !== 'shop') return '';
-    const conv = store.conversations.find((c) => c.id === store.currentConvId);
-    const sp = conv?.spaceId ? spaceStore.spaces.find((s) => s.id === conv.spaceId) : undefined;
+    const spaceId = shopProjectSpaceId(activeShopProjectId());
+    const sp = spaceId ? spaceStore.spaces.find((s) => s.id === spaceId) : undefined;
     return sp?.dirPath || '';
   });
   // 对外暴露，UI 展示用（未设置时显示 'workspace'）
@@ -924,8 +939,11 @@ function createChat() {  const router = useRouter();
         if (saved) await settingsStore.update({ workspaceDir: saved });
       } catch {}
     }
-    // 把当前工作目录同步给 server，作为 cmd_exec / 目录工具的默认 cwd
-    await pushWorkspaceDir(settingsStore.settings.workspaceDir);
+    // 把当前工作目录同步给 server，作为 cmd_exec / 目录工具的默认 cwd。
+    // 店铺模式使用项目素材目录，不能把办公模式的全局目录带进去。
+    await pushWorkspaceDir(activeMode.value === 'shop'
+      ? shopProjectDir.value
+      : settingsStore.settings.workspaceDir);
   }
 
   async function pushWorkspaceDir(dir: string) {
@@ -946,21 +964,28 @@ function createChat() {  const router = useRouter();
   async function syncWorkspaceDirToSpace(spaceId: string | null | undefined): Promise<void> {
     const sp = spaceId ? spaceStore.spaces.find((s) => s.id === spaceId) : undefined;
     const dir = sp?.dirPath || '';
-    try {
-      if ((settingsStore.settings.workspaceDir || '') !== dir) {
-        await settingsStore.update({ workspaceDir: dir });
-      }
-    } catch { /* 设置落盘失败不阻塞切会话/发消息；服务端那一份仍会下发 */ }
+    if (activeMode.value !== 'shop') {
+      try {
+        if ((settingsStore.settings.workspaceDir || '') !== dir) {
+          await settingsStore.update({ workspaceDir: dir });
+        }
+      } catch { /* 设置落盘失败不阻塞切会话/发消息；服务端那一份仍会下发 */ }
+    }
     await pushWorkspaceDir(dir);
   }
 
   async function onWorkspaceDirSelected(path: string) {
-    // 店铺运营：目录绑定到「当前店铺项目」的空间，**不动全局**（否则会串到办公项目）
+    // 店铺运营：目录绑定到稳定项目及其全部任务，**不动全局**（否则会串到办公项目）
     if (activeMode.value === 'shop') {
       try {
         const spaceId = await spaceStore.findOrCreateByDirPath(path);
-        if (store.currentConvId) await store.updateConversation(store.currentConvId, { spaceId });
+        spaceStore.selectSpace(spaceId);
+        const projectId = activeShopProjectId();
+        for (const conv of shopProjectConversations(projectId)) {
+          if (conv.spaceId !== spaceId) await store.updateConversation(conv.id, { spaceId });
+        }
         await store.loadConversations();
+        await pushWorkspaceDir(path);
       } catch { /* 绑定失败不影响其它操作 */ }
       return;
     }
@@ -982,6 +1007,16 @@ function createChat() {  const router = useRouter();
 
   /** 清除已选工作目录，恢复到未设置状态 */
   async function clearWorkspaceDir() {
+    if (activeMode.value === 'shop') {
+      const projectId = activeShopProjectId();
+      spaceStore.selectSpace(null);
+      for (const conv of shopProjectConversations(projectId)) {
+        if (conv.spaceId) await store.updateConversation(conv.id, { spaceId: null });
+      }
+      await store.loadConversations();
+      await pushWorkspaceDir('');
+      return;
+    }
     await settingsStore.update({ workspaceDir: '' });
     await pushWorkspaceDir('');
     // 清除后若 Git tab 正开着则关掉，避免指向不存在的目录
@@ -2998,13 +3033,22 @@ async function healStalePlatform() {
     //   有空间取空间目录（空间没绑目录时 sync 过去就是空 = 未设置），没空间一律回到「未设置」。
     //   空间列表里查不到（如空间还没加载完）时不动，避免把已绑目录的会话误清空；
     //   店铺模式本就不继承全局目录，别在逛店铺任务时把办公的目录清掉。
-    if (conv?.spaceId) {
-      const sp = spaceStore.spaces.find((s) => s.id === conv.spaceId);
+    const projectId = activeMode.value === 'shop' ? shopProjectIdOf(conv) : '';
+    const projectSpaceId = projectId ? shopProjectSpaceId(projectId) : '';
+    const targetSpaceId = conv?.spaceId && spaceStore.spaces.some((s) => s.id === conv.spaceId)
+      ? conv.spaceId
+      : projectSpaceId;
+    if (targetSpaceId) {
+      const sp = spaceStore.spaces.find((s) => s.id === targetSpaceId);
       if (sp) {
         spaceStore.selectSpace(sp.id);
         await syncWorkspaceDirToSpace(sp.id);
+        if (activeMode.value === 'shop' && conv && !conv.spaceId) {
+          await store.updateConversation(conv.id, { spaceId: sp.id });
+        }
       }
-    } else if (conv && activeMode.value !== 'shop') {
+    } else if (conv) {
+      if (activeMode.value === 'shop') spaceStore.selectSpace(null);
       await syncWorkspaceDirToSpace(null);
     }
     if (conv?.modelId && conv?.platformId) {

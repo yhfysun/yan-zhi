@@ -5,6 +5,9 @@
       <ShopSidebar
         :projects="shopProjects"
         :active-project-id="activeProjectId"
+        :project-workspace-dir="projectWorkspaceDir"
+        :project-tasks="activeProjectTasks"
+        :active-task-id="chatStore.currentConvId"
         :shops="projectConns"
         :active-shop-id="shopActiveId"
         :orphan-count="orphanCount"
@@ -12,6 +15,8 @@
         :demo-busy="demoBusy"
         :counts="projectCounts"
         @select-project="switchProject"
+        @choose-workspace="openProjectWorkspacePicker"
+        @select-task="selectProjectTask"
         @create-project="createProject"
         @delete-project="deleteProject"
         @select-shop="selectShop"
@@ -122,7 +127,18 @@
             <el-icon :size="12"><ArrowRight /></el-icon>
           </button>
         </div>
-        <ChatMessageList />
+        <ChatMessageList>
+          <template #welcome>
+            <ShopAiWelcome
+              :project-title="activeProjectId ? activeProjectTitle : ''"
+              :profile="setupProfile"
+              :progress="setupProgress"
+              :model-label="currentModelLabel"
+              @start="startSetupAi"
+              @quick-action="runSetupQuickAction"
+            />
+          </template>
+        </ChatMessageList>
         <ChatInputArea ref="chatInputRef" />
       </aside>
 
@@ -162,6 +178,7 @@ import { useChatStore } from '../../stores/chat';
 import { useChat } from '../../composables/chat/useChat';
 import { useResizable } from '../../composables/useResizable';
 import { activeMode, leadOf, setLead, type LeadMode } from '../../stores/mode';
+import { setWorkbenchContext } from '../../stores/workbenchContext';
 import ShopSidebar from './shop/ShopSidebar.vue';
 import ShopToolbar from './shop/ShopToolbar.vue';
 import ShopConnectionDialog from './shop/ShopConnectionDialog.vue';
@@ -176,6 +193,7 @@ import ShopPlatformView from './shop/tabs/ShopPlatformView.vue';
 import ShopAudit from './shop/tabs/ShopAudit.vue';
 import ShopReference from './shop/tabs/ShopReference.vue';
 import ShopLaunchpad from './shop/onboarding/ShopLaunchpad.vue';
+import ShopAiWelcome from './shop/ShopAiWelcome.vue';
 import {
   buildShopProjects,
   shopProjectIdOfConversation,
@@ -227,6 +245,18 @@ function syncNarrowShopChrome(): void {
 const chat = useChat();
 const chatStore = useChatStore();
 const chatInputRef = ref<{ fillAndSend: (prompt: string) => Promise<void> } | null>(null);
+const currentModelLabel = computed(() => {
+  const selectedId = chat.selectedModelId.value;
+  if (!selectedId) return '模型待选择';
+  for (const group of chat.modelGroups.value) {
+    const model = group.models.find((item) => item.id === selectedId);
+    if (model) return model.alias || model.modelId || '已选模型';
+  }
+  return '已选模型';
+});
+const projectWorkspaceDir = computed(() => (
+  chat.hasWorkspaceDir.value ? chat.workspaceDir.value : ''
+));
 const shopProjects = computed(() => buildShopProjects(chatStore.conversations));
 
 /** 店铺模式与聊天页共用同一个应用级浏览器预览；关闭时只折叠，不卸载 BrowserPanel。 */
@@ -253,6 +283,10 @@ const activeProjectId = ref('');
 const activeProjectTitle = computed(() =>
   shopProjects.value.find((p) => p.id === activeProjectId.value)?.title
   || (activeProjectId.value ? '未命名项目' : '未归属资源'));
+
+watch([activeProjectId, activeProjectTitle], ([id, title]) => {
+  setWorkbenchContext('shop', id ? { label: '项目', value: title } : null);
+}, { immediate: true });
 
 function armShopProjectContext(projectId: string): void {
   chatStore.setNextConversationSourceMeta(
@@ -318,6 +352,12 @@ function toggleSetupStep(id: ShopSetupStepId, done: boolean): void {
 
 const projectConns = computed(() =>
   shopConnections.value.filter((c) => (c.projectId || '') === activeProjectId.value));
+const activeProjectTasks = computed(() =>
+  shopProjectTasks(chatStore.conversations, activeProjectId.value).map((conv) => ({
+    id: conv.id,
+    title: conv.title,
+    running: chatStore.isConvStreaming(conv.id),
+  })));
 const orphanCount = computed(() => shopConnections.value.filter((c) => !c.projectId).length);
 const projectCounts = computed(() => {
   const map: Record<string, number> = {};
@@ -406,6 +446,15 @@ async function switchProject(id: string): Promise<void> {
   if (latestTask) {
     try { await chat.selectConv(latestTask.id); } catch { /* 会话可能已删：保持空项目 */ }
   }
+}
+
+async function selectProjectTask(id: string): Promise<void> {
+  try { await chat.selectConv(id); } catch { /* 任务可能已删除 */ }
+}
+
+function openProjectWorkspacePicker(): void {
+  if (!activeProjectId.value) return;
+  chat.showWorkspaceDir.value = true;
 }
 
 async function createProject(): Promise<void> {

@@ -119,7 +119,17 @@ vi.mock('./shop/useShopApi', async () => {
 });
 
 // 对话组件替身：它们依赖全局 chat store，本测试不验证聊天本身
-vi.mock('../../components/chat/ChatMessageList.vue', () => ({ default: { name: 'ChatMessageList', render: () => null } }));
+vi.mock('../../components/chat/ChatMessageList.vue', async () => {
+  const { defineComponent, h } = await import('vue');
+  return {
+    default: defineComponent({
+      name: 'ChatMessageList',
+      setup(_, { slots }) {
+        return () => h('div', { class: 'chat-message-list-stub' }, slots.welcome?.());
+      },
+    }),
+  };
+});
 vi.mock('../../components/chat/ChatInputArea.vue', () => ({ default: { name: 'ChatInputArea', render: () => null } }));
 vi.mock('../../components/chat/ChatDialogs.vue', () => ({ default: { name: 'ChatDialogs', render: () => null } }));
 vi.mock('../../components/chat/ChatPreviewPane.vue', async () => {
@@ -136,17 +146,29 @@ vi.mock('../../stores/chat', () => ({
     setNextConversationSourceMeta: () => {},
   }),
 }));
-vi.mock('../../composables/chat/useChat', () => ({
-  useChat: () => ({
-    selectConv: async () => {},
-    store: {
-      rightPanelOpen: false,
-      previewTabs: [],
-      activatePreviewTab: vi.fn(),
-      openTab: vi.fn(),
-    },
-  }),
-}));
+vi.mock('../../composables/chat/useChat', async () => {
+  const { ref } = await import('vue');
+  return {
+    useChat: () => ({
+      selectConv: async () => {},
+      selectedModelId: ref('m_shop'),
+      modelGroups: ref([{
+        platformId: 'p_shop',
+        platformName: 'DeepSeek',
+        models: [{ id: 'm_shop', modelId: 'deepseek-chat', alias: 'DeepSeek Chat' }],
+      }]),
+      workspaceDir: ref(''),
+      hasWorkspaceDir: ref(false),
+      showWorkspaceDir: ref(false),
+      store: {
+        rightPanelOpen: false,
+        previewTabs: [],
+        activatePreviewTab: vi.fn(),
+        openTab: vi.fn(),
+      },
+    }),
+  };
+});
 
 import ShopConsole from './ShopConsole.vue';
 
@@ -211,5 +233,17 @@ describe('ShopConsole · setup 守门', () => {
     expect(host.querySelectorAll('.lead-toggle-wrap')).toHaveLength(1);
     expect(host.querySelector('.shop-chat-head .lead-toggle-wrap')).not.toBeNull();
     expect(host.querySelector('.shop-toolbar .el-radio-group')).toBeNull();
+  });
+
+  it('店铺模式使用店铺专属 AI 起步入口，不混入办公场景卡', async () => {
+    const host = mountConsole();
+    await nextTick();
+    expect(host.querySelector('.shop-ai-welcome')).not.toBeNull();
+    expect(host.textContent).toContain('继续开店');
+    expect(host.textContent).toContain('选品与利润');
+    expect(host.textContent).toContain('检查首单阻塞');
+    expect(host.textContent).toContain('DeepSeek Chat');
+    expect(host.textContent).not.toContain('日常办公');
+    expect(host.textContent).not.toContain('设计创意');
   });
 });

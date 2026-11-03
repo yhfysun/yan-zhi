@@ -285,6 +285,124 @@
   line-height: 1.55;
 }
 
+.shop-project-workspace {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 5px 0 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 7px;
+  background: var(--el-fill-color-lighter);
+}
+.shop-project-workspace-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--shop-accent-soft);
+  color: var(--shop-accent);
+}
+.shop-project-workspace-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+.shop-project-workspace-copy > span {
+  color: var(--el-text-color-placeholder);
+  font-size: 9px;
+}
+.shop-project-workspace-copy strong {
+  overflow: hidden;
+  color: var(--el-text-color-regular);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shop-project-workspace-action {
+  flex: none;
+  padding: 2px 5px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--shop-accent);
+  font-size: 10px;
+  cursor: pointer;
+}
+.shop-project-workspace-action:hover { background: var(--shop-accent-soft); }
+.shop-project-workspace-action:focus-visible {
+  outline: 2px solid var(--shop-accent);
+  outline-offset: 1px;
+}
+
+/* 当前项目的最近任务：项目可承载多条会话，旧任务不能只靠“最近一条”猜测 */
+.shop-project-tasks {
+  margin: 4px 0 10px 18px;
+  padding: 6px 0 6px 8px;
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+.shop-project-tasks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 4px;
+  color: var(--el-text-color-placeholder);
+  font-size: 10px;
+}
+.shop-project-task-list { max-height: 168px; overflow: auto; }
+.shop-project-task {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--el-text-color-regular);
+  text-align: left;
+  cursor: pointer;
+}
+.shop-project-task:hover { background: var(--el-fill-color-light); }
+.shop-project-task.active {
+  background: color-mix(in srgb, var(--shop-accent) 7%, var(--el-bg-color));
+  color: var(--shop-accent);
+}
+.shop-project-task:focus-visible {
+  outline: 2px solid var(--shop-accent);
+  outline-offset: -2px;
+}
+.shop-project-task-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shop-project-task-current {
+  flex: none;
+  color: var(--el-text-color-placeholder);
+  font-size: 9px;
+}
+.shop-project-task-running {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--el-color-warning);
+  animation: shop-task-pulse 1.4s ease-in-out infinite;
+}
+@keyframes shop-task-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 /* ===== 店铺列表（左栏下半）===== */
 .shop-shops { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter); }
 .shop-shops-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }

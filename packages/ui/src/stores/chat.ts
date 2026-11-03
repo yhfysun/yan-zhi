@@ -1869,7 +1869,7 @@ async function loadConversations(scope: 'active' | 'archived' | 'trashed' | 'all
     return id;
   }
 
-  async function updateConversation(id: string, patch: Partial<Conversation>) {
+  async function updateConversation(id: string, patch: Partial<Omit<Conversation, 'spaceId'>> & { spaceId?: string | null }) {
     if (isServerMode()) {
       const body: any = {};
       if (patch.title !== undefined) body.title = patch.title;
