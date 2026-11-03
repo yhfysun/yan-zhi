@@ -195,6 +195,8 @@ dist-plugins/
 
 # 运行时数据（浏览器历史等，不入库）
 workspace/
+# 服务端空间目录与空间记忆（运行时数据；项目工作目录在用户选择的真实路径）
+apps/server/spaces/
 # 临时 demo 页
 list-fix-demo.html
 
