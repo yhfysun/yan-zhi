@@ -6,7 +6,7 @@
   新建文档/表格/演示、重命名、复制一份、删除。
 -->
 <template>
-  <aside class="ws-tree">
+  <aside class="ws-tree" ref="treeEl" tabindex="0" @keydown="onTreeKeydown">
     <header class="ws-head">
       <div class="ws-head-text">
         <span class="ws-title">工作区</span>
@@ -81,6 +81,7 @@
           />
         </span>
         <span v-else class="ws-name" :title="node.name">{{ node.name }}</span>
+        <span v-if="renamingPath !== node.path && !node.isDir && node.size" class="ws-size" :title="`${node.size} 字节`">{{ humanSize(node.size) }}</span>
       </div>
     </div>
 
@@ -140,6 +141,12 @@ function extOf(name: string): string {
   const i = name.lastIndexOf('.');
   return i >= 0 ? name.slice(i).toLowerCase() : '';
 }
+function humanSize(bytes: number): string {
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 function iconText(node: WsNode): string {
   if (node.isDir) return '▣';
   const ext = extOf(node.name);
@@ -158,12 +165,54 @@ function iconClass(node: WsNode): string {
 }
 
 function onRowClick(node: WsNode) {
+  treeEl.value?.focus();
   if (node.isDir) {
     void toggleDir(node);
     return;
   }
   select(node.path);
   officeSelectedFile.value = node.path;
+}
+
+// ===== 键盘操作：F2 改名 / Del 删除 / Ctrl+Z 撤销 =====
+const treeEl = ref<HTMLElement | null>(null);
+function selectedNode(): WsNode | null {
+  return flatNodes.value.find((n) => n.path === selectedPath.value) || null;
+}
+function onTreeKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    if (!undoStack.value.length) return;
+    e.preventDefault();
+    void undoLast();
+    return;
+  }
+  if (e.key === 'F2') {
+    const node = selectedNode();
+    if (!node) return;
+    e.preventDefault();
+    startRename(node);
+    return;
+  }
+  if (e.key === 'Delete') {
+    const node = selectedNode();
+    if (!node) return;
+    e.preventDefault();
+    void removeByKeyboard(node);
+  }
+}
+async function removeByKeyboard(node: WsNode) {
+  try {
+    await ElMessageBox.confirm(
+      `删除「${node.name}」${node.isDir ? '及其全部内容' : ''}？文件会被直接删除，不进回收站。`,
+      '删除',
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '删除', cancelButtonText: '取消' },
+    );
+  } catch { return; }
+  const r = await deleteNode(node);
+  if (!r.ok) { ElMessage.error(r.error || '删除失败'); return; }
+  ElMessage.success('已删除');
 }
 
 // ===== 撤销（重命名 / 移动）=====
@@ -464,7 +513,10 @@ defineExpose({ doCreate });
 .ws-ficon.f-word { color: #2b579a; }
 .ws-ficon.f-xls { color: #1d7044; }
 .ws-ficon.f-ppt { color: #b7472a; }
-.ws-name { overflow: hidden; text-overflow: ellipsis; }
+.ws-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ws-size { flex: 0 0 auto; margin-left: 8px; font-size: 10.5px; color: var(--color-text-tertiary); }
+/* 树获得焦点时不画整块描边（键盘操作靠选中行反馈） */
+.ws-tree:focus { outline: none; }
 
 .ws-menu {
   position: fixed; z-index: 3000; min-width: 200px;

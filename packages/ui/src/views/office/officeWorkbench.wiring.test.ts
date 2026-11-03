@@ -119,6 +119,15 @@ describe('P2-4 文件树与三套视图', () => {
     expect(TREE).toMatch(/pushUndo\(`移动/);
   });
 
+  it('文件树键盘操作与文件大小', () => {
+    const TREE = strip(readRepo('packages/ui/src/components/office/WorkspaceFileTree.vue'));
+    expect(TREE).toMatch(/onTreeKeydown/);
+    expect(TREE).toMatch(/e\.key === 'F2'/);
+    expect(TREE).toMatch(/e\.key === 'Delete'/);
+    expect(TREE).toMatch(/humanSize/);
+    expect(TREE).toMatch(/ws-size/);
+  });
+
   it('工作台记住上次文件与目录展开状态', () => {
     const WS = strip(readRepo('packages/ui/src/composables/office/useWorkspaceFiles.ts'));
     expect(WS).toMatch(/yz:office:tree:expanded/);
