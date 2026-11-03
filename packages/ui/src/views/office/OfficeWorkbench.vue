@@ -109,11 +109,14 @@ const fileSub = computed(() => {
   return useFilePreview.value ? '可直接编辑 · 自动保存' : '可编辑文字 · 保存到本机';
 });
 
-/** 复用专门的编辑器：FilePreview 支持 md/txt/代码/docx/xlsx/pdf/图片；pptx 走解析视图 */
+/**
+ * 复用专门的编辑器：FilePreview 支持 md/txt/代码/xlsx/pdf/图片；
+ * docx/pptx 走 OfficeDocumentView —— 结构化块 + 画布内「编辑 / 取消 / 保存」（与 PPT 一致）。
+ */
 const useFilePreview = computed(() => {
   const p = selectedPath.value;
   if (!p) return false;
-  return !/\.pptx$/i.test(p);
+  return !/\.(pptx|docx)$/i.test(p);
 });
 
 const isYdocFile = computed(() => /\.ydoc$/i.test(selectedPath.value));

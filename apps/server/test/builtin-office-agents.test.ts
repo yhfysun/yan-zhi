@@ -37,6 +37,8 @@ const KNOWN_TOOL_NAMES = new Set([
   'call_agent', 'spawn_subagent', 'list_sub_agents', 'list_models',
   'ask_user', 'confirm_user', 'task_plan', 'task_step',
   'image_analyze',
+  // 办公三件套（office-docs.ts）
+  'office_create', 'office_read', 'office_write', 'office_search',
   // 浏览器
   'browser_navigate', 'browser_get_page_content',
   // api_* 直查工具（不走 ToolRegistry，但必须并入判定集合）

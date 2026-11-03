@@ -1,11 +1,7 @@
 <template>
-  <div class="page">
-    <!-- 页头：标题 + 向量模型 + 新建，单行工具栏 -->
-    <header class="page-header kb-header">
-      <div class="kb-header-title">
-        <h2 class="page-title">知识库</h2>
-        <div class="page-sub">管理文档切片，按关键词检索知识内容</div>
-      </div>
+  <PageFrame title="知识库" subtitle="管理文档切片，按关键词检索知识内容" class="kb-page">
+    <!-- 工具条：向量模型 + 新建（独立一行，窄屏也不会挤压标题） -->
+    <template #toolbar>
       <div class="kb-header-tools">
         <div class="embedding-inline">
           <el-icon><Histogram /></el-icon>
@@ -44,7 +40,7 @@
         </span>
         <el-button type="primary" :icon="Plus" @click="openCreate">新建知识库</el-button>
       </div>
-    </header>
+    </template>
 
     <div class="knowledge-layout">
       <aside class="kb-list glass-card">
@@ -259,11 +255,12 @@
         <el-form-item label="来源路径"><el-input v-model="docForm.sourcePath" placeholder="可选，本地文件绝对路径" /></el-form-item>
       </el-form>
     </FormDialog>
-  </div>
+  </PageFrame>
 </template>
 
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref, computed, watch } from 'vue';
+import PageFrame from '../components/common/PageFrame.vue';
 import { Plus, Refresh, Edit, Delete, Search, Folder, Share, ArrowRight, Histogram, Document } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { api } from '../api/client';

@@ -3,7 +3,7 @@ export { FileReadTool } from './file-read';
 //   所以必须从包根透出（此前 fs-walk 并未导出，前端引不到）。
 export { resolveToolPath, isAbsolutePath, joinPath, DEFAULT_SKIP_DIRS } from './fs-walk';
 export { FileToMarkdownTool } from './file-to-markdown';
-export { OfficeCreateTool, OfficeReadTool } from './office-docs';
+export { OfficeCreateTool, OfficeReadTool, OfficeWriteTool, OfficeSearchTool } from './office-docs';
 export { FileWriteTool } from './file-write';
 export { FileEditTool } from './file-edit';
 export { FileTranscodeTool } from './file-transcode';
@@ -83,7 +83,7 @@ export {
 import { FileReadTool } from './file-read';
 import { FileToMarkdownTool } from './file-to-markdown';
 import { FileWriteTool } from './file-write';
-import { OfficeCreateTool, OfficeReadTool } from './office-docs';
+import { OfficeCreateTool, OfficeReadTool, OfficeWriteTool, OfficeSearchTool } from './office-docs';
 import { FileEditTool } from './file-edit';
 import { FileTranscodeTool } from './file-transcode';
 import { FileGrepTool } from './file-grep';
@@ -144,6 +144,9 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   // 办公三件套：新建 / 结构化读取（与办公工作台共用同一套 Python 生成解析）
   registry.register(new OfficeCreateTool());
   registry.register(new OfficeReadTool());
+  // 办公文档写入（追加/替换内容）与工作区搜索（文件名/内容，与工作台同一口径）
+  registry.register(new OfficeWriteTool());
+  registry.register(new OfficeSearchTool());
   // 文件编辑（局部替换）与文件内容搜索（正则+上下文）——补齐「精准编辑 + 定位」能力
   registry.register(new FileEditTool());
   // 编码转换（GBK↔UTF-8 / Big5 / Shift_JIS…）：用户要求「格式转换也要有」

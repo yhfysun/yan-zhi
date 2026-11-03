@@ -117,7 +117,7 @@ withDefaults(
 .pf-body.no-scroll { overflow: hidden; }
 .pf-body.no-pad { padding: 0; }
 
-@media (max-width: 767px) {
+@media (max-width: 900px) {
   .pf-header { padding: 14px 16px 8px; flex-direction: column; gap: 10px; }
   .pf-actions { width: 100%; }
   .pf-toolbar { padding: 0 16px 8px; }

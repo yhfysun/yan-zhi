@@ -27,7 +27,7 @@ export const TRANSLATE_AGENT_BUILTIN_TOOLS = [
   // 读资料：file_read 精读、file_to_markdown 把 Word/Excel/PPT/PDF 转 md 再读、file_list 看目录
   'file_read', 'file_to_markdown', 'file_write', 'file_list',
   // 办公三件套：交付 Word/Excel/PPT（与工作台同一套生成器）
-  'office_create', 'office_read',
+  'office_create', 'office_read', 'office_write', 'office_search',
   // 图片/扫描件里的文字：OCR 取文字，image_analyze 看版式与图文内容
   'api_tool_ocr', 'image_analyze',
   // 需要翻译网页原文时直接看页面内容（多步网站操作仍委派 pageAgent）
@@ -84,7 +84,7 @@ export const BUSINESS_AGENT_BUILTIN_TOOLS = [
   // 读资料与交付：读用户给的流水/台账/合同/报价单，交付测算表与方案
   'file_read', 'file_to_markdown', 'file_write', 'file_list',
   // 办公三件套：交付 Word/Excel/PPT（与工作台同一套生成器）
-  'office_create', 'office_read',
+  'office_create', 'office_read', 'office_write', 'office_search',
   // 测算底座：成本表、盈亏平衡、敏感性分析、图表（python）
   'python_exec',
   // 看图：门店照片、菜单、招牌、竞品截图、后台数据截图（只有路径，必须调它才看得见）

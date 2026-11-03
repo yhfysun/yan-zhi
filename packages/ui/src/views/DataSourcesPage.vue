@@ -1,10 +1,10 @@
 <template>
-  <div class="page dw-root">
-    <header class="page-header">
-      <div>
-        <h2 class="page-title dw-display">数据源</h2>
-        <div class="page-sub">连接外部数据库与内置项目库，作为本体（text2sql）与 SQL 控制台的数据面</div>
-      </div>
+  <PageFrame
+    title="数据源"
+    subtitle="连接外部数据库与内置项目库，作为本体（text2sql）与 SQL 控制台的数据面"
+    class="dw-root"
+  >
+    <template #toolbar>
       <div class="ds-actions">
         <SearchToolbar
           v-model:query="keyword"
@@ -28,7 +28,7 @@
           </template>
         </SearchToolbar>
       </div>
-    </header>
+    </template>
 
     <!-- 新建/编辑：统一走弹窗。此前内嵌在卡片网格首位会导致整片重排、
          且「顶部编辑卡 + 列表里同一条原卡」同时存在；弹窗化后编辑态与列表态互斥 -->
@@ -225,7 +225,7 @@
 
       <div v-if="!filtered.length" class="dw-empty">没有匹配的数据源</div>
     </div>
-  </div>
+  </PageFrame>
 </template>
 
 <script setup lang="ts">
@@ -234,6 +234,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Plus, ArrowRight, MoreFilled } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import FormDialog from '../components/FormDialog.vue';
+import PageFrame from '../components/common/PageFrame.vue';
 import SearchToolbar from '../components/common/SearchToolbar.vue';
 import '../styles/data-workbench.css';
 

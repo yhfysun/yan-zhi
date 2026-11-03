@@ -14,22 +14,61 @@
     <div v-else-if="error" class="odv-empty">{{ error }}</div>
 
     <!-- 文档 -->
-    <div v-else-if="kind === 'doc'" class="odv-doc-wrap">
-      <article class="odv-page">
-        <template v-for="(b, i) in docBlocks" :key="i">
-          <h1 v-if="b.type === 'heading' && b.level === 1" class="odv-h1">{{ b.text }}</h1>
-          <h2 v-else-if="b.type === 'heading'" class="odv-h2">{{ b.text }}</h2>
-          <p v-else-if="b.type === 'paragraph'" class="odv-p">{{ b.text }}</p>
-          <table v-else-if="b.type === 'table'" class="odv-table">
-            <tbody>
-              <tr v-for="(row, r) in b.rows" :key="r">
-                <td v-for="(cell, c) in row" :key="c" :class="{ 'is-head': r === 0 }">{{ cell }}</td>
-              </tr>
-            </tbody>
-          </table>
+    <div v-else-if="kind === 'doc'" class="odv-doc-outer">
+      <div class="odv-doc-toolbar">
+        <template v-if="!editingDoc">
+          <el-button size="small" @click="startDocEdit">编辑文字</el-button>
         </template>
-        <div v-if="docBlocks.length === 0" class="odv-empty-inline">（空白文档）</div>
-      </article>
+        <template v-else>
+          <el-button size="small" @click="cancelDocEdit">取消</el-button>
+          <el-button size="small" type="primary" :loading="savingDoc" @click="saveDocEdits">保存</el-button>
+        </template>
+        <span v-if="docError" class="odv-slide-error">{{ docError }}</span>
+      </div>
+      <div class="odv-doc-wrap">
+        <article class="odv-page">
+          <template v-for="(b, i) in (editingDoc ? docDraft : docBlocks)" :key="i">
+            <template v-if="editingDoc">
+              <el-input
+                v-if="b.type === 'heading'"
+                v-model="b.text"
+                size="small"
+                class="odv-doc-edit-h"
+              />
+              <el-input
+                v-else-if="b.type === 'paragraph'"
+                v-model="b.text"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 8 }"
+                size="small"
+                class="odv-doc-edit-p"
+              />
+              <table v-else-if="b.type === 'table'" class="odv-table">
+                <tbody>
+                  <tr v-for="(row, r) in b.rows" :key="r">
+                    <td v-for="(cell, c) in row" :key="c" :class="{ 'is-head': r === 0 }">
+                      <el-input v-model="b.rows[r][c]" size="small" />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+            <template v-else>
+              <h1 v-if="b.type === 'heading' && b.level === 1" class="odv-h1">{{ b.text }}</h1>
+              <h2 v-else-if="b.type === 'heading'" class="odv-h2">{{ b.text }}</h2>
+              <p v-else-if="b.type === 'paragraph'" class="odv-p">{{ b.text }}</p>
+              <table v-else-if="b.type === 'table'" class="odv-table">
+                <tbody>
+                  <tr v-for="(row, r) in b.rows" :key="r">
+                    <td v-for="(cell, c) in row" :key="c" :class="{ 'is-head': r === 0 }">{{ cell }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+          </template>
+          <div v-if="docBlocks.length === 0" class="odv-empty-inline">（空白文档）</div>
+        </article>
+      </div>
     </div>
 
     <!-- 表格 -->
@@ -123,6 +162,43 @@ const editingSlides = ref(false);
 const savingSlides = ref(false);
 const slideError = ref('');
 
+// ===== docx 文字编辑（标题 / 段落 / 表格单元格）=====
+const editingDoc = ref(false);
+const savingDoc = ref(false);
+const docError = ref('');
+const docDraft = ref<DocBlock[]>([]);
+
+function startDocEdit() {
+  // 深拷贝成草稿：取消时直接丢弃，不动已渲染的原内容
+  docDraft.value = JSON.parse(JSON.stringify(docBlocks.value)) as DocBlock[];
+  editingDoc.value = true;
+  docError.value = '';
+}
+function cancelDocEdit() {
+  editingDoc.value = false;
+  docError.value = '';
+  docDraft.value = [];
+}
+async function saveDocEdits() {
+  if (!props.path) return;
+  savingDoc.value = true;
+  docError.value = '';
+  try {
+    const blocks = docDraft.value.map((b) =>
+      b.type === 'table' ? { type: 'table', rows: b.rows } : { type: b.type, text: b.text },
+    );
+    const r = await api.post('/office/save', { path: props.path, blocks });
+    if (!('data' in r)) { docError.value = r.error || '保存失败'; return; }
+    editingDoc.value = false;
+    docDraft.value = [];
+    await load();
+  } catch (e: any) {
+    docError.value = e?.message || '保存失败';
+  } finally {
+    savingDoc.value = false;
+  }
+}
+
 function startSlideEdit() {
   editingSlides.value = true;
   slideError.value = '';
@@ -172,6 +248,11 @@ async function load() {
   if (!props.path) return;
   loading.value = true;
   error.value = '';
+  editingDoc.value = false;
+  docDraft.value = [];
+  docError.value = '';
+  editingSlides.value = false;
+  slideError.value = '';
   docBlocks.value = [];
   sheetTabs.value = [];
   slides.value = [];
@@ -208,6 +289,14 @@ defineExpose({ load, ext: () => extOf(props.path) });
 .odv-empty-inline { padding: 24px; text-align: center; font-size: 13px; color: var(--color-text-tertiary); }
 
 /* ===== 文档：A4 纸面 ===== */
+.odv-doc-outer { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.odv-doc-toolbar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-bottom: 1px solid var(--color-border);
+}
+.odv-doc-edit-h { display: block; margin: 6px 0; }
+.odv-doc-edit-p { display: block; margin: 4px 0; }
 .odv-doc-wrap { flex: 1; min-height: 0; overflow: auto; background: var(--color-bg); padding: 26px 40px 60px; display: flex; justify-content: center; }
 .odv-page {
   width: min(720px, 100%); min-height: 900px; padding: 54px 64px;

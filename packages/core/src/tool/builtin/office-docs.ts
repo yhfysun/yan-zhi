@@ -4,11 +4,13 @@
 // 生成与解析仍由 Python（python-docx / openpyxl / python-pptx）完成。
 // 工作台的人工侧走服务端 /api/office/*，路径与文件名规则保持一致。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { BuiltInTool, ToolContext } from '../types';
 import type { McpCallResult } from '../../mcp/client';
 import { getPythonScript, runPythonScript } from './python-runtime';
-import { resolveToolPath } from './fs-walk';
+import { resolveToolPath, walkFiles } from './fs-walk';
+import { getPlatformAdapter } from '../../platform/types';
 import { capToolOutput } from './output-cap';
 import { toolError } from '../result';
 
@@ -128,8 +130,7 @@ export class OfficeReadTool implements BuiltInTool {
   }
 }
 
-/** 把 Python 的解析结果整理成模型易读的文本（控制行/列数量，避免超长） */
-function formatContent(filePath: string, data: any): string {
+/** 把 Python 的解析结果整理成模型易读的文本（控制行/列数量，避免超长） */function formatContent(filePath: string, data: any): string {
   const kind = data?.kind;
   const lines: string[] = [`文件：${filePath}`];
 
@@ -172,4 +173,162 @@ function formatContent(filePath: string, data: any): string {
   }
 
   return lines.concat('（暂不支持的内容类型）').join('\n');
+}
+
+// ============================================================================
+// office_write —— 向已有文档追加 / 替换内容（2026-11-03，P1）
+// 与 office_create/office_read 共用 office_docs.py：写回逻辑只在 Python 一处。
+// ============================================================================
+export class OfficeWriteTool implements BuiltInTool {
+  name = 'office_write';
+  description =
+    '向已存在的 Word/Excel/PPT 追加或替换内容：docx 用 blocks（标题/段落/表格），' +
+    'xlsx 用 rows（行数组，可指定 sheet），pptx 用 slides（append: [{title,texts}]；replace: [{index,title?,texts}]）。' +
+    'mode=append 追加；mode=replace 按序号替换已有内容（docx 块序号 / xlsx 清空重写 / pptx 页序号）。' +
+    '写前建议先用 office_read 看清结构；纯文本文件请用 file_write / file_edit。';
+
+  inputSchema = {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: '目标文件路径（绝对路径或相对工作目录），须已存在' },
+      mode: { type: 'string', enum: ['append', 'replace'], description: 'append=追加（默认），replace=替换' },
+      blocks: {
+        type: 'array',
+        description: 'docx 内容块：[{type:"heading",level?,text}|{type:"paragraph",text}|{type:"table",rows:[[...]]}]',
+        items: { type: 'object' },
+      },
+      rows: {
+        type: 'array',
+        description: 'xlsx 行数据：[[单元格,...],...]',
+        items: { type: 'array' },
+      },
+      sheet: { type: 'string', description: 'xlsx 工作表名（省略=活动工作表）' },
+      slides: {
+        type: 'array',
+        description: 'pptx：append=[{title,texts}]；replace=[{index,title?,texts}]',
+        items: { type: 'object' },
+      },
+    },
+    required: ['path'],
+  };
+
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
+    const p = resolveToolPath(args.path, ctx?.workspaceDir);
+    if (!p) return toolError('path 不能为空');
+    const ext = path.extname(p).toLowerCase();
+    if (!['.docx', '.xlsx', '.xlsm', '.pptx'].includes(ext)) {
+      return toolError('仅支持 .docx / .xlsx / .pptx');
+    }
+    try {
+      if (!fs.statSync(p).isFile()) return toolError('不是文件：' + p);
+    } catch {
+      return toolError('文件不存在：' + p);
+    }
+
+    const mode = args.mode === 'replace' ? 'replace' : 'append';
+    const payload: Record<string, unknown> = {};
+    if (Array.isArray(args.blocks)) payload.blocks = args.blocks;
+    if (Array.isArray(args.rows)) payload.rows = args.rows;
+    if (Array.isArray(args.slides)) payload.slides = args.slides;
+    if (typeof args.sheet === 'string' && args.sheet.trim()) payload.sheet = args.sheet.trim();
+    if (Object.keys(payload).length === 0) {
+      return toolError('需要提供 blocks（docx）/ rows（xlsx）/ slides（pptx）之一');
+    }
+
+    const script = scriptPath();
+    if (!script) return toolError('办公文档脚本缺失（office/office_docs.py）');
+    const tmpJson = path.join(os.tmpdir(), `yz_office_write_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+    try {
+      fs.writeFileSync(tmpJson, JSON.stringify(payload), 'utf8');
+      const r = await runPythonScript(script, ['write', '--path', p, '--json-file', tmpJson, '--mode', mode], { timeout: 60000 });
+      if (r.exitCode !== 0) return toolError(`写入失败：${(r.stderr || r.stdout || '').slice(0, 400)}`);
+      const parsed = lastJsonLine(r.stdout);
+      if (parsed?.ok === false) return toolError(String(parsed.error || '写入失败'));
+      return { content: [{ type: 'text', text: `已写入：${p}（mode=${mode}）` }] };
+    } catch (e) {
+      return toolError(`写入异常：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      try { fs.rmSync(tmpJson, { force: true }); } catch { /* ignore */ }
+    }
+  }
+}
+
+// ============================================================================
+// office_search —— 工作区按文件名 / 内容搜索（与办公工作台搜索同一口径）
+// 复用 fs-walk 的目录遍历（跳过 node_modules/.git/dist 等噪声目录），三端可用。
+// ============================================================================
+const SEARCH_MAX_FILE_SIZE = 2 * 1024 * 1024;
+
+export class OfficeSearchTool implements BuiltInTool {
+  name = 'office_search';
+  description =
+    '在工作区按文件名或内容搜索（与办公工作台同一口径），返回文件路径与命中行预览。' +
+    'query 匹配文件名或正文；可用 include 过滤扩展名（如 "*.docx,*.md"）；默认搜索当前工作目录。';
+
+  inputSchema = {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: '搜索关键字（文件名或内容，大小写不敏感）' },
+      path: { type: 'string', description: '搜索根目录（绝对路径或相对工作目录，默认=工作目录）' },
+      include: { type: 'string', description: '扩展名过滤，逗号分隔，如 "*.docx,*.xlsx" 或 "docx,xlsx"' },
+      maxResults: { type: 'number', description: '最多返回多少条（默认 60，上限 300）' },
+    },
+    required: ['query'],
+  };
+
+  async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<McpCallResult> {
+    const { fs } = getPlatformAdapter();
+    const query = String(args.query || '').trim();
+    if (!query) return toolError('query 不能为空');
+    const root = resolveToolPath(typeof args.path === 'string' ? args.path : '', ctx?.workspaceDir);
+    if (!root) return toolError('未设置工作目录，请提供 path');
+
+    const include = typeof args.include === 'string' && args.include.trim()
+      ? args.include.split(',').map((s) => s.trim()).filter(Boolean)
+      : undefined;
+    const maxResults = Math.min(Math.max(Math.floor(Number(args.maxResults) || 60), 1), 300);
+
+    const exists = await fs.exists(root).catch(() => false);
+    if (!exists) return toolError('路径不存在：' + root);
+
+    let isDir = false;
+    if (fs.stat) {
+      try { isDir = (await fs.stat(root)).isDir; } catch { isDir = false; }
+    } else {
+      isDir = await fs.readDir(root).then(() => true).catch(() => false);
+    }
+    const files = isDir ? await walkFiles(fs, root, { globFilter: include }) : [root];
+
+    const lower = query.toLowerCase();
+    const hits: Array<{ file: string; line: number; preview: string }> = [];
+    let truncated = false;
+    for (const file of files) {
+      if (hits.length >= maxResults) { truncated = true; break; }
+      const nameHit = path.basename(file).toLowerCase().includes(lower);
+      let content: string;
+      try {
+        content = await fs.readFile(file);
+      } catch {
+        if (nameHit) hits.push({ file, line: 0, preview: '（文件名匹配）' });
+        continue;
+      }
+      if (content.includes('\0') || content.length > SEARCH_MAX_FILE_SIZE) {
+        if (nameHit) hits.push({ file, line: 0, preview: '（文件名匹配）' });
+        continue;
+      }
+      if (nameHit) hits.push({ file, line: 0, preview: '（文件名匹配）' });
+      if (hits.length >= maxResults) { truncated = true; break; }
+      const lines = content.replace(/\r\n/g, '\n').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].toLowerCase().includes(lower)) continue;
+        hits.push({ file, line: i + 1, preview: lines[i].trim().slice(0, 200) });
+        if (hits.length >= maxResults) { truncated = true; break; }
+      }
+    }
+
+    if (hits.length === 0) return { content: [{ type: 'text', text: `未找到与「${query}」匹配的文件或内容（搜索根：${root}）` }] };
+    const out = hits.map((h) => (h.line > 0 ? `${h.file}:${h.line}: ${h.preview}` : `${h.file} ${h.preview}`)).join('\n');
+    const tail = truncated ? `\n\n[已截断到 ${maxResults} 条，请缩小范围或提高 maxResults]` : '';
+    return { content: [{ type: 'text', text: capToolOutput(out + tail) }] };
+  }
 }

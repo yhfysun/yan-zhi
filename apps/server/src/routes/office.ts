@@ -17,6 +17,7 @@ import path from 'node:path';
 import { authMiddleware } from '../auth.js';
 import { getPythonScript, runPythonScript } from '@yan-zhi/core';
 import { isAllowedPathForUser } from '../services/allowed-roots.js';
+import { serverState } from '../state.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -54,6 +55,26 @@ function availablePath(dir: string, base: string, ext: string): string {
   return candidate;
 }
 
+/** 模板目录：<工作区>/.office-templates —— 按 kind 找 default.<ext> / <kind>.<ext> 或用户指定名 */
+function resolveTemplate(kind: OfficeKind, requested: string): string | null {
+  const ws = (serverState.workspaceDir || '').trim();
+  if (!ws) return null;
+  const dir = path.join(ws, '.office-templates');
+  if (!fs.existsSync(dir)) return null;
+  const ext = KIND_EXT[kind];
+  const candidates: string[] = [];
+  if (requested) {
+    const b = safeBaseName(requested);
+    if (b) candidates.push(path.join(dir, /\.[a-z0-9]+$/i.test(b) ? b : b + ext));
+  }
+  candidates.push(path.join(dir, `default${ext}`));
+  candidates.push(path.join(dir, `${kind}${ext}`));
+  for (const c of candidates) {
+    try { if (fs.statSync(c).isFile()) return c; } catch { /* ignore */ }
+  }
+  return null;
+}
+
 router.post('/create', async (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const { dir, name, kind } = (req.body || {}) as { dir?: string; name?: string; kind?: string };
@@ -68,6 +89,17 @@ router.post('/create', async (req: Request, res: Response) => {
   const ext = KIND_EXT[kind];
   const out = availablePath(dir, base, ext);
   if (!isAllowedPathForUser(userId, out)) { res.status(403).json({ error: '目标路径不在允许范围内' }); return; }
+
+  // 模板优先：<工作区>/.office-templates 里有对应模板就复制，否则回落空白文档
+  const requested = typeof req.body?.template === 'string' ? req.body.template : '';
+  const templatePath = resolveTemplate(kind, requested);
+  if (templatePath) {
+    try {
+      fs.copyFileSync(templatePath, out);
+      res.json({ data: { path: out, name: path.basename(out), template: path.basename(templatePath) } });
+      return;
+    } catch { /* 模板复制失败 → 继续走空白文档 */ }
+  }
 
   const script = getPythonScript('office/office_docs.py');
   if (!script) { res.status(501).json({ error: '办公文档脚本缺失（office/office_docs.py）' }); return; }
@@ -113,14 +145,19 @@ router.get('/content', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/office/save  { path, slides: [{ index, shapes: [{ shape, text }] }] }
-// pptx 文字回写：只改指定形状的文本，版式/图片不动。
+// POST /api/office/save
+//   pptx: { path, slides: [{ index, shapes: [{ shape, text }] }] } —— 只改指定形状的文本
+//   docx: { path, blocks: [{ type:'heading'|'paragraph', text } | { type:'table', rows }] }
+//         按块序号回写标题/段落/表格，保留段落样式与版式
 router.post('/save', async (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  const { path: p, slides } = (req.body || {}) as { path?: string; slides?: unknown };
-  if (!p || !Array.isArray(slides)) { res.status(400).json({ error: 'path 与 slides 为必填项' }); return; }
+  const { path: p, slides, blocks } = (req.body || {}) as { path?: string; slides?: unknown; blocks?: unknown };
+  if (!p) { res.status(400).json({ error: 'path 为必填项' }); return; }
   if (!isAllowedPathForUser(userId, p)) { res.status(403).json({ error: '路径不在允许范围内' }); return; }
-  if (path.extname(p).toLowerCase() !== '.pptx') { res.status(400).json({ error: '目前仅支持写回 .pptx' }); return; }
+  const ext = path.extname(p).toLowerCase();
+  if (ext !== '.pptx' && ext !== '.docx') { res.status(400).json({ error: '目前仅支持写回 .docx / .pptx' }); return; }
+  if (ext === '.pptx' && !Array.isArray(slides)) { res.status(400).json({ error: 'pptx 保存需要 slides' }); return; }
+  if (ext === '.docx' && !Array.isArray(blocks)) { res.status(400).json({ error: 'docx 保存需要 blocks' }); return; }
   try {
     if (!fs.statSync(p).isFile()) { res.status(404).json({ error: '文件不存在' }); return; }
   } catch {
@@ -131,7 +168,7 @@ router.post('/save', async (req: Request, res: Response) => {
   if (!script) { res.status(501).json({ error: '办公文档脚本缺失（office/office_docs.py）' }); return; }
   const tmpJson = path.join(os.tmpdir(), `yz_office_save_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
   try {
-    fs.writeFileSync(tmpJson, JSON.stringify({ slides }), 'utf8');
+    fs.writeFileSync(tmpJson, JSON.stringify(ext === '.pptx' ? { slides } : { blocks }), 'utf8');
     const r = await runPythonScript(script, ['save', '--path', p, '--json-file', tmpJson], { timeout: 60000 });
     if (r.exitCode !== 0) {
       const msg = (r.stderr || r.stdout || '').slice(0, 500);

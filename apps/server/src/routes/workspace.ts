@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { serverState } from '../state.js';
 import { db } from '../db.js';
 import { isWithinRoot } from '../services/path-guard.js';
+import { allowedRootsForUser } from '../services/allowed-roots.js';
 // 文本落盘的唯一出口：按目标文件现有编码写回（GBK 文件不会被悄悄转成 UTF-8）
 import { writeTextFilePreservingEncoding } from '../services/text-file-write.js';
 import { diffStatLines } from '../services/hunk-apply.js';
@@ -321,6 +322,97 @@ function writeTextAsEncoding(filePath: string, content: string, to: TextEncoding
 /** 用指定编码解回文本（无损校验用；解不动返回 null） */
 function decodeAsStrict(bytes: Uint8Array, enc: TextEncoding): string | null {
   return decodeTextBytesAs(bytes, enc);
+}
+
+// ============================================================================
+// 外部文件导入（办公工作台「拖入文件上传」）
+// POST /api/workspace/upload  { dir, files: [{ name, base64 }] }
+// 与 /conversations/:id/files/upload 同一套口径（仓库既有先例，免引入 multipart 依赖）：
+// 前端把 File 读成 base64 一次提交，服务端逐条落盘，重名自动加序号，逐条回报成功/失败。
+// ============================================================================
+const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+const UPLOAD_MAX_FILES = 50;
+
+/** 上传允许的根：全局工作目录 ∪ 本用户允许根（本路由未挂 authMiddleware，至少受工作目录约束） */
+function uploadRoots(req: { user?: { userId?: string } }): string[] {
+  const roots: string[] = [];
+  const gw = (serverState.workspaceDir || '').trim();
+  if (gw) roots.push(gw);
+  const uid = req.user?.userId;
+  if (uid && uid !== 'guest') {
+    try { roots.push(...allowedRootsForUser(uid)); } catch { /* 用户根解析失败不阻断 */ }
+  }
+  return roots.filter(Boolean);
+}
+
+/** 上传文件名清洗：去掉路径分隔与 Windows 非法字符，只保留基名（防目录穿越） */
+function safeUploadName(raw: unknown): string {
+  return String(raw || '')
+    .replace(/[\\/]/g, '_')
+    .replace(/\.\./g, '_')
+    .replace(/[<>:"|?*\u0000-\u001f]/g, '')
+    .trim()
+    .slice(0, 180);
+}
+
+/** 同名时生成「名称 (2).ext」，绝不覆盖目录里已有的同名文件 */
+function uploadAvailablePath(dir: string, name: string): string {
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  let candidate = path.join(dir, name);
+  let n = 2;
+  while (fs.existsSync(candidate) && n < 1000) {
+    candidate = path.join(dir, `${stem} (${n})${ext}`);
+    n += 1;
+  }
+  return candidate;
+}
+
+router.post('/upload', (req, res) => {
+  const dirRaw = typeof req.body?.dir === 'string' ? req.body.dir.trim() : '';
+  const files = Array.isArray(req.body?.files) ? req.body.files : (req.body?.name ? [req.body] : []);
+  if (!dirRaw) return res.status(400).json({ error: '缺少 dir 参数' });
+  if (!files.length) return res.status(400).json({ error: '缺少 files 参数' });
+  if (files.length > UPLOAD_MAX_FILES) return res.status(400).json({ error: `一次最多上传 ${UPLOAD_MAX_FILES} 个文件` });
+
+  const dir = path.resolve(dirRaw);
+  const roots = uploadRoots(req as { user?: { userId?: string } });
+  if (!roots.some((r) => isWithinRoot(dir, r))) {
+    return res.status(403).json({ error: '目标目录不在允许范围内' });
+  }
+  try {
+    if (!fs.statSync(dir).isDirectory()) return res.status(400).json({ error: '目标不是目录' });
+  } catch {
+    return res.status(404).json({ error: '目标目录不存在' });
+  }
+
+  const saved: Array<{ name: string; path: string; size: number }> = [];
+  const failed: Array<{ name: string; error: string }> = [];
+  for (const f of files as Array<{ name?: unknown; base64?: unknown }>) {
+    const rawName = typeof f?.name === 'string' ? f.name : '';
+    const name = safeUploadName(rawName);
+    if (!name) { failed.push({ name: rawName || '(未命名)', error: '文件名非法' }); continue; }
+    if (typeof f?.base64 !== 'string' || !f.base64) { failed.push({ name, error: '缺少文件内容' }); continue; }
+    let buf: Buffer;
+    try { buf = Buffer.from(f.base64, 'base64'); } catch { failed.push({ name, error: '内容解码失败' }); continue; }
+    if (buf.length === 0) { failed.push({ name, error: '文件为空' }); continue; }
+    if (buf.length > UPLOAD_MAX_BYTES) { failed.push({ name, error: `超过 ${UPLOAD_MAX_BYTES / 1024 / 1024}MB 上限` }); continue; }
+    try {
+      const target = uploadAvailablePath(dir, name);
+      if (!isAllowedPathHelper(target, roots)) { failed.push({ name, error: '目标路径不在允许范围内' }); continue; }
+      fs.writeFileSync(target, buf);
+      saved.push({ name: path.basename(target), path: target, size: buf.length });
+    } catch (e) {
+      failed.push({ name, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  res.json({ ok: failed.length === 0, dir, saved, failed });
+});
+
+/** 目标路径也必须在允许根内（name 清洗后理论上仍在 dir 内，这里再兜一次） */
+function isAllowedPathHelper(target: string, roots: string[]): boolean {
+  return roots.some((r) => isWithinRoot(target, r));
 }
 
 // POST /api/workspace/mkdir  { path } —— 新建目录（含父级）

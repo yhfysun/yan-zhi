@@ -28,6 +28,27 @@ export const OFFICE_EXT: Record<OfficeDocKind, string> = {
   slides: '.pptx',
 };
 
+export interface WorkspaceSearchHit {
+  file: string;
+  relPath: string;
+  line: number;
+  column: number;
+  preview: string;
+}
+
+export interface UploadOutcome {
+  saved: Array<{ name: string; path: string; size: number }>;
+  failed: Array<{ name: string; error: string }>;
+  error?: string;
+}
+
+export interface SearchOutcome {
+  hits: WorkspaceSearchHit[];
+  truncated: boolean;
+  scanned: number;
+  error?: string;
+}
+
 const childrenByDir = ref<Record<string, WsEntry[]>>({});
 const expanded = ref<Record<string, boolean>>({});
 
@@ -243,6 +264,100 @@ async function deleteNode(node: WsNode): Promise<{ ok: boolean; error?: string }
   return { ok: true };
 }
 
+// ===== 外部文件导入（拖入上传）=====
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * 把浏览器 File 对象上传到工作区目录（服务端 /workspace/upload）。
+ * 逐条读成 base64 后一次提交；服务端逐条落盘并回报失败原因，成功后刷新目录。
+ */
+async function uploadFiles(dir: string, files: File[]): Promise<UploadOutcome> {
+  if (!dir || !files.length) return { saved: [], failed: [] };
+  const payload: Array<{ name: string; base64: string }> = [];
+  const failed: Array<{ name: string; error: string }> = [];
+  for (const f of files) {
+    try {
+      payload.push({ name: f.name, base64: await fileToBase64(f) });
+    } catch {
+      failed.push({ name: f.name, error: '读取文件失败' });
+    }
+  }
+  if (!payload.length) return { saved: [], failed };
+  const r = await api.post<{ saved?: UploadOutcome['saved']; failed?: UploadOutcome['failed'] }>('/workspace/upload', { dir, files: payload });
+  if (!('data' in r)) return { saved: [], failed, error: r.error || '上传失败' };
+  const d = (r.data || {}) as { saved?: UploadOutcome['saved']; failed?: UploadOutcome['failed'] };
+  await refresh();
+  return { saved: d.saved || [], failed: [...failed, ...(d.failed || [])] };
+}
+
+// ===== 工作区搜索（文件名 / 内容）=====
+async function searchWorkspace(q: string, opts: { include?: string; maxResults?: number } = {}): Promise<SearchOutcome> {
+  const root = rootDir.value;
+  const query = q.trim();
+  if (!root || !query) return { hits: [], truncated: false, scanned: 0 };
+  const params = new URLSearchParams({ dir: root, q: query });
+  if (opts.include) params.set('include', opts.include);
+  params.set('maxResults', String(opts.maxResults ?? 300));
+  const r = await api.get<{ hits?: WorkspaceSearchHit[]; truncated?: boolean; scanned?: number }>(`/workspace/search?${params.toString()}`);
+  if (!('data' in r)) return { hits: [], truncated: false, scanned: 0, error: r.error || '搜索失败' };
+  const d = (r.data || {}) as { hits?: WorkspaceSearchHit[]; truncated?: boolean; scanned?: number };
+  return { hits: d.hits || [], truncated: !!d.truncated, scanned: d.scanned || 0 };
+}
+
+// ===== 批量操作（前端循环 + 汇总，不新增批量后端接口）=====
+export interface BatchMoveResult {
+  moved: Array<{ name: string; from: string; to: string }>;
+  failed: Array<{ name: string; error: string }>;
+}
+export interface BatchDeleteResult {
+  deleted: number;
+  failed: Array<{ name: string; error: string }>;
+}
+
+async function moveNodes(nodes: WsNode[], targetDirPath: string): Promise<BatchMoveResult> {
+  const rootNorm = targetDirPath.replace(/[\\/]+$/, '');
+  const moved: BatchMoveResult['moved'] = [];
+  const failed: BatchMoveResult['failed'] = [];
+  for (const node of nodes) {
+    const nodeNorm = node.path.replace(/[\\/]+$/, '');
+    if (node.isDir && (rootNorm === nodeNorm || rootNorm.startsWith(nodeNorm + '/'))) {
+      failed.push({ name: node.name, error: '不能移动到自身或子目录' });
+      continue;
+    }
+    const to = `${rootNorm}/${node.name}`;
+    if (to === node.path) continue;
+    const r = await api.post('/workspace/rename', { from: node.path, to });
+    if (!('data' in r)) { failed.push({ name: node.name, error: r.error || '移动失败' }); continue; }
+    moved.push({ name: node.name, from: node.path, to });
+  }
+  if (moved.length) await refresh();
+  return { moved, failed };
+}
+
+async function deleteMany(nodes: WsNode[]): Promise<BatchDeleteResult> {
+  const failed: BatchDeleteResult['failed'] = [];
+  let deleted = 0;
+  for (const node of nodes) {
+    const r = await api.post('/workspace/delete', { path: node.path });
+    if (!('data' in r)) { failed.push({ name: node.name, error: r.error || '删除失败' }); continue; }
+    deleted += 1;
+    if (selectedPath.value === node.path) selectedPath.value = '';
+  }
+  if (deleted) await refresh();
+  return { deleted, failed };
+}
+
 export function useWorkspaceFiles() {
   return {
     rootDir,
@@ -263,6 +378,10 @@ export function useWorkspaceFiles() {
     renameNode,
     duplicateNode,
     deleteNode,
+    moveNodes,
+    deleteMany,
+    uploadFiles,
+    searchWorkspace,
     targetDir,
   };
 }

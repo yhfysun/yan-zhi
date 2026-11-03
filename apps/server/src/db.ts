@@ -1235,7 +1235,7 @@ const DEFAULT_AGENT_BUILTIN_TOOLS = [
   // 文件读写
   'file_read', 'file_write', 'file_list',
   // 办公三件套（Word/Excel/PPT 的新建与结构化读取；与办公工作台同源）
-  'office_create', 'office_read',
+  'office_create', 'office_read', 'office_write', 'office_search',
   // 代码工具
   'code_search', 'code_outline', 'code_diagnostics', 'js_exec', 'python_exec',
   // 命令执行
@@ -1469,6 +1469,8 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
   ★ 只读权限会话会在运行时被拒绝（这是预期行为，不是故障）
 - office_create: 新建 Word / Excel / PPT 空文档（doc/sheet/slides），返回绝对路径；交付办公文档时先建再填内容，与办公工作台格式一致。
 - office_read: 读 Word / Excel / PPT 的结构化内容（标题层级/表格/工作表/幻灯片文字）；修改已有办公文档前先看清结构。
+- office_write: 向已有 Word/Excel/PPT 追加或替换内容（docx: blocks；xlsx: rows；pptx: slides），不需要写 Python 脚本；改已有文档优先用它。
+- office_search: 在工作区按文件名或内容搜索（与办公工作台同一口径），交付/修改前先定位相关文件。
 - python_exec: 在本机执行 Python——统计/切分/合并/生成 CSV 等；适合一切"算一下/批处理"的活。
 - js_exec: 在本机执行 JavaScript(Node)——JSON 处理/字符串批处理/小脚本。
 - cmd_exec: 执行本机系统命令——调用 CLI（如 ffmpeg / yt-dlp / 目录操作等）。
@@ -3415,19 +3417,19 @@ export const builtinSkillDefaults: Array<{ id: string; name: string; category: s
     id: 'skill_pptx_creation', name: 'PPT 制作', category: '文档处理',
     description: '创建、编辑、解析 PowerPoint 演示文稿（.pptx）。通过 python-pptx 生成专业幻灯片，支持自定义布局、图表、图片、表格、演讲者备注。',
     triggers: ['做PPT', '制作幻灯片', '生成演示文稿', '解析PPT', 'PPT制作', 'presentation'],
-    body: `# PPT 制作与编辑\n\n用 python-pptx 创建、编辑、解析 PowerPoint 演示文稿，通过 shell 执行 Python 脚本生成 .pptx。\n\n## 依赖\n\`\`\`bash\npip install python-pptx Pillow\n\`\`\`\n\n## 流程\n0. 新建空演示优先用 office_create { kind: "slides", name }（返回绝对路径）；解析已有 PPT 用 office_read（标题/正文/备注比转 md 更完整）\n1. 理解需求：主题、页数、每页内容、风格\n2. 编写 python-pptx 脚本（标题页 + 内容页 + 图表/图片）\n3. shell 执行脚本生成 .pptx\n4. 回报文件路径\n\n## 设计要点\n- 配色与主题相关，深色背景配浅色文字\n- 每页有视觉元素（图片/图表/色块），避免纯文字\n- 标题 36-44pt，正文 14-16pt\n- 坐标用 Inches()，颜色用 RGBColor(r,g,b)\n\n详见 .claude/skills/pptx-creation/SKILL.md`,
+    body: `# PPT 制作与编辑\n\n用 python-pptx 创建、编辑、解析 PowerPoint 演示文稿，通过 shell 执行 Python 脚本生成 .pptx。\n\n## 依赖\n\`\`\`bash\npip install python-pptx Pillow\n\`\`\`\n\n## 流程\n0. 新建空演示优先用 office_create { kind: "slides", name }（返回绝对路径）；解析已有 PPT 用 office_read（标题/正文/备注比转 md 更完整）；向已有演示追加页或在页内替换文字用 office_write { path, mode, slides }\n1. 理解需求：主题、页数、每页内容、风格\n2. 编写 python-pptx 脚本（标题页 + 内容页 + 图表/图片）\n3. shell 执行脚本生成 .pptx\n4. 回报文件路径\n\n## 设计要点\n- 配色与主题相关，深色背景配浅色文字\n- 每页有视觉元素（图片/图表/色块），避免纯文字\n- 标题 36-44pt，正文 14-16pt\n- 坐标用 Inches()，颜色用 RGBColor(r,g,b)\n\n详见 .claude/skills/pptx-creation/SKILL.md`,
   },
     {
       id: 'skill_docx_processing', name: 'Word 文档处理', category: '文档处理',
       description: '创建、编辑、解析 Word 文档（.docx）。通过 python-docx 生成带格式文档，支持标题、目录、表格、图片、页眉页脚、样式。',
       triggers: ['写Word文档', '生成报告', '制作合同', '编辑docx', '提取Word内容', 'Word文档'],
-      body: `# Word 文档处理\n\n用 python-docx 创建、编辑、解析 Word 文档，通过 shell 执行 Python 脚本生成 .docx。\n\n## 依赖\n\`\`\`bash\npip install python-docx\n\`\`\`\n\n## 流程\n0. 新建空文档优先用 office_create { kind: "doc", name }（返回绝对路径）；读已有 Word 用 office_read（标题/段落/表格结构完整）\n1. 理解需求：文档类型（报告/合同/信函）、结构、内容\n2. 编写 python-docx 脚本（标题 + 段落 + 表格 + 图片）\n3. shell 执行生成 .docx\n4. 回报文件路径\n\n## 要点\n- 不要用 \\n 换行，用多个 add_paragraph\n- 表格用 style='Table Grid' 才有边框\n- 图片需指定 width\n\n详见 .claude/skills/docx-processing/SKILL.md`,
+      body: `# Word 文档处理\n\n用 python-docx 创建、编辑、解析 Word 文档，通过 shell 执行 Python 脚本生成 .docx。\n\n## 依赖\n\`\`\`bash\npip install python-docx\n\`\`\`\n\n## 流程\n0. 新建空文档优先用 office_create { kind: "doc", name }（返回绝对路径）；读已有 Word 用 office_read（标题/段落/表格结构完整）；向已有文档追加/替换标题、段落、表格用 office_write { path, mode, blocks }\n1. 理解需求：文档类型（报告/合同/信函）、结构、内容\n2. 编写 python-docx 脚本（标题 + 段落 + 表格 + 图片）\n3. shell 执行生成 .docx\n4. 回报文件路径\n\n## 要点\n- 不要用 \\n 换行，用多个 add_paragraph\n- 表格用 style='Table Grid' 才有边框\n- 图片需指定 width\n\n详见 .claude/skills/docx-processing/SKILL.md`,
     },
     {
       id: 'skill_xlsx_data_processing', name: 'Excel/数据处理', category: '文档处理',
       description: '处理 Excel/CSV 电子表格数据。通过 pandas + openpyxl 读写数据、计算公式、格式化、图表，支持数据清洗、聚合、透视、多表合并。',
       triggers: ['处理Excel', '分析表格数据', '清洗数据', '生成报表', '合并CSV', '数据处理'],
-      body: `# Excel/数据处理\n\n用 pandas + openpyxl 处理 Excel/CSV 数据，通过 shell 执行 Python 脚本。\n\n## 依赖\n\`\`\`bash\npip install pandas openpyxl xlsxwriter\n\`\`\`\n\n## 流程\n0. 新建空表格用 office_create { kind: "sheet", name }；看已有 Excel 的 sheet/单元格用 office_read（不必先转 CSV）\n1. 读取数据（read_excel/read_csv）\n2. 数据清洗（去重/填充空值/类型转换）\n3. 聚合分析（groupby/pivot_table/筛选/排序）\n4. 写入输出（to_excel + openpyxl 格式化）\n5. 回报行数列数 + 输出路径\n\n## 要点\n- CSV 中文用 encoding="utf-8-sig"\n- 公式以 = 开头写入单元格\n\n详见 .claude/skills/xlsx-data-processing/SKILL.md`,
+      body: `# Excel/数据处理\n\n用 pandas + openpyxl 处理 Excel/CSV 数据，通过 shell 执行 Python 脚本。\n\n## 依赖\n\`\`\`bash\npip install pandas openpyxl xlsxwriter\n\`\`\`\n\n## 流程\n0. 新建空表格用 office_create { kind: "sheet", name }；看已有 Excel 的 sheet/单元格用 office_read（不必先转 CSV）；向已有表格追加行或覆写用 office_write { path, mode, rows, sheet? }\n1. 读取数据（read_excel/read_csv）\n2. 数据清洗（去重/填充空值/类型转换）\n3. 聚合分析（groupby/pivot_table/筛选/排序）\n4. 写入输出（to_excel + openpyxl 格式化）\n5. 回报行数列数 + 输出路径\n\n## 要点\n- CSV 中文用 encoding="utf-8-sig"\n- 公式以 = 开头写入单元格\n\n详见 .claude/skills/xlsx-data-processing/SKILL.md`,
     },
     {
       id: 'skill_pdf_processing', name: 'PDF 处理', category: '文档处理',

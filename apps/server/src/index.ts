@@ -214,6 +214,9 @@ app.use('/api/tools/ocr', express.json({ limit: '64mb' }));
 //   动辄几十 MB，10MB 上限会把"预览"变成"打不开"。160MB ≈ 原始 100MB 文件 base64 后的体积。
 app.use('/api/preview/pdf', express.json({ limit: '160mb' }));
 app.use('/api/preview/xls-styled', express.json({ limit: '160mb' }));
+// 办公工作台「拖入文件上传」收的是 base64 文件字节，10MB 全局上限会把常见的 PDF/图片拦掉
+// （上限在路由里再按 50MB 原始字节细分）。与上面几条同理，必须挂在全局 JSON 之前。
+app.use('/api/workspace/upload', express.json({ limit: '64mb' }));
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/health', (_req, res) => {

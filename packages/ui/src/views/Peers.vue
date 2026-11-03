@@ -1,10 +1,6 @@
 <template>
-  <div class="page">
-    <header class="page-header">
-      <div>
-        <h2 class="page-title">聊天</h2>
-        <div class="page-sub">和其它客户端互发消息</div>
-      </div>
+  <PageFrame title="聊天" subtitle="和其它客户端互发消息" class="peer-page">
+    <template #actions>
       <div class="header-actions">
         <div class="my-nickname">
           <span class="nickname-label">昵称</span>
@@ -14,7 +10,7 @@
         <el-button :icon="Refresh" @click="loadPeers" />
         <el-button :icon="Setting" @click="showRegister = true">节点设置</el-button>
       </div>
-    </header>
+    </template>
 
     <div class="peer-layout">
       <aside class="peer-list glass-card">
@@ -91,11 +87,12 @@
       @save-nickname="saveNickname"
       @save-register="saveRegister"
     />
-  </div>
+  </PageFrame>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import PageFrame from '../components/common/PageFrame.vue';
 import { Refresh, Document, Edit, Setting } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { api, LOCAL_API_BASE } from '../api/client';

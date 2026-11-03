@@ -13,6 +13,9 @@
         <span class="ws-sub" :title="rootDir">{{ rootName }}</span>
       </div>
       <div class="ws-head-actions">
+        <button class="ws-icon-btn" type="button" title="搜索文件名或内容" @click="toggleSearch">
+          <el-icon :size="14"><Search /></el-icon>
+        </button>
         <el-dropdown trigger="click" :disabled="!rootDir" @command="onCreatePick">
           <button class="ws-icon-btn" type="button" title="新建文档 / 表格 / 演示">
             <el-icon :size="14"><Plus /></el-icon>
@@ -31,6 +34,24 @@
       </div>
     </header>
 
+    <!-- 搜索：输入即搜（按文件名或内容），结果列表替代树；点结果定位并退出搜索 -->
+    <div v-if="searchOpen" class="ws-search">
+      <input
+        ref="searchInputEl"
+        v-model="searchQuery"
+        class="ws-search-input"
+        spellcheck="false"
+        placeholder="搜索文件名或内容…"
+        @keydown.esc.prevent="closeSearch"
+        @keydown.enter.prevent="runSearch"
+      />
+      <button v-if="searchQuery" class="ws-search-clear" type="button" title="清空" @click="searchQuery = ''">
+        <el-icon :size="12"><Close /></el-icon>
+      </button>
+      <button class="ws-search-close" type="button" title="关闭搜索" @click="closeSearch">取消</button>
+    </div>
+    <div v-if="uploading" class="ws-uploading">正在上传 {{ uploadCount }} 个文件…</div>
+
     <div
       class="ws-body"
       :class="{ 'is-drop-root': dropTarget && dropTarget === rootDir.replace(/[\\/]+$/, '') }"
@@ -38,51 +59,95 @@
       @dragover.prevent="onDragOver($event, rootDir)"
       @drop.prevent="onDrop($event, rootDir)"
     >
-      <div v-if="!rootDir" class="ws-empty">未设置工作目录</div>
-      <div v-else-if="error" class="ws-empty">{{ error }}</div>
-      <div v-else-if="loading && flatNodes.length === 0" class="ws-empty">正在读取目录…</div>
-      <div v-else-if="flatNodes.length === 0" class="ws-empty">目录是空的，从右上角新建文档开始</div>
+      <!-- 搜索态：结果列表替代树 -->
+      <template v-if="isSearching">
+        <div v-if="searching" class="ws-empty">正在搜索…</div>
+        <div v-else-if="searchError" class="ws-empty">{{ searchError }}</div>
+        <div v-else-if="searchHits.length === 0" class="ws-empty">没有匹配结果</div>
+        <div
+          v-for="(hit, i) in searchHits"
+          :key="hit.file + ':' + hit.line + ':' + i"
+          class="ws-hit-row"
+          :title="hit.file"
+          @click="openHit(hit)"
+        >
+          <span class="ws-ficon">{{ iconTextByName(hit.file) }}</span>
+          <span class="ws-hit-main">
+            <span class="ws-hit-name">{{ baseName(hit.file) }}<span class="ws-hit-line">:{{ hit.line }}</span></span>
+            <span class="ws-hit-rel">{{ hit.relPath }}</span>
+            <span class="ws-hit-preview">{{ hit.preview }}</span>
+          </span>
+        </div>
+        <div v-if="!searching && searchHits.length" class="ws-hit-foot">
+          共 {{ searchHits.length }} 条{{ searchTruncated ? '（已截断）' : '' }}
+        </div>
+      </template>
 
-      <div
-        v-for="node in flatNodes"
-        :key="node.path"
-        class="ws-row"
-        :class="{
-          'is-dir': node.isDir,
-          'is-active': node.path === selectedPath,
-          dragging: dragging?.path === node.path,
-          'drop-target': dropTarget && dropTarget === (node.isDir ? node.path : dirOfNode(node)),
-        }"
-        :style="{ paddingLeft: 8 + node.depth * 14 + 'px' }"
-        draggable="true"
-        @click="onRowClick(node)"
-        @dblclick.stop="startRename(node)"
-        @contextmenu.prevent.stop="openMenu($event, node)"
-        @dragstart="onDragStart($event, node)"
-        @dragend="onDragEnd"
-        @dragover.prevent="onDragOver($event, node.isDir ? node.path : dirOfNode(node))"
-        @drop.prevent="onDrop($event, node.isDir ? node.path : dirOfNode(node))"
-      >
-        <span class="ws-caret" @click.stop="onRowClick(node)">
-          <el-icon v-if="node.isDir" :size="10">
-            <ArrowDown v-if="expanded[node.path]" /><ArrowRight v-else />
-          </el-icon>
-        </span>
-        <span class="ws-ficon" :class="iconClass(node)">{{ iconText(node) }}</span>
-        <span v-if="renamingPath === node.path" class="ws-name" @click.stop>
-          <input
-            v-model="renameValue"
-            class="ws-rename-input"
-            spellcheck="false"
-            @click.stop
-            @keydown.enter.prevent="commitRename(node)"
-            @keydown.esc.prevent="cancelRename"
-            @blur="commitRename(node)"
-          />
-        </span>
-        <span v-else class="ws-name" :title="node.name">{{ node.name }}</span>
-        <span v-if="renamingPath !== node.path && !node.isDir && node.size" class="ws-size" :title="`${node.size} 字节`">{{ humanSize(node.size) }}</span>
-      </div>
+      <template v-else>
+        <div v-if="!rootDir" class="ws-empty">未设置工作目录</div>
+        <div v-else-if="error" class="ws-empty">{{ error }}</div>
+        <div v-else-if="loading && flatNodes.length === 0" class="ws-empty">正在读取目录…</div>
+        <div v-else-if="flatNodes.length === 0" class="ws-empty">目录是空的，从右上角新建文档开始</div>
+
+        <div
+          v-for="node in flatNodes"
+          :key="node.path"
+          class="ws-row"
+          :class="{
+            'is-dir': node.isDir,
+            'is-active': node.path === selectedPath,
+            'is-multi': selectedPaths.includes(node.path),
+            dragging: dragging?.path === node.path,
+            'drop-target': dropTarget && dropTarget === (node.isDir ? node.path : dirOfNode(node)),
+          }"
+          :style="{ paddingLeft: 8 + node.depth * 14 + 'px' }"
+          draggable="true"
+          @click="onRowClick(node, $event)"
+          @dblclick.stop="startRename(node)"
+          @contextmenu.prevent.stop="openMenu($event, node)"
+          @dragstart="onDragStart($event, node)"
+          @dragend="onDragEnd"
+          @dragover.prevent="onDragOver($event, node.isDir ? node.path : dirOfNode(node))"
+          @drop.prevent="onDrop($event, node.isDir ? node.path : dirOfNode(node))"
+        >
+          <span class="ws-caret" @click.stop="onRowClick(node, $event)">
+            <el-icon v-if="node.isDir" :size="10">
+              <ArrowDown v-if="expanded[node.path]" /><ArrowRight v-else />
+            </el-icon>
+          </span>
+          <span class="ws-ficon" :class="iconClass(node)">{{ iconText(node) }}</span>
+          <span v-if="renamingPath === node.path" class="ws-name" @click.stop>
+            <input
+              v-model="renameValue"
+              class="ws-rename-input"
+              spellcheck="false"
+              @click.stop
+              @keydown.enter.prevent="commitRename(node)"
+              @keydown.esc.prevent="cancelRename"
+              @blur="commitRename(node)"
+            />
+          </span>
+          <span v-else class="ws-name" :title="node.name">{{ node.name }}</span>
+          <span v-if="renamingPath !== node.path && !node.isDir && node.size" class="ws-size" :title="`${node.size} 字节`">{{ humanSize(node.size) }}</span>
+        </div>
+      </template>
+    </div>
+
+    <!-- 批量操作条：Ctrl/Cmd 点选、Shift 连选后出现 -->
+    <div v-if="selectedNodes.length" class="ws-batch">
+      <span class="ws-batch-count">已选 {{ selectedNodes.length }} 项</span>
+      <el-dropdown trigger="click" size="small" @command="batchMoveTo">
+        <button class="ws-batch-btn" type="button">移动到…</button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item v-for="d in knownDirs" :key="d" :command="d">{{ dirLabel(d) }}</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+      <button class="ws-batch-btn danger" type="button" @click="batchDelete">删除</button>
+      <button class="ws-batch-x" type="button" title="取消选择" @click="clearMulti">
+        <el-icon :size="12"><Close /></el-icon>
+      </button>
     </div>
 
     <!-- 撤销条：重命名 / 移动后出现，最多回退最近 10 步 -->
@@ -122,14 +187,15 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, reactive, watch, ref, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, Refresh, ArrowRight, ArrowDown, Close } from '@element-plus/icons-vue';
-import { useWorkspaceFiles, dirOfNode, type WsNode, type OfficeDocKind } from '../../composables/office/useWorkspaceFiles';
+import { Plus, Refresh, ArrowRight, ArrowDown, Close, Search } from '@element-plus/icons-vue';
+import { useWorkspaceFiles, dirOfNode, type WsNode, type OfficeDocKind, type WorkspaceSearchHit } from '../../composables/office/useWorkspaceFiles';
 import { api } from '../../api/client';
 import { officeSelectedFile } from '../../stores/officeWorkbench';
 
 const {
-  rootDir, loading, error, selectedPath, flatNodes, expanded,
-  loadRoot, toggleDir, refresh, select, createDoc, renameNode, duplicateNode, deleteNode, targetDir,
+  rootDir, loading, error, selectedPath, flatNodes, expanded, childrenByDir,
+  loadRoot, toggleDir, refresh, select, revealPath, createDoc, renameNode, duplicateNode, deleteNode,
+  moveNodes, deleteMany, uploadFiles, searchWorkspace, targetDir,
 } = useWorkspaceFiles();
 
 const rootName = computed(() => {
@@ -147,13 +213,19 @@ function humanSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
-function iconText(node: WsNode): string {
-  if (node.isDir) return '▣';
-  const ext = extOf(node.name);
+function baseName(p: string): string {
+  return p.split(/[\\/]/).pop() || p;
+}
+function iconTextByName(name: string): string {
+  const ext = extOf(name);
   if (ext === '.docx') return 'W';
   if (ext === '.xlsx') return 'X';
   if (ext === '.pptx') return 'P';
   return '·';
+}
+function iconText(node: WsNode): string {
+  if (node.isDir) return '▣';
+  return iconTextByName(node.name);
 }
 function iconClass(node: WsNode): string {
   if (node.isDir) return 'is-folder';
@@ -164,8 +236,48 @@ function iconClass(node: WsNode): string {
   return '';
 }
 
-function onRowClick(node: WsNode) {
+// ===== 多选（Ctrl/Cmd 点选、Shift 连选）=====
+const selectedPaths = ref<string[]>([]);
+const lastAnchorPath = ref('');
+const selectedNodes = computed<WsNode[]>(() =>
+  flatNodes.value.filter((n) => selectedPaths.value.includes(n.path)),
+);
+function clearMulti() {
+  selectedPaths.value = [];
+  lastAnchorPath.value = '';
+}
+function toggleInMulti(node: WsNode) {
+  selectedPaths.value = selectedPaths.value.includes(node.path)
+    ? selectedPaths.value.filter((p) => p !== node.path)
+    : [...selectedPaths.value, node.path];
+  lastAnchorPath.value = node.path;
+  select(node.path);
+  officeSelectedFile.value = node.path;
+}
+
+function onRowClick(node: WsNode, e?: MouseEvent) {
   treeEl.value?.focus();
+  const mod = !!e && (e.ctrlKey || e.metaKey);
+  const shift = !!e && e.shiftKey;
+
+  if (shift && lastAnchorPath.value) {
+    const a = flatNodes.value.findIndex((n) => n.path === lastAnchorPath.value);
+    const b = flatNodes.value.findIndex((n) => n.path === node.path);
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a <= b ? [a, b] : [b, a];
+      selectedPaths.value = flatNodes.value.slice(lo, hi + 1).map((n) => n.path);
+      select(node.path);
+      officeSelectedFile.value = node.path;
+      return;
+    }
+  }
+  if (mod) {
+    toggleInMulti(node);
+    return;
+  }
+  // 普通点击：清空多选；目录 = 展开/收起，文件 = 打开
+  clearMulti();
+  lastAnchorPath.value = node.path;
   if (node.isDir) {
     void toggleDir(node);
     return;
@@ -195,7 +307,12 @@ function onTreeKeydown(e: KeyboardEvent) {
     startRename(node);
     return;
   }
+  if (e.key === 'Escape') {
+    if (selectedPaths.value.length) { e.preventDefault(); clearMulti(); }
+    return;
+  }
   if (e.key === 'Delete') {
+    if (selectedPaths.value.length) { e.preventDefault(); void batchDelete(); return; }
     const node = selectedNode();
     if (!node) return;
     e.preventDefault();
@@ -213,6 +330,129 @@ async function removeByKeyboard(node: WsNode) {
   const r = await deleteNode(node);
   if (!r.ok) { ElMessage.error(r.error || '删除失败'); return; }
   ElMessage.success('已删除');
+}
+
+// ===== 批量操作（批量移动 / 批量删除）=====
+const knownDirs = computed(() => {
+  const root = rootDir.value.replace(/[\\/]+$/, '');
+  const set = new Set<string>();
+  if (root) set.add(root);
+  for (const d of Object.keys(childrenByDir.value)) set.add(d.replace(/[\\/]+$/, ''));
+  for (const n of flatNodes.value) if (n.isDir) set.add(n.path.replace(/[\\/]+$/, ''));
+  return [...set].filter(Boolean).sort();
+});
+function dirLabel(d: string): string {
+  const root = rootDir.value.replace(/[\\/]+$/, '');
+  if (d === root) return '/（工作区根）';
+  const rel = d.toLowerCase().startsWith(root.toLowerCase())
+    ? d.slice(root.length).replace(/^[\\/]+/, '')
+    : d;
+  return rel || '/';
+}
+async function batchMoveTo(target: string) {
+  const nodes = selectedNodes.value.slice();
+  if (!nodes.length || !target) return;
+  const r = await moveNodes(nodes, target);
+  for (const m of r.moved) pushUndo(`移动「${m.name}」`, m.from, m.to);
+  if (r.moved.length) ElMessage.success(`已移动 ${r.moved.length} 项`);
+  if (r.failed.length) ElMessage.warning(`${r.failed.length} 项移动失败：${r.failed[0].name}（${r.failed[0].error}）`);
+  selectedPaths.value = r.moved.length ? r.moved.map((m) => m.to) : nodes.map((n) => n.path);
+}
+async function batchDelete() {
+  const nodes = selectedNodes.value.slice();
+  if (!nodes.length) return;
+  try {
+    await ElMessageBox.confirm(
+      `删除选中的 ${nodes.length} 项？文件会被直接删除，不进回收站。`,
+      '批量删除',
+      { type: 'warning', confirmButtonClass: 'yz-confirm-danger', confirmButtonText: '删除', cancelButtonText: '取消' },
+    );
+  } catch { return; }
+  const r = await deleteMany(nodes);
+  clearMulti();
+  if (r.deleted) ElMessage.success(`已删除 ${r.deleted} 项`);
+  if (r.failed.length) ElMessage.warning(`${r.failed.length} 项删除失败：${r.failed[0].name}（${r.failed[0].error}）`);
+}
+
+// ===== 工作区搜索（文件名 / 内容）=====
+const searchOpen = ref(false);
+const searchInputEl = ref<HTMLInputElement | null>(null);
+const searchQuery = ref('');
+const searching = ref(false);
+const searchError = ref('');
+const searchHits = ref<WorkspaceSearchHit[]>([]);
+const searchTruncated = ref(false);
+const isSearching = computed(() => searchOpen.value && searchQuery.value.trim().length > 0);
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleSearch() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { void runSearch(); }, 320);
+}
+async function runSearch() {
+  const q = searchQuery.value.trim();
+  if (!q) { searchHits.value = []; searchError.value = ''; return; }
+  searching.value = true;
+  searchError.value = '';
+  const r = await searchWorkspace(q);
+  searching.value = false;
+  if (r.error) { searchError.value = r.error; searchHits.value = []; return; }
+  searchHits.value = r.hits;
+  searchTruncated.value = r.truncated;
+}
+watch(searchQuery, scheduleSearch);
+async function toggleSearch() {
+  searchOpen.value = !searchOpen.value;
+  if (searchOpen.value) {
+    await nextTick();
+    searchInputEl.value?.focus();
+    if (searchQuery.value.trim()) void runSearch();
+  } else {
+    searchHits.value = [];
+    searchError.value = '';
+  }
+}
+function closeSearch() {
+  searchOpen.value = false;
+  searchQuery.value = '';
+  searchHits.value = [];
+  searchError.value = '';
+}
+async function openHit(hit: WorkspaceSearchHit) {
+  closeSearch();
+  await revealPath(hit.file);
+  officeSelectedFile.value = hit.file;
+}
+
+// ===== 外部文件拖入上传 =====
+const uploading = ref(false);
+const uploadCount = ref(0);
+function hasExternalFiles(e: DragEvent): boolean {
+  const dt = e.dataTransfer;
+  if (!dt) return false;
+  return Array.from(dt.types || []).includes('Files');
+}
+async function handleUpload(dir: string, fileList: FileList | File[]) {
+  const files = Array.from(fileList as ArrayLike<File>);
+  if (!dir || !files.length) return;
+  uploading.value = true;
+  uploadCount.value = files.length;
+  try {
+    const r = await uploadFiles(dir, files);
+    if (r.error) ElMessage.error(r.error);
+    if (r.saved.length) {
+      ElMessage.success(`已上传 ${r.saved.length} 个文件`);
+      const first = r.saved[0];
+      if (first) { select(first.path); officeSelectedFile.value = first.path; }
+    }
+    if (r.failed.length) {
+      const f = r.failed[0];
+      ElMessage.warning(`${r.failed.length} 个文件上传失败：${f.name}（${f.error}）`);
+    }
+  } finally {
+    uploading.value = false;
+    uploadCount.value = 0;
+  }
 }
 
 // ===== 撤销（重命名 / 移动）=====
@@ -272,10 +512,20 @@ function onDragStart(e: DragEvent, node: WsNode) {
   }
 }
 function onDragOver(e: DragEvent, dir: string) {
-  if (!dragging.value) return;
-  e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-  dropTarget.value = dir;
+  const normalized = (dir || '').replace(/[\\/]+$/, '');
+  // 内部拖拽：移动到目录
+  if (dragging.value) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    dropTarget.value = normalized;
+    return;
+  }
+  // 外部文件：上传到目录（DataTransfer.types 含 'Files'，内部拖拽只有 'text/plain'）
+  if (hasExternalFiles(e)) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    dropTarget.value = normalized;
+  }
 }
 function onDragEnd() {
   dragging.value = null;
@@ -283,9 +533,17 @@ function onDragEnd() {
 }
 async function onDrop(e: DragEvent, dir: string) {
   const node = dragging.value;
+  const dt = e.dataTransfer;
   dragging.value = null;
   dropTarget.value = '';
-  if (!node || !dir) return;
+  if (!node) {
+    if (dt && dt.files && dt.files.length) {
+      e.preventDefault();
+      await handleUpload(dir, dt.files);
+    }
+    return;
+  }
+  if (!dir) return;
   e.preventDefault();
   const rootNormalized = dir.replace(/[\\/]+$/, '');
   const nodeNormalized = node.path.replace(/[\\/]+$/, '');
@@ -412,7 +670,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocMouseDown, true);
   document.removeEventListener('keydown', onKeydown);
 });
-watch(rootDir, () => { void loadRoot(true); });
+watch(rootDir, () => { clearMulti(); closeSearch(); void loadRoot(true); });
 
 defineExpose({ doCreate });
 </script>
@@ -517,6 +775,100 @@ defineExpose({ doCreate });
 .ws-size { flex: 0 0 auto; margin-left: 8px; font-size: 10.5px; color: var(--color-text-tertiary); }
 /* 树获得焦点时不画整块描边（键盘操作靠选中行反馈） */
 .ws-tree:focus { outline: none; }
+
+.ws-row.is-multi {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  color: var(--color-primary);
+}
+/* 搜索行 */
+.ws-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+.ws-search-input {
+  flex: 1; min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.ws-search-input:focus { border-color: var(--color-primary); }
+.ws-search-clear, .ws-search-close {
+  border: none; background: transparent; padding: 2px 4px;
+  color: var(--color-text-tertiary); cursor: pointer; font-size: 11.5px;
+}
+.ws-search-clear:hover, .ws-search-close:hover { color: var(--color-text); }
+.ws-search-close { flex: 0 0 auto; }
+.ws-uploading {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+/* 搜索结果 */
+.ws-hit-row {
+  display: flex;
+  gap: 7px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ws-hit-row:hover { background: var(--glass-bg-hover); }
+.ws-hit-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ws-hit-name {
+  font-size: 12.5px; color: var(--color-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-hit-line { color: var(--color-primary); }
+.ws-hit-rel { font-size: 10.5px; color: var(--color-text-tertiary); }
+.ws-hit-preview {
+  font-size: 11px; color: var(--color-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-hit-foot { padding: 8px 10px; font-size: 10.5px; color: var(--color-text-tertiary); }
+/* 批量操作条 */
+.ws-batch {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+.ws-batch-count { flex: 1; min-width: 0; }
+.ws-batch-btn {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.ws-batch-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.ws-batch-btn.danger { color: #b91c1c; }
+.ws-batch-btn.danger:hover { border-color: #b91c1c; }
+.ws-batch-x {
+  border: none; background: transparent; padding: 2px;
+  display: grid; place-items: center;
+  color: var(--color-text-tertiary); cursor: pointer;
+}
+.ws-batch-x:hover { color: var(--color-text); }
 
 .ws-menu {
   position: fixed; z-index: 3000; min-width: 200px;
