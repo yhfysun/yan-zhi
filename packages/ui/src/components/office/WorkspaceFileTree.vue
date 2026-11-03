@@ -31,7 +31,13 @@
       </div>
     </header>
 
-    <div class="ws-body" @contextmenu.prevent="openBlankMenu">
+    <div
+      class="ws-body"
+      :class="{ 'is-drop-root': dropTarget && dropTarget === rootDir.replace(/[\\/]+$/, '') }"
+      @contextmenu.prevent="openBlankMenu"
+      @dragover.prevent="onDragOver($event, rootDir)"
+      @drop.prevent="onDrop($event, rootDir)"
+    >
       <div v-if="!rootDir" class="ws-empty">未设置工作目录</div>
       <div v-else-if="error" class="ws-empty">{{ error }}</div>
       <div v-else-if="loading && flatNodes.length === 0" class="ws-empty">正在读取目录…</div>
@@ -41,10 +47,21 @@
         v-for="node in flatNodes"
         :key="node.path"
         class="ws-row"
-        :class="{ 'is-dir': node.isDir, 'is-active': node.path === selectedPath }"
+        :class="{
+          'is-dir': node.isDir,
+          'is-active': node.path === selectedPath,
+          dragging: dragging?.path === node.path,
+          'drop-target': dropTarget && dropTarget === (node.isDir ? node.path : dirOfNode(node)),
+        }"
         :style="{ paddingLeft: 8 + node.depth * 14 + 'px' }"
+        draggable="true"
         @click="onRowClick(node)"
+        @dblclick.stop="startRename(node)"
         @contextmenu.prevent.stop="openMenu($event, node)"
+        @dragstart="onDragStart($event, node)"
+        @dragend="onDragEnd"
+        @dragover.prevent="onDragOver($event, node.isDir ? node.path : dirOfNode(node))"
+        @drop.prevent="onDrop($event, node.isDir ? node.path : dirOfNode(node))"
       >
         <span class="ws-caret" @click.stop="onRowClick(node)">
           <el-icon v-if="node.isDir" :size="10">
@@ -52,7 +69,18 @@
           </el-icon>
         </span>
         <span class="ws-ficon" :class="iconClass(node)">{{ iconText(node) }}</span>
-        <span class="ws-name" :title="node.name">{{ node.name }}</span>
+        <span v-if="renamingPath === node.path" class="ws-name" @click.stop>
+          <input
+            v-model="renameValue"
+            class="ws-rename-input"
+            spellcheck="false"
+            @click.stop
+            @keydown.enter.prevent="commitRename(node)"
+            @keydown.esc.prevent="cancelRename"
+            @blur="commitRename(node)"
+          />
+        </span>
+        <span v-else class="ws-name" :title="node.name">{{ node.name }}</span>
       </div>
     </div>
 
@@ -82,10 +110,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, reactive, watch } from 'vue';
+import { computed, onMounted, onBeforeUnmount, reactive, watch, ref, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, Refresh, ArrowRight, ArrowDown } from '@element-plus/icons-vue';
-import { useWorkspaceFiles, type WsNode, type OfficeDocKind } from '../../composables/office/useWorkspaceFiles';
+import { useWorkspaceFiles, dirOfNode, type WsNode, type OfficeDocKind } from '../../composables/office/useWorkspaceFiles';
 import { api } from '../../api/client';
 import { officeSelectedFile } from '../../stores/officeWorkbench';
 
@@ -127,6 +155,75 @@ function onRowClick(node: WsNode) {
   }
   select(node.path);
   officeSelectedFile.value = node.path;
+}
+
+// ===== 行内重命名（双击 / 右键菜单）=====
+const renamingPath = ref('');
+const renameValue = ref('');
+function startRename(node: WsNode) {
+  renamingPath.value = node.path;
+  renameValue.value = node.name;
+  void nextTick(() => {
+    const el = document.querySelector<HTMLInputElement>('.ws-rename-input');
+    el?.focus();
+    el?.select();
+  });
+}
+function cancelRename() {
+  renamingPath.value = '';
+  renameValue.value = '';
+}
+async function commitRename(node: WsNode) {
+  if (renamingPath.value !== node.path) return;
+  const name = renameValue.value.trim();
+  renamingPath.value = '';
+  if (!name || name === node.name) return;
+  const r = await renameNode(node, name);
+  if (!r.ok) { ElMessage.error(r.error || '重命名失败'); return; }
+  ElMessage.success('已重命名');
+}
+
+// ===== 拖拽移动（拖到目录行 / 空白处=根目录）=====
+const dragging = ref<WsNode | null>(null);
+const dropTarget = ref('');
+function onDragStart(e: DragEvent, node: WsNode) {
+  dragging.value = node;
+  dropTarget.value = '';
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', node.path);
+  }
+}
+function onDragOver(e: DragEvent, dir: string) {
+  if (!dragging.value) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  dropTarget.value = dir;
+}
+function onDragEnd() {
+  dragging.value = null;
+  dropTarget.value = '';
+}
+async function onDrop(e: DragEvent, dir: string) {
+  const node = dragging.value;
+  dragging.value = null;
+  dropTarget.value = '';
+  if (!node || !dir) return;
+  e.preventDefault();
+  const rootNormalized = dir.replace(/[\\/]+$/, '');
+  const nodeNormalized = node.path.replace(/[\\/]+$/, '');
+  // 目录不能拖进自身或子目录
+  if (node.isDir && (rootNormalized === nodeNormalized || rootNormalized.startsWith(nodeNormalized + '/'))) {
+    ElMessage.error('不能移动到自身或子目录');
+    return;
+  }
+  const to = `${rootNormalized}/${node.name}`;
+  if (to === node.path) return; // 同目录，无变化
+  const r = await api.post('/workspace/rename', { from: node.path, to });
+  if (!('data' in r)) { ElMessage.error(r.error || '移动失败'); return; }
+  await refresh();
+  select(to);
+  ElMessage.success('已移动');
 }
 
 // 手机/触屏没有右键：长按同一行打开菜单。桌面右键已覆盖主要场景，这里不额外引组件。
@@ -199,11 +296,7 @@ async function menuRename() {
   const node = menu.node;
   closeMenu();
   if (!node) return;
-  const name = await promptName('重命名', node.name);
-  if (!name || name === node.name) return;
-  const r = await renameNode(node, name);
-  if (!r.ok) { ElMessage.error(r.error || '重命名失败'); return; }
-  ElMessage.success('已重命名');
+  startRename(node);
 }
 
 async function menuDuplicate() {
@@ -291,6 +384,23 @@ defineExpose({ doCreate });
 .ws-row:hover { background: var(--glass-bg-hover); }
 .ws-row.is-active { background: color-mix(in srgb, var(--color-primary) 12%, transparent); color: var(--color-primary); font-weight: 500; }
 .ws-row.is-dir { color: var(--color-text-secondary); font-weight: 600; }
+.ws-row.dragging { opacity: 0.45; }
+.ws-row.drop-target {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  outline: 1px dashed var(--color-primary);
+  outline-offset: -1px;
+}
+.ws-body.is-drop-root { background: color-mix(in srgb, var(--color-primary) 4%, transparent); }
+.ws-rename-input {
+  width: 100%; min-width: 0;
+  border: 1px solid var(--color-primary);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  padding: 1px 4px;
+  outline: none;
+}
 .ws-caret { width: 12px; flex: 0 0 12px; display: inline-flex; justify-content: center; color: var(--color-text-tertiary); }
 .ws-ficon { width: 16px; flex: 0 0 16px; text-align: center; font-size: 10px; font-weight: 700; }
 .ws-ficon.is-folder { color: var(--color-text-tertiary); font-size: 11px; }
