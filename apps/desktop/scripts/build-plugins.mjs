@@ -40,6 +40,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const DESKTOP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..');
+const { writePluginFingerprint } = require(path.join(REPO_ROOT, 'scripts', 'lib', 'dev-plugin-sync.cjs'));
 const CATALOG_PATH = path.join(REPO_ROOT, 'build', 'plugins.catalog.json');
 const SELECTION_PATH = path.join(REPO_ROOT, 'build', 'build-plugins.json');
 const UI_SRC = path.join(REPO_ROOT, 'packages', 'ui', 'src');
@@ -541,6 +542,14 @@ async function buildOne(catalog, id, opts, serverShimPath) {
       manifestValue = withFrontendEntry(manifestValue, 'frontend/index.mjs');
     }
     summary.manifest = writeManifest(pkgDir, id, manifestValue);
+  }
+  if (entry.backendEntry) {
+    writePluginFingerprint({
+      root: REPO_ROOT,
+      id,
+      backendEntry: entry.backendEntry,
+      artifactDir: pkgDir,
+    });
   }
 
   console.log(

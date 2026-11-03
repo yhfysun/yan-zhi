@@ -7,6 +7,9 @@
  */
 const fsDefault = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+
+const FINGERPRINT_FILE = '.yz-source-hash';
 
 function latestMtimeMs(target, fs = fsDefault) {
   let stat;
@@ -44,10 +47,70 @@ function sourceTargets(root, id, backendEntry) {
   return [...new Set(targets)];
 }
 
+function collectSourceFiles(target, fs = fsDefault, out = []) {
+  let stat;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    return out;
+  }
+  if (stat.isFile()) {
+    out.push(target);
+    return out;
+  }
+  if (!stat.isDirectory()) return out;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(target, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (entry.name === 'node_modules' || entry.name === '.git') continue;
+    collectSourceFiles(path.join(target, entry.name), fs, out);
+  }
+  return out;
+}
+
+function hashPluginSource({ root, id, backendEntry, fs = fsDefault }) {
+  const files = [...new Set(
+    sourceTargets(root, id, backendEntry)
+      .flatMap((target) => collectSourceFiles(target, fs))
+      .map((file) => path.resolve(file)),
+  )].sort((a, b) => a.localeCompare(b));
+  const hash = crypto.createHash('sha256');
+  for (const file of files) {
+    const rel = path.relative(root, file).replace(/\\/g, '/');
+    hash.update(rel);
+    hash.update('\0');
+    try {
+      hash.update(fs.readFileSync(file));
+    } catch {
+      hash.update('<missing>');
+    }
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+function writePluginFingerprint({ root, id, backendEntry, artifactDir, fs = fsDefault }) {
+  const fingerprint = hashPluginSource({ root, id, backendEntry, fs });
+  fs.mkdirSync(artifactDir, { recursive: true });
+  fs.writeFileSync(path.join(artifactDir, FINGERPRINT_FILE), fingerprint, 'utf8');
+  return fingerprint;
+}
+
 function isPluginArtifactStale({ root, id, backendEntry, artifactDir, fs = fsDefault }) {
   const artifact = path.join(artifactDir, 'backend', 'index.js');
   const artifactMtime = latestMtimeMs(artifact, fs);
   if (!artifactMtime) return true;
+  let recordedFingerprint = '';
+  try {
+    recordedFingerprint = fs.readFileSync(path.join(artifactDir, FINGERPRINT_FILE), 'utf8').trim();
+  } catch { /* 旧产物没有标记，回退 mtime */ }
+  if (recordedFingerprint) {
+    return hashPluginSource({ root, id, backendEntry, fs }) !== recordedFingerprint;
+  }
   const sourceMtime = Math.max(
     0,
     ...sourceTargets(root, id, backendEntry).map((target) => latestMtimeMs(target, fs)),
@@ -84,8 +147,11 @@ function findStaleBuiltinPlugins({ root, builtinDir, catalog, fs = fsDefault }) 
 }
 
 module.exports = {
+  FINGERPRINT_FILE,
   findStaleBuiltinPlugins,
+  hashPluginSource,
   isPluginArtifactStale,
   latestMtimeMs,
   sourceTargets,
+  writePluginFingerprint,
 };
