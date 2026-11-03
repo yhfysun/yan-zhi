@@ -80,6 +80,23 @@
           </template>
         </div>
 
+        <div class="orbc-versions">
+          <div class="orbc-head">
+            <span>版本历史</span>
+            <el-button size="small" text @click="loadVersions">刷新</el-button>
+          </div>
+          <div v-if="!versions.length" class="orbc-empty">暂无版本记录</div>
+          <div v-for="version in versions" :key="version.version" class="orbc-version-row">
+            <button type="button" class="orbc-version-main" @click="openVersion(version)">
+              <span>v{{ version.version }} · {{ version.name }}</span>
+              <span>{{ formatTime(version.createdAt) }}</span>
+              <span>{{ version.stepCount }} 步 · {{ version.parameterCount }} 个参数</span>
+            </button>
+            <span v-if="version.version === selected.version" class="orbc-version-current">当前</span>
+            <el-button v-else size="small" text @click="restoreVersion(version)">恢复此版本</el-button>
+          </div>
+        </div>
+
         <div class="orbc-history">
           <div class="orbc-head"><span>运行历史</span><el-button size="small" text @click="loadRuns">刷新</el-button></div>
           <div v-if="!runs.length" class="orbc-empty">暂无运行记录</div>
@@ -172,6 +189,27 @@
         <el-button size="small" type="primary" @click="confirmRunParams">继续运行</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="versionDialogVisible" title="版本详情" width="680px" append-to-body>
+      <template v-if="previewVersion">
+        <div class="orbc-version-detail-head">
+          v{{ previewVersion.version }} · {{ previewVersion.snapshot.name }} ·
+          {{ formatTime(previewVersion.createdAt) }}
+        </div>
+        <pre class="orbc-version-json">{{ JSON.stringify(previewVersion.snapshot, null, 2) }}</pre>
+      </template>
+      <template #footer>
+        <el-button size="small" @click="versionDialogVisible = false">关闭</el-button>
+        <el-button
+          v-if="previewVersion && previewVersion.version !== selected?.version"
+          size="small"
+          type="primary"
+          @click="restoreVersion(previewVersion)"
+        >
+          恢复此版本
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -234,6 +272,24 @@ interface RunbookRun {
   finishedAt?: number;
   error?: string;
 }
+interface RunbookVersionSummary {
+  runbookId: string;
+  version: number;
+  name: string;
+  description?: string;
+  connectionId: string;
+  enabled: boolean;
+  parameterCount: number;
+  stepCount: number;
+  rollbackStepCount: number;
+  createdAt: number;
+}
+interface RunbookVersionDetail {
+  runbookId: string;
+  version: number;
+  snapshot: Runbook;
+  createdAt: number;
+}
 
 const props = defineProps<{
   connections: MonitorConnection[];
@@ -243,14 +299,17 @@ const props = defineProps<{
 const runbooks = ref<Runbook[]>([]);
 const selected = ref<Runbook | null>(null);
 const runs = ref<RunbookRun[]>([]);
+const versions = ref<RunbookVersionSummary[]>([]);
 const currentRun = ref<RunbookRun | null>(null);
 const running = ref(false);
 const cancelling = ref(false);
 const saving = ref(false);
 const dialogVisible = ref(false);
 const runDialogVisible = ref(false);
+const versionDialogVisible = ref(false);
 const editingId = ref('');
 const runParams = ref<Record<string, string>>({});
+const previewVersion = ref<RunbookVersionDetail | null>(null);
 const pollingRunIds = new Set<string>();
 const monitorConnections = computed(() => props.connections.filter((conn) => conn.type !== 'database'));
 const form = ref({
@@ -291,7 +350,7 @@ async function load(): Promise<void> {
   } else {
     selected.value = result.data.find((item) => item.id === selected.value!.id) || null;
   }
-  await loadRuns();
+  await Promise.all([loadRuns(), loadVersions()]);
 }
 
 async function loadRuns(): Promise<void> {
@@ -303,11 +362,24 @@ async function loadRuns(): Promise<void> {
   if ('data' in result) runs.value = result.data;
 }
 
+async function loadVersions(): Promise<void> {
+  if (!selected.value) {
+    versions.value = [];
+    return;
+  }
+  const result = await api.get<RunbookVersionSummary[]>(
+    `/plugin/ops-shell/runbooks/${selected.value.id}/versions`,
+  );
+  versions.value = 'data' in result ? result.data : [];
+}
+
 function selectRunbook(item: Runbook): void {
   selected.value = item;
   currentRun.value = null;
+  previewVersion.value = null;
   runDialogVisible.value = false;
-  void loadRuns();
+  versionDialogVisible.value = false;
+  void Promise.all([loadRuns(), loadVersions()]);
 }
 
 function resetForm(): void {
@@ -384,7 +456,7 @@ async function save(): Promise<void> {
     dialogVisible.value = false;
     await load();
     selected.value = runbooks.value.find((item) => item.id === result.data.id) || result.data;
-    await loadRuns();
+    await Promise.all([loadRuns(), loadVersions()]);
   } finally {
     saving.value = false;
   }
@@ -401,7 +473,42 @@ async function remove(item: Runbook): Promise<void> {
     return;
   }
   selected.value = null;
+  versions.value = [];
   await load();
+}
+
+async function openVersion(item: RunbookVersionSummary): Promise<void> {
+  const result = await api.get<RunbookVersionDetail>(
+    `/plugin/ops-shell/runbooks/${item.runbookId}/versions/${item.version}`,
+  );
+  if ('error' in result) {
+    ElMessage.error(result.error);
+    return;
+  }
+  previewVersion.value = result.data;
+  versionDialogVisible.value = true;
+}
+
+async function restoreVersion(item: Pick<RunbookVersionSummary, 'runbookId' | 'version'>): Promise<void> {
+  const ok = await ElMessageBox.confirm(
+    `把 v${item.version} 恢复为新的当前版本？现有版本和运行历史都会保留。`,
+    '恢复 Runbook 版本',
+    { type: 'warning', confirmButtonText: '恢复此版本', cancelButtonText: '取消' },
+  ).then(() => true).catch(() => false);
+  if (!ok) return;
+  const result = await api.post<Runbook>(
+    `/plugin/ops-shell/runbooks/${item.runbookId}/versions/${item.version}/restore`,
+  );
+  if ('error' in result) {
+    ElMessage.error(result.error);
+    return;
+  }
+  versionDialogVisible.value = false;
+  previewVersion.value = null;
+  await load();
+  selected.value = runbooks.value.find((runbook) => runbook.id === result.data.id) || result.data;
+  await Promise.all([loadRuns(), loadVersions()]);
+  ElMessage.success(`已恢复 v${item.version}，生成 v${result.data.version}`);
 }
 
 function planText(item: Runbook, params: Record<string, string> = {}): string {
@@ -579,7 +686,7 @@ onMounted(() => { void load(); });
 .orbc-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .orbc-meta { justify-content: flex-start; font-size: 11px; color: var(--color-text-tertiary); }
 .orbc-meta b { color: var(--color-text-primary); }
-.orbc-run, .orbc-history { border-top: 1px solid var(--color-border); padding-top: 9px; }
+.orbc-run, .orbc-versions, .orbc-history { border-top: 1px solid var(--color-border); padding-top: 9px; }
 .orbc-run-head { font-size: 12px; font-weight: 600; }
 .orbc-run-head-actions { display: inline-flex; align-items: center; gap: 4px; }
 .orbc-run-params { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 5px; font-size: 10.5px; color: var(--color-text-secondary); }
@@ -597,6 +704,12 @@ onMounted(() => { void load(); });
 .orbc-step-summary { min-width: 0; overflow-wrap: anywhere; color: var(--color-text-secondary); white-space: pre-wrap; }
 .orbc-step-duration { color: var(--color-text-tertiary); }
 .orbc-rollback-title { margin: 8px 0 2px; font-size: 11px; color: var(--color-warning); }
+.orbc-versions { display: flex; flex-direction: column; gap: 4px; }
+.orbc-version-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.orbc-version-main { flex: 1; min-width: 0; display: grid; grid-template-columns: auto minmax(120px, 1fr) auto; gap: 8px; align-items: center; border: 0; border-radius: 4px; padding: 5px 6px; background: transparent; color: var(--color-text-secondary); text-align: left; font-size: 11px; cursor: pointer; }
+.orbc-version-main:hover { background: var(--color-surface-hover); }
+.orbc-version-main span:first-child { color: var(--color-text-primary); font-weight: 600; }
+.orbc-version-current { flex: none; font-size: 10px; color: var(--color-success); }
 .orbc-history { display: flex; flex-direction: column; gap: 4px; }
 .orbc-history-row { width: 100%; border: 0; border-radius: 4px; padding: 5px 6px; background: transparent; color: var(--color-text-secondary); text-align: left; font-size: 11px; cursor: pointer; }
 .orbc-history-row:hover { background: var(--color-surface-hover); }
@@ -610,6 +723,8 @@ onMounted(() => { void load(); });
 .orbc-run-form label span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .orbc-run-form em { font-style: normal; font-size: 10px; color: var(--color-warning); }
 .orbc-run-form-empty { margin: 0; font-size: 12px; color: var(--color-text-tertiary); }
+.orbc-version-detail-head { margin-bottom: 8px; font-size: 12px; color: var(--color-text-secondary); }
+.orbc-version-json { margin: 0; max-height: 58vh; overflow: auto; padding: 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-secondary); color: var(--color-text-primary); font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 900px) {
   .orbc { grid-template-columns: 1fr; overflow: auto; }
   .orbc-list, .orbc-main { overflow: visible; }

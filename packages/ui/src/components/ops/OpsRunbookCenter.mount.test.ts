@@ -36,6 +36,19 @@ async function mountCenter(): Promise<{ app: App; host: HTMLElement }> {
   return { app, host };
 }
 
+function versionSummaries() {
+  return [
+    {
+      runbookId: 'rb1', version: 2, name: '发布检查', connectionId: 'c1', enabled: true,
+      parameterCount: 1, stepCount: 1, rollbackStepCount: 1, createdAt: 2,
+    },
+    {
+      runbookId: 'rb1', version: 1, name: '发布检查旧版', connectionId: 'c1', enabled: true,
+      parameterCount: 0, stepCount: 1, rollbackStepCount: 0, createdAt: 1,
+    },
+  ];
+}
+
 beforeEach(() => {
   document.body.innerHTML = '';
   apiMock.get.mockImplementation(async (path: string) => {
@@ -49,6 +62,19 @@ beforeEach(() => {
           rollbackSteps: [{ id: 'r1', type: 'exec', name: '恢复', command: 'sh rollback.sh' }],
           createdAt: 1, updatedAt: 2,
         }],
+      };
+    }
+    if (path.endsWith('/versions')) return { data: versionSummaries() };
+    if (path.includes('/versions/')) {
+      return {
+        data: {
+          runbookId: 'rb1', version: 1, createdAt: 1,
+          snapshot: {
+            id: 'rb1', name: '发布检查旧版', connectionId: 'c1', enabled: true, version: 1,
+            parameters: [], steps: [{ id: 's1', type: 'exec', name: '检查', command: 'uptime' }],
+            rollbackSteps: [], createdAt: 1, updatedAt: 1,
+          },
+        },
       };
     }
     return {
@@ -68,6 +94,7 @@ describe('OpsRunbookCenter mount', () => {
     expect(host.textContent).toContain('v2');
     expect(host.textContent).toContain('执行步骤');
     expect(host.textContent).toContain('回滚步骤');
+    expect(host.textContent).toContain('版本历史');
     expect(host.textContent).toContain('运行历史');
     expect(host.textContent).toContain('成功');
     app.unmount();
@@ -100,6 +127,10 @@ describe('OpsRunbookCenter mount', () => {
             rollbackSteps: [], createdAt: 1, updatedAt: 2,
           }],
         };
+      }
+      if (path.endsWith('/versions')) return { data: versionSummaries() };
+      if (path.includes('/versions/')) {
+        return { data: { runbookId: 'rb1', version: 1, createdAt: 1, snapshot: {} } };
       }
       if (path.includes('/runbooks/runs/run-param')) {
         return {
@@ -153,6 +184,10 @@ describe('OpsRunbookCenter mount', () => {
           }],
         };
       }
+      if (path.endsWith('/versions')) return { data: versionSummaries() };
+      if (path.includes('/versions/')) {
+        return { data: { runbookId: 'rb1', version: 1, createdAt: 1, snapshot: {} } };
+      }
       if (path.includes('/runbooks/runs/run-live')) {
         return {
           data: {
@@ -185,6 +220,36 @@ describe('OpsRunbookCenter mount', () => {
 
     expect(confirm).toHaveBeenCalled();
     expect(apiMock.post).toHaveBeenCalledWith('/plugin/ops-shell/runbooks/runs/run-live/cancel');
+    confirm.mockRestore();
+    app.unmount();
+  });
+
+  it('版本历史可恢复旧版为新的当前版本', async () => {
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
+    apiMock.post.mockImplementation(async (path: string) => {
+      if (path.endsWith('/versions/1/restore')) {
+        return {
+          data: {
+            id: 'rb1', name: '发布检查旧版', connectionId: 'c1', enabled: true, version: 3,
+            parameters: [], steps: [{ id: 's1', type: 'exec', name: '检查', command: 'uptime' }],
+            rollbackSteps: [], createdAt: 1, updatedAt: 4,
+          },
+        };
+      }
+      return { data: {} };
+    });
+
+    const { app, host } = await mountCenter();
+    expect(host.textContent).toContain('版本历史');
+    expect(host.textContent).toContain('发布检查旧版');
+    const restoreButton = Array.from(host.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === '恢复此版本') as HTMLButtonElement | undefined;
+    expect(restoreButton).toBeTruthy();
+    restoreButton!.click();
+    await settle();
+
+    expect(confirm).toHaveBeenCalled();
+    expect(apiMock.post).toHaveBeenCalledWith('/plugin/ops-shell/runbooks/rb1/versions/1/restore');
     confirm.mockRestore();
     app.unmount();
   });

@@ -4643,6 +4643,57 @@ const opsShellModule: PluginModule = {
         jsonRes(res).json({ data: next });
       });
 
+      r.get('/runbooks/:id/versions', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        if (!runbookStore.get(id)) { failRes(res, 404, 'Runbook 不存在'); return; }
+        jsonRes(res).json({
+          data: runbookStore.listVersions(id).map((item) => ({
+            runbookId: item.runbookId,
+            version: item.version,
+            name: item.snapshot.name,
+            description: item.snapshot.description,
+            connectionId: item.snapshot.connectionId,
+            enabled: item.snapshot.enabled,
+            parameterCount: (item.snapshot.parameters || []).length,
+            stepCount: (item.snapshot.steps || []).length,
+            rollbackStepCount: (item.snapshot.rollbackSteps || []).length,
+            createdAt: item.createdAt,
+          })),
+        });
+      });
+
+      r.get('/runbooks/:id/versions/:version', async (req: unknown, res: unknown) => {
+        const { id, version: rawVersion } = (req as { params: { id: string; version: string } }).params;
+        const version = Math.floor(Number(rawVersion));
+        if (!Number.isFinite(version) || version < 1) { failRes(res, 400, '版本号非法'); return; }
+        const found = runbookStore.getVersion(id, version);
+        if (!found) { failRes(res, 404, 'Runbook 版本不存在'); return; }
+        jsonRes(res).json({ data: found });
+      });
+
+      r.post('/runbooks/:id/versions/:version/restore', async (req: unknown, res: unknown) => {
+        const { id, version: rawVersion } = (req as { params: { id: string; version: string } }).params;
+        const version = Math.floor(Number(rawVersion));
+        if (!Number.isFinite(version) || version < 1) { failRes(res, 400, '版本号非法'); return; }
+        const existing = runbookStore.get(id);
+        if (!existing) { failRes(res, 404, 'Runbook 不存在'); return; }
+        const found = runbookStore.getVersion(id, version);
+        if (!found) { failRes(res, 404, 'Runbook 版本不存在'); return; }
+        const normalized = normalizeRunbookInput({ ...found.snapshot } as Record<string, unknown>);
+        if (normalized.error) { failRes(res, 400, `该版本无法恢复：${normalized.error}`); return; }
+        const conn = (await loadConnections()).find((item) => item.id === normalized.value!.connectionId);
+        if (!conn) { failRes(res, 400, '该版本绑定的执行连接已不存在'); return; }
+        if (conn.type === 'database') { failRes(res, 400, 'Runbook 暂不支持数据库连接'); return; }
+        const next = buildRunbook(normalized.value!, existing);
+        runbookStore.save(next);
+        await audit('runbook.restore', {
+          connection: conn.name,
+          detail: `${next.name} 恢复自 v${version}，生成 v${next.version}`,
+          ok: true,
+        });
+        jsonRes(res).json({ data: next });
+      });
+
       r.delete('/runbooks/:id', async (req: unknown, res: unknown) => {
         const { id } = (req as { params: { id: string } }).params;
         const existing = runbookStore.get(id);

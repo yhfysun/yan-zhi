@@ -16,6 +16,13 @@ export interface RunbookDatabase {
   prepare(sql: string): Statement;
 }
 
+export interface OpsRunbookVersion {
+  runbookId: string;
+  version: number;
+  snapshot: OpsRunbook;
+  createdAt: number;
+}
+
 function parseJson<T>(raw: unknown, fallback: T): T {
   try {
     const value = JSON.parse(String(raw || ''));
@@ -42,6 +49,15 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
         updated_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_ops_runbook_updated ON ops_runbook(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS ops_runbook_version (
+        runbook_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(runbook_id, version)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ops_runbook_version_created
+        ON ops_runbook_version(runbook_id, version DESC);
       CREATE TABLE IF NOT EXISTS ops_runbook_run (
         id TEXT PRIMARY KEY,
         runbook_id TEXT NOT NULL,
@@ -68,6 +84,8 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     ]) {
       try { database.exec(sql); } catch { /* 列已存在 */ }
     }
+    const rows = database.prepare('SELECT * FROM ops_runbook').all() as any[];
+    for (const row of rows) recordVersion(rowToRunbook(row));
   };
 
   const rowToRunbook = (row: any): OpsRunbook => ({
@@ -102,6 +120,21 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     finishedAt: row.finished_at || undefined,
   });
 
+  const rowToVersion = (row: any): OpsRunbookVersion => ({
+    runbookId: row.runbook_id,
+    version: row.version,
+    snapshot: parseJson(row.snapshot_json, {} as OpsRunbook),
+    createdAt: row.created_at,
+  });
+
+  function recordVersion(runbook: OpsRunbook) {
+    database.prepare(`
+      INSERT OR IGNORE INTO ops_runbook_version
+        (runbook_id, version, snapshot_json, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run(runbook.id, runbook.version, JSON.stringify(runbook), runbook.updatedAt);
+  }
+
   const list = (): OpsRunbook[] => (database.prepare('SELECT * FROM ops_runbook ORDER BY updated_at DESC').all() as any[])
     .map(rowToRunbook);
   const get = (id: string): OpsRunbook | null => {
@@ -109,30 +142,57 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     return row ? rowToRunbook(row) : null;
   };
   const save = (runbook: OpsRunbook) => {
-    database.prepare(`
-      INSERT INTO ops_runbook
-        (id, name, description, connection_id, enabled, version, parameters_json, steps_json, rollback_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        name=excluded.name,
-        description=excluded.description,
-        connection_id=excluded.connection_id,
-        enabled=excluded.enabled,
-        version=excluded.version,
-        parameters_json=excluded.parameters_json,
-        steps_json=excluded.steps_json,
-        rollback_json=excluded.rollback_json,
-        updated_at=excluded.updated_at
-    `).run(
-      runbook.id, runbook.name, runbook.description || null, runbook.connectionId,
-      runbook.enabled ? 1 : 0, runbook.version, JSON.stringify(runbook.parameters),
-      JSON.stringify(runbook.steps),
-      JSON.stringify(runbook.rollbackSteps), runbook.createdAt, runbook.updatedAt,
-    );
+    database.exec('BEGIN');
+    try {
+      database.prepare(`
+        INSERT INTO ops_runbook
+          (id, name, description, connection_id, enabled, version, parameters_json, steps_json, rollback_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name=excluded.name,
+          description=excluded.description,
+          connection_id=excluded.connection_id,
+          enabled=excluded.enabled,
+          version=excluded.version,
+          parameters_json=excluded.parameters_json,
+          steps_json=excluded.steps_json,
+          rollback_json=excluded.rollback_json,
+          updated_at=excluded.updated_at
+      `).run(
+        runbook.id, runbook.name, runbook.description || null, runbook.connectionId,
+        runbook.enabled ? 1 : 0, runbook.version, JSON.stringify(runbook.parameters),
+        JSON.stringify(runbook.steps),
+        JSON.stringify(runbook.rollbackSteps), runbook.createdAt, runbook.updatedAt,
+      );
+      recordVersion(runbook);
+      database.exec('COMMIT');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
   };
   const remove = (id: string): boolean => {
-    const result = database.prepare('DELETE FROM ops_runbook WHERE id=?').run(id) as { changes?: number };
-    return (result.changes || 0) > 0;
+    database.exec('BEGIN');
+    try {
+      database.prepare('DELETE FROM ops_runbook_version WHERE runbook_id=?').run(id);
+      const result = database.prepare('DELETE FROM ops_runbook WHERE id=?').run(id) as { changes?: number };
+      database.exec('COMMIT');
+      return (result.changes || 0) > 0;
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    }
+  };
+  const listVersions = (runbookId: string): OpsRunbookVersion[] => (
+    database.prepare(
+      'SELECT * FROM ops_runbook_version WHERE runbook_id=? ORDER BY version DESC',
+    ).all(runbookId) as any[]
+  ).map(rowToVersion);
+  const getVersion = (runbookId: string, version: number): OpsRunbookVersion | null => {
+    const row = database.prepare(
+      'SELECT * FROM ops_runbook_version WHERE runbook_id=? AND version=?',
+    ).get(runbookId, version) as any;
+    return row ? rowToVersion(row) : null;
   };
 
   const createRun = (
@@ -217,6 +277,8 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     get,
     save,
     remove,
+    listVersions,
+    getVersion,
     createRun,
     updateRun,
     getRun,

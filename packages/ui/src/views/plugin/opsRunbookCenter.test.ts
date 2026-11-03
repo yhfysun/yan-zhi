@@ -37,4 +37,10 @@ describe('OpsRunbookCenter', () => {
     expect(RUNBOOK).toContain('/cancel');
     expect(RUNBOOK).toContain("cancelled: '已取消'");
   });
+
+  it('版本历史可查看并恢复为新的当前版本', () => {
+    expect(RUNBOOK).toContain('/versions');
+    expect(RUNBOOK).toContain('版本历史');
+    expect(RUNBOOK).toContain('恢复此版本');
+  });
 });

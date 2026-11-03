@@ -141,6 +141,35 @@ describe('Runbook routes', () => {
     expect((updated.body as any).data).toMatchObject({ id: rb.id, version: 2, name: '检查服务 v2' });
   });
 
+  it('旧版本可查看，并可恢复为新的当前版本', async () => {
+    const rb = await createRunbook();
+    const updated = await call('PUT', `/runbooks/${rb.id}`, {
+      name: '检查服务 v2',
+      steps: [{ type: 'exec', name: '检查 v2', command: 'uptime -p' }],
+    });
+    expect((updated.body as any).data.version).toBe(2);
+
+    const versions = await call('GET', `/runbooks/${rb.id}/versions`);
+    expect(versions.statusCode).toBe(200);
+    expect((versions.body as any).data.map((item: any) => item.version)).toEqual([2, 1]);
+
+    const v1 = await call('GET', `/runbooks/${rb.id}/versions/1`);
+    expect(v1.statusCode).toBe(200);
+    expect((v1.body as any).data.snapshot).toMatchObject({
+      name: '检查服务',
+      steps: [{ command: 'uptime' }],
+    });
+
+    const restored = await call('POST', `/runbooks/${rb.id}/versions/1/restore`);
+    expect(restored.statusCode).toBe(200);
+    expect((restored.body as any).data).toMatchObject({
+      id: rb.id,
+      version: 3,
+      name: '检查服务',
+      steps: [{ command: 'uptime' }],
+    });
+  });
+
   it('生产 Runbook 未审批时 428，审批后异步执行并成功', async () => {
     const rb = await createRunbook();
     const denied = await call('POST', `/runbooks/${rb.id}/run`);
