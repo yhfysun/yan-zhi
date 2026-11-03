@@ -84,6 +84,15 @@
       </div>
     </div>
 
+    <!-- 撤销条：重命名 / 移动后出现，最多回退最近 10 步 -->
+    <div v-if="undoStack.length" class="ws-undo">
+      <span class="ws-undo-text" :title="undoStack[undoStack.length - 1].label">{{ undoStack[undoStack.length - 1].label }}</span>
+      <button class="ws-undo-btn" type="button" @click="undoLast">撤销</button>
+      <button class="ws-undo-x" type="button" title="关闭" @click="clearUndo">
+        <el-icon :size="12"><Close /></el-icon>
+      </button>
+    </div>
+
     <!-- 右键菜单 -->
     <Teleport to="body">
       <div
@@ -112,7 +121,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, reactive, watch, ref, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, Refresh, ArrowRight, ArrowDown } from '@element-plus/icons-vue';
+import { Plus, Refresh, ArrowRight, ArrowDown, Close } from '@element-plus/icons-vue';
 import { useWorkspaceFiles, dirOfNode, type WsNode, type OfficeDocKind } from '../../composables/office/useWorkspaceFiles';
 import { api } from '../../api/client';
 import { officeSelectedFile } from '../../stores/officeWorkbench';
@@ -157,6 +166,24 @@ function onRowClick(node: WsNode) {
   officeSelectedFile.value = node.path;
 }
 
+// ===== 撤销（重命名 / 移动）=====
+interface TreeUndo { label: string; from: string; to: string }
+const undoStack = ref<TreeUndo[]>([]);
+function pushUndo(label: string, from: string, to: string) {
+  undoStack.value = [...undoStack.value.slice(-9), { label, from, to }];
+}
+function clearUndo() { undoStack.value = []; }
+async function undoLast() {
+  const last = undoStack.value[undoStack.value.length - 1];
+  if (!last) return;
+  const r = await api.post('/workspace/rename', { from: last.to, to: last.from });
+  if (!('data' in r)) { ElMessage.error(r.error || '撤销失败'); return; }
+  undoStack.value = undoStack.value.slice(0, -1);
+  await refresh();
+  select(last.from);
+  ElMessage.success('已撤销：' + last.label);
+}
+
 // ===== 行内重命名（双击 / 右键菜单）=====
 const renamingPath = ref('');
 const renameValue = ref('');
@@ -180,6 +207,7 @@ async function commitRename(node: WsNode) {
   if (!name || name === node.name) return;
   const r = await renameNode(node, name);
   if (!r.ok) { ElMessage.error(r.error || '重命名失败'); return; }
+  if (r.path) pushUndo(`重命名「${node.name}」`, node.path, r.path);
   ElMessage.success('已重命名');
 }
 
@@ -221,6 +249,7 @@ async function onDrop(e: DragEvent, dir: string) {
   if (to === node.path) return; // 同目录，无变化
   const r = await api.post('/workspace/rename', { from: node.path, to });
   if (!('data' in r)) { ElMessage.error(r.error || '移动失败'); return; }
+  pushUndo(`移动「${node.name}」`, node.path, to);
   await refresh();
   select(to);
   ElMessage.success('已移动');
@@ -401,6 +430,34 @@ defineExpose({ doCreate });
   padding: 1px 4px;
   outline: none;
 }
+/* 撤销条 */
+.ws-undo {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+}
+.ws-undo-text {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-undo-btn {
+  border: none; background: transparent; padding: 0;
+  color: var(--color-primary); font-size: 11.5px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.ws-undo-btn:hover { text-decoration: underline; }
+.ws-undo-x {
+  border: none; background: transparent; padding: 2px;
+  display: grid; place-items: center;
+  color: var(--color-text-tertiary); cursor: pointer;
+}
+.ws-undo-x:hover { color: var(--color-text); }
 .ws-caret { width: 12px; flex: 0 0 12px; display: inline-flex; justify-content: center; color: var(--color-text-tertiary); }
 .ws-ficon { width: 16px; flex: 0 0 16px; text-align: center; font-size: 10px; font-weight: 700; }
 .ws-ficon.is-folder { color: var(--color-text-tertiary); font-size: 11px; }

@@ -202,7 +202,7 @@ async function createDoc(kind: OfficeDocKind, name: string): Promise<{ ok: boole
   return { ok: true, path: r.data.path };
 }
 
-async function renameNode(node: WsNode, rawName: string): Promise<{ ok: boolean; error?: string }> {
+async function renameNode(node: WsNode, rawName: string): Promise<{ ok: boolean; path?: string; error?: string }> {
   const name = rawName.trim().replace(/[\\/:*?"<>|]/g, '');
   if (!name) return { ok: false, error: '名称不能为空' };
   const dir = dirOfNode(node);
@@ -213,7 +213,7 @@ async function renameNode(node: WsNode, rawName: string): Promise<{ ok: boolean;
   if (!('data' in r)) return { ok: false, error: r.error || '重命名失败' };
   await refresh();
   select(to);
-  return { ok: true };
+  return { ok: true, path: to };
 }
 
 async function duplicateNode(node: WsNode): Promise<{ ok: boolean; error?: string }> {

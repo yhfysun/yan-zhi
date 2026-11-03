@@ -110,6 +110,15 @@ describe('P2-4 文件树与三套视图', () => {
     expect(TREE).toMatch(/function startRename/);
   });
 
+  it('重命名 / 移动可撤销', () => {
+    const TREE = strip(readRepo('packages/ui/src/components/office/WorkspaceFileTree.vue'));
+    expect(TREE).toMatch(/undoStack/);
+    expect(TREE).toMatch(/async function undoLast/);
+    expect(TREE).toMatch(/ws-undo/);
+    expect(TREE).toMatch(/pushUndo\(`重命名/);
+    expect(TREE).toMatch(/pushUndo\(`移动/);
+  });
+
   it('工作台记住上次文件与目录展开状态', () => {
     const WS = strip(readRepo('packages/ui/src/composables/office/useWorkspaceFiles.ts'));
     expect(WS).toMatch(/yz:office:tree:expanded/);
