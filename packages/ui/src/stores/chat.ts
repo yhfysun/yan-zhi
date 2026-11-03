@@ -3245,6 +3245,16 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
             costStore.applyNoticeEvent(convId, event);
             break;
           }
+          case 'task:model_switched': {
+            console.warn(
+              `[Chat] 模型故障转移: ${event.fromModelId || '-'} → ${event.toModelId || '-'}`,
+            );
+            try {
+              const { ElMessage } = await import('element-plus');
+              ElMessage.warning('当前模型未正常响应，已自动切换备用模型继续执行');
+            } catch { /* 提示失败不影响任务 */ }
+            break;
+          }
           // ★★★ 执行面判据（P2-1，2026-10-10）：服务端单一给出，前端只服从。
           //   收到 bridge ⇒ 本任务的 browser_* 由服务端直连主进程执行，前端**跳过本地执行**
           //   （否则双执行：同一次调用打两遍页面）。老 server 不发本字段 → 不进入本分支 → 行为不变。

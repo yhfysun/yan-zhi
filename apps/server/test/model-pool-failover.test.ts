@@ -59,6 +59,9 @@ describe('isPoolFailoverable · 什么错才该换模型', () => {
     expect(isPoolFailoverable(new Error('connect ECONNREFUSED 127.0.0.1:3000'))).toBe(true);
     expect(isPoolFailoverable(new Error('fetch failed: network error'))).toBe(true);
     expect(isPoolFailoverable(new Error('rate limit exceeded'))).toBe(true);
+    expect(isPoolFailoverable(new Error(
+      '上游流 120 秒无数据（未返回首包，连接已建立但上游静默）—— 已中止本次流读取',
+    ))).toBe(true);
   });
 
   it('业务性报错不换（模型能力/参数问题）', () => {

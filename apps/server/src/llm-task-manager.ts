@@ -103,6 +103,8 @@ import { findModelRow, rowToModel } from './services/model-resolve.js';
 import { platformReadableCond } from './services/platform-share.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from './constants.js';
 import { TaskChunkCoalescer, type TaskChunkEvent } from './services/task-chunk-coalescer.js';
+import { retainReplayEvents } from './services/task-event-buffer.js';
+import { BrowserProgressGuard } from './services/browser-progress-guard.js';
 import {
   startWorkflowRun, subscribeWorkflowRun, getWorkflowRun, resolveBundleFromDb,
   markWorkflowDelivered, loadPendingWorkflowDeliveries, type WorkflowDeliveryCtx,
@@ -617,6 +619,7 @@ interface LlmTask {
   /** 流式增量合并器：80ms 窗口内的同流增量合并后 emit */
   chunkCoalescer?: TaskChunkCoalescer;
   chunkFlushTimer?: ReturnType<typeof setTimeout>;
+  browserProgressGuard?: BrowserProgressGuard;
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -628,9 +631,9 @@ function emitNow(task: LlmTask, event: SSEEvent) {
   task.seq++;
   event.seq = task.seq;
   task.events.push(event);
-  // 超出上限时丢弃最旧的事件（重连重放只保留最近 MAX_EVENTS 条）
+  // 超出上限时优先丢弃旧 chunk，保护 tool/message 等重连续跑必需事件。
   if (task.events.length > MAX_EVENTS) {
-    task.events.splice(0, task.events.length - MAX_EVENTS);
+    task.events = retainReplayEvents(task.events, MAX_EVENTS);
   }
   for (const sub of task.subscribers) {
     try { sub(event); } catch {}
@@ -1114,6 +1117,12 @@ async function runToolCallAndPersist(opts: {
       }
       result = await enrichToolErrorReceipt(task, toolName, args, e);
     }
+  }
+
+  if (toolName.startsWith('browser_')) {
+    task.browserProgressGuard ||= new BrowserProgressGuard();
+    const progressBlock = task.browserProgressGuard.noteResult(toolName, args, result);
+    if (progressBlock) result = `${progressBlock}\n\n${result}`;
   }
 
   // ★★★ 进事件缓冲前**先截断**（2026-10-15，内存）：
@@ -3560,9 +3569,18 @@ async function runReActLoop(task: LlmTask, params: {
         const next = failoverChain[failoverCursor];
         const nextPlatform = loadPlatform(next.platformId, userId);
         if (!nextPlatform) continue;
+        const previousModelId = model?.id || '';
         model = next.model;
         platform = nextPlatform;
         client = new LlmClient(nextPlatform, next.model);
+        task.platformId = next.platformId;
+        task.modelId = next.model.id;
+        emit(task, {
+          type: 'task:model_switched',
+          fromModelId: previousModelId,
+          toModelId: next.model.id,
+          reason: 'failover',
+        });
         return next.model.id;
       }
       return null;
