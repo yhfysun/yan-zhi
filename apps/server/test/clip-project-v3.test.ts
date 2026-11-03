@@ -15,6 +15,7 @@ import {
 import {
   MAX_COMPOUND_DEPTH,
   buildProjectV3ForWrite,
+  compoundProjectAtPath,
   loadedFromV2,
   materializeTrackTimes,
   migrateV2ToV3,
@@ -259,6 +260,41 @@ describe('validateProjectV3 · 轨道校验', () => {
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.error).toContain('嵌套深度');
   });
+
+  it('★ 复合片段内部同样执行同轨重叠校验', () => {
+    const inner = migrateV2ToV3(v2Fixture());
+    (inner.tracks[0].items[1] as { start?: number }).start = 1;
+    const outer = base();
+    outer.tracks[0].items = [{
+      type: 'compound', id: 'cmp-inner', start: 0, duration: 2, project: inner,
+    }];
+    const r = validateProjectV3(outer);
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.error).toContain('复合片段 cmp-inner');
+    expect(r.ok === false && r.error).toContain('重叠');
+  });
+});
+
+describe('compoundProjectAtPath · 内部编辑预览路径', () => {
+  it('★ 按 compound id 逐层进入内部工程；不存在返回 null', () => {
+    const leaf = migrateV2ToV3(v2Fixture());
+    const middle: ClipProjectV3 = {
+      ...migrateV2ToV3(v2Fixture()),
+      tracks: [{
+        id: 'v1', kind: 'video',
+        items: [{ type: 'compound', id: 'inner', start: 0, duration: 2, project: leaf }],
+      }],
+    };
+    const root: ClipProjectV3 = {
+      ...migrateV2ToV3(v2Fixture()),
+      tracks: [{
+        id: 'v1', kind: 'video',
+        items: [{ type: 'compound', id: 'outer', start: 0, duration: 2, project: middle }],
+      }],
+    };
+    expect(compoundProjectAtPath(root, ['outer', 'inner'])).toBe(leaf);
+    expect(compoundProjectAtPath(root, ['outer', 'missing'])).toBeNull();
+  });
 });
 
 describe('buildProjectV3ForWrite · 视图是编辑权威', () => {
@@ -295,12 +331,26 @@ describe('buildProjectV3ForWrite · 视图是编辑权威', () => {
     expect(audioTracks.map((t) => t.items.map((i) => i.id))).toEqual([['a1'], ['a9']]);
   });
 
-  it('★ 主轨含复合片段 → 拒绝保存（S1 视图盖不住它，宁可报错也不静默丢弃）', () => {
+  it('★ 主轨含复合片段 → 保存时保留 compound，v2 视图只镜像普通片段', () => {
     const loaded = loadedFromV2(v2Fixture());
     loaded.tracks[0].items = [{
-      type: 'compound', id: 'cmp1', start: 0, duration: 2, project: migrateV2ToV3(v2Fixture()),
+      type: 'compound', id: 'cmp1', start: 0, duration: 4, project: migrateV2ToV3(v2Fixture()),
     }];
-    expect(() => buildProjectV3ForWrite(loaded)).toThrow(/复合片段/);
+    loaded.clips = [];
+    const written = buildProjectV3ForWrite(loaded);
+    expect(written.tracks[0].items).toEqual(loaded.tracks[0].items);
+  });
+
+  it('★ 主轨含 compound 时视图新增/修改普通片段，不得重建主轨丢 compound', () => {
+    const loaded = loadedFromV2(v2Fixture());
+    const inner = migrateV2ToV3(v2Fixture());
+    loaded.tracks[0].items = [
+      { type: 'clip', id: 'c1', start: 0, duration: 4, segment: seg('c1', { trimStart: 0, trimEnd: 4 }) },
+      { type: 'compound', id: 'cmp1', start: 4, duration: 2, project: inner },
+    ];
+    loaded.clips = [seg('c1x', { trimStart: 0, trimEnd: 1 })];
+    const written = buildProjectV3ForWrite(loaded);
+    expect(written.tracks[0].items.some((it) => it.type === 'compound' && it.id === 'cmp1')).toBe(true);
   });
 
   it('★ audios 视图清空 → 主音频轨项清空但保留轨道（S3 允许空轨），额外音频轨保留', () => {

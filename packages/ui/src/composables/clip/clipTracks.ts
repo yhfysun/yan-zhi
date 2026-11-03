@@ -32,7 +32,17 @@ export interface UiAudioItem {
   trimStart?: number;
 }
 
-export type UiTrackItem = UiClipItem | UiAudioItem;
+export interface UiCompoundItem {
+  type: 'compound';
+  id: string;
+  start: number;
+  duration: number;
+  project: UiProject;
+  transform?: { x?: number; y?: number; scale?: number; rotation?: number; opacity?: number };
+  audio?: { volume?: number; muted?: boolean };
+}
+
+export type UiTrackItem = UiClipItem | UiAudioItem | UiCompoundItem;
 
 export interface UiTrack {
   id: string;
@@ -48,20 +58,26 @@ export interface UiTrack {
 
 export interface UiProject {
   version?: number;
+  name?: string;
+  updatedAt?: number;
+  output?: { size: string; fps: number; [key: string]: unknown };
   clips: any[];
   audios?: any[];
   tracks?: UiTrack[];
+  timedLayers?: any[];
 }
 
 /** 已解析时间位置（用于渲染/拖拽；不写回工程）。 */
 export type ResolvedClipItem = UiClipItem & { start: number; duration: number };
 export type ResolvedAudioItem = UiAudioItem & { start: number; duration: number };
+export type ResolvedCompoundItem = UiCompoundItem & { start: number; duration: number };
 
 const EPS = 1e-6;
 export const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
 export const isClipItem = (it: UiTrackItem): it is UiClipItem => it.type === 'clip';
 export const isAudioItem = (it: UiTrackItem): it is UiAudioItem => it.type === 'audio';
+export const isCompoundItem = (it: UiTrackItem): it is UiCompoundItem => it.type === 'compound';
 
 export function nextTrackId(tracks: UiTrack[], kind: TrackKind): string {
   const prefix = kind === 'video' ? 'v' : 'a';
@@ -136,6 +152,23 @@ export function resolveAudioItems(track: UiTrack): ResolvedAudioItem[] {
     start: round3(it.start),
     duration: round3(Math.max(0, it.duration)),
   }));
+}
+
+export function resolveVideoItems(
+  track: UiTrack,
+  durationOf: (seg: any) => number,
+): Array<ResolvedClipItem | ResolvedCompoundItem> {
+  const clipResolved = new Map(resolveClipItems(track, durationOf).map((it) => [it.id, it]));
+  const compounds = new Map<string, ResolvedCompoundItem>();
+  for (const item of track.items) {
+    if (!isCompoundItem(item)) continue;
+    compounds.set(item.id, {
+      ...item,
+      start: round3(Number(item.start) || 0),
+      duration: round3(Math.max(0, Number(item.duration) || 0)),
+    });
+  }
+  return sortItems([...clipResolved.values(), ...compounds.values()]) as Array<ResolvedClipItem | ResolvedCompoundItem>;
 }
 
 /** 只读视图：有 tracks 用 tracks；没有就按 clips/audios 合成（不写回工程）。 */
@@ -218,8 +251,31 @@ export function syncProjectModel(p: UiProject | null | undefined, durationOf: (s
   const clips = Array.isArray(p.clips) ? p.clips : (p.clips = []);
   if (mainVideo) {
     const items = mainVideo.items.filter(isClipItem);
+    const hasCompound = mainVideo.items.some(isCompoundItem);
     if (sameClipView(items, clips)) {
       // 轨道布局权威 → 视图按起点顺序跟随（id/segment 原样）
+      p.clips = resolveClipItems(mainVideo, durationOf).map((it) => ({
+        ...it.segment,
+        id: it.segment?.id || it.id,
+      }));
+    } else if (hasCompound) {
+      // v2 clips 无法表达 compound：保留 compound，只协调普通片段。
+      const viewIds = new Set(clips.map((c) => String(c.id)));
+      const next: UiTrackItem[] = mainVideo.items
+        .filter((it) => isCompoundItem(it) || viewIds.has(it.id))
+        .map((it) => {
+          if (!isClipItem(it)) return it;
+          const view = clips.find((c) => String(c.id) === it.id);
+          return view ? { ...it, segment: view } : it;
+        });
+      let cursor = next.reduce((max, it) => Math.max(max, (it.start ?? 0) + (it.duration ?? 0)), 0);
+      for (const seg of clips) {
+        if (next.some((it) => it.id === String(seg.id))) continue;
+        const d = Math.max(0, durationOf(seg));
+        next.push({ type: 'clip', id: String(seg.id), start: round3(cursor), duration: round3(d), segment: seg });
+        cursor += d;
+      }
+      mainVideo.items = next.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
       p.clips = resolveClipItems(mainVideo, durationOf).map((it) => ({
         ...it.segment,
         id: it.segment?.id || it.id,

@@ -14,9 +14,15 @@
 //   · moov 必须前置（`-movflags +faststart`），否则应用内预览要下完整文件才开播。
 
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 import { runCmd } from './exec-cmd.js';
 import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-style.js';
-import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, effectLayerOf, speedCurveDuration, speedSlices, SPEED_SLICES, type BlendModeId } from '@yan-zhi/shared';
+import {
+  MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList,
+  overlayAnchorOf, blendModeOf, effectLayerOf, speedCurveDuration, speedSlices, SPEED_SLICES,
+  compoundCacheKey, type BlendModeId,
+} from '@yan-zhi/shared';
 import { buildMaskFilter, flattenMaskPath, polygonAlphaExpr } from './clip-mask.js';
 import { hslCube } from './clip-hsl.js';
 import { trackToCropExpr } from './clip-crop-track.js';
@@ -26,11 +32,16 @@ import {
   buildProjectV3ForWrite,
   isLoadedV3,
   materializeTrackTimes,
+  v2ViewsOfV3,
+  validateProjectV3,
   type AudioItem,
   type ClipItem,
   type ClipProjectV3,
+  type CompoundItem,
   type TrackItem,
 } from './clip-project-v3.js';
+
+const EPS_NUM = 1e-6;
 
 export interface RenderProbeResult {
   hasAudio: boolean;
@@ -123,6 +134,8 @@ export interface BuildPlanInput {
    * 只跑后续阶段（画中画/特效/字幕/音效链/音频层/BGM）。仅供 buildTrackPlan 内部使用。
    */
   precomposed?: { file: string; duration: number };
+  /** 复合片段内部成片的稳定缓存目录；缺省落系统临时目录，跨单次渲染保留。 */
+  compoundCacheDir?: string;
 }
 
 /**
@@ -1394,6 +1407,32 @@ function isClipItem(it: TrackItem): it is ClipItem {
 function isAudioItem(it: TrackItem): it is AudioItem {
   return it.type === 'audio';
 }
+function isCompoundItem(it: TrackItem): it is CompoundItem {
+  return it.type === 'compound';
+}
+
+function hasCompoundInProject(project: ClipProjectV3): boolean {
+  return project.tracks.some((track) => track.items.some((item) => item.type === 'compound'));
+}
+
+/**
+ * P0 触发口径：工程存在 >1 条视频轨或任意 compound 时自动走多轨计划；
+ * 单视频轨且无 compound 仍走旧计划，保证老工程出片计划逐字节不变。
+ */
+export function shouldUseTrackPlan(project: ClipProject): boolean {
+  if (!isLoadedV3(project)) return false;
+  const videoTracks = project.tracks.filter((track) => track.kind === 'video');
+  return videoTracks.length > 1 || hasCompoundInProject(project);
+}
+
+export function planClipRender(
+  input: BuildPlanInput,
+  forceMultitrack = false,
+): { ok: true; plan: RenderPlan } | { ok: false; error: string } {
+  return forceMultitrack || shouldUseTrackPlan(input.project)
+    ? buildTrackPlan(input)
+    : buildRenderPlan(input);
+}
 
 /** v3 音频项 → v2 定时音频（复用下游 ③.8 混音阶段，不为多轨再写一套混音）。 */
 function audioItemToClipAudio(a: AudioItem): NonNullable<ClipProject['audios']>[number] {
@@ -1438,25 +1477,25 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
 
   let v3: ClipProjectV3;
   try {
-    v3 = materializeTrackTimes(buildProjectV3ForWrite(project), input.durations);
+    const forWrite = buildProjectV3ForWrite(project);
+    const checked = validateProjectV3(forWrite);
+    if (!checked.ok) return checked;
+    v3 = materializeTrackTimes(forWrite, input.durations);
   } catch (e) {
     // 例如主轨含复合片段（S4）：不静默丢数据，把原因交给调用方
     return { ok: false, error: (e as Error).message };
   }
-  if (v3.tracks.some((t) => t.items.some((it) => it.type === 'compound'))) {
-    return { ok: false, error: '多轨渲染暂不支持复合片段（S4）；请先把复合片段展开' };
-  }
-
   const videoTracks = v3.tracks.filter((t) => t.kind === 'video' && !t.hidden && !t.muted && t.opacity !== 0);
   const audioTracks = v3.tracks.filter((t) => t.kind === 'audio' && !t.muted);
   const extraAudio = audioTracks.slice(1).flatMap((t) => t.items.filter(isAudioItem));
+  const hasCompound = v3.tracks.some((t) => t.items.some(isCompoundItem));
 
   // 单视频轨 + 无额外音频轨：与既有计划**完全一致**（S2 不改变任何老工程出片）
-  if (videoTracks.length <= 1 && extraAudio.length === 0) return buildRenderPlan(input);
+  if (videoTracks.length <= 1 && extraAudio.length === 0 && !hasCompound) return buildRenderPlan(input);
   if (!videoTracks.length) return { ok: false, error: '多轨渲染：工程没有可用的视频轨（全部被隐藏/静音/透明）' };
 
   // 只有额外音频轨：视频仍走单主轨计划，音频项并进定时音频阶段
-  if (videoTracks.length === 1) {
+  if (videoTracks.length === 1 && !hasCompound) {
     return buildRenderPlan({
       ...input,
       project: { ...project, audios: [...(project.audios || []), ...extraAudio.map(audioItemToClipAudio)] },
@@ -1483,6 +1522,108 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
   });
   const orderByStart = <T extends { start?: number }>(items: T[]): T[] =>
     items.every((it) => it.start != null) ? [...items].sort((a, b) => (a.start as number) - (b.start as number)) : items;
+  const outputSpec = {
+    size: `${W}x${H}`,
+    fps,
+    quality: input.quality ?? project.output.quality ?? 'std',
+    interpolate,
+    fast: input.fast === true,
+    hwEncoder: input.hwEncoder ?? 'cpu',
+  };
+  const compoundCacheDir = input.compoundCacheDir || path.join(os.tmpdir(), 'yz-clip-compound-cache');
+
+  /**
+   * 复合片段 = 递归内部轨道计划 → 稳定缓存 mp4 → 外层该段的源视频。
+   * transform / audio 在外层适配一次；内部工程没变时命中缓存，不重复生成。
+   */
+  const planCompoundSource = (
+    item: CompoundItem,
+    title: string,
+  ): { ok: true; file: string; duration: number } | { ok: false; error: string } => {
+    const duration = Number(item.duration);
+    if (!(duration > 0)) return { ok: false, error: `复合片段 ${item.id} 的时长必须大于 0` };
+    const key = compoundCacheKey(item.id, item.project, outputSpec);
+    const cacheFile = path.join(compoundCacheDir, `${key}.mp4`);
+    const hit = fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 0;
+    let innerDuration = duration;
+
+    if (!hit) {
+      fs.mkdirSync(compoundCacheDir, { recursive: true });
+      const innerWorkDir = path.join(workDir, `compound-${safeStem(item.id)}`);
+      fs.mkdirSync(innerWorkDir, { recursive: true });
+      const innerProject = v2ViewsOfV3(item.project);
+      innerProject.output = {
+        ...innerProject.output,
+        size: `${W}x${H}`,
+        fps,
+        quality: outputSpec.quality as ExportQuality,
+        interpolate,
+      };
+      const recursive = buildTrackPlan({
+        ...input,
+        project: innerProject,
+        workDir: innerWorkDir,
+        outFile: cacheFile,
+        cover: false,
+        bgmFile: undefined,
+        precomposed: undefined,
+        compoundCacheDir,
+      });
+      if (!recursive.ok) return recursive;
+      innerDuration = recursive.plan.totalDuration;
+      steps.push(...recursive.plan.steps.map((step) => ({
+        ...step,
+        label: `复合片段 ${item.id} / ${step.label}`,
+      })));
+      assets.push(...recursive.plan.assets);
+    }
+
+    const transform = item.transform || {};
+    const x = Number(transform.x ?? 0);
+    const y = Number(transform.y ?? 0);
+    const scale = Math.max(0.01, Number(transform.scale ?? 1));
+    const rotation = Number(transform.rotation ?? 0);
+    const opacity = Math.max(0, Math.min(1, Number(transform.opacity ?? 1)));
+    const volume = Math.max(0, Number(item.audio?.volume ?? 1));
+    const muted = item.audio?.muted === true;
+    const needsTransform = Math.abs(x) > EPS_NUM || Math.abs(y) > EPS_NUM
+      || Math.abs(scale - 1) > EPS_NUM || Math.abs(rotation) > EPS_NUM
+      || opacity < 0.999;
+    const needsAudio = muted || Math.abs(volume - 1) > EPS_NUM;
+    const needsTiming = Math.abs(innerDuration - duration) > EPS_NUM;
+    if (!needsTransform && !needsAudio && !needsTiming) {
+      return { ok: true, file: cacheFile, duration };
+    }
+
+    const adapted = path.join(workDir, `${title}-${safeStem(item.id)}-${key.slice(-8)}.mp4`);
+    const padSec = Math.max(0, duration - innerDuration);
+    const visual: string[] = [
+      `trim=duration=${duration.toFixed(3)}`,
+      'setpts=PTS-STARTPTS',
+      `scale=iw*${scale.toFixed(6)}:ih*${scale.toFixed(6)}:flags=lanczos`,
+    ];
+    if (Math.abs(rotation) > EPS_NUM) {
+      visual.push(`rotate=${(rotation * Math.PI / 180).toFixed(9)}:ow=rotw(iw):oh=roth(ih):c=none`);
+    }
+    visual.push('setsar=1', 'format=rgba');
+    if (padSec > EPS_NUM) visual.push(`tpad=stop_mode=clone:stop_duration=${padSec.toFixed(3)}`);
+    if (opacity < 0.999) visual.push(`colorchannelmixer=aa=${opacity.toFixed(3)}`);
+    const vol = muted ? 0 : volume;
+    const fc = [
+      `color=c=black:s=${W}x${H}:r=${fps}:d=${duration.toFixed(3)}[bg]`,
+      `[0:v]${visual.join(',')}[fg]`,
+      `[bg][fg]overlay=x=${(W / 2 + x).toFixed(3)}-w/2:y=${(H / 2 + y).toFixed(3)}-h/2:shortest=1,format=yuv420p[v]`,
+      `[0:a]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS${padSec > EPS_NUM ? `,apad=pad_dur=${padSec.toFixed(3)}` : ''},volume=${vol.toFixed(3)}[a]`,
+    ].join(';');
+    steps.push({
+      label: `${title}：应用变换/音频（复合片段 ${item.id}）`,
+      args: ['-y', '-i', cacheFile, '-filter_complex', fc, '-map', '[v]', '-map', '[a]',
+        '-t', duration.toFixed(3), ...x264, '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', adapted],
+      out: adapted,
+    });
+    return { ok: true, file: adapted, duration };
+  };
+
   const blackSegment = (dur: number, file: string, label: string): void => {
     steps.push({
       label,
@@ -1499,14 +1640,15 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
   const overlays: OverlayPlan[] = [];
   for (let ti = 1; ti < videoTracks.length; ti++) {
     const track = videoTracks[ti];
-    const clips = orderByStart(track.items.filter(isClipItem));
+    const items = orderByStart(track.items.filter((it) => isClipItem(it) || isCompoundItem(it)));
+    const clips = items.filter(isClipItem);
     const baked = bakeSegmentAssets({
       clips: clips.map((c) => c.segment), workDir, W, H, steps, assets, keyPrefix: `t${ti}-`,
     });
     const ctx = makeCtx(baked.maskFiles, baked.hslFiles);
     let prevEnd = -Infinity;
-    for (let k = 0; k < clips.length; k++) {
-      const it = clips[k];
+    for (let k = 0; k < items.length; k++) {
+      const it = items[k];
       if (it.start == null || it.duration == null) {
         return { ok: false, error: `视频轨 ${track.id} 的片段 ${it.id} 缺少时间信息（旧片段未探测时长）` };
       }
@@ -1514,12 +1656,20 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
         return { ok: false, error: `视频轨 ${track.id} 内片段重叠（${it.id}）：同轨不允许重叠，请移到新轨` };
       }
       prevEnd = it.start + it.duration;
-      const r = planSegmentStage(ctx, it.segment, {
-        key: `t${ti}`, index: k + 1, title: `轨 ${ti + 1} 第 ${k + 1} 段`, mute: true,
-      });
-      if (!r.ok) return r;
+      let file: string;
+      if (isCompoundItem(it)) {
+        const r = planCompoundSource(it, `轨 ${ti + 1} 第 ${k + 1} 段`);
+        if (!r.ok) return r;
+        file = r.file;
+      } else {
+        const r = planSegmentStage(ctx, it.segment, {
+          key: `t${ti}`, index: k + 1, title: `轨 ${ti + 1} 第 ${k + 1} 段`, mute: true,
+        });
+        if (!r.ok) return r;
+        file = r.file;
+      }
       overlays.push({
-        file: r.file, start: it.start, end: it.start + it.duration,
+        file, start: it.start, end: it.start + it.duration,
         opacity: track.opacity ?? 1,
         ...(track.blend ? { blend: track.blend } : {}),
       });
@@ -1528,7 +1678,8 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
 
   // ── 主轨：逐段加工 + 空档补黑 → concat ──
   const mainTrack = videoTracks[0];
-  const mainClips = orderByStart(mainTrack.items.filter(isClipItem));
+  const mainItems = orderByStart(mainTrack.items.filter((it) => isClipItem(it) || isCompoundItem(it)));
+  const mainClips = mainItems.filter(isClipItem);
   const mainBaked = bakeSegmentAssets({
     clips: mainClips.map((c) => c.segment), workDir, W, H, steps, assets,
   });
@@ -1536,8 +1687,8 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
 
   const concatItems: Array<{ file: string; segDur: number; transition?: ClipSegment['transition'] }> = [];
   let cursor = 0;
-  for (let k = 0; k < mainClips.length; k++) {
-    const it = mainClips[k];
+  for (let k = 0; k < mainItems.length; k++) {
+    const it = mainItems[k];
     if (it.start == null || it.duration == null) {
       return { ok: false, error: `主轨片段 ${it.id} 缺少时间信息（旧片段未探测时长）` };
     }
@@ -1550,15 +1701,22 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
       blackSegment(gap, gapFile, `主轨补黑场（${gap.toFixed(2)}s）`);
       concatItems.push({ file: gapFile, segDur: gap });
     }
-    const r = planSegmentStage(mainCtx, it.segment, {
-      key: 'track0', index: k + 1, title: `主轨第 ${k + 1} 段`,
-    });
-    if (!r.ok) return r;
-    concatItems.push({
-      file: r.file, segDur: r.filmDur,
-      ...(it.segment.transition ? { transition: it.segment.transition } : {}),
-    });
-    cursor = it.start + r.filmDur;
+    if (isCompoundItem(it)) {
+      const r = planCompoundSource(it, `主轨第 ${k + 1} 段`);
+      if (!r.ok) return r;
+      concatItems.push({ file: r.file, segDur: r.duration });
+      cursor = it.start + r.duration;
+    } else {
+      const r = planSegmentStage(mainCtx, it.segment, {
+        key: 'track0', index: k + 1, title: `主轨第 ${k + 1} 段`,
+      });
+      if (!r.ok) return r;
+      concatItems.push({
+        file: r.file, segDur: r.filmDur,
+        ...(it.segment.transition ? { transition: it.segment.transition } : {}),
+      });
+      cursor = it.start + r.filmDur;
+    }
   }
 
   const overlayEnd = overlays.reduce((m, o) => Math.max(m, o.end), 0);

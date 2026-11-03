@@ -47,8 +47,8 @@ import { generateSong } from '../services/music-generate.js';
 import { SFX_LIBRARY, sfxById, searchSfxLibrary } from '../services/sfx-library.js';
 import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-library.js';
 import { singingStatus, installSingingRuntime, importModelZip } from '../services/music-sing-install.js';
-import { applyClipOp, summarizeProject, nextAudioSlot, type ClipProject } from '../services/clip-project.js';
-import { buildRenderPlan, buildTrackPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
+import { applyClipOp, summarizeProject, nextAudioSlot, type ClipProject, type ClipSegment } from '../services/clip-project.js';
+import { planClipRender, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
 import { materializeProjectMatte } from '../services/clip-matte-render.js';
 import { detectHwEncoder } from '../services/clip-hw-encode.js';
 import { readClipProject, writeClipProject } from '../services/clip-store.js';
@@ -1914,13 +1914,39 @@ async function saveClipProject(conversationId: string | undefined, project: Clip
   return writeClipProject(conversationId, project);
 }
 
-/**
- * 渲染计划入口：多轨（S2）隐藏开关。
- * ★ 只在 CLIP_MULTITRACK=1 时走 buildTrackPlan；即使打开，单视频轨 + 无额外音频轨的工程
- *   也会在 buildTrackPlan 内部直接复用旧计划 —— 老工程出片逐字节不变。
- */
-function planClipRender(input: Parameters<typeof buildRenderPlan>[0]) {
-  return process.env.CLIP_MULTITRACK === '1' ? buildTrackPlan(input) : buildRenderPlan(input);
+/** 环境变量只作为强制开关；>1 视频轨或 compound 已由 planClipRender 自动识别。 */
+function planClipRenderForTool(input: Parameters<typeof planClipRender>[0]) {
+  return planClipRender(input, process.env.CLIP_MULTITRACK === '1');
+}
+
+function projectHasRenderableVideo(project: ClipProject): boolean {
+  if (project.clips.length) return true;
+  const tracks = (project as { tracks?: Array<{ kind?: string; items?: Array<{ type?: string }> }> }).tracks;
+  return !!tracks?.some((track) => track.kind === 'video'
+    && track.items?.some((item) => item.type === 'clip' || item.type === 'compound'));
+}
+
+function collectClipSegments(project: ClipProject): ClipSegment[] {
+  const out: ClipSegment[] = [];
+  const seen = new Set<string>();
+  const push = (segment: ClipSegment | undefined) => {
+    if (!segment) return;
+    const key = `${segment.id}|${segment.file}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(segment);
+  };
+  for (const segment of project.clips) push(segment);
+  const visit = (p: { tracks?: Array<{ items?: Array<{ type?: string; segment?: ClipSegment; project?: unknown }> }> }) => {
+    for (const track of p.tracks || []) {
+      for (const item of track.items || []) {
+        if (item.type === 'clip') push(item.segment);
+        else if (item.type === 'compound' && item.project) visit(item.project as typeof p);
+      }
+    }
+  };
+  visit(project as Parameters<typeof visit>[0]);
+  return out;
 }
 
 /** 探每段的真实时长与音轨：键同时挂 clip.id 与 file（调用方两种取值都要能用）。 */
@@ -1932,7 +1958,7 @@ async function probeClipSegments(
   const hasAudio: Record<string, boolean> = {};
   const images: string[] = [];
   const IMG = /\.(png|jpe?g|webp|gif|bmp)$/i;
-  for (const seg of project.clips) {
+  for (const seg of collectClipSegments(project)) {
     if (IMG.test(seg.file)) {
       images.push(seg.file);
       durations[seg.id] = 0;
@@ -1976,7 +2002,7 @@ export async function clipProjectTool(
   // 渲染：唯一需要 ffmpeg 的分支（先落盘工程，再渲染，保证失败也不丢编辑）
   if (op === 'render') {
     if (!cur) return fail('当前会话还没有剪辑工程（先 op=create + add_clip）');
-    if (!cur.clips.length) return fail('工程里没有片段，无法渲染（先 add_clip）');
+    if (!projectHasRenderableVideo(cur)) return fail('工程里没有片段，无法渲染（先 add_clip）');
     const ff = await resolveFfmpeg();
     if (!ff.ok) return fail(ffmpegMissingHint(ff));
 
@@ -2038,7 +2064,7 @@ export async function clipProjectTool(
       ...(qArg ? { quality: qArg as 'low' | 'std' | 'high' } : {}),
       hwEncoder: hw,
     };
-    let planned = planClipRender(planInput);
+    let planned = planClipRenderForTool(planInput);
     if (!planned.ok) return fail(planned.error);
     let { steps, assets, totalDuration, cover } = planned.plan;
     let hwUsed = hw;
@@ -2053,7 +2079,7 @@ export async function clipProjectTool(
       // ★ 硬件编码失败（驱动/显存/不支持该像素格式）→ 自动回退 CPU 重跑一次。
       //   不这样做的话，用户开了"硬件加速"反而可能整条导出失败，体验比不开更差。
       if (!ran.ok && hw) {
-        const retry = planClipRender({ ...planInput, hwEncoder: null });
+        const retry = planClipRenderForTool({ ...planInput, hwEncoder: null });
         if (retry.ok) {
           planned = retry;
           ({ steps, assets, totalDuration, cover } = retry.plan);

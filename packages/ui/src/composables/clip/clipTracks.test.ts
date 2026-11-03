@@ -160,6 +160,23 @@ describe('syncProjectModel · 保存前双向收敛', () => {
     expect(p.tracks![2].items).toEqual([]);
   });
 
+  it('★ 主轨含 compound 时视图差异不得重建主轨丢 compound', () => {
+    const p = trackProject();
+    p.tracks![0].items = [
+      { type: 'clip', id: 'c1', start: 0, duration: 2, segment: { id: 'c1', file: 'C:/a.mp4' } },
+      {
+        type: 'compound', id: 'cmp1', start: 2, duration: 2,
+        project: {
+          version: 3, name: 'inner', updatedAt: 1, output: { size: '1080x1920', fps: 30 },
+          clips: [], tracks: [{ id: 'v1', kind: 'video', items: [] }], timedLayers: [],
+        },
+      },
+    ];
+    p.clips = [{ id: 'c1-new', file: 'C:/new.mp4' }];
+    syncProjectModel(p, dur);
+    expect(p.tracks![0].items.some((it) => it.type === 'compound' && it.id === 'cmp1')).toBe(true);
+  });
+
   it('★ audios 与音频轨一致 → 不重建（保留 volume 等字段）', () => {
     const p = trackProject();
     p.audios = [{ id: 'a1', file: 'C:/x.wav', start: 1, end: 2, volume: 0.5 }];

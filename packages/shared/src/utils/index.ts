@@ -25,6 +25,8 @@ export * from './clip-effects';
 export * from './clip-sfx-match';
 // 字体注册表（P1-2）：字幕字体选择的单一真相源（工具 enum / UI 下拉 / \fn 解析共用）
 export * from './clip-fonts';
+// 复合片段打包/解包、深度与缓存键（S4）：UI 与渲染唯一口径
+export * from './clip-compound';
 
 // 智能体默认采样参数（temperature / maxTokens / topP …）——**前后端共用的单一真相源**。
 // ★ 为什么放 shared（2026-10-10 实据）：这些默认值此前散落 **7 处**硬编码，

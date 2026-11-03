@@ -67,6 +67,19 @@
       <button class="cp-btn primary" :disabled="rendering" @click="render(false)">导出成片</button>
     </header>
 
+    <div v-if="view === 'editor' && compoundStack.length" class="cp-compound-nav">
+      <button class="cp-btn ghost" title="返回项目根时间线" @click="exitCompoundTo(-1)">
+        <el-icon :size="13"><Back /></el-icon>项目
+      </button>
+      <template v-for="(entry, i) in compoundStack" :key="entry.id">
+        <span class="cp-compound-sep">/</span>
+        <button class="cp-compound-crumb" :class="{ current: i === compoundStack.length - 1 }" @click="exitCompoundTo(i)">
+          {{ entry.name }}
+        </button>
+      </template>
+      <span class="cp-compound-readonly">复合片段内部编辑 · 外层只读预览</span>
+    </div>
+
     <div v-show="view === 'editor'" class="cp-body">
       <!-- ===== 左：素材库 ===== -->
       <aside class="cp-left">
@@ -373,6 +386,7 @@
             <button class="cp-mini" title="选中片段右移" :disabled="!selectedClipId" @click="moveClip(1)"><el-icon :size="13"><ArrowRight /></el-icon></button>
             <button class="cp-mini" title="在播放头分割选中片段" :disabled="!selectedClipId" @click="splitAtPlayhead"><el-icon :size="13"><Scissor /></el-icon></button>
             <button class="cp-mini" title="复制选中片段" :disabled="!selectedClipId" @click="duplicateClip"><el-icon :size="13"><CopyDocument /></el-icon></button>
+            <button class="cp-mini" title="打包为复合片段（Ctrl/Shift 可多选连续主轨片段）" :disabled="!canPackSelectedClips" @click="packSelectedAsCompound"><el-icon :size="13"><Files /></el-icon></button>
             <button class="cp-mini danger" title="删除选中片段" :disabled="!selectedClipId" @click="removeClip"><el-icon :size="13"><Delete /></el-icon></button>
             <span class="cp-toolbar-sep"></span>
             <button class="cp-mini" title="在播放头处添加一条字幕（加完在右侧属性面板编辑文案与时间）" :disabled="!clipCount" @click="addTextAtPlayhead">
@@ -554,35 +568,51 @@
                   :class="{ dim: tr.hidden, main: ti === 0 }"
                   :data-track-id="tr.id"
                 >
-                  <div
-                    v-for="(it, i) in rowClips(tr)"
-                    :key="it.id"
-                    class="cp-clip"
-                    :class="{ active: it.id === selectedClipId && (ti === 0 || it.id === selectedTrackClipId), off: tr.hidden }"
-                    :style="{ left: itemLeft(it.start) + 'px', width: itemWidth(it.duration) + 'px' }"
-                    :title="`${ti === 0 ? `${i + 1}.` : `${ti + 1}-${i + 1}.`} ${it.segment.label || baseName(it.segment.file)}${it.segment.trimStart != null || it.segment.trimEnd != null ? `\n裁剪 ${(it.segment.trimStart ?? 0).toFixed(1)}s ~ ${it.segment.trimEnd != null ? it.segment.trimEnd.toFixed(1) + 's' : '末尾'}` : ''}\n拖动改位置/换轨，边缘拖动修剪`"
-                    @click="selectTrackClip(tr, it.id)"
-                    @contextmenu.prevent.stop="onTrackClipMenu($event, tr, it)"
-                    @mousedown="onClipMouseDown($event, tr, it)"
-                  >
-                    <!-- 左/右边缘把手：拖动即修剪（商用软件的标配交互，比进属性面板改数字快得多） -->
-                    <span class="cp-clip-handle left" title="拖动修剪开头" @mousedown.stop="startTrim($event, tr, it, 'start')"></span>
-                    <span class="cp-clip-handle right" title="拖动修剪结尾" @mousedown.stop="startTrim($event, tr, it, 'end')"></span>
-                    <!-- 波形底图（有音轨的素材；服务端生成，生成失败静默无图不报错） -->
-                    <img v-if="waveUrl(it.segment.file)" class="cp-clip-wave" :src="waveUrl(it.segment.file)" alt="" />
-                    <span class="cp-clip-idx">{{ ti === 0 ? i + 1 : `${ti + 1}-${i + 1}` }}</span>
-                    <span class="cp-clip-name">{{ it.segment.label || baseName(it.segment.file) }}</span>
-                    <span class="cp-clip-tags">
-                      <em v-if="it.segment.speed">{{ it.segment.speed }}x</em>
-                      <em v-if="it.segment.kenburns">运镜</em>
-                      <em v-if="it.segment.colorPreset">{{ it.segment.colorPreset }}</em>
-                      <em v-if="it.segment.audioFile">配音</em>
-                      <em v-if="it.segment.fadeIn || it.segment.fadeOut">淡入淡出</em>
-                      <em v-if="it.segment.mask">蒙版</em>
-                      <em v-if="it.segment.crop">裁剪</em>
-                      <em v-if="it.segment.keyframes?.length">关键帧</em>
-                    </span>
-                  </div>
+                  <template v-for="(it, i) in rowVideoItems(tr)" :key="it.id">
+                    <div
+                      v-if="isClipItem(it)"
+                      class="cp-clip"
+                      :class="{ active: selectedClipIds.includes(it.id) && (ti === 0 || it.id === selectedTrackClipId), off: tr.hidden }"
+                      :style="{ left: itemLeft(it.start) + 'px', width: itemWidth(it.duration) + 'px' }"
+                      :title="`${ti === 0 ? `${i + 1}.` : `${ti + 1}-${i + 1}.`} ${it.segment.label || baseName(it.segment.file)}${it.segment.trimStart != null || it.segment.trimEnd != null ? `\n裁剪 ${(it.segment.trimStart ?? 0).toFixed(1)}s ~ ${it.segment.trimEnd != null ? it.segment.trimEnd.toFixed(1) + 's' : '末尾'}` : ''}\n拖动改位置/换轨，边缘拖动修剪`"
+                      @click="selectTrackClip(tr, it.id, $event)"
+                      @contextmenu.prevent.stop="onTrackClipMenu($event, tr, it)"
+                      @mousedown="onClipMouseDown($event, tr, it)"
+                    >
+                      <!-- 左/右边缘把手：拖动即修剪（商用软件的标配交互，比进属性面板改数字快得多） -->
+                      <span class="cp-clip-handle left" title="拖动修剪开头" @mousedown.stop="startTrim($event, tr, it, 'start')"></span>
+                      <span class="cp-clip-handle right" title="拖动修剪结尾" @mousedown.stop="startTrim($event, tr, it, 'end')"></span>
+                      <!-- 波形底图（有音轨的素材；服务端生成，生成失败静默无图不报错） -->
+                      <img v-if="waveUrl(it.segment.file)" class="cp-clip-wave" :src="waveUrl(it.segment.file)" alt="" />
+                      <span class="cp-clip-idx">{{ ti === 0 ? i + 1 : `${ti + 1}-${i + 1}` }}</span>
+                      <span class="cp-clip-name">{{ it.segment.label || baseName(it.segment.file) }}</span>
+                      <span class="cp-clip-tags">
+                        <em v-if="it.segment.speed">{{ it.segment.speed }}x</em>
+                        <em v-if="it.segment.kenburns">运镜</em>
+                        <em v-if="it.segment.colorPreset">{{ it.segment.colorPreset }}</em>
+                        <em v-if="it.segment.audioFile">配音</em>
+                        <em v-if="it.segment.fadeIn || it.segment.fadeOut">淡入淡出</em>
+                        <em v-if="it.segment.mask">蒙版</em>
+                        <em v-if="it.segment.crop">裁剪</em>
+                        <em v-if="it.segment.keyframes?.length">关键帧</em>
+                      </span>
+                    </div>
+                    <div
+                      v-else
+                      class="cp-clip cp-compound"
+                      :class="{ active: it.id === selectedCompoundId, off: tr.hidden }"
+                      :style="{ left: itemLeft(it.start) + 'px', width: itemWidth(it.duration) + 'px' }"
+                      :title="`复合片段 ${it.id}\n${it.duration.toFixed(1)}s · 内部 ${compoundClipCount(it)} 段\n双击进入内部编辑`"
+                      @click.stop="selectCompoundTrackClip(tr, it.id)"
+                      @dblclick.stop="enterCompound(tr, it)"
+                      @contextmenu.prevent.stop="onCompoundMenu($event, tr, it)"
+                    >
+                      <el-icon :size="13" class="cp-compound-icon"><Files /></el-icon>
+                      <span class="cp-clip-idx">{{ ti === 0 ? i + 1 : `${ti + 1}-${i + 1}` }}</span>
+                      <span class="cp-clip-name">复合片段 · {{ compoundClipCount(it) }} 段</span>
+                      <span class="cp-clip-tags"><em>复合</em></span>
+                    </div>
+                  </template>
                   <!-- 主轨空档：虚线占位（允许留空；渲染时补黑） -->
                   <template v-if="ti === 0">
                     <div
@@ -2106,7 +2136,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
-  ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, Crop, DArrowLeft, Delete,
+  ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, Crop, DArrowLeft, Delete, Files,
   Close, EditPen, FolderOpened, Headset, List, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, Star, VideoCamera, VideoPlay, View, WarningFilled,
 } from '@element-plus/icons-vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
@@ -2124,12 +2154,14 @@ import {
   clampWithinGaps,
   ensureTracks,
   isClipItem,
+  isCompoundItem,
   mirrorAudiosFromMainTrack,
   mirrorClipsFromMainTrack,
   nextTrackId,
   overlapsOthers,
   resolveAudioItems,
   resolveClipItems,
+  resolveVideoItems,
   snapStart,
   sortItems,
   syncProjectModel,
@@ -2138,8 +2170,10 @@ import {
   round3,
   type ResolvedAudioItem,
   type ResolvedClipItem,
+  type ResolvedCompoundItem,
   type TrackKind,
   type UiClipItem,
+  type UiCompoundItem,
   type UiTrack,
   type UiTrackItem,
 } from '../composables/clip/clipTracks';
@@ -2148,6 +2182,7 @@ import { clampMenuPos } from '../utils/menuPosition';
 import {
   COLOR_EFFECTS, FX_EFFECTS, TEXT_ANIMATIONS, AUDIO_EFFECTS, MASK_SHAPES, MASK_KEYS, TEXT_STYLES,
   TRANSITIONS, OVERLAY_POSITIONS, BLEND_MODES, EFFECT_LAYERS, FONT_FAMILIES, HSL_BANDS, groupEffects, effectIds, fxParamsOf, matchSfx, type TextStylePreset,
+  packMainTrackRange, unpackCompound,
 } from '@yan-zhi/shared';
 
 /**
@@ -2310,6 +2345,9 @@ const spaceStore = useSpaceStore();
 /** 当前绑定的项目目录（空间 dirPath）；未绑定 = 产物落默认数据目录。 */
 const currentSpaceDir = computed(() => spaceStore.currentSpace?.dirPath || '');
 const project = ref<ClipProject | null>(null);
+/** 顶层工程；进入复合片段后 project 指向内部工程，保存仍必须写回这里。 */
+const rootProject = ref<ClipProject | null>(null);
+const compoundStack = ref<Array<{ id: string; name: string }>>([]);
 const projectName = ref('');
 
 /** 底部状态栏：剪辑项目（编辑中 = 项目名；列表页 = 项目数）——状态栏只认这一份 */
@@ -2323,6 +2361,8 @@ const dirty = ref(false);
 const files = ref<ConvFile[]>([]);
 const keyword = ref('');
 const selectedClipId = ref('');
+const selectedClipIds = ref<string[]>([]);
+const selectedCompoundId = ref('');
 const selectedTextId = ref('');
 const outSize = ref('1080x1920');
 const outFps = ref(30);
@@ -2554,8 +2594,9 @@ async function fetchFrame() {
     const qs = mediaAuthQuery();
     // ★ URL 带工程版本（project.updatedAt）：改了参数 URL 就变，
     //   即使中间有代理/浏览器缓存也不会拿到旧帧（与 no-store 双保险）。
-    const ver = project.value?.updatedAt || 0;
-    const url = `${API_BASE}/plugin/clip-mode/frame?conversationId=${encodeURIComponent(convId.value)}&t=${playhead.value.toFixed(3)}&v=${ver}${qs}`;
+    const ver = rootProject.value?.updatedAt || project.value?.updatedAt || 0;
+    const compoundPath = compoundStack.value.map((entry) => entry.id).join(',');
+    const url = `${API_BASE}/plugin/clip-mode/frame?conversationId=${encodeURIComponent(convId.value)}&t=${playhead.value.toFixed(3)}&v=${ver}${compoundPath ? `&compoundPath=${encodeURIComponent(compoundPath)}` : ''}${qs}`;
     const res = await fetch(url);
     if (mySeq !== frameSeq) return;   // 有更新的请求在飞 → 本次结果作废
     if (!res.ok) {
@@ -2665,8 +2706,9 @@ function proxySegStartOf(k: number): number | null {
 function proxyUrlOf(i: number): string {
   if (!convId.value) return '';
   const qs = mediaAuthQuery();
-  const ver = project.value?.updatedAt || 0;
-  return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&i=${i}&v=${ver}${qs}`;
+  const ver = rootProject.value?.updatedAt || project.value?.updatedAt || 0;
+  const compoundPath = compoundStack.value.map((entry) => entry.id).join(',');
+  return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&i=${i}&v=${ver}${compoundPath ? `&compoundPath=${encodeURIComponent(compoundPath)}` : ''}${qs}`;
 }
 
 /**
@@ -2804,7 +2846,8 @@ function proxyTogglePlay() {
 /** 时长显示：探不到真实值时明确标"未知"，不假装算对了。 */
 const unknownDuration = computed(() => clips.value.some((c) => !mediaMeta.value[c.file]?.ok && !c.kenburns));
 const texts = computed(() => project.value?.texts || []);
-const clipCount = computed(() => clips.value.length);
+const clipCount = computed(() => clips.value.length
+  + videoTrackRows.value.reduce((sum, track) => sum + track.items.filter(isCompoundItem).length, 0));
 const textCount = computed(() => texts.value.length);
 const bgm = computed(() => project.value?.bgm || null);
 const audios = computed(() => project.value?.audios || []);
@@ -2828,7 +2871,12 @@ const selectedTrackClipId = ref('');
 
 function rowClips(row: UiTrack): ResolvedClipItem[] { return resolveClipItems(row, segSeconds); }
 function rowAudios(row: UiTrack): ResolvedAudioItem[] { return resolveAudioItems(row); }
-function rowItems(row: UiTrack) { return row.kind === 'video' ? rowClips(row) : rowAudios(row); }
+function rowVideoItems(row: UiTrack): Array<ResolvedClipItem | ResolvedCompoundItem> {
+  return resolveVideoItems(row, segSeconds);
+}
+function rowItems(row: UiTrack): Array<{ id: string; start: number; duration: number }> {
+  return row.kind === 'video' ? rowVideoItems(row) : rowAudios(row);
+}
 function itemLeft(start?: number): number { return Math.max(0, (start ?? 0) * pxPerSec.value); }
 function itemWidth(duration?: number): number { return Math.max(24, (duration ?? 0) * pxPerSec.value); }
 
@@ -2838,7 +2886,7 @@ const mainGaps = computed<Array<{ start: number; end: number }>>(() => {
   if (!row) return [];
   const out: Array<{ start: number; end: number }> = [];
   let cursor = 0;
-  for (const it of rowClips(row)) {
+  for (const it of rowVideoItems(row)) {
     if (it.start > cursor + 1e-6) out.push({ start: cursor, end: it.start });
     cursor = Math.max(cursor, it.start + it.duration);
   }
@@ -2863,6 +2911,7 @@ function realAudioItem(row: UiTrack, id: string) {
 }
 /** 主轨是"顺序叙事"：修剪/删改后按顺序重排（保留既有的 ripple 行为）。 */
 function reflowMain(row: UiTrack) {
+  if (row.items.some(isCompoundItem)) return;
   let cursor = 0;
   for (const it of sortItems(row.items.filter(isClipItem))) {
     it.start = round3(cursor);
@@ -2975,17 +3024,142 @@ async function onTrackDrop(targetId: string) {
   });
 }
 
-function selectTrackClip(row: UiTrack, id: string) {
+function selectTrackClip(row: UiTrack, id: string, ev?: MouseEvent) {
   selectedTrackId.value = row.id;
   selectedTrackClipId.value = id;
-  if (isMainVideo(row)) selectClip(id);
+  selectedCompoundId.value = '';
+  if (isMainVideo(row)) {
+    const ordered = rowClips(row).map((it) => it.id);
+    if (ev?.shiftKey && selectedClipId.value && ordered.includes(selectedClipId.value)) {
+      const a = ordered.indexOf(selectedClipId.value);
+      const b = ordered.indexOf(id);
+      selectedClipIds.value = ordered.slice(Math.min(a, b), Math.max(a, b) + 1);
+    } else if (ev?.ctrlKey || ev?.metaKey) {
+      selectedClipIds.value = selectedClipIds.value.includes(id)
+        ? selectedClipIds.value.filter((x) => x !== id)
+        : [...selectedClipIds.value, id];
+    } else {
+      selectedClipIds.value = [id];
+    }
+    const primary = selectedClipIds.value.includes(id)
+      ? id
+      : (selectedClipIds.value[selectedClipIds.value.length - 1] || '');
+    if (primary) selectClip(primary, true);
+    else {
+      selectedClipId.value = '';
+      selectedTextId.value = '';
+      rightTab.value = 'inspector';
+    }
+  }
   else {
     selectedClipId.value = id;
+    selectedClipIds.value = [id];
     selectedTextId.value = '';
     selectedAudioId.value = '';
     selectedStickerId.value = '';
     selectedEffectId.value = '';
     rightTab.value = 'inspector';
+  }
+}
+
+function selectCompoundTrackClip(row: UiTrack, id: string) {
+  selectedTrackId.value = row.id;
+  selectedTrackClipId.value = id;
+  selectedCompoundId.value = id;
+  selectedClipId.value = '';
+  selectedClipIds.value = [];
+  selectedTextId.value = '';
+  selectedAudioId.value = '';
+  selectedStickerId.value = '';
+  selectedEffectId.value = '';
+  rightTab.value = 'inspector';
+}
+
+function compoundClipCount(item: UiCompoundItem): number {
+  let count = 0;
+  for (const track of item.project.tracks || []) {
+    for (const child of track.items || []) {
+      if (child.type === 'clip' || child.type === 'compound') count++;
+    }
+  }
+  return count;
+}
+
+function nextCompoundId(): string {
+  const used = new Set<string>();
+  const visit = (p: ClipProject | null) => {
+    for (const track of p?.tracks || []) {
+      for (const item of track.items) {
+        if (item.type !== 'compound') continue;
+        used.add(item.id);
+        visit(item.project as ClipProject);
+      }
+    }
+  };
+  visit(rootProject.value);
+  let n = 1;
+  while (used.has(`cmp${n}`)) n++;
+  return `cmp${n}`;
+}
+
+const canPackSelectedClips = computed(() => {
+  const main = mainVideoTrack.value;
+  if (!main || selectedClipIds.value.length < 1) return false;
+  const ids = new Set(selectedClipIds.value);
+  return rowClips(main).some((it) => ids.has(it.id));
+});
+
+const selectedCompound = computed<ResolvedCompoundItem | null>(() => {
+  if (!selectedCompoundId.value) return null;
+  for (const row of videoTrackRows.value) {
+    const hit = rowVideoItems(row).find((it) => isCompoundItem(it) && it.id === selectedCompoundId.value);
+    if (hit && isCompoundItem(hit)) return hit;
+  }
+  return null;
+});
+
+async function packSelectedAsCompound() {
+  const p = project.value;
+  const main = mainVideoTrack.value;
+  if (!p || !main) return;
+  try {
+    const result = packMainTrackRange(p as never, {
+      trackId: main.id,
+      clipIds: [...selectedClipIds.value],
+      compoundId: nextCompoundId(),
+    });
+    Object.assign(p, result.project);
+    selectedClipId.value = '';
+    selectedClipIds.value = [];
+    selectedCompoundId.value = result.compound.id;
+    selectedTrackId.value = main.id;
+    selectedTrackClipId.value = result.compound.id;
+    pendingLabel.value = '打包为复合片段';
+    dirty.value = true;
+    await save();
+    note('已打包为复合片段：双击进入内部编辑');
+  } catch (e) {
+    note(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function unpackSelectedCompound() {
+  const p = project.value;
+  const id = selectedCompoundId.value;
+  if (!p || !id) return;
+  try {
+    const result = unpackCompound(p as never, id);
+    Object.assign(p, result.project);
+    selectedCompoundId.value = '';
+    selectedTrackClipId.value = '';
+    selectedClipIds.value = result.restoredMainItemIds;
+    selectedClipId.value = result.restoredMainItemIds[0] || '';
+    pendingLabel.value = '解包复合片段';
+    dirty.value = true;
+    await save();
+    note('已解包为普通片段');
+  } catch (e) {
+    note(e instanceof Error ? e.message : String(e));
   }
 }
 const selectedExtraClip = computed<ResolvedClipItem | null>(() => {
@@ -3061,14 +3235,26 @@ async function removeTrackItem(row: UiTrack, id: string) {
 }
 
 function onTrackClipMenu(e: MouseEvent, row: UiTrack, item: ResolvedClipItem) {
-  selectTrackClip(row, item.id);
+  if (!(isMainVideo(row) && selectedClipIds.value.includes(item.id))) selectTrackClip(row, item.id);
   const items: CtxItem[] = [
+    ...(isMainVideo(row) && selectedClipIds.value.length
+      ? [{ label: '打包为复合片段', icon: 'Files', action: () => packSelectedAsCompound() } as CtxItem]
+      : []),
     ...(row.kind === 'video' && !isMainVideo(row)
       ? [{ label: '移到主轨末尾', icon: 'VideoCamera', action: () => moveItemToMain(row, item.id) } as CtxItem]
       : []),
     { label: '删除该片段', icon: 'Delete', danger: true, action: () => removeTrackItem(row, item.id) },
   ];
   openCtxMenu(e, `${row.name || row.id} · ${item.segment?.label || baseName(item.segment?.file || '')}`, items, `trackclip-${item.id}`);
+}
+
+function onCompoundMenu(e: MouseEvent, row: UiTrack, item: ResolvedCompoundItem) {
+  selectCompoundTrackClip(row, item.id);
+  openCtxMenu(e, `复合片段 ${item.id}`, [
+    { label: '进入复合片段编辑', icon: 'EditPen', action: () => enterCompound(row, item) },
+    { label: '解包复合片段', icon: 'Files', action: () => unpackSelectedCompound() },
+    { label: '删除该片段', icon: 'Delete', danger: true, action: () => removeTrackItem(row, item.id) },
+  ], `compound-${item.id}`);
 }
 
 
@@ -3436,11 +3622,84 @@ function streamUrl(name: string): string {
 }
 
 // ===== 工程读写 =====
+function findCompoundById(projectValue: ClipProject | null, id: string): UiCompoundItem | null {
+  for (const track of projectValue?.tracks || []) {
+    for (const item of track.items) {
+      if (item.type === 'compound' && item.id === id) return item;
+    }
+  }
+  return null;
+}
+
+function editingProjectAt(path: Array<{ id: string }>): ClipProject | null {
+  let cur = rootProject.value;
+  for (const entry of path) {
+    const compound = findCompoundById(cur, entry.id);
+    if (!compound) return null;
+    cur = compound.project as ClipProject;
+  }
+  return cur;
+}
+
+/** 把当前（可能是内部）工程对象重新挂回根工程。 */
+function commitCurrentProjectReference(): void {
+  if (!project.value) return;
+  if (!compoundStack.value.length) {
+    rootProject.value = project.value;
+    return;
+  }
+  const parent = editingProjectAt(compoundStack.value.slice(0, -1));
+  const leaf = compoundStack.value[compoundStack.value.length - 1];
+  const compound = findCompoundById(parent, leaf.id);
+  if (compound) compound.project = project.value as never;
+}
+
+function syncEditingReference(): void {
+  project.value = compoundStack.value.length ? editingProjectAt(compoundStack.value) : rootProject.value;
+}
+
+async function enterCompound(row: UiTrack, item: ResolvedCompoundItem) {
+  if (dirty.value) await save();
+  if (!compoundStack.value.length) rootProject.value = project.value;
+  compoundStack.value.push({ id: item.id, name: `复合 ${compoundStack.value.length + 1}` });
+  project.value = item.project as ClipProject;
+  selectedClipId.value = '';
+  selectedClipIds.value = [];
+  selectedCompoundId.value = '';
+  selectedTextId.value = '';
+  selectedAudioId.value = '';
+  selectedStickerId.value = '';
+  selectedEffectId.value = '';
+  playhead.value = 0;
+  resetHistory();
+  await loadMediaMeta();
+  scheduleFrameFetch(80);
+  note(`已进入复合片段内部（深度 ${compoundStack.value.length + 1}/${3}）`);
+}
+
+async function exitCompoundTo(index: number) {
+  if (dirty.value) await save();
+  commitCurrentProjectReference();
+  const next = compoundStack.value.slice(0, index + 1);
+  compoundStack.value = next;
+  syncEditingReference();
+  selectedClipId.value = '';
+  selectedClipIds.value = [];
+  selectedCompoundId.value = '';
+  selectedTrackClipId.value = '';
+  playhead.value = 0;
+  resetHistory();
+  scheduleFrameFetch(80);
+  note(next.length ? '已返回上一层复合片段' : '已返回项目时间线');
+}
+
 async function reload() {
-  if (!convId.value) { project.value = null; return; }
+  if (!convId.value) { project.value = null; rootProject.value = null; compoundStack.value = []; return; }
   const r = await api.get<{ exists: boolean; project: ClipProject | null }>(`/plugin/clip-mode/project?conversationId=${encodeURIComponent(convId.value)}`);
   if ('error' in r) { note(`读取工程失败：${r.error}`); return; }
-  project.value = r.data.project || null;
+  compoundStack.value = [];
+  rootProject.value = r.data.project || null;
+  project.value = rootProject.value;
   projectName.value = r.data.project?.name || '';
   outSize.value = r.data.project?.output?.size || '1080x1920';
   outFps.value = r.data.project?.output?.fps || 30;
@@ -3502,6 +3761,7 @@ async function undo() {
   applyingHistory = true;
   try {
     project.value = JSON.parse(entry.json) as ClipProject | null;
+    commitCurrentProjectReference();
     await persistProject();       // 只落盘，不再入栈
     lastCommitted = snapshotProject();   // ★ 基线同步，否则撤销后再编辑会存错快照
     refreshSelectionAfterHistory();
@@ -3517,6 +3777,7 @@ async function redo() {
   applyingHistory = true;
   try {
     project.value = JSON.parse(entry.json) as ClipProject | null;
+    commitCurrentProjectReference();
     await persistProject();
     lastCommitted = snapshotProject();   // ★ 同上
     refreshSelectionAfterHistory();
@@ -3527,6 +3788,8 @@ async function redo() {
 /** 撤销/重做后：清掉已不存在的选中项（否则属性面板会指向幽灵片段） */
 function refreshSelectionAfterHistory() {
   if (selectedClipId.value && !clips.value.some((c) => c.id === selectedClipId.value)) selectedClipId.value = '';
+  selectedClipIds.value = selectedClipIds.value.filter((id) => clips.value.some((c) => c.id === id));
+  if (selectedCompoundId.value && !selectedCompound.value) selectedCompoundId.value = '';
   if (selectedTextId.value && !texts.value.some((t) => t.id === selectedTextId.value)) selectedTextId.value = '';
   if (selectedAudioId.value && !audios.value.some((a) => a.id === selectedAudioId.value)) selectedAudioId.value = '';
   if (selectedStickerId.value && !stickers.value.some((s) => s.id === selectedStickerId.value)) selectedStickerId.value = '';
@@ -3543,12 +3806,15 @@ function refreshSelectionAfterHistory() {
 async function persistProject(): Promise<boolean> {
   if (!project.value) return false;
   if (!convId.value) return false;  // 草稿态不落盘（首次加素材时由 ensureConversation 建会话）
-  project.value.name = projectName.value || project.value.name;
+  commitCurrentProjectReference();
+  const root = rootProject.value;
+  if (!root) return false;
+  root.name = projectName.value || root.name;
   // ★ 只覆盖规格两项，其余 output 字段（quality/encoder/interpolate）原样保留 ——
   //   否则每次保存都会把刚选的补帧方式/质量档/编码方式抹掉。
-  project.value.output = { ...project.value.output, size: outSize.value, fps: outFps.value };
-  project.value.updatedAt = Date.now();
-  const r = await api.put('/plugin/clip-mode/project', { conversationId: convId.value, project: project.value });
+  root.output = { ...root.output, size: outSize.value, fps: outFps.value };
+  root.updatedAt = Date.now();
+  const r = await api.put('/plugin/clip-mode/project', { conversationId: convId.value, project: root });
   if ('error' in r) { note(`保存失败：${r.error}`); return false; }
   dirty.value = false;
   return true;
@@ -4317,6 +4583,8 @@ async function doDeleteProject() {
   if (p.conversationId === convId.value) {
     // 删的是当前打开的项目 → 回列表并清空本地工程态
     project.value = null;
+    rootProject.value = null;
+    compoundStack.value = [];
     previewUrl.value = '';
     view.value = 'projects';
   }
@@ -4399,10 +4667,12 @@ function nextTextId(): string {
 
 function ensureProject() {
   if (!project.value) {
-    project.value = {
+    const created: ClipProject = {
       version: 2, name: projectName.value || '未命名剪辑', updatedAt: Date.now(),
       output: { size: outSize.value, fps: outFps.value }, clips: [], texts: [], layers: [],
     };
+    project.value = created;
+    if (!compoundStack.value.length) rootProject.value = created;
   }
   return project.value;
 }
@@ -5184,8 +5454,10 @@ async function clearTextKfs() {
   note('已清空字幕关键帧');
 }
 
-function selectClip(id: string) {
+function selectClip(id: string, preserveMulti = false) {
   selectedClipId.value = id;
+  if (!preserveMulti) selectedClipIds.value = id ? [id] : [];
+  selectedCompoundId.value = '';
   selectedTextId.value = '';
   selectedAudioId.value = '';
   selectedStickerId.value = '';
@@ -7079,6 +7351,11 @@ onMounted(async () => {
 
 /* ===== 顶栏 ===== */
 .cp-top { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--el-bg-color); border-bottom: 1px solid var(--el-border-color-lighter); flex: 0 0 auto; min-height: 44px; }
+.cp-compound-nav { display: flex; align-items: center; gap: 4px; min-height: 34px; padding: 3px 12px; background: color-mix(in srgb, var(--el-color-success-light-9) 65%, var(--el-bg-color)); border-bottom: 1px solid var(--el-border-color-lighter); flex: 0 0 auto; overflow-x: auto; }
+.cp-compound-sep { color: var(--el-text-color-placeholder); font-size: 12px; }
+.cp-compound-crumb { border: 0; background: transparent; color: var(--el-text-color-regular); font-size: 12px; cursor: pointer; padding: 2px 4px; white-space: nowrap; }
+.cp-compound-crumb.current { color: var(--el-color-success-dark-2); font-weight: 600; }
+.cp-compound-readonly { margin-left: auto; color: var(--el-text-color-secondary); font-size: 11px; white-space: nowrap; }
 .cp-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; color: var(--el-text-color-secondary); }
 .cp-name-input { width: 180px; flex: 0 1 180px; min-width: 90px; padding: 3px 8px; font-size: 13px; font-weight: 600; border: 1px solid transparent; border-radius: 4px; background: transparent; }
 .cp-name-input:hover, .cp-name-input:focus { border-color: var(--el-border-color); background: var(--el-fill-color-blank); }
@@ -7305,6 +7582,9 @@ onMounted(async () => {
 
 /* 片段（视频轨） */
 .cp-clip { position: absolute; top: 5px; bottom: 5px; display: flex; flex-direction: column; gap: 1px; padding: 4px 6px; border-radius: 5px; background: linear-gradient(180deg, #7cc0ff, #4a9ded); border: 1px solid #2b7fd4; color: #fff; cursor: pointer; overflow: hidden; }
+.cp-compound { background: linear-gradient(180deg, #81cfb8, #3f9e83); border-color: #2c806a; padding-left: 25px; }
+.cp-compound.active { outline: 2px solid var(--el-color-success-light-3); outline-offset: 1px; }
+.cp-compound-icon { position: absolute; left: 6px; top: 6px; }
 .cp-clip:hover { filter: brightness(1.05); }
 .cp-clip.active { outline: 2px solid var(--el-color-primary); outline-offset: 1px; }
 .cp-clip-idx { font-size: 10px; opacity: .85; }

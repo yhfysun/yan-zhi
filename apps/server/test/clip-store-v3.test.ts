@@ -287,4 +287,39 @@ describe('v3 文件读取校验', () => {
     expect(twice.effects).toEqual(once.effects);
     expect(twice.tracks).toEqual(once.tracks);
   });
+
+  it('★ 主轨 compound 原样落盘；v2 clips 只镜像普通片段', () => {
+    const id = 'conv-compound';
+    convDir(id);
+    fs.writeFileSync(clipProjectPath(id).file, JSON.stringify(v2Fixture()), 'utf8');
+    const project = readClipProject(id)!;
+    const inner = {
+      version: 3 as const,
+      name: 'inner',
+      updatedAt: 1,
+      output: project.output,
+      tracks: [{
+        id: 'v1', kind: 'video' as const,
+        items: [{ type: 'clip' as const, id: 'inner-c1', start: 0, duration: 2, segment: { id: 'inner-c1', file: 'C:/inner.mp4' } }],
+      }],
+      timedLayers: [],
+    };
+    project.tracks[0].items = [
+      { type: 'clip', id: 'outer-c1', start: 0, duration: 2, segment: { id: 'outer-c1', file: 'C:/outer.mp4' } },
+      { type: 'compound', id: 'cmp1', start: 2, duration: 2, project: inner },
+    ];
+    project.clips = [{ id: 'outer-c1', file: 'C:/outer.mp4' }];
+
+    writeClipProject(id, project);
+    const raw = JSON.parse(fs.readFileSync(clipProjectPath(id).file, 'utf8')) as {
+      tracks: Array<{ id: string; items: Array<{ type: string; id: string; project?: unknown }> }>;
+    };
+    const compound = raw.tracks.find((track) => track.id === 'v1')!.items
+      .find((item) => item.type === 'compound');
+    expect(compound).toMatchObject({ id: 'cmp1', project: inner });
+
+    const again = readClipProject(id)!;
+    expect(again.clips.map((clip) => clip.id)).toEqual(['outer-c1']);
+    expect(again.tracks[0].items.some((item) => item.type === 'compound' && item.id === 'cmp1')).toBe(true);
+  });
 });

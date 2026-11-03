@@ -38,6 +38,35 @@ export function projectSourcePaths(project: ClipProject | null | undefined): str
   for (const s of project.stickers || []) push(s.file);
   for (const a of project.audios || []) push(a.file);
   push(project.bgm?.file);
+  // v3 tracks 是权威；复合片段内部素材也必须可预览（否则进入内部后图层全 403）。
+  const visit = (value: unknown, seen: Set<unknown>) => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    const v3 = value as {
+      tracks?: Array<{ items?: Array<{
+        type?: string;
+        file?: string;
+        segment?: { file?: string; audioFile?: string };
+        project?: unknown;
+      }> }>;
+      timedLayers?: Array<{ file?: string }>;
+      bgm?: { file?: string };
+    };
+    for (const layer of v3.timedLayers || []) push(layer.file);
+    push(v3.bgm?.file);
+    for (const track of v3.tracks || []) {
+      for (const item of track.items || []) {
+        if (item.type === 'compound') {
+          visit(item.project, seen);
+          continue;
+        }
+        push(item.file);
+        push(item.segment?.file);
+        push(item.segment?.audioFile);
+      }
+    }
+  };
+  visit(project, new Set<unknown>());
   return [...new Set(out)];
 }
 

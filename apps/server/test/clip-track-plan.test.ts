@@ -11,8 +11,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { loadedFromV2, type ClipProjectV3Loaded } from '../src/services/clip-project-v3';
-import { buildRenderPlan, buildTrackPlan, runRenderPlan, type BuildPlanInput } from '../src/services/clip-render';
+import crypto from 'node:crypto';
+import { loadedFromV2, type ClipProjectV3Loaded, type CompoundItem } from '../src/services/clip-project-v3';
+import { buildRenderPlan, buildTrackPlan, planClipRender, runRenderPlan, type BuildPlanInput } from '../src/services/clip-render';
+import { compoundCacheKey } from '@yan-zhi/shared';
 
 const FFMPEG = process.env.YZ_FFMPEG_PATH
   || path.join(process.env.APPDATA || '', 'yan-zhi', 'server-data', 'ffmpeg', 'ffmpeg.exe');
@@ -40,6 +42,10 @@ function inputOf(project: ClipProjectV3Loaded): BuildPlanInput {
   };
 }
 
+function compoundInputOf(project: ClipProjectV3Loaded, cacheDir: string): BuildPlanInput {
+  return { ...inputOf(project), compoundCacheDir: cacheDir };
+}
+
 function filterComplexOf(steps: Array<{ args: string[] }>, labelStart: string): string {
   const st = steps.find((s) => (s as { label?: string }).label?.startsWith(labelStart));
   if (!st) throw new Error(`找不到步骤：${labelStart}`);
@@ -52,6 +58,24 @@ describe('buildTrackPlan · 计划层', () => {
   it('★ 单视频轨 + 无额外音频轨 → 与 buildRenderPlan 完全相同（出片零变化）', () => {
     const p = singleTrack();
     expect(buildTrackPlan(inputOf(p))).toEqual(buildRenderPlan(inputOf(p)));
+  });
+
+  it('★ P0 planClipRender：单轨无 compound 自动走旧计划，且旧计划快照不变', () => {
+    const p = singleTrack();
+    const input = inputOf(p);
+    expect(planClipRender(input, false)).toEqual(buildRenderPlan(input));
+    const hash = crypto.createHash('sha256').update(JSON.stringify(planClipRender(input, false))).digest('hex');
+    expect(hash).toBe('f351e049cd9bf99ee99751e16f56c88a418ecd87cd18d3d156feb054842c53a4');
+  });
+
+  it('★ P0 planClipRender：>1 视频轨自动走 buildTrackPlan；环境强制开关仍保留', () => {
+    const p = singleTrack();
+    p.tracks.push({
+      id: 'v2', kind: 'video', hidden: true,
+      items: [{ type: 'clip', id: 'b1', start: 0, duration: 2, segment: { id: 'b1', file: 'C:/b.mp4' } }],
+    });
+    expect(planClipRender(inputOf(p), false)).toEqual(buildTrackPlan(inputOf(p)));
+    expect(planClipRender(inputOf(singleTrack()), true)).toEqual(buildTrackPlan(inputOf(singleTrack())));
   });
 
   it('★ 隐藏的第二条视频轨被跳过 → 仍与旧计划相同', () => {
@@ -157,18 +181,96 @@ describe('buildTrackPlan · 计划层', () => {
     expect(r.ok === false && r.error).toContain('重叠');
   });
 
-  it('★ 复合片段（S4）拒绝而不是静默丢弃', () => {
+  it('★ 复合片段（S4）递归进入计划，不再拒绝', () => {
     const p = singleTrack();
+    const cacheDir = path.join(os.tmpdir(), `yz-cmp-plan-${crypto.randomUUID()}`);
     p.tracks.push({
       id: 'v2', kind: 'video',
       items: [{
         type: 'compound', id: 'cmp1', start: 0, duration: 1,
-        project: { version: 3, name: 'inner', updatedAt: 1, output: p.output, tracks: [], timedLayers: [] },
+        project: {
+          version: 3, name: 'inner', updatedAt: 1, output: p.output,
+          tracks: [{
+            id: 'v1', kind: 'video', items: [{
+              type: 'clip', id: 'inner1', start: 0, duration: 1,
+              segment: { id: 'inner1', file: 'C:/inner.mp4', trimStart: 0, trimEnd: 1 },
+            }],
+          }],
+          timedLayers: [],
+        },
       }],
     });
-    const r = buildTrackPlan(inputOf(p));
-    expect(r.ok).toBe(false);
-    expect(r.ok === false && r.error).toContain('复合片段');
+    const r = buildTrackPlan(compoundInputOf(p, cacheDir));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.steps.some((s) => s.label.includes('复合片段'))).toBe(true);
+    expect(r.plan.steps.some((s) => s.label.includes('inner.mp4'))).toBe(true);
+  });
+
+  it('★ 复合片段缓存命中时不重复生成内部步骤，内部改动后键失效', () => {
+    const cacheDir = path.join(os.tmpdir(), `yz-cmp-cache-${crypto.randomUUID()}`);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const p = singleTrack();
+    const inner = {
+      version: 3 as const, name: 'inner', updatedAt: 1, output: p.output,
+      tracks: [{
+        id: 'v1', kind: 'video' as const, items: [{
+          type: 'clip' as const, id: 'inner1', start: 0, duration: 1,
+          segment: { id: 'inner1', file: 'C:/inner.mp4', trimStart: 0, trimEnd: 1 },
+        }],
+      }],
+      timedLayers: [],
+    };
+    const compound: CompoundItem = {
+      type: 'compound', id: 'cmp1', start: 3, duration: 1, project: inner,
+    };
+    p.tracks[0].items.push(compound);
+    const spec = { size: p.output.size, fps: p.output.fps, quality: 'std', fast: false, hwEncoder: 'cpu' };
+    const key = compoundCacheKey('cmp1', inner, spec);
+    const cacheFile = path.join(cacheDir, `${key}.mp4`);
+    fs.writeFileSync(cacheFile, 'cached');
+
+    const hit = buildTrackPlan(compoundInputOf(p, cacheDir));
+    expect(hit.ok).toBe(true);
+    if (!hit.ok) return;
+    expect(hit.plan.steps.some((s) => s.out === cacheFile)).toBe(false);
+
+    compound.project.tracks[0].items[0].segment.trimEnd = 0.5;
+    const miss = buildTrackPlan(compoundInputOf(p, cacheDir));
+    expect(miss.ok).toBe(true);
+    if (!miss.ok) return;
+    expect(miss.plan.steps.some((s) => s.out.endsWith('.mp4') && s.label.includes('复合片段'))).toBe(true);
+  });
+
+  it('★ 复合片段 transform/audio 在外层计划生效（缩放/旋转/透明/音量/静音）', () => {
+    const cacheDir = path.join(os.tmpdir(), `yz-cmp-transform-${crypto.randomUUID()}`);
+    const p = singleTrack();
+    p.tracks[0].items = [{
+      type: 'compound', id: 'cmp-t', start: 0, duration: 1,
+      transform: { x: 20, y: -10, scale: 0.6, rotation: 15, opacity: 0.5 },
+      audio: { volume: 0.4, muted: true },
+      project: {
+        version: 3, name: 'inner', updatedAt: 1, output: p.output,
+        tracks: [{
+          id: 'v1', kind: 'video', items: [{
+            type: 'clip', id: 'inner1', start: 0, duration: 1,
+            segment: { id: 'inner1', file: 'C:/inner.mp4', trimStart: 0, trimEnd: 1 },
+          }],
+        }],
+        timedLayers: [],
+      },
+    }];
+    p.clips = [];
+    const r = buildTrackPlan(compoundInputOf(p, cacheDir));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const step = r.plan.steps.find((s) => s.label.includes('应用变换/音频'));
+    expect(step).toBeTruthy();
+    const fc = step!.args[step!.args.indexOf('-filter_complex') + 1];
+    expect(fc).toContain('scale=iw*0.600000');
+    expect(fc).toContain('rotate=');
+    expect(fc).toContain('colorchannelmixer=aa=0.500');
+    expect(fc).toContain('volume=0.000');
   });
 
   it('★ 旧片段缺时间信息 → 明确报错（不猜时间轴）', () => {
@@ -180,6 +282,35 @@ describe('buildTrackPlan · 计划层', () => {
     const r = buildTrackPlan({ ...inputOf(p), durations: { c1: 2, c2: 1 } });
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.error).toContain('缺少时间信息');
+  });
+
+  it('★ 复合片段超深 → 渲染计划拒绝并给出深度错误', () => {
+    const p = singleTrack();
+    const leaf = {
+      version: 3 as const, name: 'leaf', updatedAt: 1, output: p.output,
+      tracks: [{
+        id: 'v1', kind: 'video' as const,
+        items: [{ type: 'clip' as const, id: 'leaf1', start: 0, duration: 1, segment: { id: 'leaf1', file: 'C:/leaf.mp4' } }],
+      }],
+      timedLayers: [],
+    };
+    let nested: any = leaf;
+    for (let i = 0; i < 3; i++) {
+      nested = {
+        ...leaf,
+        tracks: [{
+          id: 'v1', kind: 'video',
+          items: [{ type: 'compound', id: `deep${i}`, start: 0, duration: 1, project: nested }],
+        }],
+      };
+    }
+    p.tracks[0].items = [{
+      type: 'compound', id: 'too-deep', start: 0, duration: 1, project: nested,
+    }];
+    p.clips = [];
+    const r = buildTrackPlan(inputOf(p));
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.error).toContain('嵌套深度');
   });
 });
 
@@ -251,5 +382,79 @@ describe.skipIf(!HAS_FFMPEG)('buildTrackPlan · ffmpeg 实跑（双轨）', () =
     // 窗口外恢复红
     expect(after.r).toBeGreaterThan(150);
     expect(after.b).toBeLessThan(100);
+  }, 120000);
+
+  it('★ 主轨两侧普通段 + 中间复合片段：窗口内外画面正确切换，缓存命中/失效可复现', async () => {
+    const red = path.join(tmp, 'red.mp4');
+    const blue = path.join(tmp, 'blue.mp4');
+    const green = path.join(tmp, 'green.mp4');
+    execFileSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=320x568:d=1:r=30', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', red]);
+    execFileSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=320x568:d=1:r=30', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', blue]);
+    execFileSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=green:s=320x568:d=1:r=30', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', green]);
+
+    const p = loadedFromV2({
+      version: 2, name: 'compound-e2e', updatedAt: 1, output: { size: '320x568', fps: 30 },
+      clips: [{ id: 'c1', file: red }],
+      layers: [], texts: [],
+    });
+    p.tracks[0].items = [
+      { type: 'clip', id: 'c1', start: 0, duration: 1, segment: { id: 'c1', file: red, trimStart: 0, trimEnd: 1 } },
+      {
+        type: 'compound', id: 'cmp1', start: 1, duration: 1,
+        project: {
+          version: 3, name: 'inner', updatedAt: 1, output: p.output,
+          tracks: [{
+            id: 'v1', kind: 'video', items: [{
+              type: 'clip', id: 'inner1', start: 0, duration: 1,
+              segment: { id: 'inner1', file: blue, trimStart: 0, trimEnd: 1 },
+            }],
+          }],
+          timedLayers: [],
+        },
+      },
+      { type: 'clip', id: 'c2', start: 2, duration: 1, segment: { id: 'c2', file: green, trimStart: 0, trimEnd: 1 } },
+    ];
+    p.clips = [
+      { id: 'c1', file: red, trimStart: 0, trimEnd: 1 },
+      { id: 'c2', file: green, trimStart: 0, trimEnd: 1 },
+    ];
+    const workDir = path.join(tmp, 'compound-work');
+    const cacheDir = path.join(tmp, 'compound-cache');
+    fs.mkdirSync(workDir, { recursive: true });
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const outFile = path.join(tmp, 'compound-out.mp4');
+    const input = {
+      project: p,
+      durations: { c1: 1, c2: 1, inner1: 1 },
+      hasAudio: {} as Record<string, boolean>,
+      workDir,
+      outFile,
+      imageFiles: [],
+      cover: false,
+      compoundCacheDir: cacheDir,
+    };
+    const first = buildTrackPlan(input);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    for (const a of first.plan.assets) fs.writeFileSync(a.file, a.content, 'utf8');
+    const ran = await runRenderPlan(FFMPEG, first.plan.steps);
+    expect(ran.ok, ran.ok ? '' : ran.stderr).toBe(true);
+
+    expect(rgbAt(outFile, 0.5).r).toBeGreaterThan(150);
+    expect(rgbAt(outFile, 1.5).b).toBeGreaterThan(150);
+    expect(rgbAt(outFile, 2.5).g).toBeGreaterThan(100);
+
+    const hit = buildTrackPlan(input);
+    expect(hit.ok).toBe(true);
+    if (!hit.ok) return;
+    expect(hit.plan.steps.some((s) => s.label.includes('复合片段'))).toBe(false);
+
+    const changed = JSON.parse(JSON.stringify(p)) as typeof p;
+    const cmp = changed.tracks[0].items[1] as CompoundItem;
+    cmp.project.tracks[0].items[0].segment.file = green;
+    const miss = buildTrackPlan({ ...input, project: changed });
+    expect(miss.ok).toBe(true);
+    if (!miss.ok) return;
+    expect(miss.plan.steps.some((s) => s.label.includes('复合片段'))).toBe(true);
   }, 120000);
 });

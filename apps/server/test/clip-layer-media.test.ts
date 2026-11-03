@@ -50,6 +50,32 @@ describe('projectSourcePaths · 工程引用收集', () => {
     p.clips = [{ id: 'c1', file: '' }];
     expect(projectSourcePaths(p)).toEqual([]);
   });
+
+  it('★ 复合片段内部的片段/音轨/定时图层也进入白名单', () => {
+    const p = createEmptyProject('t');
+    (p as any).tracks = [{
+      id: 'v1', kind: 'video', items: [{
+        type: 'compound', id: 'cmp1', start: 0, duration: 2,
+        project: {
+          version: 3, name: 'inner', updatedAt: 1, output: p.output,
+          tracks: [
+            { id: 'v1', kind: 'video', items: [
+              { type: 'clip', id: 'ic1', start: 0, duration: 2, segment: { id: 'ic1', file: media('inner.mp4'), audioFile: media('inner-voice.wav') } },
+            ] },
+            { id: 'a1', kind: 'audio', items: [
+              { type: 'audio', id: 'ia1', file: media('inner-sfx.wav'), start: 0, duration: 1 },
+            ] },
+          ],
+          timedLayers: [{ id: 't1', kind: 'video', file: media('inner-pip.mp4'), start: 0, duration: 1, track: 0, transform: {} }],
+        },
+      }],
+    }];
+    const list = projectSourcePaths(p);
+    expect(list).toContain(media('inner.mp4'));
+    expect(list).toContain(media('inner-voice.wav'));
+    expect(list).toContain(media('inner-sfx.wav'));
+    expect(list).toContain(media('inner-pip.mp4'));
+  });
 });
 
 describe('isProjectSourcePath · 精确匹配', () => {

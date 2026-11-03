@@ -158,7 +158,7 @@ describe('ClipWorkbench · 草稿态会话（工程可落盘）', () => {
     // 诚实定位：必须写清非 AI，避免被当成 RIFE
     expect(CODE).toContain('非 AI 补帧');
     const body = fnBody('persistProject');
-    expect(body).toContain('...project.value.output');
+    expect(body).toContain('...root.output');
     expect(body).not.toMatch(/output\s*=\s*\{\s*size:/);
   });
 });
@@ -514,8 +514,9 @@ describe('ClipWorkbench · 编辑器基础三件套（撤销 / 拖拽 / 吸附�
     expect(body, '入栈后要推进基线').toContain('lastCommitted = after');
     // 基线必须在载入工程后重置（否则首次编辑会撤销到空工程）
     expect(CODE).toContain('function resetHistory');
-    const r = CODE.indexOf('await loadMediaMeta();');
-    expect(CODE.slice(r, r + 400)).toContain('resetHistory()');
+    const reloadBody = fnBody('reload');
+    expect(reloadBody).toContain('await loadMediaMeta();');
+    expect(reloadBody.indexOf('resetHistory()')).toBeGreaterThan(reloadBody.indexOf('await loadMediaMeta();'));
     // undo/redo 也要同步基线
     for (const fn of ['async function undo()', 'async function redo()']) {
       const k = CODE.indexOf(fn);
@@ -663,6 +664,27 @@ describe('ClipWorkbench · 与后端契约一致', () => {
     expect(body).toContain("'error' in r");
     expect(body).toMatch(/r\.data/);
     expect(body).not.toMatch(/r\.data\.data/);
+  });
+});
+
+describe('ClipWorkbench · S4 复合片段', () => {
+  it('工具栏与片段右键都有「打包为复合片段」入口', () => {
+    expect(CODE).toContain('packSelectedAsCompound');
+    expect(CODE).toMatch(/@click="packSelectedAsCompound"/);
+    expect(CODE).toContain("label: '打包为复合片段'");
+  });
+
+  it('复合片段可双击进入内部编辑，面包屑可逐级返回', () => {
+    expect(CODE).toMatch(/@dblclick\.stop="enterCompound/);
+    expect(CODE).toContain('compoundStack');
+    expect(CODE).toContain('exitCompoundTo');
+    expect(SRC).toContain('复合片段内部编辑');
+  });
+
+  it('内部保存写回外层根工程，而不是只保存内部 project', () => {
+    const body = fnBody('persistProject');
+    expect(body).toContain('rootProject');
+    expect(body).toContain('commitCurrentProjectReference');
   });
 });
 

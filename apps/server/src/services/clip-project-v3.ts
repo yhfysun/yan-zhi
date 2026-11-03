@@ -21,7 +21,13 @@
 //   · 嵌套深度上限 3（根工程算 1 层）。
 //   · 多机位仍保留拍平（multicamGroups 原样保留）。
 
-import { speedCurveDuration, type BlendModeId, type LayerKfPoint } from '@yan-zhi/shared';
+import {
+  COMPOUND_MAX_DEPTH as SHARED_COMPOUND_MAX_DEPTH,
+  compoundProjectDepth,
+  speedCurveDuration,
+  type BlendModeId,
+  type LayerKfPoint,
+} from '@yan-zhi/shared';
 import {
   layersFromV1Fields,
   normalizeOutput,
@@ -40,7 +46,7 @@ import {
 
 export const CLIP_PROJECT_V3_VERSION = 3 as const;
 /** 复合片段嵌套深度上限（根工程 = 1 层）。 */
-export const MAX_COMPOUND_DEPTH = 3;
+export const MAX_COMPOUND_DEPTH = SHARED_COMPOUND_MAX_DEPTH;
 
 const EPS = 1e-6;
 const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
@@ -425,20 +431,46 @@ export function buildProjectV3ForWrite(p: ClipProject): ClipProjectV3 {
     base.tracks.unshift({ id: 'v1', kind: 'video', name: '主轨', items: [] });
     mainVideoIdx = 0;
   }
-  // ★ 复合片段（S4 能力）不在 S1 的视图里 —— 直接重建主轨会**静默丢掉**它们。
-  //   宁可拒绝保存（原文件不动），也不做有损写盘。
-  if (base.tracks[mainVideoIdx].items.some((it) => it.type === 'compound')) {
-    throw new Error('主轨含复合片段：多轨 S1 还不能保存这类工程（原文件保持不变）');
-  }
   // ★ 视图没变 → 保留原轨道布局（含 S2 的主轨空档）；视图变了（op 编辑过）→ 按视图重建。
   //   只比对 id + segment 语义：op 改了片段内容必须重建，否则 AI/UI 的改动静默丢失。
   const clips = p.clips || [];
   const currentItems = base.tracks[mainVideoIdx].items;
-  const sameView = currentItems.length === clips.length
-    && currentItems.every((it) => it.type === 'clip')
-    && orderByStart(currentItems as ClipItem[]).every((raw, i) =>
+  const currentClips = currentItems.filter(isClipItem);
+  const hasCompound = currentItems.some((it) => it.type === 'compound');
+  const sameView = currentClips.length === clips.length
+    && orderByStart(currentClips).every((raw, i) =>
       raw.id === clips[i].id && stable(raw.segment) === stable(clips[i]));
-  if (!sameView) {
+  if (!sameView && hasCompound) {
+    // ★ v2 clips 视图无法表达 compound；此时主轨必须以 tracks 为权威。
+    //   只同步普通片段的 segment / 增删，compound 原对象与位置保持不变。
+    const viewIds = new Set(clips.map((c) => c.id));
+    const nextItems: TrackItem[] = currentItems
+      .filter((it) => it.type === 'compound' || viewIds.has(it.id))
+      .map((it) => {
+        if (it.type !== 'clip') return it;
+        const view = clips.find((c) => c.id === it.id);
+        return view ? { ...it, segment: { ...view } } : it;
+      });
+    let cursor = nextItems.reduce((max, it) => {
+      const start = typeof it.start === 'number' ? it.start : 0;
+      const duration = typeof it.duration === 'number' ? it.duration : 0;
+      return Math.max(max, start + duration);
+    }, 0);
+    for (const clip of clips) {
+      if (nextItems.some((it) => it.id === clip.id)) continue;
+      const duration = plannedClipDuration(clip);
+      nextItems.push({
+        type: 'clip',
+        id: clip.id,
+        start: round6(cursor),
+        ...(duration != null ? { duration } : {}),
+        segment: { ...clip },
+      });
+      if (duration != null) cursor += duration;
+    }
+    nextItems.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+    base.tracks[mainVideoIdx] = { ...base.tracks[mainVideoIdx], items: nextItems };
+  } else if (!sameView) {
     base.tracks[mainVideoIdx] = {
       ...base.tracks[mainVideoIdx],
       items: buildClipItems(clips),
@@ -485,13 +517,25 @@ export type V3Validation = { ok: true } | { ok: false; error: string };
 
 /** 复合片段嵌套深度（根工程 = 1）。 */
 export function projectDepth(p: ClipProjectV3): number {
-  let max = 0;
-  for (const t of p.tracks) {
-    for (const it of t.items) {
-      if (it.type === 'compound') max = Math.max(max, projectDepth(it.project));
+  return compoundProjectDepth(p);
+}
+
+/** 按 compound id 路径进入内部工程（用于内部编辑预览）。 */
+export function compoundProjectAtPath(project: ClipProjectV3, ids: string[]): ClipProjectV3 | null {
+  let current: ClipProjectV3 = project;
+  for (const id of ids) {
+    let next: CompoundItem | null = null;
+    for (const track of current.tracks) {
+      const hit = track.items.find((item): item is CompoundItem => item.type === 'compound' && item.id === id);
+      if (hit) {
+        next = hit;
+        break;
+      }
     }
+    if (!next) return null;
+    current = next.project;
   }
-  return 1 + max;
+  return current;
 }
 
 function validateTracks(tracks: Track[], prefix: string): string | null {
@@ -560,7 +604,11 @@ export function materializeTrackTimes(p: ClipProjectV3, durations: Record<string
     if (t.kind !== 'video') continue;
     let cursor = 0;
     let known = true;
-    for (const it of t.items) {
+    for (const it of orderByStart(t.items)) {
+      if (it.type === 'compound') {
+        if (known) cursor = Math.max(cursor, it.start + it.duration);
+        continue;
+      }
       if (it.type !== 'clip') continue;
       const raw = durations[it.id] ?? durations[it.segment.file] ?? 0;
       const duration = it.duration ?? (raw > 0 ? plannedClipDuration({ ...it.segment, trimEnd: it.segment.trimEnd ?? raw }) : undefined);
@@ -570,7 +618,7 @@ export function materializeTrackTimes(p: ClipProjectV3, durations: Record<string
         known = false;
       } else {
         it.duration = duration;
-        cursor += duration;
+        cursor = Math.max(cursor, (it.start ?? cursor) + duration);
       }
     }
   }
