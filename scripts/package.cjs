@@ -76,7 +76,10 @@ const readline = require('node:readline');
 const ROOT = path.resolve(__dirname, '..');
 const TMP = path.join(ROOT, 'tmp');
 const ALL_EDITIONS = ['lite', 'basic', 'pro'];
-const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版' };
+// 轻量壳（2026-11-02）：只出前端、不含后端，装好后直连远程后端（地址见 --server-url / server-base.json）
+const SHELL_EDITION = 'shell';
+const ALL_DESKTOP_TARGETS = [...ALL_EDITIONS, SHELL_EDITION];
+const EDITION_LABEL = { lite: '阉割版', basic: '基础版', pro: '高级版', shell: '轻量壳·无后端' };
 
 /**
  * 会撞安全删除保护的构建输出目录（开工前必须整体移走）。
@@ -120,7 +123,7 @@ let ANDROID_APK = null;
 /** 按给定的产物根重算全部产物路径 */
 function computePaths(outRoot) {
   RELEASE_ROOT = outRoot;
-  OUTPUT_DIRS = Object.fromEntries(ALL_EDITIONS.map((e) => [
+  OUTPUT_DIRS = Object.fromEntries(ALL_DESKTOP_TARGETS.map((e) => [
     e,
     path.relative(ROOT, outDirForEdition(e, { repoRoot: ROOT, version: DESKTOP_VERSION, outRoot })),
   ]));
@@ -286,6 +289,15 @@ if (argv.includes('--name') && !NAME_FLAG) {
   console.error('\x1b[31m[ERROR]\x1b[0m --name 需要一个名称，例如 --name=v2');
   process.exit(1);
 }
+
+// --server-url：轻量壳包内置的后端地址（不传则沿用 resources/server-base.json / 默认 127.0.0.1:3001）
+const SERVER_URL_FLAG = (() => {
+  const hit = argv.find((a) => a.startsWith('--server-url='));
+  if (hit) return hit.slice('--server-url='.length);
+  const i = argv.indexOf('--server-url');
+  const v = i >= 0 ? argv[i + 1] : null;
+  return v && !v.startsWith('-') ? v : null;
+})();
 
 // --list-modes：不打包，只列出可选模式与各档位预设，避免记参数。
 if (flags.has('--list-modes')) {
@@ -894,9 +906,10 @@ async function askTargets() {
     return { desktop: [...ALL_EDITIONS], android: true };
   }
 
-  // 候选项：桌面三档 + 安卓（desktop:full 与 basic 等价，不单列）
+  // 候选项：桌面三档 + 轻量壳 + 安卓（desktop:full 与 basic 等价，不单列）
   const items = [
     ...ALL_EDITIONS.map((e) => ({ id: `desktop:${e}`, label: `桌面 · ${e}（${EDITION_LABEL[e]}）`, checked: false })),
+    { id: 'desktop:shell', label: '桌面 · shell（轻量壳·无后端，直连远程后端）', checked: false },
     { id: 'android', label: '安卓 APK', checked: false },
   ];
   const result = await multiPick({
@@ -907,8 +920,8 @@ async function askTargets() {
   }) || [];
 
   const desktop = result.filter((id) => id.startsWith('desktop:')).map((id) => id.split(':')[1]);
-  // 保持 lite → basic → pro 的构建顺序（勾选顺序不影响实际构建顺序）
-  desktop.sort((x, y) => ALL_EDITIONS.indexOf(x) - ALL_EDITIONS.indexOf(y));
+  // 保持 lite → basic → pro → shell 的构建顺序（勾选顺序不影响实际构建顺序）
+  desktop.sort((x, y) => ALL_DESKTOP_TARGETS.indexOf(x) - ALL_DESKTOP_TARGETS.indexOf(y));
   return { desktop, android: result.includes('android') };
 }
 
@@ -1063,8 +1076,8 @@ function parseTargets(raw) {
   if (edFlag) {
     const list = edFlag.slice(edFlag.indexOf('=') + 1).split(',').map((s) => s.trim()).filter(Boolean);
     if (!list.length) { fail('--editions= 后必须跟档位，如 --editions=lite,pro'); process.exit(1); }
-    const bad = list.filter((e) => !ALL_EDITIONS.includes(e));
-    if (bad.length) { fail(`未知档位: ${bad.join(', ')}（可选 ${ALL_EDITIONS.join('/')}）`); process.exit(1); }
+    const bad = list.filter((e) => !ALL_DESKTOP_TARGETS.includes(e));
+    if (bad.length) { fail(`未知档位: ${bad.join(', ')}（可选 ${ALL_DESKTOP_TARGETS.join('/')}）`); process.exit(1); }
     result.desktop.push(...list);
   }
 
@@ -1072,12 +1085,12 @@ function parseTargets(raw) {
 
   for (const item of t) {
     const [kind, sub] = item.split(':');
-    if (kind === 'desktop' || kind === 'desktop:all') {
+    if (kind === 'desktop' || item === 'desktop:all') {
       if (!sub || sub === 'all') { result.desktop.push(...ALL_EDITIONS); continue; }
-      // desktop:lite,pro
+      // desktop:lite,pro / desktop:shell
       const list = sub.split(',').map((s) => s.trim()).filter(Boolean);
-      const bad = list.filter((e) => !ALL_EDITIONS.includes(e));
-      if (bad.length) { fail(`未知档位: ${bad.join(', ')}（可选 ${ALL_EDITIONS.join('/')}）`); process.exit(1); }
+      const bad = list.filter((e) => !ALL_DESKTOP_TARGETS.includes(e));
+      if (bad.length) { fail(`未知档位: ${bad.join(', ')}（可选 ${ALL_DESKTOP_TARGETS.join('/')}）`); process.exit(1); }
       result.desktop.push(...list);
     } else if (kind === 'www' || item === 'desktop:full') {
       result.desktop.push('basic');
@@ -1087,7 +1100,7 @@ function parseTargets(raw) {
       result.desktop.push(...ALL_EDITIONS);
       result.android = true;
     } else {
-      fail(`未知目标: ${item}（可选 desktop[:档位] / android / all）`);
+      fail(`未知目标: ${item}（可选 desktop[:档位] / desktop:shell / android / all）`);
       process.exit(1);
     }
   }
@@ -1172,29 +1185,47 @@ function computeMovable(targets, willCompile) {
 
 // ─────────────────────── 桌面构建 ───────────────────────
 function buildDesktop(editions) {
-  step(`桌面打包：${editions.map((e) => `${e}(${EDITION_LABEL[e]})`).join(' / ')}`);
-  info(`将依次：真编译 server → vite build → 逐档 electron-builder（约 3.5 分钟）`);
-  if (BUILD_MODES) info(`代码裁剪：只打入 ${BUILD_MODES.join(', ')}（未选模式的入口与页面不会进包）`);
-  if (PLUGIN_SELECTION) info(`插件裁剪：只打入 ${PLUGIN_SELECTION.ids.length} 个内置插件（其余目录打包时暂存移出，自动恢复）`);
-  if (PET_SELECTION) {
-    info(
-      `宠物资源：${PET_SELECTION.ids.length ? PET_SELECTION.ids.join(', ') : '(无 —— 未选资源不进包，宠物入口降级隐藏)'}`,
-    );
+  // 轻量壳与普通档位是两条链路：壳包不编译 server、不跑插件裁剪/授权码，直接 vite build + shell.yml
+  const shellTargets = editions.filter((e) => e === SHELL_EDITION);
+  const editionsToBuild = editions.filter((e) => e !== SHELL_EDITION);
+
+  if (editionsToBuild.length) {
+    step(`桌面打包：${editionsToBuild.map((e) => `${e}(${EDITION_LABEL[e]})`).join(' / ')}`);
+    info(`将依次：真编译 server → vite build → 逐档 electron-builder（约 3.5 分钟）`);
+    if (BUILD_MODES) info(`代码裁剪：只打入 ${BUILD_MODES.join(', ')}（未选模式的入口与页面不会进包）`);
+    if (PLUGIN_SELECTION) info(`插件裁剪：只打入 ${PLUGIN_SELECTION.ids.length} 个内置插件（其余目录打包时暂存移出，自动恢复）`);
+    if (PET_SELECTION) {
+      info(
+        `宠物资源：${PET_SELECTION.ids.length ? PET_SELECTION.ids.join(', ') : '(无 —— 未选资源不进包，宠物入口降级隐藏)'}`,
+      );
+    }
+    // build-all-editions.cjs 内部含真编译 + 逐档重写 edition.json + 清 appOutDir；
+    // 每档独立输出到 dist-release/desktop/<档>/<版本>/（无需 --separate，那已是默认行为）。
+    run(process.execPath, [
+      path.join('apps', 'desktop', 'scripts', 'build-all-editions.cjs'),
+      ...editionsToBuild,
+    ], {
+      env: {
+        ...(BUILD_MODES ? { YZ_BUILD_MODES: BUILD_MODES.join(',') } : {}),
+        ...(PLUGIN_SELECTION ? { YZ_BUILD_PLUGINS: PLUGIN_SELECTION.ids.join(',') } : {}),
+        ...(petsEnvValue() ? { YZ_BUILD_PETS: petsEnvValue() } : {}),
+        ...(NAME_FLAG ? { YZ_ARTIFACT_NAME: NAME_FLAG } : {}),
+      },
+    });
+    ok('桌面构建完成');
   }
-  // build-all-editions.cjs 内部含真编译 + 逐档重写 edition.json + 清 appOutDir；
-  // 每档独立输出到 dist-release/desktop/<档>/<版本>/（无需 --separate，那已是默认行为）。
-  run(process.execPath, [
-    path.join('apps', 'desktop', 'scripts', 'build-all-editions.cjs'),
-    ...editions,
-  ], {
-    env: {
-      ...(BUILD_MODES ? { YZ_BUILD_MODES: BUILD_MODES.join(',') } : {}),
-      ...(PLUGIN_SELECTION ? { YZ_BUILD_PLUGINS: PLUGIN_SELECTION.ids.join(',') } : {}),
-      ...(petsEnvValue() ? { YZ_BUILD_PETS: petsEnvValue() } : {}),
-      ...(NAME_FLAG ? { YZ_ARTIFACT_NAME: NAME_FLAG } : {}),
-    },
-  });
-  ok('桌面构建完成');
+
+  if (shellTargets.length) {
+    step('桌面打包：shell(轻量壳·无后端)');
+    const serverBase = SERVER_URL_FLAG || process.env.YZ_SERVER_BASE || '';
+    info(`将依次：vite build → electron-builder（shell.yml，约 2 分钟）`);
+    info(`内置后端地址：${serverBase || '沿用 resources/server-base.json / 默认 127.0.0.1:3001'}`);
+    run(process.execPath, [
+      path.join('apps', 'desktop', 'scripts', 'build-shell.cjs'),
+      ...(serverBase ? [`--server-url=${serverBase}`] : []),
+    ]);
+    ok('轻量壳构建完成（dist-release/desktop/shell/<版本>/）');
+  }
 }
 
 /**
@@ -1601,10 +1632,11 @@ function cleanFreshRoot() {
   preflight(targets);
 
   // 是否需要真编译 server：
-  //   · 桌面构建内含编译（build-all-editions 第一步就是 server build）；
+  //   · 普通桌面档位构建内含编译（build-all-editions 第一步就是 server build）；
+  //   · 轻量壳（shell）不含后端，不需要编译 server —— 只有它被选中时整步跳过；
   //   · 纯安卓时，只有 dist 陈旧/缺失才单独编译一次；
   //   · --only + dist 新鲜 → 直接复用，连编译都省。
-  const needCompile = targets.desktop.length > 0;
+  const needCompile = targets.desktop.some((e) => e !== SHELL_EDITION);
   let willCompile = needCompile;
   if (!needCompile && targets.android) {
     if (distReady() && !distStale()) ok('apps/server/dist 新鲜，可复用（跳过编译）');
@@ -1615,7 +1647,11 @@ function cleanFreshRoot() {
     step('dry-run 计划（不执行任何写操作）');
     info(`目标: ${[targets.desktop.length ? `桌面 ${targets.desktop.join('/')}` : null, targets.android ? '安卓 APK' : null].filter(Boolean).join(' + ')}`);
     info(`将真编译 server: ${willCompile ? '是' : '否（复用现有 dist）'}`);
-    info(`将构建: ${[needCompile ? '桌面三档/选档' : null, targets.android ? '安卓 APK' : null].filter(Boolean).join(' → ')}`);
+    info(`将构建: ${[
+      needCompile ? '桌面三档/选档' : null,
+      targets.desktop.includes(SHELL_EDITION) ? '桌面轻量壳（无后端）' : null,
+      targets.android ? '安卓 APK' : null,
+    ].filter(Boolean).join(' → ')}`);
     info(`代码模式: ${BUILD_MODES ? BUILD_MODES.join(', ') : '按档位预设（可用 --modes=office,dev 指定）'}`);
     info(`内置插件: ${PLUGIN_SELECTION ? `${PLUGIN_SELECTION.ids.join(', ')}（${PLUGIN_SELECTION.source}）` : '按档位预设（可用 --plugins=office-core,skins 指定）'}`);
     if (PLUGIN_SELECTION) {

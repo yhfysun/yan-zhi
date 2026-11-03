@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   isDevInstance: (process.argv || []).includes('--yz-dev-instance'),
   // 窗口控制
   minimize: () => ipcRenderer.send('window-minimize'),
+  // 渲染层挂载完成信号：主进程据此才 show 主窗 + 销毁 splash（否则 dev 依赖预构建期间是黑窗）
+  notifyUiReady: () => ipcRenderer.send('ui-ready'),
   maximize: () => ipcRenderer.send('window-maximize'),
   close: () => ipcRenderer.send('window-close'),
   isMaximized: () => ipcRenderer.invoke('window-is-maximized'),

@@ -16,9 +16,26 @@ console.log(`[desktop] 平台适配器: ${desktopAdapter.platform}`);
 console.log(`[desktop] 后端基址: ${localApiBase()}`);
 console.log(`[desktop] 实例: ${(window as any).electronAPI?.isDevInstance ? '开发' : '生产'}`);
 
-// 注入桌面平台适配器（LLM 请求走本地后端代理，避免 CORS 且隐藏 API Key）
+// 首屏就绪信号：主进程收到后才 show 主窗并销毁 splash。
+// 必须等 Vue 真正 mount —— dev 下 vite 重跑依赖预构建时，窗口会先以背景色（近黑）亮出来，
+// 提前放行就是用户实报的「脚本启动黑屏」。
+const notifyUiReady = () => {
+  try { (window as any).electronAPI?.notifyUiReady?.(); } catch { /* 非桌面端忽略 */ }
+};
+
+// 注入桌面平台适配器（LLM 请求走后端代理，避免 CORS 且隐藏 API Key）
 // ★ 基址随实例（生产 3001 / 开发 3002）—— 由 preload 下发，不写死。
-setPlatformAdapter({ ...desktopAdapter, llmProxyBase: `${localApiBase()}/llm` });
+// ★ 轻量壳（无本机后端）：必须跟随生效后端地址（登录页手填 > 打包内置 server-base.json），
+//   否则 LLM 代理仍打 127.0.0.1，壳包只能聊天界面打不开模型。
+const effectiveApiBase = (): string => {
+  try {
+    const saved = (localStorage.getItem('yz_server_base') || '').trim().replace(/\/+$/, '');
+    if (saved) return `${saved}/api`;
+  } catch { /* localStorage 不可用则走默认 */ }
+  const baked = String((window as any).electronAPI?.serverBase || '').replace(/\/+$/, '');
+  return baked ? `${baked}/api` : localApiBase();
+};
+setPlatformAdapter({ ...desktopAdapter, llmProxyBase: `${effectiveApiBase()}/llm` });
 console.log('[desktop] 平台适配器已注入');
 
 // 插件宿主桥（mode-pluginization）：任何插件前端装载之前必须挂好 window.__YZ_HOST__。
@@ -42,6 +59,7 @@ initSchema((sql) => desktopAdapter.db.exec(sql))
     app.use(ElementPlus);
     app.mount('#app');
     console.log('[desktop] Vue 应用已挂载');
+    notifyUiReady();
   })
   .catch((err) => {
     console.error(`[desktop] 数据库初始化失败: ${String(err)}`);
@@ -54,4 +72,5 @@ initSchema((sql) => desktopAdapter.db.exec(sql))
     app.use(ElementPlus);
     app.mount('#app');
     console.error('[desktop] Vue 应用已降级挂载（数据库不可用）');
+    notifyUiReady();
   });

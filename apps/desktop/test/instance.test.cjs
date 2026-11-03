@@ -171,7 +171,8 @@ describe('静态守门：源码里不得再出现「把正式版列入可杀名�
 
   test('main.cjs 通过 additionalArguments 下发端口（与 preload 的对端）', () => {
     const src = strip(read('apps/desktop/main.cjs'));
-    assert.match(src, /additionalArguments:\s*\['--yz-api-port='\s*\+\s*API_PORT/, 'main 必须下发 --yz-api-port');
+    assert.match(src, /const RENDER_EXTRA_ARGS\s*=\s*\['--yz-api-port='\s*\+\s*API_PORT/, 'RENDER_EXTRA_ARGS 必须包含 --yz-api-port');
+    assert.match(src, /additionalArguments:\s*RENDER_EXTRA_ARGS/, 'main 必须通过 additionalArguments 下发 RENDER_EXTRA_ARGS');
   });
 
   test('dev-desktop.bat 的清理逻辑显式排除安装版进程名', () => {

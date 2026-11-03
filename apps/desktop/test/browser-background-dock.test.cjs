@@ -97,10 +97,13 @@ describe('后台停靠：最小化/关窗/任务迟到都切到"移出屏幕"', 
   });
 
   test('★ 点 X 关窗（隐藏到托盘）任务在跑时也必须停靠', () => {
-    const idx = mainSrc.indexOf("mainWindow.on('close'");
-    assert.ok(idx > -1, '未找到 close handler');
-    const body = mainSrc.slice(idx, idx + 500);
-    assert.match(body, /browserWorkInProgress\(\) && enterBackgroundDock\(\)/, '★ 关窗路径漏了停靠');
+    const handlers = [...mainSrc.matchAll(/mainWindow\.on\('close', \(e\) => \{/g)]
+      .map((m) => mainSrc.slice(m.index, m.index + 500));
+    assert.ok(handlers.length > 0, '未找到 close handler');
+    assert.ok(
+      handlers.some((body) => /browserWorkInProgress\(\) && enterBackgroundDock\(\)/.test(body)),
+      '★ 关窗路径漏了停靠',
+    );
   });
 
   test('★ 用户先最小化、任务后开始：动作到达时补停靠', () => {

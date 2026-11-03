@@ -62,20 +62,37 @@ describe('splash：超时不得强制创建主窗', () => {
 });
 
 describe('splash：生命周期收口', () => {
-  test('★ destroySplashWindow 只出现在 ready-to-show 回调内（建窗 ≠ 可见）', () => {
+  test('★ destroySplashWindow 只在首屏闸门里、show 之后调用（建窗 ≠ 可见 ≠ 渲染层已挂载）', () => {
     // 排除函数定义行（`function destroySplashWindow() {`），只看调用点
     const calls = [...mainCode.matchAll(/(?<!function )destroySplashWindow\(\)/g)].map((m) => m.index);
     assert.ok(calls.length >= 1, '找不到 destroySplashWindow 调用');
-    const rts = mainCode.indexOf("mainWindow.once('ready-to-show'");
-    assert.ok(rts > 0, '找不到 ready-to-show 注册');
+    const gate = mainCode.indexOf('const revealMainWindow = () => {');
+    assert.ok(gate > 0, '找不到首屏闸门 revealMainWindow —— 逻辑被改动了？');
+    const gateEnd = mainCode.indexOf('mainRevealTimer = setTimeout', gate);
+    assert.ok(gateEnd > gate, '找不到首屏闸门结束锚点');
     for (const i of calls) {
-      // 所有调用点都必须位于 ready-to-show 回调附近（其后 300 字符内），
-      // 不允许在健康检查通过处提前销毁（那时窗口还没显示）
+      // 2026-11-02：ready-to-show 在 dev 下可能只画出背景色就触发 → 提前销毁 splash = 黑窗。
+      // 现在只允许在闸门内（show 之后）销毁，闸门外任何调用都视为回归。
       assert.ok(
-        i > rts && i - rts < 1200,
-        `destroySplashWindow 调用点(${i})不在 ready-to-show 回调内(${rts}) —— 提前销毁会白闪`,
+        i > gate && i < gateEnd,
+        `destroySplashWindow 调用点(${i})不在首屏闸门内(${gate}..${gateEnd}) —— 提前销毁会黑窗`,
+      );
+      const showIdx = mainCode.lastIndexOf('mainWindow.show()', i);
+      assert.ok(
+        showIdx > gate && showIdx < i,
+        'destroySplashWindow 必须在 mainWindow.show() 之后 —— 否则用户会看到桌面空窗',
       );
     }
+  });
+
+  test('★ 首屏闸门必须由 ready-to-show ∩ ui-ready 双闸放行', () => {
+    assert.ok(mainCode.includes("ipcMain.on('ui-ready'"), 'main.cjs 未监听渲染层 ui-ready 信号');
+    assert.ok(
+      mainCode.includes('if (!mainReadyToShow || !mainUiReady) return;'),
+      '首屏闸门缺少双条件判定 —— 任一信号单独到达就放行会退回黑窗',
+    );
+    // 兜底：渲染层异常时不能让 splash 常驻
+    assert.ok(mainCode.includes('MAIN_REVEAL_TIMEOUT_MS'), '缺少首屏闸门超时兜底');
   });
 
   test('健康检查通过后、ready-to-show 前不得销毁 splash', () => {
@@ -117,6 +134,21 @@ describe('splash：preload 契约与渲染层', () => {
     assert.ok(pre.includes("'splash:update'"), 'preload 缺 splash:update 频道');
     assert.ok(MAIN.includes("'splash:update'"), 'main.cjs 缺 splash:update 频道');
     assert.ok(MAIN.includes("'splash:get-last-update'"), 'main.cjs 缺 get-last-update handle');
+  });
+
+  test('★ 首屏就绪信号链路完整：preload 暴露 notifyUiReady → 渲染层 mount 后调用', () => {
+    const pre = fs.readFileSync(path.join(DESKTOP, 'preload.cjs'), 'utf8');
+    assert.ok(pre.includes('notifyUiReady'), 'preload 未暴露 notifyUiReady');
+    assert.ok(pre.includes("ipcRenderer.send('ui-ready')"), 'preload 未发送 ui-ready');
+    const renderer = fs.readFileSync(path.join(DESKTOP, 'src', 'main.ts'), 'utf8');
+    const mounts = renderer.match(/app\.mount\('#app'\)/g) || [];
+    const calls = renderer.match(/notifyUiReady\(\)/g) || [];
+    assert.ok(mounts.length >= 1, '渲染层找不到 app.mount');
+    // 两处挂载（正常 / 降级）都必须发信号，否则降级路径会卡在 splash
+    assert.ok(
+      calls.length >= mounts.length,
+      `渲染层 notifyUiReady 调用(${calls.length})少于 app.mount(${mounts.length}) —— 降级路径会卡 splash`,
+    );
   });
 
   test('splash.html 引用 splashAPI 并具备 indeterminate 滑条与失败态', () => {

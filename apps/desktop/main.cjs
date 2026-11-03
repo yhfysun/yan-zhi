@@ -132,6 +132,11 @@ function resolveBakedServerBase() {
   return '';
 }
 const BAKED_SERVER_BASE = resolveBakedServerBase();
+/**
+ * 轻量壳模式（2026-11-02 补）：打包版且未内置后端产物 ⇒ 后端在别的机器上。
+ * 判定口径与 startServer 里的跳过分支、resolveBakedServerBase 的守卫保持同一份依据。
+ */
+const SHELL_MODE = app.isPackaged && !fs.existsSync(path.join(process.resourcesPath, 'server', 'dist'));
 /** 下发给渲染层的附加参数（主窗口/采集窗/RC 卡片窗共用）。 */
 const RENDER_EXTRA_ARGS = ['--yz-api-port=' + API_PORT,
   ...(BAKED_SERVER_BASE ? ['--yz-server-base=' + BAKED_SERVER_BASE] : []),
@@ -229,6 +234,8 @@ let tray = null;
 let splashWindow = null;
 let splashLastUpdate = null;   // splashAPI.getLastUpdate 的数据源（防错过已推送状态）
 const SPLASH_HEALTH_TIMEOUT_MS = 120000; // dev tsx 冷编译实测 60s+，30s 太紧
+// 主窗首屏闸门兜底：渲染层异常/脚本报错时永远等不到 ui-ready，超时后照旧显示，别让 splash 常驻
+const MAIN_REVEAL_TIMEOUT_MS = 15000;
 function pushSplashUpdate(update) {
   splashLastUpdate = update;
   if (splashWindow && !splashWindow.isDestroyed()) {
@@ -1457,7 +1464,43 @@ function createWindow() {
     }, 500);
   });
 
-  // 页面首屏渲染完成后再显示窗口，配合 show:false 彻底消除黑屏
+  // ★ 首屏闸门（2026-11-02 用户实报「脚本启动黑屏」）：dev 下 vite 重跑依赖预构建时，
+  //   ready-to-show 会先以 backgroundColor(#1D1D1C 近黑) 就触发 —— 窗口亮出来、渲染层
+  //   两分钟后才 mount，用户看到的就是整窗黑屏。现在要求 ready-to-show ∩ 渲染层 mount
+  //   信号(ui-ready) 同时到达才 show 并销毁 splash，期间用户看到的是 splash 而不是黑窗。
+  let mainReadyToShow = false;
+  let mainUiReady = false;
+  let mainRevealed = false;
+  let mainRevealTimer = null;
+  const revealMainWindow = () => {
+    if (mainRevealed || !mainWindow || mainWindow.isDestroyed()) return;
+    if (!mainReadyToShow || !mainUiReady) return;
+    mainRevealed = true;
+    if (mainRevealTimer) { clearTimeout(mainRevealTimer); mainRevealTimer = null; }
+    // 还原上次的最大化状态（在 show 之前 maximize，避免先闪一下小窗再铺满）
+    if (restoreMaximized) { try { mainWindow.maximize(); } catch { /* ignore */ } }
+    mainWindow.show();
+    // ★ splash 生命周期收口：主窗真正可见后才销毁（无缝衔接，不白闪）。
+    //   挂在首屏闸门里而非健康检查通过处 —— 建窗 ≠ 可见，更 ≠ 渲染层已挂载。
+    destroySplashWindow();
+  };
+  const gatedWc = mainWindow.webContents;
+  const onUiReady = (event) => {
+    if (event.sender !== gatedWc) return;
+    mainUiReady = true;
+    revealMainWindow();
+  };
+  ipcMain.on('ui-ready', onUiReady);
+  mainWindow.once('closed', () => ipcMain.off('ui-ready', onUiReady));
+  mainRevealTimer = setTimeout(() => {
+    if (mainRevealed) return;
+    console.warn(`[main] 渲染层 ui-ready 超时（${MAIN_REVEAL_TIMEOUT_MS / 1000}s），强制显示主窗`);
+    mainReadyToShow = true;
+    mainUiReady = true;
+    revealMainWindow();
+  }, MAIN_REVEAL_TIMEOUT_MS);
+
+  // 首屏渲染完成（可能只是背景色，见上面的闸门注释）——只置标志，不直接 show
   mainWindow.once('ready-to-show', () => {
     // dev 下窗口 icon 再补一道运行时设置：构造参数 icon 在部分 Windows/驱动组合下
     // 不落到任务栏按钮（frame:false + 自定义 AUMID 时），setIcon 走 WM_SETICON 强制生效
@@ -1469,12 +1512,8 @@ function createWindow() {
         if (iconOk) mainWindow.setIcon(iconPath);
       } catch (e) { console.warn('[dev-icon] setIcon 失败:', e && e.message); }
     }
-    // 还原上次的最大化状态（在 show 之前 maximize，避免先闪一下小窗再铺满）
-    if (restoreMaximized) { try { mainWindow.maximize(); } catch { /* ignore */ } }
-    mainWindow?.show();
-    // ★ splash 生命周期收口：主窗真正可见后才销毁（无缝衔接，不白闪）。
-    //   挂在 ready-to-show 里而非健康检查通过处 —— 建窗 ≠ 可见。
-    destroySplashWindow();
+    mainReadyToShow = true;
+    revealMainWindow();
   });
 
   // 关闭窗口时隐藏而非销毁（守护模式：后端保持运行，可通过托盘重新打开）
@@ -14760,7 +14799,17 @@ app.whenReady().then(async () => {
     tryCreateWindow();
   };
   const startedAt = Date.now();
+  // ★ 轻量壳（2026-11-02）：壳包没有本机后端，健康检查必须打内置的远程地址；
+  //   照旧打 127.0.0.1 会干等 120 秒后显示「启动失败」——壳包等于永远打不开。
+  const shellHealthBase = SHELL_MODE ? BAKED_SERVER_BASE : '';
+  const healthUrl = SHELL_MODE ? (shellHealthBase ? shellHealthBase + '/api/health' : '') : API_ORIGIN + '/api/health';
   const checkHealth = (retries = 0) => {
+    if (SHELL_MODE && !healthUrl) {
+      // 未内置地址：没有可探活的目标，直接放行到登录页（用户在那里填服务器地址）
+      console.log('[后端] 轻量壳未内置后端地址，跳过健康检查，直接进入登录页');
+      onBackendReady();
+      return;
+    }
     if (Date.now() - startedAt >= SPLASH_HEALTH_TIMEOUT_MS) {
       console.error('[后端] 启动超时（120 秒），不创建主窗，splash 显示失败态');
       try { fs.appendFileSync(path.join(app.getPath('userData'), 'server.log'), `[${new Date().toLocaleString('zh-CN', { hour12: false })}] [后端] 120 秒健康检查超时，后端未就绪（大概率后端启动失败，见上方日志）；主窗未创建，请在 splash 结束后重启应用\n`); } catch {}
@@ -14782,7 +14831,7 @@ app.whenReady().then(async () => {
       settled = true;
       setTimeout(() => checkHealth(retries + 1), 150);
     };
-    const req = http.get(API_ORIGIN + '/api/health', (res) => {
+    const req = http.get(healthUrl, (res) => {
       res.resume();
       if (settled) return;
       settled = true;
