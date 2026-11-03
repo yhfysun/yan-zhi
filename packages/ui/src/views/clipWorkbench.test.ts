@@ -394,13 +394,13 @@ describe('ClipWorkbench · 鼠标与键盘交互（对标商用软件）', () =>
 
   it('★★ 拖动修剪要按 speed 换算回素材时间（否则变速段的裁剪点会错位）', () => {
     const i = CODE.indexOf('function startTrim');
-    const body = CODE.slice(i, i + 1400);
+    const body = CODE.slice(i, i + 2600);
     expect(body).toContain('/ pxPerSec.value) * sp');
     // 拖动中要刷新预览帧（边剪边看）
     expect(body).toContain('scheduleFrameFetch');
     // 拖动中不落盘、松手才落盘
     expect(body).toContain('window.removeEventListener');
-    expect(body).toMatch(/void save\(\)/);
+    expect(body).toMatch(/void save\(/);
   });
 
   it('★★ 快捷键必须在输入框聚焦时不拦截（否则打字按 Delete 会删片段）', () => {
@@ -548,13 +548,14 @@ describe('ClipWorkbench · 编辑器基础三件套（撤销 / 拖拽 / 吸附�
     expect(body).toContain('shift()');
   });
 
-  it('★★ 拖动片段要能交换位序（此前只能右键挪一位，挪 5 位要 5 次）', () => {
+  it('★★ 拖动片段 = 移动（吸附 + 同轨不重叠）；S3 起主轨允许空档与跨轨', () => {
     const i = CODE.indexOf('function onClipMouseDown');
-    const body = CODE.slice(i, i + 1800);
-    expect(body).toContain('splice');            // 就地交换
+    const body = CODE.slice(i, i + 2200);
+    expect(body).toContain('clampWithinGaps');    // 同轨重叠夹取（不许压住邻居）
+    expect(body).toContain('moveItemToTrack');    // 竖拖换轨
     expect(body).toContain('dragMoved.value = true');
     // 松手才落盘（拖动中不动磁盘）
-    expect(body).toMatch(/void save\(\)/);
+    expect(body).toMatch(/(void|await) save\(/);
   });
 
   it('★★ 拖动要有像素阈值（否则轻微抖动会弄乱片段顺序）', () => {
@@ -593,7 +594,7 @@ describe('ClipWorkbench · 编辑器基础三件套（撤销 / 拖拽 / 吸附�
 
   it('★ 关键操作要设置可读标签（撤销时能看懂撤了什么）', () => {
     expect(CODE).toContain('pendingLabel.value');
-    for (const label of ['删除片段', '分割片段', '修改片段参数', '添加字幕', '调整片段顺序']) {
+    for (const label of ['删除片段', '分割片段', '修改片段参数', '添加字幕', '移动片段']) {
       expect(CODE, `缺标签 ${label}`).toContain(label);
     }
   });
@@ -616,10 +617,11 @@ describe('ClipWorkbench · 与后端契约一致', () => {
     expect(CODE).toContain('EffectCardGrid');
   });
 
-  it('预览地址参数名与 FilePreview 一致（license=，非 x-license）', () => {
+  it('预览地址参数名与 FilePreview 一致（媒体参数统一走 mediaAuthQuery，非 x-license）', () => {
     const start = CODE.indexOf('function streamUrl');
     const body = CODE.slice(start, CODE.indexOf('\n}', start));
-    expect(body).toContain('license=');
+    // 2026-11-02：license/token/viewAs 统一由 mediaAuthQuery 拼（媒体元素带不了请求头）
+    expect(body).toContain('mediaAuthQuery()');
     expect(body).not.toContain('x-license=');
   });
 

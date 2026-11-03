@@ -484,13 +484,57 @@
           </div>
 
           <div class="cp-tl">
-            <!-- 轨道名（固定不滚动） -->
+            <!-- 轨道名（固定不滚动）：视频/音频轨动态渲染，其余为定时图层行 -->
             <div class="cp-tl-labels">
               <div class="cp-tl-label head"></div>
-              <div class="cp-tl-label"><el-icon :size="12"><VideoCamera /></el-icon>视频</div>
+              <div
+                v-for="(tr, ti) in videoTrackRows"
+                :key="tr.id"
+                class="cp-tl-label cp-track-head"
+                :class="{ dim: tr.hidden, main: ti === 0 }"
+                draggable="true"
+                :title="ti === 0 ? '主轨（合成底片，固定第一位）' : '拖动可调整叠放顺序（后面的轨盖前面的）'"
+                @dragstart="onTrackDragStart(tr.id)"
+                @dragover.prevent
+                @drop="onTrackDrop(tr.id)"
+              >
+                <el-icon :size="12"><VideoCamera /></el-icon>
+                <span class="cp-th-name">{{ tr.name || (ti === 0 ? '主轨' : `视频${ti + 1}`) }}</span>
+                <span class="cp-th-actions">
+                  <button class="cp-th-btn" :title="tr.hidden ? '显示该轨' : '隐藏该轨'" @click="toggleTrack('hidden', tr.id)">{{ tr.hidden ? '隐' : '显' }}</button>
+                  <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" @click="toggleTrack('locked', tr.id)">{{ tr.locked ? '锁' : '解' }}</button>
+                  <button class="cp-th-btn" :disabled="ti === 0" title="上移" @click="moveTrack('video', tr.id, -1)">↑</button>
+                  <button class="cp-th-btn" :disabled="ti === 0" title="下移" @click="moveTrack('video', tr.id, 1)">↓</button>
+                  <button class="cp-th-btn danger" :disabled="ti === 0" title="删除轨道（主轨不可删）" @click="removeTrack(tr.id)">×</button>
+                </span>
+              </div>
               <div class="cp-tl-label"><el-icon :size="12"><ChatLineSquare /></el-icon>字幕</div>
-              <div class="cp-tl-label"><el-icon :size="12"><Headset /></el-icon>音频</div>
+              <div
+                v-for="(tr, ai) in audioTrackRows"
+                :key="tr.id"
+                class="cp-tl-label cp-track-head"
+                :class="{ dim: tr.muted }"
+                draggable="true"
+                title="拖动可调整音频轨顺序"
+                @dragstart="onTrackDragStart(tr.id)"
+                @dragover.prevent
+                @drop="onTrackDrop(tr.id)"
+              >
+                <el-icon :size="12"><Headset /></el-icon>
+                <span class="cp-th-name">{{ tr.name || `音轨${ai + 1}` }}</span>
+                <span class="cp-th-actions">
+                  <button class="cp-th-btn" :title="tr.muted ? '取消静音' : '静音该轨'" @click="toggleTrack('muted', tr.id)">{{ tr.muted ? '静' : '声' }}</button>
+                  <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" @click="toggleTrack('locked', tr.id)">{{ tr.locked ? '锁' : '解' }}</button>
+                  <button class="cp-th-btn" :disabled="ai === 0" title="上移" @click="moveTrack('audio', tr.id, -1)">↑</button>
+                  <button class="cp-th-btn" :disabled="ai === 0" title="下移" @click="moveTrack('audio', tr.id, 1)">↓</button>
+                  <button class="cp-th-btn danger" title="删除音轨" @click="removeTrack(tr.id)">×</button>
+                </span>
+              </div>
               <div class="cp-tl-label"><el-icon :size="12"><Picture /></el-icon>画中画</div>
+              <div class="cp-tl-addrow">
+                <button class="cp-th-add" title="新增视频轨（B-roll / 叠加画面）" @click="addVideoTrack">＋视频轨</button>
+                <button class="cp-th-add" title="新增音频轨（音效 / 多段音乐）" @click="addAudioTrack">＋音频轨</button>
+              </div>
             </div>
 
             <div ref="tlScroll" class="cp-tl-scroll" @dragover.prevent @drop="onDropTrack" @contextmenu.prevent="onEmptyMenu">
@@ -502,38 +546,54 @@
                   </div>
                 </div>
 
-                <!-- 视频轨 -->
-                <div class="cp-track">
+                <!-- 视频轨（S3：动态多轨；第一条 = 主轨，其余为 B-roll/叠加） -->
+                <div
+                  v-for="(tr, ti) in videoTrackRows"
+                  :key="tr.id"
+                  class="cp-track cp-vtrack"
+                  :class="{ dim: tr.hidden, main: ti === 0 }"
+                  :data-track-id="tr.id"
+                >
                   <div
-                    v-for="(c, i) in clips"
-                    :key="c.id"
+                    v-for="(it, i) in rowClips(tr)"
+                    :key="it.id"
                     class="cp-clip"
-                    :class="{ active: c.id === selectedClipId }"
-                    :style="{ left: segLeft(i) + 'px', width: segWidth(c) + 'px' }"
-                    :title="`${i + 1}. ${c.label || baseName(c.file)}${c.trimStart != null || c.trimEnd != null ? `\n裁剪 ${(c.trimStart ?? 0).toFixed(1)}s ~ ${c.trimEnd != null ? c.trimEnd.toFixed(1) + 's' : '末尾'}` : ''}`"
-                    @click="selectClip(c.id)"
-                    @contextmenu.prevent.stop="onClipMenu($event, c)"
-                    @mousedown="onClipMouseDown($event, c)"
+                    :class="{ active: it.id === selectedClipId && (ti === 0 || it.id === selectedTrackClipId), off: tr.hidden }"
+                    :style="{ left: itemLeft(it.start) + 'px', width: itemWidth(it.duration) + 'px' }"
+                    :title="`${ti === 0 ? `${i + 1}.` : `${ti + 1}-${i + 1}.`} ${it.segment.label || baseName(it.segment.file)}${it.segment.trimStart != null || it.segment.trimEnd != null ? `\n裁剪 ${(it.segment.trimStart ?? 0).toFixed(1)}s ~ ${it.segment.trimEnd != null ? it.segment.trimEnd.toFixed(1) + 's' : '末尾'}` : ''}\n拖动改位置/换轨，边缘拖动修剪`"
+                    @click="selectTrackClip(tr, it.id)"
+                    @contextmenu.prevent.stop="onTrackClipMenu($event, tr, it)"
+                    @mousedown="onClipMouseDown($event, tr, it)"
                   >
                     <!-- 左/右边缘把手：拖动即修剪（商用软件的标配交互，比进属性面板改数字快得多） -->
-                    <span class="cp-clip-handle left" title="拖动修剪开头" @mousedown.stop="startTrim($event, c, 'start')"></span>
-                    <span class="cp-clip-handle right" title="拖动修剪结尾" @mousedown.stop="startTrim($event, c, 'end')"></span>
+                    <span class="cp-clip-handle left" title="拖动修剪开头" @mousedown.stop="startTrim($event, tr, it, 'start')"></span>
+                    <span class="cp-clip-handle right" title="拖动修剪结尾" @mousedown.stop="startTrim($event, tr, it, 'end')"></span>
                     <!-- 波形底图（有音轨的素材；服务端生成，生成失败静默无图不报错） -->
-                    <img v-if="waveUrl(c.file)" class="cp-clip-wave" :src="waveUrl(c.file)" alt="" />
-                    <span class="cp-clip-idx">{{ i + 1 }}</span>
-                    <span class="cp-clip-name">{{ c.label || baseName(c.file) }}</span>
+                    <img v-if="waveUrl(it.segment.file)" class="cp-clip-wave" :src="waveUrl(it.segment.file)" alt="" />
+                    <span class="cp-clip-idx">{{ ti === 0 ? i + 1 : `${ti + 1}-${i + 1}` }}</span>
+                    <span class="cp-clip-name">{{ it.segment.label || baseName(it.segment.file) }}</span>
                     <span class="cp-clip-tags">
-                      <em v-if="c.speed">{{ c.speed }}x</em>
-                      <em v-if="c.kenburns">运镜</em>
-                      <em v-if="c.colorPreset">{{ c.colorPreset }}</em>
-                      <em v-if="c.audioFile">配音</em>
-                      <em v-if="c.fadeIn || c.fadeOut">淡入淡出</em>
-                      <em v-if="c.mask">蒙版</em>
-                      <em v-if="c.crop">裁剪</em>
-                      <em v-if="c.keyframes?.length">关键帧</em>
+                      <em v-if="it.segment.speed">{{ it.segment.speed }}x</em>
+                      <em v-if="it.segment.kenburns">运镜</em>
+                      <em v-if="it.segment.colorPreset">{{ it.segment.colorPreset }}</em>
+                      <em v-if="it.segment.audioFile">配音</em>
+                      <em v-if="it.segment.fadeIn || it.segment.fadeOut">淡入淡出</em>
+                      <em v-if="it.segment.mask">蒙版</em>
+                      <em v-if="it.segment.crop">裁剪</em>
+                      <em v-if="it.segment.keyframes?.length">关键帧</em>
                     </span>
                   </div>
-                  <div v-if="!clips.length" class="cp-track-empty">把左侧素材拖到这里</div>
+                  <!-- 主轨空档：虚线占位（允许留空；渲染时补黑） -->
+                  <template v-if="ti === 0">
+                    <div
+                      v-for="g in mainGaps"
+                      :key="`gap-${g.start}`"
+                      class="cp-gap"
+                      :style="{ left: itemLeft(g.start) + 'px', width: Math.max(10, (g.end - g.start) * pxPerSec) + 'px' }"
+                      title="空档（主轨允许留空，渲染时补黑）"
+                    ></div>
+                  </template>
+                  <div v-if="!tr.items.length" class="cp-track-empty">{{ ti === 0 ? '把左侧素材拖到这里' : '空轨道：把素材拖进来，或右键素材「放到该轨」' }}</div>
                 </div>
 
                 <!-- 字幕轨 -->
@@ -554,12 +614,18 @@
                   <button v-if="!texts.length" class="cp-track-empty cp-track-empty-btn" :disabled="!clipCount" title="在播放头处添加一条字幕（也可右键时间轴空白区）" @click="addTextAtPlayhead">＋ 点击添加字幕（说清文案与时间点也可让剪辑师加）</button>
                 </div>
 
-                <!-- 音频轨：整片 BGM（铺底）+ 定时音频层（音效/多段 BGM，P0-7） -->
-                <div class="cp-track">
+                <!-- 音频轨（S3：动态多音轨；第一条同时承载整片 BGM） -->
+                <div
+                  v-for="(tr, ai) in audioTrackRows"
+                  :key="tr.id"
+                  class="cp-track cp-atrack"
+                  :class="{ dim: tr.muted }"
+                  :data-track-id="tr.id"
+                >
                   <div
-                    v-if="bgm"
-                    class="cp-audio"
-                    :style="{ left: 0, width: Math.max(60, estTotal * pxPerSec) + 'px', ...(audios.length ? { top: '32px', height: '20px' } : {}) }"
+                    v-if="ai === 0 && bgm"
+                    class="cp-audio cp-bgm"
+                    :style="{ left: 0, width: Math.max(60, estTotal * pxPerSec) + 'px', ...(rowAudios(tr).length ? { top: '32px', height: '20px' } : {}) }"
                     title="背景音乐（整片铺底）"
                   >
                     <img v-if="waveUrl(bgm.file)" class="cp-bgm-wave" :src="waveUrl(bgm.file)" alt="" />
@@ -567,19 +633,24 @@
                     <span>{{ baseName(bgm.file) }} · 音量 {{ bgm.volume }}</span>
                   </div>
                   <div
-                    v-for="(a, i) in audios"
+                    v-for="(a, i) in rowAudios(tr)"
                     :key="a.id"
                     class="cp-audio cp-audio-layer"
-                    :class="{ active: a.id === selectedAudioId }"
-                    :style="{ left: (a.start * pxPerSec) + 'px', width: Math.max(24, (a.end - a.start) * pxPerSec) + 'px', top: '4px', height: '24px' }"
-                    :title="`音频${i + 1} ${baseName(a.file)}\n${a.start.toFixed(1)}s ~ ${a.end.toFixed(1)}s\n音量 ${(a.volume ?? 1).toFixed(2)}${a.fadeIn ? ` · 淡入 ${a.fadeIn}s` : ''}${a.fadeOut ? ` · 淡出 ${a.fadeOut}s` : ''}`"
+                    :class="{ active: a.id === selectedAudioId, off: tr.muted }"
+                    :style="{ left: itemLeft(a.start) + 'px', width: itemWidth(a.duration) + 'px', top: '4px', height: '24px' }"
+                    :title="`${ai === 0 ? `音频${i + 1}` : `音轨${ai + 1}-${i + 1}`} ${baseName(a.file)}\n${a.start.toFixed(1)}s ~ ${(a.start + a.duration).toFixed(1)}s\n音量 ${(a.volume ?? 1).toFixed(2)}${a.fadeIn ? ` · 淡入 ${a.fadeIn}s` : ''}${a.fadeOut ? ` · 淡出 ${a.fadeOut}s` : ''}\n拖动改位置/换轨`"
                     @click="selectAudio(a.id)"
-                    @contextmenu.prevent.stop="onAudioMenu($event, a)"
+                    @contextmenu.prevent.stop="onAudioMenuById($event, a.id)"
+                    @mousedown="onAudioMouseDown($event, tr, a)"
                   >
                     <el-icon :size="11"><Headset /></el-icon>
                     <span>{{ baseName(a.file) }}</span>
                   </div>
-                  <div v-if="!bgm && !audios.length" class="cp-track-empty">右键音频素材 → 设为 BGM / 音效</div>
+                  <div v-if="ai === 0 && !bgm && !rowAudios(tr).length" class="cp-track-empty">右键音频素材 → 设为 BGM / 音效</div>
+                  <div v-if="ai > 0 && !tr.items.length" class="cp-track-empty">空音轨：拖动音频片段到这里</div>
+                </div>
+                <div v-if="!audioTrackRows.length" class="cp-track">
+                  <div class="cp-track-empty">右键音频素材 → 设为 BGM / 音效，或点左侧「＋音频轨」</div>
                 </div>
 
                 <!-- 画中画轨（叠加轨）：右键素材 → 设为画中画 -->
@@ -1535,6 +1606,18 @@
             <button class="cp-btn danger full" @click="removeEffect(selectedEffect.id)">删除特效</button>
           </template>
 
+          <template v-else-if="selectedExtraClip">
+            <div class="cp-ins-head">
+              <span class="cp-ins-title">轨道片段</span>
+              <span class="cp-ins-sub">{{ baseName(selectedExtraClip.segment.file) }}</span>
+            </div>
+            <div class="cp-ins-hint">
+              B-roll 轨片段：按住拖动改时间/换轨，边缘拖动修剪。<br />
+              参数编辑请在主轨片段上做；右键可「移到主轨」或删除。
+            </div>
+            <button class="cp-btn danger full" @click="removeSelectedExtraClip">删除该片段</button>
+          </template>
+
           <div v-else class="cp-empty">
             <template v-if="!clipCount">还没有片段。<br />把左侧素材拖入时间轴开始剪辑，或直接在对话里让剪辑师剪。</template>
             <template v-else>在时间轴上选中一个片段或字幕后<br />在这里调整参数。</template>
@@ -2033,9 +2116,33 @@ import EffectCardGrid from '../components/clip/EffectCardGrid.vue';
 import ClipVectorLayer from '../components/clip/ClipVectorLayer.vue';
 import { useSpaceStore } from '../stores/space';
 import { leadOf, activeMode, type LeadMode } from '../stores/mode';
+import { setWorkbenchContext } from '../stores/workbenchContext';
 import { useChat } from '../composables/chat/useChat';
-import { api, API_BASE, getLicenseCode } from '../api/client';
+import { api, API_BASE, mediaAuthQuery } from '../api/client';
 import { clampOffset, localLayerT, round4, sampleLayerTf, shiftLayerPosition } from '../utils/clip-stage-geometry';
+import {
+  clampWithinGaps,
+  ensureTracks,
+  isClipItem,
+  mirrorAudiosFromMainTrack,
+  mirrorClipsFromMainTrack,
+  nextTrackId,
+  overlapsOthers,
+  resolveAudioItems,
+  resolveClipItems,
+  snapStart,
+  sortItems,
+  syncProjectModel,
+  viewAudioRows,
+  viewVideoRows,
+  round3,
+  type ResolvedAudioItem,
+  type ResolvedClipItem,
+  type TrackKind,
+  type UiClipItem,
+  type UiTrack,
+  type UiTrackItem,
+} from '../composables/clip/clipTracks';
 import { formatRecTime, pickRecorderMime, recordingFileName, RECORDING_MAX_MS } from '../utils/clip-recording';
 import { clampMenuPos } from '../utils/menuPosition';
 import {
@@ -2140,9 +2247,11 @@ interface MulticamGroup {
   slotBoundariesSec?: number[];
 }
 interface ClipProject {
-  version: 2; name: string; updatedAt: number;
+  version: 2 | 3; name: string; updatedAt: number;
   /** 图层轨（v2）：字幕/画中画在此落盘；UI 继续操作 texts/overlays 视图字段 */
   layers?: Array<{ id: string; kind: string; start: number; end: number; track: number; transform?: Record<string, unknown> }>;
+  /** v3 轨道（S3）：视频/音频轨；缺省时由 clips/audios 合成（老工程兼容） */
+  tracks?: UiTrack[];
   output: { size: string; fps: number; quality?: 'low' | 'std' | 'high'; encoder?: 'cpu' | 'auto'; interpolate?: 'off' | 'blend' | 'mci' };
   clips: ClipSegment[]; texts: ClipText[];
   /** 音效链（整片，按顺序串联；见效果库 AUDIO_EFFECTS） */
@@ -2186,6 +2295,7 @@ const lead = ref<LeadMode>(leadOf(activeMode.value));
 // 视图：projects = 项目列表（进模式先看这个）；editor = 时间轴编辑
 const view = ref<'projects' | 'editor'>('projects');
 const projectList = ref<ProjectListItem[]>([]);
+
 const loadingList = ref(false);
 const newProjectDialog = ref(false);
 const newName = ref('');
@@ -2201,6 +2311,14 @@ const spaceStore = useSpaceStore();
 const currentSpaceDir = computed(() => spaceStore.currentSpace?.dirPath || '');
 const project = ref<ClipProject | null>(null);
 const projectName = ref('');
+
+/** 底部状态栏：剪辑项目（编辑中 = 项目名；列表页 = 项目数）——状态栏只认这一份 */
+watch([view, projectName, projectList], () => {
+  setWorkbenchContext('clip', view.value === 'editor'
+    ? { label: '项目', value: projectName.value || '未命名剪辑' }
+    : { label: '项目', value: `共 ${projectList.value.length} 个` });
+}, { immediate: true });
+
 const dirty = ref(false);
 const files = ref<ConvFile[]>([]);
 const keyword = ref('');
@@ -2433,8 +2551,7 @@ async function fetchFrame() {
   frameLoading.value = true;
   frameError.value = '';
   try {
-    const code = getLicenseCode();
-    const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+    const qs = mediaAuthQuery();
     // ★ URL 带工程版本（project.updatedAt）：改了参数 URL 就变，
     //   即使中间有代理/浏览器缓存也不会拿到旧帧（与 no-store 双保险）。
     const ver = project.value?.updatedAt || 0;
@@ -2547,8 +2664,7 @@ function proxySegStartOf(k: number): number | null {
 /** 段代理 URL（i=段下标；v=工程版本 → 段参数改动后 v 变，强制穿透浏览器缓存重取）。 */
 function proxyUrlOf(i: number): string {
   if (!convId.value) return '';
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const qs = mediaAuthQuery();
   const ver = project.value?.updatedAt || 0;
   return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&i=${i}&v=${ver}${qs}`;
 }
@@ -2698,6 +2814,264 @@ const selectedSticker = computed(() => stickers.value.find((s) => s.id === selec
 const effects = computed(() => project.value?.effects || []);
 const selectedEffect = computed(() => effects.value.find((e) => e.id === selectedEffectId.value) || null);
 
+// ===== 多轨时间轴（S3）=====
+// 轨道模型与"轨道 ↔ v2 视图"同步由 composables/clip/clipTracks 提供（纯函数，有单测）。
+// ★ 老工程没有 tracks：viewVideoRows/viewAudioRows 会按 clips/audios 合成只读视图，
+//   第一次做轨道编辑时才 ensureTracks 物化（并升到 v3）。
+const videoTrackRows = computed<UiTrack[]>(() => viewVideoRows(project.value as never, segSeconds));
+const audioTrackRows = computed<UiTrack[]>(() => viewAudioRows(project.value as never));
+const mainVideoTrack = computed(() => videoTrackRows.value[0] || null);
+const trackDragId = ref('');
+/** 选中非主轨片段时记录所属轨（属性面板只对主轨片段可用） */
+const selectedTrackId = ref('');
+const selectedTrackClipId = ref('');
+
+function rowClips(row: UiTrack): ResolvedClipItem[] { return resolveClipItems(row, segSeconds); }
+function rowAudios(row: UiTrack): ResolvedAudioItem[] { return resolveAudioItems(row); }
+function rowItems(row: UiTrack) { return row.kind === 'video' ? rowClips(row) : rowAudios(row); }
+function itemLeft(start?: number): number { return Math.max(0, (start ?? 0) * pxPerSec.value); }
+function itemWidth(duration?: number): number { return Math.max(24, (duration ?? 0) * pxPerSec.value); }
+
+/** 主轨空档（虚线占位）：允许留空，渲染时补黑。 */
+const mainGaps = computed<Array<{ start: number; end: number }>>(() => {
+  const row = mainVideoTrack.value;
+  if (!row) return [];
+  const out: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const it of rowClips(row)) {
+    if (it.start > cursor + 1e-6) out.push({ start: cursor, end: it.start });
+    cursor = Math.max(cursor, it.start + it.duration);
+  }
+  return out;
+});
+
+function isMainVideo(row: UiTrack): boolean {
+  return row.kind === 'video' && mainVideoTrack.value?.id === row.id;
+}
+function ensureProjectTracks(): UiTrack[] | null {
+  const p = project.value;
+  if (!p) return null;
+  const tracks = ensureTracks(p as never, segSeconds);
+  p.version = 3;
+  return tracks;
+}
+function realClipItem(row: UiTrack, id: string): UiClipItem | null {
+  return (row.items.find((i) => i.type === 'clip' && i.id === id) as UiClipItem | undefined) || null;
+}
+function realAudioItem(row: UiTrack, id: string) {
+  return row.items.find((i) => i.type === 'audio' && i.id === id) || null;
+}
+/** 主轨是"顺序叙事"：修剪/删改后按顺序重排（保留既有的 ripple 行为）。 */
+function reflowMain(row: UiTrack) {
+  let cursor = 0;
+  for (const it of sortItems(row.items.filter(isClipItem))) {
+    it.start = round3(cursor);
+    it.duration = round3(it.duration ?? segSeconds(it.segment));
+    cursor += it.duration ?? 0;
+  }
+}
+function mirrorAfterVideoEdit() {
+  if (project.value?.tracks) mirrorClipsFromMainTrack(project.value as never, segSeconds);
+}
+function mirrorAfterAudioEdit() {
+  if (project.value?.tracks) mirrorAudiosFromMainTrack(project.value as never);
+}
+
+async function addVideoTrack() {
+  if (!project.value) return;
+  const tracks = ensureProjectTracks();
+  if (!tracks) return;
+  const n = tracks.filter((t) => t.kind === 'video').length + 1;
+  tracks.push({ id: nextTrackId(tracks, 'video'), kind: 'video', name: `视频${n}`, items: [] });
+  pendingLabel.value = '新增视频轨';
+  dirty.value = true;
+  await save();
+  note('已新增视频轨：把素材拖到这条轨上，或在素材右键菜单里选择「放到该轨」');
+}
+
+async function addAudioTrack() {
+  if (!project.value) return;
+  const tracks = ensureProjectTracks();
+  if (!tracks) return;
+  const n = tracks.filter((t) => t.kind === 'audio').length + 1;
+  tracks.push({ id: nextTrackId(tracks, 'audio'), kind: 'audio', name: `音轨${n}`, items: [] });
+  mirrorAfterAudioEdit();
+  pendingLabel.value = '新增音频轨';
+  dirty.value = true;
+  await save();
+  note('已新增音频轨：在素材右键菜单里选择「放到该音轨」');
+}
+
+async function removeTrack(id: string) {
+  const p = project.value;
+  if (!p?.tracks) return;
+  const idx = p.tracks.findIndex((t) => t.id === id);
+  if (idx < 0) return;
+  const tr = p.tracks[idx];
+  if (tr.kind === 'video' && mainVideoTrack.value?.id === id) {
+    note('主轨固定在第一位（合成底片），不能删除');
+    return;
+  }
+  if (tr.items.length && !window.confirm(`删除轨道「${tr.name || tr.id}」及其中的 ${tr.items.length} 个片段？`)) return;
+  p.tracks.splice(idx, 1);
+  if (tr.kind === 'video') mirrorAfterVideoEdit();
+  else mirrorAfterAudioEdit();
+  selectedTrackId.value = '';
+  selectedTrackClipId.value = '';
+  pendingLabel.value = '删除轨道';
+  dirty.value = true;
+  await save();
+  note(`已删除轨道 ${tr.name || tr.id}`);
+}
+
+async function toggleTrack(key: 'hidden' | 'muted' | 'locked', id: string) {
+  const tr = project.value?.tracks?.find((t) => t.id === id);
+  if (!tr) return;
+  (tr as unknown as Record<string, boolean>)[key] = !(tr as unknown as Record<string, boolean>)[key];
+  pendingLabel.value = key === 'locked' ? '锁定/解锁轨道' : key === 'muted' ? '静音/取消静音' : '显示/隐藏轨道';
+  dirty.value = true;
+  await save();
+}
+
+/** 轨道顺序 = 合成顺序：视频轨在前、音频轨在后；组内可调，主轨固定第 1。 */
+async function reorderTracks(mutate: (video: UiTrack[], audio: UiTrack[]) => boolean) {
+  const p = project.value;
+  if (!p?.tracks) return;
+  const video = p.tracks.filter((t) => t.kind === 'video');
+  const audio = p.tracks.filter((t) => t.kind === 'audio');
+  if (!mutate(video, audio)) return;
+  p.tracks = [...video, ...audio];
+  pendingLabel.value = '调整轨道顺序';
+  dirty.value = true;
+  await save();
+}
+
+async function moveTrack(kind: TrackKind, id: string, delta: number) {
+  await reorderTracks((video, audio) => {
+    const arr = kind === 'video' ? video : audio;
+    const i = arr.findIndex((t) => t.id === id);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= arr.length) return false;
+    if (kind === 'video' && (i === 0 || j === 0)) { note('主轨固定在第一位（合成底片）'); return false; }
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    return true;
+  });
+}
+
+function onTrackDragStart(id: string) { trackDragId.value = id; }
+async function onTrackDrop(targetId: string) {
+  const dragId = trackDragId.value;
+  trackDragId.value = '';
+  if (!dragId || dragId === targetId) return;
+  await reorderTracks((video, audio) => {
+    const src = video.some((t) => t.id === dragId) ? video : audio;
+    const from = src.findIndex((t) => t.id === dragId);
+    const to = src.findIndex((t) => t.id === targetId);
+    if (from < 0 || to < 0) return false;
+    if (src === video && (from === 0 || to === 0)) { note('主轨固定在第一位（合成底片）'); return false; }
+    const [moved] = src.splice(from, 1);
+    src.splice(to, 0, moved);
+    return true;
+  });
+}
+
+function selectTrackClip(row: UiTrack, id: string) {
+  selectedTrackId.value = row.id;
+  selectedTrackClipId.value = id;
+  if (isMainVideo(row)) selectClip(id);
+  else {
+    selectedClipId.value = id;
+    selectedTextId.value = '';
+    selectedAudioId.value = '';
+    selectedStickerId.value = '';
+    selectedEffectId.value = '';
+    rightTab.value = 'inspector';
+  }
+}
+const selectedExtraClip = computed<ResolvedClipItem | null>(() => {
+  if (!selectedTrackClipId.value) return null;
+  for (const row of videoTrackRows.value) {
+    if (isMainVideo(row)) continue;
+    const it = row.items.find((x) => x.type === 'clip' && x.id === selectedTrackClipId.value);
+    if (it) return { ...(it as UiClipItem), start: it.start ?? 0, duration: it.duration ?? segSeconds((it as UiClipItem).segment) };
+  }
+  return null;
+});
+
+/** 右键音频片段：转回 v2 视图对象交给既有菜单（extra 音轨的项可能不在 audios 里）。 */
+function onAudioMenuById(e: MouseEvent, id: string) {
+  const a = audios.value.find((x) => x.id === id);
+  if (a) { onAudioMenu(e, a); return; }
+  selectAudio(id);
+  openCtxMenu(e, `音频 ${baseName(id)}`, [
+    { label: '删除该音频', icon: 'Delete', danger: true, action: () => {
+      for (const tr of project.value?.tracks || []) {
+        if (tr.kind !== 'audio') continue;
+        if (tr.items.some((x) => x.id === id)) { void removeTrackItem(tr, id); return; }
+      }
+    } },
+  ], `audio-extra-${id}`);
+}
+
+/** 把片段从一条轨移到另一条（同类轨道）；目标轨放不下就拒绝。 */
+async function moveItemToTrack(row: UiTrack, id: string, targetId: string): Promise<boolean> {
+  const p = project.value;
+  const target = p?.tracks?.find((t) => t.id === targetId);
+  if (!p || !target || target.id === row.id || target.kind !== row.kind || target.locked) return false;
+  const items = rowItems(row);
+  const cur = items.find((i) => i.id === id);
+  if (!cur) return false;
+  const start = clampWithinGaps(rowItems(target), id, cur.start, cur.duration);
+  if (start == null) { note('目标轨没有足够空档：先在其他片段之间腾出位置'); return false; }
+  row.items = row.items.filter((i) => i.id !== id);
+  const movedItem: UiTrackItem = row.kind === 'video'
+    ? { ...(cur as ResolvedClipItem), type: 'clip', start, duration: cur.duration }
+    : { ...(cur as ResolvedAudioItem), type: 'audio', start, duration: cur.duration };
+  target.items.push(movedItem);
+  if (row.kind === 'video') {
+    if (isMainVideo(row)) reflowMain(row);
+    mirrorAfterVideoEdit();
+  } else {
+    mirrorAfterAudioEdit();
+  }
+  selectedTrackId.value = target.id;
+  return true;
+}
+
+async function moveItemToMain(row: UiTrack, id: string) {
+  const main = mainVideoTrack.value;
+  if (!main || row.id === main.id) return;
+  if (row.kind !== 'video') return;
+  const ok = await moveItemToTrack(row, id, main.id);
+  if (ok) { pendingLabel.value = '片段移到主轨'; void save(); }
+}
+
+async function removeTrackItem(row: UiTrack, id: string) {
+  row.items = row.items.filter((i) => i.id !== id);
+  if (row.kind === 'video') {
+    if (isMainVideo(row)) reflowMain(row);
+    mirrorAfterVideoEdit();
+  } else {
+    mirrorAfterAudioEdit();
+  }
+  selectedTrackClipId.value = '';
+  pendingLabel.value = '删除轨道片段';
+  dirty.value = true;
+  await save();
+}
+
+function onTrackClipMenu(e: MouseEvent, row: UiTrack, item: ResolvedClipItem) {
+  selectTrackClip(row, item.id);
+  const items: CtxItem[] = [
+    ...(row.kind === 'video' && !isMainVideo(row)
+      ? [{ label: '移到主轨末尾', icon: 'VideoCamera', action: () => moveItemToMain(row, item.id) } as CtxItem]
+      : []),
+    { label: '删除该片段', icon: 'Delete', danger: true, action: () => removeTrackItem(row, item.id) },
+  ];
+  openCtxMenu(e, `${row.name || row.id} · ${item.segment?.label || baseName(item.segment?.file || '')}`, items, `trackclip-${item.id}`);
+}
+
+
 /** 音频字段滑杆（缺省值不写字段；淡入淡出不超过本段时长，与后端 normalizeAudio 同口径）。 */
 function setAudioField(key: 'volume' | 'fadeIn' | 'fadeOut', v: number, def: number, lo: number, hi: number) {
   const a = selectedAudio.value;
@@ -2792,7 +3166,17 @@ function segSeconds(c: ClipSegment): number {
   const te = c.trimEnd ?? (raw > 0 ? raw : ts);
   return c.kenburns?.duration ?? Math.max(0, te - ts) / (c.speed ?? 1);
 }
-const estTotal = computed(() => Math.max(1, clips.value.reduce((a, c) => a + segSeconds(c), 0)));
+const estTotal = computed(() => {
+  let max = clips.value.reduce((a, c) => a + segSeconds(c), 0);
+  for (const t of [...videoTrackRows.value, ...audioTrackRows.value]) {
+    for (const it of t.items) {
+      const start = it.start ?? 0;
+      const dur = typeof it.duration === 'number' ? it.duration : 0;
+      max = Math.max(max, start + dur);
+    }
+  }
+  return Math.max(1, max);
+});
 /**
  * 工程时长标签。
  *
@@ -2889,8 +3273,7 @@ const vectorFrameStyle = computed(() => ({
 function layerMediaUrl(file: string): string {
   const p = String(file || '').trim();
   if (!p || !convId.value) return '';
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const qs = mediaAuthQuery();
   return `${API_BASE}/plugin/clip-mode/layer-media?conversationId=${encodeURIComponent(convId.value)}&path=${encodeURIComponent(p)}${qs}`;
 }
 
@@ -3043,14 +3426,12 @@ function zoomBy(f: number) { zoom.value = Math.min(6, Math.max(0.25, zoom.value 
 
 /**
  * 预览播放地址。
- * ★ 参数名与 FilePreview 保持一致：授权码是 `license=`（不是 x-license），
- *   且**不加 token** —— file-stream 走 authMiddleware 的本地 guest 身份，
- *   多带一个 query token 只会在日志里留痕，没有实际作用。
+ * ★ 媒体元素带不了请求头：授权码 `license=`、JWT `token=`、管理员视角 `viewAs=`
+ *   全部走 query（统一由 mediaAuthQuery 拼）。漏 token 在 multi 模式下就是 401 → 黑屏。
  */
 function streamUrl(name: string): string {
   if (!convId.value || !name) return '';
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const qs = mediaAuthQuery();
   return `${API_BASE}/conversations/${encodeURIComponent(convId.value)}/file-stream?name=${encodeURIComponent(name)}${qs}`;
 }
 
@@ -3197,6 +3578,9 @@ function resetHistory() {
 
 async function save() {
   if (!project.value) return;
+  // ★ 保存前把轨道与 v2 视图对齐：既有 op 改的是视图、S3 轨道编辑改的是轨道，
+  //   两个方向都在这里收敛（规则与 server 的 buildProjectV3ForWrite 同构）。
+  syncProjectModel(project.value as never, segSeconds);
   const after = snapshotProject();
   const ok = await persistProject();
   // ★ 落盘成功才入历史栈：保存失败说明改动没生效，不该给用户一条"可撤销"的假历史
@@ -3576,15 +3960,19 @@ async function duplicateText() {
  *   而拖动边缘 + 实时预览帧 = 所见即所得。这是剪辑软件最核心的手感。
  * ★ 增量按像素换算：拖动距离 / pxPerSec = 秒数；变速的段要乘 speed 换算回素材时间。
  */
-function startTrim(e: MouseEvent, c: ClipSegment, which: 'start' | 'end') {
+function startTrim(e: MouseEvent, row: UiTrack, item: ResolvedClipItem, which: 'start' | 'end') {
   e.preventDefault();
-  selectClip(c.id);
+  if (row.locked) return;
+  const real = realClipItem(row, item.id);
+  if (!real) return;
+  selectTrackClip(row, real.id);
+  const c = real.segment;
   const startX = e.clientX;
   const t0 = c.trimStart ?? 0;
   const raw = mediaMeta.value[c.file]?.duration ?? 0;
   const t1 = c.trimEnd ?? raw;
   const sp = c.speed ?? 1;
-  // 正在拖的段不做"移动"判定
+  // 正在拖的段不做移动判定
   dragMoved.value = false;
 
   const move = (ev: MouseEvent) => {
@@ -3598,15 +3986,34 @@ function startTrim(e: MouseEvent, c: ClipSegment, which: 'start' | 'end') {
       const next = Math.max((c.trimStart ?? 0) + 0.1, Math.min(maxEnd, t1 + dSec));
       c.trimEnd = Number(next.toFixed(3));
     }
+    // 轨道项的 duration 必须同步：时间轴/出片都按它排布
+    real.duration = round3(segSeconds(c));
+    real.start = round3(real.start ?? item.start);
     dirty.value = true;
-    scheduleFrameFetch(180);   // 拖动中持续刷新预览帧（这就是"边剪边看"）
+    scheduleFrameFetch(180);   // 拖动中持续刷新预览帧（这就是边剪边看）
   };
   const up = () => {
     window.removeEventListener('mousemove', move);
     window.removeEventListener('mouseup', up);
+    if (isMainVideo(row)) {
+      reflowMain(row);
+    } else {
+      // 非主轨：修剪后不许压到后一段（同轨重叠会被服务端拒绝保存）
+      const others = rowClips(row).filter((x) => x.id !== real.id);
+      const start = real.start ?? 0;
+      const dur = real.duration ?? 0;
+      if (overlapsOthers(others, real.id, start, dur)) {
+        const nextStart = others
+          .filter((x) => x.start > start)
+          .reduce((m, x) => Math.min(m, x.start), Infinity);
+        if (Number.isFinite(nextStart)) real.duration = round3(Math.max(0.1, nextStart - start));
+      }
+    }
+    mirrorAfterVideoEdit();
+    pendingLabel.value = '修剪片段';
     // 拖完才落盘（拖动中每帧都写库既慢又产生大量无意义写入）
     void save().then(() => {
-      const cur = clips.value.find((x) => x.id === c.id);
+      const cur = clips.value.find((x) => x.id === real.id);
       if (cur) selectClip(cur.id);
     });
   };
@@ -3614,62 +4021,121 @@ function startTrim(e: MouseEvent, c: ClipSegment, which: 'start' | 'end') {
   window.addEventListener('mouseup', up);
 }
 
-/** 片段按下：区分"点击选中"与"按住拖动（预留拖拽移动）"。 */
+/** 吸附参考点：所有轨道的片段边缘 + 播放头 + 0。 */
+function trackSnapPoints(): number[] {
+  const pts = [0, playhead.value];
+  for (const t of project.value?.tracks || []) {
+    if (t.locked) continue;
+    for (const it of t.items) {
+      if (typeof it.start !== 'number') continue;
+      pts.push(it.start);
+      if (typeof it.duration === 'number') pts.push(it.start + it.duration);
+    }
+  }
+  return pts;
+}
+
 /**
- * 片段按下：实现"按住拖动 → 交换位序"。
+ * 片段按下：按住拖动 = **移动**（不再交换位序）。
  *
- * ★★★ 为什么必须做（2026-10-07 用户："实现一个剪辑软件最基础的功能"）：
- *   调整片段顺序是剪辑里**最高频**的操作（改叙事节奏），此前只能右键"前移/后移一位"，
- *   挪 5 位要点 5 次。商用软件都是直接拖。
- *
- * ★ 实现取舍：**交换位序**而不是"插入到任意位置" ——
- *   时间轴是首尾相接的线性结构，"拖到第 N 位"与"与前一段交换"对用户是同一件事，
- *   但前者要处理"拖到空白处"等边界；交换语义简单、结果可预期。
- * ★ 阈值 4px：低于它视为点击（否则轻微抖动会把片段顺序弄乱）。
+ * ★★ S3 起主轨支持空档/跨轨，所以拖拽语义从交换位序改为移动绝对位置：
+ *   横拖改 start（吸附到邻居边缘/播放头），竖拖到别的视频轨 = 跨轨移动。
+ * ★ 同轨重叠**不允许**：拖动时用空隙夹取，片段会在邻居边缘停住；
+ *   跨轨落点放不下时拒绝并提示（跨轨允许落到任意空档）。
+ * ★ 阈值 3px：低于它视为点击（否则轻微抖动会把片段挪偏）。
  */
-function onClipMouseDown(e: MouseEvent, c: ClipSegment) {
-  if (e.button !== 0) return;   // 只有左键
-  dragMoved.value = false;
+function onClipMouseDown(e: MouseEvent, row: UiTrack, item: ResolvedClipItem) {
+  if (e.button !== 0 || row.locked) return;   // 只有左键
+  ensureProjectTracks();
+  const real = realClipItem(row, item.id);
+  if (!real) return;
+  selectTrackClip(row, real.id);
   const startX = e.clientX;
-  let lastSwapIdx = clips.value.findIndex((x) => x.id === c.id);
+  const startY = e.clientY;
+  const origStart = real.start ?? item.start;
+  const dur = real.duration ?? item.duration;
+  const points = trackSnapPoints();
+  let moved = false;
 
   const move = (ev: MouseEvent) => {
-    if (Math.abs(ev.clientX - startX) < 4) return;
+    if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
+    moved = true;
     dragMoved.value = true;
-    const curIdx = clips.value.findIndex((x) => x.id === c.id);
-    if (curIdx < 0 || !project.value) return;
-    // 指针位置对应"应处于第几段"：按各段像素宽度累计判断（中点分界）
-    const el = tlScroll.value as HTMLElement | null;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const xInTimeline = ev.clientX - rect.left + el.scrollLeft;
-    let acc = 0;
-    let targetIdx = clips.value.length - 1;
-    for (let i = 0; i < clips.value.length; i++) {
-      const w = segWidth(clips.value[i]);
-      if (xInTimeline < acc + w / 2) { targetIdx = i; break; }
-      acc += w;
-    }
-    if (targetIdx === curIdx || targetIdx === lastSwapIdx) return;
-    // 就地交换（拖动中不落盘）
-    const arr = project.value.clips;
-    const moved = arr.splice(curIdx, 1)[0];
-    arr.splice(targetIdx, 0, moved);
-    lastSwapIdx = targetIdx;
-    selectClip(c.id);
-    scheduleFrameFetch(200);
+    const raw = origStart + (ev.clientX - startX) / pxPerSec.value;
+    const snapped = snapStart(raw, dur, points, 8 / pxPerSec.value);
+    const clamped = clampWithinGaps(rowClips(row), real.id, snapped, dur);
+    if (clamped == null) return;   // 该轨放不下：保持原位
+    real.start = round3(clamped);
+    real.duration = round3(dur);
+    if (isMainVideo(row)) mirrorAfterVideoEdit();
+    dirty.value = true;
+    scheduleFrameFetch(220);
   };
-  const up = () => {
+  const up = async (ev: MouseEvent) => {
     window.removeEventListener('mousemove', move);
     window.removeEventListener('mouseup', up);
-    if (dragMoved.value) {
-      pendingLabel.value = '调整片段顺序';
-      dirty.value = true;
-      void save();
+    if (!moved) return;
+    // 跨轨：看松手时指针落在哪个轨道行（行上有 data-track-id）
+    const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+    const targetId = el?.closest('[data-track-id]')?.getAttribute('data-track-id') || row.id;
+    if (targetId !== row.id && !(await moveItemToTrack(row, real.id, targetId))) {
+      note('目标轨放不下这段（可能不是同类轨道或没有足够空档），已保持原轨');
     }
+    if (isMainVideo(row)) mirrorAfterVideoEdit();
+    mirrorAfterAudioEditIfNeeded();
+    pendingLabel.value = '移动片段';
+    dirty.value = true;
+    await save();
   };
   window.addEventListener('mousemove', move);
   window.addEventListener('mouseup', up);
+}
+
+/** 音频片段拖动：横拖改 start、竖拖换音频轨。 */
+function onAudioMouseDown(e: MouseEvent, row: UiTrack, item: ResolvedAudioItem) {
+  if (e.button !== 0 || row.locked) return;
+  ensureProjectTracks();
+  const real = realAudioItem(row, item.id);
+  if (!real) return;
+  selectAudio(real.id);
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const dur = item.duration;
+  const points = trackSnapPoints();
+  let moved = false;
+  const move = (ev: MouseEvent) => {
+    if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
+    moved = true;
+    dragMoved.value = true;
+    const raw = (real.start ?? item.start) + (ev.clientX - startX) / pxPerSec.value;
+    const snapped = snapStart(raw, dur, points, 8 / pxPerSec.value);
+    const clamped = clampWithinGaps(rowAudios(row), real.id, snapped, dur);
+    if (clamped == null) return;
+    real.start = round3(clamped);
+    mirrorAfterAudioEdit();
+    dirty.value = true;
+  };
+  const up = async (ev: MouseEvent) => {
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+    if (!moved) return;
+    const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+    const targetId = el?.closest('[data-track-id]')?.getAttribute('data-track-id') || row.id;
+    if (targetId !== row.id && !(await moveItemToTrack(row, real.id, targetId))) {
+      note('目标音轨放不下这段，已保持原轨');
+    }
+    mirrorAfterAudioEdit();
+    pendingLabel.value = '移动音频';
+    dirty.value = true;
+    await save();
+  };
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+}
+
+/** 视频/音频共用的移动后镜像（避免在拖动回调里判断类型）。 */
+function mirrorAfterAudioEditIfNeeded() {
+  if (project.value?.tracks?.some((t) => t.kind === 'audio')) mirrorAfterAudioEdit();
 }
 
 // ===== 键盘快捷键（对标商用软件）=====
@@ -4374,8 +4840,7 @@ async function openStickerLib() {
 }
 
 function stickerPreviewUrl(id: string): string {
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const qs = mediaAuthQuery();
   return `${API_BASE}/plugin/clip-mode/library/sticker-preview?id=${encodeURIComponent(id)}${qs}`;
 }
 
@@ -4504,8 +4969,7 @@ function onEffectMenu(e: MouseEvent, it: { id: string; fx: string; start: number
 /** 音频波形图 URL（服务端 showwavespic；仅限本会话工程引用/登记过的文件）。 */
 function waveUrl(p: string, w = 600, h = 56): string {
   if (!convId.value || !p) return '';
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const qs = mediaAuthQuery();
   return `${API_BASE}/plugin/clip-mode/waveform?conversationId=${encodeURIComponent(convId.value)}&path=${encodeURIComponent(p)}&w=${w}&h=${h}${qs}`;
 }
 
@@ -4820,11 +5284,24 @@ async function duplicateClip() {
 
 async function removeClip() {
   pendingLabel.value = '删除片段';
+  if (!project.value) return;
+  // 非主轨片段：选中项不在 clips 里，按所属轨道删除
+  if (selectedExtraClip.value) {
+    const row = videoTrackRows.value.find((t) => t.items.some((x) => x.id === selectedExtraClip.value!.id));
+    if (row) { await removeTrackItem(row, selectedExtraClip.value.id); return; }
+  }
   const i = selectedClipIndex.value;
-  if (i < 0 || !project.value) return;
+  if (i < 0) return;
   project.value.clips.splice(i, 1);
   selectedClipId.value = '';
   dirty.value = true; await save();
+}
+
+async function removeSelectedExtraClip() {
+  const it = selectedExtraClip.value;
+  if (!it) return;
+  const row = videoTrackRows.value.find((t) => t.items.some((x) => x.id === it.id));
+  if (row) await removeTrackItem(row, it.id);
 }
 
 async function removeText() {
@@ -4852,8 +5329,7 @@ let sfxAudio: HTMLAudioElement | null = null;
 function previewSfx(id: string) {
   if (sfxAudio) { sfxAudio.pause(); sfxAudio = null; }
   if (sfxPlaying.value === id) { sfxPlaying.value = ''; return; }  // 再点一次 = 停止
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const qs = mediaAuthQuery();
   const a = new Audio(`${API_BASE}/plugin/clip-mode/library/sfx-preview?id=${encodeURIComponent(id)}${qs}`);
   a.onended = () => { if (sfxPlaying.value === id) sfxPlaying.value = ''; };
   a.onerror = () => { sfxPlaying.value = ''; note('试听失败（ffmpeg 不可用？）'); };
@@ -6738,7 +7214,7 @@ onMounted(async () => {
 .cp-toolbar-sep { width: 1px; height: 16px; background: var(--el-border-color-lighter); margin: 0 4px; }
 .cp-hint { font-size: 11px; color: var(--el-text-color-placeholder); }
 .cp-tl { display: flex; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; overflow: hidden; background: var(--el-fill-color-blank); }
-.cp-tl-labels { flex: 0 0 62px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
+.cp-tl-labels { flex: 0 0 96px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
 .cp-tl-label { display: flex; align-items: center; gap: 4px; height: 58px; padding: 0 8px; font-size: 11px; color: var(--el-text-color-secondary); border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tl-label.head { height: 24px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tl-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
@@ -6755,6 +7231,25 @@ onMounted(async () => {
 .cp-track-empty-btn { width: 100%; padding: 0; border: none; background: none; cursor: pointer; }
 .cp-track-empty-btn:hover:not(:disabled) { color: var(--el-color-primary); }
 .cp-track-empty-btn:disabled { cursor: not-allowed; opacity: .55; }
+
+/* 多轨（S3）：轨道头 / 空档 / 隐藏态 */
+.cp-track-head { gap: 2px; flex-wrap: wrap; align-content: center; padding: 3px 5px; overflow: hidden; }
+.cp-track-head.main { background: var(--el-color-primary-light-9); }
+.cp-track-head.dim { opacity: .55; }
+.cp-th-name { flex: 1 1 100%; font-size: 10px; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-th-actions { display: flex; gap: 1px; flex-wrap: nowrap; }
+.cp-th-btn { width: 15px; height: 14px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 3px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font-size: 9px; line-height: 1; cursor: pointer; }
+.cp-th-btn:hover:not(:disabled) { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); }
+.cp-th-btn:disabled { opacity: .35; cursor: not-allowed; }
+.cp-th-btn.danger:hover:not(:disabled) { color: var(--el-color-danger); border-color: var(--el-color-danger-light-5); }
+.cp-tl-addrow { display: flex; flex-direction: column; gap: 3px; padding: 6px; }
+.cp-th-add { width: 100%; padding: 3px 0; font-size: 10px; border: 1px dashed var(--el-border-color); border-radius: 4px; background: none; color: var(--el-text-color-secondary); cursor: pointer; }
+.cp-th-add:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }
+.cp-track.main { background: color-mix(in srgb, var(--el-color-primary) 4%, transparent); }
+.cp-track.dim { opacity: .5; }
+/* 主轨空档：虚线占位（允许留空；渲染时补黑） */
+.cp-gap { position: absolute; top: 8px; height: 42px; border: 1px dashed var(--el-border-color); border-radius: 4px; background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--el-fill-color) 60%, transparent) 6px 12px); pointer-events: none; }
+.cp-clip.off, .cp-audio.off { opacity: .45; }
 
 /* 音效库弹窗 */
 .cp-sfxl { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; }

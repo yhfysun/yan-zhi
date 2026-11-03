@@ -453,7 +453,10 @@ export function buildProjectV3ForWrite(p: ClipProject): ClipProjectV3 {
     if (audioIdx < 0) base.tracks.push({ id: 'a1', kind: 'audio', name: '音频', items });
     else base.tracks[audioIdx] = { ...base.tracks[audioIdx], items };
   } else if (audioIdx >= 0) {
-    base.tracks.splice(audioIdx, 1);
+    // 视图清空：清掉主音频轨的项，但**保留轨道本身**。
+    // ★ S3 起 UI 允许空轨道（先加轨再拖素材）；删轨由 UI 显式删除。
+    //   保留空轨不会让已删音频"复活"：项已经清空，读回的 audios 视图仍为空。
+    base.tracks[audioIdx] = { ...base.tracks[audioIdx], items: [] };
   }
 
   // timedLayers ← 视图重建（未知 kind 从旧 layers 保留），规则与 v2 的 layers 重建同构

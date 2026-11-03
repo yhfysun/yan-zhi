@@ -303,15 +303,19 @@ describe('buildProjectV3ForWrite · 视图是编辑权威', () => {
     expect(() => buildProjectV3ForWrite(loaded)).toThrow(/复合片段/);
   });
 
-  it('★ audios 视图清空 → 主音频轨被移除，额外音频轨保留', () => {
+  it('★ audios 视图清空 → 主音频轨项清空但保留轨道（S3 允许空轨），额外音频轨保留', () => {
     const loaded = loadedFromV2(v2Fixture());
     loaded.audios = [];
-    expect(buildProjectV3ForWrite(loaded).tracks.some((t) => t.kind === 'audio')).toBe(false);
+    const written = buildProjectV3ForWrite(loaded);
+    const audioTracks = written.tracks.filter((t) => t.kind === 'audio');
+    expect(audioTracks).toHaveLength(1);
+    expect(audioTracks[0].items).toEqual([]);
 
     const withExtra = loadedFromV2(v2Fixture());
     withExtra.audios = [];
     withExtra.tracks = [...withExtra.tracks, { id: 'a9', kind: 'audio', items: [] }];
-    expect(buildProjectV3ForWrite(withExtra).tracks.filter((t) => t.kind === 'audio').map((t) => t.id)).toEqual(['a9']);
+    const w2 = buildProjectV3ForWrite(withExtra);
+    expect(w2.tracks.filter((t) => t.kind === 'audio').map((t) => t.id)).toEqual(['a1', 'a9']);
   });
 });
 
