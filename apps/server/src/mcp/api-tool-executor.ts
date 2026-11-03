@@ -129,7 +129,7 @@ import {
   runScheduledTask,
   refreshScheduledTaskScheduler,
 } from '../services/scheduled-tasks.js';
-import { prepareScheduledRunbookBinding } from '../plugins/ops-shell.js';
+import { latestScheduledRunbookRun, prepareScheduledRunbookBinding } from '../plugins/ops-shell.js';
 import {
   listOllamaMarket,
   pullOllamaModel,
@@ -4871,7 +4871,11 @@ export async function executeApiTool(
 
       // Scheduled task
       case 'api_scheduled_task_list':
-        return ok(db.prepare('SELECT * FROM scheduled_task WHERE user_id = ? ORDER BY created_at DESC').all(requireUser(userId)));
+        return ok((db.prepare('SELECT * FROM scheduled_task WHERE user_id = ? ORDER BY created_at DESC').all(requireUser(userId)) as any[])
+          .map((row) => ({
+            ...row,
+            lastRunbookRun: row.task_type === 'runbook' ? latestScheduledRunbookRun(row.id) : null,
+          })));
       case 'api_scheduled_task_create': {
         const uid = requireUser(userId);
         const name = str(args, 'name');

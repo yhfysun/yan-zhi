@@ -22,6 +22,17 @@ export interface ScheduleConfig {
   daysOfWeek?: number[];
 }
 
+export interface ScheduledRunbookRunSummary {
+  runId: string;
+  runbookId: string;
+  runbookName: string;
+  runbookVersion: number;
+  status: 'running' | 'success' | 'failed' | 'rolled_back' | 'cancelled';
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
+}
+
 /** 对话定时任务 */
 export interface ScheduledTask {
   id: string;
@@ -57,6 +68,7 @@ export interface ScheduledTask {
   runbookName?: string | null;
   runbookVersion?: number | null;
   runbookInputs?: Record<string, string> | null;
+  lastRunbookRun?: ScheduledRunbookRunSummary | null;
   enabled: boolean;
   lastRunAt?: number | null;
   nextRunAt?: number | null;
@@ -120,6 +132,7 @@ function rowToTask(r: any): ScheduledTask {
     runbookName: r.runbook_name ?? r.runbookName ?? null,
     runbookVersion: r.runbook_version ?? r.runbookVersion ?? null,
     runbookInputs: runbookInputsJson ? (typeof runbookInputsJson === 'string' ? JSON.parse(runbookInputsJson) : runbookInputsJson) : r.runbookInputs ?? null,
+    lastRunbookRun: r.last_runbook_run ?? r.lastRunbookRun ?? null,
     enabled: !!(r.enabled ?? 1),
     lastRunAt: r.last_run_at ?? r.lastRunAt ?? null,
     nextRunAt: r.next_run_at ?? r.nextRunAt ?? null,

@@ -43,6 +43,11 @@ describe('ops runbook store', () => {
       rollbackResults: [],
     });
     expect(store.getRun(run.id)).toMatchObject({ status: 'success', runbookVersion: 2 });
+    expect(store.getLatestRunByScheduledTask('st-1')).toMatchObject({
+      id: run.id,
+      status: 'success',
+      scheduledTaskId: 'st-1',
+    });
 
     const stale = store.createRun(v2, 'prod-web');
     store.markInterruptedRuns();

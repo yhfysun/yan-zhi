@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { computeNextRun, nextCronTime, runScheduledTask, refreshScheduledTaskScheduler, parseSchedule } from '../services/scheduled-tasks.js';
-import { prepareScheduledRunbookBinding } from '../plugins/ops-shell.js';
+import { latestScheduledRunbookRun, prepareScheduledRunbookBinding } from '../plugins/ops-shell.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -30,6 +30,7 @@ function rowToTask(r: any) {
     runbookName: r.runbook_name ?? null,
     runbookVersion: r.runbook_version ?? null,
     runbookInputs: (() => { try { return r.runbook_inputs_json ? JSON.parse(r.runbook_inputs_json) : null; } catch { return null; } })(),
+    lastRunbookRun: r.task_type === 'runbook' ? latestScheduledRunbookRun(r.id) : null,
     schedule: parseSchedule(r.schedule_json),
     expireAt: r.expire_at ?? null,
     enabled: !!r.enabled,

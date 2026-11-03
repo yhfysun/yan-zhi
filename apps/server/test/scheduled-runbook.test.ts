@@ -88,10 +88,12 @@ describe('Runbook 调度接线', () => {
     }
     expect(tool).toContain("taskType === 'runbook'");
     expect(tool).toContain('prepareScheduledRunbookBinding');
+    expect(tool).toContain('lastRunbookRun');
     expect(toolSchema).toContain("enum: ['chat', 'runbook']");
     expect(toolSchema).toContain('runbookInputs');
     expect(routes).toContain("isRunbookTask");
     expect(routes).toContain('prepareScheduledRunbookBinding');
+    expect(routes).toContain('lastRunbookRun');
   });
 });
 

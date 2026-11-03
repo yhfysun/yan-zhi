@@ -86,6 +86,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     ]) {
       try { database.exec(sql); } catch { /* 列已存在 */ }
     }
+    database.exec('CREATE INDEX IF NOT EXISTS idx_ops_runbook_run_scheduled ON ops_runbook_run(scheduled_task_id, started_at DESC)');
     const rows = database.prepare('SELECT * FROM ops_runbook').all() as any[];
     for (const row of rows) recordVersion(rowToRunbook(row));
   };
@@ -256,6 +257,15 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     const row = database.prepare('SELECT * FROM ops_runbook_run WHERE id=?').get(id) as any;
     return row ? rowToRun(row) : null;
   };
+  const getLatestRunByScheduledTask = (scheduledTaskId: string): OpsRunbookRun | null => {
+    const row = database.prepare(`
+      SELECT * FROM ops_runbook_run
+      WHERE scheduled_task_id=?
+      ORDER BY started_at DESC
+      LIMIT 1
+    `).get(scheduledTaskId) as any;
+    return row ? rowToRun(row) : null;
+  };
 
   const listRuns = (runbookId?: string, limit = 50): OpsRunbookRun[] => {
     const n = Math.max(1, Math.min(200, Math.floor(limit) || 50));
@@ -288,6 +298,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     createRun,
     updateRun,
     getRun,
+    getLatestRunByScheduledTask,
     listRuns,
     hasRunning,
     markInterruptedRuns,

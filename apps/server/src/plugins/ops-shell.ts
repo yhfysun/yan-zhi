@@ -44,7 +44,7 @@ import { sendOpsMonitorNotifications } from './ops-notify.js';
 import {
   buildRunbook, buildRunbookApprovalSubject, executeRunbook, normalizeRunbookInput, renderRunbook,
   resolveRunbookParams,
-  type OpsRunbook,
+  type OpsRunbook, type OpsRunbookRun,
 } from './ops-runbook.js';
 import { createOpsRunbookStore } from './ops-runbook-store.js';
 import { prepareUnattendedRunbook } from './ops-runbook-schedule.js';
@@ -428,6 +428,32 @@ export interface ScheduledRunbookBinding {
   runbookName: string;
   runbookVersion: number;
   inputParams: Record<string, string>;
+}
+
+export interface ScheduledRunbookRunSummary {
+  runId: string;
+  runbookId: string;
+  runbookName: string;
+  runbookVersion: number;
+  status: OpsRunbookRun['status'];
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
+}
+
+export function latestScheduledRunbookRun(scheduledTaskId: string): ScheduledRunbookRunSummary | null {
+  const run = runbookStore.getLatestRunByScheduledTask(scheduledTaskId);
+  if (!run) return null;
+  return {
+    runId: run.id,
+    runbookId: run.runbookId,
+    runbookName: run.runbookName,
+    runbookVersion: run.runbookVersion,
+    status: run.status,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    error: run.error,
+  };
 }
 
 function assertScheduledOpsAccess(userId: string): void {

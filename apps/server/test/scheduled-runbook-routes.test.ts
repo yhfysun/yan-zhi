@@ -35,7 +35,11 @@ vi.mock('ssh2', async () => {
 });
 
 import scheduledTaskRoutes from '../src/routes/scheduled-tasks.js';
-import { opsShellModule, startScheduledRunbookExecution } from '../src/plugins/ops-shell.js';
+import {
+  latestScheduledRunbookRun,
+  opsShellModule,
+  startScheduledRunbookExecution,
+} from '../src/plugins/ops-shell.js';
 import { createOpsRunbookStore } from '../src/plugins/ops-runbook-store.js';
 import { buildRunbook, normalizeRunbookInput } from '../src/plugins/ops-runbook.js';
 import { refreshScheduledTaskScheduler } from '../src/services/scheduled-tasks.js';
@@ -208,6 +212,11 @@ describe('Scheduled task Runbook routes', () => {
       scheduledTaskId: 'st-run',
       runbookVersion: rb.version,
       inputParams: { service: 'api' },
+    });
+    expect(latestScheduledRunbookRun('st-run')).toMatchObject({
+      runId: started.runId,
+      status: 'success',
+      runbookVersion: rb.version,
     });
   });
 });

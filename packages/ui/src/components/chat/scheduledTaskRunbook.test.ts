@@ -12,6 +12,7 @@ describe('ScheduledTaskDialog · Runbook 定时任务', () => {
     expect(DIALOG).toContain('runbookId');
     expect(DIALOG).toContain('runbookVersion');
     expect(DIALOG).toContain('runbookInputs');
+    expect(DIALOG).toContain('lastRunbookRun');
   });
 
   it('store 与服务端读写 runbook 调度字段', () => {

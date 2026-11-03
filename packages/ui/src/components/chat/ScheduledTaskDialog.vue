@@ -41,6 +41,14 @@
                   <span v-if="task.taskType === 'runbook'" class="st-item-sub">
                     Runbook：{{ task.runbookName || task.runbookId }} · v{{ task.runbookVersion }}
                   </span>
+                  <span
+                    v-if="task.lastRunbookRun"
+                    class="st-item-sub"
+                    :class="`st-runbook-${task.lastRunbookRun.status}`"
+                    :title="task.lastRunbookRun.error || ''"
+                  >
+                    上次 Runbook：{{ runbookRunStatusLabel(task.lastRunbookRun.status) }} · {{ formatTime(task.lastRunbookRun.startedAt) }}
+                  </span>
                   <span v-if="boundSpaceName(task.spaceId)" class="st-item-sub">空间：{{ boundSpaceName(task.spaceId) }}</span>
                   <span v-if="task.conversationId" class="st-item-sub">已绑定会话</span>
                   <span class="st-item-sub">上次：{{ task.lastRunAt ? formatTime(task.lastRunAt) : '未运行' }}</span>
@@ -89,6 +97,14 @@
                   <span v-if="boundAgentName(task.agentId)" class="st-item-sub">智能体：{{ boundAgentName(task.agentId) }}</span>
                   <span v-if="task.taskType === 'runbook'" class="st-item-sub">
                     Runbook：{{ task.runbookName || task.runbookId }} · v{{ task.runbookVersion }}
+                  </span>
+                  <span
+                    v-if="task.lastRunbookRun"
+                    class="st-item-sub"
+                    :class="`st-runbook-${task.lastRunbookRun.status}`"
+                    :title="task.lastRunbookRun.error || ''"
+                  >
+                    上次 Runbook：{{ runbookRunStatusLabel(task.lastRunbookRun.status) }} · {{ formatTime(task.lastRunbookRun.startedAt) }}
                   </span>
                   <span v-if="boundSpaceName(task.spaceId)" class="st-item-sub">空间：{{ boundSpaceName(task.spaceId) }}</span>
                   <span v-if="task.conversationId" class="st-item-sub">已绑定会话</span>
@@ -868,6 +884,16 @@ function scheduleText(task: ScheduledTask): string {
   return task.cronExpr ? `Cron ${task.cronExpr}` : '未设置';
 }
 
+function runbookRunStatusLabel(status: NonNullable<ScheduledTask['lastRunbookRun']>['status']): string {
+  return {
+    running: '运行中',
+    success: '成功',
+    failed: '失败',
+    rolled_back: '已回滚',
+    cancelled: '已取消',
+  }[status];
+}
+
 function formatTime(ts: number): string {
   const d = new Date(ts);
   const now = new Date();
@@ -1118,6 +1144,10 @@ async function onDelete(task: ScheduledTask) {
   color: var(--el-text-color-secondary, #64748b);
   font-size: 11px;
 }
+.st-runbook-success { color: var(--el-color-success, #22c55e); }
+.st-runbook-failed { color: var(--el-color-danger, #ef4444); }
+.st-runbook-rolled_back,
+.st-runbook-cancelled { color: var(--el-color-warning, #f59e0b); }
 
 .st-item-actions {
   display: flex;
