@@ -3,7 +3,11 @@ import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { computeNextRun, nextCronTime, runScheduledTask, refreshScheduledTaskScheduler, parseSchedule } from '../services/scheduled-tasks.js';
-import { latestScheduledRunbookRun, prepareScheduledRunbookBinding } from '../plugins/ops-shell.js';
+import {
+  auditScheduledRunbookApproval,
+  latestScheduledRunbookRun,
+  prepareScheduledRunbookBinding,
+} from '../plugins/ops-shell.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -30,6 +34,8 @@ function rowToTask(r: any) {
     runbookName: r.runbook_name ?? null,
     runbookVersion: r.runbook_version ?? null,
     runbookInputs: (() => { try { return r.runbook_inputs_json ? JSON.parse(r.runbook_inputs_json) : null; } catch { return null; } })(),
+    runbookApprovalRequired: r.runbook_approval_required === 1,
+    runbookApproval: (() => { try { return r.runbook_approval_json ? JSON.parse(r.runbook_approval_json) : null; } catch { return null; } })(),
     lastRunbookRun: r.task_type === 'runbook' ? latestScheduledRunbookRun(r.id) : null,
     schedule: parseSchedule(r.schedule_json),
     expireAt: r.expire_at ?? null,
@@ -71,7 +77,7 @@ router.post('/', async (req: Request, res: Response) => {
   const { name, prompt, cronExpr, intervalMinutes, conversationId, agentId, platformId, modelId, spaceId, groupId, schedule, expireAt, enabled } = req.body || {};
   const {
     taskType, workflowAgentId, workflowBundle, workflowInputs,
-    runbookId, runbookVersion, runbookInputs,
+    runbookId, runbookVersion, runbookInputs, approveProductionWrite,
   } = req.body || {};
   if (!name || !String(name).trim()) { res.status(400).json({ error: '任务名称为必填项' }); return; }
   const scheduleError = validateSchedule(intervalMinutes, cronExpr, schedule);
@@ -105,7 +111,16 @@ router.post('/', async (req: Request, res: Response) => {
         String(runbookId),
         runbookInputs || {},
         runbookVersion === undefined || runbookVersion === null ? undefined : Number(runbookVersion),
+        { allowStandingApproval: true },
       );
+      if (runbookBinding.requiresStandingApproval && approveProductionWrite !== true) {
+        res.status(428).json({
+          error: runbookBinding.policyReason || '生产写 Runbook 需要显式长期授权',
+          requiresStandingApproval: true,
+          approvalFingerprint: runbookBinding.approvalFingerprint,
+        });
+        return;
+      }
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'Runbook 调度配置无效' });
       return;
@@ -116,8 +131,16 @@ router.post('/', async (req: Request, res: Response) => {
   const now = Date.now();
   const isEnabled = enabled === undefined ? true : !!enabled;
   const scheduleJson = schedule ? JSON.stringify(schedule) : null;
+  const runbookApproval = runbookBinding?.requiresStandingApproval
+    ? {
+        approvedBy: userId,
+        approvedAt: now,
+        fingerprint: runbookBinding.approvalFingerprint,
+        reason: runbookBinding.policyReason,
+      }
+    : null;
   db.prepare(
-    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, enabled, task_type, workflow_agent_id, workflow_bundle_json, workflow_inputs_json, runbook_id, runbook_name, runbook_version, runbook_inputs_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
+    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, enabled, task_type, workflow_agent_id, workflow_bundle_json, workflow_inputs_json, runbook_id, runbook_name, runbook_version, runbook_inputs_json, runbook_approval_required, runbook_approval_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
   ).run(
     id, userId, String(name).trim(), prompt || null, cronExpr || null, intervalMinutes || null,
     ownConversationId(userId, conversationId), agentId || null, platformId || null, modelId || null, spaceId || null, groupId || null,
@@ -131,9 +154,20 @@ router.post('/', async (req: Request, res: Response) => {
     runbookBinding?.runbookName || null,
     runbookBinding?.runbookVersion || null,
     runbookBinding ? JSON.stringify(runbookBinding.inputParams) : null,
+    runbookBinding?.requiresStandingApproval ? 1 : 0,
+    runbookApproval ? JSON.stringify(runbookApproval) : null,
     isEnabled ? computeNextRun({ interval_minutes: intervalMinutes, cron_expr: cronExpr, schedule_json: scheduleJson, expire_at: expireAt || null }, now) : null,
     now, now,
   );
+  if (runbookApproval && runbookBinding) {
+    await auditScheduledRunbookApproval({
+      scheduledTaskId: id,
+      runbookName: runbookBinding.runbookName,
+      runbookVersion: runbookBinding.runbookVersion,
+      approvedBy: userId,
+      approvedAt: runbookApproval.approvedAt,
+    });
+  }
   const row = db.prepare('SELECT * FROM scheduled_task WHERE id = ?').get(id);
   refreshScheduledTaskScheduler();
   res.json({ data: rowToTask(row) });
@@ -196,6 +230,7 @@ router.patch('/:id', async (req: Request, res: Response) => {
   if (body.workflowAgentId !== undefined) { sets.push('workflow_agent_id = ?'); vals.push(body.workflowAgentId || null); }
   if (body.workflowBundle !== undefined) { sets.push('workflow_bundle_json = ?'); vals.push(body.workflowBundle ? JSON.stringify(body.workflowBundle) : null); }
   if (body.workflowInputs !== undefined) { sets.push('workflow_inputs_json = ?'); vals.push(body.workflowInputs ? JSON.stringify(body.workflowInputs) : null); }
+  let approvalAudit: { runbookName: string; runbookVersion: number; approvedAt: number } | null = null;
   if (nextTaskType === 'runbook') {
     const runbookBindingChanged =
       existing.task_type !== 'runbook' ||
@@ -220,16 +255,53 @@ router.patch('/:id', async (req: Request, res: Response) => {
           String(nextRunbookId),
           rawInputs,
           versionRaw === undefined || versionRaw === null ? undefined : Number(versionRaw),
+          { allowStandingApproval: true },
         );
         sets.push('runbook_id = ?', 'runbook_name = ?', 'runbook_version = ?', 'runbook_inputs_json = ?');
         vals.push(binding.runbookId, binding.runbookName, binding.runbookVersion, JSON.stringify(binding.inputParams));
+        let approval: any = null;
+        if (binding.requiresStandingApproval) {
+          const existingApproval = (() => {
+            try { return JSON.parse(existing.runbook_approval_json || 'null'); } catch { return null; }
+          })();
+          const alreadyApproved =
+            existingApproval?.approvedBy === userId &&
+            existingApproval?.fingerprint === binding.approvalFingerprint;
+          if (alreadyApproved) {
+            approval = existingApproval;
+          } else if (body.approveProductionWrite === true) {
+            approval = {
+              approvedBy: userId,
+              approvedAt: Date.now(),
+              fingerprint: binding.approvalFingerprint,
+              reason: binding.policyReason,
+            };
+            approvalAudit = {
+              runbookName: binding.runbookName,
+              runbookVersion: binding.runbookVersion,
+              approvedAt: approval.approvedAt,
+            };
+          } else {
+            res.status(428).json({
+              error: binding.policyReason || '生产写 Runbook 需要显式长期授权',
+              requiresStandingApproval: true,
+              approvalFingerprint: binding.approvalFingerprint,
+            });
+            return;
+          }
+        }
+        sets.push('runbook_approval_required = ?', 'runbook_approval_json = ?');
+        vals.push(binding.requiresStandingApproval ? 1 : 0, approval ? JSON.stringify(approval) : null);
       } catch (error) {
         res.status(400).json({ error: error instanceof Error ? error.message : 'Runbook 调度配置无效' });
         return;
       }
     }
   } else if (existing.task_type === 'runbook') {
-    sets.push('runbook_id = NULL', 'runbook_name = NULL', 'runbook_version = NULL', 'runbook_inputs_json = NULL');
+    sets.push(
+      'runbook_id = NULL', 'runbook_name = NULL', 'runbook_version = NULL',
+      'runbook_inputs_json = NULL', 'runbook_approval_required = 0', 'runbook_approval_json = NULL',
+    );
   }
   if (sets.length === 0) { res.json({ data: rowToTask(existing) }); return; }
 
@@ -250,6 +322,15 @@ router.patch('/:id', async (req: Request, res: Response) => {
   sets.push('updated_at = ?'); vals.push(Date.now());
   vals.push(id);
   db.prepare(`UPDATE scheduled_task SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  if (approvalAudit) {
+    await auditScheduledRunbookApproval({
+      scheduledTaskId: id,
+      runbookName: approvalAudit.runbookName,
+      runbookVersion: approvalAudit.runbookVersion,
+      approvedBy: userId,
+      approvedAt: approvalAudit.approvedAt,
+    });
+  }
   const row = db.prepare('SELECT * FROM scheduled_task WHERE id = ?').get(id);
   refreshScheduledTaskScheduler();
   res.json({ data: rowToTask(row) });

@@ -8,7 +8,32 @@ import {
 export interface UnattendedRunbookPreparation {
   runbook?: OpsRunbook;
   inputParams?: Record<string, string>;
+  requiresStandingApproval?: boolean;
+  policyReason?: string;
   error?: string;
+}
+
+export interface UnattendedRunbookOptions {
+  allowStandingApproval?: boolean;
+}
+
+export function analyzeUnattendedRunbook(runbook: OpsRunbook, production: boolean): {
+  requiresStandingApproval: boolean;
+  policyReason?: string;
+} {
+  if (!production) return { requiresStandingApproval: false };
+  const reasons: string[] = [];
+  if (runbook.rollbackSteps.length > 0) reasons.push('包含回滚步骤');
+  const writeStep = runbook.steps.find(
+    (step) => step.type === 'exec' && !isReadonly(step.command),
+  );
+  if (writeStep) reasons.push(`步骤「${writeStep.name}」包含写操作`);
+  return {
+    requiresStandingApproval: reasons.length > 0,
+    policyReason: reasons.length
+      ? `生产连接无人值守执行需要长期授权：${reasons.join('；')}`
+      : undefined,
+  };
 }
 
 /**
@@ -19,6 +44,7 @@ export function prepareUnattendedRunbook(
   runbook: OpsRunbook,
   production: boolean,
   rawInputs: Record<string, unknown> = {},
+  options: UnattendedRunbookOptions = {},
 ): UnattendedRunbookPreparation {
   const resolved = resolveRunbookParams(runbook, rawInputs);
   if (resolved.error) return { error: resolved.error };
@@ -28,17 +54,15 @@ export function prepareUnattendedRunbook(
   } catch (error) {
     return { error: (error as Error).message };
   }
-  if (!production) return { runbook: rendered, inputParams: resolved.params! };
-  if (rendered.rollbackSteps.length > 0) {
-    return { error: '生产连接的定时 Runbook 不允许配置回滚步骤，请改为人工运行' };
+  const policy = analyzeUnattendedRunbook(rendered, production);
+  const { requiresStandingApproval, policyReason } = policy;
+  if (requiresStandingApproval && !options.allowStandingApproval) {
+    return { error: policyReason };
   }
-  const writeStep = rendered.steps.find(
-    (step) => step.type === 'exec' && !isReadonly(step.command),
-  );
-  if (writeStep) {
-    return {
-      error: `生产连接的定时 Runbook 只允许只读命令；步骤「${writeStep.name}」不是只读操作`,
-    };
-  }
-  return { runbook: rendered, inputParams: resolved.params! };
+  return {
+    runbook: rendered,
+    inputParams: resolved.params!,
+    requiresStandingApproval,
+    policyReason,
+  };
 }

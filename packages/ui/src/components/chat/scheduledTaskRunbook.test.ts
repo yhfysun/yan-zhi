@@ -13,6 +13,9 @@ describe('ScheduledTaskDialog · Runbook 定时任务', () => {
     expect(DIALOG).toContain('runbookVersion');
     expect(DIALOG).toContain('runbookInputs');
     expect(DIALOG).toContain('lastRunbookRun');
+    expect(DIALOG).toContain('approveProductionWrite');
+    expect(DIALOG).toContain('runbookRequiresApproval');
+    expect(DIALOG).toContain('无人值守');
   });
 
   it('store 与服务端读写 runbook 调度字段', () => {

@@ -38,6 +38,7 @@ import scheduledTaskRoutes from '../src/routes/scheduled-tasks.js';
 import {
   latestScheduledRunbookRun,
   opsShellModule,
+  prepareScheduledRunbookBinding,
   startScheduledRunbookExecution,
 } from '../src/plugins/ops-shell.js';
 import { createOpsRunbookStore } from '../src/plugins/ops-runbook-store.js';
@@ -153,17 +154,37 @@ describe('Scheduled task Runbook routes', () => {
     });
   });
 
-  it('生产连接的非只读 Runbook 不允许创建定时任务', async () => {
+  it('生产写入需显式长期授权，授权后固定指纹落库', async () => {
     const produced = db.prepare("SELECT id, version FROM ops_runbook WHERE connection_id = 'c2'").get() as any;
-    const created = await call('post', '/', {
+    const denied = await call('post', '/', {
       name: '生产重启',
       taskType: 'runbook',
       runbookId: produced.id,
       runbookVersion: produced.version,
       schedule: { mode: 'cycle', type: 'daily', time: '09:00' },
     });
-    expect(created.statusCode).toBe(400);
-    expect((created.body as any).error).toContain('只读');
+    expect(denied.statusCode).toBe(428);
+    expect(denied.body as any).toMatchObject({
+      requiresStandingApproval: true,
+      approvalFingerprint: expect.any(String),
+    });
+
+    const created = await call('post', '/', {
+      name: '生产重启',
+      taskType: 'runbook',
+      runbookId: produced.id,
+      runbookVersion: produced.version,
+      approveProductionWrite: true,
+      schedule: { mode: 'cycle', type: 'daily', time: '09:00' },
+    });
+    expect(created.statusCode).toBe(200);
+    expect((created.body as any).data).toMatchObject({
+      runbookApprovalRequired: true,
+      runbookApproval: {
+        approvedBy: 'guest',
+        fingerprint: expect.any(String),
+      },
+    });
   });
 
   it('编辑已有对话任务可切换为 Runbook 调度', async () => {
@@ -218,5 +239,53 @@ describe('Scheduled task Runbook routes', () => {
       status: 'success',
       runbookVersion: rb.version,
     });
+  });
+
+  it('生产写 Runbook 无长期授权时不执行，指纹匹配时才放行', async () => {
+    const rb = db.prepare("SELECT id, version FROM ops_runbook WHERE connection_id = 'c2'").get() as any;
+    const binding = await prepareScheduledRunbookBinding(
+      'guest',
+      rb.id,
+      {},
+      rb.version,
+      { allowStandingApproval: true },
+    );
+    await expect(startScheduledRunbookExecution({
+      userId: 'guest',
+      scheduledTaskId: 'st-no-approval',
+      runbookId: rb.id,
+      runbookVersion: rb.version,
+      inputParams: binding.inputParams,
+      standingApproval: null,
+    })).rejects.toThrow('长期授权');
+
+    await expect(startScheduledRunbookExecution({
+      userId: 'guest',
+      scheduledTaskId: 'st-stale-approval',
+      runbookId: rb.id,
+      runbookVersion: rb.version,
+      inputParams: binding.inputParams,
+      standingApproval: {
+        approvedBy: 'guest',
+        approvedAt: Date.now(),
+        fingerprint: 'stale-fingerprint',
+        reason: binding.policyReason,
+      },
+    })).rejects.toThrow('长期授权');
+
+    const started = await startScheduledRunbookExecution({
+      userId: 'guest',
+      scheduledTaskId: 'st-approved',
+      runbookId: rb.id,
+      runbookVersion: rb.version,
+      inputParams: binding.inputParams,
+      standingApproval: {
+        approvedBy: 'guest',
+        approvedAt: Date.now(),
+        fingerprint: binding.approvalFingerprint,
+        reason: binding.policyReason,
+      },
+    });
+    expect(started.runId).toContain('run-');
   });
 });

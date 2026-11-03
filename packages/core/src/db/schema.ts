@@ -684,6 +684,8 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN runbook_name TEXT;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN runbook_version INTEGER;`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN runbook_inputs_json TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN runbook_approval_required INTEGER DEFAULT 0;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE scheduled_task ADD COLUMN runbook_approval_json TEXT;`); } catch { /* 列已存在 */ }
 }
 
 /** 内置 skill 种子数据（三端共用，桌面端/移动端本地 sqlite 与服务端均会 upsert） */

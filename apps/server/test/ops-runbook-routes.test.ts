@@ -141,6 +141,22 @@ describe('Runbook routes', () => {
     expect((updated.body as any).data).toMatchObject({ id: rb.id, version: 2, name: '检查服务 v2' });
   });
 
+  it('Runbook 列表返回生产无人值守策略，供任务表单提前确认', async () => {
+    const created = await call('POST', '/runbooks', {
+      name: '生产重启',
+      connectionId: 'c1',
+      steps: [{ type: 'exec', name: '重启', command: 'systemctl restart nginx' }],
+    });
+    const rb = (created.body as any).data;
+    const list = await call('GET', '/runbooks');
+    expect(list.statusCode).toBe(200);
+    expect((list.body as any).data.find((item: any) => item.id === rb.id)).toMatchObject({
+      production: true,
+      requiresStandingApproval: true,
+      policyReason: expect.stringContaining('长期授权'),
+    });
+  });
+
   it('旧版本可查看，并可恢复为新的当前版本', async () => {
     const rb = await createRunbook();
     const updated = await call('PUT', `/runbooks/${rb.id}`, {

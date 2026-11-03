@@ -4904,6 +4904,9 @@ export async function executeApiTool(
               rawInputs,
               args.runbookVersion == null ? undefined : num(args, 'runbookVersion', 1),
             );
+            if (runbookBinding.requiresStandingApproval) {
+              return fail(`${runbookBinding.policyReason || '生产写 Runbook 需要长期授权'}。请在定时任务控制台人工确认，模型工具不能自行授权`);
+            }
           } catch (error) {
             return fail(error instanceof Error ? error.message : 'Runbook 调度配置无效');
           }
@@ -4912,7 +4915,7 @@ export async function executeApiTool(
         const now = Date.now();
         const isEnabled = args.enabled === undefined ? true : !!args.enabled;
         db.prepare(
-          'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, enabled, task_type, runbook_id, runbook_name, runbook_version, runbook_inputs_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
+          'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, enabled, task_type, runbook_id, runbook_name, runbook_version, runbook_inputs_json, runbook_approval_required, runbook_approval_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?)',
         ).run(
           id, uid, name.trim(), prompt || null, cronExpr, intervalMinutes,
           ownConversationId(uid, str(args, 'conversationId')), str(args, 'agentId') || null,
@@ -4990,14 +4993,32 @@ export async function executeApiTool(
                   ? num(args, 'runbookVersion', 1)
                   : (existing.runbook_version == null ? undefined : Number(existing.runbook_version)),
               );
+              let approval: any = null;
+              if (binding.requiresStandingApproval) {
+                const existingApproval = (() => {
+                  try { return JSON.parse(existing.runbook_approval_json || 'null'); } catch { return null; }
+                })();
+                if (
+                  existingApproval?.approvedBy !== uid ||
+                  existingApproval?.fingerprint !== binding.approvalFingerprint
+                ) {
+                  return fail(`${binding.policyReason || '生产写 Runbook 需要长期授权'}。请在定时任务控制台人工确认，模型工具不能自行授权`);
+                }
+                approval = existingApproval;
+              }
               sets.push('runbook_id = ?', 'runbook_name = ?', 'runbook_version = ?', 'runbook_inputs_json = ?');
               vals.push(binding.runbookId, binding.runbookName, binding.runbookVersion, JSON.stringify(binding.inputParams));
+              sets.push('runbook_approval_required = ?', 'runbook_approval_json = ?');
+              vals.push(binding.requiresStandingApproval ? 1 : 0, approval ? JSON.stringify(approval) : null);
             } catch (error) {
               return fail(error instanceof Error ? error.message : 'Runbook 调度配置无效');
             }
           }
         } else if (existing.task_type === 'runbook') {
-          sets.push('runbook_id = NULL', 'runbook_name = NULL', 'runbook_version = NULL', 'runbook_inputs_json = NULL');
+          sets.push(
+            'runbook_id = NULL', 'runbook_name = NULL', 'runbook_version = NULL',
+            'runbook_inputs_json = NULL', 'runbook_approval_required = 0', 'runbook_approval_json = NULL',
+          );
         }
         if (sets.length === 0) return ok(existing);
 

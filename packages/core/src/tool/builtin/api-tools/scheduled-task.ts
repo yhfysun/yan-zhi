@@ -10,7 +10,7 @@ export function registerScheduledTaskTools(m: Map<ApiModuleName, ToolDefinition[
     },
     {
       name: 'api_scheduled_task_create',
-      description: '创建定时任务：taskType=chat 时需 prompt；taskType=runbook 时需 runbookId 与 runbookInputs，自动固定当前 Runbook 版本。调度方式二选一——intervalMinutes（每隔 N 分钟）或 cronExpr（5 字段分钟粒度，如 "30 9 * * *" 表示每天 9:30）。可绑定 agentId/platformId/modelId/spaceId/conversationId，创建后默认启用',
+      description: '创建定时任务：taskType=chat 时需 prompt；taskType=runbook 时需 runbookId 与 runbookInputs，自动固定当前 Runbook 版本。生产写 Runbook 必须由用户在控制台建立长期无人值守授权，本工具不能自行授权。调度方式二选一——intervalMinutes（每隔 N 分钟）或 cronExpr（5 字段分钟粒度，如 "30 9 * * *" 表示每天 9:30）。可绑定 agentId/platformId/modelId/spaceId/conversationId，创建后默认启用',
       inputSchema: {
         type: 'object',
         properties: {

@@ -43,6 +43,7 @@ function insertScheduledTask(id = 'st-runbook') {
     runbook_name: '巡检服务',
     runbook_version: 2,
     runbook_inputs_json: JSON.stringify({ service: 'api' }),
+    runbook_approval_json: '',
     schedule_json: JSON.stringify({ mode: 'cycle', type: 'daily', time: '09:00' }),
     enabled: 1,
     conversation_id: null,
@@ -66,8 +67,20 @@ beforeEach(() => {
 describe('Runbook 无人值守安全策略', () => {
   it('生产连接允许只读且无回滚的 Runbook，拒绝写命令和回滚步骤', () => {
     expect(prepareUnattendedRunbook(runbook('uptime'), true).error).toBeUndefined();
-    expect(prepareUnattendedRunbook(runbook('systemctl restart nginx'), true).error).toContain('只读');
+    expect(prepareUnattendedRunbook(runbook('systemctl restart nginx'), true).error).toContain('长期授权');
     expect(prepareUnattendedRunbook(runbook('uptime', 'systemctl restart nginx'), true).error).toContain('回滚');
+  });
+
+  it('生产写入在显式长期授权下生成计划，但仍标记为必须审批', () => {
+    const prepared = prepareUnattendedRunbook(
+      runbook('systemctl restart nginx', 'systemctl restart nginx'),
+      true,
+      {},
+      { allowStandingApproval: true },
+    );
+    expect(prepared.error).toBeUndefined();
+    expect(prepared.requiresStandingApproval).toBe(true);
+    expect(prepared.policyReason).toContain('生产');
   });
 
   it('非生产连接允许需要修复动作的 Runbook', () => {
@@ -85,15 +98,18 @@ describe('Runbook 调度接线', () => {
     for (const source of [serverDb, coreSchema]) {
       expect(source).toContain('runbook_inputs_json');
       expect(source).toContain('runbook_version');
+      expect(source).toContain('runbook_approval_json');
     }
     expect(tool).toContain("taskType === 'runbook'");
     expect(tool).toContain('prepareScheduledRunbookBinding');
     expect(tool).toContain('lastRunbookRun');
+    expect(tool).toContain('模型工具不能自行授权');
     expect(toolSchema).toContain("enum: ['chat', 'runbook']");
     expect(toolSchema).toContain('runbookInputs');
     expect(routes).toContain("isRunbookTask");
     expect(routes).toContain('prepareScheduledRunbookBinding');
     expect(routes).toContain('lastRunbookRun');
+    expect(routes).toContain('approveProductionWrite');
   });
 });
 
@@ -115,6 +131,7 @@ describe('Runbook 定时执行', () => {
       runbookId: 'rb1',
       runbookVersion: 2,
       inputParams: { service: 'api' },
+      standingApproval: null,
     });
     const message = db.prepare('SELECT content FROM message WHERE conversation_id = ?').get(result.conversationId) as any;
     expect(message.content).toContain('run-scheduled-1');
@@ -131,5 +148,32 @@ describe('Runbook 定时执行', () => {
     const message = db.prepare('SELECT content FROM message WHERE conversation_id = ?').get(result.conversationId) as any;
     expect(message.content).toContain('定时任务执行失败');
     expect(message.content).toContain('已停用');
+  });
+
+  it('把任务保存的长期授权对象原样交给执行层复核指纹', async () => {
+    const task = insertScheduledTask('st-runbook-approved');
+    task.runbook_approval_json = JSON.stringify({
+      approvedBy: testUserId,
+      approvedAt: 123,
+      fingerprint: 'fp-1',
+      reason: '生产写授权',
+    });
+    startScheduledRunbookExecution.mockResolvedValue({
+      runId: 'run-approved-1',
+      runbookName: '巡检服务',
+      runbookVersion: 2,
+    });
+
+    await runScheduledTask(task);
+
+    expect(startScheduledRunbookExecution).toHaveBeenCalledWith(expect.objectContaining({
+      scheduledTaskId: 'st-runbook-approved',
+      standingApproval: {
+        approvedBy: testUserId,
+        approvedAt: 123,
+        fingerprint: 'fp-1',
+        reason: '生产写授权',
+      },
+    }));
   });
 });

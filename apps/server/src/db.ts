@@ -5132,6 +5132,8 @@ try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_id TEXT'); } catch 
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_name TEXT'); } catch {}
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_version INTEGER'); } catch {}
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_inputs_json TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_approval_required INTEGER DEFAULT 0'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_approval_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE conversation ADD COLUMN scheduled_task_id TEXT'); } catch {}
 // 定时任务分组
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN group_id TEXT'); } catch {}

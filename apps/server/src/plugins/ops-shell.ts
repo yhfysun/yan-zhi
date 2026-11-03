@@ -16,6 +16,7 @@ import { Client } from 'ssh2';
 import { readdirSync, lstatSync, mkdirSync, renameSync, rmSync, createReadStream, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { createServer, type Server } from 'node:net';
+import { createHash } from 'node:crypto';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
 import type { ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
@@ -47,7 +48,7 @@ import {
   type OpsRunbook, type OpsRunbookRun,
 } from './ops-runbook.js';
 import { createOpsRunbookStore } from './ops-runbook-store.js';
-import { prepareUnattendedRunbook } from './ops-runbook-schedule.js';
+import { analyzeUnattendedRunbook, prepareUnattendedRunbook } from './ops-runbook-schedule.js';
 import { isPluginGranted, pluginAclBypassed } from '../plugin-acl.js';
 const logger = createLogger('ops-shell');
 
@@ -56,10 +57,10 @@ export const OPS_SHELL_ID = 'ops-shell';
 export const opsShellManifest: PluginManifest = {
   id: OPS_SHELL_ID,
   name: '运维',
-  version: '0.5.0',
+  version: '0.6.0',
   category: '操作',
   description:
-    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询、常驻巡检告警与版本化/定时 Runbook；「更多 → 运维」打开运维控制台：命令终端 / 容器面板 / SQL 查询 / 事件中心 / Runbook + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
+    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询、常驻巡检告警与版本化/定时 Runbook（生产写需显式长期授权）；「更多 → 运维」打开运维控制台：命令终端 / 容器面板 / SQL 查询 / 事件中心 / Runbook + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
   permissions: ['remote-shell', 'shell', 'network'],
   contributes: {
     // ★ 模式运行时化（P3）：模式定义随插件声明，前端动态合并（替代构建期硬编码表的部分消费方）
@@ -428,6 +429,22 @@ export interface ScheduledRunbookBinding {
   runbookName: string;
   runbookVersion: number;
   inputParams: Record<string, string>;
+  requiresStandingApproval: boolean;
+  approvalFingerprint: string;
+  policyReason?: string;
+}
+
+export interface ScheduledRunbookApproval {
+  approvedBy: string;
+  approvedAt: number;
+  fingerprint: string;
+  reason?: string;
+}
+
+export interface ScheduledRunbookPolicy {
+  production: boolean;
+  requiresStandingApproval: boolean;
+  policyReason?: string;
 }
 
 export interface ScheduledRunbookRunSummary {
@@ -456,6 +473,47 @@ export function latestScheduledRunbookRun(scheduledTaskId: string): ScheduledRun
   };
 }
 
+function scheduledRunbookFingerprint(
+  runbook: OpsRunbook,
+  conn: StoredConnection,
+  inputParams: Record<string, string>,
+  connections: StoredConnection[],
+): string {
+  const sortedParams = Object.fromEntries(
+    Object.entries(inputParams).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  const connectionChain = (current: StoredConnection, seen = new Set<string>()): Record<string, unknown> => {
+    if (seen.has(current.id)) return { id: current.id, cycle: true };
+    seen.add(current.id);
+    const jump = current.jumpConnectionId
+      ? connections.find((item) => item.id === current.jumpConnectionId)
+      : null;
+    return {
+      id: current.id,
+      type: current.type,
+      name: current.name,
+      host: current.host,
+      port: current.port,
+      username: current.username,
+      tag: current.tag,
+      jump: jump ? connectionChain(jump, seen) : null,
+    };
+  };
+  return createHash('sha256').update(JSON.stringify({
+    schema: 1,
+    runbook: {
+      id: runbook.id,
+      version: runbook.version,
+      name: runbook.name,
+      connectionId: runbook.connectionId,
+      steps: runbook.steps,
+      rollbackSteps: runbook.rollbackSteps,
+    },
+    connection: connectionChain(conn),
+    inputParams: sortedParams,
+  })).digest('hex');
+}
+
 function assertScheduledOpsAccess(userId: string): void {
   if (!pluginStorage) throw new Error('运维插件未启用');
   if (!pluginAclBypassed(userId) && !isPluginGranted(OPS_SHELL_ID, userId)) {
@@ -463,11 +521,37 @@ function assertScheduledOpsAccess(userId: string): void {
   }
 }
 
+export async function scheduledRunbookPolicy(
+  userId: string,
+  runbookId: string,
+  pinnedVersion?: number,
+): Promise<ScheduledRunbookPolicy> {
+  assertScheduledOpsAccess(userId);
+  const current = runbookStore.get(runbookId);
+  if (!current) throw new Error('Runbook 不存在');
+  const snapshot = pinnedVersion === undefined
+    ? current
+    : runbookStore.getVersion(runbookId, Number(pinnedVersion))?.snapshot;
+  if (!snapshot) throw new Error('Runbook 版本不存在');
+  const connections = await loadConnections();
+  const conn = connections.find((item) => item.id === snapshot.connectionId);
+  if (!conn) throw new Error('Runbook 绑定连接不存在');
+  if (conn.type === 'database') throw new Error('Runbook 暂不支持数据库连接');
+  const production = isProductionTag(conn.tag);
+  const policy = analyzeUnattendedRunbook(snapshot, production);
+  return {
+    production,
+    requiresStandingApproval: policy.requiresStandingApproval,
+    policyReason: policy.policyReason,
+  };
+}
+
 export async function prepareScheduledRunbookBinding(
   userId: string,
   runbookId: string,
   rawInputs: Record<string, unknown> = {},
   pinnedVersion?: number,
+  options: { allowStandingApproval?: boolean } = {},
 ): Promise<ScheduledRunbookBinding> {
   assertScheduledOpsAccess(userId);
   const current = runbookStore.get(runbookId);
@@ -477,16 +561,25 @@ export async function prepareScheduledRunbookBinding(
   if (!Number.isInteger(version) || version < 1) throw new Error('Runbook 版本非法');
   const snapshot = version === current.version ? current : runbookStore.getVersion(runbookId, version)?.snapshot;
   if (!snapshot) throw new Error('Runbook 版本不存在');
-  const conn = (await loadConnections()).find((item) => item.id === snapshot.connectionId);
+  const connections = await loadConnections();
+  const conn = connections.find((item) => item.id === snapshot.connectionId);
   if (!conn) throw new Error('Runbook 绑定连接不存在');
   if (conn.type === 'database') throw new Error('Runbook 暂不支持数据库连接');
-  const prepared = prepareUnattendedRunbook(snapshot, isProductionTag(conn.tag), rawInputs);
+  const prepared = prepareUnattendedRunbook(
+    snapshot,
+    isProductionTag(conn.tag),
+    rawInputs,
+    { allowStandingApproval: options.allowStandingApproval !== false },
+  );
   if (prepared.error) throw new Error(prepared.error);
   return {
     runbookId: snapshot.id,
     runbookName: snapshot.name,
     runbookVersion: snapshot.version,
     inputParams: prepared.inputParams!,
+    requiresStandingApproval: prepared.requiresStandingApproval === true,
+    approvalFingerprint: scheduledRunbookFingerprint(snapshot, conn, prepared.inputParams!, connections),
+    policyReason: prepared.policyReason,
   };
 }
 
@@ -496,6 +589,7 @@ export async function startScheduledRunbookExecution(input: {
   runbookId: string;
   runbookVersion: number;
   inputParams: Record<string, string>;
+  standingApproval?: ScheduledRunbookApproval | null;
 }): Promise<{ runId: string; runbookName: string; runbookVersion: number }> {
   assertScheduledOpsAccess(input.userId);
   const current = runbookStore.get(input.runbookId);
@@ -503,15 +597,24 @@ export async function startScheduledRunbookExecution(input: {
   if (!current.enabled) throw new Error('Runbook 已停用');
   const snapshot = runbookStore.getVersion(input.runbookId, input.runbookVersion)?.snapshot;
   if (!snapshot) throw new Error('Runbook 固定版本不存在');
-  const conn = (await loadConnections()).find((item) => item.id === snapshot.connectionId);
+  const connections = await loadConnections();
+  const conn = connections.find((item) => item.id === snapshot.connectionId);
   if (!conn) throw new Error('Runbook 绑定连接不存在');
   if (conn.type === 'database') throw new Error('Runbook 暂不支持数据库连接');
   const prepared = prepareUnattendedRunbook(
     snapshot,
     isProductionTag(conn.tag),
     input.inputParams,
+    { allowStandingApproval: true },
   );
   if (prepared.error) throw new Error(prepared.error);
+  if (prepared.requiresStandingApproval) {
+    const fingerprint = scheduledRunbookFingerprint(snapshot, conn, prepared.inputParams!, connections);
+    const approval = input.standingApproval;
+    if (!approval || approval.approvedBy !== input.userId || approval.fingerprint !== fingerprint) {
+      throw new Error('生产写 Runbook 缺少匹配的长期授权，请重新编辑定时任务并确认');
+    }
+  }
   const run = await startRunbookExecution(
     prepared.runbook!,
     conn,
@@ -524,6 +627,19 @@ export async function startScheduledRunbookExecution(input: {
     runbookName: run.runbookName,
     runbookVersion: run.runbookVersion,
   };
+}
+
+export async function auditScheduledRunbookApproval(input: {
+  scheduledTaskId: string;
+  runbookName: string;
+  runbookVersion: number;
+  approvedBy: string;
+  approvedAt: number;
+}): Promise<void> {
+  await audit('runbook.schedule.approve', {
+    detail: `${input.runbookName} v${input.runbookVersion}（定时任务 ${input.scheduledTaskId}，授权人 ${input.approvedBy}）`,
+    ok: true,
+  });
 }
 
 function toClientView(c: StoredConnection) {
@@ -4717,7 +4833,21 @@ const opsShellModule: PluginModule = {
 
       // ===== 版本化 Runbook =====
       r.get('/runbooks', async (_req: unknown, res: unknown) => {
-        jsonRes(res).json({ data: runbookStore.list() });
+        const connections = await loadConnections();
+        jsonRes(res).json({
+          data: runbookStore.list().map((runbook) => {
+            const conn = connections.find((item) => item.id === runbook.connectionId);
+            const production = !!conn && isProductionTag(conn.tag);
+            const policy = analyzeUnattendedRunbook(runbook, production);
+            return {
+              ...runbook,
+              connectionName: conn?.name || null,
+              production,
+              requiresStandingApproval: policy.requiresStandingApproval,
+              policyReason: policy.policyReason,
+            };
+          }),
+        });
       });
 
       r.post('/runbooks', async (req: unknown, res: unknown) => {

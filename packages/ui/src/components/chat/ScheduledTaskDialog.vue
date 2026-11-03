@@ -49,6 +49,9 @@
                   >
                     上次 Runbook：{{ runbookRunStatusLabel(task.lastRunbookRun.status) }} · {{ formatTime(task.lastRunbookRun.startedAt) }}
                   </span>
+                  <span v-if="task.runbookApproval" class="st-item-sub st-runbook-approved">
+                    无人值守已授权
+                  </span>
                   <span v-if="boundSpaceName(task.spaceId)" class="st-item-sub">空间：{{ boundSpaceName(task.spaceId) }}</span>
                   <span v-if="task.conversationId" class="st-item-sub">已绑定会话</span>
                   <span class="st-item-sub">上次：{{ task.lastRunAt ? formatTime(task.lastRunAt) : '未运行' }}</span>
@@ -105,6 +108,9 @@
                     :title="task.lastRunbookRun.error || ''"
                   >
                     上次 Runbook：{{ runbookRunStatusLabel(task.lastRunbookRun.status) }} · {{ formatTime(task.lastRunbookRun.startedAt) }}
+                  </span>
+                  <span v-if="task.runbookApproval" class="st-item-sub st-runbook-approved">
+                    无人值守已授权
                   </span>
                   <span v-if="boundSpaceName(task.spaceId)" class="st-item-sub">空间：{{ boundSpaceName(task.spaceId) }}</span>
                   <span v-if="task.conversationId" class="st-item-sub">已绑定会话</span>
@@ -236,6 +242,10 @@
             />
           </el-form-item>
           <div v-if="form.runbookId && !runbookDefinition?.parameters?.length" class="st-hint">该 Runbook 无需运行参数</div>
+          <div v-if="form.runbookRequiresApproval" class="st-danger-hint">
+            生产连接包含写操作或回滚步骤。保存时会再次确认长期无人值守授权。
+            <span v-if="form.runbookPolicyReason"> {{ form.runbookPolicyReason }}</span>
+          </div>
           <div v-if="runbooksError" class="st-hint">{{ runbooksError }}</div>
         </template>
         <el-form-item label="定时方式">
@@ -345,7 +355,7 @@
       <div class="st-form-hint">
         {{
           form.taskType === 'runbook'
-            ? '生产连接上的 Runbook 定时任务只允许只读命令且不能配置回滚步骤；需要人工审批的修复流程请继续手动运行。'
+            ? '生产连接上的写操作和回滚步骤需要保存时显式建立长期无人值守授权；授权与 Runbook 版本、参数和连接指纹绑定。'
             : '不绑定会话时，将在首次运行时自动创建独立会话；绑定智能体/大模型/空间后，任务发起的会话会继承这些配置。'
         }}
       </div>
@@ -398,6 +408,9 @@ interface RunbookDefinition {
   version: number;
   parameters: RunbookParameter[];
   steps: Array<{ id: string; name: string; type: string }>;
+  production?: boolean;
+  requiresStandingApproval?: boolean;
+  policyReason?: string;
 }
 
 const taskStore = useScheduledTaskStore();
@@ -433,6 +446,8 @@ const form = reactive({
   runbookId: '' as string,
   runbookVersion: 0,
   runbookInputs: {} as Record<string, string>,
+  runbookRequiresApproval: false,
+  runbookPolicyReason: '',
   prompt: '',
   scheduleMode: 'cycle' as 'cycle' | 'interval',
   cycleType: 'daily' as 'once' | 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'yearly',
@@ -496,6 +511,8 @@ function onRunbookPick(runbookId: string): void {
   runbookDefinition.value = runbook;
   form.runbookVersion = runbook?.version || 0;
   form.runbookInputs = runbook ? runbookDefaults(runbook) : {};
+  form.runbookRequiresApproval = runbook?.requiresStandingApproval === true;
+  form.runbookPolicyReason = runbook?.policyReason || '';
 }
 
 async function loadPinnedRunbook(runbookId: string, version: number): Promise<void> {
@@ -783,6 +800,8 @@ function openCreate(groupId?: string) {
   form.runbookId = '';
   form.runbookVersion = 0;
   form.runbookInputs = {};
+  form.runbookRequiresApproval = false;
+  form.runbookPolicyReason = '';
   runbookDefinition.value = null;
   runbooksError.value = '';
   resetSchedule();
@@ -811,10 +830,17 @@ async function openEdit(task: ScheduledTask) {
   form.runbookId = task.runbookId || '';
   form.runbookVersion = task.runbookVersion || 0;
   form.runbookInputs = { ...(task.runbookInputs || {}) };
+  form.runbookRequiresApproval = task.runbookApprovalRequired === true;
+  form.runbookPolicyReason = task.runbookApproval?.reason || '';
   if (form.taskType === 'workflow' && wfStore.agents.value.length === 0) void wfStore.loadAgents();
   if (form.taskType === 'runbook') {
     await loadRunbooks();
     await loadPinnedRunbook(form.runbookId, form.runbookVersion);
+    const currentPolicy = runbooks.value.find((item) => item.id === form.runbookId);
+    if (!form.runbookRequiresApproval && currentPolicy?.requiresStandingApproval) {
+      form.runbookRequiresApproval = true;
+      form.runbookPolicyReason = currentPolicy.policyReason || '';
+    }
   } else {
     runbookDefinition.value = null;
   }
@@ -929,6 +955,23 @@ async function onSave() {
   if (form.scheduleMode === 'interval' && form.intervalDays <= 0 && form.intervalHours <= 0 && form.intervalMinutes <= 0) {
     ElMessage.warning('请设置间隔时长（天/时/分至少一项大于 0）'); return;
   }
+  let approveProductionWrite = false;
+  if (form.taskType === 'runbook' && form.runbookRequiresApproval) {
+    const ok = await ElMessageBox.confirm(
+      `生产 Runbook「${runbookDefinition.value?.name || form.runbookId}」v${form.runbookVersion} 包含写操作或回滚步骤。\n\n`
+      + `授权后将在无人值守情况下按固定版本和固定参数自动执行，并在失败时自动回滚。\n\n`
+      + `${form.runbookPolicyReason || ''}\n\n确认建立长期授权？`,
+      '生产无人值守长期授权',
+      {
+        type: 'error',
+        confirmButtonText: '确认无人值守授权',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'yz-confirm-danger',
+      },
+    ).then(() => true).catch(() => false);
+    if (!ok) return;
+    approveProductionWrite = true;
+  }
   const schedule = buildSchedule();
   const input: any = {
     name: form.name.trim(),
@@ -941,6 +984,7 @@ async function onSave() {
     runbookName: form.taskType === 'runbook' ? runbookDefinition.value?.name || null : null,
     runbookVersion: form.taskType === 'runbook' ? form.runbookVersion : null,
     runbookInputs: form.taskType === 'runbook' ? form.runbookInputs : null,
+    approveProductionWrite,
     conversationId: form.bindConversation && currentConv.value ? currentConv.value.id : null,
     agentId: form.taskType === 'runbook' ? null : form.agentId || null,
     platformId: form.taskType === 'runbook' ? null : form.platformId || null,
@@ -1017,6 +1061,16 @@ async function onDelete(task: ScheduledTask) {
   line-height: 1.6;
   margin-top: 4px;
   width: 100%;
+}
+.st-danger-hint {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--el-color-danger, #ef4444) 35%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--el-color-danger, #ef4444) 7%, transparent);
+  color: var(--el-color-danger, #ef4444);
+  font-size: var(--font-size-xs);
+  line-height: 1.55;
 }
 .scheduled-task-panel {
   display: flex;
@@ -1148,6 +1202,7 @@ async function onDelete(task: ScheduledTask) {
 .st-runbook-failed { color: var(--el-color-danger, #ef4444); }
 .st-runbook-rolled_back,
 .st-runbook-cancelled { color: var(--el-color-warning, #f59e0b); }
+.st-runbook-approved { color: var(--el-color-success, #22c55e); }
 
 .st-item-actions {
   display: flex;

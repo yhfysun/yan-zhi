@@ -314,6 +314,14 @@ async function runRunbookScheduledTask(
       return {};
     }
   })();
+  const standingApproval = (() => {
+    try {
+      const parsed = JSON.parse(task.runbook_approval_json || 'null');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  })();
   try {
     const run = await startScheduledRunbookExecution({
       userId,
@@ -321,6 +329,7 @@ async function runRunbookScheduledTask(
       runbookId: String(task.runbook_id || ''),
       runbookVersion: Number(task.runbook_version),
       inputParams,
+      standingApproval,
     });
     db.prepare(INSERT_MESSAGE).run(
       uuid(), convId, userId, 'assistant',
