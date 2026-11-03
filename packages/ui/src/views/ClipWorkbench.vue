@@ -7684,7 +7684,7 @@ onMounted(async () => {
 .cp-track-head.dim { opacity: .55; }
 .cp-th-name { flex: 1 1 100%; font-size: 11px; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-th-actions { display: flex; gap: 2px; flex-wrap: nowrap; }
-.cp-th-btn { width: 18px; height: 18px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 3px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font-size: 10px; line-height: 1; cursor: pointer; }
+.cp-th-btn { width: 20px; height: 20px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font-size: 11px; line-height: 1; cursor: pointer; }
 .cp-th-btn:hover:not(:disabled) { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); }
 .cp-th-btn:disabled { opacity: .35; cursor: not-allowed; }
 .cp-th-btn.danger:hover:not(:disabled) { color: var(--el-color-danger); border-color: var(--el-color-danger-light-5); }
