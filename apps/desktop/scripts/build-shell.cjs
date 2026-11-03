@@ -10,8 +10,9 @@
  *
  * 做的事：
  *   1. 把目标后端地址写进 resources/server-base.json（shell.yml 的 extraResources 会带进包）；
- *   2. vite build 出 dist/**；
- *   3. 交给 scripts/electron-build.cjs 用 electron-builder.shell.yml 出安装包。
+ *   2. 构建本机能力运行时（远控被控端、浏览器/电脑使用执行桥）；
+ *   3. vite build 出 dist/**；
+ *   4. 交给 scripts/electron-build.cjs 用 electron-builder.shell.yml 出安装包。
  *
  * 地址优先级（运行时）：登录页/Setup 页手填（localStorage yz_server_base）> 本文件写入的内置地址。
  * 所以内置地址只是「默认值」，用户装完仍可改。
@@ -53,6 +54,13 @@ fs.writeFileSync(
   'utf8',
 );
 console.log(`[build-shell] 内置后端地址: ${serverBase}（装好后可在登录页改）`);
+
+const localCapabilities = spawnSync(
+  process.execPath,
+  [path.join(DESKTOP, 'scripts', 'build-local-capabilities.cjs')],
+  { cwd: DESKTOP, stdio: 'inherit' },
+);
+if (localCapabilities.status !== 0) fail('本机能力运行时构建失败');
 
 const viteBin = path.join(DESKTOP, 'node_modules', 'vite', 'bin', 'vite.js');
 if (!fs.existsSync(viteBin)) fail(`找不到 vite（${viteBin}），请先 pnpm install`);

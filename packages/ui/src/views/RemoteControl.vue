@@ -1168,6 +1168,8 @@ function stopScan(): void {
 const hostTabLoading = ref(false);
 const hostLoaded = ref(false);
 const hostPluginEnabled = ref(false);
+/** 轻量壳：本机能力服务与网页同源，不能再向远程后端取 hostkey/status */
+const hostUsesLocalCapabilities = ref(false);
 const hostCode = ref('');
 const hostMode = ref('');
 /** 防火墙入站放行状态：null=未检测（纯 Web 宿主 / 非 Windows），false=未开放 */
@@ -1245,26 +1247,43 @@ async function loadHostInfo(): Promise<void> {
     // 设置可能还没从本地读回来（远控页常在新窗口里先于设置加载）：先补一次，
     // 否则下面排序/默认 IP 读到的都是默认值，用户选过的网卡会被当成没选。
     if (!settingsStore.loaded) await settingsStore.load();
-    const [net, key] = await Promise.allSettled([
-      api.get<any>('/network/ip'),
-      api.get<any>('/plugin/remote-control/hostkey'),
-    ]);
-    if (net.status === 'fulfilled') {
-      const { ips, port } = parseNetworkIpResponse(net.value);
-      if (port) hostPort.value = port;
-      // 排序 = 默认 IP 贯通：用户选过的置顶，其后物理网卡，最后虚拟网卡（与设置页同口径）
-      hostIps.value = sortLanIps(ips, settingsStore.settings.defaultLanIp);
-    }
-    if (key.status === 'fulfilled' && (key.value as any)?.data?.key) {
-      hostHostKey = String((key.value as any).data.key);
-      const r = await fetch(`${API_BASE}/plugin/remote-control/status`, {
-        headers: { ...buildRequestHeaders(), 'x-rc-host-key': hostHostKey },
-      });
-      const body = await r.json();
-      if (!body?.error) {
-        hostPluginEnabled.value = true;
-        hostCode.value = String(body?.data?.code?.current || '');
-        hostMode.value = String(body?.data?.mode || '');
+    const local = await rcPortBridge()?.localCapabilityInfo?.().catch(() => null);
+    if (local?.ok) {
+      hostUsesLocalCapabilities.value = true;
+      hostPluginEnabled.value = true;
+      hostHostKey = String(local.hostKey || '');
+      hostCode.value = String(local.code || '');
+      hostMode.value = String(local.mode || '');
+      if (Number(local.port) > 0) hostPort.value = Number(local.port);
+      const addresses = Array.isArray(local.addresses)
+        ? local.addresses
+          .filter((x) => x && /^(\d{1,3}\.){3}\d{1,3}$/.test(String(x.address || '')))
+          .map((x) => ({ name: String(x.name || ''), address: String(x.address), family: 'IPv4' }))
+        : [];
+      hostIps.value = sortLanIps(addresses, settingsStore.settings.defaultLanIp);
+    } else {
+      hostUsesLocalCapabilities.value = false;
+      const [net, key] = await Promise.allSettled([
+        api.get<any>('/network/ip'),
+        api.get<any>('/plugin/remote-control/hostkey'),
+      ]);
+      if (net.status === 'fulfilled') {
+        const { ips, port } = parseNetworkIpResponse(net.value);
+        if (port) hostPort.value = port;
+        // 排序 = 默认 IP 贯通：用户选过的置顶，其后物理网卡，最后虚拟网卡（与设置页同口径）
+        hostIps.value = sortLanIps(ips, settingsStore.settings.defaultLanIp);
+      }
+      if (key.status === 'fulfilled' && (key.value as any)?.data?.key) {
+        hostHostKey = String((key.value as any).data.key);
+        const r = await fetch(`${API_BASE}/plugin/remote-control/status`, {
+          headers: { ...buildRequestHeaders(), 'x-rc-host-key': hostHostKey },
+        });
+        const body = await r.json();
+        if (!body?.error) {
+          hostPluginEnabled.value = true;
+          hostCode.value = String(body?.data?.code?.current || '');
+          hostMode.value = String(body?.data?.mode || '');
+        }
       }
     }
   } catch { /* 任一失败按未启用渲染 */ } finally {
@@ -1280,6 +1299,16 @@ async function loadHostInfo(): Promise<void> {
  * 「地址能拼出来但控制端一直等待/连不上」。桌面端可检测 + 一键授权开放。
  */
 type RcPortBridge = {
+  localCapabilityInfo?: () => Promise<{
+    ok?: boolean;
+    baseUrl?: string;
+    port?: number;
+    hostKey?: string;
+    code?: string;
+    mode?: string;
+    addresses?: Array<{ name: string; address: string; family?: string }>;
+  }>;
+  localCapabilityRotateCode?: () => Promise<{ ok?: boolean; code?: string; error?: string }>;
   rcPortStatus?: () => Promise<{ ok?: boolean; port?: number; listening?: boolean; ruleExists?: boolean }>;
   rcPortOpen?: () => Promise<{ ok?: boolean; already?: boolean; error?: string }>;
 };
@@ -1330,6 +1359,17 @@ async function renderHostQr(): Promise<void> {  const ip = hostPreferredIp.value
 
 async function rotateHostCode(): Promise<void> {
   try {
+    if (hostUsesLocalCapabilities.value) {
+      const local = await rcPortBridge()?.localCapabilityRotateCode?.();
+      if (!local?.ok) {
+        ElMessage.error(local?.error || '换码失败');
+        return;
+      }
+      hostCode.value = String(local.code || '');
+      ElMessage.success('已生成新授权码（旧码立即失效）');
+      await renderHostQr();
+      return;
+    }
     const r = await api.post<any>('/plugin/remote-control/code/rotate');
     if ('error' in r) { ElMessage.error(r.error || '换码失败'); return; }
     hostCode.value = String(r?.data?.current || '');

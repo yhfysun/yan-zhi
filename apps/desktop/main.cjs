@@ -5,6 +5,7 @@ const fsp = fs.promises;
 const { spawn, execFile, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const http = require('http');
+const os = require('os');
 // 实例配置单一真相源：端口 / userData / 共享目录一律从这里取，禁止在本文件再硬编码。
 // 目的见 instance.cjs 顶部注释（dev 与安装版的运行期隔离）。
 const inst = require('./instance.cjs');
@@ -42,6 +43,7 @@ const {
 } = require('./desktop-shell.cjs');
 // 插件窗口全局快捷键：清单规范化和差量（纯函数，有单测）；注册仍走本文件 setGlobalHotkey
 const { normalizePluginHotkeys } = require('./plugin-hotkeys.cjs');
+const { createDesktopCapabilityRelay } = require('./desktop-capability-relay.cjs');
 // ★ privileged scheme 注册必须在 app ready 之前（模块顶层即执行）。
 protocol.registerSchemesAsPrivileged([YZ_SCHEME_PRIVILEGES]);
 
@@ -141,6 +143,125 @@ const SHELL_MODE = app.isPackaged && !fs.existsSync(path.join(process.resourcesP
 const RENDER_EXTRA_ARGS = ['--yz-api-port=' + API_PORT,
   ...(BAKED_SERVER_BASE ? ['--yz-server-base=' + BAKED_SERVER_BASE] : []),
   ...(IS_DEV_INSTANCE ? ['--yz-dev-instance'] : [])];
+
+/**
+ * 轻量壳本机能力运行时。
+ *
+ * 远程后端不是壳的执行端：远控、键鼠注入、浏览器与电脑使用都必须落在壳所在机器。
+ * 这里按需加载单文件 bundle，避免轻量壳携带完整 server/dist。
+ */
+let localCapabilityRuntime = null;
+let localCapabilityBootError = '';
+let localCapabilityPort = API_PORT;
+let desktopCapabilityRelay = null;
+let desktopCapabilityRelayKey = '';
+
+async function startLocalCapabilitiesRuntime() {
+  if (localCapabilityRuntime) return localCapabilityRuntime;
+  try {
+    const mod = require('./local-capabilities.bundle.cjs');
+    localCapabilityRuntime = await mod.startLocalCapabilities({
+      // 轻量壳用固定 3001 作为被控端入口；完整桌面已有 3001 后端，本机执行运行时用随机端口。
+      port: SHELL_MODE ? API_PORT : 0,
+      host: SHELL_MODE ? '0.0.0.0' : '127.0.0.1',
+      distDir: path.join(__dirname, 'dist'),
+      dataDir: path.join(app.getPath('userData'), 'local-capabilities'),
+    });
+    if (SHELL_MODE) localCapabilityPort = localCapabilityRuntime.port;
+    console.log('[local-capabilities] 已启动，本机远控地址:', localCapabilityRuntime.baseUrl);
+    return localCapabilityRuntime;
+  } catch (err) {
+    localCapabilityBootError = String((err && err.message) || err);
+    console.error('[local-capabilities] 启动失败:', localCapabilityBootError);
+    return null;
+  }
+}
+
+ipcMain.handle('local-capabilities:info', async () => {
+  if (!SHELL_MODE) return { ok: false, error: '当前不是轻量壳模式' };
+  if (!localCapabilityRuntime) {
+    return { ok: false, error: localCapabilityBootError || '本机能力服务尚未启动' };
+  }
+  try {
+    return await localCapabilityRuntime.info();
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('local-capabilities:rotate-code', async () => {
+  if (!SHELL_MODE || !localCapabilityRuntime) {
+    return { ok: false, error: localCapabilityBootError || '本机能力服务尚未启动' };
+  }
+  try {
+    const r = await localCapabilityRuntime.rotateCode();
+    return { ok: true, ...r };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('desktop-capability:start', async (event, options = {}) => {
+  try {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!mainWindow || owner !== mainWindow) return { ok: false, error: '仅主窗口可建立桌面能力桥' };
+    const serverBase = String(options.serverBase || BAKED_SERVER_BASE || '').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(serverBase)) return { ok: false, error: '未配置远程 AI 后端地址' };
+    const token = String(options.token || '');
+    const license = String(options.license || '');
+    const key = crypto.createHash('sha256').update(`${serverBase}\n${token}\n${license}`).digest('hex');
+    if (desktopCapabilityRelay && desktopCapabilityRelayKey === key) return { ok: true, reused: true };
+    try { await desktopCapabilityRelay?.stop(); } catch { /* 重建连接 */ }
+    desktopCapabilityRelayKey = key;
+    desktopCapabilityRelay = createDesktopCapabilityRelay({
+      serverBase,
+      token,
+      license,
+      deviceId: `${os.hostname()}-${IS_DEV_INSTANCE ? 'dev' : 'app'}`,
+      deviceName: `${os.hostname()} · 言智${SHELL_MODE ? '轻量壳' : '桌面端'}`,
+      capabilities: {
+        browser: true,
+        computer: localCapabilityRuntime?.capabilities?.().computer || [],
+      },
+      execute: async (capability, method, args, context) => {
+        if (capability === 'browser') {
+          const actionArgs = { ...(args || {}) };
+          const flow = String(actionArgs._flowKey || '');
+          const convId = String(context?.conversationId || actionArgs._conversationId || '');
+          const tabId = actionArgs.tabId;
+          delete actionArgs._flowKey;
+          delete actionArgs._conversationId;
+          return {
+            result: await runBrowserAction(convId || null, tabId, method, actionArgs, flow),
+          };
+        }
+        if (capability === 'computer') {
+          if (!localCapabilityRuntime?.executeComputerTool) {
+            throw new Error('本机电脑使用运行时未启动');
+          }
+          return {
+            result: await localCapabilityRuntime.executeComputerTool(method, args || {}, {
+              conversationId: String(context?.conversationId || ''),
+              workspaceDir: String(context?.workspaceDir || ''),
+            }),
+          };
+        }
+        throw new Error(`不支持的本机能力: ${capability}`);
+      },
+    });
+    desktopCapabilityRelay.start();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+ipcMain.handle('desktop-capability:stop', async () => {
+  try { await desktopCapabilityRelay?.stop(); } catch { /* ignore */ }
+  desktopCapabilityRelay = null;
+  desktopCapabilityRelayKey = '';
+  return { ok: true };
+});
 
 // ============================================================
 // userData 目录固定与历史数据迁移（productName 言智 → yan-zhi 配套）
@@ -13954,13 +14075,14 @@ app.whenReady().then(async () => {
   // ---- 局域网入站端口（远控/手机连本机必须能进来）----
   // Windows 防火墙默认拦入站：控制端连不上、配对请求送不到、通道建不起来，
   // 除应用层问题外最常见的就是这一层。这里给「检查 + 一键授权开放」，用户点一下即可。
-  const rcFirewallRuleName = `YanZhi RemoteControl TCP ${API_PORT}`;
+  const rcCapabilityPort = () => Number(localCapabilityPort) || API_PORT;
+  const rcFirewallRuleName = () => `YanZhi RemoteControl TCP ${rcCapabilityPort()}`;
   const rcRunNetsh = (args) => new Promise((resolve) => {
     execFile('netsh', args, { windowsHide: true, timeout: 8000 }, (err, stdout, stderr) => {
       resolve({ ok: !err, code: err ? (err.code ?? 1) : 0, out: String(stdout || '') + String(stderr || '') });
     });
   });
-  const rcFirewallRuleExists = async () => (await rcRunNetsh(['advfirewall', 'firewall', 'show', 'rule', `name=${rcFirewallRuleName}`, 'dir=in'])).ok;
+  const rcFirewallRuleExists = async () => (await rcRunNetsh(['advfirewall', 'firewall', 'show', 'rule', `name=${rcFirewallRuleName()}`, 'dir=in'])).ok;
   // 程序级规则：Windows「安全警报」弹窗被点过「取消」时，系统会给本 exe 自动建程序级
   // Block。★ 它无条件压过一切端口级 Allow（防火墙求值先 Block 后 Allow）—— 只查端口
   // 规则会假绿灯：规则建成、状态绿灯，入站照样全丢（2026-10-30 两台真机复现）。
@@ -13983,7 +14105,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('rc:port-status', async () => {
     let listening = false;
     try {
-      const res = await fetch(`http://127.0.0.1:${API_PORT}/health`, { signal: AbortSignal.timeout(1500) });
+      const port = rcCapabilityPort();
+      const healthPath = SHELL_MODE ? '/api/plugin/remote-control/status' : '/api/health';
+      const res = await fetch(`http://127.0.0.1:${port}${healthPath}`, { signal: AbortSignal.timeout(1500) });
       listening = res.ok;
     } catch { /* 后端还没起 */ }
     let ruleExists = false;
@@ -13992,7 +14116,7 @@ app.whenReady().then(async () => {
       ruleExists = await rcFirewallRuleExists();
       programBlocked = rcProgramBlocked(await rcListProgramRules());
     } catch { /* netsh 不可用 */ }
-    return { ok: true, port: API_PORT, listening, ruleExists, programBlocked, ruleName: rcFirewallRuleName };
+    return { ok: true, port: rcCapabilityPort(), listening, ruleExists, programBlocked, ruleName: rcFirewallRuleName() };
   });
   ipcMain.handle('rc:port-open', async () => {
     if (process.platform !== 'win32') return { ok: false, error: '仅 Windows 需要单独放行入站端口' };
@@ -14002,7 +14126,7 @@ app.whenReady().then(async () => {
     try { programRules = await rcListProgramRules(); } catch { /* PowerShell 不可用 */ }
     const hasInboundBlock = rcProgramBlocked(programRules);
     const portRuleOk = await rcFirewallRuleExists().catch(() => false);
-    if (!hasInboundBlock && portRuleOk) return { ok: true, already: true, ruleName: rcFirewallRuleName };
+    if (!hasInboundBlock && portRuleOk) return { ok: true, already: true, ruleName: rcFirewallRuleName() };
     // ② 修复脚本（幂等）：删本 exe 的 Inbound Block → 建程序级 Allow → 建端口级 Allow。
     //    写临时 .ps1 再执行 —— Start-Process 嵌套引号会把含空格参数拆散
     //   （netsh 报 A specified value is not valid，规则压根没建成），落文件可绕开。
@@ -14015,7 +14139,7 @@ app.whenReady().then(async () => {
       // 程序级 Allow：比端口级更根本（exe 换端口也覆盖；同时免掉每次的安全警报弹窗）
       `New-NetFirewallRule -DisplayName '${RC_PROGRAM_ALLOW_RULE}' -Direction Inbound -Program $exe -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null`,
       // 端口级 Allow（保留，双保险）
-      `netsh advfirewall firewall add rule name="${rcFirewallRuleName}" dir=in action=allow protocol=TCP localport=${API_PORT} profile=any | Out-Null`,
+      `netsh advfirewall firewall add rule name="${rcFirewallRuleName()}" dir=in action=allow protocol=TCP localport=${rcCapabilityPort()} profile=any | Out-Null`,
     ].join('\n');
     const scriptPath = path.join(app.getPath('temp'), 'yz-fix-fw.ps1');
     try { fs.writeFileSync(scriptPath, fixScript, 'utf8'); } catch (e) {
@@ -14040,7 +14164,7 @@ app.whenReady().then(async () => {
         rcListProgramRules().catch(() => []),
         rcFirewallRuleExists().catch(() => false),
       ]);
-      if (!rcProgramBlocked(rules2) && portOk2) return { ok: true, elevated, ruleName: rcFirewallRuleName };
+      if (!rcProgramBlocked(rules2) && portOk2) return { ok: true, elevated, ruleName: rcFirewallRuleName() };
       return { ok: false, error: '防火墙修复未生效（授权窗口被取消，或防火墙由组策略接管）' };
     } finally {
       try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
@@ -14729,6 +14853,7 @@ app.whenReady().then(async () => {
   //   ★ 必须 **await**：`server.listen()` 是异步的，不等就取 envForServer() 会拿到空 url/token
   //     （真跑测试实测抓到的缺陷）→ 同样是静默失效。
   await browserBridge.start();
+  await startLocalCapabilitiesRuntime();
   startServer();
 
   // computer-use 急停热键：★ 不可禁用（安全阀不可拆）。启动即按默认键注册
@@ -14932,6 +15057,8 @@ app.on('before-quit', () => {
   isQuitting = true;
   try { globalShortcut.unregisterAll(); } catch {}
   try { browserBridge.close(); } catch { /* 端口自动分配，异常退出也无需处理残留 */ }
+  try { void desktopCapabilityRelay?.stop(); } catch { /* ignore */ }
+  try { void localCapabilityRuntime?.close(); } catch { /* 进程退出时端口会随进程释放 */ }
   if (serverProcess) { try { serverProcess.kill('SIGTERM'); } catch {} serverProcess = null; }
   for (const [id, entry] of mcpChildren) {
     try { entry.child.kill('SIGTERM'); } catch {}

@@ -21,6 +21,7 @@
     "prepare:server-runtime": "node ./scripts/pre-sign-license.cjs && node ./scripts/prepare-server-runtime.cjs",
     "generate:host-shims": "node ./scripts/generate-host-shims.mjs",
     "build:plugin": "node ./scripts/build-plugins.mjs",
+    "build:local-capabilities": "node ./scripts/build-local-capabilities.cjs",
     "postinstall": "node ./scripts/fix-sqlite-binding.cjs || true",
     "typecheck": "vue-tsc --noEmit",
     "test": "node --test \"test/**/*.test.cjs\""
@@ -29,7 +30,8 @@
     "adm-zip": "^0.5.16",
     "better-sqlite3": "13.0.3",
     "electron-chrome-web-store": "0.13.0",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@element-plus/icons-vue": "^2.3.0",

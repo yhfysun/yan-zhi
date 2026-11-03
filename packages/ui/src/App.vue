@@ -178,6 +178,7 @@ import { MODE_VIEW_LOADERS } from './generated/build-modes';
 import { useLicenseStore } from './stores/license';
 import { usePlatformStore } from './stores/platform';
 import { waitForBackend } from './api/backend-ready';
+import { getEffectiveServerBase, getLicenseCode, getToken } from './api/client';
 
 import { useMobileShell } from './composables/useMobileShell';
 import { usePlatform } from './composables/usePlatform';
@@ -438,7 +439,39 @@ function scheduleModeViewWarmup() {
 const chat = useChat();
 const chatStore = useChatStore();
 
+let desktopRelayTimer: number | null = null;
+let desktopRelayKey = '';
+
+/** 轻量壳/桌面端把 browser + computer-use 执行能力注册到当前 AI 后端。 */
+async function syncDesktopCapabilityRelay(): Promise<void> {
+  try {
+    const api = (window as unknown as {
+      electronAPI?: {
+        apiOrigin?: string;
+        desktopCapabilityBridge?: {
+          start?: (opts: { serverBase: string; token: string; license: string }) => Promise<unknown>;
+        };
+      };
+    }).electronAPI;
+    // 完整桌面端连本机内嵌后端时用 apiOrigin；轻量壳/远程模式用配置的 serverBase。
+    const serverBase = getEffectiveServerBase() || String(api?.apiOrigin || '');
+    const token = getToken() || '';
+    const license = getLicenseCode() || '';
+    const key = `${serverBase}\n${token}\n${license}`;
+    if (!api?.desktopCapabilityBridge?.start || !serverBase || key === desktopRelayKey) return;
+    desktopRelayKey = key;
+    const result = await api.desktopCapabilityBridge.start({ serverBase, token, license }) as { ok?: boolean } | undefined;
+    if (result?.ok === false) desktopRelayKey = '';
+  } catch { /* 远程后端旧版本/未登录都不影响远控 IP 直连 */ }
+}
+
 onMounted(async () => {
+  // 登录/授权初始化可能晚于首屏；定时对指纹，凭据变化时重连能力桥。
+  void syncDesktopCapabilityRelay();
+  if ((window as unknown as { electronAPI?: { desktopCapabilityBridge?: unknown } }).electronAPI?.desktopCapabilityBridge) {
+    desktopRelayTimer = window.setInterval(() => void syncDesktopCapabilityRelay(), 5000);
+  }
+
   // 独立模式窗口（2026-10-18）：把 activeMode 同步到弹出路由对应的模式。
   // 子窗口与主窗口共享 localStorage 的 yz:mode —— 主窗口可能停在办公、弹出的却是运维窗口；
   // 工作台组件（lead/placement 等）按 activeMode 渲染，不同步会出现"路由在 /code、
@@ -614,6 +647,10 @@ const offWindowFailed = pluginWindowEvents?.on?.('failed', (p) => {
 onUnmounted(() => {
   offWindowOpened?.();
   offWindowFailed?.();
+  if (desktopRelayTimer) {
+    clearInterval(desktopRelayTimer);
+    desktopRelayTimer = null;
+  }
 });
 
 // 插件启停会改变「运行时插件模式」：模式下拉/路由必须跟着变（停用即消失）

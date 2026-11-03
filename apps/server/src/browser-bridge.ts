@@ -24,6 +24,10 @@
 //   切档只需重启后端（dev 下 tsx watch 自动），**不需要重启 Electron 主进程**。
 
 import { createLogger } from './services/logger.js';
+import {
+  desktopCapabilityAvailable,
+  callDesktopCapability,
+} from './plugins/desktop-capability.js';
 
 const logger = createLogger('browser-bridge');
 
@@ -55,14 +59,15 @@ export const READONLY_BRIDGE_ACTIONS = new Set([
 ]);
 
 /** 桥是否**配置可用**（主进程起了端点 + token 注入到位 + 档位不是 off） */
-export function browserBridgeAvailable(): boolean {
+export function browserBridgeAvailable(userId = 'guest'): boolean {
   if (bridgeMode() === 'off') return false;
+  if (desktopCapabilityAvailable(userId, 'browser')) return true;
   return !!(process.env.YZ_BROWSER_BRIDGE_URL && process.env.YZ_BROWSER_BRIDGE_TOKEN);
 }
 
 /** 本次该由谁执行这个 browser action（**唯一判定口径**，前端不得自行推断 —— 防双执行） */
-export function decideBrowserExecution(action: string): 'bridge' | 'frontend' {
-  if (!browserBridgeAvailable()) return 'frontend';
+export function decideBrowserExecution(action: string, userId = 'guest'): 'bridge' | 'frontend' {
+  if (!browserBridgeAvailable(userId)) return 'frontend';
   const mode = bridgeMode();
   if (mode === 'shadow') return READONLY_BRIDGE_ACTIONS.has(action) ? 'bridge' : 'frontend';
   return 'bridge'; // on / strict
@@ -101,10 +106,23 @@ export async function callBrowserBridgeRaw(
    *   锚在另一把键上是最难查的一类漂移。缺省 = 共享主面板流 ⇒ 行为与今天一致。
    */
   flowKey?: string,
+  userId = 'guest',
 ): Promise<any> {
+  const action = toolNameToAction(toolName);
+  if (desktopCapabilityAvailable(userId, 'browser')) {
+    const argsObj: Record<string, unknown> = (args && typeof args === 'object') ? (args as Record<string, unknown>) : {};
+    return callDesktopCapability('browser', action, {
+      ...argsObj,
+      _conversationId: convId,
+      _flowKey: flowKey || '',
+    }, {
+      userId,
+      conversationId: convId,
+      timeoutMs,
+    });
+  }
   const url = process.env.YZ_BROWSER_BRIDGE_URL as string;
   const token = process.env.YZ_BROWSER_BRIDGE_TOKEN as string;
-  const action = toolNameToAction(toolName);
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs > 0 ? timeoutMs : 60000);
@@ -163,9 +181,10 @@ export async function callBrowserBridge(
   args: unknown,
   timeoutMs: number,
   flowKey?: string,
+  userId = 'guest',
 ): Promise<string> {
   const action = toolNameToAction(toolName);
-  const json: any = await callBrowserBridgeRaw(convId, toolName, args, timeoutMs, flowKey);
+  const json: any = await callBrowserBridgeRaw(convId, toolName, args, timeoutMs, flowKey, userId);
   // ★★★ HTTP 200 + `{error}` 是**动作执行失败**（业务错误），不是桥故障 —— 见 isBridgeTransportError 注释。
   //   直接作为工具结果返回给模型（保留原始文案，模型据此换招），**不抛异常、不触发降级**。
   //   ★★ 2026-10-12（诊断报告 P0-1）：超时/仍在加载（`timedOut`）**不是失败** ——

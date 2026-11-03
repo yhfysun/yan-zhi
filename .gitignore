@@ -256,6 +256,8 @@ apps/desktop/resources/.baked-deps.json
 # （apps/desktop/scripts/generate-host-shims.mjs 生成，electron-builder files 随包分发，不入库）
 apps/server/plugins/build/
 apps/desktop/host-shims/
+# 轻量壳本机能力运行时（build-local-capabilities.cjs 的构建产物）
+apps/desktop/local-capabilities.bundle.cjs
 # builtin/ 也是 build-plugins.mjs 的产物（builtin-packages.ts 注释：dev 落在
 # apps/server/plugins/builtin；含 ~1000 个皮肤 webp 素材，55MB），不入库
 apps/server/plugins/builtin/

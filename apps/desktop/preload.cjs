@@ -53,6 +53,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   apiOrigin: 'http://127.0.0.1:' + API_PORT,
   // 轻量壳内置的远程后端地址（'' = 未内置；渲染层 localStorage yz_server_base 优先级更高）
   serverBase: BAKED_SERVER_BASE,
+  // 轻量壳本机能力服务：远控 host 必须使用壳所在机器的 origin/token
+  localCapabilityInfo: () => ipcRenderer.invoke('local-capabilities:info'),
+  localCapabilityRotateCode: () => ipcRenderer.invoke('local-capabilities:rotate-code'),
+  // 远程 AI 后端的 browser/computer-use RPC 出站桥（仅主窗口，主进程兜底校验）
+  desktopCapabilityBridge: {
+    start: (options) => ipcRenderer.invoke('desktop-capability:start', options || {}),
+    stop: () => ipcRenderer.invoke('desktop-capability:stop'),
+  },
   // 是否开发实例（界面可据此区分标题，避免与安装版窗口混淆）
   isDevInstance: (process.argv || []).includes('--yz-dev-instance'),
   // 窗口控制

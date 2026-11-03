@@ -29,6 +29,7 @@ afterPack: ./electron-builder.after-pack.cjs
 files:
   - dist/**/*
   - main.cjs
+  - desktop-capability-relay.cjs
   - preload.cjs
   - browser-preload.cjs
   - snip-preload.cjs

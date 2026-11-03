@@ -25,6 +25,12 @@ const path = require('node:path');
 
 const DESKTOP = path.resolve(__dirname, '..');
 const YMLS = ['electron-builder.full.yml', 'electron-builder.lite.yml', 'electron-builder.mac.yml'];
+/**
+ * 轻量壳专用构建产物：main.cjs 在 SHELL_MODE 分支里条件加载，构建时才生成。
+ * 它不是三档完整包的顶层依赖，因此不能在源码树里要求预先存在，也不能要求进入
+ * full/lite/mac 三份完整包；但 shell.yml 必须登记它（下方显式校验）。
+ */
+const SHELL_GENERATED_MODULES = new Set(['local-capabilities.bundle.cjs']);
 
 /** 从主进程/预加载脚本里抽出所有本地 .cjs 依赖（`require('./x.cjs')`） */
 function localCjsRequires(entryFiles) {
@@ -73,6 +79,7 @@ const ENTRY_FILES = ['main.cjs', 'preload.cjs', 'browser-preload.cjs', 'snip-pre
 
 describe('打包入口模块：本地 require 必须真实存在', () => {
   const requires = localCjsRequires(ENTRY_FILES);
+  const sourceRequires = requires.filter((f) => !SHELL_GENERATED_MODULES.has(f));
 
   test('至少能识别出已知的两个本地模块（防正则失效导致的假绿）', () => {
     assert.ok(requires.includes('instance.cjs'), `未识别到 instance.cjs，实际: ${requires.join(', ')}`);
@@ -80,13 +87,14 @@ describe('打包入口模块：本地 require 必须真实存在', () => {
   });
 
   test('★ 每个被 require 的本地 .cjs 都真实存在于 apps/desktop/', () => {
-    const missing = requires.filter((f) => !fs.existsSync(path.join(DESKTOP, f)));
+    const missing = sourceRequires.filter((f) => !fs.existsSync(path.join(DESKTOP, f)));
     assert.deepStrictEqual(missing, [], `以下模块被 require 但文件不存在: ${missing.join(', ')}`);
   });
 });
 
 describe('打包入口模块：必须登记进三份 yml 的 files:', () => {
-  const requires = localCjsRequires(ENTRY_FILES);
+  const requires = localCjsRequires(ENTRY_FILES)
+    .filter((f) => !SHELL_GENERATED_MODULES.has(f));
 
   for (const yml of YMLS) {
     test(`★★ ${yml} 登记了全部本地模块（漏一个 → 该档位安装版启动即崩）`, () => {
@@ -117,6 +125,11 @@ describe('打包入口模块：必须登记进三份 yml 的 files:', () => {
       assert.ok(items.includes('edition.json'), `${yml} 缺 edition.json`);
       assert.ok(items.includes('keyring-crypto.cjs'), `${yml} 缺 keyring-crypto.cjs`);
     }
+  });
+
+  test('轻量壳本机能力 bundle 登记在 shell.yml（构建时生成，不能要求源码存在）', () => {
+    const shellYml = fs.readFileSync(path.join(DESKTOP, 'electron-builder.shell.yml'), 'utf8');
+    assert.match(shellYml, /local-capabilities\.bundle\.cjs/);
   });
 });
 

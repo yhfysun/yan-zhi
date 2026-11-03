@@ -1393,7 +1393,7 @@ export function createTask(params: {
     //     ② 探端点需要 token → 会把凭据暴露到渲染层（安全边界禁止，见 browser-bridge 注释）。
     //   ★ 值里**绝不含** URL/token —— 只是个枚举标记。
     //   ★ 前端对未知事件字段容忍；老 frontend 忽略本字段 → 行为不变（不破坏兼容）。
-    browserExecution: browserBridgeAvailable() ? 'bridge' : 'frontend' });
+    browserExecution: browserBridgeAvailable(task.userId) ? 'bridge' : 'frontend' });
   void runReActLoop(task, params);
   return taskId;
 }
@@ -5904,7 +5904,7 @@ async function executeTool(
           + `请等它完成后继续（可调用 get_sub_task_detail 查它的进度），期间不要重复调用 browser_* 工具。`;
       }
     }
-    const exec = decideBrowserExecution(toolNameToAction(toolName));
+    const exec = decideBrowserExecution(toolNameToAction(toolName), task.userId);
     // ★★★ 2026-10-26（实报「发布页表单反复填了 4 分半还没完」的根因之一）：
     //   `browser_run_recipe` 是**编排层**（内部再发一整套 navigate/upload/fill_form/click/读页），
     //   不是桌面 action。此前它被当成普通 browser_* 一路透传给桥 ⇒ 主进程判
@@ -5916,10 +5916,10 @@ async function executeTool(
       const flow = browserFlowKey || SHARED_FLOW;
       const api = {
         navigate: (url: string) =>
-          callBrowserBridgeRaw(task.conversationId, 'browser_navigate', { url }, resolveFrontendToolTimeout('browser_navigate'), flow),
+          callBrowserBridgeRaw(task.conversationId, 'browser_navigate', { url }, resolveFrontendToolTimeout('browser_navigate'), flow, task.userId),
         action: async (action: string, actionArgs: Record<string, unknown>) => {
           const subTool = `browser_${action}`;
-          const raw = await callBrowserBridgeRaw(task.conversationId, subTool, actionArgs, resolveFrontendToolTimeout(subTool), flow);
+          const raw = await callBrowserBridgeRaw(task.conversationId, subTool, actionArgs, resolveFrontendToolTimeout(subTool), flow, task.userId);
           // ★ 桥把"动作执行失败"编码成 200 + {error}（与工具内 callBrowserApi 抛错同义）。
           //   不转成异常的话配方会把失败当成功（fill_form 无 failed/state 时会被回读判"已填"）。
           if (raw?.error && !raw?.timedOut) throw new Error(String(raw.error));
@@ -5946,7 +5946,7 @@ async function executeTool(
         const argsWithWs = (args && typeof args === 'object')
           ? { ...(args as Record<string, unknown>), __workspaceDir: task.workspaceDir || undefined }
           : args;
-        const raw = await callBrowserBridge(task.conversationId, toolName, argsWithWs, bridgeTimeout, browserFlowKey || SHARED_FLOW);
+        const raw = await callBrowserBridge(task.conversationId, toolName, argsWithWs, bridgeTimeout, browserFlowKey || SHARED_FLOW, task.userId);
         // ★ 截图归档与 SSE 路径**共用同一后处理出口**（见 archiveDelegatedScreenshot 注释）——
         //   否则"截图进临时区但登记不进 conversation_file"会以新形态复发（C6 刚修过同一处）。
         if (toolName === 'browser_screenshot') {

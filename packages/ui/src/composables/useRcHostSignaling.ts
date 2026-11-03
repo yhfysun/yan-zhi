@@ -15,6 +15,11 @@
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { API_BASE, buildRequestHeaders, wsUrl } from '../api/client';
+import {
+  resolveRcHostEndpoint,
+  rcHostWsUrl,
+  type RcLocalCapabilityInfo,
+} from '../utils/rcLocalEndpoint';
 
 /** 多显示器：主进程枚举的单屏信息（bounds 为虚拟屏物理像素，与注入坐标同系） */
 export interface RcDisplayInfo {
@@ -30,6 +35,8 @@ export interface RcDisplayInfo {
 }
 
 export interface RcElectronAPI {
+  /** 轻量壳本机能力服务：host 信令必须走这里，而不是远程后端 API_BASE */
+  localCapabilityInfo?: () => Promise<RcLocalCapabilityInfo>;
   rcPrivacy?: (on: boolean) => Promise<unknown>;
   rcDisplays?: () => Promise<{ ok: boolean; displays?: RcDisplayInfo[] }>;
   rcSetCaptureDisplay?: (id: string) => Promise<{ ok: boolean }>;
@@ -96,6 +103,9 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
 
   let hostKey = '';
   let ws: WebSocket | null = null;
+  let hostApiBase = API_BASE;
+  let usingLocalCapability = false;
+  let endpointResolved = false;
   /** 当前这条 host WS 是否真的连上过：区分「auth 失败」与「连上后断开」 */
   let wsOpened = false;
   let pollTimer: number | null = null;
@@ -131,15 +141,30 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
   }
 
   const fetchJson = async (path: string, init?: RequestInit): Promise<Record<string, unknown>> => {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`${hostApiBase}${path}`, {
       ...init,
       headers: { ...(init?.headers || {}), ...buildRequestHeaders() },
     });
     return (await res.json()) as Record<string, unknown>;
   };
 
+  async function ensureEndpoint(): Promise<void> {
+    if (endpointResolved) return;
+    endpointResolved = true;
+    try {
+      const local = await electron()?.localCapabilityInfo?.();
+      const endpoint = resolveRcHostEndpoint(API_BASE, local);
+      hostApiBase = endpoint.apiBase;
+      usingLocalCapability = endpoint.isLocal;
+      if (endpoint.hostKey) hostKey = endpoint.hostKey;
+    } catch (e) {
+      console.warn('[rc-host] 本机能力服务探测失败，回落 API_BASE:', e);
+    }
+  }
+
   async function ensureHostKey(): Promise<void> {
     if (hostKey) return;
+    await ensureEndpoint();
     try {
       const res = await fetchJson('/plugin/remote-control/hostkey', { method: 'GET' });
       if (res.error) return;
@@ -151,6 +176,7 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
 
   async function poll(): Promise<void> {
     try {
+      await ensureEndpoint();
       await ensureHostKey();
       if (!hostKey) return;
       const res = await fetchJson('/plugin/remote-control/status', {
@@ -204,7 +230,8 @@ export function useRcHostSignaling(options: RcHostSignalingOptions = {}) {
     if (ws) return;
     let sock: WebSocket;
     try {
-      sock = new WebSocket(wsUrl(`/plugin/remote-control/session/ws?role=host&key=${encodeURIComponent(hostKey)}`));
+      const path = `/plugin/remote-control/session/ws?role=host&key=${encodeURIComponent(hostKey)}`;
+      sock = new WebSocket(usingLocalCapability ? rcHostWsUrl(hostApiBase, path) : wsUrl(path));
     } catch {
       return;
     }

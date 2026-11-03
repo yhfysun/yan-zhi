@@ -103,6 +103,7 @@ import modelPoolRoutes from './routes/model-pools.js';
 import costBudgetRoutes from './routes/cost-budget.js';
 import { gitExplorerManifest, gitExplorerModule } from './plugins/git-explorer.js';
 import { computerUseManifest, computerUseModule } from './plugins/computer-use.js';
+import { desktopCapabilityManifest, desktopCapabilityModule } from './plugins/desktop-capability.js';
 // 远程控制（向日葵式配对：授权码 + 白名单免确认 + WebRTC/JPEG 双通道），见 plugins/remote-control.ts 文件头
 import { remoteControlManifest, remoteControlModule } from './plugins/remote-control.js';
 // 安卓远控（scrcpy）：电脑上镜像并操作安卓手机，见 plugins/android-mirror.ts 文件头
@@ -933,6 +934,9 @@ try {
     // 移动端（MOBILE_MODE）无桌面输入环境，跳过注册避免运行时崩溃
     if (!process.env.MOBILE_MODE) {
       await registerPkgOrSource('computer-use', () => mgr.registerBuiltin(computerUseManifest, computerUseModule, true));
+      // 轻量壳执行桥：浏览器/电脑使用工具必须回到壳所在机器；无连接时明确失败。
+      await registerPkgOrSource('desktop-capability', () =>
+        mgr.registerBuiltin(desktopCapabilityManifest, desktopCapabilityModule, true));
     }
     // remote-control（2026-10-25 起移动端同样注册）：手机是「控制端」的重要形态 ——
     // 看并操作桌面机只依赖 WS 信令 + REST（activate 期零桌面专属动作；C# 代理与剪贴板

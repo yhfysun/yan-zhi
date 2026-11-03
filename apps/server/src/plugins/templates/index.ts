@@ -247,6 +247,10 @@ import {
   rgbFromAbgr,
   asArray,
 } from './computer-use-system.js';
+import {
+  desktopCapabilityAvailable,
+  callDesktopCapability,
+} from './desktop-capability.js';
 
 export const computerUseManifest: PluginManifest = {
   id: 'computer-use',
@@ -294,6 +298,7 @@ let opCount = 0;
 let lastOpAt = 0;
 let maxOps = 200;
 let allowSelfWindowClick = false;
+let screenshotsDirOverride = '';
 /** 急停标志：Ctrl+Alt+Esc（桌面端 globalShortcut → POST /panic）触发后置位并禁用插件 */
 let panicActive = false;
 
@@ -350,6 +355,7 @@ const SCREENSHOT_SCAN_MS = 5 * 60 * 1000;
 let reapTimer: ReturnType<typeof setInterval> | null = null;
 
 function screenshotsDir(): string {
+  if (screenshotsDirOverride) return screenshotsDirOverride;
   return process.env.DATA_DIR
     ? path.join(process.env.DATA_DIR, 'screenshots')
     : path.resolve('screenshots');
@@ -606,6 +612,33 @@ export const computerUseModule: PluginModule = {
     panicActive = false;
     maxOps = Number((ctx.config as Record<string, unknown> | undefined)?.maxOps) || 200;
     allowSelfWindowClick = !!(ctx.config as Record<string, unknown> | undefined)?.allowSelfWindowClick;
+    screenshotsDirOverride = String((ctx.config as Record<string, unknown> | undefined)?.screenshotDir || '');
+
+    // 轻量壳/远程桌面在线时，所有 computer_* 工具必须回到用户本机执行。
+    // 不能因为后端恰好也是 Windows 就“看起来能用”——那会操作错误机器的键鼠。
+    const rawRegisterTool = ctx.registerTool.bind(ctx);
+    ctx.registerTool = (def) => rawRegisterTool({
+      ...def,
+      execute: async (args, toolCtx) => {
+        const userId = String(toolCtx?.userId || 'guest');
+        if (desktopCapabilityAvailable(userId, 'computer')) {
+          return callDesktopCapability('computer', def.name, args, {
+            userId,
+            conversationId: toolCtx?.conversationId,
+            workspaceDir: toolCtx?.workspaceDir,
+            timeoutMs: def.name === 'computer_screenshot' ? 60_000 : 45_000,
+          });
+        }
+        // 默认绝不回落到“后端机器”执行。仅测试/无桌面宿主部署可显式打开逃生阀。
+        if (process.env.YZ_ALLOW_BACKEND_COMPUTER_USE !== '1') {
+          return errResult(new Error(
+            '本机执行端未连接：电脑使用工具必须在轻量壳/桌面端执行。'
+            + '请确认壳已启动并连到当前后端',
+          ));
+        }
+        return def.execute(args, toolCtx);
+      },
+    });
 
     // 截图临时区清理器：启用即扫一次，之后每 5 分钟扫一次（模块级单例定时器，防止重复启用叠加）
     reapOldScreenshots();
