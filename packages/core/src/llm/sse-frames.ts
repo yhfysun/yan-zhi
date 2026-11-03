@@ -32,6 +32,11 @@
  * 4. **网关可能省略 `event:` 行**，把类型放在 JSON 的 `type` 字段里
  *    ⇒ 本模块**不做**类型推断，两个来源都交给调用方（调用方最清楚自己的协议）。
  */
+import {
+  readWithIdleTimeout,
+  resolveStreamReadTimeout,
+  type StreamTimeoutOptions,
+} from './stream.js';
 
 export interface SseFrame {
   /** `event:` 行的值；该帧没有 `event:` 行时为空串 */
@@ -45,12 +50,14 @@ export interface SseFrame {
 /** 把 SSE 字节流切成帧。**只做分帧，不解释业务语义。** */
 export async function* parseSseFrames(
   stream: ReadableStream<Uint8Array>,
+  opts?: StreamTimeoutOptions,
 ): AsyncIterable<SseFrame> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let eventType = '';
   let dataStr = '';
+  let receivedFirstByte = false;
 
   const reset = () => {
     eventType = '';
@@ -90,8 +97,10 @@ export async function* parseSseFrames(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const timeout = resolveStreamReadTimeout(opts, receivedFirstByte);
+      const { done, value } = await readWithIdleTimeout(reader, timeout.timeoutMs, timeout.timeoutError);
       if (done) break;
+      receivedFirstByte = true;
       buffer += decoder.decode(value, { stream: true });
 
       let nl: number;

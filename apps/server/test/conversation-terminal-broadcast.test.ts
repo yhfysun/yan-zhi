@@ -110,9 +110,9 @@ describe('会话级终态广播：行为级验证', () => {
 });
 
 describe('会话级终态广播：源码静态断言（防漂移）', () => {
-  it('★★★ emit() 内必须有终态双发块', () => {
-    const i = mgrSrc.indexOf('function emit(task: LlmTask, event: SSEEvent)');
-    expect(i, '★ 找不到 emit 定义').toBeGreaterThan(-1);
+  it('★★★ emitNow() 内必须有终态双发块', () => {
+    const i = mgrSrc.indexOf('function emitNow(task: LlmTask, event: SSEEvent)');
+    expect(i, '★ 找不到 emitNow 定义').toBeGreaterThan(-1);
     const seg = mgrSrc.slice(i, i + 2200);
     expect(seg, '★ 缺少终态双发 → 前端订阅断了只能轮询').toMatch(/emitConversation\(task\.conversationId/);
     // 三类终态都要判到
@@ -121,8 +121,8 @@ describe('会话级终态广播：源码静态断言（防漂移）', () => {
     }
   });
 
-  it('★★★ 双发块必须在 emit 的**末尾**（不能在 subscribers 循环之前，否则终态会在通道未占时先发）', () => {
-    const i = mgrSrc.indexOf('function emit(task: LlmTask, event: SSEEvent)');
+  it('★★★ 双发块必须在 emitNow 的**末尾**（不能在 subscribers 循环之前，否则终态会在通道未占时先发）', () => {
+    const i = mgrSrc.indexOf('function emitNow(task: LlmTask, event: SSEEvent)');
     const seg = mgrSrc.slice(i, i + 2200);
     const subLoop = seg.indexOf('for (const sub of task.subscribers)');
     const dual = seg.indexOf('emitConversation(task.conversationId');

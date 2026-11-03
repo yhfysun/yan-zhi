@@ -9,6 +9,7 @@
  *   options:
  *     --clean        强制清理 Vite 缓存（默认仅在依赖/配置指纹变化时清理）
  *     --no-install   跳过依赖同步检查
+ *     --no-plugin-sync  跳过内置插件产物新鲜度检查/重建
  *     --no-kill     端口被占用时不杀进程，仅提示
  *     --vite-only    只启动 Vite，不拉起 Electron（排障/CI 用）
  *     --disable-gpu  直接以软件渲染启动 Electron（GPU 崩溃时会自动重试，一般无需手动加）
@@ -27,7 +28,11 @@ import fsp from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const { findStaleBuiltinPlugins } = require('./lib/dev-plugin-sync.cjs');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -87,6 +92,7 @@ if (!app) {
 const OPT = {
   clean: flags.has('--clean'),
   install: !flags.has('--no-install'),
+  pluginSync: !flags.has('--no-plugin-sync'),
   kill: !flags.has('--no-kill'),
   viteOnly: flags.has('--vite-only'),
   disableGpu: flags.has('--disable-gpu'),
@@ -158,6 +164,42 @@ function run(cmd, args, opts = {}) {
       resolve(1);
     });
   });
+}
+
+/**
+ * Dev 运行时优先加载 plugins/builtin 下的插件包。
+ * 只改源码不重建时，旧提示词/旧工具会静默继续生效；启动前按 mtime 检查并只重建落后插件。
+ */
+async function syncStaleBuiltinPlugins() {
+  if (!OPT.pluginSync) return;
+  const catalogPath = path.join(ROOT, 'build', 'plugins.catalog.json');
+  const builtinDir = path.join(ROOT, 'apps', 'server', 'plugins', 'builtin');
+  if (!fs.existsSync(catalogPath) || !fs.existsSync(builtinDir)) return;
+
+  let catalog;
+  try {
+    catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  } catch (err) {
+    warn(`读取插件目录失败，跳过产物检查: ${err.message}`);
+    return;
+  }
+
+  const stale = findStaleBuiltinPlugins({ root: ROOT, builtinDir, catalog });
+  if (!stale.length) return;
+  log(`检测到插件源码比产物新，重建: ${stale.join(', ')}`);
+  for (const id of stale) {
+    const code = await run(
+      process.execPath,
+      [
+        path.join(ROOT, 'apps', 'desktop', 'scripts', 'build-plugins.mjs'),
+        `--id=${id}`,
+        `--out=${builtinDir}`,
+      ],
+      { timeout: 180000 },
+    );
+    if (code !== 0) throw new Error(`插件 ${id} 重建失败（退出码 ${code}）`);
+  }
+  log(`插件产物已更新: ${stale.join(', ')}`);
 }
 
 /**
@@ -639,6 +681,7 @@ async function main() {
   log(`目标: ${app.label}  分支工作区: ${ROOT}`);
 
   if (appName === 'server') {
+    await syncStaleBuiltinPlugins();
     // 独立跑 server（不带 Electron）：同样用开发端口，且以 YANZHI_DEV_INSTANCE=1
     // 让 server 侧拿到与「开发实例」一致的实例语义（env 供 shared/local-server 读取）。
     await guardProductionPort(DEV_API_PORT, 'backend');
@@ -716,6 +759,7 @@ async function main() {
 
   await syncDeps();
   await manageCache();
+  await syncStaleBuiltinPlugins();
 
   // 开发实例与安装版**同端口**（2026-10-10 起），且共用同一套库 →
   //   端口被正式版占用时**必须中止启动**，不能像旧版那样只警告然后继续。

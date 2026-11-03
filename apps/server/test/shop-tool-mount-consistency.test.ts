@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   SHOP_AGENT_BUILTIN_TOOLS,
   SHOP_AGENT_SYSTEM_PROMPT,
+  builtinShopAgentDefs,
 } from '../src/plugins/shop-ops/seed.js';
 
 const mounted = new Set(SHOP_AGENT_BUILTIN_TOOLS);
@@ -51,6 +52,19 @@ describe('店铺助手工具面一致性', () => {
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('同一 URL 只调用一次 browser_navigate');
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('不得再次 navigate');
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('browser_get_tabs');
+  });
+
+  it('用户当前问题优先于历史计划，记忆不得冒充用户已确认事实', () => {
+    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('用户当前消息里的直接问题必须先回答');
+    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('不得因为 task_plan');
+    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('当前用户明确输入 > 当前会话确认');
+    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('不得把项目记忆当成用户刚刚确认');
+  });
+
+  it('从零开店预算不应再给 500 步的默认失控空间', () => {
+    const config = JSON.parse(String(builtinShopAgentDefs[0]?.config_json || '{}'));
+    expect(config.maxReActSteps).toBeGreaterThanOrEqual(80);
+    expect(config.maxReActSteps).toBeLessThanOrEqual(200);
   });
 
   it('主体规则必须按平台适配，不能把抖店规则套到其他平台', () => {

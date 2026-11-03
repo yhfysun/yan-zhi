@@ -9,6 +9,7 @@
 import type { Message, ChatChunk, DeltaToolCall } from '@yan-zhi/shared';
 import { normalizeResponsesUsage } from '@yan-zhi/shared';
 import { parseSseFrames, type SseFrame } from './sse-frames.js';
+import type { StreamTimeoutOptions } from './stream.js';
 
 export interface ResponsesInput {
   instructions?: string;
@@ -159,6 +160,7 @@ function usageToChunkUsage(usage: any): ChatChunk['usage'] | undefined {
  */
 export async function* parseResponsesSSE(
   stream: ReadableStream<Uint8Array>,
+  opts?: StreamTimeoutOptions,
 ): AsyncIterable<ChatChunk> {
   // item_id -> 顺序 index（Responses 用 item_id 关联，而下游认 index）
   const itemToIndex = new Map<string, number>();
@@ -166,7 +168,7 @@ export async function* parseResponsesSSE(
   let sawFunctionCall = false;
   let terminated = false;
 
-  for await (const frame of parseSseFrames(stream)) {
+  for await (const frame of parseSseFrames(stream, opts)) {
     const ev = frame.json;
     if (!ev || typeof ev !== 'object') continue;
     // 网关可能省略 event: 行，把类型放在 JSON 里；两个来源都认

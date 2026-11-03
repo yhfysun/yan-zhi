@@ -102,6 +102,7 @@ import { dynamicToolRoute } from './services/tool-router.js';
 import { findModelRow, rowToModel } from './services/model-resolve.js';
 import { platformReadableCond } from './services/platform-share.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from './constants.js';
+import { TaskChunkCoalescer, type TaskChunkEvent } from './services/task-chunk-coalescer.js';
 import {
   startWorkflowRun, subscribeWorkflowRun, getWorkflowRun, resolveBundleFromDb,
   markWorkflowDelivered, loadPendingWorkflowDeliveries, type WorkflowDeliveryCtx,
@@ -613,13 +614,17 @@ interface LlmTask {
   costUnpricedCalls?: number;
   /** 单价缓存（platformId::modelId → 单价）：避免每轮调用都读 model 表 */
   costPricingCache?: Map<string, ModelPricing | undefined>;
+  /** 流式增量合并器：80ms 窗口内的同流增量合并后 emit */
+  chunkCoalescer?: TaskChunkCoalescer;
+  chunkFlushTimer?: ReturnType<typeof setTimeout>;
 }
 
 const tasks = new Map<string, LlmTask>();
 const MAX_EVENTS = 10000; // SSE 事件缓冲上限，防止长任务内存泄漏
+const TASK_CHUNK_FLUSH_MS = 80;
 let playwrightAvailable: boolean | null = null; // Playwright 可用性缓存（null=未检测）
 
-function emit(task: LlmTask, event: SSEEvent) {
+function emitNow(task: LlmTask, event: SSEEvent) {
   task.seq++;
   event.seq = task.seq;
   task.events.push(event);
@@ -657,6 +662,42 @@ function emit(task: LlmTask, event: SSEEvent) {
       void generateTitleFor(task.conversationId, task.userId, { platformId: task.platformId, modelId: task.modelId });
     }
   }
+}
+
+function clearTaskChunkTimer(task: LlmTask): void {
+  if (task.chunkFlushTimer) {
+    clearTimeout(task.chunkFlushTimer);
+    task.chunkFlushTimer = undefined;
+  }
+}
+
+function flushTaskChunks(task: LlmTask): void {
+  clearTaskChunkTimer(task);
+  const pending = task.chunkCoalescer?.drain() || [];
+  for (const event of pending) emitNow(task, event as SSEEvent);
+}
+
+function scheduleTaskChunkFlush(task: LlmTask): void {
+  if (task.chunkFlushTimer) return;
+  task.chunkFlushTimer = setTimeout(() => {
+    task.chunkFlushTimer = undefined;
+    flushTaskChunks(task);
+  }, TASK_CHUNK_FLUSH_MS);
+}
+
+/**
+ * 统一事件出口：chunk 先按任务/子智能体合桶，低频事件到达前强制冲出，
+ * 保证 tool/message/terminal 与已生成文本的顺序不被合并器打乱。
+ */
+function emit(task: LlmTask, event: SSEEvent) {
+  if (event.type === 'chunk') {
+    task.chunkCoalescer ||= new TaskChunkCoalescer();
+    task.chunkCoalescer.push(event as TaskChunkEvent);
+    if (task.chunkCoalescer.size) scheduleTaskChunkFlush(task);
+    return;
+  }
+  flushTaskChunks(task);
+  emitNow(task, event);
 }
 
 function rowToMsg(row: any): Message {
@@ -3096,6 +3137,7 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
   const maxPausedMs = 24 * 60 * 60 * 1000; // ★ paused 任务最大挂起时长 24h（2026-10-27）
   for (const [id, task] of tasks) {
     if (task.status !== 'running' && task.status !== 'paused' && now - task.createdAt > maxAgeMs) {
+      clearTaskChunkTimer(task);
       tasks.delete(id);
       forgetTaskScopedState(id); // ★ A5：一并清任务级 Map（此前**永不清理** → 无界增长）
     }
@@ -3109,6 +3151,7 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
       task.status = 'failed';
       task.error = '任务挂起超过 24 小时，已自动终止';
       emit(task, { type: 'task:error', error: task.error });
+      clearTaskChunkTimer(task);
       tasks.delete(id);
       forgetTaskScopedState(id);
       continue;
@@ -3118,6 +3161,7 @@ export function cleanupTasks(maxAgeMs: number = 30 * 60 * 1000) {
       try { task.abortController.abort(); } catch {}
       task.status = 'failed';
       task.error = '任务运行超时（超过 2 小时）';
+      clearTaskChunkTimer(task);
       tasks.delete(id);
       forgetTaskScopedState(id); // ★ A5：同上
     }

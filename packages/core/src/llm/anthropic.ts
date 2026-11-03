@@ -3,6 +3,11 @@
 // 并把 Anthropic 的 SSE 流解析成与 OpenAI 路径一致的 ChatChunk。
 import type { Message, ChatChunk, DeltaToolCall } from '@yan-zhi/shared';
 import { normalizeAnthropicUsage } from '@yan-zhi/shared';
+import {
+  readWithIdleTimeout,
+  resolveStreamReadTimeout,
+  type StreamTimeoutOptions,
+} from './stream.js';
 
 /** 将工具入参（可能是 JSON 字符串或对象）统一解析为对象 */
 function parseInput(args: unknown): Record<string, unknown> {
@@ -144,7 +149,10 @@ export function toAnthropicTools(tools: unknown[] | undefined): Array<Record<str
  * Anthropic 事件使用 `event:` / `data:` 行，data 为 JSON，type 字段形如
  * message_start / content_block_start / content_block_delta / message_delta / message_stop。
  */
-export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): AsyncIterable<ChatChunk> {
+export async function* parseAnthropicSSE(
+  stream: ReadableStream<Uint8Array>,
+  opts?: StreamTimeoutOptions,
+): AsyncIterable<ChatChunk> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -164,6 +172,7 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
    *   而长 system prompt 每次改写都要重新付费写入，这笔钱在长任务里不小。
    */
   let startUsage: any = null;
+  let receivedFirstByte = false;
   // ★ 是否见到终态（message_stop 事件 或 message_delta 带 stop_reason）——
   //   与 OpenAI 侧 parseSSE 的 terminated 同一判据：未见即视为流被掐断（2026-10-09）。
   let terminated = false;
@@ -252,8 +261,10 @@ export async function* parseAnthropicSSE(stream: ReadableStream<Uint8Array>): As
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const timeout = resolveStreamReadTimeout(opts, receivedFirstByte);
+      const { done, value } = await readWithIdleTimeout(reader, timeout.timeoutMs, timeout.timeoutError);
       if (done) break;
+      receivedFirstByte = true;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';

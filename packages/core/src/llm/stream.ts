@@ -25,6 +25,14 @@ const TERMINAL_FINISH_REASONS = new Set(['stop', 'tool_calls', 'length', 'conten
  *   ★ 与"终止判定"（terminated）是**两件事**：那个管"流是不是正常说完"，这个管"流是不是死了"。
  */
 export const DEFAULT_LLM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * 首包超时：连接已建立、但上游一直不吐第一个字节。
+ *
+ * 与 idleTimeout 分开：首 token 慢的推理模型通常也会在 2 分钟内开始输出；
+ * 若网关接了连接后静默挂起，不应让用户干等 10 分钟。可用
+ * `YANZHI_LLM_FIRST_BYTE_TIMEOUT_MS` 覆盖，0 = 回落到 idleTimeout。
+ */
+export const DEFAULT_LLM_FIRST_BYTE_TIMEOUT_MS = 2 * 60 * 1000;
 
 /** 解析生效的空闲超时：显式传参 > 环境变量 > 默认 10 分钟；<=0 关闭。 */
 export function resolveLlmIdleTimeoutMs(explicit?: number): number {
@@ -32,6 +40,38 @@ export function resolveLlmIdleTimeoutMs(explicit?: number): number {
   const env = Number(process.env.YANZHI_LLM_IDLE_TIMEOUT_MS);
   if (Number.isFinite(env)) return Math.max(0, env);
   return DEFAULT_LLM_IDLE_TIMEOUT_MS;
+}
+
+export function resolveLlmFirstByteTimeoutMs(explicit?: number): number {
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) return Math.max(0, explicit);
+  const env = Number(process.env.YANZHI_LLM_FIRST_BYTE_TIMEOUT_MS);
+  if (Number.isFinite(env)) return Math.max(0, env);
+  return DEFAULT_LLM_FIRST_BYTE_TIMEOUT_MS;
+}
+
+export interface StreamTimeoutOptions {
+  idleTimeoutMs?: number;
+  firstByteTimeoutMs?: number;
+}
+
+export function resolveStreamReadTimeout(
+  opts: StreamTimeoutOptions | undefined,
+  receivedFirstByte: boolean,
+): { timeoutMs: number; timeoutError?: string } {
+  const idleMs = resolveLlmIdleTimeoutMs(opts?.idleTimeoutMs);
+  // 显式只调 idleTimeout 的调用方通常也在测“静默流”，首包沿用同一时长；
+  // 未显式覆盖时使用更短的默认首包超时。
+  const firstByteMs = opts?.firstByteTimeoutMs !== undefined
+    ? resolveLlmFirstByteTimeoutMs(opts.firstByteTimeoutMs)
+    : opts?.idleTimeoutMs !== undefined
+      ? idleMs
+      : resolveLlmFirstByteTimeoutMs();
+  if (receivedFirstByte || firstByteMs <= 0) return { timeoutMs: idleMs };
+  const timeoutLabel = firstByteMs < 1000 ? `${firstByteMs} 毫秒` : `${Math.round(firstByteMs / 1000)} 秒`;
+  return {
+    timeoutMs: firstByteMs,
+    timeoutError: `上游流 ${timeoutLabel}无数据（未返回首包，连接已建立但上游静默）—— 已中止本次流读取`,
+  };
 }
 
 /**
@@ -43,6 +83,7 @@ export function resolveLlmIdleTimeoutMs(explicit?: number): number {
 export async function readWithIdleTimeout<T>(
   reader: ReadableStreamDefaultReader<T>,
   idleMs: number,
+  timeoutError?: string,
 ): Promise<ReadableStreamReadResult<T>> {
   const readPromise = reader.read();
   if (!(idleMs > 0)) return readPromise;
@@ -54,7 +95,7 @@ export async function readWithIdleTimeout<T>(
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           timedOut = true;
-          reject(new Error(`上游流 ${Math.round(idleMs / 1000)} 秒无数据（连接未关闭但已静默）—— 已中止本次流读取，避免任务无限挂起`));
+          reject(new Error(timeoutError || `上游流 ${Math.round(idleMs / 1000)} 秒无数据（连接未关闭但已静默）—— 已中止本次流读取，避免任务无限挂起`));
         }, idleMs);
       }),
     ]);
@@ -86,19 +127,21 @@ export async function readWithIdleTimeout<T>(
  */
 export async function* parseSSE(
   stream: ReadableStream<Uint8Array>,
-  opts?: { idleTimeoutMs?: number },
+  opts?: StreamTimeoutOptions,
 ): AsyncIterable<ChatChunk> {
   const reader = stream.getReader();
-  const idleMs = resolveLlmIdleTimeoutMs(opts?.idleTimeoutMs);
   const decoder = new TextDecoder();
   let buffer = '';
+  let receivedFirstByte = false;
   /** 是否见到终态（finish_reason 或 [DONE]） */
   let terminated = false;
 
   try {
     while (true) {
-      const { done, value } = await readWithIdleTimeout(reader, idleMs);
+      const timeout = resolveStreamReadTimeout(opts, receivedFirstByte);
+      const { done, value } = await readWithIdleTimeout(reader, timeout.timeoutMs, timeout.timeoutError);
       if (done) break;
+      receivedFirstByte = true;
       buffer += decoder.decode(value, { stream: true });
 
       const lines = buffer.split('\n');

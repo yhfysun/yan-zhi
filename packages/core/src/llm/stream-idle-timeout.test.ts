@@ -14,7 +14,15 @@
  * 并验证正常流不会被误杀。
  */
 import { describe, it, expect } from 'vitest';
-import { parseSSE, resolveLlmIdleTimeoutMs, DEFAULT_LLM_IDLE_TIMEOUT_MS } from './stream';
+import {
+  parseSSE,
+  resolveLlmIdleTimeoutMs,
+  resolveLlmFirstByteTimeoutMs,
+  DEFAULT_LLM_IDLE_TIMEOUT_MS,
+  DEFAULT_LLM_FIRST_BYTE_TIMEOUT_MS,
+} from './stream';
+import { parseAnthropicSSE } from './anthropic';
+import { parseResponsesSSE } from './responses';
 
 /** 一个**永不出数据、也永不关闭**的流 —— 模拟上游静默挂起。 */
 function stallingStream(): ReadableStream<Uint8Array> {
@@ -32,9 +40,13 @@ function dataThenStall(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
-async function drain(stream: ReadableStream<Uint8Array>, idleTimeoutMs: number) {
+async function drain(
+  stream: ReadableStream<Uint8Array>,
+  idleTimeoutMs: number,
+  firstByteTimeoutMs?: number,
+) {
   const out: any[] = [];
-  for await (const c of parseSSE(stream, { idleTimeoutMs })) out.push(c);
+  for await (const c of parseSSE(stream, { idleTimeoutMs, firstByteTimeoutMs })) out.push(c);
   return out;
 }
 
@@ -50,6 +62,39 @@ describe('上游流静默超时（2026-10-15）', () => {
     expect(String(err.message)).toMatch(/无数据/);
     // 必须在超时附近返回，而不是挂住
     expect(dt, `超时后应立即返回，实际用了 ${dt}ms`).toBeLessThan(3000);
+  });
+
+  it('★★ 首字节超时独立于空闲超时：已连上但迟迟不吐首包会快速失败', async () => {
+    const t0 = Date.now();
+    let err: any = null;
+    try {
+      await drain(stallingStream(), 10_000, 60);
+    } catch (e) { err = e; }
+    const dt = Date.now() - t0;
+    expect(err, '静默首包没有触发首字节超时').toBeTruthy();
+    expect(String(err.message)).toMatch(/首包|首 token/);
+    expect(dt, `首字节超时后应立即返回，实际用了 ${dt}ms`).toBeLessThan(3000);
+  });
+
+  it('Anthropic 与 Responses 流同样受首字节超时保护', async () => {
+    const run = async (parse: (s: ReadableStream<Uint8Array>, opts: any) => AsyncIterable<any>) => {
+      const t0 = Date.now();
+      let err: any = null;
+      try {
+        for await (const _ of parse(stallingStream(), { idleTimeoutMs: 10_000, firstByteTimeoutMs: 60 })) {
+          // 不应产出数据
+        }
+      } catch (e) { err = e; }
+      return { err, dt: Date.now() - t0 };
+    };
+
+    const anthropic = await run(parseAnthropicSSE);
+    const responses = await run(parseResponsesSSE);
+    for (const result of [anthropic, responses]) {
+      expect(result.err).toBeTruthy();
+      expect(String(result.err.message)).toMatch(/首包/);
+      expect(result.dt).toBeLessThan(3000);
+    }
   });
 
   it('★★ 半途静默（已收到帧后上游停住）同样会抛错', async () => {
@@ -95,6 +140,27 @@ describe('上游流静默超时（2026-10-15）', () => {
       if (prev === undefined) delete process.env.YANZHI_LLM_IDLE_TIMEOUT_MS;
       else process.env.YANZHI_LLM_IDLE_TIMEOUT_MS = prev;
     }
+  });
+
+  it('首字节超时解析：显式传参 > 环境变量 > 默认', () => {
+    expect(resolveLlmFirstByteTimeoutMs(1234)).toBe(1234);
+    expect(resolveLlmFirstByteTimeoutMs(0)).toBe(0);
+    const prev = process.env.YANZHI_LLM_FIRST_BYTE_TIMEOUT_MS;
+    try {
+      process.env.YANZHI_LLM_FIRST_BYTE_TIMEOUT_MS = '4321';
+      expect(resolveLlmFirstByteTimeoutMs()).toBe(4321);
+      delete process.env.YANZHI_LLM_FIRST_BYTE_TIMEOUT_MS;
+      expect(resolveLlmFirstByteTimeoutMs()).toBe(DEFAULT_LLM_FIRST_BYTE_TIMEOUT_MS);
+    } finally {
+      if (prev === undefined) delete process.env.YANZHI_LLM_FIRST_BYTE_TIMEOUT_MS;
+      else process.env.YANZHI_LLM_FIRST_BYTE_TIMEOUT_MS = prev;
+    }
+  });
+
+  it('默认首字节超时明显短于 10 分钟空闲超时', () => {
+    expect(DEFAULT_LLM_FIRST_BYTE_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
+    expect(DEFAULT_LLM_FIRST_BYTE_TIMEOUT_MS).toBeLessThanOrEqual(3 * 60_000);
+    expect(DEFAULT_LLM_FIRST_BYTE_TIMEOUT_MS).toBeLessThan(DEFAULT_LLM_IDLE_TIMEOUT_MS);
   });
 
   it('默认值足够长 —— 绝不能误杀"首 token 慢"的正常请求', () => {
