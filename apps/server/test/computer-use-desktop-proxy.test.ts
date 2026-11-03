@@ -27,11 +27,11 @@ afterEach(async () => {
   delete process.env.YZ_ALLOW_BACKEND_COMPUTER_USE;
 });
 
-function activateWithTools(): Map<string, any> {
+function activateWithTools(config: Record<string, unknown> = {}): Map<string, any> {
   const tools = new Map<string, any>();
   const ctx = {
     id: 'computer-use',
-    config: {},
+    config,
     log: () => undefined,
     storage: {
       get: async () => undefined,
@@ -76,8 +76,7 @@ describe('computer-use 桌面能力代理', () => {
   it('完整桌面包没有能力桥时，继续在后端本机执行', async () => {
     bridge.available.mockReturnValue(false);
     bridge.seen.mockReturnValue(false);
-    process.env.YZ_DESKTOP_LOCAL_EXECUTION = '1';
-    const tools = activateWithTools();
+    const tools = activateWithTools({ localExecution: true });
     const result = await tools.get('computer_mouse_move').execute(
       { x: 10, y: 20 },
       { userId: 'guest' },
@@ -89,7 +88,7 @@ describe('computer-use 桌面能力代理', () => {
   it('连接过轻量壳后再掉线时明确失败，不静默回落后端机器', async () => {
     bridge.available.mockReturnValue(false);
     bridge.seen.mockReturnValue(true);
-    const tools = activateWithTools();
+    const tools = activateWithTools({ localExecution: true });
     const result = await tools.get('computer_mouse_move').execute(
       { x: 10, y: 20 },
       { userId: 'guest' },

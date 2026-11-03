@@ -43,34 +43,46 @@ console.log('[desktop] 平台适配器已注入');
 initPluginHostBridge();
 console.log('[desktop] 插件宿主桥已挂载');
 
+function mountApp(): void {
+  const app = createApp(App);
+  for (const [key, comp] of Object.entries(Icons)) {
+    app.component(key, comp as any);
+  }
+  app.use(createPinia());
+  app.use(router);
+  app.use(ElementPlus);
+  app.mount('#app');
+  console.log('[desktop] Vue 应用已挂载');
+  notifyUiReady();
+}
+
+/** 普通浏览器打开壳的本机 `/remote`：没有 Electron preload，也没有桌面数据库。 */
+function isRemoteGuestEntry(): boolean {
+  try {
+    const pathname = location.pathname.replace(/\/+$/, '');
+    const hash = location.hash || '';
+    return pathname === '/remote' || hash.startsWith('#/remote');
+  } catch {
+    return false;
+  }
+}
+
+if (isRemoteGuestEntry()) {
+  console.log('[desktop] 远程控制 guest 入口：跳过桌面数据库初始化');
+  mountApp();
+} else {
 // 初始化数据库 schema，完成后挂载 Vue 应用
-initSchema((sql) => desktopAdapter.db.exec(sql))
-  .then(() => seedBuiltinSkills((sql, params) => desktopAdapter.db.exec(sql, params)))
-  // 内置「页面指令」种子（页面内对话方案 §5 P1）：与 skill 种子同一条链，幂等 upsert
-  .then(() => seedBuiltinPageCommands((sql, params) => desktopAdapter.db.exec(sql, params)))
-  .then(() => {
-    console.log('[desktop] 数据库 schema 初始化完成');
-    const app = createApp(App);
-    for (const [key, comp] of Object.entries(Icons)) {
-      app.component(key, comp as any);
-    }
-    app.use(createPinia());
-    app.use(router);
-    app.use(ElementPlus);
-    app.mount('#app');
-    console.log('[desktop] Vue 应用已挂载');
-    notifyUiReady();
-  })
-  .catch((err) => {
-    console.error(`[desktop] 数据库初始化失败: ${String(err)}`);
-    const app = createApp(App);
-    for (const [key, comp] of Object.entries(Icons)) {
-      app.component(key, comp as any);
-    }
-    app.use(createPinia());
-    app.use(router);
-    app.use(ElementPlus);
-    app.mount('#app');
-    console.error('[desktop] Vue 应用已降级挂载（数据库不可用）');
-    notifyUiReady();
-  });
+  initSchema((sql) => desktopAdapter.db.exec(sql))
+    .then(() => seedBuiltinSkills((sql, params) => desktopAdapter.db.exec(sql, params)))
+    // 内置「页面指令」种子（页面内对话方案 §5 P1）：与 skill 种子同一条链，幂等 upsert
+    .then(() => seedBuiltinPageCommands((sql, params) => desktopAdapter.db.exec(sql, params)))
+    .then(() => {
+      console.log('[desktop] 数据库 schema 初始化完成');
+      mountApp();
+    })
+    .catch((err) => {
+      console.error(`[desktop] 数据库初始化失败: ${String(err)}`);
+      mountApp();
+      console.error('[desktop] Vue 应用已降级挂载（数据库不可用）');
+    });
+}

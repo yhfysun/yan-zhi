@@ -185,6 +185,16 @@ describe('轻量壳：本机远程控制运行时', () => {
     assert.ok(!bundleSrc.includes('SQLite 驱动'), 'bundle 不得携带后端数据库初始化代码');
   });
 
+  test('壳本机 computer-use 能真实调用 Windows 只读工具', { skip: process.platform !== 'win32' }, async () => {
+    const result = await runtime.executeComputerTool(
+      'computer_list_windows',
+      { page: 1, pageSize: 5 },
+      { userId: 'guest' },
+    );
+    assert.notStrictEqual(result?.isError, true, String(result?.content?.[0]?.text || ''));
+    assert.match(String(result?.content?.[0]?.text || ''), /窗口|apps|total/i);
+  });
+
   test('壳模式启动本机运行时，打包产物与构建脚本都已登记', () => {
     assert.match(MAIN, /startLocalCapabilities/);
     assert.match(MAIN, /local-capabilities\.bundle\.cjs/);

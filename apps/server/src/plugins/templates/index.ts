@@ -610,10 +610,12 @@ Write-Output 'OK'\`;
 
 export const computerUseModule: PluginModule = {
   activate: (ctx) => {
+    const cfg = (ctx.config || {}) as Record<string, unknown>;
     panicActive = false;
-    maxOps = Number((ctx.config as Record<string, unknown> | undefined)?.maxOps) || 200;
-    allowSelfWindowClick = !!(ctx.config as Record<string, unknown> | undefined)?.allowSelfWindowClick;
-    screenshotsDirOverride = String((ctx.config as Record<string, unknown> | undefined)?.screenshotDir || '');
+    maxOps = Number(cfg.maxOps) || 200;
+    allowSelfWindowClick = !!cfg.allowSelfWindowClick;
+    screenshotsDirOverride = String(cfg.screenshotDir || '');
+    const configuredLocalExecution = cfg.localExecution === true;
 
     // 轻量壳/远程桌面在线时，所有 computer_* 工具必须回到用户本机执行。
     // 不能因为后端恰好也是 Windows 就“看起来能用”——那会操作错误机器的键鼠。
@@ -632,7 +634,7 @@ export const computerUseModule: PluginModule = {
         }
         // 一旦该用户连接过轻量壳，掉线后只报错，绝不回落到后端机器。
         // 完整桌面包由主进程显式标记为“本地执行”，从没接能力桥，继续沿用原执行器。
-        const localDesktop = process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1';
+        const localDesktop = configuredLocalExecution || process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1';
         const explicitHeadless = process.env.YZ_ALLOW_BACKEND_COMPUTER_USE === '1';
         if (desktopCapabilitySeen(userId) || (!localDesktop && !explicitHeadless)) {
           return errResult(new Error(

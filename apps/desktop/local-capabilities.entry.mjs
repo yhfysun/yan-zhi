@@ -351,6 +351,7 @@ export async function startLocalCapabilities(options = {}) {
       config: {
         maxOps: 200,
         allowSelfWindowClick: false,
+        localExecution: true,
         screenshotDir: path.join(dataDir, 'computer-use-data', 'screenshots'),
         ...(options.computerUse || {}),
       },
@@ -360,7 +361,11 @@ export async function startLocalCapabilities(options = {}) {
         shell: {
           exec(command, args = [], execOptions = {}) {
             return new Promise((resolve) => {
-              execFile(command, args, {
+              // 工具层为兼容 cmd 会给路径参数加双引号；execFile 直传时不能保留这层引号。
+              const cleanArgs = Array.isArray(args)
+                ? args.map((arg) => String(arg).replace(/^"(.*)"$/s, '$1'))
+                : [];
+              execFile(command, cleanArgs, {
                 timeout: Math.max(1000, Number(execOptions.timeout) || 20000),
                 windowsHide: true,
                 maxBuffer: 16 * 1024 * 1024,
