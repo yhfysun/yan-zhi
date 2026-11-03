@@ -721,7 +721,7 @@ describe('ClipWorkbench · 工作台密度与可操作性', () => {
     const labels = declBlockOf(CSS, '.cp-tl-labels');
     const timeline = declBlockOf(CSS, '.cp-tl');
     const left = declBlockOf(CSS, '.cp-left');
-    expect(labels).toMatch(/flex:\s*0\s+0\s+136px/);
+    expect(labels).toMatch(/flex:\s*0\s+0\s+152px/);
     expect(timeline).toMatch(/max-height:/);
     expect(timeline).toMatch(/overflow-y:\s*auto/);
     expect(left).toMatch(/overflow-y:\s*auto/);
@@ -816,6 +816,36 @@ describe('ClipWorkbench · 多视频轨代理叠放', () => {
     expect(CODE).toContain('syncProxyOverlayVideos');
     expect(CODE).toContain('onProxyOverlayLoadedMeta');
     expect(CODE).toContain('proxyOverlayVideoEls.clear()');
+  });
+});
+
+describe('ClipWorkbench · 视频轨合成设置', () => {
+  it('非主视频轨提供紧凑「混」入口，主轨与角度轨不显示', () => {
+    expect(CODE).toContain('trackSupportsComposition');
+    expect(CODE).toContain("isMulticamAngleTrack(row)");
+    expect(CODE).toContain("mainVideoTrack.value?.id === row.id");
+    expect(CODE).toMatch(/v-if="trackSupportsComposition\(tr\)"/);
+    expect(CODE).toContain('调整轨道透明度');
+    expect(CODE).toContain('cp-track-mix');
+  });
+
+  it('透明度实时预览、松手落盘；混合模式来自共享 BLEND_MODES', () => {
+    expect(CODE).toMatch(/@input="onTrackOpacityInput\(tr\.id, \$event\)"/);
+    expect(CODE).toMatch(/@change="onTrackOpacityCommit\(tr\.id\)"/);
+    expect(CODE).toMatch(/@change="onTrackBlendChange\(tr\.id, \$event\)"/);
+    expect(CODE).toMatch(/v-for="b in BLEND_MODES"/);
+    expect(CODE).toContain(':value="tr.blend || \'normal\'"');
+  });
+
+  it('合成变更走纯函数、标脏并保存，不另写一套轨道字段规则', () => {
+    const set = fnBody('setTrackComposition');
+    expect(set).toContain('applyVideoTrackComposition');
+    expect(set).toContain('pendingLabel');
+    expect(set).toContain('dirty.value = true');
+    expect(set).toContain('syncProxyOverlayVideos');
+    expect(set).toContain('scheduleFrameFetch');
+    expect(fnBody('onTrackOpacityCommit')).toContain('save()');
+    expect(fnBody('onTrackBlendChange')).toContain('save()');
   });
 });
 

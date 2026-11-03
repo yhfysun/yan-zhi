@@ -544,6 +544,49 @@
                 </span>
                 <span v-else class="cp-th-actions">
                   <button class="cp-th-btn" :title="tr.hidden ? '显示该轨' : '隐藏该轨'" @click="toggleTrack('hidden', tr.id)">{{ tr.hidden ? '隐' : '显' }}</button>
+                  <el-popover
+                    v-if="trackSupportsComposition(tr)"
+                    trigger="click"
+                    placement="right-start"
+                    :width="232"
+                    popper-class="cp-track-mix-popper"
+                  >
+                    <template #reference>
+                      <button
+                        class="cp-th-btn"
+                        :class="{ on: hasTrackComposition(tr) }"
+                        title="轨道合成：透明度与混合模式"
+                        @click.stop
+                      >混</button>
+                    </template>
+                    <div class="cp-track-mix" @mousedown.stop @click.stop @dragstart.stop.prevent>
+                      <div class="cp-track-mix-title">{{ tr.name || tr.id }} · 合成</div>
+                      <div class="cp-field">
+                        <label>不透明度 <span class="cp-val">{{ trackOpacityPct(tr) }}%</span></label>
+                        <input
+                          class="cp-range"
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          :value="trackOpacityPct(tr)"
+                          @input="onTrackOpacityInput(tr.id, $event)"
+                          @change="onTrackOpacityCommit(tr.id)"
+                        />
+                      </div>
+                      <div class="cp-field">
+                        <label>混合模式</label>
+                        <select
+                          class="cp-select"
+                          :value="tr.blend || 'normal'"
+                          @change="onTrackBlendChange(tr.id, $event)"
+                        >
+                          <option v-for="b in BLEND_MODES" :key="b.id" :value="b.id">{{ b.label }}</option>
+                        </select>
+                      </div>
+                      <button class="cp-btn full" :disabled="!hasTrackComposition(tr)" @click="resetTrackComposition(tr.id)">重置合成</button>
+                    </div>
+                  </el-popover>
                   <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" @click="toggleTrack('locked', tr.id)">{{ tr.locked ? '锁' : '解' }}</button>
                   <button class="cp-th-btn" :disabled="ti === 0" title="上移" @click="moveTrack('video', tr.id, -1)">↑</button>
                   <button class="cp-th-btn" :disabled="ti === 0" title="下移" @click="moveTrack('video', tr.id, 1)">↓</button>
@@ -2288,6 +2331,7 @@ import { api, API_BASE, mediaAuthQuery } from '../api/client';
 import { clampOffset, localLayerT, round4, sampleLayerTf, shiftLayerPosition } from '../utils/clip-stage-geometry';
 import {
   activeVideoOverlayLayers,
+  applyVideoTrackComposition,
   clampWithinGaps,
   ensureTracks,
   isClipItem,
@@ -2314,6 +2358,7 @@ import {
   type UiCompoundItem,
   type UiTrack,
   type UiTrackItem,
+  type VideoTrackCompositionPatch,
 } from '../composables/clip/clipTracks';
 import { formatRecTime, pickRecorderMime, recordingFileName, RECORDING_MAX_MS } from '../utils/clip-recording';
 import { clampMenuPos } from '../utils/menuPosition';
@@ -3207,6 +3252,54 @@ function isMainVideo(row: UiTrack): boolean {
 }
 function isMulticamAngleTrack(row: UiTrack): boolean {
   return !!row.multicamGroupId && Number.isInteger(row.multicamAngleIndex);
+}
+function trackSupportsComposition(row: UiTrack): boolean {
+  return row.kind === 'video'
+    && mainVideoTrack.value?.id !== row.id
+    && !isMulticamAngleTrack(row);
+}
+function trackOpacityPct(row: UiTrack): number {
+  return Math.round(Math.max(0, Math.min(1, Number(row.opacity ?? 1))) * 100);
+}
+function hasTrackComposition(row: UiTrack): boolean {
+  return (row.opacity ?? 1) < 1 || (!!row.blend && row.blend !== 'normal');
+}
+function setTrackComposition(
+  trackId: string,
+  patch: VideoTrackCompositionPatch,
+): boolean {
+  const track = videoTrackRows.value.find((row) => row.id === trackId);
+  if (!track || !trackSupportsComposition(track)) return false;
+  if (!applyVideoTrackComposition(track, patch)) return false;
+  pendingLabel.value = '调整轨道合成';
+  dirty.value = true;
+  if (monitorMode.value === 'proxy') void nextTick(syncProxyOverlayVideos);
+  else if (monitorMode.value === 'live') scheduleFrameFetch(150);
+  return true;
+}
+function onTrackOpacityInput(trackId: string, event: Event): void {
+  const value = Number((event.target as HTMLInputElement).value);
+  setTrackComposition(trackId, { opacity: value / 100 });
+}
+async function onTrackOpacityCommit(trackId: string): Promise<void> {
+  if (!dirty.value) return;
+  const track = videoTrackRows.value.find((row) => row.id === trackId);
+  if (!track) return;
+  pendingLabel.value = `调整轨道透明度：${track.name || track.id}`;
+  await save();
+}
+async function onTrackBlendChange(trackId: string, event: Event): Promise<void> {
+  const blend = String((event.target as HTMLSelectElement).value || '').trim();
+  if (!BLEND_MODES.some((mode) => mode.id === blend)) return;
+  if (!setTrackComposition(trackId, { blend })) return;
+  const track = videoTrackRows.value.find((row) => row.id === trackId);
+  pendingLabel.value = `调整「${track?.name || trackId}」混合模式`;
+  await save();
+}
+async function resetTrackComposition(trackId: string): Promise<void> {
+  if (!setTrackComposition(trackId, { opacity: 1, blend: 'normal' })) return;
+  pendingLabel.value = '重置轨道合成';
+  await save();
 }
 function ensureProjectTracks(): UiTrack[] | null {
   const p = project.value;
@@ -8033,7 +8126,7 @@ onMounted(async () => {
 .cp-toolbar-text { gap: 5px; padding: 0 8px; }
 .cp-hint { font-size: 11px; color: var(--el-text-color-placeholder); }
 .cp-tl { display: flex; max-height: clamp(260px, 40vh, 430px); border: 1px solid var(--el-border-color-lighter); border-radius: 6px; overflow-x: hidden; overflow-y: auto; background: var(--el-fill-color-blank); overscroll-behavior: contain; }
-.cp-tl-labels { flex: 0 0 136px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
+.cp-tl-labels { flex: 0 0 152px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
 .cp-tl-label { display: flex; align-items: center; gap: 5px; height: 64px; padding: 0 8px; font-size: 11px; color: var(--el-text-color-secondary); border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tl-label.head { position: sticky; top: 0; z-index: 8; height: 28px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tl-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
@@ -8061,8 +8154,11 @@ onMounted(async () => {
 .cp-th-actions { display: flex; gap: 2px; flex-wrap: nowrap; }
 .cp-th-btn { width: 20px; height: 20px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font-size: 11px; line-height: 1; cursor: pointer; }
 .cp-th-btn:hover:not(:disabled) { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); }
+.cp-th-btn.on { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); background: var(--el-color-primary-light-9); }
 .cp-th-btn:disabled { opacity: .35; cursor: not-allowed; }
 .cp-th-btn.danger:hover:not(:disabled) { color: var(--el-color-danger); border-color: var(--el-color-danger-light-5); }
+.cp-track-mix { display: flex; flex-direction: column; gap: 10px; padding: 2px; }
+.cp-track-mix-title { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-tl-addrow { display: flex; flex-direction: column; gap: 3px; padding: 6px; }
 .cp-th-add { width: 100%; padding: 3px 0; font-size: 10px; border: 1px dashed var(--el-border-color); border-radius: 4px; background: none; color: var(--el-text-color-secondary); cursor: pointer; }
 .cp-th-add:hover { color: var(--el-color-primary); border-color: var(--el-color-primary); }

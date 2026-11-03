@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   activeVideoOverlayLayers,
+  applyVideoTrackComposition,
   clampWithinGaps,
   ensureTracks,
   isClipItem,
@@ -182,6 +183,32 @@ describe('activeVideoOverlayLayers · 非主轨代理叠放', () => {
 
     expect(activeVideoOverlayLayers(tracks, 1, dur)).toEqual([]);
     expect(activeVideoOverlayLayers(tracks, 3, dur)).toEqual([]);
+  });
+});
+
+describe('applyVideoTrackComposition · 视频轨透明度/混合模式', () => {
+  it('★ 写入透明度与混合模式，并把脏值夹到 0~1', () => {
+    const track: UiTrack = { id: 'v2', kind: 'video', items: [] };
+    expect(applyVideoTrackComposition(track, { opacity: 0.7, blend: 'screen' })).toBe(true);
+    expect(track.opacity).toBe(0.7);
+    expect(track.blend).toBe('screen');
+    expect(applyVideoTrackComposition(track, { opacity: -0.4 })).toBe(true);
+    expect(track.opacity).toBe(0);
+    expect(applyVideoTrackComposition(track, { opacity: 0.4567 })).toBe(true);
+    expect(track.opacity).toBe(0.457);
+  });
+
+  it('★ 满透明度与 normal 混合不落冗余字段；音频轨不参与视频合成', () => {
+    const track: UiTrack = { id: 'v2', kind: 'video', opacity: 0.4, blend: 'multiply', items: [] };
+    expect(applyVideoTrackComposition(track, { opacity: 1, blend: 'normal' })).toBe(true);
+    expect(track).not.toHaveProperty('opacity');
+    expect(track).not.toHaveProperty('blend');
+    expect(applyVideoTrackComposition(track, { opacity: 1, blend: 'normal' })).toBe(false);
+
+    const audio: UiTrack = { id: 'a1', kind: 'audio', items: [] };
+    expect(applyVideoTrackComposition(audio, { opacity: 0, blend: 'screen' })).toBe(false);
+    expect(audio).not.toHaveProperty('opacity');
+    expect(audio).not.toHaveProperty('blend');
   });
 });
 

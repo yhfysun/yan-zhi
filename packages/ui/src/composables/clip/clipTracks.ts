@@ -88,6 +88,11 @@ export interface ActiveVideoOverlayLayer {
   blend?: string;
 }
 
+export interface VideoTrackCompositionPatch {
+  opacity?: number;
+  blend?: string | null;
+}
+
 const EPS = 1e-6;
 export const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
@@ -220,6 +225,45 @@ export function activeVideoOverlayLayers(
     });
   }
   return out;
+}
+
+/**
+ * 更新视频轨合成参数；透明度夹到 0~1，满值与 normal 混合删除冗余字段。
+ * 主轨是否允许由 UI 判断；纯函数只拒绝音频轨。
+ */
+export function applyVideoTrackComposition(track: UiTrack, patch: VideoTrackCompositionPatch): boolean {
+  if (track.kind !== 'video') return false;
+  let changed = false;
+
+  if (patch.opacity !== undefined) {
+    const raw = Number(patch.opacity);
+    if (Number.isFinite(raw)) {
+      const next = round3(Math.max(0, Math.min(1, raw)));
+      const prev = track.opacity ?? 1;
+      if (next >= 1 - EPS) {
+        if (track.opacity !== undefined) {
+          delete track.opacity;
+          changed = true;
+        }
+      } else if (Math.abs(prev - next) > EPS) {
+        track.opacity = next;
+        changed = true;
+      }
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'blend')) {
+    const normalized = String(patch.blend || '').trim().toLowerCase();
+    const next = !normalized || normalized === 'normal' ? undefined : normalized;
+    const prev = track.blend || undefined;
+    if (prev !== next) {
+      if (next) track.blend = next;
+      else delete track.blend;
+      changed = true;
+    }
+  }
+
+  return changed;
 }
 
 /** 只读视图：有 tracks 用 tracks；没有就按 clips/audios 合成（不写回工程）。 */
