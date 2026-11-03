@@ -7,7 +7,7 @@
 // ★ 断线重连：指数退避（1s→15s）。重连后**必须重新订阅**（subscribe_task 的 since 由调用方按
 //   taskEventCounts 传入），本模块不记忆订阅 —— 订阅生命周期由 store 管，这里只管传输。
 
-import { API_BASE } from '../api/client';
+import { API_BASE, getToken } from '../api/client';
 
 type TaskEventCb = (taskId: string, event: any) => void;
 type ConvEventCb = (conversationId: string, event: any) => void;
@@ -47,7 +47,11 @@ const openCbs = new Set<() => void>();
 function wsUrl(): string {
   const base = API_BASE.startsWith('http') ? API_BASE : `${window.location.origin}${API_BASE}`;
   const origin = base.replace(/\/api\/?$/, '');
-  return origin.replace(/^http/, 'ws') + '/ws/chat';
+  const url = origin.replace(/^http/, 'ws') + '/ws/chat';
+  // ★ multi 多用户模式（2026-11-02 实报「WS 订阅无限重试」）：浏览器 WS 带不了 Authorization 头，
+  //   服务端 wsUpgradeAuthorized 只认 header 或 ?token=；漏掉 token 时非回环连接会被全部拒绝。
+  const token = getToken();
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
 }
 
 export function chatWsUrl(): string {

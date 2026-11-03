@@ -1,6 +1,5 @@
 import { db } from '../db.js';
-import { userHasPermission } from '../rbac.js';
-import { getAuthMode } from '../auth.js';
+import { isPluginGranted, pluginAclBypassed } from '../plugin-acl.js';
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
 import { getPluginManager, validateManifest, ManifestError } from '@yan-zhi/core';
@@ -114,18 +113,12 @@ function readPluginSourceFromDisk(id: string): string | null {
 //   modeDefs 同步按过滤后的清单聚合 —— 未授权插件的模式菜单对用户不可见。
 router.get('/', (req: Request, res: Response) => {
   const mgr = getPluginManager();
-  const isAdmin = getAuthMode() === 'guest' || userHasPermission(req.user!.userId, 'admin.permission.manage');
+  const isAdmin = pluginAclBypassed(req.user!.userId);
   const visible = mgr.list().filter((p) => {
     if (p.state !== 'enabled') return true; // 未启用的照旧下发（状态展示），启用判定在前端
     if (isAdmin) return true;
     const uid = req.user!.userId;
-    // 名单命中：直接授权给该用户 / 授权给其角色 / 授权给其所属组织
-    const hit = db.prepare(
-      `SELECT 1 FROM resource_acl WHERE resource_type = 'plugin' AND resource_id = ?
-        AND (user_id = ? OR user_id IN (SELECT role_id FROM user_role WHERE user_id = ?)
-          OR user_id IN (SELECT role_id FROM org_role WHERE org_id IN (SELECT org_id FROM user_org WHERE user_id = ?)))`,
-    ).get(p.manifest.id, uid, uid, uid, uid);
-    return !!hit;
+    return isPluginGranted(p.manifest.id, uid);
   });
   const modeDefs = visible
     .filter((p) => p.state === 'enabled' && p.manifest.contributes?.mode)

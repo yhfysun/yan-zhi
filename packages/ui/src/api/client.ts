@@ -130,6 +130,27 @@ export function wsUrl(path: string): string {
   return extra ? `${url}${url.includes('?') ? '&' : '?'}${extra}` : url;
 }
 
+/**
+ * 媒体直链的 query 鉴权参数（**已带前导 `&`**，直接拼到已有 query 后面）。
+ *
+ * ★★★ 为什么必须有（2026-11-02 用户报「视频 0MB 流式读取失败且超过内嵌播放上限」）：
+ *   `<video>` / `<audio>` / `<img>` / iframe 的请求由浏览器自己发起，**带不了
+ *   Authorization 头**，也带不了 X-YZ-View-As。multi 模式下媒体端点于是被判
+ *   游客或 403/401 —— 界面上一切媒体预览全挂，而普通接口（走 apiFetch）完全正常。
+ *   服务端已按同一口径兜底：query 令牌只在 GET/HEAD 上接受（见 server/auth.ts）。
+ * ★ 与 wsUrl 注入的 extra 完全同口径，新增媒体地址时不要再各自拼 license。
+ */
+export function mediaAuthQuery(): string {
+  const parts: string[] = [];
+  const license = getLicenseCode();
+  if (license) parts.push(`license=${encodeURIComponent(license)}`);
+  const token = getToken();
+  if (token) parts.push(`token=${encodeURIComponent(token)}`);
+  const viewAs = getViewAs();
+  if (viewAs?.id) parts.push(`viewAs=${encodeURIComponent(viewAs.id)}`);
+  return parts.length ? '&' + parts.join('&') : '';
+}
+
 const MOBILE_API_BASE_KEY = 'mobile_api_base';
 
 /** 当前配置的移动端远程后端地址；未配置返回 ''（走 APK 内嵌本地后端） */
@@ -159,7 +180,7 @@ export function setMobileApiBase(url: string): string {
   return trimmed;
 }
 
-function getToken(): string | null {
+export function getToken(): string | null {
   try {
     return localStorage.getItem('auth_token');
   } catch {

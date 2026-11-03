@@ -63,7 +63,7 @@ export function registerArtifactHooks(emit: (ctx: ToolHookContext, e: { type: st
   //    ★ 2026-10-08 泛化：原钩子只认 file_write，导致 novel_tuiwen（推文成片，回传
   //      `_meta.path`+category=deliverable）的产物**既不登记也进不了工件清单** ——
   //      "任意工具只要产文件就该登记"，判据不该绑在工具名上。
-  registerAfterToolHook('artifact:meta_path', (toolName, _args, result, ctx) => {
+  registerAfterToolHook('artifact:meta_path', async (toolName, _args, result, ctx) => {
     if (isFailure(result)) return;
     // MEDIA_TOOLS 有自己的钩子（从 result JSON 解析），避免双重登记
     if (MEDIA_TOOLS.has(toolName)) return;
@@ -71,10 +71,16 @@ export function registerArtifactHooks(emit: (ctx: ToolHookContext, e: { type: st
     const filePath = String(m?.path || '');
     if (!filePath) return;
     const fileName = String(m?.name || '') || (filePath.split(/[/\\]/).pop() || filePath);
+    // ★ 工具没回 bytes（或回了 0）时按磁盘真实大小补 —— 否则文件管理/预览显示「0 B」，
+    //   媒体预览的降级判定还会把「未知大小」误当成「超过内嵌上限」（2026-11-02 实报）。
+    let size = Number(m?.bytes) || 0;
+    if (!size) {
+      try { size = (await fsp.stat(filePath)).size; } catch { /* 取不到就留 0 */ }
+    }
     registerFile(ctx, {
       fileName, filePath,
       category: m?.category === 'deliverable' ? 'deliverable' : 'intermediate',
-      size: Number(m?.bytes) || 0,
+      size,
       emit: (e) => emit(ctx, e),
     });
   });

@@ -732,6 +732,10 @@ async function main() {
           YANZHI_DEV_INSTANCE: '1',
           YANZHI_API_PORT: String(DEV_API_PORT),
           DATA_DIR: DEV_DATA_DIR,
+          // ★ 2026-11-02 固化：dev 默认 multi（多用户登录）。
+          //   本机库的历史数据已过户到 yanZhiPower 名下，跑单机（guest）模式会"看不到数据"。
+          //   仍可显式覆盖：YZ_AUTH_MODE=guest pnpm dev:desktop
+          YZ_AUTH_MODE: process.env.YZ_AUTH_MODE || 'multi',
           // 热重载标记（2026-10-09）：与 apps/server/scripts/dev.cjs / apps/desktop/main.cjs
           //   **同源**注入 —— 缺了它，孤儿任务回收会把"可续的暂停"当成"真中断"，
           //   用户看到「继续直接失败」。这里跟随 watch 开关，两条路径口径一致。
@@ -752,6 +756,8 @@ async function main() {
       YANZHI_DEV_INSTANCE: '1',
       YANZHI_API_PORT: String(DEV_API_PORT),
       DATA_DIR: DEV_DATA_DIR,
+      // 与主路径同口径：dev 默认 multi（见上方注释）
+      YZ_AUTH_MODE: process.env.YZ_AUTH_MODE || 'multi',
       ...browserEnv,
     });
     return;
@@ -815,6 +821,10 @@ async function main() {
   //   这里显式传一份，保证「dev.mjs server」与「dev.mjs desktop」两条路径拿到同一个值，
   //   不会因为一个走 Electron、一个走裸 server 就落到两个不同的库上）。
   electronEnv.DATA_DIR = DEV_DATA_DIR;
+  // ★ 2026-11-02 固化：desktop 模式下后端是 main.cjs 拉起的（不走上面 app server 那段），
+  //   鉴权模式必须在这里下发，否则 dev 默认单机（guest）——而本机数据挂在账号名下，
+  //   单机模式会"看不到数据"。要回单机：YZ_AUTH_MODE=guest pnpm dev:desktop
+  electronEnv.YZ_AUTH_MODE = process.env.YZ_AUTH_MODE || 'multi';
   log('  env 净化: 已剥离 ELECTRON_* 变量，NODE_OPTIONS 置空');
   log(`  实例: YANZHI_DEV_INSTANCE=1, YANZHI_API_PORT=${DEV_API_PORT}（与安装版共用 yan-zhi 数据目录与端口）`);
   log(`  数据目录: DATA_DIR=${DEV_DATA_DIR}`);

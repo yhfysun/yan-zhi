@@ -312,7 +312,7 @@ import { toWindowsPath } from '../utils/file-open';
 import { parseExcelStyled, type ExcelStyledSheet } from '../utils/excel-styled';
 import AudioPlayer from './media/AudioPlayer.vue';
 import { useChat } from '../composables/chat/useChat';
-import { API_BASE, getLicenseCode } from '../api/client';
+import { API_BASE, mediaAuthQuery } from '../api/client';
 
 const props = defineProps<{
   file: {
@@ -537,9 +537,7 @@ async function referenceCurrentFile() {
  * 面板内 iframe 继承主窗口 CSP —— 内联脚本与外链样式会被拦，带 JS 的页面只有这里能完整跑。
  */
 function openHtmlInBrowser() {
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
-  const url = `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(props.file.path)}${qs}`;
+  const url = `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(props.file.path)}${mediaAuthQuery()}`;
   void useChat().store.openBrowserUrl(url, props.file.name).then((ok: boolean) => {
     if (!ok) window.open(url, '_blank', 'noopener,noreferrer');
   });
@@ -643,9 +641,7 @@ watch(
     const p = String(props.file?.path || '').trim();
     if (!p) return;
     if (!(/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('/') || p.startsWith('\\'))) return;
-    const code = getLicenseCode();
-    const qs = code ? `&license=${encodeURIComponent(code)}` : '';
-    const url = `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(p)}${qs}`;
+    const url = `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(p)}${mediaAuthQuery()}`;
     try {
       const r = await fetch(url, { method: 'HEAD' });
       if (r.ok) htmlSrc.value = url;
@@ -811,6 +807,21 @@ const humanSize = computed(() => {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / 1024 / 1024).toFixed(1) + ' MB';
 });
+
+/**
+ * 用媒体端点回传的 Content-Length 补正确切大小。
+ *
+ * 为什么需要：remote/多用户模式下文件在服务端，渲染层 `fs.stat` 读不到 → 大小恒显示
+ * 「0 B」，且降级判定把「未知」误当「超限」。HEAD 一次即可拿到真实字节数。
+ */
+async function fillSizeFromHead(url: string) {
+  if (byteSize.value > 0) return;
+  try {
+    const r = await fetch(url, { method: 'HEAD' });
+    const len = Number(r.headers.get('content-length') || 0);
+    if (len > 0) byteSize.value = len;
+  } catch { /* 拿不到就保持未知，不影响播放 */ }
+}
 
 const renderedMd = computed(() => (kind.value === 'text' && isMd.value ? md.render(content.value) : ''));
 
@@ -1203,7 +1214,21 @@ async function onVideoError() {
     try {
       const { getPlatformAdapter } = await import('@yan-zhi/core');
       const adapter = getPlatformAdapter();
-      const size = byteSize.value || (await adapter.fs.stat?.(props.file.path))?.size || 0;
+      // ★ 大小取三道：已测得的字节数 → 本机 stat → 向媒体端点要 Content-Length。
+      //   最后一道是 remote/多用户模式的必需项：客户端读不到服务端路径，stat 恒为空，
+      //   旧实现于是把 3MB 的视频当成「大小未知 ⇒ 超过上限」，报出「0MB 读取失败」的
+      //   误导性文案（2026-11-02 用户实报）。
+      let size = byteSize.value || 0;
+      if (!size) {
+        try { size = (await adapter.fs.stat?.(props.file.path))?.size || 0; } catch { /* stat 可选 */ }
+      }
+      if (!size && /^https?:/i.test(src)) {
+        try {
+          const head = await fetch(src, { method: 'HEAD' });
+          if (head.ok) size = Number(head.headers.get('content-length') || 0) || 0;
+        } catch { /* 拿不到大小就按未知处理 */ }
+      }
+      byteSize.value = size;
       if (size > 0 && size <= VIDEO_INLINE_MAX) {
         const b64 = await readFileWithFallback(adapter);
         const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -1213,7 +1238,9 @@ async function onVideoError() {
       }
       // 超限：保留 ① 的状态码提示，说明为什么不能回退
       if (!videoError.value) {
-        videoError.value = `视频 ${(size / 1024 / 1024).toFixed(0)}MB 流式读取失败且超过内嵌播放上限`;
+        videoError.value = size > VIDEO_INLINE_MAX
+          ? `视频 ${(size / 1024 / 1024).toFixed(0)}MB 流式读取失败且超过内嵌播放上限`
+          : '视频流式读取失败：服务端没有返回文件字节（可能需要重新登录，或文件不在允许目录内）';
       }
       return;
     } catch { /* 直读失败（Web 端等），落到通用错误映射 */ }
@@ -1303,23 +1330,16 @@ async function readTextDecoded(
  *      —— 资源文件不在会话目录下，走空间通道。
  * 都拿不到时返回 null，调用方退回 Blob（并保留超限降级），不静默黑屏。
  *
- * ★ 认证：本地单用户模式下 auth 中间件恒定 guest 身份（见 server/src/auth.ts），
- *   `<video src>` 不带 Authorization 头也能通过。若将来恢复多用户鉴权，
- *   需给该端点加 query 令牌支持 —— 已在后端注释里标注。
+ * ★ 认证：媒体元素带不了 Authorization / x-license / X-YZ-View-As 任何请求头 ——
+ *   授权码、JWT、管理员视角都必须走 query（统一由 mediaAuthQuery 拼，见 api/client.ts）。
+ *   multi 模式下漏了 token 的表现就是「0MB 流式读取失败」（2026-11-02 实锤）。
  */
 async function resolveMediaUrl(): Promise<string | null> {
   try {
-    const { API_BASE, getLicenseCode } = await import('../api/client');
-    // ★ `<video>/<audio>` 的 src 带不了 x-license 请求头 —— 授权门禁（YZ_LICENSE_GUARD=1）
-    //   开启时媒体端点会 403，播放器表现为「格式不支持或损坏」。把授权码放进 query，
-    //   服务端 extractLicenseCode 兜底解析（2026-10-02）。
-    const licenseQs = () => {
-      const code = getLicenseCode();
-      return code ? `&license=${encodeURIComponent(code)}` : '';
-    };
+    const { API_BASE, mediaAuthQuery: authQs } = await import('../api/client');
     // ① 会话产物通道
     if (props.file.conversationId && props.file.name) {
-      return `${API_BASE}/conversations/${encodeURIComponent(props.file.conversationId)}/file-stream?name=${encodeURIComponent(props.file.name)}${licenseQs()}`;
+      return `${API_BASE}/conversations/${encodeURIComponent(props.file.conversationId)}/file-stream?name=${encodeURIComponent(props.file.name)}${authQs()}`;
     }
     // ② ★ 本地/工作区通用通道（2026-10-02 修「本地视频预览黑屏」）：
     //    只要有**绝对本机路径**就走它 —— 覆盖工作区文件树任意嵌套目录、未登记的本地媒体等
@@ -1328,12 +1348,12 @@ async function resolveMediaUrl(): Promise<string | null> {
     //    ★ 只认绝对路径：Web 端 File System Access 句柄可能是虚拟相对路径，那种留给 ③/兜底。
     const localPath = String(props.file.path || '').trim();
     if (localPath && (/^[A-Za-z]:[\\/]/.test(localPath) || localPath.startsWith('/') || localPath.startsWith('\\'))) {
-      return `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(localPath)}${licenseQs()}`;
+      return `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(localPath)}${authQs()}`;
     }
     // ③ 空间资源通道（资源文件没有 conversationId）
     const { spaceId, resourceDir, name } = props.file;
     if (spaceId && resourceDir && name) {
-      return `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/resources/${encodeURIComponent(resourceDir)}/raw?name=${encodeURIComponent(name)}${licenseQs()}`;
+      return `${API_BASE}/spaces/${encodeURIComponent(spaceId)}/resources/${encodeURIComponent(resourceDir)}/raw?name=${encodeURIComponent(name)}${authQs()}`;
     }
     return null;
   } catch {
@@ -1461,6 +1481,7 @@ async function loadFile() {
         revokeVideoSrc();
         videoSrc.value = httpUrl;
         kind.value = 'video';
+        void fillSizeFromHead(httpUrl);
         return;
       }
       // 兜底：拿不到 HTTP URL（Web 端无 spaceId 等）时才退回 Blob，

@@ -12,8 +12,10 @@ router.use(authMiddleware);
 // GET /api/skills —— 可见 = 自己的 ∪ guest 预置 ∪ 共享（is_public=1）
 router.get('/', (req: Request, res: Response) => {
   const uid = req.user!.userId;
+  // 占位符共 5 个：user_id=? 、user_id=?(guest 预置) 、aclExistsSql 里 3 个（直接用户/角色/组织）。
+  // ★ 多传一个 uid 会让 better-sqlite3 抛 RangeError → 整个 /api/skills 500（同 /api/plugins 的老坑）。
   const rows = db.prepare(`SELECT * FROM skill WHERE user_id = ? OR user_id = ? OR is_public = 1 OR ${aclExistsSql('skill', 'skill.id')}
-    ORDER BY created_at DESC`).all(uid, 'guest', uid, uid, uid, uid);
+    ORDER BY created_at DESC`).all(uid, 'guest', uid, uid, uid);
   res.json({ data: rows });
 });
 

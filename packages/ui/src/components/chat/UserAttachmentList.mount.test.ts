@@ -26,6 +26,7 @@ const { openPathMock, referenceFileMock, viewerMock, hoverMock, hoverCloseMock, 
 vi.mock('../../api/client', () => ({
   API_BASE: 'http://localhost:3002/api',
   getLicenseCode: () => null,
+  mediaAuthQuery: () => '',
 }));
 vi.mock('../../composables/chat/useChat', () => ({
   useChat: () => ({

@@ -134,7 +134,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue';
 import { ArrowRight, ArrowUp, ChatDotRound, Document, Folder, Picture, Link } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
-import { API_BASE, getLicenseCode } from '../../api/client';
+import { API_BASE, mediaAuthQuery } from '../../api/client';
 import { openMediaViewer, openMediaMenu, openMediaHover, closeMediaHover, type MediaTarget } from '../../composables/useMediaPreview';
 import { useChat } from '../../composables/chat/useChat';
 import { usePlatform } from '../../composables/usePlatform';
@@ -203,9 +203,7 @@ const broken = ref<Record<string, boolean>>({});
 
 function srcOf(a: UserAttachment): string {
   if (!a.path) return '';
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
-  return `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(a.path)}${qs}`;
+  return `${API_BASE}/workspace/file-stream?path=${encodeURIComponent(a.path)}${mediaAuthQuery()}`;
 }
 
 function titleOf(a: UserAttachment): string {

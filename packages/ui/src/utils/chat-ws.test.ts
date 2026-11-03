@@ -14,7 +14,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-vi.mock('../api/client', () => ({ API_BASE: 'http://127.0.0.1:3001/api' }));
+/** 多用户模式 token（2026-11-02）：chat-ws 拼 WS 地址时必须带上，否则服务端拒绝升级 */
+let mockToken: string | null = null;
+vi.mock('../api/client', () => ({
+  API_BASE: 'http://127.0.0.1:3001/api',
+  getToken: () => mockToken,
+}));
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -157,5 +162,15 @@ describe('chat WS 等待连接恢复（自动重发用）', () => {
     const wait = mod.waitForChatWsOpen(3000);
     await vi.advanceTimersByTimeAsync(3000);
     await expect(wait).resolves.toBe(false);
+  });
+});
+
+describe('多用户模式：WS 地址必须带 token（2026-11-02 实报 WS 订阅无限重试）', () => {
+  it('有 token → ?token=；无 token → 不带', async () => {
+    const mod = await import('./chat-ws');
+    mockToken = 'tok-abc';
+    expect(mod.chatWsUrl()).toBe('ws://127.0.0.1:3001/ws/chat?token=tok-abc');
+    mockToken = null;
+    expect(mod.chatWsUrl()).toBe('ws://127.0.0.1:3001/ws/chat');
   });
 });

@@ -104,25 +104,31 @@ export const PERMISSION_TREE: PermissionDef[] = [
 export const ROOT_ORG_ID = 'org_root';
 export const ADMIN_ROLE_ID = 'role_admin';
 export const ADMIN_PERMISSION_ID = 'admin';
+/** 首启占位管理员（空密码、未配置）：未设置密码前不算"已初始化"，前端据此展示设置密码向导。 */
+export const DEFAULT_ADMIN_ID = 'user-yanzhipower-default';
 
 /** 启动时种子化：权限树 + 根组织 + 系统管理员角色（幂等）。 */
 /**
- * 默认管理员种子（2026-11-01 用户拍板）：multi 模式启动时若**一个用户都没有** →
- * 自动创建账号 yanZhiPower（密码 YanZhi@2026，绑定系统管理员角色），登录页直接登录，
- * 不必先走 /setup。已有任何用户则什么都不做（幂等）。登录后请在用户管理里改密码。
+ * 默认管理员占位（2026-11-01 拍板；2026-11-02 改为「缺了就补种」+ 首启向导接管）：
+ * multi 模式下只要**这条占位账号不存在**就补种 yanZhiPower（**空密码**、强制改密）。
+ *
+ * ★ 为什么不再要求"库里零用户"：开发库/老库里早就有 test1 / admin 这些历史账号，
+ *   条件一卡就永远种不上，用户对着登录页只看到 401（2026-11-02 实报）。
+ * ★ 空密码不是漏洞：登录必须**留空密码**，登录后立刻被 must_change_password 闸到改密页，
+ *   改密前除 /change-password、/me 外所有接口 403。
+ * ★ /setup 成功后是**就地接管**这条占位行（改名 + 设密码），接管后 id 仍在，这里不会重复种。
  */
 export function ensureDefaultAdmin(): boolean {
-  // ★ 必须排除 guest：本地库建表时就种了内置 guest 行，按全表 COUNT 永远 ≥1，
-  //   默认管理员会永远种不上（首启冒烟实锤）。
-  const anyUser = db.prepare("SELECT COUNT(*) AS c FROM user WHERE id != 'guest'").get() as { c: number };
-  if (anyUser.c > 0) return false;
   const now = Date.now();
-  const uid = 'user-yanzhipower-default';
-  // ★ 密码为空（password_hash 存空串）：登录时密码留空即可，首次登录强制设置新密码
-  //   （must_change_password=1，login 返回 mustChangePassword，改密前其它接口一律 403）。
+  const uid = DEFAULT_ADMIN_ID;
+  const exists = db.prepare('SELECT id FROM user WHERE id = ?').get(uid);
+  if (exists) return false;
+  // 用户名可能被历史数据占用：撞名时改用 id 兜底名，避免 UNIQUE 失败后占位行根本种不进去
+  const taken = db.prepare('SELECT id FROM user WHERE username = ?').get('yanZhiPower') as { id: string } | undefined;
+  const username = taken ? 'yanZhiPower-default' : 'yanZhiPower';
   db.prepare(
     "INSERT OR IGNORE INTO user (id, username, email, password_hash, must_change_password, created_at) VALUES (?, ?, NULL, '', 1, ?)",
-  ).run(uid, 'yanZhiPower', now);
+  ).run(uid, username, now);
   db.prepare('INSERT OR IGNORE INTO user_role (user_id, role_id, created_at) VALUES (?, ?, ?)')
     .run(uid, ADMIN_ROLE_ID, now);
   return true;
@@ -218,9 +224,15 @@ export function userIsAdmin(userId: string): boolean {
   return userHasPermission(userId, ADMIN_PERMISSION_ID);
 }
 
-/** 系统里是否存在除 guest 外的可登录用户（决定是否需要首次安装向导）。 */
+/**
+ * 系统里是否存在除 guest 外的**已配置**用户（决定是否需要首次安装向导）。
+ * ★ 首启占位管理员（DEFAULT_ADMIN_ID 且密码为空）不算：否则用户永远看不到
+ *   「自己设置密码」这一步，只能对着登录页猜默认密码（2026-11-02 用户实报）。
+ */
 export function hasRealUsers(): boolean {
-  const row = db.prepare("SELECT COUNT(*) AS n FROM user WHERE id <> 'guest'").get() as { n: number };
+  const row = db.prepare(
+    "SELECT COUNT(*) AS n FROM user WHERE id <> 'guest' AND NOT (id = ? AND (password_hash IS NULL OR password_hash = ''))",
+  ).get(DEFAULT_ADMIN_ID) as { n: number };
   return row.n > 0;
 }
 

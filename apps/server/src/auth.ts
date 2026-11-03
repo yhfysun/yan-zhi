@@ -6,6 +6,7 @@ import { db } from './db.js';
 import {
   getAuthMode, seedRbac, hasRealUsers, invalidatePermissionCache,
   ROOT_ORG_ID, ADMIN_ROLE_ID, userIsAdmin, getUserPermissions, PERMISSION_TREE, ensureDefaultAdmin,
+  DEFAULT_ADMIN_ID,
 } from './rbac.js';
 import { ensureAgensPlatform } from './agens-platform/service.js';
 
@@ -37,18 +38,39 @@ function isLoopback(req: Request): boolean {
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1' || addr.startsWith('::ffff:127.');
 }
 
-/** 校验 Bearer token，合法返回身份，否则 null。 */
-export function verifyBearer(req: Request): JwtPayload | null {
-  const header = req.headers.authorization || '';
-  const m = /^Bearer\s+(.+)$/i.exec(header);
-  if (!m) return null;
+/** 校验 JWT 字符串，合法返回身份，否则 null。 */
+function verifyJwt(token: string): JwtPayload | null {
   try {
-    const payload = jwt.verify(m[1], JWT_SECRET) as JwtPayload;
+    const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
     if (!payload?.userId) return null;
     return { userId: payload.userId, username: payload.username };
   } catch {
     return null;
   }
+}
+
+/** 校验 Bearer token，合法返回身份，否则 null。 */
+export function verifyBearer(req: Request): JwtPayload | null {
+  const header = req.headers.authorization || '';
+  const m = /^Bearer\s+(.+)$/i.exec(header);
+  return m ? verifyJwt(m[1]) : null;
+}
+
+/**
+ * 只读请求的 `?token=` query 令牌（原始串；无则空串）。
+ *
+ * ★★★ 为什么 REST 也要支持 query 令牌（2026-11-02 用户报「视频 0MB 流式读取失败」）：
+ *   浏览器媒体元素（`<video>` / `<audio>` / `<img>` / iframe）**发不了 Authorization 头** ——
+ *   请求由元素自己发起，前端没有任何挂钩。multi 模式下这些请求不带 token 就被判
+ *   游客（回环）或 401（远程），于是成片预览一律"读不出来"。
+ *   WS 早已有同一兜底（wsUpgradeAuthorized）；REST 这边一直缺，本函数补齐。
+ * ★ 只对 GET/HEAD 开放：写操作仍必须走请求头，避免 token 出现在可被记录的写请求
+ *   链接里，也把「GET 才能带 query」这条边界钉死。
+ */
+function queryToken(req: Request): string {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return '';
+  const t = (req.query as Record<string, unknown> | undefined)?.token;
+  return typeof t === 'string' ? t.trim() : '';
 }
 
 /** 统一鉴权收口（全仓路由均经此处，见各 routes 的 router.use(authMiddleware)）。
@@ -68,7 +90,12 @@ export function verifyBearer(req: Request): JwtPayload | null {
  *  全部业务路由的 user_id 过滤零改动即按目标用户执行（唯一收口，防逐路由漏改）。
  *  约束：仅 multi 模式；先验 token 身份再验 admin 权限；目标用户必须存在；guest 模式不启用。 */
 function applyViewAs(req: Request, identity: JwtPayload): JwtPayload {
-  const viewAs = req.headers['x-yz-view-as'];
+  let viewAs = req.headers['x-yz-view-as'];
+  // 媒体元素带不了请求头 → 只读请求允许 `?viewAs=`（权限校验与请求头完全同一条）
+  if ((typeof viewAs !== 'string' || !viewAs) && (req.method === 'GET' || req.method === 'HEAD')) {
+    const q = (req.query as Record<string, unknown> | undefined)?.viewAs;
+    viewAs = typeof q === 'string' ? q : '';
+  }
   if (typeof viewAs !== 'string' || !viewAs || viewAs === identity.userId) return identity;
   if (getAuthMode() !== 'multi') return identity;
   try {
@@ -88,10 +115,16 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
     next();
     return;
   }
-  const identity = verifyBearer(req);
+  const qt = queryToken(req);
+  const identity = verifyBearer(req) || (qt ? verifyJwt(qt) : null);
   if (identity) {
     req.user = applyViewAs(req, identity);
     next();
+    return;
+  }
+  // 带了 query 令牌却解析失败：明确 401，让前端知道要重新登录（不静默回落游客）
+  if (qt) {
+    res.status(401).json({ error: '登录令牌无效或已过期', code: 'UNAUTHENTICATED' });
     return;
   }
   if (isLoopback(req)) {
@@ -109,7 +142,8 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
     next();
     return;
   }
-  const identity = verifyBearer(req);
+  const qt = queryToken(req);
+  const identity = verifyBearer(req) || (qt ? verifyJwt(qt) : null);
   req.user = identity ? applyViewAs(req, identity) : LOCAL_USER;
   next();
 }
@@ -212,10 +246,21 @@ router.post('/setup', (req: Request, res: Response) => {
     res.status(409).json({ error: '该用户名已存在' });
     return;
   }
-  const id = uuid();
   const now = Date.now();
-  db.prepare('INSERT INTO user (id, username, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(id, username, null, bcrypt.hashSync(password, 10), now);
+  // ★ 首启占位管理员就地接管（2026-11-02）：预置的 yanZhiPower 是空密码占位行，
+  //   若另建新账号，这条占位行会继续存在且**空密码即可登录**（管理后门）。
+  //   这里改为改名 + 设密码 + 清 must_change_password，账号仍是同一条。
+  const placeholder = db.prepare(
+    "SELECT id FROM user WHERE id = ? AND (password_hash IS NULL OR password_hash = '')",
+  ).get(DEFAULT_ADMIN_ID) as { id: string } | undefined;
+  const id = placeholder?.id ?? uuid();
+  if (placeholder) {
+    db.prepare('UPDATE user SET username = ?, password_hash = ?, must_change_password = 0 WHERE id = ?')
+      .run(username, bcrypt.hashSync(password, 10), id);
+  } else {
+    db.prepare('INSERT INTO user (id, username, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(id, username, null, bcrypt.hashSync(password, 10), now);
+  }
   // 授权：根组织 + 管理员角色（rbac.seedRbac 已保证根组织/管理员角色存在）
   db.prepare('INSERT OR IGNORE INTO user_org (user_id, org_id, created_at) VALUES (?, ?, ?)')
     .run(id, ROOT_ORG_ID, now);

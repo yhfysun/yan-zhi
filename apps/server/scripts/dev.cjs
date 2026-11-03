@@ -143,6 +143,9 @@ const child = spawn(bin, args, {
     YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
     // ★ 数据目录：不注入的话 db.ts 会退回 apps/server/（源码目录）—— 见文件头注释
     DATA_DIR: devDataDir,
+    // ★ 2026-11-02 固化：dev 默认 multi（多用户登录）。本机库数据挂在账号名下，
+    //   guest 单机模式会"看不到数据"；要回单机显式 YZ_AUTH_MODE=guest。
+    YZ_AUTH_MODE: process.env.YZ_AUTH_MODE || 'multi',
   },
 });
 child.on('exit', (code) => process.exit(code ?? 0));

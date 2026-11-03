@@ -734,11 +734,11 @@ try {
 // 启动时种子化 RBAC（权限树 + 根组织 + 系统管理员角色），幂等
 try {
   seedRbac();
-  // 默认管理员（2026-11-01）：multi 模式且库里没有任何用户时，自动种 yanZhiPower，
-  // 免去首次 /setup；guest 单机模式不种（无登录语义）。
+  // 默认管理员占位（2026-11-01；2026-11-02 改为「缺了就补种」）：multi 模式下调用，
+  // 只要 yanZhiPower 占位行不在就补一条（空密码 + 强制改密）。空库首启会走 /setup 自己设密码。
   if (getAuthMode() === 'multi') {
     try {
-      if (ensureDefaultAdmin()) console.log('[rbac] 已创建默认管理员账号 yanZhiPower（初始密码 YanZhi@2026，请尽快修改）');
+      if (ensureDefaultAdmin()) console.log('[rbac] 已补种管理员占位账号 yanZhiPower（空密码登录后强制改密）');
     } catch (e) { console.warn('[rbac] 默认管理员创建失败（不影响启动）:', e); }
   }
 } catch (err) {
