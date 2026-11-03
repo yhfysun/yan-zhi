@@ -23,11 +23,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { buildRenderPlan, runRenderPlan, segmentDuration,
+import { buildRenderPlan, buildTrackPlan, runRenderPlan, segmentDuration,
   type BuildPlanInput,
 } from './clip-render.js';
 import { materializeSegmentMatte, matteRuntimeHint } from './clip-matte-render.js';
 import type { ClipProject, ClipSegment } from './clip-project.js';
+import { compoundCacheKey } from '@yan-zhi/shared';
+import { v2ViewsOfV3, type ClipProjectV3, type CompoundItem } from './clip-project-v3.js';
 
 /** 代理画幅：长边 480（竖屏 270x480，横屏 480x270，方图按比例）。 */
 export const PROXY_LONG_EDGE = 480;
@@ -77,6 +79,29 @@ export function proxyCacheKey(
 ): string {
   return createHash('sha1')
     .update(`${PROXY_CACHE_VERSION}|${segmentFingerprint(seg)}|${size.w}x${size.h}|${fps}|${extra}`)
+    .digest('hex')
+    .slice(0, 20);
+}
+
+/** 复合片段整体代理键：compoundId + 内部工程指纹 + transform/audio + 代理规格。 */
+export function compoundProxyCacheKey(
+  compound: CompoundItem,
+  size: { w: number; h: number },
+  fps: number,
+  extra = '',
+): string {
+  const spec = {
+    kind: 'compound-proxy',
+    w: size.w,
+    h: size.h,
+    fps,
+    duration: compound.duration,
+    transform: compound.transform || null,
+    audio: compound.audio || null,
+    extra,
+  };
+  return createHash('sha1')
+    .update(`${PROXY_CACHE_VERSION}|${compoundCacheKey(compound.id, compound.project, spec)}`)
     .digest('hex')
     .slice(0, 20);
 }
@@ -141,6 +166,90 @@ export function proxyDerivedProject(
     bgm: undefined,
     output: { ...project.output, size: `${size.w}x${size.h}` },
   };
+}
+
+/** 复合片段代理的派生工程：只保留该 compound，并归一到代理时间轴 0 点。 */
+export function proxyDerivedCompoundProject(
+  compound: CompoundItem,
+  size: { w: number; h: number },
+  fps = 30,
+): ReturnType<typeof v2ViewsOfV3> {
+  const normalized: CompoundItem = {
+    ...compound,
+    start: 0,
+    project: JSON.parse(JSON.stringify(compound.project)) as CompoundItem['project'],
+    ...(compound.transform ? { transform: { ...compound.transform } } : {}),
+    ...(compound.audio ? { audio: { ...compound.audio } } : {}),
+  };
+  const outer: ClipProjectV3 = {
+    version: 3,
+    name: `${compound.project.name || '复合片段'} / proxy`,
+    updatedAt: compound.project.updatedAt || 0,
+    output: { ...compound.project.output, size: `${size.w}x${size.h}`, fps },
+    tracks: [{ id: 'proxy-v1', kind: 'video', items: [normalized] }],
+    timedLayers: [],
+  };
+  return v2ViewsOfV3(outer);
+}
+
+/**
+ * 生成复合片段整体 480p 代理。渲染走 buildTrackPlan，保留内部字幕/图层/音轨，
+ * 并应用外层 transform/audio；键只随该 compound 与代理规格变化。
+ */
+export async function ensureCompoundProxy(input: {
+  compound: CompoundItem;
+  size: { w: number; h: number };
+  fps: number;
+  probe: ProxyProbeRow;
+  ffmpeg: string;
+}): Promise<{ ok: boolean; file?: string; cached?: boolean; key?: string; seconds?: number; error?: string }> {
+  const key = compoundProxyCacheKey(input.compound, input.size, input.fps);
+  const dir = proxyCacheDir();
+  const file = path.join(dir, `compound-${key}.mp4`);
+  try {
+    const st = await stat(file);
+    if (st.isFile() && st.size > 0) {
+      const now = new Date();
+      await fs.promises.utimes(file, now, now).catch(() => undefined);
+      return { ok: true, file, cached: true, key, seconds: input.compound.duration };
+    }
+  } catch { /* miss */ }
+
+  const workDir = path.join(dir, `tmp-compound-${key}-${Date.now()}`);
+  try {
+    await mkdir(workDir, { recursive: true });
+    const outFile = path.join(workDir, 'proxy.mp4');
+    const derived = proxyDerivedCompoundProject(input.compound, input.size, input.fps);
+    const planned = buildTrackPlan({
+      project: derived,
+      durations: input.probe.durations,
+      hasAudio: input.probe.hasAudio,
+      workDir,
+      outFile,
+      imageFiles: input.probe.imageFiles,
+      fast: true,
+      cover: false,
+    });
+    if (!planned.ok) return { ok: false, error: planned.error };
+    for (const asset of planned.plan.assets) {
+      await mkdir(path.dirname(asset.file), { recursive: true });
+      await writeFile(asset.file, asset.content, 'utf8');
+    }
+    const ran = await runRenderPlan(input.ffmpeg, planned.plan.steps);
+    if (!ran.ok) {
+      return { ok: false, error: `复合片段代理渲染失败（${ran.failedLabel}）：${(ran.stderr || '').slice(-300)}` };
+    }
+    const st = await stat(outFile);
+    if (!(st.isFile() && st.size > 0)) return { ok: false, error: '复合片段代理产物为空' };
+    await mkdir(dir, { recursive: true });
+    await rename(outFile, file);
+    await pruneProxyCache();
+    return { ok: true, file, cached: false, key, seconds: input.compound.duration };
+  } catch (e: unknown) {
+    return { ok: false, error: `复合片段代理生成异常：${e instanceof Error ? e.message : String(e)}` };
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 }
 
 /**

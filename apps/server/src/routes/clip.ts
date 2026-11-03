@@ -22,7 +22,7 @@ import { listAllRecipes } from '../services/clip-recipe-store.js';
 import { parseProbeJson, probeArgs, segmentDuration } from '../services/clip-render.js';
 import { compoundItemAtTime, compoundProjectAtPath, v2ViewsOfV3 } from '../services/clip-project-v3.js';
 import { renderPreviewFrame, locateTimeline } from '../services/clip-preview.js';
-import { ensureSegmentProxy } from '../services/clip-proxy.js';
+import { ensureCompoundProxy, ensureSegmentProxy, proxyTargetSize } from '../services/clip-proxy.js';
 import { isProjectSourcePath } from '../services/clip-layer-media.js';
 import { ensureEffectPreview } from '../services/clip-effect-preview.js';
 import { analyzeBeats } from '../services/clip-beats.js';
@@ -86,8 +86,23 @@ async function buildProxyProbeRow(
   const durations: Record<string, number> = {};
   const hasAudio: Record<string, number | boolean> = {};
   const imageFiles: string[] = [];
+  const segments: ClipProject['clips'] = [...project.clips];
+  const visit = (value: { tracks?: Array<{ items?: Array<{ type?: string; segment?: ClipProject['clips'][number]; project?: unknown }> }> }) => {
+    for (const track of value.tracks || []) {
+      for (const item of track.items || []) {
+        if (item.type === 'clip' && item.segment) {
+          if (!segments.some((seg) => seg.id === item.segment!.id && seg.file === item.segment!.file)) {
+            segments.push(item.segment);
+          }
+        } else if (item.type === 'compound' && item.project) {
+          visit(item.project as typeof value);
+        }
+      }
+    }
+  };
+  visit(project as Parameters<typeof visit>[0]);
   const uniq: string[] = [];
-  for (const c of project.clips) if (!uniq.includes(c.file)) uniq.push(c.file);
+  for (const c of segments) if (!uniq.includes(c.file)) uniq.push(c.file);
   const CONC = 4;
   for (let i = 0; i < uniq.length; i += CONC) {
     const batch = uniq.slice(i, i + CONC);
@@ -97,7 +112,7 @@ async function buildProxyProbeRow(
       const img = IMAGE_EXT_RE.test(p);
       if (img) imageFiles.push(p);
       durations[p] = img ? 0 : r.duration;
-      const seg = project.clips.find((c) => c.file === p);
+      const seg = segments.find((c) => c.file === p);
       if (seg) {
         durations[seg.id] = durations[p];
         hasAudio[seg.id] = img ? false : r.hasAudio;
@@ -1015,9 +1030,12 @@ router.get('/frame', async (req: Request, res: Response) => {
 //   真正的缓存由服务端磁盘 LRU（clip-proxy 的 pruneProxyCache）负责。
 router.get('/proxy', async (req: Request, res: Response) => {
   const conversationId = String(req.query.conversationId || '').trim();
+  const itemId = String(req.query.itemId || '').trim();
   const i = Math.round(Number(req.query.i));
   if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
-  if (!Number.isInteger(i) || i < 0) return res.status(400).json({ error: '段下标 i 必须是非负整数' });
+  if (!itemId && (!Number.isInteger(i) || i < 0)) {
+    return res.status(400).json({ error: '段下标 i 必须是非负整数，或提供 itemId' });
+  }
   if (!conversationExists(conversationId)) return res.status(404).json({ error: '会话不存在' });
   const rootProject = readClipProject(conversationId);
   if (!rootProject) return res.status(404).json({ error: '工程不存在' });
@@ -1029,16 +1047,43 @@ router.get('/proxy', async (req: Request, res: Response) => {
   const selectedV3 = compoundProjectAtPath(rootProject, compoundPath);
   if (!selectedV3) return res.status(404).json({ error: '复合片段路径不存在' });
   const project = compoundPath.length ? v2ViewsOfV3(selectedV3) : rootProject;
-  if (!project.clips.length) return res.status(409).json({ error: '工程还没有片段' });
-  if (i >= project.clips.length) return res.status(404).json({ error: `段下标越界（共 ${project.clips.length} 段）` });
+  if (!itemId && !project.clips.length) return res.status(409).json({ error: '工程还没有片段' });
+  if (!itemId && i >= project.clips.length) return res.status(404).json({ error: `段下标越界（共 ${project.clips.length} 段）` });
 
   const ff = await resolveFfmpeg();
   if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（代理预览需要它）' });
 
-  const probe = await buildProxyProbeRow(ff.ffprobe, project);
-  const out = await ensureSegmentProxy({
-    project, segIndex: i, probe, ffmpeg: ff.ffmpeg, ffprobe: ff.ffprobe,
-  });
+  let out: Awaited<ReturnType<typeof ensureSegmentProxy>>;
+  if (itemId) {
+    const mainTrack = selectedV3.tracks.find((track) => track.kind === 'video');
+    const item = mainTrack?.items.find((entry) => entry.id === itemId);
+    if (!item) return res.status(404).json({ error: `主轨 trackItem 不存在：${itemId}` });
+    if (item.type === 'clip') {
+      const segIndex = project.clips.findIndex((clip) => clip.id === item.id);
+      if (segIndex < 0) return res.status(404).json({ error: `片段视图里找不到 ${item.id}` });
+      const probe = await buildProxyProbeRow(ff.ffprobe, project);
+      out = await ensureSegmentProxy({
+        project, segIndex, probe, ffmpeg: ff.ffmpeg, ffprobe: ff.ffprobe,
+      });
+    } else if (item.type === 'compound') {
+      const inner = v2ViewsOfV3(item.project);
+      const probe = await buildProxyProbeRow(ff.ffprobe, inner);
+      out = await ensureCompoundProxy({
+        compound: item,
+        size: proxyTargetSize(project.output.size),
+        fps: project.output.fps || 30,
+        probe,
+        ffmpeg: ff.ffmpeg,
+      });
+    } else {
+      return res.status(400).json({ error: '音频项没有视频代理' });
+    }
+  } else {
+    const probe = await buildProxyProbeRow(ff.ffprobe, project);
+    out = await ensureSegmentProxy({
+      project, segIndex: i, probe, ffmpeg: ff.ffmpeg, ffprobe: ff.ffprobe,
+    });
+  }
   if (!out.ok || !out.file) return res.status(500).json({ error: out.error || '代理生成失败' });
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Cache-Control', 'no-store');

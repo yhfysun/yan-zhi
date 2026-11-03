@@ -775,6 +775,19 @@ describe('ClipWorkbench · S5 多机位角度轨', () => {
   });
 });
 
+describe('ClipWorkbench · compound 整体代理', () => {
+  it('含 compound 的主轨代理按 trackItem 定位并使用 itemId 请求', () => {
+    expect(CODE).toContain('proxyTimelineItems');
+    expect(CODE).toContain('proxyUsesTrackItems');
+    expect(CODE).toContain('itemId=');
+    expect(CODE).toMatch(/type: isCompoundItem\(item\) \? 'compound' : 'clip'/);
+  });
+
+  it('普通无 compound 工程继续走旧段下标代理', () => {
+    expect(CODE).toContain('&i=${i}');
+  });
+});
+
 describe('ClipWorkbench · 画中画变换 / 关键帧（P0-2）', () => {
   it('★ 面板必须有四个变换控件，且绑定到 computed（直接绑 selectedOverlay 会因为 undefined 显示错位）', () => {
     for (const bind of ['overlayX', 'overlayY', 'overlayRotation', 'overlayOpacity']) {

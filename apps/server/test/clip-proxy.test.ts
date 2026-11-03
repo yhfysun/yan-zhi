@@ -17,8 +17,10 @@ import path from 'node:path';
 import {
   segmentFingerprint, proxyCacheKey, proxyTargetSize, proxySegmentSeconds,
   pruneProxyCache, proxyCacheDir, PROXY_CACHE_MAX, proxyDerivedProject,
+  compoundProxyCacheKey, proxyDerivedCompoundProject,
 } from '../src/services/clip-proxy';
 import { createEmptyProject, applyClipOp, type ClipProject } from '../src/services/clip-project';
+import type { CompoundItem } from '../src/services/clip-project-v3';
 
 function proj(ops: Array<[string, Record<string, unknown>]>): ClipProject {
   let cur: ClipProject | null = createEmptyProject('t');
@@ -125,6 +127,64 @@ describe('proxyTargetSize · 画幅换算', () => {
     expect(proxyTargetSize('')).toEqual({ w: 270, h: 480 });
     expect(proxyTargetSize('0x0')).toEqual({ w: 270, h: 480 });
     expect(proxyTargetSize('abc')).toEqual({ w: 270, h: 480 });
+  });
+});
+
+describe('compoundProxyCacheKey · 复合片段整体代理', () => {
+  function compound(): CompoundItem {
+    return {
+      type: 'compound',
+      id: 'cmp1',
+      start: 5,
+      duration: 3,
+      transform: { scale: 0.8, x: 10 },
+      audio: { volume: 0.7 },
+      project: {
+        version: 3,
+        name: 'inner',
+        updatedAt: 1,
+        output: { size: '1080x1920', fps: 30 },
+        tracks: [{
+          id: 'v1', kind: 'video',
+          items: [{
+            type: 'clip', id: 'inner1', start: 0, duration: 3,
+            segment: { id: 'inner1', file: 'C:/inner.mp4', trimStart: 0, trimEnd: 3 },
+          }],
+        }],
+        timedLayers: [],
+      },
+    };
+  }
+
+  it('stable for same inner project/spec, changes on inner edit/transform/audio/spec', () => {
+    const c = compound();
+    const base = compoundProxyCacheKey(c, { w: 270, h: 480 }, 30);
+    expect(compoundProxyCacheKey(JSON.parse(JSON.stringify(c)), { w: 270, h: 480 }, 30)).toBe(base);
+
+    const edited = JSON.parse(JSON.stringify(c)) as CompoundItem;
+    (edited.project.tracks[0].items[0] as { segment: { trimEnd: number } }).segment.trimEnd = 2;
+    expect(compoundProxyCacheKey(edited, { w: 270, h: 480 }, 30)).not.toBe(base);
+
+    const transformed = { ...c, transform: { ...c.transform, rotation: 15 } };
+    expect(compoundProxyCacheKey(transformed, { w: 270, h: 480 }, 30)).not.toBe(base);
+    const muted = { ...c, audio: { ...c.audio, muted: true } };
+    expect(compoundProxyCacheKey(muted, { w: 270, h: 480 }, 30)).not.toBe(base);
+    expect(compoundProxyCacheKey({ ...c, duration: 2 }, { w: 270, h: 480 }, 30)).not.toBe(base);
+    expect(compoundProxyCacheKey(c, { w: 480, h: 270 }, 30)).not.toBe(base);
+    expect(compoundProxyCacheKey(c, { w: 270, h: 480 }, 25)).not.toBe(base);
+  });
+
+  it('derives a proxy project with only the compound, normalized to timeline zero', () => {
+    const p = proxyDerivedCompoundProject(compound(), { w: 270, h: 480 });
+    expect(p.output.size).toBe('270x480');
+    const main = p.tracks.find((track) => track.kind === 'video')!;
+    expect(main.items).toHaveLength(1);
+    expect(main.items[0]).toMatchObject({
+      type: 'compound',
+      id: 'cmp1',
+      start: 0,
+      duration: 3,
+    });
   });
 });
 

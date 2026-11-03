@@ -2803,12 +2803,47 @@ let proxySeq = 0;
 
 const proxyVideoEl = ref<HTMLVideoElement | null>(null);
 
+interface ProxyTimelineItem {
+  id: string;
+  type: 'clip' | 'compound';
+  start: number;
+  duration: number;
+}
+
+function proxyUsesTrackItems(): boolean {
+  const main = videoTrackRows.value.find((track) => track.kind === 'video');
+  return !!main?.items.some(isCompoundItem);
+}
+
+function proxyTimelineItems(): ProxyTimelineItem[] {
+  const main = videoTrackRows.value.find((track) => track.kind === 'video');
+  if (!main) return [];
+  return resolveVideoItems(main, segSeconds).map((item) => ({
+    id: item.id,
+    type: isCompoundItem(item) ? 'compound' : 'clip',
+    start: item.start,
+    duration: item.duration,
+  }));
+}
+
 /**
  * 播放头 → (段下标, 段内偏移)。
  * 与后端 locateTimeline 同口径：kenburns 段用其 duration；时长 0 的段跳过；
  * t 超出总长时夹到末段尾。
  */
 function proxyLocate(t: number): { idx: number; offset: number } | null {
+  if (proxyUsesTrackItems()) {
+    const items = proxyTimelineItems();
+    for (let k = 0; k < items.length; k++) {
+      const item = items[k];
+      if (!(item.duration > 0)) continue;
+      if (t < item.start - 1e-6) return null;
+      if (t < item.start + item.duration || k === items.length - 1) {
+        return { idx: k, offset: Math.max(0, Math.min(item.duration, t - item.start)) };
+      }
+    }
+    return null;
+  }
   const list = clips.value;
   let cursor = 0;
   for (let k = 0; k < list.length; k++) {
@@ -2824,6 +2859,10 @@ function proxyLocate(t: number): { idx: number; offset: number } | null {
 
 /** 第 k 段在成片时间轴上的起点（秒；k 越界返回 null）。 */
 function proxySegStartOf(k: number): number | null {
+  if (proxyUsesTrackItems()) {
+    const item = proxyTimelineItems()[k];
+    return item ? item.start : null;
+  }
   if (k < 0 || k >= clips.value.length) return null;
   let acc = 0;
   for (let j = 0; j < k; j++) acc += segSeconds(clips.value[j]);
@@ -2836,6 +2875,11 @@ function proxyUrlOf(i: number): string {
   const qs = mediaAuthQuery();
   const ver = rootProject.value?.updatedAt || project.value?.updatedAt || 0;
   const compoundPath = compoundStack.value.map((entry) => entry.id).join(',');
+  if (proxyUsesTrackItems()) {
+    const item = proxyTimelineItems()[i];
+    if (!item) return '';
+    return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&itemId=${encodeURIComponent(item.id)}&v=${ver}${compoundPath ? `&compoundPath=${encodeURIComponent(compoundPath)}` : ''}${qs}`;
+  }
   return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&i=${i}&v=${ver}${compoundPath ? `&compoundPath=${encodeURIComponent(compoundPath)}` : ''}${qs}`;
 }
 
@@ -2897,10 +2941,14 @@ function proxyPlayCurrent() {
 /** 顺序连播的步进：ended → 下一段（最后一段结束后停在其段尾）。 */
 async function onProxyEnded() {
   const next = proxySegIndex.value + 1;
-  if (next >= clips.value.length) {
+  const trackItems = proxyUsesTrackItems() ? proxyTimelineItems() : null;
+  const count = trackItems ? trackItems.length : clips.value.length;
+  if (next >= count) {
     setProxyAdvancing(false);
-    const lastStart = proxySegStartOf(clips.value.length - 1) ?? 0;
-    const lastDur = segSeconds(clips.value[clips.value.length - 1]);
+    const lastStart = proxySegStartOf(count - 1) ?? 0;
+    const lastDur = trackItems
+      ? (trackItems[count - 1]?.duration || 0)
+      : segSeconds(clips.value[clips.value.length - 1]);
     playhead.value = lastStart + lastDur;
     note('播放结束');
     return;
