@@ -194,6 +194,19 @@ describe('collectTitleMaterial · 素材收集', () => {
     ] as any);
     expect(material).toBe('user: 真实问题');
   });
+
+  it('用户事实优先于 assistant 推测：标题素材先收集 user 行', () => {
+    const material = collectTitleMaterial([
+      { role: 'assistant', content: '个人身份需办个体户' },
+      { role: 'user', content: '我确认是个人身份开店' },
+      { role: 'assistant', content: '好的' },
+      { role: 'user', content: '查一下猫粮类目' },
+    ] as any);
+    expect(material.split('\n').slice(0, 2)).toEqual([
+      'user: 我确认是个人身份开店',
+      'user: 查一下猫粮类目',
+    ]);
+  });
 });
 
 describe('generateTitleFor · 端到端（真库 + CAS）', () => {
@@ -203,7 +216,11 @@ describe('generateTitleFor · 端到端（真库 + CAS）', () => {
     seedMsg('m2', 'c_e2e', 'assistant', '好的，我来处理。', 2000);
 
     hoisted.notifier.mockClear();
+    hoisted.chatViaRowMock.mockClear();
     await generateTitleFor('c_e2e', hoisted.testUser, { platformId: 'p1', modelId: 'm1' });
+    const titleMessages = hoisted.chatViaRowMock.mock.calls[0]?.[1] as Array<{ role: string; content: string }>;
+    expect(titleMessages[0]?.content).toContain('不得把 assistant');
+    expect(titleMessages[0]?.content).toContain('用户明确表述');
 
     // 落库：标题被清洗 + title_source 置 llm
     const row = getConv('c_e2e');

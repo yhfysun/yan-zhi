@@ -52,10 +52,18 @@ export function shouldGenerateTitle(conversationId: string): boolean {
 export function collectTitleMaterial(rows: Array<{ role: string; content: string | null }>): string {
   const parts: string[] = [];
   let total = 0;
-  for (const r of rows) {
+  const valid = rows.filter((r) => {
+    const text = (r.content || '').trim();
+    return !!text && (r.role === 'user' || r.role === 'assistant');
+  });
+  // 标题概括用户意图：先拿 user 事实，再用 assistant 补上下文，避免模型推测反过来定义会话。
+  const ordered = [
+    ...valid.filter((r) => r.role === 'user'),
+    ...valid.filter((r) => r.role === 'assistant'),
+  ];
+  for (const r of ordered) {
     if (parts.length >= MAX_MESSAGES) break;
     const text = (r.content || '').trim();
-    if (!text || r.role !== 'user' && r.role !== 'assistant') continue;
     const clipped = text.slice(0, MAX_MSG_CHARS);
     if (total + clipped.length > MAX_PROMPT_CHARS) break;
     parts.push(`${r.role}: ${clipped}`);
@@ -102,7 +110,12 @@ export async function generateTitleFor(conversationId: string, userId: string,
       if (!model) return;
 
       const { content } = await chatViaRow(model, [
-        { role: 'system', content: '你是会话标题生成器。根据对话内容生成一个不超过16个字的中文标题，概括用户要做的事。只输出标题本身，不要任何解释、引号或标点结尾。' },
+        {
+          role: 'system',
+          content: '你是会话标题生成器。根据对话内容生成一个不超过16个字的中文标题，概括用户要做的事。'
+            + '必须以用户明确表述为准，不得把 assistant 的推测、平台规则结论或错误判断当成事实；'
+            + '主体、平台、类目等关键词沿用用户明确写出的说法。只输出标题本身，不要任何解释、引号或标点结尾。',
+        },
         { role: 'user', content: material.slice(0, MAX_PROMPT_CHARS) },
       ], {
         maxTokens: model.protocol === 'anthropic' ? 64 : undefined,
