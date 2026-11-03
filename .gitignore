@@ -157,6 +157,7 @@ apps/mobile/nodejs/index.js
 
 # 服务端临时冒烟数据
 apps/server/tmp_*
+apps/server/tmp-*
 
 # CodeBuddy 工作区数据（不入库）
 .codebuddy/
