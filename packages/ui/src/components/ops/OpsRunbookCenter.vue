@@ -28,7 +28,7 @@
             <span>v{{ selected.version }} · {{ connectionName(selected.connectionId) }}</span>
           </div>
           <div class="orbc-actions">
-            <el-button size="small" :loading="running" :disabled="!selected.enabled" @click="runNow">运行</el-button>
+            <el-button size="small" :loading="running" :disabled="!selected.enabled" @click="openRun">运行</el-button>
             <el-button size="small" @click="openEdit(selected)">编辑</el-button>
             <el-button size="small" text type="danger" @click="remove(selected)">删除</el-button>
           </div>
@@ -38,24 +38,40 @@
         <div class="orbc-meta">
           <span>执行步骤 <b>{{ selected.steps.length }}</b></span>
           <span>回滚步骤 <b>{{ selected.rollbackSteps.length }}</b></span>
+          <span>参数 <b>{{ (selected.parameters || []).length }}</b></span>
           <span>更新 {{ formatTime(selected.updatedAt) }}</span>
         </div>
 
         <div v-if="currentRun" class="orbc-run">
           <div class="orbc-run-head">
             <span>本次运行</span>
-            <span class="orbc-run-status" :class="currentRun.status">{{ runStatusLabel(currentRun.status) }}</span>
+            <div class="orbc-run-head-actions">
+              <el-button
+                v-if="currentRun.status === 'running'"
+                size="small"
+                text
+                type="warning"
+                :loading="cancelling"
+                @click="cancelCurrentRun"
+              >
+                取消运行
+              </el-button>
+              <span class="orbc-run-status" :class="currentRun.status">{{ runStatusLabel(currentRun.status) }}</span>
+            </div>
+          </div>
+          <div v-if="Object.keys(currentRun.inputParams || {}).length" class="orbc-run-params">
+            <span v-for="(value, key) in currentRun.inputParams" :key="key">{{ key }}={{ value }}</span>
           </div>
           <div v-if="currentRun.error" class="orbc-run-error">{{ currentRun.error }}</div>
-          <div v-for="step in currentRun.stepResults" :key="step.id" class="orbc-step" :class="step.status">
+          <div v-for="step in currentRun.stepResults || []" :key="step.id" class="orbc-step" :class="step.status">
             <span class="orbc-step-dot" />
             <span class="orbc-step-name">{{ step.name }}</span>
             <span class="orbc-step-summary">{{ step.error || step.output || step.status }}</span>
             <span class="orbc-step-duration">{{ duration(step) }}</span>
           </div>
-          <template v-if="currentRun.rollbackResults.length">
+          <template v-if="(currentRun.rollbackResults || []).length">
             <div class="orbc-rollback-title">回滚结果</div>
-            <div v-for="step in currentRun.rollbackResults" :key="`r-${step.id}`" class="orbc-step" :class="step.status">
+            <div v-for="step in currentRun.rollbackResults || []" :key="`r-${step.id}`" class="orbc-step" :class="step.status">
               <span class="orbc-step-dot" />
               <span class="orbc-step-name">{{ step.name }}</span>
               <span class="orbc-step-summary">{{ step.error || step.output || step.status }}</span>
@@ -110,6 +126,17 @@
           <el-switch v-model="form.enabled" size="small" />
         </div>
         <label class="orbc-wide">
+          <span>参数 JSON</span>
+          <el-input
+            v-model="form.parametersText"
+            type="textarea"
+            :rows="4"
+            size="small"
+            spellcheck="false"
+            placeholder='[{"key":"service","label":"服务名","required":true,"defaultValue":"api"}]'
+          />
+        </label>
+        <label class="orbc-wide">
           <span>执行步骤 JSON</span>
           <el-input v-model="form.stepsText" type="textarea" :rows="8" size="small" spellcheck="false" />
         </label>
@@ -123,6 +150,28 @@
         <el-button size="small" type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="runDialogVisible" title="运行参数" width="460px" append-to-body>
+      <div v-if="selected" class="orbc-run-form">
+        <div class="orbc-run-form-head">{{ selected.name }} · {{ connectionName(selected.connectionId) }}</div>
+        <label v-for="parameter in selected.parameters || []" :key="parameter.key">
+          <span>
+            {{ parameter.label || parameter.key }}
+            <em v-if="parameter.required">必填</em>
+          </span>
+          <el-input
+            v-model="runParams[parameter.key]"
+            size="small"
+            :placeholder="parameter.defaultValue || `请输入 ${parameter.key}`"
+          />
+        </label>
+        <p v-if="!(selected.parameters || []).length" class="orbc-run-form-empty">该 Runbook 无需运行参数</p>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="runDialogVisible = false">取消</el-button>
+        <el-button size="small" type="primary" @click="confirmRunParams">继续运行</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -134,6 +183,12 @@ import { api } from '../../api/client';
 
 interface MonitorConnection { id: string; name: string; type?: string; tag?: string }
 type StepType = 'exec' | 'http' | 'wait';
+interface RunbookParameter {
+  key: string;
+  label: string;
+  required: boolean;
+  defaultValue?: string;
+}
 interface RunbookStep {
   id: string;
   name: string;
@@ -151,6 +206,7 @@ interface Runbook {
   connectionId: string;
   enabled: boolean;
   version: number;
+  parameters: RunbookParameter[];
   steps: RunbookStep[];
   rollbackSteps: RunbookStep[];
   createdAt: number;
@@ -170,7 +226,8 @@ interface RunbookRun {
   runbookId: string;
   runbookName: string;
   runbookVersion: number;
-  status: 'running' | 'success' | 'failed' | 'rolled_back';
+  status: 'running' | 'success' | 'failed' | 'rolled_back' | 'cancelled';
+  inputParams: Record<string, string>;
   stepResults: StepResult[];
   rollbackResults: StepResult[];
   startedAt: number;
@@ -188,12 +245,17 @@ const selected = ref<Runbook | null>(null);
 const runs = ref<RunbookRun[]>([]);
 const currentRun = ref<RunbookRun | null>(null);
 const running = ref(false);
+const cancelling = ref(false);
 const saving = ref(false);
 const dialogVisible = ref(false);
+const runDialogVisible = ref(false);
 const editingId = ref('');
+const runParams = ref<Record<string, string>>({});
+const pollingRunIds = new Set<string>();
 const monitorConnections = computed(() => props.connections.filter((conn) => conn.type !== 'database'));
 const form = ref({
   name: '', description: '', connectionId: '', enabled: true,
+  parametersText: '[]',
   stepsText: '[\n  {\n    "type": "exec",\n    "name": "检查版本",\n    "command": "uptime"\n  }\n]',
   rollbackText: '[]',
 });
@@ -211,7 +273,13 @@ function duration(step: StepResult): string {
 }
 
 function runStatusLabel(status: RunbookRun['status']): string {
-  return { running: '运行中', success: '成功', failed: '失败', rolled_back: '已回滚' }[status];
+  return {
+    running: '运行中',
+    success: '成功',
+    failed: '失败',
+    rolled_back: '已回滚',
+    cancelled: '已取消',
+  }[status];
 }
 
 async function load(): Promise<void> {
@@ -238,6 +306,7 @@ async function loadRuns(): Promise<void> {
 function selectRunbook(item: Runbook): void {
   selected.value = item;
   currentRun.value = null;
+  runDialogVisible.value = false;
   void loadRuns();
 }
 
@@ -247,6 +316,7 @@ function resetForm(): void {
     description: '',
     connectionId: props.activeConnectionId || monitorConnections.value[0]?.id || '',
     enabled: true,
+    parametersText: '[]',
     stepsText: '[\n  {\n    "type": "exec",\n    "name": "检查版本",\n    "command": "uptime"\n  }\n]',
     rollbackText: '[]',
   };
@@ -265,13 +335,14 @@ function openEdit(item: Runbook): void {
     description: item.description || '',
     connectionId: item.connectionId,
     enabled: item.enabled,
+    parametersText: JSON.stringify(item.parameters || [], null, 2),
     stepsText: JSON.stringify(item.steps, null, 2),
     rollbackText: JSON.stringify(item.rollbackSteps, null, 2),
   };
   dialogVisible.value = true;
 }
 
-function parseSteps(text: string, label: string): RunbookStep[] | null {
+function parseArray<T>(text: string, label: string): T[] | null {
   try {
     const value = JSON.parse(text);
     if (!Array.isArray(value)) {
@@ -286,9 +357,11 @@ function parseSteps(text: string, label: string): RunbookStep[] | null {
 }
 
 async function save(): Promise<void> {
-  const steps = parseSteps(form.value.stepsText, '执行步骤');
+  const parameters = parseArray<RunbookParameter>(form.value.parametersText, '参数');
+  if (!parameters) return;
+  const steps = parseArray<RunbookStep>(form.value.stepsText, '执行步骤');
   if (!steps) return;
-  const rollbackSteps = parseSteps(form.value.rollbackText, '回滚步骤');
+  const rollbackSteps = parseArray<RunbookStep>(form.value.rollbackText, '回滚步骤');
   if (!rollbackSteps) return;
   saving.value = true;
   try {
@@ -297,6 +370,7 @@ async function save(): Promise<void> {
       description: form.value.description,
       connectionId: form.value.connectionId,
       enabled: form.value.enabled,
+      parameters,
       steps,
       rollbackSteps,
     };
@@ -330,10 +404,13 @@ async function remove(item: Runbook): Promise<void> {
   await load();
 }
 
-function planText(item: Runbook): string {
+function planText(item: Runbook, params: Record<string, string> = {}): string {
+  const parameterLines = Object.entries(params).map(([key, value]) => `- ${key}=${value}`);
   return [
     `Runbook：${item.name} v${item.version}`,
     `连接：${connectionName(item.connectionId)}`,
+    '运行参数：',
+    ...(parameterLines.length ? parameterLines : ['- 无']),
     '执行步骤：',
     ...item.steps.map((step) => `- ${step.name} [${step.type}]`),
     '失败回滚：',
@@ -350,15 +427,42 @@ function textBlock(text: string) {
   }, text);
 }
 
-async function runNow(): Promise<void> {
+function openRun(): void {
   if (!selected.value) return;
+  runParams.value = Object.fromEntries(
+    (selected.value.parameters || []).map((parameter) => [parameter.key, parameter.defaultValue || '']),
+  );
+  if (!(selected.value.parameters || []).length) {
+    void runNow();
+    return;
+  }
+  runDialogVisible.value = true;
+}
+
+async function confirmRunParams(): Promise<void> {
+  if (!selected.value) return;
+  const missing = (selected.value.parameters || []).find(
+    (parameter) => parameter.required && !String(runParams.value[parameter.key] || '').trim(),
+  );
+  if (missing) {
+    ElMessage.warning(`请填写${missing.label || missing.key}`);
+    return;
+  }
+  runDialogVisible.value = false;
+  await runNow();
+}
+
+async function runNow(): Promise<void> {
+  const runbook = selected.value;
+  if (!runbook) return;
+  const params = { ...runParams.value };
   running.value = true;
   try {
     const prep = await api.post<{
       required: boolean;
       plan?: string;
       approval?: { id: string; command: string; status: 'pending' | 'approved' | 'rejected' };
-    }>(`/plugin/ops-shell/runbooks/${selected.value.id}/approval`, {});
+    }>(`/plugin/ops-shell/runbooks/${runbook.id}/approval`, { params });
     if ('error' in prep) {
       ElMessage.error(prep.error);
       return;
@@ -383,13 +487,13 @@ async function runNow(): Promise<void> {
         if (!ok) return;
       }
     } else {
-      const ok = await ElMessageBox.confirm(textBlock(prep.data.plan || planText(selected.value)), '运行 Runbook', {
+      const ok = await ElMessageBox.confirm(textBlock(prep.data.plan || planText(runbook, params)), '运行 Runbook', {
         type: 'warning', confirmButtonText: '开始运行', cancelButtonText: '取消',
       }).then(() => true).catch(() => false);
       if (!ok) return;
     }
 
-    const started = await api.post<RunbookRun>(`/plugin/ops-shell/runbooks/${selected.value.id}/run`, {});
+    const started = await api.post<RunbookRun>(`/plugin/ops-shell/runbooks/${runbook.id}/run`, { params });
     if ('error' in started) {
       ElMessage.error(started.error);
       return;
@@ -401,16 +505,45 @@ async function runNow(): Promise<void> {
   }
 }
 
-async function pollRun(runId: string): Promise<void> {
-  for (let i = 0; i < 120; i++) {
-    const result = await api.get<RunbookRun>(`/plugin/ops-shell/runbooks/runs/${runId}`);
-    if ('error' in result) return;
-    currentRun.value = result.data;
-    if (result.data.status !== 'running') {
-      await loadRuns();
+async function cancelCurrentRun(): Promise<void> {
+  if (!currentRun.value || currentRun.value.status !== 'running') return;
+  const runId = currentRun.value.id;
+  const ok = await ElMessageBox.confirm(
+    '取消只会在当前步骤结束后生效，不会强制中断正在执行的远程命令。确认请求取消？',
+    '取消 Runbook',
+    { type: 'warning', confirmButtonText: '请求取消', cancelButtonText: '继续等待' },
+  ).then(() => true).catch(() => false);
+  if (!ok) return;
+  cancelling.value = true;
+  try {
+    const result = await api.post(`/plugin/ops-shell/runbooks/runs/${runId}/cancel`);
+    if ('error' in result) {
+      ElMessage.error(result.error);
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    ElMessage.success('已请求取消，将在当前步骤结束后停止');
+    void pollRun(runId);
+  } finally {
+    cancelling.value = false;
+  }
+}
+
+async function pollRun(runId: string): Promise<void> {
+  if (pollingRunIds.has(runId)) return;
+  pollingRunIds.add(runId);
+  try {
+    for (let i = 0; i < 120; i++) {
+      const result = await api.get<RunbookRun>(`/plugin/ops-shell/runbooks/runs/${runId}`);
+      if ('error' in result) return;
+      currentRun.value = result.data;
+      if (result.data.status !== 'running') {
+        await loadRuns();
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  } finally {
+    pollingRunIds.delete(runId);
   }
 }
 
@@ -448,11 +581,15 @@ onMounted(() => { void load(); });
 .orbc-meta b { color: var(--color-text-primary); }
 .orbc-run, .orbc-history { border-top: 1px solid var(--color-border); padding-top: 9px; }
 .orbc-run-head { font-size: 12px; font-weight: 600; }
+.orbc-run-head-actions { display: inline-flex; align-items: center; gap: 4px; }
+.orbc-run-params { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 5px; font-size: 10.5px; color: var(--color-text-secondary); }
+.orbc-run-params span { overflow-wrap: anywhere; }
 .orbc-run-error { margin-top: 5px; font-size: 11px; color: var(--color-danger); overflow-wrap: anywhere; }
 .orbc-run-status { font-size: 11px; color: var(--color-primary); }
 .orbc-run-status.success { color: var(--color-success); }
 .orbc-run-status.failed { color: var(--color-danger); }
 .orbc-run-status.rolled_back { color: var(--color-warning); }
+.orbc-run-status.cancelled { color: var(--color-text-tertiary); }
 .orbc-step { display: grid; grid-template-columns: 8px minmax(90px, .7fr) minmax(0, 1.6fr) auto; align-items: start; gap: 7px; padding: 6px 0; border-bottom: 1px dashed var(--color-border); font-size: 11px; }
 .orbc-step-dot { width: 6px; height: 6px; margin-top: 4px; border-radius: 50%; background: var(--color-success); }
 .orbc-step.failed .orbc-step-dot { background: var(--color-danger); }
@@ -467,6 +604,12 @@ onMounted(() => { void load(); });
 .orbc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--color-text-secondary); }
 .orbc-wide { grid-column: 1 / -1; }
 .orbc-switch { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
+.orbc-run-form { display: flex; flex-direction: column; gap: 10px; }
+.orbc-run-form-head { color: var(--color-text-secondary); font-size: 12px; }
+.orbc-run-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--color-text-secondary); }
+.orbc-run-form label span { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.orbc-run-form em { font-style: normal; font-size: 10px; color: var(--color-warning); }
+.orbc-run-form-empty { margin: 0; font-size: 12px; color: var(--color-text-tertiary); }
 @media (max-width: 900px) {
   .orbc { grid-template-columns: 1fr; overflow: auto; }
   .orbc-list, .orbc-main { overflow: visible; }

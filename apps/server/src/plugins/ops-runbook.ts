@@ -26,6 +26,13 @@ export interface RunbookWaitStep extends RunbookStepBase {
 
 export type OpsRunbookStep = RunbookExecStep | RunbookHttpStep | RunbookWaitStep;
 
+export interface OpsRunbookParameter {
+  key: string;
+  label: string;
+  required: boolean;
+  defaultValue?: string;
+}
+
 export interface OpsRunbook {
   id: string;
   name: string;
@@ -33,6 +40,7 @@ export interface OpsRunbook {
   connectionId: string;
   enabled: boolean;
   version: number;
+  parameters: OpsRunbookParameter[];
   steps: OpsRunbookStep[];
   rollbackSteps: OpsRunbookStep[];
   createdAt: number;
@@ -50,7 +58,7 @@ export interface OpsRunbookStepResult {
   error?: string;
 }
 
-export type OpsRunbookRunStatus = 'running' | 'success' | 'failed' | 'rolled_back';
+export type OpsRunbookRunStatus = 'running' | 'success' | 'failed' | 'rolled_back' | 'cancelled';
 
 export interface OpsRunbookRun {
   id: string;
@@ -61,6 +69,7 @@ export interface OpsRunbookRun {
   connectionName: string;
   status: OpsRunbookRunStatus;
   approvalId?: string;
+  inputParams: Record<string, string>;
   snapshot: OpsRunbook;
   stepResults: OpsRunbookStepResult[];
   rollbackResults: OpsRunbookStepResult[];
@@ -74,6 +83,7 @@ export interface RunbookInput {
   description?: string;
   connectionId: string;
   enabled: boolean;
+  parameters: OpsRunbookParameter[];
   steps: OpsRunbookStep[];
   rollbackSteps: OpsRunbookStep[];
 }
@@ -91,6 +101,63 @@ function safeUrl(raw: unknown): string {
   } catch {
     return '';
   }
+}
+
+function safeUrlTemplate(raw: unknown): string {
+  const template = String(raw || '').trim();
+  if (!template) return '';
+  const probe = template.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, '1');
+  return safeUrl(probe) ? template : '';
+}
+
+const PARAM_VALUE_RE = /^[A-Za-z0-9_./:@%+=,?~-]{0,300}$/;
+const PARAM_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,40}$/;
+const RESERVED_PARAM_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function normalizeParameters(raw: unknown): { parameters?: OpsRunbookParameter[]; error?: string } {
+  if (raw === undefined) return { parameters: [] };
+  if (!Array.isArray(raw)) return { error: '参数必须是数组' };
+  if (raw.length > 20) return { error: '参数最多 20 个' };
+  const parameters: OpsRunbookParameter[] = [];
+  const keys = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return { error: '参数格式非法' };
+    const value = item as Record<string, unknown>;
+    const key = String(value.key || '').trim();
+    if (!PARAM_KEY_RE.test(key) || RESERVED_PARAM_KEYS.has(key)) {
+      return { error: `参数 key 非法：${key || '（空）'}` };
+    }
+    if (keys.has(key)) return { error: `参数 key 重复：${key}` };
+    keys.add(key);
+    const defaultValue = value.defaultValue === undefined || value.defaultValue === null
+      ? undefined
+      : String(value.defaultValue);
+    if (defaultValue !== undefined && !PARAM_VALUE_RE.test(defaultValue)) {
+      return { error: `参数 ${key} 的默认值包含不安全字符` };
+    }
+    parameters.push({
+      key,
+      label: String(value.label || key).trim().slice(0, 80) || key,
+      required: value.required !== false,
+      defaultValue,
+    });
+  }
+  return { parameters };
+}
+
+function placeholders(text: string): string[] {
+  return [...text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((match) => match[1]);
+}
+
+function validatePlaceholders(steps: OpsRunbookStep[], parameters: OpsRunbookParameter[]): string | null {
+  const known = new Set(parameters.map((parameter) => parameter.key));
+  for (const step of steps) {
+    const text = step.type === 'exec' ? step.command : step.type === 'http' ? step.url : '';
+    for (const key of placeholders(text)) {
+      if (!known.has(key)) return `步骤「${step.name}」引用了未声明参数：${key}`;
+    }
+  }
+  return null;
 }
 
 function normalizeStep(raw: unknown, index: number, prefix: string): { step?: OpsRunbookStep; error?: string } {
@@ -112,7 +179,7 @@ function normalizeStep(raw: unknown, index: number, prefix: string): { step?: Op
     return { step: { ...base, type: 'wait', seconds } };
   }
   if (type === 'http') {
-    const url = safeUrl(value.url);
+    const url = safeUrlTemplate(value.url);
     if (!url) return { error: `HTTP 步骤「${name}」URL 必须是 http/https 且不能含账号密码` };
     const expected = Math.floor(Number(value.expectedStatus || 200));
     if (!Number.isFinite(expected) || expected < 100 || expected > 599) {
@@ -151,16 +218,24 @@ export function normalizeRunbookInput(raw: Record<string, unknown>): { value?: R
   const connectionId = String(raw.connectionId || '').trim();
   if (!name) return { error: 'Runbook 名称必填' };
   if (!connectionId) return { error: '必须选择执行连接' };
+  const parameterResult = normalizeParameters(raw.parameters);
+  if (parameterResult.error) return { error: parameterResult.error };
   const main = normalizeSteps(raw.steps, '执行', 1, 30);
   if (main.error) return { error: main.error };
   const rollback = normalizeSteps(raw.rollbackSteps === undefined ? [] : raw.rollbackSteps, '回滚', 0, 20);
   if (rollback.error) return { error: rollback.error };
+  const placeholderError = validatePlaceholders(
+    [...main.steps!, ...rollback.steps!],
+    parameterResult.parameters!,
+  );
+  if (placeholderError) return { error: placeholderError };
   return {
     value: {
       name,
       description: String(raw.description || '').trim().slice(0, 500) || undefined,
       connectionId,
       enabled: raw.enabled !== false,
+      parameters: parameterResult.parameters!,
       steps: main.steps!,
       rollbackSteps: rollback.steps!,
     },
@@ -176,10 +251,63 @@ export function buildRunbook(input: RunbookInput, existing?: OpsRunbook): OpsRun
     connectionId: input.connectionId,
     enabled: input.enabled,
     version: (existing?.version || 0) + 1,
+    parameters: input.parameters,
     steps: input.steps,
     rollbackSteps: input.rollbackSteps,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
+  };
+}
+
+export function resolveRunbookParams(
+  runbook: OpsRunbook,
+  input: Record<string, unknown> = {},
+): { params?: Record<string, string>; error?: string } {
+  const params: Record<string, string> = Object.create(null);
+  const known = new Set(runbook.parameters.map((parameter) => parameter.key));
+  const unknown = Object.keys(input).find((key) => !known.has(key));
+  if (unknown) return { error: `未声明的运行参数：${unknown}` };
+  for (const parameter of runbook.parameters) {
+    const raw = Object.prototype.hasOwnProperty.call(input, parameter.key)
+      ? input[parameter.key]
+      : undefined;
+    const value = raw === undefined || raw === null || raw === ''
+      ? parameter.defaultValue
+      : String(raw);
+    if (value === undefined || value === '') {
+      if (parameter.required) {
+        const label = parameter.label || parameter.key;
+        return { error: label === parameter.key ? `缺少必填参数：${label}` : `缺少必填参数：${label}（${parameter.key}）` };
+      }
+      params[parameter.key] = '';
+      continue;
+    }
+    if (!PARAM_VALUE_RE.test(value)) {
+      return { error: `参数 ${parameter.key} 包含不安全字符` };
+    }
+    params[parameter.key] = value;
+  }
+  return { params };
+}
+
+function renderText(text: string, params: Record<string, string>): string {
+  return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, key: string) => params[key] ?? '');
+}
+
+export function renderRunbook(runbook: OpsRunbook, params: Record<string, string>): OpsRunbook {
+  const renderStep = (step: OpsRunbookStep): OpsRunbookStep => {
+    if (step.type === 'exec') return { ...step, command: renderText(step.command, params) };
+    if (step.type === 'http') {
+      const url = safeUrl(renderText(step.url, params));
+      if (!url) throw new Error(`HTTP 步骤「${step.name}」参数替换后 URL 非法`);
+      return { ...step, url };
+    }
+    return { ...step };
+  };
+  return {
+    ...runbook,
+    steps: runbook.steps.map(renderStep),
+    rollbackSteps: runbook.rollbackSteps.map(renderStep),
   };
 }
 
@@ -203,6 +331,7 @@ export function buildRunbookApprovalSubject(runbook: OpsRunbook, conn: StoredCon
 export interface RunbookExecutionDeps {
   execRemote(command: string, timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }>;
   wait(ms: number): Promise<void>;
+  shouldCancel?(): boolean;
 }
 
 async function executeStep(step: OpsRunbookStep, deps: RunbookExecutionDeps): Promise<OpsRunbookStepResult> {
@@ -254,12 +383,18 @@ export async function executeRunbook(runbook: OpsRunbook, deps: RunbookExecution
   const stepResults: OpsRunbookStepResult[] = [];
   let failed = false;
   for (const step of runbook.steps) {
+    if (deps.shouldCancel?.()) {
+      return { status: 'cancelled', stepResults, rollbackResults: [], startedAt, finishedAt: Date.now() };
+    }
     const result = await executeStep(step, deps);
     stepResults.push(result);
     if (result.status === 'failed') {
       failed = true;
       if (!step.continueOnError) break;
     }
+  }
+  if (!failed && deps.shouldCancel?.()) {
+    return { status: 'cancelled', stepResults, rollbackResults: [], startedAt, finishedAt: Date.now() };
   }
   const rollbackResults: OpsRunbookStepResult[] = [];
   if (!failed) {

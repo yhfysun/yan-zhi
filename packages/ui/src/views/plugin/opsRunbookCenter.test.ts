@@ -29,4 +29,12 @@ describe('OpsRunbookCenter', () => {
     expect(RUNBOOK).toContain('rollbackResults');
     expect(RUNBOOK).toContain('运行历史');
   });
+
+  it('参数化运行与步骤边界取消都有完整入口', () => {
+    expect(RUNBOOK).toContain('parameters');
+    expect(RUNBOOK).toContain('inputParams');
+    expect(RUNBOOK).toContain('/runbooks/runs/${');
+    expect(RUNBOOK).toContain('/cancel');
+    expect(RUNBOOK).toContain("cancelled: '已取消'");
+  });
 });

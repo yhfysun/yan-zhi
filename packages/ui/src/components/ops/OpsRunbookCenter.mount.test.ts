@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, type App } from 'vue';
-import ElementPlus from 'element-plus';
+import ElementPlus, { ElMessageBox } from 'element-plus';
 import * as Icons from '@element-plus/icons-vue';
 
 const apiMock = vi.hoisted(() => ({
@@ -44,6 +44,7 @@ beforeEach(() => {
         data: [{
           id: 'rb1', name: '发布检查', description: '检查服务', connectionId: 'c1',
           enabled: true, version: 2,
+          parameters: [{ key: 'service', label: '服务名', required: true, defaultValue: 'api' }],
           steps: [{ id: 's1', type: 'exec', name: '检查', command: 'uptime' }],
           rollbackSteps: [{ id: 'r1', type: 'exec', name: '恢复', command: 'sh rollback.sh' }],
           createdAt: 1, updatedAt: 2,
@@ -69,6 +70,122 @@ describe('OpsRunbookCenter mount', () => {
     expect(host.textContent).toContain('回滚步骤');
     expect(host.textContent).toContain('运行历史');
     expect(host.textContent).toContain('成功');
+    app.unmount();
+  });
+
+  it('运行前展示参数并把同一组参数传给审批与启动接口', async () => {
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
+    apiMock.post.mockImplementation(async (path: string) => {
+      if (path.endsWith('/approval')) {
+        return { data: { required: false, plan: '执行检查' } };
+      }
+      if (path.endsWith('/run')) {
+        return {
+          data: {
+            id: 'run-param', runbookId: 'rb1', runbookName: '发布检查', runbookVersion: 2,
+            status: 'running', inputParams: { service: 'api' }, stepResults: [], rollbackResults: [],
+            startedAt: 3,
+          },
+        };
+      }
+      return { data: {} };
+    });
+    apiMock.get.mockImplementation(async (path: string) => {
+      if (path === '/plugin/ops-shell/runbooks') {
+        return {
+          data: [{
+            id: 'rb1', name: '发布检查', connectionId: 'c1', enabled: true, version: 2,
+            parameters: [{ key: 'service', label: '服务名', required: true, defaultValue: 'api' }],
+            steps: [{ id: 's1', type: 'exec', name: '检查', command: 'systemctl status ${service}' }],
+            rollbackSteps: [], createdAt: 1, updatedAt: 2,
+          }],
+        };
+      }
+      if (path.includes('/runbooks/runs/run-param')) {
+        return {
+          data: {
+            id: 'run-param', runbookId: 'rb1', runbookName: '发布检查', runbookVersion: 2,
+            status: 'success', inputParams: { service: 'api' }, stepResults: [], rollbackResults: [],
+            startedAt: 3, finishedAt: 4,
+          },
+        };
+      }
+      return { data: [] };
+    });
+
+    const { app, host } = await mountCenter();
+    const runButton = Array.from(host.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === '运行') as HTMLButtonElement | undefined;
+    expect(runButton).toBeTruthy();
+    runButton!.click();
+    await settle();
+
+    expect(document.body.textContent).toContain('运行参数');
+    expect(document.body.textContent).toContain('服务名');
+    const continueButton = Array.from(document.body.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === '继续运行') as HTMLButtonElement | undefined;
+    expect(continueButton).toBeTruthy();
+    continueButton!.click();
+    await settle(8);
+
+    expect(confirm).toHaveBeenCalled();
+    expect(apiMock.post).toHaveBeenCalledWith(
+      '/plugin/ops-shell/runbooks/rb1/approval',
+      { params: { service: 'api' } },
+    );
+    expect(apiMock.post).toHaveBeenCalledWith(
+      '/plugin/ops-shell/runbooks/rb1/run',
+      { params: { service: 'api' } },
+    );
+    confirm.mockRestore();
+    app.unmount();
+  });
+
+  it('运行中的记录可请求取消并保持轮询到终态', async () => {
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
+    apiMock.get.mockImplementation(async (path: string) => {
+      if (path === '/plugin/ops-shell/runbooks') {
+        return {
+          data: [{
+            id: 'rb1', name: '发布检查', connectionId: 'c1', enabled: true, version: 2,
+            parameters: [], steps: [{ id: 's1', type: 'wait', name: '等待', seconds: 30 }],
+            rollbackSteps: [], createdAt: 1, updatedAt: 2,
+          }],
+        };
+      }
+      if (path.includes('/runbooks/runs/run-live')) {
+        return {
+          data: {
+            id: 'run-live', runbookId: 'rb1', runbookName: '发布检查', runbookVersion: 2,
+            status: 'cancelled', inputParams: {}, stepResults: [], rollbackResults: [],
+            startedAt: 3, finishedAt: 4,
+          },
+        };
+      }
+      return {
+        data: [{
+          id: 'run-live', runbookId: 'rb1', runbookName: '发布检查', runbookVersion: 2,
+          status: 'running', inputParams: {}, stepResults: [], rollbackResults: [], startedAt: 3,
+        }],
+      };
+    });
+    apiMock.post.mockResolvedValue({ data: { cancelRequested: true } });
+
+    const { app, host } = await mountCenter();
+    const historyRow = host.querySelector('.orbc-history-row') as HTMLButtonElement | null;
+    expect(historyRow).toBeTruthy();
+    historyRow!.click();
+    await settle();
+
+    const cancelButton = Array.from(host.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === '取消运行') as HTMLButtonElement | undefined;
+    expect(cancelButton).toBeTruthy();
+    cancelButton!.click();
+    await settle();
+
+    expect(confirm).toHaveBeenCalled();
+    expect(apiMock.post).toHaveBeenCalledWith('/plugin/ops-shell/runbooks/runs/run-live/cancel');
+    confirm.mockRestore();
     app.unmount();
   });
 });

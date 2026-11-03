@@ -18,8 +18,10 @@ describe('ops runbook store', () => {
     store.save(v2);
     expect(store.list()[0]).toMatchObject({ id: v1.id, version: 2, name: '巡检脚本' });
 
-    const run = store.createRun(v2, 'prod-web', 'approval-1');
-    expect(run).toMatchObject({ runbookId: v1.id, runbookVersion: 2, status: 'running' });
+    const run = store.createRun(v2, 'prod-web', 'approval-1', { service: 'api' });
+    expect(run).toMatchObject({
+      runbookId: v1.id, runbookVersion: 2, status: 'running', inputParams: { service: 'api' },
+    });
     store.updateRun(run.id, {
       status: 'success',
       finishedAt: Date.now(),

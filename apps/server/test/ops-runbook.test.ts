@@ -10,6 +10,8 @@ import {
   buildRunbookApprovalSubject,
   executeRunbook,
   normalizeRunbookInput,
+  renderRunbook,
+  resolveRunbookParams,
   type OpsRunbook,
 } from '../src/plugins/ops-runbook.js';
 
@@ -21,6 +23,7 @@ const conn = {
 function runbook(): OpsRunbook {
   return {
     id: 'rb1', name: '发布检查', connectionId: 'c1', enabled: true, version: 3,
+    parameters: [],
     steps: [
       { id: 's1', type: 'exec', name: '检查版本', command: 'cat VERSION' },
       { id: 's2', type: 'wait', name: '等待', seconds: 1 },
@@ -46,6 +49,55 @@ describe('Runbook 归一化与版本', () => {
     expect(v1).toMatchObject({ version: 1, name: '发布检查' });
     const v2 = buildRunbook(normalized.value!, v1);
     expect(v2).toMatchObject({ id: v1.id, version: 2, createdAt: v1.createdAt });
+  });
+
+  it('参数默认值与运行输入通过 ${key} 替换进入步骤', () => {
+    const normalized = normalizeRunbookInput({
+      name: '重启服务', connectionId: 'c1',
+      parameters: [
+        { key: 'service', label: '服务名', required: true, defaultValue: 'nginx' },
+        { key: 'port', label: '端口', required: true },
+      ],
+      steps: [
+        { type: 'exec', name: '重启', command: 'systemctl restart ${service}' },
+        { type: 'http', name: '检查', url: 'http://127.0.0.1:${port}/health', expectedStatus: 200 },
+      ],
+    });
+    expect(normalized.error).toBeUndefined();
+    const rb = buildRunbook(normalized.value!);
+    expect(resolveRunbookParams(rb, { port: '8080' })).toEqual({
+      params: { service: 'nginx', port: '8080' },
+    });
+    expect(resolveRunbookParams(rb, {})?.error).toContain('port');
+    const rendered = renderRunbook(rb, { service: 'api', port: '8080' });
+    expect(rendered.steps[0]).toMatchObject({ command: 'systemctl restart api' });
+    expect(rendered.steps[1]).toMatchObject({ url: 'http://127.0.0.1:8080/health' });
+  });
+
+  it('步骤引用未声明参数时拒绝保存', () => {
+    const normalized = normalizeRunbookInput({
+      name: 'bad', connectionId: 'c1',
+      steps: [{ type: 'exec', name: 'x', command: 'echo ${missing}' }],
+    });
+    expect(normalized.error).toContain('未声明参数');
+  });
+
+  it('拒绝原型污染参数键和含 shell 元字符的运行值', () => {
+    const reserved = normalizeRunbookInput({
+      name: 'bad-key', connectionId: 'c1',
+      parameters: [{ key: '__proto__', label: '危险键' }],
+      steps: [{ type: 'exec', name: 'x', command: 'echo ${__proto__}' }],
+    });
+    expect(reserved.error).toContain('key 非法');
+
+    const normalized = normalizeRunbookInput({
+      name: 'safe', connectionId: 'c1',
+      parameters: [{ key: 'branch', label: '分支', required: true }],
+      steps: [{ type: 'exec', name: 'x', command: 'deploy ${branch}' }],
+    });
+    const rb = buildRunbook(normalized.value!);
+    expect(resolveRunbookParams(rb, { branch: 'main; rm -rf /' }).error).toContain('不安全字符');
+    expect(resolveRunbookParams(rb, { branch: 'main', extra: 'ignored' }).error).toContain('未声明');
   });
 
   it('拒绝非法步骤与空步骤', () => {
@@ -125,5 +177,23 @@ describe('Runbook 执行与回滚', () => {
     });
     expect(result.status).toBe('failed');
     expect(result.rollbackResults[0].status).toBe('failed');
+  });
+
+  it('取消在步骤边界生效，当前步骤完成但不启动下一步', async () => {
+    const rb = runbook();
+    rb.steps = [
+      { id: 's1', type: 'wait', name: '等待', seconds: 1 },
+      { id: 's2', type: 'exec', name: '不应执行', command: 'never.sh' },
+    ];
+    let cancelled = false;
+    const calls: string[] = [];
+    const result = await executeRunbook(rb, {
+      execRemote: async (command) => { calls.push(command); return { code: 0, stdout: '', stderr: '' }; },
+      wait: async () => { cancelled = true; },
+      shouldCancel: () => cancelled,
+    });
+    expect(result.status).toBe('cancelled');
+    expect(result.stepResults).toHaveLength(1);
+    expect(calls).toEqual([]);
   });
 });

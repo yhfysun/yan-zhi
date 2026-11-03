@@ -35,6 +35,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
         connection_id TEXT NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
         version INTEGER NOT NULL,
+        parameters_json TEXT NOT NULL DEFAULT '[]',
         steps_json TEXT NOT NULL,
         rollback_json TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -50,6 +51,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
         connection_name TEXT NOT NULL,
         status TEXT NOT NULL,
         approval_id TEXT,
+        input_params_json TEXT NOT NULL DEFAULT '{}',
         snapshot_json TEXT NOT NULL,
         step_results_json TEXT NOT NULL DEFAULT '[]',
         rollback_results_json TEXT NOT NULL DEFAULT '[]',
@@ -60,6 +62,12 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
       CREATE INDEX IF NOT EXISTS idx_ops_runbook_run_started ON ops_runbook_run(started_at DESC);
       CREATE INDEX IF NOT EXISTS idx_ops_runbook_run_active ON ops_runbook_run(runbook_id, status);
     `);
+    for (const sql of [
+      "ALTER TABLE ops_runbook ADD COLUMN parameters_json TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE ops_runbook_run ADD COLUMN input_params_json TEXT NOT NULL DEFAULT '{}'",
+    ]) {
+      try { database.exec(sql); } catch { /* 列已存在 */ }
+    }
   };
 
   const rowToRunbook = (row: any): OpsRunbook => ({
@@ -69,6 +77,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     connectionId: row.connection_id,
     enabled: row.enabled === 1,
     version: row.version,
+    parameters: parseJson(row.parameters_json, []),
     steps: parseJson(row.steps_json, []),
     rollbackSteps: parseJson(row.rollback_json, []),
     createdAt: row.created_at,
@@ -84,6 +93,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     connectionName: row.connection_name,
     status: row.status as OpsRunbookRunStatus,
     approvalId: row.approval_id || undefined,
+    inputParams: parseJson(row.input_params_json, {}),
     snapshot: parseJson(row.snapshot_json, {} as OpsRunbook),
     stepResults: parseJson(row.step_results_json, []),
     rollbackResults: parseJson(row.rollback_results_json, []),
@@ -101,20 +111,22 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
   const save = (runbook: OpsRunbook) => {
     database.prepare(`
       INSERT INTO ops_runbook
-        (id, name, description, connection_id, enabled, version, steps_json, rollback_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, name, description, connection_id, enabled, version, parameters_json, steps_json, rollback_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name=excluded.name,
         description=excluded.description,
         connection_id=excluded.connection_id,
         enabled=excluded.enabled,
         version=excluded.version,
+        parameters_json=excluded.parameters_json,
         steps_json=excluded.steps_json,
         rollback_json=excluded.rollback_json,
         updated_at=excluded.updated_at
     `).run(
       runbook.id, runbook.name, runbook.description || null, runbook.connectionId,
-      runbook.enabled ? 1 : 0, runbook.version, JSON.stringify(runbook.steps),
+      runbook.enabled ? 1 : 0, runbook.version, JSON.stringify(runbook.parameters),
+      JSON.stringify(runbook.steps),
       JSON.stringify(runbook.rollbackSteps), runbook.createdAt, runbook.updatedAt,
     );
   };
@@ -123,7 +135,12 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     return (result.changes || 0) > 0;
   };
 
-  const createRun = (runbook: OpsRunbook, connectionName: string, approvalId?: string): OpsRunbookRun => {
+  const createRun = (
+    runbook: OpsRunbook,
+    connectionName: string,
+    approvalId?: string,
+    inputParams: Record<string, string> = {},
+  ): OpsRunbookRun => {
     const run: OpsRunbookRun = {
       id: `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
       runbookId: runbook.id,
@@ -133,6 +150,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
       connectionName,
       status: 'running',
       approvalId,
+      inputParams,
       snapshot: JSON.parse(JSON.stringify(runbook)),
       stepResults: [],
       rollbackResults: [],
@@ -141,11 +159,11 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     database.prepare(`
       INSERT INTO ops_runbook_run
         (id, runbook_id, runbook_name, runbook_version, connection_id, connection_name, status,
-         approval_id, snapshot_json, step_results_json, rollback_results_json, started_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?)
+         approval_id, input_params_json, snapshot_json, step_results_json, rollback_results_json, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?)
     `).run(
       run.id, run.runbookId, run.runbookName, run.runbookVersion, run.connectionId,
-      run.connectionName, run.status, run.approvalId || null,
+      run.connectionName, run.status, run.approvalId || null, JSON.stringify(run.inputParams),
       JSON.stringify(run.snapshot), run.startedAt,
     );
     return run;

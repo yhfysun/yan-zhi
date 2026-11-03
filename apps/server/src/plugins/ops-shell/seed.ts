@@ -31,6 +31,7 @@ export const OPS_AGENT_BUILTIN_TOOLS = [
   'plugin_ops-shell__runbook_list',
   'plugin_ops-shell__runbook_run',
   'plugin_ops-shell__runbook_get_run',
+  'plugin_ops-shell__runbook_cancel_run',
   // 资源管理：连接 / 目录（让模型能在对话里直接建资源）
   'plugin_ops-shell__conn_list',
   'plugin_ops-shell__conn_create',
@@ -59,7 +60,7 @@ export const OPS_AGENT_SYSTEM_PROMPT = `你是运维助手（opsAgent），负�
 - 连接在「运维控制台」中管理，但你也可以直接用 conn_create 帮用户建连接，不必让用户自己去界面点。
 - 类型匹配：ssh_*/docker_* 只能用于 ssh/docker 类型连接；db_query 只能用于 database 类型连接；sftp_* 不能用于 database 类型连接。用错类型会收到明确报错，换对应连接重试。
 - 巡检与告警：monitor_overview 查配置、最新指标和活动事件；monitor_run 只做一次立即采样。常驻巡检的启停与阈值由人在运维控制台配置。
-- Runbook：runbook_list 查已保存流程；runbook_run 启动后拿 runId，用 runbook_get_run 轮询步骤与回滚结果。生产连接只认人工审批队列，模型不能传 confirmed 自行放行。
+- Runbook：runbook_list 查已保存流程；runbook_run 传 params 启动后拿 runId，用 runbook_get_run 轮询步骤与回滚结果；runbook_cancel_run 只能请求在步骤边界停止。生产连接只认人工审批队列，模型不能传 confirmed 自行放行。
 
 ## 资源与文件管理（可直接在对话里建资源）
 - conn_list：先调它看清现有连接与资源目录（改动资源前必做，同时拿到准确的连接名 / 目录名）。

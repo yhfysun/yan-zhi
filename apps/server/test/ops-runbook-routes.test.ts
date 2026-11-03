@@ -164,4 +164,68 @@ describe('Runbook routes', () => {
     expect(run).toMatchObject({ status: 'success', runbookVersion: 1 });
     expect(run.stepResults[0]).toMatchObject({ name: '检查', status: 'success' });
   });
+
+  it('运行参数进入审批计划、运行快照与历史输入', async () => {
+    const created = await call('POST', '/runbooks', {
+      name: '检查指定服务',
+      connectionId: 'c1',
+      parameters: [{ key: 'service', label: '服务名', required: true, defaultValue: 'nginx' }],
+      steps: [{ type: 'exec', name: '检查', command: 'systemctl status ${service}' }],
+    });
+    const rb = (created.body as any).data;
+
+    const prepared = await call('POST', `/runbooks/${rb.id}/approval`, {
+      params: { service: 'api' },
+    });
+    const approval = (prepared.body as any).data.approval;
+    expect(approval.command).toContain('systemctl status api');
+    await call('POST', `/approvals/${approval.id}`, { approve: true });
+
+    const started = await call('POST', `/runbooks/${rb.id}/run`, {
+      params: { service: 'api' },
+    });
+    expect(started.statusCode).toBe(202);
+    expect((started.body as any).data).toMatchObject({
+      inputParams: { service: 'api' },
+      snapshot: { steps: [{ command: 'systemctl status api' }] },
+    });
+  });
+
+  it('运行参数不是对象时拒绝审批与启动', async () => {
+    const rb = await createRunbook();
+    const prepared = await call('POST', `/runbooks/${rb.id}/approval`, { params: 'service=api' });
+    expect(prepared.statusCode).toBe(400);
+    expect((prepared.body as any).error).toContain('参数必须是对象');
+
+    const started = await call('POST', `/runbooks/${rb.id}/run`, { params: ['api'] });
+    expect(started.statusCode).toBe(400);
+    expect((started.body as any).error).toContain('参数必须是对象');
+  });
+
+  it('取消请求在步骤边界生效并落为 cancelled', async () => {
+    const created = await call('POST', '/runbooks', {
+      name: '慢任务',
+      connectionId: 'c1',
+      parameters: [],
+      steps: [{ type: 'wait', name: '等待', seconds: 1 }],
+    });
+    const rb = (created.body as any).data;
+    const prepared = await call('POST', `/runbooks/${rb.id}/approval`);
+    const approval = (prepared.body as any).data.approval;
+    await call('POST', `/approvals/${approval.id}`, { approve: true });
+    const started = await call('POST', `/runbooks/${rb.id}/run`);
+    const runId = (started.body as any).data.id;
+
+    const cancelled = await call('POST', `/runbooks/runs/${runId}/cancel`);
+    expect(cancelled.statusCode).toBe(202);
+
+    let run: any = null;
+    for (let i = 0; i < 30; i++) {
+      const poll = await call('GET', `/runbooks/runs/${runId}`);
+      run = (poll.body as any).data;
+      if (run.status !== 'running') break;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    expect(run).toMatchObject({ status: 'cancelled', stepResults: [{ name: '等待', status: 'success' }] });
+  });
 });
