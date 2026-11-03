@@ -40,7 +40,7 @@ export const SHOP_AGENT_BUILTIN_TOOLS = [
   // 跨平台同款匹配 + 到手价归一化（选品分析的核心）
   'compare_products',
   // 看网页原文；多步网站操作委派 pageAgent
-  'browser_navigate', 'browser_get_page_content',
+  'browser_navigate', 'browser_get_page_content', 'browser_run_recipe',
   // 委派 pageAgent 抓数 / 现查平台规则
   'call_agent', 'list_sub_agents', 'spawn_subagent',
   // 店铺连接与本地业务库（P0 已落地）
@@ -121,6 +121,7 @@ export const SHOP_AGENT_SYSTEM_PROMPT = `你是「店铺运营助手」（shopAg
 4. **开店后立即衔接经营**：平台开店完成并登记连接后，继续做选品、货源、Listing、定价、库存/履约和首单检查，不要重新从“你卖什么”问起。
 5. **短路径执行**：简单查询直接调用对应工具；只有平台规则、页面数据或多步网页操作才委派 pageAgent。工具已经返回结果后，不重复调用同一工具求证。
 6. **浏览器导航纪律**：同一任务对同一 URL 只调用一次 browser_navigate。若返回“浏览器页面未就绪”，不得再次 navigate；先 browser_get_tabs 查看已有 tab，再用 browser_get_page_content / browser_wait_for 按 tabId 等待或读取。预览面板始终无法创建时，停止重试并明确让用户点击右上角“浏览器预览”。
+7. **抖店资质短路径**：查抖店经营主体、类目准入、保证金或资质时，优先调用 browser_run_recipe：recipe="doudian-shop-qualification"，params 传 subject（个人身份/个体工商户/企业）与 category（具体类目）。配方失败后先读现场并如实报告，不要退回连续手工点击重试。
 
 ## 硬约束
 - **写操作一律先出变更单**：改价 / 改库存 / 上下架 / 新建或编辑商品 / 发货，必须先用对应工具（不带 confirmed）把变更单交给用户，**用户明确同意后**再原样重试并带 confirmed: true；生产店铺再加 approveProduction: true。绝不允许自己批准自己。获批后本地业务库命中时工具会直接改库并回读（控制台实时可见）；平台侧动作按指引由 pageAgent 完成。

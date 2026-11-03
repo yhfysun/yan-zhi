@@ -52,6 +52,8 @@ describe('店铺助手工具面一致性', () => {
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('同一 URL 只调用一次 browser_navigate');
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('不得再次 navigate');
     expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('browser_get_tabs');
+    expect(SHOP_AGENT_SYSTEM_PROMPT).toContain('doudian-shop-qualification');
+    expect(SHOP_AGENT_BUILTIN_TOOLS).toContain('browser_run_recipe');
   });
 
   it('用户当前问题优先于历史计划，记忆不得冒充用户已确认事实', () => {

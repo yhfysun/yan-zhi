@@ -867,11 +867,71 @@ export const DOUYIN_INSERT_TOPICS_RECIPE: PublishRecipe = {
   ],
 };
 
+/**
+ * 抖店入驻类目资质配方（2026-11-03）。
+ *
+ * 背景：通用浏览器探索会把「个人身份/个体户/企业」与类目搜索拆成很多轮，
+ * 模型还会把材料页默认主体当成当前主体。这里把主体切换、类目搜索、读取资质结果
+ * 固化成一条确定性流程；只剩无法自动判定的账号权限/真实提交交给用户。
+ */
+export const DOUDIAN_QUALIFICATION_RECIPE: PublishRecipe = {
+  id: 'doudian-shop-qualification',
+  hosts: ['fxg.jinritemai.com'],
+  description: '抖店入驻类目资质查询：打开官方材料页→切换经营主体→搜索类目→读取保证金/技术服务费/资质要求',
+  params: {
+    subject: {
+      type: 'string',
+      required: true,
+      description: '经营主体：个人身份 / 个体工商户 / 企业。必须使用用户当前确认的主体，不得沿用材料页默认值',
+    },
+    category: {
+      type: 'string',
+      required: true,
+      description: '经营类目或商品名，如“宠物粮”“猫主粮”“猫零食”',
+    },
+  },
+  steps: [
+    { kind: 'navigate', url: 'https://fxg.jinritemai.com/enter/quali-fee' },
+    {
+      kind: 'clickText',
+      texts: ['{{subject}}'],
+      failHint: '主体切换失败：先读取页面确认入口文本。个人身份入口通常显示“个人身份”或“我没有营业执照，用身份证开店”；不得默认按企业/个体户继续。',
+    },
+    {
+      kind: 'clickText',
+      texts: ['选择类目', '重新选择'],
+      failHint: '未找到类目入口：先读取页面可见文本与可交互元素，不要反复刷新或重复导航。',
+    },
+    {
+      kind: 'fill',
+      fields: [{
+        selector: 'input[placeholder*="类目名称"]',
+        selectors: ['input[placeholder*="商品名称"]', 'input[placeholder*="商品注册号"]'],
+        value: '{{category}}',
+        label: '经营类目搜索',
+      }],
+    },
+    {
+      kind: 'clickText',
+      texts: ['{{category}}'],
+      failHint: '类目搜索结果中未看到目标文本：读取页面结果后如实报告“未找到/需更具体类目”，不要猜资质结论。',
+    },
+    { kind: 'clickText', texts: ['确定', '确认'], optional: true },
+    {
+      kind: 'waitText',
+      texts: ['{{category}}', '保证金', '技术服务费', '资质'],
+      optional: true,
+      timeoutMs: 15000,
+    },
+  ],
+};
+
 export const RECIPES: Record<string, PublishRecipe> = {
   [DOUYIN_PUBLISH_RECIPE.id]: DOUYIN_PUBLISH_RECIPE,
   [DOUYIN_POST_COMMENT_RECIPE.id]: DOUYIN_POST_COMMENT_RECIPE,
   [DOUYIN_SET_COVER_RECIPE.id]: DOUYIN_SET_COVER_RECIPE,
   [DOUYIN_INSERT_TOPICS_RECIPE.id]: DOUYIN_INSERT_TOPICS_RECIPE,
+  [DOUDIAN_QUALIFICATION_RECIPE.id]: DOUDIAN_QUALIFICATION_RECIPE,
   [FORM_FILL_RECIPE.id]: FORM_FILL_RECIPE,
 };
 

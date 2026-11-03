@@ -12,6 +12,7 @@ import {
   DOUYIN_POST_COMMENT_RECIPE,
   DOUYIN_SET_COVER_RECIPE,
   DOUYIN_INSERT_TOPICS_RECIPE,
+  DOUDIAN_QUALIFICATION_RECIPE,
   getRecipe,
   listRecipes,
   parseTopicList,
@@ -118,6 +119,22 @@ describe('① 配方注册表', () => {
     const sels = fill.kind === 'fill' ? fill.fields.map((f) => f.selector) : [];
     expect(sels).toContain('input[placeholder*="填写作品标题"]');
     expect(sels).toContain('.zone-container.editor-kit-container');
+  });
+
+  it('抖店类目资质配方固化主体切换与类目搜索', () => {
+    expect(listRecipes()).toContain('doudian-shop-qualification');
+    const r = getRecipe('doudian-shop-qualification')!;
+    expect(r).toBe(DOUDIAN_QUALIFICATION_RECIPE);
+    expect(r.hosts).toContain('fxg.jinritemai.com');
+    expect(r.params.subject.type).toBe('string');
+    expect(r.params.category.required).toBe(true);
+    expect(r.steps.some((s) =>
+      s.kind === 'clickText'
+      && s.texts.includes('{{subject}}')
+      && String(s.failHint || '').includes('个人身份'),
+    )).toBe(true);
+    expect(r.steps.some((s) => s.kind === 'fill')).toBe(true);
+    expect(r.description).toContain('资质');
   });
 });
 
