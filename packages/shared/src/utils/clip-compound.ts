@@ -293,6 +293,12 @@ export function packMainTrackRange(
   }
   const start = rangeStart!;
   const end = rangeEnd!;
+  const hitMain = main.items.filter((it) => intersects(it, start, end));
+  if (!hitMain.length) throw new Error('打包复合片段：所选范围内没有主轨内容');
+  const contentEnd = main.items.reduce((max, it) => Math.max(max, itemEnd(it) ?? 0), 0);
+  if (end > contentEnd + EPS) {
+    throw new Error(`打包复合片段：区间终点 ${end.toFixed(2)}s 超出主轨范围 ${contentEnd.toFixed(2)}s`);
+  }
 
   const innerTracks = (project.tracks || []).map((track) => ({
     ...clone(track),

@@ -16,6 +16,7 @@ import {
   MAX_COMPOUND_DEPTH,
   buildProjectV3ForWrite,
   compoundProjectAtPath,
+  compoundItemAtTime,
   loadedFromV2,
   materializeTrackTimes,
   migrateV2ToV3,
@@ -294,6 +295,21 @@ describe('compoundProjectAtPath · 内部编辑预览路径', () => {
     };
     expect(compoundProjectAtPath(root, ['outer', 'inner'])).toBe(leaf);
     expect(compoundProjectAtPath(root, ['outer', 'missing'])).toBeNull();
+  });
+
+  it('★ 播放头落在 compound 窗口内时能定位外层 compound', () => {
+    const inner = migrateV2ToV3(v2Fixture());
+    const root: ClipProjectV3 = {
+      ...migrateV2ToV3(v2Fixture()),
+      tracks: [{
+        id: 'v1', kind: 'video',
+        items: [{ type: 'compound', id: 'cmp-window', start: 1, duration: 2, project: inner }],
+      }],
+    };
+    expect(compoundItemAtTime(root, 0.99)).toBeNull();
+    expect(compoundItemAtTime(root, 1)).toMatchObject({ id: 'cmp-window', start: 1, duration: 2 });
+    expect(compoundItemAtTime(root, 2.5)).toMatchObject({ id: 'cmp-window' });
+    expect(compoundItemAtTime(root, 3)).toBeNull();
   });
 });
 

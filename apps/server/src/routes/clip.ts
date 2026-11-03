@@ -20,7 +20,7 @@ import { readClipProject, writeClipProject, clipProjectPath as clipProjectPathOf
 import { summarizeProject, type ClipProject } from '../services/clip-project.js';
 import { listAllRecipes } from '../services/clip-recipe-store.js';
 import { parseProbeJson, probeArgs, segmentDuration } from '../services/clip-render.js';
-import { compoundProjectAtPath, v2ViewsOfV3 } from '../services/clip-project-v3.js';
+import { compoundItemAtTime, compoundProjectAtPath, v2ViewsOfV3 } from '../services/clip-project-v3.js';
 import { renderPreviewFrame, locateTimeline } from '../services/clip-preview.js';
 import { ensureSegmentProxy } from '../services/clip-proxy.js';
 import { isProjectSourcePath } from '../services/clip-layer-media.js';
@@ -968,8 +968,19 @@ router.get('/frame', async (req: Request, res: Response) => {
   if (compoundPath.length > 2) return res.status(400).json({ error: '复合片段路径超过深度上限' });
   const selectedV3 = compoundProjectAtPath(rootProject, compoundPath);
   if (!selectedV3) return res.status(404).json({ error: '复合片段路径不存在' });
-  const project = compoundPath.length ? v2ViewsOfV3(selectedV3) : rootProject;
-  if (!project.clips.length) return res.status(409).json({ error: '工程还没有片段' });
+  let previewV3 = selectedV3;
+  let previewTime = t;
+  let project = compoundPath.length ? v2ViewsOfV3(selectedV3) : rootProject;
+  for (let depth = 0; depth < 3; depth++) {
+    const compound = compoundItemAtTime(previewV3, previewTime);
+    if (!compound) break;
+    previewTime = Math.max(0, previewTime - compound.start);
+    previewV3 = compound.project;
+    project = v2ViewsOfV3(previewV3);
+  }
+  if (!project.clips.length) {
+    return res.status(409).json({ error: '当前时间点没有可预览片段（空档或复合片段内部无普通片段）' });
+  }
 
   const ff = await resolveFfmpeg();
   if (!ff.ok) return res.status(503).json({ error: 'ffmpeg 不可用（媒体功能需要它）' });
@@ -977,7 +988,7 @@ router.get('/frame', async (req: Request, res: Response) => {
   // 每段真实时长（并发探测，供时间轴定位）
   const durations = await probeProjectDurations(ff.ffprobe, project);
 
-  const out = await renderPreviewFrame({ project, timeSec: t, durations, ffmpeg: ff.ffmpeg });
+  const out = await renderPreviewFrame({ project, timeSec: previewTime, durations, ffmpeg: ff.ffmpeg });
   if (!out.ok || !out.png) return res.status(500).json({ error: out.error || '取帧失败' });
   res.setHeader('Content-Type', 'image/png');
   // ★★ 必须 no-store 而不是 max-age（2026-10-07 实测踩到）：

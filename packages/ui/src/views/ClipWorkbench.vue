@@ -400,6 +400,9 @@
             <span class="cp-hint">拖动素材入轨 · 拖动播放头定位 · 选中片段/字幕改参数</span>
             <span v-if="timelineToolsExpanded" class="cp-toolbar-advanced">
               <span class="cp-toolbar-label">高级剪辑工具</span>
+              <button class="cp-mini cp-toolbar-text" title="按起止时间打包主轨内容，可跨越片段剪裁边界" @click="openPackRangeDialog">
+                <el-icon :size="13"><Timer /></el-icon><span>区间打包</span>
+              </button>
             <!-- 语音转字幕（本地 whisper.cpp）：素材只有音频/视频时自动打轴。
                  ★ 加这条的起因（2026-10-08）：ASR 后端已通，但此前只能从**对话**触发 ——
                    工作台里"想自动打轴"却找不到入口 = 能力有了、用户用不上。 -->
@@ -1818,6 +1821,41 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="packRangeDialog" title="按时间区间打包" width="440px" :append-to-body="true">
+      <div class="cp-pack-range" @keyup.enter="applyPackRange">
+        <div class="cp-pack-range-summary">
+          <span>主轨范围</span>
+          <b>0.00s ~ {{ mainTrackRangeEnd.toFixed(2) }}s</b>
+        </div>
+        <div class="cp-pack-range-grid">
+          <label>
+            <span>起点（秒）</span>
+            <input v-model.number="packRangeStart" class="cp-num wide" type="number" min="0" :max="mainTrackRangeEnd" step="0.1" />
+          </label>
+          <label>
+            <span>终点（秒）</span>
+            <input v-model.number="packRangeEnd" class="cp-num wide" type="number" min="0" :max="mainTrackRangeEnd" step="0.1" />
+          </label>
+        </div>
+        <div class="cp-pack-range-metrics">
+          <span>区间时长 <b>{{ packRangeDuration.toFixed(2) }}s</b></span>
+          <span>覆盖主轨片段 <b>{{ packRangeHitCount }}</b></span>
+        </div>
+        <div v-if="packRangeError" class="cp-pack-range-error" role="alert">{{ packRangeError }}</div>
+        <div class="cp-ins-hint">
+          区间边界落在片段中间时，会在内部自动调整裁剪点；字幕、图层和其它音视频轨也会按同一区间收进复合片段。
+        </div>
+        <div class="cp-pack-range-presets">
+          <button class="cp-mini" :disabled="!selectedPackRange()" @click="setPackRangeFromSelection">使用选中片段</button>
+          <button class="cp-mini" @click="setPackRangeFromPlayhead">播放头起 5 秒</button>
+        </div>
+      </div>
+      <template #footer>
+        <button class="cp-btn" @click="packRangeDialog = false">取消</button>
+        <button class="cp-btn primary" :disabled="!!packRangeError" @click="applyPackRange">打包为复合片段</button>
+      </template>
+    </el-dialog>
+
     <!-- 内置音效库：合成式免版权音效，一键生成并加入会话素材库 -->
     <el-dialog v-model="sfxLibOpen" title="内置音效库" width="540px" :append-to-body="true">
       <div class="cp-sfxl">
@@ -2204,7 +2242,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, Crop, DArrowLeft, DArrowRight, Delete, Files,
-  Close, EditPen, FolderOpened, Headset, List, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, Star, Tools, VideoCamera, VideoPlay, View, WarningFilled,
+  Close, EditPen, FolderOpened, Headset, List, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, Star, Timer, Tools, VideoCamera, VideoPlay, View, WarningFilled,
 } from '@element-plus/icons-vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
@@ -2432,6 +2470,9 @@ const selectedClipIds = ref<string[]>([]);
 const selectedCompoundId = ref('');
 const timelineToolsExpanded = ref(false);
 const rightPanelCollapsed = ref(true);
+const packRangeDialog = ref(false);
+const packRangeStart = ref(0);
+const packRangeEnd = ref(0);
 const selectedTextId = ref('');
 const outSize = ref('1080x1920');
 const outFps = ref(30);
@@ -2962,6 +3003,29 @@ const mainGaps = computed<Array<{ start: number; end: number }>>(() => {
   return out;
 });
 
+const mainTrackRangeEnd = computed(() => {
+  const row = mainVideoTrack.value;
+  if (!row) return 0;
+  return rowVideoItems(row).reduce((max, it) => Math.max(max, it.start + it.duration), 0);
+});
+const packRangeDuration = computed(() => Math.max(0, Number(packRangeEnd.value) - Number(packRangeStart.value)));
+const packRangeHitCount = computed(() => {
+  const row = mainVideoTrack.value;
+  if (!row) return 0;
+  const start = Number(packRangeStart.value);
+  const end = Number(packRangeEnd.value);
+  return rowVideoItems(row).filter((it) => start < it.start + it.duration - 1e-6 && end > it.start + 1e-6).length;
+});
+const packRangeError = computed(() => {
+  const start = Number(packRangeStart.value);
+  const end = Number(packRangeEnd.value);
+  if (!Number.isFinite(start) || start < 0) return '起点必须是非负数字';
+  if (!Number.isFinite(end) || end <= start + 1e-6) return '终点必须大于起点';
+  if (end > mainTrackRangeEnd.value + 1e-6) return `终点不能超过主轨结尾 ${mainTrackRangeEnd.value.toFixed(2)}s`;
+  if (!packRangeHitCount.value) return '所选区间内没有主轨片段';
+  return '';
+});
+
 function isMainVideo(row: UiTrack): boolean {
   return row.kind === 'video' && mainVideoTrack.value?.id === row.id;
 }
@@ -3273,6 +3337,93 @@ async function applyCompoundSettings() {
   note('复合片段参数已保存');
 }
 
+async function finishPackedCompound(
+  result: ReturnType<typeof packMainTrackRange>,
+  trackId: string,
+  label: string,
+  message: string,
+) {
+  const p = project.value;
+  if (!p) return;
+  Object.assign(p, result.project);
+  selectedClipId.value = '';
+  selectedClipIds.value = [];
+  selectedCompoundId.value = result.compound.id;
+  selectedTrackId.value = trackId;
+  selectedTrackClipId.value = result.compound.id;
+  playhead.value = round3(result.compound.start + Math.min(0.05, result.compound.duration / 2));
+  pendingLabel.value = label;
+  dirty.value = true;
+  await save();
+  scheduleFrameFetch(80);
+  note(message);
+}
+
+function selectedPackRange(): { start: number; end: number } | null {
+  const main = mainVideoTrack.value;
+  if (!main) return null;
+  const ids = new Set(selectedClipIds.value);
+  const selected = rowClips(main).filter((item) => ids.has(item.id));
+  if (!selected.length) return null;
+  return {
+    start: Math.min(...selected.map((item) => item.start)),
+    end: Math.max(...selected.map((item) => item.start + item.duration)),
+  };
+}
+
+function setPackRangeFromSelection() {
+  const range = selectedPackRange();
+  if (!range) return;
+  packRangeStart.value = round3(range.start);
+  packRangeEnd.value = round3(range.end);
+}
+
+function setPackRangeFromPlayhead() {
+  const max = mainTrackRangeEnd.value;
+  const start = Math.max(0, Math.min(playhead.value, Math.max(0, max - 0.1)));
+  const end = Math.min(max, start + 5);
+  packRangeStart.value = round3(start);
+  packRangeEnd.value = round3(Math.max(start + 0.1, end));
+}
+
+function openPackRangeDialog() {
+  const main = mainVideoTrack.value;
+  if (!main || !mainTrackRangeEnd.value) {
+    note('主轨还没有可打包的内容');
+    return;
+  }
+  const selected = selectedPackRange();
+  if (selected) {
+    packRangeStart.value = round3(selected.start);
+    packRangeEnd.value = round3(selected.end);
+  } else {
+    setPackRangeFromPlayhead();
+  }
+  packRangeDialog.value = true;
+}
+
+async function applyPackRange() {
+  const p = project.value;
+  const main = mainVideoTrack.value;
+  if (!p || !main) return;
+  if (packRangeError.value) {
+    note(packRangeError.value);
+    return;
+  }
+  try {
+    const result = packMainTrackRange(p as never, {
+      trackId: main.id,
+      start: round3(Number(packRangeStart.value)),
+      end: round3(Number(packRangeEnd.value)),
+      compoundId: nextCompoundId(),
+    });
+    packRangeDialog.value = false;
+    await finishPackedCompound(result, main.id, '按区间打包复合片段', '已按时间区间打包为复合片段');
+  } catch (e) {
+    note(e instanceof Error ? e.message : String(e));
+  }
+}
+
 async function packSelectedAsCompound() {
   const p = project.value;
   const main = mainVideoTrack.value;
@@ -3283,16 +3434,7 @@ async function packSelectedAsCompound() {
       clipIds: [...selectedClipIds.value],
       compoundId: nextCompoundId(),
     });
-    Object.assign(p, result.project);
-    selectedClipId.value = '';
-    selectedClipIds.value = [];
-    selectedCompoundId.value = result.compound.id;
-    selectedTrackId.value = main.id;
-    selectedTrackClipId.value = result.compound.id;
-    pendingLabel.value = '打包为复合片段';
-    dirty.value = true;
-    await save();
-    note('已打包为复合片段：双击进入内部编辑');
+    await finishPackedCompound(result, main.id, '打包为复合片段', '已打包为复合片段：双击进入内部编辑');
   } catch (e) {
     note(e instanceof Error ? e.message : String(e));
   }
@@ -3394,6 +3536,9 @@ function onTrackClipMenu(e: MouseEvent, row: UiTrack, item: ResolvedClipItem) {
   const items: CtxItem[] = [
     ...(isMainVideo(row) && selectedClipIds.value.length
       ? [{ label: '打包为复合片段', icon: 'Files', action: () => packSelectedAsCompound() } as CtxItem]
+      : []),
+    ...(isMainVideo(row)
+      ? [{ label: '按时间区间打包…', icon: 'Timer', action: () => openPackRangeDialog() } as CtxItem]
       : []),
     ...(row.kind === 'video' && !isMainVideo(row)
       ? [{ label: '移到主轨末尾', icon: 'VideoCamera', action: () => moveItemToMain(row, item.id) } as CtxItem]
@@ -4256,6 +4401,7 @@ function onMediaMenu(e: MouseEvent, f: ConvFile) {
   openCtxMenu(e, f.name, [
     { label: '加入时间轴末尾', icon: 'Plus', action: () => appendClip(f.path) },
     { label: '在播放头新建字幕', icon: 'ChatLineSquare', disabled: !clipCount.value, action: addTextAtPlayhead },
+    { label: '按时间区间打包…', icon: 'Timer', disabled: !mainTrackRangeEnd.value, action: openPackRangeDialog },
     ...(isVideo(f) || isImage(f)
       ? [{ label: '设为画中画', icon: 'Picture', disabled: !clipCount.value, action: () => addOverlay(f) }]
       : []),
@@ -7658,6 +7804,7 @@ onMounted(async () => {
 .cp-tool-toggle { gap: 4px; padding: 0 8px; }
 .cp-toolbar-advanced { display: flex; align-items: center; flex-wrap: wrap; flex-basis: 100%; gap: 6px; padding: 7px 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-light); }
 .cp-toolbar-label { margin-right: 4px; color: var(--el-text-color-secondary); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.cp-toolbar-text { gap: 5px; padding: 0 8px; }
 .cp-hint { font-size: 11px; color: var(--el-text-color-placeholder); }
 .cp-tl { display: flex; max-height: clamp(260px, 40vh, 430px); border: 1px solid var(--el-border-color-lighter); border-radius: 6px; overflow-x: hidden; overflow-y: auto; background: var(--el-fill-color-blank); overscroll-behavior: contain; }
 .cp-tl-labels { flex: 0 0 136px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
@@ -7901,6 +8048,15 @@ onMounted(async () => {
 .cp-preset-label { color: var(--el-text-color-regular); text-align: center; }
 .cp-preset-size { color: var(--el-text-color-placeholder); font-variant-numeric: tabular-nums; }
 .cp-np-hint { font-size: 11px; line-height: 1.7; color: var(--el-text-color-placeholder); }
+.cp-pack-range { display: flex; flex-direction: column; gap: 12px; }
+.cp-pack-range-summary { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 6px; background: var(--el-fill-color-light); color: var(--el-text-color-secondary); font-size: 12px; }
+.cp-pack-range-summary b { color: var(--el-text-color-primary); font-variant-numeric: tabular-nums; }
+.cp-pack-range-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.cp-pack-range-grid label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--el-text-color-secondary); }
+.cp-pack-range-metrics { display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--el-text-color-secondary); }
+.cp-pack-range-metrics b { color: var(--el-text-color-primary); font-variant-numeric: tabular-nums; }
+.cp-pack-range-error { padding: 7px 9px; border-radius: 5px; background: var(--el-color-danger-light-9); color: var(--el-color-danger); font-size: 12px; line-height: 1.5; }
+.cp-pack-range-presets { display: flex; flex-wrap: wrap; gap: 6px; }
 .cp-btn.danger { background: var(--el-color-danger); border-color: var(--el-color-danger); color: #fff; }
 .cp-btn.danger:hover:not(:disabled) { filter: brightness(1.08); color: #fff; }
 

@@ -538,6 +538,18 @@ export function compoundProjectAtPath(project: ClipProjectV3, ids: string[]): Cl
   return current;
 }
 
+/** 播放头落在哪个 compound 窗口内（用于外层时间线递归预览）。 */
+export function compoundItemAtTime(project: ClipProjectV3, timeSec: number): CompoundItem | null {
+  const track = project.tracks.find((item) =>
+    item.kind === 'video' && !item.hidden && !item.muted && item.opacity !== 0);
+  if (!track) return null;
+  for (const item of track.items) {
+    if (item.type !== 'compound') continue;
+    if (timeSec >= item.start - EPS && timeSec < item.start + item.duration - EPS) return item;
+  }
+  return null;
+}
+
 function validateTracks(tracks: Track[], prefix: string): string | null {
   const ids = new Set<string>();
   for (const t of tracks) {

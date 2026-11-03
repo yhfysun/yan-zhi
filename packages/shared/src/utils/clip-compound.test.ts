@@ -108,6 +108,22 @@ describe('compound clip mapping', () => {
     expect(main.items[1]).toMatchObject({ id: 'c2', start: 1.5, duration: 1.5 });
   });
 
+  it('rejects an empty range that contains no main-track content', () => {
+    expect(() => packMainTrackRange(project(), {
+      start: 10,
+      end: 11,
+      compoundId: 'cmp-empty',
+    })).toThrow(/范围内没有主轨内容/);
+  });
+
+  it('rejects a range that extends beyond the main track end', () => {
+    expect(() => packMainTrackRange(project(), {
+      start: 4,
+      end: 7,
+      compoundId: 'cmp-past-end',
+    })).toThrow(/超出主轨范围/);
+  });
+
   it('rejects packing when the resulting root would exceed depth 3', () => {
     const deep = project();
     const level3: CompoundProjectLike = {

@@ -726,6 +726,32 @@ describe('ClipWorkbench · 工作台密度与可操作性', () => {
   });
 });
 
+describe('ClipWorkbench · 显式时间区间打包', () => {
+  it('高级工具栏提供区间打包入口，右键菜单也可打开', () => {
+    expect(CODE).toContain('openPackRangeDialog');
+    expect(CODE).toMatch(/@click="openPackRangeDialog"/);
+    expect(CODE).toContain('按时间区间打包…');
+  });
+
+  it('区间对话框包含起止时间、实时时长与校验错误', () => {
+    expect(CODE).toContain('packRangeDialog');
+    expect(SRC).toContain('按时间区间打包');
+    expect(CODE).toContain('packRangeStart');
+    expect(CODE).toContain('packRangeEnd');
+    expect(CODE).toContain('packRangeDuration');
+    expect(CODE).toContain('packRangeError');
+  });
+
+  it('应用区间时传入 trackId/start/end，而不是重新按片段 id 打包', () => {
+    const body = fnBody('applyPackRange');
+    expect(body).toContain('packMainTrackRange');
+    expect(body).toContain('trackId: main.id');
+    expect(body).toContain('start:');
+    expect(body).toContain('end:');
+    expect(body).not.toContain('clipIds:');
+  });
+});
+
 describe('ClipWorkbench · 画中画变换 / 关键帧（P0-2）', () => {
   it('★ 面板必须有四个变换控件，且绑定到 computed（直接绑 selectedOverlay 会因为 undefined 显示错位）', () => {
     for (const bind of ['overlayX', 'overlayY', 'overlayRotation', 'overlayOpacity']) {
