@@ -66,6 +66,7 @@ import {
   buildMulticamFromFiles, planMulticamCuts, buildMulticamSegments, insertMulticamSegments,
   makeMulticamGroup, computeBeatBoundaries,
 } from '../services/clip-multicam.js';
+import { syncMulticamAngleTracks } from '../services/clip-multicam-angle.js';
 import { planBeatCut } from '../services/clip-beat-cut.js';
 import { downloadMediaBinary } from '../services/media-fetch.js';
 import { systemSpeak, listSystemVoices, pickVoiceForRole, describeVoiceCapacity, inferRoleGender } from './tts-sapi.js';
@@ -1957,17 +1958,22 @@ async function probeClipSegments(
   const durations: Record<string, number> = {};
   const hasAudio: Record<string, boolean> = {};
   const images: string[] = [];
+  const probedFiles = new Map<string, { durationSec: number; hasAudio: boolean }>();
   const IMG = /\.(png|jpe?g|webp|gif|bmp)$/i;
   for (const seg of collectClipSegments(project)) {
     if (IMG.test(seg.file)) {
-      images.push(seg.file);
+      if (!images.includes(seg.file)) images.push(seg.file);
       durations[seg.id] = 0;
       durations[seg.file] = 0;
       hasAudio[seg.id] = false;
       hasAudio[seg.file] = false;
       continue;
     }
-    const info = await probeMedia(ffprobe, seg.file);
+    let info = probedFiles.get(seg.file);
+    if (!info) {
+      info = await probeMedia(ffprobe, seg.file);
+      probedFiles.set(seg.file, info);
+    }
     durations[seg.id] = info.durationSec;
     durations[seg.file] = info.durationSec;
     hasAudio[seg.id] = info.hasAudio;
@@ -2331,7 +2337,8 @@ export async function clipProjectTool(
       multicamGroups: [...(cur.multicamGroups || []), group],
       updatedAt: Date.now(),
     };
-    await saveClipProject(conversationId, nextProject);
+    const withAngleTracks = syncMulticamAngleTracks(nextProject, group.id);
+    await saveClipProject(conversationId, withAngleTracks);
 
     return ok(JSON.stringify({
       ok: true,
@@ -2344,7 +2351,7 @@ export async function clipProjectTool(
       warnings: [...warnings, ...plan.warnings],
       note:
         `多机位已生成 ${built.segments.length} 段（${align.angles.length} 个机位，组时长 ${plan.groupDurationSec}s）：` +
-        `${inserted.note}。${beatNote ? `${beatNote}。` : ''}可在「多机位」弹窗按槽位手动切换机位并原地重建。`,
+        `${inserted.note}。${beatNote ? `${beatNote}。` : ''}已保留 ${align.angles.length} 条角度参考轨，可在「多机位」弹窗按槽位或全组切换机位。`,
     }));
   }
 

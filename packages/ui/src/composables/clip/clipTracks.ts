@@ -53,6 +53,8 @@ export interface UiTrack {
   locked?: boolean;
   blend?: string;
   opacity?: number;
+  multicamGroupId?: string;
+  multicamAngleIndex?: number;
   items: UiTrackItem[];
 }
 

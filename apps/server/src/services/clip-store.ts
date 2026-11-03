@@ -38,6 +38,7 @@ import {
   type ClipProjectV3,
   type ClipProjectV3Loaded,
 } from './clip-project-v3.js';
+import { ensureMulticamAngleTracks } from './clip-multicam-angle.js';
 
 export const CLIP_PROJECT_FILE = 'clip-project.json';
 
@@ -95,12 +96,12 @@ export function readClipProject(conversationId?: string): ClipProjectV3Loaded | 
       if (!Array.isArray(v3.tracks)) return null;
       const check = validateProjectV3(v3);
       if (!check.ok) return null;
-      return v2ViewsOfV3(v3);
+      return ensureMulticamAngleTracks(v2ViewsOfV3(v3));
     }
 
     // v1 / v2：先得到既有 v2 形态，再迁到 v3 内存（视图原样保留 → 出片路径零改动）
     const v2 = normalizeV2Shape(parsed);
-    return v2 ? loadedFromV2(v2) : null;
+    return v2 ? ensureMulticamAngleTracks(loadedFromV2(v2)) : null;
   } catch {
     return null;
   }

@@ -126,6 +126,9 @@ export interface Track {
   blend?: BlendModeId;
   /** 0~1，整轨透明度 */
   opacity?: number;
+  /** S5：多机位角度参考轨所属组与角度下标（只读，不参与合成）。 */
+  multicamGroupId?: string;
+  multicamAngleIndex?: number;
   items: TrackItem[];
 }
 
@@ -141,7 +144,7 @@ export interface ClipProjectV3 {
   /** 音频总线（工程级，不进轨道） */
   audioFx?: string[];
   bgm?: { file: string; volume: number; duck: boolean };
-  /** 多机位组：S1 仍拍平，元数据原样保留 */
+  /** 多机位组：主轨保留当前激活角度投影，同时保留各角度参考轨。 */
   multicamGroups?: MulticamGroup[];
 }
 

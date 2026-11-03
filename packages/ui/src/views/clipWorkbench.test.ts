@@ -752,6 +752,29 @@ describe('ClipWorkbench · 显式时间区间打包', () => {
   });
 });
 
+describe('ClipWorkbench · S5 多机位角度轨', () => {
+  it('角度轨在时间轴上标记为只读参考轨，并可打开所属多机位组', () => {
+    expect(CODE).toContain('isMulticamAngleTrack');
+    expect(CODE).toContain('openMulticamForTrack');
+    expect(SRC).toContain('多机位角度参考轨');
+    expect(CODE).toMatch(/@click\.stop="openMulticamForTrack\(tr\)"/);
+  });
+
+  it('多机位弹窗提供全组机位激活开关', () => {
+    expect(CODE).toContain('activateMulticamAngle');
+    expect(SRC).toContain('全组激活');
+    expect(CODE).toMatch(/v-for="\(_, angle\) in selectedMulticamGroup\.files"/);
+    expect(CODE).toMatch(/@click="activateMulticamAngle\(angle\)"/);
+  });
+
+  it('角度轨不参与手动排序和删除', () => {
+    const head = CODE.slice(CODE.indexOf('v-for="(tr, ti) in videoTrackRows"'), CODE.indexOf('cp-tl-addrow'));
+    expect(head).toContain('v-if="isMulticamAngleTrack(tr)"');
+    expect(head).toContain('v-else');
+    expect(CODE).toContain("if (isMulticamAngleTrack(tr)) return");
+  });
+});
+
 describe('ClipWorkbench · 画中画变换 / 关键帧（P0-2）', () => {
   it('★ 面板必须有四个变换控件，且绑定到 computed（直接绑 selectedOverlay 会因为 undefined 显示错位）', () => {
     for (const bind of ['overlayX', 'overlayY', 'overlayRotation', 'overlayOpacity']) {

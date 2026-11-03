@@ -428,7 +428,7 @@
                  生成一串普通片段拍平进主轨（不做多轨；生成后可在时间轴微调切点） -->
             <button
               class="cp-mini"
-              title="多机位：勾选 ≥2 个同时录制的机位视频，先用声音自动对齐，再按间隔交替切换生成普通片段（生成后可在时间轴手动调整）"
+              title="多机位：勾选 ≥2 个同时录制的机位视频，自动对齐后生成角度参考轨，并随时切换主轨激活机位"
               :disabled="multicamCandidates.length < 2"
               @click="openMulticam"
             >
@@ -514,16 +514,20 @@
                 v-for="(tr, ti) in videoTrackRows"
                 :key="tr.id"
                 class="cp-tl-label cp-track-head"
-                :class="{ dim: tr.hidden, main: ti === 0 }"
-                draggable="true"
-                :title="ti === 0 ? '主轨（合成底片，固定第一位）' : '拖动可调整叠放顺序（后面的轨盖前面的）'"
-                @dragstart="onTrackDragStart(tr.id)"
+                :class="{ dim: tr.hidden, main: ti === 0, angle: isMulticamAngleTrack(tr) }"
+                :draggable="!isMulticamAngleTrack(tr)"
+                :title="isMulticamAngleTrack(tr) ? '多机位角度参考轨（只读，不参与手动排序）' : ti === 0 ? '主轨（合成底片，固定第一位）' : '拖动可调整叠放顺序（后面的轨盖前面的）'"
+                @dragstart="onTrackDragStart(tr)"
                 @dragover.prevent
                 @drop="onTrackDrop(tr.id)"
               >
                 <el-icon :size="12"><VideoCamera /></el-icon>
                 <span class="cp-th-name">{{ tr.name || (ti === 0 ? '主轨' : `视频${ti + 1}`) }}</span>
-                <span class="cp-th-actions">
+                <span v-if="isMulticamAngleTrack(tr)" class="cp-th-actions">
+                  <span class="cp-th-angle-badge">角度</span>
+                  <button class="cp-th-btn" title="打开所属多机位组并切换角度" @click.stop="openMulticamForTrack(tr)">机位</button>
+                </span>
+                <span v-else class="cp-th-actions">
                   <button class="cp-th-btn" :title="tr.hidden ? '显示该轨' : '隐藏该轨'" @click="toggleTrack('hidden', tr.id)">{{ tr.hidden ? '隐' : '显' }}</button>
                   <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" @click="toggleTrack('locked', tr.id)">{{ tr.locked ? '锁' : '解' }}</button>
                   <button class="cp-th-btn" :disabled="ti === 0" title="上移" @click="moveTrack('video', tr.id, -1)">↑</button>
@@ -539,7 +543,7 @@
                 :class="{ dim: tr.muted }"
                 draggable="true"
                 title="拖动可调整音频轨顺序"
-                @dragstart="onTrackDragStart(tr.id)"
+                @dragstart="onTrackDragStart(tr)"
                 @dragover.prevent
                 @drop="onTrackDrop(tr.id)"
               >
@@ -1955,12 +1959,12 @@
       </div>
     </el-dialog>
 
-    <!-- 多机位（P2 MVP）：勾选机位 → 声音自动对齐 → 等间隔交替生成普通片段 -->
+    <!-- 多机位 S5：勾选机位 → 声音自动对齐 → 保留角度参考轨 + 主轨激活角度投影 -->
     <el-dialog v-model="multicamOpen" title="多机位（声音自动对齐）" width="540px" :append-to-body="true">
       <div class="cp-mc">
         <div class="cp-mc-note">
           勾选 <b>≥2 个同时录制的机位视频</b>：会尝试用声音自动对齐各机位，再按间隔（或音频节拍）在机位间交替切换。
-          <br />生成的是<b>普通片段</b>（已拍平进主轨），生成后可在时间轴上手动调整切点。
+          <br />生成后保留<b>各机位角度参考轨</b>；主轨显示当前激活角度，可随时按槽位或整组切换。
         </div>
         <div class="cp-mc-list">
           <label v-for="f in multicamCandidates" :key="f.path" class="cp-mc-item">
@@ -2043,6 +2047,18 @@
               >删切点</button>
               <em>加切点会插在最长那一段的中点；删切点会合并到左侧机位</em>
             </div>
+            <div class="cp-mc-angle-switch">
+              <span>全组激活</span>
+              <button
+                v-for="(_, angle) in selectedMulticamGroup.files"
+                :key="`mc-angle-${angle}`"
+                class="cp-mc-angle-btn"
+                :class="{ on: multicamSlotAngles.length > 0 && multicamSlotAngles.every((a) => a === angle) }"
+                :disabled="multicamRebuilding"
+                :title="`把全部槽位切换到机位 ${angle + 1}`"
+                @click="activateMulticamAngle(angle)"
+              >机位{{ angle + 1 }}</button>
+            </div>
             <div class="cp-mc-slots">
               <button
                 v-for="(a, i) in multicamSlotAngles"
@@ -2057,7 +2073,7 @@
               <button class="cp-btn primary" :disabled="multicamRebuilding" @click="applyMulticamSlots">
                 {{ multicamRebuilding ? '重建中…' : '应用切换' }}
               </button>
-              <em>原地重建这些片段；组时长与其他图层时间不变</em>
+              <em>同步重建主轨投影与角度参考轨；组时长与其他图层时间不变</em>
             </div>
           </template>
         </div>
@@ -2385,6 +2401,8 @@ interface MulticamGroup {
   filmStart: number; groupDurationSec: number; slotSec: number; slotAngles: number[]; clipIds: string[];
   /** 跟节拍切点（组内相对秒，严格递增）；缺省 = 等间隔模式 */
   slotBoundariesSec?: number[];
+  /** S5：各机位参考轨绑定 */
+  angleTracks?: Array<{ trackId: string; angleIndex: number; file: string }>;
 }
 interface ClipProject {
   version: 2 | 3; name: string; updatedAt: number;
@@ -3029,6 +3047,9 @@ const packRangeError = computed(() => {
 function isMainVideo(row: UiTrack): boolean {
   return row.kind === 'video' && mainVideoTrack.value?.id === row.id;
 }
+function isMulticamAngleTrack(row: UiTrack): boolean {
+  return !!row.multicamGroupId && Number.isInteger(row.multicamAngleIndex);
+}
 function ensureProjectTracks(): UiTrack[] | null {
   const p = project.value;
   if (!p) return null;
@@ -3090,6 +3111,7 @@ async function removeTrack(id: string) {
   const idx = p.tracks.findIndex((t) => t.id === id);
   if (idx < 0) return;
   const tr = p.tracks[idx];
+  if (isMulticamAngleTrack(tr)) return;
   if (tr.kind === 'video' && mainVideoTrack.value?.id === id) {
     note('主轨固定在第一位（合成底片），不能删除');
     return;
@@ -3140,11 +3162,16 @@ async function moveTrack(kind: TrackKind, id: string, delta: number) {
   });
 }
 
-function onTrackDragStart(id: string) { trackDragId.value = id; }
+function onTrackDragStart(tr: UiTrack) {
+  if (isMulticamAngleTrack(tr)) return;
+  trackDragId.value = tr.id;
+}
 async function onTrackDrop(targetId: string) {
   const dragId = trackDragId.value;
   trackDragId.value = '';
   if (!dragId || dragId === targetId) return;
+  const target = project.value?.tracks?.find((track) => track.id === targetId);
+  if (target && isMulticamAngleTrack(target)) return;
   await reorderTracks((video, audio) => {
     const src = video.some((t) => t.id === dragId) ? video : audio;
     const from = src.findIndex((t) => t.id === dragId);
@@ -6710,7 +6737,7 @@ const reframing = ref(false);
 const reframeMode = ref<'static' | 'track'>('static');
 
 // ===== 多机位（P2 MVP）=====
-// ★ 扁平化：声音对齐 + 等间隔交替 → 生成普通片段拍平进主轨，不引入多轨模型。
+// ★ S5：声音对齐 + 激活角度投影进主轨，同时保留各机位只读角度参考轨。
 const multicamOpen = ref(false);
 const multicamRunning = ref(false);
 const multicamError = ref('');
@@ -6766,6 +6793,24 @@ function openMulticam() {
   multicamSlotAngles.value = [];
   multicamRebuildError.value = '';
   multicamOpen.value = true;
+}
+
+function openMulticamForTrack(track: UiTrack) {
+  const groupId = String(track.multicamGroupId || '');
+  if (!groupId) return;
+  openMulticam();
+  selectMulticamGroup(groupId);
+  const angle = Number(track.multicamAngleIndex);
+  if (Number.isInteger(angle) && angle >= 0) {
+    multicamSlotAngles.value = multicamSlotAngles.value.map(() => angle);
+  }
+}
+
+async function activateMulticamAngle(angle: number) {
+  const group = selectedMulticamGroup.value;
+  if (!group || !Number.isInteger(angle) || angle < 0 || angle >= group.files.length) return;
+  multicamSlotAngles.value = multicamSlotAngles.value.map(() => angle);
+  await applyMulticamSlots();
 }
 
 /**
@@ -7778,6 +7823,12 @@ onMounted(async () => {
 .cp-mc-group-main { font-size: 12px; color: var(--el-text-color-regular); }
 .cp-mc-group-sub { font-size: 11px; color: var(--el-text-color-secondary); }
 .cp-mc-slots { display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow: auto; }
+.cp-mc-angle-switch { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-light); }
+.cp-mc-angle-switch > span { margin-right: 4px; font-size: 11px; font-weight: 600; color: var(--el-text-color-secondary); }
+.cp-mc-angle-btn { padding: 4px 9px; border: 1px solid var(--el-border-color); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-regular); font-size: 11px; cursor: pointer; }
+.cp-mc-angle-btn:hover:not(:disabled) { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+.cp-mc-angle-btn.on { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); color: var(--el-color-primary); font-weight: 600; }
+.cp-mc-angle-btn:disabled { opacity: .45; cursor: not-allowed; }
 .cp-mc-cutbar-wrap { display: flex; flex-direction: column; gap: 3px; }
 .cp-mc-cutbar { position: relative; display: flex; align-items: stretch; height: 28px; border: 1px solid var(--el-border-color); border-radius: 4px; background: var(--el-fill-color-lighter); user-select: none; touch-action: none; }
 .cp-mc-cutbar.dragging { border-color: var(--el-color-primary); }
@@ -7829,6 +7880,8 @@ onMounted(async () => {
 .cp-track-head { gap: 4px; flex-wrap: wrap; align-content: center; padding: 4px 8px; overflow: hidden; }
 .cp-track-head.main { background: var(--el-color-primary-light-9); }
 .cp-track-head.dim { opacity: .55; }
+.cp-track-head.angle { opacity: .75; background: color-mix(in srgb, var(--el-color-warning-light-9) 70%, var(--el-fill-color-light)); }
+.cp-th-angle-badge { display: inline-flex; align-items: center; padding: 1px 5px; border-radius: 3px; background: var(--el-color-warning-light-8); color: var(--el-color-warning-dark-2); font-size: 10px; }
 .cp-th-name { flex: 1 1 100%; font-size: 11px; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-th-actions { display: flex; gap: 2px; flex-wrap: nowrap; }
 .cp-th-btn { width: 20px; height: 20px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font-size: 11px; line-height: 1; cursor: pointer; }

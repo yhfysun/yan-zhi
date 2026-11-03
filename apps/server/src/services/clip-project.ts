@@ -376,8 +376,8 @@ export interface ClipText {
 /**
  * 多机位组元数据（P2 手动切换）。
  *
- * ★ 只记「怎么切」的规划参数，不引入多轨：组内片段仍是普通 clips，
- *   重建时按槽位重新生成这一小段并原地替换（组时长不变 → 字幕/画中画时间不动）。
+ * ★ 主轨仍保存当前激活角度的 clips 投影；S5 额外保留各机位角度参考轨。
+ *   重建时按槽位重新生成主轨这一段并同步参考轨（组时长不变 → 字幕/画中画时间不动）。
  * ★ headsSec 是各机位裁掉的头部（d_i - min(d)），srcStart = headsSec[angle] + 组内偏移。
  */
 export interface MulticamGroup {
@@ -403,6 +403,8 @@ export interface MulticamGroup {
   slotBoundariesSec?: number[];
   /** 组内片段 id（与主轨 clips 中连续的一段对应，顺序一致） */
   clipIds: string[];
+  /** S5：每个机位对应的只读参考轨（老组没有该字段，读取时自动补齐） */
+  angleTracks?: Array<{ trackId: string; angleIndex: number; file: string }>;
 }
 
 /**
@@ -427,6 +429,23 @@ export function normalizeMulticamGroups(v: unknown): MulticamGroup[] {
     const groupDurationSec = Number(o.groupDurationSec);
     const slotSec = Number(o.slotSec);
     if (!id || files.length < 2 || !(groupDurationSec > 0) || !(slotSec > 0)) continue;
+    const angleTracks: NonNullable<MulticamGroup['angleTracks']> = [];
+    const usedTrackIds = new Set<string>();
+    const usedAngleIndexes = new Set<number>();
+    if (Array.isArray(o.angleTracks)) {
+      for (const raw of o.angleTracks) {
+        if (!raw || typeof raw !== 'object') continue;
+        const t = raw as Record<string, unknown>;
+        const trackId = String(t.trackId || '').trim();
+        const angleIndex = Number(t.angleIndex);
+        if (!trackId || usedTrackIds.has(trackId)) continue;
+        if (!Number.isInteger(angleIndex) || angleIndex < 0 || angleIndex >= files.length) continue;
+        if (usedAngleIndexes.has(angleIndex)) continue;
+        usedTrackIds.add(trackId);
+        usedAngleIndexes.add(angleIndex);
+        angleTracks.push({ trackId, angleIndex, file: files[angleIndex] });
+      }
+    }
     // 节拍切点：整组必须全部合法（有限、0 < b < 组时长、严格递增）才保留；
     // 任何越界/非递增都退回等间隔模式 —— 脏数据宁可不跟节拍，也不能让规划炸掉。
     let slotBoundariesSec: number[] | undefined;
@@ -447,6 +466,7 @@ export function normalizeMulticamGroups(v: unknown): MulticamGroup[] {
       slotAngles: slotAngles.map((n) => Math.max(0, Math.round(n))),
       ...(slotBoundariesSec ? { slotBoundariesSec } : {}),
       clipIds,
+      ...(angleTracks.length ? { angleTracks } : {}),
     });
   }
   return out;

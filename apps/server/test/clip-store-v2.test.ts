@@ -121,7 +121,10 @@ describe('readClipProject / writeClipProject · v2 序列化边界', () => {
     writeClipProject(CONV, { ...p, multicamGroups: [group] });
     const raw = JSON.parse(fs.readFileSync(clipProjectPath(CONV).file, 'utf8')) as Record<string, unknown>;
     expect(raw.multicamGroups).toEqual([group]);       // 必须落盘（UI 保存一次不能丢组）
-    expect(readClipProject(CONV)!.multicamGroups).toEqual([group]);
+    const reread = readClipProject(CONV)!;
+    expect(reread.multicamGroups).toMatchObject([group]);
+    expect(reread.multicamGroups![0].angleTracks).toHaveLength(2);
+    expect(reread.tracks.filter((track) => track.multicamGroupId === 'g1')).toHaveLength(2);
 
     // 老工程（没有该字段）→ 读回空数组，不炸
     const without = { ...readClipProject(CONV)! } as ClipProject;

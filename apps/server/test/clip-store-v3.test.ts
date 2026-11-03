@@ -97,8 +97,11 @@ describe('readClipProject · 老工程统一读成 v3 内存形态', () => {
 
     const p = readClipProject(id)!;
     expect(p.version).toBe(3);
-    // 轨道：一条主视频轨 + 一条音频轨
-    expect(p.tracks.filter((t) => t.kind === 'video')).toHaveLength(1);
+    // 轨道：主视频轨 + 两条多机位角度参考轨 + 一条音频轨
+    const videoTracks = p.tracks.filter((t) => t.kind === 'video');
+    expect(videoTracks).toHaveLength(3);
+    expect(videoTracks[0].id).toBe('v1');
+    expect(videoTracks.slice(1).every((t) => t.hidden && !!t.multicamGroupId)).toBe(true);
     expect(p.tracks.find((t) => t.kind === 'audio')!.items).toHaveLength(2);
     // 定时图层：字幕/画中画/贴纸/特效（不含音频）
     expect(p.timedLayers.map((l) => l.kind).sort()).toEqual(['effect', 'sticker', 'text', 'text', 'video']);
@@ -111,7 +114,8 @@ describe('readClipProject · 老工程统一读成 v3 内存形态', () => {
     expect(p.effects).toEqual(src.effects);
     expect(p.bgm).toEqual(src.bgm);
     expect(p.audioFx).toEqual(src.audioFx);
-    expect(p.multicamGroups).toEqual(src.multicamGroups);
+    expect(p.multicamGroups).toMatchObject(src.multicamGroups as Array<Record<string, unknown>>);
+    expect(p.multicamGroups![0].angleTracks).toHaveLength(2);
   });
 
   it('★ v1 文件读入：迁移到 v3，且首次写盘留 .v1.bak（既有行为不回退）', () => {
@@ -155,7 +159,8 @@ describe('writeClipProject · 只写 v3 并留 .v2.bak', () => {
     }
     expect(raw.bgm).toEqual(src.bgm);
     expect(raw.audioFx).toEqual(src.audioFx);
-    expect(raw.multicamGroups).toEqual(src.multicamGroups);
+    expect(raw.multicamGroups).toMatchObject(src.multicamGroups as Array<Record<string, unknown>>);
+    expect((raw.multicamGroups as Array<{ angleTracks?: unknown[] }>)[0].angleTracks).toHaveLength(2);
   });
 
   it('★ .v2.bak = 迁移前的原件（可回退）；只留一份，后续写盘不覆盖', () => {

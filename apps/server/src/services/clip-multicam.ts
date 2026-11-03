@@ -1,12 +1,11 @@
-// 多机位编排 MVP（P2）—— 「先对齐，再拍平成一串普通片段」。
+// 多机位编排（S5）—— 「先对齐，保留角度参考轨，再生成主轨激活角度投影」。
 //
-// ★ 架构取舍（照方案文档「四十」）：
-//   本工程主轨是**顺序 clips 数组**，多机位的最终产物本来就是「多次切换后的普通剪辑」。
-//   所以这里**不引入多轨数据模型**，而是：
+// ★ 架构取舍（S5）：
+//   主轨仍保存当前激活角度的顺序 clips 投影，现有剪辑/AI op/渲染语义不变；
+//   同时为每个机位生成隐藏、锁定的角度参考轨，保留真实多机位源：
 //     1) 用声音对齐求各机位的时间偏移（复用 clip-audio-sync 的 syncAudioFiles）；
 //     2) 按固定间隔在机位间轮换，规划成一段段**成片时间区间**；
-//     3) 每段生成一个普通 ClipSegment（带 trimStart/trimEnd）插进主轨。
-//   生成后它就是普通时间轴内容，用户可继续手动微调切点。
+//     3) 每段生成主轨投影，并同步全部角度参考轨；切换只重建该组。
 //
 // ★ 对齐规则（与 clip-audio-sync 的符号约定配套）：
 //   d_i = syncAudioFiles(机位0, 机位i).offsetSec：
@@ -28,6 +27,7 @@ import { parseProbeJson, probeArgs, segmentDuration } from './clip-render.js';
 import { syncAudioFiles, type AudioSyncOptions } from './clip-audio-sync.js';
 import { analyzeBeats } from './clip-beats.js';
 import type { ClipProject, ClipSegment, MulticamGroup } from './clip-project.js';
+import { syncMulticamAngleTracks } from './clip-multicam-angle.js';
 
 /** 默认每段切换间隔（秒）。 */
 export const MULTICAM_DEFAULT_SWITCH_SEC = 3;
@@ -835,9 +835,15 @@ export function rebuildMulticamGroup(
     clipIds: built.segments.map((s) => s.id),
   };
   const nextGroups = groups.map((g, i) => (i === groupIndex ? nextGroup : g));
+  const updatedProject = {
+    ...project,
+    clips: nextClips,
+    multicamGroups: nextGroups,
+    updatedAt: Date.now(),
+  };
   return {
     ok: true,
-    project: { ...project, clips: nextClips, multicamGroups: nextGroups, updatedAt: Date.now() },
+    project: syncMulticamAngleTracks(updatedProject, group.id),
     groupId: group.id,
     segments: built.segments.length,
     note: `已按槽位重切 ${built.segments.length} 段（总时长 ${planned.groupDurationSec}s 不变）`,
