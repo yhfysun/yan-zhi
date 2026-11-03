@@ -393,6 +393,13 @@
               <el-icon :size="13"><EditPen /></el-icon>
             </button>
             <button class="cp-mini danger" title="删除选中字幕" :disabled="!selectedTextId" @click="removeText"><el-icon :size="13"><ChatLineSquare /></el-icon></button>
+            <button class="cp-mini cp-tool-toggle" :class="{ on: timelineToolsExpanded }" title="展开或收起 AI 与素材工具" @click="timelineToolsExpanded = !timelineToolsExpanded">
+              <el-icon :size="13"><Tools /></el-icon><span>工具</span>
+            </button>
+            <span class="cp-spacer"></span>
+            <span class="cp-hint">拖动素材入轨 · 拖动播放头定位 · 选中片段/字幕改参数</span>
+            <span v-if="timelineToolsExpanded" class="cp-toolbar-advanced">
+              <span class="cp-toolbar-label">高级剪辑工具</span>
             <!-- 语音转字幕（本地 whisper.cpp）：素材只有音频/视频时自动打轴。
                  ★ 加这条的起因（2026-10-08）：ASR 后端已通，但此前只能从**对话**触发 ——
                    工作台里"想自动打轴"却找不到入口 = 能力有了、用户用不上。 -->
@@ -493,8 +500,7 @@
             >
               <el-icon :size="13"><MagicStick /></el-icon>
             </button>
-            <span class="cp-spacer"></span>
-            <span class="cp-hint">拖动素材入轨 · 拖动播放头定位 · 选中片段/字幕改参数</span>
+            </span>
           </div>
 
           <div class="cp-tl">
@@ -747,11 +753,28 @@
       </main>
 
       <!-- ===== 右：检视器 / 对话 ===== -->
-      <aside class="cp-right">
-        <div class="cp-tabs">
-          <button class="cp-tab" :class="{ on: rightTab === 'inspector' }" @click="rightTab = 'inspector'">属性</button>
-          <button class="cp-tab" :class="{ on: rightTab === 'chat' }" @click="rightTab = 'chat'">对话</button>
+      <aside class="cp-right" :class="{ compact: rightPanelCollapsed }">
+        <div v-if="rightPanelCollapsed" class="cp-right-rail">
+          <button class="cp-rail-btn" title="展开属性 / 对话面板" @click="rightPanelCollapsed = false">
+            <el-icon :size="15"><DArrowLeft /></el-icon>
+          </button>
+          <button class="cp-rail-btn" title="属性" @click="rightTab = 'inspector'; rightPanelCollapsed = false">
+            <el-icon :size="16"><EditPen /></el-icon>
+            <span>属性</span>
+          </button>
+          <button class="cp-rail-btn" title="对话" @click="rightTab = 'chat'; rightPanelCollapsed = false">
+            <el-icon :size="16"><ChatLineSquare /></el-icon>
+            <span>对话</span>
+          </button>
         </div>
+        <template v-else>
+          <div class="cp-tabs">
+            <button class="cp-tab" :class="{ on: rightTab === 'inspector' }" @click="rightTab = 'inspector'">属性</button>
+            <button class="cp-tab" :class="{ on: rightTab === 'chat' }" @click="rightTab = 'chat'">对话</button>
+            <button class="cp-tabs-collapse" title="收起右侧面板" @click="rightPanelCollapsed = !rightPanelCollapsed">
+              <el-icon :size="14"><DArrowRight /></el-icon>
+            </button>
+          </div>
 
         <div v-show="rightTab === 'inspector'" class="cp-ins">
           <!-- 片段属性 -->
@@ -1636,6 +1659,49 @@
             <button class="cp-btn danger full" @click="removeEffect(selectedEffect.id)">删除特效</button>
           </template>
 
+          <template v-else-if="selectedCompound">
+            <div class="cp-ins-head">
+              <span class="cp-ins-title">复合片段参数</span>
+              <span class="cp-ins-sub">{{ selectedCompound.duration.toFixed(1) }}s · 内部 {{ compoundClipCount(selectedCompound) }} 段</span>
+            </div>
+            <div class="cp-compound-actions">
+              <button class="cp-btn primary" @click="enterSelectedCompound">
+                <el-icon :size="13"><Files /></el-icon>进入内部编辑
+              </button>
+              <button class="cp-btn" @click="unpackSelectedCompound">
+                <el-icon :size="13"><CopyDocument /></el-icon>解包
+              </button>
+            </div>
+            <div class="cp-field">
+              <label>位置 <span class="cp-val">像素</span></label>
+              <div class="cp-field-row">
+                <input v-model.number="compoundX" class="cp-num wide" type="number" step="1" title="水平偏移" />
+                <input v-model.number="compoundY" class="cp-num wide" type="number" step="1" title="垂直偏移" />
+              </div>
+            </div>
+            <div class="cp-field">
+              <label>缩放 <span class="cp-val">{{ compoundScale.toFixed(2) }}×</span></label>
+              <input v-model.number="compoundScale" class="cp-range" type="range" min="0.05" max="4" step="0.05" />
+            </div>
+            <div class="cp-field">
+              <label>旋转 <span class="cp-val">{{ compoundRotation.toFixed(0) }}°</span></label>
+              <input v-model.number="compoundRotation" class="cp-range" type="range" min="-180" max="180" step="1" />
+            </div>
+            <div class="cp-field">
+              <label>不透明度 <span class="cp-val">{{ (compoundOpacity * 100).toFixed(0) }}%</span></label>
+              <input v-model.number="compoundOpacity" class="cp-range" type="range" min="0" max="1" step="0.01" />
+            </div>
+            <div class="cp-compound-audio">
+              <label class="cp-check"><input v-model="compoundMuted" type="checkbox" /> 静音内部混音</label>
+              <div class="cp-field">
+                <label>音量 <span class="cp-val">{{ compoundVolume.toFixed(2) }}</span></label>
+                <input v-model.number="compoundVolume" class="cp-range" type="range" min="0" max="2" step="0.05" :disabled="compoundMuted" />
+              </div>
+            </div>
+            <div class="cp-ins-hint">变换与音量作用于整个复合片段；内部字幕、图层和音轨在进入编辑后分别调整。</div>
+            <button class="cp-btn primary full" @click="applyCompoundSettings">保存复合片段参数</button>
+          </template>
+
           <template v-else-if="selectedExtraClip">
             <div class="cp-ins-head">
               <span class="cp-ins-title">轨道片段</span>
@@ -1658,6 +1724,7 @@
           <ChatMessageList />
           <ChatInputArea />
         </div>
+        </template>
       </aside>
     </div>
 
@@ -2136,8 +2203,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
-  ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, Crop, DArrowLeft, Delete, Files,
-  Close, EditPen, FolderOpened, Headset, List, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, Star, VideoCamera, VideoPlay, View, WarningFilled,
+  ArrowLeft, ArrowRight, Back, Check, ChatLineSquare, CopyDocument, Crop, DArrowLeft, DArrowRight, Delete, Files,
+  Close, EditPen, FolderOpened, Headset, List, Loading, MagicStick, Microphone, Picture, Plus, Refresh, RefreshLeft, RefreshRight, Scissor, Star, Tools, VideoCamera, VideoPlay, View, WarningFilled,
 } from '@element-plus/icons-vue';
 import ChatMessageList from '../components/chat/ChatMessageList.vue';
 import ChatInputArea from '../components/chat/ChatInputArea.vue';
@@ -2363,6 +2430,8 @@ const keyword = ref('');
 const selectedClipId = ref('');
 const selectedClipIds = ref<string[]>([]);
 const selectedCompoundId = ref('');
+const timelineToolsExpanded = ref(false);
+const rightPanelCollapsed = ref(true);
 const selectedTextId = ref('');
 const outSize = ref('1080x1920');
 const outFps = ref(30);
@@ -3118,6 +3187,92 @@ const selectedCompound = computed<ResolvedCompoundItem | null>(() => {
   return null;
 });
 
+function compoundItemForEdit(): UiCompoundItem | null {
+  if (!selectedCompoundId.value) return null;
+  for (const row of videoTrackRows.value) {
+    const item = row.items.find((entry) => isCompoundItem(entry) && entry.id === selectedCompoundId.value);
+    if (item && isCompoundItem(item)) return item;
+  }
+  return null;
+}
+
+function ensureCompoundItem(): UiCompoundItem | null {
+  const item = compoundItemForEdit();
+  if (!item) return null;
+  if (!item.transform) item.transform = {};
+  if (!item.audio) item.audio = {};
+  return item;
+}
+
+const compoundX = computed<number>({
+  get: () => Number(selectedCompound.value?.transform?.x ?? 0),
+  set: (value) => {
+    const item = ensureCompoundItem();
+    if (item) item.transform!.x = Math.max(-4000, Math.min(4000, Number(value) || 0));
+  },
+});
+const compoundY = computed<number>({
+  get: () => Number(selectedCompound.value?.transform?.y ?? 0),
+  set: (value) => {
+    const item = ensureCompoundItem();
+    if (item) item.transform!.y = Math.max(-4000, Math.min(4000, Number(value) || 0));
+  },
+});
+const compoundScale = computed<number>({
+  get: () => Number(selectedCompound.value?.transform?.scale ?? 1),
+  set: (value) => {
+    const item = ensureCompoundItem();
+    if (item) item.transform!.scale = Math.max(0.05, Math.min(4, Number(value) || 1));
+  },
+});
+const compoundRotation = computed<number>({
+  get: () => Number(selectedCompound.value?.transform?.rotation ?? 0),
+  set: (value) => {
+    const item = ensureCompoundItem();
+    if (item) item.transform!.rotation = Math.max(-180, Math.min(180, Number(value) || 0));
+  },
+});
+const compoundOpacity = computed<number>({
+  get: () => Number(selectedCompound.value?.transform?.opacity ?? 1),
+  set: (value) => {
+    const item = ensureCompoundItem();
+    if (item) item.transform!.opacity = Math.max(0, Math.min(1, Number(value)));
+  },
+});
+const compoundVolume = computed<number>({
+  get: () => Number(selectedCompound.value?.audio?.volume ?? 1),
+  set: (value) => {
+    const item = ensureCompoundItem();
+    if (item) item.audio!.volume = Math.max(0, Math.min(2, Number(value)));
+  },
+});
+const compoundMuted = computed<boolean>({
+  get: () => selectedCompound.value?.audio?.muted === true,
+  set: (value) => {
+    const item = ensureCompoundItem();
+    if (!item) return;
+    if (value) item.audio!.muted = true;
+    else delete item.audio!.muted;
+  },
+});
+
+async function enterSelectedCompound() {
+  const item = selectedCompound.value;
+  if (!item) return;
+  const row = videoTrackRows.value.find((track) => track.items.some((entry) => entry.id === item.id && isCompoundItem(entry)));
+  if (!row) return;
+  await enterCompound(row, item);
+}
+
+async function applyCompoundSettings() {
+  if (!selectedCompound.value) return;
+  pendingLabel.value = '修改复合片段参数';
+  dirty.value = true;
+  await save();
+  scheduleFrameFetch(80);
+  note('复合片段参数已保存');
+}
+
 async function packSelectedAsCompound() {
   const p = project.value;
   const main = mainVideoTrack.value;
@@ -3588,6 +3743,13 @@ watch(
 const selectedClipIndex = computed(() => clips.value.findIndex((c) => c.id === selectedClipId.value));
 const selectedText = computed(() => texts.value.find((t) => t.id === selectedTextId.value) || null);
 const selectedTextIndex = computed(() => texts.value.findIndex((t) => t.id === selectedTextId.value));
+const hasInspectorSelection = computed(() => !!(
+  selectedClip.value || selectedText.value || selectedAudio.value || selectedSticker.value
+  || selectedEffect.value || selectedExtraClip.value || selectedCompound.value
+));
+watch(hasInspectorSelection, (has) => {
+  if (has) rightPanelCollapsed.value = false;
+});
 
 const filteredFiles = computed(() => {
   const k = keyword.value.trim().toLowerCase();
@@ -7364,9 +7526,13 @@ onMounted(async () => {
 
 /* ===== 主体三栏 ===== */
 .cp-body { display: flex; flex: 1; min-height: 0; }
-.cp-left { width: 210px; flex: 0 0 210px; display: flex; flex-direction: column; min-height: 0; background: var(--el-bg-color); border-right: 1px solid var(--el-border-color-lighter); }
+.cp-left { width: 228px; flex: 0 0 228px; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; background: var(--el-bg-color); border-right: 1px solid var(--el-border-color-lighter); }
 .cp-center { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
-.cp-right { width: 330px; flex: 0 0 330px; display: flex; flex-direction: column; min-height: 0; background: var(--el-bg-color); border-left: 1px solid var(--el-border-color-lighter); }
+.cp-right { width: 304px; flex: 0 0 304px; display: flex; flex-direction: column; min-height: 0; background: var(--el-bg-color); border-left: 1px solid var(--el-border-color-lighter); transition: width .18s ease, flex-basis .18s ease; }
+.cp-right.compact { width: 48px; flex: 0 0 48px; }
+.cp-right-rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 5px; }
+.cp-rail-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 36px; min-height: 38px; padding: 4px 2px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--el-text-color-secondary); font-size: 10px; cursor: pointer; }
+.cp-rail-btn:hover { color: var(--el-color-primary); border-color: var(--el-color-primary-light-7); background: var(--el-color-primary-light-9); }
 
 .cp-panel-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px 4px; font-size: 12px; font-weight: 600; color: var(--el-text-color-regular); flex: 0 0 auto; }
 .cp-panel-head.sub { border-top: 1px solid var(--el-border-color-lighter); margin-top: 4px; }
@@ -7374,7 +7540,7 @@ onMounted(async () => {
 .cp-input { margin: 0 10px 6px; padding: 4px 8px; font-size: 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; flex: 0 0 auto; }
 
 /* 素材网格 */
-.cp-media { flex: 1; min-height: 60px; overflow: auto; padding: 0 8px 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; align-content: start; }
+.cp-media { flex: 0 0 auto; min-height: 120px; max-height: 260px; overflow: auto; padding: 0 8px 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; align-content: start; }
 .cp-media-item { display: flex; flex-direction: column; gap: 3px; padding: 6px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-blank); cursor: grab; font-size: 11px; }
 .cp-media-item:hover { border-color: var(--el-color-primary); box-shadow: 0 1px 6px rgb(0 0 0 / 8%); }
 .cp-media-icon { display: flex; align-items: center; justify-content: center; height: 34px; border-radius: 4px; background: var(--el-fill-color); color: var(--el-color-primary); }
@@ -7487,35 +7653,38 @@ onMounted(async () => {
 
 /* ===== 时间轴（按内容定高，在监视器下方） ===== */
 .cp-timeline { flex: 0 0 auto; display: flex; flex-direction: column; padding: 6px 12px 10px; }
-.cp-toolbar { display: flex; align-items: center; gap: 4px; padding: 2px 0 6px; flex: 0 0 auto; }
+.cp-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; flex: 0 0 auto; }
 .cp-toolbar-sep { width: 1px; height: 16px; background: var(--el-border-color-lighter); margin: 0 4px; }
+.cp-tool-toggle { gap: 4px; padding: 0 8px; }
+.cp-toolbar-advanced { display: flex; align-items: center; flex-wrap: wrap; flex-basis: 100%; gap: 6px; padding: 7px 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-light); }
+.cp-toolbar-label { margin-right: 4px; color: var(--el-text-color-secondary); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .cp-hint { font-size: 11px; color: var(--el-text-color-placeholder); }
-.cp-tl { display: flex; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; overflow: hidden; background: var(--el-fill-color-blank); }
-.cp-tl-labels { flex: 0 0 96px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
-.cp-tl-label { display: flex; align-items: center; gap: 4px; height: 58px; padding: 0 8px; font-size: 11px; color: var(--el-text-color-secondary); border-bottom: 1px solid var(--el-border-color-lighter); }
-.cp-tl-label.head { height: 24px; border-bottom: 1px solid var(--el-border-color-lighter); }
+.cp-tl { display: flex; max-height: clamp(260px, 40vh, 430px); border: 1px solid var(--el-border-color-lighter); border-radius: 6px; overflow-x: hidden; overflow-y: auto; background: var(--el-fill-color-blank); overscroll-behavior: contain; }
+.cp-tl-labels { flex: 0 0 136px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
+.cp-tl-label { display: flex; align-items: center; gap: 5px; height: 64px; padding: 0 8px; font-size: 11px; color: var(--el-text-color-secondary); border-bottom: 1px solid var(--el-border-color-lighter); }
+.cp-tl-label.head { position: sticky; top: 0; z-index: 8; height: 28px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tl-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
 .cp-tl-canvas { position: relative; min-width: 100%; }
 
 /* 刻度尺 */
-.cp-ruler { position: relative; height: 24px; border-bottom: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-light); cursor: ew-resize; }
+.cp-ruler { position: sticky; top: 0; z-index: 7; height: 28px; border-bottom: 1px solid var(--el-border-color-lighter); background: var(--el-fill-color-light); cursor: ew-resize; }
 .cp-tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--el-border-color); }
 .cp-tick span { position: absolute; left: 3px; top: 4px; font-size: 10px; color: var(--el-text-color-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* 轨道 */
-.cp-track { position: relative; height: 58px; border-bottom: 1px solid var(--el-border-color-lighter); }
+.cp-track { position: relative; height: 64px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-track-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--el-text-color-placeholder); }
 .cp-track-empty-btn { width: 100%; padding: 0; border: none; background: none; cursor: pointer; }
 .cp-track-empty-btn:hover:not(:disabled) { color: var(--el-color-primary); }
 .cp-track-empty-btn:disabled { cursor: not-allowed; opacity: .55; }
 
 /* 多轨（S3）：轨道头 / 空档 / 隐藏态 */
-.cp-track-head { gap: 2px; flex-wrap: wrap; align-content: center; padding: 3px 5px; overflow: hidden; }
+.cp-track-head { gap: 4px; flex-wrap: wrap; align-content: center; padding: 4px 8px; overflow: hidden; }
 .cp-track-head.main { background: var(--el-color-primary-light-9); }
 .cp-track-head.dim { opacity: .55; }
-.cp-th-name { flex: 1 1 100%; font-size: 10px; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cp-th-actions { display: flex; gap: 1px; flex-wrap: nowrap; }
-.cp-th-btn { width: 15px; height: 14px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 3px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font-size: 9px; line-height: 1; cursor: pointer; }
+.cp-th-name { flex: 1 1 100%; font-size: 11px; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-th-actions { display: flex; gap: 2px; flex-wrap: nowrap; }
+.cp-th-btn { width: 18px; height: 18px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 3px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font-size: 10px; line-height: 1; cursor: pointer; }
 .cp-th-btn:hover:not(:disabled) { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); }
 .cp-th-btn:disabled { opacity: .35; cursor: not-allowed; }
 .cp-th-btn.danger:hover:not(:disabled) { color: var(--el-color-danger); border-color: var(--el-color-danger-light-5); }
@@ -7525,7 +7694,7 @@ onMounted(async () => {
 .cp-track.main { background: color-mix(in srgb, var(--el-color-primary) 4%, transparent); }
 .cp-track.dim { opacity: .5; }
 /* 主轨空档：虚线占位（允许留空；渲染时补黑） */
-.cp-gap { position: absolute; top: 8px; height: 42px; border: 1px dashed var(--el-border-color); border-radius: 4px; background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--el-fill-color) 60%, transparent) 6px 12px); pointer-events: none; }
+.cp-gap { position: absolute; top: 8px; height: 48px; border: 1px dashed var(--el-border-color); border-radius: 4px; background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--el-fill-color) 60%, transparent) 6px 12px); pointer-events: none; }
 .cp-clip.off, .cp-audio.off { opacity: .45; }
 
 /* 音效库弹窗 */
@@ -7662,13 +7831,18 @@ onMounted(async () => {
 .cp-playhead-knob { position: absolute; top: 0; left: -4px; width: 10px; height: 10px; border-radius: 0 0 4px 4px; background: #ff4d4f; }
 
 /* ===== 检视器 ===== */
-.cp-tabs { display: flex; flex: 0 0 auto; border-bottom: 1px solid var(--el-border-color-lighter); }
+.cp-tabs { display: flex; align-items: stretch; flex: 0 0 auto; border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tab { flex: 1; padding: 8px 0; font-size: 12px; background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--el-text-color-secondary); cursor: pointer; }
 .cp-tab.on { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
+.cp-tabs-collapse { display: inline-flex; align-items: center; justify-content: center; width: 30px; border: 0; border-left: 1px solid var(--el-border-color-lighter); background: transparent; color: var(--el-text-color-secondary); cursor: pointer; }
+.cp-tabs-collapse:hover { color: var(--el-color-primary); background: var(--el-fill-color-light); }
 .cp-ins { flex: 1; min-height: 0; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
 .cp-ins-head { display: flex; align-items: baseline; gap: 6px; }
 .cp-ins-title { font-size: 13px; font-weight: 600; }
 .cp-ins-sub { font-size: 11px; color: var(--el-text-color-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-compound-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.cp-compound-actions .cp-btn { justify-content: center; padding-inline: 8px; }
+.cp-compound-audio { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-lighter); }
 .cp-field { display: flex; flex-direction: column; gap: 4px; }
 .cp-field > label { display: flex; justify-content: space-between; font-size: 11px; color: var(--el-text-color-secondary); }
 .cp-field-row { display: flex; align-items: center; gap: 6px; }
@@ -7738,7 +7912,7 @@ onMounted(async () => {
 .cp-btn.primary:hover:not(:disabled) { filter: brightness(1.08); color: #fff; }
 .cp-btn.ghost { background: transparent; }
 .cp-btn.full { width: 100%; justify-content: center; margin-top: 2px; }
-.cp-mini { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 6px; font-size: 11px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-regular); cursor: pointer; }
+.cp-mini { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; font-size: 11px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-regular); cursor: pointer; }
 .cp-mini:hover:not(:disabled) { border-color: var(--el-color-primary); color: var(--el-color-primary); }
 .cp-mini:disabled { opacity: .4; cursor: not-allowed; }
 .cp-mini.on { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }

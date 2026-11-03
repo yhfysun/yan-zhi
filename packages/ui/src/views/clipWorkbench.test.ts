@@ -688,6 +688,43 @@ describe('ClipWorkbench · S4 复合片段', () => {
   });
 });
 
+describe('ClipWorkbench · 工作台密度与可操作性', () => {
+  it('时间轴高级工具默认收起，核心编辑仍保持一键可达', () => {
+    expect(CODE).toContain('timelineToolsExpanded');
+    expect(CODE).toMatch(/@click="timelineToolsExpanded = !timelineToolsExpanded"/);
+    expect(CODE).toContain('cp-toolbar-advanced');
+    expect(CODE).toMatch(/v-if="timelineToolsExpanded"/);
+    expect(CODE).toContain('高级剪辑工具');
+  });
+
+  it('右侧空检视器可收起；选中对象时自动展开', () => {
+    expect(CODE).toContain('rightPanelCollapsed');
+    expect(CODE).toContain('cp-right-rail');
+    expect(CODE).toMatch(/@click="rightPanelCollapsed = !rightPanelCollapsed"/);
+    expect(CODE).toMatch(/watch\(hasInspectorSelection/);
+    expect(CODE).toMatch(/if \(has\) rightPanelCollapsed\.value = false/);
+  });
+
+  it('轨道头加宽、轨道区限高可滚动，缓解时间轴挤压', () => {
+    const labels = declBlockOf(CSS, '.cp-tl-labels');
+    const timeline = declBlockOf(CSS, '.cp-tl');
+    const left = declBlockOf(CSS, '.cp-left');
+    expect(labels).toMatch(/flex:\s*0\s+0\s+136px/);
+    expect(timeline).toMatch(/max-height:/);
+    expect(timeline).toMatch(/overflow-y:\s*auto/);
+    expect(left).toMatch(/overflow-y:\s*auto/);
+  });
+
+  it('选中复合片段后右侧显示可编辑属性，而不是空白面板', () => {
+    expect(CODE).toMatch(/v-else-if="selectedCompound"/);
+    expect(SRC).toContain('复合片段参数');
+    for (const bind of ['compoundX', 'compoundY', 'compoundScale', 'compoundOpacity', 'compoundVolume']) {
+      expect(CODE).toContain(bind);
+    }
+    expect(CODE).toMatch(/@click="enterSelectedCompound"/);
+  });
+});
+
 describe('ClipWorkbench · 画中画变换 / 关键帧（P0-2）', () => {
   it('★ 面板必须有四个变换控件，且绑定到 computed（直接绑 selectedOverlay 会因为 undefined 显示错位）', () => {
     for (const bind of ['overlayX', 'overlayY', 'overlayRotation', 'overlayOpacity']) {
