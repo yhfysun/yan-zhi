@@ -10,6 +10,38 @@ import { type Ctx, type Side, W, H, clamp, rand, FONT } from './shared'
 /** 等距投影：格坐标 → 画布坐标 */
 const isoP = (gx: number, gy: number) => ({ x: 180 + (gx - gy) * 31, y: 56 + (gx + gy) * 31 })
 
+/**
+ * 贴图素材（scripts/gen-danmaku-art.py 生成，方案约定：地面 1 张 + 船/兵序列帧图集，不上 Tiled）。
+ * node（测试）或加载失败时回落组件内程序化绘制，画面永不空白。
+ */
+const ART = import.meta.glob('../../../assets/danmaku/*.png', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+}) as Record<string, string>
+
+function loadArt(name: string): HTMLImageElement | null {
+  if (typeof Image === 'undefined') return null
+  const hit = Object.entries(ART).find(([k]) => k.endsWith(`/${name}.png`))
+  if (!hit) return null
+  const img = new Image()
+  img.src = hit[1]
+  return img
+}
+
+const GROUND_IMG = loadArt('ground')
+const SHIPS_IMG = loadArt('ships')
+const SQUADS_IMG = loadArt('squads')
+
+function artReady(img: HTMLImageElement | null): img is HTMLImageElement {
+  return !!img && img.complete && img.naturalWidth > 0
+}
+
+/** 序列帧相位：6fps 循环 4 帧，船与兵共用；north 侧错开半个周期免得整齐划一 */
+function animFrame(now: number, offset: number, frames = 4): number {
+  return (Math.floor(now / 1000 * 6) + offset) % frames
+}
+
 interface Boat { col: number; burn: boolean }
 interface Particle { x: number; y: number; vy: number; life: number; r?: number }
 interface Pulse { x: number; y: number; t: number; color: string }
@@ -79,27 +111,57 @@ export function createChibi(): DanmakuGameMode {
     return null
   }
 
+  /** 船：贴图优先（图集帧 128x128@2x，锚点 64,100）；无图回落程序化 ship() */
+  function drawShipAt(
+    g: Ctx, x: number, y: number, now: number,
+    faction: 0 | 1, burning: boolean, seed: number, small = false,
+  ) {
+    if (artReady(SHIPS_IMG)) {
+      const frame = (faction === 0 ? 0 : 4) + animFrame(now, seed, 4)
+      g.globalAlpha = burning ? 0.92 : 1
+      // 56/28 逻辑框：船距 50 逻辑，再大会互相压帆；锚点按帧内 (64,100)/128 同比换算
+      if (small) g.drawImage(SHIPS_IMG, frame * 128, 0, 128, 128, x - 14, y - 19, 28, 28)
+      else g.drawImage(SHIPS_IMG, frame * 128, 0, 128, 128, x - 28, y - 44, 56, 56)
+      g.globalAlpha = 1
+      return
+    }
+    if (faction === 0) ship(g, x, y, small ? 0.55 : 1.4, '#7a3a32', '#e06a5f', burning)
+    else ship(g, x, y, small ? 0.55 : 1.25, '#2b5a74', '#5aa8e0', false)
+  }
+
+  /** 小队：贴图优先（图集帧 128x96@2x，锚点 64,80）；无图回落程序化 squad() */
+  function drawSquadAt(g: Ctx, x: number, y: number, now: number, faction: 0 | 1, seed: number) {
+    if (artReady(SQUADS_IMG)) {
+      const frame = (faction === 0 ? 0 : 2) + animFrame(now, seed, 2)
+      g.drawImage(SQUADS_IMG, frame * 128, 0, 128, 96, x - 24, y - 30, 48, 36)
+      return
+    }
+    if (faction === 0) squad(g, x, y, '#ff7a72', 'rgba(255,110,110,.65)')
+    else squad(g, x, y, '#6db6ff', 'rgba(110,190,255,.65)')
+  }
+
   /** 沿用组件版画法：三层远山 + 菱形地块 + 岸线泡沫 + 水面高光 + 底部收边 */
   function draw(g: Ctx, t: number, dt: number, s: EngineState): void {
     void dt
     const now = performance.now()
-    const sky = g.createLinearGradient(0, 0, 0, H)
-    sky.addColorStop(0, '#0b1220')
-    sky.addColorStop(0.4, '#141d2d')
-    sky.addColorStop(0.7, '#1c2333')
-    sky.addColorStop(1, '#07090f')
-    g.fillStyle = sky
-    g.fillRect(0, 0, W, H)
+    if (!artReady(GROUND_IMG)) {
+      const sky = g.createLinearGradient(0, 0, 0, H)
+      sky.addColorStop(0, '#0b1220')
+      sky.addColorStop(0.4, '#141d2d')
+      sky.addColorStop(0.7, '#1c2333')
+      sky.addColorStop(1, '#07090f')
+      g.fillStyle = sky
+      g.fillRect(0, 0, W, H)
 
-    // 远山三层，越远越淡
-    ridge(g, 150, 86, '#0d1420', 1.1)
-    ridge(g, 164, 66, '#131c2b', 2.3)
-    ridge(g, 176, 48, '#1a2434', 0.6)
+      // 远山三层，越远越淡
+      ridge(g, 150, 86, '#0d1420', 1.1)
+      ridge(g, 164, 66, '#131c2b', 2.3)
+      ridge(g, 176, 48, '#1a2434', 0.6)
 
-    const LAND = ['#2b3526', '#303c2a', '#273120', '#35422e']
-    const WATER = ['#17445f', '#123a56']
-    const EDGE = '#151b14'
-    for (let sRow = 0; sRow <= 16; sRow++) {
+      const LAND = ['#2b3526', '#303c2a', '#273120', '#35422e']
+      const WATER = ['#17445f', '#123a56']
+      const EDGE = '#151b14'
+      for (let sRow = 0; sRow <= 16; sRow++) {
       for (let gx = 0; gx <= 8; gx++) {
         const gy = sRow - gx
         if (gy < 0 || gy > 8) continue
@@ -116,10 +178,10 @@ export function createChibi(): DanmakuGameMode {
       }
     }
 
-    // 草地细节
-    g.strokeStyle = 'rgba(150,180,120,.35)'
-    g.lineWidth = 1
-    for (let sRow = 0; sRow <= 16; sRow++) {
+      // 草地细节
+      g.strokeStyle = 'rgba(150,180,120,.35)'
+      g.lineWidth = 1
+      for (let sRow = 0; sRow <= 16; sRow++) {
       for (let gx = 0; gx <= 8; gx++) {
         const gy = sRow - gx
         if (gy < 0 || gy > 8 || gy === 3 || gy === 4 || gy === 8 || gx === 8) continue
@@ -135,16 +197,27 @@ export function createChibi(): DanmakuGameMode {
       }
     }
 
-    // 岸线泡沫
-    g.strokeStyle = 'rgba(168,214,240,.28)'
-    g.lineWidth = 1.4
-    for (let gx = 0; gx <= 8; gx++) {
+      // 岸线泡沫
+      g.strokeStyle = 'rgba(168,214,240,.28)'
+      g.lineWidth = 1.4
+      for (let gx = 0; gx <= 8; gx++) {
       const a = isoP(gx, 3)
       const b = isoP(gx + 1, 3)
       g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke()
       const c = isoP(gx, 5)
       const d = isoP(gx + 1, 5)
       g.beginPath(); g.moveTo(c.x, c.y); g.lineTo(d.x, d.y); g.stroke()
+    }
+
+      // 底部收边
+      const fg = g.createLinearGradient(0, 500, 0, H)
+      fg.addColorStop(0, 'rgba(8,11,9,0)')
+      fg.addColorStop(1, 'rgba(6,9,7,.92)')
+      g.fillStyle = fg
+      g.fillRect(0, 500, W, H - 500)
+    } else {
+      // 贴图底图：天空/远山/地块/草/泡沫/收边已烘进 ground.png
+      g.drawImage(GROUND_IMG, 0, 0, 720, 1280, 0, 0, W, H)
     }
 
     // 水面高光（缓慢横移）
@@ -158,35 +231,29 @@ export function createChibi(): DanmakuGameMode {
       g.beginPath(); g.moveTo(a.x, a.y + (i % 3)); g.lineTo(b.x, b.y + (i % 3)); g.stroke()
     }
 
-    // 底部收边
-    const fg = g.createLinearGradient(0, 500, 0, H)
-    fg.addColorStop(0, 'rgba(8,11,9,0)')
-    fg.addColorStop(1, 'rgba(6,9,7,.92)')
-    g.fillStyle = fg
-    g.fillRect(0, 500, W, H - 500)
 
     // 实体按 y 排序绘制（等距遮挡）
     const ents: Array<{ y: number; draw: () => void }> = []
-    boats.forEach((b) => {
+    boats.forEach((b, i) => {
       const p = caoShipPos(b.col)
-      ents.push({ y: p.y, draw: () => ship(g, p.x, p.y, 1.4, '#7a3a32', '#e06a5f', b.burn) })
+      ents.push({ y: p.y, draw: () => drawShipAt(g, p.x, p.y, now, 0, b.burn, i * 3) })
     })
     for (let i = 0; i < 4; i++) {
       const p = allyShipPos(i)
-      ents.push({ y: p.y, draw: () => ship(g, p.x, p.y, 1.25, '#2b5a74', '#5aa8e0', false) })
+      ents.push({ y: p.y, draw: () => drawShipAt(g, p.x, p.y, now, 1, false, i * 3) })
     }
     for (let i = 0; i < 5; i++) {
       const p = isoP(0.45, 0.5 + i * 0.8)
-      ents.push({ y: p.y, draw: () => squad(g, p.x, p.y, '#ff7a72', 'rgba(255,110,110,.65)') })
+      ents.push({ y: p.y, draw: () => drawSquadAt(g, p.x, p.y, now, 0, i) })
     }
     for (let i = 0; i < 5; i++) {
       const p = isoP(7.15, 3.5 + i * 0.8)
-      ents.push({ y: p.y, draw: () => squad(g, p.x, p.y, '#6db6ff', 'rgba(110,190,255,.65)') })
+      ents.push({ y: p.y, draw: () => drawSquadAt(g, p.x, p.y, now, 1, i) })
     }
     ents.sort((a, b) => a.y - b.y)
     ents.forEach((e) => e.draw())
 
-    for (const f of fireships) ship(g, f.x, f.y, 0.55, '#7a3a12', 'rgba(255,196,120,.95)', false)
+    for (const f of fireships) drawShipAt(g, f.x, f.y, now, 0, false, 0, true)
 
     for (const sm of smoke) {
       g.beginPath(); g.arc(sm.x, sm.y, sm.r ?? 6, 0, 6.28)

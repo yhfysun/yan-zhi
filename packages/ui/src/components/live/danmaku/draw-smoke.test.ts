@@ -3,7 +3,7 @@
  * 目的：抓住 vue-tsc 抓不到的运行时异常（undefined 数学、漏初始化的数组等）。
  * 不验证像素。
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createModeByKey, MODE_FACTORIES } from './registry'
 
 /** 万能 ctx stub：未知方法返回 undefined，渐变工厂返回带 addColorStop 的对象 */
@@ -77,5 +77,48 @@ describe('五玩法渲染冒烟（tick + draw + 输入全链路）', () => {
     for (const key of ['chibi', 'stars', 'debate', 'surname', 'mbti']) {
       expect(createModeByKey(key)?.key).toBe(key)
     }
+  })
+})
+
+describe('赤壁贴图分支（素材加载成功时走 drawImage）', () => {
+  it('ground/ships/squads 三张图都会被绘制，且不抛异常', async () => {
+    const calls: Array<unknown[]> = []
+    const gradient = { addColorStop: () => {} }
+    const g = new Proxy(
+      {
+        createLinearGradient: () => gradient,
+        createRadialGradient: () => gradient,
+        measureText: (s: string) => ({ width: String(s).length * 8 }),
+        drawImage: (...args: unknown[]) => { calls.push(args) },
+      },
+      {
+        get(target: Record<string, unknown>, prop) {
+          if (prop in target) return target[prop as string]
+          return () => undefined
+        },
+        set() { return true },
+      },
+    ) as unknown as CanvasRenderingContext2D
+
+    class FakeImage {
+      src = ''
+      complete = true
+      naturalWidth = 720
+    }
+    ;(globalThis as unknown as { Image: unknown }).Image = FakeImage
+    try {
+      vi.resetModules()
+      const mod = await import('./chibi')
+      const m = mod.createChibi()
+      m.reset()
+      const s = { rewrite: 10, resolved: false }
+      m.tick(500, 1 / 30, s)
+      m.draw(g, 500, 1 / 30, s)
+    } finally {
+      delete (globalThis as unknown as { Image?: unknown }).Image
+    }
+
+    // 底图 1 次 + 船 5+4 次 + 火船 0 + 小队 10 次 = 至少 20 次 drawImage
+    expect(calls.length).toBeGreaterThanOrEqual(19)
   })
 })

@@ -331,6 +331,7 @@ import type { WorkflowAgentItem, WorkflowRunItem, OverridableNodeDef, PreflightI
 import { usePlatformStore } from '../stores/platform';
 import { useAgentStore } from '../stores/agent';
 import { leadOf, setLead, type LeadMode } from '../stores/mode';
+import { setWorkbenchContext } from '../stores/workbenchContext';
 import { useResizable } from '../composables/useResizable';
 import { useChat } from '../composables/chat/useChat';
 
@@ -480,6 +481,11 @@ const wfFilterActive = computed(() => !!keyword.value.trim() || !!runStatusFilte
 const current = computed<WorkflowAgentItem | null>(
   () => wf.agents.value.find((a) => a.id === selectedId.value) || null,
 );
+
+/** 底部状态栏：当前工作流（工作流模式的「上下文」就是这个被选中的工作流） */
+watch(current, (w) => {
+  setWorkbenchContext('wf', { label: '工作流', value: w?.name || '未选择工作流' });
+}, { immediate: true });
 
 function isLong(f: { type: string; description?: string }): boolean {
   // 描述里带「段落/长文本」或 key 像 content/text/body 的走多行输入
