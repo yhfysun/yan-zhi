@@ -414,7 +414,18 @@ describe('ClipWorkbench · 鼠标与键盘交互（对标商用软件）', () =>
   it('★ 快捷键要在弹窗打开时不生效（避免误删）', () => {
     const i = CODE.indexOf('function onKeyDown');
     const body = CODE.slice(i, i + 900);
-    expect(body).toContain('el-dialog');
+    expect(body).toContain('hasVisibleModalOpen()');
+  });
+
+  it('★★ 已关闭但留在 DOM 的 Element Plus overlay 不得吞掉快捷键', () => {
+    const body = fnBody('hasVisibleModalOpen');
+    expect(body).toContain('.el-dialog, .el-overlay');
+    expect(body).toContain('getComputedStyle');
+    expect(body).toContain("display !== 'none'");
+    expect(body).toContain("visibility !== 'hidden'");
+    expect(body).toContain('width > 0');
+    expect(body).toContain('height > 0');
+    expect(fnBody('onKeyDown')).toContain('hasVisibleModalOpen()');
   });
 
   it('★ 快捷键表要覆盖商用软件的高频键（空格/S/Ctrl+D/Delete/方向键）', () => {
@@ -780,11 +791,31 @@ describe('ClipWorkbench · compound 整体代理', () => {
     expect(CODE).toContain('proxyTimelineItems');
     expect(CODE).toContain('proxyUsesTrackItems');
     expect(CODE).toContain('itemId=');
+    expect(CODE).toContain('trackId=');
     expect(CODE).toMatch(/type: isCompoundItem\(item\) \? 'compound' : 'clip'/);
   });
 
   it('普通无 compound 工程继续走旧段下标代理', () => {
     expect(CODE).toContain('&i=${i}');
+  });
+});
+
+describe('ClipWorkbench · 多视频轨代理叠放', () => {
+  it('非主轨代理使用独立 video 层，按窗口渲染且不会出声', () => {
+    expect(CODE).toContain('activeVideoOverlayLayers');
+    expect(CODE).toContain('proxyOverlayLayers');
+    expect(CODE).toMatch(/v-for="layer in proxyOverlayLayers"/);
+    expect(CODE).toMatch(/class="cp-video cp-proxy-overlay"/);
+    expect(CODE).toMatch(/:style="proxyOverlayStyle\(layer\)"/);
+    expect(CODE).toContain('muted');
+    expect(CODE).toContain('playsinline');
+  });
+
+  it('叠放层与主轨代理同步 seek/play/pause，并在卸载时清理引用', () => {
+    expect(CODE).toContain('setProxyOverlayVideo');
+    expect(CODE).toContain('syncProxyOverlayVideos');
+    expect(CODE).toContain('onProxyOverlayLoadedMeta');
+    expect(CODE).toContain('proxyOverlayVideoEls.clear()');
   });
 });
 

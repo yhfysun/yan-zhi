@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  activeVideoOverlayLayers,
   clampWithinGaps,
   ensureTracks,
   isClipItem,
@@ -105,6 +106,82 @@ describe('resolveClipItems · 缺时间时的顺排', () => {
       ],
     };
     expect(resolveClipItems(track, dur).map((i) => i.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('activeVideoOverlayLayers · 非主轨代理叠放', () => {
+  it('★ 播放头窗口内的 clip/compound 按轨道顺序返回，并带窗口内偏移/透明度/混合模式', () => {
+    const overlayProject: UiProject = {
+      version: 3,
+      updatedAt: 1,
+      output: { size: '1080x1920', fps: 30 },
+      clips: [],
+      tracks: [{ id: 'inner-v1', kind: 'video', items: [] }],
+    };
+    const tracks: UiTrack[] = [
+      {
+        id: 'v1', kind: 'video', items: [
+          { type: 'clip', id: 'main', start: 0, duration: 6, segment: { id: 'main', file: 'main.mp4' } },
+        ],
+      },
+      {
+        id: 'v2', kind: 'video', name: 'B-roll', opacity: 0.45, blend: 'screen', items: [
+          { type: 'clip', id: 'b1', start: 1, duration: 2, segment: { id: 'b1', file: 'b.mp4' } },
+        ],
+      },
+      {
+        id: 'v3', kind: 'video', name: '复合层', items: [
+          {
+            type: 'compound', id: 'cmp1', start: 2, duration: 2,
+            project: overlayProject,
+          },
+        ],
+      },
+    ];
+
+    expect(activeVideoOverlayLayers(tracks, 2.5, dur)).toEqual([
+      {
+        trackId: 'v2', trackName: 'B-roll', itemId: 'b1', itemType: 'clip',
+        start: 1, duration: 2, offset: 1.5, opacity: 0.45, blend: 'screen',
+      },
+      {
+        trackId: 'v3', trackName: '复合层', itemId: 'cmp1', itemType: 'compound',
+        start: 2, duration: 2, offset: 0.5, opacity: 1,
+      },
+    ]);
+  });
+
+  it('★ 窗口外不返回；hidden/muted/opacity=0/多机位角度轨全部跳过', () => {
+    const tracks: UiTrack[] = [
+      {
+        id: 'v1', kind: 'video', items: [
+          { type: 'clip', id: 'main', start: 0, duration: 3, segment: { id: 'main', file: 'main.mp4' } },
+        ],
+      },
+      {
+        id: 'hidden', kind: 'video', hidden: true, items: [
+          { type: 'clip', id: 'h', start: 0, duration: 3, segment: { id: 'h', file: 'h.mp4' } },
+        ],
+      },
+      {
+        id: 'muted', kind: 'video', muted: true, items: [
+          { type: 'clip', id: 'm', start: 0, duration: 3, segment: { id: 'm', file: 'm.mp4' } },
+        ],
+      },
+      {
+        id: 'transparent', kind: 'video', opacity: 0, items: [
+          { type: 'clip', id: 'o', start: 0, duration: 3, segment: { id: 'o', file: 'o.mp4' } },
+        ],
+      },
+      {
+        id: 'angle', kind: 'video', multicamGroupId: 'g1', multicamAngleIndex: 1, items: [
+          { type: 'clip', id: 'a', start: 0, duration: 3, segment: { id: 'a', file: 'a.mp4' } },
+        ],
+      },
+    ];
+
+    expect(activeVideoOverlayLayers(tracks, 1, dur)).toEqual([]);
+    expect(activeVideoOverlayLayers(tracks, 3, dur)).toEqual([]);
   });
 });
 

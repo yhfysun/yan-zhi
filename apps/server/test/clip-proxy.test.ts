@@ -17,10 +17,10 @@ import path from 'node:path';
 import {
   segmentFingerprint, proxyCacheKey, proxyTargetSize, proxySegmentSeconds,
   pruneProxyCache, proxyCacheDir, PROXY_CACHE_MAX, proxyDerivedProject,
-  compoundProxyCacheKey, proxyDerivedCompoundProject,
+  compoundProxyCacheKey, proxyDerivedCompoundProject, locateProxyTrackItem,
 } from '../src/services/clip-proxy';
 import { createEmptyProject, applyClipOp, type ClipProject } from '../src/services/clip-project';
-import type { CompoundItem } from '../src/services/clip-project-v3';
+import { migrateV2ToV3, type CompoundItem } from '../src/services/clip-project-v3';
 
 function proj(ops: Array<[string, Record<string, unknown>]>): ClipProject {
   let cur: ClipProject | null = createEmptyProject('t');
@@ -185,6 +185,42 @@ describe('compoundProxyCacheKey · 复合片段整体代理', () => {
       start: 0,
       duration: 3,
     });
+  });
+});
+
+describe('locateProxyTrackItem · 任意视频轨代理定位', () => {
+  function projectWithOverlay() {
+    const project = migrateV2ToV3({
+      version: 2, name: 'p', updatedAt: 1, output: { size: '1080x1920', fps: 30 },
+      clips: [{ id: 'main', file: 'C:/main.mp4', trimStart: 0, trimEnd: 3 }],
+      layers: [], texts: [],
+    });
+    project.tracks.push({
+      id: 'v2', kind: 'video', name: 'B-roll',
+      items: [{
+        type: 'clip', id: 'b1', start: 0, duration: 2,
+        segment: { id: 'b1', file: 'C:/b.mp4', trimStart: 0, trimEnd: 2 },
+      }],
+    });
+    return project;
+  }
+
+  it('★ 指定 trackId 时只在该视频轨定位，返回轨道与 item', () => {
+    const found = locateProxyTrackItem(projectWithOverlay(), { trackId: 'v2', itemId: 'b1' });
+    expect(found?.track.id).toBe('v2');
+    expect(found?.item.id).toBe('b1');
+    expect(found?.item.type).toBe('clip');
+  });
+
+  it('★ 未指定 trackId 时扫描任意视频轨；错轨或音频轨返回 null', () => {
+    const p = projectWithOverlay();
+    expect(locateProxyTrackItem(p, { itemId: 'b1' })?.track.id).toBe('v2');
+    expect(locateProxyTrackItem(p, { trackId: 'v1', itemId: 'b1' })).toBeNull();
+    p.tracks.push({
+      id: 'a1', kind: 'audio',
+      items: [{ type: 'audio', id: 'a1', file: 'C:/a.wav', start: 0, duration: 2 }],
+    });
+    expect(locateProxyTrackItem(p, { trackId: 'a1', itemId: 'a1' })).toBeNull();
   });
 });
 

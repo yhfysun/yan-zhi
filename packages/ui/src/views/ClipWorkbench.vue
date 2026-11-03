@@ -313,6 +313,21 @@
               <el-icon :size="30"><VideoPlay /></el-icon>
               <span>{{ monitorHint }}</span>
             </div>
+            <!-- 非主轨只在当前播放头窗口内挂一个代理视频；声音仍只由主轨代理输出。 -->
+            <template v-if="monitorMode === 'proxy' && proxyClipUrl">
+              <video
+                v-for="layer in proxyOverlayLayers"
+                :key="`${layer.trackId}:${layer.itemId}`"
+                :ref="(el) => setProxyOverlayVideo(layer.trackId, layer.itemId, el)"
+                class="cp-video cp-proxy-overlay"
+                :style="proxyOverlayStyle(layer)"
+                :src="proxyOverlayUrl(layer)"
+                muted
+                playsinline
+                preload="auto"
+                @loadedmetadata="onProxyOverlayLoadedMeta(layer)"
+              ></video>
+            </template>
             <!-- ★★ 矢量图层实时合成（P1-10 / C-1）：字幕/贴纸画在 DOM 上，
                  代理模式再叠一路画中画 <video>；拖动不经服务端，松手才落盘。
                  盒子按底图（<img>/<video>）的实际渲染框定位 —— 舞台有黑边，
@@ -2272,6 +2287,7 @@ import { useChat } from '../composables/chat/useChat';
 import { api, API_BASE, mediaAuthQuery } from '../api/client';
 import { clampOffset, localLayerT, round4, sampleLayerTf, shiftLayerPosition } from '../utils/clip-stage-geometry';
 import {
+  activeVideoOverlayLayers,
   clampWithinGaps,
   ensureTracks,
   isClipItem,
@@ -2289,6 +2305,7 @@ import {
   viewAudioRows,
   viewVideoRows,
   round3,
+  type ActiveVideoOverlayLayer,
   type ResolvedAudioItem,
   type ResolvedClipItem,
   type ResolvedCompoundItem,
@@ -2797,11 +2814,74 @@ function setProxyAdvancing(v: boolean) {
   proxyPlaying.value = v;
   if (v) startProxyClock();
   else stopProxyClock();
+  void nextTick(syncProxyOverlayVideos);
 }
 /** 序号防竞态：切段/重取期间旧请求回来不覆盖新状态 */
 let proxySeq = 0;
 
 const proxyVideoEl = ref<HTMLVideoElement | null>(null);
+const proxyOverlayVideoEls = new Map<string, HTMLVideoElement>();
+
+const PROXY_OVERLAY_CSS_BLEND: Record<string, string> = {
+  normal: 'normal',
+  screen: 'screen',
+  multiply: 'multiply',
+  overlay: 'overlay',
+  softlight: 'soft-light',
+  add: 'plus-lighter',
+  darken: 'darken',
+  lighten: 'lighten',
+};
+
+function proxyOverlayKey(trackId: string, itemId: string): string {
+  return `${trackId}\u0000${itemId}`;
+}
+
+function setProxyOverlayVideo(trackId: string, itemId: string, el: unknown) {
+  const key = proxyOverlayKey(trackId, itemId);
+  if (el instanceof HTMLVideoElement) proxyOverlayVideoEls.set(key, el);
+  else proxyOverlayVideoEls.delete(key);
+}
+
+function proxyOverlayStyle(layer: ActiveVideoOverlayLayer): Record<string, string> {
+  const opacity = Math.max(0, Math.min(1, Number(layer.opacity)));
+  return {
+    opacity: String(Number.isFinite(opacity) ? opacity : 1),
+    mixBlendMode: PROXY_OVERLAY_CSS_BLEND[layer.blend || 'normal'] || 'normal',
+  };
+}
+
+function seekProxyOverlayVideo(v: HTMLVideoElement, layer: ActiveVideoOverlayLayer): void {
+  const offset = Math.max(0, Math.min(layer.duration, playhead.value - layer.start));
+  if (!Number.isFinite(v.duration) || !(v.duration > 0)) return;
+  const target = Math.min(offset, Math.max(0, v.duration - 0.05));
+  if (Math.abs((v.currentTime || 0) - target) > 0.18) v.currentTime = target;
+}
+
+/** 主轨代理是唯一播放时钟；非主轨层只跟随 seek/play/pause，不反写播放头。 */
+function syncProxyOverlayVideos(): void {
+  if (monitorMode.value !== 'proxy') return;
+  for (const layer of proxyOverlayLayers.value) {
+    const v = proxyOverlayVideoEls.get(proxyOverlayKey(layer.trackId, layer.itemId));
+    if (!v) continue;
+    v.muted = true;
+    seekProxyOverlayVideo(v, layer);
+    if (proxyPlaying.value) {
+      if (v.paused) void v.play().catch(() => { /* 浏览器手势/换源中断：下一轮再同步 */ });
+    } else if (!v.paused) {
+      v.pause();
+    }
+  }
+}
+
+function onProxyOverlayLoadedMeta(layer: ActiveVideoOverlayLayer): void {
+  const v = proxyOverlayVideoEls.get(proxyOverlayKey(layer.trackId, layer.itemId));
+  if (!v) return;
+  v.muted = true;
+  seekProxyOverlayVideo(v, layer);
+  if (proxyPlaying.value) void v.play().catch(() => { /* 等用户手势 */ });
+  else v.pause();
+}
 
 interface ProxyTimelineItem {
   id: string;
@@ -2872,15 +2952,33 @@ function proxySegStartOf(k: number): number | null {
 /** 段代理 URL（i=段下标；v=工程版本 → 段参数改动后 v 变，强制穿透浏览器缓存重取）。 */
 function proxyUrlOf(i: number): string {
   if (!convId.value) return '';
+  if (proxyUsesTrackItems()) {
+    const main = videoTrackRows.value.find((track) => track.kind === 'video');
+    const item = proxyTimelineItems()[i];
+    if (!main || !item) return '';
+    return proxyTrackItemUrl(main.id, item.id);
+  }
+  return proxyIndexUrl(i);
+}
+
+function proxyIndexUrl(i: number): string {
+  if (!convId.value) return '';
   const qs = mediaAuthQuery();
   const ver = rootProject.value?.updatedAt || project.value?.updatedAt || 0;
   const compoundPath = compoundStack.value.map((entry) => entry.id).join(',');
-  if (proxyUsesTrackItems()) {
-    const item = proxyTimelineItems()[i];
-    if (!item) return '';
-    return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&itemId=${encodeURIComponent(item.id)}&v=${ver}${compoundPath ? `&compoundPath=${encodeURIComponent(compoundPath)}` : ''}${qs}`;
-  }
   return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&i=${i}&v=${ver}${compoundPath ? `&compoundPath=${encodeURIComponent(compoundPath)}` : ''}${qs}`;
+}
+
+function proxyTrackItemUrl(trackId: string, itemId: string): string {
+  if (!convId.value) return '';
+  const qs = mediaAuthQuery();
+  const ver = rootProject.value?.updatedAt || project.value?.updatedAt || 0;
+  const compoundPath = compoundStack.value.map((entry) => entry.id).join(',');
+  return `${API_BASE}/plugin/clip-mode/proxy?conversationId=${encodeURIComponent(convId.value)}&trackId=${encodeURIComponent(trackId)}&itemId=${encodeURIComponent(itemId)}&v=${ver}${compoundPath ? `&compoundPath=${encodeURIComponent(compoundPath)}` : ''}${qs}`;
+}
+
+function proxyOverlayUrl(layer: ActiveVideoOverlayLayer): string {
+  return proxyTrackItemUrl(layer.trackId, layer.itemId);
 }
 
 /**
@@ -2888,10 +2986,18 @@ function proxyUrlOf(i: number): string {
  * 载入成功后：若处于播放状态则从段内偏移处开播，否则停在偏移位置。
  */
 async function loadProxyForPlayhead() {
-  if (!convId.value || !clipCount.value) { proxyClipUrl.value = ''; return; }
+  if (!convId.value || !clipCount.value) {
+    proxyClipUrl.value = '';
+    syncProxyOverlayVideos();
+    return;
+  }
   const mySeq = ++proxySeq;
   const loc = proxyLocate(playhead.value);
-  if (!loc) { proxyClipUrl.value = ''; return; }
+  if (!loc) {
+    proxyClipUrl.value = '';
+    syncProxyOverlayVideos();
+    return;
+  }
   const start = proxySegStartOf(loc.idx) ?? 0;
   // 同段同版本已在播 → 不重复取（seek 与 playhead watch 会双双触发，去重）
   const nextUrl = proxyUrlOf(loc.idx);
@@ -2987,6 +3093,7 @@ function onProxyTimeUpdate() {
   const v = proxyVideoEl.value;
   if (!v) return;
   playhead.value = proxySegStart.value + (v.currentTime || 0);
+  syncProxyOverlayVideos();
 }
 
 function onProxyLoadedMeta() {
@@ -3003,6 +3110,7 @@ function onProxyLoadedMeta() {
     void v.play().catch(() => {});
     startProxyClock();
   }
+  syncProxyOverlayVideos();
 }
 
 function onProxyError() {
@@ -3040,6 +3148,8 @@ const selectedEffect = computed(() => effects.value.find((e) => e.id === selecte
 const videoTrackRows = computed<UiTrack[]>(() => viewVideoRows(project.value as never, segSeconds));
 const audioTrackRows = computed<UiTrack[]>(() => viewAudioRows(project.value as never));
 const mainVideoTrack = computed(() => videoTrackRows.value[0] || null);
+const proxyOverlayLayers = computed(() =>
+  activeVideoOverlayLayers(videoTrackRows.value, playhead.value, segSeconds));
 const trackDragId = ref('');
 /** 选中非主轨片段时记录所属轨（属性面板只对主轨片段可用） */
 const selectedTrackId = ref('');
@@ -3930,6 +4040,7 @@ function startProxyClock() {
     if (!v || !proxyAdvancing) { proxyClock = null; return; }
     const t = proxySegStart.value + (v.currentTime || 0);
     if (Number.isFinite(t)) playhead.value = Math.max(0, Math.min(estTotal.value, t));
+    syncProxyOverlayVideos();
     proxyClock = requestAnimationFrame(tick);
   };
   proxyClock = requestAnimationFrame(tick);
@@ -4821,6 +4932,18 @@ const SHORTCUTS: Array<{ key: string; ctrl?: boolean; label: string; run: () => 
 
 let shiftHeld = false;
 
+/** Element Plus 关闭弹窗后仍把 overlay 留在 DOM；只有实际可见的才应吞快捷键。 */
+function hasVisibleModalOpen(): boolean {
+  return [...document.querySelectorAll<HTMLElement>('.el-dialog, .el-overlay')].some((node) => {
+    const style = getComputedStyle(node);
+    const box = node.getBoundingClientRect();
+    return style.display !== 'none'
+      && style.visibility !== 'hidden'
+      && box.width > 0
+      && box.height > 0;
+  });
+}
+
 function onKeyDown(e: KeyboardEvent) {
   if (view.value !== 'editor') return;
   // ★ 焦点在输入框/文本域时不拦截（否则打字会触发删除/分割）
@@ -4828,7 +4951,7 @@ function onKeyDown(e: KeyboardEvent) {
   const tag = el?.tagName?.toLowerCase();
   if (tag === 'input' || tag === 'textarea' || el?.isContentEditable) return;
   // 有弹窗（新建/删除确认）时也不拦截
-  if (document.querySelector('.el-dialog') || document.querySelector('.el-overlay')) return;
+  if (hasVisibleModalOpen()) return;
 
   shiftHeld = e.shiftKey;
   // Escape 关菜单
@@ -7512,6 +7635,7 @@ function seek(sec: number) {
         v.currentTime = Math.min(off, Math.max(0, v.duration - 0.05));
       }
     }
+    syncProxyOverlayVideos();
   }
 }
 /**
@@ -7710,11 +7834,13 @@ onBeforeUnmount(() => {
   stageRO = null;
   replaceFrameUrl('');
   proxySeq++;   // 作废在途请求（卸载后回来的响应不再写状态）
+  proxyOverlayVideoEls.clear();
 });
 
 watch(() => chat.store.currentConvId, async () => {
   previewUrl.value = ''; videoDur.value = 0;
   proxyClipUrl.value = ''; proxySegIndex.value = -1; proxyError.value = '';
+  proxyOverlayVideoEls.clear();
   await loadFiles();
   if (monitorMode.value === 'proxy') void loadProxyForPlayhead();
   await reload();
@@ -7830,6 +7956,7 @@ onMounted(async () => {
 /* 舞台铺满可用宽度、深色底（视频工作区惯例，不是主题色），画面在其中等比居中 */
 .cp-monitor-stage { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; flex: 1; min-height: 0; background: #101216; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgb(0 0 0 / 18%); }
 .cp-video { max-width: 100%; max-height: 100%; background: #000; }
+.cp-proxy-overlay { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; background: transparent; pointer-events: none; z-index: 2; }
 .cp-monitor-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px 16px; color: #7c8798; font-size: 12px; text-align: center; }
 /* 实时预览帧：按输出画幅比例居中（与 <video> 一致的观感） */
 .cp-live-frame { object-fit: contain; background: #000; }

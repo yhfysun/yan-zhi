@@ -74,6 +74,20 @@ export type ResolvedClipItem = UiClipItem & { start: number; duration: number };
 export type ResolvedAudioItem = UiAudioItem & { start: number; duration: number };
 export type ResolvedCompoundItem = UiCompoundItem & { start: number; duration: number };
 
+/** 当前播放头下需要叠到主轨代理上的非主轨视频层（一轨最多一层）。 */
+export interface ActiveVideoOverlayLayer {
+  trackId: string;
+  trackName?: string;
+  itemId: string;
+  itemType: 'clip' | 'compound';
+  start: number;
+  duration: number;
+  /** 播放头相对该片段的素材内偏移（秒）。 */
+  offset: number;
+  opacity: number;
+  blend?: string;
+}
+
 const EPS = 1e-6;
 export const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
@@ -171,6 +185,41 @@ export function resolveVideoItems(
     });
   }
   return sortItems([...clipResolved.values(), ...compounds.values()]) as Array<ResolvedClipItem | ResolvedCompoundItem>;
+}
+
+/**
+ * 代理预览的非主轨叠放层：按轨道数组顺序返回，每轨只取播放头窗口内的一项。
+ * 跳过 hidden/muted/opacity=0 和多机位角度参考轨；主轨仍是第一条视频轨。
+ */
+export function activeVideoOverlayLayers(
+  tracks: UiTrack[],
+  time: number,
+  durationOf: (seg: any) => number,
+): ActiveVideoOverlayLayer[] {
+  const videoTracks = tracks.filter((track) => track.kind === 'video');
+  const out: ActiveVideoOverlayLayer[] = [];
+  for (const track of videoTracks.slice(1)) {
+    if (track.hidden || track.muted || track.opacity === 0) continue;
+    if (track.multicamGroupId && Number.isInteger(track.multicamAngleIndex)) continue;
+    const active = resolveVideoItems(track, durationOf).find((item) => {
+      if (!(item.duration > EPS)) return false;
+      const end = item.start + item.duration;
+      return time >= item.start - EPS && time < end - EPS;
+    });
+    if (!active) continue;
+    out.push({
+      trackId: track.id,
+      ...(track.name ? { trackName: track.name } : {}),
+      itemId: active.id,
+      itemType: isCompoundItem(active) ? 'compound' : 'clip',
+      start: active.start,
+      duration: active.duration,
+      offset: round3(Math.max(0, time - active.start)),
+      opacity: track.opacity ?? 1,
+      ...(track.blend ? { blend: track.blend } : {}),
+    });
+  }
+  return out;
 }
 
 /** 只读视图：有 tracks 用 tracks；没有就按 clips/audios 合成（不写回工程）。 */

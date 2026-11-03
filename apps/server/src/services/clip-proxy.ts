@@ -29,7 +29,9 @@ import { buildRenderPlan, buildTrackPlan, runRenderPlan, segmentDuration,
 import { materializeSegmentMatte, matteRuntimeHint } from './clip-matte-render.js';
 import type { ClipProject, ClipSegment } from './clip-project.js';
 import { compoundCacheKey } from '@yan-zhi/shared';
-import { v2ViewsOfV3, type ClipProjectV3, type CompoundItem } from './clip-project-v3.js';
+import {
+  v2ViewsOfV3, type ClipProjectV3, type CompoundItem, type Track, type TrackItem,
+} from './clip-project-v3.js';
 
 /** 代理画幅：长边 480（竖屏 270x480，横屏 480x270，方图按比例）。 */
 export const PROXY_LONG_EDGE = 480;
@@ -116,6 +118,20 @@ export function proxyTargetSize(outputSize: string): { w: number; h: number } {
   const k = PROXY_LONG_EDGE / Math.max(W, H);
   const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
   return { w: even(W * k), h: even(H * k) };
+}
+
+/** 在任意视频轨定位代理项；指定 trackId 时避免跨轨同名 id 误取。 */
+export function locateProxyTrackItem(
+  project: ClipProjectV3,
+  input: { trackId?: string; itemId: string },
+): { track: Track; item: TrackItem } | null {
+  const tracks = project.tracks.filter((track) =>
+    track.kind === 'video' && (!input.trackId || track.id === input.trackId));
+  for (const track of tracks) {
+    const item = track.items.find((entry) => entry.id === input.itemId);
+    if (item) return { track, item };
+  }
+  return null;
 }
 
 /**

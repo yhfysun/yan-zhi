@@ -22,7 +22,9 @@ import { listAllRecipes } from '../services/clip-recipe-store.js';
 import { parseProbeJson, probeArgs, segmentDuration } from '../services/clip-render.js';
 import { compoundItemAtTime, compoundProjectAtPath, v2ViewsOfV3 } from '../services/clip-project-v3.js';
 import { renderPreviewFrame, locateTimeline } from '../services/clip-preview.js';
-import { ensureCompoundProxy, ensureSegmentProxy, proxyTargetSize } from '../services/clip-proxy.js';
+import {
+  ensureCompoundProxy, ensureSegmentProxy, locateProxyTrackItem, proxyTargetSize,
+} from '../services/clip-proxy.js';
 import { isProjectSourcePath } from '../services/clip-layer-media.js';
 import { ensureEffectPreview } from '../services/clip-effect-preview.js';
 import { analyzeBeats } from '../services/clip-beats.js';
@@ -1019,6 +1021,7 @@ router.get('/frame', async (req: Request, res: Response) => {
 });
 
 // GET /api/plugin/clip-mode/proxy?conversationId=xxx&i=段下标&v=工程版本
+//   或 &trackId=视频轨&itemId=轨道项（主轨/附加轨的 clip/compound 均可）
 //
 // **段代理预览**（P0-10）：返回某一段的 480p 代理 mp4（命中回文件，未命中同步生成）。
 //
@@ -1031,6 +1034,7 @@ router.get('/frame', async (req: Request, res: Response) => {
 router.get('/proxy', async (req: Request, res: Response) => {
   const conversationId = String(req.query.conversationId || '').trim();
   const itemId = String(req.query.itemId || '').trim();
+  const trackId = String(req.query.trackId || '').trim();
   const i = Math.round(Number(req.query.i));
   if (!conversationId) return res.status(400).json({ error: 'conversationId 必填' });
   if (!itemId && (!Number.isInteger(i) || i < 0)) {
@@ -1055,15 +1059,17 @@ router.get('/proxy', async (req: Request, res: Response) => {
 
   let out: Awaited<ReturnType<typeof ensureSegmentProxy>>;
   if (itemId) {
-    const mainTrack = selectedV3.tracks.find((track) => track.kind === 'video');
-    const item = mainTrack?.items.find((entry) => entry.id === itemId);
-    if (!item) return res.status(404).json({ error: `主轨 trackItem 不存在：${itemId}` });
+    const located = locateProxyTrackItem(selectedV3, { ...(trackId ? { trackId } : {}), itemId });
+    if (!located) return res.status(404).json({ error: `视频轨 trackItem 不存在：${itemId}` });
+    const item = located.item;
     if (item.type === 'clip') {
-      const segIndex = project.clips.findIndex((clip) => clip.id === item.id);
-      if (segIndex < 0) return res.status(404).json({ error: `片段视图里找不到 ${item.id}` });
       const probe = await buildProxyProbeRow(ff.ffprobe, project);
       out = await ensureSegmentProxy({
-        project, segIndex, probe, ffmpeg: ff.ffmpeg, ffprobe: ff.ffprobe,
+        project: { ...project, clips: [item.segment] },
+        segIndex: 0,
+        probe,
+        ffmpeg: ff.ffmpeg,
+        ffprobe: ff.ffprobe,
       });
     } else if (item.type === 'compound') {
       const inner = v2ViewsOfV3(item.project);
