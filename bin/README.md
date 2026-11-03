@@ -43,6 +43,10 @@ pnpm dev:backend
 
 # 机器 B：只启动轻量壳，连接机器 A；不启动本机 server
 pnpm dev:shell --server-url=http://192.168.1.100:3001
+
+# Windows 也可直接双击/运行:
+bin\dev-backend.bat
+bin\dev-shell.bat --server-url=http://192.168.1.100:3001
 ```
 
 `dev:shell` 未传地址时依次读取 `YZ_SERVER_BASE` 和
