@@ -700,7 +700,8 @@ describe('ClipWorkbench · 工作台密度与可操作性', () => {
   it('右侧空检视器可收起；选中对象时自动展开', () => {
     expect(CODE).toContain('rightPanelCollapsed');
     expect(CODE).toContain('cp-right-rail');
-    expect(CODE).toMatch(/@click="rightPanelCollapsed = !rightPanelCollapsed"/);
+    expect(CODE).toMatch(/@click="rightPanelCollapsed = false"/);
+    expect(CODE).toMatch(/@click="rightPanelCollapsed = true"/);
     expect(CODE).toMatch(/watch\(hasInspectorSelection/);
     expect(CODE).toMatch(/if \(has\) rightPanelCollapsed\.value = false/);
   });

@@ -771,7 +771,7 @@
           <div class="cp-tabs">
             <button class="cp-tab" :class="{ on: rightTab === 'inspector' }" @click="rightTab = 'inspector'">属性</button>
             <button class="cp-tab" :class="{ on: rightTab === 'chat' }" @click="rightTab = 'chat'">对话</button>
-            <button class="cp-tabs-collapse" title="收起右侧面板" @click="rightPanelCollapsed = !rightPanelCollapsed">
+            <button class="cp-tabs-collapse" title="收起右侧面板" @click="rightPanelCollapsed = true">
               <el-icon :size="14"><DArrowRight /></el-icon>
             </button>
           </div>
