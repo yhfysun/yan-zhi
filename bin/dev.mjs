@@ -32,7 +32,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const { findStaleBuiltinPlugins } = require('./lib/dev-plugin-sync.cjs');
+const { findStaleBuiltinPlugins } = require('../scripts/lib/dev-plugin-sync.cjs');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
