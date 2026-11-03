@@ -126,6 +126,8 @@ export interface Track {
   blend?: BlendModeId;
   /** 0~1，整轨透明度 */
   opacity?: number;
+  /** 仅音频轨：整轨增益 0~2；视频轨忽略 */
+  volume?: number;
   /** S5：多机位角度参考轨所属组与角度下标（只读，不参与合成）。 */
   multicamGroupId?: string;
   multicamAngleIndex?: number;
@@ -559,6 +561,10 @@ function validateTracks(tracks: Track[], prefix: string): string | null {
     if (!t || (t.kind !== 'video' && t.kind !== 'audio')) return `${prefix}轨道 ${t?.id ?? '?'} 的类型非法`;
     if (ids.has(t.id)) return `${prefix}轨道 id 重复：${t.id}`;
     ids.add(t.id);
+    if (t.kind === 'audio' && t.volume != null
+      && (!Number.isFinite(t.volume) || t.volume < 0 || t.volume > 2)) {
+      return `${prefix}音频轨 ${t.id} 的整体音量必须在 0~2`;
+    }
     const itemIds = new Set<string>();
     for (const it of t.items) {
       if (!it || !it.id) return `${prefix}轨道 ${t.id} 有缺少 id 的项`;

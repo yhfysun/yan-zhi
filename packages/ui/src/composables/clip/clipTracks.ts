@@ -53,6 +53,8 @@ export interface UiTrack {
   locked?: boolean;
   blend?: string;
   opacity?: number;
+  /** 音频轨整体增益，0~2；视频轨忽略。 */
+  volume?: number;
   multicamGroupId?: string;
   multicamAngleIndex?: number;
   items: UiTrackItem[];
@@ -264,6 +266,24 @@ export function applyVideoTrackComposition(track: UiTrack, patch: VideoTrackComp
   }
 
   return changed;
+}
+
+/** 更新音频轨整体增益；0~2，1 删除冗余字段。 */
+export function applyAudioTrackVolume(track: UiTrack, volume: number): boolean {
+  if (track.kind !== 'audio') return false;
+  const raw = Number(volume);
+  if (!Number.isFinite(raw)) return false;
+  const next = round3(Math.max(0, Math.min(2, raw)));
+  if (next >= 1 - EPS) {
+    if (next <= 1 + EPS) {
+      if (track.volume === undefined) return false;
+      delete track.volume;
+      return true;
+    }
+  }
+  if (Math.abs((track.volume ?? 1) - next) <= EPS) return false;
+  track.volume = next;
+  return true;
 }
 
 /** 只读视图：有 tracks 用 tracks；没有就按 clips/audios 合成（不写回工程）。 */

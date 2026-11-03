@@ -849,6 +849,25 @@ describe('ClipWorkbench · 视频轨合成设置', () => {
   });
 });
 
+describe('ClipWorkbench · 音频轨整体音量', () => {
+  it('每条音频轨提供「量」入口，滑块 0~200% 并显示当前值', () => {
+    expect(CODE).toContain('applyAudioTrackVolume');
+    expect(CODE).toMatch(/v-for="\(tr, ai\) in audioTrackRows"[\s\S]{0,1800}title="音频轨整体音量"/);
+    expect(CODE).toContain('cp-audio-track-volume');
+    expect(CODE).toMatch(/@input="onAudioTrackVolumeInput\(tr\.id, \$event\)"/);
+    expect(CODE).toMatch(/@change="onAudioTrackVolumeCommit\(tr\.id\)"/);
+    expect(CODE).toContain('trackVolumePct');
+  });
+
+  it('音频轨音量变更标脏并走统一 save()', () => {
+    const set = fnBody('setAudioTrackVolume');
+    expect(set).toContain('applyAudioTrackVolume');
+    expect(set).toContain('pendingLabel');
+    expect(set).toContain('dirty.value = true');
+    expect(fnBody('onAudioTrackVolumeCommit')).toContain('save()');
+  });
+});
+
 describe('ClipWorkbench · 画中画变换 / 关键帧（P0-2）', () => {
   it('★ 面板必须有四个变换控件，且绑定到 computed（直接绑 selectedOverlay 会因为 undefined 显示错位）', () => {
     for (const bind of ['overlayX', 'overlayY', 'overlayRotation', 'overlayOpacity']) {

@@ -38,6 +38,7 @@ import {
   type ClipItem,
   type ClipProjectV3,
   type CompoundItem,
+  type Track,
   type TrackItem,
 } from './clip-project-v3.js';
 
@@ -1435,17 +1436,29 @@ export function planClipRender(
 }
 
 /** v3 音频项 → v2 定时音频（复用下游 ③.8 混音阶段，不为多轨再写一套混音）。 */
-function audioItemToClipAudio(a: AudioItem): NonNullable<ClipProject['audios']>[number] {
+function audioItemToClipAudio(
+  a: AudioItem,
+  trackVolume = 1,
+): NonNullable<ClipProject['audios']>[number] {
+  const volume = Math.max(0, Math.min(2, (a.volume ?? 1) * trackVolume));
   return {
     id: a.id,
     file: a.file,
     start: a.start,
     end: Number((a.start + a.duration).toFixed(6)),
-    ...(a.volume != null && Math.abs(a.volume - 1) > 1e-6 ? { volume: a.volume } : {}),
+    ...(Math.abs(volume - 1) > 1e-6 ? { volume } : {}),
     ...(a.fadeIn != null && a.fadeIn > 0 ? { fadeIn: a.fadeIn } : {}),
     ...(a.fadeOut != null && a.fadeOut > 0 ? { fadeOut: a.fadeOut } : {}),
     ...(a.trimStart != null && a.trimStart > 0 ? { trimStart: a.trimStart } : {}),
   };
+}
+
+function audioTrackItemsToClipAudio(tracks: Track[]): NonNullable<ClipProject['audios']> {
+  return tracks
+    .filter((track) => track.kind === 'audio' && !track.muted)
+    .flatMap((track) => track.items
+      .filter(isAudioItem)
+      .map((item) => audioItemToClipAudio(item, track.volume ?? 1)));
 }
 
 /**
@@ -1486,19 +1499,25 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
     return { ok: false, error: (e as Error).message };
   }
   const videoTracks = v3.tracks.filter((t) => t.kind === 'video' && !t.hidden && !t.muted && t.opacity !== 0);
-  const audioTracks = v3.tracks.filter((t) => t.kind === 'audio' && !t.muted);
+  const allAudioTracks = v3.tracks.filter((t) => t.kind === 'audio');
+  const audioTracks = allAudioTracks.filter((t) => !t.muted);
   const extraAudio = audioTracks.slice(1).flatMap((t) => t.items.filter(isAudioItem));
+  const audioFromTracks = audioTrackItemsToClipAudio(allAudioTracks);
+  const needsAudioTrackFold = allAudioTracks.some((track) =>
+    !!track.muted || Math.abs((track.volume ?? 1) - 1) > EPS_NUM);
   const hasCompound = v3.tracks.some((t) => t.items.some(isCompoundItem));
 
   // 单视频轨 + 无额外音频轨：与既有计划**完全一致**（S2 不改变任何老工程出片）
-  if (videoTracks.length <= 1 && extraAudio.length === 0 && !hasCompound) return buildRenderPlan(input);
+  if (videoTracks.length <= 1 && extraAudio.length === 0 && !hasCompound && !needsAudioTrackFold) {
+    return buildRenderPlan(input);
+  }
   if (!videoTracks.length) return { ok: false, error: '多轨渲染：工程没有可用的视频轨（全部被隐藏/静音/透明）' };
 
   // 只有额外音频轨：视频仍走单主轨计划，音频项并进定时音频阶段
   if (videoTracks.length === 1 && !hasCompound) {
     return buildRenderPlan({
       ...input,
-      project: { ...project, audios: [...(project.audios || []), ...extraAudio.map(audioItemToClipAudio)] },
+      project: { ...project, audios: audioFromTracks },
     });
   }
 
@@ -1768,7 +1787,7 @@ export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderP
   const synthetic: ClipProject = {
     ...project,
     clips: [{ id: '__tracks__', file: compositeFile, label: '多轨合成' }],
-    audios: [...(project.audios || []), ...extraAudio.map(audioItemToClipAudio)],
+    audios: audioFromTracks,
   };
   const delegated = buildRenderPlan({
     ...input,

@@ -609,6 +609,33 @@
                 <span class="cp-th-name">{{ tr.name || `音轨${ai + 1}` }}</span>
                 <span class="cp-th-actions">
                   <button class="cp-th-btn" :title="tr.muted ? '取消静音' : '静音该轨'" @click="toggleTrack('muted', tr.id)">{{ tr.muted ? '静' : '声' }}</button>
+                  <el-popover trigger="click" placement="right-start" :width="232" popper-class="cp-audio-track-volume-popper">
+                    <template #reference>
+                      <button
+                        class="cp-th-btn"
+                        :class="{ on: (tr.volume ?? 1) !== 1 }"
+                        title="音频轨整体音量"
+                        @click.stop
+                      >量</button>
+                    </template>
+                    <div class="cp-track-mix cp-audio-track-volume" @mousedown.stop @click.stop @dragstart.stop.prevent>
+                      <div class="cp-track-mix-title">{{ tr.name || `音轨${ai + 1}` }} · 整体音量</div>
+                      <div class="cp-field">
+                        <label>音量 <span class="cp-val">{{ trackVolumePct(tr) }}%</span></label>
+                        <input
+                          class="cp-range"
+                          type="range"
+                          min="0"
+                          max="200"
+                          step="1"
+                          :value="trackVolumePct(tr)"
+                          @input="onAudioTrackVolumeInput(tr.id, $event)"
+                          @change="onAudioTrackVolumeCommit(tr.id)"
+                        />
+                      </div>
+                      <button class="cp-btn full" :disabled="(tr.volume ?? 1) === 1" @click="setAudioTrackVolume(tr.id, 1); onAudioTrackVolumeCommit(tr.id)">恢复 100%</button>
+                    </div>
+                  </el-popover>
                   <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" @click="toggleTrack('locked', tr.id)">{{ tr.locked ? '锁' : '解' }}</button>
                   <button class="cp-th-btn" :disabled="ai === 0" title="上移" @click="moveTrack('audio', tr.id, -1)">↑</button>
                   <button class="cp-th-btn" :disabled="ai === 0" title="下移" @click="moveTrack('audio', tr.id, 1)">↓</button>
@@ -2331,6 +2358,7 @@ import { api, API_BASE, mediaAuthQuery } from '../api/client';
 import { clampOffset, localLayerT, round4, sampleLayerTf, shiftLayerPosition } from '../utils/clip-stage-geometry';
 import {
   activeVideoOverlayLayers,
+  applyAudioTrackVolume,
   applyVideoTrackComposition,
   clampWithinGaps,
   ensureTracks,
@@ -3264,6 +3292,9 @@ function trackOpacityPct(row: UiTrack): number {
 function hasTrackComposition(row: UiTrack): boolean {
   return (row.opacity ?? 1) < 1 || (!!row.blend && row.blend !== 'normal');
 }
+function trackVolumePct(row: UiTrack): number {
+  return Math.round(Math.max(0, Math.min(2, Number(row.volume ?? 1))) * 100);
+}
 function setTrackComposition(
   trackId: string,
   patch: VideoTrackCompositionPatch,
@@ -3299,6 +3330,24 @@ async function onTrackBlendChange(trackId: string, event: Event): Promise<void> 
 async function resetTrackComposition(trackId: string): Promise<void> {
   if (!setTrackComposition(trackId, { opacity: 1, blend: 'normal' })) return;
   pendingLabel.value = '重置轨道合成';
+  await save();
+}
+function setAudioTrackVolume(trackId: string, volume: number): boolean {
+  const track = audioTrackRows.value.find((row) => row.id === trackId);
+  if (!track || !applyAudioTrackVolume(track, volume)) return false;
+  pendingLabel.value = `调整音频轨音量：${track.name || track.id}`;
+  dirty.value = true;
+  return true;
+}
+function onAudioTrackVolumeInput(trackId: string, event: Event): void {
+  const value = Number((event.target as HTMLInputElement).value);
+  setAudioTrackVolume(trackId, value / 100);
+}
+async function onAudioTrackVolumeCommit(trackId: string): Promise<void> {
+  if (!dirty.value) return;
+  const track = audioTrackRows.value.find((row) => row.id === trackId);
+  if (!track) return;
+  pendingLabel.value = `调整音频轨音量：${track.name || track.id}`;
   await save();
 }
 function ensureProjectTracks(): UiTrack[] | null {

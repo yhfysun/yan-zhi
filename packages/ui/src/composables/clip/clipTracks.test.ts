@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   activeVideoOverlayLayers,
+  applyAudioTrackVolume,
   applyVideoTrackComposition,
   clampWithinGaps,
   ensureTracks,
@@ -209,6 +210,25 @@ describe('applyVideoTrackComposition · 视频轨透明度/混合模式', () => 
     expect(applyVideoTrackComposition(audio, { opacity: 0, blend: 'screen' })).toBe(false);
     expect(audio).not.toHaveProperty('opacity');
     expect(audio).not.toHaveProperty('blend');
+  });
+});
+
+describe('applyAudioTrackVolume · 音频轨整体音量', () => {
+  it('★ 写入 0~2 音量；1 删除冗余字段，视频轨不参与', () => {
+    const track: UiTrack = { id: 'a2', kind: 'audio', items: [] };
+    expect(applyAudioTrackVolume(track, 0.65)).toBe(true);
+    expect(track.volume).toBe(0.65);
+    expect(applyAudioTrackVolume(track, 9)).toBe(true);
+    expect(track.volume).toBe(2);
+    expect(applyAudioTrackVolume(track, -1)).toBe(true);
+    expect(track.volume).toBe(0);
+    expect(applyAudioTrackVolume(track, 1)).toBe(true);
+    expect(track).not.toHaveProperty('volume');
+    expect(applyAudioTrackVolume(track, 1)).toBe(false);
+
+    const video: UiTrack = { id: 'v2', kind: 'video', items: [] };
+    expect(applyAudioTrackVolume(video, 0.5)).toBe(false);
+    expect(video).not.toHaveProperty('volume');
   });
 });
 

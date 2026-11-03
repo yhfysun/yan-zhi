@@ -13,7 +13,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { applyClipOp, type ClipProject } from '../src/services/clip-project';
-import { buildRenderPlan, runRenderPlan } from '../src/services/clip-render';
+import { buildRenderPlan, buildTrackPlan, runRenderPlan } from '../src/services/clip-render';
+import { loadedFromV2 } from '../src/services/clip-project-v3';
 
 const FFMPEG = process.env.YZ_FFMPEG_PATH
   || path.join(process.env.APPDATA || '', 'yan-zhi', 'server-data', 'ffmpeg', 'ffmpeg.exe');
@@ -88,6 +89,28 @@ describe.skipIf(!HAS_FFMPEG)('定时音频层 · ffmpeg 实跑', () => {
     return outFile;
   }
 
+  async function renderTrackVolume(name: string, trackVolume: number): Promise<string> {
+    const project = loadedFromV2({
+      version: 2, name, updatedAt: 1, output: { size: '320x568', fps: 30 },
+      clips: [{ id: 'base', file: base, trimStart: 0, trimEnd: 5 }],
+      audios: [{ id: 'tone', file: tone, start: 0.2, end: 0.8, volume: 0.9 }],
+      layers: [], texts: [],
+    });
+    const audioTrack = project.tracks.find((track) => track.kind === 'audio')!;
+    audioTrack.volume = trackVolume;
+    const workDir = path.join(tmp, `work-${name}`);
+    const outFile = path.join(tmp, `${name}.mp4`);
+    fs.mkdirSync(workDir, { recursive: true });
+    const plan = buildTrackPlan({
+      project, durations: { base: 5, [base]: 5 }, hasAudio: { base: true, [base]: true },
+      workDir, outFile, cover: false,
+    });
+    if (!plan.ok) throw new Error(plan.error);
+    const run = await runRenderPlan(FFMPEG, plan.plan.steps);
+    if (!run.ok) throw new Error(`${run.failedLabel}: ${run.stderr}`);
+    return outFile;
+  }
+
   it('转场音效落在指定时间点：窗口内有声、前后都是静音', async () => {
     const out = await render('sfx', [{ file: tone, start: 1.5, end: 2.1, volume: 0.9 }]);
     const before = meanVolume(out, 0.3, 0.6);
@@ -110,5 +133,14 @@ describe.skipIf(!HAS_FFMPEG)('定时音频层 · ffmpeg 实跑', () => {
     expect(seam).toBeGreaterThan(-40);
     // 交界窗口不比两侧明显低（不断档）；允许 6dB 余量吸收正弦过零与编码抖动
     expect(seam).toBeGreaterThan(Math.min(left, right) - 6);
+  }, 120000);
+
+  it('音频轨整体音量实跑：100% → 25% 后同一素材下降约 12dB', async () => {
+    const full = await renderTrackVolume('track-vol-full', 1);
+    const quarter = await renderTrackVolume('track-vol-quarter', 0.25);
+    const fullDb = meanVolume(full, 0.35, 0.25);
+    const quarterDb = meanVolume(quarter, 0.35, 0.25);
+    expect(fullDb).toBeGreaterThan(-40);
+    expect(fullDb - quarterDb).toBeGreaterThan(8);
   }, 120000);
 });

@@ -151,6 +151,35 @@ describe('buildTrackPlan · 计划层', () => {
     expect(fc).toContain('amix=inputs=4');          // 主音轨(0:a) + 3 条定时音频
   });
 
+  it('★ 音频轨整体音量与 item 音量相乘；仅主音频轨增益也走轨道计划', () => {
+    const extra = loadedFromV2({
+      version: 2, name: 'p', updatedAt: 1, output: { size: '1080x1920', fps: 30 },
+      clips: [{ id: 'c1', file: 'C:/a.mp4', trimStart: 0, trimEnd: 2 }],
+      audios: [{ id: 'a1', file: 'C:/main.wav', start: 0, end: 1, volume: 0.8 }],
+      layers: [], texts: [],
+    });
+    const mainAudio = extra.tracks.find((track) => track.kind === 'audio')!;
+    mainAudio.volume = 0.5;
+    extra.tracks.push({
+      id: 'a2', kind: 'audio', volume: 0.5,
+      items: [{ type: 'audio', id: 'x1', file: 'C:/sfx.wav', start: 0.2, duration: 0.3, volume: 0.6 }],
+    });
+    const mixed = buildTrackPlan(inputOf(extra));
+    expect(mixed.ok).toBe(true);
+    if (!mixed.ok) return;
+    const mixedFc = filterComplexOf(mixed.plan.steps, '混入音频层');
+    expect(mixedFc).toContain('volume=0.400');
+    expect(mixedFc).toContain('volume=0.300');
+
+    extra.tracks = extra.tracks.filter((track) => track.id !== 'a2');
+    const mainOnly = buildTrackPlan(inputOf(extra));
+    expect(mainOnly.ok).toBe(true);
+    if (!mainOnly.ok) return;
+    expect(mainOnly.plan).not.toEqual(buildRenderPlan(inputOf(extra)));
+    const mainFc = filterComplexOf(mainOnly.plan.steps, '混入音频层');
+    expect(mainFc).toContain('volume=0.400');
+  });
+
   it('★ 非主轨的 mixed 音轨被跳过；blend 走中性色画布 + blend', () => {
     const p = singleTrack();
     p.tracks.push(

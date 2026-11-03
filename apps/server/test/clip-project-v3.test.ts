@@ -181,6 +181,19 @@ describe('v2ViewsOfV3 · 反向投影', () => {
     expect(v3.timedLayers.some((l) => l.id === 'h1' && l.kind === 'hologram')).toBe(true);
     expect(v2ViewsOfV3(v3).layers.some((l) => l.id === 'h1')).toBe(true);
   });
+
+  it('★ 音频轨整体音量原样保留；v2 audios 不预乘，避免读写成倍丢音量', () => {
+    const v3 = migrateV2ToV3(v2Fixture());
+    const audio = v3.tracks.find((track) => track.kind === 'audio')!;
+    audio.volume = 0.5;
+    (audio.items[0] as { volume?: number }).volume = 0.8;
+    const views = v2ViewsOfV3(v3);
+    expect(views.audios?.[0].volume).toBe(0.8);
+    const written = buildProjectV3ForWrite(views);
+    const writtenAudio = written.tracks.find((track) => track.kind === 'audio')!;
+    expect(writtenAudio.volume).toBe(0.5);
+    expect((writtenAudio.items[0] as { volume?: number }).volume).toBe(0.8);
+  });
 });
 
 describe('validateProjectV3 · 轨道校验', () => {
@@ -226,6 +239,20 @@ describe('validateProjectV3 · 轨道校验', () => {
     const wrong = base();
     wrong.tracks[0].items.push({ type: 'audio', id: 'a9', file: 'C:/a.wav', start: 0, duration: 1 });
     expect(validateProjectV3(wrong).ok).toBe(false);
+  });
+
+  it('★ 音频轨整体音量只接受 0~2，非法值直接拒绝', () => {
+    const ok = base();
+    ok.tracks.find((track) => track.kind === 'audio')!.volume = 0.5;
+    expect(validateProjectV3(ok).ok).toBe(true);
+
+    for (const volume of [-0.1, 2.1, Number.NaN]) {
+      const bad = base();
+      bad.tracks.find((track) => track.kind === 'audio')!.volume = volume;
+      const r = validateProjectV3(bad);
+      expect(r.ok).toBe(false);
+      expect(r.ok === false && r.error).toContain('音量');
+    }
   });
 
   it('★ 版本/结构非法 → 拒绝', () => {
