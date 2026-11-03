@@ -62,7 +62,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, watch } from 'vue';
-import { API_BASE, getLicenseCode } from '../../api/client';
+import { API_BASE, mediaAuthQuery } from '../../api/client';
 
 const props = withDefaults(defineProps<{
   /** 预览种类（与 /api/plugin/clip-mode/effect-preview 的 kind 一致） */
@@ -111,8 +111,7 @@ function staggerMount() {
 onMounted(staggerMount);
 
 function urlOf(id: string): string {
-  const code = getLicenseCode();
-  const qs = code ? `&license=${encodeURIComponent(code)}` : '';
+  const qs = mediaAuthQuery();
   // 重试时带 r=n：URL 变了浏览器才会丢掉上一次失败的缓存重新拉
   const n = attempts.get(id) || 0;
   const rq = n ? `&r=${n}` : '';
