@@ -5128,6 +5128,10 @@ try { db.exec("ALTER TABLE scheduled_task ADD COLUMN task_type TEXT DEFAULT 'cha
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN workflow_bundle_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN workflow_inputs_json TEXT'); } catch {}
 try { db.exec("ALTER TABLE scheduled_task ADD COLUMN workflow_agent_id TEXT"); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_id TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_name TEXT'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_version INTEGER'); } catch {}
+try { db.exec('ALTER TABLE scheduled_task ADD COLUMN runbook_inputs_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE conversation ADD COLUMN scheduled_task_id TEXT'); } catch {}
 // 定时任务分组
 try { db.exec('ALTER TABLE scheduled_task ADD COLUMN group_id TEXT'); } catch {}

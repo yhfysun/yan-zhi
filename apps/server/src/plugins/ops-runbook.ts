@@ -69,6 +69,7 @@ export interface OpsRunbookRun {
   connectionName: string;
   status: OpsRunbookRunStatus;
   approvalId?: string;
+  scheduledTaskId?: string;
   inputParams: Record<string, string>;
   snapshot: OpsRunbook;
   stepResults: OpsRunbookStepResult[];

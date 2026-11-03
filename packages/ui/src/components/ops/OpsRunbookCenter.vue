@@ -56,6 +56,7 @@
               >
                 取消运行
               </el-button>
+              <span v-if="currentRun.scheduledTaskId" class="orbc-run-source">定时</span>
               <span class="orbc-run-status" :class="currentRun.status">{{ runStatusLabel(currentRun.status) }}</span>
             </div>
           </div>
@@ -108,6 +109,7 @@
             @click="currentRun = run"
           >
             <span class="orbc-run-status" :class="run.status">{{ runStatusLabel(run.status) }}</span>
+            <span v-if="run.scheduledTaskId" class="orbc-run-source">定时</span>
             <span>v{{ run.runbookVersion }}</span>
             <span>{{ formatTime(run.startedAt) }}</span>
             <span>{{ run.stepResults.length }} 步</span>
@@ -265,6 +267,7 @@ interface RunbookRun {
   runbookName: string;
   runbookVersion: number;
   status: 'running' | 'success' | 'failed' | 'rolled_back' | 'cancelled';
+  scheduledTaskId?: string;
   inputParams: Record<string, string>;
   stepResults: StepResult[];
   rollbackResults: StepResult[];
@@ -689,6 +692,7 @@ onMounted(() => { void load(); });
 .orbc-run, .orbc-versions, .orbc-history { border-top: 1px solid var(--color-border); padding-top: 9px; }
 .orbc-run-head { font-size: 12px; font-weight: 600; }
 .orbc-run-head-actions { display: inline-flex; align-items: center; gap: 4px; }
+.orbc-run-source { font-size: 10px; color: var(--color-primary); }
 .orbc-run-params { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 5px; font-size: 10.5px; color: var(--color-text-secondary); }
 .orbc-run-params span { overflow-wrap: anywhere; }
 .orbc-run-error { margin-top: 5px; font-size: 11px; color: var(--color-danger); overflow-wrap: anywhere; }

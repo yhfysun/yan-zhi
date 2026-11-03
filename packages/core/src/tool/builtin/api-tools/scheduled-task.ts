@@ -10,12 +10,16 @@ export function registerScheduledTaskTools(m: Map<ApiModuleName, ToolDefinition[
     },
     {
       name: 'api_scheduled_task_create',
-      description: '创建定时任务：需指定 name 与 prompt，调度方式二选一——intervalMinutes（每隔 N 分钟）或 cronExpr（5 字段分钟粒度，如 "30 9 * * *" 表示每天 9:30）。可绑定 agentId/platformId/modelId/spaceId/conversationId，创建后默认启用',
+      description: '创建定时任务：taskType=chat 时需 prompt；taskType=runbook 时需 runbookId 与 runbookInputs，自动固定当前 Runbook 版本。调度方式二选一——intervalMinutes（每隔 N 分钟）或 cronExpr（5 字段分钟粒度，如 "30 9 * * *" 表示每天 9:30）。可绑定 agentId/platformId/modelId/spaceId/conversationId，创建后默认启用',
       inputSchema: {
         type: 'object',
         properties: {
           name: { type: 'string', description: '任务名称' },
-          prompt: { type: 'string', description: '每次触发时交给智能体执行的提示词' },
+          taskType: { type: 'string', enum: ['chat', 'runbook'], description: 'chat=提示词任务；runbook=固定版本运维流程。默认 chat' },
+          prompt: { type: 'string', description: 'chat 任务必填：每次触发时交给智能体执行的提示词' },
+          runbookId: { type: 'string', description: 'runbook 任务必填：要执行的 Runbook id' },
+          runbookVersion: { type: 'number', description: '可选，固定历史版本；缺省固定当前版本' },
+          runbookInputs: { type: 'object', additionalProperties: { type: 'string' }, description: 'runbook 任务参数' },
           intervalMinutes: { type: 'number', description: '每隔多少分钟执行一次；与 cronExpr 二选一' },
           cronExpr: { type: 'string', description: 'cron 表达式（5 字段分钟粒度）；与 intervalMinutes 二选一' },
           agentId: { type: 'string', description: '可选，指定执行该任务的智能体 id' },
@@ -25,7 +29,7 @@ export function registerScheduledTaskTools(m: Map<ApiModuleName, ToolDefinition[
           conversationId: { type: 'string', description: '可选，复用已有会话（必须是当前用户自己的会话，否则会被忽略）' },
           enabled: { type: 'boolean', description: '是否启用，默认 true' },
         },
-        required: ['name', 'prompt'],
+        required: ['name'],
       },
     },
     {
@@ -35,8 +39,12 @@ export function registerScheduledTaskTools(m: Map<ApiModuleName, ToolDefinition[
         type: 'object',
         properties: {
           id: { type: 'string' },
+          taskType: { type: 'string', enum: ['chat', 'runbook'] },
           name: { type: 'string' },
           prompt: { type: 'string' },
+          runbookId: { type: 'string' },
+          runbookVersion: { type: 'number' },
+          runbookInputs: { type: 'object', additionalProperties: { type: 'string' } },
           intervalMinutes: { type: 'number' },
           cronExpr: { type: 'string' },
           agentId: { type: 'string' },

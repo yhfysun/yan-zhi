@@ -9,6 +9,7 @@ import { buildWorkflowInputFieldDefs } from './workflow-delegate.js';
 import { createLogger } from './logger.js';
 import { resolveFirstModel } from './model-pools.js';
 import { TOKEN_DEAD_PLATFORM_IDS_SQL } from './token-pool.js';
+import { startScheduledRunbookExecution } from '../plugins/ops-shell.js';
 const logger = createLogger('scheduled-tasks');
 
 const MINUTE_MS = 60_000;
@@ -299,6 +300,45 @@ async function runWorkflowScheduledTask(
   return finishTask(task, convId, now, true);
 }
 
+async function runRunbookScheduledTask(
+  task: any,
+  convId: string,
+  userId: string,
+  now: number,
+): Promise<ScheduledTaskRunResult> {
+  const inputParams: Record<string, string> = (() => {
+    try {
+      const parsed = JSON.parse(task.runbook_inputs_json || '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  })();
+  try {
+    const run = await startScheduledRunbookExecution({
+      userId,
+      scheduledTaskId: task.id,
+      runbookId: String(task.runbook_id || ''),
+      runbookVersion: Number(task.runbook_version),
+      inputParams,
+    });
+    db.prepare(INSERT_MESSAGE).run(
+      uuid(), convId, userId, 'assistant',
+      `[定时任务] 已启动 Runbook「${run.runbookName}」v${run.runbookVersion}（运行 ${run.runId}），执行结果会写入 Runbook 历史。`,
+      0, Date.now(),
+    );
+    return finishTask(task, convId, now, true);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    db.prepare(INSERT_MESSAGE).run(
+      uuid(), convId, userId, 'assistant',
+      `[定时任务执行失败] ${task.name}：${message}`,
+      0, Date.now(),
+    );
+    return finishTask(task, convId, now, false, message);
+  }
+}
+
 /** 执行一次定时任务：复用/创建会话 → 创建后端任务走 ReAct 循环 → 更新调度状态 */
 export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResult> {
   const now = Date.now();
@@ -327,6 +367,9 @@ export async function runScheduledTask(task: any): Promise<ScheduledTaskRunResul
   //     走 chat 那套会白算一遍模型、还会把 `[定时任务] xxx` 拼进 prompt（工作流不读 prompt）。
   if (task.task_type === 'workflow') {
     return runWorkflowScheduledTask(task, convId, userId, now);
+  }
+  if (task.task_type === 'runbook') {
+    return runRunbookScheduledTask(task, convId, userId, now);
   }
 
   // 2. 确定模型：优先 task 指定，其次 agent 默认，最后任意启用 LLM

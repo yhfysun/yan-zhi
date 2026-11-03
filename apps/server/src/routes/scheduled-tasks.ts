@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../auth.js';
 import { db } from '../db.js';
 import { computeNextRun, nextCronTime, runScheduledTask, refreshScheduledTaskScheduler, parseSchedule } from '../services/scheduled-tasks.js';
+import { prepareScheduledRunbookBinding } from '../plugins/ops-shell.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -21,10 +22,14 @@ function rowToTask(r: any) {
     spaceId: r.space_id,
     groupId: r.group_id,
     // 任务类型与工作流字段（DB 列早已预留，此前只差这层读写）
-    taskType: r.task_type === 'workflow' ? 'workflow' : 'chat',
+    taskType: r.task_type === 'workflow' ? 'workflow' : r.task_type === 'runbook' ? 'runbook' : 'chat',
     workflowAgentId: r.workflow_agent_id ?? null,
     workflowBundle: (() => { try { return r.workflow_bundle_json ? JSON.parse(r.workflow_bundle_json) : null; } catch { return null; } })(),
     workflowInputs: (() => { try { return r.workflow_inputs_json ? JSON.parse(r.workflow_inputs_json) : null; } catch { return null; } })(),
+    runbookId: r.runbook_id ?? null,
+    runbookName: r.runbook_name ?? null,
+    runbookVersion: r.runbook_version ?? null,
+    runbookInputs: (() => { try { return r.runbook_inputs_json ? JSON.parse(r.runbook_inputs_json) : null; } catch { return null; } })(),
     schedule: parseSchedule(r.schedule_json),
     expireAt: r.expire_at ?? null,
     enabled: !!r.enabled,
@@ -60,23 +65,50 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // POST /api/scheduled-tasks —— 创建任务
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const { name, prompt, cronExpr, intervalMinutes, conversationId, agentId, platformId, modelId, spaceId, groupId, schedule, expireAt, enabled } = req.body || {};
-  const { taskType, workflowAgentId, workflowBundle, workflowInputs } = req.body || {};
+  const {
+    taskType, workflowAgentId, workflowBundle, workflowInputs,
+    runbookId, runbookVersion, runbookInputs,
+  } = req.body || {};
   if (!name || !String(name).trim()) { res.status(400).json({ error: '任务名称为必填项' }); return; }
   const scheduleError = validateSchedule(intervalMinutes, cronExpr, schedule);
   if (scheduleError) { res.status(400).json({ error: scheduleError }); return; }
 
+  const normalizedTaskType = taskType === 'workflow' ? 'workflow' : taskType === 'runbook' ? 'runbook' : 'chat';
   // 工作流型任务必须指定工作流（否则调度时才发现跑不了，白等一个周期）
-  const isWorkflowTask = taskType === 'workflow';
+  const isWorkflowTask = normalizedTaskType === 'workflow';
+  const isRunbookTask = normalizedTaskType === 'runbook';
   if (isWorkflowTask && !workflowAgentId && !workflowBundle?.agent?.workflow) {
     res.status(400).json({ error: '工作流任务需要指定 workflowAgentId' });
     return;
   }
-  if (!isWorkflowTask && !prompt) {
+  if (!isWorkflowTask && !isRunbookTask && !prompt) {
     res.status(400).json({ error: '对话任务需要填写 prompt' });
     return;
+  }
+  let runbookBinding: Awaited<ReturnType<typeof prepareScheduledRunbookBinding>> | null = null;
+  if (isRunbookTask) {
+    if (!runbookId) {
+      res.status(400).json({ error: 'Runbook 任务需要指定 runbookId' });
+      return;
+    }
+    if (runbookInputs !== undefined && (!runbookInputs || typeof runbookInputs !== 'object' || Array.isArray(runbookInputs))) {
+      res.status(400).json({ error: 'Runbook 参数必须是对象' });
+      return;
+    }
+    try {
+      runbookBinding = await prepareScheduledRunbookBinding(
+        userId,
+        String(runbookId),
+        runbookInputs || {},
+        runbookVersion === undefined || runbookVersion === null ? undefined : Number(runbookVersion),
+      );
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'Runbook 调度配置无效' });
+      return;
+    }
   }
 
   const id = uuid();
@@ -84,16 +116,20 @@ router.post('/', (req: Request, res: Response) => {
   const isEnabled = enabled === undefined ? true : !!enabled;
   const scheduleJson = schedule ? JSON.stringify(schedule) : null;
   db.prepare(
-    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, enabled, task_type, workflow_agent_id, workflow_bundle_json, workflow_inputs_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
+    'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, group_id, schedule_json, expire_at, enabled, task_type, workflow_agent_id, workflow_bundle_json, workflow_inputs_json, runbook_id, runbook_name, runbook_version, runbook_inputs_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
   ).run(
     id, userId, String(name).trim(), prompt || null, cronExpr || null, intervalMinutes || null,
     ownConversationId(userId, conversationId), agentId || null, platformId || null, modelId || null, spaceId || null, groupId || null,
     scheduleJson, expireAt || null,
     isEnabled ? 1 : 0,
-    isWorkflowTask ? 'workflow' : 'chat',
+    normalizedTaskType,
     workflowAgentId || null,
     workflowBundle ? JSON.stringify(workflowBundle) : null,
     workflowInputs ? JSON.stringify(workflowInputs) : null,
+    runbookBinding?.runbookId || null,
+    runbookBinding?.runbookName || null,
+    runbookBinding?.runbookVersion || null,
+    runbookBinding ? JSON.stringify(runbookBinding.inputParams) : null,
     isEnabled ? computeNextRun({ interval_minutes: intervalMinutes, cron_expr: cronExpr, schedule_json: scheduleJson, expire_at: expireAt || null }, now) : null,
     now, now,
   );
@@ -103,13 +139,29 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 // PATCH /api/scheduled-tasks/:id —— 更新任务（含启用/停用）
-router.patch('/:id', (req: Request, res: Response) => {
+router.patch('/:id', async (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const id = req.params.id;
   const existing = db.prepare('SELECT * FROM scheduled_task WHERE id = ? AND user_id = ?').get(id, userId) as any;
   if (!existing) { res.status(404).json({ error: '任务不存在' }); return; }
 
   const body = req.body || {};
+  const nextTaskType = body.taskType !== undefined
+    ? (body.taskType === 'workflow' ? 'workflow' : body.taskType === 'runbook' ? 'runbook' : 'chat')
+    : (existing.task_type === 'workflow' ? 'workflow' : existing.task_type === 'runbook' ? 'runbook' : 'chat');
+  const nextPrompt = body.prompt !== undefined ? body.prompt : existing.prompt;
+  if (nextTaskType === 'chat' && !String(nextPrompt || '').trim()) {
+    res.status(400).json({ error: '对话任务需要填写 prompt' });
+    return;
+  }
+  const nextWorkflowId = body.workflowAgentId !== undefined ? body.workflowAgentId : existing.workflow_agent_id;
+  const nextWorkflowBundle = body.workflowBundle !== undefined
+    ? body.workflowBundle
+    : (() => { try { return existing.workflow_bundle_json ? JSON.parse(existing.workflow_bundle_json) : null; } catch { return null; } })();
+  if (nextTaskType === 'workflow' && !nextWorkflowId && !nextWorkflowBundle?.agent?.workflow) {
+    res.status(400).json({ error: '工作流任务需要指定 workflowAgentId' });
+    return;
+  }
   const intervalMinutes = body.intervalMinutes !== undefined ? body.intervalMinutes : existing.interval_minutes;
   const cronExpr = body.cronExpr !== undefined ? body.cronExpr : existing.cron_expr;
   const scheduleBody = body.schedule !== undefined ? body.schedule : parseSchedule(existing.schedule_json);
@@ -136,14 +188,48 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (body.schedule !== undefined) { sets.push('schedule_json = ?'); vals.push(body.schedule ? JSON.stringify(body.schedule) : null); }
   if (body.expireAt !== undefined) { sets.push('expire_at = ?'); vals.push(body.expireAt || null); }
   if (body.enabled !== undefined) { sets.push('enabled = ?'); vals.push(body.enabled ? 1 : 0); }
-  // 工作流字段：允许改类型与绑定的工作流/入参（改类型时校验对应的必填项）
+  // 任务类型与固定绑定：Runbook 保存时再次校验参数和生产连接安全策略
   if (body.taskType !== undefined) {
-    const t = body.taskType === 'workflow' ? 'workflow' : 'chat';
-    sets.push('task_type = ?'); vals.push(t);
+    sets.push('task_type = ?'); vals.push(nextTaskType);
   }
   if (body.workflowAgentId !== undefined) { sets.push('workflow_agent_id = ?'); vals.push(body.workflowAgentId || null); }
   if (body.workflowBundle !== undefined) { sets.push('workflow_bundle_json = ?'); vals.push(body.workflowBundle ? JSON.stringify(body.workflowBundle) : null); }
   if (body.workflowInputs !== undefined) { sets.push('workflow_inputs_json = ?'); vals.push(body.workflowInputs ? JSON.stringify(body.workflowInputs) : null); }
+  if (nextTaskType === 'runbook') {
+    const runbookBindingChanged =
+      existing.task_type !== 'runbook' ||
+      body.runbookId !== undefined ||
+      body.runbookVersion !== undefined ||
+      body.runbookInputs !== undefined;
+    if (runbookBindingChanged) {
+      const nextRunbookId = body.runbookId !== undefined ? body.runbookId : existing.runbook_id;
+      if (!nextRunbookId) { res.status(400).json({ error: 'Runbook 任务需要指定 runbookId' }); return; }
+      const existingInputs = (() => {
+        try { return JSON.parse(existing.runbook_inputs_json || '{}'); } catch { return {}; }
+      })();
+      const rawInputs = body.runbookInputs !== undefined ? body.runbookInputs : existingInputs;
+      if (!rawInputs || typeof rawInputs !== 'object' || Array.isArray(rawInputs)) {
+        res.status(400).json({ error: 'Runbook 参数必须是对象' });
+        return;
+      }
+      const versionRaw = body.runbookVersion !== undefined ? body.runbookVersion : existing.runbook_version;
+      try {
+        const binding = await prepareScheduledRunbookBinding(
+          userId,
+          String(nextRunbookId),
+          rawInputs,
+          versionRaw === undefined || versionRaw === null ? undefined : Number(versionRaw),
+        );
+        sets.push('runbook_id = ?', 'runbook_name = ?', 'runbook_version = ?', 'runbook_inputs_json = ?');
+        vals.push(binding.runbookId, binding.runbookName, binding.runbookVersion, JSON.stringify(binding.inputParams));
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : 'Runbook 调度配置无效' });
+        return;
+      }
+    }
+  } else if (existing.task_type === 'runbook') {
+    sets.push('runbook_id = NULL', 'runbook_name = NULL', 'runbook_version = NULL', 'runbook_inputs_json = NULL');
+  }
   if (sets.length === 0) { res.json({ data: rowToTask(existing) }); return; }
 
   // 停用清空 next_run_at；调度配置变化或重新启用时从现在起重算

@@ -36,6 +36,7 @@ describe('OpsRunbookCenter', () => {
     expect(RUNBOOK).toContain('/runbooks/runs/${');
     expect(RUNBOOK).toContain('/cancel');
     expect(RUNBOOK).toContain("cancelled: '已取消'");
+    expect(RUNBOOK).toContain('scheduledTaskId');
   });
 
   it('版本历史可查看并恢复为新的当前版本', () => {

@@ -67,6 +67,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
         connection_name TEXT NOT NULL,
         status TEXT NOT NULL,
         approval_id TEXT,
+        scheduled_task_id TEXT,
         input_params_json TEXT NOT NULL DEFAULT '{}',
         snapshot_json TEXT NOT NULL,
         step_results_json TEXT NOT NULL DEFAULT '[]',
@@ -81,6 +82,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     for (const sql of [
       "ALTER TABLE ops_runbook ADD COLUMN parameters_json TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE ops_runbook_run ADD COLUMN input_params_json TEXT NOT NULL DEFAULT '{}'",
+      "ALTER TABLE ops_runbook_run ADD COLUMN scheduled_task_id TEXT",
     ]) {
       try { database.exec(sql); } catch { /* 列已存在 */ }
     }
@@ -111,6 +113,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     connectionName: row.connection_name,
     status: row.status as OpsRunbookRunStatus,
     approvalId: row.approval_id || undefined,
+    scheduledTaskId: row.scheduled_task_id || undefined,
     inputParams: parseJson(row.input_params_json, {}),
     snapshot: parseJson(row.snapshot_json, {} as OpsRunbook),
     stepResults: parseJson(row.step_results_json, []),
@@ -200,6 +203,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     connectionName: string,
     approvalId?: string,
     inputParams: Record<string, string> = {},
+    scheduledTaskId?: string,
   ): OpsRunbookRun => {
     const run: OpsRunbookRun = {
       id: `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -210,6 +214,7 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
       connectionName,
       status: 'running',
       approvalId,
+      scheduledTaskId,
       inputParams,
       snapshot: JSON.parse(JSON.stringify(runbook)),
       stepResults: [],
@@ -219,11 +224,12 @@ export function createOpsRunbookStore(database: RunbookDatabase) {
     database.prepare(`
       INSERT INTO ops_runbook_run
         (id, runbook_id, runbook_name, runbook_version, connection_id, connection_name, status,
-         approval_id, input_params_json, snapshot_json, step_results_json, rollback_results_json, started_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?)
+         approval_id, scheduled_task_id, input_params_json, snapshot_json, step_results_json, rollback_results_json, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?)
     `).run(
       run.id, run.runbookId, run.runbookName, run.runbookVersion, run.connectionId,
-      run.connectionName, run.status, run.approvalId || null, JSON.stringify(run.inputParams),
+      run.connectionName, run.status, run.approvalId || null, run.scheduledTaskId || null,
+      JSON.stringify(run.inputParams),
       JSON.stringify(run.snapshot), run.startedAt,
     );
     return run;

@@ -47,6 +47,8 @@ import {
   type OpsRunbook,
 } from './ops-runbook.js';
 import { createOpsRunbookStore } from './ops-runbook-store.js';
+import { prepareUnattendedRunbook } from './ops-runbook-schedule.js';
+import { isPluginGranted, pluginAclBypassed } from '../plugin-acl.js';
 const logger = createLogger('ops-shell');
 
 export const OPS_SHELL_ID = 'ops-shell';
@@ -54,10 +56,10 @@ export const OPS_SHELL_ID = 'ops-shell';
 export const opsShellManifest: PluginManifest = {
   id: OPS_SHELL_ID,
   name: '运维',
-  version: '0.4.0',
+  version: '0.5.0',
   category: '操作',
   description:
-    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询、常驻巡检告警与版本化 Runbook；「更多 → 运维」打开运维控制台：命令终端 / 容器面板 / SQL 查询 / 事件中心 / Runbook + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
+    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询、常驻巡检告警与版本化/定时 Runbook；「更多 → 运维」打开运维控制台：命令终端 / 容器面板 / SQL 查询 / 事件中心 / Runbook + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
   permissions: ['remote-shell', 'shell', 'network'],
   contributes: {
     // ★ 模式运行时化（P3）：模式定义随插件声明，前端动态合并（替代构建期硬编码表的部分消费方）
@@ -369,13 +371,14 @@ async function startRunbookExecution(
   conn: StoredConnection,
   approvalId?: string,
   inputParams: Record<string, string> = {},
+  scheduledTaskId?: string,
 ) {
   if (runbookStore.hasRunning(runbook.id)) throw new Error('该 Runbook 已有运行中的任务');
-  const run = runbookStore.createRun(runbook, conn.name, approvalId, inputParams);
+  const run = runbookStore.createRun(runbook, conn.name, approvalId, inputParams, scheduledTaskId);
   activeRunbookCancels.delete(run.id);
   await audit('runbook.start', {
     connection: conn.name,
-    detail: `${runbook.name} v${runbook.version}（${run.id}${approvalId ? `，审批 ${approvalId}` : ''}）`,
+    detail: `${runbook.name} v${runbook.version}（${run.id}${approvalId ? `，审批 ${approvalId}` : ''}${scheduledTaskId ? `，定时任务 ${scheduledTaskId}` : ''}）`,
     ok: true,
   });
   void executeRunbook(runbook, {
@@ -418,6 +421,83 @@ async function startRunbookExecution(
     activeRunbookCancels.delete(run.id);
   });
   return run;
+}
+
+export interface ScheduledRunbookBinding {
+  runbookId: string;
+  runbookName: string;
+  runbookVersion: number;
+  inputParams: Record<string, string>;
+}
+
+function assertScheduledOpsAccess(userId: string): void {
+  if (!pluginStorage) throw new Error('运维插件未启用');
+  if (!pluginAclBypassed(userId) && !isPluginGranted(OPS_SHELL_ID, userId)) {
+    throw new Error('当前用户没有运维插件权限');
+  }
+}
+
+export async function prepareScheduledRunbookBinding(
+  userId: string,
+  runbookId: string,
+  rawInputs: Record<string, unknown> = {},
+  pinnedVersion?: number,
+): Promise<ScheduledRunbookBinding> {
+  assertScheduledOpsAccess(userId);
+  const current = runbookStore.get(runbookId);
+  if (!current) throw new Error('Runbook 不存在');
+  if (!current.enabled) throw new Error('Runbook 已停用');
+  const version = pinnedVersion === undefined ? current.version : Number(pinnedVersion);
+  if (!Number.isInteger(version) || version < 1) throw new Error('Runbook 版本非法');
+  const snapshot = version === current.version ? current : runbookStore.getVersion(runbookId, version)?.snapshot;
+  if (!snapshot) throw new Error('Runbook 版本不存在');
+  const conn = (await loadConnections()).find((item) => item.id === snapshot.connectionId);
+  if (!conn) throw new Error('Runbook 绑定连接不存在');
+  if (conn.type === 'database') throw new Error('Runbook 暂不支持数据库连接');
+  const prepared = prepareUnattendedRunbook(snapshot, isProductionTag(conn.tag), rawInputs);
+  if (prepared.error) throw new Error(prepared.error);
+  return {
+    runbookId: snapshot.id,
+    runbookName: snapshot.name,
+    runbookVersion: snapshot.version,
+    inputParams: prepared.inputParams!,
+  };
+}
+
+export async function startScheduledRunbookExecution(input: {
+  userId: string;
+  scheduledTaskId: string;
+  runbookId: string;
+  runbookVersion: number;
+  inputParams: Record<string, string>;
+}): Promise<{ runId: string; runbookName: string; runbookVersion: number }> {
+  assertScheduledOpsAccess(input.userId);
+  const current = runbookStore.get(input.runbookId);
+  if (!current) throw new Error('Runbook 不存在');
+  if (!current.enabled) throw new Error('Runbook 已停用');
+  const snapshot = runbookStore.getVersion(input.runbookId, input.runbookVersion)?.snapshot;
+  if (!snapshot) throw new Error('Runbook 固定版本不存在');
+  const conn = (await loadConnections()).find((item) => item.id === snapshot.connectionId);
+  if (!conn) throw new Error('Runbook 绑定连接不存在');
+  if (conn.type === 'database') throw new Error('Runbook 暂不支持数据库连接');
+  const prepared = prepareUnattendedRunbook(
+    snapshot,
+    isProductionTag(conn.tag),
+    input.inputParams,
+  );
+  if (prepared.error) throw new Error(prepared.error);
+  const run = await startRunbookExecution(
+    prepared.runbook!,
+    conn,
+    undefined,
+    prepared.inputParams!,
+    input.scheduledTaskId,
+  );
+  return {
+    runId: run.id,
+    runbookName: run.runbookName,
+    runbookVersion: run.runbookVersion,
+  };
 }
 
 function toClientView(c: StoredConnection) {

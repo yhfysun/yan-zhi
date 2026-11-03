@@ -129,6 +129,7 @@ import {
   runScheduledTask,
   refreshScheduledTaskScheduler,
 } from '../services/scheduled-tasks.js';
+import { prepareScheduledRunbookBinding } from '../plugins/ops-shell.js';
 import {
   listOllamaMarket,
   pullOllamaModel,
@@ -4875,20 +4876,48 @@ export async function executeApiTool(
         const uid = requireUser(userId);
         const name = str(args, 'name');
         if (!name.trim()) return fail('任务名称为必填项');
+        const taskType = str(args, 'taskType') === 'runbook' ? 'runbook' : 'chat';
+        const prompt = str(args, 'prompt');
+        if (taskType === 'chat' && !prompt.trim()) return fail('对话任务需要填写 prompt');
         const intervalMinutes = args.intervalMinutes == null ? null : num(args, 'intervalMinutes', 0);
         const cronExpr = args.cronExpr == null ? null : str(args, 'cronExpr');
         const scheduleError = validateTaskSchedule(intervalMinutes, cronExpr);
         if (scheduleError) return fail(scheduleError);
+        let runbookBinding: Awaited<ReturnType<typeof prepareScheduledRunbookBinding>> | null = null;
+        if (taskType === 'runbook') {
+          const runbookId = str(args, 'runbookId');
+          if (!runbookId) return fail('Runbook 任务需要指定 runbookId');
+          if (args.runbookInputs !== undefined && (!args.runbookInputs || typeof args.runbookInputs !== 'object' || Array.isArray(args.runbookInputs))) {
+            return fail('Runbook 参数必须是对象');
+          }
+          const rawInputs = args.runbookInputs && typeof args.runbookInputs === 'object' && !Array.isArray(args.runbookInputs)
+            ? args.runbookInputs as Record<string, unknown>
+            : {};
+          try {
+            runbookBinding = await prepareScheduledRunbookBinding(
+              uid,
+              runbookId,
+              rawInputs,
+              args.runbookVersion == null ? undefined : num(args, 'runbookVersion', 1),
+            );
+          } catch (error) {
+            return fail(error instanceof Error ? error.message : 'Runbook 调度配置无效');
+          }
+        }
         const id = uuid();
         const now = Date.now();
         const isEnabled = args.enabled === undefined ? true : !!args.enabled;
         db.prepare(
-          'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, enabled, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
+          'INSERT INTO scheduled_task (id, user_id, name, prompt, cron_expr, interval_minutes, conversation_id, agent_id, platform_id, model_id, space_id, enabled, task_type, runbook_id, runbook_name, runbook_version, runbook_inputs_json, last_run_at, next_run_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)',
         ).run(
-          id, uid, name.trim(), str(args, 'prompt') || null, cronExpr, intervalMinutes,
+          id, uid, name.trim(), prompt || null, cronExpr, intervalMinutes,
           ownConversationId(uid, str(args, 'conversationId')), str(args, 'agentId') || null,
           str(args, 'platformId') || null, str(args, 'modelId') || null, str(args, 'spaceId') || null,
-          isEnabled ? 1 : 0,
+          isEnabled ? 1 : 0, taskType,
+          runbookBinding?.runbookId || null,
+          runbookBinding?.runbookName || null,
+          runbookBinding?.runbookVersion || null,
+          runbookBinding ? JSON.stringify(runbookBinding.inputParams) : null,
           isEnabled ? computeNextRun({ interval_minutes: intervalMinutes, cron_expr: cronExpr }, now) : null,
           now, now,
         );
@@ -4900,6 +4929,13 @@ export async function executeApiTool(
         const id = str(args, 'id');
         const existing = db.prepare('SELECT * FROM scheduled_task WHERE id = ? AND user_id = ?').get(id, uid) as any;
         if (!existing) return fail('任务不存在');
+        const nextTaskType = args.taskType !== undefined
+          ? (str(args, 'taskType') === 'runbook' ? 'runbook' : 'chat')
+          : (existing.task_type === 'runbook' ? 'runbook' : 'chat');
+        const nextPrompt = args.prompt !== undefined ? str(args, 'prompt') : existing.prompt;
+        if (nextTaskType === 'chat' && !String(nextPrompt || '').trim()) {
+          return fail('对话任务需要填写 prompt');
+        }
 
         const intervalMinutes = args.intervalMinutes !== undefined ? (args.intervalMinutes == null ? null : num(args, 'intervalMinutes', 0)) : existing.interval_minutes;
         const cronExpr = args.cronExpr !== undefined ? (args.cronExpr == null ? null : str(args, 'cronExpr')) : existing.cron_expr;
@@ -4912,6 +4948,7 @@ export async function executeApiTool(
           if (!String(args.name).trim()) return fail('任务名称不能为空');
           sets.push('name = ?'); vals.push(String(args.name).trim());
         }
+        if (args.taskType !== undefined) { sets.push('task_type = ?'); vals.push(nextTaskType); }
         if (args.prompt !== undefined) { sets.push('prompt = ?'); vals.push(str(args, 'prompt') || null); }
         if (args.cronExpr !== undefined) { sets.push('cron_expr = ?'); vals.push(cronExpr); }
         if (args.intervalMinutes !== undefined) { sets.push('interval_minutes = ?'); vals.push(intervalMinutes); }
@@ -4921,6 +4958,43 @@ export async function executeApiTool(
         if (args.modelId !== undefined) { sets.push('model_id = ?'); vals.push(str(args, 'modelId') || null); }
         if (args.spaceId !== undefined) { sets.push('space_id = ?'); vals.push(str(args, 'spaceId') || null); }
         if (args.enabled !== undefined) { sets.push('enabled = ?'); vals.push(args.enabled ? 1 : 0); }
+        if (nextTaskType === 'runbook') {
+          const bindingChanged =
+            existing.task_type !== 'runbook' ||
+            args.runbookId !== undefined ||
+            args.runbookVersion !== undefined ||
+            args.runbookInputs !== undefined;
+          if (bindingChanged) {
+            const runbookId = args.runbookId !== undefined ? str(args, 'runbookId') : String(existing.runbook_id || '');
+            if (!runbookId) return fail('Runbook 任务需要指定 runbookId');
+            if (args.runbookInputs !== undefined && (!args.runbookInputs || typeof args.runbookInputs !== 'object' || Array.isArray(args.runbookInputs))) {
+              return fail('Runbook 参数必须是对象');
+            }
+            const rawInputs = args.runbookInputs !== undefined
+              ? (args.runbookInputs && typeof args.runbookInputs === 'object' && !Array.isArray(args.runbookInputs)
+                ? args.runbookInputs as Record<string, unknown>
+                : {})
+              : (() => {
+                  try { return JSON.parse(existing.runbook_inputs_json || '{}'); } catch { return {}; }
+                })();
+            try {
+              const binding = await prepareScheduledRunbookBinding(
+                uid,
+                runbookId,
+                rawInputs,
+                args.runbookVersion !== undefined
+                  ? num(args, 'runbookVersion', 1)
+                  : (existing.runbook_version == null ? undefined : Number(existing.runbook_version)),
+              );
+              sets.push('runbook_id = ?', 'runbook_name = ?', 'runbook_version = ?', 'runbook_inputs_json = ?');
+              vals.push(binding.runbookId, binding.runbookName, binding.runbookVersion, JSON.stringify(binding.inputParams));
+            } catch (error) {
+              return fail(error instanceof Error ? error.message : 'Runbook 调度配置无效');
+            }
+          }
+        } else if (existing.task_type === 'runbook') {
+          sets.push('runbook_id = NULL', 'runbook_name = NULL', 'runbook_version = NULL', 'runbook_inputs_json = NULL');
+        }
         if (sets.length === 0) return ok(existing);
 
         // 停用清空 next_run_at；调度变化或重新启用时从现在起重算

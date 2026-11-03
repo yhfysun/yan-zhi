@@ -38,6 +38,9 @@
                 <div class="st-item-meta">
                   <el-tag size="small" effect="plain" round>{{ scheduleText(task) }}</el-tag>
                   <span v-if="boundAgentName(task.agentId)" class="st-item-sub">智能体：{{ boundAgentName(task.agentId) }}</span>
+                  <span v-if="task.taskType === 'runbook'" class="st-item-sub">
+                    Runbook：{{ task.runbookName || task.runbookId }} · v{{ task.runbookVersion }}
+                  </span>
                   <span v-if="boundSpaceName(task.spaceId)" class="st-item-sub">空间：{{ boundSpaceName(task.spaceId) }}</span>
                   <span v-if="task.conversationId" class="st-item-sub">已绑定会话</span>
                   <span class="st-item-sub">上次：{{ task.lastRunAt ? formatTime(task.lastRunAt) : '未运行' }}</span>
@@ -84,6 +87,9 @@
                 <div class="st-item-meta">
                   <el-tag size="small" effect="plain" round>{{ scheduleText(task) }}</el-tag>
                   <span v-if="boundAgentName(task.agentId)" class="st-item-sub">智能体：{{ boundAgentName(task.agentId) }}</span>
+                  <span v-if="task.taskType === 'runbook'" class="st-item-sub">
+                    Runbook：{{ task.runbookName || task.runbookId }} · v{{ task.runbookVersion }}
+                  </span>
                   <span v-if="boundSpaceName(task.spaceId)" class="st-item-sub">空间：{{ boundSpaceName(task.spaceId) }}</span>
                   <span v-if="task.conversationId" class="st-item-sub">已绑定会话</span>
                   <span class="st-item-sub">上次：{{ task.lastRunAt ? formatTime(task.lastRunAt) : '未运行' }}</span>
@@ -143,9 +149,16 @@
           <el-radio-group v-model="form.taskType">
             <el-radio value="chat">对话任务</el-radio>
             <el-radio value="workflow">工作流任务</el-radio>
+            <el-radio value="runbook">Runbook 任务</el-radio>
           </el-radio-group>
           <div class="st-hint">
-            {{ form.taskType === 'workflow' ? '按固定入参直接运行工作流流水线，产出自动回写到会话' : '把提示词定时发给智能体，由它自主决策' }}
+            {{
+              form.taskType === 'workflow'
+                ? '按固定入参直接运行工作流流水线，产出自动回写到会话'
+                : form.taskType === 'runbook'
+                  ? '固定 Runbook 版本与参数，到点直接执行并写入运行历史'
+                  : '把提示词定时发给智能体，由它自主决策'
+            }}
           </div>
         </el-form-item>
 
@@ -155,7 +168,7 @@
         </el-form-item>
 
         <!-- 工作流任务：选工作流 + 填固定入参 -->
-        <template v-else>
+        <template v-else-if="form.taskType === 'workflow'">
           <el-form-item label="工作流">
             <el-select v-model="form.workflowAgentId" placeholder="选择要定时运行的工作流" filterable>
               <el-option
@@ -176,6 +189,38 @@
             />
           </el-form-item>
           <div v-if="form.workflowAgentId && !wfFields.length" class="st-hint">该工作流未声明入参，可直接运行</div>
+        </template>
+
+        <!-- Runbook 任务：固定版本 + 固定参数；生产连接只允许只读、无回滚定义 -->
+        <template v-else>
+          <el-form-item label="Runbook">
+            <el-select v-model="form.runbookId" placeholder="选择运维 Runbook" filterable @change="onRunbookPick">
+              <el-option
+                v-for="rb in runbooks"
+                :key="rb.id"
+                :value="rb.id"
+                :label="`${rb.name} · v${rb.version}${rb.enabled ? '' : '（已停用）'}`"
+                :disabled="!rb.enabled"
+              />
+            </el-select>
+          </el-form-item>
+          <div v-if="runbookDefinition" class="st-hint">
+            固定版本 v{{ runbookDefinition.version }} · {{ runbookDefinition.steps.length }} 个步骤
+            <span v-if="runbookDefinition.parameters?.length"> · {{ runbookDefinition.parameters.length }} 个参数</span>
+          </div>
+          <el-form-item
+            v-for="parameter in runbookDefinition?.parameters || []"
+            :key="parameter.key"
+            :label="parameter.label || parameter.key"
+          >
+            <el-input
+              v-model="form.runbookInputs[parameter.key]"
+              :placeholder="(parameter.required ? '必填 · ' : '可选 · ') + (parameter.defaultValue || '')"
+              clearable
+            />
+          </el-form-item>
+          <div v-if="form.runbookId && !runbookDefinition?.parameters?.length" class="st-hint">该 Runbook 无需运行参数</div>
+          <div v-if="runbooksError" class="st-hint">{{ runbooksError }}</div>
         </template>
         <el-form-item label="定时方式">
           <el-radio-group v-model="form.scheduleMode">
@@ -249,12 +294,12 @@
         <el-form-item label="有效期">
           <el-date-picker v-model="form.expireAt" type="date" value-format="YYYY-MM-DD" placeholder="永久有效" clearable />
         </el-form-item>
-        <el-form-item label="智能体">
+        <el-form-item v-if="form.taskType !== 'runbook'" label="智能体">
           <el-select v-model="form.agentId" placeholder="不绑定则用默认智能体" clearable filterable @change="onAgentPick">
             <el-option v-for="ag in agentStore.chatAgents" :key="ag.id" :value="ag.id" :label="ag.name" />
           </el-select>
         </el-form-item>
-        <el-form-item label="大模型">
+        <el-form-item v-if="form.taskType !== 'runbook'" label="大模型">
           <!-- filterable 的 el-select 点选后不会自动收起（留给用户继续筛选），
                这里选中即主动 blur 收起，否则下拉一直挂着挡住下面的表单项 -->
           <el-select
@@ -281,7 +326,13 @@
           </el-checkbox>
         </el-form-item>
       </el-form>
-      <div class="st-form-hint">不绑定会话时，将在首次运行时自动创建独立会话；绑定智能体/大模型/空间后，任务发起的会话会继承这些配置。</div>
+      <div class="st-form-hint">
+        {{
+          form.taskType === 'runbook'
+            ? '生产连接上的 Runbook 定时任务只允许只读命令且不能配置回滚步骤；需要人工审批的修复流程请继续手动运行。'
+            : '不绑定会话时，将在首次运行时自动创建独立会话；绑定智能体/大模型/空间后，任务发起的会话会继承这些配置。'
+        }}
+      </div>
       <div class="st-form-footer">
         <el-button size="small" @click="formVisible = false">取消</el-button>
         <el-button type="primary" size="small" :loading="saving" @click="onSave">{{ editingId ? '保存' : '创建' }}</el-button>
@@ -314,8 +365,24 @@ import {
 import { useScheduledTaskStore, type ScheduledTask, type ScheduleConfig } from '../../stores/scheduledTask';
 import { useWorkflowStore } from '../../stores/workflow';
 import { useChat } from '../../composables/chat/useChat';
+import { api } from '../../api/client';
 import EmptyState from '../common/EmptyState.vue';
 import SkeletonList from '../common/SkeletonList.vue';
+
+interface RunbookParameter {
+  key: string;
+  label: string;
+  required: boolean;
+  defaultValue?: string;
+}
+interface RunbookDefinition {
+  id: string;
+  name: string;
+  enabled: boolean;
+  version: number;
+  parameters: RunbookParameter[];
+  steps: Array<{ id: string; name: string; type: string }>;
+}
 
 const taskStore = useScheduledTaskStore();
 const { store, currentConv, agentStore, spaceStore, modelGroups } = useChat();
@@ -331,6 +398,9 @@ const renamingGroupId = ref<string | null>(null);
 const renamingGroupName = ref('');
 const renameInputRef = ref<HTMLInputElement | null>(null);
 const collapsedGroups = ref<Record<string, boolean>>({});
+const runbooks = ref<RunbookDefinition[]>([]);
+const runbookDefinition = ref<RunbookDefinition | null>(null);
+const runbooksError = ref('');
 
 // 工作流任务用：可选工作流清单（wfFields / watch 必须在下方 form 声明之后——
 // watch getter 创建即执行一次收集依赖，提前引用未初始化的 form 会 TDZ 崩溃）
@@ -340,10 +410,13 @@ const WEEK_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五',
 
 const form = reactive({
   name: '',
-  // 任务类型：对话任务走 ReAct（prompt 驱动）；工作流任务直接起 DAG（固定入参）
-  taskType: 'chat' as 'chat' | 'workflow',
+  // 任务类型：对话走 ReAct；工作流起 DAG；Runbook 直接执行固定版本运维流程
+  taskType: 'chat' as 'chat' | 'workflow' | 'runbook',
   workflowAgentId: '' as string,
   workflowInputs: {} as Record<string, unknown>,
+  runbookId: '' as string,
+  runbookVersion: 0,
+  runbookInputs: {} as Record<string, string>,
   prompt: '',
   scheduleMode: 'cycle' as 'cycle' | 'interval',
   cycleType: 'daily' as 'once' | 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'yearly',
@@ -380,8 +453,52 @@ watch(
   () => [form.taskType, form.workflowAgentId] as const,
   () => {
     if (form.taskType === 'workflow' && wfStore.agents.value.length === 0) void wfStore.loadAgents();
+    if (form.taskType === 'runbook' && runbooks.value.length === 0) void loadRunbooks();
   },
 );
+
+async function loadRunbooks(): Promise<void> {
+  const result = await api.get<RunbookDefinition[]>('/plugin/ops-shell/runbooks');
+  if ('error' in result) {
+    runbooks.value = [];
+    runbooksError.value = result.error || '无法加载 Runbook，请确认运维插件已启用';
+    return;
+  }
+  runbooks.value = Array.isArray(result.data) ? result.data : [];
+  runbooksError.value = '';
+}
+
+function runbookDefaults(runbook: RunbookDefinition): Record<string, string> {
+  return Object.fromEntries(
+    (runbook.parameters || []).map((parameter) => [parameter.key, parameter.defaultValue || '']),
+  );
+}
+
+function onRunbookPick(runbookId: string): void {
+  runbooksError.value = '';
+  const runbook = runbooks.value.find((item) => item.id === runbookId) || null;
+  runbookDefinition.value = runbook;
+  form.runbookVersion = runbook?.version || 0;
+  form.runbookInputs = runbook ? runbookDefaults(runbook) : {};
+}
+
+async function loadPinnedRunbook(runbookId: string, version: number): Promise<void> {
+  runbooksError.value = '';
+  if (!runbookId || !version) {
+    runbookDefinition.value = null;
+    return;
+  }
+  const current = runbooks.value.find((item) => item.id === runbookId);
+  if (current?.version === version) {
+    runbookDefinition.value = current;
+    return;
+  }
+  const result = await api.get<{ snapshot: RunbookDefinition }>(
+    `/plugin/ops-shell/runbooks/${encodeURIComponent(runbookId)}/versions/${version}`,
+  );
+  runbookDefinition.value = 'data' in result ? result.data.snapshot : null;
+  if ('error' in result) runbooksError.value = result.error || '固定 Runbook 版本不可用';
+}
 
 onMounted(() => {
   if (taskStore.tasks.length === 0) taskStore.loadTasks();
@@ -647,6 +764,11 @@ function openCreate(groupId?: string) {
   form.taskType = 'chat';
   form.workflowAgentId = '';
   form.workflowInputs = {};
+  form.runbookId = '';
+  form.runbookVersion = 0;
+  form.runbookInputs = {};
+  runbookDefinition.value = null;
+  runbooksError.value = '';
   resetSchedule();
   form.bindConversation = !!currentConv.value;
   form.agentId = agentStore.selectedId || '';
@@ -658,15 +780,28 @@ function openCreate(groupId?: string) {
   formVisible.value = true;
 }
 
-function openEdit(task: ScheduledTask) {
+async function openEdit(task: ScheduledTask) {
   editingId.value = task.id;
   form.name = task.name;
   form.prompt = task.prompt || '';
   // 工作流任务回填类型与固定入参（否则编辑一条工作流任务会退化成对话任务）
-  form.taskType = task.taskType === 'workflow' ? 'workflow' : 'chat';
+  form.taskType = task.taskType === 'workflow'
+    ? 'workflow'
+    : task.taskType === 'runbook'
+      ? 'runbook'
+      : 'chat';
   form.workflowAgentId = task.workflowAgentId || '';
   form.workflowInputs = { ...(task.workflowInputs || {}) };
+  form.runbookId = task.runbookId || '';
+  form.runbookVersion = task.runbookVersion || 0;
+  form.runbookInputs = { ...(task.runbookInputs || {}) };
   if (form.taskType === 'workflow' && wfStore.agents.value.length === 0) void wfStore.loadAgents();
+  if (form.taskType === 'runbook') {
+    await loadRunbooks();
+    await loadPinnedRunbook(form.runbookId, form.runbookVersion);
+  } else {
+    runbookDefinition.value = null;
+  }
   if (task.schedule) {
     applySchedule(task.schedule);
   } else if (task.intervalMinutes && task.intervalMinutes > 0) {
@@ -750,6 +885,15 @@ async function onSave() {
       .filter((f) => f.required && (form.workflowInputs[f.key] === undefined || form.workflowInputs[f.key] === ''))
       .map((f) => f.label || f.key);
     if (missing.length) { ElMessage.warning(`请填写必填入参：${missing.join('、')}`); return; }
+  } else if (form.taskType === 'runbook') {
+    if (!form.runbookId || !runbookDefinition.value) {
+      ElMessage.warning('请选择要运行的 Runbook');
+      return;
+    }
+    const missing = (runbookDefinition.value.parameters || [])
+      .filter((parameter) => parameter.required && !String(form.runbookInputs[parameter.key] || '').trim())
+      .map((parameter) => parameter.label || parameter.key);
+    if (missing.length) { ElMessage.warning(`请填写 Runbook 必填参数：${missing.join('、')}`); return; }
   } else if (!form.prompt.trim()) {
     ElMessage.warning('请填写提示词'); return;
   }
@@ -767,10 +911,14 @@ async function onSave() {
     // 工作流任务：绑定的工作流 + 固定入参（后端据此直接起 DAG，不走 prompt）
     workflowAgentId: form.taskType === 'workflow' ? (form.workflowAgentId || null) : null,
     workflowInputs: form.taskType === 'workflow' ? form.workflowInputs : null,
+    runbookId: form.taskType === 'runbook' ? form.runbookId : null,
+    runbookName: form.taskType === 'runbook' ? runbookDefinition.value?.name || null : null,
+    runbookVersion: form.taskType === 'runbook' ? form.runbookVersion : null,
+    runbookInputs: form.taskType === 'runbook' ? form.runbookInputs : null,
     conversationId: form.bindConversation && currentConv.value ? currentConv.value.id : null,
-    agentId: form.agentId || null,
-    platformId: form.platformId || null,
-    modelId: form.modelId || null,
+    agentId: form.taskType === 'runbook' ? null : form.agentId || null,
+    platformId: form.taskType === 'runbook' ? null : form.platformId || null,
+    modelId: form.taskType === 'runbook' ? null : form.modelId || null,
     spaceId: form.spaceId || null,
     groupId: form.groupId || null,
     schedule,

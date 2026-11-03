@@ -31,9 +31,10 @@ describe('ops runbook store', () => {
     store.ensureSchema();
     expect(store.listVersions(v1.id).map((item) => item.version)).toEqual([2]);
 
-    const run = store.createRun(v2, 'prod-web', 'approval-1', { service: 'api' });
+    const run = store.createRun(v2, 'prod-web', 'approval-1', { service: 'api' }, 'st-1');
     expect(run).toMatchObject({
-      runbookId: v1.id, runbookVersion: 2, status: 'running', inputParams: { service: 'api' },
+      runbookId: v1.id, runbookVersion: 2, status: 'running',
+      inputParams: { service: 'api' }, scheduledTaskId: 'st-1',
     });
     store.updateRun(run.id, {
       status: 'success',
