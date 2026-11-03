@@ -178,6 +178,11 @@ describe('轻量壳：本机远程控制运行时', () => {
       () => runtime.executeComputerTool('computer_not_exists', {}),
       /未知的电脑使用工具/,
     );
+    const files = fs.readdirSync(path.join(tempDir, 'data'));
+    assert.ok(!files.includes('data.db'), '本机能力运行时不得初始化后端 SQLite 库');
+    const bundleSrc = fs.readFileSync(path.join(tempDir, 'local-capabilities.bundle.cjs'), 'utf8');
+    assert.ok(!bundleSrc.includes('process.env.DATA_DIR ='), 'bundle 不得改写主进程 DATA_DIR');
+    assert.ok(!bundleSrc.includes('SQLite 驱动'), 'bundle 不得携带后端数据库初始化代码');
   });
 
   test('壳模式启动本机运行时，打包产物与构建脚本都已登记', () => {
@@ -186,5 +191,9 @@ describe('轻量壳：本机远程控制运行时', () => {
     assert.match(SHELL_YML, /local-capabilities\.bundle\.cjs/);
     const buildShell = fs.readFileSync(path.join(DESKTOP, 'scripts', 'build-shell.cjs'), 'utf8');
     assert.match(buildShell, /build-local-capabilities\.cjs/);
+    // dev 是完整桌面包，已有本机后端，不得启动轻量壳 runtime。
+    assert.match(MAIN, /if \(!SHELL_MODE \|\| localCapabilityRuntime\)/);
+    assert.match(MAIN, /const BOOT_DATA_DIR = String\(process\.env\.DATA_DIR/);
+    assert.match(MAIN, /const explicit = BOOT_DATA_DIR;/);
   });
 });

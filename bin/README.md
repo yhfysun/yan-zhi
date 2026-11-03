@@ -33,6 +33,22 @@
 
 ## 脚本说明
 
+### 后端 / 轻量壳分开启动
+
+开发机需要把「完整后端」和「轻量壳」分开跑时：
+
+```bash
+# 机器 A：只启动完整后端（包含本机 server、插件与数据目录）
+pnpm dev:backend
+
+# 机器 B：只启动轻量壳，连接机器 A；不启动本机 server
+pnpm dev:shell --server-url=http://192.168.1.100:3001
+```
+
+`dev:shell` 未传地址时依次读取 `YZ_SERVER_BASE` 和
+`apps/desktop/resources/server-base.json`。壳本机被控端默认监听 `3001`，
+若与同机后端冲突可加 `--host-port=3002`，页面会显示实际端口。
+
 每个功能提供两套脚本 — `.sh`（Bash：Git Bash / MSYS2 / WSL / Linux / macOS）和 `.bat`（Windows CMD / PowerShell 直接运行）：
 
 | 功能 | .sh (Bash) | .bat (Windows CMD) |

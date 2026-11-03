@@ -48,6 +48,7 @@ export const db = {
 
 const DESKTOP_CAPABILITY_NOOP = `
 export function desktopCapabilityAvailable() { return false; }
+export function desktopCapabilitySeen() { return false; }
 export async function callDesktopCapability() {
   throw new Error('本机运行时不能递归调用桌面能力桥');
 }

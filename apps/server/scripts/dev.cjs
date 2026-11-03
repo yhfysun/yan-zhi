@@ -143,6 +143,8 @@ const child = spawn(bin, args, {
     YZ_DEV_AUTOLOAD_PLUGINS: process.env.YZ_DEV_AUTOLOAD_PLUGINS ?? 'desktop-manager',
     // ★ 数据目录：不注入的话 db.ts 会退回 apps/server/（源码目录）—— 见文件头注释
     DATA_DIR: devDataDir,
+    // 完整后端开发环境：computer-use 允许在后端本机执行；轻量壳远程后端不设此标记。
+    YZ_DESKTOP_LOCAL_EXECUTION: '1',
     // ★ 2026-11-02 固化：dev 默认 multi（多用户登录）。本机库数据挂在账号名下，
     //   guest 单机模式会"看不到数据"；要回单机显式 YZ_AUTH_MODE=guest。
     YZ_AUTH_MODE: process.env.YZ_AUTH_MODE || 'multi',

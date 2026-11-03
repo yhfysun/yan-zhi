@@ -42,6 +42,7 @@ import {
 } from './computer-use-system.js';
 import {
   desktopCapabilityAvailable,
+  desktopCapabilitySeen,
   callDesktopCapability,
 } from './desktop-capability.js';
 
@@ -422,8 +423,11 @@ export const computerUseModule: PluginModule = {
             timeoutMs: def.name === 'computer_screenshot' ? 60_000 : 45_000,
           });
         }
-        // 默认绝不回落到“后端机器”执行。仅测试/无桌面宿主部署可显式打开逃生阀。
-        if (process.env.YZ_ALLOW_BACKEND_COMPUTER_USE !== '1') {
+        // 一旦该用户连接过轻量壳，掉线后只报错，绝不回落到后端机器。
+        // 完整桌面包由主进程显式标记为“本地执行”，从没接能力桥，继续沿用原执行器。
+        const localDesktop = process.env.YZ_DESKTOP_LOCAL_EXECUTION === '1';
+        const explicitHeadless = process.env.YZ_ALLOW_BACKEND_COMPUTER_USE === '1';
+        if (desktopCapabilitySeen(userId) || (!localDesktop && !explicitHeadless)) {
           return errResult(new Error(
             '本机执行端未连接：电脑使用工具必须在轻量壳/桌面端执行。'
             + '请确认壳已启动并连到当前后端',

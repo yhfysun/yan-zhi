@@ -42,6 +42,8 @@ interface HostConnection {
 }
 
 const connections = new Map<string, HostConnection>();
+/** 曾连接过的用户：掉线后不能再静默回落到后端机器执行 desktop-input。 */
+const seenUsers = new Set<string>();
 let logLine: (...args: unknown[]) => void = (...args) => console.log(...args);
 
 function safeName(raw: unknown): string {
@@ -136,6 +138,7 @@ function onHostMessage(conn: HostConnection, raw: Buffer | string, isBinary: boo
     conn.capabilities = msg.capabilities && typeof msg.capabilities === 'object'
       ? msg.capabilities as Record<string, unknown>
       : {};
+    seenUsers.add(conn.userId);
     send(conn, { type: 'hello.ack', protocol: 1, connectionId: conn.id });
     logLine(`[desktop-capability] 本机执行端上线: ${conn.deviceName} (${conn.deviceId}) user=${conn.userId}`);
     return;
@@ -166,6 +169,10 @@ function onHostMessage(conn: HostConnection, raw: Buffer | string, isBinary: boo
 
 export function desktopCapabilityAvailable(userId = 'guest', capability?: Capability): boolean {
   return !!pickConnection(userId, capability);
+}
+
+export function desktopCapabilitySeen(userId = 'guest'): boolean {
+  return seenUsers.has(String(userId || 'guest'));
 }
 
 export function listDesktopCapabilities(userId = 'guest'): Array<Record<string, unknown>> {
@@ -252,6 +259,7 @@ export const desktopCapabilityModule: PluginModule = {
         try { conn.ws.close(); } catch { /* ignore */ }
         closeConnection(conn);
       }
+      seenUsers.clear();
       deactivateImpl = null;
     };
   },

@@ -96,6 +96,7 @@ describe('桌面能力桥', () => {
   it('壳 hello 后，computer 调用会发到壳并按 requestId 回执', async () => {
     const mod = await activate();
     const host = connect(mod);
+    expect(mod.desktopCapabilitySeen('guest')).toBe(true);
     const pending = mod.callDesktopCapability(
       'computer',
       'computer_mouse_move',
@@ -138,6 +139,16 @@ describe('桌面能力桥', () => {
     const call = host.sent.find((m) => m.type === 'call' && m.capability === 'browser');
     host.receive({ type: 'result', id: call!.id, ok: true, result: { url: 'https://example.com' } });
     await expect(pending).resolves.toMatchObject({ url: 'https://example.com' });
+  });
+
+  it('壳曾连接过，掉线后 seen 标记保留，供 computer-use 拒绝静默回落', async () => {
+    const mod = await activate();
+    const host = connect(mod);
+    expect(mod.desktopCapabilitySeen('guest')).toBe(true);
+    expect(mod.desktopCapabilityAvailable('guest', 'computer')).toBe(true);
+    host.close();
+    expect(mod.desktopCapabilityAvailable('guest', 'computer')).toBe(false);
+    expect(mod.desktopCapabilitySeen('guest')).toBe(true);
   });
 
   it('壳回传截图文件时落到后端临时区，并改写结果路径供 image_analyze 读取', async () => {

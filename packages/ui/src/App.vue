@@ -448,11 +448,14 @@ async function syncDesktopCapabilityRelay(): Promise<void> {
     const api = (window as unknown as {
       electronAPI?: {
         apiOrigin?: string;
+        localCapabilityInfo?: () => Promise<{ ok?: boolean }>;
         desktopCapabilityBridge?: {
           start?: (opts: { serverBase: string; token: string; license: string }) => Promise<unknown>;
         };
       };
     }).electronAPI;
+    const localCapability = await api?.localCapabilityInfo?.().catch(() => null);
+    if (!localCapability?.ok) return;
     // 完整桌面端连本机内嵌后端时用 apiOrigin；轻量壳/远程模式用配置的 serverBase。
     const serverBase = getEffectiveServerBase() || String(api?.apiOrigin || '');
     const token = getToken() || '';

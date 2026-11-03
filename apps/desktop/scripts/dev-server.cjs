@@ -31,6 +31,8 @@ const child = spawn(electronExe, watch ? [tsxPath, 'watch', 'src/index.ts'] : [t
     ELECTRON_RUN_AS_NODE: '1',
     YZ_EDITION: 'pro',
     YZ_DEFAULT_EDITION: 'pro',
+    // 完整桌面开发环境：computer-use 在后端本机执行；轻量壳远程后端不设此标记。
+    YZ_DESKTOP_LOCAL_EXECUTION: '1',
     // 热重载标记：只在真 watch 时注入 —— 它是"这次重启是热重载"的分流标记，
     // 不 watch 还注入会把用户的手动重启误判成「可续的暂停」。
     ...(watch ? { YZ_HOT_RELOAD: '1' } : {}),

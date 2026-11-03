@@ -99,6 +99,8 @@ const IS_DEV_INSTANCE = inst.isDevInstance(process.env);
  */
 const API_PORT = inst.resolveApiPort(process.env);
 const API_ORIGIN = 'http://127.0.0.1:' + API_PORT;
+/** dev 壳启动：完整包也能显式模拟“无内置后端”的轻量壳。 */
+const DEV_SHELL_MODE = !app.isPackaged && process.env.YZ_SHELL_DEV === '1';
 
 /**
  * 内置远程后端地址（轻量壳模式专用，2026-11-01）。
@@ -111,6 +113,15 @@ const API_ORIGIN = 'http://127.0.0.1:' + API_PORT;
  */
 function resolveBakedServerBase() {
   try {
+    const envBase = String(process.env.YZ_SERVER_BASE || '').trim().replace(/\/+$/, '');
+    if (DEV_SHELL_MODE && envBase) {
+      if (!/^https?:\/\//i.test(envBase)) {
+        console.warn('[server-base] YZ_SERVER_BASE 非法（需 http/https 开头），忽略:', envBase);
+      } else {
+        console.log('[server-base] dev 壳远程地址:', envBase);
+        return envBase;
+      }
+    }
     if (!app.isPackaged) return '';
     const candidates = [
       path.join(process.resourcesPath, 'server-base.json'),
@@ -135,10 +146,19 @@ function resolveBakedServerBase() {
 }
 const BAKED_SERVER_BASE = resolveBakedServerBase();
 /**
+ * 后端数据目录在进程启动时冻结。
+ *
+ * 本机能力插件可能也要写自己的 DATA_DIR，但绝不能污染随后 spawn 的后端。
+ * 2026-11-03 实报：一份过期 bundle 把这里改成 local-capabilities/...，
+ * 后端因此读到空库，页面显示“未初始化”，用户名却已在另一套库里存在。
+ */
+const BOOT_DATA_DIR = String(process.env.DATA_DIR || '').trim();
+/**
  * 轻量壳模式（2026-11-02 补）：打包版且未内置后端产物 ⇒ 后端在别的机器上。
  * 判定口径与 startServer 里的跳过分支、resolveBakedServerBase 的守卫保持同一份依据。
  */
-const SHELL_MODE = app.isPackaged && !fs.existsSync(path.join(process.resourcesPath, 'server', 'dist'));
+const SHELL_MODE = DEV_SHELL_MODE
+  || (app.isPackaged && !fs.existsSync(path.join(process.resourcesPath, 'server', 'dist')));
 /** 下发给渲染层的附加参数（主窗口/采集窗/RC 卡片窗共用）。 */
 const RENDER_EXTRA_ARGS = ['--yz-api-port=' + API_PORT,
   ...(BAKED_SERVER_BASE ? ['--yz-server-base=' + BAKED_SERVER_BASE] : []),
@@ -157,13 +177,20 @@ let desktopCapabilityRelay = null;
 let desktopCapabilityRelayKey = '';
 
 async function startLocalCapabilitiesRuntime() {
-  if (localCapabilityRuntime) return localCapabilityRuntime;
+  // 完整桌面包/开发包已有本机后端，浏览器桥和 computer-use 在执行端本进程内跑；
+  // 只有“无内置 server/dist”的轻量壳才需要这套独立本机能力运行时。
+  if (!SHELL_MODE || localCapabilityRuntime) return localCapabilityRuntime;
   try {
+    if (!app.isPackaged) {
+      const builderPath = path.join(__dirname, 'scripts', 'build-local-capabilities.cjs');
+      const { buildLocalCapabilities } = require(builderPath);
+      await buildLocalCapabilities();
+    }
     const mod = require('./local-capabilities.bundle.cjs');
     localCapabilityRuntime = await mod.startLocalCapabilities({
-      // 轻量壳用固定 3001 作为被控端入口；完整桌面已有 3001 后端，本机执行运行时用随机端口。
-      port: SHELL_MODE ? API_PORT : 0,
-      host: SHELL_MODE ? '0.0.0.0' : '127.0.0.1',
+      // 轻量壳作为被控端监听局域网；dev 壳可用 YZ_SHELL_HOST_PORT 避开本机后端。
+      port: app.isPackaged ? API_PORT : (Number(process.env.YZ_SHELL_HOST_PORT) || API_PORT),
+      host: '0.0.0.0',
       distDir: path.join(__dirname, 'dist'),
       dataDir: path.join(app.getPath('userData'), 'local-capabilities'),
     });
@@ -1153,7 +1180,8 @@ let mcpChildSeq = 0;
  *  ★ 显式传入的 DATA_DIR（bin/dev.mjs 下发）优先，避免 Electron 与裸 server 两条
  *    启动路径拿到不同的目录。 */
 function ensureServerDataDir() {
-  const explicit = (process.env.DATA_DIR || '').trim();
+  // 只用进程启动时捕获的值：后续插件不得改变后端数据目录。
+  const explicit = BOOT_DATA_DIR;
   if (explicit) {
     fs.mkdirSync(explicit, { recursive: true });
     return explicit;
@@ -1285,15 +1313,15 @@ async function isServerAlive() {
 }
 
 async function startServer() {
+  if (SHELL_MODE) {
+    console.log('[后端] 轻量壳模式，跳过本地后端启动');
+    return;
+  }
   const serverDir = path.join(__dirname, '..', 'server');
   // 壳模式：打包版未内置后端资源（轻量前端壳）⇒ 不启动本地后端，前端配置远程地址使用
   const shellServerPath = app.isPackaged
     ? path.join(process.resourcesPath, 'server', 'dist', 'apps', 'server', 'src', 'index.js')
     : null;
-  if (shellServerPath && !fs.existsSync(shellServerPath)) {
-    console.log('[后端] 未内置后端资源（轻量壳模式），跳过本地后端启动');
-    return;
-  }
   // 复用：端口上已有健康后端（detached 守护进程 / 手动 dev）⇒ 不重复 spawn，退出也不杀
   if (await isServerAlive()) {
     console.log(`[后端] 127.0.0.1:${API_PORT} 已有健康后端，本进程复用之（退出不杀）`);
@@ -1407,7 +1435,7 @@ async function startServer() {
       stdio: logFd !== null ? ['ignore', logFd, logFd] : ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       ...(detached ? { detached: true } : {}),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: String(API_PORT), YANZHI_MODELS_DIR: modelsDir, BROWSER_MODE: 'cdp', CDP_ENDPOINT: cdpEndpoint, WEB_DIST: path.join(process.resourcesPath, 'server', 'web-dist'), ...(dataDir ? { DATA_DIR: dataDir } : {}), YZ_DESKTOP_LOCAL_EXECUTION: '1', ...bridgeEnv, ...editionEnv, ...hostEnv, ...guardEnv, ...readLicenseCodesEnv() },
     });
     if (logStream) {
       serverProcess.stdout.on('data', (d) => logStream.write(d));

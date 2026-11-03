@@ -74,6 +74,7 @@ const DEV_DATA_DIR = resolveDevDataDir();
 
 const APPS = {
   desktop: { dir: 'apps/desktop', vitePort: 1420, label: 'Desktop (Electron)' },
+  shell: { dir: 'apps/desktop', vitePort: 1420, label: 'Shell (remote backend)' },
   web: { dir: 'apps/web', vitePort: 5173, label: 'Web' },
   server: { dir: 'apps/server', vitePort: null, label: 'Server' },
 };
@@ -732,6 +733,7 @@ async function main() {
           YANZHI_DEV_INSTANCE: '1',
           YANZHI_API_PORT: String(DEV_API_PORT),
           DATA_DIR: DEV_DATA_DIR,
+          YZ_DESKTOP_LOCAL_EXECUTION: '1',
           // ★ 2026-11-02 固化：dev 默认 multi（多用户登录）。
           //   本机库的历史数据已过户到 yanZhiPower 名下，跑单机（guest）模式会"看不到数据"。
           //   仍可显式覆盖：YZ_AUTH_MODE=guest pnpm dev:desktop
@@ -756,6 +758,7 @@ async function main() {
       YANZHI_DEV_INSTANCE: '1',
       YANZHI_API_PORT: String(DEV_API_PORT),
       DATA_DIR: DEV_DATA_DIR,
+      YZ_DESKTOP_LOCAL_EXECUTION: '1',
       // 与主路径同口径：dev 默认 multi（见上方注释）
       YZ_AUTH_MODE: process.env.YZ_AUTH_MODE || 'multi',
       ...browserEnv,
@@ -803,6 +806,15 @@ async function main() {
 
   const electronBin = resolveElectronBin();
   if (!electronBin) throw new Error('未找到 Electron 二进制，请先执行 pnpm install');
+  if (appName === 'shell') {
+    const builder = path.join(ROOT, 'apps', 'desktop', 'scripts', 'build-local-capabilities.cjs');
+    log('构建轻量壳本机能力 bundle ...');
+    execFileSync(process.execPath, [builder], {
+      cwd: path.join(ROOT, 'apps', 'desktop'),
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+  }
   // 关键：环境里若残留 ELECTRON_RUN_AS_NODE=1（部分终端/工具链会注入），
   // electron.exe 会退化成纯 Node，require('electron') 拿到的是可执行文件路径字符串，
   // 导致 ipcMain 等 API 全部 undefined 并崩溃。这里剥离所有 ELECTRON_* 变量。
@@ -817,6 +829,11 @@ async function main() {
   //      所以不再有"不碰安装版"的隔离语义 —— 两实例不能同时启动。
   electronEnv.YANZHI_DEV_INSTANCE = '1';
   electronEnv.YANZHI_API_PORT = String(DEV_API_PORT);
+  if (appName === 'shell') {
+    electronEnv.YZ_SHELL_DEV = '1';
+    electronEnv.YZ_SERVER_BASE = process.env.YZ_SERVER_BASE || '';
+    electronEnv.YZ_SHELL_HOST_PORT = process.env.YZ_SHELL_HOST_PORT || String(DEV_API_PORT);
+  }
   // ★ 数据目录也下发（main.cjs 会在 app.getPath('userData') 基础上用 server-data 子目录；
   //   这里显式传一份，保证「dev.mjs server」与「dev.mjs desktop」两条路径拿到同一个值，
   //   不会因为一个走 Electron、一个走裸 server 就落到两个不同的库上）。

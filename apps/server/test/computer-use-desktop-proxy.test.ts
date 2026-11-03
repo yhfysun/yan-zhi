@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const bridge = vi.hoisted(() => ({
   available: vi.fn(() => true),
+  seen: vi.fn(() => false),
   call: vi.fn(async () => ({ content: [{ type: 'text', text: 'REMOTE_OK' }] })),
 }));
 
 vi.mock('../src/plugins/desktop-capability.js', () => ({
   desktopCapabilityAvailable: bridge.available,
+  desktopCapabilitySeen: bridge.seen,
   callDesktopCapability: bridge.call,
 }));
 
@@ -19,7 +21,10 @@ import { computerUseModule } from '../src/plugins/computer-use.js';
 afterEach(async () => {
   await computerUseModule.deactivate?.();
   bridge.available.mockReset();
+  bridge.seen.mockReset();
   bridge.call.mockClear();
+  delete process.env.YZ_DESKTOP_LOCAL_EXECUTION;
+  delete process.env.YZ_ALLOW_BACKEND_COMPUTER_USE;
 });
 
 function activateWithTools(): Map<string, any> {
@@ -68,8 +73,22 @@ describe('computer-use 桌面能力代理', () => {
     );
   });
 
-  it('壳不在线时明确失败，不静默操作后端机器', async () => {
+  it('完整桌面包没有能力桥时，继续在后端本机执行', async () => {
     bridge.available.mockReturnValue(false);
+    bridge.seen.mockReturnValue(false);
+    process.env.YZ_DESKTOP_LOCAL_EXECUTION = '1';
+    const tools = activateWithTools();
+    const result = await tools.get('computer_mouse_move').execute(
+      { x: 10, y: 20 },
+      { userId: 'guest' },
+    );
+    expect(result.content[0].text).toContain('moved to');
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
+
+  it('连接过轻量壳后再掉线时明确失败，不静默回落后端机器', async () => {
+    bridge.available.mockReturnValue(false);
+    bridge.seen.mockReturnValue(true);
     const tools = activateWithTools();
     const result = await tools.get('computer_mouse_move').execute(
       { x: 10, y: 20 },

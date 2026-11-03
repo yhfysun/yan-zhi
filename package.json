@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "pnpm --filter @yan-zhi/server dev",
     "dev:server": "pnpm --filter @yan-zhi/server dev",
+    "dev:backend": "node bin/dev-backend.mjs",
+    "dev:shell": "node bin/dev-shell.mjs",
     "dev:web": "pnpm --filter @yan-zhi/web dev",
     "dev:desktop": "node bin/dev.mjs desktop",
     "dev:desktop:web": "pnpm --filter @yan-zhi/desktop dev",

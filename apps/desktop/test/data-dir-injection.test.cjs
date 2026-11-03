@@ -87,14 +87,14 @@ describe('dev 模式必须注入 DATA_DIR（否则库落到源码目录）', () 
     assert.match(body, /return\s+dataDir/, '★ 必须返回 dataDir');
   });
 
-  test('③ apps/desktop/main.cjs：显式 DATA_DIR 优先于 userData 推导', () => {
+  test('③ apps/desktop/main.cjs：启动时冻结的 DATA_DIR 优先于 userData 推导', () => {
     const src = strip(read('apps/desktop/main.cjs'));
     const i = src.indexOf('function ensureServerDataDir');
     const body = src.slice(i, i + 1600);
-    // 显式传入的要先被采纳（否则 Electron 与裸 server 两条路径会落到不同目录）
-    const explicitIdx = body.search(/process\.env\.DATA_DIR/);
+    // 用启动时快照，防止本机插件在 spawn 前改写 process.env.DATA_DIR 污染后端。
+    const explicitIdx = body.search(/BOOT_DATA_DIR/);
     const userDataIdx = body.search(/app\.getPath\('userData'\)/);
-    assert.ok(explicitIdx > -1, '★ 未读取显式 DATA_DIR');
+    assert.ok(explicitIdx > -1, '★ 未读取启动时冻结的 DATA_DIR');
     assert.ok(
       explicitIdx < userDataIdx,
       '★ 显式 DATA_DIR 的判定必须早于 userData 推导 —— 否则 dev.mjs 下发的值会被覆盖',
