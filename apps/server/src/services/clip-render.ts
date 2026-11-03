@@ -16,12 +16,21 @@
 import path from 'node:path';
 import { runCmd } from './exec-cmd.js';
 import { parseSrt, buildAss, SUBTITLE_ANIMATION_PRESETS } from '../mcp/subtitle-style.js';
-import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, effectLayerOf, speedCurveDuration, speedSlices, SPEED_SLICES } from '@yan-zhi/shared';
+import { MASK_KEYS, AUDIO_EFFECTS, COLOR_EFFECTS, effectFilter, fxFilter, buildPiecewiseExpr, easePointList, overlayAnchorOf, blendModeOf, effectLayerOf, speedCurveDuration, speedSlices, SPEED_SLICES, type BlendModeId } from '@yan-zhi/shared';
 import { buildMaskFilter, flattenMaskPath, polygonAlphaExpr } from './clip-mask.js';
 import { hslCube } from './clip-hsl.js';
 import { trackToCropExpr } from './clip-crop-track.js';
 import type { ClipProject, ClipSegment, ClipText, ClipOverlay, ExportQuality } from './clip-project.js';
 import { normalizeInterpolate } from './clip-project.js';
+import {
+  buildProjectV3ForWrite,
+  isLoadedV3,
+  materializeTrackTimes,
+  type AudioItem,
+  type ClipItem,
+  type ClipProjectV3,
+  type TrackItem,
+} from './clip-project-v3.js';
 
 export interface RenderProbeResult {
   hasAudio: boolean;
@@ -109,6 +118,11 @@ export interface BuildPlanInput {
   cover?: boolean;
   /** 硬件编码器（P1-9）：null/缺省 = CPU；可用性由调用方探测后传入 */
   hwEncoder?: HwEncoder | null;
+  /**
+   * 多轨（S2）：本计划以**已合成好的视频文件**作为成片底片，跳过分段加工与拼接，
+   * 只跑后续阶段（画中画/特效/字幕/音效链/音频层/BGM）。仅供 buildTrackPlan 内部使用。
+   */
+  precomposed?: { file: string; duration: number };
 }
 
 /**
@@ -669,9 +683,314 @@ export function effectLayerChain(fx: string, o: {
   };
 }
 
+/**
+ * 段加工阶段共享上下文（S2：多轨与单轨共用同一份段滤镜定义）。
+ * ★ 抽出来不是为了好看：多轨若另写一套"轨内段加工"，滤镜/音频映射必然与主路径漂移，
+ *   表现为"单轨导出正常、多轨导出颜色/音量不对"，且很难定位。
+ */
+interface SegmentStageCtx {
+  workDir: string;
+  W: number;
+  H: number;
+  fps: number;
+  x264: string[];
+  ab: string;
+  interpolate: 'off' | 'blend' | 'mci';
+  imgSet: Set<string>;
+  keyFilterOf: (id: string) => string | null;
+  maskFiles: Map<string, string>;
+  hslFiles: Map<string, string>;
+  durations: Record<string, number>;
+  hasAudio: Record<string, number | boolean>;
+  steps: RenderPlanStep[];
+  assets: RenderAsset[];
+}
+
+/**
+ * ②.0 段级媒体资产：钢笔路径蒙版烘焙（PNG）+ HSL 分色 LUT（.cube）。
+ * ★ 必须排在所有段加工之前（段滤镜会引用这些文件）。
+ */
+function bakeSegmentAssets(opts: {
+  clips: ClipSegment[];
+  workDir: string;
+  W: number;
+  H: number;
+  steps: RenderPlanStep[];
+  assets: RenderAsset[];
+  /** 多轨时区分同名 clip id 的文件前缀 */
+  keyPrefix?: string;
+}): { maskFiles: Map<string, string>; hslFiles: Map<string, string> } {
+  const { clips, workDir, W, H, steps, assets } = opts;
+  const p = opts.keyPrefix ?? '';
+  const maskFiles = new Map<string, string>();
+  for (const seg of clips) {
+    if (!seg.mask?.path || seg.mask.path.points.length < 3) continue;
+    const file = path.join(workDir, `${p}mask-${safeStem(seg.id)}.png`);
+    const expr = polygonAlphaExpr(flattenMaskPath(seg.mask.path, W, H));
+    steps.push({
+      label: `生成蒙版 ${seg.id}（钢笔路径，${seg.mask.path.points.length} 个锚点）`,
+      args: ['-y', '-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:r=1:d=1`,
+        '-vf', `format=gray,geq=lum='${expr}'`, '-frames:v', '1', file],
+      out: file,
+    });
+    maskFiles.set(seg.id, file);
+  }
+  const hslFiles = new Map<string, string>();
+  for (const seg of clips) {
+    if (!seg.hsl?.bands.length) continue;
+    const file = path.join(workDir, `${p}hsl-${safeStem(seg.id)}.cube`);
+    assets.push({ file, content: hslCube(seg.hsl.bands) });
+    hslFiles.set(seg.id, file);
+  }
+  return { maskFiles, hslFiles };
+}
+
+/**
+ * ① 单段加工：裁切/变速/调色/蒙版/配音 → 与工程同规格的 mp4。
+ * ★ 渲染与多轨共用。`mute=true` 用于多轨里的非主轨（视频叠加轨默认不出声）。
+ */
+function planSegmentStage(
+  ctx: SegmentStageCtx,
+  seg: ClipSegment,
+  opts: { key: string; index: number; title?: string; mute?: boolean },
+): { ok: true; file: string; filmDur: number } | { ok: false; error: string } {
+  const { workDir, W, H, fps, x264, ab } = ctx;
+  const rawDur = ctx.durations[seg.id] ?? ctx.durations[seg.file] ?? 0;
+  const isImage = ctx.imgSet.has(seg.file.toLowerCase()) || seg.kenburns != null;
+  const segDur = isImage
+    ? (seg.kenburns?.duration ?? Math.max(3, rawDur || 3))
+    : segmentDuration(seg, rawDur);
+  if (seg.reverse && !isImage && segDur > REVERSE_MAX_SEC) {
+    return {
+      ok: false,
+      error: `第 ${opts.index} 段开了倒放，但时长 ${segDur.toFixed(1)}s 超过单段上限 ${REVERSE_MAX_SEC}s：`
+        + 'ffmpeg 的 reverse 会把整段帧读进内存，长段会把进程拖垮。先把这一段裁短再倒放。',
+    };
+  }
+
+  const pad = String(opts.index).padStart(3, '0');
+  const segOut = path.join(workDir, `${opts.key}-${pad}-${safeStem(seg.id)}.mp4`);
+  // ★ 曲线变速：先按 1 倍出整段（视觉处理与淡入淡出都在**源时间**里生效，随画面一起被时移，
+  //   语义一致），再按曲线切成 N 片各自 setpts + atempo，最后拼回 —— 音画共用同一套切片边界。
+  const isRamp = !isImage && !!seg.speedCurve?.length;
+  const srcLen = isImage ? segDur : trimmedSourceLength(seg, rawDur);
+  const stage1Out = isRamp ? path.join(workDir, `${opts.key}-${pad}-src.mp4`) : segOut;
+  const chainDur = isRamp ? srcLen : segDur;
+  // ★ 段滤镜链走**共享装配层**（与实时预览同一份定义）—— 各写一套必然漂移
+  const chain = assembleSegmentChain({
+    seg, segDur: chainDur, isImage, W, H, fps, keyFilterOf: ctx.keyFilterOf,
+    // 只给视频段传补帧（图片段 zoompan 已按目标 fps 生成，无需插帧）
+    ...(ctx.interpolate !== 'off' && !isImage ? { interpolate: ctx.interpolate } : {}),
+    ...(isRamp ? { speedOverride: 1 } : {}),
+    ...(ctx.maskFiles.has(seg.id) ? { maskFile: ctx.maskFiles.get(seg.id) } : {}),
+    ...(ctx.hslFiles.has(seg.id) ? { hslFile: ctx.hslFiles.get(seg.id) } : {}),
+  });
+
+  const args: string[] = ['-y'];
+  const speed = isImage ? 1 : (isRamp ? 1 : (seg.speed ?? 1));
+  // 从源读多少秒：变速前的原始长度（setpts 之后自然变成 segDur）
+  const readDur = isImage ? segDur : (isRamp ? srcLen : segDur * speed);
+  if (isImage) {
+    args.push('-loop', '1', '-i', seg.file, '-t', String(segDur));
+  } else {
+    if (seg.trimStart != null && seg.trimStart > 0) args.push('-ss', String(seg.trimStart));
+    // ★★ `-t` 必须紧跟在 `-ss` 之后、**本输入 `-i` 之前**。
+    //   放在两个 `-i` 之间时 ffmpeg 会把它归属到**后一个**输入 → 视频根本没被裁、
+    //   反而把配音截短了：成片时长错、且完全不报错（实测踩到：3 段预算 10.5s 出了 12.5s）。
+    if (seg.trimStart != null || seg.trimEnd != null) args.push('-t', readDur.toFixed(3), '-i', seg.file);
+    else args.push('-i', seg.file);
+  }
+
+  const hasAudioIn = opts.mute ? false : Boolean(ctx.hasAudio[seg.id] ?? ctx.hasAudio[seg.file]);
+  const audioFile = opts.mute ? undefined : seg.audioFile;
+  // P1-7 升降调：半音 → 频率比 2^(n/12)，rubberband 变调不变速（时长/时间轴不受影响）。
+  const pitchFilter = seg.pitch && Math.abs(seg.pitch) > 0.001
+    ? `rubberband=pitch=${Math.pow(2, seg.pitch / 12).toFixed(6)}`
+    : null;
+  // 倒放时音轨同步倒放（补的静音源不用处理：倒过来还是静音）
+  const revAudio = Boolean(seg.reverse) && !isImage;
+  // ★ 透明度关键帧存在时视频必须走 filter_complex（垫黑底），音频也要并进同一条 fc
+  const useKfFc = chain.fcHead != null;
+  const vLabel = `[${chain.vLabel}]`;
+
+  if (audioFile) {
+    args.push('-i', audioFile);
+    const vol = seg.volume ?? 1;
+    const aChain = [...(revAudio ? ['areverse'] : []), `volume=${vol.toFixed(3)}`, ...(pitchFilter ? [pitchFilter] : [])];
+    // ★★ 用 filter_complex 时**不能**再前置裸 `-map 0:v:0` ——
+    //   那样会同时映射「原始未加工视频流」与滤镜链产物 `[v]`，产出**两条视频流**，
+    //   而 ffmpeg 把未加工的那条放在前面 → 成片分辨率/裁剪/调色全部静默失效
+    //   （实测：1080x1920 工程出成 1920x1080，且不报任何错）。
+    if (!seg.keepOriginalAudio) {
+      // 配音替换原声：只映射配音轨
+      if (Math.abs(speed - 1) > 0.001) aChain.push(atempoChain(speed));
+      const fc = useKfFc
+        ? `${chain.fcHead};[1:a]${aChain.join(',')}[a]`
+        : `[0:v]${chain.vf}[v];[1:a]${aChain.join(',')}[a]`;
+      args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
+    } else if (hasAudioIn) {
+      // 保留原声并与配音混音（倒放时两路都倒，保持同步）
+      const rev = revAudio ? 'areverse,' : '';
+      const fc = (useKfFc ? `${chain.fcHead};` : `[0:v]${chain.vf}[v];`) +
+        `[0:a]${rev}volume=${vol.toFixed(3)}[o];[1:a]${rev}volume=${vol.toFixed(3)}[d];[o][d]amix=inputs=2:duration=first:dropout_transition=2${pitchFilter ? `,${pitchFilter}` : ''}[a]`;
+      args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
+    } else {
+      const fc = useKfFc
+        ? `${chain.fcHead};[1:a]${aChain.join(',')}[a]`
+        : `[0:v]${chain.vf}[v];[1:a]${aChain.join(',')}[a]`;
+      args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
+    }
+    args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
+  } else {
+    // 无配音：用原音轨；无音轨则补等长静音（anullsrc 必须显式 -t）
+    const vol = seg.volume;
+    if (useKfFc) {
+      // 透明度关键帧：视频+音频全走 filter_complex
+      if (hasAudioIn) {
+        const volExpr = vol != null && Math.abs(vol - 1) > 0.001 ? `volume=${vol.toFixed(3)}` : 'anull';
+        const volPart = `[0:a]${revAudio ? 'areverse,' : ''}${volExpr}${pitchFilter ? `,${pitchFilter}` : ''}[a]`;
+        args.push('-filter_complex', `${chain.fcHead};${volPart}`, '-map', vLabel, '-map', '[a]');
+        // ★★ 这里原本**漏了输出路径**：透明度关键帧 + 有原声时 args 到 "-map [a]" 就结束了，
+        //   ffmpeg 会报 "At least one output file must be specified"。纯函数测试只看字符串，
+        //   所以一直没暴露 —— 属于"只有真跑才炸"的那类。
+        args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
+      } else {
+        args.push('-f', 'lavfi', '-t', String(chainDur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
+        args.push('-filter_complex', chain.fcHead!, '-map', vLabel, '-map', '1:a:0');
+        // ★ 同上：这段原本也没有输出路径（透明度关键帧 + 无音轨），一并补上
+        args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-shortest', '-movflags', '+faststart', stage1Out);
+      }
+    } else if (hasAudioIn) {
+      const afParts: string[] = [];
+      if (revAudio) afParts.push('areverse');
+      if (vol != null && Math.abs(vol - 1) > 0.001) afParts.push(`volume=${vol.toFixed(3)}`);
+      if (pitchFilter) afParts.push(pitchFilter);
+      const vArgs = afParts.length ? ['-af', afParts.join(',')] : [];
+      args.push('-map', '0:v:0', '-map', '0:a:0', '-vf', chain.vf!, ...vArgs, ...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
+    } else {
+      args.push('-f', 'lavfi', '-t', String(chainDur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-map', '0:v:0', '-map', '1:a:0', '-vf', chain.vf!, ...x264, '-c:a', 'aac', '-b:a', ab, '-shortest', '-movflags', '+faststart', stage1Out);
+    }
+  }
+  ctx.steps.push({ label: `${opts.title ?? `加工第 ${opts.index} 段`}（${seg.label || path.basename(seg.file)}，${chainDur.toFixed(2)}s）`, args, out: stage1Out });
+
+  if (isRamp) {
+    // ★ 切片变速：每片恒定倍速（视频 setpts、音轨 atempo），切点来自共享的 speedSlices ——
+    //   时长计算/预览定位用的是同一份切片数学，三处不会漂移。
+    const slices = speedSlices(seg.speedCurve!, SPEED_SLICES);
+    const sliceFiles: string[] = [];
+    for (let k = 0; k < slices.length; k++) {
+      const s = slices[k];
+      const startSec = srcLen * s.t0;
+      const takeSec = srcLen * (s.t1 - s.t0);
+      if (!(takeSec > 0.001)) continue;
+      const outK = path.join(workDir, `${opts.key}-${pad}-ramp-${String(k + 1).padStart(2, '0')}.mp4`);
+      const a: string[] = ['-y', '-ss', startSec.toFixed(3), '-t', takeSec.toFixed(3), '-i', stage1Out];
+      if (Math.abs(s.speed - 1) > 0.001) {
+        a.push('-vf', `setpts=PTS/${s.speed.toFixed(6)}`, '-af', atempoChain(s.speed));
+      }
+      a.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', outK);
+      ctx.steps.push({ label: `变速片 ${k + 1}/${slices.length}（${s.speed.toFixed(2)}×）`, args: a, out: outK });
+      sliceFiles.push(outK);
+    }
+    const listFile = path.join(workDir, `${opts.key}-ramp-${opts.index}.txt`);
+    ctx.assets.push({
+      file: listFile,
+      content: sliceFiles.map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'),
+    });
+    ctx.steps.push({
+      label: `拼接变速片（${sliceFiles.length} 段）`,
+      args: ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', segOut],
+      out: segOut,
+    });
+  }
+
+  return { ok: true, file: segOut, filmDur: segDur };
+}
+
+/**
+ * ② 拼接：**有转场走 xfade 链，无转场走 -c copy 直拼**。
+ *
+ * ★★★ 为什么分两条路（2026-10-07）：
+ *   转场必须重编码（xfade 是滤镜），而**绝大多数工程没有转场** ——
+ *   一律走 xfade 会让所有导出白白慢几倍、还掉画质。所以"有转场才付代价"。
+ * ★ xfade 链是**逐段串接**的：每接一段都要把前面已拼好的结果当输入之一，
+ *   所以 offset 要用"累计到该交界处的时长 - 转场时长"。
+ * ★ S2：多轨的主轨拼接也走这里（空档已由补黑段填成普通 item）。
+ */
+function planConcatStage(opts: {
+  items: Array<{ file: string; segDur: number; transition?: ClipSegment['transition'] }>;
+  workDir: string;
+  x264: string[];
+  ab: string;
+  steps: RenderPlanStep[];
+  assets: RenderAsset[];
+  /** 多轨时区分中间文件名的前缀 */
+  prefix?: string;
+}): { file: string; duration: number } {
+  const { items, workDir, x264, ab, steps, assets } = opts;
+  const p = opts.prefix ?? '';
+  if (!items.length) return { file: '', duration: 0 };
+  if (items.length === 1) return { file: items[0].file, duration: items[0].segDur };
+
+  const hasTransition = items.some((it, i) => i > 0 && it.transition);
+  let cursorFile = '';
+
+  if (!hasTransition) {
+    const listBody = items.map((it) => `file '${it.file.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
+    const listFile = path.join(workDir, `${p}concat.txt`);
+    const joined = path.join(workDir, `${p}joined.mp4`);
+    assets.push({ file: listFile, content: listBody });
+    steps.push({
+      label: `拼接 ${items.length} 段（直拼）`,
+      args: ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', joined],
+      out: joined,
+    });
+    return { file: joined, duration: items.reduce((s, it) => s + it.segDur, 0) };
+  }
+
+  // 逐段 xfade：先算出每段时长（复用与时间轴一致的口径）
+  let acc = items[0].file;
+  let accDur = items[0].segDur;
+  for (let i = 1; i < items.length; i++) {
+    const tr = items[i].transition;
+    const outFile = path.join(workDir, `${p}xfade-${String(i).padStart(3, '0')}.mp4`);
+    if (!tr) {
+      // 该交界无转场：用 concat 把两段接起来（保持 copy，不重编码）
+      const lf = path.join(workDir, `${p}cat-${i}.txt`);
+      const body = [acc, items[i].file].map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
+      assets.push({ file: lf, content: body });
+      steps.push({
+        label: `接第 ${i + 1} 段（无转场直拼）`,
+        args: ['-y', '-f', 'concat', '-safe', '0', '-i', lf, '-c', 'copy', '-movflags', '+faststart', outFile],
+        out: outFile,
+      });
+      acc = outFile;
+      accDur += items[i].segDur;
+      continue;
+    }
+    // 有转场：xfade。duration 不能超过任一段时长（否则 offset 为负 → ffmpeg 报错）
+    const want = tr.duration ?? 0.8;
+    const d = Math.max(0.1, Math.min(want, accDur - 0.05, items[i].segDur - 0.05));
+    const offset = Math.max(0, accDur - d);
+    // ★ 音频：两段都有音轨才做 acrossfade（我们的段管线保证每段都有音轨——无音轨已补静音）
+    const fc = `[0:v][1:v]xfade=transition=${tr.type}:duration=${d.toFixed(3)}:offset=${offset.toFixed(3)},format=yuv420p[v];[0:a][1:a]acrossfade=d=${d.toFixed(3)}[a]`;
+    steps.push({
+      label: `转场 ${tr.type}（第 ${i} → ${i + 1} 段，${d.toFixed(2)}s）`,
+      args: ['-y', '-i', acc, '-i', items[i].file, '-filter_complex', fc, '-map', '[v]', '-map', '[a]',
+        ...x264, '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', outFile],
+      out: outFile,
+    });
+    acc = outFile;
+    accDur = accDur + items[i].segDur - d;   // 转场让总时长缩短 d
+  }
+  return { file: acc, duration: accDur };
+}
+
 export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: RenderPlan } | { ok: false; error: string } {
   const { project, workDir, outFile } = input;
-  if (!project.clips.length) return { ok: false, error: '工程里没有任何片段（先用 add_clip 加素材或 clip_import 导入目录）' };
+  // S2 多轨：底片已由 buildTrackPlan 合成好 → 跳过分段加工与拼接，只跑后续阶段
+  const precomposed = input.precomposed;
+  if (!precomposed && !project.clips.length) return { ok: false, error: '工程里没有任何片段（先用 add_clip 加素材或 clip_import 导入目录）' };
 
   const [W, H] = project.output.size.split('x').map(Number);
   if (!(W > 0 && H > 0)) return { ok: false, error: `导出规格非法：${project.output.size}` };
@@ -693,252 +1012,41 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
   // 蒙版滤镜构造所需的色键查表（来自效果库，单一真相源）
   const keyFilterOf = (id: string) => MASK_KEYS.find((k) => k.id === id)?.filter || null;
 
-  // ②.0 路径蒙版烘焙（P1-4）：钢笔路径的逐像素多边形测试在 1080p 上太慢，
-  //   先按目标画幅烘一张黑白 PNG（一次），段滤镜再用 movie+alphamerge 当 alpha。
-  //   ★ 这一步必须排在所有段加工之前（段滤镜会引用这个文件）。
-  const maskFiles = new Map<string, string>();
-  for (const seg of project.clips) {
-    if (!seg.mask?.path || seg.mask.path.points.length < 3) continue;
-    const file = path.join(workDir, `mask-${safeStem(seg.id)}.png`);
-    const expr = polygonAlphaExpr(flattenMaskPath(seg.mask.path, W, H));
-    steps.push({
-      label: `生成蒙版 ${seg.id}（钢笔路径，${seg.mask.path.points.length} 个锚点）`,
-      args: ['-y', '-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:r=1:d=1`,
-        '-vf', `format=gray,geq=lum='${expr}'`, '-frames:v', '1', file],
-      out: file,
-    });
-    maskFiles.set(seg.id, file);
+  // ②.0 路径蒙版烘焙（P1-4）/ HSL 分色（P1-6）—— 与多轨共用同一份实现。
+  //   ★ 必须排在所有段加工之前（段滤镜会引用这些文件）。
+  //   ★ precomposed：底片已经合成好，没有任何段加工，也就不需要这些中间资产。
+  let maskFiles = new Map<string, string>();
+  let hslFiles = new Map<string, string>();
+  if (!precomposed) {
+    ({ maskFiles, hslFiles } = bakeSegmentAssets({ clips: project.clips, workDir, W, H, steps, assets }));
   }
 
-  // HSL 分色（P1-6）：参数 → 3D LUT 文本（作为 assets 落盘，段滤镜用 lut3d 引用）。
-  const hslFiles = new Map<string, string>();
-  for (const seg of project.clips) {
-    if (!seg.hsl?.bands.length) continue;
-    const file = path.join(workDir, `hsl-${safeStem(seg.id)}.cube`);
-    assets.push({ file, content: hslCube(seg.hsl.bands) });
-    hslFiles.set(seg.id, file);
-  }
-
-  for (let i = 0; i < project.clips.length; i++) {
-    const seg = project.clips[i];
-    const rawDur = input.durations[seg.id] ?? input.durations[seg.file] ?? 0;
-    const isImage = imgSet.has(seg.file.toLowerCase()) || seg.kenburns != null;
-    const segDur = isImage
-      ? (seg.kenburns?.duration ?? Math.max(3, rawDur || 3))
-      : segmentDuration(seg, rawDur);
-    totalDuration += segDur;
-    if (seg.reverse && !isImage && segDur > REVERSE_MAX_SEC) {
-      return {
-        ok: false,
-        error: `第 ${i + 1} 段开了倒放，但时长 ${segDur.toFixed(1)}s 超过单段上限 ${REVERSE_MAX_SEC}s：`
-          + 'ffmpeg 的 reverse 会把整段帧读进内存，长段会把进程拖垮。先把这一段裁短再倒放。',
-      };
-    }
-
-    const segOut = path.join(workDir, `seg-${String(i + 1).padStart(3, '0')}-${safeStem(seg.id)}.mp4`);
-    // ★ 曲线变速：先按 1 倍出整段（视觉处理与淡入淡出都在**源时间**里生效，随画面一起被时移，
-    //   语义一致），再按曲线切成 N 片各自 setpts + atempo，最后拼回 —— 音画共用同一套切片边界。
-    const isRamp = !isImage && !!seg.speedCurve?.length;
-    const srcLen = isImage ? segDur : trimmedSourceLength(seg, rawDur);
-    const stage1Out = isRamp ? path.join(workDir, `seg-${String(i + 1).padStart(3, '0')}-src.mp4`) : segOut;
-    const chainDur = isRamp ? srcLen : segDur;
-    // ★ 段滤镜链走**共享装配层**（与实时预览同一份定义）—— 各写一套必然漂移
-    const chain = assembleSegmentChain({
-      seg, segDur: chainDur, isImage, W, H, fps, keyFilterOf,
-      // 只给视频段传补帧（图片段 zoompan 已按目标 fps 生成，无需插帧）
-      ...(interpolate !== 'off' && !isImage ? { interpolate } : {}),
-      ...(isRamp ? { speedOverride: 1 } : {}),
-      ...(maskFiles.has(seg.id) ? { maskFile: maskFiles.get(seg.id) } : {}),
-      ...(hslFiles.has(seg.id) ? { hslFile: hslFiles.get(seg.id) } : {}),
-    });
-
-    const args: string[] = ['-y'];
-    const speed = isImage ? 1 : (isRamp ? 1 : (seg.speed ?? 1));
-    // 从源读多少秒：变速前的原始长度（setpts 之后自然变成 segDur）
-    const readDur = isImage ? segDur : (isRamp ? srcLen : segDur * speed);
-    if (isImage) {
-      args.push('-loop', '1', '-i', seg.file, '-t', String(segDur));
-    } else {
-      if (seg.trimStart != null && seg.trimStart > 0) args.push('-ss', String(seg.trimStart));
-      // ★★ `-t` 必须紧跟在 `-ss` 之后、**本输入 `-i` 之前**。
-      //   放在两个 `-i` 之间时 ffmpeg 会把它归属到**后一个**输入 → 视频根本没被裁、
-      //   反而把配音截短了：成片时长错、且完全不报错（实测踩到：3 段预算 10.5s 出了 12.5s）。
-      if (seg.trimStart != null || seg.trimEnd != null) args.push('-t', readDur.toFixed(3), '-i', seg.file);
-      else args.push('-i', seg.file);
-    }
-
-    const hasAudioIn = Boolean(input.hasAudio[seg.id] ?? input.hasAudio[seg.file]);
-    const audioFile = seg.audioFile;
-    // P1-7 升降调：半音 → 频率比 2^(n/12)，rubberband 变调不变速（时长/时间轴不受影响）。
-    const pitchFilter = seg.pitch && Math.abs(seg.pitch) > 0.001
-      ? `rubberband=pitch=${Math.pow(2, seg.pitch / 12).toFixed(6)}`
-      : null;
-    // 倒放时音轨同步倒放（补的静音源不用处理：倒过来还是静音）
-    const revAudio = Boolean(seg.reverse) && !isImage;
-    // ★ 透明度关键帧存在时视频必须走 filter_complex（垫黑底），音频也要并进同一条 fc
-    const useKfFc = chain.fcHead != null;
-    const vLabel = `[${chain.vLabel}]`;
-
-    if (audioFile) {
-      args.push('-i', audioFile);
-      const vol = seg.volume ?? 1;
-      const aChain = [...(revAudio ? ['areverse'] : []), `volume=${vol.toFixed(3)}`, ...(pitchFilter ? [pitchFilter] : [])];
-      // ★★ 用 filter_complex 时**不能**再前置裸 `-map 0:v:0` ——
-      //   那样会同时映射「原始未加工视频流」与滤镜链产物 `[v]`，产出**两条视频流**，
-      //   而 ffmpeg 把未加工的那条放在前面 → 成片分辨率/裁剪/调色全部静默失效
-      //   （实测：1080x1920 工程出成 1920x1080，且不报任何错）。
-      if (!seg.keepOriginalAudio) {
-        // 配音替换原声：只映射配音轨
-        if (Math.abs(speed - 1) > 0.001) aChain.push(atempoChain(speed));
-        const fc = useKfFc
-          ? `${chain.fcHead};[1:a]${aChain.join(',')}[a]`
-          : `[0:v]${chain.vf}[v];[1:a]${aChain.join(',')}[a]`;
-        args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
-      } else if (hasAudioIn) {
-        // 保留原声并与配音混音（倒放时两路都倒，保持同步）
-        const rev = revAudio ? 'areverse,' : '';
-        const fc = (useKfFc ? `${chain.fcHead};` : `[0:v]${chain.vf}[v];`) +
-          `[0:a]${rev}volume=${vol.toFixed(3)}[o];[1:a]${rev}volume=${vol.toFixed(3)}[d];[o][d]amix=inputs=2:duration=first:dropout_transition=2${pitchFilter ? `,${pitchFilter}` : ''}[a]`;
-        args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
-      } else {
-        const fc = useKfFc
-          ? `${chain.fcHead};[1:a]${aChain.join(',')}[a]`
-          : `[0:v]${chain.vf}[v];[1:a]${aChain.join(',')}[a]`;
-        args.push('-filter_complex', fc, '-map', vLabel, '-map', '[a]');
-      }
-      args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
-    } else {
-      // 无配音：用原音轨；无音轨则补等长静音（anullsrc 必须显式 -t）
-      const vol = seg.volume;
-      if (useKfFc) {
-        // 透明度关键帧：视频+音频全走 filter_complex
-        if (hasAudioIn) {
-          const volExpr = vol != null && Math.abs(vol - 1) > 0.001 ? `volume=${vol.toFixed(3)}` : 'anull';
-          const volPart = `[0:a]${revAudio ? 'areverse,' : ''}${volExpr}${pitchFilter ? `,${pitchFilter}` : ''}[a]`;
-          args.push('-filter_complex', `${chain.fcHead};${volPart}`, '-map', vLabel, '-map', '[a]');
-          // ★★ 这里原本**漏了输出路径**：透明度关键帧 + 有原声时 args 到 "-map [a]" 就结束了，
-          //   ffmpeg 会报 "At least one output file must be specified"。纯函数测试只看字符串，
-          //   所以一直没暴露 —— 属于"只有真跑才炸"的那类。
-          args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
-        } else {
-          args.push('-f', 'lavfi', '-t', String(chainDur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000');
-          args.push('-filter_complex', chain.fcHead!, '-map', vLabel, '-map', '1:a:0');
-          // ★ 同上：这段原本也没有输出路径（透明度关键帧 + 无音轨），一并补上
-          args.push(...x264, '-c:a', 'aac', '-b:a', ab, '-shortest', '-movflags', '+faststart', stage1Out);
-        }
-      } else if (hasAudioIn) {
-        const afParts: string[] = [];
-        if (revAudio) afParts.push('areverse');
-        if (vol != null && Math.abs(vol - 1) > 0.001) afParts.push(`volume=${vol.toFixed(3)}`);
-        if (pitchFilter) afParts.push(pitchFilter);
-        const vArgs = afParts.length ? ['-af', afParts.join(',')] : [];
-        args.push('-map', '0:v:0', '-map', '0:a:0', '-vf', chain.vf!, ...vArgs, ...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', stage1Out);
-      } else {
-        args.push('-f', 'lavfi', '-t', String(chainDur), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-map', '0:v:0', '-map', '1:a:0', '-vf', chain.vf!, ...x264, '-c:a', 'aac', '-b:a', ab, '-shortest', '-movflags', '+faststart', stage1Out);
-      }
-    }
-    steps.push({ label: `加工第 ${i + 1} 段（${seg.label || path.basename(seg.file)}，${chainDur.toFixed(2)}s）`, args, out: stage1Out });
-
-    if (isRamp) {
-      // ★ 切片变速：每片恒定倍速（视频 setpts、音轨 atempo），切点来自共享的 speedSlices ——
-      //   时长计算/预览定位用的是同一份切片数学，三处不会漂移。
-      const slices = speedSlices(seg.speedCurve!, SPEED_SLICES);
-      const sliceFiles: string[] = [];
-      for (let k = 0; k < slices.length; k++) {
-        const s = slices[k];
-        const startSec = srcLen * s.t0;
-        const takeSec = srcLen * (s.t1 - s.t0);
-        if (!(takeSec > 0.001)) continue;
-        const outK = path.join(workDir, `seg-${String(i + 1).padStart(3, '0')}-ramp-${String(k + 1).padStart(2, '0')}.mp4`);
-        const a: string[] = ['-y', '-ss', startSec.toFixed(3), '-t', takeSec.toFixed(3), '-i', stage1Out];
-        if (Math.abs(s.speed - 1) > 0.001) {
-          a.push('-vf', `setpts=PTS/${s.speed.toFixed(6)}`, '-af', atempoChain(s.speed));
-        }
-        a.push(...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', '-movflags', '+faststart', outK);
-        steps.push({ label: `变速片 ${k + 1}/${slices.length}（${s.speed.toFixed(2)}×）`, args: a, out: outK });
-        sliceFiles.push(outK);
-      }
-      const listFile = path.join(workDir, `ramp-${i + 1}.txt`);
-      assets.push({
-        file: listFile,
-        content: sliceFiles.map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'),
-      });
-      steps.push({
-        label: `拼接变速片（${sliceFiles.length} 段）`,
-        args: ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', segOut],
-        out: segOut,
-      });
-    }
-    segFiles.push(segOut);
-  }
-
-  // ② 拼接：**有转场走 xfade 链，无转场走 -c copy 直拼**
-  //
-  // ★★★ 为什么分两条路（2026-10-07）：
-  //   转场必须重编码（xfade 是滤镜），而**绝大多数工程没有转场** ——
-  //   一律走 xfade 会让所有导出白白慢几倍、还掉画质。所以"有转场才付代价"。
-  // ★ xfade 链是**逐段串接**的：每接一段都要把前面已拼好的结果当输入之一，
-  //   所以 offset 要用"累计到该交界处的时长 - 转场时长"。
-  const hasTransition = project.clips.some((c, i) => i > 0 && c.transition);
-  let cursorFile = '';
-
-  if (segFiles.length === 1) {
-    cursorFile = segFiles[0];
-  } else if (!hasTransition) {
-    const listBody = segFiles.map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
-    const listFile = path.join(workDir, 'concat.txt');
-    const joined = path.join(workDir, 'joined.mp4');
-    assets.push({ file: listFile, content: listBody });
-    steps.push({
-      label: `拼接 ${segFiles.length} 段（直拼）`,
-      args: ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c', 'copy', '-movflags', '+faststart', joined],
-      out: joined,
-    });
-    cursorFile = joined;
+  // ① 段加工：主轨逐段 → 同规格 mp4（多轨时同一函数处理其它轨，见 buildTrackPlan）
+  const segDurs: number[] = [];
+  if (precomposed) {
+    segFiles.push(precomposed.file);
+    totalDuration = precomposed.duration;
   } else {
-    // 逐段 xfade：先算出每段时长（复用与时间轴一致的口径）
-    const segDurs: number[] = project.clips.map((seg, i) => {
-      const rawDur = input.durations[seg.id] ?? input.durations[seg.file] ?? 0;
-      const isImg = !!seg.kenburns || imgSet.has(seg.file.toLowerCase());
-      return isImg ? (seg.kenburns?.duration ?? Math.max(3, rawDur || 3)) : segmentDuration(seg, rawDur);
-    });
-
-    let acc = segFiles[0];          // 已拼好的结果（初始=第 1 段）
-    let accDur = segDurs[0];
-    for (let i = 1; i < segFiles.length; i++) {
-      const tr = project.clips[i].transition;
-      const outFile = path.join(workDir, `xfade-${String(i).padStart(3, '0')}.mp4`);
-      if (!tr) {
-        // 该交界无转场：用 concat 把两段接起来（保持 copy，不重编码）
-        const lf = path.join(workDir, `cat-${i}.txt`);
-        const body = [acc, segFiles[i]].map((f) => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n');
-        assets.push({ file: lf, content: body });
-        steps.push({
-          label: `接第 ${i + 1} 段（无转场直拼）`,
-          args: ['-y', '-f', 'concat', '-safe', '0', '-i', lf, '-c', 'copy', '-movflags', '+faststart', outFile],
-          out: outFile,
-        });
-        acc = outFile;
-        accDur += segDurs[i];
-        continue;
-      }
-      // 有转场：xfade。duration 不能超过任一段时长（否则 offset 为负 → ffmpeg 报错）
-      const want = tr.duration ?? 0.8;
-      const d = Math.max(0.1, Math.min(want, accDur - 0.05, segDurs[i] - 0.05));
-      const offset = Math.max(0, accDur - d);
-      // ★ 音频：两段都有音轨才做 acrossfade（我们的段管线保证每段都有音轨——无音轨已补静音）
-      const fc = `[0:v][1:v]xfade=transition=${tr.type}:duration=${d.toFixed(3)}:offset=${offset.toFixed(3)},format=yuv420p[v];[0:a][1:a]acrossfade=d=${d.toFixed(3)}[a]`;
-      steps.push({
-        label: `转场 ${tr.type}（第 ${i} → ${i + 1} 段，${d.toFixed(2)}s）`,
-        args: ['-y', '-i', acc, '-i', segFiles[i], '-filter_complex', fc, '-map', '[v]', '-map', '[a]',
-          ...x264, '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', outFile],
-        out: outFile,
-      });
-      acc = outFile;
-      accDur = accDur + segDurs[i] - d;   // 转场让总时长缩短 d
+    const stageCtx: SegmentStageCtx = {
+      workDir, W, H, fps, x264, ab, interpolate, imgSet, keyFilterOf,
+      maskFiles, hslFiles, durations: input.durations, hasAudio: input.hasAudio, steps, assets,
+    };
+    for (let i = 0; i < project.clips.length; i++) {
+      const r = planSegmentStage(stageCtx, project.clips[i], { key: 'seg', index: i + 1 });
+      if (!r.ok) return r;
+      segDurs.push(r.filmDur);
+      totalDuration += r.filmDur;
+      segFiles.push(r.file);
     }
-    cursorFile = acc;
   }
+
+  // ② 拼接（含转场）；多轨时主轨空档已由补黑段填成普通 item
+  let cursorFile = precomposed
+    ? precomposed.file
+    : planConcatStage({
+        items: segFiles.map((f, i) => ({ file: f, segDur: segDurs[i], transition: project.clips[i].transition })),
+        workDir, x264, ab, steps, assets,
+      }).file;
 
   // ②.5 画中画（叠加轨）：在成片的某段时间叠一个小画面
   //
@@ -1229,7 +1337,15 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
 
   // ⑤ 收尾：直接产出到目标文件（steps 内部已完成编码，末步产物改名为 outFile）
   const last = steps[steps.length - 1];
-  if (last.out !== outFile) {
+  if (!last) {
+    // 仅 precomposed 且工程没有任何后续阶段（无字幕/图层/BGM/音效）会走到这里：
+    // 底片本身就是成片，补一条落盘步骤（steps 的不变式：末步产物 = 成片）。
+    steps.push({
+      label: '收尾落盘',
+      args: ['-y', '-i', cursorFile, '-c', 'copy', '-movflags', '+faststart', outFile],
+      out: outFile,
+    });
+  } else if (last.out !== outFile) {
     if (steps.length === 1 && last.out === segFiles[0] && segFiles.length === 1) {
       // 单段无后续：直接输出到目标
       last.out = outFile;
@@ -1266,6 +1382,249 @@ export function buildRenderPlan(input: BuildPlanInput): { ok: true; plan: Render
       assets,
       totalDuration: Number(totalDuration.toFixed(3)),
       ...(cover ? { cover } : {}),
+    },
+  };
+}
+
+// ===== S2：多轨渲染计划（隐藏能力） =====
+
+function isClipItem(it: TrackItem): it is ClipItem {
+  return it.type === 'clip';
+}
+function isAudioItem(it: TrackItem): it is AudioItem {
+  return it.type === 'audio';
+}
+
+/** v3 音频项 → v2 定时音频（复用下游 ③.8 混音阶段，不为多轨再写一套混音）。 */
+function audioItemToClipAudio(a: AudioItem): NonNullable<ClipProject['audios']>[number] {
+  return {
+    id: a.id,
+    file: a.file,
+    start: a.start,
+    end: Number((a.start + a.duration).toFixed(6)),
+    ...(a.volume != null && Math.abs(a.volume - 1) > 1e-6 ? { volume: a.volume } : {}),
+    ...(a.fadeIn != null && a.fadeIn > 0 ? { fadeIn: a.fadeIn } : {}),
+    ...(a.fadeOut != null && a.fadeOut > 0 ? { fadeOut: a.fadeOut } : {}),
+    ...(a.trimStart != null && a.trimStart > 0 ? { trimStart: a.trimStart } : {}),
+  };
+}
+
+/**
+ * S2 多轨渲染计划：多视频轨叠加 + 多音频轨混音。
+ *
+ * 口径：
+ *   · 主轨（第一条可见视频轨）= 底板：逐段走 `planSegmentStage` → 空档补黑 → concat/xfade
+ *     （与单轨路径**同一套**实现，颜色/音量/转场不会漂移）；
+ *   · 其它视频轨：每段加工成同规格文件后按 start/end 窗口 overlay（空档天然透明）；
+ *     轨级 hidden/muted/opacity/blend 生效；非主轨**不出声**（B-roll 默认静音）；
+ *   · 额外音频轨 → 转成 v2 定时音频，交给既有 ③.8 混音阶段
+ *     （normalize=0 + alimiter；BGM duck 的侧链仍看到主轨人声）；
+ *   · 字幕/画中画/贴纸/特效/音效链/BGM 全部复用 `buildRenderPlan` 的后续阶段。
+ *
+ * ★ 与方案 §4.1 的偏差（诚实记录）：文档建议"每轨先合成一个整段产物，再顶层叠加"。
+ *   这里改为**按条目窗口叠加**：
+ *     好处：空档不需要透明编码（qtrle/4444 体积大、且与 x264 段不可 copy 拼接）；
+ *           编码次数从「轨数 + 1」降为 1 次顶层合成；
+ *     代价：filtergraph 输入数 = 非主轨段数，单轨上百段时偏重（短视频量级无压力）。
+ *   若将来要支持长片多轨，再换回按轨预合成。
+ *
+ * ★ 触发条件（隐藏开关）：执行器只在 `CLIP_MULTITRACK=1` 时调用本函数；
+ *   即使调用，单视频轨 + 无额外音频轨的工程也会**直接复用旧计划**，出片逐字节不变。
+ */
+export function buildTrackPlan(input: BuildPlanInput): { ok: true; plan: RenderPlan } | { ok: false; error: string } {
+  const project = input.project;
+  // 不是 v3 内存对象（没有 tracks）→ 没有多轨信息，直接走既有单主轨计划
+  if (!isLoadedV3(project)) return buildRenderPlan(input);
+
+  let v3: ClipProjectV3;
+  try {
+    v3 = materializeTrackTimes(buildProjectV3ForWrite(project), input.durations);
+  } catch (e) {
+    // 例如主轨含复合片段（S4）：不静默丢数据，把原因交给调用方
+    return { ok: false, error: (e as Error).message };
+  }
+  if (v3.tracks.some((t) => t.items.some((it) => it.type === 'compound'))) {
+    return { ok: false, error: '多轨渲染暂不支持复合片段（S4）；请先把复合片段展开' };
+  }
+
+  const videoTracks = v3.tracks.filter((t) => t.kind === 'video' && !t.hidden && !t.muted && t.opacity !== 0);
+  const audioTracks = v3.tracks.filter((t) => t.kind === 'audio' && !t.muted);
+  const extraAudio = audioTracks.slice(1).flatMap((t) => t.items.filter(isAudioItem));
+
+  // 单视频轨 + 无额外音频轨：与既有计划**完全一致**（S2 不改变任何老工程出片）
+  if (videoTracks.length <= 1 && extraAudio.length === 0) return buildRenderPlan(input);
+  if (!videoTracks.length) return { ok: false, error: '多轨渲染：工程没有可用的视频轨（全部被隐藏/静音/透明）' };
+
+  // 只有额外音频轨：视频仍走单主轨计划，音频项并进定时音频阶段
+  if (videoTracks.length === 1) {
+    return buildRenderPlan({
+      ...input,
+      project: { ...project, audios: [...(project.audios || []), ...extraAudio.map(audioItemToClipAudio)] },
+    });
+  }
+
+  const workDir = input.workDir;
+  const [W, H] = project.output.size.split('x').map(Number);
+  if (!(W > 0 && H > 0)) return { ok: false, error: `导出规格非法：${project.output.size}` };
+  const fps = project.output.fps || 30;
+  const interpolate = normalizeInterpolate(project.output.interpolate);
+  const imgSet = new Set((input.imageFiles || []).map((f) => f.toLowerCase()));
+  const q = QUALITY_PRESETS[(input.quality ?? project.output.quality ?? 'std') as ExportQuality] ?? QUALITY_PRESETS.std;
+  const x264 = videoEncodeArgs(q, input.fast === true, input.hwEncoder ?? null);
+  const ab = `${q.audioK}k`;
+  const keyFilterOf = (id: string) => MASK_KEYS.find((k) => k.id === id)?.filter || null;
+  const steps: RenderPlanStep[] = [];
+  const assets: RenderAsset[] = [];
+  const pad = (n: number) => String(n).padStart(3, '0');
+
+  const makeCtx = (maskFiles: Map<string, string>, hslFiles: Map<string, string>): SegmentStageCtx => ({
+    workDir, W, H, fps, x264, ab, interpolate, imgSet, keyFilterOf,
+    maskFiles, hslFiles, durations: input.durations, hasAudio: input.hasAudio, steps, assets,
+  });
+  const orderByStart = <T extends { start?: number }>(items: T[]): T[] =>
+    items.every((it) => it.start != null) ? [...items].sort((a, b) => (a.start as number) - (b.start as number)) : items;
+  const blackSegment = (dur: number, file: string, label: string): void => {
+    steps.push({
+      label,
+      args: ['-y',
+        '-f', 'lavfi', '-i', `color=c=black:s=${W}x${H}:r=${fps}:d=${dur.toFixed(3)}`,
+        '-f', 'lavfi', '-t', dur.toFixed(3), '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+        '-shortest', ...x264, '-c:a', 'aac', '-b:a', ab, '-ar', '48000', '-ac', '2', file],
+      out: file,
+    });
+  };
+
+  // ── 非主轨：每段加工成同规格文件，记录窗口 ──
+  type OverlayPlan = { file: string; start: number; end: number; opacity: number; blend?: BlendModeId };
+  const overlays: OverlayPlan[] = [];
+  for (let ti = 1; ti < videoTracks.length; ti++) {
+    const track = videoTracks[ti];
+    const clips = orderByStart(track.items.filter(isClipItem));
+    const baked = bakeSegmentAssets({
+      clips: clips.map((c) => c.segment), workDir, W, H, steps, assets, keyPrefix: `t${ti}-`,
+    });
+    const ctx = makeCtx(baked.maskFiles, baked.hslFiles);
+    let prevEnd = -Infinity;
+    for (let k = 0; k < clips.length; k++) {
+      const it = clips[k];
+      if (it.start == null || it.duration == null) {
+        return { ok: false, error: `视频轨 ${track.id} 的片段 ${it.id} 缺少时间信息（旧片段未探测时长）` };
+      }
+      if (it.start < prevEnd - 1e-6) {
+        return { ok: false, error: `视频轨 ${track.id} 内片段重叠（${it.id}）：同轨不允许重叠，请移到新轨` };
+      }
+      prevEnd = it.start + it.duration;
+      const r = planSegmentStage(ctx, it.segment, {
+        key: `t${ti}`, index: k + 1, title: `轨 ${ti + 1} 第 ${k + 1} 段`, mute: true,
+      });
+      if (!r.ok) return r;
+      overlays.push({
+        file: r.file, start: it.start, end: it.start + it.duration,
+        opacity: track.opacity ?? 1,
+        ...(track.blend ? { blend: track.blend } : {}),
+      });
+    }
+  }
+
+  // ── 主轨：逐段加工 + 空档补黑 → concat ──
+  const mainTrack = videoTracks[0];
+  const mainClips = orderByStart(mainTrack.items.filter(isClipItem));
+  const mainBaked = bakeSegmentAssets({
+    clips: mainClips.map((c) => c.segment), workDir, W, H, steps, assets,
+  });
+  const mainCtx = makeCtx(mainBaked.maskFiles, mainBaked.hslFiles);
+
+  const concatItems: Array<{ file: string; segDur: number; transition?: ClipSegment['transition'] }> = [];
+  let cursor = 0;
+  for (let k = 0; k < mainClips.length; k++) {
+    const it = mainClips[k];
+    if (it.start == null || it.duration == null) {
+      return { ok: false, error: `主轨片段 ${it.id} 缺少时间信息（旧片段未探测时长）` };
+    }
+    if (it.start < cursor - 1e-6) {
+      return { ok: false, error: `主轨片段 ${it.id} 与上一段重叠：同轨不允许重叠，请移到新轨` };
+    }
+    if (it.start > cursor + 1e-6) {
+      const gap = it.start - cursor;
+      const gapFile = path.join(workDir, `track0-gap-${pad(k + 1)}.mp4`);
+      blackSegment(gap, gapFile, `主轨补黑场（${gap.toFixed(2)}s）`);
+      concatItems.push({ file: gapFile, segDur: gap });
+    }
+    const r = planSegmentStage(mainCtx, it.segment, {
+      key: 'track0', index: k + 1, title: `主轨第 ${k + 1} 段`,
+    });
+    if (!r.ok) return r;
+    concatItems.push({
+      file: r.file, segDur: r.filmDur,
+      ...(it.segment.transition ? { transition: it.segment.transition } : {}),
+    });
+    cursor = it.start + r.filmDur;
+  }
+
+  const overlayEnd = overlays.reduce((m, o) => Math.max(m, o.end), 0);
+  if (!concatItems.length) {
+    // 主轨为空：铺一段黑底当底板（时长为其它轨的最大结束时间）
+    if (!(overlayEnd > 0)) return { ok: false, error: '多轨渲染：所有轨都没有内容' };
+    const base = path.join(workDir, 'track0-blank.mp4');
+    blackSegment(overlayEnd, base, `主轨空白（补黑 ${overlayEnd.toFixed(2)}s）`);
+    concatItems.push({ file: base, segDur: overlayEnd });
+  }
+  const mainConcat = planConcatStage({ items: concatItems, workDir, x264, ab, steps, assets, prefix: 'track0-' });
+  const total = Math.max(mainConcat.duration, overlayEnd);
+
+  // ── 顶层：把非主轨按窗口叠加到主轨上 ──
+  let compositeFile = mainConcat.file;
+  if (overlays.length) {
+    const composite = path.join(workDir, 'tracks.mp4');
+    const args: string[] = ['-y', '-i', mainConcat.file];
+    const fc: string[] = [];
+    let prev = '0:v';
+    for (let k = 0; k < overlays.length; k++) {
+      const o = overlays[k];
+      args.push('-i', o.file);
+      // ★ setpts 对齐成片时间轴（与 ②.5 同一教训）：-ss/-t 后输入 PTS 从 0 起，
+      //   不对齐会让叠加内容整体后移 start 秒。
+      const chain = [`setpts=PTS+${o.start.toFixed(3)}/TB`];
+      if (o.opacity < 0.999) chain.push('format=rgba', `colorchannelmixer=aa=${o.opacity.toFixed(3)}`);
+      const bm = o.blend ? blendModeOf(o.blend) : null;
+      if (!bm || !bm.mode || !bm.neutral) {
+        fc.push(`[${k + 1}:v]${chain.join(',')}[ov${k}]`);
+        fc.push(`[${prev}][ov${k}]overlay=x=0:y=0:enable='between(t,${o.start.toFixed(3)},${o.end.toFixed(3)})'[v${k}]`);
+      } else {
+        // 混合模式：中性色画布 + 窗口叠层 + blend（与 ②.5 同一套做法）
+        fc.push(`color=c=0x${bm.neutral.slice(1)}:s=${W}x${H}:r=${fps}:d=${total.toFixed(3)}[bl${k}]`);
+        fc.push(`[${k + 1}:v]${[...chain, `fps=${fps}`].join(',')}[ov${k}]`);
+        fc.push(`[bl${k}][ov${k}]overlay=x=0:y=0:enable='between(t,${o.start.toFixed(3)},${o.end.toFixed(3)})':eof_action=repeat,format=yuv420p[ly${k}]`);
+        fc.push(`[${prev}][ly${k}]blend=all_mode=${bm.mode}:all_opacity=${o.opacity.toFixed(3)}:shortest=1[v${k}]`);
+      }
+      prev = `v${k}`;
+    }
+    // 音频只取主轨（非主轨 mute=true 只有静音轨；额外音频由 ③.8 混入）
+    args.push('-filter_complex', fc.join(';'), '-map', `[${prev}]`, '-map', '0:a?',
+      ...x264, '-c:a', 'aac', '-b:a', ab, '-movflags', '+faststart', composite);
+    steps.push({ label: `视频轨叠加（${overlays.length} 段）`, args, out: composite });
+    compositeFile = composite;
+  }
+
+  // ── 后续阶段复用单轨计划（precomposed 跳过段加工/拼接） ──
+  const synthetic: ClipProject = {
+    ...project,
+    clips: [{ id: '__tracks__', file: compositeFile, label: '多轨合成' }],
+    audios: [...(project.audios || []), ...extraAudio.map(audioItemToClipAudio)],
+  };
+  const delegated = buildRenderPlan({
+    ...input,
+    project: synthetic,
+    precomposed: { file: compositeFile, duration: total },
+  });
+  if (!delegated.ok) return delegated;
+  return {
+    ok: true,
+    plan: {
+      ...delegated.plan,
+      steps: [...steps, ...delegated.plan.steps],
+      assets: [...assets, ...delegated.plan.assets],
+      totalDuration: Number(total.toFixed(3)),
     },
   };
 }

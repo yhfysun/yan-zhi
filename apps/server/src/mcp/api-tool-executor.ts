@@ -48,7 +48,7 @@ import { SFX_LIBRARY, sfxById, searchSfxLibrary } from '../services/sfx-library.
 import { STICKER_LIBRARY, stickerById, stickerArgs } from '../services/sticker-library.js';
 import { singingStatus, installSingingRuntime, importModelZip } from '../services/music-sing-install.js';
 import { applyClipOp, summarizeProject, nextAudioSlot, type ClipProject } from '../services/clip-project.js';
-import { buildRenderPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
+import { buildRenderPlan, buildTrackPlan, runRenderPlan, probeArgs, parseProbeJson } from '../services/clip-render.js';
 import { materializeProjectMatte } from '../services/clip-matte-render.js';
 import { detectHwEncoder } from '../services/clip-hw-encode.js';
 import { readClipProject, writeClipProject } from '../services/clip-store.js';
@@ -1913,6 +1913,15 @@ async function saveClipProject(conversationId: string | undefined, project: Clip
   return writeClipProject(conversationId, project);
 }
 
+/**
+ * 渲染计划入口：多轨（S2）隐藏开关。
+ * ★ 只在 CLIP_MULTITRACK=1 时走 buildTrackPlan；即使打开，单视频轨 + 无额外音频轨的工程
+ *   也会在 buildTrackPlan 内部直接复用旧计划 —— 老工程出片逐字节不变。
+ */
+function planClipRender(input: Parameters<typeof buildRenderPlan>[0]) {
+  return process.env.CLIP_MULTITRACK === '1' ? buildTrackPlan(input) : buildRenderPlan(input);
+}
+
 /** 探每段的真实时长与音轨：键同时挂 clip.id 与 file（调用方两种取值都要能用）。 */
 async function probeClipSegments(
   ffprobe: string,
@@ -2028,7 +2037,7 @@ export async function clipProjectTool(
       ...(qArg ? { quality: qArg as 'low' | 'std' | 'high' } : {}),
       hwEncoder: hw,
     };
-    let planned = buildRenderPlan(planInput);
+    let planned = planClipRender(planInput);
     if (!planned.ok) return fail(planned.error);
     let { steps, assets, totalDuration, cover } = planned.plan;
     let hwUsed = hw;
@@ -2043,7 +2052,7 @@ export async function clipProjectTool(
       // ★ 硬件编码失败（驱动/显存/不支持该像素格式）→ 自动回退 CPU 重跑一次。
       //   不这样做的话，用户开了"硬件加速"反而可能整条导出失败，体验比不开更差。
       if (!ran.ok && hw) {
-        const retry = buildRenderPlan({ ...planInput, hwEncoder: null });
+        const retry = planClipRender({ ...planInput, hwEncoder: null });
         if (retry.ok) {
           planned = retry;
           ({ steps, assets, totalDuration, cover } = retry.plan);

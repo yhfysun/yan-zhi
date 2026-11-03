@@ -250,6 +250,12 @@ function layerOf(t: TimedLayer): Layer {
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
+/** 稳定序列化（对象键排序）：用于判断"视图有没有被 op 改过"。 */
+const stable = (v: unknown): string => JSON.stringify(v, (_k, val) =>
+  val && typeof val === 'object' && !Array.isArray(val)
+    ? Object.fromEntries(Object.entries(val as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    : val);
+
 function cloneV3(p: ClipProjectV3): ClipProjectV3 {
   return clone(p);
 }
@@ -424,10 +430,20 @@ export function buildProjectV3ForWrite(p: ClipProject): ClipProjectV3 {
   if (base.tracks[mainVideoIdx].items.some((it) => it.type === 'compound')) {
     throw new Error('主轨含复合片段：多轨 S1 还不能保存这类工程（原文件保持不变）');
   }
-  base.tracks[mainVideoIdx] = {
-    ...base.tracks[mainVideoIdx],
-    items: buildClipItems(p.clips || []),
-  };
+  // ★ 视图没变 → 保留原轨道布局（含 S2 的主轨空档）；视图变了（op 编辑过）→ 按视图重建。
+  //   只比对 id + segment 语义：op 改了片段内容必须重建，否则 AI/UI 的改动静默丢失。
+  const clips = p.clips || [];
+  const currentItems = base.tracks[mainVideoIdx].items;
+  const sameView = currentItems.length === clips.length
+    && currentItems.every((it) => it.type === 'clip')
+    && orderByStart(currentItems as ClipItem[]).every((raw, i) =>
+      raw.id === clips[i].id && stable(raw.segment) === stable(clips[i]));
+  if (!sameView) {
+    base.tracks[mainVideoIdx] = {
+      ...base.tracks[mainVideoIdx],
+      items: buildClipItems(clips),
+    };
+  }
 
   // 主音频轨 ← audios 视图（第一条音频轨；视图清空则移除该轨，额外音频轨保留）
   const audioIdx = base.tracks.findIndex((t) => t.kind === 'audio');
