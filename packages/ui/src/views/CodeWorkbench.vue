@@ -459,12 +459,46 @@ async function syncProjectSpace() {
     code.setProjectSpaceId(sid);
   } catch { /* ignore */ }
 }
-// 切换项目目录：同步 space → 重新拉取会话列表 → 进入新任务草稿（避免残留上个项目的任务内容）
+
+let suppressProjectAutoOpen = false;
+
+function latestTaskForCodeProject(spaceId: string | null): any | undefined {
+  if (!spaceId) return undefined;
+  return chatStore.conversations
+    .filter((conv) => conv.spaceId === spaceId)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+}
+
+async function syncProjectDirFromConversation(): Promise<void> {
+  const conv = chatStore.conversations.find((item) => item.id === chatStore.currentConvId);
+  const sp = conv?.spaceId ? spaceStore.spaces.find((item) => item.id === conv.spaceId) : undefined;
+  if (!sp?.dirPath || sp.dirPath === code.projectDir) return;
+  // 当前任务来自另一个开发项目：目录跟随任务，但不要再自动打开一条任务覆盖它。
+  suppressProjectAutoOpen = true;
+  code.setProjectDir(sp.dirPath);
+}
+
+// 切换项目目录：同步 space → 恢复该项目最近任务；没有任务才进入新任务草稿。
 watch(() => code.projectDir, async () => {
+  const requestedDir = code.projectDir;
   await syncProjectSpace();
+  if (code.projectDir !== requestedDir) return;
   await chatStore.loadConversations();
-  await chat.startNewChat(code.projectSpaceId);
+  if (code.projectDir !== requestedDir) return;
+  if (suppressProjectAutoOpen) {
+    suppressProjectAutoOpen = false;
+    return;
+  }
+  const latest = latestTaskForCodeProject(code.projectSpaceId);
+  if (latest) {
+    if (latest.id !== chatStore.currentConvId) await chat.selectConv(latest.id);
+  } else {
+    await chat.startNewChat(code.projectSpaceId);
+  }
 });
+
+// 外部打开开发任务、任务下拉切换时，编辑器/文件树跟随任务所属项目目录。
+watch(() => chatStore.currentConvId, () => { void syncProjectDirFromConversation(); });
 
 /** 收起对话栏：宽度归零（再次点击顶栏「代码」或刷新恢复） */
 function toggleChat() {
@@ -766,7 +800,10 @@ onMounted(async () => {
   void refreshGitStatus();
   // 加载空间列表并同步当前项目目录对应的 space
   // 注意：loadSpaces 可能因数据库迁移问题失败，必须 catch，否则 mounted 钩子抛未处理异常
-  void spaceStore.loadSpaces().then(() => void syncProjectSpace()).catch((e) => {
+  void spaceStore.loadSpaces().then(async () => {
+    await syncProjectSpace();
+    await syncProjectDirFromConversation();
+  }).catch((e) => {
     console.warn('[CodeWorkbench] 空间列表加载失败：', e);
   });
 });

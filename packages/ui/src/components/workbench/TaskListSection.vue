@@ -296,6 +296,8 @@ const props = withDefaults(defineProps<{
    *   父级传了这个回调就完全接管点击，不传则保持通用行为（办公/开发/安全共用本组件）。
    */
   onOpen?: (convId: string) => void;
+  /** 父级接管「新建任务」；不传则走通用 chat.startNewChat。 */
+  onNew?: (spaceId: string | null) => void;
   /**
    * 当前高亮的会话 id（2026-10-21）。
    *
@@ -413,6 +415,14 @@ function onGroupDblClick(id: string) {
 /** 在某组（未归类 = null / 某空间 = spaceId）下新建任务：与列表头「新建任务」按钮同 startNewChat 流程 */
 function newChatInGroup(groupId: string) {
   const spaceId = groupId === '__root__' || groupId === '__pinned__' ? null : groupId;
+  createTaskInSpace(spaceId);
+}
+
+function createTaskInSpace(spaceId: string | null): void {
+  if (props.onNew) {
+    props.onNew(spaceId);
+    return;
+  }
   void chat.startNewChat(spaceId);
 }
 
@@ -451,12 +461,12 @@ function onRowClick(c: any) {
   rows.activate(c);
 }
 function onNew() {
-  void chat.startNewChat(effSpaceId.value || null);
+  createTaskInSpace(effSpaceId.value || null);
 }
 /** 空白区右键「新建任务」：带上当前目录，避免开发模式下新任务落到未归类 */
 function onTreeNewTask() {
   closeTreeMenu();
-  void chat.startNewChat(effSpaceId.value || null);
+  createTaskInSpace(effSpaceId.value || null);
 }
 
 // ===== 任务行右键 =====

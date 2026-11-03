@@ -62,7 +62,12 @@
       <aside class="sec-col-left">
         <!-- 任务段（决策 13 / 5f.5）：四模式同构会话列表，授权/资产之上 -->
         <section class="sec-frame sec-frame-tasks">
-          <TaskListSection :space-id="null" />
+          <TaskListSection
+            :space-id="null"
+            :active-conv-id="secConvId"
+            :on-open="openSecConversation"
+            :on-new="newSecConversation"
+          />
         </section>
 
         <!-- 左上：授权目录 -->
@@ -1021,6 +1026,7 @@ import ChatConsolePanel from '../../components/chat/ChatConsolePanel.vue';
 import { consumeSseStream } from '../../utils/sse';
 import { useSettingsStore } from '../../stores/settings';
 import { usePlatformStore } from '../../stores/platform';
+import { useChatStore } from '../../stores/chat';
 import TaskListSection from '../../components/workbench/TaskListSection.vue';
 import LeadToggle from '../../components/workbench/LeadToggle.vue';
 import FormDialog from '../../components/FormDialog.vue';
@@ -1062,6 +1068,7 @@ const secCmdRunning = ref(false);
 /** P2 后台执行：提交后不等待 SSE，服务端任务继续跑，切回命令模式可在任务列表看进度 */
 const secBackground = ref(false);
 const secConvId = ref((() => { try { return localStorage.getItem('sec-ai-conv') || ''; } catch { return ''; } })());
+const secChatStore = useChatStore();
 const secChatListEl = ref<HTMLElement | null>(null);
 let secAbort: AbortController | null = null;
 
@@ -1144,13 +1151,45 @@ async function toggleEngagement(v: boolean) {
 }
 
 async function ensureSecConversation(): Promise<string> {
-  if (secConvId.value) return secConvId.value;
-  const r = await api.post<any>('/conversations', { title: '安全控制台', agentId: SEC_AGENT_ID });
+  if (secConvId.value && secChatStore.conversations.some((conv) => conv.id === secConvId.value)) {
+    return secConvId.value;
+  }
+  const r = await api.post<any>('/conversations', {
+    title: '安全控制台',
+    agentId: SEC_AGENT_ID,
+    mode: 'sec',
+  });
   if ('error' in r) throw new Error(r.error);
   secConvId.value = (r.data as any).id as string;
   // 刷新后回到同一个安全会话（而不是每题都新建一个）
   try { localStorage.setItem('sec-ai-conv', secConvId.value); } catch { /* 隐私模式忽略 */ }
+  await secChatStore.loadConversations();
   return secConvId.value;
+}
+
+async function openSecConversation(convId: string): Promise<void> {
+  if (secChatStreaming.value || secCmdRunning.value) {
+    ElMessage.warning('当前安全任务仍在运行，结束后再切换任务');
+    return;
+  }
+  secConvId.value = convId;
+  secMessages.value = [];
+  try { localStorage.setItem('sec-ai-conv', convId); } catch { /* 隐私模式忽略 */ }
+  await loadSecMessages();
+  onLeadChange('ai');
+}
+
+function newSecConversation(): void {
+  if (secChatStreaming.value || secCmdRunning.value) {
+    ElMessage.warning('当前安全任务仍在运行，结束后再新建任务');
+    return;
+  }
+  secAbort?.abort();
+  secConvId.value = '';
+  secMessages.value = [];
+  secChatInput.value = '';
+  try { localStorage.removeItem('sec-ai-conv'); } catch { /* 隐私模式忽略 */ }
+  onLeadChange('ai');
 }
 
 async function loadSecMessages() {
@@ -2257,6 +2296,13 @@ const chatApi = useChat();
 onMounted(async () => {
   await loadAll();
   await loadToolchain();
+  await secChatStore.loadConversations().catch(() => {});
+  if (secConvId.value && !secChatStore.conversations.some((conv) => conv.id === secConvId.value)) {
+    // 旧版本创建的“安全控制台”可能落在 office，任务列表看不到。丢弃坏指针，下一条消息重建 sec 会话。
+    secConvId.value = '';
+    secMessages.value = [];
+    try { localStorage.removeItem('sec-ai-conv'); } catch { /* 隐私模式忽略 */ }
+  }
   // 用户自定义剧本（`/playbook save` 写入）：与插件声明的内置剧本一起进 `@` 召唤清单
   void commandsStore.loadUserPlaybooks();
   // 任务 8.5：进入安全模式时切到 sec 场景（场景提示词只影响后续消息的 system prompt，不动历史）。

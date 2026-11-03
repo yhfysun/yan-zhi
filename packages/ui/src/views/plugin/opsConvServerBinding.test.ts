@@ -50,8 +50,22 @@ describe('会话跟着服务器走 —— 交互', () => {
     expect(fn, '★ 父级传了 onOpen 就必须走它').toMatch(/if \(props\.onOpen\) \{ props\.onOpen\(c\.id\); return; \}/);
   });
 
+  it('任务列表支持父级接管“新建任务”，避免运维/安全继续落通用全局草稿', () => {
+    expect(TASK_LIST).toMatch(/onNew\?: \(spaceId: string \| null\) => void/);
+    const fn = TASK_LIST.slice(TASK_LIST.indexOf('function newChatInGroup'), TASK_LIST.indexOf('function newChatInGroup') + 500);
+    expect(fn).toMatch(/if \(props\.onNew\)/);
+    expect(CODE).toMatch(/:on-new=/);
+  });
+
+  it('运维“新建任务”在当前服务器新开对话窗口，不创建无归属的全局草稿', () => {
+    const fn = CODE.slice(CODE.indexOf('function onTaskRowNew'), CODE.indexOf('function onTaskRowNew') + 1200);
+    expect(fn).toMatch(/activeConn\.value/);
+    expect(fn).toMatch(/newWin\(conn,\s*'chat'\)/);
+    expect(fn).toMatch(/windows\.value\.push\(w\)/);
+  });
+
   it('运维页把行点击接到「打开会话 + 打开服务器」', () => {
-    expect(CODE).toMatch(/<TaskListSection :space-id="null" :on-open="onTaskRowOpen"/);
+    expect(CODE).toMatch(/<TaskListSection[\s\S]{0,220}:on-open="onTaskRowOpen"/);
     expect(CODE).toContain('openConvFromTaskList');
   });
 

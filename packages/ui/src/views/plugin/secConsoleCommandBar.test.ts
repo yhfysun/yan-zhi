@@ -85,6 +85,17 @@ describe('★ AI 模式输入框工具条（对齐运维模式 P0-1）', () => {
     expect(SRC, '后台分支必须在 subscribeSecTask 之前').toMatch(/if \(secBackground\.value\)[\s\S]{0,400}?pushSecLocal[\s\S]{0,200}?return;[\s\S]{0,120}?await subscribeSecTask/);
   });
 
+  it('安全会话必须建在 sec 模式，并接入任务列表切换', () => {
+    expect(SRC, '★ 未传 mode 会落 office，安全任务列表永远看不到').toMatch(/mode:\s*'sec'/);
+    expect(SRC).toContain('active-conv-id');
+    expect(SRC).toContain(':on-open="openSecConversation"');
+    expect(SRC).toContain(':on-new="newSecConversation"');
+    expect(SRC).toMatch(/async function openSecConversation/);
+    expect(SRC).toMatch(/function newSecConversation/);
+    expect(SRC, '★ 切换安全任务必须重新加载该会话消息').toMatch(/openSecConversation[\s\S]{0,500}loadSecMessages/);
+    expect(SRC, '★ 新建任务必须清掉上一条会话指针').toMatch(/newSecConversation[\s\S]{0,500}localStorage\.removeItem\('sec-ai-conv'\)/);
+  });
+
   it('★ ExecutionGate：三档审批 + 待批面板 + 批准/拒绝入口', () => {
     expect(SRC).toContain('approvalMode');
     expect(SRC).toContain('changeApprovalMode');
@@ -106,11 +117,14 @@ describe('★ 收敛边界：Tab 数下降，但功能与人工闸门一个都�
     expect(SRC).toContain('simConfirm');
   });
 
-  it('★ Tab 从 8 收敛到 3（终端 / 结果 / 环境）——界面不再随能力增长', () => {
+  // ★ 2026-11-02：本机终端（tty）作为第 4 个 Tab 补进来看本机 shell，
+  //   原断言停在「3 个」已经和代码不符（HEAD 里早就是 4 个）。这里把口径改成当前事实，
+  //   但仍然锁死「就是这几个」——再加 Tab 会红，别让界面随能力继续膨胀。
+  it('★ Tab 从 8 收敛到 4（终端 / 结果 / 环境 / 本机终端）——不再随能力增长', () => {
     const i = RAW.indexOf('const TABS');
     const tabBlock = RAW.slice(i, i + 1400);
     const nums = [...tabBlock.matchAll(/num:\s*'(\d+)'/g)].map((m) => m[1]);
-    expect(nums).toEqual(['01', '02', '03']);
+    expect(nums).toEqual(['01', '02', '03', '04']);
   });
 
   it('★ 收敛只改信息架构：四个动作面降级为「高级表单」，一个都没删', () => {

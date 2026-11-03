@@ -9,7 +9,12 @@
           <!-- ★ 行尾 hover 操作组关掉（2026-10-23 实报「很容易误点击」）：
                操作组悬浮盖在标题上，窄栏里想点行打开任务容易误点成删除；
                置顶/重命名/移动/归档/删除右键、移动端长按面板都有。 -->
-          <TaskListSection :space-id="null" :on-open="onTaskRowOpen" :active-conv-id="activeWin?.conversationId || ''" />
+          <TaskListSection
+            :space-id="null"
+            :on-open="onTaskRowOpen"
+            :on-new="onTaskRowNew"
+            :active-conv-id="activeWin?.conversationId || ''"
+          />
         </div>
         <!-- 发布项目（7b）：本地目录 + 服务器 + 流水线；绑定后工具面挂到当前窗口会话 -->
         <div class="ops-side-release">
@@ -796,6 +801,7 @@ import {
   opsCollapsedGroups,
 } from './opsSession';
 import { placeMenuAfterRender } from '../../composables/useMenuPlacement';
+import { setWorkbenchContext } from '../../stores/workbenchContext';
 import { consumeSseStream } from '../../utils/sse';
 import { startVisiblePolling } from '../../utils/visible-polling';
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
@@ -901,6 +907,11 @@ const chatTasks = opsChatTasks;
 const activeWin = computed(() => windows.value.find((w) => w.id === activeWinId.value) || null);
 /** 当前激活窗口对应的连接 / 是否支持文件面板（「文件」是全局开关，但要看当前连接支不支持） */
 const activeConn = computed(() => connOf(activeWin.value));
+
+/** 底部状态栏：当前连接（运维模式的「上下文」就是这台机器） */
+watch(activeConn, (c) => {
+  setWorkbenchContext('ops', { label: '连接', value: c?.name || '未连接' });
+}, { immediate: true });
 const canFileNow = computed(() => !!activeWin.value && supportsFileFor(activeWin.value));
 function connOf(w: OpsWin | null): OpsConn | null {
   if (!w) return null;
@@ -1109,6 +1120,30 @@ async function openConvOnWindow(w: OpsWin, conv: any) {
 /** 从任务列表点开运维会话（TaskListSection 的行点击出口） */
 function onTaskRowOpen(convId: string) {
   void openConvFromTaskList(convId);
+}
+
+/** 任务列表「新建任务」：在当前服务器新开对话窗口，而不是落到全局 office 草稿。 */
+function onTaskRowNew(): void {
+  const conn = activeConn.value
+    || (connections.value.length === 1 ? connections.value[0] : null);
+  if (!conn) {
+    ElMessage.warning('先在左侧选择一台服务器，再新建运维任务');
+    return;
+  }
+  const reusable = activeWin.value?.connectionId === conn.id
+    && !activeWin.value.conversationId
+    && !activeWin.value.chatStreaming
+    ? activeWin.value
+    : null;
+  if (reusable) {
+    reusable.view = 'chat';
+    activateWindow(reusable.id);
+    return;
+  }
+  const w = newWin(conn, 'chat');
+  windows.value.push(w);
+  activateWindow(w.id);
+  void openTerminal(w);
 }
 
 function closeWindow(id: string) {
