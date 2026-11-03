@@ -41,6 +41,11 @@ import {
 } from './ops-monitor.js';
 import { createOpsMonitorStore } from './ops-monitor-store.js';
 import { sendOpsMonitorNotifications } from './ops-notify.js';
+import {
+  buildRunbook, buildRunbookApprovalSubject, executeRunbook, normalizeRunbookInput,
+  type OpsRunbook,
+} from './ops-runbook.js';
+import { createOpsRunbookStore } from './ops-runbook-store.js';
 const logger = createLogger('ops-shell');
 
 export const OPS_SHELL_ID = 'ops-shell';
@@ -48,10 +53,10 @@ export const OPS_SHELL_ID = 'ops-shell';
 export const opsShellManifest: PluginManifest = {
   id: OPS_SHELL_ID,
   name: '运维',
-  version: '0.3.0',
+  version: '0.4.0',
   category: '操作',
   description:
-    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询与常驻巡检告警；「更多 → 运维」打开运维控制台：命令终端 / 容器面板 / SQL 查询 / 事件中心 + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
+    '连接服务器执行命令（SSH）、上传/下载文件、管理 Docker 容器、数据库只读查询、常驻巡检告警与版本化 Runbook；「更多 → 运维」打开运维控制台：命令终端 / 容器面板 / SQL 查询 / 事件中心 / Runbook + 对话模式（内置运维助手）。默认开启，可在插件管理页停用。',
   permissions: ['remote-shell', 'shell', 'network'],
   contributes: {
     // ★ 模式运行时化（P3）：模式定义随插件声明，前端动态合并（替代构建期硬编码表的部分消费方）
@@ -69,6 +74,9 @@ export const opsShellManifest: PluginManifest = {
       'db_query',
       'monitor_overview',
       'monitor_run',
+      'runbook_list',
+      'runbook_run',
+      'runbook_get_run',
     ],
     // ★ 2026-10-16 去掉 sidebar 贡献：它渲染的「更多 → 运维」分组与顶栏**模式下拉**是同一个
     //   入口（都进 /ops），属重复，用户拍板只保留模式下拉。routes 必须留着 —— 模式仍要靠它拿路由。
@@ -149,6 +157,7 @@ interface OpsGroup {
 
 let pluginStorage: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> } | null = null;
 const monitorStore = createOpsMonitorStore(db, { encrypt, decrypt });
+const runbookStore = createOpsRunbookStore(db);
 let monitorTimer: NodeJS.Timeout | null = null;
 let monitorCycleRunning = false;
 const monitorLastRun = new Map<string, number>();
@@ -318,6 +327,67 @@ function startOpsMonitor(): void {
   void runOpsMonitorCycle().catch((e) => {
     logger.warn('[ops-shell] 首次巡检失败:', (e as Error).message);
   });
+}
+
+async function runbookContext(id: string): Promise<{ runbook: OpsRunbook; conn: StoredConnection; subject: string }> {
+  const runbook = runbookStore.get(id);
+  if (!runbook) throw new Error('Runbook 不存在');
+  if (!runbook.enabled) throw new Error('Runbook 已停用');
+  const conn = (await loadConnections()).find((item) => item.id === runbook.connectionId);
+  if (!conn) throw new Error('Runbook 绑定连接不存在');
+  if (conn.type === 'database') throw new Error('Runbook 暂不支持数据库连接');
+  return { runbook, conn, subject: buildRunbookApprovalSubject(runbook, conn) };
+}
+
+async function startRunbookExecution(
+  runbook: OpsRunbook,
+  conn: StoredConnection,
+  approvalId?: string,
+) {
+  if (runbookStore.hasRunning(runbook.id)) throw new Error('该 Runbook 已有运行中的任务');
+  const run = runbookStore.createRun(runbook, conn.name, approvalId);
+  await audit('runbook.start', {
+    connection: conn.name,
+    detail: `${runbook.name} v${runbook.version}（${run.id}${approvalId ? `，审批 ${approvalId}` : ''}）`,
+    ok: true,
+  });
+  void executeRunbook(runbook, {
+    execRemote: (command, timeoutMs) => execOnConnection(conn, command, timeoutMs),
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  }).then(async (result) => {
+    runbookStore.updateRun(run.id, {
+      status: result.status,
+      stepResults: result.stepResults,
+      rollbackResults: result.rollbackResults,
+      error: result.error,
+      finishedAt: result.finishedAt,
+    });
+    try {
+      await audit('runbook.finish', {
+        connection: conn.name,
+        detail: `${runbook.name} v${runbook.version}（${run.id}）：${result.status}${result.status === 'rolled_back' ? '（已回滚）' : ''}`,
+        ok: result.status === 'success',
+      });
+    } catch (e) {
+      logger.warn('[ops-shell] Runbook 结束审计写入失败:', (e as Error).message);
+    }
+  }).catch(async (e) => {
+    const error = (e as Error).message;
+    runbookStore.updateRun(run.id, {
+      status: 'failed', stepResults: [], rollbackResults: [], error, finishedAt: Date.now(),
+    });
+    try {
+      await audit('runbook.finish', {
+        connection: conn.name,
+        detail: `${runbook.name} v${runbook.version}（${run.id}）：failed ${error}`,
+        ok: false,
+      });
+    } catch (auditError) {
+      logger.warn('[ops-shell] Runbook 失败审计写入失败:', (auditError as Error).message);
+    }
+    logger.warn(`[ops-shell] Runbook ${runbook.name} 运行失败: ${error}`);
+  });
+  return run;
 }
 
 function toClientView(c: StoredConnection) {
@@ -2183,6 +2253,56 @@ export function makeTools(): BuiltInTool[] {
         return textResult(JSON.stringify(result, null, 2));
       },
     },
+    {
+      name: 'runbook_list',
+      description: '列出已保存的版本化 Runbook（名称、版本、连接、步骤摘要、最近运行状态）。',
+      inputSchema: { type: 'object', properties: {} },
+      execute: async () => textResult(JSON.stringify(runbookStore.list().map((runbook) => ({
+        ...runbook,
+        recentRun: runbookStore.listRuns(runbook.id, 1)[0] || null,
+      })), null, 2)),
+    },
+    {
+      name: 'runbook_run',
+      description: '启动一个已保存的 Runbook。生产连接必须先由人工在审批队列批准；工具不会自行确认。',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string', description: 'Runbook ID' } },
+        required: ['id'],
+      },
+      execute: async (args) => {
+        try {
+          const { runbook, conn, subject } = await runbookContext(String(args.id || ''));
+          if (runbookStore.hasRunning(runbook.id)) return textResult('该 Runbook 已有运行中的任务');
+          let approvalId: string | undefined;
+          if (isProductionTag(conn.tag)) {
+            const gate = await consumeManualApproval(conn, subject, 'Runbook 变更');
+            if (gate.blocked) return textResult(gate.blocked);
+            approvalId = gate.approvalId;
+          }
+          const run = await startRunbookExecution(runbook, conn, approvalId);
+          return textResult(JSON.stringify({
+            runId: run.id, status: run.status, runbook: run.runbookName,
+            version: run.runbookVersion, pollWith: 'runbook_get_run',
+          }, null, 2));
+        } catch (e) {
+          return textResult(`Runbook 启动失败：${(e as Error).message}`);
+        }
+      },
+    },
+    {
+      name: 'runbook_get_run',
+      description: '查看 Runbook 运行状态、步骤结果和回滚结果。',
+      inputSchema: {
+        type: 'object',
+        properties: { runId: { type: 'string' } },
+        required: ['runId'],
+      },
+      execute: async (args) => {
+        const run = runbookStore.getRun(String(args.runId || ''));
+        return textResult(run ? JSON.stringify(run, null, 2) : '运行记录不存在');
+      },
+    },
 
     // ===== 资源管理（连接 / 目录）：让运维助手能在对话里直接建资源 =====
     {
@@ -2921,6 +3041,9 @@ const opsShellModule: PluginModule = {
   activate(ctx) {
     applyBuiltinSeed({ agents: opsModeAgentDefs, scenes: [opsModeScene] });
     pluginStorage = ctx.storage;
+    runbookStore.ensureSchema();
+    const interrupted = runbookStore.markInterruptedRuns();
+    if (interrupted > 0) logger.warn(`[ops-shell] 已把 ${interrupted} 条中断的 Runbook 运行标记为失败`);
     startOpsMonitor();
     // 录制开关：默认开（对齐堡垒机的合规口径），可在插件管理页关掉
     recordSessions = (ctx.config as { recordSessions?: boolean } | undefined)?.recordSessions !== false;
@@ -4424,6 +4547,100 @@ const opsShellModule: PluginModule = {
         const { id } = (req as { params: { id: string } }).params;
         const limit = Number((req as { query: Record<string, string> }).query?.limit || 60);
         jsonRes(res).json({ data: monitorStore.listSamples(id, limit) });
+      });
+
+      // ===== 版本化 Runbook =====
+      r.get('/runbooks', async (_req: unknown, res: unknown) => {
+        jsonRes(res).json({ data: runbookStore.list() });
+      });
+
+      r.post('/runbooks', async (req: unknown, res: unknown) => {
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const normalized = normalizeRunbookInput(body);
+        if (normalized.error) { failRes(res, 400, normalized.error); return; }
+        const conn = (await loadConnections()).find((item) => item.id === normalized.value!.connectionId);
+        if (!conn) { failRes(res, 400, '执行连接不存在'); return; }
+        if (conn.type === 'database') { failRes(res, 400, 'Runbook 暂不支持数据库连接'); return; }
+        const runbook = buildRunbook(normalized.value!);
+        runbookStore.save(runbook);
+        await audit('runbook.create', { connection: conn.name, detail: `${runbook.name} v${runbook.version}`, ok: true });
+        jsonRes(res).json({ data: runbook });
+      });
+
+      r.put('/runbooks/:id', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const existing = runbookStore.get(id);
+        if (!existing) { failRes(res, 404, 'Runbook 不存在'); return; }
+        const body = (req as { body: Record<string, unknown> }).body || {};
+        const normalized = normalizeRunbookInput({ ...existing, ...body });
+        if (normalized.error) { failRes(res, 400, normalized.error); return; }
+        const conn = (await loadConnections()).find((item) => item.id === normalized.value!.connectionId);
+        if (!conn) { failRes(res, 400, '执行连接不存在'); return; }
+        if (conn.type === 'database') { failRes(res, 400, 'Runbook 暂不支持数据库连接'); return; }
+        const next = buildRunbook(normalized.value!, existing);
+        runbookStore.save(next);
+        await audit('runbook.update', { connection: conn.name, detail: `${next.name} v${next.version}`, ok: true });
+        jsonRes(res).json({ data: next });
+      });
+
+      r.delete('/runbooks/:id', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const existing = runbookStore.get(id);
+        if (!existing) { failRes(res, 404, 'Runbook 不存在'); return; }
+        if (runbookStore.hasRunning(id)) { failRes(res, 409, '运行中的 Runbook 不能删除'); return; }
+        runbookStore.remove(id);
+        await audit('runbook.delete', { detail: `${existing.name} v${existing.version}`, ok: true });
+        jsonRes(res).json({ data: { deleted: true } });
+      });
+
+      r.post('/runbooks/:id/approval', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        try {
+          const { conn, subject } = await runbookContext(id);
+          if (!isProductionTag(conn.tag)) {
+            jsonRes(res).json({ data: { required: false, plan: subject } });
+            return;
+          }
+          const approval = await requestManualApproval(conn, subject, 'Runbook 变更');
+          jsonRes(res).json({ data: { required: true, approval } });
+        } catch (e) {
+          failRes(res, 400, (e as Error).message);
+        }
+      });
+
+      r.post('/runbooks/:id/run', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        try {
+          const { runbook, conn, subject } = await runbookContext(id);
+          if (runbookStore.hasRunning(id)) { failRes(res, 409, '该 Runbook 已有运行中的任务'); return; }
+          let approvalId: string | undefined;
+          if (isProductionTag(conn.tag)) {
+            const gate = await consumeManualApproval(conn, subject, 'Runbook 变更');
+            if (gate.blocked) {
+              failRes(res, 428, gate.blocked);
+              return;
+            }
+            approvalId = gate.approvalId;
+          }
+          const run = await startRunbookExecution(runbook, conn, approvalId);
+          (res as { status: (n: number) => { json: (d: unknown) => void } }).status(202).json({ data: run });
+        } catch (e) {
+          failRes(res, 400, (e as Error).message);
+        }
+      });
+
+      r.get('/runbooks/runs', async (req: unknown, res: unknown) => {
+        const query = (req as { query: Record<string, string> }).query || {};
+        jsonRes(res).json({
+          data: runbookStore.listRuns(query.runbookId || undefined, Number(query.limit || 50)),
+        });
+      });
+
+      r.get('/runbooks/runs/:id', async (req: unknown, res: unknown) => {
+        const { id } = (req as { params: { id: string } }).params;
+        const run = runbookStore.getRun(id);
+        if (!run) { failRes(res, 404, '运行记录不存在'); return; }
+        jsonRes(res).json({ data: run });
       });
 
       // 终端会话（命令模式）：open 返回 sessionId，SSE 读输出，POST 写输入
