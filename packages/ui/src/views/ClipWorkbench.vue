@@ -81,8 +81,12 @@
       <button class="cp-btn ghost" title="重新读取工程（读取对话里剪辑师改的结果）" @click="reloadAll">
         <el-icon :size="13"><Refresh /></el-icon>刷新
       </button>
-      <button class="cp-btn" :disabled="rendering" @click="render(true)">{{ rendering ? '渲染中…' : '预览档' }}</button>
-      <button class="cp-btn primary" :disabled="rendering" @click="render(false)">导出成片</button>
+      <button class="cp-btn" :disabled="rendering" @click="render(true)">
+        <el-icon :size="13"><VideoPlay /></el-icon>{{ rendering ? '渲染中…' : '预览档' }}
+      </button>
+      <button class="cp-btn primary" :disabled="rendering" @click="render(false)">
+        <el-icon :size="13"><Download /></el-icon>导出成片
+      </button>
     </header>
 
     <div v-if="view === 'editor' && compoundStack.length" class="cp-compound-nav">
@@ -398,8 +402,10 @@
             <span v-if="monitorMode === 'live' && frameError" class="cp-live-err" :title="frameError">{{ frameError }}</span>
           </div>
           <div class="cp-transport">
-            <button class="cp-btn ghost" title="回到开头" @click="seek(0)"><el-icon :size="13"><DArrowLeft /></el-icon></button>
-            <button class="cp-mini" title="上一帧（,）" :disabled="!clipCount" @click="stepFrame(-1)">|◀</button>
+            <button class="cp-btn ghost cp-transport-btn" title="回到开头" aria-label="回到开头" @click="seek(0)"><el-icon :size="13"><DArrowLeft /></el-icon></button>
+            <button class="cp-mini cp-transport-btn" title="上一帧（,）" aria-label="上一帧" :disabled="!clipCount" @click="stepFrame(-1)">
+              <el-icon :size="14"><CaretLeft /></el-icon>
+            </button>
             <button
               class="cp-mini cp-play-btn"
               :disabled="!clipCount"
@@ -409,7 +415,9 @@
             >
               <el-icon :size="16"><component :is="transportPlaying ? 'VideoPause' : 'VideoPlay'" /></el-icon>
             </button>
-            <button class="cp-mini" title="下一帧（.）" :disabled="!clipCount" @click="stepFrame(1)">▶|</button>
+            <button class="cp-mini cp-transport-btn" title="下一帧（.）" aria-label="下一帧" :disabled="!clipCount" @click="stepFrame(1)">
+              <el-icon :size="14"><CaretRight /></el-icon>
+            </button>
             <span class="cp-time" :title="monitorMode === 'clip' ? '成片长度（上一次渲染的结果）' : '当前工程时长'">{{ fmtTime(playhead) }} / {{ fmtTime(monitorMode === 'clip' ? (videoDur || estTotal) : estTotal) }}</span>
             <span v-if="monitorMode === 'clip' && videoDur && Math.abs(videoDur - estTotal) > 0.5" class="cp-stale" title="成片长度与当前工程不一致：改动后需重新渲染">
               <el-icon :size="11"><WarningFilled /></el-icon>待重新渲染
@@ -578,10 +586,14 @@
                 <span class="cp-th-name">{{ tr.name || (ti === 0 ? '主轨' : `视频${ti + 1}`) }}</span>
                 <span v-if="isMulticamAngleTrack(tr)" class="cp-th-actions">
                   <span class="cp-th-angle-badge">角度</span>
-                  <button class="cp-th-btn" title="打开所属多机位组并切换角度" @click.stop="openMulticamForTrack(tr)">机位</button>
+                  <button class="cp-th-btn" title="打开所属多机位组并切换角度" aria-label="切换机位" @click.stop="openMulticamForTrack(tr)">
+                    <el-icon :size="12"><VideoCamera /></el-icon>
+                  </button>
                 </span>
                 <span v-else class="cp-th-actions">
-                  <button class="cp-th-btn" :title="tr.hidden ? '显示该轨' : '隐藏该轨'" @click="toggleTrack('hidden', tr.id)">{{ tr.hidden ? '隐' : '显' }}</button>
+                  <button class="cp-th-btn" :title="tr.hidden ? '显示该轨' : '隐藏该轨'" :aria-label="tr.hidden ? '显示轨道' : '隐藏轨道'" @click="toggleTrack('hidden', tr.id)">
+                    <el-icon :size="12"><component :is="tr.hidden ? 'Hide' : 'View'" /></el-icon>
+                  </button>
                   <el-popover
                     v-if="trackSupportsComposition(tr)"
                     trigger="click"
@@ -594,8 +606,11 @@
                         class="cp-th-btn"
                         :class="{ on: hasTrackComposition(tr) }"
                         title="轨道合成：透明度与混合模式"
+                        aria-label="轨道合成"
                         @click.stop
-                      >混</button>
+                      >
+                        <el-icon :size="12"><Operation /></el-icon>
+                      </button>
                     </template>
                     <div class="cp-track-mix" @mousedown.stop @click.stop @dragstart.stop.prevent>
                       <div class="cp-track-mix-title">{{ tr.name || tr.id }} · 合成</div>
@@ -625,10 +640,12 @@
                       <button class="cp-btn full" :disabled="!hasTrackComposition(tr)" @click="resetTrackComposition(tr.id)">重置合成</button>
                     </div>
                   </el-popover>
-                  <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" @click="toggleTrack('locked', tr.id)">{{ tr.locked ? '锁' : '解' }}</button>
-                  <button class="cp-th-btn" :disabled="ti === 0" title="上移" @click="moveTrack('video', tr.id, -1)">↑</button>
-                  <button class="cp-th-btn" :disabled="ti === 0" title="下移" @click="moveTrack('video', tr.id, 1)">↓</button>
-                  <button class="cp-th-btn danger" :disabled="ti === 0" title="删除轨道（主轨不可删）" @click="removeTrack(tr.id)">×</button>
+                  <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" :aria-label="tr.locked ? '解锁轨道' : '锁定轨道'" @click="toggleTrack('locked', tr.id)">
+                    <el-icon :size="12"><component :is="tr.locked ? 'Lock' : 'Unlock'" /></el-icon>
+                  </button>
+                  <button class="cp-th-btn" :disabled="ti === 0" title="上移" aria-label="上移轨道" @click="moveTrack('video', tr.id, -1)"><el-icon :size="12"><ArrowUp /></el-icon></button>
+                  <button class="cp-th-btn" :disabled="ti === 0" title="下移" aria-label="下移轨道" @click="moveTrack('video', tr.id, 1)"><el-icon :size="12"><ArrowDown /></el-icon></button>
+                  <button class="cp-th-btn danger" :disabled="ti === 0" title="删除轨道（主轨不可删）" aria-label="删除轨道" @click="removeTrack(tr.id)"><el-icon :size="12"><Delete /></el-icon></button>
                 </span>
               </div>
               <div class="cp-tl-label"><el-icon :size="12"><ChatLineSquare /></el-icon>字幕</div>
@@ -646,15 +663,20 @@
                 <el-icon :size="12"><Headset /></el-icon>
                 <span class="cp-th-name">{{ tr.name || `音轨${ai + 1}` }}</span>
                 <span class="cp-th-actions">
-                  <button class="cp-th-btn" :title="tr.muted ? '取消静音' : '静音该轨'" @click="toggleTrack('muted', tr.id)">{{ tr.muted ? '静' : '声' }}</button>
+                  <button class="cp-th-btn" :title="tr.muted ? '取消静音' : '静音该轨'" :aria-label="tr.muted ? '取消静音' : '静音该轨'" @click="toggleTrack('muted', tr.id)">
+                    <el-icon :size="12"><component :is="tr.muted ? 'Mute' : 'Headset'" /></el-icon>
+                  </button>
                   <el-popover trigger="click" placement="right-start" :width="232" popper-class="cp-audio-track-volume-popper">
                     <template #reference>
                       <button
                         class="cp-th-btn"
                         :class="{ on: (tr.volume ?? 1) !== 1 }"
                         title="音频轨整体音量"
+                        aria-label="音频轨整体音量"
                         @click.stop
-                      >量</button>
+                      >
+                        <el-icon :size="12"><Operation /></el-icon>
+                      </button>
                     </template>
                     <div class="cp-track-mix cp-audio-track-volume" @mousedown.stop @click.stop @dragstart.stop.prevent>
                       <div class="cp-track-mix-title">{{ tr.name || `音轨${ai + 1}` }} · 整体音量</div>
@@ -674,10 +696,12 @@
                       <button class="cp-btn full" :disabled="(tr.volume ?? 1) === 1" @click="setAudioTrackVolume(tr.id, 1); onAudioTrackVolumeCommit(tr.id)">恢复 100%</button>
                     </div>
                   </el-popover>
-                  <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" @click="toggleTrack('locked', tr.id)">{{ tr.locked ? '锁' : '解' }}</button>
-                  <button class="cp-th-btn" :disabled="ai === 0" title="上移" @click="moveTrack('audio', tr.id, -1)">↑</button>
-                  <button class="cp-th-btn" :disabled="ai === 0" title="下移" @click="moveTrack('audio', tr.id, 1)">↓</button>
-                  <button class="cp-th-btn danger" title="删除音轨" @click="removeTrack(tr.id)">×</button>
+                  <button class="cp-th-btn" :title="tr.locked ? '解锁' : '锁定（防误拖）'" :aria-label="tr.locked ? '解锁轨道' : '锁定轨道'" @click="toggleTrack('locked', tr.id)">
+                    <el-icon :size="12"><component :is="tr.locked ? 'Lock' : 'Unlock'" /></el-icon>
+                  </button>
+                  <button class="cp-th-btn" :disabled="ai === 0" title="上移" aria-label="上移轨道" @click="moveTrack('audio', tr.id, -1)"><el-icon :size="12"><ArrowUp /></el-icon></button>
+                  <button class="cp-th-btn" :disabled="ai === 0" title="下移" aria-label="下移轨道" @click="moveTrack('audio', tr.id, 1)"><el-icon :size="12"><ArrowDown /></el-icon></button>
+                  <button class="cp-th-btn danger" title="删除音轨" aria-label="删除音轨" @click="removeTrack(tr.id)"><el-icon :size="12"><Delete /></el-icon></button>
                 </span>
               </div>
               <div class="cp-tl-label"><el-icon :size="12"><Picture /></el-icon>画中画</div>
@@ -8251,7 +8275,7 @@ onMounted(async () => {
 .cp-time { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--el-text-color-regular); }
 /* 「待重新渲染」角标：成片与工程不一致时提醒（避免用户以为改动没生效） */
 .cp-stale { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--el-color-warning-light-9); color: var(--el-color-warning); }
-.cp-zoom { display: inline-flex; gap: 4px; }
+.cp-zoom { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-light); }
 
 /* ===== 时间轴（按内容定高，在监视器下方） ===== */
 .cp-timeline { grid-column: 1 / -1; grid-row: 2; min-width: 0; display: flex; flex-direction: column; padding: 6px 12px 10px; border-top: 1px solid var(--el-border-color-lighter); }
@@ -8263,7 +8287,7 @@ onMounted(async () => {
 .cp-toolbar-text { gap: 5px; padding: 0 8px; }
 .cp-hint { font-size: 11px; color: var(--el-text-color-placeholder); }
 .cp-tl { display: flex; max-height: clamp(260px, 40vh, 430px); border: 1px solid var(--el-border-color-lighter); border-radius: 6px; overflow-x: hidden; overflow-y: auto; background: var(--el-fill-color-blank); overscroll-behavior: contain; }
-.cp-tl-labels { flex: 0 0 152px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
+.cp-tl-labels { flex: 0 0 168px; background: var(--el-fill-color-light); border-right: 1px solid var(--el-border-color-lighter); }
 .cp-tl-label { display: flex; align-items: center; gap: 5px; height: 64px; padding: 0 8px; font-size: 11px; color: var(--el-text-color-secondary); border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tl-label.head { position: sticky; top: 0; z-index: 8; height: 28px; border-bottom: 1px solid var(--el-border-color-lighter); }
 .cp-tl-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
@@ -8288,12 +8312,12 @@ onMounted(async () => {
 .cp-track-head.angle { opacity: .75; background: color-mix(in srgb, var(--el-color-warning-light-9) 70%, var(--el-fill-color-light)); }
 .cp-th-angle-badge { display: inline-flex; align-items: center; padding: 1px 5px; border-radius: 3px; background: var(--el-color-warning-light-8); color: var(--el-color-warning-dark-2); font-size: 10px; }
 .cp-th-name { flex: 1 1 100%; font-size: 11px; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cp-th-actions { display: flex; gap: 2px; flex-wrap: nowrap; }
-.cp-th-btn { width: 20px; height: 20px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-secondary); font-size: 11px; line-height: 1; cursor: pointer; }
-.cp-th-btn:hover:not(:disabled) { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); }
-.cp-th-btn.on { color: var(--el-color-primary); border-color: var(--el-color-primary-light-5); background: var(--el-color-primary-light-9); }
+.cp-th-actions { display: flex; gap: 3px; flex-wrap: nowrap; }
+.cp-th-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--el-text-color-secondary); font-size: 11px; line-height: 1; cursor: pointer; transition: color .12s, background .12s, border-color .12s; }
+.cp-th-btn:hover:not(:disabled) { color: var(--el-color-primary); border-color: var(--el-color-primary-light-7); background: var(--el-color-primary-light-9); }
+.cp-th-btn.on { color: var(--el-color-primary); border-color: var(--el-color-primary-light-6); background: var(--el-color-primary-light-9); }
 .cp-th-btn:disabled { opacity: .35; cursor: not-allowed; }
-.cp-th-btn.danger:hover:not(:disabled) { color: var(--el-color-danger); border-color: var(--el-color-danger-light-5); }
+.cp-th-btn.danger:hover:not(:disabled) { color: var(--el-color-danger); border-color: var(--el-color-danger-light-7); background: var(--el-color-danger-light-9); }
 .cp-track-mix { display: flex; flex-direction: column; gap: 10px; padding: 2px; }
 .cp-track-mix-title { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-tl-addrow { display: flex; flex-direction: column; gap: 3px; padding: 6px; }
@@ -8456,7 +8480,9 @@ onMounted(async () => {
 .cp-field-row { display: flex; align-items: center; gap: 6px; }
 .cp-tilde { font-size: 11px; color: var(--el-text-color-placeholder); }
 .cp-textarea { width: 100%; padding: 5px 8px; font-size: 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; resize: vertical; font-family: inherit; }
-.cp-seg-btns { display: flex; gap: 4px; }
+.cp-seg-btns { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--el-border-color-lighter); border-radius: 6px; background: var(--el-fill-color-light); }
+.cp-seg-btns .cp-mini { width: auto; min-width: 34px; height: 24px; padding: 0 7px; border-color: transparent; border-radius: 4px; background: transparent; white-space: nowrap; }
+.cp-seg-btns .cp-mini.on { border-color: var(--el-color-primary); background: var(--el-color-primary); color: #fff; }
 .cp-color { width: 34px; height: 24px; padding: 0; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: none; cursor: pointer; }
 .cp-chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
@@ -8522,18 +8548,24 @@ onMounted(async () => {
 .cp-btn.danger:hover:not(:disabled) { filter: brightness(1.08); color: #fff; }
 
 /* ===== 按钮与提示 ===== */
-.cp-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-size: 12px; border: 1px solid var(--el-border-color); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-regular); cursor: pointer; white-space: nowrap; }
-.cp-btn:hover:not(:disabled) { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+.cp-btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 0 10px; font-size: 12px; font-weight: 500; border: 1px solid var(--el-border-color); border-radius: 6px; background: var(--el-fill-color-blank); color: var(--el-text-color-regular); cursor: pointer; white-space: nowrap; transition: color .12s, border-color .12s, background .12s, filter .12s; }
+.cp-btn:hover:not(:disabled) { border-color: var(--el-color-primary-light-3); background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
 .cp-btn:disabled { opacity: .45; cursor: not-allowed; }
-.cp-btn.primary { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }
+.cp-btn.primary { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; font-weight: 600; }
 .cp-btn.primary:hover:not(:disabled) { filter: brightness(1.08); color: #fff; }
-.cp-btn.ghost { background: transparent; }
+.cp-btn.ghost { border-color: transparent; background: transparent; }
 .cp-btn.full { width: 100%; justify-content: center; margin-top: 2px; }
-.cp-mini { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; font-size: 11px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; background: var(--el-fill-color-blank); color: var(--el-text-color-regular); cursor: pointer; }
-.cp-mini:hover:not(:disabled) { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+.cp-mini { display: inline-flex; align-items: center; justify-content: center; width: 28px; min-width: 28px; height: 28px; padding: 0; font-size: 11px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--el-text-color-regular); cursor: pointer; transition: color .12s, border-color .12s, background .12s; }
+.cp-mini:hover:not(:disabled) { border-color: var(--el-color-primary-light-7); background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
 .cp-mini:disabled { opacity: .4; cursor: not-allowed; }
 .cp-mini.on { background: var(--el-color-primary); border-color: var(--el-color-primary); color: #fff; }
 .cp-mini.danger:hover:not(:disabled) { border-color: var(--el-color-danger); color: var(--el-color-danger); }
+.cp-toolbar > .cp-mini { width: 30px; min-width: 30px; height: 30px; }
+.cp-toolbar > .cp-mini.cp-tool-toggle,
+.cp-toolbar .cp-toolbar-text { width: auto; min-width: 0; padding: 0 9px; gap: 5px; }
+.cp-zoom .cp-mini { width: 24px; min-width: 24px; height: 24px; }
+.cp-transport .cp-transport-btn { width: 30px; min-width: 30px; height: 30px; border-color: transparent; background: transparent; }
+.cp-transport .cp-transport-btn:hover:not(:disabled) { border-color: var(--el-color-primary-light-7); background: var(--el-color-primary-light-9); }
 .cp-empty { padding: 16px 10px; font-size: 12px; line-height: 1.7; color: var(--el-text-color-placeholder); text-align: center; word-break: normal; overflow-wrap: anywhere; }
 .cp-empty.small { padding: 8px; }
 /* 素材栏窄（210px）：空态与条目标题都不许被压成竖排 */

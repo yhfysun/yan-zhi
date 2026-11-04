@@ -164,6 +164,21 @@ describe('ClipWorkbench · 整体工作台可用性', () => {
     expect(CODE).toMatch(/class="cp-btn primary"[^>]*@click="render\(false\)"/);
     expect(CODE).toMatch(/@click="openQueue"/);
   });
+
+  it('按钮体系统一：主按钮/工具图标/轨道微工具分层，字符按钮改为图标', () => {
+    const btn = declBlockOf(CSS, '.cp-btn');
+    const mini = declBlockOf(CSS, '.cp-mini');
+    const thBtn = declBlockOf(CSS, '.cp-th-btn');
+    expect(btn).toMatch(/min-height:\s*30px/);
+    expect(btn).toMatch(/border-radius:\s*6px/);
+    expect(mini).toMatch(/width:\s*28px/);
+    expect(thBtn).toMatch(/width:\s*22px/);
+    expect(declBlockOf(CSS, '.cp-btn.ghost')).toMatch(/border-color:\s*transparent/);
+    expect(CODE).toMatch(/title="上一帧（,）"[\s\S]{0,180}<CaretLeft/);
+    expect(CODE).toMatch(/title="轨道合成：透明度与混合模式"[\s\S]{0,220}<Operation/);
+    expect(CODE).toContain("tr.muted ? 'Mute' : 'Headset'");
+    expect(CODE).toMatch(/title="删除音轨"[\s\S]{0,180}<Delete/);
+  });
 });
 
 describe('ClipWorkbench · 草稿态会话（工程可落盘）', () => {
@@ -764,7 +779,7 @@ describe('ClipWorkbench · 工作台密度与可操作性', () => {
     const labels = declBlockOf(CSS, '.cp-tl-labels');
     const timeline = declBlockOf(CSS, '.cp-tl');
     const left = declBlockOf(CSS, '.cp-left');
-    expect(labels).toMatch(/flex:\s*0\s+0\s+152px/);
+    expect(labels).toMatch(/flex:\s*0\s+0\s+168px/);
     expect(timeline).toMatch(/max-height:/);
     expect(timeline).toMatch(/overflow-y:\s*auto/);
     expect(left).toMatch(/overflow-y:\s*auto/);
