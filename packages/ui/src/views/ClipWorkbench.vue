@@ -8110,10 +8110,11 @@ onMounted(async () => {
 .cp-top-more-action em { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: 11px; color: var(--el-text-color-placeholder); }
 
 /* ===== 主体三栏 ===== */
-.cp-body { display: flex; flex: 1; min-height: 0; }
-.cp-left { width: 228px; flex: 0 0 228px; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; background: var(--el-bg-color); border-right: 1px solid var(--el-border-color-lighter); }
-.cp-center { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
-.cp-right { width: 304px; flex: 0 0 304px; display: flex; flex-direction: column; min-height: 0; background: var(--el-bg-color); border-left: 1px solid var(--el-border-color-lighter); transition: width .18s ease, flex-basis .18s ease; }
+/* 剪映式骨架：上排素材/预览/属性，下排时间轴横跨整窗。 */
+.cp-body { display: grid; grid-template-columns: 228px minmax(0, 1fr) auto; grid-template-rows: minmax(220px, 1fr) auto; flex: 1; min-height: 0; overflow: hidden; }
+.cp-left { width: 228px; min-width: 0; grid-column: 1; grid-row: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; background: var(--el-bg-color); border-right: 1px solid var(--el-border-color-lighter); }
+.cp-center { display: contents; min-width: 0; min-height: 0; }
+.cp-right { width: 304px; grid-column: 3; grid-row: 1; display: flex; flex-direction: column; min-height: 0; background: var(--el-bg-color); border-left: 1px solid var(--el-border-color-lighter); transition: width .18s ease; }
 .cp-right.compact { width: 48px; flex: 0 0 48px; }
 .cp-right-rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 5px; }
 .cp-rail-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; width: 36px; min-height: 38px; padding: 4px 2px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--el-text-color-secondary); font-size: 10px; cursor: pointer; }
@@ -8178,7 +8179,7 @@ onMounted(async () => {
 /* ===== 监视器 =====
    ★ 比例按剪辑软件惯例：监视器占**剩余全部高度**（flex:1），时间轴按内容定高在下方。
    上一版反了（monitor 定高 + timeline flex:1）→ 监视器被挤成窄条、时间轴下方大片空白。 */
-.cp-monitor { flex: 1; min-height: 140px; padding: 10px 12px 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.cp-monitor { grid-column: 2; grid-row: 1; min-width: 0; min-height: 140px; padding: 10px 12px 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
 /* 舞台铺满可用宽度、深色底（视频工作区惯例，不是主题色），画面在其中等比居中 */
 .cp-monitor-stage { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; flex: 1; min-height: 0; background: #101216; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgb(0 0 0 / 18%); }
 .cp-video { max-width: 100%; max-height: 100%; background: #000; }
@@ -8253,7 +8254,7 @@ onMounted(async () => {
 .cp-zoom { display: inline-flex; gap: 4px; }
 
 /* ===== 时间轴（按内容定高，在监视器下方） ===== */
-.cp-timeline { flex: 0 0 auto; display: flex; flex-direction: column; padding: 6px 12px 10px; }
+.cp-timeline { grid-column: 1 / -1; grid-row: 2; min-width: 0; display: flex; flex-direction: column; padding: 6px 12px 10px; border-top: 1px solid var(--el-border-color-lighter); }
 .cp-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; flex: 0 0 auto; }
 .cp-toolbar-sep { width: 1px; height: 16px; background: var(--el-border-color-lighter); margin: 0 4px; }
 .cp-tool-toggle { gap: 4px; padding: 0 8px; }
@@ -8548,14 +8549,18 @@ onMounted(async () => {
 @media (max-width: 1199px) {
   /* ★ 150px 太窄：空态长句会被压成竖排（实测 1100px 命中）。
      收到 168px 并配合 .cp-empty 的自然断行，仍保持单列可用。 */
-  .cp-left { width: 168px; flex-basis: 168px; }
+  .cp-body { grid-template-columns: 168px minmax(0, 1fr) auto; }
+  .cp-left { width: 168px; }
   .cp-left .cp-ins-hint { display: none; }
   .cp-right { width: 270px; flex-basis: 270px; }
   .cp-media { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 900px) {
   .cp-top { flex-wrap: wrap; }
+  .cp-body { grid-template-columns: minmax(0, 1fr) auto; }
   .cp-left { display: none; }
+  .cp-monitor { grid-column: 1; }
+  .cp-right { grid-column: 2; }
 }
 @media (max-width: 640px) {
   .cp-right { width: 220px; flex-basis: 220px; }

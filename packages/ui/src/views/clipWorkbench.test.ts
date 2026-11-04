@@ -86,8 +86,9 @@ describe('ClipWorkbench · 布局（撑满 + 剪辑软件比例）', () => {
   it('★ 监视器占剩余高度、时间轴按内容定高（方向不能反）', () => {
     const monitor = declBlockOf(CSS, '.cp-monitor');
     const timeline = declBlockOf(CSS, '.cp-timeline');
-    expect(monitor).toMatch(/flex:\s*1\b/);
-    expect(timeline).toMatch(/flex:\s*0\s+0\s+auto/);
+    expect(monitor).toMatch(/grid-row:\s*1\b/);
+    expect(monitor).toMatch(/min-height:\s*140px/);
+    expect(timeline).toMatch(/grid-row:\s*2\b/);
   });
 
   it('★ 比例只约束画面，不约束舞台（否则竖屏工程舞台宽度塌陷）', () => {
@@ -107,6 +108,20 @@ describe('ClipWorkbench · 布局（撑满 + 剪辑软件比例）', () => {
       expect(b, sel).toBeTruthy();
       expect(b, sel).toMatch(/min-height:\s*0/);
     }
+  });
+
+  it('剪映式骨架：上排素材/预览/属性，下排时间轴横跨整窗', () => {
+    const body = declBlockOf(CSS, '.cp-body');
+    const center = declBlockOf(CSS, '.cp-center');
+    const monitor = declBlockOf(CSS, '.cp-monitor');
+    const timeline = declBlockOf(CSS, '.cp-timeline');
+    const right = declBlockOf(CSS, '.cp-right');
+    expect(body).toMatch(/display:\s*grid/);
+    expect(body).toMatch(/grid-template-columns:/);
+    expect(center).toMatch(/display:\s*contents/);
+    expect(monitor).toMatch(/grid-column:\s*2/);
+    expect(right).toMatch(/grid-column:\s*3/);
+    expect(timeline).toMatch(/grid-column:\s*1\s*\/\s*-1/);
   });
 
   it('窄屏断点齐备且素材栏不直接消失（1199 收窄 / 900 隐藏 / 640 收右栏）', () => {
