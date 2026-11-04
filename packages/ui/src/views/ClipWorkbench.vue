@@ -35,28 +35,46 @@
         <option value="std">推荐</option>
         <option value="high">高清</option>
       </select>
-      <select
-        v-model="outputEncoder"
-        class="cp-quality"
-        title="编码方式：CPU 兼容性最好；硬件加速更快（没有可用硬件时自动回退 CPU）"
-      >
-        <option value="cpu">CPU 编码</option>
-        <option value="auto">硬件加速</option>
-      </select>
-      <button class="cp-btn ghost" title="渲染队列：后台顺序渲染，导出不再卡住编辑" @click="openQueue">
-        <el-icon :size="13"><List /></el-icon>队列<template v-if="activeJobCount"> ({{ activeJobCount }})</template>
-      </button>
-      <button
-        class="cp-btn ghost"
-        title="按 BGM 节拍一键切开时间轴（需要先设 BGM）。会在每个拍点切一刀，段数会变，字幕要重排"
-        :disabled="!bgm || beatCutting"
-        @click="beatCut"
-      >{{ beatCutting ? '卡点中…' : '一键卡点' }}</button>
-      <span class="cp-dir-tag" :title="projectDirTitle" @click="spaceDirPicker = true">
-        <el-icon :size="12"><FolderOpened /></el-icon>
-        {{ currentSpaceDir ? shortPath(currentSpaceDir) : '默认目录' }}
-      </span>
       <span class="cp-spacer"></span>
+      <el-popover trigger="click" placement="bottom-end" :width="272" popper-class="cp-top-more-popper">
+        <template #reference>
+          <button class="cp-btn ghost cp-top-more" title="更多工程工具">
+            <el-icon :size="13"><MoreFilled /></el-icon>更多<template v-if="activeJobCount"> ({{ activeJobCount }})</template>
+          </button>
+        </template>
+        <div class="cp-top-more-menu">
+          <label class="cp-top-more-row">
+            <span>编码方式</span>
+            <select
+              v-model="outputEncoder"
+              class="cp-quality"
+              title="编码方式：CPU 兼容性最好；硬件加速更快（没有可用硬件时自动回退 CPU）"
+            >
+              <option value="cpu">CPU 编码</option>
+              <option value="auto">硬件加速</option>
+            </select>
+          </label>
+          <button class="cp-top-more-action" title="渲染队列：后台顺序渲染，导出不再卡住编辑" @click="openQueue">
+            <el-icon :size="13"><List /></el-icon>
+            <span>渲染队列</span>
+            <em v-if="activeJobCount">{{ activeJobCount }}</em>
+          </button>
+          <button
+            class="cp-top-more-action"
+            title="按 BGM 节拍一键切开时间轴（需要先设 BGM）"
+            :disabled="!bgm || beatCutting"
+            @click="beatCut"
+          >
+            <el-icon :size="13"><Headset /></el-icon>
+            <span>{{ beatCutting ? '卡点中…' : '一键卡点' }}</span>
+          </button>
+          <button class="cp-top-more-action" :title="projectDirTitle" @click="spaceDirPicker = true">
+            <el-icon :size="13"><FolderOpened /></el-icon>
+            <span>项目目录</span>
+            <em class="text">{{ currentSpaceDir ? shortPath(currentSpaceDir) : '默认目录' }}</em>
+          </button>
+        </div>
+      </el-popover>
       <button class="cp-btn ghost" :title="dirty ? '有未保存改动' : '已自动保存'" @click="save">
         <el-icon :size="13"><Check /></el-icon>{{ dirty ? '保存' : '已保存' }}
       </button>
@@ -154,13 +172,22 @@
         <!-- 智能抠像（P2-1）：运行时探测 + 模型下载（用户显式触发）。
              ★ 缺模型时如实显示"可下载或手动放置"，绝不静默自动下载。
              ★ 抠像效果以导出/代理为准；实时单帧预览不做抠像。 -->
-        <div class="cp-panel-head sub">
-          <span>智能抠像（P2-1）</span>
-          <button class="cp-mini" :disabled="matteProbing" title="重新探测 Python / onnxruntime / ONNX 抠像模型" @click="probeMatte">
+        <div class="cp-panel-head sub cp-collapsible-head">
+          <button
+            class="cp-collapse-trigger"
+            type="button"
+            :aria-expanded="mattePanelExpanded"
+            @click="mattePanelExpanded = !mattePanelExpanded"
+          >
+            <el-icon :size="11"><component :is="mattePanelExpanded ? 'ArrowDown' : 'ArrowRight'" /></el-icon>
+            <span>智能抠像</span>
+            <span class="cp-collapse-status" :class="{ ok: matteInfo?.ok, bad: matteInfo && !matteInfo.ok }">{{ mattePanelSummary }}</span>
+          </button>
+          <button class="cp-mini" :disabled="matteProbing" title="重新探测 Python / onnxruntime / ONNX 抠像模型" @click.stop="probeMatte">
             <el-icon :size="11" :class="{ 'cp-spin': matteProbing }"><Refresh /></el-icon>
           </button>
         </div>
-        <div class="cp-matte">
+        <div v-show="mattePanelExpanded" class="cp-matte">
           <div v-if="matteProbing" class="cp-ins-hint">正在探测运行时…</div>
           <template v-else-if="matteInfo">
             <div class="cp-matte-state" :class="matteInfo.ok ? 'ok' : 'bad'">
@@ -286,6 +313,8 @@
               controls
               @timeupdate="onTimeUpdate"
               @loadedmetadata="onLoadedMeta"
+              @play="clipPlaying = true"
+              @pause="clipPlaying = false"
             ></video>
             <!-- ★★ 段代理预览（P0-10）：每段按指纹取 480p 代理 mp4 顺序连播。
                  改一段只重取那一段（URL 带段下标 + 工程版本）；
@@ -371,6 +400,15 @@
           <div class="cp-transport">
             <button class="cp-btn ghost" title="回到开头" @click="seek(0)"><el-icon :size="13"><DArrowLeft /></el-icon></button>
             <button class="cp-mini" title="上一帧（,）" :disabled="!clipCount" @click="stepFrame(-1)">|◀</button>
+            <button
+              class="cp-mini cp-play-btn"
+              :disabled="!clipCount"
+              :title="`${transportPlaying ? '暂停' : '播放'}（空格）`"
+              :aria-label="transportPlaying ? '暂停' : '播放'"
+              @click="togglePlay"
+            >
+              <el-icon :size="16"><component :is="transportPlaying ? 'VideoPause' : 'VideoPlay'" /></el-icon>
+            </button>
             <button class="cp-mini" title="下一帧（.）" :disabled="!clipCount" @click="stepFrame(1)">▶|</button>
             <span class="cp-time" :title="monitorMode === 'clip' ? '成片长度（上一次渲染的结果）' : '当前工程时长'">{{ fmtTime(playhead) }} / {{ fmtTime(monitorMode === 'clip' ? (videoDur || estTotal) : estTotal) }}</span>
             <span v-if="monitorMode === 'clip' && videoDur && Math.abs(videoDur - estTotal) > 0.5" class="cp-stale" title="成片长度与当前工程不一致：改动后需重新渲染">
@@ -2850,6 +2888,12 @@ function onFrameError() {
 
 function setMonitorMode(m: 'live' | 'proxy' | 'clip') {
   if (m !== 'proxy') setProxyAdvancing(false);
+  if (m !== 'live' && playTimer) {
+    clearInterval(playTimer);
+    playTimer = null;
+    livePlaying.value = false;
+  }
+  if (m !== 'clip') clipPlaying.value = false;
   monitorMode.value = m;
   if (m === 'live') scheduleFrameFetch(0);
   if (m === 'proxy') {
@@ -2880,6 +2924,13 @@ const proxyError = ref('');
 let proxyAdvancing = false;
 // ★ 播放状态另存一份响应式引用：矢量图层组件要据此决定画中画 <video> 的播放/暂停。
 const proxyPlaying = ref(false);
+const clipPlaying = ref(false);
+const livePlaying = ref(false);
+const transportPlaying = computed(() => {
+  if (monitorMode.value === 'proxy') return proxyPlaying.value;
+  if (monitorMode.value === 'clip') return clipPlaying.value;
+  return livePlaying.value;
+});
 
 /** 统一入口：同步「是否连播」到响应式引用，并驱动 rAF 播放时钟（矢量图层平滑跟帧）。 */
 function setProxyAdvancing(v: boolean) {
@@ -5131,7 +5182,13 @@ function stepFrame(dir: number) {
 //   （轮询收口只针对**打接口**的定时器，本处是纯本地状态推进。）
 let playTimer: ReturnType<typeof setInterval> | null = null;
 function togglePlay() {
-  if (playTimer) { clearInterval(playTimer); playTimer = null; note('已暂停'); return; }
+  if (playTimer) {
+    clearInterval(playTimer);
+    playTimer = null;
+    livePlaying.value = false;
+    note('已暂停');
+    return;
+  }
   if (monitorMode.value === 'proxy') {
     proxyTogglePlay();
     return;
@@ -5142,9 +5199,18 @@ function togglePlay() {
     return;
   }
   // 实时模式：定时器按 ~4fps 推进播放头（每帧一次抽图，再快 ffmpeg 跟不上）
+  if (playhead.value >= estTotal.value) seek(0);
+  livePlaying.value = true;
   playTimer = setInterval(() => {
     const next = playhead.value + 0.25;
-    if (next >= estTotal.value) { clearInterval(playTimer!); playTimer = null; seek(estTotal.value); note('播放结束'); return; }
+    if (next >= estTotal.value) {
+      clearInterval(playTimer!);
+      playTimer = null;
+      livePlaying.value = false;
+      seek(estTotal.value);
+      note('播放结束');
+      return;
+    }
     seek(next);
   }, 250);
   note('播放中（实时模式约 4fps，切「成片」可流畅播放）');
@@ -7679,6 +7745,12 @@ const matteModels = ref<MatteModelInfo[]>([]);
 const matteSelectedModel = ref('');
 const matteDownloading = ref(false);
 const matteDownloadNote = ref('');
+const mattePanelExpanded = ref(false);
+const mattePanelSummary = computed(() => {
+  if (matteProbing.value) return '检测中…';
+  if (!matteInfo.value) return '未检测';
+  return matteInfo.value.ok ? '可用' : '未就绪';
+});
 const installedMatteModels = computed(() => matteModels.value.filter((m) => m.installed));
 const matteDownloadTarget = computed(() => {
   if (!matteModels.value.length) return null;
@@ -8030,6 +8102,12 @@ onMounted(async () => {
 .cp-name-input:hover, .cp-name-input:focus { border-color: var(--el-border-color); background: var(--el-fill-color-blank); }
 .cp-meta { font-size: 12px; white-space: nowrap; color: var(--el-text-color-secondary); }
 .cp-spacer { flex: 1; min-width: 0; }
+.cp-top-more-menu { display: flex; flex-direction: column; gap: 6px; }
+.cp-top-more-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 6px; font-size: 12px; color: var(--el-text-color-secondary); }
+.cp-top-more-action { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--el-text-color-regular); font-size: 12px; text-align: left; cursor: pointer; }
+.cp-top-more-action:hover:not(:disabled) { background: var(--el-fill-color-light); color: var(--el-color-primary); }
+.cp-top-more-action:disabled { opacity: .45; cursor: not-allowed; }
+.cp-top-more-action em { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: 11px; color: var(--el-text-color-placeholder); }
 
 /* ===== 主体三栏 ===== */
 .cp-body { display: flex; flex: 1; min-height: 0; }
@@ -8043,6 +8121,12 @@ onMounted(async () => {
 
 .cp-panel-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px 4px; font-size: 12px; font-weight: 600; color: var(--el-text-color-regular); flex: 0 0 auto; }
 .cp-panel-head.sub { border-top: 1px solid var(--el-border-color-lighter); margin-top: 4px; }
+.cp-collapsible-head { padding-right: 6px; }
+.cp-collapse-trigger { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; padding: 2px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.cp-collapse-trigger:focus-visible { outline: 2px solid var(--el-color-primary-light-5); outline-offset: 2px; border-radius: 3px; }
+.cp-collapse-status { margin-left: auto; padding: 1px 5px; border-radius: 3px; background: var(--el-fill-color); color: var(--el-text-color-placeholder); font-size: 10px; font-weight: 400; white-space: nowrap; }
+.cp-collapse-status.ok { background: var(--el-color-success-light-9); color: var(--el-color-success); }
+.cp-collapse-status.bad { background: var(--el-color-warning-light-9); color: var(--el-color-warning); }
 .cp-count { font-weight: 400; color: var(--el-text-color-secondary); }
 .cp-input { margin: 0 10px 6px; padding: 4px 8px; font-size: 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; flex: 0 0 auto; }
 
@@ -8160,6 +8244,9 @@ onMounted(async () => {
 /* 取帧失败提示（贴底居中，不遮挡画面主体） */
 .cp-live-err { position: absolute; left: 8px; right: 8px; bottom: 8px; font-size: 11px; line-height: 1.5; padding: 4px 8px; border-radius: 4px; background: rgb(220 38 38 / 88%); color: #fff; text-align: center; z-index: 5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-transport { display: flex; align-items: center; gap: 8px; width: 100%; padding: 2px 0; }
+.cp-transport .cp-play-btn { width: 32px; min-width: 32px; height: 32px; margin: 0 2px; border-radius: 50%; border-color: var(--el-color-primary); background: var(--el-color-primary); color: #fff; }
+.cp-transport .cp-play-btn:hover:not(:disabled) { border-color: var(--el-color-primary-light-3); background: var(--el-color-primary-light-3); color: #fff; }
+.cp-transport .cp-play-btn:disabled { border-color: var(--el-border-color-lighter); background: var(--el-fill-color); color: var(--el-text-color-placeholder); }
 .cp-time { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--el-text-color-regular); }
 /* 「待重新渲染」角标：成片与工程不一致时提醒（避免用户以为改动没生效） */
 .cp-stale { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--el-color-warning-light-9); color: var(--el-color-warning); }
@@ -8454,10 +8541,15 @@ onMounted(async () => {
 .cp-toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 7px 14px; font-size: 12px; color: #fff; background: rgb(0 0 0 / 76%); border-radius: 6px; cursor: pointer; z-index: 20; }
 
 /* 窄屏：顶栏换行（不横向溢出）、右栏收窄、素材栏收成更窄（保留可用，不做"直接消失"） */
+@media (max-width: 1280px) {
+  .cp-meta { display: none; }
+  .cp-name-input { width: 150px; flex-basis: 150px; }
+}
 @media (max-width: 1199px) {
   /* ★ 150px 太窄：空态长句会被压成竖排（实测 1100px 命中）。
      收到 168px 并配合 .cp-empty 的自然断行，仍保持单列可用。 */
   .cp-left { width: 168px; flex-basis: 168px; }
+  .cp-left .cp-ins-hint { display: none; }
   .cp-right { width: 270px; flex-basis: 270px; }
   .cp-media { grid-template-columns: minmax(0, 1fr); }
 }

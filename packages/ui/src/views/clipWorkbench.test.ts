@@ -123,6 +123,34 @@ describe('ClipWorkbench · 布局（撑满 + 剪辑软件比例）', () => {
   });
 });
 
+describe('ClipWorkbench · 整体工作台可用性', () => {
+  it('监视器传输栏有显眼的播放/暂停键，三种预览模式共用状态', () => {
+    expect(CODE).toMatch(/class="cp-mini cp-play-btn"/);
+    expect(CODE).toMatch(/@click="togglePlay"/);
+    expect(CODE).toMatch(/:aria-label="transportPlaying \? '暂停' : '播放'/);
+    expect(CODE).toContain('transportPlaying');
+    expect(CODE).toContain('clipPlaying');
+    expect(CODE).toContain('livePlaying');
+    expect(declBlockOf(CSS, '.cp-transport .cp-play-btn')).toMatch(/border-radius:\s*50%/);
+  });
+
+  it('智能抠像诊断默认折叠，只展示状态且可键盘展开', () => {
+    expect(CODE).toMatch(/const mattePanelExpanded = ref\(false\)/);
+    expect(CODE).toMatch(/@click="mattePanelExpanded = !mattePanelExpanded"/);
+    expect(CODE).toMatch(/v-show="mattePanelExpanded"/);
+    expect(CODE).toContain('mattePanelSummary');
+    expect(CODE).toMatch(/class="cp-collapse-trigger"[^>]*aria-expanded/);
+  });
+
+  it('顶栏低频工程操作收进「更多」，保存/刷新/预览/导出保持直达', () => {
+    expect(CODE).toContain('cp-top-more');
+    expect(SRC).toContain('更多工程工具');
+    expect(CODE).toContain('cp-top-more-menu');
+    expect(CODE).toMatch(/class="cp-btn primary"[^>]*@click="render\(false\)"/);
+    expect(CODE).toMatch(/@click="openQueue"/);
+  });
+});
+
 describe('ClipWorkbench · 草稿态会话（工程可落盘）', () => {
   it('★★ 加素材前必须 ensureConversation（草稿态否则无处落盘，刷新即丢）', () => {
     for (const fn of ['async function appendClip', 'async function setBgm', 'async function render']) {
