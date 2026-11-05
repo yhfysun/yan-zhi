@@ -39,7 +39,7 @@ export const TOOL_CATEGORIES = [
   // 系统与网络
   'system', 'network', 'browser',
   // 编排与交互
-  'orchestrate', 'interaction', 'task', 'content-gen', 'discovery',
+  'orchestrate', 'interaction', 'task', 'content-gen', 'discovery', 'page-asset',
 ] as const;
 
 export type ToolCategory = (typeof TOOL_CATEGORIES)[number];
@@ -240,6 +240,18 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   api_skill_delete: 'skill',
   api_skill_create: 'skill',
   api_skill_update: 'skill',
+  api_page_asset_list: 'page-asset',
+  api_page_asset_get: 'page-asset',
+  api_page_asset_resolve: 'page-asset',
+  api_page_asset_create_draft: 'page-asset',
+  api_page_asset_update_draft: 'page-asset',
+  api_page_asset_validate: 'page-asset',
+  api_page_asset_activate: 'page-asset',
+  api_page_asset_archive: 'page-asset',
+  api_page_asset_versions: 'page-asset',
+  api_page_asset_probe: 'page-asset',
+  api_page_asset_rollback: 'page-asset',
+  browser_run_page_operation: 'page-asset',
 
   // ═══ 插件 ═══
   api_plugin_list: 'plugin',

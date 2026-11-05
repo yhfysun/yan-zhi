@@ -14,6 +14,7 @@ import { registerMemoryTools } from './memory';
 import { registerMessageTools } from './message';
 import { registerOllamaTools } from './ollama';
 import { registerPeerTools } from './peer';
+import { registerPageAssetTools } from './page-assets';
 import { registerPlatformTools } from './platform';
 import { registerPluginTools } from './plugin';
 import { registerScheduledTaskTools } from './scheduled-task';
@@ -41,6 +42,7 @@ export type ApiModuleName =
   | 'memory'
   | 'file'
   | 'peer'
+  | 'page-asset'
   | 'im'
   | 'knowledge'
   | 'scheduled-task'
@@ -68,6 +70,7 @@ export const API_MODULES: ApiModuleName[] = [
   'memory',
   'file',
   'peer',
+  'page-asset',
   'im',
   'knowledge',
   'scheduled-task',
@@ -111,6 +114,7 @@ export function initApiToolRegistry(): void {
   registerMemoryTools(registry);
   registerFileTools(registry);
   registerPeerTools(registry);
+  registerPageAssetTools(registry);
   registerImTools(registry);
   registerKnowledgeTools(registry);
   registerScheduledTaskTools(registry);

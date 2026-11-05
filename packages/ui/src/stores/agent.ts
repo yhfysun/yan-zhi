@@ -188,6 +188,7 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   'browser_get_api_data',
   // 站点配方（2026-10-24 P2-2）：form-fill 通用批量填表（备用选择器回退 + 回读核验在代码里跑）
   'browser_run_recipe',
+  'browser_run_page_operation',
   // 登录闭环必备：向用户提问/请求确认（扫码、验证码等人工干预场景）
   'ask_user',
 ];

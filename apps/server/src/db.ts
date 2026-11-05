@@ -586,6 +586,8 @@ db.exec(`
     enabled INTEGER DEFAULT 1,
     installs INTEGER DEFAULT 0,
     is_public INTEGER NOT NULL DEFAULT 0,
+    page_asset_refs_json TEXT NOT NULL DEFAULT '[]',
+    asset_capabilities_json TEXT NOT NULL DEFAULT '[]',
     created_at INTEGER NOT NULL
   );
 
@@ -919,6 +921,8 @@ try { db.exec('ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0
 //   files_json = [{path, content}]（path 相对 skill 根，禁止绝对路径与 ..）；DB 为真相源，
 //   任务启动时同步落盘到 <工作目录>/.yan-zhi/skills/<skill名>/ 供 file_read 读取。
 try { db.exec('ALTER TABLE skill ADD COLUMN files_json TEXT'); } catch {}
+try { db.exec("ALTER TABLE skill ADD COLUMN page_asset_refs_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
+try { db.exec("ALTER TABLE skill ADD COLUMN asset_capabilities_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Skill 蒸馏草稿（2026-10-15，对标 WorkMateAI 融合方案 P0-1）
@@ -1374,6 +1378,8 @@ const PAGE_AGENT_BUILTIN_TOOLS = [
   // ★ 站点配方（2026-10-24，P2-2）：form-fill 配方 = 通用批量填表（备用选择器回退 + 回读核验在代码里跑），
   //   字段多 / 类名带 hash / 要"填完点保存并确认"的表单用它，比反复调 fill_form 少很多轮。
   'browser_run_recipe',
+  // PageAsset operation（2026-11-05）：已登记站点优先走资产化流程
+  'browser_run_page_operation',
   // 读文件（2026-10-14）：pageAgent 此前**只挂 file_write、没有 file_read** —— 需要读本地文件
   //   （父智能体落盘的成品文案/章节/经验档）时无工具可用，只能拿浏览器凑：
   //   browser_navigate(file://…) 会把本地路径当页面开进预览面板、fetch(file://) 也读不到
@@ -1464,6 +1470,7 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_fill_form: 批量填表——一次调用填写多个表单字段。fields 数组每项 {selector, value, type?}，type 为 text/select/checkbox/radio；select 用 label（显示文本）或 value；checkbox/radio 用 true/false。普通输入框与富文本编辑器（contenteditable，如 Slate/ProseMirror）都支持：富文本字段直接传 selector 指向该 div。**多字段表单必须用它一次填完，禁止逐个 browser_type**；返回 state 数组 = 各字段填写后的当前值（回读核验），逐条核对 state 判断是否全部生效，**不要凭感觉重复填写**；failed 列表逐条列出未填成功的字段与原因，按提示换 selector 只重试失败的字段
 - browser_submit_form: 提交表单——填写完成后用它提交（也可改用 browser_click 点提交按钮）；返回里带页面判定（成功提示 / 校验提示 / 是否还有表单），据此判断，不要立刻再读一遍页面
 - browser_run_recipe: 站点配方——其中 form-fill 是"通用批量填表"：参数 fields 传字段 JSON 数组（每项 selector 优先用 get_page_content 回显的高质量选择器（id/testid/aria/name/placeholder）；元素行没带 <selector> 段的用 index——hash class 下一次读取就漂移，不要凭印象猜），selectors 可给备用选择器，下拉优先 label。可选 submit + submitText 一并提交。备用选择器回退与回读核验都在代码里完成，一次调用闭环。
+- browser_run_page_operation: 已登记站点优先走页面资产。先看可用页面资产引用，再用 assetId + operationId + params 执行；禁止用自由选择器或脚本替代已声明 operation。
 - browser_screenshot: 截图当前页面（annotate=true 时叠加元素编号框），返回文件路径
 - image_analyze: 视觉识别——把截图路径 + 描述传给视觉模型，返回画面内容/元素位置
 - file_read: 读本地文件（工作目录内）——需要复用父任务落盘的成品文案/章节/经验档，或核对文件内容时用它。★ 不要用 browser_navigate 打开 file:// 去读文件：那会把本地路径当页面开进预览面板，且加载必然失败；读文件一律用本工具。
@@ -2832,6 +2839,78 @@ try {
     } else {
       db.prepare("UPDATE skill SET source = 'builtin' WHERE id = ?").run(skillId);
     }
+  }
+} catch {}
+
+// 预置内置 skill：多平台内容发布（2026-11-05）—— 同一公共 capability 适配抖音/快手/小红书。
+try {
+  const skillId = 'skill_social_content_publish';
+  const body = `# 多平台内容发布
+
+用页面资产完成抖音、快手和小红书的内容发布，不把站点选择器写进本 skill。
+
+## 选平台
+1. 先调用 api_page_asset_resolve：capability=social.content.publish.video（视频）或 social.content.publish.note（图文），platform 按 douyin / kuaishou / xiaohongshu 传入。
+2. 只有 active 资产可用。小红书资产当前是 draft，未激活时不得尝试自动发布，应向用户说明尚未完成真实页面验证。
+3. 用 api_page_asset_get 读取 operationId、inputSchema 与确认策略。
+
+## 执行
+1. 平台已登录时直接调用 browser_run_page_operation，传 assetId + operationId + params。
+2. submit 默认 false，只上传和填写；用户明确要求发布时才传 submit=true。
+3. 发布是外部不可逆动作。被验证码、滑块或登录拦住时请用户接管，不要重复上传或重复点发布。
+4. 返回页面执行器给出的 recipe 回执、asset version 和 runId，不要自行宣称发布成功。
+
+## 维护
+一次验证过的新页面流程，可用 api_page_asset_create_draft 沉淀为资产草稿；先用 api_page_asset_validate 校验，再经用户确认后 api_page_asset_activate。不要用自由脚本覆盖已激活资产。`;
+  const exists = db.prepare('SELECT id FROM skill WHERE id = ?').get(skillId);
+  if (!exists) {
+    db.prepare(
+      `INSERT INTO skill
+         (id, user_id, name, description, triggers_json, body, category, author, enabled, installs,
+          source, page_asset_refs_json, asset_capabilities_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'builtin', ?, ?, ?)`,
+    ).run(
+      skillId,
+      'guest',
+      '多平台内容发布',
+      '基于公共 PageAsset capability 发布抖音、快手与小红书内容；skill 只做平台选择与业务编排，页面步骤由资产维护。',
+      JSON.stringify(['发布视频', '发抖音', '发快手', '发小红书', '多平台发布', '内容发布']),
+      body,
+      '内容运营',
+      'yan-zhi',
+      JSON.stringify([
+        'social.douyin.creator',
+        'social.kuaishou.creator',
+        'social.xiaohongshu.creator',
+      ]),
+      JSON.stringify([
+        'social.content.publish.video',
+        'social.content.publish.note',
+      ]),
+      Date.now(),
+    );
+  } else if (overwriteEnabled) {
+    db.prepare(
+      `UPDATE skill
+          SET body = ?, description = ?, triggers_json = ?, category = ?,
+              page_asset_refs_json = ?, asset_capabilities_json = ?, source = 'builtin'
+        WHERE id = ?`,
+    ).run(
+      body,
+      '基于公共 PageAsset capability 发布抖音、快手与小红书内容；skill 只做平台选择与业务编排，页面步骤由资产维护。',
+      JSON.stringify(['发布视频', '发抖音', '发快手', '发小红书', '多平台发布', '内容发布']),
+      '内容运营',
+      JSON.stringify([
+        'social.douyin.creator',
+        'social.kuaishou.creator',
+        'social.xiaohongshu.creator',
+      ]),
+      JSON.stringify([
+        'social.content.publish.video',
+        'social.content.publish.note',
+      ]),
+      skillId,
+    );
   }
 } catch {}
 

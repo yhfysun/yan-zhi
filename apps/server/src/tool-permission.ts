@@ -35,6 +35,7 @@ const WRITE_TOOLS = new Set([
   'browser_upload', 'browser_download', 'browser_login_saved',
   // 配方会执行上传/填表/点发布（可能改变远端状态）——按写操作管控
   'browser_run_recipe',
+  'browser_run_page_operation',
   // —— Git 写操作（pull/fetch 会改动本地工作区，同样算写）——
   'api_git_add', 'api_git_commit', 'api_git_push', 'api_git_pull', 'api_git_fetch',
   'api_git_stage_hunks',
@@ -154,6 +155,9 @@ const WRITE_TOOLS = new Set([
   //   ⇒ 判据（第三次重申）：**按实现判读写，不按名字判**；execute 就是"跑代码"，等于写。
   'api_custom_tool_execute',
   'api_skill_create', 'api_skill_update', 'api_skill_delete', 'api_skill_toggle', 'api_skill_install',
+  // —— 页面资产：草稿与激活都写库；读取类在下方 READONLY_SAFE_TOOLS ——
+  'api_page_asset_create_draft', 'api_page_asset_update_draft',
+  'api_page_asset_activate', 'api_page_asset_archive', 'api_page_asset_rollback',
   'api_tool_install',
   'api_agent_create', 'api_agent_update', 'api_agent_delete', 'api_agent_mount',
   'api_marketplace_add_source', 'api_marketplace_delete_source', 'api_marketplace_install',
@@ -434,6 +438,9 @@ const READONLY_SAFE_TOOLS = new Set([
   'api_platform_list', 'api_model_list',
   'api_mcp_server_list', 'api_mcp_tool_list',
   'api_skill_list', 'api_skill_get',
+  'api_page_asset_list', 'api_page_asset_get', 'api_page_asset_resolve',
+  'api_page_asset_validate', 'api_page_asset_versions',
+  'api_page_asset_probe',
   'api_custom_tool_list', 'api_custom_tool_get',
   'api_builtin_tool_list',
   'api_workspace_list_dir', 'api_workspace_search_files',

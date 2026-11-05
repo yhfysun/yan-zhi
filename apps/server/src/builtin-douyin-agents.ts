@@ -37,6 +37,8 @@ export const DOUYIN_AGENT_BUILTIN_TOOLS = [
   // 看网页原文（抖音热点/搜索页）；多步网站操作委派 pageAgent
   // browser_get_tabs：自查自己开了哪些页、收尾关中间页 —— 2026-10-27 实测未授权被拒（conv c79811d2）
   'browser_navigate', 'browser_get_page_content', 'browser_get_tabs',
+  // 已登记的抖音页面优先走 PageAsset operation
+  'browser_run_page_operation',
   // 委派 pageAgent 查平台规则/热点/竞品；list_models 用于挑选图片生成模型
   'call_agent', 'list_sub_agents', 'spawn_subagent', 'list_models',
   // 交互与规划
@@ -45,7 +47,7 @@ export const DOUYIN_AGENT_BUILTIN_TOOLS = [
 
 /** 抖音运营 skill：图文带货方法论 + 引流内容方法论 + 文档交付（须与 skill 表种子 id 对齐） */
 export const DOUYIN_AGENT_SKILL_IDS = [
-  'skill_douyin_sell', 'skill_douyin_traffic', 'skill_markdown_doc',
+  'skill_douyin_sell', 'skill_douyin_traffic', 'skill_social_content_publish', 'skill_markdown_doc',
 ];
 
 export const DOUYIN_AGENT_SYSTEM_PROMPT = `你是「抖音运营助手」（douyinAgent），陪用户做抖音的两件事：**引流涨粉**与**图文带货变现**。你服务的是真实账号（从 0 粉丝到起步期），不是理论课。

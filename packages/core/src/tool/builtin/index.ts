@@ -39,7 +39,7 @@ export {
 export { JobStatusTool } from './job-status';
 export { DoyzTool } from './doyz';
 export { NovelTuiwenTool } from './novel-tuiwen';
-export { BrowserToolClasses, BROWSER_TOOL_NAMES, BrowserRunRecipeTool, computePageStateSignature } from './browser';
+export { BrowserToolClasses, BROWSER_TOOL_NAMES, BrowserRunRecipeTool, BrowserRunPageOperationTool, computePageStateSignature } from './browser';
 // ★ A4 根治（2026-10-10）：会话标识透传的入口 —— 执行器在调用 browser_* 前设置，
 //   `callBrowserApi` 把它作为 `x-yz-conversation-id` 带给服务端（读路由据此按会话隔离）。
 //   ★ 本文件是**逐个具名导出**（无 `export *`）→ 漏了这一行则跨包引不到（TS2305）。

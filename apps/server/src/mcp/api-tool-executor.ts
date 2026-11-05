@@ -186,6 +186,19 @@ import {
   detailOntologyForAgent,
   ontologyValuesForAgent,
 } from '../services/data-query.js';
+import {
+  activatePageAsset,
+  archivePageAsset,
+  createPageAssetDraft,
+  getPageAsset,
+  listPageAssets,
+  listPageAssetVersions,
+  probePageAsset,
+  resolvePageAssets,
+  rollbackPageAssetDraft,
+  updatePageAssetDraft,
+  validateStoredPageAsset,
+} from '../services/page-assets.js';
 import type { QueryIntent } from '../services/ontology-compiler.js';
 import { setJsExecDataBridge, getToolRegistry, getApiToolRegistry } from '@yan-zhi/core';
 // 工具分类单一真相源（2026-10-22）：内置工具清单与 get_api_tools 共用同一套分类
@@ -389,6 +402,11 @@ export const SUPPORTED_API_TOOLS = new Set([
   'api_mcp_server_list', 'api_mcp_server_create', 'api_mcp_server_update', 'api_mcp_server_delete', 'api_mcp_tool_list', 'api_mcp_tool_toggle',
   'api_skill_list', 'api_skill_get', 'api_skill_toggle', 'api_skill_install', 'api_skill_delete',
   'api_skill_create', 'api_skill_update',
+  'api_page_asset_list', 'api_page_asset_get', 'api_page_asset_resolve',
+  'api_page_asset_create_draft', 'api_page_asset_update_draft',
+  'api_page_asset_validate', 'api_page_asset_activate',
+  'api_page_asset_archive', 'api_page_asset_versions',
+  'api_page_asset_probe', 'api_page_asset_rollback',
   'api_custom_tool_list', 'api_custom_tool_get', 'api_custom_tool_create', 'api_custom_tool_update', 'api_custom_tool_delete', 'api_custom_tool_toggle',
   'api_builtin_tool_list',
   // ★ 工具发现三件套（2026-10-22）：分类浏览在 get_api_tools（内置），
@@ -4306,6 +4324,83 @@ export async function executeApiTool(
         return ok({ updated: true });
       }
 
+      // Page Assets
+      case 'api_page_asset_list': {
+        const uid = requireUser(userId);
+        return ok(listPageAssets(uid, {
+          query: str(args, 'query') || undefined,
+          platform: str(args, 'platform') || undefined,
+          capability: str(args, 'capability') || undefined,
+          status: (str(args, 'status') || undefined) as any,
+          includeDrafts: args.includeDrafts === true,
+          page: Number(args.page) || 1,
+          pageSize: Number(args.pageSize) || 50,
+        }));
+      }
+      case 'api_page_asset_get': {
+        const uid = requireUser(userId);
+        return ok(getPageAsset(uid, str(args, 'assetId')));
+      }
+      case 'api_page_asset_resolve': {
+        const uid = requireUser(userId);
+        return ok(resolvePageAssets(uid, {
+          capability: str(args, 'capability') || undefined,
+          platform: str(args, 'platform') || undefined,
+          url: str(args, 'url') || undefined,
+        }));
+      }
+      case 'api_page_asset_create_draft': {
+        const uid = requireUser(userId);
+        return ok(createPageAssetDraft(uid, {
+          spec: args.spec,
+          expectedVersion: args.expectedVersion === undefined ? undefined : Number(args.expectedVersion),
+          changeSummary: str(args, 'changeSummary') || undefined,
+        }));
+      }
+      case 'api_page_asset_update_draft': {
+        const uid = requireUser(userId);
+        return ok(updatePageAssetDraft(uid, str(args, 'assetId'), {
+          spec: args.spec,
+          expectedVersion: Number(args.expectedVersion),
+          changeSummary: str(args, 'changeSummary') || undefined,
+        }));
+      }
+      case 'api_page_asset_validate': {
+        const uid = requireUser(userId);
+        return ok(validateStoredPageAsset(uid, str(args, 'assetId')));
+      }
+      case 'api_page_asset_activate': {
+        const uid = requireUser(userId);
+        return ok(activatePageAsset(
+          uid,
+          str(args, 'assetId'),
+          Number(args.expectedVersion),
+          str(args, 'changeSummary') || undefined,
+        ));
+      }
+      case 'api_page_asset_archive': {
+        const uid = requireUser(userId);
+        return ok(archivePageAsset(uid, str(args, 'assetId')));
+      }
+      case 'api_page_asset_versions': {
+        const uid = requireUser(userId);
+        return ok(listPageAssetVersions(uid, str(args, 'assetId')));
+      }
+      case 'api_page_asset_probe': {
+        const uid = requireUser(userId);
+        return ok(probePageAsset(
+          uid,
+          str(args, 'assetId'),
+          str(args, 'operationId') || undefined,
+          obj(args, 'params'),
+          str(args, 'url') || undefined,
+        ));
+      }
+      case 'api_page_asset_rollback': {
+        const uid = requireUser(userId);
+        return ok(rollbackPageAssetDraft(uid, str(args, 'assetId'), Number(args.targetVersion)));
+      }
+
       // Skill
       case 'api_skill_list':
         return ok(db.prepare('SELECT * FROM skill WHERE user_id = ? OR is_public = 1 ORDER BY created_at DESC').all(requireUser(userId)));
@@ -5509,8 +5604,17 @@ export async function executeApiTool(
         if (!name || !body) return fail('名称和 body 为必填项');
         const id = uuid();
         db.prepare(
-          'INSERT INTO skill (id, user_id, name, description, triggers_json, body, category, enabled, installs, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?)',
-        ).run(id, uid, name, args.description ? str(args, 'description') : null, JSON.stringify(arr(args, 'triggers')), body, args.category ? str(args, 'category') : null, Date.now());
+          'INSERT INTO skill (id, user_id, name, description, triggers_json, body, category, page_asset_refs_json, asset_capabilities_json, enabled, installs, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)',
+        ).run(
+          id, uid, name,
+          args.description ? str(args, 'description') : null,
+          JSON.stringify(arr(args, 'triggers')),
+          body,
+          args.category ? str(args, 'category') : null,
+          JSON.stringify(arr(args, 'pageAssets')),
+          JSON.stringify(arr(args, 'capabilities')),
+          Date.now(),
+        );
         return ok(db.prepare('SELECT * FROM skill WHERE id = ?').get(id));
       }
       case 'api_skill_update': {
@@ -5527,6 +5631,8 @@ export async function executeApiTool(
         if (args.triggers !== undefined) { sets.push('triggers_json = ?'); vals.push(JSON.stringify(arr(args, 'triggers'))); }
         if (args.enabled !== undefined) { sets.push('enabled = ?'); vals.push(args.enabled ? 1 : 0); }
         if (args.isPublic !== undefined) { sets.push('is_public = ?'); vals.push(args.isPublic ? 1 : 0); }
+        if (args.pageAssets !== undefined) { sets.push('page_asset_refs_json = ?'); vals.push(JSON.stringify(arr(args, 'pageAssets'))); }
+        if (args.capabilities !== undefined) { sets.push('asset_capabilities_json = ?'); vals.push(JSON.stringify(arr(args, 'capabilities'))); }
         if (sets.length === 0) return ok(existing);
         vals.push(sid);
         db.prepare(`UPDATE skill SET ${sets.join(', ')} WHERE id = ?`).run(...vals);

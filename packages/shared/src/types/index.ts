@@ -630,6 +630,10 @@ export interface SkillFrontmatter {
   description?: string;
   triggers?: string[];
   tools?: string[];
+  /** PageAsset ids referenced by this skill. Assets are not copied into the skill. */
+  pageAssets?: string[];
+  /** Capability ids the skill needs; runtime resolves them to platform assets. */
+  capabilities?: string[];
   [key: string]: unknown;
 }
 

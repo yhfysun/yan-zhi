@@ -33,6 +33,8 @@ export const PUBLISH_AGENT_BUILTIN_TOOLS = [
   // ★ P1 站点配方（2026-10-19）：一次调用完成上传→填表→回读→可选发布，
   //   模型只传参数，避免在发布页上反复清空重填（实测 2 小时空转事故）
   'browser_run_recipe',
+  // PageAsset：已注册的平台页面优先走受控 operation，而不是现场拼自由步骤
+  'browser_run_page_operation',
   // 发布刚需：filechooser 上传（媒体文件）、表单批量填写、提交
   'browser_upload', 'browser_fill_form', 'browser_submit_form',
   // 视觉兜底（DOM 失效时截图→识别→坐标动作）
@@ -47,7 +49,7 @@ export const PUBLISH_AGENT_BUILTIN_TOOLS = [
  * 平台配方来源：skill_novel_tuiwen 的 references/pages/（抖音/快手/番茄全带实抓锚点）。
  * P1 计划：泛化出独立 skill_publish_ops（小红书/B站/公众号/知乎等骨架 SOP），届时换挂。
  */
-export const PUBLISH_AGENT_SKILL_IDS = ['skill_novel_tuiwen'];
+export const PUBLISH_AGENT_SKILL_IDS = ['skill_novel_tuiwen', 'skill_social_content_publish'];
 
 export const PUBLISH_AGENT_SYSTEM_PROMPT = `你是「发布执行员」（publishAgent）——**在平台创作者中心页面上动手**的专职执行智能体。策划层（言智代言官 / 小说推文助手等）把自包含指令派给你，你负责把它变成平台上的真实动作，并带回可核验的回执。
 

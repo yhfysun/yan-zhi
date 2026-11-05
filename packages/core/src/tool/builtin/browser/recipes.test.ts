@@ -13,6 +13,7 @@ import {
   DOUYIN_SET_COVER_RECIPE,
   DOUYIN_INSERT_TOPICS_RECIPE,
   DOUDIAN_QUALIFICATION_RECIPE,
+  KUAISHOU_PUBLISH_RECIPE,
   getRecipe,
   listRecipes,
   parseTopicList,
@@ -135,6 +136,23 @@ describe('① 配方注册表', () => {
     )).toBe(true);
     expect(r.steps.some((s) => s.kind === 'fill')).toBe(true);
     expect(r.description).toContain('资质');
+  });
+
+  it('快手发布配方使用 cp.kuaishou.com 并默认只做发布前准备', () => {
+    expect(listRecipes()).toContain('kuaishou-publish-video');
+    const r = getRecipe('kuaishou-publish-video')!;
+    expect(r).toBe(KUAISHOU_PUBLISH_RECIPE);
+    expect(r.hosts).toContain('cp.kuaishou.com');
+    expect(r.params.videoPath.required).toBe(true);
+    expect(r.params.description.required).toBe(true);
+    expect(r.steps.some((step) =>
+      step.kind === 'navigate'
+      && step.url === 'https://cp.kuaishou.com/article/publish/video',
+    )).toBe(true);
+    const publish = r.steps.find((step) =>
+      step.kind === 'clickText' && step.texts.includes('发布') && step.when === 'submit',
+    );
+    expect(publish, '发布按钮必须仅在 submit=true 时点击').toBeTruthy();
   });
 });
 

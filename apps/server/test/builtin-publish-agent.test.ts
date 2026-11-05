@@ -32,6 +32,7 @@ const KNOWN_SKILL_IDS = new Set([
   'skill_image_processing', 'skill_file_convert', 'skill_data_visualization', 'skill_markdown_doc',
   'skill_translation_workflow', 'skill_business_ops',
   'skill_douyin_sell', 'skill_douyin_traffic',
+  'skill_social_content_publish',
   // ★ 发布执行员的配方库（平台页面实测配方全在它的 references/pages/ 下）
   'skill_novel_tuiwen',
 ]);
@@ -50,6 +51,7 @@ const KNOWN_TOOL_NAMES = new Set([
   'browser_scroll', 'browser_run_script',
   'browser_upload', 'browser_fill_form', 'browser_submit_form',
   'browser_run_recipe',
+  'browser_run_page_operation',
   'browser_screenshot',
 ]);
 

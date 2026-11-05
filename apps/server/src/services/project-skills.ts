@@ -21,6 +21,8 @@ export interface ProjectSkill {
   name: string;
   description: string;
   triggers: string[];
+  pageAssets: string[];
+  capabilities: string[];
   /** 已按 DB skill 同口径截断（2000 字）的正文 */
   body: string;
   /** 来源标注（提示词里让模型知道可以从工作目录直接读到完整文件） */
@@ -88,6 +90,8 @@ export function loadProjectSkills(workspaceDir: string): ProjectSkill[] {
         name,
         description: String(parsed.frontmatter.description || '').trim(),
         triggers: Array.isArray(parsed.frontmatter.triggers) ? parsed.frontmatter.triggers.map(String) : [],
+        pageAssets: Array.isArray(parsed.frontmatter.pageAssets) ? parsed.frontmatter.pageAssets.map(String) : [],
+        capabilities: Array.isArray(parsed.frontmatter.capabilities) ? parsed.frontmatter.capabilities.map(String) : [],
         body,
         source,
       });

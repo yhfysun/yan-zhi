@@ -1669,6 +1669,42 @@ export class BrowserRunRecipeTool implements BuiltInTool {
   }
 }
 
+/**
+ * 页面资产操作执行器（2026-11-05）。
+ *
+ * 真正的资产解析、版本校验、输入校验、配方映射和运行审计由服务端注入执行；
+ * core 只提供工具契约，保证模型面使用 `assetId + operationId + params`，
+ * 不允许传任意 URL、选择器或脚本。
+ */
+export class BrowserRunPageOperationTool implements BuiltInTool {
+  name = 'browser_run_page_operation';
+  readsExternalState = true;
+  description = 'Run one active PageAsset operation. The server resolves the pinned asset version, validates input schema, maps params to the installed browser recipe, and records an audited run. Never pass URL/selector/script. Operations with confirmation=required are guarded by the task permission gate; submit-style operations still default to safe pre-submit mode unless their schema says otherwise.';
+  inputSchema = {
+    type: 'object',
+    properties: {
+      assetId: {
+        type: 'string',
+        description: 'PageAsset id, unique title, or unique capability. Prefer page_assets_get/resolve first.',
+      },
+      operationId: { type: 'string', description: 'Operation id declared by the PageAsset.' },
+      params: {
+        type: 'object',
+        description: 'Operation input matching the asset inputSchema.',
+      },
+      tabId: {
+        type: 'string',
+        description: 'Optional existing browser tab id. Omit to use the current page.',
+      },
+    },
+    required: ['assetId', 'operationId'],
+  };
+
+  async execute(): Promise<McpCallResult> {
+    return toolError('browser_run_page_operation is executed by the server-side PageAsset runtime. Do not send it directly to the desktop browser bridge.');
+  }
+}
+
 export const BrowserToolClasses = [
   BrowserNavigateTool,
   BrowserOpenExternalTool,
@@ -1720,6 +1756,8 @@ export const BrowserToolClasses = [
   BrowserRunScriptTool,
   // P1 站点配方（2026-10-19）
   BrowserRunRecipeTool,
+  // PageAsset operation executor (2026-11-05)
+  BrowserRunPageOperationTool,
   // 读状态不读画面（2026-10-29）
   BrowserObserveTool,
   // 确定性输入循环（2026-10-29，P1）
@@ -1756,6 +1794,7 @@ export const BROWSER_TOOL_NAMES = [
   'browser_run_script',
   // P1 站点配方（2026-10-19）
   'browser_run_recipe',
+  'browser_run_page_operation',
   // 读状态不读画面（2026-10-29）
   'browser_observe',
   // 确定性输入循环（2026-10-29，P1）

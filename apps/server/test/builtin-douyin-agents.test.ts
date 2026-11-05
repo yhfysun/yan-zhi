@@ -33,6 +33,7 @@ const KNOWN_SKILL_IDS = new Set([
   'skill_translation_workflow', 'skill_business_ops',
   // 2026-10-12 新增：抖音两条线（本测试的被测对象）
   'skill_douyin_sell', 'skill_douyin_traffic',
+  'skill_social_content_publish',
 ]);
 
 /** 已注册的内置工具名（core registerBuiltInTools + api-tool-executor 的 SUPPORTED_API_TOOLS） */
@@ -47,6 +48,7 @@ const KNOWN_TOOL_NAMES = new Set([
   'novel_tuiwen', 'music_compose',
   // 浏览器
   'browser_navigate', 'browser_get_page_content', 'browser_get_tabs',
+  'browser_run_page_operation',
   // api_* 直查工具（不走 ToolRegistry，但必须并入判定集合）
   'api_tool_ocr',
   // AI 媒体生成（api-tool-executor 的 SUPPORTED_API_TOOLS，短剧导演同款挂载）

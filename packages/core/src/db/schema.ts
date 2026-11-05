@@ -51,6 +51,84 @@ export const PAGE_COMMAND_RUN_DDL = `CREATE TABLE IF NOT EXISTS browser_command_
 );
 CREATE INDEX IF NOT EXISTS idx_command_run_cmd ON browser_command_run(command_id, started_at);`;
 
+/**
+ * 页面资产真源（2026-11-05）。
+ *
+ * 与 AgentScope 的 PageSpec 对齐，但补上版本与草稿边界：
+ * - `spec_json` 永远是当前投影；不可变历史在 page_asset_version；
+ * - 内置资产 user_id IS NULL，用户资产 user_id=创建者；
+ * - 智能体写入只允许创建/修改草稿，activate 后才能进入运行时解析。
+ */
+export const PAGE_ASSET_DDL = `CREATE TABLE IF NOT EXISTS page_asset (
+  id                 TEXT PRIMARY KEY,
+  user_id            TEXT,
+  title              TEXT NOT NULL,
+  platform           TEXT NOT NULL,
+  scope              TEXT NOT NULL DEFAULT 'private',
+  status             TEXT NOT NULL DEFAULT 'draft',
+  version            INTEGER NOT NULL DEFAULT 1,
+  capabilities_json  TEXT NOT NULL DEFAULT '[]',
+  spec_json          TEXT NOT NULL,
+  source             TEXT NOT NULL DEFAULT 'user',
+  enabled            INTEGER NOT NULL DEFAULT 1,
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_page_asset_platform ON page_asset(platform, status);
+CREATE INDEX IF NOT EXISTS idx_page_asset_owner ON page_asset(user_id, updated_at DESC);`;
+
+export const PAGE_ASSET_VERSION_DDL = `CREATE TABLE IF NOT EXISTS page_asset_version (
+  id             TEXT PRIMARY KEY,
+  asset_id       TEXT NOT NULL,
+  version        INTEGER NOT NULL,
+  spec_json      TEXT NOT NULL,
+  contract_hash  TEXT NOT NULL,
+  change_summary TEXT,
+  created_by     TEXT,
+  created_at     INTEGER NOT NULL,
+  UNIQUE(asset_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_page_asset_version_asset
+  ON page_asset_version(asset_id, version DESC);`;
+
+/**
+ * 页面资产工作草稿：与 active 真源分开存储。
+ *
+ * 一个资产最多一份未激活草稿；active 行始终保持线上契约不变。
+ * 激活时把草稿写回 page_asset，再删除该行，实现 active/draft 双轨切换。
+ */
+export const PAGE_ASSET_DRAFT_DDL = `CREATE TABLE IF NOT EXISTS page_asset_draft (
+  asset_id       TEXT PRIMARY KEY,
+  base_version   INTEGER NOT NULL,
+  version        INTEGER NOT NULL,
+  spec_json      TEXT NOT NULL,
+  contract_hash  TEXT NOT NULL,
+  created_by     TEXT,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);`;
+
+export const PAGE_ASSET_RUN_DDL = `CREATE TABLE IF NOT EXISTS page_asset_run (
+  id              TEXT PRIMARY KEY,
+  asset_id        TEXT NOT NULL,
+  asset_version   INTEGER NOT NULL,
+  user_id         TEXT,
+  agent_id        TEXT,
+  conversation_id TEXT,
+  operation_id    TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  params_json     TEXT,
+  result_json     TEXT,
+  error_code      TEXT,
+  error           TEXT,
+  started_at      INTEGER NOT NULL,
+  ended_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_page_asset_run_asset
+  ON page_asset_run(asset_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_page_asset_run_conv
+  ON page_asset_run(conversation_id, started_at DESC);`;
+
 export const SCHEMA_SQL = `
 -- 平台
 CREATE TABLE IF NOT EXISTS platform (
@@ -242,6 +320,8 @@ CREATE TABLE IF NOT EXISTS skill (
   frontmatter_json TEXT,
   body_md TEXT,
   files_json TEXT,
+  page_asset_refs_json TEXT NOT NULL DEFAULT '[]',
+  asset_capabilities_json TEXT NOT NULL DEFAULT '[]',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL
 );
@@ -505,6 +585,10 @@ CREATE INDEX IF NOT EXISTS idx_shop_purchase_shop ON shop_purchase(shop_id, stat
 -- 默认权限口径（每次确认 / 白名单 / 审计）待拍板，字段先占位不启用。
 ${PAGE_COMMAND_DDL}
 ${PAGE_COMMAND_RUN_DDL}
+${PAGE_ASSET_DDL}
+${PAGE_ASSET_VERSION_DDL}
+${PAGE_ASSET_DRAFT_DDL}
+${PAGE_ASSET_RUN_DDL}
 `;
 
 /** 迁移 SQL：为已有数据库添加新字段 */
@@ -596,6 +680,8 @@ export async function initSchema(execFn: (sql: string) => Promise<void>): Promis
   }
   // 迁移：skill 子目录文件（2026-10-06，files_json = [{path, content}]）
   try { await execFn(`ALTER TABLE skill ADD COLUMN files_json TEXT;`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE skill ADD COLUMN page_asset_refs_json TEXT NOT NULL DEFAULT '[]';`); } catch { /* 列已存在 */ }
+  try { await execFn(`ALTER TABLE skill ADD COLUMN asset_capabilities_json TEXT NOT NULL DEFAULT '[]';`); } catch { /* 列已存在 */ }
   try { await execFn(`ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;`); } catch {
     try { await execFn(`ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0;`); } catch { /* 已存在 */ }
   }

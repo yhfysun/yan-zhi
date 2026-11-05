@@ -926,12 +926,72 @@ export const DOUDIAN_QUALIFICATION_RECIPE: PublishRecipe = {
   ],
 };
 
+/**
+ * 快手发布配方（2026-11-05）。
+ *
+ * 页面锚点来自 novel-tuiwen skill 中 2026-10-15/16 的实抓记录：
+ * - 入口是 cp.kuaishou.com，不是 creator.kuaishou.com；
+ * - 作品描述是受控 contenteditable，必须走 fill_form 的真实输入而不是直接改 innerText；
+ * - 页面存在多个「发布」文本，submit=false 时绝不点击，submit=true 时由 clickText 的歧义处理选精确候选。
+ */
+export const KUAISHOU_PUBLISH_RECIPE: PublishRecipe = {
+  id: 'kuaishou-publish-video',
+  hosts: ['cp.kuaishou.com'],
+  description: '快手创作者服务平台发布一条视频：上传→填作品描述→（submit=true 时）点发布并验证',
+  params: {
+    videoPath: { type: 'string', required: true, description: '本地成片 mp4 的绝对路径' },
+    description: { type: 'string', required: true, description: '作品描述（含话题与引导语）' },
+    submit: { type: 'boolean', description: '是否点击「发布」。默认 false' },
+  },
+  steps: [
+    { kind: 'navigate', url: 'https://cp.kuaishou.com/article/publish/video' },
+    {
+      kind: 'upload',
+      filePath: '{{videoPath}}',
+      clickSelectors: [
+        'div:contains("拖拽视频到此或点击上传")',
+        'div:contains("上传视频")',
+        'button:contains("上传视频")',
+      ],
+      successTexts: ['重新上传', '上传成功', '上传完成'],
+      failureTexts: ['上传失败', '上传出错', '格式不支持'],
+      timeoutMs: 600000,
+    },
+    {
+      kind: 'fill',
+      fields: [{
+        selector: '[contenteditable="true"][class*="_description_"]',
+        selectors: [
+          'div[contenteditable="true"]',
+          '[contenteditable="true"][data-placeholder*="作品描述"]',
+        ],
+        value: '{{description}}',
+        label: '作品描述',
+      }],
+    },
+    {
+      kind: 'clickText',
+      texts: ['发布'],
+      when: 'submit',
+      failHint: '快手页面的「发布」文本不唯一，若点击歧义请先读取页面元素，按底部主提交按钮的编号重试；不要重复导航，否则已上传内容会丢失。',
+    },
+    {
+      kind: 'waitText',
+      texts: ['发布成功', '审核中', '已发布'],
+      when: 'submit',
+      optional: true,
+      timeoutMs: 90000,
+    },
+  ],
+};
+
 export const RECIPES: Record<string, PublishRecipe> = {
   [DOUYIN_PUBLISH_RECIPE.id]: DOUYIN_PUBLISH_RECIPE,
   [DOUYIN_POST_COMMENT_RECIPE.id]: DOUYIN_POST_COMMENT_RECIPE,
   [DOUYIN_SET_COVER_RECIPE.id]: DOUYIN_SET_COVER_RECIPE,
   [DOUYIN_INSERT_TOPICS_RECIPE.id]: DOUYIN_INSERT_TOPICS_RECIPE,
   [DOUDIAN_QUALIFICATION_RECIPE.id]: DOUDIAN_QUALIFICATION_RECIPE,
+  [KUAISHOU_PUBLISH_RECIPE.id]: KUAISHOU_PUBLISH_RECIPE,
   [FORM_FILL_RECIPE.id]: FORM_FILL_RECIPE,
 };
 

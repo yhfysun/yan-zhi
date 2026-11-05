@@ -202,6 +202,8 @@ await driver.exec(`
     author TEXT,
     enabled INTEGER DEFAULT 1,
     installs INTEGER DEFAULT 0,
+    page_asset_refs_json TEXT NOT NULL DEFAULT '[]',
+    asset_capabilities_json TEXT NOT NULL DEFAULT '[]',
     created_at INTEGER NOT NULL
   );
 
@@ -373,6 +375,8 @@ for (const col of ['source', 'remote_source_id']) {
   try { await driver.exec(`ALTER TABLE skill ADD COLUMN ${col} TEXT`); } catch {}
 }
 try { await driver.exec('ALTER TABLE skill ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0'); } catch {}
+try { await driver.exec("ALTER TABLE skill ADD COLUMN page_asset_refs_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
+try { await driver.exec("ALTER TABLE skill ADD COLUMN asset_capabilities_json TEXT NOT NULL DEFAULT '[]'"); } catch {}
 
 // 迁移 agent 表（添加商城相关字段，如果 agent 表存在）
 try {

@@ -40,6 +40,7 @@ const NOT_DESKTOP_ACTIONS: Record<string, string> = {
   browser_open_external: '打开系统默认浏览器，不是页面动作（已知缺口：桥里没有对应 action）',
   browser_login_saved: '用已保存密码登录，本身不是单个页面动作（已知缺口：走服务端 /login-saved 流程）',
   browser_run_recipe: '编排器：内部再发一整套动作 —— 已改造为服务端编排 + 子动作逐个走桥（见本文件下半）',
+  browser_run_page_operation: 'PageAsset 编排器：服务端解析资产版本与输入后复用 recipe，子动作逐个走桥',
 };
 
 describe('浏览器工具的执行通道必须逐个可解释', () => {

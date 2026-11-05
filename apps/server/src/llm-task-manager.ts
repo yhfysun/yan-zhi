@@ -27,6 +27,7 @@ import {
   recordUsage, getConversationUsage, checkAndSaveNotice, getCostBudgetConfig, summarizeByModel, resolveModelPricing,
   recordStandaloneUsage, estimateUsageDetail,
 } from './services/usage-ledger.js';
+import { getPageAsset, preparePageAssetRun, recordPageAssetRun, resolvePageAssets } from './services/page-assets.js';
 import {
   resolveExperienceBase, resolveSkillDraftsDir, appendExperienceEntry, buildExperienceContextForConversation,
   listExperienceSummaries, type ExperienceKind,
@@ -321,6 +322,8 @@ const BROWSER_SLOW_TOOLS = new Set([
   'browser_login_saved', 'browser_download', 'browser_wait_for', 'browser_drag',
   // 配方一次性跑完上传→转码→填表→发布，必须给足慢档（默认未登记也走慢档，这里显式登记）
   'browser_run_recipe',
+  // PageAsset operation 包装同一个 recipe，同样需要完整慢档预算
+  'browser_run_page_operation',
 ]);
 const BROWSER_FAST_TOOLS = new Set([
   'browser_get_page_content', 'browser_get_visible_text', 'browser_get_page_info',
@@ -410,6 +413,7 @@ export const DANGEROUS_TOOLS = new Set([
   'media_install_ffmpeg', 'media_install_singing', 'whisper_install', 'media_install_ytdlp',
   'publish_enqueue', 'publish_mark_published',
   'tcp_send', 'udp_send',
+  'browser_run_page_operation',
 ]);
 
 /** 危险工具判定（供执行器与测试共用）：外部 IM 发送类 API 同样按危险处理。 */
@@ -5489,7 +5493,8 @@ async function executeTool(
     toolName,
     permissionMode: task.permissionMode,
     hasConfirmRules: hookVerdict.confirmRules.length > 0,
-    alreadyAuthorized: isDangerToolAuthorized(task.conversationId, toolName),
+    alreadyAuthorized: isDangerToolAuthorized(task.conversationId, toolName)
+      || task.authorizedTools?.has(toolName) === true,
   })) {
     auditPathAccess({
       userId: task.userId, conversationId: task.conversationId, taskId: task.id,
@@ -5628,6 +5633,88 @@ async function executeTool(
       }
     }
     return executeToolViaFrontend(task, toolName, args, toolCallId, depth);
+  }
+
+  // ── PageAsset 运行时（2026-11-05）──────────────────────────────────────────
+  // 模型只能给 assetId + operationId + params。资产版本、输入 schema、origin 前置约束
+  // 和配方映射都在服务端解析；实际浏览器动作仍走现有 recipe 执行面。
+  if (toolName === 'browser_run_page_operation') {
+    const startedAt = Date.now();
+    let prepared: ReturnType<typeof preparePageAssetRun>;
+    try {
+      prepared = preparePageAssetRun({
+        userId: task.userId,
+        assetId: String((args as any).assetId || ''),
+        operationId: String((args as any).operationId || ''),
+        params: (args as any).params && typeof (args as any).params === 'object'
+          ? (args as any).params as Record<string, unknown>
+          : {},
+      });
+    } catch (e: any) {
+      return `页面资产操作未执行：${e?.message || e}`;
+    }
+    if (prepared.operation.executor.stopBeforeStepId) {
+      return `页面资产 ${prepared.asset.id} 配置了 stopBeforeStepId=${prepared.operation.executor.stopBeforeStepId}，当前 recipe 执行器尚不支持安全截断，已拒绝执行。`;
+    }
+    const recipeArgs = {
+      recipe: prepared.recipeId,
+      params: prepared.recipeParams,
+    };
+    let recipeResult: any;
+    try {
+      const exec = decideBrowserExecution('navigate', task.userId);
+      if (exec === 'bridge') {
+        const flow = browserFlowKey || SHARED_FLOW;
+        const api = {
+          navigate: (url: string) =>
+            callBrowserBridgeRaw(task.conversationId, 'browser_navigate', { url }, resolveFrontendToolTimeout('browser_navigate'), flow, task.userId),
+          action: async (action: string, actionArgs: Record<string, unknown>) => {
+            const subTool = `browser_${action}`;
+            const raw = await callBrowserBridgeRaw(task.conversationId, subTool, actionArgs, resolveFrontendToolTimeout(subTool), flow, task.userId);
+            if (raw?.error && !raw?.timedOut) throw new Error(String(raw.error));
+            return raw;
+          },
+        };
+        recipeResult = await BrowserRunRecipeTool.run(recipeArgs, api, { workspaceDir: task.workspaceDir });
+      } else {
+        setBrowserToolConversationId(task.conversationId);
+        setBrowserToolWorkspaceDir(task.workspaceDir || '');
+        recipeResult = await new BrowserRunRecipeTool().execute(recipeArgs, {
+          conversationId: task.conversationId,
+          userId: task.userId,
+          workspaceDir: task.workspaceDir,
+        });
+      }
+    } catch (e: any) {
+      const message = e?.message || String(e);
+      const runId = recordPageAssetRun({
+        prepared,
+        userId: task.userId,
+        agentId: task.agentId,
+        conversationId: task.conversationId,
+        status: 'failed',
+        errorCode: 'PAGE_OPERATION_FAILED',
+        error: message,
+        startedAt,
+        endedAt: Date.now(),
+      });
+      return `页面资产操作失败：${message}\nrunId=${runId} asset=${prepared.asset.id}@${prepared.asset.version} operation=${prepared.operation.id}`;
+    }
+    const text = recipeResult?.content?.map((c: any) => c.text || '').join('') || JSON.stringify(recipeResult);
+    const failed = recipeResult?.isError === true;
+    const runId = recordPageAssetRun({
+      prepared,
+      userId: task.userId,
+      agentId: task.agentId,
+      conversationId: task.conversationId,
+      status: failed ? 'failed' : 'success',
+      result: { text },
+      errorCode: failed ? 'PAGE_OPERATION_FAILED' : null,
+      error: failed ? text.slice(0, 1000) : null,
+      startedAt,
+      endedAt: Date.now(),
+    });
+    return `${text}\n\n[page-asset-run]\nrunId=${runId}\nasset=${prepared.asset.id}@${prepared.asset.version}\noperation=${prepared.operation.id}`;
   }
 
   // API 工具（api_memory_search/api_kb_search/api_data_* 等）→ 后端直接执行；agentId 用于本体挂载范围过滤
@@ -8414,6 +8501,19 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         if (t) toolLines.push(`- \`${name}\`: ${t.description}${formatSchemaParams(t.inputSchema)}`);
       }
 
+      // 页面资产维护工具对 prompt-mode 模型同样可见。原生 tools 模型走
+      // buildToolsForBackend 的同一组常量；这里只是把同一能力投影成文本。
+      for (const name of PAGE_ASSET_ALWAYS_API_TOOLS) {
+        if (toolLines.some((line) => line.startsWith(`- \`${name}\``))) continue;
+        for (const tools of getApiToolRegistry().values()) {
+          const def = tools.find((tool) => tool.name === name);
+          if (def) {
+            toolLines.push(`- \`${name}\`: ${def.description}${formatSchemaParams(def.inputSchema)}`);
+            break;
+          }
+        }
+      }
+
       // ★ deny 预过滤（2026-10-18）：与 buildToolsForBackend 的 6.5 段同源 ——
       //   提示词模式的工具清单也必须摘掉用户 deny 的工具，否则提示词模型看到"可用"
       //   却调不动（同一事实两处判定必须一致，canDelegate 教训的同类）。
@@ -8493,8 +8593,46 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
       const userQuery = String(opts?.userContent || '');
       const skillLines: string[] = [];
       const flowParts: string[] = [];
+      const describePageAssets = (refs: string[], capabilities: string[]): string => {
+        const selected = new Map<string, { id: string; title: string; status: string; capabilities: string[] }>();
+        const missing: string[] = [];
+        for (const ref of refs) {
+          const asset = getPageAsset(userId, ref);
+          if (asset) {
+            selected.set(asset.id, {
+              id: asset.id,
+              title: asset.title,
+              status: asset.status,
+              capabilities: asset.capabilities,
+            });
+          } else {
+            missing.push(ref);
+          }
+        }
+        for (const capability of capabilities) {
+          for (const asset of resolvePageAssets(userId, { capability })) {
+            selected.set(asset.id, {
+              id: asset.id,
+              title: asset.title,
+              status: asset.status,
+              capabilities: asset.capabilities,
+            });
+          }
+        }
+        if (!selected.size && !missing.length) return '';
+        const lines: string[] = [];
+        for (const asset of selected.values()) {
+          lines.push(`- ${asset.title} (\`${asset.id}\`) · ${asset.status} · ${asset.capabilities.join(' / ')}`);
+        }
+        if (missing.length) lines.push(`- 未找到的引用：${missing.join('、')}`);
+        return [
+          '### 页面资产引用',
+          ...lines,
+          '页面操作必须走 `browser_run_page_operation`：先确认 operationId 与 inputSchema，禁止用 `browser_run_recipe`、临时选择器或自由脚本替代已声明 operation。',
+        ].join('\n');
+      };
       for (const skId of skillIds) {
-        const sk = db.prepare('SELECT name, description, body, triggers_json, enabled, files_json FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL OR is_public = 1)').get(skId, userId) as any;
+        const sk = db.prepare('SELECT name, description, body, triggers_json, enabled, files_json, page_asset_refs_json, asset_capabilities_json FROM skill WHERE id = ? AND (user_id = ? OR user_id IS NULL OR is_public = 1)').get(skId, userId) as any;
         if (!sk || !sk.enabled) continue;
         // 项目技能目录里有同名技能 → 跳过 DB 版（项目 SOP 覆盖通用技能）
         if (projectSkillNames.has(String(sk.name || '').toLowerCase())) continue;
@@ -8519,6 +8657,10 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
             ? `\n> 📁 参考资料（按需 file_read，别一次全读）：<工作目录>/.yan-zhi/skills/${skillDirName(sk.name)}/ 下的 ${refFiles.map((f) => f.path).join('、')}`
             : '';
           flowParts.push(`### Skill 流程指引：${sk.name}\n${body}${refNote}`);
+          const refs = (() => { try { return JSON.parse(sk.page_asset_refs_json || '[]').map(String); } catch { return []; } })();
+          const caps = (() => { try { return JSON.parse(sk.asset_capabilities_json || '[]').map(String); } catch { return []; } })();
+          const assetBlock = describePageAssets(refs, caps);
+          if (assetBlock) flowParts.push(assetBlock);
         }
       }
       // 项目技能（.yan-zhi/skills 下的 .md）：与 DB skill 同一份注入格式与触发词口径，
@@ -8528,6 +8670,8 @@ export function buildSystemPromptForBackend(agentId: string | null, userId: stri
         skillLines.push(`- **${ps.name}**（项目技能，来自 ${ps.source}）: ${ps.description || ''}${hit ? ' ← **本次命中，按它的流程执行**' : ''}`);
         if (ps.body && (hit || !userQuery.trim())) {
           flowParts.push(`### Skill 流程指引：${ps.name}\n${ps.body}`);
+          const assetBlock = describePageAssets(ps.pageAssets || [], ps.capabilities || []);
+          if (assetBlock) flowParts.push(assetBlock);
         }
       }
       if (skillLines.length > 0) parts.push('---\n## 可用 Skills\n' + skillLines.join('\n'));
@@ -9034,6 +9178,19 @@ function buildCustomToolDescLines(agentId: string | null, userId: string, includ
 
 /** 从 DB 加载 agent + 会话挂载，构建工具 schema（三条入口共用的单一事实来源，与前端 getMergedMounts 同规则）。
  *  opts.includeUiTools：交互式任务（前端在线）纳入 UI 工具；定时/IM 等无人值守任务排除。 */
+/**
+ * 页面资产维护工具（2026-11-05）：主智能体默认可发现，真正写入仍由权限模式与
+ * expectedVersion/activate 门禁约束。这样模型能自己把一次验证过的页面流程沉淀成资产，
+ * 不需要先改代码或让用户手工进后台。
+ */
+const PAGE_ASSET_ALWAYS_API_TOOLS = [
+  'api_page_asset_list', 'api_page_asset_get', 'api_page_asset_resolve',
+  'api_page_asset_create_draft', 'api_page_asset_update_draft',
+  'api_page_asset_validate', 'api_page_asset_activate',
+  'api_page_asset_archive', 'api_page_asset_versions',
+  'api_page_asset_probe', 'api_page_asset_rollback',
+];
+
 export function buildToolsForBackend(agentId: string | null, userId: string, opts?: {
   conversationId?: string | null;
   includeUiTools?: boolean;
@@ -9065,6 +9222,40 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
       type: 'function',
       function: { name, description: def.description, parameters: def.inputSchema },
     });
+  }
+
+  // Skill 引用 PageAsset 时，自动暴露唯一执行入口。资产定义仍由 skill 引用/悬挂关系决定，
+  // 这里只补工具面，避免“流程里写了 page asset、模型却看不到执行工具”的断链。
+  if (!seen.has('browser_run_page_operation') && registry.has('browser_run_page_operation')) {
+    const assetSkillIds = new Set<string>();
+    if (agentId) {
+      const row = db.prepare('SELECT skill_ids FROM agent WHERE id = ? AND (user_id = ? OR is_public = 1)').get(agentId, userId) as any;
+      try { for (const id of JSON.parse(row?.skill_ids || '[]')) assetSkillIds.add(String(id)); } catch { /* ignore */ }
+    }
+    for (const id of convMounts.skillIds) assetSkillIds.add(String(id));
+    let hasPageAssetRef = false;
+    for (const skillId of assetSkillIds) {
+      const row = db.prepare('SELECT page_asset_refs_json, asset_capabilities_json FROM skill WHERE id = ?').get(skillId) as any;
+      if (!row) continue;
+      const refs = (() => { try { return JSON.parse(row.page_asset_refs_json || '[]'); } catch { return []; } })();
+      const caps = (() => { try { return JSON.parse(row.asset_capabilities_json || '[]'); } catch { return []; } })();
+      if ((Array.isArray(refs) && refs.length > 0) || (Array.isArray(caps) && caps.length > 0)) {
+        hasPageAssetRef = true;
+        break;
+      }
+    }
+    if (hasPageAssetRef) {
+      const def = registry.get('browser_run_page_operation')!;
+      seen.add('browser_run_page_operation');
+      tools.push({
+        type: 'function',
+        function: {
+          name: 'browser_run_page_operation',
+          description: def.description,
+          parameters: def.inputSchema,
+        },
+      });
+    }
   }
 
   // 无 agent 且无会话挂载时兜底：暴露所有非 UI 内置工具
@@ -9171,7 +9362,12 @@ export function buildToolsForBackend(agentId: string | null, userId: string, opt
   const mountedApiTools = [...toolIds, ...convMounts.builtinToolIds].filter((n) => isApiExecutableTool(n));
   // 已挂载专属 api_* 工具链的（数据查询智能体等）只暴露它挂载的工具：记忆/知识库这类通用工具
   // 对它属于干扰源 —— 实测会先去搜知识库扑空、再乱调子智能体工具，最终编造答案。
-  const apiToolNames = mountedApiTools.length ? mountedApiTools : alwaysApiTools;
+  const apiToolNames = [
+    ...new Set([
+      ...(mountedApiTools.length ? mountedApiTools : alwaysApiTools),
+      ...PAGE_ASSET_ALWAYS_API_TOOLS,
+    ]),
+  ];
   for (const tName of apiToolNames) {
     if (seen.has(tName)) continue;
     for (const apiTools of apiRegistry.values()) {
