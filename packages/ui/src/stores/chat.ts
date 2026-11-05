@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick, watch } from 'vue';
 import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView, InlineDataViewChart } from '@yan-zhi/shared';
-import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause } from '@yan-zhi/core';
+import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause, computePageStateSignature } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
 import { useAgentStore } from './agent';
@@ -2692,7 +2692,11 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
                   if (e.href) s += ` →${String(e.href).slice(0, 80)}`;
                   return s;
                 }).join('\n');
-                text = `URL: ${result.url}\nTitle: ${result.title}\n\n【页面可见文本】\n${result.text || '(空)'}\n\n【可交互元素】(${result.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
+                // ★ 2026-11-03：PageState 是服务端浏览器进展守卫的唯一硬判据。
+                //   此前桌面回执只带 URL/Title/正文，守卫解析不到签名，实际处于静默失效；
+                //   模型也失去“同一状态连续两次 = 操作没生效”的明确信号。
+                const pageState = computePageStateSignature(result);
+                text = `URL: ${result.url}\nTitle: ${result.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n${result.text || '(空)'}\n\n【可交互元素】(${result.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
               } else if (action === 'upload') {
                 // ★ 2026-10-12（诊断报告 P0-3）：与 server 的 formatBridgeResult 同口径 ——
                 //   带上"页面是否回读到该文件"的核验结论，避免模型因无成功证据而反复重传。

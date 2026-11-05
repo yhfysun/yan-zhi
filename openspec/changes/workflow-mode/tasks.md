@@ -22,7 +22,8 @@
 
 - [x] 2.1 `routes/workflow.ts` 新增 `GET /agents`（列表 + `buildWorkflowInputFieldDefs` 输出字段 + 节点可覆盖项 + 最近运行状态）
 - [x] 2.2 新增 `POST /runs/:id/cancel` + `workflow-runner.ts` 的 `cancelWorkflowRun(runId)`（状态 `aborted`，发 `run:aborted` 事件）
-- [ ] 2.3 新增 `GET /runs/:id/artifacts`
+- [x] 2.3 新增 `GET /runs/:id/artifacts`
+  → 2026-11-05 核实：`workflow_run_artifact` 按 runId 落盘，路由先校验 run 归属后返回文件清单；`workflow-run-artifacts.test.ts` 2 例通过。
 - [x] 2.4 新增 `POST /debug/run-to`、`POST /debug/node`、`POST /debug/continue`（配套 `debugRunTo` / `debugRunNode` / `debugRunFrom`）
 - [x] 2.5 运行请求体接收 `nodeOverrides` 并透传到引擎（`annotateBundle` 第二参 + `pickNodeOverrides` 白名单）
 - [x] 2.6 `services/workflow-tool-registry.ts`：`syncWorkflowTools()` 幂等注册/注销 `wf_*`（先 unregister 再 register，规避单例重名 throw）

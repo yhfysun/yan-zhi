@@ -20,6 +20,7 @@
 // Element Plus / 图标 / 子组件一律走真实现。
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { createApp, h, nextTick, ref, type App } from 'vue';
+import { createPinia } from 'pinia';
 import ElementPlus from 'element-plus';
 import * as Icons from '@element-plus/icons-vue';
 
@@ -109,6 +110,8 @@ vi.mock('../api/client', () => ({
   api: { get: vi.fn(async () => ({ data: { ips: [], port: 3001 } })) },
   API_BASE: '', isCapacitor: false,
   getMobileApiBase: () => '', setMobileApiBase: () => {},
+  getBakedServerBase: () => '', getEffectiveServerBase: () => '',
+  getServerBase: () => '', setServerBase: () => '',
 }));
 
 // useMobileShell 与 smsAdapter 都要 getPlatformAdapter；node 环境给个非移动端底座
@@ -148,6 +151,7 @@ async function mount(pane: string | { value: string }): Promise<HTMLElement> {
   });
   for (const [k, c] of Object.entries(Icons)) app.component(k, c as any);
   app.use(ElementPlus);
+  app.use(createPinia());
   app.mount(host);
   await nextTick(); await nextTick();
   return host;

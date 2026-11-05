@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const SRC = readFileSync(resolve(__dirname, 'AgentEditDialog.vue'), 'utf8');
+const SRC = readFileSync(resolve(__dirname, 'AgentEditForm.vue'), 'utf8');
 
 describe('编辑智能体弹窗 · 表单内按钮不得触发提交', () => {
   it('el-form 内所有原生 button 都带 type="button"', () => {

@@ -100,7 +100,7 @@ export const useAuthStore = defineStore('auth', () => {
   /** 当前是否以内部 guest 身份运行（UI 据此显示"未登录"，而不是显示 guest 账号）。 */
   const isGuest = computed(() => isGuestIdentity(user.value));
 
-  // 数据源收敛后后端为唯一数据源（桌面端 guest token 免登录，与 /api/llm/* 同库）。
+  // 数据源收敛后后端为唯一数据源（桌面端 guest token 免登录，与 /api/llm 接口同库）。
   // 各 store 的 isServerMode()/on() 依赖此标志判断是否走后端 API；
   // 被误删会导致会话/平台等创建回退到渲染端本地库，任务写 message 撞 conversation 外键。
   // 恒为 true（纯本地无后端场景已不再支持）。
@@ -123,7 +123,7 @@ export const useAuthStore = defineStore('auth', () => {
     const token = localStorage.getItem('auth_token');
     if (!token) {
       // 本机单机端（桌面 / 移动）本地模式：取 guest token，使平台等数据走后端 API（data.db），
-      // 与聊天代理 /api/llm/* 同库；避免前端 IPC 库（yan-zhi.db）与后端库不同步导致 404。
+      // 与聊天代理 /api/llm 接口同库；避免前端 IPC 库（yan-zhi.db）与后端库不同步导致 404。
       //
       // ★ 这**不是"登录"** —— guest 是内部数据归属身份（见 isGuestIdentity 注释）。
       //   前端已用 `isLoggedIn`/`isGuest` 把"身份"与"登录态"拆开，

@@ -3,7 +3,7 @@
 // 使用此处映射的键，由 resolvePluginComponent 解析为懒加载组件。
 //
 // ★ 构建期裁剪（2026-10-23）：清单来自生成文件 `generated/build-modes.ts`，
-//   **不能再用 import.meta.glob** —— glob 会把 `./views/plugin/**` 下所有 .vue 都
+//   **不能再用 import.meta.glob** —— glob 会把 views/plugin 目录下所有 .vue 都
 //   变成独立 chunk（哪怕路由没注册），`--modes` 裁剪等于白做。
 //   生成表只包含「非模式插件视图 + 本次选中模式的插件视图」。
 import { PLUGIN_VIEW_LOADERS } from './generated/build-modes';

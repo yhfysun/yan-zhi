@@ -1342,6 +1342,32 @@ html[data-skin="on"] .el-dialog.tm-solid-dialog .el-textarea__inner {
   background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
   background-position: center !important;
 }
+
+/* 下拉菜单专属图案：未配置时回落到菜单图案，配置后允许与普通菜单区分 */
+[data-skin="on"] .el-dropdown-menu,
+[data-skin="on"] .el-select-dropdown {
+  background-image: var(--skin-dropdown-pattern, var(--skin-menu-pattern, none)) !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
+  background-position: center !important;
+}
+
+/* 横幅与任务卡片 */
+[data-skin="on"] .conv-archived-banner,
+[data-skin="on"] .viewas-banner {
+  background-image: var(--skin-banner-pattern, none) !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
+  background-position: center !important;
+}
+
+[data-skin="on"] .new-task-btn,
+[data-skin="on"] .task-card {
+  background-image: var(--skin-task-card-pattern, none) !important;
+  background-size: var(--skin-pattern-size, cover) !important;
+  background-repeat: var(--skin-pattern-repeat, no-repeat) !important;
+  background-position: center !important;
+}
 /* 菜单 hover 项压一层主色微光，保证图案上仍清晰 */
 [data-skin="on"] .app-menu-list .menu-item:hover,
 [data-skin="on"] .el-dropdown-menu__item:not(.is-disabled):hover {

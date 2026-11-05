@@ -79,6 +79,15 @@ type SkinSurface = {
   menuPattern?: string;
   /** 菜单底图暗色变体（p.dark 深底，暗色主题优先于 menuPattern） */
   menuPatternDark?: string;
+  /** 横幅/提示条底图 */
+  bannerPattern?: string;
+  bannerPatternDark?: string;
+  /** 任务/新建任务卡片底图 */
+  taskCardPattern?: string;
+  taskCardPatternDark?: string;
+  /** 下拉菜单底图 */
+  dropdownPattern?: string;
+  dropdownPatternDark?: string;
   /** 代码模式底图（区别于壁纸的独立背景图） */
   codePattern?: string;
   /** 内置浏览器外壳底图（tab 栏/工具栏） */
@@ -199,6 +208,7 @@ const SKIN_ELEMENT_VARS = [
   '--skin-card-4-pattern', '--skin-card-5-pattern', '--skin-card-6-pattern',
   '--skin-card-count',
   '--skin-menu-pattern', '--skin-code-pattern', '--skin-browser-pattern',
+  '--skin-banner-pattern', '--skin-task-card-pattern', '--skin-dropdown-pattern',
   '--skin-pattern-size', '--skin-pattern-repeat',
 ] as const;
 
@@ -668,6 +678,9 @@ interface ThemePalette {
     cardPatterns?: string[];
     cardPatternsDark?: string[];
     menuPattern?: string;
+    bannerPattern?: string;
+    taskCardPattern?: string;
+    dropdownPattern?: string;
     codePattern?: string;
     browserPattern?: string;
     inputBorder?: string;
@@ -1411,6 +1424,9 @@ export const useSettingsStore = defineStore('settings', () => {
     }
     // ===== 菜单 / 代码模式 / 浏览器外壳底图 =====
     setPattern('--skin-menu-pattern', themedPattern(sf.menuPattern, sf.menuPatternDark));
+    setPattern('--skin-banner-pattern', themedPattern(sf.bannerPattern, sf.bannerPatternDark));
+    setPattern('--skin-task-card-pattern', themedPattern(sf.taskCardPattern, sf.taskCardPatternDark));
+    setPattern('--skin-dropdown-pattern', themedPattern(sf.dropdownPattern, sf.dropdownPatternDark));
     setPattern('--skin-code-pattern', themedPattern(sf.codePattern));
     setPattern('--skin-browser-pattern', themedPattern(sf.browserPattern, sf.browserPatternDark));
     // 输入框边框色（EP 输入框 + 自定义输入容器共用）—— 已在上方配色兜底块与派生色一并下发，此处不再重复

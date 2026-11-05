@@ -318,7 +318,7 @@ describe('⑤ 不得把内部 guest 身份显示成"已登录账号"', () => {
 
   it('★ loadUser 必须先等后端就绪（否则网络失败被误判成 guest 身份）', () => {
     const code = stripComments(AUTH);
-    const i = code.indexOf('async function loadUser');
+    const i = code.indexOf('function loadUser(');
     const body = code.slice(i, i + 700);
     expect(body, 'loadUser 未等后端就绪').toContain('waitForBackend');
   });

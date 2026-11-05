@@ -53,6 +53,9 @@ function skinTheme(
     menuPattern: 'dialog-bg.webp',
     codePattern: 'dialog-bg.webp',
     browserPattern: 'task-list-bg.webp',
+    bannerPattern: 'dialog-bg.webp',
+    taskCardPattern: 'card-1-bg.webp',
+    dropdownPattern: 'dialog-bg.webp',
     // 滚动条造型（2026-09-13 晚 · 第四版，定稿 —— 材质剖面模型，且**每套皮肤一套配色**）：
     // 用户原话："横向效果不是很好啊多搞几个样式配色？每个皮肤一个？"
     //

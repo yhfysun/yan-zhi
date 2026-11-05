@@ -49,7 +49,7 @@
       title="在独立窗口打开当前模式（窗口内固定本模式）"
       @click="openStandalone"
     >
-      <el-icon :size="15"><CopyDocument /></el-icon>
+      <el-icon :size="15"><TopRight /></el-icon>
     </button>
   </span>
 </template>
@@ -57,7 +57,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Check, Lock, ChatDotRound, Monitor, Platform, Connection, VideoCamera, Shop, CopyDocument } from '@element-plus/icons-vue';
+import { Check, Lock, ChatDotRound, Monitor, Platform, Connection, VideoCamera, Shop, TopRight } from '@element-plus/icons-vue';
 import {
   activeMode, allModeDefs, setMode, modeRoute, visibleModeDefs,
   type AppMode, type ModeDef,

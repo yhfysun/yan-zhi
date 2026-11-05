@@ -198,7 +198,8 @@
 - [x] 权限 `desktop-shell`：`PluginPermission` 增项；未声明调用 `pluginWindow`/`desktopShell` 一律拒绝
 - [x] `desktopShell`：`iconsVisible` / `setIconsVisible` / `fileIcon` / `openPath` / `query`
 - [x] C# 助手 `yz-desktop.exe`：`--progman` / `--spawn-workerw` / `--pin` / `--toggle-icons` / `--icons-visible`
-- [ ] 抽出通用 `ensureHelperExe(name, src)`，`ensureGdiCapExe` 改调用它（行为不变）+ 守门测试
+- [x] 抽出通用 `ensureHelperExe(name, src)`，`ensureGdiCapExe` 改调用它（行为不变）+ 守门测试
+  → 2026-11-05 核实：`main.cjs` 已改为路径/编译尝试分表缓存，`helper-compile.test.cjs` 通过。
 - [ ] 会话级恢复状态机：窗口异常关闭 / deactivate / before-quit / app.exit → 恢复图标；启动自检不接管他人隐藏
 - [x] 审计：pluginWindow / 图标显隐 / llm 调用全部进 `pushPluginAudit`（llm 只记 tokens 与耗时，不记 prompt）
 - [ ] `llm` 桥（通用）：`llm.json({system,user,schema,maxTokens,timeoutMs})`，内部走 `chatViaRow` + `findModelRow`（默认模型）；错误码 `no-model|timeout|bad-json|upstream`

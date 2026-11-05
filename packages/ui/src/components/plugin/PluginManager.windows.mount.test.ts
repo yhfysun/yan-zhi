@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
+import { createPinia } from 'pinia';
 import ElementPlus from 'element-plus';
 import * as Icons from '@element-plus/icons-vue';
 
@@ -108,6 +109,7 @@ async function mount(): Promise<HTMLElement> {
   app = createApp(PluginManager);
   for (const [k, c] of Object.entries(Icons)) app.component(k, c as any);
   app.use(ElementPlus);
+  app.use(createPinia());
   app.mount(host);
   await nextTick();
   await nextTick();

@@ -23,7 +23,10 @@
 
 - [x] 2.1 `routes/sql-console.ts`：/run 执行 + `services/sql-guard.ts` 只读护栏（DDL 一律拒/写引导走数据编辑/SET 等 admin 拒/EXPLAIN ANALYZE 写语句拦/字符串与注释不误伤）+ `@yan-zhi/shared` sql-text 切分器（两端共用）——冒烟 22/22
 - [x] 2.2 `views/DataConsolePage.vue`：数据源下拉（默认项目库）+ schema 树（搜索/点列插入）+ 行号深色编辑器 + Ctrl+Enter 运行选中/光标语句 + Ctrl+Shift+Enter 全部 + 结果多 Tab（状态点/截断提示/出错即停标 skipped）+ 导出 CSV（BOM）+ 轻量格式化
-- [ ] 2.3 **数据编辑（默认关闭）**：`data_edit_audit` 表 + 写权限开关（15min 自动关）+ 预检影响行数 + 二次确认 + 事务 + 审计（含变更前快照）
+- [x] 2.3a **数据编辑基础通道**：`data_edit_audit` 表 + 显式写权限开关 + 预检影响行数 + 二次确认 + 事务化提交 + 审计查询
+  → 2026-11-05：SQLite / MySQL / PostgreSQL / Oracle / 达梦事务适配与一次性令牌已落地；控制台数据编辑入口、审计抽屉及窄屏卡片已接。`data-edit.test.ts` 5 例、Oracle/DM 2 例通过。
+- [ ] 2.3b 写权限 15 分钟自动关闭 + 审计记录变更前快照
+  → 当前 `allow_write` 为数据源持久开关，审计只存 SQL/参数/影响行数与错误，尚不可回放变更前数据。
 - [ ] 2.4 网格内编辑：结果集必须带主键，否则禁止；禁止 DDL / 无 WHERE 的 UPDATE·DELETE / 多语句
 
 ## P2.5 schema 同步升级为富化流水线（v2 新增）

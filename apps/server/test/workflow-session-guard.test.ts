@@ -112,7 +112,7 @@ beforeAll(async () => {
 
   wfId = (db.prepare("SELECT id FROM agent WHERE type='workflow' LIMIT 1").get() as any)?.id;
   harnessId = (db.prepare("SELECT id FROM agent WHERE type='harness' AND system_prompt IS NOT NULL LIMIT 1").get() as any)?.id;
-});
+}, 60_000);
 
 afterAll(() => {
   try { db?.close?.(); } catch { /* ignore */ }

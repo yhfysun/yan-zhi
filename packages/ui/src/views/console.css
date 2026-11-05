@@ -64,6 +64,7 @@
    ★ 用具名类而非内联 style="flex:1"：内联样式优先级高于媒体查询，
    窄屏换行布局要收起它时会被内联样式顶住、只能靠 !important 硬压。 */
 .dw-root .dc-bar-spacer { flex: 1; }
+.dc-write-action { display: inline-flex; }
 
 .dw-root .kbd {
   font-family: var(--dw-f-mono);
@@ -472,6 +473,68 @@
   font-family: var(--dw-f-mono);
 }
 
+.dc-audit {
+  min-height: 180px;
+}
+.dc-audit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.dc-audit-head > div {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dc-audit-empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  color: var(--dw-ink-3);
+  font-size: 12px;
+}
+.dc-audit-sql {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+.dc-audit-error {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--el-color-danger);
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.dc-audit-cards { display: none; }
+.dc-edit-confirm p {
+  margin: 0 0 10px;
+  line-height: 1.55;
+}
+.dc-edit-confirm-sql {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--dw-rule);
+  border-radius: var(--dw-r-sm);
+  background: var(--dw-canvas);
+  color: var(--dw-ink);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dc-edit-confirm-note {
+  color: var(--dw-ink-3);
+  font-size: 12px;
+}
+
 /* ===== 窄屏适配 =====
    本页两处固定宽度在窄屏必然溢出（实测 400/360px）：
    ① `.dc-bar` 一行放「数据源选择 240px + 只读护栏 + 上限提示 + 3 个执行按钮」，
@@ -495,7 +558,9 @@
   .dw-root .dc-limits { white-space: nowrap; }
   /* 原来用于右推按钮的弹性垫片在换行布局里会制造空洞 */
   .dw-root .dc-bar-spacer { display: none; }
-  .dw-root .dc-bar .el-button { flex: 1 1 auto; }
+  .dw-root .dc-bar .el-button,
+  .dw-root .dc-write-action { flex: 1 1 auto; }
+  .dw-root .dc-write-action .el-button { width: 100%; }
   .dw-root .kbd { margin-left: 2px; }
 
   /* schema 树：改为上方横向可折叠条，不再硬占 250px */
@@ -514,6 +579,55 @@
   .dw-root .dc-results { min-height: 240px; }
   .dw-root .dc-ed-hint { display: none; }
   .dw-root .dc-gutter { width: 34px; padding: 10px 6px; }
+
+  /* 审计抽屉在手机上不再强塞 6 列表格，改为可完整阅读的纵向记录卡。 */
+  .dc-audit-table { display: none; }
+  .dc-audit-cards {
+    display: grid;
+    gap: 10px;
+  }
+  .dc-audit-card {
+    min-width: 0;
+    padding: 12px;
+    border: 1px solid var(--dw-rule);
+    border-radius: var(--dw-r-md);
+    background: var(--dw-surface);
+  }
+  .dc-audit-card-head,
+  .dc-audit-card-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .dc-audit-card-head time,
+  .dc-audit-card-meta {
+    color: var(--dw-ink-3);
+    font-size: 11px;
+  }
+  .dc-audit-card-meta {
+    margin-top: 8px;
+  }
+  .dc-audit-card-sql {
+    max-height: 132px;
+    overflow: auto;
+    margin: 10px 0 0;
+    padding: 9px 10px;
+    border-radius: var(--dw-r-sm);
+    background: var(--dw-canvas);
+    color: var(--dw-ink-2);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .dc-audit-card-error {
+    margin: 9px 0 0;
+    color: var(--el-color-danger);
+    font-size: 11px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
 }
 
 @media (max-width: 480px) {

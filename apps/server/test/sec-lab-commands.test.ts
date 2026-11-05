@@ -145,8 +145,16 @@ describe('★★ 命令的 params / danger 必须与工具真相源同口径', (
 describe('★ 剧本（`@名字` 召唤）：每一步都必须是**已声明的命令**', () => {
   const PLAYBOOKS = () => (secLabManifest.contributes as any).playbooks as Array<Record<string, any>>;
 
-  it('6 个内置剧本，字段齐备且限定安全模式', () => {
-    expect(PLAYBOOKS().length).toBe(6);
+  it('7 个内置剧本，字段齐备且限定安全模式', () => {
+    expect(PLAYBOOKS().map((pb) => pb.id).sort()).toEqual([
+      'asset-review',
+      'blue-review',
+      'full-assessment',
+      'intranet-exposure',
+      'lab-drill',
+      'recon-basic',
+      'web-audit',
+    ]);
     for (const pb of PLAYBOOKS()) {
       expect(pb.id, '剧本缺 id').toBeTruthy();
       expect(pb.name, `${pb.id} 缺召唤名`).toBeTruthy();

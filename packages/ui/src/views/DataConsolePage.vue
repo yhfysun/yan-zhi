@@ -29,6 +29,25 @@
 
       <span class="dc-bar-spacer" />
       <el-button size="small" @click="formatSql">格式化</el-button>
+      <el-tooltip
+        :disabled="!!activeDs?.allowWrite"
+        content="该数据源未开启写操作。请先在数据源设置中允许写入。"
+        placement="bottom"
+      >
+        <span class="dc-write-action">
+          <el-button
+            size="small"
+            :disabled="!activeDs?.allowWrite"
+            :loading="editChecking || editApplying"
+            @click="preflightEdit"
+          >
+            <el-icon><EditPen /></el-icon>数据编辑
+          </el-button>
+        </span>
+      </el-tooltip>
+      <el-button size="small" :disabled="!activeDsId" @click="openAudits">
+        <el-icon><Document /></el-icon>审计
+      </el-button>
       <el-button size="small" :loading="running" @click="run('current')">
         运行选中 <kbd class="kbd">⌃↵</kbd>
       </el-button>
@@ -175,13 +194,83 @@
         </div>
       </div>
     </div>
+
+    <el-drawer v-model="auditOpen" size="min(760px, 94vw)" append-to-body>
+      <template #header>
+        <div class="dc-audit-head">
+          <div>
+            <b>数据编辑审计</b>
+            <span v-if="activeDs"> · {{ activeDs.name }}</span>
+          </div>
+          <el-button
+            text
+            circle
+            :icon="Refresh"
+            :loading="auditLoading"
+            aria-label="刷新数据编辑审计"
+            title="刷新"
+            @click="loadAudits"
+          />
+        </div>
+      </template>
+      <div v-loading="auditLoading" class="dc-audit">
+        <div v-if="!auditLoading && !audits.length" class="dc-audit-empty" role="status">
+          此数据源还没有数据编辑记录
+        </div>
+        <el-table v-else :data="audits" size="small" row-key="id" class="dc-audit-table">
+          <el-table-column label="时间" width="152">
+            <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+          </el-table-column>
+          <el-table-column label="动作" width="82">
+            <template #default="{ row }">{{ actionLabel(row.action) }}</template>
+          </el-table-column>
+          <el-table-column label="SQL" min-width="240">
+            <template #default="{ row }">
+              <div class="dc-audit-sql dw-mono" :title="row.sql">{{ row.sql }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="88">
+            <template #default="{ row }">
+              <el-tag size="small" :type="auditTagType(row.status)">
+                {{ auditStatusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="影响行数" width="90" align="right">
+            <template #default="{ row }">{{ row.affectedRows ?? '—' }}</template>
+          </el-table-column>
+          <el-table-column label="错误" min-width="160">
+            <template #default="{ row }">
+              <span v-if="row.error" class="dc-audit-error">{{ row.error }}</span>
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div v-if="audits.length" class="dc-audit-cards" role="list">
+          <article v-for="row in audits" :key="row.id" class="dc-audit-card" role="listitem">
+            <div class="dc-audit-card-head">
+              <time :datetime="new Date(row.createdAt).toISOString()">{{ formatTime(row.createdAt) }}</time>
+              <el-tag size="small" :type="auditTagType(row.status)">
+                {{ auditStatusLabel(row.status) }}
+              </el-tag>
+            </div>
+            <div class="dc-audit-card-meta">
+              <span>{{ actionLabel(row.action) }}</span>
+              <span>影响 {{ row.affectedRows ?? '—' }} 行</span>
+            </div>
+            <pre class="dc-audit-card-sql dw-mono">{{ row.sql }}</pre>
+            <p v-if="row.error" class="dc-audit-card-error">{{ row.error }}</p>
+          </article>
+        </div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
-import { Search, ArrowRight, Lock, VideoPlay } from '@element-plus/icons-vue';
+import { computed, h, nextTick, onMounted, ref } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import { Search, ArrowRight, Document, EditPen, Lock, Refresh, VideoPlay } from '@element-plus/icons-vue';
 import { api } from '../api/client';
 import { statementAt, splitSqlStatements } from '@yan-zhi/shared';
 import '../styles/data-workbench.css';
@@ -234,6 +323,8 @@ async function onDsChange() {
   tables.value = [];
   results.value = [];
   activeResult.value = 0;
+  auditOpen.value = false;
+  audits.value = [];
   if (!activeDsId.value) return;
   schemaLoading.value = true;
   const res = await api.get<{ tables: SchemaTable[] }>(`/datasources/${activeDsId.value}/schema`);
@@ -355,22 +446,18 @@ function onCtrlEnter(e: KeyboardEvent) {
   void run(e.shiftKey ? 'all' : 'current');
 }
 
+function currentEditorText(): string {
+  const el = editorEl.value;
+  if (el && el.selectionStart !== el.selectionEnd) {
+    return editorText.value.slice(el.selectionStart, el.selectionEnd);
+  }
+  const cur = statementAt(editorText.value, el ? el.selectionStart : 0);
+  return cur?.text || '';
+}
+
 async function run(mode: 'current' | 'all') {
   if (!activeDsId.value) return ElMessage.warning('请先选择数据源');
-  let text = '';
-  if (mode === 'all') {
-    text = editorText.value;
-  } else {
-    const el = editorEl.value;
-    const hasSel = el && el.selectionStart !== el.selectionEnd;
-    if (hasSel) {
-      text = editorText.value.slice(el!.selectionStart, el!.selectionEnd);
-    } else {
-      const cur = statementAt(editorText.value, el ? el.selectionStart : 0);
-      if (!cur) return ElMessage.warning('没有可执行的语句');
-      text = cur.text;
-    }
-  }
+  const text = mode === 'all' ? editorText.value : currentEditorText();
   if (!text.trim()) return ElMessage.warning('没有可执行的语句');
 
   running.value = true;
@@ -389,6 +476,127 @@ async function run(mode: 'current' | 'all') {
   activeResult.value = firstBad === -1 ? res.data.results.length - 1 : firstBad;
   const blocked = res.data.results.filter((r) => r.status === 'blocked');
   if (blocked.length) ElMessage.warning(`${blocked.length} 条语句被护栏拦截，见结果区说明`);
+}
+
+// ===== 数据编辑通道 =====
+interface DataEditPreflight {
+  token: string;
+  auditId: string;
+  action: 'insert' | 'update' | 'delete';
+  affectedRows: number;
+  expiresAt: number;
+  statement: string;
+}
+
+interface DataEditAudit {
+  id: string;
+  action: string;
+  sql: string;
+  status: 'preflight' | 'applied' | 'failed' | 'rejected' | 'expired';
+  affectedRows: number | null;
+  error: string | null;
+  createdAt: number;
+  appliedAt: number | null;
+}
+
+const editChecking = ref(false);
+const editApplying = ref(false);
+const auditOpen = ref(false);
+const auditLoading = ref(false);
+const audits = ref<DataEditAudit[]>([]);
+
+function actionLabel(action: string): string {
+  return ({ insert: '插入', update: '更新', delete: '删除' } as Record<string, string>)[action] || action;
+}
+
+function auditStatusLabel(status: DataEditAudit['status']): string {
+  return {
+    preflight: '已预检',
+    applied: '已提交',
+    failed: '失败',
+    rejected: '已拦截',
+    expired: '已过期',
+  }[status];
+}
+
+function auditTagType(status: DataEditAudit['status']): 'success' | 'warning' | 'danger' | 'info' {
+  if (status === 'applied') return 'success';
+  if (status === 'preflight') return 'warning';
+  if (status === 'failed') return 'danger';
+  return 'info';
+}
+
+function formatTime(value: number | null): string {
+  if (!value) return '—';
+  return new Date(value).toLocaleString('zh-CN', { hour12: false });
+}
+
+async function preflightEdit() {
+  if (!activeDsId.value) return ElMessage.warning('请先选择数据源');
+  if (!activeDs.value?.allowWrite) return ElMessage.warning('该数据源未开启写操作');
+  const sql = currentEditorText().trim();
+  if (!sql) return ElMessage.warning('请选中或定位到一条 INSERT / UPDATE / DELETE');
+
+  const sourceDsId = activeDsId.value;
+  editChecking.value = true;
+  const res = await api.post<DataEditPreflight>(
+    `/datasources/${sourceDsId}/data-edit/preflight`,
+    { sql },
+  );
+  editChecking.value = false;
+  if ('error' in res) return ElMessage.error(`预检失败：${res.error}`);
+
+  const preview = res.data;
+  if (activeDsId.value !== sourceDsId) {
+    return ElMessage.warning('预检期间数据源已切换，本次编辑已取消');
+  }
+  try {
+    await ElMessageBox.confirm(
+      h('div', { class: 'dc-edit-confirm' }, [
+        h('p', `将对「${activeDs.value?.name || '当前数据源'}」执行${actionLabel(preview.action)}，预检影响 ${preview.affectedRows} 行。`),
+        h('pre', { class: 'dc-edit-confirm-sql dw-mono' }, preview.statement),
+        h('p', { class: 'dc-edit-confirm-note' }, '提交时会重新执行并写入审计。确认令牌 5 分钟内有效且只能使用一次。'),
+      ]),
+      '确认数据编辑',
+      {
+        confirmButtonText: '提交写入',
+        cancelButtonText: '取消',
+        type: 'warning',
+        distinguishCancelAndClose: true,
+      },
+    );
+  } catch {
+    ElMessage.info('已取消，本次预检记录将在 5 分钟后过期');
+    return;
+  }
+
+  if (activeDsId.value !== sourceDsId) {
+    return ElMessage.warning('数据源已切换，本次编辑已取消');
+  }
+  editApplying.value = true;
+  const applied = await api.post<{ ok: boolean; auditId: string; affectedRows: number; latencyMs: number }>(
+    `/datasources/${sourceDsId}/data-edit/apply`,
+    { token: preview.token },
+  );
+  editApplying.value = false;
+  if ('error' in applied) return ElMessage.error(`提交失败：${applied.error}`);
+  ElMessage.success(`已提交，影响 ${applied.data.affectedRows} 行；审计 ${applied.data.auditId}`);
+  if (auditOpen.value) await loadAudits();
+}
+
+async function loadAudits() {
+  if (!activeDsId.value) return;
+  auditLoading.value = true;
+  const res = await api.get<DataEditAudit[]>(`/datasources/${activeDsId.value}/data-edit/audits`);
+  auditLoading.value = false;
+  if ('error' in res) return ElMessage.error(`加载审计失败：${res.error}`);
+  audits.value = res.data;
+}
+
+async function openAudits() {
+  if (!activeDsId.value) return;
+  auditOpen.value = true;
+  await loadAudits();
 }
 
 // ===== 展示工具 =====

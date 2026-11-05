@@ -119,6 +119,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   api_tts_speak: 'media-audio',
   api_tts_voices: 'media-audio',
   api_sfx: 'media-audio',
+  api_media_audio_sync: 'media-audio',
 
   // ═══ 媒体 · 音乐创作 ═══
   music_compose: 'media-compose',

@@ -78,9 +78,9 @@ describe('桌面端身份区：必须有头像，且不得是登录入口', () =
     const localBranch = block.slice(start);
     expect(localBranch.slice(0, 400), '★★ 桌面端头像仍跳 /login（就是"点了被弹回"的死按钮）')
       .not.toMatch(/'\/login'/);
-    // 路由侧仍然声明桌面端无登录概念 —— UI 必须与它一致
-    expect(ROUTER, '★ 路由未声明"桌面端无登录概念"（前提变了，需重新评估）')
-      .toMatch(/isElectron && to\.path === '\/login'/);
+    // 2026-11-01 起本机端可进入 /login 配置远程 multi 后端；路由不得把 /login 当成未授权死路。
+    expect(ROUTER, '★ 路由重新把 /login 当成受保护页面（本机端将无法连接远程后端）')
+      .toContain("to.path !== '/login'");
   });
 
   it('★ Web/移动端保留登录入口（未来接用户体系要用）', () => {

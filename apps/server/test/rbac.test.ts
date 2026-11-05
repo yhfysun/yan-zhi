@@ -141,7 +141,9 @@ describe('③ 锚点：鉴权收口顺序与权限门', () => {
     const guestIdx = body.indexOf("getAuthMode() === 'guest'");
     const bearerIdx = body.indexOf('verifyBearer(req)');
     const loopbackIdx = body.indexOf('isLoopback(req)');
-    const unauthIdx = body.indexOf("code: 'UNAUTHENTICATED'");
+    // 前面还有“带无效 query token”分支也会返回 UNAUTHENTICATED；
+    // 这里要锚定的是**最后一个**远程未登录 401，不是那个早退分支。
+    const unauthIdx = body.lastIndexOf("code: 'UNAUTHENTICATED'");
     expect(guestIdx, 'guest 模式分支必须最先（本机桌面行为不变）').toBeGreaterThan(-1);
     expect(bearerIdx, 'multi 下 token 解析先于回环（否则主机进不了管理页）').toBeGreaterThan(-1);
     expect(loopbackIdx, '无 token 回环落 guest').toBeGreaterThan(-1);

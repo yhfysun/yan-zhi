@@ -100,7 +100,7 @@ describe('POOL_SLOTS / POOL_LABELS · 元数据唯一实现', () => {
   it('★ 候选池视图都从 utils/model-pools 取 POOL_LABELS，不得再有本地副本', () => {
     for (const f of [
       'views/Settings.vue', 'views/Agents.vue',
-      'components/AgentEditDialog.vue',
+      'components/AgentEditForm.vue',
     ]) {
       const src = read(f);
       expect(src, `${f} 未从 utils/model-pools 导入 POOL_LABELS`).toMatch(
@@ -195,7 +195,7 @@ describe('候选池数据源 · 必须独立于 platformStore.models', () => {
     for (const f of [
       'views/Settings.vue',
       'views/Agents.vue',
-      'components/AgentEditDialog.vue',
+      'components/AgentEditForm.vue',
     ]) {
       const src = read(f);
       expect(src, `${f} 未使用 poolModelsOf 兜底数据源`).toMatch(/poolModelsOf\s*\(/);
@@ -263,7 +263,7 @@ describe('渲染接线 · 设置页排版与候选池入口', () => {
   });
 
   it('★ 智能体编辑：placeholder 里「候选」只出现一次（不得「视觉候选 候选」）', () => {
-    const src = read('components/AgentEditDialog.vue');
+    const src = read('components/AgentEditForm.vue');
     // 精确截出 placeholder 那一行（锚点必须带 POOL_LABELS，别用整文件 toMatch —— 注释里也有「候选」）
     const line = src.split('\n').find((l) => l.includes('placeholder=') && l.includes('POOL_LABELS[slot]'));
     expect(line, '未找到候选池 placeholder 行').toBeTruthy();

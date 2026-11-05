@@ -172,7 +172,7 @@ describe('后端收口 · 列表 SQL 与任务入口', () => {
 // ═══ 2026-10-16 缺陷修复回归（H1 内存收口 / H2 restore / M1 只读 / M4 活动时间 / 空间批量归档）═══
 describe('缺陷修复回归 · 2026-10-16 第二轮', () => {
   const CLIP_ROUTES = strip(readRepo('apps/server/src/routes/clip.ts'));
-  const WORKSPACE_FILES = strip(readRepo('apps/server/src/routes/workspace-files.ts'));
+  const ALLOWED_ROOTS = strip(readRepo('apps/server/src/services/allowed-roots.ts'));
   const LIFECYCLE_SVC = strip(readRepo('apps/server/src/services/conversation-lifecycle.ts'));
   const FILES_ROUTES = strip(readRepo('apps/server/src/routes/files.ts'));
 
@@ -208,7 +208,7 @@ describe('缺陷修复回归 · 2026-10-16 第二轮', () => {
   it('H3：clip.ts 列表与 conversationExists 排除回收站+归档（业界：归档从一切列表消失）', () => {
     expect(CLIP_ROUTES).toMatch(/conversationExists/);
     expect(CLIP_ROUTES).toMatch(/deleted_at IS NULL AND archived_at IS NULL/);
-    expect(WORKSPACE_FILES).toMatch(/WHERE user_id = \? AND deleted_at IS NULL/);
+    expect(ALLOWED_ROOTS).toMatch(/WHERE user_id = \? AND deleted_at IS NULL/);
   });
 
   it('M4：本地 addMessage / pushMessageOptimistic 都更新 last_activity_at', () => {

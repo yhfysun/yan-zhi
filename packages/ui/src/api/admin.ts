@@ -1,4 +1,4 @@
-// 管理后台 API（/api/admin/**）：用户 / 组织 / 角色 / 权限
+// 管理后台 API（/api/admin 下）：用户 / 组织 / 角色 / 权限
 // 仅 multi 模式 + admin 权限点可调；路由守卫已挡住无权用户进入管理页。
 import { api } from './client';
 

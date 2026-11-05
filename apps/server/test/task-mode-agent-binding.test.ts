@@ -167,14 +167,14 @@ describe('② 任务类型 → skill：必须真实存在，且挂到了智能�
   it('★★ 新建 skill 的 body 里不得出现反引号（模板串会被截断）', () => {
     // body 是反引号模板串；正文里再写反引号会提前结束字符串 —— 项目铁律
     const start = DB.indexOf("id: 'skill_novel_rewrite'");
-    const end = DB.indexOf('// 批量 upsert 内置 skill');
+    const end = DB.indexOf('\n];', start);
     const seg = DB.slice(start, end);
     // ★ body 后面可能跟一行 filesJson（正文下沉 references 的 skill），切分时要一并吃掉：
     //   不匹配的话会把下一条 body 的起始反引号圈进 inner，误报「body 含反引号」。
-    const bodies = seg.match(/body: `([\s\S]*?)`,\n(?:\s*filesJson:[^\n]*\n)?\s*\},/g) || [];
+    const bodies = seg.match(/body: `([\s\S]*?)`,\s*\n\s*(?:filesJson:[\s\S]*?\n\s*)?\},/g) || [];
     expect(bodies.length, '★ 没抓到 skill body（切分逻辑要复核）').toBeGreaterThanOrEqual(4);
     for (const b of bodies) {
-      const inner = b.replace(/^body: `/, '').replace(/`,\n(?:\s*filesJson:[^\n]*\n)?\s*\},$/, '');
+      const inner = b.match(/^body: `([\s\S]*?)`,\s*\n/)?.[1] || '';
       expect(inner.includes('`'), '★★ body 内含反引号（模板串会被截断成语法错误）').toBe(false);
     }
   });

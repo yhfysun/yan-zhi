@@ -480,7 +480,7 @@ router.beforeEach(async (to) => {
       return { path: '/chat' };
     }
   }
-  // 管理页（/admin/**）与 meta.requiresAdmin 路由：仅拥有 admin 权限点的用户可进
+  // 管理页（/admin 下）与 meta.requiresAdmin 路由：仅拥有 admin 权限点的用户可进
   if (to.meta.requiresAdmin) {
     if (!authStore.isLoggedIn || !authStore.hasPermission('admin')) {
       return { path: '/chat' };

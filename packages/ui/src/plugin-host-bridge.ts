@@ -2,7 +2,7 @@
  * 插件宿主桥（前端）—— 插件前端 bundle 取用宿主共享依赖与受控 API 的唯一入口。
  *
  * 原理：宿主在应用启动早期挂 `window.__YZ_HOST__`；插件前端 bundle 构建时（build-plugins.mjs）
- * 把 vue / vue-router / pinia / element-plus / icons 的 import 改写到 yz://shared/*.mjs 静态 shim，
+ * 把 vue / vue-router / pinia / element-plus / icons 的 import 改写到 yz://shared 下的静态 shim，
  * shim 再委托回这里的命名空间 —— 共享依赖全程单实例，插件包零复制。
  *
  * ★ 白名单纪律：api 面即插件的渲染层权限面。新增导出必须同步：

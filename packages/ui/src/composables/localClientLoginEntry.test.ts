@@ -51,8 +51,8 @@ describe('本机单机端判定：必须覆盖桌面 + 移动两端', () => {
   });
 
   it('★★ loadUser 必须按 isLocalClient 取 guest token（而不是只认 isElectron）', () => {
-    const fn = AUTH.slice(AUTH.indexOf('async function loadUser'));
-    const body = fn.slice(0, fn.indexOf('async function login'));
+    const fn = AUTH.slice(AUTH.indexOf('function loadUser('));
+    const body = fn.slice(0, fn.indexOf('async function login('));
     expect(body, '★★ loadUser 仍只对桌面端取 guest（移动端 user 恒 null → 渲染登录入口）')
       .toMatch(/if \(isLocalClient\)/);
     expect(body, '★ 未再直接以 isElectron 判定身份来源').not.toMatch(/if \(isElectron\)/);
@@ -73,9 +73,10 @@ describe('三处身份区：本机单机端不得渲染「登录入口」', () =
       APP.indexOf('v-else-if="isLocalClient"'),
       APP.indexOf('<button v-else class="mobile-user-avatar"'),
     );
-    expect(localBranch, '★★ 本机身份分支仍指向 /login（死入口）').not.toMatch(/\/login/);
-    expect(localBranch, '★ 本机身份分支显示了 guest（内部数据归属身份，不该暴露）')
-      .not.toMatch(/authStore\.user/);
+    expect(localBranch, '★★ 本机身份分支缺少「登录 / 切换账号」入口（连接远程 multi 后端时无法切换）')
+      .toMatch(/登录 \/ 切换账号/);
+    expect(localBranch, '★ 本机身份分支直接显示了 guest（内部数据归属身份，不该暴露）')
+      .not.toMatch(/'guest'|>\s*guest\s*</);
   });
 
   it('★★ ChatTopbar：移动端登录链接必须排除本机单机端', () => {

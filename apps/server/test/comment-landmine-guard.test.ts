@@ -19,6 +19,7 @@ const ROOTS = [
   resolve(__dirname, '..', 'src'),
   resolve(__dirname, '..', '..', '..', 'packages', 'shared', 'src'),
   resolve(__dirname, '..', '..', '..', 'packages', 'core', 'src'),
+  resolve(__dirname, '..', '..', '..', 'packages', 'ui', 'src'),
 ];
 
 // 用字符串拼出两个两字符序列与引号码点，避免在本文件里书写这些序列
@@ -94,6 +95,7 @@ describe('注释地雷守门：行注释里不得出现块注释起始序列', (
     const offenders: string[] = [];
     for (const root of ROOTS) {
       for (const f of walk(root)) {
+        if (/[\\/]packages[\\/]ui[\\/]src[\\/].+\.test\.ts$/.test(f)) continue;
         const clean = stripStringsAndBlocks(readFileSync(f, 'utf8'));
         clean.split('\n').forEach((l, i) => {
           if (LANDMINE.test(l)) offenders.push(f + ':' + (i + 1) + '  ' + l.trim().slice(0, 80));
