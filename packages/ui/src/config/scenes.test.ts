@@ -110,6 +110,7 @@ describe('场景目录完整性', () => {
     // 硬约束：不承诺数据 + 合规
     expect(s?.prompt).toContain('不承诺');
     expect(s?.skillKeywords).toContain('抖音');
+    expect(s?.examples[0]).toBe('开始今天的抖音运营');
   });
 
   it('所有场景 agentId 指向既有智能体（不新建未登记 id）', () => {

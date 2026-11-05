@@ -6,8 +6,7 @@
  *      发布队列 dispatch 指令三处都按 id 硬引用 a_builtin_publish_agent——
  *      id 改一个字，三处全部指向不存在的智能体（call_agent 会报"不存在或不可用"）。
  *   2) force_sync 必须为 true —— 内置定义以代码为准，改了提示词旧库必须拿到新版。
- *   3) 挂载的 skill（skill_novel_tuiwen）必须真实存在——配方库挂空 = 执行员两手空空，
- *      退化为又一个"从零摸索平台页面"的通用 agent（正是本拆分要消灭的形态）。
+ *   3) 挂载的 PageAsset 编排 skill 必须真实存在——skill 挂空 = 执行员不知道先解析资产。
  *   4) 工具面收口：浏览器全家桶必须有（upload/fill_form 是发布刚需），
  *      本地执行面（python/js/cmd）必须没有——执行员是"手"不是"脑"。
  *   5) 业务红线必须写死在提示词：真实键盘输入、browser_upload only、3 次重试上限、
@@ -33,8 +32,6 @@ const KNOWN_SKILL_IDS = new Set([
   'skill_translation_workflow', 'skill_business_ops',
   'skill_douyin_sell', 'skill_douyin_traffic',
   'skill_social_content_publish',
-  // ★ 发布执行员的配方库（平台页面实测配方全在它的 references/pages/ 下）
-  'skill_novel_tuiwen',
 ]);
 
 /** 已注册的内置工具名（core registerBuiltInTools + api-tool-executor 的 SUPPORTED_API_TOOLS） */
@@ -127,10 +124,11 @@ describe('发布执行员 · 工具面收口', () => {
     expect(unknown).toEqual([]);
   });
 
-  it('★ 发布刚需工具齐全：upload / fill_form / run_script / 配方 / 截图兜底', () => {
-    for (const t of ['browser_upload', 'browser_fill_form', 'browser_run_script', 'browser_run_recipe', 'browser_screenshot', 'image_analyze']) {
+  it('★ PageAsset 发布刚需工具齐全，且不再暴露旧发布配方入口', () => {
+    for (const t of ['browser_run_page_operation', 'browser_upload', 'browser_fill_form', 'browser_run_script', 'browser_screenshot', 'image_analyze']) {
       expect(PUBLISH_AGENT_BUILTIN_TOOLS, `缺 ${t}`).toContain(t);
     }
+    expect(PUBLISH_AGENT_BUILTIN_TOOLS).not.toContain('browser_run_recipe');
   });
 
   it('★ 本地执行面收窄：不挂 python/js/cmd（执行员是"手"不是"脑"）', () => {
@@ -149,16 +147,19 @@ describe('发布执行员 · 工具面收口', () => {
     }
   });
 
-  it('配方库 skill 真实存在（挂空 = 两手空空摸平台）', () => {
+  it('PageAsset 编排 skill 真实存在（挂空 = 不知道先解析资产）', () => {
     const unknown = PUBLISH_AGENT_SKILL_IDS.filter((s) => !KNOWN_SKILL_IDS.has(s));
     expect(unknown).toEqual([]);
-    expect(PUBLISH_AGENT_SKILL_IDS).toContain('skill_novel_tuiwen');
+    expect(PUBLISH_AGENT_SKILL_IDS).toEqual(['skill_social_content_publish']);
   });
 });
 
 describe('发布执行员 · 提示词红线', () => {
-  it('上传只用 browser_upload，禁自造替代通道', () => {
-    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('browser_upload');
+  it('已登记平台只用 PageAsset operation，未登记平台才允许 browser_upload', () => {
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('browser_run_page_operation');
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('submit-current');
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('禁止用 `browser_run_recipe`');
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('未登记平台才允许 browser_upload');
     expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('file://');
   });
 
@@ -180,9 +181,10 @@ describe('发布执行员 · 提示词红线', () => {
     expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('不做指令外');
   });
 
-  it('先读配方再动手（references/pages/ 配方库用法）', () => {
-    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('references/pages');
-    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('实抓复核');
+  it('发布动作先解析 PageAsset，旧配方不再是发布入口', () => {
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('api_page_asset_resolve');
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).toContain('active 资产');
+    expect(PUBLISH_AGENT_SYSTEM_PROMPT).not.toContain('一律先走 browser_run_recipe');
   });
 
   it('预览面板收起假死的判断（页面假死头号根因，别误判站点故障）', () => {

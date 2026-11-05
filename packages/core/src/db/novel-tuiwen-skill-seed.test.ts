@@ -57,10 +57,10 @@ describe('novel-tuiwen skill 种子（本轮补充的配方）', () => {
     expect(all).toContain('#content.chapter p');
     expect(all).toContain('catalogue__item-text');
   });
-  it('★ 评论区配方（Draft.js 关键发现）在', () => {
-    expect(all).toContain('Draft.js');
-    expect(all).toContain('public-DraftEditor-content');
-    expect(all).toContain('comment/list');
+  it('★ 评论走 PageAsset，旧配方和 DOM 锚点不进入 Skill', () => {
+    expect(all).toContain('social.douyin.creator / post-comment');
+    expect(all).toContain('cid');
+    expect(all).not.toContain('browser_run_recipe');
   });
   it('★ 评论只发不置顶：Web 端无置顶入口的事实写在正文（2026-10-14 穷尽验证）', () => {
     // 2026-10-14 实跑：评论能发出（创作者后台互动评论页），但置顶在 Web 端无入口

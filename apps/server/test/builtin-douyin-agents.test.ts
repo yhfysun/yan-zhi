@@ -162,6 +162,12 @@ describe('抖音运营助手 · 提示词覆盖与业务红线', () => {
     expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('一次问全');
   });
 
+  it('★ 今日默认任务可用一句话启动，不要求用户输入内部流程', () => {
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('开始今天的抖音运营');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('今日整套流程');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('不要要求用户再写长提示词');
+  });
+
   it('★ 红线一：不承诺涨粉/收益数据', () => {
     expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('不承诺');
     expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('保证涨粉');
@@ -178,6 +184,14 @@ describe('抖音运营助手 · 提示词覆盖与业务红线', () => {
     expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('没要求发布就只交付');
     // 2026-10-24 用户拍板：明确要求发布即代发，不再说「不代发布」
     expect(DOUYIN_AGENT_SYSTEM_PROMPT).not.toContain('不代发布');
+  });
+
+  it('★ 发布链路使用 PageAsset operation，不再回退旧发布配方', () => {
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('browser_run_page_operation');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('api_page_asset_resolve');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).toContain('submit-current');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).not.toContain('browser_run_recipe {');
+    expect(DOUYIN_AGENT_SYSTEM_PROMPT).not.toContain('browser_run_recipe「');
   });
 
   it('★ 只问一次 + 只允许三种停（2026-10-24 用户反馈「动不动就停下来问」）', () => {

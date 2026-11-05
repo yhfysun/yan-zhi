@@ -79,22 +79,22 @@ description: 小说推文全自动产线：授权平台选书→过滤打分→�
    ★ **字幕安全区（2026-10-24）**：9:16 字幕已自动上移到 `H*14%`，避开抖音底部账号名/进度条；不要再把字幕往下压。
    ★ **通用口播模式**：给抖音运营/非小说内容出片时传 `verbatim: true`（按原稿逐段口播，不改写、不加钩子、默认 9:16），同样带配音+字幕+BGM+首帧封面。
 6. **发布**（用户下发发布即授权，不再二次确认）：抖音 / 快手各见其 `publish-video.md`。
-   ★ 工具列表里有 `browser_run_recipe` 时**必须先用配方**，不要手工逐页点
-   （2026-10-23 复盘：手工发一集实测「上传 15 分 / 封面 7.5 分 / 评论 14 分」）：
-   - `douyin-publish-video { videoPath, title, description, collectionName?, submit }` —— 上传 + 填表 + 选合集；
-   - `douyin-set-cover { coverPath }` —— **在同一个已上传页面**设封面（发布配方 submit:false 之后调用，失败就放弃封面直接发布）；
-   - `douyin-post-comment { videoTitle, comment }` —— 发布后发引导评论，一次调用完成「选作品→键入→发送→回读」。
-   `submit` 只在用户明确要求发布时传 true；不需要自定义封面的单集可以一步传 submit:true。
-   ★ 被验证码/滑块拦住（`blockedByVerification`）→ 先 `ask_user` 请用户在浏览器面板完成验证，
-   再带返回的 `resumeStep` 续跑；**不要重跑全流程**（会重新上传/重置表单）。
+   ★ 已登记平台必须走 PageAsset operation；先 `api_page_asset_resolve/get`，再 `browser_run_page_operation`。
+   抖音固定拆成三段，**不要现场拼浏览器步骤**：
+   - `publish-video`（`submit=false`）—— 上传、标题、描述、合集，停在待发布现场；
+   - `set-cover` —— 只在同一已上传页面修改封面，失败可放弃，绝不重跑发布；
+   - `submit-current` —— **只点当前页「发布」并核验**，不导航、不上传、不改字段。
+   发布后调用同资产 `post-comment`，一次完成「选作品→键入→发送→回读」。
+   ★ 被验证码/滑块拦住 → 请用户在浏览器面板完成验证，然后**先只读核验当前现场**；
+   已经点过发布时绝不再次点击，也不得重跑 `publish-video`。
    ★★ **系列任务（≥2 集 / 用户说"系列、连着、合集"）：第一集发布前就要把合集建好并勾选** ——
    发布页「添加到合集」→ 首次弹「创建新合集」（名称=**别名**，≤20 字；有 1:1 封面就一起传 1080×1080 ≤5MB）→
    选中后发第一集。**禁止先发完再回头补归集**：第 1 集不在合集里，主页「第N集」从开头就断，后续要逐条补；
    合集创建要审核 1–3 小时，提前建好后续集直接勾选。**只有单集一次性任务才可不建**。
-   ⚠️ 配方传了 `collectionName` 却没选中合集时会**停在发布前** —— 按回执在页面上手动建/选合集后直接点「发布」，
-   **不要重跑配方**（会重新上传并重置表单）。
-7. **引导评论**：抖音发布后发引导评论 → 优先 `browser_run_recipe douyin-post-comment { videoTitle, comment }`；
-   手工兜底步骤见 `pages/douyin/comment/post-comment.md`（锚点以 2026-10-15 实抓为准）。
+   ⚠️ `publish-video` 传了 `collectionName` 却没选中合集时会**停在发布前** —— 在页面上建/选合集后调用
+   `submit-current`，**不要重跑 `publish-video`**（会重新上传并重置表单）。
+7. **引导评论**：抖音发布后调用 `social.douyin.creator / post-comment`；
+   页面锚点与核验口径见 `pages/douyin/comment/post-comment.md`。
 8. **回填发文**：番茄达人中心别名管理 → `backfill.md` —— **不回填不结算**
 9. **回报**：选书理由 + 成片路径 + 发布/回填状态
 

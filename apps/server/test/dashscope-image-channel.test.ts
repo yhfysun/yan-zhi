@@ -143,8 +143,8 @@ describe('抖音 skill 写入配图生成步骤（默认模型落地）', () => 
     expect(DB).toMatch(/画中文字必糊/);
   });
 
-  it('★★ skill_douyin_traffic 的逐镜脚本含补位画面生成指引', () => {
-    expect(DB).toMatch(/生成补位画面（api_image_generate）/);
+  it('★★ skill_douyin_traffic 的逐镜脚本含补底图指引', () => {
+    expect(DB).toContain('api_image_generate 补底图');
   });
 
   it('★ 两个抖音 skill 仍在 SKILL_BODY_REFRESH_IDS 白名单（老库才会刷新到新版 body）', () => {

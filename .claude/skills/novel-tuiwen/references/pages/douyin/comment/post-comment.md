@@ -1,17 +1,21 @@
 # post-comment — 发一条引导评论
 
-## 首选：一行配方（2026-10-23 起）
+## 首选：PageAsset operation
 
 ```text
-browser_run_recipe {
-  recipe: 'douyin-post-comment',
-  params: { videoTitle: '<作品标题片段>', comment: '打开番茄小说搜「别名」可直达本书 👉' }
+browser_run_page_operation {
+  assetId: 'social.douyin.creator',
+  operationId: 'post-comment',
+  params: {
+    videoTitle: '<作品标题片段>',
+    comment: '打开番茄小说搜「别名」可直达本书 👉'
+  }
 }
 ```
 
 一次调用完成：打开互动评论页 → 选中作品 → 真实键盘键入 → 点发送 → 回读评论文案。
 **不要自己找输入框**：此前手工操作实测一条评论 14 分钟，原因是提示词里的旧锚点已失效，
-模型先在旧选择器上撞墙再重试。配方失败会返回卡在哪一步，按提示处理或如实报告，**不要换脚本反复重填**。
+模型先在旧选择器上撞墙再重试。operation 失败会返回卡在哪一步，按提示处理或如实报告，**不要换脚本反复重填**。
 
 ## 页面锚点（**2026-10-15 实抓更正**）
 
@@ -28,7 +32,7 @@ browser_run_recipe {
 2. 选中目标作品
 3. 在输入框**真实键盘键入**评论文案（Draft.js contenteditable —— **JS 设 innerText 不生效**）
 4. 点「发送」
-5. 核验：页内 fetch `comment/list` 接口，`total ≥ 1`
+5. 核验：评论已在页面出现；优先从现有评论列表证据回读 `total ≥ 1` 和 `cid`
 
 ## ⚠️ 评论置顶 Web 端做不到（2026-10-14 穷尽验证，别再找）
 

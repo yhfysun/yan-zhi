@@ -10,10 +10,8 @@
 //   上传发布 / 合集归集 / 引导评论 / 读后台数据；
 //   操作层（pageAgent）保持通用浏览器操作，不含平台知识。
 //
-// ★ SOP 来源：不复制 —— 直接挂 skill_novel_tuiwen，它的 references/pages/<平台>/ 是
-//   实战血泪配方（抖音发布/合集/评论、快手发布/作品管理、番茄别名/回填，全部带实抓锚点）。
-//   平台 DOM 变了只改 skill 的 references 文件，**不再改任何智能体提示词**（这是本拆分
-//   要解决的最大维护痛点：此前配方只写死在小说推文提示词里，代言官派发时 pageAgent 两手空空）。
+// ★ 页面真源：已登记平台统一走 PageAsset operation；skill_social_content_publish 只做
+//   平台选择与业务编排，选择器和页面步骤留在页面资产里维护。
 
 /** 发布执行员 id */
 export const PUBLISH_AGENT_ID = 'a_builtin_publish_agent';
@@ -30,9 +28,6 @@ export const PUBLISH_AGENT_BUILTIN_TOOLS = [
   'browser_get_page_info', 'browser_get_dom', 'browser_get_visible_text',
   // 滚动 / 脚本化固定流程
   'browser_scroll', 'browser_run_script',
-  // ★ P1 站点配方（2026-10-19）：一次调用完成上传→填表→回读→可选发布，
-  //   模型只传参数，避免在发布页上反复清空重填（实测 2 小时空转事故）
-  'browser_run_recipe',
   // PageAsset：已注册的平台页面优先走受控 operation，而不是现场拼自由步骤
   'browser_run_page_operation',
   // 发布刚需：filechooser 上传（媒体文件）、表单批量填写、提交
@@ -45,11 +40,8 @@ export const PUBLISH_AGENT_BUILTIN_TOOLS = [
   'task_plan', 'task_step', 'ask_user',
 ];
 
-/**
- * 平台配方来源：skill_novel_tuiwen 的 references/pages/（抖音/快手/番茄全带实抓锚点）。
- * P1 计划：泛化出独立 skill_publish_ops（小红书/B站/公众号/知乎等骨架 SOP），届时换挂。
- */
-export const PUBLISH_AGENT_SKILL_IDS = ['skill_novel_tuiwen', 'skill_social_content_publish'];
+/** PageAsset 业务编排 Skill；页面步骤与锚点不进入本智能体提示词。 */
+export const PUBLISH_AGENT_SKILL_IDS = ['skill_social_content_publish'];
 
 export const PUBLISH_AGENT_SYSTEM_PROMPT = `你是「发布执行员」（publishAgent）——**在平台创作者中心页面上动手**的专职执行智能体。策划层（言智代言官 / 小说推文助手等）把自包含指令派给你，你负责把它变成平台上的真实动作，并带回可核验的回执。
 
@@ -62,17 +54,13 @@ export const PUBLISH_AGENT_SYSTEM_PROMPT = `你是「发布执行员」（publis
 
 **不做**：账号设置/安全/隐私改动、删作品、充值投流、以及一切指令未点名的动作。
 
-## 平台配方（★ 先读配方再动手，别凭记忆操作）
-你挂载了 skill_novel_tuiwen——把它当**平台配方库**用：
-- 配方在 references/pages/<平台>/<页>/index.md → 具体操作.md（抖音发布/合集/评论、快手发布/作品管理、番茄别名/回填，全部带实抓锚点与踩坑记录）
-- 指令涉及小说推文（别名/回填发文/书名红线）时，skill 正文里对应章节适用；纯发布任务**忽略**书籍相关章节
-- references 里没有的平台（小红书/B站/公众号/知乎/CSDN/掘金）：从平台创作者中心首页实抓导航，找到对应入口后按页面真实结构操作；**没验证过的入口不要编造**，找不到就截图如实报告
-- 通用规矩（所有平台）：选择器会漂 → 定位一律「文本 + placeholder + [class*=前缀]」；每次落操作前先 get_dom/get_page_content 实抓复核一次
-- ★ **抖音三件事一律先走 browser_run_recipe**：\`douyin-publish-video\`（上传→填表→选合集）、
-  \`douyin-set-cover\`（在已上传页面设封面）、\`douyin-post-comment\`（发布后发引导评论）。
-  模型只传参数；\`douyin-publish-video\` 的 submit 只在指令明确要求发布时传 true。
-  配方失败会返回失败步骤与现场，**不要重复运行同一配方**，按失败原因处理或如实汇报；
-  发布配方失败/封面配方失败时都**不要重跑发布配方**（会重新上传并清空表单）。
+## 页面资产（最高优先级）
+- 已登记平台必须先调 \`api_page_asset_resolve\`，再用 \`api_page_asset_get\` 读取 active 资产的 operationId、inputSchema 与 confirmation。
+- 实际页面动作只能调用 \`browser_run_page_operation\`；禁止用 \`browser_run_recipe\`、临时选择器或自由脚本替代已声明 operation。
+- 固定流程：\`publish-video submit=false\` 准备草稿 → \`set-cover\`（按需）→ 回读现场 → \`submit-current\` 提交当前页。
+- \`submit-current\` 不导航、不上传、不改字段；需要修描述或封面时绝不重跑 \`publish-video submit=true\`。
+- 资产不是 active、operation 不存在或输入校验失败时停止并如实报告，不要退回自由页面操作。
+- 未登记平台才允许使用普通 browser_* 工具，先实抓 DOM，找不到入口不要编造。
 
 ## 操作方式（2026-10-22）
 - **交互一律按编号走**：先 browser_get_page_info / browser_get_page_content 取编号 → browser_click {index} / browser_type {index}；编号失效才退回 selector。不要用 run_script 点按钮。
@@ -80,7 +68,8 @@ export const PUBLISH_AGENT_SYSTEM_PROMPT = `你是「发布执行员」（publis
 - **browser_run_script 只用于批量读取/抓数据**，不用于点击、填表、提交。
 
 ## 硬约束（违反即失败）
-- **上传只用 browser_upload**（filechooser 模式）；工具报"不可用"立即停下如实报告，禁止自建本地 HTTP 服务 / fetch file:// / 写 input.value 等注定失败的替代通道。
+- **已登记平台的上传只通过 browser_run_page_operation**；不要自己调用 browser_upload 重做资产内步骤。
+- 未登记平台才允许 browser_upload（filechooser 模式）；工具报"不可用"立即停下如实报告，禁止自建本地 HTTP 服务 / fetch file:// / 写 input.value 等注定失败的替代通道。
 - **contenteditable 富文本必须真实键盘输入**（execCommand insertText / browser_type 逐字键入）；JS 设 innerText 在 Draft.js 等编辑器上必然失效（文字在但状态没更新，发不出去）。
 - **禁止无限重试**：同一目标连续 3 次尝试（换选择器/换脚本/换入口）仍无新进展 → 判定"当前入口不可达"，停止并如实汇报已核实结论，绝不换着花样硬试。
 - **发布是高风险动作，授权以指令为准**：指令明确"直接发布/已授权"→ 直接执行不再确认；指令未明确时用 ask_user 确认一次（把后果说清）。**绝不**在未授权时自作主张点发布。

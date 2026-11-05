@@ -3,58 +3,58 @@
 > 站点：`creator.douyin.com` ｜ 上传页：`/creator-micro/content/upload`
 > 依据：2026-10-14 ~ 10-19 多集实战（含 10-19 描述框反复清空事故）
 
-## 首选：一行配方（2026-10-19 起）
+## 首选：PageAsset operation
 
-工具列表里有 `browser_run_recipe` 时，**优先用它**，不要自己逐页操作：
+已登记平台只走页面资产，不要自己逐页操作，也不要调用旧配方：
 
 ```text
-browser_run_recipe {
-  recipe: 'douyin-publish-video',
+browser_run_page_operation {
+  assetId: 'social.douyin.creator',
+  operationId: 'publish-video',
   params: {
-    videoPath: '<成片绝对路径>',
+    mediaPaths: ['<成片绝对路径>'],
     title: '<标题>',
-    description: '<描述正文>',
+    body: '<描述正文>',
     collectionName: '<合集名，可选>',
-    submit: true   // 只有用户明确要求发布时才传；默认 false 只上传+填表
+    submit: false
   }
 }
 ```
 
-- 配方内部完成：导航 → filechooser 上传 → 等转码 → 一次填表（幂等）→ 可选选合集 → 可选点发布 → 验证成功。
-- 返回 `readyToSubmit:true`（submit=false 跑完）时：用户确认后**直接 `browser_click` 页面上的「发布」**；
-  **不要重新运行配方** —— 会重新上传视频并重置表单。
-- 返回 `blockedByVerification:true`（滑块/验证码）时，按**验证交接**处理：
+- 该 operation 内部完成：导航 → filechooser 上传 → 等转码 → 一次填表 → 可选选合集，停在待发布现场。
+- 返回 `readyToSubmit:true` 后，先回读标题、描述、换行、话题和合集。
+- 返回被滑块/验证码拦住时，按**验证交接**处理：
   1. 立即 `ask_user`：「请在浏览器面板完成滑块/验证码，完成后回复继续」；
-  2. 用户确认后，再次调用 `browser_run_recipe`，**params 保持不变**，并加上返回的 `resumeStep`；
-  3. 续跑只执行验证之后的步骤（发布已点过就只等结果），**不会重新上传/填表/重复点发布**；
-  4. 若续跑仍返回 `blockedByVerification`，说明验证还没完成，再次请用户处理，不要换脚本硬试。
-- 返回失败步骤与页面现场时：**不要重复运行同一配方**。先按失败原因处理（补登录 / 等上传完成 / 换参数），仍不行就向用户报告。
-- 配方不可用或站点改版时，才走下面的手动步骤。
+  2. 用户确认后先只读核验页面现场；若发布尚未点击，再执行 `submit-current`；
+  3. 若发布已经点击，只核验结果，**绝不再次点击或重跑上传**。
+- operation 失败时**不要重复运行同一 operation**。先按失败原因处理（补登录 / 等上传完成 / 换参数），仍不行就向用户报告。
+- PageAsset 不可用或状态不是 active 时停止，不退回旧配方或自由脚本。
 
-## 封面 + 发布：三步调用（2026-10-23 起）
+## 封面 + 提交：三步调用
 
-手工逐页点实测「上传 15 分 / 封面 7.5 分」，现在固定为三次调用，不要自己找封面弹窗：
+固定为三次调用，不要自己找封面弹窗，也不要重新上传：
 
 ```text
-① browser_run_recipe { recipe:'douyin-publish-video', params:{ videoPath, title, description, collectionName?, submit:false } }
-② 有封面图时：browser_run_recipe { recipe:'douyin-set-cover', params:{ coverPath } }
-③ browser_click 页面上的「发布」   // 不需要自定义封面时，①直接传 submit:true 一步到底
+① operationId:'publish-video'   params:{ mediaPaths, title, body, collectionName?, submit:false }
+② operationId:'set-cover'       params:{ coverPath }                 // 可选
+③ operationId:'submit-current'  params:{}                            // 只提交当前页
 ```
 
-- `douyin-set-cover` 必须在**同一个已上传页面**调用；失败就放弃封面直接进 ③，
+- `set-cover` 必须在**同一个已上传页面**调用；失败就放弃封面直接进 ③，
   **绝不重跑 ①**（会重新上传并重置表单）。
+- `submit-current` 不导航、不上传、不改字段；它只点当前页的「发布」并观察结果。
 - 封面图规格：4:3 成片用 1080×1440，9:16 用 1080×1920（见 `references/cover-recipes.md`）。
 - 封面弹窗的锚点尚未逐版实抓（2026-10-23 首版配方），首次使用若卡在「选择封面」入口，
   按回执提示放弃封面并如实报告，不要换脚本硬试。
 
 ## 输入参数
 
-- `videoPath`：本地成片 `.mp4`（`novel_tuiwen` 产物）
+- `mediaPaths[0]`：本地成片 `.mp4`（`novel_tuiwen` 产物）
 - `title`：作品标题（≤ 30 字，带别名关键词，**禁书名**）
-- `description`：描述正文（≤ 1000 字，带别名关键词 + 引导语，可含 `#话题`）
+- `body`：描述正文（≤ 1000 字，带别名关键词 + 引导语，可含 `#话题`）
 - `collectionName`：**系列任务（≥2 集 / 同一本书连发）首集必填** —— 第一集发布时就要创建并选中合集；
   单集一次性任务才可留空。**不要先发完再补归集**（第 1 集不进合集 → 主页「第N集」从开头就断）
-- `submit`：是否点「发布」；**默认必须经 `confirm_user` 确认**
+- `submit`：准备阶段固定 false；正式提交改用 `submit-current`
 
 ## 页面锚点（实抓，改版时以 `browser_get_page_content` 复核为准）
 
@@ -94,7 +94,7 @@ https://creator.douyin.com/creator-micro/content/upload
 6. 若返回 `forceStop:true`（同字段连续 2 次未生效）：**立即停止重填**，不要换脚本继续试，
    向用户报告“描述框无法写入”及当前值，由用户决定手填或换方案。
 
-## 步骤（确定性配方）
+## 步骤（PageAsset 确定性执行）
 
 1. `browser_navigate` 上传页（一次到位，别先开空 tab）
 2. `browser_upload` 投递 `videoPath`：
@@ -108,7 +108,7 @@ https://creator.douyin.com/creator-micro/content/upload
    - 页面确认已显示所选合集名，再进下一步；**没选上合集不得点发布**（单集任务除外）
    - 入口整页搜不到 → 按 `collection.md` 四层排查（实名 / 手机号 / 权限申请）；仍不行就**截图报告用户**，
      不要静默跳过合集直接发布
-5. `confirm_user` 确认 → 点底部「发布」
+5. 回读标题、描述、合集与封面 → 调用 `submit-current`
 6. 轮询成功判据（见下）；**严禁再 navigate 回上传页** —— 会重置流程、清空已填内容
 7. 取 `aweme_id` / 作品链接 → 发引导评论（见 `../comment/post-comment.md`）
 
@@ -118,8 +118,7 @@ https://creator.douyin.com/creator-micro/content/upload
 2. 「内容管理」列表出现该作品
 3. 合集已选中时，`/web/api/mix/item/list/` 能查到该 `aweme_id`
 
-> 只读核验优先用页面内 `fetch`（`credentials:'include'`）：`/web/api/mix/list/`、
-> `/web/api/mix/detail/`、`/web/api/mix/item/list/`，比反复读 DOM 稳定。
+> 只读核验优先使用页面已有数据或后台列表，不得为核验而重复导航发布页。
 
 ## 常见坑
 

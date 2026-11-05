@@ -34,7 +34,7 @@ export const BUILTIN_PAGE_ASSETS: PageAssetSpec[] = [
     platform: 'douyin',
     scope: 'public',
     status: 'active',
-    version: 1,
+    version: 2,
     capabilities: [
       PAGE_ASSET_CAPABILITIES.publishVideo,
       PAGE_ASSET_CAPABILITIES.createComment,
@@ -49,6 +49,7 @@ export const BUILTIN_PAGE_ASSETS: PageAssetSpec[] = [
     instructions: [
       '优先执行已声明的 operation，不要在页面里临时重写发布配方。',
       'submit=false 时只做上传和填写，不点击发布。',
+      '需要改封面、修描述或确认合集时，先准备草稿，再用 submit-current 提交当前页；不要用 publish-video submit=true 重跑上传。',
     ],
     operations: [
       {
@@ -71,6 +72,26 @@ export const BUILTIN_PAGE_ASSETS: PageAssetSpec[] = [
           },
         },
         assertions: ['recipe.ok === true', 'submit=false 时 recipe.submitted === false'],
+      },
+      {
+        id: 'submit-current',
+        title: '提交当前草稿',
+        capability: PAGE_ASSET_CAPABILITIES.publishVideo,
+        description: '只点击当前发布页的「发布」并核验结果；不导航、不上传、不修改标题/描述/合集/封面。',
+        confirmation: 'required',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+        outputSchema: COMMON_PUBLISH_OUTPUT,
+        executor: {
+          kind: 'recipe',
+          recipeId: 'douyin-submit-current',
+          paramMap: {
+            submit: true,
+          },
+        },
+        assertions: ['recipe.ok === true', 'recipe.submitted === true'],
       },
       {
         id: 'set-cover',

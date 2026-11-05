@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DOUYIN_PUBLISH_RECIPE,
+  DOUYIN_SUBMIT_CURRENT_RECIPE,
   DOUYIN_POST_COMMENT_RECIPE,
   DOUYIN_SET_COVER_RECIPE,
   DOUYIN_INSERT_TOPICS_RECIPE,
@@ -115,6 +116,14 @@ describe('① 配方注册表', () => {
     expect(r.params.submit.type).toBe('boolean');
   });
 
+  it('抖音当前页提交配方只提交现有草稿，不包含导航/上传/填表', () => {
+    expect(listRecipes()).toContain('douyin-submit-current');
+    expect(getRecipe('douyin-submit-current')).toBe(DOUYIN_SUBMIT_CURRENT_RECIPE);
+    expect(DOUYIN_SUBMIT_CURRENT_RECIPE.steps.some((s) => s.kind === 'navigate')).toBe(false);
+    expect(DOUYIN_SUBMIT_CURRENT_RECIPE.steps.some((s) => s.kind === 'upload')).toBe(false);
+    expect(DOUYIN_SUBMIT_CURRENT_RECIPE.steps.some((s) => s.kind === 'fill')).toBe(false);
+  });
+
   it('填表锚点包含标题与 Draft.js 描述框', () => {
     const fill = DOUYIN_PUBLISH_RECIPE.steps.find((s) => s.kind === 'fill')!;
     const sels = fill.kind === 'fill' ? fill.fields.map((f) => f.selector) : [];
@@ -176,6 +185,20 @@ describe('② 执行流程', () => {
     expect(res.submitted).toBe(true);
     expect(res.verified).toBe(true);
     expect(calls.some((c) => c.action === 'click' && JSON.stringify(c.args).includes('发布'))).toBe(true);
+  });
+
+  it('submit-current：只点击当前页发布并核验，不重传或重置表单', async () => {
+    const { api, calls } = makeApi({
+      pageText: '发布',
+      afterClickText: '发布成功',
+    });
+    const res = await runRecipe(DOUYIN_SUBMIT_CURRENT_RECIPE, { submit: true }, api);
+    expect(res.ok).toBe(true);
+    expect(res.submitted).toBe(true);
+    expect(res.verified).toBe(true);
+    expect(calls.some((c) => c.action === 'navigate')).toBe(false);
+    expect(calls.some((c) => c.action === 'upload')).toBe(false);
+    expect(calls.some((c) => c.action === 'fill_form')).toBe(false);
   });
 
   it('点发布后没有成功判据：不谎报成功（verified=false）', async () => {

@@ -23,16 +23,17 @@ describe('推文智能体 prompt（本轮同步的配方）', () => {
     expect(p).toContain('catalogue__item-text');
     expect(p).toContain('54 秒');
   });
-  it('★ 发布/封面/评论都强制走站点配方（2026-10-23：手工逐页点实测 15/7.5/14 分钟）', () => {
-    expect(p).toContain('douyin-publish-video');
-    expect(p).toContain('douyin-set-cover');
-    expect(p).toContain('douyin-post-comment');
-    expect(p).toContain('绝不重跑 ①');
+  it('★ 发布/封面/评论都强制走 PageAsset operation，不回退旧配方', () => {
+    expect(p).toContain('social.douyin.creator');
+    expect(p).toContain('browser_run_page_operation');
+    expect(p).toContain('publish-video');
+    expect(p).toContain('set-cover');
+    expect(p).toContain('post-comment');
+    expect(p).toContain('禁止退回 browser_run_recipe');
   });
-  it('★ 评论区配方以实抓锚点为准（旧锚点已失效，不得再出现）', () => {
-    expect(p).toContain('Draft.js');
-    expect(p).toContain('input-d24X73');
-    // 2026-10-15 实抓：旧锚点（10-14 版）已失效 —— 留在提示词里会让模型先撞墙再重试
+  it('★ 页面 DOM 锚点不再进入智能体提示词，统一由 PageAsset 维护', () => {
+    expect(p).not.toContain('Draft.js');
+    expect(p).not.toContain('input-d24X73');
     expect(p).not.toContain('comment-input-inner-container');
     expect(p).not.toContain('wchsYBpK');
     expect(p).not.toContain('public-DraftEditor-content');

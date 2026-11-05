@@ -25,4 +25,12 @@ describe('BUILTIN_PAGE_ASSETS', () => {
     expect(kuaishou.operations.find((op) => op.capability === capability)?.executor.recipeId)
       .toBe('kuaishou-publish-video');
   });
+
+  it('keeps Douyin preparation and current-page submission as separate operations', () => {
+    const douyin = BUILTIN_PAGE_ASSETS.find((asset) => asset.platform === 'douyin')!;
+    const submit = douyin.operations.find((op) => op.id === 'submit-current');
+    expect(submit?.executor.recipeId).toBe('douyin-submit-current');
+    expect(submit?.executor.paramMap).toEqual({ submit: true });
+    expect(submit?.inputSchema?.properties).toEqual({});
+  });
 });

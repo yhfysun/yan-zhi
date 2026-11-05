@@ -17,9 +17,13 @@ describe('PageAsset server wiring', () => {
   it('mounts the page asset API and injects skill references at runtime', () => {
     const index = readFileSync(path.join(ROOT, 'src/index.ts'), 'utf-8');
     const manager = readFileSync(path.join(ROOT, 'src/llm-task-manager.ts'), 'utf-8');
+    const database = readFileSync(path.join(ROOT, 'src/db.ts'), 'utf-8');
     expect(index).toContain("app.use('/api/page-assets', pageAssetRoutes)");
     expect(manager).toContain('page_asset_refs_json');
     expect(manager).toContain('browser_run_page_operation');
     expect(manager).toContain('PAGE_ASSET_ALWAYS_API_TOOLS');
+    expect(database).toContain('builtinSkillOwnerId');
+    expect(database).toContain("source = 'builtin', is_public = 0");
+    expect(database).toContain('submit-current');
   });
 });

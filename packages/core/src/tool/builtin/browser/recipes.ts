@@ -718,6 +718,42 @@ export const DOUYIN_PUBLISH_RECIPE: PublishRecipe = {
 };
 
 /**
+ * 抖音当前发布页提交配方（2026-11-05）。
+ *
+ * 背景：publish-video 的 submit=true 会从上传页重新开始，无法安全提交一个已经
+ * 手工修好描述、选好合集或封面的草稿。本配方不导航、不上传、不改字段，只点
+ * 当前页「发布」并观察成功判据。调用方必须在用户已授权发布时使用。
+ */
+export const DOUYIN_SUBMIT_CURRENT_RECIPE: PublishRecipe = {
+  id: 'douyin-submit-current',
+  hosts: ['creator.douyin.com'],
+  description: '只提交当前抖音发布页：不导航、不上传、不改标题/描述/合集/封面，点发布并回读结果',
+  params: {
+    submit: {
+      type: 'boolean',
+      required: true,
+      description: '内部安全开关；PageAsset 固定传 true。仅在用户明确授权发布时调用',
+    },
+  },
+  steps: [
+    {
+      kind: 'clickText',
+      texts: ['发布'],
+      when: 'submit',
+      failHint: '当前页没找到发布按钮：确认仍停在已填写完成的发布页。不要重新上传，也不要重跑 publish-video。',
+    },
+    {
+      kind: 'waitText',
+      texts: ['发布成功', '已提交', '等待审核', '审核中'],
+      when: 'submit',
+      optional: true,
+      timeoutMs: 90000,
+      failHint: '发布按钮已点击但未观察到成功文案：先只读检查内容管理列表，严禁直接再次点击发布或重跑上传配方。',
+    },
+  ],
+};
+
+/**
  * 抖音引导评论配方（2026-10-23，依据 2026-10-15 实抓）
  * 为什么要有：此前评论靠模型现场操作，提示词里的锚点还是 10-14 的失效版本
  * （`.comment-input-inner-container` / `span.wchsYBpK`），实测一条评论花 14 分钟。
@@ -987,6 +1023,7 @@ export const KUAISHOU_PUBLISH_RECIPE: PublishRecipe = {
 
 export const RECIPES: Record<string, PublishRecipe> = {
   [DOUYIN_PUBLISH_RECIPE.id]: DOUYIN_PUBLISH_RECIPE,
+  [DOUYIN_SUBMIT_CURRENT_RECIPE.id]: DOUYIN_SUBMIT_CURRENT_RECIPE,
   [DOUYIN_POST_COMMENT_RECIPE.id]: DOUYIN_POST_COMMENT_RECIPE,
   [DOUYIN_SET_COVER_RECIPE.id]: DOUYIN_SET_COVER_RECIPE,
   [DOUYIN_INSERT_TOPICS_RECIPE.id]: DOUYIN_INSERT_TOPICS_RECIPE,
