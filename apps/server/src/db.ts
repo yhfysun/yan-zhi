@@ -20,7 +20,7 @@ import type { TaskTypeSpec } from '@yan-zhi/shared';
 import { createRequire } from 'node:module';
 import { openSqlite, type YzSqliteDb } from './services/sqlite-driver.js';
 import { createLogger } from './services/logger.js';
-import { DEFAULT_AGENT_PARAMS } from './constants.js';
+import { BROWSER_NAV_STREAK_LIMIT, DEFAULT_AGENT_PARAMS } from './constants.js';
 // 剪映剪辑 skill 的参考文件（由 scripts/sync-jianying-skill-seed.cjs 从 .claude/skills 生成）
 import { JIANYING_SKILL_FILES } from './skills/jianying-editing-files.generated.js';
 const logger = createLogger('db');
@@ -1452,6 +1452,11 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - browser_get_page_info: 元素坐标——与 get_page_content 同样的编号元素，但额外给 x/y/w/h。需要按坐标点击、判断元素是否在视口内/被遮挡/需滚动、或配合 browser_screenshot(annotate=true) 时用它
 - browser_get_dom: 父子层级树——需要看清元素归属、弹窗/portal 挂在哪个容器下时用；只要操作目标时不必调它
 - browser_get_visible_text: 纯正文——只读内容、抽取长文时用，输出最小
+- browser_get_tabs: 查看当前浏览器里的标签页与 tabId；任务收尾或页面卡死时先看有哪些 agent 打开的页
+- browser_new_tab: 新开后台标签页；需要保留当前页、并行读取另一页时用
+- browser_switch_tab: 切换可见标签页；后台流只能按 tabId 读取，不能切走用户正在看的页面
+- browser_close_tab: 关闭自己打开的中间页；只收尾清理时用
+- browser_wait_for: 等待页面加载或等待指定文本出现；页面仍在加载时用它，不要连续 navigate 同一 URL
 - browser_get_api_data: 接口直采——页面自然发生的 XHR/fetch JSON 响应按 URL 模式直取（urlPattern 传 "/api/..." 子串）。列表/搜索/分页取数首选它，比读 DOM 省 token 且拿到的是结构化数据；刚打开的新页先等加载或滚动触发请求后再取，取不到回退 browser_get_page_content
 - browser_scroll: 滚动页面。传 y（正数向下/负数向上，像素，如 y=600）滚动一屏查看视口外内容；传 selector 则把目标元素滚到视野中央。用于查看长列表更多内容、触发懒加载，或让视口外的按钮/元素进入视野后再点击
 - browser_run_script: 代码模式——在页面里执行一段 JS 并返回结果。只用于【批量提取数据 / 循环检查 / 一次脚本内自洽的多步流程】（翻页收集列表、批量提取、触发懒加载）；脚本内可用 document/fetch，返回值必须可 JSON 序列化（超时 30s）。★ 单点交互（找按钮点击、往输入框填字）禁止写脚本穷举选择器——脚本没有防循环计数与元素重定位保护，选择器失效直接抛错；用 browser_click/browser_type，找不到目标先 browser_get_page_content 重新读页定位
@@ -1544,6 +1549,8 @@ PAGE_AGENT_BUILTIN_TOOLS 必须逐项一致——提示词推荐了却没挂 = �
 - 同一工具 + 相同参数连续调用 2 次结果不变 → 立即停止重试，换其他工具或向父智能体返回已有结果。
 - 读页工具连续 3 次无法拿到目标信息 → 停止盲试，直接返回已获取的部分结果并说明缺失原因。
 - PageState 签名判据（硬性）：browser_get_page_content 返回的 PageState 与上一次相同（页面没变）→ 本次操作未生效，**必须换定位方式**（重新分析元素/换 index/换选择器），禁止用同样参数再试。
+- 外部数据取不到时（登录墙、页面无结果、接口 4xx/5xx、第三方站点不可用）：**同一数据口径最多尝试 3 个站点或 3 种工具路径**，仍无结果就立即收口，返回“公开网页不可得”+ 已取得的字段；禁止继续换站、换 URL、换脚本碰运气。
+- 连续调用 browser_navigate ${BROWSER_NAV_STREAK_LIMIT} 次仍没有一次点击/输入/上传或新数据产出 → 停止探索，返回当前结论；需要批量翻页时改用 browser_run_script 在一个脚本里完成，不要用多次 browser_navigate 手工试站。
 - 任务要求提取搜索结果/链接列表时，只用 browser_get_page_content 的输出提取（配合 browser_scroll 翻看视口外内容），不要反复换参数重试。
 - 读页工具分工（按"你需要什么"选，不要为同一页重复调用多个）：
   · browser_get_page_content —— 内容 + 操作目标：标题/正文 + 带编号的可交互元素（含 index、selector、type、name）。找"点哪里、往哪输入"用它，操作后重新观察结果也用它。
@@ -1625,7 +1632,7 @@ const JAVA_AGENT_SYSTEM_PROMPT = `你是 Java 开发助手（javaAgent），负�
 - **项目管理**：检测项目类型（Maven/Gradle/Spring Boot），解析构建文件，依赖分析
 - **构建**：执行 Maven/Gradle 构建命令，查看依赖树，打包部署
 - **Spring Boot**：分析 Bean（Controller/Service/Repository）、API Endpoint、配置文件
-- **调试**：启动调试会话（JDWP），设置断点，单步执行，表达式求值
+- **调试**：使用配置的 JDK + JDK 内置 JDI 连接 JDWP，设置断点、继续、单步，并读取局部变量/this/字段/数组元素
 - **测试**：运行 JUnit/TestNG 测试，查看测试结果
 - **格式化**：google-java-format / spotless 代码格式化
 - **MyBatis**：分析 Mapper XML，SQL 语句提取
@@ -1772,7 +1779,7 @@ const CODE_AGENT_SYSTEM_PROMPT = `你是「代码编写助手」（codeAgent）�
 | 高级程序助手 | a_builtin_backend_dev | 接口契约设计、后端/服务端业务代码编写与自测 |
 | 设计助手 | a_builtin_ui_designer | 页面设计规格：信息架构、组件树、交互态、设计令牌 |
 | 前端助手 | a_builtin_frontend_dev | 按设计规格编写前端页面代码 |
-| Java 开发助手 | a_builtin_java_agent | Java 项目专项：检测/构建（maven/gradle）/Spring Boot 分析/Java 调试（JDWP）/JUnit 测试/代码格式化/MyBatis Mapper |
+| Java 开发助手 | a_builtin_java_agent | Java 项目专项：检测/构建（maven/gradle）/Spring Boot 分析/Java 调试（JDWP + JDK JDI）/JUnit 测试/代码格式化/MyBatis Mapper |
 | 发布助手 | a_builtin_cicd_agent | CI/CD 流水线：检测项目类型→选模板→创建流水线→一键打包部署（JAR/散包/Docker/直接运行，复用运维 SSH 连接） |
 | 浏览器操作助手 | a_builtin_page_agent | 查官方文档、核实框架/库的准确用法与最新版本 |
 
@@ -2330,7 +2337,7 @@ export const seedAgents: Array<Record<string, unknown>> = [
     id: 'a_builtin_java_agent',
     name: 'Java 开发助手',
     description:
-      '内置 Java 工程子智能体：项目检测、Maven/Gradle 构建、Spring Boot 分析（Bean/Endpoint/配置）、Java 调试（JDWP）、JUnit 测试、代码格式化、MyBatis Mapper 分析；由代码编写助手委派',
+      '内置 Java 工程子智能体：项目检测、Maven/Gradle 构建、Spring Boot 分析（Bean/Endpoint/配置）、Java 调试（JDWP + JDK JDI）、JUnit 测试、代码格式化、MyBatis Mapper 分析；由代码编写助手委派',
     type: 'harness',
     is_builtin: 1,
     builtin_tool_ids: JSON.stringify(JAVA_AGENT_BUILTIN_TOOLS),
@@ -5416,6 +5423,24 @@ db.exec(`
 `);
 try { db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_run_user ON workflow_run(user_id, created_at DESC)'); } catch {}
 
+// 工作流产物 ↔ 运行映射：conversation_file 只回答“文件挂在哪”，不能回答“哪次 run 产出了它”。
+// 路由 GET /workflow/runs/:id/artifacts 依赖这张表按 runId 精确回查。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS workflow_run_artifact (
+    run_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    size INTEGER DEFAULT 0,
+    category TEXT NOT NULL DEFAULT 'deliverable',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, file_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_workflow_run_artifact_run ON workflow_run_artifact(run_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_workflow_run_artifact_user ON workflow_run_artifact(user_id, created_at DESC);
+`);
+
 // 工作流反写投递上下文：call_agent 委派的运行在此记录「跑完后往哪个会话反写」。
 // 非空 = 待投递；成功反写后置回 NULL（重启后按此补投，写回失败会保留以便重试）。
 try { db.exec("ALTER TABLE workflow_run ADD COLUMN delivery_json TEXT"); } catch {}
@@ -5455,6 +5480,26 @@ db.exec(`
   );
 `);
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_data_source_user_name ON data_source(user_id, name)'); } catch {}
+
+// 数据编辑审计：预检先落 preflight，真正提交后更新为 applied；失败保留 failed 与错误原因。
+// SQL 文本和绑定参数原样留痕，便于追查误操作；令牌本身只在进程内短期保存，不落库。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS data_edit_audit (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    datasource_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    sql_text TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    affected_rows INTEGER,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    applied_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_data_edit_audit_ds
+    ON data_edit_audit(user_id, datasource_id, created_at DESC);
+`);
 
 // ===== 看板（数据查询 P1）=====
 // 一个看板 = 标题 + 若干 widget；widget 只存「取数契约 + 图表定义 + 位置」，不存行数据，

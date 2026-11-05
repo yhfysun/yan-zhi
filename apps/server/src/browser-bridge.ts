@@ -24,6 +24,7 @@
 //   切档只需重启后端（dev 下 tsx watch 自动），**不需要重启 Electron 主进程**。
 
 import { createLogger } from './services/logger.js';
+import { computePageStateSignature } from '@yan-zhi/core';
 import {
   desktopCapabilityAvailable,
   callDesktopCapability,
@@ -292,7 +293,8 @@ export function formatBridgeResult(action: string, r: any): string {
       if (e.href) s += ` →${String(e.href).slice(0, 80)}`;
       return s;
     }).join('\n');
-    return `URL: ${r.url}\nTitle: ${r.title}\n\n【页面可见文本】\n${r.text || '(空)'}\n\n【可交互元素】(${r.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
+    const pageState = computePageStateSignature(r);
+    return `URL: ${r.url}\nTitle: ${r.title}\nPageState: ${pageState}（页面状态签名；与上次读取相同 = 操作未生效，需换定位方式重新观察）\n\n【页面可见文本】\n${r.text || '(空)'}\n\n【可交互元素】(${r.interactiveCount} 个，编号可直接用于 browser_click/browser_type 的 index 参数)\n${elems}`;
   }
   if (action === 'upload') {
     if (!r.uploaded) return r.error || '文件注入失败';

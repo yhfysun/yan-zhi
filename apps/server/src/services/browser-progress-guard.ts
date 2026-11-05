@@ -1,4 +1,17 @@
 import { FORCE_STOP_MARKER } from './tool-loop-guard.js';
+import { BROWSER_NAV_STREAK_LIMIT } from '../constants.js';
+
+export { BROWSER_NAV_STREAK_LIMIT } from '../constants.js';
+
+/**
+ * 进度守卫的隔离键：浏览器流 + 单次子智能体执行。
+ *
+ * 同步 pageAgent 默认共用 `shared` 流；若只按流键记账，上一个子任务留下的计数会污染
+ * 下一个子任务。parentToolCallId 是每次委派的唯一生命周期 ID，必须一起进键。
+ */
+export function browserProgressGuardKey(flowKey: string, parentToolCallId?: string): string {
+  return parentToolCallId ? `${flowKey}::sub:${parentToolCallId}` : flowKey;
+}
 
 const MUTATING_BROWSER_TOOLS = new Set([
   'browser_navigate',
@@ -7,6 +20,24 @@ const MUTATING_BROWSER_TOOLS = new Set([
   'browser_fill_form',
   'browser_submit_form',
   'browser_upload',
+  'browser_press_key',
+  'browser_select_option',
+  'browser_check',
+  'browser_uncheck',
+  'browser_run_recipe',
+]);
+
+const PROGRESS_BROWSER_TOOLS = new Set([
+  'browser_click',
+  'browser_type',
+  'browser_fill_form',
+  'browser_submit_form',
+  'browser_upload',
+  'browser_press_key',
+  'browser_select_option',
+  'browser_check',
+  'browser_uncheck',
+  'browser_run_recipe',
 ]);
 
 function actionKey(toolName: string, args: unknown): string {
@@ -28,7 +59,25 @@ function looksSuccessful(text: string): boolean {
 }
 
 function pageSignature(text: string): string {
-  return String(text || '').match(/PageState:\s*([^\s（(]+)/)?.[1] || '';
+  const raw = String(text || '');
+  const explicit = raw.match(/PageState:\s*([^\s（(]+)/)?.[1];
+  if (explicit) return explicit;
+
+  // 兼容旧版桌面回执：未显式带 PageState 时，用 URL + 标题 + 编号元素序列
+  // 生成同口径的轻量签名。否则守卫会静默失效（2026-11-03 实报：同一页反复查询，
+  // 日志里只有业务回执，没有进展守卫触发）。
+  const url = raw.match(/^URL:\s*(.+)$/m)?.[1]?.trim() || '';
+  const title = raw.match(/^Title:\s*(.+)$/m)?.[1]?.trim() || '';
+  const count = Number(raw.match(/【可交互元素】\((\d+)\s*个/)?.[1] || 0);
+  const elements = [...raw.matchAll(/^\[(\d+)\]\s+([a-z0-9-]+)/gm)]
+    .map((m) => `${m[1]}:${m[2]}`)
+    .join(',');
+  if (!url && !title && !count && !elements) return '';
+
+  const src = `${url}|${title}|${elements}`;
+  let sig = 5381;
+  for (let i = 0; i < src.length; i++) sig = ((sig << 5) + sig + src.charCodeAt(i)) >>> 0;
+  return `legacy${sig.toString(16)}#${count || elements.split(',').filter(Boolean).length}`;
 }
 
 /**
@@ -40,10 +89,23 @@ export class BrowserProgressGuard {
   private lastAction = '';
   private lastSignature = '';
   private sameActionWithoutProgress = 0;
+  private navigationsWithoutProgress = 0;
 
   noteResult(toolName: string, args: unknown, text: string): string | null {
     if (MUTATING_BROWSER_TOOLS.has(toolName)) {
-      this.pendingAction = looksSuccessful(text) ? actionKey(toolName, args) : '';
+      const successful = looksSuccessful(text);
+      this.pendingAction = successful ? actionKey(toolName, args) : '';
+      if (!successful) return null;
+      if (toolName === 'browser_navigate') {
+        this.navigationsWithoutProgress++;
+        if (this.navigationsWithoutProgress >= BROWSER_NAV_STREAK_LIMIT) {
+          return `${FORCE_STOP_MARKER} 已连续导航 ${this.navigationsWithoutProgress} 次，期间没有任何点击、输入、上传或填表进展。`
+            + '这通常是在不断换站点碰运气，继续 navigate 不会产生新结论。'
+            + '请立即停止导航，直接汇报：已查到什么、哪些数据公开不可得、建议用户下一步怎么做。';
+        }
+      } else if (PROGRESS_BROWSER_TOOLS.has(toolName)) {
+        this.navigationsWithoutProgress = 0;
+      }
       return null;
     }
     if (toolName !== 'browser_get_page_content') return null;

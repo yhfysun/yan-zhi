@@ -104,7 +104,7 @@ import { platformReadableCond } from './services/platform-share.js';
 import { DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from './constants.js';
 import { TaskChunkCoalescer, type TaskChunkEvent } from './services/task-chunk-coalescer.js';
 import { retainReplayEvents } from './services/task-event-buffer.js';
-import { BrowserProgressGuard } from './services/browser-progress-guard.js';
+import { BrowserProgressGuard, browserProgressGuardKey } from './services/browser-progress-guard.js';
 import {
   startWorkflowRun, subscribeWorkflowRun, getWorkflowRun, resolveBundleFromDb,
   markWorkflowDelivered, loadPendingWorkflowDeliveries, type WorkflowDeliveryCtx,
@@ -619,7 +619,8 @@ interface LlmTask {
   /** 流式增量合并器：80ms 窗口内的同流增量合并后 emit */
   chunkCoalescer?: TaskChunkCoalescer;
   chunkFlushTimer?: ReturnType<typeof setTimeout>;
-  browserProgressGuard?: BrowserProgressGuard;
+  /** 按浏览器执行流隔离：并发的多个 pageAgent 不得互相覆盖进展状态。 */
+  browserProgressGuards?: Map<string, BrowserProgressGuard>;
 }
 
 const tasks = new Map<string, LlmTask>();
@@ -1097,6 +1098,7 @@ async function runToolCallAndPersist(opts: {
 }): Promise<string> {
   const { task, registry, convId, userId, assistantMsgId, toolName, args, tcId, depth, toolDefs, uiTools, precomputed, ownership } = opts;
   const subEvt = ownership ? { subAgentId: ownership.subAgentId } : {};
+  touchTaskRow(task.id, task.step || 0);
   // ★ 与主循环对齐：收集工具回传的 _meta（file_write 的落盘路径在这里），
   //   供产物登记钩子使用。用出参而非改返回类型（见 executeTool 参数注释）。
   const metaOut: { value?: Record<string, unknown> | null } = {};
@@ -1120,8 +1122,17 @@ async function runToolCallAndPersist(opts: {
   }
 
   if (toolName.startsWith('browser_')) {
-    task.browserProgressGuard ||= new BrowserProgressGuard();
-    const progressBlock = task.browserProgressGuard.noteResult(toolName, args, result);
+    const flowKey = browserProgressGuardKey(
+      ownership?.browserFlowKey || SHARED_FLOW,
+      ownership?.parentToolCallId,
+    );
+    task.browserProgressGuards ||= new Map();
+    let guard = task.browserProgressGuards.get(flowKey);
+    if (!guard) {
+      guard = new BrowserProgressGuard();
+      task.browserProgressGuards.set(flowKey, guard);
+    }
+    const progressBlock = guard.noteResult(toolName, args, result);
     if (progressBlock) result = `${progressBlock}\n\n${result}`;
   }
 
@@ -3059,6 +3070,22 @@ function persistTaskStatus(task: LlmTask): void {
     db.prepare('UPDATE llm_task SET status = ?, step = ?, error = ?, updated_at = ? WHERE id = ?')
       .run(task.status, task.step || 0, task.error || null, Date.now(), task.id);
   } catch { /* 落库失败不阻塞 */ }
+}
+
+/**
+ * 运行心跳：只要有工具活动就刷新 step/updated_at。
+ *
+ * 为什么必须：任务跑 1 小时时旧实现只在启动/收尾写 llm_task，诊断里“最近活动”
+ * 一直停在启动时间，无法区分长任务和卡死。放在统一工具出口，主循环与子智能体都覆盖。
+ */
+export function touchTaskRow(taskId: string, step: number, now: number = Date.now()): boolean {
+  try {
+    const info = db.prepare('UPDATE llm_task SET step = ?, updated_at = ? WHERE id = ?')
+      .run(Math.max(0, Math.floor(step) || 0), now, taskId);
+    return Number(info?.changes || 0) > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** 把当前 pending 工具调用写进 llm_task.pending_tool_json（服务重启后仍能查到"卡在等谁"） */
@@ -7254,6 +7281,9 @@ async function runSubAgentImpl(
   })();
   // 单批步数预算（接力时重置为 maxSteps）
   let subStepBudget = maxSteps;
+  // ★ 2026-11-03：子智能体此前只把 FORCE_STOP 文案回灌模型，自己从不跳出循环。
+  //   实测 pageAgent 连续换站/换脚本 40 分钟仍继续跑；守卫文案再明确也不会生效。
+  let forceStoppedByLoopGuard = false;
   // ★ 2026-10-18：原 D 方案的子智能体预算闸（subBudgets/subTokensTotal/subBudgetHit）已随
   //   P1-9 预算闸一并退役 ——「不要程序自动停」。子智能体用量仍同步进父任务 totalTokens
   //   （见循环内坑 #8 注），但只做可观测。
@@ -7559,14 +7589,24 @@ async function runSubAgentImpl(
         if (newTabNavIds.has(String(tc.id || ''))) toolArgs.openInNewTab = true;
         // 统一出口（P1）：执行/中止/钩子/落库与主循环同源 —— 此前这里各写一份已两次漂移
         //（漏跑 runAfterToolHooks 导致子智能体产物不登记等）。
-        await runToolCallAndPersist({
+        const toolResult = await runToolCallAndPersist({
           task, registry,
           convId: task.conversationId, userId: task.userId, assistantMsgId,
           toolName, args: toolArgs, tcId: tc.id || '', depth: depth + 1, toolDefs: subTools, uiTools,
           ownership: subOwnership,
         });
+        if (String(toolResult || '').startsWith(FORCE_STOP_MARKER)) {
+          logger.warn(
+            `[llm-task] 子智能体循环闸门硬停: conv=${task.conversationId} parent=${parentToolCallId} tool=${toolName}`,
+          );
+          forceStoppedByLoopGuard = true;
+          break;
+        }
       }
+      if (forceStoppedByLoopGuard) break;
     }  // ← 子智能体单批步数循环
+
+    if (forceStoppedByLoopGuard) break;
 
     // ★★★ 达单批上限 → 决策是否接力下一批（对齐主循环；见函数头 P1-1 注释）。
     //   子智能体的接力**不向用户抛总结消息**（用户看的是父智能体的产出），
@@ -7606,7 +7646,9 @@ async function runSubAgentImpl(
     emit(task, { type: 'sub_agent:end', agentId: resolvedId, agentName: subAgentName, parentToolCallId });
     // 达到最大步数：先请模型总结进展再返回给父智能体（父智能体可基于总结决策下一步），
     // 总结失败回退到固定文案。
-    let resultText = `子智能体已达到最大循环数（${maxSteps}）`;
+    let resultText = forceStoppedByLoopGuard
+      ? '子智能体已触发防循环闸门，停止继续尝试并返回阶段结果。'
+      : `子智能体已达到最大循环数（${maxSteps}）`;
     try {
       const hist = loadSubAgentMessages(task.conversationId, parentToolCallId).filter(m => m.content || m.toolCalls || m.role === 'tool');
       const history: Message[] = hist.map(m => ({
@@ -7618,7 +7660,10 @@ async function runSubAgentImpl(
       const summary = await summarizeOnMaxSteps(client, systemPrompt, history, maxSteps, 'sub',
         (detail, meta) => recordTaskUsage(task, 'sub_agent', detail, meta, { messages: history }));
       if (summary.text) {
-        resultText = `${summary.text}\n\n（注：子智能体已达到最大循环步数（${maxSteps}），以上为阶段总结。）`;
+        const note = forceStoppedByLoopGuard
+          ? '（注：子智能体已触发防循环闸门，以上为阶段总结。）'
+          : `（注：子智能体已达到最大循环步数（${maxSteps}），以上为阶段总结。）`;
+        resultText = `${summary.text}\n\n${note}`;
       }
     } catch { /* 总结失败回退固定文案 */ }
     return resultText;

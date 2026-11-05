@@ -48,6 +48,11 @@ export interface ParamQueryResult extends QueryResult {
   paramCount: number;
 }
 
+export interface WriteExecutionResult {
+  affectedRows: number;
+  latencyMs: number;
+}
+
 /** 方言占位符形态：sqlite/mysql 用 `?`，postgres 用 `$1/$2…`，oracle/dm 拼参数化不支持 */
 export type ParamStyle = '?' | 'pg' | 'none';
 
@@ -79,6 +84,8 @@ export interface Connector {
   query(sql: string, opts?: { maxRows?: number; timeoutMs?: number }): Promise<QueryResult>;
   /** 参数绑定执行。params 按 SQL 内占位符顺序一一对应（? 或 pg $n）。不支持时抛可读错误。 */
   queryParam(sql: string, params: RunParam[], opts?: { maxRows?: number; timeoutMs?: number }): Promise<ParamQueryResult>;
+  /** 在独立事务中执行单条 DML；rollback=true 用于预检，提交/回滚后均释放连接。 */
+  executeWrite?(sql: string, params: RunParam[], opts: { rollback: boolean; timeoutMs?: number }): Promise<WriteExecutionResult>;
   schemaInfo(): Promise<SchemaTable[]>;
   close(): void;
 }
@@ -258,6 +265,25 @@ class SqliteLikeConnector implements Connector {
     };
   }
 
+  async executeWrite(
+    sql: string,
+    params: RunParam[],
+    opts: { rollback: boolean },
+  ): Promise<WriteExecutionResult> {
+    const start = Date.now();
+    await this.ensureInit();
+    const conn = this.conn!;
+    conn.exec('BEGIN IMMEDIATE');
+    try {
+      const result = conn.prepare(sql).run(...params);
+      conn.exec(opts.rollback ? 'ROLLBACK' : 'COMMIT');
+      return { affectedRows: result.changes, latencyMs: Date.now() - start };
+    } catch (err) {
+      try { conn.exec('ROLLBACK'); } catch { /* 事务可能已自动回滚 */ }
+      throw err;
+    }
+  }
+
   async schemaInfo(): Promise<SchemaTable[]> {
     await this.ensureInit();
     const conn = this.conn!;
@@ -305,7 +331,15 @@ class SqliteLikeConnector implements Connector {
 interface MysqlField { name?: string }
 type MysqlPool = {
   query: (cfg: { sql: string; values?: unknown[]; timeout?: number }) => Promise<[Record<string, unknown>[], MysqlField[]]>;
+  getConnection: () => Promise<MysqlConnection>;
   end: () => Promise<void>;
+};
+type MysqlConnection = {
+  query: (cfg: { sql: string; values?: unknown[]; timeout?: number }) => Promise<[unknown, MysqlField[]]>;
+  beginTransaction: () => Promise<void>;
+  commit: () => Promise<void>;
+  rollback: () => Promise<void>;
+  release: () => void;
 };
 
 class MysqlConnector implements Connector {
@@ -386,6 +420,34 @@ class MysqlConnector implements Connector {
     };
   }
 
+  async executeWrite(
+    sql: string,
+    params: RunParam[],
+    opts: { rollback: boolean; timeoutMs?: number },
+  ): Promise<WriteExecutionResult> {
+    const start = Date.now();
+    const conn = await (await this.pool()).getConnection();
+    try {
+      await conn.beginTransaction();
+      const [raw] = await conn.query({
+        sql,
+        values: params,
+        timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      });
+      if (opts.rollback) await conn.rollback();
+      else await conn.commit();
+      const affectedRows = Array.isArray(raw)
+        ? raw.length
+        : Number((raw as { affectedRows?: number } | null)?.affectedRows || 0);
+      return { affectedRows, latencyMs: Date.now() - start };
+    } catch (err) {
+      try { await conn.rollback(); } catch { /* ignore */ }
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+
   async schemaInfo(): Promise<SchemaTable[]> {
     const pool = await this.pool();
     const [rows] = await pool.query({
@@ -415,7 +477,11 @@ class MysqlConnector implements Connector {
 // ===== PostgreSQL（pg 连接池；只读数据源在会话层强制 default_transaction_read_only）=====
 
 type PgClient = {
-  query: (sql: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[]; fields: { name: string }[] }>;
+  query: (sql: string, values?: unknown[]) => Promise<{
+    rows: Record<string, unknown>[];
+    fields: { name: string }[];
+    rowCount?: number | null;
+  }>;
   release: () => void;
 };
 type PgPool = {
@@ -522,6 +588,31 @@ class PgConnector implements Connector {
     }
   }
 
+  async executeWrite(
+    sql: string,
+    params: RunParam[],
+    opts: { rollback: boolean; timeoutMs?: number },
+  ): Promise<WriteExecutionResult> {
+    const start = Date.now();
+    const client = await this.client();
+    try {
+      const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      if (timeout > 0) await client.query(`SET statement_timeout = ${Math.floor(timeout)}`);
+      await client.query('BEGIN');
+      const result = await client.query(sql, params);
+      await client.query(opts.rollback ? 'ROLLBACK' : 'COMMIT');
+      return {
+        affectedRows: Number(result.rowCount ?? result.rows.length),
+        latencyMs: Date.now() - start,
+      };
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async schemaInfo(): Promise<SchemaTable[]> {
     const client = await this.client();
     try {
@@ -561,20 +652,34 @@ class PgConnector implements Connector {
 // ===== Oracle / 达梦（可选驱动：oracledb / dmdb，未安装时给出明确安装指引）=====
 // 两家官方 Node 驱动同构（getConnection/execute/metaData），共用一个实现类。
 
-interface OracleLikeConn {
-  execute: (sql: string) => Promise<{ rows?: Record<string, unknown>[]; metaData?: { name: string }[] }>;
+export interface OracleLikeConn {
+  execute: (
+    sql: string,
+    binds?: unknown,
+    options?: { autoCommit?: boolean },
+  ) => Promise<{
+    rows?: Record<string, unknown>[];
+    metaData?: { name: string }[];
+    rowsAffected?: number;
+  }>;
+  commit?: () => Promise<void>;
+  rollback?: () => Promise<void>;
   close?: () => Promise<void>;
 }
 
-class OracleLikeConnector implements Connector {
+export class OracleLikeConnector implements Connector {
   readonly type: DataSourceType;
   private row: DataSourceRow;
   private init: Promise<OracleLikeConn>;
 
-  constructor(type: 'oracle' | 'dm', row: DataSourceRow) {
+  constructor(
+    type: 'oracle' | 'dm',
+    row: DataSourceRow,
+    connectorFactory?: (type: 'oracle' | 'dm', row: DataSourceRow) => Promise<OracleLikeConn>,
+  ) {
     this.type = type;
     this.row = row;
-    this.init = this.connect();
+    this.init = connectorFactory ? connectorFactory(type, row) : this.connect();
   }
 
   private async connect(): Promise<OracleLikeConn> {
@@ -628,6 +733,33 @@ class OracleLikeConnector implements Connector {
   async queryParam(): Promise<ParamQueryResult> {
     // Oracle/DM 绑定执行需 ora:bind 位置绑定，Q1 不纳入（明细主链路首要覆盖 sqlite/project + mysql/pg）
     throw new Error(`${this.type} 驱动暂不支持参数化浏览；请改用 SQL 控制台或切换 sqlite/pg/mysql 数据源`);
+  }
+
+  async executeWrite(
+    sql: string,
+    params: RunParam[],
+    opts: { rollback: boolean },
+  ): Promise<WriteExecutionResult> {
+    if (params.length) {
+      throw new Error(`${this.type} 数据编辑暂不支持绑定参数；请直接提交不含参数的 DML`);
+    }
+    const start = Date.now();
+    const conn = await this.init;
+    if (!conn.commit || !conn.rollback) {
+      throw new Error(`${this.type} 驱动未提供事务提交/回滚接口，已拒绝写入`);
+    }
+    try {
+      const result = await conn.execute(sql, [], { autoCommit: false });
+      if (opts.rollback) await conn.rollback();
+      else await conn.commit();
+      return {
+        affectedRows: Number(result.rowsAffected ?? 0),
+        latencyMs: Date.now() - start,
+      };
+    } catch (err) {
+      try { await conn.rollback(); } catch { /* ignore */ }
+      throw err;
+    }
   }
 
   async schemaInfo(): Promise<SchemaTable[]> {

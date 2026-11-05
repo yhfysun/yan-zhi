@@ -13,6 +13,11 @@ import {
 } from '../services/datasource.js';
 import { profileTable } from '../services/ontology-profile.js';
 import { queryDocuments } from '../services/doc-query.js';
+import {
+  applyDataEdit,
+  listDataEditAudits,
+  preflightDataEdit,
+} from '../services/data-edit.js';
 
 const router = Router();
 
@@ -99,6 +104,49 @@ router.post('/:id/profile', authMiddleware, async (req: Request, res: Response) 
 router.get('/:id/relation-suggestions', authMiddleware, async (req: Request, res: Response) => {
   try {
     res.json({ data: await suggestRelations(req.user!.userId, req.params.id) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/datasources/:id/data-edit/preflight —— 事务内执行后回滚，返回一次性确认令牌
+router.post('/:id/data-edit/preflight', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: await preflightDataEdit(req.user!.userId, req.params.id, {
+        sql: req.body?.sql,
+        params: req.body?.params,
+      }),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// POST /api/datasources/:id/data-edit/apply —— 二次确认后真实提交，令牌一次有效
+router.post('/:id/data-edit/apply', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const token = String(req.body?.token || '').trim();
+    if (!token) {
+      res.status(400).json({ error: '缺少确认令牌 token' });
+      return;
+    }
+    res.json({ data: await applyDataEdit(req.user!.userId, req.params.id, token) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// GET /api/datasources/:id/data-edit/audits —— 最近数据编辑审计
+router.get('/:id/data-edit/audits', authMiddleware, (req: Request, res: Response) => {
+  try {
+    res.json({
+      data: listDataEditAudits(
+        req.user!.userId,
+        req.params.id,
+        Number(req.query.limit) || 50,
+      ),
+    });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

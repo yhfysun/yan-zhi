@@ -19,6 +19,7 @@ import {
   debugRunFrom,
   resolveHumanConfirm,
   getPendingConfirm,
+  listRunArtifacts,
 } from '../workflow-runner.js';
 import type { WorkflowRunBundle } from '../workflow-runner.js';
 import { buildWorkflowInputFieldDefs, collectOverridableNodes } from '../services/workflow-delegate.js';
@@ -253,6 +254,15 @@ router.get('/runs/:id', (req: Request, res: Response) => {
       pendingConfirm: getPendingConfirm(runId),
     },
   });
+});
+
+// GET /runs/:id/artifacts —— 该次运行产出的文件清单（路由先校验 run 归属）
+router.get('/runs/:id/artifacts', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const runId = req.params.id;
+  const row = db.prepare('SELECT id FROM workflow_run WHERE id = ? AND user_id = ?').get(runId, userId);
+  if (!row) { res.status(404).json({ error: '运行不存在' }); return; }
+  res.json({ data: listRunArtifacts(runId, userId) });
 });
 
 // POST /runs/:id/confirm —— 提交人工确认结果（唤醒 human_confirm 节点继续跑）

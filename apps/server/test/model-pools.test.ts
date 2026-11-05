@@ -33,7 +33,8 @@ async function mkDb() {
       user_id TEXT,
       name TEXT,
       llm_enabled INTEGER DEFAULT 1,
-      model_pools_json TEXT
+      model_pools_json TEXT,
+      is_public INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE model (
       id TEXT PRIMARY KEY,
@@ -48,7 +49,8 @@ async function mkDb() {
       enabled INTEGER DEFAULT 1,
       visible INTEGER DEFAULT 1,
       is_default INTEGER DEFAULT 0,
-      created_at INTEGER
+      created_at INTEGER,
+      is_public INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE agent (
       id TEXT PRIMARY KEY,

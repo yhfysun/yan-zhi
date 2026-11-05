@@ -1140,6 +1140,11 @@ export function persistRunArtifacts(
         db.prepare(
           'INSERT OR IGNORE INTO conversation_file (id, conversation_id, user_id, name, path, size, category, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         ).run(fileId, ownerConvId, userId, item.name, filePath, size, 'deliverable', 'workflow', Date.now());
+        db.prepare(
+          `INSERT OR REPLACE INTO workflow_run_artifact
+            (run_id, user_id, file_id, name, path, size, category, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(runId, userId, fileId, item.name, filePath, size, 'deliverable', Date.now());
         // 工件采集：作为计划项（工作流型）执行时，让 runSubAgent 的工件清单能带上它
         collectArtifact({ id: fileId, path: filePath, name: item.name, category: 'deliverable', size });
       } catch (e: any) {
@@ -1152,6 +1157,38 @@ export function persistRunArtifacts(
     logger.warn(`[workflow] 运行产物落盘失败 ${runId}:`, e?.message || e);
   }
   return saved;
+}
+
+export interface WorkflowRunArtifact {
+  runId: string;
+  fileId: string;
+  name: string;
+  path: string;
+  size: number;
+  category: string;
+  createdAt: number;
+}
+
+/** 按运行 id 查询产物。归属校验由路由先做，避免把“查不到”和“越权”混成两个不同响应。 */
+export function listRunArtifacts(runId: string, userId: string): WorkflowRunArtifact[] {
+  try {
+    return (db.prepare(
+      `SELECT run_id, file_id, name, path, size, category, created_at
+         FROM workflow_run_artifact
+        WHERE run_id = ? AND user_id = ?
+        ORDER BY created_at ASC`,
+    ).all(runId, userId) as any[]).map((r) => ({
+      runId: r.run_id,
+      fileId: r.file_id,
+      name: r.name,
+      path: r.path,
+      size: Number(r.size) || 0,
+      category: r.category || 'deliverable',
+      createdAt: Number(r.created_at) || 0,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 /**

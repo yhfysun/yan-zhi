@@ -34,6 +34,20 @@ export interface ModelRowLike {
   capabilities_json: string | null;
 }
 
+/** ACL 是 2026-11-01 新表；旧迷你库/迁移前数据库没有它时，共享兜底不能整体失效。 */
+function hasAclSchema(db: YzSqliteDb): boolean {
+  try {
+    const required = ['resource_acl', 'user_role', 'org_role', 'user_org'];
+    const rows = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${required.map(() => '?').join(',')})`,
+    ).all(...required) as Array<{ name: string }>;
+    const have = new Set(rows.map((r) => r.name));
+    return required.every((name) => have.has(name));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 按标识解析模型行。
  *
@@ -82,8 +96,10 @@ export function findModelRow(
     const sharedCond = platformId ? 'AND platform_id = ?' : '';
     const sharedArgs: any[] = platformId ? [modelId, platformId] : [modelId];
     // ACL 定向授权（2026-11-01）：EXISTS 参数按 SQL 中 ? 顺序追加在末尾（sharedArgs 之后）
-    const aclCond = ` OR ${aclExistsSql('model', 'model.id')}`;
-    const aclArgs = [userId, userId, userId];
+    // 旧库可能尚无 ACL 三张关联表；此时只跳过 ACL 条件，仍保留 is_public 共享兜底。
+    const aclAvailable = hasAclSchema(db);
+    const aclCond = aclAvailable ? ` OR ${aclExistsSql('model', 'model.id')}` : '';
+    const aclArgs = aclAvailable ? [userId, userId, userId] : [];
     const bySharedId = db
       .prepare(`SELECT * FROM model WHERE id = ? ${sharedCond} AND (platform_id IN (SELECT id FROM platform WHERE is_public = 1) OR is_public = 1${aclCond})`)
       .get(...sharedArgs, ...aclArgs) as ModelRowLike | undefined;

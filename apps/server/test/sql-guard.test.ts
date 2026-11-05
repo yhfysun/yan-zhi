@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { splitSqlStatements, statementAt } from '@yan-zhi/shared';
-import { guardSqlConsole } from '../src/services/sql-guard.js';
+import { guardDataEditSql, guardSqlConsole } from '../src/services/sql-guard.js';
 
 describe('splitSqlStatements（@yan-zhi/shared）', () => {
   const SQL = `SELECT 1; -- 注释; 里的分号
@@ -150,5 +150,47 @@ describe('guardSqlConsole · allow_write=1（写开关打开）', () => {
     const r = guardSqlConsole('CREATE INDEX idx ON t(a)', true);
     expect(r.ok).toBe(false);
     expect(r.blocked[0].reason).toContain('DDL');
+  });
+});
+
+describe('guardDataEditSql · 数据编辑通道', () => {
+  it('允许单条带 WHERE 的 UPDATE / DELETE 和无 WHERE 的 INSERT', () => {
+    expect(guardDataEditSql('UPDATE account SET name = ? WHERE id = ?')).toMatchObject({
+      ok: true,
+      action: 'update',
+      statement: 'UPDATE account SET name = ? WHERE id = ?',
+    });
+    expect(guardDataEditSql('DELETE FROM account WHERE id = 7')).toMatchObject({
+      ok: true,
+      action: 'delete',
+    });
+    expect(guardDataEditSql('INSERT INTO account (id, name) VALUES (?, ?)')).toMatchObject({
+      ok: true,
+      action: 'insert',
+    });
+  });
+
+  it('UPDATE / DELETE 缺少顶层 WHERE 时拒绝', () => {
+    expect(guardDataEditSql('UPDATE account SET name = ?')).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('WHERE'),
+    });
+    expect(guardDataEditSql('DELETE FROM account')).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('WHERE'),
+    });
+    // 子查询里的 WHERE 不能冒充主语句的过滤条件
+    expect(guardDataEditSql('UPDATE account SET name = (SELECT name FROM x WHERE id = 1)')).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('WHERE'),
+    });
+  });
+
+  it('多语句、只读语句、DDL、管理语句和 CTE 写入全部拒绝', () => {
+    expect(guardDataEditSql('UPDATE account SET name = ? WHERE id = ?; DELETE FROM account WHERE id = ?').ok).toBe(false);
+    expect(guardDataEditSql('SELECT * FROM account').ok).toBe(false);
+    expect(guardDataEditSql('DROP TABLE account').ok).toBe(false);
+    expect(guardDataEditSql('SET statement_timeout = 0').ok).toBe(false);
+    expect(guardDataEditSql('WITH x AS (SELECT 1) DELETE FROM account WHERE id = 1').ok).toBe(false);
   });
 });

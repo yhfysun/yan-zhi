@@ -127,6 +127,89 @@ function classify(text: string): { action: SqlAction; reason?: string } {
   return { action: 'admin', reason: `无法识别的语句类型「${head}」，按最保守策略拒绝` };
 }
 
+function hasTopLevelKeyword(stripped: string, keyword: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < stripped.length;) {
+    const ch = stripped[i];
+    if (ch === '(') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === ')') {
+      depth = Math.max(0, depth - 1);
+      i++;
+      continue;
+    }
+    if (depth !== 0 || !/[A-Za-z_]/.test(ch)) {
+      i++;
+      continue;
+    }
+    const prev = i > 0 ? stripped[i - 1] : '';
+    if (/[A-Za-z0-9_]/.test(prev)) {
+      i++;
+      continue;
+    }
+    let end = i + 1;
+    while (end < stripped.length && /[A-Za-z0-9_]/.test(stripped[end])) end++;
+    if (stripped.slice(i, end).toUpperCase() === keyword) return true;
+    i = end;
+  }
+  return false;
+}
+
+export interface DataEditGuardResult {
+  ok: boolean;
+  action: 'insert' | 'update' | 'delete' | null;
+  statement: string | null;
+  reason?: string;
+}
+
+/**
+ * 数据编辑通道的 SQL 白名单。控制台仍保持只读；只有这里放行单条
+ * INSERT/UPDATE/DELETE，并要求 UPDATE/DELETE 带顶层 WHERE，避免误改全表。
+ */
+export function guardDataEditSql(sql: string): DataEditGuardResult {
+  const statements = splitSqlStatements(sql);
+  if (statements.length !== 1) {
+    return {
+      ok: false,
+      action: null,
+      statement: null,
+      reason: statements.length === 0 ? '没有可编辑的 SQL 语句' : '数据编辑只允许单条语句',
+    };
+  }
+
+  const statement = statements[0].text;
+  const stripped = stripForScan(statement);
+  const head = headWord(stripped);
+  if (head === 'WITH') {
+    return { ok: false, action: null, statement, reason: '数据编辑暂不支持 WITH/CTE，请改写为单条 DML' };
+  }
+  if (head !== 'INSERT' && head !== 'UPDATE' && head !== 'DELETE') {
+    return {
+      ok: false,
+      action: null,
+      statement,
+      reason: '数据编辑只允许 INSERT / UPDATE / DELETE；查询请走 SQL 控制台，DDL 一律拒绝',
+    };
+  }
+  if ((head === 'UPDATE' || head === 'DELETE') && !hasTopLevelKeyword(stripped, 'WHERE')) {
+    return {
+      ok: false,
+      action: null,
+      statement,
+      reason: `${head} 必须包含顶层 WHERE，禁止无过滤条件修改或删除整表`,
+    };
+  }
+
+  return {
+    ok: true,
+    action: head.toLowerCase() as 'insert' | 'update' | 'delete',
+    statement,
+  };
+}
+
 /**
  * 控制台执行前校验。
  * @param sql 原始文本（可含多语句）

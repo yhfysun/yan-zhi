@@ -27,6 +27,12 @@
  */
 export { DEFAULT_AGENT_PARAMS, LEGACY_AGENT_MAX_TOKENS } from '@yan-zhi/shared';
 
+/**
+ * 浏览器连续导航硬上限：自上次真实交互后，连续 navigate 到本值仍无进展 → 强制收口。
+ * 浏览器守卫与 pageAgent 提示词共用本常量，禁止各写一份字面量。
+ */
+export const BROWSER_NAV_STREAK_LIMIT = 8;
+
 /** 新建/读取模型时的默认上下文窗口：1M（token 数） */
 export const DEFAULT_CONTEXT_WINDOW = 1048576;
 
