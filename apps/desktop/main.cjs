@@ -10468,37 +10468,53 @@ static class ScreenCap {
   }
 }
 `;
-let gdiExePath = null;
-let gdiCompileTried = false;
+const helperExePaths = new Map();
+const helperCompileTried = new Set();
 
-async function ensureGdiCapExe() {
-  if (gdiExePath || gdiCompileTried) return gdiExePath;
-  gdiCompileTried = true;
+/**
+ * 编译并缓存一个本机 C# helper。
+ * @param {string} name 稳定文件名（变更源码需换名字以触发重编）
+ * @param {string} source C# 源码
+ * @param {{ refs?: string[], cscArgs?: string[] }} [opts]
+ */
+async function ensureHelperExe(name, source, opts = {}) {
+  if (helperExePaths.has(name)) return helperExePaths.get(name);
+  if (helperCompileTried.has(name)) return null;
+  helperCompileTried.add(name);
   if (process.platform !== 'win32') return null;
   try {
     const dir = path.join(app.getPath('userData'), 'bin');
-    // v2：带窗口枚举（--win / 抓屏附窗口清单）。改名让老 exe 自动重编，
-    // 不用用户手动清缓存。
-    const exe = path.join(dir, 'yan-zhi-screencap-v2.exe');
-    if (fs.existsSync(exe)) { gdiExePath = exe; return exe; }
+    const exe = path.join(dir, name + '.exe');
+    if (fs.existsSync(exe)) {
+      helperExePaths.set(name, exe);
+      return exe;
+    }
     const csc = ['C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe', 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe']
       .find((p) => fs.existsSync(p));
-    if (!csc) { snipLog('WARN no csc, gdi pipeline unavailable'); return null; }
+    if (!csc) { snipLog(`WARN no csc, helper ${name} unavailable`); return null; }
     fs.mkdirSync(dir, { recursive: true });
-    const srcPath = path.join(dir, 'screencap-v2.cs');
-    fs.writeFileSync(srcPath, GDI_CAP_CS, 'utf8');
+    const srcPath = path.join(dir, name + '.cs');
+    fs.writeFileSync(srcPath, source, 'utf8');
+    const refs = opts.refs || ['/r:System.Drawing.dll'];
+    const extraArgs = opts.cscArgs || [];
     await new Promise((resolve, reject) => {
-      execFile(csc, ['/nologo', '/out:' + exe, '/r:System.Drawing.dll', srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {
+      execFile(csc, ['/nologo', ...extraArgs, '/out:' + exe, ...refs, srcPath], { timeout: 30000, windowsHide: true }, (err, so, se) => {
         if (err) reject(new Error((se || err.message || '').trim()));
         else resolve();
       });
     });
-    gdiExePath = exe;
-    snipLog('gdi helper compiled:', exe);
+    helperExePaths.set(name, exe);
+    snipLog(`helper ${name} compiled:`, exe);
   } catch (e) {
-    snipLog('WARN gdi helper compile failed:', e?.message || e);
+    snipLog(`WARN helper ${name} compile failed:`, e?.message || e);
   }
-  return gdiExePath;
+  return helperExePaths.get(name) || null;
+}
+
+async function ensureGdiCapExe() {
+  // v2：带窗口枚举（--win / 抓屏附窗口清单）。改名让老 exe 自动重编，
+  // 不用用户手动清缓存。
+  return ensureHelperExe('yan-zhi-screencap-v2', GDI_CAP_CS);
 }
 
 /** 把主进程的窗口枚举 JSON 行解析成对象数组（容错：解析失败返回 []） */

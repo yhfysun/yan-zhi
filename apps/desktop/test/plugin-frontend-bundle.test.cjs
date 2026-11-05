@@ -12,7 +12,10 @@ const path = require('node:path');
 
 const REPO = path.join(__dirname, '..', '..', '..');
 const BUILTIN = path.join(REPO, 'apps', 'server', 'plugins', 'builtin');
-const BUNDLED = ['clip-mode', 'dev-mode', 'wf-mode'];
+const CATALOG = JSON.parse(fs.readFileSync(path.join(REPO, 'build', 'plugins.catalog.json'), 'utf8'));
+const BUNDLED = Object.entries(CATALOG.plugins)
+  .filter(([, entry]) => entry.frontendBundle && (entry.frontendViews || []).length)
+  .map(([id]) => id);
 
 function bundleFiles(dir) {
   return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.mjs')) : [];
@@ -22,6 +25,7 @@ for (const id of BUNDLED) {
   const dir = path.join(BUILTIN, id, 'frontend');
   const files = bundleFiles(dir);
   test(`${id}：bundle 的视图 key 与 manifest component 一致，且宿主 shim 齐全`, { skip: !files.length && '未构建插件前端（跳过）' }, () => {
+    const pkgRoot = path.join(BUILTIN, id);
     const manifest = JSON.parse(fs.readFileSync(path.join(BUILTIN, id, 'manifest.json'), 'utf8'));
     const expected = (manifest.contributes?.routes || []).map((r) => r.component).filter(Boolean);
     assert.ok(expected.length, `${id} manifest 没有 routes.component`);
@@ -42,10 +46,15 @@ for (const id of BUNDLED) {
       `${id} 缺 shared/vue.mjs（Web/移动端 HTTP 装载会 404）`,
     );
     assert.ok(!text.includes('yz://shared'), `${id} 仍写死 yz:// 前缀（Web 端无法解析）`);
+    if (id === 'java-suite') {
+      assert.ok(
+        fs.existsSync(path.join(pkgRoot, 'YanZhiJavaDebugger.java')),
+        'java-suite 未随包携带 JDI helper 源码（打包后无法编译调试器）',
+      );
+    }
 
     // 自包含：bundle 里所有相对 import 都必须能在包内找到文件（相对路径在 yz:// 与 HTTP 下
     // 语义一致，只要文件在包里就一定能解析；缺一个就是运行期 404/模块找不到）。
-    const pkgRoot = path.join(BUILTIN, id);
     const relSpecs = new Set(
       [...text.matchAll(/(?:from|import)\s*\(?\s*"(\.[^"]+)"/g)].map((m) => m[1]),
     );

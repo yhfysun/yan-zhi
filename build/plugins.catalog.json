@@ -86,7 +86,8 @@
         "views/plugin/SftpPanel.vue",
         "views/plugin/opsSession.ts"
       ],
-      "defaultEnabled": true
+      "defaultEnabled": true,
+      "frontendBundle": true
     },
     "sec-lab": {
       "kind": "mode",
@@ -101,7 +102,8 @@
       "frontendViews": [
         "views/plugin/SecConsole.vue"
       ],
-      "defaultEnabled": true
+      "defaultEnabled": true,
+      "frontendBundle": true
     },
     "shop-ops": {
       "kind": "mode",
@@ -118,6 +120,7 @@
         "views/plugin/shop/**"
       ],
       "defaultEnabled": true,
+      "frontendBundle": true,
       "notes": "自有业务模块 src/shop/*、services/amazon-sp-api、services/logistics、services/platform-api 随插件打包（P2 归位）"
     },
     "cicd-pipeline": {
@@ -130,7 +133,8 @@
       "frontendViews": [
         "views/plugin/CicdConsole.vue"
       ],
-      "defaultEnabled": true
+      "defaultEnabled": true,
+      "frontendBundle": true
     },
     "java-suite": {
       "kind": "feature",
@@ -142,7 +146,8 @@
       "frontendViews": [
         "views/plugin/JavaSuite.vue"
       ],
-      "defaultEnabled": true
+      "defaultEnabled": true,
+      "frontendBundle": true
     },
     "git-explorer": {
       "kind": "feature",
@@ -154,7 +159,8 @@
         "views/plugin/GitExplorer.vue",
         "views/plugin/GitSettings.vue"
       ],
-      "defaultEnabled": true
+      "defaultEnabled": true,
+      "frontendBundle": true
     },
     "computer-use": {
       "kind": "feature",
@@ -196,6 +202,7 @@
         "views/plugin/AndroidMirror.vue"
       ],
       "defaultEnabled": false,
+      "frontendBundle": true,
       "notes": "2026-11-02 补登记（历史遗漏）：此前不参与选择集裁剪，AndroidMirror.vue 恒在主包。现按档位显式纳入，未选档位可真正裁掉视图与后端注册。"
     },
     "skins": {

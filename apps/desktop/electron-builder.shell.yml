@@ -69,6 +69,8 @@ linux:
   target: AppImage
   icon: ../../assets/icons/icon.png
 nsis:
+  # 与完整版共用安装进度页和阶段提示
+  include: build/installer.nsh
   oneClick: false
   perMachine: true
   allowToChangeInstallationDirectory: true

@@ -31,7 +31,7 @@ const EXPECTED_EXPORTS = [
   'llmJson', 'extractJson', 'listReadContracts', 'runReadContract',
   'loadEffectiveTaskTypes', 'lookupOnPath', 'MESSAGE_LIST_COLS', 'normalizeForCompare',
   'pushPluginAudit', 'resetAllAuthorizations', 'runCmd', 'serverState', 'summarizeCommandArgs',
-  'tarPathArg',
+  'tarPathArg', 'buildSpawnEnv', 'loadDevEnv', 'resolveToolExe',
 ].sort();
 
 describe('插件宿主桥', () => {

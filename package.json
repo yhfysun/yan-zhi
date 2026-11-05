@@ -32,6 +32,7 @@
     "package:desktop:basic": "node scripts/package-desktop-basic.cjs",
     "package:desktop:pro": "node scripts/package-desktop-pro.cjs",
     "package:desktop:shell": "node scripts/package-desktop-shell.cjs",
+    "package:server:linux": "node scripts/package-server-linux.cjs",
     "package:android": "node scripts/package-android.cjs",
     "package:all": "node scripts/package.cjs all",
     "verify:package": "node scripts/verify-package-artifacts.cjs",

@@ -40,6 +40,7 @@ import { hardDeleteRow } from './services/conversation-lifecycle.js';
 import { resolveArtifactDirFor, ensureArtifactDirFor } from './services/artifact-dir.js';
 import { chatViaRow } from './services/llm-call.js';
 import { listReadContracts, runReadContract } from './services/read-contracts.js';
+import { buildSpawnEnv, loadDevEnv, resolveToolExe } from './services/dev-env.js';
 
 /** 桥面版本：插件包 manifest.engine 与它比对；不兼容字段变更时递增 */
 export const HOST_BRIDGE_VERSION = 1;
@@ -123,6 +124,7 @@ export {
   runCmd, lookupOnPath, tarPathArg, serverState,
   authMiddleware, hardDeleteRow, resolveArtifactDirFor, ensureArtifactDirFor, applyBuiltinSeed,
   listReadContracts, runReadContract,
+  buildSpawnEnv, loadDevEnv, resolveToolExe,
 };
 export const {
   COMMAND_TOOLS, allowedRootsFor, authorizeCommand, authorizeDangerTool, authorizeDir,
@@ -148,6 +150,7 @@ export function injectServerHostBridge(): void {
     authMiddleware, hardDeleteRow, resolveArtifactDirFor, ensureArtifactDirFor, applyBuiltinSeed,
     llmJson, extractJson,
     listReadContracts, runReadContract,
+    buildSpawnEnv, loadDevEnv, resolveToolExe,
     ...pathGuard,
   };
 }

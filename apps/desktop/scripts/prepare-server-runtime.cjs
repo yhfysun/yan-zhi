@@ -9,11 +9,20 @@ const buildDir = path.join(runtimeDir, '.build-package');
 const runtimeNodeModules = path.join(runtimeDir, 'node_modules');
 // better-sqlite3 ≥13（N-API 化）：二进制在包内 prebuilds/<platform>-<arch>.node，
 // 不再经过 build/Release；<13 仍走 build/Release。两处按存在性探测，兼容跨版本。
-const desktopBetterSqliteCandidates = [
-  path.join(desktopDir, 'node_modules', 'better-sqlite3', 'prebuilds', `${process.platform}-${process.arch}.node`),
-  path.join(desktopDir, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'),
-];
-const desktopBetterSqlite = desktopBetterSqliteCandidates.find((p) => fs.existsSync(p)) || desktopBetterSqliteCandidates[0];
+const betterSqliteRoots = [];
+for (const baseDir of [desktopDir, path.join(rootDir, 'apps', 'server')]) {
+  const link = path.join(baseDir, 'node_modules', 'better-sqlite3');
+  try {
+    if (fs.existsSync(link)) betterSqliteRoots.push(fs.realpathSync(link));
+  } catch {
+    /* 另一个 workspace 未安装时继续 */
+  }
+}
+const betterSqliteCandidates = betterSqliteRoots.flatMap((dir) => [
+  path.join(dir, 'prebuilds', `${process.platform}-${process.arch}.node`),
+  path.join(dir, 'build', 'Release', 'better_sqlite3.node'),
+]);
+const betterSqlite = betterSqliteCandidates.find((p) => fs.existsSync(p)) || betterSqliteCandidates[0];
 
 const ESBUILD_VERSION = '0.28.2';
 
@@ -173,11 +182,14 @@ const readCache = () => {
   }
 };
 const cached = readCache();
-const needInstall = !(cached && cached.key === cacheKey && fs.existsSync(runtimeNodeModules));
+const reuseExistingRuntime = process.env.YZ_SERVER_RUNTIME_REUSE === '1' && fs.existsSync(runtimeNodeModules);
+const needInstall = !reuseExistingRuntime && !(cached && cached.key === cacheKey && fs.existsSync(runtimeNodeModules));
 
 const tempNodeModules = path.join(buildDir, 'node_modules');
 
-if (!needInstall) {
+if (reuseExistingRuntime) {
+  console.log('[prepare-server-runtime] 按 YZ_SERVER_RUNTIME_REUSE=1 复用已有 Linux node_modules');
+} else if (!needInstall) {
   console.log(
     `[prepare-server-runtime] 依赖缓存命中（${new Date(cached.at).toLocaleString()}），跳过 npm install / postinstall`,
   );
@@ -325,15 +337,15 @@ for (const name of ['core', 'shared']) {
   );
 }
 
-if (!fs.existsSync(desktopBetterSqlite)) {
+if (!betterSqlite || !fs.existsSync(betterSqlite)) {
   throw new Error(
-    `[prepare-server-runtime] 找不到 better-sqlite3 原生二进制（探测过 prebuilds/ 与 build/Release）：${desktopBetterSqlite}\n` +
-      '请先运行 apps/desktop 的 postinstall 或 pnpm install。',
+    `[prepare-server-runtime] 找不到 better-sqlite3 原生二进制（探测过 desktop/server 的 prebuilds 与 build/Release）：${betterSqlite || '(无候选路径)'}\n` +
+      '请先在 apps/server 或 apps/desktop 执行 pnpm install。',
   );
 }
 const sqliteBuildDir = path.join(workNodeModules, 'better-sqlite3', 'build', 'Release');
 fs.mkdirSync(sqliteBuildDir, { recursive: true });
-fs.copyFileSync(desktopBetterSqlite, path.join(sqliteBuildDir, 'better_sqlite3.node'));
+fs.copyFileSync(betterSqlite, path.join(sqliteBuildDir, 'better_sqlite3.node'));
 
 if (needInstall) {
   assertInside(runtimeDir, runtimeNodeModules);

@@ -20,7 +20,10 @@
 //   node scripts/build-python-runtime.mjs --no-deps      # 只下载解释器，不装依赖（调试用）
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync, readFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync, readFileSync,
+  readlinkSync, symlinkSync, unlinkSync,
+} from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -140,12 +143,46 @@ function flattenPython(innerRoot) {
   rmSync(PY_DIR, { recursive: true, force: true });
   mkdirSync(PY_DIR, { recursive: true });
   cpSync(src, PY_DIR, { recursive: true });
+  return src;
+}
+
+/** python-build-standalone 的部分链接指向构建临时目录；改写成包内相对链接。 */
+function normalizeAbsoluteSymlinks(root, sourceRoots) {
+  const normalizedRoots = sourceRoots.map((p) => path.resolve(p));
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(file);
+        continue;
+      }
+      if (!entry.isSymbolicLink()) continue;
+      const target = readlinkSync(file);
+      if (!path.isAbsolute(target)) continue;
+      const sourceRoot = normalizedRoots.find((r) => target === r || target.startsWith(r + path.sep));
+      if (!sourceRoot) continue;
+      const rel = path.relative(sourceRoot, target);
+      const fixedTarget = path.relative(path.dirname(file), path.join(root, rel));
+      unlinkSync(file);
+      symlinkSync(fixedTarget, file);
+    }
+  };
+  walk(root);
 }
 
 function pipInstall(pythonExe, deps) {
   const indexUrl = process.env.YZ_PIP_INDEX_URL || 'https://pypi.org/simple';
   run(pythonExe, ['-m', 'pip', 'install', '--upgrade', 'pip', '-i', indexUrl]);
   run(pythonExe, ['-m', 'pip', 'install', '-i', indexUrl, ...deps]);
+}
+
+function pythonDepsReady(pythonExe) {
+  const r = spawnSync(
+    pythonExe,
+    ['-c', 'import docx, pptx, openpyxl, fitz, rapidocr_onnxruntime'],
+    { stdio: 'ignore', timeout: 60000 },
+  );
+  return r.status === 0;
 }
 
 function copyScripts() {
@@ -206,6 +243,12 @@ async function main() {
   mkdirSync(RESOURCES, { recursive: true });
 
   const pythonExe = platform === 'win' ? path.join(PY_DIR, 'python.exe') : path.join(PY_DIR, 'bin', 'python3');
+  if (platform !== 'win') {
+    normalizeAbsoluteSymlinks(PY_DIR, [
+      PY_DIR,
+      path.join(RESOURCES, `_pbs_${platform}_${arch}`, 'python'),
+    ]);
+  }
   const havePython = existsSync(pythonExe);
 
   // 已存在解释器且非 --force：跳过「下载 + 装依赖」（耗时最长两步），仅同步随包脚本。
@@ -217,8 +260,12 @@ async function main() {
     // 依赖清单变化（如新增 xlrd）时增量补装，保证本地重包与 CI 产物一致
     const baked = readBakedDeps();
     const sig = JSON.stringify(DEPS);
-    if (baked?.deps !== sig) {
-      console.log('预烤依赖清单已变化（上次:', baked?.deps ? '有记录' : '无记录', '）→ 增量 pip install');
+    if (baked?.deps !== sig || !pythonDepsReady(pythonExe)) {
+      console.log(
+        baked?.deps !== sig
+          ? `预烤依赖清单已变化（上次:${baked?.deps ? '有记录' : '无记录'}）→ 增量 pip install`
+          : '预烤依赖 import 校验失败（可能安装到了临时目录）→ 重新安装到最终运行时',
+      );
       pipInstall(pythonExe, DEPS);
     } else {
       console.log('预烤依赖指纹一致，跳过 pip install');
@@ -239,7 +286,10 @@ async function main() {
   const usedUrl = await download(urls, archive);
   console.log('下载源:', usedUrl);
   extractWithTar(archive, tmp);
-  flattenPython(tmp);
+  const pythonSource = flattenPython(tmp);
+  if (platform !== 'win') {
+    normalizeAbsoluteSymlinks(PY_DIR, [PY_DIR, pythonSource]);
+  }
 
   if (!existsSync(pythonExe)) throw new Error(`未找到解释器: ${pythonExe}`);
   console.log('解释器就绪:', pythonExe);

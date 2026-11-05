@@ -288,7 +288,7 @@ async function buildBackend(absBackendEntry, pkgDir, serverShimPath, tmpDir) {
     wrapper,
     `import * as __m from ${JSON.stringify(absBackendEntry.replace(/\\/g, '/'))};\n` +
       `const __pick = Object.values(__m).find((v) => v && typeof v.activate === 'function');\n` +
-      `export default __pick ?? __m.default ?? __m;\n`,
+      `export default __pick ?? Reflect.get(__m, 'default') ?? __m;\n`,
     'utf8',
   );
   try {
@@ -533,6 +533,14 @@ async function buildOne(catalog, id, opts, serverShimPath) {
       fs.cpSync(srcAssets, dst, { recursive: true });
       summary.assets = dst;
     }
+  }
+
+  // Java debugger compiles this JDK-only JDI helper on first use. Keep the source
+  // inside the installed plugin package so packaged builds do not depend on server/src.
+  if (id === 'java-suite') {
+    const helperSource = path.join(REPO_ROOT, 'apps', 'server', 'src', 'plugins', 'YanZhiJavaDebugger.java');
+    if (!fs.existsSync(helperSource)) throw new Error(`[build-plugins] java-suite 缺 JDI helper: ${helperSource}`);
+    fs.copyFileSync(helperSource, path.join(pkgDir, 'YanZhiJavaDebugger.java'));
   }
 
   // manifest 最后写：前端 bundle 成功产出 index.mjs 才把入口字段写进去

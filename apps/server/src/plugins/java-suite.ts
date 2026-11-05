@@ -2,11 +2,14 @@
 // 集成 Maven / Gradle / Spring Boot / Java Debug / 测试运行 / 代码格式化 / Lombok / MyBatis
 // 工具暴露给 AI，配合「Java 开发助手」智能体，用户描述需求即可自动执行
 import type { BuiltInTool, McpCallResult, PluginManifest, PluginModule } from '@yan-zhi/core';
-import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve, basename, dirname, extname, relative } from 'node:path';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve, basename, dirname, extname, relative, delimiter } from 'node:path';
+import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 // ★ 宿主能力走宿主桥（mode-pluginization，见 computer-use.ts 同款注释）。
-import { runCmd } from '../host-bridge.js';
+import { buildSpawnEnv, dataDir, resolveToolExe, runCmd } from '../host-bridge.js';
 
 export const JAVA_SUITE_ID = 'java-suite';
 
@@ -16,10 +19,10 @@ export const JAVA_SUITE_ID = 'java-suite';
 export const javaSuiteManifest: PluginManifest = {
   id: JAVA_SUITE_ID,
   name: 'Java 开发套件',
-  version: '1.0.0',
+  version: '1.1.0',
   category: '功能',
   description:
-    'Java 主流开发环境：Maven/Gradle 构建管理、Spring Boot 项目分析、Java 调试（DAP）、JUnit 测试运行、代码格式化、Lombok/MyBatis 支持。对话中可让 Java 开发助手自动完成构建、分析、调试、测试等任务。',
+    'Java 主流开发环境：Maven/Gradle 构建管理、Spring Boot 项目分析、Java 调试（JDWP + JDK JDI）、JUnit 测试运行、代码格式化、Lombok/MyBatis 支持。对话中可让 Java 开发助手自动完成构建、分析、调试、测试等任务。',
   permissions: ['fs', 'shell', 'network'],
   kind: 'code',
   contributes: {
@@ -377,20 +380,233 @@ function analyzeMyBatisMappers(dir: string): Array<{ mapper: string; namespace: 
 // ============================================================
 // Java 调试会话管理
 // ============================================================
+interface JavaPauseLocation {
+  reason: string;
+  thread?: string;
+  className?: string;
+  method?: string;
+  file?: string;
+  line?: number;
+}
+
 interface DebugSession {
   id: string;
   pid: number | null;
   port: number;
   host: string;
-  status: 'launching' | 'running' | 'stopped' | 'terminated';
+  status: 'launching' | 'running' | 'paused' | 'stopped' | 'terminated';
   breakpoints: Array<{ className: string; line: number }>;
   projectDir: string;
   mainClass?: string;
   startedAt: number;
+  launched: boolean;
+  helperPid: number | null;
+  lastPause: JavaPauseLocation | null;
+  lastError: string;
+  _helper?: ChildProcess | null;
+  _target?: ChildProcess | null;
+  _pending?: Map<string, {
+    resolve: (value: { ok: boolean; result: string }) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>;
+  _cmdSeq?: number;
 }
 
 const debugSessions = new Map<string, DebugSession>();
 let pluginStorage: { get<T>(key: string): Promise<T | undefined>; set(key: string, value: unknown): Promise<void> } | null = null;
+
+interface JavaHelperBuild {
+  java: string;
+  classesDir: string;
+}
+
+let javaHelperBuild: Promise<JavaHelperBuild> | null = null;
+const helperArg = (value: string): string => Buffer.from(value, 'utf8').toString('base64');
+
+function splitProgramArgs(value: unknown): string[] {
+  return String(value || '').match(/"[^"]*"|'[^']*'|\S+/g)?.map((part) =>
+    part.replace(/^(["'])([\s\S]*)\1$/, '$2'),
+  ) || [];
+}
+
+function helperSourceFile(): string {
+  const candidates = [
+    fileURLToPath(new URL('./YanZhiJavaDebugger.java', import.meta.url)),
+    fileURLToPath(new URL('../YanZhiJavaDebugger.java', import.meta.url)),
+    resolve(process.cwd(), 'apps/server/src/plugins/YanZhiJavaDebugger.java'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new Error('Java 调试助手源码缺失（YanZhiJavaDebugger.java）');
+}
+
+function ensureJavaDebugHelper(): Promise<JavaHelperBuild> {
+  if (!javaHelperBuild) {
+    javaHelperBuild = Promise.resolve().then(() => {
+      const java = resolveToolExe('java');
+      if (!java) throw new Error('未配置 JDK：请到「设置 → 开发环境」选择包含 java 的 JDK 目录');
+      const javac = join(dirname(java), process.platform === 'win32' ? 'javac.exe' : 'javac');
+      if (!existsSync(javac)) {
+        throw new Error(`当前 JDK 缺少 javac：${javac}。JDI 轻量调试需要完整 JDK，而不是仅 JRE`);
+      }
+      const sourceFile = helperSourceFile();
+      const source = readFileSync(sourceFile);
+      const hash = createHash('sha256').update(source).digest('hex').slice(0, 16);
+      const classesDir = join(dataDir, 'java-debug-helper', hash);
+      const classFile = join(classesDir, 'YanZhiJavaDebugger.class');
+      if (!existsSync(classFile)) {
+        mkdirSync(classesDir, { recursive: true });
+        const compiled = spawnSync(javac, [
+          '--add-modules', 'jdk.jdi',
+          '-encoding', 'UTF-8',
+          '-d', classesDir,
+          sourceFile,
+        ], {
+          encoding: 'utf8',
+          windowsHide: true,
+          env: buildSpawnEnv(),
+          timeout: 60_000,
+        });
+        if (compiled.status !== 0 || !existsSync(classFile)) {
+          throw new Error(`Java 调试助手编译失败：${(compiled.stderr || compiled.stdout || '').trim().slice(0, 1200)}`);
+        }
+      }
+      return { java, classesDir };
+    }).catch((error) => {
+      javaHelperBuild = null;
+      throw error;
+    });
+  }
+  return javaHelperBuild;
+}
+
+function decodeHelperEvent(line: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(line);
+    return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function sendJavaHelper(
+  session: DebugSession,
+  command: string,
+  ...args: string[]
+): Promise<{ ok: boolean; result: string }> {
+  const helper = session._helper;
+  const input = helper?.stdin;
+  if (!helper || helper.killed || !input?.writable) {
+    return Promise.reject(new Error('Java 调试助手未连接'));
+  }
+  const id = String((session._cmdSeq || 0) + 1);
+  session._cmdSeq = Number(id);
+  return new Promise((resolveCommand, rejectCommand) => {
+    const timer = setTimeout(() => {
+      session._pending?.delete(id);
+      rejectCommand(new Error(`Java 调试命令超时：${command}`));
+    }, 20_000);
+    session._pending?.set(id, { resolve: resolveCommand, reject: rejectCommand, timer });
+    input.write([id, command, ...args].join('\t') + '\n');
+  });
+}
+
+async function attachJavaDebugHelper(session: DebugSession): Promise<void> {
+  const { java, classesDir } = await ensureJavaDebugHelper();
+  const helper = spawn(java, [
+    '--add-modules', 'jdk.jdi',
+    '-cp', classesDir,
+    'YanZhiJavaDebugger',
+    session.host,
+    String(session.port),
+  ], {
+    cwd: session.projectDir || process.cwd(),
+    env: buildSpawnEnv(),
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  session._helper = helper;
+  session.helperPid = helper.pid ?? null;
+  session._pending = new Map();
+  session._cmdSeq = 0;
+
+  const attached = new Promise<void>((resolveAttached, rejectAttached) => {
+    const timer = setTimeout(() => rejectAttached(new Error('Java 调试助手连接 JDWP 超时')), 20_000);
+    const stdout = createInterface({ input: helper.stdout! });
+    stdout.on('line', (line) => {
+      const message = decodeHelperEvent(line);
+      if (!message) return;
+      if (message.event === 'attached') {
+        clearTimeout(timer);
+        resolveAttached();
+        return;
+      }
+      if (message.event === 'paused') {
+        session.status = 'paused';
+        session.lastPause = {
+          reason: String(message.reason || 'breakpoint'),
+          thread: typeof message.thread === 'string' ? message.thread : undefined,
+          className: typeof message.class === 'string' ? message.class : undefined,
+          method: typeof message.method === 'string' ? message.method : undefined,
+          file: typeof message.file === 'string' ? message.file : undefined,
+          line: typeof message.line === 'string' ? Number(message.line) : undefined,
+        };
+        return;
+      }
+      if (message.event === 'exited' || message.event === 'disconnect') {
+        session.status = 'terminated';
+        return;
+      }
+      if (typeof message.id === 'string') {
+        const pending = session._pending?.get(message.id);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        session._pending!.delete(message.id);
+        const response = {
+          ok: !!message.ok,
+          result: String(message.result ?? ''),
+        };
+        if (response.ok) pending.resolve(response);
+        else pending.reject(new Error(response.result || 'Java 调试命令失败'));
+      }
+    });
+  });
+
+  helper.stderr?.on('data', (chunk: Buffer) => {
+    session.lastError = chunk.toString('utf8').trim().slice(0, 2000);
+  });
+  helper.once('error', (error) => {
+    session.lastError = error.message;
+    session.status = 'terminated';
+  });
+  helper.once('exit', (code) => {
+    for (const pending of session._pending?.values() || []) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(`Java 调试助手已退出（${code ?? 'unknown'}）${session.lastError ? `：${session.lastError}` : ''}`));
+    }
+    session._pending?.clear();
+    if (session.status !== 'paused') session.status = 'terminated';
+  });
+
+  await attached;
+}
+
+function stopJavaHelper(session: DebugSession): void {
+  try {
+    session._helper?.stdin?.write('0\tstop\n');
+  } catch {
+    // ignore
+  }
+  try {
+    session._helper?.kill();
+  } catch {
+    // ignore
+  }
+  session._helper = null;
+  session.status = 'terminated';
+}
 
 // ============================================================
 // 工具定义
@@ -657,49 +873,74 @@ export function makeJavaSuiteTools(): BuiltInTool[] {
         const mainClass = String(args.mainClass);
         const port = (args.port as number) || 5005;
         const sessionId = `debug-${Date.now().toString(36)}`;
+        try {
+          const { java } = await ensureJavaDebugHelper();
+          let cp = String(args.classpath || '').trim();
+          if (!cp) {
+            const cpFile = join(dir, '.yz-debug-classpath');
+            await runCommand(
+              `mvn dependency:build-classpath -Dmdep.outputFile="${cpFile.replace(/\\/g, '/')}" -q`,
+              dir,
+              120_000,
+            );
+            const dependencies = exists(cpFile) ? readFileSafe(cpFile).trim() : '';
+            cp = [join(dir, 'target', 'classes'), dependencies].filter(Boolean).join(delimiter);
+          }
+          if (!cp) throw new Error('无法构建 classpath：请先执行 mvn compile，或显式传 classpath');
 
-        // 构建 classpath
-        let cp = args.classpath as string || '';
-        if (!cp) {
-          // 尝试 Maven classpath
-          const r = await runCommand('mvn dependency:build-classpath -Dmdep.outputFile=/dev/stdout -q', dir, 60000);
-          cp = r.stdout.trim().split('\n').pop() || '';
-          // 加上 target/classes
-          cp = `target/classes${cp ? ':' + cp : ''}`;
+          const session: DebugSession = {
+            id: sessionId,
+            pid: null,
+            port,
+            host: '127.0.0.1',
+            status: 'launching',
+            breakpoints: [],
+            projectDir: dir,
+            mainClass,
+            startedAt: Date.now(),
+            launched: true,
+            helperPid: null,
+            lastPause: null,
+            lastError: '',
+          };
+          const target = spawn(java, [
+            `-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=${session.host}:${port}`,
+            '-cp', cp,
+            mainClass,
+            ...splitProgramArgs(args.args),
+          ], {
+            cwd: dir,
+            env: buildSpawnEnv(),
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          session._target = target;
+          session.pid = target.pid ?? null;
+          target.stdout?.on('data', () => {});
+          target.stderr?.on('data', (chunk: Buffer) => {
+            session.lastError = chunk.toString('utf8').trim().slice(-2000);
+          });
+          target.once('exit', (code) => {
+            if (session.status !== 'paused') session.status = 'terminated';
+            session.lastError = session.lastError || `目标进程退出（${code ?? 'unknown'}）`;
+          });
+          debugSessions.set(sessionId, session);
+          await attachJavaDebugHelper(session);
+          session.status = 'paused';
+          session.lastPause = { reason: 'entry' };
+          return textResult(
+            `调试会话已启动并暂停在入口: ${sessionId} (pid=${session.pid}, helper=${session.helperPid}, port=${port})\n`
+              + '先调用 java_debug_set_breakpoint 设置断点，再调用 java_debug_continue 开始执行。',
+          );
+        } catch (error) {
+          const session = debugSessions.get(sessionId);
+          if (session) {
+            try { session._target?.kill(); } catch { /* ignore */ }
+            session.status = 'terminated';
+            debugSessions.delete(sessionId);
+          }
+          return textResult(`[错误] Java 调试启动失败：${(error as Error)?.message || error}`);
         }
-
-        const debugArgs = `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=${port}`;
-        const programArgs = args.args ? String(args.args) : '';
-        const cmd = `java ${debugArgs} -cp "${cp}" ${mainClass} ${programArgs}`;
-
-        const session: DebugSession = {
-          id: sessionId,
-          pid: null,
-          port,
-          host: '127.0.0.1',
-          status: 'launching',
-          breakpoints: [],
-          projectDir: dir,
-          mainClass,
-          startedAt: Date.now(),
-        };
-
-        // 异步启动
-        const proc = execFile('java', ['-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=' + port, '-cp', cp, mainClass, ...programArgs.split(/\s+/).filter(Boolean)], {
-          cwd: dir,
-          maxBuffer: 10 * 1024 * 1024,
-          // ★ 2026-10-09：漏了 windowsHide → JVM 调试子进程会弹黑框（与 ffmpeg 同源问题）。
-          //   全仓核查后仅此一处遗漏（其余 spawn/execFile 均已带）。
-          windowsHide: true,
-        }, (err) => {
-          session.status = 'terminated';
-          if (err && !err.killed) session.status = 'terminated';
-        });
-        session.pid = proc.pid ?? null;
-        session.status = 'running';
-        debugSessions.set(sessionId, session);
-
-        return textResult(`调试会话已启动: ${sessionId} (pid=${session.pid}, port=${port})\n可使用 java_debug_set_breakpoint 设置断点，java_debug_continue 继续`);
       },
     },
     {
@@ -726,9 +967,21 @@ export function makeJavaSuiteTools(): BuiltInTool[] {
           breakpoints: [],
           projectDir: '',
           startedAt: Date.now(),
+          launched: false,
+          helperPid: null,
+          lastPause: null,
+          lastError: '',
         };
         debugSessions.set(sessionId, session);
-        return textResult(`已附加到 ${host}:${port}，会话 ID: ${sessionId}`);
+        try {
+          await attachJavaDebugHelper(session);
+          session.status = 'running';
+          return textResult(`已附加到 ${host}:${port}，会话 ID: ${sessionId}，调试助手 pid=${session.helperPid}`);
+        } catch (error) {
+          stopJavaHelper(session);
+          debugSessions.delete(sessionId);
+          return textResult(`[错误] 附加 Java 进程失败：${(error as Error)?.message || error}`);
+        }
       },
     },
     {
@@ -742,7 +995,8 @@ export function makeJavaSuiteTools(): BuiltInTool[] {
       execute: async (args) => {
         const session = debugSessions.get(String(args.sessionId));
         if (!session) return textResult('会话不存在');
-        session.status = 'terminated';
+        stopJavaHelper(session);
+        try { session._target?.kill(); } catch { /* ignore */ }
         debugSessions.delete(String(args.sessionId));
         return textResult(`会话 ${args.sessionId} 已停止`);
       },
@@ -762,11 +1016,16 @@ export function makeJavaSuiteTools(): BuiltInTool[] {
       execute: async (args) => {
         const session = debugSessions.get(String(args.sessionId));
         if (!session) return textResult('会话不存在');
-        session.breakpoints.push({
-          className: String(args.className),
-          line: Number(args.line),
-        });
-        return textResult(`断点已设置: ${args.className}:${args.line}`);
+        const className = String(args.className).trim();
+        const line = Math.max(1, Math.floor(Number(args.line)));
+        if (!className || !Number.isFinite(line)) return textResult('[错误] className / line 非法');
+        try {
+          const response = await sendJavaHelper(session, 'break', helperArg(className), String(line));
+          session.breakpoints.push({ className, line });
+          return textResult(`断点已提交: ${className}:${line}（${response.result}）`);
+        } catch (error) {
+          return textResult(`[错误] 设置断点失败：${(error as Error)?.message || error}`);
+        }
       },
     },
     {
@@ -783,8 +1042,17 @@ export function makeJavaSuiteTools(): BuiltInTool[] {
       execute: async (args) => {
         const session = debugSessions.get(String(args.sessionId));
         if (!session) return textResult('会话不存在');
-        // TODO: 通过 DAP 协议发送 step 请求
-        return textResult(`单步执行 ${args.mode || 'over'}（会话 ${args.sessionId}）— 需要接入 DAP 适配器`);
+        const mode = String(args.mode || 'over').toLowerCase();
+        if (mode !== 'over' && mode !== 'into' && mode !== 'out') {
+          return textResult('[错误] mode 只能是 over / into / out');
+        }
+        try {
+          const response = await sendJavaHelper(session, 'step', mode);
+          session.status = 'running';
+          return textResult(`单步执行 ${mode}（会话 ${args.sessionId}）：${response.result}`);
+        } catch (error) {
+          return textResult(`[错误] 单步执行失败：${(error as Error)?.message || error}`);
+        }
       },
     },
     {
@@ -798,24 +1066,38 @@ export function makeJavaSuiteTools(): BuiltInTool[] {
       execute: async (args) => {
         const session = debugSessions.get(String(args.sessionId));
         if (!session) return textResult('会话不存在');
-        return textResult(`继续执行（会话 ${args.sessionId}）— 需要接入 DAP 适配器`);
+        try {
+          const response = await sendJavaHelper(session, 'continue');
+          session.status = 'running';
+          session.lastPause = null;
+          return textResult(`继续执行（会话 ${args.sessionId}）：${response.result}`);
+        } catch (error) {
+          return textResult(`[错误] 继续执行失败：${(error as Error)?.message || error}`);
+        }
       },
     },
     {
       name: 'java_debug_eval',
-      description: '在调试上下文中求值表达式',
+      description: '在暂停的调试帧中读取值。支持局部变量、this、this.field、array[index]、Type.staticField；复杂表达式会明确拒绝',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: '调试会话 ID' },
-          expression: { type: 'string', description: 'Java 表达式' },
+          expression: { type: 'string', description: '局部变量名、this、this.field、array[index] 或 Type.staticField' },
         },
         required: ['sessionId', 'expression'],
       },
       execute: async (args) => {
         const session = debugSessions.get(String(args.sessionId));
         if (!session) return textResult('会话不存在');
-        return textResult(`求值 ${args.expression}（会话 ${args.sessionId}）— 需要接入 DAP 适配器`);
+        const expression = String(args.expression || '').trim();
+        if (!expression) return textResult('[错误] expression 不能为空');
+        try {
+          const response = await sendJavaHelper(session, 'eval', helperArg(expression));
+          return textResult(`${response.result}`);
+        } catch (error) {
+          return textResult(`[错误] 求值失败：${(error as Error)?.message || error}`);
+        }
       },
     },
     {
@@ -827,6 +1109,7 @@ export function makeJavaSuiteTools(): BuiltInTool[] {
         return textResult(JSON.stringify(sessions.map((s) => ({
           id: s.id, pid: s.pid, port: s.port, status: s.status,
           mainClass: s.mainClass, breakpoints: s.breakpoints.length,
+          helperPid: s.helperPid, lastPause: s.lastPause, lastError: s.lastError || undefined,
         })), null, 2));
       },
     },
@@ -977,7 +1260,10 @@ export const javaSuiteModule: PluginModule = {
     ctx.log('Java 开发套件插件已激活（Maven/Gradle/Spring Boot/Debug/Test/Format/MyBatis）');
   },
   deactivate() {
-    // 清理所有调试会话
+    for (const session of debugSessions.values()) {
+      stopJavaHelper(session);
+      try { session._target?.kill(); } catch { /* ignore */ }
+    }
     debugSessions.clear();
   },
 };
