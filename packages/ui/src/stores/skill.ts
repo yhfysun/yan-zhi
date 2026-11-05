@@ -15,6 +15,8 @@ export interface Skill {
   bodyMd: string;
   /** 子目录文件（2026-10-06）：[{path, content}]，path 相对 skill 根（SKILL.md 即 bodyMd 本体） */
   files?: Array<{ path: string; content: string }>;
+  pageAssets?: string[];
+  capabilities?: string[];
   enabled: boolean;
   isPublic?: boolean;
   category?: string;
@@ -251,6 +253,8 @@ function rowToSkill(r: any): Skill {
       frontmatter: safeJson(r.frontmatter_json, { name: r.name }),
       bodyMd: r.body_md,
       files: safeJson<Array<{ path: string; content: string }> | undefined>(r.files_json, undefined),
+      pageAssets: safeJson<string[]>(r.page_asset_refs_json, []),
+      capabilities: safeJson<string[]>(r.asset_capabilities_json, []),
     };
   }
   return {
@@ -264,6 +268,8 @@ function rowToSkill(r: any): Skill {
     },
     bodyMd: r.body || '',
     files: safeJson<Array<{ path: string; content: string }> | undefined>(r.files_json, undefined),
+    pageAssets: safeJson<string[]>(r.page_asset_refs_json, []),
+    capabilities: safeJson<string[]>(r.asset_capabilities_json, []),
     enabled: !!r.enabled,
     category: r.category,
     author: r.author,

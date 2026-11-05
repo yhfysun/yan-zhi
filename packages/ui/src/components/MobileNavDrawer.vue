@@ -27,7 +27,7 @@
 
 <script setup lang="ts">
 import type { Component } from 'vue';
-import { FolderOpened, Timer, Tools, Setting } from '@element-plus/icons-vue';
+import { FolderOpened, Timer, Tools, Setting, Files } from '@element-plus/icons-vue';
 import { useRouter } from 'vue-router';
 import { useChat } from '../composables/chat/useChat';
 
@@ -60,6 +60,7 @@ const items: Array<{ key: string; label: string; icon: Component; run: () => voi
   { key: 'space', label: '空间切换', icon: FolderOpened, run: () => goChatTab('chat') },
   { key: 'cron', label: '定时任务', icon: Timer, run: () => goChatTab('task') },
   { key: 'tools', label: '技能工具', icon: Tools, run: () => go('/tools') },
+  { key: 'page-assets', label: '页面资产', icon: Files, run: () => go('/page-assets') },
   { key: 'settings', label: '设置', icon: Setting, run: () => go('/settings') },
 ];
 </script>

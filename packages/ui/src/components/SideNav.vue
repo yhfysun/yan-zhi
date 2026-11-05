@@ -242,7 +242,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, Setting, UserFilled, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document, OfficeBuilding } from '@element-plus/icons-vue';
+import { ChatDotRound, Setting, UserFilled, Avatar, SwitchButton, Fold, Expand, Monitor, Collection, Moon, Sunny, HomeFilled, Promotion, DataLine, Operation, Share, Key, Cpu, Document, OfficeBuilding, Files } from '@element-plus/icons-vue';
 import { Code } from 'lucide-vue-next';
 import { openSettingsDrawer } from '../composables/useSettingsDrawer';
 import { useAuthStore } from '../stores/auth';
@@ -287,6 +287,7 @@ const builtinNavItems: NavItem[] = [
   { path: '/browser', label: '浏览器', tabLabel: '浏览器', icon: Monitor, kind: 'route', group: '工作台', hideOnMobile: true },
   { path: '/chat-hub', label: '消息', tabLabel: '消息', icon: Promotion, kind: 'route', group: '工作台' },
   { path: '/models', label: '模型平台', tabLabel: '模型', icon: Cpu, kind: 'route', group: '工作台' },
+  { path: '/page-assets', label: '页面资产', tabLabel: '页面资产', icon: Files, kind: 'route', group: '系统' },
   { path: '', label: '设置', tabLabel: '设置', icon: Setting, kind: 'settings', group: '系统' },
 ];
 

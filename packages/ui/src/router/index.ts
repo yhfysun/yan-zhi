@@ -214,6 +214,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Skill 商店' },
   },
   {
+    path: '/page-assets',
+    name: 'page-assets',
+    component: () => import('../views/page-assets/PageAssets.vue'),
+    meta: { title: '页面资产' },
+  },
+  {
     path: '/skills/:id',
     name: 'skill-detail',
     component: () => import('../views/Skills.vue'),
