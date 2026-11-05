@@ -23,68 +23,96 @@
 <template>
   <div v-if="items.length" class="tcs">
     <div class="tcs-head">
-      <el-icon :size="14" class="tcs-icon"><Files /></el-icon>
-      <span class="tcs-title">本次修改 {{ totalFiles }} 个文件</span>
-      <span class="tcs-stat">
+      <span class="tcs-head-icon" aria-hidden="true">
+        <el-icon :size="14"><CircleCheck /></el-icon>
+      </span>
+      <span class="tcs-heading">
+        <span class="tcs-title">本次修改 {{ totalFiles }} 个文件</span>
+        <span class="tcs-sub">{{ totalWrites }} 次写入 · 已完成，待确认</span>
+      </span>
+      <span class="tcs-stat" aria-label="本次代码改动行数">
         <em class="tcs-add">+{{ totalAdded }}</em>
         <em class="tcs-del">−{{ totalDeleted }}</em>
       </span>
-      <span class="tcs-sub">{{ totalWrites }} 次写入 · 待确认</span>
       <span class="tcs-spacer" />
       <el-button size="small" text :loading="loading" @click="load">刷新</el-button>
       <el-button size="small" type="primary" :loading="savingAll" :disabled="!!acting" @click="saveAll">全部保存</el-button>
       <el-button size="small" :loading="revertingAll" :disabled="!!acting" @click="revertAll">全部撤销</el-button>
     </div>
 
-    <template v-for="it in items" :key="it.id">
-      <div
-        class="tcs-row"
-        :class="{ clickable: canOpenEditor }"
-        :title="rowTitle(it)"
-        @click="onRowClick(it)"
-      >
-        <!-- 代码模式：箭头表示「去编辑器看」；否则表示「就地展开」 -->
-        <el-icon :size="12" class="tcs-chevron">
-          <ArrowDown v-if="!canOpenEditor && expanded[it.id]" />
-          <ArrowRight v-else />
-        </el-icon>
-        <code class="tcs-path">{{ shortPath(it.path) }}</code>
-        <span class="tcs-stat">
-          <em v-if="it.truncated" class="tcs-approx">大改动</em>
-          <template v-else>
-            <em class="tcs-add">+{{ it.added }}</em>
-            <em class="tcs-del">−{{ it.deleted }}</em>
-          </template>
-        </span>
-        <span v-if="it.writes > 1" class="tcs-badge">{{ it.writes }} 次</span>
-        <span class="tcs-spacer" />
-        <span class="tcs-time">{{ timeLabel(it.lastAt) }}</span>
+    <template v-for="it in visibleItems" :key="it.id">
+      <div class="tcs-row-wrap">
+        <button
+          type="button"
+          class="tcs-row"
+          :title="rowTitle(it)"
+          @click="onRowClick(it)"
+        >
+          <el-icon :size="12" class="tcs-chevron">
+            <ArrowDown v-if="!canOpenEditor && expanded[it.id]" />
+            <ArrowRight v-else />
+          </el-icon>
+          <code class="tcs-path">{{ displayPath(it.path) }}</code>
+          <span class="tcs-stat">
+            <em v-if="it.truncated" class="tcs-approx">大改动</em>
+            <template v-else>
+              <em class="tcs-add">+{{ it.added }}</em>
+              <em class="tcs-del">−{{ it.deleted }}</em>
+            </template>
+          </span>
+          <span v-if="it.writes > 1" class="tcs-badge">{{ it.writes }} 次</span>
+          <span class="tcs-spacer" />
+          <span class="tcs-time">{{ timeLabel(it.lastAt) }}</span>
+        </button>
+        <button
+          v-if="canOpenEditor"
+          type="button"
+          class="tcs-preview"
+          :class="{ active: expanded[it.id] }"
+          :aria-label="`${expanded[it.id] ? '收起' : '预览'} ${displayPath(it.path)} 的差异`"
+          :title="expanded[it.id] ? '收起差异预览' : '在聊天中预览差异'"
+          @click="togglePreview(it)"
+        >
+          <el-icon :size="13"><View /></el-icon>
+        </button>
       </div>
 
-      <!-- 兜底：没有编辑器可跳转时，仍在原地看 diff（不倒退能力） -->
-      <div v-if="!canOpenEditor && expanded[it.id]" class="tcs-row-body">
+      <!-- 代码模式保留编辑器主入口；这里的预览按钮供聊天流内快速查看。 -->
+      <div v-if="expanded[it.id]" class="tcs-row-body">
         <div v-if="detailState[it.id] === 'loading'" class="tcs-empty">加载中…</div>
         <div v-else-if="detailState[it.id] === 'gone'" class="tcs-empty">该修改已处理（或被后续修改覆盖）</div>
         <DiffBody
           v-else-if="detailText[it.id]"
           :diff-text="detailText[it.id]"
-          :file-name="shortPath(it.path)"
+          :file-name="displayPath(it.path)"
           plain
         />
         <div v-else class="tcs-empty">（内容无差异）</div>
       </div>
     </template>
+
+    <button
+      v-if="hiddenCount || (showAll && items.length > MAX_VISIBLE_ITEMS)"
+      type="button"
+      class="tcs-more"
+      @click="showAll = !showAll"
+    >
+      <el-icon :size="12"><ArrowDown v-if="!showAll" /><ArrowUp v-else /></el-icon>
+      {{ showAll ? '收起文件列表' : `展开其余 ${hiddenCount} 个文件` }}
+    </button>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Files, ArrowDown, ArrowRight } from '@element-plus/icons-vue';
+import { ArrowDown, ArrowRight, ArrowUp, CircleCheck, View } from '@element-plus/icons-vue';
 import { api } from '../../api/client';
 import { buildUnifiedDiff } from '../../utils/text-diff';
 import { useCodeStore } from '../../stores/code';
 import DiffBody from './DiffBody.vue';
+
+const MAX_VISIBLE_ITEMS = 3;
 
 const props = defineProps<{
   /** 会话 id —— 快照按会话归属聚合 */
@@ -118,6 +146,7 @@ const loading = ref(false);
 const acting = ref<'' | 'apply' | 'revert' | 'all'>('');
 const savingAll = ref(false);
 const revertingAll = ref(false);
+const showAll = ref(false);
 const expanded = reactive<Record<string, boolean>>({});
 const detailState = reactive<Record<string, 'idle' | 'loading' | 'gone'>>({});
 const detailText = reactive<Record<string, string>>({});
@@ -125,9 +154,36 @@ const detailText = reactive<Record<string, string>>({});
 /** 有代码工作台的编辑器可跳转时才走「点开预览」，否则兜底就地展开 */
 const canOpenEditor = computed(() => Boolean(code.codeModeActive));
 
-function shortPath(p: string): string {
-  const parts = String(p || '').split(/[\\/]/);
-  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : parts.join('/');
+const visibleItems = computed(() =>
+  showAll.value ? items.value : items.value.slice(0, MAX_VISIBLE_ITEMS),
+);
+const hiddenCount = computed(() => Math.max(0, items.value.length - MAX_VISIBLE_ITEMS));
+const commonRoot = computed(() => commonDirectory(items.value.map((item) => item.path)));
+
+function normalizedPath(p: string): string {
+  return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function commonDirectory(paths: string[]): string {
+  if (paths.length < 2) return '';
+  const parts = paths.map((p) => normalizedPath(p).split('/').filter(Boolean));
+  if (!parts.length) return '';
+  let length = Math.min(...parts.map((item) => item.length));
+  for (let index = 0; index < length; index += 1) {
+    const segment = parts[0][index];
+    if (!parts.every((item) => item[index] === segment)) {
+      length = index;
+      break;
+    }
+  }
+  return parts[0].slice(0, length).join('/');
+}
+
+function displayPath(p: string): string {
+  const normalized = normalizedPath(p);
+  if (!commonRoot.value || normalized === commonRoot.value) return normalized;
+  const prefix = `${commonRoot.value}/`;
+  return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
 }
 
 function timeLabel(ts: number): string {
@@ -159,6 +215,7 @@ async function load() {
     totalWrites.value = Number(r.data?.totalWrites) || items.value.length;
     totalAdded.value = Number(r.data?.totalAdded) || items.value.reduce((n, i) => n + (i.added || 0), 0);
     totalDeleted.value = Number(r.data?.totalDeleted) || items.value.reduce((n, i) => n + (i.deleted || 0), 0);
+    if (items.value.length <= MAX_VISIBLE_ITEMS) showAll.value = false;
     // 已不存在的行清掉展开态，避免下次同名行带着旧 diff
     for (const k of Object.keys(expanded)) {
       if (!items.value.some((i) => i.id === k)) delete expanded[k];
@@ -192,6 +249,11 @@ function onRowClick(it: SummaryItem) {
     code.openDiff(it.path, it.id);
     return;
   }
+  expanded[it.id] = !expanded[it.id];
+  if (expanded[it.id]) void ensureDetail(it);
+}
+
+function togglePreview(it: SummaryItem) {
   expanded[it.id] = !expanded[it.id];
   if (expanded[it.id]) void ensureDetail(it);
 }
@@ -260,47 +322,143 @@ watch(() => props.streaming, (now, before) => {
 .tcs {
   margin: 12px 16px 24px;
   border: 1px solid var(--el-border-color-lighter, #e4e7ed);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--el-fill-color-blank, #fff);
   overflow: hidden;
 }
 .tcs-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
+  gap: 8px;
+  min-height: 48px;
+  padding: 8px 10px 8px 12px;
   background: var(--el-fill-color-light, #f5f7fa);
   border-bottom: 1px solid var(--el-border-color-lighter, #e4e7ed);
 }
-.tcs-icon { color: var(--el-color-primary, #409eff); }
+.tcs-head-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #22a06b 13%, transparent);
+  color: #16835b;
+}
+.tcs-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
 .tcs-title { font-size: 13px; font-weight: 600; }
 .tcs-sub { font-size: 12px; color: var(--el-text-color-secondary, #909399); }
 .tcs-spacer { flex: 1; }
 /* 行数：绿加红减 —— 与 diff 着色一致（此处是"改动量"，不是行情涨跌） */
-.tcs-stat { display: inline-flex; align-items: center; gap: 4px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+.tcs-stat { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
 .tcs-add { font-style: normal; color: #22a06b; }
 .tcs-del { font-style: normal; color: #e5484d; }
 .tcs-approx { font-style: normal; color: var(--el-text-color-secondary, #909399); }
+.tcs-row-wrap {
+  display: flex;
+  align-items: stretch;
+  border-top: 1px solid var(--el-border-color-lighter, #e4e7ed);
+}
+.tcs-row-wrap:first-of-type { border-top: none; }
 .tcs-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-top: 1px solid var(--el-border-color-lighter, #e4e7ed);
+  flex: 1;
+  min-width: 0;
+  padding: 7px 6px 7px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
 }
-.tcs-row:first-of-type { border-top: none; }
-.tcs-row.clickable { cursor: pointer; }
-.tcs-row.clickable:hover { background: var(--el-fill-color-light, #f5f7fa); }
+.tcs-row:focus-visible,
+.tcs-preview:focus-visible,
+.tcs-more:focus-visible {
+  outline: 2px solid var(--el-color-primary, #409eff);
+  outline-offset: -2px;
+}
+.tcs-row-wrap:hover { background: var(--el-fill-color-light, #f5f7fa); }
 .tcs-chevron { color: var(--el-text-color-secondary, #909399); }
-.tcs-path { font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.tcs-path {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tcs-badge {
   font-size: 11px;
   padding: 0 5px;
   border-radius: 8px;
   background: var(--el-color-primary-light-9, #ecf5ff);
   color: var(--el-color-primary, #409eff);
+  white-space: nowrap;
 }
-.tcs-time { font-size: 11px; color: var(--el-text-color-secondary, #909399); }
+.tcs-time { flex: 0 0 auto; font-size: 11px; color: var(--el-text-color-secondary, #909399); }
+.tcs-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  flex: 0 0 34px;
+  border: 0;
+  border-left: 1px solid var(--el-border-color-lighter, #e4e7ed);
+  background: transparent;
+  color: var(--el-text-color-secondary, #909399);
+  cursor: pointer;
+}
+.tcs-preview:hover,
+.tcs-preview.active {
+  background: var(--el-color-primary-light-9, #ecf5ff);
+  color: var(--el-color-primary, #409eff);
+}
 .tcs-row-body { padding: 0 12px 8px; }
 .tcs-empty { font-size: 12px; color: var(--el-text-color-secondary, #909399); padding: 6px 0; }
+.tcs-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-top: 1px solid var(--el-border-color-lighter, #e4e7ed);
+  background: var(--el-fill-color-blank, #fff);
+  color: var(--el-text-color-secondary, #606266);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tcs-more:hover {
+  color: var(--el-color-primary, #409eff);
+  background: var(--el-fill-color-light, #f5f7fa);
+}
+
+@media (max-width: 680px) {
+  .tcs {
+    margin: 10px 8px 20px;
+  }
+  .tcs-head {
+    flex-wrap: wrap;
+  }
+  .tcs-heading {
+    flex: 1 1 160px;
+  }
+  .tcs-head .el-button {
+    margin-left: 0;
+  }
+  .tcs-time {
+    display: none;
+  }
+}
 </style>

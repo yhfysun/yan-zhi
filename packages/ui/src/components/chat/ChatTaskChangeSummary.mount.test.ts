@@ -38,6 +38,7 @@ const ITEMS = [
     truncated: false,
   },
 ];
+let summaryItems = [...ITEMS];
 
 vi.mock('../../api/client', () => {
   const get = vi.fn(async (url: string) => {
@@ -45,10 +46,10 @@ vi.mock('../../api/client', () => {
     if (u.startsWith('/workspace/changes/summary')) {
       return {
         data: {
-          items: ITEMS,
-          totalFiles: ITEMS.length,
+          items: summaryItems,
+          totalFiles: summaryItems.length,
           totalWrites: 3,
-          totalAdded: 52,
+          totalAdded: summaryItems.reduce((sum, item) => sum + item.added, 0),
           totalDeleted: 3,
         },
       };
@@ -108,6 +109,7 @@ beforeEach(() => {
   document.body.innerHTML = '';
   get.mockClear();
   post.mockClear();
+  summaryItems = [...ITEMS];
   setMode('office'); // 默认离开开发模式：canOpenEditor=false，走兜底展开
 });
 
@@ -156,6 +158,41 @@ describe('ChatTaskChangeSummary · 任务结束后的改动汇总（真实挂载
     row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await settle();
     expect(get).toHaveBeenCalledWith(expect.stringContaining('/workspace/changes/content?id=fc_1'));
+    app.unmount();
+  });
+
+  it('文件多时默认只展示前三项，并可展开其余文件', async () => {
+    summaryItems = [
+      ...ITEMS,
+      { ...ITEMS[0], id: 'fc_3', path: 'C:\\proj\\shutter\\apps\\mobile\\lib\\third.dart' },
+      { ...ITEMS[0], id: 'fc_4', path: 'C:\\proj\\shutter\\apps\\mobile\\lib\\fourth.dart' },
+      { ...ITEMS[0], id: 'fc_5', path: 'C:\\proj\\shutter\\apps\\mobile\\lib\\fifth.dart' },
+    ];
+    const { app, host } = await mountCard(false);
+    expect(host.querySelectorAll('.tcs-row')).toHaveLength(3);
+    expect(host.textContent).toContain('展开其余 2 个文件');
+    expect(host.textContent).not.toContain('fifth.dart');
+
+    const more = host.querySelector('.tcs-more') as HTMLButtonElement;
+    more.click();
+    await settle();
+    expect(host.querySelectorAll('.tcs-row')).toHaveLength(5);
+    expect(host.textContent).toContain('fifth.dart');
+    expect(host.textContent).toContain('收起文件列表');
+    app.unmount();
+  });
+
+  it('开发模式下可用独立预览按钮在聊天中查看差异', async () => {
+    setMode('dev');
+    const { app, host } = await mountCard(false);
+    expect(get).not.toHaveBeenCalledWith(expect.stringContaining('/changes/content'));
+
+    const preview = host.querySelector('.tcs-preview') as HTMLButtonElement;
+    expect(preview).toBeTruthy();
+    preview.click();
+    await settle();
+    expect(get).toHaveBeenCalledWith(expect.stringContaining('/workspace/changes/content?id=fc_1'));
+    expect(host.querySelector('.dv')).toBeTruthy();
     app.unmount();
   });
 
