@@ -5,11 +5,9 @@
         <el-input v-model="search" size="small" clearable placeholder="搜索目标计划" :prefix-icon="Search" />
         <el-popover placement="bottom-end" :width="248" trigger="click">
           <template #reference>
-            <el-tooltip content="目标并发设置" placement="top">
-              <el-button size="small" circle>
-                <el-icon><Setting /></el-icon>
-              </el-button>
-            </el-tooltip>
+            <el-button size="small" circle title="目标并发设置" aria-label="目标并发设置">
+              <el-icon><Setting /></el-icon>
+            </el-button>
           </template>
           <div class="gsp-governance">
             <div class="gsp-governance-title">目标并发</div>
