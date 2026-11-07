@@ -48,6 +48,11 @@ import { serverState } from './state.js';
 import { buildOpsFieldContext, type OpsContextInput, type OpsConnectionInfo, type OpsReleaseProjectInfo } from './ops-context.js';
 // 产物登记钩子（P2-3）：把 file_write / 媒体登记的副作用从主循环里搬出去
 import { runAfterToolHooks, runBeforeToolHooks } from './services/tool-hooks.js';
+import {
+  beginGoalOperation,
+  finishGoalOperation,
+  markGoalOperationExecuting,
+} from './services/goal-operation.js';
 // 防失控循环闸门（2026-10-09）：同名同参重复 / 单工具连刷，在 executeTool 漏斗拦截
 import { checkToolLoop, FORCE_STOP_MARKER, neutralizeForceStopMarker, noteToolOutcome } from './services/tool-loop-guard.js';
 // ★★★ 浏览器执行面直连化（2026-10-10）：主进程 loopback 端点客户端。
@@ -1116,20 +1121,63 @@ async function runToolCallAndPersist(opts: {
   const metaOut: { value?: Record<string, unknown> | null } = {};
 
   let result: string;
+  let goalOperationKey: string | null = null;
+  let executionFailed = false;
   if (precomputed !== undefined) {
     result = precomputed;
   } else {
-    emit(task, { type: 'tool:start', toolName, args, ...subEvt });
-    try {
-      result = await executeTool(task, registry, toolName, args, tcId, uiTools, depth, toolDefs, metaOut, ownership?.browserFlowKey);
-    } catch (e: any) {
-      if (isAbortError(e)) {
-        try {
-          insertToolMessageAndEmit(task, convId, userId, tcId, capToolResult('[已中止] 用户中断了工具执行'), ownership);
-        } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
-        throw e;
+    const executeOnce = async () => {
+      emit(task, { type: 'tool:start', toolName, args, ...subEvt });
+      try {
+        return await executeTool(task, registry, toolName, args, tcId, uiTools, depth, toolDefs, metaOut, ownership?.browserFlowKey);
+      } catch (e: any) {
+        if (isAbortError(e)) {
+          try {
+            insertToolMessageAndEmit(task, convId, userId, tcId, capToolResult('[已中止] 用户中断了工具执行'), ownership);
+          } catch { /* 落库失败不影响中止流程（发送侧 sanitize 仍会兜底配对） */ }
+          throw e;
+        }
+        executionFailed = true;
+        return await enrichToolErrorReceipt(task, toolName, args, e);
       }
-      result = await enrichToolErrorReceipt(task, toolName, args, e);
+    };
+
+    if (task.goalId && !INTERACTIVE_TOOLS.has(toolName)) {
+      let begun: ReturnType<typeof beginGoalOperation> | null = null;
+      try {
+        begun = beginGoalOperation({
+          goalId: task.goalId,
+          batchId: task.goalBatchId,
+          toolName,
+          args,
+        });
+      } catch {
+        // 账本故障不能阻断普通工具执行；下一次恢复无法识别时按未执行处理。
+      }
+      if (!begun) {
+        result = await executeOnce();
+      } else {
+        goalOperationKey = begun.operation.idempotencyKey;
+        if (begun.reused) {
+          const cached = begun.operation.result as { result?: unknown } | null;
+          result = typeof cached?.result === 'string'
+            ? cached.result
+            : JSON.stringify(cached?.result ?? cached ?? null);
+        } else if (begun.operation.status === 'prepared' || begun.operation.status === 'failed') {
+          try {
+            markGoalOperationExecuting(goalOperationKey);
+          } catch { /* 继续执行；结束账本失败时结果仍会返回给模型 */ }
+          result = await executeOnce();
+          try {
+            finishGoalOperation(goalOperationKey, executionFailed ? 'failed' : 'executed', { result });
+          } catch { /* 账本失败不重复执行，也不阻断当前工具结果 */ }
+        } else {
+          result = `[目标操作未自动重放] ${toolName} 的上一次执行结果状态为 ${begun.operation.status}。`
+            + '请先核实外部现场，确认未生效后才能再次执行，避免重复副作用。';
+        }
+      }
+    } else {
+      result = await executeOnce();
     }
   }
 

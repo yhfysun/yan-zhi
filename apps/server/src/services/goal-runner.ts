@@ -10,6 +10,7 @@ import {
   loadModel,
   loadPlatform,
   pauseTask,
+  resolveEffectiveWorkspaceDir,
   resumeTask,
   subscribe,
 } from '../llm-task-manager.js';
@@ -27,6 +28,11 @@ import {
   type GoalCreateInput,
   type GoalRun,
 } from './goal-store.js';
+import {
+  verifyDeterministicCriteria,
+  type GoalCriterionResult,
+} from './goal-verifier.js';
+import { listUnknownGoalOperations } from './goal-operation.js';
 
 type BatchStatus = 'completed' | 'failed' | 'aborted';
 
@@ -42,6 +48,7 @@ export interface GoalVerifyResult {
   summary: string;
   unmet: string[];
   needsApproval?: boolean;
+  checks?: GoalCriterionResult[];
 }
 
 export interface GoalRunnerDeps {
@@ -58,6 +65,7 @@ function goalContext(goal: GoalRun, feedback?: string): string {
   const criteria = goal.criteria.length
     ? goal.criteria.map((c, i) => `${i + 1}. [${c.kind || 'text'}] ${c.title}`).join('\n')
     : '无自动验收标准，完成后必须请求人工验收。';
+  const unknownOperations = listUnknownGoalOperations(goal.id);
   return [
     '---',
     '## 目标模式',
@@ -73,6 +81,11 @@ function goalContext(goal: GoalRun, feedback?: string): string {
     '- 不要仅凭“我觉得完成”结束目标；必须产出可核验证据。',
     '- 无自动验收标准时，完成前必须明确请求用户验收。',
     feedback ? `\n上一次验收未通过，必须优先修正：\n${feedback}` : '',
+    unknownOperations.length
+      ? `\n以下外部操作上次执行结果不明，禁止盲目重放；先回到原处核实，确认未生效后才能重试：\n${
+          unknownOperations.slice(-20).map(op => `- ${op.toolName} (${op.argsHash.slice(0, 12)})`).join('\n')
+        }`
+      : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -186,6 +199,34 @@ async function defaultVerify(goal: GoalRun, outcome: GoalBatchResult): Promise<G
       unmet: ['人工验收'],
     };
   }
+  const workspaceDir = resolveEffectiveWorkspaceDir(goal.conversationId) || '';
+  const deterministic = await verifyDeterministicCriteria(goal.criteria, workspaceDir);
+  const failed = deterministic.results.filter(c => !c.passed);
+  if (failed.length) {
+    return {
+      passed: false,
+      summary: failed[0].summary,
+      unmet: failed.map(c => `${c.title}：${c.summary}`),
+      checks: deterministic.results,
+    };
+  }
+  if (deterministic.needsHuman) {
+    return {
+      passed: false,
+      needsApproval: true,
+      summary: '目标包含人工验收项，需要用户确认',
+      unmet: deterministic.unresolved.map(c => c.title),
+      checks: deterministic.results,
+    };
+  }
+  if (!deterministic.unresolved.length) {
+    return {
+      passed: true,
+      summary: `全部 ${deterministic.results.length} 项自动验收通过`,
+      unmet: [],
+      checks: deterministic.results,
+    };
+  }
   const platform = loadPlatform(goal.platformId, goal.userId);
   const model = platform ? loadModel(goal.modelId, goal.userId, platform.id) : null;
   if (!platform || !model) {
@@ -201,7 +242,8 @@ async function defaultVerify(goal: GoalRun, outcome: GoalBatchResult): Promise<G
     .map(m => `【${m.role}】${String(m.content || '').slice(0, 4_000)}`)
     .join('\n\n')
     .slice(-40_000);
-  const criteria = goal.criteria.map((c, i) => `${i + 1}. [${c.kind || 'text'}] ${c.title}`).join('\n');
+  const criteria = deterministic.unresolved.map((c, i) => `${i + 1}. [${c.kind || 'text'}] ${c.title}`).join('\n');
+  const evidence = JSON.stringify(deterministic.results, null, 2).slice(0, 20_000);
   try {
     const { LlmClient } = await import('@yan-zhi/core');
     const client = new LlmClient(platform, model);
@@ -214,7 +256,7 @@ async function defaultVerify(goal: GoalRun, outcome: GoalBatchResult): Promise<G
       },
       {
         id: 'usr', conversationId: '', role: 'user', createdAt: 0,
-        content: `目标：${goal.objective}\n\n验收标准：\n${criteria}\n\n约束：\n${goal.constraints.join('\n') || '无'}\n\n任务记录：\n${transcript}`,
+        content: `目标：${goal.objective}\n\n仍未自动判定的验收标准：\n${criteria}\n\n已通过的确定性证据：\n${evidence || '无'}\n\n约束：\n${goal.constraints.join('\n') || '无'}\n\n任务记录：\n${transcript}`,
       },
     ], { temperature: 0.1, maxTokens: 1200, responseFormat: { type: 'json_object' } });
     const parsed = parseJsonObject(resp.delta?.content || '');
@@ -223,7 +265,7 @@ async function defaultVerify(goal: GoalRun, outcome: GoalBatchResult): Promise<G
     const summary = typeof parsed?.summary === 'string' && parsed.summary.trim()
       ? parsed.summary.trim().slice(0, 1_000)
       : passed ? '验收通过' : '验收未通过';
-    return { passed, summary, unmet };
+    return { passed, summary, unmet, checks: deterministic.results };
   } catch (error: any) {
     return {
       passed: false,

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
+import { markUncertainGoalOperations } from './goal-operation.js';
 
 export type GoalStatus =
   | 'queued'
@@ -371,6 +372,7 @@ export function recoverInterruptedGoals(now = Date.now()): number {
        SET status = 'interrupted', error = '服务重启，目标批次已转入恢复流程', updated_at = ?
        WHERE goal_id = ? AND status IN ('running','waiting_tool')`,
     ).run(now, goalId);
+    markUncertainGoalOperations(goalId);
     if (paused) {
       db.prepare(`
         UPDATE goal_run

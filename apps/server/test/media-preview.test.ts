@@ -114,7 +114,8 @@ describe('③ 产物只登记了图片没视频：子智能体循环漏跑钩子
     //   所以现在断言的是「单点出口存在 + 钩子在其中」，而不是「必须有 2 处调用」。
     expect(LTM, '★ 统一工具出口丢失（子智能体产物将再次不登记）')
       .toMatch(/async function runToolCallAndPersist\(/);
-    const body = win(LTM, 'async function runToolCallAndPersist(', 3000, '统一工具出口');
+    // 目标操作账本增加后统一出口更长，窗口需覆盖到 afterToolHooks。
+    const body = win(LTM, 'async function runToolCallAndPersist(', 8000, '统一工具出口');
     expect(body, '★ 统一出口里没跑 afterToolHooks → 产物永不登记')
       .toMatch(/runAfterToolHooks\(/);
     // 子智能体路径必须也走这个出口（子智能体循环里不能再自写一份执行序列）
@@ -123,7 +124,7 @@ describe('③ 产物只登记了图片没视频：子智能体循环漏跑钩子
 
   it('★★★ 统一出口必须收集工具回传 _meta（否则 file_write 路径拿不到）', () => {
     // 重构后变量统一叫 metaOut（原按两处循环分别命名 subToolMetaOut）
-    const body = win(LTM, 'async function runToolCallAndPersist(', 3000, '统一工具出口');
+    const body = win(LTM, 'async function runToolCallAndPersist(', 8000, '统一工具出口');
     expect(body, '★ 未接 executeTool 的 _meta 出参').toMatch(/metaOut/);
     // ★ 2026-10-15：executeTool 末尾新增一个可选参数（浏览器流键），故 metaOut 之后允许再跟参数
     //   —— 断言只钉"出参确实传进去了"，不再钉它是最后一个实参。
