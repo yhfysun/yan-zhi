@@ -60,6 +60,23 @@ describe('goal schedule store', () => {
     expect(store.schedules[0].id).toBe('goalsched_1');
   });
 
+  it('forwards a current goal snapshot instead of requiring a saved template', async () => {
+    const store = useGoalScheduleStore();
+    await store.createSchedule({
+      name: '当前目标转定时',
+      conversationId: 'conv_1',
+      goalId: 'goal_current',
+      platformId: 'platform_1',
+      modelId: 'model_1',
+      intervalMinutes: 30,
+    });
+
+    expect(post.mock.calls[0][1]).toMatchObject({
+      goalId: 'goal_current',
+      intervalMinutes: 30,
+    });
+  });
+
   it('toggles a schedule through the update endpoint', async () => {
     const store = useGoalScheduleStore();
     store.schedules = [{

@@ -72,6 +72,11 @@
         <el-form-item v-if="!editingId" label="目标模板">
           <el-select v-model="form.templateId" filterable placeholder="选择目标模板" @change="onTemplatePick">
             <el-option
+              v-if="store.currentGoal"
+              value="__current_goal__"
+              :label="`当前目标 · ${store.currentGoal.objective.slice(0, 28)}`"
+            />
+            <el-option
               v-for="template in store.goalTemplates"
               :key="template.id"
               :value="template.id"
@@ -79,10 +84,10 @@
             />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="currentTemplate" label="目标">
+        <el-form-item v-if="selectedPolicy" label="目标">
           <div class="gsp-template-preview">
-            <div>{{ currentTemplate.objective }}</div>
-            <span>{{ currentTemplate.criteria.length }} 项验收 · {{ currentTemplate.constraints.length }} 项约束</span>
+            <div>{{ selectedPolicy.objective }}</div>
+            <span>{{ selectedPolicy.criteria.length }} 项验收 · {{ selectedPolicy.constraints.length }} 项约束</span>
           </div>
         </el-form-item>
 
@@ -185,6 +190,10 @@ const filteredSchedules = computed(() => {
 const currentTemplate = computed<GoalTemplate | null>(() => (
   store.goalTemplates.find((template) => template.id === form.templateId) || null
 ));
+const currentGoalPreview = computed(() => (
+  form.templateId === '__current_goal__' ? store.currentGoal || null : null
+));
+const selectedPolicy = computed(() => currentTemplate.value || currentGoalPreview.value);
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -200,7 +209,7 @@ onBeforeUnmount(() => {
 
 function setDefaults(): void {
   form.name = '';
-  form.templateId = store.goalTemplates[0]?.id || '';
+  form.templateId = store.currentGoal ? '__current_goal__' : (store.goalTemplates[0]?.id || '');
   form.mode = 'daily';
   form.time = '09:00';
   form.weekday = 1;
@@ -221,14 +230,15 @@ async function openCreate(): Promise<void> {
     return;
   }
   await store.loadGoalTemplates();
-  if (!store.goalTemplates.length) {
-    ElMessage.warning('请先在目标模式中保存模板');
+  if (!store.goalTemplates.length && !store.currentGoal) {
+    ElMessage.warning('请先创建目标或保存模板');
     return;
   }
   editingId.value = null;
   setDefaults();
   const template = currentTemplate.value;
   if (template) form.name = template.name;
+  else if (store.currentGoal) form.name = store.currentGoal.objective.slice(0, 40);
   formVisible.value = true;
 }
 
@@ -248,6 +258,10 @@ function openEdit(schedule: GoalSchedule): void {
 }
 
 function onTemplatePick(templateId: string): void {
+  if (templateId === '__current_goal__' && store.currentGoal) {
+    form.name = store.currentGoal.objective.slice(0, 40);
+    return;
+  }
   const template = store.goalTemplates.find((item) => item.id === templateId);
   if (template) form.name = template.name;
 }
@@ -283,6 +297,7 @@ async function onSave(): Promise<void> {
     return;
   }
   const expression = buildGoalScheduleExpression(form);
+  const usingCurrentGoal = form.templateId === '__current_goal__';
   saving.value = true;
   try {
     if (editingId.value) {
@@ -298,7 +313,8 @@ async function onSave(): Promise<void> {
       await scheduleStore.createSchedule({
         name: form.name.trim(),
         conversationId: currentConv.value!.id,
-        templateId: form.templateId,
+        templateId: usingCurrentGoal ? null : form.templateId,
+        goalId: usingCurrentGoal ? store.currentGoal?.id : null,
         agentId: form.agentId || null,
         platformId: form.platformId,
         modelId: form.modelId,
