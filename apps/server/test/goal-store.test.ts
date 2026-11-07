@@ -12,6 +12,7 @@ import {
   startGoalBatch,
   transitionGoal,
 } from '../src/services/goal-store.js';
+import { acquireGoalResource, getGoalResourceLock } from '../src/services/goal-resource-lock.js';
 
 const USER = 'u_goal_store';
 const CONV = 'conv_goal_store';
@@ -131,5 +132,17 @@ describe('goal-store', () => {
     expect(getLatestGoalForConversation('conv_goal_paused_recovery')?.id).toBe(goal.id);
     const row = db.prepare('SELECT status FROM goal_batch WHERE id = ?').get(batch.id) as any;
     expect(row.status).toBe('unknown');
+  });
+
+  it('重启恢复会释放目标持有的工作目录锁', () => {
+    const goal = seed({ conversationId: 'conv_goal_lock_recovery', objective: '锁恢复测试' });
+    transitionGoal(goal.id, 'running');
+    acquireGoalResource(goal.id, 'workspace', 'C:/workspace/recovery', 'recovery');
+    expect(getGoalResourceLock(goal.id)).toBeTruthy();
+
+    recoverInterruptedGoals(Date.now());
+
+    expect(getGoal(goal.id)?.status).toBe('queued');
+    expect(getGoalResourceLock(goal.id)).toBeNull();
   });
 });

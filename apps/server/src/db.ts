@@ -5603,6 +5603,16 @@ db.exec(`
     updated_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_goal_operation_goal ON goal_operation(goal_id, status);
+
+  CREATE TABLE IF NOT EXISTS goal_resource_lock (
+    resource_key TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    heartbeat_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_resource_lock_goal ON goal_resource_lock(goal_id);
 `);
 
 // ===== 工作流运行持久化 =====

@@ -33,6 +33,7 @@ import {
   type GoalCriterionResult,
 } from './goal-verifier.js';
 import { listUnknownGoalOperations } from './goal-operation.js';
+import { acquireGoalResource, releaseGoalResourceLocks } from './goal-resource-lock.js';
 
 type BatchStatus = 'completed' | 'failed' | 'aborted';
 
@@ -334,6 +335,7 @@ export async function runGoalOnce(
     return goal;
   }
   RUNNING.add(goalId);
+  let resourceHeld = false;
   try {
     if (goal.currentBatch >= goal.maxBatches) {
       transitionGoal(goal.id, 'blocked', {
@@ -342,6 +344,32 @@ export async function runGoalOnce(
       });
       appendGoalEvent(goal.id, 'goal.blocked', { reason: 'max_batches' });
       return getGoal(goal.id)!;
+    }
+
+    const workspaceDir = resolveEffectiveWorkspaceDir(goal.conversationId);
+    if (workspaceDir) {
+      const resource = acquireGoalResource(goal.id, 'workspace', workspaceDir, workspaceDir);
+      if (!resource.acquired) {
+        const next = Date.now() + 30_000;
+        transitionGoal(goal.id, 'retry_wait', {
+          nextRunAt: next,
+          lastError: `工作目录正被另一个目标使用${resource.holder?.goalId ? `（${resource.holder.goalId}）` : ''}`,
+          leaseOwner: null,
+          leaseUntil: null,
+        });
+        appendGoalEvent(goal.id, 'resource.wait', {
+          kind: 'workspace',
+          holderGoalId: resource.holder?.goalId || null,
+          nextAt: next,
+        });
+        return getGoal(goal.id)!;
+      }
+      resourceHeld = true;
+      appendGoalEvent(goal.id, 'resource.acquired', {
+        kind: 'workspace',
+        resourceKey: resource.resourceKey,
+        label: workspaceDir,
+      });
     }
 
     goal = transitionGoal(goal.id, 'running', {
@@ -451,6 +479,7 @@ export async function runGoalOnce(
     }
     throw error;
   } finally {
+    if (resourceHeld) releaseGoalResourceLocks(goalId);
     RUNNING.delete(goalId);
   }
 }

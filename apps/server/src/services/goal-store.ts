@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db } from '../db.js';
 import { markUncertainGoalOperations } from './goal-operation.js';
+import { releaseGoalResourceLocks } from './goal-resource-lock.js';
 
 export type GoalStatus =
   | 'queued'
@@ -373,6 +374,7 @@ export function recoverInterruptedGoals(now = Date.now()): number {
        WHERE goal_id = ? AND status IN ('running','waiting_tool')`,
     ).run(now, goalId);
     markUncertainGoalOperations(goalId);
+    releaseGoalResourceLocks(goalId);
     if (paused) {
       db.prepare(`
         UPDATE goal_run
