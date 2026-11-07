@@ -201,7 +201,10 @@ async function defaultVerify(goal: GoalRun, outcome: GoalBatchResult): Promise<G
     };
   }
   const workspaceDir = resolveEffectiveWorkspaceDir(goal.conversationId) || '';
-  const deterministic = await verifyDeterministicCriteria(goal.criteria, workspaceDir);
+  const deterministic = await verifyDeterministicCriteria(goal.criteria, workspaceDir, {
+    conversationId: goal.conversationId,
+    userId: goal.userId,
+  });
   const failed = deterministic.results.filter(c => !c.passed);
   if (failed.length) {
     return {

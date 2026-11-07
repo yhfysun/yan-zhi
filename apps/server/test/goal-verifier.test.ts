@@ -109,4 +109,45 @@ describe('goal deterministic verifier', () => {
     expect(result.unresolved.map(c => c.id)).toEqual(['t', 'h']);
     expect(result.needsHuman).toBe(true);
   });
+
+  it('浏览器验收读取当前页 URL、标题、正文和选择器可见性', async () => {
+    const inspectPage = async () => ({
+      url: 'https://example.com/dashboard',
+      title: '控制台',
+      text: '发布成功 订单已同步',
+      selectorVisible: {
+        '.success-banner': true,
+        '#missing': false,
+      },
+    });
+    const ok = await verifyDeterministicCriterion({
+      id: 'browser-ok',
+      title: '页面状态',
+      kind: 'browser',
+      expect: {
+        urlIncludes: '/dashboard',
+        titleIncludes: '控制台',
+        textIncludes: ['发布成功', '订单已同步'],
+        selectors: [
+          { selector: '.success-banner', visible: true },
+          { selector: '#missing', visible: false },
+        ],
+      },
+    }, workspace, { inspectPage });
+    expect(ok).toMatchObject({ id: 'browser-ok', passed: true });
+    expect(ok?.evidence).toMatchObject({ url: 'https://example.com/dashboard' });
+
+    const failed = await verifyDeterministicCriterion({
+      id: 'browser-fail',
+      title: '页面失败',
+      kind: 'browser',
+      expect: {
+        urlIncludes: '/expected',
+        textIncludes: ['不存在'],
+        selectors: [{ selector: '.success-banner', visible: false }],
+      },
+    }, workspace, { inspectPage });
+    expect(failed).toMatchObject({ id: 'browser-fail', passed: false });
+    expect(failed?.summary).toContain('页面验收未通过');
+  });
 });

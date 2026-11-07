@@ -1,6 +1,7 @@
 import { exec } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { callBrowserBridgeRaw } from '../browser-bridge.js';
 import type { GoalCriterion } from './goal-store.js';
 
 export interface GoalCriterionResult {
@@ -15,6 +16,19 @@ export interface GoalDeterministicVerification {
   results: GoalCriterionResult[];
   unresolved: GoalCriterion[];
   needsHuman: boolean;
+}
+
+export interface GoalBrowserInspection {
+  url?: string;
+  title?: string;
+  text?: string;
+  selectorVisible?: Record<string, boolean>;
+}
+
+export interface GoalVerifierContext {
+  conversationId?: string;
+  userId?: string;
+  inspectPage?: (criterion: GoalCriterion) => Promise<GoalBrowserInspection>;
 }
 
 function expectObject(value: unknown): Record<string, any> {
@@ -166,9 +180,112 @@ async function verifyHttp(criterion: GoalCriterion): Promise<GoalCriterionResult
   }
 }
 
+async function inspectPageViaBridge(
+  criterion: GoalCriterion,
+  context: GoalVerifierContext,
+): Promise<GoalBrowserInspection> {
+  if (!context.conversationId) throw new Error('缺少会话，无法读取浏览器现场');
+  const userId = context.userId || 'guest';
+  const page = await callBrowserBridgeRaw(
+    context.conversationId,
+    'browser_get_page_content',
+    {},
+    20_000,
+    undefined,
+    userId,
+  );
+  if (page?.error) throw new Error(String(page.error));
+  const expect = expectObject(criterion.expect);
+  const selectors = [
+    ...(Array.isArray(expect.selectors) ? expect.selectors : []),
+    ...Object.keys(expectObject(expect.selectorVisible)).map(selector => ({
+      selector,
+      visible: expectObject(expect.selectorVisible)[selector],
+    })),
+  ];
+  const selectorVisible: Record<string, boolean> = {};
+  for (const item of selectors) {
+    const selector = String(item?.selector || '').trim();
+    if (!selector) continue;
+    const observed = await callBrowserBridgeRaw(
+      context.conversationId,
+      'browser_is_visible',
+      { selector },
+      15_000,
+      undefined,
+      userId,
+    );
+    selectorVisible[selector] = observed?.visible === true;
+  }
+  return {
+    url: page?.url ? String(page.url) : '',
+    title: page?.title ? String(page.title) : '',
+    text: page?.text ? String(page.text) : '',
+    selectorVisible,
+  };
+}
+
+async function verifyBrowser(
+  criterion: GoalCriterion,
+  context: GoalVerifierContext,
+): Promise<GoalCriterionResult> {
+  try {
+    const inspection = await (context.inspectPage || (c => inspectPageViaBridge(c, context)))(criterion);
+    const expect = expectObject(criterion.expect);
+    const problems: string[] = [];
+    const urlChecks = Array.isArray(expect.urlIncludes)
+      ? expect.urlIncludes.map(String)
+      : typeof expect.urlIncludes === 'string' ? [expect.urlIncludes] : [];
+    for (const part of urlChecks) {
+      if (!String(inspection.url || '').includes(part)) problems.push(`URL 不含「${part}」`);
+    }
+    if (typeof expect.titleIncludes === 'string'
+      && !String(inspection.title || '').includes(expect.titleIncludes)) {
+      problems.push(`标题不含「${expect.titleIncludes}」`);
+    }
+    const textChecks = Array.isArray(expect.textIncludes)
+      ? expect.textIncludes.map(String)
+      : typeof expect.textIncludes === 'string' ? [expect.textIncludes] : [];
+    for (const part of textChecks) {
+      if (!String(inspection.text || '').includes(part)) problems.push(`页面正文不含「${part}」`);
+    }
+    const expectedSelectors = [
+      ...(Array.isArray(expect.selectors) ? expect.selectors : []),
+      ...Object.entries(expectObject(expect.selectorVisible)).map(([selector, visible]) => ({ selector, visible })),
+    ];
+    for (const item of expectedSelectors) {
+      const selector = String(item?.selector || '').trim();
+      if (!selector) continue;
+      const actual = inspection.selectorVisible?.[selector] === true;
+      const expected = item?.visible !== false;
+      if (actual !== expected) problems.push(`选择器 ${selector} 期望${expected ? '可见' : '不可见'}，实际${actual ? '可见' : '不可见'}`);
+    }
+    return {
+      id: criterion.id,
+      title: criterion.title,
+      passed: problems.length === 0,
+      summary: problems.length ? `页面验收未通过：${problems.join('；')}` : '浏览器页面验收通过',
+      evidence: {
+        url: inspection.url || '',
+        title: inspection.title || '',
+        text: String(inspection.text || '').slice(0, 8_000),
+        selectorVisible: inspection.selectorVisible || {},
+      },
+    };
+  } catch (error: any) {
+    return {
+      id: criterion.id,
+      title: criterion.title,
+      passed: false,
+      summary: `浏览器页面验收失败：${error?.message || error}`,
+    };
+  }
+}
+
 export async function verifyDeterministicCriterion(
   criterion: GoalCriterion,
   workspaceDir: string,
+  context: GoalVerifierContext = {},
 ): Promise<GoalCriterionResult | null> {
   const kind = String(criterion.kind || 'text').toLowerCase();
   if (kind === 'file_exists' || kind === 'file' || kind === 'path_exists') {
@@ -180,17 +297,21 @@ export async function verifyDeterministicCriterion(
   if (kind === 'http' || kind === 'url') {
     return verifyHttp(criterion);
   }
+  if (kind === 'browser' || kind === 'page') {
+    return verifyBrowser(criterion, context);
+  }
   return null;
 }
 
 export async function verifyDeterministicCriteria(
   criteria: GoalCriterion[],
   workspaceDir: string,
+  context: GoalVerifierContext = {},
 ): Promise<GoalDeterministicVerification> {
   const results: GoalCriterionResult[] = [];
   const unresolved: GoalCriterion[] = [];
   for (const criterion of criteria) {
-    const result = await verifyDeterministicCriterion(criterion, workspaceDir);
+    const result = await verifyDeterministicCriterion(criterion, workspaceDir, context);
     if (result) results.push(result);
     else unresolved.push(criterion);
   }
