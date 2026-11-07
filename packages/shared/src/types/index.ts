@@ -861,6 +861,46 @@ export interface GoalTemplate {
   updatedAt: number;
 }
 
+export interface GoalSchedule {
+  id: string;
+  userId: string;
+  name: string;
+  sourceConversationId: string | null;
+  templateId: string | null;
+  agentId: string | null;
+  platformId: string;
+  modelId: string;
+  spaceId: string | null;
+  objective: string;
+  criteria: GoalCriterion[];
+  constraints: string[];
+  approvalRequired: string[];
+  maxBatches: number;
+  maxStallBatches: number;
+  intervalMinutes: number | null;
+  cronExpr: string | null;
+  enabled: boolean;
+  lastRunAt: number | null;
+  nextRunAt: number | null;
+  lastGoalId: string | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface GoalScheduleRun {
+  id: string;
+  scheduleId: string;
+  userId: string;
+  scheduledFor: number;
+  eventId: string;
+  goalId: string | null;
+  conversationId: string | null;
+  status: 'created' | 'failed';
+  error: string | null;
+  createdAt: number;
+}
+
 export interface GoalBatch {
   id: string;
   goalId: string;

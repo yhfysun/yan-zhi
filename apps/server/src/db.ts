@@ -5643,9 +5643,57 @@ db.exec(`
     UNIQUE(user_id, source, event_id)
   );
   CREATE INDEX IF NOT EXISTS idx_goal_trigger_event_user ON goal_trigger_event(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS goal_schedule (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    source_conversation_id TEXT,
+    template_id TEXT,
+    agent_id TEXT,
+    platform_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    space_id TEXT,
+    objective TEXT NOT NULL,
+    criteria_json TEXT NOT NULL DEFAULT '[]',
+    constraints_json TEXT NOT NULL DEFAULT '[]',
+    approval_policy_json TEXT NOT NULL DEFAULT '[]',
+    max_batches INTEGER NOT NULL DEFAULT 20,
+    max_stall_batches INTEGER NOT NULL DEFAULT 3,
+    interval_minutes INTEGER,
+    cron_expr TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_run_at INTEGER,
+    next_run_at INTEGER,
+    last_goal_id TEXT,
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_schedule_due
+    ON goal_schedule(enabled, next_run_at);
+  CREATE INDEX IF NOT EXISTS idx_goal_schedule_user
+    ON goal_schedule(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS goal_schedule_run (
+    id TEXT PRIMARY KEY,
+    schedule_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    scheduled_for INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    goal_id TEXT,
+    conversation_id TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(schedule_id, scheduled_for)
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_schedule_run_schedule
+    ON goal_schedule_run(schedule_id, created_at DESC);
 `);
 try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolution_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolved_at INTEGER'); } catch {}
+try { db.exec('ALTER TABLE conversation ADD COLUMN goal_schedule_id TEXT'); } catch {}
 try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolved_by TEXT'); } catch {}
 
 // ===== 工作流运行持久化 =====

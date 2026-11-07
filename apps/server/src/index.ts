@@ -24,6 +24,7 @@ import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicens
 import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
 import { handleChatUpgrade } from './chat-ws.js';
 import { startGoalScheduler } from './services/goal-runner.js';
+import { startGoalScheduleScheduler } from './services/goal-schedule.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
@@ -67,6 +68,7 @@ import officeRoutes from './routes/office.js';
 import workspaceRoutes from './routes/workspace.js';
 import memoryRoutes from './routes/memory.js';
 import scheduledTaskRoutes from './routes/scheduled-tasks.js';
+import goalScheduleRoutes from './routes/goal-schedules.js';
 // 浏览器「页面指令」库（2026-10-16 · 页面内对话与页面指令方案 §5 P1）——
 // 挂在与 /api/browser 同级的独立路径：移动端 /api/browser 被 501 拦住，指令库不该被连坐。
 import pageCommandRoutes from './routes/page-commands.js';
@@ -321,6 +323,7 @@ app.use('/api/mcp', mcpBridgeRoutes);
 app.use('/api/workspace', workspaceRoutes);
 app.use('/api/memory', memoryRoutes);
 app.use('/api/scheduled-tasks', scheduledTaskRoutes);
+app.use('/api/llm/goal-schedules', goalScheduleRoutes);
 // 系统信息：当前数据目录 / 实例类型（dev 还是安装版）
 // ★ 双库 issue 的真痛点就是「不可见」——本路由把这个答案交给前端
 app.use('/api/system', systemRoutes);
@@ -725,6 +728,9 @@ try {
 try {
   startGoalScheduler();
 } catch (e) { logger.warn('[goal] 目标调度器启动失败:', e); }
+try {
+  startGoalScheduleScheduler();
+} catch (e) { logger.warn('[goal-schedule] 定时目标调度器启动失败:', e); }
 
 // 启动时清理已移除的内置模型平台残留记录（local-model-*）
 try {
