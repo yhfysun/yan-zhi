@@ -5616,6 +5616,33 @@ db.exec(`
     heartbeat_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_goal_resource_lock_goal ON goal_resource_lock(goal_id);
+
+  CREATE TABLE IF NOT EXISTS goal_template (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    criteria_json TEXT NOT NULL DEFAULT '[]',
+    constraints_json TEXT NOT NULL DEFAULT '[]',
+    approval_policy_json TEXT NOT NULL DEFAULT '[]',
+    max_batches INTEGER NOT NULL DEFAULT 20,
+    max_stall_batches INTEGER NOT NULL DEFAULT 3,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(user_id, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS goal_trigger_event (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    goal_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    UNIQUE(user_id, source, event_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_goal_trigger_event_user ON goal_trigger_event(user_id, created_at DESC);
 `);
 try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolution_json TEXT'); } catch {}
 try { db.exec('ALTER TABLE goal_operation ADD COLUMN resolved_at INTEGER'); } catch {}

@@ -3654,7 +3654,13 @@ ${q.text}
           agentId: currentConv.value?.agentId || agent?.id || null,
           platformId: platform.id,
           modelId: model.modelId,
+          criteria: store.goalTemplateDraft?.criteria,
+          constraints: store.goalTemplateDraft?.constraints,
+          approvalRequired: store.goalTemplateDraft?.approvalRequired,
+          maxBatches: store.goalTemplateDraft?.maxBatches,
+          maxStallBatches: store.goalTemplateDraft?.maxStallBatches,
         });
+        store.clearGoalTemplateDraft();
         store.goalMode = false;
         return;
       }

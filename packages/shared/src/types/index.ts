@@ -847,6 +847,20 @@ export interface GoalOperationRecord {
   updatedAt: number;
 }
 
+export interface GoalTemplate {
+  id: string;
+  userId: string;
+  name: string;
+  objective: string;
+  criteria: GoalCriterion[];
+  constraints: string[];
+  approvalRequired: string[];
+  maxBatches: number;
+  maxStallBatches: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface GoalBatch {
   id: string;
   goalId: string;

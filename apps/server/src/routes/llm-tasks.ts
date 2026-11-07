@@ -17,6 +17,17 @@ import {
 } from '../services/goal-runner.js';
 import { listGoalOperations } from '../services/goal-operation.js';
 import {
+  createGoalTemplate,
+  deleteGoalTemplate,
+  getGoalTemplate,
+  listGoalTemplates,
+} from '../services/goal-template.js';
+import {
+  findGoalTrigger,
+  listGoalTriggers,
+  saveGoalTrigger,
+} from '../services/goal-trigger.js';
+import {
   getActiveGoalForConversation,
   getGoal,
   getLatestGoalForConversation,
@@ -284,6 +295,152 @@ router.post('/goals/:id/cancel', (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(409).json({ error: String(e?.message || e) });
   }
+});
+
+router.post('/goals/:id/template', (req: Request, res: Response) => {
+  try {
+    const goal = getGoal(req.params.id);
+    if (!goal || goal.userId !== req.user!.userId) {
+      res.status(404).json({ error: '目标不存在' });
+      return;
+    }
+    const name = typeof req.body?.name === 'string' && req.body.name.trim()
+      ? req.body.name
+      : goal.objective.slice(0, 40);
+    res.json({ data: createGoalTemplate(goal.id, req.user!.userId, name) });
+  } catch (e: any) {
+    res.status(409).json({ error: String(e?.message || e) });
+  }
+});
+
+router.get('/goal-templates', (req: Request, res: Response) => {
+  res.json({ data: listGoalTemplates(req.user!.userId) });
+});
+
+router.delete('/goal-templates/:id', (req: Request, res: Response) => {
+  const removed = deleteGoalTemplate(req.params.id, req.user!.userId);
+  res.status(removed ? 200 : 404).json(removed ? { ok: true } : { error: '模板不存在' });
+});
+
+router.post('/goal-templates/:id/start', (req: Request, res: Response) => {
+  const template = getGoalTemplate(req.params.id);
+  if (!template || template.userId !== req.user!.userId) {
+    res.status(404).json({ error: '模板不存在' });
+    return;
+  }
+  const { conversationId, platformId, modelId, agentId } = req.body || {};
+  if (!conversationId || !platformId || !modelId) {
+    res.status(400).json({ error: '缺少 conversationId / platformId / modelId' });
+    return;
+  }
+  const conv = db.prepare(
+    'SELECT id FROM conversation WHERE id = ? AND user_id = ? AND deleted_at IS NULL AND archived_at IS NULL',
+  ).get(String(conversationId), req.user!.userId) as { id?: string } | undefined;
+  if (!conv) {
+    res.status(404).json({ error: '会话不存在、已归档或不属于当前用户' });
+    return;
+  }
+  const active = getActiveGoalForConversation(String(conversationId));
+  if (active) {
+    res.status(409).json({ error: '该会话已有活动目标', data: active });
+    return;
+  }
+  const invalid = validateTaskModel(req.user!.userId, String(platformId), String(modelId));
+  if (invalid) {
+    res.status(400).json({ error: invalid });
+    return;
+  }
+  try {
+    const goal = createAndStartGoal({
+      userId: req.user!.userId,
+      conversationId: String(conversationId),
+      agentId: agentId ? String(agentId) : null,
+      platformId: String(platformId),
+      modelId: String(modelId),
+      objective: template.objective,
+      criteria: template.criteria,
+      constraints: template.constraints,
+      approvalRequired: template.approvalRequired,
+      maxBatches: template.maxBatches,
+      maxStallBatches: template.maxStallBatches,
+    });
+    res.json({ data: { goal, templateId: template.id } });
+  } catch (e: any) {
+    res.status(400).json({ error: String(e?.message || e) });
+  }
+});
+
+router.post('/goals/events', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const {
+    source, eventId, conversationId, objective, platformId, modelId, agentId,
+    criteria, constraints, approvalRequired, maxBatches, maxStallBatches, payload,
+  } = req.body || {};
+  const cleanSource = String(source || '').trim().slice(0, 120);
+  const cleanEventId = String(eventId || '').trim().slice(0, 300);
+  if (!cleanSource || !cleanEventId || !conversationId || !String(objective || '').trim() || !platformId || !modelId) {
+    res.status(400).json({ error: '缺少 source / eventId / conversationId / objective / platformId / modelId' });
+    return;
+  }
+  const duplicate = findGoalTrigger(userId, cleanSource, cleanEventId);
+  if (duplicate) {
+    res.json({ data: { goal: getGoal(duplicate.goalId), trigger: duplicate, duplicate: true } });
+    return;
+  }
+  const conv = db.prepare(
+    'SELECT id FROM conversation WHERE id = ? AND user_id = ? AND deleted_at IS NULL AND archived_at IS NULL',
+  ).get(String(conversationId), userId) as { id?: string } | undefined;
+  if (!conv) {
+    res.status(404).json({ error: '会话不存在、已归档或不属于当前用户' });
+    return;
+  }
+  const active = getActiveGoalForConversation(String(conversationId));
+  if (active) {
+    res.status(409).json({ error: '该会话已有活动目标', data: active });
+    return;
+  }
+  const invalid = validateTaskModel(userId, String(platformId), String(modelId));
+  if (invalid) {
+    res.status(400).json({ error: invalid });
+    return;
+  }
+  let goal: ReturnType<typeof createAndStartGoal> | null = null;
+  try {
+    goal = createAndStartGoal({
+      userId,
+      conversationId: String(conversationId),
+      agentId: agentId ? String(agentId) : null,
+      platformId: String(platformId),
+      modelId: String(modelId),
+      objective: String(objective),
+      criteria: Array.isArray(criteria) ? criteria : [],
+      constraints: Array.isArray(constraints) ? constraints.map(String) : [],
+      approvalRequired: Array.isArray(approvalRequired) ? approvalRequired.map(String) : [],
+      maxBatches,
+      maxStallBatches,
+    });
+    const trigger = saveGoalTrigger({
+      userId,
+      source: cleanSource,
+      eventId: cleanEventId,
+      goalId: goal.id,
+      payload,
+    });
+    res.json({ data: { goal, trigger, duplicate: false } });
+  } catch (e: any) {
+    if (goal && String(e?.message || '').includes('已处理过')) {
+      cancelGoal(goal.id, '重复事件触发，已取消重复目标');
+      const existing = findGoalTrigger(userId, cleanSource, cleanEventId);
+      res.json({ data: { goal: existing ? getGoal(existing.goalId) : null, trigger: existing, duplicate: true } });
+      return;
+    }
+    res.status(400).json({ error: String(e?.message || e) });
+  }
+});
+
+router.get('/goal-trigger-events', (req: Request, res: Response) => {
+  const limit = Number(req.query.limit) || 100;
+  res.json({ data: listGoalTriggers(req.user!.userId, limit) });
 });
 
 router.post('/goals/:id/approve', (req: Request, res: Response) => {

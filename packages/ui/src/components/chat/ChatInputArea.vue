@@ -150,6 +150,14 @@
       >
         结束
       </button>
+      <button
+        v-if="goalCanSaveTemplate"
+        type="button"
+        class="goal-action-btn"
+        @click="saveGoalTemplate"
+      >
+        存模板
+      </button>
     </div>
 
     <div class="input-box" :class="{ focused: inputFocused, 'is-dragover': dragOver }">
@@ -574,6 +582,21 @@
                       </div>
                       <el-switch v-model="store.goalMode" size="small" @click.stop />
                     </div>
+                    <template v-if="store.goalMode && store.goalTemplates.length">
+                      <div class="plus-menu-divider">目标模板</div>
+                      <div
+                        v-for="t in store.goalTemplates.slice(0, 6)"
+                        :key="t.id"
+                        class="plus-menu-item"
+                        @click="closePlus(() => applyGoalTemplate(t))"
+                      >
+                        <span class="plus-menu-ic"><el-icon><DocumentCopy /></el-icon></span>
+                        <div class="plus-menu-info">
+                          <div class="plus-menu-label">{{ t.name }}</div>
+                          <div class="plus-menu-desc">{{ t.objective }}</div>
+                        </div>
+                      </div>
+                    </template>
                   </template>
                   <!-- 工具权限子菜单：与桌面端工具条的权限胶囊同一个 store.permissionMode -->
                   <template v-else-if="hoverSub === 'perm'">
@@ -972,7 +995,7 @@ import { useCodeStore } from '../../stores/code';
 import { useSettingsStore, usePlatformStore } from '../../stores';
 import { useScreenRecorderStore } from '../../stores/screen-recorder';
 import { formatContextWindow } from '../../utils/context-window';
-import type { Model } from '@yan-zhi/shared';
+import type { Model, GoalTemplate } from '@yan-zhi/shared';
 import { useRouter } from 'vue-router';
 import AgentAvatar from '../AgentAvatar.vue';
 import AgentPicker from './AgentPicker.vue';
@@ -1514,11 +1537,22 @@ const goalCanStop = computed(() => {
   const s = store.currentGoal?.status;
   return !!s && !['completed', 'failed', 'cancelled', 'blocked'].includes(s);
 });
+const goalCanSaveTemplate = computed(() => {
+  const s = store.currentGoal?.status;
+  return !!s && ['completed', 'failed', 'cancelled', 'blocked'].includes(s);
+});
 watch(() => store.goalMode, (enabled) => {
   if (!enabled) return;
   store.answerOnly = false;
   store.planMode = true;
+  void store.loadGoalTemplates();
 });
+
+function applyGoalTemplate(template: GoalTemplate) {
+  store.selectGoalTemplate(template);
+  input.value = template.objective;
+  ElMessage.success(`已载入目标模板：${template.name}`);
+}
 
 function formatGoalRetry(at: number): string {
   const seconds = Math.max(0, Math.ceil((at - Date.now()) / 1000));
@@ -1579,6 +1613,15 @@ async function resolveGoalOperation(outcome: 'done' | 'not_done') {
     }
   } catch (e: any) {
     ElMessage.error(e?.message || '目标操作核实失败');
+  }
+}
+
+async function saveGoalTemplate() {
+  try {
+    const template = await store.saveCurrentGoalTemplate();
+    if (template) ElMessage.success(`已保存模板：${template.name}`);
+  } catch (e: any) {
+    ElMessage.error(e?.message || '保存目标模板失败');
   }
 }
 const currentModelName = computed(() => {

@@ -1,7 +1,7 @@
 // 聊天 store
 import { defineStore } from 'pinia';
 import { ref, computed, nextTick, watch } from 'vue';
-import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView, InlineDataViewChart, GoalRun } from '@yan-zhi/shared';
+import type { Conversation, Message, Platform, Model, DeltaToolCall, InlineDataView, InlineDataViewChart, GoalRun, GoalTemplate } from '@yan-zhi/shared';
 import { getPlatformAdapter, LlmClient, ContextWindow, getToolRegistry, resolveToolPath, parseSourceMeta, CONV_SOURCE_BROWSER_PAGE, excludeSourceClause, computePageStateSignature } from '@yan-zhi/core';
 import { uid } from '@yan-zhi/shared';
 import { useMcpStore } from './mcp';
@@ -710,6 +710,8 @@ export const useChatStore = defineStore('chat', () => {
   const answerOnly = ref(false);     // 仅回答：后端清空工具列表，禁一切工具调用
   const goalMode = ref(false);       // 目标模式：跨批次、跨重启持续推进，验收通过才完成
   const goalByConv = ref<Record<string, GoalRun | null>>({});
+  const goalTemplates = ref<GoalTemplate[]>([]);
+  const goalTemplateDraft = ref<GoalTemplate | null>(null);
   const goalPollTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const currentGoal = computed(() => currentConvId.value ? goalByConv.value[currentConvId.value] || null : null);
 
@@ -767,6 +769,10 @@ export const useChatStore = defineStore('chat', () => {
     platformId: string;
     modelId: string;
     criteria?: Array<{ id?: string; title: string; kind?: string }>;
+    constraints?: string[];
+    approvalRequired?: string[];
+    maxBatches?: number;
+    maxStallBatches?: number;
   }): Promise<GoalRun> {
     const r = await api.post<any>('/llm/goals', {
       conversationId: input.conversationId,
@@ -779,6 +785,10 @@ export const useChatStore = defineStore('chat', () => {
         title: c.title,
         kind: c.kind || 'text',
       })),
+      constraints: input.constraints || [],
+      approvalRequired: input.approvalRequired || [],
+      maxBatches: input.maxBatches,
+      maxStallBatches: input.maxStallBatches,
     });
     if ((r as any)?.error) throw new Error((r as any).error);
     const goal = ((r as any)?.data ?? r) as GoalRun;
@@ -861,6 +871,50 @@ export const useChatStore = defineStore('chat', () => {
     if (data?.goal?.id) goalByConv.value[goal.conversationId] = data.goal;
     pollGoal(goal.conversationId, goal.id);
     return true;
+  }
+
+  async function saveCurrentGoalTemplate(name?: string): Promise<GoalTemplate | null> {
+    const goal = currentGoal.value;
+    if (!goal) return null;
+    const r = await api.post<any>(`/llm/goals/${encodeURIComponent(goal.id)}/template`, {
+      name: name || goal.objective.slice(0, 40),
+    });
+    if ((r as any)?.error) throw new Error((r as any).error);
+    const template = ((r as any)?.data ?? r) as GoalTemplate;
+    goalTemplates.value = [template, ...goalTemplates.value.filter(t => t.id !== template.id)];
+    return template;
+  }
+
+  async function loadGoalTemplates(): Promise<GoalTemplate[]> {
+    const r = await api.get<any>('/llm/goal-templates');
+    if ((r as any)?.error) return goalTemplates.value;
+    const list = ((r as any)?.data ?? r) as GoalTemplate[];
+    goalTemplates.value = Array.isArray(list) ? list : [];
+    return goalTemplates.value;
+  }
+
+  function selectGoalTemplate(template: GoalTemplate): void {
+    goalTemplateDraft.value = template;
+    goalMode.value = true;
+  }
+
+  function clearGoalTemplateDraft(): void {
+    goalTemplateDraft.value = null;
+  }
+
+  async function startGoalFromTemplate(
+    templateId: string,
+    input: { conversationId: string; platformId: string; modelId: string; agentId?: string | null },
+  ): Promise<GoalRun> {
+    const r = await api.post<any>(`/llm/goal-templates/${encodeURIComponent(templateId)}/start`, input);
+    if ((r as any)?.error) throw new Error((r as any).error);
+    const data = (r as any)?.data ?? r;
+    const goal = data?.goal as GoalRun;
+    if (!goal?.id) throw new Error('目标创建失败');
+    goalByConv.value[goal.conversationId] = goal;
+    runningConvIds.value.add(goal.conversationId);
+    pollGoal(goal.conversationId, goal.id);
+    return goal;
   }
   // 思考强度（reasoning_effort API 参数）—— 注意与上面的「深度思考」是两回事：
   //   深度思考 = 提示词模式；思考强度 = 真正下发给 LLM 的 reasoning_effort / reasoning.effort。
@@ -4445,6 +4499,8 @@ async function dispatchToolCallInner(fullName: string, args: unknown, ctx?: { pa
     runningToolCallIds, isToolCallRunning,
     browserSteps, pushBrowserStep, rightPanelOpen, thinkingMode, planMode, answerOnly,
     goalMode, currentGoal, goalByConv, refreshGoal, startGoal,
+    goalTemplates, goalTemplateDraft, loadGoalTemplates, selectGoalTemplate, clearGoalTemplateDraft,
+    saveCurrentGoalTemplate, startGoalFromTemplate,
     approveCurrentGoal, pauseCurrentGoal, resumeCurrentGoal, cancelCurrentGoal, resolveCurrentGoalOperation,
     reasoningEffortOverride,
     permissionMode, setPermissionMode,
