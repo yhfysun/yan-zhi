@@ -6,6 +6,7 @@ import {
   finishGoalBatch,
   getActiveGoalForConversation,
   getGoal,
+  getLatestGoalForConversation,
   listGoalEvents,
   recoverInterruptedGoals,
   startGoalBatch,
@@ -111,6 +112,23 @@ describe('goal-store', () => {
     const count = recoverInterruptedGoals(Date.now());
     expect(count).toBeGreaterThanOrEqual(1);
     expect(getGoal(goal.id)?.status).toBe('queued');
+    const row = db.prepare('SELECT status FROM goal_batch WHERE id = ?').get(batch.id) as any;
+    expect(row.status).toBe('unknown');
+  });
+
+  it('重启时暂停中的目标保持暂停，但执行中的批次收敛为 unknown', () => {
+    const goal = seed({ conversationId: 'conv_goal_paused_recovery', objective: '暂停恢复测试' });
+    transitionGoal(goal.id, 'paused');
+    const batch = startGoalBatch(goal.id, {
+      llmTaskId: 'task_goal_paused',
+      prompt: { kind: 'initial' },
+    });
+    transitionGoal(goal.id, 'paused');
+
+    recoverInterruptedGoals(Date.now());
+
+    expect(getGoal(goal.id)?.status).toBe('paused');
+    expect(getLatestGoalForConversation('conv_goal_paused_recovery')?.id).toBe(goal.id);
     const row = db.prepare('SELECT status FROM goal_batch WHERE id = ?').get(batch.id) as any;
     expect(row.status).toBe('unknown');
   });

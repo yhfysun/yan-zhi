@@ -33,7 +33,8 @@ describe('① 清理接线', () => {
   it('★★★ cleanupTasks 三处 tasks.delete 都必须伴清理（否则漏一条路径）', () => {
     const i = LTM.indexOf('export function cleanupTasks');
     expect(i, '★ 锚点缺失').toBeGreaterThan(-1);
-    const body = LTM.slice(i, i + 1400);
+    // cleanupTasks 现在包含“按最近活动判断普通任务 + 目标批次豁免”，窗口需覆盖完整函数。
+    const body = LTM.slice(i, i + 4000);
     const dels = (body.match(/tasks\.delete\(id\)/g) || []).length;
     const cleans = (body.match(/forgetTaskScopedState\(id\)/g) || []).length;
     // ★ 2026-10-27 由 2 → 3：新增「paused 超 24h 自动终止」分支（abort + failed 收尾），
@@ -79,7 +80,7 @@ describe('②★★★ 两个 Map 的清理策略必须分别定（本条最容�
 
   it('★★ 时间淘汰必须被 cleanupTasks 调用', () => {
     const i = LTM.indexOf('export function cleanupTasks');
-    const body = LTM.slice(i, i + 1400);
+    const body = LTM.slice(i, i + 4000);
     expect(body, '★ 淘汰函数定义了却没被调用（死代码）').toMatch(/pruneAutoDiagnoseThrottle\(/);
   });
 

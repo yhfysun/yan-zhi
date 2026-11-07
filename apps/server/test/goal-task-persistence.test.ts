@@ -1,6 +1,13 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { db } from '../src/db.js';
-import { abortTask, createTask, markOrphanTasksInterrupted } from '../src/llm-task-manager.js';
+import {
+  abortTask,
+  cleanupTasks,
+  createTask,
+  getLatestTaskRowForConversation,
+  getTask,
+  markOrphanTasksInterrupted,
+} from '../src/llm-task-manager.js';
 
 const USER = 'u_goal_task';
 const CONV = 'conv_goal_task';
@@ -35,6 +42,26 @@ describe('goal task persistence', () => {
     const params = JSON.parse(row.params_json);
     expect(params.maxSteps).toBe(17);
     expect(params.modeFlags).toEqual({ goal: true, plan: true });
+    expect(getLatestTaskRowForConversation(CONV, USER)?.id).toBe(taskId);
+    abortTask(taskId);
+  });
+
+  it('普通 2 小时看门狗不会清理仍有心跳的目标任务', () => {
+    const taskId = createTask({
+      conversationId: CONV,
+      userId: USER,
+      platformId: 'p_goal_fake',
+      modelId: 'm_goal_fake',
+      userContent: '长目标',
+      goalId: 'goal_long_running',
+      goalBatchId: 'gobatch_long_running',
+    });
+    const task = getTask(taskId)!;
+    task.status = 'running';
+    task.createdAt = Date.now() - 3 * 60 * 60 * 1000;
+    task.heartbeatAt = Date.now();
+    cleanupTasks();
+    expect(getTask(taskId)).toBeTruthy();
     abortTask(taskId);
   });
 

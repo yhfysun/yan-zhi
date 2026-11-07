@@ -1,11 +1,26 @@
 // LLM 任务 SSE 路由 —— 前端通过此路由创建任务、订阅事件流、终止任务
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth.js';
+import { db } from '../db.js';
 import { sseStream } from '../services/sse.js';
 import {
-  createTask, subscribe, subscribeConversation, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, resolveToolResult, injectUserMessage, findRunningTaskId, validateTaskModel,
+  createTask, subscribe, subscribeConversation, abortTask, pauseTask, resumeTask, getActiveTasks, getTask, getTaskRow, getLatestTaskRowForConversation, resolveToolResult, injectUserMessage, findRunningTaskId, validateTaskModel,
 } from '../llm-task-manager.js';
 import type { OpsContextInput } from '../ops-context.js';
+import {
+  approveGoal,
+  cancelGoal,
+  createAndStartGoal,
+  pauseGoal,
+  resumeGoal,
+} from '../services/goal-runner.js';
+import {
+  getActiveGoalForConversation,
+  getGoal,
+  getLatestGoalForConversation,
+  listGoalBatches,
+  listGoalEvents,
+} from '../services/goal-store.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -52,6 +67,15 @@ router.post('/tasks', (req: Request, res: Response) => {
   // memoryExtractPlatformId/ModelId：前端设置页下发的记忆抽取模型（任务完成后抽取/压缩前抢救用）
   // includeUiTools: true —— 此路由只服务前端在线的交互式任务，UI 工具（ask_user 等）纳入工具列表并委托前端执行
   // ontologyIds：前端随任务下发的智能体本体挂载（智能体编辑存本地库，server 库不持有，须显式传递）
+  const activeGoal = getActiveGoalForConversation(String(conversationId));
+  if (activeGoal) {
+    res.status(409).json({
+      error: '该会话有活动目标，请先完成、暂停或结束目标',
+      code: 'GOAL_ACTIVE',
+      data: activeGoal,
+    });
+    return;
+  }
     // ★ 复用保护（2026-10-07）：同会话已有运行中任务时，新消息走「注入」而不是静默吞掉——
   // 追问/换要求立即落库并推送 message:added（前端可见），任务在下一轮 LLM 调用时读到（pendingInjects）。
   // 此前行为：createTask 幂等返回旧 taskId，前端重新订阅旧流 → 用户新要求人间蒸发，看起来像「不回」。
@@ -110,6 +134,138 @@ router.post('/tasks', (req: Request, res: Response) => {
     throw e;
   }
   res.json({ data: { taskId } });
+});
+
+// ===== 目标模式 =====
+// 目标跨批次、跨重启持续运行；llm_task 只承载其中一批执行。
+router.post('/goals', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const {
+    conversationId, agentId, platformId, modelId, objective, criteria,
+    constraints, approvalRequired, maxBatches, maxStallBatches,
+  } = req.body || {};
+  if (!conversationId || !String(objective || '').trim() || !platformId || !modelId) {
+    res.status(400).json({ error: '缺少 conversationId / objective / platformId / modelId' });
+    return;
+  }
+  const conv = db.prepare(
+    'SELECT id FROM conversation WHERE id = ? AND user_id = ? AND deleted_at IS NULL AND archived_at IS NULL',
+  ).get(conversationId, userId) as { id?: string } | undefined;
+  if (!conv) {
+    res.status(404).json({ error: '会话不存在、已归档或不属于当前用户' });
+    return;
+  }
+  const existing = getActiveGoalForConversation(String(conversationId));
+  if (existing) {
+    res.status(409).json({ error: '该会话已有活动目标', data: existing });
+    return;
+  }
+  const runningTask = findRunningTaskId(String(conversationId), userId);
+  if (runningTask) {
+    res.status(409).json({ error: '该会话已有任务在运行，请等待结束或先停止', data: { taskId: runningTask } });
+    return;
+  }
+  const invalid = validateTaskModel(userId, String(platformId), String(modelId));
+  if (invalid) {
+    res.status(400).json({ error: invalid });
+    return;
+  }
+  try {
+    const goal = createAndStartGoal({
+      userId,
+      conversationId: String(conversationId),
+      agentId: agentId ? String(agentId) : null,
+      platformId: platformId ? String(platformId) : null,
+      modelId: modelId ? String(modelId) : null,
+      objective: String(objective),
+      criteria: Array.isArray(criteria) ? criteria : [],
+      constraints: Array.isArray(constraints) ? constraints.map(String) : [],
+      approvalRequired: Array.isArray(approvalRequired) ? approvalRequired.map(String) : [],
+      maxBatches,
+      maxStallBatches,
+    });
+    res.json({ data: goal });
+  } catch (e: any) {
+    res.status(400).json({ error: String(e?.message || e) });
+  }
+});
+
+router.get('/goals', (req: Request, res: Response) => {
+  const conversationId = String(req.query.conversationId || '');
+  if (!conversationId) {
+    res.status(400).json({ error: '缺少 conversationId' });
+    return;
+  }
+  const goal = getLatestGoalForConversation(conversationId);
+  res.json({ data: goal });
+});
+
+router.get('/goals/:id', (req: Request, res: Response) => {
+  const goal = getGoal(req.params.id);
+  if (!goal || goal.userId !== req.user!.userId) {
+    res.status(404).json({ error: '目标不存在' });
+    return;
+  }
+  res.json({
+    data: {
+      ...goal,
+      batches: listGoalBatches(goal.id),
+      events: listGoalEvents(goal.id),
+    },
+  });
+});
+
+router.post('/goals/:id/pause', (req: Request, res: Response) => {
+  try {
+    const goal = getGoal(req.params.id);
+    if (!goal || goal.userId !== req.user!.userId) {
+      res.status(404).json({ error: '目标不存在' });
+      return;
+    }
+    res.json({ data: pauseGoal(req.params.id) });
+  } catch (e: any) {
+    res.status(409).json({ error: String(e?.message || e) });
+  }
+});
+
+router.post('/goals/:id/resume', (req: Request, res: Response) => {
+  try {
+    const goal = getGoal(req.params.id);
+    if (!goal || goal.userId !== req.user!.userId) {
+      res.status(404).json({ error: '目标不存在' });
+      return;
+    }
+    res.json({ data: resumeGoal(req.params.id) });
+  } catch (e: any) {
+    res.status(409).json({ error: String(e?.message || e) });
+  }
+});
+
+router.post('/goals/:id/cancel', (req: Request, res: Response) => {
+  try {
+    const goal = getGoal(req.params.id);
+    if (!goal || goal.userId !== req.user!.userId) {
+      res.status(404).json({ error: '目标不存在' });
+      return;
+    }
+    res.json({ data: cancelGoal(req.params.id, typeof req.body?.reason === 'string' ? req.body.reason : undefined) });
+  } catch (e: any) {
+    res.status(409).json({ error: String(e?.message || e) });
+  }
+});
+
+router.post('/goals/:id/approve', (req: Request, res: Response) => {
+  try {
+    const goal = getGoal(req.params.id);
+    if (!goal || goal.userId !== req.user!.userId) {
+      res.status(404).json({ error: '目标不存在' });
+      return;
+    }
+    const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 2_000) : '';
+    res.json({ data: approveGoal(req.params.id, note) });
+  } catch (e: any) {
+    res.status(409).json({ error: String(e?.message || e) });
+  }
 });
 
 // GET /api/llm/tasks/:id/stream  订阅 SSE 事件流
@@ -217,6 +373,17 @@ router.get('/tasks/active', (req: Request, res: Response) => {
   const conversationId = req.query.conversationId as string | undefined;
   const active = getActiveTasks(userId, conversationId);
   res.json({ data: active });
+});
+
+router.get('/conversations/:id/task-status', (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const live = getActiveTasks(userId, req.params.id)[0];
+  if (live) {
+    res.json({ data: live });
+    return;
+  }
+  const row = getLatestTaskRowForConversation(req.params.id, userId);
+  res.json({ data: row || null });
 });
 
 // GET /api/llm/tasks/:id  获取任务状态

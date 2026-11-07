@@ -17,6 +17,7 @@ import {
 } from './llm-task-manager.js';
 import { findCreatedTask, rememberCreatedTask } from './chat-ws-dedupe.js';
 import { resolveWsUserId } from './auth.js';
+import { getActiveGoalForConversation } from './services/goal-store.js';
 // 本机单用户身份（与 auth.ts 的 LOCAL_USER 一致；全库 user_id 都是 guest）。
 // ★ multi 模式下身份按连接解析（handleChatUpgrade → client.userId），
 //   远程登录用户的任务/消息归属到其真实 user_id，不再落到 guest。
@@ -68,6 +69,10 @@ interface ClientMsg {
 /** 复用 POST /tasks 的「运行中任务 → 追问注入」语义，避免 WS 与 HTTP 两条建任务路径漂移 */
 function createTaskOrInject(payload: ClientMsg, uid: string): { taskId: string; reused?: boolean; injected?: boolean; injectedMsgId?: string; duplicate?: boolean } {
   const conversationId = payload.conversationId!;
+  const activeGoal = getActiveGoalForConversation(conversationId);
+  if (activeGoal) {
+    throw new Error('该会话有活动目标，请先完成、暂停或结束目标');
+  }
   // ★ 重发幂等（2026-10-26）：前端自动重发时沿用同一个 clientMsgId。
   //   命中说明上一次 create_task 其实已经建好了任务，只是应答在断连中丢了 ——
   //   此时**绝不能再建/再注入一次**，直接把 taskId 还回去（前端订阅即可重放整个过程）。

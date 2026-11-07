@@ -23,6 +23,7 @@ import { refreshRuntimeModes } from './plugins/runtime-modes.js';
 import { requireLicense, isLicenseGuardEnabled, isGuardExemptPath, extractLicenseCode, verifyLicenseCached } from './license-guard.js';
 import { matchPluginWsRoute } from './plugin-ws-dispatch.js';
 import { handleChatUpgrade } from './chat-ws.js';
+import { startGoalScheduler } from './services/goal-runner.js';
 import conversationRoutes from './routes/conversations.js';
 import messageRoutes from './routes/messages.js';
 import spaceRoutes from './routes/spaces.js';
@@ -721,6 +722,9 @@ try {
   if (orphanTasks || orphanRuns || orphanPlans) logger.info(`[cleanup] 已回收遗留任务 ${orphanTasks} 条、遗留工作流运行 ${orphanRuns} 条、遗留计划项 ${orphanPlans} 条`);
   resumeWorkflowDeliveries();
 } catch (e) { logger.warn('[cleanup] 遗留运行回收/补投失败:', e); }
+try {
+  startGoalScheduler();
+} catch (e) { logger.warn('[goal] 目标调度器启动失败:', e); }
 
 // 启动时清理已移除的内置模型平台残留记录（local-model-*）
 try {

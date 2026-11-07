@@ -229,6 +229,13 @@ export function getActiveGoalForConversation(conversationId: string): GoalRun | 
   return row ? mapGoal(row) : null;
 }
 
+export function getLatestGoalForConversation(conversationId: string): GoalRun | null {
+  const row = db.prepare(
+    'SELECT * FROM goal_run WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1',
+  ).get(conversationId);
+  return row ? mapGoal(row) : null;
+}
+
 export function isGoalTerminal(status: GoalStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
 }
@@ -350,21 +357,35 @@ export function finishGoalBatch(
 
 export function recoverInterruptedGoals(now = Date.now()): number {
   const active = db.prepare(
-    `SELECT * FROM goal_run WHERE status IN ('planning','running','verifying')`,
+    `SELECT * FROM goal_run WHERE status IN ('planning','running','verifying','paused')`,
   ).all() as any[];
   let recovered = 0;
   for (const row of active) {
     const goalId = String(row.id);
+    const paused = row.status === 'paused';
     db.prepare(
       "UPDATE goal_batch SET status = 'unknown', finished_at = ? WHERE goal_id = ? AND status = 'running'",
     ).run(now, goalId);
-    db.prepare(`
-      UPDATE goal_run
-      SET status = 'queued', next_run_at = ?, lease_owner = NULL, lease_until = NULL,
-          last_error = '服务重启，目标已重新排队', updated_at = ?
-      WHERE id = ?
-    `).run(now, now, goalId);
-    appendGoalEvent(goalId, 'goal.recovered', { reason: 'service_restart' });
+    db.prepare(
+      `UPDATE llm_task
+       SET status = 'interrupted', error = '服务重启，目标批次已转入恢复流程', updated_at = ?
+       WHERE goal_id = ? AND status IN ('running','waiting_tool')`,
+    ).run(now, goalId);
+    if (paused) {
+      db.prepare(`
+        UPDATE goal_run
+        SET lease_owner = NULL, lease_until = NULL, last_error = '服务重启，目标保持暂停', updated_at = ?
+        WHERE id = ?
+      `).run(now, goalId);
+    } else {
+      db.prepare(`
+        UPDATE goal_run
+        SET status = 'queued', next_run_at = ?, lease_owner = NULL, lease_until = NULL,
+            last_error = '服务重启，目标已重新排队', updated_at = ?
+        WHERE id = ?
+      `).run(now, now, goalId);
+    }
+    appendGoalEvent(goalId, paused ? 'goal.recovered_paused' : 'goal.recovered', { reason: 'service_restart' });
     recovered++;
   }
   return recovered;

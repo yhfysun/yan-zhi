@@ -733,7 +733,7 @@ function rowToMsg(row: any): Message {
   } as any;
 }
 
-function loadPlatform(platformId: string, userId: string): Platform | null {
+export function loadPlatform(platformId: string, userId: string): Platform | null {
   // 共享平台（is_public=1，管理员统一创建授权大家用）对全部用户可调用（2026-11-01）
   const row = db.prepare(`SELECT * FROM platform WHERE id = ? AND ${platformReadableCond('user_id', 'id')}`).get(platformId, userId, userId, userId, userId) as any;
   // ★ 禁用闸（2026-10-18）：llm_enabled=0 的平台对服务端一切调用不可用
@@ -766,7 +766,7 @@ function loadPlatform(platformId: string, userId: string): Platform | null {
  *   与「命中存量裸名时打 warn 提示迁移」，并有 test/model-resolve.test.ts 守着。
  *   同一件事在两处实现必然漂移，故改为直接调用。
  */
-function loadModel(modelId: string, userId: string, platformId?: string): Model | null {
+export function loadModel(modelId: string, userId: string, platformId?: string): Model | null {
   const row = findModelRow(db, modelId, userId, platformId);
   if (!row) return null;
   return rowToModel(row, DEFAULT_CONTEXT_WINDOW);
@@ -902,7 +902,7 @@ function listAvailableModels(userId: string, args: Record<string, unknown>, task
   return lines.join('\n') + moreHint + starHint;
 }
 
-function loadMessages(convId: string): Message[] {
+export function loadMessages(convId: string): Message[] {
   // ★★★ 必须用白名单列（不含 system_prompt_snapshot）—— 见 db.ts:MESSAGE_LIST_COLS 注释。
   //   SELECT * 会把单条可达 200KB 的快照读进来，而 rowToMsg 立刻丢弃它：
   //   实测会话 deed2862 每步白读 183MB（快照占 99.8%），是「上下文越长越慢」的头号成因。
@@ -953,7 +953,7 @@ function capToolResult(result: string, spillCtx?: {
     + result.slice(-tail);
 }
 
-function insertMessage(convId: string, userId: string, role: string, content: string, extra?: any): string {
+export function insertMessage(convId: string, userId: string, role: string, content: string, extra?: any): string {
   const id = 'msg_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const ts = Date.now();
   db.prepare(
@@ -3138,6 +3138,7 @@ function syncPendingToolsJson(task: LlmTask): void {
       callId: p.callId,
       toolName: p.toolName,
       requestedAt: p.requestedAt,
+      args: p.args ?? null,
     }));
     db.prepare('UPDATE llm_task SET pending_tool_json = ? WHERE id = ?')
       .run(JSON.stringify(arr), task.id);
@@ -3200,6 +3201,11 @@ function emitConversation(conversationId: string, event: SSEEvent): void {
   for (const cb of [...set]) {
     try { cb(event); } catch { /* 单个订阅者异常不影响其他人 */ }
   }
+}
+
+/** 供目标运行器向会话总线推送目标状态事件；在线端立即看到，离线时状态已落库。 */
+export function emitConversationEvent(conversationId: string, event: SSEEvent): void {
+  emitConversation(conversationId, event);
 }
 
 // ★ 标题变更回推（2026-10-11）：conversation-title 生成成功后经此把新标题推到会话级总线，
@@ -3459,6 +3465,27 @@ export function getTaskRow(taskId: string): any | undefined {
   }
 }
 
+/** 会话最近一次任务行：任务窗口状态必须以此为准，不能按最后一条消息角色猜完成。 */
+export function getLatestTaskRowForConversation(conversationId: string, userId?: string): any | undefined {
+  try {
+    return userId
+      ? db.prepare(
+          `SELECT id, conversation_id, status, step, error, created_at, updated_at, pending_tool_json,
+                  params_json, goal_id, goal_batch_id, heartbeat_at
+           FROM llm_task WHERE conversation_id = ? AND user_id = ?
+           ORDER BY created_at DESC LIMIT 1`,
+        ).get(conversationId, userId)
+      : db.prepare(
+          `SELECT id, conversation_id, status, step, error, created_at, updated_at, pending_tool_json,
+                  params_json, goal_id, goal_batch_id, heartbeat_at
+           FROM llm_task WHERE conversation_id = ?
+           ORDER BY created_at DESC LIMIT 1`,
+        ).get(conversationId);
+  } catch {
+    return undefined;
+  }
+}
+
 // ============================================================
 // ReAct 循环（后端独立运行）
 // ============================================================
@@ -3693,6 +3720,13 @@ async function runReActLoop(task: LlmTask, params: {
     }
     if (modeFlags.plan) {
       modePrompt.push('- 计划模式：动手执行前先制定完整分步计划。若 task_plan 工具可用，优先用 task_plan/task_step 登记计划与进度；否则以编号列表先给出计划，再按计划逐项执行并在每步完成后简要汇报。');
+    }
+    if (modeFlags.goal) {
+      modePrompt.push(
+        '- 目标模式：当前任务是长期目标的一个执行批次。先读取目标、验收标准、当前计划和历史进度，按未完成步骤继续。'
+        + '不得重复已完成工作；必须产出可核验证据；不得只凭自我判断宣告目标完成。'
+        + '如果目标需要等待用户或外部状态，明确说明阻塞并保留当前进度，系统会持久化并在之后继续。'
+      );
     }
     if (modeFlags.answerOnly) {
       modePrompt.push('- 仅回答模式：本次任务禁止调用任何工具（包括搜索、文件、代码执行与子智能体），直接依据已有知识与上下文用文字回答；若信息不足，明确说明缺什么，而不是尝试调用工具。');
